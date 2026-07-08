@@ -593,3 +593,129 @@ func TestRealGLONASS(t *testing.T) {
 	}
 	t.Logf("real F9T capture: %d GLONASS SVs with full ephemerides", assembled)
 }
+
+// TestRealBeiDouD1AgreesWithBCNAV2 is the cross-oracle that closes the D1
+// subframe-3 compliance gap for good: the B1I D1 decode and the ICD-authoritative
+// B2a B-CNAV2 decode describe the same physical orbit, so for every SV carrying
+// both, the two propagated positions must agree to metres at a common epoch. A
+// field-order mistake in either decoder (the historical Ω0/ω misplacement) throws
+// this off by thousands of km — radius and inclination checks alone cannot see it.
+// The clocks (both referenced to B3I) must likewise agree, and the B-CNAV2 type-30
+// group delays and BDGIM coefficients must be physically plausible.
+func TestRealBeiDouD1AgreesWithBCNAV2(t *testing.T) {
+	data, err := os.ReadFile("testdata/f9t_capture.ubx")
+	if err != nil {
+		t.Skipf("no capture fixture: %v", err)
+	}
+	var frames []*RawFrame
+	_ = scanUBX(bytes.NewReader(data), "cap", fixedTime,
+		func(f *RawFrame) { frames = append(frames, f) }, func(string) {})
+
+	type d1set struct{ s1, s2, s3 *frame.BeiDouSubframe }
+	type b2set struct{ m10, m11, m30 *frame.BeiDouBCNAV2 }
+	d1 := map[int]*d1set{}
+	b2 := map[int]*b2set{}
+	for _, f := range frames {
+		if f.GnssID != gnss.BeiDou {
+			continue
+		}
+		switch f.SigID {
+		case 0: // B1I D1
+			sf, err := frame.DecodeBeiDouD1(f.Words)
+			if err != nil {
+				continue
+			}
+			s := d1[f.SvID]
+			if s == nil {
+				s = &d1set{}
+				d1[f.SvID] = s
+			}
+			switch sf.FraID {
+			case 1:
+				s.s1 = sf
+			case 2:
+				s.s2 = sf
+			case 3:
+				s.s3 = sf
+			}
+		case 8: // B2a B-CNAV2
+			m, err := frame.DecodeBeiDouBCNAV2(f.Words)
+			if err != nil {
+				continue
+			}
+			s := b2[f.SvID]
+			if s == nil {
+				s = &b2set{}
+				b2[f.SvID] = s
+			}
+			switch m.MesType {
+			case 10:
+				s.m10 = m
+			case 11:
+				s.m11 = m
+			case 30:
+				s.m30 = m
+			}
+		}
+	}
+
+	compared := 0
+	for sv, d := range d1 {
+		b := b2[sv]
+		if b == nil || d.s1 == nil || d.s2 == nil || d.s3 == nil || b.m10 == nil || b.m11 == nil {
+			continue
+		}
+		ephD1, clkD1, err := frame.AssembleBeiDou(sv, d.s1, d.s2, d.s3)
+		if err != nil {
+			continue
+		}
+		ephB2, clkB2, err := frame.AssembleBeiDouBCNAV2(sv, b.m10, b.m11, b.m30)
+		if err != nil {
+			continue
+		}
+
+		// Both ephemerides are fresh within the 20-minute capture; compare at
+		// the B-CNAV2 broadcast second, inside both validity windows.
+		tow := float64(b.m10.SOW)
+		posD1, err1 := kepler.Propagate(ephD1, tow)
+		posB2, err2 := kepler.Propagate(ephB2, tow)
+		if err1 != nil || err2 != nil {
+			t.Errorf("C%02d propagate: d1=%v b2a=%v", sv, err1, err2)
+			continue
+		}
+		if d := posD1.Sub(posB2).Norm(); d > 20 {
+			vel, _ := kepler.Velocity(ephD1, tow)
+			rhat := posD1.Scale(1 / posD1.Norm())
+			that := vel.Scale(1 / vel.Norm())
+			diff := posD1.Sub(posB2)
+			t.Logf("C%02d toeD1=%.0f toeB2=%.0f sowB2=%d dM0=%.3e de=%.3e di0=%.3e dOm0=%.3e dom=%.3e",
+				sv, ephD1.Toe, ephB2.Toe, b.m10.SOW,
+				ephD1.M0-ephB2.M0, ephD1.Ecc-ephB2.Ecc, ephD1.I0-ephB2.I0,
+				ephD1.Omega0-ephB2.Omega0, ephD1.Omega-ephB2.Omega)
+			t.Errorf("C%02d D1 vs B-CNAV2 position differ by %.1f m (radial %.1f along %.1f), want < 20 m",
+				sv, d, diff.Dot(rhat), diff.Dot(that))
+		}
+
+		// Clocks: both a0 reference the B3I signal, so the polynomials evaluated
+		// at a common epoch must agree closely across the two fits.
+		if b.m30 != nil {
+			dtD1 := clkD1.Af0 + clkD1.Af1*(tow-clkD1.Toc)
+			dtB2 := clkB2.Af0 + clkB2.Af1*(tow-clkB2.Toc)
+			if dns := (dtD1 - dtB2) * 1e9; dns > 50 || dns < -50 {
+				t.Errorf("C%02d D1 vs B-CNAV2 clock differ by %.1f ns, want < 50 ns", sv, dns)
+			}
+			// Group delays and BDGIM plausibility (ICD Tables 7-6, 7-10).
+			if tgd := b.m30.TGDB2ap; tgd < -1e-7 || tgd > 1e-7 {
+				t.Errorf("C%02d TGD_B2ap = %.2e s, implausible", sv, tgd)
+			}
+			if a1 := b.m30.BDGIM[0]; a1 <= 0 || a1 > 60 {
+				t.Errorf("C%02d BDGIM alpha1 = %.2f TECu, implausible", sv, a1)
+			}
+		}
+		compared++
+	}
+	if compared < 3 {
+		t.Errorf("cross-compared only %d SVs, want >= 3", compared)
+	}
+	t.Logf("real capture: %d BeiDou SVs cross-validated D1 vs B-CNAV2", compared)
+}

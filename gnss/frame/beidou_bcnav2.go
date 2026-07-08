@@ -91,7 +91,9 @@ func DecodeBeiDouBCNAV2(words []uint32) (*BeiDouBCNAV2, error) {
 	m := &BeiDouBCNAV2{
 		PRN:     int(u(0, 6)),
 		MesType: int(u(6, 6)),
-		SOW:     int(u(12, 18)),
+		// SOW is transmitted in 3-second units — one B-CNAV2 frame — and
+		// denotes the current frame's preamble edge (ICD Table 7-2, §7.3).
+		SOW: int(u(12, 18)) * 3,
 	}
 	// The per-signal integrity flags follow the header in every defined type:
 	// type 10 has WN first (Fig 6-3); types 11/30/31/32/33/34/40 have HS first

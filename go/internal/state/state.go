@@ -55,6 +55,8 @@ type svState struct {
 	galW [5]*frame.GalileoINAV
 	// BeiDou D1 subframe assembly buffers.
 	bd1, bd2, bd3 *frame.BeiDouSubframe
+	// BeiDou B2a B-CNAV2 message assembly buffers (types 10/11 ephemeris, 30/34 clock).
+	bc10, bc11, bc30 *frame.BeiDouBCNAV2
 	// GLONASS string assembly buffers + Cartesian ephemeris (RK4, not kepler).
 	gloS1, gloS2, gloS3 *frame.GLONASSString
 	gloEph              glonass.Ephemeris
@@ -117,6 +119,8 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 		s.applyGalileoINAV(f)
 	case f.GnssID == gnss.BeiDou && f.SigID == 0: // B1I D1 NAV
 		s.applyBeiDouD1(f)
+	case f.GnssID == gnss.BeiDou && f.SigID == 8: // B2a data component, B-CNAV2
+		s.applyBeiDouBCNAV2(f)
 	case f.GnssID == gnss.GLONASS && f.SigID == 0: // L1OF strings
 		s.applyGLONASS(f)
 	case (f.GnssID == gnss.GPS || f.GnssID == gnss.QZSS) && isCNAVSignal(f.GnssID, f.SigID):
@@ -302,6 +306,53 @@ func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
 	st.health = st.bd1.Health
+}
+
+func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
+	m, err := frame.DecodeBeiDouBCNAV2(f.Words)
+	if err != nil {
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "bcnav2").Inc()
+		return
+	}
+	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "bcnav2").Inc()
+
+	key := Key{G: f.GnssID, Sv: f.SvID, Sig: f.SigID}
+	sh := s.shardFor(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+
+	st := sh.m[key]
+	if st == nil {
+		st = &svState{key: key}
+		sh.m[key] = st
+	}
+	st.lastSeen = f.Recv
+
+	switch m.MesType {
+	case 10:
+		st.bc10 = m
+	case 11:
+		st.bc11 = m
+	case 30, 34:
+		st.bc30 = m
+	default:
+		return // types 31/32/33/40 (almanac/EOP/BGTO) not consumed here
+	}
+	if st.bc10 == nil || st.bc11 == nil {
+		return
+	}
+	eph, clk, err := frame.AssembleBeiDouBCNAV2(f.SvID, st.bc10, st.bc11, st.bc30)
+	if err != nil {
+		return // types 10/11 not broadcast-adjacent; wait for a fresh pair
+	}
+	if st.haveEph && st.bc10.IODE == st.iod {
+		return
+	}
+	if st.haveEph {
+		s.computeDisco(st, eph, clk, f.Recv)
+	}
+	st.eph, st.clk, st.iod, st.haveEph = eph, clk, st.bc10.IODE, true
+	st.health = st.bc11.HS
 }
 
 func (s *Store) applyGLONASS(f *ingest.RawFrame) {
