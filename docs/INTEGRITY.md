@@ -23,12 +23,12 @@ Two responsibilities are kept separate within `navlistener`:
   DECODE ──▶ COMPUTE (internal/state)          ──▶ DETECT (internal/state/detect)   ──▶ EMIT
              derive raw metrics per SV:             debounced state machine:             SSE events,
              orbit-disco, time-disco, delta-Hz,     threshold + hysteresis + 60 s        gnss_events,
-             health/URA/SISA/OSNMA, corroboration   confirmation → typed events          svs.json fields
+             health/URA/SISA/OSNMA, corroboration   confirmation → typed events          svs feed fields
 ```
 
 - **Compute** runs on every new ephemeris / reception; it is pure and stateless-per-input given
-  the ephemeris store. Its outputs are the numbers published in `svs.json` (`orbit-disco`,
-  `time-disco`, `sisa-m`, `healthissue`, `eph-age-m`, `perrecv.delta_hz`, …).
+  the ephemeris store. Its outputs are the numbers published in the svs feed (`orbit_disco_m`,
+  `time_disco_ns`, `sisa_m`, `health_issue_level`, `eph_age_m`, `perrecv.delta_hz`, …).
 - **Detect** is a **debounced state machine**: a provisional state change must persist for the
   debounce window before it becomes a confirmed `Event`. This kills the flapping that a single
   noisy frame would otherwise generate.
@@ -97,7 +97,8 @@ orbit-disco = |X_new − X_old|                  // metres
 Guards: only record when **both** propagations
 succeed and are non-zero/non-NaN, **both** ephemerides are `ephAge < 4 h` old, and this is **not**
 the first-ever ephemeris for the SV (no `E_old` ⇒ no disco, not a huge phantom jump). A violated
-guard yields the `-1` "unknown" sentinel, never a garbage number that trips an alert.
+guard leaves the field **absent** (unknown), never a garbage number or a magic sentinel that
+trips an alert.
 
 **Time-disco.** The clock-offset jump at the same changeover:
 
@@ -113,11 +114,11 @@ broadcast shows up as metres / nanoseconds. This discontinuity measure is also u
 **delta-Hz** (per receiver): observed Doppler − ephemeris-predicted Doppler (docs/MATH.md §2.2),
 optionally clock-corrected (`delta_hz_corr`). A *coherent* delta-Hz across independent receivers
 points at the broadcast (orbit/clock) or a wide-area spoofer; an *incoherent* one points at a
-single receiver's oscillator. Published per-receiver in `svs.json.perrecv`.
+single receiver's oscillator. Published per-receiver in the svs feed's `perrecv`.
 
 **RTCM precise-vs-broadcast.** From SSR corrections (RTCM 1057–1068), the magnitude of the
 radial/along/cross orbit correction is "how wrong the broadcast orbit is vs. the precise network
-orbit" — an independent truth source. Surfaced as `rtcm-eph-delta-cm` (+ components). A broadcast
+orbit" — an independent truth source. Surfaced as `rtcm_eph_delta_cm` (+ components). A broadcast
 that diverges from the SSR correction while claiming good SISA is a strong integrity flag.
 
 ---
@@ -256,17 +257,17 @@ synchronized access to shared state:
 
 ## 10. What we report and where
 
-| Signal | `svs.json` field | schema-1.1 field | Event |
-|---|---|---|---|
-| health | `healthissue`, `health` | `health_code`, `health_issue_level`, `health_subcode` | `health_change`, `qzss_health`, `navic_health`, `sbas_health` |
-| ephemeris age | `eph-age-m` | `eph_age_m` | `eph_aged` |
-| orbit disco | `orbit-disco`, `orbit-disco-age` | `orbit_disco` | `orbit_disco` |
-| clock jump | `time-disco` | `time_disco` | `clock_jump` |
-| accuracy | `sisa`, `sisa-m` | `sisa_valid`, `sisa_m` | `sisa_change` |
-| per-receiver Doppler | `perrecv.delta_hz(_corr)` | same | (feeds coherent-delta detection) |
-| OSNMA | `osnma` | `osnma` | `osnma_change` |
-| silence | `last-seen-s` | `last_seen_s` | `observation_lost` (SV), `station_offline` (observer) |
-| corroboration | `conf`, `perrecv` | same | — |
+| Signal | Feed field (`docs/OUTPUT.md §1`) | Event |
+|---|---|---|
+| health | `health_code`, `health_issue_level`, `health_subcode` | `health_change`, `qzss_health`, `navic_health`, `sbas_health` |
+| ephemeris age | `eph_age_m` | `eph_aged` |
+| orbit disco | `orbit_disco_m`, `orbit_disco_age_s` | `orbit_disco` |
+| clock jump | `time_disco_ns` | `clock_jump` |
+| accuracy | `sisa_valid`, `sisa_m` | `sisa_change` |
+| per-receiver Doppler | `perrecv.delta_hz(_corr)` | (feeds coherent-delta detection) |
+| OSNMA | `osnma` | `osnma_change` |
+| silence | `last_seen_s` | `observation_lost` (SV), `station_offline` (observer) |
+| corroboration | `conf`, `perrecv` | — |
 
 Field names and event vocabulary are defined once, in `docs/OUTPUT.md`; the integrity layer
 emits to that standard and consumers read it from there.

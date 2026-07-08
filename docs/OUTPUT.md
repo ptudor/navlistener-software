@@ -92,6 +92,7 @@ below):
 | `a0g`,`a1g`,`t0g`,`wn0g` | float/int | raw inter-system offset polynomial terms |
 | `af0`,`af1`,`af2` | float | raw SV clock polynomial (MATH.md §4) |
 | `aodc`,`aode` | int | BeiDou age-of-data (BeiDou only) |
+| `conf` | int | corroboration count — independent authenticated chains confirming this SV's state (INTEGRITY.md §6) |
 | `perrecv` | object | per-observer reception, keyed by observer id (below) |
 
 `perrecv[<observer_id>]`:
@@ -183,6 +184,11 @@ against its `server.go` route table): `/gnss/api/{sky, sky/history, sv/{sv},
 constellations, events, events/summary, stations, station/{id}, availability, geolocate}`
 and `/gnss/health`. When `navlistener` absorbs the serve role these move here unchanged in
 shape; they are read-side conveniences over the same state and DB.
+
+New enrichment endpoints (ours — the Japan/India product surface, `docs/CONSTELLATIONS.md
+§3.2/§4.1`): `/gnss/api/qzss-dcr` (QZSS L1S DC Report disaster/crisis bulletins) and
+`/gnss/api/navic-text` (NavIC broadcast text messages). Same envelope; message streams,
+not positioning inputs.
 
 ### 2.2 Enums (frozen)
 

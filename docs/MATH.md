@@ -68,7 +68,7 @@ if tk < −half_week:  tk += week_seconds     // ...backward
 
 with `week_seconds = 604800`, `half_week = 302400`. **This half-week correction is mandatory**
 and appears in *every* propagation and clock call (`tk` for Kepler, `Δt` for the clock
-polynomial, and the "age" reported to the integrity layer and the feeds as `eph-age-m` =
+polynomial, and the "age" reported to the integrity layer and the feeds as `eph_age_m` =
 `tk/60`). For GLONASS,
 where there is no TOW, "age" is `(t − tb)` in seconds of the day with the same wrap around the
 86400 s day boundary.
@@ -214,9 +214,10 @@ node). The analytic propagator (GLONASS ICD Appendix 3.2.2 / A.3.2.2) produces P
 > Validate almanac positions at multiple times of day and check that the
 > sub-satellite longitude follows the expected ground trace.
 
-GLONASS positions are **absent from `svs.json`** (the legacy API's field layout) and instead delivered through `almanac.json` in **kilometres** — see
-`docs/OUTPUT.md`. So this propagator's output feeds the almanac feed, and the numerical §3
-propagator (from ephemeris strings) feeds the internal state / az-el / integrity.
+GLONASS is served **first-class, like every other constellation**: the numerical §3
+propagator (from broadcast ephemeris strings) fills the svs feed's ECEF and drives
+az-el/integrity, while this analytic almanac propagator fills the all-SV almanac feed
+(metres, `docs/OUTPUT.md §1.4`) — including GLONASS SVs currently out of ephemeris view.
 
 ---
 
@@ -291,8 +292,9 @@ separate from the *freshness* gate (the 60 s fresh-receiver window in `docs/INTE
 
 ## 6. Signal-in-space accuracy: URA / SISA / F_T
 
-Each constellation broadcasts a coarse accuracy index; we decode to metres and expose `sisa` /
-`sisa-m` (feeds) and use it for integrity (`docs/INTEGRITY.md`, SISA-change alert at 3 m):
+Each constellation broadcasts a coarse accuracy index; we decode to metres and expose
+`sisa_valid` / `sisa_m` (feeds) and use it for integrity (`docs/INTEGRITY.md`, SISA-change
+alert at 3 m):
 
 - **GPS/QZSS/NavIC URA index `N` (0–15)** → metres by the IS-GPS-200 Table 20-XII step function:
   `N≤6 ⇒ 2^(1+N/2)` (rounded per table), `N≥7 ⇒ 2^(N−2)`; `N=15` = "no accuracy / do not use".
@@ -302,8 +304,8 @@ Each constellation broadcasts a coarse accuracy index; we decode to metres and e
 - **GLONASS F_T (0–15)** → metres by the ICD F_T table; `NONE`/absent ⇒ `sisa_valid=false`.
 - **BeiDou** — B1I URAI table (like GPS), B-CNAV uses SISAoe/SISAoc + a separate accuracy set.
 
-`sisa_valid` (schema-1.1 boolean) captures the "no accuracy available" sentinels so clients
-never parse English; galmon emits the strings, we emit both (see `docs/OUTPUT.md`).
+`sisa_valid` captures the "no accuracy available" sentinels and `sisa_m` carries the metres —
+clients never parse English accuracy strings (`docs/OUTPUT.md §1.1`).
 
 ---
 
@@ -355,16 +357,16 @@ published examples.
 
 ---
 
-## 8. Time-system offsets (feeds' `a0g/a1g/t0g/wn0g`, `global.json` offsets)
+## 8. Time-system offsets (feeds' `a0g/a1g/t0g/wn0g`, the `global` feed offsets)
 
 Broadcast inter-system and UTC offsets, decoded and republished:
 
 - **GNSS–UTC**: `A0, A1, ΔtLS, tot, WNt, ΔtLSF, WNLSF, DN` → UTC(k) offset + pending leap.
 - **GGTO** (Galileo–GPS Time Offset): `A0G, A1G, t0G, WN0G` → `ΔtGGTO = A0G + A1G·(t − t0G)`
-  (OS-SIS-ICD §5.1.7). Surfaced as `a0g/a1g/t0g/wn0g` and `gst-gps-offset-ns`.
+  (OS-SIS-ICD §5.1.7). Surfaced as `a0g/a1g/t0g/wn0g` and `gst_gps_offset_ns`.
 - **BGTO** (BeiDou–GPS/Galileo), **QZSS–GPS** (≈0 by design), **GLONASS–GPS/UTC(SU)**.
-- `global.json` aggregates: `gps-utc-offset-ns`, `gst-utc-offset-ns`, `gst-gps-offset-ns`, and
-  `leap-seconds`. These come from the `TimeOffset` decode, not computed by us — we transcribe the
+- The `global` feed aggregates: `gps_utc_offset_ns`, `gst_utc_offset_ns`, `gst_gps_offset_ns`,
+  `leap_seconds`. These come from the `TimeOffset` decode, not computed by us — we transcribe the
   broadcast values (and flag when receivers disagree, an integrity signal).
 
 ---
@@ -397,17 +399,17 @@ an offset from a per-constellation reference inclination — do not hardcode GPS
 ~41–45°, nowhere near 54° — a GPS-hardcoded reference silently corrupts QZSS almanacs); Galileo
 references 56° (OS-SIS-ICD almanac §); BeiDou MEO/IGSO reference 0.3 semicircles, GEO 0.
 GLONASS almanac uses §3.1. We publish
-almanac-derived ECEF in `almanac.json` (km) — this is *also* how the feed supplies GLONASS
-positions and how `best-tle`/`alma-dist` cross-checks are computed (`alma-dist` = distance between
-the ephemeris ECEF and the almanac/TLE ECEF, a coarse sanity check).
+almanac-derived ECEF in the almanac feed (**metres**, `docs/OUTPUT.md §1.4`); it also drives
+the `alma_dist_m` cross-check (distance between the ephemeris ECEF and the almanac/TLE ECEF,
+a coarse sanity check).
 
 ---
 
 ## 11. TLE cross-check (`best-tle`, `best-tle-dist`)
 
 As an independent orbit reference we match each SV against public TLEs (CelesTrak GNSS
-catalogue), propagate with **SGP4**, and report the SV name of the best match and the distance
-`best-tle-dist` between our broadcast-ephemeris ECEF and the SGP4 ECEF. SGP4 is a standard,
+catalogue), propagate with **SGP4**, and report the best match (`best_tle`) and the distance
+`best_tle_dist_m` between our broadcast-ephemeris ECEF and the SGP4 ECEF. SGP4 is a standard,
 independently-implemented algorithm (using a permissively licensed implementation); the TLE match is a coarse gross-error detector, not a precision reference.
 
 ---
@@ -425,8 +427,9 @@ Three independent oracles, in CI:
    epochs — the real-world accuracy check (broadcast-vs-precise is a few metres; a bug is
    kilometres). Also re-derive our own decoders' output from RINEX to confirm frame decode.
 3. **Independent implementation comparison.** Run galmon and `navlistener` over the **same captured raw
-   frame stream** and diff `svs.json`/`sv.json` numeric fields (ECEF x/y/z, clock offset,
-   orbit-disco, time-disco). **Agreement cross-validates both implementations**; a disagreement
+   frame stream** and diff the numbers — the harness maps galmon's `svs.json` fields onto our
+   native feed fields (ECEF, clock offset, orbit/time discontinuities) and compares numerically.
+   **Agreement cross-validates both implementations**; a disagreement
    is a bug in one of us worth root-causing. Check units, reference frames, signal conventions, and constants
    before interpreting a numerical difference. The comparison uses numerical
    outputs from independently authored implementations.

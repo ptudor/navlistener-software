@@ -26,22 +26,20 @@ dumb, tiny, and robust, and keeps the security-sensitive parser in one auditable
 
 ## 0. gnssId conventions (read this first)
 
-Two numbering schemes coexist by design:
+**One numbering, everywhere** — the u-blox `gnssId` order, which UBX-RXM-SFRBX carries
+natively (no remap on ingest) and which our feeds emit (`docs/OUTPUT.md §0`):
 
-| Scheme | GPS | SBAS | Galileo | BeiDou | IMES | QZSS | GLONASS | NavIC |
-|---|---|---|---|---|---|---|---|---|
-| **Internal** (`navlistener`, = u-blox) | 0 | 1 | 2 | 3 | 4 | **5** | 6 | **7** |
-| **galmon-emit** (`svs.json` output) | 0 | 1 | 2 | 3 | — | **5** ✚ | 6 | **7** ✚ |
+| GPS | SBAS | Galileo | BeiDou | IMES | QZSS | GLONASS | NavIC |
+|---|---|---|---|---|---|---|---|
+| 0 | 1 | 2 | 3 | 4 *(never emitted)* | **5** | 6 | **7** |
 
-- **Internal** uses the u-blox `gnssId` numbering verbatim (it is what UBX-RXM-SFRBX carries,
-  so no remap on ingest).
-- The **galmon-compatible output feed** uses galmon's numbering for the constellations galmon
-  implemented (GPS 0, Galileo 2, BeiDou 3, GLONASS 6 — note galmon's GLONASS is 6, which
-  happens to match u-blox), and **extends** it with **QZSS = 5** and **NavIC = 7** (marked ✚).
-  The regional constellation IDs follow the same u-blox numbering. See the `gnssid` field notes in `docs/OUTPUT.md §1.1`.
 - **SV-name letters:** `G` GPS, `S` SBAS, `E` Galileo, `C` BeiDou, `R` GLONASS, **`J` QZSS**,
-  **`I` NavIC**. `J`/`I` follow the RINEX 3.x / IGS convention, so downstream (intsat,
-  mapintsat) needs no new letter logic — only the two new `GnssIDFromPrefix` cases.
+  **`I` NavIC** — the RINEX 3.x / IGS letters. No consumer parses letters (verified: clients
+  key on the numeric `gnssid` and treat SV names as opaque map keys), so `J`/`I` names carry
+  zero client work.
+- **Consumer conformance:** mapintsat's `Gnss.cs`/`GNSS.swift` currently mislabel `4 = NavIC`
+  and `7 = KASS` (KASS is an SBAS *provider* on PRN 134 under gnssid 1, not a constellation);
+  that table is fixed per `docs/OUTPUT.md §6.1` before NavIC SVs appear in feeds.
 
 ---
 
@@ -50,17 +48,17 @@ Two numbering schemes coexist by design:
 Decoder status: **★ core** (v1, must ship) · **▲ extended** (modern civil signals, v2) ·
 **◇ carried-raw** (stored + re-decodable, not yet interpreted).
 
-| Constellation | gnssId (int / emit) | Letter | Nav messages we decode | Signals / freqs | Source ICD (doc # / edition) | Status |
+| Constellation | gnssId | Letter | Nav messages we decode | Signals / freqs | Source ICD (doc # / edition) | Status |
 |---|---|---|---|---|---|---|
-| **GPS** | 0 / 0 | G | L1 C/A **LNAV** (subframes 1–5); L2C/L5 **CNAV** (msg 10/11/30–37); L1C **CNAV-2** | L1 1575.42, L2 1227.60, L5 1176.45 MHz | IS-GPS-200 (Rev N, 2022); IS-GPS-705 (L5, Rev J); IS-GPS-800 (L1C, Rev J) | ★ LNAV; ▲ CNAV/CNAV-2 |
-| **Galileo** | 2 / 2 | E | E1-B **I/NAV** (word types 0–10, 16 reduced-CED, 17–20 FEC2, 63 dummy); E5a **F/NAV**; E5b **I/NAV**; E6-B **C/NAV** | E1 1575.42, E5a 1176.45, E5b 1207.14, E6 1278.75 MHz | Galileo OS SIS ICD Issue 2.1 (Nov 2023); Galileo HAS SIS ICD 1.0 (E6) | ★ I/NAV, F/NAV; ▲ E6 C/NAV |
-| **BeiDou** | 3 / 3 | C | **D1** NAV (MEO/IGSO, subframes 1–5); **D2** NAV (GEO); **B-CNAV1** (B1C); **B-CNAV2** (B2a); **B-CNAV3** (B2b) | B1I 1561.098, B1C 1575.42, B2a 1176.45, B2b 1207.14, B3I 1268.52 MHz | BDS-SIS-ICD-B1I 3.0 (2019); -B1C 1.0 (2017); -B2a 1.0 (2017); -B2b 1.0 (2020) | ★ D1/D2; ▲ B-CNAV1/2/3 |
-| **GLONASS** | 6 / 6 | R | L1OF/L2OF **strings 1–15** (eph strings 1–4, time string 5, almanac 6–15) | L1 ~1602+k·0.5625, L2 ~1246+k·0.4375 MHz (FDMA, k=−7..+6); L3OC 1202.025 (CDMA, future) | GLONASS ICD Ed. 5.1 (2008, FDMA); GLONASS ICD CDMA Gen. Desc. Ed. 1.0 (L3OC) | ★ L1OF/L2OF; ◇ L3OC |
-| **QZSS** 🇯🇵 | 5 / 5 ✚ | J | L1 C/A **LNAV** (GPS-compatible); L2C/L5 **CNAV**; L1C **CNAV-2**; **L1S** (SLAS + DC Report); **L6** (L6D/L6E CLAS/MADOCA) | L1 1575.42, L2 1227.60, L5 1176.45, L1S 1575.42, L6 1278.75 MHz | IS-QZSS-PNT-005 (2023); IS-QZSS-L1S-005; IS-QZSS-L6-005 | ★ LNAV, L1S; ▲ CNAV, L6 |
-| **NavIC/IRNSS** 🇮🇳 | 7 / 7 ✚ | I | L5/S **SPS NAV** (master frame, subframes 1–4); **L1 SPS** NAV (NVS-01 onward) | L5 1176.45, S 2492.028, **L1 1575.42** (NVS-01+) MHz | IRNSS SPS ICD Version 1.1 (Aug 2017); NavIC L1 SPS ICD 1.0 (2023) | ★ L5/S NAV; ▲ L1 |
-| **SBAS** | 1 / 1 | S | L1 C/A **MT 0–63** (integrity, fast/long corrections, iono grid, almanac) | L1 1575.42, L5 1176.45 (DFMC, future) MHz | RTCA DO-229 (MOPS, D/E); ICAO Annex 10 SARPs; SBAS L5 DFMC ICD (L5) | ★ L1 MT; ◇ L5 DFMC |
+| **GPS** | 0 | G | L1 C/A **LNAV** (subframes 1–5); L2C/L5 **CNAV** (msg 10/11/30–37); L1C **CNAV-2** | L1 1575.42, L2 1227.60, L5 1176.45 MHz | IS-GPS-200 (Rev N, 2022); IS-GPS-705 (L5, Rev J); IS-GPS-800 (L1C, Rev J) | ★ LNAV; ▲ CNAV/CNAV-2 |
+| **Galileo** | 2 | E | E1-B **I/NAV** (word types 0–10, 16 reduced-CED, 17–20 FEC2, 63 dummy); E5a **F/NAV**; E5b **I/NAV**; E6-B **C/NAV** | E1 1575.42, E5a 1176.45, E5b 1207.14, E6 1278.75 MHz | Galileo OS SIS ICD Issue 2.1 (Nov 2023); Galileo HAS SIS ICD 1.0 (E6) | ★ I/NAV, F/NAV; ▲ E6 C/NAV |
+| **BeiDou** | 3 | C | **D1** NAV (MEO/IGSO, subframes 1–5); **D2** NAV (GEO); **B-CNAV1** (B1C); **B-CNAV2** (B2a); **B-CNAV3** (B2b) | B1I 1561.098, B1C 1575.42, B2a 1176.45, B2b 1207.14, B3I 1268.52 MHz | BDS-SIS-ICD-B1I 3.0 (2019); -B1C 1.0 (2017); -B2a 1.0 (2017); -B2b 1.0 (2020) | ★ D1/D2; ▲ B-CNAV1/2/3 |
+| **GLONASS** | 6 | R | L1OF/L2OF **strings 1–15** (eph strings 1–4, time string 5, almanac 6–15) | L1 ~1602+k·0.5625, L2 ~1246+k·0.4375 MHz (FDMA, k=−7..+6); L3OC 1202.025 (CDMA, future) | GLONASS ICD Ed. 5.1 (2008, FDMA); GLONASS ICD CDMA Gen. Desc. Ed. 1.0 (L3OC) | ★ L1OF/L2OF; ◇ L3OC |
+| **QZSS** 🇯🇵 | 5 | J | L1 C/A **LNAV** (GPS-compatible); L2C/L5 **CNAV**; L1C **CNAV-2**; **L1S** (SLAS + DC Report); **L6** (L6D/L6E CLAS/MADOCA) | L1 1575.42, L2 1227.60, L5 1176.45, L1S 1575.42, L6 1278.75 MHz | IS-QZSS-PNT-005 (2023); IS-QZSS-L1S-005; IS-QZSS-L6-005 | ★ LNAV, L1S; ▲ CNAV, L6 |
+| **NavIC/IRNSS** 🇮🇳 | 7 | I | L5/S **SPS NAV** (master frame, subframes 1–4); **L1 SPS** NAV (NVS-01 onward) | L5 1176.45, S 2492.028, **L1 1575.42** (NVS-01+) MHz | IRNSS SPS ICD Version 1.1 (Aug 2017); NavIC L1 SPS ICD 1.0 (2023) | ★ L5/S NAV; ▲ L1 |
+| **SBAS** | 1 | S | L1 C/A **MT 0–63** (integrity, fast/long corrections, iono grid, almanac) | L1 1575.42, L5 1176.45 (DFMC, future) MHz | RTCA DO-229 (MOPS, D/E); ICAO Annex 10 SARPs; SBAS L5 DFMC ICD (L5) | ★ L1 MT; ◇ L5 DFMC |
 
-SBAS providers we name and geo-fence for coverage (`docs/OUTPUT.md` `sbas.json`): **WAAS**
+SBAS providers we name and geo-fence for coverage (the `sbas` feed, `docs/OUTPUT.md §1.5`): **WAAS**
 (US, PRN 131/133/135/…), **EGNOS** (EU, 121/123/136), **MSAS** (Japan, 129/137), **GAGAN**
 (India, 127/128/132), **SDCM** (Russia, 125/140/141), **BDSBAS** (China, 130/143/144),
 **KASS** (Korea, 134), **SouthPAN** (AU/NZ). QZSS also broadcasts an SBAS-like service on
@@ -186,7 +184,7 @@ the broadcast-vs-precise integrity check in `docs/INTEGRITY.md`). `rtcm.go` deco
 | (SSR-4076) | Multi-GNSS SSR (Galileo/BeiDou/QZSS orbit/clock) |
 
 The SSR radial/along/cross orbit deltas feed the *broadcast-vs-precise* discontinuity metric
-(`rtcm-eph-delta-cm`, `docs/INTEGRITY.md`). Ephemeris messages 1041/1044 give a second,
+(`rtcm_eph_delta_cm`, `docs/INTEGRITY.md`). Ephemeris messages 1041/1044 give a second,
 receiver-independent path to NavIC/QZSS orbits.
 
 ---
@@ -320,13 +318,10 @@ PZ-90.11 datum**. Source: **GLONASS ICD Edition 5.1 (2008)**.
   including the J₂/C₂₀ oblateness term, and reject zero or timeless states
   (`docs/MATH.md §3`).
 
-- **No ECEF in `svs.json` (legacy API field layout).** galmon's `svs.json`
-  omits GLONASS `x/y/z`; GLONASS positions are published via the **`almanac.json`** feed
-  instead. We keep this split so intsat/mapintsat (which already special-case GLONASS-via-
-  almanac) work unchanged — see the almanac feed in `docs/OUTPUT.md §1.4` and the GLONASS note
-  in `§1.1`. Internally we
-  *do* compute the immediate-ephemeris ECEF (for the orbit-disco integrity metric); it simply
-  is not placed in the `svs.json` `x/y/z` fields.
+- **GLONASS positions.** The svs feed carries `x_m/y_m/z_m` from RK4 ephemeris
+  propagation. The almanac feed (`docs/OUTPUT.md §1.4`, metres) carries the
+  longer-lived all-SV view. Consumer integration is described in
+  `docs/OUTPUT.md §6.1`.
 
 - **L3OC (CDMA, future).** New GLONASS-K satellites add a CDMA L3OC signal (1202.025 MHz) with
   a modern message. Carried-raw (◇) for now; a decoder is a later deliverable.
