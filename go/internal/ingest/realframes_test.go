@@ -153,3 +153,70 @@ func TestRealGalileoINAV(t *testing.T) {
 	}
 	t.Logf("real F9T capture: %d Galileo SVs with full I/NAV ephemerides", assembled)
 }
+
+// TestRealBeiDouD1 validates the BeiDou D1 decoder against the real capture:
+// subframes 1/2/3 (B1I, sigId 0) assemble per SV; each must propagate to the BeiDou
+// MEO shell (~27906 km) and carry the ~55° MEO inclination — the latter guards the
+// SF3 orientation fields (i0/Ω/ω), which a radius check alone would not.
+func TestRealBeiDouD1(t *testing.T) {
+	data, err := os.ReadFile("testdata/f9t_capture.ubx")
+	if err != nil {
+		t.Skipf("no capture fixture: %v", err)
+	}
+	var frames []*RawFrame
+	_ = scanUBX(bytes.NewReader(data), "cap", fixedTime,
+		func(f *RawFrame) { frames = append(frames, f) }, func(string) {})
+
+	type set struct{ s1, s2, s3 *frame.BeiDouSubframe }
+	bySV := map[int]*set{}
+	for _, f := range frames {
+		if f.GnssID != gnss.BeiDou || f.SigID != 0 { // B1I D1
+			continue
+		}
+		sf, err := frame.DecodeBeiDouD1(f.Words)
+		if err != nil {
+			continue
+		}
+		s := bySV[f.SvID]
+		if s == nil {
+			s = &set{}
+			bySV[f.SvID] = s
+		}
+		switch sf.FraID {
+		case 1:
+			s.s1 = sf
+		case 2:
+			s.s2 = sf
+		case 3:
+			s.s3 = sf
+		}
+	}
+
+	assembled := 0
+	for sv, s := range bySV {
+		if s.s1 == nil || s.s2 == nil || s.s3 == nil {
+			continue
+		}
+		eph, _, err := frame.AssembleBeiDou(sv, s.s1, s.s2, s.s3)
+		if err != nil {
+			continue
+		}
+		pos, err := kepler.Propagate(eph, eph.Toe)
+		if err != nil {
+			t.Errorf("C%02d propagate: %v", sv, err)
+			continue
+		}
+		if r := pos.Norm(); r < 27.4e6 || r > 28.4e6 {
+			t.Errorf("C%02d real ephemeris radius = %.0f m, want the BeiDou MEO shell ~27906 km", sv, r)
+		}
+		// MEO inclination ~55° (0.96 rad) — guards the SF3 orientation decode.
+		if incDeg := eph.I0 * 180 / 3.14159265; incDeg < 50 || incDeg > 60 {
+			t.Errorf("C%02d inclination = %.1f°, want the BeiDou MEO ~55°", sv, incDeg)
+		}
+		assembled++
+	}
+	if assembled < 4 {
+		t.Errorf("assembled only %d BeiDou ephemerides, want >= 4", assembled)
+	}
+	t.Logf("real F9T capture: %d BeiDou D1 SVs with full ephemerides", assembled)
+}
