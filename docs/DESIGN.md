@@ -64,8 +64,8 @@ nav-frame output and forward it untouched. Per source:
 
 | Source | Producer (on the receiver) | Raw frames `navlistener` consumes |
 |---|---|---|
-| **u-blox** | the F9P/F9T/F10 itself | **UBX-RXM-SFRBX** (raw nav words, per gnssId/sigId) + **UBX-RXM-RAWX** (pseudorange/Doppler/carrier-phase) + **UBX-NAV-SAT/SIG** (C/N0, el/az, prRes) + **UBX-NAV-HPPOSECEF/PVT** (receiver position) + **UBX-MON-HW** (jamming). |
-| **Septentrio** | mosaic-X5 / PolaRx | **SBF** raw-nav blocks (`GPSRawCA` 4017, `GALRawINAV` 4023, …, NavIC `IRNSSRaw` 4093) + `MeasEpoch` + `PVTGeodetic`. |
+| **u-blox** | the F9P/F9T/F10 itself | **UBX-RXM-SFRBX** (raw nav words, per gnssId/sigId) + **UBX-RXM-RAWX** (pseudorange/Doppler/carrier-phase) + **UBX-NAV-SAT/SIG** (C/N0, el/az, prRes) + **UBX-NAV-HPPOSECEF/PVT** (receiver position) + **UBX-MON-HW/MON-RF** (jamming; MON-RF on F9+). |
+| **Septentrio** | mosaic-X5 / PolaRx | **SBF** raw-nav blocks (`GPSRawCA` 4017, `GALRawINAV` 4023, …, `NAVICRaw` 4093) + `MeasEpoch` + `PVTGeodetic`. |
 | **RTCM3** | any RTCM source / caster | ephemeris messages **1019/1020/1041/1042/1044/1045/1046** + SSR orbit/clock **1057–1068** (precise-vs-broadcast integrity input). |
 
 The `internal/gnss/frame` decoders live centrally; the feeder is dumb. Ingest is a **registry

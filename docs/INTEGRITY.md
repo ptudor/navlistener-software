@@ -62,7 +62,7 @@ Severity encoding (the SSE/`gnss_events` contract): `0 = info`, `1 = warning`, `
 
 **Monitored signals.** The initial monitoring set covers GPS L1CA (`0,0`), Galileo E1 (`2,1`), BeiDou B1I
 (`3,0`), GLONASS L1 (`6,0`). **Regional signal coverage:**
-add **QZSS L1CA (`5,0`)** and **NavIC L5 (`7,5`)** as first-class monitored signals, with the
+add **QZSS L1CA (`5,0`)** and **NavIC L5 (`7,0`)** as first-class monitored signals, with the
 GPS-family thresholds (QZSS) and NavIC-appropriate staleness (its SPS NAV refresh cadence). This
 is the integrity-layer half of the CONSTELLATIONS.md decoder work — decoding QZSS/NavIC is
 pointless if the monitor ignores them.
@@ -212,8 +212,9 @@ Cheap, always-on gates that catch the common attacks and gross errors without an
 - **Cross-constellation clock coherence:** the broadcast inter-system offsets (§docs/MATH.md 8)
   should be mutually consistent across receivers; a receiver whose time-offset decode disagrees
   with the fleet is suspect.
-- **Jamming context:** UBX-MON-HW jamming/AGC indicators (`UbloxJammingStats`) raise the prior on
-  a receiver's environment being hostile, down-weighting its votes.
+- **Jamming context:** u-blox MON-HW/MON-RF jamming/AGC indicators (the GNF1 `JammingStats`
+  telemetry type) raise the prior on a receiver's environment being hostile, down-weighting its
+  votes.
 
 Every gate is a *plausibility* judgement, cheap and independent of signatures — the failures they
 catch (a replayed constellation, a lifted-and-shifted receiver, a bad upload) are exactly the ones
