@@ -51,6 +51,8 @@ type svState struct {
 	sf1, sf2, sf3 *frame.GPSSubframe
 	// Galileo I/NAV word assembly buffers, indexed by word type 1–4.
 	galW [5]*frame.GalileoINAV
+	// BeiDou D1 subframe assembly buffers.
+	bd1, bd2, bd3 *frame.BeiDouSubframe
 
 	eph     kepler.Ephemeris
 	clk     clock.Model
@@ -106,6 +108,8 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 		s.applyGPSLNAV(f)
 	case f.GnssID == gnss.Galileo && (f.SigID == 0 || f.SigID == 1): // E1-B I/NAV
 		s.applyGalileoINAV(f)
+	case f.GnssID == gnss.BeiDou && f.SigID == 0: // B1I D1 NAV
+		s.applyBeiDouD1(f)
 	default:
 		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "unsupported").Inc()
 	}
@@ -207,6 +211,56 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 	// it is decoded and surfaced when the integrity pass consumes word 5.
 }
 
+func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
+	sf, err := frame.DecodeBeiDouD1(f.Words)
+	if err != nil {
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "d1").Inc()
+		return
+	}
+	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "d1").Inc()
+
+	key := Key{G: f.GnssID, Sv: f.SvID, Sig: 0}
+	sh := s.shardFor(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+
+	st := sh.m[key]
+	if st == nil {
+		st = &svState{key: key}
+		sh.m[key] = st
+	}
+	st.lastSeen = f.Recv
+
+	switch sf.FraID {
+	case 1:
+		st.bd1 = sf
+	case 2:
+		st.bd2 = sf
+	case 3:
+		st.bd3 = sf
+	default:
+		return // subframes 4/5 (almanac/iono) not consumed here
+	}
+	if st.bd1 == nil || st.bd2 == nil || st.bd3 == nil {
+		return
+	}
+	eph, clk, err := frame.AssembleBeiDou(f.SvID, st.bd1, st.bd2, st.bd3)
+	if err != nil {
+		return
+	}
+	// BeiDou has no single issue-of-data across subframes; key the changeover on
+	// the ephemeris reference time toe.
+	newIOD := int(eph.Toe)
+	if st.haveEph && newIOD == st.iod {
+		return
+	}
+	if st.haveEph {
+		s.computeDisco(st, eph, clk, f.Recv)
+	}
+	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
+	st.health = st.bd1.Health
+}
+
 // computeDisco propagates the outgoing and incoming ephemerides to the new
 // reference epoch and records orbit-disco (metres) and time-disco (ns). Guards
 // require both propagations to succeed; this is not the first ephemeris
@@ -244,7 +298,7 @@ func (s *Store) Propagate(now time.Time) {
 			if !st.haveEph {
 				continue
 			}
-			tow := gpsTOW(now)
+			tow := towFor(st.key.G, now)
 			if pos, err := kepler.Propagate(st.eph, tow); err == nil {
 				st.pos, st.havePos = pos, true
 			}
@@ -272,7 +326,21 @@ func (s *Store) Expire(now time.Time, ttl time.Duration) {
 }
 
 // gpsTOW returns the GPS/QZSS time-of-week (seconds) for a wall-clock instant.
+// GST (Galileo) shares this time-of-week to nanoseconds.
 func gpsTOW(now time.Time) float64 {
 	gps := now.Unix() - gpsEpochUnix + gpsUTCOffset
 	return float64(((gps % weekSeconds) + weekSeconds) % weekSeconds)
+}
+
+// towFor returns the constellation's own time-of-week for propagation. GPS/QZSS/
+// Galileo share GPS SOW; BeiDou runs 14 s behind (BDT = GPST − 14 s), so its toe
+// is on a shifted scale and it must be propagated at the shifted SOW.
+func towFor(g gnss.GNSSID, now time.Time) float64 {
+	tow := gpsTOW(now)
+	if g == gnss.BeiDou {
+		if tow -= 14; tow < 0 {
+			tow += weekSeconds
+		}
+	}
+	return tow
 }
