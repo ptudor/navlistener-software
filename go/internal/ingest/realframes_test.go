@@ -89,3 +89,67 @@ func TestRealF9TCapture(t *testing.T) {
 	}
 	t.Logf("real F9T capture: %d SFRBX, %d GPS SVs with full ephemerides", len(frames), assembled)
 }
+
+// TestRealGalileoINAV validates the Galileo I/NAV decoder against the same real
+// F9T capture: word types 1–4 (E1-B, sigId 1) are collected per SV, assembled, and
+// each ephemeris must propagate to the Galileo shell (~29600 km).
+func TestRealGalileoINAV(t *testing.T) {
+	data, err := os.ReadFile("testdata/f9t_capture.ubx")
+	if err != nil {
+		t.Skipf("no capture fixture: %v", err)
+	}
+	var frames []*RawFrame
+	_ = scanUBX(bytes.NewReader(data), "cap", fixedTime,
+		func(f *RawFrame) { frames = append(frames, f) }, func(string) {})
+
+	type words struct{ w1, w2, w3, w4 *frame.GalileoINAV }
+	bySV := map[int]*words{}
+	for _, f := range frames {
+		if f.GnssID != gnss.Galileo || f.SigID != 1 { // E1-B I/NAV
+			continue
+		}
+		w, err := frame.DecodeGalileoINAV(f.Words)
+		if err != nil {
+			continue
+		}
+		s := bySV[f.SvID]
+		if s == nil {
+			s = &words{}
+			bySV[f.SvID] = s
+		}
+		switch w.Type {
+		case 1:
+			s.w1 = w
+		case 2:
+			s.w2 = w
+		case 3:
+			s.w3 = w
+		case 4:
+			s.w4 = w
+		}
+	}
+
+	assembled := 0
+	for sv, s := range bySV {
+		if s.w1 == nil || s.w2 == nil || s.w3 == nil || s.w4 == nil {
+			continue
+		}
+		eph, _, err := frame.AssembleGalileo(sv, s.w1, s.w2, s.w3, s.w4)
+		if err != nil {
+			continue // words from different IODnav; skip
+		}
+		pos, err := kepler.Propagate(eph, eph.Toe)
+		if err != nil {
+			t.Errorf("E%02d propagate: %v", sv, err)
+			continue
+		}
+		if r := pos.Norm(); r < 29.2e6 || r > 30.0e6 {
+			t.Errorf("E%02d real ephemeris radius = %.0f m, want the Galileo shell ~29600 km", sv, r)
+		}
+		assembled++
+	}
+	if assembled < 4 {
+		t.Errorf("assembled only %d Galileo ephemerides, want >= 4", assembled)
+	}
+	t.Logf("real F9T capture: %d Galileo SVs with full I/NAV ephemerides", assembled)
+}

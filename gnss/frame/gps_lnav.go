@@ -33,6 +33,10 @@ var ErrParity = errors.New("frame: LNAV parity check failed")
 // ErrShortFrame is returned when a decoder is handed too few words/bytes.
 var ErrShortFrame = errors.New("frame: short frame")
 
+// errIODMismatch is returned when the parts of an ephemeris carry inconsistent
+// issue-of-data tags (they belong to different data sets).
+var errIODMismatch = errors.New("frame: ephemeris IOD mismatch")
+
 // GPSSubframe holds the decoded fields of a single LNAV subframe. Only the fields
 // belonging to this subframe's ID are populated; a full ephemeris is assembled
 // from subframes 1, 2, and 3 (AssembleGPS).
