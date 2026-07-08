@@ -129,6 +129,29 @@ func run() int {
 		}()
 	}
 
+	// The authenticated GNF1 push endpoint (docs/DESIGN.md §1/§2) is the production
+	// fleet ingest path: navfeeder edge feeders connect out to us over TLS and their
+	// frames join the same decode stage as the dial connectors. Enabled by
+	// [push].addr; TLS is mandatory when set.
+	if cfg.Push.Addr != "" {
+		auth := ingest.NewConfigAuthenticator(cfg.Push.Observers)
+		pushSrv, err := ingest.NewPushServer(cfg.Push, frames, auth, log)
+		if err != nil {
+			log.Error("push endpoint init failed", "error", err)
+			cancel()
+			storeCancel() // release the historian context before the early exit
+			return 1
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := pushSrv.Run(ctx); err != nil {
+				log.Error("push endpoint", "error", err)
+			}
+		}()
+		log.Info("push endpoint enabled", "addr", cfg.Push.Addr, "observers", len(cfg.Push.Observers))
+	}
+
 	// Integrity DETECT: the debounced detector runs on a cadence over the same live
 	// read model the feeds serve, persists confirmed events (firing pg_notify) and
 	// pushes them to the SSE broker (docs/INTEGRITY.md, docs/OUTPUT.md §3).
@@ -317,6 +340,11 @@ func printConfigSummary(cfg *config.Config) {
 		serveAddr = "(disabled)"
 	}
 	fmt.Printf("  serve addr:     %s\n", serveAddr)
+	pushAddr := cfg.Push.Addr
+	if pushAddr == "" {
+		pushAddr = "(disabled)"
+	}
+	fmt.Printf("  push addr:      %s (%d observers)\n", pushAddr, len(cfg.Push.Observers))
 	fmt.Printf("  log:            %s / %s\n", cfg.Logging.Level, cfg.Logging.Format)
 	fmt.Printf("  state shards:   %d\n", cfg.State.Shards)
 	fmt.Printf("  sv ttl:         %s\n", cfg.State.SVTTL)

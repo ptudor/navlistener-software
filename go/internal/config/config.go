@@ -38,6 +38,7 @@ type Config struct {
 	State   State    `toml:"state"`
 	Store   Store    `toml:"store"`
 	Serve   Serve    `toml:"serve"`
+	Push    Push     `toml:"push"`
 	Ingest  []Source `toml:"ingest"`
 
 	// ShutdownTimeout bounds graceful shutdown; kept out of the wire format.
@@ -73,6 +74,35 @@ type Store struct {
 	RawRetention string `toml:"raw_retention"` // default "7 days"
 	// CompressAfter is when a raw chunk is columnar-compressed (default "1 day").
 	CompressAfter string `toml:"compress_after"`
+}
+
+// Push is the authenticated GNF1 fleet push endpoint (docs/DESIGN.md §1/§2): the
+// production ingest path where navfeeder edge feeders connect out to us over TLS. It
+// is enabled only when addr is set; TLS is mandatory when it is. Observers
+// authenticate with a bearer token whose SHA-256 is stored here (the token itself is
+// shown once at enrollment and never committed).
+type Push struct {
+	Addr    string `toml:"addr"`     // e.g. 0.0.0.0:5580; empty = push disabled
+	TLSCert string `toml:"tls_cert"` // server certificate (PEM)
+	TLSKey  string `toml:"tls_key"`  // server private key (PEM)
+	// ClientCA, when set, enables mTLS: connecting feeders must present a client
+	// certificate signed by this CA (the software/ATECC cert tiers). The bearer
+	// token stays the bootstrap tier and is always checked.
+	ClientCA string `toml:"client_ca"`
+
+	AckIntervals string        `toml:"ack_interval"` // ack cadence, default "1s"
+	AckInterval  time.Duration `toml:"-"`
+
+	Observers []PushObserver `toml:"observer"`
+}
+
+// PushObserver is one enrolled edge feeder's credential and feed grant. TokenSHA256
+// is the hex-encoded SHA-256 of the bearer token; Feeds is the allow-list of feed
+// types this observer may push (the as-built Device.feed_types grant, DESIGN §3).
+type PushObserver struct {
+	Station     string   `toml:"station"`
+	TokenSHA256 string   `toml:"token_sha256"`
+	Feeds       []string `toml:"feeds"`
 }
 
 // Logging selects level and format for log/slog.
@@ -200,6 +230,10 @@ func (c *Config) finalize() error {
 		c.Serve.RefreshSlow = 90 * time.Second
 	}
 
+	if err := c.finalizePush(); err != nil {
+		return err
+	}
+
 	seen := make(map[string]bool, len(c.Ingest))
 	for i := range c.Ingest {
 		s := &c.Ingest[i]
@@ -218,6 +252,59 @@ func (c *Config) finalize() error {
 		}
 	}
 	return nil
+}
+
+// finalizePush validates and defaults the push endpoint. When disabled (no addr) it
+// is a no-op; when enabled, TLS material is mandatory and every observer must carry
+// a station, a well-formed token hash, and at least one known feed type.
+func (c *Config) finalizePush() error {
+	p := &c.Push
+	if err := parseDur(p.AckIntervals, &p.AckInterval); err != nil {
+		return fmt.Errorf("push.ack_interval: %w", err)
+	}
+	if p.AckInterval <= 0 {
+		p.AckInterval = time.Second
+	}
+	if p.Addr == "" {
+		return nil // push disabled
+	}
+	if p.TLSCert == "" || p.TLSKey == "" {
+		return fmt.Errorf("push.tls_cert and push.tls_key are required when push.addr is set")
+	}
+	stations := make(map[string]bool, len(p.Observers))
+	for i := range p.Observers {
+		o := &p.Observers[i]
+		if o.Station == "" {
+			return fmt.Errorf("push.observer[%d]: station is required", i)
+		}
+		if stations[o.Station] {
+			return fmt.Errorf("push.observer[%d]: duplicate station %q", i, o.Station)
+		}
+		stations[o.Station] = true
+		if len(o.TokenSHA256) != 64 || !isHex(o.TokenSHA256) {
+			return fmt.Errorf("push.observer %q: token_sha256 must be 64 hex chars (a SHA-256)", o.Station)
+		}
+		if len(o.Feeds) == 0 {
+			return fmt.Errorf("push.observer %q: at least one feed type is required", o.Station)
+		}
+		for _, f := range o.Feeds {
+			if !knownIngestTypes[f] {
+				return fmt.Errorf("push.observer %q: unknown feed type %q", o.Station, f)
+			}
+		}
+	}
+	return nil
+}
+
+func isHex(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func parseDur(s string, out *time.Duration) error {

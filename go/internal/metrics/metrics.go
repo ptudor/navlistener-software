@@ -97,6 +97,30 @@ var (
 		Help: "Integrity events that failed to persist to the historian.",
 	})
 
+	// PushConnectsTotal counts authenticated feeder connections, by observer.
+	PushConnectsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_push_connects_total",
+		Help: "Authenticated feeder connections accepted, by observer.",
+	}, []string{"observer"})
+
+	// PushObserversUp is the number of feeder connections currently established, by observer.
+	PushObserversUp = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "navlistener_push_observers_up",
+		Help: "Feeder connections currently established, by observer.",
+	}, []string{"observer"})
+
+	// PushAuthFailuresTotal counts rejected feeder handshakes.
+	PushAuthFailuresTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "navlistener_push_auth_failures_total",
+		Help: "Feeder handshakes rejected for a bad token or feed grant.",
+	})
+
+	// PushErrorsTotal counts per-connection push errors, by observer and kind.
+	PushErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_push_errors_total",
+		Help: "Push connection errors, by observer and kind.",
+	}, []string{"observer", "kind"})
+
 	// StoreRowsTotal counts raw nav frames persisted to the historian.
 	StoreRowsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "navlistener_store_rows_total",

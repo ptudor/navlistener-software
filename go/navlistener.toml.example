@@ -5,8 +5,10 @@
 # push stages land, real credentials (DB DSN, TLS keys) go only in the deployed,
 # git-ignored file with 0600 permissions — never in this committed example.
 #
-# This build wires INGEST (dial) → DECODE → PROPAGATE. Point [[ingest]] sources
-# at receivers we control on the LAN; all decoding and orbit math is central.
+# The pipeline is INGEST (dial + authenticated push) → DECODE → PROPAGATE +
+# INTEGRITY → PERSIST → SERVE. Point [[ingest]] sources at receivers we control on
+# the LAN; enroll fleet feeders under [[push.observer]]; all decoding, orbit math,
+# and integrity detection is central.
 
 [logging]
 level  = "info"   # debug | info | warn | error
@@ -31,6 +33,34 @@ batch_size     = 1000    # rows per CopyFrom
 batch_interval = "1s"    # flush cadence
 compress_after = "1 day" # columnar-compress raw chunks older than this
 raw_retention  = "7 days" # drop raw frames older than this (long-term lives in aggregates)
+
+# Native v2 read API (docs/OUTPUT.md): /gnss/api/v2/{svs,global,observers,almanac,
+# sbas} + the /gnss/events SSE stream, served from RAM. Optional: leave addr empty to
+# run collector-only. Loopback only; a reverse proxy terminates TLS and fronts it as
+# intsat.space. Satellites move slowly, so the refresh cadences are deliberately slow.
+[serve]
+# addr                    = "127.0.0.1:8080"
+refresh_interval        = "30s"  # svs/global/observers/sbas
+almanac_refresh_interval = "90s" # almanac (longer-life, all-SV view)
+
+# Authenticated GNF1 fleet push endpoint (docs/DESIGN.md §1/§2): the production
+# ingest path where navfeeder edge feeders connect out to us over TLS. Optional:
+# leave addr empty to accept dial-mode ingest only. When enabled, TLS is mandatory;
+# the real cert/key go only in the deployed, git-ignored config, 0600.
+[push]
+# addr      = "0.0.0.0:5580"
+# tls_cert  = "/usr/local/etc/navlistener/push.crt"
+# tls_key   = "/usr/local/etc/navlistener/push.key"
+# client_ca = "/usr/local/etc/navlistener/fleet-ca.crt"  # set to require mTLS (cert tiers)
+ack_interval = "1s"
+
+# One [[push.observer]] per enrolled feeder. token_sha256 is the hex SHA-256 of the
+# bearer token shown once at enrollment (generate it: printf %s "$TOKEN" | sha256).
+# The token itself is NEVER stored here. feeds is the grant (Device.feed_types).
+# [[push.observer]]
+# station      = "observer16"
+# token_sha256 = "….64 hex chars.…"
+# feeds        = ["ubx"]
 
 # One [[ingest]] block per receiver we dial. type ∈ { ubx, sbf, rtcm }.
 # Leave disabled = true to keep an entry without starting it.

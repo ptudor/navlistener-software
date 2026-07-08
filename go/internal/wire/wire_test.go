@@ -61,10 +61,11 @@ func TestFrameTooLargeOnRead(t *testing.T) {
 func TestDataRoundTrip(t *testing.T) {
 	rec := RawRecord{
 		RecvUnixNs: 1_700_000_000_000_000_000,
-		GnssID:     gnss.GPS,
+		GnssID:     gnss.GLONASS,
 		SvID:       5,
 		SigID:      0,
-		FrameType:  0x10,
+		FreqID:     11,
+		FrameType:  0x40,
 		Raw:        []byte{0xDE, 0xAD, 0xBE, 0xEF},
 	}
 	payload := EncodeData(42, rec)
@@ -76,7 +77,8 @@ func TestDataRoundTrip(t *testing.T) {
 		t.Errorf("seq = %d, want 42", seq)
 	}
 	if got.RecvUnixNs != rec.RecvUnixNs || got.GnssID != rec.GnssID ||
-		got.SvID != rec.SvID || got.SigID != rec.SigID || got.FrameType != rec.FrameType {
+		got.SvID != rec.SvID || got.SigID != rec.SigID ||
+		got.FreqID != rec.FreqID || got.FrameType != rec.FrameType {
 		t.Errorf("record header mismatch: %+v", got)
 	}
 	if !bytes.Equal(got.Raw, rec.Raw) {

@@ -73,11 +73,12 @@ type RawRecord struct {
 	GnssID     gnss.GNSSID // constellation (u-blox numbering)
 	SvID       uint8       // PRN within constellation
 	SigID      uint8       // signal id
+	FreqID     uint8       // GLONASS FDMA channel (k = freqId − 7); 0 for other constellations
 	FrameType  uint8       // GNF1 nav message type (docs/CONSTELLATIONS.md §6)
 	Raw        []byte      // the broadcast nav frame, verbatim
 }
 
-const recordHeaderLen = 8 + 1 + 1 + 1 + 1 // recv_unix_ns + gnssId + svId + sigId + frame_type
+const recordHeaderLen = 8 + 1 + 1 + 1 + 1 + 1 // recv_unix_ns + gnssId + svId + sigId + freqId + frame_type
 
 // WriteMagic writes the GNF1 stream prefix. Call once, before any frame.
 func WriteMagic(w io.Writer) error {
@@ -147,6 +148,18 @@ func WriteWelcome(w io.Writer, m WelcomeMsg) error {
 	return WriteFrame(w, Welcome, b)
 }
 
+// ParseHello unmarshals a HELLO frame payload into a HelloMsg.
+func ParseHello(payload []byte) (HelloMsg, error) {
+	var h HelloMsg
+	err := json.Unmarshal(payload, &h)
+	return h, err
+}
+
+// MarshalWelcome encodes a WelcomeMsg to its JSON frame payload.
+func MarshalWelcome(m WelcomeMsg) ([]byte, error) {
+	return json.Marshal(m)
+}
+
 // EncodeData builds a DATA frame payload: [8B seq][record header][raw bytes].
 func EncodeData(seq uint64, rec RawRecord) []byte {
 	buf := make([]byte, 8+recordHeaderLen+len(rec.Raw))
@@ -155,8 +168,9 @@ func EncodeData(seq uint64, rec RawRecord) []byte {
 	buf[16] = byte(rec.GnssID)
 	buf[17] = rec.SvID
 	buf[18] = rec.SigID
-	buf[19] = rec.FrameType
-	copy(buf[20:], rec.Raw)
+	buf[19] = rec.FreqID
+	buf[20] = rec.FrameType
+	copy(buf[21:], rec.Raw)
 	return buf
 }
 
@@ -171,8 +185,9 @@ func DecodeData(payload []byte) (seq uint64, rec RawRecord, err error) {
 	rec.GnssID = gnss.GNSSID(payload[16])
 	rec.SvID = payload[17]
 	rec.SigID = payload[18]
-	rec.FrameType = payload[19]
-	rec.Raw = payload[20:]
+	rec.FreqID = payload[19]
+	rec.FrameType = payload[20]
+	rec.Raw = payload[21:]
 	return seq, rec, nil
 }
 
