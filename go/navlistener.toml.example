@@ -22,6 +22,16 @@ shards             = 16     # sharded per-SV live store; >= 1
 sv_ttl             = "2h"   # expire an SV unseen by every receiver this long
 propagate_interval = "1s"   # cadence for re-propagating live SVs to "now"
 
+# TimescaleDB raw-nav-frame historian (docs/OUTPUT.md §4). Optional: leave dsn empty
+# to run persist-less (dev). When set, TimescaleDB is required (a missing extension
+# is fatal). The real DSN goes only in the deployed, git-ignored config, 0600.
+[store]
+# dsn            = "postgres://navlistener:PASSWORD@localhost/navlistener"
+batch_size     = 1000    # rows per CopyFrom
+batch_interval = "1s"    # flush cadence
+compress_after = "1 day" # columnar-compress raw chunks older than this
+raw_retention  = "7 days" # drop raw frames older than this (long-term lives in aggregates)
+
 # One [[ingest]] block per receiver we dial. type ∈ { ubx, sbf, rtcm }.
 # Leave disabled = true to keep an entry without starting it.
 

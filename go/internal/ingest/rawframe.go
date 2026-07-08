@@ -9,6 +9,7 @@
 package ingest
 
 import (
+	"encoding/binary"
 	"time"
 
 	"github.com/ptudor/gnss"
@@ -29,4 +30,60 @@ type RawFrame struct {
 	MsgType int         // SBF block number / RTCM message number (byte-oriented sources)
 	Words   []uint32    // 30-bit (or native) nav words, right-aligned
 	Bytes   []byte      // raw frame bytes (for byte-oriented sources)
+}
+
+// RawBytes returns the frame's untouched bytes for the forensic record: the words
+// serialized big-endian, or the byte payload for byte-oriented sources.
+func (f *RawFrame) RawBytes() []byte {
+	if len(f.Bytes) > 0 {
+		return f.Bytes
+	}
+	b := make([]byte, len(f.Words)*4)
+	for i, w := range f.Words {
+		binary.BigEndian.PutUint32(b[i*4:], w)
+	}
+	return b
+}
+
+// NavType returns the GNF1 nav message type byte for this frame's (gnssId, sigId)
+// (docs/CONSTELLATIONS.md §6), or 0 if unmapped.
+func (f *RawFrame) NavType() int {
+	switch f.GnssID {
+	case gnss.GPS:
+		if f.SigID == 0 {
+			return 0x10 // GpsLnav
+		}
+		return 0x11 // GpsCnav
+	case gnss.QZSS:
+		switch f.SigID {
+		case 0:
+			return 0x50 // QzsLnav
+		case 1:
+			return 0x53 // QzsL1s
+		default:
+			return 0x51 // QzsCnav
+		}
+	case gnss.Galileo:
+		if f.SigID == 3 || f.SigID == 4 {
+			return 0x21 // GalFnav
+		}
+		return 0x20 // GalInav
+	case gnss.BeiDou:
+		switch f.SigID {
+		case 1, 3:
+			return 0x31 // BdsD2
+		case 7, 8:
+			return 0x33 // BdsCnav2
+		default:
+			return 0x30 // BdsD1
+		}
+	case gnss.GLONASS:
+		return 0x40 // GloNav
+	case gnss.NavIC:
+		return 0x60 // NavicNav
+	case gnss.SBAS:
+		return 0x70 // SbasL1
+	default:
+		return 0
+	}
 }

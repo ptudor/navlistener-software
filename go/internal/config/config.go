@@ -36,10 +36,30 @@ type Config struct {
 	Logging Logging  `toml:"logging"`
 	Metrics Metrics  `toml:"metrics"`
 	State   State    `toml:"state"`
+	Store   Store    `toml:"store"`
 	Ingest  []Source `toml:"ingest"`
 
 	// ShutdownTimeout bounds graceful shutdown; kept out of the wire format.
 	ShutdownTimeout time.Duration `toml:"-"`
+}
+
+// Store is the TimescaleDB raw-nav-frame historian (docs/OUTPUT.md §4). It is
+// enabled only when a DSN is given, so the daemon can run persist-less in dev; when
+// enabled, TimescaleDB is required (a missing extension is fatal). Real credentials
+// live only in the deployed, git-ignored config.
+type Store struct {
+	DSN string `toml:"dsn"` // pgx DSN; empty = persist disabled
+
+	BatchSize   int           `toml:"batch_size"`    // rows per CopyFrom (default 1000)
+	BatchEverys string        `toml:"batch_interval"` // flush cadence, e.g. "1s"
+	BatchEvery  time.Duration `toml:"-"`
+
+	// Retention (PostgreSQL INTERVAL literals). Raw frames are the short-window
+	// forensic record; the long-term ephemeris history lives in continuous
+	// aggregates (a later pass).
+	RawRetention string `toml:"raw_retention"` // default "7 days"
+	// CompressAfter is when a raw chunk is columnar-compressed (default "1 day").
+	CompressAfter string `toml:"compress_after"`
 }
 
 // Logging selects level and format for log/slog.
@@ -114,6 +134,7 @@ func defaults() *Config {
 		Logging:         Logging{Level: "info", Format: "json"},
 		Metrics:         Metrics{Addr: "127.0.0.1:9100"},
 		State:           State{Shards: 16, SVTTLs: "2h", PropagateEverys: "1s"},
+		Store:           Store{BatchSize: 1000, BatchEverys: "1s", RawRetention: "7 days", CompressAfter: "1 day"},
 		ShutdownTimeout: 15 * time.Second,
 	}
 }
@@ -141,6 +162,16 @@ func (c *Config) finalize() error {
 	}
 	if c.State.Shards < 1 {
 		return fmt.Errorf("state.shards must be >= 1")
+	}
+
+	if err := parseDur(c.Store.BatchEverys, &c.Store.BatchEvery); err != nil {
+		return fmt.Errorf("store.batch_interval: %w", err)
+	}
+	if c.Store.BatchEvery <= 0 {
+		c.Store.BatchEvery = time.Second
+	}
+	if c.Store.BatchSize < 1 {
+		c.Store.BatchSize = 1000
 	}
 
 	seen := make(map[string]bool, len(c.Ingest))

@@ -26,6 +26,7 @@ import (
 	"github.com/ptudor/navlistener/internal/metrics"
 	"github.com/ptudor/navlistener/internal/server"
 	"github.com/ptudor/navlistener/internal/state"
+	"github.com/ptudor/navlistener/internal/store"
 	"github.com/ptudor/navlistener/internal/version"
 )
 
@@ -65,25 +66,44 @@ func run() int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Pipeline: ingest → decode → live state.
-	store := state.New(cfg.State.Shards)
+	// Pipeline: ingest → decode → live state (+ optional persist historian).
+	live := state.New(cfg.State.Shards)
 	frames := make(chan *ingest.RawFrame, frameQueue)
 	mgr := ingest.New(cfg.Ingest, frames, log)
+
+	// The TimescaleDB historian is optional (enabled by [store].dsn). It runs under
+	// its own context, cancelled only after the decode loop has drained — so no frame
+	// is lost at the decode→persist hop at shutdown.
+	var historian *store.Store
+	storeCtx, storeCancel := context.WithCancel(context.Background())
+	storeDone := make(chan struct{})
+	if cfg.Store.DSN != "" {
+		historian, err = store.New(ctx, cfg.Store, log)
+		if err != nil {
+			log.Error("historian init failed — TimescaleDB is required when store.dsn is set", "error", err)
+			storeCancel()
+			return 1
+		}
+		go func() { defer close(storeDone); historian.Run(storeCtx) }()
+		log.Info("historian enabled")
+	} else {
+		close(storeDone)
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() { defer wg.Done(); mgr.Run(ctx) }()
 
 	wg.Add(1)
-	go func() { defer wg.Done(); decodeLoop(ctx, frames, store, log) }()
+	go func() { defer wg.Done(); decodeLoop(ctx, frames, live, historian, log) }()
 
 	wg.Add(1)
-	go func() { defer wg.Done(); stateLoop(ctx, cfg.State, store) }()
+	go func() { defer wg.Done(); stateLoop(ctx, cfg.State, live) }()
 
 	// Observability server exposes /metrics + /healthz + the live-state snapshot.
 	debugState := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(store.Snapshot(time.Now()))
+		_ = json.NewEncoder(w).Encode(live.Snapshot(time.Now()))
 	}
 	obs := server.New(cfg.Metrics.Addr, log, debugState)
 	go func() {
@@ -102,8 +122,9 @@ func run() int {
 	sig := <-sigCh
 	log.Info("shutdown signal", "signal", sig.String())
 
-	// Ordered shutdown: stop ingest + decode + tick, then the obs server, bounded
-	// by ShutdownTimeout.
+	// Ordered shutdown: stop ingest + decode + tick (the decode loop drains its
+	// buffered frames into the historian), THEN stop the historian so it flushes the
+	// last batch, THEN the obs server — all bounded by ShutdownTimeout.
 	cancel()
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
@@ -115,6 +136,11 @@ func run() int {
 	case <-shutCtx.Done():
 		log.Warn("shutdown timeout exceeded; exiting")
 	}
+	storeCancel() // historian drains its queue, flushes, closes the pool
+	select {
+	case <-storeDone:
+	case <-shutCtx.Done():
+	}
 	if err := obs.Shutdown(shutCtx); err != nil {
 		log.Warn("metrics server shutdown", "error", err)
 	}
@@ -122,17 +148,33 @@ func run() int {
 	return 0
 }
 
-// decodeLoop folds every ingested frame into live state, recovering per-frame so a
-// decoder edge case drops one frame rather than crashing the process. On shutdown
-// it drains the buffered frames before returning.
-func decodeLoop(ctx context.Context, frames <-chan *ingest.RawFrame, store *state.Store, log *slog.Logger) {
+// decodeLoop folds every ingested frame into live state and, when the historian
+// is enabled, enqueues the raw frame for the forensic record — persistence is
+// independent of decode success, so a decoder bug never loses evidence. Each
+// frame is applied with a per-frame recover so a decoder edge case drops one
+// frame rather than crashing the process. On shutdown it drains the buffered
+// frames before returning.
+func decodeLoop(ctx context.Context, frames <-chan *ingest.RawFrame, live *state.Store, historian *store.Store, log *slog.Logger) {
 	apply := func(f *ingest.RawFrame) {
 		defer func() {
 			if r := recover(); r != nil {
 				log.Error("decode panic recovered; frame dropped", "recover", fmt.Sprint(r))
 			}
 		}()
-		store.Apply(f)
+		if historian != nil {
+			historian.Enqueue(&store.NavFrame{
+				Ts:         time.Now(),
+				ReceivedAt: f.Recv,
+				SourceID:   f.Source,
+				GnssID:     int(f.GnssID),
+				SvID:       f.SvID,
+				SigID:      f.SigID,
+				MsgType:    f.MsgType,
+				Raw:        f.RawBytes(),
+				DecoderVer: version.Version,
+			})
+		}
+		live.Apply(f)
 	}
 	for {
 		select {

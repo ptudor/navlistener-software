@@ -84,6 +84,31 @@ var (
 		Name: "navlistener_svs_expired_total",
 		Help: "SVs expired from live state after their TTL elapsed.",
 	})
+
+	// StoreRowsTotal counts raw nav frames persisted to the historian.
+	StoreRowsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "navlistener_store_rows_total",
+		Help: "Raw nav frames written to TimescaleDB.",
+	})
+
+	// StoreDroppedTotal counts frames dropped because the writer queue was full.
+	StoreDroppedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "navlistener_store_dropped_total",
+		Help: "Nav frames dropped under DB backpressure (queue full).",
+	})
+
+	// StoreErrorsTotal counts failed batch-flush attempts (each retry increments).
+	StoreErrorsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "navlistener_store_errors_total",
+		Help: "Failed historian batch-flush attempts (includes retries).",
+	})
+
+	// StoreQuarantinedTotal counts frames permanently dropped after retries were
+	// exhausted or a poison row was quarantined.
+	StoreQuarantinedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "navlistener_store_quarantined_total",
+		Help: "Nav frames dropped after flush retries exhausted or a poison row was quarantined.",
+	})
 )
 
 // Init records build identity and registers the uptime gauge. Call once at startup.
