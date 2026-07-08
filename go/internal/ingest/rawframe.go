@@ -31,6 +31,41 @@ type RawFrame struct {
 	Words   []uint32    // 30-bit (or native) nav words, right-aligned
 	Bytes   []byte      // raw frame bytes (for byte-oriented sources)
 	Obs     *RawObs     // raw observables (RXM-RAWX telemetry), nil for nav frames
+	RF      *RawRF      // RF-environment telemetry (MON-RF/MON-HW/NAV-SAT), nil for nav frames
+}
+
+// RawRF is one RF-environment telemetry sample from a receiver: the jamming/AGC
+// front-end state (UBX-MON-RF on F9+, UBX-MON-HW legacy) and/or the per-SV C/N₀ +
+// elevation the spoofing gates need (UBX-NAV-SAT). It is station-scoped (keyed by the
+// ingest source), not per-SV, and feeds the PNT-defense layer (docs/DEFENSE-PNT.md §1);
+// the collector derives the detection metrics centrally — the edge only forwards.
+type RawRF struct {
+	Bands []RFBand // per-RF-path AGC/noise/CW/jamming/antenna (MON-RF/MON-HW)
+	Sats  []SatCN0 // per-SV C/N₀ and elevation (NAV-SAT), for the C/N₀-vs-elevation gate
+}
+
+// RFBand is one RF path's front-end state (UBX-MON-RF block, or the single MON-HW
+// path). Fields are the raw receiver numbers; the collector learns the per-station
+// baseline and derives departures (docs/DEFENSE-PNT.md §2) — we do not threshold here.
+type RFBand struct {
+	Block     int // RF block index (0 = L1, 1 = L2/L5, …); MON-HW is always 0
+	AGC       int // AGC monitor (0..8191); lower ⇒ the front-end cut gain (broadband energy)
+	NoiseLevel int // noise level indicator
+	CWSuppress int // CW-suppression / jamming indicator (0..255); high ⇒ a narrowband tone
+	JamState  int // receiver's own jamming state (0 unknown/disabled, 1 ok, 2 warning, 3 critical)
+	AntStatus int // antenna status: 0 init, 1 unknown, 2 ok, 3 short, 4 open
+}
+
+// SatCN0 is one satellite's carrier-to-noise density and elevation as the receiver
+// reports it (UBX-NAV-SAT), the input to the C/N₀-vs-elevation spoofing gate
+// (docs/DEFENSE-PNT.md §3): a constellation of identical, elevation-independent C/N₀ is
+// the classic single-transmitter spoofer signature.
+type SatCN0 struct {
+	GnssID  int
+	SvID    int
+	Cn0     int // dB-Hz
+	ElevDeg int // −90..+90; degrees
+	Used    bool
 }
 
 // RawObs is one raw observable measurement (UBX-RXM-RAWX / SBF MeasEpoch): the

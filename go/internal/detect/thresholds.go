@@ -39,6 +39,32 @@ const (
 	// FreshReceiver bounds how recently a receiver must have seen an SV for its
 	// vote to count (docs/INTEGRITY.md §2/§6).
 	FreshReceiverThreshold = 60.0
+
+	// PNT-defense Tier-0 operating points (docs/DEFENSE-PNT.md §2/§3/§4). These are
+	// deliberately CONSERVATIVE and OBSERVATIONAL in v1: the design mandates learning
+	// per-station quiet-time distributions before freezing alert thresholds, so these
+	// gate only gross, unambiguous departures and the thresholds are expected to move
+	// once real baselines exist (docs/DEFENSE-PNT.md §4 — this file is their single home).
+
+	// AGCDepartureThreshold (AGC counts below the learned baseline) at which a band is
+	// considered jamming-suspect; the severe band is a near-total gain collapse.
+	AGCDepartureThreshold       = 800.0
+	AGCDepartureSevereThreshold = 2000.0
+
+	// CWSuppressThreshold: a CW-suppression / jamming indicator above this points at a
+	// narrowband tone (u-blox reports 0..255).
+	CWSuppressThreshold = 180
+
+	// Cn0SpoofResidVar / Cn0SpoofMean: the C/N₀-vs-elevation gate fires when the residual
+	// variance collapses (an unnaturally flat sky) AT an unnaturally high, uniform C/N₀ —
+	// the single-transmitter spoofer signature (docs/DEFENSE-PNT.md §3).
+	Cn0SpoofResidVar = 2.0
+	Cn0SpoofMean     = 45.0
+
+	// SpoofGateQuorum is the fusion rule: a spoofing_suspected event needs at least this
+	// many independent physics gates agreeing at one station (docs/DEFENSE-PNT.md §3). In
+	// v1 few gates are wired, so this keeps spoofing alerts corroborated, not trigger-happy.
+	SpoofGateQuorum = 2
 )
 
 // DebounceDuration is how long a provisional state change must persist before it is

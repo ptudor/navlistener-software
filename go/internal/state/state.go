@@ -134,6 +134,11 @@ type Store struct {
 	gloAlmMu   sync.Mutex
 	gloAlmanac map[int]frame.GLONASSAlmanacEntry
 	gloNA      int
+
+	// Per-station RF-environment state for the PNT-defense layer (docs/DEFENSE-PNT.md):
+	// station-scoped (keyed by ingest source / observer id), not per-SV.
+	rfMu sync.Mutex
+	rf   map[string]*rfStation
 }
 
 // New builds a Store with n shards (n >= 1).
@@ -145,6 +150,7 @@ func New(n int) *Store {
 		shards:     make([]*shard, n),
 		sbas:       make(map[int]*sbasState),
 		gloAlmanac: make(map[int]frame.GLONASSAlmanacEntry),
+		rf:         make(map[string]*rfStation),
 	}
 	for i := range s.shards {
 		s.shards[i] = &shard{m: make(map[Key]*svState)}
@@ -162,6 +168,10 @@ func (s *Store) shardFor(k Key) *shard {
 // stage lands). It never panics on malformed input — decode errors are returned as
 // metrics, not crashes.
 func (s *Store) Apply(f *ingest.RawFrame) {
+	if f.RF != nil {
+		s.applyRF(f)
+		return
+	}
 	if f.Obs != nil {
 		s.applyObservation(f)
 		return

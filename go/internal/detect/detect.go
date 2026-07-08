@@ -83,7 +83,33 @@ func (d *Detector) observe(subject, metric, newState string, now time.Time) (cha
 func (d *Detector) Tick(now time.Time, svs map[string]state.FeedSV, sbas map[string]state.SBASEntry) []Event {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	return d.run(now, func(emit emitFunc) {
+		for name, sv := range svs {
+			d.detectSV(name, sv, now, emit)
+		}
+		for prn, s := range sbas {
+			d.detectSBAS(prn, s, emit)
+		}
+	})
+}
 
+// TickStations advances the station-scoped PNT-defense classifiers (jamming/spoofing/RF-
+// degraded/antenna, docs/DEFENSE-PNT.md §4) over the same debounced state machines as the
+// SV/SBAS metrics, so a station's RF events share the confirmation discipline and event
+// contract. The daemon calls it alongside Tick on the detector cadence.
+func (d *Detector) TickStations(now time.Time, stations map[string]state.StationRF) []Event {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.run(now, func(emit emitFunc) {
+		for id, rf := range stations {
+			d.detectStationRF(id, rf, emit)
+		}
+	})
+}
+
+// run collects the events a classifier set produces, deterministically ordered. The
+// caller holds d.mu (observe mutates the shared machines).
+func (d *Detector) run(now time.Time, classify func(emit emitFunc)) []Event {
 	var events []Event
 	emit := func(subject, metric, newState string, ev func(old string) Event) {
 		if changed, old := d.observe(subject, metric, newState, now); changed {
@@ -92,14 +118,7 @@ func (d *Detector) Tick(now time.Time, svs map[string]state.FeedSV, sbas map[str
 			events = append(events, e)
 		}
 	}
-
-	for name, sv := range svs {
-		d.detectSV(name, sv, now, emit)
-	}
-	for prn, s := range sbas {
-		d.detectSBAS(prn, s, emit)
-	}
-
+	classify(emit)
 	sort.Slice(events, func(i, j int) bool {
 		if events[i].SV != events[j].SV {
 			return events[i].SV < events[j].SV
