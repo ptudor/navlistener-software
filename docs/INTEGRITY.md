@@ -157,7 +157,7 @@ The baseline vocabulary and severities below are **verified against intsat's shi
 
 | `event_type` | Fires when | Severity |
 |---|---|---|
-| `health_change` | broadcast health/`healthissue` transition | 2 |
+| `health_change` | broadcast health transition (`health_code`/`health_issue_level`) | 2 |
 | `eph_aged` | ephemeris age crosses the constellation threshold (§2) | 1 |
 | `orbit_disco` | orbit-disco band change (§2) | 1, → 2 above 10 m |
 | `clock_jump` | time-disco band change | 1, → 2 above 10 ns |

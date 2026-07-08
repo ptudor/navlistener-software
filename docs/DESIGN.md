@@ -50,12 +50,15 @@ values, not a receiver's smoothed solution. This is galmon's central insight and
 
 ```
   INGEST (N receivers)  →  DECODE  →  PROPAGATE + INTEGRITY  →  PERSIST   →   SERVE
-  raw nav frames over      internal/gnss    per-SV ephemeris store;   TimescaleDB    galmon-compatible
+  raw nav frames over      internal/gnss    per-SV ephemeris store;   TimescaleDB    the native v2 API:
   GNF1 (authenticated      frame decoders   Kepler/RK4 ECEF; orbit-   (raw frames +  svs/global/observers/
-  push) + dev-LAN pull     → typed nav      disco + clock-disco vs    decoded +      almanac/sbas.json,
-  from our own receivers   messages         last eph; delta-Hz;       events)        schema-1.1, SSE
+  push) + dev-LAN pull     → typed nav      disco + clock-disco vs    decoded +      almanac/sbas feeds,
+  from our own receivers   messages         last eph; delta-Hz;       events)        events + SSE
                                             health/URA; spoof gates
 ```
+
+(Radiolistener's NORMALIZE and FUSE stages are GNSS-specific here — DECODE and
+PROPAGATE+INTEGRITY — but the skeleton and the stage boundaries are the same.)
 
 ### Stage 1 — Ingest: forward raw frames, never decode at the edge
 
@@ -109,7 +112,7 @@ near-monotonic ingest clock, tagged with `decoder`/`decoder_ver` so a decoder fi
 history. `gnss_snapshots` stores periodic feed dumps; `gnss_events` stores confirmed integrity
 transitions (Phase 2). Written via `pgx CopyFrom`, compressed + retained per policy.
 
-### Stage 5 — Serve: galmon-compatible now, schema-1.1 native
+### Stage 5 — Serve: the native API
 
 Live feeds from RAM; history/SSE from the DB via `LISTEN/NOTIFY`. Ingest (write) and serving
 (read) are physically separate listeners with separate DB pools and authz — ingest is locked
@@ -145,8 +148,13 @@ envelope is what lets a Septentrio and a u-blox feeder converge on one collector
 
 Resilience (galmon's "never go down," radiolistener-proven): a bounded RAM ring with monotonic
 sequence numbers; replay all unacked frames on reconnect; spill the oldest to a disk spool on
-overflow (`--spool-file`) that survives reboot; backoff-reconnect forever, never exit. zstd
-gives ~3–4× on the repetitive nav bitstream.
+overflow (`--spool-file`, with `--spool-disk-mb` cap) that survives reboot; backoff-reconnect
+forever (exponential, 30 s cap), never exit. zstd (feeder→collector direction only, ACKs stay
+plaintext) gives ~3–4× on the repetitive nav bitstream. TLS: the collector floor is 1.2, and
+the C feeder **pins TLS 1.2 exactly** — radiolistener's regression fix finding: its split reader/writer
+threads on one SSL object are unsafe under TLS 1.3 KeyUpdate — a constraint `navfeeder`
+inherits with the port. Every frame length is validated against `MaxFrameLen` (1 MiB, RLF1
+parity) before allocation.
 
 **Wire implementation.** GNF1 uses a fixed record header that can be implemented
 in a small C binary or ESP-IDF firmware. Adapters for other wire formats run
@@ -158,10 +166,13 @@ as separate programs.
 
 `navlistener` reuses radiolistener's **AAA control plane verbatim** (`radiolistener/docs/
 IDENTITY-AND-AAA.md`): one shared PostgreSQL on `collector-host`, Django owns identity/policy/CA/audit,
-the collector reads `Device`/`Credential`/`FeedGrant` for a single indexed auth lookup and
-writes accounting back. A GNSS observer is just a `Device` whose `FeedGrant`s are
-`ubx`/`sbf`/`rtcm`. Nothing about AAA is GNSS-specific, so we do not re-invent it — we add GNSS
-feed types and reuse the CA, enrollment, revocation (`enabled=false`), and trust scoring.
+the collector reads `Device`/`Credential` for a single indexed auth lookup and writes
+accounting back. Feed grants are **as-built** the `feed_types` array field on `Device`
+(radiolistener's AAA doc sketches a `FeedGrant` model, but the shipped Django implements
+`Device.feed_types` — we follow the code). A GNSS observer is just a `Device` whose
+`feed_types` include `ubx`/`sbf`/`rtcm`. Nothing about AAA is GNSS-specific, so we do not
+re-invent it — we add GNSS feed types and reuse the CA, enrollment, revocation
+(`enabled=false`), and trust scoring.
 
 Three credential tiers → trust (radiolistener's ladder, unchanged):
 1. **Bearer token** (bootstrap) — SHA-256 stored, shown once.
@@ -233,7 +244,8 @@ monitoring as radiolistener.
 **Architecture:** dumb-edge/smart-center; raw-frame-as-record;
 spool+ack+replay resilience; the generic Keplerian propagator abstraction; the integrity
 signal set (orbit-disco, time-disco, delta-Hz, health/SISA, RTCM precise-vs-broadcast); the
-debounced alert state machine; the JSON feed shapes.
+debounced alert state machine; the five-feed *concept* (svs/global/observers/almanac/sbas —
+reshaped to our own contract, `docs/OUTPUT.md`).
 
 **Implementation priorities:**
 - **Signal coverage** with explicit implemented and deferred status (`docs/CONSTELLATIONS.md`).
