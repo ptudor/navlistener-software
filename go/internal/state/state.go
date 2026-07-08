@@ -119,9 +119,43 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 		s.applyBeiDouD1(f)
 	case f.GnssID == gnss.GLONASS && f.SigID == 0: // L1OF strings
 		s.applyGLONASS(f)
+	case (f.GnssID == gnss.GPS || f.GnssID == gnss.QZSS) && isCNAVSignal(f.GnssID, f.SigID):
+		s.applyGPSCNAV(f)
+	case f.GnssID == gnss.SBAS && f.SigID == 0: // L1 C/A message stream
+		s.applySBAS(f)
 	default:
 		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "unsupported").Inc()
 	}
+}
+
+// isCNAVSignal reports whether an (id, sigId) is a GPS/QZSS L2C or L5 CNAV signal
+// (docs/CONSTELLATIONS.md §2.1): GPS L2C 3/4, L5 6/7; QZSS L2C 4/5, L5 8/9.
+func isCNAVSignal(id gnss.GNSSID, sig int) bool {
+	if id == gnss.GPS {
+		return sig == 3 || sig == 4 || sig == 6 || sig == 7
+	}
+	return sig == 4 || sig == 5 || sig == 8 || sig == 9 // QZSS
+}
+
+// applyGPSCNAV decodes a GPS/QZSS CNAV message for telemetry. The CNAV ephemeris is
+// redundant with LNAV for positioning; its L2C/L5 ISCs and the cross-signal
+// integrity check are consumed in the integrity pass (P6).
+func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
+	if _, err := frame.DecodeGPSCNAV(f.GnssID, f.Words); err != nil {
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "cnav").Inc()
+		return
+	}
+	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "cnav").Inc()
+}
+
+// applySBAS decodes an SBAS L1 message for telemetry. The per-PRN sbas health feed
+// (message type / do-not-use / provider) is populated in the serve pass (P5).
+func (s *Store) applySBAS(f *ingest.RawFrame) {
+	if _, err := frame.DecodeSBASL1(f.SvID, f.Words); err != nil {
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "sbas").Inc()
+		return
+	}
+	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "sbas").Inc()
 }
 
 func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
