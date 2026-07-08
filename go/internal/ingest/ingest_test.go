@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"math"
 	"testing"
 	"time"
 
@@ -154,5 +155,51 @@ func TestScanSBF(t *testing.T) {
 	}
 	if !bytes.Equal(frames[0].Bytes, body) {
 		t.Errorf("SBF body mismatch")
+	}
+}
+
+// TestScanUBXRAWX drives a synthetic UBX-RXM-RAWX message through the scanner and
+// checks the per-measurement observation frames (u-blox interface description
+// layout: 16-byte header + 32 bytes per measurement). The current fleet captures
+// carry SFRBX only, so this parser is validated synthetically until a
+// RAWX-enabled capture exists.
+func TestScanUBXRAWX(t *testing.T) {
+	body := make([]byte, 16+2*32)
+	binary.LittleEndian.PutUint64(body[0:], math.Float64bits(345601.25)) // rcvTow
+	binary.LittleEndian.PutUint16(body[8:], 2372)                        // week
+	body[11] = 2                                                         // numMeas
+	m0 := body[16:]
+	binary.LittleEndian.PutUint64(m0[0:], math.Float64bits(2.2e7))    // prMes
+	binary.LittleEndian.PutUint64(m0[8:], math.Float64bits(1.15e8))   // cpMes cycles
+	binary.LittleEndian.PutUint32(m0[16:], math.Float32bits(-1234.5)) // doMes
+	m0[20], m0[21], m0[22], m0[23] = 0, 7, 0, 0                       // GPS G07 L1
+	binary.LittleEndian.PutUint16(m0[24:], 60000)                     // locktime
+	m0[26] = 47                                                       // cno
+	m0[30] = 0x03                                                     // pr+cp valid
+	m1 := body[48:]
+	binary.LittleEndian.PutUint64(m1[0:], math.Float64bits(2.2e7+5)) // prMes
+	m1[20], m1[21], m1[22] = 0, 7, 6                                 // GPS G07 L5-I
+	m1[30] = 0x01                                                    // pr valid, cp invalid
+
+	msg := buildUBX(0x02, 0x15, body)
+	var got []*RawFrame
+	err := scanUBX(bytes.NewReader(msg), "test", fixedTime,
+		func(f *RawFrame) { got = append(got, f) }, func(string) {})
+	if err != io.EOF && err != io.ErrUnexpectedEOF {
+		t.Fatalf("scan err = %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("emitted %d observation frames, want 2", len(got))
+	}
+	o := got[0]
+	if o.Obs == nil || o.GnssID != gnss.GPS || o.SvID != 7 || o.SigID != 0 {
+		t.Fatalf("first obs frame = %+v", o)
+	}
+	if o.Obs.RcvTow != 345601.25 || o.Obs.Week != 2372 || o.Obs.PrM != 2.2e7 ||
+		o.Obs.Cn0 != 47 || o.Obs.LockTimeMs != 60000 || !o.Obs.CpValid {
+		t.Fatalf("first obs fields = %+v", o.Obs)
+	}
+	if got[1].SigID != 6 || got[1].Obs.CpValid {
+		t.Fatalf("second obs frame = sig %d cpValid %v, want 6/false", got[1].SigID, got[1].Obs.CpValid)
 	}
 }

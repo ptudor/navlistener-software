@@ -30,6 +30,22 @@ type RawFrame struct {
 	MsgType int         // SBF block number / RTCM message number (byte-oriented sources)
 	Words   []uint32    // 30-bit (or native) nav words, right-aligned
 	Bytes   []byte      // raw frame bytes (for byte-oriented sources)
+	Obs     *RawObs     // raw observables (RXM-RAWX telemetry), nil for nav frames
+}
+
+// RawObs is one raw observable measurement (UBX-RXM-RAWX / SBF MeasEpoch): the
+// pseudorange/carrier/Doppler tuple for one SV signal at one receiver epoch.
+// Dual-frequency pairs of these feed the geometry-free measured ionosphere
+// (docs/MATH.md §7.4); Doppler feeds the delta-Hz integrity signal.
+type RawObs struct {
+	RcvTow     float64 // receiver time of week, seconds (receiver clock)
+	Week       int     // week number of RcvTow
+	PrM        float64 // pseudorange, metres
+	CpCyc      float64 // carrier phase, cycles
+	DoHz       float64 // Doppler, Hz (positive approaching)
+	LockTimeMs int     // carrier lock time, ms — a reset signals a cycle slip
+	Cn0        int     // dB-Hz
+	CpValid    bool    // carrier-phase measurement valid (trkStat bit 1)
 }
 
 // RawBytes returns the frame's untouched bytes for the forensic record: the words

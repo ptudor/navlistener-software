@@ -37,10 +37,23 @@ type Config struct {
 	Metrics Metrics  `toml:"metrics"`
 	State   State    `toml:"state"`
 	Store   Store    `toml:"store"`
+	Serve   Serve    `toml:"serve"`
 	Ingest  []Source `toml:"ingest"`
 
 	// ShutdownTimeout bounds graceful shutdown; kept out of the wire format.
 	ShutdownTimeout time.Duration `toml:"-"`
+}
+
+// Serve is the native v2 read API listener (docs/OUTPUT.md). It binds loopback and
+// is fronted by a TLS reverse proxy; it is enabled only when an addr is given, so
+// the daemon can run collector-only. The refresh cadences default per §5.
+type Serve struct {
+	Addr string `toml:"addr"` // e.g. 127.0.0.1:8080; empty = serve disabled
+
+	RefreshFasts string        `toml:"refresh_interval"` // svs/global/observers/sbas, default "30s"
+	RefreshFast  time.Duration `toml:"-"`
+	RefreshSlows string        `toml:"almanac_refresh_interval"` // almanac, default "90s"
+	RefreshSlow  time.Duration `toml:"-"`
 }
 
 // Store is the TimescaleDB raw-nav-frame historian (docs/OUTPUT.md §4). It is
@@ -50,7 +63,7 @@ type Config struct {
 type Store struct {
 	DSN string `toml:"dsn"` // pgx DSN; empty = persist disabled
 
-	BatchSize   int           `toml:"batch_size"`    // rows per CopyFrom (default 1000)
+	BatchSize   int           `toml:"batch_size"`     // rows per CopyFrom (default 1000)
 	BatchEverys string        `toml:"batch_interval"` // flush cadence, e.g. "1s"
 	BatchEvery  time.Duration `toml:"-"`
 
@@ -172,6 +185,19 @@ func (c *Config) finalize() error {
 	}
 	if c.Store.BatchSize < 1 {
 		c.Store.BatchSize = 1000
+	}
+
+	if err := parseDur(c.Serve.RefreshFasts, &c.Serve.RefreshFast); err != nil {
+		return fmt.Errorf("serve.refresh_interval: %w", err)
+	}
+	if c.Serve.RefreshFast <= 0 {
+		c.Serve.RefreshFast = 30 * time.Second
+	}
+	if err := parseDur(c.Serve.RefreshSlows, &c.Serve.RefreshSlow); err != nil {
+		return fmt.Errorf("serve.almanac_refresh_interval: %w", err)
+	}
+	if c.Serve.RefreshSlow <= 0 {
+		c.Serve.RefreshSlow = 90 * time.Second
 	}
 
 	seen := make(map[string]bool, len(c.Ingest))

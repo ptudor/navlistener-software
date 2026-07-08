@@ -24,6 +24,7 @@ import (
 	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/metrics"
+	"github.com/ptudor/navlistener/internal/serve"
 	"github.com/ptudor/navlistener/internal/server"
 	"github.com/ptudor/navlistener/internal/state"
 	"github.com/ptudor/navlistener/internal/store"
@@ -112,7 +113,22 @@ func run() int {
 		}
 	}()
 
-	log.Info("ready", "ingest_sources", len(cfg.Ingest), "metrics_addr", cfg.Metrics.Addr, "shards", cfg.State.Shards)
+	// The native v2 read API (docs/OUTPUT.md) is optional (enabled by [serve].addr).
+	// It serves the live feeds from RAM on a loopback listener behind a TLS front,
+	// separate from the ingest write path and the metrics listener.
+	var apiSrv *serve.Server
+	if cfg.Serve.Addr != "" {
+		apiSrv = serve.New(cfg.Serve.Addr, live, cfg.Ingest, cfg.Serve.RefreshFast, cfg.Serve.RefreshSlow, log)
+		wg.Add(1)
+		go func() { defer wg.Done(); apiSrv.Run(ctx) }()
+		go func() {
+			if err := apiSrv.Start(); err != nil {
+				log.Error("v2 serve", "error", err)
+			}
+		}()
+	}
+
+	log.Info("ready", "ingest_sources", len(cfg.Ingest), "metrics_addr", cfg.Metrics.Addr, "serve_addr", cfg.Serve.Addr, "shards", cfg.State.Shards)
 	if len(cfg.Ingest) == 0 {
 		log.Warn("no ingest sources configured")
 	}
@@ -141,6 +157,11 @@ func run() int {
 	case <-storeDone:
 	case <-shutCtx.Done():
 	}
+	if apiSrv != nil {
+		if err := apiSrv.Shutdown(shutCtx); err != nil {
+			log.Warn("v2 serve shutdown", "error", err)
+		}
+	}
 	if err := obs.Shutdown(shutCtx); err != nil {
 		log.Warn("metrics server shutdown", "error", err)
 	}
@@ -161,7 +182,7 @@ func decodeLoop(ctx context.Context, frames <-chan *ingest.RawFrame, live *state
 				log.Error("decode panic recovered; frame dropped", "recover", fmt.Sprint(r))
 			}
 		}()
-		if historian != nil {
+		if historian != nil && f.Obs == nil { // observables are telemetry, not the nav-frame record
 			historian.Enqueue(&store.NavFrame{
 				Ts:         time.Now(),
 				ReceivedAt: f.Recv,
@@ -214,6 +235,11 @@ func stateLoop(ctx context.Context, cfg config.State, store *state.Store) {
 func printConfigSummary(cfg *config.Config) {
 	fmt.Println("Configuration valid.")
 	fmt.Printf("  metrics addr:   %s\n", cfg.Metrics.Addr)
+	serveAddr := cfg.Serve.Addr
+	if serveAddr == "" {
+		serveAddr = "(disabled)"
+	}
+	fmt.Printf("  serve addr:     %s\n", serveAddr)
 	fmt.Printf("  log:            %s / %s\n", cfg.Logging.Level, cfg.Logging.Format)
 	fmt.Printf("  state shards:   %d\n", cfg.State.Shards)
 	fmt.Printf("  sv ttl:         %s\n", cfg.State.SVTTL)

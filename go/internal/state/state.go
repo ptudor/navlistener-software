@@ -57,6 +57,8 @@ type svState struct {
 	bd1, bd2, bd3 *frame.BeiDouSubframe
 	// BeiDou B2a B-CNAV2 message assembly buffers (types 10/11 ephemeris, 30/34 clock).
 	bc10, bc11, bc30 *frame.BeiDouBCNAV2
+	// Measured-iono tracks per ingest source (dual-frequency observables).
+	ionoBySource map[string]*ionoTrack
 	// GLONASS string assembly buffers + Cartesian ephemeris (RK4, not kepler).
 	gloS1, gloS2, gloS3 *frame.GLONASSString
 	gloEph              glonass.Ephemeris
@@ -70,6 +72,14 @@ type svState struct {
 	health  int
 	ura     int
 
+	// Broadcast accuracy index and the table it decodes with (accNone/accURA/
+	// accSISA) — backs the sisa_valid/sisa_m feed fields. BeiDou also carries an
+	// age-of-clock / age-of-ephemeris pair, surfaced for that constellation only.
+	accIdx     int
+	accKind    uint8
+	aodc, aode int
+	haveAOD    bool
+
 	pos     gnss.ECEF
 	havePos bool
 
@@ -80,14 +90,37 @@ type svState struct {
 	discoAt         time.Time
 }
 
+// accuracy-table selectors for accKind (docs/MATH.md §6).
+const (
+	accNone uint8 = 0 // no accuracy captured for this constellation/signal
+	accURA  uint8 = 1 // GPS/QZSS/NavIC/BeiDou-B1I URA step table
+	accSISA uint8 = 2 // Galileo SISA linear bands
+)
+
 type shard struct {
 	mu sync.Mutex
 	m  map[Key]*svState
 }
 
-// Store is the sharded live SV state.
+// sbasState is the per-GEO SBAS augmentation health tracked for the sbas feed
+// (docs/OUTPUT.md §1.5): the last message type seen, the last type-0 (do-not-use)
+// timestamp, and the provider derived from the PRN.
+type sbasState struct {
+	prn       int
+	provider  string
+	lastType  int
+	lastSeen  time.Time
+	lastType0 time.Time
+	haveType0 bool
+	doNotUse  bool
+}
+
+// Store is the sharded live SV state plus the SBAS health map.
 type Store struct {
 	shards []*shard
+
+	sbasMu sync.Mutex
+	sbas   map[int]*sbasState
 }
 
 // New builds a Store with n shards (n >= 1).
@@ -95,7 +128,7 @@ func New(n int) *Store {
 	if n < 1 {
 		n = 1
 	}
-	s := &Store{shards: make([]*shard, n)}
+	s := &Store{shards: make([]*shard, n), sbas: make(map[int]*sbasState)}
 	for i := range s.shards {
 		s.shards[i] = &shard{m: make(map[Key]*svState)}
 	}
@@ -112,6 +145,10 @@ func (s *Store) shardFor(k Key) *shard {
 // stage lands). It never panics on malformed input — decode errors are returned as
 // metrics, not crashes.
 func (s *Store) Apply(f *ingest.RawFrame) {
+	if f.Obs != nil {
+		s.applyObservation(f)
+		return
+	}
 	switch {
 	case (f.GnssID == gnss.GPS || f.GnssID == gnss.QZSS) && f.SigID == 0:
 		s.applyGPSLNAV(f)
@@ -152,14 +189,30 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "cnav").Inc()
 }
 
-// applySBAS decodes an SBAS L1 message for telemetry. The per-PRN sbas health feed
-// (message type / do-not-use / provider) is populated in the serve pass (P5).
+// applySBAS decodes an SBAS L1 message and folds it into the per-PRN augmentation
+// health map that backs the sbas feed (docs/OUTPUT.md §1.5): the last message type,
+// the provider from the PRN, and the last type-0 (do-not-use) transition.
 func (s *Store) applySBAS(f *ingest.RawFrame) {
-	if _, err := frame.DecodeSBASL1(f.SvID, f.Words); err != nil {
+	m, err := frame.DecodeSBASL1(f.SvID, f.Words)
+	if err != nil {
 		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "sbas").Inc()
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "sbas").Inc()
+
+	s.sbasMu.Lock()
+	defer s.sbasMu.Unlock()
+	st := s.sbas[f.SvID]
+	if st == nil {
+		st = &sbasState{prn: f.SvID, provider: m.Provider}
+		s.sbas[f.SvID] = st
+	}
+	st.lastSeen = f.Recv
+	st.lastType = m.Type
+	st.doNotUse = m.DoNotUse
+	if m.DoNotUse {
+		st.lastType0, st.haveType0 = f.Recv, true
+	}
 }
 
 func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
@@ -212,6 +265,7 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
 	st.health, st.ura = st.sf1.Health, st.sf1.URAIndex
+	st.accKind, st.accIdx = accURA, st.sf1.URAIndex
 }
 
 func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
@@ -234,6 +288,12 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 	}
 	st.lastSeen = f.Recv
 
+	// Word type 5 carries E1B health and BGD (not part of the ephemeris set); fold
+	// its health in as it arrives (docs/CONSTELLATIONS.md §2.2).
+	if w.Type == 5 {
+		st.health = w.Health
+		return
+	}
 	if w.Type < 1 || w.Type > 4 {
 		return // only word types 1–4 assemble the ephemeris
 	}
@@ -254,8 +314,7 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 		s.computeDisco(st, eph, clk, f.Recv)
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
-	// Galileo health lives in I/NAV word type 5 (not part of the ephemeris set);
-	// it is decoded and surfaced when the integrity pass consumes word 5.
+	st.accKind, st.accIdx = accSISA, st.galW[3].SISA
 }
 
 func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
@@ -306,6 +365,8 @@ func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
 	st.health = st.bd1.Health
+	st.accKind, st.accIdx = accURA, st.bd1.URAI
+	st.aodc, st.aode, st.haveAOD = st.bd1.AODC, st.bd1.AODE, true
 }
 
 func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {

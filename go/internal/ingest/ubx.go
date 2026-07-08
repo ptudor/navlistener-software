@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/binary"
 	"io"
+	"math"
 	"time"
 
 	"github.com/ptudor/gnss"
@@ -16,6 +17,7 @@ const (
 	ubxSync2      = 0x62
 	ubxClassRXM   = 0x02
 	ubxIDSFRBX    = 0x13
+	ubxIDRAWX     = 0x15
 	ubxMaxPayload = 1 << 14 // guard against a corrupt length prefix
 )
 
@@ -50,14 +52,69 @@ func scanUBX(r io.Reader, source string, now func() time.Time, emit func(*RawFra
 			onErr("ubx_checksum")
 			continue
 		}
-		if hdr[0] == ubxClassRXM && hdr[1] == ubxIDSFRBX {
+		switch {
+		case hdr[0] == ubxClassRXM && hdr[1] == ubxIDSFRBX:
 			if f := parseSFRBX(body, source, now()); f != nil {
 				emit(f)
 			} else {
 				onErr("ubx_sfrbx")
 			}
+		case hdr[0] == ubxClassRXM && hdr[1] == ubxIDRAWX:
+			if n := parseRAWX(body, source, now(), emit); n == 0 && len(body) > 16 {
+				onErr("ubx_rawx")
+			}
 		}
 	}
+}
+
+// parseRAWX converts a UBX-RXM-RAWX payload into one observation RawFrame per
+// measurement (u-blox interface description: 16-byte header — rcvTow R8 in
+// seconds of week, week U2, leapS I1, numMeas U1, recStat X1 — then 32 bytes per
+// measurement). These are the dual-frequency observables feeding the measured
+// ionosphere (docs/MATH.md §7.4); they are telemetry, not nav frames, so they
+// carry Obs instead of Words. Returns the number of measurements emitted.
+func parseRAWX(p []byte, source string, recv time.Time, emit func(*RawFrame)) int {
+	if len(p) < 16 {
+		return 0
+	}
+	rcvTow := math.Float64frombits(binary.LittleEndian.Uint64(p[0:]))
+	week := int(binary.LittleEndian.Uint16(p[8:]))
+	numMeas := int(p[11])
+	if 16+numMeas*32 > len(p) {
+		return 0
+	}
+	emitted := 0
+	for i := 0; i < numMeas; i++ {
+		m := p[16+i*32:]
+		prM := math.Float64frombits(binary.LittleEndian.Uint64(m[0:]))
+		cpCyc := math.Float64frombits(binary.LittleEndian.Uint64(m[8:]))
+		doHz := math.Float32frombits(binary.LittleEndian.Uint32(m[16:]))
+		trkStat := m[30]
+		// trkStat bit 0 = pseudorange valid, bit 1 = carrier phase valid.
+		if trkStat&0x01 == 0 {
+			continue
+		}
+		emit(&RawFrame{
+			Recv:   recv,
+			Source: source,
+			GnssID: gnss.GNSSID(m[20]),
+			SvID:   int(m[21]),
+			SigID:  int(m[22]),
+			FreqID: int(m[23]),
+			Obs: &RawObs{
+				RcvTow:     rcvTow,
+				Week:       week,
+				PrM:        prM,
+				CpCyc:      cpCyc,
+				DoHz:       float64(doHz),
+				LockTimeMs: int(binary.LittleEndian.Uint16(m[24:])),
+				Cn0:        int(m[26]),
+				CpValid:    trkStat&0x02 != 0,
+			},
+		})
+		emitted++
+	}
+	return emitted
 }
 
 // parseSFRBX converts a UBX-RXM-SFRBX payload to a RawFrame. Layout (F9/M9
