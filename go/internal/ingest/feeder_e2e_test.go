@@ -18,8 +18,15 @@ import (
 // the frames the collector receives match, byte-for-byte, what the Go dial-mode scanner
 // (scanUBX) decodes from the same capture. This is the cross-oracle check for the feeder's
 // SFRBX parse + big-endian word packing: the C edge and the Go collector must agree on the
-// wire, or the two ingest modes would diverge. Skips when the binary isn't built.
+// wire, or the two ingest modes would diverge. The zstd subtest additionally exercises the
+// C libzstd compressor against the Go klauspost/compress decompressor on the DATA stream.
+// Skips when the binary isn't built.
 func TestNavfeederEndToEnd(t *testing.T) {
+	t.Run("plaintext", func(t *testing.T) { runFeederE2E(t, false) })
+	t.Run("zstd", func(t *testing.T) { runFeederE2E(t, true) })
+}
+
+func runFeederE2E(t *testing.T, useZstd bool) {
 	bin := feederBinary(t)
 
 	// Ground truth: the nav frames the Go scanner lifts off the capture.
@@ -72,11 +79,16 @@ func TestNavfeederEndToEnd(t *testing.T) {
 
 	// Run the feeder: read the fake receiver over TCP, push to the collector over TLS.
 	var ferr bytes.Buffer
-	cmd := exec.CommandContext(ctx, bin,
+	args := []string{
 		"--server", pushLn.Addr().String(),
 		"--source", srcLn.Addr().String(),
 		"--station", "f9t-e2e", "--token", "s3cret", "--feed", "ubx",
-		"--insecure", "--spool", "100000")
+		"--insecure", "--spool", "100000",
+	}
+	if useZstd {
+		args = append(args, "--zstd")
+	}
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Stderr = &ferr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

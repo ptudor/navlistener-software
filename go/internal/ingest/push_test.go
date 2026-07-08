@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/wire"
@@ -163,6 +164,57 @@ func TestPushReplayFromReconnect(t *testing.T) {
 	// The ack must reflect the highest replayed sequence so the feeder can prune.
 	if seq := readAck(t, conn); seq != 505 {
 		t.Errorf("ack seq = %d, want 505 (highest replayed)", seq)
+	}
+}
+
+// TestPushZstdStream confirms the collector negotiates and decompresses a zstd DATA
+// stream: the feeder requests zstd in HELLO, the collector confirms it in WELCOME, and the
+// DATA frames — sent through a zstd stream flushed per frame, exactly as the C feeder does —
+// decode correctly on the far side. ACKs stay plaintext. (The C-feeder↔Go-collector zstd
+// path is exercised end-to-end in TestNavfeederEndToEnd/zstd; this covers it in pure Go.)
+func TestPushZstdStream(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	addr, out := startPushServer(t, ctx, tokenAuth("observer16", "s3cret", "ubx"))
+
+	conn := dialPush(t, addr)
+	defer conn.Close()
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx", Zstd: true}); err != nil {
+		t.Fatal(err)
+	}
+	ft, payload, err := wire.ReadFrame(conn)
+	if err != nil || ft != wire.Welcome {
+		t.Fatalf("welcome frame: ft=%d err=%v", ft, err)
+	}
+	wmsg, err := parseWelcome(payload)
+	if err != nil || !wmsg.OK || !wmsg.Zstd {
+		t.Fatalf("welcome = %+v err=%v, want ok+zstd confirmed", wmsg, err)
+	}
+
+	// Everything after the handshake is compressed through one zstd stream, flushed per
+	// frame so the collector decodes each promptly (the feeder's conn_write does the same).
+	enc, err := zstd.NewWriter(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := wire.RawRecord{RecvUnixNs: time.Now().UnixNano(), GnssID: gnss.Galileo, SvID: 14, SigID: 1, Raw: make([]byte, 32)}
+	if err := wire.WriteFrame(enc, wire.Data, wire.EncodeData(1, rec)); err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case f := <-out:
+		if f.GnssID != gnss.Galileo || f.SvID != 14 || f.SigID != 1 || len(f.Words) != 8 {
+			t.Errorf("frame = %+v, want Galileo/14/1/8words", f)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("zstd DATA frame did not decode on the collector")
+	}
+	if seq := readAck(t, conn); seq != 1 { // ACK is plaintext
+		t.Errorf("ack seq = %d, want 1", seq)
 	}
 }
 

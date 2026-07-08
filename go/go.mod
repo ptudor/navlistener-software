@@ -3,6 +3,7 @@ module github.com/ptudor/navlistener
 go 1.25.0
 
 require (
+	github.com/klauspost/compress v1.18.0
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/prometheus/client_golang v1.23.2
 )

@@ -9,16 +9,36 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/metrics"
 	"github.com/ptudor/navlistener/internal/wire"
 )
+
+// idleReadTimeout bounds silence on a feeder connection: feeders stream steadily (or PING),
+// so a longer gap means a dead peer. idleConn refreshes this deadline on every underlying
+// read, so a wrapping zstd decoder — which pulls bytes outside the per-frame loop — still
+// honours the timeout.
+const idleReadTimeout = 120 * time.Second
+
+// idleConn refreshes the read deadline on every Read, so a decoder reading through it (zstd)
+// can't outlive the idle timeout even though it reads outside wire.ReadFrame's frame loop.
+type idleConn struct {
+	net.Conn
+	timeout time.Duration
+}
+
+func (c *idleConn) Read(p []byte) (int, error) {
+	_ = c.Conn.SetReadDeadline(time.Now().Add(c.timeout))
+	return c.Conn.Read(p)
+}
 
 // Authenticator validates an edge feeder's HELLO. It returns the canonical observer
 // id (the source tag stamped on every frame) and whether the token authorizes this
@@ -179,56 +199,73 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 		}
 	}()
 
-	if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err == nil {
-		defer conn.SetReadDeadline(time.Time{})
+	// The magic + handshake are plaintext and time-boxed; the DATA stream that follows
+	// refreshes its own deadline through idleConn below.
+	if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		return
 	}
 	if err := wire.ReadMagic(conn); err != nil {
 		p.log.Warn("push bad handshake", "remote", remote, "error", err)
 		return
 	}
 	w := &connWriter{c: conn}
-	observer, feed, ok := p.handshake(conn, w, remote)
+	observer, feed, useZstd, ok := p.handshake(conn, w, remote)
 	if !ok {
 		return
 	}
 	metrics.PushConnectsTotal.WithLabelValues(observer).Inc()
 	metrics.PushObserversUp.WithLabelValues(observer).Inc()
 	defer metrics.PushObserversUp.WithLabelValues(observer).Dec()
-	p.log.Info("push feeder authenticated", "observer", observer, "feed", feed, "remote", remote)
+	p.log.Info("push feeder authenticated", "observer", observer, "feed", feed, "remote", remote, "zstd", useZstd)
 
-	p.stream(conn, w, observer, feed)
+	// Everything after the handshake is read through idleConn (deadline discipline); when the
+	// feeder negotiated zstd, the DATA stream is decompressed first. ACKs/PONGs back to the
+	// feeder stay plaintext (written straight to conn via connWriter).
+	var frames io.Reader = &idleConn{Conn: conn, timeout: idleReadTimeout}
+	if useZstd {
+		zr, err := zstd.NewReader(frames)
+		if err != nil {
+			p.log.Warn("push zstd reader init failed", "observer", observer, "error", err)
+			return
+		}
+		defer zr.Close()
+		frames = zr
+	}
+
+	p.stream(frames, w, observer, feed)
 }
 
 // handshake reads and authenticates the HELLO, replying WELCOME. It returns the
-// canonical observer id and feed on success.
-func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (observer, feed string, ok bool) {
+// canonical observer id, feed, and whether the DATA stream is zstd-compressed
+// (confirmed only when the feeder requested it) on success.
+func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (observer, feed string, useZstd, ok bool) {
 	ft, payload, err := wire.ReadFrame(conn)
 	if err != nil || ft != wire.Hello {
 		p.log.Warn("push expected HELLO", "remote", remote, "frame", ft, "error", err)
-		return "", "", false
+		return "", "", false, false
 	}
 	h, err := wire.ParseHello(payload)
 	if err != nil {
 		p.log.Warn("push bad HELLO json", "remote", remote, "error", err)
-		return "", "", false
+		return "", "", false, false
 	}
 	obs, authed := p.auth.Authenticate(h.Token, h.Station, h.Feed)
 	if !authed {
 		metrics.PushAuthFailuresTotal.Inc()
 		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "unauthorized"}))
 		p.log.Warn("push auth rejected", "remote", remote, "station", h.Station, "feed", h.Feed)
-		return "", "", false
+		return "", "", false, false
 	}
 	if scannerFor(h.Feed) == nil {
 		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "unsupported feed"}))
-		return "", "", false
+		return "", "", false, false
 	}
 	if err := w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{
-		OK: true, AckIntervalMS: int(p.ackInterval / time.Millisecond),
+		OK: true, AckIntervalMS: int(p.ackInterval / time.Millisecond), Zstd: h.Zstd,
 	})); err != nil {
-		return "", "", false
+		return "", "", false, false
 	}
-	return obs, h.Feed, true
+	return obs, h.Feed, h.Zstd, true
 }
 
 // stream reads DATA/PING frames, forwards decoded records to the decode stage, and
@@ -240,7 +277,7 @@ func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (obs
 // advance past a replay and the feeder's spool would grow without bound. Frames are
 // forwarded to decode unconditionally (nav frames are idempotent, so a replayed
 // duplicate is harmless); the sequence governs only spool pruning.
-func (p *PushServer) stream(conn net.Conn, w *connWriter, observer, feed string) {
+func (p *PushServer) stream(frames io.Reader, w *connWriter, observer, feed string) {
 	var (
 		mu      sync.Mutex
 		highest uint64 // highest sequence received this connection
@@ -268,9 +305,9 @@ func (p *PushServer) stream(conn net.Conn, w *connWriter, observer, feed string)
 	}()
 
 	for {
-		// Feeders stream steadily; a long silence means a dead peer. PINGs reset it.
-		_ = conn.SetReadDeadline(time.Now().Add(120 * time.Second))
-		ft, payload, err := wire.ReadFrame(conn)
+		// The idle-timeout deadline is refreshed by idleConn on every underlying read, so a
+		// stalled feeder (or a stalled zstd stream) still trips it here.
+		ft, payload, err := wire.ReadFrame(frames)
 		if err != nil {
 			if !errors.Is(err, os.ErrDeadlineExceeded) {
 				p.log.Info("push feeder disconnected", "observer", observer, "error", err)
