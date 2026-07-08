@@ -126,6 +126,46 @@ func TestPushHappyPath(t *testing.T) {
 	}
 }
 
+// TestPushReplayFromReconnect models a feeder resuming after a disconnect: it
+// replays unacked frames starting from a global sequence well past 1. The collector
+// must ack the highest sequence it saw this connection (not "contiguous from 1"),
+// or the feeder could never prune its spool. This guards the reconnect contract that
+// makes the store-and-forward feeder lossless (docs/DESIGN.md §2).
+func TestPushReplayFromReconnect(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	addr, out := startPushServer(t, ctx, tokenAuth("observer16", "s3cret", "ubx"))
+
+	conn := dialPush(t, addr)
+	defer conn.Close()
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, payload, err := wire.ReadFrame(conn); err != nil {
+		t.Fatal(err)
+	} else if wmsg, _ := parseWelcome(payload); !wmsg.OK {
+		t.Fatal("handshake rejected")
+	}
+
+	// Replay three frames whose sequences resume mid-stream (503, 504, 505).
+	for _, seq := range []uint64{503, 504, 505} {
+		rec := wire.RawRecord{RecvUnixNs: time.Now().UnixNano(), GnssID: gnss.GPS, SvID: 5, Raw: make([]byte, 40)}
+		if err := wire.WriteFrame(conn, wire.Data, wire.EncodeData(seq, rec)); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-out:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("frame seq=%d did not reach decode", seq)
+		}
+	}
+
+	// The ack must reflect the highest replayed sequence so the feeder can prune.
+	if seq := readAck(t, conn); seq != 505 {
+		t.Errorf("ack seq = %d, want 505 (highest replayed)", seq)
+	}
+}
+
 // TestPushRejectsBadToken confirms an unknown token gets WELCOME ok=false and no
 // frame is admitted.
 func TestPushRejectsBadToken(t *testing.T) {

@@ -232,12 +232,19 @@ func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (obs
 }
 
 // stream reads DATA/PING frames, forwards decoded records to the decode stage, and
-// acks the last contiguously-received sequence on the configured cadence.
+// acks the highest sequence received on the configured cadence. The feeder assigns
+// monotonically increasing global sequences and, on every reconnect, replays all
+// frames past the last ack it received (docs/DESIGN.md §2). A fresh connection
+// therefore resumes at an arbitrary sequence, not 1, so the collector must ack the
+// highest seq seen this connection — acking "contiguous from zero" would never
+// advance past a replay and the feeder's spool would grow without bound. Frames are
+// forwarded to decode unconditionally (nav frames are idempotent, so a replayed
+// duplicate is harmless); the sequence governs only spool pruning.
 func (p *PushServer) stream(conn net.Conn, w *connWriter, observer, feed string) {
 	var (
-		mu     sync.Mutex
-		contig uint64 // highest in-order sequence received
-		acked  uint64
+		mu      sync.Mutex
+		highest uint64 // highest sequence received this connection
+		acked   uint64
 	)
 	ackTicker := time.NewTicker(p.ackInterval)
 	defer ackTicker.Stop()
@@ -246,7 +253,7 @@ func (p *PushServer) stream(conn net.Conn, w *connWriter, observer, feed string)
 		defer close(ackDone)
 		for range ackTicker.C {
 			mu.Lock()
-			last, prev := contig, acked
+			last, prev := highest, acked
 			mu.Unlock()
 			if last == prev {
 				continue
@@ -282,8 +289,8 @@ func (p *PushServer) stream(conn net.Conn, w *connWriter, observer, feed string)
 				continue
 			}
 			mu.Lock()
-			if seq == contig+1 {
-				contig = seq // in order
+			if seq > highest {
+				highest = seq
 			}
 			mu.Unlock()
 			f := recordToFrame(rec, feed, observer)
