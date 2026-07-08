@@ -53,7 +53,7 @@ Decoder status: **★ core** (v1, must ship) · **▲ extended** (modern civil s
 | Constellation | gnssId (int / emit) | Letter | Nav messages we decode | Signals / freqs | Source ICD (doc # / edition) | Status |
 |---|---|---|---|---|---|---|
 | **GPS** | 0 / 0 | G | L1 C/A **LNAV** (subframes 1–5); L2C/L5 **CNAV** (msg 10/11/30–37); L1C **CNAV-2** | L1 1575.42, L2 1227.60, L5 1176.45 MHz | IS-GPS-200 (Rev N, 2022); IS-GPS-705 (L5, Rev J); IS-GPS-800 (L1C, Rev J) | ★ LNAV; ▲ CNAV/CNAV-2 |
-| **Galileo** | 2 / 2 | E | E1-B **I/NAV** (word types 1–10, 0, 16–63); E5a **F/NAV**; E5b **I/NAV**; E6-B **C/NAV** | E1 1575.42, E5a 1176.45, E5b 1207.14, E6 1278.75 MHz | Galileo OS SIS ICD Issue 2.1 (Nov 2023); Galileo HAS SIS ICD 1.0 (E6) | ★ I/NAV, F/NAV; ▲ E6 C/NAV |
+| **Galileo** | 2 / 2 | E | E1-B **I/NAV** (word types 0–10, 16 reduced-CED, 17–20 FEC2, 63 dummy); E5a **F/NAV**; E5b **I/NAV**; E6-B **C/NAV** | E1 1575.42, E5a 1176.45, E5b 1207.14, E6 1278.75 MHz | Galileo OS SIS ICD Issue 2.1 (Nov 2023); Galileo HAS SIS ICD 1.0 (E6) | ★ I/NAV, F/NAV; ▲ E6 C/NAV |
 | **BeiDou** | 3 / 3 | C | **D1** NAV (MEO/IGSO, subframes 1–5); **D2** NAV (GEO); **B-CNAV1** (B1C); **B-CNAV2** (B2a); **B-CNAV3** (B2b) | B1I 1561.098, B1C 1575.42, B2a 1176.45, B2b 1207.14, B3I 1268.52 MHz | BDS-SIS-ICD-B1I 3.0 (2019); -B1C 1.0 (2017); -B2a 1.0 (2017); -B2b 1.0 (2020) | ★ D1/D2; ▲ B-CNAV1/2/3 |
 | **GLONASS** | 6 / 6 | R | L1OF/L2OF **strings 1–15** (eph strings 1–4, time string 5, almanac 6–15) | L1 ~1602+k·0.5625, L2 ~1246+k·0.4375 MHz (FDMA, k=−7..+6); L3OC 1202.025 (CDMA, future) | GLONASS ICD Ed. 5.1 (2008, FDMA); GLONASS ICD CDMA Gen. Desc. Ed. 1.0 (L3OC) | ★ L1OF/L2OF; ◇ L3OC |
 | **QZSS** 🇯🇵 | 5 / 5 ✚ | J | L1 C/A **LNAV** (GPS-compatible); L2C/L5 **CNAV**; L1C **CNAV-2**; **L1S** (SLAS + DC Report); **L6** (L6D/L6E CLAS/MADOCA) | L1 1575.42, L2 1227.60, L5 1176.45, L1S 1575.42, L6 1278.75 MHz | IS-QZSS-PNT-005 (2023); IS-QZSS-L1S-005; IS-QZSS-L6-005 | ★ LNAV, L1S; ▲ CNAV, L6 |
@@ -71,7 +71,7 @@ L1S; see §3.
 ## 2. Nav-frame ingestion path
 
 Three raw-frame sources are supported. Each is forwarded verbatim by `navfeeder` and decoded
-in `navlistener/internal/nav/<constellation>.go`. The parser's contract: **untrusted input**
+in `navlistener/internal/gnss/frame/<constellation>.go`. The parser's contract: **untrusted input**
 — every length, index, and bit-read is bounds-checked. A frame that fails parity/CRC is
 counted (`navlistener_nav_crc_fail_total{gnssid,sigid}`) and dropped, never assembled.
 
@@ -107,15 +107,16 @@ table):
 | 2 Gal | 5,6 | E5b I/Q | `GalInav` |
 | 3 BDS | 0,1 | B1I D1/D2 | `BdsD1` / `BdsD2` |
 | 3 BDS | 2,3 | B2I D1/D2 | `BdsD1` / `BdsD2` |
-| 3 BDS | 5,6 | B1C / B2a | `BdsCnav1` / `BdsCnav2` |
+| 3 BDS | 5,6 | B1 Cp/Cd (B1C) | `BdsCnav1` |
+| 3 BDS | 7,8 | B2 ap/ad (B2a) | `BdsCnav2` |
 | **5 QZSS** | 0 | L1 C/A | `QzsLnav` |
 | **5 QZSS** | 1 | **L1S** | `QzsL1s` |
 | **5 QZSS** | 4,5 | L2 CM/CL | `QzsCnav` |
-| **5 QZSS** | 6,7 | L5 I/Q | `QzsCnav` |
+| **5 QZSS** | 8,9 | L5 I/Q | `QzsCnav` |
 | 6 GLO | 0 | L1 OF | `GloNav` |
 | 6 GLO | 2 | L2 OF | `GloNav` |
 | **7 NavIC** | 0 | L5 A | `NavicNav` |
-| **7 NavIC** | 1 | L1 (NVS-01+) | `NavicL1Nav` |
+| **7 NavIC** | — | L1 (NVS-01+; no u-blox support yet — SBF only) | `NavicL1Nav` |
 | 1 SBAS | 0 | L1 C/A | `SbasL1` |
 
 QZSS uses gnssId 5 and NavIC uses gnssId 7. Each needs an explicit dispatch
@@ -242,10 +243,11 @@ Source: **IRNSS SPS ICD Version 1.1 (Aug 2017)** for L5/S; **NavIC L1 SPS ICD 1.
 the new L1 signal on NVS-01 and later spacecraft.
 
 ### 4.1 L5/S SPS NAV frame structure
-- **Master frame = 2400 symbols**, split into **4 subframes of 600 symbols each**. Each
-  subframe is **292 data bits + a 16-bit FEC tail after 1/2-rate convolutional coding +
-  interleaving**; after Viterbi decode + de-interleave the collector works on the 292-bit
-  payload. (Septentrio SBF 4093 / u-blox deliver post-FEC bits; the collector CRC-checks.)
+- **Master frame = 2400 symbols**, split into **4 subframes of 600 symbols each**: a
+  **16-symbol sync word** followed by **584 symbols** of rate-1/2 convolutionally coded +
+  interleaved data carrying a **292-bit subframe payload** (which includes the 6 tail bits);
+  after Viterbi decode + de-interleave the collector works on the 292-bit payload.
+  (Septentrio SBF 4093 / u-blox deliver post-FEC bits; the collector CRC-checks.)
 - Each subframe: **TLM (8b) + TOWC (17b) + Alert/Autonav/Subframe-ID (…) + data (233b) +
   CRC-24Q (24b) + tail (6b)**.
 - **Subframe 1 & 2 are fixed:** primary **ephemeris + clock** (the full Kepler-like set —
@@ -290,7 +292,8 @@ PZ-90.11 datum**. Source: **GLONASS ICD Edition 5.1 (2008)**.
   positions in PZ-90.11 internally and note the datum in the output (a fixed 7-parameter
   Helmert transform to WGS84/ITRF is applied only where a common frame is needed —
   `docs/MATH.md`).
-- **Strings 1–15 (85 bits each, 2 s each; a superframe is 15 strings × 5 = 30 s):**
+- **Strings 1–15 (85 bits each, 2 s each; a frame is 15 strings = 30 s; a superframe is 5
+  frames = 2.5 min):**
   - **Strings 1–4** — immediate **ephemeris**: broadcast **Cartesian position, velocity, and
     luni-solar acceleration** `(x,y,z, ẋ,ẏ,ż, ẍ,ÿ,z̈)` in PZ-90 at reference time `t_b`, plus
     clock `τ_n, γ_n, Δτ_n`, health `B_n`/`l_n`, `F_T`, `E_n`, `P1–P4`, `M`.
@@ -333,23 +336,23 @@ payloads, and receiver telemetry described below.
 |---|---|---|---|---|
 | 0x10 | `GpsLnav` | GPS L1 C/A LNAV | 300-bit subframe (10×30b) | UBX (0,0) / SBF 4017 |
 | 0x11 | `GpsCnav` | GPS L2C/L5 CNAV | 300-bit message | UBX (0,3/4/6/7) / SBF 4018,4019 |
-| 0x12 | `GpsCnav2` | GPS L1C CNAV-2 | subframe 2 (1200b) + TOI + sf3 | SBF 4221 |
+| 0x12 | `GpsCnav2` | GPS L1C CNAV-2 | subframe 2 (600b / 1200 symbols) + TOI + sf3 | SBF 4221 |
 | 0x20 | `GalInav` | Galileo E1-B / E5b I/NAV | 240-bit page (2×120b half-pages) | UBX (2,0/1/5/6) / SBF 4023 |
 | 0x21 | `GalFnav` | Galileo E5a F/NAV | 244-bit page | UBX (2,3/4) / SBF 4022 |
 | 0x22 | `GalCnav` | Galileo E6-B C/NAV | 486-bit page | SBF 4024 |
 | 0x30 | `BdsD1` | BeiDou B1I/B3I D1 (MEO/IGSO) | 300-bit subframe | UBX (3,0/2) / SBF 4047 |
 | 0x31 | `BdsD2` | BeiDou B1I D2 (GEO) | 300-bit subframe | UBX (3,1/3) / SBF 4047 |
-| 0x32 | `BdsCnav1` | BeiDou B1C B-CNAV1 | frame (1800 symbols → payload) | UBX (3,5) / SBF 4218 |
-| 0x33 | `BdsCnav2` | BeiDou B2a B-CNAV2 | 600-bit frame | UBX (3,6) / SBF 4219 |
-| 0x34 | `BdsCnav3` | BeiDou B2b B-CNAV3 | 1000-bit frame | SBF 4242 |
+| 0x32 | `BdsCnav1` | BeiDou B1C B-CNAV1 | frame (1800 symbols → payload) | UBX (3,5/6) / SBF 4218 |
+| 0x33 | `BdsCnav2` | BeiDou B2a B-CNAV2 | 600-symbol frame (288-bit message) | UBX (3,7/8) / SBF 4219 |
+| 0x34 | `BdsCnav3` | BeiDou B2b B-CNAV3 | 1000-symbol frame (486-bit message) | SBF 4242 |
 | 0x40 | `GloNav` | GLONASS L1OF/L2OF | 85-bit string (+ `k`, slot) | UBX (6,0/2) / SBF 4026 |
 | **0x50** | **`QzsLnav`** | **QZSS L1 C/A LNAV** | 300-bit subframe | UBX (5,0) / SBF 4066 |
-| **0x51** | **`QzsCnav`** | **QZSS L2C/L5 CNAV** | 300-bit message | UBX (5,4/5/6/7) / SBF 4067,4068 |
+| **0x51** | **`QzsCnav`** | **QZSS L2C/L5 CNAV** | 300-bit message | UBX (5,4/5/8/9) / SBF 4067,4068 |
 | **0x52** | **`QzsCnav2`** | **QZSS L1C CNAV-2** | subframe 2 + TOI | SBF 4227 |
 | **0x53** | **`QzsL1s`** | **QZSS L1S SLAS / DC-report** | 250-bit message | UBX (5,1) / SBF 4228 |
 | **0x54** | **`QzsL6`** | **QZSS L6D/L6E CLAS/MADOCA** | 2000-bit frame | SBF 4069 |
 | **0x60** | **`NavicNav`** | **NavIC L5/S SPS NAV** | 292-bit subframe (post-FEC) | UBX (7,0) / SBF 4093 |
-| **0x61** | **`NavicL1Nav`** | **NavIC L1 SPS NAV** | frame (post-FEC) | UBX (7,1) / SBF 4259 |
+| **0x61** | **`NavicL1Nav`** | **NavIC L1 SPS NAV** | frame (post-FEC) | SBF 4259 (no u-blox source yet) |
 | 0x70 | `SbasL1` | SBAS L1 C/A | 250-bit block | UBX (1,0) / SBF 4020 |
 | 0x71 | `SbasL5` | SBAS L5 DFMC ◇ | 250-bit block | SBF 4021 |
 
@@ -361,7 +364,7 @@ payloads, and receiver telemetry described below.
 | 0x02 | `RFData` | raw observables: pseudorange, carrier phase, Doppler, lock-time, cno, validity (UBX-RXM-RAWX) |
 | 0x03 | `ObserverPosition` | receiver ECEF x/y/z, accuracy, ground-speed (UBX-NAV-HPPOSECEF/PVT) |
 | 0x04 | `ObserverDetails` | vendor, hw/sw version, git hash, serial, clock offset/drift, owner, remark, uptime |
-| 0x05 | `JammingStats` | u-blox MON-HW jamming/AGC/spoofing indicators (RF-integrity input, `docs/INTEGRITY.md`) |
+| 0x05 | `JammingStats` | u-blox MON-HW/MON-RF jamming/AGC/spoofing indicators (MON-RF on F9+; RF-integrity input, `docs/INTEGRITY.md`) |
 | 0x06 | `TimeOffset` | per-GNSS inter-system offsets (GGTO, BGTO, GPS-UTC, …) → `global.json` |
 | 0x07 | `RtcmMessage` | forwarded RTCM3 message (ephemeris 1019/1020/1041/1042/1044/1045/1046; SSR 1057-1068) |
 | 0x08 | `QzssDcr` | QZSS L1S DC-report (disaster/crisis) — enrichment stream (derived from `QzsL1s`) |
