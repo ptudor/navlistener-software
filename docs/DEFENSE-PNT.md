@@ -218,6 +218,24 @@ is forward-compatible with it. In priority order:
   favorite, and the pragmatic fallback is exactly Tier 0 — the F9x *is* a multi-band front-end via
   RXM-RAWX. We do not commit to bare-metal RF until a detector need is proven that Tier 0 telemetry
   cannot meet.
+  - **Prior art to build on:** PocketSDR (open GNSS SDR, originally MAX2771-based), GNSS-SDR (the
+    open C++ I/Q-processing framework), early-gen SwiftNav Piksi (GNSS front-end + Spartan-6 FPGA),
+    and the NT1065-based Nut4NT.
+  - **Architecture sketch (recorded so the brief isn't lost; detailed design lands in `firmware/`
+    if/when Tier 2 is committed):** RF stage — SMA on a 50 Ω coplanar waveguide into the front-end
+    IC; bias-tee (3.3 V through an RF choke onto the SMA center pin) powering the active antenna;
+    a TCXO reference (~16.368 MHz, per the IC's PLL) — the same clock the §3 time gate leans on.
+    Digital stage — ESP32-S3: SPI control plane to configure the front-end's PLLs/AGC; data plane
+    via the I2S / LCD-I80 peripheral as a DMA slave, sweeping the 2-bit I/Q bits into a PSRAM ring
+    buffer with zero CPU overhead; a FreeRTOS task runs esp-dsp FFTs (jamming: a discrete bin
+    spike = CW, a broadband floor rise = noise jamming) and PRN cross-correlation (spoofing:
+    multiple PRNs arriving at identical, implausible power). Native ESP-IDF, not Arduino — the
+    DMA/timing budget requires it.
+  - **Rejected path — RTL-SDR-class silicon on the embedded tier:** the RTL2832U has no public
+    datasheet and only emits I/Q as a USB 2.0 bulk stream; forcing an MCU to ingest ~2 MSps over
+    USB while running DSP is a non-starter. An RTL-SDR + host-PC rig remains fine as a *lab
+    prototyping* harness for the Tier-2 DSP (FFT + PRN correlation against live air), but it is
+    not a fleet tier.
 
 The software contract (`JammingStats` carrying raw per-band numbers, station-scoped RF events,
 replayable telemetry storage) is designed so Tiers 1–2 slot in as richer *sources* of the same
