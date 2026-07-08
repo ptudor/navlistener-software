@@ -167,7 +167,10 @@ f_D_predicted = −f · ρ̇ / c
 ```
 
 Compare against the receiver's *observed* Doppler (UBX-RXM-RAWX / SBF MeasEpoch) to get
-`delta_hz` — a broadcast-vs-observed integrity signal (§9, `docs/INTEGRITY.md`). Carrier `f` per
+`delta_hz` — a broadcast-vs-observed integrity signal (§9, `docs/INTEGRITY.md`). We evaluate
+the SV state at the receive epoch, consciously ignoring the ~70 ms signal transit time and
+Sagnac effect: with line-of-sight acceleration ≤ ~0.05 m/s² that contributes < ~0.02 Hz at
+L1, far below the receiver-clock-drift noise floor `delta_hz_corr` exists to remove. Carrier `f` per
 signal: GPS/Gal/QZSS/NavIC L1≈1575.42 MHz, L5/E5a≈1176.45, L2≈1227.60, E5b≈1207.14, E6≈1278.75,
 B1I≈1561.098, B2a≈1176.45, B3I≈1268.52; GLONASS FDMA L1 = 1602 + k·0.5625 MHz (channel `k`).
 
@@ -412,6 +415,13 @@ catalogue), propagate with **SGP4**, and report the best match (`best_tle`) and 
 `best_tle_dist_m` between our broadcast-ephemeris ECEF and the SGP4 ECEF. SGP4 is a standard,
 independently-implemented algorithm (using a permissively licensed implementation); the TLE match is a coarse gross-error detector, not a precision reference.
 
+> ⚠️ **SGP4 outputs TEME, not ECEF.** SGP4 positions are in the **TEME** (True Equator, Mean
+> Equinox) quasi-inertial frame. Comparing them to our ECEF without rotating **TEME → ECEF
+> (rotate by GMST about Z;** polar motion is negligible at this check's km-scale tolerance**)**
+> introduces an Earth-rotation-sized longitude error that a
+> single-instant test cannot catch. The TEME→ECEF rotation is mandatory, and its test is the
+> same multi-time-of-day ground-trace check as §3.1.
+
 ---
 
 ## 12. Validation strategy (how we know the math is right)
@@ -426,6 +436,12 @@ Three independent oracles, in CI:
    propagator and compare the SV positions against the IGS **SP3 precise orbits** at the same
    epochs — the real-world accuracy check (broadcast-vs-precise is a few metres; a bug is
    kilometres). Also re-derive our own decoders' output from RINEX to confirm frame decode.
+   **Reference-point caveat:** broadcast ephemerides describe the satellite's **antenna phase
+   centre (APC)**; SP3 orbits describe its **centre of mass (CoM)**. The difference is the
+   satellite phase-centre offset — up to ~1–3 m, mostly radial. Either apply the IGS ANTEX
+   PCO (CoM→APC) before differencing, or set the pass tolerance to absorb the documented
+   radial bias; silently differencing APC against CoM would "fail" a correct propagator at
+   exactly the metre scale this check is supposed to certify.
 3. **Independent implementation comparison.** Run galmon and `navlistener` over the **same captured raw
    frame stream** and diff the numbers — the harness maps galmon's `svs.json` fields onto our
    native feed fields (ECEF, clock offset, orbit/time discontinuities) and compares numerically.
