@@ -64,6 +64,10 @@ type svState struct {
 	gloEph              glonass.Ephemeris
 	gloFreqID           int
 	haveGloEph          bool
+	// Buffered first string of an almanac pair (6/8/10/12/14), awaiting its second
+	// (7/9/11/13/15) from the same transmitting satellite.
+	gloAlmFirst    []uint32
+	gloAlmFirstNum int
 
 	eph     kepler.Ephemeris
 	clk     clock.Model
@@ -115,12 +119,21 @@ type sbasState struct {
 	doNotUse  bool
 }
 
-// Store is the sharded live SV state plus the SBAS health map.
+// Store is the sharded live SV state plus the SBAS health map and the GLONASS almanac
+// (the broadcast almanac names every slot, so it carries out-of-view SVs the ephemeris
+// store cannot — docs/OUTPUT.md §1.4).
 type Store struct {
 	shards []*shard
 
 	sbasMu sync.Mutex
 	sbas   map[int]*sbasState
+
+	// GLONASS almanac, keyed by subject slot (nA), plus the frame day-number NA. Any
+	// satellite's frame carries the whole constellation's almanac (strings 6–15), so
+	// this is a store-global map, separate from the per-SV ephemeris shards.
+	gloAlmMu   sync.Mutex
+	gloAlmanac map[int]frame.GLONASSAlmanacEntry
+	gloNA      int
 }
 
 // New builds a Store with n shards (n >= 1).
@@ -128,7 +141,11 @@ func New(n int) *Store {
 	if n < 1 {
 		n = 1
 	}
-	s := &Store{shards: make([]*shard, n), sbas: make(map[int]*sbasState)}
+	s := &Store{
+		shards:     make([]*shard, n),
+		sbas:       make(map[int]*sbasState),
+		gloAlmanac: make(map[int]frame.GLONASSAlmanacEntry),
+	}
 	for i := range s.shards {
 		s.shards[i] = &shard{m: make(map[Key]*svState)}
 	}
@@ -437,16 +454,31 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 	st.lastSeen = f.Recv
 	st.gloFreqID = f.FreqID
 
-	switch str.Number {
-	case 1:
+	switch {
+	case str.Number == 1:
 		st.gloS1 = str
-	case 2:
+	case str.Number == 2:
 		st.gloS2 = str
 		st.health = str.Health
-	case 3:
+	case str.Number == 3:
 		st.gloS3 = str
+	case str.Number == 5: // time string: carries the frame day-number NA
+		if na, err := frame.DecodeGLONASSFrameNA(f.Words); err == nil {
+			s.setGloNA(na)
+		}
+		return
+	case str.Number >= 6 && str.Number <= 14 && str.Number%2 == 0: // first of an almanac pair
+		st.gloAlmFirst = append(st.gloAlmFirst[:0], f.Words...)
+		st.gloAlmFirstNum = str.Number
+		return
+	case str.Number >= 7 && str.Number <= 15 && str.Number%2 == 1: // second of an almanac pair
+		if st.gloAlmFirst != nil && str.Number == st.gloAlmFirstNum+1 {
+			s.applyGloAlmanac(st.gloAlmFirst, f.Words)
+		}
+		st.gloAlmFirst = nil
+		return
 	default:
-		return // strings 4/5 (time) and 6–15 (almanac) not assembled here
+		return // string 4 (reserved here)
 	}
 	if st.gloS1 == nil || st.gloS2 == nil || st.gloS3 == nil {
 		return
@@ -456,6 +488,34 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		return
 	}
 	st.gloEph, st.haveGloEph = eph, true
+}
+
+// setGloNA records the frame day-number NA (the day the almanac elements refer to),
+// validated against its ICD range (1..1461 days within the four-year interval).
+func (s *Store) setGloNA(na int) {
+	if na < 1 || na > 1461 {
+		return
+	}
+	s.gloAlmMu.Lock()
+	s.gloNA = na
+	s.gloAlmMu.Unlock()
+}
+
+// applyGloAlmanac decodes one satellite's almanac from its two-string pair and stores it
+// by subject slot. Decoding is pure and done outside the lock; only the map write is
+// guarded. Called with the transmitting SV's shard lock held (ordering shard→gloAlm).
+func (s *Store) applyGloAlmanac(first, second []uint32) {
+	s.gloAlmMu.Lock()
+	na := s.gloNA
+	s.gloAlmMu.Unlock()
+
+	a, err := frame.DecodeGLONASSAlmanac(first, second, na)
+	if err != nil || a.Alm.Slot < 1 || a.Alm.Slot > 24 {
+		return
+	}
+	s.gloAlmMu.Lock()
+	s.gloAlmanac[a.Alm.Slot] = a
+	s.gloAlmMu.Unlock()
 }
 
 // computeDisco propagates the outgoing and incoming ephemerides to the new

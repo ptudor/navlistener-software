@@ -6,7 +6,9 @@ import (
 
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/gnss/accuracy"
+	"github.com/ptudor/gnss/frame"
 	"github.com/ptudor/gnss/geo"
+	"github.com/ptudor/gnss/glonass"
 	"github.com/ptudor/gnss/gnsstime"
 	"github.com/ptudor/gnss/physconst"
 )
@@ -89,6 +91,11 @@ type AlmanacEntry struct {
 	T0e            int     `json:"t0e"`
 	T              int     `json:"t"`
 	EphSource      int     `json:"eph_source"`
+
+	// GLONASS-only ascending-node longitude and its epoch (docs/OUTPUT.md §1.4),
+	// absent for other constellations.
+	LambdaNA  *float64 `json:"lambda_na,omitempty"`
+	TLambdaNA *float64 `json:"t_lambda_na,omitempty"`
 }
 
 // SBASEntry is one augmentation-system health entry (docs/OUTPUT.md §1.5).
@@ -258,7 +265,65 @@ func (s *Store) FeedAlmanac(now time.Time) map[string]AlmanacEntry {
 		}
 		sh.mu.Unlock()
 	}
+	s.addGlonassAlmanac(out, now)
 	return out
+}
+
+// gloMeanInclination is the GLONASS mean orbital inclination (63°, ICD Ed. 5.1
+// §A.3.2.1); the almanac broadcasts Δi as a correction to it.
+var gloMeanInclination = 63.0 * physconst.Pi / 180.0
+
+// addGlonassAlmanac adds an almanac entry for every GLONASS slot that is not already
+// observed (out-of-view SVs the ephemeris store cannot carry). Each is propagated to now
+// with the analytic almanac propagator (docs/MATH.md §3.1). The current day-number is the
+// broadcast NA — kept current by the live stream — so propagating at NA to the current
+// GLONASS time-of-day gives the present position without reimplementing GLONASS calendar
+// arithmetic.
+func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
+	s.gloAlmMu.Lock()
+	na := s.gloNA
+	alms := make([]frame.GLONASSAlmanacEntry, 0, len(s.gloAlmanac))
+	for _, a := range s.gloAlmanac {
+		alms = append(alms, a)
+	}
+	s.gloAlmMu.Unlock()
+	if na == 0 {
+		return // no day-number anchor yet; the almanac time base is unknown
+	}
+
+	ti := gloTOD(now)
+	ell := physconst.WGS84
+	if p, ok := physconst.For(gnss.GLONASS); ok {
+		ell = p.Datum
+	}
+	for _, a := range alms {
+		name := fmt.Sprintf("R%02d", a.Alm.Slot)
+		if _, seen := out[name]; seen {
+			continue // observed → its precise broadcast-ephemeris entry wins
+		}
+		pos, err := glonass.PropagateAlmanacECEF(a.Alm, na, ti)
+		if err != nil {
+			continue
+		}
+		gd := geo.ECEFToGeodetic(pos, ell)
+		lambda, tLambda := a.Alm.Lambda, a.Alm.Tlambda
+		out[name] = AlmanacEntry{
+			Name:           name,
+			GnssID:         int(gnss.GLONASS),
+			Observed:       false,
+			EcefXM:         pos.X,
+			EcefYM:         pos.Y,
+			EcefZM:         pos.Z,
+			LatDeg:         geo.Deg(gd.Lat),
+			LonDeg:         geo.Deg(gd.Lon),
+			InclinationRad: gloMeanInclination + a.Alm.DeltaI,
+			T0e:            int(a.Alm.Tlambda),
+			T:              int(now.Unix()),
+			EphSource:      0,
+			LambdaNA:       &lambda,
+			TLambdaNA:      &tLambda,
+		}
+	}
 }
 
 // FeedSBAS builds the sbas augmentation-health feed as of now (docs/OUTPUT.md §1.5).

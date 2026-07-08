@@ -52,3 +52,20 @@ func FuzzGPSLNAV(f *testing.F) {
 		}
 	})
 }
+
+// FuzzGLONASSAlmanac asserts the almanac-pair decoder never panics on arbitrary word
+// content — a short or malformed pair returns an error or an in-range struct, never a
+// crash or an out-of-bounds bit read.
+func FuzzGLONASSAlmanac(f *testing.F) {
+	f.Add(uint32(0x60000000), uint32(0), uint32(0), uint32(0),
+		uint32(0x70000000), uint32(0), uint32(0), uint32(0))
+	f.Fuzz(func(t *testing.T, a0, a1, a2, a3, b0, b1, b2, b3 uint32) {
+		e, err := DecodeGLONASSAlmanac([]uint32{a0, a1, a2, a3}, []uint32{b0, b1, b2, b3}, 100)
+		if err != nil {
+			return
+		}
+		if e.Alm.Slot < 0 || e.Alm.Slot > 31 {
+			t.Fatalf("slot out of range: %d", e.Alm.Slot)
+		}
+	})
+}
