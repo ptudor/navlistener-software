@@ -1,0 +1,112 @@
+package wire
+
+import (
+	"bytes"
+	"encoding/binary"
+	"testing"
+
+	"github.com/ptudor/gnss"
+)
+
+func TestMagicRoundTrip(t *testing.T) {
+	var buf bytes.Buffer
+	if err := WriteMagic(&buf); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReadMagic(&buf); err != nil {
+		t.Fatalf("ReadMagic = %v", err)
+	}
+}
+
+func TestBadMagic(t *testing.T) {
+	if err := ReadMagic(bytes.NewReader([]byte("XXXX"))); err != ErrBadMagic {
+		t.Errorf("err = %v, want ErrBadMagic", err)
+	}
+}
+
+func TestFrameRoundTrip(t *testing.T) {
+	var buf bytes.Buffer
+	payload := []byte("hello payload")
+	if err := WriteFrame(&buf, Hello, payload); err != nil {
+		t.Fatal(err)
+	}
+	ft, got, err := ReadFrame(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ft != Hello || !bytes.Equal(got, payload) {
+		t.Errorf("round-trip = %d/%q", ft, got)
+	}
+}
+
+func TestFrameTooLargeOnWrite(t *testing.T) {
+	var buf bytes.Buffer
+	if err := WriteFrame(&buf, Data, make([]byte, MaxFrameLen+1)); err != ErrFrameTooLarge {
+		t.Errorf("write err = %v, want ErrFrameTooLarge", err)
+	}
+}
+
+func TestFrameTooLargeOnRead(t *testing.T) {
+	// Hand-craft a header claiming a payload larger than MaxFrameLen; ReadFrame
+	// must reject it before allocating.
+	var hdr [5]byte
+	hdr[0] = byte(Data)
+	binary.BigEndian.PutUint32(hdr[1:], MaxFrameLen+1)
+	_, _, err := ReadFrame(bytes.NewReader(hdr[:]))
+	if err != ErrFrameTooLarge {
+		t.Errorf("read err = %v, want ErrFrameTooLarge", err)
+	}
+}
+
+func TestDataRoundTrip(t *testing.T) {
+	rec := RawRecord{
+		RecvUnixNs: 1_700_000_000_000_000_000,
+		GnssID:     gnss.GPS,
+		SvID:       5,
+		SigID:      0,
+		FrameType:  0x10,
+		Raw:        []byte{0xDE, 0xAD, 0xBE, 0xEF},
+	}
+	payload := EncodeData(42, rec)
+	seq, got, err := DecodeData(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seq != 42 {
+		t.Errorf("seq = %d, want 42", seq)
+	}
+	if got.RecvUnixNs != rec.RecvUnixNs || got.GnssID != rec.GnssID ||
+		got.SvID != rec.SvID || got.SigID != rec.SigID || got.FrameType != rec.FrameType {
+		t.Errorf("record header mismatch: %+v", got)
+	}
+	if !bytes.Equal(got.Raw, rec.Raw) {
+		t.Errorf("raw = %x, want %x", got.Raw, rec.Raw)
+	}
+}
+
+func TestDecodeDataShort(t *testing.T) {
+	if _, _, err := DecodeData([]byte{1, 2, 3}); err != ErrShortRecord {
+		t.Errorf("err = %v, want ErrShortRecord", err)
+	}
+}
+
+func TestHelloWelcomeFrames(t *testing.T) {
+	var buf bytes.Buffer
+	if err := WriteHello(&buf, HelloMsg{Token: "t", Station: "s", Feed: "ubx"}); err != nil {
+		t.Fatal(err)
+	}
+	ft, payload, err := ReadFrame(&buf)
+	if err != nil || ft != Hello {
+		t.Fatalf("hello frame: ft=%d err=%v", ft, err)
+	}
+	if !bytes.Contains(payload, []byte(`"feed":"ubx"`)) {
+		t.Errorf("hello JSON missing feed: %s", payload)
+	}
+}
+
+func TestAckRoundTrip(t *testing.T) {
+	got, err := DecodeAck(EncodeAck(9001))
+	if err != nil || got != 9001 {
+		t.Errorf("ack round-trip = %d, %v", got, err)
+	}
+}
