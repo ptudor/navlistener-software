@@ -23,7 +23,7 @@ bit-for-bit.
 | **GPS** | WGS-84 | `3.986005e14` | `7.2921151467e-5` | `−4.442807633e-10` | IS-GPS-200, §20.3.3.4.3 |
 | **QZSS** | (GPS-compat) | `3.986005e14` | `7.2921151467e-5` | `−4.442807633e-10` | IS-QZSS-PNT, §5.2 |
 | **NavIC** | WGS-84 | `3.986005e14` | `7.2921151467e-5` | `−4.442807633e-10` | IRNSS SPS ICD v1.1, §6 |
-| **Galileo** | GTRF | `3.986004418e14` | `7.2921151467e-5` | `−4.442807309e-10` | OS-SIS-ICD v2.0, §5.1.1 |
+| **Galileo** | GTRF | `3.986004418e14` | `7.2921151467e-5` | `−4.442807309e-10` | OS-SIS-ICD Issue 2.1, §5.1.1 |
 | **BeiDou** | CGCS2000 | `3.986004418e14` | `7.2921150e-5` | `−4.442807309e-10` | BDS-SIS-ICD-B1I v3.0, §5.2.4 |
 | **GLONASS** | PZ-90.11 | `3.986004418e14` | `7.2921150e-5` | (Cartesian model; no F term) | GLONASS ICD Ed. 5.1, App. |
 
@@ -44,7 +44,7 @@ handling, and week rollover:
 
 | System | Epoch | Week length | Leap seconds? | Rollover |
 |---|---|---|---|---|
-| GPS (GPST) | 1980-01-06 | 1024 (mod) | no (offset from UTC grows) | 1024 wk; modern nav sends WN mod; disambiguate by date |
+| GPS (GPST) | 1980-01-06 | 1024 (mod) | no (offset from UTC grows) | LNAV WN is 10-bit (1024-wk ambiguity, disambiguate by date); CNAV/CNAV-2 send a 13-bit WN |
 | Galileo (GST) | 1999-08-22 | 4096 (mod) | no | 4096 wk |
 | BeiDou (BDT) | 2006-01-01 | 8192 (mod) | no | 8192 wk (BDT = GPST − 14 s at epoch) |
 | QZSS (QZSST) | = GPST | = GPST | no | shares GPST |
@@ -143,8 +143,9 @@ Y_GK  = x′·sin Ω_GEO + y′·cos i·cos Ω_GEO
 Z_GK  = y′·sin i
 ```
 
-then rotate by `−5°` about X and by `ωe·tk` about Z into CGCS2000 ECEF (BDS-SIS-ICD-B1I
-§5.2.4.12, the `Rx(−5°)·Rz(ωe·tk)` product). MEO/IGSO BeiDou SVs use the plain §2 algorithm.
+then rotate by `−5°` about X and then by `ωe·tk` about Z into CGCS2000 ECEF (BDS-SIS-ICD-B1I
+§5.2.4.12: `[X,Y,Z]ᵀ = Rz(ωe·tk)·Rx(−5°)·[X_GK,Y_GK,Z_GK]ᵀ` — Rx applied first, Rz last).
+MEO/IGSO BeiDou SVs use the plain §2 algorithm.
 Detect GEO by SV id, not by inclination. Getting this wrong puts the GEO belt ~km off — a
 constant error a differential test against galmon catches immediately.
 
@@ -183,8 +184,7 @@ Integrate from `tb` to the target time (step `h = ±30…60 s`, Runge–Kutta 4t
 `s = (x, y, z, ẋ, ẏ, ż)` with the derivative:
 
 ```
-r   = √(x² + y² + z²)
-μ̄  = μ / r²·... (work in km with μ = 398600.4418 km³/s²)
+r   = √(x² + y² + z²)             // work in km: μ = 398600.4418 km³/s²
 ρ   = aₑ / r                      // aₑ = 6378.136 km
 
 ax = −μ·x/r³ · (1 + 1.5·J₂·ρ²·(1 − 5z²/r²)) + ωe²·x + 2·ωe·ẏ + jx
@@ -284,7 +284,8 @@ elevation = asin(U / |d|)          // or atan2(U, √(E²+N²))
 ```
 
 Elevation gates most integrity checks (low-elevation SVs have unreliable Doppler/pseudorange);
-we typically require `elev > FreshReceiverThreshold`-elevation for a receiver's vote to count.
+a receiver's vote only counts above a configured elevation mask (e.g. `elev > 10°`) — this is
+separate from the *freshness* gate (the 60 s fresh-receiver window in `docs/INTEGRITY.md §2`).
 
 ---
 
@@ -296,7 +297,7 @@ Each constellation broadcasts a coarse accuracy index; we decode to metres and e
 - **GPS/QZSS/NavIC URA index `N` (0–15)** → metres by the IS-GPS-200 Table 20-XII step function:
   `N≤6 ⇒ 2^(1+N/2)` (rounded per table), `N≥7 ⇒ 2^(N−2)`; `N=15` = "no accuracy / do not use".
 - **Galileo SISA (0–255)** → metres in four linear bands (OS-SIS-ICD §5.1.12): `0–49: 0–0.49 m`
-  (3 cm step), `50–74: 0.5–0.98 m` (6 cm), `75–99: 1–2 m` (12 cm), `100–125: 2–6 m` (16 cm),
+  (1 cm step), `50–74: 0.5–0.98 m` (2 cm), `75–99: 1–1.96 m` (4 cm), `100–125: 2–6 m` (16 cm),
   `126–254` spare, `255` = **"NO SISA AVAILABLE"** (SISA-invalid → `sisa_valid=false`).
 - **GLONASS F_T (0–15)** → metres by the ICD F_T table; `NONE`/absent ⇒ `sisa_valid=false`.
 - **BeiDou** — B1I URAI table (like GPS), B-CNAV uses SISAoe/SISAoc + a separate accuracy set.
@@ -390,8 +391,12 @@ The integrity signals are *derived* here and *thresholded/alerted* in INTEGRITY.
 ## 10. Almanac (coarse orbit) propagation
 
 Reduced-precision Kepler for all-SV acquisition data. GPS/QZSS/NavIC/Galileo/BeiDou almanacs are
-the §2 algorithm with almanac scalings and `i₀ = 0.3π + δi` (GPS: nominal 54° via the `0.3
-semicircle` offset), `toe = toa` (`toa·2¹²` for GPS). GLONASS almanac uses §3.1. We publish
+the §2 algorithm with almanac scalings, `toe = toa` (`toa·2¹²` for GPS). **The broadcast `δi` is
+an offset from a per-constellation reference inclination — do not hardcode GPS's:** GPS/NavIC
+`i₀ = 0.3 semicircles (54°) + δi`; QZSS QZO uses its own reference per IS-QZSS-PNT (QZO flies
+~41–45°, nowhere near 54° — a GPS-hardcoded reference silently corrupts QZSS almanacs); Galileo
+references 56° (OS-SIS-ICD almanac §); BeiDou MEO/IGSO reference 0.3 semicircles, GEO 0.
+GLONASS almanac uses §3.1. We publish
 almanac-derived ECEF in `almanac.json` (km) — this is *also* how the feed supplies GLONASS
 positions and how `best-tle`/`alma-dist` cross-checks are computed (`alma-dist` = distance between
 the ephemeris ECEF and the almanac/TLE ECEF, a coarse sanity check).
