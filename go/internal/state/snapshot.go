@@ -56,7 +56,7 @@ func (s *Store) Snapshot(now time.Time) Snapshot {
 				e.TimeDisco = &v
 			}
 			snap.SVs[e.Name] = e
-			if st.haveEph {
+			if st.haveEph || st.haveGloEph {
 				snap.LiveSVs++
 			}
 		}

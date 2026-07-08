@@ -18,6 +18,8 @@ import (
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/gnss/clock"
 	"github.com/ptudor/gnss/frame"
+	"github.com/ptudor/gnss/glonass"
+	"github.com/ptudor/gnss/gnsstime"
 	"github.com/ptudor/gnss/kepler"
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/metrics"
@@ -53,6 +55,11 @@ type svState struct {
 	galW [5]*frame.GalileoINAV
 	// BeiDou D1 subframe assembly buffers.
 	bd1, bd2, bd3 *frame.BeiDouSubframe
+	// GLONASS string assembly buffers + Cartesian ephemeris (RK4, not kepler).
+	gloS1, gloS2, gloS3 *frame.GLONASSString
+	gloEph              glonass.Ephemeris
+	gloFreqID           int
+	haveGloEph          bool
 
 	eph     kepler.Ephemeris
 	clk     clock.Model
@@ -110,6 +117,8 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 		s.applyGalileoINAV(f)
 	case f.GnssID == gnss.BeiDou && f.SigID == 0: // B1I D1 NAV
 		s.applyBeiDouD1(f)
+	case f.GnssID == gnss.GLONASS && f.SigID == 0: // L1OF strings
+		s.applyGLONASS(f)
 	default:
 		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "unsupported").Inc()
 	}
@@ -261,6 +270,48 @@ func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 	st.health = st.bd1.Health
 }
 
+func (s *Store) applyGLONASS(f *ingest.RawFrame) {
+	str, err := frame.DecodeGLONASSString(f.Words)
+	if err != nil {
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "glo").Inc()
+		return
+	}
+	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "glo").Inc()
+
+	key := Key{G: f.GnssID, Sv: f.SvID, Sig: 0}
+	sh := s.shardFor(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+
+	st := sh.m[key]
+	if st == nil {
+		st = &svState{key: key}
+		sh.m[key] = st
+	}
+	st.lastSeen = f.Recv
+	st.gloFreqID = f.FreqID
+
+	switch str.Number {
+	case 1:
+		st.gloS1 = str
+	case 2:
+		st.gloS2 = str
+		st.health = str.Health
+	case 3:
+		st.gloS3 = str
+	default:
+		return // strings 4/5 (time) and 6–15 (almanac) not assembled here
+	}
+	if st.gloS1 == nil || st.gloS2 == nil || st.gloS3 == nil {
+		return
+	}
+	eph, err := frame.AssembleGLONASS(f.SvID, st.gloFreqID, st.gloS1, st.gloS2, st.gloS3)
+	if err != nil {
+		return
+	}
+	st.gloEph, st.haveGloEph = eph, true
+}
+
 // computeDisco propagates the outgoing and incoming ephemerides to the new
 // reference epoch and records orbit-disco (metres) and time-disco (ns). Guards
 // require both propagations to succeed; this is not the first ephemeris
@@ -295,6 +346,17 @@ func (s *Store) Propagate(now time.Time) {
 	for _, sh := range s.shards {
 		sh.mu.Lock()
 		for _, st := range sh.m {
+			if st.key.G == gnss.GLONASS {
+				if !st.haveGloEph {
+					continue
+				}
+				tk := gnsstime.EphAgeDay(gloTOD(now), st.gloEph.Tb)
+				if pos, err := glonass.Propagate(st.gloEph, tk); err == nil {
+					st.pos, st.havePos = pos, true
+				}
+				counts["glonass"]++
+				continue
+			}
 			if !st.haveEph {
 				continue
 			}
@@ -343,4 +405,15 @@ func towFor(g gnss.GNSSID, now time.Time) float64 {
 		}
 	}
 	return tow
+}
+
+// gloTOD returns the GLONASS time-of-day (seconds) for a wall-clock instant.
+// GLONASS time is UTC(SU)+3h, and the broadcast tb is on that scale, so the RK4
+// propagation target is (UTC + 3 h) modulo the day.
+func gloTOD(now time.Time) float64 {
+	tod := (now.Unix() + 3*3600) % 86400
+	if tod < 0 {
+		tod += 86400
+	}
+	return float64(tod)
 }
