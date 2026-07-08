@@ -10,19 +10,27 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/ptudor/navlistener/internal/config"
+	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/metrics"
 	"github.com/ptudor/navlistener/internal/server"
+	"github.com/ptudor/navlistener/internal/state"
 	"github.com/ptudor/navlistener/internal/version"
 )
+
+// frameQueue bounds the ingest→decode channel; a full queue backpressures ingest.
+const frameQueue = 8192
 
 func main() {
 	os.Exit(run())
@@ -44,7 +52,6 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)
 		return 1
 	}
-
 	if *checkConfig {
 		printConfigSummary(cfg)
 		return 0
@@ -53,15 +60,31 @@ func run() int {
 	log := setupLogger(cfg.Logging)
 	slog.SetDefault(log)
 	log.Info("starting", "version", version.Version, "build", version.BuildTime)
-
 	metrics.Init()
 
-	// The pipeline (ingest → decode → state) will register a live-state snapshot
-	// handler here; until that stage lands there is no snapshot to expose.
-	var debugState http.HandlerFunc
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	// Observability server (Prometheus /metrics + /healthz + /debug/state),
-	// loopback only, separate from any future app-facing read path.
+	// Pipeline: ingest → decode → live state.
+	store := state.New(cfg.State.Shards)
+	frames := make(chan *ingest.RawFrame, frameQueue)
+	mgr := ingest.New(cfg.Ingest, frames, log)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); mgr.Run(ctx) }()
+
+	wg.Add(1)
+	go func() { defer wg.Done(); decodeLoop(ctx, frames, store, log) }()
+
+	wg.Add(1)
+	go func() { defer wg.Done(); stateLoop(ctx, cfg.State, store) }()
+
+	// Observability server exposes /metrics + /healthz + the live-state snapshot.
+	debugState := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(store.Snapshot(time.Now()))
+	}
 	obs := server.New(cfg.Metrics.Addr, log, debugState)
 	go func() {
 		if err := obs.Start(); err != nil {
@@ -69,24 +92,81 @@ func run() int {
 		}
 	}()
 
-	log.Info("ready", "ingest_sources", len(cfg.Ingest), "metrics_addr", cfg.Metrics.Addr)
+	log.Info("ready", "ingest_sources", len(cfg.Ingest), "metrics_addr", cfg.Metrics.Addr, "shards", cfg.State.Shards)
 	if len(cfg.Ingest) == 0 {
 		log.Warn("no ingest sources configured")
 	}
 
-	// Wait for a shutdown signal.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh
 	log.Info("shutdown signal", "signal", sig.String())
 
+	// Ordered shutdown: stop ingest + decode + tick, then the obs server, bounded
+	// by ShutdownTimeout.
+	cancel()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer shutCancel()
+	select {
+	case <-done:
+		log.Info("pipeline drained")
+	case <-shutCtx.Done():
+		log.Warn("shutdown timeout exceeded; exiting")
+	}
 	if err := obs.Shutdown(shutCtx); err != nil {
 		log.Warn("metrics server shutdown", "error", err)
 	}
 	log.Info("graceful shutdown complete")
 	return 0
+}
+
+// decodeLoop folds every ingested frame into live state, recovering per-frame so a
+// decoder edge case drops one frame rather than crashing the process. On shutdown
+// it drains the buffered frames before returning.
+func decodeLoop(ctx context.Context, frames <-chan *ingest.RawFrame, store *state.Store, log *slog.Logger) {
+	apply := func(f *ingest.RawFrame) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("decode panic recovered; frame dropped", "recover", fmt.Sprint(r))
+			}
+		}()
+		store.Apply(f)
+	}
+	for {
+		select {
+		case f := <-frames:
+			apply(f)
+		case <-ctx.Done():
+			for {
+				select {
+				case f := <-frames:
+					apply(f)
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+// stateLoop re-propagates live SVs on the configured cadence and expires stale ones.
+func stateLoop(ctx context.Context, cfg config.State, store *state.Store) {
+	prop := time.NewTicker(cfg.PropagateEvery)
+	defer prop.Stop()
+	expire := time.NewTicker(30 * time.Second)
+	defer expire.Stop()
+	for {
+		select {
+		case <-prop.C:
+			store.Propagate(time.Now())
+		case <-expire.C:
+			store.Expire(time.Now(), cfg.SVTTL)
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func printConfigSummary(cfg *config.Config) {
