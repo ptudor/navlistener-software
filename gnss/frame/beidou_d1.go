@@ -94,6 +94,21 @@ func DecodeBeiDouD1(words []uint32) (*BeiDouSubframe, error) {
 		sf.eph.SqrtA = float64(u(190, 32)) * p2m19
 		sf.toeMSB = int(u(222, 2))
 	case 3:
+		// ┌─ COMPLIANCE GAP: BDS-SIS-ICD-B1I §5.2.4.4 (D1 subframe 3) ───────────┐
+		// │ These SF3 offsets were reverse-engineered from captures (no B1I ICD │
+		// │ on hand) and are PARTLY WRONG. Cross-checking against the           │
+		// │ ICD-authoritative B-CNAV2 decoder (which decodes the same orbit)    │
+		// │ confirms i0@53, OmegaDot@103 are correct, but Omega0 is @159 (not   │
+		// │ @145), and omega/Cic/Cis do NOT match — so the orbital-plane        │
+		// │ orientation (Ω0, ω) is wrong: BeiDou SVs get the right radius and   │
+		// │ inclination (TestRealBeiDouD1 passes) but are placed in the WRONG   │
+		// │ DIRECTION. A future review MUST verify the full SF3 field map       │
+		// │ against BDS-SIS-ICD-B1I §5.2.4.4 and fix, validating that the D1    │
+		// │ position matches the B-CNAV2 position for the same SV (they must    │
+		// │ agree to metres). Do NOT partial-fix Omega0 alone — the whole SF3   │
+		// │ tail (Cic/OmegaDot/Cis/Omega0/omega/IDOT, incl. any split fields)   │
+		// │ needs to come from the ICD together.                                │
+		// └─────────────────────────────────────────────────────────────────────┘
 		sf.toeLSB = int(u(38, 15))
 		sf.eph.I0 = float64(s(53, 32)) * p2m31 * semi
 		sf.eph.Cic = float64(s(85, 18)) * p2m31
