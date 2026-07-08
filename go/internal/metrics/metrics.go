@@ -85,6 +85,18 @@ var (
 		Help: "SVs expired from live state after their TTL elapsed.",
 	})
 
+	// EventsTotal counts confirmed integrity events emitted, by type and severity.
+	EventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_events_total",
+		Help: "Confirmed integrity events emitted, by type and severity.",
+	}, []string{"type", "severity"})
+
+	// EventWriteErrorsTotal counts integrity events that failed to persist.
+	EventWriteErrorsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "navlistener_event_write_errors_total",
+		Help: "Integrity events that failed to persist to the historian.",
+	})
+
 	// StoreRowsTotal counts raw nav frames persisted to the historian.
 	StoreRowsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "navlistener_store_rows_total",

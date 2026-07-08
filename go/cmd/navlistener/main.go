@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/ptudor/navlistener/internal/config"
+	"github.com/ptudor/navlistener/internal/detect"
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/metrics"
 	"github.com/ptudor/navlistener/internal/serve"
@@ -128,6 +129,13 @@ func run() int {
 		}()
 	}
 
+	// Integrity DETECT: the debounced detector runs on a cadence over the same live
+	// read model the feeds serve, persists confirmed events (firing pg_notify) and
+	// pushes them to the SSE broker (docs/INTEGRITY.md, docs/OUTPUT.md §3).
+	detector := detect.New(0)
+	wg.Add(1)
+	go func() { defer wg.Done(); detectLoop(ctx, live, detector, historian, apiSrv, log) }()
+
 	log.Info("ready", "ingest_sources", len(cfg.Ingest), "metrics_addr", cfg.Metrics.Addr, "serve_addr", cfg.Serve.Addr, "shards", cfg.State.Shards)
 	if len(cfg.Ingest) == 0 {
 		log.Warn("no ingest sources configured")
@@ -211,6 +219,75 @@ func decodeLoop(ctx context.Context, frames <-chan *ingest.RawFrame, live *state
 				}
 			}
 		}
+	}
+}
+
+// detectInterval is the cadence at which the integrity detector samples live state.
+// It is well under the 60 s debounce window, so a confirmed transition is caught
+// promptly without the detector itself defining the confirmation delay.
+const detectInterval = 15 * time.Second
+
+// detectLoop samples the live read model on a cadence, folds it through the
+// debounced detector, and routes each confirmed event to the historian (which
+// assigns the id and fires pg_notify) and the SSE broker. With no historian a local
+// counter supplies the id so the SSE stream still has stable, ordered ids.
+func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, historian *store.Store, api *serve.Server, log *slog.Logger) {
+	tick := time.NewTicker(detectInterval)
+	defer tick.Stop()
+	var localID int64
+	for {
+		select {
+		case <-tick.C:
+			now := time.Now()
+			events := det.Tick(now, live.FeedSVs(now), live.FeedSBAS(now))
+			for _, e := range events {
+				emitEvent(ctx, e, historian, api, &localID, log)
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// emitEvent persists one integrity event (if the historian is enabled) and pushes it
+// to the SSE broker, tagging metrics. The historian-assigned id is authoritative;
+// without it a monotonic local counter keeps SSE ids stable and ordered.
+func emitEvent(ctx context.Context, e detect.Event, historian *store.Store, api *serve.Server, localID *int64, log *slog.Logger) {
+	metrics.EventsTotal.WithLabelValues(e.Type, fmt.Sprint(e.Severity)).Inc()
+
+	var rawJSON []byte
+	if len(e.Params) > 0 {
+		if b, err := json.Marshal(e.Params); err == nil {
+			rawJSON = b
+		}
+	}
+
+	var id int64
+	if historian != nil {
+		gotID, err := historian.WriteEvent(ctx, store.EventRow{
+			Time: e.Time, SV: e.SV, Type: e.Type, OldValue: e.OldValue,
+			NewValue: e.NewValue, Severity: e.Severity, Message: e.Message, Raw: rawJSON,
+		})
+		if err != nil {
+			metrics.EventWriteErrorsTotal.Inc()
+			log.Error("persist integrity event", "type", e.Type, "sv", e.SV, "error", err)
+		} else {
+			id = gotID
+		}
+	}
+	if id == 0 {
+		*localID++
+		id = *localID
+	}
+	log.Info("integrity event", "id", id, "sv", e.SV, "type", e.Type,
+		"severity", e.Severity, "old", e.OldValue, "new", e.NewValue)
+
+	if api != nil {
+		api.PublishEvent(serve.EventMsg{
+			ID: id, Time: e.Time.UTC().Format(time.RFC3339), SV: e.SV, Type: e.Type,
+			OldValue: e.OldValue, NewValue: e.NewValue, Severity: e.Severity,
+			Message: e.Message, Params: e.Params,
+		})
 	}
 }
 

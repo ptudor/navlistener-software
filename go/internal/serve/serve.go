@@ -38,6 +38,8 @@ type Server struct {
 	fast time.Duration
 	slow time.Duration
 
+	broker *Broker
+
 	mu    sync.RWMutex
 	cache map[string][]byte
 }
@@ -60,6 +62,7 @@ func New(addr string, store *state.Store, sources []config.Source, fast, slow ti
 		now:     time.Now,
 		fast:    fast,
 		slow:    slow,
+		broker:  newBroker(),
 		cache:   map[string][]byte{},
 	}
 	mux := http.NewServeMux()
@@ -68,6 +71,7 @@ func New(addr string, store *state.Store, sources []config.Source, fast, slow ti
 	mux.HandleFunc("/gnss/api/v2/observers", s.serveFeed("observers"))
 	mux.HandleFunc("/gnss/api/v2/almanac", s.serveFeed("almanac"))
 	mux.HandleFunc("/gnss/api/v2/sbas", s.serveFeed("sbas"))
+	mux.HandleFunc("/gnss/events", s.broker.serveEvents)
 	s.http = &http.Server{
 		Addr:              addr,
 		Handler:           mux,
@@ -112,6 +116,12 @@ func (s *Server) Run(ctx context.Context) {
 // Shutdown gracefully stops the HTTP server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	return s.http.Shutdown(ctx)
+}
+
+// PublishEvent fans a confirmed integrity event out to the SSE clients and records
+// it in the reconnect-replay ring (docs/OUTPUT.md §3).
+func (s *Server) PublishEvent(e EventMsg) {
+	s.broker.Publish(e)
 }
 
 func (s *Server) refreshAll() {

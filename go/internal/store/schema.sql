@@ -36,3 +36,51 @@ ALTER TABLE nav_frames SET (
     timescaledb.compress_segmentby = 'gnssid',
     timescaledb.compress_orderby   = 'svid, ts DESC'
 );
+
+-- gnss_events: confirmed integrity transitions (docs/OUTPUT.md §4). navlistener
+-- writes; a serve-side process (this daemon's SSE broker, or intsat) consumes.
+-- The AFTER INSERT trigger fires pg_notify('gnss_event', …) so external LISTENers
+-- see events without polling. This schema is a superset of intsat's 001_init.sql,
+-- so its read path keeps working while it is still the serve front.
+CREATE TABLE IF NOT EXISTS gnss_events (
+    id         BIGSERIAL,
+    time       TIMESTAMPTZ NOT NULL,
+    sv         TEXT        NOT NULL,
+    event_type TEXT        NOT NULL,
+    old_value  TEXT,
+    new_value  TEXT,
+    severity   SMALLINT    NOT NULL DEFAULT 0,
+    message    TEXT,
+    raw        JSONB
+);
+SELECT create_hypertable('gnss_events', 'time', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_gnss_events_sv_time       ON gnss_events (sv, time DESC);
+CREATE INDEX IF NOT EXISTS idx_gnss_events_type_time     ON gnss_events (event_type, time DESC);
+CREATE INDEX IF NOT EXISTS idx_gnss_events_severity_time ON gnss_events (severity, time DESC);
+
+CREATE OR REPLACE FUNCTION notify_gnss_event() RETURNS trigger AS $$
+BEGIN
+    PERFORM pg_notify('gnss_event', json_build_object(
+        'id', NEW.id, 'sv', NEW.sv, 'type', NEW.event_type,
+        'severity', NEW.severity, 'message', NEW.message)::text);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS gnss_event_notify ON gnss_events;
+CREATE TRIGGER gnss_event_notify AFTER INSERT ON gnss_events
+    FOR EACH ROW EXECUTE FUNCTION notify_gnss_event();
+
+-- gnss_snapshots: periodic feed dumps for replay/backfill (docs/OUTPUT.md §4).
+CREATE TABLE IF NOT EXISTS gnss_snapshots (
+    time     TIMESTAMPTZ NOT NULL,
+    endpoint TEXT        NOT NULL,  -- 'svs' | 'global' | 'observers' | 'almanac' | 'sbas'
+    data     JSONB       NOT NULL
+);
+SELECT create_hypertable('gnss_snapshots', 'time', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_gnss_snapshots_endpoint ON gnss_snapshots (endpoint, time DESC);
+ALTER TABLE gnss_snapshots SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'endpoint',
+    timescaledb.compress_orderby   = 'time DESC'
+);

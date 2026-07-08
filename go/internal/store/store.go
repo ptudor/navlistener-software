@@ -191,6 +191,16 @@ func applyPolicies(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, cf
 	if err := exec(fmt.Sprintf(`SELECT add_retention_policy('nav_frames', INTERVAL '%s', if_not_exists => true)`, rawRet)); err != nil {
 		return fmt.Errorf("retention policy: %w", err)
 	}
+
+	// Feed snapshots are the light replay/backfill record: compress after 7 days,
+	// drop after 90 days (docs/OUTPUT.md §4). Events (gnss_events) carry no retention
+	// policy — confirmed integrity transitions are the durable record.
+	if err := exec(`SELECT add_compression_policy('gnss_snapshots', INTERVAL '7 days', if_not_exists => true)`); err != nil {
+		return fmt.Errorf("snapshot compression policy: %w", err)
+	}
+	if err := exec(`SELECT add_retention_policy('gnss_snapshots', INTERVAL '90 days', if_not_exists => true)`); err != nil {
+		return fmt.Errorf("snapshot retention policy: %w", err)
+	}
 	log.Info("historian policies applied", "compress_after", compAfter, "raw_retention", rawRet)
 	return nil
 }
