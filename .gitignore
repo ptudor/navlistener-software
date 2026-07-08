@@ -24,3 +24,6 @@ navlistener.toml
 
 # Claude local machine settings
 .claude/settings.local.json
+
+# Reference ICD documents (copyrighted; kept locally, never committed)
+*.pdf

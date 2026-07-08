@@ -92,6 +92,70 @@ func TestRealF9TCapture(t *testing.T) {
 	t.Logf("real F9T capture: %d SFRBX, %d GPS SVs with full ephemerides", len(frames), assembled)
 }
 
+// TestRealBeiDouBCNAV2 validates the B2a B-CNAV2 decoder against the F9T capture:
+// message types 10/11 assemble per SV and must propagate to the BeiDou MEO shell
+// (~27906 km) with the ~55° MEO inclination. Offsets are the BDS-SIS-ICD-B2a
+// Table 7-8 layout (this closes the earlier compliance gap).
+func TestRealBeiDouBCNAV2(t *testing.T) {
+	data, err := os.ReadFile("testdata/f9t_capture.ubx")
+	if err != nil {
+		t.Skipf("no capture fixture: %v", err)
+	}
+	var frames []*RawFrame
+	_ = scanUBX(bytes.NewReader(data), "cap", fixedTime,
+		func(f *RawFrame) { frames = append(frames, f) }, func(string) {})
+
+	type set struct{ m10, m11 *frame.BeiDouBCNAV2 }
+	bySV := map[int]*set{}
+	for _, f := range frames {
+		if f.GnssID != gnss.BeiDou || f.SigID != 8 { // B2a B-CNAV2
+			continue
+		}
+		m, err := frame.DecodeBeiDouBCNAV2(f.Words)
+		if err != nil {
+			continue
+		}
+		s := bySV[f.SvID]
+		if s == nil {
+			s = &set{}
+			bySV[f.SvID] = s
+		}
+		switch m.MesType {
+		case 10:
+			s.m10 = m
+		case 11:
+			s.m11 = m
+		}
+	}
+
+	assembled := 0
+	for sv, s := range bySV {
+		if s.m10 == nil || s.m11 == nil {
+			continue
+		}
+		eph, _, err := frame.AssembleBeiDouBCNAV2(sv, s.m10, s.m11)
+		if err != nil {
+			continue
+		}
+		pos, err := kepler.Propagate(eph, eph.Toe)
+		if err != nil {
+			t.Errorf("C%02d propagate: %v", sv, err)
+			continue
+		}
+		if r := pos.Norm(); r < 27.4e6 || r > 28.4e6 {
+			t.Errorf("C%02d B-CNAV2 radius = %.0f m, want the BeiDou MEO shell ~27906 km", sv, r)
+		}
+		if incDeg := eph.I0 * 180 / 3.14159265; incDeg < 50 || incDeg > 60 {
+			t.Errorf("C%02d B-CNAV2 inclination = %.1f°, want ~55°", sv, incDeg)
+		}
+		assembled++
+	}
+	if assembled < 4 {
+		t.Errorf("assembled only %d B-CNAV2 ephemerides, want >= 4", assembled)
+	}
+	t.Logf("real F9T capture: %d BeiDou SVs with full B-CNAV2 ephemerides", assembled)
+}
+
 // TestRealGalileoINAV validates the Galileo I/NAV decoder against the same real
 // F9T capture: word types 1–4 (E1-B, sigId 1) are collected per SV, assembled, and
 // each ephemeris must propagate to the Galileo shell (~29600 km).
