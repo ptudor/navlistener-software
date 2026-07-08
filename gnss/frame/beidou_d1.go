@@ -11,13 +11,16 @@ import (
 // delivers each 300-bit subframe as one UBX-RXM-SFRBX of ten 30-bit words. The
 // receiver has removed the BCH(15,11) parity, leaving the information bits at the
 // top of each word: 26 bits in word 1, 22 bits in words 2–10. We concatenate those
-// into a 224-bit information stream and read fields at their ICD offsets. All
-// offsets and scale factors here were validated against real ZED-F9T frames
-// (a ≈ 27906 km, i₀ ≈ 55°, SVs above the receiver's horizon).
+// into a 224-bit information stream and read fields at their ICD offsets. Offsets
+// and scale factors follow BDS-SIS-ICD-B1I v3.0 Figures 5-8…5-10 and Tables
+// 5-5…5-10, and the decode cross-validates against the B-CNAV2 (B2a) decode of
+// the same SVs on real captured frames (frame test).
 
 // BeiDou scale factors beyond the shared set (note Crc/Crs use 2^-6, not GPS 2^-5).
 const (
 	p2m6  = 1.0 / (1 << 6)
+	p2m24 = 1.0 / (1 << 24)
+	p2m27 = 1.0 / (1 << 27)
 	p2m50 = 1.0 / float64(uint64(1)<<50)
 	p2m66 = p2m33 * p2m33 // 2^-66 (2^66 overflows uint64)
 	bdsT0 = 8.0           // toe / toc step, seconds (2^3)
@@ -28,11 +31,15 @@ const (
 type BeiDouSubframe struct {
 	FraID         int
 	SOW           int
-	Health        int
+	Health        int // SatH1
+	AODC          int // age of clock data (ICD Table 5-6)
 	URAI          int
+	WN            int // BDT week number
 	Toc           float64
 	Af0, Af1, Af2 float64
-	TGD1          float64
+	TGD1, TGD2    float64    // B1I / B2I equipment group delays, seconds
+	Alpha, Beta   [4]float64 // Klobuchar coefficients (ICD Table 5-5)
+	AODE          int        // age of ephemeris data (ICD Table 5-8)
 	toeMSB        int
 	toeLSB        int
 	eph           kepler.Ephemeris
@@ -76,13 +83,28 @@ func DecodeBeiDouD1(words []uint32) (*BeiDouSubframe, error) {
 	semi := physconst.Pi
 	switch fra {
 	case 1:
+		// Figure 5-8. Note the clock order quirk: B1I broadcasts a2 BEFORE
+		// a0 and a1 (a2@162, a0@173, a1@197), and the Klobuchar α/β set
+		// rides in subframe 1 (@98–161), unlike GPS (subframe 4).
 		sf.Health = int(u(38, 1))
+		sf.AODC = int(u(39, 5))
 		sf.URAI = int(u(44, 4))
+		sf.WN = int(u(48, 13))
 		sf.Toc = float64(u(61, 17)) * bdsT0
 		sf.TGD1 = float64(s(78, 10)) * 1e-10 // 0.1 ns
-		sf.Af0 = float64(s(167, 24)) * p2m33
-		sf.Af1 = float64(s(191, 22)) * p2m50
-		sf.Af2 = float64(s(213, 11)) * p2m66
+		sf.TGD2 = float64(s(88, 10)) * 1e-10
+		sf.Alpha[0] = float64(s(98, 8)) * p2m30
+		sf.Alpha[1] = float64(s(106, 8)) * p2m27
+		sf.Alpha[2] = float64(s(114, 8)) * p2m24
+		sf.Alpha[3] = float64(s(122, 8)) * p2m24
+		sf.Beta[0] = float64(s(130, 8)) * (1 << 11)
+		sf.Beta[1] = float64(s(138, 8)) * (1 << 14)
+		sf.Beta[2] = float64(s(146, 8)) * (1 << 16)
+		sf.Beta[3] = float64(s(154, 8)) * (1 << 16)
+		sf.Af2 = float64(s(162, 11)) * p2m66
+		sf.Af0 = float64(s(173, 24)) * p2m33
+		sf.Af1 = float64(s(197, 22)) * p2m50
+		sf.AODE = int(u(219, 5))
 	case 2:
 		sf.eph.DeltaN = float64(s(38, 16)) * p2m43 * semi
 		sf.eph.Cuc = float64(s(54, 18)) * p2m31
@@ -94,29 +116,19 @@ func DecodeBeiDouD1(words []uint32) (*BeiDouSubframe, error) {
 		sf.eph.SqrtA = float64(u(190, 32)) * p2m19
 		sf.toeMSB = int(u(222, 2))
 	case 3:
-		// ┌─ COMPLIANCE GAP: BDS-SIS-ICD-B1I §5.2.4.4 (D1 subframe 3) ───────────┐
-		// │ These SF3 offsets were reverse-engineered from captures (no B1I ICD │
-		// │ on hand) and are PARTLY WRONG. Cross-checking against the           │
-		// │ ICD-authoritative B-CNAV2 decoder (which decodes the same orbit)    │
-		// │ confirms i0@53, OmegaDot@103 are correct, but Omega0 is @159 (not   │
-		// │ @145), and omega/Cic/Cis do NOT match — so the orbital-plane        │
-		// │ orientation (Ω0, ω) is wrong: BeiDou SVs get the right radius and   │
-		// │ inclination (TestRealBeiDouD1 passes) but are placed in the WRONG   │
-		// │ DIRECTION. A future review MUST verify the full SF3 field map       │
-		// │ against BDS-SIS-ICD-B1I §5.2.4.4 and fix, validating that the D1    │
-		// │ position matches the B-CNAV2 position for the same SV (they must    │
-		// │ agree to metres). Do NOT partial-fix Omega0 alone — the whole SF3   │
-		// │ tail (Cic/OmegaDot/Cis/Omega0/omega/IDOT, incl. any split fields)   │
-		// │ needs to come from the ICD together.                                │
-		// └─────────────────────────────────────────────────────────────────────┘
+		// Figure 5-10 field order: toe(15 LSB), i0, Cic, Ω̇, Cis, IDOT, Ω0, ω —
+		// note IDOT sits BETWEEN Cis and Ω0 (the word-split fields are
+		// contiguous in the parity-stripped information stream). Verified
+		// against BDS-SIS-ICD-B1I v3.0 and cross-validated against the
+		// ICD-authoritative B-CNAV2 decode of the same SVs (frame test).
 		sf.toeLSB = int(u(38, 15))
 		sf.eph.I0 = float64(s(53, 32)) * p2m31 * semi
 		sf.eph.Cic = float64(s(85, 18)) * p2m31
 		sf.eph.OmegaDot = float64(s(103, 24)) * p2m43 * semi
 		sf.eph.Cis = float64(s(127, 18)) * p2m31
-		sf.eph.Omega0 = float64(s(145, 32)) * p2m31 * semi
-		sf.eph.Omega = float64(s(177, 32)) * p2m31 * semi
-		sf.eph.IDot = float64(s(209, 14)) * p2m43 * semi
+		sf.eph.IDot = float64(s(145, 14)) * p2m43 * semi
+		sf.eph.Omega0 = float64(s(159, 32)) * p2m31 * semi
+		sf.eph.Omega = float64(s(191, 32)) * p2m31 * semi
 	}
 	return sf, nil
 }

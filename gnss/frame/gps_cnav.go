@@ -22,11 +22,13 @@ import (
 const (
 	p2m8  = 1.0 / (1 << 8)
 	p2m9  = 1.0 / (1 << 9)
+	p2m21 = 1.0 / (1 << 21)
 	p2m30 = 1.0 / (1 << 30)
 	p2m32 = 1.0 / float64(uint64(1)<<32)
 	p2m35 = 1.0 / float64(uint64(1)<<35)
 	p2m44 = 1.0 / float64(uint64(1)<<44)
 	p2m48 = 1.0 / float64(uint64(1)<<48)
+	p2m57 = 1.0 / float64(uint64(1)<<57)
 	p2m60 = 1.0 / float64(uint64(1)<<60)
 
 	cnavAref = 26559710.0 // GPS/QZSS reference semi-major axis, metres
@@ -69,7 +71,9 @@ func DecodeGPSCNAV(id gnss.GNSSID, words []uint32) (*GPSCNAV, error) {
 	case m.MsgType == 10: // Ephemeris 1
 		m.eph.Toe = float64(u(70, 11)) * cnavT0
 		m.eph.SqrtA = math.Sqrt(cnavAref + float64(s(81, 26))*p2m9)
+		m.eph.ADot = float64(s(107, 25)) * p2m21 // Ȧ, m/s (Table 30-I)
 		m.eph.DeltaN = float64(s(132, 17)) * p2m44 * semi
+		m.eph.DeltaNDot = float64(s(149, 23)) * p2m57 * semi // Δṅ₀, rad/s²
 		m.eph.M0 = float64(s(172, 33)) * p2m32 * semi
 		m.eph.Ecc = float64(u(205, 33)) * p2m34
 		m.eph.Omega = float64(s(238, 33)) * p2m32 * semi

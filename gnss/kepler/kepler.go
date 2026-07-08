@@ -22,19 +22,21 @@ type Ephemeris struct {
 	ID   gnss.GNSSID // constellation (selects the physical constants)
 	SVID int         // PRN within constellation (BeiDou GEO detection)
 
-	SqrtA    float64 // √A, √metres
-	Ecc      float64 // eccentricity e
-	M0       float64 // mean anomaly at reference, rad
-	DeltaN   float64 // mean-motion correction Δn, rad/s
-	I0       float64 // inclination at reference i₀, rad
-	IDot     float64 // inclination rate IDOT, rad/s
-	Omega0   float64 // longitude of ascending node Ω₀, rad
-	OmegaDot float64 // rate of right ascension Ω̇, rad/s
-	Omega    float64 // argument of perigee ω, rad
-	Cuc, Cus float64 // argument-of-latitude corrections, rad
-	Crc, Crs float64 // radius corrections, metres
-	Cic, Cis float64 // inclination corrections, rad
-	Toe      float64 // reference time of ephemeris, seconds of week
+	SqrtA     float64 // √A at reference time, √metres
+	ADot      float64 // semi-major-axis rate Ȧ, m/s (CNAV/B-CNAV family; 0 for LNAV/D1/INAV)
+	Ecc       float64 // eccentricity e
+	M0        float64 // mean anomaly at reference, rad
+	DeltaN    float64 // mean-motion correction Δn₀, rad/s
+	DeltaNDot float64 // mean-motion correction rate Δṅ₀, rad/s² (CNAV/B-CNAV family; else 0)
+	I0        float64 // inclination at reference i₀, rad
+	IDot      float64 // inclination rate IDOT, rad/s
+	Omega0    float64 // longitude of ascending node Ω₀, rad
+	OmegaDot  float64 // rate of right ascension Ω̇, rad/s
+	Omega     float64 // argument of perigee ω, rad
+	Cuc, Cus  float64 // argument-of-latitude corrections, rad
+	Crc, Crs  float64 // radius corrections, metres
+	Cic, Cis  float64 // inclination corrections, rad
+	Toe       float64 // reference time of ephemeris, seconds of week
 }
 
 // Solution is the result of a propagation: the ECEF position plus the eccentric
@@ -70,10 +72,16 @@ func Solve(e Ephemeris, tow float64) (Solution, error) {
 		return Solution{}, errBadEcc
 	}
 
-	n0 := math.Sqrt(p.Mu / (a * a * a)) // computed mean motion
+	n0 := math.Sqrt(p.Mu / (a * a * a)) // computed mean motion from A at reference
 	tk := gnsstime.EphAge(tow, e.Toe)   // §1.1 half-week corrected
-	n := n0 + e.DeltaN                  // corrected mean motion
-	m := e.M0 + n*tk                    // mean anomaly
+	// CNAV-family time-varying terms (IS-GPS-705 / BDS-SIS-ICD-B2a Table 7-9):
+	// A(tk) = A₀ + Ȧ·tk and n = n₀ + Δn₀ + ½Δṅ₀·tk. Zero for LNAV/D1/INAV.
+	ak := a + e.ADot*tk
+	if ak <= 0 || math.IsNaN(ak) {
+		return Solution{}, errBadSemiAxis
+	}
+	n := n0 + e.DeltaN + 0.5*e.DeltaNDot*tk // corrected mean motion
+	m := e.M0 + n*tk                        // mean anomaly
 
 	// Kepler's equation M = E − e·sin E, Newton–Raphson (docs/MATH.md §2).
 	ecc := e.Ecc
@@ -97,7 +105,7 @@ func Solve(e Ephemeris, tow float64) (Solution, error) {
 	di := e.Cis*sin2phi + e.Cic*cos2phi
 
 	u := phi + du
-	r := a*(1-ecc*cosE) + dr
+	r := ak*(1-ecc*cosE) + dr
 	inc := e.I0 + di + e.IDot*tk
 
 	sinU, cosU := math.Sincos(u)
