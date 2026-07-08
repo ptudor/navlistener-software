@@ -1,0 +1,41 @@
+[Unit]
+# navlistener edge feeder — one instance per receiver (%i = instance label, e.g. observer16).
+# Config: /etc/navfeeder/%i.env    (SERVER/SOURCE/BAUD/STATION/EXTRA)
+#         /etc/navfeeder/%i.token  (the bearer token, 0640 root:navfeeder)
+#         /etc/navfeeder/ingest-ca.pem  (the collector cert / CA to pin)
+Description=navlistener edge feeder (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=navfeeder
+Group=navfeeder
+# A serial receiver (/dev/ttyACM0) needs the tty group; harmless for a TCP source.
+SupplementaryGroups=dialout
+EnvironmentFile=/etc/navfeeder/%i.env
+ExecStart=/usr/local/bin/navfeeder \
+    --server ${SERVER} \
+    --source ${SOURCE} \
+    --baud ${BAUD} \
+    --feed ubx \
+    --station ${STATION} \
+    --token-file /etc/navfeeder/%i.token \
+    --ca /etc/navfeeder/ingest-ca.pem \
+    --spool-file /var/spool/navfeeder/%i.spool \
+    $EXTRA
+Restart=always
+RestartSec=5
+
+# Hardening: the feeder needs only its spool dir writable, the receiver device, the network.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+ReadWritePaths=/var/spool/navfeeder
+
+[Install]
+WantedBy=multi-user.target
