@@ -1,0 +1,26 @@
+# Go build artifacts
+/go/navlistener
+/go/build/
+/go/dist/
+*.test
+*.out
+coverage.*
+
+# C feeder build artifact
+/feeder/navfeeder
+
+# GPL-quarantined bridge build artifact (out-of-process; never linked into the core)
+/galmon-bridge/galmon-bridge
+
+# Local config / secrets — config is TOML, never committed with real values
+navlistener.toml
+!navlistener.toml.example
+*.local.toml
+
+# TLS material / observer credentials — never commit
+*.pem
+*.key
+*.crt
+
+# Claude local machine settings
+.claude/settings.local.json
