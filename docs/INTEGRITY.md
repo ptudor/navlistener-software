@@ -33,20 +33,21 @@ Two responsibilities are kept separate within `navlistener`:
   debounce window before it becomes a confirmed `Event`. This kills the flapping that a single
   noisy frame would otherwise generate.
 
-**Phase note & authority:** in the drop-in phase, intsat's own `detect` package (ported from
-`galmonmon.cc`) already consumes our `svs.json`. In the absorb phase, `navlistener` runs this
-detector itself, writes `gnss_events`, and fires `pg_notify` — so during the transition the
-thresholds must stay numerically identical to intsat's `internal/detect/thresholds.go` (they
-were verified identical on 2026-07-07). Going forward **this document is the standard**: intsat
-is a consumer, changes land here first, and intsat conforms in lockstep.
+**Authority:** **`navlistener` runs this detector itself** — computes the metrics, detects the
+transitions, writes `gnss_events`, fires `pg_notify`. This document is the standard for all of
+it. intsat today carries its own legacy detector (a galmonmon port); that code is retired when
+intsat repoints to us — it is a consumer, not a designer. Its constants were cross-checked once
+against this table (2026-07-07); from here on, changes are designed here and consumers align.
 
 ---
 
-## 2. The confirmed thresholds (from `galmonmon.cc`, as carried in intsat)
+## 2. The thresholds (the standard)
 
-These are the exact constants intsat uses today (**verified 2026-07-07 against
-`go/internal/detect/thresholds.go` + `detector.go`**); `navlistener` adopts them verbatim so
-the cutover is a no-op for consumers. Change them only in lockstep with intsat.
+These thresholds are **defined here.** The numeric values are retained from galmonmon/intsat
+operational experience because they are proven operating points — cross-checked 2026-07-07
+against intsat's as-built `go/internal/detect/{thresholds,detector}.go` — not because
+compatibility demands them. Changes are designed in this table first; intsat and every other
+consumer align to it.
 
 | Metric | Threshold (constant) | Severity | Notes |
 |---|---|---|---|
@@ -60,16 +61,15 @@ the cutover is a no-op for consumers. Change them only in lockstep with intsat.
 | **Fresh-receiver window** | `≤ 60 s` (`FreshReceiverThreshold`) | — | a receiver's vote only counts if it saw the SV this recently |
 | **Debounce** | `60 s` (`DebounceDuration`) | — | provisional state must persist this long to confirm |
 
-> **Dead-band caveat.** `thresholds.go` also defines `OrbitDiscoWarningThreshold = 5.0` and
-> `TimeDiscoWarningThreshold = 5.0` ("emphasis" middle bands, a galmonmon inheritance), but
-> the shipped Go detector **never references them** — only 1.45/10 m and 2.5/10 ns actually
-> branch. The real contract is two bands, not three; if intsat ever wires the 5.0 bands in,
-> adopt in lockstep.
+> **Dead-band note.** intsat's `thresholds.go` also defines `OrbitDiscoWarningThreshold = 5.0`
+> and `TimeDiscoWarningThreshold = 5.0` ("emphasis" middle bands, a galmonmon inheritance), but
+> its shipped detector never references them — only 1.45/10 m and 2.5/10 ns actually branch.
+> **The standard is two bands (warn/crit); the 5.0 constants are not part of it.**
 
-Severity encoding (the SSE/`gnss_events` contract, `thresholds.go`): `0 = info`,
-`1 = warning`, `2 = critical`. Where intsat restricts an event to certain constellations
-(orbit_disco: GPS+Galileo; clock_jump: Galileo; observation_lost: GPS+Galileo), we widen to
-the full monitored set below — that widening is a documented superset, not a threshold change.
+Severity encoding (the SSE/`gnss_events` contract): `0 = info`, `1 = warning`, `2 = critical`.
+The standard applies each event type across the **full monitored set** below. intsat's as-built
+restrictions (orbit_disco: GPS+Galileo; clock_jump: Galileo-only; observation_lost:
+GPS+Galileo) are consumer limitations to be lifted, not part of the standard.
 
 **Monitored signals.** The initial monitoring set covers GPS L1CA (`0,0`), Galileo E1 (`2,1`), BeiDou B1I
 (`3,0`), GLONASS L1 (`6,0`). **Regional signal coverage:**
@@ -268,5 +268,5 @@ synchronized access to shared state:
 | silence | `last-seen-s` | `last_seen_s` | `observation_lost` (SV), `station_offline` (observer) |
 | corroboration | `conf`, `perrecv` | same | — |
 
-All of these are byte-compatible with what intsat consumes today (`docs/OUTPUT.md`), so the
-integrity output remains consistent during consumer integration.
+Field names and event vocabulary are defined once, in `docs/OUTPUT.md`; the integrity layer
+emits to that standard and consumers read it from there.

@@ -1,319 +1,239 @@
 # navlistener — Output Contract
 
 **Status: design (2026-07-07).** This document specifies **every byte `navlistener` emits**.
-It is the contract the existing Integrity-Constellation consumers already speak, so a
-developer implementing the serve path can produce output that **intsat** and **mapintsat**
-accept *unmodified*. `navlistener` supplies navigation data to these applications. Authorship is **ICD-first** — decoders
-and orbit math are written from the public ICDs with **no galmon code copied** — while galmon
-is permitted as a **differential-test oracle** for cross-checking numeric output (the
-byte-compat validation in §6 is exactly that use). See `docs/DESIGN.md` for the pipeline,
-`docs/MATH.md` for how the emitted numbers are computed, `docs/CONSTELLATIONS.md` for the
-signal/SV coverage behind the feeds, and `docs/INTEGRITY.md` for the event-detection logic.
+It is the output standard, designed here. The existing clients (intsat, mapintsat) are
+**consumers, not designers** — they align to this contract on our schedule (§6.1). See
+`docs/DESIGN.md` for the pipeline, `docs/MATH.md` for how the emitted numbers are computed,
+`docs/CONSTELLATIONS.md` for signal/SV coverage, and `docs/INTEGRITY.md` for event detection.
 
-> **Prime directive of this file:** the Phase-1 galmon-compatible feeds must be
-> *byte-shape-identical* to what `galmon.eu`'s `navparse` emits today (hyphenated keys,
-> `name@sigid` map keys, ECEF-meters in `svs`, ECEF-**kilometres** in `almanac`, polymorphic
-> `healthissue`). Any deviation breaks a shipped consumer. Additional QZSS and
-> NavIC fields form a **documented superset**, never by changing an existing field's shape.
+> **Native API.** `navlistener` serves one versioned API. Consumers use the
+> contract below. A differential-test harness may translate independent feed
+> formats, including galmon's, to compare numerical outputs over identical
+> captured frames (`docs/MATH.md §12`).
 
 ---
 
-## 0. Why two tiers, and who consumes which
+## 0. The contract at a glance
 
-`navlistener` serves two output tiers from the same in-RAM state, under `intsat.space` so
-existing client URLs keep resolving:
+- **One API**, versioned: `/gnss/api/v2/{svs, global, observers, almanac, sbas}` plus the
+  operational endpoints (§2), the event API and SSE stream (§3).
+- **Envelope** on every JSON response:
 
-| Tier | Path root | Shape | Primary consumer |
-|---|---|---|---|
-| **(a) galmon-compatible** | `/api/*.json` | galmon `navparse` JSON, hyphenated keys | intsat's `gnss-history-collect` (parses these); mapintsat `.NET`/Swift `FeedClient` raw `svs.json` |
-| **(b) schema-1.1 normalized** | `/gnss/api/v1.1/*` | envelope `{"schema":"1.1",…}`, underscored keys, numeric codes | intsat Vue frontend (`useHealth.js`), mapintsat `AlmanacEntry` (`/gnss/api/v1.1/almanac`), new native clients |
+  ```json
+  { "ok": true, "time": "2026-07-07T12:00:00Z",
+    "data": { "schema": "2.0", "svs": { "E14@1": { "...": "..." } } } }
+  ```
 
-Consumer-specific facts pinned from the current code:
+  Errors: `{ "ok": false, "error": "…", "code": … }`. `time` is RFC3339 UTC.
+- **Keys** are `snake_case`. **Units are SI and explicit**: metres, seconds, nanoseconds —
+  the same unit for the same quantity in every feed (the almanac is metres, like everything
+  else). **Every field has exactly one JSON type** — no bool-or-int fields, no
+  English-to-parse. Enums are numeric codes defined in §2.2.
+- **SV keys** are `name@sigid` (e.g. `G05@0`, `E14@1`, `J03@0`, `I04@0`); SV names are the
+  RINEX letter + zero-padded PRN. gnssid numbering is the single internal convention
+  (u-blox order, `docs/CONSTELLATIONS.md §0`): GPS 0, SBAS 1, Galileo 2, BeiDou 3, QZSS 5,
+  GLONASS 6, NavIC 7.
+- **GLONASS is a first-class constellation**: its `x_m/y_m/z_m` appear in `svs` like every
+  other SV (from the PZ-90 RK4 propagator, MATH.md §3). No feed omits a constellation's
+  position as a special case.
 
-- **mapintsat** (`dotnet/IntegrityMap.Core/Services/FeedClient.cs`, Swift mirror) fetches raw
-  `https://intsat.space/api/svs.json` **and** `https://intsat.space/gnss/api/v1.1/almanac`.
-  It decodes `svs` with `FlexibleIntConverter`/`FlexibleBoolConverter` — tolerant of absence
-  and of `healthissue` arriving as bool *or* int. `AlmanacEntry.EcefMeters` multiplies the
-  almanac ECEF by **1000** (confirming almanac is km), and derives GLONASS positions there.
-- **intsat** `internal/fetch/parse.go` parses all five galmon feeds; `parseHealthIssueLevel()`
-  handles the polymorphic `healthissue`. `internal/serve/v11.go` re-emits the normalized
-  tier. Our Phase-1 job is to *be* the thing `internal/fetch` points at.
+Current consumer behaviors, pinned 2026-07-07 (migration facts, not design constraints):
 
-**Tier (a) is the drop-in.** Tier (b) is native and preferred by the browser, and is where our
-QZSS/NavIC superset and coded fields live for clients that want to localize themselves.
+- **mapintsat** (`dotnet/IntegrityMap/Services/FeedClient.cs`; converters/models in
+  `IntegrityMap.Core`; Swift mirror `swift/IntegrityMap/Services/FeedClient.swift`) fetches
+  `https://intsat.space/api/svs.json` and `https://intsat.space/gnss/api/v1.1/almanac`,
+  multiplies almanac ECEF by 1000 (`AlmanacEntry.EcefMeters`), tolerates `healthissue` as
+  bool-or-int (`FlexibleBoolConverter`), and resolves GLONASS positions from the almanac.
+  Its gnssid table (`Gnss.cs`/`GNSS.swift`) is **wrong at 4 and 7** (`4=NavIC`, `7=KASS`).
+- **intsat**: `gnss-history-collect` fetches the five galmon feeds via `internal/fetch`
+  (upstream `[upstream] base_url`, **currently `http://localhost/api`** — an Apache
+  `mod_cache` proxy fronting galmon.eu); its own detector is a galmonmon port; `serve/v11.go`
+  re-emits a coded "schema 1.1" tier whose almanac passes galmon's hyphenated km fields
+  through untouched.
+
+All of that is what §6.1 migrates. None of it constrains this contract.
 
 ---
 
-## 1. galmon-compatible feed set (Tier a — the drop-in)
+## 1. The feed set (`/gnss/api/v2/`)
 
-Five endpoints, all `Content-Type: application/json`, all keys **hyphenated**, refreshed from
-RAM on each request (see §6 cadence). Field provenance (which raw nav frame / which MATH.md
-routine fills each) is called out inline.
+### 1.1 `svs` — one entry per satellite×signal
 
-### 1.1 `GET /api/svs.json`
-
-A JSON **object keyed by SV signal id** in `name@sigid` form — e.g. `"G05@0"`, `"E14@1"`,
-`"C06@0"`, `"J03@0"` (QZSS, ours), `"I04@0"` (NavIC, ours). One entry per **satellite×signal**.
-
-Per-SV fields (hyphenated; pointers/absent-tolerant — a consumer treats any missing field as
-unknown):
+Object keyed `name@sigid`. Fields (absent = unknown; a present field always has the type
+below):
 
 | Field | Type | Meaning / source |
 |---|---|---|
-| `fullName` | string | e.g. `"GPS-5"`, `"Galileo-14 (E1B)"` — human label |
-| `name` | string | short SV name `"G05"` (letter+PRN; numbering per `docs/CONSTELLATIONS.md §0`) |
-| `gnssid` | int | **galmon-emit** gnssid (GPS 0, Galileo 2, BeiDou 3, GLONASS 6; **ours:** QZSS 5, NavIC 7) |
+| `full_name` | string | human label, e.g. `"GPS-5"`, `"Galileo-14 (E1B)"` |
+| `name` | string | SV name `"G05"` (RINEX letter + PRN) |
+| `gnssid` | int | constellation id (`docs/CONSTELLATIONS.md §0`) |
 | `svid` | int | PRN within constellation |
-| `sigid` | int | signal id (0 = primary; galmon-emit numbering per `docs/CONSTELLATIONS.md §0`) |
-| `health` | string | free-text broadcast health, e.g. `"OK"`, `"NOT OK: 3"`, `"DON'T USE"`, Galileo composite `"OK/OK/val/val"` (health bits decoded per constellation — `docs/INTEGRITY.md §10`) |
-| `healthissue` | **bool OR int** | **polymorphic** — legacy shape is bool; severity shape is int `0`/`1`/`2`. We emit the **int** form (0 none / 1 warn / 2 error); consumers accept both. Never emit as string. |
-| `eph-age-m` | float | ephemeris age in minutes = `ephAge(tow,t0e)/60` (MATH.md §age) |
-| `sisa` | string | accuracy label `"200 cm"`, or sentinel `"NO SISA AVAILABLE"`/`"NONE"` (MATH.md §URA/SISA) |
-| `sisa-m` | float | numeric accuracy in metres; `0`/absent when sentinel |
+| `sigid` | int | signal id (0 = the constellation's primary civil signal) |
+| `health_code` | int | §2.2 enum: 0 unknown · 1 OK · 2 not-ok · 3 do-not-use |
+| `health_issue_level` | int | 0 none · 1 warning · 2 error |
+| `health_subcode` | int | raw broadcast health bits (0 when none) |
+| `eph_age_m` | float | ephemeris age, minutes = `ephAge(tow,t0e)/60` (MATH.md §1.1) |
+| `sisa_valid` | bool | false when the broadcast accuracy is a "none/no accuracy" sentinel |
+| `sisa_m` | float | URA/SISA in metres (MATH.md §6); meaningful only when `sisa_valid` |
 | `iod` | int | issue-of-data (IODE/IODnav/AODE per constellation) |
-| `orbit-disco` | float | latest ephemeris-changeover position discontinuity, metres (INTEGRITY.md §orbit-disco); `-1` sentinel when untrusted (eph age > 4 h, first-store, NaN) |
-| `orbit-disco-age` | float | seconds since that discontinuity |
-| `time-disco` | float | latest clock discontinuity at changeover, **nanoseconds** (INTEGRITY.md §time-disco) |
-| `osnma` | bool | Galileo OSNMA authentication seen active (false for non-Galileo) |
-| `alma-dist` | float | metres between broadcast-ephemeris position and this SV's almanac/TLE position (cross-check) |
-| `last-seen-s` | int | seconds since any receiver last reported this SV |
-| `x`,`y`,`z` | float | **ECEF metres**, broadcast-ephemeris solution at last TOW (MATH.md §Kepler / §GLONASS). **GLONASS omits these** (see note) |
-| `tow` | int | time-of-week of the solution |
-| `wn` | int | week number |
-| `best-tle` | string | best-matching TLE line-set text (from `tlecatch` cross-check), or `""` |
-| `best-tle-dist` | float | metres to that TLE |
-| `delta-utc` | string | galmon-formatted UTC offset, e.g. `"-3.8 -0.8/d"` (value and drift/day) |
-| `delta-gps` | string | galmon-formatted inter-system offset to GPS |
-| `a0g`,`a1g` | float | GNSS-to-GPS time-offset polynomial terms |
-| `af0`,`af1`,`af2` | float | SV clock correction terms (raw broadcast, MATH.md §clock) |
-| `aodc`,`aode` | int | BeiDou age-of-data clock/ephemeris (BeiDou only) |
-| `t0g`,`t0t` | int | reference times for the offset terms |
-| `wn0g`,`wn0t` | int | reference weeks for the offset terms |
-| `perrecv` | object | **nested map keyed by observer id** (below) |
+| `orbit_disco_m` | float | position discontinuity at last ephemeris changeover, metres (INTEGRITY.md §3); **absent** when not yet computable (first ephemeris, stale, failed guard) — never a sentinel number |
+| `orbit_disco_age_s` | float | seconds since that changeover |
+| `time_disco_ns` | float | clock discontinuity at changeover, nanoseconds; absent like `orbit_disco_m` |
+| `osnma` | bool | Galileo OSNMA authentication seen active (absent for non-Galileo) |
+| `alma_dist_m` | float | broadcast-ephemeris vs almanac/TLE position distance (cross-check) |
+| `last_seen_s` | int | seconds since any receiver last reported this SV |
+| `x_m`,`y_m`,`z_m` | float | ECEF metres at `tow` — **all constellations, GLONASS included** |
+| `tow` | int | time-of-week (s) of the solution; `wn` | int | week number (full, disambiguated) |
+| `best_tle` | string | name of best-matching CelesTrak object (MATH.md §11), absent if none |
+| `best_tle_dist_m` | float | metres to the SGP4 position of that object |
+| `utc_offset_ns` | float | broadcast system→UTC offset (ns), from the UTC parameters (MATH.md §8) |
+| `utc_drift_ns_day` | float | its drift term, ns/day |
+| `gps_offset_ns` | float | broadcast system→GPS offset (ns; GGTO for Galileo, τ_GPS for GLONASS…) |
+| `a0g`,`a1g`,`t0g`,`wn0g` | float/int | raw inter-system offset polynomial terms |
+| `af0`,`af1`,`af2` | float | raw SV clock polynomial (MATH.md §4) |
+| `aodc`,`aode` | int | BeiDou age-of-data (BeiDou only) |
+| `perrecv` | object | per-observer reception, keyed by observer id (below) |
 
-`perrecv[<observerId>]` — one entry per receiver currently hearing this SV:
+`perrecv[<observer_id>]`:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `azi` | float | azimuth deg (MATH.md §look-angles) |
-| `elev` | float | elevation deg |
-| `db` | int | C/N0 dB-Hz |
-| `qi` | int | receiver signal quality indicator |
-| `prres` | float | pseudorange residual (m) reported by the receiver PVT |
-| `used` | bool | SV used in the receiver's nav solution |
-| `last-seen-s` | int | seconds since this receiver last reported the SV |
-| `delta_hz` | float | observed Doppler − ephemeris-predicted Doppler (Hz) (INTEGRITY.md §delta-hz) |
+| `azi_deg`, `elev_deg` | float | look angles from that observer (MATH.md §5.2) |
+| `cn0_db_hz` | int | carrier-to-noise density |
+| `qi` | int | receiver quality indicator (0–7, u-blox scale) |
+| `prres_m` | float | pseudorange residual reported by the receiver PVT |
+| `used` | bool | SV used in the receiver's own nav solution |
+| `last_seen_s` | int | seconds since this receiver last reported the SV |
+| `delta_hz` | float | observed − predicted Doppler (INTEGRITY.md §3) |
 | `delta_hz_corr` | float | `delta_hz` after receiver clock-drift correction |
 
-> **GLONASS `x/y/z` are omitted in `svs.json`** under the legacy API contract. GLONASS positions are delivered via `almanac.json` (§1.4). Consumers
-> already special-case this (`AlmanacEntry` fills GLONASS from the almanac feed).
-
-**Representative `svs.json` fragment:**
+Representative entry:
 
 ```json
-{
+{ "ok": true, "time": "2026-07-07T12:00:00Z", "data": { "schema": "2.0", "svs": {
   "G05@0": {
-    "fullName": "GPS-5", "name": "G05", "gnssid": 0, "svid": 5, "sigid": 0,
-    "health": "OK", "healthissue": 0,
-    "eph-age-m": 12.4, "sisa": "240 cm", "sisa-m": 2.4, "iod": 61,
-    "orbit-disco": 0.42, "orbit-disco-age": 733.0, "time-disco": 0.9,
-    "osnma": false, "alma-dist": 118.3, "last-seen-s": 2,
-    "x": -15637892.3, "y": 20984773.1, "z": 6512240.7, "tow": 453612, "wn": 2371,
-    "best-tle": "1 25933U 99055A ...", "best-tle-dist": 940.2,
-    "delta-utc": "-3.8 -0.8/d", "af0": 0.000123, "af1": 1.1e-11, "af2": 0.0,
+    "full_name": "GPS-5", "name": "G05", "gnssid": 0, "svid": 5, "sigid": 0,
+    "health_code": 1, "health_issue_level": 0, "health_subcode": 0,
+    "eph_age_m": 12.4, "sisa_valid": true, "sisa_m": 2.4, "iod": 61,
+    "orbit_disco_m": 0.42, "orbit_disco_age_s": 733.0, "time_disco_ns": 0.9,
+    "alma_dist_m": 118.3, "last_seen_s": 2,
+    "x_m": -15637892.3, "y_m": 20984773.1, "z_m": 6512240.7, "tow": 453612, "wn": 2427,
+    "best_tle": "GPS BIIR-2 (PRN 05)", "best_tle_dist_m": 940.2,
+    "utc_offset_ns": -3.8, "utc_drift_ns_day": -0.8,
+    "af0": 0.000123, "af1": 1.1e-11, "af2": 0.0,
     "perrecv": {
-      "0x00a1c3": {"azi": 143.2, "db": 47, "elev": 61.0, "qi": 7, "prres": 0.4,
-                   "used": true, "last-seen-s": 2, "delta_hz": -1.2, "delta_hz_corr": 0.3}
-    }
+      "0x00a1c3": { "azi_deg": 143.2, "elev_deg": 61.0, "cn0_db_hz": 47, "qi": 7,
+                    "prres_m": 0.4, "used": true, "last_seen_s": 2,
+                    "delta_hz": -1.2, "delta_hz_corr": 0.3 } }
   },
-  "J03@0": { "fullName": "QZSS-3", "name": "J03", "gnssid": 5, "svid": 3, "...": "..." }
-}
+  "J03@0": { "full_name": "QZSS-3", "name": "J03", "gnssid": 5, "svid": 3, "...": "..." }
+} } }
 ```
 
-### 1.2 `GET /api/global.json`
+### 1.2 `global` — system-wide counters and time offsets
 
-A **flat object** of system-wide counters and time offsets:
+Flat object inside the envelope: `last_seen` (epoch s), per-constellation `<c>_svs` /
+`<c>_sigs` live counts for `gps, galileo, beidou, glonass, qzss, navic, sbas`,
+`gps_utc_offset_ns`, `gst_utc_offset_ns`, `gst_gps_offset_ns`, `bdt_utc_offset_ns`,
+`glonass_utc_su_offset_ns`, `leap_seconds`, `total_live_receivers`, `total_live_signals`,
+`total_live_svs`. Offsets are transcribed broadcast values (MATH.md §8), not computed by us;
+receiver disagreement on them is an integrity signal, not an averaging problem.
 
-| Field | Type | Meaning |
-|---|---|---|
-| `last-seen` | int | epoch seconds of most recent observation across the fleet |
-| `gps-svs`, `gps-sigs` | int | live GPS satellites / satellite-signals |
-| `gps-utc-offset-ns` | float | broadcast GPS→UTC offset (ns) |
-| `galileo-svs`, `galileo-sigs` | int | live Galileo counts |
-| `gst-utc-offset-ns` | float | Galileo GST→UTC offset (ns) |
-| `gst-gps-offset-ns` | float | GGTO, Galileo→GPS (ns) |
-| `beidou-svs`, `beidou-sigs`, `beidou-utc-offset-ns` | int/float | BeiDou counts + BDT→UTC |
-| `glonass-svs`, `glonass-sigs` | int | GLONASS counts |
-| `leap-seconds` | int | current broadcast leap seconds |
-| `total-live-receivers` | int | observers reporting within the online window |
-| `total-live-signals` | int | distinct SV-signals live |
-| `total-live-svs` | int | distinct SVs live |
-| `qzss-svs`, `qzss-sigs`, `navic-svs`, `navic-sigs` | int | **ours** — superset counters |
+### 1.3 `observers` — the station list
 
-### 1.3 `GET /api/observers.json`
+Array of station records: `id`, `owner`, `remark`, `latitude_deg`, `longitude_deg`,
+`height_m` (ellipsoidal), `hw_version`, `sw_version`, `git_hash`, `vendor`, `mods`,
+`serial_no`, `last_seen` (epoch s), `uptime_s`, `clock_drift_ns`, `accuracy_m`, and `svs` —
+a map keyed `name@sigid` of per-SV reception mirroring the `perrecv` shape (§1.1) plus
+`age_s`. String fields that originate on the receiver (`owner`, `remark`, `vendor`, …) are
+sanitized before serialization (INTEGRITY.md §9).
 
-A JSON **array** (not an object) of station records:
+### 1.4 `almanac` — coarse orbits for every known SV
 
-| Field | Type | Meaning |
-|---|---|---|
-| `id` | int/string | observer/source id (the GNF1 `sourceID`, rendered as galmon does) |
-| `owner`, `remark` | string | operator + free note (`ObserverDetails`) |
-| `latitude`, `longitude` | float | station position (deg) |
-| `h` | float | ellipsoidal height (m) |
-| `hwversion`, `swversion`, `githash` | string | receiver HW/FW + feeder build id |
-| `vendor`, `mods`, `serialno` | string | receiver vendor / module string / serial |
-| `last-seen` | int | epoch seconds |
-| `uptime` | int | seconds |
-| `clockdriftns` | float | receiver clock drift (ns) |
-| `acc` | float | reported position accuracy (m) |
-| `svs` | object | map keyed `E04@1` → per-SV reception (below) |
-
-`svs[<name@sigid>]`: `{fullName, name, gnss (int), sv (svid), sigid, azi, elev, db, qi,
-prres, used, last-seen, age-s}`. Note several numeric fields historically arrive as floats;
-emit them as JSON numbers (intsat's `rawObserver` coerces float64→int).
-
-### 1.4 `GET /api/almanac.json`
-
-A JSON **object keyed by SV name** (`"C01"`, `"R07"`, `"J02"`, `"I03"`). **This feed supplies
-positions `svs.json` omits — above all GLONASS.**
-
-> ⚠️ **UNIT WARNING:** almanac ECEF is in **KILOMETRES**, whereas `svs.json` ECEF is in
-> **METRES**. This is part of the shipped legacy consumer contract (`AlmanacEntry.EcefMeters`
-> multiplies by 1000). Do not "fix" it. Emit `eph-ecefX/Y/Z` in km.
+Object keyed by SV name (`"C01"`, `"R07"`, `"J02"`, `"I03"`). This is the long-life,
+all-SV view (acquisition-grade); `svs` remains the precision view. Fields:
 
 | Field | Type | Meaning |
 |---|---|---|
 | `name` | string | SV name |
-| `gnssid` | int | galmon-emit gnssid (+ ours 5/7) |
-| `observed` | bool | true if we currently hear it (vs. almanac-only) |
-| `eph-ecefX`,`eph-ecefY`,`eph-ecefZ` | float | **ECEF kilometres** (almanac-propagated, MATH.md §almanac) |
-| `eph-latitude`,`eph-longitude` | float | sub-satellite lat/lon (deg) — fallback when ECEF absent |
-| `inclination` | float | orbital inclination (rad or deg per galmon convention — match galmon: radians) |
-| `t0e` | int | almanac reference time |
-| `t` | int | evaluation time |
-| `lambdana`, `tlambdana` | float | **GLONASS-only** — longitude of ascending node & its time (the F0 fix path; MATH.md §GLONASS-almanac) |
-| `eph-source` | string | `""` = computed by us from broadcast almanac; `"tle-sgp4"` = filled from CelesTrak TLE when no broadcast almanac (MATH.md §TLE-fill) |
+| `gnssid` | int | constellation id |
+| `observed` | bool | currently heard by ≥1 receiver (vs. almanac-only) |
+| `ecef_x_m`,`ecef_y_m`,`ecef_z_m` | float | almanac-propagated ECEF, **metres** (MATH.md §10) |
+| `lat_deg`,`lon_deg` | float | sub-satellite point (fallback / display) |
+| `inclination_rad` | float | orbital inclination, radians |
+| `t0e` | int | almanac reference time; `t` | int | evaluation time |
+| `lambda_na`,`t_lambda_na` | float | GLONASS-only: ascending-node longitude and its epoch (MATH.md §3.1) |
+| `eph_source` | int | §2.2 enum: 0 broadcast-almanac · 1 tle-sgp4 fill |
 
-### 1.5 `GET /api/sbas.json`
+### 1.5 `sbas` — augmentation-system health
 
-A JSON **object keyed by SBAS PRN** (`"120"`, `"131"`, …):
-
-| Field | Type | Meaning |
-|---|---|---|
-| `health` | string | SBAS health text |
-| `last-seen` | int | epoch seconds |
-| `last-seen-s` | int | seconds since last seen |
-| `last-type-0` | int | epoch of last MT0 (test/do-not-use) |
-| `last-type-0-s` | int | seconds since last MT0 |
-| `perrecv` | object | map keyed by observer id → `{last-seen, last-seen-s}` |
-
-SBAS coverage (WAAS/EGNOS/**MSAS** (Japan)/**GAGAN** (India)/SDCM) is enumerated in
-`docs/CONSTELLATIONS.md §SBAS`.
+Object keyed by SBAS PRN (`"131"`, `"136"`, …): `provider` (string, e.g. `"WAAS"`,
+`"EGNOS"`, `"MSAS"`, `"GAGAN"` — the §CONSTELLATIONS provider table), `health_code`,
+`last_seen`, `last_seen_s`, `last_type_0`, `last_type_0_s`, `perrecv` (observer id →
+`{last_seen, last_seen_s}`).
 
 ---
 
-## 2. schema-1.1 normalized API (Tier b — native)
+## 2. Operational endpoints, enums
 
-Same data, **numeric-coded and underscored**, wrapped in a version envelope so clients localize
-themselves instead of parsing English. Endpoints:
+### 2.1 Operational API
 
-`/gnss/api/v1.1/svs`, `/global`, `/observers`, `/almanac`, `/sbas`.
+Same envelope, non-versioned paths carried forward from intsat's serve role (verified
+against its `server.go` route table): `/gnss/api/{sky, sky/history, sv/{sv},
+constellations, events, events/summary, stations, station/{id}, availability, geolocate}`
+and `/gnss/health`. When `navlistener` absorbs the serve role these move here unchanged in
+shape; they are read-side conveniences over the same state and DB.
 
-Envelope:
+### 2.2 Enums (frozen)
 
-```json
-{ "schema": "1.1", "svs": { "E14@1": { ... } } }
-```
-
-The coded substitutions (everything else is the §1 field, **underscored**):
-
-| galmon (Tier a) | schema-1.1 (Tier b) | Type | Notes |
-|---|---|---|---|
-| `health` (string) | `health_code` | int enum | **0** unknown · **1** OK · **2** not-ok · **3** dont-use. **Frozen contract** — mirror of frontend `useHealth.js CODE_BY_NUM`; never reorder or renumber. |
-| `healthissue` (bool/int) | `health_issue_level` | int | 0/1/2 severity |
-| `health` trailing `": N"` | `health_subcode` | int | broadcast health bits (0 when none) |
-| `sisa` (string) | `sisa_valid` | bool | false for `NONE`/`NO SISA AVAILABLE`/empty |
-| `sisa-m` | `sisa_m` | float | numeric accuracy (m) |
-| `eph-age-m` | `eph_age_m` | float | |
-| `orbit-disco` | `orbit_disco` | float | |
-| `time-disco` | `time_disco` | float | |
-| `last-seen-s` | `last_seen_s` | int | |
-| `best-tle` | `best_tle` | string | |
-| `delta-utc`/`delta-gps` | `delta_utc`/`delta_gps` | string | kept for parity |
-
-Tier b is a **full superset**: it also carries `best_tle`, `best_tle_dist`, `a0g`,`a1g`,
-`af0`,`af1`,`af2`, `aodc`,`aode`, `t0g`,`t0t`,`wn0g`,`wn0t`, and the `perrecv` map. QZSS/NavIC
-SVs appear here first-class (that's the point of the coded feed — the browser renders them
-without English-parsing hacks).
-
-**Representative v1.1 `svs` entry:**
-
-```json
-{
-  "schema": "1.1",
-  "svs": {
-    "E14@1": {
-      "full_name": "Galileo-14 (E1B)", "name": "E14", "gnssid": 2, "svid": 14, "sigid": 1,
-      "health_code": 1, "health_issue_level": 0, "health_subcode": 0,
-      "sisa_valid": true, "sisa_m": 3.12,
-      "eph_age_m": 8.7, "orbit_disco": 0.0, "time_disco": 0.0,
-      "osnma": true, "last_seen_s": 1,
-      "x": 12345678.9, "y": -8765432.1, "z": 23456789.0, "tow": 453612, "wn": 1298,
-      "af0": 1.2e-4, "af1": 4.5e-12, "af2": 0.0,
-      "perrecv": { "0x00a1c3": { "azi": 210.4, "elev": 33.1, "db": 44, "qi": 6,
-                                 "prres": 0.7, "used": true, "last_seen_s": 1,
-                                 "delta_hz": 0.4, "delta_hz_corr": 0.1 } }
-    }
-  }
-}
-```
-
-Additional native JSON (envelope `{"ok":true,"time":"…","data":{…}}`, non-versioned):
-`/gnss/api/{sky, sv/{sv}, constellations, events, events/summary, stations, station/{id},
-geolocate}` — carried forward from intsat's serve API so its clients keep working when
-`navlistener` absorbs the serve role in Phase 2.
+| Enum | Values |
+|---|---|
+| `health_code` | **0** unknown · **1** OK · **2** not-ok · **3** do-not-use. Matches the deployed `useHealth.js CODE_BY_NUM` / intsat `model.HealthCode` — retained because the numbering is already right; never reorder. |
+| `health_issue_level` | 0 none · 1 warning · 2 error |
+| `severity` (events) | 0 info · 1 warning · 2 critical |
+| `eph_source` | 0 computed from broadcast almanac · 1 filled from CelesTrak TLE via SGP4 |
 
 ---
 
-## 3. SSE + event API
+## 3. Events: SSE + query API
 
-Live state-change events (the integrity namesake). SSE stream at **`GET /gnss/events`**; the
-same events are queryable at `/gnss/api/events` and summarized at `/gnss/api/events/summary`.
+Live integrity events (the namesake). SSE stream at **`GET /gnss/events`**; queryable at
+`/gnss/api/events`, summarized at `/gnss/api/events/summary`.
 
-Event object:
+Event object (SSE `data:` payload and API rows; the JSON key is `type` — the DB column is
+`event_type`):
 
 | Field | Type | Meaning |
 |---|---|---|
-| `id` | int64 | monotonic event id (BIGSERIAL in Phase 2) |
+| `id` | int64 | monotonic event id (BIGSERIAL) |
 | `time` | RFC3339 | confirmation time (post-debounce) |
 | `sv` | string | `name@sigid` |
-| `type` | string | event type (below) |
+| `type` | string | event type (INTEGRITY.md §5 — the authoritative vocabulary) |
 | `old_value`,`new_value` | string | pre/post state |
-| `severity` | int | **0** info · **1** warn · **2** crit |
+| `severity` | int | §2.2 |
 | `message` | string | English fallback headline |
-| `params` | object | interpolation values for client-side i18n (sv, constellation, magnitudes) |
-| `raw` | object | the raw discriminators (JSONB) |
+| `params` | object | interpolation values for client-side i18n |
+| `raw` | object | raw discriminators (JSONB) |
 
-Event types (the galmonmon set + our supersets):
+SSE contract (defined here; intsat's shipped broker already matches it, verified 2026-07-07):
+named events `event: gnss` (an integrity event, `id:` set), `event: status` (heartbeat,
+default every 60 s), `event: resolved`; reconnect via `Last-Event-ID` replays from that id
+(bounded), else the most recent N (default 20). `Content-Type: text/event-stream`,
+`X-Accel-Buffering: no`.
 
-`health_change`, `eph_aged`, `orbit_disco`, `clock_jump`, `sisa_change`, `observation_lost`,
-`osnma_change`, `sbas_health`, **`qzss_health`**, **`navic_health`** (ours — first-class Japan/
-India monitoring).
-
-Detection thresholds, debounce, and severity escalation are defined once in
-`docs/INTEGRITY.md §thresholds` — **do not duplicate the numbers here**; this section is the
-wire shape only.
+Event types and their thresholds/severities are defined once, in `docs/INTEGRITY.md §2/§5` —
+this section is the wire shape only.
 
 ---
 
-## 4. Persistence contract (Phase 2)
+## 4. Persistence contract
 
-Phase 1 emits feeds only; intsat's `gnss-history-collect` still owns the DB. Phase 2 absorbs
-collect, and `navlistener` writes TimescaleDB directly and fires `NOTIFY` itself. The schema is
-a **superset** of intsat's `migrations/001_init.sql` so its serve path keeps reading unchanged.
+`navlistener` writes TimescaleDB directly and fires `NOTIFY`. The schema is a **superset of
+intsat's `migrations/001_init.sql`** (verified 2026-07-07) so intsat's read path keeps
+working while it is still the serve front; the additions are ours.
 
 ```sql
--- Events (intsat-compatible; navlistener writes, serve LISTENs)
+-- Events (navlistener writes; serve-side LISTENs)
 CREATE TABLE gnss_events (
     id         BIGSERIAL,
     time       TIMESTAMPTZ NOT NULL,
@@ -325,14 +245,14 @@ CREATE TABLE gnss_events (
     raw        JSONB
 );
 SELECT create_hypertable('gnss_events','time', if_not_exists => TRUE);
-CREATE INDEX ON gnss_events (sv, time DESC);
-CREATE INDEX ON gnss_events (event_type, time DESC);
-CREATE INDEX ON gnss_events (severity, time DESC);
--- AFTER INSERT trigger -> pg_notify('gnss_event', json{id,sv,type,severity,message})
-CREATE TRIGGER gnss_events_notify AFTER INSERT ON gnss_events
+CREATE INDEX idx_gnss_events_sv_time       ON gnss_events (sv, time DESC);
+CREATE INDEX idx_gnss_events_type_time     ON gnss_events (event_type, time DESC);
+CREATE INDEX idx_gnss_events_severity_time ON gnss_events (severity, time DESC);
+-- notify_gnss_event(): pg_notify('gnss_event', json{id,sv,type,severity,message})
+CREATE TRIGGER gnss_event_notify AFTER INSERT ON gnss_events
     FOR EACH ROW EXECUTE FUNCTION notify_gnss_event();
 
--- Endpoint snapshots (raw feed dumps for replay/backfill)
+-- Endpoint snapshots (feed dumps for replay/backfill)
 CREATE TABLE gnss_snapshots (
     time     TIMESTAMPTZ NOT NULL,
     endpoint TEXT        NOT NULL,   -- 'svs' | 'global' | 'observers' | 'almanac' | 'sbas'
@@ -342,19 +262,21 @@ SELECT create_hypertable('gnss_snapshots','time', if_not_exists => TRUE);
 -- compress after 7 days, drop after 90 days (add_compression_policy / add_retention_policy)
 ```
 
-Plus the **raw-nav-frame hypertable** `navlistener` adds — the forensic system of record,
-following the `radiolistener` `observations` discipline (raw bytes **+** decoded projection,
-organized on the near-monotonic **ingest** clock, event time indexed; see `docs/DESIGN.md`):
+(intsat's migration also carries a small `daemon_state` key/value table; it stays intsat's.)
+
+Plus the **raw-nav-frame hypertable** — the forensic system of record, following the
+`radiolistener` `observations` discipline (raw bytes **+** decoded projection, organized on
+the near-monotonic **ingest** clock, event time indexed; see `docs/DESIGN.md`):
 
 ```sql
 CREATE TABLE nav_frames (
     ts          TIMESTAMPTZ NOT NULL,   -- ingest time (hypertable dimension)
     received_at TIMESTAMPTZ NOT NULL,   -- receiver reception time (indexed)
     source_id   TEXT        NOT NULL,   -- GNF1 sourceID (observer)
-    gnssid      SMALLINT    NOT NULL,   -- internal u-blox gnssId (0..7)
+    gnssid      SMALLINT    NOT NULL,   -- gnssId (0..7, CONSTELLATIONS.md §0)
     svid        SMALLINT    NOT NULL,
     sigid       SMALLINT    NOT NULL,
-    msg_type    SMALLINT    NOT NULL,   -- GNF1 nav message type (CONSTELLATIONS.md §registry)
+    msg_type    SMALLINT    NOT NULL,   -- GNF1 nav message type (CONSTELLATIONS.md §6)
     raw         BYTEA       NOT NULL,   -- the broadcast nav frame, untouched (re-decodable)
     decoded     JSONB,                  -- normalized projection (ephemeris/almanac params)
     decoder_ver TEXT
@@ -364,8 +286,8 @@ SELECT create_hypertable('nav_frames','ts', chunk_time_interval => INTERVAL '1 h
 -- long-term lives in per-SV continuous aggregates (ephemeris history).
 ```
 
-Raw-plus-decoded means a decoder bug fix lets us **re-derive every historical ephemeris** from
-`raw` without re-collecting — the same re-decodability guarantee `radiolistener` keeps.
+Raw-plus-decoded means a decoder bug fix lets us **re-derive every historical ephemeris**
+from `raw` without re-collecting — the same re-decodability guarantee `radiolistener` keeps.
 
 ---
 
@@ -374,49 +296,63 @@ Raw-plus-decoded means a decoder bug fix lets us **re-derive every historical ep
 Read and write paths are **physically separate** (the `radiolistener` rule):
 
 - **Ingest (write):** the GNF1 push endpoint (authenticated feeders → sharded state), a
-  different listener/authz/DB pool. See `docs/DESIGN.md §ingest`.
-- **Serve (read):** live Tier-a/Tier-b feeds from **RAM**; history + SSE from the DB via
+  different listener/authz/DB pool. See `docs/DESIGN.md §1`.
+- **Serve (read):** live feeds from **RAM**; history + SSE from the DB via
   `LISTEN gnss_event`. Binds **loopback**; a reverse proxy terminates TLS and fronts it as
-  `intsat.space` so every shipped client URL keeps resolving. All third-party keys (CelesTrak
-  TLE fetch, etc.) stay server-side.
+  `intsat.space` (host consolidation — same box, same front). All third-party keys
+  (CelesTrak TLE fetch, etc.) stay server-side.
 
-Poll/emit cadence (satellites move slowly; over-polling wastes cache):
+Refresh cadence (satellites move slowly; over-polling wastes cache):
 
 | Feed | Cadence |
 |---|---|
-| `svs.json` / v1.1 `svs` | 30 s (matches intsat's satellite layer) |
-| `global.json` | 30 s |
-| `observers.json` | 30 s |
-| `almanac.json` | 60–120 s |
-| `sbas.json` | 30 s |
+| `svs`, `global`, `observers`, `sbas` | 30 s |
+| `almanac` | 60–120 s |
 | `/gnss/events` SSE | push-on-change (server-driven) |
 
-An Apache `mod_cache` layer in front (as intsat runs today) is compatible and encouraged.
+An Apache `mod_cache` layer in front is compatible and encouraged.
 
 ---
 
-## 6. Migration / cutover
+## 6. Migration
 
-Staged integration of the navlistener feeds with intsat:
+`navlistener` stands up serving **only this contract**. The consumers move to it; nothing
+in the product bends toward what they parse today.
 
-1. **Stand up `navlistener` on `collector-host`** serving Tier-a feeds on loopback, fronted at a staging
-   host (e.g. `gnss.staging.intsat.net`). At least one real receiver (the `.91` u-blox, plus an
-   F9T/Septentrio) feeding it via `navfeeder`.
-2. **Byte-compat validation.** For a receiver that also feeds `galmon.eu`, fetch both
-   `svs.json` at the same instant and structurally diff: same key set (`name@sigid`), same
-   `gnssid`/`sigid` numbering, ECEF within numerical tolerance (metres), `healthissue` int-form
-   accepted, `perrecv` shape identical. Confirm `almanac.json` ECEF is in **km** and GLONASS
-   entries carry `lambdana`/`tlambdana`. Automate as a golden-file test using intsat's own
-   `testdata/{svs,almanac,observers,global,sbas}.json` fixtures as the shape oracle.
-3. **Point intsat's collector at staging.** Change `gnss-history-collect`'s upstream base URL
-   (config only) from `galmon.eu` to `navlistener`. Run both collectors in parallel writing to
-   *separate* DBs; diff the `gnss_events` streams for a day. Check matching signals for agreement and validate additional
-   QZSS/NavIC events against their signal-specific fixtures.
-4. **Promote.** Repoint production `gnss-history-collect` at `navlistener`; keep `galmon.eu` as
-   a warm fallback URL for one release. `mapintsat` needs **no change** — it already hits
-   `intsat.space/api/svs.json`, which now originates from us.
-5. **Phase 2.** Absorb collect: `navlistener` writes `gnss_events`/`gnss_snapshots` directly
-   (§4) and fires `NOTIFY`; retire `gnss-history-collect`.
+1. **Stand up `navlistener` on `collector-host`** serving `/gnss/api/v2/*` on loopback, fronted at a
+   staging host. At least one real receiver feeding it via `navfeeder` (the `.91` u-blox,
+   plus an F9T/Septentrio).
+2. **Differential validation (CI, not production):** run galmon (`third_party/galmon`,
+   `integrity` branch) and `navlistener` over the same captured raw frames; the harness maps
+   galmon's `svs.json` fields onto §1.1 names and diffs the numbers (ECEF, clock, disco).
+   Check the constants (MATH.md §0) and coordinate frames (MATH.md §3.1)
+   used by each implementation when interpreting differences.
+3. **Migrate intsat:** configure `gnss-history-collect` to use a v2 client
+   (one envelope with typed fields),
+   and retire its internal detector in favor of consuming our `gnss_events` (INTEGRITY.md).
+   Run old and new side by side against separate DBs for a day; our stream must cover every
+   event the old path caught, plus QZSS/NavIC events it never could.
+4. **Migrate mapintsat:** point `FeedClient` (C# + Swift) at `/gnss/api/v2/{svs,almanac}`,
+   apply the §6.1 fixes, delete the ×1000 and the flexible converters (typed fields make
+   them dead code).
+5. **Absorb serve:** `navlistener` (or its serve process) takes over the `/gnss/api/*`
+   routes on `intsat.space`; `gnss-history-collect` retires; intsat's dependency on
+   external feed providers ends for these consumers.
 
-**Rollback** at every step is a one-line URL revert, because Tier-a is byte-compatible: nothing
-downstream knows the origin changed.
+Rollback at each step: the previous upstream stays configured until the step after it
+succeeds; reverting is a config change.
+
+### 6.1 Consumer conformance (they align to this standard)
+
+| Consumer | Required change |
+|---|---|
+| **mapintsat** `Gnss.cs` / `GNSS.swift` | Fix the gnssid table: **7 = NavIC, 5 = QZSS, 4 = IMES (never emitted)**. Today it labels `4=NavIC`, `7=KASS` — KASS is an SBAS *provider* (PRN 134 under gnssid 1), not a constellation. Must land before NavIC SVs appear in any feed. |
+| **mapintsat** `FeedClient`/models | Fetch v2; almanac is metres (drop `EcefMeters`'s ×1000); fields are single-typed (drop `FlexibleBoolConverter`/`FlexibleIntConverter` usage for this feed). |
+| **intsat** collect | Use the v2 feed client; upstream stays one `base_url` config key. |
+| **intsat** detect | Retire the galmonmon-port detector; consume `gnss_events` produced by us. Until then, its thresholds were verified equal to INTEGRITY.md §2 (2026-07-07). |
+| **intsat** model/constants | Add QZSS (5) and NavIC (7) constellation constants and monitored signals (5,0), (7,0); adopt the two new event types (`qzss_health`, `navic_health`). |
+| **intsat** glonass TLE shim | Retire `internal/glonass` (CelesTrak SGP4 synthesis) — v2 carries real GLONASS positions from broadcast ephemeris/almanac. |
+| **intsat** frontend / v1.1 | The v1.1 tier is intsat's to sunset; `useHealth.js` numbering already matches §2.2 (no change). |
+
+No client parses SV-name letters anywhere (verified — they key on numeric `gnssid` and treat
+names as opaque strings), so the `J`/`I` names flow through with zero client work.
