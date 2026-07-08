@@ -24,11 +24,19 @@ import (
 //	         ΔA@74 (26 bits signed, 2^-9 m; A = A_ref + ΔA, A_ref = 27906100 m MEO).
 //	type 11: i0@75 (33 bits signed, 2^-32 semicircle × π; exact match to D1).
 //
-// UNRESOLVED: the type-10 M0/e/ω (and the A_dot/Δn0/Δn0-dot widths preceding them)
-// do not match the D1 values at the assumed offsets — the B2a message interleaves
-// integrity/reserved fields whose exact widths must come from the ICD, not the
-// capture. Do NOT guess these: a wrong offset silently yields a plausible-but-wrong
-// orbit. The rest of the parameterization is CNAV-style (ΔA not √A, rate terms).
+// UNRESOLVED — and confirmed intractable from the capture (2026-07-08): a definitive
+// search matched the constant orbital parameters e and ω (which MUST equal the D1
+// values, and do match on the LNAV/CNAV/D1/F-NAV signals) against EVERY message type,
+// bit offset, field width (30–34), and plausible scale in the captured B-CNAV2 frames
+// — no position works, even though toe@61 and i0@75 match exactly. That split (some
+// fields land, most don't) is the signature of u-blox delivering B2a with the
+// LDPC(96,48) channel-coding parity still INTERLEAVED: i0 happens to sit on an
+// information bit, e straddles a coding boundary. The information-bit layout therefore
+// cannot be recovered from the frames — it must come from the BDS-SIS-ICD-B2a §6.2
+// message spec together with §5 channel coding. Do NOT guess: a wrong offset silently
+// yields a plausible-but-wrong orbit. (Contrast GPS L2C CNAV, frame/gps_cnav.go, which
+// u-blox delivers as clean information bits and which IS implemented + validated — its
+// ΔA/message-10-11 structure is the model to follow once the B2a coding is in hand.)
 
 // ErrBCNAV2Unimplemented is returned by DecodeBeiDouBCNAV2 until the §6.2 layout is
 // completed. It is intentionally explicit so the frame is dropped rather than
