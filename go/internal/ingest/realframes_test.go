@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"bytes"
+	"math"
 	"os"
 	"testing"
 
@@ -318,6 +319,101 @@ func TestRealBeiDouD1(t *testing.T) {
 		t.Errorf("assembled only %d BeiDou ephemerides, want >= 4", assembled)
 	}
 	t.Logf("real F9T capture: %d BeiDou D1 SVs with full ephemerides", assembled)
+}
+
+// TestRealGPSCNAVAgreesWithLNAV validates the GPS L2C CNAV decoder against a real
+// ZED-F9P capture (testdata/f9p_capture.ubx has both L1 C/A LNAV and L2C CNAV): for
+// every GPS SV present on both, the CNAV-decoded position must agree with the
+// LNAV-decoded position (same broadcast ephemeris, ΔA vs √A parameterizations) to
+// within a few metres.
+func TestRealGPSCNAVAgreesWithLNAV(t *testing.T) {
+	data, err := os.ReadFile("testdata/f9p_capture.ubx")
+	if err != nil {
+		t.Skipf("no F9P capture fixture: %v", err)
+	}
+	var frames []*RawFrame
+	_ = scanUBX(bytes.NewReader(data), "cap", fixedTime,
+		func(f *RawFrame) { frames = append(frames, f) }, func(string) {})
+
+	type ln struct{ sf1, sf2, sf3 *frame.GPSSubframe }
+	type cn struct{ m10, m11 *frame.GPSCNAV }
+	lnav := map[int]*ln{}
+	cnav := map[int]*cn{}
+	for _, f := range frames {
+		if f.GnssID != gnss.GPS {
+			continue
+		}
+		switch f.SigID {
+		case 0: // L1 C/A LNAV
+			sf, err := frame.DecodeGPSLNAV(f.Words)
+			if err != nil {
+				continue
+			}
+			s := lnav[f.SvID]
+			if s == nil {
+				s = &ln{}
+				lnav[f.SvID] = s
+			}
+			switch sf.SubframeID {
+			case 1:
+				s.sf1 = sf
+			case 2:
+				s.sf2 = sf
+			case 3:
+				s.sf3 = sf
+			}
+		case 4: // L2C CNAV
+			m, err := frame.DecodeGPSCNAV(gnss.GPS, f.Words)
+			if err != nil {
+				continue
+			}
+			s := cnav[f.SvID]
+			if s == nil {
+				s = &cn{}
+				cnav[f.SvID] = s
+			}
+			switch m.MsgType {
+			case 10:
+				s.m10 = m
+			case 11:
+				s.m11 = m
+			}
+		}
+	}
+
+	agreed := 0
+	for sv, c := range cnav {
+		l := lnav[sv]
+		if l == nil || l.sf1 == nil || l.sf2 == nil || l.sf3 == nil || c.m10 == nil || c.m11 == nil {
+			continue
+		}
+		lEph, _, err1 := frame.AssembleGPS(gnss.GPS, sv, l.sf1, l.sf2, l.sf3)
+		cEph, _, err2 := frame.AssembleGPSCNAV(gnss.GPS, sv, c.m10, c.m11, nil)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		// LNAV and CNAV update independently, so they rarely share a toe; propagate
+		// both to a common instant and require same-orbit agreement. The residual is
+		// the genuine difference between two ephemeris uploads propagated a few
+		// hundred–thousand seconds apart (tens of metres), NOT a decode error — a
+		// wrong CNAV offset would put the SV kilometres off.
+		tow := lEph.Toe
+		lp, e1 := kepler.Propagate(lEph, tow)
+		cp, e2 := kepler.Propagate(cEph, tow)
+		if e1 != nil || e2 != nil {
+			continue
+		}
+		tol := 5.0 + math.Abs(lEph.Toe-cEph.Toe)*0.02 // ~5 m + growth with the toe gap
+		if dist := lp.Sub(cp).Norm(); dist > tol {
+			t.Errorf("G%02d CNAV vs LNAV disagree by %.1f m (tol %.0f, toe L=%.0f C=%.0f) — likely a decode error",
+				sv, dist, tol, lEph.Toe, cEph.Toe)
+		}
+		agreed++
+	}
+	if agreed < 4 {
+		t.Errorf("only %d GPS SVs cross-checked CNAV against LNAV, want >= 4", agreed)
+	}
+	t.Logf("real F9P capture: %d GPS SVs agree CNAV↔LNAV (same orbit, within the toe-gap tolerance)", agreed)
 }
 
 // TestRealGLONASS validates the GLONASS string decoder + RK4 propagator against
