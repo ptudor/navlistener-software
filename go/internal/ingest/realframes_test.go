@@ -155,6 +155,104 @@ func TestRealGalileoINAV(t *testing.T) {
 	t.Logf("real F9T capture: %d Galileo SVs with full I/NAV ephemerides", assembled)
 }
 
+// TestRealGalileoFNAVAgreesWithINAV validates the E5a F/NAV decoder against the
+// same capture by the strongest possible check: for every SV present on both
+// signals, the F/NAV-decoded position must agree with the I/NAV-decoded position
+// (same broadcast ephemeris, two signals) to within a few metres.
+func TestRealGalileoFNAVAgreesWithINAV(t *testing.T) {
+	data, err := os.ReadFile("testdata/f9t_capture.ubx")
+	if err != nil {
+		t.Skipf("no capture fixture: %v", err)
+	}
+	var frames []*RawFrame
+	_ = scanUBX(bytes.NewReader(data), "cap", fixedTime,
+		func(f *RawFrame) { frames = append(frames, f) }, func(string) {})
+
+	type inav struct{ w1, w2, w3, w4 *frame.GalileoINAV }
+	type fnav struct{ p1, p2, p3, p4 *frame.GalileoFNAV }
+	iByte := map[int]*inav{}
+	fByte := map[int]*fnav{}
+	for _, f := range frames {
+		if f.GnssID != gnss.Galileo {
+			continue
+		}
+		switch f.SigID {
+		case 1: // E1-B I/NAV
+			w, err := frame.DecodeGalileoINAV(f.Words)
+			if err != nil {
+				continue
+			}
+			s := iByte[f.SvID]
+			if s == nil {
+				s = &inav{}
+				iByte[f.SvID] = s
+			}
+			switch w.Type {
+			case 1:
+				s.w1 = w
+			case 2:
+				s.w2 = w
+			case 3:
+				s.w3 = w
+			case 4:
+				s.w4 = w
+			}
+		case 3: // E5a F/NAV
+			w, err := frame.DecodeGalileoFNAV(f.Words)
+			if err != nil {
+				continue
+			}
+			s := fByte[f.SvID]
+			if s == nil {
+				s = &fnav{}
+				fByte[f.SvID] = s
+			}
+			switch w.PageType {
+			case 1:
+				s.p1 = w
+			case 2:
+				s.p2 = w
+			case 3:
+				s.p3 = w
+			case 4:
+				s.p4 = w
+			}
+		}
+	}
+
+	agreed := 0
+	for sv, fs := range fByte {
+		is := iByte[sv]
+		if is == nil || is.w1 == nil || is.w2 == nil || is.w3 == nil || is.w4 == nil {
+			continue
+		}
+		if fs.p1 == nil || fs.p2 == nil || fs.p3 == nil || fs.p4 == nil {
+			continue
+		}
+		iEph, _, err1 := frame.AssembleGalileo(sv, is.w1, is.w2, is.w3, is.w4)
+		fEph, _, err2 := frame.AssembleGalileoFNAV(sv, fs.p1, fs.p2, fs.p3, fs.p4)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		if iEph.Toe != fEph.Toe {
+			continue // different data sets in this window; skip
+		}
+		ip, e1 := kepler.Propagate(iEph, iEph.Toe)
+		fp, e2 := kepler.Propagate(fEph, fEph.Toe)
+		if e1 != nil || e2 != nil {
+			continue
+		}
+		if dist := ip.Sub(fp).Norm(); dist > 5 {
+			t.Errorf("E%02d F/NAV vs I/NAV position disagree by %.1f m", sv, dist)
+		}
+		agreed++
+	}
+	if agreed < 3 {
+		t.Errorf("only %d SVs cross-checked F/NAV against I/NAV, want >= 3", agreed)
+	}
+	t.Logf("real F9T capture: %d Galileo SVs agree F/NAV↔I/NAV to <5 m", agreed)
+}
+
 // TestRealBeiDouD1 validates the BeiDou D1 decoder against the real capture:
 // subframes 1/2/3 (B1I, sigId 0) assemble per SV; each must propagate to the BeiDou
 // MEO shell (~27906 km) and carry the ~55° MEO inclination — the latter guards the
