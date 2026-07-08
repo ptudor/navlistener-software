@@ -7,6 +7,7 @@ import (
 
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/gnss/frame"
+	"github.com/ptudor/gnss/glonass"
 	"github.com/ptudor/gnss/kepler"
 )
 
@@ -219,4 +220,72 @@ func TestRealBeiDouD1(t *testing.T) {
 		t.Errorf("assembled only %d BeiDou ephemerides, want >= 4", assembled)
 	}
 	t.Logf("real F9T capture: %d BeiDou D1 SVs with full ephemerides", assembled)
+}
+
+// TestRealGLONASS validates the GLONASS string decoder + RK4 propagator against
+// the real capture: strings 1/2/3 assemble the PZ-90 Cartesian state per SV, which
+// must sit on the ~25510 km shell at tb (position decode) and stay there after a
+// 300 s RK4 propagation (which exercises the velocity decode too).
+func TestRealGLONASS(t *testing.T) {
+	data, err := os.ReadFile("testdata/f9t_capture.ubx")
+	if err != nil {
+		t.Skipf("no capture fixture: %v", err)
+	}
+	var frames []*RawFrame
+	_ = scanUBX(bytes.NewReader(data), "cap", fixedTime,
+		func(f *RawFrame) { frames = append(frames, f) }, func(string) {})
+
+	type strset struct {
+		s1, s2, s3 *frame.GLONASSString
+		freqID     int
+	}
+	bySV := map[int]*strset{}
+	for _, f := range frames {
+		if f.GnssID != gnss.GLONASS || f.SigID != 0 {
+			continue
+		}
+		s, err := frame.DecodeGLONASSString(f.Words)
+		if err != nil {
+			continue
+		}
+		set := bySV[f.SvID]
+		if set == nil {
+			set = &strset{freqID: f.FreqID}
+			bySV[f.SvID] = set
+		}
+		switch s.Number {
+		case 1:
+			set.s1 = s
+		case 2:
+			set.s2 = s
+		case 3:
+			set.s3 = s
+		}
+	}
+
+	assembled := 0
+	for sv, set := range bySV {
+		if set.s1 == nil || set.s2 == nil || set.s3 == nil {
+			continue
+		}
+		eph, err := frame.AssembleGLONASS(sv, set.freqID, set.s1, set.s2, set.s3)
+		if err != nil {
+			continue
+		}
+		for _, tk := range []float64{0, 300} {
+			pos, err := glonass.Propagate(eph, tk)
+			if err != nil {
+				t.Errorf("R%02d propagate tk=%.0f: %v", sv, tk, err)
+				continue
+			}
+			if r := pos.Norm(); r < 25.0e6 || r > 26.0e6 {
+				t.Errorf("R%02d radius at tk=%.0f = %.0f m, want the GLONASS shell ~25510 km", sv, tk, r)
+			}
+		}
+		assembled++
+	}
+	if assembled < 4 {
+		t.Errorf("assembled only %d GLONASS ephemerides, want >= 4", assembled)
+	}
+	t.Logf("real F9T capture: %d GLONASS SVs with full ephemerides", assembled)
 }
