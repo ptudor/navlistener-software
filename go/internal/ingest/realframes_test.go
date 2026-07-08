@@ -416,6 +416,52 @@ func TestRealGPSCNAVAgreesWithLNAV(t *testing.T) {
 	t.Logf("real F9P capture: %d GPS SVs agree CNAV↔LNAV (same orbit, within the toe-gap tolerance)", agreed)
 }
 
+// TestRealSBAS validates the SBAS L1 decoder against the real F9P capture: every
+// SBAS message decodes with a valid preamble and message type, and the WAAS PRNs
+// (131/133/135) map to the WAAS provider.
+func TestRealSBAS(t *testing.T) {
+	data, err := os.ReadFile("testdata/f9p_capture.ubx")
+	if err != nil {
+		t.Skipf("no F9P capture fixture: %v", err)
+	}
+	var frames []*RawFrame
+	_ = scanUBX(bytes.NewReader(data), "cap", fixedTime,
+		func(f *RawFrame) { frames = append(frames, f) }, func(string) {})
+
+	types := map[int]bool{}
+	n, waas := 0, 0
+	for _, f := range frames {
+		if f.GnssID != gnss.SBAS {
+			continue
+		}
+		m, err := frame.DecodeSBASL1(f.SvID, f.Words)
+		if err != nil {
+			t.Fatalf("SBAS decode: %v", err)
+		}
+		if !m.PreambleOK {
+			t.Errorf("PRN %d: bad SBAS preamble", m.PRN)
+		}
+		if m.Type < 0 || m.Type > 63 {
+			t.Errorf("PRN %d: message type %d out of range", m.PRN, m.Type)
+		}
+		types[m.Type] = true
+		if m.PRN == 131 || m.PRN == 133 || m.PRN == 135 {
+			if m.Provider != "WAAS" {
+				t.Errorf("PRN %d provider = %q, want WAAS", m.PRN, m.Provider)
+			}
+			waas++
+		}
+		n++
+	}
+	if n < 100 {
+		t.Fatalf("only %d SBAS messages decoded", n)
+	}
+	if waas == 0 {
+		t.Error("no WAAS messages recognised")
+	}
+	t.Logf("real F9P capture: %d SBAS messages, %d WAAS, message types seen: %v", n, waas, types)
+}
+
 // TestRealGLONASS validates the GLONASS string decoder + RK4 propagator against
 // the real capture: strings 1/2/3 assemble the PZ-90 Cartesian state per SV, which
 // must sit on the ~25510 km shell at tb (position decode) and stay there after a
