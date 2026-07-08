@@ -1,0 +1,134 @@
+package detect
+
+import (
+	"testing"
+	"time"
+
+	"github.com/ptudor/navlistener/internal/state"
+)
+
+func ptrF(v float64) *float64 { return &v }
+
+// gps builds a minimal healthy GPS FeedSV with a position, at the given health.
+func gps(name string, svid, health int) state.FeedSV {
+	return state.FeedSV{
+		Name: name, GnssID: 0, SvID: svid, SigID: 0,
+		HealthCode: health, XM: ptrF(1), YM: ptrF(2), ZM: ptrF(3),
+	}
+}
+
+// TestSeedNoEvent confirms the first sighting of a metric seeds the state silently —
+// no phantom transition (docs/INTEGRITY.md §3 guard).
+func TestSeedNoEvent(t *testing.T) {
+	d := New(time.Minute)
+	now := time.Unix(1_000_000, 0)
+	evs := d.Tick(now, map[string]state.FeedSV{"G05@0": gps("G05", 5, 1)}, nil)
+	if len(evs) != 0 {
+		t.Fatalf("first tick emitted %d events, want 0 (seed only)", len(evs))
+	}
+}
+
+// TestHealthDebounce confirms a health change is emitted only after the provisional
+// state persists for the full debounce window, and reverts silently before it.
+func TestHealthDebounce(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(1_000_000, 0)
+	svs := map[string]state.FeedSV{"G05@0": gps("G05", 5, 1)} // healthy
+	d.Tick(t0, svs, nil)                                      // seed OK
+
+	// Unhealthy: this tick starts the provisional window (no event yet).
+	bad := map[string]state.FeedSV{"G05@0": gps("G05", 5, 2)}
+	if evs := d.Tick(t0.Add(30*time.Second), bad, nil); len(evs) != 0 {
+		t.Fatalf("emitted %d events when provisional started, want 0", len(evs))
+	}
+	// Still inside the window (< 60 s since the provisional began): no event.
+	if evs := d.Tick(t0.Add(60*time.Second), bad, nil); len(evs) != 0 {
+		t.Fatalf("emitted %d events before debounce elapsed, want 0", len(evs))
+	}
+	// Past the window (≥ 60 s since the provisional began): confirmed transition.
+	evs := d.Tick(t0.Add(95*time.Second), bad, nil)
+	if len(evs) != 1 {
+		t.Fatalf("got %d events, want 1", len(evs))
+	}
+	e := evs[0]
+	if e.Type != "health_change" || e.Severity != SevCritical {
+		t.Errorf("event = %s/%d, want health_change/2", e.Type, e.Severity)
+	}
+	if e.OldValue != "1" || e.NewValue != "2" {
+		t.Errorf("transition %s→%s, want 1→2", e.OldValue, e.NewValue)
+	}
+}
+
+// TestRevertBeforeConfirm confirms a provisional change that reverts to the current
+// state before the window elapses fires nothing (the flap filter).
+func TestRevertBeforeConfirm(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(2_000_000, 0)
+	ok := map[string]state.FeedSV{"G05@0": gps("G05", 5, 1)}
+	bad := map[string]state.FeedSV{"G05@0": gps("G05", 5, 2)}
+	d.Tick(t0, ok, nil)
+	d.Tick(t0.Add(20*time.Second), bad, nil) // provisional unhealthy
+	d.Tick(t0.Add(40*time.Second), ok, nil)  // reverts before 60 s
+	if evs := d.Tick(t0.Add(90*time.Second), ok, nil); len(evs) != 0 {
+		t.Fatalf("flap emitted %d events, want 0", len(evs))
+	}
+}
+
+// TestOrbitDiscoBands confirms the orbit-disco warn/crit banding and event type.
+func TestOrbitDiscoBands(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(3_000_000, 0)
+	sv := gps("G05", 5, 1)
+	sv.OrbitDiscoM = ptrF(0.5) // ok
+	d.Tick(t0, map[string]state.FeedSV{"G05@0": sv}, nil)
+
+	sv.OrbitDiscoM = ptrF(12.0) // crit
+	m := map[string]state.FeedSV{"G05@0": sv}
+	d.Tick(t0.Add(10*time.Second), m, nil)
+	evs := d.Tick(t0.Add(80*time.Second), m, nil)
+	var found *Event
+	for i := range evs {
+		if evs[i].Type == "orbit_disco" {
+			found = &evs[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("no orbit_disco event")
+	}
+	if found.NewValue != "crit" || found.Severity != SevCritical {
+		t.Errorf("orbit_disco = %s/%d, want crit/2", found.NewValue, found.Severity)
+	}
+}
+
+// TestQZSSHealthType confirms QZSS health transitions carry the qzss_health type,
+// not health_change (docs/INTEGRITY.md §5, the Japan extension).
+func TestQZSSHealthType(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(4_000_000, 0)
+	j := state.FeedSV{Name: "J03", GnssID: 5, SvID: 3, HealthCode: 1, XM: ptrF(1), YM: ptrF(1), ZM: ptrF(1)}
+	d.Tick(t0, map[string]state.FeedSV{"J03@0": j}, nil)
+	j.HealthCode = 3 // do-not-use
+	bad := map[string]state.FeedSV{"J03@0": j}
+	d.Tick(t0.Add(10*time.Second), bad, nil)
+	evs := d.Tick(t0.Add(80*time.Second), bad, nil)
+	if len(evs) != 1 || evs[0].Type != "qzss_health" || evs[0].Severity != SevCritical {
+		t.Fatalf("got %+v, want one qzss_health/2", evs)
+	}
+}
+
+// TestSBASDoNotUse confirms an SBAS PRN going do-not-use fires a critical sbas_health.
+func TestSBASDoNotUse(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(5_000_000, 0)
+	ok := map[string]state.SBASEntry{"131": {Provider: "WAAS", HealthCode: 1}}
+	d.Tick(t0, nil, ok)
+	bad := map[string]state.SBASEntry{"131": {Provider: "WAAS", HealthCode: 3}}
+	d.Tick(t0.Add(10*time.Second), nil, bad)
+	evs := d.Tick(t0.Add(80*time.Second), nil, bad)
+	if len(evs) != 1 || evs[0].Type != "sbas_health" || evs[0].Severity != SevCritical {
+		t.Fatalf("got %+v, want one sbas_health/2", evs)
+	}
+	if evs[0].SV != "S131" {
+		t.Errorf("subject = %s, want S131", evs[0].SV)
+	}
+}

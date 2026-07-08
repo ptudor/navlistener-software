@@ -1,0 +1,271 @@
+package detect
+
+import (
+	"fmt"
+	"sort"
+	"sync"
+	"time"
+
+	"github.com/ptudor/navlistener/internal/state"
+)
+
+// Event is one confirmed integrity transition (docs/OUTPUT.md §3). The daemon
+// assigns the monotonic id when it persists the event; the detector fills the rest.
+type Event struct {
+	Time     time.Time
+	SV       string
+	Type     string
+	OldValue string
+	NewValue string
+	Severity int
+	Message  string
+	Params   map[string]any
+}
+
+// Detector holds the per-(subject, metric) debounced state machines and confirms a
+// transition only after it has persisted for the debounce window (docs/INTEGRITY.md
+// §4). It is safe for one goroutine to call Tick on a cadence; the mutex guards
+// against a concurrent reset.
+type Detector struct {
+	mu       sync.Mutex
+	machines map[string]*machine
+	debounce time.Duration
+}
+
+// machine is one metric's state: the confirmed current classification, a pending
+// provisional one, and when the pending one was first seen.
+type machine struct {
+	current     string
+	provisional string
+	since       time.Time
+}
+
+// New builds a Detector with the standard debounce window. A non-positive debounce
+// uses DebounceDuration.
+func New(debounce time.Duration) *Detector {
+	if debounce <= 0 {
+		debounce = DebounceDuration
+	}
+	return &Detector{machines: map[string]*machine{}, debounce: debounce}
+}
+
+// observe folds a new classification for one (subject, metric) into its state
+// machine and reports whether this is a confirmed transition, with the old value.
+// The first-ever observation seeds the current state silently (no phantom event).
+func (d *Detector) observe(subject, metric, newState string, now time.Time) (changed bool, old string) {
+	key := subject + "\x00" + metric
+	m := d.machines[key]
+	if m == nil {
+		d.machines[key] = &machine{current: newState}
+		return false, "" // seed; first sighting is not a transition
+	}
+	switch {
+	case newState == m.current:
+		m.provisional = "" // pending change reverted
+		return false, ""
+	case newState == m.provisional:
+		if now.Sub(m.since) >= d.debounce {
+			old = m.current
+			m.current, m.provisional = newState, ""
+			return true, old
+		}
+		return false, ""
+	default:
+		m.provisional, m.since = newState, now // start a new pending change
+		return false, ""
+	}
+}
+
+// Tick classifies the current SV and SBAS metrics, advances every state machine, and
+// returns the transitions confirmed at this instant. Events are returned sorted for
+// deterministic output. now is the wall clock; the daemon supplies the live read
+// model (the same one the feeds serve).
+func (d *Detector) Tick(now time.Time, svs map[string]state.FeedSV, sbas map[string]state.SBASEntry) []Event {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	var events []Event
+	emit := func(subject, metric, newState string, ev func(old string) Event) {
+		if changed, old := d.observe(subject, metric, newState, now); changed {
+			e := ev(old)
+			e.Time, e.SV = now, subject
+			events = append(events, e)
+		}
+	}
+
+	for name, sv := range svs {
+		d.detectSV(name, sv, now, emit)
+	}
+	for prn, s := range sbas {
+		d.detectSBAS(prn, s, emit)
+	}
+
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].SV != events[j].SV {
+			return events[i].SV < events[j].SV
+		}
+		return events[i].Type < events[j].Type
+	})
+	return events
+}
+
+// Reset clears all state machines (used at shutdown/tests). It does not emit.
+func (d *Detector) Reset() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.machines = map[string]*machine{}
+}
+
+// emitFunc is the closure Tick passes to the per-subject detectors.
+type emitFunc func(subject, metric, newState string, ev func(old string) Event)
+
+// detectSV runs every SV-level classifier for one satellite×signal.
+func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, emit emitFunc) {
+	// Health transition. QZSS/NavIC get their own event types (docs/INTEGRITY.md §5).
+	healthType, healthSev := healthEvent(sv.GnssID, sv.HealthCode)
+	emit(name, "health", fmt.Sprintf("%d", sv.HealthCode), func(old string) Event {
+		return Event{
+			Type: healthType, OldValue: old, NewValue: fmt.Sprintf("%d", sv.HealthCode),
+			Severity: healthSev,
+			Message:  fmt.Sprintf("%s health %s→%d", sv.Name, old, sv.HealthCode),
+			Params:   map[string]any{"sv": sv.Name, "gnssid": sv.GnssID, "health_code": sv.HealthCode},
+		}
+	})
+
+	// Ephemeris age crossing.
+	if sv.EphAgeM != nil {
+		aged := *sv.EphAgeM > ephAgeThreshold(sv.GnssID)
+		emit(name, "eph_age", boolState(aged, "aged", "fresh"), func(old string) Event {
+			return Event{
+				Type: "eph_aged", OldValue: old, NewValue: boolState(aged, "aged", "fresh"),
+				Severity: SevWarning,
+				Message:  fmt.Sprintf("%s ephemeris age %.0f min", sv.Name, *sv.EphAgeM),
+				Params:   map[string]any{"sv": sv.Name, "eph_age_m": *sv.EphAgeM},
+			}
+		})
+	}
+
+	// Orbit-disco band (absent = not computable; no classification).
+	if sv.OrbitDiscoM != nil {
+		band, sev := discoBand(*sv.OrbitDiscoM, OrbitDiscoThreshold, OrbitDiscoSevereThreshold)
+		emit(name, "orbit_disco", band, func(old string) Event {
+			return Event{
+				Type: "orbit_disco", OldValue: old, NewValue: band, Severity: sev,
+				Message: fmt.Sprintf("%s orbit disco %.2f m", sv.Name, *sv.OrbitDiscoM),
+				Params:  map[string]any{"sv": sv.Name, "orbit_disco_m": *sv.OrbitDiscoM},
+			}
+		})
+	}
+
+	// Time-disco / clock jump band.
+	if sv.TimeDiscoNs != nil {
+		band, sev := discoBand(*sv.TimeDiscoNs, TimeDiscoThreshold, TimeDiscoSevereThreshold)
+		emit(name, "clock_jump", band, func(old string) Event {
+			return Event{
+				Type: "clock_jump", OldValue: old, NewValue: band, Severity: sev,
+				Message: fmt.Sprintf("%s clock jump %.2f ns", sv.Name, *sv.TimeDiscoNs),
+				Params:  map[string]any{"sv": sv.Name, "time_disco_ns": *sv.TimeDiscoNs},
+			}
+		})
+	}
+
+	// SISA/URA accuracy degradation, with hysteresis so a boundary value doesn't flap.
+	if sv.SISAM != nil {
+		emit(name, "sisa", sisaBand(*sv.SISAM), func(old string) Event {
+			return Event{
+				Type: "sisa_change", OldValue: old, NewValue: sisaBand(*sv.SISAM), Severity: SevWarning,
+				Message: fmt.Sprintf("%s SISA %.2f m", sv.Name, *sv.SISAM),
+				Params:  map[string]any{"sv": sv.Name, "sisa_m": *sv.SISAM},
+			}
+		})
+	}
+
+	// Silence (observation lost).
+	silent := float64(sv.LastSeenS) > SilentThreshold
+	emit(name, "silence", boolState(silent, "silent", "seen"), func(old string) Event {
+		return Event{
+			Type: "observation_lost", OldValue: old, NewValue: boolState(silent, "silent", "seen"),
+			Severity: SevWarning,
+			Message:  fmt.Sprintf("%s unseen %ds", sv.Name, sv.LastSeenS),
+			Params:   map[string]any{"sv": sv.Name, "last_seen_s": sv.LastSeenS},
+		}
+	})
+
+	// A monitored SV with no computable position.
+	unknown := sv.XM == nil
+	emit(name, "position", boolState(unknown, "unknown", "known"), func(old string) Event {
+		return Event{
+			Type: "position_unknown", OldValue: old, NewValue: boolState(unknown, "unknown", "known"),
+			Severity: SevWarning,
+			Message:  fmt.Sprintf("%s position %s", sv.Name, boolState(unknown, "unknown", "known")),
+			Params:   map[string]any{"sv": sv.Name},
+		}
+	})
+}
+
+// detectSBAS runs the augmentation-health classifier for one SBAS PRN.
+func (d *Detector) detectSBAS(prn string, s state.SBASEntry, emit emitFunc) {
+	band := "ok"
+	sev := SevInfo
+	if s.HealthCode == 3 { // do-not-use
+		band, sev = "do_not_use", SevCritical
+	}
+	subject := "S" + prn
+	emit(subject, "sbas_health", band, func(old string) Event {
+		return Event{
+			Type: "sbas_health", OldValue: old, NewValue: band, Severity: sev,
+			Message: fmt.Sprintf("SBAS %s (%s) %s", prn, s.Provider, band),
+			Params:  map[string]any{"prn": prn, "provider": s.Provider, "health_code": s.HealthCode},
+		}
+	})
+}
+
+// healthEvent maps a constellation to its health event type and severity: QZSS and
+// NavIC carry their own types (docs/INTEGRITY.md §5); the rest use health_change.
+func healthEvent(gnssID, healthCode int) (string, int) {
+	switch gnssID {
+	case 5: // QZSS
+		if healthCode == 3 {
+			return "qzss_health", SevCritical
+		}
+		return "qzss_health", SevWarning
+	case 7: // NavIC
+		if healthCode == 3 {
+			return "navic_health", SevCritical
+		}
+		return "navic_health", SevWarning
+	default:
+		return "health_change", SevCritical
+	}
+}
+
+// discoBand classifies a discontinuity magnitude into ok/warn/crit and returns the
+// event severity for the band.
+func discoBand(v, warn, severe float64) (string, int) {
+	switch {
+	case v >= severe:
+		return "crit", SevCritical
+	case v >= warn:
+		return "warn", SevWarning
+	default:
+		return "ok", SevInfo
+	}
+}
+
+// sisaBand classifies accuracy as ok/degraded across the 3 m threshold. A value
+// dithering on the boundary cannot flap the confirmed state because a change must
+// persist for the full debounce window before it is emitted (docs/INTEGRITY.md §4);
+// the debounce is the flap filter for this continuous metric.
+func sisaBand(m float64) string {
+	if m >= SISAAlertThreshold {
+		return "degraded"
+	}
+	return "ok"
+}
+
+func boolState(b bool, t, f string) string {
+	if b {
+		return t
+	}
+	return f
+}
