@@ -44,7 +44,10 @@ func TestSlantFromCodeBiasSign(t *testing.T) {
 	p1, p2, _, _ := obs.sample(rand.New(rand.NewSource(2)))
 	biased := SlantFromCode(p1, p2, L1Hz, L2Hz, 0)
 	want := obs.i1 + obs.codeBias/(Gamma(L1Hz, L2Hz)-1)
-	if math.Abs(biased-want) > 1e-9 {
+	// biased and want are algebraically identical but reached by different float
+	// paths ((γ−1)·i1+bias then /(γ−1) vs i1 + bias/(γ−1)), so allow the resulting
+	// ~nm rounding rather than demanding bit-exact equality on an ~8 m value.
+	if math.Abs(biased-want) > 1e-6 {
 		t.Fatalf("biased slant = %v, want %v", biased, want)
 	}
 }
