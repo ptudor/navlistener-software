@@ -16,7 +16,16 @@ import (
 
 	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/state"
+	"github.com/ptudor/navlistener/internal/store"
 )
+
+// EventStore is the read side of the integrity-event historian the query API serves
+// (docs/OUTPUT.md §2.1/§3). The TimescaleDB store satisfies it; it is nil when the
+// historian is disabled, in which case the events query endpoints report unavailable.
+type EventStore interface {
+	QueryEvents(ctx context.Context, q store.EventQuery) ([]store.StoredEvent, int, error)
+	SummarizeEvents(ctx context.Context, since, until time.Time) (store.EventSummary, error)
+}
 
 // schemaVersion is the OUTPUT contract version carried in every feed's data object.
 const schemaVersion = "2.0"
@@ -31,6 +40,7 @@ var fastFeeds = []string{"svs", "global", "observers", "sbas"}
 type Server struct {
 	http    *http.Server
 	store   *state.Store
+	events  EventStore
 	sources []config.Source
 	log     *slog.Logger
 	now     func() time.Time
@@ -48,7 +58,7 @@ type Server struct {
 // ingest connectors, published (dial mode) as the observer list until authenticated
 // push observers replace it. fast/slow are the refresh cadences (§5); zero uses the
 // defaults (30 s / 90 s).
-func New(addr string, store *state.Store, sources []config.Source, fast, slow time.Duration, log *slog.Logger) *Server {
+func New(addr string, st *state.Store, events EventStore, sources []config.Source, fast, slow time.Duration, log *slog.Logger) *Server {
 	if fast <= 0 {
 		fast = 30 * time.Second
 	}
@@ -56,7 +66,8 @@ func New(addr string, store *state.Store, sources []config.Source, fast, slow ti
 		slow = 90 * time.Second
 	}
 	s := &Server{
-		store:   store,
+		store:   st,
+		events:  events,
 		sources: sources,
 		log:     log,
 		now:     time.Now,
@@ -71,6 +82,8 @@ func New(addr string, store *state.Store, sources []config.Source, fast, slow ti
 	mux.HandleFunc("/gnss/api/v2/observers", s.serveFeed("observers"))
 	mux.HandleFunc("/gnss/api/v2/almanac", s.serveFeed("almanac"))
 	mux.HandleFunc("/gnss/api/v2/sbas", s.serveFeed("sbas"))
+	mux.HandleFunc("/gnss/api/events/summary", s.serveEventsSummary)
+	mux.HandleFunc("/gnss/api/events", s.serveEventsQuery)
 	mux.HandleFunc("/gnss/events", s.broker.serveEvents)
 	s.http = &http.Server{
 		Addr:              addr,

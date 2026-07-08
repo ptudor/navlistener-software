@@ -119,7 +119,13 @@ func run() int {
 	// separate from the ingest write path and the metrics listener.
 	var apiSrv *serve.Server
 	if cfg.Serve.Addr != "" {
-		apiSrv = serve.New(cfg.Serve.Addr, live, cfg.Ingest, cfg.Serve.RefreshFast, cfg.Serve.RefreshSlow, log)
+		// The events query API reads the historian; a true nil interface (not a typed nil
+		// *store.Store) keeps the endpoints reporting "unavailable" when persistence is off.
+		var eventStore serve.EventStore
+		if historian != nil {
+			eventStore = historian
+		}
+		apiSrv = serve.New(cfg.Serve.Addr, live, eventStore, cfg.Ingest, cfg.Serve.RefreshFast, cfg.Serve.RefreshSlow, log)
 		wg.Add(1)
 		go func() { defer wg.Done(); apiSrv.Run(ctx) }()
 		go func() {

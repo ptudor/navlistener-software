@@ -14,7 +14,11 @@ import (
 )
 
 func testServer(sources []config.Source) *Server {
-	return New("127.0.0.1:0", state.New(4), sources, time.Minute, time.Minute,
+	return newTestServer(sources, nil)
+}
+
+func newTestServer(sources []config.Source, events EventStore) *Server {
+	return New("127.0.0.1:0", state.New(4), events, sources, time.Minute, time.Minute,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
