@@ -33,32 +33,43 @@ Two responsibilities are kept separate within `navlistener`:
   debounce window before it becomes a confirmed `Event`. This kills the flapping that a single
   noisy frame would otherwise generate.
 
-**Phase note:** in the drop-in phase, intsat's own `detect` package (ported from `galmonmon.cc`,
-thresholds verified below) already consumes our `svs.json`. In the absorb phase, `navlistener`
-runs this detector itself, writes `gnss_events`, and fires `pg_notify` — so the thresholds here
-**must stay numerically identical to intsat's `internal/detect/thresholds.go`** or the two phases
-would disagree. They are reproduced from that file, which is the authority.
+**Phase note & authority:** in the drop-in phase, intsat's own `detect` package (ported from
+`galmonmon.cc`) already consumes our `svs.json`. In the absorb phase, `navlistener` runs this
+detector itself, writes `gnss_events`, and fires `pg_notify` — so during the transition the
+thresholds must stay numerically identical to intsat's `internal/detect/thresholds.go` (they
+were verified identical on 2026-07-07). Going forward **this document is the standard**: intsat
+is a consumer, changes land here first, and intsat conforms in lockstep.
 
 ---
 
 ## 2. The confirmed thresholds (from `galmonmon.cc`, as carried in intsat)
 
-These are the exact constants intsat uses today; `navlistener` adopts them verbatim so the
-cutover is a no-op for consumers. Change them only in lockstep with intsat.
+These are the exact constants intsat uses today (**verified 2026-07-07 against
+`go/internal/detect/thresholds.go` + `detector.go`**); `navlistener` adopts them verbatim so
+the cutover is a no-op for consumers. Change them only in lockstep with intsat.
 
-| Metric | Threshold | Severity escalation | Notes |
+| Metric | Threshold (constant) | Severity | Notes |
 |---|---|---|---|
-| **Ephemeris age (Galileo)** | `eph-age-m > 105 min` | crit | Galileo refreshes fastest; stale = suspect |
-| **Ephemeris age (GPS & others)** | `eph-age-m > 140 min` | crit | per-constellation; QZSS follows GPS |
-| **Orbit disco** | `> 1.45 m` → warn | `> 5 m` warn+emphasis 😬, `> 10 m` crit 🚨 | GPS/Galileo primary; §3 |
-| **Time disco (clock jump)** | `> 2.5 ns` → warn | `> 5 ns` warn+emphasis, `> 10 ns` crit | `ns/3.335 ≈ m`; §3 |
-| **SISA / URA change** | crosses `~3.0 m` | warn | accuracy degradation |
-| **Silent SV** | unseen `> 3600 s` | warn | GPS/Galileo (constellations always in view) |
-| **Observer offline** | station unseen `> 300 s` | warn | operator-actionable; shorter than SV silence |
-| **Fresh-receiver window** | `≤ 60 s` | — | a receiver's vote only counts if it saw the SV this recently |
-| **Debounce** | `60 s` | — | provisional state must persist this long to confirm |
+| **Ephemeris age (Galileo)** | `eph-age-m > 105` (`EphAgeThresholdGalileo`) | **warn** (`eph_aged`) | Galileo refreshes fastest; stale = suspect |
+| **Ephemeris age (all non-Galileo)** | `eph-age-m > 140` (`EphAgeThresholdGPS`) | **warn** | despite the name, this constant is intsat's default for *every* non-Galileo constellation; QZSS/NavIC inherit it |
+| **Orbit disco** | `> 1.45 m` (`OrbitDiscoThreshold`) → warn | `> 10 m` (`OrbitDiscoSevereThreshold`) → crit | GPS+Galileo only in intsat today; §3 |
+| **Time disco (clock jump)** | `> 2.5 ns` (`TimeDiscoThreshold`) → warn | `> 10 ns` (`TimeDiscoSevereThreshold`) → crit | Galileo only in intsat today; `ns/3.335 ≈ m`; §3 |
+| **SISA / URA change** | crosses `3.0 m` (`SISAAlertThreshold`) | warn | accuracy degradation |
+| **Silent SV** | unseen `> 3600 s` (`SilentThreshold`) | warn (`observation_lost`) | GPS/Galileo (constellations always in view) |
+| **Observer offline** | station unseen `> 300 s` (`ObserverOfflineThreshold`) | warn→crit (`station_offline`) | operator-actionable; shorter than SV silence |
+| **Fresh-receiver window** | `≤ 60 s` (`FreshReceiverThreshold`) | — | a receiver's vote only counts if it saw the SV this recently |
+| **Debounce** | `60 s` (`DebounceDuration`) | — | provisional state must persist this long to confirm |
 
-Severity encoding (the SSE/`gnss_events` contract): `0 = info`, `1 = warning`, `2 = critical`.
+> **Dead-band caveat.** `thresholds.go` also defines `OrbitDiscoWarningThreshold = 5.0` and
+> `TimeDiscoWarningThreshold = 5.0` ("emphasis" middle bands, a galmonmon inheritance), but
+> the shipped Go detector **never references them** — only 1.45/10 m and 2.5/10 ns actually
+> branch. The real contract is two bands, not three; if intsat ever wires the 5.0 bands in,
+> adopt in lockstep.
+
+Severity encoding (the SSE/`gnss_events` contract, `thresholds.go`): `0 = info`,
+`1 = warning`, `2 = critical`. Where intsat restricts an event to certain constellations
+(orbit_disco: GPS+Galileo; clock_jump: Galileo; observation_lost: GPS+Galileo), we widen to
+the full monitored set below — that widening is a documented superset, not a threshold change.
 
 **Monitored signals.** The initial monitoring set covers GPS L1CA (`0,0`), Galileo E1 (`2,1`), BeiDou B1I
 (`3,0`), GLONASS L1 (`6,0`). **Regional signal coverage:**
@@ -140,18 +151,23 @@ English fallback. This mirrors intsat's `Event`/`params` contract exactly (`docs
 
 ## 5. Event types (the SSE / `gnss_events` contract)
 
+The baseline vocabulary and severities below are **verified against intsat's shipped detector
+(2026-07-07)**; the two `*_health` types are our extensions.
+
 | `event_type` | Fires when | Severity |
 |---|---|---|
-| `health_change` | broadcast health/`healthissue` transition | 1–2 by level |
-| `eph_aged` | ephemeris age crosses the constellation threshold | 2 |
-| `orbit_disco` | orbit-disco band change (§2) | 1–2 by band |
-| `clock_jump` | time-disco band change | 1–2 by band |
-| `sisa_change` | SISA/URA crosses ~3 m | 1 |
-| `observation_lost` | SV silent > 3600 s / observer offline > 300 s | 1 |
-| `osnma_change` | Galileo OSNMA authentication on↔off | 1 |
-| `sbas_health` | SBAS message-type-0 / health change | 1–2 |
-| `qzss_health` *(new)* | QZSS health/DC-report (disaster) transition | 1–2 |
-| `navic_health` *(new)* | NavIC SPS health transition | 1–2 |
+| `health_change` | broadcast health/`healthissue` transition | 2 |
+| `eph_aged` | ephemeris age crosses the constellation threshold (§2) | 1 |
+| `orbit_disco` | orbit-disco band change (§2) | 1, → 2 above 10 m |
+| `clock_jump` | time-disco band change | 1, → 2 above 10 ns |
+| `sisa_change` | SISA/URA crosses 3 m | 1 |
+| `observation_lost` | SV silent > 3600 s | 1 |
+| `station_offline` | observer unseen > 300 s | 1–2 |
+| `position_unknown` | a monitored SV has no computable position | 1 |
+| `osnma_change` | Galileo OSNMA authentication on↔off | 0 |
+| `sbas_health` | SBAS message-type-0 / health change | 0, → 2 on do-not-use |
+| `qzss_health` *(ours)* | QZSS health/DC-report (disaster) transition | 1–2 |
+| `navic_health` *(ours)* | NavIC SPS health transition | 1–2 |
 
 The two `*_health` types cover QZSS and NavIC; the
 QZSS one is doubly interesting because QZSS L1S carries **DC Report** disaster/crisis messages
@@ -249,7 +265,7 @@ synchronized access to shared state:
 | accuracy | `sisa`, `sisa-m` | `sisa_valid`, `sisa_m` | `sisa_change` |
 | per-receiver Doppler | `perrecv.delta_hz(_corr)` | same | (feeds coherent-delta detection) |
 | OSNMA | `osnma` | `osnma` | `osnma_change` |
-| silence | `last-seen-s` | `last_seen_s` | `observation_lost` |
+| silence | `last-seen-s` | `last_seen_s` | `observation_lost` (SV), `station_offline` (observer) |
 | corroboration | `conf`, `perrecv` | same | — |
 
 All of these are byte-compatible with what intsat consumes today (`docs/OUTPUT.md`), so the
