@@ -164,6 +164,32 @@ func TestStoreDiscoOnIODChange(t *testing.T) {
 	}
 }
 
+// TestStoreQZSS confirms that QZSS L1 C/A (gnssId 5) uses the shared GPS LNAV
+// path and surfaces as J03@0 with a propagated position.
+func TestStoreQZSS(t *testing.T) {
+	st := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	qzss := func(words []uint32) *ingest.RawFrame {
+		return &ingest.RawFrame{Recv: now, Source: "test", GnssID: gnss.QZSS, SvID: 3, SigID: 0, Words: words}
+	}
+	st.Apply(qzss(sf1Words(85)))
+	st.Apply(qzss(sf2Words(85, 205075516)))
+	st.Apply(qzss(sf3Words(85)))
+	st.Propagate(now)
+
+	e, ok := st.Snapshot(now).SVs["J03@0"]
+	if !ok {
+		t.Fatalf("J03@0 (QZSS) not in snapshot")
+	}
+	if e.GnssID != int(gnss.QZSS) || e.XM == nil {
+		t.Errorf("QZSS entry wrong: %+v", e)
+	}
+	radius := math.Sqrt((*e.XM)*(*e.XM) + (*e.YM)*(*e.YM) + (*e.ZM)*(*e.ZM))
+	if radius < 26.0e6 || radius > 27.2e6 {
+		t.Errorf("QZSS radius = %.0f m (ephemeris is GPS-like here)", radius)
+	}
+}
+
 func TestStoreExpire(t *testing.T) {
 	st := New(2)
 	now := time.Unix(1_700_000_000, 0)
