@@ -15,9 +15,14 @@ import (
 const (
 	ubxSync1      = 0xB5
 	ubxSync2      = 0x62
+	ubxClassNAV   = 0x01
+	ubxIDNAVSAT   = 0x35
 	ubxClassRXM   = 0x02
 	ubxIDSFRBX    = 0x13
 	ubxIDRAWX     = 0x15
+	ubxClassMON   = 0x0A
+	ubxIDMONHW    = 0x09
+	ubxIDMONRF    = 0x38
 	ubxMaxPayload = 1 << 14 // guard against a corrupt length prefix
 )
 
@@ -62,6 +67,24 @@ func scanUBX(r io.Reader, source string, now func() time.Time, emit func(*RawFra
 		case hdr[0] == ubxClassRXM && hdr[1] == ubxIDRAWX:
 			if n := parseRAWX(body, source, now(), emit); n == 0 && len(body) > 16 {
 				onErr("ubx_rawx")
+			}
+		case hdr[0] == ubxClassMON && hdr[1] == ubxIDMONRF:
+			if f := parseMONRF(body, source, now()); f != nil {
+				emit(f)
+			} else {
+				onErr("ubx_monrf")
+			}
+		case hdr[0] == ubxClassMON && hdr[1] == ubxIDMONHW:
+			if f := parseMONHW(body, source, now()); f != nil {
+				emit(f)
+			} else {
+				onErr("ubx_monhw")
+			}
+		case hdr[0] == ubxClassNAV && hdr[1] == ubxIDNAVSAT:
+			if f := parseNAVSAT(body, source, now()); f != nil {
+				emit(f)
+			} else {
+				onErr("ubx_navsat")
 			}
 		}
 	}
@@ -146,6 +169,79 @@ func parseSFRBX(p []byte, source string, recv time.Time) *RawFrame {
 		FreqID: freqID,
 		Words:  words,
 	}
+}
+
+// parseMONRF converts a UBX-MON-RF payload (F9+ RF-front-end telemetry) into a
+// station-scoped RF sample (docs/DEFENSE-PNT.md §1). Layout: version U1, nBlocks U1,
+// reserved U1[2], then nBlocks × 24-byte blocks — blockId U1, flags X1 (bits 0-1 =
+// jammingState), antStatus U1, antPower U1, postStatus U4, reserved U1[4], noisePerMS U2,
+// agcCnt U2, jamInd U1, … Every length is bounds-checked. Returns nil on a short frame.
+func parseMONRF(p []byte, source string, recv time.Time) *RawFrame {
+	if len(p) < 4 {
+		return nil
+	}
+	nBlocks := int(p[1])
+	if nBlocks == 0 || 4+nBlocks*24 > len(p) {
+		return nil
+	}
+	rf := &RawRF{Bands: make([]RFBand, 0, nBlocks)}
+	for i := 0; i < nBlocks; i++ {
+		b := p[4+i*24:]
+		rf.Bands = append(rf.Bands, RFBand{
+			Block:      int(b[0]),
+			JamState:   int(b[1] & 0x03),
+			AntStatus:  int(b[2]),
+			NoiseLevel: int(binary.LittleEndian.Uint16(b[14:])),
+			AGC:        int(binary.LittleEndian.Uint16(b[16:])),
+			CWSuppress: int(b[20]), // jamInd (CW-jamming indicator, 0..255)
+		})
+	}
+	return &RawFrame{Source: source, Recv: recv, RF: rf}
+}
+
+// parseMONHW converts a legacy UBX-MON-HW payload (60 bytes) into a single-band RF
+// sample: noisePerMS U2 @16, agcCnt U2 @18, aStatus U1 @20, flags X1 @22 (jammingState in
+// bits 2-3), jamInd U1 @45 (docs/DEFENSE-PNT.md §1). Returns nil on a short frame.
+func parseMONHW(p []byte, source string, recv time.Time) *RawFrame {
+	if len(p) < 60 {
+		return nil
+	}
+	band := RFBand{
+		Block:      0,
+		NoiseLevel: int(binary.LittleEndian.Uint16(p[16:])),
+		AGC:        int(binary.LittleEndian.Uint16(p[18:])),
+		AntStatus:  int(p[20]),
+		JamState:   int((p[22] >> 2) & 0x03),
+		CWSuppress: int(p[45]),
+	}
+	return &RawFrame{Source: source, Recv: recv, RF: &RawRF{Bands: []RFBand{band}}}
+}
+
+// parseNAVSAT converts a UBX-NAV-SAT payload into per-SV C/N₀ + elevation for the
+// C/N₀-vs-elevation spoofing gate (docs/DEFENSE-PNT.md §3). Layout: iTOW U4, version U1,
+// numSvs U1, reserved U1[2], then numSvs × 12-byte blocks — gnssId U1, svId U1, cno U1
+// (dB-Hz), elev I1 (deg), azim I2, prRes I2, flags X4 (bit 3 = svUsed). Bounds-checked.
+func parseNAVSAT(p []byte, source string, recv time.Time) *RawFrame {
+	if len(p) < 8 {
+		return nil
+	}
+	numSvs := int(p[5])
+	if numSvs == 0 || 8+numSvs*12 > len(p) {
+		return nil
+	}
+	rf := &RawRF{Sats: make([]SatCN0, 0, numSvs)}
+	for i := 0; i < numSvs; i++ {
+		s := p[8+i*12:]
+		flags := binary.LittleEndian.Uint32(s[8:])
+		rf.Sats = append(rf.Sats, SatCN0{
+			GnssID:  int(s[0]),
+			SvID:    int(s[1]),
+			Cn0:     int(s[2]),
+			ElevDeg: int(int8(s[3])),
+			Used:    flags&0x08 != 0,
+		})
+	}
+	return &RawFrame{Source: source, Recv: recv, RF: rf}
 }
 
 // syncTo advances the reader until the two-byte sync pattern s1,s2 is consumed.
