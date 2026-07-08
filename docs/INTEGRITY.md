@@ -121,6 +121,16 @@ radial/along/cross orbit correction is "how wrong the broadcast orbit is vs. the
 orbit" — an independent truth source. Surfaced as `rtcm_eph_delta_cm` (+ components). A broadcast
 that diverges from the SSR correction while claiming good SISA is a strong integrity flag.
 
+**Measured-vs-model ionosphere `iono_resid_m`** (per receiver × SV): the carrier-leveled
+geometry-free dual-frequency measurement minus the broadcast-model prediction (MATH.md §7.4).
+The discriminator is coherence, same as delta-Hz: a residual that moves **coherently across
+receivers and satellites** is an ionospheric storm or a broadcast-model failure — a space-
+weather sensor the network gets for free; a **single receiver** diverging is local
+multipath/interference and down-weights that receiver's votes rather than raising an SV alarm.
+v1 is observational — publish the residuals, accumulate baselines; alert thresholds and an
+event type are added to §2/§5 only once quiet-time distributions are known (constants land in
+this document first, per §authority).
+
 ---
 
 ## 4. The detector state machine

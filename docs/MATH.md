@@ -358,6 +358,60 @@ broadcast coefficients `α1..α9` over a spherical-harmonic basis with predicted
 an embedded model. Implement per **BDS-SIS-ICD-B-CNAV1 §7.4**; cross-check against BeiDou's
 published examples.
 
+### 7.4 Measured slant ionosphere — the geometry-free dual-frequency combination
+
+The models above *predict*; a dual-frequency receiver lets us **measure**. Every observer that
+tracks two frequencies of one SV hands us the actual first-order ionospheric delay on that
+line of sight — the geometry (orbit, clocks, troposphere) is common to both signals and
+cancels. This turns §7 from "transcribe and model" into a **measured integrity cross-check**:
+we score the broadcast model against the real ionosphere, per receiver, per satellite,
+continuously.
+
+**Code (pseudorange) combination.** For pseudoranges `P₁, P₂` on frequencies `f₁, f₂` from
+the same SV, with `γ = (f₁/f₂)²` and `I₁` the slant delay at `f₁` (metres):
+
+```
+P_GF = P₂ − P₁ = I₁·(γ − 1) + c·(DCB_sat + DCB_rx)
+Î₁   = (P₂ − P₁)/(γ − 1) − bias terms
+```
+
+**Carrier leveling.** The phase geometry-free combination `Φ_GF = Φ₁ − Φ₂` (metres) has the
+same `I₁·(γ−1)` scale but is far less noisy — at the cost of an unknown per-arc ambiguity
+constant. Standard carrier-leveled measurement: over a continuous tracking arc (reset on
+loss-of-lock / cycle slip, detected via the receiver's lock-time counter), level the phase to
+the code —
+
+```
+b_arc = mean(P_GF − Φ_GF)  over the arc          // ambiguity + noise average
+Î₁    = (Φ_GF + b_arc)/(γ − 1) − bias terms       // smooth slant delay at f₁
+```
+
+**Biases.** The satellite differential code bias is corrected from the **broadcast group
+delays for the tracked pair** (§4: `TGD`/`ISC` for GPS/QZSS/NavIC, `BGD` for Galileo,
+`TGD1/TGD2` for BeiDou — the same values a single-frequency user applies). The **receiver
+DCB `b_rx`** is a per-receiver, per-pair constant we cannot separate from a constant TEC
+offset without an external reference; v1 estimates it as the constant that best fits the
+receiver's slant measurements to the model over a full local day at high elevation (robust
+median fit) and **flags the method** (`iono_cal`) — the *dynamics* (temporal changes,
+cross-receiver gradients, storm signatures) are bias-free regardless, and those are the
+integrity signal. Optionally, published DCB products (CODE/IGS) can pin `b_rx` exactly.
+
+**Vertical mapping (thin shell).** For elevation `E`, shell height `h = 350 km`,
+`sin χ = R_E/(R_E + h)·cos E`; the obliquity `M(E) = 1/cos χ`; `VTEC = slant/M(E)`.
+Conversion: `I₁[m] = 40.308×10¹⁶·TEC/f₁²` — **1 TECU = 0.162 m at GPS L1**.
+
+**Published per `(SV, receiver)`** (`docs/OUTPUT.md §1.1 perrecv`): `iono_delay_m` (leveled
+measured slant at the pair's primary frequency), `iono_model_m` (the §7.1–7.3 broadcast-model
+slant for the same epoch/geometry), `iono_resid_m` (measured − model), `iono_pair_sigid`
+(the second signal of the pair). **Integrity reading** (`docs/INTEGRITY.md §3`): a residual
+that jumps *coherently* across receivers and SVs is an ionospheric storm or a broadcast-model
+failure (a space-weather sensor we get for free); a *single* receiver diverging is local
+multipath/interference — down-weight that receiver, don't blame the ionosphere.
+
+**Validation oracle:** computed VTEC is cross-checked against the IGS global ionosphere maps
+(IONEX, public) — agreement within a few TECU at mid-latitude quiet time validates the whole
+chain (RAWX decode → leveling → bias → mapping).
+
 ---
 
 ## 8. Time-system offsets (feeds' `a0g/a1g/t0g/wn0g`, the `global` feed offsets)

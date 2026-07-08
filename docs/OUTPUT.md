@@ -107,6 +107,11 @@ below):
 | `last_seen_s` | int | seconds since this receiver last reported the SV |
 | `delta_hz` | float | observed − predicted Doppler (INTEGRITY.md §3) |
 | `delta_hz_corr` | float | `delta_hz` after receiver clock-drift correction |
+| `iono_delay_m` | float | **measured** slant ionospheric delay, carrier-leveled geometry-free dual-frequency (MATH.md §7.4); absent when the receiver tracks only one frequency of this SV |
+| `iono_model_m` | float | broadcast-model slant delay for the same epoch/geometry (Klobuchar/NeQuick-G/BDGIM) |
+| `iono_resid_m` | float | `iono_delay_m − iono_model_m` — the model-vs-reality integrity signal |
+| `iono_pair_sigid` | int | sigid of the second signal in the measuring pair |
+| `iono_cal` | int | receiver-DCB calibration method: 0 uncalibrated · 1 daily model fit · 2 external DCB product |
 
 Representative entry:
 

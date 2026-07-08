@@ -365,7 +365,7 @@ payloads, and receiver telemetry described below.
 | # | Name | Content |
 |---|---|---|
 | 0x01 | `ReceptionData` | per-SV C/N₀, elevation, azimuth, pseudorange-residual, quality-ind, used-in-solution (UBX-NAV-SAT/NAV-SIG) |
-| 0x02 | `RFData` | raw observables: pseudorange, carrier phase, Doppler, lock-time, cno, validity (UBX-RXM-RAWX) |
+| 0x02 | `RFData` | raw observables: pseudorange, carrier phase, Doppler, lock-time, cno, validity (UBX-RXM-RAWX). Dual-frequency observable pairs feed the measured-ionosphere cross-check (`docs/MATH.md §7.4`) |
 | 0x03 | `ObserverPosition` | receiver ECEF x/y/z, accuracy, ground-speed (UBX-NAV-HPPOSECEF/PVT) |
 | 0x04 | `ObserverDetails` | vendor, hw/sw version, git hash, serial, clock offset/drift, owner, remark, uptime |
 | 0x05 | `JammingStats` | u-blox MON-HW/MON-RF jamming/AGC/spoofing indicators (MON-RF on F9+; RF-integrity input, `docs/INTEGRITY.md`) |
