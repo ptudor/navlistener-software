@@ -49,6 +49,8 @@ type svState struct {
 
 	// LNAV subframe assembly buffers (GPS/QZSS).
 	sf1, sf2, sf3 *frame.GPSSubframe
+	// Galileo I/NAV word assembly buffers, indexed by word type 1–4.
+	galW [5]*frame.GalileoINAV
 
 	eph     kepler.Ephemeris
 	clk     clock.Model
@@ -102,6 +104,8 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 	switch {
 	case (f.GnssID == gnss.GPS || f.GnssID == gnss.QZSS) && f.SigID == 0:
 		s.applyGPSLNAV(f)
+	case f.GnssID == gnss.Galileo && (f.SigID == 0 || f.SigID == 1): // E1-B I/NAV
+		s.applyGalileoINAV(f)
 	default:
 		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "unsupported").Inc()
 	}
@@ -157,6 +161,50 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
 	st.health, st.ura = st.sf1.Health, st.sf1.URAIndex
+}
+
+func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
+	w, err := frame.DecodeGalileoINAV(f.Words)
+	if err != nil {
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "inav").Inc()
+		return
+	}
+	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "inav").Inc()
+
+	key := Key{G: f.GnssID, Sv: f.SvID, Sig: 0} // Galileo SV keyed on primary signal
+	sh := s.shardFor(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+
+	st := sh.m[key]
+	if st == nil {
+		st = &svState{key: key}
+		sh.m[key] = st
+	}
+	st.lastSeen = f.Recv
+
+	if w.Type < 1 || w.Type > 4 {
+		return // only word types 1–4 assemble the ephemeris
+	}
+	st.galW[w.Type] = w
+	if st.galW[1] == nil || st.galW[2] == nil || st.galW[3] == nil || st.galW[4] == nil {
+		return
+	}
+
+	eph, clk, err := frame.AssembleGalileo(f.SvID, st.galW[1], st.galW[2], st.galW[3], st.galW[4])
+	if err != nil {
+		return // words from different IODnav; wait for a consistent set
+	}
+	newIOD := st.galW[1].IODnav
+	if st.haveEph && newIOD == st.iod {
+		return
+	}
+	if st.haveEph {
+		s.computeDisco(st, eph, clk, f.Recv)
+	}
+	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
+	// Galileo health lives in I/NAV word type 5 (not part of the ephemeris set);
+	// it is decoded and surfaced when the integrity pass consumes word 5.
 }
 
 // computeDisco propagates the outgoing and incoming ephemerides to the new
