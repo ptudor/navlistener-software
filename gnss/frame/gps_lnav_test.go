@@ -34,27 +34,18 @@ func setSplit32(buf []byte, wHi, aHi, wLo int, val int64) {
 	setField(buf, wLo, 1, 24, int64(u&0xFFFFFF))
 }
 
-// packLNAV turns a 240-bit data buffer (the intended, normalized data) into ten
-// parity-bearing 30-bit words as they are actually transmitted: when the previous
-// word's D30* is 1 the data bits are sent complemented (the SV inverts them so the
-// receiver's D30* un-complement recovers the intent), and the six parity bits are
-// computed by validParity (the GPSParity oracle) over the transmitted bits.
+// packLNAV turns a 240-bit data buffer (the intended data) into ten 30-bit words
+// the way u-blox delivers them: the true 24 data bits sit in bits 29..6,
+// receiver-validated and already un-inverted, with the six parity bits below
+// (which DecodeGPSLNAV ignores — see its doc comment). The GPSParity primitive is
+// exercised separately by TestGPSParity*.
 func packLNAV(t *testing.T, buf []byte) []uint32 {
 	t.Helper()
 	r := NewBitReaderN(buf, 240)
 	words := make([]uint32, 10)
-	var d29, d30 uint32
 	for i := 0; i < 10; i++ {
 		want, _ := r.Bits(i*24, 24)
-		stored := uint32(want)
-		if d30 == 1 {
-			stored = ^stored & 0xFFFFFF // transmitted complemented; decode recovers want
-		}
-		p := validParity(t, stored, d29, d30)
-		word := (stored << 6) | p
-		words[i] = word
-		d29 = (word >> 1) & 1
-		d30 = word & 1
+		words[i] = uint32(want) << 6
 	}
 	return words
 }

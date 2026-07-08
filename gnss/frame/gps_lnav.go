@@ -55,27 +55,22 @@ type GPSSubframe struct {
 	Toe  float64
 }
 
-// DecodeGPSLNAV decodes one LNAV subframe from ten 30-bit words (as delivered by
-// UBX-RXM-SFRBX after de-interleaving, or SBF GPSRawCA). It verifies each word's
-// parity chained from the previous word's last two parity bits (seeded at 0 for a
-// normalized subframe) and returns the decoded fields. A parity failure or a short
-// input is an error; the raw bytes are still preserved upstream for the record.
+// DecodeGPSLNAV decodes one LNAV subframe from ten 30-bit words as delivered by
+// UBX-RXM-SFRBX (and, verified against real ZED-F9T frames, SBF GPSRawCA): the
+// receiver has already validated parity and resolved the D30* data inversion, so
+// each word carries the true 24 data bits in bits 29..6. We extract those directly
+// — re-running the broadcast parity on receiver-supplied words fails, because the
+// receiver normalises them (this is why RTKLIB also trusts u-blox SFRBX). The
+// GPSParity primitive remains for a future raw-signal path. Bounds are still fully
+// checked by BitReader; a short input is an error.
 func DecodeGPSLNAV(words []uint32) (*GPSSubframe, error) {
 	if len(words) < 10 {
 		return nil, ErrShortFrame
 	}
-	// Verify parity and pack the 24 data bits of each word contiguously (240 bits).
+	// Pack the 24 data bits (bits 29..6) of each word contiguously (240 bits).
 	buf := make([]byte, 30)
-	var d29, d30 uint32
 	for i := 0; i < 10; i++ {
-		data, ok := GPSParity(words[i], d29, d30)
-		if !ok {
-			return nil, ErrParity
-		}
-		// Carry this word's last two parity bits into the next word's check.
-		d29 = (words[i] >> 1) & 1
-		d30 = words[i] & 1
-		// Place the 24 data bits (MSB first) at bit offset i*24.
+		data := (words[i] >> 6) & 0xFFFFFF
 		for b := 0; b < 24; b++ {
 			if data&(1<<uint(23-b)) != 0 {
 				pos := i*24 + b

@@ -110,11 +110,7 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 	sf, err := frame.DecodeGPSLNAV(f.Words)
 	if err != nil {
-		if err == frame.ErrParity {
-			metrics.NavCRCFailTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), fmt.Sprint(f.SigID)).Inc()
-		} else {
-			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "lnav").Inc()
-		}
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "lnav").Inc()
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "lnav").Inc()

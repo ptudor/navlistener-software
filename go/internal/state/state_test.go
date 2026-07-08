@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/ptudor/gnss"
-	"github.com/ptudor/gnss/frame"
 	"github.com/ptudor/navlistener/internal/ingest"
 )
 
@@ -42,29 +41,13 @@ func read24(buf []byte, wordIdx int) uint32 {
 	return v
 }
 
-func findParity(data24, d29, d30 uint32) uint32 {
-	for p := uint32(0); p < 64; p++ {
-		if _, ok := frame.GPSParity((data24<<6)|p, d29, d30); ok {
-			return p
-		}
-	}
-	return 0
-}
-
+// packWords lays the intended 24 data bits per word into bits 29..6, the way
+// u-blox delivers them (receiver-validated, un-inverted); DecodeGPSLNAV reads
+// those directly.
 func packWords(buf []byte) []uint32 {
 	words := make([]uint32, 10)
-	var d29, d30 uint32
 	for i := 0; i < 10; i++ {
-		want := read24(buf, i)
-		stored := want
-		if d30 == 1 {
-			stored = ^stored & 0xFFFFFF
-		}
-		p := findParity(stored, d29, d30)
-		word := (stored << 6) | p
-		words[i] = word
-		d29 = (word >> 1) & 1
-		d30 = word & 1
+		words[i] = read24(buf, i) << 6
 	}
 	return words
 }
