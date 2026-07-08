@@ -158,6 +158,14 @@ revision):
 Septentrio block 4093 carries NavIC raw navigation data. Its central decoder
 is part of the planned NavIC support.
 
+> **Block-ID provenance.** The established IDs (4017–4026, 4047, 4066–4068, 4093, 4218/4219,
+> 4024) are confirmed against published SBF reference guides. The newest-generation entries —
+> `QZSRawL1S`/`QZSRawL1C`, `QZSRawL6`, `BDSRawB2b`, `GPSRawL1C`, and especially `NAVICLNAVRaw`
+> (Septentrio may not yet emit a NavIC-L1 raw block at all) — must be re-verified against the
+> receiver's *shipping* firmware SBF Reference Guide when `sbf.go` is written in P3; Septentrio
+> adds raw-nav blocks per firmware release. The dispatch table is config-data, not logic, so a
+> corrected ID is a one-line change.
+
 ### 2.3 RTCM3 — ephemeris & SSR
 
 `navfeeder --source-mode rtcm` forwards RTCM3 framed messages (used where a receiver or an
