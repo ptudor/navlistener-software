@@ -1,0 +1,900 @@
+/*
+ * navfeeder — the navlistener edge feeder (C).
+ *
+ * A tiny forwarder for the GNSS observer fleet: read raw broadcast nav frames off a
+ * local u-blox receiver (UBX-RXM-SFRBX, from a serial device or a TCP bridge) and push
+ * each frame to the navlistener collector's authenticated TLS ingest endpoint, framed
+ * per ../go/internal/wire (GNF1). It does NOT decode — the edge is dumb, all decoding and
+ * orbit math is central in the collector (docs/DESIGN.md §1, docs/CONSTELLATIONS.md §2).
+ * C because the observer fleet is OpenWrt/mips routers and SBCs where a tiny static binary
+ * fits and a Go runtime does not — the same shape as radiolistener/feeder/feeder.c, which
+ * this is a near-verbatim port of (the resilient spool/ack/replay core is reused verbatim;
+ * only the source parser and the on-wire record are GNSS-specific).
+ *
+ * Store-and-forward: a producer thread reads the receiver and appends each SFRBX frame to a
+ * bounded in-memory ring (assigning a monotonic sequence); a consumer drains it to the
+ * collector. Reading and sending are decoupled, so a collector restart or network blip does
+ * NOT lose data — on every reconnect the consumer REPLAYS all unacked frames (galmon's rule:
+ * "the receiver must never go down"). The collector ACKs the highest sequence it has stored,
+ * pruning the ring. On overflow the OLDEST frame spills to a disk spool (--spool-file) rather
+ * than being dropped; the spool is recovered and replayed on restart, so an outage longer
+ * than RAM, or a router reboot, still loses nothing. With --zstd the feeder→collector DATA
+ * stream is zstd-compressed (negotiated in the handshake; ~3–4:1 on the repetitive nav
+ * bitstream); ACKs stay plaintext.
+ *
+ * Wire (must match ../go/internal/wire/wire.go):
+ *   stream = "GNF1" then frames [1B type][4B BE len][payload]
+ *   HELLO(0x01) {token,station,feed,sw,zstd?} -> WELCOME(0x02){ok,zstd?}
+ *   DATA(0x03)  [8B BE seq][record];  ACK(0x04) [8B BE seq]    (DATA zstd-streamed if negotiated)
+ *   the DATA record = [8B BE recv_unix_ns][gnssId][svId][sigId][freqId][frame_type][raw…]
+ *   raw = the native nav words serialized big-endian (the collector reads them back BE).
+ *
+ * Still deferred: SBF/RTCM source modes (the fleet is u-blox; the collector's push path wires
+ * ubx today), mTLS enrollment tooling, and the ATECC SIGNED_DATA (0x07) hardware tier.
+ */
+#define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE   /* glibc: expose usleep() + cfmakeraw() under -std=c11 */
+#define _DARWIN_C_SOURCE  /* macOS: expose cfmakeraw() under -std=c11 */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <stdarg.h>
+#include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <time.h>
+#include <termios.h>
+#include <pthread.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/time.h>
+#include <netdb.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <zstd.h>
+
+#define MAGIC "GNF1"
+#define F_HELLO 0x01
+#define F_WELCOME 0x02
+#define F_DATA 0x03
+#define F_ACK 0x04
+#define F_PING 0x05
+#define F_PONG 0x06
+#define MAX_FRAME (1u << 20)
+#define RECORD_HDR 13         /* recv_ns(8) + gnssId + svId + sigId + freqId + frame_type */
+#define MAX_RAW 1024          /* numWords is a u8 → ≤ 1020 raw bytes; round up */
+#define GNF_RECORD (RECORD_HDR + MAX_RAW)
+#define DRAIN_BATCH 512
+#define KEEPALIVE_S 30        /* PING when idle this long, to stay under the collector's idle timeout */
+
+/* UBX protocol constants (u-blox interface description). SFRBX carries raw nav words
+ * per gnssId/sigId (docs/CONSTELLATIONS.md §2.1). */
+#define UBX_SYNC1 0xB5
+#define UBX_SYNC2 0x62
+#define UBX_CLASS_RXM 0x02
+#define UBX_ID_SFRBX 0x13
+#define UBX_MAX_PAYLOAD (1u << 14)
+
+struct opts {
+	const char *server_host, *server_port;
+	const char *source;    /* /dev/ttyACM0 (serial) or host:port (TCP bridge) */
+	int baud;              /* serial baud when --source is a device path */
+	const char *token, *station, *feed, *ca;
+	const char *cert, *key; /* mTLS client cert + key (PEM); the cert CN is the station */
+	const char *spool_file; /* NULL = in-memory only (drop-oldest on overflow) */
+	int insecure;
+	int zstd; /* request zstd stream compression (the collector must confirm) */
+	size_t spool_cap;
+	uint64_t disk_max_bytes;
+};
+
+/* conn is the write side of a collector connection: a TLS socket, optionally with a zstd
+ * compression stream over the feeder→collector (DATA) direction. ACKs back are plaintext
+ * and read separately. One conn lives per connection in the consumer thread (no locking). */
+struct conn {
+	SSL *ssl;
+	ZSTD_CCtx *cctx;     /* NULL = plaintext */
+	unsigned char *obuf; /* compression output staging */
+	size_t obuf_cap;
+	uint64_t raw, comp;  /* bytes in / on the wire, for the compression-ratio log */
+};
+
+/* spool: a bounded ring of unacked frames, ordered by ascending seq. Each frame is one
+ * complete GNF1 DATA record (RECORD_HDR + raw words); the seq is assigned on append and
+ * prepended by send_data, exactly as radiolistener spools a line. */
+struct frame {
+	uint64_t seq;
+	uint32_t len;
+	unsigned char *data;
+};
+struct spool {
+	struct frame *ring;
+	size_t cap, head, count;
+	uint64_t seq;     /* last assigned sequence */
+	uint64_t acked;   /* last sequence acked by the collector */
+	uint64_t dropped; /* frames lost to overflow (no disk, or disk full) */
+	/* disk tier (opt-in): on ring overflow, the OLDEST frame spills here instead of
+	 * being dropped — so an outage longer than the ring is still lossless. The disk
+	 * always holds seqs older than the ring; the consumer drains disk before ring. */
+	const char *path;
+	FILE *disk_w;
+	uint64_t disk_max_seq, disk_bytes, disk_max_bytes, disk_dropped;
+	pthread_mutex_t mu;
+};
+
+static struct spool g_spool;
+static volatile int g_disconnected;
+
+static void die(const char *m) { fprintf(stderr, "navfeeder: %s\n", m); exit(2); }
+
+static void log_msg(const char *fmt, ...) {
+	char ts[32];
+	time_t t = time(NULL);
+	struct tm tm;
+	gmtime_r(&t, &tm);
+	strftime(ts, sizeof ts, "%Y-%m-%dT%H:%M:%SZ", &tm);
+	fprintf(stderr, "%s navfeeder: ", ts);
+	va_list ap; va_start(ap, fmt); vfprintf(stderr, fmt, ap); va_end(ap);
+	fputc('\n', stderr);
+}
+
+static uint64_t now_unix_ns(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_REALTIME, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+/* ── byte order ──────────────────────────────────────────────────────────── */
+
+static void be32(unsigned char *b, uint32_t v) { b[0]=v>>24; b[1]=v>>16; b[2]=v>>8; b[3]=v; }
+static uint32_t rd_be32(const unsigned char *b) {
+	return ((uint32_t)b[0]<<24)|((uint32_t)b[1]<<16)|((uint32_t)b[2]<<8)|b[3];
+}
+static void be64(unsigned char *b, uint64_t v) { for (int i=7;i>=0;i--){ b[i]=v&0xff; v>>=8; } }
+static uint64_t rd_be64(const unsigned char *b) {
+	uint64_t v=0; for (int i=0;i<8;i++) v=(v<<8)|b[i]; return v;
+}
+
+/* ── spool ───────────────────────────────────────────────────────────────── */
+
+/* spool_recover replays a spool file left by a previous run (a feeder restart mid-outage,
+ * e.g. a router reboot): it scans the records, truncates any torn tail from an unclean
+ * exit, and resumes the sequence so new frames continue past the recovered ones. */
+static void spool_recover(struct spool *s) {
+	FILE *r = fopen(s->path, "rb");
+	if (!r) return; /* no prior spool — first overflow opens it lazily */
+	uint64_t max_seq = 0, good_bytes = 0, count = 0;
+	for (;;) {
+		unsigned char hdr[12];
+		if (fread(hdr, 1, 12, r) != 12) break;
+		uint64_t seq = rd_be64(hdr);
+		uint32_t len = rd_be32(hdr + 8);
+		if (len > GNF_RECORD) break;
+		if (len) { unsigned char tmp[GNF_RECORD]; if (fread(tmp, 1, len, r) != len) break; }
+		max_seq = seq;
+		good_bytes += 12 + len;
+		count++;
+	}
+	fclose(r);
+	if (count == 0) { unlink(s->path); return; }
+	if (truncate(s->path, (off_t)good_bytes) != 0) { unlink(s->path); return; }
+	s->seq = s->disk_max_seq = max_seq;
+	s->disk_bytes = good_bytes;
+	s->disk_w = fopen(s->path, "ab");
+	log_msg("recovered disk spool: %llu frame(s) up to seq %llu (will replay on connect)",
+		(unsigned long long)count, (unsigned long long)max_seq);
+}
+
+static void spool_init(struct spool *s, size_t cap, const char *path, uint64_t disk_max_bytes) {
+	s->ring = calloc(cap, sizeof *s->ring);
+	if (!s->ring) die("out of memory for spool");
+	s->cap = cap;
+	s->head = s->count = 0;
+	s->seq = s->acked = s->dropped = 0;
+	s->path = path;
+	s->disk_w = NULL;
+	s->disk_max_seq = s->disk_bytes = s->disk_dropped = 0;
+	s->disk_max_bytes = disk_max_bytes;
+	pthread_mutex_init(&s->mu, NULL);
+	if (path) spool_recover(s); /* resume a spool left by a prior run */
+}
+
+/* disk_put appends one frame to the disk spool (caller holds the mutex). */
+static void disk_put(struct spool *s, uint64_t seq, const unsigned char *data, uint32_t len) {
+	if (!s->disk_w) {
+		s->disk_w = fopen(s->path, "ab");
+		if (!s->disk_w) { s->dropped++; return; }
+	}
+	uint64_t rec = 12 + (uint64_t)len;
+	if (s->disk_bytes + rec > s->disk_max_bytes) { s->disk_dropped++; return; }
+	unsigned char hdr[12];
+	be64(hdr, seq);
+	be32(hdr + 8, len);
+	if (fwrite(hdr, 1, 12, s->disk_w) != 12 || (len && fwrite(data, 1, len, s->disk_w) != len)) {
+		s->disk_dropped++;
+		return;
+	}
+	fflush(s->disk_w);
+	s->disk_bytes += rec;
+	s->disk_max_seq = seq;
+}
+
+/* spool_append copies a record in, assigns the next seq, and on overflow spills the oldest
+ * frame to disk (if a spool file is set) or drops it. */
+static uint64_t spool_append(struct spool *s, const unsigned char *data, uint32_t len) {
+	pthread_mutex_lock(&s->mu);
+	if (s->count == s->cap) {
+		struct frame *ev = &s->ring[s->head];
+		if (s->path)
+			disk_put(s, ev->seq, ev->data, ev->len);
+		else
+			s->dropped++;
+		free(ev->data);
+		s->head = (s->head + 1) % s->cap;
+		s->count--;
+	}
+	uint64_t seq = ++s->seq;
+	size_t idx = (s->head + s->count) % s->cap;
+	s->ring[idx].seq = seq;
+	s->ring[idx].len = len;
+	s->ring[idx].data = malloc(len);
+	if (!s->ring[idx].data) die("out of memory appending to spool");
+	memcpy(s->ring[idx].data, data, len);
+	s->count++;
+	pthread_mutex_unlock(&s->mu);
+	return seq;
+}
+
+/* spool_ack drops every frame with seq <= n. */
+static void spool_ack(struct spool *s, uint64_t n) {
+	pthread_mutex_lock(&s->mu);
+	while (s->count > 0 && s->ring[s->head].seq <= n) {
+		free(s->ring[s->head].data);
+		s->head = (s->head + 1) % s->cap;
+		s->count--;
+	}
+	if (n > s->acked) s->acked = n;
+	pthread_mutex_unlock(&s->mu);
+}
+
+/* spool_collect copies up to max frames with seq > after into out (caller frees data). */
+static size_t spool_collect(struct spool *s, uint64_t after, struct frame *out, size_t max) {
+	pthread_mutex_lock(&s->mu);
+	size_t n = 0;
+	for (size_t i = 0; i < s->count && n < max; i++) {
+		struct frame *f = &s->ring[(s->head + i) % s->cap];
+		if (f->seq <= after) continue;
+		out[n].seq = f->seq;
+		out[n].len = f->len;
+		out[n].data = malloc(f->len);
+		if (!out[n].data) die("out of memory collecting spool batch");
+		memcpy(out[n].data, f->data, f->len);
+		n++;
+	}
+	pthread_mutex_unlock(&s->mu);
+	return n;
+}
+
+static uint64_t spool_acked(struct spool *s) {
+	pthread_mutex_lock(&s->mu);
+	uint64_t a = s->acked;
+	pthread_mutex_unlock(&s->mu);
+	return a;
+}
+
+/* spool_stats reads the counters under the lock. */
+static void spool_stats(struct spool *s, uint64_t *seq, uint64_t *dropped, size_t *count, uint64_t *disk_dropped) {
+	pthread_mutex_lock(&s->mu);
+	if (seq) *seq = s->seq;
+	if (dropped) *dropped = s->dropped;
+	if (count) *count = s->count;
+	if (disk_dropped) *disk_dropped = s->disk_dropped;
+	pthread_mutex_unlock(&s->mu);
+}
+
+/* ── net + wire ──────────────────────────────────────────────────────────── */
+
+static int tcp_dial(const char *host, const char *port, int rcv_timeout_s) {
+	struct addrinfo hints, *res, *rp;
+	memset(&hints, 0, sizeof hints);
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+	if (getaddrinfo(host, port, &hints, &res) != 0) return -1;
+	int fd = -1;
+	for (rp = res; rp; rp = rp->ai_next) {
+		fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+		if (fd < 0) continue;
+		if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) break;
+		close(fd); fd = -1;
+	}
+	freeaddrinfo(res);
+	if (fd >= 0 && rcv_timeout_s > 0) {
+		struct timeval tv = { rcv_timeout_s, 0 };
+		setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+	}
+	return fd;
+}
+
+static int ssl_write_all(SSL *ssl, const void *buf, size_t n) {
+	const unsigned char *p = buf;
+	while (n > 0) {
+		int w = SSL_write(ssl, p, (int)n);
+		if (w <= 0) return -1;
+		p += w; n -= (size_t)w;
+	}
+	return 0;
+}
+
+static int ssl_read_full(SSL *ssl, void *buf, size_t n) {
+	unsigned char *p = buf;
+	while (n > 0) {
+		int r = SSL_read(ssl, p, (int)n);
+		if (r <= 0) return -1;
+		p += r; n -= (size_t)r;
+	}
+	return 0;
+}
+
+static int send_frame(SSL *ssl, uint8_t type, const void *payload, uint32_t len) {
+	unsigned char hdr[5];
+	hdr[0] = type; be32(hdr+1, len);
+	if (ssl_write_all(ssl, hdr, 5) != 0) return -1;
+	if (len && ssl_write_all(ssl, payload, len) != 0) return -1;
+	return 0;
+}
+
+/* conn_write writes len bytes to the collector, compressing through the zstd stream if
+ * one is set (flushing per call so the collector decodes each frame promptly while the
+ * window keeps compressing across frames). */
+static int conn_write(struct conn *c, const unsigned char *buf, size_t len) {
+	if (!c->cctx) return ssl_write_all(c->ssl, buf, len);
+	ZSTD_inBuffer in = { buf, len, 0 };
+	size_t rem;
+	do {
+		ZSTD_outBuffer out = { c->obuf, c->obuf_cap, 0 };
+		rem = ZSTD_compressStream2(c->cctx, &out, &in, ZSTD_e_flush);
+		if (ZSTD_isError(rem)) return -1;
+		if (out.pos && ssl_write_all(c->ssl, c->obuf, out.pos) != 0) return -1;
+		c->comp += out.pos;
+	} while (rem > 0);
+	c->raw += len;
+	return 0;
+}
+
+/* send_data sends one DATA frame: [F_DATA][4B len][8B seq][record]. The whole frame goes
+ * through conn_write, so when compression is on the framing is compressed too and the
+ * collector's decoder yields exactly the bytes wire.ReadFrame expects. */
+static int send_data(struct conn *c, uint64_t seq, const unsigned char *data, uint32_t len) {
+	unsigned char frame[5 + 8 + GNF_RECORD];
+	if (len > GNF_RECORD) len = GNF_RECORD;
+	frame[0] = F_DATA;
+	be32(frame + 1, 8 + len);
+	be64(frame + 5, seq);
+	memcpy(frame + 13, data, len);
+	return conn_write(c, frame, 13 + (size_t)len);
+}
+
+/* send_ping keeps an idle connection alive — a stalled receiver can go minutes with nothing
+ * to send, and the collector drops a connection with no frames within its idle timeout. */
+static int send_ping(struct conn *c) {
+	unsigned char frame[5] = { F_PING, 0, 0, 0, 0 };
+	return conn_write(c, frame, 5);
+}
+
+static int read_frame(SSL *ssl, uint8_t *type, unsigned char *buf, uint32_t cap, uint32_t *len) {
+	unsigned char hdr[5];
+	if (ssl_read_full(ssl, hdr, 5) != 0) return -1;
+	uint32_t n = rd_be32(hdr+1);
+	if (n > MAX_FRAME || n > cap) return -1;
+	if (n && ssl_read_full(ssl, buf, n) != 0) return -1;
+	*type = hdr[0]; *len = n;
+	return 0;
+}
+
+/* reader thread: apply ACKs (pruning the spool) until the connection drops. */
+static void *reader_thread(void *arg) {
+	SSL *ssl = arg;
+	unsigned char buf[256];
+	uint8_t type; uint32_t len;
+	for (;;) {
+		if (read_frame(ssl, &type, buf, sizeof buf, &len) != 0) break;
+		if (type == F_ACK && len >= 8) spool_ack(&g_spool, rd_be64(buf));
+	}
+	g_disconnected = 1;
+	return NULL;
+}
+
+/* ── producer: UBX source -> spool (forever) ─────────────────────────────── */
+
+/* frame_type maps (gnssId, sigId) to the GNF1 nav message type byte (docs/CONSTELLATIONS.md
+ * §6), mirroring RawFrame.NavType() in the collector so the historian's msg_type is right.
+ * The collector dispatches decoding on (gnssId, sigId), so an unmapped type (0) is still
+ * decoded — the byte is a forensic label, not the dispatch key. */
+static uint8_t frame_type(unsigned gnssId, unsigned sigId) {
+	switch (gnssId) {
+	case 0: return sigId == 0 ? 0x10 : 0x11;                 /* GPS: LNAV / CNAV */
+	case 5: return sigId == 0 ? 0x50 : sigId == 1 ? 0x53 : 0x51; /* QZSS: LNAV / L1S / CNAV */
+	case 2: return (sigId == 3 || sigId == 4) ? 0x21 : 0x20; /* Galileo: F/NAV / I/NAV */
+	case 3:                                                  /* BeiDou: D2 / B-CNAV2 / D1 */
+		if (sigId == 1 || sigId == 3) return 0x31;
+		if (sigId == 7 || sigId == 8) return 0x33;
+		return 0x30;
+	case 6: return 0x40;                                     /* GLONASS */
+	case 7: return 0x60;                                     /* NavIC */
+	case 1: return 0x70;                                     /* SBAS */
+	default: return 0;
+	}
+}
+
+/* emit_sfrbx builds one GNF1 DATA record from a UBX-RXM-SFRBX payload and appends it to the
+ * spool. Layout (F9/M9): gnssId, svId, sigId, freqId, numWords, reserved, version, reserved,
+ * then numWords little-endian 32-bit dwrds each holding one native nav word right-aligned.
+ * We re-serialize each word big-endian (the collector reads them back with BE, matching its
+ * RawBytes()/bytesToWords round-trip), and stamp the host reception time. */
+static void emit_sfrbx(const unsigned char *p, unsigned len) {
+	if (len < 8) return;
+	unsigned gnssId = p[0], svId = p[1], sigId = p[2], freqId = p[3], numWords = p[4];
+	if (numWords == 0 || 8u + numWords * 4u > len) return;
+	unsigned rawlen = numWords * 4u;
+	if (rawlen > MAX_RAW) return;
+
+	unsigned char rec[GNF_RECORD];
+	be64(rec, now_unix_ns());
+	rec[8]  = (unsigned char)gnssId;
+	rec[9]  = (unsigned char)svId;
+	rec[10] = (unsigned char)sigId;
+	rec[11] = (unsigned char)freqId;
+	rec[12] = frame_type(gnssId, sigId);
+	for (unsigned i = 0; i < numWords; i++) {
+		const unsigned char *w = p + 8 + i * 4; /* u-blox stores the dwrd little-endian */
+		uint32_t v = (uint32_t)w[0] | ((uint32_t)w[1] << 8) | ((uint32_t)w[2] << 16) | ((uint32_t)w[3] << 24);
+		be32(rec + RECORD_HDR + i * 4, v);
+	}
+	spool_append(&g_spool, rec, RECORD_HDR + rawlen);
+}
+
+/* rdbuf is a small buffered reader over the source fd (serial or TCP). */
+struct rdbuf { int fd; size_t pos, len; unsigned char buf[4096]; };
+
+static int rb_getc(struct rdbuf *b) {
+	while (b->pos >= b->len) {
+		ssize_t r = read(b->fd, b->buf, sizeof b->buf);
+		if (r > 0) { b->len = (size_t)r; b->pos = 0; break; }
+		if (r == 0) return -1;                       /* EOF / device closed */
+		if (errno == EINTR) continue;
+		return -1;                                   /* read error */
+	}
+	return b->buf[b->pos++];
+}
+
+static int rb_read(struct rdbuf *b, unsigned char *dst, unsigned n) {
+	for (unsigned i = 0; i < n; i++) {
+		int c = rb_getc(b);
+		if (c < 0) return -1;
+		dst[i] = (unsigned char)c;
+	}
+	return 0;
+}
+
+/* sync_ubx consumes bytes until the two-byte 0xB5 0x62 sync is found. A lone 0xB5 followed
+ * by another 0xB5 re-examines the second as a fresh sync candidate (mirrors the collector's
+ * scanUBX resync). Returns 0 on sync, -1 on stream end. */
+static int sync_ubx(struct rdbuf *b) {
+	int c = rb_getc(b);
+	for (;;) {
+		if (c < 0) return -1;
+		if (c != UBX_SYNC1) { c = rb_getc(b); continue; }
+		c = rb_getc(b);
+		if (c < 0) return -1;
+		if (c == UBX_SYNC2) return 0;
+		/* not 0x62; loop — if c is itself 0xB5 it becomes the next sync candidate */
+	}
+}
+
+/* run_ubx reads a UBX byte stream, validates each message's Fletcher checksum, and emits
+ * every UBX-RXM-SFRBX to the spool. It returns when the source ends (reconnect trigger). A
+ * corrupt frame is dropped and the reader resynchronises — a mid-stream connect never
+ * derails it. Untrusted-input discipline (docs/INTEGRITY.md §9): every length and index is
+ * bounds-checked before use. */
+static void run_ubx(int fd) {
+	struct rdbuf rb; rb.fd = fd; rb.pos = rb.len = 0;
+	unsigned char head[4], payload[UBX_MAX_PAYLOAD], ck[2];
+	for (;;) {
+		if (sync_ubx(&rb) != 0) { log_msg("source closed"); return; }
+		if (rb_read(&rb, head, 4) != 0) return;               /* class, id, len(2, LE) */
+		unsigned len = (unsigned)head[2] | ((unsigned)head[3] << 8);
+		if (len > UBX_MAX_PAYLOAD) continue;                  /* implausible length → resync */
+		if (rb_read(&rb, payload, len) != 0) return;
+		if (rb_read(&rb, ck, 2) != 0) return;
+		uint8_t a = 0, bb = 0;                                 /* 8-bit Fletcher over class..payload */
+		a += head[0]; bb += a; a += head[1]; bb += a;
+		a += head[2]; bb += a; a += head[3]; bb += a;
+		for (unsigned i = 0; i < len; i++) { a += payload[i]; bb += a; }
+		if (a != ck[0] || bb != ck[1]) continue;              /* bad checksum → drop, resync */
+		if (head[0] == UBX_CLASS_RXM && head[1] == UBX_ID_SFRBX)
+			emit_sfrbx(payload, len);
+	}
+}
+
+/* ── source open (serial or TCP) ─────────────────────────────────────────── */
+
+static speed_t baud_to_speed(int baud) {
+	switch (baud) {
+#ifdef B9600
+	case 9600: return B9600;
+#endif
+#ifdef B19200
+	case 19200: return B19200;
+#endif
+#ifdef B38400
+	case 38400: return B38400;
+#endif
+#ifdef B57600
+	case 57600: return B57600;
+#endif
+#ifdef B115200
+	case 115200: return B115200;
+#endif
+#ifdef B230400
+	case 230400: return B230400;
+#endif
+#ifdef B460800
+	case 460800: return B460800;
+#endif
+#ifdef B921600
+	case 921600: return B921600;
+#endif
+	default: return 0;
+	}
+}
+
+/* open_serial opens a receiver device in raw mode at the configured baud. u-blox USB CDC-ACM
+ * ignores the line rate, but a real UART bridge needs it (the fleet runs 460800). */
+static int open_serial(const char *path, int baud) {
+	int fd = open(path, O_RDONLY | O_NOCTTY);
+	if (fd < 0) return -1;
+	struct termios t;
+	if (tcgetattr(fd, &t) != 0) { close(fd); return -1; }
+	cfmakeraw(&t);
+	speed_t sp = baud_to_speed(baud);
+	if (sp == 0) { close(fd); log_msg("unsupported --baud %d", baud); return -1; }
+	cfsetispeed(&t, sp);
+	cfsetospeed(&t, sp);
+	t.c_cflag |= (CLOCAL | CREAD);
+	t.c_cc[VMIN] = 1;   /* block for at least one byte */
+	t.c_cc[VTIME] = 0;
+	if (tcsetattr(fd, TCSANOW, &t) != 0) { close(fd); return -1; }
+	return fd;
+}
+
+/* open_source opens the receiver: a device path (leading '/') is a serial port; otherwise a
+ * host:port TCP bridge (ser2net / a receiver's raw TCP port). */
+static int open_source(const struct opts *o) {
+	if (o->source[0] == '/') return open_serial(o->source, o->baud);
+	char hp[256];
+	snprintf(hp, sizeof hp, "%s", o->source);
+	char *colon = strrchr(hp, ':');
+	if (!colon) { log_msg("--source %s: expected /dev/... or host:port", o->source); return -1; }
+	*colon = 0;
+	return tcp_dial(hp, colon + 1, 5);
+}
+
+static void *producer_thread(void *arg) {
+	const struct opts *o = arg;
+	int backoff = 1;
+	for (;;) {
+		int fd = open_source(o);
+		if (fd < 0) {
+			log_msg("source open failed (%s); retry in %ds", o->source, backoff);
+			sleep(backoff); if ((backoff *= 2) > 30) backoff = 30;
+			continue;
+		}
+		log_msg("source open (ubx): %s", o->source);
+		backoff = 1;
+		run_ubx(fd);
+		close(fd);
+	}
+	return NULL;
+}
+
+/* ── consumer: spool -> collector, replaying unacked on every reconnect ───── */
+
+static SSL *tls_connect(SSL_CTX *ctx, const struct opts *o, int *out_fd) {
+	int fd = tcp_dial(o->server_host, o->server_port, 0);
+	if (fd < 0) return NULL;
+	SSL *ssl = SSL_new(ctx);
+	if (!ssl) { close(fd); return NULL; }
+	SSL_set_fd(ssl, fd);
+	if (!o->insecure) SSL_set_tlsext_host_name(ssl, o->server_host);
+	if (SSL_connect(ssl) != 1) { SSL_free(ssl); close(fd); return NULL; }
+	if (!o->insecure && SSL_get_verify_result(ssl) != X509_V_OK) {
+		log_msg("server certificate verification failed");
+		SSL_free(ssl); close(fd); return NULL;
+	}
+	*out_fd = fd;
+	return ssl;
+}
+
+static int handshake(SSL *ssl, const struct opts *o, int *zstd_ok) {
+	*zstd_ok = 0;
+	if (ssl_write_all(ssl, MAGIC, 4) != 0) return -1;
+	char hello[1024];
+	int n = snprintf(hello, sizeof hello,
+		"{\"token\":\"%s\",\"station\":\"%s\",\"feed\":\"%s\",\"sw\":\"navfeeder/1\"%s}",
+		o->token ? o->token : "", o->station, o->feed, o->zstd ? ",\"zstd\":true" : "");
+	if (n < 0 || (size_t)n >= sizeof hello) return -1;
+	if (send_frame(ssl, F_HELLO, hello, (uint32_t)n) != 0) return -1;
+
+	unsigned char buf[1024]; uint8_t type; uint32_t len;
+	if (read_frame(ssl, &type, buf, sizeof buf, &len) != 0) return -1;
+	if (type != F_WELCOME) return -1;
+	buf[len < sizeof buf ? len : sizeof buf - 1] = 0;
+	if (!strstr((char *)buf, "\"ok\":true")) {
+		log_msg("collector rejected handshake: %.*s", (int)len, buf);
+		return -2;
+	}
+	*zstd_ok = (strstr((char *)buf, "\"zstd\":true") != NULL); /* only compress if confirmed */
+	return 0;
+}
+
+/* disk_maybe_delete removes the spool file once everything in it has been acked. */
+static void disk_maybe_delete(struct spool *s) {
+	pthread_mutex_lock(&s->mu);
+	uint64_t cleared_bytes = 0;
+	if (s->path && s->disk_max_seq != 0 && s->acked >= s->disk_max_seq) {
+		if (s->disk_w) { fclose(s->disk_w); s->disk_w = NULL; }
+		unlink(s->path);
+		cleared_bytes = s->disk_bytes;
+		s->disk_max_seq = s->disk_bytes = 0;
+	}
+	pthread_mutex_unlock(&s->mu);
+	if (cleared_bytes >= 64 * 1024)
+		log_msg("disk spool delivered and cleared (%llu KiB)", (unsigned long long)(cleared_bytes / 1024));
+}
+
+/* disk_drain sends disk-spooled frames with seq > *sent_upto (oldest first). Returns the
+ * count sent, or -1 on a send failure. The disk always holds seqs older than the ring. */
+static int disk_drain(struct spool *s, struct conn *c, uint64_t *sent_upto) {
+	pthread_mutex_lock(&s->mu);
+	const char *path = s->path;
+	uint64_t dmax = s->disk_max_seq;
+	pthread_mutex_unlock(&s->mu);
+	if (!path || dmax <= *sent_upto) return 0;
+
+	FILE *r = fopen(path, "rb");
+	if (!r) return 0;
+	int sent = 0;
+	for (;;) {
+		unsigned char hdr[12];
+		if (fread(hdr, 1, 12, r) != 12) break;
+		uint64_t seq = rd_be64(hdr);
+		uint32_t len = rd_be32(hdr + 8);
+		if (len > GNF_RECORD) break; /* truncated/corrupt tail record */
+		unsigned char data[GNF_RECORD];
+		if (len && fread(data, 1, len, r) != len) break;
+		if (seq > *sent_upto) {
+			if (send_data(c, seq, data, len) != 0) { fclose(r); g_disconnected = 1; return -1; }
+			*sent_upto = seq;
+			sent++;
+		}
+	}
+	fclose(r);
+	return sent;
+}
+
+/* serve_collector connects once and drains the spool until disconnect. Returns -2 on auth
+ * rejection (back off hard), -1 otherwise. */
+static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
+	int tls_fd;
+	SSL *ssl = tls_connect(ctx, o, &tls_fd);
+	if (!ssl) { log_msg("collector TLS connect failed"); return -1; }
+
+	int zstd_ok = 0;
+	int hs = handshake(ssl, o, &zstd_ok);
+	if (hs != 0) { SSL_free(ssl); close(tls_fd); return hs == -2 ? -2 : -1; }
+
+	struct conn c = { ssl, NULL, NULL, 0, 0, 0 };
+	if (zstd_ok) {
+		c.cctx = ZSTD_createCCtx();
+		c.obuf_cap = ZSTD_CStreamOutSize();
+		c.obuf = malloc(c.obuf_cap);
+		if (!c.cctx || !c.obuf) die("out of memory for zstd stream");
+		ZSTD_CCtx_setParameter(c.cctx, ZSTD_c_compressionLevel, 3);
+	}
+
+	g_disconnected = 0;
+	pthread_t rt;
+	pthread_create(&rt, NULL, reader_thread, ssl);
+
+	/* Replay-on-reconnect: resume from the last acked sequence. */
+	uint64_t sent_upto = spool_acked(&g_spool);
+	uint64_t replay_base = 0;
+	spool_stats(&g_spool, &replay_base, NULL, NULL, NULL);
+	if (replay_base > sent_upto)
+		log_msg("connected: station=%s feed=%s zstd=%d; replaying %llu unacked frame(s)",
+			o->station, o->feed, zstd_ok, (unsigned long long)(replay_base - sent_upto));
+	else
+		log_msg("connected: station=%s feed=%s zstd=%d -> %s:%s",
+			o->station, o->feed, zstd_ok, o->server_host, o->server_port);
+
+	struct frame batch[DRAIN_BATCH];
+	int rc = -1;
+	time_t last_tx = time(NULL);
+	while (!g_disconnected) {
+		disk_maybe_delete(&g_spool);
+		int d = disk_drain(&g_spool, &c, &sent_upto);  /* oldest unacked first (disk) */
+		if (d < 0) break;                              /* disconnected during disk replay */
+		if (d > 0) { last_tx = time(NULL); continue; } /* re-check disk before the ring */
+		size_t n = spool_collect(&g_spool, sent_upto, batch, DRAIN_BATCH);
+		if (n == 0) {                                  /* caught up; wait for the producer */
+			if (time(NULL) - last_tx >= KEEPALIVE_S) {
+				if (send_ping(&c) != 0) { g_disconnected = 1; break; }
+				last_tx = time(NULL);
+			}
+			usleep(50 * 1000);
+			continue;
+		}
+		for (size_t i = 0; i < n; i++) {
+			if (!g_disconnected && send_data(&c, batch[i].seq, batch[i].data, batch[i].len) == 0)
+				sent_upto = batch[i].seq;
+			else
+				g_disconnected = 1;
+			free(batch[i].data);
+		}
+		last_tx = time(NULL);
+	}
+
+	SSL_shutdown(ssl);
+	pthread_join(rt, NULL);
+	SSL_free(ssl); close(tls_fd);
+	if (c.cctx) ZSTD_freeCCtx(c.cctx);
+	if (c.raw)
+		log_msg("zstd: %llu -> %llu bytes on the wire (%.1f%% of raw)",
+			(unsigned long long)c.raw, (unsigned long long)c.comp, 100.0 * (double)c.comp / (double)c.raw);
+	free(c.obuf);
+	uint64_t dropped = 0, disk_dropped = 0; size_t spooled = 0;
+	spool_stats(&g_spool, NULL, &dropped, &spooled, &disk_dropped);
+	log_msg("disconnected (spooled=%zu dropped=%llu disk_dropped=%llu)",
+		spooled, (unsigned long long)dropped, (unsigned long long)disk_dropped);
+	return rc;
+}
+
+/* ── setup ───────────────────────────────────────────────────────────────── */
+
+static SSL_CTX *make_ctx(const struct opts *o) {
+	SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
+	if (!ctx) die("SSL_CTX_new failed");
+	SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+	/* Pin to TLS 1.2 (radiolistener regression fix). The reader thread runs SSL_read while the consumer
+	 * thread runs SSL_write on the SAME SSL object with no lock. OpenSSL's one-reader/one-writer
+	 * pattern is only safe when SSL_read can't have to write: under TLS 1.3 a post-handshake
+	 * KeyUpdate processed inside SSL_read needs the write path, racing the concurrent SSL_write
+	 * and corrupting the connection. TLS 1.2 has no KeyUpdate and the Go collector never
+	 * renegotiates, so capping the max version keeps the split threading model correct without a
+	 * per-SSL mutex (which would deadlock the blocking reader). TLS 1.2 with modern ciphers is
+	 * secure. */
+	SSL_CTX_set_max_proto_version(ctx, TLS1_2_VERSION);
+	if (o->insecure) {
+		SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
+	} else {
+		SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+		if (o->ca) {
+			if (SSL_CTX_load_verify_locations(ctx, o->ca, NULL) != 1) die("failed to load --ca file");
+		} else if (SSL_CTX_set_default_verify_paths(ctx) != 1) {
+			die("failed to load system CA paths");
+		}
+	}
+	/* mTLS: present a client certificate (the collector reads its CN as the station). */
+	if (o->cert && o->key) {
+		if (SSL_CTX_use_certificate_chain_file(ctx, o->cert) != 1) die("failed to load --cert file");
+		if (SSL_CTX_use_PrivateKey_file(ctx, o->key, SSL_FILETYPE_PEM) != 1) die("failed to load --key file");
+		if (SSL_CTX_check_private_key(ctx) != 1) die("--cert and --key do not match");
+	}
+	return ctx;
+}
+
+/* read_token_file loads the bearer token from a file so it never appears in argv (visible in
+ * ps / /proc/<pid>/cmdline). The rc/systemd unit points here. */
+static const char *read_token_file(const char *path) {
+	FILE *f = fopen(path, "r");
+	if (!f) die("cannot open --token-file");
+	static char tok[512];
+	if (!fgets(tok, sizeof tok, f)) die("empty --token-file");
+	fclose(f);
+	size_t n = strlen(tok);
+	while (n && (tok[n-1] == '\n' || tok[n-1] == '\r' || tok[n-1] == ' ' || tok[n-1] == '\t'))
+		tok[--n] = 0;
+	if (n == 0) die("empty --token-file");
+	return tok;
+}
+
+static const char *need(const char *v, const char *name) {
+	if (!v) { fprintf(stderr, "navfeeder: missing required --%s\n", name); exit(2); }
+	return v;
+}
+
+static const char *split_hostport(char *s) {
+	char *c = strrchr(s, ':');
+	if (!c) die("--server: expected host:port");
+	*c = 0;
+	return c + 1;
+}
+
+static void usage(void) {
+	fprintf(stderr,
+		"navfeeder — navlistener edge feeder (UBX raw nav frames over GNF1/TLS)\n"
+		"usage: navfeeder --server host:port --source (/dev/ttyACM0 | host:port) --station ID\n"
+		"                 (--token TOK | --token-file F | --cert C --key K) [options]\n\n"
+		"  --server host:port    the collector's authenticated push endpoint\n"
+		"  --source SRC          /dev/ttyACM0 (serial) or host:port (TCP bridge to the receiver)\n"
+		"  --baud N              serial baud when --source is a device path (default 460800)\n"
+		"  --station ID          this observer's station id (also the mTLS cert CN)\n"
+		"  --feed ubx            feed type (only 'ubx' is implemented today; default ubx)\n"
+		"  --token TOK           bearer token (prefer --token-file so it stays out of argv)\n"
+		"  --token-file F        read the bearer token from a file\n"
+		"  --cert C --key K      mTLS client certificate + private key (PEM)\n"
+		"  --ca F                CA bundle to verify the collector (default: system store)\n"
+		"  --spool N             in-memory ring capacity in frames (default 65536)\n"
+		"  --spool-file F        disk spool path (survives reboots; lossless past RAM)\n"
+		"  --spool-disk-mb N     disk spool cap in MiB (default 256)\n"
+		"  --zstd                request zstd DATA-stream compression (collector must confirm)\n"
+		"  --insecure            skip TLS verification (dev only)\n");
+}
+
+int main(int argc, char **argv) {
+	struct opts o; memset(&o, 0, sizeof o);
+	o.feed = "ubx";
+	o.baud = 460800;
+	o.spool_cap = 65536;
+	o.disk_max_bytes = 256ull * 1024 * 1024;
+	char *server = NULL;
+	for (int i = 1; i < argc; i++) {
+		const char *a = argv[i];
+		if (!strcmp(a, "--server") && i+1 < argc) server = argv[++i];
+		else if (!strcmp(a, "--source") && i+1 < argc) o.source = argv[++i];
+		else if (!strcmp(a, "--baud") && i+1 < argc) o.baud = atoi(argv[++i]);
+		else if (!strcmp(a, "--token") && i+1 < argc) o.token = argv[++i];
+		else if (!strcmp(a, "--token-file") && i+1 < argc) o.token = read_token_file(argv[++i]);
+		else if (!strcmp(a, "--station") && i+1 < argc) o.station = argv[++i];
+		else if (!strcmp(a, "--feed") && i+1 < argc) o.feed = argv[++i];
+		else if (!strcmp(a, "--ca") && i+1 < argc) o.ca = argv[++i];
+		else if (!strcmp(a, "--cert") && i+1 < argc) o.cert = argv[++i];
+		else if (!strcmp(a, "--key") && i+1 < argc) o.key = argv[++i];
+		else if (!strcmp(a, "--spool") && i+1 < argc) o.spool_cap = strtoul(argv[++i], NULL, 10);
+		else if (!strcmp(a, "--spool-file") && i+1 < argc) o.spool_file = argv[++i];
+		else if (!strcmp(a, "--spool-disk-mb") && i+1 < argc) o.disk_max_bytes = strtoull(argv[++i], NULL, 10) * 1024 * 1024;
+		else if (!strcmp(a, "--zstd")) o.zstd = 1;
+		else if (!strcmp(a, "--insecure")) o.insecure = 1;
+		else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
+		else { fprintf(stderr, "navfeeder: unknown arg %s\n", a); usage(); return 2; }
+	}
+	server = (char *)need(server, "server");
+	need(o.source, "source");
+	need(o.station, "station");
+	if (strcmp(o.feed, "ubx") != 0)
+		die("only --feed ubx is implemented today (sbf/rtcm source modes are deferred)");
+	if (!o.token && !o.cert) die("need --token/--token-file, or --cert+--key for mTLS");
+	if ((o.cert != NULL) != (o.key != NULL)) die("--cert and --key must be given together");
+	if (o.spool_cap < 1) o.spool_cap = 1;
+	o.server_port = split_hostport(server); o.server_host = server;
+
+	SSL_library_init();
+	SSL_load_error_strings();
+	SSL_CTX *ctx = make_ctx(&o);
+	spool_init(&g_spool, o.spool_cap, o.spool_file, o.disk_max_bytes);
+
+	pthread_t prod;
+	pthread_create(&prod, NULL, producer_thread, &o);
+
+	int backoff = 1;
+	for (;;) {
+		int rc = serve_collector(ctx, &o);
+		int wait = rc == -2 ? 30 : backoff;
+		log_msg("reconnecting in %ds", wait);
+		sleep(wait);
+		if (rc == -2) backoff = 1;
+		else { if ((backoff *= 2) > 30) backoff = 30; }
+	}
+	return 0;
+}
