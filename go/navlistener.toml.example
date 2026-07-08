@@ -1,0 +1,41 @@
+# navlistener configuration — example.
+#
+# Copy to /usr/local/etc/navlistener/navlistener.toml and edit. Configuration is
+# TOML only (never a .env file). This file holds no secrets; when the persist and
+# push stages land, real credentials (DB DSN, TLS keys) go only in the deployed,
+# git-ignored file with 0600 permissions — never in this committed example.
+#
+# This build wires INGEST (dial) → DECODE → PROPAGATE. Point [[ingest]] sources
+# at receivers we control on the LAN; all decoding and orbit math is central.
+
+[logging]
+level  = "info"   # debug | info | warn | error
+format = "json"   # json | text
+
+[metrics]
+# Prometheus /metrics + /healthz + /debug/state, loopback only. a reverse proxy
+# terminates TLS in front; this listener never faces the network directly.
+addr = "127.0.0.1:9100"
+
+[state]
+shards             = 16     # sharded per-SV live store; >= 1
+sv_ttl             = "2h"   # expire an SV unseen by every receiver this long
+propagate_interval = "1s"   # cadence for re-propagating live SVs to "now"
+
+# One [[ingest]] block per receiver we dial. type ∈ { ubx, sbf, rtcm }.
+# Leave disabled = true to keep an entry without starting it.
+
+# [[ingest]]
+# name = "observer16"           # our reference u-blox F9 box
+# type = "ubx"                # UBX-RXM-SFRBX raw nav words
+# addr = "192.0.2.16:2947"    # host:port to dial on the LAN
+
+# [[ingest]]
+# name = "mosaic-x5"          # a Septentrio receiver
+# type = "sbf"                # SBF raw-nav blocks
+# addr = "192.0.2.20:28784"
+
+# [[ingest]]
+# name = "ntrip-caster"       # an RTCM3 source (ephemeris + SSR)
+# type = "rtcm"
+# addr = "192.0.2.30:2101"

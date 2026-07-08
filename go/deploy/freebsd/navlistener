@@ -1,0 +1,65 @@
+#!/bin/sh
+#
+# FreeBSD rc.d service for navlistener.
+# Install as /usr/local/etc/rc.d/navlistener (chmod 755), then:
+#   sysrc navlistener_enable=YES
+#   service navlistener start
+#
+# PROVIDE: navlistener
+# REQUIRE: LOGIN NETWORKING postgresql
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="navlistener"
+rcvar="${name}_enable"
+
+load_rc_config $name
+
+: ${navlistener_enable:="NO"}
+: ${navlistener_config:="/usr/local/etc/navlistener/navlistener.toml"}
+: ${navlistener_user:="navlistener"}
+: ${navlistener_logfile:="/var/log/navlistener.log"}
+: ${navlistener_rundir:="/var/run/navlistener"}
+
+navlistener_program="/usr/local/bin/${name}"
+
+# A daemon(8) supervisor (-r) restarts the collector on unexpected exit and drops
+# it to ${navlistener_user}. status/stop target the CHILD (pidfile + procname both
+# name the collector itself), so they work even though daemon(8) renames the
+# supervisor process. stop signals the supervisor so its restart loop ends, then it
+# forwards SIGTERM to the child for a graceful shutdown. Both pidfiles live in a
+# daemon-owned rundir because daemon(8) writes the child pidfile after the privilege
+# drop.
+command="/usr/sbin/daemon"
+procname="${navlistener_program}"
+pidfile="${navlistener_rundir}/${name}.pid"
+supervisor_pidfile="${navlistener_rundir}/supervisor.pid"
+
+start_cmd="${name}_start"
+stop_cmd="${name}_stop"
+
+navlistener_start() {
+	if [ -f "${pidfile}" ] && pgrep -F "${pidfile}" "${name}" >/dev/null 2>&1; then
+		echo "${name} already running? (pid=$(cat ${pidfile}))."
+		return 1
+	fi
+	install -d -o "${navlistener_user}" -g "${navlistener_user}" -m 0755 "${navlistener_rundir}"
+	echo "Starting ${name}."
+	/usr/sbin/daemon -f -r -R 5 \
+		-P "${supervisor_pidfile}" -p "${pidfile}" \
+		-u "${navlistener_user}" -o "${navlistener_logfile}" \
+		"${navlistener_program}" -config "${navlistener_config}"
+}
+
+navlistener_stop() {
+	if [ ! -f "${supervisor_pidfile}" ]; then
+		echo "${name} not running."
+		return 0
+	fi
+	echo "Stopping ${name}."
+	kill -TERM "$(cat ${supervisor_pidfile})" 2>/dev/null
+	wait_for_pids "$(cat ${pidfile} 2>/dev/null)"
+}
+
+run_rc_command "$1"
