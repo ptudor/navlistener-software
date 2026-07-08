@@ -134,7 +134,7 @@ on each update(metric_value):
 must cross the band by a margin to flip and flip back, so a value dithering on the boundary
 doesn't alternate). Each emitted `Event` carries `params` (the interpolation values — SV,
 constellation, magnitudes, discriminators) so clients localize the headline; `message` is the
-English fallback. This mirrors intsat's `Event`/`params` contract exactly (`docs/OUTPUT.md §4`).
+English fallback. This mirrors intsat's `Event`/`params` contract exactly (`docs/OUTPUT.md §3`).
 
 ---
 

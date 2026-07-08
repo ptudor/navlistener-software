@@ -38,7 +38,7 @@ Two numbering schemes coexist by design:
 - The **galmon-compatible output feed** uses galmon's numbering for the constellations galmon
   implemented (GPS 0, Galileo 2, BeiDou 3, GLONASS 6 — note galmon's GLONASS is 6, which
   happens to match u-blox), and **extends** it with **QZSS = 5** and **NavIC = 7** (marked ✚).
-  The regional constellation IDs follow the same u-blox numbering. See `docs/OUTPUT.md` §"gnssId & SV-name extensions".
+  The regional constellation IDs follow the same u-blox numbering. See the `gnssid` field notes in `docs/OUTPUT.md §1.1`.
 - **SV-name letters:** `G` GPS, `S` SBAS, `E` Galileo, `C` BeiDou, `R` GLONASS, **`J` QZSS**,
   **`I` NavIC**. `J`/`I` follow the RINEX 3.x / IGS convention, so downstream (intsat,
   mapintsat) needs no new letter logic — only the two new `GnssIDFromPrefix` cases.
@@ -315,7 +315,8 @@ PZ-90.11 datum**. Source: **GLONASS ICD Edition 5.1 (2008)**.
 - **No ECEF in `svs.json` (legacy API field layout).** galmon's `svs.json`
   omits GLONASS `x/y/z`; GLONASS positions are published via the **`almanac.json`** feed
   instead. We keep this split so intsat/mapintsat (which already special-case GLONASS-via-
-  almanac) work unchanged — see `docs/OUTPUT.md` §"GLONASS position via almanac". Internally we
+  almanac) work unchanged — see the almanac feed in `docs/OUTPUT.md §1.4` and the GLONASS note
+  in `§1.1`. Internally we
   *do* compute the immediate-ephemeris ECEF (for the orbit-disco integrity metric); it simply
   is not placed in the `svs.json` `x/y/z` fields.
 
@@ -386,6 +387,6 @@ precisely because a `MON-VER` string does not determine capability — e.g. ZED-
 integrity layer knows **what a node *should* be reporting**: a node whose silicon supports E5a
 but which suddenly stops delivering `GalFnav` is a signal (jamming, spoofing, or fault), not
 just "quiet." This is the GNSS analogue of `radiolistener`'s per-observer expectations and is
-detailed in `docs/INTEGRITY.md` §"Per-observer capability gate". The fingerprint schema reuses
+detailed in `docs/INTEGRITY.md §6` (capability plausibility). The fingerprint schema reuses
 the `tudorgps` capability-tuple shape (`constellation_support`, `signal_support`) so the two
 systems share vocabulary.

@@ -61,11 +61,11 @@ unknown):
 | Field | Type | Meaning / source |
 |---|---|---|
 | `fullName` | string | e.g. `"GPS-5"`, `"Galileo-14 (E1B)"` — human label |
-| `name` | string | short SV name `"G05"` (letter+PRN; galmon numbering, §4) |
+| `name` | string | short SV name `"G05"` (letter+PRN; numbering per `docs/CONSTELLATIONS.md §0`) |
 | `gnssid` | int | **galmon-emit** gnssid (GPS 0, Galileo 2, BeiDou 3, GLONASS 6; **ours:** QZSS 5, NavIC 7) |
 | `svid` | int | PRN within constellation |
-| `sigid` | int | signal id (0 = primary; galmon-emit numbering, §4.2) |
-| `health` | string | free-text broadcast health, e.g. `"OK"`, `"NOT OK: 3"`, `"DON'T USE"`, Galileo composite `"OK/OK/val/val"` (MATH.md §health) |
+| `sigid` | int | signal id (0 = primary; galmon-emit numbering per `docs/CONSTELLATIONS.md §0`) |
+| `health` | string | free-text broadcast health, e.g. `"OK"`, `"NOT OK: 3"`, `"DON'T USE"`, Galileo composite `"OK/OK/val/val"` (health bits decoded per constellation — `docs/INTEGRITY.md §10`) |
 | `healthissue` | **bool OR int** | **polymorphic** — legacy shape is bool; severity shape is int `0`/`1`/`2`. We emit the **int** form (0 none / 1 warn / 2 error); consumers accept both. Never emit as string. |
 | `eph-age-m` | float | ephemeris age in minutes = `ephAge(tow,t0e)/60` (MATH.md §age) |
 | `sisa` | string | accuracy label `"200 cm"`, or sentinel `"NO SISA AVAILABLE"`/`"NONE"` (MATH.md §URA/SISA) |

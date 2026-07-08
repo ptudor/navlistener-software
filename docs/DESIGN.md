@@ -103,7 +103,7 @@ fails CRC is dropped from decode but its raw bytes are still persisted (forensic
 
 ### Stage 4 — Persist: raw + decoded, TimescaleDB, ingest-time organized
 
-Same discipline as radiolistener (see `docs/OUTPUT.md §5` for the schema): a `nav_frames`
+Same discipline as radiolistener (see `docs/OUTPUT.md §4` for the schema): a `nav_frames`
 hypertable holds the **raw frame bytes + the decoded jsonb** side by side, organized on the
 near-monotonic ingest clock, tagged with `decoder`/`decoder_ver` so a decoder fix can re-run
 history. `gnss_snapshots` stores periodic feed dumps; `gnss_events` stores confirmed integrity
