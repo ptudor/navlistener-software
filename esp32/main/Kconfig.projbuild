@@ -1,0 +1,53 @@
+menu "navfeeder-esp"
+
+    config NVF_WIFI_SSID
+        string "WiFi SSID"
+        default ""
+        help
+            STA network to join. Leave empty to run receiver-only (bench throughput log, no
+            network). Production units are provisioned into NVS (P5), not built-in here.
+
+    config NVF_WIFI_PASS
+        string "WiFi password"
+        default ""
+
+    config NVF_COLLECTOR_HOST
+        string "Collector host"
+        default ""
+        help
+            The navlistener collector's [push] endpoint hostname. Empty => no pusher.
+
+    config NVF_COLLECTOR_PORT
+        int "Collector push port"
+        default 5580
+
+    config NVF_TOKEN
+        string "Bearer token"
+        default ""
+        help
+            One-time enrollment token granting the 'ubx' feed. Dev only here; production
+            tokens live in NVS, never in a committed sdkconfig.
+
+    config NVF_STATION
+        string "Station id"
+        default "navfeeder-esp-1"
+
+    config NVF_INSECURE
+        bool "Skip TLS verification (dev only)"
+        default n
+        help
+            Do not verify the collector's certificate. Dev bench only — a production unit
+            pins the collector CA (embed it or provision it).
+
+    config NVF_RX_BAUD
+        int "Receiver UART baud"
+        default 460800
+
+    config NVF_SPOOL_FRAMES
+        int "Spool ring capacity (frames)"
+        default 1024
+        help
+            Bounded RAM ring of unacked records. Sized against the C6 SRAM budget with
+            WiFi+TLS up; overflow drops the oldest (a littlefs reboot tier is a later phase).
+
+endmenu

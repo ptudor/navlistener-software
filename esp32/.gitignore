@@ -1,3 +1,8 @@
+# Editor / language-server caches
+.cache/
+.vscode/
+compile_commands.json
+
 # ESP-IDF build artifacts
 /build/
 sdkconfig
