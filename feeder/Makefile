@@ -6,8 +6,8 @@
 # system libraries are used. Override SSL_PREFIX as needed.
 #
 # The real fleet target is a tiny binary on the OpenWrt/SBC observers — the `openwrt`
-# cross-build sketch below, wired up when the u-blox fleet (observer16, the .61 F9P, the F9T)
-# is converted from dial-mode ingest to authenticated push (P7).
+# cross-build sketch below, wired up when the u-blox fleet (the .61 F9P, the F9T, and the
+# rest of the observers) is converted from dial-mode ingest to authenticated push (P7).
 
 BINARY    := navfeeder
 CC        ?= cc
