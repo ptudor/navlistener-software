@@ -42,6 +42,7 @@ raw_retention  = "7 days" # drop raw frames older than this (long-term lives in 
 # addr                    = "127.0.0.1:8080"
 refresh_interval        = "30s"  # svs/global/observers/sbas
 almanac_refresh_interval = "90s" # almanac (longer-life, all-SV view)
+snapshot_interval        = "5m"  # persist each feed to the historian for replay/backfill; "0s" disables (needs [store].dsn)
 
 # Authenticated GNF1 fleet push endpoint (docs/DESIGN.md §1/§2): the production
 # ingest path where navfeeder edge feeders connect out to us over TLS. Optional:

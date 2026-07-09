@@ -133,6 +133,17 @@ func run() int {
 				log.Error("v2 serve", "error", err)
 			}
 		}()
+		// Persist each served feed to the historian on a slow cadence — the replay/backfill
+		// record (docs/OUTPUT.md §4). Only meaningful when the historian is on and the
+		// cadence is non-zero ([serve].snapshot_interval; "0s" disables).
+		if historian != nil && cfg.Serve.SnapshotEvery > 0 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				snapshotLoop(ctx, apiSrv, historian, cfg.Serve.SnapshotEvery, log)
+			}()
+			log.Info("feed snapshots enabled", "interval", cfg.Serve.SnapshotEvery.String())
+		}
 	}
 
 	// The authenticated GNF1 push endpoint (docs/DESIGN.md §1/§2) is the production
@@ -247,6 +258,32 @@ func decodeLoop(ctx context.Context, frames <-chan *ingest.RawFrame, live *state
 					return
 				}
 			}
+		}
+	}
+}
+
+// snapshotLoop persists each served v2 feed's current body to the historian on the
+// configured cadence — the light replay/backfill record (docs/OUTPUT.md §4), complementary
+// to the raw-nav-frame hypertable. A write failure is logged and the loop continues: a
+// missed snapshot never disrupts serving or ingest. It stops when ctx is cancelled, before
+// the historian is closed in the ordered shutdown.
+func snapshotLoop(ctx context.Context, api *serve.Server, historian *store.Store, every time.Duration, log *slog.Logger) {
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	for {
+		select {
+		case <-tick.C:
+			now := time.Now()
+			for feed, body := range api.SnapshotFeeds() {
+				if err := historian.WriteSnapshot(ctx, now, feed, body); err != nil {
+					if ctx.Err() != nil {
+						return // shutting down: the historian context is going away
+					}
+					log.Warn("feed snapshot write failed", "feed", feed, "error", err)
+				}
+			}
+		case <-ctx.Done():
+			return
 		}
 	}
 }

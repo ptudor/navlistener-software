@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 const goodHash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -22,6 +23,36 @@ func TestPushDisabled(t *testing.T) {
 	}
 	if c.Push.AckInterval <= 0 {
 		t.Errorf("ack interval not defaulted: %v", c.Push.AckInterval)
+	}
+}
+
+// TestSnapshotInterval: an unset snapshot_interval defaults to 5m; an explicit "0s"
+// disables it; a valid duration is honoured; garbage is a hard error.
+func TestSnapshotInterval(t *testing.T) {
+	def := defaults()
+	if err := def.finalize(); err != nil {
+		t.Fatalf("defaults should finalize: %v", err)
+	}
+	if def.Serve.SnapshotEvery != 5*time.Minute {
+		t.Errorf("unset snapshot_interval = %v, want 5m", def.Serve.SnapshotEvery)
+	}
+
+	off := defaults()
+	off.Serve.SnapshotEverys = "0s"
+	if err := off.finalize(); err != nil || off.Serve.SnapshotEvery != 0 {
+		t.Errorf("explicit 0s should disable, got %v (err %v)", off.Serve.SnapshotEvery, err)
+	}
+
+	custom := defaults()
+	custom.Serve.SnapshotEverys = "2m"
+	if err := custom.finalize(); err != nil || custom.Serve.SnapshotEvery != 2*time.Minute {
+		t.Errorf("2m not honoured: %v (err %v)", custom.Serve.SnapshotEvery, err)
+	}
+
+	bad := defaults()
+	bad.Serve.SnapshotEverys = "nonsense"
+	if err := bad.finalize(); err == nil {
+		t.Error("garbage snapshot_interval accepted, want error")
 	}
 }
 

@@ -137,6 +137,25 @@ func (s *Server) PublishEvent(e EventMsg) {
 	s.broker.Publish(e)
 }
 
+// SnapshotFeeds returns a copy of every warmed feed's current marshalled envelope, keyed
+// by feed name, for the historian's replay/backfill record (docs/OUTPUT.md §4). Feeds not
+// yet built are omitted; the returned byte slices are copies, so the caller may retain them
+// without racing the next refresh's cache swap.
+func (s *Server) SnapshotFeeds() map[string][]byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string][]byte, len(s.cache))
+	for f, b := range s.cache {
+		if len(b) == 0 {
+			continue
+		}
+		cp := make([]byte, len(b))
+		copy(cp, b)
+		out[f] = cp
+	}
+	return out
+}
+
 func (s *Server) refreshAll() {
 	for _, f := range fastFeeds {
 		s.refresh(f)

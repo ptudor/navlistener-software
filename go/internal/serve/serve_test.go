@@ -58,6 +58,40 @@ func TestEnvelopeAndSchema(t *testing.T) {
 	}
 }
 
+// TestSnapshotFeeds verifies the historian backfill accessor returns a copy of each warmed
+// feed's current body, omits un-warmed feeds, and does not alias the live cache.
+func TestSnapshotFeeds(t *testing.T) {
+	s := testServer(nil)
+	if len(s.SnapshotFeeds()) != 0 {
+		t.Fatalf("cold server should snapshot no feeds, got %d", len(s.SnapshotFeeds()))
+	}
+	s.refreshAll()
+	snap := s.SnapshotFeeds()
+	for _, feed := range []string{"svs", "global", "observers", "almanac", "sbas"} {
+		body, ok := snap[feed]
+		if !ok || len(body) == 0 {
+			t.Fatalf("feed %q missing from snapshot", feed)
+		}
+		var env struct {
+			OK   bool `json:"ok"`
+			Data struct {
+				Schema string `json:"schema"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(body, &env); err != nil || !env.OK || env.Data.Schema != schemaVersion {
+			t.Errorf("feed %q snapshot not a valid envelope: %v", feed, err)
+		}
+	}
+	// The returned slice is a copy: mutating it must not corrupt the served cache.
+	snap["svs"][0] = 'X'
+	s.mu.RLock()
+	cached := s.cache["svs"][0]
+	s.mu.RUnlock()
+	if cached == 'X' {
+		t.Error("SnapshotFeeds aliased the live cache")
+	}
+}
+
 // TestGlobalCounters verifies the global feed carries the flat leap-second and
 // live-total scalars (docs/OUTPUT.md §1.2).
 func TestGlobalCounters(t *testing.T) {

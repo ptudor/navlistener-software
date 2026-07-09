@@ -55,6 +55,11 @@ type Serve struct {
 	RefreshFast  time.Duration `toml:"-"`
 	RefreshSlows string        `toml:"almanac_refresh_interval"` // almanac, default "90s"
 	RefreshSlow  time.Duration `toml:"-"`
+	// SnapshotEvery is the cadence at which each served feed's current body is persisted
+	// to the historian as a replay/backfill record (docs/OUTPUT.md §4). Only active when
+	// both [serve].addr and [store].dsn are set. Default "5m"; "0s" disables.
+	SnapshotEverys string        `toml:"snapshot_interval"`
+	SnapshotEvery  time.Duration `toml:"-"`
 }
 
 // Store is the TimescaleDB raw-nav-frame historian (docs/OUTPUT.md §4). It is
@@ -228,6 +233,12 @@ func (c *Config) finalize() error {
 	}
 	if c.Serve.RefreshSlow <= 0 {
 		c.Serve.RefreshSlow = 90 * time.Second
+	}
+	if err := parseDur(c.Serve.SnapshotEverys, &c.Serve.SnapshotEvery); err != nil {
+		return fmt.Errorf("serve.snapshot_interval: %w", err)
+	}
+	if c.Serve.SnapshotEverys == "" { // unset → default; an explicit "0s" disables
+		c.Serve.SnapshotEvery = 5 * time.Minute
 	}
 
 	if err := c.finalizePush(); err != nil {
