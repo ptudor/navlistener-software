@@ -85,3 +85,17 @@ ack_interval = "1s"
 # name = "ntrip-caster"       # an RTCM3 source (ephemeris + SSR)
 # type = "rtcm"
 # addr = "192.0.2.30:2101"
+
+# NTRIP caster (RTCM3 over HTTP), e.g. CRTN at Scripps/UCSD. Fill addr/mountpoint/username/
+# password in the deployed, git-ignored config — never commit real credentials here. This build
+# frames + CRC-checks + persists the RTCM3 stream (a live capture/validation source); decoding
+# the RTCM ephemeris messages (1019/1020/1041/…) into live SV state is a follow-on.
+#   NOTE: CRTN stations are in California, so they carry GPS/GLONASS/Galileo/BeiDou/QZSS — NOT
+#   NavIC (its satellites are below the horizon here); a NavIC/1041 stream must be sourced in Asia.
+# [[ingest]]
+# name = "crtn-ucsd"
+# type = "ntrip"
+# addr = "<caster-host>:2101"  # NTRIP caster host:port
+# mountpoint = "<MOUNT>"       # the mountpoint to subscribe
+# username = "<user>"          # NTRIP basic-auth credentials
+# password = "<pass>"

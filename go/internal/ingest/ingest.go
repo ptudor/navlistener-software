@@ -31,8 +31,8 @@ func scannerFor(typ string) scanner {
 		return scanUBX
 	case "sbf":
 		return scanSBF
-	case "rtcm":
-		return scanRTCM
+	case "rtcm", "ntrip":
+		return scanRTCM // ntrip is RTCM3 carried over an NTRIP caster; same frame parser
 	default:
 		return nil
 	}
@@ -91,6 +91,21 @@ func (m *Manager) runSource(ctx context.Context, src config.Source, sc scanner) 
 			}
 			backoff = nextBackoff(backoff)
 			continue
+		}
+		// An NTRIP source needs the caster handshake (GET the mountpoint, basic auth) before
+		// the RTCM3 stream flows; a failed handshake reconnects like any other drop.
+		if src.Type == "ntrip" {
+			if err := ntripConnect(conn, src); err != nil {
+				_ = conn.Close()
+				metrics.SourceUp.WithLabelValues(src.Name, src.Type).Set(0)
+				metrics.IngestErrorsTotal.WithLabelValues(src.Name, "ntrip_handshake").Inc()
+				m.log.Warn("ntrip handshake failed; will retry", "source", src.Name, "mountpoint", src.Mountpoint, "error", err, "backoff", backoff)
+				if !sleep(ctx, backoff) {
+					return
+				}
+				backoff = nextBackoff(backoff)
+				continue
+			}
 		}
 		metrics.SourceConnectsTotal.WithLabelValues(src.Name).Inc()
 		metrics.SourceUp.WithLabelValues(src.Name, src.Type).Set(1)

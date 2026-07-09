@@ -25,12 +25,22 @@ var DefaultPaths = []string{
 	"./navlistener.toml",
 }
 
-// knownIngestTypes are the raw-frame connector types this build implements
-// (docs/CONSTELLATIONS.md §2). Each dials a receiver and forwards raw frames.
+// knownIngestTypes are the raw-frame message formats a feeder may push (the push feed grant)
+// and the plain raw-frame dial connectors (docs/CONSTELLATIONS.md §2).
 var knownIngestTypes = map[string]bool{
 	"ubx":  true, // u-blox UBX-RXM-SFRBX stream
 	"sbf":  true, // Septentrio SBF raw-nav blocks
 	"rtcm": true, // RTCM3 ephemeris / SSR
+}
+
+// knownDialTypes are the connector types a dial [[ingest]] source may use: the raw-frame
+// formats above plus ntrip, which is an RTCM3 transport (a caster spoken over HTTP), not a
+// push feed grant — hence a separate set (a feeder can't push "ntrip").
+var knownDialTypes = map[string]bool{
+	"ubx":   true,
+	"sbf":   true,
+	"rtcm":  true,
+	"ntrip": true, // RTCM3 over an NTRIP caster (host:port + mountpoint + basic auth)
 }
 
 // Config is the whole-daemon configuration.
@@ -159,6 +169,13 @@ type Source struct {
 	// signal the silicon can't produce, is a threat (docs/INTEGRITY.md §6). Parsed into CapDecl.
 	Capabilities []string     `toml:"capabilities,omitempty"`
 	CapDecl      []Capability `toml:"-"`
+
+	// NTRIP transport (type = "ntrip"): Addr is the caster host:port, Mountpoint is the stream
+	// to subscribe, and Username/Password are the basic-auth credentials. Real credentials live
+	// only in the deployed, git-ignored config — never in a committed example.
+	Mountpoint string `toml:"mountpoint,omitempty"`
+	Username   string `toml:"username,omitempty"`
+	Password   string `toml:"password,omitempty"`
 }
 
 // Capability is one declared (gnssId, sigId) an observer's silicon can produce.
@@ -274,11 +291,14 @@ func (c *Config) finalize() error {
 			return fmt.Errorf("ingest[%d]: duplicate source name %q", i, s.Name)
 		}
 		seen[s.Name] = true
-		if !knownIngestTypes[s.Type] {
-			return fmt.Errorf("ingest %q: unknown type %q (want ubx, sbf, or rtcm)", s.Name, s.Type)
+		if !knownDialTypes[s.Type] {
+			return fmt.Errorf("ingest %q: unknown type %q (want ubx, sbf, rtcm, or ntrip)", s.Name, s.Type)
 		}
 		if s.Addr == "" {
 			return fmt.Errorf("ingest %q: addr is required (host:port to dial)", s.Name)
+		}
+		if s.Type == "ntrip" && s.Mountpoint == "" {
+			return fmt.Errorf("ingest %q: mountpoint is required for type ntrip", s.Name)
 		}
 		caps, err := parseCapabilities(s.Capabilities)
 		if err != nil {

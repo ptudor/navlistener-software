@@ -181,9 +181,11 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 		s.applyRF(f)
 		return
 	}
-	// A decoded nav frame (Words/Bytes) is the canonical evidence that this station tracks
-	// this (gnssId, sigId); record it into the capability fingerprint before dispatch.
-	if f.Source != "" && (f.Words != nil || f.Bytes != nil) {
+	// A word-oriented nav frame (ubx/push SFRBX) is the canonical evidence that this station
+	// tracks this (gnssId, sigId); record it into the capability fingerprint before dispatch.
+	// Byte-oriented frames (SBF blocks, RTCM messages) are keyed by message number, not a
+	// per-signal (gnssId, sigId), so they carry no capability signal and are excluded.
+	if f.Source != "" && f.Words != nil {
 		s.recordCapability(f.Source, f.GnssID, f.SigID, f.Recv)
 	}
 	if f.Obs != nil {

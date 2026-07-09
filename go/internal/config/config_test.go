@@ -83,6 +83,27 @@ func TestCapabilitiesParsing(t *testing.T) {
 	}
 }
 
+// TestNtripSource: an ntrip dial source requires a mountpoint; a valid one passes; ntrip is a
+// dial type but not a push feed grant.
+func TestNtripSource(t *testing.T) {
+	c := defaults()
+	c.Ingest = []Source{{Name: "crtn", Type: "ntrip", Addr: "caster.invalid:2101"}} // no mountpoint
+	if err := c.finalize(); err == nil || !strings.Contains(err.Error(), "mountpoint") {
+		t.Fatalf("ntrip without mountpoint should fail on mountpoint, got %v", err)
+	}
+
+	ok := defaults()
+	ok.Ingest = []Source{{Name: "crtn", Type: "ntrip", Addr: "caster.invalid:2101", Mountpoint: "P472_RTCM3"}}
+	if err := ok.finalize(); err != nil {
+		t.Fatalf("valid ntrip source rejected: %v", err)
+	}
+
+	// ntrip is not a valid push feed grant (a feeder can't push "ntrip").
+	if knownIngestTypes["ntrip"] {
+		t.Error("ntrip must not be a push feed type")
+	}
+}
+
 // TestPushRequiresTLS: enabling the endpoint without cert/key is a hard error —
 // unauthenticated feeder ingest must never be possible.
 func TestPushRequiresTLS(t *testing.T) {
