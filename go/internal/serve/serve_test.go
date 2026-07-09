@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ptudor/navlistener/internal/config"
+	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/state"
 )
 
@@ -126,5 +127,35 @@ func TestMethodNotAllowed(t *testing.T) {
 	}
 	if env.OK || env.Code != http.StatusMethodNotAllowed {
 		t.Errorf("error envelope = %+v", env)
+	}
+}
+
+// TestObserversCarryRF confirms a station's PNT-defense RF metrics attach to its observer
+// record when the receiver has reported RF telemetry (docs/OUTPUT.md §1.3, DEFENSE-PNT §6).
+func TestObserversCarryRF(t *testing.T) {
+	s := testServer([]config.Source{{Name: "observer16", Type: "ubx", Addr: "10.0.0.2:2947"}})
+	// Feed a clear-sky RF sample so the station's RF read model exists.
+	for i := 0; i < 10; i++ {
+		s.store.Apply(&ingest.RawFrame{
+			Source: "observer16", Recv: time.Now(),
+			RF: &ingest.RawRF{Bands: []ingest.RFBand{{Block: 0, AGC: 4000, AntStatus: 2}}},
+		})
+	}
+	s.refresh("observers")
+	rr := httptest.NewRecorder()
+	s.serveFeed("observers")(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/observers", nil))
+	var env struct {
+		Data struct {
+			Observers []observer `json:"observers"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if len(env.Data.Observers) != 1 || env.Data.Observers[0].RF == nil {
+		t.Fatalf("observer RF not attached: %+v", env.Data.Observers)
+	}
+	if got := env.Data.Observers[0].RF.RFTrust; got != 1.0 {
+		t.Errorf("rf_trust = %v, want 1.0 (clear sky)", got)
 	}
 }

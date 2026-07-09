@@ -217,23 +217,30 @@ type envelope struct {
 // observer is one station record (docs/OUTPUT.md §1.3). In dial mode each configured
 // ingest connector is published as a receiver we control; the richer per-SV reception
 // (perrecv, position, azimuth/elevation) arrives with the authenticated push +
-// measurement path.
+// measurement path. RF carries the PNT-defense per-station RF-environment metrics when
+// the receiver reports MON-RF/NAV-SAT telemetry (docs/DEFENSE-PNT.md §6).
 type observer struct {
-	ID       string `json:"id"`
-	Vendor   string `json:"vendor"`
-	Remark   string `json:"remark"`
-	Disabled bool   `json:"disabled"`
+	ID       string           `json:"id"`
+	Vendor   string           `json:"vendor"`
+	Remark   string           `json:"remark"`
+	Disabled bool             `json:"disabled"`
+	RF       *state.StationRF `json:"rf,omitempty"`
 }
 
-func (s *Server) observers(_ time.Time) []observer {
+func (s *Server) observers(now time.Time) []observer {
+	rf := s.store.FeedStationRF(now)
 	out := make([]observer, 0, len(s.sources))
 	for _, src := range s.sources {
-		out = append(out, observer{
+		o := observer{
 			ID:       sanitize(src.Name),
 			Vendor:   sanitize(src.Type),
 			Remark:   sanitize(src.Addr),
 			Disabled: src.Disabled,
-		})
+		}
+		if r, ok := rf[src.Name]; ok {
+			o.RF = &r
+		}
+		out = append(out, o)
 	}
 	return out
 }

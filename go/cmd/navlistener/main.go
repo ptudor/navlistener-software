@@ -269,6 +269,9 @@ func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, hi
 		case <-tick.C:
 			now := time.Now()
 			events := det.Tick(now, live.FeedSVs(now), live.FeedSBAS(now))
+			// Station-scoped PNT-defense events (jamming/spoofing/RF, docs/DEFENSE-PNT.md)
+			// share the debounce state machine and event pipeline.
+			events = append(events, det.TickStations(now, live.FeedStationRF(now))...)
 			for _, e := range events {
 				emitEvent(ctx, e, historian, api, &localID, log)
 			}
