@@ -2,22 +2,20 @@
 //
 // Ties the pipeline together: WiFi STA -> UART producer (u-blox bytes) -> ubx framer ->
 // GNF1 record -> spool -> TLS pusher -> the navlistener collector. All decode + orbit math is
-// central in the collector (docs/DESIGN.md §1); this box just frames and forwards.
+// central in the collector (docs/DESIGN.md §1); this box just frames and forwards. A UI task
+// mirrors state to the LCD dashboard + the WS2812 status LED.
 //
 // Config today comes from Kconfig (idf.py menuconfig -> "navfeeder-esp"); NVS provisioning is
-// P5. With no WiFi SSID or collector host set, the firmware still runs the receiver producer
-// and logs throughput, so a wired u-blox module can be bench-tested before any network.
+// P5. With no WiFi SSID or collector host set, the firmware still boots, brings up the display,
+// runs the receiver producer, and shows "NO WIFI / unprovisioned" — it notices the problem.
 
-#include <inttypes.h>
 #include <string.h>
 #include <time.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/event_groups.h"
 #include "driver/uart.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
@@ -26,6 +24,8 @@
 #include "ubx.h"
 #include "spool.h"
 #include "pusher.h"
+#include "display_st7789.h"
+#include "status_led.h"
 
 static const char *TAG = "navfeeder";
 
@@ -40,10 +40,13 @@ static const char *TAG = "navfeeder";
 #define RX_PIN_TX   10
 #define RX_BUF_SIZE 4096
 
+static volatile bool s_wifi_up;
+static char s_collector[64];      // "host:port" once provisioned, else empty
+static ubx_parser_t s_parser;     // static: its buffers are too large for a task stack
+
 // app_now_ns returns the reception timestamp stamped into each GNF1 record. Until SNTP/RTC
 // lands (P-hw), there is no trustworthy wall clock, so we return 0 and the collector stamps
-// its own receive time (push.go recordToFrame) — the safe default. Once a real clock is synced
-// this returns CLOCK_REALTIME in nanoseconds, matching navfeeder.c.
+// its own receive time (push.go recordToFrame) — the safe default.
 static uint64_t app_now_ns(void)
 {
     struct timespec ts;
@@ -52,42 +55,63 @@ static uint64_t app_now_ns(void)
     return 0;
 }
 
-// on_record is the UBX parser's emit sink: hand each GNF1 record to the spool, which the
-// pusher drains to the collector.
+// on_record hands each framed GNF1 record to the spool, which the pusher drains.
 static void on_record(const uint8_t *record, size_t record_len, void *ctx)
 {
     (void)ctx;
     spool_append(record, (uint32_t)record_len);
 }
 
-// A single parser instance lives for the life of the app (its scratch + payload buffers are
-// too large for a task stack, so it is static).
-static ubx_parser_t s_parser;
-
 static void rx_task(void *arg)
 {
     ubx_parser_t *parser = arg;
     uint8_t buf[512];
-    int64_t last_log_us = esp_timer_get_time();
-    uint32_t last_nav = 0;
-
     for (;;) {
         int n = uart_read_bytes(RX_UART, buf, sizeof buf, pdMS_TO_TICKS(200));
         if (n > 0) ubx_parser_feed(parser, buf, (size_t)n);
+    }
+}
 
-        int64_t now_us = esp_timer_get_time();
-        if (now_us - last_log_us >= 5000000) { // every 5 s
-            uint64_t dropped = 0;
-            size_t depth = 0;
-            spool_stats(NULL, &dropped, &depth);
-            ESP_LOGI(TAG, "nav=%" PRIu32 " (+%" PRIu32 "/5s) telem=%" PRIu32
-                          " bad_ck=%" PRIu32 " spool=%u drop=%llu link=%s",
-                     parser->frames_nav, parser->frames_nav - last_nav, parser->frames_telem,
-                     parser->bad_checksum, (unsigned)depth, (unsigned long long)dropped,
-                     pusher_connected() ? "up" : "down");
-            last_nav = parser->frames_nav;
-            last_log_us = now_us;
-        }
+// ui_task refreshes the LCD dashboard + the status LED and logs a heartbeat every 2 s.
+static void ui_task(void *arg)
+{
+    ubx_parser_t *p = arg;
+    uint32_t last_nav = 0;
+    led_state_t last_led = LED_BOOT;
+    for (;;) {
+        uint64_t dropped = 0;
+        size_t depth = 0;
+        spool_stats(NULL, &dropped, &depth);
+        uint32_t nav = p->frames_nav;
+        bool link = pusher_connected();
+        bool wifi = s_wifi_up;
+
+        nvf_status_t st = {
+            .station = CONFIG_NVF_STATION,
+            .collector = s_collector[0] ? s_collector : NULL,
+            .wifi_up = wifi,
+            .link_up = link,
+            .nav = nav,
+            .nav_rate = nav - last_nav,
+            .telem = p->frames_telem,
+            .bad_ck = p->bad_checksum,
+            .spool_depth = (unsigned)depth,
+            .dropped = dropped,
+        };
+        display_render_status(&st);
+
+        led_state_t ls = !wifi ? LED_NO_WIFI
+                       : !link ? LED_NO_LINK
+                       : depth > 0 ? LED_SPOOL_FILLING
+                       : LED_STREAMING;
+        if (ls != last_led) { status_led_state(ls); last_led = ls; }
+
+        ESP_LOGI(TAG, "nav=%u (+%u) telem=%u bad_ck=%u spool=%u drop=%llu link=%s",
+                 (unsigned)nav, (unsigned)(nav - last_nav), (unsigned)p->frames_telem,
+                 (unsigned)p->bad_checksum, (unsigned)depth, (unsigned long long)dropped,
+                 link ? "up" : "down");
+        last_nav = nav;
+        vTaskDelay(pdMS_TO_TICKS(2000));
     }
 }
 
@@ -112,14 +136,15 @@ static void rx_uart_init(void)
 static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
-    (void)data;
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        s_wifi_up = false;
         ESP_LOGW(TAG, "wifi disconnected; reconnecting");
         esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *ev = data;
+        s_wifi_up = true;
         ESP_LOGI(TAG, "wifi up: " IPSTR, IP2STR(&ev->ip_info.ip));
     }
 }
@@ -153,6 +178,10 @@ void app_main(void)
 
     ESP_LOGI(TAG, "navfeeder-esp starting (GNF1 edge feeder for navlistener)");
 
+    // Display + LED first, so the board shows life (and any problem) even if unprovisioned.
+    if (display_init() != ESP_OK) ESP_LOGW(TAG, "display init failed — continuing headless");
+    if (status_led_init() != ESP_OK) ESP_LOGW(TAG, "status LED init failed");
+
     if (!spool_init(CONFIG_NVF_SPOOL_FRAMES)) {
         ESP_LOGE(TAG, "spool init failed (cap=%d) — out of memory", CONFIG_NVF_SPOOL_FRAMES);
         return;
@@ -160,6 +189,7 @@ void app_main(void)
     rx_uart_init();
     ubx_parser_init(&s_parser, on_record, app_now_ns, NULL);
     xTaskCreate(rx_task, "rx", 4096, &s_parser, 5, NULL);
+    xTaskCreate(ui_task, "ui", 4096, &s_parser, 4, NULL);
 
     const bool have_net = strlen(CONFIG_NVF_WIFI_SSID) > 0 && strlen(CONFIG_NVF_COLLECTOR_HOST) > 0;
     if (!have_net) {
@@ -168,6 +198,8 @@ void app_main(void)
         return;
     }
 
+    snprintf(s_collector, sizeof s_collector, "%s:%d",
+             CONFIG_NVF_COLLECTOR_HOST, CONFIG_NVF_COLLECTOR_PORT);
     wifi_start();
 
     pusher_cfg_t pc = {
