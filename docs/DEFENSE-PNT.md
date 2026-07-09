@@ -48,11 +48,15 @@ telemetry types (`docs/CONSTELLATIONS.md §6.2`); the feeder forwards them verba
 | **UBX-RXM-RAWX** | pseudorange, carrier phase, Doppler, lock-time, C/N₀ | `RFData` (0x02) | Doppler plausibility, measured iono (§3, `docs/MATH.md §7.4`) |
 | **UBX-NAV-PVT / TIMEUTC** | fix time, clock offset/drift, fix validity flags | `ObserverPosition`/`ObserverDetails` (0x03/0x04) | time-jump plausibility (§3) |
 
-`JammingStats` currently carries only a coarse subset. **Software task P-Jam-1:** extend the
-`JammingStats` GNF1 record to carry the full MON-RF per-band block (AGC, noiseLevel,
-cwSuppression, jamInd, antStatus per RF path) and the SEC-SIG per-signal state, so the collector
-sees the raw numbers rather than a pre-digested flag. Keep it a fixed-layout record (no protobuf
-on the wire — `docs/DESIGN.md §2`).
+**Software task P-Jam-1 (done for MON-RF/MON-HW/NAV-SAT):** the `JammingStats` (0x05) record
+carries the full MON-RF per-band block (per RF path: AGC, noiseLevel, cwSuppression/jamInd,
+jammingState, antStatus) and `ReceptionData` (0x01) carries per-SV C/N₀ + elevation, both as
+fixed-layout GNF1 telemetry records that ride the existing DATA stream (no protobuf on the wire
+— `docs/DESIGN.md §2`; body layout in `go/internal/ingest/telemetry.go`, feeder emit in
+`feeder/navfeeder.c`). The collector sees the raw receiver numbers rather than a pre-digested
+flag, and the PNT-defense detector runs identically over dial- and push-sourced stations.
+**Remaining:** fold the UBX-SEC-SIG / SEC-SIGLOG per-signal spoofing/jamming state into the
+`JammingStats` body (raises the spoof-gate fusion count, §3) once that source is wired.
 
 ---
 

@@ -219,7 +219,7 @@ func decodeLoop(ctx context.Context, frames <-chan *ingest.RawFrame, live *state
 				log.Error("decode panic recovered; frame dropped", "recover", fmt.Sprint(r))
 			}
 		}()
-		if historian != nil && f.Obs == nil { // observables are telemetry, not the nav-frame record
+		if historian != nil && f.Obs == nil && f.RF == nil { // telemetry (observables, RF) is not a nav-frame record
 			historian.Enqueue(&store.NavFrame{
 				Ts:         time.Now(),
 				ReceivedAt: f.Recv,

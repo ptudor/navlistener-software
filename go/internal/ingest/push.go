@@ -331,7 +331,13 @@ func (p *PushServer) stream(frames io.Reader, w *connWriter, observer, feed stri
 			}
 			mu.Unlock()
 			f := recordToFrame(rec, feed, observer)
-			metrics.FramesTotal.WithLabelValues(observer, fmt.Sprint(int(f.GnssID))).Inc()
+			if f == nil {
+				metrics.PushErrorsTotal.WithLabelValues(observer, "bad_telemetry").Inc()
+				continue
+			}
+			if f.RF == nil { // FramesTotal counts nav-frame throughput per constellation, not telemetry
+				metrics.FramesTotal.WithLabelValues(observer, fmt.Sprint(int(f.GnssID))).Inc()
+			}
 			select {
 			case p.out <- f:
 			default:
@@ -345,14 +351,18 @@ func (p *PushServer) stream(frames io.Reader, w *connWriter, observer, feed stri
 	}
 }
 
-// recordToFrame reconstructs a RawFrame from a GNF1 raw record. Word-oriented feeds
-// (ubx/sbf nav frames) carry the broadcast words big-endian in Raw; rtcm carries the
-// message bytes. The reception time falls back to now when the feeder did not stamp
-// it.
+// recordToFrame reconstructs a RawFrame from a GNF1 raw record. A telemetry record
+// (frame_type < 0x10, docs/CONSTELLATIONS.md §6.2) decodes to an RF sample; word-oriented
+// feeds (ubx/sbf nav frames) carry the broadcast words big-endian in Raw; rtcm carries the
+// message bytes. The reception time falls back to now when the feeder did not stamp it. A
+// malformed telemetry body returns nil (the caller counts and drops it).
 func recordToFrame(rec wire.RawRecord, feed, source string) *RawFrame {
 	recv := time.Now()
 	if rec.RecvUnixNs > 0 {
 		recv = time.Unix(0, rec.RecvUnixNs)
+	}
+	if IsTelemetryType(int(rec.FrameType)) {
+		return telemetryToFrame(rec, source, recv)
 	}
 	f := &RawFrame{
 		Recv:    recv,
@@ -369,6 +379,33 @@ func recordToFrame(rec wire.RawRecord, feed, source string) *RawFrame {
 		f.Words = bytesToWords(rec.Raw)
 	}
 	return f
+}
+
+// telemetryToFrame decodes a GNF1 telemetry record's body into a station-scoped RF sample
+// (docs/CONSTELLATIONS.md §6.2), the fleet-push counterpart of the dial-mode MON-RF/NAV-SAT
+// parsers. The sample is tagged with the authenticated observer id — the same station key
+// applyRF uses — so the PNT-defense detector sees push and dial stations alike. An
+// unrecognised telemetry type or malformed body returns nil. RF frames carry no nav words
+// and are never written to the raw-nav historian (main.decodeLoop skips them).
+func telemetryToFrame(rec wire.RawRecord, source string, recv time.Time) *RawFrame {
+	rf := &RawRF{}
+	switch int(rec.FrameType) {
+	case TelemJammingStats:
+		bands, err := decodeJammingStats(rec.Raw)
+		if err != nil {
+			return nil
+		}
+		rf.Bands = bands
+	case TelemReceptionData:
+		sats, err := decodeReceptionData(rec.Raw)
+		if err != nil {
+			return nil
+		}
+		rf.Sats = sats
+	default:
+		return nil // a telemetry type we don't transport yet
+	}
+	return &RawFrame{Recv: recv, Source: source, RF: rf}
 }
 
 // bytesToWords reassembles big-endian 32-bit nav words (the inverse of

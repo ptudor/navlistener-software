@@ -144,7 +144,7 @@ func scanCaptureNavFrames(t *testing.T, path string) []*RawFrame {
 	var frames []*RawFrame
 	now := func() time.Time { return time.Unix(0, 0) }
 	_ = scanUBX(f, "cap", now, func(fr *RawFrame) {
-		if fr.Obs == nil {
+		if fr.Obs == nil && fr.RF == nil { // nav frames only — the feeder forwards RAWX/RF as telemetry
 			frames = append(frames, fr)
 		}
 	}, func(string) {})

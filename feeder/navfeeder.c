@@ -4,8 +4,11 @@
  * A tiny forwarder for the GNSS observer fleet: read raw broadcast nav frames off a
  * local u-blox receiver (UBX-RXM-SFRBX, from a serial device or a TCP bridge) and push
  * each frame to the navlistener collector's authenticated TLS ingest endpoint, framed
- * per ../go/internal/wire (GNF1). It does NOT decode — the edge is dumb, all decoding and
- * orbit math is central in the collector (docs/DESIGN.md §1, docs/CONSTELLATIONS.md §2).
+ * per ../go/internal/wire (GNF1). It also forwards the RF-front-end and per-SV telemetry
+ * the collector's PNT-defense layer needs (UBX-MON-RF/MON-HW/NAV-SAT → GNF1 telemetry
+ * records, docs/DEFENSE-PNT.md §1). It does NOT decode — the edge is dumb, all decoding and
+ * orbit math (and all threat detection) is central in the collector (docs/DESIGN.md §1,
+ * docs/CONSTELLATIONS.md §2).
  * C because the observer fleet is OpenWrt/mips routers and SBCs where a tiny static binary
  * fits and a Go runtime does not — the same shape as radiolistener/feeder/feeder.c, which
  * this is a near-verbatim port of (the resilient spool/ack/replay core is reused verbatim;
@@ -28,6 +31,8 @@
  *   DATA(0x03)  [8B BE seq][record];  ACK(0x04) [8B BE seq]    (DATA zstd-streamed if negotiated)
  *   the DATA record = [8B BE recv_unix_ns][gnssId][svId][sigId][freqId][frame_type][raw…]
  *   raw = the native nav words serialized big-endian (the collector reads them back BE).
+ *   A telemetry record (frame_type < 0x10, §6.2) reuses the same DATA frame with a zeroed
+ *   gnssId/svId/sigId/freqId and a type-specific body (see emit_monrf/emit_navsat).
  *
  * Still deferred: SBF/RTCM source modes (the fleet is u-blox; the collector's push path wires
  * ubx today), mTLS enrollment tooling, and the ATECC SIGNED_DATA (0x07) hardware tier.
@@ -69,12 +74,26 @@
 #define KEEPALIVE_S 30        /* PING when idle this long, to stay under the collector's idle timeout */
 
 /* UBX protocol constants (u-blox interface description). SFRBX carries raw nav words
- * per gnssId/sigId (docs/CONSTELLATIONS.md §2.1). */
+ * per gnssId/sigId (docs/CONSTELLATIONS.md §2.1); MON-RF/MON-HW/NAV-SAT carry the RF-front-end
+ * and per-SV telemetry the collector's PNT-defense layer needs (docs/DEFENSE-PNT.md §1). */
 #define UBX_SYNC1 0xB5
 #define UBX_SYNC2 0x62
+#define UBX_CLASS_NAV 0x01
 #define UBX_CLASS_RXM 0x02
+#define UBX_CLASS_MON 0x0A
 #define UBX_ID_SFRBX 0x13
+#define UBX_ID_NAVSAT 0x35
+#define UBX_ID_MONHW 0x09
+#define UBX_ID_MONRF 0x38
 #define UBX_MAX_PAYLOAD (1u << 14)
+
+/* GNF1 telemetry record types (docs/CONSTELLATIONS.md §6.2): receiver-side metadata that
+ * rides the same DATA stream as raw-nav frames, discriminated by the record's frame_type
+ * byte (< 0x10). The body layouts MUST match ../go/internal/ingest/telemetry.go. */
+#define F_T_RECEPTION 0x01    /* NAV-SAT per-SV C/N0 + elevation */
+#define F_T_JAMMING   0x05    /* MON-RF / MON-HW AGC/jamming/antenna */
+#define TELEM_VERSION 1
+#define MAX_TELEM_SATS 200    /* fits a ReceptionData body in MAX_RAW (3 + 5*200 = 1003) */
 
 struct opts {
 	const char *server_host, *server_port;
@@ -147,9 +166,16 @@ static uint64_t now_unix_ns(void) {
 
 /* ── byte order ──────────────────────────────────────────────────────────── */
 
+static void be16(unsigned char *b, uint16_t v) { b[0]=v>>8; b[1]=v; }
 static void be32(unsigned char *b, uint32_t v) { b[0]=v>>24; b[1]=v>>16; b[2]=v>>8; b[3]=v; }
 static uint32_t rd_be32(const unsigned char *b) {
 	return ((uint32_t)b[0]<<24)|((uint32_t)b[1]<<16)|((uint32_t)b[2]<<8)|b[3];
+}
+/* UBX telemetry fields are little-endian on the wire; the collector reads the GNF1 body
+ * big-endian (matching ../go/internal/ingest/telemetry.go), so we byte-swap on emit. */
+static uint16_t rd_le16(const unsigned char *b) { return (uint16_t)b[0] | ((uint16_t)b[1]<<8); }
+static uint32_t rd_le32(const unsigned char *b) {
+	return (uint32_t)b[0]|((uint32_t)b[1]<<8)|((uint32_t)b[2]<<16)|((uint32_t)b[3]<<24);
 }
 static void be64(unsigned char *b, uint64_t v) { for (int i=7;i>=0;i--){ b[i]=v&0xff; v>>=8; } }
 static uint64_t rd_be64(const unsigned char *b) {
@@ -454,6 +480,90 @@ static void emit_sfrbx(const unsigned char *p, unsigned len) {
 	spool_append(&g_spool, rec, RECORD_HDR + rawlen);
 }
 
+/* emit_telem builds one GNF1 telemetry record (frame_type < 0x10 — a §6.2 receiver-side
+ * sample) and spools it exactly like a nav frame: telemetry rides the same DATA/seq/ack/
+ * replay stream. The record's gnssId/svId/sigId/freqId are zero (the sample is station-
+ * scoped, keyed by the observer at the collector); the body is the type-specific payload
+ * and MUST match ../go/internal/ingest/telemetry.go so the C↔Go cross-oracle stays exact. */
+static void emit_telem(uint8_t type, const unsigned char *body, unsigned bodylen) {
+	if (bodylen > MAX_RAW) return;
+	unsigned char rec[GNF_RECORD];
+	be64(rec, now_unix_ns());
+	rec[8] = rec[9] = rec[10] = rec[11] = 0; /* gnssId/svId/sigId/freqId: unused for telemetry */
+	rec[12] = type;
+	memcpy(rec + RECORD_HDR, body, bodylen);
+	spool_append(&g_spool, rec, RECORD_HDR + bodylen);
+}
+
+/* emit_monrf converts a UBX-MON-RF payload (F9+ RF-front-end telemetry) into a JammingStats
+ * (0x05) record. Layout: version U1, nBlocks U1, reserved U1[2], then nBlocks × 24-byte
+ * blocks — blockId U1, flags X1 (bits 0-1 = jammingState), antStatus U1, …, noisePerMS U2
+ * @14, agcCnt U2 @16, jamInd U1 @20. Body: [ver][nBands] then per band
+ * [block][agc BE16][noise BE16][cw][jamState][antStatus]. Bounds-checked. */
+static void emit_monrf(const unsigned char *p, unsigned len) {
+	if (len < 4) return;
+	unsigned nBlocks = p[1];
+	if (nBlocks == 0 || 4u + nBlocks * 24u > len) return;
+	unsigned bodylen = 2u + nBlocks * 8u;
+	if (bodylen > MAX_RAW) return;
+	unsigned char body[MAX_RAW];
+	body[0] = TELEM_VERSION;
+	body[1] = (unsigned char)nBlocks;
+	for (unsigned i = 0; i < nBlocks; i++) {
+		const unsigned char *b = p + 4 + i * 24;
+		unsigned o = 2 + i * 8;
+		body[o]     = b[0];                       /* blockId */
+		be16(body + o + 1, rd_le16(b + 16));      /* agcCnt */
+		be16(body + o + 3, rd_le16(b + 14));      /* noisePerMS */
+		body[o + 5] = b[20];                      /* jamInd (CW) */
+		body[o + 6] = (unsigned char)(b[1] & 0x03); /* jammingState */
+		body[o + 7] = b[2];                       /* antStatus */
+	}
+	emit_telem(F_T_JAMMING, body, bodylen);
+}
+
+/* emit_monhw converts a legacy UBX-MON-HW payload (60 bytes) into a single-band JammingStats
+ * record: noisePerMS U2 @16, agcCnt U2 @18, aStatus U1 @20, flags X1 @22 (jammingState in
+ * bits 2-3), jamInd U1 @45. Bounds-checked. */
+static void emit_monhw(const unsigned char *p, unsigned len) {
+	if (len < 60) return;
+	unsigned char body[2 + 8];
+	body[0] = TELEM_VERSION;
+	body[1] = 1;
+	body[2] = 0;                            /* block 0 */
+	be16(body + 3, rd_le16(p + 18));        /* agcCnt */
+	be16(body + 5, rd_le16(p + 16));        /* noisePerMS */
+	body[7] = p[45];                        /* jamInd (CW) */
+	body[8] = (unsigned char)((p[22] >> 2) & 0x03); /* jammingState */
+	body[9] = p[20];                        /* aStatus */
+	emit_telem(F_T_JAMMING, body, sizeof body);
+}
+
+/* emit_navsat converts a UBX-NAV-SAT payload into a ReceptionData (0x01) record for the
+ * C/N0-vs-elevation spoofing gate. Layout: iTOW U4, version U1, numSvs U1 @5, reserved U1[2],
+ * then numSvs × 12-byte blocks — gnssId U1, svId U1, cno U1 @2, elev I1 @3, …, flags X4 @8
+ * (bit 3 = svUsed). Body: [ver][nSats BE16] then per sat [gnssId][svId][cno][elev i8][flags];
+ * capped at MAX_TELEM_SATS. Bounds-checked. */
+static void emit_navsat(const unsigned char *p, unsigned len) {
+	if (len < 8) return;
+	unsigned numSvs = p[5];
+	if (numSvs == 0 || 8u + numSvs * 12u > len) return;
+	unsigned n = numSvs > MAX_TELEM_SATS ? MAX_TELEM_SATS : numSvs;
+	unsigned char body[3 + MAX_TELEM_SATS * 5];
+	body[0] = TELEM_VERSION;
+	be16(body + 1, (uint16_t)n);
+	for (unsigned i = 0; i < n; i++) {
+		const unsigned char *s = p + 8 + i * 12;
+		unsigned o = 3 + i * 5;
+		body[o]     = s[0];                 /* gnssId */
+		body[o + 1] = s[1];                 /* svId */
+		body[o + 2] = s[2];                 /* cno */
+		body[o + 3] = s[3];                 /* elev (I1, forwarded verbatim) */
+		body[o + 4] = (rd_le32(s + 8) & 0x08) ? 0x01 : 0x00; /* svUsed */
+	}
+	emit_telem(F_T_RECEPTION, body, 3u + n * 5u);
+}
+
 /* rdbuf is a small buffered reader over the source fd (serial or TCP). */
 struct rdbuf { int fd; size_t pos, len; unsigned char buf[4096]; };
 
@@ -514,6 +624,12 @@ static void run_ubx(int fd) {
 		if (a != ck[0] || bb != ck[1]) continue;              /* bad checksum → drop, resync */
 		if (head[0] == UBX_CLASS_RXM && head[1] == UBX_ID_SFRBX)
 			emit_sfrbx(payload, len);
+		else if (head[0] == UBX_CLASS_MON && head[1] == UBX_ID_MONRF)
+			emit_monrf(payload, len);
+		else if (head[0] == UBX_CLASS_MON && head[1] == UBX_ID_MONHW)
+			emit_monhw(payload, len);
+		else if (head[0] == UBX_CLASS_NAV && head[1] == UBX_ID_NAVSAT)
+			emit_navsat(payload, len);
 	}
 }
 
