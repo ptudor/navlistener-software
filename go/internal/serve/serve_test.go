@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ptudor/gnss"
 	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/state"
@@ -139,6 +140,38 @@ func TestObservers(t *testing.T) {
 	}
 	if env.Data.Observers[1].ID != "badname" { // NUL stripped by sanitize
 		t.Errorf("unsanitized observer id %q", env.Data.Observers[1].ID)
+	}
+}
+
+// TestObserversCarryCapabilities confirms a station's demonstrated (gnss, sig) fingerprint
+// attaches to its observer record once it has produced nav frames (docs/OUTPUT.md §1.3,
+// CONSTELLATIONS §7).
+func TestObserversCarryCapabilities(t *testing.T) {
+	s := testServer([]config.Source{{Name: "observer16", Type: "ubx", Addr: "10.0.0.2:2947"}})
+	now := time.Now()
+	// A GPS L1 nav frame and a Galileo E5a F/NAV frame from this station.
+	s.store.Apply(&ingest.RawFrame{Source: "observer16", GnssID: gnss.GPS, SigID: 0, Recv: now, Words: []uint32{0}})
+	s.store.Apply(&ingest.RawFrame{Source: "observer16", GnssID: gnss.Galileo, SigID: 3, Recv: now, Words: []uint32{0}})
+	s.refresh("observers")
+	rr := httptest.NewRecorder()
+	s.serveFeed("observers")(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/observers", nil))
+	var env struct {
+		Data struct {
+			Observers []observer `json:"observers"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if len(env.Data.Observers) != 1 {
+		t.Fatalf("got %d observers, want 1", len(env.Data.Observers))
+	}
+	caps := env.Data.Observers[0].Capabilities
+	if len(caps) != 2 {
+		t.Fatalf("capabilities = %+v, want 2 signals", caps)
+	}
+	if caps[0].Gnss != int(gnss.GPS) || caps[1].Gnss != int(gnss.Galileo) || caps[1].Sig != 3 {
+		t.Errorf("capabilities not the expected sorted set: %+v", caps)
 	}
 }
 

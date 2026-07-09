@@ -139,6 +139,12 @@ type Store struct {
 	// station-scoped (keyed by ingest source / observer id), not per-SV.
 	rfMu sync.Mutex
 	rf   map[string]*rfStation
+
+	// Per-station capability fingerprint (docs/CONSTELLATIONS.md §7, INTEGRITY §6): the set
+	// of (gnssId, sigId) each observer has actually produced nav frames on, so the integrity
+	// layer knows what a node *should* be reporting.
+	capMu sync.Mutex
+	caps  map[string]*capStation
 }
 
 // New builds a Store with n shards (n >= 1).
@@ -151,6 +157,7 @@ func New(n int) *Store {
 		sbas:       make(map[int]*sbasState),
 		gloAlmanac: make(map[int]frame.GLONASSAlmanacEntry),
 		rf:         make(map[string]*rfStation),
+		caps:       make(map[string]*capStation),
 	}
 	for i := range s.shards {
 		s.shards[i] = &shard{m: make(map[Key]*svState)}
@@ -171,6 +178,11 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 	if f.RF != nil {
 		s.applyRF(f)
 		return
+	}
+	// A decoded nav frame (Words/Bytes) is the canonical evidence that this station tracks
+	// this (gnssId, sigId); record it into the capability fingerprint before dispatch.
+	if f.Source != "" && (f.Words != nil || f.Bytes != nil) {
+		s.recordCapability(f.Source, f.GnssID, f.SigID, f.Recv)
 	}
 	if f.Obs != nil {
 		s.applyObservation(f)

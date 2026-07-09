@@ -237,17 +237,22 @@ type envelope struct {
 // ingest connector is published as a receiver we control; the richer per-SV reception
 // (perrecv, position, azimuth/elevation) arrives with the authenticated push +
 // measurement path. RF carries the PNT-defense per-station RF-environment metrics when
-// the receiver reports MON-RF/NAV-SAT telemetry (docs/DEFENSE-PNT.md §6).
+// the receiver reports MON-RF/NAV-SAT telemetry (docs/DEFENSE-PNT.md §6). Capabilities is the
+// node's demonstrated (gnssId, sigId) fingerprint — what signals it actually produces, so a
+// consumer (and the integrity layer) knows what it should be reporting (docs/CONSTELLATIONS.md
+// §7, docs/INTEGRITY.md §6).
 type observer struct {
-	ID       string           `json:"id"`
-	Vendor   string           `json:"vendor"`
-	Remark   string           `json:"remark"`
-	Disabled bool             `json:"disabled"`
-	RF       *state.StationRF `json:"rf,omitempty"`
+	ID           string                    `json:"id"`
+	Vendor       string                    `json:"vendor"`
+	Remark       string                    `json:"remark"`
+	Disabled     bool                      `json:"disabled"`
+	RF           *state.StationRF          `json:"rf,omitempty"`
+	Capabilities []state.StationCapability `json:"capabilities,omitempty"`
 }
 
 func (s *Server) observers(now time.Time) []observer {
 	rf := s.store.FeedStationRF(now)
+	caps := s.store.FeedStationCapabilities(now)
 	out := make([]observer, 0, len(s.sources))
 	for _, src := range s.sources {
 		o := observer{
@@ -259,6 +264,7 @@ func (s *Server) observers(now time.Time) []observer {
 		if r, ok := rf[src.Name]; ok {
 			o.RF = &r
 		}
+		o.Capabilities = caps[src.Name]
 		out = append(out, o)
 	}
 	return out
