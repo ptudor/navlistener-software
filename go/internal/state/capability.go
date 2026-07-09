@@ -68,8 +68,49 @@ func (s *Store) recordCapability(source string, g gnss.GNSSID, sig int, recv tim
 // CapSignal is one (gnssId, sigId) a station is declared capable of producing — the tudorgps
 // fingerprint the integrity layer checks the observed set against (docs/INTEGRITY.md §6).
 type CapSignal struct {
-	Gnss int
-	Sig  int
+	Gnss int `json:"gnss"`
+	Sig  int `json:"sig"`
+}
+
+// CapabilityDiff compares a station's observed signal set against its declared (tudorgps) set
+// and returns the two mismatches an operator watches (docs/INTEGRITY.md §6): unexpected =
+// observed but NOT declared (a signal the silicon should not be able to produce — the
+// capability_impossible input); missing = declared but never observed (a signal the node
+// should produce but has not). Both are nil when no declared set exists — there is nothing to
+// compare against. Deterministically ordered by (gnss, sig).
+func CapabilityDiff(observed []StationCapability, declared []CapSignal) (unexpected, missing []CapSignal) {
+	if len(declared) == 0 {
+		return nil, nil
+	}
+	declSet := make(map[CapSignal]bool, len(declared))
+	for _, c := range declared {
+		declSet[c] = true
+	}
+	obsSet := make(map[CapSignal]bool, len(observed))
+	for _, o := range observed {
+		k := CapSignal{Gnss: o.Gnss, Sig: o.Sig}
+		obsSet[k] = true
+		if !declSet[k] {
+			unexpected = append(unexpected, k)
+		}
+	}
+	for _, c := range declared {
+		if !obsSet[c] {
+			missing = append(missing, c)
+		}
+	}
+	sortCapSignals(unexpected)
+	sortCapSignals(missing)
+	return unexpected, missing
+}
+
+func sortCapSignals(cs []CapSignal) {
+	sort.Slice(cs, func(i, j int) bool {
+		if cs[i].Gnss != cs[j].Gnss {
+			return cs[i].Gnss < cs[j].Gnss
+		}
+		return cs[i].Sig < cs[j].Sig
+	})
 }
 
 // SetDeclaredCapabilities installs each station's declared (tudorgps) capability set, keyed by

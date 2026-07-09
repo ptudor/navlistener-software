@@ -175,6 +175,43 @@ func TestObserversCarryCapabilities(t *testing.T) {
 	}
 }
 
+// TestObserversCapabilityMismatch confirms a node's declared-vs-observed mismatch surfaces in
+// the feed: an observed signal outside the declared set is flagged unexpected, a declared
+// signal never observed is flagged missing (docs/INTEGRITY.md §6).
+func TestObserversCapabilityMismatch(t *testing.T) {
+	s := testServer([]config.Source{{Name: "observer16", Type: "ubx", Addr: "10.0.0.2:2947"}})
+	// Declared: GPS L1 (0:0) and Galileo I/NAV (2:0).
+	s.store.SetDeclaredCapabilities(map[string][]state.CapSignal{
+		"observer16": {{Gnss: 0, Sig: 0}, {Gnss: 2, Sig: 0}},
+	})
+	now := time.Now()
+	// Observed: GPS L1 (declared, fine) + NavIC (7:0, not declared → unexpected). Galileo I/NAV
+	// is declared but never seen → missing.
+	s.store.Apply(&ingest.RawFrame{Source: "observer16", GnssID: gnss.GPS, SigID: 0, Recv: now, Words: []uint32{0}})
+	s.store.Apply(&ingest.RawFrame{Source: "observer16", GnssID: gnss.NavIC, SigID: 0, Recv: now, Words: []uint32{0}})
+	s.refresh("observers")
+	rr := httptest.NewRecorder()
+	s.serveFeed("observers")(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/observers", nil))
+	var env struct {
+		Data struct {
+			Observers []observer `json:"observers"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	o := env.Data.Observers[0]
+	if len(o.Declared) != 2 {
+		t.Errorf("declared = %+v, want 2", o.Declared)
+	}
+	if len(o.Unexpected) != 1 || o.Unexpected[0] != (state.CapSignal{Gnss: 7, Sig: 0}) {
+		t.Errorf("unexpected = %+v, want [7:0]", o.Unexpected)
+	}
+	if len(o.Missing) != 1 || o.Missing[0] != (state.CapSignal{Gnss: 2, Sig: 0}) {
+		t.Errorf("missing = %+v, want [2:0]", o.Missing)
+	}
+}
+
 // TestMethodNotAllowed verifies non-GET/HEAD requests are rejected with 405 and an
 // error envelope (docs/OUTPUT.md §0).
 func TestMethodNotAllowed(t *testing.T) {

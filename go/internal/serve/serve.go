@@ -248,11 +248,18 @@ type observer struct {
 	Disabled     bool                      `json:"disabled"`
 	RF           *state.StationRF          `json:"rf,omitempty"`
 	Capabilities []state.StationCapability `json:"capabilities,omitempty"`
+	// Declared/Unexpected/Missing surface the tudorgps capability mismatch directly in the
+	// feed (docs/INTEGRITY.md §6), so an operator sees a signal the silicon shouldn't produce
+	// (unexpected) or one it should but hasn't (missing) without waiting for a detector event.
+	// All omitted when the node has no declared fingerprint.
+	Declared   []state.CapSignal `json:"declared_capabilities,omitempty"`
+	Unexpected []state.CapSignal `json:"unexpected_capabilities,omitempty"`
+	Missing    []state.CapSignal `json:"missing_capabilities,omitempty"`
 }
 
 func (s *Server) observers(now time.Time) []observer {
 	rf := s.store.FeedStationRF(now)
-	caps := s.store.FeedStationCapabilities(now)
+	reps := s.store.FeedCapabilityReports(now)
 	out := make([]observer, 0, len(s.sources))
 	for _, src := range s.sources {
 		o := observer{
@@ -264,7 +271,11 @@ func (s *Server) observers(now time.Time) []observer {
 		if r, ok := rf[src.Name]; ok {
 			o.RF = &r
 		}
-		o.Capabilities = caps[src.Name]
+		if rep, ok := reps[src.Name]; ok {
+			o.Capabilities = rep.Observed
+			o.Declared = rep.Declared
+			o.Unexpected, o.Missing = state.CapabilityDiff(rep.Observed, rep.Declared)
+		}
 		out = append(out, o)
 	}
 	return out
