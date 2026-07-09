@@ -56,6 +56,33 @@ func TestSnapshotInterval(t *testing.T) {
 	}
 }
 
+// TestCapabilitiesParsing: valid "gnss:sig" tuples parse; malformed, out-of-range, and
+// duplicate declarations are hard errors so a mistyped fingerprint can't silently disarm the
+// plausibility detector.
+func TestCapabilitiesParsing(t *testing.T) {
+	got, err := parseCapabilities([]string{"0:0", "2:3", " 6 : 0 "})
+	if err != nil {
+		t.Fatalf("valid capabilities rejected: %v", err)
+	}
+	want := []Capability{{0, 0}, {2, 3}, {6, 0}}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("cap[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	for _, bad := range []string{"2", "2:", ":3", "8:0", "x:0", "0:999", "2:3:4", ""} {
+		if _, err := parseCapabilities([]string{bad}); err == nil {
+			t.Errorf("capability %q accepted, want rejected", bad)
+		}
+	}
+	if _, err := parseCapabilities([]string{"2:0", "2:0"}); err == nil {
+		t.Error("duplicate capability accepted, want rejected")
+	}
+}
+
 // TestPushRequiresTLS: enabling the endpoint without cert/key is a hard error —
 // unauthenticated feeder ingest must never be possible.
 func TestPushRequiresTLS(t *testing.T) {

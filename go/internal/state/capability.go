@@ -65,6 +65,65 @@ func (s *Store) recordCapability(source string, g gnss.GNSSID, sig int, recv tim
 	c.count++
 }
 
+// CapSignal is one (gnssId, sigId) a station is declared capable of producing — the tudorgps
+// fingerprint the integrity layer checks the observed set against (docs/INTEGRITY.md §6).
+type CapSignal struct {
+	Gnss int
+	Sig  int
+}
+
+// SetDeclaredCapabilities installs each station's declared (tudorgps) capability set, keyed by
+// station id. Called once at startup from config; a station with no entry simply has no
+// declared set, and only the observed-only detectors (signal-lost) apply to it.
+func (s *Store) SetDeclaredCapabilities(decl map[string][]CapSignal) {
+	s.capMu.Lock()
+	defer s.capMu.Unlock()
+	m := make(map[string][]CapSignal, len(decl))
+	for id, sigs := range decl {
+		cp := make([]CapSignal, len(sigs))
+		copy(cp, sigs)
+		m[id] = cp
+	}
+	s.declared = m
+}
+
+// StationCapReport is the detector's per-station capability read model (docs/INTEGRITY.md §6):
+// how recently the station produced any nav frame (is it otherwise alive?), the observed
+// signal set with recency, and the declared set to check against. Built by
+// FeedCapabilityReports for every station that has observed or declared capabilities.
+type StationCapReport struct {
+	ID              string
+	StationLastSeen int64
+	Observed        []StationCapability
+	Declared        []CapSignal
+}
+
+// FeedCapabilityReports builds the per-station capability read model for the plausibility
+// detector: the union of stations with an observed fingerprint and stations with only a
+// declared set (a node that has produced nothing yet is still checkable for a never-delivered
+// declared signal). now is accepted for signature symmetry with the other Feed* methods.
+func (s *Store) FeedCapabilityReports(now time.Time) map[string]StationCapReport {
+	observed := s.FeedStationCapabilities(now)
+	s.capMu.Lock()
+	defer s.capMu.Unlock()
+	out := make(map[string]StationCapReport, len(s.caps))
+	for id, st := range s.caps {
+		out[id] = StationCapReport{
+			ID:              id,
+			StationLastSeen: st.lastSeen.Unix(),
+			Observed:        observed[id],
+			Declared:        s.declared[id],
+		}
+	}
+	for id, decl := range s.declared {
+		if _, ok := out[id]; ok {
+			continue
+		}
+		out[id] = StationCapReport{ID: id, Declared: decl} // declared but nothing observed yet
+	}
+	return out
+}
+
 // StationCapability is one demonstrated signal in a station's fingerprint (docs/OUTPUT.md
 // §1.3). Consumers key on the numeric gnss/sig ids, never on letters (docs/CONSTELLATIONS.md
 // §0). first_seen/last_seen bound how long the node has been producing the signal and how

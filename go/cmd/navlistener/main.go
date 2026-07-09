@@ -70,6 +70,10 @@ func run() int {
 
 	// Pipeline: ingest → decode → live state (+ optional persist historian).
 	live := state.New(cfg.State.Shards)
+	if decl := declaredCapabilities(cfg); len(decl) > 0 {
+		live.SetDeclaredCapabilities(decl)
+		log.Info("declared capabilities loaded", "stations", len(decl))
+	}
 	frames := make(chan *ingest.RawFrame, frameQueue)
 	mgr := ingest.New(cfg.Ingest, frames, log)
 
@@ -262,6 +266,31 @@ func decodeLoop(ctx context.Context, frames <-chan *ingest.RawFrame, live *state
 	}
 }
 
+// declaredCapabilities collects each station's declared tudorgps fingerprint (the signals its
+// silicon can produce) from the dial sources and push observers, keyed by station id, for the
+// capability-plausibility detector (docs/INTEGRITY.md §6). A station may be configured in only
+// one place; a push observer's declaration overrides a dial source of the same name.
+func declaredCapabilities(cfg *config.Config) map[string][]state.CapSignal {
+	out := map[string][]state.CapSignal{}
+	add := func(id string, decl []config.Capability) {
+		if len(decl) == 0 {
+			return
+		}
+		sigs := make([]state.CapSignal, len(decl))
+		for i, c := range decl {
+			sigs[i] = state.CapSignal{Gnss: c.Gnss, Sig: c.Sig}
+		}
+		out[id] = sigs
+	}
+	for _, s := range cfg.Ingest {
+		add(s.Name, s.CapDecl)
+	}
+	for _, o := range cfg.Push.Observers {
+		add(o.Station, o.CapDecl)
+	}
+	return out
+}
+
 // snapshotLoop persists each served v2 feed's current body to the historian on the
 // configured cadence — the light replay/backfill record (docs/OUTPUT.md §4), complementary
 // to the raw-nav-frame hypertable. A write failure is logged and the loop continues: a
@@ -309,6 +338,9 @@ func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, hi
 			// Station-scoped PNT-defense events (jamming/spoofing/RF, docs/DEFENSE-PNT.md)
 			// share the debounce state machine and event pipeline.
 			events = append(events, det.TickStations(now, live.FeedStationRF(now))...)
+			// Capability plausibility: a demonstrated signal gone silent, or a signal the
+			// node's silicon can't produce (docs/INTEGRITY.md §6, CONSTELLATIONS §7).
+			events = append(events, det.TickCapabilities(now, live.FeedCapabilityReports(now))...)
 			for _, e := range events {
 				emitEvent(ctx, e, historian, api, &localID, log)
 			}

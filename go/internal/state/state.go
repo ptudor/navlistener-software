@@ -142,9 +142,11 @@ type Store struct {
 
 	// Per-station capability fingerprint (docs/CONSTELLATIONS.md §7, INTEGRITY §6): the set
 	// of (gnssId, sigId) each observer has actually produced nav frames on, so the integrity
-	// layer knows what a node *should* be reporting.
-	capMu sync.Mutex
-	caps  map[string]*capStation
+	// layer knows what a node *should* be reporting. declared is the tudorgps-declared set
+	// (what the silicon *can* produce), set once at startup; both are guarded by capMu.
+	capMu    sync.Mutex
+	caps     map[string]*capStation
+	declared map[string][]CapSignal
 }
 
 // New builds a Store with n shards (n >= 1).

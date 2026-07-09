@@ -53,6 +53,37 @@ func TestCapabilityFingerprint(t *testing.T) {
 	}
 }
 
+// TestCapabilityReports checks the detector read model: it unions stations that have an
+// observed fingerprint with stations that only carry a declared set, and attaches the station's
+// last-seen and both signal sets.
+func TestCapabilityReports(t *testing.T) {
+	s := New(4)
+	t0 := time.Unix(1_700_000_000, 0)
+	s.SetDeclaredCapabilities(map[string][]CapSignal{
+		"obsA": {{Gnss: 0, Sig: 0}, {Gnss: 2, Sig: 3}},
+		"obsC": {{Gnss: 6, Sig: 0}}, // declared but never observed
+	})
+	// obsA produces GPS L1; obsB (no declaration) produces GLONASS.
+	s.recordCapability("obsA", gnss.GPS, 0, t0)
+	s.recordCapability("obsB", gnss.GLONASS, 0, t0.Add(time.Second))
+
+	reps := s.FeedCapabilityReports(t0.Add(time.Minute))
+	if len(reps) != 3 {
+		t.Fatalf("reports = %d stations, want 3 (obsA, obsB, obsC)", len(reps))
+	}
+	a := reps["obsA"]
+	if a.StationLastSeen != t0.Unix() || len(a.Observed) != 1 || len(a.Declared) != 2 {
+		t.Errorf("obsA report = %+v", a)
+	}
+	if b := reps["obsB"]; len(b.Observed) != 1 || b.Declared != nil {
+		t.Errorf("obsB report = %+v, want observed-only", b)
+	}
+	c := reps["obsC"]
+	if c.StationLastSeen != 0 || len(c.Observed) != 0 || len(c.Declared) != 1 {
+		t.Errorf("obsC report = %+v, want declared-only with no observations", c)
+	}
+}
+
 // TestCapabilityFromApply confirms Apply records capability from a nav frame but NOT from
 // station RF telemetry (which has no per-signal identity).
 func TestCapabilityFromApply(t *testing.T) {

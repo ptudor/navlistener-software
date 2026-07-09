@@ -70,6 +70,11 @@ ack_interval = "1s"
 # name = "observer16"           # our reference u-blox F9 box
 # type = "ubx"                # UBX-RXM-SFRBX raw nav words
 # addr = "192.0.2.16:2947"    # host:port to dial on the LAN
+# capabilities = ["0:0", "2:0", "2:3", "3:0", "6:0"]  # declared tudorgps fingerprint: the
+#                             # "gnss:sig" signals this silicon can produce (GPS L1, Galileo
+#                             # I/NAV + F/NAV, BeiDou D1, GLONASS). The integrity layer flags a
+#                             # declared signal that goes silent, or an observed one not listed
+#                             # here (docs/INTEGRITY.md §6). Omit if unknown.
 
 # [[ingest]]
 # name = "mosaic-x5"          # a Septentrio receiver

@@ -65,6 +65,14 @@ const (
 	// many independent physics gates agreeing at one station (docs/DEFENSE-PNT.md §3). In
 	// v1 few gates are wired, so this keeps spoofing alerts corroborated, not trigger-happy.
 	SpoofGateQuorum = 2
+
+	// Capability plausibility (docs/INTEGRITY.md §6, CONSTELLATIONS §7). A signal a node has
+	// *demonstrated* it can track (produced this many nav frames on) and then stops delivering,
+	// while the node is otherwise alive, is a targeted loss (jamming/spoofing/fault) — not the
+	// whole receiver going quiet, which the observation/offline detectors already cover.
+	CapMinObservations    = 10               // nav frames before a signal counts as demonstrated
+	CapSignalLostAfter    = 15 * time.Minute // a demonstrated signal unseen this long is "lost"
+	CapStationAliveWindow = 5 * time.Minute  // the station must have produced a frame this recently
 )
 
 // DebounceDuration is how long a provisional state change must persist before it is

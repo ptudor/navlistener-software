@@ -11,6 +11,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	toml "github.com/pelletier/go-toml/v2"
@@ -108,6 +110,10 @@ type PushObserver struct {
 	Station     string   `toml:"station"`
 	TokenSHA256 string   `toml:"token_sha256"`
 	Feeds       []string `toml:"feeds"`
+
+	// Capabilities is the declared tudorgps fingerprint ("gnss:sig" list), as on Source.
+	Capabilities []string     `toml:"capabilities,omitempty"`
+	CapDecl      []Capability `toml:"-"`
 }
 
 // Logging selects level and format for log/slog.
@@ -146,6 +152,19 @@ type Source struct {
 	Type     string `toml:"type"`               // ubx | sbf | rtcm
 	Addr     string `toml:"addr"`               // host:port to dial
 	Disabled bool   `toml:"disabled,omitempty"` // keep the entry but don't start it (pause)
+
+	// Capabilities is this node's declared tudorgps fingerprint: the "gnss:sig" signals its
+	// silicon can produce (docs/CONSTELLATIONS.md §7). The integrity layer compares it against
+	// what the node actually delivers — a declared signal that goes silent, or an observed
+	// signal the silicon can't produce, is a threat (docs/INTEGRITY.md §6). Parsed into CapDecl.
+	Capabilities []string     `toml:"capabilities,omitempty"`
+	CapDecl      []Capability `toml:"-"`
+}
+
+// Capability is one declared (gnssId, sigId) an observer's silicon can produce.
+type Capability struct {
+	Gnss int
+	Sig  int
 }
 
 // Load reads the config from an explicit path, or the first existing default path.
@@ -261,8 +280,45 @@ func (c *Config) finalize() error {
 		if s.Addr == "" {
 			return fmt.Errorf("ingest %q: addr is required (host:port to dial)", s.Name)
 		}
+		caps, err := parseCapabilities(s.Capabilities)
+		if err != nil {
+			return fmt.Errorf("ingest %q: %w", s.Name, err)
+		}
+		s.CapDecl = caps
 	}
 	return nil
+}
+
+// parseCapabilities turns the declared "gnss:sig" strings into typed tuples, validating the
+// numbering against the u-blox gnssId range (docs/CONSTELLATIONS.md §0). An empty list yields
+// nil (no declared fingerprint — the observed-only detectors still run).
+func parseCapabilities(raw []string) ([]Capability, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make([]Capability, 0, len(raw))
+	seen := make(map[Capability]bool, len(raw))
+	for _, s := range raw {
+		g, sig, ok := strings.Cut(s, ":")
+		if !ok {
+			return nil, fmt.Errorf("capability %q: want \"gnss:sig\" (e.g. \"2:3\")", s)
+		}
+		gi, err := strconv.Atoi(strings.TrimSpace(g))
+		if err != nil || gi < 0 || gi > 7 {
+			return nil, fmt.Errorf("capability %q: gnssId must be 0..7", s)
+		}
+		si, err := strconv.Atoi(strings.TrimSpace(sig))
+		if err != nil || si < 0 || si > 255 {
+			return nil, fmt.Errorf("capability %q: sigId must be 0..255", s)
+		}
+		c := Capability{Gnss: gi, Sig: si}
+		if seen[c] {
+			return nil, fmt.Errorf("capability %q: duplicate", s)
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	return out, nil
 }
 
 // finalizePush validates and defaults the push endpoint. When disabled (no addr) it
@@ -303,6 +359,11 @@ func (c *Config) finalizePush() error {
 				return fmt.Errorf("push.observer %q: unknown feed type %q", o.Station, f)
 			}
 		}
+		caps, err := parseCapabilities(o.Capabilities)
+		if err != nil {
+			return fmt.Errorf("push.observer %q: %w", o.Station, err)
+		}
+		o.CapDecl = caps
 	}
 	return nil
 }
