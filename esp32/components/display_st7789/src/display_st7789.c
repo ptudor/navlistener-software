@@ -79,9 +79,15 @@ static const char *TAG = "display";
 static esp_lcd_panel_handle_t    s_panel = NULL;
 static esp_lcd_panel_io_handle_t s_io = NULL;
 static bool s_ready = false;
+// Full-frame off-screen buffer (320x172 RGB565). The dashboard is rendered into this and
+// pushed in one esp_lcd_panel_draw_bitmap, so text is never corrupted by per-glyph DMA-buffer
+// reuse (the panel IO queues transfers async) and updates don't flicker. NULL => fall back to
+// direct banded draws.
+static uint16_t *s_fb = NULL;
 
 static inline uint16_t swab16(uint16_t c) { return (uint16_t)((c >> 8) | (c << 8)); }
 static void fill_rect(int x, int y, int w, int h, uint16_t color);
+static void display_flush(void);
 
 void display_backlight_set_percent(uint8_t percent)
 {
@@ -133,7 +139,7 @@ esp_err_t display_init(void)
     spi_bus_config_t buscfg = {
         .sclk_io_num = PIN_SCLK, .mosi_io_num = PIN_MOSI, .miso_io_num = -1,
         .quadwp_io_num = -1, .quadhd_io_num = -1,
-        .max_transfer_sz = LCD_H_RES * LCD_BAND_ROWS * (int)sizeof(uint16_t),
+        .max_transfer_sz = LCD_H_RES * LCD_V_RES * (int)sizeof(uint16_t), // full-frame single push
     };
     esp_err_t err = spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
@@ -164,12 +170,21 @@ esp_err_t display_init(void)
     ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(s_panel, true), TAG, "disp_on");
 
     s_ready = true;
+
+    // Off-screen framebuffer (~110 KB), allocated once, early — heap is plentiful before WiFi
+    // and TLS come up. On failure we log and fall back to direct banded draws (functional, but
+    // per-glyph DMA-buffer reuse can corrupt text, which is exactly what this avoids).
+    s_fb = heap_caps_malloc((size_t)LCD_H_RES * LCD_V_RES * sizeof(uint16_t), MALLOC_CAP_DMA);
+    if (!s_fb) ESP_LOGW(TAG, "framebuffer alloc failed; direct draw (text may corrupt)");
+
     display_clear(DISPLAY_BLACK);
     draw_banner(0, TOP_BANNER_H, "NAVFEEDER-ESP", TITLE_SCALE, COL_TOP_FG, COL_TOP_BG);
     draw_build_banner();
     fill_rect(0, STATUS_Y0, LCD_H_RES, STATUS_Y1 - STATUS_Y0, COL_STATUS_BG);
+    display_flush();
     display_backlight_set_percent(BL_DEFAULT_PERCENT);
-    ESP_LOGI(TAG, "ST7789 %dx%d ready (BL %d%%)", LCD_H_RES, LCD_V_RES, BL_DEFAULT_PERCENT);
+    ESP_LOGI(TAG, "ST7789 %dx%d ready (BL %d%%, %s)", LCD_H_RES, LCD_V_RES, BL_DEFAULT_PERCENT,
+             s_fb ? "double-buffered" : "direct");
     return ESP_OK;
 }
 
@@ -185,10 +200,21 @@ static void fill_rect(int x, int y, int w, int h, uint16_t color)
     if (y + h > LCD_V_RES) h = LCD_V_RES - y;
     if (w <= 0 || h <= 0) return;
 
+    uint16_t be = swab16(color);
+
+    // Framebuffer path: write into RAM; the caller flushes the whole frame once.
+    if (s_fb) {
+        for (int row = y; row < y + h; row++) {
+            uint16_t *dst = &s_fb[(size_t)row * LCD_H_RES + x];
+            for (int col = 0; col < w; col++) dst[col] = be;
+        }
+        return;
+    }
+
+    // Fallback: banded direct-to-panel draw.
     int band = LCD_BAND_ROWS;
     uint16_t *buf = heap_caps_malloc((size_t)w * band * sizeof(uint16_t), MALLOC_CAP_DMA);
     if (!buf) return;
-    uint16_t be = swab16(color);
     for (int i = 0; i < w * band; i++) buf[i] = be;
     for (int yy = y; yy < y + h; yy += band) {
         int rows = (yy + band <= y + h) ? band : (y + h - yy);
@@ -199,11 +225,51 @@ static void fill_rect(int x, int y, int w, int h, uint16_t color)
 
 void display_clear(uint16_t color) { fill_rect(0, 0, LCD_H_RES, LCD_V_RES, color); }
 
+// display_flush pushes the whole framebuffer to the panel in one transaction (no-op in the
+// direct-draw fallback). Call once per complete screen update, never per glyph.
+static void display_flush(void)
+{
+    if (s_ready && s_fb) {
+        esp_lcd_panel_draw_bitmap(s_panel, 0, 0, LCD_H_RES, LCD_V_RES, s_fb);
+    }
+}
+
 void display_text(int x, int y, const char *s, uint16_t fg, uint16_t bg, int scale)
 {
     if (!s_ready || !s || scale < 1) return;
     int glyph = 8 * scale;
     uint16_t fg_be = swab16(fg), bg_be = swab16(bg);
+
+    // Framebuffer path: blit scaled glyph pixels straight into RAM with per-pixel clipping;
+    // the caller flushes the whole frame once. No per-glyph DMA buffer to race on.
+    if (s_fb) {
+        int cx = x;
+        for (const char *p = s; *p; ++p) {
+            if (cx >= LCD_H_RES) break;
+            unsigned char ch = (unsigned char)*p;
+            if (ch >= 128) ch = '?';
+            const uint8_t *rows = font8x8_basic[ch];
+            for (int gy = 0; gy < 8; gy++) {
+                uint8_t bits = rows[gy];
+                for (int sy = 0; sy < scale; sy++) {
+                    int py = y + gy * scale + sy;
+                    if (py < 0 || py >= LCD_V_RES) continue;
+                    uint16_t *line = &s_fb[(size_t)py * LCD_H_RES];
+                    for (int gx = 0; gx < 8; gx++) {
+                        uint16_t px = (bits & (1u << gx)) ? fg_be : bg_be;
+                        for (int sx = 0; sx < scale; sx++) {
+                            int pxx = cx + gx * scale + sx;
+                            if (pxx >= 0 && pxx < LCD_H_RES) line[pxx] = px;
+                        }
+                    }
+                }
+            }
+            cx += GLYPH_ADV(scale);
+        }
+        return;
+    }
+
+    // Fallback: per-glyph draw straight to the panel via a reused DMA cell.
     uint16_t *cell = heap_caps_malloc((size_t)glyph * glyph * sizeof(uint16_t), MALLOC_CAP_DMA);
     if (!cell) return;
 
@@ -273,6 +339,7 @@ void display_render_status(const nvf_status_t *st)
 
     // Fill any remaining rows so a shrinking dashboard leaves no stale text.
     if (y < STATUS_Y1) fill_rect(0, y, LCD_H_RES, STATUS_Y1 - y, COL_STATUS_BG);
+    display_flush();
 }
 
 void display_show_portal(const char *ssid, const char *pass)
@@ -286,4 +353,5 @@ void display_show_portal(const char *ssid, const char *pass)
     status_line(&y, pass ? pass : "?", COL_STATUS_FG);
     status_line(&y, "http://192.168.4.1", COL_STATUS_FG);
     if (y < STATUS_Y1) fill_rect(0, y, LCD_H_RES, STATUS_Y1 - y, COL_STATUS_BG);
+    display_flush();
 }
