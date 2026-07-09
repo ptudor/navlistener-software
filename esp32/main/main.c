@@ -26,13 +26,9 @@
 #include "pusher.h"
 #include "display_st7789.h"
 #include "status_led.h"
+#include "netcfg.h"
 
 static const char *TAG = "navfeeder";
-
-// A Kconfig bool left at 'n' emits no #define, so give it a concrete 0 for the struct init.
-#ifndef CONFIG_NVF_INSECURE
-#define CONFIG_NVF_INSECURE 0
-#endif
 
 // Receiver wiring (Waveshare ESP32-C6-LCD-1.47 -> u-blox on UART1).
 #define RX_UART     UART_NUM_1
@@ -41,7 +37,8 @@ static const char *TAG = "navfeeder";
 #define RX_BUF_SIZE 4096
 
 static volatile bool s_wifi_up;
-static char s_collector[64];      // "host:port" once provisioned, else empty
+static char s_collector[80];      // "host:port" once provisioned, else empty
+static netcfg_t g_cfg;            // live config (NVS over Kconfig defaults)
 static ubx_parser_t s_parser;     // static: its buffers are too large for a task stack
 
 // app_now_ns returns the reception timestamp stamped into each GNF1 record. Until SNTP/RTC
@@ -87,7 +84,7 @@ static void ui_task(void *arg)
         bool wifi = s_wifi_up;
 
         nvf_status_t st = {
-            .station = CONFIG_NVF_STATION,
+            .station = g_cfg.station,
             .collector = s_collector[0] ? s_collector : NULL,
             .wifi_up = wifi,
             .link_up = link,
@@ -161,8 +158,8 @@ static void wifi_start(void)
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                                         wifi_event_handler, NULL, NULL));
     wifi_config_t wc = {0};
-    strlcpy((char *)wc.sta.ssid, CONFIG_NVF_WIFI_SSID, sizeof wc.sta.ssid);
-    strlcpy((char *)wc.sta.password, CONFIG_NVF_WIFI_PASS, sizeof wc.sta.password);
+    strlcpy((char *)wc.sta.ssid, g_cfg.wifi_ssid, sizeof wc.sta.ssid);
+    strlcpy((char *)wc.sta.password, g_cfg.wifi_pass, sizeof wc.sta.password);
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
     ESP_ERROR_CHECK(esp_wifi_start());
@@ -189,27 +186,36 @@ void app_main(void)
     rx_uart_init();
     ubx_parser_init(&s_parser, on_record, app_now_ns, NULL);
     xTaskCreate(rx_task, "rx", 4096, &s_parser, 5, NULL);
-    xTaskCreate(ui_task, "ui", 4096, &s_parser, 4, NULL);
 
-    const bool have_net = strlen(CONFIG_NVF_WIFI_SSID) > 0 && strlen(CONFIG_NVF_COLLECTOR_HOST) > 0;
-    if (!have_net) {
-        ESP_LOGW(TAG, "unprovisioned: set WiFi SSID + collector host via 'idf.py menuconfig' "
-                      "(navfeeder-esp), or provision NVS (P5). Running receiver-only.");
-        return;
+    // Config precedence: NVS (field-provisioned) over Kconfig defaults.
+    bool provisioned = netcfg_load(&g_cfg);
+    if (!provisioned) {
+        // First boot / factory reset: raise the SoftAP provisioning portal and show its
+        // credentials on the LCD, so the board is configured from a phone (no serial console).
+        char ap_ssid[33] = {0}, ap_pass[16] = {0};
+        if (netcfg_start_portal(ap_ssid, ap_pass) == ESP_OK) {
+            status_led_state(LED_BOOT);
+            display_show_portal(ap_ssid, ap_pass);
+            ESP_LOGW(TAG, "unprovisioned: join AP '%s' and open http://192.168.4.1/ to configure",
+                     ap_ssid);
+        } else {
+            ESP_LOGE(TAG, "provisioning portal failed to start");
+        }
+        return; // rx_task keeps counting frames; reboots into station mode after provisioning
     }
 
-    snprintf(s_collector, sizeof s_collector, "%s:%d",
-             CONFIG_NVF_COLLECTOR_HOST, CONFIG_NVF_COLLECTOR_PORT);
+    xTaskCreate(ui_task, "ui", 4096, &s_parser, 4, NULL);
+    snprintf(s_collector, sizeof s_collector, "%s:%d", g_cfg.host, g_cfg.port);
     wifi_start();
 
     pusher_cfg_t pc = {
-        .host = CONFIG_NVF_COLLECTOR_HOST,
-        .port = CONFIG_NVF_COLLECTOR_PORT,
-        .token = CONFIG_NVF_TOKEN,
-        .station = CONFIG_NVF_STATION,
+        .host = g_cfg.host,
+        .port = g_cfg.port,
+        .token = g_cfg.token,
+        .station = g_cfg.station,
         .feed = "ubx",
-        .ca_pem = NULL, // P5: pin the collector CA; today rely on the Mozilla bundle or --insecure
-        .insecure = CONFIG_NVF_INSECURE,
+        .ca_pem = NULL, // P-hw: pin the collector CA; today rely on the Mozilla bundle or insecure
+        .insecure = g_cfg.insecure,
     };
     if (!pusher_start(&pc)) {
         ESP_LOGE(TAG, "failed to start pusher task");

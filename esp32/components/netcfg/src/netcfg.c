@@ -1,0 +1,246 @@
+// netcfg — NVS config + SoftAP provisioning portal. See include/netcfg.h.
+
+#include "netcfg.h"
+
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "nvs.h"
+#include "esp_wifi.h"
+#include "esp_netif.h"
+#include "esp_event.h"
+#include "esp_mac.h"
+#include "esp_random.h"
+#include "esp_system.h"
+#include "esp_http_server.h"
+#include "esp_check.h"
+#include "esp_log.h"
+#include "sdkconfig.h"
+
+static const char *TAG = "netcfg";
+#define NVS_NS "navfeeder"
+
+// A Kconfig bool left at 'n' emits no #define.
+#ifndef CONFIG_NVF_INSECURE
+#define CONFIG_NVF_INSECURE 0
+#endif
+
+// --- NVS load / save ---------------------------------------------------------------------
+
+static void get_str(nvs_handle_t h, const char *key, char *dst, size_t cap, const char *dflt)
+{
+    size_t len = cap;
+    if (nvs_get_str(h, key, dst, &len) != ESP_OK) {
+        snprintf(dst, cap, "%s", dflt ? dflt : "");
+    }
+}
+
+bool netcfg_load(netcfg_t *out)
+{
+    memset(out, 0, sizeof *out);
+    // Compiled Kconfig defaults first; NVS overrides any key present.
+    snprintf(out->wifi_ssid, sizeof out->wifi_ssid, "%s", CONFIG_NVF_WIFI_SSID);
+    snprintf(out->wifi_pass, sizeof out->wifi_pass, "%s", CONFIG_NVF_WIFI_PASS);
+    snprintf(out->host, sizeof out->host, "%s", CONFIG_NVF_COLLECTOR_HOST);
+    out->port = CONFIG_NVF_COLLECTOR_PORT;
+    snprintf(out->token, sizeof out->token, "%s", CONFIG_NVF_TOKEN);
+    snprintf(out->station, sizeof out->station, "%s", CONFIG_NVF_STATION);
+    out->insecure = CONFIG_NVF_INSECURE;
+
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+        get_str(h, "ssid", out->wifi_ssid, sizeof out->wifi_ssid, out->wifi_ssid);
+        get_str(h, "pass", out->wifi_pass, sizeof out->wifi_pass, out->wifi_pass);
+        get_str(h, "host", out->host, sizeof out->host, out->host);
+        int32_t port = out->port;
+        nvs_get_i32(h, "port", &port);
+        out->port = port;
+        get_str(h, "token", out->token, sizeof out->token, out->token);
+        get_str(h, "station", out->station, sizeof out->station, out->station);
+        uint8_t ins = out->insecure;
+        nvs_get_u8(h, "insecure", &ins);
+        out->insecure = ins;
+        nvs_close(h);
+    }
+    return out->wifi_ssid[0] != '\0' && out->host[0] != '\0';
+}
+
+esp_err_t netcfg_save(const netcfg_t *cfg)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    nvs_set_str(h, "ssid", cfg->wifi_ssid);
+    nvs_set_str(h, "pass", cfg->wifi_pass);
+    nvs_set_str(h, "host", cfg->host);
+    nvs_set_i32(h, "port", cfg->port);
+    nvs_set_str(h, "token", cfg->token);
+    nvs_set_str(h, "station", cfg->station);
+    nvs_set_u8(h, "insecure", cfg->insecure ? 1 : 0);
+    err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
+
+// --- provisioning portal -----------------------------------------------------------------
+
+static const char PORTAL_HTML[] =
+    "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
+    "<title>navfeeder-esp setup</title>"
+    "<style>body{font-family:sans-serif;max-width:32em;margin:2em auto;padding:0 1em}"
+    "label{display:block;margin:.8em 0 .2em}input{width:100%;padding:.5em;box-sizing:border-box}"
+    "button{margin-top:1.2em;padding:.7em 1.4em}</style>"
+    "<h2>navfeeder-esp setup</h2>"
+    "<form method=POST action=/save>"
+    "<label>WiFi SSID<input name=ssid required></label>"
+    "<label>WiFi password<input name=pass type=password></label>"
+    "<label>Collector host<input name=host required placeholder='collector.host.invalid'></label>"
+    "<label>Collector port<input name=port type=number value=5580></label>"
+    "<label>Station id<input name=station required></label>"
+    "<label>Bearer token<input name=token></label>"
+    "<label><input type=checkbox name=insecure style='width:auto'> Skip TLS verify (dev only)</label>"
+    "<button type=submit>Save &amp; reboot</button></form>";
+
+// url_decode decodes application/x-www-form-urlencoded text in place-safe form into dst.
+static void url_decode(char *dst, size_t cap, const char *src, size_t srclen)
+{
+    size_t o = 0;
+    for (size_t i = 0; i < srclen && o + 1 < cap; i++) {
+        char c = src[i];
+        if (c == '+') {
+            dst[o++] = ' ';
+        } else if (c == '%' && i + 2 < srclen) {
+            char hex[3] = { src[i + 1], src[i + 2], 0 };
+            dst[o++] = (char)strtol(hex, NULL, 16);
+            i += 2;
+        } else {
+            dst[o++] = c;
+        }
+    }
+    dst[o] = '\0';
+}
+
+// form_field extracts one urlencoded field ("name=value&...") into dst (decoded).
+static void form_field(const char *body, const char *name, char *dst, size_t cap)
+{
+    dst[0] = '\0';
+    char key[24];
+    int kn = snprintf(key, sizeof key, "%s=", name);
+    const char *p = body;
+    while ((p = strstr(p, key)) != NULL) {
+        // Must be at the start or right after '&' to avoid matching a suffix.
+        if (p == body || p[-1] == '&') {
+            const char *v = p + kn;
+            const char *end = strchr(v, '&');
+            size_t vlen = end ? (size_t)(end - v) : strlen(v);
+            url_decode(dst, cap, v, vlen);
+            return;
+        }
+        p += kn;
+    }
+}
+
+static void restart_task(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(1500));
+    esp_restart();
+}
+
+static esp_err_t root_get(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_send(req, PORTAL_HTML, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t save_post(httpd_req_t *req)
+{
+    char body[1024];
+    int total = 0;
+    while (total < (int)sizeof(body) - 1) {
+        int r = httpd_req_recv(req, body + total, sizeof(body) - 1 - total);
+        if (r <= 0) break;
+        total += r;
+    }
+    body[total > 0 ? total : 0] = '\0';
+
+    netcfg_t cfg;
+    netcfg_load(&cfg); // start from current so unspecified fields keep their value
+    form_field(body, "ssid", cfg.wifi_ssid, sizeof cfg.wifi_ssid);
+    form_field(body, "pass", cfg.wifi_pass, sizeof cfg.wifi_pass);
+    form_field(body, "host", cfg.host, sizeof cfg.host);
+    char port[8];
+    form_field(body, "port", port, sizeof port);
+    if (port[0]) cfg.port = atoi(port);
+    form_field(body, "station", cfg.station, sizeof cfg.station);
+    form_field(body, "token", cfg.token, sizeof cfg.token);
+    char ins[8];
+    form_field(body, "insecure", ins, sizeof ins);
+    cfg.insecure = ins[0] != '\0'; // checkbox present => on
+
+    esp_err_t err = netcfg_save(&cfg);
+    if (err != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "save failed");
+        return err;
+    }
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_sendstr(req, "<meta name=viewport content='width=device-width'>"
+                            "<h3>Saved. Rebooting into station mode...</h3>");
+    ESP_LOGI(TAG, "provisioned: ssid='%s' host='%s:%d' station='%s' — rebooting",
+             cfg.wifi_ssid, cfg.host, cfg.port, cfg.station);
+    xTaskCreate(restart_task, "restart", 2048, NULL, 5, NULL);
+    return ESP_OK;
+}
+
+// gen_password builds a strong AP password from an unambiguous alphabet (no 0/O/1/l/I),
+// never a placeholder — the design rule (generate real secrets at creation).
+static void gen_password(char *dst, size_t n)
+{
+    static const char alpha[] =
+        "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    for (size_t i = 0; i + 1 < n; i++)
+        dst[i] = alpha[esp_random() % (sizeof(alpha) - 1)];
+    dst[n - 1] = '\0';
+}
+
+esp_err_t netcfg_start_portal(char ap_ssid[33], char ap_pass[16])
+{
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_ap();
+    wifi_init_config_t ic = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&ic));
+
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
+    snprintf(ap_ssid, 33, "navfeeder-%02X%02X%02X", mac[3], mac[4], mac[5]);
+    gen_password(ap_pass, 13); // 12 chars + NUL (WPA2 needs >= 8)
+
+    wifi_config_t ap = {0};
+    snprintf((char *)ap.ap.ssid, sizeof ap.ap.ssid, "%s", ap_ssid);
+    ap.ap.ssid_len = strlen(ap_ssid);
+    snprintf((char *)ap.ap.password, sizeof ap.ap.password, "%s", ap_pass);
+    ap.ap.max_connection = 2;
+    ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    ap.ap.channel = 1;
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    httpd_handle_t server = NULL;
+    httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
+    ESP_RETURN_ON_ERROR(httpd_start(&server, &hcfg), TAG, "httpd");
+    httpd_uri_t root = { .uri = "/", .method = HTTP_GET, .handler = root_get };
+    httpd_uri_t save = { .uri = "/save", .method = HTTP_POST, .handler = save_post };
+    httpd_register_uri_handler(server, &root);
+    httpd_register_uri_handler(server, &save);
+
+    // The AP password is a secret shown on the local LCD, never logged (only its length).
+    ESP_LOGI(TAG, "provisioning portal up: SSID='%s' (pass %d chars) -> http://192.168.4.1/",
+             ap_ssid, (int)strlen(ap_pass));
+    return ESP_OK;
+}

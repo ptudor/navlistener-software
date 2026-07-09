@@ -274,3 +274,16 @@ void display_render_status(const nvf_status_t *st)
     // Fill any remaining rows so a shrinking dashboard leaves no stale text.
     if (y < STATUS_Y1) fill_rect(0, y, LCD_H_RES, STATUS_Y1 - y, COL_STATUS_BG);
 }
+
+void display_show_portal(const char *ssid, const char *pass)
+{
+    if (!s_ready) return;
+    int y = STATUS_Y0;
+    fill_rect(0, STATUS_Y0, LCD_H_RES, STATUS_Y1 - STATUS_Y0, COL_STATUS_BG);
+    status_line(&y, "SETUP - join AP:", COL_UP);
+    status_line(&y, ssid ? ssid : "?", COL_STATUS_FG);
+    status_line(&y, "pass:", COL_STATUS_FG);
+    status_line(&y, pass ? pass : "?", COL_STATUS_FG);
+    status_line(&y, "http://192.168.4.1", COL_STATUS_FG);
+    if (y < STATUS_Y1) fill_rect(0, y, LCD_H_RES, STATUS_Y1 - y, COL_STATUS_BG);
+}

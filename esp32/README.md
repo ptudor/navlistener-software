@@ -38,10 +38,16 @@ flashes + monitors; set `PORT=` to pick the serial device).
 
 ## What each phase does
 
-See `docs/PLAN.md`. Today (P0/P1) the firmware boots, brings up UART1, runs the clean-room
-UBX framer, and logs what it frames (`nav=… telem=… bad_ck=…`) every 5 s — so you can confirm
-a wired receiver is producing frames on the bench before any network exists. The spool, TLS
-push, display dashboard, and provisioning land in P2–P5.
+See `docs/PLAN.md`. P0–P5 are built: the firmware boots, brings up the LCD dashboard + WS2812
+status LED, runs the clean-room UBX framer, spools frames, and pushes them to the collector
+over GNF1/TLS. Config is NVS-first (`netcfg`), falling back to the compiled Kconfig defaults.
+
+**Provisioning a fresh board (no serial console):** an unprovisioned board raises a WiFi AP
+`navfeeder-XXYYZZ` and shows its one-time password on the LCD. Join it, open
+`http://192.168.4.1/`, enter WiFi + collector + station + token, Save — it writes NVS and
+reboots into station mode. (For dev you can still pre-seed everything via `idf.py menuconfig`
+→ "navfeeder-esp".) Remaining: P-hw (ATECC608 identity + `SIGNED_DATA`) and the u8g2 font
+upgrade.
 
 ## Enrollment (the shared AAA control plane)
 

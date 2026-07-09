@@ -58,6 +58,10 @@ typedef struct {
 // display_render_status redraws the dashboard from st. Cheap enough to call every 1-2 s.
 void display_render_status(const nvf_status_t *st);
 
+// display_show_portal renders the first-boot provisioning screen: the SoftAP SSID + password
+// and the setup URL, so an unprovisioned board can be configured from a phone.
+void display_show_portal(const char *ssid, const char *pass);
+
 #ifdef __cplusplus
 }
 #endif
