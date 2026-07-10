@@ -110,6 +110,12 @@ type Push struct {
 	AckIntervals string        `toml:"ack_interval"` // ack cadence, default "1s"
 	AckInterval  time.Duration `toml:"-"`
 
+	// MaxConns bounds concurrent in-flight feeder connections : production
+	// should gate admission at the TLS layer via ClientCA (mTLS), but when it isn't
+	// set this is the only cap between the internet and unbounded goroutine/FD
+	// growth. Default 512 — a generous multiple of any fleet size in this project.
+	MaxConns int `toml:"max_conns"`
+
 	Observers []PushObserver `toml:"observer"`
 }
 
@@ -351,6 +357,9 @@ func (c *Config) finalizePush() error {
 	}
 	if p.AckInterval <= 0 {
 		p.AckInterval = time.Second
+	}
+	if p.MaxConns <= 0 {
+		p.MaxConns = 512
 	}
 	if p.Addr == "" {
 		return nil // push disabled

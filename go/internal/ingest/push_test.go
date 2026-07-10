@@ -53,7 +53,7 @@ func startPushServer(t *testing.T, ctx context.Context, auth Authenticator) (str
 	t.Helper()
 	out := make(chan *RawFrame, 8)
 	tc := &tls.Config{Certificates: []tls.Certificate{selfSigned(t)}, MinVersion: tls.VersionTLS12}
-	srv := newPushServer("127.0.0.1:0", tc, out, auth, 25*time.Millisecond,
+	srv := newPushServer("127.0.0.1:0", tc, out, auth, 25*time.Millisecond, 0,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", tc)
 	if err != nil {
@@ -219,6 +219,49 @@ func TestPushZstdStream(t *testing.T) {
 	}
 }
 
+// TestPushZstdRejectsOversizedWindow guards a feeder that negotiates zstd
+// but declares a window larger than the collector's WithDecoderMaxWindow cap must
+// be rejected (the connection dropped, no frame delivered), not silently
+// accepted into an outsized allocation.
+func TestPushZstdRejectsOversizedWindow(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	addr, out := startPushServer(t, ctx, tokenAuth("observer16", "s3cret", "ubx"))
+
+	conn := dialPush(t, addr)
+	defer conn.Close()
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx", Zstd: true}); err != nil {
+		t.Fatal(err)
+	}
+	ft, payload, err := wire.ReadFrame(conn)
+	if err != nil || ft != wire.Welcome {
+		t.Fatalf("welcome frame: ft=%d err=%v", ft, err)
+	}
+	if wmsg, _ := parseWelcome(payload); !wmsg.OK {
+		t.Fatal("handshake rejected")
+	}
+
+	// zstdMaxWindow is 16 MiB (push.go); declare a window well beyond it.
+	enc, err := zstd.NewWriter(conn, zstd.WithWindowSize(64<<20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := wire.RawRecord{RecvUnixNs: time.Now().UnixNano(), GnssID: gnss.GPS, SvID: 5, Raw: make([]byte, 40)}
+	if err := wire.WriteFrame(enc, wire.Data, wire.EncodeData(1, rec)); err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case f := <-out:
+		t.Fatalf("frame with an oversized declared window should have been rejected, got %+v", f)
+	case <-time.After(500 * time.Millisecond):
+		// expected: no frame delivered — the decoder rejected the frame header.
+	}
+}
+
 // TestPushRejectsBadToken confirms an unknown token gets WELCOME ok=false and no
 // frame is admitted.
 func TestPushRejectsBadToken(t *testing.T) {
@@ -257,6 +300,132 @@ func TestPushRejectsUngrantedFeed(t *testing.T) {
 	}
 	if wmsg, _ := parseWelcome(payload); wmsg.OK {
 		t.Fatal("ungranted feed was accepted")
+	}
+}
+
+// TestPushRejectsStationMismatch guards a valid token presented with a
+// station id other than the token's canonical one is a misconfiguration (a feeder
+// pointed at the wrong station) and must be rejected, not silently accepted under
+// the token's real identity.
+func TestPushRejectsStationMismatch(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	addr, _ := startPushServer(t, ctx, tokenAuth("observer16", "s3cret", "ubx"))
+
+	conn := dialPush(t, addr)
+	defer conn.Close()
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "wrong-station", Feed: "ubx"}); err != nil {
+		t.Fatal(err)
+	}
+	_, payload, err := wire.ReadFrame(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wmsg, _ := parseWelcome(payload); wmsg.OK {
+		t.Fatal("station mismatch was accepted")
+	}
+}
+
+// TestPushMaxConnsBounded guards the accept loop must not spawn more than
+// maxConns concurrent handler goroutines, and a slot must free (and admit a
+// waiting connection) when a held connection closes.
+func TestPushMaxConnsBounded(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	out := make(chan *RawFrame, 8)
+	tc := &tls.Config{Certificates: []tls.Certificate{selfSigned(t)}, MinVersion: tls.VersionTLS12}
+	const maxConns = 2
+	srv := newPushServer("127.0.0.1:0", tc, out, tokenAuth("observer16", "s3cret", "ubx"), 25*time.Millisecond, maxConns,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", tc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.serve(ctx, ln) }()
+	addr := ln.Addr().String()
+
+	// Open maxConns connections that never send the GNF1 magic — each is accepted
+	// and holds a semaphore slot indefinitely (parked reading the handshake).
+	held := make([]*tls.Conn, maxConns)
+	for i := range held {
+		held[i] = dialPush(t, addr) // WriteMagic only; no HELLO, so handle() blocks reading it
+	}
+	defer func() {
+		for _, c := range held {
+			if c != nil {
+				c.Close()
+			}
+		}
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if len(srv.conns) == maxConns {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("semaphore never filled: len=%d, want %d", len(srv.conns), maxConns)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// A full semaphore must not block shutdown: a pending Accept()'s admit attempt
+	// (or, as here, an already-parked handler) must not prevent ctx cancellation
+	// from draining and returning promptly.
+	held[0].Close()
+	held[0] = nil
+
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		if len(srv.conns) < maxConns {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("semaphore slot was not released after the connection closed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestPushMaxConnsShutdownCompletes guards the fix's shutdown safety: even
+// with the semaphore at capacity, cancelling ctx must let serve() return promptly
+// (it must not deadlock trying to admit a connection that will never come, nor
+// wait forever on an already-parked handler that ctx cancellation itself closes).
+func TestPushMaxConnsShutdownCompletes(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	out := make(chan *RawFrame, 8)
+	tc := &tls.Config{Certificates: []tls.Certificate{selfSigned(t)}, MinVersion: tls.VersionTLS12}
+	const maxConns = 1
+	srv := newPushServer("127.0.0.1:0", tc, out, tokenAuth("observer16", "s3cret", "ubx"), 25*time.Millisecond, maxConns,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", tc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+
+	done := make(chan error, 1)
+	go func() { done <- srv.serve(ctx, ln) }()
+
+	conn := dialPush(t, addr)
+	defer conn.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for len(srv.conns) < maxConns {
+		if time.Now().After(deadline) {
+			t.Fatal("semaphore never filled")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("serve() = %v, want nil on clean shutdown", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("serve() did not return after ctx cancellation with a full semaphore")
 	}
 }
 
@@ -326,7 +495,7 @@ func TestPushAckWaitsForBackpressure(t *testing.T) {
 	defer cancel()
 	out := make(chan *RawFrame, 1)
 	tc := &tls.Config{Certificates: []tls.Certificate{selfSigned(t)}, MinVersion: tls.VersionTLS12}
-	srv := newPushServer("127.0.0.1:0", tc, out, tokenAuth("observer16", "s3cret", "ubx"), 25*time.Millisecond,
+	srv := newPushServer("127.0.0.1:0", tc, out, tokenAuth("observer16", "s3cret", "ubx"), 25*time.Millisecond, 0,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", tc)
 	if err != nil {
@@ -393,4 +562,42 @@ func parseWelcome(payload []byte) (wire.WelcomeMsg, error) {
 	var m wire.WelcomeMsg
 	err := json.Unmarshal(payload, &m)
 	return m, err
+}
+
+// TestRecordToFrameClampsImplausibleTimestamp guards a feeder-supplied
+// RecvUnixNs far outside recvTimestampSlack of wall-clock (either direction) must
+// be rejected in favor of now(), not trusted verbatim into the historian's
+// time-based math. A timestamp within slack, and the == 0 fallback, are untouched.
+func TestRecordToFrameClampsImplausibleTimestamp(t *testing.T) {
+	before := time.Now()
+	rec := wire.RawRecord{
+		RecvUnixNs: time.Now().Add(48 * time.Hour).UnixNano(), // far future
+		GnssID:     gnss.GPS, SvID: 5, Raw: make([]byte, 40),
+	}
+	f := recordToFrame(rec, "ubx", "obs1")
+	if f == nil {
+		t.Fatal("recordToFrame returned nil")
+	}
+	after := time.Now()
+	if f.Recv.Before(before) || f.Recv.After(after) {
+		t.Errorf("Recv = %v, want clamped to now() (between %v and %v)", f.Recv, before, after)
+	}
+
+	// A plausible, recent timestamp is trusted as-is.
+	plausible := time.Now().Add(-time.Second)
+	rec2 := wire.RawRecord{RecvUnixNs: plausible.UnixNano(), GnssID: gnss.GPS, SvID: 5, Raw: make([]byte, 40)}
+	f2 := recordToFrame(rec2, "ubx", "obs1")
+	if f2 == nil {
+		t.Fatal("recordToFrame returned nil")
+	}
+	if !f2.Recv.Equal(plausible) {
+		t.Errorf("Recv = %v, want the plausible feeder timestamp %v unmodified", f2.Recv, plausible)
+	}
+
+	// The == 0 fallback (no feeder timestamp at all) is untouched.
+	rec3 := wire.RawRecord{GnssID: gnss.GPS, SvID: 5, Raw: make([]byte, 40)}
+	f3 := recordToFrame(rec3, "ubx", "obs1")
+	if f3 == nil || f3.Recv.Before(before) {
+		t.Errorf("Recv = %v, want now() when RecvUnixNs is unset", f3.Recv)
+	}
 }

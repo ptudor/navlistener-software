@@ -33,6 +33,14 @@ const idleReadTimeout = 120 * time.Second
 // connWriter's mutex, every other writer on the same connection) past this deadline.
 const writeTimeout = 30 * time.Second
 
+// zstdMaxWindow bounds the per-connection zstd decoder's window/memory.
+// navfeeder.c's compressor sets only ZSTD_c_compressionLevel=3 (no explicit
+// windowLog, no pledged source size), whose default window is 2 MiB
+// (ZSTD_WINDOWLOG_LIMIT_DEFAULT-class level-3 table entry) — 16 MiB leaves a wide
+// margin for that while still bounding a hostile-but-authenticated feeder that
+// declares a large window from allocating an unbounded amount per connection.
+const zstdMaxWindow = 16 << 20 // 16 MiB
+
 // idleConn refreshes the read deadline on every Read, so a decoder reading through it (zstd)
 // can't outlive the idle timeout even though it reads outside wire.ReadFrame's frame loop.
 type idleConn struct {
@@ -75,6 +83,13 @@ func (a *configAuth) Authenticate(token, station, feed string) (string, bool) {
 	if !ok {
 		return "", false
 	}
+	// The token is the identity; station is a misconfiguration guard  — a
+	// feeder pointed at the wrong station id (valid token, wrong presented name)
+	// is rejected rather than silently accepted under the token's canonical
+	// identity. handshake()'s caller already logs the rejected station/feed.
+	if station != o.Station {
+		return "", false
+	}
 	for _, f := range o.Feeds {
 		if f == feed {
 			return o.Station, true
@@ -105,6 +120,11 @@ type PushServer struct {
 	out         chan<- *RawFrame
 	ackInterval time.Duration
 	log         *slog.Logger
+	// conns bounds concurrent in-flight connections : a buffered semaphore
+	// acquired before spawning a handler goroutine, released in its defer. Without
+	// mTLS (ClientCA unset), this is the only cap between the internet and
+	// unbounded goroutine/FD growth from a pre-auth connection flood.
+	conns chan struct{}
 }
 
 // NewPushServer builds the listener from config. It loads the server certificate and,
@@ -130,16 +150,19 @@ func NewPushServer(cfg config.Push, out chan<- *RawFrame, auth Authenticator, lo
 		tc.ClientCAs = pool
 		tc.ClientAuth = tls.RequireAndVerifyClientCert
 	}
-	return newPushServer(cfg.Addr, tc, out, auth, cfg.AckInterval, log), nil
+	return newPushServer(cfg.Addr, tc, out, auth, cfg.AckInterval, cfg.MaxConns, log), nil
 }
 
 // newPushServer builds a PushServer from a ready TLS config (the file-loading
 // NewPushServer wraps it; tests construct an in-memory config directly).
-func newPushServer(addr string, tc *tls.Config, out chan<- *RawFrame, auth Authenticator, ack time.Duration, log *slog.Logger) *PushServer {
+func newPushServer(addr string, tc *tls.Config, out chan<- *RawFrame, auth Authenticator, ack time.Duration, maxConns int, log *slog.Logger) *PushServer {
 	if ack <= 0 {
 		ack = time.Second
 	}
-	return &PushServer{addr: addr, tlsConfig: tc, auth: auth, out: out, ackInterval: ack, log: log}
+	if maxConns <= 0 {
+		maxConns = 512
+	}
+	return &PushServer{addr: addr, tlsConfig: tc, auth: auth, out: out, ackInterval: ack, log: log, conns: make(chan struct{}, maxConns)}
 }
 
 // Run listens until ctx is cancelled, handling each feeder connection concurrently.
@@ -168,8 +191,19 @@ func (p *PushServer) serve(ctx context.Context, ln net.Listener) error {
 			p.log.Warn("push accept failed", "error", err)
 			continue
 		}
+		select {
+		case p.conns <- struct{}{}:
+		case <-ctx.Done():
+			_ = conn.Close()
+			wg.Wait()
+			return nil // clean shutdown; don't block admission on a full semaphore
+		}
 		wg.Add(1)
-		go func() { defer wg.Done(); p.handle(ctx, conn) }()
+		go func() {
+			defer wg.Done()
+			defer func() { <-p.conns }()
+			p.handle(ctx, conn)
+		}()
 	}
 }
 
@@ -229,7 +263,11 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 	// feeder stay plaintext (written straight to conn via connWriter).
 	var frames io.Reader = &idleConn{Conn: conn, timeout: idleReadTimeout}
 	if useZstd {
-		zr, err := zstd.NewReader(frames)
+		zr, err := zstd.NewReader(frames,
+			zstd.WithDecoderConcurrency(1), // one connection, one stream: no goroutine fan-out
+			zstd.WithDecoderMaxWindow(zstdMaxWindow),
+			zstd.WithDecoderMaxMemory(zstdMaxWindow),
+		)
 		if err != nil {
 			p.log.Warn("push zstd reader init failed", "observer", observer, "error", err)
 			return
@@ -378,10 +416,22 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 // feeds (ubx/sbf nav frames) carry the broadcast words big-endian in Raw; rtcm carries the
 // message bytes. The reception time falls back to now when the feeder did not stamp it. A
 // malformed telemetry body returns nil (the caller counts and drops it).
+// recvTimestampSlack bounds how far a feeder-supplied reception timestamp may
+// diverge from collector wall-clock before it's rejected as implausible :
+// a receiver/feeder clock can legitimately drift by a little, but a stamp minutes
+// away in either direction is not a reception time, it's a bug or a malfunctioning
+// clock, and must not flow into the historian's time-based partitioning/integrity
+// math uncorrected.
+const recvTimestampSlack = 5 * time.Minute
+
 func recordToFrame(rec wire.RawRecord, feed, source string) *RawFrame {
 	recv := time.Now()
 	if rec.RecvUnixNs > 0 {
-		recv = time.Unix(0, rec.RecvUnixNs)
+		if stamped := time.Unix(0, rec.RecvUnixNs); withinSlack(stamped, recv, recvTimestampSlack) {
+			recv = stamped
+		} else {
+			metrics.PushErrorsTotal.WithLabelValues(source, "recv_ts_implausible").Inc()
+		}
 	}
 	if IsTelemetryType(int(rec.FrameType)) {
 		return telemetryToFrame(rec, source, recv)
@@ -428,6 +478,15 @@ func telemetryToFrame(rec wire.RawRecord, source string, recv time.Time) *RawFra
 		return nil // a telemetry type we don't transport yet
 	}
 	return &RawFrame{Recv: recv, Source: source, RF: rf}
+}
+
+// withinSlack reports whether stamped is within slack of now in either direction.
+func withinSlack(stamped, now time.Time, slack time.Duration) bool {
+	d := stamped.Sub(now)
+	if d < 0 {
+		d = -d
+	}
+	return d <= slack
 }
 
 // bytesToWords reassembles big-endian 32-bit nav words (the inverse of

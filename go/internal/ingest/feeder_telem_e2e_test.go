@@ -37,7 +37,7 @@ func TestNavfeederTelemetryEndToEnd(t *testing.T) {
 	out := make(chan *RawFrame, 64)
 	tc := &tls.Config{Certificates: []tls.Certificate{selfSigned(t)}, MinVersion: tls.VersionTLS12}
 	srv := newPushServer("127.0.0.1:0", tc, out, tokenAuth("rf-e2e", "s3cret", "ubx"),
-		25*time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		25*time.Millisecond, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	pushLn, err := tls.Listen("tcp", "127.0.0.1:0", tc)
 	if err != nil {
 		t.Fatal(err)
