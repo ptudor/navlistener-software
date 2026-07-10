@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"math"
 	"testing"
 	"time"
@@ -117,5 +118,40 @@ func TestMeasuredIonoArcResetOnSlip(t *testing.T) {
 	sh.mu.Unlock()
 	if n >= 5 {
 		t.Fatalf("arc count = %d after slip, want reset", n)
+	}
+}
+
+// TestMeasuredIonoSameFrequencyPairRejected guards Galileo sigId 0 (E1C)
+// and sigId 1 (E1B) both map to 1575.42 MHz (signalFreqHz), so a receiver
+// reporting RAWX for both components of the primary band must not form a
+// geometry-free "pair" between them — Gamma(f1,f2)-1 is exactly 0 for equal
+// frequencies, which previously produced a +-Inf iono_delay_m that failed
+// json.Marshal and froze the feed (the regression fix mechanism). Feeding both signals
+// must leave Perrecv empty and FeedSVs must still marshal cleanly.
+func TestMeasuredIonoSameFrequencyPairRejected(t *testing.T) {
+	s := New(1)
+	apply := func(sig, lock int, tow, pr, cpCyc float64) {
+		s.Apply(&ingest.RawFrame{
+			Recv: time.Now(), Source: "bench", GnssID: gnss.Galileo, SvID: 11, SigID: sig,
+			Obs: &ingest.RawObs{RcvTow: tow, PrM: pr, CpCyc: cpCyc, LockTimeMs: lock, CpValid: true},
+		})
+	}
+	for epoch := 0; epoch < iono.MinArc+5; epoch++ {
+		tow := 200000.0 + float64(epoch)
+		lock := 1000 + epoch*1000
+		apply(0, lock, tow, 2.2e7, 2.2e7/0.19) // E1C, primary
+		apply(1, lock, tow, 2.2e7, 2.2e7/0.19) // E1B, same carrier as E1C
+	}
+
+	svs := s.FeedSVs(time.Now())
+	sv, ok := svs["E11@0"]
+	if !ok {
+		t.Fatal("E11@0 missing from the feed")
+	}
+	if pr, ok := sv.Perrecv["bench"]; ok {
+		t.Errorf("perrecv iono measurement present for a same-frequency pair: %+v", pr)
+	}
+	if _, err := json.Marshal(svs); err != nil {
+		t.Fatalf("json.Marshal(FeedSVs) failed: %v", err)
 	}
 }

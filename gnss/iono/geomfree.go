@@ -61,6 +61,13 @@ func (a *Arc) Slant(phiGFm, f1Hz, f2Hz, biasM float64) (float64, bool) {
 	if a.n < MinArc {
 		return 0, false
 	}
+	if f1Hz == f2Hz {
+		// regression fix (defense-in-depth): a same-frequency pair makes Gamma-1 exactly
+		// 0, producing +-Inf. The caller is expected to reject same-carrier
+		// pairs before reaching Slant; this is a second gate against any future
+		// caller that doesn't.
+		return 0, false
+	}
 	return (phiGFm + a.meanDiff - biasM) / (Gamma(f1Hz, f2Hz) - 1), true
 }
 

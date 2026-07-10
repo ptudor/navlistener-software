@@ -47,10 +47,22 @@ const pairEpsilonS = 0.05
 // is keyed on the SV's primary signal; secondary signals contribute to the pair.
 func (s *Store) applyObservation(f *ingest.RawFrame) {
 	o := f.Obs
-	f1 := signalFreqHz(f.GnssID, primarySig(f.GnssID), f.FreqID)
+	priSig := primarySig(f.GnssID)
+	f1 := signalFreqHz(f.GnssID, priSig, f.FreqID)
 	f2 := signalFreqHz(f.GnssID, f.SigID, f.FreqID)
 	if f1 == 0 || f2 == 0 {
 		return // unmapped signal
+	}
+	if f.SigID != priSig && f2 == f1 {
+		// signalFreqHz maps multiple sigIds to one carrier (e.g. Galileo
+		// E1C/E1B both -> 1575.42 MHz), so a receiver reporting RAWX for both
+		// components of the primary band forms a same-frequency "pair" — the
+		// geometry-free Slant divides by Gamma(f1,f2)-1, which is exactly 0 for
+		// f1==f2, yielding ±Inf that later fails json.Marshal and freezes the feed
+		// (the regression fix mechanism). Not a genuine secondary signal; drop it. (The
+		// primary signal's own observation, f.SigID == priSig, trivially has
+		// f2 == f1 by construction and must not be rejected here.)
+		return
 	}
 	if f.GnssID == gnss.GLONASS {
 		return // FDMA inter-frequency biases need per-channel calibration; v2
