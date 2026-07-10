@@ -2,12 +2,15 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/ptudor/navlistener/internal/config"
 )
 
@@ -28,6 +31,19 @@ func testDSN(t *testing.T) string {
 }
 
 func integrationLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// isolatedDSN returns the DSN for a *fresh, empty* database — distinct from
+// testDSN's shared instance — for tests that need to control initial table state
+// (e.g. simulating a pre-existing intsat deployment) before store.New applies
+// schema.sql. Skips if NAVLISTENER_TEST_DSN_ISOLATED is unset.
+func isolatedDSN(t *testing.T) string {
+	t.Helper()
+	dsn := os.Getenv("NAVLISTENER_TEST_DSN_ISOLATED")
+	if dsn == "" {
+		t.Skip("NAVLISTENER_TEST_DSN_ISOLATED not set; skipping isolated-database integration test")
+	}
+	return dsn
+}
 
 // TestIntegrationSchemaApplies confirms store.New connects, requires TimescaleDB,
 // applies schema.sql (including the regression fix nav_frames_seq_seen ledger), and installs
@@ -165,5 +181,154 @@ func TestIntegrationPruneSeqSeen(t *testing.T) {
 	}
 	if remaining != 1 {
 		t.Errorf("remaining ledger rows = %d, want 1 (only the recent entry should survive a 7-day prune)", remaining)
+	}
+}
+
+// intsatGnssEventsDDL and intsatGnssSnapshotsDDL are copied verbatim from
+// apps/intsat/go/migrations/001_init.sql (this repo's sibling product,
+// docs/DESIGN.md's stated compatibility goal) to regression-test actual
+// premise: today the two schemas are column-identical, but nothing enforces that
+// going forward, and this pins the real shape rather than a hypothetical one.
+const intsatGnssEventsDDL = `
+CREATE TABLE IF NOT EXISTS gnss_events (
+    id          BIGSERIAL,
+    time        TIMESTAMPTZ NOT NULL,
+    sv          TEXT NOT NULL,
+    event_type  TEXT NOT NULL,
+    old_value   TEXT,
+    new_value   TEXT,
+    severity    SMALLINT NOT NULL DEFAULT 0,
+    message     TEXT,
+    raw         JSONB
+);`
+
+const intsatGnssSnapshotsDDL = `
+CREATE TABLE IF NOT EXISTS gnss_snapshots (
+    time        TIMESTAMPTZ NOT NULL,
+    endpoint    TEXT NOT NULL,
+    data        JSONB NOT NULL
+);`
+
+// TestIntegrationVerifyRequiredColumnsAcceptsIntsatSchema guards happy
+// path: a database where gnss_events/gnss_snapshots were already created by
+// intsat's actual 001_init.sql (verified byte-identical to navlistener's own
+// column set as of this fix) must not be rejected by verifyRequiredColumns.
+func TestIntegrationVerifyRequiredColumnsAcceptsIntsatSchema(t *testing.T) {
+	dsn := isolatedDSN(t)
+	ctx := context.Background()
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+	if _, err := pool.Exec(ctx, intsatGnssEventsDDL); err != nil {
+		t.Fatalf("pre-create gnss_events (intsat shape): %v", err)
+	}
+	if _, err := pool.Exec(ctx, intsatGnssSnapshotsDDL); err != nil {
+		t.Fatalf("pre-create gnss_snapshots (intsat shape): %v", err)
+	}
+
+	cfg := config.Store{DSN: dsn, BatchSize: 100, BatchEvery: 50 * time.Millisecond, RawRetention: "7 days", CompressAfter: "1 day"}
+	s, err := New(ctx, cfg, integrationLog())
+	if err != nil {
+		t.Fatalf("store.New rejected an intsat-pre-created schema it should accept: %v", err)
+	}
+	s.pool.Close()
+}
+
+// TestIntegrationVerifyRequiredColumnsFailsOnMissingColumn guards failure
+// path: a pre-existing gnss_events missing a column this build requires (here,
+// `raw`) must fail store.New with a clear, actionable error — not a working start
+// that only fails later on the first WriteEvent/QueryEvents touching that column.
+func TestIntegrationVerifyRequiredColumnsFailsOnMissingColumn(t *testing.T) {
+	dsn := isolatedDSN(t)
+	ctx := context.Background()
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+	// If TestIntegrationVerifyRequiredColumnsAcceptsIntsatSchema already ran against
+	// this same isolated DB, gnss_events exists with the right shape; drop it so
+	// this test controls the initial state.
+	if _, err := pool.Exec(ctx, `DROP TABLE IF EXISTS gnss_events CASCADE`); err != nil {
+		t.Fatalf("drop gnss_events: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `CREATE TABLE gnss_events (
+		id BIGSERIAL, time TIMESTAMPTZ NOT NULL, sv TEXT NOT NULL, event_type TEXT NOT NULL,
+		old_value TEXT, new_value TEXT, severity SMALLINT NOT NULL DEFAULT 0, message TEXT
+		-- raw JSONB intentionally omitted
+	)`); err != nil {
+		t.Fatalf("pre-create incompatible gnss_events: %v", err)
+	}
+
+	cfg := config.Store{DSN: dsn, BatchSize: 100, BatchEvery: 50 * time.Millisecond, RawRetention: "7 days", CompressAfter: "1 day"}
+	_, err = New(ctx, cfg, integrationLog())
+	if err == nil {
+		t.Fatal("store.New succeeded against a gnss_events missing the raw column, want a fail-fast error")
+	}
+	if !strings.Contains(err.Error(), "gnss_events") || !strings.Contains(err.Error(), "raw") {
+		t.Errorf("error = %q, want it to name the table and the missing column", err.Error())
+	}
+	t.Logf("got expected error: %v", err)
+
+	// Restore a compatible table so a later run of the happy-path test against this
+	// same isolated DB isn't left broken.
+	if _, err := pool.Exec(ctx, `DROP TABLE IF EXISTS gnss_events CASCADE`); err != nil {
+		t.Fatalf("cleanup gnss_events: %v", err)
+	}
+}
+
+// TestIntegrationNotifyPayloadBounded guards an event with a multi-KB
+// message must not fail its INSERT (pg_notify's ~8000-byte payload limit would
+// raise inside the AFTER INSERT trigger and fail the whole transaction if message
+// were still in the payload), and the fired notification's payload must be well
+// under the limit regardless of message length.
+func TestIntegrationNotifyPayloadBounded(t *testing.T) {
+	dsn := testDSN(t)
+	ctx := context.Background()
+	cfg := config.Store{DSN: dsn, BatchSize: 100, BatchEvery: 50 * time.Millisecond, RawRetention: "7 days", CompressAfter: "1 day"}
+	s, err := New(ctx, cfg, integrationLog())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer s.pool.Close()
+
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, "LISTEN gnss_event"); err != nil {
+		t.Fatalf("LISTEN: %v", err)
+	}
+
+	longMessage := strings.Repeat("x", 20_000) // well past pg_notify's ~8000-byte payload limit
+	id, err := s.WriteEvent(ctx, EventRow{
+		Time: time.Now(), SV: "G01-notify-test", Type: "test_event", Severity: 1, Message: longMessage,
+	})
+	if err != nil {
+		t.Fatalf("WriteEvent with a %d-byte message failed (pg_notify payload limit leaking into the INSERT): %v", len(longMessage), err)
+	}
+
+	nctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	n, err := conn.Conn().WaitForNotification(nctx)
+	if err != nil {
+		t.Fatalf("WaitForNotification: %v", err)
+	}
+	if n.Channel != "gnss_event" {
+		t.Errorf("notification channel = %q, want gnss_event", n.Channel)
+	}
+	if len(n.Payload) > 1000 {
+		t.Errorf("notification payload is %d bytes, want well under pg_notify's ~8000-byte limit", len(n.Payload))
+	}
+	if strings.Contains(n.Payload, "xxxx") {
+		t.Error("notification payload contains the long message; it must carry only id/sv/type/severity")
+	}
+	if !strings.Contains(n.Payload, fmt.Sprintf(`"id" : %d`, id)) { // json_build_object spaces its colons
+		t.Errorf("notification payload = %q, want it to carry the inserted event's id (%d)", n.Payload, id)
 	}
 }

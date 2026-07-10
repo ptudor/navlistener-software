@@ -145,6 +145,13 @@ var (
 		Name: "navlistener_store_quarantined_total",
 		Help: "Nav frames dropped after flush retries exhausted or a poison row was quarantined.",
 	})
+
+	// StoreEmptyRawTotal counts frames dropped at Enqueue for having an empty Raw
+	// (would otherwise trip nav_frames.raw's NOT NULL constraint, regression fix).
+	StoreEmptyRawTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "navlistener_store_empty_raw_total",
+		Help: "Nav frames dropped at enqueue for having empty Raw bytes (would violate raw NOT NULL).",
+	})
 )
 
 // Init records build identity and registers the uptime gauge. Call once at startup.

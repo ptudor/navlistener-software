@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/ptudor/navlistener/internal/metrics"
 )
 
 var testRetry = flushRetry{attempts: 3, backoff: time.Millisecond, attemptTO: time.Second}
@@ -167,5 +169,89 @@ func TestNavFrameToRow(t *testing.T) {
 	f.Decoded = nil
 	if navFrameToRow(f)[8] != nil {
 		t.Error("empty decoded should map to nil")
+	}
+}
+
+// TestShutdownFlushSharesOneDeadline guards drain() + the final flush()
+// must share ONE shutdown deadline, not a fresh per-chunk budget. With batchSize=2
+// and 10 queued frames (5 chunks) and a copy that takes 1s per chunk if allowed to
+// run to completion, a per-chunk budget would let total shutdown flush time run to
+// ~5s; a shared ~500ms deadline must cut it off well short of that. The margin
+// between "bounded" and "unbounded" is kept deliberately huge (an order of
+// magnitude) so this isn't flaky under -race/system load or when run alongside
+// this package's live-DB integration tests, which add real scheduling contention.
+func TestShutdownFlushSharesOneDeadline(t *testing.T) {
+	slowCopy := func(ctx context.Context, rows [][]any) (int64, error) {
+		select {
+		case <-time.After(time.Second):
+			return int64(len(rows)), nil
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
+	s := &Store{
+		in:             make(chan *NavFrame, 32),
+		batchSize:      2,
+		batchEvery:     time.Hour, // never fires on its own; only shutdown drives flushes here
+		retry:          flushRetry{attempts: 3, backoff: 10 * time.Millisecond, attemptTO: 30 * time.Second},
+		log:            quietLog(),
+		shutdownBudget: 500 * time.Millisecond,
+	}
+	s.copy = slowCopy
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() { defer close(runDone); s.Run(ctx) }()
+
+	for i := 0; i < 10; i++ {
+		s.Enqueue(&NavFrame{SourceID: "obs", Raw: []byte{1}})
+	}
+	time.Sleep(20 * time.Millisecond) // let Enqueue's sends land before shutdown begins
+
+	start := time.Now()
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return — shutdown deadline was not enforced")
+	}
+	elapsed := time.Since(start)
+
+	// 5 unbounded chunk flushes at 1s each would take ~5s; the shared 500ms
+	// deadline must cut it off well before that — 3s leaves generous headroom for
+	// scheduling contention while still clearly failing if the budget were not
+	// actually shared (i.e. not bounded at all).
+	if elapsed > 3*time.Second {
+		t.Errorf("shutdown took %v, want well under 3s (5 unbounded chunks would take ~5s) — "+
+			"the shared deadline does not appear to be bounding total drain time", elapsed)
+	}
+}
+
+// TestEnqueueDropsNilRaw guards a nil Raw maps to SQL NULL and trips
+// nav_frames.raw's NOT NULL constraint, poison-quarantining the whole batch by
+// bisection. Enqueue must drop it before it ever reaches the queue, counting a
+// specific metric rather than surfacing as a generic quarantine. A non-nil empty
+// []byte{} stores fine as an empty bytea and must NOT be dropped.
+func TestEnqueueDropsNilRaw(t *testing.T) {
+	s := &Store{in: make(chan *NavFrame, 4), log: quietLog()}
+
+	before := testutil.ToFloat64(metrics.StoreEmptyRawTotal)
+	s.Enqueue(&NavFrame{SourceID: "obs", Raw: nil})
+	after := testutil.ToFloat64(metrics.StoreEmptyRawTotal)
+	if after-before != 1 {
+		t.Errorf("StoreEmptyRawTotal delta = %v, want 1", after-before)
+	}
+	select {
+	case f := <-s.in:
+		t.Fatalf("nil-Raw frame reached the queue: %+v", f)
+	default:
+	}
+
+	// A non-nil empty Raw is not dropped.
+	s.Enqueue(&NavFrame{SourceID: "obs", Raw: []byte{}})
+	select {
+	case <-s.in:
+	default:
+		t.Error("non-nil empty Raw was dropped, want it enqueued")
 	}
 }

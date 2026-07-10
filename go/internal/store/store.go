@@ -97,6 +97,8 @@ type Store struct {
 	retry            flushRetry
 	log              *slog.Logger
 	seqSeenRetention time.Duration // prune window for nav_frames_seq_seen 
+	copy             copyRowsFunc  // defaults to s.copyRows (pool-backed); tests substitute a fake
+	shutdownBudget   time.Duration // defaults to shutdownFlushBudget; tests shrink it to run fast
 }
 
 // New connects, applies the schema idempotently, installs the compression/retention
@@ -121,6 +123,10 @@ func New(ctx context.Context, cfg config.Store, log *slog.Logger) (*Store, error
 		pool.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
+	if err := verifyRequiredColumns(cctx, pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	if err := applyPolicies(cctx, pool, log, cfg); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("policies: %w", err)
@@ -137,7 +143,7 @@ func New(ctx context.Context, cfg config.Store, log *slog.Logger) (*Store, error
 	if d, err := parseSimpleInterval(cfg.RawRetention); err == nil {
 		seqSeenRetention = d
 	}
-	return &Store{
+	s := &Store{
 		pool:             pool,
 		in:               make(chan *NavFrame, queueDepth),
 		batchSize:        bs,
@@ -145,7 +151,10 @@ func New(ctx context.Context, cfg config.Store, log *slog.Logger) (*Store, error
 		retry:            defaultFlushRetry,
 		log:              log,
 		seqSeenRetention: seqSeenRetention,
-	}, nil
+		shutdownBudget:   shutdownFlushBudget,
+	}
+	s.copy = s.copyRows
+	return s, nil
 }
 
 // parseSimpleInterval parses the same "N minute(s)/hour(s)/day(s)/week(s)" shape
@@ -199,6 +208,60 @@ func applySchema(ctx context.Context, pool *pgxpool.Pool) error {
 	defer conn.Release()
 	_, err = conn.Conn().PgConn().Exec(ctx, schemaSQL).ReadAll()
 	return err
+}
+
+// requiredColumns is the set of columns this build's WriteEvent/QueryEvents and
+// snapshot writer actually read or write, per table. gnss_events/gnss_snapshots
+// are `CREATE TABLE IF NOT EXISTS` : the DSN can point at a database where
+// intsat already created these tables (docs §"superset of intsat's 001_init.sql"),
+// in which case applySchema's CREATE TABLE is a silent no-op — if intsat's shape
+// ever drifts from ours, code assuming the superset would fail at runtime on the
+// first INSERT/SELECT touching a missing column, not at startup. This check turns
+// that into a clear, fail-fast error instead.
+var requiredColumns = map[string][]string{
+	"gnss_events":    {"id", "time", "sv", "event_type", "old_value", "new_value", "severity", "message", "raw"},
+	"gnss_snapshots": {"time", "endpoint", "data"},
+}
+
+// verifyRequiredColumns fails fast with an actionable message if a required table
+// is missing a column this build reads or writes  — most likely because the
+// DSN points at a database where gnss_events/gnss_snapshots pre-date this schema
+// (e.g. an older intsat deployment) and CREATE TABLE IF NOT EXISTS left them as-is.
+func verifyRequiredColumns(ctx context.Context, pool *pgxpool.Pool) error {
+	for table, want := range requiredColumns {
+		rows, err := pool.Query(ctx,
+			`SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1`,
+			table)
+		if err != nil {
+			return fmt.Errorf("verify schema: query columns of %s: %w", table, err)
+		}
+		have := make(map[string]bool)
+		for rows.Next() {
+			var col string
+			if err := rows.Scan(&col); err != nil {
+				rows.Close()
+				return fmt.Errorf("verify schema: scan columns of %s: %w", table, err)
+			}
+			have[col] = true
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("verify schema: %s: %w", table, err)
+		}
+		var missing []string
+		for _, col := range want {
+			if !have[col] {
+				missing = append(missing, col)
+			}
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf(
+				"table %q is missing column(s) %v that this build requires — "+
+					"it likely pre-exists from an older/incompatible schema (e.g. intsat's 001_init.sql) "+
+					"and CREATE TABLE IF NOT EXISTS left it unchanged; reconcile the table manually before starting navlistener",
+				table, missing)
+		}
+	}
+	return nil
 }
 
 var intervalRe = regexp.MustCompile(`^[1-9][0-9]* (minute|hour|day|week)s?$`)
@@ -256,6 +319,14 @@ func applyPolicies(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, cf
 // Enqueue hands a frame to the writer without blocking the caller. On overflow (the
 // DB can't keep up) it drops the newest and records it — the live path stays healthy.
 func (s *Store) Enqueue(f *NavFrame) {
+	// raw BYTEA NOT NULL : Raw == nil maps to SQL NULL and would poison the
+	// whole batch (bisected, quarantined, dropped with only a generic log). A
+	// non-nil empty []byte{} stores fine as an empty bytea and is not guarded here.
+	if f.Raw == nil {
+		metrics.StoreEmptyRawTotal.Inc()
+		s.log.Warn("dropping nav frame with nil Raw", "source", f.SourceID, "gnssid", f.GnssID, "svid", f.SvID)
+		return
+	}
 	select {
 	case s.in <- f:
 	default:
@@ -276,7 +347,7 @@ func (s *Store) Run(ctx context.Context) {
 		if len(batch) == 0 {
 			return
 		}
-		s.flush(batch, normalFlushBudget)
+		s.flush(batch, time.Now().Add(normalFlushBudget))
 		batch = batch[:0]
 	}
 
@@ -292,9 +363,16 @@ func (s *Store) Run(ctx context.Context) {
 		case <-pruneTicker.C:
 			s.pruneSeqSeen(ctx)
 		case <-ctx.Done():
-			s.drain(&batch, shutdownFlushBudget)
-			s.flush(batch, shutdownFlushBudget)
-			s.pool.Close()
+			// One shared deadline for the entire shutdown drain, not a fresh budget
+			// per chunk flush — a full queue at batchSize chunks would otherwise take
+			// up to (queueDepth/batchSize)*shutdownFlushBudget, far past
+			// ShutdownTimeout, and main's os.Exit would kill the store mid-flush.
+			deadline := time.Now().Add(s.shutdownBudget)
+			s.drain(&batch, deadline)
+			s.flush(batch, deadline)
+			if s.pool != nil { // nil only in tests that construct a Store without New()
+				s.pool.Close()
+			}
 			s.log.Info("store drained and closed")
 			return
 		}
@@ -318,13 +396,15 @@ func (s *Store) pruneSeqSeen(ctx context.Context) {
 	}
 }
 
-func (s *Store) drain(batch *[]*NavFrame, budget time.Duration) {
+// drain empties the in-flight queue, flushing full-size chunks against the shared
+// shutdown deadline (not a fresh budget per chunk).
+func (s *Store) drain(batch *[]*NavFrame, deadline time.Time) {
 	for {
 		select {
 		case f := <-s.in:
 			*batch = append(*batch, f)
 			if len(*batch) >= s.batchSize {
-				s.flush(*batch, budget)
+				s.flush(*batch, deadline)
 				*batch = (*batch)[:0]
 			}
 		default:
@@ -396,15 +476,17 @@ func dedupBatch(batch []*NavFrame, fresh map[seqKey]bool) []*NavFrame {
 }
 
 // flush bulk-loads a batch with bounded retry + poison-row quarantine on a detached
-// context (so the final shutdown flush still runs) capped by budget. Push-path
+// context (so the final shutdown flush still runs) capped by deadline. Callers in a
+// shutdown drain pass the *same* deadline to every flush call  so the total
+// shutdown flush time is bounded by one budget, not a fresh one per chunk. Push-path
 // frames are first deduplicated against nav_frames_seq_seen; a dedup-ledger
 // failure fails open (persists the batch un-deduped) — losing the forensic record
 // is worse than an occasional duplicate row.
-func (s *Store) flush(batch []*NavFrame, budget time.Duration) {
+func (s *Store) flush(batch []*NavFrame, deadline time.Time) {
 	if len(batch) == 0 {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 
 	var keys []seqKey
@@ -429,7 +511,7 @@ func (s *Store) flush(batch []*NavFrame, budget time.Duration) {
 	for _, f := range batch {
 		rows = append(rows, navFrameToRow(f))
 	}
-	written, dropped := persistRetry(ctx, s.retry, s.copyRows, rows, s.log)
+	written, dropped := persistRetry(ctx, s.retry, s.copy, rows, s.log)
 	if written > 0 {
 		metrics.StoreRowsTotal.Add(float64(written))
 	}

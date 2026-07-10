@@ -82,11 +82,17 @@ CREATE INDEX IF NOT EXISTS idx_gnss_events_sv_time       ON gnss_events (sv, tim
 CREATE INDEX IF NOT EXISTS idx_gnss_events_type_time     ON gnss_events (event_type, time DESC);
 CREATE INDEX IF NOT EXISTS idx_gnss_events_severity_time ON gnss_events (severity, time DESC);
 
+-- pg_notify has a hard ~8000-byte payload limit; a long NEW.message would raise in
+-- this trigger and fail the whole INSERT in the same transaction. The
+-- payload carries only the fields needed to identify the row (id/sv/type/severity)
+-- — message is intentionally omitted, not truncated, since LISTENers fetch the
+-- full row by id anyway (id is the load-bearing field; the channel name and the
+-- id-carrying contract are unchanged).
 CREATE OR REPLACE FUNCTION notify_gnss_event() RETURNS trigger AS $$
 BEGIN
     PERFORM pg_notify('gnss_event', json_build_object(
         'id', NEW.id, 'sv', NEW.sv, 'type', NEW.event_type,
-        'severity', NEW.severity, 'message', NEW.message)::text);
+        'severity', NEW.severity)::text);
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
