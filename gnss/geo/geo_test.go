@@ -85,3 +85,18 @@ func TestAzElEastHorizon(t *testing.T) {
 		t.Errorf("east horizon elevation = %v deg, want 0", Deg(el))
 	}
 }
+
+// TestAzElCoincidentPoint guards sv == recv previously divided by zero
+// (d.Norm() == 0) and silently returned a NaN elevation. Degenerate input, but
+// AzEl has no error return, so it must not propagate NaN — "directly overhead"
+// is the defined convention for zero separation.
+func TestAzElCoincidentPoint(t *testing.T) {
+	r := GeodeticToECEF(eqRecv, physconst.WGS84)
+	_, el := AzEl(r, eqRecv, physconst.WGS84) // sv == recv exactly
+	if math.IsNaN(el) {
+		t.Fatal("elevation is NaN for a coincident SV/receiver point")
+	}
+	if math.Abs(Deg(el)-90) > 1e-6 {
+		t.Errorf("coincident-point elevation = %v deg, want 90 (directly overhead convention)", Deg(el))
+	}
+}

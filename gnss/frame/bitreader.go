@@ -69,10 +69,11 @@ func (r *BitReader) Signed(start, n int) (int64, error) {
 	if n == 0 {
 		return 0, nil
 	}
-	if u&(1<<(uint(n)-1)) != 0 { // sign bit set
-		return int64(u) - (1 << uint(n)), nil
-	}
-	return int64(u), nil
+	// sign-extend via a left-then-arithmetic-right shift rather than
+	// int64(u) - (1<<n) — the subtraction form overflows at n==63 (1<<63 ==
+	// math.MinInt64, and subtracting that from a positive int64(u) wraps). The
+	// shift form is exact for every 1 <= n <= 64.
+	return int64(u<<(64-uint(n))) >> (64 - uint(n)), nil
 }
 
 // SignMag reads n bits at start as a sign-magnitude integer: the top bit is the
@@ -118,8 +119,6 @@ func (r *BitReader) ConcatSigned(hiStart, hiN, loStart, loN int) (int64, error) 
 	if n == 0 {
 		return 0, nil
 	}
-	if u&(1<<(uint(n)-1)) != 0 {
-		return int64(u) - (1 << uint(n)), nil
-	}
-	return int64(u), nil
+	// same overflow-safe sign-extend as Signed above.
+	return int64(u<<(64-uint(n))) >> (64 - uint(n)), nil
 }

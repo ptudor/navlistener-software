@@ -96,7 +96,15 @@ func AzEl(sv gnss.ECEF, recv Geodetic, ell physconst.Ellipsoid) (az, el float64)
 	if az < 0 {
 		az += 2 * math.Pi
 	}
-	el = math.Asin(u / d.Norm())
+	// sv == recv is degenerate (cannot occur for a real SV/receiver pair —
+	// no broadcast satellite coincides with a ground receiver) but would otherwise
+	// divide by zero and silently propagate NaN. Directly overhead is the natural
+	// convention for "zero separation."
+	if norm := d.Norm(); norm != 0 {
+		el = math.Asin(u / norm)
+	} else {
+		el = math.Pi / 2
+	}
 	return az, el
 }
 

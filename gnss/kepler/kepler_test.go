@@ -122,6 +122,22 @@ func TestErrorGuards(t *testing.T) {
 	if _, err := Propagate(bad, 432000); err == nil {
 		t.Error("expected error for e >= 1")
 	}
+	// a spoofed/malformed high-eccentricity ephemeris (far outside any real
+	// broadcast, e<~0.03) must be rejected outright rather than risk a
+	// non-converged Newton-Raphson solution silently passing as a finite position.
+	bad = base
+	bad.Ecc = 0.9
+	bad.M0 = math.Pi
+	if _, err := Propagate(bad, 432000); err == nil {
+		t.Error("expected error for e=0.9 (spoofed/malformed high-eccentricity ephemeris)")
+	}
+	// A realistic eccentricity just under the new gate must still propagate fine —
+	// the tightened bound must not reject legitimate slightly-eccentric orbits.
+	ok := base
+	ok.Ecc = 0.03
+	if _, err := Propagate(ok, 432000); err != nil {
+		t.Errorf("e=0.03 (realistic) rejected: %v", err)
+	}
 	// A constellation with no Keplerian parameter set (SBAS).
 	bad = base
 	bad.ID = gnss.SBAS

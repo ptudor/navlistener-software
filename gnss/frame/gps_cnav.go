@@ -45,6 +45,14 @@ type GPSCNAV struct {
 	clk     clock.Model
 	hasEph2 bool // message 11 present (has i0/Ω0)
 	hasClk  bool
+
+	// Message-10-only integrity fields : WN (bits 39-51), the 3-bit L1/L2/L5
+	// health flags (52-54), and URA_ED (66-70) — captured for LNAV (GPSSubframe.WN/
+	// Health/URAIndex) but previously dropped for CNAV. Purely additive; ephemeris/
+	// clock field offsets above are unchanged. Populated only when MsgType == 10.
+	WN     int
+	Health int // raw 3-bit L1/L2/L5 signal-health field (IS-GPS-200 §30.3.3.1.1.2), unmasked
+	URAED  int
 }
 
 // DecodeGPSCNAV decodes one CNAV message (ten words). id is GPS or QZSS (they
@@ -69,6 +77,15 @@ func DecodeGPSCNAV(id gnss.GNSSID, words []uint32) (*GPSCNAV, error) {
 	semi := physconst.Pi
 	switch {
 	case m.MsgType == 10: // Ephemeris 1
+		// WN/Health/URA_ED : IS-GPS-200 Table 30-I cites these as 1-indexed bit
+		// numbers 39-51/52-54/66-70; BitReader.Bits uses 0-indexed absolute offsets (one
+		// less, the same translation PRN/MsgType/TOW above already use — e.g. PRN's
+		// ICD "bits 9-14" is coded as u(8,6)). URA_ED's 0-indexed span (65-69) ends
+		// exactly where the existing, already-verified Toe field begins (u(70, 11)),
+		// which is the cross-check that the offsets below are right.
+		m.WN = int(u(38, 13))
+		m.Health = int(u(51, 3))
+		m.URAED = int(u(65, 5))
 		m.eph.Toe = float64(u(70, 11)) * cnavT0
 		m.eph.SqrtA = math.Sqrt(cnavAref + float64(s(81, 26))*p2m9)
 		m.eph.ADot = float64(s(107, 25)) * p2m21 // Ȧ, m/s (Table 30-I)

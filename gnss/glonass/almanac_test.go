@@ -4,6 +4,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/ptudor/gnss"
 	"github.com/ptudor/gnss/physconst"
 )
 
@@ -111,5 +112,67 @@ func TestAlmanacECEFGroundTrack(t *testing.T) {
 			}
 		}
 		prevLon, first = lon, false
+	}
+}
+
+// TestAlmanacECEFMatchesRotatedICDExample guards the production feed path
+// (PropagateAlmanacECEF → ecefNode) had only the loose ground-track bounds above
+// as coverage, while the strong ICD-worked-example check (TestAlmanacICDExample)
+// exercises the inertialNode branch exclusively. A sign/scale slip isolated to the
+// ecefNode-only line (`omegaBase = lambdaK - almWe*(ti-tLambdaK)`) would pass both
+// of those and still be wrong.
+//
+// This pins ecefNode to the same ICD-validated example by an independent route:
+// every other computed quantity in propagateAlmanac (aI, eaI, uI, rI, vr, vu, the
+// inclination terms) is identical between the two node conventions — only
+// omegaBase (the node's right-ascension-type longitude) differs. So the ECEF
+// position must equal the ICD-example inertial position rotated by -GMST(ti)
+// about Z, where GMST(t) = s0 + almWe*(t-10800) is exactly the sidereal-time
+// function inertialNode evaluates at tLambdaK; here it is evaluated at ti instead,
+// which is the algebraic identity that makes ecefNode's formula consistent with
+// inertialNode's. No propagation code changes; this is test-only, per the fix spec.
+func TestAlmanacECEFMatchesRotatedICDExample(t *testing.T) {
+	a := Almanac{
+		NA:        615,
+		Lambda:    halfCycle(-0.189986229),
+		Tlambda:   27122.09375,
+		DeltaI:    halfCycle(0.011929512),
+		DeltaT:    -2655.76171875,
+		DeltaTdot: 0.000549316,
+		Ecc:       0.001482010,
+		Omega:     halfCycle(0.440277100),
+	}
+	const (
+		n0 = 615
+		ti = 33300.0
+		s0 = 6.02401539573 // same ICD §A.3.2.3 Greenwich sidereal time at midnight
+	)
+
+	inertialPos, _, err := propagateAlmanac(a, n0, ti, inertialNode, s0)
+	if err != nil {
+		t.Fatalf("inertialNode propagate: %v", err)
+	}
+	ecefPos, _, err := propagateAlmanac(a, n0, ti, ecefNode, s0)
+	if err != nil {
+		t.Fatalf("ecefNode propagate: %v", err)
+	}
+
+	gmst := s0 + almWe*(ti-10800)
+	sinG, cosG := math.Sincos(gmst)
+	wantEcef := gnss.ECEF{
+		X: inertialPos.X*cosG + inertialPos.Y*sinG,
+		Y: -inertialPos.X*sinG + inertialPos.Y*cosG,
+		Z: inertialPos.Z,
+	}
+
+	const tol = 1e-6 // km (~1 mm) — an exact algebraic identity, not an independent measurement
+	if d := math.Abs(ecefPos.X - wantEcef.X); d > tol {
+		t.Errorf("X = %.9f km, want %.9f (rotated ICD example, Δ %.2e km)", ecefPos.X, wantEcef.X, d)
+	}
+	if d := math.Abs(ecefPos.Y - wantEcef.Y); d > tol {
+		t.Errorf("Y = %.9f km, want %.9f (rotated ICD example, Δ %.2e km)", ecefPos.Y, wantEcef.Y, d)
+	}
+	if d := math.Abs(ecefPos.Z - wantEcef.Z); d > tol {
+		t.Errorf("Z = %.9f km, want %.9f (rotated ICD example, Δ %.2e km)", ecefPos.Z, wantEcef.Z, d)
 	}
 }

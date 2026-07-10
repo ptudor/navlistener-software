@@ -472,6 +472,13 @@ func TestRealGPSCNAVAgreesWithLNAV(t *testing.T) {
 			t.Errorf("G%02d CNAV vs LNAV disagree by %.1f m (tol %.0f, toe L=%.0f C=%.0f) — likely a decode error",
 				sv, dist, tol, lEph.Toe, cEph.Toe)
 		}
+		// CNAV's WN (13-bit) and LNAV's WN (10-bit, mod 1024) truncate the same
+		// real week number at different moduli — since 1024 divides 8192 evenly, a
+		// correct decode must agree mod 1024 on the same real-world capture.
+		if got, want := c.m10.WN%1024, l.sf1.WN; got != want {
+			t.Errorf("G%02d CNAV WN %%1024 = %d, want %d (LNAV WN) — CNAV WN offset likely wrong",
+				sv, got, want)
+		}
 		agreed++
 	}
 	if agreed < 4 {

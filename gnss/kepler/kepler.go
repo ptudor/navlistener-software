@@ -51,9 +51,26 @@ type Solution struct {
 var (
 	errNoParams    = errors.New("kepler: constellation has no Keplerian parameters")
 	errBadSemiAxis = errors.New("kepler: non-positive semi-major axis")
-	errBadEcc      = errors.New("kepler: eccentricity out of range [0,1)")
+	errBadEcc      = errors.New("kepler: eccentricity out of range [0, eccMax)")
 	errNaN         = errors.New("kepler: propagation produced a non-finite value")
+	errNoConverge  = errors.New("kepler: eccentric-anomaly iteration did not converge")
 )
+
+// eccMax bounds Solve's eccentricity gate. The prior guard (e < 1) only
+// rejected the mathematically-degenerate case; every real GNSS orbit has e <
+// ~0.02-0.03, but Newton-Raphson seeded at E0=M is only guaranteed to converge for
+// modest eccentricity — a malformed or spoofed ephemeris with e near 1 (M near π)
+// can fail to converge in the loop below and silently return a wrong-but-finite
+// position, which matters because this feeds an anti-spoof integrity monitor that
+// intentionally ingests untrusted broadcasts. 0.25 keeps generous margin over any
+// legitimate broadcast while well short of where Newton-Raphson's convergence
+// radius becomes a real risk.
+const eccMax = 0.25
+
+// keplerIterTol is the Newton-Raphson convergence tolerance (radians) for the
+// eccentric-anomaly loop in Solve; kept as its own constant so the post-loop
+// convergence check  uses the exact same bound the loop breaks on.
+const keplerIterTol = 1e-12
 
 // Solve propagates ephemeris e to time-of-week tow (seconds) and returns the full
 // solution. It returns an error — never a NaN that could poison the feed — on
@@ -68,7 +85,7 @@ func Solve(e Ephemeris, tow float64) (Solution, error) {
 	if a <= 0 || math.IsNaN(a) {
 		return Solution{}, errBadSemiAxis
 	}
-	if e.Ecc < 0 || e.Ecc >= 1 || math.IsNaN(e.Ecc) {
+	if e.Ecc < 0 || e.Ecc >= eccMax || math.IsNaN(e.Ecc) {
 		return Solution{}, errBadEcc
 	}
 
@@ -86,12 +103,19 @@ func Solve(e Ephemeris, tow float64) (Solution, error) {
 	// Kepler's equation M = E − e·sin E, Newton–Raphson (docs/MATH.md §2).
 	ecc := e.Ecc
 	ea := m
+	dE := math.Inf(1)
 	for i := 0; i < 15; i++ {
-		dE := (m - ea + ecc*math.Sin(ea)) / (1 - ecc*math.Cos(ea))
+		dE = (m - ea + ecc*math.Sin(ea)) / (1 - ecc*math.Cos(ea))
 		ea += dE
-		if math.Abs(dE) < 1e-12 {
+		if math.Abs(dE) < keplerIterTol {
 			break
 		}
+	}
+	// the loop above only ever breaks early on convergence; without this
+	// check a malformed/spoofed ephemeris that fails to converge in 15 iterations
+	// would silently return the last (wrong) iterate as if it were a solution.
+	if math.Abs(dE) >= keplerIterTol {
+		return Solution{}, errNoConverge
 	}
 
 	sinE, cosE := math.Sincos(ea)
