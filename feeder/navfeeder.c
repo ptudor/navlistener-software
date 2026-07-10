@@ -53,6 +53,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <time.h>
 #include <termios.h>
 #include <pthread.h>
@@ -1040,6 +1041,12 @@ static void usage(void) {
 }
 
 int main(int argc, char **argv) {
+	// OpenSSL's socket BIO writes with plain write()/send(), no
+	// MSG_NOSIGNAL; a write to a collector that has already closed its end
+	// (routine restart/deploy) raises SIGPIPE, whose default action kills the
+	// process outright, losing the entire unacked RAM ring. Ignore it so the
+	// write instead fails with EPIPE and the normal reconnect path handles it.
+	signal(SIGPIPE, SIG_IGN);
 	struct opts o; memset(&o, 0, sizeof o);
 	o.feed = "ubx";
 	o.baud = 460800;
