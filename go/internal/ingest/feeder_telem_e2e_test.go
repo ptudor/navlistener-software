@@ -127,9 +127,11 @@ func syntheticRFCapture() []byte {
 		blk[0] = b.block
 		blk[1] = b.jam
 		blk[2] = b.ant
-		binary.LittleEndian.PutUint16(blk[14:], b.noise)
-		binary.LittleEndian.PutUint16(blk[16:], b.agc)
-		blk[20] = b.cw
+		// noisePerMS/agcCnt/jamInd are at 12/14/16 (blockId/flags/antStatus/
+		// antPower/postStatus[4]/reserved[4] = 12 bytes precede them), not 14/16/20.
+		binary.LittleEndian.PutUint16(blk[12:], b.noise)
+		binary.LittleEndian.PutUint16(blk[14:], b.agc)
+		blk[16] = b.cw
 		monrf = append(monrf, blk...)
 	}
 

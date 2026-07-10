@@ -2,10 +2,15 @@ package frame
 
 import (
 	"encoding/binary"
+	"errors"
 	"math"
 
 	"github.com/ptudor/gnss/glonass"
 )
+
+// errGLONASSStringOrder is returned when AssembleGLONASS's arguments aren't
+// strings 1/2/3 in that order (regression fix defense-in-depth).
+var errGLONASSStringOrder = errors.New("frame: GLONASS strings not in 1/2/3 order")
 
 // glonassBlock packs the four 32-bit words of a GLONASS string big-endian into a
 // 128-bit block and returns a bit reader over it. The 85-bit ICD string maps into the
@@ -174,6 +179,12 @@ func DecodeGLONASSFrameNA(words []uint32) (int, error) {
 func AssembleGLONASS(slot, freqID int, s1, s2, s3 *GLONASSString) (glonass.Ephemeris, error) {
 	if s1 == nil || s2 == nil || s3 == nil {
 		return glonass.Ephemeris{}, ErrShortFrame
+	}
+	// regression fix (defense-in-depth): the caller is expected to pass strings in their
+	// broadcast slots, but assert it rather than silently combine x/y/z components
+	// from the wrong string numbers if a caller ever mis-wires the arguments.
+	if s1.Number != 1 || s2.Number != 2 || s3.Number != 3 {
+		return glonass.Ephemeris{}, errGLONASSStringOrder
 	}
 	return glonass.Ephemeris{
 		X: s1.Coord, Vx: s1.Vel, Ax: s1.Accel,

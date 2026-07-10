@@ -188,12 +188,16 @@ func parseMONRF(p []byte, source string, recv time.Time) *RawFrame {
 	for i := 0; i < nBlocks; i++ {
 		b := p[4+i*24:]
 		rf.Bands = append(rf.Bands, RFBand{
-			Block:      int(b[0]),
-			JamState:   int(b[1] & 0x03),
-			AntStatus:  int(b[2]),
-			NoiseLevel: int(binary.LittleEndian.Uint16(b[14:])),
-			AGC:        int(binary.LittleEndian.Uint16(b[16:])),
-			CWSuppress: int(b[20]), // jamInd (CW-jamming indicator, 0..255)
+			Block:     int(b[0]),
+			JamState:  int(b[1] & 0x03),
+			AntStatus: int(b[2]),
+			// postStatus U4 sits at +4, reserved U1[4] at +8 (12 bytes total,
+			// matching the doc comment above), then noisePerMS U2 @+12, agcCnt U2
+			// @+14, jamInd U1 @+16 — the previous +14/+16/+20 offsets read agcCnt as
+			// noise, jamInd|ofsI<<8 as AGC, and magQ as CWSuppress.
+			NoiseLevel: int(binary.LittleEndian.Uint16(b[12:])),
+			AGC:        int(binary.LittleEndian.Uint16(b[14:])),
+			CWSuppress: int(b[16]), // jamInd (CW-jamming indicator, 0..255)
 		})
 	}
 	return &RawFrame{Source: source, Recv: recv, RF: rf}

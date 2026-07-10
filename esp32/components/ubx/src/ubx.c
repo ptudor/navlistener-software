@@ -66,7 +66,9 @@ static void emit_sfrbx(ubx_parser_t *p, const uint8_t *payload, uint16_t len)
 
 // emit_monrf: UBX-MON-RF (F9+) -> JammingStats (0x05). Layout: version U1, nBlocks U1,
 // reserved U1[2], then nBlocks x 24-byte blocks (blockId U1, flags X1 [bits0-1=jamState],
-// antStatus U1, ..., noisePerMS U2 @14, agcCnt U2 @16, jamInd U1 @20).
+// antStatus U1, antPower U1, postStatus U4 @4, reserved U1[4] @8, noisePerMS U2 @12,
+// agcCnt U2 @14, jamInd U1 @16 (previously read @14/@16/@20, off by the 2-byte
+// antStatus/antPower pair).
 static void emit_monrf(ubx_parser_t *p, const uint8_t *payload, uint16_t len)
 {
     if (len < 4) return;
@@ -83,9 +85,9 @@ static void emit_monrf(ubx_parser_t *p, const uint8_t *payload, uint16_t len)
         const uint8_t *b = payload + 4 + i * 24;
         unsigned o = 2 + i * 8;
         body[o]     = b[0];                          // blockId
-        gnf1_be16(body + o + 1, rd_le16(b + 16));    // agcCnt
-        gnf1_be16(body + o + 3, rd_le16(b + 14));    // noisePerMS
-        body[o + 5] = b[20];                         // jamInd (CW)
+        gnf1_be16(body + o + 1, rd_le16(b + 14));    // agcCnt
+        gnf1_be16(body + o + 3, rd_le16(b + 12));    // noisePerMS
+        body[o + 5] = b[16];                         // jamInd (CW)
         body[o + 6] = (uint8_t)(b[1] & 0x03);        // jammingState
         body[o + 7] = b[2];                          // antStatus
     }

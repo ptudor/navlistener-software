@@ -550,9 +550,11 @@ static void emit_telem(uint8_t type, const unsigned char *body, unsigned bodylen
 
 /* emit_monrf converts a UBX-MON-RF payload (F9+ RF-front-end telemetry) into a JammingStats
  * (0x05) record. Layout: version U1, nBlocks U1, reserved U1[2], then nBlocks × 24-byte
- * blocks — blockId U1, flags X1 (bits 0-1 = jammingState), antStatus U1, …, noisePerMS U2
- * @14, agcCnt U2 @16, jamInd U1 @20. Body: [ver][nBands] then per band
- * [block][agc BE16][noise BE16][cw][jamState][antStatus]. Bounds-checked. */
+ * blocks — blockId U1, flags X1 (bits 0-1 = jammingState), antStatus U1, antPower U1,
+ * postStatus U4 @4, reserved U1[4] @8, noisePerMS U2 @12, agcCnt U2 @14, jamInd U1 @16
+ * (previously read @14/@16/@20 — off by the 2-byte antStatus/antPower pair, so
+ * NoiseLevel got agcCnt, AGC got jamInd|ofsI<<8, and CW got magQ). Body: [ver][nBands]
+ * then per band [block][agc BE16][noise BE16][cw][jamState][antStatus]. Bounds-checked. */
 static void emit_monrf(const unsigned char *p, unsigned len) {
 	if (len < 4) return;
 	unsigned nBlocks = p[1];
@@ -566,9 +568,9 @@ static void emit_monrf(const unsigned char *p, unsigned len) {
 		const unsigned char *b = p + 4 + i * 24;
 		unsigned o = 2 + i * 8;
 		body[o]     = b[0];                       /* blockId */
-		be16(body + o + 1, rd_le16(b + 16));      /* agcCnt */
-		be16(body + o + 3, rd_le16(b + 14));      /* noisePerMS */
-		body[o + 5] = b[20];                      /* jamInd (CW) */
+		be16(body + o + 1, rd_le16(b + 14));      /* agcCnt */
+		be16(body + o + 3, rd_le16(b + 12));      /* noisePerMS */
+		body[o + 5] = b[16];                      /* jamInd (CW) */
 		body[o + 6] = (unsigned char)(b[1] & 0x03); /* jammingState */
 		body[o + 7] = b[2];                       /* antStatus */
 	}

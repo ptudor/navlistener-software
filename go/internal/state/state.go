@@ -31,6 +31,12 @@ const (
 	gpsUTCOffset  = 18
 	weekSeconds   = 604800
 	discoTrustAge = 4 * time.Hour // ephemerides older than this aren't trusted for disco
+
+	// glonassFrameWindow bounds how far apart strings 1/2/3's reception times may be
+	// and still be treated as one coherent frame. Real broadcast spacing is
+	// ~2s per string (~4s end to end); this is generous margin over normal jitter
+	// while comfortably rejecting a stale string left over from ~30 minutes prior.
+	glonassFrameWindow = 8 * time.Second
 )
 
 // Key identifies a satellite×signal, the feed's name@sigid space.
@@ -61,10 +67,16 @@ type svState struct {
 	// Measured-iono tracks per ingest source (dual-frequency observables).
 	ionoBySource map[string]*ionoTrack
 	// GLONASS string assembly buffers + Cartesian ephemeris (RK4, not kepler).
-	gloS1, gloS2, gloS3 *frame.GLONASSString
-	gloEph              glonass.Ephemeris
-	gloFreqID           int
-	haveGloEph          bool
+	// gloS{1,2,3}At are each string's reception time : strings 1/2/3 carry
+	// x/y/z of one PZ-90 state valid only within one ~30 s frame, and unlike
+	// GPS/Galileo/BeiDou they carry no per-changeover tag, so recency is the only
+	// coherence guard — assembly is gated on all three having arrived within one
+	// frame window of each other.
+	gloS1, gloS2, gloS3       *frame.GLONASSString
+	gloS1At, gloS2At, gloS3At time.Time
+	gloEph                    glonass.Ephemeris
+	gloFreqID                 int
+	haveGloEph                bool
 	// Buffered first string of an almanac pair (6/8/10/12/14), awaiting its second
 	// (7/9/11/13/15) from the same transmitting satellite.
 	gloAlmFirst    []uint32
@@ -491,12 +503,12 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 
 	switch {
 	case str.Number == 1:
-		st.gloS1 = str
+		st.gloS1, st.gloS1At = str, f.Recv
 	case str.Number == 2:
-		st.gloS2 = str
+		st.gloS2, st.gloS2At = str, f.Recv
 		st.health = str.Health
 	case str.Number == 3:
-		st.gloS3 = str
+		st.gloS3, st.gloS3At = str, f.Recv
 	case str.Number == 5: // time string: carries the frame day-number NA
 		if na, err := frame.DecodeGLONASSFrameNA(f.Words); err == nil {
 			s.setGloNA(na)
@@ -516,6 +528,23 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		return // string 4 (reserved here)
 	}
 	if st.gloS1 == nil || st.gloS2 == nil || st.gloS3 == nil {
+		return
+	}
+	// strings 1/2/3 are coherent only within one ~30s frame (broadcast order
+	// 1,2,3, each ~2s apart); reassembling on every arrival with no temporal guard
+	// mixes epochs at every tb changeover (a fresh string arriving pairs with the
+	// other two still-cached, up-to-30-minutes-old strings). Gate on all three
+	// having arrived within one frame window of each other.
+	oldest, newest := st.gloS1At, st.gloS1At
+	for _, t := range []time.Time{st.gloS2At, st.gloS3At} {
+		if t.Before(oldest) {
+			oldest = t
+		}
+		if t.After(newest) {
+			newest = t
+		}
+	}
+	if newest.Sub(oldest) > glonassFrameWindow {
 		return
 	}
 	eph, err := frame.AssembleGLONASS(f.SvID, st.gloFreqID, st.gloS1, st.gloS2, st.gloS3)

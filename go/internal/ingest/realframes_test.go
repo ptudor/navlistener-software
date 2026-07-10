@@ -331,8 +331,16 @@ func TestRealBeiDouD1(t *testing.T) {
 	_ = scanUBX(bytes.NewReader(data), "cap", fixedTime,
 		func(f *RawFrame) { frames = append(frames, f) }, func(string) {})
 
+	// sf1/sf2/sf3 must come from one broadcast-adjacent triple (AssembleBeiDou
+	// now enforces this), so the collector can no longer just track "the latest sf1
+	// seen, the latest sf2 seen, the latest sf3 seen" independently across the whole
+	// capture — over a multi-minute capture those are typically minutes apart, not
+	// one coherent 12 s-span triple. A fresh sf1 starts a new candidate; sf2/sf3 only
+	// attach to a candidate that already has the prior subframe(s), mirroring
+	// broadcast order.
 	type set struct{ s1, s2, s3 *frame.BeiDouSubframe }
-	bySV := map[int]*set{}
+	pending := map[int]*set{}
+	best := map[int]kepler.Ephemeris{}
 	for _, f := range frames {
 		if f.GnssID != gnss.BeiDou || f.SigID != 0 { // B1I D1
 			continue
@@ -341,30 +349,36 @@ func TestRealBeiDouD1(t *testing.T) {
 		if err != nil {
 			continue
 		}
-		s := bySV[f.SvID]
+		s := pending[f.SvID]
 		if s == nil {
 			s = &set{}
-			bySV[f.SvID] = s
+			pending[f.SvID] = s
 		}
 		switch sf.FraID {
 		case 1:
-			s.s1 = sf
+			s.s1, s.s2, s.s3 = sf, nil, nil
 		case 2:
-			s.s2 = sf
+			if s.s1 != nil {
+				s.s2 = sf
+			}
 		case 3:
-			s.s3 = sf
+			if s.s1 != nil && s.s2 != nil {
+				s.s3 = sf
+			}
 		}
-	}
-
-	assembled := 0
-	for sv, s := range bySV {
 		if s.s1 == nil || s.s2 == nil || s.s3 == nil {
 			continue
 		}
-		eph, _, err := frame.AssembleBeiDou(sv, s.s1, s.s2, s.s3)
-		if err != nil {
-			continue
+		if _, have := best[f.SvID]; !have {
+			if eph, _, err := frame.AssembleBeiDou(f.SvID, s.s1, s.s2, s.s3); err == nil {
+				best[f.SvID] = eph
+			}
 		}
+		s.s1, s.s2, s.s3 = nil, nil, nil // consumed; wait for the next triple
+	}
+
+	assembled := 0
+	for sv, eph := range best {
 		pos, err := kepler.Propagate(eph, eph.Toe)
 		if err != nil {
 			t.Errorf("C%02d propagate: %v", sv, err)
@@ -618,9 +632,13 @@ func TestRealBeiDouD1AgreesWithBCNAV2(t *testing.T) {
 	_ = scanUBX(bytes.NewReader(data), "cap", fixedTime,
 		func(f *RawFrame) { frames = append(frames, f) }, func(string) {})
 
+	// d1's sf1/sf2/sf3 must be one broadcast-adjacent triple (AssembleBeiDou
+	// now enforces this) — a fresh sf1 starts a new candidate and locks in once a
+	// full triple accumulates, same discipline as TestRealBeiDouD1 above.
 	type d1set struct{ s1, s2, s3 *frame.BeiDouSubframe }
 	type b2set struct{ m10, m11, m30 *frame.BeiDouBCNAV2 }
 	d1 := map[int]*d1set{}
+	d1Done := map[int]bool{}
 	b2 := map[int]*b2set{}
 	for _, f := range frames {
 		if f.GnssID != gnss.BeiDou {
@@ -628,6 +646,9 @@ func TestRealBeiDouD1AgreesWithBCNAV2(t *testing.T) {
 		}
 		switch f.SigID {
 		case 0: // B1I D1
+			if d1Done[f.SvID] {
+				continue
+			}
 			sf, err := frame.DecodeBeiDouD1(f.Words)
 			if err != nil {
 				continue
@@ -639,11 +660,18 @@ func TestRealBeiDouD1AgreesWithBCNAV2(t *testing.T) {
 			}
 			switch sf.FraID {
 			case 1:
-				s.s1 = sf
+				s.s1, s.s2, s.s3 = sf, nil, nil
 			case 2:
-				s.s2 = sf
+				if s.s1 != nil {
+					s.s2 = sf
+				}
 			case 3:
-				s.s3 = sf
+				if s.s1 != nil && s.s2 != nil {
+					s.s3 = sf
+				}
+			}
+			if s.s1 != nil && s.s2 != nil && s.s3 != nil {
+				d1Done[f.SvID] = true // coherent triple locked in; stop overwriting
 			}
 		case 8: // B2a B-CNAV2
 			m, err := frame.DecodeBeiDouBCNAV2(f.Words)

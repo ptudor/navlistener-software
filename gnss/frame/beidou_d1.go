@@ -1,11 +1,17 @@
 package frame
 
 import (
+	"errors"
+
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/gnss/clock"
 	"github.com/ptudor/gnss/kepler"
 	"github.com/ptudor/gnss/physconst"
 )
+
+// errBeiDouSOWGap is returned when D1 subframes 1/2/3 are not broadcast-adjacent
+//  — the only coherence guard available, since D1 has no IODE/IODC-style tag.
+var errBeiDouSOWGap = errors.New("frame: BeiDou D1 subframes not broadcast-adjacent (SOW gap)")
 
 // BeiDou D1 NAV decoding (BDS-SIS-ICD-B1I v3.0 §5.2.4), for MEO/IGSO SVs. u-blox
 // delivers each 300-bit subframe as one UBX-RXM-SFRBX of ten 30-bit words. The
@@ -139,6 +145,18 @@ func DecodeBeiDouD1(words []uint32) (*BeiDouSubframe, error) {
 func AssembleBeiDou(svid int, sf1, sf2, sf3 *BeiDouSubframe) (kepler.Ephemeris, clock.Model, error) {
 	if sf1 == nil || sf2 == nil || sf3 == nil {
 		return kepler.Ephemeris{}, clock.Model{}, ErrShortFrame
+	}
+	// D1 carries no AODE-style pairing tag across subframes (unlike GPS
+	// IODE/IODC, Galileo IODnav, or B-CNAV2's SOW-adjacency check on m10/m11), so
+	// broadcast adjacency — sf1/sf2/sf3 are each exactly 6s apart within one 30s
+	// D1 frame — is the only valid rule. Without it, a stale sf2 (e.g. from
+	// before an hourly changeover, after a subframe-2 loss) can pair with a
+	// fresh sf1/sf3: toe is split across sf2/sf3, so this splices a toe
+	// belonging to neither, fabricating a garbage ephemeris that would
+	// otherwise pass the toe-based IOD gate in state.go and fire a false
+	// critical orbit-disco event.
+	if sf2.SOW != sf1.SOW+6 || sf3.SOW != sf2.SOW+6 {
+		return kepler.Ephemeris{}, clock.Model{}, errBeiDouSOWGap
 	}
 	eph := sf2.eph
 	eph.I0, eph.Cic, eph.OmegaDot = sf3.eph.I0, sf3.eph.Cic, sf3.eph.OmegaDot

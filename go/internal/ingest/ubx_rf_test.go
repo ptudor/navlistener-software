@@ -29,15 +29,18 @@ func scanRF(t *testing.T, msg []byte) []*RawFrame {
 }
 
 // TestParseMONRF builds a one-block MON-RF frame with known AGC/jamming values and checks
-// the parsed RF band matches the ICD field offsets.
+// the parsed RF band matches the ICD field offsets (noisePerMS/agcCnt/jamInd are at
+// 12/14/16 — blockId(1) flags(1) antStatus(1) antPower(1) postStatus(4) reserved(4) = 12
+// bytes before noisePerMS, not 14/16/20 as a prior version of this fixture assumed).
 func TestParseMONRF(t *testing.T) {
 	block := make([]byte, 24)
 	block[0] = 3    // blockId
 	block[1] = 0x02 // flags: jammingState = warning
 	block[2] = 2    // antStatus = ok
-	binary.LittleEndian.PutUint16(block[14:], 120)  // noisePerMS
-	binary.LittleEndian.PutUint16(block[16:], 3000) // agcCnt
-	block[20] = 200                                 // jamInd (CW)
+	// block[3] = antPower, block[4:8] = postStatus, block[8:12] = reserved (unused here)
+	binary.LittleEndian.PutUint16(block[12:], 120)  // noisePerMS
+	binary.LittleEndian.PutUint16(block[14:], 3000) // agcCnt
+	block[16] = 200                                 // jamInd (CW)
 	payload := append([]byte{0, 1, 0, 0}, block...) // version, nBlocks=1, reserved[2]
 
 	frames := scanRF(t, ubxMsg(ubxClassMON, ubxIDMONRF, payload))
