@@ -27,6 +27,9 @@ static const char *TAG = "netcfg";
 #ifndef CONFIG_NVF_INSECURE
 #define CONFIG_NVF_INSECURE 0
 #endif
+#ifndef CONFIG_NVF_ALLOW_INSECURE_PORTAL
+#define CONFIG_NVF_ALLOW_INSECURE_PORTAL 0
+#endif
 
 // --- NVS load / save ---------------------------------------------------------------------
 
@@ -34,7 +37,11 @@ static void get_str(nvs_handle_t h, const char *key, char *dst, size_t cap, cons
 {
     size_t len = cap;
     if (nvs_get_str(h, key, dst, &len) != ESP_OK) {
-        snprintf(dst, cap, "%s", dflt ? dflt : "");
+        // every caller passes dflt == dst (the Kconfig default already sitting in
+        // dst), so snprintf(dst, cap, "%s", dflt) would alias source and destination —
+        // undefined behavior even though it happens to work today. Skip the no-op copy
+        // when they're the same buffer; still honor a genuinely different dflt.
+        if (dflt && dflt != dst) snprintf(dst, cap, "%s", dflt);
     }
 }
 
@@ -87,6 +94,18 @@ esp_err_t netcfg_save(const netcfg_t *cfg)
 
 // --- provisioning portal -----------------------------------------------------------------
 
+// the "Skip TLS verify" checkbox is a permanent, field-settable MITM downgrade —
+// anyone who can reach the SoftAP portal during provisioning could flip it. It is compiled
+// into the shipped portal only for a dev/bench build (CONFIG_NVF_ALLOW_INSECURE_PORTAL);
+// production builds (the default) never expose the control, though the underlying NVS
+// field/config struct is unchanged for bench use via NVF_INSECURE or a direct NVS write.
+#if CONFIG_NVF_ALLOW_INSECURE_PORTAL
+#define PORTAL_INSECURE_FIELD \
+    "<label><input type=checkbox name=insecure style='width:auto'> Skip TLS verify (dev only)</label>"
+#else
+#define PORTAL_INSECURE_FIELD ""
+#endif
+
 static const char PORTAL_HTML[] =
     "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
     "<title>navfeeder-esp setup</title>"
@@ -101,7 +120,7 @@ static const char PORTAL_HTML[] =
     "<label>Collector port<input name=port type=number value=5580></label>"
     "<label>Station id<input name=station required></label>"
     "<label>Bearer token<input name=token></label>"
-    "<label><input type=checkbox name=insecure style='width:auto'> Skip TLS verify (dev only)</label>"
+    PORTAL_INSECURE_FIELD
     "<button type=submit>Save &amp; reboot</button></form>";
 
 // url_decode decodes application/x-www-form-urlencoded text in place-safe form into dst.
@@ -156,9 +175,21 @@ static esp_err_t root_get(httpd_req_t *req)
     return httpd_resp_send(req, PORTAL_HTML, HTTPD_RESP_USE_STRLEN);
 }
 
+// body_cap  must exceed the worst-case URL-encoded form: token[129] + wifi_pass[65] +
+// host[64] + wifi_ssid[33] + station[33] fields, each up to 3x under %XX-encoding, plus
+// field names/delimiters — comfortably under 2048. A silently truncated body would parse
+// trailing fields wrong/empty rather than fail loudly, on a headless provisioning flow
+// where nobody is watching the response.
+#define SAVE_POST_BODY_CAP 2048
+
 static esp_err_t save_post(httpd_req_t *req)
 {
-    char body[1024];
+    if (req->content_len > SAVE_POST_BODY_CAP - 1) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "form too large");
+        return ESP_FAIL;
+    }
+
+    char body[SAVE_POST_BODY_CAP];
     int total = 0;
     while (total < (int)sizeof(body) - 1) {
         int r = httpd_req_recv(req, body + total, sizeof(body) - 1 - total);
@@ -177,9 +208,14 @@ static esp_err_t save_post(httpd_req_t *req)
     if (port[0]) cfg.port = atoi(port);
     form_field(body, "station", cfg.station, sizeof cfg.station);
     form_field(body, "token", cfg.token, sizeof cfg.token);
+#if CONFIG_NVF_ALLOW_INSECURE_PORTAL
     char ins[8];
     form_field(body, "insecure", ins, sizeof ins);
     cfg.insecure = ins[0] != '\0'; // checkbox present => on
+#endif
+    // With the portal control compiled out (regression fix, the shipped default), cfg.insecure
+    // stays exactly what netcfg_load already populated (NVS or the Kconfig/NVF_INSECURE
+    // default) — the form cannot change it either way.
 
     esp_err_t err = netcfg_save(&cfg);
     if (err != ESP_OK) {

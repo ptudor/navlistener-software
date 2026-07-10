@@ -39,6 +39,16 @@ menu "navfeeder-esp"
             Do not verify the collector's certificate. Dev bench only — a production unit
             pins the collector CA (embed it or provision it).
 
+    config NVF_ALLOW_INSECURE_PORTAL
+        bool "Allow the provisioning portal to set insecure=1 (dev/bench only)"
+        default n
+        help
+            the SoftAP provisioning portal is reachable by anyone in radio range
+            during setup. With this off (the shipped default), the portal has no control
+            to disable TLS verification on a running unit — 'insecure' is bench/compile-time
+            only (NVF_INSECURE above, or a direct NVS write on the bench). Turn this on only
+            for a dev/bench build where a field-settable TLS downgrade is acceptable.
+
     config NVF_RX_BAUD
         int "Receiver UART baud"
         default 460800
