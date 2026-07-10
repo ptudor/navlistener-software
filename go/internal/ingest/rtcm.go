@@ -39,7 +39,7 @@ func scanRTCM(r io.Reader, source string, now func() time.Time, emit func(*RawFr
 			return err
 		}
 		length := int(lenHi&0x03)<<8 | int(lenLo) // low 10 bits
-		if length < 3 || length > rtcmMaxLen { // < 3: no room for the 12-bit message number
+		if length < 3 || length > rtcmMaxLen {    // < 3: no room for the 12-bit message number
 			onErr("rtcm_length")
 			continue
 		}

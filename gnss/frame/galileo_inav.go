@@ -134,9 +134,10 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 		}
 		w.hasClk = true
 	case 5:
-		// Ionosphere, BGD, health. E1B health at bit 67 (2 bits) per ICD.
+		// Ionosphere, BGD, health. Layout after BGD_E1E5a(47-56): BGD_E1E5b(57-66),
+		// E5b_HS(67-68), E1B_HS(69-70) per ICD — bit 67 is E5b health, not E1B health.
 		bgd, _ := r.Signed(47, 10) // BGD(E1,E5a), 2^-32 s
-		e1bHealth, _ := r.Bits(67, 2)
+		e1bHealth, _ := r.Bits(69, 2)
 		w.eph.ID = gnss.Galileo
 		w.Health = int(e1bHealth)
 		w.clk.TGD = float64(bgd) * float64(1.0/float64(uint64(1)<<32))
@@ -145,8 +146,10 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 }
 
 // AssembleGalileo combines I/NAV word types 1–4 for one SV (matching IODnav) into
-// the kepler ephemeris and clock model. svid tags the constellation.
-func AssembleGalileo(svid int, w1, w2, w3, w4 *GalileoINAV) (kepler.Ephemeris, clock.Model, error) {
+// the kepler ephemeris and clock model. svid tags the constellation. w5 (word type
+// 5: BGD/health) is nil-tolerant and not part of the IODnav-matched set — when
+// present, its BGD(E1,E5a) is folded into the clock model's TGD.
+func AssembleGalileo(svid int, w1, w2, w3, w4, w5 *GalileoINAV) (kepler.Ephemeris, clock.Model, error) {
 	if w1 == nil || w2 == nil || w3 == nil || w4 == nil {
 		return kepler.Ephemeris{}, clock.Model{}, ErrShortFrame
 	}
@@ -162,5 +165,8 @@ func AssembleGalileo(svid int, w1, w2, w3, w4 *GalileoINAV) (kepler.Ephemeris, c
 	eph.SVID = svid
 	clk := w4.clk
 	clk.ID = gnss.Galileo
+	if w5 != nil {
+		clk.TGD = w5.clk.TGD
+	}
 	return eph, clk, nil
 }

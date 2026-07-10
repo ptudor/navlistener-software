@@ -28,6 +28,30 @@ SELECT create_hypertable('nav_frames', 'ts',
 CREATE INDEX IF NOT EXISTS idx_nav_frames_sv   ON nav_frames (gnssid, svid, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_nav_frames_recv ON nav_frames (received_at DESC);
 
+-- Dedup contract : on feeder reconnect, navfeeder replays every DATA frame
+-- past the last ack it received (docs/DESIGN.md §2). decode/live-state tolerate the
+-- resulting duplicate ("replay is harmless" — push.go), but the raw historian must
+-- not, or a routine reconnect (any collector restart, any regression fix-class hang) permanently
+-- duplicates rows for one receiver, polluting the dedup-on-read "N receivers saw this
+-- SV" integrity signal with single-receiver replay artifacts. nav_frames itself can't
+-- carry a (source_id, feeder_seq) UNIQUE constraint — Timescale requires a hypertable's
+-- unique index to include its partition column, and `ts` legitimately differs between
+-- a frame and its replay (ingest time, not broadcast time). So the dedup key lives in
+-- a small side ledger with a real (non-partitioned) unique constraint: the writer
+-- upserts each push-path frame's (source_id, feeder_seq) here first (ON CONFLICT DO
+-- NOTHING RETURNING) and only CopyFrom's the rows that were newly seen. Dial-mode
+-- frames carry no feeder sequence and always pass through unfiltered — duplicates
+-- across *different* receivers remain intentional and untouched by this table.
+-- Pruned by the store on the same interval as raw_retention (store.go prunePolicy) —
+-- entries older than that are moot, since nav_frames itself has already retired them.
+CREATE TABLE IF NOT EXISTS nav_frames_seq_seen (
+    source_id  TEXT        NOT NULL,
+    feeder_seq BIGINT      NOT NULL,
+    seen_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (source_id, feeder_seq)
+);
+CREATE INDEX IF NOT EXISTS idx_nav_frames_seq_seen_prune ON nav_frames_seq_seen (seen_at);
+
 -- Columnar compression: segment by constellation, order by SV then time so the
 -- repetitive nav bitstream compresses hard. The compress/retention POLICIES are
 -- applied (config-tunable) by the store at startup.

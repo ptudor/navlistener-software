@@ -236,15 +236,17 @@ func decodeLoop(ctx context.Context, frames <-chan *ingest.RawFrame, live *state
 		}()
 		if historian != nil && f.Obs == nil && f.RF == nil { // telemetry (observables, RF) is not a nav-frame record
 			historian.Enqueue(&store.NavFrame{
-				Ts:         time.Now(),
-				ReceivedAt: f.Recv,
-				SourceID:   f.Source,
-				GnssID:     int(f.GnssID),
-				SvID:       f.SvID,
-				SigID:      f.SigID,
-				MsgType:    f.MsgType,
-				Raw:        f.RawBytes(),
-				DecoderVer: version.Version,
+				Ts:           time.Now(),
+				ReceivedAt:   f.Recv,
+				SourceID:     f.Source,
+				GnssID:       int(f.GnssID),
+				SvID:         f.SvID,
+				SigID:        f.SigID,
+				MsgType:      f.MsgType,
+				Raw:          f.RawBytes(),
+				DecoderVer:   version.Version,
+				SourceSeq:    f.Seq,
+				HasSourceSeq: f.HasSeq,
 			})
 		}
 		live.Apply(f)

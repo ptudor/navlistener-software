@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -36,6 +37,14 @@ const (
 	normalFlushBudget   = 35 * time.Second
 	shutdownFlushBudget = 5 * time.Second
 )
+
+// pruneEvery is how often nav_frames_seq_seen (the regression fix replay-dedup ledger) is
+// swept of entries older than the raw-retention window. Coarse cadence: the table
+// is small (one row per historically-seen (source, feeder_seq) pair) and the
+// window is days-scale, so hourly is more than enough to keep it bounded.
+const pruneEvery = 1 * time.Hour
+
+const defaultSeqSeenRetention = 7 * 24 * time.Hour // mirrors the "7 days" RawRetention default
 
 var defaultFlushRetry = flushRetry{attempts: 3, backoff: 250 * time.Millisecond, attemptTO: 10 * time.Second}
 
@@ -69,16 +78,25 @@ type NavFrame struct {
 	Raw        []byte
 	Decoded    []byte // JSON, or nil
 	DecoderVer string
+
+	// SourceSeq is the feeder's GNF1 global sequence (push-path only, HasSourceSeq
+	// true). It is the dedup key for reconnect replay : a feeder replays
+	// every DATA frame past its last ack, and decode/live-state tolerate the
+	// duplicate, but the historian must not persist it twice. Dial-mode frames
+	// carry no such sequence and always persist (HasSourceSeq false).
+	SourceSeq    uint64
+	HasSourceSeq bool
 }
 
 // Store owns the connection pool and the batched writer.
 type Store struct {
-	pool       *pgxpool.Pool
-	in         chan *NavFrame
-	batchSize  int
-	batchEvery time.Duration
-	retry      flushRetry
-	log        *slog.Logger
+	pool             *pgxpool.Pool
+	in               chan *NavFrame
+	batchSize        int
+	batchEvery       time.Duration
+	retry            flushRetry
+	log              *slog.Logger
+	seqSeenRetention time.Duration // prune window for nav_frames_seq_seen 
 }
 
 // New connects, applies the schema idempotently, installs the compression/retention
@@ -115,14 +133,44 @@ func New(ctx context.Context, cfg config.Store, log *slog.Logger) (*Store, error
 	if be <= 0 {
 		be = time.Second
 	}
+	seqSeenRetention := defaultSeqSeenRetention
+	if d, err := parseSimpleInterval(cfg.RawRetention); err == nil {
+		seqSeenRetention = d
+	}
 	return &Store{
-		pool:       pool,
-		in:         make(chan *NavFrame, queueDepth),
-		batchSize:  bs,
-		batchEvery: be,
-		retry:      defaultFlushRetry,
-		log:        log,
+		pool:             pool,
+		in:               make(chan *NavFrame, queueDepth),
+		batchSize:        bs,
+		batchEvery:       be,
+		retry:            defaultFlushRetry,
+		log:              log,
+		seqSeenRetention: seqSeenRetention,
 	}, nil
+}
+
+// parseSimpleInterval parses the same "N minute(s)/hour(s)/day(s)/week(s)" shape
+// applyPolicies validates (intervalRe) into a time.Duration.
+func parseSimpleInterval(s string) (time.Duration, error) {
+	var n int
+	var unit string
+	if _, err := fmt.Sscanf(s, "%d %s", &n, &unit); err != nil {
+		return 0, err
+	}
+	unit = strings.TrimSuffix(unit, "s")
+	var per time.Duration
+	switch unit {
+	case "minute":
+		per = time.Minute
+	case "hour":
+		per = time.Hour
+	case "day":
+		per = 24 * time.Hour
+	case "week":
+		per = 7 * 24 * time.Hour
+	default:
+		return 0, fmt.Errorf("unknown interval unit %q", unit)
+	}
+	return time.Duration(n) * per, nil
 }
 
 // requireTimescaleDB fails fast with an actionable message when the extension is
@@ -221,6 +269,8 @@ func (s *Store) Run(ctx context.Context) {
 	batch := make([]*NavFrame, 0, s.batchSize)
 	ticker := time.NewTicker(s.batchEvery)
 	defer ticker.Stop()
+	pruneTicker := time.NewTicker(pruneEvery)
+	defer pruneTicker.Stop()
 
 	flush := func() {
 		if len(batch) == 0 {
@@ -239,6 +289,8 @@ func (s *Store) Run(ctx context.Context) {
 			}
 		case <-ticker.C:
 			flush()
+		case <-pruneTicker.C:
+			s.pruneSeqSeen(ctx)
 		case <-ctx.Done():
 			s.drain(&batch, shutdownFlushBudget)
 			s.flush(batch, shutdownFlushBudget)
@@ -246,6 +298,23 @@ func (s *Store) Run(ctx context.Context) {
 			s.log.Info("store drained and closed")
 			return
 		}
+	}
+}
+
+// pruneSeqSeen deletes replay-dedup ledger entries older than the raw-retention
+// window : once nav_frames itself has retired a chunk that old, there's
+// nothing left for a stale entry to deduplicate against.
+func (s *Store) pruneSeqSeen(ctx context.Context) {
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cutoff := time.Now().Add(-s.seqSeenRetention)
+	tag, err := s.pool.Exec(cctx, `DELETE FROM nav_frames_seq_seen WHERE seen_at < $1`, cutoff)
+	if err != nil {
+		s.log.Warn("nav_frames_seq_seen prune failed", "error", err)
+		return
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		s.log.Info("nav_frames_seq_seen pruned", "rows", n, "cutoff", cutoff)
 	}
 }
 
@@ -268,18 +337,98 @@ func (s *Store) copyRows(ctx context.Context, rows [][]any) (int64, error) {
 	return s.pool.CopyFrom(ctx, pgx.Identifier{"nav_frames"}, copyColumns, pgx.CopyFromRows(rows))
 }
 
+// seqKey identifies one feeder-assigned sequence for the regression fix replay-dedup ledger.
+type seqKey struct {
+	source string
+	seq    uint64
+}
+
+// checkSeqSeen upserts keys into nav_frames_seq_seen in one round trip and returns
+// the subset that were newly inserted (i.e. not a replay of an already-persisted
+// sequence). ON CONFLICT DO NOTHING + RETURNING means a key already present in the
+// ledger is silently absent from the result — exactly the "already stored, drop
+// this replay" signal dedupBatch needs.
+func (s *Store) checkSeqSeen(ctx context.Context, keys []seqKey) (map[seqKey]bool, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	sources := make([]string, len(keys))
+	seqs := make([]int64, len(keys))
+	for i, k := range keys {
+		sources[i] = k.source
+		seqs[i] = int64(k.seq)
+	}
+	rows, err := s.pool.Query(ctx,
+		`INSERT INTO nav_frames_seq_seen (source_id, feeder_seq)
+		 SELECT * FROM unnest($1::text[], $2::bigint[])
+		 ON CONFLICT (source_id, feeder_seq) DO NOTHING
+		 RETURNING source_id, feeder_seq`,
+		sources, seqs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	fresh := make(map[seqKey]bool, len(keys))
+	for rows.Next() {
+		var src string
+		var seq int64
+		if err := rows.Scan(&src, &seq); err != nil {
+			return nil, err
+		}
+		fresh[seqKey{src, uint64(seq)}] = true
+	}
+	return fresh, rows.Err()
+}
+
+// dedupBatch drops replayed push-path frames: an entry with a feeder sequence not
+// present in fresh was already persisted on a prior flush. Frames without
+// a sequence (dial-mode ingest) always pass through — replay dedup only applies to
+// the push path's ack/retransmit contract; duplicates across different receivers
+// remain intentional. Returns a new slice; does not alias batch's backing array.
+func dedupBatch(batch []*NavFrame, fresh map[seqKey]bool) []*NavFrame {
+	out := make([]*NavFrame, 0, len(batch))
+	for _, f := range batch {
+		if !f.HasSourceSeq || fresh[seqKey{f.SourceID, f.SourceSeq}] {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // flush bulk-loads a batch with bounded retry + poison-row quarantine on a detached
-// context (so the final shutdown flush still runs) capped by budget.
+// context (so the final shutdown flush still runs) capped by budget. Push-path
+// frames are first deduplicated against nav_frames_seq_seen; a dedup-ledger
+// failure fails open (persists the batch un-deduped) — losing the forensic record
+// is worse than an occasional duplicate row.
 func (s *Store) flush(batch []*NavFrame, budget time.Duration) {
 	if len(batch) == 0 {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+
+	var keys []seqKey
+	for _, f := range batch {
+		if f.HasSourceSeq {
+			keys = append(keys, seqKey{f.SourceID, f.SourceSeq})
+		}
+	}
+	if len(keys) > 0 {
+		fresh, err := s.checkSeqSeen(ctx, keys)
+		if err != nil {
+			s.log.Warn("nav_frames_seq_seen check failed; persisting batch un-deduped", "error", err)
+		} else {
+			batch = dedupBatch(batch, fresh)
+			if len(batch) == 0 {
+				return
+			}
+		}
+	}
+
 	rows := make([][]any, 0, len(batch))
 	for _, f := range batch {
 		rows = append(rows, navFrameToRow(f))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), budget)
-	defer cancel()
 	written, dropped := persistRetry(ctx, s.retry, s.copyRows, rows, s.log)
 	if written > 0 {
 		metrics.StoreRowsTotal.Add(float64(written))

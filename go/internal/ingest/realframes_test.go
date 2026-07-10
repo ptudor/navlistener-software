@@ -200,7 +200,7 @@ func TestRealGalileoINAV(t *testing.T) {
 		if s.w1 == nil || s.w2 == nil || s.w3 == nil || s.w4 == nil {
 			continue
 		}
-		eph, _, err := frame.AssembleGalileo(sv, s.w1, s.w2, s.w3, s.w4)
+		eph, _, err := frame.AssembleGalileo(sv, s.w1, s.w2, s.w3, s.w4, nil)
 		if err != nil {
 			continue // words from different IODnav; skip
 		}
@@ -294,7 +294,7 @@ func TestRealGalileoFNAVAgreesWithINAV(t *testing.T) {
 		if fs.p1 == nil || fs.p2 == nil || fs.p3 == nil || fs.p4 == nil {
 			continue
 		}
-		iEph, _, err1 := frame.AssembleGalileo(sv, is.w1, is.w2, is.w3, is.w4)
+		iEph, _, err1 := frame.AssembleGalileo(sv, is.w1, is.w2, is.w3, is.w4, nil)
 		fEph, _, err2 := frame.AssembleGalileoFNAV(sv, fs.p1, fs.p2, fs.p3, fs.p4)
 		if err1 != nil || err2 != nil {
 			continue

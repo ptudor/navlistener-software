@@ -43,15 +43,15 @@ func (s *Store) Snapshot(now time.Time) Snapshot {
 				IOD:       st.iod,
 				LastSeenS: int(now.Sub(st.lastSeen).Seconds()),
 			}
-			if st.havePos {
+			if st.havePos && finiteECEF(st.pos) {
 				x, y, z := st.pos.X, st.pos.Y, st.pos.Z
 				e.XM, e.YM, e.ZM = &x, &y, &z
 			}
-			if st.orbitDiscoValid {
+			if st.orbitDiscoValid && finite(st.orbitDisco) {
 				v := st.orbitDisco
 				e.OrbitDisco = &v
 			}
-			if st.timeDiscoValid {
+			if st.timeDiscoValid && finite(st.timeDiscoNs) {
 				v := st.timeDiscoNs
 				e.TimeDisco = &v
 			}

@@ -349,7 +349,8 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				mu.Unlock()
 				continue
 			}
-			if f.RF == nil { // FramesTotal counts nav-frame throughput per constellation, not telemetry
+			f.Seq, f.HasSeq = seq, true // historian dedup key : this connection may be a replay
+			if f.RF == nil {            // FramesTotal counts nav-frame throughput per constellation, not telemetry
 				metrics.FramesTotal.WithLabelValues(observer, fmt.Sprint(int(f.GnssID))).Inc()
 			}
 			select {

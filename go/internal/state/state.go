@@ -51,8 +51,9 @@ type svState struct {
 
 	// LNAV subframe assembly buffers (GPS/QZSS).
 	sf1, sf2, sf3 *frame.GPSSubframe
-	// Galileo I/NAV word assembly buffers, indexed by word type 1–4.
-	galW [5]*frame.GalileoINAV
+	// Galileo I/NAV word assembly buffers, indexed by word type 1–5 (word 5 carries
+	// BGD/health, not part of the ephemeris set; index 0 unused).
+	galW [6]*frame.GalileoINAV
 	// BeiDou D1 subframe assembly buffers.
 	bd1, bd2, bd3 *frame.BeiDouSubframe
 	// BeiDou B2a B-CNAV2 message assembly buffers (types 10/11 ephemeris, 30/34 clock).
@@ -331,10 +332,18 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 	}
 	st.lastSeen = f.Recv
 
-	// Word type 5 carries E1B health and BGD (not part of the ephemeris set); fold
-	// its health in as it arrives (docs/CONSTELLATIONS.md §2.2).
+	// Word type 5 carries E1B health and BGD (not part of the IODnav-matched
+	// ephemeris set); fold its health in as it arrives (docs/CONSTELLATIONS.md
+	// §2.2) and refresh the already-assembled clock's TGD without treating this as
+	// a new ephemeris (no IODnav change, so no disco recompute).
 	if w.Type == 5 {
 		st.health = w.Health
+		st.galW[5] = w
+		if st.haveEph && st.galW[1] != nil && st.galW[2] != nil && st.galW[3] != nil && st.galW[4] != nil {
+			if _, clk, err := frame.AssembleGalileo(f.SvID, st.galW[1], st.galW[2], st.galW[3], st.galW[4], st.galW[5]); err == nil {
+				st.clk.TGD = clk.TGD
+			}
+		}
 		return
 	}
 	if w.Type < 1 || w.Type > 4 {
@@ -345,7 +354,7 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 		return
 	}
 
-	eph, clk, err := frame.AssembleGalileo(f.SvID, st.galW[1], st.galW[2], st.galW[3], st.galW[4])
+	eph, clk, err := frame.AssembleGalileo(f.SvID, st.galW[1], st.galW[2], st.galW[3], st.galW[4], st.galW[5])
 	if err != nil {
 		return // words from different IODnav; wait for a consistent set
 	}
@@ -544,6 +553,18 @@ func (s *Store) applyGloAlmanac(first, second []uint32) {
 	s.gloAlmMu.Unlock()
 }
 
+// finite reports whether v is neither NaN nor ±Inf — encoding/json.Marshal fails
+// the whole envelope on either, so a non-finite float must never reach a feed
+// (the "absent = unknown, never a sentinel" contract: treat it as unset, not 0).
+func finite(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0)
+}
+
+// finiteECEF reports whether every component of an ECEF position is finite.
+func finiteECEF(p gnss.ECEF) bool {
+	return finite(p.X) && finite(p.Y) && finite(p.Z)
+}
+
 // computeDisco propagates the outgoing and incoming ephemerides to the new
 // reference epoch and records orbit-disco (metres) and time-disco (ns). Guards
 // require both propagations to succeed; this is not the first ephemeris
@@ -554,16 +575,26 @@ func (s *Store) computeDisco(st *svState, newEph kepler.Ephemeris, newClk clock.
 	oldPos, e1 := kepler.Propagate(st.eph, tstar)
 	newPos, e2 := kepler.Propagate(newEph, tstar)
 	if e1 == nil && e2 == nil {
-		st.orbitDisco = newPos.Sub(oldPos).Norm()
-		st.orbitDiscoValid = true
+		disco := newPos.Sub(oldPos).Norm()
+		if !math.IsNaN(disco) && !math.IsInf(disco, 0) {
+			st.orbitDisco = disco
+			st.orbitDiscoValid = true
+		} else {
+			st.orbitDiscoValid = false
+		}
 	} else {
 		st.orbitDiscoValid = false
 	}
 	oOff, e3 := clock.OffsetFor(st.clk, st.eph, tstar)
 	nOff, e4 := clock.OffsetFor(newClk, newEph, tstar)
 	if e3 == nil && e4 == nil {
-		st.timeDiscoNs = math.Abs(nOff-oOff) * 1e9
-		st.timeDiscoValid = true
+		disco := math.Abs(nOff-oOff) * 1e9
+		if !math.IsNaN(disco) && !math.IsInf(disco, 0) {
+			st.timeDiscoNs = disco
+			st.timeDiscoValid = true
+		} else {
+			st.timeDiscoValid = false
+		}
 	} else {
 		st.timeDiscoValid = false
 	}
@@ -583,7 +614,7 @@ func (s *Store) Propagate(now time.Time) {
 					continue
 				}
 				tk := gnsstime.EphAgeDay(gloTOD(now), st.gloEph.Tb)
-				if pos, err := glonass.Propagate(st.gloEph, tk); err == nil {
+				if pos, err := glonass.Propagate(st.gloEph, tk); err == nil && finiteECEF(pos) {
 					st.pos, st.havePos = pos, true
 				}
 				counts["glonass"]++
@@ -593,7 +624,7 @@ func (s *Store) Propagate(now time.Time) {
 				continue
 			}
 			tow := towFor(st.key.G, now)
-			if pos, err := kepler.Propagate(st.eph, tow); err == nil {
+			if pos, err := kepler.Propagate(st.eph, tow); err == nil && finiteECEF(pos) {
 				st.pos, st.havePos = pos, true
 			}
 			counts[st.key.G.String()]++

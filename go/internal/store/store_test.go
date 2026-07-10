@@ -85,6 +85,67 @@ func TestIsPoison(t *testing.T) {
 	}
 }
 
+// TestDedupBatchDropsReplayedSeq guards a push-path frame whose
+// (source, feeder_seq) is not in `fresh` (already persisted on a prior flush) must
+// be dropped, while dial-mode frames (HasSourceSeq false) always pass through
+// regardless of fresh, and a first-seen sequence (present in fresh) passes too.
+func TestDedupBatchDropsReplayedSeq(t *testing.T) {
+	dial := &NavFrame{SourceID: "dial1", Raw: []byte{1}} // no sequence: always kept
+	firstSeen := &NavFrame{SourceID: "obs1", SourceSeq: 10, HasSourceSeq: true, Raw: []byte{2}}
+	replayed := &NavFrame{SourceID: "obs1", SourceSeq: 9, HasSourceSeq: true, Raw: []byte{3}}
+
+	fresh := map[seqKey]bool{{source: "obs1", seq: 10}: true} // 9 already in the ledger
+	out := dedupBatch([]*NavFrame{dial, firstSeen, replayed}, fresh)
+
+	if len(out) != 2 {
+		t.Fatalf("dedupBatch returned %d frames, want 2 (dial + first-seen)", len(out))
+	}
+	for _, f := range out {
+		if f == replayed {
+			t.Error("replayed sequence was not dropped")
+		}
+	}
+	if out[0] != dial || out[1] != firstSeen {
+		t.Errorf("dedupBatch = %+v, want [dial, firstSeen] in order", out)
+	}
+}
+
+// TestDedupBatchDoesNotAliasInput guards against a subtle regression: dedupBatch
+// must return a fresh slice, not a view over the caller's backing array (the
+// caller reuses `batch` across flushes via batch = batch[:0]).
+func TestDedupBatchDoesNotAliasInput(t *testing.T) {
+	batch := make([]*NavFrame, 0, 4)
+	batch = append(batch, &NavFrame{SourceID: "a"}, &NavFrame{SourceID: "b"})
+	out := dedupBatch(batch, nil)
+	out[0] = &NavFrame{SourceID: "mutated"}
+	if batch[0].SourceID == "mutated" {
+		t.Error("dedupBatch aliased the input slice's backing array")
+	}
+}
+
+func TestParseSimpleInterval(t *testing.T) {
+	cases := map[string]time.Duration{
+		"7 days":    7 * 24 * time.Hour,
+		"1 day":     24 * time.Hour,
+		"12 hours":  12 * time.Hour,
+		"30 minute": 30 * time.Minute,
+		"2 weeks":   2 * 7 * 24 * time.Hour,
+	}
+	for in, want := range cases {
+		got, err := parseSimpleInterval(in)
+		if err != nil {
+			t.Errorf("parseSimpleInterval(%q): %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("parseSimpleInterval(%q) = %v, want %v", in, got, want)
+		}
+	}
+	if _, err := parseSimpleInterval("not an interval"); err == nil {
+		t.Error("expected an error for a malformed interval")
+	}
+}
+
 func TestNavFrameToRow(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	f := &NavFrame{

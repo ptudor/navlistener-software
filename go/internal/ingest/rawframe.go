@@ -32,6 +32,14 @@ type RawFrame struct {
 	Bytes   []byte      // raw frame bytes (for byte-oriented sources)
 	Obs     *RawObs     // raw observables (RXM-RAWX telemetry), nil for nav frames
 	RF      *RawRF      // RF-environment telemetry (MON-RF/MON-HW/NAV-SAT), nil for nav frames
+
+	// Seq is the feeder's GNF1 global sequence, set only for push-path frames
+	// (HasSeq true). On feeder reconnect, DATA frames past the last ack are
+	// replayed — decode/live-state tolerate the duplicate, but the historian must
+	// not : Seq is the dedup key store.Store uses to drop replayed rows.
+	// Dial-mode frames have no such sequence and always persist.
+	Seq    uint64
+	HasSeq bool
 }
 
 // RawRF is one RF-environment telemetry sample from a receiver: the jamming/AGC
@@ -48,12 +56,12 @@ type RawRF struct {
 // path). Fields are the raw receiver numbers; the collector learns the per-station
 // baseline and derives departures (docs/DEFENSE-PNT.md §2) — we do not threshold here.
 type RFBand struct {
-	Block     int // RF block index (0 = L1, 1 = L2/L5, …); MON-HW is always 0
-	AGC       int // AGC monitor (0..8191); lower ⇒ the front-end cut gain (broadband energy)
+	Block      int // RF block index (0 = L1, 1 = L2/L5, …); MON-HW is always 0
+	AGC        int // AGC monitor (0..8191); lower ⇒ the front-end cut gain (broadband energy)
 	NoiseLevel int // noise level indicator
 	CWSuppress int // CW-suppression / jamming indicator (0..255); high ⇒ a narrowband tone
-	JamState  int // receiver's own jamming state (0 unknown/disabled, 1 ok, 2 warning, 3 critical)
-	AntStatus int // antenna status: 0 init, 1 unknown, 2 ok, 3 short, 4 open
+	JamState   int // receiver's own jamming state (0 unknown/disabled, 1 ok, 2 warning, 3 critical)
+	AntStatus  int // antenna status: 0 init, 1 unknown, 2 ok, 3 short, 4 open
 }
 
 // SatCN0 is one satellite's carrier-to-noise density and elevation as the receiver

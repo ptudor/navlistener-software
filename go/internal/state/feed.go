@@ -141,21 +141,21 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 		IOD:              st.iod,
 		LastSeenS:        int(now.Sub(st.lastSeen).Seconds()),
 	}
-	if st.havePos {
+	if st.havePos && finiteECEF(st.pos) {
 		x, y, z := st.pos.X, st.pos.Y, st.pos.Z
 		e.XM, e.YM, e.ZM = &x, &y, &z
 	}
-	if st.orbitDiscoValid {
+	if st.orbitDiscoValid && finite(st.orbitDisco) {
 		v := st.orbitDisco
 		e.OrbitDiscoM = &v
 		age := now.Sub(st.discoAt).Seconds()
 		e.OrbitDiscoAgeS = &age
 	}
-	if st.timeDiscoValid {
+	if st.timeDiscoValid && finite(st.timeDiscoNs) {
 		v := st.timeDiscoNs
 		e.TimeDiscoNs = &v
 	}
-	if m, ok := sisaFor(st.accKind, st.accIdx); ok {
+	if m, ok := sisaFor(st.accKind, st.accIdx); ok && finite(m) {
 		e.SISAValid, e.SISAM = true, &m
 	}
 	if st.haveAOD {
@@ -163,7 +163,7 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 		e.AODC, e.AODE = &aodc, &aode
 	}
 	for src, tr := range st.ionoBySource {
-		if !tr.hasDelay {
+		if !tr.hasDelay || !finite(tr.delayM) {
 			continue
 		}
 		if e.Perrecv == nil {
@@ -176,21 +176,27 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 	if g == gnss.GLONASS {
 		if st.haveGloEph {
 			age := gnsstime.EphAgeDay(gloTOD(now), st.gloEph.Tb) / 60.0
-			e.EphAgeM = &age
+			if finite(age) {
+				e.EphAgeM = &age
+			}
 		}
 		return e
 	}
 
 	// Kepler-family: clock polynomial, time-of-week/week, ephemeris age.
-	af0, af1, af2 := st.clk.Af0, st.clk.Af1, st.clk.Af2
-	e.Af0, e.Af1, e.Af2 = &af0, &af1, &af2
+	if finite(st.clk.Af0) && finite(st.clk.Af1) && finite(st.clk.Af2) {
+		af0, af1, af2 := st.clk.Af0, st.clk.Af1, st.clk.Af2
+		e.Af0, e.Af1, e.Af2 = &af0, &af1, &af2
+	}
 	tow := int(towFor(g, now))
 	e.Tow = &tow
 	if wn, ok := weekFor(g, now); ok {
 		e.Wn = &wn
 	}
 	age := gnsstime.EphAgeMinutes(towFor(g, now), st.eph.Toe)
-	e.EphAgeM = &age
+	if finite(age) {
+		e.EphAgeM = &age
+	}
 	return e
 }
 
@@ -234,7 +240,7 @@ func (s *Store) FeedAlmanac(now time.Time) map[string]AlmanacEntry {
 	for _, sh := range s.shards {
 		sh.mu.Lock()
 		for _, st := range sh.m {
-			if !st.havePos {
+			if !st.havePos || !finiteECEF(st.pos) {
 				continue
 			}
 			name := fmt.Sprintf("%c%02d", st.key.G.Letter(), st.key.Sv)
@@ -302,7 +308,7 @@ func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
 			continue // observed → its precise broadcast-ephemeris entry wins
 		}
 		pos, err := glonass.PropagateAlmanacECEF(a.Alm, na, ti)
-		if err != nil {
+		if err != nil || !finiteECEF(pos) {
 			continue
 		}
 		gd := geo.ECEFToGeodetic(pos, ell)
