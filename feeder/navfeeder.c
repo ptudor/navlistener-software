@@ -57,6 +57,7 @@
 #include <netdb.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#include <openssl/x509v3.h>
 #include <zstd.h>
 
 #define MAGIC "GNF1"
@@ -722,7 +723,18 @@ static SSL *tls_connect(SSL_CTX *ctx, const struct opts *o, int *out_fd) {
 	SSL *ssl = SSL_new(ctx);
 	if (!ssl) { close(fd); return NULL; }
 	SSL_set_fd(ssl, fd);
-	if (!o->insecure) SSL_set_tlsext_host_name(ssl, o->server_host);
+	if (!o->insecure) {
+		/* SSL_set_tlsext_host_name() only sets SNI (which name to request); it does
+		 * NOT enable peer hostname verification. Without SSL_set1_host(),
+		 * SSL_get_verify_result() below only checks the chain, not the name, so any
+		 * attacker holding any publicly-trusted cert for any domain passes. */
+		SSL_set_hostflags(ssl, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+		if (SSL_set1_host(ssl, o->server_host) != 1) {
+			log_msg("failed to set expected TLS hostname");
+			SSL_free(ssl); close(fd); return NULL;
+		}
+		SSL_set_tlsext_host_name(ssl, o->server_host);
+	}
 	if (SSL_connect(ssl) != 1) { SSL_free(ssl); close(fd); return NULL; }
 	if (!o->insecure && SSL_get_verify_result(ssl) != X509_V_OK) {
 		log_msg("server certificate verification failed");
