@@ -63,7 +63,11 @@ func sf1Words(iodcLo int64) []uint32 {
 	return packWords(buf)
 }
 
-func sf2Words(iode, m0 int64) []uint32 {
+func sf2Words(iode, m0 int64) []uint32 { return sf2WordsToe(iode, m0, 27000) }
+
+// sf2WordsToe is sf2Words with an explicit Toe (word 10, seconds/16 scale), so
+// tests can control the ephemeris changeover reference epoch directly (// computeDisco's staleness gate is keyed on the gap between two Toe values).
+func sf2WordsToe(iode, m0, toe int64) []uint32 {
 	buf := make([]byte, 30)
 	setField(buf, 2, 20, 3, 2)
 	setField(buf, 3, 1, 8, iode)
@@ -74,7 +78,7 @@ func sf2Words(iode, m0 int64) []uint32 {
 	setSplit32(buf, 6, 17, 7, 42949673)
 	setField(buf, 8, 1, 16, 4295)
 	setSplit32(buf, 8, 17, 9, 2702199603)
-	setField(buf, 10, 1, 16, 27000)
+	setField(buf, 10, 1, 16, toe)
 	return packWords(buf)
 }
 
@@ -144,6 +148,63 @@ func TestStoreDiscoOnIODChange(t *testing.T) {
 	}
 	if e.TimeDisco == nil {
 		t.Error("time_disco not computed on IOD change")
+	}
+}
+
+// TestStoreDiscoGatedOnStaleOutgoingEphemeris guards computeDisco must not
+// trust a disco computed against an outgoing ephemeris whose Toe is more than
+// discoTrustAge (4h) away from the new changeover epoch — an SV unseen for hours
+// and then refreshed would otherwise propagate an arbitrarily stale outgoing set,
+// producing a physically meaningless (but detector-triggering) discontinuity.
+func TestStoreDiscoGatedOnStaleOutgoingEphemeris(t *testing.T) {
+	st := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	// First data set: Toe raw 27000 (×16 scale = 432000s).
+	st.Apply(gpsFrame(sf1Words(85), now))
+	st.Apply(gpsFrame(sf2WordsToe(85, 205075516, 27000), now))
+	st.Apply(gpsFrame(sf3Words(85), now))
+	// Second data set: Toe raw 28000 (448000s) — a 16000s (4.44h) gap, over the 4h
+	// discoTrustAge, so the disco must be gated to absent rather than computed.
+	st.Apply(gpsFrame(sf1Words(86), now))
+	st.Apply(gpsFrame(sf2WordsToe(86, 205075516+2000, 28000), now))
+	st.Apply(gpsFrame(sf3Words(86), now))
+
+	snap := st.Snapshot(now)
+	e := snap.SVs["G05@0"]
+	if e.OrbitDisco != nil {
+		t.Errorf("orbit_disco = %v, want absent (outgoing ephemeris is stale relative to the changeover epoch)", *e.OrbitDisco)
+	}
+	if e.TimeDisco != nil {
+		t.Errorf("time_disco = %v, want absent", *e.TimeDisco)
+	}
+}
+
+// TestFeedAlmanacDeterministicSignalPick guards FeedAlmanac must pick one
+// signal's position per SV deterministically (lowest SigID = primary signal), not
+// whichever signal Go's randomized map/shard iteration happens to visit first.
+func TestFeedAlmanacDeterministicSignalPick(t *testing.T) {
+	st := New(4)
+	now := time.Unix(1_700_000_000, 0)
+
+	insert := func(sig int, pos gnss.ECEF) {
+		key := Key{G: gnss.Galileo, Sv: 14, Sig: sig}
+		sh := st.shardFor(key)
+		sh.mu.Lock()
+		sh.m[key] = &svState{key: key, pos: pos, havePos: true}
+		sh.mu.Unlock()
+	}
+	// Insert the non-primary signal first so a naive "first wins" would pick it.
+	insert(1, gnss.ECEF{X: 999, Y: 999, Z: 999})
+	insert(0, gnss.ECEF{X: 111, Y: 222, Z: 333})
+
+	alm := st.FeedAlmanac(now)
+	e, ok := alm["E14"]
+	if !ok {
+		t.Fatalf("E14 not in almanac: %+v", alm)
+	}
+	if e.EcefXM != 111 || e.EcefYM != 222 || e.EcefZM != 333 {
+		t.Errorf("E14 almanac position = (%v,%v,%v), want the SigID=0 (primary) signal's (111,222,333)",
+			e.EcefXM, e.EcefYM, e.EcefZM)
 	}
 }
 

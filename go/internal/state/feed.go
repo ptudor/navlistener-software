@@ -230,13 +230,49 @@ func (s *Store) FeedGlobal(now time.Time) GlobalFeed {
 	if !last.IsZero() {
 		g.LastSeen = last.Unix()
 	}
+	g.TotalLiveReceivers = s.countLiveReceivers(now)
 	return g
+}
+
+// liveReceiverWindow bounds how recently a station must have produced a nav frame
+// or RF-telemetry sample to count toward total_live_receivers. Mirrors
+// detect.ObserverOfflineThreshold ("an observer unseen this long is offline",
+// docs/INTEGRITY.md §2) — duplicated as a local constant rather than imported
+// because detect depends on state, not the reverse; keep the two in sync if the
+// operating point moves.
+const liveReceiverWindow = 300 * time.Second
+
+// countLiveReceivers counts distinct stations seen (via either a decoded nav
+// frame or RF telemetry) within liveReceiverWindow of now — the union of
+// s.caps and s.rf, since a station can report one, the other, or both.
+func (s *Store) countLiveReceivers(now time.Time) int {
+	live := map[string]bool{}
+	s.capMu.Lock()
+	for id, st := range s.caps {
+		if now.Sub(st.lastSeen) <= liveReceiverWindow {
+			live[id] = true
+		}
+	}
+	s.capMu.Unlock()
+	s.rfMu.Lock()
+	for id, st := range s.rf {
+		if now.Sub(st.lastSeen) <= liveReceiverWindow {
+			live[id] = true
+		}
+	}
+	s.rfMu.Unlock()
+	return len(live)
 }
 
 // FeedAlmanac builds the almanac feed as of now (docs/OUTPUT.md §1.4), one coarse
 // entry per currently-observed SV derived from its precise broadcast ephemeris.
 func (s *Store) FeedAlmanac(now time.Time) map[string]AlmanacEntry {
 	out := make(map[string]AlmanacEntry)
+	// bestSig tracks the winning signal's SigID per SV name : one entry per
+	// SV, and the pick must be deterministic (lowest SigID — the primary signal)
+	// rather than dependent on Go's randomized map/shard iteration order, so
+	// replays/backfills reproduce the same almanac.
+	bestSig := map[string]int{}
 	for _, sh := range s.shards {
 		sh.mu.Lock()
 		for _, st := range sh.m {
@@ -244,9 +280,10 @@ func (s *Store) FeedAlmanac(now time.Time) map[string]AlmanacEntry {
 				continue
 			}
 			name := fmt.Sprintf("%c%02d", st.key.G.Letter(), st.key.Sv)
-			if _, seen := out[name]; seen {
-				continue // one entry per SV; the first signal that has a fix wins
+			if prev, seen := bestSig[name]; seen && st.key.Sig >= prev {
+				continue // a lower-SigID (more primary) signal already won this SV
 			}
+			bestSig[name] = st.key.Sig
 			ent := AlmanacEntry{
 				Name:      name,
 				GnssID:    int(st.key.G),

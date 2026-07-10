@@ -116,6 +116,11 @@ func sortCapSignals(cs []CapSignal) {
 // SetDeclaredCapabilities installs each station's declared (tudorgps) capability set, keyed by
 // station id. Called once at startup from config; a station with no entry simply has no
 // declared set, and only the observed-only detectors (signal-lost) apply to it.
+//
+// Set-once invariant : this is the only place s.declared is written, and it installs
+// freshly-copied slices, so StationCapReport.Declared (below) can safely alias s.declared[id]
+// directly — no per-read copy needed. If declared sets are ever made mutable post-startup (a
+// live-reload path, say), that aliasing must be revisited and Declared must copy on read.
 func (s *Store) SetDeclaredCapabilities(decl map[string][]CapSignal) {
 	s.capMu.Lock()
 	defer s.capMu.Unlock()
@@ -144,9 +149,13 @@ type StationCapReport struct {
 // declared set (a node that has produced nothing yet is still checkable for a never-delivered
 // declared signal). now is accepted for signature symmetry with the other Feed* methods.
 func (s *Store) FeedCapabilityReports(now time.Time) map[string]StationCapReport {
-	observed := s.FeedStationCapabilities(now)
 	s.capMu.Lock()
 	defer s.capMu.Unlock()
+	// build the observed and declared views in this one critical section
+	// (rather than a separate FeedStationCapabilities call that re-locks capMu) so
+	// a station added by recordCapability between the two can't appear in one view
+	// but not the other.
+	observed := s.stationCapabilitiesLocked()
 	out := make(map[string]StationCapReport, len(s.caps))
 	for id, st := range s.caps {
 		out[id] = StationCapReport{
@@ -170,10 +179,10 @@ func (s *Store) FeedCapabilityReports(now time.Time) map[string]StationCapReport
 // §0). first_seen/last_seen bound how long the node has been producing the signal and how
 // recently — a stale last_seen against a live station is the capability-loss signal.
 type StationCapability struct {
-	Gnss      int   `json:"gnss"`
-	Sig       int   `json:"sig"`
-	FirstSeen int64 `json:"first_seen"`
-	LastSeen  int64 `json:"last_seen"`
+	Gnss      int    `json:"gnss"`
+	Sig       int    `json:"sig"`
+	FirstSeen int64  `json:"first_seen"`
+	LastSeen  int64  `json:"last_seen"`
 	Count     uint64 `json:"count"`
 }
 
@@ -183,9 +192,18 @@ type StationCapability struct {
 // detectable); recency lives in each signal's last_seen. now is accepted for symmetry with the
 // other Feed* methods and to keep the signature stable as the declared-capability merge lands.
 func (s *Store) FeedStationCapabilities(now time.Time) map[string][]StationCapability {
-	out := make(map[string][]StationCapability)
 	s.capMu.Lock()
 	defer s.capMu.Unlock()
+	return s.stationCapabilitiesLocked()
+}
+
+// stationCapabilitiesLocked is FeedStationCapabilities' body, factored out so
+// FeedCapabilityReports  can build the observed and declared views under
+// one capMu critical section instead of two separate lock/unlock rounds — a
+// station added by recordCapability between the two could otherwise appear in
+// one view but not the other. The caller must hold capMu.
+func (s *Store) stationCapabilitiesLocked() map[string][]StationCapability {
+	out := make(map[string][]StationCapability)
 	for id, st := range s.caps {
 		caps := make([]StationCapability, 0, len(st.sigs))
 		for k, c := range st.sigs {

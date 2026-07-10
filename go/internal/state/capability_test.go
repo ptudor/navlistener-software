@@ -101,3 +101,36 @@ func TestCapabilityFromApply(t *testing.T) {
 		t.Fatalf("obs1 capabilities = %+v, want only BeiDou B1I from the nav frame", caps)
 	}
 }
+
+// TestFeedGlobalTotalLiveReceivers guards total_live_receivers was declared
+// in the contract but never populated (always 0). It must count distinct stations
+// seen recently via either a nav frame (the capability fingerprint) or RF
+// telemetry, excluding ones that have gone quiet past liveReceiverWindow.
+func TestFeedGlobalTotalLiveReceivers(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+
+	s.Apply(navFrame("obsA", gnss.GPS, 0, now))                            // nav-frame station
+	s.Apply(&ingest.RawFrame{Source: "obsB", Recv: now, RF: &ingest.RawRF{ // RF-only station
+		Bands: []ingest.RFBand{{Block: 0, AGC: 3000}},
+	}})
+	s.Apply(navFrame("obsC", gnss.GLONASS, 0, now.Add(-time.Hour))) // long gone quiet
+
+	if got := s.FeedGlobal(now).TotalLiveReceivers; got != 2 {
+		t.Errorf("total_live_receivers = %d, want 2 (obsA nav + obsB RF; obsC is stale)", got)
+	}
+
+	// obsC comes back inside the window: now 3.
+	s.Apply(navFrame("obsC", gnss.GLONASS, 0, now))
+	if got := s.FeedGlobal(now).TotalLiveReceivers; got != 3 {
+		t.Errorf("total_live_receivers = %d, want 3 after obsC reports again", got)
+	}
+
+	// A station reporting both a nav frame and RF telemetry counts once, not twice.
+	s.Apply(&ingest.RawFrame{Source: "obsA", Recv: now, RF: &ingest.RawRF{
+		Bands: []ingest.RFBand{{Block: 0, AGC: 2900}},
+	}})
+	if got := s.FeedGlobal(now).TotalLiveReceivers; got != 3 {
+		t.Errorf("total_live_receivers = %d, want 3 (obsA counted once across both sources)", got)
+	}
+}

@@ -572,6 +572,21 @@ func finiteECEF(p gnss.ECEF) bool {
 // the feed), never a sentinel.
 func (s *Store) computeDisco(st *svState, newEph kepler.Ephemeris, newClk clock.Model, now time.Time) {
 	tstar := newEph.Toe
+
+	// don't trust a disco computed against an outgoing ephemeris that's gone
+	// stale. docs/INTEGRITY.md §3 requires "both ephemerides are ephAge < 4h old" at
+	// the changeover epoch tstar; newEph's age there is 0 by construction (tstar ==
+	// newEph.Toe), so this reduces to checking the outgoing set's age. An SV unseen
+	// for hours and then refreshed would otherwise propagate an arbitrarily stale
+	// outgoing ephemeris out to tstar, producing a physically meaningless (but
+	// detector-triggering) discontinuity.
+	if math.Abs(gnsstime.EphAge(tstar, st.eph.Toe)) >= discoTrustAge.Seconds() {
+		st.orbitDiscoValid = false
+		st.timeDiscoValid = false
+		st.discoAt = now
+		return
+	}
+
 	oldPos, e1 := kepler.Propagate(st.eph, tstar)
 	newPos, e2 := kepler.Propagate(newEph, tstar)
 	if e1 == nil && e2 == nil {

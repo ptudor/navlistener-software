@@ -27,7 +27,13 @@ type Event struct {
 // §4). It is safe for one goroutine to call Tick on a cadence; the mutex guards
 // against a concurrent reset.
 type Detector struct {
-	mu       sync.Mutex
+	mu sync.Mutex
+	// machines is keyed per (subject, metric) and never shrinks except via Reset
+	// : an SV/station going away leaves its entries in place. This is a
+	// bounded key space (finite SVs × signals × metrics + stations), not an
+	// unbounded leak — documented here so it isn't later "fixed" as one. Pruning
+	// on a TTL or read-model absence is a possible future optimization but not a
+	// correctness requirement at this scale.
 	machines map[string]*machine
 	debounce time.Duration
 }
