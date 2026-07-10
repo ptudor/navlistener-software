@@ -28,6 +28,11 @@ import (
 // honours the timeout.
 const idleReadTimeout = 120 * time.Second
 
+// writeTimeout bounds every WriteFrame on a push connection (WELCOME/ACK/PONG). A
+// feeder that stops reading must not be able to wedge the writer (and, via
+// connWriter's mutex, every other writer on the same connection) past this deadline.
+const writeTimeout = 30 * time.Second
+
 // idleConn refreshes the read deadline on every Read, so a decoder reading through it (zstd)
 // can't outlive the idle timeout even though it reads outside wire.ReadFrame's frame loop.
 type idleConn struct {
@@ -178,6 +183,7 @@ type connWriter struct {
 func (w *connWriter) write(ft wire.FrameType, payload []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	_ = w.c.SetWriteDeadline(time.Now().Add(writeTimeout))
 	return wire.WriteFrame(w.c, ft, payload)
 }
 
@@ -232,7 +238,7 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 		frames = zr
 	}
 
-	p.stream(frames, w, observer, feed)
+	p.stream(ctx, frames, w, observer, feed)
 }
 
 // handshake reads and authenticates the HELLO, replying WELCOME. It returns the
@@ -277,7 +283,7 @@ func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (obs
 // advance past a replay and the feeder's spool would grow without bound. Frames are
 // forwarded to decode unconditionally (nav frames are idempotent, so a replayed
 // duplicate is harmless); the sequence governs only spool pruning.
-func (p *PushServer) stream(frames io.Reader, w *connWriter, observer, feed string) {
+func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter, observer, feed string) {
 	var (
 		mu      sync.Mutex
 		highest uint64 // highest sequence received this connection
@@ -286,21 +292,27 @@ func (p *PushServer) stream(frames io.Reader, w *connWriter, observer, feed stri
 	ackTicker := time.NewTicker(p.ackInterval)
 	defer ackTicker.Stop()
 	ackDone := make(chan struct{})
+	quit := make(chan struct{})
 	go func() {
 		defer close(ackDone)
-		for range ackTicker.C {
-			mu.Lock()
-			last, prev := highest, acked
-			mu.Unlock()
-			if last == prev {
-				continue
-			}
-			if err := w.write(wire.Ack, wire.EncodeAck(last)); err != nil {
+		for {
+			select {
+			case <-quit:
 				return
+			case <-ackTicker.C:
+				mu.Lock()
+				last, prev := highest, acked
+				mu.Unlock()
+				if last == prev {
+					continue
+				}
+				if err := w.write(wire.Ack, wire.EncodeAck(last)); err != nil {
+					return
+				}
+				mu.Lock()
+				acked = last
+				mu.Unlock()
 			}
-			mu.Lock()
-			acked = last
-			mu.Unlock()
 		}
 	}()
 
@@ -314,7 +326,7 @@ func (p *PushServer) stream(frames io.Reader, w *connWriter, observer, feed stri
 			} else {
 				p.log.Warn("push feeder idle timeout", "observer", observer)
 			}
-			ackTicker.Stop()
+			close(quit)
 			<-ackDone
 			return
 		}
@@ -325,14 +337,16 @@ func (p *PushServer) stream(frames io.Reader, w *connWriter, observer, feed stri
 				metrics.PushErrorsTotal.WithLabelValues(observer, "short_record").Inc()
 				continue
 			}
-			mu.Lock()
-			if seq > highest {
-				highest = seq
-			}
-			mu.Unlock()
 			f := recordToFrame(rec, feed, observer)
 			if f == nil {
 				metrics.PushErrorsTotal.WithLabelValues(observer, "bad_telemetry").Inc()
+				// The body is malformed; a retransmit cannot fix it, so this sequence is
+				// acked (matches the pre-existing behaviour for this branch, regression fix).
+				mu.Lock()
+				if seq > highest {
+					highest = seq
+				}
+				mu.Unlock()
 				continue
 			}
 			if f.RF == nil { // FramesTotal counts nav-frame throughput per constellation, not telemetry
@@ -340,8 +354,15 @@ func (p *PushServer) stream(frames io.Reader, w *connWriter, observer, feed stri
 			}
 			select {
 			case p.out <- f:
-			default:
-				metrics.PushErrorsTotal.WithLabelValues(observer, "queue_full").Inc()
+				mu.Lock()
+				if seq > highest {
+					highest = seq
+				}
+				mu.Unlock()
+			case <-ctx.Done(): // daemon teardown; frame is unacked, feeder replays on reconnect
+				close(quit)
+				<-ackDone
+				return
 			}
 		case wire.Ping:
 			_ = w.write(wire.Pong, nil)

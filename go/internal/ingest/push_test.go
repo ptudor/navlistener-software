@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"math/big"
 	"net"
+	"runtime"
 	"testing"
 	"time"
 
@@ -256,6 +257,116 @@ func TestPushRejectsUngrantedFeed(t *testing.T) {
 	}
 	if wmsg, _ := parseWelcome(payload); wmsg.OK {
 		t.Fatal("ungranted feed was accepted")
+	}
+}
+
+// TestPushHandleReturnsOnDisconnect guards the per-connection ack goroutine
+// must exit (and handle() must return, releasing the conn's goroutines/FD) on a
+// quiet client disconnect, not just on a write error. Runs many connect/disconnect
+// cycles and asserts the goroutine count settles back down rather than growing.
+func TestPushHandleReturnsOnDisconnect(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	addr, out := startPushServer(t, ctx, tokenAuth("observer16", "s3cret", "ubx"))
+	drainDone := make(chan struct{})
+	go func() {
+		defer close(drainDone)
+		for {
+			select {
+			case <-out:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	before := runtime.NumGoroutine()
+	for i := 0; i < 50; i++ {
+		conn := dialPush(t, addr)
+		if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, payload, err := wire.ReadFrame(conn); err != nil {
+			t.Fatal(err)
+		} else if wmsg, _ := parseWelcome(payload); !wmsg.OK {
+			t.Fatal("handshake rejected")
+		}
+		rec := wire.RawRecord{RecvUnixNs: time.Now().UnixNano(), GnssID: gnss.GPS, SvID: 5, Raw: make([]byte, 40)}
+		if err := wire.WriteFrame(conn, wire.Data, wire.EncodeData(1, rec)); err != nil {
+			t.Fatal(err)
+		}
+		_ = readAck(t, conn)
+		conn.Close() // quiet disconnect: no write error, exercises the regression fix path
+	}
+
+	// The read loop notices the close on its next read; give it a moment to unwind.
+	deadline := time.Now().Add(3 * time.Second)
+	var after int
+	for {
+		after = runtime.NumGoroutine()
+		if after <= before+5 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if after > before+5 {
+		t.Errorf("goroutine count grew from %d to %d after 50 connect/disconnect cycles (leak)", before, after)
+	}
+	cancel()
+	<-drainDone
+}
+
+// TestPushAckWaitsForBackpressure guards the acked watermark must not
+// advance for a frame that has not actually been handed off to the decode stage.
+// With a size-1, undrained out channel, frame 2 blocks in the read loop until the
+// channel is drained — during that time the ack must stay at 1, not jump to 2 and
+// falsely tell the feeder it can prune a frame that was never delivered.
+func TestPushAckWaitsForBackpressure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	out := make(chan *RawFrame, 1)
+	tc := &tls.Config{Certificates: []tls.Certificate{selfSigned(t)}, MinVersion: tls.VersionTLS12}
+	srv := newPushServer("127.0.0.1:0", tc, out, tokenAuth("observer16", "s3cret", "ubx"), 25*time.Millisecond,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", tc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.serve(ctx, ln) }()
+	addr := ln.Addr().String()
+
+	conn := dialPush(t, addr)
+	defer conn.Close()
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, payload, err := wire.ReadFrame(conn); err != nil {
+		t.Fatal(err)
+	} else if wmsg, _ := parseWelcome(payload); !wmsg.OK {
+		t.Fatal("handshake rejected")
+	}
+
+	send := func(seq uint64) {
+		rec := wire.RawRecord{RecvUnixNs: time.Now().UnixNano(), GnssID: gnss.GPS, SvID: 5, Raw: make([]byte, 40)}
+		if err := wire.WriteFrame(conn, wire.Data, wire.EncodeData(seq, rec)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send(1) // fills the size-1 out channel; nothing drains it yet
+	send(2) // the server's read loop now blocks handing this off
+
+	if seq := readAck(t, conn); seq != 1 {
+		t.Errorf("ack seq = %d, want 1 (frame 2 not yet delivered, must not be acked)", seq)
+	}
+
+	<-out // drain frame 1, unblocking the read loop's send of frame 2
+	select {
+	case <-out:
+	case <-time.After(2 * time.Second):
+		t.Fatal("frame 2 was never delivered after the channel drained")
+	}
+	if seq := readAck(t, conn); seq != 2 {
+		t.Errorf("ack seq = %d, want 2 after frame 2 was actually delivered", seq)
 	}
 }
 

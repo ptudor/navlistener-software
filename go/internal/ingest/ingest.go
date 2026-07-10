@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -122,9 +123,7 @@ func (m *Manager) runSource(ctx context.Context, src config.Source, sc scanner) 
 			}
 		}()
 
-		err = sc(conn, src.Name, m.now, m.emit(ctx, src), func(kind string) {
-			metrics.IngestErrorsTotal.WithLabelValues(src.Name, kind).Inc()
-		})
+		err = m.runScanner(ctx, sc, conn, src)
 		close(stop)
 		_ = conn.Close()
 		metrics.SourceUp.WithLabelValues(src.Name, src.Type).Set(0)
@@ -137,6 +136,22 @@ func (m *Manager) runSource(ctx context.Context, src config.Source, sc scanner) 
 			backoff = nextBackoff(backoff)
 		}
 	}
+}
+
+// runScanner invokes the source's scanner with a recover() so a parser bug (e.g. an
+// out-of-bounds slice on malformed input from an external/untrusted source such as an
+// NTRIP caster) reconnects this one source instead of crashing the whole daemon.
+func (m *Manager) runScanner(ctx context.Context, sc scanner, conn net.Conn, src config.Source) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			metrics.IngestErrorsTotal.WithLabelValues(src.Name, "panic").Inc()
+			m.log.Error("ingest scanner panicked; reconnecting", "source", src.Name, "panic", r)
+			err = fmt.Errorf("scanner panic: %v", r)
+		}
+	}()
+	return sc(conn, src.Name, m.now, m.emit(ctx, src), func(kind string) {
+		metrics.IngestErrorsTotal.WithLabelValues(src.Name, kind).Inc()
+	})
 }
 
 // emit returns the per-source emit closure: count the frame and hand it to the

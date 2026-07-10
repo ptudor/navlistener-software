@@ -131,6 +131,26 @@ func TestScanRTCMBadCRC(t *testing.T) {
 	}
 }
 
+// TestScanRTCMShortLength guards a length==1 RTCM message (a valid CRC-24Q
+// over an undersized payload is trivial to construct — no message-number bits
+// exist) must be rejected before the message-number extraction, not panic on an
+// out-of-bounds payload[1] read.
+func TestScanRTCMShortLength(t *testing.T) {
+	payload := make([]byte, 1)
+	full := []byte{rtcmPreamble, 0x00, byte(len(payload))}
+	full = append(full, payload...)
+	c := frame.CRC24Q(full)
+	full = append(full, byte(c>>16), byte(c>>8), byte(c))
+
+	frames, errs := collect(t, scanRTCM, full)
+	if len(frames) != 0 {
+		t.Errorf("length-1 RTCM message should be dropped, got %+v", frames)
+	}
+	if len(errs) == 0 || errs[0] != "rtcm_length" {
+		t.Errorf("want rtcm_length, got %v", errs)
+	}
+}
+
 func TestScanSBF(t *testing.T) {
 	blockNum := uint16(4017) // GPSRawCA
 	body := make([]byte, 16)
