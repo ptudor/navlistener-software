@@ -56,6 +56,53 @@ func TestSnapshotInterval(t *testing.T) {
 	}
 }
 
+// TestLoggingLevelValidated guards unlike logging.format, logging.level was
+// never validated, so a typo ("trace"/"warning") silently mapped to info with no
+// diagnostic. The empty-string default and the four real levels must still pass.
+func TestLoggingLevelValidated(t *testing.T) {
+	for _, level := range []string{"", "debug", "info", "warn", "error"} {
+		c := defaults()
+		c.Logging.Level = level
+		if err := c.finalize(); err != nil {
+			t.Errorf("logging.level %q should validate, got %v", level, err)
+		}
+	}
+	for _, bad := range []string{"trace", "warning", "DEBUG", " info"} {
+		c := defaults()
+		c.Logging.Level = bad
+		if err := c.finalize(); err == nil {
+			t.Errorf("logging.level %q accepted, want a hard error", bad)
+		}
+	}
+}
+
+// TestStoreIntervalsValidatedAtFinalize guards raw_retention/compress_after
+// were only checked when the store actually connected, so `-check-config` reported
+// a malformed interval (or an injection attempt into the later policy DDL) as
+// valid. finalize (which -check-config runs) must catch it up front, using the
+// same config.IntervalRe the store re-checks in applyPolicies.
+func TestStoreIntervalsValidatedAtFinalize(t *testing.T) {
+	for _, good := range []string{"", "7 days", "1 hour", "30 minutes", "2 weeks"} {
+		c := defaults()
+		c.Store.RawRetention, c.Store.CompressAfter = good, good
+		if err := c.finalize(); err != nil {
+			t.Errorf("interval %q should validate, got %v", good, err)
+		}
+	}
+	for _, bad := range []string{"soon", "; DROP TABLE nav_frames;--", "7", "days", "0 days"} {
+		c := defaults()
+		c.Store.RawRetention = bad
+		if err := c.finalize(); err == nil {
+			t.Errorf("store.raw_retention %q accepted, want a hard error", bad)
+		}
+		c = defaults()
+		c.Store.CompressAfter = bad
+		if err := c.finalize(); err == nil {
+			t.Errorf("store.compress_after %q accepted, want a hard error", bad)
+		}
+	}
+}
+
 // TestCapabilitiesParsing: valid "gnss:sig" tuples parse; malformed, out-of-range, and
 // duplicate declarations are hard errors so a mistyped fingerprint can't silently disarm the
 // plausibility detector.

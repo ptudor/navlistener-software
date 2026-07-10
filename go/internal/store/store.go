@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"strings"
 	"time"
 
@@ -264,10 +263,12 @@ func verifyRequiredColumns(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
-var intervalRe = regexp.MustCompile(`^[1-9][0-9]* (minute|hour|day|week)s?$`)
-
 // applyPolicies installs the columnar-compression and raw-retention policies at the
-// configured intervals (idempotent; reset so the interval can change).
+// configured intervals (idempotent; reset so the interval can change). The
+// intervalRe check here is defense-in-depth : config.finalize applies the
+// same config.IntervalRe so `-check-config` catches a malformed interval up front,
+// but this guard against the later SQL-DDL interpolation stays regardless of
+// caller.
 func applyPolicies(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, cfg config.Store) error {
 	compAfter, rawRet := cfg.CompressAfter, cfg.RawRetention
 	if compAfter == "" {
@@ -276,7 +277,7 @@ func applyPolicies(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, cf
 	if rawRet == "" {
 		rawRet = "7 days"
 	}
-	if !intervalRe.MatchString(compAfter) || !intervalRe.MatchString(rawRet) {
+	if !config.IntervalRe.MatchString(compAfter) || !config.IntervalRe.MatchString(rawRet) {
 		return fmt.Errorf("intervals must be simple like \"7 days\" (compress_after=%q raw_retention=%q)", compAfter, rawRet)
 	}
 

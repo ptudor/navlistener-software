@@ -11,12 +11,20 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	toml "github.com/pelletier/go-toml/v2"
 )
+
+// IntervalRe is the simple-interval allowlist for store.Store's raw_retention and
+// compress_after ("7 days", "1 hour", …). It is the sole definition (store.go
+// references this one, regression fix) — it also doubles as the injection guard for the
+// interval string's later interpolation into policy DDL, so it must never be
+// relaxed.
+var IntervalRe = regexp.MustCompile(`^[1-9][0-9]* (minute|hour|day|week)s?$`)
 
 // DefaultPaths are searched in order when -config is not given.
 var DefaultPaths = []string{
@@ -238,6 +246,11 @@ func (c *Config) finalize() error {
 	default:
 		return fmt.Errorf("logging.format %q: want json or text", c.Logging.Format)
 	}
+	switch c.Logging.Level {
+	case "", "debug", "info", "warn", "error":
+	default:
+		return fmt.Errorf("logging.level %q: want debug, info, warn, or error", c.Logging.Level)
+	}
 	if err := parseDur(c.State.SVTTLs, &c.State.SVTTL); err != nil {
 		return fmt.Errorf("state.sv_ttl: %w", err)
 	}
@@ -262,6 +275,12 @@ func (c *Config) finalize() error {
 	}
 	if c.Store.BatchSize < 1 {
 		c.Store.BatchSize = 1000
+	}
+	if c.Store.RawRetention != "" && !IntervalRe.MatchString(c.Store.RawRetention) {
+		return fmt.Errorf(`store.raw_retention %q: want a simple interval like "7 days"`, c.Store.RawRetention)
+	}
+	if c.Store.CompressAfter != "" && !IntervalRe.MatchString(c.Store.CompressAfter) {
+		return fmt.Errorf(`store.compress_after %q: want a simple interval like "1 day"`, c.Store.CompressAfter)
 	}
 
 	if err := parseDur(c.Serve.RefreshFasts, &c.Serve.RefreshFast); err != nil {
