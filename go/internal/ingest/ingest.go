@@ -21,6 +21,14 @@ const (
 	backoffMax     = 30 * time.Second
 )
 
+// dialIdleTimeout bounds silence on a dial-mode source connection : without
+// it, a half-open receiver (cable pull, NAT timeout, crashed peer with no RST)
+// blocks the scanner's read forever — SourceUp stays 1, no reconnect fires, a dead
+// source reports healthy. Generous enough for the slowest legitimate source (RTCM
+// ephemeris messages can be tens of seconds apart) so a live source doesn't thrash
+// reconnects; mirrors push.go's idleConn/idleReadTimeout pattern for the dial path.
+const dialIdleTimeout = 180 * time.Second
+
 // scanner reads a receiver stream and emits RawFrames until the stream errors.
 type scanner func(r io.Reader, source string, now func() time.Time, emit func(*RawFrame), onErr func(kind string)) error
 
@@ -149,7 +157,8 @@ func (m *Manager) runScanner(ctx context.Context, sc scanner, conn net.Conn, src
 			err = fmt.Errorf("scanner panic: %v", r)
 		}
 	}()
-	return sc(conn, src.Name, m.now, m.emit(ctx, src), func(kind string) {
+	frames := &idleConn{Conn: conn, timeout: dialIdleTimeout}
+	return sc(frames, src.Name, m.now, m.emit(ctx, src), func(kind string) {
 		metrics.IngestErrorsTotal.WithLabelValues(src.Name, kind).Inc()
 	})
 }
@@ -158,7 +167,9 @@ func (m *Manager) runScanner(ctx context.Context, sc scanner, conn net.Conn, src
 // decode stage, honouring shutdown.
 func (m *Manager) emit(ctx context.Context, src config.Source) func(*RawFrame) {
 	return func(f *RawFrame) {
-		metrics.FramesTotal.WithLabelValues(src.Name, strconv.Itoa(int(f.GnssID))).Inc()
+		if f.Obs == nil && f.RF == nil { // FramesTotal counts nav-frame throughput, not observables/telemetry
+			metrics.FramesTotal.WithLabelValues(src.Name, strconv.Itoa(int(f.GnssID))).Inc()
+		}
 		select {
 		case m.out <- f:
 		case <-ctx.Done():
@@ -167,7 +178,7 @@ func (m *Manager) emit(ctx context.Context, src config.Source) func(*RawFrame) {
 }
 
 func dialCtx(ctx context.Context, addr string) (net.Conn, error) {
-	d := net.Dialer{Timeout: dialTimeout}
+	d := net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}
 	return d.DialContext(ctx, "tcp", addr)
 }
 
