@@ -21,7 +21,12 @@
  * "the receiver must never go down"). The collector ACKs the highest sequence it has stored,
  * pruning the ring. On overflow the OLDEST frame spills to a disk spool (--spool-file) rather
  * than being dropped; the spool is recovered and replayed on restart, so an outage longer
- * than RAM, or a router reboot, still loses nothing. With --zstd the feeder→collector DATA
+ * than RAM, or an ORDERLY router reboot, still loses nothing. Disk-spooled frames are
+ * fflush()'d but deliberately not fsync()'d  — a bounded flash-wear trade for the
+ * fleet's mips/SBC hardware, not an oversight — so an UNCLEAN power loss can still drop the
+ * page-cache tail that hadn't reached disk yet; spool_recover's torn-tail scan handles that
+ * cleanly (no corruption, just a shorter replay), it just isn't zero-loss for a power cut the
+ * way it is for `reboot`/`poweroff`. With --zstd the feeder→collector DATA
  * stream is zstd-compressed (negotiated in the handshake; ~3–4:1 on the repetitive nav
  * bitstream); ACKs stay plaintext.
  *
@@ -227,7 +232,14 @@ static void spool_init(struct spool *s, size_t cap, const char *path, uint64_t d
 	if (path) spool_recover(s); /* resume a spool left by a prior run */
 }
 
-/* disk_put appends one frame to the disk spool (caller holds the mutex). */
+/* disk_put appends one frame to the disk spool (caller holds the mutex). Each record is
+ * fflush()'d into the OS page cache but NOT fsync()'d (regression fix, deliberate): fsync-per-frame
+ * on the fleet's flash storage would be a real wear/latency cost for a spill path that is
+ * the overflow case, not the common one. This makes the "lossless across reboot" claim in
+ * the file header true only for an orderly `reboot`/`poweroff` (page cache flushed on
+ * shutdown) — an unclean power loss can drop the not-yet-written-back tail. spool_recover's
+ * torn-record scan handles that safely (a partial trailing record is discarded, not
+ * misparsed), so this is a bounded durability/wear trade, not a correctness bug. */
 static void disk_put(struct spool *s, uint64_t seq, const unsigned char *data, uint32_t len) {
 	if (!s->disk_w) {
 		s->disk_w = fopen(s->path, "ab");
@@ -248,9 +260,20 @@ static void disk_put(struct spool *s, uint64_t seq, const unsigned char *data, u
 }
 
 /* spool_append copies a record in, assigns the next seq, and on overflow spills the oldest
- * frame to disk (if a spool file is set) or drops it. */
+ * frame to disk (if a spool file is set) or drops it. On a transient allocation failure
+ * (regression fix — "the receiver must never go down"), the record is dropped and counted rather
+ * than killing the process: malloc is attempted first, before any state mutation, so a
+ * failure leaves the ring/seq counter untouched (no phantom seq gap, no wrongful
+ * eviction) — mirroring the ESP32 sibling's drop-and-count behavior. */
 static uint64_t spool_append(struct spool *s, const unsigned char *data, uint32_t len) {
 	pthread_mutex_lock(&s->mu);
+	unsigned char *copy = malloc(len);
+	if (!copy) {
+		s->dropped++;
+		pthread_mutex_unlock(&s->mu);
+		return 0;
+	}
+	memcpy(copy, data, len);
 	if (s->count == s->cap) {
 		struct frame *ev = &s->ring[s->head];
 		if (s->path)
@@ -265,9 +288,7 @@ static uint64_t spool_append(struct spool *s, const unsigned char *data, uint32_
 	size_t idx = (s->head + s->count) % s->cap;
 	s->ring[idx].seq = seq;
 	s->ring[idx].len = len;
-	s->ring[idx].data = malloc(len);
-	if (!s->ring[idx].data) die("out of memory appending to spool");
-	memcpy(s->ring[idx].data, data, len);
+	s->ring[idx].data = copy;
 	s->count++;
 	pthread_mutex_unlock(&s->mu);
 	return seq;
@@ -285,17 +306,21 @@ static void spool_ack(struct spool *s, uint64_t n) {
 	pthread_mutex_unlock(&s->mu);
 }
 
-/* spool_collect copies up to max frames with seq > after into out (caller frees data). */
+/* spool_collect copies up to max frames with seq > after into out (caller frees data). On a
+ * transient allocation failure  it stops and returns the partial batch collected so
+ * far rather than dying — the frame that failed to copy, and everything after it in this
+ * round, is simply not yet collected; it stays in the ring and is retried the next round. */
 static size_t spool_collect(struct spool *s, uint64_t after, struct frame *out, size_t max) {
 	pthread_mutex_lock(&s->mu);
 	size_t n = 0;
 	for (size_t i = 0; i < s->count && n < max; i++) {
 		struct frame *f = &s->ring[(s->head + i) % s->cap];
 		if (f->seq <= after) continue;
+		unsigned char *copy = malloc(f->len);
+		if (!copy) break;
 		out[n].seq = f->seq;
 		out[n].len = f->len;
-		out[n].data = malloc(f->len);
-		if (!out[n].data) die("out of memory collecting spool batch");
+		out[n].data = copy;
 		memcpy(out[n].data, f->data, f->len);
 		n++;
 	}
@@ -353,11 +378,23 @@ static int ssl_write_all(SSL *ssl, const void *buf, size_t n) {
 	return 0;
 }
 
+/* ssl_read_full reads exactly n bytes. Returns 0 on success, -1 on a real error or clean
+ * EOF, or -2  if the socket's SO_RCVTIMEO elapsed with no data — a "nothing to read
+ * yet, keep waiting" signal distinct from a dead connection. A blocking socket's receive
+ * timeout usually surfaces through OpenSSL as SSL_ERROR_SYSCALL with errno EAGAIN/EWOULDBLOCK,
+ * but some builds/BIOs report SSL_ERROR_WANT_READ for the same condition — both are treated
+ * as a timeout here. */
 static int ssl_read_full(SSL *ssl, void *buf, size_t n) {
 	unsigned char *p = buf;
 	while (n > 0) {
 		int r = SSL_read(ssl, p, (int)n);
-		if (r <= 0) return -1;
+		if (r <= 0) {
+			int err = SSL_get_error(ssl, r);
+			if (err == SSL_ERROR_WANT_READ ||
+			    (err == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)))
+				return -2;
+			return -1;
+		}
 		p += r; n -= (size_t)r;
 	}
 	return 0;
@@ -409,23 +446,38 @@ static int send_ping(struct conn *c) {
 	return conn_write(c, frame, 5);
 }
 
+/* read_frame reads one wire frame. Returns 0 on success, -1 on a real error, or -2 
+ * on a receive timeout (ssl_read_full's "keep waiting" signal) — propagated unchanged so
+ * reader_thread's loop can tell "idle" from "dead" apart. */
 static int read_frame(SSL *ssl, uint8_t *type, unsigned char *buf, uint32_t cap, uint32_t *len) {
 	unsigned char hdr[5];
-	if (ssl_read_full(ssl, hdr, 5) != 0) return -1;
+	int rc = ssl_read_full(ssl, hdr, 5);
+	if (rc != 0) return rc;
 	uint32_t n = rd_be32(hdr+1);
 	if (n > MAX_FRAME || n > cap) return -1;
-	if (n && ssl_read_full(ssl, buf, n) != 0) return -1;
+	if (n && (rc = ssl_read_full(ssl, buf, n)) != 0) return rc;
 	*type = hdr[0]; *len = n;
 	return 0;
 }
 
-/* reader thread: apply ACKs (pruning the spool) until the connection drops. */
+/* reader thread: apply ACKs (pruning the spool) until the connection drops. The collector
+ * socket carries an SO_RCVTIMEO (regression fix, set in tls_connect's tcp_dial call), so a genuinely
+ * half-open peer (vanished, no RST) no longer leaves this thread blocked in SSL_read for the
+ * full TCP retransmit window — it wakes on each timeout, checks g_disconnected (set by the
+ * consumer side on its own write failure), and returns promptly instead of stalling teardown
+ * while the spool fills. A timeout alone is not a disconnect signal; only a real read error
+ * or clean EOF ends the loop. */
 static void *reader_thread(void *arg) {
 	SSL *ssl = arg;
 	unsigned char buf[256];
 	uint8_t type; uint32_t len;
 	for (;;) {
-		if (read_frame(ssl, &type, buf, sizeof buf, &len) != 0) break;
+		int rc = read_frame(ssl, &type, buf, sizeof buf, &len);
+		if (rc == -2) {
+			if (g_disconnected) break;
+			continue;
+		}
+		if (rc != 0) break;
 		if (type == F_ACK && len >= 8) spool_ack(&g_spool, rd_be64(buf));
 	}
 	g_disconnected = 1;
@@ -718,7 +770,11 @@ static void *producer_thread(void *arg) {
 /* ── consumer: spool -> collector, replaying unacked on every reconnect ───── */
 
 static SSL *tls_connect(SSL_CTX *ctx, const struct opts *o, int *out_fd) {
-	int fd = tcp_dial(o->server_host, o->server_port, 0);
+	/* a receive timeout (2x KEEPALIVE_S) so reader_thread wakes periodically
+	 * instead of blocking in SSL_read indefinitely on a half-open peer; long enough
+	 * that a normally-idle link (waiting on ACKs between our own KEEPALIVE_S pings)
+	 * is never mistaken for dead — see ssl_read_full/reader_thread. */
+	int fd = tcp_dial(o->server_host, o->server_port, 2 * KEEPALIVE_S);
 	if (fd < 0) return NULL;
 	SSL *ssl = SSL_new(ctx);
 	if (!ssl) { close(fd); return NULL; }
@@ -824,6 +880,17 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 
 	struct conn c = { ssl, NULL, NULL, 0, 0, 0 };
 	if (zstd_ok) {
+		/* regression fix (partial, see technical validation): kept as die() here, not downgraded
+		 * to a silent plaintext fallback. By this point handshake() has already
+		 * exchanged "zstd":true with the collector, which commits it to wrapping
+		 * its reader in a zstd decompressor for the rest of THIS connection
+		 * (internal/ingest/push.go's useZstd path is stream-, not frame-, scoped).
+		 * Switching c.cctx to NULL here would silently write plaintext into that
+		 * decompressor and desync the wire — worse than a clean process exit. The
+		 * safe equivalent (probe the allocation before advertising zstd in the
+		 * HELLO, or fail this connection attempt and let the outer loop
+		 * reconnect) is a real fix but is not what this exact line can do without
+		 * restructuring handshake(), so it's deliberately left out of this pass. */
 		c.cctx = ZSTD_createCCtx();
 		c.obuf_cap = ZSTD_CStreamOutSize();
 		c.obuf = malloc(c.obuf_cap);
