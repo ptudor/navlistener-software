@@ -331,7 +331,12 @@ const detectInterval = 15 * time.Second
 func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, historian *store.Store, api *serve.Server, log *slog.Logger) {
 	tick := time.NewTicker(detectInterval)
 	defer tick.Stop()
-	var localID int64
+	// lastID is the highest event id issued so far, from either source : a
+	// historian write failure falls back to lastID+1 rather than an independent
+	// counter starting near 0/1, so a mix of DB bigserial ids and locally-issued
+	// ids stays monotonic — the SSE replay window's `e.ID > lastID` filter
+	// requires it, or a reconnect can drop or duplicate events.
+	var lastID int64
 	for {
 		select {
 		case <-tick.C:
@@ -344,7 +349,7 @@ func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, hi
 			// node's silicon can't produce (docs/INTEGRITY.md §6, CONSTELLATIONS §7).
 			events = append(events, det.TickCapabilities(now, live.FeedCapabilityReports(now))...)
 			for _, e := range events {
-				emitEvent(ctx, e, historian, api, &localID, log)
+				emitEvent(ctx, e, historian, api, &lastID, log)
 			}
 		case <-ctx.Done():
 			return
@@ -355,7 +360,7 @@ func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, hi
 // emitEvent persists one integrity event (if the historian is enabled) and pushes it
 // to the SSE broker, tagging metrics. The historian-assigned id is authoritative;
 // without it a monotonic local counter keeps SSE ids stable and ordered.
-func emitEvent(ctx context.Context, e detect.Event, historian *store.Store, api *serve.Server, localID *int64, log *slog.Logger) {
+func emitEvent(ctx context.Context, e detect.Event, historian *store.Store, api *serve.Server, lastID *int64, log *slog.Logger) {
 	metrics.EventsTotal.WithLabelValues(e.Type, fmt.Sprint(e.Severity)).Inc()
 
 	var rawJSON []byte
@@ -379,8 +384,12 @@ func emitEvent(ctx context.Context, e detect.Event, historian *store.Store, api 
 		}
 	}
 	if id == 0 {
-		*localID++
-		id = *localID
+		// No historian, or this write failed: fall back to lastID+1  rather
+		// than an independent counter, so ids stay monotonic across the mix.
+		id = *lastID + 1
+	}
+	if id > *lastID {
+		*lastID = id
 	}
 	log.Info("integrity event", "id", id, "sv", e.SV, "type", e.Type,
 		"severity", e.Severity, "old", e.OldValue, "new", e.NewValue)

@@ -33,6 +33,12 @@ const (
 	sseClientBuffer = 64
 )
 
+// sseWriteTimeout bounds every write+flush : a client whose TCP receive
+// window is full (dead-but-not-reset) must not be able to park the handler
+// goroutine (and its buffered EventMsgs) indefinitely. A var, not a const, so
+// tests can shrink it rather than waiting out the production value.
+var sseWriteTimeout = 10 * time.Second
+
 // Broker fans confirmed integrity events out to connected SSE clients and keeps a
 // bounded ring of recent events for Last-Event-ID reconnect replay. It is the
 // server-driven push side of the events contract; the DB trigger's pg_notify serves
@@ -114,15 +120,38 @@ func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no") // defeat proxy buffering (docs/OUTPUT.md §3)
 
-	lastID, hasLast := parseLastEventID(r)
-	for _, e := range b.replayFrom(lastID, hasLast) {
-		writeSSE(w, "gnss", e)
+	rc := http.NewResponseController(w)
+	writeAndFlush := func(f func() error) bool {
+		_ = rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
+		if err := f(); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
 	}
-	writeStatus(w, "connected")
-	flusher.Flush()
 
+	// Subscribe *before* replaying : an event Published between an
+	// after-replay subscribe and the replay finishing would reach neither path —
+	// past the replay cut, and the client's channel didn't exist yet. Subscribing
+	// first means any such event lands in ch; replayFrom's own snapshot may *also*
+	// include it (a second race, opposite direction), so live events are
+	// deduplicated against the highest id actually written by the replay loop —
+	// ids are monotonic within a process, so a `<=` compare is exact either way.
 	ch := b.subscribe()
 	defer b.unsubscribe(ch)
+
+	lastID, hasLast := parseLastEventID(r)
+	var lastReplayedID int64
+	for _, e := range b.replayFrom(lastID, hasLast) {
+		if !writeAndFlush(func() error { return writeSSE(w, "gnss", e) }) {
+			return
+		}
+		lastReplayedID = e.ID
+	}
+	if !writeAndFlush(func() error { return writeStatus(w, "connected") }) {
+		return
+	}
+
 	heartbeat := time.NewTicker(sseHeartbeat)
 	defer heartbeat.Stop()
 
@@ -130,11 +159,16 @@ func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case e := <-ch:
-			writeSSE(w, "gnss", e)
-			flusher.Flush()
+			if e.ID <= lastReplayedID {
+				continue // already delivered via the replay above
+			}
+			if !writeAndFlush(func() error { return writeSSE(w, "gnss", e) }) {
+				return
+			}
 		case <-heartbeat.C:
-			writeStatus(w, "heartbeat")
-			flusher.Flush()
+			if !writeAndFlush(func() error { return writeStatus(w, "heartbeat") }) {
+				return
+			}
 		case <-ctx.Done():
 			return
 		}
@@ -159,14 +193,16 @@ func parseLastEventID(r *http.Request) (int64, bool) {
 	return id, true
 }
 
-func writeSSE(w http.ResponseWriter, event string, e EventMsg) {
+func writeSSE(w http.ResponseWriter, event string, e EventMsg) error {
 	body, err := json.Marshal(e)
 	if err != nil {
-		return
+		return nil // malformed event: drop it, not a write failure
 	}
-	fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", e.ID, event, body)
+	_, err = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", e.ID, event, body)
+	return err
 }
 
-func writeStatus(w http.ResponseWriter, state string) {
-	fmt.Fprintf(w, "event: status\ndata: {\"status\":%q}\n\n", state)
+func writeStatus(w http.ResponseWriter, state string) error {
+	_, err := fmt.Fprintf(w, "event: status\ndata: {\"status\":%q}\n\n", state)
+	return err
 }
