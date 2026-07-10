@@ -23,6 +23,21 @@ static const char *TAG = "pusher";
 #define KEEPALIVE_S   30   // PING when idle this long (under the collector's idle timeout)
 #define BACKOFF_MAX_S 30
 
+// esp-tls maps a socket timeout to WANT_READ/WANT_WRITE; on a half-open link (no
+// RST ever arrives) tls_write_all/tls_read_full retried that forever with no bound. Fail
+// the operation -- and so the whole connection, via the normal error-return path -- after
+// this long without any actual progress (a partial read/write resets the clock).
+#define OP_DEADLINE_S 30
+
+// TCP-level keepalive (distinct from the GNF1 PING above, which is application-level and
+// requires the peer to be GNF1-aware): detects a link the OS itself can determine is dead
+// (no ACK to repeated probes) even when nothing at the TLS layer is trying to talk, so a
+// silently vanished collector is found without waiting for OP_DEADLINE_S to elapse on some
+// future write.
+#define TCP_KEEPIDLE_S  10
+#define TCP_KEEPINTVL_S 5
+#define TCP_KEEPCNT     3
+
 static pusher_cfg_t s_cfg;   // owned copy (strings duplicated)
 static volatile bool s_connected;
 
@@ -33,11 +48,18 @@ bool pusher_connected(void) { return s_connected; }
 static int tls_write_all(esp_tls_t *tls, const uint8_t *buf, size_t n)
 {
     size_t off = 0;
+    int64_t deadline_start_us = esp_timer_get_time();
     while (off < n) {
         ssize_t w = esp_tls_conn_write(tls, buf + off, n - off);
-        if (w == ESP_TLS_ERR_SSL_WANT_WRITE || w == ESP_TLS_ERR_SSL_WANT_READ) continue;
+        if (w == ESP_TLS_ERR_SSL_WANT_WRITE || w == ESP_TLS_ERR_SSL_WANT_READ) {
+            if (esp_timer_get_time() - deadline_start_us > (int64_t)OP_DEADLINE_S * 1000000) {
+                return -1; // no progress for OP_DEADLINE_S -- declare the link dead
+            }
+            continue;
+        }
         if (w <= 0) return -1;
         off += (size_t)w;
+        deadline_start_us = esp_timer_get_time(); // progress made; restart the deadline
     }
     return 0;
 }
@@ -45,11 +67,18 @@ static int tls_write_all(esp_tls_t *tls, const uint8_t *buf, size_t n)
 static int tls_read_full(esp_tls_t *tls, uint8_t *buf, size_t n)
 {
     size_t off = 0;
+    int64_t deadline_start_us = esp_timer_get_time();
     while (off < n) {
         ssize_t r = esp_tls_conn_read(tls, buf + off, n - off);
-        if (r == ESP_TLS_ERR_SSL_WANT_READ || r == ESP_TLS_ERR_SSL_WANT_WRITE) continue;
+        if (r == ESP_TLS_ERR_SSL_WANT_READ || r == ESP_TLS_ERR_SSL_WANT_WRITE) {
+            if (esp_timer_get_time() - deadline_start_us > (int64_t)OP_DEADLINE_S * 1000000) {
+                return -1; // no progress for OP_DEADLINE_S -- declare the link dead
+            }
+            continue;
+        }
         if (r <= 0) return -1;
         off += (size_t)r;
+        deadline_start_us = esp_timer_get_time(); // progress made; restart the deadline
     }
     return 0;
 }
@@ -101,11 +130,22 @@ static bool drain_acks(esp_tls_t *tls, int fd)
 
 // --- connect + handshake -----------------------------------------------------------------
 
+// static storage -- esp_tls_cfg_t.keep_alive_cfg is a pointer, and while
+// esp_tls_conn_new_sync is synchronous (so even a stack lifetime would technically survive
+// the call), a static avoids any doubt about esp-tls retaining the pointer past setup.
+static const tls_keep_alive_cfg_t s_keep_alive_cfg = {
+    .keep_alive_enable = true,
+    .keep_alive_idle = TCP_KEEPIDLE_S,
+    .keep_alive_interval = TCP_KEEPINTVL_S,
+    .keep_alive_count = TCP_KEEPCNT,
+};
+
 static esp_tls_t *connect_collector(void)
 {
     esp_tls_cfg_t tls_cfg = {
 .tls_version = ESP_TLS_VER_TLS_1_2, // pin (regression fix / collector floor)
         .timeout_ms = 10000,
+.keep_alive_cfg = (tls_keep_alive_cfg_t *)&s_keep_alive_cfg, // regression fix
     };
     if (s_cfg.ca_pem) {
         tls_cfg.cacert_buf = (const unsigned char *)s_cfg.ca_pem;
