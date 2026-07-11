@@ -222,6 +222,14 @@ func applySchema(ctx context.Context, pool *pgxpool.Pool) error {
 var requiredColumns = map[string][]string{
 	"gnss_events":    {"id", "time", "sv", "event_type", "old_value", "new_value", "severity", "message", "raw"},
 	"gnss_snapshots": {"time", "endpoint", "data"},
+	// navlistener's own raw-frame tables get the same fail-fast drift check. A future
+	// build that adds a copyColumns column against an existing deployment's older nav_frames
+	// starts cleanly (CREATE TABLE IF NOT EXISTS is a no-op), then every CopyFrom fails 42703
+	// undefined_column — class 42 is not poison, so each batch is retried and dropped forever
+	// (silent forensic-record loss while /healthz stays OK). nav_frames_seq_seen is the
+	// push-path dedup ledger; a drift there fails the atomic claim tx and drops the batch.
+	"nav_frames":          copyColumns,
+	"nav_frames_seq_seen": {"source_id", "feeder_seq", "seen_at"},
 }
 
 // verifyRequiredColumns fails fast with an actionable message if a required table

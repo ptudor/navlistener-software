@@ -222,6 +222,47 @@ func TestEventsQueryWindowClamped(t *testing.T) {
 	}
 }
 
+// TestEventsQueryFarFutureUntilClamped guards a far-future until (the "no upper
+// bound" idiom) must be clamped to now so the window-size clamp doesn't drag since into the
+// future and silently return zero rows. A last-hour request with until=9999 must still reach
+// the store with Since ≈ now-1h and Until = now.
+func TestEventsQueryFarFutureUntilClamped(t *testing.T) {
+	fe := &fakeEvents{}
+	s := newTestServer(nil, fe)
+	fixedNow := time.Unix(2_000_000_000, 0).UTC()
+	s.now = func() time.Time { return fixedNow }
+	since := fixedNow.Add(-time.Hour)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/gnss/api/events?since="+since.Format(time.RFC3339)+"&until=9999-01-01T00:00:00Z", nil)
+	rr := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, req)
+	decodeEnvelope(t, rr)
+
+	if !fe.lastQuery.Until.Equal(fixedNow) {
+		t.Errorf("until = %v, want clamped to now %v", fe.lastQuery.Until, fixedNow)
+	}
+	if !fe.lastQuery.Since.Equal(since) {
+		t.Errorf("since = %v, want the requested %v (not dragged into the future)", fe.lastQuery.Since, since)
+	}
+}
+
+// TestEventsAndFeed405CarryAllow guards a non-GET/HEAD request to the feed and events
+// endpoints must return 405 with the RFC 9110 §15.5.6 Allow header (as the SSE endpoint does).
+func TestEventsAndFeed405CarryAllow(t *testing.T) {
+	s := newTestServer(nil, &fakeEvents{})
+	for _, path := range []string{"/gnss/api/v2/svs", "/gnss/api/events", "/gnss/api/events/summary"} {
+		rr := httptest.NewRecorder()
+		s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, path, nil))
+		if rr.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s POST: status = %d, want 405", path, rr.Code)
+		}
+		if got := rr.Header().Get("Allow"); got != "GET, HEAD" {
+			t.Errorf("%s POST: Allow = %q, want \"GET, HEAD\"", path, got)
+		}
+	}
+}
+
 // TestEventsQueryOffsetClamped guards second clamp: offset is bounded, not just
 // floored at zero.
 func TestEventsQueryOffsetClamped(t *testing.T) {

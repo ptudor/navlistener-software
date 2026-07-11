@@ -33,8 +33,7 @@ const (
 // severity (minimum), limit (≤500), offset. Returns the standard envelope with the matched
 // events (newest first) and the total before pagination.
 func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	if methodNotAllowedGetHead(w, r) {
 		return
 	}
 	if s.events == nil {
@@ -56,6 +55,13 @@ func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "until: "+err.Error())
 		return
+	}
+	// events are historical, so clamp until to now. A client sending a "no upper
+	// bound" idiom (until=3000-01-01) would otherwise anchor the window-size clamp below in
+	// the far future and silently drag since with it, returning zero rows with ok:true — the
+	// confidently-wrong empty output regression fix exists to prevent.
+	if until.After(now) {
+		until = now
 	}
 	severity, err := atoiParam(q.Get("severity"), 0)
 	if err != nil {
@@ -108,8 +114,7 @@ func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 // (?hours=, default 24, ≤720) — totals, active critical/warning counts, the last critical
 // time, and breakdowns by event type and constellation (docs/OUTPUT.md §2.1).
 func (s *Server) serveEventsSummary(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	if methodNotAllowedGetHead(w, r) {
 		return
 	}
 	if s.events == nil {

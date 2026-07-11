@@ -182,11 +182,19 @@ var constellationByLetter = map[byte]string{
 // grouped result) so the window can be large without streaming every row.
 func (s *Store) SummarizeEvents(ctx context.Context, since, until time.Time) (EventSummary, error) {
 	sum := EventSummary{ByType: map[string]int{}, ByConstellation: map[string]int{}}
+	// only SV-scoped events (sv shaped like G05@0 / E14@1) contribute to the
+	// by-constellation breakdown. Station-scoped events (jamming/spoofing/capability) store
+	// the station id in sv, so a bare LEFT(sv,1) would misattribute a station named
+	// "Gateway1"/"Roof2"/"East…" to gps/glonass/…; the SV-name-shape regex excludes them
+	// (their letter comes back '' and is skipped below) while they still count in the total,
+	// by-type, and severity tallies.
 	rows, err := s.pool.Query(ctx,
-		`SELECT event_type, LEFT(sv,1), severity, count(*)
+		`SELECT event_type,
+		        CASE WHEN sv ~ '^[GRECJIS][0-9]{2}@' THEN LEFT(sv,1) ELSE '' END,
+		        severity, count(*)
 		   FROM gnss_events
 		  WHERE time >= $1 AND time <= $2
-		  GROUP BY event_type, LEFT(sv,1), severity`,
+		  GROUP BY event_type, 2, severity`,
 		since, until)
 	if err != nil {
 		return sum, fmt.Errorf("summarize events: %w", err)

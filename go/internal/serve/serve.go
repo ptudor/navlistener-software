@@ -223,8 +223,7 @@ func (s *Server) refresh(feed string) {
 // get 405. A not-yet-warmed feed is built on demand.
 func (s *Server) serveFeed(feed string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		if methodNotAllowedGetHead(w, r) {
 			return
 		}
 		s.mu.RLock()
@@ -342,4 +341,16 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": msg, "code": code})
+}
+
+// methodNotAllowedGetHead writes a 405 with the RFC 9110 §15.5.6 Allow header when the
+// request method is not GET or HEAD, returning true (the caller should then return). // shared by the feed, events-query/summary, and SSE handlers so the Allow header — which the
+// SSE handler already set — is applied consistently on every read endpoint's 405.
+func methodNotAllowedGetHead(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return true
+	}
+	return false
 }

@@ -18,6 +18,38 @@ var testRetry = flushRetry{attempts: 3, backoff: time.Millisecond, attemptTO: ti
 
 func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
+// TestRequiredColumnsCoversNavFrames guards verifyRequiredColumns must fail fast on a
+// drifted nav_frames / nav_frames_seq_seen (not just the intsat-shared tables), so a
+// self-upgrade against an older deployed raw-frame table is caught at startup rather than
+// silently dropping every CopyFrom batch. The nav_frames list must stay exactly copyColumns.
+func TestRequiredColumnsCoversNavFrames(t *testing.T) {
+	nf, ok := requiredColumns["nav_frames"]
+	if !ok {
+		t.Fatal("requiredColumns is missing nav_frames ")
+	}
+	if len(nf) != len(copyColumns) {
+		t.Fatalf("requiredColumns[nav_frames] = %v, want copyColumns %v", nf, copyColumns)
+	}
+	for i := range copyColumns {
+		if nf[i] != copyColumns[i] {
+			t.Errorf("nav_frames column %d = %q, want %q (must track copyColumns)", i, nf[i], copyColumns[i])
+		}
+	}
+	seq, ok := requiredColumns["nav_frames_seq_seen"]
+	if !ok {
+		t.Fatal("requiredColumns is missing nav_frames_seq_seen ")
+	}
+	want := []string{"source_id", "feeder_seq", "seen_at"}
+	if len(seq) != len(want) {
+		t.Fatalf("requiredColumns[nav_frames_seq_seen] = %v, want %v", seq, want)
+	}
+	for i := range want {
+		if seq[i] != want[i] {
+			t.Errorf("nav_frames_seq_seen column %d = %q, want %q", i, seq[i], want[i])
+		}
+	}
+}
+
 // row builds a CopyFrom row whose source_id (index 2) marks it poison when "bad".
 func row(id string) []any { return []any{nil, nil, id} }
 

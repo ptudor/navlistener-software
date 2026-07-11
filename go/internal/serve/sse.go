@@ -126,9 +126,7 @@ func (b *Broker) unsubscribe(ch chan EventMsg) {
 // reconnect window (Last-Event-ID, else the recent tail), then streams live events
 // as `event: gnss` with the id set, and a `event: status` heartbeat on the cadence.
 func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.Header().Set("Allow", "GET, HEAD") // RFC 9110 §15.5.6: 405 must name the allowed methods
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	if methodNotAllowedGetHead(w, r) { // RFC 9110 §15.5.6: 405 must name the allowed methods
 		return
 	}
 	// HEAD answers with the stream's headers and completes immediately —

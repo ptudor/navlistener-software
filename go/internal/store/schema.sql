@@ -82,6 +82,12 @@ SELECT create_hypertable('gnss_events', 'time', if_not_exists => TRUE);
 CREATE INDEX IF NOT EXISTS idx_gnss_events_sv_time       ON gnss_events (sv, time DESC);
 CREATE INDEX IF NOT EXISTS idx_gnss_events_type_time     ON gnss_events (event_type, time DESC);
 CREATE INDEX IF NOT EXISTS idx_gnss_events_severity_time ON gnss_events (severity, time DESC);
+-- the notify contract directs external LISTENers to fetch the full row by id
+-- (the trigger below carries only id/sv/type/severity). A hypertable PK must include the
+-- partition column (time), so id has no index by default; without this, every notify-driven
+-- `SELECT ... WHERE id = $1` seq-scans all chunks of this retention-less table — a cost that
+-- lands invisibly on the consumer since navlistener itself never queries by id.
+CREATE INDEX IF NOT EXISTS idx_gnss_events_id            ON gnss_events (id);
 
 -- pg_notify has a hard ~8000-byte payload limit; a long NEW.message would raise in
 -- this trigger and fail the whole INSERT in the same transaction. The
