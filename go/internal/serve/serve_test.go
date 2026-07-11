@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -153,6 +154,77 @@ func TestObservers(t *testing.T) {
 	}
 	if env.Data.Observers[1].ID != "badname" { // NUL stripped by sanitize
 		t.Errorf("unsanitized observer id %q", env.Data.Observers[1].ID)
+	}
+}
+
+// TestObserversRemarkNeverLeaksAddr guards the internal dial address
+// (LAN topology + the exact port of an unauthenticated raw receiver TCP
+// stream) must never reach the public observers feed's remark field -- only
+// an operator-supplied Source.Remark may.
+func TestObserversRemarkNeverLeaksAddr(t *testing.T) {
+	s := testServer([]config.Source{
+		{Name: "observer16", Type: "ubx", Addr: "10.0.0.2:2947"},
+		{Name: "observer17", Type: "ubx", Addr: "192.168.1.5:2948", Remark: "roof antenna"},
+	})
+	s.refreshAll()
+	rr := httptest.NewRecorder()
+	s.serveFeed("observers")(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/observers", nil))
+	body := rr.Body.String()
+	if strings.Contains(body, "10.0.0.2") || strings.Contains(body, "192.168.1.5") {
+		t.Fatalf("observers body leaks a configured dial address: %s", body)
+	}
+	var env struct {
+		Data struct {
+			Observers []observer `json:"observers"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Data.Observers[0].Remark != "" {
+		t.Errorf("observer16 remark = %q, want empty (no operator remark configured)", env.Data.Observers[0].Remark)
+	}
+	if env.Data.Observers[1].Remark != "roof antenna" {
+		t.Errorf("observer17 remark = %q, want the operator-supplied remark", env.Data.Observers[1].Remark)
+	}
+}
+
+// TestObserversUnionsPushStations guards FeedStationRF/FeedCapabilityReports
+// key stations by dial source OR authenticated push station id, and the detector
+// already sees both -- but the observers feed must union in a push-fleet station
+// that has no [[ingest]] entry at all, not just dial sources.
+func TestObserversUnionsPushStations(t *testing.T) {
+	s := testServer([]config.Source{{Name: "dial1", Type: "ubx", Addr: "10.0.0.2:2947"}})
+	now := time.Now()
+	// "pushstation1" never appears in cfg.Ingest -- only via authenticated RF telemetry.
+	s.store.Apply(&ingest.RawFrame{Source: "pushstation1", Recv: now, RF: &ingest.RawRF{
+		Bands: []ingest.RFBand{{Block: 0, AGC: 3000}},
+	}})
+	s.refresh("observers")
+	rr := httptest.NewRecorder()
+	s.serveFeed("observers")(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/observers", nil))
+	var env struct {
+		Data struct {
+			Observers []observer `json:"observers"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if len(env.Data.Observers) != 2 {
+		t.Fatalf("got %d observers, want 2 (dial1 + pushstation1): %+v", len(env.Data.Observers), env.Data.Observers)
+	}
+	var push *observer
+	for i := range env.Data.Observers {
+		if env.Data.Observers[i].ID == "pushstation1" {
+			push = &env.Data.Observers[i]
+		}
+	}
+	if push == nil {
+		t.Fatal("pushstation1 missing from observers feed despite reporting RF telemetry")
+	}
+	if push.RF == nil {
+		t.Error("pushstation1's RF data missing from its observer entry")
 	}
 }
 

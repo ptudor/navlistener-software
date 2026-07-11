@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -78,6 +79,7 @@ func New(addr string, st *state.Store, events EventStore, sources []config.Sourc
 		broker:  newBroker(),
 		cache:   map[string][]byte{},
 	}
+	s.broker.log = log // SSE marshal failures log through the server's real logger
 	mux := http.NewServeMux()
 	mux.HandleFunc("/gnss/api/v2/svs", s.serveFeed("svs"))
 	mux.HandleFunc("/gnss/api/v2/global", s.serveFeed("global"))
@@ -277,18 +279,56 @@ type observer struct {
 func (s *Server) observers(now time.Time) []observer {
 	rf := s.store.FeedStationRF(now)
 	reps := s.store.FeedCapabilityReports(now)
+	seen := make(map[string]bool, len(s.sources))
 	out := make([]observer, 0, len(s.sources))
 	for _, src := range s.sources {
+		seen[src.Name] = true
 		o := observer{
-			ID:       sanitize(src.Name),
+			ID: sanitize(src.Name),
+			// Remark is the operator-supplied station note; the internal
+			// dial address (LAN topology + the exact port of an unauthenticated
+			// raw receiver TCP stream) must never reach this public feed.
 			Vendor:   sanitize(src.Type),
-			Remark:   sanitize(src.Addr),
+			Remark:   sanitize(src.Remark),
 			Disabled: src.Disabled,
 		}
 		if r, ok := rf[src.Name]; ok {
 			o.RF = &r
 		}
 		if rep, ok := reps[src.Name]; ok {
+			o.Capabilities = rep.Observed
+			o.Declared = rep.Declared
+			o.Unexpected, o.Missing = state.CapabilityDiff(rep.Observed, rep.Declared)
+		}
+		out = append(out, o)
+	}
+	// FeedStationRF/FeedCapabilityReports key stations by dial source OR
+	// authenticated push station id -- the detector already sees both -- but until
+	// now this loop joined them only against s.sources (cfg.Ingest), so a
+	// push-fleet station's RF and capability data was collected, classified, and
+	// evented, yet unreachable in this feed. Union in any station id present in
+	// either read model that isn't already a dial source, with dial-only metadata
+	// (vendor/remark/disabled) simply absent. Sorted for a stable feed.
+	extra := make([]string, 0)
+	for id := range rf {
+		if !seen[id] {
+			seen[id] = true
+			extra = append(extra, id)
+		}
+	}
+	for id := range reps {
+		if !seen[id] {
+			seen[id] = true
+			extra = append(extra, id)
+		}
+	}
+	sort.Strings(extra)
+	for _, id := range extra {
+		o := observer{ID: sanitize(id)}
+		if r, ok := rf[id]; ok {
+			o.RF = &r
+		}
+		if rep, ok := reps[id]; ok {
 			o.Capabilities = rep.Observed
 			o.Declared = rep.Declared
 			o.Unexpected, o.Missing = state.CapabilityDiff(rep.Observed, rep.Declared)

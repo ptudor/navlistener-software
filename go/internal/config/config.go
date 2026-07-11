@@ -189,6 +189,13 @@ type Source struct {
 	Addr     string `toml:"addr"`               // host:port to dial
 	Disabled bool   `toml:"disabled,omitempty"` // keep the entry but don't start it (pause)
 
+	// Remark is an operator-supplied free-form station note (docs/OUTPUT.md §1.3):
+	// the ONLY thing that reaches the public observers feed's remark field
+	//. Addr is the internal LAN dial target the collector connects
+	// to -- publishing it would disclose network topology and the exact
+	// host:port of an unauthenticated raw receiver TCP stream. Empty by default.
+	Remark string `toml:"remark,omitempty"`
+
 	// Capabilities is this node's declared tudorgps fingerprint: the "gnss:sig" signals its
 	// silicon can produce (docs/CONSTELLATIONS.md §7). The integrity layer compares it against
 	// what the node actually delivers — a declared signal that goes silent, or an observed

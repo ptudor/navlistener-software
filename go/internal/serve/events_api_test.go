@@ -106,6 +106,72 @@ func TestEventsQueryParamsAndShape(t *testing.T) {
 	}
 }
 
+// TestEventsQueryMalformedParamsRejected guards a malformed since/until/severity/
+// limit/offset must return 400 with ok:false, not silently coerce to a default and
+// return ok:true with a confidently-wrong filter.
+func TestEventsQueryMalformedParamsRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{"bad since", "since=2026-7-1"},
+		{"bad until", "until=not-a-time"},
+		{"bad severity", "severity=high"},
+		{"bad limit", "limit=abc"},
+		{"bad offset", "offset=abc"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestServer(nil, &fakeEvents{})
+			rr := httptest.NewRecorder()
+			s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/events?"+tc.query, nil))
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status %d, want 400: %s", rr.Code, rr.Body.String())
+			}
+			var env struct {
+				OK   bool   `json:"ok"`
+				Code int    `json:"code"`
+				Err  string `json:"error"`
+			}
+			if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if env.OK || env.Code != http.StatusBadRequest || env.Err == "" {
+				t.Errorf("envelope = %+v, want ok:false code:400 with a message", env)
+			}
+		})
+	}
+}
+
+// TestEventsSummaryMalformedHoursRejected guards regression fix for the summary endpoint's
+// ?hours= param.
+func TestEventsSummaryMalformedHoursRejected(t *testing.T) {
+	s := newTestServer(nil, &fakeEvents{})
+	rr := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/events/summary?hours=lots", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestEventsQueryAbsentParamsStillDefault confirms stricter parsing does not
+// change behavior for absent (as opposed to malformed) params -- the pre-existing
+// default-on-absence contract is unchanged.
+func TestEventsQueryAbsentParamsStillDefault(t *testing.T) {
+	fe := &fakeEvents{}
+	s := newTestServer(nil, fe)
+	rr := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/events", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	if fe.lastQuery.Limit != eventsDefaultLimit {
+		t.Errorf("limit = %d, want default %d", fe.lastQuery.Limit, eventsDefaultLimit)
+	}
+	if fe.lastQuery.MinSeverity != 0 {
+		t.Errorf("severity = %d, want default 0", fe.lastQuery.MinSeverity)
+	}
+}
+
 // TestEventsQueryEmpty confirms an empty result serializes as [] (not null), so consumers
 // can iterate without a nil guard.
 func TestEventsQueryEmpty(t *testing.T) {

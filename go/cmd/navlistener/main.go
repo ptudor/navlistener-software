@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -77,6 +78,23 @@ func run() int {
 	frames := make(chan *ingest.RawFrame, frameQueue)
 	mgr := ingest.New(cfg.Ingest, frames, log)
 
+	// validate/construct the authenticated push endpoint (TLS cert/key/CA
+	// load, addr) *before* any pipeline goroutine starts. Previously this lived
+	// after the historian/decode/state goroutines were already running, so a bad
+	// push.tls_cert failed via cancel()+storeCancel() waiting for nothing --
+	// dying while the historian could be mid-CopyFrom instead of a clean
+	// pre-pipeline exit. Only construction moves; Run() still starts below,
+	// alongside the other pipeline goroutines.
+	var pushSrv *ingest.PushServer
+	if cfg.Push.Addr != "" {
+		auth := ingest.NewConfigAuthenticator(cfg.Push.Observers)
+		pushSrv, err = ingest.NewPushServer(cfg.Push, frames, auth, log)
+		if err != nil {
+			log.Error("push endpoint init failed", "error", err)
+			return 1
+		}
+	}
+
 	// The TimescaleDB historian is optional (enabled by [store].dsn). It runs under
 	// its own context, cancelled only after the decode loop has drained — so no frame
 	// is lost at the decode→persist hop at shutdown.
@@ -96,12 +114,17 @@ func run() int {
 		close(storeDone)
 	}
 
+	// ingestWG tracks only the frame producers (dial connectors + the authenticated
+	// push server) so shutdown can wait for "nothing will ever send to frames again"
+	// before closing it. decodeLoop's own completion (tracked in wg below)
+	// depends on that closure, so producers must be waited on separately, and first.
+	var ingestWG sync.WaitGroup
+	ingestWG.Add(1)
+	go func() { defer ingestWG.Done(); mgr.Run(ctx) }()
+
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go func() { defer wg.Done(); mgr.Run(ctx) }()
-
-	wg.Add(1)
-	go func() { defer wg.Done(); decodeLoop(ctx, frames, live, historian, log) }()
+	go func() { defer wg.Done(); decodeLoop(frames, live, historian, log) }()
 
 	wg.Add(1)
 	go func() { defer wg.Done(); stateLoop(ctx, cfg.State, live) }()
@@ -170,20 +193,12 @@ func run() int {
 
 	// The authenticated GNF1 push endpoint (docs/DESIGN.md §1/§2) is the production
 	// fleet ingest path: navfeeder edge feeders connect out to us over TLS and their
-	// frames join the same decode stage as the dial connectors. Enabled by
-	// [push].addr; TLS is mandatory when set.
-	if cfg.Push.Addr != "" {
-		auth := ingest.NewConfigAuthenticator(cfg.Push.Observers)
-		pushSrv, err := ingest.NewPushServer(cfg.Push, frames, auth, log)
-		if err != nil {
-			log.Error("push endpoint init failed", "error", err)
-			cancel()
-			storeCancel() // release the historian context before the early exit
-			return 1
-		}
-		wg.Add(1)
+	// frames join the same decode stage as the dial connectors. Constructed/validated
+	// above; only the run loop starts here.
+	if pushSrv != nil {
+		ingestWG.Add(1)
 		go func() {
-			defer wg.Done()
+			defer ingestWG.Done()
 			if err := pushSrv.Run(ctx); err != nil {
 				log.Error("push endpoint", "error", err)
 			}
@@ -208,14 +223,32 @@ func run() int {
 	sig := <-sigCh
 	log.Info("shutdown signal", "signal", sig.String())
 
-	// Ordered shutdown: stop ingest + decode + tick (the decode loop drains its
-	// buffered frames into the historian), THEN stop the historian so it flushes the
-	// last batch, THEN the obs server — all bounded by ShutdownTimeout.
+	// Ordered shutdown : cancel() stops every producer's accept/dial loop, but
+	// decodeLoop must not race them to give up on a momentarily-empty frames channel —
+	// a producer still mid-teardown (an in-flight connection handler, an in-flight
+	// dial reconnect) can still send after that false-empty read, and those frames
+	// would reach neither state nor the historian with no drop metric or log. Instead:
+	// wait for ingestWG (every producer's own Run already waits out its in-flight
+	// handlers before returning, so ingestWG.Wait() is a reliable "nothing can send to
+	// frames again" signal), THEN close frames, THEN let decodeLoop range it to
+	// closure — draining every already-enqueued frame with no race. Only close frames
+	// once producers are confirmed done: closing while one might still send would
+	// panic.
 	cancel()
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer shutCancel()
+
+	ingestDone := make(chan struct{})
+	go func() { ingestWG.Wait(); close(ingestDone) }()
+	select {
+	case <-ingestDone:
+		close(frames)
+	case <-shutCtx.Done():
+		log.Warn("shutdown timeout waiting for ingest producers; exiting without closing the frame queue")
+	}
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
 	select {
 	case <-done:
 		log.Info("pipeline drained")
@@ -243,9 +276,11 @@ func run() int {
 // is enabled, enqueues the raw frame for the forensic record — persistence is
 // independent of decode success, so a decoder bug never loses evidence. Each
 // frame is applied with a per-frame recover so a decoder edge case drops one
-// frame rather than crashing the process. On shutdown it drains the buffered
-// frames before returning.
-func decodeLoop(ctx context.Context, frames <-chan *ingest.RawFrame, live *state.Store, historian *store.Store, log *slog.Logger) {
+// frame rather than crashing the process. It has no shutdown logic of its own
+// : it simply ranges frames until the channel is closed, which the owner
+// (run, above) does only after every producer has confirmed it will never send
+// again — so every already-enqueued frame is applied with no drain race.
+func decodeLoop(frames <-chan *ingest.RawFrame, live *state.Store, historian *store.Store, log *slog.Logger) {
 	apply := func(f *ingest.RawFrame) {
 		defer func() {
 			if r := recover(); r != nil {
@@ -269,20 +304,8 @@ func decodeLoop(ctx context.Context, frames <-chan *ingest.RawFrame, live *state
 		}
 		live.Apply(f)
 	}
-	for {
-		select {
-		case f := <-frames:
-			apply(f)
-		case <-ctx.Done():
-			for {
-				select {
-				case f := <-frames:
-					apply(f)
-				default:
-					return
-				}
-			}
-		}
+	for f := range frames {
+		apply(f)
 	}
 }
 
@@ -381,9 +404,18 @@ func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, hi
 func emitEvent(ctx context.Context, e detect.Event, historian *store.Store, api *serve.Server, lastID *int64, log *slog.Logger) {
 	metrics.EventsTotal.WithLabelValues(e.Type, fmt.Sprint(e.Severity)).Inc()
 
+	// Params is a map of ephemeris-derived float64s, and encoding/json fails
+	// the whole document on NaN/±Inf -- sanitize once here, the single production
+	// EventMsg/EventRow construction point, so neither the historian write nor the
+	// SSE publish below can silently drop the event over one bad value.
+	e.Params = sanitizeEventParams(e.Params)
+
 	var rawJSON []byte
 	if len(e.Params) > 0 {
-		if b, err := json.Marshal(e.Params); err == nil {
+		b, err := json.Marshal(e.Params)
+		if err != nil {
+			log.Error("event params marshal failed", "type", e.Type, "sv", e.SV, "error", err)
+		} else {
 			rawJSON = b
 		}
 	}
@@ -419,6 +451,36 @@ func emitEvent(ctx context.Context, e detect.Event, historian *store.Store, api 
 			Message: e.Message, Params: e.Params,
 		})
 	}
+}
+
+// sanitizeEventParams replaces any non-finite float64 (NaN/±Inf) in params with its
+// string representation ("NaN", "+Inf", "-Inf") so json.Marshal can never fail on it
+//. encoding/json fails the whole document on a non-finite float; without
+// this, one such value in an event's params silently drops the event from both the
+// SSE stream (whose id is still consumed, so Last-Event-ID replay can't recover it)
+// and the persisted historian row (no params at all, no log, no metric). Returns
+// params unchanged (same map) when nothing needs sanitizing, to avoid an allocation
+// on the common path.
+func sanitizeEventParams(params map[string]any) map[string]any {
+	var dirty bool
+	for _, v := range params {
+		if f, ok := v.(float64); ok && (math.IsNaN(f) || math.IsInf(f, 0)) {
+			dirty = true
+			break
+		}
+	}
+	if !dirty {
+		return params
+	}
+	out := make(map[string]any, len(params))
+	for k, v := range params {
+		if f, ok := v.(float64); ok && (math.IsNaN(f) || math.IsInf(f, 0)) {
+			out[k] = fmt.Sprint(f) // "NaN", "+Inf", "-Inf"
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // stateLoop re-propagates live SVs on the configured cadence and expires stale ones.

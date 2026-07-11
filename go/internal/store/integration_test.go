@@ -149,6 +149,54 @@ func TestIntegrationReplayDedup(t *testing.T) {
 	}
 }
 
+// TestIntegrationQueryEventsTotalPastLastPage guards QueryEvents' total is
+// observed only via the paginated rows' count(*) OVER() -- a page past the last
+// matching row (offset >= the matching count) returns zero rows, and without a
+// fallback count total silently collapses to 0 even though rows genuinely match.
+func TestIntegrationQueryEventsTotalPastLastPage(t *testing.T) {
+	dsn := testDSN(t)
+	ctx := context.Background()
+	cfg := config.Store{DSN: dsn, BatchSize: 100, BatchEvery: 50 * time.Millisecond, RawRetention: "7 days", CompressAfter: "1 day"}
+	s, err := New(ctx, cfg, integrationLog())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer s.pool.Close()
+
+	const sv = "R114-integration-sv"
+	if _, err := s.pool.Exec(ctx, `DELETE FROM gnss_events WHERE sv = $1`, sv); err != nil {
+		t.Fatalf("cleanup gnss_events: %v", err)
+	}
+	now := time.Now()
+	for i := 0; i < 5; i++ {
+		if _, err := s.WriteEvent(ctx, EventRow{
+			Time: now.Add(time.Duration(i) * time.Second), SV: sv, Type: "orbit_disco", Severity: 1,
+		}); err != nil {
+			t.Fatalf("WriteEvent %d: %v", i, err)
+		}
+	}
+
+	events, total, err := s.QueryEvents(ctx, EventQuery{SV: sv, Limit: 100, Offset: 10})
+	if err != nil {
+		t.Fatalf("QueryEvents: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("events at offset=10 = %d, want 0 (only 5 rows exist)", len(events))
+	}
+	if total != 5 {
+		t.Errorf("total = %d, want 5 (the fix spec's exact verification: insert 5, offset=10, total must still read 5)", total)
+	}
+
+	// A within-range page still reports the same total.
+	events, total, err = s.QueryEvents(ctx, EventQuery{SV: sv, Limit: 100, Offset: 0})
+	if err != nil {
+		t.Fatalf("QueryEvents: %v", err)
+	}
+	if len(events) != 5 || total != 5 {
+		t.Errorf("first page = %d events / total %d, want 5/5", len(events), total)
+	}
+}
+
 // TestIntegrationPruneSeqSeen confirms pruneSeqSeen deletes ledger entries older
 // than the configured raw-retention window and leaves recent ones alone.
 func TestIntegrationPruneSeqSeen(t *testing.T) {

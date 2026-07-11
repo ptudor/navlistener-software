@@ -3,6 +3,8 @@ package serve
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"sync"
@@ -54,11 +56,13 @@ type Broker struct {
 	mu      sync.Mutex
 	clients map[chan EventMsg]struct{}
 	recent  []EventMsg // ring, oldest-first, capped at sseRecentCap
+	log     *slog.Logger
 }
 
-// newBroker builds an empty Broker.
+// newBroker builds an empty Broker. log defaults to a discard logger (tests, and
+// any construction that doesn't care) — New (serve.go) sets the real one.
 func newBroker() *Broker {
-	return &Broker{clients: map[chan EventMsg]struct{}{}}
+	return &Broker{clients: map[chan EventMsg]struct{}{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 }
 
 // Publish records an event in the replay ring and delivers it to every connected
@@ -167,7 +171,7 @@ func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
 	lastID, hasLast := parseLastEventID(r)
 	var lastReplayedID int64
 	for _, e := range b.replayFrom(lastID, hasLast) {
-		if !writeAndFlush(func() error { return writeSSE(w, "gnss", e) }) {
+		if !writeAndFlush(func() error { return b.writeSSE(w, "gnss", e) }) {
 			return
 		}
 		lastReplayedID = e.ID
@@ -186,7 +190,7 @@ func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
 			if e.ID <= lastReplayedID {
 				continue // already delivered via the replay above
 			}
-			if !writeAndFlush(func() error { return writeSSE(w, "gnss", e) }) {
+			if !writeAndFlush(func() error { return b.writeSSE(w, "gnss", e) }) {
 				return
 			}
 		case <-heartbeat.C:
@@ -217,9 +221,15 @@ func parseLastEventID(r *http.Request) (int64, bool) {
 	return id, true
 }
 
-func writeSSE(w http.ResponseWriter, event string, e EventMsg) error {
+// writeSSE marshals and frames one event. a marshal failure (e.g. a
+// non-finite float slipping past emitEvent's sanitization) is logged with the
+// event's type/SV before being dropped -- silently swallowing it here meant the
+// event vanished from both the live stream and the id sequence a client's
+// Last-Event-ID replay depends on, with no signal anywhere that it happened.
+func (b *Broker) writeSSE(w http.ResponseWriter, event string, e EventMsg) error {
 	body, err := json.Marshal(e)
 	if err != nil {
+		b.log.Error("sse event marshal failed", "type", e.Type, "sv", e.SV, "id", e.ID, "error", err)
 		return nil // malformed event: drop it, not a write failure
 	}
 	_, err = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", e.ID, event, body)

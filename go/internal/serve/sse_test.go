@@ -3,6 +3,8 @@ package serve
 import (
 	"bytes"
 	"context"
+	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -49,6 +51,33 @@ func TestBrokerReplayFrom(t *testing.T) {
 	got := b.replayFrom(3, true)
 	if len(got) != 2 || got[0].ID != 4 || got[1].ID != 5 {
 		t.Errorf("cursor replay = %+v, want ids 4,5", got)
+	}
+}
+
+// TestWriteSSELogsMarshalFailure guards a non-finite float in an event's
+// params makes json.Marshal fail; writeSSE must log the failure (with the event's
+// type/sv) rather than silently dropping the event with no signal anywhere. The
+// event is still dropped from the stream (a malformed event, not a write failure),
+// but now with a log record proving it happened.
+func TestWriteSSELogsMarshalFailure(t *testing.T) {
+	var logBuf bytes.Buffer
+	b := newBroker()
+	b.log = slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	rr := newSyncRecorder()
+	e := EventMsg{ID: 9, SV: "G05@0", Type: "orbit_disco", Params: map[string]any{"orbit_disco_m": math.NaN()}}
+	if err := b.writeSSE(rr, "gnss", e); err != nil {
+		t.Fatalf("writeSSE returned an error, want nil (malformed event dropped, not a write failure): %v", err)
+	}
+	if rr.String() != "" {
+		t.Errorf("a marshal-failed event must not write any bytes to the stream: %q", rr.String())
+	}
+	logged := logBuf.String()
+	if !strings.Contains(logged, "sse event marshal failed") {
+		t.Errorf("marshal failure not logged: %s", logged)
+	}
+	if !strings.Contains(logged, "orbit_disco") || !strings.Contains(logged, "G05@0") {
+		t.Errorf("logged record missing type/sv: %s", logged)
 	}
 }
 

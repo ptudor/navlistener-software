@@ -43,8 +43,35 @@ func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	now := s.now()
-	since := parseTimeDefault(q.Get("since"), now.Add(-24*time.Hour))
-	until := parseTimeDefault(q.Get("until"), now)
+	// an unparsable since/until/severity/limit/offset must not silently
+	// coerce to a default with ok:true -- a typo (since=2026-7-1, severity=high,
+	// limit=abc) becomes a confidently wrong window/filter with no signal to the
+	// caller. Absent (empty) params still default, unchanged.
+	since, err := parseTimeParam(q.Get("since"), now.Add(-24*time.Hour))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "since: "+err.Error())
+		return
+	}
+	until, err := parseTimeParam(q.Get("until"), now)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "until: "+err.Error())
+		return
+	}
+	severity, err := atoiParam(q.Get("severity"), 0)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "severity: "+err.Error())
+		return
+	}
+	limit, err := atoiParam(q.Get("limit"), eventsDefaultLimit)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "limit: "+err.Error())
+		return
+	}
+	offset, err := atoiParam(q.Get("offset"), 0)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "offset: "+err.Error())
+		return
+	}
 	if d := until.Sub(since); d > eventsMaxWindow {
 		// clamp the window rather than reject it -- until (defaulting to now) is
 		// the caller's anchor; since is pulled forward to eventsMaxWindow before it.
@@ -53,11 +80,11 @@ func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 	query := store.EventQuery{
 		SV:          q.Get("sv"),
 		Type:        q.Get("type"),
-		MinSeverity: atoiDefault(q.Get("severity"), 0),
+		MinSeverity: severity,
 		Since:       since,
 		Until:       until,
-		Limit:       clampInt(atoiDefault(q.Get("limit"), eventsDefaultLimit), 1, eventsMaxLimit),
-		Offset:      clampInt(atoiDefault(q.Get("offset"), 0), 0, eventsMaxOffset),
+		Limit:       clampInt(limit, 1, eventsMaxLimit),
+		Offset:      clampInt(offset, 0, eventsMaxOffset),
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), eventsQueryTimeout)
 	defer cancel()
@@ -89,7 +116,12 @@ func (s *Server) serveEventsSummary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "events history unavailable (historian disabled)")
 		return
 	}
-	hours := clampInt(atoiDefault(r.URL.Query().Get("hours"), summaryDefaultHours), 1, summaryMaxHours)
+	hoursRaw, err := atoiParam(r.URL.Query().Get("hours"), summaryDefaultHours)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "hours: "+err.Error())
+		return
+	}
+	hours := clampInt(hoursRaw, 1, summaryMaxHours)
 	now := s.now()
 	ctx, cancel := context.WithTimeout(r.Context(), eventsQueryTimeout)
 	defer cancel()
@@ -131,27 +163,32 @@ func (s *Server) writeEnvelope(w http.ResponseWriter, now time.Time, data map[st
 	_, _ = w.Write(body)
 }
 
-func atoiDefault(s string, def int) int {
+// atoiParam parses an integer query param. An absent (empty) value returns def, nil --
+// the pre-regression fix default-on-absence behavior, unchanged. A malformed non-empty value
+// returns an error instead of silently falling back to def: a typo like limit=abc must
+// not become a confidently-wrong default with ok:true.
+func atoiParam(s string, def int) (int, error) {
 	if s == "" {
-		return def
+		return def, nil
 	}
 	n, err := strconv.Atoi(s)
 	if err != nil {
-		return def
+		return 0, fmt.Errorf("invalid integer %q", s)
 	}
-	return n
+	return n, nil
 }
 
-// parseTimeDefault parses an RFC3339 timestamp, falling back to def on any error.
-func parseTimeDefault(s string, def time.Time) time.Time {
+// parseTimeParam parses an RFC3339 timestamp query param, with the same
+// absent-defaults/malformed-errors split as atoiParam.
+func parseTimeParam(s string, def time.Time) (time.Time, error) {
 	if s == "" {
-		return def
+		return def, nil
 	}
 	t, err := time.Parse(time.RFC3339, s)
 	if err != nil {
-		return def
+		return time.Time{}, fmt.Errorf("invalid RFC3339 timestamp %q", s)
 	}
-	return t
+	return t, nil
 }
 
 func clampInt(v, lo, hi int) int {

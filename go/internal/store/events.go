@@ -43,6 +43,21 @@ func (s *Store) WriteEvent(ctx context.Context, e EventRow) (int64, error) {
 	return id, nil
 }
 
+// clampSeverity bounds a caller-supplied MinSeverity into the valid 0..2 (info/warning/
+// critical) range before it is cast to the DB column's int16 : an out-of-range
+// value like 65538 wraps to 2 and 65536 wraps to 0 under a raw int16 cast, silently
+// remapping the filter to a plausible-looking but wrong severity instead of the caller's
+// actual (invalid) request.
+func clampSeverity(v int) int {
+	if v < 0 {
+		return 0
+	}
+	if v > 2 {
+		return 2
+	}
+	return v
+}
+
 // EventQuery filters a historical events query (docs/OUTPUT.md §2.1/§3). A zero-value
 // string/severity field is "any"; a zero Since/Until is "unbounded on that side". Limit
 // and Offset paginate; the caller clamps them.
@@ -104,7 +119,7 @@ func (s *Store) QueryEvents(ctx context.Context, q EventQuery) ([]StoredEvent, i
 		    AND time >= $4 AND time <= $5
 		  ORDER BY time DESC, id DESC
 		  LIMIT $6 OFFSET $7`,
-		q.SV, q.Type, int16(q.MinSeverity), since, until, q.Limit, q.Offset)
+		q.SV, q.Type, int16(clampSeverity(q.MinSeverity)), since, until, q.Limit, q.Offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("query events: %w", err)
 	}
@@ -129,6 +144,23 @@ func (s *Store) QueryEvents(ctx context.Context, q EventQuery) ([]StoredEvent, i
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, fmt.Errorf("iterate events: %w", err)
+	}
+	// count(*) OVER() is observed only via the returned rows, so a page past the
+	// last row (offset >= the matching count -- including the routine "probe one past
+	// the last page") returns zero rows and total silently collapses to 0, though
+	// thousands of rows may still match the filters. Run a separate, unpaginated count
+	// with the same filters whenever the page came back empty.
+	if len(out) == 0 {
+		if err := s.pool.QueryRow(ctx,
+			`SELECT count(*) FROM gnss_events
+			  WHERE ($1 = '' OR sv = $1)
+			    AND ($2 = '' OR event_type = $2)
+			    AND severity >= $3
+			    AND time >= $4 AND time <= $5`,
+			q.SV, q.Type, int16(clampSeverity(q.MinSeverity)), since, until,
+		).Scan(&total); err != nil {
+			return nil, 0, fmt.Errorf("count events: %w", err)
+		}
 	}
 	return out, total, nil
 }

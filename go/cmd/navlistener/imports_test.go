@@ -17,9 +17,14 @@ var forbidden = []string{
 }
 
 func TestNoForbiddenImports(t *testing.T) {
-	out, err := exec.Command("go", "list", "-deps", "./...").Output()
+	// this is the stated CI enforcement of the Apache/GPL provenance
+	// boundary -- a provenance control must fail closed. A `go list` failure (a
+	// broken import, a network-required module, a sandboxed CI) must not turn
+	// the gate into a silent skip that leaves the boundary unverified in an
+	// otherwise-green build.
+	out, err := exec.Command("go", "list", "-deps", "./...").CombinedOutput()
 	if err != nil {
-		t.Skipf("go list unavailable: %v", err)
+		t.Fatalf("go list -deps failed (import-graph boundary unverified): %v\n%s", err, out)
 	}
 	for _, dep := range strings.Fields(string(out)) {
 		for _, bad := range forbidden {
