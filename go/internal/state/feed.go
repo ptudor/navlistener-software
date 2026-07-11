@@ -32,7 +32,7 @@ type FeedSV struct {
 	EphAgeM          *float64 `json:"eph_age_m,omitempty"`
 	SISAValid        bool     `json:"sisa_valid"`
 	SISAM            *float64 `json:"sisa_m,omitempty"`
-	IOD              int      `json:"iod"`
+	IOD              *int     `json:"iod,omitempty"`
 	OrbitDiscoM      *float64 `json:"orbit_disco_m,omitempty"`
 	OrbitDiscoAgeS   *float64 `json:"orbit_disco_age_s,omitempty"`
 	TimeDiscoNs      *float64 `json:"time_disco_ns,omitempty"`
@@ -145,7 +145,6 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 		HealthCode:       code,
 		HealthIssueLevel: level,
 		HealthSubcode:    st.health,
-		IOD:              st.iod,
 		LastSeenS:        int(now.Sub(st.lastSeen).Seconds()),
 	}
 	// posFresh gates both the position and (for Kepler-family below) its
@@ -224,6 +223,12 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 	// on haveEph; the entry itself (and its per-receiver iono, above) is still
 	// published either way.
 	if st.haveEph {
+		// iod is a decoded issue-of-data; for an eph-less SV (iono-only RAWX) a
+		// served iod:0 is a fabricated value indistinguishable from a genuine IODE 0, so
+		// gate it on haveEph like the clock fields ("absent = unknown"). GLONASS (haveGloEph,
+		// no issue-of-data) correctly never reaches this block.
+		iod := st.iod
+		e.IOD = &iod
 		if finite(st.clk.Af0) && finite(st.clk.Af1) && finite(st.clk.Af2) {
 			af0, af1, af2 := st.clk.Af0, st.clk.Af1, st.clk.Af2
 			e.Af0, e.Af1, e.Af2 = &af0, &af1, &af2
@@ -274,6 +279,33 @@ func (s *Store) FeedGlobal(now time.Time) GlobalFeed {
 	for id, set := range svs {
 		g.Counts[id.String()+"_svs"] = len(set)
 		g.TotalLiveSVs += len(set)
+	}
+	// SBAS nav state lives in s.sbas (never the shards), so its counts were
+	// structurally absent even with live WAAS/EGNOS reception. Count fresh PRNs — one SV and
+	// one signal each. (total_live_* stays shard-derived; the finding scopes this to the
+	// per-constellation counts, not the live totals.)
+	s.sbasMu.Lock()
+	sbasN := 0
+	for _, st := range s.sbas {
+		if now.Sub(st.lastSeen) <= sbasStaleAfter {
+			sbasN++
+			if st.lastSeen.After(last) {
+				last = st.lastSeen
+			}
+		}
+	}
+	s.sbasMu.Unlock()
+	g.Counts[gnss.SBAS.String()+"_svs"] = sbasN
+	g.Counts[gnss.SBAS.String()+"_sigs"] = sbasN
+	// zero-fill every constellation pair so a count of 0 is an explicit value, not an
+	// absent-vs-0 ambiguity for a count (IMES=4 is never emitted, docs/CONSTELLATIONS §0).
+	for _, id := range []gnss.GNSSID{gnss.GPS, gnss.SBAS, gnss.Galileo, gnss.BeiDou, gnss.QZSS, gnss.GLONASS, gnss.NavIC} {
+		if _, ok := g.Counts[id.String()+"_svs"]; !ok {
+			g.Counts[id.String()+"_svs"] = 0
+		}
+		if _, ok := g.Counts[id.String()+"_sigs"]; !ok {
+			g.Counts[id.String()+"_sigs"] = 0
+		}
 	}
 	if !last.IsZero() {
 		g.LastSeen = last.Unix()

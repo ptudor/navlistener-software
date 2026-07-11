@@ -186,8 +186,10 @@ type StationRFBand struct {
 
 // FeedStationRF builds the per-station RF-defense read model as of now, for the
 // observers feed and the detector. rf_trust falls when a band shows a sustained AGC
-// departure or the C/N₀-vs-elevation residual collapses — an untrustworthy RF
-// environment down-weights the station's integrity votes (docs/DEFENSE-PNT.md §2).
+// departure — an untrustworthy RF environment down-weights the station's integrity votes
+// (docs/DEFENSE-PNT.md §2). the C/N₀-vs-elevation residual is computed and served as
+// cn0_resid but is deliberately NOT yet folded into rf_trust (no DEFENSE-PNT-defined collapse
+// threshold exists, and nothing in detect consumes rf_trust); this comment matches the code.
 func (s *Store) FeedStationRF(now time.Time) map[string]StationRF {
 	out := make(map[string]StationRF)
 	s.rfMu.Lock()

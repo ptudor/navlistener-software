@@ -21,7 +21,7 @@ It is the output standard, designed here. The existing clients (intsat, mapintsa
 
   ```json
   { "ok": true, "time": "2026-07-07T12:00:00Z",
-    "data": { "schema": "2.0", "svs": { "E14@1": { "...": "..." } } } }
+    "data": { "schema": "2.0", "svs": { "E14@0": { "...": "..." } } } }
   ```
 
   Errors: `{ "ok": false, "error": "…", "code": … }`. `time` is RFC3339 UTC.
@@ -29,10 +29,13 @@ It is the output standard, designed here. The existing clients (intsat, mapintsa
   the same unit for the same quantity in every feed (the almanac is metres, like everything
   else). **Every field has exactly one JSON type** — no bool-or-int fields, no
   English-to-parse. Enums are numeric codes defined in §2.2.
-- **SV keys** are `name@sigid` (e.g. `G05@0`, `E14@1`, `J03@0`, `I04@0`); SV names are the
+- **SV keys** are `name@sigid` (e.g. `G05@0`, `E14@0`, `J03@0`, `I04@0`); SV names are the
   RINEX letter + zero-padded PRN. gnssid numbering is the single internal convention
   (u-blox order, `docs/CONSTELLATIONS.md §0`): GPS 0, SBAS 1, Galileo 2, BeiDou 3, QZSS 5,
-  GLONASS 6, NavIC 7.
+  GLONASS 6, NavIC 7. **sigid 0 is the constellation's primary civil signal** (§1.1), so the
+  key normalizes to `@0` even where the u-blox NAV-SAT/SFRBX sigId differs — e.g. Galileo
+  E1-B (u-blox sigId 1) is keyed `E14@0`, not `E14@1`. Consumers key on the numeric
+  gnssid + this normalized sigid, never the receiver's raw sigId.
 - **GLONASS is a first-class constellation**: its `x_m/y_m/z_m` appear in `svs` like every
   other SV (from the PZ-90 RK4 propagator, MATH.md §3). No feed omits a constellation's
   position as a special case.

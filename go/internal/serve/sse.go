@@ -57,12 +57,29 @@ type Broker struct {
 	clients map[chan EventMsg]struct{}
 	recent  []EventMsg // ring, oldest-first, capped at sseRecentCap
 	log     *slog.Logger
+	// done is closed by Close() on server shutdown : http.Server.Shutdown never
+	// cancels in-flight request contexts, so the SSE handler must have a daemon-scoped
+	// signal to return on, or every restart with a live consumer (intsat holds a permanent
+	// EventSource) burns the full ShutdownTimeout and logs "ungraceful".
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 // newBroker builds an empty Broker. log defaults to a discard logger (tests, and
 // any construction that doesn't care) — New (serve.go) sets the real one.
 func newBroker() *Broker {
-	return &Broker{clients: map[chan EventMsg]struct{}{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	return &Broker{
+		clients: map[chan EventMsg]struct{}{},
+		log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		done:    make(chan struct{}),
+	}
+}
+
+// Close signals every active SSE handler to return. Idempotent; registered via
+// http.Server.RegisterOnShutdown so a graceful Shutdown completes promptly instead of
+// polling until the timeout on a client holding a permanent EventSource.
+func (b *Broker) Close() {
+	b.closeOnce.Do(func() { close(b.done) })
 }
 
 // Publish records an event in the replay ring and delivers it to every connected
@@ -205,6 +222,8 @@ func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
 			if !writeAndFlush(func() error { return writeStatus(w, "heartbeat") }) {
 				return
 			}
+		case <-b.done:
+			return // server is shutting down
 		case <-ctx.Done():
 			return
 		}

@@ -98,6 +98,9 @@ func New(addr string, st *state.Store, events EventStore, sources []config.Sourc
 		// is running on it) -- WriteTimeout stays unset, SSE's per-write deadline is regression fix.
 		IdleTimeout: 120 * time.Second,
 	}
+	// Shutdown() doesn't cancel in-flight SSE request contexts, so signal the broker
+	// to release its handlers when a graceful shutdown begins.
+	s.http.RegisterOnShutdown(s.broker.Close)
 	return s
 }
 

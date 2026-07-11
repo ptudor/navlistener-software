@@ -45,6 +45,10 @@ func TestFeedSVEphemerisLessFieldsOmitted(t *testing.T) {
 	if sv.EphAgeM != nil {
 		t.Errorf("EphAgeM = %v, want nil (no ephemeris)", *sv.EphAgeM)
 	}
+	// iod is a decoded issue-of-data; an eph-less SV must not serve a fabricated iod:0.
+	if sv.IOD != nil {
+		t.Errorf("IOD = %v, want nil (no ephemeris)", *sv.IOD)
+	}
 
 	det := detect.New(0)
 	events := det.Tick(now, svs, nil)

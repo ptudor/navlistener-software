@@ -19,6 +19,7 @@ type SVEntry struct {
 	SvID       int      `json:"svid"`
 	SigID      int      `json:"sigid"`
 	Health     int      `json:"health"`
+	HaveHealth bool     `json:"have_health"` // health is meaningful only when true
 	IOD        int      `json:"iod"`
 	XM         *float64 `json:"x_m,omitempty"`
 	YM         *float64 `json:"y_m,omitempty"`
@@ -35,15 +36,19 @@ func (s *Store) Snapshot(now time.Time) Snapshot {
 		sh.mu.Lock()
 		for _, st := range sh.m {
 			e := SVEntry{
-				Name:      st.key.Name(),
-				GnssID:    int(st.key.G),
-				SvID:      st.key.Sv,
-				SigID:     st.key.Sig,
-				Health:    st.health,
-				IOD:       st.iod,
-				LastSeenS: int(now.Sub(st.lastSeen).Seconds()),
+				Name:       st.key.Name(),
+				GnssID:     int(st.key.G),
+				SvID:       st.key.Sv,
+				SigID:      st.key.Sig,
+				Health:     st.health,
+				HaveHealth: st.haveHealth,
+				IOD:        st.iod,
+				LastSeenS:  int(now.Sub(st.lastSeen).Seconds()),
 			}
-			if st.havePos && finiteECEF(st.pos) {
+			// mirror the feed's posFresh gate  — a position frozen by a
+			// repeatedly-failing propagate tick (havePos stays true, posAt stops advancing)
+			// must not linger in the debug view forever misleading an operator.
+			if st.havePos && finiteECEF(st.pos) && !st.posAt.IsZero() && now.Sub(st.posAt) <= posStaleBound {
 				x, y, z := st.pos.X, st.pos.Y, st.pos.Z
 				e.XM, e.YM, e.ZM = &x, &y, &z
 			}

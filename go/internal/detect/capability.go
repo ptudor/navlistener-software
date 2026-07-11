@@ -41,7 +41,15 @@ func (d *Detector) detectCapability(id string, rep state.StationCapReport, now t
 
 	// Per-signal loss of a demonstrated capability.
 	for _, sig := range rep.Observed {
-		lost := sig.Count >= CapMinObservations && stationAlive &&
+		// when the whole station is dark, a signal is neither demonstrably "lost"
+		// (that classification is a TARGETED per-signal loss while the node is otherwise
+		// alive) nor "present" (nothing is present). Hold the machine instead of emitting a
+		// false lost→present "recovery" SevWarning mid-outage — with station_offline
+		// detection skipped, that lie would be the only event an operator sees.
+		if !stationAlive {
+			continue
+		}
+		lost := sig.Count >= CapMinObservations &&
 			now.Unix()-sig.LastSeen > int64(CapSignalLostAfter.Seconds())
 		metric := fmt.Sprintf("cap_lost:%d:%d", sig.Gnss, sig.Sig)
 		gnss, s := sig.Gnss, sig.Sig

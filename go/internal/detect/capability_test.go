@@ -60,6 +60,34 @@ func TestCapabilityStationOfflineNotLost(t *testing.T) {
 	}
 }
 
+// TestCapabilityNoFalseRecoveryWhenStationDark guards after a signal is confirmed
+// "lost", the whole station going dark must NOT fire a lost→present "recovery" (a lie — the
+// signal is not present, the station is gone). The machine is held while the station is dark.
+func TestCapabilityNoFalseRecoveryWhenStationDark(t *testing.T) {
+	d := New(0)
+	t0 := time.Unix(1_700_000_000, 0)
+	sig := state.StationCapability{Gnss: 2, Sig: 3, Count: 50, LastSeen: t0.Unix()}
+	d.TickCapabilities(t0, capReport("s", t0.Unix(), []state.StationCapability{sig}, nil)) // seed present
+
+	// Confirm "lost": signal stale, station still alive.
+	t1 := t0.Add(20 * time.Minute)
+	d.TickCapabilities(t1, capReport("s", t1.Unix(), []state.StationCapability{sig}, nil))
+	evs := d.TickCapabilities(t1.Add(70*time.Second),
+		capReport("s", t1.Add(70*time.Second).Unix(), []state.StationCapability{sig}, nil))
+	if e, ok := find(evs, "capability_signal_lost"); !ok || e.NewValue != "lost" {
+		t.Fatalf("expected a confirmed lost, got %+v", evs)
+	}
+
+	// The whole station now goes dark (StationLastSeen frozen). Past the alive window +
+	// debounce there must be NO recovery event.
+	dark := capReport("s", t1.Add(70*time.Second).Unix(), []state.StationCapability{sig}, nil)
+	t2 := t1.Add(2 * time.Hour)
+	d.TickCapabilities(t2, dark)
+	if evs := d.TickCapabilities(t2.Add(70*time.Second), dark); len(evs) != 0 {
+		t.Fatalf("station-dark wrongly fired a capability recovery: %+v", evs)
+	}
+}
+
 // TestCapabilityLossEventOrderDeterministic guards (SV, Type) alone is
 // not a unique key -- one station losing two demonstrated signals in the same
 // tick emits two capability_signal_lost events sharing both SV and Type, and

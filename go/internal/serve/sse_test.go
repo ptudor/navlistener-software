@@ -116,6 +116,28 @@ func TestServeEventsStream(t *testing.T) {
 	}
 }
 
+// TestServeEventsClosedOnShutdown guards Broker.Close() (registered on server
+// shutdown) must release an in-flight SSE handler promptly, even though the request context
+// is never cancelled — otherwise a client holding a permanent EventSource forces every
+// restart to burn the full ShutdownTimeout.
+func TestServeEventsClosedOnShutdown(t *testing.T) {
+	b := newBroker()
+	// A background request context that is NOT cancelled — the shutdown must come via Close().
+	req := httptest.NewRequest("GET", "/gnss/events", nil).WithContext(context.Background())
+	rr := newSyncRecorder()
+
+	done := make(chan struct{})
+	go func() { defer close(done); b.serveEvents(rr, req) }()
+	waitFor(t, func() bool { return strings.Contains(rr.String(), "event: status") }) // connected
+
+	b.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SSE handler did not return after Broker.Close() ")
+	}
+}
+
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

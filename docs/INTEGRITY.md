@@ -71,8 +71,9 @@ The standard applies each event type across the **full monitored set** below. in
 restrictions (orbit_disco: GPS+Galileo; clock_jump: Galileo-only; observation_lost:
 GPS+Galileo) are consumer limitations to be lifted, not part of the standard.
 
-**Monitored signals.** The initial monitoring set covers GPS L1CA (`0,0`), Galileo E1 (`2,1`), BeiDou B1I
-(`3,0`), GLONASS L1 (`6,0`). **Regional signal coverage:**
+**Monitored signals.** The initial monitoring set covers GPS L1CA (`0,0`), Galileo E1 (`2,0` — E1-B is
+u-blox sigId 1 on the wire but the feed keys it at the primary sigid 0, so cross-references use
+`2,0`/`E##@0`, regression fix), BeiDou B1I (`3,0`), GLONASS L1 (`6,0`). **Regional signal coverage:**
 add **QZSS L1CA (`5,0`)** and **NavIC L5 (`7,0`)** as first-class monitored signals, with the
 GPS-family thresholds (QZSS) and NavIC-appropriate staleness (its SPS NAV refresh cadence). This
 is the integrity-layer half of the CONSTELLATIONS.md decoder work — decoding QZSS/NavIC is

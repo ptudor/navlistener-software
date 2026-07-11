@@ -43,6 +43,31 @@ func TestFeedSBASExcludesStaleEntries(t *testing.T) {
 	}
 }
 
+// TestFeedGlobalSBASAndZeroFill guards the global feed must count fresh SBAS PRNs
+// (they live in s.sbas, not the shards) and zero-fill every per-constellation pair so a
+// count of 0 is an explicit value, not an absent key.
+func TestFeedGlobalSBASAndZeroFill(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	s.sbas[133] = &sbasState{prn: 133, provider: "WAAS", lastType: 1, lastSeen: now}
+
+	g := s.FeedGlobal(now.Add(time.Minute))
+	if g.Counts["sbas_svs"] != 1 || g.Counts["sbas_sigs"] != 1 {
+		t.Errorf("sbas counts = %d/%d, want 1/1", g.Counts["sbas_svs"], g.Counts["sbas_sigs"])
+	}
+	for _, c := range []string{"gps", "sbas", "galileo", "beidou", "qzss", "glonass", "navic"} {
+		if _, ok := g.Counts[c+"_svs"]; !ok {
+			t.Errorf("%s_svs key absent (want zero-filled)", c)
+		}
+		if _, ok := g.Counts[c+"_sigs"]; !ok {
+			t.Errorf("%s_sigs key absent (want zero-filled)", c)
+		}
+	}
+	if g.Counts["navic_svs"] != 0 {
+		t.Errorf("navic_svs = %d, want an explicit 0", g.Counts["navic_svs"])
+	}
+}
+
 // TestApplySBASSkipsUpdateWhenPreambleNotOK guards a structurally
 // self-consistent (valid CRC-24Q) message whose preamble doesn't match one of
 // the three ICD-mandated SBAS values (0x53/0x9A/0xC6) must not update state at

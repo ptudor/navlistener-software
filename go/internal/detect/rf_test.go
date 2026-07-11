@@ -80,6 +80,25 @@ func TestRFDegradedNotJamming(t *testing.T) {
 	}
 }
 
+// TestRFReceiverJamFlagAloneDegraded guards a receiver reporting its own jam flag
+// (jamState >= 2) with AGC below the departure threshold and no CW spike must surface as
+// station_rf_degraded (DEFENSE-PNT §2's single-metric rule), not classify "ok".
+func TestRFReceiverJamFlagAloneDegraded(t *testing.T) {
+	d := New(0)
+	t0 := time.Unix(1_700_000_000, 0)
+	d.TickStations(t0, station("s", band(0, 0, 2, 0))) // seed clear
+	jamFlag := station("s", band(0, 0, 2, 3))          // receiver jamState=3 alone, no AGC/CW
+	d.TickStations(t0.Add(10*time.Second), jamFlag)
+	evs := d.TickStations(t0.Add(75*time.Second), jamFlag)
+	if _, ok := find(evs, "jamming_detected"); ok {
+		t.Error("jamState-alone wrongly called a jamming attack")
+	}
+	e, ok := find(evs, "station_rf_degraded")
+	if !ok || e.NewValue != "degraded" {
+		t.Fatalf("station_rf_degraded = %+v (ok=%v), want degraded for jamState-alone", e, ok)
+	}
+}
+
 // TestRFAntennaFault confirms an antenna open/short surfaces antenna_fault.
 func TestRFAntennaFault(t *testing.T) {
 	d := New(0)
