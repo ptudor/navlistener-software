@@ -80,16 +80,24 @@ esp_err_t netcfg_save(const netcfg_t *cfg)
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
-    nvs_set_str(h, "ssid", cfg->wifi_ssid);
-    nvs_set_str(h, "pass", cfg->wifi_pass);
-    nvs_set_str(h, "host", cfg->host);
-    nvs_set_i32(h, "port", cfg->port);
-    nvs_set_str(h, "token", cfg->token);
-    nvs_set_str(h, "station", cfg->station);
-    nvs_set_u8(h, "insecure", cfg->insecure ? 1 : 0);
-    err = nvs_commit(h);
+    // each nvs_set_* return was previously discarded, so a failure (NVS full or
+    // fragmented) could still be followed by a successful nvs_commit() of the other keys,
+    // and the portal reported "Saved" for a partially-written config. Accumulate the first
+    // failure and return it (still attempting every set, so whatever did fit is persisted).
+    esp_err_t first_err = ESP_OK;
+    esp_err_t rc;
+#define NVS_TRY(x) do { rc = (x); if (rc != ESP_OK && first_err == ESP_OK) first_err = rc; } while (0)
+    NVS_TRY(nvs_set_str(h, "ssid", cfg->wifi_ssid));
+    NVS_TRY(nvs_set_str(h, "pass", cfg->wifi_pass));
+    NVS_TRY(nvs_set_str(h, "host", cfg->host));
+    NVS_TRY(nvs_set_i32(h, "port", cfg->port));
+    NVS_TRY(nvs_set_str(h, "token", cfg->token));
+    NVS_TRY(nvs_set_str(h, "station", cfg->station));
+    NVS_TRY(nvs_set_u8(h, "insecure", cfg->insecure ? 1 : 0));
+#undef NVS_TRY
+    esp_err_t commit_err = nvs_commit(h);
     nvs_close(h);
-    return err;
+    return first_err != ESP_OK ? first_err : commit_err;
 }
 
 // --- provisioning portal -----------------------------------------------------------------
@@ -142,10 +150,16 @@ static void url_decode(char *dst, size_t cap, const char *src, size_t srclen)
     dst[o] = '\0';
 }
 
-// form_field extracts one urlencoded field ("name=value&...") into dst (decoded).
-static void form_field(const char *body, const char *name, char *dst, size_t cap)
+// form_field extracts one urlencoded field ("name=value&...") into dst (decoded), returning
+// whether the key was present in the body at all. It no longer clears dst up front:
+// on "not found" it leaves dst untouched, so a caller seeding dst from the current config
+// (as save_post does) keeps that value for a field a partial POST omitted entirely, rather
+// than silently wiping it to empty — the "unspecified fields keep their value" the comment
+// there already claimed. Callers using a fresh, otherwise-uninitialized local buffer (not a
+// pre-seeded config field) must zero it themselves before calling, since "not found" is now
+// a true no-op.
+static bool form_field(const char *body, const char *name, char *dst, size_t cap)
 {
-    dst[0] = '\0';
     char key[24];
     int kn = snprintf(key, sizeof key, "%s=", name);
     const char *p = body;
@@ -156,10 +170,11 @@ static void form_field(const char *body, const char *name, char *dst, size_t cap
             const char *end = strchr(v, '&');
             size_t vlen = end ? (size_t)(end - v) : strlen(v);
             url_decode(dst, cap, v, vlen);
-            return;
+            return true;
         }
         p += kn;
     }
+    return false;
 }
 
 static void restart_task(void *arg)
@@ -182,8 +197,33 @@ static esp_err_t root_get(httpd_req_t *req)
 // where nobody is watching the response.
 #define SAVE_POST_BODY_CAP 2048
 
+// origin_ok validates the request came from our own portal page, not a cross-origin page
+// open in the operator's browser while it's joined to the provisioning AP : a plain
+// HTML <form> POST needs no CORS preflight, so without this check any page open in a
+// phone's browser during provisioning could silently POST to http://192.168.4.1/save in
+// the background and rewrite the collector host/token. Origin (sent by browsers on
+// cross-origin POSTs, and by modern browsers on same-origin ones too) must exactly match
+// our own origin when present; when it's absent (older/simple form submits), Referer must
+// at least point back at us. Rejecting when both are absent is the safe default — a
+// legitimate browser POST from our own served form always sends one or the other.
+static bool origin_ok(httpd_req_t *req)
+{
+    char buf[64];
+    if (httpd_req_get_hdr_value_str(req, "Origin", buf, sizeof buf) == ESP_OK) {
+        return strcmp(buf, "http://192.168.4.1") == 0;
+    }
+    if (httpd_req_get_hdr_value_str(req, "Referer", buf, sizeof buf) == ESP_OK) {
+        return strncmp(buf, "http://192.168.4.1/", 19) == 0;
+    }
+    return false; // neither header present: fail closed
+}
+
 static esp_err_t save_post(httpd_req_t *req)
 {
+    if (!origin_ok(req)) {
+        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "cross-origin request rejected");
+        return ESP_FAIL;
+    }
     if (req->content_len > SAVE_POST_BODY_CAP - 1) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "form too large");
         return ESP_FAIL;
@@ -199,17 +239,17 @@ static esp_err_t save_post(httpd_req_t *req)
     body[total > 0 ? total : 0] = '\0';
 
     netcfg_t cfg;
-    netcfg_load(&cfg); // start from current so unspecified fields keep their value
+    netcfg_load(&cfg); // start from current so unspecified fields keep their value (                       // form_field no longer clears dst on "not found", so a field genuinely
+                       // absent from the body leaves this NVS-loaded value untouched)
     form_field(body, "ssid", cfg.wifi_ssid, sizeof cfg.wifi_ssid);
     form_field(body, "pass", cfg.wifi_pass, sizeof cfg.wifi_pass);
     form_field(body, "host", cfg.host, sizeof cfg.host);
-    char port[8];
-    form_field(body, "port", port, sizeof port);
-    if (port[0]) cfg.port = atoi(port);
+    char port[8] = {0}; // fresh buffer, not a pre-seeded cfg field: must self-init 
+    if (form_field(body, "port", port, sizeof port) && port[0]) cfg.port = atoi(port);
     form_field(body, "station", cfg.station, sizeof cfg.station);
     form_field(body, "token", cfg.token, sizeof cfg.token);
 #if CONFIG_NVF_ALLOW_INSECURE_PORTAL
-    char ins[8];
+    char ins[8] = {0}; // fresh buffer: must self-init 
     form_field(body, "insecure", ins, sizeof ins);
     cfg.insecure = ins[0] != '\0'; // checkbox present => on
 #endif

@@ -3,6 +3,7 @@
 
 #include "pusher.h"
 
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/select.h>
@@ -154,6 +155,9 @@ static esp_tls_t *connect_collector(void)
         tls_cfg.crt_bundle_attach = esp_crt_bundle_attach;
     }
     // insecure: neither CA nor bundle -> the collector is not authenticated (dev only).
+    // this only actually skips verification (instead of esp-tls hard-failing the
+    // connection with neither option set) when NVF_INSECURE's Kconfig selects
+    // CONFIG_ESP_TLS_INSECURE + CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY (Kconfig.projbuild).
 
     esp_tls_t *tls = esp_tls_init();
     if (!tls) return NULL;
@@ -279,6 +283,13 @@ static void pusher_task(void *arg)
 
 static char *dup_or_null(const char *s) { return s ? strdup(s) : NULL; }
 
+// pusher_str_ok reports whether duplicating one config string succeeded :
+// dup_or_null legitimately returns NULL for a NULL input (no value configured at all), but
+// a non-NULL input turning into a NULL output means strdup failed under memory pressure --
+// that must not be silently treated the same as "no value configured," which previously let
+// connect_collector() go on to do strlen(s_cfg.host) on a NULL pointer.
+static bool pusher_str_ok(const char *in, const char *out) { return !in || out; }
+
 bool pusher_start(const pusher_cfg_t *cfg)
 {
     s_cfg = *cfg;
@@ -288,5 +299,15 @@ bool pusher_start(const pusher_cfg_t *cfg)
     s_cfg.station = dup_or_null(cfg->station);
     s_cfg.feed = dup_or_null(cfg->feed ? cfg->feed : "ubx");
     s_cfg.ca_pem = dup_or_null(cfg->ca_pem);
+    if (!pusher_str_ok(cfg->host, s_cfg.host) ||
+        !pusher_str_ok(cfg->token, s_cfg.token) ||
+        !pusher_str_ok(cfg->station, s_cfg.station) ||
+        !s_cfg.feed || // feed's input is never NULL (falls back to "ubx"), so its dup must succeed
+        !pusher_str_ok(cfg->ca_pem, s_cfg.ca_pem)) {
+        ESP_LOGE(TAG, "pusher_start: out of memory duplicating config strings; pusher not started");
+        free(s_cfg.host); free(s_cfg.token); free(s_cfg.station); free(s_cfg.feed); free(s_cfg.ca_pem);
+        memset(&s_cfg, 0, sizeof s_cfg);
+        return false;
+    }
     return xTaskCreate(pusher_task, "pusher", 8192, NULL, 6, NULL) == pdPASS;
 }

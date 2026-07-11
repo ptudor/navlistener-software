@@ -131,6 +131,8 @@ func (f *RawFrame) NavType() int {
 		switch f.SigID {
 		case 1, 3:
 			return 0x31 // BdsD2
+		case 5, 6:
+			return 0x32 // BdsCnav1
 		case 7, 8:
 			return 0x33 // BdsCnav2
 		default:

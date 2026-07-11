@@ -65,12 +65,52 @@ size_t gnf1_encode_data(uint8_t *out, uint64_t seq, const uint8_t *record, size_
     return GNF1_FRAME_HDR + 8 + record_len;
 }
 
+// gnf1_json_escape copies src into dst as a JSON string body (no surrounding quotes),
+// escaping '"', '\', and control characters : an operator-supplied token/station
+// containing '"' or '\' would otherwise produce invalid JSON, and the collector's
+// ParseHello failing on it manifests as a confusing permanent auth-reject/reconnect loop
+// rather than a clear error at provisioning time. Truncates cleanly (never overruns) if
+// the escaped form would not fit dstcap; dst is always NUL-terminated when dstcap > 0.
+// Well-formed inputs (no '"', '\', or control chars) are copied byte-identical. Mirrors
+// json_escape() in ../../../feeder/navfeeder.c.
+static void gnf1_json_escape(char *dst, size_t dstcap, const char *src)
+{
+    if (dstcap == 0) return;
+    size_t di = 0;
+    for (const unsigned char *s = (const unsigned char *)src; *s; s++) {
+        unsigned char c = *s;
+        char ubuf[7];
+        const char *esc = NULL;
+        switch (c) {
+        case '"':  esc = "\\\""; break;
+        case '\\': esc = "\\\\"; break;
+        case '\n': esc = "\\n"; break;
+        case '\r': esc = "\\r"; break;
+        case '\t': esc = "\\t"; break;
+        default:
+            if (c < 0x20) {
+                snprintf(ubuf, sizeof ubuf, "\\u%04x", c);
+                esc = ubuf;
+            }
+        }
+        size_t elen = esc ? strlen(esc) : 1;
+        if (di + elen + 1 > dstcap) break; // would overflow: truncate cleanly
+        if (esc) { memcpy(dst + di, esc, elen); } else { dst[di] = (char)c; }
+        di += elen;
+    }
+    dst[di] = 0;
+}
+
 int gnf1_build_hello(char *out, size_t cap, const char *token, const char *station,
                      const char *feed, bool zstd)
 {
+    char token_esc[512], station_esc[256], feed_esc[128];
+    gnf1_json_escape(token_esc, sizeof token_esc, token ? token : "");
+    gnf1_json_escape(station_esc, sizeof station_esc, station ? station : "");
+    gnf1_json_escape(feed_esc, sizeof feed_esc, feed ? feed : "ubx");
     int n = snprintf(out, cap,
                      "{\"token\":\"%s\",\"station\":\"%s\",\"feed\":\"%s\",\"sw\":\"navfeeder-esp/1\"%s}",
-                     token ? token : "", station ? station : "", feed ? feed : "ubx",
+                     token_esc, station_esc, feed_esc,
                      zstd ? ",\"zstd\":true" : "");
     if (n < 0 || (size_t)n >= cap) return -1;
     return n;

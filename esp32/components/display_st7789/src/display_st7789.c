@@ -16,6 +16,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -79,6 +80,16 @@ static const char *TAG = "display";
 static esp_lcd_panel_handle_t    s_panel = NULL;
 static esp_lcd_panel_io_handle_t s_io = NULL;
 static bool s_ready = false;
+// signaled by on_color_trans_done whenever any esp_lcd_panel_draw_bitmap() transfer
+// finishes (framebuffer path included). The fallback (direct-draw) path drains any stale
+// signal before issuing its own draw_bitmap and then blocks on this until ITS transfer
+// completes, before freeing the DMA buffer it just handed to the panel -- draw_bitmap
+// queues async SPI/DMA transactions (trans_queue_depth 10) and returns before they've
+// necessarily finished, so freeing right after issuing one races the in-flight DMA read.
+// Safe because display_* calls are only ever made serially from one render task (never
+// concurrently), so there is no other source of a draw_bitmap in flight to confuse the
+// drain-then-wait pairing.
+static SemaphoreHandle_t s_trans_sem = NULL;
 // Full-frame off-screen buffer (320x172 RGB565). The dashboard is rendered into this and
 // pushed in one esp_lcd_panel_draw_bitmap, so text is never corrupted by per-glyph DMA-buffer
 // reuse (the panel IO queues transfers async) and updates don't flicker. NULL => fall back to
@@ -88,6 +99,26 @@ static uint16_t *s_fb = NULL;
 static inline uint16_t swab16(uint16_t c) { return (uint16_t)((c >> 8) | (c << 8)); }
 static void fill_rect(int x, int y, int w, int h, uint16_t color);
 static void display_flush(void);
+
+// trans_done_cb runs in ISR context (the SPI DMA completion interrupt) and simply signals
+// s_trans_sem  -- see the comment on s_trans_sem above.
+static bool trans_done_cb(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *edata,
+                           void *user_ctx)
+{
+    (void)io; (void)edata; (void)user_ctx;
+    BaseType_t hp_task_woken = pdFALSE;
+    xSemaphoreGiveFromISR(s_trans_sem, &hp_task_woken);
+    return hp_task_woken == pdTRUE;
+}
+
+// wait_trans_done blocks until the panel confirms the most recently issued draw_bitmap has
+// fully completed. Call immediately after issuing exactly one draw_bitmap and
+// before touching/freeing the buffer it was given. drain_stale_trans_signal must be called
+// first, immediately before that draw_bitmap call, to clear any leftover signal from an
+// earlier, unrelated transfer (e.g. the framebuffer path's display_flush(), which never
+// waits on this semaphore itself).
+static void drain_stale_trans_signal(void) { xSemaphoreTake(s_trans_sem, 0); }
+static void wait_trans_done(void) { xSemaphoreTake(s_trans_sem, portMAX_DELAY); }
 
 void display_backlight_set_percent(uint8_t percent)
 {
@@ -156,6 +187,14 @@ esp_err_t display_init(void)
         esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_config, &s_io),
         TAG, "panel_io");
 
+    // needed by the fallback (direct-draw) path in fill_rect/display_text to know
+    // when it's safe to free a DMA transfer buffer.
+    s_trans_sem = xSemaphoreCreateBinary();
+    if (!s_trans_sem) { ESP_LOGE(TAG, "trans_sem alloc failed"); return ESP_ERR_NO_MEM; }
+    esp_lcd_panel_io_callbacks_t io_cbs = { .on_color_trans_done = trans_done_cb };
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_io_register_event_callbacks(s_io, &io_cbs, NULL),
+        TAG, "trans_done_cb");
+
     esp_lcd_panel_dev_config_t panel_config = {
         .reset_gpio_num = PIN_RST, .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB, .bits_per_pixel = 16,
     };
@@ -218,9 +257,11 @@ static void fill_rect(int x, int y, int w, int h, uint16_t color)
     for (int i = 0; i < w * band; i++) buf[i] = be;
     for (int yy = y; yy < y + h; yy += band) {
         int rows = (yy + band <= y + h) ? band : (y + h - yy);
+        drain_stale_trans_signal(); // regression fix
         esp_lcd_panel_draw_bitmap(s_panel, x, yy, x + w, yy + rows, buf);
+        wait_trans_done(); // block until THIS band's DMA transfer is done before reusing buf
     }
-    heap_caps_free(buf);
+    heap_caps_free(buf); // safe: the last band's transfer is confirmed complete above
 }
 
 void display_clear(uint16_t color) { fill_rect(0, 0, LCD_H_RES, LCD_V_RES, color); }
@@ -292,14 +333,19 @@ void display_text(int x, int y, const char *s, uint16_t fg, uint16_t bg, int sca
         int w = glyph;
         if (cx + w > LCD_H_RES) w = LCD_H_RES - cx;
         if (w == glyph) {
+            drain_stale_trans_signal(); // regression fix
             esp_lcd_panel_draw_bitmap(s_panel, cx, y, cx + glyph, y + glyph, cell);
+            wait_trans_done(); // must complete before the next glyph overwrites cell
         } else {
-            for (int gy = 0; gy < glyph; gy++)
+            for (int gy = 0; gy < glyph; gy++) {
+                drain_stale_trans_signal(); // regression fix
                 esp_lcd_panel_draw_bitmap(s_panel, cx, y + gy, cx + w, y + gy + 1, &cell[gy * glyph]);
+                wait_trans_done(); // same reasoning, per clipped row
+            }
         }
         cx += GLYPH_ADV(scale);
     }
-    heap_caps_free(cell);
+    heap_caps_free(cell); // safe: the last glyph's transfer is confirmed complete above
 }
 
 // ---- navfeeder dashboard ----------------------------------------------------------------

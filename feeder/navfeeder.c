@@ -79,6 +79,9 @@
 #define GNF_RECORD (RECORD_HDR + MAX_RAW)
 #define DRAIN_BATCH 512
 #define KEEPALIVE_S 30        /* PING when idle this long, to stay under the collector's idle timeout */
+#define USEFUL_CONN_S 3       /* a source connection must survive this long, or emit >=1 frame,
+                                * before it resets producer_thread's backoff (else an accept-then-close
+                                * peer retries at ~1 Hz forever) */
 
 /* UBX protocol constants (u-blox interface description). SFRBX carries raw nav words
  * per gnssId/sigId (docs/CONSTELLATIONS.md §2.1); MON-RF/MON-HW/NAV-SAT carry the RF-front-end
@@ -307,12 +310,22 @@ static void spool_ack(struct spool *s, uint64_t n) {
 	pthread_mutex_unlock(&s->mu);
 }
 
-/* spool_collect copies up to max frames with seq > after into out (caller frees data). On a
- * transient allocation failure  it stops and returns the partial batch collected so
- * far rather than dying — the frame that failed to copy, and everything after it in this
- * round, is simply not yet collected; it stays in the ring and is retried the next round. */
-static size_t spool_collect(struct spool *s, uint64_t after, struct frame *out, size_t max) {
+/* spool_collect copies up to max frames with seq > after into out (caller frees data), and
+ * reports the spool's current disk_max_seq under the same lock. Without this, a
+ * race exists between disk_drain's own (separately locked) snapshot of disk_max_seq and this
+ * call: the producer can evict a ring frame with seq > after to disk in between (advancing
+ * disk_max_seq past what disk_drain already saw and observed as "nothing new"), and that
+ * frame is then gone from the ring for THIS call to find — the batch silently skips it, the
+ * caller advances sent_upto past it anyway, and it is never sent. Reporting disk_max_seq here
+ * lets the caller detect that gap and re-run disk_drain (which will see the now-current
+ * disk_max_seq) before trusting the ring batch. On a transient allocation failure  it
+ * stops and returns the partial batch collected so far rather than dying — the frame that
+ * failed to copy, and everything after it in this round, is simply not yet collected; it
+ * stays in the ring and is retried the next round. */
+static size_t spool_collect(struct spool *s, uint64_t after, struct frame *out, size_t max,
+                            uint64_t *disk_max_seq_out) {
 	pthread_mutex_lock(&s->mu);
+	if (disk_max_seq_out) *disk_max_seq_out = s->disk_max_seq;
 	size_t n = 0;
 	for (size_t i = 0; i < s->count && n < max; i++) {
 		struct frame *f = &s->ring[(s->head + i) % s->cap];
@@ -496,8 +509,9 @@ static uint8_t frame_type(unsigned gnssId, unsigned sigId) {
 	case 0: return sigId == 0 ? 0x10 : 0x11;                 /* GPS: LNAV / CNAV */
 	case 5: return sigId == 0 ? 0x50 : sigId == 1 ? 0x53 : 0x51; /* QZSS: LNAV / L1S / CNAV */
 	case 2: return (sigId == 3 || sigId == 4) ? 0x21 : 0x20; /* Galileo: F/NAV / I/NAV */
-	case 3:                                                  /* BeiDou: D2 / B-CNAV2 / D1 */
+	case 3:                                                  /* BeiDou: D2 / B-CNAV1 / B-CNAV2 / D1 */
 		if (sigId == 1 || sigId == 3) return 0x31;
+		if (sigId == 5 || sigId == 6) return 0x32;
 		if (sigId == 7 || sigId == 8) return 0x33;
 		return 0x30;
 	case 6: return 0x40;                                     /* GLONASS */
@@ -662,31 +676,38 @@ static int sync_ubx(struct rdbuf *b) {
  * every UBX-RXM-SFRBX to the spool. It returns when the source ends (reconnect trigger). A
  * corrupt frame is dropped and the reader resynchronises — a mid-stream connect never
  * derails it. Untrusted-input discipline (docs/INTEGRITY.md §9): every length and index is
- * bounds-checked before use. */
-static void run_ubx(int fd) {
+ * bounds-checked before use. Returns nonzero if this connection proved "useful" — it
+ * emitted >=1 frame, or survived USEFUL_CONN_S — 0 otherwise : a TCP bridge that
+ * accepts and instantly closes (ser2net with the tty missing, port busy) makes this return
+ * immediately on the very first read; producer_thread uses the return value to decide
+ * whether resetting backoff is warranted, mirroring go/internal/ingest's regression fix fix. */
+static int run_ubx(int fd) {
 	struct rdbuf rb; rb.fd = fd; rb.pos = rb.len = 0;
 	unsigned char head[4], payload[UBX_MAX_PAYLOAD], ck[2];
+	time_t start = time(NULL);
+	unsigned long frames = 0;
 	for (;;) {
-		if (sync_ubx(&rb) != 0) { log_msg("source closed"); return; }
-		if (rb_read(&rb, head, 4) != 0) return;               /* class, id, len(2, LE) */
+		if (sync_ubx(&rb) != 0) { log_msg("source closed"); break; }
+		if (rb_read(&rb, head, 4) != 0) break;                /* class, id, len(2, LE) */
 		unsigned len = (unsigned)head[2] | ((unsigned)head[3] << 8);
 		if (len > UBX_MAX_PAYLOAD) continue;                  /* implausible length → resync */
-		if (rb_read(&rb, payload, len) != 0) return;
-		if (rb_read(&rb, ck, 2) != 0) return;
+		if (rb_read(&rb, payload, len) != 0) break;
+		if (rb_read(&rb, ck, 2) != 0) break;
 		uint8_t a = 0, bb = 0;                                 /* 8-bit Fletcher over class..payload */
 		a += head[0]; bb += a; a += head[1]; bb += a;
 		a += head[2]; bb += a; a += head[3]; bb += a;
 		for (unsigned i = 0; i < len; i++) { a += payload[i]; bb += a; }
 		if (a != ck[0] || bb != ck[1]) continue;              /* bad checksum → drop, resync */
 		if (head[0] == UBX_CLASS_RXM && head[1] == UBX_ID_SFRBX)
-			emit_sfrbx(payload, len);
+			{ emit_sfrbx(payload, len); frames++; }
 		else if (head[0] == UBX_CLASS_MON && head[1] == UBX_ID_MONRF)
-			emit_monrf(payload, len);
+			{ emit_monrf(payload, len); frames++; }
 		else if (head[0] == UBX_CLASS_MON && head[1] == UBX_ID_MONHW)
-			emit_monhw(payload, len);
+			{ emit_monhw(payload, len); frames++; }
 		else if (head[0] == UBX_CLASS_NAV && head[1] == UBX_ID_NAVSAT)
-			emit_navsat(payload, len);
+			{ emit_navsat(payload, len); frames++; }
 	}
+	return frames > 0 || (time(NULL) - start) >= USEFUL_CONN_S;
 }
 
 /* ── source open (serial or TCP) ─────────────────────────────────────────── */
@@ -763,9 +784,14 @@ static void *producer_thread(void *arg) {
 			continue;
 		}
 		log_msg("source open (ubx): %s", o->source);
-		backoff = 1;
-		run_ubx(fd);
+		int useful = run_ubx(fd);
 		close(fd);
+		if (useful) {
+			backoff = 1;
+		} else {
+			log_msg("source %s closed instantly with no data; retry in %ds", o->source, backoff);
+			sleep(backoff); if ((backoff *= 2) > 30) backoff = 30;
+		}
 	}
 	return NULL;
 }
@@ -803,13 +829,51 @@ static SSL *tls_connect(SSL_CTX *ctx, const struct opts *o, int *out_fd) {
 	return ssl;
 }
 
+/* json_escape copies src into dst as a JSON string body (no surrounding quotes), escaping
+ * '"', '\', and control characters : an operator-supplied token/station/feed
+ * containing '"' or '\' would otherwise produce invalid JSON, and the collector's
+ * ParseHello failing on it manifests as a confusing permanent auth-reject/reconnect loop
+ * rather than a clear error at the source. Truncates cleanly (never overruns) if the
+ * escaped form would not fit dstcap; dst is always NUL-terminated when dstcap > 0.
+ * Well-formed inputs (no '"', '\', or control chars) are copied byte-identical. */
+static void json_escape(char *dst, size_t dstcap, const char *src) {
+	if (dstcap == 0) return;
+	size_t di = 0;
+	for (const unsigned char *s = (const unsigned char *)src; *s; s++) {
+		unsigned char c = *s;
+		char ubuf[7];
+		const char *esc = NULL;
+		switch (c) {
+		case '"':  esc = "\\\""; break;
+		case '\\': esc = "\\\\"; break;
+		case '\n': esc = "\\n"; break;
+		case '\r': esc = "\\r"; break;
+		case '\t': esc = "\\t"; break;
+		default:
+			if (c < 0x20) {
+				snprintf(ubuf, sizeof ubuf, "\\u%04x", c);
+				esc = ubuf;
+			}
+		}
+		size_t elen = esc ? strlen(esc) : 1;
+		if (di + elen + 1 > dstcap) break; /* would overflow: truncate cleanly */
+		if (esc) { memcpy(dst + di, esc, elen); } else { dst[di] = (char)c; }
+		di += elen;
+	}
+	dst[di] = 0;
+}
+
 static int handshake(SSL *ssl, const struct opts *o, int *zstd_ok) {
 	*zstd_ok = 0;
 	if (ssl_write_all(ssl, MAGIC, 4) != 0) return -1;
+	char tok_esc[512], station_esc[512], feed_esc[128];
+	json_escape(tok_esc, sizeof tok_esc, o->token ? o->token : "");
+	json_escape(station_esc, sizeof station_esc, o->station);
+	json_escape(feed_esc, sizeof feed_esc, o->feed);
 	char hello[1024];
 	int n = snprintf(hello, sizeof hello,
 		"{\"token\":\"%s\",\"station\":\"%s\",\"feed\":\"%s\",\"sw\":\"navfeeder/1\"%s}",
-		o->token ? o->token : "", o->station, o->feed, o->zstd ? ",\"zstd\":true" : "");
+		tok_esc, station_esc, feed_esc, o->zstd ? ",\"zstd\":true" : "");
 	if (n < 0 || (size_t)n >= sizeof hello) return -1;
 	if (send_frame(ssl, F_HELLO, hello, (uint32_t)n) != 0) return -1;
 
@@ -903,7 +967,17 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 
 	g_disconnected = 0;
 	pthread_t rt;
-	pthread_create(&rt, NULL, reader_thread, ssl);
+	if (pthread_create(&rt, NULL, reader_thread, ssl) != 0) {
+		/* a failed thread create left `rt` indeterminate, and the unconditional
+		 * pthread_join(rt, NULL) at the end of this function is UB on it; treat this
+		 * exactly like a failed connect (log + tear down + let the outer loop retry). */
+		log_msg("failed to start reader thread; treating as a connection error");
+		if (c.cctx) ZSTD_freeCCtx(c.cctx);
+		free(c.obuf);
+		SSL_free(ssl);
+		close(tls_fd);
+		return -1;
+	}
 
 	/* Replay-on-reconnect: resume from the last acked sequence. */
 	uint64_t sent_upto = spool_acked(&g_spool);
@@ -924,7 +998,18 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 		int d = disk_drain(&g_spool, &c, &sent_upto);  /* oldest unacked first (disk) */
 		if (d < 0) break;                              /* disconnected during disk replay */
 		if (d > 0) { last_tx = time(NULL); continue; } /* re-check disk before the ring */
-		size_t n = spool_collect(&g_spool, sent_upto, batch, DRAIN_BATCH);
+		uint64_t disk_max_seq_now = 0;
+		size_t n = spool_collect(&g_spool, sent_upto, batch, DRAIN_BATCH, &disk_max_seq_now);
+		if (disk_max_seq_now > sent_upto) {
+			/* a frame > sent_upto may have been evicted to disk between
+			 * disk_drain's snapshot (above) and this collect. Discard whatever was
+			 * gathered from the ring and loop back to disk_drain first, which will
+			 * see the now-current disk_max_seq and send it — safe even if nothing
+			 * was actually evicted (disk_drain then sees dmax <= sent_upto and this
+			 * check falls through next time). */
+			for (size_t i = 0; i < n; i++) free(batch[i].data);
+			continue;
+		}
 		if (n == 0) {                                  /* caught up; wait for the producer */
 			if (time(NULL) - last_tx >= KEEPALIVE_S) {
 				if (send_ping(&c) != 0) { g_disconnected = 1; break; }
@@ -1088,8 +1173,19 @@ int main(int argc, char **argv) {
 	SSL_CTX *ctx = make_ctx(&o);
 	spool_init(&g_spool, o.spool_cap, o.spool_file, o.disk_max_bytes);
 
+	/* a failed pthread_create here (OOM at boot) previously left `prod`
+	 * indeterminate and the process running with no source thread ever reading the
+	 * receiver -- silently half-dead while still reconnect-logging like a healthy
+	 * feeder. Retry with backoff instead of die()ing: boot-time OOM is typically
+	 * transient (heap fragmentation easing as the OS settles), and "never exit" is
+	 * this file's rule throughout. */
 	pthread_t prod;
-	pthread_create(&prod, NULL, producer_thread, &o);
+	int prod_backoff = 1;
+	while (pthread_create(&prod, NULL, producer_thread, &o) != 0) {
+		log_msg("failed to start producer thread; retrying in %ds", prod_backoff);
+		sleep(prod_backoff);
+		if ((prod_backoff *= 2) > 30) prod_backoff = 30;
+	}
 
 	int backoff = 1;
 	for (;;) {

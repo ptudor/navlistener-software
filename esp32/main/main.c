@@ -158,8 +158,16 @@ static void wifi_start(void)
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                                         wifi_event_handler, NULL, NULL));
     wifi_config_t wc = {0};
-    strlcpy((char *)wc.sta.ssid, g_cfg.wifi_ssid, sizeof wc.sta.ssid);
-    strlcpy((char *)wc.sta.password, g_cfg.wifi_pass, sizeof wc.sta.password);
+    // wifi_sta_config_t's ssid[32]/password[64] accept a full-length, non-NUL-
+    // terminated value (a 32-byte SSID, a 64-hex-char raw PSK) -- strlcpy always reserves a
+    // byte for its own trailing NUL, silently dropping the last byte of exactly such a value
+    // and making that network permanently unjoinable. memcpy a strnlen-bounded length
+    // instead; wc is zero-initialized above, so a shorter value is still correctly
+    // zero-padded (equivalent to NUL-terminated) past its own length.
+    size_t ssid_len = strnlen(g_cfg.wifi_ssid, sizeof wc.sta.ssid);
+    memcpy(wc.sta.ssid, g_cfg.wifi_ssid, ssid_len);
+    size_t pass_len = strnlen(g_cfg.wifi_pass, sizeof wc.sta.password);
+    memcpy(wc.sta.password, g_cfg.wifi_pass, pass_len);
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
     ESP_ERROR_CHECK(esp_wifi_start());

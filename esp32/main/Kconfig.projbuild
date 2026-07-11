@@ -35,9 +35,19 @@ menu "navfeeder-esp"
     config NVF_INSECURE
         bool "Skip TLS verification (dev only)"
         default n
+        select ESP_TLS_INSECURE
+        select ESP_TLS_SKIP_SERVER_CERT_VERIFY
         help
             Do not verify the collector's certificate. Dev bench only — a production unit
             pins the collector CA (embed it or provision it).
+
+            this also selects esp-tls's own ESP_TLS_INSECURE/
+            ESP_TLS_SKIP_SERVER_CERT_VERIFY Kconfig options. Without them, connect_collector()'s
+            insecure branch (leaving both cacert_buf and crt_bundle_attach unset) makes esp-tls
+            hard-fail the connection outright ("no server verification option set") rather than
+            skip verification — the insecure path silently never worked. Enabling this Kconfig
+            makes esp-tls skip verification specifically for connections (like ours) that leave
+            every verification option unset, instead of failing them.
 
     config NVF_ALLOW_INSECURE_PORTAL
         bool "Allow the provisioning portal to set insecure=1 (dev/bench only)"
