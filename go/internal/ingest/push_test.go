@@ -923,15 +923,26 @@ func TestRecordToFramePushRTCMDerivesMsgTypeFromPayload(t *testing.T) {
 	}
 }
 
+// tempNetError mimics the shape real EMFILE/ENFILE errors reach the accept loop
+// in: a net.Error whose Temporary() is true (syscall.Errno reports EMFILE/ENFILE
+// as temporary). serve() classifies on exactly that, so a plain errors.New would
+// take the terminal fail-closed branch instead of the regression fix backoff branch and
+// make the backoff test vacuous.
+type tempNetError struct{}
+
+func (tempNetError) Error() string   { return "accept: too many open files" }
+func (tempNetError) Timeout() bool   { return false }
+func (tempNetError) Temporary() bool { return true }
+
 // alwaysErrListener is a net.Listener whose Accept always fails with a
-// persistent, non-timeout error -- simulating EMFILE/ENFILE.
+// persistent-but-temporary error -- simulating EMFILE/ENFILE.
 type alwaysErrListener struct {
 	calls int32
 }
 
 func (l *alwaysErrListener) Accept() (net.Conn, error) {
 	atomic.AddInt32(&l.calls, 1)
-	return nil, errors.New("too many open files")
+	return nil, tempNetError{}
 }
 func (l *alwaysErrListener) Close() error   { return nil }
 func (l *alwaysErrListener) Addr() net.Addr { return &net.TCPAddr{} }
@@ -956,8 +967,8 @@ func TestPushAcceptBackoffBoundsCallRate(t *testing.T) {
 	if calls > 60 {
 		t.Errorf("Accept called %d times in 200ms, want a bounded (backed-off) rate", calls)
 	}
-	if calls < 1 {
-		t.Error("Accept was never called")
+	if calls < 3 {
+		t.Errorf("Accept called only %d times in 200ms -- the loop stopped retrying (temporary errors must take the backoff branch, not the terminal one)", calls)
 	}
 
 	start := time.Now()

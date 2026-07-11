@@ -98,12 +98,13 @@ func ntripConnect(conn net.Conn, src config.Source) (chunked bool, err error) {
 	// a v2 caster answering an unknown mountpoint with "200 OK" and the ASCII
 	// sourcetable as body is a refusal, not a stream, exactly like the v1 SOURCETABLE status
 	// line ntripAccepted already rejects -- it just arrives one layer later, in the body's
-	// declared Content-Type rather than the status line.
+	// declared Content-Type rather than the status line. the media type is parsed,
+	// not string-compared, so a parameterized "gnss/sourcetable; charset=utf-8" is still a
+	// refusal rather than being mistaken for a silent, frameless RTCM stream; a header
+	// mime.ParseMediaType cannot parse falls back to the raw string comparison.
 	mediaType := contentType
-	if contentType != "" {
-		if parsed, _, err := mime.ParseMediaType(contentType); err == nil {
-			mediaType = parsed
-		}
+	if parsed, _, err := mime.ParseMediaType(contentType); err == nil {
+		mediaType = parsed
 	}
 	if strings.EqualFold(mediaType, "gnss/sourcetable") {
 		return false, fmt.Errorf("ntrip caster returned a sourcetable for mountpoint %q (Content-Type: %s)", src.Mountpoint, contentType)
@@ -133,7 +134,11 @@ func readNtripLine(conn net.Conn) (string, error) {
 
 // ntripAccepted reports whether a caster status line grants the stream. A SOURCETABLE reply is
 // a 200 that returns the caster's mountpoint list — it means the requested mount was not found,
-// so it is a refusal, not a stream.
+// so it is a refusal, not a stream. only the two protocols we actually speak are
+// accepted — NTRIP 1.0's exact "ICY 200 OK" and NTRIP 2.0's HTTP/1.0 or HTTP/1.1 — and the
+// status code is parsed as the exact three-digit token after the protocol version, not
+// substring-matched: "HTTP/1.1 1200 Weird" and "HTTP/2 200 OK" must not pass. Anything else
+// on a socket we wrote an HTTP/1.1 request into would be misparsed downstream anyway.
 func ntripAccepted(status string) bool {
 	fields := strings.Fields(status)
 	if len(fields) < 2 {

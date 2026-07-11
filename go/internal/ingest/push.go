@@ -366,7 +366,10 @@ func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (obs
 			return "", "", false, false
 		}
 	}
-	if scannerFor(h.Feed) == nil {
+	// regression fix defense-in-depth: sbf is rejected here as well as at config load —
+	// the GNF1 frame_type byte cannot carry an SBF block number, so a push-sbf
+	// grant from any future non-config Authenticator must not reach stream().
+	if h.Feed == "sbf" || scannerFor(h.Feed) == nil {
 		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "unsupported feed"}))
 		return "", "", false, false
 	}

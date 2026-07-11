@@ -209,21 +209,46 @@ func TestServeEventsMethodNotAllowed(t *testing.T) {
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", rr.Code)
 	}
+	if allow := rr.Header().Get("Allow"); allow != "GET, HEAD" {
+		t.Errorf("Allow = %q, want %q (RFC 9110 §15.5.6)", allow, "GET, HEAD")
+	}
 }
 
-func TestServeEventsHEADDoesNotSubscribe(t *testing.T) {
+// TestServeEventsHeadCompletesWithoutSubscribing guards HEAD gets the
+// stream's headers and returns immediately — it must not subscribe (consuming a
+// capped slot until disconnect), must carry no SSE body, and repeated HEADs
+// must not reduce the GET streams that can still subscribe.
+func TestServeEventsHeadCompletesWithoutSubscribing(t *testing.T) {
+	old := sseMaxClients
+	sseMaxClients = 1
+	defer func() { sseMaxClients = old }()
+
 	b := newBroker()
-	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodHead, "/gnss/events", nil)
-	b.serveEvents(rr, req)
-	if rr.Code != http.StatusMethodNotAllowed || rr.Header().Get("Allow") != "GET" {
-		t.Fatalf("HEAD = %d Allow %q, want 405/GET", rr.Code, rr.Header().Get("Allow"))
+	for i := 0; i < 5; i++ {
+		rr := httptest.NewRecorder()
+		b.serveEvents(rr, httptest.NewRequest(http.MethodHead, "/gnss/events", nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("HEAD status = %d, want 200", rr.Code)
+		}
+		if ct := rr.Header().Get("Content-Type"); ct != "text/event-stream" {
+			t.Errorf("HEAD content-type = %q, want text/event-stream", ct)
+		}
+		if rr.Body.Len() != 0 {
+			t.Errorf("HEAD wrote %d body bytes, want none", rr.Body.Len())
+		}
 	}
 	b.mu.Lock()
-	clients := len(b.clients)
+	n := len(b.clients)
 	b.mu.Unlock()
-	if clients != 0 {
-		t.Fatalf("HEAD subscribed %d broker clients", clients)
+	if n != 0 {
+		t.Fatalf("HEAD requests left %d subscribed clients, want 0", n)
+	}
+
+	// The only capped slot is still available for a real GET stream.
+	if ch, ok := b.subscribe(); !ok {
+		t.Fatal("GET stream slot consumed by HEAD requests")
+	} else {
+		b.unsubscribe(ch)
 	}
 }
 

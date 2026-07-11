@@ -171,6 +171,28 @@ func TestNtripConnectSourcetableRejected(t *testing.T) {
 	<-reqCh
 }
 
+// TestNtripConnectParameterizedSourcetableRejected guards a valid
+// parameterized or case-varied sourcetable media type is still a refusal — the
+// base media type is parsed, not compared as a whole string.
+func TestNtripConnectParameterizedSourcetableRejected(t *testing.T) {
+	for _, ct := range []string{
+		"gnss/sourcetable; charset=utf-8",
+		"GNSS/SourceTable",
+		"GNSS/SOURCETABLE; Charset=UTF-8",
+		"gnss/sourcetable ; boundary=x",
+	} {
+		client, server := net.Pipe()
+		reqCh := make(chan string, 1)
+		go fakeCaster(server, reqCh, "HTTP/1.1 200 OK\r\nContent-Type: "+ct+"\r\n\r\n", []byte("STR;...\r\n"))
+		src := config.Source{Name: "crtn", Type: "ntrip", Addr: "caster.invalid:2101", Mountpoint: "NOPE"}
+		if _, err := ntripConnect(client, src); err == nil {
+			t.Errorf("Content-Type %q accepted as a stream; want refusal", ct)
+		}
+		<-reqCh
+		client.Close()
+	}
+}
+
 // TestNtripConnectDataContentTypeAccepted confirms the fix spec's explicit carve-out: a v1
 // caster (no Content-Type at all) and an explicit gnss/data both still pass.
 func TestNtripConnectDataContentTypeAccepted(t *testing.T) {
@@ -202,30 +224,25 @@ func TestNtripAccepted(t *testing.T) {
 		{"SOURCETABLE 200 OK", false},
 		{"HTTP/1.1 401 Unauthorized", false},
 		{"HTTP/1.1 404 Not Found", false},
-		{"HTTP/1.1 1200 Embedded", false},
-		{"HTTP/1.1 2000 Embedded", false},
+		// the code must be the exact three-digit token, not a substring.
+		{"HTTP/1.1 1200 Weird", false},
+		{"HTTP/1.1 2000 Huge", false},
 		{"HTTP/1.1 X200 Bad", false},
+		{"HTTP/1.1 404 page mentions 200", false},
+		{"200", false},            // no protocol token
+		{"GARBAGE 200 OK", false}, // unknown protocol
+		// only the protocols we speak — HTTP/1.0, HTTP/1.1, and the exact
+		// NTRIP 1.0 "ICY 200 OK" — are accepted.
 		{"HTTP/2 200 OK", false},
 		{"ICY 1200 Embedded", false},
-		{"ICY 2000 Embedded", false},
+		{"ICY 2001 Nope", false},
 		{"ICY 200 OK extra", false},
+		{"ICY 200", false},         // NTRIP 1.0's grant is the exact "ICY 200 OK"
+		{"HTTP/1.1  200 OK", true}, // tolerate doubled separator space
+		{"HTTP/1.1 200", true},     // reason phrase absent
 	} {
 		if got := ntripAccepted(tt.status); got != tt.ok {
 			t.Errorf("ntripAccepted(%q) = %v, want %v", tt.status, got, tt.ok)
 		}
-	}
-}
-
-func TestNtripParameterizedSourcetableRejected(t *testing.T) {
-	for _, contentType := range []string{"gnss/sourcetable; charset=utf-8", "GNSS/SOURCETABLE; Charset=UTF-8"} {
-		client, server := net.Pipe()
-		reqCh := make(chan string, 1)
-		go fakeCaster(server, reqCh, "HTTP/1.1 200 OK\r\nContent-Type: "+contentType+"\r\n\r\n", nil)
-		src := config.Source{Name: "caster", Type: "ntrip", Addr: "caster.invalid:443", Mountpoint: "NOPE"}
-		if _, err := ntripConnect(client, src); err == nil {
-			t.Errorf("content type %q accepted", contentType)
-		}
-		<-reqCh
-		client.Close()
 	}
 }
