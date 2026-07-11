@@ -37,6 +37,15 @@ const (
 	// ~2s per string (~4s end to end); this is generous margin over normal jitter
 	// while comfortably rejecting a stale string left over from ~30 minutes prior.
 	glonassFrameWindow = 8 * time.Second
+
+	// posStaleBound  is how old a stored propagation epoch (svState.posAt)
+	// may be before the feed omits the position/tow/wn entirely rather than serve a
+	// solution frozen at a repeatedly-failing propagate tick. Generous over any
+	// sane [state].propagate_interval (default 1s) while still catching "this SV's
+	// propagation has been silently failing for a couple of minutes" (each failure
+	// leaves havePos/pos untouched, so without this bound a stale-but-finite
+	// position would otherwise be served forever with an ever-fresher-looking tow).
+	posStaleBound = 120 * time.Second
 )
 
 // Key identifies a satellite×signal, the feed's name@sigid space.
@@ -99,6 +108,12 @@ type svState struct {
 
 	pos     gnss.ECEF
 	havePos bool
+	// posAt is the propagation epoch that produced pos : the exact instant
+	// Propagate passed to kepler.Propagate/glonass.Propagate, not "now" at feed
+	// build time. tow/wn must be served from this epoch, not recomputed later, or
+	// the (tow, position) pair served can disagree by the SV's orbital motion over
+	// the skew between the tick and the feed build (up to km).
+	posAt time.Time
 
 	orbitDisco      float64
 	orbitDiscoValid bool
@@ -659,7 +674,7 @@ func (s *Store) Propagate(now time.Time) {
 				}
 				tk := gnsstime.EphAgeDay(gloTOD(now), st.gloEph.Tb)
 				if pos, err := glonass.Propagate(st.gloEph, tk); err == nil && finiteECEF(pos) {
-					st.pos, st.havePos = pos, true
+					st.pos, st.havePos, st.posAt = pos, true, now
 				}
 				counts["glonass"]++
 				continue
@@ -669,7 +684,7 @@ func (s *Store) Propagate(now time.Time) {
 			}
 			tow := towFor(st.key.G, now)
 			if pos, err := kepler.Propagate(st.eph, tow); err == nil && finiteECEF(pos) {
-				st.pos, st.havePos = pos, true
+				st.pos, st.havePos, st.posAt = pos, true, now
 			}
 			counts[st.key.G.String()]++
 		}

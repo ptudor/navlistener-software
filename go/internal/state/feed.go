@@ -141,7 +141,14 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 		IOD:              st.iod,
 		LastSeenS:        int(now.Sub(st.lastSeen).Seconds()),
 	}
-	if st.havePos && finiteECEF(st.pos) {
+	// posFresh gates both the position and (for Kepler-family below) its
+	// paired tow/wn on the same stored propagation epoch, so the two can never
+	// disagree the way "position from the last tick, tow recomputed at feed-build
+	// time" did -- and a position frozen by a repeatedly-failing propagate tick
+	// (havePos stays true; posAt stops advancing) is dropped once it's stale,
+	// rather than served forever alongside an ever-fresher-looking tow.
+	posFresh := st.havePos && finiteECEF(st.pos) && !st.posAt.IsZero() && now.Sub(st.posAt) <= posStaleBound
+	if posFresh {
 		x, y, z := st.pos.X, st.pos.Y, st.pos.Z
 		e.XM, e.YM, e.ZM = &x, &y, &z
 	}
@@ -195,10 +202,17 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 			af0, af1, af2 := st.clk.Af0, st.clk.Af1, st.clk.Af2
 			e.Af0, e.Af1, e.Af2 = &af0, &af1, &af2
 		}
-		tow := int(towFor(g, now))
-		e.Tow = &tow
-		if wn, ok := weekFor(g, now); ok {
-			e.Wn = &wn
+		// tow/wn are "time-of-week of the solution" (docs/OUTPUT.md §1.1) --
+		// the solution is x_m/y_m/z_m, so tow/wn must be the epoch that produced
+		// that position (st.posAt), not "now" at feed-build time. Gated on posFresh
+		// (not just haveEph) so tow/wn are never served without the position they
+		// describe.
+		if posFresh {
+			tow := int(towFor(g, st.posAt))
+			e.Tow = &tow
+			if wn, ok := weekFor(g, st.posAt); ok {
+				e.Wn = &wn
+			}
 		}
 		age := gnsstime.EphAgeMinutes(towFor(g, now), st.eph.Toe)
 		if finite(age) {
