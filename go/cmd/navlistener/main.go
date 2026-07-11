@@ -255,6 +255,11 @@ func run() int {
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	// Go's default SIGHUP action terminates the process. Ignore it so a mis-aimed
+	// newsyslog HUP (or a HUP at the child pidfile instead of the daemon(8) supervisor) can
+	// never kill the collector mid-drain. Log rotation reopens the logfile via daemon(8)'s
+	// -H on the supervisor; the collector needs no reload signal of its own.
+	signal.Ignore(syscall.SIGHUP)
 	exitCode := 0
 	select {
 	case sig := <-sigCh:

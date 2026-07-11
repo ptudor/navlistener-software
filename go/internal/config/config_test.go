@@ -1,6 +1,13 @@
 package config
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +16,43 @@ import (
 )
 
 const goodHash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// testKeypair generates a self-signed cert+key, writes them to temp files, and returns the
+// cert path and key path. regression fix makes finalizePush actually load the TLS keypair, so push
+// tests need real files. The self-signed cert also serves as a valid client_ca PEM.
+func testKeypair(t *testing.T) (certPath, keyPath string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		IsCA:         true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	certPath = filepath.Join(dir, "cert.pem")
+	keyPath = filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return certPath, keyPath
+}
 
 func pushConfig(p Push) *Config {
 	c := defaults()
@@ -280,8 +324,9 @@ func TestPushSBFFeedGrantRejected(t *testing.T) {
 
 // TestPushValid: a complete, well-formed observer table validates.
 func TestPushValid(t *testing.T) {
+	cert, key := testKeypair(t)
 	c := pushConfig(Push{
-		Addr: "0.0.0.0:5580", TLSCert: "c.pem", TLSKey: "k.pem", AckIntervals: "500ms",
+		Addr: "0.0.0.0:5580", TLSCert: cert, TLSKey: key, AckIntervals: "500ms",
 		Observers: []PushObserver{
 			{Station: "observer16", TokenSHA256: goodHash, Feeds: []string{"ubx", "rtcm"}},
 		},
@@ -337,21 +382,78 @@ func TestStrictUnknownFields(t *testing.T) {
 // config load, not lock the observer out at connect time. Without client_ca the
 // same name stays valid (bearer-only mode has no certificate binding).
 func TestPushStationMustBindToCertWhenMTLS(t *testing.T) {
+	cert, key := testKeypair(t)
 	obs := []PushObserver{{Station: "observer_16", TokenSHA256: goodHash, Feeds: []string{"ubx"}}}
-	c := pushConfig(Push{Addr: "0.0.0.0:5580", TLSCert: "c.pem", TLSKey: "k.pem",
-		ClientCA: "ca.pem", Observers: obs})
+	c := pushConfig(Push{Addr: "0.0.0.0:5580", TLSCert: cert, TLSKey: key,
+		ClientCA: cert, Observers: obs}) // self-signed cert doubles as the client_ca PEM
 	err := c.finalizePush()
 	if err == nil || !strings.Contains(err.Error(), "certificate-bindable") {
 		t.Fatalf("unbindable station with client_ca error = %v, want certificate-bindable rejection", err)
 	}
-	c = pushConfig(Push{Addr: "0.0.0.0:5580", TLSCert: "c.pem", TLSKey: "k.pem", Observers: obs})
+	c = pushConfig(Push{Addr: "0.0.0.0:5580", TLSCert: cert, TLSKey: key, Observers: obs})
 	if err := c.finalizePush(); err != nil {
 		t.Fatalf("bearer-only station name rejected: %v", err)
 	}
 }
 
+// TestCheckConfigParity guards a malformed push.addr, an unloadable TLS keypair, an
+// unparsable store.dsn, and a missing ntrip ca_file must each fail config finalize with a
+// named-field error (parity with what startup requires), not pass -check-config and die later.
+func TestCheckConfigParity(t *testing.T) {
+	cert, key := testKeypair(t)
+
+	badAddr := pushConfig(Push{Addr: "5580", TLSCert: cert, TLSKey: key,
+		Observers: []PushObserver{{Station: "s", TokenSHA256: goodHash, Feeds: []string{"ubx"}}}})
+	if err := badAddr.finalizePush(); err == nil || !strings.Contains(err.Error(), "push.addr") {
+		t.Errorf("push.addr=5580: err = %v, want a push.addr error", err)
+	}
+
+	badCert := pushConfig(Push{Addr: "0.0.0.0:5580", TLSCert: "/nonexistent", TLSKey: "/nonexistent",
+		Observers: []PushObserver{{Station: "s", TokenSHA256: goodHash, Feeds: []string{"ubx"}}}})
+	if err := badCert.finalizePush(); err == nil || !strings.Contains(err.Error(), "push.tls_cert") {
+		t.Errorf("tls_cert=/nonexistent: err = %v, want a push.tls_cert error", err)
+	}
+
+	badDSN := defaults()
+	badDSN.Store.DSN = "not a dsn"
+	if err := badDSN.finalize(); err == nil || !strings.Contains(err.Error(), "store.dsn") {
+		t.Errorf("store.dsn='not a dsn': err = %v, want a store.dsn error", err)
+	}
+
+	badCA := defaults()
+	badCA.Ingest = []Source{{Name: "crtn", Type: "ntrip", Addr: "caster.invalid:2101",
+		Mountpoint: "M", CaptureOnly: true, NTRIPCAFile: "/nonexistent"}}
+	if err := badCA.finalize(); err == nil || !strings.Contains(err.Error(), "ca_file") {
+		t.Errorf("ntrip ca_file=/nonexistent: err = %v, want a ca_file error", err)
+	}
+}
+
+// TestConfigRejectsExplicitNonPositiveAndUbxCaptureOnly guards an explicitly-set
+// non-positive duration is a hard error (not silently coerced to a default), and capture_only
+// on a ubx source is rejected rather than silently ignored.
+func TestConfigRejectsExplicitNonPositiveAndUbxCaptureOnly(t *testing.T) {
+	zeroTTL := defaults()
+	zeroTTL.State.SVTTLs = "0s"
+	if err := zeroTTL.finalize(); err == nil || !strings.Contains(err.Error(), "state.sv_ttl") {
+		t.Errorf("sv_ttl=0s: err = %v, want a state.sv_ttl positive-duration error", err)
+	}
+
+	negBatch := defaults()
+	negBatch.Store.BatchEverys = "-5s"
+	if err := negBatch.finalize(); err == nil || !strings.Contains(err.Error(), "store.batch_interval") {
+		t.Errorf("batch_interval=-5s: err = %v, want a store.batch_interval error", err)
+	}
+
+	ubxCapture := defaults()
+	ubxCapture.Ingest = []Source{{Name: "u", Type: "ubx", Addr: "127.0.0.1:1", CaptureOnly: true}}
+	if err := ubxCapture.finalize(); err == nil || !strings.Contains(err.Error(), "capture_only") {
+		t.Errorf("ubx capture_only=true: err = %v, want a capture_only rejection", err)
+	}
+}
+
 func TestPushDuplicateTokenHash(t *testing.T) {
-	c := pushConfig(Push{Addr: "0.0.0.0:5580", TLSCert: "c.pem", TLSKey: "k.pem",
+	cert, key := testKeypair(t)
+	c := pushConfig(Push{Addr: "0.0.0.0:5580", TLSCert: cert, TLSKey: key,
 		Observers: []PushObserver{
 			{Station: "first", TokenSHA256: goodHash, Feeds: []string{"ubx"}},
 			{Station: "second", TokenSHA256: strings.ToUpper(goodHash), Feeds: []string{"rtcm"}},

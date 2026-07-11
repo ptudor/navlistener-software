@@ -1,9 +1,21 @@
 #!/bin/sh
 #
 # FreeBSD rc.d service for navlistener.
+#
+# One-time provisioning (regression fix — the daemon runs as, and the rundir is owned by, this user;
+# `service start` on a fresh host fails without it):
+#   pw useradd navlistener -d /nonexistent -s /usr/sbin/nologin -c "navlistener collector"
+#   install -d -o navlistener -g navlistener -m 0755 /usr/local/etc/navlistener
+#
 # Install as /usr/local/etc/rc.d/navlistener (chmod 755), then:
 #   sysrc navlistener_enable=YES
 #   service navlistener start
+#
+# Log rotation : daemon(8) is invoked with -H so it reopens ${navlistener_logfile}
+# on SIGHUP; ship deploy/freebsd/newsyslog.conf.d/navlistener.conf to
+# /usr/local/etc/newsyslog.conf.d/navlistener.conf so newsyslog signals the SUPERVISOR
+# pidfile (never the child — a SIGHUP at the collector is ignored in main.go, but rotation
+# must not risk the ordered drain).
 #
 # PROVIDE: navlistener
 # REQUIRE: LOGIN NETWORKING postgresql
@@ -46,20 +58,32 @@ navlistener_start() {
 	fi
 	install -d -o "${navlistener_user}" -g "${navlistener_user}" -m 0755 "${navlistener_rundir}"
 	echo "Starting ${name}."
-	/usr/sbin/daemon -f -r -R 5 \
+	# -H: reopen -o output on SIGHUP so newsyslog can rotate the logfile without killing the
+	# daemon or losing the historian's in-flight batch. Requires daemon(8) 13.x+.
+	/usr/sbin/daemon -f -H -r -R 5 \
 		-P "${supervisor_pidfile}" -p "${pidfile}" \
 		-u "${navlistener_user}" -o "${navlistener_logfile}" \
 		"${navlistener_program}" -config "${navlistener_config}"
 }
 
 navlistener_stop() {
-	if [ ! -f "${supervisor_pidfile}" ]; then
+	# prefer signalling the supervisor (so its -R restart loop ends before the child
+	# is torn down), but VERIFY the pidfile actually names a live daemon(8) supervisor first —
+	# a stale supervisor pidfile could otherwise TERM a reused, unrelated PID. If the
+	# supervisor is already gone but the child survives, TERM the child directly so a dead
+	# supervisor can't leave `service stop` hanging on wait_for_pids forever.
+	_child="$(cat ${pidfile} 2>/dev/null)"
+	if [ -f "${supervisor_pidfile}" ] && pgrep -F "${supervisor_pidfile}" daemon >/dev/null 2>&1; then
+		echo "Stopping ${name}."
+		kill -TERM "$(cat ${supervisor_pidfile})" 2>/dev/null
+	elif [ -n "${_child}" ] && pgrep -F "${pidfile}" "${name}" >/dev/null 2>&1; then
+		echo "Stopping ${name} (supervisor absent; signalling child directly)."
+		kill -TERM "${_child}" 2>/dev/null
+	else
 		echo "${name} not running."
 		return 0
 	fi
-	echo "Stopping ${name}."
-	kill -TERM "$(cat ${supervisor_pidfile})" 2>/dev/null
-	wait_for_pids "$(cat ${pidfile} 2>/dev/null)"
+	wait_for_pids "${_child}"
 }
 
 run_rc_command "$1"

@@ -10,6 +10,8 @@ package config
 
 import (
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"os"
@@ -18,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	toml "github.com/pelletier/go-toml/v2"
 )
 
@@ -297,17 +300,11 @@ func (c *Config) finalize() error {
 			return err
 		}
 	}
-	if err := parseDur(c.State.SVTTLs, &c.State.SVTTL); err != nil {
-		return fmt.Errorf("state.sv_ttl: %w", err)
+	if err := parseDurPositive("state.sv_ttl", c.State.SVTTLs, &c.State.SVTTL, 2*time.Hour); err != nil {
+		return err
 	}
-	if c.State.SVTTL <= 0 {
-		c.State.SVTTL = 2 * time.Hour
-	}
-	if err := parseDur(c.State.PropagateEverys, &c.State.PropagateEvery); err != nil {
-		return fmt.Errorf("state.propagate_interval: %w", err)
-	}
-	if c.State.PropagateEvery <= 0 {
-		c.State.PropagateEvery = time.Second
+	if err := parseDurPositive("state.propagate_interval", c.State.PropagateEverys, &c.State.PropagateEvery, time.Second); err != nil {
+		return err
 	}
 	if c.State.Shards < 1 {
 		return fmt.Errorf("state.shards must be >= 1")
@@ -319,13 +316,15 @@ func (c *Config) finalize() error {
 		return fmt.Errorf("state.leap_seconds %d: outside the plausible 10-30 range", c.State.LeapSeconds)
 	}
 
-	if err := parseDur(c.Store.BatchEverys, &c.Store.BatchEvery); err != nil {
-		return fmt.Errorf("store.batch_interval: %w", err)
+	if err := parseDurPositive("store.batch_interval", c.Store.BatchEverys, &c.Store.BatchEvery, time.Second); err != nil {
+		return err
 	}
-	if c.Store.BatchEvery <= 0 {
-		c.Store.BatchEvery = time.Second
+	// a negative batch_size is explicit garbage (an int has no "unset" string form to
+	// distinguish, but < 0 can never be intended); 0 stays "unset → default".
+	if c.Store.BatchSize < 0 {
+		return fmt.Errorf("store.batch_size %d: must be positive", c.Store.BatchSize)
 	}
-	if c.Store.BatchSize < 1 {
+	if c.Store.BatchSize == 0 {
 		c.Store.BatchSize = 1000
 	}
 	if c.Store.RawRetention != "" && !IntervalRe.MatchString(c.Store.RawRetention) {
@@ -334,18 +333,19 @@ func (c *Config) finalize() error {
 	if c.Store.CompressAfter != "" && !IntervalRe.MatchString(c.Store.CompressAfter) {
 		return fmt.Errorf(`store.compress_after %q: want a simple interval like "1 day"`, c.Store.CompressAfter)
 	}
+	// parse the DSN at load so a malformed store.dsn fails -check-config, not at the
+	// first pool connect.
+	if c.Store.DSN != "" {
+		if _, err := pgxpool.ParseConfig(c.Store.DSN); err != nil {
+			return fmt.Errorf("store.dsn: %w", err)
+		}
+	}
 
-	if err := parseDur(c.Serve.RefreshFasts, &c.Serve.RefreshFast); err != nil {
-		return fmt.Errorf("serve.refresh_interval: %w", err)
+	if err := parseDurPositive("serve.refresh_interval", c.Serve.RefreshFasts, &c.Serve.RefreshFast, 30*time.Second); err != nil {
+		return err
 	}
-	if c.Serve.RefreshFast <= 0 {
-		c.Serve.RefreshFast = 30 * time.Second
-	}
-	if err := parseDur(c.Serve.RefreshSlows, &c.Serve.RefreshSlow); err != nil {
-		return fmt.Errorf("serve.almanac_refresh_interval: %w", err)
-	}
-	if c.Serve.RefreshSlow <= 0 {
-		c.Serve.RefreshSlow = 90 * time.Second
+	if err := parseDurPositive("serve.almanac_refresh_interval", c.Serve.RefreshSlows, &c.Serve.RefreshSlow, 90*time.Second); err != nil {
+		return err
 	}
 	if err := parseDur(c.Serve.SnapshotEverys, &c.Serve.SnapshotEvery); err != nil {
 		return fmt.Errorf("serve.snapshot_interval: %w", err)
@@ -377,6 +377,12 @@ func (c *Config) finalize() error {
 		if (s.Type == "sbf" || s.Type == "rtcm" || s.Type == "ntrip") && !s.CaptureOnly {
 			return fmt.Errorf("ingest %q: type %s is capture-only; set capture_only = true explicitly", s.Name, s.Type)
 		}
+		// capture_only is implied only for byte sources; on a ubx source (which
+		// decodes into live state) it has no effect, so an explicitly-set value is an
+		// operator misunderstanding — reject it rather than silently ignore it.
+		if s.Type == "ubx" && s.CaptureOnly {
+			return fmt.Errorf("ingest %q: capture_only is not valid on a ubx source (it decodes into live state; capture_only is implied only for byte sources sbf/rtcm/ntrip)", s.Name)
+		}
 		if s.Type == "ntrip" && s.Mountpoint == "" {
 			return fmt.Errorf("ingest %q: mountpoint is required for type ntrip", s.Name)
 		}
@@ -391,6 +397,14 @@ func (c *Config) finalize() error {
 		}
 		if s.Type == "ntrip" && s.NTRIPCAFile != "" && s.AllowInsecurePlaintext {
 			return fmt.Errorf("ingest %q: ca_file cannot be used with insecure plaintext", s.Name)
+		}
+		// validate the ntrip ca_file at load. A wrong path otherwise fails only at
+		// dial time, presenting as a permanently-backoff-retried flaky receiver rather than
+		// a clear config error.
+		if s.Type == "ntrip" && s.NTRIPCAFile != "" {
+			if err := validatePEMFile("ingest "+s.Name+" ca_file", s.NTRIPCAFile); err != nil {
+				return err
+			}
 		}
 		caps, err := parseCapabilities(s.Capabilities)
 		if err != nil {
@@ -438,20 +452,35 @@ func parseCapabilities(raw []string) ([]Capability, error) {
 // a station, a well-formed token hash, and at least one known feed type.
 func (c *Config) finalizePush() error {
 	p := &c.Push
-	if err := parseDur(p.AckIntervals, &p.AckInterval); err != nil {
-		return fmt.Errorf("push.ack_interval: %w", err)
+	if err := parseDurPositive("push.ack_interval", p.AckIntervals, &p.AckInterval, time.Second); err != nil {
+		return err
 	}
-	if p.AckInterval <= 0 {
-		p.AckInterval = time.Second
+	// a negative max_conns is explicit garbage; 0 stays "unset → default".
+	if p.MaxConns < 0 {
+		return fmt.Errorf("push.max_conns %d: must be positive", p.MaxConns)
 	}
-	if p.MaxConns <= 0 {
+	if p.MaxConns == 0 {
 		p.MaxConns = 512
 	}
 	if p.Addr == "" {
 		return nil // push disabled
 	}
+	// fail -check-config for a malformed push listener addr, an unloadable TLS
+	// keypair, or an unparsable client_ca — the same fail-fast parity regression fix gave metrics/
+	// serve, so a config edit is caught pre-flight instead of in a 5 s supervisor restart loop.
+	if err := validateAddr("push.addr", p.Addr); err != nil {
+		return err
+	}
 	if p.TLSCert == "" || p.TLSKey == "" {
 		return fmt.Errorf("push.tls_cert and push.tls_key are required when push.addr is set")
+	}
+	if _, err := tls.LoadX509KeyPair(p.TLSCert, p.TLSKey); err != nil {
+		return fmt.Errorf("push.tls_cert/tls_key: %w", err)
+	}
+	if p.ClientCA != "" {
+		if err := validatePEMFile("push.client_ca", p.ClientCA); err != nil {
+			return err
+		}
 	}
 	stations := make(map[string]bool, len(p.Observers))
 	tokens := make(map[string]string, len(p.Observers))
@@ -525,6 +554,20 @@ func validateAddr(field, addr string) error {
 	return nil
 }
 
+// validatePEMFile reads a PEM file and confirms it parses to at least one certificate
+//, so a wrong client_ca / ntrip ca_file path fails config load rather than at
+// dial/accept time (which for ntrip presents as an endlessly-retried flaky receiver).
+func validatePEMFile(field, path string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("%s %q: %w", field, path, err)
+	}
+	if !x509.NewCertPool().AppendCertsFromPEM(b) {
+		return fmt.Errorf("%s %q: no valid PEM certificate found", field, path)
+	}
+	return nil
+}
+
 func isHex(s string) bool {
 	for _, r := range s {
 		switch {
@@ -543,6 +586,28 @@ func parseDur(s string, out *time.Duration) error {
 	d, err := time.ParseDuration(s)
 	if err != nil {
 		return err
+	}
+	*out = d
+	return nil
+}
+
+// parseDurPositive applies def when s is empty (unset), but treats a non-empty s that parses
+// to a non-positive duration as a hard config error : the previous "parse then coerce
+// <= 0 to a default" pattern couldn't tell "unset" from "explicitly configured garbage", so
+// sv_ttl = "0s" (an operator plausibly meaning "never expire") silently became 2 h and a
+// negative batch_interval silently became 1 s. Fields where 0 is a documented disable
+// (snapshot_interval) keep their own handling and do not use this.
+func parseDurPositive(field, s string, out *time.Duration, def time.Duration) error {
+	if s == "" {
+		*out = def
+		return nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("%s: %w", field, err)
+	}
+	if d <= 0 {
+		return fmt.Errorf("%s %q: must be a positive duration", field, s)
 	}
 	*out = d
 	return nil
