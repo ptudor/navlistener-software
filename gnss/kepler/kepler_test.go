@@ -199,32 +199,54 @@ func TestDopplerPlausible(t *testing.T) {
 	}
 }
 
-func TestPredictedDopplerRejectsNonFinitePublicInputs(t *testing.T) {
-	validRecv := gnss.ECEF{X: 6378137}
-	for _, tc := range []struct {
+// TestDopplerRejectsInvalidInputs guards PredictedDoppler is a public
+// API bound by the package's errors-never-NaN contract (gnss.go), but carrier
+// frequency and receiver ECEF bypass propagation's validation — every invalid
+// combination must return an error with a finite zero value, and the valid
+// vector must be unchanged.
+func TestDopplerRejectsInvalidInputs(t *testing.T) {
+	recv := gnss.ECEF{X: 6378137}
+	const l1 = 1575.42e6
+	nan, inf := math.NaN(), math.Inf(1)
+	cases := []struct {
 		name string
 		freq float64
 		recv gnss.ECEF
 	}{
-		{"zero frequency", 0, validRecv}, {"negative frequency", -1, validRecv},
-		{"nan frequency", math.NaN(), validRecv}, {"positive inf frequency", math.Inf(1), validRecv},
-		{"negative inf frequency", math.Inf(-1), validRecv},
-		{"nan receiver", 1575.42e6, gnss.ECEF{X: math.NaN()}},
-		{"inf receiver", 1575.42e6, gnss.ECEF{Y: math.Inf(1)}},
-	} {
+		{"NaN frequency", nan, recv},
+		{"+Inf frequency", inf, recv},
+		{"-Inf frequency", -inf, recv},
+		{"zero frequency", 0, recv},
+		{"negative frequency", -l1, recv},
+		{"NaN receiver X", l1, gnss.ECEF{X: nan}},
+		{"Inf receiver Y", l1, gnss.ECEF{Y: inf}},
+		{"NaN receiver Z", l1, gnss.ECEF{X: 6378137, Z: nan}},
+	}
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := PredictedDoppler(realisticGPS, 432000, tc.freq, tc.recv)
-			if err == nil || got != 0 || math.IsNaN(got) || math.IsInf(got, 0) {
-				t.Fatalf("got (%v,%v), want finite zero and error", got, err)
+			fd, err := PredictedDoppler(realisticGPS, 432000, tc.freq, tc.recv)
+			if err == nil {
+				t.Fatal("invalid input accepted")
+			}
+			if fd != 0 || math.IsNaN(fd) {
+				t.Errorf("value = %v, want finite zero alongside the error", fd)
 			}
 		})
 	}
+
+	// A receiver coincident with the SV has no line of sight: error, not NaN.
 	pos, err := Propagate(realisticGPS, 432000)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := PredictedDoppler(realisticGPS, 432000, 1575.42e6, pos); err == nil || got != 0 {
-		t.Fatalf("coincident receiver = (%v,%v), want zero and error", got, err)
+	if fd, err := PredictedDoppler(realisticGPS, 432000, l1, pos); err == nil || fd != 0 {
+		t.Errorf("coincident receiver = (%v, %v), want (0, error)", fd, err)
+	}
+
+	// The realistic vector still returns the same finite Doppler as before.
+	fd, err := PredictedDoppler(realisticGPS, 432000, l1, recv)
+	if err != nil || math.Abs(fd) > 6000 {
+		t.Errorf("valid vector = (%v, %v), want small finite Doppler with nil error", fd, err)
 	}
 }
 

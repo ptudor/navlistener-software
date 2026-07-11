@@ -62,6 +62,13 @@ var (
 	// ~604800s jump, not 1s. Only reachable with a ~3.5-day-stale ephemeris; the
 	// library's contract is to refuse a degenerate result, not emit one.
 	errHalfWeekStraddle = errors.New("kepler: tow-toe too close to the half-week wrap for a central-difference velocity")
+	// errBadFreq/errBadReceiver are PredictedDoppler's carrier frequency
+	// and receiver position are public inputs propagation never validates, so a
+	// NaN/Inf/non-positive frequency or a non-finite receiver could otherwise
+	// reach the final multiplication and return non-finite with err == nil,
+	// violating the package's errors-never-NaN contract (gnss.go).
+	errBadFreq     = errors.New("kepler: carrier frequency must be finite and positive")
+	errBadReceiver = errors.New("kepler: receiver ECEF is not finite")
 )
 
 // eccMax bounds Solve's eccentricity gate. The prior guard (e < 1) only
@@ -242,8 +249,11 @@ func Velocity(e Ephemeris, tow float64) (gnss.ECEF, error) {
 // (docs/MATH.md §2.2). This is the "predicted" half of the delta-Hz integrity
 // signal (docs/INTEGRITY.md §3).
 func PredictedDoppler(e Ephemeris, tow, freqHz float64, recv gnss.ECEF) (float64, error) {
-	if math.IsNaN(freqHz) || math.IsInf(freqHz, 0) || freqHz <= 0 || !finite(recv) {
-		return 0, errNaN
+	if math.IsNaN(freqHz) || math.IsInf(freqHz, 0) || freqHz <= 0 {
+		return 0, errBadFreq
+	}
+	if !finite(recv) {
+		return 0, errBadReceiver
 	}
 	pos, err := Propagate(e, tow)
 	if err != nil {
@@ -255,16 +265,18 @@ func PredictedDoppler(e Ephemeris, tow, freqHz float64, recv gnss.ECEF) (float64
 	}
 	los := pos.Sub(recv)
 	dist := los.Norm()
-	if math.IsNaN(dist) || math.IsInf(dist, 0) || dist <= 0 {
+	// A NaN distance would sail past a bare == 0 check, and a receiver
+	// coincident with the SV has no line of sight either way.
+	if dist == 0 || math.IsNaN(dist) || math.IsInf(dist, 0) {
 		return 0, errNaN
 	}
 	unit := los.Scale(1 / dist)
 	rangeRate := vel.Dot(unit) // receiver static ⇒ v_recv = 0
-	result := -freqHz * rangeRate / physconst.SpeedOfLight
-	if math.IsNaN(result) || math.IsInf(result, 0) {
+	doppler := -freqHz * rangeRate / physconst.SpeedOfLight
+	if math.IsNaN(doppler) || math.IsInf(doppler, 0) {
 		return 0, errNaN
 	}
-	return result, nil
+	return doppler, nil
 }
 
 func finite(p gnss.ECEF) bool {
