@@ -48,7 +48,13 @@ func (r *BitReader) Len() int { return r.nbits }
 // returns them right-aligned in a uint64. It errors if the range is invalid or
 // extends past the frame.
 func (r *BitReader) Bits(start, n int) (uint64, error) {
-	if n < 0 || n > 64 || start < 0 || start+n > r.nbits {
+	// start > r.nbits must be checked (and short-circuit) before start+n is
+	// ever computed -- an attacker-supplied start near math.MaxInt overflows the
+	// signed-int addition, wrapping start+n negative and slipping past the bound
+	// check into an out-of-bounds r.data index. Once start <= r.nbits is
+	// established here, start+n cannot overflow (nbits is a real frame's bit
+	// length and n <= 64).
+	if n < 0 || n > 64 || start < 0 || start > r.nbits || start+n > r.nbits {
 		return 0, ErrOutOfRange
 	}
 	var v uint64
@@ -98,6 +104,14 @@ func (r *BitReader) SignMag(start, n int) (int64, error) {
 // part — for a field the ICD splits across non-adjacent words (common in LNAV and
 // GLONASS). The result is (hi << loN) | lo.
 func (r *BitReader) Concat(hiStart, hiN, loStart, loN int) (uint64, error) {
+	// reject before shifting -- with loN == 64, hi << 64 is 0 in Go (shift
+	// amounts >= the operand's bit width are defined to yield 0, not an error), so
+	// the result would silently become just lo with no signal that hiN bits were
+	// dropped; any total width in (64,128] is likewise wrong instead of erroring,
+	// unlike Bits's own n > 64 rejection.
+	if hiN+loN > 64 {
+		return 0, ErrOutOfRange
+	}
 	hi, err := r.Bits(hiStart, hiN)
 	if err != nil {
 		return 0, err

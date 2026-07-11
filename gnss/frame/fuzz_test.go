@@ -1,6 +1,10 @@
 package frame
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/ptudor/gnss"
+)
 
 // FuzzBitReader asserts the reader never panics or reads out of bounds for any
 // input bytes and any offset/length — the untrusted-input contract
@@ -67,5 +71,111 @@ func FuzzGLONASSAlmanac(f *testing.F) {
 		if e.Alm.Slot < 0 || e.Alm.Slot > 31 {
 			t.Fatalf("slot out of range: %d", e.Alm.Slot)
 		}
+	})
+}
+
+// every decoder gets a fuzz target, not just BitReader/CRC24Q/GPSLNAV/
+// GLONASSAlmanac -- "every decoder is fuzzed" (the package doc's own claim) was
+// false for 7 of 9 decoders. Each target below follows the existing style: no
+// panic on arbitrary word content, and a nil result must come with a non-nil
+// error (never a silent zero value mistaken for a decoded message). Go's fuzzing
+// engine doesn't support []uint32 directly, so each word is its own fuzzed
+// uint32 parameter, assembled into the slice the decoder expects inside the
+// closure (the same pattern FuzzGPSLNAV/FuzzGLONASSAlmanac already use).
+
+// FuzzDecodeGPSCNAV asserts the GPS/QZSS CNAV decoder never panics.
+func FuzzDecodeGPSCNAV(f *testing.F) {
+	f.Add(uint8(gnss.GPS), uint32(0x8B000000), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0))
+	f.Fuzz(func(t *testing.T, id uint8, w0, w1, w2, w3, w4, w5, w6, w7, w8, w9 uint32) {
+		words := []uint32{w0, w1, w2, w3, w4, w5, w6, w7, w8, w9}
+		if m, err := DecodeGPSCNAV(gnss.GNSSID(id), words); err == nil && m == nil {
+			t.Fatal("nil message without error")
+		}
+	})
+}
+
+// FuzzDecodeGalileoINAV asserts the Galileo I/NAV word decoder never panics.
+func FuzzDecodeGalileoINAV(f *testing.F) {
+	f.Add(uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0))
+	f.Fuzz(func(t *testing.T, w0, w1, w2, w3, w4, w5, w6, w7 uint32) {
+		words := []uint32{w0, w1, w2, w3, w4, w5, w6, w7}
+		if m, err := DecodeGalileoINAV(words); err == nil && m == nil {
+			t.Fatal("nil message without error")
+		}
+	})
+}
+
+// FuzzDecodeGalileoFNAV asserts the Galileo F/NAV page decoder never panics.
+func FuzzDecodeGalileoFNAV(f *testing.F) {
+	f.Add(uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0))
+	f.Fuzz(func(t *testing.T, w0, w1, w2, w3, w4, w5, w6, w7 uint32) {
+		words := []uint32{w0, w1, w2, w3, w4, w5, w6, w7}
+		if m, err := DecodeGalileoFNAV(words); err == nil && m == nil {
+			t.Fatal("nil message without error")
+		}
+	})
+}
+
+// FuzzDecodeGLONASSString asserts the GLONASS nav-string decoder never panics.
+func FuzzDecodeGLONASSString(f *testing.F) {
+	f.Add(uint32(0x08000000), uint32(0), uint32(0), uint32(0))
+	f.Fuzz(func(t *testing.T, w0, w1, w2, w3 uint32) {
+		words := []uint32{w0, w1, w2, w3}
+		if s, err := DecodeGLONASSString(words); err == nil && s == nil {
+			t.Fatal("nil string without error")
+		}
+	})
+}
+
+// FuzzDecodeGLONASSFrameNA asserts the GLONASS frame-day (string 5) decoder never
+// panics.
+func FuzzDecodeGLONASSFrameNA(f *testing.F) {
+	f.Add(uint32(0), uint32(0), uint32(0), uint32(0))
+	f.Fuzz(func(t *testing.T, w0, w1, w2, w3 uint32) {
+		words := []uint32{w0, w1, w2, w3}
+		_, _ = DecodeGLONASSFrameNA(words)
+	})
+}
+
+// FuzzDecodeBeiDouD1 asserts the BeiDou D1 subframe decoder never panics.
+func FuzzDecodeBeiDouD1(f *testing.F) {
+	f.Add(uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0))
+	f.Fuzz(func(t *testing.T, w0, w1, w2, w3, w4, w5, w6, w7, w8, w9 uint32) {
+		words := []uint32{w0, w1, w2, w3, w4, w5, w6, w7, w8, w9}
+		if sf, err := DecodeBeiDouD1(words); err == nil && sf == nil {
+			t.Fatal("nil subframe without error")
+		}
+	})
+}
+
+// FuzzDecodeBeiDouBCNAV2 asserts the BeiDou B-CNAV2 message decoder never panics.
+func FuzzDecodeBeiDouBCNAV2(f *testing.F) {
+	f.Add(uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0))
+	f.Fuzz(func(t *testing.T, w0, w1, w2, w3, w4, w5, w6, w7, w8 uint32) {
+		words := []uint32{w0, w1, w2, w3, w4, w5, w6, w7, w8}
+		if m, err := DecodeBeiDouBCNAV2(words); err == nil && m == nil {
+			t.Fatal("nil message without error")
+		}
+	})
+}
+
+// FuzzDecodeSBASL1 asserts the SBAS L1 message decoder never panics.
+func FuzzDecodeSBASL1(f *testing.F) {
+	f.Add(1, uint32(0x53000000), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0))
+	f.Fuzz(func(t *testing.T, prn int, w0, w1, w2, w3, w4, w5, w6, w7 uint32) {
+		words := []uint32{w0, w1, w2, w3, w4, w5, w6, w7}
+		if m, err := DecodeSBASL1(prn, words); err == nil && m == nil {
+			t.Fatal("nil message without error")
+		}
+	})
+}
+
+// FuzzGPSParity asserts the LNAV Hamming-parity check never panics on arbitrary
+// words -- it's the untrusted-input entry point every LNAV word passes through
+// before any field is read.
+func FuzzGPSParity(f *testing.F) {
+	f.Add(uint32(0x22c000), uint32(0), uint32(0))
+	f.Fuzz(func(t *testing.T, word, d29star, d30star uint32) {
+		_, _ = GPSParity(word, d29star, d30star)
 	})
 }

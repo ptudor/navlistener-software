@@ -54,9 +54,27 @@ test:
 race:
 	$(GO) test -race ./...
 
-# fuzz smoke-tests every frame decoder's fuzz target briefly (docs/MATH.md §12).
+# fuzz smoke-tests every fuzz target across both workspace modules -- this one
+# (navlistener) and ../gnss, where most decoder fuzz targets actually live
+# (docs/MATH.md §12). `-fuzz../...` cannot work at all -- `go test -fuzz`
+# accepts exactly one package per invocation ("cannot use -fuzz flag with multiple
+# packages") AND exactly one matching fuzz function per invocation (a package
+# with more than one Fuzz* errors "-fuzz matches more than one fuzz test"), so
+# this discovers every (module, package, FuzzXxx) triple via `go test -list` and
+# runs each individually. FUZZTIME overrides the per-target duration (default 30s;
+# use e.g. `make fuzz FUZZTIME=5s` for a quick local check).
+FUZZTIME ?= 30s
 fuzz:
-	$(GO) test -run '^$$' -fuzz . -fuzztime 30s ./...
+	@set -e; \
+	for modroot in . ../gnss; do \
+		( cd $$modroot && \
+		  for pkg in $$($(GO) list ./...); do \
+		    for fn in $$($(GO) test -list '^Fuzz' $$pkg 2>/dev/null | grep '^Fuzz' || true); do \
+		      echo "==> $$modroot :: $$pkg :: $$fn"; \
+		      $(GO) test -run '^$$' -fuzz "^$${fn}$$" -fuzztime $(FUZZTIME) $$pkg; \
+		    done; \
+		  done ); \
+	done
 
 vet:
 	$(GO) vet ./...
