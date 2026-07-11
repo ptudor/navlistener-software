@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/gnss/frame"
 	"github.com/ptudor/navlistener/internal/ingest"
 )
 
@@ -42,6 +43,7 @@ func glonassStringWords(number int, coord, vel, accel int64, health, tb int) []u
 	for i := 0; i < 4; i++ {
 		words[i] = uint32(buf[i*4])<<24 | uint32(buf[i*4+1])<<16 | uint32(buf[i*4+2])<<8 | uint32(buf[i*4+3])
 	}
+	frame.StampGLONASSHamming(words) // valid §4.7 check bits
 	return words
 }
 
@@ -184,6 +186,7 @@ func glonassString4Frame(svID int, tauRaw, dtauRaw int64, recv time.Time) *inges
 	for i := 0; i < 4; i++ {
 		words[i] = uint32(buf[i*4])<<24 | uint32(buf[i*4+1])<<16 | uint32(buf[i*4+2])<<8 | uint32(buf[i*4+3])
 	}
+	frame.StampGLONASSHamming(words) // regression fix
 	return &ingest.RawFrame{
 		Recv: recv, Source: "test", GnssID: gnss.GLONASS, SvID: svID, SigID: 0, FreqID: 7,
 		Words: words,

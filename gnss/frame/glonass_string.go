@@ -12,6 +12,110 @@ import (
 // strings 1/2/3 in that order (regression fix defense-in-depth).
 var errGLONASSStringOrder = errors.New("frame: GLONASS strings not in 1/2/3 order")
 
+// errBadStringNum  is returned for a length-valid GLONASS block with string
+// number 0 (out of the 1..15 range) — a mis-tagged or corrupt frame.
+var errBadStringNum = errors.New("frame: GLONASS string number out of range (1..15)")
+
+// errGLONASSHamming  is returned when a string fails the ICD §4.7 Hamming check.
+var errGLONASSHamming = errors.New("frame: GLONASS string Hamming check failed")
+
+// gloHammingRange builds the inclusive integer range [lo, hi].
+func gloHammingRange(lo, hi int) []int {
+	s := make([]int, 0, hi-lo+1)
+	for i := lo; i <= hi; i++ {
+		s = append(s, i)
+	}
+	return s
+}
+
+// gloHammingSets are the data-bit (ICD b_N) sets for check bits β1..β7 (index 0..6),
+// GLONASS ICD Ed. 5.1 §4.7 / Table 4.13.
+var gloHammingSets = func() [7][]int {
+	cat := func(parts ...[]int) []int {
+		var out []int
+		for _, p := range parts {
+			out = append(out, p...)
+		}
+		return out
+	}
+	return [7][]int{
+		{9, 10, 12, 13, 15, 17, 19, 20, 22, 24, 26, 28, 30, 32, 34, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 66, 68, 70, 72, 74, 76, 78, 80, 82, 84},
+		{9, 11, 12, 14, 15, 18, 19, 21, 22, 25, 26, 29, 30, 33, 34, 36, 37, 40, 41, 44, 45, 48, 49, 52, 53, 56, 57, 60, 61, 64, 65, 67, 68, 71, 72, 75, 76, 79, 80, 83, 84},
+		cat(gloHammingRange(10, 12), gloHammingRange(16, 19), gloHammingRange(23, 26), gloHammingRange(31, 34), gloHammingRange(38, 41), gloHammingRange(46, 49), gloHammingRange(54, 57), gloHammingRange(62, 65), gloHammingRange(69, 72), gloHammingRange(77, 80), []int{85}),
+		cat(gloHammingRange(13, 19), gloHammingRange(27, 34), gloHammingRange(42, 49), gloHammingRange(58, 65), gloHammingRange(73, 80)),
+		cat(gloHammingRange(20, 34), gloHammingRange(50, 65), gloHammingRange(81, 85)),
+		gloHammingRange(35, 65),
+		gloHammingRange(66, 85),
+	}
+}()
+
+// glonassHammingValid verifies the GLONASS ICD Ed. 5.1 §4.7 / Table 4.13 Hamming check
+// bits over the 85-bit string. ICD bit b_N maps to block offset 85−N (the same
+// convention DecodeGLONASSString's field offsets use): check bits β1..β8 are ICD bits 1..8,
+// data bits b9..b85 are ICD bits 9..85. Each Cj = βj ⊕ (parity of a fixed data-bit set),
+// and CΣ is the parity of the whole 85-bit string. The string carries no detected error
+// (and is accepted) iff C1..C7 and CΣ are all zero; any nonzero checksum rejects it.
+func glonassHammingValid(r *BitReader) bool {
+	bit := func(icd int) uint64 { v, _ := r.Bits(85-icd, 1); return v & 1 }
+	var acc uint64
+	for j := 0; j < 7; j++ {
+		cj := bit(j + 1) // βj
+		for _, i := range gloHammingSets[j] {
+			cj ^= bit(i)
+		}
+		acc |= cj & 1
+	}
+	// CΣ = parity of β1..β8 (ICD 1..8) and b9..b85 (ICD 9..85) = parity of all 85 bits.
+	var csum uint64
+	for n := 1; n <= 85; n++ {
+		csum ^= bit(n)
+	}
+	return acc|(csum&1) == 0
+}
+
+// StampGLONASSHamming computes and writes the 8 ICD §4.7 check bits (β1..β8) for the 85-bit
+// string in words so it passes glonassHammingValid. Exposed for tests (and any GNF1
+// re-framer that must synthesize a valid string), mirroring the exported CRC24Q used the
+// same way. words must be the four 32-bit big-endian words of one string.
+func StampGLONASSHamming(words []uint32) {
+	buf := make([]byte, 16)
+	for i := 0; i < 4; i++ {
+		binary.BigEndian.PutUint32(buf[i*4:], words[i])
+	}
+	getBit := func(icd int) uint64 {
+		o := 85 - icd
+		return uint64(buf[o>>3]>>(7-uint(o&7))) & 1
+	}
+	setBit := func(icd int, v uint64) {
+		o := 85 - icd
+		mask := byte(1) << (7 - uint(o&7))
+		if v&1 != 0 {
+			buf[o>>3] |= mask
+		} else {
+			buf[o>>3] &^= mask
+		}
+	}
+	// β1..β7 = parity of their data set (so Cj = 0).
+	var betaParity uint64
+	for j := 0; j < 7; j++ {
+		var p uint64
+		for _, i := range gloHammingSets[j] {
+			p ^= getBit(i)
+		}
+		setBit(j+1, p)
+		betaParity ^= p
+	}
+	// β8 = parity(β1..β7) ⊕ parity(b9..b85) so CΣ = 0 (β8 appears only in CΣ).
+	var dataParity uint64
+	for n := 9; n <= 85; n++ {
+		dataParity ^= getBit(n)
+	}
+	setBit(8, betaParity^dataParity)
+	for i := 0; i < 4; i++ {
+		words[i] = binary.BigEndian.Uint32(buf[i*4:])
+	}
+}
+
 // glonassBlock packs the four 32-bit words of a GLONASS string big-endian into a
 // 128-bit block and returns a bit reader over it. The 85-bit ICD string maps into the
 // block as block bit = 85 − (ICD bit number), so an ICD field spanning bits [lo..hi]
@@ -72,7 +176,21 @@ func DecodeGLONASSString(words []uint32) (*GLONASSString, error) {
 		return nil, ErrShortFrame
 	}
 	r := glonassBlock(words)
+	// verify the ICD §4.7 Hamming check bits before trusting any field. The receiver
+	// is not a documented guarantee of pre-validated strings, and push-path frames arrive
+	// from remote feeders; one flipped bit in string 2's tb/health (written straight into
+	// live state) mis-epochs the RK4 or flips served health. A detected error rejects the
+	// string, mirroring the regression fix/regression fix CRC hardening precedent.
+	if !glonassHammingValid(r) {
+		return nil, errGLONASSHamming
+	}
 	m, _ := r.Bits(1, 4)
+	// string number must be 1..15 (GLONASS ICD Ed. 5.1 §4.1). A length-valid block
+	// with string number 0 is mis-tagged or corrupt — reject so the caller counts a decode
+	// error and records no capability off garbage.
+	if m < 1 || m > 15 {
+		return nil, errBadStringNum
+	}
 	s := &GLONASSString{Number: int(m)}
 
 	// Strings 1–3 share the coordinate/velocity/acceleration field positions.

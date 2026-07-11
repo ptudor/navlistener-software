@@ -37,6 +37,10 @@ var ErrShortFrame = errors.New("frame: short frame")
 // issue-of-data tags (they belong to different data sets).
 var errIODMismatch = errors.New("frame: ephemeris IOD mismatch")
 
+// errBadSubframe  is returned when a length-valid LNAV frame carries an
+// out-of-range subframe id (not 1..5) — a mis-tagged or corrupt frame.
+var errBadSubframe = errors.New("frame: LNAV subframe id out of range (1..5)")
+
 // GPSSubframe holds the decoded fields of a single LNAV subframe. Only the fields
 // belonging to this subframe's ID are populated; a full ephemeris is assembled
 // from subframes 1, 2, and 3 (AssembleGPS).
@@ -96,6 +100,15 @@ func DecodeGPSLNAV(words []uint32) (*GPSSubframe, error) {
 		decodeGPSSf2(r, sf)
 	case 3:
 		decodeGPSSf3(r, sf)
+	case 4, 5:
+		// Almanac/iono pages: a structurally valid subframe id, not decoded into
+		// ephemeris fields here.
+	default:
+		// subframe id must be 1..5 (IS-GPS-200N §20.3.2). A frame of the right
+		// length but an out-of-range id (0/6/7) is a mis-tagged or corrupt frame, not a
+		// successful decode — reject it so the caller counts DecodeErrorsTotal (not
+		// DecodeTotal) and never records durable capability evidence off garbage.
+		return nil, errBadSubframe
 	}
 	return sf, nil
 }

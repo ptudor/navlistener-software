@@ -233,8 +233,16 @@ func TestObserversUnionsPushStations(t *testing.T) {
 // after a real decode, capability tests must route through frames the
 // decoders actually accept, not an undersized placeholder). None of the
 // decoded field values matter here -- only that decode succeeds.
-func gpsLNAVWords() []uint32  { return make([]uint32, 10) }
-func beidouD1Words() []uint32 { return make([]uint32, 10) }
+func gpsLNAVWords() []uint32 {
+	w := make([]uint32, 10)
+	w[1] = 1 << 8 // HOW subframe id = 1 (id must be 1..5 to decode)
+	return w
+}
+func beidouD1Words() []uint32 {
+	w := make([]uint32, 10)
+	w[0] = 1 << 12 // FraID = 1 (FraID must be 1..5 to decode)
+	return w
+}
 func galileoINAVWords() []uint32 {
 	w := make([]uint32, 8)
 	w[4] = 0x80000000 // odd-part Even/Odd flag (page bit 128) must be 1

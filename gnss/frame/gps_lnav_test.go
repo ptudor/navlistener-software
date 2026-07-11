@@ -119,6 +119,25 @@ func TestGPSLNAVShortFrame(t *testing.T) {
 	}
 }
 
+// TestGPSLNAVRejectsOutOfRangeSubframe guards a length-valid LNAV frame whose HOW
+// carries an out-of-range subframe id (0/6/7) is a mis-tagged or corrupt frame and must
+// return an error (so the state layer counts a decode error and records no capability off
+// garbage), while a valid but non-ephemeris id (4/5) still decodes cleanly.
+func TestGPSLNAVRejectsOutOfRangeSubframe(t *testing.T) {
+	for _, id := range []int64{0, 6, 7} {
+		buf := make([]byte, 30)
+		setField(buf, 2, 20, 3, id)
+		if _, err := DecodeGPSLNAV(packLNAV(t, buf)); err != errBadSubframe {
+			t.Errorf("subframe id %d: err = %v, want errBadSubframe", id, err)
+		}
+	}
+	buf := make([]byte, 30)
+	setField(buf, 2, 20, 3, 4) // almanac page: valid id, no ephemeris fields
+	if sf, err := DecodeGPSLNAV(packLNAV(t, buf)); err != nil || sf.SubframeID != 4 {
+		t.Errorf("subframe 4: sf=%v err=%v, want a clean decode", sf, err)
+	}
+}
+
 // --- builders for the full-ephemeris test ---
 
 func buildSf1(t *testing.T) []byte {

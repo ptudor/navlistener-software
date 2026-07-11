@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/gnss/frame"
 	"github.com/ptudor/navlistener/internal/ingest"
 )
 
@@ -23,6 +24,7 @@ func gloWords(number int, fill func(buf []byte)) []uint32 {
 	for i := 0; i < 4; i++ {
 		words[i] = binary.BigEndian.Uint32(buf[i*4:])
 	}
+	frame.StampGLONASSHamming(words) // valid §4.7 check bits
 	return words
 }
 

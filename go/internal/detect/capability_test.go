@@ -124,7 +124,9 @@ func TestCapabilitySignalLostWithLiveRFTelemetry(t *testing.T) {
 	t0 := time.Unix(1_700_000_000, 0)
 
 	gpsFrame := func(recv time.Time) *ingest.RawFrame {
-		return &ingest.RawFrame{Source: "s", GnssID: gnss.GPS, SigID: 0, Recv: recv, Words: make([]uint32, 10)}
+		w := make([]uint32, 10)
+		w[1] = 1 << 8 // HOW subframe id = 1 (a valid id, not the old all-zero sf-id-0)
+		return &ingest.RawFrame{Source: "s", GnssID: gnss.GPS, SigID: 0, Recv: recv, Words: w}
 	}
 	rfFrame := func(recv time.Time) *ingest.RawFrame {
 		return &ingest.RawFrame{Source: "s", Recv: recv, RF: &ingest.RawRF{

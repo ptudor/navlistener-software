@@ -119,7 +119,10 @@ func DecodeGPSCNAV(id gnss.GNSSID, words []uint32) (*GPSCNAV, error) {
 		// which is the cross-check that the offsets below are right.
 		m.WN = int(u(38, 13))
 		m.Health = int(u(51, 3))
-		m.URAED = int(u(65, 5))
+		// URA_ED is a SIGNED two's-complement integer (+15..−16), IS-GPS-200N
+		// §30.3.3.1.1.2 — not unsigned. A negative index (URA < 2.4 m, routine for modern
+		// SVs) was mis-decoded (e.g. bits 11111 = −1 read as 31) over half the domain.
+		m.URAED = int(s(65, 5))
 		m.eph.Toe = float64(u(70, 11)) * cnavT0
 		m.eph.SqrtA = math.Sqrt(cnavAref + float64(s(81, 26))*p2m9)
 		m.eph.ADot = float64(s(107, 25)) * p2m21 // Ȧ, m/s (Table 30-I)

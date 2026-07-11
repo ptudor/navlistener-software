@@ -31,7 +31,39 @@ func gloStringWords(number int, fill func(buf []byte)) []uint32 {
 	for i := 0; i < 4; i++ {
 		words[i] = binary.BigEndian.Uint32(buf[i*4:])
 	}
+	StampGLONASSHamming(words) // synthetic strings need valid §4.7 check bits
 	return words
+}
+
+// TestDecodeGLONASSStringHammingReject guards a valid string decodes, but flipping
+// any single data bit fails the ICD §4.7 Hamming check and is rejected (a corrupt push-path
+// frame must not reach live state).
+func TestDecodeGLONASSStringHammingReject(t *testing.T) {
+	good := gloStringWords(2, func(buf []byte) {
+		gloSetSignMag(buf, 50, 27, 12345)
+		setBits(buf, 9, 7, 40) // tb
+	})
+	if _, err := DecodeGLONASSString(good); err != nil {
+		t.Fatalf("valid GLONASS string rejected: %v", err)
+	}
+	// Flip a single data bit (block offset 30 → an interior data bit).
+	bad := append([]uint32(nil), good...)
+	bad[0] ^= 1 << 1 // flip a bit inside word 0 (a data bit, not a check bit)
+	if _, err := DecodeGLONASSString(bad); err != errGLONASSHamming {
+		t.Errorf("single-bit-flipped string: err = %v, want errGLONASSHamming", err)
+	}
+}
+
+// TestDecodeGLONASSStringRejectsZeroNumber guards a length-valid GLONASS block with
+// string number 0 (out of the 1..15 range) is mis-tagged/corrupt and must return an error;
+// a valid number decodes.
+func TestDecodeGLONASSStringRejectsZeroNumber(t *testing.T) {
+	if _, err := DecodeGLONASSString(gloStringWords(0, nil)); err != errBadStringNum {
+		t.Errorf("string number 0: err = %v, want errBadStringNum", err)
+	}
+	if _, err := DecodeGLONASSString(gloStringWords(1, nil)); err != nil {
+		t.Errorf("string number 1: err = %v, want nil", err)
+	}
 }
 
 // TestDecodeGLONASSStringClockTerms guards γn(tb) from string 3 and

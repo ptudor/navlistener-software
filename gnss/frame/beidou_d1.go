@@ -13,6 +13,10 @@ import (
 //  — the only coherence guard available, since D1 has no IODE/IODC-style tag.
 var errBeiDouSOWGap = errors.New("frame: BeiDou D1 subframes not broadcast-adjacent (SOW gap)")
 
+// errBadFraID  is returned for a length-valid D1 frame with an out-of-range
+// FraID (not 1..5) — a mis-tagged or corrupt frame.
+var errBadFraID = errors.New("frame: BeiDou D1 FraID out of range (1..5)")
+
 // BeiDou D1 NAV decoding (BDS-SIS-ICD-B1I v3.0 §5.2.4), for MEO/IGSO SVs. u-blox
 // delivers each 300-bit subframe as one UBX-RXM-SFRBX of ten 30-bit words. The
 // receiver has removed the BCH(15,11) parity, leaving the information bits at the
@@ -135,6 +139,13 @@ func DecodeBeiDouD1(words []uint32) (*BeiDouSubframe, error) {
 		sf.eph.IDot = float64(s(145, 14)) * p2m43 * semi
 		sf.eph.Omega0 = float64(s(159, 32)) * p2m31 * semi
 		sf.eph.Omega = float64(s(191, 32)) * p2m31 * semi
+	case 4, 5:
+		// Almanac/integrity pages: a structurally valid FraID, not decoded here.
+	default:
+		// FraID must be 1..5 (BDS-SIS-ICD-B1I §5.2). A length-valid frame with an
+		// out-of-range FraID (0/6/7) is mis-tagged or corrupt — reject so the caller counts
+		// a decode error and records no capability off garbage.
+		return nil, errBadFraID
 	}
 	return sf, nil
 }

@@ -201,7 +201,11 @@ func TestDecodeGPSCNAVMsg10Integrity(t *testing.T) {
 		wn, health, uraED int
 	}{
 		{"zero", 0, 0, 0},
-		{"max", 8191, 7, 31}, // 13-bit, 3-bit, 5-bit field maxima
+		// URA_ED is signed (+15..−16). bits 11111 = −1 (was mis-read as 31);
+		// bits 10000 = −16 (minimum); bits 01111 = +15 (maximum).
+		{"neg_one", 8191, 7, -1},
+		{"neg_min", 0, 0, -16},
+		{"pos_max", 0, 0, 15},
 		{"typical", 2296, 0, 2},
 	}
 	for _, c := range cases {
