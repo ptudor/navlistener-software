@@ -24,6 +24,8 @@ import (
 type GalileoFNAV struct {
 	PageType int
 	IODnav   int
+	SISA     int // page 1 only, SISA(E1,E5a) 
+	E5aHS    int // page 1 only, E5a Signal Health Status 
 	eph      kepler.Ephemeris
 	clk      clock.Model
 	hasClk   bool
@@ -46,8 +48,14 @@ func DecodeGalileoFNAV(words []uint32) (*GalileoFNAV, error) {
 	w := &GalileoFNAV{PageType: pt, IODnav: int(u(6, 10))}
 	semi := physconst.Pi
 	switch pt {
-	case 1: // SVID(6), IODnav(10), t0c(14), af0(31), af1(21), af2(6), SISA(8)…
+	case 1:
+		// SVID(6) IODnav(10) t0c(14) af0(31) af1(21) af2(6) SISA(8) ai0(11) ai1(11)
+		// ai2(14) Region1-5(5) BGD(E1,E5a)(10) E5aHS(2) WN(12) TOW(20) E5aDVS(1)
+		// Spare(26) CRC(24) Tail(6) — OS-SIS-ICD Issue 2.1 Table 28 (SISA
+		// and E5aHS added; ionospheric/GST/DVS fields are out of this fix's scope).
 		w.IODnav = int(u(12, 10))
+		w.SISA = int(u(94, 8))
+		w.E5aHS = int(u(153, 2))
 		w.clk = clock.Model{
 			ID:  gnss.Galileo,
 			Toc: float64(u(22, 14)) * galT0,

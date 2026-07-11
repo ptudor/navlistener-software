@@ -220,6 +220,64 @@ func TestRealGalileoINAV(t *testing.T) {
 	t.Logf("real F9T capture: %d Galileo SVs with full I/NAV ephemerides", assembled)
 }
 
+// TestRealGalileoGSTAgreesWithGPS guards the GST WN/TOW now decoded from
+// I/NAV word 5 must agree with the same real F9T capture's GPS-decoded time.
+// regression fix/regression fix established that GST(WN,TOW) equals GPS(WN+1024,TOW) with zero
+// further offset (GST epoch is exactly the GPS week-1024 rollover), so a
+// correct decode must satisfy GST_WN % 1024 == GPS LNAV's raw (10-bit) WN --
+// the same mod-1024 cross-check TestRealGPSCNAVAgreesWithLNAV already uses for
+// CNAV's 13-bit WN -- and GST_TOW must fall within the capture's ~90 s window of
+// the GPS subframe's own TOW (GGTO is on the order of nanoseconds, negligible at
+// this resolution).
+func TestRealGalileoGSTAgreesWithGPS(t *testing.T) {
+	data, err := os.ReadFile("testdata/f9t_capture.ubx")
+	if err != nil {
+		t.Skipf("no capture fixture: %v", err)
+	}
+	var frames []*RawFrame
+	_ = scanUBX(bytes.NewReader(data), "cap", fixedTime,
+		func(f *RawFrame) { frames = append(frames, f) }, func(string) {})
+
+	var gpsWN int
+	var gpsTOW float64
+	haveGPS := false
+	var galWN int
+	var galTOW float64
+	haveGal := false
+	for _, f := range frames {
+		if !haveGPS && f.GnssID == gnss.GPS && f.SigID == 0 {
+			if sf, err := frame.DecodeGPSLNAV(f.Words); err == nil && sf.SubframeID == 1 {
+				gpsWN, gpsTOW = sf.WN, sf.TOW
+				haveGPS = true
+			}
+		}
+		if !haveGal && f.GnssID == gnss.Galileo && f.SigID == 1 {
+			if w, err := frame.DecodeGalileoINAV(f.Words); err == nil && w.Type == 5 {
+				galWN, galTOW = w.WN, w.TOW
+				haveGal = true
+			}
+		}
+		if haveGPS && haveGal {
+			break
+		}
+	}
+	if !haveGPS {
+		t.Fatal("no GPS LNAV subframe 1 (WN) decoded from the real capture")
+	}
+	if !haveGal {
+		t.Fatal("no Galileo I/NAV word 5 (GST WN/TOW) decoded from the real capture")
+	}
+
+	if got, want := galWN%1024, gpsWN; got != want {
+		t.Errorf("GST WN %%1024 = %d, want %d (GPS LNAV WN) — GST week decode likely wrong", got, want)
+	}
+	if diff := math.Abs(galTOW - gpsTOW); diff > 120 {
+		t.Errorf("GST TOW = %.0f vs GPS TOW = %.0f, differ by %.0fs (want <= 120s within this capture)",
+			galTOW, gpsTOW, diff)
+	}
+	t.Logf("real F9T capture: GST WN=%d TOW=%.0f agrees with GPS WN=%d TOW=%.0f", galWN, galTOW, gpsWN, gpsTOW)
+}
+
 // TestRealGalileoFNAVAgreesWithINAV validates the E5a F/NAV decoder against the
 // same capture by the strongest possible check: for every SV present on both
 // signals, the F/NAV-decoded position must agree with the I/NAV-decoded position

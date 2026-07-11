@@ -2,12 +2,18 @@ package frame
 
 import (
 	"encoding/binary"
+	"errors"
 
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/gnss/clock"
 	"github.com/ptudor/gnss/kepler"
 	"github.com/ptudor/gnss/physconst"
 )
+
+// errGalileoAlertPage is returned when a page's Even/Odd or Page Type flag bits
+// (OS-SIS-ICD §4.3.1) don't match a nominal even+odd pair -- an alert page or a
+// misaligned pair, whose data fields are not a nav word.
+var errGalileoAlertPage = errors.New("frame: Galileo I/NAV alert page or misaligned pair")
 
 // Galileo E1-B I/NAV decoding (OS-SIS-ICD Issue 2.1 §4.3). u-blox delivers each
 // I/NAV nominal page as one UBX-RXM-SFRBX of eight 32-bit words = a 256-bit page:
@@ -33,6 +39,15 @@ type GalileoINAV struct {
 	IODnav int
 	SISA   int
 	Health int // E1B health (word 5), when present
+	// WN/TOW (word 5, regression fix): the 12-bit GST week number and 20-bit GST
+	// time-of-week, both plain integer counts (OS-SIS-ICD Issue 2.1 Table 67 --
+	// no scale factor). GST epoch is 1999-08-22 (gnsstime.go); this 12-bit field
+	// must never be confused with GPS's 10-bit WN -- it lives only on this
+	// Galileo-specific struct, never a field shared with another constellation.
+	WN     int
+	TOW    float64
+	E5bDVS int // E5b Data Validity Status (word 5): 0 valid, 1 working without guarantee
+	E1BDVS int // E1B Data Validity Status (word 5)
 	eph    kepler.Ephemeris
 	clk    clock.Model
 	hasClk bool
@@ -48,6 +63,22 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 		binary.BigEndian.PutUint32(page[i*4:], words[i])
 	}
 	pr := NewBitReader(page)
+
+	// validate the Even/Odd and Page Type flag bits before trusting the
+	// page as a nominal nav word. OS-SIS-ICD: even-part bit 0 must be 0, odd-part
+	// bit 0 (page bit 128) must be 1, and Page Type (bit 1 of each part) must be 0
+	// (Nominal) -- Page Type 1 marks an alert page whose data fields are not a nav
+	// word at all. Without this check, an alert page (or a misaligned pair from a
+	// non-u-blox source) decodes as a nav word with an arbitrary type 0-63; word
+	// type 5 writes health directly into live state, so a single alert page could
+	// flip an SV's served health.
+	evenFlag, _ := pr.Bits(0, 1)
+	evenPageType, _ := pr.Bits(1, 1)
+	oddFlag, _ := pr.Bits(128, 1)
+	oddPageType, _ := pr.Bits(129, 1)
+	if evenFlag != 0 || oddFlag != 1 || evenPageType != 0 || oddPageType != 0 {
+		return nil, errGalileoAlertPage
+	}
 
 	// Reconstruct the contiguous 128-bit nav word: even data (page bits 2..114)
 	// then odd data (page bits 130..146). Some fields (e.g. √A) straddle the join,
@@ -134,12 +165,23 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 		}
 		w.hasClk = true
 	case 5:
-		// Ionosphere, BGD, health. Layout after BGD_E1E5a(47-56): BGD_E1E5b(57-66),
-		// E5b_HS(67-68), E1B_HS(69-70) per ICD — bit 67 is E5b health, not E1B health.
+		// Ionosphere, BGD, health, DVS, GST (OS-SIS-ICD Issue 2.1 Table 44). Layout
+		// after BGD_E1E5a(47-56): BGD_E1E5b(57-66), E5b_HS(67-68), E1B_HS(69-70),
+		// E5bDVS(71), E1BDVS(72), WN(73-84, 12 bits), TOW(85-104, 20 bits), Spare
+		// (105-127) — bit 67 is E5b health, not E1B health. WN/TOW are plain integer
+		// counts (Table 67: scale factor 1), never scaled like GPS's ×6 TOW.
 		bgd, _ := r.Signed(47, 10) // BGD(E1,E5a), 2^-32 s
 		e1bHealth, _ := r.Bits(69, 2)
+		e5bDVS, _ := r.Bits(71, 1)
+		e1bDVS, _ := r.Bits(72, 1)
+		wn, _ := r.Bits(73, 12)
+		tow, _ := r.Bits(85, 20)
 		w.eph.ID = gnss.Galileo
 		w.Health = int(e1bHealth)
+		w.E5bDVS = int(e5bDVS)
+		w.E1BDVS = int(e1bDVS)
+		w.WN = int(wn)
+		w.TOW = float64(tow)
 		w.clk.TGD = float64(bgd) * float64(1.0/float64(uint64(1)<<32))
 	}
 	return w, nil

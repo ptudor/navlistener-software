@@ -34,6 +34,11 @@ func copyBits(dst []byte, dstOff int, src []byte, srcOff, n int) {
 // page bit is left zero — DecodeGalileoINAV never reads them.
 func buildGalileoINAVWords(content []byte) []uint32 {
 	page := make([]byte, 32)
+	// the odd part's Even/Odd flag bit (page bit 128) must be 1 for a
+	// nominal page -- every other flag bit (even-part bit 0, both Page Type bits)
+	// is correctly 0 by the zeroed page, but this one isn't, so it must be set
+	// explicitly or DecodeGalileoINAV now rejects every test-built page.
+	page[16] = 0x80 // bit 128 is the MSB of byte 16 (128/8 = 16)
 	copyBits(page, 2, content, 0, 112)
 	copyBits(page, 130, content, 112, 16)
 	words := make([]uint32, 8)
@@ -102,6 +107,137 @@ func buildGalileoINAVWord1234(t *testing.T, iod uint64) (w1, w2, w3, w4 *Galileo
 		t.Fatalf("decode word4: %v", err)
 	}
 	return w1, w2, w3, w4
+}
+
+// TestDecodeGalileoINAVRejectsAlertPage guards a page whose Even/Odd or
+// Page Type flag bits don't match a nominal even+odd pair must error, not decode
+// as an arbitrary nav word -- an alert page's data fields aren't a nav word at
+// all, and word 5 writes health directly into live state.
+func TestDecodeGalileoINAVRejectsAlertPage(t *testing.T) {
+	content := make([]byte, 16)
+	setContentBits(content, 0, 1, 6) // word type = 1 (would otherwise decode fine)
+
+	base := buildGalileoINAVWords(content)
+	page := make([]byte, 32)
+	for i := 0; i < 8; i++ {
+		page[i*4] = byte(base[i] >> 24)
+		page[i*4+1] = byte(base[i] >> 16)
+		page[i*4+2] = byte(base[i] >> 8)
+		page[i*4+3] = byte(base[i])
+	}
+	toWords := func(p []byte) []uint32 {
+		words := make([]uint32, 8)
+		for i := 0; i < 8; i++ {
+			words[i] = uint32(p[i*4])<<24 | uint32(p[i*4+1])<<16 | uint32(p[i*4+2])<<8 | uint32(p[i*4+3])
+		}
+		return words
+	}
+
+	for _, tt := range []struct {
+		name string
+		bit  int // absolute page bit to flip to 1
+	}{
+		{"even-part alert (bit 1, the finding's exact PoC)", 1},
+		{"even-part Even/Odd flag set (bit 0)", 0},
+		{"odd-part alert (bit 129)", 129},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			p := make([]byte, 32)
+			copy(p, page)
+			p[tt.bit>>3] |= 1 << uint(7-(tt.bit&7))
+			if _, err := DecodeGalileoINAV(toWords(p)); err != errGalileoAlertPage {
+				t.Errorf("DecodeGalileoINAV with bit %d set = %v, want errGalileoAlertPage", tt.bit, err)
+			}
+		})
+	}
+
+	// The odd part's Even/Odd flag bit (128) missing (i.e. 0, a misaligned pair)
+	// must also be rejected.
+	p := make([]byte, 32)
+	copy(p, page)
+	p[16] = 0 // clear bit 128
+	if _, err := DecodeGalileoINAV(toWords(p)); err != errGalileoAlertPage {
+		t.Errorf("DecodeGalileoINAV with bit 128 cleared = %v, want errGalileoAlertPage", err)
+	}
+
+	// The unmodified page (nominal, bit 128 set, all others 0) must still decode.
+	if _, err := DecodeGalileoINAV(toWords(page)); err != nil {
+		t.Errorf("DecodeGalileoINAV on nominal page: %v, want success", err)
+	}
+}
+
+// TestDecodeGalileoINAVWord5TimeAndDVS guards word 5 must decode GST
+// WN/TOW and both DVS bits, at the exact OS-SIS-ICD Issue 2.1 Table 44 offsets
+// (WN@73, 12 bits; TOW@85, 20 bits; E5bDVS@71; E1BDVS@72) — confirmed against
+// the published ICD text, not assumed. WN must be able to hold a full 12-bit
+// value (up to 4095) without truncation, distinguishing it from GPS's 10-bit WN.
+func TestDecodeGalileoINAVWord5TimeAndDVS(t *testing.T) {
+	content := make([]byte, 16)
+	setContentBits(content, 0, 5, 6)        // word type = 5
+	setContentBits(content, 71, 1, 1)       // E5bDVS = 1 (working without guarantee)
+	setContentBits(content, 72, 0, 1)       // E1BDVS = 0 (valid)
+	setContentBits(content, 73, 3500, 12)   // WN = 3500 (> GPS's 10-bit max of 1023)
+	setContentBits(content, 85, 483000, 20) // TOW = 483000 s (< 604800, within-week)
+	w, err := DecodeGalileoINAV(buildGalileoINAVWords(content))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if w.WN != 3500 {
+		t.Errorf("WN = %d, want 3500", w.WN)
+	}
+	if w.TOW != 483000 {
+		t.Errorf("TOW = %v, want 483000", w.TOW)
+	}
+	if w.E5bDVS != 1 {
+		t.Errorf("E5bDVS = %d, want 1", w.E5bDVS)
+	}
+	if w.E1BDVS != 0 {
+		t.Errorf("E1BDVS = %d, want 0", w.E1BDVS)
+	}
+}
+
+// setFNAVBufBits packs v's low n bits (MSB-first) into a raw 256-bit F/NAV page
+// buffer at bit offset off — F/NAV pages have no even/odd split (unlike I/NAV),
+// so this writes directly into the 32-byte buffer DecodeGalileoFNAV reads.
+func setFNAVBufBits(buf []byte, off int, v uint64, n int) {
+	for i := 0; i < n; i++ {
+		if v&(1<<uint(n-1-i)) != 0 {
+			p := off + i
+			buf[p>>3] |= 1 << uint(7-(p&7))
+		}
+	}
+}
+
+func fnavBufToWords(buf []byte) []uint32 {
+	words := make([]uint32, 8)
+	for i := 0; i < 8; i++ {
+		words[i] = uint32(buf[i*4])<<24 | uint32(buf[i*4+1])<<16 | uint32(buf[i*4+2])<<8 | uint32(buf[i*4+3])
+	}
+	return words
+}
+
+// TestDecodeGalileoFNAVPage1SISAHealth guards F/NAV page 1 must decode
+// SISA(E1,E5a) and E5a Signal Health Status, at the exact OS-SIS-ICD Issue 2.1
+// Table 28 offsets (SISA@94, 8 bits; E5aHS@153, 2 bits) — confirmed against the
+// published ICD text, not assumed.
+func TestDecodeGalileoFNAVPage1SISAHealth(t *testing.T) {
+	buf := make([]byte, 32)
+	setFNAVBufBits(buf, 0, 1, 6)    // page type = 1
+	setFNAVBufBits(buf, 94, 200, 8) // SISA = 200
+	setFNAVBufBits(buf, 153, 2, 2)  // E5aHS = 2
+	w, err := DecodeGalileoFNAV(fnavBufToWords(buf))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if w.PageType != 1 {
+		t.Fatalf("PageType = %d, want 1", w.PageType)
+	}
+	if w.SISA != 200 {
+		t.Errorf("SISA = %d, want 200", w.SISA)
+	}
+	if w.E5aHS != 2 {
+		t.Errorf("E5aHS = %d, want 2", w.E5aHS)
+	}
 }
 
 // TestAssembleGalileoBGD guards Galileo BGD (decoded in word 5) must
