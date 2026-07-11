@@ -149,6 +149,57 @@ func TestIntegrationReplayDedup(t *testing.T) {
 	}
 }
 
+// TestIntegrationAtomicReplayClaim proves the replay claim is not stranded when
+// CopyFrom rejects the corresponding raw row. The second attempt uses the same
+// key with valid JSON and must persist exactly once.
+func TestIntegrationAtomicReplayClaim(t *testing.T) {
+	dsn := testDSN(t)
+	ctx := context.Background()
+	cfg := config.Store{DSN: dsn, BatchSize: 100, BatchEvery: 50 * time.Millisecond, RawRetention: "7 days", CompressAfter: "1 day"}
+	s, err := New(ctx, cfg, integrationLog())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer s.pool.Close()
+
+	const source = "r002-atomic-integration"
+	if _, err := s.pool.Exec(ctx, `DELETE FROM nav_frames WHERE source_id = $1`, source); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM nav_frames_seq_seen WHERE source_id = $1`, source); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	frame := &NavFrame{Ts: now, ReceivedAt: now, SourceID: source, GnssID: 0, SvID: 1,
+		SigID: 0, MsgType: 0x10, Raw: []byte{1}, Decoded: []byte(`{not-json`),
+		SourceSeq: 1, HasSourceSeq: true}
+	if _, err := s.persistAtomicOnce(ctx, []*NavFrame{frame}); err == nil {
+		t.Fatal("invalid JSON CopyFrom unexpectedly succeeded")
+	}
+	var claims int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM nav_frames_seq_seen WHERE source_id = $1`, source).Scan(&claims); err != nil {
+		t.Fatal(err)
+	}
+	if claims != 0 {
+		t.Fatalf("dedup claims after failed CopyFrom = %d, want 0", claims)
+	}
+
+	frame.Decoded = []byte(`{"ok":true}`)
+	if n, err := s.persistAtomicOnce(ctx, []*NavFrame{frame}); err != nil || n != 1 {
+		t.Fatalf("retry persist = (%d, %v), want (1, nil)", n, err)
+	}
+	if n, err := s.persistAtomicOnce(ctx, []*NavFrame{frame}); err != nil || n != 0 {
+		t.Fatalf("replay persist = (%d, %v), want (0, nil)", n, err)
+	}
+	var rows int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM nav_frames WHERE source_id = $1`, source).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("nav_frames rows = %d, want exactly 1", rows)
+	}
+}
+
 // TestIntegrationQueryEventsTotalPastLastPage guards QueryEvents' total is
 // observed only via the paginated rows' count(*) OVER() -- a page past the last
 // matching row (offset >= the matching count) returns zero rows, and without a

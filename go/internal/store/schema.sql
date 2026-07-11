@@ -38,8 +38,9 @@ CREATE INDEX IF NOT EXISTS idx_nav_frames_recv ON nav_frames (received_at DESC);
 -- unique index to include its partition column, and `ts` legitimately differs between
 -- a frame and its replay (ingest time, not broadcast time). So the dedup key lives in
 -- a small side ledger with a real (non-partitioned) unique constraint: the writer
--- upserts each push-path frame's (source_id, feeder_seq) here first (ON CONFLICT DO
--- NOTHING RETURNING) and only CopyFrom's the rows that were newly seen. Dial-mode
+-- claims each push-path frame's (source_id, feeder_seq) here in the same transaction
+-- that CopyFrom's the newly seen rows. A copy/commit failure therefore rolls the claim
+-- back and leaves the edge replay retryable. Dial-mode
 -- frames carry no feeder sequence and always pass through unfiltered — duplicates
 -- across *different* receivers remain intentional and untouched by this table.
 -- Pruned by the store on the same interval as raw_retention (store.go prunePolicy) —

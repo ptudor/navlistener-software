@@ -97,6 +97,7 @@ type Store struct {
 	log              *slog.Logger
 	seqSeenRetention time.Duration // prune window for nav_frames_seq_seen 
 	copy             copyRowsFunc  // defaults to s.copyRows (pool-backed); tests substitute a fake
+	atomicPersist    bool          // production: claim replay keys and copy rows in one transaction
 	shutdownBudget   time.Duration // defaults to shutdownFlushBudget; tests shrink it to run fast
 }
 
@@ -150,6 +151,7 @@ func New(ctx context.Context, cfg config.Store, log *slog.Logger) (*Store, error
 		retry:            defaultFlushRetry,
 		log:              log,
 		seqSeenRetention: seqSeenRetention,
+		atomicPersist:    true,
 		shutdownBudget:   shutdownFlushBudget,
 	}
 	s.copy = s.copyRows
@@ -424,6 +426,121 @@ type seqKey struct {
 	seq    uint64
 }
 
+// persistAtomicOnce claims replay keys and inserts their corresponding raw rows in
+// one transaction. A failed CopyFrom or commit rolls the claims back, so reconnect
+// replay can retry them. Existing claims are durable proof that the row committed
+// in an earlier transaction and are therefore omitted. Duplicate keys inside one
+// batch are also emitted only once.
+func (s *Store) persistAtomicOnce(ctx context.Context, batch []*NavFrame) (written int64, err error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	unique := make([]seqKey, 0, len(batch))
+	seen := make(map[seqKey]bool, len(batch))
+	for _, f := range batch {
+		if !f.HasSourceSeq {
+			continue
+		}
+		k := seqKey{f.SourceID, f.SourceSeq}
+		if !seen[k] {
+			seen[k] = true
+			unique = append(unique, k)
+		}
+	}
+
+	fresh := make(map[seqKey]bool, len(unique))
+	if len(unique) > 0 {
+		sources := make([]string, len(unique))
+		seqs := make([]int64, len(unique))
+		for i, k := range unique {
+			sources[i], seqs[i] = k.source, int64(k.seq)
+		}
+		rows, qerr := tx.Query(ctx,
+			`INSERT INTO nav_frames_seq_seen (source_id, feeder_seq)
+			 SELECT * FROM unnest($1::text[], $2::bigint[])
+			 ON CONFLICT (source_id, feeder_seq) DO NOTHING
+			 RETURNING source_id, feeder_seq`, sources, seqs)
+		if qerr != nil {
+			return 0, qerr
+		}
+		for rows.Next() {
+			var src string
+			var seq int64
+			if qerr = rows.Scan(&src, &seq); qerr != nil {
+				rows.Close()
+				return 0, qerr
+			}
+			fresh[seqKey{src, uint64(seq)}] = true
+		}
+		qerr = rows.Err()
+		rows.Close()
+		if qerr != nil {
+			return 0, qerr
+		}
+	}
+
+	copyRows := make([][]any, 0, len(batch))
+	emitted := make(map[seqKey]bool, len(fresh))
+	for _, f := range batch {
+		if f.HasSourceSeq {
+			k := seqKey{f.SourceID, f.SourceSeq}
+			if !fresh[k] || emitted[k] {
+				continue
+			}
+			emitted[k] = true
+		}
+		copyRows = append(copyRows, navFrameToRow(f))
+	}
+	if len(copyRows) > 0 {
+		written, err = tx.CopyFrom(ctx, pgx.Identifier{"nav_frames"}, copyColumns, pgx.CopyFromRows(copyRows))
+		if err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return written, nil
+}
+
+func (s *Store) persistAtomicRetry(ctx context.Context, batch []*NavFrame) (written int64, dropped int) {
+	if len(batch) == 0 {
+		return 0, 0
+	}
+	backoff := s.retry.backoff
+	for attempt := 1; ; attempt++ {
+		cctx, cancel := context.WithTimeout(ctx, s.retry.attemptTO)
+		n, err := s.persistAtomicOnce(cctx, batch)
+		cancel()
+		if err == nil {
+			return n, 0
+		}
+		metrics.StoreErrorsTotal.Inc()
+		if isPoison(err) {
+			if len(batch) == 1 {
+				s.log.Error("store quarantined a poison row", "error", err)
+				return 0, 1
+			}
+			mid := len(batch) / 2
+			w1, d1 := s.persistAtomicRetry(ctx, batch[:mid])
+			w2, d2 := s.persistAtomicRetry(ctx, batch[mid:])
+			return w1 + w2, d1 + d2
+		}
+		s.log.Warn("store flush failed; will retry", "error", err, "rows", len(batch), "attempt", attempt)
+		if attempt >= s.retry.attempts || ctx.Err() != nil {
+			s.log.Error("store flush giving up; leaving batch replayable", "rows", len(batch), "attempts", attempt)
+			return 0, len(batch)
+		}
+		if !sleepCtx(ctx, backoff) {
+			return 0, len(batch)
+		}
+		backoff *= 2
+	}
+}
+
 // checkSeqSeen upserts keys into nav_frames_seq_seen in one round trip and returns
 // the subset that were newly inserted (i.e. not a replay of an already-persisted
 // sequence). ON CONFLICT DO NOTHING + RETURNING means a key already present in the
@@ -489,6 +606,16 @@ func (s *Store) flush(batch []*NavFrame, deadline time.Time) {
 	}
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
+	if s.atomicPersist {
+		written, dropped := s.persistAtomicRetry(ctx, batch)
+		if written > 0 {
+			metrics.StoreRowsTotal.Add(float64(written))
+		}
+		if dropped > 0 {
+			metrics.StoreQuarantinedTotal.Add(float64(dropped))
+		}
+		return
+	}
 
 	var keys []seqKey
 	for _, f := range batch {
