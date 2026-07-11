@@ -10,7 +10,10 @@ uint8_t gnf1_frame_type(unsigned gnss_id, unsigned sig_id)
 {
     switch (gnss_id) {
     case 0: return sig_id == 0 ? 0x10 : 0x11;                        // GPS: LNAV / CNAV
-    case 5: return sig_id == 0 ? 0x50 : sig_id == 1 ? 0x53 : 0x51;   // QZSS: LNAV / L1S / CNAV
+    case 5:                                                         // QZSS: shipped LNAV/CNAV only
+        if (sig_id == 0) return 0x50;
+        if (sig_id == 4 || sig_id == 5 || sig_id == 8 || sig_id == 9) return 0x51;
+        return 0;
     case 2: return (sig_id == 3 || sig_id == 4) ? 0x21 : 0x20;       // Galileo: F/NAV / I/NAV
     case 3:                                                          // BeiDou: D2 / B-CNAV2 / D1
         if (sig_id == 1 || sig_id == 3) return 0x31;

@@ -39,7 +39,7 @@ func TestNavTypeMatchesConstellationsTable(t *testing.T) {
 		{gnss.BeiDou, 7, 0x33, "BdsCnav2"},
 		{gnss.BeiDou, 8, 0x33, "BdsCnav2"},
 		{gnss.QZSS, 0, 0x50, "QzsLnav"},
-		{gnss.QZSS, 1, 0x53, "QzsL1s"},
+		{gnss.QZSS, 1, 0, "QzsL1sPlannedUnsupported"},
 		{gnss.QZSS, 4, 0x51, "QzsCnav"},
 		{gnss.QZSS, 5, 0x51, "QzsCnav"},
 		{gnss.QZSS, 8, 0x51, "QzsCnav"},

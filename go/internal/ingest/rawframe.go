@@ -119,10 +119,10 @@ func (f *RawFrame) NavType() int {
 		switch f.SigID {
 		case 0:
 			return 0x50 // QzsLnav
-		case 1:
-			return 0x53 // QzsL1s
-		default:
+		case 4, 5, 8, 9:
 			return 0x51 // QzsCnav
+		default:
+			return 0 // L1S/L1C-CNAV2/L6 are planned, not supported mappings
 		}
 	case gnss.Galileo:
 		if f.SigID == 3 || f.SigID == 4 {

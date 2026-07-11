@@ -509,7 +509,10 @@ static void *reader_thread(void *arg) {
 static uint8_t frame_type(unsigned gnssId, unsigned sigId) {
 	switch (gnssId) {
 	case 0: return sigId == 0 ? 0x10 : 0x11;                 /* GPS: LNAV / CNAV */
-	case 5: return sigId == 0 ? 0x50 : sigId == 1 ? 0x53 : 0x51; /* QZSS: LNAV / L1S / CNAV */
+	case 5:                                                   /* QZSS: shipped LNAV/CNAV only */
+		if (sigId == 0) return 0x50;
+		if (sigId == 4 || sigId == 5 || sigId == 8 || sigId == 9) return 0x51;
+		return 0;
 	case 2: return (sigId == 3 || sigId == 4) ? 0x21 : 0x20; /* Galileo: F/NAV / I/NAV */
 	case 3:                                                  /* BeiDou: D2 / B-CNAV1 / B-CNAV2 / D1 */
 		if (sigId == 1 || sigId == 3) return 0x31;

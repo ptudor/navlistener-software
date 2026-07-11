@@ -191,7 +191,7 @@ and `/gnss/health`. When `navlistener` absorbs the serve role these move here un
 shape; they are read-side conveniences over the same state and DB.
 
 New enrichment endpoints (ours — the Japan/India product surface, `docs/CONSTELLATIONS.md
-§3.2/§4.1`): `/gnss/api/qzss-dcr` (QZSS L1S DC Report disaster/crisis bulletins) and
+§3.2/§4.1`): `/gnss/api/qzss-dcr` (planned; unavailable until the QZSS L1S decoder lands) and
 `/gnss/api/navic-text` (planned; unavailable until the NavIC decoder lands). Same envelope; message streams,
 not positioning inputs.
 

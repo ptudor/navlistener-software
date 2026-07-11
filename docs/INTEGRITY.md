@@ -177,7 +177,7 @@ The baseline vocabulary and severities below are **verified against intsat's shi
 | `position_unknown` | a monitored SV has no computable position | 1 |
 | `osnma_change` | Galileo OSNMA authentication on↔off | 0 |
 | `sbas_health` | SBAS message-type-0 / health change | 0, → 2 on do-not-use |
-| `qzss_health` *(ours)* | QZSS health/DC-report (disaster) transition | 1–2 |
+| `qzss_health` | QZSS navigation health transition; L1S DC-report enrichment is planned | 1–2 |
 | `navic_health` *(planned)* | NavIC SPS health transition; unavailable until the NavIC decoder lands | 1–2 |
 
 The two `*_health` types cover QZSS and NavIC; the
