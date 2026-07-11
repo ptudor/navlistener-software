@@ -25,8 +25,10 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/navlistener/internal/config"
+	"github.com/ptudor/navlistener/internal/metrics"
 	"github.com/ptudor/navlistener/internal/wire"
 )
 
@@ -42,6 +44,48 @@ func TestPushServeReturnsTerminalAcceptFailure(t *testing.T) {
 	err := p.serve(context.Background(), terminalListener{err: errors.New("terminal accept failure")})
 	if err == nil || !strings.Contains(err.Error(), "terminal accept failure") {
 		t.Fatalf("serve error = %v, want terminal accept failure", err)
+	}
+}
+
+// oneConnThenTerminal returns one connection, then a (non-temporary) terminal error.
+type oneConnThenTerminal struct {
+	conn net.Conn
+	err  error
+	done bool
+}
+
+func (l *oneConnThenTerminal) Accept() (net.Conn, error) {
+	if !l.done {
+		l.done = true
+		return l.conn, nil
+	}
+	return nil, l.err
+}
+func (*oneConnThenTerminal) Close() error   { return nil }
+func (*oneConnThenTerminal) Addr() net.Addr { return &net.TCPAddr{} }
+
+// TestPushServeTerminalAcceptWithActiveConn guards on a non-temporary accept error
+// with an in-flight connection, serve() must still return (so main can report the fatal and
+// tear down) rather than deadlocking in wg.Wait() — the in-flight handler exits only on
+// context cancellation, and the parent ctx is cancelled only AFTER serve returns. serve()'s
+// child-context cancel breaks that cycle. Before the fix this hangs (until the handler's 30s
+// read deadline at best, forever on a live streaming feeder).
+func TestPushServeTerminalAcceptWithActiveConn(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close() // held open, never writes: the handler blocks reading the magic
+	ln := &oneConnThenTerminal{conn: server, err: errors.New("terminal accept failure")}
+	p := newPushServer("unused", &tls.Config{}, make(chan *RawFrame), nil, time.Second, 4,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	done := make(chan error, 1)
+	go func() { done <- p.serve(context.Background(), ln) }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "terminal accept failure") {
+			t.Fatalf("serve error = %v, want terminal accept failure", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve deadlocked on wg.Wait() after a terminal accept error with an active connection ")
 	}
 }
 
@@ -888,6 +932,20 @@ func TestRecordToFrameClampsImplausibleTimestamp(t *testing.T) {
 	f3 := recordToFrame(rec3, "ubx", "obs1")
 	if f3 == nil || f3.Recv.Before(before) {
 		t.Errorf("Recv = %v, want now() when RecvUnixNs is unset", f3.Recv)
+	}
+
+	// a negative RecvUnixNs (byte-swapped/sign-flipped clock) is as implausible as a
+	// far-future stamp — it must increment recv_ts_implausible (not fall through uncounted)
+	// while still falling back to now(). == 0 stays uncounted (asserted above by rec3).
+	c := metrics.PushErrorsTotal.WithLabelValues("obsNeg", "recv_ts_implausible")
+	start := testutil.ToFloat64(c)
+	recNeg := wire.RawRecord{RecvUnixNs: -1_000_000, GnssID: gnss.GPS, SvID: 5, Raw: make([]byte, 40)}
+	f4 := recordToFrame(recNeg, "ubx", "obsNeg")
+	if f4 == nil || f4.Recv.Before(before) {
+		t.Errorf("Recv = %v, want now() for a negative stamp", f4.Recv)
+	}
+	if got := testutil.ToFloat64(c) - start; got != 1 {
+		t.Errorf("recv_ts_implausible delta = %v, want 1 for a negative stamp ", got)
 	}
 }
 

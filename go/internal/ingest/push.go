@@ -206,6 +206,17 @@ func (p *PushServer) Serve(ctx context.Context, ln net.Listener) error {
 func (p *PushServer) serve(ctx context.Context, ln net.Listener) error {
 	go func() { <-ctx.Done(); _ = ln.Close() }()
 
+	// handlers exit when their context is cancelled (the stop goroutine in handle()
+	// closes the conn so a blocked read returns), but the PARENT ctx is cancelled only AFTER
+	// this function returns — main wires the returned terminal error into reportFatal ->
+	// cancel(). On a non-temporary Accept error with the parent ctx still alive, a bare
+	// wg.Wait() would therefore block forever on fleet feeders that stream + PING indefinitely:
+	// Serve never returns, the fatal is never reported, and /healthz stays OK (the half-alive
+	// state the terminal-error path exists to prevent, regression fix). Give the handlers a
+	// child context this function can cancel itself, so wg.Wait() completes on that path.
+	hctx, hcancel := context.WithCancel(ctx)
+	defer hcancel()
+
 	var wg sync.WaitGroup
 	backoff := acceptBackoffInitial
 	for {
@@ -216,6 +227,7 @@ func (p *PushServer) serve(ctx context.Context, ln net.Listener) error {
 				return nil // clean shutdown
 			}
 			if ne, ok := err.(net.Error); !ok || !ne.Temporary() {
+				hcancel() // tear down in-flight handlers so wg.Wait() can complete
 				wg.Wait()
 				return fmt.Errorf("push accept: %w", err)
 			}
@@ -242,7 +254,7 @@ func (p *PushServer) serve(ctx context.Context, ln net.Listener) error {
 		go func() {
 			defer wg.Done()
 			defer func() { <-p.conns }()
-			p.handle(ctx, conn)
+			p.handle(hctx, conn)
 		}()
 	}
 }
@@ -267,6 +279,18 @@ func (w *connWriter) write(ft wire.FrameType, payload []byte) error {
 func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 	remote := conn.RemoteAddr().String()
+
+	// recover so a future parser edge case in the push path (wire.DecodeData,
+	// decodeJammingStats, decodeReceptionData, bytesToWords, rtcm) reconnects this one
+	// authenticated feeder instead of crashing the whole collector — symmetric with the dial
+	// path's runScanner recover. decodeLoop's per-frame recover only covers the far side.
+	var observer string // set after handshake; labels the panic metric below
+	defer func() {
+		if r := recover(); r != nil {
+			metrics.PushErrorsTotal.WithLabelValues(observer, "panic").Inc()
+			p.log.Error("push handler panicked; closing connection", "observer", observer, "remote", remote, "panic", r)
+		}
+	}()
 
 	// Close the connection when the daemon shuts down so a blocked read returns.
 	stop := make(chan struct{})
@@ -527,12 +551,19 @@ const recvTimestampSlack = 5 * time.Minute
 
 func recordToFrame(rec wire.RawRecord, feed, source string) *RawFrame {
 	recv := time.Now()
-	if rec.RecvUnixNs > 0 {
+	switch {
+	case rec.RecvUnixNs > 0:
 		if stamped := time.Unix(0, rec.RecvUnixNs); withinSlack(stamped, recv, recvTimestampSlack) {
 			recv = stamped
 		} else {
 			metrics.PushErrorsTotal.WithLabelValues(source, "recv_ts_implausible").Inc()
 		}
+	case rec.RecvUnixNs < 0:
+		// a negative stamp (byte-swapped/sign-flipped clock) is as implausible as a
+		// far-future one — count it under the same metric so a misbehaving feeder clock
+		// stays visible. == 0 remains the deliberate "unstamped" sentinel (uncounted; falls
+		// back to now()).
+		metrics.PushErrorsTotal.WithLabelValues(source, "recv_ts_implausible").Inc()
 	}
 	if IsTelemetryType(int(rec.FrameType)) {
 		return telemetryToFrame(rec, source, recv)

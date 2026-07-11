@@ -123,6 +123,16 @@ func TestTelemetryBadBody(t *testing.T) {
 	if _, err := decodeReceptionData([]byte{9, 0, 0}); err == nil {
 		t.Error("unknown ReceptionData version not rejected")
 	}
+	// over-long bodies (trailing junk after the declared bands/sats) must be rejected,
+	// not silently accepted — the decoders now enforce exact length.
+	goodJam := EncodeJammingStats([]RFBand{{Block: 0, AGC: 2500}})
+	if _, err := decodeJammingStats(append(append([]byte(nil), goodJam...), 0xFF)); err == nil {
+		t.Error("JammingStats with trailing junk not rejected ")
+	}
+	goodRx := EncodeReceptionData([]SatCN0{{GnssID: 0, SvID: 1, Cn0: 40}})
+	if _, err := decodeReceptionData(append(append([]byte(nil), goodRx...), 0xFF)); err == nil {
+		t.Error("ReceptionData with trailing junk not rejected ")
+	}
 }
 
 // TestIsTelemetryType checks the discriminator that separates §6.2 telemetry (< 0x10) from

@@ -102,7 +102,11 @@ func decodeJammingStats(b []byte) ([]RFBand, error) {
 		return nil, ErrBadTelemetry
 	}
 	n := int(b[1])
-	if len(b) < 2+n*jammingBandLen {
+	// exact length, not a lower bound. The feeder encoder emits exactly
+	// 2+n*jammingBandLen bytes; trailing junk after the declared bands is a feeder-encoder
+	// bug and must be rejected (ErrBadTelemetry's contract), keeping the C↔Go cross-oracle
+	// byte-exact rather than silently accepting over-long bodies.
+	if len(b) != 2+n*jammingBandLen {
 		return nil, ErrBadTelemetry
 	}
 	bands := make([]RFBand, n)
@@ -178,7 +182,9 @@ func decodeReceptionData(b []byte) ([]SatCN0, error) {
 	if n > maxTelemSats {
 		return nil, ErrBadTelemetry
 	}
-	if len(b) < 3+n*receptionSatLen {
+	// exact length, not a lower bound — trailing junk after the declared sats is a
+	// feeder-encoder bug, rejected to keep the C↔Go cross-oracle byte-exact.
+	if len(b) != 3+n*receptionSatLen {
 		return nil, ErrBadTelemetry
 	}
 	sats := make([]SatCN0, n)
