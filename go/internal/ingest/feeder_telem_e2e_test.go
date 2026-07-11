@@ -120,7 +120,7 @@ func syntheticRFCapture() []byte {
 		noise, agc      uint16
 		cw              byte
 	}{
-		{0, 0x01, 2, 110, 2900, 30}, // L1: jammingState=ok
+		{0, 0x01, 2, 110, 2900, 30},  // L1: jammingState=ok
 		{1, 0x02, 3, 250, 8000, 180}, // L2/L5: jammingState=warning, short antenna, strong CW
 	} {
 		blk := make([]byte, 24)

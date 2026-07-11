@@ -62,9 +62,9 @@ func TestParseMONHW(t *testing.T) {
 	p := make([]byte, 60)
 	binary.LittleEndian.PutUint16(p[16:], 90)   // noisePerMS
 	binary.LittleEndian.PutUint16(p[18:], 4096) // agcCnt
-	p[20] = 4                                    // aStatus = open
-	p[22] = 0x0C                                 // flags: jammingState=3 (bits 2-3) → critical
-	p[45] = 150                                  // jamInd
+	p[20] = 4                                   // aStatus = open
+	p[22] = 0x0C                                // flags: jammingState=3 (bits 2-3) → critical
+	p[45] = 150                                 // jamInd
 
 	frames := scanRF(t, ubxMsg(ubxClassMON, ubxIDMONHW, p))
 	if len(frames) != 1 || len(frames[0].RF.Bands) != 1 {

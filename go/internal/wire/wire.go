@@ -30,9 +30,9 @@ const MaxFrameLen = 1 << 20 // 1 MiB
 type FrameType uint8
 
 const (
-	Hello      FrameType = 0x01 // feeder→collector: JSON HelloMsg
-	Welcome    FrameType = 0x02 // collector→feeder: JSON WelcomeMsg
-	Data       FrameType = 0x03 // feeder→collector: [8B seq][raw record]
+	Hello   FrameType = 0x01 // feeder→collector: JSON HelloMsg
+	Welcome FrameType = 0x02 // collector→feeder: JSON WelcomeMsg
+	Data    FrameType = 0x03 // feeder→collector: [8B seq][raw record]
 	// Ack : [8B seq] the highest sequence number received on this
 	// connection, not "last contiguous stored" -- the collector never buffers
 	// to wait for a gap to fill; a lost/reordered frame is simply skipped past.
@@ -40,7 +40,7 @@ const (
 	// contiguity and never prune across a gap; reconnect replay (the feeder
 	// resends everything after the last ack it received) makes any resulting
 	// duplicate harmless, which is what actually makes this safe.
-	Ack FrameType = 0x04 // collector→feeder: [8B seq] highest sequence received this connection
+	Ack        FrameType = 0x04 // collector→feeder: [8B seq] highest sequence received this connection
 	Ping       FrameType = 0x05 // keepalive
 	Pong       FrameType = 0x06 // keepalive
 	SignedData FrameType = 0x07 // hardware tier (vNext): Data batch + ATECC ECDSA
