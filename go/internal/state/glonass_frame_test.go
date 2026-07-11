@@ -110,6 +110,63 @@ func TestGLONASSChangeoverDoesNotMixEpochs(t *testing.T) {
 	}
 }
 
+// TestGLONASSL2OFDispatched guards L2OF (SigID 2) strings share the byte-identical
+// 85-bit format with L1OF and must decode into the same per-SV state (keyed at Sig 0), not
+// be dropped as "unsupported". A coherent L2OF triple must assemble an ephemeris.
+func TestGLONASSL2OFDispatched(t *testing.T) {
+	st := New(4)
+	t0 := time.Unix(1_700_000_000, 0)
+	l2of := func(number int, coord, vel, accel int64, health, tb int, recv time.Time) *ingest.RawFrame {
+		f := glonassStringFrame(9, number, coord, vel, accel, health, tb, recv)
+		f.SigID = 2 // L2OF
+		return f
+	}
+	st.Apply(l2of(1, 20000000, 10, 1, 0, 0, t0))
+	st.Apply(l2of(2, 20000000, 20, 2, 0, 450, t0.Add(2*time.Second)))
+	st.Apply(l2of(3, 20000000, 30, 3, 0, 0, t0.Add(4*time.Second)))
+
+	key := Key{G: gnss.GLONASS, Sv: 9, Sig: 0}
+	sh := st.shardFor(key)
+	sh.mu.Lock()
+	have := sh.m[key] != nil && sh.m[key].haveGloEph
+	sh.mu.Unlock()
+	if !have {
+		t.Fatal("L2OF (SigID 2) triple did not assemble — dispatched as unsupported?")
+	}
+}
+
+// TestGLONASSDiscoOnTbChangeover guards a GLONASS tb changeover with an offset
+// position/clock must produce orbit_disco_m and time_disco_ns in FeedSVs (the metric was
+// structurally absent for GLONASS before this fix).
+func TestGLONASSDiscoOnTbChangeover(t *testing.T) {
+	st := New(4)
+	t0 := time.Unix(1_700_000_000, 0)
+	const tauRaw = -100000
+	// First set: large (valid) positions, small velocity, tb encoded 450.
+	st.Apply(glonassStringFrame(7, 1, 20000000, 10, 1, 0, 0, t0))
+	st.Apply(glonassStringFrame(7, 2, 20000000, 20, 2, 0, 450, t0.Add(2*time.Second)))
+	st.Apply(glonassStringFrame(7, 3, 20000000, 30, 3, 0, 0, t0.Add(4*time.Second)))
+	st.Apply(glonassString4Frame(7, tauRaw, 5, t0.Add(6*time.Second)))
+
+	// Second set ~15 min later: adjacent tb (451), an offset X and a changed clock.
+	t1 := t0.Add(15 * time.Minute)
+	st.Apply(glonassStringFrame(7, 1, 20500000, 10, 1, 0, 0, t1))
+	st.Apply(glonassStringFrame(7, 2, 20000000, 20, 2, 0, 451, t1.Add(2*time.Second)))
+	st.Apply(glonassStringFrame(7, 3, 20000000, 30, 3, 0, 0, t1.Add(4*time.Second)))
+	st.Apply(glonassString4Frame(7, tauRaw+50000, 5, t1.Add(6*time.Second)))
+
+	sv, ok := st.FeedSVs(t1.Add(6 * time.Second))["R07@0"]
+	if !ok {
+		t.Fatal("R07@0 missing from svs feed")
+	}
+	if sv.OrbitDiscoM == nil {
+		t.Error("orbit_disco_m absent for a GLONASS tb changeover")
+	}
+	if sv.TimeDiscoNs == nil {
+		t.Error("time_disco_ns absent for a GLONASS tb changeover with a clock offset")
+	}
+}
+
 // gloPosScale mirrors gnss/frame's unexported gloPos (2^-11 km) scale factor —
 // duplicated here (not imported; frame's constant is unexported) purely to
 // translate this test's raw encoded units back to the decoded km for assertions.

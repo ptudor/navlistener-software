@@ -50,6 +50,46 @@ func TestGloNTDay(t *testing.T) {
 	}
 }
 
+// TestGloAlmanacPairCoherenceWindow guards the even/odd almanac string pair must
+// arrive within one frame window. A stale even string pairing with a later frame's odd
+// string merges two DIFFERENT subject satellites into a chimera almanac for the wrong slot.
+func TestGloAlmanacPairCoherenceWindow(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	const svid = 12
+	const slot = 7
+
+	send5 := func(s *Store, at time.Time) {
+		na5 := gloWords(5, func(buf []byte) { setAbsBits(buf, 5, 11, 615) })
+		s.Apply(&ingest.RawFrame{GnssID: gnss.GLONASS, SvID: svid, SigID: 0, Recv: at, Words: na5})
+	}
+	first := func() []uint32 { return gloWords(6, func(buf []byte) { setAbsBits(buf, 8, 5, slot) }) }
+	second := func() []uint32 { return gloWords(7, nil) }
+
+	// Odd string arrives 30 s after the even one → cross-frame → must NOT be stored.
+	s := New(4)
+	send5(s, now)
+	s.Apply(&ingest.RawFrame{GnssID: gnss.GLONASS, SvID: svid, SigID: 0, Recv: now, Words: first()})
+	s.Apply(&ingest.RawFrame{GnssID: gnss.GLONASS, SvID: svid, SigID: 0, Recv: now.Add(30 * time.Second), Words: second()})
+	s.gloAlmMu.Lock()
+	_, stale := s.gloAlmanac[slot]
+	s.gloAlmMu.Unlock()
+	if stale {
+		t.Error("almanac pair 30 s apart (cross-frame) must not be stored")
+	}
+
+	// Odd string within the frame window → same frame → stored.
+	s2 := New(4)
+	send5(s2, now)
+	s2.Apply(&ingest.RawFrame{GnssID: gnss.GLONASS, SvID: svid, SigID: 0, Recv: now, Words: first()})
+	s2.Apply(&ingest.RawFrame{GnssID: gnss.GLONASS, SvID: svid, SigID: 0, Recv: now.Add(2 * time.Second), Words: second()})
+	s2.gloAlmMu.Lock()
+	_, fresh := s2.gloAlmanac[slot]
+	s2.gloAlmMu.Unlock()
+	if !fresh {
+		t.Error("almanac pair within the frame window must be stored")
+	}
+}
+
 // TestApplyGloAlmanacRejectsBeforeNAKnown guards an almanac string pair
 // decoded before string 5 has ever set the frame day-number NA must not be
 // stored (it would mis-epoch PropagateAlmanacECEF with Alm.NA=0, outside the

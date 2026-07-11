@@ -106,15 +106,34 @@ type svState struct {
 	gloEph                             glonass.Ephemeris
 	gloFreqID                          int
 	haveGloEph                         bool
+	// gloEphAt is the wall-clock apply time of the current GLONASS ephemeris,
+	// the analog of ephAt: the GLONASS disco staleness gate uses it.
+	gloEphAt time.Time
+	// GLONASS time-disco is deferred : the tb changeover is detected at the string-3
+	// (clockless) assembly, but the incoming clock (τn/γn) rides string 4, which completes
+	// the same-tb set ~2 s later. At the changeover we retain the OUTGOING clock and the
+	// awaited tb, then complete the time-disco when string 4 supplies the new clock.
+	discoPendClk                           bool
+	discoPendTb                            float64
+	discoOldTau, discoOldGamma, discoOldTb float64
 	// Buffered first string of an almanac pair (6/8/10/12/14), awaiting its second
 	// (7/9/11/13/15) from the same transmitting satellite.
 	gloAlmFirst    []uint32
 	gloAlmFirstNum int
+	// gloAlmFirstAt is the reception time of the buffered even string : the odd
+	// string must arrive within one frame window, or the pair is a cross-frame chimera
+	// (each frame's strings 6/7 describe a DIFFERENT subject satellite) and must be dropped.
+	gloAlmFirstAt time.Time
 
 	eph     kepler.Ephemeris
 	clk     clock.Model
 	haveEph bool
 	iod     int
+	// ephAt is the wall-clock instant this ephemeris was applied. computeDisco's
+	// staleness gate must use it, not gnsstime.EphAge(tstar, Toe): EphAge wraps its result
+	// to ±half-week, so an outgoing ephemeris ~1 week stale reads as fresh and produces the
+	// exact phantom critical disco the regression fix gate exists to prevent. Wall-clock cannot wrap.
+	ephAt time.Time
 	// bcIODC is BeiDou B-CNAV2's type-30/34 clock IODC, tracked separately
 	// from iod (the type-10/11 ephemeris IODE) so a clock-only refresh (same
 	// ephemeris, new af0/af1/af2) is not silently dropped by the ephemeris IODE
@@ -265,7 +284,12 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 		s.applyBeiDouD1(f)
 	case f.GnssID == gnss.BeiDou && f.SigID == 8: // B2a data component, B-CNAV2
 		s.applyBeiDouBCNAV2(f)
-	case f.GnssID == gnss.GLONASS && f.SigID == 0: // L1OF strings
+	case f.GnssID == gnss.GLONASS && (f.SigID == 0 || f.SigID == 2): // L1OF/L2OF strings
+		// L2OF (6,2) carries the byte-identical 85-bit string format to L1OF and is
+		// contract-shipped (0x40 GloNav in all three frame tables). applyGLONASS keys GLONASS
+		// state at Sig:0, so L1OF and L2OF strings for one SV merge into one state entry —
+		// they carry the same navigation data. Without this, every L2OF string on an
+		// L2-tracking receiver was dropped as "unsupported".
 		s.applyGLONASS(f)
 	case (f.GnssID == gnss.GPS || f.GnssID == gnss.QZSS) && isCNAVSignal(f.GnssID, f.SigID):
 		s.applyGPSCNAV(f)
@@ -402,6 +426,7 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 		s.computeDisco(st, eph, clk, f.Recv)
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
+	st.ephAt = f.Recv // wall-clock apply time for the disco staleness gate
 	st.health, st.haveHealth, st.ura = st.sf1.Health, true, st.sf1.URAIndex
 	st.accKind, st.accIdx = accURA, st.sf1.URAIndex
 }
@@ -463,6 +488,7 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 		s.computeDisco(st, eph, clk, f.Recv)
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
+	st.ephAt = f.Recv // regression fix
 	st.accKind, st.accIdx = accSISA, st.galW[3].SISA
 }
 
@@ -523,6 +549,7 @@ func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 		s.computeDisco(st, eph, clk, f.Recv)
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
+	st.ephAt = f.Recv // regression fix
 	st.health, st.haveHealth = st.bd1.Health, true
 	st.accKind, st.accIdx = accURA, st.bd1.URAI
 	st.aodc, st.aode, st.haveAOD = st.bd1.AODC, st.bd1.AODE, true
@@ -604,6 +631,7 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		}
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, st.bc10.IODE, true
+	st.ephAt = f.Recv // regression fix
 	if clkOK {
 		st.bcIODC, st.haveBcIOD = st.bc30.IODC, true
 	}
@@ -652,9 +680,15 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 	case str.Number >= 6 && str.Number <= 14 && str.Number%2 == 0: // first of an almanac pair
 		st.gloAlmFirst = append(st.gloAlmFirst[:0], f.Words...)
 		st.gloAlmFirstNum = str.Number
+		st.gloAlmFirstAt = f.Recv
 		return
 	case str.Number >= 7 && str.Number <= 15 && str.Number%2 == 1: // second of an almanac pair
-		if st.gloAlmFirst != nil && str.Number == st.gloAlmFirstNum+1 {
+		// require the odd string within one frame window of its even mate. Without
+		// it, a stale even string (from a fade a frame or more ago) pairs with a later
+		// frame's odd string — but strings 6/7 of different frames describe DIFFERENT
+		// subject satellites, so the merge is a chimera almanac stored under the wrong slot.
+		if st.gloAlmFirst != nil && str.Number == st.gloAlmFirstNum+1 &&
+			f.Recv.Sub(st.gloAlmFirstAt) <= glonassFrameWindow {
 			s.applyGloAlmanac(st.gloAlmFirst, f.Words, f.Recv)
 		}
 		st.gloAlmFirst = nil
@@ -705,7 +739,77 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 	if err != nil {
 		return
 	}
+	// compute the orbit/time discontinuity across a tb changeover before replacing
+	// the outgoing set — the same integrity metric the Kepler family gets from computeDisco.
+	// An identical tb (e.g. an L2OF string re-assembling the same set, regression fix) is not a
+	// changeover and does no disco work.
+	if st.haveGloEph && eph.Tb != st.gloEph.Tb {
+		s.computeGloDisco(st, eph, f.Recv)
+	}
+	// complete a deferred time-disco once the incoming set's clock (string 4)
+	// arrives for the tb we recorded at the changeover.
+	if st.discoPendClk && eph.ClockKnown && eph.Tb == st.discoPendTb {
+		tkOld := gnsstime.EphAgeDay(eph.Tb, st.discoOldTb)
+		oldOff := st.discoOldTau - st.discoOldGamma*tkOld
+		if d := math.Abs(eph.TauN-oldOff) * 1e9; finite(d) {
+			st.timeDiscoNs = d
+			st.timeDiscoValid = true
+			st.discoAt = f.Recv
+		}
+		st.discoPendClk = false
+	}
 	st.gloEph, st.haveGloEph = eph, true
+	st.gloEphAt = f.Recv
+}
+
+// computeGloDisco records the orbit/time discontinuity across a GLONASS tb changeover
+//, mirroring computeDisco for the Kepler family. It propagates the outgoing and
+// incoming ephemerides to the incoming tb and differences position (orbit_disco_m) and the
+// SV clock model (time_disco_ns). Guards match computeDisco: the outgoing set must be
+// fresher than discoTrustAge by wall clock (which cannot wrap, regression fix), and both propagations
+// must be finite; time-disco is skipped (only) when either side lacks a decoded clock
+// (ClockKnown false), mirroring the regression fix B-CNAV2 handling. Called before st.gloEph is
+// replaced, with the shard lock held. Reuses st.orbitDisco*/timeDisco*/discoAt so the feed
+// and detector consume it unchanged.
+func (s *Store) computeGloDisco(st *svState, newEph glonass.Ephemeris, now time.Time) {
+	st.discoAt = now
+	st.orbitDiscoValid = false
+	st.timeDiscoValid = false
+	if st.gloEphAt.IsZero() || now.Sub(st.gloEphAt) >= discoTrustAge {
+		return
+	}
+	// Propagate the outgoing set forward by the day-wrapped interval from its tb to the new
+	// tb; the incoming set sits at tk=0 (its own reference epoch).
+	tkOld := gnsstime.EphAgeDay(newEph.Tb, st.gloEph.Tb)
+	oldPos, e1 := glonass.Propagate(st.gloEph, tkOld)
+	newPos, e2 := glonass.Propagate(newEph, 0)
+	if e1 == nil && e2 == nil {
+		if d := newPos.Sub(oldPos).Norm(); finite(d) {
+			st.orbitDisco = d
+			st.orbitDiscoValid = true
+		}
+	}
+	// Time-disco: difference the two SV clock corrections at the common epoch (the new tb).
+	// The old model evaluated at the new tb is τn − γn·(tb_new − tb_old); the new model at
+	// its own tb is τn (the γ term vanishes). The outgoing set must carry a clock to compare
+	// against; otherwise time-disco is genuinely unknowable and skipped (the regression fix rule).
+	st.discoPendClk = false
+	if !st.gloEph.ClockKnown {
+		return
+	}
+	if newEph.ClockKnown {
+		oldOff := st.gloEph.TauN - st.gloEph.GammaN*tkOld
+		if d := math.Abs(newEph.TauN-oldOff) * 1e9; finite(d) {
+			st.timeDiscoNs = d
+			st.timeDiscoValid = true
+		}
+		return
+	}
+	// The incoming set is clockless at the changeover (string 4 not yet in this frame): retain
+	// the outgoing clock and defer the time-disco until string 4 completes the same-tb set.
+	st.discoPendClk = true
+	st.discoPendTb = newEph.Tb
+	st.discoOldTau, st.discoOldGamma, st.discoOldTb = st.gloEph.TauN, st.gloEph.GammaN, st.gloEph.Tb
 }
 
 // setGloNA records the frame day-number NA (the day the almanac elements refer to),
@@ -789,7 +893,17 @@ func (s *Store) computeDisco(st *svState, newEph kepler.Ephemeris, newClk clock.
 	// for hours and then refreshed would otherwise propagate an arbitrarily stale
 	// outgoing ephemeris out to tstar, producing a physically meaningless (but
 	// detector-triggering) discontinuity.
-	if math.Abs(gnsstime.EphAge(tstar, st.eph.Toe)) >= discoTrustAge.Seconds() {
+	//
+	//
+	// EphAge alone is insufficient — it wraps to ±half-week, so an outgoing set
+	// whose Toe is ~1 week older than tstar reads as < 4 h and passes this gate, is then
+	// propagated at tk ≈ 0 (its position a week ago, thousands of km off), banded crit, and
+	// confirmed as a phantom disco. regression fix newly enables that window (RAWX observables keep
+	// lastSeen fresh with no nav decode for a week). Add a wall-clock age gate (now − ephAt,
+	// which cannot wrap) alongside the EphAge propagation-distance gate: skip the disco if
+	// EITHER says the outgoing set is stale.
+	if math.Abs(gnsstime.EphAge(tstar, st.eph.Toe)) >= discoTrustAge.Seconds() ||
+		st.ephAt.IsZero() || now.Sub(st.ephAt) >= discoTrustAge {
 		st.orbitDiscoValid = false
 		st.timeDiscoValid = false
 		st.discoAt = now

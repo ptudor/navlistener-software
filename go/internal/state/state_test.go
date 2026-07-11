@@ -186,6 +186,35 @@ func TestStoreDiscoGatedOnStaleOutgoingEphemeris(t *testing.T) {
 	}
 }
 
+// TestStoreDiscoGatedOnHalfWeekStaleEphemeris guards the regression fix disco staleness
+// gate is defeated by gnsstime.EphAge's ±half-week wrap. An outgoing ephemeris whose Toe
+// is ~1 week older than the changeover epoch (same seconds-of-week value, a week apart in
+// wall clock) reads as fresh through EphAge — but the wall-clock age gate (now − ephAt)
+// catches it, so no phantom disco is emitted.
+func TestStoreDiscoGatedOnHalfWeekStaleEphemeris(t *testing.T) {
+	st := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	weekLater := now.Add(7 * 24 * time.Hour)
+	// First data set at t0: Toe raw 27000 (SOW 432000).
+	st.Apply(gpsFrame(sf1Words(85), now))
+	st.Apply(gpsFrame(sf2WordsToe(85, 205075516, 27000), now))
+	st.Apply(gpsFrame(sf3Words(85), now))
+	// Second data set a WEEK later, IODE 86, at the SAME SOW Toe (27000) — EphAge wraps the
+	// week-long gap to ~0 and would pass the regression fix gate, propagating the week-old set to a
+	// bogus position. The shifted M0 would otherwise produce a large "valid" disco.
+	st.Apply(gpsFrame(sf1Words(86), weekLater))
+	st.Apply(gpsFrame(sf2WordsToe(86, 205075516+2000, 27000), weekLater))
+	st.Apply(gpsFrame(sf3Words(86), weekLater))
+
+	e := st.Snapshot(weekLater).SVs["G05@0"]
+	if e.OrbitDisco != nil {
+		t.Errorf("orbit_disco = %v, want absent (outgoing ephemeris is a week stale via wall clock)", *e.OrbitDisco)
+	}
+	if e.TimeDisco != nil {
+		t.Errorf("time_disco = %v, want absent", *e.TimeDisco)
+	}
+}
+
 // TestFeedAlmanacDeterministicSignalPick guards FeedAlmanac must pick one
 // signal's position per SV deterministically (lowest SigID = primary signal), not
 // whichever signal Go's randomized map/shard iteration happens to visit first.

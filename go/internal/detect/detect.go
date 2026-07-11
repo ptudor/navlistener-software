@@ -158,15 +158,23 @@ type emitFunc func(subject, metric, newState string, ev func(old string) Event)
 // detectSV runs every SV-level classifier for one satellite×signal.
 func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, emit emitFunc) {
 	// Health transition. QZSS/NavIC get their own event types (docs/INTEGRITY.md §5).
-	healthType, healthSev := healthEvent(sv.GnssID, sv.HealthCode)
-	emit(name, "health", fmt.Sprintf("%d", sv.HealthCode), func(old string) Event {
-		return Event{
-			Type: healthType, OldValue: old, NewValue: fmt.Sprintf("%d", sv.HealthCode),
-			Severity: healthSev,
-			Message:  fmt.Sprintf("%s health %s→%d", sv.Name, old, sv.HealthCode),
-			Params:   map[string]any{"sv": sv.Name, "gnssid": sv.GnssID, "health_code": sv.HealthCode},
-		}
-	})
+	// skip the classifier while health is unknown (health_code 0) — 0 is not a
+	// broadcast value (regression fix serves it until an SV's health bits decode, or for iono-only
+	// RAWX tracking). Classifying it would seed the machine at "0" and then fire a phantom
+	// critical health_change on the unknown→decoded transition, or a spurious 1→0→1 pair
+	// when a marginal SV drops to RAWX-only and reacquires. Like the disco gate below, treat
+	// unknown as "no classification": the machine seeds on the first DECODED health.
+	if sv.HealthCode != 0 {
+		healthType, healthSev := healthEvent(sv.GnssID, sv.HealthCode)
+		emit(name, "health", fmt.Sprintf("%d", sv.HealthCode), func(old string) Event {
+			return Event{
+				Type: healthType, OldValue: old, NewValue: fmt.Sprintf("%d", sv.HealthCode),
+				Severity: healthSev,
+				Message:  fmt.Sprintf("%s health %s→%d", sv.Name, old, sv.HealthCode),
+				Params:   map[string]any{"sv": sv.Name, "gnssid": sv.GnssID, "health_code": sv.HealthCode},
+			}
+		})
+	}
 
 	// Ephemeris age crossing.
 	if sv.EphAgeM != nil {

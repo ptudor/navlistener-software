@@ -28,6 +28,32 @@ func TestSeedNoEvent(t *testing.T) {
 	}
 }
 
+// TestHealthUnknownNoPhantomEvent guards health_code 0 ("unknown", e.g. iono-only
+// RAWX tracking or pre-word-5 Galileo) must not be classified. An SV that enters unknown,
+// then decodes to OK past the debounce, must fire NO event (the machine seeds on the first
+// DECODED health); and a 1→0→1 excursion through unknown must likewise stay silent.
+func TestHealthUnknownNoPhantomEvent(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(1_000_000, 0)
+
+	// Unknown → decoded OK past debounce: no phantom health_change 0→1.
+	unknown := map[string]state.FeedSV{"G05@0": gps("G05", 5, 0)}
+	d.Tick(t0, unknown, nil) // health unknown: not classified, nothing seeded
+	ok := map[string]state.FeedSV{"G05@0": gps("G05", 5, 1)}
+	d.Tick(t0.Add(10*time.Second), ok, nil) // seeds OK silently (first decoded health)
+	if evs := d.Tick(t0.Add(120*time.Second), ok, nil); len(evs) != 0 {
+		t.Fatalf("unknown→OK fired %d events, want 0", len(evs))
+	}
+
+	// OK → unknown (RAWX-only) → OK, each held past debounce: no spurious 1→0 or 0→1.
+	if evs := d.Tick(t0.Add(200*time.Second), unknown, nil); len(evs) != 0 {
+		t.Fatalf("OK→unknown fired %d events, want 0", len(evs))
+	}
+	if evs := d.Tick(t0.Add(400*time.Second), ok, nil); len(evs) != 0 {
+		t.Fatalf("unknown→OK reacquire fired %d events, want 0", len(evs))
+	}
+}
+
 // TestHealthDebounce confirms a health change is emitted only after the provisional
 // state persists for the full debounce window, and reverts silently before it.
 func TestHealthDebounce(t *testing.T) {
