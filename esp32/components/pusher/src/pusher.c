@@ -39,10 +39,30 @@ static const char *TAG = "pusher";
 #define TCP_KEEPINTVL_S 5
 #define TCP_KEEPCNT     3
 
+// The Kconfig bool is undefined (not 0) when off; give the preprocessor a value
+// so #if works under -Wundef, mirroring netcfg.c.
+#ifndef CONFIG_NVF_INSECURE
+#define CONFIG_NVF_INSECURE 0
+#endif
+
 static pusher_cfg_t s_cfg;   // owned copy (strings duplicated)
 static volatile bool s_connected;
 
 bool pusher_connected(void) { return s_connected; }
+
+// pusher_cfg_free releases the owned config copies and zeroes s_cfg. The struct
+// fields are const char * (the caller's view is borrowed/immutable), so the owned
+// duplicates are cast back to the mutable pointers dup_or_null returned;
+// free(NULL) is safe for the never-populated ones.
+static void pusher_cfg_free(void)
+{
+    free((char *)s_cfg.host);
+    free((char *)s_cfg.token);
+    free((char *)s_cfg.station);
+    free((char *)s_cfg.feed);
+    free((char *)s_cfg.ca_pem);
+    memset(&s_cfg, 0, sizeof s_cfg);
+}
 
 // --- TLS frame I/O -----------------------------------------------------------------------
 
@@ -151,13 +171,28 @@ static esp_tls_t *connect_collector(void)
     if (s_cfg.ca_pem) {
         tls_cfg.cacert_buf = (const unsigned char *)s_cfg.ca_pem;
         tls_cfg.cacert_bytes = strlen(s_cfg.ca_pem) + 1;
-    } else if (!s_cfg.insecure) {
+    } else {
+#if CONFIG_NVF_INSECURE
+        // insecure: neither CA nor bundle -> the collector is not authenticated (dev
+        // only). this only actually skips verification (instead of esp-tls
+        // hard-failing the connection with neither option set) because NVF_INSECURE's
+        // Kconfig selects CONFIG_ESP_TLS_INSECURE +
+        // CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY (Kconfig.projbuild).
+        if (!s_cfg.insecure) {
+            tls_cfg.crt_bundle_attach = esp_crt_bundle_attach;
+        }
+#else
+        // regression fix follow-up: on a production build the skip-verify support is not
+        // compiled in, so honoring a stored insecure=1 (e.g. written by an old
+        // portal build's checkbox) would make esp-tls hard-fail every connect —
+        // an unrecoverable reconnect-loop brick until an NVS erase. Ignore the
+        // flag, verify with the bundle, and say so.
+        if (s_cfg.insecure) {
+            ESP_LOGW(TAG, "ignoring stored insecure=1: built without NVF_INSECURE; verifying the collector against the certificate bundle");
+        }
         tls_cfg.crt_bundle_attach = esp_crt_bundle_attach;
+#endif
     }
-    // insecure: neither CA nor bundle -> the collector is not authenticated (dev only).
-    // this only actually skips verification (instead of esp-tls hard-failing the
-    // connection with neither option set) when NVF_INSECURE's Kconfig selects
-    // CONFIG_ESP_TLS_INSECURE + CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY (Kconfig.projbuild).
 
     esp_tls_t *tls = esp_tls_init();
     if (!tls) return NULL;
@@ -305,9 +340,15 @@ bool pusher_start(const pusher_cfg_t *cfg)
         !s_cfg.feed || // feed's input is never NULL (falls back to "ubx"), so its dup must succeed
         !pusher_str_ok(cfg->ca_pem, s_cfg.ca_pem)) {
         ESP_LOGE(TAG, "pusher_start: out of memory duplicating config strings; pusher not started");
-        free(s_cfg.host); free(s_cfg.token); free(s_cfg.station); free(s_cfg.feed); free(s_cfg.ca_pem);
-        memset(&s_cfg, 0, sizeof s_cfg);
+        pusher_cfg_free();
         return false;
     }
-    return xTaskCreate(pusher_task, "pusher", 8192, NULL, 6, NULL) == pdPASS;
+    if (xTaskCreate(pusher_task, "pusher", 8192, NULL, 6, NULL) != pdPASS) {
+        // regression fix follow-up: a failed task create must not leak the owned copies or
+        // leave s_cfg half-populated for a later retry to double-free.
+        ESP_LOGE(TAG, "pusher_start: task create failed; pusher not started");
+        pusher_cfg_free();
+        return false;
+    }
+    return true;
 }

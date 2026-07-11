@@ -3,7 +3,9 @@
 // The store-and-forward buffer between the UART producer (ubx -> record) and the TLS pusher.
 // Reading and sending are decoupled, so a collector restart or a network blip does not lose
 // data: on every reconnect the pusher replays all unacked records, and the collector acks the
-// highest sequence it has stored, pruning the ring (navfeeder.c's spool, ported to FreeRTOS).
+// highest sequence it has received this connection — not "stored"; the ack makes no durability
+// guarantee, replay-on-reconnect is what makes duplicates harmless (regression fix; see
+// ../go/internal/wire/wire.go). The ack prunes the ring (navfeeder.c's spool, ported to FreeRTOS).
 //
 // On overflow the OLDEST record is dropped and counted (a littlefs disk tier — the
 // reboot-surviving equivalent of navfeeder's --spool-file — is a later phase; until then the

@@ -309,6 +309,12 @@ esp_err_t netcfg_start_portal(char ap_ssid[33], char ap_pass[16])
 
     httpd_handle_t server = NULL;
     httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
+    // regression fix follow-up: save_post keeps ~2.4 KB of locals on this task's stack
+    // (body[SAVE_POST_BODY_CAP] + a netcfg_t + scratch), and the httpd default
+    // stack is 4096 — too tight once httpd's own frames and the NVS/log calls
+    // underneath the handler are added. Double it rather than heap-allocating
+    // the body (the portal runs pre-provisioning, when RAM is otherwise idle).
+    hcfg.stack_size = 8192;
     ESP_RETURN_ON_ERROR(httpd_start(&server, &hcfg), TAG, "httpd");
     httpd_uri_t root = { .uri = "/", .method = HTTP_GET, .handler = root_get };
     httpd_uri_t save = { .uri = "/save", .method = HTTP_POST, .handler = save_post };
