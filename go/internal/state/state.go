@@ -124,6 +124,12 @@ type svState struct {
 	// string must arrive within one frame window, or the pair is a cross-frame chimera
 	// (each frame's strings 6/7 describe a DIFFERENT subject satellite) and must be dropped.
 	gloAlmFirstAt time.Time
+	// gloFrameBaseSlot is the subject slot of the current frame's first almanac pair
+	// (strings 6/7), used to detect frame 5. Frame 5 carries almanac only for slots
+	// 21–24 (strings 6–13); its strings 14/15 are B1/B2/KP UT1/leap data, NOT almanac, so a
+	// base slot ≥ 21 means strings 14/15 must not be paired as an almanac. Reset to 0 when a
+	// new frame's string 6 is buffered so a stale frame-5 base can't linger.
+	gloFrameBaseSlot int
 
 	eph     kepler.Ephemeris
 	clk     clock.Model
@@ -681,6 +687,9 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		st.gloAlmFirst = append(st.gloAlmFirst[:0], f.Words...)
 		st.gloAlmFirstNum = str.Number
 		st.gloAlmFirstAt = f.Recv
+		if str.Number == 6 {
+			st.gloFrameBaseSlot = 0 // new frame's first almanac; base slot set on pairing
+		}
 		return
 	case str.Number >= 7 && str.Number <= 15 && str.Number%2 == 1: // second of an almanac pair
 		// require the odd string within one frame window of its even mate. Without
@@ -689,7 +698,18 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		// subject satellites, so the merge is a chimera almanac stored under the wrong slot.
 		if st.gloAlmFirst != nil && str.Number == st.gloAlmFirstNum+1 &&
 			f.Recv.Sub(st.gloAlmFirstAt) <= glonassFrameWindow {
-			s.applyGloAlmanac(st.gloAlmFirst, f.Words, f.Recv)
+			// in frame 5 (base slot ≥ 21), strings 14/15 carry B1/B2/KP UT1/leap
+			// data, not almanac — decoding them as an almanac pair stores garbage (a stable
+			// misread of B1's bits) under a wrong slot, flip-flopping that slot every
+			// superframe. Skip the pair there; frames 1–4 (base 1..16) pair normally, and an
+			// unknown base (string 6 lost) conservatively still pairs (the slot-range guard
+			// in applyGloAlmanac remains the backstop).
+			if !(st.gloAlmFirstNum == 14 && st.gloFrameBaseSlot >= 21) {
+				slot := s.applyGloAlmanac(st.gloAlmFirst, f.Words, f.Recv)
+				if st.gloAlmFirstNum == 6 && slot > 0 {
+					st.gloFrameBaseSlot = slot
+				}
+			}
 		}
 		st.gloAlmFirst = nil
 		return
@@ -844,8 +864,9 @@ const gloAlmanacStaleAfter = 3 * 24 * time.Hour
 // applyGloAlmanac decodes one satellite's almanac from its two-string pair and stores it
 // by subject slot, alongside recv as the slot's last-(re)broadcast time. Decoding is pure
 // and done outside the lock; only the map write is guarded. Called with the transmitting
-// SV's shard lock held (ordering shard→gloAlm).
-func (s *Store) applyGloAlmanac(first, second []uint32, recv time.Time) {
+// SV's shard lock held (ordering shard→gloAlm). Returns the stored subject slot (1..24), or
+// 0 if nothing was stored (used by frame-5 detection).
+func (s *Store) applyGloAlmanac(first, second []uint32, recv time.Time) int {
 	s.gloAlmMu.Lock()
 	na := s.gloNA
 	s.gloAlmMu.Unlock()
@@ -854,16 +875,17 @@ func (s *Store) applyGloAlmanac(first, second []uint32, recv time.Time) {
 	// almanac pair against na==0 (outside that range) mis-epochs
 	// PropagateAlmanacECEF for every entry decoded before the first string 5.
 	if na == 0 {
-		return
+		return 0
 	}
 
 	a, err := frame.DecodeGLONASSAlmanac(first, second, na)
 	if err != nil || a.Alm.Slot < 1 || a.Alm.Slot > 24 {
-		return
+		return 0
 	}
 	s.gloAlmMu.Lock()
 	s.gloAlmanac[a.Alm.Slot] = gloAlmSlot{entry: a, lastSeen: recv}
 	s.gloAlmMu.Unlock()
+	return a.Alm.Slot
 }
 
 // finite reports whether v is neither NaN nor ±Inf — encoding/json.Marshal fails

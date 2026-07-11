@@ -28,6 +28,55 @@ func gloWords(number int, fill func(buf []byte)) []uint32 {
 	return words
 }
 
+// TestGloAlmanacFrame5Strings1415Skipped guards frame 5 carries almanac only for
+// slots 21–24 (strings 6–13); its strings 14/15 are B1/B2/KP UT1/leap data, not almanac.
+// When the frame's base slot (string 6) is ≥ 21 (frame 5), strings 14/15 must NOT be paired
+// as an almanac; in frames 1–4 (base 1..16) they must pair normally.
+func TestGloAlmanacFrame5Strings1415Skipped(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	const svid = 12
+	mk := func(s *Store, num, slot int, at time.Time) {
+		w := gloWords(num, func(buf []byte) {
+			if slot > 0 {
+				setAbsBits(buf, 8, 5, uint64(slot))
+			}
+		})
+		s.Apply(&ingest.RawFrame{GnssID: gnss.GLONASS, SvID: svid, SigID: 0, Recv: at, Words: w})
+	}
+	send5 := func(s *Store, at time.Time) {
+		na5 := gloWords(5, func(buf []byte) { setAbsBits(buf, 5, 11, 615) })
+		s.Apply(&ingest.RawFrame{GnssID: gnss.GLONASS, SvID: svid, SigID: 0, Recv: at, Words: na5})
+	}
+	stored := func(s *Store, slot int) bool {
+		s.gloAlmMu.Lock()
+		defer s.gloAlmMu.Unlock()
+		_, ok := s.gloAlmanac[slot]
+		return ok
+	}
+
+	// Frame 5: string 6/7 base slot 21 → strings 14/15 (a B1-bits misread "slot 23") skipped.
+	s := New(4)
+	send5(s, now)
+	mk(s, 6, 21, now)
+	mk(s, 7, 0, now.Add(2*time.Second)) // pairs → base slot 21
+	mk(s, 14, 23, now.Add(4*time.Second))
+	mk(s, 15, 0, now.Add(6*time.Second)) // frame-5 string 14/15: skipped
+	if stored(s, 23) {
+		t.Error("frame-5 string 14/15 wrongly stored an almanac from B1/B2/KP bits ")
+	}
+
+	// Frame 1: base slot 1 → string 14/15 (slot 5) stored normally.
+	s2 := New(4)
+	send5(s2, now)
+	mk(s2, 6, 1, now)
+	mk(s2, 7, 0, now.Add(2*time.Second)) // base slot 1
+	mk(s2, 14, 5, now.Add(4*time.Second))
+	mk(s2, 15, 0, now.Add(6*time.Second))
+	if !stored(s2, 5) {
+		t.Error("frame-1 string 14/15 almanac not stored — regression fix guard too broad")
+	}
+}
+
 // TestGloNTDay guards day derivation: gloNTDay must return the current MT
 // (UTC+3h) calendar day number NT within the four-year interval (1..1461), where NT=1 is
 // 1 Jan of the interval's leap-year start (1996, 2000, …, 2024, 2028).

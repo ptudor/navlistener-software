@@ -59,8 +59,8 @@ func SBASProvider(prn int) string {
 	switch prn {
 	case 131, 133, 135, 138:
 		return "WAAS" // United States
-	case 121, 123, 136, 126:
-		return "EGNOS" // Europe
+	case 120, 121, 123, 126, 136:
+		return "EGNOS" // Europe (PRN 120 = Inmarsat-3F2 AOR-E, EGNOS's last holder of that code, regression fix)
 	case 129, 137:
 		return "MSAS" // Japan
 	case 127, 128, 132:
@@ -72,7 +72,10 @@ func SBASProvider(prn int) string {
 	case 134:
 		return "KASS" // Korea
 	case 122, 124:
-		return "SouthPAN" // Australia / New Zealand
+		// Australia / New Zealand. PRN 124 was reassigned from EGNOS to SouthPAN in
+		// April 2024 (Geoscience Australia / LINZ, Inmarsat-4F1 redundancy payload) — do NOT
+		// move it back to EGNOS.
+		return "SouthPAN"
 	default:
 		return "SBAS"
 	}

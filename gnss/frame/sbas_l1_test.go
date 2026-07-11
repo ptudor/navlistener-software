@@ -57,3 +57,20 @@ func TestDecodeSBASL1FabricatedDoNotUseNowRejected(t *testing.T) {
 		t.Errorf("err = %v, want ErrBadCRC", err)
 	}
 }
+
+// TestSBASProviderAssignments guards regression fix against the current (2026) SBAS PRN table: PRN 120
+// is EGNOS (its last holder, Inmarsat-3F2 AOR-E), and PRN 124 is SouthPAN (reassigned from
+// EGNOS in April 2024) — not the other way around, which older tables recorded.
+func TestSBASProviderAssignments(t *testing.T) {
+	cases := map[int]string{
+		120: "EGNOS", 121: "EGNOS", 123: "EGNOS", 126: "EGNOS", 136: "EGNOS",
+		122: "SouthPAN", 124: "SouthPAN",
+		131: "WAAS", 129: "MSAS", 127: "GAGAN", 125: "SDCM", 130: "BDSBAS", 134: "KASS",
+		999: "SBAS", // unknown → default
+	}
+	for prn, want := range cases {
+		if got := SBASProvider(prn); got != want {
+			t.Errorf("SBASProvider(%d) = %q, want %q", prn, got, want)
+		}
+	}
+}
