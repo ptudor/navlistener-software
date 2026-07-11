@@ -183,19 +183,27 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 		return e
 	}
 
-	// Kepler-family: clock polynomial, time-of-week/week, ephemeris age.
-	if finite(st.clk.Af0) && finite(st.clk.Af1) && finite(st.clk.Af2) {
-		af0, af1, af2 := st.clk.Af0, st.clk.Af1, st.clk.Af2
-		e.Af0, e.Af1, e.Af2 = &af0, &af1, &af2
-	}
-	tow := int(towFor(g, now))
-	e.Tow = &tow
-	if wn, ok := weekFor(g, now); ok {
-		e.Wn = &wn
-	}
-	age := gnsstime.EphAgeMinutes(towFor(g, now), st.eph.Toe)
-	if finite(age) {
-		e.EphAgeM = &age
+	// Kepler-family: clock polynomial, time-of-week/week, ephemeris age. an
+	// SV present only via RAWX observables (st.haveEph == false) has no clock/toe
+	// to report -- af0/af1/af2 = 0 and eph_age_m computed against Toe = 0 are
+	// fabricated sentinels, not measurements, and the half-week-wrapped age against
+	// a zero Toe can debounce-confirm a false eph_aged event. Gate the whole block
+	// on haveEph; the entry itself (and its per-receiver iono, above) is still
+	// published either way.
+	if st.haveEph {
+		if finite(st.clk.Af0) && finite(st.clk.Af1) && finite(st.clk.Af2) {
+			af0, af1, af2 := st.clk.Af0, st.clk.Af1, st.clk.Af2
+			e.Af0, e.Af1, e.Af2 = &af0, &af1, &af2
+		}
+		tow := int(towFor(g, now))
+		e.Tow = &tow
+		if wn, ok := weekFor(g, now); ok {
+			e.Wn = &wn
+		}
+		age := gnsstime.EphAgeMinutes(towFor(g, now), st.eph.Toe)
+		if finite(age) {
+			e.EphAgeM = &age
+		}
 	}
 	return e
 }

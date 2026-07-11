@@ -78,6 +78,11 @@ func (s *Store) applyObservation(f *ingest.RawFrame) {
 		st = &svState{key: key}
 		sh.m[key] = st
 	}
+	// every other apply* sets lastSeen; without it an iono-only SV (seen
+	// only via RAWX, no nav frame) stays at the zero Time, so Expire deletes it on
+	// every sweep (destroying the leveling arc before it can mature) and a feed
+	// build that catches it first serves an absurd last_seen_s.
+	st.lastSeen = f.Recv
 	if st.ionoBySource == nil {
 		st.ionoBySource = map[string]*ionoTrack{}
 	}

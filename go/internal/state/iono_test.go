@@ -155,3 +155,39 @@ func TestMeasuredIonoSameFrequencyPairRejected(t *testing.T) {
 		t.Fatalf("json.Marshal(FeedSVs) failed: %v", err)
 	}
 }
+
+// TestApplyObservationSetsLastSeen guards applyObservation previously never
+// touched st.lastSeen, so an SV seen only via RAWX (iono-only) stayed at the zero
+// Time -- Expire's `now.Sub(zeroTime) > ttl` is always true, deleting the entry (and
+// destroying its leveling arc before it can mature) on every sweep, and a feed
+// build that caught it first would serve an absurd last_seen_s (~1.7e9).
+func TestApplyObservationSetsLastSeen(t *testing.T) {
+	s := New(1)
+	now := time.Now()
+	s.Apply(&ingest.RawFrame{
+		Recv: now, Source: "bench", GnssID: gnss.GPS, SvID: 5, SigID: 0,
+		Obs: &ingest.RawObs{RcvTow: 100000, PrM: 2.2e7, CpCyc: 2.2e7 / 0.19, LockTimeMs: 1000, CpValid: true},
+	})
+
+	// Expire runs a minute later with a generous TTL: the entry must survive (a
+	// zero lastSeen would compute an elapsed time in the tens of years, far past
+	// any TTL).
+	s.Expire(now.Add(time.Minute), 2*time.Hour)
+
+	key := Key{G: gnss.GPS, Sv: 5, Sig: 0}
+	sh := s.shardFor(key)
+	sh.mu.Lock()
+	_, stillPresent := sh.m[key]
+	sh.mu.Unlock()
+	if !stillPresent {
+		t.Fatal("iono-only SV was expired despite a fresh observation -- lastSeen not set")
+	}
+
+	sv, ok := s.FeedSVs(now.Add(2 * time.Second))["G05@0"]
+	if !ok {
+		t.Fatal("G05@0 missing from the feed")
+	}
+	if sv.LastSeenS < 0 || sv.LastSeenS > 10 {
+		t.Errorf("last_seen_s = %d, want a small elapsed time (~2s), not a zero-Time artifact", sv.LastSeenS)
+	}
+}
