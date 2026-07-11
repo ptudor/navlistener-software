@@ -285,6 +285,17 @@ func TestEventsSummaryShape(t *testing.T) {
 	if tot, _ := data["total_events"].(float64); int(tot) != 5 {
 		t.Errorf("total_events = %v, want 5", data["total_events"])
 	}
+	// the severity buckets are historical counts and must be published
+	// under the truthful names — the misleading active_* keys are gone.
+	if v, _ := data["critical_events"].(float64); int(v) != 2 {
+		t.Errorf("critical_events = %v, want 2", data["critical_events"])
+	}
+	if v, _ := data["warning_events"].(float64); int(v) != 3 {
+		t.Errorf("warning_events = %v, want 3", data["warning_events"])
+	}
+	if _, present := data["active_critical"]; present {
+		t.Error("active_critical still published; renamed to critical_events ")
+	}
 	if data["last_critical"] != last.Format(time.RFC3339) {
 		t.Errorf("last_critical = %v, want %s", data["last_critical"], last.Format(time.RFC3339))
 	}
