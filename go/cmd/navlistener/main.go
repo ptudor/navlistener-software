@@ -415,17 +415,11 @@ const detectInterval = 15 * time.Second
 
 // detectLoop samples the live read model on a cadence, folds it through the
 // debounced detector, and routes each confirmed event to the historian (which
-// assigns the id and fires pg_notify) and the SSE broker. With no historian a local
-// counter supplies the id so the SSE stream still has stable, ordered ids.
+// assigns the id and fires pg_notify) and the SSE broker. Only durable events are
+// published, so the database id is the sole replay cursor domain.
 func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, historian *store.Store, api *serve.Server, log *slog.Logger) {
 	tick := time.NewTicker(detectInterval)
 	defer tick.Stop()
-	// lastID is the highest event id issued so far, from either source : a
-	// historian write failure falls back to lastID+1 rather than an independent
-	// counter starting near 0/1, so a mix of DB bigserial ids and locally-issued
-	// ids stays monotonic — the SSE replay window's `e.ID > lastID` filter
-	// requires it, or a reconnect can drop or duplicate events.
-	var lastID int64
 	for {
 		select {
 		case <-tick.C:
@@ -438,7 +432,7 @@ func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, hi
 			// node's silicon can't produce (docs/INTEGRITY.md §6, CONSTELLATIONS §7).
 			events = append(events, det.TickCapabilities(now, live.FeedCapabilityReports(now))...)
 			for _, e := range events {
-				emitEvent(ctx, e, historian, api, &lastID, log)
+				emitEvent(ctx, e, historian, api, log)
 			}
 		case <-ctx.Done():
 			return
@@ -447,9 +441,15 @@ func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, hi
 }
 
 // emitEvent persists one integrity event (if the historian is enabled) and pushes it
-// to the SSE broker, tagging metrics. The historian-assigned id is authoritative;
-// without it a monotonic local counter keeps SSE ids stable and ordered.
-func emitEvent(ctx context.Context, e detect.Event, historian *store.Store, api *serve.Server, lastID *int64, log *slog.Logger) {
+// to the SSE broker, tagging metrics. The historian-assigned id is the only SSE
+// cursor: a non-durable event is logged/metriced but deliberately unavailable to
+// SSE rather than receiving an id PostgreSQL may later allocate.
+type eventWriter interface {
+	WriteEvent(context.Context, store.EventRow) (int64, error)
+}
+type eventPublisher interface{ PublishEvent(serve.EventMsg) }
+
+func emitEvent(ctx context.Context, e detect.Event, historian eventWriter, api eventPublisher, log *slog.Logger) {
 	metrics.EventsTotal.WithLabelValues(e.Type, fmt.Sprint(e.Severity)).Inc()
 
 	// Params is a map of ephemeris-derived float64s, and encoding/json fails
@@ -468,26 +468,18 @@ func emitEvent(ctx context.Context, e detect.Event, historian *store.Store, api 
 		}
 	}
 
-	var id int64
-	if historian != nil {
-		gotID, err := historian.WriteEvent(ctx, store.EventRow{
-			Time: e.Time, SV: e.SV, Type: e.Type, OldValue: e.OldValue,
-			NewValue: e.NewValue, Severity: e.Severity, Message: e.Message, Raw: rawJSON,
-		})
-		if err != nil {
-			metrics.EventWriteErrorsTotal.Inc()
-			log.Error("persist integrity event", "type", e.Type, "sv", e.SV, "error", err)
-		} else {
-			id = gotID
-		}
+	if historian == nil {
+		log.Warn("integrity event is not publishable without durable historian", "sv", e.SV, "type", e.Type)
+		return
 	}
-	if id == 0 {
-		// No historian, or this write failed: fall back to lastID+1  rather
-		// than an independent counter, so ids stay monotonic across the mix.
-		id = *lastID + 1
-	}
-	if id > *lastID {
-		*lastID = id
+	id, err := historian.WriteEvent(ctx, store.EventRow{
+		Time: e.Time, SV: e.SV, Type: e.Type, OldValue: e.OldValue,
+		NewValue: e.NewValue, Severity: e.Severity, Message: e.Message, Raw: rawJSON,
+	})
+	if err != nil {
+		metrics.EventWriteErrorsTotal.Inc()
+		log.Error("persist integrity event; not publishing non-durable event", "type", e.Type, "sv", e.SV, "error", err)
+		return
 	}
 	log.Info("integrity event", "id", id, "sv", e.SV, "type", e.Type,
 		"severity", e.Severity, "old", e.OldValue, "new", e.NewValue)

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"math"
@@ -10,38 +11,43 @@ import (
 	"time"
 
 	"github.com/ptudor/navlistener/internal/detect"
+	"github.com/ptudor/navlistener/internal/serve"
+	"github.com/ptudor/navlistener/internal/store"
 )
 
-// TestEmitEventLocalFallbackStaysMonotonic guards without a historian (or
-// on a write failure) emitEvent falls back to lastID+1 rather than an independent
-// counter. If lastID were reset instead of threaded through, a local id could
-// collide with or fall behind a previously-issued DB id, and serve.replayFrom's
-// `e.ID > lastID` reconnect filter (docs/OUTPUT.md §3) would drop or duplicate
-// events. This exercises both the "counting up from zero" case and — the actual
-// regression — the "already seen a high id" case, by pre-seeding lastID the way a
-// prior successful historian write would have left it.
-func TestEmitEventLocalFallbackStaysMonotonic(t *testing.T) {
+type scriptedEventWriter struct {
+	ids  []int64
+	errs []error
+	n    int
+}
+
+func (w *scriptedEventWriter) WriteEvent(context.Context, store.EventRow) (int64, error) {
+	i := w.n
+	w.n++
+	return w.ids[i], w.errs[i]
+}
+
+type capturePublisher struct{ events []serve.EventMsg }
+
+func (p *capturePublisher) PublishEvent(e serve.EventMsg) { p.events = append(p.events, e) }
+
+func TestEmitEventPublishesOnlyDurableDatabaseIDs(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ctx := context.Background()
 	ev := func() detect.Event {
 		return detect.Event{Time: time.Now(), SV: "G01@0", Type: "orbit_disco", Severity: 1}
 	}
-
-	var lastID int64
-	for i, want := range []int64{1, 2, 3} {
-		emitEvent(ctx, ev(), nil, nil, &lastID, log)
-		if lastID != want {
-			t.Fatalf("call %d: lastID = %d, want %d", i, lastID, want)
-		}
+	w := &scriptedEventWriter{ids: []int64{500, 0, 501}, errs: []error{nil, errors.New("db down"), nil}}
+	p := &capturePublisher{}
+	for i := 0; i < 3; i++ {
+		emitEvent(ctx, ev(), w, p, log)
 	}
-
-	// Simulate a prior historian write that succeeded with DB id 500 (bigserial,
-	// so far ahead of any local counter): a subsequent historian-less/failed call
-	// must continue from 501, not restart near 1.
-	lastID = 500
-	emitEvent(ctx, ev(), nil, nil, &lastID, log)
-	if lastID != 501 {
-		t.Errorf("lastID after seeded call = %d, want 501 (must stay monotonic relative to DB ids)", lastID)
+	if len(p.events) != 2 || p.events[0].ID != 500 || p.events[1].ID != 501 {
+		t.Fatalf("published IDs = %+v, want durable [500, 501] only", p.events)
+	}
+	emitEvent(ctx, ev(), nil, p, log)
+	if len(p.events) != 2 {
+		t.Fatal("historian-disabled event was published")
 	}
 }
 
@@ -95,9 +101,5 @@ func TestEmitEventSanitizesNonFiniteParamsBeforeMarshal(t *testing.T) {
 		Time: time.Now(), SV: "G01@0", Type: "orbit_disco", Severity: 1,
 		Params: map[string]any{"orbit_disco_m": math.NaN()},
 	}
-	var lastID int64
-	emitEvent(ctx, ev, nil, nil, &lastID, log) // must not panic
-	if lastID != 1 {
-		t.Errorf("lastID = %d, want 1 (event must still be counted despite the NaN param)", lastID)
-	}
+	emitEvent(ctx, ev, nil, nil, log) // must not panic
 }
