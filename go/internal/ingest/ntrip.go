@@ -30,11 +30,13 @@ const (
 
 // ntripConnect performs the NTRIP client handshake on an already-dialled caster connection:
 // it sends the mountpoint GET (with Basic auth when credentials are set), then consumes the
-// response status line and headers, leaving conn positioned at the first RTCM3 byte so the
-// caller can hand it to scanRTCM unchanged. It returns an error on any non-200/ICY response
-// (mountpoint refused, auth rejected, or a SOURCETABLE reply), which the caller treats as a
-// reconnect. Deadlines use wall-clock time directly — they gate real I/O, not frame stamping.
-func ntripConnect(conn net.Conn, src config.Source) error {
+// response status line and headers, leaving conn positioned at the first byte of the response
+// body (RTCM3, or -- regression fix -- chunk-framed RTCM3) so the caller can hand it to scanRTCM,
+// wrapping in a de-chunking reader first when chunked is true. It returns an error on any
+// non-200/ICY response (mountpoint refused, auth rejected, or a SOURCETABLE reply -- regression fix),
+// which the caller treats as a reconnect. Deadlines use wall-clock time directly — they gate
+// real I/O, not frame stamping.
+func ntripConnect(conn net.Conn, src config.Source) (chunked bool, err error) {
 	host := src.Addr
 	if h, _, err := net.SplitHostPort(src.Addr); err == nil {
 		host = h
@@ -53,7 +55,7 @@ func ntripConnect(conn net.Conn, src config.Source) error {
 
 	_ = conn.SetWriteDeadline(time.Now().Add(ntripHandshakeTimeout))
 	if _, err := io.WriteString(conn, req.String()); err != nil {
-		return fmt.Errorf("ntrip request: %w", err)
+		return false, fmt.Errorf("ntrip request: %w", err)
 	}
 	_ = conn.SetWriteDeadline(time.Time{})
 
@@ -62,21 +64,43 @@ func ntripConnect(conn net.Conn, src config.Source) error {
 
 	status, err := readNtripLine(conn)
 	if err != nil {
-		return fmt.Errorf("ntrip response: %w", err)
+		return false, fmt.Errorf("ntrip response: %w", err)
 	}
 	if !ntripAccepted(status) {
-		return fmt.Errorf("ntrip caster refused mountpoint %q: %q", src.Mountpoint, status)
+		return false, fmt.Errorf("ntrip caster refused mountpoint %q: %q", src.Mountpoint, status)
 	}
-	// Drain the remaining headers; the RTCM3 stream begins right after the blank line.
+	// Drain the remaining headers; the RTCM3 (or chunk-framed RTCM3) stream begins right
+	// after the blank line. regression fix/capture Transfer-Encoding and Content-Type rather
+	// than discard every header, since either can turn "200 OK" into something other than a
+	// live RTCM3 byte stream.
+	contentType := ""
 	for {
 		line, err := readNtripLine(conn)
 		if err != nil {
-			return fmt.Errorf("ntrip header: %w", err)
+			return false, fmt.Errorf("ntrip header: %w", err)
 		}
 		if line == "" {
-			return nil
+			break
+		}
+		name, val, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "transfer-encoding":
+			chunked = strings.EqualFold(strings.TrimSpace(val), "chunked")
+		case "content-type":
+			contentType = strings.TrimSpace(val)
 		}
 	}
+	// a v2 caster answering an unknown mountpoint with "200 OK" and the ASCII
+	// sourcetable as body is a refusal, not a stream, exactly like the v1 SOURCETABLE status
+	// line ntripAccepted already rejects -- it just arrives one layer later, in the body's
+	// declared Content-Type rather than the status line.
+	if strings.EqualFold(contentType, "gnss/sourcetable") {
+		return false, fmt.Errorf("ntrip caster returned a sourcetable for mountpoint %q (Content-Type: %s)", src.Mountpoint, contentType)
+	}
+	return chunked, nil
 }
 
 // readNtripLine reads one CRLF-terminated line off conn a byte at a time, so the read stops

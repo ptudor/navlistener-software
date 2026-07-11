@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http/httputil"
 	"strconv"
 	"sync"
 	"time"
@@ -103,12 +104,15 @@ func (m *Manager) runSource(ctx context.Context, src config.Source, sc scanner) 
 		}
 		// An NTRIP source needs the caster handshake (GET the mountpoint, basic auth) before
 		// the RTCM3 stream flows; a failed handshake reconnects like any other drop.
+		ntripChunked := false
 		if src.Type == "ntrip" {
-			if err := ntripConnect(conn, src); err != nil {
+			var ntripErr error
+			ntripChunked, ntripErr = ntripConnect(conn, src)
+			if ntripErr != nil {
 				_ = conn.Close()
 				metrics.SourceUp.WithLabelValues(src.Name, src.Type).Set(0)
 				metrics.IngestErrorsTotal.WithLabelValues(src.Name, "ntrip_handshake").Inc()
-				m.log.Warn("ntrip handshake failed; will retry", "source", src.Name, "mountpoint", src.Mountpoint, "error", err, "backoff", backoff)
+				m.log.Warn("ntrip handshake failed; will retry", "source", src.Name, "mountpoint", src.Mountpoint, "error", ntripErr, "backoff", backoff)
 				if !sleep(ctx, backoff) {
 					return
 				}
@@ -131,7 +135,7 @@ func (m *Manager) runSource(ctx context.Context, src config.Source, sc scanner) 
 			}
 		}()
 
-		err = m.runScanner(ctx, sc, conn, src)
+		err = m.runScanner(ctx, sc, conn, src, ntripChunked)
 		close(stop)
 		_ = conn.Close()
 		metrics.SourceUp.WithLabelValues(src.Name, src.Type).Set(0)
@@ -148,8 +152,12 @@ func (m *Manager) runSource(ctx context.Context, src config.Source, sc scanner) 
 
 // runScanner invokes the source's scanner with a recover() so a parser bug (e.g. an
 // out-of-bounds slice on malformed input from an external/untrusted source such as an
-// NTRIP caster) reconnects this one source instead of crashing the whole daemon.
-func (m *Manager) runScanner(ctx context.Context, sc scanner, conn net.Conn, src config.Source) (err error) {
+// NTRIP caster) reconnects this one source instead of crashing the whole daemon. chunked
+//  wraps the idle-timeout-guarded conn in a de-chunking reader before handing it to
+// the scanner, for an NTRIP v2 caster that answered with Transfer-Encoding: chunked -- the
+// idleConn stays the innermost layer so each physical socket read still gets a deadline,
+// with the chunk-framing decode layered on top of that, not the raw conn directly.
+func (m *Manager) runScanner(ctx context.Context, sc scanner, conn net.Conn, src config.Source, chunked bool) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			metrics.IngestErrorsTotal.WithLabelValues(src.Name, "panic").Inc()
@@ -157,7 +165,10 @@ func (m *Manager) runScanner(ctx context.Context, sc scanner, conn net.Conn, src
 			err = fmt.Errorf("scanner panic: %v", r)
 		}
 	}()
-	frames := &idleConn{Conn: conn, timeout: dialIdleTimeout}
+	var frames io.Reader = &idleConn{Conn: conn, timeout: dialIdleTimeout}
+	if chunked {
+		frames = httputil.NewChunkedReader(frames)
+	}
 	return sc(frames, src.Name, m.now, m.emit(ctx, src), func(kind string) {
 		metrics.IngestErrorsTotal.WithLabelValues(src.Name, kind).Inc()
 	})
