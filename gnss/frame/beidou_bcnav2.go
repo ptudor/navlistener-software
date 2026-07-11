@@ -211,11 +211,11 @@ func AssembleBeiDouBCNAV2(svid int, m10, m11, mClk *BeiDouBCNAV2) (kepler.Epheme
 	if m10 == nil || m11 == nil {
 		return kepler.Ephemeris{}, clock.Model{}, ErrShortFrame
 	}
-	if d := m10.SOW - m11.SOW; d < -3 || d > 3 {
+	if d, ok := sowDelta(m10.SOW, m11.SOW); !ok || d < -3 || d > 3 {
 		return kepler.Ephemeris{}, clock.Model{}, errPairSOW
 	}
 	if mClk != nil && mClk.hasClk {
-		if d := m10.SOW - mClk.SOW; d < -bcnavClkStaleSOW || d > bcnavClkStaleSOW {
+		if d, ok := sowDelta(m10.SOW, mClk.SOW); !ok || d < -bcnavClkStaleSOW || d > bcnavClkStaleSOW {
 			mClk = nil // stale: don't pair a cached-old clock with this ephemeris
 		}
 	}

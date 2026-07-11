@@ -155,7 +155,9 @@ func AssembleBeiDou(svid int, sf1, sf2, sf3 *BeiDouSubframe) (kepler.Ephemeris, 
 	// belonging to neither, fabricating a garbage ephemeris that would
 	// otherwise pass the toe-based IOD gate in state.go and fire a false
 	// critical orbit-disco event.
-	if sf2.SOW != sf1.SOW+6 || sf3.SOW != sf2.SOW+6 {
+	d21, ok21 := sowDelta(sf2.SOW, sf1.SOW)
+	d32, ok32 := sowDelta(sf3.SOW, sf2.SOW)
+	if !ok21 || !ok32 || d21 != 6 || d32 != 6 {
 		return kepler.Ephemeris{}, clock.Model{}, errBeiDouSOWGap
 	}
 	eph := sf2.eph

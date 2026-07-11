@@ -211,6 +211,22 @@ func TestServeEventsMethodNotAllowed(t *testing.T) {
 	}
 }
 
+func TestServeEventsHEADDoesNotSubscribe(t *testing.T) {
+	b := newBroker()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodHead, "/gnss/events", nil)
+	b.serveEvents(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed || rr.Header().Get("Allow") != "GET" {
+		t.Fatalf("HEAD = %d Allow %q, want 405/GET", rr.Code, rr.Header().Get("Allow"))
+	}
+	b.mu.Lock()
+	clients := len(b.clients)
+	b.mu.Unlock()
+	if clients != 0 {
+		t.Fatalf("HEAD subscribed %d broker clients", clients)
+	}
+}
+
 // TestServeEventsClientCapEnforced guards client cap: past sseMaxClients
 // concurrent streams, a new connection gets 503 with a clean JSON error (not a
 // text/event-stream response), and a freed slot lets the next connection through.

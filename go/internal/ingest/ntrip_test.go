@@ -202,9 +202,30 @@ func TestNtripAccepted(t *testing.T) {
 		{"SOURCETABLE 200 OK", false},
 		{"HTTP/1.1 401 Unauthorized", false},
 		{"HTTP/1.1 404 Not Found", false},
+		{"HTTP/1.1 1200 Embedded", false},
+		{"HTTP/1.1 2000 Embedded", false},
+		{"HTTP/1.1 X200 Bad", false},
+		{"HTTP/2 200 OK", false},
+		{"ICY 1200 Embedded", false},
+		{"ICY 2000 Embedded", false},
+		{"ICY 200 OK extra", false},
 	} {
 		if got := ntripAccepted(tt.status); got != tt.ok {
 			t.Errorf("ntripAccepted(%q) = %v, want %v", tt.status, got, tt.ok)
 		}
+	}
+}
+
+func TestNtripParameterizedSourcetableRejected(t *testing.T) {
+	for _, contentType := range []string{"gnss/sourcetable; charset=utf-8", "GNSS/SOURCETABLE; Charset=UTF-8"} {
+		client, server := net.Pipe()
+		reqCh := make(chan string, 1)
+		go fakeCaster(server, reqCh, "HTTP/1.1 200 OK\r\nContent-Type: "+contentType+"\r\n\r\n", nil)
+		src := config.Source{Name: "caster", Type: "ntrip", Addr: "caster.invalid:443", Mountpoint: "NOPE"}
+		if _, err := ntripConnect(client, src); err == nil {
+			t.Errorf("content type %q accepted", contentType)
+		}
+		<-reqCh
+		client.Close()
 	}
 }

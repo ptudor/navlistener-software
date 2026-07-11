@@ -13,6 +13,19 @@ func TestBCNAV2ShortFrame(t *testing.T) {
 	}
 }
 
+func TestBCNAV2AdjacencyAcrossWeek(t *testing.T) {
+	m10 := &BeiDouBCNAV2{MesType: 10, SOW: 0}
+	m11 := &BeiDouBCNAV2{MesType: 11, SOW: 604797, hasEph2: true}
+	clk := &BeiDouBCNAV2{MesType: 30, SOW: 604797, hasClk: true}
+	if _, _, err := AssembleBeiDouBCNAV2(28, m10, m11, clk); err != nil {
+		t.Fatalf("rollover set rejected: %v", err)
+	}
+	m11.SOW = 604800
+	if _, _, err := AssembleBeiDouBCNAV2(28, m10, m11, clk); err != errPairSOW {
+		t.Fatalf("out-of-domain SOW error = %v", err)
+	}
+}
+
 // TestBCNAV2RejectsBadCRC confirms a frame failing its CRC-24Q is rejected, never
 // partially decoded (the real capture's frames all pass — see TestRealBeiDouBCNAV2).
 func TestBCNAV2RejectsBadCRC(t *testing.T) {

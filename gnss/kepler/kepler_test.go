@@ -199,6 +199,35 @@ func TestDopplerPlausible(t *testing.T) {
 	}
 }
 
+func TestPredictedDopplerRejectsNonFinitePublicInputs(t *testing.T) {
+	validRecv := gnss.ECEF{X: 6378137}
+	for _, tc := range []struct {
+		name string
+		freq float64
+		recv gnss.ECEF
+	}{
+		{"zero frequency", 0, validRecv}, {"negative frequency", -1, validRecv},
+		{"nan frequency", math.NaN(), validRecv}, {"positive inf frequency", math.Inf(1), validRecv},
+		{"negative inf frequency", math.Inf(-1), validRecv},
+		{"nan receiver", 1575.42e6, gnss.ECEF{X: math.NaN()}},
+		{"inf receiver", 1575.42e6, gnss.ECEF{Y: math.Inf(1)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := PredictedDoppler(realisticGPS, 432000, tc.freq, tc.recv)
+			if err == nil || got != 0 || math.IsNaN(got) || math.IsInf(got, 0) {
+				t.Fatalf("got (%v,%v), want finite zero and error", got, err)
+			}
+		})
+	}
+	pos, err := Propagate(realisticGPS, 432000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := PredictedDoppler(realisticGPS, 432000, 1575.42e6, pos); err == nil || got != 0 {
+		t.Fatalf("coincident receiver = (%v,%v), want zero and error", got, err)
+	}
+}
+
 // angleDiff returns the smallest signed difference a − b wrapped to (−π, π].
 func angleDiff(a, b float64) float64 {
 	d := math.Mod(a-b, 2*math.Pi)

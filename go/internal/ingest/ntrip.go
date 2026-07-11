@@ -4,7 +4,9 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"mime"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -97,7 +99,13 @@ func ntripConnect(conn net.Conn, src config.Source) (chunked bool, err error) {
 	// sourcetable as body is a refusal, not a stream, exactly like the v1 SOURCETABLE status
 	// line ntripAccepted already rejects -- it just arrives one layer later, in the body's
 	// declared Content-Type rather than the status line.
-	if strings.EqualFold(contentType, "gnss/sourcetable") {
+	mediaType := contentType
+	if contentType != "" {
+		if parsed, _, err := mime.ParseMediaType(contentType); err == nil {
+			mediaType = parsed
+		}
+	}
+	if strings.EqualFold(mediaType, "gnss/sourcetable") {
 		return false, fmt.Errorf("ntrip caster returned a sourcetable for mountpoint %q (Content-Type: %s)", src.Mountpoint, contentType)
 	}
 	return chunked, nil
@@ -127,9 +135,19 @@ func readNtripLine(conn net.Conn) (string, error) {
 // a 200 that returns the caster's mountpoint list — it means the requested mount was not found,
 // so it is a refusal, not a stream.
 func ntripAccepted(status string) bool {
-	if strings.HasPrefix(status, "SOURCETABLE") {
+	fields := strings.Fields(status)
+	if len(fields) < 2 {
 		return false
 	}
-	return strings.Contains(status, "200") &&
-		(strings.HasPrefix(status, "ICY") || strings.HasPrefix(status, "HTTP/"))
+	if fields[0] == "ICY" {
+		return status == "ICY 200 OK"
+	}
+	if fields[0] != "HTTP/1.0" && fields[0] != "HTTP/1.1" {
+		return false
+	}
+	if len(fields[1]) != 3 {
+		return false
+	}
+	code, err := strconv.Atoi(fields[1])
+	return err == nil && code == 200
 }

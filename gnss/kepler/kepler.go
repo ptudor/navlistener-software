@@ -242,6 +242,9 @@ func Velocity(e Ephemeris, tow float64) (gnss.ECEF, error) {
 // (docs/MATH.md §2.2). This is the "predicted" half of the delta-Hz integrity
 // signal (docs/INTEGRITY.md §3).
 func PredictedDoppler(e Ephemeris, tow, freqHz float64, recv gnss.ECEF) (float64, error) {
+	if math.IsNaN(freqHz) || math.IsInf(freqHz, 0) || freqHz <= 0 || !finite(recv) {
+		return 0, errNaN
+	}
 	pos, err := Propagate(e, tow)
 	if err != nil {
 		return 0, err
@@ -252,12 +255,16 @@ func PredictedDoppler(e Ephemeris, tow, freqHz float64, recv gnss.ECEF) (float64
 	}
 	los := pos.Sub(recv)
 	dist := los.Norm()
-	if dist == 0 {
+	if math.IsNaN(dist) || math.IsInf(dist, 0) || dist <= 0 {
 		return 0, errNaN
 	}
 	unit := los.Scale(1 / dist)
 	rangeRate := vel.Dot(unit) // receiver static ⇒ v_recv = 0
-	return -freqHz * rangeRate / physconst.SpeedOfLight, nil
+	result := -freqHz * rangeRate / physconst.SpeedOfLight
+	if math.IsNaN(result) || math.IsInf(result, 0) {
+		return 0, errNaN
+	}
+	return result, nil
 }
 
 func finite(p gnss.ECEF) bool {

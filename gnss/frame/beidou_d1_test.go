@@ -34,3 +34,20 @@ func TestAssembleBeiDouSOWAdjacency(t *testing.T) {
 		t.Errorf("err = %v, want ErrShortFrame for nil sf1", err)
 	}
 }
+
+func TestAssembleBeiDouSOWAdjacencyAcrossWeek(t *testing.T) {
+	sf1 := &BeiDouSubframe{FraID: 1, SOW: 604794}
+	sf2 := &BeiDouSubframe{FraID: 2, SOW: 0}
+	sf3 := &BeiDouSubframe{FraID: 3, SOW: 6}
+	if _, _, err := AssembleBeiDou(1, sf1, sf2, sf3); err != nil {
+		t.Fatalf("rollover set rejected: %v", err)
+	}
+	sf2.SOW = 604788
+	if _, _, err := AssembleBeiDou(1, sf1, sf2, sf3); err != errBeiDouSOWGap {
+		t.Fatalf("reordered set error = %v", err)
+	}
+	sf2.SOW = 604800
+	if _, _, err := AssembleBeiDou(1, sf1, sf2, sf3); err != errBeiDouSOWGap {
+		t.Fatalf("out-of-domain SOW error = %v", err)
+	}
+}
