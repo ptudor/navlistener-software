@@ -29,7 +29,7 @@ func TestGLONASSAlmanacCrossOracle(t *testing.T) {
 		s1, s2, s3 *frame.GLONASSString
 		freqID     int
 	}
-	ephs := map[int]*ephParts{}    // by slot (SFRBX svId)
+	ephs := map[int]*ephParts{} // by slot (SFRBX svId)
 	alms := map[int]glonass.Almanac{}
 	na := -1
 	var pendFirst []uint32 // the first string of an almanac pair, awaiting its second
@@ -111,7 +111,7 @@ func TestGLONASSAlmanacCrossOracle(t *testing.T) {
 		if e == nil || e.s1 == nil || e.s2 == nil || e.s3 == nil {
 			continue
 		}
-		eph, err := frame.AssembleGLONASS(slot, e.freqID, e.s1, e.s2, e.s3)
+		eph, err := frame.AssembleGLONASS(slot, e.freqID, e.s1, e.s2, e.s3, nil)
 		if err != nil {
 			continue
 		}

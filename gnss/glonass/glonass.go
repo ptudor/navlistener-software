@@ -29,6 +29,20 @@ type Ephemeris struct {
 	Tb       float64 // reference time (seconds of day)
 	TodKnown bool    // true once string 5 anchored the time-of-day (docs/MATH.md §3)
 
+	// SV clock terms (regression fix; GLONASS ICD Ed. 5.1 Table 4.5), stored exactly as
+	// broadcast: TauN is τn(tb), the correction of the SV time scale to GLONASS
+	// time at tb, seconds (applied as t_GLO = t_sv + τn − γn·(t_sv − tb));
+	// GammaN is γn(tb), the relative frequency deviation, dimensionless;
+	// DeltaTauN is Δτn, the L2−L1 group-delay difference, seconds. γn rides
+	// string 3 with the rest of the immediate data, so it is always present on
+	// an assembled set; ClockKnown reports whether a same-frame string 4
+	// contributed τn/Δτn (an ephemeris can assemble clockless when string 4 was
+	// lost — position math needs none of these).
+	TauN       float64
+	GammaN     float64
+	DeltaTauN  float64
+	ClockKnown bool
+
 	FreqCh int // FDMA channel k = freqId − 7 (identity metadata)
 	Slot   int // slot number n
 }

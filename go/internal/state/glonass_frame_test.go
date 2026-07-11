@@ -114,3 +114,78 @@ func TestGLONASSChangeoverDoesNotMixEpochs(t *testing.T) {
 // duplicated here (not imported; frame's constant is unexported) purely to
 // translate this test's raw encoded units back to the decoded km for assertions.
 const gloPosScale = 1.0 / (1 << 11)
+
+// glonassString4Frame builds a string-4 frame carrying the SV clock terms
+// (regression fix; ICD Ed. 5.1 Table 4.6: τn at block offset 5 width 22, Δτn at 27
+// width 5, both sign-magnitude, raw pre-scale units).
+func glonassString4Frame(svID int, tauRaw, dtauRaw int64, recv time.Time) *ingest.RawFrame {
+	buf := make([]byte, 16)
+	setAbsBits(buf, 1, 4, 4)
+	setSignMag(buf, 5, 22, tauRaw)
+	setSignMag(buf, 27, 5, dtauRaw)
+	words := make([]uint32, 4)
+	for i := 0; i < 4; i++ {
+		words[i] = uint32(buf[i*4])<<24 | uint32(buf[i*4+1])<<16 | uint32(buf[i*4+2])<<8 | uint32(buf[i*4+3])
+	}
+	return &ingest.RawFrame{
+		Recv: recv, Source: "test", GnssID: gnss.GLONASS, SvID: svID, SigID: 0, FreqID: 7,
+		Words: words,
+	}
+}
+
+// TestGLONASSClockFromString4 guards state wiring: a same-frame string 4
+// refreshes the assembled ephemeris with τn/Δτn (ClockKnown), and a stale
+// string 4 from a previous frame must not attach to a fresh 1/2/3 triple — the
+// same temporal rule regression fix applies to the position strings.
+func TestGLONASSClockFromString4(t *testing.T) {
+	st := New(4)
+	t0 := time.Unix(1_700_000_000, 0)
+	const tauRaw = -123456
+
+	// Broadcast order 1,2,3,4 at ~2s spacing: assembly first happens at string 3
+	// (clockless — string 4 hasn't arrived), then string 4 completes the frame.
+	st.Apply(glonassStringFrame(7, 1, 1000, 10, 1, 0, 0, t0))
+	st.Apply(glonassStringFrame(7, 2, 2000, 20, 2, 0, 450, t0.Add(2*time.Second)))
+	st.Apply(glonassStringFrame(7, 3, 3000, 30, 3, 0, 0, t0.Add(4*time.Second)))
+
+	key := Key{G: gnss.GLONASS, Sv: 7, Sig: 0}
+	sh := st.shardFor(key)
+	sh.mu.Lock()
+	eph, have := sh.m[key].gloEph, sh.m[key].haveGloEph
+	sh.mu.Unlock()
+	if !have {
+		t.Fatal("triple did not assemble")
+	}
+	if eph.ClockKnown {
+		t.Error("ClockKnown = true before any string 4 arrived")
+	}
+
+	st.Apply(glonassString4Frame(7, tauRaw, 5, t0.Add(6*time.Second)))
+	sh.mu.Lock()
+	eph = sh.m[key].gloEph
+	sh.mu.Unlock()
+	if !eph.ClockKnown {
+		t.Fatal("same-frame string 4 did not attach the clock")
+	}
+	if want := float64(tauRaw) / (1 << 30); eph.TauN != want {
+		t.Errorf("TauN = %v, want %v", eph.TauN, want)
+	}
+
+	// A tb changeover 30 minutes later: fresh strings 1/2/3, but the cached
+	// string 4 is from the old frame — the new set must assemble clockless
+	// rather than pair the stale τn with the new epoch.
+	t1 := t0.Add(30 * time.Minute)
+	st.Apply(glonassStringFrame(7, 1, 9000, 10, 1, 0, 0, t1))
+	st.Apply(glonassStringFrame(7, 2, 9500, 20, 2, 0, 450, t1.Add(2*time.Second)))
+	st.Apply(glonassStringFrame(7, 3, 9800, 30, 3, 0, 0, t1.Add(4*time.Second)))
+
+	sh.mu.Lock()
+	eph = sh.m[key].gloEph
+	sh.mu.Unlock()
+	if eph.X != 9000*gloPosScale {
+		t.Fatalf("changeover triple did not assemble: X = %v", eph.X)
+	}
+	if eph.ClockKnown {
+		t.Error("stale string 4 from the previous frame attached to a fresh triple")
+	}
+}

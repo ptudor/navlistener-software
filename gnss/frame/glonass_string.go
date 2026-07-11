@@ -36,12 +36,17 @@ func glonassBlock(words []uint32) *BitReader {
 // factors validated against real ZED-F9T frames: √(x²+y²+z²) ≈ 25510 km for every
 // SV, and the state stays on-shell when RK4-propagated.
 
-// GLONASS scale factors (km, km/s, km/s²).
+// GLONASS scale factors (km, km/s, km/s²; clock terms dimensionless/seconds).
 const (
 	gloPos   = 1.0 / (1 << 11)      // 2^-11 km
 	gloVel   = 1.0 / float64(1<<20) // 2^-20 km/s
 	gloAccel = 1.0 / float64(1<<30) // 2^-30 km/s²
 	gloTbSec = 900.0                // tb LSB = 15 min = 900 s
+
+	// SV clock scale factors (regression fix; ICD Ed. 5.1 Table 4.5): γn(tb) LSB = 2^-40
+	// (dimensionless), τn(tb) and Δτn LSB = 2^-30 s.
+	gloGamma2m40 = 1.0 / float64(uint64(1)<<40)
+	gloClk2m30   = 1.0 / float64(1<<30)
 )
 
 // GLONASSString holds the decoded fields of one nav string. Coord/Vel/Accel are
@@ -53,6 +58,12 @@ type GLONASSString struct {
 	Accel  float64 // km/s²
 	Health int     // string 2: Bn health flags
 	Tb     float64 // string 2: reference time, seconds of day
+
+	// SV clock terms (regression fix; ICD Ed. 5.1 Tables 4.5/4.6, sign-magnitude per
+	// Table 4.5 Note 2): γn(tb) from string 3, τn(tb) and Δτn from string 4.
+	GammaN    float64 // string 3: relative frequency deviation, dimensionless
+	TauN      float64 // string 4: SV-time-to-GLONASS-time correction at tb, s
+	DeltaTauN float64 // string 4: L2−L1 group-delay difference, s
 }
 
 // DecodeGLONASSString decodes one string from its four words.
@@ -77,6 +88,16 @@ func DecodeGLONASSString(words []uint32) (*GLONASSString, error) {
 		tb, _ := r.Bits(9, 7)
 		s.Health = int(bn)
 		s.Tb = float64(tb) * gloTbSec
+	}
+	if m == 3 {
+		gamma, _ := r.SignMag(6, 11) // γn(tb) — ICD Table 4.6: string 3 bits 69–79 (85−79 = 6)
+		s.GammaN = float64(gamma) * gloGamma2m40
+	}
+	if m == 4 {
+		tau, _ := r.SignMag(5, 22)  // τn(tb) — ICD Table 4.6: string 4 bits 59–80 (85−80 = 5)
+		dtau, _ := r.SignMag(27, 5) // Δτn — ICD Table 4.6: string 4 bits 54–58 (85−58 = 27)
+		s.TauN = float64(tau) * gloClk2m30
+		s.DeltaTauN = float64(dtau) * gloClk2m30
 	}
 	return s, nil
 }
@@ -175,8 +196,12 @@ func DecodeGLONASSFrameNA(words []uint32) (int, error) {
 
 // AssembleGLONASS combines strings 1/2/3 into the PZ-90 Cartesian ephemeris the
 // RK4 propagator consumes. slot is the GLONASS slot number; freqID is the UBX
-// freqId (the FDMA channel is freqID−7). tb and the health come from string 2.
-func AssembleGLONASS(slot, freqID int, s1, s2, s3 *GLONASSString) (glonass.Ephemeris, error) {
+// freqId (the FDMA channel is freqID−7). tb and the health come from string 2;
+// γn rides string 3. s4 is nil-tolerant : when present it must be a
+// same-frame string 4 and contributes the SV clock terms τn/Δτn (ClockKnown);
+// when nil the ephemeris assembles clockless — the caller enforces the
+// same-frame temporal window for all strings, exactly as for strings 1–3.
+func AssembleGLONASS(slot, freqID int, s1, s2, s3, s4 *GLONASSString) (glonass.Ephemeris, error) {
 	if s1 == nil || s2 == nil || s3 == nil {
 		return glonass.Ephemeris{}, ErrShortFrame
 	}
@@ -186,13 +211,21 @@ func AssembleGLONASS(slot, freqID int, s1, s2, s3 *GLONASSString) (glonass.Ephem
 	if s1.Number != 1 || s2.Number != 2 || s3.Number != 3 {
 		return glonass.Ephemeris{}, errGLONASSStringOrder
 	}
-	return glonass.Ephemeris{
+	if s4 != nil && s4.Number != 4 {
+		return glonass.Ephemeris{}, errGLONASSStringOrder
+	}
+	eph := glonass.Ephemeris{
 		X: s1.Coord, Vx: s1.Vel, Ax: s1.Accel,
 		Y: s2.Coord, Vy: s2.Vel, Ay: s2.Accel,
 		Z: s3.Coord, Vz: s3.Vel, Az: s3.Accel,
 		Tb:       s2.Tb,
 		TodKnown: true, // string 2 carries tb; the day is anchored
+		GammaN:   s3.GammaN,
 		FreqCh:   freqID - 7,
 		Slot:     slot,
-	}, nil
+	}
+	if s4 != nil {
+		eph.TauN, eph.DeltaTauN, eph.ClockKnown = s4.TauN, s4.DeltaTauN, true
+	}
+	return eph, nil
 }

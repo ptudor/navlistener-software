@@ -101,11 +101,11 @@ type svState struct {
 	// GPS/Galileo/BeiDou they carry no per-changeover tag, so recency is the only
 	// coherence guard — assembly is gated on all three having arrived within one
 	// frame window of each other.
-	gloS1, gloS2, gloS3       *frame.GLONASSString
-	gloS1At, gloS2At, gloS3At time.Time
-	gloEph                    glonass.Ephemeris
-	gloFreqID                 int
-	haveGloEph                bool
+	gloS1, gloS2, gloS3, gloS4         *frame.GLONASSString
+	gloS1At, gloS2At, gloS3At, gloS4At time.Time
+	gloEph                             glonass.Ephemeris
+	gloFreqID                          int
+	haveGloEph                         bool
 	// Buffered first string of an almanac pair (6/8/10/12/14), awaiting its second
 	// (7/9/11/13/15) from the same transmitting satellite.
 	gloAlmFirst    []uint32
@@ -619,6 +619,8 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		st.health, st.haveHealth = str.Health, true
 	case str.Number == 3:
 		st.gloS3, st.gloS3At = str, f.Recv
+	case str.Number == 4: // SV clock: τn/Δτn; joins the frame-window assembly below
+		st.gloS4, st.gloS4At = str, f.Recv
 	case str.Number == 5: // time string: carries the frame day-number NA
 		if na, err := frame.DecodeGLONASSFrameNA(f.Words); err == nil {
 			s.setGloNA(na)
@@ -635,7 +637,7 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		st.gloAlmFirst = nil
 		return
 	default:
-		return // string 4 (reserved here)
+		return
 	}
 	if st.gloS1 == nil || st.gloS2 == nil || st.gloS3 == nil {
 		return
@@ -657,7 +659,26 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 	if newest.Sub(oldest) > glonassFrameWindow {
 		return
 	}
-	eph, err := frame.AssembleGLONASS(f.SvID, st.gloFreqID, st.gloS1, st.gloS2, st.gloS3)
+	// string 4 (τn/Δτn) belongs to the same immediate-data frame as
+	// strings 1–3 (broadcast order 1,2,3,4, ~2 s apart). Include it only when it
+	// falls inside the same frame window — a stale string 4 from a previous
+	// frame must not pair with fresh strings 1–3, exactly the regression fix rule. When
+	// excluded the set assembles clockless (ClockKnown false) and the clock
+	// arrives ~2 s later when string 4 completes the frame and reassembles.
+	s4 := st.gloS4
+	if s4 != nil {
+		lo, hi := oldest, newest
+		if st.gloS4At.Before(lo) {
+			lo = st.gloS4At
+		}
+		if st.gloS4At.After(hi) {
+			hi = st.gloS4At
+		}
+		if hi.Sub(lo) > glonassFrameWindow {
+			s4 = nil
+		}
+	}
+	eph, err := frame.AssembleGLONASS(f.SvID, st.gloFreqID, st.gloS1, st.gloS2, st.gloS3, s4)
 	if err != nil {
 		return
 	}

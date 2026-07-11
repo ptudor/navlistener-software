@@ -619,8 +619,8 @@ func TestRealGLONASS(t *testing.T) {
 		func(f *RawFrame) { frames = append(frames, f) }, func(string) {})
 
 	type strset struct {
-		s1, s2, s3 *frame.GLONASSString
-		freqID     int
+		s1, s2, s3, s4 *frame.GLONASSString
+		freqID         int
 	}
 	bySV := map[int]*strset{}
 	for _, f := range frames {
@@ -643,15 +643,18 @@ func TestRealGLONASS(t *testing.T) {
 			set.s2 = s
 		case 3:
 			set.s3 = s
+		case 4:
+			set.s4 = s
 		}
 	}
 
-	assembled := 0
+	assembled, clocked := 0, 0
+	var maxAbsTau float64
 	for sv, set := range bySV {
 		if set.s1 == nil || set.s2 == nil || set.s3 == nil {
 			continue
 		}
-		eph, err := frame.AssembleGLONASS(sv, set.freqID, set.s1, set.s2, set.s3)
+		eph, err := frame.AssembleGLONASS(sv, set.freqID, set.s1, set.s2, set.s3, set.s4)
 		if err != nil {
 			continue
 		}
@@ -665,12 +668,41 @@ func TestRealGLONASS(t *testing.T) {
 				t.Errorf("R%02d radius at tk=%.0f = %.0f m, want the GLONASS shell ~25510 km", sv, tk, r)
 			}
 		}
+		// regression fix plausibility (ICD Ed. 5.1 Table 4.5 effective ranges): a real
+		// broadcast has |τn| ≤ 2⁻⁹ s (~1.95 ms), |γn| ≤ 2⁻³⁰ (~9.3e-10), and
+		// |Δτn| ≤ 13.97e-9 s. Values outside these bounds mean a broken bit
+		// offset, not a strange satellite.
+		if eph.ClockKnown {
+			clocked++
+			if math.Abs(eph.TauN) > 2e-3 {
+				t.Errorf("R%02d τn = %v s, outside the ICD ±2⁻⁹ s range", sv, eph.TauN)
+			}
+			if math.Abs(eph.DeltaTauN) > 15e-9 {
+				t.Errorf("R%02d Δτn = %v s, outside the ICD ±13.97e-9 s range", sv, eph.DeltaTauN)
+			}
+			if math.Abs(eph.TauN) > maxAbsTau {
+				maxAbsTau = math.Abs(eph.TauN)
+			}
+		}
+		if math.Abs(eph.GammaN) > 1e-9 {
+			t.Errorf("R%02d γn = %v, outside the ICD ±2⁻³⁰ range", sv, eph.GammaN)
+		}
 		assembled++
 	}
 	if assembled < 4 {
 		t.Errorf("assembled only %d GLONASS ephemerides, want >= 4", assembled)
 	}
-	t.Logf("real F9T capture: %d GLONASS SVs with full ephemerides", assembled)
+	if clocked < 1 {
+		t.Errorf("no GLONASS set assembled with a string-4 clock (τn/Δτn) — string 4 not decoded from the capture")
+	}
+	// Every real fleet has at least one SV whose clock bias is well above the
+	// noise floor; all-zero τn across the constellation means the field was
+	// read from the wrong bits, not that every clock is perfect.
+	if clocked > 0 && maxAbsTau < 1e-7 {
+		t.Errorf("max |τn| across %d clocked SVs = %v s — implausibly zero, wrong bit offset?", clocked, maxAbsTau)
+	}
+	t.Logf("real F9T capture: %d GLONASS SVs with full ephemerides, %d with string-4 clocks (max |τn| = %.3g s)",
+		assembled, clocked, maxAbsTau)
 }
 
 // TestRealBeiDouD1AgreesWithBCNAV2 is the cross-oracle that closes the D1
