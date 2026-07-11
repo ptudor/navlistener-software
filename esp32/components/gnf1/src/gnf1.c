@@ -15,10 +15,10 @@ uint8_t gnf1_frame_type(unsigned gnss_id, unsigned sig_id)
         if (sig_id == 4 || sig_id == 5 || sig_id == 8 || sig_id == 9) return 0x51;
         return 0;
     case 2: return (sig_id == 3 || sig_id == 4) ? 0x21 : 0x20;       // Galileo: F/NAV / I/NAV
-    case 3:                                                          // BeiDou: D2 / B-CNAV2 / D1
-        if (sig_id == 1 || sig_id == 3) return 0x31;
-        if (sig_id == 7 || sig_id == 8) return 0x33;
-        return 0x30;
+    case 3:                                                          // BeiDou: shipped B1I D1 + B2a B-CNAV2 only
+        if (sig_id == 0) return 0x30;
+        if (sig_id == 8) return 0x33;
+        return 0; // D2/B2I/B-CNAV1/B2a-companion planned: no verified decoder 
     case 6: return 0x40;                                             // GLONASS
     case 7: return 0;                                                // NavIC planned; no collector decoder
     case 1: return 0x70;                                             // SBAS

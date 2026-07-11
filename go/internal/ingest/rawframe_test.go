@@ -9,9 +9,10 @@ import (
 
 // TestNavTypeMatchesConstellationsTable guards NavType must match every
 // (gnssId, sigId) -> GNF1 type byte row in docs/CONSTELLATIONS.md §6's u-blox
-// table (lines 108-128) and §6.1's byte table (lines 355-377). In particular
-// BeiDou sigId 5/6 (B1C, B-CNAV1) must map to 0x32, not fall through to 0x30
-// (BdsD1) as it did before this fix.
+// table and §6.1's byte registry. Signals whose decoder has not shipped and
+// whose ID mapping is not capture-verified (BeiDou D2/B2I/B-CNAV1 and
+// the B2a companion, like QZSS L1S and NavIC) map to 0 — their type bytes stay
+// reserved, not emitted as supported.
 func TestNavTypeMatchesConstellationsTable(t *testing.T) {
 	cases := []struct {
 		gnssID gnss.GNSSID
@@ -31,12 +32,12 @@ func TestNavTypeMatchesConstellationsTable(t *testing.T) {
 		{gnss.Galileo, 5, 0x20, "GalInav"},
 		{gnss.Galileo, 6, 0x20, "GalInav"},
 		{gnss.BeiDou, 0, 0x30, "BdsD1"},
-		{gnss.BeiDou, 1, 0x31, "BdsD2"},
-		{gnss.BeiDou, 2, 0x30, "BdsD1"},
-		{gnss.BeiDou, 3, 0x31, "BdsD2"},
-		{gnss.BeiDou, 5, 0x32, "BdsCnav1"},
-		{gnss.BeiDou, 6, 0x32, "BdsCnav1"},
-		{gnss.BeiDou, 7, 0x33, "BdsCnav2"},
+		{gnss.BeiDou, 1, 0, "BdsD2PlannedUnsupported"},
+		{gnss.BeiDou, 2, 0, "BdsB2ID1PlannedUnsupported"},
+		{gnss.BeiDou, 3, 0, "BdsD2PlannedUnsupported"},
+		{gnss.BeiDou, 5, 0, "BdsCnav1PlannedUnsupported"},
+		{gnss.BeiDou, 6, 0, "BdsCnav1PlannedUnsupported"},
+		{gnss.BeiDou, 7, 0, "BdsCnav2CompanionUnverified"},
 		{gnss.BeiDou, 8, 0x33, "BdsCnav2"},
 		{gnss.QZSS, 0, 0x50, "QzsLnav"},
 		{gnss.QZSS, 1, 0, "QzsL1sPlannedUnsupported"},

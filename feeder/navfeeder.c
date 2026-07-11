@@ -514,11 +514,10 @@ static uint8_t frame_type(unsigned gnssId, unsigned sigId) {
 		if (sigId == 4 || sigId == 5 || sigId == 8 || sigId == 9) return 0x51;
 		return 0;
 	case 2: return (sigId == 3 || sigId == 4) ? 0x21 : 0x20; /* Galileo: F/NAV / I/NAV */
-	case 3:                                                  /* BeiDou: D2 / B-CNAV1 / B-CNAV2 / D1 */
-		if (sigId == 1 || sigId == 3) return 0x31;
-		if (sigId == 5 || sigId == 6) return 0x32;
-		if (sigId == 7 || sigId == 8) return 0x33;
-		return 0x30;
+	case 3:                                                  /* BeiDou: shipped B1I D1 + B2a B-CNAV2 only */
+		if (sigId == 0) return 0x30;
+		if (sigId == 8) return 0x33;
+		return 0; /* D2/B2I/B-CNAV1/B2a-companion planned: no verified decoder  */
 	case 6: return 0x40;                                     /* GLONASS */
 	case 7: return 0;                                        /* NavIC planned: capture without false type */
 	case 1: return 0x70;                                     /* SBAS */

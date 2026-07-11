@@ -131,14 +131,16 @@ func (f *RawFrame) NavType() int {
 		return 0x20 // GalInav
 	case gnss.BeiDou:
 		switch f.SigID {
-		case 1, 3:
-			return 0x31 // BdsD2
-		case 5, 6:
-			return 0x32 // BdsCnav1
-		case 7, 8:
-			return 0x33 // BdsCnav2
+		case 0:
+			return 0x30 // BdsD1 (B1I — the shipped, capture-verified decoder)
+		case 8:
+			return 0x33 // BdsCnav2 (B2a data — shipped, capture-verified)
 		default:
-			return 0x30 // BdsD1
+			// D2 (1/3), B2I D1 (2), B-CNAV1 (5/6), and the B2a companion
+			// (7) have no shipped decoder and no capture-verified ID mapping —
+			// do not label them as supported families (the same deferral
+			// contract as NavIC/QZSS; BdsD2/BdsCnav1 stay reserved).
+			return 0
 		}
 	case gnss.GLONASS:
 		return 0x40 // GloNav
