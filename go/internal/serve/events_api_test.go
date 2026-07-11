@@ -268,7 +268,7 @@ func TestEventsQueryHasDeadline(t *testing.T) {
 func TestEventsSummaryShape(t *testing.T) {
 	last := time.Unix(2000, 0).UTC()
 	fe := &fakeEvents{summary: store.EventSummary{
-		TotalEvents: 5, ActiveCritical: 2, ActiveWarnings: 3,
+		TotalEvents: 5, CriticalEvents: 2, WarningEvents: 3,
 		LastCritical:    &last,
 		ByType:          map[string]int{"orbit_disco": 4, "clock_jump": 1},
 		ByConstellation: map[string]int{"galileo": 5},

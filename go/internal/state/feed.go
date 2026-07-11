@@ -186,8 +186,13 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 			if !secT.hasDelay || !finite(secT.delayM) || secT.delayAt.IsZero() || now.Sub(secT.delayAt) > ionoDelayTTL {
 				continue
 			}
+			// Ties happen in the realistic shape: two secondaries maturing in the
+			// same RAWX epoch share both delayAt (one Recv per RXM-RAWX message)
+			// and lastEpochS (both equal the primary's epoch), so break the last
+			// tie on sigID (lower = more primary) to keep the pick deterministic.
 			if best == nil || secT.delayAt.After(best.delayAt) ||
-				(secT.delayAt.Equal(best.delayAt) && secT.lastEpochS > best.lastEpochS) {
+				(secT.delayAt.Equal(best.delayAt) && (secT.lastEpochS > best.lastEpochS ||
+					(secT.lastEpochS == best.lastEpochS && sigID < bestSig))) {
 				best, bestSig = secT, sigID
 			}
 		}

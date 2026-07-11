@@ -109,11 +109,12 @@ func cn0ElevationResidual(sats []ingest.SatCN0) (mean, residVar float64, n int) 
 	var xs, ys []float64
 	for _, s := range sats {
 		// UBX-NAV-SAT elevation is valid only in [0,90]; > 90 is the
-		// "elevation unknown" sentinel (91 dial-mode, clamped to 90 by the feeder's
-		// GNF1 telemetry encode -- both must be excluded here, the one choke point
-		// covering both paths), typical for a freshly-acquired SV. Feeding an
-		// unknown elevation into the regression as if it were a real data point
-		// biases the slope/residual this single-transmitter spoof gate depends on.
+		// "elevation unknown" sentinel (91), typical for a freshly-acquired SV.
+		// The GNF1 telemetry encode preserves it (clampElev bounds at the wire
+		// field's int8 range, not 90), so this one choke point covers both the
+		// dial and push paths. Feeding an unknown elevation into the regression
+		// as if it were a real data point biases the slope/residual this
+		// single-transmitter spoof gate depends on.
 		if s.Cn0 <= 0 || s.ElevDeg < 0 || s.ElevDeg > 90 {
 			continue // untracked, below-horizon, or elevation-unknown sentinel
 		}

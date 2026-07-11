@@ -86,11 +86,16 @@ type StoredEvent struct {
 	Params   json.RawMessage `json:"params,omitempty"`
 }
 
-// EventSummary aggregates the events in a window (docs/OUTPUT.md §2.1).
+// EventSummary aggregates the events in a window (docs/OUTPUT.md §2.1). The
+// severity buckets are historical event counts over the window — every row at
+// that severity, including superseded conditions and recovery transitions
+//. They are deliberately NOT named "active": the schema has no
+// resolved marker and no latest-state-per-detector query, so a truthful
+// current-incident count does not exist here yet.
 type EventSummary struct {
 	TotalEvents     int
-	ActiveCritical  int
-	ActiveWarnings  int
+	CriticalEvents  int
+	WarningEvents   int
 	LastCritical    *time.Time
 	ByType          map[string]int
 	ByConstellation map[string]int
@@ -203,9 +208,9 @@ func (s *Store) SummarizeEvents(ctx context.Context, since, until time.Time) (Ev
 		}
 		switch {
 		case sev >= 2:
-			sum.ActiveCritical += n
+			sum.CriticalEvents += n
 		case sev >= 1:
-			sum.ActiveWarnings += n
+			sum.WarningEvents += n
 		}
 	}
 	if err := rows.Err(); err != nil {

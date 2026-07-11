@@ -546,9 +546,9 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 	if st.bc10 == nil || st.bc11 == nil {
 		return
 	}
-	eph, clk, err := frame.AssembleBeiDouBCNAV2(f.SvID, st.bc10, st.bc11, st.bc30)
+	eph, clk, clkOK, err := frame.AssembleBeiDouBCNAV2(f.SvID, st.bc10, st.bc11, st.bc30)
 	if err != nil {
-		return // types 10/11 not broadcast-adjacent, or the clock is too stale 
+		return // types 10/11 not broadcast-adjacent (a stale clock no longer fails assembly)
 	}
 	// an ephemeris changeover (IODE) and a clock changeover (IODC) are
 	// independent events. Gating the whole update on IODE (as before) silently
@@ -557,16 +557,31 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 	// the st.clk assignment below. disco stays keyed on IODE alone (an ephemeris
 	// changeover is what "disco" measures); a clock-only refresh must still
 	// update st.clk so served af0/af1/af2 don't run stale between IODE changes.
+	//
+	// When the assembler dropped the cached type-30/34 as stale (clkOK false),
+	// the returned clock is the zero model, not a decoded one: keep serving the
+	// previously applied clock (BeiDou clock and ephemeris changeovers are
+	// independent, so the old af0/af1/af2 remain the best estimate until a fresh
+	// type-30/34 decodes), skip the time-disco (there is no fresh clock to
+	// difference against — absent, not zero), and do not latch the stale
+	// message's IODC as applied (a later fresh type-30 carrying that IODC must
+	// still be recognized as a change).
 	ephChanged := !st.haveEph || st.bc10.IODE != st.iod
-	clkChanged := st.bc30 != nil && (!st.haveBcIOD || st.bc30.IODC != st.bcIODC)
+	clkChanged := clkOK && (!st.haveBcIOD || st.bc30.IODC != st.bcIODC)
 	if !ephChanged && !clkChanged {
 		return
 	}
+	if !clkOK {
+		clk = st.clk
+	}
 	if ephChanged && st.haveEph {
 		s.computeDisco(st, eph, clk, f.Recv)
+		if !clkOK {
+			st.timeDiscoValid = false
+		}
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, st.bc10.IODE, true
-	if st.bc30 != nil {
+	if clkOK {
 		st.bcIODC, st.haveBcIOD = st.bc30.IODC, true
 	}
 	st.health, st.haveHealth = st.bc11.HS, true

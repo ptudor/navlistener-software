@@ -84,3 +84,104 @@ func TestApplyBeiDouBCNAV2ClockOnlyRefreshUpdatesSameIODE(t *testing.T) {
 		t.Errorf("ephemeris IODE must be unchanged by a clock-only refresh: %d", st.iod)
 	}
 }
+
+// TestApplyBeiDouBCNAV2StaleClockAtIODEChangeover guards the regression fix follow-up: an
+// IODE changeover assembled while the cached type-30/34 is stale (dropped by the
+// assembler) must keep serving the previously applied clock — not install the
+// zero model over it — and must not report a time-disco (there is no fresh clock
+// to difference against; absent, not zero).
+func TestApplyBeiDouBCNAV2StaleClockAtIODEChangeover(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	const prn = 21
+
+	apply := func(words []uint32, at time.Time) {
+		s.Apply(&ingest.RawFrame{GnssID: gnss.BeiDou, SvID: prn, SigID: 8, Recv: at, Words: words})
+	}
+	apply(bcnav2Frame(prn, 10, 100002, func(buf []byte) {
+		setAbsBits(buf, 53, 8, 7)   // IODE = 7
+		setAbsBits(buf, 61, 11, 10) // Toe (raw)
+		setAbsBits(buf, 72, 2, 3)   // SatType = MEO
+	}), now)
+	apply(bcnav2Frame(prn, 11, 100002, nil), now)
+	apply(bcnav2Frame(prn, 30, 100005, func(buf []byte) {
+		setAbsBits(buf, 111, 10, 3)                  // IODC = 3
+		setAbsBits(buf, 53, 25, uint64(int64(1000))) // Af0 (raw, nonzero)
+	}), now)
+
+	key := Key{G: gnss.BeiDou, Sv: prn, Sig: 8}
+	st := s.shardFor(key).m[key]
+	if st == nil || !st.haveEph || st.clk.Af0 == 0 {
+		t.Fatalf("setup: ephemeris+clock not applied: %+v", st)
+	}
+	af0 := st.clk.Af0
+
+	// One hour later the IODE changes; the cached type-30's SOW is now well past
+	// bcnavClkStaleSOW, so the assembler drops it and returns the zero model.
+	later := now.Add(time.Hour)
+	apply(bcnav2Frame(prn, 10, 103602, func(buf []byte) {
+		setAbsBits(buf, 53, 8, 8)   // IODE 7 -> 8
+		setAbsBits(buf, 61, 11, 11) // Toe advances one step
+		setAbsBits(buf, 72, 2, 3)
+	}), later)
+	apply(bcnav2Frame(prn, 11, 103602, nil), later)
+
+	if st.iod != 8 {
+		t.Fatalf("IODE changeover not applied: iod=%d, want 8", st.iod)
+	}
+	if st.clk.Af0 != af0 {
+		t.Errorf("stale clock zeroed the served clock at IODE changeover: Af0=%v, want %v kept", st.clk.Af0, af0)
+	}
+	if st.timeDiscoValid {
+		t.Errorf("time-disco reported with no fresh clock to difference against: %v ns", st.timeDiscoNs)
+	}
+}
+
+// TestApplyBeiDouBCNAV2StaleClockIODCNotLatched guards the regression fix follow-up's
+// second half: when the assembler drops the cached type-30/34 as stale, its IODC
+// was never applied and must not be latched — otherwise a later fresh type-30
+// carrying the same IODC reads as "unchanged" and its clock is never served.
+func TestApplyBeiDouBCNAV2StaleClockIODCNotLatched(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	const prn = 22
+
+	apply := func(words []uint32, at time.Time) {
+		s.Apply(&ingest.RawFrame{GnssID: gnss.BeiDou, SvID: prn, SigID: 8, Recv: at, Words: words})
+	}
+	// The type-30 arrives first (IODC=7), before any 10/11 pair completes.
+	apply(bcnav2Frame(prn, 30, 100005, func(buf []byte) {
+		setAbsBits(buf, 111, 10, 7)                  // IODC = 7
+		setAbsBits(buf, 53, 25, uint64(int64(1000))) // Af0 (raw, nonzero)
+	}), now)
+
+	// An hour later the 10/11 pair assembles; the cached type-30 is stale and
+	// dropped, so its IODC=7 must not be latched as applied.
+	later := now.Add(time.Hour)
+	apply(bcnav2Frame(prn, 10, 103602, func(buf []byte) {
+		setAbsBits(buf, 53, 8, 7)   // IODE = 7
+		setAbsBits(buf, 61, 11, 11) // Toe (raw)
+		setAbsBits(buf, 72, 2, 3)   // SatType = MEO
+	}), later)
+	apply(bcnav2Frame(prn, 11, 103602, nil), later)
+
+	key := Key{G: gnss.BeiDou, Sv: prn, Sig: 8}
+	st := s.shardFor(key).m[key]
+	if st == nil || !st.haveEph {
+		t.Fatalf("setup: ephemeris not assembled: %+v", st)
+	}
+	if st.clk.Af0 != 0 {
+		t.Fatalf("setup: stale clock should not have been applied, Af0=%v", st.clk.Af0)
+	}
+
+	// A fresh type-30 rebroadcasting the same IODC=7 must now be recognized and
+	// applied — the stale message's IODC was never latched.
+	apply(bcnav2Frame(prn, 30, 103605, func(buf []byte) {
+		setAbsBits(buf, 111, 10, 7)                  // same IODC = 7
+		setAbsBits(buf, 53, 25, uint64(int64(1000))) // Af0 (raw, nonzero)
+	}), later)
+
+	if st.clk.Af0 == 0 {
+		t.Errorf("fresh type-30 with the stale message's IODC was never applied: served clock still zero")
+	}
+}
