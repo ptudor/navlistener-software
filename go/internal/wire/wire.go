@@ -116,12 +116,23 @@ func WriteFrame(w io.Writer, ft FrameType, payload []byte) error {
 // ReadFrame reads one framed message, validating the length against MaxFrameLen
 // before allocating (the pre-allocation length check).
 func ReadFrame(r io.Reader) (FrameType, []byte, error) {
+	return ReadFrameMax(r, MaxFrameLen)
+}
+
+// ReadFrameMax is ReadFrame with a caller-supplied length cap instead of the
+// package-wide MaxFrameLen -- a reception-side policy for callers that want a
+// tighter bound in a specific context (the collector's pre-auth
+// handshake caps HELLO far below MaxFrameLen, since a real HELLO is ~150 bytes
+// and there is no reason to let an unauthenticated connection pin 1 MiB).
+// This is not a wire change: the frame format is identical, only the maximum
+// this particular read will accept is smaller.
+func ReadFrameMax(r io.Reader, maxLen uint32) (FrameType, []byte, error) {
 	var hdr [5]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
 		return 0, nil, err
 	}
 	n := binary.BigEndian.Uint32(hdr[1:])
-	if n > MaxFrameLen {
+	if n > maxLen {
 		return 0, nil, ErrFrameTooLarge
 	}
 	payload := make([]byte, n)

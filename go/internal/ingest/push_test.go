@@ -9,13 +9,18 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"math/big"
 	"net"
+	"os"
 	"runtime"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -300,6 +305,72 @@ func TestPushRejectsUngrantedFeed(t *testing.T) {
 	}
 	if wmsg, _ := parseWelcome(payload); wmsg.OK {
 		t.Fatal("ungranted feed was accepted")
+	}
+}
+
+// TestPushHelloOversizedRejectedPreAuth guards the pre-auth HELLO read
+// must reject a length prefix beyond helloMaxLen immediately, without ever
+// attempting to read the declared payload -- otherwise an attacker-declared
+// length up to wire.MaxFrameLen (1 MiB) pins that much per pre-auth connection.
+func TestPushHelloOversizedRejectedPreAuth(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	addr, _ := startPushServer(t, ctx, tokenAuth("observer16", "s3cret", "ubx"))
+
+	conn := dialPush(t, addr)
+	defer conn.Close()
+
+	// Declare a length beyond helloMaxLen (4096) but well under wire.MaxFrameLen
+	// (1 MiB) -- then never send that many payload bytes. If the collector only
+	// enforced MaxFrameLen it would block waiting for the (never-arriving) rest
+	// of the payload and this test would time out; the regression fix cap must reject
+	// right after the 5-byte header, before attempting to read any payload.
+	var hdr [5]byte
+	hdr[0] = byte(wire.Hello)
+	binary.BigEndian.PutUint32(hdr[1:], 8192)
+	if _, err := conn.Write(hdr[:]); err != nil {
+		t.Fatal(err)
+	}
+
+	// A short client-side deadline, well under the server's 30s handshake-phase
+	// deadline: if the collector still tried to read the full declared payload
+	// (i.e. the fix is missing), our own Read here would time out waiting -- which
+	// must not be mistaken for the server having rejected and closed the
+	// connection. Only a non-timeout error (EOF / connection reset, i.e. the
+	// server actually closed it) counts as a pass.
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 1)
+	_, err := conn.Read(buf)
+	if err == nil {
+		t.Fatal("expected the connection to be closed after an oversized pre-auth HELLO length, got data instead")
+	}
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("client read timed out waiting -- the server never closed the connection (it read/blocked on the oversized HELLO instead of rejecting it): %v", err)
+	}
+}
+
+// TestPushHelloMaxSizeStillAuthenticates guards the other half of fix
+// spec: the reception-side cap must not be so tight that a legitimate,
+// near-the-feeder's-own-limit HELLO (navfeeder.c never sends one over 1024
+// bytes) is rejected.
+func TestPushHelloMaxSizeStillAuthenticates(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bigToken := strings.Repeat("a", 900) // realistic upper bound per the finding, comfortably under helloMaxLen
+	addr, _ := startPushServer(t, ctx, tokenAuth("observer16", bigToken, "ubx"))
+
+	conn := dialPush(t, addr)
+	defer conn.Close()
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: bigToken, Station: "observer16", Feed: "ubx"}); err != nil {
+		t.Fatal(err)
+	}
+	ft, payload, err := wire.ReadFrame(conn)
+	if err != nil || ft != wire.Welcome {
+		t.Fatalf("welcome frame: ft=%d err=%v", ft, err)
+	}
+	wmsg, err := parseWelcome(payload)
+	if err != nil || !wmsg.OK {
+		t.Fatalf("welcome = %+v err=%v, want ok (a max-size HELLO must still authenticate)", wmsg, err)
 	}
 }
 
@@ -599,5 +670,135 @@ func TestRecordToFrameClampsImplausibleTimestamp(t *testing.T) {
 	f3 := recordToFrame(rec3, "ubx", "obs1")
 	if f3 == nil || f3.Recv.Before(before) {
 		t.Errorf("Recv = %v, want now() when RecvUnixNs is unset", f3.Recv)
+	}
+}
+
+// TestRecordToFramePushRTCMDerivesMsgTypeFromPayload guards the GNF1
+// frame_type byte is 8 bits and cannot carry an RTCM message number (12 bits,
+// e.g. 1019); recordToFrame must derive MsgType from the payload's first 12
+// bits the same way scanRTCM does, not trust the feeder-supplied frame_type.
+func TestRecordToFramePushRTCMDerivesMsgTypeFromPayload(t *testing.T) {
+	// Message 1019 (GPS ephemeris): 0x3FB << 4 == 0x3FB0, top byte 0x3F, next
+	// nibble 0xB0's high nibble 0xB -- payload[0]=0x3F, payload[1]=0xB0... gives
+	// msgNum = 0x3F<<4 | 0xB0>>4 = 0x3F0 | 0xB = 0x3FB = 1019.
+	rec := wire.RawRecord{
+		FrameType: 0x10, // a frame_type the old code would have used verbatim -- must be ignored
+		Raw:       []byte{0x3F, 0xB0, 0x00, 0x00},
+	}
+	f := recordToFrame(rec, "rtcm", "obs1")
+	if f == nil {
+		t.Fatal("recordToFrame returned nil")
+	}
+	if f.MsgType != 1019 {
+		t.Errorf("MsgType = %d, want 1019 (derived from payload, not frame_type=0x10)", f.MsgType)
+	}
+	if f.Bytes == nil || f.Words != nil {
+		t.Errorf("rtcm feed must set Bytes (not Words); Bytes=%v Words=%v", f.Bytes, f.Words)
+	}
+
+	// Too short to hold a 12-bit message number: MsgType falls back to frame_type
+	// rather than indexing out of range.
+	short := wire.RawRecord{FrameType: 0x22, Raw: []byte{0xAB}}
+	fs := recordToFrame(short, "rtcm", "obs1")
+	if fs == nil || fs.MsgType != 0x22 {
+		t.Errorf("short rtcm payload: MsgType = %v, want fallback to frame_type 0x22", fs)
+	}
+}
+
+// alwaysErrListener is a net.Listener whose Accept always fails with a
+// persistent, non-timeout error -- simulating EMFILE/ENFILE.
+type alwaysErrListener struct {
+	calls int32
+}
+
+func (l *alwaysErrListener) Accept() (net.Conn, error) {
+	atomic.AddInt32(&l.calls, 1)
+	return nil, errors.New("too many open files")
+}
+func (l *alwaysErrListener) Close() error   { return nil }
+func (l *alwaysErrListener) Addr() net.Addr { return &net.TCPAddr{} }
+
+// TestPushAcceptBackoffBoundsCallRate guards a persistent Accept error
+// must not hot-spin the loop at 100% CPU -- the fix spec's exact verification
+// ("bounded call rate; ctx cancel still returns promptly").
+func TestPushAcceptBackoffBoundsCallRate(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	srv := newPushServer("127.0.0.1:0", &tls.Config{}, nil, nil, time.Second, 0,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ln := &alwaysErrListener{}
+
+	done := make(chan error, 1)
+	go func() { done <- srv.serve(ctx, ln) }()
+
+	time.Sleep(200 * time.Millisecond)
+	calls := atomic.LoadInt32(&ln.calls)
+	// Without backoff this would be tens of thousands of calls in 200ms; with a
+	// 5ms-1s exponential backoff it's a handful (~6). 60 gives ample margin
+	// against scheduling jitter while still catching a hot-spin regression.
+	if calls > 60 {
+		t.Errorf("Accept called %d times in 200ms, want a bounded (backed-off) rate", calls)
+	}
+	if calls < 1 {
+		t.Error("Accept was never called")
+	}
+
+	start := time.Now()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("serve did not return promptly after ctx cancel")
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Errorf("serve took %v to return after cancel, want prompt (ctx must be honored during the backoff sleep)", elapsed)
+	}
+}
+
+// splitWriteConn wraps a real net.Conn (from net.Pipe, for deterministic
+// Read/Close semantics) but makes every Write fail -- simulating a connection
+// whose write side is dead while the read side would otherwise keep delivering
+// (exact scenario: a broken TLS write with reads still arriving).
+type splitWriteConn struct {
+	net.Conn
+	writeErr error
+}
+
+func (c *splitWriteConn) Write([]byte) (int, error) { return 0, c.writeErr }
+
+// TestPushAckWriteFailureClosesConnection guards an ack-write failure
+// must close the connection so the read loop's blocked ReadFrame errors out too
+// -- otherwise frames are consumed forever, never acked, while the connection
+// looks alive (the feeder's spool fills and eventually drops frames permanently).
+func TestPushAckWriteFailureClosesConnection(t *testing.T) {
+	srvConn, cliConn := net.Pipe()
+	defer cliConn.Close()
+	sw := &splitWriteConn{Conn: srvConn, writeErr: errors.New("simulated broken write side")}
+	w := &connWriter{c: sw}
+
+	out := make(chan *RawFrame, 4)
+	p := &PushServer{out: out, ackInterval: 10 * time.Millisecond, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.stream(context.Background(), srvConn, w, "observer16", "ubx")
+	}()
+
+	// Feed one DATA frame so `highest` advances past `acked` -- otherwise the ack
+	// ticker sees highest==acked and never attempts a write at all.
+	rec := wire.RawRecord{RecvUnixNs: time.Now().UnixNano(), GnssID: gnss.GPS, SvID: 5, Raw: make([]byte, 40)}
+	if err := wire.WriteFrame(cliConn, wire.Data, wire.EncodeData(1, rec)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-out:
+	case <-time.After(time.Second):
+		t.Fatal("frame did not reach the decode channel")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("stream did not return after an ack-write failure -- the connection was not closed, so the read loop kept blocking indefinitely")
 	}
 }

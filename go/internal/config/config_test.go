@@ -188,6 +188,24 @@ func TestPushFeedGrantValidated(t *testing.T) {
 	}
 }
 
+// TestPushSBFFeedGrantRejected guards GNF1's 1-byte frame_type field
+// cannot carry an SBF block number, so an sbf push grant must be rejected at
+// config validation until a block-number carriage is defined -- dial-mode sbf
+// (a separate, decoder-owned connector) is unaffected.
+func TestPushSBFFeedGrantRejected(t *testing.T) {
+	c := pushConfig(Push{Addr: "0.0.0.0:5580", TLSCert: "c.pem", TLSKey: "k.pem"})
+	c.Push.Observers = []PushObserver{{Station: "s", TokenSHA256: goodHash, Feeds: []string{"sbf"}}}
+	if err := c.finalizePush(); err == nil {
+		t.Error("sbf push feed grant accepted, want rejected (no block-number carriage yet)")
+	}
+	// Dial-mode sbf remains valid -- this finding is push-only.
+	ok := defaults()
+	ok.Ingest = []Source{{Name: "sbf-recv", Type: "sbf", Addr: "127.0.0.1:5555"}}
+	if err := ok.finalize(); err != nil {
+		t.Errorf("dial-mode sbf source rejected: %v (should be unaffected by the push-only regression fix restriction)", err)
+	}
+}
+
 // TestPushValid: a complete, well-formed observer table validates.
 func TestPushValid(t *testing.T) {
 	c := pushConfig(Push{

@@ -33,6 +33,16 @@ const idleReadTimeout = 120 * time.Second
 // connWriter's mutex, every other writer on the same connection) past this deadline.
 const writeTimeout = 30 * time.Second
 
+// acceptBackoffInitial/acceptBackoffMax bound the accept loop's retry pace on a
+// persistent Accept error (EMFILE/ENFILE, regression fix) -- without backoff, Accept
+// fails instantly and the loop hot-spins at 100% CPU while flooding the log at
+// line rate, exactly when the process is already in trouble (out of file
+// descriptors, possibly from the regression fix pre-auth flood or the regression fix FD leak).
+const (
+	acceptBackoffInitial = 5 * time.Millisecond
+	acceptBackoffMax     = 1 * time.Second
+)
+
 // zstdMaxWindow bounds the per-connection zstd decoder's window/memory.
 // navfeeder.c's compressor sets only ZSTD_c_compressionLevel=3 (no explicit
 // windowLog, no pledged source size), whose default window is 2 MiB
@@ -181,6 +191,7 @@ func (p *PushServer) serve(ctx context.Context, ln net.Listener) error {
 	go func() { <-ctx.Done(); _ = ln.Close() }()
 
 	var wg sync.WaitGroup
+	backoff := acceptBackoffInitial
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -188,9 +199,18 @@ func (p *PushServer) serve(ctx context.Context, ln net.Listener) error {
 				wg.Wait()
 				return nil // clean shutdown
 			}
-			p.log.Warn("push accept failed", "error", err)
+			p.log.Warn("push accept failed", "error", err, "backoff", backoff)
+			if !sleep(ctx, backoff) {
+				wg.Wait()
+				return nil // ctx cancelled during the backoff sleep; clean shutdown
+			}
+			backoff *= 2
+			if backoff > acceptBackoffMax {
+				backoff = acceptBackoffMax
+			}
 			continue
 		}
+		backoff = acceptBackoffInitial
 		select {
 		case p.conns <- struct{}{}:
 		case <-ctx.Done():
@@ -279,11 +299,20 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 	p.stream(ctx, frames, w, observer, feed)
 }
 
+// helloMaxLen caps the pre-auth HELLO frame length far below wire.MaxFrameLen
+// : a real HELLO is ~150 bytes and navfeeder.c never sends one over 1024
+// bytes, but ReadFrame's normal 1 MiB cap would let any unauthenticated
+// connection pin up to 1 MiB before a single byte is verified -- a
+// per-connection amplifier for the regression fix pre-auth flood. This is a
+// reception-side policy, not a wire change: DATA-phase reads (in stream, after
+// authentication) keep the full MaxFrameLen.
+const helloMaxLen = 4096
+
 // handshake reads and authenticates the HELLO, replying WELCOME. It returns the
 // canonical observer id, feed, and whether the DATA stream is zstd-compressed
 // (confirmed only when the feeder requested it) on success.
 func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (observer, feed string, useZstd, ok bool) {
-	ft, payload, err := wire.ReadFrame(conn)
+	ft, payload, err := wire.ReadFrameMax(conn, helloMaxLen)
 	if err != nil || ft != wire.Hello {
 		p.log.Warn("push expected HELLO", "remote", remote, "frame", ft, "error", err)
 		return "", "", false, false
@@ -345,6 +374,13 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 					continue
 				}
 				if err := w.write(wire.Ack, wire.EncodeAck(last)); err != nil {
+					// an ack-write failure means this connection's write side is
+					// dead (e.g. a broken TLS session with the read side still delivering).
+					// Close it so the read loop's blocked ReadFrame errors out too --
+					// otherwise frames are consumed forever, never acked, and the feeder's
+					// spool fills and eventually drops them permanently while this
+					// connection looks alive.
+					_ = w.c.Close()
 					return
 				}
 				mu.Lock()
@@ -404,7 +440,11 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				return
 			}
 		case wire.Ping:
-			_ = w.write(wire.Pong, nil)
+			// same rationale as the ack-writer above -- a dead write side must
+			// tear down the connection, not just silently drop the PONG.
+			if err := w.write(wire.Pong, nil); err != nil {
+				_ = w.c.Close()
+			}
 		default:
 			metrics.PushErrorsTotal.WithLabelValues(observer, "unexpected_frame").Inc()
 		}
@@ -447,6 +487,12 @@ func recordToFrame(rec wire.RawRecord, feed, source string) *RawFrame {
 	}
 	if feed == "rtcm" {
 		f.Bytes = rec.Raw
+		// the GNF1 frame_type byte is 8 bits and cannot carry an RTCM message
+		// number (12 bits, e.g. 1019/1020); derive it from the payload the same way
+		// scanRTCM does (rtcm.go) rather than trusting the feeder-supplied frame_type.
+		if len(rec.Raw) >= 2 {
+			f.MsgType = int(rec.Raw[0])<<4 | int(rec.Raw[1])>>4
+		}
 	} else {
 		f.Words = bytesToWords(rec.Raw)
 	}

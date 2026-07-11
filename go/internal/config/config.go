@@ -34,11 +34,13 @@ var DefaultPaths = []string{
 	"./navlistener.toml",
 }
 
-// knownIngestTypes are the raw-frame message formats a feeder may push (the push feed grant)
-// and the plain raw-frame dial connectors (docs/CONSTELLATIONS.md §2).
+// knownIngestTypes are the raw-frame message formats a feeder may push (the push
+// feed grant, docs/CONSTELLATIONS.md §2). sbf is deliberately absent : GNF1's
+// 1-byte frame_type field cannot carry an SBF block number (dial-mode sbf, decoded
+// directly by the receiver's own connector, is unaffected -- see knownDialTypes
+// below). Re-add it once a block-number carriage is defined.
 var knownIngestTypes = map[string]bool{
 	"ubx":  true, // u-blox UBX-RXM-SFRBX stream
-	"sbf":  true, // Septentrio SBF raw-nav blocks
 	"rtcm": true, // RTCM3 ephemeris / SSR
 }
 
