@@ -386,32 +386,17 @@ func matchPeerIdentity(chain []*x509.Certificate, observer string) error {
 	if len(chain) == 0 {
 		return errors.New("verified client certificate missing")
 	}
-	if !asciiObserverID(observer) {
-		return errors.New("canonical observer id is not valid ASCII")
+	if !config.ValidObserverID(observer) {
+		return errors.New("canonical observer id is not a certificate-bindable name")
 	}
 	names := chain[0].DNSNames
 	if len(names) != 1 {
 		return fmt.Errorf("client certificate must contain exactly one DNS SAN, got %d", len(names))
 	}
-	if !asciiObserverID(names[0]) || names[0] != observer {
+	if !config.ValidObserverID(names[0]) || names[0] != observer {
 		return fmt.Errorf("DNS SAN does not exactly match canonical observer")
 	}
 	return nil
-}
-
-func asciiObserverID(s string) bool {
-	if len(s) == 0 || len(s) > 253 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-			(c >= '0' && c <= '9') || c == '.' || c == '-' {
-			continue
-		}
-		return false
-	}
-	return true
 }
 
 // stream reads DATA/PING frames, forwards decoded records to the decode stage, and

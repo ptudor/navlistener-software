@@ -83,6 +83,170 @@ func TestMatchPeerIdentity(t *testing.T) {
 	}
 }
 
+// mtlsPKI is an in-memory fleet CA for the end-to-end mTLS binding tests
+// : issue() returns a client leaf carrying exactly the given DNS SANs,
+// signed by the CA the test server trusts in ClientCAs.
+type mtlsPKI struct {
+	pool   *x509.CertPool
+	caCert *x509.Certificate
+	caKey  *ecdsa.PrivateKey
+}
+
+func newMtlsPKI(t *testing.T) *mtlsPKI {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "fleet-test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(cert)
+	return &mtlsPKI{pool: pool, caCert: cert, caKey: key}
+}
+
+func (p *mtlsPKI) issue(t *testing.T, cn string, sans ...string) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: cn},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		DNSNames:     sans,
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, p.caCert, &key.PublicKey, p.caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// startMTLSPushServer is startPushServer with client-certificate verification
+// against the given fleet CA pool, exercising the same ClientAuth mode
+// newPushServer configures when push.client_ca is set.
+func startMTLSPushServer(t *testing.T, ctx context.Context, auth Authenticator, pool *x509.CertPool) (string, chan *RawFrame) {
+	t.Helper()
+	out := make(chan *RawFrame, 8)
+	tc := &tls.Config{
+		Certificates: []tls.Certificate{selfSigned(t)},
+		MinVersion:   tls.VersionTLS12,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    pool,
+	}
+	srv := newPushServer("127.0.0.1:0", tc, out, auth, 25*time.Millisecond, 0,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", tc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.serve(ctx, ln) }()
+	return ln.Addr().String(), out
+}
+
+func dialPushWithCert(t *testing.T, addr string, cert tls.Certificate) *tls.Conn {
+	t.Helper()
+	conn, err := tls.Dial("tcp", addr, &tls.Config{
+		InsecureSkipVerify: true,
+		Certificates:       []tls.Certificate{cert},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wire.WriteMagic(conn); err != nil {
+		t.Fatal(err)
+	}
+	return conn
+}
+
+// TestPushMTLSBindsCertificateToObserver drives full mTLS handshakes :
+// a certificate whose single DNS SAN matches the token's canonical observer is
+// admitted and its frames flow; a *different* station's valid fleet certificate
+// presented with a stolen victim token is rejected before WELCOME with zero
+// frames enqueued; a CN-only legacy certificate is likewise rejected.
+func TestPushMTLSBindsCertificateToObserver(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pki := newMtlsPKI(t)
+	addr, out := startMTLSPushServer(t, ctx, tokenAuth("observer16", "s3cret", "ubx"), pki.pool)
+
+	t.Run("matching SAN admitted", func(t *testing.T) {
+		conn := dialPushWithCert(t, addr, pki.issue(t, "observer16", "observer16"))
+		defer conn.Close()
+		if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, payload, err := wire.ReadFrame(conn); err != nil {
+			t.Fatal(err)
+		} else if wmsg, _ := parseWelcome(payload); !wmsg.OK {
+			t.Fatalf("welcome = %+v, want ok", wmsg)
+		}
+		rec := wire.RawRecord{RecvUnixNs: time.Now().UnixNano(), GnssID: gnss.GPS, SvID: 5, Raw: make([]byte, 40)}
+		if err := wire.WriteFrame(conn, wire.Data, wire.EncodeData(1, rec)); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case f := <-out:
+			if f.Source != "observer16" {
+				t.Errorf("frame source = %q, want observer16", f.Source)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("frame did not reach the decode channel")
+		}
+	})
+
+	t.Run("other station's cert with victim token rejected", func(t *testing.T) {
+		conn := dialPushWithCert(t, addr, pki.issue(t, "observer17", "observer17"))
+		defer conn.Close()
+		if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, payload, err := wire.ReadFrame(conn); err != nil {
+			t.Fatal(err)
+		} else if wmsg, _ := parseWelcome(payload); wmsg.OK {
+			t.Fatal("mismatched certificate identity was accepted")
+		}
+		select {
+		case f := <-out:
+			t.Fatalf("rejected connection enqueued a frame: %+v", f)
+		case <-time.After(100 * time.Millisecond):
+		}
+	})
+
+	t.Run("legacy CN-only cert rejected", func(t *testing.T) {
+		conn := dialPushWithCert(t, addr, pki.issue(t, "observer16"))
+		defer conn.Close()
+		if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, payload, err := wire.ReadFrame(conn); err != nil {
+			t.Fatal(err)
+		} else if wmsg, _ := parseWelcome(payload); wmsg.OK {
+			t.Fatal("CN-only certificate was accepted")
+		}
+	})
+}
+
 // selfSigned builds an in-memory self-signed server certificate for the test TLS
 // listener (no files, no key material on disk).
 func selfSigned(t *testing.T) tls.Certificate {

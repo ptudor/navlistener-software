@@ -133,7 +133,7 @@ func TestRealBeiDouBCNAV2(t *testing.T) {
 		if s.m10 == nil || s.m11 == nil {
 			continue
 		}
-		eph, _, err := frame.AssembleBeiDouBCNAV2(sv, s.m10, s.m11, nil)
+		eph, _, _, err := frame.AssembleBeiDouBCNAV2(sv, s.m10, s.m11, nil)
 		if err != nil {
 			continue
 		}
@@ -762,7 +762,7 @@ func TestRealBeiDouD1AgreesWithBCNAV2(t *testing.T) {
 		if err != nil {
 			continue
 		}
-		ephB2, clkB2, err := frame.AssembleBeiDouBCNAV2(sv, b.m10, b.m11, b.m30)
+		ephB2, clkB2, _, err := frame.AssembleBeiDouBCNAV2(sv, b.m10, b.m11, b.m30)
 		if err != nil {
 			continue
 		}

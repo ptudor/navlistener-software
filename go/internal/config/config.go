@@ -464,6 +464,9 @@ func (c *Config) finalizePush() error {
 			return fmt.Errorf("push.observer[%d]: duplicate station %q", i, o.Station)
 		}
 		stations[o.Station] = true
+		if p.ClientCA != "" && !ValidObserverID(o.Station) {
+			return fmt.Errorf("push.observer %q: station must be a certificate-bindable name (ASCII letters/digits/./- only, at most 253 bytes) when push.client_ca is set", o.Station)
+		}
 		if len(o.TokenSHA256) != 64 || !isHex(o.TokenSHA256) {
 			return fmt.Errorf("push.observer %q: token_sha256 must be 64 hex chars (a SHA-256)", o.Station)
 		}
@@ -488,6 +491,29 @@ func (c *Config) finalizePush() error {
 		o.CapDecl = caps
 	}
 	return nil
+}
+
+// ValidObserverID reports whether station can serve as a canonical observer
+// identity bindable to an mTLS certificate: the push handshake (ingest,
+// matchPeerIdentity) compares the certificate's single DNS SAN byte-for-byte
+// against this name, so it must be nonempty, at most 253 bytes (the DNS name
+// bound), and only ASCII letters, digits, '.', '-' — no case-fold or Unicode
+// aliases. Enforced at config load whenever push.client_ca is set, so an
+// unbindable station name fails -check-config instead of locking the observer
+// out at connect time.
+func ValidObserverID(s string) bool {
+	if len(s) == 0 || len(s) > 253 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '.' || c == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // validateAddr checks host:port syntax  so a typo'd or malformed listener addr is

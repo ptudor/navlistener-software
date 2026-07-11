@@ -332,6 +332,24 @@ func TestStrictUnknownFields(t *testing.T) {
 	}
 }
 
+// TestPushStationMustBindToCertWhenMTLS: with push.client_ca set, a station name
+// the mTLS SAN comparison could never match (here an underscore) must fail at
+// config load, not lock the observer out at connect time. Without client_ca the
+// same name stays valid (bearer-only mode has no certificate binding).
+func TestPushStationMustBindToCertWhenMTLS(t *testing.T) {
+	obs := []PushObserver{{Station: "observer_16", TokenSHA256: goodHash, Feeds: []string{"ubx"}}}
+	c := pushConfig(Push{Addr: "0.0.0.0:5580", TLSCert: "c.pem", TLSKey: "k.pem",
+		ClientCA: "ca.pem", Observers: obs})
+	err := c.finalizePush()
+	if err == nil || !strings.Contains(err.Error(), "certificate-bindable") {
+		t.Fatalf("unbindable station with client_ca error = %v, want certificate-bindable rejection", err)
+	}
+	c = pushConfig(Push{Addr: "0.0.0.0:5580", TLSCert: "c.pem", TLSKey: "k.pem", Observers: obs})
+	if err := c.finalizePush(); err != nil {
+		t.Fatalf("bearer-only station name rejected: %v", err)
+	}
+}
+
 func TestPushDuplicateTokenHash(t *testing.T) {
 	c := pushConfig(Push{Addr: "0.0.0.0:5580", TLSCert: "c.pem", TLSKey: "k.pem",
 		Observers: []PushObserver{
