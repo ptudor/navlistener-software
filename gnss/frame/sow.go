@@ -1,20 +1,16 @@
 package frame
 
-const secondsPerWeek = 604800
+import "github.com/ptudor/gnss/gnsstime"
 
-// sowDelta returns the shortest signed a-b difference on a GNSS week ring.
-// Inputs outside the transmitted seconds-of-week domain are rejected rather
-// than normalized into an apparently fresh value.
+// sowDelta returns the shortest signed a−b difference on the GNSS week ring
+// (gnsstime.SOWDelta, regression fix), rejecting inputs outside the transmitted
+// seconds-of-week domain [0, 604800). The decoders do not range-check SOW
+// fields, so an out-of-domain value from a corrupt frame must fail here
+// rather than be normalized into an apparently broadcast-adjacent delta.
 func sowDelta(a, b int) (int, bool) {
-	if a < 0 || a >= secondsPerWeek || b < 0 || b >= secondsPerWeek {
+	const week = int(gnsstime.WeekSeconds)
+	if a < 0 || a >= week || b < 0 || b >= week {
 		return 0, false
 	}
-	d := a - b
-	if d > secondsPerWeek/2 {
-		d -= secondsPerWeek
-	}
-	if d < -secondsPerWeek/2 {
-		d += secondsPerWeek
-	}
-	return d, true
+	return gnsstime.SOWDelta(a, b), true
 }

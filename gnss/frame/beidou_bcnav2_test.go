@@ -13,19 +13,6 @@ func TestBCNAV2ShortFrame(t *testing.T) {
 	}
 }
 
-func TestBCNAV2AdjacencyAcrossWeek(t *testing.T) {
-	m10 := &BeiDouBCNAV2{MesType: 10, SOW: 0}
-	m11 := &BeiDouBCNAV2{MesType: 11, SOW: 604797, hasEph2: true}
-	clk := &BeiDouBCNAV2{MesType: 30, SOW: 604797, hasClk: true}
-	if _, _, err := AssembleBeiDouBCNAV2(28, m10, m11, clk); err != nil {
-		t.Fatalf("rollover set rejected: %v", err)
-	}
-	m11.SOW = 604800
-	if _, _, err := AssembleBeiDouBCNAV2(28, m10, m11, clk); err != errPairSOW {
-		t.Fatalf("out-of-domain SOW error = %v", err)
-	}
-}
-
 // TestBCNAV2RejectsBadCRC confirms a frame failing its CRC-24Q is rejected, never
 // partially decoded (the real capture's frames all pass — see TestRealBeiDouBCNAV2).
 func TestBCNAV2RejectsBadCRC(t *testing.T) {
@@ -66,12 +53,46 @@ func TestBCNAV2AcceptsValidCRC(t *testing.T) {
 func TestBCNAV2PairAdjacency(t *testing.T) {
 	m10 := &BeiDouBCNAV2{MesType: 10, SOW: 100}
 	m11 := &BeiDouBCNAV2{MesType: 11, SOW: 103, hasEph2: true}
-	if _, _, err := AssembleBeiDouBCNAV2(28, m10, m11, nil); err != nil {
+	if _, _, _, err := AssembleBeiDouBCNAV2(28, m10, m11, nil); err != nil {
 		t.Errorf("adjacent pair rejected: %v", err)
 	}
 	m11.SOW = 130 // a type 11 from a previous broadcast group
-	if _, _, err := AssembleBeiDouBCNAV2(28, m10, m11, nil); err != errPairSOW {
+	if _, _, _, err := AssembleBeiDouBCNAV2(28, m10, m11, nil); err != errPairSOW {
 		t.Errorf("err = %v, want errPairSOW", err)
+	}
+}
+
+// TestBCNAV2PairAndClockWeekRollover guards a broadcast-adjacent 10/11
+// pair or a current clock straddling the weekly SOW rollover (604797 → 0) must
+// not be rejected — the delta wraps mod 604800. A clock a full staleness bound
+// behind across the boundary must still be dropped.
+func TestBCNAV2PairAndClockWeekRollover(t *testing.T) {
+	m10 := &BeiDouBCNAV2{MesType: 10, SOW: 0}
+	m11 := &BeiDouBCNAV2{MesType: 11, SOW: 604797, hasEph2: true}
+	fresh := &BeiDouBCNAV2{MesType: 30, SOW: 604797, IODC: 3, hasClk: true, clk: clock.Model{Af0: 1.5}}
+	_, clk, clkOK, err := AssembleBeiDouBCNAV2(28, m10, m11, fresh)
+	if err != nil {
+		t.Fatalf("rollover pair (0, 604797) rejected: %v", err)
+	}
+	if !clkOK || clk.Af0 != 1.5 {
+		t.Errorf("rollover clock dropped: Af0=%v clkOK=%v, want fresh clock applied", clk.Af0, clkOK)
+	}
+
+	stale := &BeiDouBCNAV2{MesType: 30, SOW: 604800 - bcnavClkStaleSOW - 1, hasClk: true, clk: clock.Model{Af0: 9.9}}
+	_, clk2, clkOK2, err := AssembleBeiDouBCNAV2(28, m10, m11, stale)
+	if err != nil {
+		t.Fatalf("ephemeris must still assemble with a cross-boundary stale clock: %v", err)
+	}
+	if clkOK2 || clk2.Af0 != 0 {
+		t.Errorf("cross-boundary stale clock must be dropped, got Af0=%v clkOK=%v", clk2.Af0, clkOK2)
+	}
+
+	// SOW 604800 is outside the transmitted domain [0, 604800): a corrupt
+	// field, rejected by sowDelta rather than wrapped into an apparently
+	// adjacent pair.
+	outOfDomain := &BeiDouBCNAV2{MesType: 11, SOW: 604800, hasEph2: true}
+	if _, _, _, err := AssembleBeiDouBCNAV2(28, m10, outOfDomain, fresh); err != errPairSOW {
+		t.Errorf("err = %v, want errPairSOW (out-of-domain SOW)", err)
 	}
 }
 
@@ -84,21 +105,21 @@ func TestBCNAV2StaleClockDropped(t *testing.T) {
 	m10 := &BeiDouBCNAV2{MesType: 10, SOW: 100000, IODE: 7}
 	m11 := &BeiDouBCNAV2{MesType: 11, SOW: 100002, hasEph2: true}
 	fresh := &BeiDouBCNAV2{MesType: 30, SOW: 100005, IODC: 3, hasClk: true, clk: clock.Model{Af0: 1.5}}
-	eph, clk, err := AssembleBeiDouBCNAV2(28, m10, m11, fresh)
+	eph, clk, clkOK, err := AssembleBeiDouBCNAV2(28, m10, m11, fresh)
 	if err != nil {
 		t.Fatalf("fresh clock rejected: %v", err)
 	}
-	if clk.Af0 != 1.5 {
-		t.Errorf("fresh clock not applied: Af0=%v", clk.Af0)
+	if clk.Af0 != 1.5 || !clkOK {
+		t.Errorf("fresh clock not applied: Af0=%v clkOK=%v", clk.Af0, clkOK)
 	}
 
 	stale := &BeiDouBCNAV2{MesType: 30, SOW: 100000 - bcnavClkStaleSOW - 1, IODC: 2, hasClk: true, clk: clock.Model{Af0: 9.9}}
-	eph2, clk2, err := AssembleBeiDouBCNAV2(28, m10, m11, stale)
+	eph2, clk2, clkOK2, err := AssembleBeiDouBCNAV2(28, m10, m11, stale)
 	if err != nil {
 		t.Fatalf("ephemeris must still assemble when only the clock is stale: %v", err)
 	}
-	if clk2.Af0 != 0 {
-		t.Errorf("stale clock must be dropped (zero clock), got Af0=%v", clk2.Af0)
+	if clk2.Af0 != 0 || clkOK2 {
+		t.Errorf("stale clock must be dropped (zero clock, clkOK false), got Af0=%v clkOK=%v", clk2.Af0, clkOK2)
 	}
 	if eph2.Toe != eph.Toe {
 		t.Errorf("ephemeris must be unaffected by clock staleness")

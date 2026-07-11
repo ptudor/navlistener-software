@@ -35,19 +35,44 @@ func TestAssembleBeiDouSOWAdjacency(t *testing.T) {
 	}
 }
 
-func TestAssembleBeiDouSOWAdjacencyAcrossWeek(t *testing.T) {
+// TestAssembleBeiDouSOWWeekRollover guards the one legitimate D1 frame
+// per week straddles the BDT SOW rollover (604794 → 0 → 6) and must assemble;
+// the adjacency comparison wraps mod 604800 rather than subtracting raw SOWs.
+// Sets that are only "adjacent" under naive modulo arithmetic must still fail,
+// and an out-of-domain SOW must be rejected, not normalized.
+func TestAssembleBeiDouSOWWeekRollover(t *testing.T) {
 	sf1 := &BeiDouSubframe{FraID: 1, SOW: 604794}
 	sf2 := &BeiDouSubframe{FraID: 2, SOW: 0}
 	sf3 := &BeiDouSubframe{FraID: 3, SOW: 6}
 	if _, _, err := AssembleBeiDou(1, sf1, sf2, sf3); err != nil {
-		t.Fatalf("rollover set rejected: %v", err)
+		t.Errorf("rollover triple (604794,0,6) rejected: %v", err)
 	}
-	sf2.SOW = 604788
-	if _, _, err := AssembleBeiDou(1, sf1, sf2, sf3); err != errBeiDouSOWGap {
-		t.Fatalf("reordered set error = %v", err)
+
+	// sf2 straddling the boundary too: (604788, 604794, 0) is a valid frame.
+	early1 := &BeiDouSubframe{FraID: 1, SOW: 604788}
+	early2 := &BeiDouSubframe{FraID: 2, SOW: 604794}
+	if _, _, err := AssembleBeiDou(1, early1, early2, sf2); err != nil {
+		t.Errorf("rollover triple (604788,604794,0) rejected: %v", err)
 	}
-	sf2.SOW = 604800
-	if _, _, err := AssembleBeiDou(1, sf1, sf2, sf3); err != errBeiDouSOWGap {
-		t.Fatalf("out-of-domain SOW error = %v", err)
+
+	// Reordered across the boundary (sf2 from the new week, sf3 from the old)
+	// is a splice, not a frame — the wrap must not admit it.
+	if _, _, err := AssembleBeiDou(1, sf1, sf3, sf2); err != errBeiDouSOWGap {
+		t.Errorf("err = %v, want errBeiDouSOWGap (reordered rollover)", err)
+	}
+
+	// A stale sf2 30 s behind sf1 sits near the boundary under the wrap but is
+	// −30 s, not +6 s — still rejected.
+	weekStale := &BeiDouSubframe{FraID: 2, SOW: 604764} // 604794 − 30
+	if _, _, err := AssembleBeiDou(1, sf1, weekStale, sf3); err != errBeiDouSOWGap {
+		t.Errorf("err = %v, want errBeiDouSOWGap (week-boundary stale sf2)", err)
+	}
+
+	// SOW 604800 is outside the transmitted domain [0, 604800): a corrupt
+	// field, not one second into the new week — sowDelta rejects it even
+	// though (604794, 604800, 6) looks adjacent under naive modulo math.
+	outOfDomain := &BeiDouSubframe{FraID: 2, SOW: 604800}
+	if _, _, err := AssembleBeiDou(1, sf1, outOfDomain, sf3); err != errBeiDouSOWGap {
+		t.Errorf("err = %v, want errBeiDouSOWGap (out-of-domain SOW)", err)
 	}
 }

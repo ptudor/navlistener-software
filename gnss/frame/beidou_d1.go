@@ -154,7 +154,10 @@ func AssembleBeiDou(svid int, sf1, sf2, sf3 *BeiDouSubframe) (kepler.Ephemeris, 
 	// fresh sf1/sf3: toe is split across sf2/sf3, so this splices a toe
 	// belonging to neither, fabricating a garbage ephemeris that would
 	// otherwise pass the toe-based IOD gate in state.go and fire a false
-	// critical orbit-disco event.
+	// critical orbit-disco event. The delta wraps mod 604800  so the one
+	// legitimate frame per week that straddles the BDT rollover (604794 → 0 → 6)
+	// still assembles; the exact +6 rule is unchanged everywhere else, and an
+	// out-of-domain SOW fails the check rather than being normalized (sowDelta).
 	d21, ok21 := sowDelta(sf2.SOW, sf1.SOW)
 	d32, ok32 := sowDelta(sf3.SOW, sf2.SOW)
 	if !ok21 || !ok32 || d21 != 6 || d32 != 6 {

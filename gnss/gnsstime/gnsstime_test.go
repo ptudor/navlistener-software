@@ -35,6 +35,26 @@ func TestEphAgeBackwardWrap(t *testing.T) {
 	}
 }
 
+// TestSOWDelta covers the integer wrapped-delta helper the BeiDou frame
+// assemblers use for broadcast adjacency across the weekly rollover.
+func TestSOWDelta(t *testing.T) {
+	for _, tc := range []struct{ a, b, want int }{
+		{106, 100, 6},         // mid-week, no wrap
+		{100, 106, -6},        // mid-week, negative
+		{0, 604794, 6},        // forward across rollover
+		{6, 0, 6},             // adjacent at zero
+		{604794, 0, -6},       // backward across rollover
+		{0, 604769, 31},       // just outside a ±30 bound, across the boundary
+		{302400, 0, 302400},   // exactly half-week keeps its sign (EphAge convention)
+		{0, 302400, -302400},  // and mirrors negative
+		{1209606, 604794, 12}, // inputs beyond one week still reduce mod 604800
+	} {
+		if got := SOWDelta(tc.a, tc.b); got != tc.want {
+			t.Errorf("SOWDelta(%d, %d) = %d, want %d", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
 func TestEphAgeDay(t *testing.T) {
 	// GLONASS day wrap: tb late in day, tod early next day.
 	got := EphAgeDay(60, 86300)

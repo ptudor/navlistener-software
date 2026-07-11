@@ -68,6 +68,22 @@ func EphAgeDay(tod, tb float64) float64 {
 // (docs/OUTPUT.md §1.1).
 func EphAgeMinutes(tow, ref float64) float64 { return EphAge(tow, ref) / 60.0 }
 
+// SOWDelta returns a − b in integer seconds-of-week, wrapped to ±half-week —
+// the integer analogue of EphAge for frame adjacency/staleness checks. Every
+// broadcast-adjacency rule that subtracts two raw SOW fields must use this
+// wrap, or a legitimate set straddling the weekly rollover (e.g. BeiDou D1
+// subframes at 604794 → 0 → 6) is rejected as a splice once per week.
+func SOWDelta(a, b int) int {
+	const week = int(WeekSeconds)
+	d := (a - b) % week
+	if d > week/2 {
+		d -= week
+	} else if d < -week/2 {
+		d += week
+	}
+	return d
+}
+
 // GNSSTime is a continuous-scale time as broadcast: system + full week number +
 // time-of-week seconds. The week must be the full (disambiguated) week, not a
 // truncated broadcast field — use DisambiguateWeek first.

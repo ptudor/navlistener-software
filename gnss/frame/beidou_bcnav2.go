@@ -206,30 +206,38 @@ func DecodeBeiDouBCNAV2(words []uint32) (*BeiDouBCNAV2, error) {
 // forever just because this SV's type-30/34 stopped decoding. Instead a mClk
 // whose SOW has drifted too far from m10's is treated as if it were absent
 // (falls back to the zero clock model below), and the caller keeps trying with
-// whatever type-30/34 arrives next.
-func AssembleBeiDouBCNAV2(svid int, m10, m11, mClk *BeiDouBCNAV2) (kepler.Ephemeris, clock.Model, error) {
+// whatever type-30/34 arrives next. clkOK reports whether the returned clock
+// model actually came from a fresh mClk — false means the zero model was
+// returned and the caller must not treat it as a decoded clock (serve it,
+// difference it for a time-disco, or latch mClk's IODC as applied).
+func AssembleBeiDouBCNAV2(svid int, m10, m11, mClk *BeiDouBCNAV2) (eph kepler.Ephemeris, clk clock.Model, clkOK bool, err error) {
 	if m10 == nil || m11 == nil {
-		return kepler.Ephemeris{}, clock.Model{}, ErrShortFrame
+		return kepler.Ephemeris{}, clock.Model{}, false, ErrShortFrame
 	}
+	// Both deltas wrap mod 604800 : a 10/11 pair or a current clock
+	// straddling the weekly SOW rollover (e.g. 604797 → 0) is broadcast-adjacent
+	// and must not be rejected; the ±3 s and staleness bounds are unchanged. An
+	// out-of-domain SOW fails the check rather than being normalized (sowDelta).
 	if d, ok := sowDelta(m10.SOW, m11.SOW); !ok || d < -3 || d > 3 {
-		return kepler.Ephemeris{}, clock.Model{}, errPairSOW
+		return kepler.Ephemeris{}, clock.Model{}, false, errPairSOW
 	}
 	if mClk != nil && mClk.hasClk {
 		if d, ok := sowDelta(m10.SOW, mClk.SOW); !ok || d < -bcnavClkStaleSOW || d > bcnavClkStaleSOW {
 			mClk = nil // stale: don't pair a cached-old clock with this ephemeris
 		}
 	}
-	eph := m10.eph
+	eph = m10.eph
 	eph.Omega0, eph.I0, eph.OmegaDot, eph.IDot = m11.eph.Omega0, m11.eph.I0, m11.eph.OmegaDot, m11.eph.IDot
 	eph.Cis, eph.Cic, eph.Crs, eph.Crc, eph.Cus, eph.Cuc = m11.eph.Cis, m11.eph.Cic, m11.eph.Crs, m11.eph.Crc, m11.eph.Cus, m11.eph.Cuc
 	eph.ID = gnss.BeiDou
 	eph.SVID = svid
-	clk := clock.Model{ID: gnss.BeiDou}
+	clk = clock.Model{ID: gnss.BeiDou}
 	if mClk != nil && mClk.hasClk {
 		clk = mClk.clk
 		// The B2a pilot user's group delay (ICD §7.6.2 eq. 7-4); the data
 		// component additionally applies ISC_B2ad (eq. 7-5), kept on the struct.
 		clk.TGD = mClk.TGDB2ap
+		clkOK = true
 	}
-	return eph, clk, nil
+	return eph, clk, clkOK, nil
 }
