@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -20,8 +21,10 @@ import (
 
 // Server is the metrics/health HTTP server.
 type Server struct {
-	http *http.Server
-	log  *slog.Logger
+	http    *http.Server
+	log     *slog.Logger
+	mu      sync.RWMutex
+	failure string
 }
 
 // New builds the server bound to addr (e.g. 127.0.0.1:9100). If debugState is
@@ -32,22 +35,65 @@ func New(addr string, log *slog.Logger, debugState http.HandlerFunc) *Server {
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"status":  "ok",
+		status, failure := "ok", ""
+		// The handler closes over s through health below, initialized after the mux.
+		if h := healthStateFromContext(r.Context()); h != nil {
+			status, failure = h.status()
+		}
+		if status != "ok" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+		body := map[string]string{
+			"status":  status,
 			"version": version.Version,
 			"build":   version.BuildTime,
-		})
+		}
+		if failure != "" {
+			body["failure"] = failure
+		}
+		_ = json.NewEncoder(w).Encode(body)
 	})
 	if debugState != nil {
 		mux.HandleFunc("/debug/state", debugState)
 	}
-	return &Server{
+	s := &Server{
 		http: &http.Server{
 			Addr:              addr,
 			Handler:           mux,
 			ReadHeaderTimeout: 5 * time.Second,
 		},
 		log: log,
+	}
+	// Make the server health state available to the handler without package globals.
+	base := s.http.Handler
+	s.http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		base.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), healthContextKey{}, s)))
+	})
+	return s
+}
+
+type healthContextKey struct{}
+
+func healthStateFromContext(ctx context.Context) *Server {
+	s, _ := ctx.Value(healthContextKey{}).(*Server)
+	return s
+}
+
+func (s *Server) status() (string, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.failure != "" {
+		return "failed", s.failure
+	}
+	return "ok", ""
+}
+
+// Fail transitions health to non-OK before controlled process shutdown.
+func (s *Server) Fail(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failure == "" && err != nil {
+		s.failure = err.Error()
 	}
 }
 

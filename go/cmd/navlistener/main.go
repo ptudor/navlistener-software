@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -96,6 +97,38 @@ func run() int {
 		}
 	}
 
+	// Bind every configured listener before starting the historian or any producer.
+	// A startup address conflict therefore accepts zero frames and needs no drain.
+	debugState := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(live.Snapshot(time.Now()))
+	}
+	obs := server.New(cfg.Metrics.Addr, log, debugState)
+	obsLn, err := obs.Listen()
+	if err != nil {
+		log.Error("metrics server", "error", err)
+		return 1
+	}
+	defer obsLn.Close()
+	var apiLn net.Listener
+	if cfg.Serve.Addr != "" {
+		apiLn, err = net.Listen("tcp", cfg.Serve.Addr)
+		if err != nil {
+			log.Error("v2 serve", "error", fmt.Errorf("v2 serve listen %s: %w", cfg.Serve.Addr, err))
+			return 1
+		}
+		defer apiLn.Close()
+	}
+	var pushLn net.Listener
+	if pushSrv != nil {
+		pushLn, err = pushSrv.Listen()
+		if err != nil {
+			log.Error("push endpoint", "error", err)
+			return 1
+		}
+		defer pushLn.Close()
+	}
+
 	// The TimescaleDB historian is optional (enabled by [store].dsn). It runs under
 	// its own context, cancelled only after the decode loop has drained — so no frame
 	// is lost at the decode→persist hop at shutdown.
@@ -130,25 +163,24 @@ func run() int {
 	wg.Add(1)
 	go func() { defer wg.Done(); stateLoop(ctx, cfg.State, live) }()
 
-	// Observability server exposes /metrics + /healthz + the live-state snapshot.
-	debugState := func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(live.Snapshot(time.Now()))
-	}
-	obs := server.New(cfg.Metrics.Addr, log, debugState)
-	// bind synchronously so a malformed/already-bound [metrics].addr fails the
-	// process now, before "ready", rather than logging once and running forever with no
-	// /metrics or /healthz while rc.d reports it healthy.
-	obsLn, err := obs.Listen()
-	if err != nil {
-		log.Error("metrics server", "error", err)
-		cancel()
-		storeCancel()
-		return 1
+	// Any required listener that terminates after readiness fails health and drives
+	// the same ordered shutdown path as a signal.
+	fatalCh := make(chan error, 1)
+	reportFatal := func(component string, err error) {
+		if err == nil || ctx.Err() != nil {
+			return
+		}
+		wrapped := fmt.Errorf("%s: %w", component, err)
+		obs.Fail(wrapped)
+		select {
+		case fatalCh <- wrapped:
+		default:
+		}
 	}
 	go func() {
 		if err := obs.Start(obsLn); err != nil {
 			log.Error("metrics server", "error", err)
+			reportFatal("metrics server", err)
 		}
 	}()
 
@@ -164,19 +196,12 @@ func run() int {
 			eventStore = historian
 		}
 		apiSrv = serve.New(cfg.Serve.Addr, live, eventStore, cfg.Ingest, cfg.Serve.RefreshFast, cfg.Serve.RefreshSlow, log)
-		// same synchronous-bind fix as the metrics listener above.
-		apiLn, err := apiSrv.Listen()
-		if err != nil {
-			log.Error("v2 serve", "error", err)
-			cancel()
-			storeCancel()
-			return 1
-		}
 		wg.Add(1)
 		go func() { defer wg.Done(); apiSrv.Run(ctx) }()
 		go func() {
 			if err := apiSrv.Start(apiLn); err != nil {
 				log.Error("v2 serve", "error", err)
+				reportFatal("v2 serve", err)
 			}
 		}()
 		// Persist each served feed to the historian on a slow cadence — the replay/backfill
@@ -200,8 +225,9 @@ func run() int {
 		ingestWG.Add(1)
 		go func() {
 			defer ingestWG.Done()
-			if err := pushSrv.Run(ctx); err != nil {
+			if err := pushSrv.Serve(ctx, pushLn); err != nil {
 				log.Error("push endpoint", "error", err)
+				reportFatal("push endpoint", err)
 			}
 		}()
 		log.Info("push endpoint enabled", "addr", cfg.Push.Addr, "observers", len(cfg.Push.Observers))
@@ -221,8 +247,14 @@ func run() int {
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-sigCh
-	log.Info("shutdown signal", "signal", sig.String())
+	exitCode := 0
+	select {
+	case sig := <-sigCh:
+		log.Info("shutdown signal", "signal", sig.String())
+	case fatal := <-fatalCh:
+		exitCode = 1
+		log.Error("required component failed; shutting down", "error", fatal)
+	}
 
 	// Ordered shutdown : cancel() stops every producer's accept/dial loop, but
 	// decodeLoop must not race them to give up on a momentarily-empty frames channel —
@@ -270,7 +302,7 @@ func run() int {
 		log.Warn("metrics server shutdown", "error", err)
 	}
 	log.Info("graceful shutdown complete")
-	return 0
+	return exitCode
 }
 
 // persistMsgType returns the msg_type to persist for f : a dial connector

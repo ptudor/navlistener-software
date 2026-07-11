@@ -30,6 +30,35 @@ import (
 	"github.com/ptudor/navlistener/internal/wire"
 )
 
+type terminalListener struct{ err error }
+
+func (l terminalListener) Accept() (net.Conn, error) { return nil, l.err }
+func (terminalListener) Close() error                { return nil }
+func (terminalListener) Addr() net.Addr              { return &net.TCPAddr{} }
+
+func TestPushServeReturnsTerminalAcceptFailure(t *testing.T) {
+	p := newPushServer("unused", &tls.Config{}, make(chan *RawFrame), nil, time.Second, 1,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	err := p.serve(context.Background(), terminalListener{err: errors.New("terminal accept failure")})
+	if err == nil || !strings.Contains(err.Error(), "terminal accept failure") {
+		t.Fatalf("serve error = %v, want terminal accept failure", err)
+	}
+}
+
+func TestPushListenFailsWhenAddressOccupied(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	p := newPushServer(occupied.Addr().String(), &tls.Config{}, make(chan *RawFrame), nil,
+		time.Second, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if ln, err := p.Listen(); err == nil {
+		ln.Close()
+		t.Fatal("push Listen succeeded on an occupied address")
+	}
+}
+
 // selfSigned builds an in-memory self-signed server certificate for the test TLS
 // listener (no files, no key material on disk).
 func selfSigned(t *testing.T) tls.Certificate {

@@ -9,6 +9,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"os"
@@ -246,7 +247,9 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg := defaults()
-	if err := toml.Unmarshal(raw, cfg); err != nil {
+	decoder := toml.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	if err := cfg.finalize(); err != nil {
@@ -434,6 +437,7 @@ func (c *Config) finalizePush() error {
 		return fmt.Errorf("push.tls_cert and push.tls_key are required when push.addr is set")
 	}
 	stations := make(map[string]bool, len(p.Observers))
+	tokens := make(map[string]string, len(p.Observers))
 	for i := range p.Observers {
 		o := &p.Observers[i]
 		if o.Station == "" {
@@ -446,6 +450,12 @@ func (c *Config) finalizePush() error {
 		if len(o.TokenSHA256) != 64 || !isHex(o.TokenSHA256) {
 			return fmt.Errorf("push.observer %q: token_sha256 must be 64 hex chars (a SHA-256)", o.Station)
 		}
+		normalized := strings.ToLower(o.TokenSHA256)
+		if prior, exists := tokens[normalized]; exists {
+			return fmt.Errorf("push.observer %q: token_sha256 duplicates observer %q", o.Station, prior)
+		}
+		tokens[normalized] = o.Station
+		o.TokenSHA256 = normalized
 		if len(o.Feeds) == 0 {
 			return fmt.Errorf("push.observer %q: at least one feed type is required", o.Station)
 		}

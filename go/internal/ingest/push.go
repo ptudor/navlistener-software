@@ -177,10 +177,26 @@ func newPushServer(addr string, tc *tls.Config, out chan<- *RawFrame, auth Authe
 
 // Run listens until ctx is cancelled, handling each feeder connection concurrently.
 func (p *PushServer) Run(ctx context.Context) error {
+	ln, err := p.Listen()
+	if err != nil {
+		return err
+	}
+	return p.Serve(ctx, ln)
+}
+
+// Listen binds the configured TLS listener. Startup calls this synchronously
+// before any producer or historian goroutine is started.
+func (p *PushServer) Listen() (net.Listener, error) {
 	ln, err := tls.Listen("tcp", p.addr, p.tlsConfig)
 	if err != nil {
-		return fmt.Errorf("push listen %s: %w", p.addr, err)
+		return nil, fmt.Errorf("push listen %s: %w", p.addr, err)
 	}
+	return ln, nil
+}
+
+// Serve runs an already-bound push listener until cancellation or a terminal
+// listener error.
+func (p *PushServer) Serve(ctx context.Context, ln net.Listener) error {
 	p.log.Info("push endpoint listening", "addr", p.addr, "mtls", p.tlsConfig.ClientAuth != tls.NoClientCert)
 	return p.serve(ctx, ln)
 }
@@ -198,6 +214,10 @@ func (p *PushServer) serve(ctx context.Context, ln net.Listener) error {
 			if ctx.Err() != nil {
 				wg.Wait()
 				return nil // clean shutdown
+			}
+			if ne, ok := err.(net.Error); !ok || !ne.Temporary() {
+				wg.Wait()
+				return fmt.Errorf("push accept: %w", err)
 			}
 			p.log.Warn("push accept failed", "error", err, "backoff", backoff)
 			if !sleep(ctx, backoff) {

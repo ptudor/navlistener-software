@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -264,5 +266,41 @@ func TestPushDuplicateStation(t *testing.T) {
 	})
 	if err := c.finalizePush(); err == nil {
 		t.Error("duplicate station accepted")
+	}
+}
+
+func TestStrictUnknownFields(t *testing.T) {
+	for name, body := range map[string]string{
+		"top-level":      "unexpected = true\n",
+		"logging":        "[logging]\nlevle = \"info\"\n",
+		"metrics":        "[metrics]\nadrr = \"127.0.0.1:9100\"\n",
+		"state":          "[state]\nshardz = 4\n",
+		"store":          "[store]\nbatch_sze = 10\n",
+		"serve":          "[serve]\nrefresh_intervl = \"1s\"\n",
+		"push-client-ca": "[push]\nclient_caa = \"ca.pem\"\n",
+		"ingest":         "[[ingest]]\nname = \"x\"\ntype = \"ubx\"\naddr = \"127.0.0.1:1\"\ndisabeld = true\n",
+		"push-observer":  "[[push.observer]]\nstaton = \"x\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "bad.toml")
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(path); err == nil {
+				t.Fatalf("unknown field accepted:\n%s", body)
+			}
+		})
+	}
+}
+
+func TestPushDuplicateTokenHash(t *testing.T) {
+	c := pushConfig(Push{Addr: "0.0.0.0:5580", TLSCert: "c.pem", TLSKey: "k.pem",
+		Observers: []PushObserver{
+			{Station: "first", TokenSHA256: goodHash, Feeds: []string{"ubx"}},
+			{Station: "second", TokenSHA256: strings.ToUpper(goodHash), Feeds: []string{"rtcm"}},
+		}})
+	err := c.finalizePush()
+	if err == nil || !strings.Contains(err.Error(), "first") || !strings.Contains(err.Error(), "second") {
+		t.Fatalf("case-varied duplicate token error = %v, want both station names", err)
 	}
 }
