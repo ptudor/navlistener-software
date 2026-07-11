@@ -119,8 +119,8 @@ func TestAlmanacECEFGroundTrack(t *testing.T) {
 // (PropagateAlmanacECEF → ecefNode) had only the loose ground-track bounds above
 // as coverage, while the strong ICD-worked-example check (TestAlmanacICDExample)
 // exercises the inertialNode branch exclusively. A sign/scale slip isolated to the
-// ecefNode-only line (`omegaBase = lambdaK - almWe*(ti-tLambdaK)`) would pass both
-// of those and still be wrong.
+// ecefNode-only line (`omegaBase = lambdaK - almWe*tau`, regression fix) would pass both of
+// those and still be wrong.
 //
 // This pins ecefNode to the same ICD-validated example by an independent route:
 // every other computed quantity in propagateAlmanac (aI, eaI, uI, rI, vr, vu, the
@@ -174,5 +174,73 @@ func TestAlmanacECEFMatchesRotatedICDExample(t *testing.T) {
 	}
 	if d := math.Abs(ecefPos.Z - wantEcef.Z); d > tol {
 		t.Errorf("Z = %.9f km, want %.9f (rotated ICD example, Δ %.2e km)", ecefPos.Z, wantEcef.Z, d)
+	}
+}
+
+// r049Fixture is an almanac whose Tlambda/DeltaT/DeltaTdot are chosen so multiple
+// node passages before a full day elapses (Tdr ≈ 40544 s, so passage k=1 already
+// falls after the ~86400*(n0-NA) day-count term for a same-day n0), the regime
+// regression fix describes: the containing node passage lands on a different calendar day
+// than a wide range of practical ti values.
+var r049Fixture = Almanac{
+	NA:        615,
+	Lambda:    halfCycle(-0.189986229),
+	Tlambda:   80000, // late in the day, so day NA+1's early ti values wrap
+	DeltaI:    halfCycle(0.011929512),
+	DeltaT:    -2655.76171875,
+	DeltaTdot: 0.000549316,
+	Ecc:       0.001482010,
+	Omega:     halfCycle(0.440277100),
+}
+
+func ecefDistanceKm(a, b gnss.ECEF) float64 {
+	dx, dy, dz := a.X-b.X, a.Y-b.Y, a.Z-b.Z
+	return math.Sqrt(dx*dx+dy*dy+dz*dz) / 1000
+}
+
+// TestPropagateAlmanacDayCountInvariant guards core property: (n0, ti) and
+// (n0+1, ti-86400) name the identical absolute instant (tStar only ever depends on
+// ti - 86400*(NA-n0)), so they must propagate to the identical position -- the day
+// count and the intra-day time must trade off exactly, with no residual jump from
+// the mod-86400 that used to discard which day the containing node passage fell on.
+func TestPropagateAlmanacDayCountInvariant(t *testing.T) {
+	a := r049Fixture
+	for _, ti := range []float64{100, 30000, 60000, 86300} {
+		// tStar = ti - Tlambda + 86400*(n0-NA) is invariant when n0 and ti trade off
+		// one day against each other in opposite directions: (NA+1, ti) and
+		// (NA, ti+86400) both give the same tStar (a.NA is fixed at 615 in both calls
+		// -- only the n0 argument and ti move).
+		p1, err1 := PropagateAlmanacECEF(a, 616, ti)
+		p2, err2 := PropagateAlmanacECEF(a, 615, ti+86400)
+		if err1 != nil {
+			t.Fatalf("ti=%.0f (n0=616): %v", ti, err1)
+		}
+		if err2 != nil {
+			t.Fatalf("ti=%.0f (n0=615): %v", ti, err2)
+		}
+		if d := ecefDistanceKm(p1, p2); d > 1e-6 {
+			t.Errorf("ti=%.0f: (n0=616,ti) vs (n0=615,ti+86400) differ by %.2e km, want ~0 (same instant)", ti, d)
+		}
+	}
+}
+
+// TestPropagateAlmanacMidnightContinuity guards failure mode directly: the
+// position 1 s before a calendar-day rollover and the position 1 s after it are 2 s
+// of orbital motion apart (~7.8 km at GLONASS's ~3.9 km/s), not the ~47 degrees
+// (tens of thousands of km) the mod-86400 bug produced whenever the containing
+// node passage straddled the day boundary.
+func TestPropagateAlmanacMidnightContinuity(t *testing.T) {
+	a := r049Fixture
+	before, err := PropagateAlmanacECEF(a, 615, 86399)
+	if err != nil {
+		t.Fatalf("before midnight: %v", err)
+	}
+	after, err := PropagateAlmanacECEF(a, 616, 1)
+	if err != nil {
+		t.Fatalf("after midnight: %v", err)
+	}
+	d := ecefDistanceKm(before, after)
+	if d < 1 || d > 20 {
+		t.Errorf("midnight continuity: positions 2s apart differ by %.1f km, want ~8 km (2s of orbital motion), not a full-period excursion", d)
 	}
 }

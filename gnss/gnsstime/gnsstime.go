@@ -83,12 +83,21 @@ type GNSSTime struct {
 // per-system epoch offset (including BeiDou's 14 s) into one constant.
 var epochGPSSeconds = map[System]float64{
 	SysGPS: 0,
-	// GST epoch 1999-08-22T00:00:00Z, TAI−UTC = 32 there → GPS−UTC = 13.
-	SysGalileo: (935280000 - gpsEpochUnix) + (32 - gpsTAIminusUTC),
+	// GST(0,0) is 1999-08-21T23:59:47 UTC -- 13 s *before* the nominal
+	// 1999-08-22T00:00:00Z UTC date, because GST was already 13 s ahead of UTC at
+	// that instant. GST(0,0) is exactly the GPS week-1024 rollover, so GST WN/TOW
+	// equals GPS WN/TOW (WN+1024)/TOW with zero offset -- the property gpsTOW's
+	// comment and weekFor already rely on. The epoch is 935280000 - gpsEpochUnix
+	// (= 1024*WeekSeconds) with no additional leap-second term folded in; the
+	// previous "+ (32 - gpsTAIminusUTC)" incorrectly treated 935280000 as a UTC
+	// timestamp of GST(0,0) itself rather than of the nominal calendar date 13 s
+	// after it.
+	SysGalileo: 935280000 - gpsEpochUnix,
 	// BDT epoch 2006-01-01T00:00:00Z, TAI−UTC = 33 → GPS−UTC = 14 (BDT = GPST − 14 s).
 	SysBeiDou: (1136073600 - gpsEpochUnix) + (33 - gpsTAIminusUTC),
-	// IRNWT shares the Galileo epoch (1999-08-22) per docs/MATH.md §1.
-	SysNavIC: (935280000 - gpsEpochUnix) + (32 - gpsTAIminusUTC),
+	// IRNWT shares the Galileo epoch/convention (1999-08-22, WN+1024=GPS WN,
+	// TOW aligned) per docs/MATH.md §1 -- same correction as SysGalileo above.
+	SysNavIC: 935280000 - gpsEpochUnix,
 }
 
 // GPSSeconds converts t to continuous seconds since the GPS epoch on the GPS/TAI

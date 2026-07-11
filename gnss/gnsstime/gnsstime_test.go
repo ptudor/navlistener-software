@@ -97,14 +97,56 @@ func TestToUnixBeiDouEpoch(t *testing.T) {
 	}
 }
 
+// TestToUnixGalileoEpoch guards GST(0,0) is 1999-08-21T23:59:47 UTC, 13 s
+// *before* the nominal 1999-08-22T00:00:00Z date -- GST was already 13 s ahead of
+// UTC at that instant. ToUnix(13) (the GPS-UTC offset at the time) must therefore
+// land 13 s before the calendar date's Unix timestamp, not on it.
 func TestToUnixGalileoEpoch(t *testing.T) {
 	tm := GNSSTime{Sys: SysGalileo, Week: 0, TOW: 0}
 	got, ok := tm.ToUnix(13) // GPS−UTC = 13 at 1999-08
 	if !ok {
 		t.Fatal("ToUnix not ok for Galileo")
 	}
-	if got != 935280000 {
-		t.Errorf("GST epoch → unix %v, want 935280000 (1999-08-22)", got)
+	if got != 935279987 {
+		t.Errorf("GST epoch → unix %v, want 935279987 (1999-08-21T23:59:47Z, 13s before the nominal date)", got)
+	}
+}
+
+// TestGalileoEpochAlignsWithGPSWeek1024 guards core claim: GST(0,0) is
+// exactly the GPS week-1024 rollover, so a Galileo time and its "GPS week+1024,
+// same TOW" twin must denote the identical instant in continuous GPS seconds --
+// the property gpsTOW's cross-constellation TOW comparison already relies on.
+func TestGalileoEpochAlignsWithGPSWeek1024(t *testing.T) {
+	gal := GNSSTime{Sys: SysGalileo, Week: 0, TOW: 0}
+	gps, ok := gal.GPSSeconds()
+	if !ok {
+		t.Fatal("GPSSeconds not ok for Galileo")
+	}
+	if want := 1024 * WeekSeconds; gps != want {
+		t.Errorf("GST(0,0) = %v GPS seconds, want %v (1024 weeks)", gps, want)
+	}
+
+	twin := GNSSTime{Sys: SysGPS, Week: 1024, TOW: 12345.5}
+	galTwin := GNSSTime{Sys: SysGalileo, Week: 0, TOW: 12345.5}
+	gpsTwin, _ := twin.GPSSeconds()
+	galTwinSecs, _ := galTwin.GPSSeconds()
+	if gpsTwin != galTwinSecs {
+		t.Errorf("GPS week 1024 TOW 12345.5 = %v GPS seconds, Galileo week 0 (same TOW) = %v -- want equal", gpsTwin, galTwinSecs)
+	}
+}
+
+// TestNavICEpochMatchesGalileo guards NavIC half of the fix: IRNWT shares
+// Galileo's epoch/convention exactly.
+func TestNavICEpochMatchesGalileo(t *testing.T) {
+	navic := GNSSTime{Sys: SysNavIC, Week: 3, TOW: 500}
+	gal := GNSSTime{Sys: SysGalileo, Week: 3, TOW: 500}
+	ns, ok1 := navic.GPSSeconds()
+	gs, ok2 := gal.GPSSeconds()
+	if !ok1 || !ok2 {
+		t.Fatal("GPSSeconds not ok")
+	}
+	if ns != gs {
+		t.Errorf("NavIC GPSSeconds = %v, want equal to Galileo's %v (same epoch/convention)", ns, gs)
 	}
 }
 

@@ -142,7 +142,17 @@ func propagateAlmanac(a Almanac, n0 int, ti float64, node nodeConvention, s0 flo
 	e0 := 2 * math.Atan(math.Sqrt((1-e)/(1+e))*math.Tan(nu0/2))
 	mNode := e0 - e*math.Sin(e0)
 
-	tau := ti - tLambdaK
+	// tau is the elapsed time since the k-th node passage, tStar − dtNode,
+	// carrying the day count -- NOT ti − tLambdaK, which discards which calendar
+	// day the passage fell on (tLambdaK is wrapped mod 86400). Whenever the
+	// containing passage was on the previous day relative to ti, ti − tLambdaK
+	// comes out ≈ 86400 s short (or, symmetrically, too large), corrupting the mean
+	// anomaly / node longitude / perturbation arguments below by a full period's
+	// worth of along-track motion. tLambdaK itself is kept only for the
+	// inertialNode sidereal term S(tλk), which the ICD's own §A.3.2.2 worked
+	// example defines against the wrapped time-of-day (the "subtract 86400,
+	// increment the day" step is explicit there).
+	tau := tStar - dtNode
 	// Perturbations are evaluated at m=1 (τ=0, λ=M+ω) and m=2 (τ, λ=M+ω+nτ); the
 	// applied correction is their difference (ICD §A.3.2.2 step 4).
 	p1 := almPert(J, aeA2, incl, h, l, n, 0, mNode+a.Omega)
@@ -175,10 +185,10 @@ func propagateAlmanac(a Almanac, n0 int, ti float64, node nodeConvention, s0 flo
 		s := s0 + almWe*(tLambdaK-10800) // ICD S(tλk); 10800 s = the 3 h MT→GMT offset
 		omegaBase = lambdaK + s
 	default: // ecefNode
-		omegaBase = lambdaK - almWe*(ti-tLambdaK)
+		omegaBase = lambdaK - almWe*tau // unwrapped tau, not ti-tLambdaK
 	}
 	omegaNode := omegaBase + dOmega
-	lambdaStar := mNode + a.Omega + n*(ti-tLambdaK) + dLambda
+	lambdaStar := mNode + a.Omega + n*tau + dLambda // unwrapped tau, not ti-tLambdaK
 	mI := lambdaStar - omegaI
 
 	// Solve the perturbed Kepler orbit and rotate into the chosen frame.
