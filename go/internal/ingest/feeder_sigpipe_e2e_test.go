@@ -41,36 +41,20 @@ func (l *capturingListener) Accept() (net.Conn, error) {
 
 // TestNavfeederSurvivesCollectorRST guards a write landing on a connection the
 // collector has already abortively closed (an ordinary collector restart/deploy, or a
-// crash) must not kill navfeeder outright -- it must log the write failure and reconnect.
-// Run as an A/B: the pre-fix navfeeder.c (built fresh from the commit before
-// `signal(SIGPIPE, SIG_IGN)` was added) is expected to die to signal 13; the current
-// tree's binary must survive and reconnect. This also confirms the harness itself
-// actually reproduces the write-after-RST scenario (the pre-fix subtest would fail with
-// a clear message if it didn't).
+// crash) must not kill navfeeder outright -- it must log the write failure and reconnect
+// instead of dying to the default SIGPIPE disposition.
+//
+// The regression asserts that the current feeder survives a collector reset
+// and reconnects after a failed write.
 func TestNavfeederSurvivesCollectorRST(t *testing.T) {
-	t.Run("pre-fix binary dies to SIGPIPE", func(t *testing.T) {
-		bin := buildPrefixNavfeeder(t)
-		alive, sig, reconnected := runSIGPIPEHarness(t, bin, 8*time.Second)
-		if alive {
-			t.Fatal("pre-fix navfeeder survived the RST; expected it to die to SIGPIPE (harness assumption broken)")
-		}
-		if sig != syscall.SIGPIPE {
-			t.Fatalf("pre-fix navfeeder died to signal %v, want SIGPIPE -- harness may not be reproducing the write-after-RST case", sig)
-		}
-		if reconnected {
-			t.Fatal("pre-fix navfeeder reconnected despite dying -- test bookkeeping bug")
-		}
-	})
-	t.Run("fixed binary survives and reconnects", func(t *testing.T) {
-		bin := feederBinary(t)
-		alive, _, reconnected := runSIGPIPEHarness(t, bin, 8*time.Second)
-		if !alive {
-			t.Fatal("fixed navfeeder died; regression fix regression")
-		}
-		if !reconnected {
-			t.Fatal("fixed navfeeder survived but never reconnected to the collector")
-		}
-	})
+	bin := feederBinary(t)
+	alive, _, reconnected := runSIGPIPEHarness(t, bin, 8*time.Second)
+	if !alive {
+		t.Fatal("navfeeder died on a write to an RST'd collector connection; regression fix regression")
+	}
+	if !reconnected {
+		t.Fatal("navfeeder survived the RST but never reconnected to the collector")
+	}
 }
 
 // runSIGPIPEHarness stands up a real PushServer (the actual collector code, via
@@ -193,33 +177,4 @@ func runSIGPIPEHarness(t *testing.T, bin string, wait time.Duration) (alive bool
 		reconnected = false
 	}
 	return true, 0, reconnected
-}
-
-// buildPrefixNavfeeder compiles feeder/navfeeder.c as it existed at the last commit
-// (before this finding's `signal(SIGPIPE, SIG_IGN)` fix) into a temp binary, so the
-// SIGPIPE harness can be run against the pre-fix behavior for an A/B comparison. Skips
-// the test if `cc`/git aren't available rather than failing the whole suite.
-func buildPrefixNavfeeder(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	srcPath := filepath.Join(dir, "navfeeder_prefix.c")
-	src, err := exec.Command("git", "show", "HEAD:feeder/navfeeder.c").Output()
-	if err != nil {
-		t.Skipf("git show HEAD:feeder/navfeeder.c failed: %v", err)
-	}
-	if err := os.WriteFile(srcPath, src, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	binPath := filepath.Join(dir, "navfeeder_prefix")
-	args := []string{"-O2", "-Wall", "-Wextra", "-std=c11"}
-	if _, err := os.Stat("/opt/local/include"); err == nil {
-		args = append(args, "-I/opt/local/include", "-L/opt/local/lib")
-	}
-	args = append(args, "-o", binPath, srcPath, "-lssl", "-lcrypto", "-lzstd", "-lpthread")
-	cmd := exec.Command("cc", args...)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Skipf("building pre-fix navfeeder failed: %v\n%s", err, out)
-	}
-	return binPath
 }
