@@ -26,6 +26,30 @@ func gloWords(number int, fill func(buf []byte)) []uint32 {
 	return words
 }
 
+// TestGloNTDay guards day derivation: gloNTDay must return the current MT
+// (UTC+3h) calendar day number NT within the four-year interval (1..1461), where NT=1 is
+// 1 Jan of the interval's leap-year start (1996, 2000, …, 2024, 2028).
+func TestGloNTDay(t *testing.T) {
+	cases := []struct {
+		name string
+		when time.Time
+		want int
+	}{
+		// 2024-01-01 00:00 MT == 2023-12-31 21:00 UTC → first day of the 2024–2027 interval.
+		{"cycle start", time.Date(2023, 12, 31, 21, 0, 0, 0, time.UTC), 1},
+		{"second day", time.Date(2024, 1, 1, 21, 0, 0, 0, time.UTC), 2},
+		// 2027-12-31 12:00 MT → last day of the 1461-day interval.
+		{"cycle end", time.Date(2027, 12, 31, 9, 0, 0, 0, time.UTC), 1461},
+		// 2028-01-01 00:00 MT → rolls to the next interval, back to day 1.
+		{"next cycle", time.Date(2027, 12, 31, 21, 0, 0, 0, time.UTC), 1},
+	}
+	for _, c := range cases {
+		if got := gloNTDay(c.when); got != c.want {
+			t.Errorf("%s: gloNTDay = %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
 // TestApplyGloAlmanacRejectsBeforeNAKnown guards an almanac string pair
 // decoded before string 5 has ever set the frame day-number NA must not be
 // stored (it would mis-epoch PropagateAlmanacECEF with Alm.NA=0, outside the

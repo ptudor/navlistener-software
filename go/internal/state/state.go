@@ -365,6 +365,17 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 	switch sf.SubframeID {
 	case 1:
 		st.sf1 = sf
+		// apply health/URA at subframe-1 arrival, BEFORE the IOD gate below, so a
+		// health-bit flip that arrives under an unchanged IODC (a re-broadcast subframe 1,
+		// or an IODC bump confined to its two high bits that leaves the low-8 IODE
+		// unchanged) reaches live state, the feeds, and the detector promptly instead of
+		// waiting for the next full ephemeris cutover. Subframe 1 is parity-checked by
+		// DecodeGPSLNAV, so its health bits are trustworthy without an assembled set —
+		// mirroring the Galileo word-5 pattern above. The eph-gated assignment below stays
+		// (it is now a no-op for these scalars) so the ephemeris/clock IOD gating is
+		// untouched.
+		st.health, st.haveHealth, st.ura = sf.Health, true, sf.URAIndex
+		st.accKind, st.accIdx = accURA, sf.URAIndex
 	case 2:
 		st.sf2 = sf
 	case 3:
@@ -481,6 +492,13 @@ func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 	switch sf.FraID {
 	case 1:
 		st.bd1 = sf
+		// apply health/URA/AOD at subframe-1 arrival, BEFORE the toe-changeover
+		// gate below, so a SatH1 flip in a re-broadcast subframe 1 (unchanged toe) reaches
+		// live state instead of being dropped for up to an hour. Subframe 1 is CRC-checked
+		// by DecodeBeiDouD1. The eph-gated assignment below stays (now a no-op for these).
+		st.health, st.haveHealth = sf.Health, true
+		st.accKind, st.accIdx = accURA, sf.URAI
+		st.aodc, st.aode, st.haveAOD = sf.AODC, sf.AODE, true
 	case 2:
 		st.bd2 = sf
 	case 3:
@@ -538,6 +556,11 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		st.bc10 = m
 	case 11:
 		st.bc11 = m
+		// apply health at type-11 arrival, BEFORE the IODE/IODC gate below, so an HS
+		// flip in a re-broadcast type-11 (unchanged IODE, no fresh type-30) reaches live
+		// state. Type 11 is CRC-checked by DecodeBeiDouBCNAV2. The eph-gated assignment
+		// below stays (now a no-op).
+		st.health, st.haveHealth = m.HS, true
 	case 30, 34:
 		st.bc30 = m
 	default:
@@ -880,4 +903,24 @@ func gloTOD(now time.Time) float64 {
 		tod += 86400
 	}
 	return float64(tod)
+}
+
+// gloNTDay returns the current GLONASS day number NT within the four-year interval
+// (1..1461), derived from wall clock on the GLONASS time scale (MT = UTC+3h). The
+// four-year intervals begin at the leap years 1996, 2000, 2004, …; NT = 1 on 1 Jan of
+// that leap year.
+//
+// the almanac feed must propagate every out-of-view slot to *today*, not to the
+// broadcast NA. NA is only the day the almanac ELEMENTS are referenced to; the CS
+// re-references the almanac roughly daily but not at 00:00 MT sharp, so NA lags the
+// calendar. Using NA as the propagation target day evaluates the position for
+// (NA-day, current-tod) — up to tens of thousands of km off along-track when NA ≠ today.
+// The current day needs no broadcast: it is the wall-clock MT calendar day, computed here.
+func gloNTDay(now time.Time) int {
+	mt := now.UTC().Add(3 * time.Hour) // civil MT fields (Year/YearDay) read off a UTC time
+	year := mt.Year()
+	cycleStart := year - ((year - 1996) % 4) // most recent four-year-interval start (leap year 1996+4k)
+	start := time.Date(cycleStart, 1, 1, 0, 0, 0, 0, time.UTC)
+	days := int(mt.Sub(start) / (24 * time.Hour))
+	return days + 1 // NT is 1-based
 }

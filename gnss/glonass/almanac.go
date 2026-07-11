@@ -48,6 +48,9 @@ const (
 	almC20  = -1082.63e-6  // second zonal harmonic C20
 	almWe   = 7.2921150e-5 // Earth rotation rate ω_e, rad/s
 	almTavg = 43200.0      // mean Draconian period T_avg, s
+	// gloDaysPerCycle is the length of the GLONASS four-year interval (3×365 + 366) in
+	// days; NA/NT are day numbers 1..1461 within it (regression fix cycle-boundary wrap).
+	gloDaysPerCycle = 1461.0
 )
 
 // almIavg is the mean inclination, 63° (ICD §A.3.2.1), in radians.
@@ -129,7 +132,17 @@ func propagateAlmanac(a Almanac, n0 int, ti float64, node nodeConvention, s0 flo
 	// The ascending-node passage tλk of the k-th orbital period containing ti, and
 	// the node's Greenwich longitude λk after k periods (secular node drift Ω' and
 	// Earth rotation folded over the full periods elapsed).
-	tStar := ti - a.Tlambda + 86400*float64(n0-a.NA)
+	// wrap (n0 − NA) across the 1461-day four-year-interval boundary. An almanac
+	// referenced to NA near the end of the cycle (e.g. 1461) but evaluated on day 1 of the
+	// next cycle has a true age of ~1 day, not −1460; without the wrap the (n0−NA) term
+	// injects thousands of spurious orbital periods (the ΔṪ·w² term alone diverges).
+	dDay := float64(n0 - a.NA)
+	if dDay > gloDaysPerCycle/2 {
+		dDay -= gloDaysPerCycle
+	} else if dDay < -gloDaysPerCycle/2 {
+		dDay += gloDaysPerCycle
+	}
+	tStar := ti - a.Tlambda + 86400*dDay
 	w := math.Floor(tStar / Tdr)
 	dtNode := Tdr*w + a.DeltaTdot*w*w
 	tLambdaK := math.Mod(a.Tlambda+dtNode, 86400)

@@ -366,10 +366,11 @@ var gloMeanInclination = 63.0 * physconst.Pi / 180.0
 
 // addGlonassAlmanac adds an almanac entry for every GLONASS slot that is not already
 // observed (out-of-view SVs the ephemeris store cannot carry). Each is propagated to now
-// with the analytic almanac propagator (docs/MATH.md §3.1). The current day-number is the
-// broadcast NA — kept current by the live stream — so propagating at NA to the current
-// GLONASS time-of-day gives the present position without reimplementing GLONASS calendar
-// arithmetic.
+// with the analytic almanac propagator (docs/MATH.md §3.1). the propagation TARGET
+// day is the actual current MT calendar day (gloNTDay), not the broadcast NA — NA is only
+// the day each almanac's elements are referenced to (stored per-entry in Alm.NA), and it
+// lags the calendar, so propagating at NA would evaluate every out-of-view SV's position a
+// day (or more) in the past, off by tens of thousands of km along-track.
 func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
 	s.gloAlmMu.Lock()
 	na := s.gloNA
@@ -391,6 +392,7 @@ func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
 	}
 
 	ti := gloTOD(now)
+	n0 := gloNTDay(now) // actual current MT day; NA (per-entry Alm.NA) is only the reference day
 	ell := physconst.WGS84
 	if p, ok := physconst.For(gnss.GLONASS); ok {
 		ell = p.Datum
@@ -400,7 +402,7 @@ func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
 		if _, seen := out[name]; seen {
 			continue // observed → its precise broadcast-ephemeris entry wins
 		}
-		pos, err := glonass.PropagateAlmanacECEF(a.Alm, na, ti)
+		pos, err := glonass.PropagateAlmanacECEF(a.Alm, n0, ti)
 		if err != nil || !finiteECEF(pos) {
 			continue
 		}

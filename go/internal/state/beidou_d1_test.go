@@ -46,11 +46,19 @@ func bdsD1Words(infoBits []byte) []uint32 {
 // between two coherent triples actually changes AssembleBeiDou's IOD key; other
 // fields are zero) as a RawFrame ready for Store.Apply.
 func bdsD1Frame(svID, fraID, sow, toe int, recv time.Time) *ingest.RawFrame {
+	return bdsD1FrameHealth(svID, fraID, sow, toe, 0, recv)
+}
+
+// bdsD1FrameHealth is bdsD1Frame with an explicit SatH1 health bit (subframe 1, bit 38),
+// so a test can flip health under an unchanged toe changeover key.
+func bdsD1FrameHealth(svID, fraID, sow, toe, health int, recv time.Time) *ingest.RawFrame {
 	buf := make([]byte, 28) // 224 bits
 	setAbsBits(buf, 15, 3, uint64(fraID))
 	setAbsBits(buf, 18, 8, uint64(sow>>12))
 	setAbsBits(buf, 26, 12, uint64(sow&0xFFF))
 	switch fraID {
+	case 1:
+		setAbsBits(buf, 38, 1, uint64(health&1)) // SatH1
 	case 2:
 		setAbsBits(buf, 222, 2, uint64(toe>>15)) // toeMSB
 	case 3:

@@ -246,6 +246,26 @@ static void spool_init(struct spool *s, size_t cap, const char *path, uint64_t d
  * shutdown) — an unclean power loss can drop the not-yet-written-back tail. spool_recover's
  * torn-record scan handles that safely (a partial trailing record is discarded, not
  * misparsed), so this is a bounded durability/wear trade, not a correctness bug. */
+/* disk_rollback repairs the spool file back to the last known-good boundary (disk_bytes)
+ * after a failed append. ENOSPC/EIO can leave a torn partial record past that
+ * boundary; if a later successful append then wrote *after* the tear, the drain scan —
+ * which is not self-resynchronizing — would misparse it and stall ALL delivery silently.
+ * We close the writer (discarding any buffered bytes), truncate the file to the good
+ * boundary, and leave disk_w NULL so the next disk_put reopens "ab" at that clean end.
+ * A repair failure is logged rate-limited and the writer stays closed. */
+static void disk_rollback(struct spool *s) {
+	if (s->disk_w) { fclose(s->disk_w); s->disk_w = NULL; }
+	if (truncate(s->path, (off_t)s->disk_bytes) != 0) {
+		static time_t last_warn;
+		time_t nowt = time(NULL);
+		if (nowt - last_warn >= 60) {
+			last_warn = nowt;
+			log_msg("disk spool repair (truncate to boundary %llu) failed: %s",
+				(unsigned long long)s->disk_bytes, strerror(errno));
+		}
+	}
+}
+
 static void disk_put(struct spool *s, uint64_t seq, const unsigned char *data, uint32_t len) {
 	if (!s->disk_w) {
 		s->disk_w = fopen(s->path, "ab");
@@ -256,11 +276,18 @@ static void disk_put(struct spool *s, uint64_t seq, const unsigned char *data, u
 	unsigned char hdr[12];
 	be64(hdr, seq);
 	be32(hdr + 8, len);
-	if (fwrite(hdr, 1, 12, s->disk_w) != 12 || (len && fwrite(data, 1, len, s->disk_w) != len)) {
+	/* Transactional append : advance the known-good boundary (disk_bytes/
+	 * disk_max_seq) ONLY after the whole record is flushed. fflush's return is now
+	 * checked — a buffered-but-unwritten record (ENOSPC on flush) must not poison the
+	 * high-water mark. On any fwrite/fflush failure, roll the file back to the last good
+	 * boundary so no torn record persists mid-file. */
+	if (fwrite(hdr, 1, 12, s->disk_w) != 12 ||
+	    (len && fwrite(data, 1, len, s->disk_w) != len) ||
+	    fflush(s->disk_w) != 0) {
 		s->disk_dropped++;
+		disk_rollback(s);
 		return;
 	}
-	fflush(s->disk_w);
 	s->disk_bytes += rec;
 	s->disk_max_seq = seq;
 }
@@ -957,6 +984,20 @@ static int disk_drain(struct spool *s, struct conn *c, uint64_t *sent_upto) {
 		}
 	}
 	fclose(r);
+	/* the scan ended before reaching disk_max_seq on an openable file — a
+	 * torn/short record (which the disk_put rollback fix now prevents from persisting,
+	 * but a spool written by an older build or an external corruption could still show).
+	 * Log it rate-limited (mirroring the fopen-failure path) so the otherwise-silent
+	 * ping-only stall is diagnosable rather than invisible. */
+	if (*sent_upto < dmax) {
+		static time_t last_warn;
+		time_t nowt = time(NULL);
+		if (nowt - last_warn >= 60) {
+			last_warn = nowt;
+			log_msg("disk spool drain reached seq %llu but disk_max_seq is %llu (torn record?)",
+				(unsigned long long)*sent_upto, (unsigned long long)dmax);
+		}
+	}
 	return sent;
 }
 

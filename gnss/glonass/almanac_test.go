@@ -12,6 +12,66 @@ import (
 // ICD π — the almanac angular fields are transmitted in half-cycles.
 func halfCycle(v float64) float64 { return v * physconst.Pi }
 
+// r135Alm is the §A.3.2.3 element set, reused by the regression fix target-day tests.
+func r135Alm(na int) Almanac {
+	return Almanac{
+		NA:        na,
+		Lambda:    halfCycle(-0.189986229),
+		Tlambda:   27122.09375,
+		DeltaI:    halfCycle(0.011929512),
+		DeltaT:    -2655.76171875,
+		DeltaTdot: 0.000549316,
+		Ecc:       0.001482010,
+		Omega:     halfCycle(0.440277100),
+	}
+}
+
+func dist3(a, b gnss.ECEF) float64 {
+	dx, dy, dz := a.X-b.X, a.Y-b.Y, a.Z-b.Z
+	return math.Sqrt(dx*dx + dy*dy + dz*dz)
+}
+
+// TestAlmanacTargetDayIsN0 guards the propagator's n0 argument is the TARGET
+// calendar day (not the reference NA). Evaluating the same element set at the same
+// time-of-day on the next day must move the satellite tens of thousands of km along-track
+// (GLONASS repeats its ground track only every ~8 sidereal days), so a one-day error in
+// the target day — the class the feed hit by passing NA instead of today — is enormous.
+func TestAlmanacTargetDayIsN0(t *testing.T) {
+	a := r135Alm(615)
+	const ti = 33300.0
+	p0, err := PropagateAlmanacECEF(a, 615, ti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p1, err := PropagateAlmanacECEF(a, 616, ti)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := dist3(p0, p1); d < 5_000_000 { // ≫ 5000 km; review measured ~20 260 km
+		t.Errorf("one-day target-day shift moved the SV only %.0f km, want a large along-track jump", d/1000)
+	}
+}
+
+// TestAlmanacCycleBoundaryWrap guards (n0 − NA) must wrap across the 1461-day
+// four-year interval. An almanac referenced to NA=1461 (last day of a cycle) evaluated on
+// day 1 of the next cycle has a true age of ~1 day; without the wrap the raw −1460-day
+// offset injects thousands of orbital periods and diverges. The wrapped result must match
+// the same 1-day gap expressed within the cycle (NA=1460, n0=1461).
+func TestAlmanacCycleBoundaryWrap(t *testing.T) {
+	const ti = 33300.0
+	wrapped, err := PropagateAlmanacECEF(r135Alm(1461), 1, ti) // dDay = 1-1461 → +1 after wrap
+	if err != nil {
+		t.Fatal(err)
+	}
+	inCycle, err := PropagateAlmanacECEF(r135Alm(1460), 1461, ti) // dDay = +1, no wrap
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := dist3(wrapped, inCycle); d > 1000 { // same 1-day gap → same position (within m)
+		t.Errorf("cycle-boundary wrap diverged by %.3f km from the in-cycle 1-day gap", d/1000)
+	}
+}
+
 // TestAlmanacICDExample reproduces the GLONASS ICD Ed. 5.1 §A.3.2.3 worked example
 // bit-for-bit: the same almanac element set, the same evaluation instant and
 // Greenwich sidereal time, must yield the ICD's published absolute-frame (OXaYaZa)

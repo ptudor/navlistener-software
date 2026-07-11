@@ -237,8 +237,16 @@ func run() int {
 	// read model the feeds serve, persists confirmed events (firing pg_notify) and
 	// pushes them to the SSE broker (docs/INTEGRITY.md, docs/OUTPUT.md §3).
 	detector := detect.New(0)
+	// detectLoop/emitEvent take the eventWriter/eventPublisher interfaces, but
+	// historian/apiSrv are concrete pointers that are nil when their config section is
+	// off. A nil concrete pointer boxed into an interface is a non-nil interface, so the
+	// `== nil` guards in emitEvent would never fire and the first confirmed event would
+	// dereference a nil receiver. Convert to true interface nils here, exactly once, the
+	// same pattern used for serve.EventStore above.
+	ew := asEventWriter(historian)
+	ep := asEventPublisher(apiSrv)
 	wg.Add(1)
-	go func() { defer wg.Done(); detectLoop(ctx, live, detector, historian, apiSrv, log) }()
+	go func() { defer wg.Done(); detectLoop(ctx, live, detector, ew, ep, log) }()
 
 	log.Info("ready", "ingest_sources", len(cfg.Ingest), "metrics_addr", cfg.Metrics.Addr, "serve_addr", cfg.Serve.Addr, "shards", cfg.State.Shards)
 	if len(cfg.Ingest) == 0 {
@@ -395,7 +403,12 @@ func snapshotLoop(ctx context.Context, api *serve.Server, historian *store.Store
 		case <-tick.C:
 			now := time.Now()
 			for feed, body := range api.SnapshotFeeds() {
-				if err := historian.WriteSnapshot(ctx, now, feed, body); err != nil {
+				// Per-call deadline : ctx is cancel-only, so a hung DB connection
+				// must not block this loop indefinitely on OS TCP timeouts.
+				callCtx, cancel := context.WithTimeout(ctx, snapshotWriteTimeout)
+				err := historian.WriteSnapshot(callCtx, now, feed, body)
+				cancel()
+				if err != nil {
 					if ctx.Err() != nil {
 						return // shutting down: the historian context is going away
 					}
@@ -408,6 +421,9 @@ func snapshotLoop(ctx context.Context, api *serve.Server, historian *store.Store
 	}
 }
 
+// snapshotWriteTimeout bounds each feed-snapshot write.
+const snapshotWriteTimeout = 10 * time.Second
+
 // detectInterval is the cadence at which the integrity detector samples live state.
 // It is well under the 60 s debounce window, so a confirmed transition is caught
 // promptly without the detector itself defining the confirmation delay.
@@ -417,25 +433,49 @@ const detectInterval = 15 * time.Second
 // debounced detector, and routes each confirmed event to the historian (which
 // assigns the id and fires pg_notify) and the SSE broker. Only durable events are
 // published, so the database id is the sole replay cursor domain.
-func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, historian *store.Store, api *serve.Server, log *slog.Logger) {
+func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, historian eventWriter, api eventPublisher, log *slog.Logger) {
 	tick := time.NewTicker(detectInterval)
 	defer tick.Stop()
+	// pending holds confirmed events whose durable write has not yet succeeded.
+	// It survives across ticks so a transient DB error cannot silently drop the namesake
+	// output: each tick re-attempts the queue before processing new detections.
+	var pending []pendingEvent
 	for {
 		select {
 		case <-tick.C:
-			now := time.Now()
-			events := det.Tick(now, live.FeedSVs(now), live.FeedSBAS(now))
-			// Station-scoped PNT-defense events (jamming/spoofing/RF, docs/DEFENSE-PNT.md)
-			// share the debounce state machine and event pipeline.
-			events = append(events, det.TickStations(now, live.FeedStationRF(now))...)
-			// Capability plausibility: a demonstrated signal gone silent, or a signal the
-			// node's silicon can't produce (docs/INTEGRITY.md §6, CONSTELLATIONS §7).
-			events = append(events, det.TickCapabilities(now, live.FeedCapabilityReports(now))...)
-			for _, e := range events {
-				emitEvent(ctx, e, historian, api, log)
-			}
+			detectTick(ctx, live, det, historian, api, log, &pending)
 		case <-ctx.Done():
 			return
+		}
+	}
+}
+
+// detectTick runs one detector sample and emits its confirmed events. It is wrapped in
+// a recover() : "the collector must never go down" — a panic in the detector or
+// an event write must reconnect/skip this tick, not kill the detect goroutine (which has
+// no supervisor within the process) and with it all integrity monitoring. pending is a
+// pointer so a mid-tick panic still preserves whatever queue mutations completed.
+func detectTick(ctx context.Context, live *state.Store, det *detect.Detector, historian eventWriter, api eventPublisher, log *slog.Logger, pending *[]pendingEvent) {
+	defer func() {
+		if r := recover(); r != nil {
+			metrics.EventWriteErrorsTotal.Inc()
+			log.Error("detect tick panicked; skipping", "panic", r)
+		}
+	}()
+	// Re-attempt any events queued by a prior tick's failed write before taking new samples
+	// : a DB blip must not drop a confirmed transition permanently.
+	*pending = reattemptPending(ctx, *pending, historian, api, log)
+	now := time.Now()
+	events := det.Tick(now, live.FeedSVs(now), live.FeedSBAS(now))
+	// Station-scoped PNT-defense events (jamming/spoofing/RF, docs/DEFENSE-PNT.md)
+	// share the debounce state machine and event pipeline.
+	events = append(events, det.TickStations(now, live.FeedStationRF(now))...)
+	// Capability plausibility: a demonstrated signal gone silent, or a signal the
+	// node's silicon can't produce (docs/INTEGRITY.md §6, CONSTELLATIONS §7).
+	events = append(events, det.TickCapabilities(now, live.FeedCapabilityReports(now))...)
+	for _, e := range events {
+		if pe := emitEvent(ctx, e, historian, api, log); pe != nil {
+			*pending = enqueuePending(*pending, *pe, log)
 		}
 	}
 }
@@ -449,7 +489,56 @@ type eventWriter interface {
 }
 type eventPublisher interface{ PublishEvent(serve.EventMsg) }
 
-func emitEvent(ctx context.Context, e detect.Event, historian eventWriter, api eventPublisher, log *slog.Logger) {
+// asEventWriter / asEventPublisher convert the concrete historian/serve pointers to
+// their interface types at the run() boundary, returning a true interface nil when the
+// pointer is nil. Without this explicit conversion, a nil *store.Store boxed
+// into an eventWriter would be a non-nil interface and defeat emitEvent's nil guard,
+// crashing the daemon on the first confirmed event in any persist-less/serve-less config.
+func asEventWriter(s *store.Store) eventWriter {
+	if s == nil {
+		return nil
+	}
+	return s
+}
+
+func asEventPublisher(s *serve.Server) eventPublisher {
+	if s == nil {
+		return nil
+	}
+	return s
+}
+
+// eventRetry bounds the per-call WriteEvent retry (mirrors store.flushRetry): confirmed
+// integrity events are the low-rate, individually-meaningful namesake artifact, so a
+// transient DB error gets a few bounded attempts under a per-call timeout rather than the
+// single un-timeout'd shot that could silently drop a confirmed transition forever
+//. A var so tests can shrink the timing.
+type eventRetry struct {
+	attempts  int
+	backoff   time.Duration
+	perCallTO time.Duration
+}
+
+var defaultEventRetry = eventRetry{attempts: 3, backoff: 250 * time.Millisecond, perCallTO: 10 * time.Second}
+
+// eventPendingMax bounds the in-RAM re-attempt queue so a persistent DB outage cannot grow
+// it without limit : when full, the oldest queued event is dropped (counted, logged
+// loudly) rather than OOMing the process.
+const eventPendingMax = 256
+
+// pendingEvent is a confirmed event whose durable write has not yet succeeded, held for
+// re-attempt on a later detector tick. row is the fully-built insert; ev carries the
+// already-sanitized fields the SSE publish needs once the id is assigned.
+type pendingEvent struct {
+	row store.EventRow
+	ev  detect.Event
+}
+
+// emitEvent counts, sanitizes and marshals one confirmed event (exactly once), then makes
+// the first durable-write+publish attempt. It returns a *pendingEvent when the write failed
+// after its bounded retry and the caller should re-attempt on a later tick; nil when the
+// event was published, permanently non-durable (no historian), or otherwise complete.
+func emitEvent(ctx context.Context, e detect.Event, historian eventWriter, api eventPublisher, log *slog.Logger) *pendingEvent {
 	metrics.EventsTotal.WithLabelValues(e.Type, fmt.Sprint(e.Severity)).Inc()
 
 	// Params is a map of ephemeris-derived float64s, and encoding/json fails
@@ -470,16 +559,30 @@ func emitEvent(ctx context.Context, e detect.Event, historian eventWriter, api e
 
 	if historian == nil {
 		log.Warn("integrity event is not publishable without durable historian", "sv", e.SV, "type", e.Type)
-		return
+		return nil
 	}
-	id, err := historian.WriteEvent(ctx, store.EventRow{
+	row := store.EventRow{
 		Time: e.Time, SV: e.SV, Type: e.Type, OldValue: e.OldValue,
 		NewValue: e.NewValue, Severity: e.Severity, Message: e.Message, Raw: rawJSON,
-	})
+	}
+	if writeAndPublish(ctx, row, e, historian, api, log) {
+		return nil
+	}
+	return &pendingEvent{row: row, ev: e}
+}
+
+// writeAndPublish makes the durable write (bounded retry under a per-call timeout) and, on
+// success, publishes to SSE with the assigned id — the durable-id contract (commit 93a21a9):
+// SSE only ever carries a real DB id. Returns true on success, false when every attempt
+// failed and the event must be re-attempted later. Shared by the first attempt (emitEvent)
+// and the re-attempt path (reattemptPending); it does NOT touch EventsTotal, so a re-attempt
+// never double-counts the event.
+func writeAndPublish(ctx context.Context, row store.EventRow, e detect.Event, historian eventWriter, api eventPublisher, log *slog.Logger) bool {
+	id, err := writeEventRetry(ctx, historian, row, defaultEventRetry, log)
 	if err != nil {
 		metrics.EventWriteErrorsTotal.Inc()
-		log.Error("persist integrity event; not publishing non-durable event", "type", e.Type, "sv", e.SV, "error", err)
-		return
+		log.Error("persist integrity event failed after retries; queued for re-attempt", "type", e.Type, "sv", e.SV, "error", err)
+		return false
 	}
 	log.Info("integrity event", "id", id, "sv", e.SV, "type", e.Type,
 		"severity", e.Severity, "old", e.OldValue, "new", e.NewValue)
@@ -491,6 +594,64 @@ func emitEvent(ctx context.Context, e detect.Event, historian eventWriter, api e
 			Message: e.Message, Params: e.Params,
 		})
 	}
+	return true
+}
+
+// writeEventRetry does a bounded WriteEvent retry, each attempt under its own timeout.
+// main's ctx is cancel-only (no statement timeout), so a silently-hung DB connection would
+// otherwise block the whole detect loop for minutes on OS TCP timeouts; the per-call
+// deadline bounds it. Returns immediately if ctx is cancelled (shutdown).
+func writeEventRetry(ctx context.Context, historian eventWriter, row store.EventRow, r eventRetry, log *slog.Logger) (int64, error) {
+	var lastErr error
+	for attempt := 0; attempt < r.attempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(r.backoff):
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			}
+		}
+		callCtx, cancel := context.WithTimeout(ctx, r.perCallTO)
+		id, err := historian.WriteEvent(callCtx, row)
+		cancel()
+		if err == nil {
+			return id, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+		log.Warn("write integrity event attempt failed", "attempt", attempt+1, "type", row.Type, "sv", row.SV, "error", err)
+	}
+	return 0, lastErr
+}
+
+// reattemptPending re-tries every queued event (oldest first), returning the queue of those
+// that still failed. It filters in place; a re-published event is dropped from the queue.
+func reattemptPending(ctx context.Context, pending []pendingEvent, historian eventWriter, api eventPublisher, log *slog.Logger) []pendingEvent {
+	if len(pending) == 0 {
+		return pending
+	}
+	kept := pending[:0]
+	for _, pe := range pending {
+		if !writeAndPublish(ctx, pe.row, pe.ev, historian, api, log) {
+			kept = append(kept, pe)
+		}
+	}
+	return kept
+}
+
+// enqueuePending appends a failed event to the re-attempt queue, dropping the oldest
+// (counted, logged) if the queue is at its cap so a persistent outage can't grow it forever.
+func enqueuePending(pending []pendingEvent, pe pendingEvent, log *slog.Logger) []pendingEvent {
+	if len(pending) >= eventPendingMax {
+		dropped := pending[0]
+		metrics.EventWriteErrorsTotal.Inc()
+		log.Error("integrity event re-attempt queue full; dropping oldest confirmed event",
+			"dropped_sv", dropped.ev.SV, "dropped_type", dropped.ev.Type, "queue_max", eventPendingMax)
+		pending = pending[1:]
+	}
+	return append(pending, pe)
 }
 
 // sanitizeEventParams replaces any non-finite float64 (NaN/±Inf) in params with its

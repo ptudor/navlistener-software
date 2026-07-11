@@ -54,11 +54,16 @@ func packWords(buf []byte) []uint32 {
 	return words
 }
 
-func sf1Words(iodcLo int64) []uint32 {
+func sf1Words(iodcLo int64) []uint32 { return sf1WordsHealth(iodcLo, 0) }
+
+// sf1WordsHealth is sf1Words with an explicit 6-bit SV health (word 3 bits 17-22),
+// so a test can flip health under an unchanged IODC.
+func sf1WordsHealth(iodcLo, health int64) []uint32 {
 	buf := make([]byte, 30)
 	setField(buf, 2, 20, 3, 1)
 	setField(buf, 3, 1, 10, 2200)
 	setField(buf, 3, 13, 4, 4)
+	setField(buf, 3, 17, 6, health)
 	setField(buf, 8, 1, 8, iodcLo)
 	setField(buf, 8, 9, 16, 27000)
 	setField(buf, 10, 1, 22, 214748)
