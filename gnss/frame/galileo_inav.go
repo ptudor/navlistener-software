@@ -48,7 +48,13 @@ type GalileoINAV struct {
 	TOW    float64
 	E5bDVS int // E5b Data Validity Status (word 5): 0 valid, 1 working without guarantee
 	E1BDVS int // E1B Data Validity Status (word 5)
-	eph    kepler.Ephemeris
+	// Broadcast group delays (word 5, seconds). I/NAV is the (E1,E5b) clock
+	// (OS-SIS-ICD v2.1 Table 71), so an E1 single-frequency user corrects with BGD(E1,E5b);
+	// BGD(E1,E5a) belongs to the F/NAV (E1,E5a) clock. Both are decoded so each clock can
+	// pick its own pair.
+	BGDE1E5a float64
+	BGDE1E5b float64
+	eph      kepler.Ephemeris
 	clk    clock.Model
 	hasClk bool
 }
@@ -170,7 +176,8 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 		// E5bDVS(71), E1BDVS(72), WN(73-84, 12 bits), TOW(85-104, 20 bits), Spare
 		// (105-127) — bit 67 is E5b health, not E1B health. WN/TOW are plain integer
 		// counts (Table 67: scale factor 1), never scaled like GPS's ×6 TOW.
-		bgd, _ := r.Signed(47, 10) // BGD(E1,E5a), 2^-32 s
+		bgdA, _ := r.Signed(47, 10) // BGD(E1,E5a), 2^-32 s — the F/NAV (E1,E5a) clock's pair
+		bgdB, _ := r.Signed(57, 10) // BGD(E1,E5b), 2^-32 s — the I/NAV (E1,E5b) clock's pair
 		e1bHealth, _ := r.Bits(69, 2)
 		e5bDVS, _ := r.Bits(71, 1)
 		e1bDVS, _ := r.Bits(72, 1)
@@ -182,7 +189,13 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 		w.E1BDVS = int(e1bDVS)
 		w.WN = int(wn)
 		w.TOW = float64(tow)
-		w.clk.TGD = float64(bgd) * float64(1.0/float64(uint64(1)<<32))
+		const bgdScale = 1.0 / float64(uint64(1)<<32)
+		w.BGDE1E5a = float64(bgdA) * bgdScale
+		w.BGDE1E5b = float64(bgdB) * bgdScale
+		// the I/NAV clock is (E1,E5b) type (OS-SIS-ICD v2.1 Table 71), so its group
+		// delay for an E1 single-frequency user is BGD(E1,E5b) — not BGD(E1,E5a), which the
+		// old code applied. clock.Model.TGD is "group delay for the tracked signal".
+		w.clk.TGD = w.BGDE1E5b
 	}
 	return w, nil
 }
@@ -190,7 +203,8 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 // AssembleGalileo combines I/NAV word types 1–4 for one SV (matching IODnav) into
 // the kepler ephemeris and clock model. svid tags the constellation. w5 (word type
 // 5: BGD/health) is nil-tolerant and not part of the IODnav-matched set — when
-// present, its BGD(E1,E5a) is folded into the clock model's TGD.
+// present, its BGD(E1,E5b) (the I/NAV clock's group-delay pair, regression fix) is folded into the
+// clock model's TGD.
 func AssembleGalileo(svid int, w1, w2, w3, w4, w5 *GalileoINAV) (kepler.Ephemeris, clock.Model, error) {
 	if w1 == nil || w2 == nil || w3 == nil || w4 == nil {
 		return kepler.Ephemeris{}, clock.Model{}, ErrShortFrame

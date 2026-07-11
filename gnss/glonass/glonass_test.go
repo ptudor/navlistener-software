@@ -71,6 +71,20 @@ func TestGuardZeroState(t *testing.T) {
 	}
 }
 
+// TestGuardTkDomain guards a non-finite or out-of-domain tk must be rejected quickly
+// with an error, not run millions of RK4 steps and return a finite-but-meaningless position.
+func TestGuardTkDomain(t *testing.T) {
+	for _, tk := range []float64{1e9, -1e9, math.Inf(1), math.NaN()} {
+		if _, err := Propagate(nearCircular, tk); err == nil {
+			t.Errorf("Propagate(valid, %v): err = nil, want an out-of-domain error", tk)
+		}
+	}
+	// An in-domain tk still works.
+	if _, err := Propagate(nearCircular, 600); err != nil {
+		t.Errorf("in-domain tk rejected: %v", err)
+	}
+}
+
 func TestDeterministic(t *testing.T) {
 	a, _ := Propagate(nearCircular, 321)
 	b, _ := Propagate(nearCircular, 321)

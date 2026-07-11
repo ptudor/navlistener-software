@@ -49,6 +49,58 @@ func cnavMsg10Words(wn, health, uraED int, toeRaw uint64) []uint32 {
 	return words
 }
 
+// cnavMsg11Words builds a synthetic CNAV message type 11 (Ephemeris 2) with the given raw
+// toe (bit 38); other fields zeroed. Used to pair with an MT10 for AssembleGPSCNAV.
+func cnavMsg11Words(toeRaw uint64) []uint32 {
+	buf := make([]byte, 40)
+	setBits(buf, 14, 6, 11) // MsgType = 11
+	setBits(buf, 38, 11, toeRaw)
+	setCNAVPreambleAndCRC(buf)
+	words := make([]uint32, 10)
+	for i := 0; i < 10; i++ {
+		words[i] = uint32(buf[i*4])<<24 | uint32(buf[i*4+1])<<16 | uint32(buf[i*4+2])<<8 | uint32(buf[i*4+3])
+	}
+	return words
+}
+
+// TestAssembleGPSCNAVStaleClockDropped guards IS-GPS-200N §30.3.4.4 requires
+// toe == toc for the same CNAV CEI data set. A clock message whose Toc doesn't match the
+// ephemeris toe must be dropped (clkOK false, zero clock), not attached as if coherent.
+func TestAssembleGPSCNAVStaleClockDropped(t *testing.T) {
+	dec := func(w []uint32) *GPSCNAV {
+		m, err := DecodeGPSCNAV(gnss.GPS, w)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return m
+	}
+	m10 := dec(cnavMsg10Words(2296, 0, 2, 400)) // toe raw 400
+	m11 := dec(cnavMsg11Words(400))             // same toe
+
+	// A clock whose Toc matches toe (400) is attached.
+	clkGood := dec(cnavMsg30Words(400, 12345, -6789, 42, -100, 55, -200, 300, -400))
+	_, clk, ok, err := AssembleGPSCNAV(gnss.GPS, 5, m10, m11, clkGood)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || clk.Toc != 400*cnavT0 {
+		t.Errorf("matching-Toc clock not attached: ok=%v Toc=%v", ok, clk.Toc)
+	}
+
+	// A clock whose Toc (500) differs from toe (400) is dropped.
+	clkStale := dec(cnavMsg30Words(500, 12345, -6789, 42, -100, 55, -200, 300, -400))
+	_, clk2, ok2, err := AssembleGPSCNAV(gnss.GPS, 5, m10, m11, clkStale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok2 {
+		t.Error("stale clock (Toc != toe) reported as coherent")
+	}
+	if clk2.Af0 != 0 || clk2.Toc != 0 {
+		t.Errorf("stale clock leaked into the model: Af0=%v Toc=%v, want zero", clk2.Af0, clk2.Toc)
+	}
+}
+
 // cnavMsg30Words builds a synthetic CNAV message type 30 (clock, iono & group
 // delay) with the given raw field counts, signed fields passed as int64 and
 // masked to their two's-complement bit width before packing.

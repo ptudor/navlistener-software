@@ -320,8 +320,11 @@ modeling a single-frequency user's expected pseudorange. Delay is per signal fre
 
 ### 7.1 Klobuchar (GPS L1, QZSS, BeiDou B1I, NavIC) — full algorithm
 
-8 coefficients `α0..α3, β0..β3` (broadcast). Inputs: user geodetic `(φu, λu)` in semicircles,
-SV azimuth `A` and elevation `E` (semicircles). Source: IS-GPS-200 §20.3.3.5.2.5.
+8 coefficients `α0..α3, β0..β3` (broadcast). Inputs: user geodetic `(φu, λu)` and SV
+elevation `E` in semicircles; SV azimuth `A` **in radians** — IS-GPS-200 lists `A` among the
+semicircle inputs, but every `cos A`/`sin A` in the algorithm below is evaluated with `A` in
+radians (the universal reading, and what `iono.go` does; regression fix). Only `E` and the
+latitudes/longitudes are semicircles. Source: IS-GPS-200 §20.3.3.5.2.5.
 
 ```
 ψ    = 0.0137/(E + 0.11) − 0.022                     // earth-centred angle (semicircles)

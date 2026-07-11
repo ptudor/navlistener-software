@@ -46,7 +46,11 @@ var errBadSubframe = errors.New("frame: LNAV subframe id out of range (1..5)")
 // from subframes 1, 2, and 3 (AssembleGPS).
 type GPSSubframe struct {
 	SubframeID int
-	TOW        float64 // seconds of week (HOW truncated TOW × 6)
+	// TOW is the seconds-of-week the HOW carries (truncated TOW × 6). per
+	// IS-GPS-200N this is the SOW at the start of the NEXT subframe, not this one — a
+	// consumer timing this frame's epoch must use TOW − 6. Currently no internal consumer
+	// reads it; documented so a library user doesn't mis-time frames by 6 s.
+	TOW float64
 
 	// Subframe 1 (clock & health).
 	WN            int

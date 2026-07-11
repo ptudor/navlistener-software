@@ -51,10 +51,15 @@ var (
 	errTimeless = errors.New("glonass: time-of-day not anchored (todKnown false)")
 	errZero     = errors.New("glonass: zero/degenerate state vector")
 	errNaN      = errors.New("glonass: integration produced a non-finite value")
+	errTkDomain = errors.New("glonass: propagation interval out of domain")
 )
 
 // maxStep is the RK4 step ceiling in seconds (docs/MATH.md §3: h = ±30…60 s).
 const maxStep = 60.0
+
+// maxPropSpan bounds |tk| for Propagate : the GLONASS ephemeris fit interval is
+// ~30 min, daemon callers wrap to ±43,200 s; two days is a generous domain ceiling.
+const maxPropSpan = 2 * 86400.0
 
 // Propagate integrates the ephemeris forward or backward by tk seconds from tb and
 // returns the ECEF position in metres (PZ-90.11). tk is the signed interval — the
@@ -63,6 +68,15 @@ const maxStep = 60.0
 func Propagate(e Ephemeris, tk float64) (gnss.ECEF, error) {
 	if !e.TodKnown {
 		return gnss.ECEF{}, errTimeless
+	}
+	// reject a non-finite or out-of-domain tk before the step-count loop. A huge tk
+	// runs millions of RK4 steps (seconds-to-CPU-days of work) and returns a finite but
+	// physically meaningless position with err==nil — the "public inputs bypass validation"
+	// class regression fix/regression fix closed on the kepler side. The GLONASS ephemeris is valid only over
+	// its ~30-min fit interval; daemon callers are wrapped to ±43,200 s, so a couple of days
+	// is a generous ceiling that only catches out-of-domain library misuse.
+	if math.IsNaN(tk) || math.IsInf(tk, 0) || math.Abs(tk) > maxPropSpan {
+		return gnss.ECEF{}, errTkDomain
 	}
 	if math.Hypot(math.Hypot(e.X, e.Y), e.Z) < 1 { // < 1 km ⇒ effectively zero
 		return gnss.ECEF{}, errZero

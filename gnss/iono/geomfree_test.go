@@ -32,9 +32,13 @@ func (s synthObs) sample(rng *rand.Rand) (p1, p2, phi1, phi2 float64) {
 func TestSlantFromCodeRecoversExactly(t *testing.T) {
 	obs := synthObs{rho: 22_345_678.9, i1: 5.25, codeBias: 3.1, f1: L1Hz, f2: L2Hz}
 	p1, p2, _, _ := obs.sample(rand.New(rand.NewSource(1)))
-	got := SlantFromCode(p1, p2, L1Hz, L2Hz, obs.codeBias)
-	if math.Abs(got-obs.i1) > 1e-9 {
-		t.Fatalf("SlantFromCode = %v, want %v", got, obs.i1)
+	got, ok := SlantFromCode(p1, p2, L1Hz, L2Hz, obs.codeBias)
+	if !ok || math.Abs(got-obs.i1) > 1e-9 {
+		t.Fatalf("SlantFromCode = %v (ok=%v), want %v", got, ok, obs.i1)
+	}
+	// a same-frequency pair must be rejected, not divide by zero into ±Inf.
+	if v, ok := SlantFromCode(p1, p2, L1Hz, L1Hz, 0); ok {
+		t.Errorf("same-frequency pair returned %v, want ok=false", v)
 	}
 }
 
@@ -42,7 +46,7 @@ func TestSlantFromCodeBiasSign(t *testing.T) {
 	// Omitting the bias must shift the estimate by bias/(γ−1), nothing else.
 	obs := synthObs{rho: 2e7, i1: 4.0, codeBias: 2.6, f1: L1Hz, f2: L2Hz}
 	p1, p2, _, _ := obs.sample(rand.New(rand.NewSource(2)))
-	biased := SlantFromCode(p1, p2, L1Hz, L2Hz, 0)
+	biased, _ := SlantFromCode(p1, p2, L1Hz, L2Hz, 0)
 	want := obs.i1 + obs.codeBias/(Gamma(L1Hz, L2Hz)-1)
 	// biased and want are algebraically identical but reached by different float
 	// paths ((γ−1)·i1+bias then /(γ−1) vs i1 + bias/(γ−1)), so allow the resulting

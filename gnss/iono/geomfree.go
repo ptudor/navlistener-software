@@ -19,11 +19,23 @@ func Gamma(f1Hz, f2Hz float64) float64 {
 }
 
 // SlantFromCode returns the slant ionospheric delay at f1 (metres) from one
-// code geometry-free sample: Î₁ = (P₂ − P₁ − biasM)/(γ − 1). biasM is the sum
-// of the satellite and receiver differential code biases in metres for this
-// signal pair; pass 0 to obtain the biased (relative) measurement.
-func SlantFromCode(p1M, p2M, f1Hz, f2Hz, biasM float64) float64 {
-	return (p2M - p1M - biasM) / (Gamma(f1Hz, f2Hz) - 1)
+// code geometry-free sample: Î₁ = (P₂ − P₁ − biasM)/(γ − 1), and whether the result is
+// usable. biasM is the sum of the satellite and receiver differential code biases in metres
+// for this signal pair; pass 0 to obtain the biased (relative) measurement.
+//
+// a same-frequency pair makes γ−1 exactly 0 (division by zero → ±Inf); the sibling
+// Arc.Slant already gates this, and the obvious code-combination entry point must too — a
+// ±Inf iono_delay_m is the regression fix feed-freeze generator regression fix was filed to close. Returns
+// ok=false on a same-frequency pair or any non-finite result.
+func SlantFromCode(p1M, p2M, f1Hz, f2Hz, biasM float64) (float64, bool) {
+	if f1Hz == f2Hz {
+		return 0, false
+	}
+	v := (p2M - p1M - biasM) / (Gamma(f1Hz, f2Hz) - 1)
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, false
+	}
+	return v, true
 }
 
 // Arc carrier-levels the phase geometry-free combination to the code one over a

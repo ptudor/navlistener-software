@@ -35,6 +35,20 @@ func gloStringWords(number int, fill func(buf []byte)) []uint32 {
 	return words
 }
 
+// TestDecodeGLONASSStringNonPositionalZeroed guards for a string 4 (which carries
+// τn/Δτn where strings 1–3 carry position), the Coord/Vel/Accel fields must decode to 0, not
+// to garbage read off the τn bit span.
+func TestDecodeGLONASSStringNonPositionalZeroed(t *testing.T) {
+	s4 := gloStringWords(4, func(buf []byte) { gloSetSignMag(buf, 5, 22, -123456) }) // τn set
+	s, err := DecodeGLONASSString(s4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Coord != 0 || s.Vel != 0 || s.Accel != 0 {
+		t.Errorf("string 4 Coord/Vel/Accel = %v/%v/%v, want all 0", s.Coord, s.Vel, s.Accel)
+	}
+}
+
 // TestDecodeGLONASSStringHammingReject guards a valid string decodes, but flipping
 // any single data bit fails the ICD §4.7 Hamming check and is rejected (a corrupt push-path
 // frame must not reach live state).

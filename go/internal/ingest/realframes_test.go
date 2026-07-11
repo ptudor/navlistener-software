@@ -524,7 +524,7 @@ func TestRealGPSCNAVAgreesWithLNAV(t *testing.T) {
 			continue
 		}
 		lEph, _, err1 := frame.AssembleGPS(gnss.GPS, sv, l.sf1, l.sf2, l.sf3)
-		cEph, _, err2 := frame.AssembleGPSCNAV(gnss.GPS, sv, c.m10, c.m11, nil)
+		cEph, _, _, err2 := frame.AssembleGPSCNAV(gnss.GPS, sv, c.m10, c.m11, nil)
 		if err1 != nil || err2 != nil {
 			continue
 		}

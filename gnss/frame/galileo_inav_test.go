@@ -51,12 +51,13 @@ func buildGalileoINAVWords(content []byte) []uint32 {
 // buildGalileoWord5 builds a Word Type 5 page with distinct BGD, E5b_HS, and
 // E1B_HS values so a bit-offset regression  is caught by a Health/TGD
 // mismatch, not accidentally matched by symmetric test data.
-func buildGalileoWord5(bgdRaw int64, e5bHS, e1bHS uint64) []uint32 {
+func buildGalileoWord5(bgdARaw, bgdBRaw int64, e5bHS, e1bHS uint64) []uint32 {
 	content := make([]byte, 16)
-	setContentBits(content, 0, 5, 6)                      // word type = 5
-	setContentBits(content, 47, uint64(bgdRaw)&0x3FF, 10) // BGD(E1,E5a), bits 47-56
-	setContentBits(content, 67, e5bHS, 2)                 // E5b_HS, bits 67-68
-	setContentBits(content, 69, e1bHS, 2)                 // E1B_HS, bits 69-70
+	setContentBits(content, 0, 5, 6)                       // word type = 5
+	setContentBits(content, 47, uint64(bgdARaw)&0x3FF, 10) // BGD(E1,E5a), bits 47-56
+	setContentBits(content, 57, uint64(bgdBRaw)&0x3FF, 10) // BGD(E1,E5b), bits 57-66 
+	setContentBits(content, 67, e5bHS, 2)                  // E5b_HS, bits 67-68
+	setContentBits(content, 69, e1bHS, 2)                  // E1B_HS, bits 69-70
 	return buildGalileoINAVWords(content)
 }
 
@@ -64,7 +65,7 @@ func buildGalileoWord5(bgdRaw int64, e5bHS, e1bHS uint64) []uint32 {
 // E1B_HS — the decoder must report E1B_HS (Health), not E5b_HS, and the two
 // must be distinguishable (a prior bug read bit 67 and stored it as E1B health).
 func TestDecodeGalileoINAVWord5Health(t *testing.T) {
-	words := buildGalileoWord5(100, 0b01, 0b10) // E5b_HS=1, E1B_HS=2
+	words := buildGalileoWord5(100, 200, 0b01, 0b10) // BGD E5a=100, E5b=200; E5b_HS=1, E1B_HS=2
 	w, err := DecodeGalileoINAV(words)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
@@ -296,16 +297,22 @@ func TestAssembleGalileoBGD(t *testing.T) {
 		t.Errorf("TGD = %v without word5, want 0", clkNoBGD.TGD)
 	}
 
-	w5, err := DecodeGalileoINAV(buildGalileoWord5(100, 0, 0))
+	// distinct BGD(E1,E5a)=100 (bit 47) and BGD(E1,E5b)=200 (bit 57); the I/NAV clock
+	// must use BGD(E1,E5b) — the bit-57 value — not BGD(E1,E5a).
+	w5, err := DecodeGalileoINAV(buildGalileoWord5(100, 200, 0, 0))
 	if err != nil {
 		t.Fatalf("decode word5: %v", err)
+	}
+	bgdScale := 1.0 / float64(uint64(1)<<32)
+	if w5.BGDE1E5a != 100*bgdScale || w5.BGDE1E5b != 200*bgdScale {
+		t.Errorf("decoded BGD E5a/E5b = %v/%v, want %v/%v", w5.BGDE1E5a, w5.BGDE1E5b, 100*bgdScale, 200*bgdScale)
 	}
 	_, clk, err := AssembleGalileo(7, w1, w2, w3, w4, w5)
 	if err != nil {
 		t.Fatalf("assemble with word5: %v", err)
 	}
-	wantTGD := float64(100) * (1.0 / float64(uint64(1)<<32))
+	wantTGD := float64(200) * bgdScale // BGD(E1,E5b), not BGD(E1,E5a)
 	if clk.TGD != wantTGD {
-		t.Errorf("TGD = %v, want %v (BGD from word5)", clk.TGD, wantTGD)
+		t.Errorf("TGD = %v, want %v (BGD(E1,E5b) from word5 bit 57)", clk.TGD, wantTGD)
 	}
 }

@@ -193,13 +193,20 @@ func DecodeGLONASSString(words []uint32) (*GLONASSString, error) {
 	}
 	s := &GLONASSString{Number: int(m)}
 
-	// Strings 1–3 share the coordinate/velocity/acceleration field positions.
-	coord, _ := r.SignMag(50, 27)
-	vel, _ := r.SignMag(21, 24)
-	acc, _ := r.SignMag(45, 5)
-	s.Coord = float64(coord) * gloPos
-	s.Vel = float64(vel) * gloVel
-	s.Accel = float64(acc) * gloAccel
+	// Strings 1–3 share the coordinate/velocity/acceleration field positions. gate
+	// the reads on m ∈ 1..3 — for a string 4/5/…/15 those bit spans hold entirely different
+	// fields (e.g. string 4's τn), so decoding them into Coord/Vel/Accel gives an external
+	// library consumer plausible-looking garbage with no error. In-repo callers are safe
+	// (AssembleGLONASS enforces 1/2/3), but the exported struct doc promises these are the
+	// axis component; honor it.
+	if m >= 1 && m <= 3 {
+		coord, _ := r.SignMag(50, 27)
+		vel, _ := r.SignMag(21, 24)
+		acc, _ := r.SignMag(45, 5)
+		s.Coord = float64(coord) * gloPos
+		s.Vel = float64(vel) * gloVel
+		s.Accel = float64(acc) * gloAccel
+	}
 
 	if m == 2 {
 		bn, _ := r.Bits(5, 3)

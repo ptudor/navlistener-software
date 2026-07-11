@@ -53,7 +53,11 @@ const (
 type GPSCNAV struct {
 	MsgType int
 	PRN     int
-	TOW     float64
+	// TOW is the message TOW count × 6. per IS-GPS-200N this is the SOW at the start
+	// of the NEXT 12-second message (6 s for L5 CNAV per IS-GPS-705 — the offset is
+	// signal-dependent), not this message. No internal consumer reads it today; documented
+	// so a library user doesn't mis-time frames by 6/12 s.
+	TOW float64
 	eph     kepler.Ephemeris
 	clk     clock.Model
 	hasEph2 bool // message 11 present (has i0/Ω0)
@@ -169,23 +173,31 @@ func DecodeGPSCNAV(id gnss.GNSSID, words []uint32) (*GPSCNAV, error) {
 }
 
 // AssembleGPSCNAV combines ephemeris messages 10 and 11 (and, if present, a clock
-// message 30–37) into the ephemeris and clock model. m10/m11 must share a toe.
-func AssembleGPSCNAV(id gnss.GNSSID, svid int, m10, m11, mClk *GPSCNAV) (kepler.Ephemeris, clock.Model, error) {
+// message 30–37) into the ephemeris and clock model. m10/m11 must share a toe. The returned
+// bool reports whether a coherent clock was attached.
+func AssembleGPSCNAV(id gnss.GNSSID, svid int, m10, m11, mClk *GPSCNAV) (kepler.Ephemeris, clock.Model, bool, error) {
 	if m10 == nil || m11 == nil {
-		return kepler.Ephemeris{}, clock.Model{}, ErrShortFrame
+		return kepler.Ephemeris{}, clock.Model{}, false, ErrShortFrame
 	}
 	if m10.eph.Toe != m11.eph.Toe {
-		return kepler.Ephemeris{}, clock.Model{}, errIODMismatch
+		return kepler.Ephemeris{}, clock.Model{}, false, errIODMismatch
 	}
 	eph := m10.eph
 	eph.Omega0, eph.I0, eph.OmegaDot, eph.IDot = m11.eph.Omega0, m11.eph.I0, m11.eph.OmegaDot, m11.eph.IDot
 	eph.Cis, eph.Cic, eph.Crs, eph.Crc, eph.Cus, eph.Cuc = m11.eph.Cis, m11.eph.Cic, m11.eph.Crs, m11.eph.Crc, m11.eph.Cus, m11.eph.Cuc
 	eph.ID = id
 	eph.SVID = svid
+	// IS-GPS-200N §30.3.4.4 — "the toe shall be equal to the toc of the same CNAV CEI
+	// data set." Attach the clock only when the cached MT30–37's Toc matches this ephemeris's
+	// toe; a mismatched clock is a stale message from a different data set (the regression fix class,
+	// previously unfixed for CNAV). clkOK distinguishes "no/stale clock" (the zero model, with
+	// af0=0/Toc=0 indistinguishable from a decoded clock) from a coherent one.
 	var clk clock.Model
-	if mClk != nil {
+	clkOK := false
+	if mClk != nil && mClk.clk.Toc == m10.eph.Toe {
 		clk = mClk.clk
+		clkOK = true
 	}
 	clk.ID = id
-	return eph, clk, nil
+	return eph, clk, clkOK, nil
 }
