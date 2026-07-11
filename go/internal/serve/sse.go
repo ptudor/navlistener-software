@@ -33,6 +33,13 @@ const (
 	sseClientBuffer = 64
 )
 
+// sseMaxClients bounds concurrent SSE streams : each connection costs a goroutine,
+// a sseClientBuffer-slot channel, and a socket held open indefinitely, so an attacker or a
+// buggy reconnect loop opening unbounded streams exhausts server resources. A var, not a
+// const (like sseWriteTimeout above), so tests can shrink it instead of opening 1000 real
+// connections.
+var sseMaxClients = 1000
+
 // sseWriteTimeout bounds every write+flush : a client whose TCP receive
 // window is full (dead-but-not-reset) must not be able to park the handler
 // goroutine (and its buffered EventMsgs) indefinitely. A var, not a const, so
@@ -92,12 +99,17 @@ func (b *Broker) replayFrom(lastID int64, hasLast bool) []EventMsg {
 	return out
 }
 
-func (b *Broker) subscribe() chan EventMsg {
-	ch := make(chan EventMsg, sseClientBuffer)
+// subscribe adds a new client, unless sseMaxClients concurrent streams are already
+// connected, in which case it returns ok=false and adds nothing.
+func (b *Broker) subscribe() (ch chan EventMsg, ok bool) {
 	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.clients) >= sseMaxClients {
+		return nil, false
+	}
+	ch = make(chan EventMsg, sseClientBuffer)
 	b.clients[ch] = struct{}{}
-	b.mu.Unlock()
-	return ch
+	return ch, true
 }
 
 func (b *Broker) unsubscribe(ch chan EventMsg) {
@@ -110,11 +122,26 @@ func (b *Broker) unsubscribe(ch chan EventMsg) {
 // reconnect window (Last-Event-ID, else the recent tail), then streams live events
 // as `event: gnss` with the id set, and a `event: status` heartbeat on the cadence.
 func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
+
+	// Subscribe *before* setting any SSE headers : a rejection past the cap must
+	// still be a clean JSON error response, not a text/event-stream response that then
+	// immediately errors.
+	ch, ok := b.subscribe()
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "too many active event streams")
+		return
+	}
+	defer b.unsubscribe(ch)
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -130,16 +157,13 @@ func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 
-	// Subscribe *before* replaying : an event Published between an
-	// after-replay subscribe and the replay finishing would reach neither path —
-	// past the replay cut, and the client's channel didn't exist yet. Subscribing
-	// first means any such event lands in ch; replayFrom's own snapshot may *also*
-	// include it (a second race, opposite direction), so live events are
-	// deduplicated against the highest id actually written by the replay loop —
-	// ids are monotonic within a process, so a `<=` compare is exact either way.
-	ch := b.subscribe()
-	defer b.unsubscribe(ch)
-
+	// subscribed (above) *before* replaying -- an event Published between an
+	// after-replay subscribe and the replay finishing would reach neither path — past
+	// the replay cut, and the client's channel didn't exist yet. Subscribing first means
+	// any such event lands in ch; replayFrom's own snapshot may *also* include it (a
+	// second race, opposite direction), so live events are deduplicated against the
+	// highest id actually written by the replay loop — ids are monotonic within a
+	// process, so a `<=` compare is exact either way.
 	lastID, hasLast := parseLastEventID(r)
 	var lastReplayedID int64
 	for _, e := range b.replayFrom(lastID, hasLast) {

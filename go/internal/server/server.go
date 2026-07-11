@@ -7,7 +7,9 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -49,10 +51,23 @@ func New(addr string, log *slog.Logger, debugState http.HandlerFunc) *Server {
 	}
 }
 
-// Start blocks serving until the listener closes. Run it in a goroutine.
-func (s *Server) Start() error {
+// Listen binds the metrics listener synchronously : call this at startup, before
+// the daemon logs "ready", so a malformed or already-bound [metrics].addr fails the
+// process immediately instead of leaving it running with no /metrics or /healthz and
+// rc.d reporting it healthy.
+func (s *Server) Listen() (net.Listener, error) {
+	ln, err := net.Listen("tcp", s.http.Addr)
+	if err != nil {
+		return nil, fmt.Errorf("metrics listen %s: %w", s.http.Addr, err)
+	}
+	return ln, nil
+}
+
+// Start blocks serving ln until it closes. Call Listen synchronously first; run Start in
+// a goroutine.
+func (s *Server) Start(ln net.Listener) error {
 	s.log.Info("metrics server listening", "addr", s.http.Addr)
-	err := s.http.ListenAndServe()
+	err := s.http.Serve(ln)
 	if err == http.ErrServerClosed {
 		return nil
 	}

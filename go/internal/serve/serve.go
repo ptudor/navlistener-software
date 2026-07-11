@@ -9,7 +9,9 @@ package serve
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -89,16 +91,31 @@ func New(addr string, st *state.Store, events EventStore, sources []config.Sourc
 		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		// bounds an idle keep-alive connection between requests. Does not affect
+		// an active SSE stream (net/http only counts a connection idle while no handler
+		// is running on it) -- WriteTimeout stays unset, SSE's per-write deadline is regression fix.
+		IdleTimeout: 120 * time.Second,
 	}
 	return s
 }
 
-// Start refreshes every feed once so the API is warm on the first request, then
-// serves until the listener closes. Run it in a goroutine; run Refresh separately.
-func (s *Server) Start() error {
+// Listen binds the v2 API listener synchronously : call this at startup, before
+// the daemon logs "ready", so a malformed or already-bound [serve].addr fails the process
+// immediately instead of leaving it running with no API and rc.d reporting it healthy.
+func (s *Server) Listen() (net.Listener, error) {
+	ln, err := net.Listen("tcp", s.http.Addr)
+	if err != nil {
+		return nil, fmt.Errorf("v2 serve listen %s: %w", s.http.Addr, err)
+	}
+	return ln, nil
+}
+
+// Start refreshes every feed once so the API is warm on the first request, then serves ln
+// until it closes. Call Listen synchronously first; run Start in a goroutine.
+func (s *Server) Start(ln net.Listener) error {
 	s.refreshAll()
 	s.log.Info("v2 serve listening", "addr", s.http.Addr)
-	err := s.http.ListenAndServe()
+	err := s.http.Serve(ln)
 	if err == http.ErrServerClosed {
 		return nil
 	}

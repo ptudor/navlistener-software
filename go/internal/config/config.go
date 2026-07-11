@@ -10,6 +10,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"regexp"
 	"strconv"
@@ -251,6 +252,16 @@ func (c *Config) finalize() error {
 	default:
 		return fmt.Errorf("logging.level %q: want debug, info, warn, or error", c.Logging.Level)
 	}
+	// a malformed addr must fail at -check-config / config-load time, not only
+	// once the listener actually tries (and fails) to bind at startup.
+	if err := validateAddr("metrics.addr", c.Metrics.Addr); err != nil {
+		return err
+	}
+	if c.Serve.Addr != "" {
+		if err := validateAddr("serve.addr", c.Serve.Addr); err != nil {
+			return err
+		}
+	}
 	if err := parseDur(c.State.SVTTLs, &c.State.SVTTL); err != nil {
 		return fmt.Errorf("state.sv_ttl: %w", err)
 	}
@@ -412,6 +423,15 @@ func (c *Config) finalizePush() error {
 			return fmt.Errorf("push.observer %q: %w", o.Station, err)
 		}
 		o.CapDecl = caps
+	}
+	return nil
+}
+
+// validateAddr checks host:port syntax  so a typo'd or malformed listener addr is
+// a config-load error, not a silent listener-bind failure discovered only at startup.
+func validateAddr(field, addr string) error {
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		return fmt.Errorf("%s %q: %w", field, addr, err)
 	}
 	return nil
 }

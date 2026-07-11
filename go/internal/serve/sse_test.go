@@ -169,3 +169,59 @@ func TestServeEventsWriteDeadline(t *testing.T) {
 		t.Fatal("serveEvents did not return after the write deadline — a stuck client can park the handler forever")
 	}
 }
+
+// TestServeEventsMethodNotAllowed guards part of every other v2/events endpoint
+// 405s a non-GET/HEAD method, and /gnss/events must too (previously it accepted POST).
+func TestServeEventsMethodNotAllowed(t *testing.T) {
+	b := newBroker()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/gnss/events", nil)
+	b.serveEvents(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", rr.Code)
+	}
+}
+
+// TestServeEventsClientCapEnforced guards client cap: past sseMaxClients
+// concurrent streams, a new connection gets 503 with a clean JSON error (not a
+// text/event-stream response), and a freed slot lets the next connection through.
+func TestServeEventsClientCapEnforced(t *testing.T) {
+	old := sseMaxClients
+	sseMaxClients = 2
+	defer func() { sseMaxClients = old }()
+
+	b := newBroker()
+	var chans []chan EventMsg
+	for i := 0; i < sseMaxClients; i++ {
+		ch, ok := b.subscribe()
+		if !ok {
+			t.Fatalf("subscribe %d unexpectedly rejected before reaching the cap", i)
+		}
+		chans = append(chans, ch)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/gnss/events", nil)
+	b.serveEvents(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503 past the cap", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("content-type = %q, want application/json (not an SSE stream) on the 503", ct)
+	}
+
+	// Freeing a slot must let a new connection through.
+	b.unsubscribe(chans[0])
+	ctx, cancel := context.WithCancel(context.Background())
+	req2 := httptest.NewRequest(http.MethodGet, "/gnss/events", nil).WithContext(ctx)
+	rr2 := newSyncRecorder()
+	done := make(chan struct{})
+	go func() { defer close(done); b.serveEvents(rr2, req2) }()
+	waitFor(t, func() bool { return strings.Contains(rr2.String(), "event: status") })
+	cancel()
+	<-done
+
+	for _, ch := range chans[1:] {
+		b.unsubscribe(ch)
+	}
+}

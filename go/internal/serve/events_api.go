@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,6 +18,14 @@ const (
 	eventsMaxLimit      = 500
 	summaryDefaultHours = 24
 	summaryMaxHours     = 720
+
+	// an unbounded since/until window forces count(*) OVER() to materialize the
+	// entire matching set (gnss_events has no retention policy); an unbounded offset adds
+	// unnecessary pagination depth on top. eventsMaxWindow mirrors summaryMaxHours (the
+	// existing precedent for "how far back is a legitimate query allowed to look").
+	eventsMaxWindow    = summaryMaxHours * time.Hour
+	eventsMaxOffset    = 1_000_000
+	eventsQueryTimeout = 5 * time.Second
 )
 
 // serveEventsQuery is GET /gnss/api/events: a filtered, paginated window over the persisted
@@ -34,16 +43,25 @@ func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	now := s.now()
+	since := parseTimeDefault(q.Get("since"), now.Add(-24*time.Hour))
+	until := parseTimeDefault(q.Get("until"), now)
+	if d := until.Sub(since); d > eventsMaxWindow {
+		// clamp the window rather than reject it -- until (defaulting to now) is
+		// the caller's anchor; since is pulled forward to eventsMaxWindow before it.
+		since = until.Add(-eventsMaxWindow)
+	}
 	query := store.EventQuery{
 		SV:          q.Get("sv"),
 		Type:        q.Get("type"),
 		MinSeverity: atoiDefault(q.Get("severity"), 0),
-		Since:       parseTimeDefault(q.Get("since"), now.Add(-24*time.Hour)),
-		Until:       parseTimeDefault(q.Get("until"), now),
+		Since:       since,
+		Until:       until,
 		Limit:       clampInt(atoiDefault(q.Get("limit"), eventsDefaultLimit), 1, eventsMaxLimit),
-		Offset:      maxInt(atoiDefault(q.Get("offset"), 0), 0),
+		Offset:      clampInt(atoiDefault(q.Get("offset"), 0), 0, eventsMaxOffset),
 	}
-	events, total, err := s.events.QueryEvents(r.Context(), query)
+	ctx, cancel := context.WithTimeout(r.Context(), eventsQueryTimeout)
+	defer cancel()
+	events, total, err := s.events.QueryEvents(ctx, query)
 	if err != nil {
 		s.log.Error("events query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "events query failed")
@@ -73,7 +91,9 @@ func (s *Server) serveEventsSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	hours := clampInt(atoiDefault(r.URL.Query().Get("hours"), summaryDefaultHours), 1, summaryMaxHours)
 	now := s.now()
-	sum, err := s.events.SummarizeEvents(r.Context(), now.Add(-time.Duration(hours)*time.Hour), now)
+	ctx, cancel := context.WithTimeout(r.Context(), eventsQueryTimeout)
+	defer cancel()
+	sum, err := s.events.SummarizeEvents(ctx, now.Add(-time.Duration(hours)*time.Hour), now)
 	if err != nil {
 		s.log.Error("events summary failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "events summary failed")
@@ -142,11 +162,4 @@ func clampInt(v, lo, hi int) int {
 		return hi
 	}
 	return v
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

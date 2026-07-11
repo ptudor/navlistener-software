@@ -16,18 +16,21 @@ import (
 // shaping are tested without a database.
 type fakeEvents struct {
 	lastQuery store.EventQuery
+	lastCtx   context.Context
 	events    []store.StoredEvent
 	total     int
 	summary   store.EventSummary
 	err       error
 }
 
-func (f *fakeEvents) QueryEvents(_ context.Context, q store.EventQuery) ([]store.StoredEvent, int, error) {
+func (f *fakeEvents) QueryEvents(ctx context.Context, q store.EventQuery) ([]store.StoredEvent, int, error) {
 	f.lastQuery = q
+	f.lastCtx = ctx
 	return f.events, f.total, f.err
 }
 
-func (f *fakeEvents) SummarizeEvents(_ context.Context, _, _ time.Time) (store.EventSummary, error) {
+func (f *fakeEvents) SummarizeEvents(ctx context.Context, _, _ time.Time) (store.EventSummary, error) {
+	f.lastCtx = ctx
 	return f.summary, f.err
 }
 
@@ -113,6 +116,84 @@ func TestEventsQueryEmpty(t *testing.T) {
 	evs, ok := data["events"].([]any)
 	if !ok || len(evs) != 0 {
 		t.Errorf("events = %#v, want empty array", data["events"])
+	}
+}
+
+// TestEventsQueryWindowClamped guards an unbounded since (e.g. the Unix epoch) must
+// not reach the store as-is -- count(*) OVER() over the entire retention-less gnss_events
+// table is the DoS this finding describes. since is pulled forward to eventsMaxWindow before
+// until, not rejected outright.
+func TestEventsQueryWindowClamped(t *testing.T) {
+	fe := &fakeEvents{}
+	s := newTestServer(nil, fe)
+	fixedNow := time.Unix(2_000_000_000, 0).UTC()
+	s.now = func() time.Time { return fixedNow }
+
+	req := httptest.NewRequest(http.MethodGet, "/gnss/api/events?since=1970-01-01T00:00:00Z", nil)
+	rr := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, req)
+	decodeEnvelope(t, rr)
+
+	wantSince := fixedNow.Add(-eventsMaxWindow)
+	if !fe.lastQuery.Since.Equal(wantSince) {
+		t.Errorf("since = %v, want clamped to %v (until - eventsMaxWindow)", fe.lastQuery.Since, wantSince)
+	}
+	if !fe.lastQuery.Until.Equal(fixedNow) {
+		t.Errorf("until = %v, want the request's anchor %v unchanged", fe.lastQuery.Until, fixedNow)
+	}
+
+	// A window already inside the bound must pass through unclamped.
+	fe2 := &fakeEvents{}
+	s2 := newTestServer(nil, fe2)
+	s2.now = func() time.Time { return fixedNow }
+	since := fixedNow.Add(-time.Hour)
+	req2 := httptest.NewRequest(http.MethodGet, "/gnss/api/events?since="+since.Format(time.RFC3339), nil)
+	rr2 := httptest.NewRecorder()
+	s2.http.Handler.ServeHTTP(rr2, req2)
+	decodeEnvelope(t, rr2)
+	if !fe2.lastQuery.Since.Equal(since) {
+		t.Errorf("since = %v, want the requested %v unclamped (within the max window)", fe2.lastQuery.Since, since)
+	}
+}
+
+// TestEventsQueryOffsetClamped guards second clamp: offset is bounded, not just
+// floored at zero.
+func TestEventsQueryOffsetClamped(t *testing.T) {
+	fe := &fakeEvents{}
+	s := newTestServer(nil, fe)
+	req := httptest.NewRequest(http.MethodGet, "/gnss/api/events?offset=999999999", nil)
+	rr := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, req)
+	decodeEnvelope(t, rr)
+	if fe.lastQuery.Offset != eventsMaxOffset {
+		t.Errorf("offset = %d, want clamp to %d", fe.lastQuery.Offset, eventsMaxOffset)
+	}
+}
+
+// TestEventsQueryHasDeadline guards third mitigation: the context reaching the store
+// carries a bounded deadline, not just the client's r.Context() (which lives as long as the
+// client holds the connection open).
+func TestEventsQueryHasDeadline(t *testing.T) {
+	fe := &fakeEvents{}
+	s := newTestServer(nil, fe)
+	rr := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/events", nil))
+	decodeEnvelope(t, rr)
+	dl, ok := fe.lastCtx.Deadline()
+	if !ok {
+		t.Fatal("QueryEvents context has no deadline")
+	}
+	if remaining := time.Until(dl); remaining <= 0 || remaining > eventsQueryTimeout {
+		t.Errorf("deadline %v from now, want (0, %v]", remaining, eventsQueryTimeout)
+	}
+
+	fe2 := &fakeEvents{}
+	s2 := newTestServer(nil, fe2)
+	rr2 := httptest.NewRecorder()
+	s2.http.Handler.ServeHTTP(rr2, httptest.NewRequest(http.MethodGet, "/gnss/api/events/summary", nil))
+	decodeEnvelope(t, rr2)
+	if _, ok := fe2.lastCtx.Deadline(); !ok {
+		t.Error("SummarizeEvents context has no deadline")
 	}
 }
 

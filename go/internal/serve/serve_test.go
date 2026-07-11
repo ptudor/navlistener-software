@@ -24,6 +24,19 @@ func newTestServer(sources []config.Source, events EventStore) *Server {
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
+// TestServerIdleTimeoutSet guards an idle keep-alive connection between requests
+// must be bounded, distinct from the SSE per-write deadline  and unset WriteTimeout
+// (SSE streams are exempt from that by design).
+func TestServerIdleTimeoutSet(t *testing.T) {
+	s := testServer(nil)
+	if s.http.IdleTimeout <= 0 {
+		t.Error("http.Server.IdleTimeout is unset, want a bounded value")
+	}
+	if s.http.WriteTimeout != 0 {
+		t.Errorf("http.Server.WriteTimeout = %v, want unset (SSE streams need long-lived writes)", s.http.WriteTimeout)
+	}
+}
+
 // TestEnvelopeAndSchema verifies every v2 feed returns the standard envelope with
 // ok=true, an RFC3339 time, and the schema version in data (docs/OUTPUT.md §0).
 func TestEnvelopeAndSchema(t *testing.T) {

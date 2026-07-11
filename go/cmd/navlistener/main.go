@@ -112,8 +112,18 @@ func run() int {
 		_ = json.NewEncoder(w).Encode(live.Snapshot(time.Now()))
 	}
 	obs := server.New(cfg.Metrics.Addr, log, debugState)
+	// bind synchronously so a malformed/already-bound [metrics].addr fails the
+	// process now, before "ready", rather than logging once and running forever with no
+	// /metrics or /healthz while rc.d reports it healthy.
+	obsLn, err := obs.Listen()
+	if err != nil {
+		log.Error("metrics server", "error", err)
+		cancel()
+		storeCancel()
+		return 1
+	}
 	go func() {
-		if err := obs.Start(); err != nil {
+		if err := obs.Start(obsLn); err != nil {
 			log.Error("metrics server", "error", err)
 		}
 	}()
@@ -130,10 +140,18 @@ func run() int {
 			eventStore = historian
 		}
 		apiSrv = serve.New(cfg.Serve.Addr, live, eventStore, cfg.Ingest, cfg.Serve.RefreshFast, cfg.Serve.RefreshSlow, log)
+		// same synchronous-bind fix as the metrics listener above.
+		apiLn, err := apiSrv.Listen()
+		if err != nil {
+			log.Error("v2 serve", "error", err)
+			cancel()
+			storeCancel()
+			return 1
+		}
 		wg.Add(1)
 		go func() { defer wg.Done(); apiSrv.Run(ctx) }()
 		go func() {
-			if err := apiSrv.Start(); err != nil {
+			if err := apiSrv.Start(apiLn); err != nil {
 				log.Error("v2 serve", "error", err)
 			}
 		}()
