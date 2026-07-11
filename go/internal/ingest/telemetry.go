@@ -165,6 +165,13 @@ func decodeReceptionData(b []byte) ([]SatCN0, error) {
 		return nil, ErrBadTelemetry
 	}
 	n := int(binary.BigEndian.Uint16(b[1:]))
+	// the encoder never emits more than maxTelemSats (200), so a body
+	// claiming more is either a misbehaving feeder or a bug -- reject before the
+	// length check below, which alone would still accept up to 65535 sats
+	// (~328 KiB, inside the 1 MiB frame limit) into the RF/spoofing detector.
+	if n > maxTelemSats {
+		return nil, ErrBadTelemetry
+	}
 	if len(b) < 3+n*receptionSatLen {
 		return nil, ErrBadTelemetry
 	}

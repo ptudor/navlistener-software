@@ -27,6 +27,15 @@ import (
 // relaxed.
 var IntervalRe = regexp.MustCompile(`^[1-9][0-9]* (minute|hour|day|week)s?$`)
 
+// ntripMountpointRe is the allowlist for an ntrip [[ingest]] source's Mountpoint
+// : printable ASCII with no whitespace or control characters --
+// NTRIP mountpoints are token-like (RTCM/NTRIP casters use short alphanumeric +
+// punctuation names). Mountpoint is interpolated directly into the caster's
+// HTTP request line (ntrip.go's `GET /%s HTTP/1.1`), so a space, \r, or \n in a
+// fat-fingered or copy-pasted value would mangle the request line or inject
+// headers toward the caster.
+var ntripMountpointRe = regexp.MustCompile(`^[!-~]+$`)
+
 // DefaultPaths are searched in order when -config is not given.
 var DefaultPaths = []string{
 	"/usr/local/etc/navlistener/navlistener.toml",
@@ -337,6 +346,9 @@ func (c *Config) finalize() error {
 		}
 		if s.Type == "ntrip" && s.Mountpoint == "" {
 			return fmt.Errorf("ingest %q: mountpoint is required for type ntrip", s.Name)
+		}
+		if s.Type == "ntrip" && !ntripMountpointRe.MatchString(s.Mountpoint) {
+			return fmt.Errorf("ingest %q: mountpoint %q contains whitespace/control characters (not a valid NTRIP mountpoint)", s.Name, s.Mountpoint)
 		}
 		caps, err := parseCapabilities(s.Capabilities)
 		if err != nil {

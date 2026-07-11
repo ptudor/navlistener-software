@@ -86,7 +86,7 @@ func TestRunScannerAppliesIdleTimeout(t *testing.T) {
 		return err
 	}
 
-	err := m.runScanner(context.Background(), sc, conn, config.Source{Name: "idle-test"}, false)
+	_, err := m.runScanner(context.Background(), sc, conn, config.Source{Name: "idle-test"}, false)
 	if err != io.EOF {
 		t.Fatalf("runScanner error = %v, want io.EOF", err)
 	}
@@ -98,6 +98,94 @@ func TestRunScannerAppliesIdleTimeout(t *testing.T) {
 	}
 	if slack := time.Until(conn.deadlines[0]) - dialIdleTimeout; slack > time.Second || slack < -time.Second {
 		t.Errorf("read deadline %v not within 1s of now+dialIdleTimeout", conn.deadlines[0])
+	}
+}
+
+// TestRunScannerUsefulOnFrame guards a connection that emits at least one
+// frame is "useful" even if it returns almost immediately afterward -- backoff
+// must reset for a source that clearly delivered real data, not just one that
+// happened to stay connected a while.
+func TestRunScannerUsefulOnFrame(t *testing.T) {
+	sc := func(r io.Reader, _ string, _ func() time.Time, emit func(*RawFrame), _ func(string)) error {
+		emit(&RawFrame{})
+		return io.EOF
+	}
+	m := New(nil, make(chan *RawFrame, 1), quietManagerLog())
+	useful, err := m.runScanner(context.Background(), sc, &fakeDeadlineConn{}, config.Source{Name: "useful-test"}, false)
+	if err != io.EOF {
+		t.Fatalf("runScanner error = %v, want io.EOF", err)
+	}
+	if !useful {
+		t.Error("useful = false, want true (the scanner emitted a frame)")
+	}
+}
+
+// TestRunScannerNotUsefulOnQuickEmptyDisconnect guards the other half of // zero frames and a near-instant return (the accept-then-close peer's exact
+// signature) must not be "useful" -- runSource must be allowed to keep growing
+// backoff instead of resetting on bare TCP-connect success.
+func TestRunScannerNotUsefulOnQuickEmptyDisconnect(t *testing.T) {
+	sc := func(r io.Reader, _ string, _ func() time.Time, _ func(*RawFrame), _ func(string)) error {
+		return io.EOF
+	}
+	m := New(nil, make(chan *RawFrame, 1), quietManagerLog())
+	useful, err := m.runScanner(context.Background(), sc, &fakeDeadlineConn{}, config.Source{Name: "not-useful-test"}, false)
+	if err != io.EOF {
+		t.Fatalf("runScanner error = %v, want io.EOF", err)
+	}
+	if useful {
+		t.Error("useful = true, want false (zero frames, near-instant disconnect)")
+	}
+}
+
+// TestIngestBackoffGrowsOnAcceptThenClosePeer guards exact fix-spec
+// verification: a listener that closes immediately on accept must see inter-dial
+// gaps grow toward backoffMax, not stay flat at ~backoffInitial forever. Runs
+// runSource against a real loopback listener; each accepted connection is closed
+// immediately (0 frames, near-instant disconnect), so every cycle is "not useful"
+// and backoff must keep doubling.
+func TestIngestBackoffGrowsOnAcceptThenClosePeer(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	connects := make(chan time.Time, 8)
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			connects <- time.Now()
+			_ = c.Close()
+		}
+	}()
+
+	src := config.Source{Name: "flaky", Type: "ubx", Addr: ln.Addr().String()}
+	sc := func(r io.Reader, _ string, _ func() time.Time, _ func(*RawFrame), _ func(string)) error {
+		_, err := io.Copy(io.Discard, r) // returns near-instantly: the peer closed right after accept
+		return err
+	}
+	m := New(nil, make(chan *RawFrame, 1), quietManagerLog())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go m.runSource(ctx, src, sc)
+
+	var times []time.Time
+	for i := 0; i < 4; i++ {
+		select {
+		case tm := <-connects:
+			times = append(times, tm)
+		case <-time.After(20 * time.Second):
+			t.Fatalf("only observed %d/4 reconnect attempts within 20s", len(times))
+		}
+	}
+	gap1 := times[1].Sub(times[0])
+	gap2 := times[2].Sub(times[1])
+	gap3 := times[3].Sub(times[2])
+	if gap2 <= gap1 || gap3 <= gap2 {
+		t.Errorf("backoff did not grow across reconnects: gap1=%v gap2=%v gap3=%v, want strictly increasing", gap1, gap2, gap3)
 	}
 }
 
@@ -145,7 +233,7 @@ func TestRunScannerDechunksNTRIPStream(t *testing.T) {
 	out := make(chan *RawFrame, 8)
 	m := New(nil, out, quietManagerLog())
 
-	err := m.runScanner(context.Background(), scanRTCM, conn, src, true)
+	_, err := m.runScanner(context.Background(), scanRTCM, conn, src, true)
 	if err != io.EOF && err != io.ErrUnexpectedEOF {
 		t.Fatalf("runScanner error = %v", err)
 	}

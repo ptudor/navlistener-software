@@ -38,8 +38,13 @@ func scanUBX(r io.Reader, source string, now func() time.Time, emit func(*RawFra
 		if err := syncTo(br, ubxSync1, ubxSync2); err != nil {
 			return err
 		}
-		hdr := make([]byte, 4) // class, id, length(2, LE)
-		if _, err := io.ReadFull(br, hdr); err != nil {
+		// peek the header+payload+checksum without consuming it. On a
+		// length or checksum failure, nothing here is Discarded, so the next
+		// syncTo call resumes scanning byte-by-byte from right after the sync
+		// pattern instead of skipping the whole claimed (possibly bogus) extent
+		// (up to ubxMaxPayload+2 = 16386 bytes), which may contain a real frame.
+		hdr, err := br.Peek(4) // class, id, length(2, LE)
+		if err != nil {
 			return err
 		}
 		length := int(binary.LittleEndian.Uint16(hdr[2:]))
@@ -47,40 +52,48 @@ func scanUBX(r io.Reader, source string, now func() time.Time, emit func(*RawFra
 			onErr("ubx_length") // implausible length: skip and resync
 			continue
 		}
-		payload := make([]byte, length+2) // payload + 2 checksum bytes
-		if _, err := io.ReadFull(br, payload); err != nil {
+		total := 4 + length + 2 // header + payload + 2 checksum bytes
+		peeked, err := br.Peek(total)
+		if err != nil {
 			return err
 		}
-		body := payload[:length]
-		ckA, ckB := fletcher8(hdr[0], hdr[1], hdr[2], hdr[3], body)
-		if ckA != payload[length] || ckB != payload[length+1] {
+		body := peeked[4 : 4+length]
+		ckA, ckB := fletcher8(peeked[0], peeked[1], peeked[2], peeked[3], body)
+		if ckA != peeked[total-2] || ckB != peeked[total-1] {
 			onErr("ubx_checksum")
 			continue
 		}
+		// Copy what's needed before Discard invalidates br's buffer view (peeked
+		// aliases it and is only valid until the next read/Discard).
+		cls, id := peeked[0], peeked[1]
+		body = append([]byte(nil), body...)
+		if _, err := br.Discard(total); err != nil {
+			return err
+		}
 		switch {
-		case hdr[0] == ubxClassRXM && hdr[1] == ubxIDSFRBX:
+		case cls == ubxClassRXM && id == ubxIDSFRBX:
 			if f := parseSFRBX(body, source, now()); f != nil {
 				emit(f)
 			} else {
 				onErr("ubx_sfrbx")
 			}
-		case hdr[0] == ubxClassRXM && hdr[1] == ubxIDRAWX:
+		case cls == ubxClassRXM && id == ubxIDRAWX:
 			if n := parseRAWX(body, source, now(), emit); n == 0 && len(body) > 16 {
 				onErr("ubx_rawx")
 			}
-		case hdr[0] == ubxClassMON && hdr[1] == ubxIDMONRF:
+		case cls == ubxClassMON && id == ubxIDMONRF:
 			if f := parseMONRF(body, source, now()); f != nil {
 				emit(f)
 			} else {
 				onErr("ubx_monrf")
 			}
-		case hdr[0] == ubxClassMON && hdr[1] == ubxIDMONHW:
+		case cls == ubxClassMON && id == ubxIDMONHW:
 			if f := parseMONHW(body, source, now()); f != nil {
 				emit(f)
 			} else {
 				onErr("ubx_monhw")
 			}
-		case hdr[0] == ubxClassNAV && hdr[1] == ubxIDNAVSAT:
+		case cls == ubxClassNAV && id == ubxIDNAVSAT:
 			if f := parseNAVSAT(body, source, now()); f != nil {
 				emit(f)
 			} else {

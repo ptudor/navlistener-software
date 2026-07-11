@@ -30,32 +30,60 @@ func scanRTCM(r io.Reader, source string, now func() time.Time, emit func(*RawFr
 		if b != rtcmPreamble {
 			continue
 		}
-		lenHi, err := br.ReadByte()
+		// peek the candidate frame (length + payload + CRC) without
+		// consuming it. On any failure below, nothing past this single preamble
+		// byte is Discarded, so the next loop iteration resumes scanning from the
+		// very next byte instead of skipping the whole claimed (possibly bogus)
+		// extent -- which, on a false sync, may contain a real, complete frame.
+		lenBytes, err := br.Peek(2)
 		if err != nil {
 			return err
 		}
-		lenLo, err := br.ReadByte()
-		if err != nil {
-			return err
-		}
+		lenHi, lenLo := lenBytes[0], lenBytes[1]
 		length := int(lenHi&0x03)<<8 | int(lenLo) // low 10 bits
-		if length < 3 || length > rtcmMaxLen {    // < 3: no room for the 12-bit message number
+
+		if length == 0 {
+			// length 0 is a legal RTCM3 filler/keepalive message (no
+			// message number, no payload) -- verify its CRC and drop it silently
+			// (not an rtcm_length error), rather than flagging it as an error and
+			// leaving its 3 CRC bytes in the stream to be rescanned as a false
+			// preamble (a 0xD3 among them would consume up to 1026 more bytes).
+			tail, err := br.Peek(5) // lenHi, lenLo, 3-byte CRC
+			if err != nil {
+				return err
+			}
+			full := append([]byte{b}, tail...)
+			if !frame.CheckCRC24Q(full) {
+				onErr("rtcm_crc")
+				continue
+			}
+			if _, err := br.Discard(5); err != nil {
+				return err
+			}
+			continue
+		}
+		if length < 3 || length > rtcmMaxLen { // < 3: no room for the 12-bit message number
 			onErr("rtcm_length")
 			continue
 		}
-		rest := make([]byte, length+3) // payload + 3-byte CRC-24Q
-		if _, err := io.ReadFull(br, rest); err != nil {
+		total := 2 + length + 3 // length bytes + payload + 3-byte CRC-24Q
+		peeked, err := br.Peek(total)
+		if err != nil {
 			return err
 		}
 		// CRC-24Q covers preamble + length + payload + the trailing CRC (→ 0).
-		full := make([]byte, 0, 3+length+3)
-		full = append(full, b, lenHi, lenLo)
-		full = append(full, rest...)
+		// full is a fresh copy: peeked aliases br's internal buffer and is only
+		// valid until the next read/Discard, but payload (sliced from full below)
+		// must outlive this call, since it's handed off via emit.
+		full := append([]byte{b}, peeked...)
 		if !frame.CheckCRC24Q(full) {
 			onErr("rtcm_crc")
 			continue
 		}
-		payload := rest[:length]
+		if _, err := br.Discard(total); err != nil {
+			return err
+		}
+		payload := full[3 : 3+length]
 		msgNum := int(payload[0])<<4 | int(payload[1])>>4 // first 12 bits
 		emit(&RawFrame{
 			Recv:    now(),

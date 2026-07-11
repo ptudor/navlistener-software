@@ -25,8 +25,13 @@ func scanSBF(r io.Reader, source string, now func() time.Time, emit func(*RawFra
 		if err := syncTo(br, sbfSync1, sbfSync2); err != nil {
 			return err
 		}
-		hdr := make([]byte, 6) // CRC(2), ID(2), Length(2), all LE
-		if _, err := io.ReadFull(br, hdr); err != nil {
+		// peek the header+body without consuming it. On a length or CRC
+		// failure, nothing here is Discarded, so the next syncTo call resumes
+		// scanning byte-by-byte from right after the sync pattern instead of
+		// skipping the whole claimed (possibly bogus) extent (up to sbfMaxLength =
+		// 64 KiB), which may contain a real, complete block.
+		hdr, err := br.Peek(6) // CRC(2), ID(2), Length(2), all LE
+		if err != nil {
 			return err
 		}
 		crc := binary.LittleEndian.Uint16(hdr[0:])
@@ -38,14 +43,21 @@ func scanSBF(r io.Reader, source string, now func() time.Time, emit func(*RawFra
 			onErr("sbf_length")
 			continue
 		}
-		body := make([]byte, length-8)
-		if _, err := io.ReadFull(br, body); err != nil {
+		total := length - 2 // header(6) + body(length-8); the 2 sync bytes are already consumed
+		peeked, err := br.Peek(total)
+		if err != nil {
 			return err
 		}
+		body := peeked[6:total]
 		// CRC-16-CCITT over ID + Length + body.
-		if crc16ccitt(hdr[2:6], body) != crc {
+		if crc16ccitt(peeked[2:6], body) != crc {
 			onErr("sbf_crc")
 			continue
+		}
+		// Copy out before Discard invalidates br's buffer view (peeked aliases it).
+		body = append([]byte(nil), body...)
+		if _, err := br.Discard(total); err != nil {
+			return err
 		}
 		emit(&RawFrame{
 			Recv:    now(),

@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"encoding/binary"
 	"reflect"
 	"testing"
 
@@ -68,6 +69,22 @@ func TestReceptionDataCap(t *testing.T) {
 }
 
 func byteMod(i int) int { return i % 200 }
+
+// TestReceptionDataRejectsOverCapCount guards decodeReceptionData must
+// reject n > maxTelemSats even when the body's length genuinely matches n (so
+// the length-vs-body-size bounds check alone would accept it) -- the encoder
+// never emits more than maxTelemSats, so a body claiming more is a
+// misbehaving feeder pumping an oversized "sky sample" into the RF/spoofing
+// detector, a shape the contract says cannot exist.
+func TestReceptionDataRejectsOverCapCount(t *testing.T) {
+	n := maxTelemSats + 1 // 201
+	body := make([]byte, 3+n*receptionSatLen)
+	body[0] = telemBodyVersion
+	binary.BigEndian.PutUint16(body[1:], uint16(n))
+	if _, err := decodeReceptionData(body); err != ErrBadTelemetry {
+		t.Errorf("decodeReceptionData(n=%d, matching length) = %v, want ErrBadTelemetry", n, err)
+	}
+}
 
 // TestTelemetryBadBody asserts truncated and mis-versioned bodies are rejected, never read
 // past — the untrusted-input discipline the push path inherits from the dial parsers.

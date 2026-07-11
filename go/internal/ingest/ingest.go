@@ -30,6 +30,15 @@ const (
 // reconnects; mirrors push.go's idleConn/idleReadTimeout pattern for the dial path.
 const dialIdleTimeout = 180 * time.Second
 
+// usefulConnectionDuration bounds how long a connection must survive (absent any
+// emitted frame) before it's considered "useful" enough to reset backoff :
+// resetting backoff the instant a TCP connect succeeds -- before a single byte of
+// data -- lets a peer that accepts and immediately closes retry at ~1 Hz forever
+// (connect -> reset -> EOF -> sleep backoffInitial -> repeat, never widening). A
+// source that stays connected a few seconds, or emits even one frame sooner, has
+// proven itself distinct from an accept-then-close peer.
+const usefulConnectionDuration = 3 * time.Second
+
 // scanner reads a receiver stream and emits RawFrames until the stream errors.
 type scanner func(r io.Reader, source string, now func() time.Time, emit func(*RawFrame), onErr func(kind string)) error
 
@@ -123,7 +132,6 @@ func (m *Manager) runSource(ctx context.Context, src config.Source, sc scanner) 
 		metrics.SourceConnectsTotal.WithLabelValues(src.Name).Inc()
 		metrics.SourceUp.WithLabelValues(src.Name, src.Type).Set(1)
 		m.log.Info("ingest source connected", "source", src.Name, "addr", src.Addr, "type", src.Type)
-		backoff = backoffInitial
 
 		// Close the connection when ctx is cancelled so a blocked read returns.
 		stop := make(chan struct{})
@@ -135,10 +143,17 @@ func (m *Manager) runSource(ctx context.Context, src config.Source, sc scanner) 
 			}
 		}()
 
-		err = m.runScanner(ctx, sc, conn, src, ntripChunked)
+		var useful bool
+		useful, err = m.runScanner(ctx, sc, conn, src, ntripChunked)
 		close(stop)
 		_ = conn.Close()
 		metrics.SourceUp.WithLabelValues(src.Name, src.Type).Set(0)
+		// backoff resets only once the connection has proven useful (ran
+		// usefulConnectionDuration or emitted >= 1 frame), not on bare TCP-connect
+		// success -- otherwise an accept-then-close peer is retried at ~1 Hz forever.
+		if useful {
+			backoff = backoffInitial
+		}
 		if ctx.Err() == nil {
 			m.log.Warn("ingest source stream ended; reconnecting", "source", src.Name, "error", err)
 			metrics.IngestErrorsTotal.WithLabelValues(src.Name, "disconnect").Inc()
@@ -157,21 +172,34 @@ func (m *Manager) runSource(ctx context.Context, src config.Source, sc scanner) 
 // the scanner, for an NTRIP v2 caster that answered with Transfer-Encoding: chunked -- the
 // idleConn stays the innermost layer so each physical socket read still gets a deadline,
 // with the chunk-framing decode layered on top of that, not the raw conn directly.
-func (m *Manager) runScanner(ctx context.Context, sc scanner, conn net.Conn, src config.Source, chunked bool) (err error) {
+//
+// useful reports whether the connection proved itself distinct from an
+// accept-then-close peer : it ran for at least usefulConnectionDuration,
+// or emitted at least one frame, before returning. runSource uses this to decide
+// whether to reset backoff rather than resetting on bare TCP-connect success.
+func (m *Manager) runScanner(ctx context.Context, sc scanner, conn net.Conn, src config.Source, chunked bool) (useful bool, err error) {
+	start := m.now()
+	var frameCount int
 	defer func() {
 		if r := recover(); r != nil {
 			metrics.IngestErrorsTotal.WithLabelValues(src.Name, "panic").Inc()
 			m.log.Error("ingest scanner panicked; reconnecting", "source", src.Name, "panic", r)
 			err = fmt.Errorf("scanner panic: %v", r)
 		}
+		useful = frameCount > 0 || m.now().Sub(start) >= usefulConnectionDuration
 	}()
 	var frames io.Reader = &idleConn{Conn: conn, timeout: dialIdleTimeout}
 	if chunked {
 		frames = httputil.NewChunkedReader(frames)
 	}
-	return sc(frames, src.Name, m.now, m.emit(ctx, src), func(kind string) {
+	baseEmit := m.emit(ctx, src)
+	err = sc(frames, src.Name, m.now, func(f *RawFrame) {
+		frameCount++
+		baseEmit(f)
+	}, func(kind string) {
 		metrics.IngestErrorsTotal.WithLabelValues(src.Name, kind).Inc()
 	})
+	return useful, err
 }
 
 // emit returns the per-source emit closure: count the frame and hand it to the

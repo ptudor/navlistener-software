@@ -145,6 +145,14 @@ func TestNtripSource(t *testing.T) {
 		t.Fatalf("valid ntrip source rejected: %v", err)
 	}
 
+	// a mountpoint containing CRLF/space injects headers or mangles the
+	// caster's HTTP request line -- the fix spec's exact PoC.
+	bad := defaults()
+	bad.Ingest = []Source{{Name: "crtn", Type: "ntrip", Addr: "caster.invalid:2101", Mountpoint: "P472 RTCM3\r\nX-Evil: 1"}}
+	if err := bad.finalize(); err == nil || !strings.Contains(err.Error(), "mountpoint") {
+		t.Fatalf("ntrip mountpoint with whitespace/CRLF should fail validation, got %v", err)
+	}
+
 	// ntrip is not a valid push feed grant (a feeder can't push "ntrip").
 	if knownIngestTypes["ntrip"] {
 		t.Error("ntrip must not be a push feed type")

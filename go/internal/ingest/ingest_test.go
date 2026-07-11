@@ -98,6 +98,26 @@ func TestScanUBXResyncsToNextMessage(t *testing.T) {
 	}
 }
 
+// TestScanUBXResyncWithinFalseSyncExtent guards on a checksum failure,
+// the scanner must resume scanning from the byte after the false sync, not skip
+// the whole claimed (bogus) extent -- a real, complete frame B embedded within a
+// corrupt frame A's claimed payload must still be found and emitted.
+func TestScanUBXResyncWithinFalseSyncExtent(t *testing.T) {
+	payloadB := buildSFRBXPayload(gnss.Galileo, 14, 1, 0, make([]uint32, 8))
+	frameB := buildUBX(ubxClassRXM, ubxIDSFRBX, payloadB)
+
+	frameA := buildUBX(ubxClassRXM, ubxIDSFRBX, frameB) // A's payload is exactly frame B
+	frameA[len(frameA)-1] ^= 0xFF                       // corrupt A's checksum
+
+	frames, errs := collect(t, scanUBX, frameA)
+	if len(errs) == 0 || errs[0] != "ubx_checksum" {
+		t.Fatalf("want a leading ubx_checksum error for A, got %v", errs)
+	}
+	if len(frames) != 1 || frames[0].GnssID != gnss.Galileo {
+		t.Fatalf("want frame B still found and emitted despite A's checksum failure, got %+v", frames)
+	}
+}
+
 func TestScanRTCM(t *testing.T) {
 	// A message whose first 12 bits are 1019.
 	payload := make([]byte, 20)
@@ -151,6 +171,82 @@ func TestScanRTCMShortLength(t *testing.T) {
 	}
 }
 
+// TestScanRTCMZeroLengthFiller guards length 0 is a legal RTCM3
+// filler/keepalive message (no payload, no message number) and must not be
+// counted as an rtcm_length error -- the fix spec's exact verification: a
+// D3 00 00 filler with a valid CRC, followed by a real 1019, must yield exactly
+// one emitted frame and zero rtcm_length errors.
+func TestScanRTCMZeroLengthFiller(t *testing.T) {
+	filler := []byte{rtcmPreamble, 0x00, 0x00}
+	c := frame.CRC24Q(filler)
+	filler = append(filler, byte(c>>16), byte(c>>8), byte(c))
+
+	payload := make([]byte, 20)
+	payload[0] = 0x3F
+	payload[1] = 0xB0
+	msg := []byte{rtcmPreamble, byte(len(payload) >> 8), byte(len(payload))}
+	msg = append(msg, payload...)
+	mc := frame.CRC24Q(msg)
+	msg = append(msg, byte(mc>>16), byte(mc>>8), byte(mc))
+
+	full := append(filler, msg...)
+	frames, errs := collect(t, scanRTCM, full)
+	if len(frames) != 1 || frames[0].MsgType != 1019 {
+		t.Fatalf("want exactly one RTCM 1019 frame, got %+v", frames)
+	}
+	for _, e := range errs {
+		if e == "rtcm_length" {
+			t.Errorf("zero-length filler counted as rtcm_length error, want none: %v", errs)
+		}
+	}
+}
+
+// TestScanRTCMZeroLengthBadCRCIsError confirms a corrupt zero-length filler (not
+// a genuine keepalive, but a false preamble whose length field happens to read
+// as 0) is still flagged -- regression fix only exempts a *verified* filler from the
+// error path, not any length-0 candidate.
+func TestScanRTCMZeroLengthBadCRCIsError(t *testing.T) {
+	full := []byte{rtcmPreamble, 0x00, 0x00, 0xDE, 0xAD, 0xBE} // wrong CRC
+	frames, errs := collect(t, scanRTCM, full)
+	if len(frames) != 0 {
+		t.Errorf("bad-CRC zero-length candidate should not emit, got %+v", frames)
+	}
+	if len(errs) == 0 || errs[0] != "rtcm_crc" {
+		t.Errorf("want rtcm_crc, got %v", errs)
+	}
+}
+
+// TestScanRTCMResyncWithinFalseSyncExtent guards on a checksum failure,
+// the scanner must resume scanning from the byte after the false preamble, not
+// skip the whole claimed (bogus) extent -- the fix spec's exact scenario: valid
+// frame A whose payload contains a false preamble overlapping real frame B;
+// corrupt A's CRC, and B must still be found and emitted.
+func TestScanRTCMResyncWithinFalseSyncExtent(t *testing.T) {
+	// Frame B: a real, valid RTCM 1019 message.
+	bPayload := make([]byte, 20)
+	bPayload[0] = 0x3F
+	bPayload[1] = 0xB0
+	frameB := []byte{rtcmPreamble, byte(len(bPayload) >> 8), byte(len(bPayload))}
+	frameB = append(frameB, bPayload...)
+	bc := frame.CRC24Q(frameB)
+	frameB = append(frameB, byte(bc>>16), byte(bc>>8), byte(bc))
+
+	// Frame A: a "valid-length" RTCM message whose payload is exactly frame B
+	// (so B is fully contained within A's claimed extent), but A's own trailing
+	// CRC is deliberately wrong -- a checksum failure on a false/corrupt sync.
+	frameA := []byte{rtcmPreamble, byte(len(frameB) >> 8), byte(len(frameB))}
+	frameA = append(frameA, frameB...)
+	frameA = append(frameA, 0xDE, 0xAD, 0xBE) // wrong CRC for A
+
+	frames, errs := collect(t, scanRTCM, frameA)
+	if len(errs) == 0 || errs[0] != "rtcm_crc" {
+		t.Fatalf("want a leading rtcm_crc error for A, got %v", errs)
+	}
+	if len(frames) != 1 || frames[0].MsgType != 1019 {
+		t.Fatalf("want frame B still found and emitted despite A's CRC failure, got %+v", frames)
+	}
+}
+
 func TestScanSBF(t *testing.T) {
 	blockNum := uint16(4017) // GPSRawCA
 	body := make([]byte, 16)
@@ -175,6 +271,52 @@ func TestScanSBF(t *testing.T) {
 	}
 	if !bytes.Equal(frames[0].Bytes, body) {
 		t.Errorf("SBF body mismatch")
+	}
+}
+
+// TestScanSBFResyncWithinFalseSyncExtent guards on a CRC failure, the
+// scanner must resume scanning from the byte after the false sync, not skip the
+// whole claimed (bogus) extent -- a real, complete block B embedded within a
+// corrupt block A's claimed body must still be found and emitted.
+func TestScanSBFResyncWithinFalseSyncExtent(t *testing.T) {
+	// Frame B: a valid SBF block (same construction as TestScanSBF).
+	blockNum := uint16(4017)
+	bodyB := make([]byte, 16)
+	for i := range bodyB {
+		bodyB[i] = byte(i)
+	}
+	lengthB := 8 + len(bodyB)
+	hdrB := make([]byte, 4)
+	binary.LittleEndian.PutUint16(hdrB[0:], blockNum)
+	binary.LittleEndian.PutUint16(hdrB[2:], uint16(lengthB))
+	crcB := crc16ccitt(hdrB, bodyB)
+	frameB := []byte{sbfSync1, sbfSync2, byte(crcB), byte(crcB >> 8)}
+	frameB = append(frameB, hdrB...)
+	frameB = append(frameB, bodyB...)
+
+	// Frame A: a "valid-length" SBF block whose body is exactly frame B (so B
+	// is fully contained within A's claimed extent), but A's CRC is
+	// deliberately wrong -- a checksum failure on a false/corrupt sync.
+	bodyA := append([]byte(nil), frameB...)
+	for (8+len(bodyA))%4 != 0 { // length must stay a multiple of 4
+		bodyA = append(bodyA, 0)
+	}
+	lengthA := 8 + len(bodyA)
+	hdrA := make([]byte, 4)
+	binary.LittleEndian.PutUint16(hdrA[0:], 9999)
+	binary.LittleEndian.PutUint16(hdrA[2:], uint16(lengthA))
+	crcA := crc16ccitt(hdrA, bodyA)
+	frameA := []byte{sbfSync1, sbfSync2, byte(crcA), byte(crcA >> 8)}
+	frameA = append(frameA, hdrA...)
+	frameA = append(frameA, bodyA...)
+	frameA[3] ^= 0xFF // corrupt A's CRC high byte
+
+	frames, errs := collect(t, scanSBF, frameA)
+	if len(errs) == 0 || errs[0] != "sbf_crc" {
+		t.Fatalf("want a leading sbf_crc error for A, got %v", errs)
+	}
+	if len(frames) != 1 || frames[0].MsgType != 4017 {
+		t.Fatalf("want frame B still found and emitted despite A's CRC failure, got %+v", frames)
 	}
 }
 
