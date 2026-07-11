@@ -395,20 +395,25 @@ static int ssl_write_all(SSL *ssl, const void *buf, size_t n) {
 }
 
 /* ssl_read_full reads exactly n bytes. Returns 0 on success, -1 on a real error or clean
- * EOF, or -2  if the socket's SO_RCVTIMEO elapsed with no data — a "nothing to read
- * yet, keep waiting" signal distinct from a dead connection. A blocking socket's receive
+ * EOF, or -2  if the socket's SO_RCVTIMEO elapsed with *no bytes of this read
+ * consumed* — a "nothing to read yet, keep waiting" signal distinct from a dead connection.
+ * A timeout after partial consumption returns -1 instead: -2 would make the caller restart
+ * its frame parse from a torn header/payload, desyncing the ACK stream (a misparsed F_ACK
+ * seq could prune unacked frames), so a peer that stalls mid-record for a full receive
+ * timeout is treated as dead and the connection torn down. A blocking socket's receive
  * timeout usually surfaces through OpenSSL as SSL_ERROR_SYSCALL with errno EAGAIN/EWOULDBLOCK,
  * but some builds/BIOs report SSL_ERROR_WANT_READ for the same condition — both are treated
  * as a timeout here. */
 static int ssl_read_full(SSL *ssl, void *buf, size_t n) {
 	unsigned char *p = buf;
+	size_t want = n;
 	while (n > 0) {
 		int r = SSL_read(ssl, p, (int)n);
 		if (r <= 0) {
 			int err = SSL_get_error(ssl, r);
 			if (err == SSL_ERROR_WANT_READ ||
 			    (err == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)))
-				return -2;
+				return n == want ? -2 : -1;
 			return -1;
 		}
 		p += r; n -= (size_t)r;
@@ -463,15 +468,17 @@ static int send_ping(struct conn *c) {
 }
 
 /* read_frame reads one wire frame. Returns 0 on success, -1 on a real error, or -2 
- * on a receive timeout (ssl_read_full's "keep waiting" signal) — propagated unchanged so
- * reader_thread's loop can tell "idle" from "dead" apart. */
+ * on a receive timeout with the frame boundary intact — i.e. only from the header read with
+ * zero bytes consumed, so reader_thread's loop can tell "idle" from "dead" apart. Once the
+ * header has been consumed, a payload-read timeout is mid-frame: it is converted to -1 so
+ * the caller never resumes parsing from a torn frame. */
 static int read_frame(SSL *ssl, uint8_t *type, unsigned char *buf, uint32_t cap, uint32_t *len) {
 	unsigned char hdr[5];
 	int rc = ssl_read_full(ssl, hdr, 5);
 	if (rc != 0) return rc;
 	uint32_t n = rd_be32(hdr+1);
 	if (n > MAX_FRAME || n > cap) return -1;
-	if (n && (rc = ssl_read_full(ssl, buf, n)) != 0) return rc;
+	if (n && ssl_read_full(ssl, buf, n) != 0) return -1;
 	*type = hdr[0]; *len = n;
 	return 0;
 }
@@ -918,7 +925,22 @@ static int disk_drain(struct spool *s, struct conn *c, uint64_t *sent_upto) {
 	if (!path || dmax <= *sent_upto) return 0;
 
 	FILE *r = fopen(path, "rb");
-	if (!r) return 0;
+	if (!r) {
+		/* regression fix follow-up: an unopenable spool file (fd exhaustion, external
+		 * unlink) is otherwise indistinguishable from "nothing to drain" while
+		 * disk_max_seq stays ahead of sent_upto — the caller paces its retry
+		 * (see the drain loop), and this rate-limited log makes the stall
+		 * diagnosable instead of silent. Only serve_collector's thread calls
+		 * this, so the static is single-threaded. */
+		static time_t last_warn;
+		time_t nowt = time(NULL);
+		if (nowt - last_warn >= 60) {
+			last_warn = nowt;
+			log_msg("disk spool open failed (frames pending past seq %llu): %s",
+				(unsigned long long)*sent_upto, strerror(errno));
+		}
+		return 0;
+	}
 	int sent = 0;
 	for (;;) {
 		unsigned char hdr[12];
@@ -1010,8 +1032,16 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 			 * gathered from the ring and loop back to disk_drain first, which will
 			 * see the now-current disk_max_seq and send it — safe even if nothing
 			 * was actually evicted (disk_drain then sees dmax <= sent_upto and this
-			 * check falls through next time). */
+			 * check falls through next time). Pace the retry and keep the
+			 * keepalive flowing: if disk_drain cannot make progress (unopenable
+			 * spool file — see its fopen failure path), a bare continue would spin
+			 * this loop at 100% CPU forever and starve PINGs. */
 			for (size_t i = 0; i < n; i++) free(batch[i].data);
+			if (time(NULL) - last_tx >= KEEPALIVE_S) {
+				if (send_ping(&c) != 0) { g_disconnected = 1; break; }
+				last_tx = time(NULL);
+			}
+			usleep(50 * 1000);
 			continue;
 		}
 		if (n == 0) {                                  /* caught up; wait for the producer */
