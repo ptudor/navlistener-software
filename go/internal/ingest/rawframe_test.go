@@ -46,7 +46,7 @@ func TestNavTypeMatchesConstellationsTable(t *testing.T) {
 		{gnss.QZSS, 9, 0x51, "QzsCnav"},
 		{gnss.GLONASS, 0, 0x40, "GloNav"},
 		{gnss.GLONASS, 2, 0x40, "GloNav"},
-		{gnss.NavIC, 0, 0x60, "NavicNav"},
+		{gnss.NavIC, 0, 0, "NavicPlannedUnsupported"},
 		{gnss.SBAS, 0, 0x70, "SbasL1"},
 	}
 	for _, c := range cases {

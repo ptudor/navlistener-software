@@ -80,6 +80,10 @@ var (
 		Name: "navlistener_raw_observation_invalid_total",
 		Help: "RAWX observations rejected before estimator mutation, by source and field.",
 	}, []string{"source", "field"})
+	CapturedOnlyTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_captured_only_frames_total",
+		Help: "Valid raw frames persisted but intentionally not decoded into live state.",
+	}, []string{"source", "format"})
 
 	// LiveSVs is the current count of SVs held in live state, by constellation.
 	LiveSVs = promauto.NewGaugeVec(prometheus.GaugeOpts{

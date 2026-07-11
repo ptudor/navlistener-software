@@ -30,7 +30,7 @@ its ranging signal. That message contains, per satellite (SV):
 
 A commercial receiver (u-blox F9P/F9T, Septentrio mosaic) demodulates the signal and can
 hand us the **raw broadcast bits** of each navigation frame *before* it interprets them —
-u-blox as **UBX-RXM-SFRBX**, Septentrio as **SBF** nav-bit blocks, or as **RTCM3** decoded
+u-blox as **UBX-RXM-SFRBX**, Septentrio as **SBF** nav-bit blocks, or as **RTCM3** captured
 ephemeris messages. `navlistener` collects those raw frames from many receivers, decodes them
 itself, and does something no single receiver can: compares what *different* receivers heard,
 and compares each new ephemeris against the last, to catch orbit/clock discontinuities,
@@ -68,8 +68,8 @@ nav-frame output and forward it untouched. Per source:
 | Source | Producer (on the receiver) | Raw frames `navlistener` consumes |
 |---|---|---|
 | **u-blox** | the F9P/F9T/F10 itself | **UBX-RXM-SFRBX** (raw nav words, per gnssId/sigId) + **UBX-RXM-RAWX** (pseudorange/Doppler/carrier-phase) + **UBX-NAV-SAT/SIG** (C/N0, el/az, prRes) + **UBX-NAV-HPPOSECEF/PVT** (receiver position) + **UBX-MON-HW/MON-RF** (jamming; MON-RF on F9+). |
-| **Septentrio** | mosaic-X5 / PolaRx | **SBF** raw-nav blocks (`GPSRawCA` 4017, `GALRawINAV` 4023, …, `NAVICRaw` 4093) + `MeasEpoch` + `PVTGeodetic`. |
-| **RTCM3** | any RTCM source / caster | ephemeris messages **1019/1020/1041/1042/1044/1045/1046** + SSR orbit/clock **1057–1068** (precise-vs-broadcast integrity input). |
+| **Septentrio** | mosaic-X5 / PolaRx | **Capture-only:** SBF blocks are framed, CRC-checked, and raw-persisted; live navigation decode is planned. |
+| **RTCM3** | any RTCM source / caster | **Capture-only:** ephemeris/SSR messages are framed, CRC-checked, and raw-persisted; live navigation/SSR decode is planned. |
 
 The `internal/gnss/frame` decoders live centrally; the feeder is dumb. Ingest is a **registry
 of thin connectors** — read a local feed → frame → ship — so a new receiver type (Unicore,

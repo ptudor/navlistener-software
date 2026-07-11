@@ -253,7 +253,7 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 	// message (e.g. once per second on a typical MSM stream), burying real LNAV
 	// decode errors under a permanently-red counter.
 	if f.Words == nil {
-		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "byte_frame").Inc()
+		metrics.CapturedOnlyTotal.WithLabelValues(f.Source, "byte_frame").Inc()
 		return
 	}
 	switch {

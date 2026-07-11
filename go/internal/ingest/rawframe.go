@@ -143,7 +143,7 @@ func (f *RawFrame) NavType() int {
 	case gnss.GLONASS:
 		return 0x40 // GloNav
 	case gnss.NavIC:
-		return 0x60 // NavicNav
+		return 0 // planned: no NavIC decoder; do not advertise false live support
 	case gnss.SBAS:
 		return 0x70 // SbasL1
 	default:

@@ -194,10 +194,11 @@ type State struct {
 // push endpoint is a separate mechanism — docs/DESIGN.md §1, a later pass). Type
 // selects the wire parser; Addr is the host:port to dial.
 type Source struct {
-	Name     string `toml:"name"`
-	Type     string `toml:"type"`               // ubx | sbf | rtcm
-	Addr     string `toml:"addr"`               // host:port to dial
-	Disabled bool   `toml:"disabled,omitempty"` // keep the entry but don't start it (pause)
+	Name        string `toml:"name"`
+	Type        string `toml:"type"`                   // ubx | sbf | rtcm
+	Addr        string `toml:"addr"`                   // host:port to dial
+	Disabled    bool   `toml:"disabled,omitempty"`     // keep the entry but don't start it (pause)
+	CaptureOnly bool   `toml:"capture_only,omitempty"` // required for byte sources until live decoders land
 
 	// Remark is an operator-supplied free-form station note (docs/OUTPUT.md §1.3):
 	// the ONLY thing that reaches the public observers feed's remark field
@@ -372,6 +373,9 @@ func (c *Config) finalize() error {
 		}
 		if s.Addr == "" {
 			return fmt.Errorf("ingest %q: addr is required (host:port to dial)", s.Name)
+		}
+		if (s.Type == "sbf" || s.Type == "rtcm" || s.Type == "ntrip") && !s.CaptureOnly {
+			return fmt.Errorf("ingest %q: type %s is capture-only; set capture_only = true explicitly", s.Name, s.Type)
 		}
 		if s.Type == "ntrip" && s.Mountpoint == "" {
 			return fmt.Errorf("ingest %q: mountpoint is required for type ntrip", s.Name)

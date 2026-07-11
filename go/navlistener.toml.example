@@ -84,11 +84,13 @@ ack_interval = "1s"
 # [[ingest]]
 # name = "mosaic-x5"          # a Septentrio receiver
 # type = "sbf"                # SBF raw-nav blocks
+# capture_only = true         # framing/CRC/raw persistence only; no live-state decode yet
 # addr = "192.0.2.20:28784"
 
 # [[ingest]]
 # name = "ntrip-caster"       # an RTCM3 source (ephemeris + SSR)
 # type = "rtcm"
+# capture_only = true         # framing/CRC/raw persistence only; no live-state decode yet
 # addr = "192.0.2.30:2101"
 
 # NTRIP caster (RTCM3 over authenticated TLS by default), e.g. CRTN at Scripps/UCSD. Fill addr/mountpoint/username/
@@ -100,6 +102,7 @@ ack_interval = "1s"
 # [[ingest]]
 # name = "crtn-ucsd"
 # type = "ntrip"
+# capture_only = true         # framing/CRC/raw persistence only; no live-state decode yet
 # addr = "<caster-host>:2101"  # NTRIP caster host:port
 # mountpoint = "<MOUNT>"       # the mountpoint to subscribe
 # username = "<user>"          # NTRIP basic-auth credentials

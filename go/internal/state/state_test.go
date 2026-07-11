@@ -262,16 +262,16 @@ func TestStoreExpire(t *testing.T) {
 // burying real LNAV decode errors under a permanently-red metric.
 func TestApplyByteFrameSkipsLNAVDispatch(t *testing.T) {
 	lnavBefore := testutil.ToFloat64(metrics.DecodeErrorsTotal.WithLabelValues("0", "lnav"))
-	byteFrameBefore := testutil.ToFloat64(metrics.DecodeErrorsTotal.WithLabelValues("0", "byte_frame"))
+	capturedBefore := testutil.ToFloat64(metrics.CapturedOnlyTotal.WithLabelValues("rtcm-test", "byte_frame"))
 
 	st := New(1)
-	st.Apply(&ingest.RawFrame{MsgType: 1074, Bytes: []byte{0xDE, 0xAD, 0xBE, 0xEF}})
+	st.Apply(&ingest.RawFrame{Source: "rtcm-test", MsgType: 1074, Bytes: []byte{0xDE, 0xAD, 0xBE, 0xEF}})
 
 	if got := testutil.ToFloat64(metrics.DecodeErrorsTotal.WithLabelValues("0", "lnav")); got != lnavBefore {
 		t.Errorf("lnav error counter = %v, want unchanged %v (a byte frame must not be dispatched to DecodeGPSLNAV)", got, lnavBefore)
 	}
-	if got := testutil.ToFloat64(metrics.DecodeErrorsTotal.WithLabelValues("0", "byte_frame")); got != byteFrameBefore+1 {
-		t.Errorf("byte_frame error counter = %v, want %v", got, byteFrameBefore+1)
+	if got := testutil.ToFloat64(metrics.CapturedOnlyTotal.WithLabelValues("rtcm-test", "byte_frame")); got != capturedBefore+1 {
+		t.Errorf("captured-only counter = %v, want %v", got, capturedBefore+1)
 	}
 	if len(st.Snapshot(time.Now()).SVs) != 0 {
 		t.Error("a byte frame must not create an svState")

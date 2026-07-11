@@ -55,7 +55,7 @@ Decoder status: **★ core** (v1, must ship) · **▲ extended** (modern civil s
 | **BeiDou** | 3 | C | **D1** NAV (MEO/IGSO, subframes 1–5); **D2** NAV (GEO); **B-CNAV1** (B1C); **B-CNAV2** (B2a); **B-CNAV3** (B2b) | B1I 1561.098, B1C 1575.42, B2a 1176.45, B2b 1207.14, B3I 1268.52 MHz | BDS-SIS-ICD-B1I 3.0 (2019); -B1C 1.0 (2017); -B2a 1.0 (2017); -B2b 1.0 (2020) | ★ D1/D2; ▲ B-CNAV1/2/3 |
 | **GLONASS** | 6 | R | L1OF/L2OF **strings 1–15** (eph strings 1–4, time string 5, almanac 6–15) | L1 ~1602+k·0.5625, L2 ~1246+k·0.4375 MHz (FDMA, k=−7..+6); L3OC 1202.025 (CDMA, future) | GLONASS ICD Ed. 5.1 (2008, FDMA); GLONASS ICD CDMA Gen. Desc. Ed. 1.0 (L3OC) | ★ L1OF/L2OF; ◇ L3OC |
 | **QZSS** 🇯🇵 | 5 | J | L1 C/A **LNAV** (GPS-compatible); L2C/L5 **CNAV**; L1C **CNAV-2**; **L1S** (SLAS + DC Report); **L6** (L6D/L6E CLAS/MADOCA) | L1 1575.42, L2 1227.60, L5 1176.45, L1S 1575.42, L6 1278.75 MHz | IS-QZSS-PNT-005 (2023); IS-QZSS-L1S-005; IS-QZSS-L6-005 | ★ LNAV, L1S; ▲ CNAV, L6 |
-| **NavIC/IRNSS** 🇮🇳 | 7 | I | L5/S **SPS NAV** (master frame, subframes 1–4); **L1 SPS** NAV (NVS-01 onward) | L5 1176.45, S 2492.028, **L1 1575.42** (NVS-01+) MHz | IRNSS SPS ICD Version 1.1 (Aug 2017); NavIC L1 SPS ICD 1.0 (2023) | ★ L5/S NAV; ▲ L1 |
+| **NavIC/IRNSS** 🇮🇳 | 7 | I | L5/S **SPS NAV** (master frame, subframes 1–4); **L1 SPS** NAV (NVS-01 onward) | L5 1176.45, S 2492.028, **L1 1575.42** (NVS-01+) MHz | IRNSS SPS ICD Version 1.1 (Aug 2017); NavIC L1 SPS ICD 1.0 (2023) | **planned / captured raw only; no live decoder** |
 | **SBAS** | 1 | S | L1 C/A **MT 0–63** (integrity, fast/long corrections, iono grid, almanac) | L1 1575.42, L5 1176.45 (DFMC, future) MHz | RTCA DO-229 (MOPS, D/E); ICAO Annex 10 SARPs; SBAS L5 DFMC ICD (L5) | ★ L1 MT; ◇ L5 DFMC |
 
 SBAS providers we name and geo-fence for coverage (the `sbas` feed, `docs/OUTPUT.md §1.5`): **WAAS**
@@ -168,7 +168,8 @@ is part of the planned NavIC support.
 
 `navfeeder --source-mode rtcm` forwards RTCM3 framed messages (used where a receiver or an
 NTRIP caster exposes RTCM rather than raw frames, and as the source of *precise* orbits for
-the broadcast-vs-precise integrity check in `docs/INTEGRITY.md`). `rtcm.go` decodes:
+the future broadcast-vs-precise integrity check in `docs/INTEGRITY.md`). The current `rtcm.go`
+validates framing/CRC and persists raw messages only; the following live decoders are planned:
 
 | RTCM3 msg | Content |
 |---|---|
@@ -355,8 +356,8 @@ payloads, and receiver telemetry described below.
 | **0x52** | **`QzsCnav2`** | **QZSS L1C CNAV-2** | subframe 2 + TOI | SBF 4227 |
 | **0x53** | **`QzsL1s`** | **QZSS L1S SLAS / DC-report** | 250-bit message | UBX (5,1) / SBF 4228 |
 | **0x54** | **`QzsL6`** | **QZSS L6D/L6E CLAS/MADOCA** | 2000-bit frame | SBF 4069 |
-| **0x60** | **`NavicNav`** | **NavIC L5/S SPS NAV** | 292-bit subframe (post-FEC) | UBX (7,0) / SBF 4093 |
-| **0x61** | **`NavicL1Nav`** | **NavIC L1 SPS NAV** | frame (post-FEC) | SBF 4259 (no u-blox source yet) |
+| **0x60** | **`NavicNav` (reserved/planned)** | **NavIC L5/S SPS NAV** | 292-bit subframe (post-FEC) | raw capture only; not emitted as supported |
+| **0x61** | **`NavicL1Nav` (reserved/planned)** | **NavIC L1 SPS NAV** | frame (post-FEC) | raw capture only; not emitted as supported |
 | 0x70 | `SbasL1` | SBAS L1 C/A | 250-bit block | UBX (1,0) / SBF 4020 |
 | 0x71 | `SbasL5` | SBAS L5 DFMC ◇ | 250-bit block | SBF 4021 |
 

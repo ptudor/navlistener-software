@@ -192,7 +192,7 @@ shape; they are read-side conveniences over the same state and DB.
 
 New enrichment endpoints (ours — the Japan/India product surface, `docs/CONSTELLATIONS.md
 §3.2/§4.1`): `/gnss/api/qzss-dcr` (QZSS L1S DC Report disaster/crisis bulletins) and
-`/gnss/api/navic-text` (NavIC broadcast text messages). Same envelope; message streams,
+`/gnss/api/navic-text` (planned; unavailable until the NavIC decoder lands). Same envelope; message streams,
 not positioning inputs.
 
 ### 2.2 Enums (frozen)

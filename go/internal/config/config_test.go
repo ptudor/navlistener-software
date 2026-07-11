@@ -159,13 +159,13 @@ func TestCapabilitiesParsing(t *testing.T) {
 // dial type but not a push feed grant.
 func TestNtripSource(t *testing.T) {
 	c := defaults()
-	c.Ingest = []Source{{Name: "crtn", Type: "ntrip", Addr: "caster.invalid:2101"}} // no mountpoint
+	c.Ingest = []Source{{Name: "crtn", Type: "ntrip", Addr: "caster.invalid:2101", CaptureOnly: true}} // no mountpoint
 	if err := c.finalize(); err == nil || !strings.Contains(err.Error(), "mountpoint") {
 		t.Fatalf("ntrip without mountpoint should fail on mountpoint, got %v", err)
 	}
 
 	ok := defaults()
-	ok.Ingest = []Source{{Name: "crtn", Type: "ntrip", Addr: "caster.invalid:2101", Mountpoint: "P472_RTCM3"}}
+	ok.Ingest = []Source{{Name: "crtn", Type: "ntrip", Addr: "caster.invalid:2101", Mountpoint: "P472_RTCM3", CaptureOnly: true}}
 	if err := ok.finalize(); err != nil {
 		t.Fatalf("valid ntrip source rejected: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestNtripSource(t *testing.T) {
 	// a mountpoint containing CRLF/space injects headers or mangles the
 	// caster's HTTP request line -- the fix spec's exact PoC.
 	bad := defaults()
-	bad.Ingest = []Source{{Name: "crtn", Type: "ntrip", Addr: "caster.invalid:2101", Mountpoint: "P472 RTCM3\r\nX-Evil: 1"}}
+	bad.Ingest = []Source{{Name: "crtn", Type: "ntrip", Addr: "caster.invalid:2101", Mountpoint: "P472 RTCM3\r\nX-Evil: 1", CaptureOnly: true}}
 	if err := bad.finalize(); err == nil || !strings.Contains(err.Error(), "mountpoint") {
 		t.Fatalf("ntrip mountpoint with whitespace/CRLF should fail validation, got %v", err)
 	}
@@ -186,12 +186,12 @@ func TestNtripSource(t *testing.T) {
 
 func TestNtripTransportSecurityValidation(t *testing.T) {
 	secure := defaults()
-	secure.Ingest = []Source{{Name: "secure", Type: "ntrip", Addr: "caster.invalid:443", Mountpoint: "M", Username: "u", Password: "p"}}
+	secure.Ingest = []Source{{Name: "secure", Type: "ntrip", Addr: "caster.invalid:443", Mountpoint: "M", Username: "u", Password: "p", CaptureOnly: true}}
 	if err := secure.finalize(); err != nil {
 		t.Fatalf("TLS-default NTRIP credentials rejected: %v", err)
 	}
 	plain := defaults()
-	plain.Ingest = []Source{{Name: "plain", Type: "ntrip", Addr: "caster.invalid:2101", Mountpoint: "M", AllowInsecurePlaintext: true}}
+	plain.Ingest = []Source{{Name: "plain", Type: "ntrip", Addr: "caster.invalid:2101", Mountpoint: "M", AllowInsecurePlaintext: true, CaptureOnly: true}}
 	if err := plain.finalize(); err != nil {
 		t.Fatalf("explicit credential-free plaintext rejected: %v", err)
 	}
@@ -202,6 +202,24 @@ func TestNtripTransportSecurityValidation(t *testing.T) {
 	plain.Ingest[0].AllowPlaintextCredentials = true
 	if err := plain.finalize(); err != nil {
 		t.Fatalf("explicitly approved plaintext credentials rejected: %v", err)
+	}
+}
+
+func TestByteSourcesRequireExplicitCaptureOnly(t *testing.T) {
+	for _, typ := range []string{"sbf", "rtcm", "ntrip"} {
+		c := defaults()
+		s := Source{Name: typ, Type: typ, Addr: "127.0.0.1:1"}
+		if typ == "ntrip" {
+			s.Mountpoint = "M"
+		}
+		c.Ingest = []Source{s}
+		if err := c.finalize(); err == nil || !strings.Contains(err.Error(), "capture_only") {
+			t.Fatalf("%s without capture_only accepted: %v", typ, err)
+		}
+		c.Ingest[0].CaptureOnly = true
+		if err := c.finalize(); err != nil {
+			t.Fatalf("explicit capture-only %s rejected: %v", typ, err)
+		}
 	}
 }
 
@@ -254,7 +272,7 @@ func TestPushSBFFeedGrantRejected(t *testing.T) {
 	}
 	// Dial-mode sbf remains valid -- this finding is push-only.
 	ok := defaults()
-	ok.Ingest = []Source{{Name: "sbf-recv", Type: "sbf", Addr: "127.0.0.1:5555"}}
+	ok.Ingest = []Source{{Name: "sbf-recv", Type: "sbf", Addr: "127.0.0.1:5555", CaptureOnly: true}}
 	if err := ok.finalize(); err != nil {
 		t.Errorf("dial-mode sbf source rejected: %v (should be unaffected by the push-only regression fix restriction)", err)
 	}

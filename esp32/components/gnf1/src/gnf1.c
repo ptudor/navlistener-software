@@ -17,7 +17,7 @@ uint8_t gnf1_frame_type(unsigned gnss_id, unsigned sig_id)
         if (sig_id == 7 || sig_id == 8) return 0x33;
         return 0x30;
     case 6: return 0x40;                                             // GLONASS
-    case 7: return 0x60;                                             // NavIC
+    case 7: return 0;                                                // NavIC planned; no collector decoder
     case 1: return 0x70;                                             // SBAS
     default: return 0;
     }

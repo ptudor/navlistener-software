@@ -178,7 +178,7 @@ The baseline vocabulary and severities below are **verified against intsat's shi
 | `osnma_change` | Galileo OSNMA authentication on↔off | 0 |
 | `sbas_health` | SBAS message-type-0 / health change | 0, → 2 on do-not-use |
 | `qzss_health` *(ours)* | QZSS health/DC-report (disaster) transition | 1–2 |
-| `navic_health` *(ours)* | NavIC SPS health transition | 1–2 |
+| `navic_health` *(planned)* | NavIC SPS health transition; unavailable until the NavIC decoder lands | 1–2 |
 
 The two `*_health` types cover QZSS and NavIC; the
 QZSS one is doubly interesting because QZSS L1S carries **DC Report** disaster/crisis messages

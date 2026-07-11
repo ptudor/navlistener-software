@@ -517,7 +517,7 @@ static uint8_t frame_type(unsigned gnssId, unsigned sigId) {
 		if (sigId == 7 || sigId == 8) return 0x33;
 		return 0x30;
 	case 6: return 0x40;                                     /* GLONASS */
-	case 7: return 0x60;                                     /* NavIC */
+	case 7: return 0;                                        /* NavIC planned: capture without false type */
 	case 1: return 0x70;                                     /* SBAS */
 	default: return 0;
 	}
