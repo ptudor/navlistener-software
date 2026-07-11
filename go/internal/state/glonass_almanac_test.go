@@ -36,7 +36,7 @@ func icdAlmanac(slot int) frame.GLONASSAlmanacEntry {
 func TestFeedGlonassAlmanacOutOfView(t *testing.T) {
 	s := New(4)
 	s.gloNA = 615
-	s.gloAlmanac[7] = icdAlmanac(7)
+	s.gloAlmanac[7] = gloAlmSlot{entry: icdAlmanac(7), lastSeen: time.Now()}
 
 	out := s.FeedAlmanac(time.Now())
 	ent, ok := out["R07"]
@@ -67,7 +67,7 @@ func TestFeedGlonassAlmanacOutOfView(t *testing.T) {
 func TestFeedGlonassAlmanacObservedWins(t *testing.T) {
 	s := New(4)
 	s.gloNA = 615
-	s.gloAlmanac[7] = icdAlmanac(7)
+	s.gloAlmanac[7] = gloAlmSlot{entry: icdAlmanac(7), lastSeen: time.Now()}
 
 	// Seed an observed (precise) fix for slot 7, as the ephemeris/propagate stage would.
 	key := Key{G: gnss.GLONASS, Sv: 7, Sig: 0}
@@ -90,5 +90,26 @@ func TestFeedGlonassAlmanacObservedWins(t *testing.T) {
 	}
 	if ent.EcefXM != 1.1e7 {
 		t.Errorf("precise position was overwritten by the almanac: x=%v", ent.EcefXM)
+	}
+}
+
+// TestFeedGlonassAlmanacAgesOutStaleSlot guards a GLONASS almanac slot
+// unseen past gloAlmanacStaleAfter (a decommissioned/ghost slot) must not be
+// served forever, propagated to an ever-more-speculative position at the
+// current day number.
+func TestFeedGlonassAlmanacAgesOutStaleSlot(t *testing.T) {
+	s := New(4)
+	s.gloNA = 615
+	now := time.Now()
+	s.gloAlmanac[7] = gloAlmSlot{entry: icdAlmanac(7), lastSeen: now.Add(-(gloAlmanacStaleAfter + time.Hour))}
+
+	if out := s.FeedAlmanac(now); len(out) != 0 {
+		t.Errorf("stale GLONASS almanac slot still served: %+v", out)
+	}
+
+	s.gloAlmanac[7] = gloAlmSlot{entry: icdAlmanac(7), lastSeen: now}
+	out := s.FeedAlmanac(now)
+	if _, ok := out["R07"]; !ok {
+		t.Error("fresh GLONASS almanac slot missing")
 	}
 }

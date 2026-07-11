@@ -128,7 +128,14 @@ func (s *Store) FeedSVs(now time.Time) map[string]FeedSV {
 // feedSV projects one svState to a FeedSV. The caller holds the shard lock.
 func (st *svState) feedSV(now time.Time) FeedSV {
 	g := st.key.G
-	code, level := healthFor(g, st.health)
+	// health_code 0 ("unknown") until this SV's own health bits have
+	// actually been decoded -- an iono-only SV, or a Galileo SV whose
+	// word 5 hasn't arrived yet, otherwise served a false "OK" from st.health's
+	// zero value.
+	var code, level int
+	if st.haveHealth {
+		code, level = healthFor(g, st.health)
+	}
 	e := FeedSV{
 		FullName:         fullName(g, st.key.Sv, st.key.Sig),
 		Name:             fmt.Sprintf("%c%02d", g.Letter(), st.key.Sv),
@@ -170,13 +177,26 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 		e.AODC, e.AODE = &aodc, &aode
 	}
 	for src, tr := range st.ionoBySource {
-		if !tr.hasDelay || !finite(tr.delayM) {
+		// a receiver may carry several matured secondary arcs (e.g. both
+		// L2C and L5); the feed still serves one iono_pair_sigid per receiver, so
+		// pick whichever secondary paired most recently.
+		var best *secTrack
+		var bestSig int
+		for sigID, secT := range tr.secs {
+			if !secT.hasDelay || !finite(secT.delayM) {
+				continue
+			}
+			if best == nil || secT.lastRcvTow > best.lastRcvTow {
+				best, bestSig = secT, sigID
+			}
+		}
+		if best == nil {
 			continue
 		}
 		if e.Perrecv == nil {
 			e.Perrecv = map[string]*FeedPerRecv{}
 		}
-		d, ps := tr.delayM, tr.pairSig
+		d, ps := best.delayM, bestSig
 		e.Perrecv[src] = &FeedPerRecv{IonoDelayM: &d, IonoPairSigID: &ps}
 	}
 
@@ -348,8 +368,16 @@ func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
 	s.gloAlmMu.Lock()
 	na := s.gloNA
 	alms := make([]frame.GLONASSAlmanacEntry, 0, len(s.gloAlmanac))
-	for _, a := range s.gloAlmanac {
-		alms = append(alms, a)
+	for _, slot := range s.gloAlmanac {
+		// a slot the constellation's ground control has actually retired
+		// stops being rebroadcast by any satellite within a few ~2.5h cycles; without
+		// this cutoff a decommissioned slot's last-ever almanac would be propagated
+		// out to an ever-more-speculative "ghost" position at the current day number
+		// forever.
+		if now.Sub(slot.lastSeen) > gloAlmanacStaleAfter {
+			continue
+		}
+		alms = append(alms, slot.entry)
 	}
 	s.gloAlmMu.Unlock()
 	if na == 0 {
@@ -391,12 +419,22 @@ func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
 	}
 }
 
+// sbasStaleAfter bounds how long an SBAS PRN may go unseen before it is dropped from the
+// feed, mirroring rfStaleAfter: a live SBAS GEO broadcasts continuously (message
+// type 1 every few seconds), so this is generous margin over normal operation while still
+// catching a PRN whose station has gone dark or been decommissioned rather than serving
+// its last-known health with an ever-growing last_seen_s forever.
+const sbasStaleAfter = rfStaleAfter
+
 // FeedSBAS builds the sbas augmentation-health feed as of now (docs/OUTPUT.md §1.5).
 func (s *Store) FeedSBAS(now time.Time) map[string]SBASEntry {
 	out := make(map[string]SBASEntry)
 	s.sbasMu.Lock()
 	defer s.sbasMu.Unlock()
 	for prn, st := range s.sbas {
+		if now.Sub(st.lastSeen) > sbasStaleAfter {
+			continue
+		}
 		code := 1 // OK
 		if st.doNotUse {
 			code = 3 // do-not-use
@@ -417,6 +455,11 @@ func (s *Store) FeedSBAS(now time.Time) map[string]SBASEntry {
 	}
 	return out
 }
+
+// gloBnMalfunctionBit is the GLONASS Bn health word's MSB (bit 2 of the 3-bit
+// field): 1 = malfunctioning, 0 = operable (GLONASS ICD Ed. 5.1). The two
+// low-order bits carry other status, not overall SV health.
+const gloBnMalfunctionBit = 0x4
 
 // healthFor maps a constellation's raw broadcast health bits to the frozen
 // health_code / health_issue_level enums (docs/OUTPUT.md §2.2): health_code 0
@@ -442,8 +485,13 @@ func healthFor(g gnss.GNSSID, raw int) (code, level int) {
 		}
 		return 2, 2
 	case gnss.GLONASS:
-		// Bn MSB (bit 2) set ⇒ malfunction.
-		if raw == 0 {
+		// frame.DecodeGLONASSString stores the RAW 3-bit Bn field
+		// (r.Bits(5,3)), not just its MSB -- the two low-order bits carry other
+		// GLONASS ICD Ed. 5.1 flags, not overall SV health. Only bit 2 (value 4,
+		// the MSB) is the malfunction indicator, so mask to it before the zero
+		// test: without the mask, a benign low bit alone (raw 1 or 2) would flag
+		// a healthy SV as not-ok and fire a spurious health_change/critical event.
+		if raw&gloBnMalfunctionBit == 0 {
 			return 1, 0
 		}
 		return 2, 2

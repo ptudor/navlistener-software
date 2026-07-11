@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ptudor/gnss"
+	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/state"
 )
 
@@ -55,6 +57,101 @@ func TestCapabilityStationOfflineNotLost(t *testing.T) {
 	d.TickCapabilities(t1, rep)
 	if evs := d.TickCapabilities(t1.Add(70*time.Second), rep); len(evs) != 0 {
 		t.Fatalf("full outage wrongly fired a capability event: %+v", evs)
+	}
+}
+
+// TestCapabilityLossEventOrderDeterministic guards (SV, Type) alone is
+// not a unique key -- one station losing two demonstrated signals in the same
+// tick emits two capability_signal_lost events sharing both SV and Type, and
+// run.go's sort must still produce a fixed, repeatable order (the tertiary
+// Message key) rather than leaving the tie's relative order unspecified.
+func TestCapabilityLossEventOrderDeterministic(t *testing.T) {
+	sigs := []state.StationCapability{
+		{Gnss: 6, Sig: 0, Count: 50}, // GLONASS
+		{Gnss: 0, Sig: 0, Count: 50}, // GPS
+	}
+	t0 := time.Unix(1_700_000_000, 0)
+	for i := range sigs {
+		sigs[i].LastSeen = t0.Unix()
+	}
+
+	run := func() []Event {
+		d := New(0)
+		rep0 := capReport("s", t0.Unix(), sigs, nil)
+		d.TickCapabilities(t0, rep0)
+		t1 := t0.Add(20 * time.Minute)
+		rep1 := capReport("s", t1.Unix(), sigs, nil)
+		d.TickCapabilities(t1, rep1)
+		evs := d.TickCapabilities(t1.Add(70*time.Second), rep1)
+		var lost []Event
+		for _, e := range evs {
+			if e.Type == "capability_signal_lost" {
+				lost = append(lost, e)
+			}
+		}
+		return lost
+	}
+
+	first := run()
+	if len(first) != 2 {
+		t.Fatalf("got %d capability_signal_lost events, want 2: %+v", len(first), first)
+	}
+	if first[0].SV != first[1].SV || first[0].Type != first[1].Type {
+		t.Fatalf("expected both events to share (SV, Type): %+v", first)
+	}
+	if first[0].Message >= first[1].Message {
+		t.Errorf("events not in ascending Message order: %+v", first)
+	}
+	for i := 0; i < 25; i++ {
+		got := run()
+		if len(got) != 2 || got[0].Message != first[0].Message || got[1].Message != first[1].Message {
+			t.Fatalf("iteration %d: order changed run-to-run: %+v vs %+v", i, got, first)
+		}
+	}
+}
+
+// TestCapabilitySignalLostWithLiveRFTelemetry guards a station whose nav
+// signal has gone silent must still be judged "alive" (and so still eligible
+// for capability_signal_lost) if it keeps producing RF telemetry (MON-RF/
+// NAV-SAT) — that combination (all-nav-signal denial + continuing RF) is the
+// strongest jamming signature, and the old nav-frame-only stationAlive gate
+// suppressed it exactly when it mattered. This drives the real state.Store +
+// FeedCapabilityReports path (not the synthetic capReport helper) since the
+// fix lives in FeedCapabilityReports's station-liveness computation.
+func TestCapabilitySignalLostWithLiveRFTelemetry(t *testing.T) {
+	st := state.New(2)
+	d := New(0) // 60s debounce
+	t0 := time.Unix(1_700_000_000, 0)
+
+	gpsFrame := func(recv time.Time) *ingest.RawFrame {
+		return &ingest.RawFrame{Source: "s", GnssID: gnss.GPS, SigID: 0, Recv: recv, Words: make([]uint32, 10)}
+	}
+	rfFrame := func(recv time.Time) *ingest.RawFrame {
+		return &ingest.RawFrame{Source: "s", Recv: recv, RF: &ingest.RawRF{
+			Sats: []ingest.SatCN0{{GnssID: 0, SvID: 1, Cn0: 40, ElevDeg: 30}},
+		}}
+	}
+
+	// Demonstrate GPS L1 (CapMinObservations nav frames) so the signal counts as observed.
+	for i := 0; i < CapMinObservations; i++ {
+		st.Apply(gpsFrame(t0.Add(time.Duration(i) * time.Second)))
+	}
+	d.TickCapabilities(t0, st.FeedCapabilityReports(t0))
+
+	// The nav signal goes silent for well past CapSignalLostAfter, but RF
+	// telemetry keeps arriving on the same station throughout.
+	t1 := t0.Add(CapSignalLostAfter + time.Minute)
+	st.Apply(rfFrame(t1))
+	if evs := d.TickCapabilities(t1, st.FeedCapabilityReports(t1)); len(evs) != 0 {
+		t.Fatalf("confirmed before debounce: %+v", evs)
+	}
+
+	t2 := t1.Add(70 * time.Second)
+	st.Apply(rfFrame(t2))
+	evs := d.TickCapabilities(t2, st.FeedCapabilityReports(t2))
+	e, ok := find(evs, "capability_signal_lost")
+	if !ok || e.NewValue != "lost" {
+		t.Fatalf("capability_signal_lost = %+v (ok=%v), want lost -- RF telemetry alone must keep the station alive", e, ok)
 	}
 }
 

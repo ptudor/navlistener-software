@@ -8,10 +8,23 @@ import (
 	"github.com/ptudor/navlistener/internal/ingest"
 )
 
-// navFrame is a minimal decoded-nav RawFrame for capability tests: a Words payload is what
-// marks a frame as a per-signal nav frame (vs RF/observable telemetry).
+// navFrame is a genuinely decodable nav RawFrame for capability tests. // recordCapability now runs only after a successful decode, so a placeholder
+// Words payload (which every constellation's decoder rejects as too short) can
+// no longer stand in here -- each constellation needs a real single-subframe
+// payload, reusing the builders the constellation-specific tests already have.
 func navFrame(source string, g gnss.GNSSID, sig int, recv time.Time) *ingest.RawFrame {
-	return &ingest.RawFrame{Source: source, GnssID: g, SigID: sig, Recv: recv, Words: []uint32{0}}
+	var words []uint32
+	switch g {
+	case gnss.BeiDou:
+		buf := make([]byte, 28) // 224 bits
+		setAbsBits(buf, 15, 3, 1)
+		words = bdsD1Words(buf)
+	case gnss.GLONASS:
+		words = glonassStringWords(1, 0, 0, 0, 0, 0)
+	default: // gnss.GPS (and any other word-1-style constellation these tests use)
+		words = sf1Words(0)
+	}
+	return &ingest.RawFrame{Source: source, GnssID: g, SigID: sig, Recv: recv, Words: words}
 }
 
 // TestCapabilityFingerprint records nav frames from two stations across several signals and
@@ -99,6 +112,39 @@ func TestCapabilityFromApply(t *testing.T) {
 	caps := s.FeedStationCapabilities(now)["obs1"]
 	if len(caps) != 1 || caps[0].Gnss != int(gnss.BeiDou) || caps[0].Sig != 0 {
 		t.Fatalf("obs1 capabilities = %+v, want only BeiDou B1I from the nav frame", caps)
+	}
+}
+
+// TestCapabilityNotRecordedOnDecodeFailure guards the capability
+// fingerprint is defined as decoded-nav-frame evidence and is durable by
+// design, so a garbage/mis-tagged Words payload that fails to decode must not
+// install a fingerprint entry -- a feeder bug or corrupt stream must not be
+// able to permanently mark a capability that can later arm capability_impossible
+// or a forever-repeating capability_signal_lost for a signal never really
+// tracked.
+func TestCapabilityNotRecordedOnDecodeFailure(t *testing.T) {
+	s := New(2)
+	now := time.Unix(1_700_000_000, 0)
+
+	// One word is too short for every constellation's decoder (all require
+	// several words for a full subframe/string) -- garbage-Words evidence that
+	// must never reach the fingerprint.
+	s.Apply(&ingest.RawFrame{Source: "obsBad", GnssID: gnss.GPS, SigID: 0, Recv: now, Words: []uint32{0}})
+	s.Apply(&ingest.RawFrame{Source: "obsBad", GnssID: gnss.BeiDou, SigID: 0, Recv: now, Words: []uint32{0}})
+	s.Apply(&ingest.RawFrame{Source: "obsBad", GnssID: gnss.GLONASS, SigID: 0, Recv: now, Words: []uint32{0}})
+
+	if caps := s.FeedStationCapabilities(now)["obsBad"]; len(caps) != 0 {
+		t.Errorf("capabilities = %+v, want none -- decode failed for every frame", caps)
+	}
+	if reps := s.FeedCapabilityReports(now); len(reps["obsBad"].Observed) != 0 {
+		t.Errorf("capability report = %+v, want no observed entry for obsBad", reps["obsBad"])
+	}
+
+	// A genuine, decodable frame from the same source afterward must still
+	// record normally -- the guard only blocks failed decodes, not the source.
+	s.Apply(navFrame("obsBad", gnss.GPS, 0, now))
+	if caps := s.FeedStationCapabilities(now)["obsBad"]; len(caps) != 1 || caps[0].Gnss != int(gnss.GPS) {
+		t.Errorf("capabilities after a real frame = %+v, want GPS L1 recorded", caps)
 	}
 }
 

@@ -150,7 +150,6 @@ type StationCapReport struct {
 // declared signal). now is accepted for signature symmetry with the other Feed* methods.
 func (s *Store) FeedCapabilityReports(now time.Time) map[string]StationCapReport {
 	s.capMu.Lock()
-	defer s.capMu.Unlock()
 	// build the observed and declared views in this one critical section
 	// (rather than a separate FeedStationCapabilities call that re-locks capMu) so
 	// a station added by recordCapability between the two can't appear in one view
@@ -171,6 +170,29 @@ func (s *Store) FeedCapabilityReports(now time.Time) map[string]StationCapReport
 		}
 		out[id] = StationCapReport{ID: id, Declared: decl} // declared but nothing observed yet
 	}
+	s.capMu.Unlock()
+
+	// the detector's stationAlive gate must reflect ANY traffic from the
+	// station, not only nav frames -- an all-signal denial with RF telemetry
+	// (MON-RF/NAV-SAT) still flowing is the strongest jamming signature, and
+	// gating capability_signal_lost on nav-only liveness suppresses it exactly
+	// when it matters. Widen StationLastSeen to max(nav, RF) here; per-signal
+	// Observed[].LastSeen stays strictly nav-frame-based (unchanged) -- only the
+	// station-level liveness gate widens. A station with no capability/declared
+	// entry at all has nothing to check for loss, so RF-only stations are not
+	// added to out.
+	s.rfMu.Lock()
+	for id, st := range s.rf {
+		rep, ok := out[id]
+		if !ok {
+			continue
+		}
+		if sec := st.lastSeen.Unix(); sec > rep.StationLastSeen {
+			rep.StationLastSeen = sec
+			out[id] = rep
+		}
+	}
+	s.rfMu.Unlock()
 	return out
 }
 

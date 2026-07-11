@@ -125,11 +125,22 @@ func (d *Detector) run(now time.Time, classify func(emit emitFunc)) []Event {
 		}
 	}
 	classify(emit)
-	sort.Slice(events, func(i, j int) bool {
+	// sort.Slice is not stable, and (SV, Type) alone is not a unique key --
+	// a subject can emit several events of the same type in one tick (e.g. one
+	// capability_signal_lost per lost signal at a station). Without a stable sort
+	// plus a tertiary key, persisted gnss_events row order and SSE ids vary
+	// run-to-run for that family. Message is a per-event free-form string but
+	// distinct enough (it embeds the differentiating params, e.g. the signal
+	// id) to give a deterministic tertiary order; SliceStable preserves emission
+	// order for any remaining ties.
+	sort.SliceStable(events, func(i, j int) bool {
 		if events[i].SV != events[j].SV {
 			return events[i].SV < events[j].SV
 		}
-		return events[i].Type < events[j].Type
+		if events[i].Type != events[j].Type {
+			return events[i].Type < events[j].Type
+		}
+		return events[i].Message < events[j].Message
 	})
 	return events
 }
@@ -196,9 +207,10 @@ func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, emit em
 
 	// SISA/URA accuracy degradation, with hysteresis so a boundary value doesn't flap.
 	if sv.SISAM != nil {
-		emit(name, "sisa", sisaBand(*sv.SISAM), func(old string) Event {
+		band := d.sisaBand(name, *sv.SISAM)
+		emit(name, "sisa", band, func(old string) Event {
 			return Event{
-				Type: "sisa_change", OldValue: old, NewValue: sisaBand(*sv.SISAM), Severity: SevWarning,
+				Type: "sisa_change", OldValue: old, NewValue: band, Severity: SevWarning,
 				Message: fmt.Sprintf("%s SISA %.2f m", sv.Name, *sv.SISAM),
 				Params:  map[string]any{"sv": sv.Name, "sisa_m": *sv.SISAM},
 			}
@@ -277,15 +289,36 @@ func discoBand(v, warn, severe float64) (string, int) {
 	}
 }
 
-// sisaBand classifies accuracy as ok/degraded across the 3 m threshold. A value
-// dithering on the boundary cannot flap the confirmed state because a change must
-// persist for the full debounce window before it is emitted (docs/INTEGRITY.md §4);
-// the debounce is the flap filter for this continuous metric.
-func sisaBand(m float64) string {
+// sisaBand classifies accuracy as ok/degraded with real hysteresis : it
+// enters degraded at SISAAlertThreshold but only clears back to ok below the
+// lower SISAExitThreshold. Without this, a quantized URA/SISA value that
+// legitimately dwells on both sides of a plain threshold for minutes at a time
+// (longer than the debounce window) produces a confirmed sisa_change pair on
+// every dwell; the asymmetric band absorbs that dithering. subject looks up the
+// last CONFIRMED band for this SV so the hysteresis is anchored to the
+// machine's actual current state, not a provisional/pending one.
+func (d *Detector) sisaBand(subject string, m float64) string {
+	if prev, ok := d.currentBand(subject, "sisa"); ok && prev == "degraded" {
+		if m < SISAExitThreshold {
+			return "ok"
+		}
+		return "degraded"
+	}
 	if m >= SISAAlertThreshold {
 		return "degraded"
 	}
 	return "ok"
+}
+
+// currentBand looks up the last CONFIRMED classification for one (subject, metric)
+// state machine, without mutating it. The caller must hold d.mu (true for every
+// detectSV/detectStationRF/detectCapability call, which run inside d.run).
+func (d *Detector) currentBand(subject, metric string) (string, bool) {
+	m := d.machines[subject+"\x00"+metric]
+	if m == nil {
+		return "", false
+	}
+	return m.current, true
 }
 
 func boolState(b bool, t, f string) string {

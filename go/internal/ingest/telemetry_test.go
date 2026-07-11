@@ -41,6 +41,22 @@ func TestReceptionDataRoundTrip(t *testing.T) {
 	}
 }
 
+// TestReceptionDataPreservesElevationUnknownSentinel guards the push-path half
+// of UBX-NAV-SAT's out-of-range "elevation unknown" sentinel (91) must
+// survive the encode/decode round-trip unclamped, not collapse to a
+// plausible-looking 90 that state.cn0ElevationResidual can no longer tell
+// apart from a genuine zenith satellite.
+func TestReceptionDataPreservesElevationUnknownSentinel(t *testing.T) {
+	sats := []SatCN0{{GnssID: 0, SvID: 5, Cn0: 45, ElevDeg: 91}}
+	got, err := decodeReceptionData(EncodeReceptionData(sats))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ElevDeg != 91 {
+		t.Errorf("round-tripped ElevDeg = %+v, want 91 (unclamped)", got)
+	}
+}
+
 // TestReceptionDataEmpty confirms a zero-sat body still round-trips (an empty sky sample).
 func TestReceptionDataEmpty(t *testing.T) {
 	got, err := decodeReceptionData(EncodeReceptionData(nil))

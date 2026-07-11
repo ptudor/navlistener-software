@@ -28,14 +28,30 @@ type obsSample struct {
 	haveSamp bool
 }
 
-// ionoTrack pairs the primary and one secondary signal of an SV from one source
-// and carries the leveling arc across epochs.
+// secTrack carries one secondary signal's leveling arc against the SV's
+// primary. lastRcvTow is the receiver time of the last successful pairing,
+// used to pick which secondary to serve when a receiver reports several
+//.
+type secTrack struct {
+	sec        obsSample
+	arc        iono.Arc
+	delayM     float64
+	hasDelay   bool
+	lastRcvTow float64
+}
+
+// ionoTrack pairs the primary signal of an SV from one source against every
+// secondary signal that receiver reports, each with its own leveling arc.
+// a tri-frequency receiver (e.g. an F9T delivering both L2C and L5)
+// alternates which secondary it reports per epoch; a single shared secondary
+// slot reset on every alternation, so the arc never reached MinArc. Keying per
+// secondary signal id means neither arc is ever reset by the other's arrival —
+// both mature independently. The served feed still reports one
+// iono_pair_sigid per receiver (feed.go picks the most recently paired
+// secondary), so the contract is unchanged.
 type ionoTrack struct {
-	pri, sec obsSample
-	pairSig  int
-	arc      iono.Arc
-	delayM   float64
-	hasDelay bool
+	pri  obsSample
+	secs map[int]*secTrack // keyed by secondary sigId
 }
 
 // pairEpsilonS is the maximum receiver-time difference for two signals to count
@@ -88,7 +104,7 @@ func (s *Store) applyObservation(f *ingest.RawFrame) {
 	}
 	tr := st.ionoBySource[f.Source]
 	if tr == nil {
-		tr = &ionoTrack{}
+		tr = &ionoTrack{secs: map[int]*secTrack{}}
 		st.ionoBySource[f.Source] = tr
 	}
 
@@ -103,39 +119,61 @@ func (s *Store) applyObservation(f *ingest.RawFrame) {
 	}
 
 	if f.SigID == key.Sig {
-		// A lock-time regression means a new tracking arc: the phase ambiguity
-		// changed, so the leveling restarts (docs/MATH.md §7.4).
+		// A primary lock-time regression invalidates the phase reference every
+		// secondary pairing depends on (docs/MATH.md §7.4), so every secondary's
+		// arc resets, not just one.
 		if sample.lockMs < tr.pri.lockMs {
-			tr.arc.Reset()
+			for _, secT := range tr.secs {
+				secT.arc.Reset()
+			}
 		}
 		tr.pri = sample
-	} else {
-		if f.SigID != tr.pairSig || sample.lockMs < tr.sec.lockMs {
-			tr.arc.Reset()
-			tr.pairSig = f.SigID
+		// The primary may complete a pairing against any secondary already
+		// waiting at this epoch (a tri-frequency epoch reports pri + several
+		// secondaries); tr.pri itself is not "consumed" since it's shared.
+		for sigID, secT := range tr.secs {
+			s.tryPairIono(f, tr, secT, sigID, f1)
 		}
-		tr.sec = sample
+	} else {
+		secT := tr.secs[f.SigID]
+		if secT == nil {
+			secT = &secTrack{}
+			tr.secs[f.SigID] = secT
+		}
+		// A regression on this secondary only restarts its own arc -- the
+		// primary and any other secondary's arc are unaffected.
+		if sample.lockMs < secT.sec.lockMs {
+			secT.arc.Reset()
+		}
+		secT.sec = sample
+		s.tryPairIono(f, tr, secT, f.SigID, f1)
 	}
+}
 
-	if !tr.pri.haveSamp || !tr.sec.haveSamp || !tr.pri.haveCp || !tr.sec.haveCp {
+// tryPairIono completes one secondary's pairing against the track's current
+// primary sample, if both are present, valid, and from the same epoch.
+func (s *Store) tryPairIono(f *ingest.RawFrame, tr *ionoTrack, secT *secTrack, secSigID int, f1 float64) {
+	if !tr.pri.haveSamp || !secT.sec.haveSamp || !tr.pri.haveCp || !secT.sec.haveCp {
 		return
 	}
-	if math.Abs(tr.pri.rcvTow-tr.sec.rcvTow) > pairEpsilonS {
+	if math.Abs(tr.pri.rcvTow-secT.sec.rcvTow) > pairEpsilonS {
 		return // different epochs; wait for the pair to complete
 	}
 
-	f2sec := signalFreqHz(f.GnssID, tr.pairSig, f.FreqID)
-	pGF := tr.sec.prM - tr.pri.prM
-	phiGF := tr.pri.cpM - tr.sec.cpM
-	tr.arc.Add(pGF, phiGF)
-	if slant, ok := tr.arc.Slant(phiGF, f1, f2sec, 0); ok {
-		tr.delayM = slant
-		tr.hasDelay = true
+	f2sec := signalFreqHz(f.GnssID, secSigID, f.FreqID)
+	pGF := secT.sec.prM - tr.pri.prM
+	phiGF := tr.pri.cpM - secT.sec.cpM
+	secT.arc.Add(pGF, phiGF)
+	if slant, ok := secT.arc.Slant(phiGF, f1, f2sec, 0); ok {
+		secT.delayM = slant
+		secT.hasDelay = true
+		secT.lastRcvTow = tr.pri.rcvTow
 		metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "iono_pair").Inc()
 	}
-	// Consume the epoch so the next Add pairs fresh samples.
-	tr.pri.haveSamp = false
-	tr.sec.haveSamp = false
+	// Consume this secondary's sample so the next Add pairs a fresh one; the
+	// primary is left alone since another secondary may still need to pair
+	// against it within the same epoch.
+	secT.sec.haveSamp = false
 }
 
 // primarySig is the signal each constellation's iono measurement is referenced

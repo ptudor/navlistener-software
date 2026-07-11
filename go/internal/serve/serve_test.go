@@ -156,15 +156,28 @@ func TestObservers(t *testing.T) {
 	}
 }
 
+// gpsLNAVWords/beidouD1Words/galileoINAVWords build the minimal Words payload
+// each decoder needs to succeed (since recordCapability now fires only
+// after a real decode, capability tests must route through frames the
+// decoders actually accept, not an undersized placeholder). None of the
+// decoded field values matter here -- only that decode succeeds.
+func gpsLNAVWords() []uint32  { return make([]uint32, 10) }
+func beidouD1Words() []uint32 { return make([]uint32, 10) }
+func galileoINAVWords() []uint32 {
+	w := make([]uint32, 8)
+	w[4] = 0x80000000 // odd-part Even/Odd flag (page bit 128) must be 1
+	return w
+}
+
 // TestObserversCarryCapabilities confirms a station's demonstrated (gnss, sig) fingerprint
 // attaches to its observer record once it has produced nav frames (docs/OUTPUT.md §1.3,
 // CONSTELLATIONS §7).
 func TestObserversCarryCapabilities(t *testing.T) {
 	s := testServer([]config.Source{{Name: "observer16", Type: "ubx", Addr: "10.0.0.2:2947"}})
 	now := time.Now()
-	// A GPS L1 nav frame and a Galileo E5a F/NAV frame from this station.
-	s.store.Apply(&ingest.RawFrame{Source: "observer16", GnssID: gnss.GPS, SigID: 0, Recv: now, Words: []uint32{0}})
-	s.store.Apply(&ingest.RawFrame{Source: "observer16", GnssID: gnss.Galileo, SigID: 3, Recv: now, Words: []uint32{0}})
+	// A GPS L1 nav frame and a Galileo E1-B I/NAV frame from this station.
+	s.store.Apply(&ingest.RawFrame{Source: "observer16", GnssID: gnss.GPS, SigID: 0, Recv: now, Words: gpsLNAVWords()})
+	s.store.Apply(&ingest.RawFrame{Source: "observer16", GnssID: gnss.Galileo, SigID: 0, Recv: now, Words: galileoINAVWords()})
 	s.refresh("observers")
 	rr := httptest.NewRecorder()
 	s.serveFeed("observers")(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/observers", nil))
@@ -183,7 +196,7 @@ func TestObserversCarryCapabilities(t *testing.T) {
 	if len(caps) != 2 {
 		t.Fatalf("capabilities = %+v, want 2 signals", caps)
 	}
-	if caps[0].Gnss != int(gnss.GPS) || caps[1].Gnss != int(gnss.Galileo) || caps[1].Sig != 3 {
+	if caps[0].Gnss != int(gnss.GPS) || caps[1].Gnss != int(gnss.Galileo) || caps[1].Sig != 0 {
 		t.Errorf("capabilities not the expected sorted set: %+v", caps)
 	}
 }
@@ -198,10 +211,10 @@ func TestObserversCapabilityMismatch(t *testing.T) {
 		"observer16": {{Gnss: 0, Sig: 0}, {Gnss: 2, Sig: 0}},
 	})
 	now := time.Now()
-	// Observed: GPS L1 (declared, fine) + NavIC (7:0, not declared → unexpected). Galileo I/NAV
-	// is declared but never seen → missing.
-	s.store.Apply(&ingest.RawFrame{Source: "observer16", GnssID: gnss.GPS, SigID: 0, Recv: now, Words: []uint32{0}})
-	s.store.Apply(&ingest.RawFrame{Source: "observer16", GnssID: gnss.NavIC, SigID: 0, Recv: now, Words: []uint32{0}})
+	// Observed: GPS L1 (declared, fine) + BeiDou D1 (3:0, not declared → unexpected).
+	// Galileo I/NAV is declared but never seen → missing.
+	s.store.Apply(&ingest.RawFrame{Source: "observer16", GnssID: gnss.GPS, SigID: 0, Recv: now, Words: gpsLNAVWords()})
+	s.store.Apply(&ingest.RawFrame{Source: "observer16", GnssID: gnss.BeiDou, SigID: 0, Recv: now, Words: beidouD1Words()})
 	s.refresh("observers")
 	rr := httptest.NewRecorder()
 	s.serveFeed("observers")(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/observers", nil))
@@ -217,8 +230,8 @@ func TestObserversCapabilityMismatch(t *testing.T) {
 	if len(o.Declared) != 2 {
 		t.Errorf("declared = %+v, want 2", o.Declared)
 	}
-	if len(o.Unexpected) != 1 || o.Unexpected[0] != (state.CapSignal{Gnss: 7, Sig: 0}) {
-		t.Errorf("unexpected = %+v, want [7:0]", o.Unexpected)
+	if len(o.Unexpected) != 1 || o.Unexpected[0] != (state.CapSignal{Gnss: 3, Sig: 0}) {
+		t.Errorf("unexpected = %+v, want [3:0]", o.Unexpected)
 	}
 	if len(o.Missing) != 1 || o.Missing[0] != (state.CapSignal{Gnss: 2, Sig: 0}) {
 		t.Errorf("missing = %+v, want [2:0]", o.Missing)

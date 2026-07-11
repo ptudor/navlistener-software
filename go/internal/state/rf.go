@@ -46,10 +46,11 @@ type rfStation struct {
 	lastSeen time.Time
 	bands    map[int]*rfBand
 
-	haveCn0    bool
-	cn0Mean    float64
-	cn0Resid   float64 // variance of C/N₀ after removing the elevation trend
-	cn0NumSats int
+	haveCn0     bool
+	cn0Mean     float64
+	cn0Resid    float64 // variance of C/N₀ after removing the elevation trend
+	cn0NumSats  int
+	cn0LastSeen time.Time // last NAV-SAT sample; ages the spoof gate independently of MON-RF
 }
 
 // applyRF folds one RF-telemetry sample into the per-station RF state, updating the
@@ -79,6 +80,7 @@ func (s *Store) applyRF(f *ingest.RawFrame) {
 	if len(f.RF.Sats) > 0 {
 		st.cn0Mean, st.cn0Resid, st.cn0NumSats = cn0ElevationResidual(f.RF.Sats)
 		st.haveCn0 = st.cn0NumSats >= cn0MinSats
+		st.cn0LastSeen = f.Recv
 	}
 }
 
@@ -106,8 +108,14 @@ func (b *rfBand) learn(agc int) {
 func cn0ElevationResidual(sats []ingest.SatCN0) (mean, residVar float64, n int) {
 	var xs, ys []float64
 	for _, s := range sats {
-		if s.Cn0 <= 0 || s.ElevDeg < 0 {
-			continue // untracked or below-horizon: not part of the sky picture
+		// UBX-NAV-SAT elevation is valid only in [0,90]; > 90 is the
+		// "elevation unknown" sentinel (91 dial-mode, clamped to 90 by the feeder's
+		// GNF1 telemetry encode -- both must be excluded here, the one choke point
+		// covering both paths), typical for a freshly-acquired SV. Feeding an
+		// unknown elevation into the regression as if it were a real data point
+		// biases the slope/residual this single-transmitter spoof gate depends on.
+		if s.Cn0 <= 0 || s.ElevDeg < 0 || s.ElevDeg > 90 {
+			continue // untracked, below-horizon, or elevation-unknown sentinel
 		}
 		xs = append(xs, float64(s.ElevDeg))
 		ys = append(ys, float64(s.Cn0))
@@ -190,12 +198,17 @@ func (s *Store) FeedStationRF(now time.Time) map[string]StationRF {
 		entry := StationRF{
 			ID:       id,
 			LastSeen: st.lastSeen.Unix(),
-			NumSats:  st.cn0NumSats,
 			RFTrust:  1.0,
 		}
-		if st.haveCn0 {
+		// MON-RF and NAV-SAT arrive as independent frames and jointly keep
+		// the station-level lastSeen fresh; without its own staleness check, a
+		// C/N₀ residual computed once and never refreshed (NAV-SAT stopped while
+		// MON-RF kept the station alive) would feed a tripped spoof gate forever
+		// -- it could confirm spoofing_suspected once and never clear.
+		if st.haveCn0 && now.Sub(st.cn0LastSeen) <= rfStaleAfter {
 			m, r := st.cn0Mean, st.cn0Resid
 			entry.Cn0Mean, entry.Cn0Resid = &m, &r
+			entry.NumSats = st.cn0NumSats
 		}
 		blocks := make([]int, 0, len(st.bands))
 		for b := range st.bands {
@@ -204,6 +217,12 @@ func (s *Store) FeedStationRF(now time.Time) map[string]StationRF {
 		sort.Ints(blocks)
 		for _, bn := range blocks {
 			b := st.bands[bn]
+			// symmetrically, a band whose own telemetry has stopped must
+			// not keep contributing its last-ever (possibly jammed) agc/jamState
+			// to the jamming classification forever.
+			if now.Sub(b.lastSeen) > rfStaleAfter {
+				continue
+			}
 			sb := StationRFBand{
 				Block: b.block, AGC: b.agc, CWSuppress: b.cwSuppress,
 				NoiseLevel: b.noise, JamState: b.jamState, AntStatus: b.antStatus,

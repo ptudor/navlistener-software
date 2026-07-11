@@ -27,9 +27,14 @@ const (
 	TimeDiscoThreshold       = 2.5
 	TimeDiscoSevereThreshold = 10.0
 
-	// SISA/URA accuracy degradation crossing (metres). A boundary-dithering value
-	// cannot flap: the debounce window is the flap filter (docs/INTEGRITY.md §4).
+	// SISA/URA accuracy degradation crossing (metres): enters degraded at
+	// SISAAlertThreshold, clears back to ok only below SISAExitThreshold. 	// URA/SISA are quantized (e.g. GPS URA steps 2.83 m / 4.0 m straddle 3.0 m),
+	// so real SVs dwell on both sides of a plain threshold for minutes at a time
+	// -- longer than the debounce window, so the debounce alone cannot suppress
+	// the repeated ok/degraded pairs. The asymmetric exit band is the real flap
+	// filter for this metric; SISAAlertThreshold itself must not move.
 	SISAAlertThreshold = 3.0
+	SISAExitThreshold  = 2.5
 
 	// Silence: an SV unseen this long is lost; an observer unseen this long is
 	// offline (shorter, operator-actionable).

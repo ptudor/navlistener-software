@@ -96,7 +96,14 @@ type svState struct {
 	haveEph bool
 	iod     int
 	health  int
-	ura     int
+	// haveHealth is health_code 0 ("unknown") is the correct answer until
+	// this SV's own health bits have actually been decoded (e.g. a Galileo SV
+	// with only word types 1-4 assembled -- health arrives on word 5) or an
+	// iono-only SV  nothing is known about at all. Without this flag,
+	// st.health's zero value is indistinguishable from a genuinely decoded
+	// "healthy" and healthFor silently (and wrongly) reports OK.
+	haveHealth bool
+	ura        int
 
 	// Broadcast accuracy index and the table it decodes with (accNone/accURA/
 	// accSISA) — backs the sisa_valid/sisa_m feed fields. BeiDou also carries an
@@ -160,7 +167,7 @@ type Store struct {
 	// satellite's frame carries the whole constellation's almanac (strings 6–15), so
 	// this is a store-global map, separate from the per-SV ephemeris shards.
 	gloAlmMu   sync.Mutex
-	gloAlmanac map[int]frame.GLONASSAlmanacEntry
+	gloAlmanac map[int]gloAlmSlot
 	gloNA      int
 
 	// Per-station RF-environment state for the PNT-defense layer (docs/DEFENSE-PNT.md):
@@ -185,7 +192,7 @@ func New(n int) *Store {
 	s := &Store{
 		shards:     make([]*shard, n),
 		sbas:       make(map[int]*sbasState),
-		gloAlmanac: make(map[int]frame.GLONASSAlmanacEntry),
+		gloAlmanac: make(map[int]gloAlmSlot),
 		rf:         make(map[string]*rfStation),
 		caps:       make(map[string]*capStation),
 	}
@@ -209,15 +216,18 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 		s.applyRF(f)
 		return
 	}
-	// A word-oriented nav frame (ubx/push SFRBX) is the canonical evidence that this station
-	// tracks this (gnssId, sigId); record it into the capability fingerprint before dispatch.
-	// Byte-oriented frames (SBF blocks, RTCM messages) are keyed by message number, not a
-	// per-signal (gnssId, sigId), so they carry no capability signal and are excluded.
-	if f.Source != "" && f.Words != nil {
-		s.recordCapability(f.Source, f.GnssID, f.SigID, f.Recv)
-	}
 	if f.Obs != nil {
 		s.applyObservation(f)
+		return
+	}
+	// byte-oriented frames (RTCM messages, SBF blocks) carry Bytes only
+	// and no word-oriented Words -- but they also carry the RawFrame zero values
+	// for GnssID/SigID (GPS/0), which matches the LNAV dispatch case below.
+	// Without this guard, DecodeGPSLNAV(nil) fails on every single RTCM/SBF
+	// message (e.g. once per second on a typical MSM stream), burying real LNAV
+	// decode errors under a permanently-red counter.
+	if f.Words == nil {
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "byte_frame").Inc()
 		return
 	}
 	switch {
@@ -258,6 +268,9 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "cnav").Inc()
+	if f.Source != "" {
+		s.recordCapability(f.Source, f.GnssID, f.SigID, f.Recv)
+	}
 }
 
 // applySBAS decodes an SBAS L1 message and folds it into the per-PRN augmentation
@@ -270,6 +283,11 @@ func (s *Store) applySBAS(f *ingest.RawFrame) {
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "sbas").Inc()
+	// the capability fingerprint is decoded-nav-frame evidence and durable
+	// by design; record it only once decode has actually succeeded, never before.
+	if f.Source != "" {
+		s.recordCapability(f.Source, f.GnssID, f.SigID, f.Recv)
+	}
 
 	s.sbasMu.Lock()
 	defer s.sbasMu.Unlock()
@@ -293,6 +311,9 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "lnav").Inc()
+	if f.Source != "" {
+		s.recordCapability(f.Source, f.GnssID, f.SigID, f.Recv)
+	}
 
 	key := Key{G: f.GnssID, Sv: f.SvID, Sig: f.SigID}
 	sh := s.shardFor(key)
@@ -335,7 +356,7 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 		s.computeDisco(st, eph, clk, f.Recv)
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
-	st.health, st.ura = st.sf1.Health, st.sf1.URAIndex
+	st.health, st.haveHealth, st.ura = st.sf1.Health, true, st.sf1.URAIndex
 	st.accKind, st.accIdx = accURA, st.sf1.URAIndex
 }
 
@@ -346,6 +367,9 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "inav").Inc()
+	if f.Source != "" {
+		s.recordCapability(f.Source, f.GnssID, f.SigID, f.Recv)
+	}
 
 	key := Key{G: f.GnssID, Sv: f.SvID, Sig: 0} // Galileo SV keyed on primary signal
 	sh := s.shardFor(key)
@@ -364,7 +388,7 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 	// §2.2) and refresh the already-assembled clock's TGD without treating this as
 	// a new ephemeris (no IODnav change, so no disco recompute).
 	if w.Type == 5 {
-		st.health = w.Health
+		st.health, st.haveHealth = w.Health, true
 		st.galW[5] = w
 		if st.haveEph && st.galW[1] != nil && st.galW[2] != nil && st.galW[3] != nil && st.galW[4] != nil {
 			if _, clk, err := frame.AssembleGalileo(f.SvID, st.galW[1], st.galW[2], st.galW[3], st.galW[4], st.galW[5]); err == nil {
@@ -403,6 +427,9 @@ func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "d1").Inc()
+	if f.Source != "" {
+		s.recordCapability(f.Source, f.GnssID, f.SigID, f.Recv)
+	}
 
 	key := Key{G: f.GnssID, Sv: f.SvID, Sig: 0}
 	sh := s.shardFor(key)
@@ -443,7 +470,7 @@ func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 		s.computeDisco(st, eph, clk, f.Recv)
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
-	st.health = st.bd1.Health
+	st.health, st.haveHealth = st.bd1.Health, true
 	st.accKind, st.accIdx = accURA, st.bd1.URAI
 	st.aodc, st.aode, st.haveAOD = st.bd1.AODC, st.bd1.AODE, true
 }
@@ -455,6 +482,9 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "bcnav2").Inc()
+	if f.Source != "" {
+		s.recordCapability(f.Source, f.GnssID, f.SigID, f.Recv)
+	}
 
 	key := Key{G: f.GnssID, Sv: f.SvID, Sig: f.SigID}
 	sh := s.shardFor(key)
@@ -492,7 +522,7 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		s.computeDisco(st, eph, clk, f.Recv)
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, st.bc10.IODE, true
-	st.health = st.bc11.HS
+	st.health, st.haveHealth = st.bc11.HS, true
 }
 
 func (s *Store) applyGLONASS(f *ingest.RawFrame) {
@@ -502,6 +532,9 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "glo").Inc()
+	if f.Source != "" {
+		s.recordCapability(f.Source, f.GnssID, f.SigID, f.Recv)
+	}
 
 	key := Key{G: f.GnssID, Sv: f.SvID, Sig: 0}
 	sh := s.shardFor(key)
@@ -521,7 +554,7 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		st.gloS1, st.gloS1At = str, f.Recv
 	case str.Number == 2:
 		st.gloS2, st.gloS2At = str, f.Recv
-		st.health = str.Health
+		st.health, st.haveHealth = str.Health, true
 	case str.Number == 3:
 		st.gloS3, st.gloS3At = str, f.Recv
 	case str.Number == 5: // time string: carries the frame day-number NA
@@ -535,7 +568,7 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		return
 	case str.Number >= 7 && str.Number <= 15 && str.Number%2 == 1: // second of an almanac pair
 		if st.gloAlmFirst != nil && str.Number == st.gloAlmFirstNum+1 {
-			s.applyGloAlmanac(st.gloAlmFirst, f.Words)
+			s.applyGloAlmanac(st.gloAlmFirst, f.Words, f.Recv)
 		}
 		st.gloAlmFirst = nil
 		return
@@ -580,10 +613,29 @@ func (s *Store) setGloNA(na int) {
 	s.gloAlmMu.Unlock()
 }
 
+// gloAlmSlot is one GLONASS almanac subject slot's decoded entry plus the wall-clock
+// time it was last (re)broadcast. the entry itself carries no wall-clock recency
+// (Alm.NA is a broadcast day-number, not a receive timestamp), so without lastSeen a
+// decommissioned slot's last-ever almanac would be served forever, propagated out to an
+// ever-more-speculative position at the current day number.
+type gloAlmSlot struct {
+	entry    frame.GLONASSAlmanacEntry
+	lastSeen time.Time
+}
+
+// gloAlmanacStaleAfter bounds how long a GLONASS almanac slot may go un-rebroadcast
+// before it is dropped from the feed. Every operating satellite retransmits the
+// whole constellation's almanac roughly every ~2.5h broadcast cycle, so this is generous
+// margin over normal operation while still catching a slot the constellation's ground
+// control has actually retired (which stops appearing in any satellite's broadcast
+// almanac table within a few cycles, not indefinitely).
+const gloAlmanacStaleAfter = 3 * 24 * time.Hour
+
 // applyGloAlmanac decodes one satellite's almanac from its two-string pair and stores it
-// by subject slot. Decoding is pure and done outside the lock; only the map write is
-// guarded. Called with the transmitting SV's shard lock held (ordering shard→gloAlm).
-func (s *Store) applyGloAlmanac(first, second []uint32) {
+// by subject slot, alongside recv as the slot's last-(re)broadcast time. Decoding is pure
+// and done outside the lock; only the map write is guarded. Called with the transmitting
+// SV's shard lock held (ordering shard→gloAlm).
+func (s *Store) applyGloAlmanac(first, second []uint32, recv time.Time) {
 	s.gloAlmMu.Lock()
 	na := s.gloNA
 	s.gloAlmMu.Unlock()
@@ -593,7 +645,7 @@ func (s *Store) applyGloAlmanac(first, second []uint32) {
 		return
 	}
 	s.gloAlmMu.Lock()
-	s.gloAlmanac[a.Alm.Slot] = a
+	s.gloAlmanac[a.Alm.Slot] = gloAlmSlot{entry: a, lastSeen: recv}
 	s.gloAlmMu.Unlock()
 }
 

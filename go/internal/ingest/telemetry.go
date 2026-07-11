@@ -146,14 +146,20 @@ func EncodeReceptionData(sats []SatCN0) []byte {
 	return buf
 }
 
-// clampElev holds an elevation to the signed-byte range the wire carries (−90..+90 in
-// practice; NAV-SAT reports I1 degrees).
+// clampElev holds an elevation to the signed-byte wire range. The nominal valid
+// range is −90..+90 (NAV-SAT reports I1 degrees), but UBX-NAV-SAT's
+// out-of-range "elevation unknown" sentinel (91, typical for a freshly-acquired
+// SV) is deliberately let through rather than clamped down to a
+// plausible-looking 90 — clamping it made the push path indistinguishable from
+// a genuine zenith satellite, defeating cn0ElevationResidual's exclusion of
+// out-of-range elevations (state/rf.go). Only bound at the wire's actual int8
+// range (127) so the byte(int8(...)) conversion above can't wrap.
 func clampElev(deg int) int {
 	if deg < -90 {
 		return -90
 	}
-	if deg > 90 {
-		return 90
+	if deg > 127 {
+		return 127
 	}
 	return deg
 }

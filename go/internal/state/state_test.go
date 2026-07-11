@@ -5,8 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/navlistener/internal/ingest"
+	"github.com/ptudor/navlistener/internal/metrics"
 )
 
 // --- synthetic LNAV builders (mirror the frame package's, using the exported
@@ -243,5 +245,29 @@ func TestStoreExpire(t *testing.T) {
 	st.Expire(now.Add(3*time.Hour), 2*time.Hour)
 	if len(st.Snapshot(now.Add(3*time.Hour)).SVs) != 0 {
 		t.Error("stale SV should have been expired")
+	}
+}
+
+// TestApplyByteFrameSkipsLNAVDispatch guards a byte-oriented frame
+// (RTCM/SBF, Words nil, Bytes only) carries the RawFrame zero values for
+// GnssID/SigID (GPS/0), matching the GPS LNAV dispatch case -- without a
+// guard, DecodeGPSLNAV(nil) fails on every single RTCM/SBF message (e.g. once
+// per second on a typical MSM stream), incrementing the lnav error counter and
+// burying real LNAV decode errors under a permanently-red metric.
+func TestApplyByteFrameSkipsLNAVDispatch(t *testing.T) {
+	lnavBefore := testutil.ToFloat64(metrics.DecodeErrorsTotal.WithLabelValues("0", "lnav"))
+	byteFrameBefore := testutil.ToFloat64(metrics.DecodeErrorsTotal.WithLabelValues("0", "byte_frame"))
+
+	st := New(1)
+	st.Apply(&ingest.RawFrame{MsgType: 1074, Bytes: []byte{0xDE, 0xAD, 0xBE, 0xEF}})
+
+	if got := testutil.ToFloat64(metrics.DecodeErrorsTotal.WithLabelValues("0", "lnav")); got != lnavBefore {
+		t.Errorf("lnav error counter = %v, want unchanged %v (a byte frame must not be dispatched to DecodeGPSLNAV)", got, lnavBefore)
+	}
+	if got := testutil.ToFloat64(metrics.DecodeErrorsTotal.WithLabelValues("0", "byte_frame")); got != byteFrameBefore+1 {
+		t.Errorf("byte_frame error counter = %v, want %v", got, byteFrameBefore+1)
+	}
+	if len(st.Snapshot(time.Now()).SVs) != 0 {
+		t.Error("a byte frame must not create an svState")
 	}
 }

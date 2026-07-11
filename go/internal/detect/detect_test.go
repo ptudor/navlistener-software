@@ -100,6 +100,62 @@ func TestOrbitDiscoBands(t *testing.T) {
 	}
 }
 
+// TestSISAHysteresisDampensQuantizedDwell guards URA/SISA are quantized
+// (e.g. this codebase's GPS URA table steps directly from 2.8284 m (N=1) to
+// 4.0 m (N=2) around the 3.0 m SISAAlertThreshold, per gnss/accuracy.URAMeters
+// -- there is no intermediate value), so a real SV legitimately dwells on both
+// steps for minutes at a time, longer than the debounce window, and a plain
+// threshold produces a confirmed sisa_change pair on every such dwell. The
+// asymmetric exit band (clear only below SISAExitThreshold, 2.5 m) must absorb
+// that: dwelling back at the lower quantized step (2.8284 m, which is still
+// >= the exit threshold) must NOT clear the degraded state, while a genuine
+// drop further below the exit threshold must.
+func TestSISAHysteresisDampensQuantizedDwell(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(4_000_000, 0)
+	sv := gps("G05", 5, 1)
+
+	tick := func(sisaM float64, at time.Time) []Event {
+		sv.SISAM = ptrF(sisaM)
+		return d.Tick(at, map[string]state.FeedSV{"G05@0": sv}, nil)
+	}
+
+	// Seed ok at the lower quantized URA step (N=1, 2.8284 m).
+	tick(2.8284, t0)
+
+	// Dwell at the upper quantized step (N=2, 4.0 m -- degraded) for 90 s, past
+	// the debounce: a genuine confirmed transition.
+	t1 := t0.Add(90 * time.Second)
+	tick(4.0, t0.Add(10*time.Second))
+	evs := tick(4.0, t1)
+	e, ok := find(evs, "sisa_change")
+	if !ok || e.NewValue != "degraded" {
+		t.Fatalf("first sisa_change = %+v (ok=%v), want degraded", e, ok)
+	}
+
+	// Dwell back at the lower quantized step (2.8284 m) for another 90 s.
+	// Without hysteresis this clears (2.8284 < SISAAlertThreshold) and fires a
+	// second sisa_change pair on every such dwell; with the exit band it must
+	// NOT clear, since 2.8284 >= SISAExitThreshold (2.5 m).
+	t2 := t1.Add(90 * time.Second)
+	tick(2.8284, t1.Add(10*time.Second))
+	if evs := tick(2.8284, t2); len(evs) != 0 {
+		if _, ok := find(evs, "sisa_change"); ok {
+			t.Fatalf("sisa flapped back to ok while dwelling at %.4f m (>= exit threshold %.1f m): %+v",
+				2.8284, SISAExitThreshold, evs)
+		}
+	}
+
+	// A genuine drop below the exit threshold DOES clear it.
+	t3 := t2.Add(90 * time.Second)
+	tick(1.0, t2.Add(10*time.Second))
+	evs = tick(1.0, t3)
+	e, ok = find(evs, "sisa_change")
+	if !ok || e.NewValue != "ok" {
+		t.Fatalf("sisa clear = %+v (ok=%v), want ok once genuinely below the exit threshold", e, ok)
+	}
+}
+
 // TestQZSSHealthType confirms QZSS health transitions carry the qzss_health type,
 // not health_change (docs/INTEGRITY.md §5, the Japan extension).
 func TestQZSSHealthType(t *testing.T) {

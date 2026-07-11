@@ -87,6 +87,68 @@ func TestMeasuredIonoPipeline(t *testing.T) {
 	}
 }
 
+// TestMeasuredIonoTriFrequencyDoesNotThrash guards a receiver
+// alternating between two secondary signals per epoch (e.g. GPS L2C=sig3,
+// L5=sig6, as an F9T delivering both) previously reset one shared secondary
+// slot on every alternation, so the arc never reached iono.MinArc and no delay
+// was ever published. Each secondary must now mature independently despite
+// the alternation, and the served iono_pair_sigid must be deterministic (not
+// dependent on Go's randomized map iteration order) across repeated feed
+// builds from the same underlying state.
+func TestMeasuredIonoTriFrequencyDoesNotThrash(t *testing.T) {
+	const (
+		f1  = 1575.42e6
+		f2a = 1227.60e6 // GPS L2C, sigId 3
+		f2b = 1176.45e6 // GPS L5, sigId 6
+		i1  = 4.2
+		rho = 2.2e7
+	)
+	gammaA := iono.Gamma(f1, f2a)
+	gammaB := iono.Gamma(f1, f2b)
+	lambda1 := physconst.SpeedOfLight / f1
+	lambdaA := physconst.SpeedOfLight / f2a
+	lambdaB := physconst.SpeedOfLight / f2b
+
+	s := New(1)
+	now := time.Now()
+	epochs := 2 * (iono.MinArc + 5)
+	for epoch := 0; epoch < epochs; epoch++ {
+		tow := 300000.0 + float64(epoch)
+		lock := 1000 + epoch*1000
+		phi1 := rho - i1
+		s.Apply(&ingest.RawFrame{
+			Recv: now, Source: "bench", GnssID: gnss.GPS, SvID: 9, SigID: 0,
+			Obs: &ingest.RawObs{RcvTow: tow, PrM: rho + i1, CpCyc: phi1 / lambda1, LockTimeMs: lock, CpValid: true},
+		})
+		sig, gamma, lambda := 3, gammaA, lambdaA
+		if epoch%2 != 0 {
+			sig, gamma, lambda = 6, gammaB, lambdaB
+		}
+		phi2 := rho - gamma*i1
+		s.Apply(&ingest.RawFrame{
+			Recv: now, Source: "bench", GnssID: gnss.GPS, SvID: 9, SigID: sig,
+			Obs: &ingest.RawObs{RcvTow: tow, PrM: rho + gamma*i1, CpCyc: phi2 / lambda, LockTimeMs: lock, CpValid: true},
+		})
+	}
+
+	svs1 := s.FeedSVs(now)
+	sv1, ok := svs1["G09@0"]
+	if !ok {
+		t.Fatal("G09@0 missing from the feed")
+	}
+	pr1 := sv1.Perrecv["bench"]
+	if pr1 == nil || pr1.IonoDelayM == nil || pr1.IonoPairSigID == nil {
+		t.Fatal("no iono measurement published despite alternating secondaries maturing -- the regression fix thrash")
+	}
+
+	// Repeat with no new data: the reported sigId must be deterministic, not
+	// dependent on Go's randomized map iteration order.
+	pr2 := s.FeedSVs(now)["G09@0"].Perrecv["bench"]
+	if pr2 == nil || pr2.IonoPairSigID == nil || *pr2.IonoPairSigID != *pr1.IonoPairSigID {
+		t.Errorf("iono_pair_sigid not stable across repeated feed builds: %v then %v", pr1.IonoPairSigID, pr2.IonoPairSigID)
+	}
+}
+
 // TestMeasuredIonoArcResetOnSlip confirms a lock-time regression (cycle slip)
 // restarts the leveling arc rather than mixing ambiguities across the slip.
 func TestMeasuredIonoArcResetOnSlip(t *testing.T) {
@@ -106,7 +168,7 @@ func TestMeasuredIonoArcResetOnSlip(t *testing.T) {
 	sh := s.shardFor(key)
 	sh.mu.Lock()
 	tr := sh.m[key].ionoBySource["bench"]
-	n := tr.arc.Count()
+	n := tr.secs[6].arc.Count()
 	sh.mu.Unlock()
 	if n != 5 {
 		t.Fatalf("arc count = %d, want 5", n)
@@ -114,7 +176,7 @@ func TestMeasuredIonoArcResetOnSlip(t *testing.T) {
 	// Lock-time regression on the secondary: arc must reset.
 	apply(6, 100, 1006, 2e7+3, (2e7-4)/0.25)
 	sh.mu.Lock()
-	n = tr.arc.Count()
+	n = tr.secs[6].arc.Count()
 	sh.mu.Unlock()
 	if n >= 5 {
 		t.Fatalf("arc count = %d after slip, want reset", n)
