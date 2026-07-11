@@ -139,6 +139,36 @@ func TestBeiDouGEOBranch(t *testing.T) {
 	}
 }
 
+// TestBeiDouGEOStationarity guards a BeiDou GEO SV is nearly Earth-fixed in ECEF, so
+// over an hour it drifts far less than a MEO SV over the same hour. A sign error in the GEO
+// frame's Rz(ωe·tk)/Rx(−5°) rotation would make the GEO sweep at roughly Earth rate (tens of
+// thousands of km/hour), so this stationarity property catches a rotation-sign regression the
+// ≥1-km branch-switch assertion in TestBeiDouGEOBranch cannot.
+func TestBeiDouGEOStationarity(t *testing.T) {
+	const a = 42164000.0
+	geo := Ephemeris{
+		ID: gnss.BeiDou, SVID: 2,
+		SqrtA: math.Sqrt(a), Ecc: 0.0003, M0: 0.1,
+		I0: 0.02, Omega0: 0.5, Omega: 0.2, Toe: 0,
+	}
+	p0, err := Propagate(geo, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p1, err := Propagate(geo, 3600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A correct BeiDou GEO traces a small analemma (~hundreds of km/hour from its residual
+	// inclination and the −5° frame tilt). If the Rz(ωe·tk) rotation sign were flipped, the
+	// SV would sweep at ~2× the sidereal rate — a ~30°/hour arc at 42 164 km ≈ 22 000 km of
+	// ECEF drift — which this bound catches while passing the correct ~hundreds of km.
+	geoDrift := p1.Sub(p0).Norm()
+	if geoDrift > 3_000_000 {
+		t.Errorf("GEO drifted %.0f km over 1h, want a small analemma (Rz/Rx sign error?)", geoDrift/1000)
+	}
+}
+
 func TestErrorGuards(t *testing.T) {
 	base := realisticGPS
 	// Non-positive semi-major axis.
