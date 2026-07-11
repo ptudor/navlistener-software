@@ -18,8 +18,10 @@
  * bounded in-memory ring (assigning a monotonic sequence); a consumer drains it to the
  * collector. Reading and sending are decoupled, so a collector restart or network blip does
  * NOT lose data — on every reconnect the consumer REPLAYS all unacked frames (galmon's rule:
- * "the receiver must never go down"). The collector ACKs the highest sequence it has stored,
- * pruning the ring. On overflow the OLDEST frame spills to a disk spool (--spool-file) rather
+ * "the receiver must never go down"). The collector ACKs the highest sequence it has RECEIVED
+ * this connection  -- not "last contiguous," and not a durability guarantee that it has
+ * actually reached the historian -- pruning the ring up to that seq. On overflow the OLDEST
+ * frame spills to a disk spool (--spool-file) rather
  * than being dropped; the spool is recovered and replayed on restart, so an outage longer
  * than RAM, or an ORDERLY router reboot, still loses nothing. Disk-spooled frames are
  * fflush()'d but deliberately not fsync()'d  — a bounded flash-wear trade for the

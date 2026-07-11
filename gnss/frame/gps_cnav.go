@@ -2,6 +2,7 @@ package frame
 
 import (
 	"encoding/binary"
+	"errors"
 	"math"
 
 	"github.com/ptudor/gnss"
@@ -17,6 +18,18 @@ import (
 // LNAV, CNAV uses the ΔA parameterization: A = A_ref + ΔA. Fields and offsets are
 // the documented IS-GPS-200 Table 30-I/II/III layout, confirmed against real
 // ZED-F9P frames (a≈26560 km, i₀≈55°, and CNAV position agrees with LNAV to <5 m).
+//
+// Unlike LNAV/I-NAV, no documented u-blox guarantee was found (regression fix, investigated
+// rather than assumed) that RXM-SFRBX delivers only CRC-validated CNAV words —
+// LNAV's "receiver already validated parity" claim above is specific to that
+// format's D30*-corrected word delivery, and no equivalent statement exists for
+// L2C/L5 CNAV in this codebase's history or any consulted reference. Push-path
+// frames also arrive from remote feeders, not just a directly-dialed receiver.
+// DecodeGPSCNAV therefore validates the preamble and CRC-24Q itself rather than
+// trusting the source, matching BeiDou B-CNAV2's ErrBadCRC-rejection precedent.
+
+// ErrBadPreamble is returned when a CNAV message's leading byte isn't 0x8B.
+var ErrBadPreamble = errors.New("frame: CNAV preamble mismatch")
 
 // CNAV scale factors and reference constants beyond the shared set.
 const (
@@ -53,6 +66,21 @@ type GPSCNAV struct {
 	WN     int
 	Health int // raw 3-bit L1/L2/L5 signal-health field (IS-GPS-200 §30.3.3.1.1.2), unmasked
 	URAED  int
+
+	// Message-30-only group delay differential correction terms : T_GD is set
+	// directly into clk.TGD (IS-GPS-200 Table 30-IV; 13 bits, 2⁻³⁵ — wider than LNAV's
+	// 8-bit T_GD, so it is NOT the same field width/scale), packed contiguously right
+	// after Af2 (bits 117-126), so T_GD starts at bit 127 — confirmed against this
+	// codebase's existing, already-verified Toc/Af0/Af1/Af2 offsets, each of which
+	// starts exactly where the previous field ends. The four ISCs immediately follow
+	// T_GD and are captured here, additive: which ISC applies is signal-pair-specific
+	// (IS-GPS-200 §30.3.3.3.1.1) and folding one into the generic clock polynomial
+	// would be wrong for every signal that doesn't use it, so none is applied
+	// automatically. Populated only when MsgType == 30.
+	ISCL1CA float64
+	ISCL2C  float64
+	ISCL5I5 float64
+	ISCL5Q5 float64
 }
 
 // DecodeGPSCNAV decodes one CNAV message (ten words). id is GPS or QZSS (they
@@ -64,6 +92,12 @@ func DecodeGPSCNAV(id gnss.GNSSID, words []uint32) (*GPSCNAV, error) {
 	buf := make([]byte, 40) // 10 words × 32 bits = 320 bits (300 used)
 	for i := 0; i < 10; i++ {
 		binary.BigEndian.PutUint32(buf[i*4:], words[i])
+	}
+	if buf[0] != 0x8B { // preamble check
+		return nil, ErrBadPreamble
+	}
+	if !CheckCRC24QBits(buf, 0, 300) { // CRC-24Q over the full 300-bit message
+		return nil, ErrBadCRC
 	}
 	r := NewBitReaderN(buf, 320)
 	u := func(p, n int) uint64 { v, _ := r.Bits(p, n); return v }
@@ -116,6 +150,17 @@ func DecodeGPSCNAV(id gnss.GNSSID, words []uint32) (*GPSCNAV, error) {
 			Af2: float64(s(117, 10)) * p2m60,
 		}
 		m.hasClk = true
+		if m.MsgType == 30 { // group delay + ISCs : MT30-only, not common to 31-37
+			// Contiguous with the clock block above (Af2 occupies bits 117-126, so
+			// T_GD starts at 127) — confirmed against the existing, already-verified
+			// Toc/Af0/Af1/Af2 offsets, each of which starts exactly where the
+			// previous field ends.
+			m.clk.TGD = float64(s(127, 13)) * p2m35
+			m.ISCL1CA = float64(s(140, 13)) * p2m35
+			m.ISCL2C = float64(s(153, 13)) * p2m35
+			m.ISCL5I5 = float64(s(166, 13)) * p2m35
+			m.ISCL5Q5 = float64(s(179, 13)) * p2m35
+		}
 	}
 	return m, nil
 }

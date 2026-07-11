@@ -44,6 +44,29 @@ func TestKlobucharNightFloor(t *testing.T) {
 	}
 }
 
+// TestKlobucharNegativeElevationGuarded guards IS-GPS-200 defines the
+// model for el >= 0. At el = -19.8 deg (-0.11*pi rad) the earth-centred-angle
+// term 0.0137/(e+0.11) - 0.022 divides by zero (e+0.11 == 0), yielding ±Inf ->
+// NaN/Inf delay before the fix; any negative elevation must now clamp to el=0
+// and return the same finite, ICD-plausible delay as an actual el=0 call.
+func TestKlobucharNegativeElevationGuarded(t *testing.T) {
+	lat := 40 * math.Pi / 180
+	lon := -75 * math.Pi / 180
+
+	zero := Klobuchar(alpha, beta, lat, lon, 0, 0, 50400)
+
+	for _, elDeg := range []float64{-19.8, -5, 0} {
+		el := elDeg * math.Pi / 180
+		got := Klobuchar(alpha, beta, lat, lon, 0, el, 50400)
+		if math.IsNaN(got) || math.IsInf(got, 0) {
+			t.Errorf("el=%.1fdeg: delay = %v, want finite", elDeg, got)
+		}
+		if got != zero {
+			t.Errorf("el=%.1fdeg: delay = %v, want the clamped-to-zero delay %v", elDeg, got, zero)
+		}
+	}
+}
+
 func TestScaleDelay(t *testing.T) {
 	// L5 delay exceeds L1 by (f_L1/f_L5)² ≈ 1.793.
 	l1 := 10e-9

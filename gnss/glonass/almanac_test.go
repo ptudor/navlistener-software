@@ -69,6 +69,62 @@ func TestAlmanacICDExample(t *testing.T) {
 	}
 }
 
+// TestAlmanacECEFVelocityMatchesFiniteDifference guards propagateAlmanac's
+// ecefNode branch returned the inertial orbital velocity rotated by the node
+// angle, but omitted the −ωe×r term from the node angle itself rotating with
+// Earth (unlike inertialNode, whose OXaYaZa frame has no such t-dependence —
+// TestAlmanacICDExample already pins that branch bit-for-bit and is untouched
+// here). The fix specification's own prescribed check: finite-difference two
+// ECEF positions 1 s apart and compare to the analytic velocity.
+func TestAlmanacECEFVelocityMatchesFiniteDifference(t *testing.T) {
+	a := Almanac{
+		NA:        615,
+		Lambda:    halfCycle(-0.189986229),
+		Tlambda:   27122.09375,
+		DeltaI:    halfCycle(0.011929512),
+		DeltaT:    -2655.76171875,
+		DeltaTdot: 0.000549316,
+		Ecc:       0.001482010,
+		Omega:     halfCycle(0.440277100),
+	}
+	const n0 = 615
+	const ti = 33300.0
+	const dt = 1.0
+
+	pos, vel, err := propagateAlmanac(a, n0, ti, ecefNode, 0)
+	if err != nil {
+		t.Fatalf("propagate: %v", err)
+	}
+	fwd, _, err := propagateAlmanac(a, n0, ti+dt, ecefNode, 0)
+	if err != nil {
+		t.Fatalf("propagate fwd: %v", err)
+	}
+	bwd, _, err := propagateAlmanac(a, n0, ti-dt, ecefNode, 0)
+	if err != nil {
+		t.Fatalf("propagate bwd: %v", err)
+	}
+
+	wantVx := (fwd.X - bwd.X) / (2 * dt)
+	wantVy := (fwd.Y - bwd.Y) / (2 * dt)
+	wantVz := (fwd.Z - bwd.Z) / (2 * dt)
+
+	const velTol = 1e-4 // km/s (0.1 m/s) -- generous over 1s curvature effects
+	if d := math.Abs(vel.X - wantVx); d > velTol {
+		t.Errorf("Vx = %.6f km/s, want %.6f (finite-diff, Δ %.6f)", vel.X, wantVx, d)
+	}
+	if d := math.Abs(vel.Y - wantVy); d > velTol {
+		t.Errorf("Vy = %.6f km/s, want %.6f (finite-diff, Δ %.6f)", vel.Y, wantVy, d)
+	}
+	if d := math.Abs(vel.Z - wantVz); d > velTol {
+		t.Errorf("Vz = %.6f km/s, want %.6f (finite-diff, Δ %.6f)", vel.Z, wantVz, d)
+	}
+
+	// pos must be unaffected -- position was already correct before the fix.
+	if pos.X == 0 && pos.Y == 0 && pos.Z == 0 {
+		t.Fatal("test setup: pos is the zero value")
+	}
+}
+
 // TestAlmanacECEFGroundTrack checks the rotating frame (MATH §3.1):
 // at multiple times of day the ECEF position must stay
 // on the GLONASS orbital shell (~25 510 km) at the ~64.8° inclination, and the

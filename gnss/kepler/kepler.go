@@ -54,6 +54,14 @@ var (
 	errBadEcc      = errors.New("kepler: eccentricity out of range [0, eccMax)")
 	errNaN         = errors.New("kepler: propagation produced a non-finite value")
 	errNoConverge  = errors.New("kepler: eccentric-anomaly iteration did not converge")
+	// errHalfWeekStraddle is Velocity's central difference calls
+	// Propagate at tow±0.5 independently, and each call re-derives its own
+	// half-week-wrapped tk via gnsstime.EphAge -- when tow−toe sits within 0.5s
+	// of ±HalfWeek, only one of the two shifted instants crosses the wrap
+	// threshold, so the "velocity" is actually the position delta across a full
+	// ~604800s jump, not 1s. Only reachable with a ~3.5-day-stale ephemeris; the
+	// library's contract is to refuse a degenerate result, not emit one.
+	errHalfWeekStraddle = errors.New("kepler: tow-toe too close to the half-week wrap for a central-difference velocity")
 )
 
 // eccMax bounds Solve's eccentricity gate. The prior guard (e < 1) only
@@ -211,6 +219,12 @@ func isBeiDouGEO(id gnss.GNSSID, svid int) bool {
 // finite difference at tow ± 0.5 s — accurate to mm/s and simpler than the
 // analytic derivative (docs/MATH.md §2.2).
 func Velocity(e Ephemeris, tow float64) (gnss.ECEF, error) {
+	// reject rather than silently straddle the half-week wrap -- see
+	// errHalfWeekStraddle for why the two ±0.5s Propagate calls below would
+	// otherwise disagree by a full week instead of 1s.
+	if gnsstime.HalfWeek-math.Abs(gnsstime.EphAge(tow, e.Toe)) < 1.0 {
+		return gnss.ECEF{}, errHalfWeekStraddle
+	}
 	fwd, err := Propagate(e, tow+0.5)
 	if err != nil {
 		return gnss.ECEF{}, err

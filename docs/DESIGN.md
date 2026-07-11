@@ -136,7 +136,7 @@ shape means one mental model and a near-verbatim port of `radiolistener/feeder/f
 | `HELLO` (0x01) | feeder→collector | JSON `{token, station, feed, sw, zstd?}` — `feed ∈ {ubx, sbf, rtcm, nmea}` |
 | `WELCOME` (0x02) | collector→feeder | JSON `{ok, error?, ack_interval_ms?, zstd?}` |
 | `DATA` (0x03) | feeder→collector | `[8B seq][framed raw record]` — see the record shape below |
-| `ACK` (0x04) | collector→feeder | `[8B seq]` last contiguous sequence stored |
+| `ACK` (0x04) | collector→feeder | `[8B seq]` highest sequence received this connection  — not "last contiguous"; reconnect replay makes any resulting duplicate harmless |
 | `PING`/`PONG` (0x05/0x06) | both | keepalive |
 | `SIGNED_DATA` (0x07) | feeder→collector | *(hardware tier, vNext)* a `DATA` batch + trailing ATECC ECDSA signature over `EUI-64 ‖ rtc_unix_ns ‖ sha256(payload) ‖ counter` |
 

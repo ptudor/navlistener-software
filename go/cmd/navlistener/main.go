@@ -70,6 +70,7 @@ func run() int {
 	defer cancel()
 
 	// Pipeline: ingest → decode → live state (+ optional persist historian).
+	state.SetLeapSeconds(cfg.State.LeapSeconds) // interim config override for ΔtLS
 	live := state.New(cfg.State.Shards)
 	if decl := declaredCapabilities(cfg); len(decl) > 0 {
 		live.SetDeclaredCapabilities(decl)
@@ -272,6 +273,21 @@ func run() int {
 	return 0
 }
 
+// persistMsgType returns the msg_type to persist for f : a dial connector
+// (ubx.go's scanUBX) never populates MsgType (leaves it 0), while the push path's
+// feeder sets it via its own frame_type() mirror of NavType() -- so the identical
+// GPS LNAV subframe historian-persists as msg_type=0 via one ingest mode and
+// msg_type=0x10 via the other, splitting one frame type into two populations for
+// queries/replay tooling. Backfilling from NavType() here (word-oriented frames
+// only -- f.Words != nil -- so SBF/RTCM's own Bytes-frame message numbers are
+// never overwritten) makes both paths agree without touching the wire.
+func persistMsgType(f *ingest.RawFrame) int {
+	if f.MsgType == 0 && f.Words != nil {
+		return f.NavType()
+	}
+	return f.MsgType
+}
+
 // decodeLoop folds every ingested frame into live state and, when the historian
 // is enabled, enqueues the raw frame for the forensic record — persistence is
 // independent of decode success, so a decoder bug never loses evidence. Each
@@ -295,7 +311,7 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live *state.Store, historian *st
 				GnssID:       int(f.GnssID),
 				SvID:         f.SvID,
 				SigID:        f.SigID,
-				MsgType:      f.MsgType,
+				MsgType:      persistMsgType(f),
 				Raw:          f.RawBytes(),
 				DecoderVer:   version.Version,
 				SourceSeq:    f.Seq,

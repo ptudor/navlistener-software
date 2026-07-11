@@ -23,6 +23,11 @@ addr = "127.0.0.1:9100"
 shards             = 16     # sharded per-SV live store; >= 1
 sv_ttl             = "2h"   # expire an SV unseen by every receiver this long
 propagate_interval = "1s"   # cadence for re-propagating live SVs to "now"
+# leap_seconds overrides the compiled-in ΔtLS (GPS-UTC) default. Leave unset (0)
+# unless a real leap second has been announced and a rebuild can't happen first;
+# must be in 10..30 if set. Applies to served leap_seconds and every GPS/BDT
+# time-of-week conversion.
+# leap_seconds = 18
 
 # TimescaleDB raw-nav-frame historian (docs/OUTPUT.md §4). Optional: leave dsn empty
 # to run persist-less (dev). When set, TimescaleDB is required (a missing extension

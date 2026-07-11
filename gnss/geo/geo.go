@@ -101,7 +101,14 @@ func AzEl(sv gnss.ECEF, recv Geodetic, ell physconst.Ellipsoid) (az, el float64)
 	// divide by zero and silently propagate NaN. Directly overhead is the natural
 	// convention for "zero separation."
 	if norm := d.Norm(); norm != 0 {
-		el = math.Asin(u / norm)
+		// math.Asin(u/norm) can return NaN for an SV exactly overhead —
+		// u = d.Dot(up) and norm = d.Norm() come from different float paths, so
+		// when d is nearly parallel to up, rounding can push the ratio to
+		// 1+ε, which Asin rejects. math.Atan2(u, Hypot(e, n)) is
+		// unconditionally safe (no ratio, no domain restriction) and is
+		// mathematically identical to Asin(u/norm) since Hypot(e,n) is the
+		// horizontal component of d.
+		el = math.Atan2(u, math.Hypot(e, n))
 	} else {
 		el = math.Pi / 2
 	}

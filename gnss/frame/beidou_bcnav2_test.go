@@ -3,6 +3,8 @@ package frame
 import (
 	"encoding/binary"
 	"testing"
+
+	"github.com/ptudor/gnss/clock"
 )
 
 func TestBCNAV2ShortFrame(t *testing.T) {
@@ -57,5 +59,35 @@ func TestBCNAV2PairAdjacency(t *testing.T) {
 	m11.SOW = 130 // a type 11 from a previous broadcast group
 	if _, _, err := AssembleBeiDouBCNAV2(28, m10, m11, nil); err != errPairSOW {
 		t.Errorf("err = %v, want errPairSOW", err)
+	}
+}
+
+// TestBCNAV2StaleClockDropped guards a cached type-30/34 clock message
+// whose SOW has drifted far from the current type-10/11 pair (its own type-30
+// stopped decoding a long time ago) must not be paired with a fresh ephemeris —
+// but the ephemeris itself must still assemble, falling back to the zero clock,
+// not fail outright.
+func TestBCNAV2StaleClockDropped(t *testing.T) {
+	m10 := &BeiDouBCNAV2{MesType: 10, SOW: 100000, IODE: 7}
+	m11 := &BeiDouBCNAV2{MesType: 11, SOW: 100002, hasEph2: true}
+	fresh := &BeiDouBCNAV2{MesType: 30, SOW: 100005, IODC: 3, hasClk: true, clk: clock.Model{Af0: 1.5}}
+	eph, clk, err := AssembleBeiDouBCNAV2(28, m10, m11, fresh)
+	if err != nil {
+		t.Fatalf("fresh clock rejected: %v", err)
+	}
+	if clk.Af0 != 1.5 {
+		t.Errorf("fresh clock not applied: Af0=%v", clk.Af0)
+	}
+
+	stale := &BeiDouBCNAV2{MesType: 30, SOW: 100000 - bcnavClkStaleSOW - 1, IODC: 2, hasClk: true, clk: clock.Model{Af0: 9.9}}
+	eph2, clk2, err := AssembleBeiDouBCNAV2(28, m10, m11, stale)
+	if err != nil {
+		t.Fatalf("ephemeris must still assemble when only the clock is stale: %v", err)
+	}
+	if clk2.Af0 != 0 {
+		t.Errorf("stale clock must be dropped (zero clock), got Af0=%v", clk2.Af0)
+	}
+	if eph2.Toe != eph.Toe {
+		t.Errorf("ephemeris must be unaffected by clock staleness")
 	}
 }

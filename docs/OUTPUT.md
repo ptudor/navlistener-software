@@ -83,7 +83,7 @@ below):
 | `alma_dist_m` | float | broadcast-ephemeris vs almanac/TLE position distance (cross-check) |
 | `last_seen_s` | int | seconds since any receiver last reported this SV |
 | `x_m`,`y_m`,`z_m` | float | ECEF metres at `tow` — **all constellations, GLONASS included** |
-| `tow` | int | time-of-week (s) of the solution; `wn` | int | week number (full, disambiguated) |
+| `tow` | int | time-of-week (s) of the solution; `wn` | int | week number (full, disambiguated) — **GPS-continuous** (GPS week number, no 1024-week rollover) for GPS, Galileo, QZSS, and NavIC; **BeiDou is the exception**, reported as its own native BDT week (GPS week − 1356, BDT epoch 2006-01-01) — regression fix. A consumer diffing `wn` against the broadcast WN sees a 1024-week offset for Galileo/NavIC but not for BeiDou; this is intentional, not a bug, and is not expected to change without a version bump. |
 | `best_tle` | string | name of best-matching CelesTrak object (MATH.md §11), absent if none |
 | `best_tle_dist_m` | float | metres to the SGP4 position of that object |
 | `utc_offset_ns` | float | broadcast system→UTC offset (ns), from the UTC parameters (MATH.md §8) |

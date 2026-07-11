@@ -93,7 +93,7 @@ func AssembleGalileoFNAV(svid int, p1, p2, p3, p4 *GalileoFNAV) (kepler.Ephemeri
 	if p1 == nil || p2 == nil || p3 == nil || p4 == nil {
 		return kepler.Ephemeris{}, clock.Model{}, ErrShortFrame
 	}
-	if p2.IODnav != p3.IODnav || p2.IODnav != p4.IODnav {
+	if p1.IODnav != p2.IODnav || p2.IODnav != p3.IODnav || p2.IODnav != p4.IODnav {
 		return kepler.Ephemeris{}, clock.Model{}, errIODMismatch
 	}
 	eph := p2.eph

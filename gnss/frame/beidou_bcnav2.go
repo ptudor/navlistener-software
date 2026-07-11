@@ -39,6 +39,14 @@ var ErrBadCRC = errors.New("frame: CRC-24Q check failed")
 // could mix elements across an ephemeris changeover).
 var errPairSOW = errors.New("frame: B-CNAV2 type 10/11 not broadcast-adjacent")
 
+// bcnavClkStaleSOW bounds |m10.SOW − mClk.SOW|. Types 10/11/30/31/32/33/34
+// interleave across a repeating cycle of B-CNAV2 message types (one every 3 s
+// frame), so the clock message is never more than one full cycle away from the
+// ephemeris pair in normal operation; this is generous margin over that cycle
+// (a small multiple of the Toe/Toc step) while still catching a clock message
+// left over from well before the last changeover.
+const bcnavClkStaleSOW = 10 * bcnavT0
+
 // BeiDouBCNAV2 holds the decoded fields of one B-CNAV2 message.
 type BeiDouBCNAV2 struct {
 	PRN     int
@@ -192,12 +200,24 @@ func DecodeBeiDouBCNAV2(words []uint32) (*BeiDouBCNAV2, error) {
 // and type 11 carries no IODE, so pairing is validated by broadcast adjacency:
 // the two SOWs must be within one frame (3 s) of each other. svid tags the
 // constellation; kepler applies the GEO rotation for C01–C05/C59–C63.
+//
+// mClk freshness : unlike the m10/m11 pairing check above, a stale mClk
+// does not fail the whole assembly — an ephemeris update must not be blocked
+// forever just because this SV's type-30/34 stopped decoding. Instead a mClk
+// whose SOW has drifted too far from m10's is treated as if it were absent
+// (falls back to the zero clock model below), and the caller keeps trying with
+// whatever type-30/34 arrives next.
 func AssembleBeiDouBCNAV2(svid int, m10, m11, mClk *BeiDouBCNAV2) (kepler.Ephemeris, clock.Model, error) {
 	if m10 == nil || m11 == nil {
 		return kepler.Ephemeris{}, clock.Model{}, ErrShortFrame
 	}
 	if d := m10.SOW - m11.SOW; d < -3 || d > 3 {
 		return kepler.Ephemeris{}, clock.Model{}, errPairSOW
+	}
+	if mClk != nil && mClk.hasClk {
+		if d := m10.SOW - mClk.SOW; d < -bcnavClkStaleSOW || d > bcnavClkStaleSOW {
+			mClk = nil // stale: don't pair a cached-old clock with this ephemeris
+		}
 	}
 	eph := m10.eph
 	eph.Omega0, eph.I0, eph.OmegaDot, eph.IDot = m11.eph.Omega0, m11.eph.I0, m11.eph.OmegaDot, m11.eph.IDot

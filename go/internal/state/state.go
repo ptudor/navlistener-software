@@ -25,10 +25,9 @@ import (
 	"github.com/ptudor/navlistener/internal/metrics"
 )
 
-// gpsEpochUnix is 1980-01-06T00:00:00Z; gpsUTCOffset is the current GPS−UTC (ΔtLS).
+// gpsEpochUnix is 1980-01-06T00:00:00Z.
 const (
 	gpsEpochUnix  = 315964800
-	gpsUTCOffset  = 18
 	weekSeconds   = 604800
 	discoTrustAge = 4 * time.Hour // ephemerides older than this aren't trusted for disco
 
@@ -47,6 +46,27 @@ const (
 	// position would otherwise be served forever with an ever-fresher-looking tow).
 	posStaleBound = 120 * time.Second
 )
+
+// gpsUTCOffset is the current GPS−UTC (ΔtLS), the leap-second count applied to
+// every wall-clock→GPS/BDT time-of-week conversion (gpsTOW, towFor, weekFor)
+// and served as the global feed's leap_seconds. the design mandates
+// "transcribe, don't invent" and the broadcast UTC-parameter decode is a stated
+// follow-up, but until that lands this compiled-in default is the only source —
+// a real leap event would otherwise shift every conversion by 1s (~3.9 km)
+// until a rebuild. SetLeapSeconds lets [state].leap_seconds override it as an
+// interim fix; it must be called during startup config wiring, before any
+// ingest/propagate goroutines start (it is a plain package var, not
+// synchronized for concurrent use).
+var gpsUTCOffset int64 = 18
+
+// SetLeapSeconds overrides gpsUTCOffset. n <= 0 is a no-op (keeps the
+// compiled-in default); config.go's Validate bounds any nonzero override to the
+// ICD-plausible 10..30s range before this is ever called.
+func SetLeapSeconds(n int) {
+	if n > 0 {
+		gpsUTCOffset = int64(n)
+	}
+}
 
 // Key identifies a satellite×signal, the feed's name@sigid space.
 type Key struct {
@@ -95,7 +115,13 @@ type svState struct {
 	clk     clock.Model
 	haveEph bool
 	iod     int
-	health  int
+	// bcIODC is BeiDou B-CNAV2's type-30/34 clock IODC, tracked separately
+	// from iod (the type-10/11 ephemeris IODE) so a clock-only refresh (same
+	// ephemeris, new af0/af1/af2) is not silently dropped by the ephemeris IODE
+	// gate below — the two message families change independently.
+	bcIODC    int
+	haveBcIOD bool
+	health    int
 	// haveHealth is health_code 0 ("unknown") is the correct answer until
 	// this SV's own health bits have actually been decoded (e.g. a Galileo SV
 	// with only word types 1-4 assembled -- health arrives on word 5) or an
@@ -287,6 +313,15 @@ func (s *Store) applySBAS(f *ingest.RawFrame) {
 	// by design; record it only once decode has actually succeeded, never before.
 	if f.Source != "" {
 		s.recordCapability(f.Source, f.GnssID, f.SigID, f.Recv)
+	}
+	// PreambleOK previously gated nothing — even a message whose preamble
+	// didn't match one of the three ICD-mandated SBAS values (0x53/0x9A/0xC6) still
+	// updated doNotUse/lastType. Now (with CRC-24Q check in DecodeSBASL1
+	// already ruling out most corruption) this is defense in depth: a structurally
+	// self-consistent but non-standard-preamble message is still not trusted for
+	// the do-not-use alarm.
+	if !m.PreambleOK {
+		return
 	}
 
 	s.sbasMu.Lock()
@@ -513,15 +548,27 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 	}
 	eph, clk, err := frame.AssembleBeiDouBCNAV2(f.SvID, st.bc10, st.bc11, st.bc30)
 	if err != nil {
-		return // types 10/11 not broadcast-adjacent; wait for a fresh pair
+		return // types 10/11 not broadcast-adjacent, or the clock is too stale 
 	}
-	if st.haveEph && st.bc10.IODE == st.iod {
+	// an ephemeris changeover (IODE) and a clock changeover (IODC) are
+	// independent events. Gating the whole update on IODE (as before) silently
+	// dropped legitimate same-IODE clock refreshes (a new af0/af1/af2 under the
+	// same ephemeris) forever, since the function returned before ever reaching
+	// the st.clk assignment below. disco stays keyed on IODE alone (an ephemeris
+	// changeover is what "disco" measures); a clock-only refresh must still
+	// update st.clk so served af0/af1/af2 don't run stale between IODE changes.
+	ephChanged := !st.haveEph || st.bc10.IODE != st.iod
+	clkChanged := st.bc30 != nil && (!st.haveBcIOD || st.bc30.IODC != st.bcIODC)
+	if !ephChanged && !clkChanged {
 		return
 	}
-	if st.haveEph {
+	if ephChanged && st.haveEph {
 		s.computeDisco(st, eph, clk, f.Recv)
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, st.bc10.IODE, true
+	if st.bc30 != nil {
+		st.bcIODC, st.haveBcIOD = st.bc30.IODC, true
+	}
 	st.health, st.haveHealth = st.bc11.HS, true
 }
 
@@ -639,6 +686,13 @@ func (s *Store) applyGloAlmanac(first, second []uint32, recv time.Time) {
 	s.gloAlmMu.Lock()
 	na := s.gloNA
 	s.gloAlmMu.Unlock()
+	// gloNA starts at its zero value until string 5 has actually been
+	// decoded (setGloNA only ever writes a validated 1..1461); storing an
+	// almanac pair against na==0 (outside that range) mis-epochs
+	// PropagateAlmanacECEF for every entry decoded before the first string 5.
+	if na == 0 {
+		return
+	}
 
 	a, err := frame.DecodeGLONASSAlmanac(first, second, na)
 	if err != nil || a.Alm.Slot < 1 || a.Alm.Slot > 24 {

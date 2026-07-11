@@ -32,6 +32,14 @@ func DecodeSBASL1(prn int, words []uint32) (*SBASL1, error) {
 	for i := 0; i < 8; i++ {
 		binary.BigEndian.PutUint32(buf[i*4:], words[i])
 	}
+	// the 250-bit message ends in a DO-229 CRC-24Q (bits 226-249) that was
+	// never checked — a single corrupted bit (e.g. the 6-bit type field flipping to
+	// 0) fabricated a "do not use for safety applications" alarm, the exact event
+	// this feed exists to report. Not byte-aligned (250 isn't a multiple of 8), so
+	// this uses the bit-level CRC-24Q helper (CRC24QBits) rather than CheckCRC24Q.
+	if !CheckCRC24QBits(buf, 0, 250) {
+		return nil, ErrBadCRC
+	}
 	r := NewBitReaderN(buf, 256)
 	pre, _ := r.Bits(0, 8)
 	mt, _ := r.Bits(8, 6)

@@ -15,6 +15,16 @@ import "math"
 // longitudes, and elevation work in semicircles internally; azimuth is used in
 // radians. BeiDou B1I and NavIC use the same form with their own α/β.
 func Klobuchar(alpha, beta [4]float64, userLat, userLon, az, el, gpsTOW float64) float64 {
+	// the model is defined for el >= 0 (IS-GPS-200 §20.3.3.5.2.5); at
+	// el = -0.11π rad (-19.8°) the earth-centred-angle term below divides by
+	// zero, and any negative elevation (AzEl can produce one — regression fix) yields an
+	// out-of-validity obliquity. Clamped, not rejected, matching this package's
+	// no-error guard style (ScaleDelay/EffectiveIonisation take their inputs on
+	// faith too) — a below-horizon SV is a caller bug elsewhere, not something
+	// this pure math function should panic or error over.
+	if el < 0 {
+		el = 0
+	}
 	const rad2semi = 1.0 / math.Pi
 	phiU := userLat * rad2semi // user geomagnetic latitude, semicircles
 	lamU := userLon * rad2semi

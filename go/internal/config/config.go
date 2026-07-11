@@ -177,6 +177,15 @@ type State struct {
 	// "now" for the debug snapshot / metrics. Parsed into PropagateEvery.
 	PropagateEverys string        `toml:"propagate_interval"`
 	PropagateEvery  time.Duration `toml:"-"`
+
+	// LeapSeconds is ΔtLS (GPS−UTC), used to convert wall-clock time to GPS/BDT
+	// time-of-week for propagation and served in the global feed's leap_seconds
+	//. 0 (the default) means "use the compiled-in current value" — the
+	// design mandates "transcribe, don't invent" and the broadcast UTC-parameter
+	// decode is a stated future pass, but until that lands a leap second would
+	// otherwise shift every wall-clock→GNSS conversion by 1s (~3.9 km) until a
+	// rebuild. Set explicitly here to apply a new value without recompiling.
+	LeapSeconds int `toml:"leap_seconds"`
 }
 
 // Source is one raw-frame ingest connector. Every navlistener ingest source is a
@@ -294,6 +303,12 @@ func (c *Config) finalize() error {
 	}
 	if c.State.Shards < 1 {
 		return fmt.Errorf("state.shards must be >= 1")
+	}
+	if c.State.LeapSeconds != 0 && (c.State.LeapSeconds < 10 || c.State.LeapSeconds > 30) {
+		// Loose ICD-plausible band: ΔtLS has been 10-18s since GPS's 1980 epoch and
+		// grows by at most 1s a year; this just catches a fat-fingered config value,
+		// not a schedule.
+		return fmt.Errorf("state.leap_seconds %d: outside the plausible 10-30 range", c.State.LeapSeconds)
 	}
 
 	if err := parseDur(c.Store.BatchEverys, &c.Store.BatchEvery); err != nil {

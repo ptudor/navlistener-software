@@ -33,7 +33,14 @@ const (
 	Hello      FrameType = 0x01 // feeder→collector: JSON HelloMsg
 	Welcome    FrameType = 0x02 // collector→feeder: JSON WelcomeMsg
 	Data       FrameType = 0x03 // feeder→collector: [8B seq][raw record]
-	Ack        FrameType = 0x04 // collector→feeder: [8B seq] last contiguous stored
+	// Ack : [8B seq] the highest sequence number received on this
+	// connection, not "last contiguous stored" -- the collector never buffers
+	// to wait for a gap to fill; a lost/reordered frame is simply skipped past.
+	// A second implementer following this comment alone would wait for
+	// contiguity and never prune across a gap; reconnect replay (the feeder
+	// resends everything after the last ack it received) makes any resulting
+	// duplicate harmless, which is what actually makes this safe.
+	Ack FrameType = 0x04 // collector→feeder: [8B seq] highest sequence received this connection
 	Ping       FrameType = 0x05 // keepalive
 	Pong       FrameType = 0x06 // keepalive
 	SignedData FrameType = 0x07 // hardware tier (vNext): Data batch + ATECC ECDSA
@@ -202,7 +209,8 @@ func DecodeData(payload []byte) (seq uint64, rec RawRecord, err error) {
 	return seq, rec, nil
 }
 
-// EncodeAck / DecodeAck carry the last contiguously-stored sequence number.
+// EncodeAck / DecodeAck carry the highest sequence number received this
+// connection  -- see the Ack FrameType comment.
 func EncodeAck(seq uint64) []byte {
 	b := make([]byte, 8)
 	binary.BigEndian.PutUint64(b, seq)

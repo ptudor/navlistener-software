@@ -79,6 +79,37 @@ func TestRealisticGPSRadiusAndSpeed(t *testing.T) {
 	}
 }
 
+// TestVelocityRejectsHalfWeekStraddle guards Velocity's central
+// difference calls Propagate independently at tow+0.5 and tow-0.5, each of
+// which re-derives its own half-week-wrapped tk via gnsstime.EphAge. When
+// tow-toe sits within 0.5s of ±HalfWeek, only one of the two shifted instants
+// crosses the wrap threshold, so the "velocity" silently becomes the position
+// delta across a ~604800s jump (thousands of km) rather than 1s — finite, so
+// it was never caught. Must now return an error instead, exactly at toe +
+// HalfWeek and toe - HalfWeek, and still work normally comfortably away from
+// the wrap.
+func TestVelocityRejectsHalfWeekStraddle(t *testing.T) {
+	toe := realisticGPS.Toe
+	for _, tow := range []float64{toe + gnsstime.HalfWeek, toe - gnsstime.HalfWeek} {
+		if _, err := Velocity(realisticGPS, tow); err != errHalfWeekStraddle {
+			t.Errorf("tow=toe%+v: err = %v, want errHalfWeekStraddle", tow-toe, err)
+		}
+	}
+
+	// Comfortably clear of the wrap (a full day short of it): must still work
+	// and return a sane orbital speed, never the multi-thousand-km/s garbage
+	// the bug produced.
+	for _, tow := range []float64{toe + gnsstime.HalfWeek - 86400, toe - gnsstime.HalfWeek + 86400, toe} {
+		vel, err := Velocity(realisticGPS, tow)
+		if err != nil {
+			t.Fatalf("tow=toe%+v: unexpected error: %v", tow-toe, err)
+		}
+		if s := vel.Norm(); s <= 0 || s > 10000 {
+			t.Errorf("tow=toe%+v: speed = %.0f m/s, want a sane orbital speed (<10 km/s)", tow-toe, s)
+		}
+	}
+}
+
 func TestBeiDouGEOBranch(t *testing.T) {
 	// A near-stationary BeiDou GEO SV (~42164 km, small inclination). The GEO
 	// branch must be taken for SVID ≤ 5 and yield a GEO-radius position.

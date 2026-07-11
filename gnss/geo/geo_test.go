@@ -86,6 +86,35 @@ func TestAzElEastHorizon(t *testing.T) {
 	}
 }
 
+// TestAzElOverheadNeverNaN guards math.Asin(u/d.Norm()) could return NaN
+// for an SV exactly overhead, since u = d.Dot(up) and d.Norm() come from
+// different float paths -- rounding can push the ratio to 1+ε, which Asin
+// rejects. Placing the SV overhead via the exact up-vector AzEl computes
+// internally (rather than through GeodeticToECEF's ellipsoidal normal, which
+// diverges from the geocentric "up" off the equator/poles) reproduces exactly
+// that near-parallel condition across many latitudes/longitudes.
+func TestAzElOverheadNeverNaN(t *testing.T) {
+	for latDeg := -80.0; latDeg <= 80.0; latDeg += 10 {
+		for lonDeg := -170.0; lonDeg <= 170.0; lonDeg += 10 {
+			recv := Geodetic{Lat: Rad(latDeg), Lon: Rad(lonDeg), Height: 0}
+			r := GeodeticToECEF(recv, physconst.WGS84)
+
+			sinLat, cosLat := math.Sincos(recv.Lat)
+			sinLon, cosLon := math.Sincos(recv.Lon)
+			up := gnss.ECEF{X: cosLat * cosLon, Y: cosLat * sinLon, Z: sinLat}
+
+			sv := gnss.ECEF{X: r.X + 2e7*up.X, Y: r.Y + 2e7*up.Y, Z: r.Z + 2e7*up.Z}
+			_, el := AzEl(sv, recv, physconst.WGS84)
+			if math.IsNaN(el) {
+				t.Fatalf("lat=%v lon=%v: elevation is NaN for an overhead SV", latDeg, lonDeg)
+			}
+			if math.Abs(Deg(el)-90) > 1e-6 {
+				t.Errorf("lat=%v lon=%v: overhead elevation = %v deg, want ≈90", latDeg, lonDeg, Deg(el))
+			}
+		}
+	}
+}
+
 // TestAzElCoincidentPoint guards sv == recv previously divided by zero
 // (d.Norm() == 0) and silently returned a NaN elevation. Degenerate input, but
 // AzEl has no error return, so it must not propagate NaN — "directly overhead"

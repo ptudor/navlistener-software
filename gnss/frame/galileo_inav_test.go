@@ -240,6 +240,47 @@ func TestDecodeGalileoFNAVPage1SISAHealth(t *testing.T) {
 	}
 }
 
+// buildFNAVPage constructs one decoded F/NAV page with the given page type and
+// IODnav, at the correct bit offset for that page type (page 1's IODnav sits at
+// bit 12 after its extra SVID field; pages 2-4 share bit offset 6).
+func buildFNAVPage(t *testing.T, pageType, iod int) *GalileoFNAV {
+	t.Helper()
+	buf := make([]byte, 32)
+	setFNAVBufBits(buf, 0, uint64(pageType), 6)
+	if pageType == 1 {
+		setFNAVBufBits(buf, 12, uint64(iod), 10)
+	} else {
+		setFNAVBufBits(buf, 6, uint64(iod), 10)
+	}
+	w, err := DecodeGalileoFNAV(fnavBufToWords(buf))
+	if err != nil {
+		t.Fatalf("decode page %d: %v", pageType, err)
+	}
+	return w
+}
+
+// TestAssembleGalileoFNAVChecksPage1IODnav guards page 1 (the clock)
+// carries its own IODnav but was excluded from the assembler's mismatch check —
+// a stale page 1 riding along with a fresh, mutually-matching pages 2/3/4 must
+// still be rejected, not silently combine a clock from a different data set than
+// the ephemeris.
+func TestAssembleGalileoFNAVChecksPage1IODnav(t *testing.T) {
+	const iod = 7
+	p1 := buildFNAVPage(t, 1, iod)
+	p2 := buildFNAVPage(t, 2, iod)
+	p3 := buildFNAVPage(t, 3, iod)
+	p4 := buildFNAVPage(t, 4, iod)
+
+	if _, _, err := AssembleGalileoFNAV(14, p1, p2, p3, p4); err != nil {
+		t.Fatalf("matching IODnav across all four pages must assemble cleanly: %v", err)
+	}
+
+	p1Stale := buildFNAVPage(t, 1, iod+1) // page 1's own IODnav now differs
+	if _, _, err := AssembleGalileoFNAV(14, p1Stale, p2, p3, p4); err != errIODMismatch {
+		t.Fatalf("AssembleGalileoFNAV with mismatched page-1 IODnav = %v, want errIODMismatch", err)
+	}
+}
+
 // TestAssembleGalileoBGD guards Galileo BGD (decoded in word 5) must
 // reach the assembled clock model's TGD, which word 4 alone never sets.
 func TestAssembleGalileoBGD(t *testing.T) {

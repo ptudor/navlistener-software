@@ -244,7 +244,7 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 
 // FeedGlobal builds the global counters feed as of now (docs/OUTPUT.md §1.2).
 func (s *Store) FeedGlobal(now time.Time) GlobalFeed {
-	g := GlobalFeed{LeapSeconds: gpsUTCOffset, Counts: map[string]int{}}
+	g := GlobalFeed{LeapSeconds: int(gpsUTCOffset), Counts: map[string]int{}}
 	svs := map[gnss.GNSSID]map[int]bool{} // distinct SVIDs per constellation
 	var last time.Time
 	for _, sh := range s.shards {
@@ -522,14 +522,20 @@ func sisaFor(kind uint8, idx int) (float64, bool) {
 // system at now: GPS week for GPS/Galileo/QZSS, BDT week (GPS week − 1356) for
 // BeiDou. GLONASS has no week number.
 func weekFor(g gnss.GNSSID, now time.Time) (int, bool) {
-	gpsWeek := int((now.Unix() - gpsEpochUnix + gpsUTCOffset) / weekSeconds)
+	gps := now.Unix() - gpsEpochUnix + gpsUTCOffset
 	switch g {
 	case gnss.GLONASS:
 		return 0, false
 	case gnss.BeiDou:
-		return gpsWeek - 1356, true // BDT epoch is 2006-01-01, 1356 weeks after GPS
+		// the BDT week must come from the same BDT-shifted seconds
+		// (GPST − 14 s, matching towFor's shift) as the tow, not from unshifted
+		// GPS seconds — otherwise, during the 14 s each week where GPS tow ∈
+		// [0, 14), the unshifted week has already rolled over while the shifted
+		// tow still reports the tail of the previous BDT week, and a consumer
+		// reconstructing absolute BDT time from (wn, tow) is a full week off.
+		return int((gps-14)/weekSeconds) - 1356, true // BDT epoch is 2006-01-01, 1356 weeks after GPS
 	default:
-		return gpsWeek, true
+		return int(gps / weekSeconds), true
 	}
 }
 

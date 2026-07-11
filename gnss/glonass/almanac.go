@@ -210,6 +210,20 @@ func propagateAlmanac(a Almanac, n0 int, ti float64, node nodeConvention, s0 flo
 		Y: vr*qQ - vu*(sinU*sinO-cosU*cosO*cosII),
 		Z: vr*sinU*sinII + vu*cosU*sinII,
 	}
+	if node == ecefNode {
+		// for ecefNode, omegaBase = lambdaK − almWe·tau folds Earth
+		// rotation directly into the node angle (dΩ/dt = −almWe), so pos(t) is
+		// already the correct time-dependent ECEF position. But vel above is
+		// only Rz(Ω)·d(r_orbital)/dt — the orbital velocity as seen in a frame
+		// with Ω momentarily frozen — and misses the extra term from Ω itself
+		// rotating: d/dt[Rz(Ω(t))]·r_orbital = (dΩ/dt)·(ẑ×r) = −almWe·(−Y,X,0).
+		// Subtracting ωe×r (ωe = (0,0,almWe)) adds that missing (almWe·Y,
+		// −almWe·X, 0) term, giving the true ECEF velocity (~1.9 km/s
+		// correction at GLONASS altitude). inertialNode's Ω has no such t
+		// dependence (it is the ICD's fixed OXaYaZa frame), so it is untouched.
+		vel.X += almWe * pos.Y
+		vel.Y -= almWe * pos.X
+	}
 	if !finiteVec(pos) || !finiteVec(vel) {
 		return gnss.ECEF{}, gnss.ECEF{}, errAlmNaN
 	}

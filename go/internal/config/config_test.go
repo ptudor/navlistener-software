@@ -56,6 +56,29 @@ func TestSnapshotInterval(t *testing.T) {
 	}
 }
 
+// TestLeapSecondsValidated guards state.leap_seconds is an interim override
+// for the compiled-in ΔtLS default; unset (0) must pass validation as a no-op, an
+// ICD-plausible value must pass, and an out-of-band value (a fat-fingered config,
+// not a real leap-second schedule) must be rejected.
+func TestLeapSecondsValidated(t *testing.T) {
+	unset := defaults()
+	if err := unset.finalize(); err != nil {
+		t.Fatalf("state.leap_seconds unset (0) should validate: %v", err)
+	}
+
+	good := defaults()
+	good.State.LeapSeconds = 19
+	if err := good.finalize(); err != nil {
+		t.Errorf("state.leap_seconds = 19 should validate: %v", err)
+	}
+
+	bad := defaults()
+	bad.State.LeapSeconds = 5
+	if err := bad.finalize(); err == nil {
+		t.Error("state.leap_seconds = 5 (outside 10-30) accepted, want error")
+	}
+}
+
 // TestLoggingLevelValidated guards unlike logging.format, logging.level was
 // never validated, so a typo ("trace"/"warning") silently mapped to info with no
 // diagnostic. The empty-string default and the four real levels must still pass.
