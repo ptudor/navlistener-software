@@ -91,7 +91,7 @@ ack_interval = "1s"
 # type = "rtcm"
 # addr = "192.0.2.30:2101"
 
-# NTRIP caster (RTCM3 over HTTP), e.g. CRTN at Scripps/UCSD. Fill addr/mountpoint/username/
+# NTRIP caster (RTCM3 over authenticated TLS by default), e.g. CRTN at Scripps/UCSD. Fill addr/mountpoint/username/
 # password in the deployed, git-ignored config — never commit real credentials here. This build
 # frames + CRC-checks + persists the RTCM3 stream (a live capture/validation source); decoding
 # the RTCM ephemeris messages (1019/1020/1041/…) into live SV state is a follow-on.
@@ -104,3 +104,7 @@ ack_interval = "1s"
 # mountpoint = "<MOUNT>"       # the mountpoint to subscribe
 # username = "<user>"          # NTRIP basic-auth credentials
 # password = "<pass>"
+# ca_file = "/usr/local/etc/ssl/private-caster-ca.pem" # optional private CA; system roots otherwise
+# server_name = "caster.example" # optional TLS name override; addr host otherwise
+# Legacy plaintext requires allow_insecure_plaintext = true. Plaintext credentials additionally
+# require allow_plaintext_credentials = true and set a persistent degraded-security metric.

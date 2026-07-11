@@ -2,15 +2,63 @@ package ingest
 
 import (
 	"bufio"
+	"context"
+	"crypto/tls"
 	"encoding/base64"
+	"encoding/pem"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ptudor/navlistener/internal/config"
 )
+
+func TestNtripTLSDialVerification(t *testing.T) {
+	cert := selfSigned(t)
+	caPath := t.TempDir() + "/ca.pem"
+	if err := os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	serveHandshake := func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_ = conn.(*tls.Conn).Handshake()
+	}
+
+	src := config.Source{Name: "caster", Type: "ntrip", Addr: ln.Addr().String(), NTRIPCAFile: caPath}
+	go serveHandshake()
+	conn, err := dialSource(context.Background(), src)
+	if err != nil {
+		t.Fatalf("valid CA and IP SAN rejected: %v", err)
+	}
+	conn.Close()
+
+	src.NTRIPServerName = "wrong.example"
+	go serveHandshake()
+	if conn, err := dialSource(context.Background(), src); err == nil {
+		conn.Close()
+		t.Fatal("wrong TLS hostname accepted")
+	}
+
+	src.NTRIPServerName = ""
+	src.NTRIPCAFile = ""
+	go serveHandshake()
+	if conn, err := dialSource(context.Background(), src); err == nil {
+		conn.Close()
+		t.Fatal("untrusted NTRIP certificate accepted")
+	}
+}
 
 // fakeCaster runs one NTRIP caster exchange over the server end of a pipe: it reads the client
 // request up to the blank line, hands it back on reqCh, then writes reply followed by tail

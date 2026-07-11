@@ -50,6 +50,10 @@ var (
 		Name: "navlistener_source_connects_total",
 		Help: "Connection attempts that succeeded, by source.",
 	}, []string{"source"})
+	SourceSecurityDegraded = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "navlistener_source_security_degraded",
+		Help: "1 when a source is explicitly using a degraded unauthenticated transport.",
+	}, []string{"source", "reason"})
 
 	// NavCRCFailTotal counts frames dropped for a failed parity/CRC check
 	// (docs/CONSTELLATIONS.md §2). The raw bytes are still preserved for the
@@ -114,6 +118,10 @@ var (
 		Name: "navlistener_push_auth_failures_total",
 		Help: "Feeder handshakes rejected for a bad token or feed grant.",
 	})
+	PushAuthFailuresByReasonTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_push_auth_failures_by_reason_total",
+		Help: "Feeder handshakes rejected, by bounded authentication failure reason.",
+	}, []string{"reason"})
 
 	// PushErrorsTotal counts per-connection push errors, by observer and kind.
 	PushErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{

@@ -59,6 +59,30 @@ func TestPushListenFailsWhenAddressOccupied(t *testing.T) {
 	}
 }
 
+func TestMatchPeerIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		certs    []*x509.Certificate
+		observer string
+		ok       bool
+	}{
+		{"matching DNS SAN", []*x509.Certificate{{DNSNames: []string{"observer16"}}}, "observer16", true},
+		{"another observer", []*x509.Certificate{{DNSNames: []string{"observer17"}}}, "observer16", false},
+		{"missing certificate", nil, "observer16", false},
+		{"legacy CN only", []*x509.Certificate{{Subject: pkix.Name{CommonName: "observer16"}}}, "observer16", false},
+		{"ambiguous SAN", []*x509.Certificate{{DNSNames: []string{"observer16", "alias"}}}, "observer16", false},
+		{"case alias", []*x509.Certificate{{DNSNames: []string{"OBSERVER16"}}}, "observer16", false},
+		{"unicode alias", []*x509.Certificate{{DNSNames: []string{"obsérver16"}}}, "obsérver16", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := matchPeerIdentity(tc.certs, tc.observer)
+			if (err == nil) != tc.ok {
+				t.Fatalf("error = %v, want ok=%v", err, tc.ok)
+			}
+		})
+	}
+}
+
 // selfSigned builds an in-memory self-signed server certificate for the test TLS
 // listener (no files, no key material on disk).
 func selfSigned(t *testing.T) tls.Certificate {

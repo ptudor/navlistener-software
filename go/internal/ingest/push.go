@@ -345,9 +345,26 @@ func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (obs
 	obs, authed := p.auth.Authenticate(h.Token, h.Station, h.Feed)
 	if !authed {
 		metrics.PushAuthFailuresTotal.Inc()
+		metrics.PushAuthFailuresByReasonTotal.WithLabelValues("token_or_grant").Inc()
 		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "unauthorized"}))
 		p.log.Warn("push auth rejected", "remote", remote, "station", h.Station, "feed", h.Feed)
 		return "", "", false, false
+	}
+	if p.tlsConfig.ClientAuth != tls.NoClientCert {
+		tlsConn, isTLS := conn.(*tls.Conn)
+		if !isTLS {
+			metrics.PushAuthFailuresTotal.Inc()
+			metrics.PushAuthFailuresByReasonTotal.WithLabelValues("certificate_identity").Inc()
+			return "", "", false, false
+		}
+		state := tlsConn.ConnectionState()
+		if err := matchPeerIdentity(state.PeerCertificates, obs); err != nil {
+			metrics.PushAuthFailuresTotal.Inc()
+			metrics.PushAuthFailuresByReasonTotal.WithLabelValues("certificate_identity").Inc()
+			_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "certificate identity mismatch"}))
+			p.log.Warn("push certificate identity rejected", "remote", remote, "observer", obs, "error", err)
+			return "", "", false, false
+		}
 	}
 	if scannerFor(h.Feed) == nil {
 		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "unsupported feed"}))
@@ -359,6 +376,42 @@ func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (obs
 		return "", "", false, false
 	}
 	return obs, h.Feed, h.Zstd, true
+}
+
+// matchPeerIdentity binds an mTLS-authenticated leaf to the token's canonical
+// observer. GNF1 uses exactly one DNS SAN as the identity field. Legacy CN-only
+// certificates are deliberately rejected; enabling them requires an explicit
+// future migration setting rather than an implicit fallback.
+func matchPeerIdentity(chain []*x509.Certificate, observer string) error {
+	if len(chain) == 0 {
+		return errors.New("verified client certificate missing")
+	}
+	if !asciiObserverID(observer) {
+		return errors.New("canonical observer id is not valid ASCII")
+	}
+	names := chain[0].DNSNames
+	if len(names) != 1 {
+		return fmt.Errorf("client certificate must contain exactly one DNS SAN, got %d", len(names))
+	}
+	if !asciiObserverID(names[0]) || names[0] != observer {
+		return fmt.Errorf("DNS SAN does not exactly match canonical observer")
+	}
+	return nil
+}
+
+func asciiObserverID(s string) bool {
+	if len(s) == 0 || len(s) > 253 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '.' || c == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // stream reads DATA/PING frames, forwards decoded records to the decode stage, and

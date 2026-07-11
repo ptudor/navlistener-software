@@ -184,6 +184,27 @@ func TestNtripSource(t *testing.T) {
 	}
 }
 
+func TestNtripTransportSecurityValidation(t *testing.T) {
+	secure := defaults()
+	secure.Ingest = []Source{{Name: "secure", Type: "ntrip", Addr: "caster.invalid:443", Mountpoint: "M", Username: "u", Password: "p"}}
+	if err := secure.finalize(); err != nil {
+		t.Fatalf("TLS-default NTRIP credentials rejected: %v", err)
+	}
+	plain := defaults()
+	plain.Ingest = []Source{{Name: "plain", Type: "ntrip", Addr: "caster.invalid:2101", Mountpoint: "M", AllowInsecurePlaintext: true}}
+	if err := plain.finalize(); err != nil {
+		t.Fatalf("explicit credential-free plaintext rejected: %v", err)
+	}
+	plain.Ingest[0].Username = "u"
+	if err := plain.finalize(); err == nil || !strings.Contains(err.Error(), "allow_plaintext_credentials") {
+		t.Fatalf("plaintext credentials accepted without separate approval: %v", err)
+	}
+	plain.Ingest[0].AllowPlaintextCredentials = true
+	if err := plain.finalize(); err != nil {
+		t.Fatalf("explicitly approved plaintext credentials rejected: %v", err)
+	}
+}
+
 // TestPushRequiresTLS: enabling the endpoint without cert/key is a hard error —
 // unauthenticated feeder ingest must never be possible.
 func TestPushRequiresTLS(t *testing.T) {

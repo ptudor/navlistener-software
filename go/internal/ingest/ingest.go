@@ -2,11 +2,14 @@ package ingest
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http/httputil"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -100,7 +103,7 @@ func (m *Manager) Run(ctx context.Context) {
 func (m *Manager) runSource(ctx context.Context, src config.Source, sc scanner) {
 	backoff := backoffInitial
 	for ctx.Err() == nil {
-		conn, err := dialCtx(ctx, src.Addr)
+		conn, err := dialSource(ctx, src)
 		if err != nil {
 			metrics.SourceUp.WithLabelValues(src.Name, src.Type).Set(0)
 			metrics.IngestErrorsTotal.WithLabelValues(src.Name, "dial").Inc()
@@ -219,6 +222,38 @@ func (m *Manager) emit(ctx context.Context, src config.Source) func(*RawFrame) {
 func dialCtx(ctx context.Context, addr string) (net.Conn, error) {
 	d := net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}
 	return d.DialContext(ctx, "tcp", addr)
+}
+
+func dialSource(ctx context.Context, src config.Source) (net.Conn, error) {
+	if src.Type != "ntrip" || src.AllowInsecurePlaintext {
+		if src.Type == "ntrip" && src.AllowInsecurePlaintext {
+			metrics.SourceSecurityDegraded.WithLabelValues(src.Name, "ntrip_plaintext").Set(1)
+		}
+		return dialCtx(ctx, src.Addr)
+	}
+	host, _, err := net.SplitHostPort(src.Addr)
+	if err != nil {
+		return nil, err
+	}
+	serverName := src.NTRIPServerName
+	if serverName == "" {
+		serverName = host
+	}
+	tc := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: serverName}
+	if src.NTRIPCAFile != "" {
+		pem, err := os.ReadFile(src.NTRIPCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("ntrip ca_file: %w", err)
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("ntrip ca_file: no certificates parsed")
+		}
+		tc.RootCAs = roots
+	}
+	d := &net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}
+	metrics.SourceSecurityDegraded.WithLabelValues(src.Name, "ntrip_plaintext").Set(0)
+	return (&tls.Dialer{NetDialer: d, Config: tc}).DialContext(ctx, "tcp", src.Addr)
 }
 
 func nextBackoff(b time.Duration) time.Duration {

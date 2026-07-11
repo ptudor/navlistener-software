@@ -216,9 +216,13 @@ type Source struct {
 	// NTRIP transport (type = "ntrip"): Addr is the caster host:port, Mountpoint is the stream
 	// to subscribe, and Username/Password are the basic-auth credentials. Real credentials live
 	// only in the deployed, git-ignored config — never in a committed example.
-	Mountpoint string `toml:"mountpoint,omitempty"`
-	Username   string `toml:"username,omitempty"`
-	Password   string `toml:"password,omitempty"`
+	Mountpoint                string `toml:"mountpoint,omitempty"`
+	Username                  string `toml:"username,omitempty"`
+	Password                  string `toml:"password,omitempty"`
+	NTRIPCAFile               string `toml:"ca_file,omitempty"`
+	NTRIPServerName           string `toml:"server_name,omitempty"`
+	AllowInsecurePlaintext    bool   `toml:"allow_insecure_plaintext,omitempty"`
+	AllowPlaintextCredentials bool   `toml:"allow_plaintext_credentials,omitempty"`
 }
 
 // Capability is one declared (gnssId, sigId) an observer's silicon can produce.
@@ -374,6 +378,15 @@ func (c *Config) finalize() error {
 		}
 		if s.Type == "ntrip" && !ntripMountpointRe.MatchString(s.Mountpoint) {
 			return fmt.Errorf("ingest %q: mountpoint %q contains whitespace/control characters (not a valid NTRIP mountpoint)", s.Name, s.Mountpoint)
+		}
+		if s.Type == "ntrip" && s.AllowPlaintextCredentials && !s.AllowInsecurePlaintext {
+			return fmt.Errorf("ingest %q: allow_plaintext_credentials requires allow_insecure_plaintext", s.Name)
+		}
+		if s.Type == "ntrip" && s.AllowInsecurePlaintext && (s.Username != "" || s.Password != "") && !s.AllowPlaintextCredentials {
+			return fmt.Errorf("ingest %q: plaintext NTRIP credentials require allow_plaintext_credentials = true", s.Name)
+		}
+		if s.Type == "ntrip" && s.NTRIPCAFile != "" && s.AllowInsecurePlaintext {
+			return fmt.Errorf("ingest %q: ca_file cannot be used with insecure plaintext", s.Name)
 		}
 		caps, err := parseCapabilities(s.Capabilities)
 		if err != nil {
