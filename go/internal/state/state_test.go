@@ -192,7 +192,7 @@ func TestFeedAlmanacDeterministicSignalPick(t *testing.T) {
 		key := Key{G: gnss.Galileo, Sv: 14, Sig: sig}
 		sh := st.shardFor(key)
 		sh.mu.Lock()
-		sh.m[key] = &svState{key: key, pos: pos, havePos: true}
+		sh.m[key] = &svState{key: key, pos: pos, havePos: true, posAt: now}
 		sh.mu.Unlock()
 	}
 	// Insert the non-primary signal first so a naive "first wins" would pick it.
@@ -207,6 +207,12 @@ func TestFeedAlmanacDeterministicSignalPick(t *testing.T) {
 	if e.EcefXM != 111 || e.EcefYM != 222 || e.EcefZM != 333 {
 		t.Errorf("E14 almanac position = (%v,%v,%v), want the SigID=0 (primary) signal's (111,222,333)",
 			e.EcefXM, e.EcefYM, e.EcefZM)
+	}
+	if e.T != int(now.Unix()) {
+		t.Errorf("E14 almanac T = %d, want propagation epoch %d", e.T, now.Unix())
+	}
+	if got := st.FeedAlmanac(now.Add(posStaleBound + time.Second)); len(got) != 0 {
+		t.Errorf("stale precise position still published in almanac: %+v", got)
 	}
 }
 

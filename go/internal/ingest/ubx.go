@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/navlistener/internal/metrics"
 )
 
 // UBX protocol constants (u-blox interface description). SFRBX carries raw nav
@@ -119,6 +120,10 @@ func parseRAWX(p []byte, source string, recv time.Time, emit func(*RawFrame)) in
 	if 16+numMeas*32 > len(p) {
 		return 0
 	}
+	if !finiteFloat(rcvTow) || rcvTow < 0 || rcvTow >= 604800 || week == 0 {
+		metrics.RawObsInvalidTotal.WithLabelValues(source, "time").Inc()
+		return 0
+	}
 	emitted := 0
 	for i := 0; i < numMeas; i++ {
 		m := p[16+i*32:]
@@ -129,6 +134,21 @@ func parseRAWX(p []byte, source string, recv time.Time, emit func(*RawFrame)) in
 		// trkStat bit 0 = pseudorange valid, bit 1 = carrier phase valid.
 		if trkStat&0x01 == 0 {
 			continue
+		}
+		if !finiteFloat(prM) || prM <= 0 || prM > 1e9 {
+			metrics.RawObsInvalidTotal.WithLabelValues(source, "pseudorange").Inc()
+			continue
+		}
+		if !finiteFloat(float64(doHz)) || math.Abs(float64(doHz)) > 1e6 {
+			metrics.RawObsInvalidTotal.WithLabelValues(source, "doppler").Inc()
+			continue
+		}
+		cpValid := trkStat&0x02 != 0
+		arcBreak := false
+		if cpValid && (!finiteFloat(cpCyc) || math.Abs(cpCyc) > 1e10) {
+			metrics.RawObsInvalidTotal.WithLabelValues(source, "carrier").Inc()
+			cpValid, arcBreak = false, true
+			cpCyc = 0
 		}
 		emit(&RawFrame{
 			Recv:   recv,
@@ -145,13 +165,17 @@ func parseRAWX(p []byte, source string, recv time.Time, emit func(*RawFrame)) in
 				DoHz:       float64(doHz),
 				LockTimeMs: int(binary.LittleEndian.Uint16(m[24:])),
 				Cn0:        int(m[26]),
-				CpValid:    trkStat&0x02 != 0,
+				CpValid:    cpValid,
+				CycleSlip:  trkStat&0x08 != 0,
+				ArcBreak:   arcBreak,
 			},
 		})
 		emitted++
 	}
 	return emitted
 }
+
+func finiteFloat(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 
 // parseSFRBX converts a UBX-RXM-SFRBX payload to a RawFrame. Layout (F9/M9
 // generation): gnssId, svId, sigId, freqId, numWords, reserved, version,

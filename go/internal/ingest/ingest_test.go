@@ -365,3 +365,44 @@ func TestScanUBXRAWX(t *testing.T) {
 		t.Fatalf("second obs frame = sig %d cpValid %v, want 6/false", got[1].SigID, got[1].Obs.CpValid)
 	}
 }
+
+func TestParseRAWXRejectsNonFiniteFieldsIndependently(t *testing.T) {
+	base := func() []byte {
+		body := make([]byte, 16+2*32)
+		binary.LittleEndian.PutUint64(body, math.Float64bits(100000))
+		binary.LittleEndian.PutUint16(body[8:], 2372)
+		body[11] = 2
+		for i := 0; i < 2; i++ {
+			m := body[16+i*32:]
+			binary.LittleEndian.PutUint64(m, math.Float64bits(2.2e7+float64(i)))
+			binary.LittleEndian.PutUint64(m[8:], math.Float64bits(1.1e8))
+			binary.LittleEndian.PutUint32(m[16:], math.Float32bits(-100))
+			m[20], m[21], m[22], m[30] = 0, 7, byte(i*6), 0x03
+		}
+		return body
+	}
+	for _, tc := range []struct {
+		name      string
+		mutate    func([]byte)
+		want      int
+		wantBreak bool
+	}{
+		{"nan tow rejects epoch", func(b []byte) { binary.LittleEndian.PutUint64(b, math.Float64bits(math.NaN())) }, 0, false},
+		{"inf pseudorange keeps sibling", func(b []byte) { binary.LittleEndian.PutUint64(b[16:], math.Float64bits(math.Inf(1))) }, 1, false},
+		{"nan doppler keeps sibling", func(b []byte) { binary.LittleEndian.PutUint32(b[32:], math.Float32bits(float32(math.NaN()))) }, 1, false},
+		{"nan carrier emits arc break", func(b []byte) { binary.LittleEndian.PutUint64(b[24:], math.Float64bits(math.NaN())) }, 2, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := base()
+			tc.mutate(body)
+			var got []*RawFrame
+			n := parseRAWX(body, "test", fixedTime(), func(f *RawFrame) { got = append(got, f) })
+			if n != tc.want || len(got) != tc.want {
+				t.Fatalf("emitted %d/%d, want %d", n, len(got), tc.want)
+			}
+			if tc.wantBreak && (!got[0].Obs.ArcBreak || got[0].Obs.CpValid) {
+				t.Fatalf("invalid carrier did not produce a non-mutating arc break: %+v", got[0].Obs)
+			}
+		})
+	}
+}

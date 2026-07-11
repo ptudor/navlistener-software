@@ -66,8 +66,9 @@ func TestFeedGlonassAlmanacOutOfView(t *testing.T) {
 // almanac for the same slot.
 func TestFeedGlonassAlmanacObservedWins(t *testing.T) {
 	s := New(4)
+	now := time.Now()
 	s.gloNA = 615
-	s.gloAlmanac[7] = gloAlmSlot{entry: icdAlmanac(7), lastSeen: time.Now()}
+	s.gloAlmanac[7] = gloAlmSlot{entry: icdAlmanac(7), lastSeen: now}
 
 	// Seed an observed (precise) fix for slot 7, as the ephemeris/propagate stage would.
 	key := Key{G: gnss.GLONASS, Sv: 7, Sig: 0}
@@ -77,10 +78,11 @@ func TestFeedGlonassAlmanacObservedWins(t *testing.T) {
 		havePos:    true,
 		haveGloEph: true,
 		pos:        gnss.ECEF{X: 1.1e7, Y: 2.2e7, Z: 5.0e6},
-		lastSeen:   time.Now(),
+		posAt:      now,
+		lastSeen:   now,
 	}
 
-	out := s.FeedAlmanac(time.Now())
+	out := s.FeedAlmanac(now)
 	ent := out["R07"]
 	if !ent.Observed {
 		t.Fatal("in-view slot 7 must keep its Observed=true precise entry")

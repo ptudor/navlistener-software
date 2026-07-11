@@ -3,6 +3,7 @@ package state
 import (
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/gnss/iono"
@@ -26,6 +27,10 @@ type obsSample struct {
 	lockMs   int
 	haveCp   bool
 	haveSamp bool
+	haveSeen bool
+	epochS   float64
+	recvAt   time.Time
+	breakArc bool
 }
 
 // secTrack carries one secondary signal's leveling arc against the SV's
@@ -37,7 +42,8 @@ type secTrack struct {
 	arc        iono.Arc
 	delayM     float64
 	hasDelay   bool
-	lastRcvTow float64
+	lastEpochS float64
+	delayAt    time.Time
 }
 
 // ionoTrack pairs the primary signal of an SV from one source against every
@@ -59,10 +65,26 @@ type ionoTrack struct {
 // this is generous).
 const pairEpsilonS = 0.05
 
+const (
+	ionoArcGapS  = 5.0
+	ionoDelayTTL = 30 * time.Second
+)
+
 // applyObservation folds one raw observable into the iono estimator. The state
 // is keyed on the SV's primary signal; secondary signals contribute to the pair.
 func (s *Store) applyObservation(f *ingest.RawFrame) {
 	o := f.Obs
+	if o == nil || !finite(o.RcvTow) || o.RcvTow < 0 || o.RcvTow >= weekSeconds ||
+		!finite(o.PrM) || o.PrM <= 0 || o.PrM > 1e9 || !finite(o.DoHz) || math.Abs(o.DoHz) > 1e6 {
+		metrics.RawObsInvalidTotal.WithLabelValues(f.Source, "state_validation").Inc()
+		return
+	}
+	cpValid, arcBreak := o.CpValid, o.ArcBreak || o.CycleSlip
+	cpCyc := o.CpCyc
+	if cpValid && (!finite(cpCyc) || math.Abs(cpCyc) > 1e10) {
+		metrics.RawObsInvalidTotal.WithLabelValues(f.Source, "carrier").Inc()
+		cpValid, arcBreak, cpCyc = false, true, 0
+	}
 	priSig := primarySig(f.GnssID)
 	f1 := signalFreqHz(f.GnssID, priSig, f.FreqID)
 	f2 := signalFreqHz(f.GnssID, f.SigID, f.FreqID)
@@ -112,19 +134,24 @@ func (s *Store) applyObservation(f *ingest.RawFrame) {
 	sample := obsSample{
 		rcvTow:   o.RcvTow,
 		prM:      o.PrM,
-		cpM:      o.CpCyc * lambda,
+		cpM:      cpCyc * lambda,
 		lockMs:   o.LockTimeMs,
-		haveCp:   o.CpValid,
+		haveCp:   cpValid,
 		haveSamp: true,
+		haveSeen: true,
+		epochS:   float64(o.Week*weekSeconds) + o.RcvTow,
+		recvAt:   f.Recv,
+		breakArc: arcBreak,
 	}
 
 	if f.SigID == key.Sig {
 		// A primary lock-time regression invalidates the phase reference every
 		// secondary pairing depends on (docs/MATH.md §7.4), so every secondary's
 		// arc resets, not just one.
-		if sample.lockMs < tr.pri.lockMs {
+		if sample.breakArc || !sample.haveCp || arcGap(tr.pri, sample) || sample.lockMs < tr.pri.lockMs {
 			for _, secT := range tr.secs {
 				secT.arc.Reset()
+				secT.hasDelay = false
 			}
 		}
 		tr.pri = sample
@@ -142,8 +169,9 @@ func (s *Store) applyObservation(f *ingest.RawFrame) {
 		}
 		// A regression on this secondary only restarts its own arc -- the
 		// primary and any other secondary's arc are unaffected.
-		if sample.lockMs < secT.sec.lockMs {
+		if sample.breakArc || !sample.haveCp || arcGap(secT.sec, sample) || sample.lockMs < secT.sec.lockMs {
 			secT.arc.Reset()
+			secT.hasDelay = false
 		}
 		secT.sec = sample
 		s.tryPairIono(f, tr, secT, f.SigID, f1)
@@ -167,13 +195,22 @@ func (s *Store) tryPairIono(f *ingest.RawFrame, tr *ionoTrack, secT *secTrack, s
 	if slant, ok := secT.arc.Slant(phiGF, f1, f2sec, 0); ok {
 		secT.delayM = slant
 		secT.hasDelay = true
-		secT.lastRcvTow = tr.pri.rcvTow
+		secT.lastEpochS = tr.pri.epochS
+		secT.delayAt = f.Recv
 		metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "iono_pair").Inc()
 	}
 	// Consume this secondary's sample so the next Add pairs a fresh one; the
 	// primary is left alone since another secondary may still need to pair
 	// against it within the same epoch.
 	secT.sec.haveSamp = false
+}
+
+func arcGap(prev, next obsSample) bool {
+	if !prev.haveSeen {
+		return false
+	}
+	d := next.epochS - prev.epochS
+	return d < 0 || d > ionoArcGapS
 }
 
 // primarySig is the signal each constellation's iono measurement is referenced

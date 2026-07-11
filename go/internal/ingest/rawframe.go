@@ -89,6 +89,8 @@ type RawObs struct {
 	LockTimeMs int     // carrier lock time, ms — a reset signals a cycle slip
 	Cn0        int     // dB-Hz
 	CpValid    bool    // carrier-phase measurement valid (trkStat bit 1)
+	CycleSlip  bool    // receiver reported a half-cycle/discontinuity condition
+	ArcBreak   bool    // parser rejected carrier data; estimator must reset continuity
 }
 
 // RawBytes returns the frame's untouched bytes for the forensic record: the words

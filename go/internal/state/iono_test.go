@@ -183,6 +183,65 @@ func TestMeasuredIonoArcResetOnSlip(t *testing.T) {
 	}
 }
 
+func TestMeasuredIonoCarrierInvalidBreaksArc(t *testing.T) {
+	s := New(1)
+	base := time.Unix(1_700_000_000, 0)
+	apply := func(sig, epoch int, valid bool) {
+		s.Apply(&ingest.RawFrame{Recv: base.Add(time.Duration(epoch) * time.Second), Source: "bench",
+			GnssID: gnss.GPS, SvID: 4, SigID: sig, Obs: &ingest.RawObs{
+				Week: 2200, RcvTow: 200000 + float64(epoch), PrM: 2.2e7 + float64(sig),
+				CpCyc: 1.1e8, DoHz: -100, LockTimeMs: 1000 + epoch*1000, CpValid: valid,
+			}})
+	}
+	for epoch := 0; epoch < iono.MinArc+2; epoch++ {
+		apply(0, epoch, true)
+		apply(6, epoch, true)
+	}
+	if got := s.FeedSVs(base.Add((iono.MinArc + 2) * time.Second))["G04@0"].Perrecv["bench"]; got == nil {
+		t.Fatal("mature ionosphere arc missing")
+	}
+	epoch := iono.MinArc + 2
+	apply(0, epoch, true)
+	apply(6, epoch, false)
+	if got := s.FeedSVs(base.Add(time.Duration(epoch) * time.Second))["G04@0"].Perrecv["bench"]; got != nil {
+		t.Fatal("carrier-invalid secondary left old leveled output visible")
+	}
+	for i := 1; i < iono.MinArc; i++ {
+		apply(0, epoch+i, true)
+		apply(6, epoch+i, true)
+	}
+	if got := s.FeedSVs(base.Add(time.Duration(epoch+iono.MinArc-1) * time.Second))["G04@0"].Perrecv["bench"]; got != nil {
+		t.Fatal("arc rematured before MinArc fresh continuous samples")
+	}
+	apply(0, epoch+iono.MinArc, true)
+	apply(6, epoch+iono.MinArc, true)
+	if got := s.FeedSVs(base.Add(time.Duration(epoch+iono.MinArc) * time.Second))["G04@0"].Perrecv["bench"]; got == nil {
+		t.Fatal("arc did not return after MinArc fresh samples")
+	}
+}
+
+func TestMeasuredIonoRecencyUsesAbsoluteTimeAndExpires(t *testing.T) {
+	s := New(1)
+	key := Key{G: gnss.GPS, Sv: 8, Sig: 0}
+	sh := s.shardFor(key)
+	now := time.Unix(1_700_000_000, 0)
+	sh.mu.Lock()
+	sh.m[key] = &svState{key: key, lastSeen: now, ionoBySource: map[string]*ionoTrack{
+		"bench": {secs: map[int]*secTrack{
+			3: {delayM: 3, hasDelay: true, lastEpochS: float64(2200*weekSeconds + 604799), delayAt: now.Add(-time.Second)},
+			6: {delayM: 6, hasDelay: true, lastEpochS: float64(2201 * weekSeconds), delayAt: now},
+		}},
+	}}
+	sh.mu.Unlock()
+	pr := s.FeedSVs(now)["G08@0"].Perrecv["bench"]
+	if pr == nil || pr.IonoPairSigID == nil || *pr.IonoPairSigID != 6 {
+		t.Fatalf("week-rollover recency selected %+v, want sig 6", pr)
+	}
+	if pr := s.FeedSVs(now.Add(ionoDelayTTL + time.Second))["G08@0"].Perrecv["bench"]; pr != nil {
+		t.Fatalf("stale ionosphere output did not expire: %+v", pr)
+	}
+}
+
 // TestMeasuredIonoSameFrequencyPairRejected guards Galileo sigId 0 (E1C)
 // and sigId 1 (E1B) both map to 1575.42 MHz (signalFreqHz), so a receiver
 // reporting RAWX for both components of the primary band must not form a

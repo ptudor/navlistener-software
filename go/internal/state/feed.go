@@ -183,10 +183,11 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 		var best *secTrack
 		var bestSig int
 		for sigID, secT := range tr.secs {
-			if !secT.hasDelay || !finite(secT.delayM) {
+			if !secT.hasDelay || !finite(secT.delayM) || secT.delayAt.IsZero() || now.Sub(secT.delayAt) > ionoDelayTTL {
 				continue
 			}
-			if best == nil || secT.lastRcvTow > best.lastRcvTow {
+			if best == nil || secT.delayAt.After(best.delayAt) ||
+				(secT.delayAt.Equal(best.delayAt) && secT.lastEpochS > best.lastEpochS) {
 				best, bestSig = secT, sigID
 			}
 		}
@@ -318,7 +319,7 @@ func (s *Store) FeedAlmanac(now time.Time) map[string]AlmanacEntry {
 	for _, sh := range s.shards {
 		sh.mu.Lock()
 		for _, st := range sh.m {
-			if !st.havePos || !finiteECEF(st.pos) {
+			if !st.havePos || !finiteECEF(st.pos) || st.posAt.IsZero() || now.Sub(st.posAt) > posStaleBound {
 				continue
 			}
 			name := fmt.Sprintf("%c%02d", st.key.G.Letter(), st.key.Sv)
@@ -333,7 +334,7 @@ func (s *Store) FeedAlmanac(now time.Time) map[string]AlmanacEntry {
 				EcefXM:    st.pos.X,
 				EcefYM:    st.pos.Y,
 				EcefZM:    st.pos.Z,
-				T:         int(now.Unix()),
+				T:         int(st.posAt.Unix()),
 				EphSource: 0,
 			}
 			ell := physconst.WGS84
