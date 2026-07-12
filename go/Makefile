@@ -11,12 +11,17 @@ CMD         := ./cmd/navlistener
 GO          := go
 
 .PHONY: all check build build-linux build-linux-arm64 build-darwin build-darwin-arm64 \
-        build-freebsd build-all install test race fuzz vet fmt tidy clean run help
+        build-freebsd build-all install test race fuzz vet fmt fmt-check tidy clean run help
+
+# MODROOTS: the workspace's two modules — the daemon (.) and the reusable gnss math library
+# (../gnss). test/race/vet/fmt-check must cover BOTH; `./...` from here only sees the
+# daemon, so a gnss regression (the "crown jewel") would otherwise pass `make check` green.
+MODROOTS := . ../gnss
 
 all: check build
 
-# check runs the fast quality gate: fmt-check + vet + tests.
-check: vet test
+# check runs the fast quality gate: fmt-check + vet + tests, across both modules.
+check: fmt-check vet test
 
 build:
 	$(GO) build $(LDFLAGS) -o $(BINARY) $(CMD)
@@ -48,11 +53,11 @@ install: build
 	install -m 755 $(BINARY) /usr/local/bin/$(BINARY)
 
 test:
-	$(GO) test ./...
+	@set -e; for modroot in $(MODROOTS); do ( cd $$modroot && $(GO) test ./... ); done
 
-# race runs the full suite under the data-race detector (the C1–C11 discipline).
+# race runs the full suite under the data-race detector (the C1–C11 discipline), both modules.
 race:
-	$(GO) test -race ./...
+	@set -e; for modroot in $(MODROOTS); do ( cd $$modroot && $(GO) test -race ./... ); done
 
 # fuzz smoke-tests every fuzz target across both workspace modules -- this one
 # (navlistener) and ../gnss, where most decoder fuzz targets actually live
@@ -77,10 +82,15 @@ fuzz:
 	done
 
 vet:
-	$(GO) vet ./...
+	@set -e; for modroot in $(MODROOTS); do ( cd $$modroot && $(GO) vet ./... ); done
 
 fmt:
-	$(GO) fmt ./...
+	@set -e; for modroot in $(MODROOTS); do ( cd $$modroot && $(GO) fmt ./... ); done
+
+# fmt-check fails (non-zero) if any file in either module is not gofmt-clean (the
+# `check` comment promised this gate; the latest commit was itself a gofmt cleanup it'd catch).
+fmt-check:
+	@bad="$$(gofmt -l $(MODROOTS))"; if [ -n "$$bad" ]; then echo "gofmt needed:"; echo "$$bad"; exit 1; fi
 
 tidy:
 	$(GO) mod tidy

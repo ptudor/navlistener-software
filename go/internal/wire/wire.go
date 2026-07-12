@@ -55,7 +55,10 @@ var (
 	ErrShortRecord = errors.New("wire: DATA record too short")
 )
 
-// HelloMsg is the feeder's opening handshake (JSON). feed ∈ {ubx, sbf, rtcm, nmea}.
+// HelloMsg is the feeder's opening handshake (JSON). feed ∈ {ubx, rtcm} : the push
+// path deliberately rejects sbf (the GNF1 frame_type can't carry SBF block numbers, regression fix)
+// and nmea is unimplemented — a second feeder implementer mirroring this file must not build
+// an sbf/nmea pusher that can never authenticate.
 type HelloMsg struct {
 	Token   string `json:"token"`
 	Station string `json:"station"`

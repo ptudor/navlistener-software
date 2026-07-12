@@ -55,8 +55,8 @@ type GalileoINAV struct {
 	BGDE1E5a float64
 	BGDE1E5b float64
 	eph      kepler.Ephemeris
-	clk    clock.Model
-	hasClk bool
+	clk      clock.Model
+	hasClk   bool
 }
 
 // DecodeGalileoINAV decodes one I/NAV page (eight words) into its word fields.

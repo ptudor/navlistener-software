@@ -57,7 +57,7 @@ type GPSCNAV struct {
 	// of the NEXT 12-second message (6 s for L5 CNAV per IS-GPS-705 — the offset is
 	// signal-dependent), not this message. No internal consumer reads it today; documented
 	// so a library user doesn't mis-time frames by 6/12 s.
-	TOW float64
+	TOW     float64
 	eph     kepler.Ephemeris
 	clk     clock.Model
 	hasEph2 bool // message 11 present (has i0/Ω0)

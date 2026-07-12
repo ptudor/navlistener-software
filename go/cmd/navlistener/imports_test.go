@@ -22,14 +22,25 @@ func TestNoForbiddenImports(t *testing.T) {
 	// broken import, a network-required module, a sandboxed CI) must not turn
 	// the gate into a silent skip that leaves the boundary unverified in an
 	// otherwise-green build.
-	out, err := exec.Command("go", "list", "-deps", "./...").CombinedOutput()
-	if err != nil {
-		t.Fatalf("go list -deps failed (import-graph boundary unverified): %v\n%s", err, out)
-	}
-	for _, dep := range strings.Fields(string(out)) {
-		for _, bad := range forbidden {
-			if strings.Contains(dep, bad) {
-				t.Errorf("core package imports forbidden (GPL-quarantined) path %q via %q", bad, dep)
+	//
+	// cover the WHOLE tree of BOTH core modules, including test files. `go test` runs
+	// each test with cwd = its package dir, so a bare `go list ./...` here matched only
+	// cmd/navlistener's PRODUCTION import graph — a _test.go anywhere, or an internal package
+	// not yet imported by main, could import a GPL-quarantined path without failing the gate.
+	// Run from each module root (relative to this package dir: go/ = ../.., gnss/ = ../../../gnss)
+	// with `-deps -test` so the check spans the full import graph and every test binary.
+	for _, mod := range []string{"../..", "../../../gnss"} {
+		cmd := exec.Command("go", "list", "-deps", "-test", "./...")
+		cmd.Dir = mod
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("go list -deps -test in %s failed (import-graph boundary unverified): %v\n%s", mod, err, out)
+		}
+		for _, dep := range strings.Fields(string(out)) {
+			for _, bad := range forbidden {
+				if strings.Contains(dep, bad) {
+					t.Errorf("%s: package imports forbidden (GPL-quarantined) path %q via %q", mod, bad, dep)
+				}
 			}
 		}
 	}
