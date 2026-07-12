@@ -10,10 +10,15 @@ import (
 	"github.com/ptudor/navlistener/internal/ingest"
 )
 
-// gloWords builds a 4-word (128-bit) GLONASS string block with the given string
-// number (bits 1-4) and lets fill set any additional fields via the shared
-// setAbsBits helper — the same MSB-first convention glonassBlock's BitReader
-// uses internally.
+// gloWords is THE canonical builder for synthetic GLONASS strings in this
+// package (independent validation): it builds the 4-word (128-bit) string block
+// with the given string number (bits 1-4), lets fill set any additional fields
+// via the shared setAbsBits/setSignMag helpers (the same MSB-first convention
+// glonassBlock's BitReader uses internally), and ALWAYS stamps the ICD §4.7
+// check bits — a hand-packed string without them is rejected by every decoder
+// since regression fix with a confusing errGLONASSHamming. Build new test strings on top
+// of this (see glonassStringWords / glonassString4Frame); do not pack words by
+// hand.
 func gloWords(number int, fill func(buf []byte)) []uint32 {
 	buf := make([]byte, 16)
 	setAbsBits(buf, 1, 4, uint64(number))

@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/ptudor/gnss"
-	"github.com/ptudor/gnss/frame"
 	"github.com/ptudor/navlistener/internal/ingest"
 )
 
@@ -28,23 +27,18 @@ func setSignMag(buf []byte, start, n int, value int64) {
 // reads (gnss/frame/glonass_string.go: string number @1, coord @50, vel @21,
 // accel @45; string 2 additionally: health/Bn @5, tb @9). coord/vel/accel are
 // raw quantized units (pre-scale-factor) — this test only needs distinct,
-// round-trippable values, not physically realistic ones.
+// round-trippable values, not physically realistic ones. Built on gloWords so
+// the §4.7 check bits are always stamped (A4).
 func glonassStringWords(number int, coord, vel, accel int64, health, tb int) []uint32 {
-	buf := make([]byte, 16) // 128 bits
-	setAbsBits(buf, 1, 4, uint64(number))
-	setSignMag(buf, 50, 27, coord)
-	setSignMag(buf, 21, 24, vel)
-	setSignMag(buf, 45, 5, accel)
-	if number == 2 {
-		setAbsBits(buf, 5, 3, uint64(health))
-		setAbsBits(buf, 9, 7, uint64(tb))
-	}
-	words := make([]uint32, 4)
-	for i := 0; i < 4; i++ {
-		words[i] = uint32(buf[i*4])<<24 | uint32(buf[i*4+1])<<16 | uint32(buf[i*4+2])<<8 | uint32(buf[i*4+3])
-	}
-	frame.StampGLONASSHamming(words) // valid §4.7 check bits
-	return words
+	return gloWords(number, func(buf []byte) {
+		setSignMag(buf, 50, 27, coord)
+		setSignMag(buf, 21, 24, vel)
+		setSignMag(buf, 45, 5, accel)
+		if number == 2 {
+			setAbsBits(buf, 5, 3, uint64(health))
+			setAbsBits(buf, 9, 7, uint64(tb))
+		}
+	})
 }
 
 func glonassStringFrame(svID, number int, coord, vel, accel int64, health, tb int, recv time.Time) *ingest.RawFrame {
@@ -178,15 +172,10 @@ const gloPosScale = 1.0 / (1 << 11)
 // (regression fix; ICD Ed. 5.1 Table 4.6: τn at block offset 5 width 22, Δτn at 27
 // width 5, both sign-magnitude, raw pre-scale units).
 func glonassString4Frame(svID int, tauRaw, dtauRaw int64, recv time.Time) *ingest.RawFrame {
-	buf := make([]byte, 16)
-	setAbsBits(buf, 1, 4, 4)
-	setSignMag(buf, 5, 22, tauRaw)
-	setSignMag(buf, 27, 5, dtauRaw)
-	words := make([]uint32, 4)
-	for i := 0; i < 4; i++ {
-		words[i] = uint32(buf[i*4])<<24 | uint32(buf[i*4+1])<<16 | uint32(buf[i*4+2])<<8 | uint32(buf[i*4+3])
-	}
-	frame.StampGLONASSHamming(words) // regression fix
+	words := gloWords(4, func(buf []byte) {
+		setSignMag(buf, 5, 22, tauRaw)
+		setSignMag(buf, 27, 5, dtauRaw)
+	})
 	return &ingest.RawFrame{
 		Recv: recv, Source: "test", GnssID: gnss.GLONASS, SvID: svID, SigID: 0, FreqID: 7,
 		Words: words,
