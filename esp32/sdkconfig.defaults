@@ -30,7 +30,14 @@ CONFIG_NVS_ENCRYPTION=n
 # --- Logging -----------------------------------------------------------------
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 
-# --- Watchdog: the app must feed it; a wedged task should reboot, not hang ----
+# --- Watchdog: rx_task subscribes and feeds it; a wedged reader reboots, not hangs.
+# (pusher_task is not subscribed — its reconnect backoff sleep can exceed the 10s timeout.)
 CONFIG_ESP_TASK_WDT_INIT=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 CONFIG_ESP_TASK_WDT_PANIC=y
+
+# --- UART ISR in IRAM  -------------------------------------------------
+# Keep the UART ISR in IRAM so a cache-disabled window (flash erase/write during an
+# NVS/PHY commit) can't stall it past the 128-byte HW FIFO (~2.8 ms at 460800) and
+# silently drop receiver bytes. Cheap insurance for the byte-lossless-forwarding bar.
+CONFIG_UART_ISR_IN_IRAM=y

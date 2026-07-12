@@ -74,6 +74,12 @@ uint64_t spool_append(const uint8_t *data, uint32_t len)
 void spool_ack(uint64_t n)
 {
     lock();
+    // clamp the ack to the highest sequence we've actually assigned. A (TLS-
+    // authenticated but buggy, or future second-implementation) collector acking a seq above
+    // what was sent would otherwise leave spool_acked() > every future spool_append seq, so
+    // serve() seeds sent_upto past all frames and nothing is ever sent again while the ring
+    // silently churns drop-oldest. Every other inbound field is validated; this one must be too.
+    if (n > g.seq) n = g.seq;
     while (g.count > 0 && g.ring[g.head].seq <= n) {
         free(g.ring[g.head].data);
         g.ring[g.head].data = NULL;

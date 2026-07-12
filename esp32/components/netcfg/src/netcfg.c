@@ -5,6 +5,9 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include "esp_random.h"
+#include "bootloader_random.h" // seed esp_random() before Wi-Fi is running
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -238,6 +241,15 @@ static esp_err_t save_post(httpd_req_t *req)
     }
     body[total > 0 ? total : 0] = '\0';
 
+    // the read loop breaks on r<=0, which includes httpd's recv timeout and peer
+    // disconnect — a lost TCP segment yields a body cut mid-value. Reject a short read before
+    // parsing, or a truncated ssid+host could persist a provisioned-but-unconnectable config
+    // that never re-raises the portal (recoverable only by an NVS erase).
+    if (total != (int)req->content_len) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "incomplete form body");
+        return ESP_FAIL;
+    }
+
     netcfg_t cfg;
     netcfg_load(&cfg); // start from current so unspecified fields keep their value (                       // form_field no longer clears dst on "not found", so a field genuinely
                        // absent from the body leaves this NVS-loaded value untouched)
@@ -245,7 +257,14 @@ static esp_err_t save_post(httpd_req_t *req)
     form_field(body, "pass", cfg.wifi_pass, sizeof cfg.wifi_pass);
     form_field(body, "host", cfg.host, sizeof cfg.host);
     char port[8] = {0}; // fresh buffer, not a pre-seeded cfg field: must self-init 
-    if (form_field(body, "port", port, sizeof port) && port[0]) cfg.port = atoi(port);
+    if (form_field(body, "port", port, sizeof port) && port[0]) {
+        int p = atoi(port); // reject an out-of-range port (a 99999/negative would
+        if (p < 1 || p > 65535) { // otherwise store verbatim into a provisioned-but-unconnectable unit)
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "port out of range (1-65535)");
+            return ESP_FAIL;
+        }
+        cfg.port = p;
+    }
     form_field(body, "station", cfg.station, sizeof cfg.station);
     form_field(body, "token", cfg.token, sizeof cfg.token);
 #if CONFIG_NVF_ALLOW_INSECURE_PORTAL
@@ -272,13 +291,19 @@ static esp_err_t save_post(httpd_req_t *req)
 }
 
 // gen_password builds a strong AP password from an unambiguous alphabet (no 0/O/1/l/I),
-// never a placeholder — the design rule (generate real secrets at creation).
+// never a placeholder — the design rule (generate real secrets at creation). // rejection-sample so no symbol is favored by the modulo bias (esp_random() % 55 alone
+// slightly over-weights the low symbols). The caller must ensure a seeded RNG first.
 static void gen_password(char *dst, size_t n)
 {
     static const char alpha[] =
         "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    for (size_t i = 0; i + 1 < n; i++)
-        dst[i] = alpha[esp_random() % (sizeof(alpha) - 1)];
+    const uint32_t m = sizeof(alpha) - 1;
+    const uint32_t max_valid = (UINT32_MAX / m) * m; // discard the top partial bucket
+    for (size_t i = 0; i + 1 < n; i++) {
+        uint32_t r;
+        do { r = esp_random(); } while (r >= max_valid);
+        dst[i] = alpha[r % m];
+    }
     dst[n - 1] = '\0';
 }
 
@@ -293,7 +318,13 @@ esp_err_t netcfg_start_portal(char ap_ssid[33], char ap_pass[16])
     uint8_t mac[6] = {0};
     esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
     snprintf(ap_ssid, 33, "navfeeder-%02X%02X%02X", mac[3], mac[4], mac[5]);
+    // esp_random() is only truly random while an RF subsystem is running; here Wi-Fi
+    // is init'd but not started, so seed the RNG from the bootloader entropy source for the
+    // duration of password generation (disabled again before esp_wifi_start, which the RF
+    // driver requires).
+    bootloader_random_enable();
     gen_password(ap_pass, 13); // 12 chars + NUL (WPA2 needs >= 8)
+    bootloader_random_disable();
 
     wifi_config_t ap = {0};
     snprintf((char *)ap.ap.ssid, sizeof ap.ap.ssid, "%s", ap_ssid);

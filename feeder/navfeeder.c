@@ -354,6 +354,10 @@ static uint64_t spool_append(struct spool *s, const unsigned char *data, uint32_
 /* spool_ack drops every frame with seq <= n. */
 static void spool_ack(struct spool *s, uint64_t n) {
 	pthread_mutex_lock(&s->mu);
+	/* clamp the ack to the highest assigned sequence — a collector acking beyond what
+	 * was sent would otherwise push acked past every future append seq, muting the feeder
+	 * until reboot (serve() seeds sent_upto = spool_acked() and collect filters seq <= after). */
+	if (n > s->seq) n = s->seq;
 	while (s->count > 0 && s->ring[s->head].seq <= n) {
 		free(s->ring[s->head].data);
 		s->head = (s->head + 1) % s->cap;

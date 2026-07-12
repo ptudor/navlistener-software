@@ -24,7 +24,13 @@ PYENV="$IDF_TOOLS_PATH/python_env/idf5.5_py3.12_env/bin"
 . "$IDF/export.sh"
 
 cd "$(dirname "$0")"
-idf.py set-target esp32c6
+# `idf.py set-target` deletes and regenerates sdkconfig (renaming the old to
+# sdkconfig.old), silently discarding any values a developer set via `idf.py menuconfig`
+# (NVF_TOKEN/SSID/host) and flashing a Kconfig-default image. Only run it when there is no
+# sdkconfig yet, or its CONFIG_IDF_TARGET isn't esp32c6; otherwise just build.
+if [ ! -f sdkconfig ] || ! grep -q '^CONFIG_IDF_TARGET="esp32c6"' sdkconfig; then
+    idf.py set-target esp32c6
+fi
 idf.py build
 
 if [ "$1" = "flash" ]; then

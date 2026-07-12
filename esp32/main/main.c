@@ -16,6 +16,8 @@
 #include "freertos/task.h"
 #include "driver/uart.h"
 #include "esp_log.h"
+#include "esp_system.h"   // esp_restart 
+#include "esp_task_wdt.h" // task watchdog subscription 
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
@@ -31,6 +33,15 @@
 static const char *TAG = "navfeeder";
 
 // Receiver wiring (Waveshare ESP32-C6-LCD-1.47 -> u-blox on UART1).
+// regression fix (hardware caveat): GPIO9 is a C6 boot STRAPPING pin — GPIO9=0 at chip reset selects
+// the ROM serial-download boot. UART idle is high (safe when quiet), but at 460800 with a
+// continuous SFRBX stream the line is low a large fraction of the time, so a power-on/
+// brownout/external reset landing mid-byte can latch the chip into the ROM downloader (a
+// field hang the watchdog can't recover — recovery needs a manual reset, which can re-strap
+// while the receiver keeps talking). This can't be fixed in firmware alone: on a board re-spin
+// move the receiver RX to a non-strapping GPIO; on production units of THIS board, burn the
+// DIS_DOWNLOAD_MODE eFuse (`espefuse.py burn_efuse DIS_DOWNLOAD_MODE`, also aligned with the
+// regression fix secure-provisioning direction) so the strap combination becomes harmless.
 #define RX_UART     UART_NUM_1
 #define RX_PIN_RX   9
 #define RX_PIN_TX   10
@@ -63,7 +74,14 @@ static void rx_task(void *arg)
 {
     ubx_parser_t *parser = arg;
     uint8_t buf[512];
+    // subscribe the receiver reader to the task WDT (CONFIG_ESP_TASK_WDT_INIT) and
+    // reset it each ≤200 ms loop — so a wedged rx_task actually reboots the unit, which the
+    // sdkconfig comment promises but nothing implemented (only the idle tasks were watched).
+    // pusher_task is deliberately NOT subscribed: its inter-connect backoff vTaskDelay can
+    // exceed the 10 s WDT and would false-trigger; its wedges are bounded by regression fix timeouts.
+    esp_task_wdt_add(NULL);
     for (;;) {
+        esp_task_wdt_reset();
         int n = uart_read_bytes(RX_UART, buf, sizeof buf, pdMS_TO_TICKS(200));
         if (n > 0) ubx_parser_feed(parser, buf, (size_t)n);
     }
@@ -193,7 +211,20 @@ void app_main(void)
     }
     rx_uart_init();
     ubx_parser_init(&s_parser, on_record, app_now_ns, NULL);
-    xTaskCreate(rx_task, "rx", 4096, &s_parser, 5, NULL);
+    // rx_task is the receiver reader — if it can't start, the unit reads no bytes and
+    // runs silently half-dead. Boot OOM is typically transient, so reboot to retry rather
+    // than continue degraded ("the receiver must never go down").
+    // rx_task (the UART producer) runs at priority 7 — ABOVE pusher_task (6) — so on
+    // this single-core C6 a TLS-handshake CPU burst in the pusher can never starve the reader
+    // and overflow the 4 KB UART ring (~89 ms of headroom at 460800), silently dropping nav
+    // frames exactly at reconnect. This restores the design rule "the consumer never blocks
+    // the producer". rx blocks on uart_read_bytes, so the high priority only preempts to drain
+    // the FIFO, then yields. (A bench measurement of the worst-case handshake holdoff is still
+    // worth running to confirm no residual risk.)
+    if (xTaskCreate(rx_task, "rx", 4096, &s_parser, 7, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "failed to create rx task (OOM); rebooting");
+        esp_restart();
+    }
 
     // Config precedence: NVS (field-provisioned) over Kconfig defaults.
     bool provisioned = netcfg_load(&g_cfg);
@@ -206,14 +237,24 @@ void app_main(void)
             display_show_portal(ap_ssid, ap_pass);
             ESP_LOGW(TAG, "unprovisioned: join AP '%s' and open http://192.168.4.1/ to configure",
                      ap_ssid);
+            // the AP password normally appears ONLY on the LCD (never logged).
+            // could ever join the AP. Physical serial-console access is equivalent trust to
+            // reading the panel, so when the display is not ready, print the one-time password
+            // to the serial console as the sole field-recovery path.
+            if (!display_is_ready())
+                ESP_LOGW(TAG, "display unavailable — AP password (serial console only): %s", ap_pass);
         } else {
             ESP_LOGE(TAG, "provisioning portal failed to start");
         }
         return; // rx_task keeps counting frames; reboots into station mode after provisioning
     }
 
-    xTaskCreate(ui_task, "ui", 4096, &s_parser, 4, NULL);
+    // fill s_collector BEFORE ui_task starts reading it — otherwise the write races
+    // the reader (formally UB; in practice a partial/empty collector string on one frame).
     snprintf(s_collector, sizeof s_collector, "%s:%d", g_cfg.host, g_cfg.port);
+    // the UI is non-essential — log a create failure but keep forwarding.
+    if (xTaskCreate(ui_task, "ui", 4096, &s_parser, 4, NULL) != pdPASS)
+        ESP_LOGW(TAG, "failed to create ui task; continuing without the dashboard");
     wifi_start();
 
     pusher_cfg_t pc = {
@@ -225,7 +266,17 @@ void app_main(void)
         .ca_pem = NULL, // P-hw: pin the collector CA; today rely on the Mozilla bundle or insecure
         .insecure = g_cfg.insecure,
     };
-    if (!pusher_start(&pc)) {
-        ESP_LOGE(TAG, "failed to start pusher task");
+    // retry pusher_start with backoff rather than spooling-until-overflow-and-never-
+    // pushing on a transient boot OOM. pusher_cfg_free (fa67e92) leaves s_cfg zeroed, so
+    // retry is safe. Bounded so a persistent failure eventually reboots to a clean slate.
+    int delay_ms = 500;
+    for (int attempt = 0; !pusher_start(&pc); attempt++) {
+        ESP_LOGE(TAG, "failed to start pusher task (attempt %d)", attempt + 1);
+        if (attempt >= 5) {
+            ESP_LOGE(TAG, "pusher task will not start; rebooting");
+            esp_restart();
+        }
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
+        if ((delay_ms *= 2) > 8000) delay_ms = 8000;
     }
 }
