@@ -11,6 +11,10 @@
 #   sysrc navlistener_enable=YES
 #   service navlistener start
 #
+# Preflight: `navlistener -check-config -config <toml>` has full startup parity  —
+# it loads the [push] TLS keypair/client CA, parses the store DSN, and validates ntrip CA
+# files, so run it AFTER certs are provisioned; on a bare host it fails by design.
+#
 # Log rotation : daemon(8) is invoked with -H so it reopens ${navlistener_logfile}
 # on SIGHUP; ship deploy/freebsd/newsyslog.conf.d/navlistener.conf to
 # /usr/local/etc/newsyslog.conf.d/navlistener.conf so newsyslog signals the SUPERVISOR

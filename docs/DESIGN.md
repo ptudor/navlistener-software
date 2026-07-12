@@ -237,6 +237,12 @@ loopback; counters for SVs tracked, frames/s/constellation, decode failures, rec
 integrity events, DB lag, per-observer drops — so it slots into the same Zabbix/Prometheus
 monitoring as radiolistener.
 
+`navlistener -check-config` validates the config with full startup parity : it
+stat/loads the `[push]` TLS keypair and `client_ca_file`, parses the `[store]` DSN, and
+PEM-validates every ntrip `ca_file` — so it **fails on a host whose certs are not yet
+provisioned**. That is deliberate (a config that passes `-check-config` must also start), but
+it means the check belongs *after* cert provisioning in any deploy runbook, not before.
+
 ---
 
 ## 6. Engineering priorities
