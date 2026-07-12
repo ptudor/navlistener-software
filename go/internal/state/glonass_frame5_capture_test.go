@@ -11,15 +11,15 @@ import (
 	"github.com/ptudor/navlistener/internal/ingest"
 )
 
-// glonassCaptureFrames extracts the GLONASS UBX-RXM-SFRBX frames from the shared
+// glonassCaptureFrames extracts the GLONASS UBX-RXM-SFRBX frames from a
 // real-receiver capture, in stream order, all stamped at. It re-implements only
 // the fixed UBX framing (sync / length / Fletcher checksum) and the SFRBX header
 // layout: the production scanner (internal/ingest ubx.go) is unexported and
 // state imports ingest, so an in-package state test cannot reach it; the
-// scanner itself is validated against this same capture by ingest's own tests.
-func glonassCaptureFrames(t *testing.T, at time.Time) []*ingest.RawFrame {
+// scanner itself is validated against these same captures by ingest's own tests.
+func glonassCaptureFrames(t *testing.T, path string, at time.Time) []*ingest.RawFrame {
 	t.Helper()
-	data, err := os.ReadFile("../ingest/testdata/f9p_capture.ubx")
+	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("no capture fixture: %v", err)
 	}
@@ -65,8 +65,11 @@ func glonassCaptureFrames(t *testing.T, at time.Time) []*ingest.RawFrame {
 }
 
 // TestGLONASSFrame5RealSuperframe validates the regression fix frame-5 heuristic against
-// the real F9P capture (independent validation) — the finding's own verification
-// step, previously done only with synthetic frames.
+// a real full-superframe fleet capture (independent validation) — the finding's
+// own verification step, previously done only with synthetic frames. The fixture
+// is 250 s of raw UBX cat'd off capture-station's receiver on 2026-07-12 (GLONASS
+// L1OF, 9 SVs, ~1.7 superframes — the earlier f9p_capture.ubx ended ~20 s before
+// frame 5's almanac section ever aired).
 //
 // Ground truth is reconstructed from the broadcast content itself, independently
 // of the heuristic under test: within one frame, the almanac pair on strings
@@ -79,20 +82,18 @@ func glonassCaptureFrames(t *testing.T, at time.Time) []*ingest.RawFrame {
 //  1. every legitimate frames-1–4 string-14/15 almanac (after NA was known) IS
 //     stored — i.e. A3's stale-base blind spot (a lost string 6 wrongly skipping
 //     a real almanac) did not fire on real data;
-//  2. no slot's stored elements ever changed during the replay (the regression fix
-//     signature was a slot flip-flopping between genuine and garbage every
-//     superframe);
-//  3. no frame-5 string-14/15 pair landed in the almanac store (the regression fix bug) —
-//     WHEN the capture contains one. The current f9p_capture.ubx ends ~20 s
-//     short: it spans frames 1–4 plus only strings 1–5 of frame 5 (GLONASS
-//     frames are constellation-synchronised, so no SV's frame-5 almanac section
-//     is present at all — which is also why the store below never holds slots
-//     21–24). Until a ≥3-minute capture replaces the fixture, the frame-5 skip
-//     itself remains validated only synthetically (own unit test); this
-//     test says so loudly rather than passing silently.
+//  2. at every replay step every stored slot holds a value actually broadcast as
+//     almanac (the regression fix signature was a slot flip-flopping between genuine and
+//     garbage every superframe);
+//  3. no frame-5 string-14/15 pair landed in the almanac store (the regression fix bug).
+//     This capture proves the hazard is live, not theoretical: its frame-5
+//     14/15 pairs decode to an IN-RANGE garbage slot — B1's bits misread as
+//     "slot 1" — so without the heuristic they would overwrite the genuine
+//     slot-1 almanac (broadcast ~10 s later by frame 1) once per superframe,
+//     exactly the flip-flop regression fix predicted.
 func TestGLONASSFrame5RealSuperframe(t *testing.T) {
 	at := time.Unix(1_700_000_000, 0)
-	frames := glonassCaptureFrames(t, at)
+	frames := glonassCaptureFrames(t, "../ingest/testdata/glo_superframe_capture.ubx", at)
 	if len(frames) < 200 {
 		t.Fatalf("only %d GLONASS SFRBX frames in the capture; need a full ~2.5 min superframe", len(frames))
 	}
@@ -223,9 +224,7 @@ func TestGLONASSFrame5RealSuperframe(t *testing.T) {
 		t.Fatal("capture contains no frames-1..4 string-14/15 almanac pair; cannot check the stale-base blind spot")
 	}
 	if len(frame5) == 0 {
-		t.Log("NOTE (A3 residue): capture ends before frame 5's almanac section airs; " +
-			"the frame-5 skip is exercised synthetically only (TestGloAlmanacFrame5Strings1415Skipped) " +
-			"until a >=3-minute GLONASS capture replaces the fixture")
+		t.Fatal("capture contains no frame-5 string-14/15 pair; a fixture regression — it must span a full superframe to validate regression fix")
 	}
 
 	// --- Whole-stream replay through the real state path -------------------
