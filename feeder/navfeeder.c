@@ -52,6 +52,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -112,7 +113,7 @@ struct opts {
 	const char *source;    /* /dev/ttyACM0 (serial) or host:port (TCP bridge) */
 	int baud;              /* serial baud when --source is a device path */
 	const char *token, *station, *feed, *ca;
-	const char *cert, *key; /* mTLS client cert + key (PEM); the cert CN is the station */
+	const char *cert, *key; /* mTLS client cert + key (PEM); one DNS SAN = the station  */
 	const char *spool_file; /* NULL = in-memory only (drop-oldest on overflow) */
 	int insecure;
 	int zstd; /* request zstd stream compression (the collector must confirm) */
@@ -155,7 +156,11 @@ struct spool {
 };
 
 static struct spool g_spool;
-static volatile int g_disconnected;
+// g_disconnected is written by the reader thread and read by the consumer/drain
+// threads. `volatile` is not a C11 synchronization primitive (concurrent unsynchronized
+// access is UB); atomic_int gives well-defined cross-thread visibility. Plain =/== on an
+// atomic_int are seq-cst atomic operations, so the existing call sites need no change.
+static atomic_int g_disconnected;
 
 static void die(const char *m) { fprintf(stderr, "navfeeder: %s\n", m); exit(2); }
 
@@ -165,9 +170,15 @@ static void log_msg(const char *fmt, ...) {
 	struct tm tm;
 	gmtime_r(&t, &tm);
 	strftime(ts, sizeof ts, "%Y-%m-%dT%H:%M:%SZ", &tm);
+	// the producer, consumer and reader threads all log; without a lock the three
+	// independently-locked stdio calls below can interleave mid-line (a reconnect log spliced
+	// into a source-retry log), garbling the logd/journal the deploy relies on. flockfile
+	// holds stderr's lock across all three so each line is emitted atomically.
+	flockfile(stderr);
 	fprintf(stderr, "%s navfeeder: ", ts);
 	va_list ap; va_start(ap, fmt); vfprintf(stderr, fmt, ap); va_end(ap);
 	fputc('\n', stderr);
+	funlockfile(stderr);
 }
 
 static uint64_t now_unix_ns(void) {
@@ -216,7 +227,20 @@ static void spool_recover(struct spool *s) {
 	}
 	fclose(r);
 	if (count == 0) { unlink(s->path); return; }
-	if (truncate(s->path, (off_t)good_bytes) != 0) { unlink(s->path); return; }
+	/* if the tail truncate fails (EROFS/EACCES/EIO), do NOT unlink the whole spool and
+	 * restart seq at 0 — that re-enters the seq-reuse regime  where the
+	 * collector's (source_id, feeder_seq) ledger discards fresh frames as replays. Instead
+	 * resume seq/disk_max_seq/disk_bytes from the recovered good prefix and leave disk_w NULL
+	 * (no appends to an unrepairable file), logging loudly. The recovered frames still replay
+	 * on connect; only new overflow-to-disk is disabled until the fs is writable again. */
+	if (truncate(s->path, (off_t)good_bytes) != 0) {
+		s->seq = s->disk_max_seq = max_seq;
+		s->disk_bytes = good_bytes;
+		s->disk_w = NULL;
+		log_msg("disk spool truncate failed (%s); resuming seq %llu read-only, disk overflow disabled",
+			strerror(errno), (unsigned long long)max_seq);
+		return;
+	}
 	s->seq = s->disk_max_seq = max_seq;
 	s->disk_bytes = good_bytes;
 	s->disk_w = fopen(s->path, "ab");
@@ -673,14 +697,28 @@ static void emit_navsat(const unsigned char *p, unsigned len) {
 }
 
 /* rdbuf is a small buffered reader over the source fd (serial or TCP). */
-struct rdbuf { int fd; size_t pos, len; unsigned char buf[4096]; };
+struct rdbuf { int fd; size_t pos, len; int quiet; unsigned char buf[4096]; };
+
+/* RB_QUIET_MAX bounds how many consecutive source read-timeouts (5s each, regression fix) may elapse
+ * before rb_getc gives up and lets the producer re-dial — ~5 min of total silence. */
+#define RB_QUIET_MAX 60
 
 static int rb_getc(struct rdbuf *b) {
 	while (b->pos >= b->len) {
 		ssize_t r = read(b->fd, b->buf, sizeof b->buf);
-		if (r > 0) { b->len = (size_t)r; b->pos = 0; break; }
+		if (r > 0) { b->len = (size_t)r; b->pos = 0; b->quiet = 0; break; }
 		if (r == 0) return -1;                       /* EOF / device closed */
 		if (errno == EINTR) continue;
+		/* a source SO_RCVTIMEO expiry (EAGAIN/EWOULDBLOCK) is NOT EOF — a healthy TCP
+		 * receiver can legitimately go quiet for >5s (messages not yet enabled, mid-reboot,
+		 * ser2net momentarily detached). Keep waiting rather than tearing the connection into
+		 * a no-backoff reconnect churn; only give up after RB_QUIET_MAX consecutive quiet
+		 * periods so a silently-wedged source is still eventually re-dialed. The serial path
+		 * uses a blocking read (VMIN=1), so it never reaches this branch. */
+		if (errno == EAGAIN || errno == EWOULDBLOCK) {
+			if (++b->quiet >= RB_QUIET_MAX) return -1;
+			continue;
+		}
 		return -1;                                   /* read error */
 	}
 	return b->buf[b->pos++];
@@ -720,7 +758,7 @@ static int sync_ubx(struct rdbuf *b) {
  * immediately on the very first read; producer_thread uses the return value to decide
  * whether resetting backoff is warranted, mirroring go/internal/ingest's regression fix fix. */
 static int run_ubx(int fd) {
-	struct rdbuf rb; rb.fd = fd; rb.pos = rb.len = 0;
+	struct rdbuf rb; rb.fd = fd; rb.pos = rb.len = 0; rb.quiet = 0;
 	unsigned char head[4], payload[UBX_MAX_PAYLOAD], ck[2];
 	time_t start = time(NULL);
 	unsigned long frames = 0;
@@ -843,6 +881,16 @@ static SSL *tls_connect(SSL_CTX *ctx, const struct opts *o, int *out_fd) {
 	 * is never mistaken for dead — see ssl_read_full/reader_thread. */
 	int fd = tcp_dial(o->server_host, o->server_port, 2 * KEEPALIVE_S);
 	if (fd < 0) return NULL;
+	/* bound the WRITE side too (regression fix only bounded reads). If the collector stops
+	 * reading while TCP stays alive (its decode stage stalls; zero-window probes keep the
+	 * link up), SSL_write would block forever — PINGs stop, the spool fills then drops, and
+	 * the feeder never reconnects. A send timeout turns that into a normal SSL_write<=0
+	 * teardown + reconnect-with-replay. Collector socket only; the source socket (tcp_dial's
+	 * other caller) is read-only. */
+	{
+		struct timeval snd = { 2 * KEEPALIVE_S, 0 };
+		setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &snd, sizeof snd);
+	}
 	SSL *ssl = SSL_new(ctx);
 	if (!ssl) { close(fd); return NULL; }
 	SSL_set_fd(ssl, fd);
@@ -1143,7 +1191,8 @@ static SSL_CTX *make_ctx(const struct opts *o) {
 			die("failed to load system CA paths");
 		}
 	}
-	/* mTLS: present a client certificate (the collector reads its CN as the station). */
+	/* mTLS: present a client certificate. regression fix/the collector matches exactly one DNS
+	 * SAN equal to the station id and REJECTS CN-only certs — mint the cert with a DNS SAN. */
 	if (o->cert && o->key) {
 		if (SSL_CTX_use_certificate_chain_file(ctx, o->cert) != 1) die("failed to load --cert file");
 		if (SSL_CTX_use_PrivateKey_file(ctx, o->key, SSL_FILETYPE_PEM) != 1) die("failed to load --key file");
@@ -1183,21 +1232,54 @@ static void usage(void) {
 	fprintf(stderr,
 		"navfeeder — navlistener edge feeder (UBX raw nav frames over GNF1/TLS)\n"
 		"usage: navfeeder --server host:port --source (/dev/ttyACM0 | host:port) --station ID\n"
-		"                 (--token TOK | --token-file F | --cert C --key K) [options]\n\n"
+		"                 (--token TOK | --token-file F) [--cert C --key K] [options]\n\n"
 		"  --server host:port    the collector's authenticated push endpoint\n"
 		"  --source SRC          /dev/ttyACM0 (serial) or host:port (TCP bridge to the receiver)\n"
 		"  --baud N              serial baud when --source is a device path (default 460800)\n"
-		"  --station ID          this observer's station id (also the mTLS cert CN)\n"
+		"  --station ID          this observer's station id (also the mTLS cert's DNS SAN)\n"
 		"  --feed ubx            feed type (only 'ubx' is implemented today; default ubx)\n"
 		"  --token TOK           bearer token (prefer --token-file so it stays out of argv)\n"
 		"  --token-file F        read the bearer token from a file\n"
 		"  --cert C --key K      mTLS client certificate + private key (PEM)\n"
 		"  --ca F                CA bundle to verify the collector (default: system store)\n"
 		"  --spool N             in-memory ring capacity in frames (default 65536)\n"
-		"  --spool-file F        disk spool path (survives reboots; lossless past RAM)\n"
+		"  --spool-file F        disk spool path (lossless past the RAM ring; survives an\n"
+		"                        orderly reboot only on PERSISTENT storage — not tmpfs, regression fix)\n"
 		"  --spool-disk-mb N     disk spool cap in MiB (default 256)\n"
 		"  --zstd                request zstd DATA-stream compression (collector must confirm)\n"
 		"  --insecure            skip TLS verification (dev only)\n");
+}
+
+/* signal_thread waits for SIGTERM/SIGINT (blocked in every other thread) and, on an orderly
+ * stop/reboot, spills every ring-resident (unacked) frame to the disk spool oldest-first,
+ * then one final fsync, then _exit(0). Without this, `service stop`/`systemctl
+ * restart`/an orderly reboot delivers SIGTERM whose default action kills the process
+ * instantly, losing every unacked RAM-ring frame — up to the full spool_cap newest backlog
+ * when stopped mid-outage (the disk tier holds only the OLDEST overflow, so the newest
+ * frames die with the process). The single shutdown fsync is a wear-acceptable one-off; the
+ * work is bounded (≤ spool_cap frames) and fits the 90 s systemd/procd stop timeout. */
+static void *signal_thread(void *arg) {
+	(void)arg;
+	sigset_t set;
+	sigemptyset(&set);
+	sigaddset(&set, SIGTERM);
+	sigaddset(&set, SIGINT);
+	int sig = 0;
+	sigwait(&set, &sig);
+	log_msg("shutdown signal %d; flushing unacked ring to disk spool", sig);
+	if (g_spool.path) {
+		pthread_mutex_lock(&g_spool.mu);
+		size_t idx = g_spool.head;
+		for (size_t i = 0; i < g_spool.count; i++) {
+			struct frame *fr = &g_spool.ring[idx];
+			disk_put(&g_spool, fr->seq, fr->data, fr->len);
+			idx = (idx + 1) % g_spool.cap;
+		}
+		if (g_spool.disk_w) { fflush(g_spool.disk_w); fsync(fileno(g_spool.disk_w)); }
+		pthread_mutex_unlock(&g_spool.mu);
+	}
+	_exit(0);
+	return NULL;
 }
 
 int main(int argc, char **argv) {
@@ -1207,6 +1289,14 @@ int main(int argc, char **argv) {
 	// process outright, losing the entire unacked RAM ring. Ignore it so the
 	// write instead fails with EPIPE and the normal reconnect path handles it.
 	signal(SIGPIPE, SIG_IGN);
+	// block SIGTERM/SIGINT in main (and thus every thread it later spawns) so they are
+	// delivered only to the dedicated signal_thread, which flushes the ring to disk before
+	// exiting. Set before any pthread_create so the block is inherited.
+	sigset_t block;
+	sigemptyset(&block);
+	sigaddset(&block, SIGTERM);
+	sigaddset(&block, SIGINT);
+	pthread_sigmask(SIG_BLOCK, &block, NULL);
 	struct opts o; memset(&o, 0, sizeof o);
 	o.feed = "ubx";
 	o.baud = 460800;
@@ -1238,7 +1328,11 @@ int main(int argc, char **argv) {
 	need(o.station, "station");
 	if (strcmp(o.feed, "ubx") != 0)
 		die("only --feed ubx is implemented today (sbf/rtcm source modes are deferred)");
-	if (!o.token && !o.cert) die("need --token/--token-file, or --cert+--key for mTLS");
+	/* a bearer token is ALWAYS required; mTLS (--cert/--key) is additive, raising the
+	 * trust tier (DESIGN §3: "token + optional mTLS"). The collector's only authenticator
+	 * matches the token hash, so a cert-only feeder would send "token":"" and be rejected
+	 * `unauthorized` in a permanent 30 s loop. */
+	if (!o.token) die("a bearer token (--token/--token-file) is required; --cert/--key adds mTLS on top");
 	if ((o.cert != NULL) != (o.key != NULL)) die("--cert and --key must be given together");
 	if (o.spool_cap < 1) o.spool_cap = 1;
 	o.server_port = split_hostport(server); o.server_host = server;
@@ -1247,6 +1341,12 @@ int main(int argc, char **argv) {
 	SSL_load_error_strings();
 	SSL_CTX *ctx = make_ctx(&o);
 	spool_init(&g_spool, o.spool_cap, o.spool_file, o.disk_max_bytes);
+
+	/* start the shutdown-flush signal thread once the spool exists. A create failure
+	 * is non-fatal (the feeder still runs; only the graceful ring-flush is unavailable). */
+	pthread_t sigthr;
+	if (pthread_create(&sigthr, NULL, signal_thread, NULL) != 0)
+		log_msg("failed to start signal thread; shutdown ring-flush disabled");
 
 	/* a failed pthread_create here (OOM at boot) previously left `prod`
 	 * indeterminate and the process running with no source thread ever reading the
@@ -1264,7 +1364,15 @@ int main(int argc, char **argv) {
 
 	int backoff = 1;
 	for (;;) {
+		time_t t0 = time(NULL);
 		int rc = serve_collector(ctx, &o);
+		/* a session that authenticated and ran at least USEFUL_CONN_S was useful —
+		 * reset the backoff so a routine collector restart weeks later reconnects in ~1s
+		 * rather than the 30s cap the backoff otherwise monotonically climbs to over the
+		 * process lifetime (it was reset only on an auth reject before). Mirrors the producer
+		 * thread's regression fix usefulness reset and the Go collector's regression fix dial-side reset. Auth
+		 * reject (-2) still backs off hard. */
+		if (rc != -2 && (time(NULL) - t0) >= USEFUL_CONN_S) backoff = 1;
 		int wait = rc == -2 ? 30 : backoff;
 		log_msg("reconnecting in %ds", wait);
 		sleep(wait);

@@ -12,6 +12,10 @@
 BINARY    := navfeeder
 CC        ?= cc
 CFLAGS    ?= -O2 -Wall -Wextra -std=c11
+# 32-bit glibc hosts (e.g. armhf Debian) default to a 32-bit off_t, so a spool file
+# ≥ 2 GiB hits EFBIG on append and EOVERFLOW on fopen. Force 64-bit file offsets everywhere
+# (harmless on musl/64-bit, which already use a 64-bit off_t).
+CFLAGS    += -D_FILE_OFFSET_BITS=64
 LDLIBS    := -lssl -lcrypto -lzstd -lpthread
 
 UNAME := $(shell uname -s)
@@ -48,7 +52,7 @@ SYS      := $(STAGING_DIR)/target-$(TARGET)
 openwrt:
 	@test -n "$(STAGING_DIR)" || { echo "set STAGING_DIR=<openwrt>/staging_dir"; exit 2; }
 	STAGING_DIR=$(STAGING_DIR) $(TC)/bin/$(GCCPFX)-gcc \
-		-Os -Wall -std=c11 --sysroot=$(SYS) \
+		-Os -Wall -std=c11 -D_FILE_OFFSET_BITS=64 --sysroot=$(SYS) \
 		-I$(SYS)/usr/include -L$(SYS)/usr/lib -L$(TC)/lib \
 		-Wl,-rpath-link,$(SYS)/usr/lib -Wl,-rpath-link,$(TC)/lib \
 		-o $(BINARY) navfeeder.c -lssl -lcrypto -lzstd -lpthread -latomic

@@ -29,7 +29,7 @@ extern "C" {
 #define GNF1_F_HELLO       0x01 // feeder->collector: JSON hello
 #define GNF1_F_WELCOME     0x02 // collector->feeder: JSON welcome
 #define GNF1_F_DATA        0x03 // feeder->collector: [8B seq][record]
-#define GNF1_F_ACK         0x04 // collector->feeder: [8B seq] highest stored
+#define GNF1_F_ACK         0x04 // collector->feeder: [8B seq] highest sequence received this connection (regression fix/regression fix; NOT a durability guarantee)
 #define GNF1_F_PING        0x05 // keepalive
 #define GNF1_F_PONG        0x06 // keepalive
 #define GNF1_F_SIGNED_DATA 0x07 // P-hw: ATECC ECDSA batch (reserved)

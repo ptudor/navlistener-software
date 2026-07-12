@@ -3,7 +3,9 @@
 `navfeeder` is the dumb edge feeder: it reads raw UBX-RXM-SFRBX off a local u-blox receiver
 and pushes each frame, undecoded, to the navlistener collector over an authenticated,
 zstd-negotiated, spooled TLS link (GNF1). All decode + orbit math is central — the edge just
-frames and forwards, and its spool means a collector restart or a reboot loses nothing
+frames and forwards, and its spool means a collector restart loses nothing (and an orderly
+reboot loses nothing too **when the spool is on persistent storage** — see the Spool note
+below; on OpenWrt's tmpfs it survives a collector outage but not a reboot, regression fix)
 (`docs/DESIGN.md §1/§2`). The fleet target is the OpenWrt/SBC observers next to each receiver.
 
 ## Build
@@ -78,6 +80,10 @@ Write `/etc/navfeeder/feeder.conf` (`SERVER/SOURCE/BAUD/STATION/EXTRA`), the tok
 - **Source modes.** Only `--feed ubx` is implemented today (the fleet is u-blox). SBF and
   RTCM source modes are deferred — the collector's push path wires `ubx`.
 - **Never `ssh` from CI/agents** to a box — the commands above are for the operator to run.
-- **Spool.** `--spool` sizes the RAM ring (frames); `--spool-file` adds a reboot-surviving
-  disk tier capped by `--spool-disk-mb`. Both are lossless up to their caps; overflow drops
-  the oldest and is counted in the disconnect log.
+- **Spool.** `--spool` sizes the RAM ring (frames); `--spool-file` adds a disk overflow tier
+  capped by `--spool-disk-mb`. On an orderly stop/reboot the ring is flushed to the disk tier
+  and fsync'd, so an orderly reboot is lossless **only when `--spool-file` points at
+  persistent storage** — on OpenWrt `/var` is tmpfs (RAM), so the spool covers a collector
+  outage while the box stays up but does NOT survive a reboot there (regression fix; the init caps the
+  tmpfs spool at 16 MiB). Both tiers are lossless up to their caps; overflow drops the oldest
+  and is counted in the disconnect log.

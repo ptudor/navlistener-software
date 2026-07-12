@@ -13,6 +13,13 @@ start_service() {
 	[ -f "$CONF" ] || { echo "missing $CONF" >&2; return 1; }
 	# shellcheck disable=SC1090
 	. "$CONF"
+	# /var is a symlink to /tmp (tmpfs) on OpenWrt, recreated empty each boot, so the
+	# spool dir must be (re)created before start or disk_put's fopen("ab") fails silently and
+	# the disk overflow tier is dead. The spool therefore lives in RAM (tmpfs) and does NOT
+	# survive a reboot on this target — it only covers a collector outage longer than the RAM
+	# ring while the box stays up. The 256 MiB default cap would exhaust tmpfs (~32-64 MiB on
+	# mips routers) and pressure logd/dnsmasq, so cap it well under RAM here.
+	mkdir -p /var/spool/navfeeder
 	procd_open_instance
 	procd_set_param command /usr/bin/navfeeder \
 		--server "$SERVER" --source "$SOURCE" --baud "${BAUD:-460800}" \
@@ -20,8 +27,10 @@ start_service() {
 		--token-file /etc/navfeeder/feeder.token \
 		--ca /etc/navfeeder/ingest-ca.pem \
 		--spool-file /var/spool/navfeeder/feeder.spool \
+		--spool-disk-mb "${SPOOL_DISK_MB:-16}" \
 		$EXTRA
 	procd_set_param respawn 5 30 0   # the feeder reconnects itself; respawn only on a real crash
+	procd_set_param term_timeout 90  # allow the shutdown ring-flush to complete before SIGKILL
 	procd_set_param stderr 1         # logd captures the feeder's structured lines
 	procd_close_instance
 }
