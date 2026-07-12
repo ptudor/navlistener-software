@@ -31,6 +31,37 @@ cd "$(dirname "$0")"
 if [ ! -f sdkconfig ] || ! grep -q '^CONFIG_IDF_TARGET="esp32c6"' sdkconfig; then
     idf.py set-target esp32c6
 fi
+
+# A1 (specification review): the regression fix guard above keeps an existing sdkconfig, so a key added
+# to sdkconfig.defaults later never takes effect on a dev box until sdkconfig is regenerated
+# (CONFIG_UART_ISR_IN_IRAM shipped exactly this way — correct in source, absent from
+# the built image). Warn — don't fail — when the active sdkconfig doesn't satisfy a defaults
+# entry. Note a defaults "CONFIG_X=n" renders as "# CONFIG_X is not set" (or is absent) in a
+# generated sdkconfig, so "=n" is only violated by an explicit "CONFIG_X=<value>" line.
+drift=""
+while IFS= read -r line; do
+    case "$line" in
+        CONFIG_*=*) ;;
+        *) continue ;;
+    esac
+    key=${line%%=*}
+    if [ "${line#*=}" = "n" ]; then
+        grep -q "^${key}=" sdkconfig && drift="$drift $key"
+    elif ! grep -qxF "$line" sdkconfig; then
+        drift="$drift $key"
+    fi
+done < sdkconfig.defaults
+if [ -n "$drift" ]; then
+    {
+        echo "WARNING: active sdkconfig does not satisfy sdkconfig.defaults for:"
+        for k in $drift; do echo "    $k"; done
+        echo "New sdkconfig.defaults entries never apply to an existing sdkconfig (set-target is"
+        echo "skipped to preserve your menuconfig values). To land them, set the key via"
+        echo "'idf.py menuconfig', or 'rm sdkconfig' and rerun (menuconfig values are lost)."
+        echo "If the mismatch is a deliberate local override, ignore this warning."
+    } >&2
+fi
+
 idf.py build
 
 if [ "$1" = "flash" ]; then
