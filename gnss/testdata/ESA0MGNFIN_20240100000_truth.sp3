@@ -1,0 +1,14 @@
+#dP2024  1 10  0  0  0.00000000     289 ORBIT ITRF  BHN ESOC                    
+## 2296 259200.00000000   300.00000000 60319 0.0000000000000                    
+/* Trimmed truth fixture from ESA0MGNFIN_20240100000_01D_05M_ORB.SP3.gz
+/* (ESA/ESOC MGEX final, navigation-office.esa.int/products/gnss-products/2296/),
+/* fetched 2026-07-12. Verbatim epoch+position lines for the 5 SVs used by
+/* truth_test.go. Positions km, ITRF, satellite centre-of-mass.
+*  2024  1 10  9 30  0.00000000                                                 
+PJ02 -31133.494974  22980.554534  21800.813561     -1.073503                    
+*  2024  1 10 12 30  0.00000000                                                 
+PG05  14412.808052   5559.840190 -21791.820530   -157.430453                    
+PR09   5830.691877 -24858.159659   -936.999923    163.565090                    
+PE21   6297.622492  17467.415185  23047.739370   -573.177864                    
+PC11  23058.546809  15469.428441  -2758.626850    350.971817                    
+EOF
