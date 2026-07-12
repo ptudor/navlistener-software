@@ -89,6 +89,11 @@ type svState struct {
 	// Galileo I/NAV word assembly buffers, indexed by word type 1–5 (word 5 carries
 	// BGD/health, not part of the ephemeris set; index 0 unused).
 	galW [6]*frame.GalileoINAV
+	// Galileo E5a F/NAV page assembly buffers, indexed by page type 1–4 (index 0 unused).
+	// Kept separate from galW because F/NAV is a distinct signal (E5a, sigId 5) with its own
+	// svState entry, mirroring BeiDou B-CNAV2 (sigId 8) rather than overwriting E1-B I/NAV.
+	// regression fix; see applyGalileoFNAV (UNTESTED on real hardware).
+	fnav [5]*frame.GalileoFNAV
 	// BeiDou D1 subframe assembly buffers.
 	bd1, bd2, bd3 *frame.BeiDouSubframe
 	// BeiDou B2a B-CNAV2 message assembly buffers (types 10/11 ephemeris, 30/34 clock).
@@ -286,6 +291,8 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 		s.applyGPSLNAV(f)
 	case f.GnssID == gnss.Galileo && (f.SigID == 0 || f.SigID == 1): // E1-B I/NAV
 		s.applyGalileoINAV(f)
+	case f.GnssID == gnss.Galileo && f.SigID == 5: // E5a F/NAV (regression fix; UNTESTED — see applyGalileoFNAV)
+		s.applyGalileoFNAV(f)
 	case f.GnssID == gnss.BeiDou && f.SigID == 0: // B1I D1 NAV
 		s.applyBeiDouD1(f)
 	case f.GnssID == gnss.BeiDou && f.SigID == 8: // B2a data component, B-CNAV2
@@ -301,6 +308,16 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 		s.applyGPSCNAV(f)
 	case f.GnssID == gnss.SBAS && f.SigID == 0: // L1 C/A message stream
 		s.applySBAS(f)
+	case f.GnssID == gnss.NavIC:
+		// NavIC (IRNSS SPS) — STUB / TRACKED DEFERRAL, not decoded.
+		// Unlike Galileo F/NAV (already decoded, this pass just wired dispatch), NavIC's L5 SPS
+		// frame is a from-scratch ICD format AND we have no live NavIC stream to validate a
+		// decoder against — NavIC is below the horizon from our stations, so a real feed must be
+		// sourced in Asia (see navlistener.toml.example). Wiring a decoder we cannot test would
+		// be untestable guesswork, so it stays a stub (gnss/frame/navic.go) until such a source
+		// exists. Counted under its own label so the deferral is visible in /metrics instead of
+		// being hidden in the generic "unsupported" bucket.
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "navic_deferred").Inc()
 	default:
 		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "unsupported").Inc()
 	}
@@ -496,6 +513,85 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
 	st.ephAt = f.Recv // regression fix
 	st.accKind, st.accIdx = accSISA, st.galW[3].SISA
+}
+
+// applyGalileoFNAV decodes a Galileo E5a F/NAV page (u-blox sigId 5) and folds it into a
+// SEPARATE per-signal SV state keyed on E5a (Sig:5) — the same secondary-signal pattern as
+// BeiDou B-CNAV2 (Sig:8), so E5a surfaces as its own name@5 feed entry instead of overwriting
+// the E1-B I/NAV (Sig:0) set. F/NAV carries the same ephemeris as I/NAV on the E5a signal;
+// decoding it here is "wire F/NAV" half and produces the cross-signal (I/NAV-vs-F/NAV)
+// evidence the P6 integrity pass consumes (docs/CONSTELLATIONS.md §2.2).
+//
+// ⚠️ EXTREMELY UNTESTED ON REAL HARDWARE. The F/NAV field offsets are cross-checked against
+// I/NAV in the gnss unit tests, but this accumulate → AssembleGalileoFNAV → changeover path has
+// only synthetic coverage — it has never been validated end-to-end against a live E5a stream
+// reaching assembly. It also does not yet decode the F/NAV GST week/TOW (matching the decoder's
+// documented scope), so a served E5a entry's wn is not yet meaningful. Treat any E5a
+// ephemeris/position it produces as provisional until corroborated against I/NAV on real
+// captures. (regression fix.)
+func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
+	w, err := frame.DecodeGalileoFNAV(f.Words)
+	if err != nil {
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "fnav").Inc()
+		return
+	}
+	// regression fix (IODnav-completeness): a right-length frame whose page type is outside the F/NAV
+	// nominal set (1..6) is not decode evidence — count it as an error, mirroring the
+	// structural-id gate the other decoders use, so a mis-tagged or corrupt E5a frame never
+	// installs the durable capability fingerprint or counts as a healthy decode.
+	if w.PageType < 1 || w.PageType > 6 {
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "fnav").Inc()
+		return
+	}
+	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "fnav").Inc()
+	// record the capability fingerprint only after a structurally valid decode.
+	if f.Source != "" {
+		s.recordCapability(f.Source, f.GnssID, f.SigID, f.Recv)
+	}
+
+	// Only the ephemeris/clock pages (1..4) assemble a nav set; almanac pages 5/6 are
+	// capability evidence only (like the BeiDou/GLONASS almanac message types, which the
+	// dispatch above also decodes-and-drops without folding into the ephemeris).
+	if w.PageType > 4 {
+		return
+	}
+
+	key := Key{G: f.GnssID, Sv: f.SvID, Sig: f.SigID} // E5a keyed on its own sigId (5)
+	sh := s.shardFor(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+
+	st := sh.m[key]
+	if st == nil {
+		st = &svState{key: key}
+		sh.m[key] = st
+	}
+	st.lastSeen = f.Recv
+
+	st.fnav[w.PageType] = w
+	// Page 1 carries SISA + the E5a Signal Health Status outside the IODnav-matched eph set;
+	// fold them in as they arrive (mirrors the I/NAV word-5 health/SISA pattern).
+	if w.PageType == 1 {
+		st.health, st.haveHealth = w.E5aHS, true
+		st.accKind, st.accIdx = accSISA, w.SISA
+	}
+	if st.fnav[1] == nil || st.fnav[2] == nil || st.fnav[3] == nil || st.fnav[4] == nil {
+		return
+	}
+	eph, clk, err := frame.AssembleGalileoFNAV(f.SvID, st.fnav[1], st.fnav[2], st.fnav[3], st.fnav[4])
+	if err != nil {
+		return // pages from different IODnav; wait for a mutually consistent set
+	}
+	newIOD := st.fnav[1].IODnav
+	if st.haveEph && newIOD == st.iod {
+		return // same data set, nothing new
+	}
+	if st.haveEph {
+		s.computeDisco(st, eph, clk, f.Recv)
+	}
+	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
+	st.ephAt = f.Recv // regression fix
+	st.accKind, st.accIdx = accSISA, st.fnav[1].SISA
 }
 
 func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
