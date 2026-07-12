@@ -90,9 +90,9 @@ type svState struct {
 	// BGD/health, not part of the ephemeris set; index 0 unused).
 	galW [6]*frame.GalileoINAV
 	// Galileo E5a F/NAV page assembly buffers, indexed by page type 1–4 (index 0 unused).
-	// Kept separate from galW because F/NAV is a distinct signal (E5a, sigId 5) with its own
-	// svState entry, mirroring BeiDou B-CNAV2 (sigId 8) rather than overwriting E1-B I/NAV.
-	// regression fix; see applyGalileoFNAV (UNTESTED on real hardware).
+	// Kept separate from galW because F/NAV is a distinct signal (E5a, u-blox sigId 3/4) with
+	// its own svState entry, mirroring BeiDou B-CNAV2 (sigId 8) rather than overwriting the
+	// E1-B I/NAV set. regression fix; see applyGalileoFNAV (lightly tested on real hardware 2026-07-12).
 	fnav [5]*frame.GalileoFNAV
 	// BeiDou D1 subframe assembly buffers.
 	bd1, bd2, bd3 *frame.BeiDouSubframe
@@ -291,7 +291,7 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 		s.applyGPSLNAV(f)
 	case f.GnssID == gnss.Galileo && (f.SigID == 0 || f.SigID == 1): // E1-B I/NAV
 		s.applyGalileoINAV(f)
-	case f.GnssID == gnss.Galileo && f.SigID == 5: // E5a F/NAV (regression fix; UNTESTED — see applyGalileoFNAV)
+	case f.GnssID == gnss.Galileo && (f.SigID == 3 || f.SigID == 4): // E5a F/NAV (regression fix; validated 2026-07-12 vs I/NAV — see applyGalileoFNAV)
 		s.applyGalileoFNAV(f)
 	case f.GnssID == gnss.BeiDou && f.SigID == 0: // B1I D1 NAV
 		s.applyBeiDouD1(f)
@@ -515,20 +515,23 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 	st.accKind, st.accIdx = accSISA, st.galW[3].SISA
 }
 
-// applyGalileoFNAV decodes a Galileo E5a F/NAV page (u-blox sigId 5) and folds it into a
-// SEPARATE per-signal SV state keyed on E5a (Sig:5) — the same secondary-signal pattern as
-// BeiDou B-CNAV2 (Sig:8), so E5a surfaces as its own name@5 feed entry instead of overwriting
-// the E1-B I/NAV (Sig:0) set. F/NAV carries the same ephemeris as I/NAV on the E5a signal;
+// applyGalileoFNAV decodes a Galileo E5a F/NAV page (u-blox sigId 3 = E5a-I; 4 = E5a-Q, the
+// dataless pilot, mapped here for parity with rawframe.go's NavType) and folds it into a
+// SEPARATE per-signal SV state keyed on E5a (Sig:3) — the same secondary-signal pattern as
+// BeiDou B-CNAV2 (Sig:8), so E5a surfaces as its own name@3 feed entry instead of overwriting
+// the E1-B I/NAV (Sig:0) set. NB: E5b-I (sigId 5) also carries I/NAV, not F/NAV — do not route
+// it here. F/NAV carries the same ephemeris as I/NAV on the E5a signal;
 // decoding it here is "wire F/NAV" half and produces the cross-signal (I/NAV-vs-F/NAV)
 // evidence the P6 integrity pass consumes (docs/CONSTELLATIONS.md §2.2).
 //
-// ⚠️ EXTREMELY UNTESTED ON REAL HARDWARE. The F/NAV field offsets are cross-checked against
-// I/NAV in the gnss unit tests, but this accumulate → AssembleGalileoFNAV → changeover path has
-// only synthetic coverage — it has never been validated end-to-end against a live E5a stream
-// reaching assembly. It also does not yet decode the F/NAV GST week/TOW (matching the decoder's
-// documented scope), so a served E5a entry's wn is not yet meaningful. Treat any E5a
-// ephemeris/position it produces as provisional until corroborated against I/NAV on real
-// captures. (regression fix.)
+// ⚠️ LIGHTLY TESTED ON REAL HARDWARE. First validated 2026-07-12 against a live E5a-I
+// stream from a u-blox on capture-station → this collector on collector-host: 136 F/NAV pages decoded with
+// ZERO decode errors, and the assembled @3 ephemerides matched the independently-decoded E1-B
+// I/NAV (@0) positions bit-for-bit for every SV (E07/E13/…: identical x,y,z, same IODnav) — the
+// cross-signal agreement the design wants. Caveats still open: a single receiver over a single
+// session (not soaked across many IODnav changeovers / health flips); E5a-Q (sigId 4) is a
+// dataless pilot never exercised; the F/NAV GST week/TOW is not frame-decoded, so a served wn
+// derives from system time, not the page; and E5b-I I/NAV (sigId 5) is still undispatched.
 func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 	w, err := frame.DecodeGalileoFNAV(f.Words)
 	if err != nil {
@@ -556,7 +559,7 @@ func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 		return
 	}
 
-	key := Key{G: f.GnssID, Sv: f.SvID, Sig: f.SigID} // E5a keyed on its own sigId (5)
+	key := Key{G: f.GnssID, Sv: f.SvID, Sig: f.SigID} // E5a keyed on its own sigId (3/4)
 	sh := s.shardFor(key)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()

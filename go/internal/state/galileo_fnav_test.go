@@ -46,9 +46,9 @@ func hasCap(caps []StationCapability, g, sig int) bool {
 }
 
 // TestApplyGalileoFNAVAssemblesE5aEntry verifies F/NAV wiring: E5a F/NAV pages (u-blox
-// sigId 5) are dispatched to applyGalileoFNAV, accumulated across the 4-page cadence, assembled
-// into a SEPARATE E##@5 SV-state entry (not overwriting the E1-B I/NAV Sig:0 set), and recorded
-// as an observed (Galileo, 5) capability.
+// sigId 3, E5a-I) are dispatched to applyGalileoFNAV, accumulated across the 4-page cadence,
+// assembled into a SEPARATE E##@3 SV-state entry (not overwriting the E1-B I/NAV Sig:0 set),
+// and recorded as an observed (Galileo, 3) capability.
 func TestApplyGalileoFNAVAssemblesE5aEntry(t *testing.T) {
 	s := New(4)
 	now := time.Unix(1_700_000_000, 0)
@@ -56,12 +56,12 @@ func TestApplyGalileoFNAVAssemblesE5aEntry(t *testing.T) {
 
 	for _, pt := range []int{1, 2, 3, 4} {
 		s.Apply(&ingest.RawFrame{
-			GnssID: gnss.Galileo, SvID: svid, SigID: 5, Source: source, Recv: now,
+			GnssID: gnss.Galileo, SvID: svid, SigID: 3, Source: source, Recv: now,
 			Words: fnavPageWords(pt, iod),
 		})
 	}
 
-	key := Key{G: gnss.Galileo, Sv: svid, Sig: 5}
+	key := Key{G: gnss.Galileo, Sv: svid, Sig: 3}
 	st := s.shardFor(key).m[key]
 	if st == nil || !st.haveEph {
 		t.Fatalf("E5a F/NAV ephemeris not assembled: %+v", st)
@@ -70,14 +70,14 @@ func TestApplyGalileoFNAVAssemblesE5aEntry(t *testing.T) {
 		t.Errorf("assembled IODnav = %d, want %d", st.iod, iod)
 	}
 
-	// The E1-B I/NAV entry (Sig:0) must be untouched — F/NAV is its own signal, keyed on sig 5.
+	// The E1-B I/NAV entry (Sig:0) must be untouched — F/NAV is its own signal, keyed on sig 3.
 	inavKey := Key{G: gnss.Galileo, Sv: svid, Sig: 0}
 	if inav := s.shardFor(inavKey).m[inavKey]; inav != nil {
 		t.Errorf("F/NAV must not create/modify the I/NAV Sig:0 entry, got %+v", inav)
 	}
 
-	if caps := s.FeedStationCapabilities(now)[source]; !hasCap(caps, int(gnss.Galileo), 5) {
-		t.Errorf("observed capability (Galileo,5) not recorded: %+v", caps)
+	if caps := s.FeedStationCapabilities(now)[source]; !hasCap(caps, int(gnss.Galileo), 3) {
+		t.Errorf("observed capability (Galileo,3) not recorded: %+v", caps)
 	}
 }
 
@@ -91,15 +91,15 @@ func TestApplyGalileoFNAVR119RejectsBadPageType(t *testing.T) {
 	const svid, source = 21, "obs-junk"
 
 	s.Apply(&ingest.RawFrame{
-		GnssID: gnss.Galileo, SvID: svid, SigID: 5, Source: source, Recv: now,
+		GnssID: gnss.Galileo, SvID: svid, SigID: 3, Source: source, Recv: now,
 		Words: fnavPageWords(7, 0), // page type 7: outside the nominal F/NAV set (1..6)
 	})
 
-	key := Key{G: gnss.Galileo, Sv: svid, Sig: 5}
+	key := Key{G: gnss.Galileo, Sv: svid, Sig: 3}
 	if st := s.shardFor(key).m[key]; st != nil {
 		t.Errorf("a bad-page-type F/NAV frame must not create SV state, got %+v", st)
 	}
-	if caps := s.FeedStationCapabilities(now)[source]; hasCap(caps, int(gnss.Galileo), 5) {
-		t.Errorf("a bad-page-type frame must not install durable (Galileo,5) capability: %+v", caps)
+	if caps := s.FeedStationCapabilities(now)[source]; hasCap(caps, int(gnss.Galileo), 3) {
+		t.Errorf("a bad-page-type frame must not install durable (Galileo,3) capability: %+v", caps)
 	}
 }
