@@ -217,14 +217,14 @@ a GNF1 session whose `HELLO` declares `role: "peer"`:
 |---|---|---|
 | `HELLO` (0x01) | initiator→peer | `{peer_id, role:"peer", instance_cert_fp, feeds, zstd?}` — no self-asserted trust; the receiver decides. |
 | `WELCOME` (0x02) | peer→initiator | `{ok, error?, ack_interval_ms?, zstd?}` — refused if the instance cert is unknown or `revoked`. |
-| `DATA` (0x03) | peer→peer | relayed **unsigned** record + envelope `{origin_receiver_id, recv_unix_ns, gnssId, svId, sigId, frame_type, raw_bytes, path[]}`. |
+| `DATA` (0x03) | peer→peer | relayed **unsigned** record + envelope `{origin_receiver_id, recv_unix_ns, gnssId, svId, sigId, freqId, frame_type, raw_bytes, path[]}`. |
 | `SIGNED_DATA` (0x07) | peer→peer | relayed record **with the observer's original ATECC signature intact** (§3) + the same envelope incl. `origin_receiver_id` and observer leaf-cert fingerprint + `path[]`. |
 | `ACK` (0x04) | peer→peer | highest sequence received this connection (regression fix semantics). |
 | `PING`/`PONG` | both | keepalive. |
 | `JOURNAL` (new, 0x08) | both | a batch of signed, hash-chained control-plane entries (§5), pull-or-push. |
 
-The record envelope already carries `{recv_unix_ns, gnssId, svId, sigId, frame_type,
-raw_bytes}` (`DESIGN.md §2`); federation adds exactly `origin_receiver_id`, the observer
+The record envelope already carries `{recv_unix_ns, gnssId, svId, sigId, freqId, frame_type,
+raw_bytes}` (`DESIGN.md §2`; `freqId = k+7` for GLONASS and 0 otherwise); federation adds exactly `origin_receiver_id`, the observer
 leaf-cert fingerprint, and `path[]`. The **signed payload is never re-encoded** — a relaying
 collector copies the `SIGNED_DATA` frame body byte-for-byte and only prepends/extends the
 envelope, or the signature breaks. All existing GNF1 resilience (bounded RAM ring, monotonic

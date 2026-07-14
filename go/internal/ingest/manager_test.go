@@ -32,12 +32,13 @@ func TestEmitExcludesObsAndRFFromFramesTotal(t *testing.T) {
 
 	before := testutil.ToFloat64(metrics.FramesTotal.WithLabelValues(src.Name, "0"))
 
-	emit(&RawFrame{GnssID: gnss.GPS, Obs: &RawObs{}}) // observable: must not count
-	emit(&RawFrame{GnssID: gnss.GPS, RF: &RawRF{}})   // telemetry: must not count
-	emit(&RawFrame{GnssID: gnss.GPS})                 // nav frame: must count
+	emit(&RawFrame{GnssID: gnss.GPS, Obs: &RawObs{}})     // observable: must not count
+	emit(&RawFrame{GnssID: gnss.GPS, RF: &RawRF{}})       // telemetry: must not count
+	emit(&RawFrame{GnssID: gnss.GPS, Bytes: []byte{1}})   // capture-only byte frame: must not count
+	emit(&RawFrame{GnssID: gnss.GPS, Words: []uint32{1}}) // nav frame: must count
 
 	// Drain what emit() sent to out so the test doesn't depend on channel capacity.
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 4; i++ {
 		select {
 		case <-out:
 		case <-time.After(time.Second):
@@ -47,7 +48,7 @@ func TestEmitExcludesObsAndRFFromFramesTotal(t *testing.T) {
 
 	after := testutil.ToFloat64(metrics.FramesTotal.WithLabelValues(src.Name, "0"))
 	if got := after - before; got != 1 {
-		t.Errorf("FramesTotal delta = %v, want 1 (only the nav frame counted, not Obs/RF)", got)
+		t.Errorf("FramesTotal delta = %v, want 1 (only the word nav frame counted)", got)
 	}
 }
 
@@ -186,6 +187,47 @@ func TestIngestBackoffGrowsOnAcceptThenClosePeer(t *testing.T) {
 	gap3 := times[3].Sub(times[2])
 	if gap2 <= gap1 || gap3 <= gap2 {
 		t.Errorf("backoff did not grow across reconnects: gap1=%v gap2=%v gap3=%v, want strictly increasing", gap1, gap2, gap3)
+	}
+}
+
+// TestNTRIPHandshakeCancelledPromptly guards cancellation closes the socket
+// during the application handshake, rather than waiting for its 15-second deadline.
+func TestNTRIPHandshakeCancelledPromptly(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			accepted <- conn // deliberately never answer the NTRIP GET
+		}
+	}()
+
+	m := New(nil, make(chan *RawFrame, 1), quietManagerLog())
+	src := config.Source{Name: "stalled-ntrip", Type: "ntrip", Addr: ln.Addr().String(), Mountpoint: "MOUNT"}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); m.runSource(ctx, src, scanRTCM) }()
+	var server net.Conn
+	select {
+	case server = <-accepted:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("source never established the caster connection")
+	}
+	defer server.Close()
+	start := time.Now()
+	cancel()
+	select {
+	case <-done:
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Fatalf("cancelled handshake returned after %v, want under 1s", elapsed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled NTRIP handshake remained blocked")
 	}
 }
 

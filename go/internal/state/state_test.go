@@ -47,6 +47,7 @@ func read24(buf []byte, wordIdx int) uint32 {
 // u-blox delivers them (receiver-validated, un-inverted); DecodeGPSLNAV reads
 // those directly.
 func packWords(buf []byte) []uint32 {
+	setField(buf, 1, 1, 8, 0x8B)
 	words := make([]uint32, 10)
 	for i := 0; i < 10; i++ {
 		words[i] = read24(buf, i) << 6
@@ -156,6 +157,25 @@ func TestStoreDiscoOnIODChange(t *testing.T) {
 	if e.TimeDisco == nil {
 		t.Error("time_disco not computed on IOD change")
 	}
+}
+
+func TestComputeDiscoExcludesGroupDelay(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	s.Apply(gpsFrame(sf1Words(85), now))
+	s.Apply(gpsFrame(sf2Words(85, 205075516), now))
+	s.Apply(gpsFrame(sf3Words(85), now))
+	key := Key{G: gnss.GPS, Sv: 5, Sig: 0}
+	sh := s.shardFor(key)
+	sh.mu.Lock()
+	st := sh.m[key]
+	newClk := st.clk
+	newClk.TGD += 8.0 / (1 << 31) // ~3.7 ns: above the warning threshold if leaked
+	s.computeDisco(st, st.eph, newClk, now)
+	if !st.timeDiscoValid || math.Abs(st.timeDiscoNs) > 1e-6 {
+		t.Errorf("TGD-only changeover time disco = %g ns (valid=%v), want ≈0", st.timeDiscoNs, st.timeDiscoValid)
+	}
+	sh.mu.Unlock()
 }
 
 // TestStoreDiscoGatedOnStaleOutgoingEphemeris guards computeDisco must not
@@ -309,5 +329,28 @@ func TestApplyByteFrameSkipsLNAVDispatch(t *testing.T) {
 	}
 	if len(st.Snapshot(time.Now()).SVs) != 0 {
 		t.Error("a byte frame must not create an svState")
+	}
+}
+
+func TestIntegrityFailuresUseNavCRCMetric(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	crcCounter := metrics.NavCRCFailTotal.WithLabelValues("0", "3")
+	decodeCounter := metrics.DecodeErrorsTotal.WithLabelValues("0", "cnav")
+	crcBefore, decodeBefore := testutil.ToFloat64(crcCounter), testutil.ToFloat64(decodeCounter)
+
+	words := make([]uint32, 10)
+	words[0] = 0x8B000000 // valid preamble, invalid CRC
+	s.Apply(&ingest.RawFrame{GnssID: gnss.GPS, SvID: 5, SigID: 3, Recv: now, Words: words})
+	if got := testutil.ToFloat64(crcCounter) - crcBefore; got != 1 {
+		t.Errorf("nav CRC counter delta = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(decodeCounter) - decodeBefore; got != 0 {
+		t.Errorf("non-CRC decode counter delta = %v, want 0", got)
+	}
+
+	s.Apply(&ingest.RawFrame{GnssID: gnss.GPS, SvID: 5, SigID: 3, Recv: now, Words: []uint32{1}})
+	if got := testutil.ToFloat64(decodeCounter) - decodeBefore; got != 1 {
+		t.Errorf("short-frame decode counter delta = %v, want 1", got)
 	}
 }

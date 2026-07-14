@@ -54,7 +54,7 @@ var sseWriteTimeout = 10 * time.Second
 // external LISTENers separately.
 type Broker struct {
 	mu      sync.Mutex
-	clients map[chan EventMsg]struct{}
+	clients map[*sseClient]struct{}
 	recent  []EventMsg // ring, oldest-first, capped at sseRecentCap
 	log     *slog.Logger
 	// done is closed by Close() on server shutdown : http.Server.Shutdown never
@@ -65,11 +65,22 @@ type Broker struct {
 	closeOnce sync.Once
 }
 
+// sseClient carries both the bounded live-event queue and an idempotent overflow
+// signal. Closing kick terminates the stream so EventSource reconnects with its last
+// delivered id instead of remaining connected across an invisible gap.
+type sseClient struct {
+	events   chan EventMsg
+	kick     chan struct{}
+	kickOnce sync.Once
+}
+
+func (c *sseClient) drop() { c.kickOnce.Do(func() { close(c.kick) }) }
+
 // newBroker builds an empty Broker. log defaults to a discard logger (tests, and
 // any construction that doesn't care) — New (serve.go) sets the real one.
 func newBroker() *Broker {
 	return &Broker{
-		clients: map[chan EventMsg]struct{}{},
+		clients: map[*sseClient]struct{}{},
 		log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		done:    make(chan struct{}),
 	}
@@ -83,8 +94,9 @@ func (b *Broker) Close() {
 }
 
 // Publish records an event in the replay ring and delivers it to every connected
-// client. A client whose buffer is full is skipped for this event (it will catch up
-// via the ring on reconnect) rather than blocking the detector.
+// client. A client whose buffer is full is kicked rather than silently skipped, forcing
+// EventSource to reconnect and replay the gap. Replay can recover only events still in
+// the 256-event ring; older history requires the query API. The publisher never blocks.
 func (b *Broker) Publish(e EventMsg) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -92,10 +104,11 @@ func (b *Broker) Publish(e EventMsg) {
 	if len(b.recent) > sseRecentCap {
 		b.recent = b.recent[len(b.recent)-sseRecentCap:]
 	}
-	for ch := range b.clients {
+	for client := range b.clients {
 		select {
-		case ch <- e:
-		default: // slow client; it recovers from the ring on reconnect
+		case client.events <- e:
+		default:
+			client.drop()
 		}
 	}
 }
@@ -122,20 +135,20 @@ func (b *Broker) replayFrom(lastID int64, hasLast bool) []EventMsg {
 
 // subscribe adds a new client, unless sseMaxClients concurrent streams are already
 // connected, in which case it returns ok=false and adds nothing.
-func (b *Broker) subscribe() (ch chan EventMsg, ok bool) {
+func (b *Broker) subscribe() (client *sseClient, ok bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if len(b.clients) >= sseMaxClients {
 		return nil, false
 	}
-	ch = make(chan EventMsg, sseClientBuffer)
-	b.clients[ch] = struct{}{}
-	return ch, true
+	client = &sseClient{events: make(chan EventMsg, sseClientBuffer), kick: make(chan struct{})}
+	b.clients[client] = struct{}{}
+	return client, true
 }
 
-func (b *Broker) unsubscribe(ch chan EventMsg) {
+func (b *Broker) unsubscribe(client *sseClient) {
 	b.mu.Lock()
-	delete(b.clients, ch)
+	delete(b.clients, client)
 	b.mu.Unlock()
 }
 
@@ -164,12 +177,12 @@ func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
 	// Subscribe *before* setting any SSE headers : a rejection past the cap must
 	// still be a clean JSON error response, not a text/event-stream response that then
 	// immediately errors.
-	ch, ok := b.subscribe()
+	client, ok := b.subscribe()
 	if !ok {
 		writeError(w, http.StatusServiceUnavailable, "too many active event streams")
 		return
 	}
-	defer b.unsubscribe(ch)
+	defer b.unsubscribe(client)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -211,7 +224,7 @@ func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	for {
 		select {
-		case e := <-ch:
+		case e := <-client.events:
 			if e.ID <= lastReplayedID {
 				continue // already delivered via the replay above
 			}
@@ -224,6 +237,8 @@ func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
 			}
 		case <-b.done:
 			return // server is shutting down
+		case <-client.kick:
+			return // slow client: reconnect + Last-Event-ID replays the ring gap
 		case <-ctx.Done():
 			return
 		}

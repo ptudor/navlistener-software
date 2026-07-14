@@ -1,6 +1,7 @@
 package kepler
 
 import (
+	"errors"
 	"math"
 	"testing"
 
@@ -169,6 +170,23 @@ func TestBeiDouGEOStationarity(t *testing.T) {
 	}
 }
 
+// TestBeiDouGEOTiltDirection analytically pins the Rx(-5°) branch. At
+// tk=0, Omega=0, inclination=0, and x'=0, a positive in-plane y' maps to the
+// sign and magnitude below. Changing the hard-coded tilt to +5° flips Z.
+func TestBeiDouGEOTiltDirection(t *testing.T) {
+	p, ok := physconst.For(gnss.BeiDou)
+	if !ok {
+		t.Fatal("missing BeiDou parameters")
+	}
+	const y = 42_164_000.0
+	pos := beidouGEO(0, y, 0, Ephemeris{}, p, 0)
+	wantY := math.Cos(5*math.Pi/180) * y
+	wantZ := math.Sin(5*math.Pi/180) * y
+	if math.Abs(pos.Y-wantY) > 1e-6 || math.Abs(pos.Z-wantZ) > 1e-6 {
+		t.Fatalf("Rx(-5°) fixed point = (Y=%g,Z=%g), want (%g,%g)", pos.Y, pos.Z, wantY, wantZ)
+	}
+}
+
 func TestErrorGuards(t *testing.T) {
 	base := realisticGPS
 	// Non-positive semi-major axis.
@@ -204,6 +222,10 @@ func TestErrorGuards(t *testing.T) {
 	bad.ID = gnss.SBAS
 	if _, err := Propagate(bad, 432000); err == nil {
 		t.Error("expected error for SBAS (no Kepler params)")
+	}
+	bad.ID = gnss.GLONASS
+	if _, err := Propagate(bad, 432000); !errors.Is(err, errNoParams) {
+		t.Errorf("GLONASS error = %v, want errNoParams (Cartesian broadcast)", err)
 	}
 }
 

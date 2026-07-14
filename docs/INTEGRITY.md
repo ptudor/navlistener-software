@@ -179,6 +179,12 @@ The baseline vocabulary and severities below are **verified against intsat's shi
 | `sbas_health` | SBAS message-type-0 / health change | 0, → 2 on do-not-use |
 | `qzss_health` | QZSS navigation health transition; L1S DC-report enrichment is planned | 1–2 |
 | `navic_health` *(planned)* | NavIC SPS health transition; unavailable until the NavIC decoder lands | 1–2 |
+| `jamming_detected` | station AGC/CW/noise evidence confirms jamming (`DEFENSE-PNT.md §4`) | 1, → 2 on severe/full-lock-loss evidence |
+| `spoofing_suspected` | ≥2 independent station physics gates agree (`DEFENSE-PNT.md §3–4`) | 2 |
+| `station_rf_degraded` | one station RF metric departs its baseline; early warning, not an attack claim | 1 |
+| `antenna_fault` | receiver antenna status reports open/short or equivalent confirmed fault | 1 |
+| `capability_signal_lost` | a demonstrated `(gnssId,sigId)` is unseen past `CapSignalLostAfter` while its station remains alive | 1 |
+| `capability_impossible` | an observed signal lies outside the station's declared tudorgps capability set | 2 |
 
 The two `*_health` types cover QZSS and NavIC; the
 QZSS one is doubly interesting because QZSS L1S carries **DC Report** disaster/crisis messages

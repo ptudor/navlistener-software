@@ -55,10 +55,14 @@ func (d *Detector) detectCapability(id string, rep state.StationCapReport, now t
 		gnss, s := sig.Gnss, sig.Sig
 		staleS := now.Unix() - sig.LastSeen
 		emit(id, metric, boolState(lost, "lost", "present"), func(old string) Event {
+			message := fmt.Sprintf("station %s resumed delivering signal %d:%d", id, gnss, s)
+			if lost {
+				message = fmt.Sprintf("station %s stopped delivering signal %d:%d (unseen %ds, station live)", id, gnss, s, staleS)
+			}
 			return Event{
 				Type: "capability_signal_lost", OldValue: old, NewValue: boolState(lost, "lost", "present"),
 				Severity: SevWarning,
-				Message:  fmt.Sprintf("station %s stopped delivering signal %d:%d (unseen %ds, station live)", id, gnss, s, staleS),
+				Message:  message,
 				Params:   map[string]any{"station": id, "gnss": gnss, "sig": s, "unseen_s": staleS},
 			}
 		})
@@ -81,10 +85,14 @@ func (d *Detector) detectCapability(id string, rep state.StationCapReport, now t
 	sort.Strings(offending)
 	impossible := len(offending) > 0
 	emit(id, "cap_impossible", boolState(impossible, "impossible", "ok"), func(old string) Event {
+		message := fmt.Sprintf("station %s no longer reporting undeclared signals", id)
+		if impossible {
+			message = fmt.Sprintf("station %s reported signals its silicon cannot produce: %s", id, strings.Join(offending, ", "))
+		}
 		return Event{
 			Type: "capability_impossible", OldValue: old, NewValue: boolState(impossible, "impossible", "ok"),
 			Severity: SevCritical,
-			Message:  fmt.Sprintf("station %s reported signals its silicon cannot produce: %s", id, strings.Join(offending, ", ")),
+			Message:  message,
 			Params:   map[string]any{"station": id, "signals": offending},
 		}
 	})

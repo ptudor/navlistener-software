@@ -120,6 +120,10 @@ var (
 		Name: "navlistener_push_observers_up",
 		Help: "Feeder connections currently established, by observer.",
 	}, []string{"observer"})
+	PushServerCertNotAfterSeconds = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "navlistener_push_server_cert_not_after_seconds",
+		Help: "Unix timestamp at which the configured push TLS server certificate expires.",
+	})
 
 	// PushAuthFailuresTotal counts rejected feeder handshakes.
 	PushAuthFailuresTotal = promauto.NewCounter(prometheus.CounterOpts{

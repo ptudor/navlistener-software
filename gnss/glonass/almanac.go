@@ -268,19 +268,18 @@ func almPert(J, aeA2, incl, h, l, n, tau, lambda float64) pert {
 		J*aeA2*c2i*(l*nt-0.5*l*sin2L)
 
 	dl := J*aeA2*(1-1.5*s2i)*(-h*nt+cosL+1.5*l*cos2L+1.5*h*sin2L) -
-		0.25*J*aeA2*s2i*(-cosL-(7.0/3.0)*cos3L+5*h*sin2L-8.5*l*cos4L-8.5*h*sin4L+l*cos2L) +
+		0.25*J*aeA2*s2i*(-cosL-(7.0/3.0)*cos3L-5*h*sin2L-8.5*l*cos4L-8.5*h*sin4L+l*cos2L) +
 		J*aeA2*c2i*(-h*nt+0.5*h*sin2L)
 
 	dOmega := -J * aeA2 * cosI * (nt + 3.5*l*sinL - 2.5*h*cosL - 0.5*sin2L - (7.0/6.0)*l*sin3L + (7.0/6.0)*h*cos3L)
 
-	di := 0.5 * J * aeA2 * sinI * cosI * (l*cosL - h*sinL + cos2L + (7.0/3.0)*l*cos3L + (7.0/3.0)*h*sin3L)
+	di := 0.5 * J * aeA2 * sinI * cosI * (-l*cosL + h*sinL + cos2L + (7.0/3.0)*l*cos3L + (7.0/3.0)*h*sin3L)
 
 	// The third δλ group carries cos²i (so the secular along-track factor is the
-	// physically-correct 3 − 4·sin²i = 2(1−1.5·sin²i) + cos²i); this reproduces the
-	// ICD §A.3.2.3 example to metres, confirming the reading.
+	// physically-correct 3 − 4·sin²i = 2(1−1.5·sin²i) + cos²i).
 	dLambda := 2*J*aeA2*(1-1.5*s2i)*(nt+1.75*l*sinL-1.75*h*cosL) +
 		3*J*aeA2*s2i*(-(7.0/24.0)*h*cosL-(7.0/24.0)*l*sinL-(49.0/72.0)*h*cos3L+(49.0/72.0)*l*sin3L+0.25*sin2L) +
-		J*aeA2*c2i*(nt+2.5*l*sinL-2.5*h*cosL-0.5*sin2L-(7.0/6.0)*l*sin3L+(7.0/6.0)*h*cos3L)
+		J*aeA2*c2i*(nt+3.5*l*sinL-2.5*h*cosL-0.5*sin2L-(7.0/6.0)*l*sin3L+(7.0/6.0)*h*cos3L)
 
 	return pert{da: da, dh: dh, dl: dl, dOmega: dOmega, di: di, dLambda: dLambda}
 }

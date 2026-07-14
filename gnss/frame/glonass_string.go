@@ -16,8 +16,8 @@ var errGLONASSStringOrder = errors.New("frame: GLONASS strings not in 1/2/3 orde
 // number 0 (out of the 1..15 range) — a mis-tagged or corrupt frame.
 var errBadStringNum = errors.New("frame: GLONASS string number out of range (1..15)")
 
-// errGLONASSHamming  is returned when a string fails the ICD §4.7 Hamming check.
-var errGLONASSHamming = errors.New("frame: GLONASS string Hamming check failed")
+// ErrGLONASSHamming  is returned when a string fails the ICD §4.7 Hamming check.
+var ErrGLONASSHamming = errors.New("frame: GLONASS string Hamming check failed")
 
 // gloHammingRange builds the inclusive integer range [lo, hi].
 func gloHammingRange(lo, hi int) []int {
@@ -182,7 +182,7 @@ func DecodeGLONASSString(words []uint32) (*GLONASSString, error) {
 	// live state) mis-epochs the RK4 or flips served health. A detected error rejects the
 	// string, mirroring the regression fix/regression fix CRC hardening precedent.
 	if !glonassHammingValid(r) {
-		return nil, errGLONASSHamming
+		return nil, ErrGLONASSHamming
 	}
 	m, _ := r.Bits(1, 4)
 	// string number must be 1..15 (GLONASS ICD Ed. 5.1 §4.1). A length-valid block
@@ -261,6 +261,14 @@ func DecodeGLONASSAlmanac(first, second []uint32, na int) (GLONASSAlmanacEntry, 
 	}
 	r1 := glonassBlock(first)
 	r2 := glonassBlock(second)
+	if !glonassHammingValid(r1) || !glonassHammingValid(r2) {
+		return GLONASSAlmanacEntry{}, ErrGLONASSHamming
+	}
+	m1, _ := r1.Bits(1, 4)
+	m2, _ := r2.Bits(1, 4)
+	if m1 < 6 || m1 > 14 || m1%2 != 0 || m2 != m1+1 {
+		return GLONASSAlmanacEntry{}, errBadStringNum
+	}
 
 	// First string of the pair (ICD Table 4.11): nA 73-77, MnA 78-79, τnA 63-72,
 	// λnA 42-62, ΔinA 24-41, εnA 9-23, CnA 80.
@@ -315,7 +323,15 @@ func DecodeGLONASSFrameNA(words []uint32) (int, error) {
 	if len(words) < 4 {
 		return 0, ErrShortFrame
 	}
-	na, _ := glonassBlock(words).Bits(5, 11) // NA (85−80 = 5), 11 bits
+	r := glonassBlock(words)
+	if !glonassHammingValid(r) {
+		return 0, ErrGLONASSHamming
+	}
+	m, _ := r.Bits(1, 4)
+	if m != 5 {
+		return 0, errBadStringNum
+	}
+	na, _ := r.Bits(5, 11) // NA (85−80 = 5), 11 bits
 	return int(na), nil
 }
 

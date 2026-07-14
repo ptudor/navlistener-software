@@ -56,6 +56,8 @@
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <poll.h>
 #include <signal.h>
 #include <time.h>
 #include <termios.h>
@@ -121,11 +123,20 @@ struct opts {
 	uint64_t disk_max_bytes;
 };
 
+/* tls_io serializes every operation on the shared SSL object. The reader polls the socket
+ * without this lock and holds it only for SSL_pending/SSL_read, so it never monopolizes the
+ * writer while waiting for ACK traffic. */
+struct tls_io {
+	SSL *ssl;
+	int fd;
+	pthread_mutex_t mu;
+};
+
 /* conn is the write side of a collector connection: a TLS socket, optionally with a zstd
  * compression stream over the feeder→collector (DATA) direction. ACKs back are plaintext
- * and read separately. One conn lives per connection in the consumer thread (no locking). */
+ * and read separately. One conn lives per connection in the consumer thread. */
 struct conn {
-	SSL *ssl;
+	struct tls_io *io;
 	ZSTD_CCtx *cctx;     /* NULL = plaintext */
 	unsigned char *obuf; /* compression output staging */
 	size_t obuf_cap;
@@ -461,14 +472,35 @@ static int tcp_dial(const char *host, const char *port, int rcv_timeout_s) {
 	return fd;
 }
 
-static int ssl_write_all(SSL *ssl, const void *buf, size_t n) {
+static int ssl_write_all(struct tls_io *io, const void *buf, size_t n) {
 	const unsigned char *p = buf;
 	while (n > 0) {
-		int w = SSL_write(ssl, p, (int)n);
+		pthread_mutex_lock(&io->mu);
+		int w = SSL_write(io->ssl, p, (int)n);
+		if (w <= 0) (void)SSL_get_error(io->ssl, w);
+		pthread_mutex_unlock(&io->mu);
 		if (w <= 0) return -1;
 		p += w; n -= (size_t)w;
 	}
 	return 0;
+}
+
+/* Wait without holding the per-SSL mutex. SSL_pending is inspected under the mutex because
+ * buffered plaintext belongs to the same shared SSL object and must be drained even when the
+ * kernel fd is no longer readable. */
+static int ssl_wait_readable(struct tls_io *io) {
+	pthread_mutex_lock(&io->mu);
+	int pending = SSL_pending(io->ssl);
+	pthread_mutex_unlock(&io->mu);
+	if (pending > 0) return 1;
+
+	struct pollfd pfd = { .fd = io->fd, .events = POLLIN };
+	int rc;
+	do {
+		rc = poll(&pfd, 1, 2 * KEEPALIVE_S * 1000);
+	} while (rc < 0 && errno == EINTR);
+	if (rc <= 0) return rc;
+	return (pfd.revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)) ? 1 : 0;
 }
 
 /* ssl_read_full reads exactly n bytes. Returns 0 on success, -1 on a real error or clean
@@ -481,13 +513,17 @@ static int ssl_write_all(SSL *ssl, const void *buf, size_t n) {
  * timeout usually surfaces through OpenSSL as SSL_ERROR_SYSCALL with errno EAGAIN/EWOULDBLOCK,
  * but some builds/BIOs report SSL_ERROR_WANT_READ for the same condition — both are treated
  * as a timeout here. */
-static int ssl_read_full(SSL *ssl, void *buf, size_t n) {
+static int ssl_read_full(struct tls_io *io, void *buf, size_t n) {
 	unsigned char *p = buf;
 	size_t want = n;
 	while (n > 0) {
-		int r = SSL_read(ssl, p, (int)n);
+		int ready = ssl_wait_readable(io);
+		if (ready <= 0) return n == want && ready == 0 ? -2 : -1;
+		pthread_mutex_lock(&io->mu);
+		int r = SSL_read(io->ssl, p, (int)n);
+		int err = r <= 0 ? SSL_get_error(io->ssl, r) : SSL_ERROR_NONE;
+		pthread_mutex_unlock(&io->mu);
 		if (r <= 0) {
-			int err = SSL_get_error(ssl, r);
 			if (err == SSL_ERROR_WANT_READ ||
 			    (err == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)))
 				return n == want ? -2 : -1;
@@ -498,11 +534,11 @@ static int ssl_read_full(SSL *ssl, void *buf, size_t n) {
 	return 0;
 }
 
-static int send_frame(SSL *ssl, uint8_t type, const void *payload, uint32_t len) {
+static int send_frame(struct tls_io *io, uint8_t type, const void *payload, uint32_t len) {
 	unsigned char hdr[5];
 	hdr[0] = type; be32(hdr+1, len);
-	if (ssl_write_all(ssl, hdr, 5) != 0) return -1;
-	if (len && ssl_write_all(ssl, payload, len) != 0) return -1;
+	if (ssl_write_all(io, hdr, 5) != 0) return -1;
+	if (len && ssl_write_all(io, payload, len) != 0) return -1;
 	return 0;
 }
 
@@ -510,14 +546,14 @@ static int send_frame(SSL *ssl, uint8_t type, const void *payload, uint32_t len)
  * one is set (flushing per call so the collector decodes each frame promptly while the
  * window keeps compressing across frames). */
 static int conn_write(struct conn *c, const unsigned char *buf, size_t len) {
-	if (!c->cctx) return ssl_write_all(c->ssl, buf, len);
+	if (!c->cctx) return ssl_write_all(c->io, buf, len);
 	ZSTD_inBuffer in = { buf, len, 0 };
 	size_t rem;
 	do {
 		ZSTD_outBuffer out = { c->obuf, c->obuf_cap, 0 };
 		rem = ZSTD_compressStream2(c->cctx, &out, &in, ZSTD_e_flush);
 		if (ZSTD_isError(rem)) return -1;
-		if (out.pos && ssl_write_all(c->ssl, c->obuf, out.pos) != 0) return -1;
+		if (out.pos && ssl_write_all(c->io, c->obuf, out.pos) != 0) return -1;
 		c->comp += out.pos;
 	} while (rem > 0);
 	c->raw += len;
@@ -549,13 +585,13 @@ static int send_ping(struct conn *c) {
  * zero bytes consumed, so reader_thread's loop can tell "idle" from "dead" apart. Once the
  * header has been consumed, a payload-read timeout is mid-frame: it is converted to -1 so
  * the caller never resumes parsing from a torn frame. */
-static int read_frame(SSL *ssl, uint8_t *type, unsigned char *buf, uint32_t cap, uint32_t *len) {
+static int read_frame(struct tls_io *io, uint8_t *type, unsigned char *buf, uint32_t cap, uint32_t *len) {
 	unsigned char hdr[5];
-	int rc = ssl_read_full(ssl, hdr, 5);
+	int rc = ssl_read_full(io, hdr, 5);
 	if (rc != 0) return rc;
 	uint32_t n = rd_be32(hdr+1);
 	if (n > MAX_FRAME || n > cap) return -1;
-	if (n && ssl_read_full(ssl, buf, n) != 0) return -1;
+	if (n && ssl_read_full(io, buf, n) != 0) return -1;
 	*type = hdr[0]; *len = n;
 	return 0;
 }
@@ -568,11 +604,11 @@ static int read_frame(SSL *ssl, uint8_t *type, unsigned char *buf, uint32_t cap,
  * while the spool fills. A timeout alone is not a disconnect signal; only a real read error
  * or clean EOF ends the loop. */
 static void *reader_thread(void *arg) {
-	SSL *ssl = arg;
+	struct tls_io *io = arg;
 	unsigned char buf[256];
 	uint8_t type; uint32_t len;
 	for (;;) {
-		int rc = read_frame(ssl, &type, buf, sizeof buf, &len);
+		int rc = read_frame(io, &type, buf, sizeof buf, &len);
 		if (rc == -2) {
 			if (g_disconnected) break;
 			continue;
@@ -592,17 +628,23 @@ static void *reader_thread(void *arg) {
  * decoded — the byte is a forensic label, not the dispatch key. */
 static uint8_t frame_type(unsigned gnssId, unsigned sigId) {
 	switch (gnssId) {
-	case 0: return sigId == 0 ? 0x10 : 0x11;                 /* GPS: LNAV / CNAV */
+	case 0:
+		if (sigId == 0) return 0x10;
+		if (sigId == 3 || sigId == 4 || sigId == 6 || sigId == 7) return 0x11;
+		return 0;
 	case 5:                                                   /* QZSS: shipped LNAV/CNAV only */
 		if (sigId == 0) return 0x50;
 		if (sigId == 4 || sigId == 5 || sigId == 8 || sigId == 9) return 0x51;
 		return 0;
-	case 2: return (sigId == 3 || sigId == 4) ? 0x21 : 0x20; /* Galileo: F/NAV / I/NAV */
+	case 2:
+		if (sigId == 0 || sigId == 1 || sigId == 5 || sigId == 6) return 0x20;
+		if (sigId == 3 || sigId == 4) return 0x21;
+		return 0;
 	case 3:                                                  /* BeiDou: shipped B1I D1 + B2a B-CNAV2 only */
 		if (sigId == 0) return 0x30;
 		if (sigId == 8) return 0x33;
 		return 0; /* D2/B2I/B-CNAV1/B2a-companion planned: no verified decoder  */
-	case 6: return 0x40;                                     /* GLONASS */
+	case 6: return (sigId == 0 || sigId == 2) ? 0x40 : 0;    /* GLONASS L1/L2 OF */
 	case 7: return 0;                                        /* NavIC planned: capture without false type */
 	case 1: return 0x70;                                     /* SBAS */
 	default: return 0;
@@ -847,7 +889,7 @@ static speed_t baud_to_speed(int baud) {
 /* open_serial opens a receiver device in raw mode at the configured baud. u-blox USB CDC-ACM
  * ignores the line rate, but a real UART bridge needs it (the fleet runs 460800). */
 static int open_serial(const char *path, int baud) {
-	int fd = open(path, O_RDONLY | O_NOCTTY);
+	int fd = open(path, O_RDONLY | O_NOCTTY | O_NONBLOCK);
 	if (fd < 0) return -1;
 	struct termios t;
 	if (tcgetattr(fd, &t) != 0) { close(fd); return -1; }
@@ -860,6 +902,8 @@ static int open_serial(const char *path, int baud) {
 	t.c_cc[VMIN] = 1;   /* block for at least one byte */
 	t.c_cc[VTIME] = 0;
 	if (tcsetattr(fd, TCSANOW, &t) != 0) { close(fd); return -1; }
+	int fl = fcntl(fd, F_GETFL);
+	if (fl < 0 || fcntl(fd, F_SETFL, fl & ~O_NONBLOCK) != 0) { close(fd); return -1; }
 	return fd;
 }
 
@@ -981,9 +1025,9 @@ static void json_escape(char *dst, size_t dstcap, const char *src) {
 	dst[di] = 0;
 }
 
-static int handshake(SSL *ssl, const struct opts *o, int *zstd_ok) {
+static int handshake(struct tls_io *io, const struct opts *o, int *zstd_ok) {
 	*zstd_ok = 0;
-	if (ssl_write_all(ssl, MAGIC, 4) != 0) return -1;
+	if (ssl_write_all(io, MAGIC, 4) != 0) return -1;
 	char tok_esc[512], station_esc[512], feed_esc[128];
 	json_escape(tok_esc, sizeof tok_esc, o->token ? o->token : "");
 	json_escape(station_esc, sizeof station_esc, o->station);
@@ -993,10 +1037,10 @@ static int handshake(SSL *ssl, const struct opts *o, int *zstd_ok) {
 		"{\"token\":\"%s\",\"station\":\"%s\",\"feed\":\"%s\",\"sw\":\"navfeeder/1\"%s}",
 		tok_esc, station_esc, feed_esc, o->zstd ? ",\"zstd\":true" : "");
 	if (n < 0 || (size_t)n >= sizeof hello) return -1;
-	if (send_frame(ssl, F_HELLO, hello, (uint32_t)n) != 0) return -1;
+	if (send_frame(io, F_HELLO, hello, (uint32_t)n) != 0) return -1;
 
 	unsigned char buf[1024]; uint8_t type; uint32_t len;
-	if (read_frame(ssl, &type, buf, sizeof buf, &len) != 0) return -1;
+	if (read_frame(io, &type, buf, sizeof buf, &len) != 0) return -1;
 	if (type != F_WELCOME) return -1;
 	buf[len < sizeof buf ? len : sizeof buf - 1] = 0;
 	if (!strstr((char *)buf, "\"ok\":true")) {
@@ -1098,12 +1142,19 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 	int tls_fd;
 	SSL *ssl = tls_connect(ctx, o, &tls_fd);
 	if (!ssl) { log_msg("collector TLS connect failed"); return -1; }
+	struct tls_io io = { .ssl = ssl, .fd = tls_fd };
+	if (pthread_mutex_init(&io.mu, NULL) != 0) {
+		SSL_free(ssl); close(tls_fd); return -1;
+	}
 
 	int zstd_ok = 0;
-	int hs = handshake(ssl, o, &zstd_ok);
-	if (hs != 0) { SSL_free(ssl); close(tls_fd); return hs == -2 ? -2 : -1; }
+	int hs = handshake(&io, o, &zstd_ok);
+	if (hs != 0) {
+		pthread_mutex_destroy(&io.mu);
+		SSL_free(ssl); close(tls_fd); return hs == -2 ? -2 : -1;
+	}
 
-	struct conn c = { ssl, NULL, NULL, 0, 0, 0 };
+	struct conn c = { &io, NULL, NULL, 0, 0, 0 };
 	if (zstd_ok) {
 		/* regression fix (partial, see technical validation): kept as die() here, not downgraded
 		 * to a silent plaintext fallback. By this point handshake() has already
@@ -1125,13 +1176,14 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 
 	g_disconnected = 0;
 	pthread_t rt;
-	if (pthread_create(&rt, NULL, reader_thread, ssl) != 0) {
+	if (pthread_create(&rt, NULL, reader_thread, &io) != 0) {
 		/* a failed thread create left `rt` indeterminate, and the unconditional
 		 * pthread_join(rt, NULL) at the end of this function is UB on it; treat this
 		 * exactly like a failed connect (log + tear down + let the outer loop retry). */
 		log_msg("failed to start reader thread; treating as a connection error");
 		if (c.cctx) ZSTD_freeCCtx(c.cctx);
 		free(c.obuf);
+		pthread_mutex_destroy(&io.mu);
 		SSL_free(ssl);
 		close(tls_fd);
 		return -1;
@@ -1194,8 +1246,11 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 		last_tx = time(NULL);
 	}
 
-	SSL_shutdown(ssl);
 	pthread_join(rt, NULL);
+	pthread_mutex_lock(&io.mu);
+	SSL_shutdown(ssl);
+	pthread_mutex_unlock(&io.mu);
+	pthread_mutex_destroy(&io.mu);
 	SSL_free(ssl); close(tls_fd);
 	if (c.cctx) ZSTD_freeCCtx(c.cctx);
 	if (c.raw)
@@ -1215,14 +1270,10 @@ static SSL_CTX *make_ctx(const struct opts *o) {
 	SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
 	if (!ctx) die("SSL_CTX_new failed");
 	SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
-	/* Pin to TLS 1.2 (radiolistener regression fix). The reader thread runs SSL_read while the consumer
-	 * thread runs SSL_write on the SAME SSL object with no lock. OpenSSL's one-reader/one-writer
-	 * pattern is only safe when SSL_read can't have to write: under TLS 1.3 a post-handshake
-	 * KeyUpdate processed inside SSL_read needs the write path, racing the concurrent SSL_write
-	 * and corrupting the connection. TLS 1.2 has no KeyUpdate and the Go collector never
-	 * renegotiates, so capping the max version keeps the split threading model correct without a
-	 * per-SSL mutex (which would deadlock the blocking reader). TLS 1.2 with modern ciphers is
-	 * secure. */
+	/* Pin to TLS 1.2 (radiolistener regression fix). The per-connection mutex serializes every shared
+	 * SSL_read/SSL_write/SSL_shutdown operation, including TLS fatal-alert writes from the read
+	 * path; readiness polling happens outside that mutex. Keeping the TLS 1.2 cap also excludes
+	 * post-handshake KeyUpdate and preserves the deployed protocol policy. */
 	SSL_CTX_set_max_proto_version(ctx, TLS1_2_VERSION);
 	if (o->insecure) {
 		SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
@@ -1262,6 +1313,21 @@ static const char *read_token_file(const char *path) {
 static const char *need(const char *v, const char *name) {
 	if (!v) { fprintf(stderr, "navfeeder: missing required --%s\n", name); exit(2); }
 	return v;
+}
+
+static uint64_t parse_positive_decimal(const char *flag, const char *s, uint64_t max) {
+	if (!s || !*s) goto bad;
+	for (const char *p = s; *p; p++)
+		if (*p < '0' || *p > '9') goto bad;
+	errno = 0;
+	char *end = NULL;
+	unsigned long long v = strtoull(s, &end, 10);
+	if (errno == ERANGE || !end || *end || v == 0 || v > max) goto bad;
+	return (uint64_t)v;
+bad:
+	fprintf(stderr, "navfeeder: bad --%s value %s: want a positive decimal integer\n",
+		flag, s ? s : "(empty)");
+	exit(2);
 }
 
 static const char *split_hostport(char *s) {
@@ -1351,7 +1417,8 @@ int main(int argc, char **argv) {
 		const char *a = argv[i];
 		if (!strcmp(a, "--server") && i+1 < argc) server = argv[++i];
 		else if (!strcmp(a, "--source") && i+1 < argc) o.source = argv[++i];
-		else if (!strcmp(a, "--baud") && i+1 < argc) o.baud = atoi(argv[++i]);
+		else if (!strcmp(a, "--baud") && i+1 < argc)
+			o.baud = (int)parse_positive_decimal("baud", argv[++i], INT_MAX);
 		else if (!strcmp(a, "--token") && i+1 < argc) o.token = argv[++i];
 		else if (!strcmp(a, "--token-file") && i+1 < argc) o.token = read_token_file(argv[++i]);
 		else if (!strcmp(a, "--station") && i+1 < argc) o.station = argv[++i];
@@ -1359,9 +1426,12 @@ int main(int argc, char **argv) {
 		else if (!strcmp(a, "--ca") && i+1 < argc) o.ca = argv[++i];
 		else if (!strcmp(a, "--cert") && i+1 < argc) o.cert = argv[++i];
 		else if (!strcmp(a, "--key") && i+1 < argc) o.key = argv[++i];
-		else if (!strcmp(a, "--spool") && i+1 < argc) o.spool_cap = strtoul(argv[++i], NULL, 10);
+		else if (!strcmp(a, "--spool") && i+1 < argc)
+			o.spool_cap = (size_t)parse_positive_decimal("spool", argv[++i], SIZE_MAX);
 		else if (!strcmp(a, "--spool-file") && i+1 < argc) o.spool_file = argv[++i];
-		else if (!strcmp(a, "--spool-disk-mb") && i+1 < argc) o.disk_max_bytes = strtoull(argv[++i], NULL, 10) * 1024 * 1024;
+		else if (!strcmp(a, "--spool-disk-mb") && i+1 < argc)
+			o.disk_max_bytes = parse_positive_decimal("spool-disk-mb", argv[++i],
+				UINT64_MAX / (1024 * 1024)) * 1024 * 1024;
 		else if (!strcmp(a, "--zstd")) o.zstd = 1;
 		else if (!strcmp(a, "--insecure")) o.insecure = 1;
 		else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
@@ -1378,7 +1448,6 @@ int main(int argc, char **argv) {
 	 * `unauthorized` in a permanent 30 s loop. */
 	if (!o.token) die("a bearer token (--token/--token-file) is required; --cert/--key adds mTLS on top");
 	if ((o.cert != NULL) != (o.key != NULL)) die("--cert and --key must be given together");
-	if (o.spool_cap < 1) o.spool_cap = 1;
 	o.server_port = split_hostport(server); o.server_host = server;
 
 	SSL_library_init();

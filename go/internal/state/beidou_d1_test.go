@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/gnss/frame"
 	"github.com/ptudor/navlistener/internal/ingest"
 )
 
@@ -38,6 +39,7 @@ func bdsD1Words(infoBits []byte) []uint32 {
 	for i := 1; i < 10; i++ {
 		words[i] = get(26+22*(i-1), 22) << 8
 	}
+	frame.StampBeiDouD1BCH(words)
 	return words
 }
 
@@ -67,6 +69,24 @@ func bdsD1FrameHealth(svID, fraID, sow, toe, health int, recv time.Time) *ingest
 	return &ingest.RawFrame{
 		Recv: recv, Source: "test", GnssID: gnss.BeiDou, SvID: svID, SigID: 0,
 		Words: bdsD1Words(buf),
+	}
+}
+
+func TestBeiDouD1BadBCHDoesNotMutateHealth(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	good := bdsD1FrameHealth(6, 1, 100, 0, 0, now)
+	s.Apply(good)
+	key := Key{G: gnss.BeiDou, Sv: 6, Sig: 0}
+	st := s.shardFor(key).m[key]
+	if st == nil || st.health != 0 {
+		t.Fatalf("setup health state = %+v", st)
+	}
+	bad := bdsD1FrameHealth(6, 1, 100, 0, 1, now.Add(time.Second))
+	bad.Words[1] ^= 1 << 29
+	s.Apply(bad)
+	if st.health != 0 {
+		t.Errorf("BCH-failing subframe mutated health to %d", st.health)
 	}
 }
 

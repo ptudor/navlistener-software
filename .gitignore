@@ -25,5 +25,7 @@ navlistener.toml
 # Claude local machine settings
 .claude/settings.local.json
 
-# Reference ICD documents (copyrighted; kept locally, never committed)
-*.pdf
+# Reference ICDs: redistribution-permitted documents are vendored explicitly;
+# all others remain local-only until their licenses are cleared.
+docs/icd/*.pdf
+!docs/icd/Galileo_OS_SIS_ICD_in_force.pdf

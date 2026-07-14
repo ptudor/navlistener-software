@@ -152,15 +152,24 @@ func scanCaptureNavFrames(t *testing.T, path string) []*RawFrame {
 }
 
 // feederBinary locates the built navfeeder relative to this package (go/internal/ingest →
-// feeder/navfeeder), skipping the test when it hasn't been compiled.
+// feeder/navfeeder), skipping when it hasn't been compiled but refusing a stale oracle.
 func feederBinary(t *testing.T) string {
 	t.Helper()
 	p, err := filepath.Abs(filepath.Join("..", "..", "..", "feeder", "navfeeder"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(p); err != nil {
+	binInfo, err := os.Stat(p)
+	if err != nil {
 		t.Skipf("navfeeder not built (%s); run: make -C feeder", p)
+	}
+	source := filepath.Join(filepath.Dir(p), "navfeeder.c")
+	sourceInfo, err := os.Stat(source)
+	if err != nil {
+		t.Fatalf("stat navfeeder source: %v", err)
+	}
+	if binInfo.ModTime().Before(sourceInfo.ModTime()) {
+		t.Fatalf("navfeeder binary is older than %s; rebuild with: make -C feeder", source)
 	}
 	return p
 }

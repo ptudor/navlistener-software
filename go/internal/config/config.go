@@ -331,6 +331,13 @@ func (c *Config) finalize() error {
 	if c.Store.CompressAfter != "" && !IntervalRe.MatchString(c.Store.CompressAfter) {
 		return fmt.Errorf(`store.compress_after %q: want a simple interval like "1 day"`, c.Store.CompressAfter)
 	}
+	if c.Store.RawRetention != "" && c.Store.CompressAfter != "" {
+		retention, _ := configIntervalDuration(c.Store.RawRetention) // regex-validated above
+		compress, _ := configIntervalDuration(c.Store.CompressAfter)
+		if compress >= retention {
+			return fmt.Errorf("store.compress_after (%q) must be shorter than store.raw_retention (%q), or chunks are dropped before compression runs", c.Store.CompressAfter, c.Store.RawRetention)
+		}
+	}
 	// parse the DSN at load so a malformed store.dsn fails -check-config, not at the
 	// first pool connect.
 	if c.Store.DSN != "" {
@@ -383,6 +390,28 @@ func (c *Config) finalize() error {
 		if s.Type == "ubx" && s.CaptureOnly {
 			return fmt.Errorf("ingest %q: capture_only is not valid on a ubx source (it decodes into live state; capture_only is implied only for byte sources sbf/rtcm/ntrip)", s.Name)
 		}
+		if s.Type != "ntrip" {
+			var field string
+			switch {
+			case s.Mountpoint != "":
+				field = "mountpoint"
+			case s.Username != "":
+				field = "username"
+			case s.Password != "":
+				field = "password"
+			case s.NTRIPCAFile != "":
+				field = "ca_file"
+			case s.NTRIPServerName != "":
+				field = "server_name"
+			case s.AllowInsecurePlaintext:
+				field = "allow_insecure_plaintext"
+			case s.AllowPlaintextCredentials:
+				field = "allow_plaintext_credentials"
+			}
+			if field != "" {
+				return fmt.Errorf("ingest %q: %s is only valid on a ntrip source (type is %s)", s.Name, field, s.Type)
+			}
+		}
 		if s.Type == "ntrip" && s.Mountpoint == "" {
 			return fmt.Errorf("ingest %q: mountpoint is required for type ntrip", s.Name)
 		}
@@ -413,6 +442,28 @@ func (c *Config) finalize() error {
 		s.CapDecl = caps
 	}
 	return nil
+}
+
+func configIntervalDuration(s string) (time.Duration, error) {
+	fields := strings.Fields(s)
+	if len(fields) != 2 {
+		return 0, fmt.Errorf("invalid interval %q", s)
+	}
+	n, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return 0, err
+	}
+	unit := strings.TrimSuffix(fields[1], "s")
+	per := map[string]time.Duration{
+		"minute": time.Minute,
+		"hour":   time.Hour,
+		"day":    24 * time.Hour,
+		"week":   7 * 24 * time.Hour,
+	}[unit]
+	if per == 0 {
+		return 0, fmt.Errorf("unknown interval unit %q", unit)
+	}
+	return time.Duration(n) * per, nil
 }
 
 // parseCapabilities turns the declared "gnss:sig" strings into typed tuples, validating the
@@ -546,8 +597,19 @@ func ValidObserverID(s string) bool {
 // validateAddr checks host:port syntax  so a typo'd or malformed listener addr is
 // a config-load error, not a silent listener-bind failure discovered only at startup.
 func validateAddr(field, addr string) error {
-	if _, _, err := net.SplitHostPort(addr); err != nil {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
 		return fmt.Errorf("%s %q: %w", field, addr, err)
+	}
+	if port == "" {
+		return fmt.Errorf("%s %q: port is required", field, addr)
+	}
+	resolved, err := net.LookupPort("tcp", port)
+	if err != nil {
+		return fmt.Errorf("%s %q: %w", field, addr, err)
+	}
+	if resolved == 0 {
+		return fmt.Errorf("%s %q: port 0 would select an ephemeral listener", field, addr)
 	}
 	return nil
 }

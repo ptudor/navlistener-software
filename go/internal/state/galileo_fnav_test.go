@@ -4,8 +4,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/gnss/frame"
 	"github.com/ptudor/navlistener/internal/ingest"
+	"github.com/ptudor/navlistener/internal/metrics"
 )
 
 // fnavPageWords builds one raw 8-word (256-bit) Galileo E5a F/NAV page with the given page type
@@ -33,6 +36,7 @@ func fnavPageWords(pageType, iod int) []uint32 {
 	for i := 0; i < 8; i++ {
 		words[i] = uint32(buf[i*4])<<24 | uint32(buf[i*4+1])<<16 | uint32(buf[i*4+2])<<8 | uint32(buf[i*4+3])
 	}
+	frame.StampGalileoFNAVCRC(words)
 	return words
 }
 
@@ -101,5 +105,24 @@ func TestApplyGalileoFNAVR119RejectsBadPageType(t *testing.T) {
 	}
 	if caps := s.FeedStationCapabilities(now)[source]; hasCap(caps, int(gnss.Galileo), 3) {
 		t.Errorf("a bad-page-type frame must not install durable (Galileo,3) capability: %+v", caps)
+	}
+}
+
+func TestApplyGalileoFNAVDummyPageIsNotError(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	const svid, source = 22, "obs-dummy"
+	errCounter := metrics.DecodeErrorsTotal.WithLabelValues("2", "fnav")
+	before := testutil.ToFloat64(errCounter)
+	s.Apply(&ingest.RawFrame{
+		GnssID: gnss.Galileo, SvID: svid, SigID: 3, Source: source, Recv: now,
+		Words: fnavPageWords(63, 0),
+	})
+	if got := testutil.ToFloat64(errCounter) - before; got != 0 {
+		t.Errorf("dummy page decode-error delta = %v, want 0", got)
+	}
+	key := Key{G: gnss.Galileo, Sv: svid, Sig: 3}
+	if st := s.shardFor(key).m[key]; st != nil {
+		t.Errorf("dummy page created SV state: %+v", st)
 	}
 }

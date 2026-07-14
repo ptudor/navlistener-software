@@ -46,12 +46,9 @@ func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 	// coerce to a default with ok:true -- a typo (since=2026-7-1, severity=high,
 	// limit=abc) becomes a confidently wrong window/filter with no signal to the
 	// caller. Absent (empty) params still default, unchanged.
-	since, err := parseTimeParam(q.Get("since"), now.Add(-24*time.Hour))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "since: "+err.Error())
-		return
-	}
-	until, err := parseTimeParam(q.Get("until"), now)
+	untilRaw := q.Get("until")
+	sinceRaw := q.Get("since")
+	until, err := parseTimeParam(untilRaw, now)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "until: "+err.Error())
 		return
@@ -62,6 +59,22 @@ func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 	// confidently-wrong empty output regression fix exists to prevent.
 	if until.After(now) {
 		until = now
+	}
+	// an omitted since describes the 24 hours ending at the caller's
+	// explicit until, not the 24 hours ending now. Parse/clamp until first so a
+	// future upper bound retains now-anchored behavior.
+	sinceDefault := now.Add(-24 * time.Hour)
+	if untilRaw != "" {
+		sinceDefault = until.Add(-24 * time.Hour)
+	}
+	since, err := parseTimeParam(sinceRaw, sinceDefault)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "since: "+err.Error())
+		return
+	}
+	if sinceRaw != "" && untilRaw != "" && since.After(until) {
+		writeError(w, http.StatusBadRequest, "since after until")
+		return
 	}
 	severity, err := atoiParam(q.Get("severity"), 0)
 	if err != nil {

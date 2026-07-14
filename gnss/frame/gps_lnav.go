@@ -37,9 +37,17 @@ var ErrShortFrame = errors.New("frame: short frame")
 // issue-of-data tags (they belong to different data sets).
 var errIODMismatch = errors.New("frame: ephemeris IOD mismatch")
 
+// errWrongMsgType is returned when an assembler/exported decoder receives a
+// valid object in the wrong positional slot.
+var errWrongMsgType = errors.New("frame: wrong navigation message type for argument")
+
 // errBadSubframe  is returned when a length-valid LNAV frame carries an
 // out-of-range subframe id (not 1..5) — a mis-tagged or corrupt frame.
 var errBadSubframe = errors.New("frame: LNAV subframe id out of range (1..5)")
+
+// ErrBadTLMPreamble is returned when word 1 does not carry the fixed 0x8B
+// telemetry-message preamble (IS-GPS-200 §20.3.3.1; QZSS defers to it).
+var ErrBadTLMPreamble = errors.New("frame: LNAV TLM preamble mismatch")
 
 // GPSSubframe holds the decoded fields of a single LNAV subframe. Only the fields
 // belonging to this subframe's ID are populated; a full ephemeris is assembled
@@ -91,6 +99,10 @@ func DecodeGPSLNAV(words []uint32) (*GPSSubframe, error) {
 		}
 	}
 	r := NewBitReaderN(buf, 240)
+	preamble, _ := r.Bits(field(1, 1), 8)
+	if preamble != 0x8B {
+		return nil, ErrBadTLMPreamble
+	}
 
 	// HOW (word 2): TOW count in data bits 1..17 (×6 s), subframe ID in bits 20..22.
 	towCount, _ := r.Bits(field(2, 1), 17)
@@ -199,6 +211,9 @@ func decodeGPSSf3(r *BitReader, sf *GPSSubframe) {
 func AssembleGPS(id gnss.GNSSID, svid int, sf1, sf2, sf3 *GPSSubframe) (kepler.Ephemeris, clock.Model, error) {
 	if sf1 == nil || sf2 == nil || sf3 == nil {
 		return kepler.Ephemeris{}, clock.Model{}, ErrShortFrame
+	}
+	if sf1.SubframeID != 1 || sf2.SubframeID != 2 || sf3.SubframeID != 3 {
+		return kepler.Ephemeris{}, clock.Model{}, errWrongMsgType
 	}
 	if sf2.IODE != sf3.IODE || sf2.IODE != (sf1.IODC&0xFF) {
 		return kepler.Ephemeris{}, clock.Model{}, errors.New("frame: LNAV IODE/IODC mismatch")

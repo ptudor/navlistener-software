@@ -85,10 +85,15 @@ freqId` (GLONASS FDMA channel, `k = freqId − 7`), `numWords`, and `numWords` l
    bit stream (GPS/QZSS: 10×30-bit words per subframe; Galileo I/NAV: 8 words → a 240-bit
    page; F/NAV: a 244-bit page; GLONASS: a 85-bit string in 3 words; BeiDou D1/D2: 10×30-bit;
    SBAS: a 250-bit block in 8 words) into a big-endian `bitreader`.
-2. **Checks integrity** per constellation: GPS/QZSS LNAV **Hamming parity** (30-bit words, 6
-   parity bits, the D25–D30 algorithm from IS-GPS-200 §20.3.5); Galileo/BeiDou-CNAV/NavIC
-   **CRC-24Q** (polynomial `0x1864CFB`); GLONASS **Hamming check** per ICD §4.7; BeiDou D1/D2
-   **BCH(15,11,1)** per word + interleaving.
+2. **Checks integrity** using the coding actually present in SFRBX: GPS/QZSS CNAV, Galileo
+   I/NAV and F/NAV, BeiDou B-CNAV2, and SBAS use central **CRC-24Q** checks (polynomial
+   `0x1864CFB`); GLONASS uses its central ICD Hamming check; BeiDou D1 centrally verifies the
+   delivered, de-interleaved **BCH(15,11,1)** blocks. GPS/QZSS LNAV is the exception: u-blox
+   delivers D30*-resolved data words, so broadcast word parity cannot be recomputed; the
+   collector checks the fixed TLM preamble structurally and relies on receiver validation for
+   parity. Thus a GNF1 push still has a central bit-level integrity gate for every shipped
+   decoder except LNAV, whose parity trust terminates at the receiver/feeder. BeiDou D2 and
+   NavIC decoding remain unsupported/planned rather than claiming an integrity check.
 3. **Dispatches** on `(gnssId, sigId)` to the constellation decoder, which extracts the ICD
    parameter set (§below) and hands it to the ephemeris store.
 
@@ -234,7 +239,9 @@ decode into `QzsL1s`:
 
 ### 3.3 L2C/L5 CNAV & L1C CNAV-2
 Structurally identical to the GPS CNAV/CNAV-2 decoders (`QzsCnav`/`QzsCnav2` share the
-`GpsCnav`/`GpsCnav2` extractors), PRN-mapped to 193–202.
+`GpsCnav`/`GpsCnav2` extractors), PRN-mapped to 193–202. The shared L2C/L5 CNAV
+extractor selects the constellation-specific MT10 reference semi-major axis: QZSS uses
+`A_REF = 42,164,200 m` (IS-QZSS-PNT-005 Table 4.3.2-16), not GPS's 26,559,710 m.
 
 ### 3.4 L6 (CLAS/MADOCA) — carried, enrichment
 L6D/L6E (1278.75 MHz) carry the **CLAS** (Centimeter Level Augmentation, compact SSR) and

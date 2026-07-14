@@ -125,20 +125,25 @@ static const char PORTAL_HTML[] =
     "button{margin-top:1.2em;padding:.7em 1.4em}</style>"
     "<h2>navfeeder-esp setup</h2>"
     "<form method=POST action=/save>"
-    "<label>WiFi SSID<input name=ssid required></label>"
-    "<label>WiFi password<input name=pass type=password></label>"
-    "<label>Collector host<input name=host required placeholder='collector.host.invalid'></label>"
+    "<label>WiFi SSID<input name=ssid maxlength=32 required></label>"
+    "<label>WiFi password<input name=pass type=password maxlength=64></label>"
+    "<label>Collector host<input name=host maxlength=63 required placeholder='collector.host.invalid'></label>"
     "<label>Collector port<input name=port type=number value=5580></label>"
-    "<label>Station id<input name=station required></label>"
-    "<label>Bearer token<input name=token></label>"
+    "<label>Station id<input name=station maxlength=32 required></label>"
+    "<label>Bearer token<input name=token maxlength=128 required></label>"
     PORTAL_INSECURE_FIELD
     "<button type=submit>Save &amp; reboot</button></form>";
 
 // url_decode decodes application/x-www-form-urlencoded text in place-safe form into dst.
-static void url_decode(char *dst, size_t cap, const char *src, size_t srclen)
+// It returns false instead of silently truncating when the decoded value does not fit.
+static bool url_decode(char *dst, size_t cap, const char *src, size_t srclen)
 {
     size_t o = 0;
-    for (size_t i = 0; i < srclen && o + 1 < cap; i++) {
+    for (size_t i = 0; i < srclen; i++) {
+        if (o + 1 >= cap) {
+            dst[o] = '\0';
+            return false;
+        }
         char c = src[i];
         if (c == '+') {
             dst[o++] = ' ';
@@ -151,6 +156,7 @@ static void url_decode(char *dst, size_t cap, const char *src, size_t srclen)
         }
     }
     dst[o] = '\0';
+    return true;
 }
 
 // form_field extracts one urlencoded field ("name=value&...") into dst (decoded), returning
@@ -161,7 +167,9 @@ static void url_decode(char *dst, size_t cap, const char *src, size_t srclen)
 // there already claimed. Callers using a fresh, otherwise-uninitialized local buffer (not a
 // pre-seeded config field) must zero it themselves before calling, since "not found" is now
 // a true no-op.
-static bool form_field(const char *body, const char *name, char *dst, size_t cap)
+typedef enum { FORM_TRUNCATED = -1, FORM_ABSENT = 0, FORM_OK = 1 } form_result_t;
+
+static form_result_t form_field(const char *body, const char *name, char *dst, size_t cap)
 {
     char key[24];
     int kn = snprintf(key, sizeof key, "%s=", name);
@@ -172,12 +180,11 @@ static bool form_field(const char *body, const char *name, char *dst, size_t cap
             const char *v = p + kn;
             const char *end = strchr(v, '&');
             size_t vlen = end ? (size_t)(end - v) : strlen(v);
-            url_decode(dst, cap, v, vlen);
-            return true;
+            return url_decode(dst, cap, v, vlen) ? FORM_OK : FORM_TRUNCATED;
         }
         p += kn;
     }
-    return false;
+    return FORM_ABSENT;
 }
 
 static void restart_task(void *arg)
@@ -253,11 +260,19 @@ static esp_err_t save_post(httpd_req_t *req)
     netcfg_t cfg;
     netcfg_load(&cfg); // start from current so unspecified fields keep their value (                       // form_field no longer clears dst on "not found", so a field genuinely
                        // absent from the body leaves this NVS-loaded value untouched)
-    form_field(body, "ssid", cfg.wifi_ssid, sizeof cfg.wifi_ssid);
-    form_field(body, "pass", cfg.wifi_pass, sizeof cfg.wifi_pass);
-    form_field(body, "host", cfg.host, sizeof cfg.host);
+    if (form_field(body, "ssid", cfg.wifi_ssid, sizeof cfg.wifi_ssid) == FORM_TRUNCATED ||
+        form_field(body, "pass", cfg.wifi_pass, sizeof cfg.wifi_pass) == FORM_TRUNCATED ||
+        form_field(body, "host", cfg.host, sizeof cfg.host) == FORM_TRUNCATED) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "form field too long");
+        return ESP_FAIL;
+    }
     char port[8] = {0}; // fresh buffer, not a pre-seeded cfg field: must self-init 
-    if (form_field(body, "port", port, sizeof port) && port[0]) {
+    form_result_t port_result = form_field(body, "port", port, sizeof port);
+    if (port_result == FORM_TRUNCATED) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "form field too long");
+        return ESP_FAIL;
+    }
+    if (port_result == FORM_OK && port[0]) {
         int p = atoi(port); // reject an out-of-range port (a 99999/negative would
         if (p < 1 || p > 65535) { // otherwise store verbatim into a provisioned-but-unconnectable unit)
             httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "port out of range (1-65535)");
@@ -265,11 +280,21 @@ static esp_err_t save_post(httpd_req_t *req)
         }
         cfg.port = p;
     }
-    form_field(body, "station", cfg.station, sizeof cfg.station);
-    form_field(body, "token", cfg.token, sizeof cfg.token);
+    if (form_field(body, "station", cfg.station, sizeof cfg.station) == FORM_TRUNCATED ||
+        form_field(body, "token", cfg.token, sizeof cfg.token) == FORM_TRUNCATED) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "form field too long");
+        return ESP_FAIL;
+    }
+    if (cfg.token[0] == '\0') {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bearer token is required");
+        return ESP_FAIL;
+    }
 #if CONFIG_NVF_ALLOW_INSECURE_PORTAL
     char ins[8] = {0}; // fresh buffer: must self-init 
-    form_field(body, "insecure", ins, sizeof ins);
+    if (form_field(body, "insecure", ins, sizeof ins) == FORM_TRUNCATED) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "form field too long");
+        return ESP_FAIL;
+    }
     cfg.insecure = ins[0] != '\0'; // checkbox present => on
 #endif
     // With the portal control compiled out (regression fix, the shipped default), cfg.insecure

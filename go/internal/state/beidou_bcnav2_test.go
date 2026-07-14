@@ -185,3 +185,66 @@ func TestApplyBeiDouBCNAV2StaleClockIODCNotLatched(t *testing.T) {
 		t.Errorf("fresh type-30 with the stale message's IODC was never applied: served clock still zero")
 	}
 }
+
+func TestApplyBeiDouBCNAV2MT34CarriesMT30TGD(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	const prn = 23
+	apply := func(words []uint32, at time.Time) {
+		s.Apply(&ingest.RawFrame{GnssID: gnss.BeiDou, SvID: prn, SigID: 8, Recv: at, Words: words})
+	}
+	m10 := func(iode, toe, sow int) []uint32 {
+		return bcnav2Frame(prn, 10, sow, func(buf []byte) {
+			setAbsBits(buf, 53, 8, uint64(iode))
+			setAbsBits(buf, 61, 11, uint64(toe))
+			setAbsBits(buf, 72, 2, 3) // MEO
+		})
+	}
+	m11 := func(sow int) []uint32 { return bcnav2Frame(prn, 11, sow, nil) }
+	m30 := func(iodc, sow int) []uint32 {
+		return bcnav2Frame(prn, 30, sow, func(buf []byte) {
+			setAbsBits(buf, 111, 10, uint64(iodc))
+			setAbsBits(buf, 121, 12, (1<<12)-137) // about -8 ns, 12-bit two's complement
+		})
+	}
+	m34 := func(iodc, sow int) []uint32 {
+		return bcnav2Frame(prn, 34, sow, func(buf []byte) {
+			setAbsBits(buf, 133, 10, uint64(iodc))
+		})
+	}
+
+	apply(m10(1, 10, 100002), now)
+	apply(m11(100002), now)
+	apply(m30(1, 100005), now)
+
+	key := Key{G: gnss.BeiDou, Sv: prn, Sig: 8}
+	st := s.shardFor(key).m[key]
+	if st == nil || !st.clkHasBcTGD || st.clk.TGD == 0 {
+		t.Fatalf("MT30 TGD not applied: %+v", st)
+	}
+	wantTGD := st.clk.TGD
+
+	// MT34 wins the next IODC race. Its clock polynomial must carry the last
+	// decoded MT30 TGD rather than install a decoded-looking zero.
+	second := now.Add(5 * time.Minute)
+	apply(m34(2, 100299), second)
+	apply(m10(2, 11, 100302), second)
+	apply(m11(100302), second)
+	if st.clk.TGD != wantTGD || !st.clkHasBcTGD {
+		t.Fatalf("MT34 lost MT30 TGD: got %g known=%v, want %g", st.clk.TGD, st.clkHasBcTGD, wantTGD)
+	}
+	// A same-IODC MT30 supplies the authoritative field without creating a
+	// separate ephemeris changeover.
+	apply(m30(2, 100305), second)
+	if st.clk.TGD != wantTGD || !st.clkHasBcTGD {
+		t.Fatalf("same-IODC MT30 did not preserve TGD: got %g known=%v", st.clk.TGD, st.clkHasBcTGD)
+	}
+
+	third := now.Add(10 * time.Minute)
+	apply(m34(3, 100599), third)
+	apply(m10(3, 12, 100602), third)
+	apply(m11(100602), third)
+	if !st.timeDiscoValid || st.timeDiscoNs >= 2.5 {
+		t.Errorf("continuous MT34 changeover time disco = %g ns valid=%v, want <2.5 ns", st.timeDiscoNs, st.timeDiscoValid)
+	}
+}

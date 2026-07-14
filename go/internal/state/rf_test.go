@@ -78,6 +78,31 @@ func TestRFCn0SpoofGate(t *testing.T) {
 	}
 }
 
+func TestRFCn0ResidualGroupedByConstellation(t *testing.T) {
+	var mixed []ingest.SatCN0
+	for i, elev := range []int{10, 25, 40, 55, 70, 85} {
+		mixed = append(mixed,
+			ingest.SatCN0{GnssID: 0, ElevDeg: elev, Cn0: 50},
+			ingest.SatCN0{GnssID: 2, ElevDeg: elev, Cn0: []int{32, 41, 43, 50, 46, 55}[i]},
+		)
+	}
+	groups := cn0ElevationResidualByConstellation(mixed)
+	if len(groups) != 2 {
+		t.Fatalf("groups = %+v, want GPS and Galileo", groups)
+	}
+	if gps := groups[0]; gps.NumSats != 6 || gps.Mean != 50 || gps.Resid >= 2 {
+		t.Fatalf("GPS group = %+v, want a flat high-C/N0 collapse", gps)
+	}
+	if gal := groups[2]; gal.NumSats != 6 || gal.Resid < 2 {
+		t.Fatalf("Galileo group = %+v, want a genuine spread", gal)
+	}
+	// A lone SBAS GEO never becomes a gate group.
+	mixed = append(mixed, ingest.SatCN0{GnssID: 1, ElevDeg: 30, Cn0: 50})
+	if _, ok := cn0ElevationResidualByConstellation(mixed)[1]; ok {
+		t.Fatal("SBAS must be excluded from constellation spoof fits")
+	}
+}
+
 // TestRFCn0ExcludesElevationUnknownSentinel guards UBX-NAV-SAT elevation
 // is valid only in [0,90] -- 91 is the "elevation unknown" sentinel (typical
 // for a freshly-acquired SV) and must be excluded, not fed into the regression
@@ -174,5 +199,24 @@ func TestRFStaleBandDroppedFromClassification(t *testing.T) {
 	}
 	if len(st.Bands) != 1 || st.Bands[0].Block != 1 {
 		t.Errorf("bands = %+v, want only fresh band 1 (stale band 0 dropped)", st.Bands)
+	}
+}
+
+// NAV-SAT may keep the station fresh after every MON-RF band ages out; the feed
+// must expose that exact empty-band shape so the detector's regression fix hold is exercised.
+func TestRFSatsKeepStationWithEmptyStaleBands(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	s.Apply(rfSample("stn1", 0, 4000, 0, 2, now))
+	freshAt := now.Add(rfStaleAfter + time.Minute)
+	sats := []ingest.SatCN0{
+		{GnssID: 0, ElevDeg: 10, Cn0: 35}, {GnssID: 0, ElevDeg: 25, Cn0: 40},
+		{GnssID: 0, ElevDeg: 40, Cn0: 44}, {GnssID: 0, ElevDeg: 55, Cn0: 47},
+		{GnssID: 0, ElevDeg: 70, Cn0: 50},
+	}
+	s.Apply(&ingest.RawFrame{Source: "stn1", Recv: freshAt, RF: &ingest.RawRF{Sats: sats}})
+	st, ok := s.FeedStationRF(freshAt)["stn1"]
+	if !ok || len(st.Bands) != 0 || st.Cn0Mean == nil {
+		t.Fatalf("NAV-SAT-only fresh station = %+v, want no bands plus current C/N0", st)
 	}
 }

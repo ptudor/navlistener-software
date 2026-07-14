@@ -144,6 +144,15 @@ func NewPushServer(cfg config.Push, out chan<- *RawFrame, auth Authenticator, lo
 	if err != nil {
 		return nil, fmt.Errorf("push tls keypair: %w", err)
 	}
+	if len(cert.Certificate) == 0 {
+		return nil, fmt.Errorf("push tls keypair: certificate chain is empty")
+	}
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return nil, fmt.Errorf("push tls leaf certificate: %w", err)
+	}
+	cert.Leaf = leaf
+	observePushServerCertificate(cfg.TLSCert, leaf, time.Now(), log)
 	tc := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS12, // collector floor (docs/DESIGN.md §2)
@@ -161,6 +170,18 @@ func NewPushServer(cfg config.Push, out chan<- *RawFrame, auth Authenticator, lo
 		tc.ClientAuth = tls.RequireAndVerifyClientCert
 	}
 	return newPushServer(cfg.Addr, tc, out, auth, cfg.AckInterval, cfg.MaxConns, log), nil
+}
+
+func observePushServerCertificate(path string, leaf *x509.Certificate, now time.Time, log *slog.Logger) {
+	metrics.PushServerCertNotAfterSeconds.Set(float64(leaf.NotAfter.Unix()))
+	const certWarnHorizon = 30 * 24 * time.Hour
+	if now.Before(leaf.NotBefore) {
+		log.Warn("push server certificate is not yet valid", "path", path, "not_before", leaf.NotBefore)
+	} else if !now.Before(leaf.NotAfter) {
+		log.Warn("push server certificate has expired", "path", path, "not_after", leaf.NotAfter)
+	} else if leaf.NotAfter.Sub(now) <= certWarnHorizon {
+		log.Warn("push server certificate expires soon", "path", path, "not_after", leaf.NotAfter)
+	}
 }
 
 // newPushServer builds a PushServer from a ready TLS config (the file-loading
@@ -390,10 +411,10 @@ func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (obs
 			return "", "", false, false
 		}
 	}
-	// regression fix defense-in-depth: sbf is rejected here as well as at config load —
-	// the GNF1 frame_type byte cannot carry an SBF block number, so a push-sbf
-	// grant from any future non-config Authenticator must not reach stream().
-	if h.Feed == "sbf" || scannerFor(h.Feed) == nil {
+	// regression fix/regression fix defense-in-depth: push has an explicit wire-contract allow-list,
+	// independent of what a future non-config Authenticator may accidentally grant.
+	// Dial-only sbf/ntrip must never reach recordToFrame's ubx/rtcm branches.
+	if h.Feed != "ubx" && h.Feed != "rtcm" {
 		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "unsupported feed"}))
 		return "", "", false, false
 	}
@@ -508,8 +529,8 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				mu.Unlock()
 				continue
 			}
-			f.Seq, f.HasSeq = seq, true // historian dedup key : this connection may be a replay
-			if f.RF == nil {            // FramesTotal counts nav-frame throughput per constellation, not telemetry
+			f.Seq, f.HasSeq = seq, true        // historian dedup key : this connection may be a replay
+			if f.RF == nil && f.Words != nil { // byte frames use CapturedOnlyTotal, not gnssid=0
 				metrics.FramesTotal.WithLabelValues(observer, fmt.Sprint(int(f.GnssID))).Inc()
 			}
 			select {
@@ -541,19 +562,21 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 // feeds (ubx/sbf nav frames) carry the broadcast words big-endian in Raw; rtcm carries the
 // message bytes. The reception time falls back to now when the feeder did not stamp it. A
 // malformed telemetry body returns nil (the caller counts and drops it).
-// recvTimestampSlack bounds how far a feeder-supplied reception timestamp may
-// diverge from collector wall-clock before it's rejected as implausible :
-// a receiver/feeder clock can legitimately drift by a little, but a stamp minutes
-// away in either direction is not a reception time, it's a bug or a malfunctioning
-// clock, and must not flow into the historian's time-based partitioning/integrity
-// math uncorrected.
-const recvTimestampSlack = 5 * time.Minute
+// Future stamps remain tightly bounded as clock errors. Past stamps have a much
+// wider horizon because the edge feeder deliberately replays its durable spool
+// after an outage; preserving that original reception time is the forensic
+// contract. Seven days comfortably covers the 256 MiB spool's hours-to-days
+// design while still rejecting absurd/stale clock values.
+const (
+	recvTimestampSlack = 5 * time.Minute
+	recvReplayHorizon  = 7 * 24 * time.Hour
+)
 
 func recordToFrame(rec wire.RawRecord, feed, source string) *RawFrame {
 	recv := time.Now()
 	switch {
 	case rec.RecvUnixNs > 0:
-		if stamped := time.Unix(0, rec.RecvUnixNs); withinSlack(stamped, recv, recvTimestampSlack) {
+		if stamped := time.Unix(0, rec.RecvUnixNs); receiveTimestampPlausible(stamped, recv) {
 			recv = stamped
 		} else {
 			metrics.PushErrorsTotal.WithLabelValues(source, "recv_ts_implausible").Inc()
@@ -618,13 +641,13 @@ func telemetryToFrame(rec wire.RawRecord, source string, recv time.Time) *RawFra
 	return &RawFrame{Recv: recv, Source: source, RF: rf}
 }
 
-// withinSlack reports whether stamped is within slack of now in either direction.
-func withinSlack(stamped, now time.Time, slack time.Duration) bool {
+// receiveTimestampPlausible applies the asymmetric live-clock/replay contract.
+func receiveTimestampPlausible(stamped, now time.Time) bool {
 	d := stamped.Sub(now)
-	if d < 0 {
-		d = -d
+	if d > 0 {
+		return d <= recvTimestampSlack
 	}
-	return d <= slack
+	return -d <= recvReplayHorizon
 }
 
 // bytesToWords reassembles big-endian 32-bit nav words (the inverse of

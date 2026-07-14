@@ -170,9 +170,12 @@ all-SV view (acquisition-grade); `svs` remains the precision view. Fields:
 | `ecef_x_m`,`ecef_y_m`,`ecef_z_m` | float | almanac-propagated ECEF, **metres** (MATH.md §10) |
 | `lat_deg`,`lon_deg` | float | sub-satellite point (fallback / display) |
 | `inclination_rad` | float | orbital inclination, radians |
-| `t0e` | int | almanac reference time; `t` | int | evaluation time |
+| `t0e` | int | constellation-native almanac reference: GPS-family `Toe` in seconds-of-week; GLONASS `t_lambda` in seconds-of-day |
+| `t` | int | evaluation time as Unix UTC seconds |
 | `lambda_na`,`t_lambda_na` | float | GLONASS-only: ascending-node longitude and its epoch (MATH.md §3.1) |
 | `eph_source` | int | §2.2 enum: 0 broadcast-almanac · 1 tle-sgp4 fill |
+
+`t0e` and `t` deliberately use different time bases; `t - t0e` is **not** an almanac age.
 
 ### 1.5 `sbas` — augmentation-system health
 
@@ -262,7 +265,8 @@ SELECT create_hypertable('gnss_events','time', if_not_exists => TRUE);
 CREATE INDEX idx_gnss_events_sv_time       ON gnss_events (sv, time DESC);
 CREATE INDEX idx_gnss_events_type_time     ON gnss_events (event_type, time DESC);
 CREATE INDEX idx_gnss_events_severity_time ON gnss_events (severity, time DESC);
--- notify_gnss_event(): pg_notify('gnss_event', json{id,sv,type,severity,message})
+-- notify_gnss_event(): pg_notify('gnss_event', json{id,sv,type,severity})
+-- The payload identifies the row; LISTENers fetch the full row (including message) by id.
 CREATE TRIGGER gnss_event_notify AFTER INSERT ON gnss_events
     FOR EACH ROW EXECUTE FUNCTION notify_gnss_event();
 

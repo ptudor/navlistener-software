@@ -41,6 +41,7 @@ func setSplit32(buf []byte, wHi, aHi, wLo int, val int64) {
 // exercised separately by TestGPSParity*.
 func packLNAV(t *testing.T, buf []byte) []uint32 {
 	t.Helper()
+	setField(buf, 1, 1, 8, 0x8B)
 	r := NewBitReaderN(buf, 240)
 	words := make([]uint32, 10)
 	for i := 0; i < 10; i++ {
@@ -48,6 +49,14 @@ func packLNAV(t *testing.T, buf []byte) []uint32 {
 		words[i] = uint32(want) << 6
 	}
 	return words
+}
+
+func TestGPSLNAVRejectsBadTLMPreamble(t *testing.T) {
+	words := packLNAV(t, buildSf1(t))
+	words[0] &^= uint32(0xFF) << 22
+	if _, err := DecodeGPSLNAV(words); err != ErrBadTLMPreamble {
+		t.Errorf("err = %v, want ErrBadTLMPreamble", err)
+	}
 }
 
 func TestGPSLNAVSubframe2RoundTrip(t *testing.T) {
@@ -110,6 +119,15 @@ func TestGPSLNAVIODEMismatch(t *testing.T) {
 	sf3.IODE = 99 // break consistency
 	if _, _, err := AssembleGPS(gnss.GPS, 5, sf1, sf2, sf3); err == nil {
 		t.Error("expected IODE/IODC mismatch error")
+	}
+}
+
+func TestAssembleGPSRejectsWrongSlots(t *testing.T) {
+	sf1 := decodeBuf(t, buildSf1(t))
+	sf2 := decodeBuf(t, buildSf2(t))
+	sf3 := decodeBuf(t, buildSf3(t))
+	if _, _, err := AssembleGPS(gnss.GPS, 5, sf2, sf1, sf3); err != errWrongMsgType {
+		t.Errorf("transposed args error = %v, want errWrongMsgType", err)
 	}
 }
 

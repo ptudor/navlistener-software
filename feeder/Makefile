@@ -15,13 +15,13 @@ CFLAGS    ?= -O2 -Wall -Wextra -std=c11
 # 32-bit glibc hosts (e.g. armhf Debian) default to a 32-bit off_t, so a spool file
 # ≥ 2 GiB hits EFBIG on append and EOVERFLOW on fopen. Force 64-bit file offsets everywhere
 # (harmless on musl/64-bit, which already use a 64-bit off_t).
-CFLAGS    += -D_FILE_OFFSET_BITS=64
+override CFLAGS += -D_FILE_OFFSET_BITS=64
 LDLIBS    := -lssl -lcrypto -lzstd -lpthread
 
 UNAME := $(shell uname -s)
 ifeq ($(UNAME),Darwin)
   SSL_PREFIX ?= /opt/local
-  CFLAGS  += -I$(SSL_PREFIX)/include
+  override CFLAGS += -I$(SSL_PREFIX)/include
   LDFLAGS += -L$(SSL_PREFIX)/lib
 endif
 

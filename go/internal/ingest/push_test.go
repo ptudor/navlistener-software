@@ -47,6 +47,20 @@ func TestPushServeReturnsTerminalAcceptFailure(t *testing.T) {
 	}
 }
 
+func TestObservePushServerCertificateExpired(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	leaf := &x509.Certificate{NotBefore: now.Add(-48 * time.Hour), NotAfter: now.Add(-time.Hour)}
+	var out strings.Builder
+	log := slog.New(slog.NewTextHandler(&out, nil))
+	observePushServerCertificate("expired.pem", leaf, now, log)
+	if !strings.Contains(out.String(), "has expired") || !strings.Contains(out.String(), "expired.pem") {
+		t.Errorf("expiry warning missing path/status: %q", out.String())
+	}
+	if got := testutil.ToFloat64(metrics.PushServerCertNotAfterSeconds); got != float64(leaf.NotAfter.Unix()) {
+		t.Errorf("cert expiry gauge = %v, want %d", got, leaf.NotAfter.Unix())
+	}
+}
+
 // oneConnThenTerminal returns one connection, then a (non-temporary) terminal error.
 type oneConnThenTerminal struct {
 	conn net.Conn
@@ -570,6 +584,36 @@ func TestPushRejectsUngrantedFeed(t *testing.T) {
 	}
 }
 
+// Even an Authenticator that explicitly grants a dial-only feed cannot widen the
+// GNF1 push wire contract.
+func TestPushRejectsGrantedDialOnlyFeeds(t *testing.T) {
+	for _, feed := range []string{"sbf", "ntrip"} {
+		t.Run(feed, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			addr, out := startPushServer(t, ctx, tokenAuth("observer16", "s3cret", feed))
+			conn := dialPush(t, addr)
+			defer conn.Close()
+			if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: feed}); err != nil {
+				t.Fatal(err)
+			}
+			ft, payload, err := wire.ReadFrame(conn)
+			if err != nil || ft != wire.Welcome {
+				t.Fatalf("welcome frame: ft=%d err=%v", ft, err)
+			}
+			wmsg, err := parseWelcome(payload)
+			if err != nil || wmsg.OK || wmsg.Error != "unsupported feed" {
+				t.Fatalf("welcome = %+v err=%v, want unsupported-feed rejection", wmsg, err)
+			}
+			select {
+			case f := <-out:
+				t.Fatalf("rejected %s feed enqueued frame %+v", feed, f)
+			default:
+			}
+		})
+	}
+}
+
 // TestPushHelloOversizedRejectedPreAuth guards the pre-auth HELLO read
 // must reject a length prefix beyond helloMaxLen immediately, without ever
 // attempting to read the declared payload -- otherwise an attacker-declared
@@ -897,10 +941,9 @@ func parseWelcome(payload []byte) (wire.WelcomeMsg, error) {
 	return m, err
 }
 
-// TestRecordToFrameClampsImplausibleTimestamp guards a feeder-supplied
-// RecvUnixNs far outside recvTimestampSlack of wall-clock (either direction) must
-// be rejected in favor of now(), not trusted verbatim into the historian's
-// time-based math. A timestamp within slack, and the == 0 fallback, are untouched.
+// TestRecordToFrameClampsImplausibleTimestamp guards the asymmetric live/replay
+// timestamp contract: replayed past stamps inside the spool horizon are retained,
+// while far-future and absurdly-old stamps are rejected.
 func TestRecordToFrameClampsImplausibleTimestamp(t *testing.T) {
 	before := time.Now()
 	rec := wire.RawRecord{
@@ -925,6 +968,32 @@ func TestRecordToFrameClampsImplausibleTimestamp(t *testing.T) {
 	}
 	if !f2.Recv.Equal(plausible) {
 		t.Errorf("Recv = %v, want the plausible feeder timestamp %v unmodified", f2.Recv, plausible)
+	}
+
+	// A routine replay after a 30-minute collector outage keeps the original
+	// reception time instead of re-aging stale data as current.
+	replayed := time.Now().Add(-30 * time.Minute)
+	cReplay := metrics.PushErrorsTotal.WithLabelValues("obsReplay", "recv_ts_implausible")
+	replayStart := testutil.ToFloat64(cReplay)
+	recReplay := wire.RawRecord{RecvUnixNs: replayed.UnixNano(), GnssID: gnss.GPS, SvID: 5, Raw: make([]byte, 40)}
+	fReplay := recordToFrame(recReplay, "ubx", "obsReplay")
+	if fReplay == nil || !fReplay.Recv.Equal(replayed) {
+		t.Fatalf("replayed Recv = %v, want original stamp %v", fReplay.Recv, replayed)
+	}
+	if got := testutil.ToFloat64(cReplay) - replayStart; got != 0 {
+		t.Errorf("valid replay incremented recv_ts_implausible by %v", got)
+	}
+
+	tooOld := time.Now().Add(-recvReplayHorizon - time.Hour)
+	cOld := metrics.PushErrorsTotal.WithLabelValues("obsOld", "recv_ts_implausible")
+	oldStart := testutil.ToFloat64(cOld)
+	recOld := wire.RawRecord{RecvUnixNs: tooOld.UnixNano(), GnssID: gnss.GPS, SvID: 5, Raw: make([]byte, 40)}
+	fOld := recordToFrame(recOld, "ubx", "obsOld")
+	if fOld == nil || fOld.Recv.Equal(tooOld) {
+		t.Fatalf("absurdly old timestamp was accepted: %v", fOld.Recv)
+	}
+	if got := testutil.ToFloat64(cOld) - oldStart; got != 1 {
+		t.Errorf("old recv_ts_implausible delta = %v, want 1", got)
 	}
 
 	// The == 0 fallback (no feeder timestamp at all) is untouched.

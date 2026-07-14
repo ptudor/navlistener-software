@@ -255,6 +255,30 @@ func TestRealGalileoINAVIntegrityAllCaptures(t *testing.T) {
 	t.Logf("%d real Galileo I/NAV pages passed CRC validation", total)
 }
 
+func TestRealGalileoFNAVIntegrityAllCaptures(t *testing.T) {
+	data, err := os.ReadFile("testdata/f9t_capture.ubx")
+	if err != nil {
+		t.Fatalf("read capture: %v", err)
+	}
+	var frames []*RawFrame
+	_ = scanUBX(bytes.NewReader(data), "cap", fixedTime,
+		func(f *RawFrame) { frames = append(frames, f) }, func(string) {})
+	total := 0
+	for i, f := range frames {
+		if f.GnssID != gnss.Galileo || f.SigID != 3 {
+			continue
+		}
+		total++
+		if _, err := frame.DecodeGalileoFNAV(f.Words); err != nil {
+			t.Errorf("frame %d E%02d: %v", i, f.SvID, err)
+		}
+	}
+	if total == 0 {
+		t.Fatal("capture fixture contains no Galileo F/NAV pages")
+	}
+	t.Logf("%d real Galileo F/NAV pages passed CRC validation", total)
+}
+
 // TestRealGalileoGSTAgreesWithGPS guards the GST WN/TOW now decoded from
 // I/NAV word 5 must agree with the same real F9T capture's GPS-decoded time.
 // regression fix/regression fix established that GST(WN,TOW) equals GPS(WN+1024,TOW) with zero

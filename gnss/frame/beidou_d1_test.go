@@ -2,6 +2,38 @@ package frame
 
 import "testing"
 
+func d1TestWords(fraID int) []uint32 {
+	info := make([]byte, 28)
+	setBits(info, 15, 3, uint64(fraID))
+	r := NewBitReaderN(info, 224)
+	words := make([]uint32, 10)
+	v, _ := r.Bits(0, 26)
+	words[0] = uint32(v) << 4
+	for i := 1; i < 10; i++ {
+		v, _ = r.Bits(26+(i-1)*22, 22)
+		words[i] = uint32(v) << 8
+	}
+	StampBeiDouD1BCH(words)
+	return words
+}
+
+func TestDecodeBeiDouD1BCH(t *testing.T) {
+	good := d1TestWords(1)
+	if _, err := DecodeBeiDouD1(good); err != nil {
+		t.Fatalf("valid BCH frame rejected: %v", err)
+	}
+	infoFlip := append([]uint32(nil), good...)
+	infoFlip[1] ^= 1 << 29
+	if _, err := DecodeBeiDouD1(infoFlip); err != ErrBadBCH {
+		t.Errorf("info-bit flip error = %v, want ErrBadBCH", err)
+	}
+	parityFlip := append([]uint32(nil), good...)
+	parityFlip[1] ^= 1
+	if _, err := DecodeBeiDouD1(parityFlip); err != ErrBadBCH {
+		t.Errorf("parity-bit flip error = %v, want ErrBadBCH", err)
+	}
+}
+
 // TestAssembleBeiDouSOWAdjacency guards D1 carries no AODE-style pairing
 // tag, so SOW adjacency (sf1/sf2/sf3 each 6s apart within one 30s D1 frame) is the
 // only guard against splicing toe/orbital-element halves from different data

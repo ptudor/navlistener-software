@@ -49,6 +49,17 @@ reboots into station mode. (For dev you can still pre-seed everything via `idf.p
 → "navfeeder-esp".) Remaining: P-hw (ATECC608 identity + `SIGNED_DATA`) and the u8g2 font
 upgrade.
 
+**Factory-reset recovery:** if a well-formed but wrong SSID, password, collector host, or token
+was saved, connect the board over USB and erase only the NVS partition, then reset it:
+
+```sh
+esptool.py --chip esp32c6 --port /dev/cu.usbmodemXXXX erase-region 0x9000 0x6000
+```
+
+Those offset/size values are the `nvs` row in `partitions.csv`; the LittleFS spool partition is
+left intact. On the next boot `netcfg_load` finds no provisioned SSID/host and raises a newly
+passworded SoftAP portal. Use the actual serial device path for the board.
+
 ## Enrollment (the shared AAA control plane)
 
 A navfeeder-esp observer is just a `Device` in the control plane navlistener shares with

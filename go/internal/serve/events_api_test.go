@@ -247,6 +247,39 @@ func TestEventsQueryFarFutureUntilClamped(t *testing.T) {
 	}
 }
 
+// TestEventsQueryPastUntilAnchorsDefaultSince guards an explicit historical
+// upper bound with no since is a 24-hour window ending there, never an inverted window
+// ending before now-24h.
+func TestEventsQueryPastUntilAnchorsDefaultSince(t *testing.T) {
+	fe := &fakeEvents{}
+	s := newTestServer(nil, fe)
+	fixedNow := time.Unix(2_000_000_000, 0).UTC()
+	s.now = func() time.Time { return fixedNow }
+	until := fixedNow.Add(-72 * time.Hour)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/gnss/api/events?until="+until.Format(time.RFC3339), nil)
+	s.http.Handler.ServeHTTP(rr, req)
+	decodeEnvelope(t, rr)
+	if !fe.lastQuery.Until.Equal(until) || !fe.lastQuery.Since.Equal(until.Add(-24*time.Hour)) {
+		t.Fatalf("query window = %v..%v, want %v..%v", fe.lastQuery.Since, fe.lastQuery.Until, until.Add(-24*time.Hour), until)
+	}
+}
+
+func TestEventsQueryExplicitInvertedWindowRejected(t *testing.T) {
+	s := newTestServer(nil, &fakeEvents{})
+	fixedNow := time.Unix(2_000_000_000, 0).UTC()
+	s.now = func() time.Time { return fixedNow }
+	since := fixedNow.Add(-time.Hour)
+	until := fixedNow.Add(-2 * time.Hour)
+	path := "/gnss/api/events?since=" + since.Format(time.RFC3339) + "&until=" + until.Format(time.RFC3339)
+	rr := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rr.Code, rr.Body.String())
+	}
+}
+
 // TestEventsAndFeed405CarryAllow guards a non-GET/HEAD request to the feed and events
 // endpoints must return 405 with the RFC 9110 §15.5.6 Allow header (as the SSE endpoint does).
 func TestEventsAndFeed405CarryAllow(t *testing.T) {

@@ -1,9 +1,8 @@
-// Package iono computes broadcast ionospheric delay. The single-frequency
-// Klobuchar model (GPS L1, QZSS, BeiDou B1I, NavIC) is implemented in full; the
-// Galileo NeQuick-G and BeiDou BDGIM models are decoded to their broadcast
-// coefficients here, with the full profile integration a documented follow-up
-// (docs/MATH.md §7). Delay is returned in seconds of L1-equivalent group delay
-// and scales to other frequencies by (f_L1/f)².
+// Package iono computes broadcast ionospheric delay. The GPS/QZSS
+// single-frequency Klobuchar model is implemented in full. Galileo NeQuick-G,
+// BeiDou's distinct B1I model and BDGIM, and a verified NavIC model are documented
+// follow-ups (docs/MATH.md §7). Delay is returned in seconds of L1-equivalent
+// group delay and scales to other frequencies by (f_L1/f)².
 package iono
 
 import "math"
@@ -13,7 +12,8 @@ import "math"
 // azimuth az and elevation el (all radians), at GPS time-of-week gpsTOW (seconds).
 // The algorithm follows IS-GPS-200 §20.3.3.5.2.5 (docs/MATH.md §7.1): latitudes,
 // longitudes, and elevation work in semicircles internally; azimuth is used in
-// radians. BeiDou B1I and NavIC use the same form with their own α/β.
+// radians. This function is scoped to GPS L1 and QZSS; BeiDou B1I uses the
+// materially different BDS-SIS-ICD-B1I §5.2.4.7 model.
 func Klobuchar(alpha, beta [4]float64, userLat, userLon, az, el, gpsTOW float64) float64 {
 	// the model is defined for el >= 0 (IS-GPS-200 §20.3.3.5.2.5); at
 	// el = -0.11π rad (-19.8°) the earth-centred-angle term below divides by
@@ -26,7 +26,7 @@ func Klobuchar(alpha, beta [4]float64, userLat, userLon, az, el, gpsTOW float64)
 		el = 0
 	}
 	const rad2semi = 1.0 / math.Pi
-	phiU := userLat * rad2semi // user geomagnetic latitude, semicircles
+	phiU := userLat * rad2semi // user geodetic latitude, semicircles
 	lamU := userLon * rad2semi
 	e := el * rad2semi // elevation, semicircles
 

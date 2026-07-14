@@ -63,8 +63,8 @@ func TestDecodeGLONASSStringHammingReject(t *testing.T) {
 	// Flip a single data bit (block offset 30 → an interior data bit).
 	bad := append([]uint32(nil), good...)
 	bad[0] ^= 1 << 1 // flip a bit inside word 0 (a data bit, not a check bit)
-	if _, err := DecodeGLONASSString(bad); err != errGLONASSHamming {
-		t.Errorf("single-bit-flipped string: err = %v, want errGLONASSHamming", err)
+	if _, err := DecodeGLONASSString(bad); err != ErrGLONASSHamming {
+		t.Errorf("single-bit-flipped string: err = %v, want ErrGLONASSHamming", err)
 	}
 }
 
@@ -77,6 +77,33 @@ func TestDecodeGLONASSStringRejectsZeroNumber(t *testing.T) {
 	}
 	if _, err := DecodeGLONASSString(gloStringWords(1, nil)); err != nil {
 		t.Errorf("string number 1: err = %v, want nil", err)
+	}
+}
+
+func TestExportedGLONASSDecodersValidateInputs(t *testing.T) {
+	s1 := gloStringWords(1, nil)
+	s5 := gloStringWords(5, nil)
+	s6 := gloStringWords(6, nil)
+	s7 := gloStringWords(7, nil)
+	if _, err := DecodeGLONASSAlmanac(s1, s7, 1); err != errBadStringNum {
+		t.Errorf("string-1 first error = %v, want errBadStringNum", err)
+	}
+	if _, err := DecodeGLONASSAlmanac(s7, s6, 1); err != errBadStringNum {
+		t.Errorf("swapped pair error = %v, want errBadStringNum", err)
+	}
+	if _, err := DecodeGLONASSFrameNA(s6); err != errBadStringNum {
+		t.Errorf("string-6 NA error = %v, want errBadStringNum", err)
+	}
+	if _, err := DecodeGLONASSFrameNA(s5); err != nil {
+		t.Errorf("valid string-5 NA rejected: %v", err)
+	}
+	if _, err := DecodeGLONASSAlmanac(s6, s7, 1); err != nil {
+		t.Errorf("valid 6/7 pair rejected: %v", err)
+	}
+	bad := append([]uint32(nil), s6...)
+	bad[0] ^= 1
+	if _, err := DecodeGLONASSAlmanac(bad, s7, 1); err != ErrGLONASSHamming {
+		t.Errorf("corrupt pair error = %v, want ErrGLONASSHamming", err)
 	}
 }
 

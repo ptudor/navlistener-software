@@ -99,15 +99,13 @@ func TestAlmanacICDExample(t *testing.T) {
 		t.Fatalf("propagate: %v", err)
 	}
 
-	// ICD §A.3.2.3 expected result, kilometres and km/s. We reproduce it to ~12 m in
-	// position and ~0.1 mm/s in velocity — a ~5e-7 relative agreement, far tighter
-	// than the almanac's own acquisition-grade accuracy (ICD Table 4.8, kilometres).
-	// The residual is one higher-harmonic C20 coefficient at the level of OCR
-	// ambiguity in the source table; the bound below is set with margin over it.
+	// ICD §A.3.2.3 expected result, kilometres and km/s. The Appendix 3 coefficients
+	// reproduce it to ~0.14 m and ~0.7 mm/s, far tighter than the almanac's own
+	// acquisition-grade accuracy (ICD Table 4.8, kilometres).
 	wantX, wantY, wantZ := 10947.021572, 13078.978287, 18922.063362
 	wantVx, wantVy, wantVz := -3.375497, -0.161453, 2.060844
-	const posTol = 0.05 // km (50 m)
-	const velTol = 1e-3 // km/s (1 m/s)
+	const posTol = 0.002 // km (2 m)
+	const velTol = 1e-5  // km/s (10 mm/s)
 
 	if d := math.Abs(pos.X - wantX); d > posTol {
 		t.Errorf("X = %.6f km, want %.6f (Δ %.4f km)", pos.X, wantX, d)

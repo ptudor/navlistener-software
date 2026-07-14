@@ -29,6 +29,7 @@ func TestBCNAV2AcceptsValidCRC(t *testing.T) {
 	buf := make([]byte, 36)
 	// PRN 30 @0(6), MesType 10 @6(6): top 12 bits = 011110 001010.
 	binary.BigEndian.PutUint32(buf[0:], (uint32(30)<<26)|(uint32(10)<<20))
+	setBits(buf, 72, 2, 3) // SatType = MEO; 00 is reserved
 	// Append a valid CRC-24Q over the leading 264 bits into the trailing 24.
 	c := CRC24Q(buf[:33])
 	buf[33] = byte(c >> 16)
@@ -44,6 +45,34 @@ func TestBCNAV2AcceptsValidCRC(t *testing.T) {
 	}
 	if m.PRN != 30 || m.MesType != 10 {
 		t.Errorf("PRN=%d MesType=%d, want 30/10", m.PRN, m.MesType)
+	}
+}
+
+func TestBCNAV2RejectsReservedSatType(t *testing.T) {
+	buf := make([]byte, 36)
+	setBits(buf, 0, 6, 30)
+	setBits(buf, 6, 6, 10)
+	// SatType remains the reserved value 00.
+	c := CRC24Q(buf[:33])
+	buf[33], buf[34], buf[35] = byte(c>>16), byte(c>>8), byte(c)
+	words := make([]uint32, 9)
+	for i := range words {
+		words[i] = binary.BigEndian.Uint32(buf[i*4:])
+	}
+	if _, err := DecodeBeiDouBCNAV2(words); err != errBadSatType {
+		t.Errorf("err = %v, want errBadSatType", err)
+	}
+}
+
+func TestAssembleBeiDouBCNAV2RejectsWrongSlots(t *testing.T) {
+	m10 := &BeiDouBCNAV2{MesType: 10, SOW: 100}
+	m11 := &BeiDouBCNAV2{MesType: 11, SOW: 103, hasEph2: true}
+	clk := &BeiDouBCNAV2{MesType: 30, SOW: 103, hasClk: true}
+	if _, _, _, err := AssembleBeiDouBCNAV2(1, m11, m10, nil); err != errWrongMsgType {
+		t.Errorf("transposed args error = %v, want errWrongMsgType", err)
+	}
+	if _, _, _, err := AssembleBeiDouBCNAV2(1, m10, clk, nil); err != errWrongMsgType {
+		t.Errorf("clock-as-m11 error = %v, want errWrongMsgType", err)
 	}
 }
 

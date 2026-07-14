@@ -20,7 +20,7 @@ extern "C" {
 typedef struct {
     const char *host;     // collector hostname
     int port;             // collector [push] port
-    const char *token;    // bearer token (P5: from NVS; today from Kconfig)
+    const char *token;    // bearer token (NVS-first; Kconfig is the development fallback)
     const char *station;  // observer/station id
     const char *feed;     // "ubx"
     const char *ca_pem;   // PEM CA to verify the collector; NULL => Mozilla bundle

@@ -13,8 +13,8 @@ import (
 // F/NAV page as one 8-word SFRBX (256-bit block); the page type is the first 6
 // bits and the clock (page 1) + ephemeris (pages 2/3/4) fields follow at fixed
 // offsets in that block. F/NAV carries the same ephemeris as E1-B I/NAV, on the
-// E5a signal — decoding it enables the cross-signal integrity check. The receiver
-// has validated the page CRC, so fields are read directly.
+// E5a signal — decoding it enables the cross-signal integrity check. The
+// transmitted CRC remains present in SFRBX and is verified centrally.
 //
 // Every field offset here was pinned by decoding the same SV via the (validated)
 // I/NAV path and matching the raw values bit-for-bit — the F/NAV position agrees
@@ -31,6 +31,32 @@ type GalileoFNAV struct {
 	hasClk   bool
 }
 
+// StampGalileoFNAVCRC computes and writes the F/NAV CRC-24Q into a synthetic
+// eight-word page. OS-SIS-ICD 2.2 §4.2.2.3 protects the first 214 bits and
+// transmits the checksum in bits 214..237.
+func StampGalileoFNAVCRC(words []uint32) {
+	if len(words) < 8 {
+		return
+	}
+	buf := make([]byte, 32)
+	for i := 0; i < 8; i++ {
+		binary.BigEndian.PutUint32(buf[i*4:], words[i])
+	}
+	crc := CRC24QBits(buf, 0, 214)
+	for i := 0; i < 24; i++ {
+		p := 214 + i
+		mask := byte(1) << uint(7-(p&7))
+		if crc&(1<<uint(23-i)) != 0 {
+			buf[p>>3] |= mask
+		} else {
+			buf[p>>3] &^= mask
+		}
+	}
+	for i := 0; i < 8; i++ {
+		words[i] = binary.BigEndian.Uint32(buf[i*4:])
+	}
+}
+
 // DecodeGalileoFNAV decodes one F/NAV page (eight words).
 func DecodeGalileoFNAV(words []uint32) (*GalileoFNAV, error) {
 	if len(words) < 8 {
@@ -39,6 +65,11 @@ func DecodeGalileoFNAV(words []uint32) (*GalileoFNAV, error) {
 	buf := make([]byte, 32)
 	for i := 0; i < 8; i++ {
 		binary.BigEndian.PutUint32(buf[i*4:], words[i])
+	}
+	// OS-SIS-ICD 2.2 §4.2.2.3: PageType+NavData (214 bits) followed
+	// by the transmitted 24-bit CRC. Tail/spare bits after bit 237 are excluded.
+	if !CheckCRC24QBits(buf, 0, 238) {
+		return nil, ErrBadCRC
 	}
 	r := NewBitReaderN(buf, 256)
 	u := func(p, n int) uint64 { v, _ := r.Bits(p, n); return v }
@@ -92,6 +123,9 @@ func DecodeGalileoFNAV(words []uint32) (*GalileoFNAV, error) {
 func AssembleGalileoFNAV(svid int, p1, p2, p3, p4 *GalileoFNAV) (kepler.Ephemeris, clock.Model, error) {
 	if p1 == nil || p2 == nil || p3 == nil || p4 == nil {
 		return kepler.Ephemeris{}, clock.Model{}, ErrShortFrame
+	}
+	if p1.PageType != 1 || p2.PageType != 2 || p3.PageType != 3 || p4.PageType != 4 {
+		return kepler.Ephemeris{}, clock.Model{}, errWrongMsgType
 	}
 	if p1.IODnav != p2.IODnav || p2.IODnav != p3.IODnav || p2.IODnav != p4.IODnav {
 		return kepler.Ephemeris{}, clock.Model{}, errIODMismatch

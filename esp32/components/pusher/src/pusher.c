@@ -3,6 +3,7 @@
 
 #include "pusher.h"
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -46,9 +47,9 @@ static const char *TAG = "pusher";
 #endif
 
 static pusher_cfg_t s_cfg;   // owned copy (strings duplicated)
-static volatile bool s_connected;
+static atomic_bool s_connected;
 
-bool pusher_connected(void) { return s_connected; }
+bool pusher_connected(void) { return atomic_load_explicit(&s_connected, memory_order_relaxed); }
 
 // pusher_cfg_free releases the owned config copies and zeroes s_cfg. The struct
 // fields are const char * (the caller's view is borrowed/immutable), so the owned
@@ -257,7 +258,7 @@ static int serve(void)
 
     int fd = -1;
     esp_tls_get_conn_sockfd(tls, &fd);
-    s_connected = true;
+    atomic_store_explicit(&s_connected, true, memory_order_relaxed);
     ESP_LOGI(TAG, "connected: station=%s feed=%s -> %s:%d", s_cfg.station, s_cfg.feed,
              s_cfg.host, s_cfg.port);
 
@@ -292,7 +293,7 @@ static int serve(void)
         if (!ok) break;
     }
 
-    s_connected = false;
+    atomic_store_explicit(&s_connected, false, memory_order_relaxed);
     esp_tls_conn_destroy(tls);
     uint64_t dropped = 0;
     size_t count = 0;

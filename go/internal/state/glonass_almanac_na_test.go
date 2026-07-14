@@ -16,7 +16,7 @@ import (
 // via the shared setAbsBits/setSignMag helpers (the same MSB-first convention
 // glonassBlock's BitReader uses internally), and ALWAYS stamps the ICD §4.7
 // check bits — a hand-packed string without them is rejected by every decoder
-// since regression fix with a confusing errGLONASSHamming. Build new test strings on top
+// since regression fix with a confusing ErrGLONASSHamming. Build new test strings on top
 // of this (see glonassStringWords / glonassString4Frame); do not pack words by
 // hand.
 func gloWords(number int, fill func(buf []byte)) []uint32 {

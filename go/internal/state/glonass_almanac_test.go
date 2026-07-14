@@ -93,6 +93,12 @@ func TestFeedGlonassAlmanacObservedWins(t *testing.T) {
 	if ent.EcefXM != 1.1e7 {
 		t.Errorf("precise position was overwritten by the almanac: x=%v", ent.EcefXM)
 	}
+	if ent.InclinationRad < 62*math.Pi/180 || ent.InclinationRad > 66*math.Pi/180 {
+		t.Errorf("observed inclination = %v rad, want fresh almanac metadata", ent.InclinationRad)
+	}
+	if ent.T0e != int(icdAlmanac(7).Alm.Tlambda) {
+		t.Errorf("observed t0e = %d, want almanac Tlambda %d", ent.T0e, int(icdAlmanac(7).Alm.Tlambda))
+	}
 }
 
 // TestFeedGlonassAlmanacAgesOutStaleSlot guards a GLONASS almanac slot

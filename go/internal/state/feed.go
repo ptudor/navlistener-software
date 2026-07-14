@@ -431,7 +431,16 @@ func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
 	}
 	for _, a := range alms {
 		name := fmt.Sprintf("R%02d", a.Alm.Slot)
-		if _, seen := out[name]; seen {
+		if ent, seen := out[name]; seen {
+			// the observed entry keeps its precise ECEF/epoch, but its
+			// always-present inclination/t0e metadata comes from the fresh
+			// broadcast almanac instead of fabricated zeros. lambda_na remains
+			// intentionally absent on observed entries.
+			if ent.Observed {
+				ent.InclinationRad = gloMeanInclination + a.Alm.DeltaI
+				ent.T0e = int(a.Alm.Tlambda)
+				out[name] = ent
+			}
 			continue // observed → its precise broadcast-ephemeris entry wins
 		}
 		pos, err := glonass.PropagateAlmanacECEF(a.Alm, n0, ti)

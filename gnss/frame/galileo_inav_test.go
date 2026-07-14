@@ -257,7 +257,9 @@ func TestDecodeGalileoFNAVPage1SISAHealth(t *testing.T) {
 	setFNAVBufBits(buf, 0, 1, 6)    // page type = 1
 	setFNAVBufBits(buf, 94, 200, 8) // SISA = 200
 	setFNAVBufBits(buf, 153, 2, 2)  // E5aHS = 2
-	w, err := DecodeGalileoFNAV(fnavBufToWords(buf))
+	words := fnavBufToWords(buf)
+	StampGalileoFNAVCRC(words)
+	w, err := DecodeGalileoFNAV(words)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -284,11 +286,34 @@ func buildFNAVPage(t *testing.T, pageType, iod int) *GalileoFNAV {
 	} else {
 		setFNAVBufBits(buf, 6, uint64(iod), 10)
 	}
-	w, err := DecodeGalileoFNAV(fnavBufToWords(buf))
+	words := fnavBufToWords(buf)
+	StampGalileoFNAVCRC(words)
+	w, err := DecodeGalileoFNAV(words)
 	if err != nil {
 		t.Fatalf("decode page %d: %v", pageType, err)
 	}
 	return w
+}
+
+func TestDecodeGalileoFNAVCRC(t *testing.T) {
+	buf := make([]byte, 32)
+	setFNAVBufBits(buf, 0, 1, 6)
+	words := fnavBufToWords(buf)
+	StampGalileoFNAVCRC(words)
+	if _, err := DecodeGalileoFNAV(words); err != nil {
+		t.Fatalf("stamped page rejected: %v", err)
+	}
+
+	dataFlip := append([]uint32(nil), words...)
+	dataFlip[1] ^= 1 << 20
+	if _, err := DecodeGalileoFNAV(dataFlip); err != ErrBadCRC {
+		t.Errorf("protected-bit flip error = %v, want ErrBadCRC", err)
+	}
+	crcFlip := append([]uint32(nil), words...)
+	crcFlip[7] ^= 1 << 28 // bit 227 lies inside the transmitted CRC
+	if _, err := DecodeGalileoFNAV(crcFlip); err != ErrBadCRC {
+		t.Errorf("CRC-bit flip error = %v, want ErrBadCRC", err)
+	}
 }
 
 // TestAssembleGalileoFNAVChecksPage1IODnav guards page 1 (the clock)
@@ -310,6 +335,21 @@ func TestAssembleGalileoFNAVChecksPage1IODnav(t *testing.T) {
 	p1Stale := buildFNAVPage(t, 1, iod+1) // page 1's own IODnav now differs
 	if _, _, err := AssembleGalileoFNAV(14, p1Stale, p2, p3, p4); err != errIODMismatch {
 		t.Fatalf("AssembleGalileoFNAV with mismatched page-1 IODnav = %v, want errIODMismatch", err)
+	}
+}
+
+func TestGalileoAssemblersRejectWrongSlots(t *testing.T) {
+	const iod = 7
+	w1, w2, w3, w4 := buildGalileoINAVWord1234(t, iod)
+	if _, _, err := AssembleGalileo(14, w1, w2, w4, w3, nil); err != errWrongMsgType {
+		t.Errorf("I/NAV w3/w4 swap error = %v, want errWrongMsgType", err)
+	}
+	p1 := buildFNAVPage(t, 1, iod)
+	p2 := buildFNAVPage(t, 2, iod)
+	p3 := buildFNAVPage(t, 3, iod)
+	p4 := buildFNAVPage(t, 4, iod)
+	if _, _, err := AssembleGalileoFNAV(14, p2, p1, p3, p4); err != errWrongMsgType {
+		t.Errorf("F/NAV p1/p2 swap error = %v, want errWrongMsgType", err)
 	}
 }
 

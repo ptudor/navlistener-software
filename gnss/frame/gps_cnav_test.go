@@ -1,10 +1,45 @@
 package frame
 
 import (
+	"math"
 	"testing"
 
 	"github.com/ptudor/gnss"
 )
+
+func TestDecodeGPSCNAVARefByConstellation(t *testing.T) {
+	words := cnavMsg10Words(2296, 0, 2, 400)
+	gps, err := DecodeGPSCNAV(gnss.GPS, words)
+	if err != nil {
+		t.Fatal(err)
+	}
+	qzss, err := DecodeGPSCNAV(gnss.QZSS, words)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gps.eph.SqrtA != math.Sqrt(cnavArefGPS) {
+		t.Errorf("GPS sqrtA = %.12f, want %.12f", gps.eph.SqrtA, math.Sqrt(cnavArefGPS))
+	}
+	if qzss.eph.SqrtA != math.Sqrt(cnavArefQZSS) {
+		t.Errorf("QZSS sqrtA = %.12f, want %.12f", qzss.eph.SqrtA, math.Sqrt(cnavArefQZSS))
+	}
+
+	// A raw delta-A count changes the reference axis by exactly 2^-9 metres.
+	buf := make([]byte, 40)
+	setBits(buf, 14, 6, 10)
+	setBits(buf, 81, 26, 1)
+	setCNAVPreambleAndCRC(buf)
+	for i := range words {
+		words[i] = uint32(buf[i*4])<<24 | uint32(buf[i*4+1])<<16 | uint32(buf[i*4+2])<<8 | uint32(buf[i*4+3])
+	}
+	shifted, err := DecodeGPSCNAV(gnss.QZSS, words)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := shifted.eph.SqrtA, math.Sqrt(cnavArefQZSS+p2m9); got != want {
+		t.Errorf("QZSS delta-A sqrtA = %.12f, want %.12f", got, want)
+	}
+}
 
 // setBits writes n bits of val (right-aligned) into buf at absolute bit offset
 // start, MSB-first — the inverse of BitReader.Bits, for building synthetic CNAV
@@ -98,6 +133,24 @@ func TestAssembleGPSCNAVStaleClockDropped(t *testing.T) {
 	}
 	if clk2.Af0 != 0 || clk2.Toc != 0 {
 		t.Errorf("stale clock leaked into the model: Af0=%v Toc=%v, want zero", clk2.Af0, clk2.Toc)
+	}
+}
+
+func TestAssembleGPSCNAVRejectsWrongSlotsAndClock(t *testing.T) {
+	dec := func(w []uint32) *GPSCNAV {
+		m, err := DecodeGPSCNAV(gnss.GPS, w)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	m10 := dec(cnavMsg10Words(2296, 0, 2, 0))
+	m11 := dec(cnavMsg11Words(0))
+	if _, _, _, err := AssembleGPSCNAV(gnss.GPS, 1, m11, m10, nil); err != errWrongMsgType {
+		t.Errorf("transposed args error = %v, want errWrongMsgType", err)
+	}
+	if _, _, ok, err := AssembleGPSCNAV(gnss.GPS, 1, m10, m11, m10); err != nil || ok {
+		t.Errorf("non-clock MT10 attached as clock: ok=%v err=%v", ok, err)
 	}
 }
 

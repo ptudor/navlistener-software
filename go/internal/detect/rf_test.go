@@ -62,6 +62,35 @@ func TestRFJammingSevereCrit(t *testing.T) {
 	}
 }
 
+// TestRFMissingBandTelemetryHoldsAlarm guards a live station whose MON-RF
+// evidence aged out must not recover a confirmed alarm merely because an empty band
+// slice initializes every aggregate to zero.
+func TestRFMissingBandTelemetryHoldsAlarm(t *testing.T) {
+	d := New(0)
+	t0 := time.Unix(1_700_000_000, 0)
+	clear := station("s", band(0, 0, 2, 0))
+	crit := station("s", band(2500, 0, 2, 0))
+	d.TickStations(t0, clear)
+	d.TickStations(t0.Add(10*time.Second), crit)
+	if e, ok := find(d.TickStations(t0.Add(75*time.Second), crit), "jamming_detected"); !ok || e.NewValue != "crit" {
+		t.Fatalf("failed to seed confirmed critical state: %+v", e)
+	}
+	mean, resid := 40.0, 10.0
+	missingBands := map[string]state.StationRF{"s": {ID: "s", Cn0Mean: &mean, Cn0Resid: &resid}}
+	if evs := d.TickStations(t0.Add(150*time.Second), missingBands); len(evs) != 0 {
+		t.Fatalf("missing band evidence emitted a recovery: %+v", evs)
+	}
+	if evs := d.TickStations(t0.Add(230*time.Second), missingBands); len(evs) != 0 {
+		t.Fatalf("missing band evidence confirmed a recovery: %+v", evs)
+	}
+	// Actual clear evidence should still recover the held machine.
+	d.TickStations(t0.Add(240*time.Second), clear)
+	e, ok := find(d.TickStations(t0.Add(310*time.Second), clear), "jamming_detected")
+	if !ok || e.NewValue != "ok" {
+		t.Fatalf("measured clear state did not recover held alarm: %+v", e)
+	}
+}
+
 // TestRFDegradedNotJamming confirms a lone metric departure (AGC down, but no CW and no
 // receiver jam flag) reports as station_rf_degraded, not a jamming attack claim.
 func TestRFDegradedNotJamming(t *testing.T) {
@@ -126,5 +155,20 @@ func TestRFSpoofQuorum(t *testing.T) {
 	}
 	if spoofGates(spoof["s"]) != 1 {
 		t.Errorf("expected exactly one gate tripped, got %d", spoofGates(spoof["s"]))
+	}
+}
+
+// A flat GPS group must remain visible beside a genuine Galileo sky.
+func TestRFSpoofGateUsesPerConstellationFit(t *testing.T) {
+	mean, resid := 42.0, 20.0 // non-tripping all-sky aggregate
+	rf := state.StationRF{
+		Cn0Mean: &mean, Cn0Resid: &resid,
+		Cn0ByConstellation: map[int]state.Cn0Stats{
+			0: {Mean: 50, Resid: 0, NumSats: 6},
+			2: {Mean: 42, Resid: 8, NumSats: 6},
+		},
+	}
+	if got := spoofGates(rf); got != 1 {
+		t.Fatalf("spoof gates = %d, want the flat GPS group to trip one gate", got)
 	}
 }

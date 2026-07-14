@@ -34,6 +34,8 @@ const (
 // ErrBadCRC is returned when a frame fails its CRC-24Q check.
 var ErrBadCRC = errors.New("frame: CRC-24Q check failed")
 
+var errBadSatType = errors.New("frame: B-CNAV2 reserved satellite type")
+
 // errPairSOW is returned when message types 10 and 11 are not broadcast-adjacent
 // (the ICD requires them broadcast continuously together; stitching a stale pair
 // could mix elements across an ephemeris changeover).
@@ -122,6 +124,9 @@ func DecodeBeiDouBCNAV2(words []uint32) (*BeiDouBCNAV2, error) {
 		flags(43)
 		m.IODE = int(u(53, 8))
 		m.SatType = int(u(72, 2))
+		if m.SatType == 0 {
+			return nil, errBadSatType
+		}
 		aref := bcnavArefMEO
 		if m.SatType != 3 {
 			aref = bcnavArefIGSO
@@ -214,6 +219,9 @@ func AssembleBeiDouBCNAV2(svid int, m10, m11, mClk *BeiDouBCNAV2) (eph kepler.Ep
 	if m10 == nil || m11 == nil {
 		return kepler.Ephemeris{}, clock.Model{}, false, ErrShortFrame
 	}
+	if m10.MesType != 10 || m11.MesType != 11 || !m11.hasEph2 {
+		return kepler.Ephemeris{}, clock.Model{}, false, errWrongMsgType
+	}
 	// Both deltas wrap mod 604800 : a 10/11 pair or a current clock
 	// straddling the weekly SOW rollover (e.g. 604797 → 0) is broadcast-adjacent
 	// and must not be rejected; the ±3 s and staleness bounds are unchanged. An
@@ -234,9 +242,12 @@ func AssembleBeiDouBCNAV2(svid int, m10, m11, mClk *BeiDouBCNAV2) (eph kepler.Ep
 	clk = clock.Model{ID: gnss.BeiDou}
 	if mClk != nil && mClk.hasClk {
 		clk = mClk.clk
-		// The B2a pilot user's group delay (ICD §7.6.2 eq. 7-4); the data
-		// component additionally applies ISC_B2ad (eq. 7-5), kept on the struct.
-		clk.TGD = mClk.TGDB2ap
+		// TGD_B2ap is carried only by MT30. MT34 is a complete clock polynomial,
+		// but it has no group-delay field; callers that retain MT30's data-set
+		// property may carry it into an MT34-sourced model (ICD §7.6.2 eq. 7-4).
+		if mClk.MesType == 30 {
+			clk.TGD = mClk.TGDB2ap
+		}
 		clkOK = true
 	}
 	return eph, clk, clkOK, nil

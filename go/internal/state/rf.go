@@ -4,6 +4,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/ptudor/gnss"
 	"github.com/ptudor/navlistener/internal/ingest"
 )
 
@@ -50,6 +51,7 @@ type rfStation struct {
 	cn0Mean     float64
 	cn0Resid    float64 // variance of C/N₀ after removing the elevation trend
 	cn0NumSats  int
+	cn0ByGNSS   map[int]Cn0Stats
 	cn0LastSeen time.Time // last NAV-SAT sample; ages the spoof gate independently of MON-RF
 }
 
@@ -79,9 +81,31 @@ func (s *Store) applyRF(f *ingest.RawFrame) {
 	}
 	if len(f.RF.Sats) > 0 {
 		st.cn0Mean, st.cn0Resid, st.cn0NumSats = cn0ElevationResidual(f.RF.Sats)
+		st.cn0ByGNSS = cn0ElevationResidualByConstellation(f.RF.Sats)
 		st.haveCn0 = st.cn0NumSats >= cn0MinSats
 		st.cn0LastSeen = f.Recv
 	}
+}
+
+// cn0ElevationResidualByConstellation keeps the single-constellation transmitter
+// signature visible in a mixed-GNSS sky. SBAS GEOs are excluded because one
+// fixed-elevation satellite cannot form a constellation trend.
+func cn0ElevationResidualByConstellation(sats []ingest.SatCN0) map[int]Cn0Stats {
+	grouped := make(map[int][]ingest.SatCN0)
+	for _, sat := range sats {
+		if gnss.GNSSID(sat.GnssID) == gnss.SBAS {
+			continue
+		}
+		grouped[sat.GnssID] = append(grouped[sat.GnssID], sat)
+	}
+	out := make(map[int]Cn0Stats)
+	for id, group := range grouped {
+		mean, resid, n := cn0ElevationResidual(group)
+		if n >= cn0MinSats {
+			out[id] = Cn0Stats{Mean: mean, Resid: resid, NumSats: n}
+		}
+	}
+	return out
 }
 
 // learn folds an AGC sample into the quiet-time baseline. A sample far from the current
@@ -170,6 +194,16 @@ type StationRF struct {
 	Cn0Resid *float64        `json:"cn0_elev_resid_var,omitempty"`
 	NumSats  int             `json:"num_sats"`
 	RFTrust  float64         `json:"rf_trust"`
+	// Cn0ByConstellation is detector-only detail. The public observers-feed shape
+	// remains the established aggregate fields above.
+	Cn0ByConstellation map[int]Cn0Stats `json:"-"`
+}
+
+// Cn0Stats is one constellation's elevation-fit result for spoof-gate fusion.
+type Cn0Stats struct {
+	Mean    float64
+	Resid   float64
+	NumSats int
 }
 
 // StationRFBand is one RF path's published metrics (docs/DEFENSE-PNT.md §6): the raw
@@ -212,6 +246,10 @@ func (s *Store) FeedStationRF(now time.Time) map[string]StationRF {
 			m, r := st.cn0Mean, st.cn0Resid
 			entry.Cn0Mean, entry.Cn0Resid = &m, &r
 			entry.NumSats = st.cn0NumSats
+			entry.Cn0ByConstellation = make(map[int]Cn0Stats, len(st.cn0ByGNSS))
+			for gnssID, stats := range st.cn0ByGNSS {
+				entry.Cn0ByConstellation[gnssID] = stats
+			}
 		}
 		blocks := make([]int, 0, len(st.bands))
 		for b := range st.bands {

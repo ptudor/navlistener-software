@@ -301,15 +301,15 @@ func run() int {
 	case <-shutCtx.Done():
 		log.Warn("shutdown timeout exceeded; exiting")
 	}
-	storeCancel() // historian drains its queue, flushes, closes the pool
-	select {
-	case <-storeDone:
-	case <-shutCtx.Done():
-	}
 	if apiSrv != nil {
 		if err := apiSrv.Shutdown(shutCtx); err != nil {
 			log.Warn("v2 serve shutdown", "error", err)
 		}
+	}
+	storeCancel() // historian drains its queue, flushes, closes the pool
+	select {
+	case <-storeDone:
+	case <-shutCtx.Done():
 	}
 	if err := obs.Shutdown(shutCtx); err != nil {
 		log.Warn("metrics server shutdown", "error", err)
@@ -441,15 +441,24 @@ const detectInterval = 15 * time.Second
 func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, historian eventWriter, api eventPublisher, log *slog.Logger) {
 	tick := time.NewTicker(detectInterval)
 	defer tick.Stop()
-	// pending holds confirmed events whose durable write has not yet succeeded.
-	// It survives across ticks so a transient DB error cannot silently drop the namesake
-	// output: each tick re-attempts the queue before processing new detections.
-	var pending []pendingEvent
+	// regression fix/detector sampling and durable writes have separate owners. The
+	// detector only appends to the bounded FIFO; a slow historian therefore cannot
+	// stall the 15-second sampling cadence or let a newer transition bypass an older
+	// queued one.
+	writer := newEventPipeline(historian, api, log)
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		writer.run(ctx)
+	}()
 	for {
 		select {
 		case <-tick.C:
-			detectTick(ctx, live, det, historian, api, log, &pending)
+			detectTick(live, det, writer, log)
 		case <-ctx.Done():
+			// writer.run performs one bounded final flush with a fresh
+			// context while run() deliberately keeps the historian alive.
+			<-writerDone
 			return
 		}
 	}
@@ -458,18 +467,15 @@ func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, hi
 // detectTick runs one detector sample and emits its confirmed events. It is wrapped in
 // a recover() : "the collector must never go down" — a panic in the detector or
 // an event write must reconnect/skip this tick, not kill the detect goroutine (which has
-// no supervisor within the process) and with it all integrity monitoring. pending is a
-// pointer so a mid-tick panic still preserves whatever queue mutations completed.
-func detectTick(ctx context.Context, live *state.Store, det *detect.Detector, historian eventWriter, api eventPublisher, log *slog.Logger, pending *[]pendingEvent) {
+// no supervisor within the process) and with it all integrity monitoring. Events already
+// appended to the writer-owned FIFO remain visible if a later classification panics.
+func detectTick(live *state.Store, det *detect.Detector, writer *eventPipeline, log *slog.Logger) {
 	defer func() {
 		if r := recover(); r != nil {
 			metrics.EventWriteErrorsTotal.Inc()
 			log.Error("detect tick panicked; skipping", "panic", r)
 		}
 	}()
-	// Re-attempt any events queued by a prior tick's failed write before taking new samples
-	// : a DB blip must not drop a confirmed transition permanently.
-	*pending = reattemptPending(ctx, *pending, historian, api, log)
 	now := time.Now()
 	events := det.Tick(now, live.FeedSVs(now), live.FeedSBAS(now))
 	// Station-scoped PNT-defense events (jamming/spoofing/RF, docs/DEFENSE-PNT.md)
@@ -479,8 +485,8 @@ func detectTick(ctx context.Context, live *state.Store, det *detect.Detector, hi
 	// node's silicon can't produce (docs/INTEGRITY.md §6, CONSTELLATIONS §7).
 	events = append(events, det.TickCapabilities(now, live.FeedCapabilityReports(now))...)
 	for _, e := range events {
-		if pe := emitEvent(ctx, e, historian, api, log); pe != nil {
-			*pending = enqueuePending(*pending, *pe, log)
+		if pe := prepareEvent(e, writer.historian, log); pe != nil {
+			writer.enqueue(*pe)
 		}
 	}
 }
@@ -526,6 +532,11 @@ type eventRetry struct {
 
 var defaultEventRetry = eventRetry{attempts: 3, backoff: 250 * time.Millisecond, perCallTO: 10 * time.Second}
 
+// eventFinalFlushTimeout is one shared shutdown budget, deliberately shorter than the
+// daemon's default 15-second ShutdownTimeout. It is a var so the hard-down test does not
+// have to spend five seconds proving the bound.
+var eventFinalFlushTimeout = 5 * time.Second
+
 // eventPendingMax bounds the in-RAM re-attempt queue so a persistent DB outage cannot grow
 // it without limit : when full, the oldest queued event is dropped (counted, logged
 // loudly) rather than OOMing the process.
@@ -539,11 +550,167 @@ type pendingEvent struct {
 	ev  detect.Event
 }
 
+// eventPipeline owns the ordered durable-write queue. The detector only holds mu long
+// enough to append, so database latency never delays sampling. pending[0] stays in the
+// slice while it is being written; enqueue therefore knows not to discard that in-flight
+// item when applying the established oldest-drop policy at capacity.
+type eventPipeline struct {
+	mu        sync.Mutex
+	pending   []pendingEvent
+	writing   bool
+	wake      chan struct{}
+	historian eventWriter
+	publisher eventPublisher
+	log       *slog.Logger
+}
+
+func newEventPipeline(historian eventWriter, publisher eventPublisher, log *slog.Logger) *eventPipeline {
+	return &eventPipeline{
+		pending:   make([]pendingEvent, 0, eventPendingMax),
+		wake:      make(chan struct{}, 1),
+		historian: historian,
+		publisher: publisher,
+		log:       log,
+	}
+}
+
+// enqueue preserves global detection order. At capacity it keeps an item currently in a
+// database call and drops the oldest waiting item; otherwise it drops the oldest item,
+// matching bounded-queue accounting without racing the writer.
+func (p *eventPipeline) enqueue(pe pendingEvent) {
+	p.mu.Lock()
+	if len(p.pending) >= eventPendingMax {
+		dropAt := 0
+		if p.writing {
+			dropAt = 1
+		}
+		dropped := p.pending[dropAt]
+		copy(p.pending[dropAt:], p.pending[dropAt+1:])
+		p.pending = p.pending[:len(p.pending)-1]
+		metrics.EventWriteErrorsTotal.Inc()
+		p.log.Error("integrity event re-attempt queue full; dropping oldest confirmed event",
+			"dropped_sv", dropped.ev.SV, "dropped_type", dropped.ev.Type, "queue_max", eventPendingMax)
+	}
+	p.pending = append(p.pending, pe)
+	p.mu.Unlock()
+	select {
+	case p.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (p *eventPipeline) head() (pendingEvent, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.pending) == 0 {
+		return pendingEvent{}, false
+	}
+	p.writing = true
+	return p.pending[0], true
+}
+
+func (p *eventPipeline) finishHead(remove bool) {
+	p.mu.Lock()
+	if remove && len(p.pending) > 0 {
+		copy(p.pending, p.pending[1:])
+		p.pending = p.pending[:len(p.pending)-1]
+	}
+	p.writing = false
+	p.mu.Unlock()
+}
+
+func (p *eventPipeline) len() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.pending)
+}
+
+// run writes one FIFO head at a time. A panic from an EventStore implementation or
+// publisher is contained here; because the head is removed only after a normal
+// successful return, the queue remains exactly ordered and contains no alias-created
+// duplicates after recovery.
+func (p *eventPipeline) run(ctx context.Context) {
+	for {
+		if ctx.Err() != nil {
+			p.flushFinal()
+			return
+		}
+		pe, ok := p.head()
+		if !ok {
+			select {
+			case <-p.wake:
+			case <-ctx.Done():
+			}
+			continue
+		}
+		ok = p.writeSafely(ctx, pe, defaultEventRetry, true)
+		p.finishHead(ok)
+		if ok {
+			continue
+		}
+		select {
+		case <-time.After(defaultEventRetry.backoff):
+		case <-ctx.Done():
+		}
+	}
+}
+
+func (p *eventPipeline) writeSafely(ctx context.Context, pe pendingEvent, retry eventRetry, queued bool) (ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			metrics.EventWriteErrorsTotal.Inc()
+			p.log.Error("integrity event writer panicked; event retained", "type", pe.ev.Type, "sv", pe.ev.SV, "panic", r)
+			ok = false
+		}
+	}()
+	return writeAndPublishRetry(ctx, pe.row, pe.ev, p.historian, p.publisher, p.log, retry, queued)
+}
+
+// flushFinal uses a fresh shared deadline because the detector's parent context is already
+// cancelled. Every queued event gets at most one final call; failures are removed, counted
+// by writeAndPublishRetry, and summarized loudly before the writer returns.
+func (p *eventPipeline) flushFinal() {
+	if p.len() == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), eventFinalFlushTimeout)
+	defer cancel()
+	retry := eventRetry{attempts: 1, perCallTO: eventFinalFlushTimeout}
+	dropped := 0
+	for {
+		pe, ok := p.head()
+		if !ok {
+			break
+		}
+		if !p.writeSafely(ctx, pe, retry, false) {
+			dropped++
+		}
+		// A final attempt is final whether it succeeds or fails.
+		p.finishHead(true)
+	}
+	if dropped > 0 {
+		p.log.Error("dropping confirmed integrity events after final shutdown flush", "count", dropped)
+	}
+}
+
 // emitEvent counts, sanitizes and marshals one confirmed event (exactly once), then makes
 // the first durable-write+publish attempt. It returns a *pendingEvent when the write failed
 // after its bounded retry and the caller should re-attempt on a later tick; nil when the
 // event was published, permanently non-durable (no historian), or otherwise complete.
 func emitEvent(ctx context.Context, e detect.Event, historian eventWriter, api eventPublisher, log *slog.Logger) *pendingEvent {
+	pe := prepareEvent(e, historian, log)
+	if pe == nil {
+		return nil
+	}
+	if writeAndPublish(ctx, pe.row, pe.ev, historian, api, log) {
+		return nil
+	}
+	return pe
+}
+
+// prepareEvent performs the once-per-confirmation work before the event enters the FIFO.
+// Retries only see the returned immutable row/event pair and never touch EventsTotal.
+func prepareEvent(e detect.Event, historian eventWriter, log *slog.Logger) *pendingEvent {
 	metrics.EventsTotal.WithLabelValues(e.Type, fmt.Sprint(e.Severity)).Inc()
 
 	// Params is a map of ephemeris-derived float64s, and encoding/json fails
@@ -570,23 +737,27 @@ func emitEvent(ctx context.Context, e detect.Event, historian eventWriter, api e
 		Time: e.Time, SV: e.SV, Type: e.Type, OldValue: e.OldValue,
 		NewValue: e.NewValue, Severity: e.Severity, Message: e.Message, Raw: rawJSON,
 	}
-	if writeAndPublish(ctx, row, e, historian, api, log) {
-		return nil
-	}
 	return &pendingEvent{row: row, ev: e}
 }
 
 // writeAndPublish makes the durable write (bounded retry under a per-call timeout) and, on
 // success, publishes to SSE with the assigned id — the durable-id contract (commit 93a21a9):
 // SSE only ever carries a real DB id. Returns true on success, false when every attempt
-// failed and the event must be re-attempted later. Shared by the first attempt (emitEvent)
-// and the re-attempt path (reattemptPending); it does NOT touch EventsTotal, so a re-attempt
-// never double-counts the event.
+// failed and the event must remain queued. It does NOT touch EventsTotal, so a retry never
+// double-counts the event.
 func writeAndPublish(ctx context.Context, row store.EventRow, e detect.Event, historian eventWriter, api eventPublisher, log *slog.Logger) bool {
-	id, err := writeEventRetry(ctx, historian, row, defaultEventRetry, log)
+	return writeAndPublishRetry(ctx, row, e, historian, api, log, defaultEventRetry, true)
+}
+
+func writeAndPublishRetry(ctx context.Context, row store.EventRow, e detect.Event, historian eventWriter, api eventPublisher, log *slog.Logger, retry eventRetry, queued bool) bool {
+	id, err := writeEventRetry(ctx, historian, row, retry, log)
 	if err != nil {
 		metrics.EventWriteErrorsTotal.Inc()
-		log.Error("persist integrity event failed after retries; queued for re-attempt", "type", e.Type, "sv", e.SV, "error", err)
+		msg := "persist integrity event failed during final shutdown flush"
+		if queued {
+			msg = "persist integrity event failed after retries; retained for re-attempt"
+		}
+		log.Error(msg, "type", e.Type, "sv", e.SV, "error", err)
 		return false
 	}
 	log.Info("integrity event", "id", id, "sv", e.SV, "type", e.Type,
@@ -629,34 +800,6 @@ func writeEventRetry(ctx context.Context, historian eventWriter, row store.Event
 		log.Warn("write integrity event attempt failed", "attempt", attempt+1, "type", row.Type, "sv", row.SV, "error", err)
 	}
 	return 0, lastErr
-}
-
-// reattemptPending re-tries every queued event (oldest first), returning the queue of those
-// that still failed. It filters in place; a re-published event is dropped from the queue.
-func reattemptPending(ctx context.Context, pending []pendingEvent, historian eventWriter, api eventPublisher, log *slog.Logger) []pendingEvent {
-	if len(pending) == 0 {
-		return pending
-	}
-	kept := pending[:0]
-	for _, pe := range pending {
-		if !writeAndPublish(ctx, pe.row, pe.ev, historian, api, log) {
-			kept = append(kept, pe)
-		}
-	}
-	return kept
-}
-
-// enqueuePending appends a failed event to the re-attempt queue, dropping the oldest
-// (counted, logged) if the queue is at its cap so a persistent outage can't grow it forever.
-func enqueuePending(pending []pendingEvent, pe pendingEvent, log *slog.Logger) []pendingEvent {
-	if len(pending) >= eventPendingMax {
-		dropped := pending[0]
-		metrics.EventWriteErrorsTotal.Inc()
-		log.Error("integrity event re-attempt queue full; dropping oldest confirmed event",
-			"dropped_sv", dropped.ev.SV, "dropped_type", dropped.ev.Type, "queue_max", eventPendingMax)
-		pending = pending[1:]
-	}
-	return append(pending, pe)
 }
 
 // sanitizeEventParams replaces any non-finite float64 (NaN/±Inf) in params with its

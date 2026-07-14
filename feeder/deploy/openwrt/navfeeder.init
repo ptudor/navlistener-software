@@ -1,7 +1,7 @@
 #!/bin/sh /etc/rc.common
 # OpenWrt procd service for the navlistener edge feeder (one receiver per box). Config is
 # sourced from /etc/navfeeder/feeder.conf (SERVER/SOURCE/BAUD/STATION/EXTRA); the token is in
-# feeder.token (0600). Install to /etc/init.d/navfeeder, then:
+# feeder.token (0640 root:navfeeder). Install to /etc/init.d/navfeeder, then:
 #   /etc/init.d/navfeeder enable; /etc/init.d/navfeeder start
 USE_PROCD=1
 START=95
@@ -20,6 +20,16 @@ start_service() {
 	# ring while the box stays up. The 256 MiB default cap would exhaust tmpfs (~32-64 MiB on
 	# mips routers) and pressure logd/dnsmasq, so cap it well under RAM here.
 	mkdir -p /var/spool/navfeeder
+	chown navfeeder:navfeeder /var/spool/navfeeder || return 1
+	# A local serial source must be group-readable by the unprivileged service account. This
+	# init-time adjustment covers the fixed receiver device used by one-receiver OpenWrt boxes;
+	# use a hotplug rule instead if the device node is recreated while the service is running.
+	case "$SOURCE" in
+		/dev/*)
+			chgrp navfeeder "$SOURCE" || return 1
+			chmod g+r "$SOURCE" || return 1
+			;;
+	esac
 	procd_open_instance
 	procd_set_param command /usr/bin/navfeeder \
 		--server "$SERVER" --source "$SOURCE" --baud "${BAUD:-460800}" \
@@ -29,6 +39,8 @@ start_service() {
 		--spool-file /var/spool/navfeeder/feeder.spool \
 		--spool-disk-mb "${SPOOL_DISK_MB:-16}" \
 		$EXTRA
+	procd_set_param user navfeeder
+	procd_set_param group navfeeder
 	procd_set_param respawn 5 30 0   # the feeder reconnects itself; respawn only on a real crash
 	procd_set_param term_timeout 90  # allow the shutdown ring-flush to complete before SIGKILL
 	procd_set_param stderr 1         # logd captures the feeder's structured lines

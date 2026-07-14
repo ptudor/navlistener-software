@@ -318,7 +318,7 @@ Broadcast ionosphere models support calculating signal delay for clients and
 modeling a single-frequency user's expected pseudorange. Delay is per signal frequency `f`:
 `delay(f) = delay(L1)·(f_L1/f)²` for the frequency-scaled models.
 
-### 7.1 Klobuchar (GPS L1, QZSS, BeiDou B1I, NavIC) — full algorithm
+### 7.1 Klobuchar (GPS L1 and QZSS) — full algorithm
 
 8 coefficients `α0..α3, β0..β3` (broadcast). Inputs: user geodetic `(φu, λu)` and SV
 elevation `E` in semicircles; SV azimuth `A` **in radians** — IS-GPS-200 lists `A` among the
@@ -340,8 +340,15 @@ Tiono = F·(5e-9 + AMP·(1 − x²/2 + x⁴/24))   if |x|<1.57
         F·5e-9                                if |x|≥1.57      // seconds of L1 delay
 ```
 
-BeiDou B1I uses the same 8-parameter form with BeiDou's own broadcast `α/β` (BDS-SIS-ICD-B1I
-§5.2.4.7). NavIC broadcasts Klobuchar-style coefficients on its grid.
+`gnss/iono.Klobuchar` implements this GPS/QZSS algorithm only. It must not be used for NavIC
+until the IRNSS/NavIC SPS ICD has been verified to prescribe the identical form.
+
+BeiDou B1I broadcasts eight `α/β` coefficients, but BDS-SIS-ICD-B1I §5.2.4.7 specifies a
+different model: spherical-trigonometric IPP geometry with `R=6378 km` and `h=375 km`,
+geographic (not geomagnetic) IPP latitude, a true cosine daytime curve, period clamping to
+`[72000,172800]`, exact secant obliquity, and BDT-SOW local time. A separate
+`KlobucharBDS` implementation and independent truth vectors are follow-up work alongside
+NeQuick-G/BDGIM; the GPS/QZSS function is not a compatible substitute.
 
 ### 7.2 NeQuick-G (Galileo)
 
@@ -518,12 +525,13 @@ boundary, non-NaN under degenerate input).
 
 | Package | Responsibility | Key ICD |
 |---|---|---|
-| `internal/gnss/time` | GNSSTime, leap seconds, `ephAge`, week rollover, inter-system offsets | all §5-time |
-| `internal/gnss/kepler` | §2 generic propagator + §2.1 BeiDou GEO + §2.2 velocity | IS-GPS-200 §20.3.3.4.3 |
-| `internal/gnss/glonass` | §3 RK4 numerical + §3.1 almanac (rotating-frame-correct) | GLONASS ICD App. |
-| `internal/gnss/clock` | §4 clock polynomial + relativity + TGD/BGD/ISC | IS-GPS-200 §20.3.3.3.3 |
-| `internal/gnss/geo` | §5 ECEF↔geodetic, az/el, per-datum ellipsoids | — |
-| `internal/gnss/accuracy` | §6 URA/SISA/F_T decode | IS-GPS-200 Tbl 20-XII, OS-SIS-ICD §5.1.12 |
-| `internal/gnss/iono` | §7 Klobuchar / NeQuick-G / BDGIM | IS-GPS-200 §20.3.3.5.2.5, NeQuick-G, B-CNAV §7.4 |
-| `internal/gnss/frame` | raw-frame bit decoders (see `docs/CONSTELLATIONS.md`) | per constellation |
-| `internal/gnss/tle` | §11 SGP4 cross-check | — |
+| `gnss/gnsstime` | GNSSTime, leap seconds, `ephAge`, week rollover, inter-system offsets | all §5-time |
+| `gnss/physconst` | constellation datums and physical constants | per constellation |
+| `gnss/kepler` | §2 generic propagator + §2.1 BeiDou GEO + §2.2 velocity | IS-GPS-200 §20.3.3.4.3 |
+| `gnss/glonass` | §3 RK4 numerical + §3.1 almanac (rotating-frame-correct) | GLONASS ICD App. |
+| `gnss/clock` | §4 clock polynomial + relativity + TGD/BGD/ISC | IS-GPS-200 §20.3.3.3.3 |
+| `gnss/geo` | §5 ECEF↔geodetic, az/el, per-datum ellipsoids | — |
+| `gnss/accuracy` | §6 URA/SISA/F_T decode | IS-GPS-200 Tbl 20-XII, OS-SIS-ICD §5.1.12 |
+| `gnss/iono` | §7 GPS/QZSS Klobuchar; NeQuick-G / BDS models planned | IS-GPS-200 §20.3.3.5.2.5, NeQuick-G, B-CNAV §7.4 |
+| `gnss/frame` | raw-frame bit decoders (see `docs/CONSTELLATIONS.md`) | per constellation |
+| `gnss/tle` *(planned; not yet present)* | §11 SGP4 cross-check | — |

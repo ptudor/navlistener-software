@@ -1,6 +1,7 @@
 package detect
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -88,6 +89,38 @@ func TestCapabilityNoFalseRecoveryWhenStationDark(t *testing.T) {
 	}
 }
 
+func TestCapabilityRecoveryMessagesMatchDirection(t *testing.T) {
+	d := New(0)
+	t0 := time.Unix(1_700_000_000, 0)
+	sig := state.StationCapability{Gnss: 2, Sig: 3, Count: 50, LastSeen: t0.Unix()}
+	d.TickCapabilities(t0, capReport("s", t0.Unix(), []state.StationCapability{sig}, nil))
+	t1 := t0.Add(20 * time.Minute)
+	d.TickCapabilities(t1, capReport("s", t1.Unix(), []state.StationCapability{sig}, nil))
+	d.TickCapabilities(t1.Add(70*time.Second), capReport("s", t1.Add(70*time.Second).Unix(), []state.StationCapability{sig}, nil))
+
+	// Fresh signal evidence while the station is alive confirms lost→present.
+	fresh := sig
+	fresh.LastSeen = t1.Add(80 * time.Second).Unix()
+	d.TickCapabilities(t1.Add(80*time.Second), capReport("s", fresh.LastSeen, []state.StationCapability{fresh}, nil))
+	e, ok := find(d.TickCapabilities(t1.Add(150*time.Second), capReport("s", t1.Add(150*time.Second).Unix(), []state.StationCapability{fresh}, nil)), "capability_signal_lost")
+	if !ok || e.NewValue != "present" || strings.Contains(e.Message, "stopped delivering") || !strings.Contains(e.Message, "2:3") {
+		t.Fatalf("loss recovery message = %+v", e)
+	}
+
+	decl := []state.CapSignal{{Gnss: 0, Sig: 0}}
+	okObs := []state.StationCapability{{Gnss: 0, Sig: 0, Count: 5, LastSeen: t0.Unix()}}
+	badObs := append(append([]state.StationCapability{}, okObs...), state.StationCapability{Gnss: 7, Sig: 0, Count: 5, LastSeen: t0.Unix()})
+	d2 := New(0)
+	d2.TickCapabilities(t0, capReport("s", t0.Unix(), okObs, decl))
+	d2.TickCapabilities(t0.Add(10*time.Second), capReport("s", t0.Add(10*time.Second).Unix(), badObs, decl))
+	d2.TickCapabilities(t0.Add(80*time.Second), capReport("s", t0.Add(80*time.Second).Unix(), badObs, decl))
+	d2.TickCapabilities(t0.Add(90*time.Second), capReport("s", t0.Add(90*time.Second).Unix(), okObs, decl))
+	e, ok = find(d2.TickCapabilities(t0.Add(160*time.Second), capReport("s", t0.Add(160*time.Second).Unix(), okObs, decl)), "capability_impossible")
+	if !ok || e.NewValue != "ok" || strings.Contains(e.Message, "cannot produce:") || !strings.Contains(e.Message, "no longer reporting") {
+		t.Fatalf("impossible recovery message = %+v", e)
+	}
+}
+
 // TestCapabilityLossEventOrderDeterministic guards (SV, Type) alone is
 // not a unique key -- one station losing two demonstrated signals in the same
 // tick emits two capability_signal_lost events sharing both SV and Type, and
@@ -153,7 +186,8 @@ func TestCapabilitySignalLostWithLiveRFTelemetry(t *testing.T) {
 
 	gpsFrame := func(recv time.Time) *ingest.RawFrame {
 		w := make([]uint32, 10)
-		w[1] = 1 << 8 // HOW subframe id = 1 (a valid id, not the old all-zero sf-id-0)
+		w[0] = 0x8B << 22 // receiver-normalized TLM preamble in data bits 1..8
+		w[1] = 1 << 8     // HOW subframe id = 1 (a valid id, not the old all-zero sf-id-0)
 		return &ingest.RawFrame{Source: "s", GnssID: gnss.GPS, SigID: 0, Recv: recv, Words: w}
 	}
 	rfFrame := func(recv time.Time) *ingest.RawFrame {

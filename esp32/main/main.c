@@ -5,10 +5,11 @@
 // central in the collector (docs/DESIGN.md §1); this box just frames and forwards. A UI task
 // mirrors state to the LCD dashboard + the WS2812 status LED.
 //
-// Config today comes from Kconfig (idf.py menuconfig -> "navfeeder-esp"); NVS provisioning is
-// P5. With no WiFi SSID or collector host set, the firmware still boots, brings up the display,
-// runs the receiver producer, and shows "NO WIFI / unprovisioned" — it notices the problem.
+// Config is NVS-first, with Kconfig values only as a development fallback. A board without a
+// provisioned WiFi SSID or collector host raises the password-protected SoftAP portal and shows
+// its one-time credentials on the display (or the physically trusted serial console fallback).
 
+#include <stdatomic.h>
 #include <string.h>
 #include <time.h>
 
@@ -47,7 +48,7 @@ static const char *TAG = "navfeeder";
 #define RX_PIN_TX   10
 #define RX_BUF_SIZE 4096
 
-static volatile bool s_wifi_up;
+static atomic_bool s_wifi_up;
 static char s_collector[80];      // "host:port" once provisioned, else empty
 static netcfg_t g_cfg;            // live config (NVS over Kconfig defaults)
 static ubx_parser_t s_parser;     // static: its buffers are too large for a task stack
@@ -99,7 +100,7 @@ static void ui_task(void *arg)
         spool_stats(NULL, &dropped, &depth);
         uint32_t nav = p->frames_nav;
         bool link = pusher_connected();
-        bool wifi = s_wifi_up;
+        bool wifi = atomic_load_explicit(&s_wifi_up, memory_order_relaxed);
 
         nvf_status_t st = {
             .station = g_cfg.station,
@@ -146,7 +147,7 @@ static void rx_uart_init(void)
                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 }
 
-// --- WiFi STA (Kconfig creds; NVS provisioning is P5) -----------------------------------
+// --- WiFi STA (NVS-first config; Kconfig values are the development fallback) ------------
 
 static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
@@ -154,12 +155,12 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        s_wifi_up = false;
+        atomic_store_explicit(&s_wifi_up, false, memory_order_relaxed);
         ESP_LOGW(TAG, "wifi disconnected; reconnecting");
         esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *ev = data;
-        s_wifi_up = true;
+        atomic_store_explicit(&s_wifi_up, true, memory_order_relaxed);
         ESP_LOGI(TAG, "wifi up: " IPSTR, IP2STR(&ev->ip_info.ip));
     }
 }
@@ -206,8 +207,9 @@ void app_main(void)
     if (status_led_init() != ESP_OK) ESP_LOGW(TAG, "status LED init failed");
 
     if (!spool_init(CONFIG_NVF_SPOOL_FRAMES)) {
-        ESP_LOGE(TAG, "spool init failed (cap=%d) — out of memory", CONFIG_NVF_SPOOL_FRAMES);
-        return;
+        ESP_LOGE(TAG, "spool init failed (cap=%d) — out of memory; rebooting", CONFIG_NVF_SPOOL_FRAMES);
+        vTaskDelay(pdMS_TO_TICKS(250));
+        esp_restart();
     }
     rx_uart_init();
     ubx_parser_init(&s_parser, on_record, app_now_ns, NULL);

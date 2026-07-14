@@ -156,9 +156,14 @@ func TestLoggingLevelValidated(t *testing.T) {
 func TestStoreIntervalsValidatedAtFinalize(t *testing.T) {
 	for _, good := range []string{"", "7 days", "1 hour", "30 minutes", "2 weeks"} {
 		c := defaults()
-		c.Store.RawRetention, c.Store.CompressAfter = good, good
+		c.Store.RawRetention, c.Store.CompressAfter = good, ""
 		if err := c.finalize(); err != nil {
-			t.Errorf("interval %q should validate, got %v", good, err)
+			t.Errorf("raw retention interval %q should validate, got %v", good, err)
+		}
+		c = defaults()
+		c.Store.RawRetention, c.Store.CompressAfter = "", good
+		if err := c.finalize(); err != nil {
+			t.Errorf("compression interval %q should validate, got %v", good, err)
 		}
 	}
 	for _, bad := range []string{"soon", "; DROP TABLE nav_frames;--", "7", "days", "0 days"} {
@@ -171,6 +176,58 @@ func TestStoreIntervalsValidatedAtFinalize(t *testing.T) {
 		c.Store.CompressAfter = bad
 		if err := c.finalize(); err == nil {
 			t.Errorf("store.compress_after %q accepted, want a hard error", bad)
+		}
+	}
+}
+
+func TestStoreCompressionMustPrecedeRetention(t *testing.T) {
+	bad := defaults()
+	bad.Store.RawRetention, bad.Store.CompressAfter = "7 days", "8 days"
+	if err := bad.finalize(); err == nil || !strings.Contains(err.Error(), "dropped before compression") {
+		t.Fatalf("misordered policies error = %v, want actionable rejection", err)
+	}
+	equal := defaults()
+	equal.Store.RawRetention, equal.Store.CompressAfter = "1 day", "1 day"
+	if err := equal.finalize(); err == nil {
+		t.Fatal("equal compression/retention ages accepted")
+	}
+	if err := defaults().finalize(); err != nil {
+		t.Fatalf("default 1 day < 7 days rejected: %v", err)
+	}
+}
+
+func TestNTRIPFieldsRejectedOnOtherSourceTypes(t *testing.T) {
+	cases := []struct {
+		name  string
+		src   Source
+		field string
+	}{
+		{"rtcm mountpoint", Source{Name: "s", Type: "rtcm", Addr: "host:1", CaptureOnly: true, Mountpoint: "M"}, "mountpoint"},
+		{"ubx username", Source{Name: "s", Type: "ubx", Addr: "host:1", Username: "u"}, "username"},
+		{"sbf plaintext opt-in", Source{Name: "s", Type: "sbf", Addr: "host:1", CaptureOnly: true, AllowInsecurePlaintext: true}, "allow_insecure_plaintext"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := defaults()
+			c.Ingest = []Source{tc.src}
+			if err := c.finalize(); err == nil || !strings.Contains(err.Error(), tc.field) {
+				t.Fatalf("error = %v, want field %q", err, tc.field)
+			}
+		})
+	}
+}
+
+func TestListenerAddressPortsValidated(t *testing.T) {
+	for _, field := range []string{"metrics.addr", "serve.addr", "push.addr"} {
+		for _, addr := range []string{"127.0.0.1:9I00", "127.0.0.1:99999", "127.0.0.1:", "127.0.0.1:0"} {
+			if err := validateAddr(field, addr); err == nil || !strings.Contains(err.Error(), field) {
+				t.Errorf("%s %q error = %v, want field-named rejection", field, addr, err)
+			}
+		}
+		for _, addr := range []string{"127.0.0.1:9100", ":5580", "localhost:http"} {
+			if err := validateAddr(field, addr); err != nil {
+				t.Errorf("%s %q rejected: %v", field, addr, err)
+			}
 		}
 	}
 }

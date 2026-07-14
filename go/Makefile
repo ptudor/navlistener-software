@@ -10,8 +10,8 @@ CMD         := ./cmd/navlistener
 
 GO          := go
 
-.PHONY: all check build build-linux build-linux-arm64 build-darwin build-darwin-arm64 \
-        build-freebsd build-all install test race fuzz vet fmt fmt-check tidy clean run help
+.PHONY: all check check-e2e build build-linux build-linux-arm64 build-darwin build-darwin-arm64 \
+		build-freebsd build-all install test race fuzz vet fmt fmt-check tidy clean run help
 
 # MODROOTS: the workspace's two modules — the daemon (.) and the reusable gnss math library
 # (../gnss). test/race/vet/fmt-check must cover BOTH; `./...` from here only sees the
@@ -21,7 +21,14 @@ MODROOTS := . ../gnss
 all: check build
 
 # check runs the fast quality gate: fmt-check + vet + tests, across both modules.
-check: fmt-check vet test
+check: fmt-check vet check-e2e test
+
+# Build the C oracle before the C↔Go GNF1 end-to-end tests. A missing C
+# toolchain fails here with a clear feeder build error; plain `go test ./...`
+# remains toolchain-optional and visibly skips when no binary exists.
+check-e2e:
+	$(MAKE) -C ../feeder
+	$(GO) test -v ./internal/ingest -run 'TestNavfeeder'
 
 build:
 	$(GO) build $(LDFLAGS) -o $(BINARY) $(CMD)
@@ -93,7 +100,7 @@ fmt-check:
 	@bad="$$(gofmt -l $(MODROOTS))"; if [ -n "$$bad" ]; then echo "gofmt needed:"; echo "$$bad"; exit 1; fi
 
 tidy:
-	$(GO) mod tidy
+	@set -e; for modroot in $(MODROOTS); do ( cd $$modroot && $(GO) mod tidy ); done
 
 run: build
 	./$(BINARY) -config ./navlistener.toml
@@ -103,4 +110,4 @@ clean:
 	rm -rf $(BUILD_DIR)
 
 help:
-	@echo "targets: check build build-freebsd build-linux-arm64 build-all install test race fuzz vet fmt tidy run clean"
+	@echo "targets: check check-e2e build build-freebsd build-linux-arm64 build-all install test race fuzz vet fmt tidy run clean"

@@ -111,10 +111,14 @@ func (f *RawFrame) RawBytes() []byte {
 func (f *RawFrame) NavType() int {
 	switch f.GnssID {
 	case gnss.GPS:
-		if f.SigID == 0 {
+		switch f.SigID {
+		case 0:
 			return 0x10 // GpsLnav
+		case 3, 4, 6, 7:
+			return 0x11 // GpsCnav
+		default:
+			return 0
 		}
-		return 0x11 // GpsCnav
 	case gnss.QZSS:
 		switch f.SigID {
 		case 0:
@@ -125,10 +129,14 @@ func (f *RawFrame) NavType() int {
 			return 0 // L1S/L1C-CNAV2/L6 are planned, not supported mappings
 		}
 	case gnss.Galileo:
-		if f.SigID == 3 || f.SigID == 4 {
+		switch f.SigID {
+		case 0, 1, 5, 6:
+			return 0x20 // GalInav
+		case 3, 4:
 			return 0x21 // GalFnav
+		default:
+			return 0
 		}
-		return 0x20 // GalInav
 	case gnss.BeiDou:
 		switch f.SigID {
 		case 0:
@@ -143,7 +151,10 @@ func (f *RawFrame) NavType() int {
 			return 0
 		}
 	case gnss.GLONASS:
-		return 0x40 // GloNav
+		if f.SigID == 0 || f.SigID == 2 {
+			return 0x40 // GloNav
+		}
+		return 0
 	case gnss.NavIC:
 		return 0 // planned: no NavIC decoder; do not advertise false live support
 	case gnss.SBAS:

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -36,6 +37,46 @@ func (s *syncRecorder) String() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.buf.String()
+}
+
+// gatedRecorder can pause a live SSE write after the connected frame has completed,
+// modelling a slow-but-draining client without relying on socket-buffer timing.
+type gatedRecorder struct {
+	*syncRecorder
+	muGate  sync.Mutex
+	gate    chan struct{}
+	started chan struct{}
+	once    sync.Once
+}
+
+func newGatedRecorder() *gatedRecorder {
+	return &gatedRecorder{syncRecorder: newSyncRecorder()}
+}
+
+func (g *gatedRecorder) blockWrites() (<-chan struct{}, func()) {
+	g.muGate.Lock()
+	g.gate = make(chan struct{})
+	g.started = make(chan struct{})
+	g.once = sync.Once{}
+	started, gate := g.started, g.gate
+	g.muGate.Unlock()
+	return started, func() { close(gate) }
+}
+
+func (g *gatedRecorder) Write(p []byte) (int, error) {
+	g.muGate.Lock()
+	gate, started := g.gate, g.started
+	g.muGate.Unlock()
+	if gate != nil {
+		g.once.Do(func() { close(started) })
+		<-gate
+		g.muGate.Lock()
+		if g.gate == gate {
+			g.gate = nil
+		}
+		g.muGate.Unlock()
+	}
+	return g.syncRecorder.Write(p)
 }
 
 // TestBrokerReplayFrom verifies the reconnect-replay windows: no cursor returns the
@@ -180,6 +221,71 @@ func TestServeEventsNoDuplicateAcrossReplayAndLive(t *testing.T) {
 	}
 }
 
+// TestServeEventsOverflowKicksAndReplays guards filling one client's live queue
+// must never block Publish or leave a silently-gapped stream connected. The kicked
+// handler returns, and a Last-Event-ID reconnect replays through the newest ring event.
+func TestServeEventsOverflowKicksAndReplays(t *testing.T) {
+	b := newBroker()
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/gnss/events", nil).WithContext(ctx)
+	rr := newGatedRecorder()
+	done := make(chan struct{})
+	go func() { defer close(done); b.serveEvents(rr, req) }()
+	waitFor(t, func() bool { return strings.Contains(rr.String(), "event: status") })
+
+	started, release := rr.blockWrites()
+	b.Publish(EventMsg{ID: 1, Type: "orbit_disco"})
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not enter the gated live write")
+	}
+	start := time.Now()
+	latest := int64(sseClientBuffer + 12)
+	for id := int64(2); id <= latest; id++ {
+		b.Publish(EventMsg{ID: id, Type: "orbit_disco"})
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("Publish blocked on slow client for %v", elapsed)
+	}
+	release()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("overflow did not terminate the SSE handler")
+	}
+	cancel()
+
+	lastID := highestSSEID(rr.String())
+	if lastID < 1 || lastID >= latest {
+		t.Fatalf("first stream last id = %d, want a partial stream before %d", lastID, latest)
+	}
+	replayCtx, replayCancel := context.WithCancel(context.Background())
+	replayReq := httptest.NewRequest(http.MethodGet, "/gnss/events", nil).WithContext(replayCtx)
+	replayReq.Header.Set("Last-Event-ID", strconv.FormatInt(lastID, 10))
+	replay := newSyncRecorder()
+	replayDone := make(chan struct{})
+	go func() { defer close(replayDone); b.serveEvents(replay, replayReq) }()
+	waitFor(t, func() bool { return strings.Contains(replay.String(), "id: "+strconv.FormatInt(latest, 10)+"\n") })
+	replayCancel()
+	<-replayDone
+}
+
+func highestSSEID(body string) int64 {
+	var highest int64
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, "id: ") {
+			continue
+		}
+		id, err := strconv.ParseInt(strings.TrimPrefix(line, "id: "), 10, 64)
+		if err == nil && id > highest {
+			highest = id
+		}
+	}
+	return highest
+}
+
 // pipeWriter adapts a net.Conn to http.ResponseWriter (+Flusher). Embedding
 // net.Conn gives it Write and, crucially, SetWriteDeadline for free — the exact
 // method http.ResponseController looks for via type assertion — so a net.Pipe
@@ -283,7 +389,7 @@ func TestServeEventsClientCapEnforced(t *testing.T) {
 	defer func() { sseMaxClients = old }()
 
 	b := newBroker()
-	var chans []chan EventMsg
+	var chans []*sseClient
 	for i := 0; i < sseMaxClients; i++ {
 		ch, ok := b.subscribe()
 		if !ok {

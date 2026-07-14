@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,37 +60,34 @@ func TestEmitEventPublishesOnlyDurableDatabaseIDs(t *testing.T) {
 	}
 }
 
-// TestEmitEventRetriesAndQueuesOnTransientError guards a confirmed event whose
-// durable write fails must not be silently dropped. emitEvent returns a *pendingEvent that
-// the detect loop re-attempts on a later tick; when the DB recovers, the event is written
-// once and published exactly once with its real id.
-func TestEmitEventRetriesAndQueuesOnTransientError(t *testing.T) {
+// TestEventPipelineRetriesTransientError guards regression fix/a confirmed event whose
+// durable write fails remains at the FIFO head; once the DB recovers, it and the later
+// event are published exactly once in detection order with durable ids.
+func TestEventPipelineRetriesTransientErrorInFIFOOrder(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	ctx := context.Background()
 	saved := defaultEventRetry
-	defaultEventRetry = eventRetry{attempts: 2, backoff: time.Millisecond, perCallTO: time.Second}
+	defaultEventRetry = eventRetry{attempts: 1, backoff: time.Millisecond, perCallTO: time.Second}
 	defer func() { defaultEventRetry = saved }()
 
-	// First tick: both attempts fail -> emitEvent returns a pending event, nothing published.
-	w := &scriptedEventWriter{ids: []int64{0, 0}, errs: []error{errors.New("db down"), errors.New("db down")}}
-	p := &capturePublisher{}
-	ev := detect.Event{Time: time.Now(), SV: "G07@0", Type: "health_change", OldValue: "1", NewValue: "2", Severity: 2}
-	pe := emitEvent(ctx, ev, w, p, log)
-	if pe == nil {
-		t.Fatal("failed durable write must return a pending event for re-attempt")
-	}
-	if len(p.events) != 0 {
-		t.Fatalf("nothing should be published on a failed write, got %+v", p.events)
-	}
-
-	// Later tick: DB recovers -> reattemptPending writes once, publishes with the real id.
-	w.ids, w.errs, w.n = []int64{900}, []error{nil}, 0
-	pending := reattemptPending(ctx, []pendingEvent{*pe}, w, p, log)
-	if len(pending) != 0 {
-		t.Fatalf("recovered event must leave the queue, still pending: %d", len(pending))
-	}
-	if len(p.events) != 1 || p.events[0].ID != 900 {
-		t.Fatalf("published = %+v, want exactly one event with durable id 900", p.events)
+	w := &switchEventWriter{}
+	p := &lockedPublisher{}
+	pipeline := newEventPipeline(w, p, log)
+	a := detect.Event{Time: time.Now(), SV: "G07@0", Type: "health_change", OldValue: "1", NewValue: "2", Severity: 2}
+	b := detect.Event{Time: time.Now(), SV: "G07@0", Type: "health_change", OldValue: "2", NewValue: "1", Severity: 0}
+	pipeline.enqueue(*prepareEvent(a, w, log))
+	pipeline.enqueue(*prepareEvent(b, w, log))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); pipeline.run(ctx) }()
+	w.waitCalls(t, 1)
+	w.setAvailable(true)
+	w.waitCalls(t, 3) // failed A, successful A, successful B
+	waitEventCount(t, p, 2)
+	cancel()
+	<-done
+	got := p.snapshot()
+	if got[0].OldValue != "1" || got[1].OldValue != "2" {
+		t.Fatalf("publish order = %+v, want A then B", got)
 	}
 }
 
@@ -95,20 +95,204 @@ func TestEmitEventRetriesAndQueuesOnTransientError(t *testing.T) {
 // event is dropped rather than growing the queue without limit.
 func TestEnqueuePendingDropsOldestWhenFull(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	q := make([]pendingEvent, 0, eventPendingMax)
+	pipeline := newEventPipeline(&switchEventWriter{}, nil, log)
 	for i := 0; i < eventPendingMax; i++ {
-		q = enqueuePending(q, pendingEvent{ev: detect.Event{SV: "G01@0", Type: "orbit_disco"}}, log)
+		pipeline.enqueue(pendingEvent{ev: detect.Event{SV: "G01@0", Type: "orbit_disco"}})
 	}
-	if len(q) != eventPendingMax {
-		t.Fatalf("queue len = %d, want %d", len(q), eventPendingMax)
+	if pipeline.len() != eventPendingMax {
+		t.Fatalf("queue len = %d, want %d", pipeline.len(), eventPendingMax)
 	}
 	newest := pendingEvent{ev: detect.Event{SV: "GNEW@0", Type: "orbit_disco"}}
-	q = enqueuePending(q, newest, log)
-	if len(q) != eventPendingMax {
-		t.Fatalf("queue over cap: len = %d, want %d", len(q), eventPendingMax)
+	pipeline.enqueue(newest)
+	if pipeline.len() != eventPendingMax {
+		t.Fatalf("queue over cap: len = %d, want %d", pipeline.len(), eventPendingMax)
 	}
-	if q[len(q)-1].ev.SV != "GNEW@0" {
+	if pipeline.pending[len(pipeline.pending)-1].ev.SV != "GNEW@0" {
 		t.Fatal("newest event must be retained after dropping the oldest")
+	}
+}
+
+type switchEventWriter struct {
+	mu        sync.Mutex
+	available bool
+	block     bool
+	calls     []store.EventRow
+}
+
+func (w *switchEventWriter) WriteEvent(ctx context.Context, row store.EventRow) (int64, error) {
+	w.mu.Lock()
+	w.calls = append(w.calls, row)
+	available, block, id := w.available, w.block, int64(len(w.calls))
+	w.mu.Unlock()
+	if block {
+		<-ctx.Done()
+		return 0, ctx.Err()
+	}
+	if !available {
+		return 0, errors.New("db down")
+	}
+	return id, nil
+}
+
+func (w *switchEventWriter) setAvailable(v bool) {
+	w.mu.Lock()
+	w.available = v
+	w.mu.Unlock()
+}
+
+func (w *switchEventWriter) waitCalls(t *testing.T, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		w.mu.Lock()
+		n := len(w.calls)
+		w.mu.Unlock()
+		if n >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("writer did not reach %d calls", want)
+}
+
+type lockedPublisher struct {
+	mu     sync.Mutex
+	events []serve.EventMsg
+}
+
+func (p *lockedPublisher) PublishEvent(e serve.EventMsg) {
+	p.mu.Lock()
+	p.events = append(p.events, e)
+	p.mu.Unlock()
+}
+
+func (p *lockedPublisher) snapshot() []serve.EventMsg {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]serve.EventMsg(nil), p.events...)
+}
+
+func waitEventCount(t *testing.T, p *lockedPublisher, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(p.snapshot()) >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("publisher did not reach %d events", want)
+}
+
+// A cancelled detector context must not poison the final write context.
+func TestEventPipelineFinalFlushUsesFreshContext(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	w := &switchEventWriter{available: true}
+	p := &lockedPublisher{}
+	pipeline := newEventPipeline(w, p, log)
+	ev := detect.Event{Time: time.Now(), SV: "G01@0", Type: "orbit_disco", Severity: 2}
+	pipeline.enqueue(*prepareEvent(ev, w, log))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	pipeline.run(ctx)
+	if got := p.snapshot(); len(got) != 1 {
+		t.Fatalf("final flush published %d events, want 1", len(got))
+	}
+	if pipeline.len() != 0 {
+		t.Fatalf("final flush left %d queued events", pipeline.len())
+	}
+}
+
+// The final flush has one shared bound and reports its dropped count.
+func TestEventPipelineFinalFlushHardDownIsBounded(t *testing.T) {
+	var logBuf strings.Builder
+	log := slog.New(slog.NewTextHandler(&logBuf, nil))
+	w := &switchEventWriter{block: true}
+	pipeline := newEventPipeline(w, nil, log)
+	pipeline.enqueue(*prepareEvent(detect.Event{Time: time.Now(), SV: "G01@0", Type: "orbit_disco"}, w, log))
+	saved := eventFinalFlushTimeout
+	eventFinalFlushTimeout = 25 * time.Millisecond
+	defer func() { eventFinalFlushTimeout = saved }()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	pipeline.run(ctx)
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("hard-down final flush took %v, want bounded return", elapsed)
+	}
+	if !strings.Contains(logBuf.String(), "dropping confirmed integrity events") {
+		t.Fatalf("missing final dropped-count log: %s", logBuf.String())
+	}
+}
+
+// Enqueue remains fast while the writer is stalled on a database call.
+func TestEventPipelineDatabaseStallDoesNotBlockEnqueue(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	w := &switchEventWriter{block: true}
+	pipeline := newEventPipeline(w, nil, log)
+	savedFlush := eventFinalFlushTimeout
+	eventFinalFlushTimeout = 25 * time.Millisecond
+	defer func() { eventFinalFlushTimeout = savedFlush }()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); pipeline.run(ctx) }()
+	pipeline.enqueue(pendingEvent{row: store.EventRow{Type: "orbit_disco"}, ev: detect.Event{Type: "orbit_disco"}})
+	w.waitCalls(t, 1)
+	start := time.Now()
+	for i := 0; i < 5; i++ {
+		pipeline.enqueue(pendingEvent{row: store.EventRow{Type: "orbit_disco"}, ev: detect.Event{Type: "orbit_disco"}})
+	}
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Fatalf("enqueue coupled to stalled writer: %v", elapsed)
+	}
+	cancel()
+	<-done
+}
+
+type panicOnceWriter struct {
+	mu      sync.Mutex
+	paniced bool
+	calls   []string
+}
+
+func (w *panicOnceWriter) WriteEvent(_ context.Context, row store.EventRow) (int64, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.calls = append(w.calls, row.NewValue)
+	if row.NewValue == "B" && !w.paniced {
+		w.paniced = true
+		panic("scripted writer panic")
+	}
+	return int64(len(w.calls)), nil
+}
+
+// A mid-write panic retains the current head and untouched tail without aliasing or
+// duplicating already-completed items.
+func TestEventPipelinePanicPreservesExactQueue(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	w := &panicOnceWriter{}
+	p := &lockedPublisher{}
+	pipeline := newEventPipeline(w, p, log)
+	for _, v := range []string{"A", "B", "C"} {
+		ev := detect.Event{Time: time.Now(), SV: "G01@0", Type: "health_change", NewValue: v}
+		pipeline.enqueue(*prepareEvent(ev, w, log))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); pipeline.run(ctx) }()
+	waitEventCount(t, p, 3)
+	cancel()
+	<-done
+	got := p.snapshot()
+	if got[0].NewValue != "A" || got[1].NewValue != "B" || got[2].NewValue != "C" {
+		t.Fatalf("published = %+v, want A,B,C exactly once", got)
+	}
+	w.mu.Lock()
+	calls := append([]string(nil), w.calls...)
+	w.mu.Unlock()
+	want := []string{"A", "B", "B", "C"}
+	if fmt.Sprint(calls) != fmt.Sprint(want) {
+		t.Fatalf("write attempts = %v, want %v", calls, want)
 	}
 }
 

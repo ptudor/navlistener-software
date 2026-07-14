@@ -92,6 +92,9 @@ const keplerIterTol = 1e-12
 // degenerate input (unknown constellation, non-positive axis, out-of-range
 // eccentricity, or a non-finite result).
 func Solve(e Ephemeris, tow float64) (Solution, error) {
+	if e.ID == gnss.GLONASS {
+		return Solution{}, errNoParams // GLONASS broadcasts Cartesian state, never Kepler elements.
+	}
 	p, ok := physconst.For(e.ID)
 	if !ok {
 		return Solution{}, errNoParams

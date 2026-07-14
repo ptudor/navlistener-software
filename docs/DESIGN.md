@@ -133,7 +133,7 @@ shape means one mental model and a near-verbatim port of `radiolistener/feeder/f
 
 | Frame | Dir | Payload |
 |---|---|---|
-| `HELLO` (0x01) | feeder→collector | JSON `{token, station, feed, sw, zstd?}` — `feed ∈ {ubx, sbf, rtcm, nmea}` |
+| `HELLO` (0x01) | feeder→collector | JSON `{token, station, feed, sw, zstd?}` — `feed ∈ {ubx, rtcm}` (SBF is rejected because GNF1 `frame_type` cannot carry SBF block numbers; NMEA is unimplemented) |
 | `WELCOME` (0x02) | collector→feeder | JSON `{ok, error?, ack_interval_ms?, zstd?}` |
 | `DATA` (0x03) | feeder→collector | `[8B seq][framed raw record]` — see the record shape below |
 | `ACK` (0x04) | collector→feeder | `[8B seq]` highest sequence received this connection  — not "last contiguous"; reconnect replay makes any resulting duplicate harmless |
@@ -142,7 +142,8 @@ shape means one mental model and a near-verbatim port of `radiolistener/feeder/f
 
 **The raw record inside a `DATA` frame** carries just enough envelope for the collector to
 dispatch without decoding: `{recv_unix_ns (from the observer/RTC), gnssId, svId, sigId,
-frame_type (GNF1 nav-type from the registry in CONSTELLATIONS.md), raw_bytes}`. For UBX the
+freqId (GLONASS FDMA channel, `k = freqId − 7`; 0 otherwise), frame_type (GNF1 nav-type from
+the registry in CONSTELLATIONS.md), raw_bytes}`. For UBX the
 feeder can forward the whole SFRBX message verbatim and let the collector split it; the record
 envelope is what lets a Septentrio and a u-blox feeder converge on one collector code path.
 
@@ -232,13 +233,13 @@ TOML at `/usr/local/etc/navlistener/navlistener.toml` (never `.env`), `-config` 
 **rc.d** on `collector-host`; DB on `zroot`. Sections mirror radiolistener: `[logging] [metrics] [serve]
 [state] [store] [[ingest]] [push]`. Each `[[ingest]]` is a connector (`type = ubx|sbf|rtcm`,
 `addr`, `listen`). `[push]` is the authenticated fleet endpoint (token + optional mTLS
-`client_ca_file`), separate listener from `[serve]`. Prometheus `/metrics` + `/healthz` on
+`client_ca`), separate listener from `[serve]`. Prometheus `/metrics` + `/healthz` on
 loopback; counters for SVs tracked, frames/s/constellation, decode failures, receiver up/down,
 integrity events, DB lag, per-observer drops — so it slots into the same Zabbix/Prometheus
 monitoring as radiolistener.
 
 `navlistener -check-config` validates the config with full startup parity : it
-stat/loads the `[push]` TLS keypair and `client_ca_file`, parses the `[store]` DSN, and
+stat/loads the `[push]` TLS keypair and `client_ca`, parses the `[store]` DSN, and
 PEM-validates every ntrip `ca_file` — so it **fails on a host whose certs are not yet
 provisioned**. That is deliberate (a config that passes `-check-config` must also start), but
 it means the check belongs *after* cert provisioning in any deploy runbook, not before.

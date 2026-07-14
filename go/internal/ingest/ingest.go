@@ -114,6 +114,16 @@ func (m *Manager) runSource(ctx context.Context, src config.Source, sc scanner) 
 			backoff = nextBackoff(backoff)
 			continue
 		}
+		// Close the connection when ctx is cancelled so every post-dial phase,
+		// including the NTRIP application handshake, returns immediately.
+		stop := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				_ = conn.Close()
+			case <-stop:
+			}
+		}()
 		// An NTRIP source needs the caster handshake (GET the mountpoint, basic auth) before
 		// the RTCM3 stream flows; a failed handshake reconnects like any other drop.
 		ntripChunked := false
@@ -121,6 +131,7 @@ func (m *Manager) runSource(ctx context.Context, src config.Source, sc scanner) 
 			var ntripErr error
 			ntripChunked, ntripErr = ntripConnect(conn, src)
 			if ntripErr != nil {
+				close(stop)
 				_ = conn.Close()
 				metrics.SourceUp.WithLabelValues(src.Name, src.Type).Set(0)
 				metrics.IngestErrorsTotal.WithLabelValues(src.Name, "ntrip_handshake").Inc()
@@ -135,16 +146,6 @@ func (m *Manager) runSource(ctx context.Context, src config.Source, sc scanner) 
 		metrics.SourceConnectsTotal.WithLabelValues(src.Name).Inc()
 		metrics.SourceUp.WithLabelValues(src.Name, src.Type).Set(1)
 		m.log.Info("ingest source connected", "source", src.Name, "addr", src.Addr, "type", src.Type)
-
-		// Close the connection when ctx is cancelled so a blocked read returns.
-		stop := make(chan struct{})
-		go func() {
-			select {
-			case <-ctx.Done():
-				_ = conn.Close()
-			case <-stop:
-			}
-		}()
 
 		var useful bool
 		useful, err = m.runScanner(ctx, sc, conn, src, ntripChunked)
@@ -209,7 +210,7 @@ func (m *Manager) runScanner(ctx context.Context, sc scanner, conn net.Conn, src
 // decode stage, honouring shutdown.
 func (m *Manager) emit(ctx context.Context, src config.Source) func(*RawFrame) {
 	return func(f *RawFrame) {
-		if f.Obs == nil && f.RF == nil { // FramesTotal counts nav-frame throughput, not observables/telemetry
+		if f.Obs == nil && f.RF == nil && f.Words != nil { // byte frames use CapturedOnlyTotal
 			metrics.FramesTotal.WithLabelValues(src.Name, strconv.Itoa(int(f.GnssID))).Inc()
 		}
 		select {

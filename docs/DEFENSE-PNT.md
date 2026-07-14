@@ -194,8 +194,9 @@ The receiver flag is therefore **one weighted input** into the fusion rule (§3)
   detector improvement can be **replayed over history** — the same re-decodability guarantee the
   nav frames get. A jamming/spoofing incident is then reconstructable after the fact.
 - **Station RF health surfaces in the `observers` feed** (`docs/OUTPUT.md §1.3`): per-station,
-  per-band `agc_departure`, `cw_suppression`, `noise_floor_db`, `jam_state`, and a `rf_trust`
-  scalar (how much this station's votes are currently down-weighted). Confirmed events go to the
+  per-band `agc_departure`, `cw_suppress`, `noise_level`, `jam_state`, and a `rf_trust`
+  scalar (how much this station's votes are currently down-weighted); `noise_level` is the
+  receiver's raw MON-RF indicator, not a dB measurement. Confirmed events go to the
   SSE stream and `gnss_events` like every other integrity event.
 - **Baselines are state, not config**: the per-station quiet-time AGC/C/N₀/clock baselines live in
   the live state and the historian, learned continuously — never hand-tuned constants.

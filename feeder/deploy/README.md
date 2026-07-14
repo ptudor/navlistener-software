@@ -67,13 +67,29 @@ the receiver's raw TCP port) needs no device group.
 ## Install (OpenWrt, one receiver per box)
 
 ```sh
+addgroup -S navfeeder
+adduser -S -D -H -s /bin/false -G navfeeder navfeeder
 scp navfeeder root@box:/usr/bin/navfeeder
 scp deploy/openwrt/navfeeder.init root@box:/etc/init.d/navfeeder
 ```
 
 Write `/etc/navfeeder/feeder.conf` (`SERVER/SOURCE/BAUD/STATION/EXTRA`), the token to
-`/etc/navfeeder/feeder.token` (`0600`), the CA to `/etc/navfeeder/ingest-ca.pem`, then
-`chmod +x /etc/init.d/navfeeder && /etc/init.d/navfeeder enable && /etc/init.d/navfeeder start`.
+`/etc/navfeeder/feeder.token`, and the CA to `/etc/navfeeder/ingest-ca.pem`. Make the two TLS
+files group-readable by the service account, then start the unit:
+
+```sh
+chown root:navfeeder /etc/navfeeder/feeder.token /etc/navfeeder/ingest-ca.pem
+chmod 0640 /etc/navfeeder/feeder.token /etc/navfeeder/ingest-ca.pem
+chmod +x /etc/init.d/navfeeder
+/etc/init.d/navfeeder enable
+/etc/init.d/navfeeder start
+```
+
+The procd instance runs as `navfeeder:navfeeder`, and `start_service` makes its tmpfs spool
+directory owned by that account. For a `/dev/...` source it also grants the `navfeeder` group
+read access to the configured device at service start. Boxes whose receiver node is recreated
+after boot should install the equivalent OpenWrt hotplug rule (`chgrp navfeeder` and `chmod g+r`
+for that stable device path); TCP bridge sources need no device permission.
 
 ## Notes
 

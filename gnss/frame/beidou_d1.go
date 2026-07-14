@@ -17,10 +17,15 @@ var errBeiDouSOWGap = errors.New("frame: BeiDou D1 subframes not broadcast-adjac
 // FraID (not 1..5) — a mis-tagged or corrupt frame.
 var errBadFraID = errors.New("frame: BeiDou D1 FraID out of range (1..5)")
 
+// ErrBadBCH is returned when a delivered BCH(15,11,1) code block fails its
+// x^4+x+1 parity check (BDS-SIS-ICD-B1I §5.1.3).
+var ErrBadBCH = errors.New("frame: BeiDou D1 BCH check failed")
+
 // BeiDou D1 NAV decoding (BDS-SIS-ICD-B1I v3.0 §5.2.4), for MEO/IGSO SVs. u-blox
 // delivers each 300-bit subframe as one UBX-RXM-SFRBX of ten 30-bit words. The
-// receiver has removed the BCH(15,11) parity, leaving the information bits at the
-// top of each word: 26 bits in word 1, 22 bits in words 2–10. We concatenate those
+// receiver delivers the BCH(15,11) parity in the low bits: four bits in word 1
+// and eight bits (two de-interleaved blocks) in words 2–10. After verifying it,
+// we concatenate the information bits
 // into a 224-bit information stream and read fields at their ICD offsets. Offsets
 // and scale factors follow BDS-SIS-ICD-B1I v3.0 Figures 5-8…5-10 and Tables
 // 5-5…5-10, and the decode cross-validates against the B-CNAV2 (B2a) decode of
@@ -76,10 +81,56 @@ func beidouInfo(words []uint32) []byte {
 	return buf
 }
 
+func bch15Remainder(code uint16) uint16 {
+	for bit := 14; bit >= 4; bit-- {
+		if code&(1<<uint(bit)) != 0 {
+			code ^= 0x13 << uint(bit-4) // g(x) = x^4 + x + 1
+		}
+	}
+	return code & 0xF
+}
+
+func bch15Valid(info uint16, parity uint16) bool {
+	return bch15Remainder((info<<4)|(parity&0xF)) == 0
+}
+
+// StampBeiDouD1BCH writes the parity bits for synthetic/test D1 words while
+// preserving their delivered information layout.
+func StampBeiDouD1BCH(words []uint32) {
+	if len(words) < 10 {
+		return
+	}
+	stamp := func(info uint16) uint16 { return bch15Remainder(info << 4) }
+	info1 := uint16((words[0] >> 4) & 0x7FF)
+	words[0] = (words[0] &^ 0xF) | uint32(stamp(info1))
+	for i := 1; i < 10; i++ {
+		info := (words[i] >> 8) & 0x3FFFFF
+		hi, lo := uint16(info>>11), uint16(info&0x7FF)
+		words[i] = (words[i] &^ 0xFF) | uint32(stamp(hi)<<4|stamp(lo))
+	}
+}
+
+func beidouBCHValid(words []uint32) bool {
+	if !bch15Valid(uint16((words[0]>>4)&0x7FF), uint16(words[0]&0xF)) {
+		return false
+	}
+	for i := 1; i < 10; i++ {
+		info := (words[i] >> 8) & 0x3FFFFF
+		if !bch15Valid(uint16(info>>11), uint16((words[i]>>4)&0xF)) ||
+			!bch15Valid(uint16(info&0x7FF), uint16(words[i]&0xF)) {
+			return false
+		}
+	}
+	return true
+}
+
 // DecodeBeiDouD1 decodes one D1 subframe from ten words.
 func DecodeBeiDouD1(words []uint32) (*BeiDouSubframe, error) {
 	if len(words) < 10 {
 		return nil, ErrShortFrame
+	}
+	if !beidouBCHValid(words) {
+		return nil, ErrBadBCH
 	}
 	r := NewBitReaderN(beidouInfo(words), 224)
 	u := func(p, n int) uint64 { v, _ := r.Bits(p, n); return v }

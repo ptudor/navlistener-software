@@ -10,6 +10,7 @@
 package state
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"sync"
@@ -24,6 +25,16 @@ import (
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/metrics"
 )
+
+func countDecodeFailure(f *ingest.RawFrame, kind string, err error) {
+	if errors.Is(err, frame.ErrBadCRC) || errors.Is(err, frame.ErrBadPreamble) ||
+		errors.Is(err, frame.ErrBadTLMPreamble) || errors.Is(err, frame.ErrBadBCH) ||
+		errors.Is(err, frame.ErrGLONASSHamming) {
+		metrics.NavCRCFailTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), fmt.Sprint(f.SigID)).Inc()
+		return
+	}
+	metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), kind).Inc()
+}
 
 // gpsEpochUnix is 1980-01-06T00:00:00Z.
 const (
@@ -96,8 +107,9 @@ type svState struct {
 	fnav [5]*frame.GalileoFNAV
 	// BeiDou D1 subframe assembly buffers.
 	bd1, bd2, bd3 *frame.BeiDouSubframe
-	// BeiDou B2a B-CNAV2 message assembly buffers (types 10/11 ephemeris, 30/34 clock).
-	bc10, bc11, bc30 *frame.BeiDouBCNAV2
+	// BeiDou B2a B-CNAV2 message assembly buffers. bcClk is the last clock-bearing
+	// MT30/34; bc30 is retained separately because only MT30 carries TGD_B2ap.
+	bc10, bc11, bc30, bcClk *frame.BeiDouBCNAV2
 	// Measured-iono tracks per ingest source (dual-frequency observables).
 	ionoBySource map[string]*ionoTrack
 	// GLONASS string assembly buffers + Cartesian ephemeris (RK4, not kepler).
@@ -151,7 +163,12 @@ type svState struct {
 	// gate below — the two message families change independently.
 	bcIODC    int
 	haveBcIOD bool
-	health    int
+	// TGD_B2ap is a quasi-static data-set property sourced only from MT30. Track
+	// its provenance separately so MT34 clocks never turn an unknown TGD into a
+	// decoded zero or create a false time discontinuity.
+	bcTGD                  float64
+	haveBcTGD, clkHasBcTGD bool
+	health                 int
 	// haveHealth is health_code 0 ("unknown") is the correct answer until
 	// this SV's own health bits have actually been decoded (e.g. a Galileo SV
 	// with only word types 1-4 assembled -- health arrives on word 5) or an
@@ -337,7 +354,7 @@ func isCNAVSignal(id gnss.GNSSID, sig int) bool {
 // integrity check are consumed in the integrity pass (P6).
 func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 	if _, err := frame.DecodeGPSCNAV(f.GnssID, f.Words); err != nil {
-		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "cnav").Inc()
+		countDecodeFailure(f, "cnav", err)
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "cnav").Inc()
@@ -352,7 +369,7 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 func (s *Store) applySBAS(f *ingest.RawFrame) {
 	m, err := frame.DecodeSBASL1(f.SvID, f.Words)
 	if err != nil {
-		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "sbas").Inc()
+		countDecodeFailure(f, "sbas", err)
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "sbas").Inc()
@@ -389,7 +406,7 @@ func (s *Store) applySBAS(f *ingest.RawFrame) {
 func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 	sf, err := frame.DecodeGPSLNAV(f.Words)
 	if err != nil {
-		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "lnav").Inc()
+		countDecodeFailure(f, "lnav", err)
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "lnav").Inc()
@@ -416,9 +433,9 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 		// health-bit flip that arrives under an unchanged IODC (a re-broadcast subframe 1,
 		// or an IODC bump confined to its two high bits that leaves the low-8 IODE
 		// unchanged) reaches live state, the feeds, and the detector promptly instead of
-		// waiting for the next full ephemeris cutover. Subframe 1 is parity-checked by
-		// DecodeGPSLNAV, so its health bits are trustworthy without an assembled set —
-		// mirroring the Galileo word-5 pattern above. The eph-gated assignment below stays
+		// waiting for the next full ephemeris cutover. Trust comes from receiver-validated,
+		// D30*-resolved SFRBX data plus DecodeGPSLNAV's fixed-preamble structural check;
+		// freshest-wins health semantics do not wait for a full set. The eph-gated assignment below stays
 		// (it is now a no-op for these scalars) so the ephemeris/clock IOD gating is
 		// untouched.
 		st.health, st.haveHealth, st.ura = sf.Health, true, sf.URAIndex
@@ -457,7 +474,7 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 	w, err := frame.DecodeGalileoINAV(f.Words)
 	if err != nil {
-		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "inav").Inc()
+		countDecodeFailure(f, "inav", err)
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "inav").Inc()
@@ -535,7 +552,11 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 	w, err := frame.DecodeGalileoFNAV(f.Words)
 	if err != nil {
-		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "fnav").Inc()
+		countDecodeFailure(f, "fnav", err)
+		return
+	}
+	if w.PageType == 63 {
+		metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "fnav_dummy").Inc()
 		return
 	}
 	// regression fix (IODnav-completeness): a right-length frame whose page type is outside the F/NAV
@@ -600,7 +621,7 @@ func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 	sf, err := frame.DecodeBeiDouD1(f.Words)
 	if err != nil {
-		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "d1").Inc()
+		countDecodeFailure(f, "d1", err)
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "d1").Inc()
@@ -625,8 +646,9 @@ func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 		st.bd1 = sf
 		// apply health/URA/AOD at subframe-1 arrival, BEFORE the toe-changeover
 		// gate below, so a SatH1 flip in a re-broadcast subframe 1 (unchanged toe) reaches
-		// live state instead of being dropped for up to an hour. Subframe 1 is CRC-checked
-		// by DecodeBeiDouD1. The eph-gated assignment below stays (now a no-op for these).
+		// live state instead of being dropped for up to an hour. DecodeBeiDouD1 verifies
+		// every delivered BCH(15,11,1) block before this freshest-wins update. The
+		// eph-gated assignment below stays (now a no-op for these).
 		st.health, st.haveHealth = sf.Health, true
 		st.accKind, st.accIdx = accURA, sf.URAI
 		st.aodc, st.aode, st.haveAOD = sf.AODC, sf.AODE, true
@@ -663,7 +685,7 @@ func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 	m, err := frame.DecodeBeiDouBCNAV2(f.Words)
 	if err != nil {
-		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "bcnav2").Inc()
+		countDecodeFailure(f, "bcnav2", err)
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "bcnav2").Inc()
@@ -693,17 +715,31 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		// state. Type 11 is CRC-checked by DecodeBeiDouBCNAV2. The eph-gated assignment
 		// below stays (now a no-op).
 		st.health, st.haveHealth = m.HS, true
-	case 30, 34:
-		st.bc30 = m
+	case 30:
+		st.bc30, st.bcClk = m, m
+		st.bcTGD, st.haveBcTGD = m.TGDB2ap, true
+	case 34:
+		st.bcClk = m
 	default:
 		return // types 31/32/33/40 (almanac/EOP/BGTO) not consumed here
 	}
 	if st.bc10 == nil || st.bc11 == nil {
 		return
 	}
-	eph, clk, clkOK, err := frame.AssembleBeiDouBCNAV2(f.SvID, st.bc10, st.bc11, st.bc30)
+	eph, clk, clkOK, err := frame.AssembleBeiDouBCNAV2(f.SvID, st.bc10, st.bc11, st.bcClk)
 	if err != nil {
 		return // types 10/11 not broadcast-adjacent (a stale clock no longer fails assembly)
+	}
+	// an MT34 clock has no TGD_B2ap field. Carry the most recently
+	// decoded MT30 value as the quasi-static data-set property; until MT30 has
+	// ever arrived, keep its provenance unknown rather than treating zero as
+	// decoded. A later same-IODC MT30 is therefore an actionable TGD refresh.
+	nextClkHasTGD := st.clkHasBcTGD
+	if clkOK {
+		nextClkHasTGD = st.bcClk.MesType == 30 || st.haveBcTGD
+		if nextClkHasTGD {
+			clk.TGD = st.bcTGD
+		}
 	}
 	// an ephemeris changeover (IODE) and a clock changeover (IODC) are
 	// independent events. Gating the whole update on IODE (as before) silently
@@ -722,23 +758,28 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 	// message's IODC as applied (a later fresh type-30 carrying that IODC must
 	// still be recognized as a change).
 	ephChanged := !st.haveEph || st.bc10.IODE != st.iod
-	clkChanged := clkOK && (!st.haveBcIOD || st.bc30.IODC != st.bcIODC)
-	if !ephChanged && !clkChanged {
+	clkChanged := clkOK && (!st.haveBcIOD || st.bcClk.IODC != st.bcIODC)
+	tgdRefresh := clkOK && nextClkHasTGD && (!st.clkHasBcTGD || clk.TGD != st.clk.TGD)
+	if !ephChanged && !clkChanged && !tgdRefresh {
 		return
 	}
 	if !clkOK {
 		clk = st.clk
 	}
 	if ephChanged && st.haveEph {
-		s.computeDisco(st, eph, clk, f.Recv)
-		if !clkOK {
+		if clkOK && st.clkHasBcTGD == nextClkHasTGD {
+			s.computeDisco(st, eph, clk, f.Recv)
+		} else {
+			// A clock comparison across differing TGD provenance would turn an
+			// unknown group delay into a false clock jump.
 			st.timeDiscoValid = false
 		}
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, st.bc10.IODE, true
 	st.ephAt = f.Recv // regression fix
 	if clkOK {
-		st.bcIODC, st.haveBcIOD = st.bc30.IODC, true
+		st.bcIODC, st.haveBcIOD = st.bcClk.IODC, true
+		st.clkHasBcTGD = nextClkHasTGD
 	}
 	st.health, st.haveHealth = st.bc11.HS, true
 }
@@ -746,7 +787,7 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 	str, err := frame.DecodeGLONASSString(f.Words)
 	if err != nil {
-		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "glo").Inc()
+		countDecodeFailure(f, "glo", err)
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "glo").Inc()
@@ -1044,8 +1085,13 @@ func (s *Store) computeDisco(st *svState, newEph kepler.Ephemeris, newClk clock.
 	} else {
 		st.orbitDiscoValid = false
 	}
-	oOff, e3 := clock.OffsetFor(st.clk, st.eph, tstar)
-	nOff, e4 := clock.OffsetFor(newClk, newEph, tstar)
+	// regression fix / docs/INTEGRITY.md §3: a changeover discontinuity compares the
+	// satellite clock polynomial plus relativity. Group delay is a signal bias,
+	// not the SV clock, so a routine TGD/BGD revision must not appear as a jump.
+	oldDiscoClk, newDiscoClk := st.clk, newClk
+	oldDiscoClk.TGD, newDiscoClk.TGD = 0, 0
+	oOff, e3 := clock.OffsetFor(oldDiscoClk, st.eph, tstar)
+	nOff, e4 := clock.OffsetFor(newDiscoClk, newEph, tstar)
 	if e3 == nil && e4 == nil {
 		disco := math.Abs(nOff-oOff) * 1e9
 		if !math.IsNaN(disco) && !math.IsInf(disco, 0) {

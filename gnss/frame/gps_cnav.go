@@ -44,9 +44,12 @@ const (
 	p2m57 = 1.0 / float64(uint64(1)<<57)
 	p2m60 = 1.0 / float64(uint64(1)<<60)
 
-	cnavAref = 26559710.0 // GPS/QZSS reference semi-major axis, metres
-	cnavOmgD = -2.6e-9    // reference rate of right ascension, semicircles/s
-	cnavT0   = 300.0      // toe/toc step, seconds
+	cnavArefGPS  = 26559710.0 // GPS reference semi-major axis, metres
+	cnavArefQZSS = 42164200.0 // QZSS reference, IS-QZSS-PNT-005 Table 4.3.2-16
+	// IS-QZSS-PNT-005 redefines A_REF but not the MT11 reference nodal rate;
+	// GPS and QZSS therefore intentionally share cnavOmgD.
+	cnavOmgD = -2.6e-9 // reference rate of right ascension, semicircles/s
+	cnavT0   = 300.0   // toe/toc step, seconds
 )
 
 // GPSCNAV holds the decoded fields of one CNAV message.
@@ -87,8 +90,8 @@ type GPSCNAV struct {
 	ISCL5Q5 float64
 }
 
-// DecodeGPSCNAV decodes one CNAV message (ten words). id is GPS or QZSS (they
-// share the format and constants).
+// DecodeGPSCNAV decodes one CNAV message (ten words). GPS and QZSS share the
+// message format, but QZSS defines a different MT10 A_REF.
 func DecodeGPSCNAV(id gnss.GNSSID, words []uint32) (*GPSCNAV, error) {
 	if len(words) < 10 {
 		return nil, ErrShortFrame
@@ -128,7 +131,11 @@ func DecodeGPSCNAV(id gnss.GNSSID, words []uint32) (*GPSCNAV, error) {
 		// SVs) was mis-decoded (e.g. bits 11111 = −1 read as 31) over half the domain.
 		m.URAED = int(s(65, 5))
 		m.eph.Toe = float64(u(70, 11)) * cnavT0
-		m.eph.SqrtA = math.Sqrt(cnavAref + float64(s(81, 26))*p2m9)
+		aref := cnavArefGPS
+		if id == gnss.QZSS {
+			aref = cnavArefQZSS
+		}
+		m.eph.SqrtA = math.Sqrt(aref + float64(s(81, 26))*p2m9)
 		m.eph.ADot = float64(s(107, 25)) * p2m21 // Ȧ, m/s (Table 30-I)
 		m.eph.DeltaN = float64(s(132, 17)) * p2m44 * semi
 		m.eph.DeltaNDot = float64(s(149, 23)) * p2m57 * semi // Δṅ₀, rad/s²
@@ -179,6 +186,9 @@ func AssembleGPSCNAV(id gnss.GNSSID, svid int, m10, m11, mClk *GPSCNAV) (kepler.
 	if m10 == nil || m11 == nil {
 		return kepler.Ephemeris{}, clock.Model{}, false, ErrShortFrame
 	}
+	if m10.MsgType != 10 || m11.MsgType != 11 || !m11.hasEph2 {
+		return kepler.Ephemeris{}, clock.Model{}, false, errWrongMsgType
+	}
 	if m10.eph.Toe != m11.eph.Toe {
 		return kepler.Ephemeris{}, clock.Model{}, false, errIODMismatch
 	}
@@ -194,7 +204,7 @@ func AssembleGPSCNAV(id gnss.GNSSID, svid int, m10, m11, mClk *GPSCNAV) (kepler.
 	// af0=0/Toc=0 indistinguishable from a decoded clock) from a coherent one.
 	var clk clock.Model
 	clkOK := false
-	if mClk != nil && mClk.clk.Toc == m10.eph.Toe {
+	if mClk != nil && mClk.hasClk && mClk.clk.Toc == m10.eph.Toe {
 		clk = mClk.clk
 		clkOK = true
 	}
