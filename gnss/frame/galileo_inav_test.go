@@ -45,7 +45,38 @@ func buildGalileoINAVWords(content []byte) []uint32 {
 	for i := 0; i < 8; i++ {
 		words[i] = uint32(page[i*4])<<24 | uint32(page[i*4+1])<<16 | uint32(page[i*4+2])<<8 | uint32(page[i*4+3])
 	}
+	StampGalileoINAVCRC(words)
 	return words
+}
+
+// TestDecodeGalileoINAVCRC guards corruption in either protected data or
+// the transmitted checksum must fail, while the ICD-excluded SSP field must not
+// be accidentally included in the check.
+func TestDecodeGalileoINAVCRC(t *testing.T) {
+	content := make([]byte, 16)
+	setContentBits(content, 0, 5, 6)
+	words := buildGalileoINAVWords(content)
+	if _, err := DecodeGalileoINAV(words); err != nil {
+		t.Fatalf("valid stamped page: %v", err)
+	}
+
+	badData := append([]uint32(nil), words...)
+	badData[0] ^= 1 << 21 // page bit 10: protected even-part data
+	if _, err := DecodeGalileoINAV(badData); err != ErrBadCRC {
+		t.Errorf("protected-data flip: err = %v, want ErrBadCRC", err)
+	}
+
+	badCRC := append([]uint32(nil), words...)
+	badCRC[6] ^= 1 << 13 // page bit 210: first transmitted CRC bit
+	if _, err := DecodeGalileoINAV(badCRC); err != ErrBadCRC {
+		t.Errorf("CRC flip: err = %v, want ErrBadCRC", err)
+	}
+
+	sspFlip := append([]uint32(nil), words...)
+	sspFlip[7] ^= 1 << 21 // page bit 234: SSP/reserved2, outside CRC coverage
+	if _, err := DecodeGalileoINAV(sspFlip); err != nil {
+		t.Errorf("unprotected SSP flip: err = %v, want success", err)
+	}
 }
 
 // buildGalileoWord5 builds a Word Type 5 page with distinct BGD, E5b_HS, and

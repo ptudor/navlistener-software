@@ -56,6 +56,9 @@ func testKeypair(t *testing.T) (certPath, keyPath string) {
 
 func pushConfig(p Push) *Config {
 	c := defaults()
+	if p.MaxConns == 0 {
+		p.MaxConns = c.Push.MaxConns
+	}
 	c.Push = p
 	return c
 }
@@ -432,6 +435,21 @@ func TestCheckConfigParity(t *testing.T) {
 // non-positive duration is a hard error (not silently coerced to a default), and capture_only
 // on a ubx source is rejected rather than silently ignored.
 func TestConfigRejectsExplicitNonPositiveAndUbxCaptureOnly(t *testing.T) {
+	// The set-ness fix must preserve the documented values when the integer fields
+	// are genuinely absent from TOML.
+	unsetPath := filepath.Join(t.TempDir(), "unset.toml")
+	if err := os.WriteFile(unsetPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unset, err := Load(unsetPath)
+	if err != nil {
+		t.Fatalf("empty config should receive defaults: %v", err)
+	}
+	if unset.Store.BatchSize != 1000 || unset.Push.MaxConns != 512 {
+		t.Fatalf("unset sizes = batch %d / max_conns %d, want 1000 / 512",
+			unset.Store.BatchSize, unset.Push.MaxConns)
+	}
+
 	zeroTTL := defaults()
 	zeroTTL.State.SVTTLs = "0s"
 	if err := zeroTTL.finalize(); err == nil || !strings.Contains(err.Error(), "state.sv_ttl") {
@@ -442,6 +460,30 @@ func TestConfigRejectsExplicitNonPositiveAndUbxCaptureOnly(t *testing.T) {
 	negBatch.Store.BatchEverys = "-5s"
 	if err := negBatch.finalize(); err == nil || !strings.Contains(err.Error(), "store.batch_interval") {
 		t.Errorf("batch_interval=-5s: err = %v, want a store.batch_interval error", err)
+	}
+
+	// Integer fields have no separate set marker. Load begins with defaults and
+	// TOML overwrites them, so these explicit zeroes must remain distinguishable
+	// from absent fields and fail rather than being re-defaulted.
+	for name, body := range map[string]string{
+		"batch-size-zero": "[store]\nbatch_size = 0\n",
+		"max-conns-zero":  "[push]\nmax_conns = 0\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(path); err == nil {
+				t.Fatalf("explicit zero accepted:\n%s", body)
+			}
+		})
+	}
+
+	negSnapshot := defaults()
+	negSnapshot.Serve.SnapshotEverys = "-1s"
+	if err := negSnapshot.finalize(); err == nil || !strings.Contains(err.Error(), "snapshot_interval") {
+		t.Errorf("snapshot_interval=-1s: err = %v, want a non-negative-duration error", err)
 	}
 
 	ubxCapture := defaults()

@@ -220,6 +220,41 @@ func TestRealGalileoINAV(t *testing.T) {
 	t.Logf("real F9T capture: %d Galileo SVs with full I/NAV ephemerides", assembled)
 }
 
+// TestRealGalileoINAVIntegrityAllCaptures is must-not-change regression:
+// every I/NAV page emitted by the fleet captures (E1-B/E1-C and E5b-I/Q) must
+// pass the decoder's in-frame CRC check. The ephemeris test above proves useful
+// pages still assemble, but would otherwise silently skip individual CRC errors.
+func TestRealGalileoINAVIntegrityAllCaptures(t *testing.T) {
+	paths := []string{
+		"testdata/f9t_capture.ubx",
+		"testdata/f9p_capture.ubx",
+		"testdata/glo_superframe_capture.ubx",
+	}
+	total := 0
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read capture %s: %v", path, err)
+		}
+		var frames []*RawFrame
+		_ = scanUBX(bytes.NewReader(data), "cap", fixedTime,
+			func(f *RawFrame) { frames = append(frames, f) }, func(string) {})
+		for i, f := range frames {
+			if f.GnssID != gnss.Galileo || (f.SigID != 0 && f.SigID != 1 && f.SigID != 5 && f.SigID != 6) {
+				continue
+			}
+			total++
+			if _, err := frame.DecodeGalileoINAV(f.Words); err != nil {
+				t.Errorf("%s frame %d E%02d sigId %d: %v", path, i, f.SvID, f.SigID, err)
+			}
+		}
+	}
+	if total == 0 {
+		t.Fatal("capture fixtures contain no Galileo I/NAV pages")
+	}
+	t.Logf("%d real Galileo I/NAV pages passed CRC validation", total)
+}
+
 // TestRealGalileoGSTAgreesWithGPS guards the GST WN/TOW now decoded from
 // I/NAV word 5 must agree with the same real F9T capture's GPS-decoded time.
 // regression fix/regression fix established that GST(WN,TOW) equals GPS(WN+1024,TOW) with zero

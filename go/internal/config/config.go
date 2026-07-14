@@ -272,6 +272,7 @@ func defaults() *Config {
 		Metrics:         Metrics{Addr: "127.0.0.1:9100"},
 		State:           State{Shards: 16, SVTTLs: "2h", PropagateEverys: "1s"},
 		Store:           Store{BatchSize: 1000, BatchEverys: "1s", RawRetention: "7 days", CompressAfter: "1 day"},
+		Push:            Push{MaxConns: 512},
 		ShutdownTimeout: 15 * time.Second,
 	}
 }
@@ -319,13 +320,10 @@ func (c *Config) finalize() error {
 	if err := parseDurPositive("store.batch_interval", c.Store.BatchEverys, &c.Store.BatchEvery, time.Second); err != nil {
 		return err
 	}
-	// a negative batch_size is explicit garbage (an int has no "unset" string form to
-	// distinguish, but < 0 can never be intended); 0 stays "unset → default".
-	if c.Store.BatchSize < 0 {
+	// defaults() pre-populates the genuine unset value before TOML decode,
+	// so a decoded zero is necessarily explicit and must not be silently defaulted.
+	if c.Store.BatchSize <= 0 {
 		return fmt.Errorf("store.batch_size %d: must be positive", c.Store.BatchSize)
-	}
-	if c.Store.BatchSize == 0 {
-		c.Store.BatchSize = 1000
 	}
 	if c.Store.RawRetention != "" && !IntervalRe.MatchString(c.Store.RawRetention) {
 		return fmt.Errorf(`store.raw_retention %q: want a simple interval like "7 days"`, c.Store.RawRetention)
@@ -352,6 +350,8 @@ func (c *Config) finalize() error {
 	}
 	if c.Serve.SnapshotEverys == "" { // unset → default; an explicit "0s" disables
 		c.Serve.SnapshotEvery = 5 * time.Minute
+	} else if c.Serve.SnapshotEvery < 0 {
+		return fmt.Errorf("serve.snapshot_interval: must be non-negative (0 disables)")
 	}
 
 	if err := c.finalizePush(); err != nil {
@@ -455,12 +455,10 @@ func (c *Config) finalizePush() error {
 	if err := parseDurPositive("push.ack_interval", p.AckIntervals, &p.AckInterval, time.Second); err != nil {
 		return err
 	}
-	// a negative max_conns is explicit garbage; 0 stays "unset → default".
-	if p.MaxConns < 0 {
+	// defaults() pre-populates the genuine unset value before TOML decode;
+	// an explicit zero from TOML therefore remains distinguishable and invalid.
+	if p.MaxConns <= 0 {
 		return fmt.Errorf("push.max_conns %d: must be positive", p.MaxConns)
-	}
-	if p.MaxConns == 0 {
-		p.MaxConns = 512
 	}
 	if p.Addr == "" {
 		return nil // push disabled

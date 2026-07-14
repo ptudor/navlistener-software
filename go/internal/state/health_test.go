@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/gnss/frame"
 	"github.com/ptudor/navlistener/internal/ingest"
 )
 
@@ -17,6 +18,7 @@ func galWord(wordType int) []uint32 {
 	w := make([]uint32, 8)
 	w[0] = uint32(wordType) << 24
 	w[4] = 0x80000000
+	frame.StampGalileoINAVCRC(w)
 	return w
 }
 

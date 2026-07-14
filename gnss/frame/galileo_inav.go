@@ -15,13 +15,70 @@ import (
 // misaligned pair, whose data fields are not a nav word.
 var errGalileoAlertPage = errors.New("frame: Galileo I/NAV alert page or misaligned pair")
 
+// copyGalileoBits copies an MSB-first bit range between byte slices. I/NAV's
+// CRC-protected message is split across the even and odd 128-bit page parts,
+// so it cannot be checked as one range in the receiver's 256-bit delivery.
+func copyGalileoBits(dst []byte, dstOff int, src []byte, srcOff, n int) {
+	for i := 0; i < n; i++ {
+		sp := srcOff + i
+		if src[sp>>3]&(1<<uint(7-(sp&7))) != 0 {
+			dp := dstOff + i
+			dst[dp>>3] |= 1 << uint(7-(dp&7))
+		}
+	}
+}
+
+// galileoINAVCRCMessage reconstructs the I/NAV CRC message from one nominal
+// page. Per OS-SIS-ICD §4.3.1.4, it is the even flags+112 data bits (page
+// 0..113), followed by the odd flags+16 data+64 auxiliary/reserved bits (page
+// 128..209), followed, when withCRC is true, by the transmitted 24-bit CRC
+// (page 210..233). SSP/reserved2 and both tail fields are not protected.
+func galileoINAVCRCMessage(page []byte, withCRC bool) []byte {
+	bitLen := 196
+	oddBits := 82
+	if withCRC {
+		bitLen += 24
+		oddBits += 24
+	}
+	msg := make([]byte, (bitLen+7)/8)
+	copyGalileoBits(msg, 0, page, 0, 114)
+	copyGalileoBits(msg, 114, page, 128, oddBits)
+	return msg
+}
+
+// StampGalileoINAVCRC computes and writes the I/NAV CRC-24Q into an eight-word
+// nominal page. It exists for synthetic frame builders; live decoders should
+// only call DecodeGalileoINAV, which verifies the transmitted checksum.
+func StampGalileoINAVCRC(words []uint32) {
+	if len(words) < 8 {
+		return
+	}
+	page := make([]byte, 32)
+	for i := 0; i < 8; i++ {
+		binary.BigEndian.PutUint32(page[i*4:], words[i])
+	}
+	crc := CRC24QBits(galileoINAVCRCMessage(page, false), 0, 196)
+	for i := 0; i < 24; i++ {
+		p := 210 + i
+		mask := byte(1) << uint(7-(p&7))
+		if crc&(1<<uint(23-i)) != 0 {
+			page[p>>3] |= mask
+		} else {
+			page[p>>3] &^= mask
+		}
+	}
+	for i := 0; i < 8; i++ {
+		words[i] = binary.BigEndian.Uint32(page[i*4:])
+	}
+}
+
 // Galileo E1-B I/NAV decoding (OS-SIS-ICD Issue 2.1 §4.3). u-blox delivers each
 // I/NAV nominal page as one UBX-RXM-SFRBX of eight 32-bit words = a 256-bit page:
 // the even page part (words 0–3) then the odd page part (words 4–7), each starting
 // with Even/Odd(1)+PageType(1). The 128-bit nav "word" is the even part's 112 data
 // bits followed by the odd part's 16 data bits; word type is its first 6 bits.
-// Verified against real ZED-F9T frames (radius ≈ 29600 km). The receiver already
-// validated the CRC, so — as with GPS LNAV — we extract fields directly.
+// Verified against real ZED-F9T frames (radius ≈ 29600 km). Decode still verifies
+// the in-frame CRC: push-path frames need not retain a receiver's integrity guarantee.
 
 // Galileo I/NAV scale factors beyond the shared p2mNN set.
 const (
@@ -84,6 +141,13 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 	oddPageType, _ := pr.Bits(129, 1)
 	if evenFlag != 0 || oddFlag != 1 || evenPageType != 0 || oddPageType != 0 {
 		return nil, errGalileoAlertPage
+	}
+	// the nominal-page CRC message is non-contiguous in the delivered
+	// even+odd page, so reconstruct its 220 protected bits (including CRC) before
+	// applying the same CRC-24Q zero-remainder check used by CNAV and SBAS.
+	crcMessage := galileoINAVCRCMessage(page, true)
+	if !CheckCRC24QBits(crcMessage, 0, 220) {
+		return nil, ErrBadCRC
 	}
 
 	// Reconstruct the contiguous 128-bit nav word: even data (page bits 2..114)

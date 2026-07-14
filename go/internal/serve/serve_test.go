@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/gnss/frame"
 	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/state"
@@ -246,6 +247,7 @@ func beidouD1Words() []uint32 {
 func galileoINAVWords() []uint32 {
 	w := make([]uint32, 8)
 	w[4] = 0x80000000 // odd-part Even/Odd flag (page bit 128) must be 1
+	frame.StampGalileoINAVCRC(w)
 	return w
 }
 

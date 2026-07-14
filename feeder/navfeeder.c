@@ -151,6 +151,7 @@ struct spool {
 	 * always holds seqs older than the ring; the consumer drains disk before ring. */
 	const char *path;
 	FILE *disk_w;
+	int disk_append_disabled; /* repair/delete failed: never append past an untrusted boundary */
 	uint64_t disk_max_seq, disk_bytes, disk_max_bytes, disk_dropped;
 	pthread_mutex_t mu;
 };
@@ -226,7 +227,14 @@ static void spool_recover(struct spool *s) {
 		count++;
 	}
 	fclose(r);
-	if (count == 0) { unlink(s->path); return; }
+	if (count == 0) {
+		if (unlink(s->path) != 0 && errno != ENOENT) {
+			s->disk_append_disabled = 1;
+			log_msg("empty/torn disk spool could not be removed (%s); disk overflow disabled",
+				strerror(errno));
+		}
+		return;
+	}
 	/* if the tail truncate fails (EROFS/EACCES/EIO), do NOT unlink the whole spool and
 	 * restart seq at 0 — that re-enters the seq-reuse regime  where the
 	 * collector's (source_id, feeder_seq) ledger discards fresh frames as replays. Instead
@@ -237,6 +245,7 @@ static void spool_recover(struct spool *s) {
 		s->seq = s->disk_max_seq = max_seq;
 		s->disk_bytes = good_bytes;
 		s->disk_w = NULL;
+		s->disk_append_disabled = 1;
 		log_msg("disk spool truncate failed (%s); resuming seq %llu read-only, disk overflow disabled",
 			strerror(errno), (unsigned long long)max_seq);
 		return;
@@ -256,6 +265,7 @@ static void spool_init(struct spool *s, size_t cap, const char *path, uint64_t d
 	s->seq = s->acked = s->dropped = 0;
 	s->path = path;
 	s->disk_w = NULL;
+	s->disk_append_disabled = 0;
 	s->disk_max_seq = s->disk_bytes = s->disk_dropped = 0;
 	s->disk_max_bytes = disk_max_bytes;
 	pthread_mutex_init(&s->mu, NULL);
@@ -280,6 +290,7 @@ static void spool_init(struct spool *s, size_t cap, const char *path, uint64_t d
 static void disk_rollback(struct spool *s) {
 	if (s->disk_w) { fclose(s->disk_w); s->disk_w = NULL; }
 	if (truncate(s->path, (off_t)s->disk_bytes) != 0) {
+		s->disk_append_disabled = 1;
 		static time_t last_warn;
 		time_t nowt = time(NULL);
 		if (nowt - last_warn >= 60) {
@@ -291,6 +302,11 @@ static void disk_rollback(struct spool *s) {
 }
 
 static void disk_put(struct spool *s, uint64_t seq, const unsigned char *data, uint32_t len) {
+	/* regression fix/regression fix verification correction: disk_w == NULL normally means "reopen lazily",
+	 * so it cannot also represent a failed repair. Once the on-disk tail/boundary is
+	 * untrusted, keep dropping-and-counting overflow until the file is safely deleted (or
+	 * the process restarts and recovery succeeds); never append a good record past a tear. */
+	if (s->disk_append_disabled) { s->disk_dropped++; return; }
 	if (!s->disk_w) {
 		s->disk_w = fopen(s->path, "ab");
 		if (!s->disk_w) { s->dropped++; return; }
@@ -434,7 +450,13 @@ static int tcp_dial(const char *host, const char *port, int rcv_timeout_s) {
 	freeaddrinfo(res);
 	if (fd >= 0 && rcv_timeout_s > 0) {
 		struct timeval tv = { rcv_timeout_s, 0 };
-		setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+		if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv) != 0) {
+			/* regression fix verification correction: without the timeout a quiet/wedged TCP
+			 * source can block the producer forever, so fail this dial and retry. */
+			log_msg("failed to set receive timeout on %s:%s: %s", host, port, strerror(errno));
+			close(fd);
+			fd = -1;
+		}
 	}
 	return fd;
 }
@@ -893,7 +915,13 @@ static SSL *tls_connect(SSL_CTX *ctx, const struct opts *o, int *out_fd) {
 	 * other caller) is read-only. */
 	{
 		struct timeval snd = { 2 * KEEPALIVE_S, 0 };
-		setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &snd, sizeof snd);
+		if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &snd, sizeof snd) != 0) {
+			/* regression fix verification correction: continuing would silently restore the
+			 * indefinite SSL_write hang the finding requires us to eliminate. */
+			log_msg("failed to set collector send timeout: %s", strerror(errno));
+			close(fd);
+			return NULL;
+		}
 	}
 	SSL *ssl = SSL_new(ctx);
 	if (!ssl) { close(fd); return NULL; }
@@ -983,13 +1011,24 @@ static int handshake(SSL *ssl, const struct opts *o, int *zstd_ok) {
 static void disk_maybe_delete(struct spool *s) {
 	pthread_mutex_lock(&s->mu);
 	uint64_t cleared_bytes = 0;
+	int delete_err = 0;
 	if (s->path && s->disk_max_seq != 0 && s->acked >= s->disk_max_seq) {
 		if (s->disk_w) { fclose(s->disk_w); s->disk_w = NULL; }
-		unlink(s->path);
-		cleared_bytes = s->disk_bytes;
-		s->disk_max_seq = s->disk_bytes = 0;
+		if (unlink(s->path) == 0 || errno == ENOENT) {
+			cleared_bytes = s->disk_bytes;
+			s->disk_max_seq = s->disk_bytes = 0;
+			s->disk_append_disabled = 0;
+		} else {
+			/* Keeping the old accounting and disabling appends is safer than resetting
+			 * disk_bytes then reopening an undeleted file at an unknown boundary. */
+			delete_err = errno;
+			s->disk_append_disabled = 1;
+		}
 	}
 	pthread_mutex_unlock(&s->mu);
+	if (delete_err)
+		log_msg("acked disk spool could not be removed (%s); disk overflow disabled",
+			strerror(delete_err));
 	if (cleared_bytes >= 64 * 1024)
 		log_msg("disk spool delivered and cleared (%llu KiB)", (unsigned long long)(cleared_bytes / 1024));
 }
@@ -1300,7 +1339,8 @@ int main(int argc, char **argv) {
 	sigemptyset(&block);
 	sigaddset(&block, SIGTERM);
 	sigaddset(&block, SIGINT);
-	pthread_sigmask(SIG_BLOCK, &block, NULL);
+	if (pthread_sigmask(SIG_BLOCK, &block, NULL) != 0)
+		die("failed to block shutdown signals for the flush thread");
 	struct opts o; memset(&o, 0, sizeof o);
 	o.feed = "ubx";
 	o.baud = 460800;
@@ -1346,11 +1386,17 @@ int main(int argc, char **argv) {
 	SSL_CTX *ctx = make_ctx(&o);
 	spool_init(&g_spool, o.spool_cap, o.spool_file, o.disk_max_bytes);
 
-	/* start the shutdown-flush signal thread once the spool exists. A create failure
-	 * is non-fatal (the feeder still runs; only the graceful ring-flush is unavailable). */
+	/* start the shutdown-flush signal thread once the spool exists. SIGTERM/SIGINT
+	 * remain blocked in every other thread, so proceeding after a create failure would make
+	 * the process immune to graceful shutdown as well as losing the promised ring flush.
+	 * Retry transient boot-time resource failures before starting the receiver producer. */
 	pthread_t sigthr;
-	if (pthread_create(&sigthr, NULL, signal_thread, NULL) != 0)
-		log_msg("failed to start signal thread; shutdown ring-flush disabled");
+	int sig_backoff = 1;
+	while (pthread_create(&sigthr, NULL, signal_thread, NULL) != 0) {
+		log_msg("failed to start signal thread; retrying in %ds", sig_backoff);
+		sleep(sig_backoff);
+		if ((sig_backoff *= 2) > 30) sig_backoff = 30;
+	}
 
 	/* a failed pthread_create here (OOM at boot) previously left `prod`
 	 * indeterminate and the process running with no source thread ever reading the
