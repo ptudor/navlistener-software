@@ -154,6 +154,49 @@ var (
 		Help: "Push connection errors, by observer and kind.",
 	}, []string{"observer", "kind"})
 
+	// Serve-tier self-observability. The read tier is the daemon's
+	// reason to exist, and before these collectors it emitted nothing: a feed
+	// frozen on stale cache bytes by a marshal failure, or an SSE consumer being
+	// buffer-overflow-kicked in a reconnect loop, was invisible for months.
+	// Labels bounded: feed ∈ the five feed-name constants; SSE metrics unlabeled.
+
+	// ServeFeedMarshalErrorsTotal counts feed refreshes whose envelope failed to
+	// marshal — the cache then keeps serving the previous (stale) bytes.
+	ServeFeedMarshalErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_serve_feed_marshal_errors_total",
+		Help: "Feed refreshes whose envelope failed to marshal (cache left serving stale bytes), by feed.",
+	}, []string{"feed"})
+
+	// ServeFeedRefreshTimestamp is the Unix time of each feed's last successful
+	// refresh; alert on time() - this exceeding a few refresh intervals. (The
+	// review sketched an age gauge; a timestamp is the Prometheus idiom — age
+	// is computed at query time and cannot go stale between scrapes.)
+	ServeFeedRefreshTimestamp = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "navlistener_serve_feed_refresh_timestamp_seconds",
+		Help: "Unix time of the last successful refresh of each served feed.",
+	}, []string{"feed"})
+
+	// SSEClients is the number of currently-connected SSE event streams (out of
+	// the sseMaxClients cap — also the signal for an attacker parking streams).
+	SSEClients = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "navlistener_sse_clients",
+		Help: "SSE event-stream clients currently connected.",
+	})
+
+	// SSEEventsDroppedTotal counts events dropped toward a slow client (whose
+	// stream is then kicked so EventSource reconnects and replays the gap). A
+	// steadily-climbing value is a consumer (intsat) in a kick/reconnect loop.
+	SSEEventsDroppedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "navlistener_sse_events_dropped_total",
+		Help: "Events dropped toward a slow SSE client (client kicked to reconnect+replay).",
+	})
+
+	// SSESubscribeRejectedTotal counts subscriptions refused at the stream cap.
+	SSESubscribeRejectedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "navlistener_sse_subscribe_rejected_total",
+		Help: "SSE subscriptions rejected at the concurrent-stream cap.",
+	})
+
 	// StoreRowsTotal counts raw nav frames persisted to the historian.
 	StoreRowsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "navlistener_store_rows_total",

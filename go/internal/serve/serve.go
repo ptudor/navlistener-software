@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ptudor/navlistener/internal/config"
+	"github.com/ptudor/navlistener/internal/metrics"
 	"github.com/ptudor/navlistener/internal/state"
 	"github.com/ptudor/navlistener/internal/store"
 )
@@ -214,12 +215,17 @@ func (s *Server) refresh(feed string) {
 	}
 	body, err := json.Marshal(envelope{OK: true, Time: now.UTC().Format(time.RFC3339), Data: data})
 	if err != nil {
+		// counted, not just logged — the cache keeps serving the
+		// previous (stale) bytes, and without a counter + the refresh-timestamp
+		// gauge below, a feed frozen weeks ago is invisible to alerting.
+		metrics.ServeFeedMarshalErrorsTotal.WithLabelValues(feed).Inc()
 		s.log.Error("serve feed marshal failed", "feed", feed, "error", err)
 		return
 	}
 	s.mu.Lock()
 	s.cache[feed] = body
 	s.mu.Unlock()
+	metrics.ServeFeedRefreshTimestamp.WithLabelValues(feed).SetToCurrentTime()
 }
 
 // serveFeed returns the handler for one cached feed. GET/HEAD only; other methods

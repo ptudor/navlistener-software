@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/ptudor/navlistener/internal/metrics"
 )
 
 // EventMsg is one integrity event pushed to SSE clients and mirrored in the query
@@ -108,6 +110,9 @@ func (b *Broker) Publish(e EventMsg) {
 		select {
 		case client.events <- e:
 		default:
+			// a chronically-slow consumer (a permanent EventSource being
+			// overflow-kicked in a reconnect loop) is invisible without a counter.
+			metrics.SSEEventsDroppedTotal.Inc()
 			client.drop()
 		}
 	}
@@ -139,16 +144,21 @@ func (b *Broker) subscribe() (client *sseClient, ok bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if len(b.clients) >= sseMaxClients {
+		metrics.SSESubscribeRejectedTotal.Inc() // cap pressure/attack signal
 		return nil, false
 	}
 	client = &sseClient{events: make(chan EventMsg, sseClientBuffer), kick: make(chan struct{})}
 	b.clients[client] = struct{}{}
+	// gauge set from the authoritative map size under the lock (never
+	// inc/dec'd separately, so it cannot drift from reality).
+	metrics.SSEClients.Set(float64(len(b.clients)))
 	return client, true
 }
 
 func (b *Broker) unsubscribe(client *sseClient) {
 	b.mu.Lock()
 	delete(b.clients, client)
+	metrics.SSEClients.Set(float64(len(b.clients))) // regression fix
 	b.mu.Unlock()
 }
 
