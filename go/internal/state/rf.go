@@ -59,6 +59,11 @@ type rfStation struct {
 // per-band AGC baselines and the C/N₀-vs-elevation residual. Station identity is the
 // ingest source (dial) or observer id (push).
 func (s *Store) applyRF(f *ingest.RawFrame) {
+	// RF staleness (rfStaleAfter) and the live-receiver window are
+	// elapsed times against this collector's clock, so recency must be stamped
+	// from it — a feeder lagging near the 5 min push timestamp slack would
+	// otherwise sit permanently at the equally-sized staleness bound.
+	recv := f.LocalRecv()
 	s.rfMu.Lock()
 	defer s.rfMu.Unlock()
 	st := s.rf[f.Source]
@@ -66,7 +71,7 @@ func (s *Store) applyRF(f *ingest.RawFrame) {
 		st = &rfStation{id: f.Source, bands: map[int]*rfBand{}}
 		s.rf[f.Source] = st
 	}
-	st.lastSeen = f.Recv
+	st.lastSeen = recv
 
 	for _, b := range f.RF.Bands {
 		band := st.bands[b.Block]
@@ -76,14 +81,14 @@ func (s *Store) applyRF(f *ingest.RawFrame) {
 		}
 		band.agc, band.noise, band.cwSuppress = b.AGC, b.NoiseLevel, b.CWSuppress
 		band.jamState, band.antStatus = b.JamState, b.AntStatus
-		band.lastSeen = f.Recv
+		band.lastSeen = recv
 		band.learn(b.AGC)
 	}
 	if len(f.RF.Sats) > 0 {
 		st.cn0Mean, st.cn0Resid, st.cn0NumSats = cn0ElevationResidual(f.RF.Sats)
 		st.cn0ByGNSS = cn0ElevationResidualByConstellation(f.RF.Sats)
 		st.haveCn0 = st.cn0NumSats >= cn0MinSats
-		st.cn0LastSeen = f.Recv
+		st.cn0LastSeen = recv
 	}
 }
 

@@ -573,10 +573,16 @@ const (
 )
 
 func recordToFrame(rec wire.RawRecord, feed, source string) *RawFrame {
-	recv := time.Now()
+	// local is the collector's own clock, monotonic : Recv below may be
+	// replaced by the feeder's wall-clock stamp (the forensic reception time),
+	// but every staleness/expiry/liveness age in live state must be an elapsed
+	// time on ONE clock — time.Unix strips the monotonic reading, so ages built
+	// on the feeder stamp silently become cross-machine wall-clock differences.
+	local := time.Now()
+	recv := local
 	switch {
 	case rec.RecvUnixNs > 0:
-		if stamped := time.Unix(0, rec.RecvUnixNs); receiveTimestampPlausible(stamped, recv) {
+		if stamped := time.Unix(0, rec.RecvUnixNs); receiveTimestampPlausible(stamped, local) {
 			recv = stamped
 		} else {
 			metrics.PushErrorsTotal.WithLabelValues(source, "recv_ts_implausible").Inc()
@@ -589,16 +595,17 @@ func recordToFrame(rec wire.RawRecord, feed, source string) *RawFrame {
 		metrics.PushErrorsTotal.WithLabelValues(source, "recv_ts_implausible").Inc()
 	}
 	if IsTelemetryType(int(rec.FrameType)) {
-		return telemetryToFrame(rec, source, recv)
+		return telemetryToFrame(rec, source, recv, local)
 	}
 	f := &RawFrame{
-		Recv:    recv,
-		Source:  source,
-		GnssID:  rec.GnssID,
-		SvID:    int(rec.SvID),
-		SigID:   int(rec.SigID),
-		FreqID:  int(rec.FreqID),
-		MsgType: int(rec.FrameType),
+		Recv:      recv,
+		RecvLocal: local,
+		Source:    source,
+		GnssID:    rec.GnssID,
+		SvID:      int(rec.SvID),
+		SigID:     int(rec.SigID),
+		FreqID:    int(rec.FreqID),
+		MsgType:   int(rec.FrameType),
 	}
 	if feed == "rtcm" {
 		f.Bytes = rec.Raw
@@ -620,7 +627,7 @@ func recordToFrame(rec wire.RawRecord, feed, source string) *RawFrame {
 // applyRF uses — so the PNT-defense detector sees push and dial stations alike. An
 // unrecognised telemetry type or malformed body returns nil. RF frames carry no nav words
 // and are never written to the raw-nav historian (main.decodeLoop skips them).
-func telemetryToFrame(rec wire.RawRecord, source string, recv time.Time) *RawFrame {
+func telemetryToFrame(rec wire.RawRecord, source string, recv, local time.Time) *RawFrame {
 	rf := &RawRF{}
 	switch int(rec.FrameType) {
 	case TelemJammingStats:
@@ -638,7 +645,7 @@ func telemetryToFrame(rec wire.RawRecord, source string, recv time.Time) *RawFra
 	default:
 		return nil // a telemetry type we don't transport yet
 	}
-	return &RawFrame{Recv: recv, Source: source, RF: rf}
+	return &RawFrame{Recv: recv, RecvLocal: local, Source: source, RF: rf}
 }
 
 // receiveTimestampPlausible applies the asymmetric live-clock/replay contract.

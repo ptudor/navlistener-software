@@ -120,7 +120,9 @@ func (s *Store) applyObservation(f *ingest.RawFrame) {
 	// only via RAWX, no nav frame) stays at the zero Time, so Expire deletes it on
 	// every sweep (destroying the leveling arc before it can mature) and a feed
 	// build that catches it first serves an absurd last_seen_s.
-	st.lastSeen = f.Recv
+	// collector-local clock (observables are dial-only today, where the
+	// two coincide; kept via LocalRecv so a future push-path RAWX inherits it).
+	st.lastSeen = f.LocalRecv()
 	if st.ionoBySource == nil {
 		st.ionoBySource = map[string]*ionoTrack{}
 	}
@@ -140,7 +142,7 @@ func (s *Store) applyObservation(f *ingest.RawFrame) {
 		haveSamp: true,
 		haveSeen: true,
 		epochS:   float64(o.Week*weekSeconds) + o.RcvTow,
-		recvAt:   f.Recv,
+		recvAt:   f.LocalRecv(), // regression fix
 		breakArc: arcBreak,
 	}
 
@@ -196,7 +198,7 @@ func (s *Store) tryPairIono(f *ingest.RawFrame, tr *ionoTrack, secT *secTrack, s
 		secT.delayM = slant
 		secT.hasDelay = true
 		secT.lastEpochS = tr.pri.epochS
-		secT.delayAt = f.Recv
+		secT.delayAt = f.LocalRecv() // ionoDelayTTL ages against the collector clock
 		metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "iono_pair").Inc()
 	}
 	// Consume this secondary's sample so the next Add pairs a fresh one; the

@@ -359,7 +359,7 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "cnav").Inc()
 	if f.Source != "" {
-		s.recordCapability(f.Source, f.GnssID, f.SigID, f.Recv)
+		s.recordCapability(f.Source, f.GnssID, f.SigID, f.LocalRecv())
 	}
 }
 
@@ -373,10 +373,13 @@ func (s *Store) applySBAS(f *ingest.RawFrame) {
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "sbas").Inc()
+	// all recency below is the collector-local clock — staleness ages
+	// (sbasStaleAfter, capability windows) must never absorb feeder clock skew.
+	recv := f.LocalRecv()
 	// the capability fingerprint is decoded-nav-frame evidence and durable
 	// by design; record it only once decode has actually succeeded, never before.
 	if f.Source != "" {
-		s.recordCapability(f.Source, f.GnssID, f.SigID, f.Recv)
+		s.recordCapability(f.Source, f.GnssID, f.SigID, recv)
 	}
 	// PreambleOK previously gated nothing — even a message whose preamble
 	// didn't match one of the three ICD-mandated SBAS values (0x53/0x9A/0xC6) still
@@ -395,11 +398,11 @@ func (s *Store) applySBAS(f *ingest.RawFrame) {
 		st = &sbasState{prn: f.SvID, provider: m.Provider}
 		s.sbas[f.SvID] = st
 	}
-	st.lastSeen = f.Recv
+	st.lastSeen = recv
 	st.lastType = m.Type
 	st.doNotUse = m.DoNotUse
 	if m.DoNotUse {
-		st.lastType0, st.haveType0 = f.Recv, true
+		st.lastType0, st.haveType0 = recv, true
 	}
 }
 
@@ -410,8 +413,9 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "lnav").Inc()
+	recv := f.LocalRecv() // collector-local clock for all staleness/expiry/disco-age math 
 	if f.Source != "" {
-		s.recordCapability(f.Source, f.GnssID, f.SigID, f.Recv)
+		s.recordCapability(f.Source, f.GnssID, f.SigID, recv)
 	}
 
 	key := Key{G: f.GnssID, Sv: f.SvID, Sig: f.SigID}
@@ -424,7 +428,7 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 		st = &svState{key: key}
 		sh.m[key] = st
 	}
-	st.lastSeen = f.Recv
+	st.lastSeen = recv
 
 	switch sf.SubframeID {
 	case 1:
@@ -463,10 +467,10 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 	// A new ephemeris (new IOD): compute the changeover discontinuities against the
 	// outgoing set before replacing it (docs/INTEGRITY.md §3).
 	if st.haveEph {
-		s.computeDisco(st, eph, clk, f.Recv)
+		s.computeDisco(st, eph, clk, recv)
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
-	st.ephAt = f.Recv // wall-clock apply time for the disco staleness gate
+	st.ephAt = recv // collector-local apply time for the disco staleness gate 
 	st.health, st.haveHealth, st.ura = st.sf1.Health, true, st.sf1.URAIndex
 	st.accKind, st.accIdx = accURA, st.sf1.URAIndex
 }
@@ -478,8 +482,9 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "inav").Inc()
+	recv := f.LocalRecv() // regression fix
 	if f.Source != "" {
-		s.recordCapability(f.Source, f.GnssID, f.SigID, f.Recv)
+		s.recordCapability(f.Source, f.GnssID, f.SigID, recv)
 	}
 
 	key := Key{G: f.GnssID, Sv: f.SvID, Sig: 0} // Galileo SV keyed on primary signal
@@ -492,7 +497,7 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 		st = &svState{key: key}
 		sh.m[key] = st
 	}
-	st.lastSeen = f.Recv
+	st.lastSeen = recv
 
 	// Word type 5 carries E1B health and BGD (not part of the IODnav-matched
 	// ephemeris set); fold its health in as it arrives (docs/CONSTELLATIONS.md
@@ -525,10 +530,10 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 		return
 	}
 	if st.haveEph {
-		s.computeDisco(st, eph, clk, f.Recv)
+		s.computeDisco(st, eph, clk, recv)
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
-	st.ephAt = f.Recv // regression fix
+	st.ephAt = recv // regression fix (collector-local, regression fix)
 	st.accKind, st.accIdx = accSISA, st.galW[3].SISA
 }
 
@@ -568,9 +573,10 @@ func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "fnav").Inc()
+	recv := f.LocalRecv() // regression fix
 	// record the capability fingerprint only after a structurally valid decode.
 	if f.Source != "" {
-		s.recordCapability(f.Source, f.GnssID, f.SigID, f.Recv)
+		s.recordCapability(f.Source, f.GnssID, f.SigID, recv)
 	}
 
 	// Only the ephemeris/clock pages (1..4) assemble a nav set; almanac pages 5/6 are
@@ -590,7 +596,7 @@ func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 		st = &svState{key: key}
 		sh.m[key] = st
 	}
-	st.lastSeen = f.Recv
+	st.lastSeen = recv
 
 	st.fnav[w.PageType] = w
 	// Page 1 carries SISA + the E5a Signal Health Status outside the IODnav-matched eph set;
@@ -611,10 +617,10 @@ func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 		return // same data set, nothing new
 	}
 	if st.haveEph {
-		s.computeDisco(st, eph, clk, f.Recv)
+		s.computeDisco(st, eph, clk, recv)
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
-	st.ephAt = f.Recv // regression fix
+	st.ephAt = recv // regression fix (collector-local, regression fix)
 	st.accKind, st.accIdx = accSISA, st.fnav[1].SISA
 }
 
@@ -625,8 +631,9 @@ func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "d1").Inc()
+	recv := f.LocalRecv() // regression fix
 	if f.Source != "" {
-		s.recordCapability(f.Source, f.GnssID, f.SigID, f.Recv)
+		s.recordCapability(f.Source, f.GnssID, f.SigID, recv)
 	}
 
 	key := Key{G: f.GnssID, Sv: f.SvID, Sig: 0}
@@ -639,7 +646,7 @@ func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 		st = &svState{key: key}
 		sh.m[key] = st
 	}
-	st.lastSeen = f.Recv
+	st.lastSeen = recv
 
 	switch sf.FraID {
 	case 1:
@@ -673,10 +680,10 @@ func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 		return
 	}
 	if st.haveEph {
-		s.computeDisco(st, eph, clk, f.Recv)
+		s.computeDisco(st, eph, clk, recv)
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
-	st.ephAt = f.Recv // regression fix
+	st.ephAt = recv // regression fix (collector-local, regression fix)
 	st.health, st.haveHealth = st.bd1.Health, true
 	st.accKind, st.accIdx = accURA, st.bd1.URAI
 	st.aodc, st.aode, st.haveAOD = st.bd1.AODC, st.bd1.AODE, true
@@ -689,8 +696,9 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "bcnav2").Inc()
+	recv := f.LocalRecv() // regression fix
 	if f.Source != "" {
-		s.recordCapability(f.Source, f.GnssID, f.SigID, f.Recv)
+		s.recordCapability(f.Source, f.GnssID, f.SigID, recv)
 	}
 
 	key := Key{G: f.GnssID, Sv: f.SvID, Sig: f.SigID}
@@ -703,7 +711,7 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		st = &svState{key: key}
 		sh.m[key] = st
 	}
-	st.lastSeen = f.Recv
+	st.lastSeen = recv
 
 	switch m.MesType {
 	case 10:
@@ -768,7 +776,7 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 	}
 	if ephChanged && st.haveEph {
 		if clkOK && st.clkHasBcTGD == nextClkHasTGD {
-			s.computeDisco(st, eph, clk, f.Recv)
+			s.computeDisco(st, eph, clk, recv)
 		} else {
 			// A clock comparison across differing TGD provenance would turn an
 			// unknown group delay into a false clock jump.
@@ -776,7 +784,7 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		}
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, st.bc10.IODE, true
-	st.ephAt = f.Recv // regression fix
+	st.ephAt = recv // regression fix (collector-local, regression fix)
 	if clkOK {
 		st.bcIODC, st.haveBcIOD = st.bcClk.IODC, true
 		st.clkHasBcTGD = nextClkHasTGD
@@ -791,8 +799,25 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "glo").Inc()
+	// regression fix — TWO clock domains in this function, deliberately:
+	//   recv (collector-local) — staleness/expiry/disco-age math (lastSeen,
+	//   gloEphAt, discoAt, almanac-slot recency): elapsed time against this
+	//   host's own clock, immune to feeder skew and spool-replay rewinds.
+	//   f.Recv (feeder stamp) — the regression fix/regression fix frame-coherence windows
+	//   (gloS1At..gloS4At, gloAlmFirstAt): those guard BROADCAST adjacency of
+	//   tag-less strings, and only the feeder's stamp preserves the on-air
+	//   spacing. A spool replay (or a feeder draining a backlog burst) delivers
+	//   strings milliseconds apart on the collector clock, so a local-clock
+	//   window would pass strings from DIFFERENT frames across a tb changeover
+	//   and assemble a chimera (X new, Y/Z old — AssembleGLONASS has no
+	//   cross-string tb tag to catch it), firing a phantom multi-thousand-km
+	//   orbit-disco. Feeder stamps from one station are self-consistent, which
+	//   is all adjacency needs; the cross-station-skew wrong-REJECT this keeps
+	//   is the conservative failure for an integrity monitor, the wrong-ACCEPT
+	//   is not.
+	recv := f.LocalRecv()
 	if f.Source != "" {
-		s.recordCapability(f.Source, f.GnssID, f.SigID, f.Recv)
+		s.recordCapability(f.Source, f.GnssID, f.SigID, recv)
 	}
 
 	key := Key{G: f.GnssID, Sv: f.SvID, Sig: 0}
@@ -805,12 +830,12 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		st = &svState{key: key}
 		sh.m[key] = st
 	}
-	st.lastSeen = f.Recv
+	st.lastSeen = recv
 	st.gloFreqID = f.FreqID
 
 	switch {
 	case str.Number == 1:
-		st.gloS1, st.gloS1At = str, f.Recv
+		st.gloS1, st.gloS1At = str, f.Recv // feeder stamp: broadcast adjacency (regression fix, above)
 	case str.Number == 2:
 		st.gloS2, st.gloS2At = str, f.Recv
 		st.health, st.haveHealth = str.Health, true
@@ -826,7 +851,7 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 	case str.Number >= 6 && str.Number <= 14 && str.Number%2 == 0: // first of an almanac pair
 		st.gloAlmFirst = append(st.gloAlmFirst[:0], f.Words...)
 		st.gloAlmFirstNum = str.Number
-		st.gloAlmFirstAt = f.Recv
+		st.gloAlmFirstAt = f.Recv // feeder stamp: broadcast adjacency (regression fix, above)
 		if str.Number == 6 {
 			st.gloFrameBaseSlot = 0 // new frame's first almanac; base slot set on pairing
 		}
@@ -845,7 +870,7 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 			// unknown base (string 6 lost) conservatively still pairs (the slot-range guard
 			// in applyGloAlmanac remains the backstop).
 			if !(st.gloAlmFirstNum == 14 && st.gloFrameBaseSlot >= 21) {
-				slot := s.applyGloAlmanac(st.gloAlmFirst, f.Words, f.Recv)
+				slot := s.applyGloAlmanac(st.gloAlmFirst, f.Words, recv)
 				if st.gloAlmFirstNum == 6 && slot > 0 {
 					st.gloFrameBaseSlot = slot
 				}
@@ -904,7 +929,7 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 	// An identical tb (e.g. an L2OF string re-assembling the same set, regression fix) is not a
 	// changeover and does no disco work.
 	if st.haveGloEph && eph.Tb != st.gloEph.Tb {
-		s.computeGloDisco(st, eph, f.Recv)
+		s.computeGloDisco(st, eph, recv)
 	}
 	// complete a deferred time-disco once the incoming set's clock (string 4)
 	// arrives for the tb we recorded at the changeover.
@@ -914,12 +939,12 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		if d := math.Abs(eph.TauN-oldOff) * 1e9; finite(d) {
 			st.timeDiscoNs = d
 			st.timeDiscoValid = true
-			st.discoAt = f.Recv
+			st.discoAt = recv
 		}
 		st.discoPendClk = false
 	}
 	st.gloEph, st.haveGloEph = eph, true
-	st.gloEphAt = f.Recv
+	st.gloEphAt = recv // collector-local, as ephAt
 }
 
 // computeGloDisco records the orbit/time discontinuity across a GLONASS tb changeover
@@ -1064,6 +1089,14 @@ func (s *Store) computeDisco(st *svState, newEph kepler.Ephemeris, newClk clock.
 	// lastSeen fresh with no nav decode for a week). Add a wall-clock age gate (now − ephAt,
 	// which cannot wrap) alongside the EphAge propagation-distance gate: skip the disco if
 	// EITHER says the outgoing set is stale.
+	//
+	// regression fix residual (known, accepted): ephAt is the COLLECTOR-local apply time, so a
+	// spool replay applies old sets seconds apart and this wall gate passes — correct in
+	// general (the replayed changeover is real and should be measured), but if two
+	// consecutive replayed sets for one SV are 7 d ± 4 h apart in Toe, EphAge aliases
+	// under 4 h too and one phantom disco can slip through. That needs a ≥6 d 20 h gap
+	// between consecutive ephemerides inside one ≤7 d spool — a razor-thin tail of an
+	// already-degenerate capture; not worth a third gate.
 	if math.Abs(gnsstime.EphAge(tstar, st.eph.Toe)) >= discoTrustAge.Seconds() ||
 		st.ephAt.IsZero() || now.Sub(st.ephAt) >= discoTrustAge {
 		st.orbitDiscoValid = false

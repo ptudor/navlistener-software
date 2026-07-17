@@ -21,7 +21,7 @@ import (
 // messages, SBF blocks) carries Bytes. The decode stage picks by (GnssID, SigID)
 // or message type.
 type RawFrame struct {
-	Recv    time.Time   // reception time (receiver/host clock)
+	Recv    time.Time   // reception time (receiver/host clock; push path: the FEEDER's stamp)
 	Source  string      // ingest source name
 	GnssID  gnss.GNSSID // constellation (u-blox numbering)
 	SvID    int         // PRN/slot within constellation
@@ -40,6 +40,32 @@ type RawFrame struct {
 	// Dial-mode frames have no such sequence and always persist.
 	Seq    uint64
 	HasSeq bool
+
+	// RecvLocal is the collector-local receipt instant, stamped from THIS host's
+	// clock (carrying Go's monotonic reading) at the push ingest boundary
+	//. On that path Recv is the feeder's wall-clock stamp — the
+	// forensic reception time, preserved for the historian and accepted with up
+	// to recvTimestampSlack of skew or recvReplayHorizon of spool-replay age —
+	// so subtracting it from this host's time.Now() compares two machines'
+	// clocks: a feeder lagging near the 5 min slack would sit permanently at the
+	// equally-sized liveness/RF staleness windows, and a spool replay would
+	// rewind lastSeen/ephAt days backward mid-stream. All elapsed-time math in
+	// live state (SV TTL expiry, live-receiver windows, RF/SBAS staleness, the
+	// disco trust gates, GLONASS frame-coherence windows) must therefore read
+	// LocalRecv(), never Recv. Dial-mode connectors stamp Recv from this host's
+	// clock already and leave RecvLocal zero.
+	RecvLocal time.Time
+}
+
+// LocalRecv returns the collector-local receipt time for elapsed-time math
+// (staleness, expiry, trust windows — regression fix). A zero RecvLocal means the
+// frame came from a dial-mode connector (or a test) whose Recv was already
+// stamped from this host's clock, so Recv is the correct local instant there.
+func (f *RawFrame) LocalRecv() time.Time {
+	if !f.RecvLocal.IsZero() {
+		return f.RecvLocal
+	}
+	return f.Recv
 }
 
 // RawRF is one RF-environment telemetry sample from a receiver: the jamming/AGC
