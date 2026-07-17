@@ -89,6 +89,20 @@ CREATE INDEX IF NOT EXISTS idx_gnss_events_severity_time ON gnss_events (severit
 -- lands invisibly on the consumer since navlistener itself never queries by id.
 CREATE INDEX IF NOT EXISTS idx_gnss_events_id            ON gnss_events (id);
 
+-- compress-enable gnss_events like the other two hypertables. Events are
+-- deliberately retention-less (confirmed integrity transitions are the durable
+-- record — no retention policy, ever), which is exactly why old chunks must not
+-- stay row-oriented forever: a flapping detector over a multi-month run
+-- accumulates uncompressed chunks without bound, and enabling compression later
+-- requires this ALTER first — a policy alone cannot do it. The compression
+-- POLICY (30 days) is applied by the store at startup (applyPolicies), like
+-- nav_frames'. Segment by event_type (the dominant query axis alongside time).
+ALTER TABLE gnss_events SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'event_type',
+    timescaledb.compress_orderby   = 'time DESC'
+);
+
 -- pg_notify has a hard ~8000-byte payload limit; a long NEW.message would raise in
 -- this trigger and fail the whole INSERT in the same transaction. The
 -- payload carries only the fields needed to identify the row (id/sv/type/severity)

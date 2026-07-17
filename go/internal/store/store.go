@@ -334,13 +334,29 @@ func applyPolicies(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, cf
 	}
 
 	// Feed snapshots are the light replay/backfill record: compress after 7 days,
-	// drop after 90 days (docs/OUTPUT.md §4). Events (gnss_events) carry no retention
-	// policy — confirmed integrity transitions are the durable record.
+	// drop after 90 days (docs/OUTPUT.md §4). remove-then-add (the
+	// nav_frames pattern above) so a future change to these interval constants
+	// actually applies on an existing deployment — add_* with if_not_exists is a
+	// silent no-op when a policy already exists.
+	if err := exec(`SELECT remove_compression_policy('gnss_snapshots', if_exists => true)`); err != nil {
+		return err
+	}
 	if err := exec(`SELECT add_compression_policy('gnss_snapshots', INTERVAL '7 days', if_not_exists => true)`); err != nil {
 		return fmt.Errorf("snapshot compression policy: %w", err)
 	}
+	if err := exec(`SELECT remove_retention_policy('gnss_snapshots', if_exists => true)`); err != nil {
+		return err
+	}
 	if err := exec(`SELECT add_retention_policy('gnss_snapshots', INTERVAL '90 days', if_not_exists => true)`); err != nil {
 		return fmt.Errorf("snapshot retention policy: %w", err)
+	}
+	// events are retention-less BY DESIGN (durability of the confirmed
+	// integrity record) — compression only, never a retention policy here.
+	if err := exec(`SELECT remove_compression_policy('gnss_events', if_exists => true)`); err != nil {
+		return err
+	}
+	if err := exec(`SELECT add_compression_policy('gnss_events', INTERVAL '30 days', if_not_exists => true)`); err != nil {
+		return fmt.Errorf("events compression policy: %w", err)
 	}
 	log.Info("historian policies applied", "compress_after", compAfter, "raw_retention", rawRet)
 	return nil
