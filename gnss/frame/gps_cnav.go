@@ -127,7 +127,10 @@ func DecodeGPSCNAV(id gnss.GNSSID, words []uint32) (*GPSCNAV, error) {
 		m.WN = int(u(38, 13))
 		m.Health = int(u(51, 3))
 		// URA_ED is a SIGNED two's-complement integer (+15..−16), IS-GPS-200N
-		// §30.3.3.1.1.2 — not unsigned. A negative index (URA < 2.4 m, routine for modern
+		// §30.3.3.1.1.4 (Elevation-Dependent Accuracy, MT10 bits 66-70) — not unsigned.
+		// (§30.3.3.1.1.2 is Signal Health; the signedness statement is in §30.3.3.1.1.4:
+		// "The URAED index is a signed, two's complement integer in the range of +15 to
+		// -16.") A negative index (URA < 2.4 m, routine for modern
 		// SVs) was mis-decoded (e.g. bits 11111 = −1 read as 31) over half the domain.
 		m.URAED = int(s(65, 5))
 		m.eph.Toe = float64(u(70, 11)) * cnavT0
