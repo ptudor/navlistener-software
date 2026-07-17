@@ -92,8 +92,8 @@ Cited by code where relevant, but the document itself is never downloaded or com
 
 | cite-key | title | issuer | note |
 |---|---|---|---|
-| **GLO-CDMA-GENDESC** | GLONASS CDMA "General Description of Code Division Multiple Access Signal System" (Ed 1.0, 2016) | JSC Russian Space Systems | Carries a worked numeric orbit-integration example useful for a GLONASS propagator truth vector (see regression fix). Only source is `russianspacesystems.ru`, which serves it behind a Russian-government CA absent from the default trust store — not fetched (no `-k`, no unofficial mirror). Obtain manually from russianspacesystems.ru. |
-| **GLO-CDMA-L1OC** | GLONASS CDMA open-service L1OC signal ICD (Ed 1.0, 2016) | JSC Russian Space Systems | Same host/CA limitation as above. |
+| **GLO-CDMA-GENDESC** | GLONASS CDMA "General Description of Code Division Multiple Access Signal System" (Ed 1.0, 2016) | JSC Russian Space Systems | Carries a worked numeric orbit-integration example useful for a GLONASS propagator truth vector (see regression fix). **Not fetchable non-interactively — obtain manually.** The issuer (`russianspacesystems.ru`, direct path `/wp-content/uploads/2016/08/ICD-GLONASS-CDMA-General.-Edition-1.0-2016.pdf`) sits behind a Russian-government CA the default trust store rejects *and*, even with the cert bypassed (`curl -k`), returns a hard reverse proxy **403 Forbidden** to non-Russian requests (geo/WAF block — reproduced with a browser UA + Referer, 2026-07-17: everyone off a Russian network gets the 403). The Scribd mirror (doc 785928725) is gated behind a JavaScript "Client Challenge" bot-wall, so curl only sees the challenge stub. Acquire from a Russian-network vantage or a JS-capable browser session. |
+| **GLO-CDMA-L1OC** | GLONASS CDMA open-service L1OC signal ICD (Ed 1.0, 2016) | JSC Russian Space Systems | Same host/CA/403 and Scribd-JS-wall limitations as above (Scribd doc 785928728). |
 
 ### 3c. Vendor / receiver protocol documents (proprietary — cite, don't redistribute)
 
