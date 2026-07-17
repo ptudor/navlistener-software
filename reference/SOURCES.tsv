@@ -1,0 +1,57 @@
+# navlistener reference-library fetch manifest — consumed by reference/Makefile.
+# One row per redistributably-or-locally vendored ICD. Tab-separated. '#' = comment.
+#
+# Columns:
+#   filename  policy  sha256  bytes  url
+#
+# policy:
+#   commit — redistribution permitted by the document's own terms; tracked in git
+#            (see the negation list in .gitignore) and present on a fresh clone.
+#   local  — terms grant no redistribution (or forbid it, or are uncleared); git-ignored,
+#            NOT in a fresh clone. `make -C reference update` fetches it from the URL below
+#            so a developer's machine matches the team byte-for-byte (verified by sha256).
+#
+# sha256 is the authority: `make verify` fails if a fetched/present file does not match,
+# which is exactly how you detect an upstream re-publish (a new edition = a new row/hash).
+#
+# filename	policy	sha256	bytes	url
+
+# ---- GPS (U.S. Space Force via USCG NAVCEN) — public domain, Distribution Statement A ----
+IS-GPS-200N.pdf	commit	54ec544bfe7e6acd97daaa1de0ca248e5abec6b418f23c1a69991e5c7bcf749a	3338120	https://www.navcen.uscg.gov/sites/default/files/pdf/gps/IS-GPS-200N.pdf
+IS-GPS-705J.pdf	commit	532fc3b89061dff84e34406b9a5b41e34b83bdc8cc194b7b7f75a70b15391885	1771754	https://www.navcen.uscg.gov/sites/default/files/pdf/gps/IS-GPS-705J.pdf
+IS-GPS-800J.pdf	commit	c4aad71058a0eba1ba90672e9511566d2d124b49801cfaa42a51c21241815d0a	4167288	https://www.navcen.uscg.gov/sites/default/files/pdf/gps/IS-GPS-800J.pdf
+ICD-GPS-240D.pdf	commit	f458baf07aedac518c807fd21897539257183ba563bde6921ca54d8cdc7d77a5	1859702	https://www.navcen.uscg.gov/sites/default/files/pdf/gps/ICD_GPS_240D.pdf
+WAAS-PS.pdf	commit	745bbfddc975c17b3797da5a7d4802cb82c2ceb24c8bdd42d2d8b3da1383463f	1507479	https://www.gps.gov/sites/default/files/2025-07/2008-WAAS-performance-standard.pdf
+
+# ---- Galileo / EGNOS (EUSPA via GSC) — conditional © European Union grant (terms travel with the doc) ----
+GAL-OS-SIS-ICD-2.2.pdf	commit	1ca51b26c970140d2a5fd932fdf6086e5dcf945cbe216ccb081c300136504671	5335673	https://www.gsc-europa.eu/sites/default/files/sites/all/files/Galileo_OS_SIS_ICD_in_force.pdf
+GAL-OSNMA-SIS-ICD.pdf	commit	0f8e385af744924cd64cea476684d399f63af0d65384d368b0765ea94d6176c3	3019523	https://www.gsc-europa.eu/sites/default/files/sites/all/files/Galileo-OSNMA-SIS-ICD_in_force.pdf
+GAL-OSNMA-RXG.pdf	commit	4b005862f5d1fbb53e9f51ae3f182cee1c7b890ea8236578669b56abc7d3b651	3839354	https://www.gsc-europa.eu/sites/default/files/sites/all/files/Galileo-OSNMA-RX-Guidelines_in_force.pdf
+GAL-HAS-SIS-ICD.pdf	commit	7b1058520175cf4d135df0fc17c4fb339a95d645804599242204405dd2a88873	2079523	https://www.gsc-europa.eu/sites/default/files/sites/all/files/Galileo-HAS-SIS-ICD_in_force.pdf
+EGNOS-SDD-OS.pdf	commit	3a6ddeb601c9c0acdba5c1c6a71eca54f4f513e26107e70b61f444f91267b5d8	2251301	https://egnos.gsc-europa.eu/sites/default/files/documents/egnos_os_sdd_in_force.pdf
+
+# ---- QZSS (Cabinet Office, Japan) — DCR has an explicit redistribution clause; PNT/L1S/L6 grant use only ----
+QZSS-DCR.pdf	commit	07cc143ea7d03b486392b16f348ca291adf758f9d81ae4c457f3e89a165fa516	3645953	https://qzss.go.jp/en/technical/download/pdf/ps-is-qzss/is-qzss-dcr-016.pdf
+QZSS-PNT-006.pdf	local	ed8097704f2335180aba8cbf5d4a5240518674eeb4d8ba7e752856a3cfbc49fb	4131112	https://qzss.go.jp/en/technical/download/pdf/ps-is-qzss/is-qzss-pnt-006.pdf
+QZSS-L1S.pdf	local	26acfb4b803990a1f72beab6e6a3c0fda161cff2255aa3277738206724877b73	1169920	https://qzss.go.jp/en/technical/download/pdf/ps-is-qzss/is-qzss-l1s-009.pdf
+QZSS-L6.pdf	local	c7de5e845bdac6815350a717cd486d04ddddd25c09edcc4099a3bef48140a1ff	1505520	https://qzss.go.jp/en/technical/download/pdf/ps-is-qzss/is-qzss-l6-008.pdf
+
+# ---- NavIC / IRNSS (ISRO) — L5S forbids reproduction; L1 grants conditional non-profit reuse (held local by decision) ----
+NAVIC-SPS-L5S.pdf	local	321573a6903ebc5d7392a1baa26795ccd6997100449cb79836f849498ea8216f	2060847	https://www.isro.gov.in/media_isro/pdf/SateliteNavigation/irnss_sps_icd_version1.1-2017.pdf
+NAVIC-SPS-L1.pdf	local	ad534a52f5eda610c11c7fbb4af6721680ee1f103f8df121b8d5a0dbd7c523c6	3617525	https://www.isro.gov.in/media_isro/pdf/SateliteNavigation/NavIC_SPS_ICD_L1_final.pdf
+
+# ---- GLONASS (Russia) — no redistribution grant; local only. GLO-ICD-5.1 URL is the UNB academic ----
+# ---- mirror (byte-identical to the RISDE 2008 original); russianspacesystems.ru serves it behind a ----
+# ---- Russian-government CA the default trust store rejects (see REFERENCES.md, GLO-CDMA rows). ----
+GLO-ICD-5.1.pdf	local	5c6226de34720656f8d195b7132a3778a7c377d263bb50954c0c581ff08cd3e0	994607	http://gauss.gge.unb.ca/GLONASS.ICD.pdf
+GLO-OS-PS-2.2.pdf	local	f0def7be0890508cd7502d7a8d6e1e9e0a69ab1f7dd1d20165fdd2c7c40a3410	1449757	https://glonass-iac.ru/upload/docs/stehos/stehos_en.pdf
+
+# ---- BeiDou (China Satellite Navigation Office) — CSNO reserves interpretation; no redistribution grant; local only ----
+BDS-SIS-B1I-3.0.pdf	local	7f2de6f69af3eb970627d43e5ad6645e76486e1cbaedfdf5f697210ede9ce2e8	1209495	http://en.beidou.gov.cn/SYSTEMS/ICD/201902/P020190227702348791891.pdf
+BDS-SIS-B2a-1.0.pdf	local	50e1b2b80181dc1d3fe4f8a9b154953d32a8e157316c09fb90e02d2954b11880	1594977	http://en.beidou.gov.cn/SYSTEMS/ICD/201806/P020180608518432765621.pdf
+BDS-SIS-B1C-1.0.pdf	local	a297befc287fe4598735ccc99246c58e299375d79770a788538123ed4a20d137	1694100	http://en.beidou.gov.cn/SYSTEMS/ICD/201806/P020180608519640359959.pdf
+BDS-SIS-B2b-1.0.pdf	local	7c99ad37a7153fbeeaadfa395700b54dfc284dc81b296c09bda9aec3853f6a74	1496980	http://en.beidou.gov.cn/SYSTEMS/ICD/202008/P020231201537880833625.pdf
+BDS-SIS-B3I-1.0.pdf	local	b924b861c79d1e70048dc13ec41c833c3bc231fd92e50b1089f055ce3a7be4a8	1217676	http://en.beidou.gov.cn/SYSTEMS/ICD/201806/P020180608516798097666.pdf
+BDS-SIS-B2I-2.1.pdf	local	e59e5e225524eb1b2ef2288d2dbf97a846b377e777327182cbf4afeffe8ac345	1685079	http://www.beidou.gov.cn/xt/gfxz/201805/P020180507527106075323.pdf
+BDS-PPP-B2b-1.0.pdf	local	a70c08357b420f0fb662e5bc02a15df6a66ff6ab5c40686bbb7d5a763791d742	1388902	http://en.beidou.gov.cn/SYSTEMS/ICD/202008/P020231201538195573144.pdf
+BDS-BDSBAS-B1C-1.0.pdf	local	22ae917b179c55ab460489c895f538cc6996ef4870eb8eb0532737feb07328ca	1396926	http://en.beidou.gov.cn/SYSTEMS/ICD/202008/P020200803538292532733.pdf

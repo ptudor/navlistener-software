@@ -25,7 +25,28 @@ navlistener.toml
 # Claude local machine settings
 .claude/settings.local.json
 
-# Reference ICDs: redistribution-permitted documents are vendored explicitly;
-# all others remain local-only until their licenses are cleared.
-docs/icd/*.pdf
-!docs/icd/Galileo_OS_SIS_ICD_in_force.pdf
+# Reference ICDs (reference/icd/, catalogued in reference/REFERENCES.md):
+# redistribution-permitted documents are vendored explicitly (negated below);
+# all others remain local-only until their licenses are cleared. Terms per
+# document are recorded in REFERENCES.md; add a negation line when a doc's
+# reproduction grant is confirmed from the document itself.
+reference/icd/*.pdf
+# US Government works — public domain (Distribution Statement A / no © asserted):
+!reference/icd/IS-GPS-200N.pdf
+!reference/icd/IS-GPS-705J.pdf
+!reference/icd/IS-GPS-800J.pdf
+!reference/icd/ICD-GPS-240D.pdf
+!reference/icd/WAAS-PS.pdf
+# EU — conditional "© European Union" reproduction grant printed in the document
+# (redistribution permitted with the Terms of Use carried unmodified alongside):
+!reference/icd/GAL-OS-SIS-ICD-2.2.pdf
+!reference/icd/GAL-OSNMA-SIS-ICD.pdf
+!reference/icd/GAL-OSNMA-RXG.pdf
+!reference/icd/GAL-HAS-SIS-ICD.pdf
+!reference/icd/EGNOS-SDD-OS.pdf
+# Japan CAO — explicit redistribution clause in the document's Additional Terms of Use:
+!reference/icd/QZSS-DCR.pdf
+# NOTE: all other reference/icd/*.pdf (BeiDou, GLONASS, QZSS-PNT/L1S/L6, NavIC) stay
+# local-only — their terms grant no redistribution (or NavIC-L5S forbids it). NavIC-L1
+# carries only a conditional non-profit grant and is held local-only by decision.
+# See reference/REFERENCES.md for per-document terms.
