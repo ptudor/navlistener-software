@@ -46,6 +46,10 @@ reference/icd/*.pdf
 !reference/icd/EGNOS-SDD-OS.pdf
 # Japan CAO — explicit redistribution clause in the document's Additional Terms of Use:
 !reference/icd/QZSS-DCR.pdf
+# IGS/RTCM open format standards — published openly at files.igs.org, no © asserted:
+!reference/icd/RINEX-3.05.pdf
+!reference/icd/RINEX-4.02.pdf
+!reference/icd/SP3-D.pdf
 # NOTE: all other reference/icd/*.pdf (BeiDou, GLONASS, QZSS-PNT/L1S/L6, NavIC) stay
 # local-only — their terms grant no redistribution (or NavIC-L5S forbids it). NavIC-L1
 # carries only a conditional non-profit grant and is held local-only by decision.

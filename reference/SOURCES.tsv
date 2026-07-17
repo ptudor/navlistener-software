@@ -40,6 +40,11 @@ QZSS-L6.pdf	local	c7de5e845bdac6815350a717cd486d04ddddd25c09edcc4099a3bef48140a1
 NAVIC-SPS-L5S.pdf	local	321573a6903ebc5d7392a1baa26795ccd6997100449cb79836f849498ea8216f	2060847	https://www.isro.gov.in/media_isro/pdf/SateliteNavigation/irnss_sps_icd_version1.1-2017.pdf
 NAVIC-SPS-L1.pdf	local	ad534a52f5eda610c11c7fbb4af6721680ee1f103f8df121b8d5a0dbd7c523c6	3617525	https://www.isro.gov.in/media_isro/pdf/SateliteNavigation/NavIC_SPS_ICD_L1_final.pdf
 
+# ---- IGS/RTCM open format standards — files.igs.org, no © asserted. RINEX 3.05 + SP3-d back gnss/truth_test.go ----
+RINEX-3.05.pdf	commit	05de6c898e1cf4102d6d0ef8b2710a98a16a5105c49a6d972757d647c7593918	1450246	https://files.igs.org/pub/data/format/rinex305.pdf
+RINEX-4.02.pdf	commit	7d5bb16d50e6010138bcc6ee7f2e8c5652f8819461523651a8e180b617d537db	2177028	https://files.igs.org/pub/data/format/rinex_4.02.pdf
+SP3-D.pdf	commit	0809fe6571816a9b8394b46b8851b9bfbab956b46f7acab5af6eb62acee5ebbe	321385	https://files.igs.org/pub/data/format/sp3d.pdf
+
 # ---- GLONASS (Russia) — no redistribution grant; local only. GLO-ICD-5.1 URL is the UNB academic ----
 # ---- mirror (byte-identical to the RISDE 2008 original); russianspacesystems.ru serves it behind a ----
 # ---- Russian-government CA the default trust store rejects (see REFERENCES.md, GLO-CDMA rows). ----

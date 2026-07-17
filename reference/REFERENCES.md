@@ -38,6 +38,18 @@ mismatch detection is for).
 | **EGNOS-SDD-OS** | EGNOS Open Service — Service Definition Document | EUSPA / ESSP | Issue 3.0 | 2024 | Conditional © grant — "may be excerpted, copied, printed, republished… only under the conditions that the… 'Terms and Conditions of Use' are… reproduced and transmitted entirely and unmodified… source: 'EGNOS OS SDD, © European Union, 2024'." (use restricted to non-safety-critical) | `3a6ddeb601c9c0acdba5c1c6a71eca54f4f513e26107e70b61f444f91267b5d8` |
 | **QZSS-DCR** | IS-QZSS-DCR (Disaster/Crisis Report / DC Report) | Cabinet Office, Japan | DCR-016 | 2026-04-03 | Explicit redistribution — "you may redistribute the information… to the redistribution-destination users… [if you] display the… Disclaimer of Liability… and this Additional Terms of Use." | `07cc143ea7d03b486392b16f348ca291adf758f9d81ae4c457f3e89a165fa516` |
 
+### 1a. Data-exchange format standards (committed)
+
+Not ICDs, but the formats the validation harness consumes. `gnss/truth_test.go` propagates a
+real broadcast ephemeris (RINEX 3.05 nav) per constellation and compares it against a precise
+orbit (SP3-d) — so the field-by-column layout the test parses comes from these specs.
+
+| cite-key | title | authority | edition | date | redistribution terms | SHA-256 |
+|---|---|---|---|---|---|---|
+| **RINEX-3.05** | The Receiver Independent Exchange Format, v3.05 (the version gnss/truth_test.go's BKG BRDC fixture and field parser follow) | IGS / RTCM RINEX WG | 3.05 | 2020-12 | Open community standard — published openly at files.igs.org for universal interchange; no © asserted (authored by the IGS/RTCM RINEX WG). Treated redistributable on the same basis as WAAS-PS's no-©-asserted public standard | `05de6c898e1cf4102d6d0ef8b2710a98a16a5105c49a6d972757d647c7593918` |
+| **RINEX-4.02** | The Receiver Independent Exchange Format, v4.02 (current edition) | IGS / RTCM RINEX Committee | 4.02 | 2024 | Open community standard (as above) | `7d5bb16d50e6010138bcc6ee7f2e8c5652f8819461523651a8e180b617d537db` |
+| **SP3-D** | The Extended Standard Product 3 Orbit Format (SP3-d) — the ESA/ESOC MGEX precise-orbit truth fixture's format | IGS | SP3-d | 2016 | Open community standard (as above) | `0809fe6571816a9b8394b46b8851b9bfbab956b46f7acab5af6eb62acee5ebbe` |
+
 Local path for all of the above: `reference/icd/<cite-key>.pdf`. Official URLs are in `SOURCES.tsv`.
 
 ---
@@ -123,6 +135,6 @@ citation record; implementation status is documented in the component guides.
 | **regression fix** | GLONASS frame-5 strings 14/15 carry **B1/B2/KP** (UT1/leap), not almanac | GLO-ICD-5.1 §4.5, **Figure 4.2b** (5th-frame structure: string 14 = B1 B2 KP) + §4.3.1 ("The 5th frame contains remainder of almanac for 4 satellites") | ✅ ICD fact confirmed (logic fix deferred) |
 | **regression fix** | GLONASS string Hamming check + Galileo I/NAV CRC-24Q | GLO-ICD-5.1 §4.7 **Table 4.13**; GAL-OS-SIS-ICD-2.2 §4.3 (CRC-24Q) | ✅ backed (logic fix deferred) |
 | **regression fix (QZSS A_REF)** | QZSS CNAV reference semi-major axis 42164200.0 m | IS-QZSS-PNT-006 (local-only) — table to be cited when the QZSS A_REF constant is finalized | ⚠️ doc on disk; citation section to confirm |
-| **regression fix** | External truth vectors for the Kepler / GLONASS propagators | Klobuchar 40°N/260°E vector: IS-GPS-200N §20.3.3.5.2.5. GLONASS worked example: **GLO-CDMA-GENDESC** (could not fetch — see §3b). RINEX BRDC/SP3: external data, not an ICD | ◐ partially backed; GLONASS worked-example doc still open |
+| **regression fix** | External truth vectors for the Kepler / GLONASS propagators | RINEX BRDC + SP3 harness (`gnss/truth_test.go`) is implemented; the formats are now vendored (**RINEX-3.05**, **SP3-D**, §1a). Klobuchar 40°N/260°E vector: IS-GPS-200N §20.3.3.5.2.5. GLONASS worked example: **GLO-CDMA-GENDESC** (could not fetch — see §3b) | ◐ mostly backed; only the GLONASS worked-example doc still open |
 | **regression fix** | SBAS PRN → provider assignments (120/124 = EGNOS; 122 = SouthPAN) | Not an ICD constant — the live **gps.gov / EUSPA SBAS PRN assignment table** (a web reference, not redistributed). Code comment already records the April-2024 PRN-124 reassignment | ✅ source identified (web table) |
 
