@@ -1,0 +1,206 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/ptudor/navlistener/internal/metrics"
+)
+
+// regression fix guard tests: a normal-path flush runs under storeCtx, so storeCancel()
+// interrupts it mid-retry instead of blocking shutdown for up to ~30 s; the
+// interrupted batch (nothing resolved, transaction rolled back) is RETAINED and
+// re-flushed by the shutdown drain under the single bounded shutdownBudget —
+// dial-mode frames have no replay source, so discarding them there was silent
+// permanent forensic loss on the most common operator action (a restart during
+// DB trouble). Wall-budget exhaustion with a live parent keeps the pre-regression fix
+// drop-counted policy so the writer stays memory-bounded through a DB outage.
+
+// atomicStore builds a Store on the atomic-persist path with a fake persistOnce,
+// mirroring how New wires production (pool-free, like the legacy copy-seam tests).
+func atomicStore(persistOnce func(ctx context.Context, batch []*NavFrame) (int64, error)) *Store {
+	s := &Store{
+		in:             make(chan *NavFrame, 64),
+		batchSize:      2,
+		batchEvery:     time.Hour, // never fires on its own in these tests
+		retry:          flushRetry{attempts: 3, backoff: time.Millisecond, attemptTO: time.Second},
+		log:            quietLog(),
+		atomicPersist:  true,
+		shutdownBudget: time.Second,
+	}
+	s.persistOnce = persistOnce
+	return s
+}
+
+// TestNormalFlushInterruptedByShutdownRetainsBatchForDrain: cancel storeCtx while
+// a normal flush is blocked on a slow DB; every enqueued frame must still be
+// persisted exactly once by the bounded shutdown drain, with zero drops.
+func TestNormalFlushInterruptedByShutdownRetainsBatchForDrain(t *testing.T) {
+	var mu sync.Mutex
+	var persisted []*NavFrame
+	firstCallStarted := make(chan struct{})
+	var once sync.Once
+	fake := func(ctx context.Context, batch []*NavFrame) (int64, error) {
+		once.Do(func() { close(firstCallStarted) })
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err() // the "hung DB attempt" the cancellation interrupts
+		case <-time.After(30 * time.Millisecond): // a slow-but-working DB (well under shutdownBudget)
+			mu.Lock()
+			persisted = append(persisted, batch...)
+			mu.Unlock()
+			return int64(len(batch)), nil
+		}
+	}
+	s := atomicStore(fake)
+
+	droppedBefore := testutil.ToFloat64(metrics.StoreQuarantinedTotal)
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() { defer close(runDone); s.Run(ctx) }()
+
+	// Two frames trip the size flush (batchSize=2) whose first attempt blocks in
+	// fake; two more queue behind it for the drain.
+	for i := 0; i < 4; i++ {
+		s.Enqueue(&NavFrame{SourceID: "dial", Raw: []byte{byte(i)}})
+	}
+	select {
+	case <-firstCallStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("normal flush never started")
+	}
+	start := time.Now()
+	cancel() // interrupts the in-flight attempt; ctx.Err() != nil ⇒ retain, not drop
+
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("shutdown took %v, want well under 2s (bounded drain)", elapsed)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(persisted) != 4 {
+		t.Errorf("persisted %d frames, want all 4 (retained batch + queued frames re-flushed by the drain)", len(persisted))
+	}
+	seen := map[byte]int{}
+	for _, f := range persisted {
+		seen[f.Raw[0]]++
+	}
+	for b, n := range seen {
+		if n != 1 {
+			t.Errorf("frame %d persisted %d times, want exactly once (atomic rollback must make retention duplicate-free)", b, n)
+		}
+	}
+	if d := testutil.ToFloat64(metrics.StoreQuarantinedTotal) - droppedBefore; d != 0 {
+		t.Errorf("StoreQuarantinedTotal delta = %v, want 0 (nothing may be dropped on an orderly shutdown with a working DB)", d)
+	}
+}
+
+// TestNormalFlushBudgetExhaustionStillDrops: when the wall budget (deadline)
+// expires with the parent context still live — a long DB outage, no shutdown —
+// the batch must be dropped and counted exactly as before regression fix, so the writer
+// stays live and memory-bounded rather than retrying one batch forever.
+func TestNormalFlushBudgetExhaustionStillDrops(t *testing.T) {
+	fake := func(ctx context.Context, batch []*NavFrame) (int64, error) {
+		<-ctx.Done() // every attempt hangs until its per-attempt/deadline context cuts it
+		return 0, ctx.Err()
+	}
+	s := atomicStore(fake)
+	s.retry = flushRetry{attempts: 3, backoff: time.Millisecond, attemptTO: 20 * time.Millisecond}
+
+	droppedBefore := testutil.ToFloat64(metrics.StoreQuarantinedTotal)
+	batch := []*NavFrame{{SourceID: "dial", Raw: []byte{1}}, {SourceID: "dial", Raw: []byte{2}}}
+	completed := s.flush(context.Background(), batch, time.Now().Add(50*time.Millisecond))
+	if !completed {
+		t.Error("flush returned false (retain) on wall-budget expiry with a live parent; want completed=true with the batch dropped")
+	}
+	if d := testutil.ToFloat64(metrics.StoreQuarantinedTotal) - droppedBefore; d != 2 {
+		t.Errorf("StoreQuarantinedTotal delta = %v, want 2 (budget-exhausted batch dropped and counted)", d)
+	}
+}
+
+// TestPersistAtomicRetryAbortAfterPartialBisectionDropsRemainder: once a poison
+// bisection has committed part of the batch, an interruption may no longer
+// signal abort (retention would re-flush — and duplicate — the committed
+// dial-mode rows); the cut-short remainder is counted dropped instead.
+func TestPersistAtomicRetryAbortAfterPartialBisectionDropsRemainder(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var calls int
+	fake := func(fctx context.Context, batch []*NavFrame) (int64, error) {
+		calls++
+		switch calls {
+		case 1: // whole batch: poison → bisect
+			return 0, &pgconn.PgError{Code: "22P02", Message: "invalid input"}
+		case 2: // first half commits
+			return int64(len(batch)), nil
+		default: // second half: the shutdown lands here
+			cancel()
+			return 0, errors.New("connection reset")
+		}
+	}
+	s := atomicStore(fake)
+
+	batch := []*NavFrame{
+		{SourceID: "dial", Raw: []byte{1}}, {SourceID: "dial", Raw: []byte{2}},
+		{SourceID: "dial", Raw: []byte{3}}, {SourceID: "dial", Raw: []byte{4}},
+	}
+	written, dropped, aborted := s.persistAtomicRetry(ctx, batch)
+	if aborted {
+		t.Fatal("aborted=true after the first half committed — retention here would duplicate committed rows")
+	}
+	if written != 2 || dropped != 2 {
+		t.Errorf("written=%d dropped=%d, want 2/2 (first half committed, interrupted remainder dropped)", written, dropped)
+	}
+}
+
+// TestNormalFlushSkippedOnceShutdownBegun: a size-threshold flush reached after
+// storeCtx is cancelled must not start a fresh normal-budget flush — the batch
+// falls through to the ctx.Done() drain ("check ctx before flushing").
+func TestNormalFlushSkippedOnceShutdownBegun(t *testing.T) {
+	var mu sync.Mutex
+	var ctxErrsAtCall []error // ctx.Err() sampled AT call time (flush cancels its ctx on return)
+	var rows int
+	fake := func(ctx context.Context, batch []*NavFrame) (int64, error) {
+		mu.Lock()
+		ctxErrsAtCall = append(ctxErrsAtCall, ctx.Err())
+		rows += len(batch)
+		mu.Unlock()
+		return int64(len(batch)), nil
+	}
+	s := atomicStore(fake)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // shutdown already begun before Run ever sees a frame
+	for i := 0; i < 3; i++ {
+		s.Enqueue(&NavFrame{SourceID: "dial", Raw: []byte{byte(i)}})
+	}
+	runDone := make(chan struct{})
+	go func() { defer close(runDone); s.Run(ctx) }()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if rows != 3 {
+		t.Fatalf("persisted %d rows, want 3 — the drain must still flush the queue", rows)
+	}
+	// Every flush must have come from the drain (detached context, live at call
+	// time), never from a normal-path flush under the already-cancelled ctx.
+	for i, err := range ctxErrsAtCall {
+		if errors.Is(err, context.Canceled) {
+			t.Errorf("persist call %d ran under the cancelled store context — normal flush was not skipped after shutdown", i)
+		}
+	}
+}

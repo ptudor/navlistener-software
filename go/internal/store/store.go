@@ -30,8 +30,15 @@ const queueDepth = 16384
 
 // Flush retry/quarantine budgets: a failed CopyFrom is retried with bounded backoff
 // (transient DB blips) rather than discarding a batch of the forensic record on the
-// first error. Budgets are wall-clock caps so the final shutdown flush stays within
-// ShutdownTimeout even when the DB is down.
+// first error. Budgets are wall-clock caps.
+//
+// the two budgets serve different masters. normalFlushBudget bounds a
+// steady-state flush's retries, but a normal flush ALSO derives its context from
+// storeCtx, so shutdown interrupts it immediately instead of waiting out up to
+// ~30 s of retries the ≤15 s ShutdownTimeout can never cover — the interrupted
+// batch is retained (not dropped) and re-flushed by the shutdown drain, which
+// runs detached from storeCtx under the single shared shutdownFlushBudget
+// (one deadline for the whole drain, never a fresh budget per chunk).
 const (
 	normalFlushBudget   = 35 * time.Second
 	shutdownFlushBudget = 5 * time.Second
@@ -99,6 +106,10 @@ type Store struct {
 	copy             copyRowsFunc  // defaults to s.copyRows (pool-backed); tests substitute a fake
 	atomicPersist    bool          // production: claim replay keys and copy rows in one transaction
 	shutdownBudget   time.Duration // defaults to shutdownFlushBudget; tests shrink it to run fast
+	// persistOnce is the one-transaction claim+copy (s.persistAtomicOnce in
+	// production); a seam so the retry/abort/retention policy around it 
+	// is unit-testable without a database, mirroring the copy seam above.
+	persistOnce func(ctx context.Context, batch []*NavFrame) (int64, error)
 }
 
 // New connects, applies the schema idempotently, installs the compression/retention
@@ -155,6 +166,7 @@ func New(ctx context.Context, cfg config.Store, log *slog.Logger) (*Store, error
 		shutdownBudget:   shutdownFlushBudget,
 	}
 	s.copy = s.copyRows
+	s.persistOnce = s.persistAtomicOnce
 	return s, nil
 }
 
@@ -358,8 +370,19 @@ func (s *Store) Run(ctx context.Context) {
 		if len(batch) == 0 {
 			return
 		}
-		s.flush(batch, time.Now().Add(normalFlushBudget))
-		batch = batch[:0]
+		// once shutdown has begun, never START a new normal-budget flush —
+		// fall through to the ctx.Done() branch, whose drain flushes everything
+		// under the single bounded shutdownBudget instead.
+		if ctx.Err() != nil {
+			return
+		}
+		// The normal flush runs under ctx (so storeCancel interrupts it mid-retry
+		// instead of it blocking shutdown for up to ~30 s of DB retries) capped by
+		// its own wall budget. false = interrupted with nothing resolved: keep the
+		// batch for the shutdown drain rather than discarding it.
+		if s.flush(ctx, batch, time.Now().Add(normalFlushBudget)) {
+			batch = batch[:0]
+		}
 	}
 
 	for {
@@ -378,9 +401,12 @@ func (s *Store) Run(ctx context.Context) {
 			// per chunk flush — a full queue at batchSize chunks would otherwise take
 			// up to (queueDepth/batchSize)*shutdownFlushBudget, far past
 			// ShutdownTimeout, and main's os.Exit would kill the store mid-flush.
+			// The drain's flushes run on a DETACHED context (Background) bounded only
+			// by the deadline: ctx is already cancelled here by definition, and this
+			// is the one bounded chance the queued forensic record gets.
 			deadline := time.Now().Add(s.shutdownBudget)
 			s.drain(&batch, deadline)
-			s.flush(batch, deadline)
+			s.flush(context.Background(), batch, deadline)
 			if s.pool != nil { // nil only in tests that construct a Store without New()
 				s.pool.Close()
 			}
@@ -408,14 +434,16 @@ func (s *Store) pruneSeqSeen(ctx context.Context) {
 }
 
 // drain empties the in-flight queue, flushing full-size chunks against the shared
-// shutdown deadline (not a fresh budget per chunk).
+// shutdown deadline (not a fresh budget per chunk). Shutdown-only: its
+// flushes run detached (Background) because the store's own context is already
+// cancelled when drain is reached.
 func (s *Store) drain(batch *[]*NavFrame, deadline time.Time) {
 	for {
 		select {
 		case f := <-s.in:
 			*batch = append(*batch, f)
 			if len(*batch) >= s.batchSize {
-				s.flush(*batch, deadline)
+				s.flush(context.Background(), *batch, deadline)
 				*batch = (*batch)[:0]
 			}
 		default:
@@ -514,36 +542,61 @@ func (s *Store) persistAtomicOnce(ctx context.Context, batch []*NavFrame) (writt
 	return written, nil
 }
 
-func (s *Store) persistAtomicRetry(ctx context.Context, batch []*NavFrame) (written int64, dropped int) {
+// persistAtomicRetry drives persistOnce with bounded retry and poison-row
+// bisection. aborted=true means ctx was cut (parent cancellation or
+// deadline expiry) before ANY row of this call's batch was resolved — the
+// invariant "aborted ⇒ written==0 && dropped==0" lets flush() safely retain the
+// whole batch for a bounded re-flush (the rolled-back transaction released every
+// replay-key claim, so a re-flush cannot duplicate rows). Once anything has been
+// resolved (a committed sub-batch, a quarantined poison row), retention is no
+// longer safe — re-flushing would duplicate the committed dial-mode rows — so an
+// interruption after partial work counts the remainder dropped instead.
+func (s *Store) persistAtomicRetry(ctx context.Context, batch []*NavFrame) (written int64, dropped int, aborted bool) {
 	if len(batch) == 0 {
-		return 0, 0
+		return 0, 0, false
 	}
 	backoff := s.retry.backoff
 	for attempt := 1; ; attempt++ {
 		cctx, cancel := context.WithTimeout(ctx, s.retry.attemptTO)
-		n, err := s.persistAtomicOnce(cctx, batch)
+		n, err := s.persistOnce(cctx, batch)
 		cancel()
 		if err == nil {
-			return n, 0
+			return n, 0, false
 		}
 		metrics.StoreErrorsTotal.Inc()
 		if isPoison(err) {
 			if len(batch) == 1 {
 				s.log.Error("store quarantined a poison row", "error", err)
-				return 0, 1
+				return 0, 1, false
 			}
 			mid := len(batch) / 2
-			w1, d1 := s.persistAtomicRetry(ctx, batch[:mid])
-			w2, d2 := s.persistAtomicRetry(ctx, batch[mid:])
-			return w1 + w2, d1 + d2
+			w1, d1, a1 := s.persistAtomicRetry(ctx, batch[:mid])
+			if a1 {
+				// Nothing resolved in this call yet: propagate the abort so the
+				// top-level flush can retain the whole batch.
+				return 0, 0, true
+			}
+			w2, d2, a2 := s.persistAtomicRetry(ctx, batch[mid:])
+			if a2 {
+				// The first half already resolved rows, so retention is off the
+				// table — count the interrupted remainder dropped (the pre-regression fix
+				// accounting for a cut-short bisection).
+				return w1, d1 + len(batch[mid:]), false
+			}
+			return w1 + w2, d1 + d2, false
+		}
+		if ctx.Err() != nil {
+			// Interrupted mid-retry with nothing resolved: signal abort; the caller
+			// (flush) decides retain-for-drain vs. budget-exhausted drop.
+			return 0, 0, true
 		}
 		s.log.Warn("store flush failed; will retry", "error", err, "rows", len(batch), "attempt", attempt)
-		if attempt >= s.retry.attempts || ctx.Err() != nil {
+		if attempt >= s.retry.attempts {
 			s.log.Error("store flush giving up; leaving batch replayable", "rows", len(batch), "attempts", attempt)
-			return 0, len(batch)
+			return 0, len(batch), false
 		}
 		if !sleepCtx(ctx, backoff) {
-			return 0, len(batch)
+			return 0, 0, true
 		}
 		backoff *= 2
 	}
@@ -601,30 +654,56 @@ func dedupBatch(batch []*NavFrame, fresh map[seqKey]bool) []*NavFrame {
 	return out
 }
 
-// flush bulk-loads a batch with bounded retry + poison-row quarantine on a detached
-// context (so the final shutdown flush still runs) capped by deadline. Callers in a
-// shutdown drain pass the *same* deadline to every flush call  so the total
-// shutdown flush time is bounded by one budget, not a fresh one per chunk. Push-path
-// frames are first deduplicated against nav_frames_seq_seen; a dedup-ledger
-// failure fails open (persists the batch un-deduped) — losing the forensic record
-// is worse than an occasional duplicate row.
-func (s *Store) flush(batch []*NavFrame, deadline time.Time) {
+// flush bulk-loads a batch with bounded retry + poison-row quarantine under a
+// context derived from parent and capped by deadline. Normal-path callers pass
+// storeCtx as parent so shutdown interrupts an in-flight flush;
+// shutdown-drain callers pass context.Background() (their parent is already
+// cancelled) with the *same* deadline on every call  so the total drain
+// time is bounded by one budget, not a fresh one per chunk. Push-path frames are
+// first deduplicated against nav_frames_seq_seen; a dedup-ledger failure
+// fails open (persists the batch un-deduped) — losing the forensic record is
+// worse than an occasional duplicate row.
+//
+// Returns false ONLY when parent was cancelled before any row was resolved: the
+// caller must then retain the batch for the shutdown drain to re-flush under the
+// bounded shutdownBudget instead of clearing it (nothing was committed, and the
+// atomic claim+copy transaction rolled its replay-key claims back, so the
+// re-flush cannot duplicate). Every completed outcome — success, quarantine,
+// retry exhaustion, wall-budget expiry with the parent still live — returns true
+// with the pre-regression fix accounting.
+func (s *Store) flush(parent context.Context, batch []*NavFrame, deadline time.Time) bool {
 	if len(batch) == 0 {
-		return
+		return true
 	}
-	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	ctx, cancel := context.WithDeadline(parent, deadline)
 	defer cancel()
 	if s.atomicPersist {
-		written, dropped := s.persistAtomicRetry(ctx, batch)
+		written, dropped, aborted := s.persistAtomicRetry(ctx, batch)
+		if aborted {
+			if parent.Err() != nil {
+				s.log.Warn("store flush interrupted by shutdown; batch retained for the bounded drain", "rows", len(batch))
+				return false
+			}
+			// The wall budget expired with the parent still live: the writer must
+			// stay live and memory-bounded through a long DB outage, so the batch
+			// is dropped (counted), exactly the pre-regression fix policy.
+			dropped = len(batch)
+			s.log.Error("store flush budget exhausted; dropping batch", "rows", len(batch))
+		}
 		if written > 0 {
 			metrics.StoreRowsTotal.Add(float64(written))
 		}
 		if dropped > 0 {
 			metrics.StoreQuarantinedTotal.Add(float64(dropped))
 		}
-		return
+		return true
 	}
 
+	// Legacy (non-atomic) path — reachable only in tests (New always enables
+	// atomicPersist). It never retains on interruption: checkSeqSeen pre-claims
+	// replay keys OUTSIDE the copy transaction, so a retained re-flush would
+	// dedup-drop push frames that were never actually written. Cancellation here
+	// keeps the pre-regression fix drop-counted accounting.
 	var keys []seqKey
 	for _, f := range batch {
 		if f.HasSourceSeq {
@@ -638,7 +717,7 @@ func (s *Store) flush(batch []*NavFrame, deadline time.Time) {
 		} else {
 			batch = dedupBatch(batch, fresh)
 			if len(batch) == 0 {
-				return
+				return true
 			}
 		}
 	}
@@ -654,6 +733,7 @@ func (s *Store) flush(batch []*NavFrame, deadline time.Time) {
 	if dropped > 0 {
 		metrics.StoreQuarantinedTotal.Add(float64(dropped))
 	}
+	return true
 }
 
 // persistRetry bulk-loads rows, retrying retryable failures with bounded backoff and
