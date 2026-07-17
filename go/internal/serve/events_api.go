@@ -26,6 +26,14 @@ const (
 	eventsMaxWindow    = summaryMaxHours * time.Hour
 	eventsMaxOffset    = 1_000_000
 	eventsQueryTimeout = 5 * time.Second
+
+	// client-supplied filter strings, unlike receiver-originated ones
+	// (bounded by sanitize/maxStringField=256), reached the DB with no length
+	// bound — a multi-MB sv= became a large bind value compared per row.
+	// Generous over the real shapes: SV keys are name@sigid (≤ ~8 chars), event
+	// types are short enums.
+	eventsMaxSVParam   = 32
+	eventsMaxTypeParam = 64
 )
 
 // serveEventsQuery is GET /gnss/api/events: a filtered, paginated window over the persisted
@@ -72,8 +80,23 @@ func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "since: "+err.Error())
 		return
 	}
-	if sinceRaw != "" && untilRaw != "" && since.After(until) {
+	// run the inversion guard whenever the caller supplied since — not
+	// only when BOTH bounds were supplied. until is already clamped to now
+	//  above, so a future since with an omitted until previously skipped
+	// this guard, ran the query with since > until, and returned zero rows with
+	// ok:true — the confidently-wrong empty output regression fix/regression fix exist to prevent.
+	// A defaulted since (empty sinceRaw) cannot invert by construction.
+	if sinceRaw != "" && since.After(until) {
 		writeError(w, http.StatusBadRequest, "since after until")
+		return
+	}
+	// bound the filter strings (see the consts above).
+	if len(q.Get("sv")) > eventsMaxSVParam {
+		writeError(w, http.StatusBadRequest, "sv: too long")
+		return
+	}
+	if len(q.Get("type")) > eventsMaxTypeParam {
+		writeError(w, http.StatusBadRequest, "type: too long")
 		return
 	}
 	severity, err := atoiParam(q.Get("severity"), 0)

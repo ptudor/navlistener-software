@@ -26,6 +26,21 @@ func TestHealthFailsAfterRequiredComponentFailure(t *testing.T) {
 	check(http.StatusServiceUnavailable, "failed")
 }
 
+// TestMetricsServerTimeoutsSet guards /metrics, /healthz, and
+// /debug/state (a full live-snapshot encode) need a write deadline, and idle
+// keep-alives need a bound, or a stalled scraper holds a goroutine forever.
+// Safe on this listener only — no SSE lives here (the v2 serve server must
+// keep WriteTimeout unset for its streams).
+func TestMetricsServerTimeoutsSet(t *testing.T) {
+	s := New("127.0.0.1:0", slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	if s.http.WriteTimeout <= 0 {
+		t.Error("http.Server.WriteTimeout is unset, want a bounded value")
+	}
+	if s.http.IdleTimeout <= 0 {
+		t.Error("http.Server.IdleTimeout is unset, want a bounded value")
+	}
+}
+
 // TestHealthzDegradedFromDataPlaneProbes guards /healthz must reflect
 // data-plane liveness probes, not just listener termination — and a degraded
 // probe must answer 200 (visible warning, no supervisor flap), while Fail()

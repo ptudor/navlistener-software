@@ -89,6 +89,15 @@ func New(addr string, log *slog.Logger, debugState http.HandlerFunc) *Server {
 			Addr:              addr,
 			Handler:           mux,
 			ReadHeaderTimeout: 5 * time.Second,
+			// a stalled scraper connection must not hold a goroutine
+			// forever — /debug/state is a full live-snapshot encode with no
+			// other write deadline, and idle keep-alives had no bound. Safe
+			// HERE because no SSE lives on this listener; do NOT copy
+			// WriteTimeout to the v2 serve server (see serve.go's IdleTimeout
+			// comment — its SSE streams must never carry a whole-response
+			// write deadline).
+			WriteTimeout: 10 * time.Second,
+			IdleTimeout:  120 * time.Second,
 		},
 		log: log,
 	}

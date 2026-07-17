@@ -928,11 +928,28 @@ func sanitizeEventParams(params map[string]any) map[string]any {
 	return out
 }
 
+// expireTickFor derives the SV-expiry sweep cadence from the configured TTL
+// : min(30 s, ttl/2), floored at 1 s. The default 2 h TTL keeps the
+// established 30 s sweep; a fast-expiry configuration (a short sv_ttl in a test
+// deployment — parseDurPositive accepts any positive duration) previously
+// quantized silently to the unrelated 30 s constant, holding SVs up to 30 s
+// past their TTL. ttl/2 keeps the worst-case overshoot at half the TTL.
+func expireTickFor(ttl time.Duration) time.Duration {
+	tick := ttl / 2
+	if tick > 30*time.Second {
+		tick = 30 * time.Second
+	}
+	if tick < time.Second {
+		tick = time.Second
+	}
+	return tick
+}
+
 // stateLoop re-propagates live SVs on the configured cadence and expires stale ones.
 func stateLoop(ctx context.Context, cfg config.State, store *state.Store) {
 	prop := time.NewTicker(cfg.PropagateEvery)
 	defer prop.Stop()
-	expire := time.NewTicker(30 * time.Second)
+	expire := time.NewTicker(expireTickFor(cfg.SVTTL))
 	defer expire.Stop()
 	for {
 		select {

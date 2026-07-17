@@ -51,6 +51,26 @@ func TestDecodePanicCountedEveryTimeLoggedOnce(t *testing.T) {
 	}
 }
 
+// TestExpireTickFor guards the SV-expiry sweep cadence must follow the
+// configured TTL instead of silently quantizing a fast-expiry configuration to
+// the unrelated 30 s constant.
+func TestExpireTickFor(t *testing.T) {
+	cases := []struct {
+		ttl, want time.Duration
+	}{
+		{2 * time.Hour, 30 * time.Second},   // default: the established sweep
+		{5 * time.Minute, 30 * time.Second}, // still capped
+		{20 * time.Second, 10 * time.Second},
+		{time.Second, time.Second}, // floored
+		{200 * time.Millisecond, time.Second},
+	}
+	for _, tc := range cases {
+		if got := expireTickFor(tc.ttl); got != tc.want {
+			t.Errorf("expireTickFor(%v) = %v, want %v", tc.ttl, got, tc.want)
+		}
+	}
+}
+
 // TestPanicLogLimiterReopensAfterInterval: the limiter is a cadence, not a
 // once-ever latch — after panicLogEvery the same signal logs again so a
 // long-running incident stays visible in the logfile.
