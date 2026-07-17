@@ -76,6 +76,19 @@ var (
 		Name: "navlistener_decode_errors_total",
 		Help: "Nav frames rejected by decode (non-CRC), by gnssId and kind.",
 	}, []string{"gnssid", "kind"})
+
+	// DecodePanicsTotal counts frames dropped by decodeLoop's per-frame recover
+	//. A decoder that panics on a specific broadcast bit pattern
+	// panics on every recurrence — the same SV re-transmits it every few
+	// seconds, or crafted frames replay it deliberately (this is a PNT-defense
+	// product; malformed frames are the threat model) — so this is the
+	// alertable signal for the failure class decode_errors_total (which counts
+	// *rejections*, never panics) can structurally never see. Label bounded:
+	// gnssId 0..7.
+	DecodePanicsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_decode_panics_total",
+		Help: "Nav frames dropped after a recovered decode panic, by gnssId.",
+	}, []string{"gnssid"})
 	RawObsInvalidTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "navlistener_raw_observation_invalid_total",
 		Help: "RAWX observations rejected before estimator mutation, by source and field.",

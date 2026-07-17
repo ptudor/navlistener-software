@@ -388,15 +388,12 @@ func persistMsgType(f *ingest.RawFrame) int {
 // (run, above) does only after every producer has confirmed it will never send
 // again — so every already-enqueued frame is applied with no drain race.
 func decodeLoop(frames <-chan *ingest.RawFrame, live *state.Store, historian *store.Store, log *slog.Logger, lastFrame *atomic.Int64) {
+	lim := &panicLogLimiter{}
 	apply := func(f *ingest.RawFrame) {
 		// every dial and push frame funnels through here, so this one
 		// stamp is the whole data plane's liveness signal for /healthz.
 		lastFrame.Store(time.Now().UnixNano())
-		defer func() {
-			if r := recover(); r != nil {
-				log.Error("decode panic recovered; frame dropped", "recover", fmt.Sprint(r))
-			}
-		}()
+		defer recoverDecodePanic(f, log, lim)
 		if historian != nil && f.Obs == nil && f.RF == nil { // telemetry (observables, RF) is not a nav-frame record
 			historian.Enqueue(&store.NavFrame{
 				Ts:           time.Now(),
@@ -416,6 +413,56 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live *state.Store, historian *st
 	}
 	for f := range frames {
 		apply(f)
+	}
+}
+
+// panicLogEvery is the per-signal decode-panic log cadence : one full
+// ERROR line per offending (gnssid, svid, msg_type) per interval; recurrences
+// within the interval increment DecodePanicsTotal silently.
+const panicLogEvery = time.Minute
+
+// panicLogLimiter rate-limits the decode-panic ERROR line per (gnssid, svid,
+// msg_type) : a decoder that panics on a specific bit pattern panics on
+// every re-broadcast — the same SV every few seconds, for months — and per-frame
+// ERROR logging both fills the logfile and buries the one line an operator
+// needs. Only the LOG line is limited; the counter increments on every
+// recurrence. The key space is bounded (8 constellations × ≤63 SVs × a handful
+// of message types), so entries are kept forever rather than evicted.
+type panicLogLimiter struct {
+	mu   sync.Mutex
+	last map[[3]int]time.Time
+}
+
+func (l *panicLogLimiter) allow(gnssid, svid, msgType int, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.last == nil {
+		l.last = map[[3]int]time.Time{}
+	}
+	k := [3]int{gnssid, svid, msgType}
+	if t, ok := l.last[k]; ok && now.Sub(t) < panicLogEvery {
+		return false
+	}
+	l.last[k] = now
+	return true
+}
+
+// recoverDecodePanic is decodeLoop's per-frame recover; it must be
+// deferred DIRECTLY (recover() is effective only in a directly-deferred
+// function). The counter is the alertable signal — dashboards watching
+// decode_errors_total/nav_crc_fail_total structurally never see panics — and
+// the rate-limited log line carries the SV identity a debugger needs to
+// reproduce the offending bit pattern from the historian's raw record.
+func recoverDecodePanic(f *ingest.RawFrame, log *slog.Logger, lim *panicLogLimiter) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	metrics.DecodePanicsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID))).Inc()
+	if lim.allow(int(f.GnssID), f.SvID, f.MsgType, time.Now()) {
+		log.Error("decode panic recovered; frame dropped",
+			"gnssid", int(f.GnssID), "svid", f.SvID, "sigid", f.SigID,
+			"source", f.Source, "msg_type", f.MsgType, "recover", fmt.Sprint(r))
 	}
 }
 
