@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,10 +40,11 @@ func TestDecodeLoopDrainsAllFramesBeforeClose(t *testing.T) {
 		}
 	}()
 
+	var lastFrame atomic.Int64
 	decodeDone := make(chan struct{})
 	go func() {
 		defer close(decodeDone)
-		decodeLoop(frames, live, nil, log)
+		decodeLoop(frames, live, nil, log, &lastFrame)
 	}()
 
 	select {
@@ -61,5 +63,9 @@ func TestDecodeLoopDrainsAllFramesBeforeClose(t *testing.T) {
 	rf := live.FeedStationRF(time.Now())
 	if len(rf) != n {
 		t.Fatalf("live state has %d stations, want %d — some concurrently-emitted frames were never applied", len(rf), n)
+	}
+	// the decode funnel must stamp ingest liveness for the /healthz probe.
+	if lastFrame.Load() == 0 {
+		t.Error("decodeLoop applied frames but never stamped the last-frame liveness signal")
 	}
 }

@@ -105,6 +105,37 @@ func TestNormalFlushInterruptedByShutdownRetainsBatchForDrain(t *testing.T) {
 	}
 }
 
+// TestDegradedAfterConsecutiveFlushGiveUps guards two consecutive
+// retry-exhausted flush cycles (≈ a minute-plus of DB failure) must surface via
+// Degraded() so /healthz reports the historian dropping the forensic record; a
+// single give-up must NOT degrade (no flapping), and one successful persist
+// clears the streak.
+func TestDegradedAfterConsecutiveFlushGiveUps(t *testing.T) {
+	fail := errors.New("db down")
+	shouldFail := true
+	fake := func(ctx context.Context, batch []*NavFrame) (int64, error) {
+		if shouldFail {
+			return 0, fail
+		}
+		return int64(len(batch)), nil
+	}
+	s := atomicStore(fake)
+	s.retry = flushRetry{attempts: 2, backoff: time.Millisecond, attemptTO: time.Second}
+	batch := []*NavFrame{{SourceID: "dial", Raw: []byte{1}}}
+	deadline := func() time.Time { return time.Now().Add(time.Second) }
+
+	if s.flush(context.Background(), batch, deadline()); s.Degraded() != "" {
+		t.Errorf("Degraded() = %q after ONE give-up, want empty (a single blip must not degrade health)", s.Degraded())
+	}
+	if s.flush(context.Background(), batch, deadline()); s.Degraded() == "" {
+		t.Error("Degraded() empty after two consecutive give-ups, want a reason")
+	}
+	shouldFail = false
+	if s.flush(context.Background(), batch, deadline()); s.Degraded() != "" {
+		t.Errorf("Degraded() = %q after a successful persist, want empty (streak must reset)", s.Degraded())
+	}
+}
+
 // TestNormalFlushBudgetExhaustionStillDrops: when the wall budget (deadline)
 // expires with the parent context still live — a long DB outage, no shutdown —
 // the batch must be dropped and counted exactly as before regression fix, so the writer

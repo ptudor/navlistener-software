@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -110,6 +111,12 @@ type Store struct {
 	// production); a seam so the retry/abort/retention policy around it 
 	// is unit-testable without a database, mirroring the copy seam above.
 	persistOnce func(ctx context.Context, batch []*NavFrame) (int64, error)
+
+	// flushFailStreak counts CONSECUTIVE flush cycles that exhausted their
+	// bounded retries or wall budget; any successful persist resets it.
+	// It feeds Degraded() so /healthz can report a historian that has been
+	// dropping the forensic record for minutes, instead of staying green.
+	flushFailStreak atomic.Int64
 }
 
 // New connects, applies the schema idempotently, installs the compression/retention
@@ -339,6 +346,19 @@ func applyPolicies(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, cf
 	return nil
 }
 
+// Degraded reports a non-empty reason while the batched writer is persistently
+// failing : two or more CONSECUTIVE flush cycles exhausted their bounded
+// retries or wall budget — i.e. the historian has been unable to persist for over
+// a minute (each cycle is ~35 s of retries) and is dropping the forensic record.
+// A single give-up (a transient blip the next cycle absorbs) does not degrade, so
+// /healthz cannot flap on one bad flush. Registered as a health probe in main.
+func (s *Store) Degraded() string {
+	if n := s.flushFailStreak.Load(); n >= 2 {
+		return fmt.Sprintf("historian: %d consecutive flush cycles failed; frames are being dropped", n)
+	}
+	return ""
+}
+
 // Enqueue hands a frame to the writer without blocking the caller. On overflow (the
 // DB can't keep up) it drops the newest and records it — the live path stays healthy.
 func (s *Store) Enqueue(f *NavFrame) {
@@ -561,6 +581,7 @@ func (s *Store) persistAtomicRetry(ctx context.Context, batch []*NavFrame) (writ
 		n, err := s.persistOnce(cctx, batch)
 		cancel()
 		if err == nil {
+			s.flushFailStreak.Store(0) // any successful persist ends a failure streak 
 			return n, 0, false
 		}
 		metrics.StoreErrorsTotal.Inc()
@@ -592,6 +613,7 @@ func (s *Store) persistAtomicRetry(ctx context.Context, batch []*NavFrame) (writ
 		}
 		s.log.Warn("store flush failed; will retry", "error", err, "rows", len(batch), "attempt", attempt)
 		if attempt >= s.retry.attempts {
+			s.flushFailStreak.Add(1) // a whole retry cycle failed 
 			s.log.Error("store flush giving up; leaving batch replayable", "rows", len(batch), "attempts", attempt)
 			return 0, len(batch), false
 		}
@@ -687,6 +709,7 @@ func (s *Store) flush(parent context.Context, batch []*NavFrame, deadline time.T
 			// The wall budget expired with the parent still live: the writer must
 			// stay live and memory-bounded through a long DB outage, so the batch
 			// is dropped (counted), exactly the pre-regression fix policy.
+			s.flushFailStreak.Add(1) // regression fix
 			dropped = len(batch)
 			s.log.Error("store flush budget exhausted; dropping batch", "rows", len(batch))
 		}

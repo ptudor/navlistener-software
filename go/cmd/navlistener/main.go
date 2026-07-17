@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -36,6 +37,15 @@ import (
 
 // frameQueue bounds the ingest→decode channel; a full queue backpressures ingest.
 const frameQueue = 8192
+
+// ingestStaleAfter is how long the collector may go without ingesting a single
+// frame (across every dial source and push observer) before /healthz reports
+// degraded. Mirrors the 5 min operating point of state's
+// liveReceiverWindow / detect.ObserverOfflineThreshold ("an observer unseen
+// this long is offline") — a healthy collector with any configured source sees
+// frames every few seconds, so 5 min of total silence means the data plane is
+// down even though every listener goroutine is alive.
+const ingestStaleAfter = 5 * time.Minute
 
 func main() {
 	os.Exit(run())
@@ -79,6 +89,9 @@ func run() int {
 	}
 	frames := make(chan *ingest.RawFrame, frameQueue)
 	mgr := ingest.New(cfg.Ingest, frames, log)
+	// lastFrameNano is the decode funnel's last-ingested stamp (every dial and
+	// push frame passes decodeLoop), feeding the /healthz ingest probe.
+	var lastFrameNano atomic.Int64
 
 	// validate/construct the authenticated push endpoint (TLS cert/key/CA
 	// load, addr) *before* any pipeline goroutine starts. Previously this lived
@@ -110,6 +123,36 @@ func run() int {
 		return 1
 	}
 	defer obsLn.Close()
+	// /healthz must reflect the data plane, not just listener liveness
+	// — before these probes it stayed "ok" while every source was down or the
+	// historian dropped every frame. The ingest probe is armed only when at
+	// least one frame producer is configured: a deliberately source-less config
+	// has no data plane to be stale.
+	ingestConfigured := cfg.Push.Addr != ""
+	for _, src := range cfg.Ingest {
+		if !src.Disabled {
+			ingestConfigured = true
+			break
+		}
+	}
+	if ingestConfigured {
+		startAt := time.Now()
+		obs.AddProbe("ingest", func() string {
+			last := lastFrameNano.Load()
+			if last == 0 {
+				// Nothing ingested yet: allow the same window from process start
+				// (sources dial with backoff; feeders reconnect on their own time).
+				if age := time.Since(startAt); age > ingestStaleAfter {
+					return fmt.Sprintf("no frames ingested since start %s ago", age.Round(time.Second))
+				}
+				return ""
+			}
+			if age := time.Since(time.Unix(0, last)); age > ingestStaleAfter {
+				return fmt.Sprintf("no frames ingested for %s", age.Round(time.Second))
+			}
+			return ""
+		})
+	}
 	var apiLn net.Listener
 	if cfg.Serve.Addr != "" {
 		apiLn, err = net.Listen("tcp", cfg.Serve.Addr)
@@ -143,6 +186,9 @@ func run() int {
 			return 1
 		}
 		go func() { defer close(storeDone); historian.Run(storeCtx) }()
+		// surface persistent flush failure (the historian silently
+		// dropping the forensic record) as a degraded /healthz.
+		obs.AddProbe("historian", historian.Degraded)
 		log.Info("historian enabled")
 	} else {
 		close(storeDone)
@@ -158,7 +204,7 @@ func run() int {
 
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go func() { defer wg.Done(); decodeLoop(frames, live, historian, log) }()
+	go func() { defer wg.Done(); decodeLoop(frames, live, historian, log, &lastFrameNano) }()
 
 	wg.Add(1)
 	go func() { defer wg.Done(); stateLoop(ctx, cfg.State, live) }()
@@ -341,8 +387,11 @@ func persistMsgType(f *ingest.RawFrame) int {
 // : it simply ranges frames until the channel is closed, which the owner
 // (run, above) does only after every producer has confirmed it will never send
 // again — so every already-enqueued frame is applied with no drain race.
-func decodeLoop(frames <-chan *ingest.RawFrame, live *state.Store, historian *store.Store, log *slog.Logger) {
+func decodeLoop(frames <-chan *ingest.RawFrame, live *state.Store, historian *store.Store, log *slog.Logger, lastFrame *atomic.Int64) {
 	apply := func(f *ingest.RawFrame) {
+		// every dial and push frame funnels through here, so this one
+		// stamp is the whole data plane's liveness signal for /healthz.
+		lastFrame.Store(time.Now().UnixNano())
 		defer func() {
 			if r := recover(); r != nil {
 				log.Error("decode panic recovered; frame dropped", "recover", fmt.Sprint(r))

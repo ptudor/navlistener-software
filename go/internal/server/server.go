@@ -25,6 +25,28 @@ type Server struct {
 	log     *slog.Logger
 	mu      sync.RWMutex
 	failure string
+	probes  []healthProbe
+}
+
+// healthProbe is one data-plane liveness check. fn returns "" while
+// healthy, or a short reason while degraded. Probes make /healthz reflect the
+// pipeline, not just listener termination: before them, the endpoint stayed
+// "ok" while every ingest source was down or the historian dropped every frame
+// — a green health endpoint over a dead data plane, the exact silent-wrong
+// output this daemon exists to prevent.
+type healthProbe struct {
+	name string
+	fn   func() string
+}
+
+// AddProbe registers a data-plane liveness probe under name. A degraded probe
+// yields status "degraded" with HTTP 200 — deliberately NOT 503, so a transient
+// ingest gap or DB blip cannot flap rc.d/daemon(8) restarts; 503 stays reserved
+// for Fail() (a required component terminated). Call before Start.
+func (s *Server) AddProbe(name string, fn func() string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.probes = append(s.probes, healthProbe{name: name, fn: fn})
 }
 
 // New builds the server bound to addr (e.g. 127.0.0.1:9100). If debugState is
@@ -35,21 +57,27 @@ func New(addr string, log *slog.Logger, debugState http.HandlerFunc) *Server {
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		status, failure := "ok", ""
+		status, failure, degraded := "ok", "", map[string]string(nil)
 		// The handler closes over s through health below, initialized after the mux.
 		if h := healthStateFromContext(r.Context()); h != nil {
-			status, failure = h.status()
+			status, failure, degraded = h.status()
 		}
-		if status != "ok" {
+		// Only "failed" (a required component terminated) is 503; "degraded"
+		// (data-plane liveness probes, regression fix) stays 200 so external probes see
+		// the warning without the supervisor flapping the process.
+		if status == "failed" {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
-		body := map[string]string{
+		body := map[string]any{
 			"status":  status,
 			"version": version.Version,
 			"build":   version.BuildTime,
 		}
 		if failure != "" {
 			body["failure"] = failure
+		}
+		if len(degraded) > 0 {
+			body["degraded"] = degraded
 		}
 		_ = json.NewEncoder(w).Encode(body)
 	})
@@ -79,13 +107,31 @@ func healthStateFromContext(ctx context.Context) *Server {
 	return s
 }
 
-func (s *Server) status() (string, string) {
+// status resolves the health tri-state: "failed" (a required component
+// terminated — Fail) beats "degraded" (a data-plane probe reports a reason,
+// regression fix) beats "ok". The probe functions run outside the lock: they only read
+// their own atomics, and one must never be able to deadlock health reporting.
+func (s *Server) status() (string, string, map[string]string) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.failure != "" {
-		return "failed", s.failure
+	failure := s.failure
+	probes := s.probes
+	s.mu.RUnlock()
+	if failure != "" {
+		return "failed", failure, nil
 	}
-	return "ok", ""
+	var degraded map[string]string
+	for _, p := range probes {
+		if reason := p.fn(); reason != "" {
+			if degraded == nil {
+				degraded = make(map[string]string, len(probes))
+			}
+			degraded[p.name] = reason
+		}
+	}
+	if len(degraded) > 0 {
+		return "degraded", "", degraded
+	}
+	return "ok", "", nil
 }
 
 // Fail transitions health to non-OK before controlled process shutdown.
