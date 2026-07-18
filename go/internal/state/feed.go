@@ -279,6 +279,15 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 			// cannot wrap — so eph_aged latches correctly with no further change.
 			if wall := now.Sub(st.gloEphAt); !st.gloEphAt.IsZero() && wall > gloPropagateMaxEphAge {
 				age = wall.Minutes()
+			} else if age < gloServeMinTk.Minutes() {
+				// regression fix follow-up, frozen-tb regime: reception is live (the wall
+				// switch above did not fire) but the day-wrapped age has left the
+				// legitimate window — past +12 h it re-wraps NEGATIVE, which would
+				// un-fire eph_aged on a worsening SV. The true broadcast age is
+				// unknowable here without extra state, but it is ≥ half a day, so
+				// clamp to the wrap ceiling (+720 min) — monotone enough to keep
+				// eph_aged latched, and honest as a lower bound.
+				age = 720
 			}
 			if finite(age) {
 				e.EphAgeM = &age

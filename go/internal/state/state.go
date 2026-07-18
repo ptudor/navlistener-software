@@ -89,6 +89,23 @@ const (
 	// wall-clock age so eph_aged latches and stays latched.
 	gloPropagateMaxEphAge = 60 * time.Minute
 
+	// gloServeMaxTk / gloServeMinTk (regression fix validation follow-up):
+	// bounds on the BROADCAST-TIME propagation interval tk = EphAgeDay(gloTOD,
+	// tb) a served GLONASS position may use. gloPropagateMaxEphAge above bounds
+	// reception staleness — but a satellite/CS failure that keeps transmitting
+	// valid-Hamming strings with a FROZEN tb keeps gloEphAt seconds-fresh
+	// forever (every same-tb reassembly re-stamps it), reaching the same ±12 h
+	// EphAgeDay wrap pathology through the other door: broadcast-time staleness
+	// with live reception. Legitimate tk while serving is tightly bounded: at
+	// apply, tb is the MIDDLE of an interval no longer than 60 min (GLO-ICD-5.1
+	// §4.4, Table 4.3), so |tk| ≤ 30 min at apply, and the wall cap adds at
+	// most 60 min forward — tk ∈ [−30, +90] min. Gate at [−45, +90] (15 min
+	// margin on the negative side): no legitimate current set can leave the
+	// window, a frozen-tb set leaves it about an hour into the failure, and a
+	// wrap alias (tk rewrapped negative past +12 h) is far outside it.
+	gloServeMaxTk = 90 * time.Minute
+	gloServeMinTk = -45 * time.Minute
+
 	// posStaleBound  is how old a stored propagation epoch (svState.posAt)
 	// may be before the feed omits the position/tow/wn entirely rather than serve a
 	// solution frozen at a repeatedly-failing propagate tick. Generous over any
@@ -1247,9 +1264,13 @@ const gloDiscoMaxTk = 60 * time.Minute
 // the span each set is the current set for — while a genuine upload discontinuity
 // still dominates the difference at any common epoch. The clock difference stays
 // at the incoming tb (both clock models are linear; τn_new is exact there), and
-// both metrics share the gloDiscoMaxTk adjacency gate: the old clock's γn·tk
-// extrapolation over hours (γ ~1e-11 × 7200 s ≈ 72 ns) would otherwise swamp the
-// 2.5 ns warn band exactly the way the orbit error does. Remaining calibration
+// both metrics share the gloDiscoMaxTk adjacency gate. Clock-gate mechanism,
+// stated precisely (validation correction): the γn·tk drift term itself
+// is the CORRECT evaluation and cancels against the new model's drift to first
+// order — what grows with tk is the drift ERROR δγ·tk, and γn's quantization
+// alone (LSB 2⁻⁴⁰, Table 4.5 ≈ 9.1e-13) contributes ≈3.3 ns per hour, at the
+// 2.5 ns warn band within one hour — so unbounded tk would still pollute the
+// jump metric even with perfect broadcast values. Remaining calibration
 // (whether routine changeovers still cross 1.45 m at the midpoint) needs a live
 // multi-hour GLONASS capture — none exists in-tree; recorded in the fix log.
 // Other guards match computeDisco: the outgoing set must be fresher than
@@ -1474,6 +1495,11 @@ func (s *Store) Propagate(now time.Time) {
 					continue
 				}
 				tk := gnsstime.EphAgeDay(gloTOD(now), st.gloEph.Tb)
+				// Frozen-tb / wrap-alias guard (see gloServeMaxTk): the wall gate
+				// above cannot see broadcast-time staleness when reception is live.
+				if tk > gloServeMaxTk.Seconds() || tk < gloServeMinTk.Seconds() {
+					continue
+				}
 				if pos, err := glonass.Propagate(st.gloEph, tk); err == nil && finiteECEF(pos) {
 					st.pos, st.havePos, st.posAt = pos, true, now
 				}
