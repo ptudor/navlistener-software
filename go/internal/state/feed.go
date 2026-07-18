@@ -412,7 +412,7 @@ func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
 		// stops being rebroadcast by any satellite within a few ~2.5h cycles; without
 		// this cutoff a decommissioned slot's last-ever almanac would be propagated
 		// out to an ever-more-speculative "ghost" position at the current day number
-		// forever.
+		// forever. (Feed filter; the RAM entry is evicted by ExpireStations, regression fix.)
 		if now.Sub(slot.lastSeen) > gloAlmanacStaleAfter {
 			continue
 		}
@@ -472,7 +472,8 @@ func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
 // feed, mirroring rfStaleAfter: a live SBAS GEO broadcasts continuously (message
 // type 1 every few seconds), so this is generous margin over normal operation while still
 // catching a PRN whose station has gone dark or been decommissioned rather than serving
-// its last-known health with an ever-growing last_seen_s forever.
+// its last-known health with an ever-growing last_seen_s forever. This is the FEED
+// filter; the RAM entry itself is evicted later by ExpireStations.
 const sbasStaleAfter = rfStaleAfter
 
 // FeedSBAS builds the sbas augmentation-health feed as of now (docs/OUTPUT.md §1.5).

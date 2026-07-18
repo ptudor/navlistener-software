@@ -969,7 +969,9 @@ func stateLoop(ctx context.Context, cfg config.State, store *state.Store) {
 		case <-prop.C:
 			store.Propagate(time.Now())
 		case <-expire.C:
-			store.Expire(time.Now(), cfg.SVTTL)
+			now := time.Now()
+			store.Expire(now, cfg.SVTTL)
+			store.ExpireStations(now) // sbas/rf/almanac RAM eviction
 		case <-ctx.Done():
 			return
 		}

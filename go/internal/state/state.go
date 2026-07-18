@@ -1188,6 +1188,49 @@ func (s *Store) Expire(now time.Time, ttl time.Duration) {
 	}
 }
 
+// stationEvictAfter is how long a filtered-stale sbas/rf entry stays in RAM
+// before ExpireStations deletes it : a generous 12× the 5 min
+// serving-staleness window, so a briefly-dark station re-appearing keeps its
+// learned AGC baselines, while a renamed/mistyped source or a decommissioned
+// GEO eventually leaves RAM entirely instead of parking a filtered entry
+// forever. GLONASS almanac slots use their own (already multi-day) bound.
+const stationEvictAfter = 12 * rfStaleAfter
+
+// ExpireStations deletes sbas, rf, and GLONASS-almanac entries whose last
+// sample is far past their serving-staleness windows. The feeds
+// already FILTER stale entries (rfStaleAfter / sbasStaleAfter /
+// gloAlmanacStaleAfter) — this makes the "dropped" language true in RAM too.
+// The maps are bounded in practice (SBAS PRNs, 24 GLONASS slots, fleet-sized
+// station ids), so this is residue hygiene, not a leak fix. The capability
+// fingerprint (s.caps) is deliberately NOT evicted: durability is its design
+// (capability.go) — a demonstrated signal gone silent must stay detectable.
+// Runs on the same tick as Expire.
+func (s *Store) ExpireStations(now time.Time) {
+	s.sbasMu.Lock()
+	for prn, st := range s.sbas {
+		if now.Sub(st.lastSeen) > stationEvictAfter {
+			delete(s.sbas, prn)
+		}
+	}
+	s.sbasMu.Unlock()
+
+	s.rfMu.Lock()
+	for id, st := range s.rf {
+		if now.Sub(st.lastSeen) > stationEvictAfter {
+			delete(s.rf, id)
+		}
+	}
+	s.rfMu.Unlock()
+
+	s.gloAlmMu.Lock()
+	for slot, a := range s.gloAlmanac {
+		if now.Sub(a.lastSeen) > gloAlmanacStaleAfter {
+			delete(s.gloAlmanac, slot)
+		}
+	}
+	s.gloAlmMu.Unlock()
+}
+
 // gpsTOW returns the GPS/QZSS time-of-week (seconds) for a wall-clock instant.
 // GST (Galileo) shares this time-of-week to nanoseconds.
 func gpsTOW(now time.Time) float64 {
