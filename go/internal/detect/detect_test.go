@@ -10,10 +10,19 @@ import (
 func ptrF(v float64) *float64 { return &v }
 
 // gps builds a minimal healthy GPS FeedSV with a position, at the given health.
+// The issue level is derived the way state.healthFor pairs them : code 1
+// → level 0, code 2 → level 1 (marginal/warning), code 3 → level 2 (error).
 func gps(name string, svid, health int) state.FeedSV {
+	level := 0
+	switch health {
+	case 2:
+		level = 1
+	case 3:
+		level = 2
+	}
 	return state.FeedSV{
 		Name: name, GnssID: 0, SvID: svid, SigID: 0,
-		HealthCode: health, XM: ptrF(1), YM: ptrF(2), ZM: ptrF(3),
+		HealthCode: health, HealthIssueLevel: level, XM: ptrF(1), YM: ptrF(2), ZM: ptrF(3),
 	}
 }
 
@@ -72,16 +81,27 @@ func TestHealthDebounce(t *testing.T) {
 		t.Fatalf("emitted %d events before debounce elapsed, want 0", len(evs))
 	}
 	// Past the window (≥ 60 s since the provisional began): confirmed transition.
+	// code 2 is the ICD's "marginal" class (issue level 1), so the event is
+	// a WARNING — the old unconditional critical manufactured alerts for routine
+	// component codes.
 	evs := d.Tick(t0.Add(95*time.Second), bad, nil)
 	if len(evs) != 1 {
 		t.Fatalf("got %d events, want 1", len(evs))
 	}
 	e := evs[0]
-	if e.Type != "health_change" || e.Severity != SevCritical {
-		t.Errorf("event = %s/%d, want health_change/2", e.Type, e.Severity)
+	if e.Type != "health_change" || e.Severity != SevWarning {
+		t.Errorf("event = %s/%d, want health_change/1 (marginal → warning, regression fix)", e.Type, e.Severity)
 	}
 	if e.OldValue != "1" || e.NewValue != "2" {
 		t.Errorf("transition %s→%s, want 1→2", e.OldValue, e.NewValue)
+	}
+
+	// A do-not-use transition (code 3, issue level 2) stays CRITICAL.
+	worse := map[string]state.FeedSV{"G05@0": gps("G05", 5, 3)}
+	d.Tick(t0.Add(120*time.Second), worse, nil)
+	evs = d.Tick(t0.Add(200*time.Second), worse, nil)
+	if len(evs) != 1 || evs[0].Type != "health_change" || evs[0].Severity != SevCritical {
+		t.Fatalf("do-not-use transition = %+v, want one health_change/2", evs)
 	}
 }
 
@@ -182,6 +202,42 @@ func TestSISAHysteresisDampensQuantizedDwell(t *testing.T) {
 	}
 }
 
+// TestNoAccuracySentinelClassifies guards an SV whose broadcast accuracy
+// index is the "no accuracy prediction — use at own risk" sentinel serves no
+// sisa_m (there is no metres value) but does serve acc_index; the sisa classifier
+// must treat that as its own confirmed state instead of being structurally
+// skipped, so the transition fires a sisa_change.
+func TestNoAccuracySentinelClassifies(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(6_000_000, 0)
+	sv := gps("G05", 5, 1)
+	sv.SISAM = ptrF(2.0) // normal accuracy: seeds "ok"
+	d.Tick(t0, map[string]state.FeedSV{"G05@0": sv}, nil)
+
+	// URA flips to index 15: sisa_m vanishes, acc_index carries the sentinel.
+	sv.SISAM = nil
+	idx := 15
+	sv.AccIndex = &idx
+	bad := map[string]state.FeedSV{"G05@0": sv}
+	d.Tick(t0.Add(10*time.Second), bad, nil)
+	evs := d.Tick(t0.Add(80*time.Second), bad, nil)
+	e, ok := find(evs, "sisa_change")
+	if !ok || e.NewValue != "no_accuracy" || e.Severity != SevWarning {
+		t.Fatalf("sisa_change = %+v (ok=%v), want confirmed no_accuracy/1", e, ok)
+	}
+
+	// An SV with NO accuracy field decoded at all (both absent) is not classified —
+	// absence stays "unknown", only the sentinel is a state.
+	d2 := New(time.Minute)
+	blank := gps("G07", 7, 1)
+	d2.Tick(t0, map[string]state.FeedSV{"G07@0": blank}, nil)
+	if evs := d2.Tick(t0.Add(120*time.Second), map[string]state.FeedSV{"G07@0": blank}, nil); len(evs) != 0 {
+		if _, ok := find(evs, "sisa_change"); ok {
+			t.Fatal("accuracy-less SV classified a sisa state")
+		}
+	}
+}
+
 // TestQZSSHealthType confirms QZSS health transitions carry the qzss_health type,
 // not health_change (docs/INTEGRITY.md §5, the Japan extension).
 func TestQZSSHealthType(t *testing.T) {
@@ -189,7 +245,7 @@ func TestQZSSHealthType(t *testing.T) {
 	t0 := time.Unix(4_000_000, 0)
 	j := state.FeedSV{Name: "J03", GnssID: 5, SvID: 3, HealthCode: 1, XM: ptrF(1), YM: ptrF(1), ZM: ptrF(1)}
 	d.Tick(t0, map[string]state.FeedSV{"J03@0": j}, nil)
-	j.HealthCode = 3 // do-not-use
+	j.HealthCode, j.HealthIssueLevel = 3, 2 // do-not-use
 	bad := map[string]state.FeedSV{"J03@0": j}
 	d.Tick(t0.Add(10*time.Second), bad, nil)
 	evs := d.Tick(t0.Add(80*time.Second), bad, nil)

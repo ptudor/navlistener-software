@@ -165,13 +165,14 @@ func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, emit em
 	// when a marginal SV drops to RAWX-only and reacquires. Like the disco gate below, treat
 	// unknown as "no classification": the machine seeds on the first DECODED health.
 	if sv.HealthCode != 0 {
-		healthType, healthSev := healthEvent(sv.GnssID, sv.HealthCode)
+		healthType, healthSev := healthEvent(sv.GnssID, sv.HealthIssueLevel)
 		emit(name, "health", fmt.Sprintf("%d", sv.HealthCode), func(old string) Event {
 			return Event{
 				Type: healthType, OldValue: old, NewValue: fmt.Sprintf("%d", sv.HealthCode),
 				Severity: healthSev,
 				Message:  fmt.Sprintf("%s health %s→%d", sv.Name, old, sv.HealthCode),
-				Params:   map[string]any{"sv": sv.Name, "gnssid": sv.GnssID, "health_code": sv.HealthCode},
+				Params: map[string]any{"sv": sv.Name, "gnssid": sv.GnssID,
+					"health_code": sv.HealthCode, "health_issue_level": sv.HealthIssueLevel},
 			}
 		})
 	}
@@ -214,13 +215,29 @@ func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, emit em
 	}
 
 	// SISA/URA accuracy degradation, with hysteresis so a boundary value doesn't flap.
-	if sv.SISAM != nil {
+	// an accuracy index that decodes to the ICD's "no accuracy prediction —
+	// use at own risk" sentinel (GPS/QZSS URA 15 per IS-GPS-200N §20.3.3.3.1.3, CNAV
+	// URA_ED 15/−16, Galileo SISA 255/spare) has no metres value, so sisa_m is
+	// absent — but it MUST still classify. Mapping the sentinel to absence
+	// structurally skipped this classifier, silencing the one broadcast field that
+	// says "do not trust this SV's accuracy". acc_index distinguishes that sentinel
+	// from "no accuracy field decoded yet" (both serve sisa_m-less entries).
+	switch {
+	case sv.SISAM != nil:
 		band := d.sisaBand(name, *sv.SISAM)
 		emit(name, "sisa", band, func(old string) Event {
 			return Event{
 				Type: "sisa_change", OldValue: old, NewValue: band, Severity: SevWarning,
 				Message: fmt.Sprintf("%s SISA %.2f m", sv.Name, *sv.SISAM),
 				Params:  map[string]any{"sv": sv.Name, "sisa_m": *sv.SISAM},
+			}
+		})
+	case sv.AccIndex != nil:
+		emit(name, "sisa", "no_accuracy", func(old string) Event {
+			return Event{
+				Type: "sisa_change", OldValue: old, NewValue: "no_accuracy", Severity: SevWarning,
+				Message: fmt.Sprintf("%s broadcast accuracy index %d: no accuracy prediction — use at own risk", sv.Name, *sv.AccIndex),
+				Params:  map[string]any{"sv": sv.Name, "acc_index": *sv.AccIndex},
 			}
 		})
 	}
@@ -267,20 +284,23 @@ func (d *Detector) detectSBAS(prn string, s state.SBASEntry, emit emitFunc) {
 
 // healthEvent maps a constellation to its health event type and severity: QZSS and
 // NavIC carry their own types (docs/INTEGRITY.md §5); the rest use health_change.
-func healthEvent(gnssID, healthCode int) (string, int) {
+// severity follows health_issue_level (2 error → critical, 1 warning →
+// warning) for every constellation — the previous unconditional SevCritical on the
+// default arm meant a GPS SV flagging a routine signal-component code (an ICD
+// §6.4.6.3 "marginal", e.g. an L2-only issue while L1 C/A is fine) manufactured a
+// critical alert, training operators to ignore the event type.
+func healthEvent(gnssID, issueLevel int) (string, int) {
+	sev := SevWarning
+	if issueLevel >= 2 {
+		sev = SevCritical
+	}
 	switch gnssID {
 	case 5: // QZSS
-		if healthCode == 3 {
-			return "qzss_health", SevCritical
-		}
-		return "qzss_health", SevWarning
+		return "qzss_health", sev
 	case 7: // NavIC
-		if healthCode == 3 {
-			return "navic_health", SevCritical
-		}
-		return "navic_health", SevWarning
+		return "navic_health", sev
 	default:
-		return "health_change", SevCritical
+		return "health_change", sev
 	}
 }
 

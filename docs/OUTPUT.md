@@ -78,6 +78,7 @@ below):
 | `eph_age_m` | float | ephemeris age, minutes = `ephAge(tow,t0e)/60` (MATH.md §1.1) |
 | `sisa_valid` | bool | false when the broadcast accuracy is a "none/no accuracy" sentinel |
 | `sisa_m` | float | URA/SISA in metres (MATH.md §6); meaningful only when `sisa_valid` |
+| `acc_index` | int | raw broadcast accuracy index (URA / URA_ED / SISA per constellation, MATH.md §6); present whenever an accuracy field has been decoded — including the "no accuracy prediction, use at own risk" sentinels (GPS/QZSS URA 15, IS-GPS-200N §20.3.3.3.1.3; CNAV URA_ED 15/−16; Galileo SISA 255) that `sisa_valid=false` alone can't distinguish from "not yet decoded"  |
 | `iod` | int | issue-of-data (IODE/IODnav/AODE per constellation) |
 | `orbit_disco_m` | float | position discontinuity at last ephemeris changeover, metres (INTEGRITY.md §3); **absent** when not yet computable (first ephemeris, stale, failed guard) — never a sentinel number |
 | `orbit_disco_age_s` | float | seconds since that changeover |

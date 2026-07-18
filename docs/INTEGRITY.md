@@ -167,11 +167,11 @@ The baseline vocabulary and severities below are **verified against intsat's shi
 
 | `event_type` | Fires when | Severity |
 |---|---|---|
-| `health_change` | broadcast health transition (`health_code`/`health_issue_level`) | 2 |
+| `health_change` | broadcast health transition (`health_code`/`health_issue_level`) | 1–2 (severity follows `health_issue_level` — marginal component codes warn, do-not-use/nav-data-bad is critical) |
 | `eph_aged` | ephemeris age crosses the constellation threshold (§2) | 1 |
 | `orbit_disco` | orbit-disco band change (§2) | 1, → 2 above 10 m |
 | `clock_jump` | time-disco band change | 1, → 2 above 10 ns |
-| `sisa_change` | SISA/URA crosses 3 m | 1 |
+| `sisa_change` | SISA/URA crosses 3 m, or the broadcast index decodes to the "no accuracy prediction — use at own risk" sentinel (`new_value` `no_accuracy`, regression fix) | 1 |
 | `observation_lost` | SV silent > 3600 s | 1 |
 | `station_offline` | observer unseen > 300 s | 1–2 |
 | `position_unknown` | a monitored SV has no computable position | 1 |
@@ -279,7 +279,7 @@ synchronized access to shared state:
 | ephemeris age | `eph_age_m` | `eph_aged` |
 | orbit disco | `orbit_disco_m`, `orbit_disco_age_s` | `orbit_disco` |
 | clock jump | `time_disco_ns` | `clock_jump` |
-| accuracy | `sisa_valid`, `sisa_m` | `sisa_change` |
+| accuracy | `sisa_valid`, `sisa_m`, `acc_index` | `sisa_change` |
 | per-receiver Doppler | `perrecv.delta_hz(_corr)` | (feeds coherent-delta detection) |
 | OSNMA | `osnma` | `osnma_change` |
 | silence | `last_seen_s` | `observation_lost` (SV), `station_offline` (observer) |

@@ -32,6 +32,13 @@ type FeedSV struct {
 	EphAgeM          *float64 `json:"eph_age_m,omitempty"`
 	SISAValid        bool     `json:"sisa_valid"`
 	SISAM            *float64 `json:"sisa_m,omitempty"`
+	// AccIndex is the raw broadcast accuracy index (URA / URA_ED / SISA per the
+	// constellation's table), present whenever an accuracy field has been decoded
+	// — including the "no accuracy prediction" sentinels (GPS/QZSS URA 15, CNAV
+	// URA_ED 15/−16, Galileo SISA 255), which map to no sisa_m value. 	// without the raw index, "index says do-not-trust" (IS-GPS-200N
+	// §20.3.3.3.1.3: use at own risk) was indistinguishable from "no accuracy
+	// field decoded yet", and the sentinel produced zero integrity signal.
+	AccIndex *int `json:"acc_index,omitempty"`
 	IOD              *int     `json:"iod,omitempty"`
 	OrbitDiscoM      *float64 `json:"orbit_disco_m,omitempty"`
 	OrbitDiscoAgeS   *float64 `json:"orbit_disco_age_s,omitempty"`
@@ -134,7 +141,7 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 	// zero value.
 	var code, level int
 	if st.haveHealth {
-		code, level = healthFor(g, st.health)
+		code, level = healthFor(g, st.key.Sig, st.health)
 	}
 	e := FeedSV{
 		FullName:         fullName(g, st.key.Sv, st.key.Sig),
@@ -167,6 +174,10 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 	if st.timeDiscoValid && finite(st.timeDiscoNs) {
 		v := st.timeDiscoNs
 		e.TimeDiscoNs = &v
+	}
+	if st.accKind != accNone {
+		idx := st.accIdx
+		e.AccIndex = &idx // serve the raw index even when it maps to no metres value
 	}
 	if m, ok := sisaFor(st.accKind, st.accIdx); ok && finite(m) {
 		e.SISAValid, e.SISAM = true, &m
@@ -511,11 +522,40 @@ func (s *Store) FeedSBAS(now time.Time) map[string]SBASEntry {
 // low-order bits carry other status, not overall SV health.
 const gloBnMalfunctionBit = 0x4
 
+// GPS subframe-1 health-word structure (IS-GPS-200N §20.3.3.3.1.4): the MSB is
+// the LNAV-data health summary; the 5 LSBs are the signal-component code of
+// Table 20-VIII. Two component codes are singled out by §6.4.6.3 as NOT merely
+// "marginal" for the C/A signal: 00010 (all signals dead) and 11100 (SV
+// temporarily out — "do not use this SV during current pass").
+const (
+	gpsHealthNavDataBad = 0x20 // MSB set: "some or all LNAV data are bad"
+	gpsHealthCompMask   = 0x1F // 5-bit signal-component code (Table 20-VIII)
+	gpsCompAllDead      = 0x02 // Table 20-VIII 00010: all signals dead
+	gpsCompTempOut      = 0x1C // Table 20-VIII 11100: SV is temporarily out
+)
+
+// QZSS subframe-1 health-word structure — deliberately DIFFERENT from GPS
+// (QZSS-PNT-006 §4.1.2.3(4), Tables 4.1.2-5-1/-2): the MSB is the health of the
+// transmitted L1 signal (L1C/A or L1C/B); the 5 LSBs are per-signal bits
+// L1C/A · L2C · L5 · L1C · L1C/B (MSB→LSB). Because L1C/A and L1C/B are
+// exclusively transmitted, the UNTRANSMITTED one's bit is 1 in normal
+// operation — a QZSS SV broadcasting health 000001 is healthy, not faulty.
+const (
+	qzssHealthL1   = 0x20 // MSB: transmitted-L1-signal (L1C/A or L1C/B) health
+	qzssHealthL1CA = 0x10
+	qzssHealthL2C  = 0x08
+	qzssHealthL5   = 0x04
+	qzssHealthL1C  = 0x02
+	qzssHealthL1CB = 0x01
+)
+
 // healthFor maps a constellation's raw broadcast health bits to the frozen
 // health_code / health_issue_level enums (docs/OUTPUT.md §2.2): health_code 0
 // unknown · 1 OK · 2 not-ok · 3 do-not-use; issue level 0 none · 1 warning · 2
-// error. The bit semantics differ per constellation (docs/CONSTELLATIONS.md §2).
-func healthFor(g gnss.GNSSID, raw int) (code, level int) {
+// error. The bit semantics differ per constellation AND per signal
+// (docs/CONSTELLATIONS.md §2); sig is the entry's u-blox sigId (0 = the
+// constellation's primary civil signal).
+func healthFor(g gnss.GNSSID, sig, raw int) (code, level int) {
 	switch g {
 	case gnss.Galileo:
 		// SHS (signal health status), 2 bits: 0 OK, 1 out-of-service (do-not-use),
@@ -545,12 +585,74 @@ func healthFor(g gnss.GNSSID, raw int) (code, level int) {
 			return 1, 0
 		}
 		return 2, 2
-	default: // GPS / QZSS / NavIC: 6-bit health, 0 = all signals OK.
+	case gnss.GPS:
+		if sig != 0 {
+			// L2C/L5 per-signal entry: raw is the tracked carrier's own 1-bit CNAV
+			// health (extracted by cnavCarrierHealth from MT10's 3-bit L1/L2/L5
+			// field). IS-GPS-200N §30.3.3.1.1.2: 1 = "all codes and data on this
+			// carrier are bad or unavailable" — do-not-use for this entry's signal.
+			if raw == 0 {
+				return 1, 0
+			}
+			return 3, 2
+		}
+		// the subframe-1 word is MSB + component code, not an opaque
+		// number. The previous "any nonzero → not-ok/error" conflated the two and
+		// fired a critical health_change for e.g. an L2-only component issue on an
+		// SV whose L1 C/A (the signal this entry tracks) is fine.
+		switch {
+		case raw == 0:
+			return 1, 0 // "all LNAV data are OK" + "all signals OK"
+		case raw&gpsHealthNavDataBad != 0:
+			// The LNAV data summary says the CEI data this daemon decodes and
+			// serves is bad; IS-GPS-200N §6.4.6.1 item 4 — such signals "should be
+			// ignored". (0x3F, the old special case, is subsumed here.)
+			return 3, 2
+		case raw&gpsHealthCompMask == gpsCompAllDead, raw&gpsHealthCompMask == gpsCompTempOut:
+			return 3, 2 // all signals dead / SV temporarily out (§6.4.6.3 carve-outs)
+		default:
+			// IS-GPS-200N §6.4.6.3: MSB 0 with any other nonzero component code is
+			// the ICD's own "marginal" — the C/A signal "may be ignored", not
+			// must-not-use. Not-ok at WARNING level, so the detector no longer
+			// manufactures criticals for routine component codes.
+			return 2, 1
+		}
+	case gnss.QZSS:
+		if sig != 0 {
+			// Same CNAV per-carrier bit as GPS (QZSS-PNT-006 §4.3.2 mirrors
+			// IS-GPS-200's MT10 health field).
+			if raw == 0 {
+				return 1, 0
+			}
+			return 3, 2
+		}
+		// QZSS-PNT-006 §4.1.2.3(4): see the qzssHealth* constants — this word is
+		// NOT GPS-shaped. In particular the exclusive L1C/A / L1C/B pair means
+		// exactly one of those two bits is 1 in NORMAL operation, so the previous
+		// GPS-style "nonzero → not-ok/critical" misclassified every healthy QZSS
+		// SV that broadcast the designed 000001/010000 pattern.
+		switch {
+		case raw&qzssHealthL1 != 0:
+			// The transmitted L1 signal (what this sig-0 entry tracks) is
+			// unhealthy: do-not-use.
+			return 3, 2
+		case raw&(qzssHealthL2C|qzssHealthL5|qzssHealthL1C) != 0:
+			return 2, 1 // another PNT signal is flagged; tracked L1 is fine — marginal
+		case raw&(qzssHealthL1CA|qzssHealthL1CB) == qzssHealthL1CA|qzssHealthL1CB:
+			// Both of the exclusively-transmitted pair flagged while the L1
+			// summary reads healthy: inconsistent broadcast — surface as marginal.
+			return 2, 1
+		default:
+			// 0, or exactly one of the L1C/A / L1C/B pair set — the designed
+			// normal-operation patterns.
+			return 1, 0
+		}
+	default: // NavIC (decoder is a tracked stub, regression fix): conservative opaque mapping.
 		if raw == 0 {
 			return 1, 0
 		}
 		if raw == 0x3F {
-			return 3, 2 // all-ones: SV shall not be used
+			return 3, 2
 		}
 		return 2, 2
 	}
