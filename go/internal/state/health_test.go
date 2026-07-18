@@ -95,9 +95,10 @@ func TestHealthChangeAppliedWithoutIODChangeover(t *testing.T) {
 			t.Fatalf("initial health_code = %d, want 1 (OK)", code)
 		}
 		// Re-broadcast subframe 1 only (same SOW/toe changeover key), SatH1 flipped.
+		// SatH1=1 ("not good", B1I §5.2.4.6) now maps to do-not-use.
 		st.Apply(bdsD1FrameHealth(6, 1, 100, 0, 1, now))
-		if code := st.FeedSVs(now)["C06@0"].HealthCode; code != 2 {
-			t.Errorf("health_code after mid-interval SatH1 flip = %d, want 2 (not-ok)", code)
+		if code := st.FeedSVs(now)["C06@0"].HealthCode; code != 3 {
+			t.Errorf("health_code after mid-interval SatH1 flip = %d, want 3 (do-not-use)", code)
 		}
 	})
 
@@ -117,10 +118,11 @@ func TestHealthChangeAppliedWithoutIODChangeover(t *testing.T) {
 			t.Fatalf("initial health_code = %d, want 1 (OK)", code)
 		}
 		// Re-broadcast type 11 only (same IODE, no fresh type-30), HS flipped.
+		// HS=1 ("does not provide services", Table 7-22) → do-not-use.
 		m11bad := bcnav2Frame(prn, 11, 100005, func(buf []byte) { setAbsBits(buf, 30, 2, 1) }) // HS = 1
 		st.Apply(&ingest.RawFrame{GnssID: gnss.BeiDou, SvID: prn, SigID: 8, Recv: now, Words: m11bad})
-		if code := st.FeedSVs(now)["C20@8"].HealthCode; code != 2 {
-			t.Errorf("health_code after mid-interval HS flip = %d, want 2 (not-ok)", code)
+		if code := st.FeedSVs(now)["C20@8"].HealthCode; code != 3 {
+			t.Errorf("health_code after mid-interval HS flip = %d, want 3 (do-not-use)", code)
 		}
 	})
 }
@@ -206,6 +208,33 @@ func TestGalileoSHSMapping(t *testing.T) {
 		if code != c.wantCode || level != c.wantLevel {
 			t.Errorf("healthFor(Galileo, 0, %d) = (%d,%d), want (%d,%d): %s",
 				c.raw, code, level, c.wantCode, c.wantLevel, c.why)
+		}
+	}
+}
+
+// TestBeiDouHealthMapping guards B-CNAV2 HS=1 is BDS-SIS-ICD-B2a v1.0
+// Table 7-22's "The satellite does not provide services" — do-not-use (3), the
+// same enum GPS's nav-data-bad and Galileo's SHS=1 get — and D1's 1-bit SatH1=1
+// (B1I v3.0 §5.2.4.6 "not good") shares that arm. The reserved HS values 2/3
+// stay at not-ok: undefined is not known-dead.
+func TestBeiDouHealthMapping(t *testing.T) {
+	cases := []struct {
+		raw                 int
+		wantCode, wantLevel int
+		why                 string
+	}{
+		{0, 1, 0, "healthy / provides services"},
+		{1, 3, 2, "HS=1 does not provide services (SatH1=1 not good): do-not-use"},
+		{2, 2, 2, "reserved: not-ok, not promoted to do-not-use"},
+		{3, 2, 2, "reserved: not-ok, not promoted to do-not-use"},
+	}
+	for _, c := range cases {
+		for _, sig := range []int{0, 8} { // D1 (B1I) and B-CNAV2 (B2a) entries share the arm
+			code, level := healthFor(gnss.BeiDou, sig, c.raw)
+			if code != c.wantCode || level != c.wantLevel {
+				t.Errorf("healthFor(BeiDou, %d, %d) = (%d,%d), want (%d,%d): %s",
+					sig, c.raw, code, level, c.wantCode, c.wantLevel, c.why)
+			}
 		}
 	}
 }

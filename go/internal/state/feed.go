@@ -735,11 +735,27 @@ func healthFor(g gnss.GNSSID, sig, raw int) (code, level int) {
 			return 2, 1
 		}
 	case gnss.BeiDou:
-		// D1 SatH1 / B-CNAV2 HS: 0 healthy, non-zero unhealthy.
-		if raw == 0 {
+		// D1 SatH1 / B-CNAV2 HS. HS=1 is BDS-SIS-ICD-B2a v1.0 Table
+		// 7-22 — "The satellite is unhealthy or in the test / The satellite
+		// does not provide services" — the same do-not-use semantic as GPS's
+		// nav-data-bad word and Galileo's SHS=1 ("out of service"), both mapped
+		// to 3 above/below; leaving BeiDou at 2 rendered the single most
+		// operationally important BDS health state as merely "not-ok" on the
+		// map. SatH1 shares the raw==1 arm: it is 1 bit ("0 means broadcasting
+		// satellite is good and 1 means not", BDS-SIS-ICD-B1I v3.0 §5.2.4.6 —
+		// no explicit "shall not be used" phrasing, but treating a B1I
+		// "not good" satellite as do-not-use matches BDS operational practice
+		// and keeps the two message families' shared st.health unambiguous).
+		// HS=2/3 are Table 7-22 "Reserved": undefined ≠ known-dead, so they
+		// stay at not-ok rather than being promoted.
+		switch raw {
+		case 0:
 			return 1, 0
+		case 1:
+			return 3, 2
+		default:
+			return 2, 2
 		}
-		return 2, 2
 	case gnss.GLONASS:
 		// raw's low 3 bits are the RAW Bn field (r.Bits(5,3)), not just its
 		// MSB -- the two low-order bits carry other GLONASS ICD Ed. 5.1 flags, not
