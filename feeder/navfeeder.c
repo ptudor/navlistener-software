@@ -215,6 +215,22 @@ static time_t monotonic_s(void) {
 	return ts.tv_sec;
 }
 
+/* sleep_with_jitter sleeps s seconds plus 0..25% : a collector redeploy fails
+ * every connected feeder at the same instant, and identical deterministic backoff
+ * ladders would then re-attempt TLS handshakes (the most expensive per-connection event
+ * on both ends) in fleet-synchronized bursts. The monotonic clock's tv_nsec is a
+ * per-process phase — enough entropy for herd-breaking without PRNG state. Only the
+ * collector reconnect path uses this; the receiver-source backoff stays plain sleep()
+ * (a local device, no herd to break). */
+static void sleep_with_jitter(unsigned s) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	unsigned jitter_ms = (unsigned)((ts.tv_nsec / 1000000L) % (long)(s * 250 + 1));
+	struct timespec d = { (time_t)s + jitter_ms / 1000, (long)(jitter_ms % 1000) * 1000000L };
+	while (nanosleep(&d, &d) == -1 && errno == EINTR)
+		;
+}
+
 /* ── byte order ──────────────────────────────────────────────────────────── */
 
 static void be16(unsigned char *b, uint16_t v) { b[0]=v>>8; b[1]=v; }
@@ -465,6 +481,13 @@ static void spool_stats(struct spool *s, uint64_t *seq, uint64_t *dropped, size_
 
 /* ── net + wire ──────────────────────────────────────────────────────────── */
 
+/* CONNECT_TIMEOUT_S bounds a single connect() attempt (regression fix, the regression fix deferred
+ * follow-on): a routable-but-down host (SYN silently dropped) otherwise blocks the
+ * calling thread for the OS SYN-retry window (~127 s on Linux defaults) per attempt —
+ * the producer or consumer sits dark that long before its retry loop even runs. 10 s
+ * matches the collector side's dialTimeout (go/internal/ingest/ingest.go). */
+#define CONNECT_TIMEOUT_S 10
+
 static int tcp_dial(const char *host, const char *port, int rcv_timeout_s) {
 	struct addrinfo hints, *res, *rp;
 	memset(&hints, 0, sizeof hints);
@@ -475,7 +498,25 @@ static int tcp_dial(const char *host, const char *port, int rcv_timeout_s) {
 	for (rp = res; rp; rp = rp->ai_next) {
 		fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
 		if (fd < 0) continue;
-		if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) break;
+		/* non-blocking connect + poll(POLLOUT) + SO_ERROR per candidate,
+		 * keeping the multi-address iteration; on success the socket is returned to
+		 * blocking mode (every later read/write relies on blocking semantics plus
+		 * SO_RCVTIMEO/SO_SNDTIMEO). POSIX: an EINTR'd connect keeps completing
+		 * asynchronously — poll for it exactly like EINPROGRESS. */
+		int fl = fcntl(fd, F_GETFL);
+		if (fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) != 0) { close(fd); fd = -1; continue; }
+		int rc = connect(fd, rp->ai_addr, rp->ai_addrlen);
+		if (rc != 0 && (errno == EINPROGRESS || errno == EINTR)) {
+			struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+			do { rc = poll(&pfd, 1, CONNECT_TIMEOUT_S * 1000); } while (rc < 0 && errno == EINTR);
+			if (rc > 0) {
+				int soerr = 0; socklen_t sl = sizeof soerr;
+				rc = (getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &sl) == 0 && soerr == 0) ? 0 : -1;
+			} else {
+				rc = -1; /* poll timeout (rc==0) or poll error */
+			}
+		}
+		if (rc == 0 && fcntl(fd, F_SETFL, fl) == 0) break; /* connected, blocking restored */
 		close(fd); fd = -1;
 	}
 	freeaddrinfo(res);
@@ -941,6 +982,15 @@ static int open_serial(const char *path, int baud) {
 	struct termios t;
 	if (tcgetattr(fd, &t) != 0) { close(fd); return -1; }
 	cfmakeraw(&t);
+	/* cfmakeraw() does not touch flow control (glibc or BSD). An inherited
+	 * CRTSCTS on the common 3-wire hookup (RTS/CTS unwired) holds RX off waiting for a
+	 * CTS that never asserts — read() stalls with a healthy receiver, presenting as a
+	 * dead station at startup on a subset of the fleet. cfmakeraw already clears IXON;
+	 * clear IXOFF too so the port never software-throttles the receiver either. */
+#ifdef CRTSCTS
+	t.c_cflag &= (tcflag_t)~CRTSCTS;
+#endif
+	t.c_iflag &= (tcflag_t)~IXOFF;
 	speed_t sp = baud_to_speed(baud);
 	if (sp == 0) { close(fd); log_msg("unsupported --baud %d", baud); return -1; }
 	cfsetispeed(&t, sp);
@@ -1094,7 +1144,12 @@ static int handshake(struct tls_io *io, const struct opts *o, int *zstd_ok) {
 		log_msg("collector rejected handshake: %.*s", (int)len, buf);
 		return -2;
 	}
-	*zstd_ok = (strstr((char *)buf, "\"zstd\":true") != NULL); /* only compress if confirmed */
+	/* honor "zstd":true only if WE advertised --zstd in the HELLO. The real
+	 * collector only echoes the feeder's request (push.go: Zstd: h.Zstd), but a buggy or
+	 * hostile-but-authenticated collector answering true to a non-zstd feeder would
+	 * desync the stream (feeder writes plaintext into a collector-side zstd decoder);
+	 * gate on our own intent instead of trusting a server field we can validate. */
+	*zstd_ok = (o->zstd && strstr((char *)buf, "\"zstd\":true") != NULL);
 	return 0;
 }
 
@@ -1185,8 +1240,14 @@ static int disk_drain(struct spool *s, struct conn *c, uint64_t *sent_upto) {
 	return sent;
 }
 
-/* serve_collector connects once and drains the spool until disconnect. Returns -2 on auth
- * rejection (back off hard), -1 otherwise. */
+/* serve_collector connects once and drains the spool until disconnect. Returns 0 when the
+ * session authenticated and then ran at least USEFUL_CONN_S (a "useful" session — main
+ * resets backoff, regression fix), -2 on auth rejection (back off hard), -1 otherwise. The
+ * usefulness clock starts AFTER the handshake (regression fix interaction with regression fix): with
+ * connect() now bounded at CONNECT_TIMEOUT_S (10 s) > USEFUL_CONN_S (3 s), the old
+ * around-the-call window in main would count every slow-FAILING connect as useful and
+ * reset backoff on each attempt against a down collector — the exact no-growth pathology
+ * regression fix/regression fix exist to prevent. */
 static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 	int tls_fd;
 	SSL *ssl = tls_connect(ctx, o, &tls_fd);
@@ -1238,6 +1299,8 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 		return -1;
 	}
 
+	time_t session_start = monotonic_s(); /* regression fix/usefulness measured post-handshake */
+
 	/* Replay-on-reconnect: resume from the last acked sequence. */
 	uint64_t sent_upto = spool_acked(&g_spool);
 	uint64_t replay_base = 0;
@@ -1250,7 +1313,6 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 			o->station, o->feed, zstd_ok, o->server_host, o->server_port);
 
 	struct frame batch[DRAIN_BATCH];
-	int rc = -1;
 	/* last_tx paces the F_PING keepalive and is monotonic : an NTP step
 	 * backward would otherwise make `monotonic_s() - last_tx` a wall-clock delta that
 	 * goes negative and mutes the keepalive for the step's magnitude, so the
@@ -1314,7 +1376,7 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 	spool_stats(&g_spool, NULL, &dropped, &spooled, &disk_dropped);
 	log_msg("disconnected (spooled=%zu dropped=%llu disk_dropped=%llu)",
 		spooled, (unsigned long long)dropped, (unsigned long long)disk_dropped);
-	return rc;
+	return (monotonic_s() - session_start >= USEFUL_CONN_S) ? 0 : -1;
 }
 
 /* ── setup ───────────────────────────────────────────────────────────────── */
@@ -1536,18 +1598,18 @@ int main(int argc, char **argv) {
 
 	int backoff = 1;
 	for (;;) {
-		time_t t0 = monotonic_s(); /* interval, not wall-clock */
 		int rc = serve_collector(ctx, &o);
-		/* a session that authenticated and ran at least USEFUL_CONN_S was useful —
-		 * reset the backoff so a routine collector restart weeks later reconnects in ~1s
-		 * rather than the 30s cap the backoff otherwise monotonically climbs to over the
-		 * process lifetime (it was reset only on an auth reject before). Mirrors the producer
-		 * thread's regression fix usefulness reset and the Go collector's regression fix dial-side reset. Auth
-		 * reject (-2) still backs off hard. */
-		if (rc != -2 && (monotonic_s() - t0) >= USEFUL_CONN_S) backoff = 1;
+		/* regression fix, tightened by serve_collector itself reports usefulness (rc==0,
+		 * authenticated + ran USEFUL_CONN_S, measured post-handshake on the monotonic
+		 * clock) — reset the backoff so a routine collector restart weeks later
+		 * reconnects in ~1s rather than the 30s cap the ladder otherwise climbs to over
+		 * the process lifetime. Mirrors the producer thread's regression fix usefulness reset and
+		 * the Go collector's regression fix dial-side reset. Auth reject (-2) still backs off
+		 * hard; failed/slow connects (-1) never reset. */
+		if (rc == 0) backoff = 1;
 		int wait = rc == -2 ? 30 : backoff;
 		log_msg("reconnecting in %ds", wait);
-		sleep(wait);
+		sleep_with_jitter((unsigned)wait);
 		if (rc == -2) backoff = 1;
 		else { if ((backoff *= 2) > 30) backoff = 30; }
 	}
