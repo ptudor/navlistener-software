@@ -253,6 +253,44 @@ func TestGLONASSUnknownSlotRejected(t *testing.T) {
 	}
 }
 
+// TestGLONASSFreqChServedAndValidated guards regression fix (the FDMA channel k — "the"
+// FDMA identifier per docs/CONSTELLATIONS.md §5 — must be served on GLONASS svs
+// entries) and state boundary (a frame with freqId outside 0..13 is
+// parked under glo_bad_freq, never stored as identity metadata).
+func TestGLONASSFreqChServedAndValidated(t *testing.T) {
+	st := New(4)
+	t0 := time.Unix(1_700_000_000, 0)
+	st.Apply(glonassStringFrame(7, 1, 20000000, 10, 1, 0, 0, t0))
+	st.Apply(glonassStringFrame(7, 2, 20000000, 20, 2, 0, 45, t0.Add(2*time.Second)))
+	st.Apply(glonassStringFrame(7, 3, 20000000, 30, 3, 0, 0, t0.Add(4*time.Second)))
+
+	sv, ok := st.FeedSVs(t0.Add(4 * time.Second))["R07@0"]
+	if !ok {
+		t.Fatal("R07@0 missing from svs feed")
+	}
+	if sv.FreqCh == nil || *sv.FreqCh != 0 {
+		t.Errorf("freq_ch = %v, want 0 (freqId 7 − 7)", sv.FreqCh)
+	}
+
+	// Out-of-plan freqId: parked with a metric, no state entry.
+	counter := metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(gnss.GLONASS)), "glo_bad_freq")
+	before := testutil.ToFloat64(counter)
+	bad := glonassStringFrame(9, 1, 20000000, 10, 1, 0, 0, t0)
+	bad.FreqID = 200
+	st.Apply(bad)
+	if got := testutil.ToFloat64(counter) - before; got != 1 {
+		t.Errorf("glo_bad_freq delta = %v, want 1", got)
+	}
+	key := Key{G: gnss.GLONASS, Sv: 9, Sig: 0}
+	sh := st.shardFor(key)
+	sh.mu.Lock()
+	_, exists := sh.m[key]
+	sh.mu.Unlock()
+	if exists {
+		t.Error("freqId 200 frame keyed into state, want parked")
+	}
+}
+
 // glonassLnFrame builds a string carrying the ℓn fast malfunction flag (regression fix;
 // GLO-ICD-5.1 Table 4.6: string 3 → block offset 20, odd strings 5–15 → offset 76).
 func glonassLnFrame(svID, number, ln int, recv time.Time) *ingest.RawFrame {

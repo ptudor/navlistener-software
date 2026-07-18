@@ -107,6 +107,109 @@ func TestExportedGLONASSDecodersValidateInputs(t *testing.T) {
 	}
 }
 
+// TestGLONASSFreqChValidation guards k = freqID − 7 must be a real FDMA
+// channel −7..+6 (GLO-ICD-5.1 §3.3.1.1) before AssembleGLONASS stores it as
+// ephemeris identity; the almanac word HnA maps 0..6 verbatim and 25..31 → −7..−1
+// (Table 4.10), and the dead codespace 7..24 must reject the pair rather than
+// store an impossible channel.
+func TestGLONASSFreqChValidation(t *testing.T) {
+	mk := func(number int, fill func([]byte)) *GLONASSString {
+		s, err := DecodeGLONASSString(gloStringWords(number, fill))
+		if err != nil {
+			t.Fatalf("string %d: %v", number, err)
+		}
+		return s
+	}
+	s1 := mk(1, nil)
+	s2 := mk(2, func(buf []byte) { setBits(buf, 9, 7, 30) })
+	s3 := mk(3, nil)
+
+	for _, freqID := range []int{-1, 14, 200} {
+		if _, err := AssembleGLONASS(7, freqID, s1, s2, s3, nil); err != errBadFreqCh {
+			t.Errorf("freqID %d: err = %v, want errBadFreqCh", freqID, err)
+		}
+	}
+	for freqID, wantK := range map[int]int{0: -7, 7: 0, 13: 6} {
+		eph, err := AssembleGLONASS(7, freqID, s1, s2, s3, nil)
+		if err != nil {
+			t.Fatalf("freqID %d rejected: %v", freqID, err)
+		}
+		if eph.FreqCh != wantK {
+			t.Errorf("freqID %d: FreqCh = %d, want %d", freqID, eph.FreqCh, wantK)
+		}
+	}
+
+	almPair := func(hn int) ([]uint32, []uint32) {
+		first := gloStringWords(6, func(buf []byte) { setBits(buf, 8, 5, 7) }) // slot 7
+		second := gloStringWords(7, func(buf []byte) { setBits(buf, 71, 5, uint64(hn)) })
+		return first, second
+	}
+	for _, hn := range []int{7, 20, 24} {
+		f, s := almPair(hn)
+		if _, err := DecodeGLONASSAlmanac(f, s, 1); err != errBadFreqCh {
+			t.Errorf("HnA %d: err = %v, want errBadFreqCh", hn, err)
+		}
+	}
+	for hn, wantK := range map[int]int{0: 0, 6: 6, 25: -7, 31: -1} {
+		f, s := almPair(hn)
+		a, err := DecodeGLONASSAlmanac(f, s, 1)
+		if err != nil {
+			t.Fatalf("HnA %d rejected: %v", hn, err)
+		}
+		if a.Alm.FreqCh != wantK {
+			t.Errorf("HnA %d: FreqCh = %d, want %d", hn, a.Alm.FreqCh, wantK)
+		}
+	}
+}
+
+// TestDecodeGLONASSStringP1En guards P1 (string 1 bits 77–78 → block
+// offset 7, the tb-update-interval flag of Table 4.3) and En (string 4 bits
+// 49–53 → offset 32, the SV-declared age of the immediate data in days) decode
+// at their Table 4.6 positions and stay isolated from their neighbors.
+func TestDecodeGLONASSStringP1En(t *testing.T) {
+	s1, err := DecodeGLONASSString(gloStringWords(1, func(buf []byte) {
+		setBits(buf, 7, 2, 2) // P1 = 10 → 45 min interval
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s1.P1 != 2 {
+		t.Errorf("P1 = %d, want 2", s1.P1)
+	}
+	s4, err := DecodeGLONASSString(gloStringWords(4, func(buf []byte) {
+		setBits(buf, 32, 5, 21)            // En = 21 days
+		gloSetSignMag(buf, 5, 22, -123456) // τn alongside — no bleed
+		gloSetSignMag(buf, 27, 5, 5)       // Δτn (offsets 27–31 abut En's 32–36)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s4.En != 21 {
+		t.Errorf("En = %d, want 21", s4.En)
+	}
+	if want := 5.0 / (1 << 30); s4.DeltaTauN != want {
+		t.Errorf("Δτn = %v, want %v (En decode must not bleed into the adjacent span)", s4.DeltaTauN, want)
+	}
+}
+
+// TestGLONASSStringUnhealthy guards the exported per-string health
+// accessor must flag only the Bn MSB (mask 0x4, GLO-ICD-5.1 §4.4 — the natural
+// Health != 0 test over-flags on the benign low bits) or a set ℓn.
+func TestGLONASSStringUnhealthy(t *testing.T) {
+	for raw, want := range map[int]bool{0: false, 1: false, 3: false, 4: true, 7: true} {
+		s := &GLONASSString{Health: raw}
+		if s.Unhealthy() != want {
+			t.Errorf("Health=%d: Unhealthy = %v, want %v", raw, s.Unhealthy(), want)
+		}
+	}
+	if s := (&GLONASSString{Ln: 1, LnKnown: true}); !s.Unhealthy() {
+		t.Error("ℓn=1 must report Unhealthy")
+	}
+	if s := (&GLONASSString{Ln: 1}); s.Unhealthy() {
+		t.Error("Ln without LnKnown must not report Unhealthy (fabricated flag)")
+	}
+}
+
 // TestDecodeGLONASSStringLn guards the GLONASS-M ℓn fast malfunction
 // flag (0 healthy, 1 malfunction; GLO-ICD-5.1 §4.4) must decode from string 3
 // at ICD bit 65 (block offset 20) and from the odd strings 5,7,9,11,13,15 at

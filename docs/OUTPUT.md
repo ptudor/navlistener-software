@@ -75,7 +75,7 @@ below):
 | `health_code` | int | §2.2 enum: 0 unknown · 1 OK · 2 not-ok · 3 do-not-use |
 | `health_issue_level` | int | 0 none · 1 warning · 2 error |
 | `health_subcode` | int | raw broadcast health bits (0 when none). **GLONASS**: a packed pair — low 3 bits = the raw Bn word (only its MSB, value 4, is the malfunction flag), bit 3 (value 8) = the GLONASS-M ℓn fast malfunction flag (regression fix; GLO-ICD-5.1 §4.4, Table 5.1) — so a Bn-vs-ℓn disagreement window is visible |
-| `eph_age_m` | float | ephemeris age, minutes = `ephAge(tow,t0e)/60` (MATH.md §1.1) |
+| `eph_age_m` | float | ephemeris age, minutes = `ephAge(tow,t0e)/60` (MATH.md §1.1). **Sign convention :** legitimately **negative** while now precedes the reference epoch — for GLONASS that is the steady state for roughly the first half of every tb interval, because the immediate data are referred to the *middle* of the interval (GLO-ICD-5.1 §4.4); Kepler-family ages can likewise be briefly negative before toe. Consumers must not assert `eph_age_m ≥ 0`. Past the constellation's serving cap the value switches to the monotone wall-clock age since apply  |
 | `sisa_valid` | bool | false when the broadcast accuracy is a "none/no accuracy" sentinel |
 | `sisa_m` | float | URA/SISA in metres (MATH.md §6); meaningful only when `sisa_valid` |
 | `acc_index` | int | raw broadcast accuracy index (URA / URA_ED / SISA per constellation, MATH.md §6); present whenever an accuracy field has been decoded — including the "no accuracy prediction, use at own risk" sentinels (GPS/QZSS URA 15, IS-GPS-200N §20.3.3.3.1.3; CNAV URA_ED 15/−16; Galileo SISA 255) that `sisa_valid=false` alone can't distinguish from "not yet decoded"  |
@@ -88,6 +88,7 @@ below):
 | `osnma` | bool | Galileo OSNMA authentication seen active (absent for non-Galileo) |
 | `alma_dist_m` | float | broadcast-ephemeris vs almanac/TLE position distance (cross-check) |
 | `last_seen_s` | int | seconds since any receiver last reported this SV |
+| `freq_ch` | int | GLONASS-only : the FDMA frequency channel k ∈ [−7,+6] the tracked signal was received on (receiver `freqId − 7`, boundary-validated). Cross-checkable against the almanac entry's `freq_ch` (HnA-derived) for the same slot — a mismatch means mis-identification or spoofing. Absent for other constellations |
 | `x_m`,`y_m`,`z_m` | float | ECEF metres at `tow` — **all constellations, GLONASS included** |
 | `tow` | int | time-of-week (s) of the solution; `wn` | int | week number (full, disambiguated) — **GPS-continuous** (GPS week number, no 1024-week rollover) for GPS, Galileo, QZSS, and NavIC; **BeiDou is the exception**, reported as its own native BDT week (GPS week − 1356, BDT epoch 2006-01-01) — regression fix. A consumer diffing `wn` against the broadcast WN sees a 1024-week offset for Galileo/NavIC but not for BeiDou; this is intentional, not a bug, and is not expected to change without a version bump. |
 | `best_tle` | string | name of best-matching CelesTrak object (MATH.md §11), absent if none |
@@ -177,6 +178,7 @@ all-SV view (acquisition-grade); `svs` remains the precision view. Fields:
 | `t` | int | evaluation time as Unix UTC seconds |
 | `lambda_na`,`t_lambda_na` | float | GLONASS-only: ascending-node longitude and its epoch (MATH.md §3.1) |
 | `operable` | bool | GLONASS-only : the almanac CnA ground-segment health flag, `true` = operable. **Polarity note:** the broadcast word is inverted vs Bn/ℓn — Cn = 0 means malfunction (GLO-ICD-5.1 §5.3); this field re-normalizes it so `true` is always healthy. For an out-of-view slot this is the SV's only broadcast health surface (the ground path reaches every SV's almanac within ~16 h, §5.3); an inoperable slot's entry is still served — it's the flag that matters, not suppression. Absent for other constellations and until the slot's almanac decodes. |
+| `freq_ch` | int | GLONASS-only : the slot's FDMA channel k from the broadcast almanac word HnA (GLO-ICD-5.1 Table 4.10) — the almanac side of the eph-vs-almanac channel cross-check (see `svs.freq_ch`) |
 | `eph_source` | int | §2.2 enum: 0 broadcast-almanac · 1 tle-sgp4 fill |
 
 `t0e` and `t` deliberately use different time bases; `t - t0e` is **not** an almanac age.

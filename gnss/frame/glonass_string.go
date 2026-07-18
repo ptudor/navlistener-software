@@ -30,6 +30,14 @@ var ErrGLONASSHamming = errors.New("frame: GLONASS string Hamming check failed")
 // 8-bit detect-only code, not a strong CRC, so this range gate is real defense.
 var errBadTb = errors.New("frame: GLONASS tb index out of range (1..95)")
 
+// errBadFreqCh  is returned when a frequency channel is outside the FDMA
+// plan k ∈ [−7, +6] (GLO-ICD-5.1 §3.3.1.1 Table 3.1 and its note: all SVs launched
+// after 2005 use K = −7…+6; the almanac word HnA encodes negatives as 25..31 per
+// Table 4.10, so HnA 7..24 encodes no valid channel at all). An out-of-domain
+// channel is corrupt identity metadata that would ride into FDMA frequency math
+// and federation wire records — reject at the boundary (the regression fix idiom).
+var errBadFreqCh = errors.New("frame: GLONASS frequency channel out of range (k -7..+6)")
+
 // gloHammingRange builds the inclusive integer range [lo, hi].
 func gloHammingRange(lo, hi int) []int {
 	s := make([]int, 0, hi-lo+1)
@@ -66,6 +74,18 @@ var gloHammingSets = func() [7][]int {
 // data bits b9..b85 are ICD bits 9..85. Each Cj = βj ⊕ (parity of a fixed data-bit set),
 // and CΣ is the parity of the whole 85-bit string. The string carries no detected error
 // (and is accepted) iff C1..C7 and CΣ are all zero; any nonzero checksum rejects it.
+//
+// DETECTION-ONLY BY DESIGN : ICD §4.7 rule (b) additionally defines
+// single-bit-error CORRECTION from the syndrome, and the machinery here computes
+// everything correction would need — it was considered and DECLINED, not
+// overlooked. An (8,4)-class check cannot distinguish a correctable single-bit
+// error from a miscorrectable multi-bit one, and for an integrity monitor a
+// silently miscorrected string trusted into live state is strictly worse than a
+// dropped one that re-broadcasts within 30 s (immediate) / 2.5 min (almanac).
+// Cost: a slightly elevated reject rate on noisy push/federation links, visible
+// per source via the nav_crc_fail metric's source label. Implement rule (b) only
+// if a real feeder ever shows meaningful loss — and then only with a
+// corrected-vs-rejected metric split.
 func glonassHammingValid(r *BitReader) bool {
 	bit := func(icd int) uint64 { v, _ := r.Bits(85-icd, 1); return v & 1 }
 	var acc uint64
@@ -171,8 +191,28 @@ type GLONASSString struct {
 	Coord  float64 // km
 	Vel    float64 // km/s
 	Accel  float64 // km/s²
-	Health int     // string 2: Bn health flags
-	Tb     float64 // string 2: reference time, seconds of day
+	// Health is string 2's RAW 3-bit Bn word. regression fix — read this before using it:
+	// only the MSB (mask 0x4) is the malfunction flag; the ICD says user equipment
+	// "does not consider both second and third bits of this word" (GLO-ICD-5.1
+	// §4.4), so the natural `Health != 0` test over-flags a healthy SV on a benign
+	// low bit. Use Unhealthy() instead of interpreting this field directly.
+	Health int
+	Tb     float64 // string 2: reference time, seconds of day (index 1..95 × 900 s)
+
+	// P1 is string 1's immediate-data updating flag, raw 2-bit value: the time
+	// interval between adjacent tb values is 0 (=not announced) / 30 / 45 / 60
+	// minutes for P1 = 0/1/2/3 (GLO-ICD-5.1 §4.4, Table 4.3; Table 4.6: string 1
+	// bits 77–78). decoded because it is the broadcast input to any
+	// adaptive validity window over tb (regression fix currently uses the fixed 60-min
+	// ceiling, the table's maximum).
+	P1 int
+
+	// En is string 4's SV-declared age of the immediate data, whole days: the
+	// time from the control-segment calculation (upload) of the current set to
+	// tb, formed on board (GLO-ICD-5.1 §4.4; Table 4.6: string 4 bits 49–53).
+	// a large En at a fresh tb is an upload anomaly — the daemon-side
+	// En-vs-computed-age cross-check is the intended consumer.
+	En int
 
 	// SV clock terms (regression fix; ICD Ed. 5.1 Tables 4.5/4.6, sign-magnitude per
 	// Table 4.5 Note 2): γn(tb) from string 3, τn(tb) and Δτn from string 4.
@@ -233,6 +273,11 @@ func DecodeGLONASSString(words []uint32) (*GLONASSString, error) {
 		s.Accel = float64(acc) * gloAccel
 	}
 
+	if m == 1 {
+		p1, _ := r.Bits(7, 2) // P1 — ICD Table 4.6: string 1 bits 77–78 (85−78 = 7)
+		s.P1 = int(p1)
+	}
+
 	if m == 2 {
 		bn, _ := r.Bits(5, 3)
 		tb, _ := r.Bits(9, 7)
@@ -263,10 +308,32 @@ func DecodeGLONASSString(words []uint32) (*GLONASSString, error) {
 	if m == 4 {
 		tau, _ := r.SignMag(5, 22)  // τn(tb) — ICD Table 4.6: string 4 bits 59–80 (85−80 = 5)
 		dtau, _ := r.SignMag(27, 5) // Δτn — ICD Table 4.6: string 4 bits 54–58 (85−58 = 27)
+		en, _ := r.Bits(32, 5)      // En — ICD Table 4.6: string 4 bits 49–53 (85−53 = 32)
 		s.TauN = float64(tau) * gloClk2m30
 		s.DeltaTauN = float64(dtau) * gloClk2m30
+		s.En = int(en)
 	}
+	// regression fix — deliberate deferrals (the NavIC-stub idiom: documented, not
+	// forgotten). Words broadcast in these already-parsed strings and NOT decoded,
+	// each awaiting a concrete consumer: tk (string 1 bits 65–76 — frame timestamp
+	// within the day; a tk-vs-tb plausibility gate), P2 (string 2 bit 77 — tb
+	// oddness flag), P4 (string 4 bit 34 — updated-ephemeris-ahead flag), M
+	// (string 4 bits 9–10 — GLONASS/GLONASS-M satellite type, which formally
+	// scopes ℓn/En/P1 per Table 4.5 Remark 1), n (string 4 bits 11–15 — the
+	// broadcast slot number; would enable svId-vs-n cross-checks and unknown-slot
+	// recovery, regression fix), FT (string 4 bits 30–33 — accuracy, tracked as regression fix).
 	return s, nil
+}
+
+// Unhealthy reports the SV-broadcast malfunction state carried by THIS string
+// : string 2's Bn MSB (the only Bn bit that means malfunction,
+// GLO-ICD-5.1 §4.4) or a set ℓn fast flag on a string that carries one. It is a
+// per-string view — a full picture combines Bn (string 2), ℓn (strings
+// 3/5/7/9/11/13/15), and the almanac's ground-segment Cn per ICD Table 5.1, as
+// the daemon's state layer does. Library consumers should call this rather than
+// interpret the raw Health field (whose benign low bits over-flag).
+func (s *GLONASSString) Unhealthy() bool {
+	return s.Health&0x4 != 0 || (s.LnKnown && s.Ln != 0)
 }
 
 // GLONASS almanac scale factors (GLONASS ICD Ed. 5.1 Table 4.9). Angular words are in
@@ -330,6 +397,14 @@ func DecodeGLONASSAlmanac(first, second []uint32, na int) (GLONASSAlmanacEntry, 
 	deltaTdot, _ := r2.SignMag(64, 7) // ΔT'nA (85−21 = 64), 2^-14 s
 	hn, _ := r2.Bits(71, 5)           // HnA   (85−14 = 71)
 
+	// an HnA outside the frequency plan is corrupt string content the
+	// 8-bit Hamming check can miss — reject the pair rather than store a channel
+	// that cannot exist (see errBadFreqCh).
+	freqCh, ok := gloHnToChannel(int(hn))
+	if !ok {
+		return GLONASSAlmanacEntry{}, errBadFreqCh
+	}
+
 	return GLONASSAlmanacEntry{
 		Cn:      int(cn),
 		SatType: int(mType),
@@ -337,7 +412,7 @@ func DecodeGLONASSAlmanac(first, second []uint32, na int) (GLONASSAlmanacEntry, 
 		Alm: glonass.Almanac{
 			NA:        na,
 			Slot:      int(slot),
-			FreqCh:    gloHnToChannel(int(hn)),
+			FreqCh:    freqCh,
 			Lambda:    float64(lambda) * gloAlm2m20 * math.Pi,
 			DeltaI:    float64(deltaI) * gloAlm2m20 * math.Pi,
 			Omega:     float64(omega) * gloAlm2m15 * math.Pi,
@@ -350,12 +425,19 @@ func DecodeGLONASSAlmanac(first, second []uint32, na int) (GLONASSAlmanacEntry, 
 }
 
 // gloHnToChannel maps the broadcast frequency-number word HnA to the FDMA channel k
-// (GLONASS ICD Ed. 5.1 Table 4.10: values 25..31 encode channels −7..−1).
-func gloHnToChannel(h int) int {
-	if h >= 25 {
-		return h - 32
+// (GLONASS ICD Ed. 5.1 Table 4.10: values 25..31 encode channels −7..−1; 0..6 are
+// the non-negative channels verbatim). HnA 7..24 encodes no valid channel
+// under the post-2005 frequency plan (§3.3.1.1) — ok is false and the caller must
+// reject rather than store an impossible k as identity metadata.
+func gloHnToChannel(h int) (k int, ok bool) {
+	switch {
+	case h >= 25 && h <= 31:
+		return h - 32, true
+	case h >= 0 && h <= 6:
+		return h, true
+	default:
+		return 0, false
 	}
-	return h
 }
 
 // DecodeGLONASSFrameNA reads the calendar day number NA from string 5 (ICD Ed. 5.1
@@ -396,6 +478,14 @@ func AssembleGLONASS(slot, freqID int, s1, s2, s3, s4 *GLONASSString) (glonass.E
 	}
 	if s4 != nil && s4.Number != 4 {
 		return glonass.Ephemeris{}, errGLONASSStringOrder
+	}
+	// k = freqID − 7 must be a real FDMA channel −7..+6 (freqID 0..13,
+	// GLO-ICD-5.1 §3.3.1.1) before it is stored as ephemeris identity metadata.
+	// freqID is the RECEIVER's tag (u-blox freqId byte, 0..255 on the wire), not
+	// Hamming-protected string content — an unvalidated corrupt byte would ride
+	// into FDMA frequency math and federation records with no error.
+	if freqID < 0 || freqID > 13 {
+		return glonass.Ephemeris{}, errBadFreqCh
 	}
 	eph := glonass.Ephemeris{
 		X: s1.Coord, Vx: s1.Vel, Ax: s1.Accel,

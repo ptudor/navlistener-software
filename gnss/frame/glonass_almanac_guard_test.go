@@ -16,11 +16,19 @@ func TestGLONASSAlmanacShortFrame(t *testing.T) {
 	}
 }
 
-// TestGLONASSHnChannel checks the FDMA channel mapping (ICD Table 4.10).
+// TestGLONASSHnChannel checks the FDMA channel mapping (ICD Table 4.10) and the
+// regression fix rejection of the dead HnA codespace 7..24 (no valid channel under the
+// post-2005 frequency plan, ICD §3.3.1.1).
 func TestGLONASSHnChannel(t *testing.T) {
 	for h, want := range map[int]int{0: 0, 6: 6, 25: -7, 31: -1} {
-		if got := gloHnToChannel(h); got != want {
-			t.Errorf("gloHnToChannel(%d) = %d, want %d", h, got, want)
+		got, ok := gloHnToChannel(h)
+		if !ok || got != want {
+			t.Errorf("gloHnToChannel(%d) = %d/%v, want %d/true", h, got, ok, want)
+		}
+	}
+	for _, h := range []int{7, 15, 24, 32, -1} {
+		if _, ok := gloHnToChannel(h); ok {
+			t.Errorf("gloHnToChannel(%d) ok = true, want rejection", h)
 		}
 	}
 }

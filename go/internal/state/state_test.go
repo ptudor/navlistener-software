@@ -335,7 +335,7 @@ func TestApplyByteFrameSkipsLNAVDispatch(t *testing.T) {
 func TestIntegrityFailuresUseNavCRCMetric(t *testing.T) {
 	s := New(4)
 	now := time.Unix(1_700_000_000, 0)
-	crcCounter := metrics.NavCRCFailTotal.WithLabelValues("0", "3")
+	crcCounter := metrics.NavCRCFailTotal.WithLabelValues("0", "3", "") // per-source label (empty = local/unlabeled source)
 	decodeCounter := metrics.DecodeErrorsTotal.WithLabelValues("0", "cnav")
 	crcBefore, decodeBefore := testutil.ToFloat64(crcCounter), testutil.ToFloat64(decodeCounter)
 

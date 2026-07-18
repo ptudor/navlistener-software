@@ -73,8 +73,13 @@ var (
 	// forensic record once the persist stage lands.
 	NavCRCFailTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "navlistener_nav_crc_fail_total",
-		Help: "Nav frames dropped for failed parity/CRC, by gnssId and sigId.",
-	}, []string{"gnssid", "sigid"})
+		Help: "Nav frames dropped for failed parity/CRC, by gnssId, sigId, and source.",
+		// the source label makes a single noisy push/federation link
+		// visible — the GLONASS Hamming check is deliberately detection-only
+		// (no rule-(b) correction), so an elevated per-source reject rate is
+		// the operational signal that trade relies on. Cardinality is bounded
+		// by the fleet size.
+	}, []string{"gnssid", "sigid", "source"})
 
 	// DecodeTotal counts nav frames decoded into a typed message, by
 	// constellation and GNF1 message type.

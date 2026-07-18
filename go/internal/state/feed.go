@@ -58,6 +58,14 @@ type FeedSV struct {
 	Af0            *float64 `json:"af0,omitempty"`
 	Af1            *float64 `json:"af1,omitempty"`
 	Af2            *float64 `json:"af2,omitempty"`
+	// FreqCh (regression fix, GLONASS-only) is the FDMA frequency channel k ∈ [−7, +6]
+	// the tracked signal was received on (receiver freqId − 7, validated at the
+	// boundary per regression fix). docs/CONSTELLATIONS.md §5 calls the channel "the"
+	// identifier for FDMA satellites; serving it lets consumers cross-check a
+	// tracked signal's channel against the broadcast almanac's HnA-derived
+	// channel for the slot (docs/OUTPUT.md §1.4 freq_ch) — a mismatch means
+	// mis-identification or spoofing (the DEFENSE-PNT cross-check family).
+	FreqCh         *int     `json:"freq_ch,omitempty"`
 	XM             *float64 `json:"x_m,omitempty"`
 	YM             *float64 `json:"y_m,omitempty"`
 	ZM             *float64 `json:"z_m,omitempty"`
@@ -126,6 +134,12 @@ type AlmanacEntry struct {
 	// inoperable slot's entry is deliberately still served: consumers want the
 	// position of an unhealthy SV; it is the flag that was missing.
 	Operable *bool `json:"operable,omitempty"`
+
+	// FreqCh (regression fix, GLONASS-only): the slot's FDMA channel k from the
+	// broadcast almanac word HnA (Table 4.10 mapping, validated per regression fix) —
+	// the almanac side of the eph-vs-almanac channel cross-check (see
+	// FeedSV.FreqCh).
+	FreqCh *int `json:"freq_ch,omitempty"`
 }
 
 // SBASEntry is one augmentation-system health entry (docs/OUTPUT.md §1.5).
@@ -249,6 +263,8 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 
 	if g == gnss.GLONASS {
 		if st.haveGloEph {
+			k := st.gloEph.FreqCh // boundary-validated, k = freqId − 7
+			e.FreqCh = &k
 			// Inside the serving cap the ICD-defined day-wrapped age is served
 			// unchanged; it is legitimately NEGATIVE for roughly the first half of
 			// each tb interval, because the immediate data are referred to the
@@ -508,6 +524,7 @@ func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
 		// entry the almanac covers, observed ones included: Cn is ground-segment
 		// truth about the slot regardless of local visibility.
 		operable := a.Cn == 1
+		freqCh := a.Alm.FreqCh // HnA-derived, validated per regression fix
 		if ent, seen := out[name]; seen {
 			// the observed entry keeps its precise ECEF/epoch, but its
 			// always-present inclination/t0e metadata comes from the fresh
@@ -517,6 +534,7 @@ func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
 				ent.InclinationRad = gloMeanInclination + a.Alm.DeltaI
 				ent.T0e = int(a.Alm.Tlambda)
 				ent.Operable = &operable
+				ent.FreqCh = &freqCh
 				out[name] = ent
 			}
 			continue // observed → its precise broadcast-ephemeris entry wins
@@ -543,6 +561,7 @@ func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
 			LambdaNA:       &lambda,
 			TLambdaNA:      &tLambda,
 			Operable:       &operable,
+			FreqCh:         &freqCh,
 		}
 	}
 }

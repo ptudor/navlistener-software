@@ -30,7 +30,7 @@ func countDecodeFailure(f *ingest.RawFrame, kind string, err error) {
 	if errors.Is(err, frame.ErrBadCRC) || errors.Is(err, frame.ErrBadPreamble) ||
 		errors.Is(err, frame.ErrBadTLMPreamble) || errors.Is(err, frame.ErrBadBCH) ||
 		errors.Is(err, frame.ErrGLONASSHamming) {
-		metrics.NavCRCFailTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), fmt.Sprint(f.SigID)).Inc()
+		metrics.NavCRCFailTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), fmt.Sprint(f.SigID), f.Source).Inc()
 		return
 	}
 	metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), kind).Inc()
@@ -1019,6 +1019,15 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "glo_unknown_slot").Inc()
 		return
 	}
+	// freqId must encode a real FDMA channel k = freqId − 7 ∈ [−7, +6]
+	// (GLO-ICD-5.1 §3.3.1.1). It is receiver metadata, not Hamming-protected
+	// string content, so a corrupt SFRBX byte or crafted push frame otherwise
+	// stores an impossible channel as ephemeris identity with no error. Same
+	// boundary rule as the slot guard above.
+	if f.FreqID < 0 || f.FreqID > 13 {
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "glo_bad_freq").Inc()
+		return
+	}
 	str, err := frame.DecodeGLONASSString(f.Words)
 	if err != nil {
 		countDecodeFailure(f, "glo", err)
@@ -1582,7 +1591,20 @@ func towFor(g gnss.GNSSID, now time.Time) float64 {
 
 // gloTOD returns the GLONASS time-of-day (seconds) for a wall-clock instant.
 // GLONASS time is UTC(SU)+3h, and the broadcast tb is on that scale, so the RK4
-// propagation target is (UTC + 3 h) modulo the day.
+// propagation target is (UTC + 3 h) modulo the day. No ΔtLS belongs in this
+// conversion: Unix and GLONASS time are both UTC-anchored (unlike the GPS path).
+//
+// regression fix — known, accepted limitation: GLONASS time STEPS with UTC leap seconds
+// (GLO-ICD-5.1 §3.3.3, inserted at 00:00 UTC = 03:00 MT), but POSIX time cannot
+// represent 23:59:60 — it collapses the leap second onto a neighbor. For the
+// second spanning an insertion (and until the host clock re-syncs/smears), this
+// TOD is 1 s off true GLONASS TOD ≈ 3.9 km of along-track motion in the RK4
+// target epoch, served without error indication. Accepted because: no leap has
+// occurred since 2017 and none is scheduled; the transient is bounded and brief;
+// and fixing it honestly needs a leap-event table (the regression fix follow-up) or the
+// broadcast KP flag (string 5, currently undecoded — the regression fix-adjacent B1/B2/KP
+// words), either of which should feed this function when it lands. Do not
+// "fix" this with a hardcoded offset — that is exactly the regression fix class of error.
 func gloTOD(now time.Time) float64 {
 	tod := (now.Unix() + 3*3600) % 86400
 	if tod < 0 {

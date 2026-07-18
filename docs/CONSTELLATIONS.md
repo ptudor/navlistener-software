@@ -305,10 +305,17 @@ PZ-90.11 datum**. Source: **GLONASS ICD Edition 5.1 (2008)**.
   channel as `freqId` (`k = freqId − 7`); it is **the** identifier — GLONASS nav strings carry
   **no week number and no full TOW**, only a time-of-day. `GloNav` records `k` and the slot
   number `n`.
-- **Datum: PZ-90.11** (not WGS84). ECEF differs from WGS84 by a small (~cm) transform; we keep
-  positions in PZ-90.11 internally and note the datum in the output (a fixed 7-parameter
-  Helmert transform to WGS84/ITRF is applied only where a common frame is needed —
-  `docs/MATH.md`).
+- **Datum: PZ-90.11** (not WGS84). **As-built policy :** GLONASS positions are served
+  **raw in PZ-90.11**, in the same `x_m/y_m/z_m` fields as the WGS-84-datum constellations,
+  with **no datum field and no Helmert transform anywhere in the pipeline** — matching the
+  `docs/OUTPUT.md` contract, which defines no datum marker. This is deliberate: PZ-90.11 has
+  been aligned with ITRF to ~cm since 2014, far below broadcast-ephemeris accuracy, so a
+  transform would move nothing a feed consumer can resolve. The per-constellation ellipsoid
+  *is* correctly selected for geodetic (lat/lon) conversion. The ~cm shrug stops being valid
+  exactly one place: the planned RTCM precise-vs-broadcast comparison (`docs/INTEGRITY.md
+  §5`), where cm-level matters — a fixed 7-parameter Helmert belongs **there, when that
+  lands**, not in the feeds. (An earlier revision of this bullet promised datum notation in
+  the output; the contract decided otherwise — this text now records what the code does.)
 - **Strings 1–15 (85 bits each, 2 s each; a frame is 15 strings = 30 s; a superframe is 5
   frames = 2.5 min):**
   - **Strings 1–4** — immediate **ephemeris**: broadcast **Cartesian position, velocity, and

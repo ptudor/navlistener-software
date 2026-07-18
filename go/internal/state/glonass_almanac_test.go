@@ -134,6 +134,10 @@ func TestFeedGlonassAlmanacOperable(t *testing.T) {
 	if sv9.Operable == nil || *sv9.Operable {
 		t.Errorf("R09 Cn=0 must serve operable=false, got %+v", sv9.Operable)
 	}
+	// the HnA-derived FDMA channel rides the almanac entry.
+	if h.FreqCh == nil || *h.FreqCh != 3 {
+		t.Errorf("R07 freq_ch = %v, want 3 (the broadcast HnA channel)", h.FreqCh)
+	}
 
 	// Observed entry: precise position wins, but the ground-segment flag rides along.
 	key := Key{G: gnss.GLONASS, Sv: 9, Sig: 0}
