@@ -231,7 +231,11 @@ static time_t monotonic_s(void) {
 static void sleep_with_jitter(unsigned s) {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
-	unsigned jitter_ms = (unsigned)((ts.tv_nsec / 1000000L) % (long)(s * 250 + 1));
+	/* Modulo the FULL tv_nsec range (verification finding, this pass): dividing down
+	 * to milliseconds first would cap the entropy at [0,999] ms, flattening the
+	 * jitter on exactly the top backoff rungs a post-outage fleet sits at (25% of
+	 * 30 s should be up to 7.5 s, not 1 s). tv_nsec <= 999999999 fits 32-bit long. */
+	unsigned jitter_ms = (unsigned)(ts.tv_nsec % ((long)s * 250L + 1L));
 	struct timespec d = { (time_t)s + jitter_ms / 1000, (long)(jitter_ms % 1000) * 1000000L };
 	while (nanosleep(&d, &d) == -1 && errno == EINTR)
 		;
@@ -350,7 +354,10 @@ static void disk_rollback(struct spool *s) {
 		/* throttle on the monotonic clock (a realtime step must not mute or
 		 * burst the warning). last_warn == 0 means "never warned" — CLOCK_MONOTONIC
 		 * starts near 0 at boot, so a plain `nowt - 0 >= 60` would suppress the first
-		 * warning for the first minute of uptime on a freshly-booted router. */
+		 * warning for the first minute of uptime on a freshly-booted router. (A warn
+		 * fired in system-uptime second 0 leaves last_warn == 0 and would not throttle
+		 * a second event that same second — one benign extra line, accepted. Applies
+		 * to all three throttle sites.) */
 		static time_t last_warn;
 		time_t nowt = monotonic_s();
 		if (last_warn == 0 || nowt - last_warn >= 60) {
@@ -497,8 +504,12 @@ static void spool_stats(struct spool *s, uint64_t *seq, uint64_t *dropped, size_
 /* CONNECT_TIMEOUT_S bounds a single connect() attempt (regression fix, the regression fix deferred
  * follow-on): a routable-but-down host (SYN silently dropped) otherwise blocks the
  * calling thread for the OS SYN-retry window (~127 s on Linux defaults) per attempt —
- * the producer or consumer sits dark that long before its retry loop even runs. 10 s
- * matches the collector side's dialTimeout (go/internal/ingest/ingest.go). */
+ * the producer or consumer sits dark that long before its retry loop even runs. The
+ * bound is deliberately PER getaddrinfo CANDIDATE (a multi-homed host can take
+ * N x 10 s worst-case): each address gets a full window every round instead of the
+ * first black-holed one starving the rest, and the never-exit retry loop absorbs the
+ * total. 10 s echoes the collector side's dialTimeout (go/internal/ingest/ingest.go),
+ * which is a total budget there. */
 #define CONNECT_TIMEOUT_S 10
 
 static int tcp_dial(const char *host, const char *port, int rcv_timeout_s) {
