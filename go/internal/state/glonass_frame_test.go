@@ -1,11 +1,14 @@
 package state
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/navlistener/internal/ingest"
+	"github.com/ptudor/navlistener/internal/metrics"
 )
 
 // setSignMag writes a sign-magnitude n-bit field (top bit sign, remaining n-1
@@ -160,6 +163,51 @@ func TestGLONASSDiscoOnTbChangeover(t *testing.T) {
 	}
 	if sv.TimeDiscoNs == nil {
 		t.Error("time_disco_ns absent for a GLONASS tb changeover with a clock offset")
+	}
+}
+
+// TestGLONASSUnknownSlotRejected guards u-blox emits SFRBX with svId 255
+// for a GLONASS satellite whose slot is not yet identified (UBX-PROTOCOL), and every
+// unknown-slot satellite aliases into that one key — so accepting it both fabricates
+// SV "R255" and lets strings from two different satellites assemble a chimera
+// ephemeris. Frames with svId outside the real slot range 1..24 (GLO-ICD-5.1 §5.1)
+// must be parked under the glo_unknown_slot metric, never keyed into state.
+func TestGLONASSUnknownSlotRejected(t *testing.T) {
+	st := New(4)
+	t0 := time.Unix(1_700_000_000, 0)
+	counter := metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(gnss.GLONASS)), "glo_unknown_slot")
+	before := testutil.ToFloat64(counter)
+
+	for _, sv := range []int{0, 25, 255} {
+		st.Apply(glonassStringFrame(sv, 1, 20000000, 10, 1, 0, 0, t0))
+		st.Apply(glonassStringFrame(sv, 2, 20000000, 20, 2, 0, 45, t0.Add(2*time.Second)))
+		st.Apply(glonassStringFrame(sv, 3, 20000000, 30, 3, 0, 0, t0.Add(4*time.Second)))
+		key := Key{G: gnss.GLONASS, Sv: sv, Sig: 0}
+		sh := st.shardFor(key)
+		sh.mu.Lock()
+		_, exists := sh.m[key]
+		sh.mu.Unlock()
+		if exists {
+			t.Errorf("svId %d keyed into state, want rejected (1..24 only)", sv)
+		}
+	}
+	if got := testutil.ToFloat64(counter) - before; got != 9 {
+		t.Errorf("glo_unknown_slot delta = %v, want 9 (3 strings × 3 bad svIds)", got)
+	}
+
+	// Boundary slots 1 and 24 must still assemble normally.
+	for _, sv := range []int{1, 24} {
+		st.Apply(glonassStringFrame(sv, 1, 20000000, 10, 1, 0, 0, t0))
+		st.Apply(glonassStringFrame(sv, 2, 20000000, 20, 2, 0, 45, t0.Add(2*time.Second)))
+		st.Apply(glonassStringFrame(sv, 3, 20000000, 30, 3, 0, 0, t0.Add(4*time.Second)))
+		key := Key{G: gnss.GLONASS, Sv: sv, Sig: 0}
+		sh := st.shardFor(key)
+		sh.mu.Lock()
+		have := sh.m[key] != nil && sh.m[key].haveGloEph
+		sh.mu.Unlock()
+		if !have {
+			t.Errorf("slot %d did not assemble", sv)
+		}
 	}
 }
 

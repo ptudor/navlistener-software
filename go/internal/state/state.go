@@ -1001,6 +1001,24 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 }
 
 func (s *Store) applyGLONASS(f *ingest.RawFrame) {
+	// the frame's svId must be a real GLONASS slot number 1..24
+	// (GLO-ICD-5.1 §5.1: three planes of 8, slots 1…24). u-blox delivers SFRBX
+	// for a GLONASS satellite whose slot is NOT yet identified with svId 255
+	// (UBX-PROTOCOL — slot resolution requires decoding the very strings being
+	// forwarded), and nothing downstream re-checks identity: accepting it
+	// fabricates SV "R255", and because EVERY unknown-slot satellite aliases
+	// into that one key, two such satellites tracked simultaneously (a
+	// cold-start norm) interleave strings 1/2/3 within the 8 s frame window and
+	// can assemble a cross-SV chimera state vector that the regression fix guard cannot
+	// catch (it bounds time, not identity — and identity is exactly what svId
+	// 255 has erased). Park such frames under their own metric label (the
+	// regression fix/navic_deferred idiom); recovering them by decoding string 4's
+	// broadcast slot `n` (Table 4.6 bits 11–15) is a possible future
+	// enhancement, not attempted here.
+	if f.SvID < 1 || f.SvID > 24 {
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "glo_unknown_slot").Inc()
+		return
+	}
 	str, err := frame.DecodeGLONASSString(f.Words)
 	if err != nil {
 		countDecodeFailure(f, "glo", err)

@@ -24,7 +24,11 @@ func navFrame(source string, g gnss.GNSSID, sig int, recv time.Time) *ingest.Raw
 	default: // gnss.GPS (and any other word-1-style constellation these tests use)
 		words = sf1Words(0)
 	}
-	return &ingest.RawFrame{Source: source, GnssID: g, SigID: sig, Recv: recv, Words: words}
+	f := &ingest.RawFrame{Source: source, GnssID: g, SigID: sig, Recv: recv, Words: words}
+	if g == gnss.GLONASS {
+		f.SvID = 7 // GLONASS dispatch rejects svId outside the real slot range 1..24
+	}
+	return f
 }
 
 // TestCapabilityFingerprint records nav frames from two stations across several signals and
