@@ -1191,27 +1191,61 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 	st.gloEphAt = recv // collector-local, as ephAt
 }
 
+// gloDiscoMaxTk  bounds the broadcast-time distance |tb_new − tb_old|
+// over which a GLONASS disco is computed at all: 60 min is the maximum routine
+// tb update interval (GLO-ICD-5.1 Table 4.3 — P1 announces 30/45/60 min), so a
+// larger gap means changeovers were MISSED (a reception gap), and the outgoing
+// model would be extrapolated far past its validity with error charged to
+// orbit_disco_m as a phantom jump. Past the bound the disco is absent (never a
+// sentinel) — the staleness detectors (eph_aged / position_unknown) already
+// cover gaps; disco measures broadcast continuity, which is only defined
+// between ADJACENT sets.
+const gloDiscoMaxTk = 60 * time.Minute
+
 // computeGloDisco records the orbit/time discontinuity across a GLONASS tb changeover
-//, mirroring computeDisco for the Kepler family. It propagates the outgoing and
-// incoming ephemerides to the incoming tb and differences position (orbit_disco_m) and the
-// SV clock model (time_disco_ns). Guards match computeDisco: the outgoing set must be
-// fresher than discoTrustAge by wall clock (which cannot wrap, regression fix), and both propagations
-// must be finite; time-disco is skipped (only) when either side lacks a decoded clock
-// (ClockKnown false), mirroring the regression fix B-CNAV2 handling. Called before st.gloEph is
-// replaced, with the shard lock held. Reuses st.orbitDisco*/timeDisco*/discoAt so the feed
-// and detector consume it unchanged.
+//, mirroring computeDisco for the Kepler family. the position
+// difference is taken at the changeover MIDPOINT (tb_old + tk/2 = tb_new − tk/2),
+// not at the incoming tb — the GLONASS immediate set is characterized by the ICD
+// only ~±15 min around its own tb (§4.4), so differencing at the new tb propagated
+// the outgoing set to twice its validity and charged the simplified model's
+// extrapolation error (J₂-only gravity, constant luni-solar) to orbit_disco_m
+// against the same 1.45 m warn band the sub-metre-continuity Kepler family uses.
+// At the midpoint each side extrapolates only half the update interval — within
+// the span each set is the current set for — while a genuine upload discontinuity
+// still dominates the difference at any common epoch. The clock difference stays
+// at the incoming tb (both clock models are linear; τn_new is exact there), and
+// both metrics share the gloDiscoMaxTk adjacency gate: the old clock's γn·tk
+// extrapolation over hours (γ ~1e-11 × 7200 s ≈ 72 ns) would otherwise swamp the
+// 2.5 ns warn band exactly the way the orbit error does. Remaining calibration
+// (whether routine changeovers still cross 1.45 m at the midpoint) needs a live
+// multi-hour GLONASS capture — none exists in-tree; recorded in the fix log.
+// Other guards match computeDisco: the outgoing set must be fresher than
+// discoTrustAge by wall clock (which cannot wrap, regression fix), and both propagations
+// must be finite; time-disco is skipped (only) when either side lacks a decoded
+// clock (ClockKnown false), mirroring the regression fix B-CNAV2 handling. Called before
+// st.gloEph is replaced, with the shard lock held. Reuses
+// st.orbitDisco*/timeDisco*/discoAt so the feed and detector consume it unchanged.
 func (s *Store) computeGloDisco(st *svState, newEph glonass.Ephemeris, now time.Time) {
 	st.discoAt = now
 	st.orbitDiscoValid = false
 	st.timeDiscoValid = false
+	// A deferred time-disco pending from an OLDER changeover is obsolete at any
+	// new one (its old-clock snapshot describes a set two generations back) —
+	// clear it on every path, the early returns included, so it can never
+	// complete against the wrong pair (regression fix hygiene; the tb match alone
+	// already made a wrong completion unlikely, this makes it structural).
+	st.discoPendClk = false
 	if st.gloEphAt.IsZero() || now.Sub(st.gloEphAt) >= discoTrustAge {
 		return
 	}
-	// Propagate the outgoing set forward by the day-wrapped interval from its tb to the new
-	// tb; the incoming set sits at tk=0 (its own reference epoch).
+	// The day-wrapped broadcast-time distance from the outgoing tb to the incoming tb.
 	tkOld := gnsstime.EphAgeDay(newEph.Tb, st.gloEph.Tb)
-	oldPos, e1 := glonass.Propagate(st.gloEph, tkOld)
-	newPos, e2 := glonass.Propagate(newEph, 0)
+	if math.Abs(tkOld) > gloDiscoMaxTk.Seconds() {
+		return // non-adjacent sets (missed changeovers): disco undefined, absent 
+	}
+	// difference at the midpoint — outgoing forward tk/2, incoming backward tk/2.
+	oldPos, e1 := glonass.Propagate(st.gloEph, tkOld/2)
+	newPos, e2 := glonass.Propagate(newEph, -tkOld/2)
 	if e1 == nil && e2 == nil {
 		if d := newPos.Sub(oldPos).Norm(); finite(d) {
 			st.orbitDisco = d
@@ -1222,7 +1256,6 @@ func (s *Store) computeGloDisco(st *svState, newEph glonass.Ephemeris, now time.
 	// The old model evaluated at the new tb is τn − γn·(tb_new − tb_old); the new model at
 	// its own tb is τn (the γ term vanishes). The outgoing set must carry a clock to compare
 	// against; otherwise time-disco is genuinely unknowable and skipped (the regression fix rule).
-	st.discoPendClk = false
 	if !st.gloEph.ClockKnown {
 		return
 	}

@@ -166,6 +166,48 @@ func TestGLONASSDiscoOnTbChangeover(t *testing.T) {
 	}
 }
 
+// TestGLONASSDiscoGatedOnAdjacentTb guards adjacency gate: disco measures
+// broadcast continuity, which is only defined between ADJACENT tb sets (≤ 60 min
+// apart, the maximum P1 update interval, GLO-ICD-5.1 Table 4.3). After missed
+// changeovers the outgoing model would be extrapolated far past its ±15 min
+// validity and the model error charged to orbit_disco_m as a phantom jump — the
+// disco must be absent (never a sentinel), while the ephemeris itself still
+// updates.
+func TestGLONASSDiscoGatedOnAdjacentTb(t *testing.T) {
+	st := New(4)
+	t0 := time.Unix(1_700_000_000, 0)
+	// First set at tb index 45.
+	st.Apply(glonassStringFrame(7, 1, 20000000, 10, 1, 0, 0, t0))
+	st.Apply(glonassStringFrame(7, 2, 20000000, 20, 2, 0, 45, t0.Add(2*time.Second)))
+	st.Apply(glonassStringFrame(7, 3, 20000000, 30, 3, 0, 0, t0.Add(4*time.Second)))
+
+	// Second set at tb index 50 — Δtb = 5×900 s = 75 min > the 60 min adjacency
+	// bound (changeovers were missed), arriving well inside discoTrustAge.
+	t1 := t0.Add(20 * time.Minute)
+	st.Apply(glonassStringFrame(7, 1, 20500000, 10, 1, 0, 0, t1))
+	st.Apply(glonassStringFrame(7, 2, 20000000, 20, 2, 0, 50, t1.Add(2*time.Second)))
+	st.Apply(glonassStringFrame(7, 3, 20000000, 30, 3, 0, 0, t1.Add(4*time.Second)))
+
+	sv, ok := st.FeedSVs(t1.Add(4 * time.Second))["R07@0"]
+	if !ok {
+		t.Fatal("R07@0 missing from svs feed")
+	}
+	if sv.OrbitDiscoM != nil {
+		t.Errorf("orbit_disco_m = %v for a 75 min tb gap, want absent (non-adjacent sets)", *sv.OrbitDiscoM)
+	}
+	if sv.TimeDiscoNs != nil {
+		t.Errorf("time_disco_ns = %v for a 75 min tb gap, want absent", *sv.TimeDiscoNs)
+	}
+	key := Key{G: gnss.GLONASS, Sv: 7, Sig: 0}
+	sh := st.shardFor(key)
+	sh.mu.Lock()
+	tb := sh.m[key].gloEph.Tb
+	sh.mu.Unlock()
+	if tb != 50*900 {
+		t.Errorf("gloEph.Tb = %v, want %v — the ephemeris itself must still update", tb, 50*900)
+	}
+}
+
 // TestGLONASSUnknownSlotRejected guards u-blox emits SFRBX with svId 255
 // for a GLONASS satellite whose slot is not yet identified (UBX-PROTOCOL), and every
 // unknown-slot satellite aliases into that one key — so accepting it both fabricates
