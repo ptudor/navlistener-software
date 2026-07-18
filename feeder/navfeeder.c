@@ -199,6 +199,22 @@ static uint64_t now_unix_ns(void) {
 	return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
+/* monotonic_s is the clock for every INTERVAL comparison — keepalive pacing, the
+ * useful-connection windows, backoff-reset decisions, log-throttle spacing.
+ * The fleet is RTC-less OpenWrt/mips/SBC hardware whose CLOCK_REALTIME is STEPPED
+ * (possibly backward, possibly by hours) at the first NTP/GNSS sync after boot: with
+ * wall-clock intervals, a backward step makes `now - last_tx` negative, so no F_PING is
+ * sent for the step's magnitude and the collector's idle timeout drops the connection;
+ * the same window misclassifies healthy sessions as not-useful and climbs backoff to
+ * the cap. CLOCK_MONOTONIC is immune to steps by definition. now_unix_ns() deliberately
+ * stays CLOCK_REALTIME — it is the on-wire reception timestamp (a forensic wall-clock
+ * fact) — as do log_msg's human-readable header timestamps. */
+static time_t monotonic_s(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ts.tv_sec;
+}
+
 /* ── byte order ──────────────────────────────────────────────────────────── */
 
 static void be16(unsigned char *b, uint16_t v) { b[0]=v>>8; b[1]=v; }
@@ -302,9 +318,13 @@ static void disk_rollback(struct spool *s) {
 	if (s->disk_w) { fclose(s->disk_w); s->disk_w = NULL; }
 	if (truncate(s->path, (off_t)s->disk_bytes) != 0) {
 		s->disk_append_disabled = 1;
+		/* throttle on the monotonic clock (a realtime step must not mute or
+		 * burst the warning). last_warn == 0 means "never warned" — CLOCK_MONOTONIC
+		 * starts near 0 at boot, so a plain `nowt - 0 >= 60` would suppress the first
+		 * warning for the first minute of uptime on a freshly-booted router. */
 		static time_t last_warn;
-		time_t nowt = time(NULL);
-		if (nowt - last_warn >= 60) {
+		time_t nowt = monotonic_s();
+		if (last_warn == 0 || nowt - last_warn >= 60) {
 			last_warn = nowt;
 			log_msg("disk spool repair (truncate to boundary %llu) failed: %s",
 				(unsigned long long)s->disk_bytes, strerror(errno));
@@ -828,7 +848,7 @@ static int sync_ubx(struct rdbuf *b) {
 static int run_ubx(int fd) {
 	struct rdbuf rb; rb.fd = fd; rb.pos = rb.len = 0; rb.quiet = 0;
 	unsigned char head[4], payload[UBX_MAX_PAYLOAD], ck[2];
-	time_t start = time(NULL);
+	time_t start = monotonic_s(); /* interval, not wall-clock */
 	unsigned long frames = 0;
 	for (;;) {
 		if (sync_ubx(&rb) != 0) { log_msg("source closed"); break; }
@@ -851,7 +871,7 @@ static int run_ubx(int fd) {
 		else if (head[0] == UBX_CLASS_NAV && head[1] == UBX_ID_NAVSAT)
 			{ emit_navsat(payload, len); frames++; }
 	}
-	return frames > 0 || (time(NULL) - start) >= USEFUL_CONN_S;
+	return frames > 0 || (monotonic_s() - start) >= USEFUL_CONN_S;
 }
 
 /* ── source open (serial or TCP) ─────────────────────────────────────────── */
@@ -1093,10 +1113,11 @@ static int disk_drain(struct spool *s, struct conn *c, uint64_t *sent_upto) {
 		 * disk_max_seq stays ahead of sent_upto — the caller paces its retry
 		 * (see the drain loop), and this rate-limited log makes the stall
 		 * diagnosable instead of silent. Only serve_collector's thread calls
-		 * this, so the static is single-threaded. */
+		 * this, so the static is single-threaded. Monotonic + first-warn guard:
+		 * regression fix (see disk_rollback's throttle comment). */
 		static time_t last_warn;
-		time_t nowt = time(NULL);
-		if (nowt - last_warn >= 60) {
+		time_t nowt = monotonic_s();
+		if (last_warn == 0 || nowt - last_warn >= 60) {
 			last_warn = nowt;
 			log_msg("disk spool open failed (frames pending past seq %llu): %s",
 				(unsigned long long)*sent_upto, strerror(errno));
@@ -1125,9 +1146,10 @@ static int disk_drain(struct spool *s, struct conn *c, uint64_t *sent_upto) {
 	 * Log it rate-limited (mirroring the fopen-failure path) so the otherwise-silent
 	 * ping-only stall is diagnosable rather than invisible. */
 	if (*sent_upto < dmax) {
+		/* Monotonic + first-warn guard: regression fix (see disk_rollback's throttle comment). */
 		static time_t last_warn;
-		time_t nowt = time(NULL);
-		if (nowt - last_warn >= 60) {
+		time_t nowt = monotonic_s();
+		if (last_warn == 0 || nowt - last_warn >= 60) {
 			last_warn = nowt;
 			log_msg("disk spool drain reached seq %llu but disk_max_seq is %llu (torn record?)",
 				(unsigned long long)*sent_upto, (unsigned long long)dmax);
@@ -1202,12 +1224,16 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 
 	struct frame batch[DRAIN_BATCH];
 	int rc = -1;
-	time_t last_tx = time(NULL);
+	/* last_tx paces the F_PING keepalive and is monotonic : an NTP step
+	 * backward would otherwise make `monotonic_s() - last_tx` a wall-clock delta that
+	 * goes negative and mutes the keepalive for the step's magnitude, so the
+	 * collector's idle timeout (idleReadTimeout, push.go) drops a healthy link. */
+	time_t last_tx = monotonic_s();
 	while (!g_disconnected) {
 		disk_maybe_delete(&g_spool);
 		int d = disk_drain(&g_spool, &c, &sent_upto);  /* oldest unacked first (disk) */
 		if (d < 0) break;                              /* disconnected during disk replay */
-		if (d > 0) { last_tx = time(NULL); continue; } /* re-check disk before the ring */
+		if (d > 0) { last_tx = monotonic_s(); continue; } /* re-check disk before the ring */
 		uint64_t disk_max_seq_now = 0;
 		size_t n = spool_collect(&g_spool, sent_upto, batch, DRAIN_BATCH, &disk_max_seq_now);
 		if (disk_max_seq_now > sent_upto) {
@@ -1221,17 +1247,17 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 			 * spool file — see its fopen failure path), a bare continue would spin
 			 * this loop at 100% CPU forever and starve PINGs. */
 			for (size_t i = 0; i < n; i++) free(batch[i].data);
-			if (time(NULL) - last_tx >= KEEPALIVE_S) {
+			if (monotonic_s() - last_tx >= KEEPALIVE_S) {
 				if (send_ping(&c) != 0) { g_disconnected = 1; break; }
-				last_tx = time(NULL);
+				last_tx = monotonic_s();
 			}
 			usleep(50 * 1000);
 			continue;
 		}
 		if (n == 0) {                                  /* caught up; wait for the producer */
-			if (time(NULL) - last_tx >= KEEPALIVE_S) {
+			if (monotonic_s() - last_tx >= KEEPALIVE_S) {
 				if (send_ping(&c) != 0) { g_disconnected = 1; break; }
-				last_tx = time(NULL);
+				last_tx = monotonic_s();
 			}
 			usleep(50 * 1000);
 			continue;
@@ -1243,7 +1269,7 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 				g_disconnected = 1;
 			free(batch[i].data);
 		}
-		last_tx = time(NULL);
+		last_tx = monotonic_s();
 	}
 
 	pthread_join(rt, NULL);
@@ -1483,7 +1509,7 @@ int main(int argc, char **argv) {
 
 	int backoff = 1;
 	for (;;) {
-		time_t t0 = time(NULL);
+		time_t t0 = monotonic_s(); /* interval, not wall-clock */
 		int rc = serve_collector(ctx, &o);
 		/* a session that authenticated and ran at least USEFUL_CONN_S was useful —
 		 * reset the backoff so a routine collector restart weeks later reconnects in ~1s
@@ -1491,7 +1517,7 @@ int main(int argc, char **argv) {
 		 * process lifetime (it was reset only on an auth reject before). Mirrors the producer
 		 * thread's regression fix usefulness reset and the Go collector's regression fix dial-side reset. Auth
 		 * reject (-2) still backs off hard. */
-		if (rc != -2 && (time(NULL) - t0) >= USEFUL_CONN_S) backoff = 1;
+		if (rc != -2 && (monotonic_s() - t0) >= USEFUL_CONN_S) backoff = 1;
 		int wait = rc == -2 ? 30 : backoff;
 		log_msg("reconnecting in %ds", wait);
 		sleep(wait);
