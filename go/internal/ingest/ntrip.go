@@ -53,6 +53,14 @@ func ntripConnect(conn net.Conn, src config.Source) (chunked bool, err error) {
 		cred := base64.StdEncoding.EncodeToString([]byte(src.Username + ":" + src.Password))
 		fmt.Fprintf(&req, "Authorization: Basic %s\r\n", cred)
 	}
+	// regression fix (recorded deferral, not an oversight): "Connection: close" on a GET whose
+	// response is by design unbounded is semantically odd — the header promises to close
+	// after a response that never completes. Most casters ignore it; a spec-strict
+	// HTTP/1.1 caster could in principle treat it unhelpfully. Omitting it (default
+	// keep-alive) is likely correct, but the NTRIP 2.0 standard (RTCM 10410.1) is not in
+	// the reference library (paid, cite-only class like RTCM-10403) and the review gated
+	// this change on verifying tolerance against the actual target casters (CRTN) —
+	// run that live check before touching this line.
 	req.WriteString("Connection: close\r\n\r\n")
 
 	_ = conn.SetWriteDeadline(time.Now().Add(ntripHandshakeTimeout))
