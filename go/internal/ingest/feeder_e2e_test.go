@@ -26,7 +26,119 @@ func TestNavfeederEndToEnd(t *testing.T) {
 	t.Run("zstd", func(t *testing.T) { runFeederE2E(t, true) })
 }
 
-func runFeederE2E(t *testing.T, useZstd bool) {
+// TestNavfeederDiskSpillWhileConnected guards with a tiny RAM ring (8 frames)
+// and a disk spool, streaming the whole capture forces sustained ring→disk eviction
+// WHILE the uplink is connected — the regime where disk_drain's per-connection read
+// cursor (rather than a rescan from byte 0 per spill) does the work. Every frame must
+// still arrive exactly once and in seq order: a cursor bug that advances past an unsent
+// record or resumes at a non-record boundary drops or stalls frames here (empirically
+// pinned: a deliberately misaligned cursor advance fails this test). The
+// delete-then-respill generation reset is pinned separately by
+// TestNavfeederDiskSpillAcrossSpoolDeletion.
+func TestNavfeederDiskSpillWhileConnected(t *testing.T) {
+	runFeederE2E(t, false, "--spool", "8", "--spool-file", filepath.Join(t.TempDir(), "spool.bin"))
+}
+
+// TestNavfeederDiskSpillAcrossSpoolDeletion pins disk_gen cursor reset: burst 1
+// spills to disk, drains, and is fully acked, so disk_maybe_delete unlinks the spool file
+// mid-connection; burst 2 then spills into a NEW file whose offsets restart at zero. A
+// cursor that survives the generation change (the exact bug the disk_gen tag prevents)
+// seeks past the second file's records — they were already evicted from the 8-frame ring,
+// so they can never be delivered and the test times out short. Empirically pinned: a
+// build with the generation reset disabled fails this test. The 750 ms pause gives
+// drain+ack+delete overwhelming margin on this harness (ack cadence 25 ms); if a slow
+// machine ever misses the deletion window the second burst appends to the same file and
+// the test still passes — opportunistic exercise, never a false failure.
+func TestNavfeederDiskSpillAcrossSpoolDeletion(t *testing.T) {
+	bin := feederBinary(t)
+	capPath := filepath.Join("testdata", "f9t_capture.ubx")
+	single := scanCaptureNavFrames(t, capPath)
+	if len(single) < 10 {
+		t.Fatalf("capture yielded only %d nav frames; expected many", len(single))
+	}
+	capBytes, err := os.ReadFile(capPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	out := make(chan *RawFrame, 16384)
+	tc := &tls.Config{Certificates: []tls.Certificate{selfSigned(t)}, MinVersion: tls.VersionTLS12}
+	srv := newPushServer("127.0.0.1:0", tc, out, tokenAuth("f9t-e2e", "s3cret", "ubx"),
+		25*time.Millisecond, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	pushLn, err := tls.Listen("tcp", "127.0.0.1:0", tc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pushLn.Close()
+	go func() { _ = srv.serve(ctx, pushLn) }()
+
+	// Fake receiver: burst, pause long enough for drain+ack+unlink, burst again.
+	srcLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srcLn.Close()
+	go func() {
+		for {
+			c, err := srcLn.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_, _ = c.Write(capBytes)
+				time.Sleep(750 * time.Millisecond)
+				_, _ = c.Write(capBytes)
+				<-ctx.Done()
+			}(c)
+		}
+	}()
+
+	var ferr bytes.Buffer
+	cmd := exec.CommandContext(ctx, bin,
+		"--server", pushLn.Addr().String(),
+		"--source", srcLn.Addr().String(),
+		"--station", "f9t-e2e", "--token", "s3cret", "--feed", "ubx",
+		"--insecure", "--spool", "8",
+		"--spool-file", filepath.Join(t.TempDir(), "spool.bin"))
+	cmd.Stderr = &ferr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		if t.Failed() && ferr.Len() > 0 {
+			t.Logf("navfeeder stderr:\n%s", ferr.String())
+		}
+	})
+
+	want := 2 * len(single)
+	got := make([]*RawFrame, 0, want)
+	deadline := time.After(30 * time.Second)
+	for len(got) < want {
+		select {
+		case f := <-out:
+			got = append(got, f)
+		case <-deadline:
+			t.Fatalf("only %d/%d frames reached the collector across the spool deletion", len(got), want)
+		}
+	}
+	for i := range got {
+		e, g := single[i%len(single)], got[i]
+		if e.GnssID != g.GnssID || e.SvID != g.SvID || e.SigID != g.SigID || len(e.Words) != len(g.Words) {
+			t.Fatalf("frame %d envelope mismatch across spool generations", i)
+		}
+		for j := range e.Words {
+			if e.Words[j] != g.Words[j] {
+				t.Fatalf("frame %d word %d mismatch across spool generations", i, j)
+			}
+		}
+	}
+}
+
+func runFeederE2E(t *testing.T, useZstd bool, extraArgs ...string) {
 	bin := feederBinary(t)
 
 	// Ground truth: the nav frames the Go scanner lifts off the capture.
@@ -83,7 +195,12 @@ func runFeederE2E(t *testing.T, useZstd bool) {
 		"--server", pushLn.Addr().String(),
 		"--source", srcLn.Addr().String(),
 		"--station", "f9t-e2e", "--token", "s3cret", "--feed", "ubx",
-		"--insecure", "--spool", "100000",
+		"--insecure",
+	}
+	if len(extraArgs) > 0 {
+		args = append(args, extraArgs...) // caller overrides/extends (e.g. tiny --spool + --spool-file)
+	} else {
+		args = append(args, "--spool", "100000")
 	}
 	if useZstd {
 		args = append(args, "--zstd")

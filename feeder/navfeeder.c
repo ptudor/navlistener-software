@@ -164,6 +164,12 @@ struct spool {
 	FILE *disk_w;
 	int disk_append_disabled; /* repair/delete failed: never append past an untrusted boundary */
 	uint64_t disk_max_seq, disk_bytes, disk_max_bytes, disk_dropped;
+	/* disk_gen counts file shrink/replace events — the unlink in disk_maybe_delete and
+	 * the boundary repair in disk_rollback. disk_drain's per-connection read
+	 * cursor is tagged with the generation it scanned; a mismatch forces a full rescan,
+	 * since bytes below the cursor may have been truncated away and re-appended with
+	 * different records. Mutated under mu. */
+	uint64_t disk_gen;
 	pthread_mutex_t mu;
 };
 
@@ -310,6 +316,7 @@ static void spool_init(struct spool *s, size_t cap, const char *path, uint64_t d
 	s->disk_w = NULL;
 	s->disk_append_disabled = 0;
 	s->disk_max_seq = s->disk_bytes = s->disk_dropped = 0;
+	s->disk_gen = 0;
 	s->disk_max_bytes = disk_max_bytes;
 	pthread_mutex_init(&s->mu, NULL);
 	if (path) spool_recover(s); /* resume a spool left by a prior run */
@@ -332,6 +339,12 @@ static void spool_init(struct spool *s, size_t cap, const char *path, uint64_t d
  * A repair failure is logged rate-limited and the writer stays closed. */
 static void disk_rollback(struct spool *s) {
 	if (s->disk_w) { fclose(s->disk_w); s->disk_w = NULL; }
+	/* any repair invalidates drain cursors — a reader may have scanned (and
+	 * even sent) a record the truncate below removes, and later appends would reuse
+	 * those offsets for different records; without the generation bump the cursor
+	 * would seek past them and they would never be sent. Bump even if the truncate
+	 * fails (appends get disabled; a rescan is harmless and conservative). */
+	s->disk_gen++;
 	if (truncate(s->path, (off_t)s->disk_bytes) != 0) {
 		s->disk_append_disabled = 1;
 		/* throttle on the monotonic clock (a realtime step must not mute or
@@ -1164,6 +1177,7 @@ static void disk_maybe_delete(struct spool *s) {
 			cleared_bytes = s->disk_bytes;
 			s->disk_max_seq = s->disk_bytes = 0;
 			s->disk_append_disabled = 0;
+			s->disk_gen++; /* the next spill starts a new file; cursors reset */
 		} else {
 			/* Keeping the old accounting and disabling appends is safer than resetting
 			 * disk_bytes then reopening an undeleted file at an unknown boundary. */
@@ -1179,13 +1193,35 @@ static void disk_maybe_delete(struct spool *s) {
 		log_msg("disk spool delivered and cleared (%llu KiB)", (unsigned long long)(cleared_bytes / 1024));
 }
 
+/* disk_cursor is disk_drain's per-CONNECTION resume point : the byte offset of
+ * the spool file already scanned, tagged with the disk_gen it was scanned under. Owned by
+ * serve_collector, initialized {0,0} for every new connection. */
+struct disk_cursor { uint64_t off, gen; };
+
 /* disk_drain sends disk-spooled frames with seq > *sent_upto (oldest first). Returns the
- * count sent, or -1 on a send failure. The disk always holds seqs older than the ring. */
-static int disk_drain(struct spool *s, struct conn *c, uint64_t *sent_upto) {
+ * count sent, or -1 on a send failure. The disk always holds seqs older than the ring.
+ *
+ * cur resumes the scan where the previous call left off instead of re-reading
+ * the file from byte 0 on every call. Without it, a sustained connected-overflow regime
+ * (producer outpacing the uplink) re-read up to the whole 256 MiB file once per spill
+ * event — severe I/O/CPU amplification on exactly the weakest (mips/flash) hardware.
+ * Resuming is safe because sends are strictly forward within one connection: every
+ * complete record below cur->off was either sent or skipped as seq <= *sent_upto, and
+ * *sent_upto only grows, so it can never be needed again on THIS connection. Records a
+ * reconnect must resend (sent-but-unacked) are covered by each connection starting a
+ * fresh cursor at 0. In-process file shrink/replace events — the unlink in
+ * disk_maybe_delete, the boundary repair in disk_rollback — bump disk_gen, which resets
+ * the cursor to a full rescan; otherwise offsets below cur->off could be reused by
+ * different records and silently skipped. A torn/short tail record stops the scan
+ * WITHOUT advancing the cursor, so the (possibly completed-by-then) record is re-read
+ * next call — regression fix/regression fix semantics preserved. */
+static int disk_drain(struct spool *s, struct conn *c, uint64_t *sent_upto, struct disk_cursor *cur) {
 	pthread_mutex_lock(&s->mu);
 	const char *path = s->path;
 	uint64_t dmax = s->disk_max_seq;
+	uint64_t gen = s->disk_gen;
 	pthread_mutex_unlock(&s->mu);
+	if (cur->gen != gen) { cur->off = 0; cur->gen = gen; }
 	if (!path || dmax <= *sent_upto) return 0;
 
 	FILE *r = fopen(path, "rb");
@@ -1206,6 +1242,10 @@ static int disk_drain(struct spool *s, struct conn *c, uint64_t *sent_upto) {
 		}
 		return 0;
 	}
+	if (cur->off && fseeko(r, (off_t)cur->off, SEEK_SET) != 0) {
+		cur->off = 0; /* seek failure: fall back to the always-safe full rescan */
+		rewind(r);
+	}
 	int sent = 0;
 	for (;;) {
 		unsigned char hdr[12];
@@ -1216,10 +1256,13 @@ static int disk_drain(struct spool *s, struct conn *c, uint64_t *sent_upto) {
 		unsigned char data[GNF_RECORD];
 		if (len && fread(data, 1, len, r) != len) break;
 		if (seq > *sent_upto) {
+			/* Cursor deliberately NOT advanced past this record on failure: the
+			 * connection is dead and the next one starts a fresh cursor anyway. */
 			if (send_data(c, seq, data, len) != 0) { fclose(r); g_disconnected = 1; return -1; }
 			*sent_upto = seq;
 			sent++;
 		}
+		cur->off += 12 + (uint64_t)len; /* complete record handled (sent or skipped) */
 	}
 	fclose(r);
 	/* the scan ended before reaching disk_max_seq on an openable file — a
@@ -1318,9 +1361,10 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 	 * goes negative and mutes the keepalive for the step's magnitude, so the
 	 * collector's idle timeout (idleReadTimeout, push.go) drops a healthy link. */
 	time_t last_tx = monotonic_s();
+	struct disk_cursor dcur = {0, 0}; /* fresh per connection */
 	while (!g_disconnected) {
 		disk_maybe_delete(&g_spool);
-		int d = disk_drain(&g_spool, &c, &sent_upto);  /* oldest unacked first (disk) */
+		int d = disk_drain(&g_spool, &c, &sent_upto, &dcur); /* oldest unacked first (disk) */
 		if (d < 0) break;                              /* disconnected during disk replay */
 		if (d > 0) { last_tx = monotonic_s(); continue; } /* re-check disk before the ring */
 		uint64_t disk_max_seq_now = 0;
