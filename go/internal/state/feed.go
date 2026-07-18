@@ -257,6 +257,18 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 			}
 		}
 		age := gnsstime.EphAgeMinutes(towFor(g, now), st.eph.Toe)
+		// the SOW-based age wraps to ±half-week, so past the serving cap a
+		// week-stale ephemeris would read near-zero here and the eph_aged detector
+		// would consume that lie even though Propagate has stopped serving its
+		// position. Beyond propagateMaxEphAge switch to the wall-clock age since
+		// apply (a lower bound on the true broadcast age — it omits the sub-fit-
+		// interval toe→apply offset), which is monotonic, cannot wrap, and keeps
+		// eph_aged latched. Inside the cap the ICD-defined SOW age (which can be
+		// legitimately negative before toe) is served unchanged, per the §1.1
+		// contract.
+		if wall := now.Sub(st.ephAt); !st.ephAt.IsZero() && wall > propagateMaxEphAge {
+			age = wall.Minutes()
+		}
 		if finite(age) {
 			e.EphAgeM = &age
 		}

@@ -48,6 +48,26 @@ const (
 	// while comfortably rejecting a stale string left over from ~30 minutes prior.
 	glonassFrameWindow = 8 * time.Second
 
+	// propagateMaxEphAge (regression fix, the documented regression fix remainder) caps how long
+	// past its wall-clock apply time (svState.ephAt) a Kepler-family ephemeris may
+	// keep being propagated into served positions. The propagation age tk is
+	// derived from gnsstime.EphAge, which wraps to ±half-week (302400 s): past
+	// ~3.5 days every derived signal self-defeats simultaneously — the propagated
+	// position is thousands of km wrong but finite (so posAt keeps advancing and
+	// posStaleBound never fires), eph_age_m wraps back toward zero, and the
+	// eph_aged detector consumes that wrapped near-zero value — silent wrong
+	// output stamped fresh. Reachable via the regression fix window: RAWX observables keep
+	// an SV lastSeen-fresh for days while its nav decode is dead. 72 h sits
+	// safely below the 302400 s wrap (12 h margin), so a served position can
+	// never come from a wrapped ephemeris and the SOW-based eph_age_m stays
+	// truthful over the whole served regime; routine hours-past-fit extrapolation
+	// (surfaced via eph_age_m / eph_aged) is untouched by design. Past the cap,
+	// Propagate skips the SV, posAt stops advancing, and posStaleBound expires
+	// the served position naturally (position_unknown then fires). The GLONASS
+	// path has the same wrap class at ±half-DAY via EphAgeDay — recorded as a
+	// follow-up finding for the GLONASS pass, not silently fixed here.
+	propagateMaxEphAge = 72 * time.Hour
+
 	// posStaleBound  is how old a stored propagation epoch (svState.posAt)
 	// may be before the feed omits the position/tow/wn entirely rather than serve a
 	// solution frozen at a repeatedly-failing propagate tick. Generous over any
@@ -1159,6 +1179,15 @@ func (s *Store) Propagate(now time.Time) {
 				continue
 			}
 			if !st.haveEph {
+				continue
+			}
+			// refuse to serve positions from an ephemeris past the wall-clock
+			// cap (see propagateMaxEphAge) — beyond it the half-week EphAge wrap turns
+			// the propagation into garbage-but-finite output while blinding every
+			// staleness signal at once. Wall clock (now − ephAt) cannot wrap, the same
+			// reasoning as computeDisco's regression fix gate. Skipping (not zeroing) lets
+			// posStaleBound expire the previously-served position naturally.
+			if st.ephAt.IsZero() || now.Sub(st.ephAt) > propagateMaxEphAge {
 				continue
 			}
 			tow := towFor(st.key.G, now)
