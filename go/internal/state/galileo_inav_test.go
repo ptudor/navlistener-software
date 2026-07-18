@@ -65,6 +65,74 @@ func galileoFrame(svid int, words []uint32, recv time.Time) *ingest.RawFrame {
 	return &ingest.RawFrame{GnssID: gnss.Galileo, SvID: svid, SigID: 0, Source: "obs-inav", Recv: recv, Words: words}
 }
 
+// TestFeedGalileoGGTO guards state/feed half: an I/NAV word 10's
+// GST-GPS conversion set must reach the served entry as the raw a0g/a1g/t0g/
+// wn0g quartet plus gps_offset_ns evaluated at the feed instant (with a1g=0 the
+// evaluation is exactly a0g, independent of the epoch math), and a subsequent
+// §5.1.8 all-ones withdrawal must clear all five fields — a stale offset never
+// outlives its broadcast withdrawal.
+func TestFeedGalileoGGTO(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	const svid, iod = 12, 33
+
+	// A minimal served entry needs an assembled ephemeris (FeedSVs skips
+	// eph-less SVs); GGTO itself rides word 10, outside that set.
+	s.Apply(galileoFrame(svid, inavWordN(1, iod, nil), now))
+	s.Apply(galileoFrame(svid, inavWordN(2, iod, nil), now))
+	s.Apply(galileoFrame(svid, inavWordN(3, iod, nil), now))
+	s.Apply(galileoFrame(svid, inavWordN(4, iod, nil), now))
+
+	word10 := func(mutate func(c []byte)) []uint32 {
+		content := make([]byte, 16)
+		inavSetBits(content, 0, 10, 6)
+		if mutate != nil {
+			mutate(content)
+		}
+		return inavContentWords(content)
+	}
+	s.Apply(galileoFrame(svid, word10(func(c []byte) {
+		inavSetBits(c, 86, 0xFFEC, 16) // A0G raw = −20 → −20×2⁻³⁵ s ≈ −0.58 ns
+		inavSetBits(c, 114, 10, 8)     // t0G = 36000 s
+		inavSetBits(c, 122, 5, 6)      // WN0G = 5 (truncated)
+	}), now))
+
+	sv, ok := s.FeedSVs(now)["E12@0"]
+	if !ok {
+		t.Fatal("E12@0 missing from svs feed")
+	}
+	wantA0 := -20.0 / float64(uint64(1)<<35)
+	if sv.A0G == nil || *sv.A0G != wantA0 {
+		t.Fatalf("a0g = %v, want %v", sv.A0G, wantA0)
+	}
+	if sv.A1G == nil || *sv.A1G != 0 {
+		t.Errorf("a1g = %v, want 0", sv.A1G)
+	}
+	if sv.T0G == nil || *sv.T0G != 36000 {
+		t.Errorf("t0g = %v, want 36000", sv.T0G)
+	}
+	if sv.WN0G == nil || *sv.WN0G != 5 {
+		t.Errorf("wn0g = %v, want 5", sv.WN0G)
+	}
+	// a1g = 0 ⇒ the evaluated offset is exactly a0g, whatever the epoch.
+	if sv.GpsOffsetNs == nil || *sv.GpsOffsetNs != wantA0*1e9 {
+		t.Errorf("gps_offset_ns = %v, want %v", sv.GpsOffsetNs, wantA0*1e9)
+	}
+
+	// The all-ones withdrawal clears the whole surface.
+	s.Apply(galileoFrame(svid, word10(func(c []byte) {
+		inavSetBits(c, 86, 0xFFFF, 16)
+		inavSetBits(c, 102, 0xFFF, 12)
+		inavSetBits(c, 114, 0xFF, 8)
+		inavSetBits(c, 122, 0x3F, 6)
+	}), now))
+	sv = s.FeedSVs(now)["E12@0"]
+	if sv.GpsOffsetNs != nil || sv.A0G != nil || sv.A1G != nil || sv.T0G != nil || sv.WN0G != nil {
+		t.Errorf("withdrawn GGTO still served: off=%v a0g=%v a1g=%v t0g=%v wn0g=%v",
+			sv.GpsOffsetNs, sv.A0G, sv.A1G, sv.T0G, sv.WN0G)
+	}
+}
+
 // TestFeedGalileoSISANAPAServesAccIndex guards regression fix (the Galileo sibling of
 // URA-15 rule): an SV broadcasting SISA index 255 — "No Accuracy
 // Prediction Available (NAPA) … an indicator of a potential anomalous SIS"

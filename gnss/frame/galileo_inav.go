@@ -82,10 +82,12 @@ func StampGalileoINAVCRC(words []uint32) {
 
 // Galileo I/NAV scale factors beyond the shared p2mNN set.
 const (
-	p2m34 = 1.0 / float64(uint64(1)<<34)
-	p2m46 = 1.0 / float64(uint64(1)<<46)
-	p2m59 = 1.0 / float64(uint64(1)<<59)
-	galT0 = 60.0 // t0e / t0c step, seconds
+	p2m34  = 1.0 / float64(uint64(1)<<34)
+	p2m46  = 1.0 / float64(uint64(1)<<46)
+	p2m51  = 1.0 / float64(uint64(1)<<51) // GGTO A1G (GAL-OS-SIS-ICD-2.2 Table 76)
+	p2m59  = 1.0 / float64(uint64(1)<<59)
+	galT0  = 60.0   // t0e / t0c step, seconds
+	galT0G = 3600.0 // GGTO t0G step, seconds (Table 76)
 )
 
 // GalileoINAV holds the decoded fields of one I/NAV word. Only the fields for this
@@ -121,9 +123,24 @@ type GalileoINAV struct {
 	// pick its own pair.
 	BGDE1E5a float64
 	BGDE1E5b float64
-	eph      kepler.Ephemeris
-	clk      clock.Model
-	hasClk   bool
+	// GGTO — the GST-GPS conversion parameters (word type 10, regression fix):
+	// Δt_systems = t_Galileo − t_GPS = A0G + A1G·[TOW − t0G + 604800·(WN − WN0G)]
+	// (GAL-OS-SIS-ICD-2.2 §5.1.8 Eq. 24; positions Table 51, coding Table 76).
+	// HasGGTO marks a decoded word 10; GGTOValid is §5.1.8's dissemination rule —
+	// all four parameters transmitted all-ones means "GGTO not valid", a
+	// deliberate broadcast withdrawal, distinct from the fields never arriving.
+	// WN0G is the raw 6-bit truncated week: §5.1.8 guarantees |untruncated
+	// WN − WN0G| ≤ 31 at broadcast time, so nearest-cycle (mod-64) disambiguation
+	// against wall clock is exact; the consumer disambiguates, not this decoder.
+	HasGGTO   bool
+	GGTOValid bool
+	A0G       float64 // s, two's complement ×2⁻³⁵
+	A1G       float64 // s/s, two's complement ×2⁻⁵¹
+	T0G       float64 // s, ×3600
+	WN0G      int     // weeks, 6-bit truncated
+	eph       kepler.Ephemeris
+	clk       clock.Model
+	hasClk    bool
 }
 
 // DecodeGalileoINAV decodes one I/NAV page (eight words) into its word fields.
@@ -272,6 +289,31 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 		// delay for an E1 single-frequency user is BGD(E1,E5b) — not BGD(E1,E5a), which the
 		// old code applied. clock.Model.TGD is "group delay for the tracked signal".
 		w.clk.TGD = w.BGDE1E5b
+	case 10:
+		// Almanac SVID3 (2/2) + GST-GPS conversion. Table 51 layout:
+		// Type(6) IODa(4) Ω0(16) Ω̇(11) M0(16) af0(16) af1(13) E5bSHS(2)
+		// E1BSHS(2) A0G(16) A1G(12) t0G(8) WN0G(6) = 128 → cumulative offsets
+		// A0G@86, A1G@102, t0G@114, WN0G@122. Only the GGTO half is decoded:
+		// the leading almanac fields (and their E5bSHS/E1BSHS at bits 82/84)
+		// describe the ALMANAC SUBJECT satellite SVID3, not the transmitter —
+		// folding those health bits into the transmitting SV's state would be
+		// the cross-SV chimera the regression fix family guards against.
+		a0gRaw, _ := r.Bits(86, 16)
+		a1gRaw, _ := r.Bits(102, 12)
+		t0gRaw, _ := r.Bits(114, 8)
+		wn0gRaw, _ := r.Bits(122, 6)
+		a0g, _ := r.Signed(86, 16)
+		a1g, _ := r.Signed(102, 12)
+		w.HasGGTO = true
+		// §5.1.8: all four parameters all-ones = "the GGTO is considered as not
+		// valid" — a broadcast withdrawal, checked on the raw patterns before
+		// scaling (A0G/A1G are two's complement; all-ones is a legal −1 value
+		// for either alone, so the sentinel is only the four-field conjunction).
+		w.GGTOValid = !(a0gRaw == 0xFFFF && a1gRaw == 0xFFF && t0gRaw == 0xFF && wn0gRaw == 0x3F)
+		w.A0G = float64(a0g) * p2m35
+		w.A1G = float64(a1g) * p2m51
+		w.T0G = float64(t0gRaw) * galT0G
+		w.WN0G = int(wn0gRaw)
 	}
 	return w, nil
 }

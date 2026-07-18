@@ -44,9 +44,20 @@ type GalileoFNAV struct {
 	// GalileoINAV.BGDE1E5a, for consumers that need the raw parameter (an E1
 	// user of the F/NAV clock, Eq. 18, would apply it unscaled).
 	BGDE1E5a float64
-	eph      kepler.Ephemeris
-	clk      clock.Model
-	hasClk   bool
+	// GGTO — the GST-GPS conversion parameters (page 4 only, regression fix), the
+	// F/NAV twin of I/NAV word 10's set; same Eq. 24 / Table 76 semantics and
+	// the same all-ones "not valid" rule (§5.1.8). See GalileoINAV's GGTO doc.
+	// NB Table 33's field ORDER differs from I/NAV Table 51: F/NAV transmits
+	// t0G BEFORE A0G (…ΔtLSF(8) t0G@147(8) A0G@155(16) A1G@171(12) WN0G@183(6)…).
+	HasGGTO   bool
+	GGTOValid bool
+	A0G       float64 // s, two's complement ×2⁻³⁵
+	A1G       float64 // s/s, two's complement ×2⁻⁵¹
+	T0G       float64 // s, ×3600
+	WN0G      int     // weeks, 6-bit truncated
+	eph       kepler.Ephemeris
+	clk       clock.Model
+	hasClk    bool
 }
 
 // StampGalileoFNAVCRC computes and writes the F/NAV CRC-24Q into a synthetic
@@ -145,9 +156,27 @@ func DecodeGalileoFNAV(words []uint32) (*GalileoFNAV, error) {
 		w.eph.Crc = float64(s(128, 16)) * p2m5
 		w.eph.Crs = float64(s(144, 16)) * p2m5
 		w.eph.Toe = float64(u(160, 14)) * galT0
-	case 4: // Cic, Cis (+ GST, spare)
+	case 4:
+		// Cic, Cis + GST-UTC + GST-GPS conversion + TOW — Table 33: Type(6)
+		// IODnav(10) Cic(16) Cis(16) A0(32) A1(24) ΔtLS(8) t0t(8) WN0t(8)
+		// WNLSF(8) DN(3) ΔtLSF(8) t0G(8) A0G(16) A1G(12) WN0G(6) TOW(20)
+		// Spare(5) CRC(24) Tail(6) = 244 → cumulative GGTO offsets t0G@147,
+		// A0G@155, A1G@171, WN0G@183 (6+10+16+16+32+24+8+8+8+8+3+8 = 147;
+		// +8 = 155; +16 = 171; +12 = 183 — regression fix; the GST-UTC block remains
+		// undecoded, the standing regression fix broadcast-UTC work).
 		w.eph.Cic = float64(s(16, 16)) * p2m29
 		w.eph.Cis = float64(s(32, 16)) * p2m29
+		a0gRaw := u(155, 16)
+		a1gRaw := u(171, 12)
+		t0gRaw := u(147, 8)
+		wn0gRaw := u(183, 6)
+		w.HasGGTO = true
+		// §5.1.8's four-field all-ones withdrawal sentinel — see the I/NAV twin.
+		w.GGTOValid = !(a0gRaw == 0xFFFF && a1gRaw == 0xFFF && t0gRaw == 0xFF && wn0gRaw == 0x3F)
+		w.A0G = float64(s(155, 16)) * p2m35
+		w.A1G = float64(s(171, 12)) * p2m51
+		w.T0G = float64(t0gRaw) * galT0G
+		w.WN0G = int(wn0gRaw)
 	}
 	return w, nil
 }

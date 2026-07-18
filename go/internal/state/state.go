@@ -282,6 +282,18 @@ type svState struct {
 	aodc, aode int
 	haveAOD    bool
 
+	// ggto is this SV's last-broadcast GST-GPS conversion set (regression fix, Galileo
+	// only): nil = never decoded OR explicitly withdrawn by the §5.1.8 all-ones
+	// sentinel — the feed serves nothing in either case, so a stale offset can
+	// never outlive its broadcast withdrawal. Stored per-SV rather than
+	// store-global deliberately: every SV broadcasts its own copy, and one SV
+	// diverging from the constellation's consensus GGTO is itself an anomaly
+	// the P6 cross-constellation clock-coherence detector (docs/INTEGRITY.md
+	// §"Cross-constellation clock coherence", docs/MATH.md §8) will consume —
+	// that detector is tracked P6 work, not yet built (the regression fix signposted
+	// remainder, like the NavIC deferral).
+	ggto *ggtoParams
+
 	pos     gnss.ECEF
 	havePos bool
 	// posAt is the propagation epoch that produced pos : the exact instant
@@ -296,6 +308,30 @@ type svState struct {
 	timeDiscoNs     float64
 	timeDiscoValid  bool
 	discoAt         time.Time
+}
+
+// ggtoParams is one broadcast GST-GPS conversion parameter set (GAL-OS-SIS-ICD-2.2
+// §5.1.8 Eq. 24: Δt_systems = t_Galileo − t_GPS = A0G + A1G·[TOW − t0G +
+// 604800·(WN − WN0G)]), decoded from I/NAV word 10 or F/NAV page 4.
+// Fields are already scaled to SI (Table 76); wn0g stays the raw 6-bit
+// truncated week — §5.1.8 bounds |untruncated WN − WN0G| ≤ 31, so the feed's
+// nearest-cycle (mod-64) disambiguation against wall clock is exact.
+type ggtoParams struct {
+	a0g  float64 // s
+	a1g  float64 // s/s
+	t0g  float64 // s
+	wn0g int     // 6-bit truncated GST week
+}
+
+// foldGGTO applies one decoded GGTO set freshest-wins (it is outside the
+// IODnav-covered data set, like health): a valid set replaces the stored one; a
+// §5.1.8 all-ones withdrawal clears it. Caller holds the shard lock.
+func (st *svState) foldGGTO(valid bool, a0g, a1g, t0g float64, wn0g int) {
+	if valid {
+		st.ggto = &ggtoParams{a0g: a0g, a1g: a1g, t0g: t0g, wn0g: wn0g}
+	} else {
+		st.ggto = nil
+	}
 }
 
 // accuracy-table selectors for accKind (docs/MATH.md §6).
@@ -762,6 +798,14 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 		}
 		return
 	}
+	// Word type 10 carries the GST-GPS conversion parameters  —
+	// outside the IODnav-matched set, folded freshest-wins like word 5's
+	// health. (Its almanac fields describe the SVID3 almanac subject, not this
+	// transmitter, and are ignored at the decoder.)
+	if w.Type == 10 {
+		st.foldGGTO(w.GGTOValid, w.A0G, w.A1G, w.T0G, w.WN0G)
+		return
+	}
 	if w.Type < 1 || w.Type > 4 {
 		return // only word types 1–4 assemble the ephemeris
 	}
@@ -867,6 +911,13 @@ func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 		if st.haveClk {
 			st.clk.TGD = w.ClockTGD()
 		}
+	}
+	// Page 4 also carries the GST-GPS conversion parameters, the
+	// F/NAV twin of I/NAV word 10 — folded freshest-wins on this @3 entry
+	// before (and independent of) assembly, since GGTO is outside the
+	// IODnav-covered set.
+	if w.PageType == 4 && w.HasGGTO {
+		st.foldGGTO(w.GGTOValid, w.A0G, w.A1G, w.T0G, w.WN0G)
 	}
 	if st.fnav[1] == nil || st.fnav[2] == nil || st.fnav[3] == nil || st.fnav[4] == nil {
 		return

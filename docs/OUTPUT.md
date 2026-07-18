@@ -95,8 +95,8 @@ below):
 | `best_tle_dist_m` | float | metres to the SGP4 position of that object |
 | `utc_offset_ns` | float | broadcast system→UTC offset (ns), from the UTC parameters (MATH.md §8) |
 | `utc_drift_ns_day` | float | its drift term, ns/day |
-| `gps_offset_ns` | float | broadcast system→GPS offset (ns; GGTO for Galileo, τ_GPS for GLONASS…) |
-| `a0g`,`a1g`,`t0g`,`wn0g` | float/int | raw inter-system offset polynomial terms |
+| `gps_offset_ns` | float | broadcast system→GPS offset (ns; GGTO for Galileo, τ_GPS for GLONASS…), evaluated at the feed instant. Sign: t_system − t_GPS (positive = the system's time scale is ahead of GPS — Galileo Eq. 24 Δt_systems, GAL-OS-SIS-ICD-2.2 §5.1.8). Absent until decoded, and absent again on Galileo's all-ones broadcast withdrawal (§5.1.8) — never a stale offset  |
+| `a0g`,`a1g`,`t0g`,`wn0g` | float/int | raw inter-system offset polynomial terms (Galileo: a0g s, a1g s/s, t0g s, wn0g raw 6-bit truncated week — consumers re-evaluating at their own epoch disambiguate wn0g mod-64, exact under §5.1.8's ±31-week bound) |
 | `af0`,`af1`,`af2` | float | raw SV clock polynomial (MATH.md §4) |
 | `aodc`,`aode` | int | BeiDou age-of-data (BeiDou only) |
 | `conf` | int | corroboration count — independent authenticated chains confirming this SV's state (INTEGRITY.md §6) |

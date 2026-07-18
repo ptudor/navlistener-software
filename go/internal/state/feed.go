@@ -48,7 +48,22 @@ type FeedSV struct {
 	// rollover-disambiguated) disagrees with the collector wall-clock week — an
 	// upload error, SV time fault, or replayed/spoofed signal. Absent until a
 	// broadcast WN has been decoded for this entry.
-	WnMismatch     *bool    `json:"wn_mismatch,omitempty"`
+	WnMismatch *bool `json:"wn_mismatch,omitempty"`
+	// GpsOffsetNs and the a0g/a1g/t0g/wn0g quartet are the broadcast
+	// system→GPS time offset (regression fix; Galileo GGTO today, docs/OUTPUT.md §1.1
+	// reserves the same fields for the other constellations' offsets).
+	// GpsOffsetNs is Eq. 24's Δt_systems = t_system − t_GPS evaluated at the
+	// feed instant (GAL-OS-SIS-ICD-2.2 §5.1.8 — note the sign: positive means
+	// the system's time scale is AHEAD of GPS); the quartet is the raw
+	// broadcast polynomial (a0g s, a1g s/s, t0g s, wn0g truncated week) so a
+	// consumer can re-evaluate at its own epoch. All absent until decoded, and
+	// absent again after the §5.1.8 all-ones broadcast withdrawal — "absent =
+	// unknown", never a stale offset.
+	GpsOffsetNs    *float64 `json:"gps_offset_ns,omitempty"`
+	A0G            *float64 `json:"a0g,omitempty"`
+	A1G            *float64 `json:"a1g,omitempty"`
+	T0G            *int     `json:"t0g,omitempty"`
+	WN0G           *int     `json:"wn0g,omitempty"`
 	IOD            *int     `json:"iod,omitempty"`
 	OrbitDiscoM    *float64 `json:"orbit_disco_m,omitempty"`
 	OrbitDiscoAgeS *float64 `json:"orbit_disco_age_s,omitempty"`
@@ -65,13 +80,13 @@ type FeedSV struct {
 	// tracked signal's channel against the broadcast almanac's HnA-derived
 	// channel for the slot (docs/OUTPUT.md §1.4 freq_ch) — a mismatch means
 	// mis-identification or spoofing (the DEFENSE-PNT cross-check family).
-	FreqCh         *int     `json:"freq_ch,omitempty"`
-	XM             *float64 `json:"x_m,omitempty"`
-	YM             *float64 `json:"y_m,omitempty"`
-	ZM             *float64 `json:"z_m,omitempty"`
-	Tow            *int     `json:"tow,omitempty"`
-	Wn             *int     `json:"wn,omitempty"`
-	LastSeenS      int      `json:"last_seen_s"`
+	FreqCh    *int     `json:"freq_ch,omitempty"`
+	XM        *float64 `json:"x_m,omitempty"`
+	YM        *float64 `json:"y_m,omitempty"`
+	ZM        *float64 `json:"z_m,omitempty"`
+	Tow       *int     `json:"tow,omitempty"`
+	Wn        *int     `json:"wn,omitempty"`
+	LastSeenS int      `json:"last_seen_s"`
 
 	Perrecv map[string]*FeedPerRecv `json:"perrecv,omitempty"`
 }
@@ -230,6 +245,28 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 	if st.haveAOD {
 		aodc, aode := st.aodc, st.aode
 		e.AODC, e.AODE = &aodc, &aode
+	}
+	if st.ggto != nil {
+		a0, a1 := st.ggto.a0g, st.ggto.a1g
+		t0, w0 := int(st.ggto.t0g), st.ggto.wn0g
+		e.A0G, e.A1G, e.T0G, e.WN0G = &a0, &a1, &t0, &w0
+		// Evaluate Eq. 24 at the feed instant on the continuous GPS-seconds
+		// axis: dt = t_now − t_ref is axis-invariant, and the ±31-week §5.1.8
+		// broadcast bound makes the mod-64 nearest-cycle disambiguation of the
+		// 6-bit WN0G exact. Worst case |dt| ≈ 31 weeks with A1G
+		// bounded by its 12-bit ×2⁻⁵¹ coding keeps the rate term ≤ ~17 µs —
+		// no wrap handling needed beyond the week disambiguation.
+		ref := gnsstime.GNSSTime{
+			Sys:  gnsstime.SysGalileo,
+			Week: gnsstime.DisambiguateWeek(gnsstime.SysGalileo, st.ggto.wn0g, 6, float64(now.Unix())),
+			TOW:  st.ggto.t0g,
+		}
+		if refGPS, ok := ref.GPSSeconds(); ok {
+			dt := float64(now.Unix()-gpsEpochUnix+gpsUTCOffset) - refGPS
+			if off := (a0 + a1*dt) * 1e9; finite(off) {
+				e.GpsOffsetNs = &off
+			}
+		}
 	}
 	for src, tr := range st.ionoBySource {
 		// a receiver may carry several matured secondary arcs (e.g. both

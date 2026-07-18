@@ -386,6 +386,126 @@ func TestGalileoAssemblersRejectWrongSlots(t *testing.T) {
 	}
 }
 
+// TestDecodeGalileoINAVWord10GGTO guards regression fix (I/NAV side): word 10's
+// GST-GPS conversion parameters decode at the GAL-OS-SIS-ICD-2.2 Table 51
+// offsets (A0G@86 16 bits ×2⁻³⁵, A1G@102 12 bits ×2⁻⁵¹, t0G@114 8 bits ×3600,
+// WN0G@122 6 bits) with two's-complement A0G/A1G, and §5.1.8's all-ones
+// withdrawal sentinel requires ALL FOUR fields all-ones (A0G=−1 alone is a
+// legal value, not a withdrawal).
+func TestDecodeGalileoINAVWord10GGTO(t *testing.T) {
+	p2m35 := 1.0 / float64(uint64(1)<<35)
+	p2m51 := 1.0 / float64(uint64(1)<<51)
+
+	content := make([]byte, 16)
+	setContentBits(content, 0, 10, 6)              // word type = 10
+	setContentBits(content, 86, 0xFFEC&0xFFFF, 16) // A0G raw = −20
+	setContentBits(content, 102, 5, 12)            // A1G raw = +5
+	setContentBits(content, 114, 100, 8)           // t0G raw = 100 → 360000 s
+	setContentBits(content, 122, 37, 6)            // WN0G = 37
+	w, err := DecodeGalileoINAV(buildGalileoINAVWords(content))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !w.HasGGTO || !w.GGTOValid {
+		t.Fatalf("HasGGTO=%v GGTOValid=%v, want true/true", w.HasGGTO, w.GGTOValid)
+	}
+	if want := -20 * p2m35; w.A0G != want {
+		t.Errorf("A0G = %v, want %v (signedness/scale)", w.A0G, want)
+	}
+	if want := 5 * p2m51; w.A1G != want {
+		t.Errorf("A1G = %v, want %v", w.A1G, want)
+	}
+	if w.T0G != 360000 {
+		t.Errorf("T0G = %v, want 360000 (raw 100 × 3600 s)", w.T0G)
+	}
+	if w.WN0G != 37 {
+		t.Errorf("WN0G = %d, want 37", w.WN0G)
+	}
+
+	// All four fields all-ones: the §5.1.8 withdrawal.
+	allOnes := make([]byte, 16)
+	setContentBits(allOnes, 0, 10, 6)
+	setContentBits(allOnes, 86, 0xFFFF, 16)
+	setContentBits(allOnes, 102, 0xFFF, 12)
+	setContentBits(allOnes, 114, 0xFF, 8)
+	setContentBits(allOnes, 122, 0x3F, 6)
+	w, err = DecodeGalileoINAV(buildGalileoINAVWords(allOnes))
+	if err != nil {
+		t.Fatalf("decode all-ones: %v", err)
+	}
+	if !w.HasGGTO || w.GGTOValid {
+		t.Errorf("all-ones GGTO: HasGGTO=%v GGTOValid=%v, want true/false", w.HasGGTO, w.GGTOValid)
+	}
+
+	// A0G all-ones alone (raw −1) with the rest zero is a VALUE, not a withdrawal.
+	minusOne := make([]byte, 16)
+	setContentBits(minusOne, 0, 10, 6)
+	setContentBits(minusOne, 86, 0xFFFF, 16)
+	w, err = DecodeGalileoINAV(buildGalileoINAVWords(minusOne))
+	if err != nil {
+		t.Fatalf("decode A0G=-1: %v", err)
+	}
+	if !w.GGTOValid {
+		t.Error("A0G=−1 with other fields zero flagged as withdrawal; the sentinel is the four-field conjunction")
+	}
+	if want := -1 * p2m35; w.A0G != want {
+		t.Errorf("A0G = %v, want %v", w.A0G, want)
+	}
+}
+
+// TestDecodeGalileoFNAVPage4GGTO guards regression fix (F/NAV side): page 4 transmits
+// the same GGTO quartet at Table 33's offsets — and in a DIFFERENT field order
+// than I/NAV (t0G@147 BEFORE A0G@155, then A1G@167, WN0G@179). Distinct values
+// per field pin the order; the all-ones withdrawal must behave as on I/NAV.
+func TestDecodeGalileoFNAVPage4GGTO(t *testing.T) {
+	p2m35 := 1.0 / float64(uint64(1)<<35)
+	p2m51 := 1.0 / float64(uint64(1)<<51)
+
+	buf := make([]byte, 32)
+	setFNAVBufBits(buf, 0, 4, 6)                // page type = 4
+	setFNAVBufBits(buf, 147, 2, 8)              // t0G raw = 2 → 7200 s
+	setFNAVBufBits(buf, 155, 0xFFFE&0xFFFF, 16) // A0G raw = −2
+	setFNAVBufBits(buf, 171, 9, 12)             // A1G raw = +9
+	setFNAVBufBits(buf, 183, 21, 6)             // WN0G = 21
+	words := fnavBufToWords(buf)
+	StampGalileoFNAVCRC(words)
+	w, err := DecodeGalileoFNAV(words)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !w.HasGGTO || !w.GGTOValid {
+		t.Fatalf("HasGGTO=%v GGTOValid=%v, want true/true", w.HasGGTO, w.GGTOValid)
+	}
+	if w.T0G != 7200 {
+		t.Errorf("T0G = %v, want 7200", w.T0G)
+	}
+	if want := -2 * p2m35; w.A0G != want {
+		t.Errorf("A0G = %v, want %v", w.A0G, want)
+	}
+	if want := 9 * p2m51; w.A1G != want {
+		t.Errorf("A1G = %v, want %v", w.A1G, want)
+	}
+	if w.WN0G != 21 {
+		t.Errorf("WN0G = %d, want 21", w.WN0G)
+	}
+
+	all := make([]byte, 32)
+	setFNAVBufBits(all, 0, 4, 6)
+	setFNAVBufBits(all, 147, 0xFF, 8)
+	setFNAVBufBits(all, 155, 0xFFFF, 16)
+	setFNAVBufBits(all, 171, 0xFFF, 12)
+	setFNAVBufBits(all, 183, 0x3F, 6)
+	words = fnavBufToWords(all)
+	StampGalileoFNAVCRC(words)
+	w, err = DecodeGalileoFNAV(words)
+	if err != nil {
+		t.Fatalf("decode all-ones: %v", err)
+	}
+	if !w.HasGGTO || w.GGTOValid {
+		t.Errorf("all-ones GGTO: HasGGTO=%v GGTOValid=%v, want true/false", w.HasGGTO, w.GGTOValid)
+	}
+}
+
 // TestAssembleGalileoFNAVBGD guards F/NAV page 1's BGD(E1,E5a) (bits
 // 143–152, 10-bit two's complement × 2⁻³², GAL-OS-SIS-ICD-2.2 Table 30/72) must
 // reach the assembled @3 clock's TGD — scaled by (f_E1/f_E5a)² per Eq. 19,
@@ -396,8 +516,8 @@ func TestGalileoAssemblersRejectWrongSlots(t *testing.T) {
 func TestAssembleGalileoFNAVBGD(t *testing.T) {
 	const iod = 9
 	buf := make([]byte, 32)
-	setFNAVBufBits(buf, 0, 1, 6)                     // page type = 1
-	setFNAVBufBits(buf, 12, iod, 10)                 // IODnav
+	setFNAVBufBits(buf, 0, 1, 6)       // page type = 1
+	setFNAVBufBits(buf, 12, iod, 10)   // IODnav
 	setFNAVBufBits(buf, 143, 1021, 10) // BGD(E1,E5a) raw = −3 (10-bit two's complement 0b1111111101)
 	words := fnavBufToWords(buf)
 	StampGalileoFNAVCRC(words)
