@@ -90,6 +90,50 @@ func TestBeiDouD1BadBCHDoesNotMutateHealth(t *testing.T) {
 	}
 }
 
+// TestFeedBeiDouD1KlobucharServed guards the subframe-1 broadcast iono
+// coefficient set (B1I §5.2.4.7, Table 5-5 — α@98 at 2⁻³⁰/2⁻²⁷/2⁻²⁴/2⁻²⁴,
+// β@130 at 2¹¹/2¹⁴/2¹⁶/2¹⁶, all 8-bit two's complement) must be folded at
+// subframe-1 arrival and served raw as klob_alpha/klob_beta instead of dying
+// in the frame struct. Distinct per-index values catch scale/offset swaps.
+func TestFeedBeiDouD1KlobucharServed(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+
+	sf1 := bdsD1Frame(6, 1, 100, 0, now)
+	buf := make([]byte, 28)
+	setAbsBits(buf, 15, 3, 1)          // FraID 1
+	setAbsBits(buf, 18, 8, 100>>12)    // SOW
+	setAbsBits(buf, 26, 12, 100&0xFFF) //
+	setAbsBits(buf, 98, 8, (1<<8)-3)   // α0 raw −3 (×2⁻³⁰)
+	setAbsBits(buf, 122, 8, 7)         // α3 raw 7 (×2⁻²⁴)
+	setAbsBits(buf, 130, 8, 5)         // β0 raw 5 (×2¹¹)
+	setAbsBits(buf, 154, 8, (1<<8)-2)  // β3 raw −2 (×2¹⁶)
+	sf1.Words = bdsD1Words(buf)
+	s.Apply(sf1)
+	s.Apply(bdsD1Frame(6, 2, 106, 800, now))
+	s.Apply(bdsD1Frame(6, 3, 112, 800, now))
+
+	sv, ok := s.FeedSVs(now)["C06@0"]
+	if !ok || sv.KlobAlpha == nil || sv.KlobBeta == nil {
+		t.Fatalf("klob_alpha/klob_beta not served: %+v", sv)
+	}
+	if got, want := sv.KlobAlpha[0], -3.0/(1<<30); got != want {
+		t.Errorf("α0 = %g, want %g (−3 × 2⁻³⁰)", got, want)
+	}
+	if got, want := sv.KlobAlpha[3], 7.0/(1<<24); got != want {
+		t.Errorf("α3 = %g, want %g (7 × 2⁻²⁴)", got, want)
+	}
+	if got, want := sv.KlobBeta[0], 5.0*(1<<11); got != want {
+		t.Errorf("β0 = %g, want %g (5 × 2¹¹)", got, want)
+	}
+	if got, want := sv.KlobBeta[3], -2.0*(1<<16); got != want {
+		t.Errorf("β3 = %g, want %g (−2 × 2¹⁶)", got, want)
+	}
+	if sv.Bdgim != nil {
+		t.Errorf("bdgim served on a D1 (B1I) entry: %v", sv.Bdgim)
+	}
+}
+
 // TestBeiDouD1ChangeoverWithDroppedSubframe guards applyBeiDouD1 must not
 // splice a stale subframe-2 with a fresh subframe-1/3 across an hourly changeover
 // (e.g. a dropped subframe 2) into a garbage ephemeris. AssembleBeiDou's SOW-

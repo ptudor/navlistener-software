@@ -189,6 +189,43 @@ func TestApplyBeiDouBCNAV2StaleClockIODCNotLatched(t *testing.T) {
 	}
 }
 
+// TestFeedBeiDouBDGIMServed guards B-CNAV2 half: MT30's BDGIM α1..α9
+// (B2a Table 7-10: α1 10-bit unsigned, α2 signed, α3/α4 unsigned, α5 unsigned
+// with the NEGATIVE −2⁻³ scale — the table's trap — α6..α9 signed, all in TECu
+// at 2⁻³ resolution) must be folded and served raw as bdgim.
+func TestFeedBeiDouBDGIMServed(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	const prn = 28
+	apply := func(words []uint32) {
+		s.Apply(&ingest.RawFrame{GnssID: gnss.BeiDou, SvID: prn, SigID: 8, Recv: now, Words: words})
+	}
+	apply(bcnav2Frame(prn, 10, 252801, func(buf []byte) {
+		setAbsBits(buf, 53, 8, 7)
+		setAbsBits(buf, 61, 11, 10)
+		setAbsBits(buf, 72, 2, 3)
+	}))
+	apply(bcnav2Frame(prn, 11, 252801, nil))
+	apply(bcnav2Frame(prn, 30, 252804, func(buf []byte) {
+		setAbsBits(buf, 111, 10, 3)       // IODC
+		setAbsBits(buf, 145, 10, 20)      // α1 raw 20 (×2⁻³ = 2.5)
+		setAbsBits(buf, 155, 8, (1<<8)-4) // α2 raw −4 (signed, ×2⁻³ = −0.5)
+		setAbsBits(buf, 179, 8, 12)       // α5 raw 12 (unsigned, ×−2⁻³ = −1.5)
+		setAbsBits(buf, 187, 8, (1<<8)-8) // α6 raw −8 (signed, ×2⁻³ = −1.0)
+	}))
+	sv := s.FeedSVs(now)["C28@8"]
+	if sv.Bdgim == nil {
+		t.Fatalf("bdgim not served: %+v", sv)
+	}
+	g := *sv.Bdgim
+	if g[0] != 2.5 || g[1] != -0.5 || g[4] != -1.5 || g[5] != -1.0 {
+		t.Errorf("bdgim = %v, want α1=2.5 α2=−0.5 α5=−1.5 (the −2⁻³ trap) α6=−1.0", g)
+	}
+	if sv.KlobAlpha != nil {
+		t.Errorf("klob_alpha served on a B-CNAV2 entry: %v", sv.KlobAlpha)
+	}
+}
+
 // TestApplyBeiDouBCNAV2PRNMismatchDropped guards a CRC-valid B-CNAV2
 // message whose in-payload PRN (Table 7-2, inside the CRC boundary) disagrees
 // with the transport SFRBX svId is mis-attributed and must be dropped under its

@@ -72,6 +72,18 @@ type FeedSV struct {
 	A1G         *float64 `json:"a1g,omitempty"`
 	T0G         *int     `json:"t0g,omitempty"`
 	WN0G        *int     `json:"wn0g,omitempty"`
+	// KlobAlpha/KlobBeta and Bdgim  are the SV's raw broadcast
+	// ionosphere coefficient sets, served so they are queryable and (via the
+	// gnss_snapshots feed dumps) replayable — a broadcast iono-coefficient
+	// anomaly is a known spoofing tell, and evaluator will need
+	// them. Today: BeiDou B1I D1 subframe-1 α/β (B1I §5.2.4.7 Table 5-5 — the
+	// BDS model, NOT interchangeable with GPS's Klobuchar) on C##@0 entries,
+	// and B-CNAV2 MT30's BDGIM α1..α9 (B2a Table 7-10, TECu) on C##@8
+	// entries. No evaluated delay is served from these yet — model evaluation
+	// is regression fix, and iono_model_m stays absent until it lands.
+	KlobAlpha *[4]float64 `json:"klob_alpha,omitempty"`
+	KlobBeta  *[4]float64 `json:"klob_beta,omitempty"`
+	Bdgim     *[9]float64 `json:"bdgim,omitempty"`
 	// Dif/Sif/Aif and Sismai (regression fix, BeiDou B-CNAV2 entries) are the B2a
 	// signal's broadcast real-time integrity flags, refreshed ~every 3 s
 	// (BDS-SIS-ICD-B2a v1.0 Table 7-23): dif=true — the broadcast message
@@ -321,6 +333,14 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 	if st.haveBdsFlags {
 		dif, sif, aif, sismai := st.bdsDIF, st.bdsSIF, st.bdsAIF, st.bdsSISMAI
 		e.Dif, e.Sif, e.Aif, e.Sismai = &dif, &sif, &aif, &sismai
+	}
+	if st.haveBdsKlob {
+		a, b := st.bdsKlobAlpha, st.bdsKlobBeta
+		e.KlobAlpha, e.KlobBeta = &a, &b
+	}
+	if st.haveBDGIM {
+		g := st.bdgim
+		e.Bdgim = &g
 	}
 	if st.bdtUTC != nil {
 		u := st.bdtUTC

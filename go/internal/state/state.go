@@ -322,6 +322,21 @@ type svState struct {
 	// remainder, like the NavIC deferral).
 	ggto *ggtoParams
 
+	// bdsKlobAlpha/bdsKlobBeta  are the B1I D1 subframe-1 broadcast
+	// ionosphere coefficients (BDS-SIS-ICD-B1I v3.0 §5.2.4.7, Table 5-5 —
+	// NOTE: a materially different model from GPS's Klobuchar: geographic not
+	// geomagnetic latitude, its own ionospheric height and night behavior, so
+	// the GPS evaluator in gnss/iono must never be fed these; the BDS
+	// evaluator is tracked follow-up). bdgim is B-CNAV2 MT30's
+	// BDGIM α1..α9 (B2a Table 7-10, TECu). Both are stored freshest-wins and
+	// served raw so the broadcast sets are queryable/replayable (a broadcast
+	// iono-coefficient anomaly is a known spoofing tell) instead of dying in
+	// the frame structs; have* flags follow regression fix.
+	bdsKlobAlpha, bdsKlobBeta [4]float64
+	haveBdsKlob               bool
+	bdgim                     [9]float64
+	haveBDGIM                 bool
+
 	// bdsDIF/bdsSIF/bdsAIF/bdsSISMAI  are the B2a signal's broadcast
 	// per-signal integrity flags (BDS-SIS-ICD-B2a v1.0 Table 7-23: DIF=1 "the
 	// error of message parameters broadcasted in this signal exceeds the
@@ -1093,6 +1108,10 @@ func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 		st.health, st.haveHealth = sf.Health, true
 		st.accKind, st.accIdx = accURA, sf.URAI
 		st.aodc, st.aode, st.haveAOD = sf.AODC, sf.AODE, true
+		// the broadcast iono set rides subframe 1 (unlike GPS's
+		// subframe 4), so it folds freshest-wins here with the other
+		// subframe-1 state.
+		st.bdsKlobAlpha, st.bdsKlobBeta, st.haveBdsKlob = sf.Alpha, sf.Beta, true
 	case 2:
 		st.bd2 = sf
 	case 3:
@@ -1193,6 +1212,9 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		// the pilot component's eq. 7-4 correction. Both addends are IODC-scoped
 		// MT30 fields, so an ISC-only revision is a legitimate tgdRefresh below.
 		st.bcTGD, st.haveBcTGD = m.TGDB2ap+m.ISCB2ad, true
+		// MT30 is the BDGIM carrier; fold the coefficient set
+		// freshest-wins so it is served/persisted rather than dropped.
+		st.bdgim, st.haveBDGIM = m.BDGIM, true
 	case 34:
 		st.bcClk = m
 		// fold the BDT-UTC set at MT34 arrival (freshest-wins, before
