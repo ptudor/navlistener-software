@@ -31,6 +31,13 @@ import (
 // ErrBadPreamble is returned when a CNAV message's leading byte isn't 0x8B.
 var ErrBadPreamble = errors.New("frame: CNAV preamble mismatch")
 
+// errPRNMismatch  is returned when the messages handed to
+// AssembleGPSCNAV carry different header PRNs, or a PRN that isn't svid's. toe
+// equality is deliberately NOT an SV discriminator — the control segment
+// routinely uploads batches of SVs sharing one toe, so SV A's MT10 pairs with
+// SV B's MT11 through the toe gate and assembles a cross-SV chimera ephemeris.
+var errPRNMismatch = errors.New("frame: CNAV PRN mismatch across messages")
+
 // CNAV scale factors and reference constants beyond the shared set.
 const (
 	p2m8  = 1.0 / (1 << 8)
@@ -201,6 +208,14 @@ func AssembleGPSCNAV(id gnss.GNSSID, svid int, m10, m11, mClk *GPSCNAV) (kepler.
 	if m10.MsgType != 10 || m11.MsgType != 11 || !m11.hasEph2 {
 		return kepler.Ephemeris{}, clock.Model{}, false, errWrongMsgType
 	}
+	// the header PRN is the SV discriminator the toe check below cannot
+	// be. For GPS the 6-bit field is the PRN itself (IS-GPS-200N §30.3.3), equal
+	// to this library's svid; for QZSS it carries the 6 LSBs of PRN 193–202,
+	// i.e. 1–10 — exactly the svid convention AssembleGPS documents
+	// (QZSS-PNT-006 §4.3.1.2(2): "indicated by the 6LSBs of the PRN number").
+	if m10.PRN != svid || m11.PRN != svid {
+		return kepler.Ephemeris{}, clock.Model{}, false, errPRNMismatch
+	}
 	if m10.eph.Toe != m11.eph.Toe {
 		return kepler.Ephemeris{}, clock.Model{}, false, errIODMismatch
 	}
@@ -216,7 +231,10 @@ func AssembleGPSCNAV(id gnss.GNSSID, svid int, m10, m11, mClk *GPSCNAV) (kepler.
 	// af0=0/Toc=0 indistinguishable from a decoded clock) from a coherent one.
 	var clk clock.Model
 	clkOK := false
-	if mClk != nil && mClk.hasClk && mClk.clk.Toc == m10.eph.Toe {
+	if mClk != nil && mClk.hasClk && mClk.PRN == svid && mClk.clk.Toc == m10.eph.Toe {
+		// a wrong-SV clock whose Toc happens to match (batch uploads
+		// share toe/toc) must not attach; like a stale clock it is dropped, not
+		// an assembly error — the ephemeris pair itself is coherent.
 		clk = mClk.clk
 		clkOK = true
 	}

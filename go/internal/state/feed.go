@@ -43,22 +43,22 @@ type FeedSV struct {
 	// §20.3.3.2 HOW bit 18 / §6.4.6.3 CNAV bit 38): true = the SV itself declares
 	// its URA may be worse than broadcast — use at own risk. Absent until decoded
 	// (and for constellations without the flag).
-	Alert *bool `json:"alert,omitempty"`
-	IOD              *int     `json:"iod,omitempty"`
-	OrbitDiscoM      *float64 `json:"orbit_disco_m,omitempty"`
-	OrbitDiscoAgeS   *float64 `json:"orbit_disco_age_s,omitempty"`
-	TimeDiscoNs      *float64 `json:"time_disco_ns,omitempty"`
-	AODC             *int     `json:"aodc,omitempty"`
-	AODE             *int     `json:"aode,omitempty"`
-	Af0              *float64 `json:"af0,omitempty"`
-	Af1              *float64 `json:"af1,omitempty"`
-	Af2              *float64 `json:"af2,omitempty"`
-	XM               *float64 `json:"x_m,omitempty"`
-	YM               *float64 `json:"y_m,omitempty"`
-	ZM               *float64 `json:"z_m,omitempty"`
-	Tow              *int     `json:"tow,omitempty"`
-	Wn               *int     `json:"wn,omitempty"`
-	LastSeenS        int      `json:"last_seen_s"`
+	Alert          *bool    `json:"alert,omitempty"`
+	IOD            *int     `json:"iod,omitempty"`
+	OrbitDiscoM    *float64 `json:"orbit_disco_m,omitempty"`
+	OrbitDiscoAgeS *float64 `json:"orbit_disco_age_s,omitempty"`
+	TimeDiscoNs    *float64 `json:"time_disco_ns,omitempty"`
+	AODC           *int     `json:"aodc,omitempty"`
+	AODE           *int     `json:"aode,omitempty"`
+	Af0            *float64 `json:"af0,omitempty"`
+	Af1            *float64 `json:"af1,omitempty"`
+	Af2            *float64 `json:"af2,omitempty"`
+	XM             *float64 `json:"x_m,omitempty"`
+	YM             *float64 `json:"y_m,omitempty"`
+	ZM             *float64 `json:"z_m,omitempty"`
+	Tow            *int     `json:"tow,omitempty"`
+	Wn             *int     `json:"wn,omitempty"`
+	LastSeenS      int      `json:"last_seen_s"`
 
 	Perrecv map[string]*FeedPerRecv `json:"perrecv,omitempty"`
 }

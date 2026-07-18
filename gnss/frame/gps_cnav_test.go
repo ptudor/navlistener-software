@@ -70,6 +70,7 @@ func setCNAVPreambleAndCRC(buf []byte) {
 
 func cnavMsg10Words(wn, health, uraED int, toeRaw uint64) []uint32 {
 	buf := make([]byte, 40) // 320 bits
+	setBits(buf, 8, 6, 5)   // PRN = 5 (assemblers now require PRN == svid)
 	setBits(buf, 14, 6, 10) // MsgType = 10
 	setBits(buf, 38, 13, uint64(wn))
 	setBits(buf, 51, 3, uint64(health))
@@ -88,6 +89,7 @@ func cnavMsg10Words(wn, health, uraED int, toeRaw uint64) []uint32 {
 // toe (bit 38); other fields zeroed. Used to pair with an MT10 for AssembleGPSCNAV.
 func cnavMsg11Words(toeRaw uint64) []uint32 {
 	buf := make([]byte, 40)
+	setBits(buf, 8, 6, 5)   // PRN = 5 
 	setBits(buf, 14, 6, 11) // MsgType = 11
 	setBits(buf, 38, 11, toeRaw)
 	setCNAVPreambleAndCRC(buf)
@@ -146,11 +148,69 @@ func TestAssembleGPSCNAVRejectsWrongSlotsAndClock(t *testing.T) {
 	}
 	m10 := dec(cnavMsg10Words(2296, 0, 2, 0))
 	m11 := dec(cnavMsg11Words(0))
-	if _, _, _, err := AssembleGPSCNAV(gnss.GPS, 1, m11, m10, nil); err != errWrongMsgType {
+	if _, _, _, err := AssembleGPSCNAV(gnss.GPS, 5, m11, m10, nil); err != errWrongMsgType {
 		t.Errorf("transposed args error = %v, want errWrongMsgType", err)
 	}
-	if _, _, ok, err := AssembleGPSCNAV(gnss.GPS, 1, m10, m11, m10); err != nil || ok {
+	if _, _, ok, err := AssembleGPSCNAV(gnss.GPS, 5, m10, m11, m10); err != nil || ok {
 		t.Errorf("non-clock MT10 attached as clock: ok=%v err=%v", ok, err)
+	}
+}
+
+// cnavWithPRN re-stamps a built CNAV message's header PRN (ICD bits 9–14) and
+// recomputes the CRC, for building cross-SV chimera scenarios.
+func cnavWithPRN(words []uint32, prn int) []uint32 {
+	buf := make([]byte, 40)
+	for i, w := range words {
+		buf[i*4], buf[i*4+1], buf[i*4+2], buf[i*4+3] = byte(w>>24), byte(w>>16), byte(w>>8), byte(w)
+	}
+	setBits(buf, 8, 6, uint64(prn))
+	setCNAVPreambleAndCRC(buf)
+	out := make([]uint32, 10)
+	for i := range out {
+		out[i] = uint32(buf[i*4])<<24 | uint32(buf[i*4+1])<<16 | uint32(buf[i*4+2])<<8 | uint32(buf[i*4+3])
+	}
+	return out
+}
+
+// TestAssembleGPSCNAVRejectsCrossSVPair guards the control segment
+// routinely uploads batches of SVs sharing one toe, so toe equality cannot
+// distinguish SV A's MT10 from SV B's MT11 — a caller pairing messages only on
+// the documented "must share a toe" contract could assemble a cross-SV chimera
+// with err == nil. The header PRN must match across all supplied messages AND
+// the svid the caller is assembling for; a wrong-SV clock is dropped (not
+// attached) like a stale one.
+func TestAssembleGPSCNAVRejectsCrossSVPair(t *testing.T) {
+	dec := func(w []uint32) *GPSCNAV {
+		m, err := DecodeGPSCNAV(gnss.GPS, w)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return m
+	}
+	m10 := dec(cnavMsg10Words(2296, 0, 2, 400))
+	m11same := dec(cnavMsg11Words(400))
+	m11other := dec(cnavWithPRN(cnavMsg11Words(400), 6)) // same toe, different SV
+
+	if _, _, _, err := AssembleGPSCNAV(gnss.GPS, 5, m10, m11other, nil); err != errPRNMismatch {
+		t.Errorf("cross-SV MT10/MT11 sharing a toe: err = %v, want errPRNMismatch", err)
+	}
+	// Assembling under the wrong svid must also fail, even with self-consistent messages.
+	if _, _, _, err := AssembleGPSCNAV(gnss.GPS, 7, m10, m11same, nil); err != errPRNMismatch {
+		t.Errorf("svid 7 with PRN-5 messages: err = %v, want errPRNMismatch", err)
+	}
+	// A wrong-SV clock whose Toc matches the toe (batch upload) is dropped, not attached.
+	clkOther := dec(cnavWithPRN(cnavMsg30Words(400, 12345, -6789, 42, -100, 55, -200, 300, -400), 6))
+	_, clk, ok, err := AssembleGPSCNAV(gnss.GPS, 5, m10, m11same, clkOther)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || clk.Af0 != 0 {
+		t.Errorf("wrong-SV clock attached: ok=%v Af0=%v", ok, clk.Af0)
+	}
+	// And the well-matched triple still assembles with the clock.
+	clkGood := dec(cnavMsg30Words(400, 12345, -6789, 42, -100, 55, -200, 300, -400))
+	if _, _, ok, err := AssembleGPSCNAV(gnss.GPS, 5, m10, m11same, clkGood); err != nil || !ok {
+		t.Errorf("matched triple: ok=%v err=%v, want clean assembly with clock", ok, err)
 	}
 }
 
@@ -159,6 +219,7 @@ func TestAssembleGPSCNAVRejectsWrongSlotsAndClock(t *testing.T) {
 // masked to their two's-complement bit width before packing.
 func cnavMsg30Words(toc uint64, af0, af1, af2, tgd, iscL1CA, iscL2C, iscL5I5, iscL5Q5 int64) []uint32 {
 	buf := make([]byte, 40)
+	setBits(buf, 8, 6, 5)   // PRN = 5 
 	setBits(buf, 14, 6, 30) // MsgType = 30
 	setBits(buf, 60, 11, toc)
 	setBits(buf, 71, 26, uint64(af0)&((1<<26)-1))
