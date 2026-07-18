@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "esp_tls.h"
 #include "esp_crt_bundle.h"
 #include "esp_timer.h"
@@ -131,7 +132,14 @@ static int read_frame(esp_tls_t *tls, uint8_t *type, uint8_t *buf, size_t cap, s
 static bool readable(esp_tls_t *tls, int fd, int timeout_ms)
 {
     if (esp_tls_get_bytes_avail(tls) > 0) return true;
-    if (fd < 0) return false;
+    if (fd < 0) {
+        // regression fix defense-in-depth: serve() rejects a connection whose fd it cannot get,
+        // so this branch is unreachable today. If it ever regresses, burn the caller's
+        // timeout as a real delay instead of returning instantly — an immediate false
+        // here turns serve()'s idle loop into a hot spin on an unwatched task.
+        if (timeout_ms > 0) vTaskDelay(pdMS_TO_TICKS(timeout_ms));
+        return false;
+    }
     fd_set rd;
     FD_ZERO(&rd);
     FD_SET(fd, &rd);
@@ -269,7 +277,18 @@ static int serve(void)
     int64_t session_start_us = esp_timer_get_time(); // monotonic since boot
 
     int fd = -1;
-    esp_tls_get_conn_sockfd(tls, &fd);
+    esp_err_t fdrc = esp_tls_get_conn_sockfd(tls, &fd);
+    if (fdrc != ESP_OK || fd < 0) {
+        // without a valid fd, readable() cannot actually wait (select needs the
+        // fd), so the idle loop would degenerate into a 100% busy-spin on a task that is
+        // deliberately NOT task-WDT-subscribed  — a single-core C6 burning hot
+        // indefinitely with no watchdog backstop and no self-heal. A connection we cannot
+        // poll is a failed connection: tear it down and let the backoff loop reconnect.
+        ESP_LOGW(TAG, "esp_tls_get_conn_sockfd failed (err=%d fd=%d); dropping connection",
+                 (int)fdrc, fd);
+        esp_tls_conn_destroy(tls);
+        return -1;
+    }
     atomic_store_explicit(&s_connected, true, memory_order_relaxed);
     ESP_LOGI(TAG, "connected: station=%s feed=%s -> %s:%d", s_cfg.station, s_cfg.feed,
              s_cfg.host, s_cfg.port);
@@ -326,8 +345,14 @@ static void pusher_task(void *arg)
         // navfeeder.c main's regression fix reset; failed/slow connects never reset (rc == -1).
         if (rc == 0) backoff = 1;
         int wait = (rc == -2) ? BACKOFF_MAX_S : backoff; // hard back-off on auth rejection
-        ESP_LOGI(TAG, "reconnecting in %ds", wait);
-        vTaskDelay(pdMS_TO_TICKS(wait * 1000));
+        // 0..25% jitter — a collector redeploy fails the whole fleet at the
+        // same instant, and identical deterministic ladders would then re-attempt TLS
+        // handshakes (the most expensive per-connection event on both ends) in
+        // synchronized bursts. Mirrors navfeeder.c's sleep_with_jitter.
+        int wait_ms = wait * 1000;
+        wait_ms += (int)(esp_random() % ((unsigned)wait_ms / 4u + 1u));
+        ESP_LOGI(TAG, "reconnecting in %d ms", wait_ms);
+        vTaskDelay(pdMS_TO_TICKS(wait_ms));
         if (rc == -2) backoff = 1;
         else if ((backoff *= 2) > BACKOFF_MAX_S) backoff = BACKOFF_MAX_S;
     }
