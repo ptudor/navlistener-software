@@ -98,7 +98,10 @@ static void ui_task(void *arg)
         uint64_t dropped = 0;
         size_t depth = 0;
         spool_stats(NULL, &dropped, &depth);
-        uint32_t nav = p->frames_nav;
+        // relaxed atomic loads — rx_task increments these concurrently.
+        uint32_t nav = atomic_load_explicit(&p->frames_nav, memory_order_relaxed);
+        uint32_t telem = atomic_load_explicit(&p->frames_telem, memory_order_relaxed);
+        uint32_t bad_ck = atomic_load_explicit(&p->bad_checksum, memory_order_relaxed);
         bool link = pusher_connected();
         bool wifi = atomic_load_explicit(&s_wifi_up, memory_order_relaxed);
 
@@ -109,8 +112,8 @@ static void ui_task(void *arg)
             .link_up = link,
             .nav = nav,
             .nav_rate = nav - last_nav,
-            .telem = p->frames_telem,
-            .bad_ck = p->bad_checksum,
+            .telem = telem,
+            .bad_ck = bad_ck,
             .spool_depth = (unsigned)depth,
             .dropped = dropped,
         };
@@ -123,8 +126,8 @@ static void ui_task(void *arg)
         if (ls != last_led) { status_led_state(ls); last_led = ls; }
 
         ESP_LOGI(TAG, "nav=%u (+%u) telem=%u bad_ck=%u spool=%u drop=%llu link=%s",
-                 (unsigned)nav, (unsigned)(nav - last_nav), (unsigned)p->frames_telem,
-                 (unsigned)p->bad_checksum, (unsigned)depth, (unsigned long long)dropped,
+                 (unsigned)nav, (unsigned)(nav - last_nav), (unsigned)telem,
+                 (unsigned)bad_ck, (unsigned)depth, (unsigned long long)dropped,
                  link ? "up" : "down");
         last_nav = nav;
         vTaskDelay(pdMS_TO_TICKS(2000));

@@ -61,7 +61,7 @@ static void emit_sfrbx(ubx_parser_t *p, const uint8_t *payload, uint16_t len)
     rec[11] = (uint8_t)freq_id;
     rec[12] = gnf1_frame_type(gnss_id, sig_id);
     p->emit(rec, GNF1_RECORD_HDR + raw_len, p->ctx);
-    p->frames_nav++;
+    atomic_fetch_add_explicit(&p->frames_nav, 1, memory_order_relaxed); /* regression fix */
 }
 
 // emit_monrf: UBX-MON-RF (F9+) -> JammingStats (0x05). Layout: version U1, nBlocks U1,
@@ -95,7 +95,7 @@ static void emit_monrf(ubx_parser_t *p, const uint8_t *payload, uint16_t len)
     rec[8] = rec[9] = rec[10] = rec[11] = 0;
     rec[12] = GNF1_T_JAMMING;
     p->emit(rec, GNF1_RECORD_HDR + body_len, p->ctx);
-    p->frames_telem++;
+    atomic_fetch_add_explicit(&p->frames_telem, 1, memory_order_relaxed); /* regression fix */
 }
 
 // emit_monhw: legacy UBX-MON-HW (60 bytes) -> single-band JammingStats. noisePerMS U2 @16,
@@ -117,7 +117,7 @@ static void emit_monhw(ubx_parser_t *p, const uint8_t *payload, uint16_t len)
     rec[8] = rec[9] = rec[10] = rec[11] = 0;
     rec[12] = GNF1_T_JAMMING;
     p->emit(rec, GNF1_RECORD_HDR + 10, p->ctx);
-    p->frames_telem++;
+    atomic_fetch_add_explicit(&p->frames_telem, 1, memory_order_relaxed); /* regression fix */
 }
 
 // emit_navsat: UBX-NAV-SAT -> ReceptionData (0x01) for the C/N0-vs-elevation spoof gate.
@@ -147,7 +147,7 @@ static void emit_navsat(ubx_parser_t *p, const uint8_t *payload, uint16_t len)
     rec[8] = rec[9] = rec[10] = rec[11] = 0;
     rec[12] = GNF1_T_RECEPTION;
     p->emit(rec, GNF1_RECORD_HDR + 3u + n * 5u, p->ctx);
-    p->frames_telem++;
+    atomic_fetch_add_explicit(&p->frames_telem, 1, memory_order_relaxed); /* regression fix */
 }
 
 // dispatch routes a checksum-valid message to its emitter.
@@ -186,7 +186,7 @@ void ubx_parser_feed(ubx_parser_t *p, const uint8_t *data, size_t len)
             break;
         case S_LEN2:
             p->len |= (uint16_t)b << 8; ck(p, b);
-            if (p->len > UBX_MAX_PAYLOAD) { p->oversize++; p->state = S_SYNC1; break; }
+            if (p->len > UBX_MAX_PAYLOAD) { atomic_fetch_add_explicit(&p->oversize, 1, memory_order_relaxed); p->state = S_SYNC1; break; }
             p->idx = 0;
             p->state = p->len ? S_PAYLOAD : S_CK_A;
             break;
@@ -200,7 +200,7 @@ void ubx_parser_feed(ubx_parser_t *p, const uint8_t *data, size_t len)
         case S_CK_B:
             p->exp_b = b;
             if (p->ck_a == p->exp_a && p->ck_b == p->exp_b) dispatch(p);
-            else p->bad_checksum++;
+            else atomic_fetch_add_explicit(&p->bad_checksum, 1, memory_order_relaxed); /* regression fix */
             p->state = S_SYNC1;
             break;
         default:

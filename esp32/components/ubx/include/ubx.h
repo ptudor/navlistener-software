@@ -17,6 +17,7 @@
 #ifndef UBX_H
 #define UBX_H
 
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -53,11 +54,17 @@ typedef struct {
     uint8_t payload[UBX_MAX_PAYLOAD];
     uint8_t scratch[GNF1_RECORD_MAX]; // record assembly (emit target)
 
-    // counters (for the display/telemetry)
-    uint32_t frames_nav;        // SFRBX records emitted
-    uint32_t frames_telem;      // MON-RF/MON-HW/NAV-SAT records emitted
-    uint32_t bad_checksum;      // messages dropped on checksum
-    uint32_t oversize;          // messages skipped for exceeding UBX_MAX_PAYLOAD
+    // counters (for the display/telemetry) — _Atomic : written by rx_task's
+    // parser and read by ui_task's dashboard, so plain uint32_t cross-task access is a
+    // formal C11 data race (benign on aligned RV32 loads/stores in practice, but the
+    // regression fix convention is to make cross-task fields atomic). Relaxed ordering
+    // everywhere: display-only monotonic counters with no cross-field consistency
+    // requirement. ubx_parser_init's memset(0) predates any concurrent access, and
+    // _Atomic uint32_t is representation-compatible on this ABI, so zero-init is sound.
+    _Atomic uint32_t frames_nav;   // SFRBX records emitted
+    _Atomic uint32_t frames_telem; // MON-RF/MON-HW/NAV-SAT records emitted
+    _Atomic uint32_t bad_checksum; // messages dropped on checksum
+    _Atomic uint32_t oversize;     // messages skipped for exceeding UBX_MAX_PAYLOAD
 } ubx_parser_t;
 
 // ubx_parser_init resets the framer and binds the emit + clock callbacks.
