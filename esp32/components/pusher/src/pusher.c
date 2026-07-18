@@ -24,6 +24,12 @@ static const char *TAG = "pusher";
 #define DRAIN_BATCH   64
 #define KEEPALIVE_S   30   // PING when idle this long (under the collector's idle timeout)
 #define BACKOFF_MAX_S 30
+// regression fix (ESP32 half): a post-handshake session must run this long to count as
+// "useful" and reset the reconnect backoff ladder. Mirrors navfeeder.c's USEFUL_CONN_S
+//  and the collector's usefulConnectionDuration : without the reset,
+// backoff climbs monotonically to BACKOFF_MAX_S over the process lifetime, so a routine
+// collector redeploy weeks into uptime waits the full 30 s on every future reconnect.
+#define USEFUL_CONN_S 3
 
 // esp-tls maps a socket timeout to WANT_READ/WANT_WRITE; on a half-open link (no
 // RST ever arrives) tls_write_all/tls_read_full retried that forever with no bound. Fail
@@ -241,8 +247,13 @@ static int send_ping(esp_tls_t *tls)
     return tls_write_all(tls, f, sizeof f);
 }
 
-// serve drains the spool over one connection until it drops. Returns -2 on auth rejection,
-// -1 otherwise.
+// serve drains the spool over one connection until it drops. Returns 0 when the session
+// authenticated and then ran for at least USEFUL_CONN_S (a "useful" session — pusher_task
+// resets the backoff ladder, regression fix), -2 on an auth rejection (back off hard), -1
+// otherwise. The usefulness clock deliberately starts AFTER the handshake: a slow-FAILING
+// connect (connect_collector's timeout_ms is 10 s, over USEFUL_CONN_S) must never count as
+// useful, or an unreachable collector would reset backoff on every attempt and the ladder
+// would never grow.
 static int serve(void)
 {
     esp_tls_t *tls = connect_collector();
@@ -255,6 +266,7 @@ static int serve(void)
         esp_tls_conn_destroy(tls);
         return hs;
     }
+    int64_t session_start_us = esp_timer_get_time(); // monotonic since boot
 
     int fd = -1;
     esp_tls_get_conn_sockfd(tls, &fd);
@@ -266,7 +278,6 @@ static int serve(void)
     spool_frame_t batch[DRAIN_BATCH];
     uint8_t frame[GNF1_DATA_MAX];
     int64_t last_tx_us = esp_timer_get_time();
-    int rc = -1;
 
     for (;;) {
         if (!drain_acks(tls, fd)) break;
@@ -300,7 +311,7 @@ static int serve(void)
     spool_stats(NULL, &dropped, &count);
     ESP_LOGI(TAG, "disconnected (spooled=%u dropped=%llu)", (unsigned)count,
              (unsigned long long)dropped);
-    return rc;
+    return (esp_timer_get_time() - session_start_us >= (int64_t)USEFUL_CONN_S * 1000000) ? 0 : -1;
 }
 
 static void pusher_task(void *arg)
@@ -309,6 +320,11 @@ static void pusher_task(void *arg)
     int backoff = 1;
     for (;;) {
         int rc = serve();
+        // a useful session (authenticated + streamed >= USEFUL_CONN_S, see
+        // serve()'s return contract) resets the ladder so a routine collector redeploy
+        // weeks into uptime reconnects in ~1 s instead of the 30 s cap. Mirrors
+        // navfeeder.c main's regression fix reset; failed/slow connects never reset (rc == -1).
+        if (rc == 0) backoff = 1;
         int wait = (rc == -2) ? BACKOFF_MAX_S : backoff; // hard back-off on auth rejection
         ESP_LOGI(TAG, "reconnecting in %ds", wait);
         vTaskDelay(pdMS_TO_TICKS(wait * 1000));
