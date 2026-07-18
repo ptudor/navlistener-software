@@ -113,6 +113,19 @@ type AlmanacEntry struct {
 	// absent for other constellations.
 	LambdaNA  *float64 `json:"lambda_na,omitempty"`
 	TLambdaNA *float64 `json:"t_lambda_na,omitempty"`
+
+	// Operable (regression fix, GLONASS-only) is the almanac CnA ground-segment health
+	// flag, re-normalized so true = operable. The broadcast polarity is INVERTED
+	// vs Bn/ℓn: Cn = 0 indicates malfunction, Cn = 1 operable (GLO-ICD-5.1
+	// §5.3), and ICD Table 5.1 requires Cn analyzed jointly with Bn(ℓn) for the
+	// usability decision. For a slot out of ephemeris view the almanac is its
+	// only presence in the feeds and Cn its only broadcast health indicator —
+	// before this field, a slot ground control had already flagged inoperable
+	// (the flag reaches every SV's almanac within ~16 h, §5.3) served as a
+	// normal coarse-orbit entry, indistinguishable from a healthy one. An
+	// inoperable slot's entry is deliberately still served: consumers want the
+	// position of an unhealthy SV; it is the flag that was missing.
+	Operable *bool `json:"operable,omitempty"`
 }
 
 // SBASEntry is one augmentation-system health entry (docs/OUTPUT.md §1.5).
@@ -490,6 +503,11 @@ func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
 	}
 	for _, a := range alms {
 		name := fmt.Sprintf("R%02d", a.Alm.Slot)
+		// surface the CnA ground-segment health flag (see the Operable
+		// field doc — broadcast polarity inverted, Cn=1 operable) on every GLONASS
+		// entry the almanac covers, observed ones included: Cn is ground-segment
+		// truth about the slot regardless of local visibility.
+		operable := a.Cn == 1
 		if ent, seen := out[name]; seen {
 			// the observed entry keeps its precise ECEF/epoch, but its
 			// always-present inclination/t0e metadata comes from the fresh
@@ -498,6 +516,7 @@ func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
 			if ent.Observed {
 				ent.InclinationRad = gloMeanInclination + a.Alm.DeltaI
 				ent.T0e = int(a.Alm.Tlambda)
+				ent.Operable = &operable
 				out[name] = ent
 			}
 			continue // observed → its precise broadcast-ephemeris entry wins
@@ -523,6 +542,7 @@ func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
 			EphSource:      0,
 			LambdaNA:       &lambda,
 			TLambdaNA:      &tLambda,
+			Operable:       &operable,
 		}
 	}
 }

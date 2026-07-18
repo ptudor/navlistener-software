@@ -101,6 +101,56 @@ func TestFeedGlonassAlmanacObservedWins(t *testing.T) {
 	}
 }
 
+// TestFeedGlonassAlmanacOperable guards the almanac CnA ground-segment
+// health flag — the ONLY broadcast health surface for an out-of-view slot — was
+// decoded, stored, and then dropped at feed-build time, so a slot ground control
+// had flagged inoperable served indistinguishably from a healthy one. The feed
+// must carry it re-normalized (broadcast polarity is inverted: Cn = 0 means
+// malfunction, GLO-ICD-5.1 §5.3), an inoperable slot's entry must STILL be
+// served (the flag was missing, not the position), and observed entries get the
+// flag too via the regression fix metadata merge.
+func TestFeedGlonassAlmanacOperable(t *testing.T) {
+	s := New(4)
+	now := time.Now()
+	s.gloNA = 615
+	healthy := icdAlmanac(7) // Cn = 1
+	sick := icdAlmanac(9)
+	sick.Cn = 0
+	s.gloAlmanac[7] = gloAlmSlot{entry: healthy, lastSeen: now}
+	s.gloAlmanac[9] = gloAlmSlot{entry: sick, lastSeen: now}
+
+	out := s.FeedAlmanac(now)
+	h, ok := out["R07"]
+	if !ok || h.Operable == nil {
+		t.Fatalf("R07: entry/operable missing (%+v)", h)
+	}
+	if !*h.Operable {
+		t.Error("R07 Cn=1 must serve operable=true")
+	}
+	sv9, ok := out["R09"]
+	if !ok {
+		t.Fatal("R09 (Cn=0) missing — an inoperable slot's entry must still be served")
+	}
+	if sv9.Operable == nil || *sv9.Operable {
+		t.Errorf("R09 Cn=0 must serve operable=false, got %+v", sv9.Operable)
+	}
+
+	// Observed entry: precise position wins, but the ground-segment flag rides along.
+	key := Key{G: gnss.GLONASS, Sv: 9, Sig: 0}
+	sh := s.shardFor(key)
+	sh.m[key] = &svState{
+		key: key, havePos: true, haveGloEph: true,
+		pos: gnss.ECEF{X: 1.1e7, Y: 2.2e7, Z: 5.0e6}, posAt: now, lastSeen: now,
+	}
+	obs := s.FeedAlmanac(now)["R09"]
+	if !obs.Observed {
+		t.Fatal("slot 9 must be Observed once in view")
+	}
+	if obs.Operable == nil || *obs.Operable {
+		t.Errorf("observed R09 must still carry operable=false, got %+v", obs.Operable)
+	}
+}
+
 // TestFeedGlonassAlmanacAgesOutStaleSlot guards a GLONASS almanac slot
 // unseen past gloAlmanacStaleAfter (a decommissioned/ghost slot) must not be
 // served forever, propagated to an ever-more-speculative position at the

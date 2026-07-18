@@ -176,6 +176,7 @@ all-SV view (acquisition-grade); `svs` remains the precision view. Fields:
 | `t0e` | int | constellation-native almanac reference: GPS-family `Toe` in seconds-of-week; GLONASS `t_lambda` in seconds-of-day |
 | `t` | int | evaluation time as Unix UTC seconds |
 | `lambda_na`,`t_lambda_na` | float | GLONASS-only: ascending-node longitude and its epoch (MATH.md §3.1) |
+| `operable` | bool | GLONASS-only : the almanac CnA ground-segment health flag, `true` = operable. **Polarity note:** the broadcast word is inverted vs Bn/ℓn — Cn = 0 means malfunction (GLO-ICD-5.1 §5.3); this field re-normalizes it so `true` is always healthy. For an out-of-view slot this is the SV's only broadcast health surface (the ground path reaches every SV's almanac within ~16 h, §5.3); an inoperable slot's entry is still served — it's the flag that matters, not suppression. Absent for other constellations and until the slot's almanac decodes. |
 | `eph_source` | int | §2.2 enum: 0 broadcast-almanac · 1 tle-sgp4 fill |
 
 `t0e` and `t` deliberately use different time bases; `t - t0e` is **not** an almanac age.
