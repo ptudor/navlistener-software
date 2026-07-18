@@ -543,6 +543,119 @@ func TestPushZstdRejectsOversizedWindow(t *testing.T) {
 	}
 }
 
+// TestPushUnforwardedFloodTornDown guards an authenticated zstd feeder
+// whose stream decompresses to endless type=0/len=0 frames (a few KB of
+// compressed zeros) previously spun the read loop at 100% of a core per
+// connection — every frame hit the default: branch and looped straight back to
+// ReadFrame, with idleConn never tripping because the compressed reads keep
+// succeeding. The connection must now be torn down after
+// maxConsecutiveUnforwarded frames, with the unforwarded_flood metric counting
+// the teardown.
+func TestPushUnforwardedFloodTornDown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	addr, out := startPushServer(t, ctx, tokenAuth("flood-e2e", "s3cret", "ubx"))
+
+	conn := dialPush(t, addr)
+	defer conn.Close()
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "flood-e2e", Feed: "ubx", Zstd: true}); err != nil {
+		t.Fatal(err)
+	}
+	ft, payload, err := wire.ReadFrame(conn)
+	if err != nil || ft != wire.Welcome {
+		t.Fatalf("welcome frame: ft=%d err=%v", ft, err)
+	}
+	if wmsg, _ := parseWelcome(payload); !wmsg.OK || !wmsg.Zstd {
+		t.Fatal("handshake rejected")
+	}
+
+	// The amplifier: 64 KiB of zeros compresses to a few hundred bytes and parses
+	// as ~13k type=0/len=0 frames — far past maxConsecutiveUnforwarded.
+	enc, err := zstd.NewWriter(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := enc.Write(make([]byte, 64<<10)); err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The server must close the connection (not consume forever): the next
+	// plaintext read errors out well before the 5s guard.
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, _, err := wire.ReadFrame(conn); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("connection still open after an unforwarded flood (read err=%v); want server-side teardown", err)
+	}
+	if got := testutil.ToFloat64(metrics.PushErrorsTotal.WithLabelValues("flood-e2e", "unforwarded_flood")); got < 1 {
+		t.Errorf("unforwarded_flood = %v, want >= 1", got)
+	}
+	select {
+	case f := <-out:
+		t.Fatalf("zero-frame flood must not deliver frames, got %+v", f)
+	default:
+	}
+}
+
+// TestPushUnforwardedCountResetsOnDelivery is negative half: junk
+// interleaved with real DATA must never trip the bound — every delivered record
+// resets the consecutive count, so a feeder with an occasionally-corrupt spool
+// (or an operator replaying a partially-damaged capture) is not torn down. 5x200
+// junk frames (1000 total, far past the bound cumulatively, never consecutively)
+// with a valid DATA between each burst must leave the connection alive.
+func TestPushUnforwardedCountResetsOnDelivery(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	addr, out := startPushServer(t, ctx, tokenAuth("reset-e2e", "s3cret", "ubx"))
+
+	conn := dialPush(t, addr)
+	defer conn.Close()
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "reset-e2e", Feed: "ubx"}); err != nil {
+		t.Fatal(err)
+	}
+	if ft, payload, err := wire.ReadFrame(conn); err != nil || ft != wire.Welcome {
+		t.Fatalf("welcome frame: ft=%d err=%v", ft, err)
+	} else if wmsg, _ := parseWelcome(payload); !wmsg.OK {
+		t.Fatal("handshake rejected")
+	}
+
+	rec := wire.RawRecord{RecvUnixNs: time.Now().UnixNano(), GnssID: gnss.GPS, SvID: 5, FrameType: 0x10, Raw: make([]byte, 8)}
+	for round := 0; round < 5; round++ {
+		for i := 0; i < 200; i++ { // < maxConsecutiveUnforwarded per burst
+			if err := wire.WriteFrame(conn, wire.FrameType(0x40), nil); err != nil {
+				t.Fatalf("round %d junk frame %d: %v", round, i, err)
+			}
+		}
+		if err := wire.WriteFrame(conn, wire.Data, wire.EncodeData(uint64(round+1), rec)); err != nil {
+			t.Fatalf("round %d DATA: %v", round, err)
+		}
+		select { // drain so p.out never blocks the server loop
+		case <-out:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("round %d: DATA frame never reached the decode stage", round)
+		}
+	}
+
+	// The connection must still be alive: a PING gets a PONG (ACKs may interleave).
+	if err := wire.WriteFrame(conn, wire.Ping, nil); err != nil {
+		t.Fatalf("ping after junk bursts: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for {
+		ft, _, err := wire.ReadFrame(conn)
+		if err != nil {
+			t.Fatalf("connection torn down despite resets (read err=%v)", err)
+		}
+		if ft == wire.Pong {
+			break
+		}
+	}
+	if got := testutil.ToFloat64(metrics.PushErrorsTotal.WithLabelValues("reset-e2e", "unforwarded_flood")); got != 0 {
+		t.Errorf("unforwarded_flood = %v, want 0", got)
+	}
+}
+
 // TestPushRejectsBadToken confirms an unknown token gets WELCOME ok=false and no
 // frame is admitted.
 func TestPushRejectsBadToken(t *testing.T) {

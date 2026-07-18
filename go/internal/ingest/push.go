@@ -364,6 +364,25 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 	p.stream(ctx, frames, w, observer, feed)
 }
 
+// maxConsecutiveUnforwarded bounds how many frames in a row a connection may
+// produce without a single record reaching the decode stage. The DATA
+// path self-throttles (p.out <- f blocks, TCP backpressure does the rest), but
+// every other outcome — unexpected frame type, short_record, bad_telemetry —
+// looped straight back to wire.ReadFrame with only a metric increment. Behind
+// zstd that is an amplifier: a few KB compressing a long run of zeros parses as
+// an endless sequence of type=0/len=0 frames (ReadFrameMax returns
+// FrameType(0), empty payload for five zero bytes), each landing in the
+// default: branch — one collector core pinned per connection, x MaxConns, with
+// idleConn never tripping because the compressed reads keep succeeding. Past
+// this bound the connection is torn down (the regression fix misbehaving-feeder
+// pattern; no wire/ack contract change — unacked frames replay on reconnect).
+// 256 is far above anything a correct feeder produces consecutively (feeders
+// send DATA + PING only; a corrupt spool record among flowing DATA resets the
+// count at every delivered frame) while ending a hostile spin within
+// microseconds. PING neither increments nor resets: it is valid protocol, but
+// resetting on it would let junk+periodic-ping streams evade the bound.
+const maxConsecutiveUnforwarded = 256
+
 // helloMaxLen caps the pre-auth HELLO frame length far below wire.MaxFrameLen
 // : a real HELLO is ~150 bytes and navfeeder.c never sends one over 1024
 // bytes, but ReadFrame's normal 1 MiB cap would let any unauthenticated
@@ -496,6 +515,9 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 		}
 	}()
 
+	// unforwarded counts consecutive frames that produced no p.out
+	// delivery; see maxConsecutiveUnforwarded for why it exists and its bound.
+	unforwarded := 0
 	for {
 		// The idle-timeout deadline is refreshed by idleConn on every underlying read, so a
 		// stalled feeder (or a stalled zstd stream) still trips it here.
@@ -515,11 +537,10 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 			seq, rec, err := wire.DecodeData(payload)
 			if err != nil {
 				metrics.PushErrorsTotal.WithLabelValues(observer, "short_record").Inc()
-				continue
-			}
-			f := recordToFrame(rec, feed, observer)
-			if f == nil {
+				unforwarded++
+			} else if f := recordToFrame(rec, feed, observer); f == nil {
 				metrics.PushErrorsTotal.WithLabelValues(observer, "bad_telemetry").Inc()
+				unforwarded++
 				// The body is malformed; a retransmit cannot fix it, so this sequence is
 				// acked (matches the pre-existing behaviour for this branch, regression fix).
 				mu.Lock()
@@ -527,23 +548,24 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 					highest = seq
 				}
 				mu.Unlock()
-				continue
-			}
-			f.Seq, f.HasSeq = seq, true        // historian dedup key : this connection may be a replay
-			if f.RF == nil && f.Words != nil { // byte frames use CapturedOnlyTotal, not gnssid=0
-				metrics.FramesTotal.WithLabelValues(observer, fmt.Sprint(int(f.GnssID))).Inc()
-			}
-			select {
-			case p.out <- f:
-				mu.Lock()
-				if seq > highest {
-					highest = seq
+			} else {
+				f.Seq, f.HasSeq = seq, true        // historian dedup key : this connection may be a replay
+				if f.RF == nil && f.Words != nil { // byte frames use CapturedOnlyTotal, not gnssid=0
+					metrics.FramesTotal.WithLabelValues(observer, fmt.Sprint(int(f.GnssID))).Inc()
 				}
-				mu.Unlock()
-			case <-ctx.Done(): // daemon teardown; frame is unacked, feeder replays on reconnect
-				close(quit)
-				<-ackDone
-				return
+				select {
+				case p.out <- f:
+					unforwarded = 0 // a delivered record proves a live, well-formed stream
+					mu.Lock()
+					if seq > highest {
+						highest = seq
+					}
+					mu.Unlock()
+				case <-ctx.Done(): // daemon teardown; frame is unacked, feeder replays on reconnect
+					close(quit)
+					<-ackDone
+					return
+				}
 			}
 		case wire.Ping:
 			// same rationale as the ack-writer above -- a dead write side must
@@ -553,6 +575,15 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 			}
 		default:
 			metrics.PushErrorsTotal.WithLabelValues(observer, "unexpected_frame").Inc()
+			unforwarded++
+		}
+		if unforwarded >= maxConsecutiveUnforwarded {
+			metrics.PushErrorsTotal.WithLabelValues(observer, "unforwarded_flood").Inc()
+			p.log.Warn("push feeder sent too many consecutive unusable frames; closing connection",
+				"observer", observer, "limit", maxConsecutiveUnforwarded)
+			close(quit)
+			<-ackDone
+			return
 		}
 	}
 }
