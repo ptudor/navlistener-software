@@ -242,11 +242,21 @@ func AssembleBeiDouBCNAV2(svid int, m10, m11, mClk *BeiDouBCNAV2) (eph kepler.Ep
 	clk = clock.Model{ID: gnss.BeiDou}
 	if mClk != nil && mClk.hasClk {
 		clk = mClk.clk
-		// TGD_B2ap is carried only by MT30. MT34 is a complete clock polynomial,
-		// but it has no group-delay field; callers that retain MT30's data-set
-		// property may carry it into an MT34-sourced model (ICD §7.6.2 eq. 7-4).
+		// The group-delay fields are carried only by MT30. MT34 is a complete
+		// clock polynomial, but it has no group-delay field; callers that retain
+		// MT30's data-set property may carry it into an MT34-sourced model.
+		//
+		// the tracked signal is the B2a DATA component (B-CNAV2 is
+		// itself carried on B2a-data; u-blox delivers it as sigId 8), so the
+		// correction that belongs in Model.TGD ("group delay for the tracked
+		// signal") is BDS-SIS-ICD-B2a v1.0 §7.6.2 eq. 7-5:
+		//     (Δt_SV)B2ad = Δt_SV − TGD_B2ap − ISC_B2ad
+		// i.e. TGD = TGD_B2ap + ISC_B2ad (ISC_B2ad is the B2a data-vs-pilot
+		// group-delay differential, Table 7-6). TGD_B2ap alone is eq. 7-4, the
+		// PILOT component's correction — wrong for this stream by ISC_B2ad
+		// (ns-scale, the same order as a 2.5 ns time-disco threshold).
 		if mClk.MesType == 30 {
-			clk.TGD = mClk.TGDB2ap
+			clk.TGD = mClk.TGDB2ap + mClk.ISCB2ad
 		}
 		clkOK = true
 	}

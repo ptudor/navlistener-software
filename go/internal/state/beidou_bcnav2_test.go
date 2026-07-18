@@ -204,7 +204,8 @@ func TestApplyBeiDouBCNAV2MT34CarriesMT30TGD(t *testing.T) {
 	m30 := func(iodc, sow int) []uint32 {
 		return bcnav2Frame(prn, 30, sow, func(buf []byte) {
 			setAbsBits(buf, 111, 10, uint64(iodc))
-			setAbsBits(buf, 121, 12, (1<<12)-137) // about -8 ns, 12-bit two's complement
+			setAbsBits(buf, 121, 12, (1<<12)-137) // TGD_B2ap raw −137 (×2⁻³⁴ ≈ −8 ns), two's complement
+			setAbsBits(buf, 133, 12, 59)          // ISC_B2ad raw +59 (×2⁻³⁴ ≈ +3.4 ns)
 		})
 	}
 	m34 := func(iodc, sow int) []uint32 {
@@ -221,6 +222,12 @@ func TestApplyBeiDouBCNAV2MT34CarriesMT30TGD(t *testing.T) {
 	st := s.shardFor(key).m[key]
 	if st == nil || !st.clkHasBcTGD || st.clk.TGD == 0 {
 		t.Fatalf("MT30 TGD not applied: %+v", st)
+	}
+	// the served group delay is the tracked B2a DATA component's
+	// eq. 7-5 sum TGD_B2ap + ISC_B2ad (raw −137 + 59 = −78 at 2⁻³⁴ s/LSB),
+	// not the pilot-only TGD_B2ap.
+	if want := -78.0 / (1 << 30) / 16; st.clk.TGD != want {
+		t.Fatalf("MT30 clock TGD = %g, want TGD_B2ap+ISC_B2ad = %g", st.clk.TGD, want)
 	}
 	wantTGD := st.clk.TGD
 

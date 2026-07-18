@@ -194,8 +194,9 @@ type svState struct {
 	// BeiDou D1 subframe assembly buffers.
 	bd1, bd2, bd3 *frame.BeiDouSubframe
 	// BeiDou B2a B-CNAV2 message assembly buffers. bcClk is the last clock-bearing
-	// MT30/34; bc30 is retained separately because only MT30 carries TGD_B2ap.
-	bc10, bc11, bc30, bcClk *frame.BeiDouBCNAV2
+	// MT30/34; the MT30-only group-delay pair rides st.bcTGD/haveBcTGD,
+	// so no separate MT30 buffer is kept (regression fix removed the write-only bc30).
+	bc10, bc11, bcClk *frame.BeiDouBCNAV2
 	// Measured-iono tracks per ingest source (dual-frequency observables).
 	ionoBySource map[string]*ionoTrack
 	// GLONASS string assembly buffers + Cartesian ephemeris (RK4, not kepler).
@@ -272,9 +273,11 @@ type svState struct {
 	// gate below — the two message families change independently.
 	bcIODC    int
 	haveBcIOD bool
-	// TGD_B2ap is a quasi-static data-set property sourced only from MT30. Track
-	// its provenance separately so MT34 clocks never turn an unknown TGD into a
-	// decoded zero or create a false time discontinuity.
+	// bcTGD is the tracked B2a data component's group delay TGD_B2ap + ISC_B2ad
+	// (regression fix, BDS-SIS-ICD-B2a v1.0 §7.6.2 eq. 7-5), a quasi-static data-set
+	// property sourced only from MT30. Track its provenance separately so MT34
+	// clocks never turn an unknown TGD into a decoded zero or create a false
+	// time discontinuity.
 	bcTGD                  float64
 	haveBcTGD, clkHasBcTGD bool
 	health                 int
@@ -1097,8 +1100,13 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		// below stays (now a no-op).
 		st.health, st.haveHealth = m.HS, true
 	case 30:
-		st.bc30, st.bcClk = m, m
-		st.bcTGD, st.haveBcTGD = m.TGDB2ap, true
+		st.bcClk = m
+		// the carried data-set property is the TRACKED signal's (B2a
+		// data component, sigId 8) full group delay, eq. 7-5's TGD_B2ap +
+		// ISC_B2ad (BDS-SIS-ICD-B2a v1.0 §7.6.2, Table 7-6) — TGD_B2ap alone is
+		// the pilot component's eq. 7-4 correction. Both addends are IODC-scoped
+		// MT30 fields, so an ISC-only revision is a legitimate tgdRefresh below.
+		st.bcTGD, st.haveBcTGD = m.TGDB2ap+m.ISCB2ad, true
 	case 34:
 		st.bcClk = m
 	default:

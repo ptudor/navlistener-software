@@ -76,6 +76,36 @@ func TestAssembleBeiDouBCNAV2RejectsWrongSlots(t *testing.T) {
 	}
 }
 
+// TestAssembleBCNAV2ClockCarriesDataComponentTGD guards the tracked
+// signal is the B2a DATA component (B-CNAV2 rides on B2a-data, u-blox sigId 8),
+// so the assembled Model.TGD must be eq. 7-5's TGD_B2ap + ISC_B2ad
+// (BDS-SIS-ICD-B2a v1.0 §7.6.2, Table 7-6) — not the pilot-only eq. 7-4 value.
+func TestAssembleBCNAV2ClockCarriesDataComponentTGD(t *testing.T) {
+	const tgdB2ap, iscB2ad = -137.0 / (1 << 30) / 16, 59.0 / (1 << 30) / 16 // −137·2⁻³⁴, +59·2⁻³⁴ s
+	m10 := &BeiDouBCNAV2{MesType: 10, SOW: 100}
+	m11 := &BeiDouBCNAV2{MesType: 11, SOW: 103, hasEph2: true}
+	m30 := &BeiDouBCNAV2{MesType: 30, SOW: 103, hasClk: true,
+		TGDB2ap: tgdB2ap, ISCB2ad: iscB2ad, clk: clock.Model{Af0: 1.5}}
+	_, clk, clkOK, err := AssembleBeiDouBCNAV2(28, m10, m11, m30)
+	if err != nil || !clkOK {
+		t.Fatalf("assembly failed: err=%v clkOK=%v", err, clkOK)
+	}
+	if want := tgdB2ap + iscB2ad; clk.TGD != want {
+		t.Errorf("MT30 clock TGD = %g, want TGD_B2ap+ISC_B2ad = %g (eq. 7-5, data component)", clk.TGD, want)
+	}
+	// An MT34-sourced clock has no group-delay field at all: TGD must stay the
+	// zero value for the caller's provenance machinery to override, never a
+	// partial or fabricated correction.
+	m34 := &BeiDouBCNAV2{MesType: 34, SOW: 103, hasClk: true, clk: clock.Model{Af0: 1.5}}
+	_, clk34, _, err := AssembleBeiDouBCNAV2(28, m10, m11, m34)
+	if err != nil {
+		t.Fatalf("MT34 assembly failed: %v", err)
+	}
+	if clk34.TGD != 0 {
+		t.Errorf("MT34 clock TGD = %g, want 0 (no group-delay field in MT34)", clk34.TGD)
+	}
+}
+
 // TestBCNAV2PairAdjacency confirms the type-10/11 assembler rejects a stale pair:
 // type 11 carries no IODE, so broadcast adjacency (±3 s) is the only guard against
 // stitching elements across an ephemeris changeover.
