@@ -359,12 +359,17 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 		// Leap-arm choice (§7.12.2 cases 1/3, mirroring B1I §5.2.4.18 and
 		// IS-GPS-200 §20.3.3.5.2.4): ΔtLS before the WNLSF/DN event, ΔtLSF
 		// after. The event instant is the END of day DN of week WNLSF — DN is
-		// 0–6 (Table 7-20), so day DN spans [DN·86400, (DN+1)·86400) of the
-		// week and the case-2 accommodation window "DN+3/4 to DN+5/4" (days)
-		// straddles (DN+1)·86400 by ±6 h, fixing the boundary. Within ±6 h of
-		// a real leap the served value follows this instant rather than the
-		// case-2 day-wrap presentation, which affects tUTC's modulo form, not
-		// the offset magnitude served here.
+		// 0–6 (Table 7-20, ruling out GPS's 1-based 1–7 reading), so day DN
+		// spans [DN·86400, (DN+1)·86400) of the week; B2a §7.12.2 defines the
+		// case-2 accommodation span as "six hours prior to the leap second
+		// time ... six hours after", whose upper edge B1I prints as "DN+5/4"
+		// (days) — together fixing the event at (DN+1)·86400. (B1I's printed
+		// LOWER edge is the asymmetric "DN+2/3", where IS-GPS-200 has DN+3/4;
+		// an apparent ICD typo, and either way it does not move the event
+		// instant this boundary hangs on.) Within ±6 h of a real leap the
+		// served value follows this instant rather than the case-2 day-wrap
+		// presentation, which affects tUTC's modulo form, not the offset
+		// magnitude served here.
 		leap := u.DtLS
 		if bdt >= float64(u.WNLSF)*weekSeconds+float64(u.DN+1)*86400 {
 			leap = u.DtLSF
