@@ -183,6 +183,33 @@ func TestQZSSHealthWord(t *testing.T) {
 	}
 }
 
+// TestGalileoSHSMapping guards the SHS enum per GAL-OS-SIS-ICD-2.2
+// Table 84 — 0 Signal OK, 1 Signal out of service, 2 Signal in Extended
+// Operations Mode (EOM, REDEFINED in Issue 2.2 from the old "will be out of
+// service"), 3 Signal Component currently in Test. EOM is a usable published
+// operational mode: it must map to not-ok/warning like in-test, never to
+// do-not-use — the regression this test pins is someone "fixing" SHS=2 to
+// (3,2) from the superseded pre-2.2 semantics.
+func TestGalileoSHSMapping(t *testing.T) {
+	cases := []struct {
+		raw                 int
+		wantCode, wantLevel int
+		why                 string
+	}{
+		{0, 1, 0, "Signal OK"},
+		{1, 3, 2, "Signal out of service: do-not-use"},
+		{2, 2, 1, "EOM (Issue 2.2 redefinition): usable mode — warning, NOT do-not-use"},
+		{3, 2, 1, "Signal Component currently in Test: warning"},
+	}
+	for _, c := range cases {
+		code, level := healthFor(gnss.Galileo, 0, c.raw)
+		if code != c.wantCode || level != c.wantLevel {
+			t.Errorf("healthFor(Galileo, 0, %d) = (%d,%d), want (%d,%d): %s",
+				c.raw, code, level, c.wantCode, c.wantLevel, c.why)
+		}
+	}
+}
+
 // TestCNAVCarrierHealthMapping guards the per-signal arm: a GPS/QZSS CNAV entry
 // (sig != 0) stores the tracked carrier's own 1-bit health (IS-GPS-200N
 // §30.3.3.1.1.2), where 1 = "all codes and data on this carrier are bad or

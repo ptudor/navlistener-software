@@ -33,6 +33,20 @@ func countDecodeFailure(f *ingest.RawFrame, kind string, err error) {
 		metrics.NavCRCFailTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), fmt.Sprint(f.SigID), f.Source).Inc()
 		return
 	}
+	// a Galileo I/NAV alert page (Page Type 1) is a deliberate, CRC'd
+	// transmission mode whose content the ICD reserves (GAL-OS-SIS-ICD-2.2
+	// §4.3.2 Table 39) — regression fix rightly refuses to decode it as a nav word, but
+	// lumping it into the generic decode-error bucket collapsed "the
+	// constellation is transmitting its attention-worthy page type" into "my
+	// input is garbage". Its own label makes an alert-mode SV visible as a
+	// metric signature (an inav_alert uptick with a QUIET inav/CRC counter)
+	// instead of anonymous bit-rot. Whether an alert-page streak should also
+	// raise a per-SV event is a P6/INTEGRITY.md decision — the ICD reserves the
+	// page's semantics, so no health may be invented from one here.
+	if errors.Is(err, frame.ErrGalileoAlertPage) {
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), kind+"_alert").Inc()
+		return
+	}
 	metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), kind).Inc()
 }
 

@@ -187,8 +187,8 @@ func TestDecodeGalileoINAVRejectsAlertPage(t *testing.T) {
 			p := make([]byte, 32)
 			copy(p, page)
 			p[tt.bit>>3] |= 1 << uint(7-(tt.bit&7))
-			if _, err := DecodeGalileoINAV(toWords(p)); err != errGalileoAlertPage {
-				t.Errorf("DecodeGalileoINAV with bit %d set = %v, want errGalileoAlertPage", tt.bit, err)
+			if _, err := DecodeGalileoINAV(toWords(p)); err != ErrGalileoAlertPage {
+				t.Errorf("DecodeGalileoINAV with bit %d set = %v, want ErrGalileoAlertPage", tt.bit, err)
 			}
 		})
 	}
@@ -198,8 +198,8 @@ func TestDecodeGalileoINAVRejectsAlertPage(t *testing.T) {
 	p := make([]byte, 32)
 	copy(p, page)
 	p[16] = 0 // clear bit 128
-	if _, err := DecodeGalileoINAV(toWords(p)); err != errGalileoAlertPage {
-		t.Errorf("DecodeGalileoINAV with bit 128 cleared = %v, want errGalileoAlertPage", err)
+	if _, err := DecodeGalileoINAV(toWords(p)); err != ErrGalileoAlertPage {
+		t.Errorf("DecodeGalileoINAV with bit 128 cleared = %v, want ErrGalileoAlertPage", err)
 	}
 
 	// The unmodified page (nominal, bit 128 set, all others 0) must still decode.

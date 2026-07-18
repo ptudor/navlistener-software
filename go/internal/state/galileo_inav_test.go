@@ -4,10 +4,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/gnss/frame"
 	"github.com/ptudor/gnss/gnsstime"
 	"github.com/ptudor/navlistener/internal/ingest"
+	"github.com/ptudor/navlistener/internal/metrics"
 )
 
 // inavContentWords packs a 128-bit I/NAV nav-word content blob into the raw
@@ -142,6 +144,39 @@ func TestFeedGalileoGSTWnMismatch(t *testing.T) {
 	s2.Apply(&ingest.RawFrame{GnssID: gnss.Galileo, SvID: svid, SigID: 3, Source: "obs-fnav", Recv: now, Words: fnavP1((gstWeek + 7) & 0xFFF)})
 	if st = s2.shardFor(key).m[key]; !st.wnMismatch {
 		t.Fatal("F/NAV wrong GST week (+7) not flagged")
+	}
+}
+
+// TestApplyGalileoINAVAlertPageMetric guards an I/NAV alert page (a
+// deliberate, reserved-content transmission mode, GAL-OS-SIS-ICD-2.2 §4.3.2
+// Table 39) must count under its own inav_alert metric label — NOT the generic
+// inav decode-error bucket, where "the constellation is transmitting its
+// attention-worthy page type" is indistinguishable from corrupted input — and
+// must not build SV state.
+func TestApplyGalileoINAVAlertPageMetric(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	const svid = 27
+
+	words := inavWordN(1, 3, nil)
+	words[0] |= 1 << 30 // page bit 1: even-part Page Type = 1 (alert)
+
+	alertCounter := metrics.DecodeErrorsTotal.WithLabelValues("2", "inav_alert")
+	genericCounter := metrics.DecodeErrorsTotal.WithLabelValues("2", "inav")
+	alertBefore := testutil.ToFloat64(alertCounter)
+	genericBefore := testutil.ToFloat64(genericCounter)
+
+	s.Apply(galileoFrame(svid, words, now))
+
+	if got := testutil.ToFloat64(alertCounter) - alertBefore; got != 1 {
+		t.Errorf("inav_alert delta = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(genericCounter) - genericBefore; got != 0 {
+		t.Errorf("generic inav decode-error delta = %v, want 0 (alert is not corruption)", got)
+	}
+	key := Key{G: gnss.Galileo, Sv: svid, Sig: 0}
+	if st := s.shardFor(key).m[key]; st != nil {
+		t.Errorf("alert page created SV state: %+v", st)
 	}
 }
 

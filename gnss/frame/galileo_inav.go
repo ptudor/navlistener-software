@@ -10,10 +10,15 @@ import (
 	"github.com/ptudor/gnss/physconst"
 )
 
-// errGalileoAlertPage is returned when a page's Even/Odd or Page Type flag bits
+// ErrGalileoAlertPage is returned when a page's Even/Odd or Page Type flag bits
 // (OS-SIS-ICD §4.3.1) don't match a nominal even+odd pair -- an alert page or a
-// misaligned pair, whose data fields are not a nav word.
-var errGalileoAlertPage = errors.New("frame: Galileo I/NAV alert page or misaligned pair")
+// misaligned pair, whose data fields are not a nav word. Exported
+//  so the daemon can count it under its own metric label: an alert
+// page (Page Type 1) is a deliberate, CRC'd transmission mode whose content
+// the ICD reserves (GAL-OS-SIS-ICD-2.2 §4.3.2 Table 39), not input corruption
+// — "the constellation is transmitting its attention-worthy page type" must
+// be distinguishable from bit-rot.
+var ErrGalileoAlertPage = errors.New("frame: Galileo I/NAV alert page or misaligned pair")
 
 // copyGalileoBits copies an MSB-first bit range between byte slices. I/NAV's
 // CRC-protected message is split across the even and odd 128-bit page parts,
@@ -182,7 +187,7 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 	oddFlag, _ := pr.Bits(128, 1)
 	oddPageType, _ := pr.Bits(129, 1)
 	if evenFlag != 0 || oddFlag != 1 || evenPageType != 0 || oddPageType != 0 {
-		return nil, errGalileoAlertPage
+		return nil, ErrGalileoAlertPage
 	}
 	// the nominal-page CRC message is non-contiguous in the delivered
 	// even+odd page, so reconstruct its 220 protected bits (including CRC) before

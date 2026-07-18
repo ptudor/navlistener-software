@@ -714,8 +714,18 @@ const (
 func healthFor(g gnss.GNSSID, sig, raw int) (code, level int) {
 	switch g {
 	case gnss.Galileo:
-		// SHS (signal health status), 2 bits: 0 OK, 1 out-of-service (do-not-use),
-		// 2 will-be-in-test, 3 in-test.
+		// SHS (Signal Health Status), 2 bits — GAL-OS-SIS-ICD-2.2 Table 84:
+		// 0 = Signal OK, 1 = Signal out of service, 2 = Signal in Extended
+		// Operations Mode (EOM), 3 = Signal Component currently in Test.
+		// Issue 2.2 REDEFINED SHS=2 — the pre-2.2 gloss was "will be
+		// out of service", and mapping from that memory would mark every EOM
+		// satellite (a usable, published operational mode) dead on the map. Do
+		// NOT promote SHS=2 to do-not-use. The 2/3 → not-ok(2)/warning(1)
+		// mapping below is a deliberate conservative choice for both EOM and
+		// in-test; a distinct EOM label is a candidate for the next OUTPUT.md
+		// §2.2 enum rev, not a unilateral change here. Whether SHS=3 should
+		// instead be do-not-use is an open product-enum call (the ICD does not
+		// dictate it) — recorded in REVIEW-FABLE5_GALILEO §Could-not-verify.
 		switch raw {
 		case 0:
 			return 1, 0
