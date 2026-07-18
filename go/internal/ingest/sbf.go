@@ -14,13 +14,23 @@ import (
 // bits, so the collector emits the raw block body tagged with its block number for
 // the (block-specific) decoders to consume.
 const (
-	sbfSync1     = '$'
-	sbfSync2     = '@'
-	sbfMaxLength = 1 << 16
+	sbfSync1 = '$'
+	sbfSync2 = '@'
+	// sbfScanBuf is the bufio buffer scanSBF peeks whole blocks out of. The real
+	// overrun invariant  is: the largest Peek extent is the largest
+	// multiple-of-4 uint16 Length (65532) minus the 2 already-consumed sync bytes
+	// = 65530 <= sbfScanBuf, so Peek(total) always fits. The guard in scanSBF is
+	// therefore unreachable while Length is a uint16 — it exists to pin the
+	// invariant against a future edit (shrinking this buffer, widening the length
+	// field): a Peek past the buffer returns bufio.ErrBufferFull, which the
+	// connector treats as a stream error — a permanent reconnect loop replaying
+	// the same block. (The previous guard compared the uint16 length against
+	// 1<<16, which was always false and enforced nothing.)
+	sbfScanBuf = 1 << 16
 )
 
 func scanSBF(r io.Reader, source string, now func() time.Time, emit func(*RawFrame), onErr func(kind string)) error {
-	br := bufio.NewReaderSize(r, 1<<16)
+	br := bufio.NewReaderSize(r, sbfScanBuf)
 	for {
 		if err := syncTo(br, sbfSync1, sbfSync2); err != nil {
 			return err
@@ -28,8 +38,8 @@ func scanSBF(r io.Reader, source string, now func() time.Time, emit func(*RawFra
 		// peek the header+body without consuming it. On a length or CRC
 		// failure, nothing here is Discarded, so the next syncTo call resumes
 		// scanning byte-by-byte from right after the sync pattern instead of
-		// skipping the whole claimed (possibly bogus) extent (up to sbfMaxLength =
-		// 64 KiB), which may contain a real, complete block.
+		// skipping the whole claimed (possibly bogus) extent (up to ~64 KiB),
+		// which may contain a real, complete block.
 		hdr, err := br.Peek(6) // CRC(2), ID(2), Length(2), all LE
 		if err != nil {
 			return err
@@ -38,12 +48,13 @@ func scanSBF(r io.Reader, source string, now func() time.Time, emit func(*RawFra
 		id := binary.LittleEndian.Uint16(hdr[2:])
 		length := int(binary.LittleEndian.Uint16(hdr[4:]))
 		// Length counts the whole block (2 sync + 6 header + body) and is a
-		// multiple of 4. Body length is length − 8.
-		if length < 8 || length > sbfMaxLength || length%4 != 0 {
+		// multiple of 4. Body length is length − 8. total is the Peek extent:
+		// header(6) + body(length-8); the 2 sync bytes are already consumed.
+		total := length - 2
+		if length < 8 || length%4 != 0 || total > sbfScanBuf {
 			onErr("sbf_length")
 			continue
 		}
-		total := length - 2 // header(6) + body(length-8); the 2 sync bytes are already consumed
 		peeked, err := br.Peek(total)
 		if err != nil {
 			return err
@@ -68,8 +79,14 @@ func scanSBF(r io.Reader, source string, now func() time.Time, emit func(*RawFra
 	}
 }
 
-// crc16ccitt is the CRC-16-CCITT (poly 0x1021, init 0) Septentrio uses, computed
-// over the given byte groups in order.
+// crc16ccitt is the CRC-16-CCITT (poly 0x1021, init 0, unreflected) Septentrio
+// uses (SBF-REF, cite-only per reference/REFERENCES.md §3c), computed over the
+// given byte groups in order. validated against an independently-authored
+// implementation of the same named algorithm (CPython's binascii.crc_hqx — see
+// TestCRC16CCITTGoldenVectors), so a wrong polynomial/init/shift here cannot pass
+// the suite. A vector from a REAL captured SBF block is still wanted to confirm
+// Septentrio's on-wire CRC is this exact algorithm end-to-end; no Septentrio
+// hardware exists in the fleet yet, and inventing one is prohibited.
 func crc16ccitt(groups ...[]byte) uint16 {
 	var crc uint16
 	for _, g := range groups {

@@ -247,6 +247,44 @@ func TestScanRTCMResyncWithinFalseSyncExtent(t *testing.T) {
 	}
 }
 
+// TestCRC16CCITTGoldenVectors guards the SBF framing tests build their
+// expected CRCs by calling crc16ccitt itself, so alone they verify resync but
+// could never catch a wrong polynomial, init value, or shift direction — every
+// real SBF block would then be silently dropped as sbf_crc with SourceUp=1. These
+// vectors come from an INDEPENDENTLY-AUTHORED implementation of the same named
+// algorithm (CRC-16-CCITT, poly 0x1021, init 0, unreflected): CPython's
+// binascii.crc_hqx. Reproduce with:
+//
+//	python3 -c "import binascii; print(hex(binascii.crc_hqx(b'123456789', 0)))"
+//	  -> 0x31c3  (the standard CRC-catalog check string)
+//	python3 -c "import binascii; print(hex(binascii.crc_hqx(
+//	    (4017).to_bytes(2,'little') + (24).to_bytes(2,'little') + bytes(range(16)), 0)))"
+//	  -> 0x1a31  (the exact ID+Length+body sequence TestScanSBF frames)
+//
+// Not invented from memory: both values were machine-computed from binascii at
+// fix time (regression fix fix log). Remaining gap, deliberately left open: a vector
+// from a REAL captured SBF block (needs Septentrio hardware or an SBF-REF
+// worked example — the guide is cite-only, reference/REFERENCES.md §3c) would
+// additionally pin that Septentrio's on-wire CRC is this exact algorithm.
+func TestCRC16CCITTGoldenVectors(t *testing.T) {
+	if got := crc16ccitt([]byte("123456789")); got != 0x31C3 {
+		t.Errorf("crc16ccitt(123456789) = %#04x, want 0x31c3 (CRC-16/XMODEM catalog check via binascii.crc_hqx)", got)
+	}
+	hdr := []byte{0xB1, 0x0F, 0x18, 0x00} // ID=4017 LE, Length=24 LE
+	body := make([]byte, 16)
+	for i := range body {
+		body[i] = byte(i)
+	}
+	if got := crc16ccitt(hdr, body); got != 0x1A31 {
+		t.Errorf("crc16ccitt(sbf hdr+body) = %#04x, want 0x1a31 (binascii.crc_hqx)", got)
+	}
+	// Group splitting must not change the digest (the scanner passes ID+Length and
+	// body as separate groups).
+	if crc16ccitt(hdr, body) != crc16ccitt(append(append([]byte(nil), hdr...), body...)) {
+		t.Error("crc16ccitt digest differs across group boundaries")
+	}
+}
+
 func TestScanSBF(t *testing.T) {
 	blockNum := uint16(4017) // GPSRawCA
 	body := make([]byte, 16)
@@ -366,6 +404,59 @@ func TestScanUBXRAWX(t *testing.T) {
 	}
 }
 
+// TestScanUBXRAWXColdStartNotAParseError guards a checksum-valid RAWX
+// that is structurally fine but carries nothing usable — cold-start week==0, or
+// every measurement's PR-valid bit clear — must NOT count as a ubx_rawx ingest
+// error (it previously did, inflating the error metric through every receiver
+// cold/warm start and double-counting the week==0 case, which RawObsInvalidTotal
+// already accounts). A truncated body (numMeas overrunning the payload) must
+// still count: the checksum passed, so the corruption is real.
+func TestScanUBXRAWXColdStartNotAParseError(t *testing.T) {
+	measurement := func(body []byte, i int, trkStat byte) {
+		m := body[16+i*32:]
+		binary.LittleEndian.PutUint64(m, math.Float64bits(2.2e7))
+		binary.LittleEndian.PutUint32(m[16:], math.Float32bits(-100))
+		m[20], m[21], m[22], m[30] = 0, 7, 0, trkStat
+	}
+	t.Run("cold start week zero", func(t *testing.T) {
+		body := make([]byte, 16+1*32)
+		binary.LittleEndian.PutUint64(body, math.Float64bits(100000)) // valid rcvTow
+		// week stays 0: the receiver has no time solution yet
+		body[11] = 1
+		measurement(body, 0, 0x03)
+		frames, errs := collect(t, scanUBX, buildUBX(ubxClassRXM, ubxIDRAWX, body))
+		if len(frames) != 0 || len(errs) != 0 {
+			t.Fatalf("cold-start RAWX: frames=%d errs=%v, want 0 frames and NO ubx_rawx error", len(frames), errs)
+		}
+	})
+	t.Run("all pseudoranges invalid", func(t *testing.T) {
+		body := make([]byte, 16+2*32)
+		binary.LittleEndian.PutUint64(body, math.Float64bits(100000))
+		binary.LittleEndian.PutUint16(body[8:], 2372)
+		body[11] = 2
+		measurement(body, 0, 0x00) // PR-valid bit clear
+		measurement(body, 1, 0x00)
+		frames, errs := collect(t, scanUBX, buildUBX(ubxClassRXM, ubxIDRAWX, body))
+		if len(frames) != 0 || len(errs) != 0 {
+			t.Fatalf("no-PR-valid RAWX: frames=%d errs=%v, want 0 frames and NO ubx_rawx error", len(frames), errs)
+		}
+	})
+	t.Run("truncated body still errors", func(t *testing.T) {
+		body := make([]byte, 16+1*32)
+		binary.LittleEndian.PutUint64(body, math.Float64bits(100000))
+		binary.LittleEndian.PutUint16(body[8:], 2372)
+		body[11] = 3 // claims 3 measurements; payload carries 1
+		measurement(body, 0, 0x03)
+		frames, errs := collect(t, scanUBX, buildUBX(ubxClassRXM, ubxIDRAWX, body))
+		if len(frames) != 0 {
+			t.Fatalf("truncated RAWX emitted %d frames, want 0", len(frames))
+		}
+		if len(errs) != 1 || errs[0] != "ubx_rawx" {
+			t.Fatalf("truncated RAWX errs=%v, want exactly [ubx_rawx]", errs)
+		}
+	})
+}
+
 func TestParseRAWXRejectsNonFiniteFieldsIndependently(t *testing.T) {
 	base := func() []byte {
 		body := make([]byte, 16+2*32)
@@ -396,7 +487,10 @@ func TestParseRAWXRejectsNonFiniteFieldsIndependently(t *testing.T) {
 			body := base()
 			tc.mutate(body)
 			var got []*RawFrame
-			n := parseRAWX(body, "test", fixedTime(), func(f *RawFrame) { got = append(got, f) })
+			n, ok := parseRAWX(body, "test", fixedTime(), func(f *RawFrame) { got = append(got, f) })
+			if !ok {
+				t.Fatal("structurally-valid payload reported malformed")
+			}
 			if n != tc.want || len(got) != tc.want {
 				t.Fatalf("emitted %d/%d, want %d", n, len(got), tc.want)
 			}

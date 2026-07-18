@@ -79,7 +79,13 @@ func scanUBX(r io.Reader, source string, now func() time.Time, emit func(*RawFra
 				onErr("ubx_sfrbx")
 			}
 		case cls == ubxClassRXM && id == ubxIDRAWX:
-			if n := parseRAWX(body, source, now(), emit); n == 0 && len(body) > 16 {
+			// only STRUCTURAL malformation is a parse error. A well-formed
+			// RAWX with nothing usable — cold-start week==0/invalid rcvTow, or every
+			// measurement's PR-valid bit clear — is a normal receiver start-up state,
+			// already accounted per-field by RawObsInvalidTotal; counting it here too
+			// inflated IngestErrorsTotal{ubx_rawx} through every cold/warm start (and
+			// double-counted the week==0 case).
+			if _, ok := parseRAWX(body, source, now(), emit); !ok {
 				onErr("ubx_rawx")
 			}
 		case cls == ubxClassMON && id == ubxIDMONRF:
@@ -109,20 +115,25 @@ func scanUBX(r io.Reader, source string, now func() time.Time, emit func(*RawFra
 // seconds of week, week U2, leapS I1, numMeas U1, recStat X1 — then 32 bytes per
 // measurement). These are the dual-frequency observables feeding the measured
 // ionosphere (docs/MATH.md §7.4); they are telemetry, not nav frames, so they
-// carry Obs instead of Words. Returns the number of measurements emitted.
-func parseRAWX(p []byte, source string, recv time.Time, emit func(*RawFrame)) int {
+// carry Obs instead of Words. Returns the number of measurements emitted and
+// whether the payload was structurally well-formed : ok=false only for
+// bytes that cannot carry a valid RAWX (short header, numMeas overrunning the
+// payload) — a checksum-valid message shaped like that means the receiver/link
+// really did corrupt something. A structurally-valid payload with no usable
+// measurements returns (0, true).
+func parseRAWX(p []byte, source string, recv time.Time, emit func(*RawFrame)) (int, bool) {
 	if len(p) < 16 {
-		return 0
+		return 0, false
 	}
 	rcvTow := math.Float64frombits(binary.LittleEndian.Uint64(p[0:]))
 	week := int(binary.LittleEndian.Uint16(p[8:]))
 	numMeas := int(p[11])
 	if 16+numMeas*32 > len(p) {
-		return 0
+		return 0, false
 	}
 	if !finiteFloat(rcvTow) || rcvTow < 0 || rcvTow >= 604800 || week == 0 {
 		metrics.RawObsInvalidTotal.WithLabelValues(source, "time").Inc()
-		return 0
+		return 0, true
 	}
 	emitted := 0
 	for i := 0; i < numMeas; i++ {
@@ -172,7 +183,7 @@ func parseRAWX(p []byte, source string, recv time.Time, emit func(*RawFrame)) in
 		})
 		emitted++
 	}
-	return emitted
+	return emitted, true
 }
 
 func finiteFloat(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
