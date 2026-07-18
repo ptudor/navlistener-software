@@ -40,6 +40,17 @@ var IntervalRe = regexp.MustCompile(`^[1-9][0-9]* (minute|hour|day|week)s?$`)
 // headers toward the caster.
 var ntripMountpointRe = regexp.MustCompile(`^[!-~]+$`)
 
+// Sizing ceilings : loud range errors instead of a boot-time surprise
+// — state.New eagerly allocates a map+mutex per shard, so a fat-fingered
+// `shards = 1000000` allocated a million maps with no -check-config diagnostic;
+// batch_size/max_conns were similarly unbounded upward. Values sit far above
+// any sane deployment while still catching a pasted extra digit.
+const (
+	maxShards    = 4096
+	maxBatchSize = 1_000_000
+	maxPushConns = 65535
+)
+
 // DefaultPaths are searched in order when -config is not given.
 var DefaultPaths = []string{
 	"/usr/local/etc/navlistener/navlistener.toml",
@@ -79,6 +90,14 @@ type Config struct {
 
 	// ShutdownTimeout bounds graceful shutdown; kept out of the wire format.
 	ShutdownTimeout time.Duration `toml:"-"`
+
+	// Warnings are non-fatal config findings surfaced at startup and by
+	// -check-config : a group/world-readable config holding
+	// credentials, a non-loopback bind of an unauthenticated surface. Warnings,
+	// not errors, because each has a legitimate deliberate mode (a secret-less
+	// dev config; remote Prometheus scraping behind a firewall) — but never a
+	// silent one. Populated by Load/finalize.
+	Warnings []string `toml:"-"`
 }
 
 // Serve is the native v2 read API listener (docs/OUTPUT.md). It binds loopback and
@@ -263,7 +282,44 @@ func Load(path string) (*Config, error) {
 	if err := cfg.finalize(); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
+	cfg.addPermissionWarnings(path)
 	return cfg, nil
+}
+
+// addPermissionWarnings warns when the config file itself is group/world-
+// readable while holding credentials : store.dsn embeds the DB
+// password, and an ntrip source may carry basic-auth credentials. A warning
+// rather than an error — a credential-less file may be shared harmlessly, and
+// existing deployments must not be bricked by a mode bit — but the docs' 0600
+// discipline stops being convention-only. (push.tls_key, actual private-key
+// material, IS a hard error — finalizePush.)
+func (c *Config) addPermissionWarnings(path string) {
+	if !c.holdsSecrets() {
+		return
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return // Load already read the file; a racing stat failure is not a config finding
+	}
+	if m := fi.Mode().Perm(); m&0o077 != 0 {
+		c.Warnings = append(c.Warnings, fmt.Sprintf(
+			"config %s holds credentials (store.dsn or ntrip username/password) but is group/world-readable (mode %04o) — chmod 600 it", path, m))
+	}
+}
+
+// holdsSecrets reports whether the config carries credential material in
+// cleartext. Any non-empty DSN counts (conservative: most embed a password);
+// push token hashes are SHA-256 digests, not secrets, and are excluded.
+func (c *Config) holdsSecrets() bool {
+	if c.Store.DSN != "" {
+		return true
+	}
+	for _, s := range c.Ingest {
+		if s.Username != "" || s.Password != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func defaults() *Config {
@@ -301,14 +357,29 @@ func (c *Config) finalize() error {
 			return err
 		}
 	}
+	// "binds loopback" was convention only. A public bind of these
+	// surfaces exposes unauthenticated endpoints — metrics carries /debug/state
+	// (full live state + source names) and serve carries the events query API
+	// (per-request DB work) and the SSE stream. Warn rather than fail: remote
+	// scraping through a firewall is a legitimate deliberate choice, but it must
+	// be one the operator saw. (/debug/state is additionally gated to loopback
+	// peers in main regardless of bind.)
+	if !isLoopbackHost(c.Metrics.Addr) {
+		c.Warnings = append(c.Warnings, fmt.Sprintf(
+			"metrics.addr %s binds a non-loopback interface: /metrics and /debug/state are unauthenticated — front with a proxy/firewall or bind 127.0.0.1", c.Metrics.Addr))
+	}
+	if c.Serve.Addr != "" && !isLoopbackHost(c.Serve.Addr) {
+		c.Warnings = append(c.Warnings, fmt.Sprintf(
+			"serve.addr %s binds a non-loopback interface: the v2 feeds, events query API (DB-backed), and SSE stream have no auth layer — front with the TLS proxy or bind 127.0.0.1", c.Serve.Addr))
+	}
 	if err := parseDurPositive("state.sv_ttl", c.State.SVTTLs, &c.State.SVTTL, 2*time.Hour); err != nil {
 		return err
 	}
 	if err := parseDurPositive("state.propagate_interval", c.State.PropagateEverys, &c.State.PropagateEvery, time.Second); err != nil {
 		return err
 	}
-	if c.State.Shards < 1 {
-		return fmt.Errorf("state.shards must be >= 1")
+	if c.State.Shards < 1 || c.State.Shards > maxShards {
+		return fmt.Errorf("state.shards %d: must be in 1..%d", c.State.Shards, maxShards)
 	}
 	if c.State.LeapSeconds != 0 && (c.State.LeapSeconds < 10 || c.State.LeapSeconds > 30) {
 		// Loose ICD-plausible band: ΔtLS has been 10-18s since GPS's 1980 epoch and
@@ -322,8 +393,8 @@ func (c *Config) finalize() error {
 	}
 	// defaults() pre-populates the genuine unset value before TOML decode,
 	// so a decoded zero is necessarily explicit and must not be silently defaulted.
-	if c.Store.BatchSize <= 0 {
-		return fmt.Errorf("store.batch_size %d: must be positive", c.Store.BatchSize)
+	if c.Store.BatchSize <= 0 || c.Store.BatchSize > maxBatchSize {
+		return fmt.Errorf("store.batch_size %d: must be in 1..%d", c.Store.BatchSize, maxBatchSize)
 	}
 	if c.Store.RawRetention != "" && !IntervalRe.MatchString(c.Store.RawRetention) {
 		return fmt.Errorf(`store.raw_retention %q: want a simple interval like "7 days"`, c.Store.RawRetention)
@@ -508,8 +579,8 @@ func (c *Config) finalizePush() error {
 	}
 	// defaults() pre-populates the genuine unset value before TOML decode;
 	// an explicit zero from TOML therefore remains distinguishable and invalid.
-	if p.MaxConns <= 0 {
-		return fmt.Errorf("push.max_conns %d: must be positive", p.MaxConns)
+	if p.MaxConns <= 0 || p.MaxConns > maxPushConns {
+		return fmt.Errorf("push.max_conns %d: must be in 1..%d", p.MaxConns, maxPushConns)
 	}
 	if p.Addr == "" {
 		return nil // push disabled
@@ -525,6 +596,17 @@ func (c *Config) finalizePush() error {
 	}
 	if _, err := tls.LoadX509KeyPair(p.TLSCert, p.TLSKey); err != nil {
 		return fmt.Errorf("push.tls_cert/tls_key: %w", err)
+	}
+	// refuse a group/world-readable private key — the sshd/postgres
+	// precedent. A readable push.tls_key lets any local user impersonate the
+	// collector to the whole feeder fleet, so this is a hard error (unlike the
+	// config-file warning: a key file has no credential-less mode). Stat after
+	// the successful LoadX509KeyPair above, so the file is known to exist; a
+	// racing stat failure is ignored rather than inventing a new failure mode.
+	if fi, err := os.Stat(p.TLSKey); err == nil {
+		if m := fi.Mode().Perm(); m&0o077 != 0 {
+			return fmt.Errorf("push.tls_key %q is group/world-readable (mode %04o); private keys must be 0600", p.TLSKey, m)
+		}
 	}
 	if p.ClientCA != "" {
 		if err := validatePEMFile("push.client_ca", p.ClientCA); err != nil {
@@ -592,6 +674,23 @@ func ValidObserverID(s string) bool {
 		return false
 	}
 	return true
+}
+
+// isLoopbackHost reports whether addr's host part is provably loopback
+// ("localhost", 127.0.0.0/8, ::1) — regression fix. An empty host (":9100") binds
+// every interface and a non-"localhost" hostname cannot be proven loopback
+// without resolving it, so both report false (conservative: they warn).
+// Assumes addr already passed validateAddr.
+func isLoopbackHost(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // validateAddr checks host:port syntax  so a typo'd or malformed listener addr is

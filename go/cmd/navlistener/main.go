@@ -75,6 +75,11 @@ func run() int {
 	log := setupLogger(cfg.Logging)
 	slog.SetDefault(log)
 	log.Info("starting", "version", version.Version, "build", version.BuildTime)
+	// regression fix/non-fatal config findings (world-readable secrets file,
+	// non-loopback bind of an unauthenticated surface) — loud at startup, once.
+	for _, w := range cfg.Warnings {
+		log.Warn("config warning", "warning", w)
+	}
 	metrics.Init()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -113,6 +118,14 @@ func run() int {
 	// Bind every configured listener before starting the historian or any producer.
 	// A startup address conflict therefore accepts zero frames and needs no drain.
 	debugState := func(w http.ResponseWriter, r *http.Request) {
+		// /debug/state dumps full live state + source names. Even when
+		// [metrics].addr is deliberately bound non-loopback (remote Prometheus),
+		// this endpoint stays loopback-only — a reverse proxy on this host still
+		// reaches it (its upstream connection originates from loopback).
+		if !isLoopbackPeer(r.RemoteAddr) {
+			http.Error(w, "forbidden: /debug/state is loopback-only", http.StatusForbidden)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(live.Snapshot(time.Now()))
 	}
@@ -963,6 +976,18 @@ func stateLoop(ctx context.Context, cfg config.State, store *state.Store) {
 	}
 }
 
+// isLoopbackPeer reports whether an http.Request.RemoteAddr is a loopback
+// address. RemoteAddr is always host:port from net/http; anything
+// unparsable is treated as non-loopback (deny).
+func isLoopbackPeer(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func printConfigSummary(cfg *config.Config) {
 	fmt.Println("Configuration valid.")
 	fmt.Printf("  metrics addr:   %s\n", cfg.Metrics.Addr)
@@ -986,6 +1011,11 @@ func printConfigSummary(cfg *config.Config) {
 			status = "disabled"
 		}
 		fmt.Printf("    - %-16s %-4s %-22s %s\n", s.Name, s.Type, s.Addr, status)
+	}
+	// regression fix/-check-config surfaces the same non-fatal findings the
+	// daemon logs at startup, so the rc.d preflight  shows them too.
+	for _, w := range cfg.Warnings {
+		fmt.Printf("  WARNING: %s\n", w)
 	}
 }
 
