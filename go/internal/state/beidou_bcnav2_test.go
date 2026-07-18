@@ -1,12 +1,15 @@
 package state
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/gnss/frame"
 	"github.com/ptudor/navlistener/internal/ingest"
+	"github.com/ptudor/navlistener/internal/metrics"
 )
 
 // bcnav2Frame builds a synthetic, CRC-valid 288-bit B-CNAV2 message (9-word
@@ -183,6 +186,61 @@ func TestApplyBeiDouBCNAV2StaleClockIODCNotLatched(t *testing.T) {
 
 	if st.clk.Af0 == 0 {
 		t.Errorf("fresh type-30 with the stale message's IODC was never applied: served clock still zero")
+	}
+}
+
+// TestApplyBeiDouBCNAV2PRNMismatchDropped guards a CRC-valid B-CNAV2
+// message whose in-payload PRN (Table 7-2, inside the CRC boundary) disagrees
+// with the transport SFRBX svId is mis-attributed and must be dropped under its
+// own metric label — never folded into the (wrong) SV's state.
+func TestApplyBeiDouBCNAV2PRNMismatchDropped(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	counter := metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(gnss.BeiDou)), "prn_mismatch")
+	before := testutil.ToFloat64(counter)
+
+	// The payload says PRN 30; the transport header says svId 31.
+	m34 := bcnav2Frame(30, 34, 252804, func(buf []byte) {
+		setAbsBits(buf, 30, 2, 1) // HS = 1 — must NOT reach C31's state
+		setAbsBits(buf, 133, 10, 3)
+	})
+	s.Apply(&ingest.RawFrame{GnssID: gnss.BeiDou, SvID: 31, SigID: 8, Recv: now, Words: m34})
+
+	if got := testutil.ToFloat64(counter) - before; got != 1 {
+		t.Errorf("prn_mismatch delta = %v, want 1", got)
+	}
+	for _, sv := range []int{30, 31} {
+		key := Key{G: gnss.BeiDou, Sv: sv, Sig: 8}
+		if st := s.shardFor(key).m[key]; st != nil {
+			t.Errorf("mis-tagged frame built state for C%02d: %+v", sv, st)
+		}
+	}
+}
+
+// TestBeiDouDeferredSignalLabels guards the known-but-undecoded BeiDou
+// sigIds (docs/CONSTELLATIONS.md §2.1 — D2 on 1/3, B2I D1 on 2, B1C on 5/6,
+// B2a pilot on 7) must each count under a stable per-signal deferral label
+// (the NavIC idiom), leaving "unsupported" for genuinely unknown sigIds.
+func TestBeiDouDeferredSignalLabels(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	cases := []struct {
+		sig   int
+		label string
+	}{
+		{1, "bds_d2_deferred"}, {3, "bds_d2_deferred"},
+		{2, "bds_b2i_deferred"},
+		{5, "bds_b1c_deferred"}, {6, "bds_b1c_deferred"},
+		{7, "bds_b2a_pilot_deferred"},
+		{9, "unsupported"}, // an unknown sigId still lands in the generic bucket
+	}
+	for _, c := range cases {
+		counter := metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(gnss.BeiDou)), c.label)
+		before := testutil.ToFloat64(counter)
+		s.Apply(&ingest.RawFrame{GnssID: gnss.BeiDou, SvID: 1, SigID: c.sig, Recv: now, Words: make([]uint32, 10)})
+		if got := testutil.ToFloat64(counter) - before; got != 1 {
+			t.Errorf("sigId %d: %s delta = %v, want 1", c.sig, c.label, got)
+		}
 	}
 }
 

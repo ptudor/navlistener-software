@@ -521,6 +521,30 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 		s.applyBeiDouD1(f)
 	case f.GnssID == gnss.BeiDou && f.SigID == 8: // B2a data component, B-CNAV2
 		s.applyBeiDouBCNAV2(f)
+	case f.GnssID == gnss.BeiDou && (f.SigID == 1 || f.SigID == 3):
+		// B1I/B2I D2 — the GEO belt's message (no D2 decoder exists, so
+		// the BDS GEOs are entirely undecoded; the sigId keying is what
+		// guarantees a D2 frame can never be fed through the D1 field layout).
+		// counted under its own label (the NavIC-deferral idiom) so an
+		// operator can see "this station now sees N GEO D2 frames/s" — the
+		// signal that prioritizes building the D2 decoder — instead of the
+		// frames vanishing into the label-free "unsupported" bucket.
+		// docs/CONSTELLATIONS.md §2.1: u-blox (3,1)=B1I D2, (3,3)=B2I D2.
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "bds_d2_deferred").Inc()
+	case f.GnssID == gnss.BeiDou && f.SigID == 2:
+		// B2I D1 (u-blox (3,2), CONSTELLATIONS.md §2.1) — deferred like D2
+		//; the legacy BDS-2 B2I ICD is vendored (BDS-SIS-B2I-2.1) but
+		// no capture-verified ID mapping exists yet.
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "bds_b2i_deferred").Inc()
+	case f.GnssID == gnss.BeiDou && (f.SigID == 5 || f.SigID == 6):
+		// B1C pilot/data, B-CNAV1 (u-blox (3,5)/(3,6)) — planned (CONSTELLATIONS.md
+		// marks BdsCnav1 reserved), deferred with its own label.
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "bds_b1c_deferred").Inc()
+	case f.GnssID == gnss.BeiDou && f.SigID == 7:
+		// B2a pilot component (u-blox (3,7)). B-CNAV2 arrives on the data
+		// component (sigId 8, decoded above); pilot-tagged frames are counted
+		// separately so a receiver-config change is visible.
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "bds_b2a_pilot_deferred").Inc()
 	case f.GnssID == gnss.GLONASS && (f.SigID == 0 || f.SigID == 2): // L1OF/L2OF strings
 		// L2OF (6,2) carries the byte-identical 85-bit string format to L1OF and is
 		// contract-shipped (0x40 GloNav in all three frame tables). applyGLONASS keys GLONASS
@@ -1104,6 +1128,19 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 	m, err := frame.DecodeBeiDouBCNAV2(f.Words)
 	if err != nil {
 		countDecodeFailure(f, "bcnav2", err)
+		return
+	}
+	// every B-CNAV2 message carries the satellite's own PRN inside
+	// the CRC-24Q boundary (ICD Table 7-2), while the SFRBX svId is receiver
+	// metadata outside it. A disagreement means the frame is internally valid
+	// but mis-attributed (header corruption upstream of the CRC'd payload, a
+	// firmware quirk, or a hostile feeder under FEDERATION.md's trust model)
+	// — accepting it would attach SV A's ephemeris/clock/health to SV B's
+	// state, a silent wrong answer that fires false discos on the victim SV.
+	// Dropped before any capability/state effect. (GPS CNAV's PRN field
+	// deserves the same guard — cross-referenced for the next GPS pass.)
+	if m.PRN != f.SvID {
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "prn_mismatch").Inc()
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "bcnav2").Inc()
