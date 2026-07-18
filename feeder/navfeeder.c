@@ -787,24 +787,51 @@ static void emit_navsat(const unsigned char *p, unsigned len) {
 /* rdbuf is a small buffered reader over the source fd (serial or TCP). */
 struct rdbuf { int fd; size_t pos, len; int quiet; unsigned char buf[4096]; };
 
-/* RB_QUIET_MAX bounds how many consecutive source read-timeouts (5s each, regression fix) may elapse
- * before rb_getc gives up and lets the producer re-dial — ~5 min of total silence. */
+/* RB_QUIET_MAX bounds how many consecutive quiet periods (RB_POLL_TIMEOUT_S each — the
+ * poll() window below, matched by the TCP SO_RCVTIMEO) may elapse before rb_getc gives up
+ * and lets the producer re-dial — ~5 min of total silence. */
+#define RB_POLL_TIMEOUT_S 5
 #define RB_QUIET_MAX 60
 
 static int rb_getc(struct rdbuf *b) {
 	while (b->pos >= b->len) {
+		/* regression fix (the residual own comment named): gate EVERY source read behind
+		 * poll(), so silence is bounded for BOTH source types. Ttys have no SO_RCVTIMEO,
+		 * so the serial path's VMIN=1 blocking read was uncovered by the regression fix EAGAIN
+		 * watchdog: a u-blox whose GNSS engine hangs while its USB CDC-ACM interface
+		 * stays enumerated — or a wired UART that simply goes quiet — blocked the
+		 * producer thread in read() indefinitely, while the independent consumer kept
+		 * the collector connection alive with PINGs: a healthy-looking station carrying
+		 * zero frames, forever, with no log and no re-dial. N consecutive quiet poll
+		 * windows force run_ubx to return so producer_thread reopens the device.
+		 * Deliberately NOT VMIN=0/VTIME=N instead: read()==0 is EOF to this reader, so a
+		 * VTIME expiry would be indistinguishable from the device vanishing. */
+		struct pollfd pfd = { .fd = b->fd, .events = POLLIN };
+		int pr;
+		do { pr = poll(&pfd, 1, RB_POLL_TIMEOUT_S * 1000); } while (pr < 0 && errno == EINTR);
+		if (pr < 0) return -1;                       /* poll error */
+		if (pr == 0) {                               /* quiet window, no data */
+			if (++b->quiet >= RB_QUIET_MAX) {
+				log_msg("source quiet for ~%d s; reopening", RB_QUIET_MAX * RB_POLL_TIMEOUT_S);
+				return -1;
+			}
+			continue;
+		}
+		/* Readable — or POLLERR/POLLHUP, which read() resolves to 0/-1 below. */
 		ssize_t r = read(b->fd, b->buf, sizeof b->buf);
 		if (r > 0) { b->len = (size_t)r; b->pos = 0; b->quiet = 0; break; }
 		if (r == 0) return -1;                       /* EOF / device closed */
 		if (errno == EINTR) continue;
-		/* a source SO_RCVTIMEO expiry (EAGAIN/EWOULDBLOCK) is NOT EOF — a healthy TCP
-		 * receiver can legitimately go quiet for >5s (messages not yet enabled, mid-reboot,
-		 * ser2net momentarily detached). Keep waiting rather than tearing the connection into
-		 * a no-backoff reconnect churn; only give up after RB_QUIET_MAX consecutive quiet
-		 * periods so a silently-wedged source is still eventually re-dialed. The serial path
-		 * uses a blocking read (VMIN=1), so it never reaches this branch. */
+		/* an SO_RCVTIMEO expiry or a spurious poll wakeup (EAGAIN/EWOULDBLOCK)
+		 * is NOT EOF — a healthy TCP receiver can legitimately go quiet (messages not
+		 * yet enabled, mid-reboot, ser2net momentarily detached). Count it as one quiet
+		 * period rather than tearing the connection into no-backoff reconnect churn;
+		 * the SO_RCVTIMEO stays on the TCP dial as a second layer under the poll(). */
 		if (errno == EAGAIN || errno == EWOULDBLOCK) {
-			if (++b->quiet >= RB_QUIET_MAX) return -1;
+			if (++b->quiet >= RB_QUIET_MAX) {
+				log_msg("source quiet for ~%d s; reopening", RB_QUIET_MAX * RB_POLL_TIMEOUT_S);
+				return -1;
+			}
 			continue;
 		}
 		return -1;                                   /* read error */
