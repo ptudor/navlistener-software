@@ -107,6 +107,75 @@ func TestExportedGLONASSDecodersValidateInputs(t *testing.T) {
 	}
 }
 
+// TestDecodeGLONASSStringLn guards the GLONASS-M ℓn fast malfunction
+// flag (0 healthy, 1 malfunction; GLO-ICD-5.1 §4.4) must decode from string 3
+// at ICD bit 65 (block offset 20) and from the odd strings 5,7,9,11,13,15 at
+// ICD bit 9 (block offset 76) — Table 4.6 — and LnKnown must be false for every
+// string that does not carry ℓn, so callers never read a fabricated flag.
+func TestDecodeGLONASSStringLn(t *testing.T) {
+	setLn := func(number int) func([]byte) {
+		off := 20
+		if number != 3 {
+			off = 76
+		}
+		return func(buf []byte) {
+			setBits(buf, off, 1, 1)
+			if number == 2 {
+				setBits(buf, 9, 7, 40) // string 2 needs a valid tb 
+			}
+		}
+	}
+	for _, num := range []int{3, 5, 7, 13, 15} {
+		s, err := DecodeGLONASSString(gloStringWords(num, setLn(num)))
+		if err != nil {
+			t.Fatalf("string %d: %v", num, err)
+		}
+		if !s.LnKnown || s.Ln != 1 {
+			t.Errorf("string %d: Ln=%d LnKnown=%v, want 1/true", num, s.Ln, s.LnKnown)
+		}
+		// The same string with the flag clear: known, healthy.
+		clear, err := DecodeGLONASSString(gloStringWords(num, nil))
+		if err != nil {
+			t.Fatalf("string %d (clear): %v", num, err)
+		}
+		if !clear.LnKnown || clear.Ln != 0 {
+			t.Errorf("string %d (clear): Ln=%d LnKnown=%v, want 0/true", num, clear.Ln, clear.LnKnown)
+		}
+	}
+	// Strings without ℓn (1, 2, 4, and the even almanac strings) must not claim it —
+	// even with the would-be flag bit positions set.
+	for _, num := range []int{1, 4, 6, 14} {
+		s, err := DecodeGLONASSString(gloStringWords(num, func(buf []byte) {
+			setBits(buf, 20, 1, 1)
+			setBits(buf, 76, 1, 1)
+		}))
+		if err != nil {
+			t.Fatalf("string %d: %v", num, err)
+		}
+		if s.LnKnown {
+			t.Errorf("string %d: LnKnown = true, want false (ℓn not carried)", num)
+		}
+	}
+	s2, err := DecodeGLONASSString(gloStringWords(2, setLn(2)))
+	if err != nil {
+		t.Fatalf("string 2: %v", err)
+	}
+	if s2.LnKnown {
+		t.Error("string 2: LnKnown = true, want false (ℓn not carried)")
+	}
+	// γn must be unaffected by the string-3 ℓn read (adjacent field isolation).
+	s3, err := DecodeGLONASSString(gloStringWords(3, func(buf []byte) {
+		gloSetSignMag(buf, 6, 11, -42)
+		setBits(buf, 20, 1, 1)
+	}))
+	if err != nil {
+		t.Fatalf("string 3 (γn+ℓn): %v", err)
+	}
+	if want := -42.0 / (1 << 40); s3.GammaN != want || s3.Ln != 1 {
+		t.Errorf("string 3: GammaN=%v Ln=%d, want %v/1", s3.GammaN, s3.Ln, want)
+	}
+}
+
 // TestDecodeGLONASSStringTbRange guards tb is a 7-bit index of a 15-min
 // interval within the current day, effective range 15…1425 min = index 1..95
 // (GLO-ICD-5.1 §4.4, Table 4.5). The codespace 96..127 exceeds a day and index 0

@@ -179,6 +179,20 @@ type GLONASSString struct {
 	GammaN    float64 // string 3: relative frequency deviation, dimensionless
 	TauN      float64 // string 4: SV-time-to-GLONASS-time correction at tb, s
 	DeltaTauN float64 // string 4: L2−L1 group-delay difference, s
+
+	// Ln is the GLONASS-M ℓn fast malfunction flag : 0 = healthy, 1 =
+	// malfunction (ICD Ed. 5.1 §4.4). It is the SV's LOW-LATENCY self-flag —
+	// §5.3's note says ℓn exists precisely to cut the onboard malfunction-to-flag
+	// delay from ≤1 min (Bn) to ≤10 s — and ICD Table 5.1 defines operability
+	// over Bn(ℓn) jointly with the almanac Cn. Meaningful only when LnKnown:
+	// ℓn rides strings 3, 5, 7, 9, 11, 13, 15 (Table 4.6: string 3 bit 65;
+	// bit 9 in the odd strings 5–15), so 7 of the 15 strings refresh it.
+	// Table 4.5 Remark (1) scopes ℓn to GLONASS-M navigation messages; on a
+	// legacy-GLONASS message the position is reserved — callers deciding health
+	// should still treat a set bit as a malfunction flag (the conservative
+	// failure: a spurious not-ok worth investigating, never a silent wrong OK).
+	Ln      int
+	LnKnown bool
 }
 
 // DecodeGLONASSString decodes one string from its four words.
@@ -234,6 +248,17 @@ func DecodeGLONASSString(words []uint32) (*GLONASSString, error) {
 	if m == 3 {
 		gamma, _ := r.SignMag(6, 11) // γn(tb) — ICD Table 4.6: string 3 bits 69–79 (85−79 = 6)
 		s.GammaN = float64(gamma) * gloGamma2m40
+	}
+	// ℓn, the GLONASS-M fast malfunction flag — ICD Table 4.6: string 3
+	// bit 65 (block offset 85−65 = 20) and bit 9 (offset 85−9 = 76) of the odd
+	// strings 5,7,9,11,13,15. See the Ln field doc for the semantics.
+	if m == 3 || (m >= 5 && m%2 == 1) {
+		off := 20
+		if m != 3 {
+			off = 76
+		}
+		ln, _ := r.Bits(off, 1)
+		s.Ln, s.LnKnown = int(ln), true
 	}
 	if m == 4 {
 		tau, _ := r.SignMag(5, 22)  // τn(tb) — ICD Table 4.6: string 4 bits 59–80 (85−80 = 5)

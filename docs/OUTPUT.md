@@ -74,7 +74,7 @@ below):
 | `sigid` | int | signal id (0 = the constellation's primary civil signal) |
 | `health_code` | int | §2.2 enum: 0 unknown · 1 OK · 2 not-ok · 3 do-not-use |
 | `health_issue_level` | int | 0 none · 1 warning · 2 error |
-| `health_subcode` | int | raw broadcast health bits (0 when none) |
+| `health_subcode` | int | raw broadcast health bits (0 when none). **GLONASS**: a packed pair — low 3 bits = the raw Bn word (only its MSB, value 4, is the malfunction flag), bit 3 (value 8) = the GLONASS-M ℓn fast malfunction flag (regression fix; GLO-ICD-5.1 §4.4, Table 5.1) — so a Bn-vs-ℓn disagreement window is visible |
 | `eph_age_m` | float | ephemeris age, minutes = `ephAge(tow,t0e)/60` (MATH.md §1.1) |
 | `sisa_valid` | bool | false when the broadcast accuracy is a "none/no accuracy" sentinel |
 | `sisa_m` | float | URA/SISA in metres (MATH.md §6); meaningful only when `sisa_valid` |

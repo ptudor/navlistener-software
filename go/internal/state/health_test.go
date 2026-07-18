@@ -207,12 +207,15 @@ func TestGLONASSHealthMasksToMSB(t *testing.T) {
 		raw      int
 		wantCode int
 	}{
-		{0, 1}, // all clear: healthy
-		{1, 1}, // low bit only (non-health flag): still healthy
-		{2, 1}, // second bit only (non-health flag): still healthy
-		{3, 1}, // both low bits, MSB clear: still healthy
-		{4, 2}, // MSB set: malfunctioning
-		{7, 2}, // all bits set: malfunctioning
+		{0, 1},  // all clear: healthy
+		{1, 1},  // low bit only (non-health flag): still healthy
+		{2, 1},  // second bit only (non-health flag): still healthy
+		{3, 1},  // both low bits, MSB clear: still healthy
+		{4, 2},  // Bn MSB set: malfunctioning
+		{7, 2},  // all Bn bits set: malfunctioning
+		{8, 2},  // packed ℓn fast flag alone: malfunctioning (Table 5.1 joint gate)
+		{12, 2}, // Bn MSB and ℓn both set: malfunctioning
+		{11, 2}, // ℓn set over benign Bn low bits: malfunctioning
 	}
 	for _, c := range cases {
 		code, level := healthFor(gnss.GLONASS, 0, c.raw)

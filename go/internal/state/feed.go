@@ -570,6 +570,18 @@ func (s *Store) FeedSBAS(now time.Time) map[string]SBASEntry {
 // low-order bits carry other status, not overall SV health.
 const gloBnMalfunctionBit = 0x4
 
+// gloLnShift/gloLnMalfunctionBit : the GLONASS health_subcode is OUR
+// packed encoding Bn | ℓn<<3 — the raw 3-bit Bn word in the low bits plus the
+// GLONASS-M ℓn fast malfunction flag (GLO-ICD-5.1 §4.4; ≤10 s latency vs Bn's
+// ≤1 min, §5.3 note) one bit above it, so the served subcode preserves both
+// flags and a Bn-vs-ℓn disagreement window is visible to consumers
+// (docs/OUTPUT.md §2.2). Either malfunction bit gates usability: ICD Table 5.1
+// defines operability over Bn(ℓn) jointly.
+const (
+	gloLnShift          = 3
+	gloLnMalfunctionBit = 1 << gloLnShift
+)
+
 // GPS subframe-1 health-word structure (IS-GPS-200N §20.3.3.3.1.4): the MSB is
 // the LNAV-data health summary; the 5 LSBs are the signal-component code of
 // Table 20-VIII. Two component codes are singled out by §6.4.6.3 as NOT merely
@@ -623,13 +635,16 @@ func healthFor(g gnss.GNSSID, sig, raw int) (code, level int) {
 		}
 		return 2, 2
 	case gnss.GLONASS:
-		// frame.DecodeGLONASSString stores the RAW 3-bit Bn field
-		// (r.Bits(5,3)), not just its MSB -- the two low-order bits carry other
-		// GLONASS ICD Ed. 5.1 flags, not overall SV health. Only bit 2 (value 4,
-		// the MSB) is the malfunction indicator, so mask to it before the zero
-		// test: without the mask, a benign low bit alone (raw 1 or 2) would flag
-		// a healthy SV as not-ok and fire a spurious health_change/critical event.
-		if raw&gloBnMalfunctionBit == 0 {
+		// raw's low 3 bits are the RAW Bn field (r.Bits(5,3)), not just its
+		// MSB -- the two low-order bits carry other GLONASS ICD Ed. 5.1 flags, not
+		// overall SV health. Only bit 2 (value 4, the MSB) is the malfunction
+		// indicator, so mask to it before the zero test: without the mask, a
+		// benign low bit alone (raw 1 or 2) would flag a healthy SV as not-ok and
+		// fire a spurious health_change/critical event. bit 3 is the
+		// packed GLONASS-M ℓn fast flag (see gloLnMalfunctionBit) — ICD Table 5.1
+		// defines operability over Bn(ℓn) jointly, so EITHER malfunction bit set
+		// is not-ok.
+		if raw&(gloBnMalfunctionBit|gloLnMalfunctionBit) == 0 {
 			return 1, 0
 		}
 		return 2, 2

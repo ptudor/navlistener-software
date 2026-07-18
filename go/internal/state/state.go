@@ -167,6 +167,14 @@ type svState struct {
 	gloEph                             glonass.Ephemeris
 	gloFreqID                          int
 	haveGloEph                         bool
+	// gloBn/gloLn are GLONASS's two broadcast per-SV malfunction flags, tracked
+	// separately because they ride different strings (Bn: string 2; ℓn: strings
+	// 3/5/7/9/11/13/15 — regression fix) and either arriving must rebuild the packed
+	// st.health = Bn | ℓn<<gloLnShift that healthFor consumes. ℓn is the ICD's
+	// deliberate low-latency flag (≤10 s vs Bn's ≤1 min, GLO-ICD-5.1 §5.3 note);
+	// gating health on Bn alone conceded that latency and lost the Bn-vs-ℓn
+	// disagreement signal entirely.
+	gloBn, gloLn int
 	// gloEphAt is the wall-clock apply time of the current GLONASS ephemeris,
 	// the analog of ephAt: the GLONASS disco staleness gate uses it.
 	gloEphAt time.Time
@@ -1033,12 +1041,30 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 	st.lastSeen = recv
 	st.gloFreqID = f.FreqID
 
+	// fold the ℓn fast malfunction flag from whichever string carried it
+	// (3/5/7/9/11/13/15 — 7 of 15, so it refreshes about every other string, the
+	// ICD's intended ≤10 s path, ahead of the 30 s Bn cadence). Health is claimed
+	// (haveHealth) from ℓn alone only when it FLAGS a malfunction: ℓn=1 is a
+	// definite broadcast statement worth serving immediately even before string 2
+	// decodes, while ℓn=0 before any Bn would claim "health OK" off half the
+	// Table 5.1 evidence — wait for Bn there (regression fix discipline). Once health is
+	// claimed, every ℓn refresh rebuilds the packed value so a cleared flag
+	// propagates too.
+	if str.LnKnown {
+		st.gloLn = str.Ln
+		if st.haveHealth || str.Ln != 0 {
+			st.health = st.gloBn | st.gloLn<<gloLnShift
+			st.haveHealth = true
+		}
+	}
+
 	switch {
 	case str.Number == 1:
 		st.gloS1, st.gloS1At = str, f.Recv // feeder stamp: broadcast adjacency (regression fix, above)
 	case str.Number == 2:
 		st.gloS2, st.gloS2At = str, f.Recv
-		st.health, st.haveHealth = str.Health, true
+		st.gloBn = str.Health // raw 3-bit Bn; only the MSB is the malfunction flag 
+		st.health, st.haveHealth = st.gloBn|st.gloLn<<gloLnShift, true
 	case str.Number == 3:
 		st.gloS3, st.gloS3At = str, f.Recv
 	case str.Number == 4: // SV clock: τn/Δτn; joins the frame-window assembly below

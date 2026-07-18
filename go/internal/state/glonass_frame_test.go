@@ -163,6 +163,79 @@ func TestGLONASSDiscoOnTbChangeover(t *testing.T) {
 	}
 }
 
+// glonassLnFrame builds a string carrying the ℓn fast malfunction flag (regression fix;
+// GLO-ICD-5.1 Table 4.6: string 3 → block offset 20, odd strings 5–15 → offset 76).
+func glonassLnFrame(svID, number, ln int, recv time.Time) *ingest.RawFrame {
+	off := 20
+	if number != 3 {
+		off = 76
+	}
+	words := gloWords(number, func(buf []byte) { setAbsBits(buf, off, 1, uint64(ln)) })
+	return &ingest.RawFrame{
+		Recv: recv, Source: "test", GnssID: gnss.GLONASS, SvID: svID, SigID: 0, FreqID: 7,
+		Words: words,
+	}
+}
+
+// TestGLONASSLnHealth guards state wiring: the ℓn fast malfunction flag
+// (≤10 s latency by design, GLO-ICD-5.1 §5.3 note) must reach served health the
+// moment any carrying string decodes — up to ~50 s before Bn catches up — and a
+// cleared ℓn must restore health. The served health_subcode is the packed
+// Bn | ℓn<<3 (docs/OUTPUT.md §2.2), so the Bn-vs-ℓn disagreement window is visible.
+func TestGLONASSLnHealth(t *testing.T) {
+	st := New(4)
+	t0 := time.Unix(1_700_000_000, 0)
+	// Coherent healthy frame: strings 1/2/3 (Bn=0, ℓn=0 rides string 3 clear).
+	st.Apply(glonassStringFrame(7, 1, 20000000, 10, 1, 0, 0, t0))
+	st.Apply(glonassStringFrame(7, 2, 20000000, 20, 2, 0, 45, t0.Add(2*time.Second)))
+	st.Apply(glonassStringFrame(7, 3, 20000000, 30, 3, 0, 0, t0.Add(4*time.Second)))
+
+	sv, ok := st.FeedSVs(t0.Add(4 * time.Second))["R07@0"]
+	if !ok {
+		t.Fatal("R07@0 missing from svs feed")
+	}
+	if sv.HealthCode != 1 || sv.HealthSubcode != 0 {
+		t.Fatalf("healthy frame: health_code=%d subcode=%d, want 1/0", sv.HealthCode, sv.HealthSubcode)
+	}
+
+	// ℓn=1 arrives on string 5 (the fast path, no string 2 needed): served health
+	// must flip to not-ok immediately, subcode showing the packed ℓn bit.
+	st.Apply(glonassLnFrame(7, 5, 1, t0.Add(8*time.Second)))
+	sv = st.FeedSVs(t0.Add(8 * time.Second))["R07@0"]
+	if sv.HealthCode != 2 {
+		t.Errorf("ℓn=1: health_code = %d, want 2 (the fast flag must gate health)", sv.HealthCode)
+	}
+	if sv.HealthSubcode != 8 {
+		t.Errorf("ℓn=1: health_subcode = %d, want 8 (packed ℓn bit)", sv.HealthSubcode)
+	}
+
+	// ℓn clears on the next carrying string: health restored, subcode zeroed.
+	st.Apply(glonassLnFrame(7, 7, 0, t0.Add(10*time.Second)))
+	sv = st.FeedSVs(t0.Add(10 * time.Second))["R07@0"]
+	if sv.HealthCode != 1 || sv.HealthSubcode != 0 {
+		t.Errorf("ℓn cleared: health_code=%d subcode=%d, want 1/0", sv.HealthCode, sv.HealthSubcode)
+	}
+
+	// regression fix discipline: for a fresh SV with no Bn yet, ℓn=0 alone must NOT claim
+	// health OK (half the Table 5.1 evidence), but ℓn=1 alone must claim not-ok.
+	st.Apply(glonassLnFrame(9, 5, 0, t0))
+	key := Key{G: gnss.GLONASS, Sv: 9, Sig: 0}
+	sh := st.shardFor(key)
+	sh.mu.Lock()
+	have := sh.m[key].haveHealth
+	sh.mu.Unlock()
+	if have {
+		t.Error("ℓn=0 with no Bn decoded claimed haveHealth (would serve OK off half the evidence)")
+	}
+	st.Apply(glonassLnFrame(9, 5, 1, t0.Add(2*time.Second)))
+	sh.mu.Lock()
+	have, health := sh.m[key].haveHealth, sh.m[key].health
+	sh.mu.Unlock()
+	if !have || health != 8 {
+		t.Errorf("ℓn=1 with no Bn: haveHealth=%v health=%d, want true/8", have, health)
+	}
+}
+
 // gloPosScale mirrors gnss/frame's unexported gloPos (2^-11 km) scale factor —
 // duplicated here (not imported; frame's constant is unexported) purely to
 // translate this test's raw encoded units back to the decoded km for assertions.
