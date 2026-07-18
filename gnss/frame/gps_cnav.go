@@ -184,6 +184,15 @@ func DecodeGPSCNAV(id gnss.GNSSID, words []uint32) (*GPSCNAV, error) {
 		}
 		m.hasClk = true
 		if m.MsgType == 30 { // group delay + ISCs : MT30-only, not common to 31-37
+			// regression fix — settled from the vendored primary text (2026-07-17), do not
+			// re-litigate: neither IS-GPS-200N (Table 30-IV; §6.2.7/6.2.8 define
+			// valid range as "the maximum range attainable with indicated bit
+			// allocation and scale factor") nor IS-GPS-705J (Table 20-IV) defines
+			// ANY "not available" bit-string sentinel for T_GD or the four ISCs —
+			// the recalled 1000000000000 (−4096) sentinel does not exist in the
+			// in-force editions. The raw two's-complement decode below is therefore
+			// correct as-is and deliberately performs no sentinel screening; this
+			// confirms the MAX pass's TGD disproof and extends it to the ISCs.
 			// Contiguous with the clock block above (Af2 occupies bits 117-126, so
 			// T_GD starts at 127) — confirmed against the existing, already-verified
 			// Toc/Af0/Af1/Af2 offsets, each of which starts exactly where the

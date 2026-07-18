@@ -181,6 +181,15 @@ type svState struct {
 	// serving the zero model's af0=0 as if decoded would be a fabricated sentinel.
 	haveClk bool
 	iod     int
+	// lnavIODC (regression fix, the GPS twin of bcIODC) is the full 10-bit IODC
+	// of the last applied LNAV data set. The 8-bit IODE equals the IODC's low 8
+	// bits (IS-GPS-200N §20.3.4.4), so an IODE-keyed gate alone drops a data set
+	// whose IODC changed only in its two high bits — reachable after a >6 h
+	// decode gap, since §20.3.4.4's no-repeat rule only spans six hours — and
+	// its refreshed af0/af1/af2/Toc/TGD with it. Clock refresh keys on the full
+	// IODC; disco stays keyed on IODE (a changeover is what disco measures).
+	lnavIODC     int
+	haveLnavIODC bool
 	// ephAt is the wall-clock instant this ephemeris was applied. computeDisco's
 	// staleness gate must use it, not gnsstime.EphAge(tstar, Toe): EphAge wraps its result
 	// to ±half-week, so an outgoing ephemeris ~1 week stale reads as fresh and produces the
@@ -608,19 +617,35 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 	if err != nil {
 		return // inconsistent triple; wait for a matching set
 	}
+	// regression fix (the GPS twin of regression fix, finishing what regression fix started for the
+	// non-clock scalars): an ephemeris changeover keys on the 8-bit IODE, but the
+	// clock scalars live in subframe 1 under the full 10-bit IODC — a data set
+	// whose IODC changes only in its two high bits (same low-8 IODE, legal after
+	// the §20.3.4.4 six-hour no-repeat horizon) must still refresh the served
+	// af0/af1/af2/Toc/TGD instead of being dropped by the IODE gate forever.
 	newIOD := st.sf2.IODE
-	if st.haveEph && newIOD == st.iod {
+	ephChanged := !st.haveEph || newIOD != st.iod
+	clkChanged := !st.haveLnavIODC || st.sf1.IODC != st.lnavIODC
+	if !ephChanged && !clkChanged {
 		return // same data set, nothing new
 	}
-
-	// A new ephemeris (new IOD): compute the changeover discontinuities against the
-	// outgoing set before replacing it (docs/INTEGRITY.md §3).
-	if st.haveEph {
-		s.computeDisco(st, eph, clk, recv)
+	if ephChanged {
+		// A new ephemeris (new IODE): compute the changeover discontinuities
+		// against the outgoing set before replacing it (docs/INTEGRITY.md §3).
+		// A clock-only IODC refresh is not a changeover and computes no disco.
+		if st.haveEph {
+			s.computeDisco(st, eph, clk, recv)
+		}
+		st.eph, st.iod, st.haveEph = eph, newIOD, true
+		st.ephAt = recv // collector-local apply time for the disco staleness gate 
 	}
-	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
-	st.haveClk = true // LNAV subframe 1 always carries the clock
-	st.ephAt = recv   // collector-local apply time for the disco staleness gate 
+	// The clock comes wholly from subframe 1 (af0/af1/af2/Toc/TGD), so it is
+	// self-coherent even on a clock-only refresh; residual (recorded): after a
+	// >6 h gap an IODE-repeating data set's *ephemeris* still waits for the next
+	// IODE change — a distinct, narrower staleness window than the clock one
+	// this fixes.
+	st.clk, st.haveClk = clk, true
+	st.lnavIODC, st.haveLnavIODC = st.sf1.IODC, true
 	st.health, st.haveHealth, st.ura = st.sf1.Health, true, st.sf1.URAIndex
 	st.accKind, st.accIdx = accURA, st.sf1.URAIndex
 }

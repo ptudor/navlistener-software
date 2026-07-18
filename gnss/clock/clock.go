@@ -21,7 +21,12 @@ type Model struct {
 	Af1 float64     // clock drift, seconds/second
 	Af2 float64     // clock drift rate, seconds/second²
 	Toc float64     // clock reference time, seconds of week
-	TGD float64     // group delay for the tracked signal, seconds (already scaled)
+	// TGD is the group delay for the tracked signal, seconds, ALREADY SCALED by
+	// the caller: the broadcast value is L1-referenced, so a single-frequency L2
+	// user must multiply it by L2GroupDelayFactor (γ) before populating this
+	// field (IS-GPS-200N §20.3.3.3.3.2), and a dual-frequency ionosphere-free
+	// user passes 0 — nothing in this package applies γ automatically.
+	TGD float64
 }
 
 // Relativistic returns the relativistic clock correction Δtr = F·e·√A·sin E
@@ -61,7 +66,12 @@ func OffsetFor(c Model, e kepler.Ephemeris, tow float64) (float64, error) {
 
 // L2GroupDelayFactor is γ = (f_L1/f_L2)², the factor by which a single-frequency
 // L2 user scales TGD relative to the broadcast (L1-referenced) value
-// (docs/MATH.md §4). f_L1 = 1575.42 MHz, f_L2 = 1227.60 MHz.
+// (IS-GPS-200N §20.3.3.3.3.2; docs/MATH.md §4). f_L1 = 1575.42 MHz, f_L2 =
+// 1227.60 MHz. this constant is the CALLER'S tool for producing the
+// already-scaled Model.TGD — no code path in this library applies it
+// automatically (the daemon tracks L1, and its computeDisco zeroes TGD on both
+// sides, so γ never enters); an L2-only consumer passing the broadcast TGD
+// unscaled would carry a (γ−1)·TGD ≈ 0.65·TGD bias.
 const L2GroupDelayFactor = (1575.42 / 1227.60) * (1575.42 / 1227.60)
 
 // UTCParams are the broadcast GNSS→UTC parameters (docs/MATH.md §4, §8).
@@ -77,6 +87,16 @@ type UTCParams struct {
 // A0 + A1·(tow − tot) + ΔtLS, half-week corrected (IS-GPS-200 §20.3.3.5.2.4). The
 // scheduled leap (DtLSF/WNLSF/DN) governs the pending step and is handled by the
 // caller near a leap event; here we apply the current ΔtLS.
+//
+// regression fix (recorded deviation, accepted): the ICD forms the A1 term over the
+// true week-spanning difference tE − tot + 604800·(WN − WNt); this
+// implementation substitutes the ±half-week wrap (EphAge) and carries no WNt,
+// which is identical within ±half a week of the reference and diverges beyond.
+// A1 is spec-bounded near 1e-15 s/s, so the divergence is sub-nanosecond
+// against the 2.5 ns integrity threshold — leave-as-is is the disposition. The
+// leap-transition arm of §20.3.3.5.2.4 (ΔtLSF applied across WN_LSF/DN) needs
+// WN_LSF/DN fields UTCParams does not yet carry; that extension is folded into
+// the standing regression fix broadcast-UTC-decode work.
 func UTCOffset(u UTCParams, tow float64) float64 {
 	dt := gnsstime.EphAge(tow, u.Tot)
 	return u.A0 + u.A1*dt + u.DtLS

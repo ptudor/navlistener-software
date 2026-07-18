@@ -161,6 +161,53 @@ func TestCNAVCarrierBitSelection(t *testing.T) {
 	}
 }
 
+// sf1WordsClk is sf1Words with an explicit two-bit IODC high field and af0, so a
+// test can broadcast a clock-only data-set refresh: IODC high bits change, low
+// 8 (== the IODE) unchanged (IS-GPS-200N §20.3.4.4).
+func sf1WordsClk(iodcHi, iodcLo, af0 int64) []uint32 {
+	buf := make([]byte, 30)
+	setField(buf, 2, 20, 3, 1)
+	setField(buf, 3, 1, 10, 240)
+	setField(buf, 3, 13, 4, 4)
+	setField(buf, 3, 23, 2, iodcHi)
+	setField(buf, 8, 1, 8, iodcLo)
+	setField(buf, 8, 9, 16, 27000)
+	setField(buf, 10, 1, 22, af0)
+	return packWords(buf)
+}
+
+// TestClockRefreshUnderUnchangedIODE guards regression fix (the GPS twin of regression fix,
+// completing regression fix): a data set whose IODC changes only in its two high bits
+// (low-8 IODE unchanged — legal once §20.3.4.4's six-hour no-repeat horizon has
+// passed) was dropped whole by the IODE gate, so its refreshed af0/af1/af2
+// never reached the served clock. The clock now keys on the full 10-bit IODC.
+func TestClockRefreshUnderUnchangedIODE(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	s.Apply(gpsFrame(sf1WordsClk(0, 85, 214748), now))
+	s.Apply(gpsFrame(sf2Words(85, 205075516), now))
+	s.Apply(gpsFrame(sf3Words(85), now))
+
+	sv := s.FeedSVs(now)["G05@0"]
+	if sv.Af0 == nil || math.Abs(*sv.Af0-214748.0/(1<<31)) > 1e-15 {
+		t.Fatalf("initial af0 = %v, want 214748×2⁻³¹", sv.Af0)
+	}
+
+	// IODC 341 (high bits 01, low 8 still 85): a clock-only refresh. The old
+	// gate saw IODE 85 == IODE 85 and returned before ever reaching st.clk.
+	s.Apply(gpsFrame(sf1WordsClk(1, 85, 300000), now))
+	sv = s.FeedSVs(now)["G05@0"]
+	if sv.Af0 == nil || math.Abs(*sv.Af0-300000.0/(1<<31)) > 1e-15 {
+		t.Errorf("af0 after IODC-high-bits refresh = %v, want 300000×2⁻³¹ (refresh dropped)", sv.Af0)
+	}
+	if sv.IOD == nil || *sv.IOD != 85 {
+		t.Errorf("served IOD = %v, want 85 (ephemeris set unchanged)", sv.IOD)
+	}
+	if sv.TimeDiscoNs != nil {
+		t.Errorf("clock-only refresh computed a time-disco (%v): not a changeover", *sv.TimeDiscoNs)
+	}
+}
+
 // sf1WordsWN is sf1Words with an explicit 10-bit broadcast WN (word 3 bits 1-10).
 func sf1WordsWN(wn, iodcLo int64) []uint32 {
 	buf := make([]byte, 30)
