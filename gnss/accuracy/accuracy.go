@@ -25,6 +25,24 @@ func URAMeters(n int) (float64, bool) {
 	return math.Pow(2, float64(n)-2), true
 }
 
+// URAEDMeters decodes a CNAV elevation-dependent URA_ED index N (a SIGNED
+// two's-complement integer, +15..−16 — IS-GPS-200N §30.3.3.1.1.4) to metres by
+// that section's nominal-value formula: −16 < N ≤ 6 ⇒ 2^(1+N/2), 6 ≤ N < 15 ⇒
+// 2^(N−2) — the same shape as the LNAV URA formula extended below zero (e.g.
+// N=−1 ⇒ ~1.41 m, N=−16 excluded). N = 15 and N = −16 both "indicate the
+// absence of an accuracy prediction and shall advise the standard positioning
+// service user to use that SV at his own risk" (valid=false; surface the raw
+// index per regression fix, as with URAMeters).
+func URAEDMeters(n int) (float64, bool) {
+	if n <= -16 || n >= 15 {
+		return 0, false
+	}
+	if n <= 6 {
+		return math.Pow(2, 1+float64(n)/2), true
+	}
+	return math.Pow(2, float64(n)-2), true
+}
+
 // GalileoSISA decodes a Galileo SISA index (0–255) to metres in the four linear
 // bands of OS-SIS-ICD §5.1.12. 255 ("NO SISA AVAILABLE") and the 126–254 spare
 // range are not meaningful (valid=false).

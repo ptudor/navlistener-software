@@ -26,6 +26,28 @@ func TestURAMeters(t *testing.T) {
 	}
 }
 
+// TestURAEDMeters guards the CNAV signed URA_ED mapping : the
+// IS-GPS-200N §30.3.3.1.1.4 nominal formula extends the LNAV shape below zero
+// (N=−1 ⇒ 2^0.5 ≈ 1.414 m, N=−14 ⇒ 2^−6), and BOTH N=15 and N=−16 are the
+// "no accuracy prediction — use at own risk" sentinels.
+func TestURAEDMeters(t *testing.T) {
+	cases := map[int]float64{
+		-15: math.Pow(2, 1-7.5), -14: math.Pow(2, -6), -1: math.Sqrt2,
+		0: 2.0, 1: 2.8284, 6: 16.0, 7: 32.0, 14: 4096.0,
+	}
+	for n, want := range cases {
+		got, ok := URAEDMeters(n)
+		if !ok || math.Abs(got-want) > 1e-3 {
+			t.Errorf("URA_ED %d = %v (ok=%v), want %v", n, got, ok, want)
+		}
+	}
+	for _, n := range []int{15, -16} {
+		if _, ok := URAEDMeters(n); ok {
+			t.Errorf("URA_ED %d must be 'no accuracy prediction' (invalid)", n)
+		}
+	}
+}
+
 func TestGalileoSISABands(t *testing.T) {
 	cases := map[int]float64{
 		0: 0.0, 49: 0.49, // band 1

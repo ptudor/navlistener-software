@@ -43,7 +43,12 @@ type FeedSV struct {
 	// §20.3.3.2 HOW bit 18 / §6.4.6.3 CNAV bit 38): true = the SV itself declares
 	// its URA may be worse than broadcast — use at own risk. Absent until decoded
 	// (and for constellations without the flag).
-	Alert          *bool    `json:"alert,omitempty"`
+	Alert *bool `json:"alert,omitempty"`
+	// WnMismatch : the broadcast week number (LNAV 10-bit / CNAV 13-bit,
+	// rollover-disambiguated) disagrees with the collector wall-clock week — an
+	// upload error, SV time fault, or replayed/spoofed signal. Absent until a
+	// broadcast WN has been decoded for this entry.
+	WnMismatch     *bool    `json:"wn_mismatch,omitempty"`
 	IOD            *int     `json:"iod,omitempty"`
 	OrbitDiscoM    *float64 `json:"orbit_disco_m,omitempty"`
 	OrbitDiscoAgeS *float64 `json:"orbit_disco_age_s,omitempty"`
@@ -188,6 +193,10 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 		a := st.alert
 		e.Alert = &a
 	}
+	if st.haveWN {
+		w := st.wnMismatch
+		e.WnMismatch = &w
+	}
 	if m, ok := sisaFor(st.accKind, st.accIdx); ok && finite(m) {
 		e.SISAValid, e.SISAM = true, &m
 	}
@@ -249,7 +258,11 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 		// no issue-of-data) correctly never reaches this block.
 		iod := st.iod
 		e.IOD = &iod
-		if finite(st.clk.Af0) && finite(st.clk.Af1) && finite(st.clk.Af2) {
+		// regression fix (regression fix/regression fix discipline for the clock): the CNAV and B-CNAV2
+		// families can assemble an ephemeris before any clock message has decoded
+		// — st.clk's zero af0/af1/af2 would serve as fabricated sentinels without
+		// the haveClk gate ("absent = unknown", docs/OUTPUT.md §1.1).
+		if st.haveClk && finite(st.clk.Af0) && finite(st.clk.Af1) && finite(st.clk.Af2) {
 			af0, af1, af2 := st.clk.Af0, st.clk.Af1, st.clk.Af2
 			e.Af0, e.Af1, e.Af2 = &af0, &af1, &af2
 		}
@@ -686,6 +699,8 @@ func sisaFor(kind uint8, idx int) (float64, bool) {
 		return accuracy.URAMeters(idx)
 	case accSISA:
 		return accuracy.GalileoSISA(idx)
+	case accURAED:
+		return accuracy.URAEDMeters(idx) // CNAV signed URA_ED 
 	default:
 		return 0, false
 	}

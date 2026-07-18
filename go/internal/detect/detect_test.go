@@ -202,6 +202,28 @@ func TestSISAHysteresisDampensQuantizedDwell(t *testing.T) {
 	}
 }
 
+// TestWNMismatchTransition guards detector half: a confirmed
+// broadcast-week anomaly (upload error / SV time fault / replayed signal) is a
+// critical wn_mismatch event; recovery back to ok is informational.
+func TestWNMismatchTransition(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(8_000_000, 0)
+	f := false
+	sv := gps("G05", 5, 1)
+	sv.WnMismatch = &f
+	d.Tick(t0, map[string]state.FeedSV{"G05@0": sv}, nil) // seeds "ok"
+
+	tr := true
+	sv.WnMismatch = &tr
+	bad := map[string]state.FeedSV{"G05@0": sv}
+	d.Tick(t0.Add(10*time.Second), bad, nil)
+	evs := d.Tick(t0.Add(80*time.Second), bad, nil)
+	e, ok := find(evs, "wn_mismatch")
+	if !ok || e.NewValue != "mismatch" || e.Severity != SevCritical {
+		t.Fatalf("wn_mismatch = %+v (ok=%v), want confirmed mismatch/2", e, ok)
+	}
+}
+
 // TestURAAlertTransition guards regression fix/detector half: a satellite
 // raising its broadcast URA-alert flag ("use at own risk", IS-GPS-200N
 // §20.3.3.2) must produce a confirmed ura_alert event — previously the bit was

@@ -117,6 +117,9 @@ type svState struct {
 
 	// LNAV subframe assembly buffers (GPS/QZSS).
 	sf1, sf2, sf3 *frame.GPSSubframe
+	// GPS/QZSS L2C/L5 CNAV message assembly buffers, keyed like BeiDou
+	// B-CNAV2's bc10/bc11/bcClk: gcClk is the last clock-bearing MT30–37.
+	gc10, gc11, gcClk *frame.GPSCNAV
 	// Galileo I/NAV word assembly buffers, indexed by word type 1–5 (word 5 carries
 	// BGD/health, not part of the ephemeris set; index 0 unused).
 	galW [6]*frame.GalileoINAV
@@ -171,6 +174,12 @@ type svState struct {
 	eph     kepler.Ephemeris
 	clk     clock.Model
 	haveEph bool
+	// haveClk (regression fix, the regression fix/regression fix discipline applied to the clock): st.clk
+	// is meaningful only when true. The LNAV/I-NAV/F-NAV/D1 paths always decode a
+	// clock with the ephemeris, but the CNAV and B-CNAV2 message families carry
+	// the clock in separate messages — an ephemeris can assemble clockless, and
+	// serving the zero model's af0=0 as if decoded would be a fabricated sentinel.
+	haveClk bool
 	iod     int
 	// ephAt is the wall-clock instant this ephemeris was applied. computeDisco's
 	// staleness gate must use it, not gnsstime.EphAge(tstar, Toe): EphAge wraps its result
@@ -204,6 +213,11 @@ type svState struct {
 	// haveAlert follows the regression fix unknown-until-decoded discipline.
 	alert     bool
 	haveAlert bool
+	// wnMismatch : the decoded broadcast week number (LNAV 10-bit /
+	// CNAV 13-bit), rollover-disambiguated, disagrees with the collector
+	// wall-clock GPS week — see checkBroadcastWN. haveWN follows regression fix.
+	wnMismatch bool
+	haveWN     bool
 
 	// Broadcast accuracy index and the table it decodes with (accNone/accURA/
 	// accSISA) — backs the sisa_valid/sisa_m feed fields. BeiDou also carries an
@@ -231,9 +245,10 @@ type svState struct {
 
 // accuracy-table selectors for accKind (docs/MATH.md §6).
 const (
-	accNone uint8 = 0 // no accuracy captured for this constellation/signal
-	accURA  uint8 = 1 // GPS/QZSS/NavIC/BeiDou-B1I URA step table
-	accSISA uint8 = 2 // Galileo SISA linear bands
+	accNone  uint8 = 0 // no accuracy captured for this constellation/signal
+	accURA   uint8 = 1 // GPS/QZSS/NavIC/BeiDou-B1I URA step table
+	accSISA  uint8 = 2 // Galileo SISA linear bands
+	accURAED uint8 = 3 // GPS/QZSS CNAV signed URA_ED (IS-GPS-200N §30.3.3.1.1.4), regression fix
 )
 
 type shard struct {
@@ -376,17 +391,118 @@ func isCNAVSignal(id gnss.GNSSID, sig int) bool {
 	return sig == 4 || sig == 5 || sig == 8 || sig == 9 // QZSS
 }
 
-// applyGPSCNAV decodes a GPS/QZSS CNAV message for telemetry. The CNAV ephemeris is
-// redundant with LNAV for positioning; its L2C/L5 ISCs and the cross-signal
-// integrity check are consumed in the integrity pass (P6).
+// cnavCarrierHealth extracts the tracked carrier's own 1-bit health from the
+// CNAV MT10 3-bit L1/L2/L5 field (bits 52–54 in broadcast order L1, L2, L5 —
+// IS-GPS-200N §30.3.3.1.1.2; QZSS-PNT-006 §4.3.2 mirrors the layout): the
+// dispatch map (isCNAVSignal, docs/CONSTELLATIONS.md §2.1) says GPS sigId 3/4
+// and QZSS sigId 4/5 are L2C, GPS 6/7 and QZSS 8/9 are L5. Storing only the
+// tracked carrier's bit keeps healthFor's per-signal arm a plain 0/1 test.
+func cnavCarrierHealth(id gnss.GNSSID, sig, h3 int) int {
+	l2, l5 := (h3>>1)&1, h3&1
+	if id == gnss.GPS {
+		if sig == 3 || sig == 4 {
+			return l2
+		}
+		return l5
+	}
+	if sig == 4 || sig == 5 { // QZSS
+		return l2
+	}
+	return l5
+}
+
+// applyGPSCNAV  decodes a GPS/QZSS L2C/L5 CNAV message and folds it
+// into a SEPARATE per-signal SV state keyed on the frame's own sigId — the same
+// secondary-signal pattern as Galileo E5a F/NAV (Sig:3) and BeiDou B-CNAV2
+// (Sig:8) — so L2C/L5 surface as their own name@sigid feed entries carrying the
+// ONLY per-signal health GPS broadcasts (MT10's L1/L2/L5 bits, §30.3.3.1.1.2),
+// the signed URA_ED, the header alert flag, the 13-bit WN cross-check
+//, and an independently-assembled CNAV ephemeris/clock. This replaces
+// the decode-and-drop stub whose "consumed in the integrity pass (P6)" comment
+// had been overtaken by P6 landing without it: the LNAV-vs-CNAV cross-signal
+// comparison consumes these entries exactly the way the E1-B-vs-E5a pair
+// already does — two independently decoded positions/clocks for one SV.
 func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
-	if _, err := frame.DecodeGPSCNAV(f.GnssID, f.Words); err != nil {
+	m, err := frame.DecodeGPSCNAV(f.GnssID, f.Words)
+	if err != nil {
 		countDecodeFailure(f, "cnav", err)
 		return
 	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "cnav").Inc()
+	recv := f.LocalRecv() // collector-local clock for staleness/expiry math 
+	// capability evidence only after a structurally valid decode.
 	if f.Source != "" {
-		s.recordCapability(f.Source, f.GnssID, f.SigID, f.LocalRecv())
+		s.recordCapability(f.Source, f.GnssID, f.SigID, recv)
+	}
+	// Only the ephemeris (10/11) and clock (30–37) messages build SV state; the
+	// almanac/EOP/UTC types are capability evidence only — the B-CNAV2
+	// types-31/32/33/40 precedent.
+	if m.MsgType != 10 && m.MsgType != 11 && (m.MsgType < 30 || m.MsgType > 37) {
+		return
+	}
+
+	key := Key{G: f.GnssID, Sv: f.SvID, Sig: f.SigID}
+	sh := s.shardFor(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	st := sh.m[key]
+	if st == nil {
+		st = &svState{key: key}
+		sh.m[key] = st
+	}
+	st.lastSeen = recv
+	// the alert flag rides every CNAV header — freshest-wins, as LNAV.
+	st.alert, st.haveAlert = m.Alert, true
+
+	switch {
+	case m.MsgType == 10:
+		st.gc10 = m
+		// regression fix freshest-wins, BEFORE the toe-changeover gate below: per-carrier
+		// health, signed URA_ED, and the broadcast-WN cross-check reach live
+		// state on every MT10, not only at data-set cutovers (Alert/URA-class
+		// fields are the ICD's NOTE1 "CEI refinement" set — they may change
+		// without a toe change, IS-GPS-200N Table 6-I-1).
+		st.health, st.haveHealth = cnavCarrierHealth(f.GnssID, f.SigID, m.Health), true
+		st.accKind, st.accIdx = accURAED, m.URAED
+		st.checkBroadcastWN(recv, m.WN, 13) // regression fix
+	case m.MsgType == 11:
+		st.gc11 = m
+	default: // MT30–37 all carry the common clock block
+		st.gcClk = m
+	}
+	if st.gc10 == nil || st.gc11 == nil {
+		return
+	}
+	eph, clk, clkOK, err := frame.AssembleGPSCNAV(f.GnssID, f.SvID, st.gc10, st.gc11, st.gcClk)
+	if err != nil {
+		return // MT10/MT11 from different data sets (toe mismatch); wait for a coherent pair
+	}
+	// CNAV carries no IODE/IODC: toe IS the data-set key (IS-GPS-200N §30.3.4.4
+	// — updates to curve-fit parameters "shall prompt changes in toe/toc"; the
+	// BeiDou D1 toe-keyed precedent). The clock shares that key (toc == toe when
+	// clkOK, regression fix), so the only same-toe refresh to catch is a coherent clock
+	// arriving after a clockless assembly.
+	ephChanged := !st.haveEph || int(eph.Toe) != st.iod
+	clkAttached := clkOK && !st.haveClk
+	if !ephChanged && !clkAttached {
+		return
+	}
+	if ephChanged && st.haveEph {
+		s.computeDisco(st, eph, clk, recv)
+		// Time-disco needs a coherent decoded clock on BOTH sides (the regression fix
+		// absent-not-zero rule); computeDisco differenced the zero model
+		// otherwise. Orbit-disco stands either way.
+		if !clkOK || !st.haveClk {
+			st.timeDiscoValid = false
+		}
+	}
+	if !clkOK {
+		clk = st.clk // keep the previously applied clock; haveClk gates serving it
+	}
+	st.eph, st.clk, st.iod, st.haveEph = eph, clk, int(eph.Toe), true
+	st.ephAt = recv // regression fix (collector-local, regression fix)
+	if clkOK {
+		st.haveClk = true
 	}
 }
 
@@ -464,6 +580,8 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 	switch sf.SubframeID {
 	case 1:
 		st.sf1 = sf
+		// cross-check the broadcast 10-bit WN against the wall-clock week.
+		st.checkBroadcastWN(recv, sf.WN, 10)
 		// apply health/URA at subframe-1 arrival, BEFORE the IOD gate below, so a
 		// health-bit flip that arrives under an unchanged IODC (a re-broadcast subframe 1,
 		// or an IODC bump confined to its two high bits that leaves the low-8 IODE
@@ -501,7 +619,8 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 		s.computeDisco(st, eph, clk, recv)
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
-	st.ephAt = recv // collector-local apply time for the disco staleness gate 
+	st.haveClk = true // LNAV subframe 1 always carries the clock
+	st.ephAt = recv   // collector-local apply time for the disco staleness gate 
 	st.health, st.haveHealth, st.ura = st.sf1.Health, true, st.sf1.URAIndex
 	st.accKind, st.accIdx = accURA, st.sf1.URAIndex
 }
@@ -564,7 +683,8 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 		s.computeDisco(st, eph, clk, recv)
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
-	st.ephAt = recv // regression fix (collector-local, regression fix)
+	st.haveClk = true // this format's ephemeris set always carries the clock
+	st.ephAt = recv   // regression fix (collector-local, regression fix)
 	st.accKind, st.accIdx = accSISA, st.galW[3].SISA
 }
 
@@ -651,7 +771,8 @@ func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 		s.computeDisco(st, eph, clk, recv)
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
-	st.ephAt = recv // regression fix (collector-local, regression fix)
+	st.haveClk = true // this format's ephemeris set always carries the clock
+	st.ephAt = recv   // regression fix (collector-local, regression fix)
 	st.accKind, st.accIdx = accSISA, st.fnav[1].SISA
 }
 
@@ -714,7 +835,8 @@ func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 		s.computeDisco(st, eph, clk, recv)
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
-	st.ephAt = recv // regression fix (collector-local, regression fix)
+	st.haveClk = true // this format's ephemeris set always carries the clock
+	st.ephAt = recv   // regression fix (collector-local, regression fix)
 	st.health, st.haveHealth = st.bd1.Health, true
 	st.accKind, st.accIdx = accURA, st.bd1.URAI
 	st.aodc, st.aode, st.haveAOD = st.bd1.AODC, st.bd1.AODE, true
@@ -819,6 +941,7 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 	if clkOK {
 		st.bcIODC, st.haveBcIOD = st.bcClk.IODC, true
 		st.clkHasBcTGD = nextClkHasTGD
+		st.haveClk = true // regression fix family: af0/af1/af2 serve only once a type-30/34 has decoded
 	}
 	st.health, st.haveHealth = st.bc11.HS, true
 }
@@ -1269,6 +1392,37 @@ func (s *Store) ExpireStations(now time.Time) {
 		}
 	}
 	s.gloAlmMu.Unlock()
+}
+
+// wnRolloverGraceS tolerates the legitimate broadcast-WN lag across the weekly
+// rollover : the transmitted WN is that of the START of the data set's
+// transmission interval (IS-GPS-200N §30.3.3.1.1.1; the LNAV WN is likewise
+// data-set-scoped — it can only change with an IODC cutover, §20.3.4.4), so a
+// set cut over shortly before Saturday-midnight GPS time keeps broadcasting the
+// previous week into the new one for up to its transmission interval —
+// nominally 2 h (Table 20-XII normal operations); 4 h here for margin. An
+// extended-operations set (the CS unable to upload for a day+) can exceed the
+// grace and fire wn_mismatch — accepted: extended ops is itself monitor-worthy,
+// and silently widening the window would blunt the replay-detection value.
+const wnRolloverGraceS = 4 * 3600
+
+// checkBroadcastWN  compares a decoded broadcast week number
+// (truncated to the field's width) against the collector wall-clock GPS week —
+// the cheapest time-domain integrity check there is, and DisambiguateWeek's
+// intended production caller (it previously had none: both WN fields were
+// decoded and never read). A mismatch means an upload error, an SV time fault,
+// or a replayed/spoofed signal carrying a plausible TOW under a wrong week
+// (docs/DEFENSE-PNT.md's time-plausibility gate). GPS and QZSS share GPS week
+// numbering. Called with the shard lock held; the result feeds wn_mismatch →
+// the detector's debounced wn_mismatch event.
+func (st *svState) checkBroadcastWN(recv time.Time, wn, bits int) {
+	full := gnsstime.DisambiguateWeek(gnsstime.SysGPS, wn, bits, float64(recv.Unix()))
+	expect := int((recv.Unix() - gpsEpochUnix + gpsUTCOffset) / weekSeconds)
+	mismatch := full != expect
+	if mismatch && full == expect-1 && gpsTOW(recv) < wnRolloverGraceS {
+		mismatch = false // data-set WN lagging across the rollover: designed behavior
+	}
+	st.wnMismatch, st.haveWN = mismatch, true
 }
 
 // gpsTOW returns the GPS/QZSS time-of-week (seconds) for a wall-clock instant.

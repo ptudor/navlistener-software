@@ -263,6 +263,28 @@ func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, emit em
 		})
 	}
 
+	// Broadcast week-number anomaly : the SV's transmitted week (LNAV
+	// 10-bit / CNAV 13-bit, rollover-disambiguated in state) disagrees with the
+	// collector wall-clock week — an upload error, an SV time fault, or a
+	// replayed/spoofed signal carrying a plausible TOW under a wrong week (the
+	// cheapest time-domain anomaly in docs/DEFENSE-PNT.md's plausibility set).
+	// Critical on mismatch; debounced like every metric here.
+	if sv.WnMismatch != nil {
+		bad := *sv.WnMismatch
+		sev := SevInfo
+		if bad {
+			sev = SevCritical
+		}
+		emit(name, "wn", boolState(bad, "mismatch", "ok"), func(old string) Event {
+			return Event{
+				Type: "wn_mismatch", OldValue: old, NewValue: boolState(bad, "mismatch", "ok"),
+				Severity: sev,
+				Message:  fmt.Sprintf("%s broadcast week number %s wall-clock week", sv.Name, map[bool]string{true: "disagrees with", false: "matches"}[bad]),
+				Params:   map[string]any{"sv": sv.Name, "wn_mismatch": bad},
+			}
+		})
+	}
+
 	// Silence (observation lost).
 	silent := float64(sv.LastSeenS) > SilentThreshold
 	emit(name, "silence", boolState(silent, "silent", "seen"), func(old string) Event {
