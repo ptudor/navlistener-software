@@ -64,9 +64,30 @@ const (
 	// (surfaced via eph_age_m / eph_aged) is untouched by design. Past the cap,
 	// Propagate skips the SV, posAt stops advancing, and posStaleBound expires
 	// the served position naturally (position_unknown then fires). The GLONASS
-	// path has the same wrap class at ±half-DAY via EphAgeDay — recorded as a
-	// follow-up finding for the GLONASS pass, not silently fixed here.
+	// twin of this cap is gloPropagateMaxEphAge.
 	propagateMaxEphAge = 72 * time.Hour
+
+	// gloPropagateMaxEphAge (regression fix, the GLONASS twin of propagateMaxEphAge) caps
+	// how long past its wall-clock apply time (svState.gloEphAt) a GLONASS
+	// immediate ephemeris keeps being propagated into served positions. GLONASS is
+	// categorically sharper than the Kepler family here: the broadcast state
+	// vector is referred to the MIDDLE of its tb interval and updated every
+	// 30/45/60 min (GLO-ICD-5.1 §4.4, Table 4.3), the simplified J₂+constant-
+	// luni-solar model is characterized by the ICD only over that ±15-min span,
+	// and the RK4's error COMPOUNDS with distance instead of staying a closed-form
+	// conic. Worse, the propagation interval tk comes from gnsstime.EphAgeDay,
+	// which wraps at ±half a DAY (GLONASS has no week/TOW): past +12 h the served
+	// eph_age_m flips negative (un-firing eph_aged on a worsening SV) and the RK4
+	// integrates the frozen state ~12 h BACKWARD — a position on the wrong side of
+	// the orbit, stamped fresh. 60 min = the maximum broadcast tb update interval
+	// (Table 4.3): one full missed changeover of margin over the fit interval,
+	// far below the 12 h wrap horizon, and deliberately NOT the 4 h discoTrustAge
+	// (that gate bounds disco comparisons, not position validity). Past the cap,
+	// Propagate skips the SV (posAt stops advancing, posStaleBound retires the
+	// served position, position_unknown fires) while the entry keeps serving
+	// health/metadata, and feedSV switches eph_age_m to the un-wrappable
+	// wall-clock age so eph_aged latches and stays latched.
+	gloPropagateMaxEphAge = 60 * time.Minute
 
 	// posStaleBound  is how old a stored propagation epoch (svState.posAt)
 	// may be before the feed omits the position/tow/wn entirely rather than serve a
@@ -1328,6 +1349,18 @@ func (s *Store) Propagate(now time.Time) {
 		for _, st := range sh.m {
 			if st.key.G == gnss.GLONASS {
 				if !st.haveGloEph {
+					continue
+				}
+				// refuse to serve positions from a GLONASS ephemeris past its
+				// wall-clock validity cap (see gloPropagateMaxEphAge). Without this gate
+				// the frozen state was re-integrated and re-stamped fresh on every tick
+				// forever — through the km-wrong 0.5–2 h regime (reachable from a plain
+				// reception gap: any decoded string refreshes lastSeen, so choppy
+				// reception keeps the entry alive without completing a 1/2/3 set) and
+				// past the ±12 h EphAgeDay wrap into backward integration. Wall clock
+				// (now − gloEphAt) cannot wrap. Skipping (not zeroing) lets posStaleBound
+				// expire the previously-served position naturally.
+				if st.gloEphAt.IsZero() || now.Sub(st.gloEphAt) > gloPropagateMaxEphAge {
 					continue
 				}
 				tk := gnsstime.EphAgeDay(gloTOD(now), st.gloEph.Tb)

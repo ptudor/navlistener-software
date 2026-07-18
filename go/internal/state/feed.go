@@ -236,7 +236,21 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 
 	if g == gnss.GLONASS {
 		if st.haveGloEph {
+			// Inside the serving cap the ICD-defined day-wrapped age is served
+			// unchanged; it is legitimately NEGATIVE for roughly the first half of
+			// each tb interval, because the immediate data are referred to the
+			// MIDDLE of the interval (GLO-ICD-5.1 §4.4) — documented in
+			// docs/OUTPUT.md §1.1, not a bug.
 			age := gnsstime.EphAgeDay(gloTOD(now), st.gloEph.Tb) / 60.0
+			// regression fix (the regression fix discipline at GLONASS's ±12 h horizon): the
+			// EphAgeDay wrap saturates at +720 min and then goes negative, so a
+			// worsening SV's served age would lie and flip the eph_aged detector
+			// back to "fresh". Past the serving cap switch to the wall-clock age
+			// since apply — a lower bound on the true broadcast age, monotone,
+			// cannot wrap — so eph_aged latches correctly with no further change.
+			if wall := now.Sub(st.gloEphAt); !st.gloEphAt.IsZero() && wall > gloPropagateMaxEphAge {
+				age = wall.Minutes()
+			}
 			if finite(age) {
 				e.EphAgeM = &age
 			}

@@ -19,6 +19,17 @@ var errBadStringNum = errors.New("frame: GLONASS string number out of range (1..
 // ErrGLONASSHamming  is returned when a string fails the ICD §4.7 Hamming check.
 var ErrGLONASSHamming = errors.New("frame: GLONASS string Hamming check failed")
 
+// errBadTb  is returned for a string 2 whose tb index is outside the ICD's
+// effective range. tb is a 7-bit index of a 15-min interval within the current day
+// (GLONASS ICD Ed. 5.1 §4.4), so the codespace (0..127 ≈ 31.75 h) exceeds a day;
+// Table 4.5 bounds the effective range to 15…1425 minutes — index 1..95. An
+// out-of-range tb decodes to a finite-but-garbage epoch that EphAgeDay's single
+// ±43 200 s wrap then aliases into an in-domain RK4 propagation interval, defeating
+// the regression fix domain guard and silently mis-epoching the served position — reject at
+// the boundary instead (the regression fix idiom). The §4.7 Hamming check upstream is an
+// 8-bit detect-only code, not a strong CRC, so this range gate is real defense.
+var errBadTb = errors.New("frame: GLONASS tb index out of range (1..95)")
+
 // gloHammingRange builds the inclusive integer range [lo, hi].
 func gloHammingRange(lo, hi int) []int {
 	s := make([]int, 0, hi-lo+1)
@@ -211,6 +222,12 @@ func DecodeGLONASSString(words []uint32) (*GLONASSString, error) {
 	if m == 2 {
 		bn, _ := r.Bits(5, 3)
 		tb, _ := r.Bits(9, 7)
+		// tb must lie in the ICD's effective range 15…1425 min = index 1..95
+		// (GLO-ICD-5.1 Table 4.5; the per-P1 grid of Table 4.3 is finer, but 1..95
+		// holds regardless of P1). See errBadTb for why an out-of-day tb is dangerous.
+		if tb < 1 || tb > 95 {
+			return nil, errBadTb
+		}
 		s.Health = int(bn)
 		s.Tb = float64(tb) * gloTbSec
 	}

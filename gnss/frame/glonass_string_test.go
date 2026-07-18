@@ -107,6 +107,33 @@ func TestExportedGLONASSDecodersValidateInputs(t *testing.T) {
 	}
 }
 
+// TestDecodeGLONASSStringTbRange guards tb is a 7-bit index of a 15-min
+// interval within the current day, effective range 15…1425 min = index 1..95
+// (GLO-ICD-5.1 §4.4, Table 4.5). The codespace 96..127 exceeds a day and index 0
+// is outside the effective range; both decode without complaint upstream (the §4.7
+// Hamming check is detect-only, not a strong CRC) and a garbage tb aliases through
+// EphAgeDay's single ±43 200 s wrap into a finite, in-domain, silently wrong RK4
+// propagation interval — so the decoder must reject out-of-range indices outright.
+func TestDecodeGLONASSStringTbRange(t *testing.T) {
+	mk := func(tb int) []uint32 {
+		return gloStringWords(2, func(buf []byte) { setBits(buf, 9, 7, uint64(tb)) })
+	}
+	for _, tb := range []int{0, 96, 100, 127} {
+		if _, err := DecodeGLONASSString(mk(tb)); err != errBadTb {
+			t.Errorf("tb index %d: err = %v, want errBadTb", tb, err)
+		}
+	}
+	for _, tb := range []int{1, 45, 95} {
+		s, err := DecodeGLONASSString(mk(tb))
+		if err != nil {
+			t.Fatalf("tb index %d rejected: %v", tb, err)
+		}
+		if want := float64(tb) * 900; s.Tb != want {
+			t.Errorf("tb index %d: Tb = %v s, want %v", tb, s.Tb, want)
+		}
+	}
+}
+
 // TestDecodeGLONASSStringClockTerms guards γn(tb) from string 3 and
 // τn(tb)/Δτn from string 4, at the GLONASS ICD Ed. 5.1 Table 4.6 positions
 // (γn bits 69–79 → block offset 6, width 11; τn bits 59–80 → offset 5, width 22;
