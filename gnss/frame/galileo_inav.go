@@ -113,6 +113,8 @@ type GalileoINAV struct {
 	// scale factor 1). GST epoch is 1999-08-22 (gnsstime.go); this 12-bit field
 	// must never be confused with GPS's 10-bit WN -- it lives only on this
 	// Galileo-specific struct, never a field shared with another constellation.
+	// consumed by the state layer's broadcast-vs-receiver GST week
+	// cross-check (wn_mismatch), on the GST axis via gnsstime.SysGalileo.
 	WN     int
 	TOW    float64
 	E5bDVS int // E5b Data Validity Status (word 5): 0 valid, 1 working without guarantee

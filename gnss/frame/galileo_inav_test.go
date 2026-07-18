@@ -268,10 +268,12 @@ func fnavBufToWords(buf []byte) []uint32 {
 // the offset (a ±1-bit regression would land in TOW's LSB or the spare field).
 func TestDecodeGalileoFNAVPage1SISAHealth(t *testing.T) {
 	buf := make([]byte, 32)
-	setFNAVBufBits(buf, 0, 1, 6)    // page type = 1
-	setFNAVBufBits(buf, 94, 200, 8) // SISA = 200
-	setFNAVBufBits(buf, 153, 2, 2)  // E5aHS = 2
-	setFNAVBufBits(buf, 187, 1, 1)  // E5aDVS = 1 (working without guarantee, Table 81)
+	setFNAVBufBits(buf, 0, 1, 6)         // page type = 1
+	setFNAVBufBits(buf, 94, 200, 8)      // SISA = 200
+	setFNAVBufBits(buf, 153, 2, 2)       // E5aHS = 2
+	setFNAVBufBits(buf, 155, 3500, 12)   // GST WN = 3500 (> a 10-bit field's max, regression fix)
+	setFNAVBufBits(buf, 167, 483000, 20) // GST TOW = 483000 s
+	setFNAVBufBits(buf, 187, 1, 1)       // E5aDVS = 1 (working without guarantee, Table 81)
 	words := fnavBufToWords(buf)
 	StampGalileoFNAVCRC(words)
 	w, err := DecodeGalileoFNAV(words)
@@ -286,6 +288,9 @@ func TestDecodeGalileoFNAVPage1SISAHealth(t *testing.T) {
 	}
 	if w.E5aHS != 2 {
 		t.Errorf("E5aHS = %d, want 2", w.E5aHS)
+	}
+	if w.WN != 3500 || w.TOW != 483000 {
+		t.Errorf("WN/TOW = %d/%v, want 3500/483000 (Table 30 offsets 155/167)", w.WN, w.TOW)
 	}
 	if w.E5aDVS != 1 {
 		t.Errorf("E5aDVS = %d, want 1 (bit 187, Table 30)", w.E5aDVS)

@@ -6,6 +6,7 @@ import (
 
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/gnss/frame"
+	"github.com/ptudor/gnss/gnsstime"
 	"github.com/ptudor/navlistener/internal/ingest"
 )
 
@@ -63,6 +64,85 @@ func inavWordN(wordType, iod int, mutate func(content []byte)) []uint32 {
 
 func galileoFrame(svid int, words []uint32, recv time.Time) *ingest.RawFrame {
 	return &ingest.RawFrame{GnssID: gnss.Galileo, SvID: svid, SigID: 0, Source: "obs-inav", Recv: recv, Words: words}
+}
+
+// TestFeedGalileoGSTWnMismatch guards the I/NAV word-5 GST WN — dead
+// since its regression fix decode — must feed the regression fix broadcast-vs-receiver week
+// gate ON THE GST AXIS (GST week = GPS week − 1024, regression fix): a correct
+// broadcast serves wn_mismatch=false, a wrong-week broadcast (replay/SV time
+// fault) serves true, and comparing on the wrong axis would fail both halves
+// of this test at once. The F/NAV page-1 twin (closing the regression fix residual)
+// runs the same gate on the independent @3 entry.
+func TestFeedGalileoGSTWnMismatch(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	gstWeek, ok := gnsstime.WeekAt(gnsstime.SysGalileo, float64(now.Unix()), 18)
+	if !ok {
+		t.Fatal("WeekAt(SysGalileo) not ok")
+	}
+	// Sanity-pin the axis itself: GST week must be exactly 1024 behind GPS week.
+	if gpsWeek, _ := gnsstime.WeekAt(gnsstime.SysGPS, float64(now.Unix()), 18); gstWeek != gpsWeek-1024 {
+		t.Fatalf("GST week %d vs GPS week %d, want a 1024-week offset", gstWeek, gpsWeek)
+	}
+
+	word5 := func(wn int) []uint32 {
+		return inavWordN(5, 0, func(c []byte) {
+			inavSetBits(c, 73, uint64(wn), 12) // GST WN (Table 46/69)
+			inavSetBits(c, 85, 300000, 20)     // mid-week TOW, away from the rollover grace
+		})
+	}
+
+	s := New(4)
+	const svid = 23
+	// FeedSVs publishes only entries with an assembled ephemeris; the check
+	// itself rides word 5 alone.
+	for _, wt := range []int{1, 2, 3, 4} {
+		s.Apply(galileoFrame(svid, inavWordN(wt, 3, nil), now))
+	}
+	s.Apply(galileoFrame(svid, word5(gstWeek&0xFFF), now))
+	sv := s.FeedSVs(now)["E23@0"]
+	if sv.WnMismatch == nil || *sv.WnMismatch {
+		t.Fatalf("wn_mismatch = %v for the correct GST week %d, want present and false", sv.WnMismatch, gstWeek)
+	}
+
+	s.Apply(galileoFrame(svid, word5((gstWeek+5)&0xFFF), now))
+	sv = s.FeedSVs(now)["E23@0"]
+	if sv.WnMismatch == nil || !*sv.WnMismatch {
+		t.Fatalf("wn_mismatch = %v for GST week %d (+5), want true", sv.WnMismatch, gstWeek+5)
+	}
+
+	// F/NAV @3: page 1 carries the same live GST WN (Table 30 @155).
+	fnavP1 := func(wn int) []uint32 {
+		buf := make([]byte, 32)
+		setBits := func(off int, v uint64, n int) {
+			for i := 0; i < n; i++ {
+				if v&(1<<uint(n-1-i)) != 0 {
+					p := off + i
+					buf[p>>3] |= 1 << uint(7-(p&7))
+				}
+			}
+		}
+		setBits(0, 1, 6)
+		setBits(155, uint64(wn), 12)
+		setBits(167, 300000, 20)
+		words := make([]uint32, 8)
+		for i := 0; i < 8; i++ {
+			words[i] = uint32(buf[i*4])<<24 | uint32(buf[i*4+1])<<16 | uint32(buf[i*4+2])<<8 | uint32(buf[i*4+3])
+		}
+		frame.StampGalileoFNAVCRC(words)
+		return words
+	}
+	s2 := New(4)
+	s2.Apply(&ingest.RawFrame{GnssID: gnss.Galileo, SvID: svid, SigID: 3, Source: "obs-fnav", Recv: now, Words: fnavP1(gstWeek & 0xFFF)})
+	// Page 1 alone assembles no ephemeris; read the shard state directly.
+	key := Key{G: gnss.Galileo, Sv: svid, Sig: 3}
+	st := s2.shardFor(key).m[key]
+	if st == nil || !st.haveWN || st.wnMismatch {
+		t.Fatalf("F/NAV correct GST week: haveWN/wnMismatch = %v/%v, want true/false", st != nil && st.haveWN, st != nil && st.wnMismatch)
+	}
+	s2.Apply(&ingest.RawFrame{GnssID: gnss.Galileo, SvID: svid, SigID: 3, Source: "obs-fnav", Recv: now, Words: fnavP1((gstWeek + 7) & 0xFFF)})
+	if st = s2.shardFor(key).m[key]; !st.wnMismatch {
+		t.Fatal("F/NAV wrong GST week (+7) not flagged")
+	}
 }
 
 // inavWithOSNMA pokes a 40-bit OSNMA pattern into an already-built I/NAV page

@@ -35,6 +35,13 @@ type GalileoFNAV struct {
 	// (how DVS maps into the frozen health enum) lands; until then it is
 	// deliberately decoded-but-unserved, like I/NAV's E1B/E5b DVS bits.
 	E5aDVS int
+	// WN/TOW (page 1 only, regression fix): the live broadcast GST week (12 bits) and
+	// time-of-week (20 bits), plain integer counts (GAL-OS-SIS-ICD-2.2 Table
+	// 69 via Table 30 — WN@155, TOW@167). Same semantics and caveats as
+	// GalileoINAV's word-5 pair; consumed by the state layer's
+	// broadcast-vs-receiver GST week cross-check on the @3 entry.
+	WN  int
+	TOW float64
 	// BGDE1E5a is the raw broadcast E1-E5a group delay (page 1 only, regression fix),
 	// seconds — 10-bit two's complement × 2⁻³² (GAL-OS-SIS-ICD-2.2 Table 30
 	// position, Table 72 coding). The F/NAV clock is the (E1,E5a) pair (Table
@@ -121,6 +128,8 @@ func DecodeGalileoFNAV(words []uint32) (*GalileoFNAV, error) {
 		w.SISA = int(u(94, 8))
 		w.E5aHS = int(u(153, 2))
 		w.E5aDVS = int(u(187, 1)) // Table 81 — 0 valid, 1 working without guarantee
+		w.WN = int(u(155, 12))    // GST week/TOW, unscaled integer counts (Table 69)
+		w.TOW = float64(u(167, 20))
 		w.BGDE1E5a = float64(s(143, 10)) * p2m32
 		w.clk = clock.Model{
 			ID:  gnss.Galileo,

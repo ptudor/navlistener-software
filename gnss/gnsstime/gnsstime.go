@@ -139,6 +139,22 @@ func (t GNSSTime) ToUnix(gpsMinusUTC float64) (float64, bool) {
 	return gpsEpochUnix + gs - gpsMinusUTC, true
 }
 
+// WeekAt returns sys's own full (untruncated) week number at the given Unix
+// instant, using the caller-supplied current GPS−UTC leap offset (it only
+// selects the week, so whole-second accuracy is ample). this is the
+// "expected week" side of a broadcast-vs-receiver week cross-check — pair it
+// with DisambiguateWeek on the broadcast side, same sys — generalized here so
+// the check works on any continuous-week system's own numbering (GST week =
+// GPS week − 1024, etc.) instead of hardcoding the GPS axis. ok=false for
+// GLONASS (no week number) or an unknown system.
+func WeekAt(sys System, unix, gpsMinusUTC float64) (int, bool) {
+	off, ok := epochGPSSeconds[sys]
+	if !ok {
+		return 0, false
+	}
+	return int(math.Floor((unix - gpsEpochUnix + gpsMinusUTC - off) / WeekSeconds)), true
+}
+
 // DisambiguateWeek recovers a full week number from a truncated broadcast field.
 // LNAV sends a 10-bit GPS week (1024-week ambiguity); other messages send wider
 // fields. Given the truncated value, the field width in bits, and an approximate

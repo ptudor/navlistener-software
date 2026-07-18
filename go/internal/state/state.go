@@ -593,7 +593,7 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 		// missed cutovers rather than spec-sanctioned mid-set changes).
 		st.health, st.haveHealth = cnavCarrierHealth(f.GnssID, f.SigID, m.Health), true
 		st.accKind, st.accIdx = accURAED, m.URAED
-		st.checkBroadcastWN(recv, m.WN, 13) // regression fix
+		st.checkBroadcastWN(recv, gnsstime.SysGPS, m.WN, 13) // regression fix (QZSS shares GPS week numbering)
 	case m.MsgType == 11:
 		st.gc11 = m
 	default: // MT30–37 all carry the common clock block
@@ -718,7 +718,7 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 	case 1:
 		st.sf1 = sf
 		// cross-check the broadcast 10-bit WN against the wall-clock week.
-		st.checkBroadcastWN(recv, sf.WN, 10)
+		st.checkBroadcastWN(recv, gnsstime.SysGPS, sf.WN, 10)
 		// apply health/URA at subframe-1 arrival, BEFORE the IOD gate below, so a
 		// health-bit flip that arrives under an unchanged IODC (a re-broadcast subframe 1,
 		// or an IODC bump confined to its two high bits that leaves the low-8 IODE
@@ -823,6 +823,12 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 	if w.Type == 5 {
 		st.health, st.haveHealth = w.Health, true
 		st.galW[5] = w
+		// word 5's GST WN/TOW is the SV's live broadcast time (Table
+		// 69), decoded since regression fix but consumed by nothing — cross-check the
+		// broadcast GST week against the collector wall clock (the regression fix
+		// gate, on the GST axis), so a satellite or spoofer transmitting a
+		// wrong GST week surfaces as wn_mismatch instead of being invisible.
+		st.checkBroadcastWN(recv, gnsstime.SysGalileo, w.WN, 12)
 		if st.haveEph && st.galW[1] != nil && st.galW[2] != nil && st.galW[3] != nil && st.galW[4] != nil {
 			if _, clk, err := frame.AssembleGalileo(f.SvID, st.galW[1], st.galW[2], st.galW[3], st.galW[4], st.galW[5]); err == nil {
 				st.clk.TGD = clk.TGD
@@ -878,8 +884,9 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 // I/NAV (@0) positions bit-for-bit for every SV (E07/E13/…: identical x,y,z, same IODnav) — the
 // cross-signal agreement the design wants. Caveats still open: a single receiver over a single
 // session (not soaked across many IODnav changeovers / health flips); E5a-Q (sigId 4) is a
-// dataless pilot never exercised; the F/NAV GST week/TOW is not frame-decoded, so a served wn
-// derives from system time, not the page; and E5b-I I/NAV (sigId 5) is still undispatched.
+// dataless pilot never exercised; the served wn still derives from system time per the regression fix
+// week convention (the page-1 GST WN is now decoded and cross-checked → wn_mismatch, regression fix,
+// but is not what wn serves); and E5b-I I/NAV (sigId 5) is still undispatched.
 func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 	w, err := frame.DecodeGalileoFNAV(f.Words)
 	if err != nil {
@@ -934,6 +941,10 @@ func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 	if w.PageType == 1 {
 		st.health, st.haveHealth = w.E5aHS, true
 		st.accKind, st.accIdx = accSISA, w.SISA
+		// regression fix (closing the regression fix F/NAV residual): page 1's live GST WN
+		// cross-checks against wall clock on this @3 entry, independently of
+		// the I/NAV @0 check — two signals, two broadcast time channels.
+		st.checkBroadcastWN(recv, gnsstime.SysGalileo, w.WN, 12)
 		// BGD(E1,E5a) also rides page 1, but — like I/NAV's word-5 BGD —
 		// it is NOT in the IODnav-covered data set (GAL-OS-SIS-ICD-2.2 §5.1.9.2
 		// scopes the IODnav to ephemeris, clock correction and SISA), and the
@@ -1704,18 +1715,26 @@ func (s *Store) ExpireStations(now time.Time) {
 // and silently widening the window would blunt the replay-detection value.
 const wnRolloverGraceS = 4 * 3600
 
-// checkBroadcastWN  compares a decoded broadcast week number
-// (truncated to the field's width) against the collector wall-clock GPS week —
-// the cheapest time-domain integrity check there is, and DisambiguateWeek's
-// intended production caller (it previously had none: both WN fields were
-// decoded and never read). A mismatch means an upload error, an SV time fault,
-// or a replayed/spoofed signal carrying a plausible TOW under a wrong week
-// (docs/DEFENSE-PNT.md's time-plausibility gate). GPS and QZSS share GPS week
-// numbering. Called with the shard lock held; the result feeds wn_mismatch →
-// the detector's debounced wn_mismatch event.
-func (st *svState) checkBroadcastWN(recv time.Time, wn, bits int) {
-	full := gnsstime.DisambiguateWeek(gnsstime.SysGPS, wn, bits, float64(recv.Unix()))
-	expect := int((recv.Unix() - gpsEpochUnix + gpsUTCOffset) / weekSeconds)
+// checkBroadcastWN (regression fix; sys parameter regression fix) compares a decoded
+// broadcast week number (truncated to the field's width) against the collector
+// wall-clock week ON THE SAME SYSTEM'S NUMBERING — the cheapest time-domain
+// integrity check there is, and DisambiguateWeek's intended production caller
+// (it previously had none: both WN fields were decoded and never read). A
+// mismatch means an upload error, an SV time fault, or a replayed/spoofed
+// signal carrying a plausible TOW under a wrong week (docs/DEFENSE-PNT.md's
+// time-plausibility gate). GPS and QZSS share GPS week numbering (pass
+// SysGPS); Galileo's 12-bit GST week counts from the 1999-08-22 GST epoch
+// (SysGalileo — GST week = GPS week − 1024, regression fix), so comparing it on the
+// GPS axis would flag every healthy SV. The rollover grace below keys on
+// gpsTOW, which GST shares to the second  — revisit if a BDT caller
+// ever appears (BDT TOW is shifted 14 s). Called with the shard lock held;
+// the result feeds wn_mismatch → the detector's debounced wn_mismatch event.
+func (st *svState) checkBroadcastWN(recv time.Time, sys gnsstime.System, wn, bits int) {
+	full := gnsstime.DisambiguateWeek(sys, wn, bits, float64(recv.Unix()))
+	expect, ok := gnsstime.WeekAt(sys, float64(recv.Unix()), float64(gpsUTCOffset))
+	if !ok {
+		return // no week numbering for this system; leave haveWN untouched
+	}
 	mismatch := full != expect
 	if mismatch && full == expect-1 && gpsTOW(recv) < wnRolloverGraceS {
 		mismatch = false // data-set WN lagging across the rollover: designed behavior
