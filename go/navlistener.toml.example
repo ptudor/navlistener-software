@@ -67,6 +67,9 @@ ack_interval = "1s"
 # station      = "observer16"
 # token_sha256 = "….64 hex chars.…"
 # feeds        = ["ubx"]
+# capabilities = ["0:0", "2:0", "6:0"]  # declared tudorgps fingerprint, same "gnss:sig"
+#                             # form as on [[ingest]] below; a push observer's declaration
+#                             # overrides a dial source of the same name. Omit if unknown.
 
 # One [[ingest]] block per receiver we dial. type ∈ { ubx, sbf, rtcm, ntrip }.
 # Leave disabled = true to keep an entry without starting it.
@@ -75,6 +78,9 @@ ack_interval = "1s"
 # name = "observer16"           # our reference u-blox F9 box
 # type = "ubx"                # UBX-RXM-SFRBX raw nav words
 # addr = "192.0.2.16:2947"    # host:port to dial on the LAN
+# remark = "roof antenna, San Diego"  # the PUBLIC station label: the ONLY operator field
+#                             # that reaches the observers feed (regression fix — addr never does).
+#                             # Empty/omitted = no public label.
 # capabilities = ["0:0", "2:0", "2:3", "3:0", "6:0"]  # declared tudorgps fingerprint: the
 #                             # "gnss:sig" signals this silicon can produce (GPS L1, Galileo
 #                             # I/NAV + F/NAV, BeiDou D1, GLONASS). The integrity layer flags a

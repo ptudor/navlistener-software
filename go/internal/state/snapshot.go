@@ -4,6 +4,16 @@ import "time"
 
 // Snapshot is the loopback /debug/state view of live SV state — a subset of the
 // future native v2 svs feed, used to verify the pipeline before that feed exists.
+//
+// regression fix (recorded design fact, not a defect): this is an in-RAM debug view
+// only — there is NO cross-restart state persistence anywhere in the daemon.
+// Every restart rebuilds the registry from live ingest (positions absent until
+// each SV re-broadcasts a full set; discos need a second post-restart ephemeris,
+// correctly gated on prior haveEph), consistent with the "re-decode from raw
+// frames" design: the historian's nav_frames hypertable is the durable record
+// and enables offline replay. If a restart blackout ever matters operationally
+// (a disco spanning a deploy), the fix is a warm-start replay of the last few
+// minutes of nav_frames at boot — not a snapshot file bolted onto this view.
 type Snapshot struct {
 	Time    string             `json:"time"`
 	LiveSVs int                `json:"live_svs"`

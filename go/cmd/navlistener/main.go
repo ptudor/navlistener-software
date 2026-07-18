@@ -126,8 +126,19 @@ func run() int {
 			http.Error(w, "forbidden: /debug/state is loopback-only", http.StatusForbidden)
 			return
 		}
+		// marshal to a buffer BEFORE committing a status, so an encode
+		// failure is a clean 500 + log instead of a silently truncated 200.
+		// Defense-in-depth: every float in SVEntry is finite-gated (snapshot.go),
+		// so this branch is unreachable today — kept so a future field can never
+		// reintroduce the truncation mode.
+		b, err := json.Marshal(live.Snapshot(time.Now()))
+		if err != nil {
+			log.Error("debug/state marshal failed", "error", err)
+			http.Error(w, "encode failed", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(live.Snapshot(time.Now()))
+		_, _ = w.Write(b) // a mid-write client disconnect is the client's problem
 	}
 	obs := server.New(cfg.Metrics.Addr, log, debugState)
 	obsLn, err := obs.Listen()
