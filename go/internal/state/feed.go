@@ -39,6 +39,11 @@ type FeedSV struct {
 	// §20.3.3.3.1.3: use at own risk) was indistinguishable from "no accuracy
 	// field decoded yet", and the sentinel produced zero integrity signal.
 	AccIndex *int `json:"acc_index,omitempty"`
+	// Alert is the GPS/QZSS broadcast URA-alert flag (regression fix/regression fix, IS-GPS-200N
+	// §20.3.3.2 HOW bit 18 / §6.4.6.3 CNAV bit 38): true = the SV itself declares
+	// its URA may be worse than broadcast — use at own risk. Absent until decoded
+	// (and for constellations without the flag).
+	Alert *bool `json:"alert,omitempty"`
 	IOD              *int     `json:"iod,omitempty"`
 	OrbitDiscoM      *float64 `json:"orbit_disco_m,omitempty"`
 	OrbitDiscoAgeS   *float64 `json:"orbit_disco_age_s,omitempty"`
@@ -178,6 +183,10 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 	if st.accKind != accNone {
 		idx := st.accIdx
 		e.AccIndex = &idx // serve the raw index even when it maps to no metres value
+	}
+	if st.haveAlert {
+		a := st.alert
+		e.Alert = &a
 	}
 	if m, ok := sisaFor(st.accKind, st.accIdx); ok && finite(m) {
 		e.SISAValid, e.SISAM = true, &m

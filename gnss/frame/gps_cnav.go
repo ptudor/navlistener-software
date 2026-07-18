@@ -60,7 +60,15 @@ type GPSCNAV struct {
 	// of the NEXT 12-second message (6 s for L5 CNAV per IS-GPS-705 — the offset is
 	// signal-dependent), not this message. No internal consumer reads it today; documented
 	// so a library user doesn't mis-time frames by 6/12 s.
-	TOW     float64
+	TOW float64
+	// Alert  is the common-header alert flag, ICD bit 38 — the single
+	// bit between TOW (ends at bit 37) and the MT10 WN (starts at bit 39).
+	// IS-GPS-200N §6.4.6.3: raised means the CM/CL-code URA components "do not
+	// apply … the URA may be worse than indicated" — use at own risk, one of the
+	// ICD's marginal conditions. Present in EVERY CNAV message type (Table 6-I-1
+	// lists Alert against "All" messages); QZSS mirrors the layout
+	// (QZSS-PNT-006 §4.3.1, Figure 4.3.1-1).
+	Alert   bool
 	eph     kepler.Ephemeris
 	clk     clock.Model
 	hasEph2 bool // message 11 present (has i0/Ω0)
@@ -114,6 +122,7 @@ func DecodeGPSCNAV(id gnss.GNSSID, words []uint32) (*GPSCNAV, error) {
 		MsgType: int(u(14, 6)),
 		PRN:     int(u(8, 6)),
 		TOW:     float64(u(20, 17)) * 6,
+		Alert:   u(37, 1) != 0, // ICD bit 38, 0-indexed 37 (TOW ends at 37, WN starts at 39)
 	}
 	semi := physconst.Pi
 	switch {

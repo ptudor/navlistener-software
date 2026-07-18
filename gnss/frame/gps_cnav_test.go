@@ -294,6 +294,49 @@ func TestDecodeGPSCNAVRejectsBadPreambleAndCRC(t *testing.T) {
 	}
 }
 
+// TestDecodeGPSCNAVAlertFlag guards the common-header alert flag (ICD
+// bit 38, the single bit between TOW ending at 37 and the MT10 WN starting at
+// 39; 0-indexed 37) is the L2C/L5 "URA may be worse than indicated — use at own
+// risk" declaration (IS-GPS-200N §6.4.6.3) and was never decoded. It must
+// decode on every message type, and must not disturb the adjacent TOW/WN.
+func TestDecodeGPSCNAVAlertFlag(t *testing.T) {
+	for _, build := range []func() []uint32{
+		func() []uint32 { return cnavMsg10Words(2296, 0, 2, 400) },
+		func() []uint32 { return cnavMsg11Words(400) },
+		func() []uint32 { return cnavMsg30Words(400, 1, 1, 1, 1, 1, 1, 1, 1) },
+	} {
+		words := build()
+		m, err := DecodeGPSCNAV(gnss.GPS, words)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m.Alert {
+			t.Errorf("MT%d: alert reads raised on a clear header", m.MsgType)
+		}
+
+		// Re-pack with bit 37 set.
+		buf := make([]byte, 40)
+		for i, w := range words {
+			buf[i*4], buf[i*4+1], buf[i*4+2], buf[i*4+3] = byte(w>>24), byte(w>>16), byte(w>>8), byte(w)
+		}
+		setBits(buf, 37, 1, 1)
+		setCNAVPreambleAndCRC(buf)
+		for i := range words {
+			words[i] = uint32(buf[i*4])<<24 | uint32(buf[i*4+1])<<16 | uint32(buf[i*4+2])<<8 | uint32(buf[i*4+3])
+		}
+		m2, err := DecodeGPSCNAV(gnss.GPS, words)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !m2.Alert {
+			t.Errorf("MT%d: alert bit 38 not decoded", m2.MsgType)
+		}
+		if m2.TOW != m.TOW || m2.WN != m.WN {
+			t.Errorf("MT%d: alert bit disturbed TOW/WN: %v/%d vs %v/%d", m2.MsgType, m2.TOW, m2.WN, m.TOW, m.WN)
+		}
+	}
+}
+
 // TestDecodeGPSCNAVMsg10Integrity guards message type 10 previously decoded
 // only the ephemeris fields, silently dropping WN (bits 39-51), the L1/L2/L5 health
 // flags (52-54), and URA_ED (66-70) — integrity-relevant fields already captured

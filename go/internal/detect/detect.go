@@ -242,6 +242,27 @@ func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, emit em
 		})
 	}
 
+	// URA-alert flag transition : the SV's own broadcast "URA may
+	// be worse than indicated — use at own risk" declaration (IS-GPS-200N
+	// §20.3.3.2 HOW bit 18 / CNAV bit 38), one of the ICD's §6.4.6.3 marginal
+	// conditions — surfaced alongside health/URA changes instead of being dropped
+	// at decode. Absent (nil) = flag not decoded: no classification (regression fix rule).
+	if sv.Alert != nil {
+		raised := *sv.Alert
+		sev := SevInfo
+		if raised {
+			sev = SevWarning // marginal, not critical — the URA/health detectors carry the hard states
+		}
+		emit(name, "ura_alert", boolState(raised, "raised", "clear"), func(old string) Event {
+			return Event{
+				Type: "ura_alert", OldValue: old, NewValue: boolState(raised, "raised", "clear"),
+				Severity: sev,
+				Message:  fmt.Sprintf("%s URA alert flag %s", sv.Name, boolState(raised, "raised", "clear")),
+				Params:   map[string]any{"sv": sv.Name, "alert": raised},
+			}
+		})
+	}
+
 	// Silence (observation lost).
 	silent := float64(sv.LastSeenS) > SilentThreshold
 	emit(name, "silence", boolState(silent, "silent", "seen"), func(old string) Event {

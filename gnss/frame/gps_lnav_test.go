@@ -156,6 +156,67 @@ func TestGPSLNAVRejectsOutOfRangeSubframe(t *testing.T) {
 	}
 }
 
+// TestGPSLNAVHOWFlagsAndFitInterval guards regression fix/the HOW alert flag
+// (bit 18) and anti-spoof flag (bit 19) sit exactly between the TOW count
+// (bits 1–17) and the subframe id (bits 20–22) and were never extracted; the
+// subframe-2 word-10 fit-interval flag (bit 17) and AODO (bits 18–22, ×900 s)
+// sat past toe undecoded (IS-GPS-200N §20.3.3.2, §20.3.3.4.3.1, §20.3.3.4.1).
+func TestGPSLNAVHOWFlagsAndFitInterval(t *testing.T) {
+	// All four bits clear: flags false, AODO 0.
+	sf := decodeBuf(t, buildSf2(t))
+	if sf.Alert || sf.AntiSpoof {
+		t.Errorf("clear HOW: Alert=%v AntiSpoof=%v, want false/false", sf.Alert, sf.AntiSpoof)
+	}
+	if sf.FitIntervalFlag || sf.AODO != 0 {
+		t.Errorf("clear word 10: fit=%v AODO=%d, want false/0", sf.FitIntervalFlag, sf.AODO)
+	}
+
+	// Alert+AS raised, fit flag set, AODO raw 31 (the 27900 s NMCT-unavailable
+	// sentinel, §20.3.3.5.1.9) — and toe/IODE must be unaffected by the new reads.
+	buf := buildSf2(t)
+	setField(buf, 2, 18, 1, 1)  // HOW alert
+	setField(buf, 2, 19, 1, 1)  // HOW anti-spoof
+	setField(buf, 10, 17, 1, 1) // fit interval flag
+	setField(buf, 10, 18, 5, 31)
+	sf = decodeBuf(t, buf)
+	if !sf.Alert || !sf.AntiSpoof {
+		t.Errorf("raised HOW: Alert=%v AntiSpoof=%v, want true/true", sf.Alert, sf.AntiSpoof)
+	}
+	if !sf.FitIntervalFlag {
+		t.Error("fit interval flag not decoded")
+	}
+	if sf.AODO != 27900 {
+		t.Errorf("AODO = %d, want 27900 (raw 31 × 900 s)", sf.AODO)
+	}
+	if sf.IODE != 85 || sf.Toe != 432000 {
+		t.Errorf("IODE/toe = %d/%v disturbed by new word-10 reads, want 85/432000", sf.IODE, sf.Toe)
+	}
+
+	// The flags decode on subframe 1 too (the HOW rides every subframe).
+	buf = buildSf1(t)
+	setField(buf, 2, 18, 1, 1)
+	if sf = decodeBuf(t, buf); !sf.Alert || sf.AntiSpoof {
+		t.Errorf("sf1 HOW: Alert=%v AntiSpoof=%v, want true/false", sf.Alert, sf.AntiSpoof)
+	}
+}
+
+// TestGPSLNAVRejectsTOWOverflow guards the HOW TOW count maxes at
+// 100,799 before rolling over (IS-GPS-200N §20.3.3.2); a larger count scales
+// past the week and is a corrupt HOW, rejected like bad subframe id.
+func TestGPSLNAVRejectsTOWOverflow(t *testing.T) {
+	buf := buildSf1(t)
+	setField(buf, 2, 1, 17, 100800)
+	if _, err := DecodeGPSLNAV(packLNAV(t, buf)); err != errBadTOWCount {
+		t.Errorf("towCount 100800: err = %v, want errBadTOWCount", err)
+	}
+	buf = buildSf1(t)
+	setField(buf, 2, 1, 17, 100799)
+	sf, err := DecodeGPSLNAV(packLNAV(t, buf))
+	if err != nil || sf.TOW != 100799*6 {
+		t.Errorf("towCount 100799: sf=%v err=%v, want a clean decode at TOW %d", sf, err, 100799*6)
+	}
+}
+
 // --- builders for the full-ephemeris test ---
 
 func buildSf1(t *testing.T) []byte {

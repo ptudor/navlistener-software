@@ -202,6 +202,39 @@ func TestSISAHysteresisDampensQuantizedDwell(t *testing.T) {
 	}
 }
 
+// TestURAAlertTransition guards regression fix/detector half: a satellite
+// raising its broadcast URA-alert flag ("use at own risk", IS-GPS-200N
+// §20.3.3.2) must produce a confirmed ura_alert event — previously the bit was
+// never decoded, so a self-declared degraded SV produced no signal at all.
+func TestURAAlertTransition(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(7_000_000, 0)
+	f := false
+	sv := gps("G05", 5, 1)
+	sv.Alert = &f
+	d.Tick(t0, map[string]state.FeedSV{"G05@0": sv}, nil) // seeds "clear"
+
+	tr := true
+	sv.Alert = &tr
+	raised := map[string]state.FeedSV{"G05@0": sv}
+	d.Tick(t0.Add(10*time.Second), raised, nil)
+	evs := d.Tick(t0.Add(80*time.Second), raised, nil)
+	e, ok := find(evs, "ura_alert")
+	if !ok || e.NewValue != "raised" || e.Severity != SevWarning {
+		t.Fatalf("ura_alert = %+v (ok=%v), want confirmed raised/1", e, ok)
+	}
+
+	// An SV whose alert flag was never decoded (nil) is not classified.
+	d2 := New(time.Minute)
+	blank := gps("G07", 7, 1)
+	d2.Tick(t0, map[string]state.FeedSV{"G07@0": blank}, nil)
+	if evs := d2.Tick(t0.Add(120*time.Second), map[string]state.FeedSV{"G07@0": blank}, nil); len(evs) != 0 {
+		if _, ok := find(evs, "ura_alert"); ok {
+			t.Fatal("undecoded alert flag classified a state")
+		}
+	}
+}
+
 // TestNoAccuracySentinelClassifies guards an SV whose broadcast accuracy
 // index is the "no accuracy prediction — use at own risk" sentinel serves no
 // sisa_m (there is no metres value) but does serve acc_index; the sisa classifier

@@ -19,6 +19,44 @@ func sf1WordsURA(iodcLo, ura int64) []uint32 {
 	return packWords(buf)
 }
 
+// sf1WordsAlert is sf1Words with the HOW alert flag (word 2 bit 18) raised.
+func sf1WordsAlert(iodcLo int64) []uint32 {
+	buf := make([]byte, 30)
+	setField(buf, 2, 18, 1, 1)
+	setField(buf, 2, 20, 3, 1)
+	setField(buf, 3, 1, 10, 2200)
+	setField(buf, 3, 13, 4, 4)
+	setField(buf, 8, 1, 8, iodcLo)
+	setField(buf, 8, 9, 16, 27000)
+	setField(buf, 10, 1, 22, 214748)
+	return packWords(buf)
+}
+
+// TestFeedAlertFlagServed guards state/feed half: the HOW alert flag
+// must reach the feed freshest-wins (it rides every subframe, outside any
+// IODC-gated set), so the detector can classify its transitions. Absent until a
+// subframe has decoded ("absent = unknown").
+func TestFeedAlertFlagServed(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	s.Apply(gpsFrame(sf1Words(85), now))
+	s.Apply(gpsFrame(sf2Words(85, 205075516), now))
+	s.Apply(gpsFrame(sf3Words(85), now))
+
+	sv := s.FeedSVs(now)["G05@0"]
+	if sv.Alert == nil || *sv.Alert {
+		t.Fatalf("alert = %v, want present and false (clear HOW decoded)", sv.Alert)
+	}
+
+	// A re-broadcast subframe 1 with the alert raised (same IODC — no data-set
+	// changeover) must flip the served flag immediately.
+	s.Apply(gpsFrame(sf1WordsAlert(85), now))
+	sv = s.FeedSVs(now)["G05@0"]
+	if sv.Alert == nil || !*sv.Alert {
+		t.Fatalf("alert = %v after raised HOW, want true (freshest-wins)", sv.Alert)
+	}
+}
+
 // TestFeedURA15ServesAccIndex guards a GPS SV broadcasting URA index 15
 // ("no accuracy prediction is available … use at own risk", IS-GPS-200N
 // §20.3.3.3.1.3) with a healthy health word must NOT collapse to a fully-healthy

@@ -185,6 +185,8 @@ The baseline vocabulary and severities below are **verified against intsat's shi
 | `antenna_fault` | receiver antenna status reports open/short or equivalent confirmed fault | 1 |
 | `capability_signal_lost` | a demonstrated `(gnssId,sigId)` is unseen past `CapSignalLostAfter` while its station remains alive | 1 |
 | `capability_impossible` | an observed signal lies outside the station's declared tudorgps capability set | 2 |
+| `ura_alert` | GPS/QZSS URA-alert flag transition : LNAV HOW bit 18 / CNAV bit 38 — the SV's own "use at own risk" declaration (IS-GPS-200N §20.3.3.2, a §6.4.6.3 marginal condition) | 1 on raise, 0 on clear |
+| `wn_mismatch` | broadcast week number (LNAV 10-bit / CNAV 13-bit, rollover-disambiguated) disagrees with the collector wall-clock week  — the cheapest time-domain anomaly: upload error, SV clock fault, or a replayed/spoofed signal carrying a wrong week | 2 on mismatch, 0 on recovery |
 
 The two `*_health` types cover QZSS and NavIC; the
 QZSS one is doubly interesting because QZSS L1S carries **DC Report** disaster/crisis messages

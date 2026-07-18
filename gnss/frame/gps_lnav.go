@@ -49,6 +49,13 @@ var errBadSubframe = errors.New("frame: LNAV subframe id out of range (1..5)")
 // telemetry-message preamble (IS-GPS-200 §20.3.3.1; QZSS defers to it).
 var ErrBadTLMPreamble = errors.New("frame: LNAV TLM preamble mismatch")
 
+// errBadTOWCount  is returned when the HOW's truncated TOW count
+// exceeds its ICD maximum: "The HOW-message TOW count reaches a maximum value
+// of 100,799 prior to rolling over" (IS-GPS-200N §20.3.3.2). A larger count
+// would scale to a TOW past the week (> 604,800 s) — a corrupt HOW, rejected
+// like out-of-range subframe id rather than exported unvalidated.
+var errBadTOWCount = errors.New("frame: LNAV HOW TOW count out of range (max 100799)")
+
 // GPSSubframe holds the decoded fields of a single LNAV subframe. Only the fields
 // belonging to this subframe's ID are populated; a full ephemeris is assembled
 // from subframes 1, 2, and 3 (AssembleGPS).
@@ -58,7 +65,18 @@ type GPSSubframe struct {
 	// IS-GPS-200N this is the SOW at the start of the NEXT subframe, not this one — a
 	// consumer timing this frame's epoch must use TOW − 6. Currently no internal consumer
 	// reads it; documented so a library user doesn't mis-time frames by 6 s.
+	// range-validated at decode (count ≤ 100,799, IS-GPS-200N §20.3.3.2).
 	TOW float64
+
+	// Alert  is HOW bit 18 (IS-GPS-200N §20.3.3.2): raised means "the
+	// signal URA may be worse than indicated in subframe 1 and … [the SPS user]
+	// shall use that SV at his own risk" — one of the ICD's three §6.4.6.3
+	// C/A-signal marginal conditions, and a first-class integrity-monitor input.
+	// Present in EVERY subframe's HOW (1–5), not just the ephemeris set.
+	Alert bool
+	// AntiSpoof  is HOW bit 19: "A '1' … indicates that the A-S mode is
+	// ON in that SV" (IS-GPS-200N §20.3.3.2). Status, not a fault flag.
+	AntiSpoof bool
 
 	// Subframe 1 (clock & health).
 	WN            int
@@ -73,6 +91,19 @@ type GPSSubframe struct {
 	IODE int
 	eph  kepler.Ephemeris // partial: sf2 or sf3 elements
 	Toe  float64
+
+	// FitIntervalFlag  is subframe-2 word 10 bit 17 (IS-GPS-200N
+	// §20.3.3.4.3.1): 0 = the nominal 4 h curve-fit interval, 1 = greater than
+	// 4 h (6–26 h by the IODC ranges of Table 20-XII — extended operations). A
+	// staleness/validity window that hard-assumes 4 h has no broadcast basis
+	// without this bit. QZSS redefines the values (0 = 2 h, always 0 in practice;
+	// QZSS-PNT-006 §4.1.2.5(3)) at the same bit position.
+	FitIntervalFlag bool
+	// AODO  is subframe-2 word 10 bits 18–22 × 900 s (IS-GPS-200N
+	// §20.3.3.4.1/§20.3.3.4.4): the age-of-data offset for the subframe-4 NMCT.
+	// 27900 (raw 31) means "NMCT unavailable" (§20.3.3.5.1.9); QZSS fixes it at
+	// that sentinel (QZSS-PNT-006 §4.1.2.5(4)). Seconds.
+	AODO int
 }
 
 // DecodeGPSLNAV decodes one LNAV subframe from ten 30-bit words as delivered by
@@ -104,11 +135,23 @@ func DecodeGPSLNAV(words []uint32) (*GPSSubframe, error) {
 		return nil, ErrBadTLMPreamble
 	}
 
-	// HOW (word 2): TOW count in data bits 1..17 (×6 s), subframe ID in bits 20..22.
+	// HOW (word 2): TOW count in data bits 1..17 (×6 s), alert flag bit 18,
+	// anti-spoof flag bit 19, subframe ID in bits 20..22 — the
+	// IS-GPS-200N §20.3.3.2 layout.
 	towCount, _ := r.Bits(field(2, 1), 17)
+	if towCount > 100799 {
+		return nil, errBadTOWCount // §20.3.3.2 maximum before rollover
+	}
+	alert, _ := r.Bits(field(2, 18), 1)
+	antiSpoof, _ := r.Bits(field(2, 19), 1)
 	sfID, _ := r.Bits(field(2, 20), 3)
 
-	sf := &GPSSubframe{SubframeID: int(sfID), TOW: float64(towCount) * 6}
+	sf := &GPSSubframe{
+		SubframeID: int(sfID),
+		TOW:        float64(towCount) * 6,
+		Alert:      alert != 0,
+		AntiSpoof:  antiSpoof != 0,
+	}
 	switch sfID {
 	case 1:
 		decodeGPSSf1(r, sf)
@@ -167,7 +210,13 @@ func decodeGPSSf2(r *BitReader, sf *GPSSubframe) {
 	cus, _ := r.Signed(field(8, 1), 16)
 	sqrtA, _ := r.Concat(field(8, 17), 8, field(9, 1), 24)
 	toe, _ := r.Bits(field(10, 1), 16)
+	// Word 10 packs toe (bits 1–16), the fit-interval flag (bit 17), and AODO
+	// (bits 18–22) — IS-GPS-200N §20.3.3.4.1/§20.3.3.4.3.1.
+	fitFlag, _ := r.Bits(field(10, 17), 1)
+	aodo, _ := r.Bits(field(10, 18), 5)
 
+	sf.FitIntervalFlag = fitFlag != 0
+	sf.AODO = int(aodo) * 900 // 5-bit unsigned, LSB 900 s (§20.3.3.4.1)
 	sf.IODE = int(iode)
 	sf.Toe = float64(toe) * p2p4
 	sf.eph.Crs = float64(crs) * p2m5

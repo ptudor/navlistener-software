@@ -197,6 +197,13 @@ type svState struct {
 	// "healthy" and healthFor silently (and wrongly) reports OK.
 	haveHealth bool
 	ura        int
+	// alert is the GPS/QZSS broadcast URA-alert flag : LNAV HOW
+	// bit 18 / CNAV header bit 38 — the SV's own "URA may be worse than indicated,
+	// use at own risk" declaration (IS-GPS-200N §20.3.3.2, §6.4.6.3). Freshest-wins
+	// like health (it rides every subframe/message, outside any IOD-gated set);
+	// haveAlert follows the regression fix unknown-until-decoded discipline.
+	alert     bool
+	haveAlert bool
 
 	// Broadcast accuracy index and the table it decodes with (accNone/accURA/
 	// accSISA) — backs the sisa_valid/sisa_m feed fields. BeiDou also carries an
@@ -449,6 +456,10 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 		sh.m[key] = st
 	}
 	st.lastSeen = recv
+	// the HOW alert flag rides EVERY subframe (1–5) and belongs to no
+	// IODC-gated data set — apply freshest-wins before the subframe switch, so
+	// even an almanac page's HOW keeps it current (the regression fix discipline).
+	st.alert, st.haveAlert = sf.Alert, true
 
 	switch sf.SubframeID {
 	case 1:
