@@ -26,9 +26,18 @@ type GalileoFNAV struct {
 	IODnav   int
 	SISA     int // page 1 only, SISA(E1,E5a) 
 	E5aHS    int // page 1 only, E5a Signal Health Status 
-	eph      kepler.Ephemeris
-	clk      clock.Model
-	hasClk   bool
+	// E5aDVS is the E5a Data Validity Status (page 1 only, regression fix):
+	// 0 = navigation data valid, 1 = "Working without guarantee"
+	// (GAL-OS-SIS-ICD-2.2 Table 79/81). The ICD gives E5a TWO per-signal
+	// integrity flags — SHS and DVS — and neither alone suffices: an SV in a
+	// maintenance window can broadcast E5aHS=0 with E5aDVS=1. Decoded so the
+	// state layer has both halves when the regression fix health-contract decision
+	// (how DVS maps into the frozen health enum) lands; until then it is
+	// deliberately decoded-but-unserved, like I/NAV's E1B/E5b DVS bits.
+	E5aDVS int
+	eph    kepler.Ephemeris
+	clk    clock.Model
+	hasClk bool
 }
 
 // StampGalileoFNAVCRC computes and writes the F/NAV CRC-24Q into a synthetic
@@ -82,11 +91,16 @@ func DecodeGalileoFNAV(words []uint32) (*GalileoFNAV, error) {
 	case 1:
 		// SVID(6) IODnav(10) t0c(14) af0(31) af1(21) af2(6) SISA(8) ai0(11) ai1(11)
 		// ai2(14) Region1-5(5) BGD(E1,E5a)(10) E5aHS(2) WN(12) TOW(20) E5aDVS(1)
-		// Spare(26) CRC(24) Tail(6) — OS-SIS-ICD Issue 2.2 Table 30 (SISA
-		// and E5aHS added; ionospheric/GST/DVS fields are out of this fix's scope).
+		// Spare(26) CRC(24) Tail(6) — OS-SIS-ICD Issue 2.2 Table 30. Cumulative
+		// offsets from that ledger: BGD@143, E5aHS@153, WN@155, TOW@167, E5aDVS@187
+		// (6+6+10+14+31+21+6+8+11+11+14+5 = 143; +10+2 = 155; +12 = 167; +20 = 187).
+		// regression fix added SISA/E5aHS; regression fix added E5aDVS; the ionospheric (NeQuick
+		// ai0/ai1/ai2) fields remain undecoded — no NeQuick model exists in
+		// gnss/iono yet (additional constellation models are planned).
 		w.IODnav = int(u(12, 10))
 		w.SISA = int(u(94, 8))
 		w.E5aHS = int(u(153, 2))
+		w.E5aDVS = int(u(187, 1)) // Table 81 — 0 valid, 1 working without guarantee
 		w.clk = clock.Model{
 			ID:  gnss.Galileo,
 			Toc: float64(u(22, 14)) * galT0,

@@ -747,7 +747,11 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 	// Word type 5 carries E1B health and BGD (not part of the IODnav-matched
 	// ephemeris set); fold its health in as it arrives (docs/CONSTELLATIONS.md
 	// §2.2) and refresh the already-assembled clock's TGD without treating this as
-	// a new ephemeris (no IODnav change, so no disco recompute).
+	// a new ephemeris (no IODnav change, so no disco recompute). st.galW[5]
+	// retains the full decoded word, so the flags word 5 carries beyond served
+	// health — E1BDVS/E5bDVS  and E5bSHS  — are available here
+	// decoded-but-unserved until the health-enum contract decision  and
+	// the multi-signal keying policy  pick their served shape.
 	if w.Type == 5 {
 		st.health, st.haveHealth = w.Health, true
 		st.galW[5] = w
@@ -846,7 +850,11 @@ func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 
 	st.fnav[w.PageType] = w
 	// Page 1 carries SISA + the E5a Signal Health Status outside the IODnav-matched eph set;
-	// fold them in as they arrive (mirrors the I/NAV word-5 health/SISA pattern).
+	// fold them in as they arrive (mirrors the I/NAV word-5 health/SISA pattern). st.fnav[1]
+	// retains the full decoded page, so E5aDVS  — the E5a signal's second integrity
+	// flag, Table 79/81 — is available here decoded-but-unserved until the regression fix health-enum
+	// decision lands; served health rests on E5aHS alone until then, by explicit contract
+	// choice, not omission.
 	if w.PageType == 1 {
 		st.health, st.haveHealth = w.E5aHS, true
 		st.accKind, st.accIdx = accSISA, w.SISA

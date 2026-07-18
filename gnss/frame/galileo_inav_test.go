@@ -95,6 +95,9 @@ func buildGalileoWord5(bgdARaw, bgdBRaw int64, e5bHS, e1bHS uint64) []uint32 {
 // TestDecodeGalileoINAVWord5Health guards bit 67 is E5b_HS, bit 69 is
 // E1B_HS — the decoder must report E1B_HS (Health), not E5b_HS, and the two
 // must be distinguishable (a prior bug read bit 67 and stored it as E1B health).
+// E5b_HS must also be decoded into its OWN field (E5bSHS), never
+// folded into Health — E5b health is broadcast on E1-B (Table 46/83), so its
+// visibility needs no E5b-I dispatch.
 func TestDecodeGalileoINAVWord5Health(t *testing.T) {
 	words := buildGalileoWord5(100, 200, 0b01, 0b10) // BGD E5a=100, E5b=200; E5b_HS=1, E1B_HS=2
 	w, err := DecodeGalileoINAV(words)
@@ -106,6 +109,9 @@ func TestDecodeGalileoINAVWord5Health(t *testing.T) {
 	}
 	if w.Health != 2 {
 		t.Errorf("Health = %d, want 2 (E1B_HS at bit 69, not E5b_HS=1 at bit 67)", w.Health)
+	}
+	if w.E5bSHS != 1 {
+		t.Errorf("E5bSHS = %d, want 1 (bits 67-68, distinct from E1B's 2)", w.E5bSHS)
 	}
 }
 
@@ -248,15 +254,20 @@ func fnavBufToWords(buf []byte) []uint32 {
 	return words
 }
 
-// TestDecodeGalileoFNAVPage1SISAHealth guards F/NAV page 1 must decode
-// SISA(E1,E5a) and E5a Signal Health Status, at the exact OS-SIS-ICD Issue 2.2
-// Table 30 offsets (SISA@94, 8 bits; E5aHS@153, 2 bits) — confirmed against the
-// published ICD text, not assumed.
+// TestDecodeGalileoFNAVPage1SISAHealth guards regression fix and F/NAV page 1
+// must decode SISA(E1,E5a), the E5a Signal Health Status, AND the E5a Data
+// Validity Status, at the exact OS-SIS-ICD Issue 2.2 Table 30 offsets (SISA@94,
+// 8 bits; E5aHS@153, 2 bits; E5aDVS@187, 1 bit) — confirmed against the
+// published ICD text, not assumed. SHS and DVS are the signal's TWO integrity
+// flags; the maintenance-window signature is exactly E5aHS=0 with E5aDVS=1, so
+// the test sets DVS while leaving the surrounding WN/TOW/spare bits zero to pin
+// the offset (a ±1-bit regression would land in TOW's LSB or the spare field).
 func TestDecodeGalileoFNAVPage1SISAHealth(t *testing.T) {
 	buf := make([]byte, 32)
 	setFNAVBufBits(buf, 0, 1, 6)    // page type = 1
 	setFNAVBufBits(buf, 94, 200, 8) // SISA = 200
 	setFNAVBufBits(buf, 153, 2, 2)  // E5aHS = 2
+	setFNAVBufBits(buf, 187, 1, 1)  // E5aDVS = 1 (working without guarantee, Table 81)
 	words := fnavBufToWords(buf)
 	StampGalileoFNAVCRC(words)
 	w, err := DecodeGalileoFNAV(words)
@@ -271,6 +282,24 @@ func TestDecodeGalileoFNAVPage1SISAHealth(t *testing.T) {
 	}
 	if w.E5aHS != 2 {
 		t.Errorf("E5aHS = %d, want 2", w.E5aHS)
+	}
+	if w.E5aDVS != 1 {
+		t.Errorf("E5aDVS = %d, want 1 (bit 187, Table 30)", w.E5aDVS)
+	}
+
+	// The DVS=0 (valid) case must not be an artifact of the zeroed buffer: flip
+	// only the neighboring spare bit and confirm DVS stays 0.
+	buf2 := make([]byte, 32)
+	setFNAVBufBits(buf2, 0, 1, 6)
+	setFNAVBufBits(buf2, 188, 1, 1) // first spare bit, adjacent to DVS
+	words2 := fnavBufToWords(buf2)
+	StampGalileoFNAVCRC(words2)
+	w2, err := DecodeGalileoFNAV(words2)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if w2.E5aDVS != 0 {
+		t.Errorf("E5aDVS = %d with only spare bit 188 set, want 0", w2.E5aDVS)
 	}
 }
 

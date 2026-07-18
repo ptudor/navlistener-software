@@ -96,9 +96,19 @@ type GalileoINAV struct {
 	IODnav int
 	SISA   int
 	Health int // E1B health (word 5), when present
+	// E5bSHS is the E5b Signal Health Status (word 5, regression fix). Every E1-B word
+	// 5 carries per-signal health for BOTH E5b and E1-B/C (GAL-OS-SIS-ICD-2.2
+	// Table 46: E5bSHS@67 2 bits, E1BSHS@69 2 bits; semantics Table 83/84), so
+	// E5b health visibility needs no E5b-I dispatch  — it is broadcast in
+	// a word this decoder already parses. Deliberately a SEPARATE field, never
+	// folded into Health: the @0 entry's served health must stay E1-B's own
+	// (the regression fix lesson — bit 67 is E5b's, bit 69 is E1-B's). Where E5bSHS
+	// lands in the feeds is the regression fix multi-signal keying decision; until then
+	// it is decoded-but-unserved, like the DVS bits below.
+	E5bSHS int
 	// WN/TOW (word 5, regression fix): the 12-bit GST week number and 20-bit GST
-	// time-of-week, both plain integer counts (OS-SIS-ICD Issue 2.2 Table 67 --
-	// no scale factor). GST epoch is 1999-08-22 (gnsstime.go); this 12-bit field
+	// time-of-week, both plain integer counts (GAL-OS-SIS-ICD-2.2 Table 69 --
+	// scale factor 1). GST epoch is 1999-08-22 (gnsstime.go); this 12-bit field
 	// must never be confused with GPS's 10-bit WN -- it lives only on this
 	// Galileo-specific struct, never a field shared with another constellation.
 	WN     int
@@ -239,9 +249,10 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 		// after BGD_E1E5a(47-56): BGD_E1E5b(57-66), E5b_HS(67-68), E1B_HS(69-70),
 		// E5bDVS(71), E1BDVS(72), WN(73-84, 12 bits), TOW(85-104, 20 bits), Spare
 		// (105-127) — bit 67 is E5b health, not E1B health. WN/TOW are plain integer
-		// counts (Table 67: scale factor 1), never scaled like GPS's ×6 TOW.
+		// counts (Table 69: scale factor 1), never scaled like GPS's ×6 TOW.
 		bgdA, _ := r.Signed(47, 10) // BGD(E1,E5a), 2^-32 s — the F/NAV (E1,E5a) clock's pair
 		bgdB, _ := r.Signed(57, 10) // BGD(E1,E5b), 2^-32 s — the I/NAV (E1,E5b) clock's pair
+		e5bHealth, _ := r.Bits(67, 2)
 		e1bHealth, _ := r.Bits(69, 2)
 		e5bDVS, _ := r.Bits(71, 1)
 		e1bDVS, _ := r.Bits(72, 1)
@@ -249,6 +260,7 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 		tow, _ := r.Bits(85, 20)
 		w.eph.ID = gnss.Galileo
 		w.Health = int(e1bHealth)
+		w.E5bSHS = int(e5bHealth) // separate field, never Health (see struct doc)
 		w.E5bDVS = int(e5bDVS)
 		w.E1BDVS = int(e1bDVS)
 		w.WN = int(wn)
