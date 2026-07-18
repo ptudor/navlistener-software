@@ -858,6 +858,15 @@ func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 	if w.PageType == 1 {
 		st.health, st.haveHealth = w.E5aHS, true
 		st.accKind, st.accIdx = accSISA, w.SISA
+		// BGD(E1,E5a) also rides page 1, but — like I/NAV's word-5 BGD —
+		// it is NOT in the IODnav-covered data set (GAL-OS-SIS-ICD-2.2 §5.1.9.2
+		// scopes the IODnav to ephemeris, clock correction and SISA), and the
+		// same-IODnav assembly below early-returns, so a BGD revision within a
+		// data set must fold into the already-assembled clock here, freshest-wins
+		// (the I/NAV word-5 TGD-refresh pattern; disco stays immune per 		// TGD-zeroing).
+		if st.haveClk {
+			st.clk.TGD = w.ClockTGD()
+		}
 	}
 	if st.fnav[1] == nil || st.fnav[2] == nil || st.fnav[3] == nil || st.fnav[4] == nil {
 		return

@@ -35,9 +35,18 @@ type GalileoFNAV struct {
 	// (how DVS maps into the frozen health enum) lands; until then it is
 	// deliberately decoded-but-unserved, like I/NAV's E1B/E5b DVS bits.
 	E5aDVS int
-	eph    kepler.Ephemeris
-	clk    clock.Model
-	hasClk bool
+	// BGDE1E5a is the raw broadcast E1-E5a group delay (page 1 only, regression fix),
+	// seconds — 10-bit two's complement × 2⁻³² (GAL-OS-SIS-ICD-2.2 Table 30
+	// position, Table 72 coding). The F/NAV clock is the (E1,E5a) pair (Table
+	// 71) and its single-frequency service is E5a — the f2 user — so the value
+	// APPLIED to the assembled clock's TGD is this × E5aGroupDelayFactor (Eq.
+	// 19); this field keeps the unscaled broadcast value, mirroring
+	// GalileoINAV.BGDE1E5a, for consumers that need the raw parameter (an E1
+	// user of the F/NAV clock, Eq. 18, would apply it unscaled).
+	BGDE1E5a float64
+	eph      kepler.Ephemeris
+	clk      clock.Model
+	hasClk   bool
 }
 
 // StampGalileoFNAVCRC computes and writes the F/NAV CRC-24Q into a synthetic
@@ -101,12 +110,23 @@ func DecodeGalileoFNAV(words []uint32) (*GalileoFNAV, error) {
 		w.SISA = int(u(94, 8))
 		w.E5aHS = int(u(153, 2))
 		w.E5aDVS = int(u(187, 1)) // Table 81 — 0 valid, 1 working without guarantee
+		w.BGDE1E5a = float64(s(143, 10)) * p2m32
 		w.clk = clock.Model{
 			ID:  gnss.Galileo,
 			Toc: float64(u(22, 14)) * galT0,
 			Af0: float64(s(36, 31)) * p2m34,
 			Af1: float64(s(67, 21)) * p2m46,
 			Af2: float64(s(88, 6)) * p2m59,
+			// Model.TGD's contract is "group delay for the tracked
+			// signal, ALREADY SCALED". The tracked signal here is E5a (this
+			// decoder feeds the daemon's E##@3 entries), the f2 of the (E1,E5a)
+			// clock pair, so Eq. 19 applies: (f_E1/f_E5a)²·BGD(E1,E5a) — unlike
+			// the I/NAV path, whose tracked E1 is the f1 user (Eq. 18, unscaled).
+			// Previously this field shipped 0, silently biasing the assembled
+			// @3 clock by the whole group delay (metre-scale in range) and
+			// arming the future I/NAV-vs-F/NAV comparison with a built-in
+			// ≈BGD false clock offset — exactly as latent note predicted.
+			TGD: float64(s(143, 10)) * p2m32 * clock.E5aGroupDelayFactor,
 		}
 		w.hasClk = true
 	case 2: // M0, Ω̇, e, √A, Ω0, IDOT
@@ -131,6 +151,14 @@ func DecodeGalileoFNAV(words []uint32) (*GalileoFNAV, error) {
 	}
 	return w, nil
 }
+
+// ClockTGD returns the already-scaled (Eq. 19) group delay carried by this
+// page's clock model — meaningful for page 1 only, zero otherwise. Exposed for
+// the state layer's freshest-wins TGD fold : BGD is outside the
+// IODnav-covered data set, so a BGD revision must reach an already-assembled
+// clock without re-assembly, and the caller must not re-derive the Eq. 19
+// scaling policy that lives in DecodeGalileoFNAV.
+func (w *GalileoFNAV) ClockTGD() float64 { return w.clk.TGD }
 
 // AssembleGalileoFNAV combines pages 1–4 (matching IODnav) into the ephemeris and
 // clock model. svid tags the constellation.

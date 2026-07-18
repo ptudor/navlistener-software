@@ -74,6 +74,18 @@ func OffsetFor(c Model, e kepler.Ephemeris, tow float64) (float64, error) {
 // unscaled would carry a (γ−1)·TGD ≈ 0.65·TGD bias.
 const L2GroupDelayFactor = (1575.42 / 1227.60) * (1575.42 / 1227.60)
 
+// E5aGroupDelayFactor is (f_E1/f_E5a)², the Galileo Eq. 19 factor by which a
+// single-frequency E5a user scales the broadcast BGD(E1,E5a) before applying it
+// to the F/NAV (E1,E5a) clock (GAL-OS-SIS-ICD-2.2 §5.1.5: Eq. 18 is the f1 = E1
+// user, no scaling; Eq. 19 is the f2 user, ×(f1/f2)²; Table 71 fixes the F/NAV
+// clock as the (E1,E5a) pair and its service as single-frequency E5a). Carriers
+// per Table 2: f_E1 = 1575.420 MHz, f_E5a = 1176.450 MHz, so the factor is
+// ≈ 1.7933. like L2GroupDelayFactor above (the regression fix rule), this is
+// the CALLER'S tool for producing the already-scaled Model.TGD — nothing in
+// this package applies it automatically. The frame package's F/NAV assembler is
+// that caller: the daemon's E##@3 entries track E5a, the f2 signal.
+const E5aGroupDelayFactor = (1575.420 / 1176.450) * (1575.420 / 1176.450)
+
 // UTCParams are the broadcast GNSS→UTC parameters (docs/MATH.md §4, §8).
 type UTCParams struct {
 	A0    float64 // constant term, seconds

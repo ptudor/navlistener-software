@@ -1,6 +1,10 @@
 package frame
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/ptudor/gnss/clock"
+)
 
 // setContentBits packs v's low n bits (MSB-first) into content starting at bit
 // offset off — the same layout DecodeGalileoINAV's internal bit reader expects
@@ -379,6 +383,47 @@ func TestGalileoAssemblersRejectWrongSlots(t *testing.T) {
 	p4 := buildFNAVPage(t, 4, iod)
 	if _, _, err := AssembleGalileoFNAV(14, p2, p1, p3, p4); err != errWrongMsgType {
 		t.Errorf("F/NAV p1/p2 swap error = %v, want errWrongMsgType", err)
+	}
+}
+
+// TestAssembleGalileoFNAVBGD guards F/NAV page 1's BGD(E1,E5a) (bits
+// 143–152, 10-bit two's complement × 2⁻³², GAL-OS-SIS-ICD-2.2 Table 30/72) must
+// reach the assembled @3 clock's TGD — scaled by (f_E1/f_E5a)² per Eq. 19,
+// because the tracked F/NAV signal (E5a) is the f2 of the (E1,E5a) clock pair —
+// while the struct's BGDE1E5a keeps the raw broadcast value. A negative raw
+// value pins the signedness (a sign-extension regression would produce a huge
+// positive TGD).
+func TestAssembleGalileoFNAVBGD(t *testing.T) {
+	const iod = 9
+	buf := make([]byte, 32)
+	setFNAVBufBits(buf, 0, 1, 6)                     // page type = 1
+	setFNAVBufBits(buf, 12, iod, 10)                 // IODnav
+	setFNAVBufBits(buf, 143, 1021, 10) // BGD(E1,E5a) raw = −3 (10-bit two's complement 0b1111111101)
+	words := fnavBufToWords(buf)
+	StampGalileoFNAVCRC(words)
+	p1, err := DecodeGalileoFNAV(words)
+	if err != nil {
+		t.Fatalf("decode page 1: %v", err)
+	}
+	bgdScale := 1.0 / float64(uint64(1)<<32)
+	wantRaw := -3 * bgdScale
+	if p1.BGDE1E5a != wantRaw {
+		t.Errorf("BGDE1E5a = %v, want %v (raw broadcast value, unscaled)", p1.BGDE1E5a, wantRaw)
+	}
+
+	p2 := buildFNAVPage(t, 2, iod)
+	p3 := buildFNAVPage(t, 3, iod)
+	p4 := buildFNAVPage(t, 4, iod)
+	_, clk, err := AssembleGalileoFNAV(14, p1, p2, p3, p4)
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	wantTGD := wantRaw * clock.E5aGroupDelayFactor
+	if clk.TGD != wantTGD {
+		t.Errorf("TGD = %v, want %v (Eq. 19: (f_E1/f_E5a)²·BGD(E1,E5a))", clk.TGD, wantTGD)
+	}
+	if clk.TGD == p1.BGDE1E5a {
+		t.Error("TGD equals the raw BGD — the Eq. 19 scaling for the E5a (f2) user is missing")
 	}
 }
 

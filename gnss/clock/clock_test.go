@@ -102,3 +102,11 @@ func TestL2GroupDelayFactor(t *testing.T) {
 		t.Errorf("γ = %v, want ≈1.6469", L2GroupDelayFactor)
 	}
 }
+
+func TestE5aGroupDelayFactor(t *testing.T) {
+	// (f_E1/f_E5a)² = (1575.420/1176.450)² ≈ 1.7933 (GAL-OS-SIS-ICD-2.2 Eq. 19,
+	// carriers per Table 2) — and it must exceed 1 (E5a is the lower frequency).
+	if math.Abs(E5aGroupDelayFactor-1.7933) > 1e-3 {
+		t.Errorf("(f_E1/f_E5a)² = %v, want ≈1.7933", E5aGroupDelayFactor)
+	}
+}
