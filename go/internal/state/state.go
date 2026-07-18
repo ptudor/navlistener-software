@@ -322,6 +322,18 @@ type svState struct {
 	// remainder, like the NavIC deferral).
 	ggto *ggtoParams
 
+	// bdtUTC is this SV's last-broadcast BDT-UTC time offset parameter set
+	// (regression fix, BeiDou B-CNAV2 MT34 — BDS-SIS-ICD-B2a v1.0 §7.12, Table 7-20),
+	// already scaled to SI. nil = never decoded. Freshest-wins per MT34 arrival
+	// (like health and the Galileo GGTO: the set is quasi-static and outside
+	// the IODE-gated ephemeris data set), and stored per-SV deliberately — every
+	// SV broadcasts its own copy, and one SV diverging from the constellation's
+	// consensus is itself an anomaly for the P6 cross-constellation
+	// clock-coherence detector (the regression fix precedent). D1 subframe 5's §5.2.4.18
+	// B1I copy is NOT decoded (subframes 4/5 are dropped); MT34 alone closes
+	// the BDS-3 gap — recorded, not hidden.
+	bdtUTC *clock.UTCParams
+
 	// OSNMA presence (regression fix, Galileo E1-B @0 only — the INTEGRITY.md §7 v1
 	// slice: presence/absence, not TESLA verification). haveOSNMA: at least one
 	// nominal non-dummy page's 40-bit OSNMA field has been observed;
@@ -1109,6 +1121,12 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		st.bcTGD, st.haveBcTGD = m.TGDB2ap+m.ISCB2ad, true
 	case 34:
 		st.bcClk = m
+		// fold the BDT-UTC set at MT34 arrival (freshest-wins, before
+		// the pair-completion gate below — the set is valid whether or not a
+		// 10/11 ephemeris ever assembles). Copied so the stored set does not
+		// alias the assembly buffer.
+		u := m.UTC
+		st.bdtUTC = &u
 	default:
 		return // types 31/32/33/40 (almanac/EOP/BGTO) not consumed here
 	}

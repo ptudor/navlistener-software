@@ -64,6 +64,25 @@ type FeedSV struct {
 	A1G         *float64 `json:"a1g,omitempty"`
 	T0G         *int     `json:"t0g,omitempty"`
 	WN0G        *int     `json:"wn0g,omitempty"`
+	// UtcOffsetNs and the leap-schedule quartet are the SV's broadcast
+	// system→UTC offset (regression fix; BeiDou B-CNAV2 MT34's BDT-UTC set today,
+	// docs/OUTPUT.md §1.1 reserves the same fields for the other
+	// constellations' UTC sets). UtcOffsetNs is BDS-SIS-ICD-B2a v1.0 Eq. 7-25's
+	// ΔtUTC = ΔtLS + A0UTC + A1UTC·dt + A2UTC·dt² evaluated at the feed
+	// instant (positive = the system's time scale is AHEAD of UTC), with the
+	// Eq. 7-29 arm's ΔtLSF substituted once the WNLSF/DN leap event is in the
+	// past. DtLS/DtLSF/WnLSF/Dn are the raw broadcast leap schedule so a
+	// consumer can handle a pending leap itself. LeapMismatch is the regression fix
+	// cross-check: the broadcast current leap count disagrees with this
+	// collector's configured GPS−UTC count — a stale config (or a leap event
+	// the config missed) that would silently shift every UTC conversion.
+	// All absent until an SV's UTC set has decoded — "absent = unknown".
+	UtcOffsetNs  *float64 `json:"utc_offset_ns,omitempty"`
+	DtLS         *int     `json:"dt_ls,omitempty"`
+	DtLSF        *int     `json:"dt_lsf,omitempty"`
+	WnLSF        *int     `json:"wn_lsf,omitempty"`
+	Dn           *int     `json:"dn,omitempty"`
+	LeapMismatch *bool    `json:"leap_mismatch,omitempty"`
 	// Osnma (regression fix, Galileo E1-B entries only — docs/OUTPUT.md §1.1): true =
 	// the SV's 40-bit I/NAV OSNMA field has carried live (nonzero) data within
 	// the last osnmaLiveWindow; false = the field is observed but all-zeros
@@ -278,6 +297,48 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 				e.GpsOffsetNs = &off
 			}
 		}
+	}
+	if st.bdtUTC != nil {
+		u := st.bdtUTC
+		// evaluate Eq. 7-25 (BDS-SIS-ICD-B2a v1.0 §7.12.2) at the feed
+		// instant on the continuous BDT axis. BDT = GPST − 14 s exactly (both
+		// leap-free scales; BDT epoch 2006-01-01 is 1356 GPS weeks after the
+		// GPS epoch — the weekFor/towFor regression fix constants), so BDT seconds since
+		// the BDT epoch is (gps − 14) − 1356·604800; WNot is the full 13-bit
+		// BDT week (no truncation to disambiguate, unlike the GGTO's 6-bit
+		// WN0G). The reference (WNot, tot) makes dt exact across week
+		// boundaries — no half-week wrap involved (the regression fix deviation does
+		// not apply here).
+		gps := now.Unix() - gpsEpochUnix + gpsUTCOffset
+		bdt := float64(gps-14) - 1356*weekSeconds
+		dt := bdt - (float64(u.WNot)*weekSeconds + u.Tot)
+		// Leap-arm choice (§7.12.2 cases 1/3, mirroring B1I §5.2.4.18 and
+		// IS-GPS-200 §20.3.3.5.2.4): ΔtLS before the WNLSF/DN event, ΔtLSF
+		// after. The event instant is the END of day DN of week WNLSF — DN is
+		// 0–6 (Table 7-20), so day DN spans [DN·86400, (DN+1)·86400) of the
+		// week and the case-2 accommodation window "DN+3/4 to DN+5/4" (days)
+		// straddles (DN+1)·86400 by ±6 h, fixing the boundary. Within ±6 h of
+		// a real leap the served value follows this instant rather than the
+		// case-2 day-wrap presentation, which affects tUTC's modulo form, not
+		// the offset magnitude served here.
+		leap := u.DtLS
+		if bdt >= float64(u.WNLSF)*weekSeconds+float64(u.DN+1)*86400 {
+			leap = u.DtLSF
+		}
+		if off := (leap + u.A0 + u.A1*dt + u.A2*dt*dt) * 1e9; finite(off) {
+			e.UtcOffsetNs = &off
+		}
+		dtLS, dtLSF, wnlsf, dn := int(u.DtLS), int(u.DtLSF), u.WNLSF, u.DN
+		e.DtLS, e.DtLSF, e.WnLSF, e.Dn = &dtLS, &dtLSF, &wnlsf, &dn
+		// regression fix cross-check: the broadcast BDT-UTC leap count and this
+		// collector's configured GPS−UTC count describe the same physical leap
+		// history, offset by the fixed 14 s BDT-GPST alignment (BDT epoch
+		// 2006-01-01, when GPS−UTC was 14 s) — so broadcast + 14 must equal
+		// gpsUTCOffset. Compare the currently-applicable arm so the check
+		// doesn't false-fire in the window where ΔtLS is already the past
+		// count of a superseded event.
+		mm := int64(leap)+14 != gpsUTCOffset
+		e.LeapMismatch = &mm
 	}
 	for src, tr := range st.ionoBySource {
 		// a receiver may carry several matured secondary arcs (e.g. both

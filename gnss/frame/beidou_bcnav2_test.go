@@ -64,6 +64,62 @@ func TestBCNAV2RejectsReservedSatType(t *testing.T) {
 	}
 }
 
+// TestBCNAV2MT34DecodesBDTUTC guards the MT34 BDT-UTC time offset
+// block at bits 143–239 (BDS-SIS-ICD-B2a v1.0 Figure 6-9 placement, Figure 6-16
+// layout, Table 7-20 scales/signs) must decode field-for-field, including the
+// two's-complement handling of every starred field. Raw values are chosen so a
+// ±1-bit offset regression or a signed/unsigned swap changes an asserted value.
+func TestBCNAV2MT34DecodesBDTUTC(t *testing.T) {
+	buf := make([]byte, 36)
+	setBits(buf, 0, 6, 30)  // PRN
+	setBits(buf, 6, 6, 34)  // MesType 34
+	setBits(buf, 12, 18, 1) // SOW raw (×3 s)
+	setBits(buf, 64, 11, 100)
+	setBits(buf, 133, 10, 7)         // IODC
+	setBits(buf, 143, 16, (1<<16)-2) // A0UTC raw −2 (two's complement)
+	setBits(buf, 159, 13, (1<<13)-3) // A1UTC raw −3
+	setBits(buf, 172, 7, (1<<7)-1)   // A2UTC raw −1
+	setBits(buf, 179, 8, 4)          // ΔtLS = 4 s (BDT-UTC, 2017+)
+	setBits(buf, 187, 16, 252800/16) // tot raw (×2⁴ s)
+	setBits(buf, 203, 13, 932)       // WNot (full BDT week)
+	setBits(buf, 216, 13, 933)       // WNLSF
+	setBits(buf, 229, 3, 6)          // DN (0–6)
+	setBits(buf, 232, 8, (1<<8)-5)   // ΔtLSF raw −5 (signedness probe)
+	c := CRC24Q(buf[:33])
+	buf[33], buf[34], buf[35] = byte(c>>16), byte(c>>8), byte(c)
+	words := make([]uint32, 9)
+	for i := range words {
+		words[i] = binary.BigEndian.Uint32(buf[i*4:])
+	}
+	m, err := DecodeBeiDouBCNAV2(words)
+	if err != nil {
+		t.Fatalf("MT34 rejected: %v", err)
+	}
+	u := m.UTC
+	if want := -2.0 / float64(uint64(1)<<35); u.A0 != want {
+		t.Errorf("A0UTC = %g, want %g (−2 × 2⁻³⁵)", u.A0, want)
+	}
+	if want := -3.0 / float64(uint64(1)<<51); u.A1 != want {
+		t.Errorf("A1UTC = %g, want %g (−3 × 2⁻⁵¹)", u.A1, want)
+	}
+	if want := -1.0 / float64(uint64(1)<<34) / float64(uint64(1)<<34); u.A2 != want {
+		t.Errorf("A2UTC = %g, want %g (−1 × 2⁻⁶⁸)", u.A2, want)
+	}
+	if u.DtLS != 4 || u.DtLSF != -5 {
+		t.Errorf("ΔtLS/ΔtLSF = %g/%g, want 4/−5", u.DtLS, u.DtLSF)
+	}
+	if u.Tot != 252800 || u.WNot != 932 {
+		t.Errorf("tot/WNot = %g/%d, want 252800/932", u.Tot, u.WNot)
+	}
+	if u.WNLSF != 933 || u.DN != 6 {
+		t.Errorf("WNLSF/DN = %d/%d, want 933/6", u.WNLSF, u.DN)
+	}
+	// The clock fields sharing the message must be unaffected by the new block.
+	if m.clk.Toc != 100*bcnavT0 || m.IODC != 7 {
+		t.Errorf("MT34 clock Toc/IODC = %g/%d, want %g/7", m.clk.Toc, m.IODC, 100*bcnavT0)
+	}
+}
+
 func TestAssembleBeiDouBCNAV2RejectsWrongSlots(t *testing.T) {
 	m10 := &BeiDouBCNAV2{MesType: 10, SOW: 100}
 	m11 := &BeiDouBCNAV2{MesType: 11, SOW: 103, hasEph2: true}

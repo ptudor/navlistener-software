@@ -292,6 +292,41 @@ func TestOsnmaChangeClassifies(t *testing.T) {
 	}
 }
 
+// TestLeapMismatchClassifies guards the served leap_mismatch flag
+// (broadcast BDT-UTC ΔtLS vs the collector's configured GPS−UTC count) must
+// drive a debounced warning transition, and an SV with no UTC set decoded
+// (nil) is never classified (regression fix absence rule).
+func TestLeapMismatchClassifies(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(6_000_000, 0)
+	okv, dtLS := false, 4
+	sv := gps("C24", 24, 1)
+	sv.GnssID = 3
+	sv.LeapMismatch, sv.DtLS = &okv, &dtLS
+	d.Tick(t0, map[string]state.FeedSV{"C24@8": sv}, nil) // seed
+
+	bad := true
+	sv.LeapMismatch = &bad
+	m := map[string]state.FeedSV{"C24@8": sv}
+	d.Tick(t0.Add(10*time.Second), m, nil)
+	evs := d.Tick(t0.Add(80*time.Second), m, nil)
+	e, ok := find(evs, "leap_mismatch")
+	if !ok || e.NewValue != "mismatch" || e.OldValue != "ok" || e.Severity != SevWarning {
+		t.Fatalf("leap_mismatch = %+v (ok=%v), want confirmed ok→mismatch at warning severity", e, ok)
+	}
+
+	// nil (no UTC set decoded): no classification, no phantom event.
+	d2 := New(time.Minute)
+	blank := gps("C25", 25, 1)
+	blank.GnssID = 3
+	d2.Tick(t0, map[string]state.FeedSV{"C25@8": blank}, nil)
+	if evs := d2.Tick(t0.Add(120*time.Second), map[string]state.FeedSV{"C25@8": blank}, nil); len(evs) != 0 {
+		if _, ok := find(evs, "leap_mismatch"); ok {
+			t.Fatal("UTC-set-less SV classified a leap state")
+		}
+	}
+}
+
 // TestNoAccuracySentinelClassifies guards an SV whose broadcast accuracy
 // index is the "no accuracy prediction — use at own risk" sentinel serves no
 // sisa_m (there is no metres value) but does serve acc_index; the sisa classifier

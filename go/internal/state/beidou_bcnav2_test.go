@@ -186,6 +186,74 @@ func TestApplyBeiDouBCNAV2StaleClockIODCNotLatched(t *testing.T) {
 	}
 }
 
+// TestFeedBeiDouBDTUTC guards an MT34's BDT-UTC set must be stored
+// freshest-wins, served as utc_offset_ns (Eq. 7-25 at the feed instant, with the
+// Eq. 7-29 ΔtLSF arm once the WNLSF/DN event is past) plus the raw leap
+// schedule, and cross-checked against the configured GPS−UTC leap count
+// (broadcast ΔtLS + 14 == gpsUTCOffset — BDT = GPST − 14 s).
+func TestFeedBeiDouBDTUTC(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0) // GPS 1_384_035_218 s → BDT week 932, tow 252_804
+	const prn = 24
+	apply := func(words []uint32) {
+		s.Apply(&ingest.RawFrame{GnssID: gnss.BeiDou, SvID: prn, SigID: 8, Recv: now, Words: words})
+	}
+	// Ephemeris pair so the entry publishes (haveEph gate).
+	apply(bcnav2Frame(prn, 10, 252801, func(buf []byte) {
+		setAbsBits(buf, 53, 8, 7)   // IODE
+		setAbsBits(buf, 61, 11, 10) // Toe
+		setAbsBits(buf, 72, 2, 3)   // MEO
+	}))
+	apply(bcnav2Frame(prn, 11, 252801, nil))
+
+	m34 := func(dtLS, wnlsf, dn, dtLSF int) []uint32 {
+		return bcnav2Frame(prn, 34, 252804, func(buf []byte) {
+			setAbsBits(buf, 133, 10, 3)             // IODC
+			setAbsBits(buf, 143, 16, (1<<16)-2)     // A0UTC raw −2 (≈ −0.058 ns)
+			setAbsBits(buf, 179, 8, uint64(dtLS))   // ΔtLS
+			setAbsBits(buf, 187, 16, 252800/16)     // tot
+			setAbsBits(buf, 203, 13, 932)           // WNot (current BDT week)
+			setAbsBits(buf, 216, 13, uint64(wnlsf)) // WNLSF
+			setAbsBits(buf, 229, 3, uint64(dn))     // DN
+			setAbsBits(buf, 232, 8, uint64(dtLSF))  // ΔtLSF
+		})
+	}
+	// Future leap event (week 933): the ΔtLS arm applies. 4 + 14 == 18 → no mismatch.
+	apply(m34(4, 933, 6, 5))
+	sv, ok := s.FeedSVs(now)["C24@8"]
+	if !ok || sv.UtcOffsetNs == nil || sv.DtLS == nil || sv.LeapMismatch == nil {
+		t.Fatalf("BDT-UTC fields not served: %+v", sv)
+	}
+	// Offset ≈ ΔtLS·1e9 with only the tiny A0 term (−2·2⁻³⁵ s ≈ −0.058 ns) on top.
+	if got := *sv.UtcOffsetNs; got < 4e9-1 || got > 4e9 {
+		t.Errorf("utc_offset_ns = %v, want ≈ 4e9 (ΔtLS=4 arm)", got)
+	}
+	if *sv.DtLS != 4 || *sv.DtLSF != 5 || *sv.WnLSF != 933 || *sv.Dn != 6 {
+		t.Errorf("leap schedule = %d/%d/%d/%d, want 4/5/933/6", *sv.DtLS, *sv.DtLSF, *sv.WnLSF, *sv.Dn)
+	}
+	if *sv.LeapMismatch {
+		t.Errorf("leap_mismatch = true, want false (ΔtLS 4 + 14 == configured 18)")
+	}
+
+	// Past leap event (week 900): the ΔtLSF arm applies — served offset and the
+	// cross-check must both use ΔtLSF, so a pre-event ΔtLS of 3 raises no alarm.
+	apply(m34(3, 900, 6, 4))
+	sv = s.FeedSVs(now)["C24@8"]
+	if got := *sv.UtcOffsetNs; got < 4e9-1 || got > 4e9 {
+		t.Errorf("utc_offset_ns = %v, want ≈ 4e9 (ΔtLSF arm after past WNLSF/DN)", got)
+	}
+	if *sv.LeapMismatch {
+		t.Errorf("leap_mismatch = true, want false (applicable ΔtLSF 4 + 14 == 18)")
+	}
+
+	// A broadcast leap count disagreeing with the configured GPS−UTC (	// missing alarm): 5 + 14 != 18 → mismatch.
+	apply(m34(5, 933, 6, 5))
+	sv = s.FeedSVs(now)["C24@8"]
+	if sv.LeapMismatch == nil || !*sv.LeapMismatch {
+		t.Errorf("leap_mismatch not raised for broadcast ΔtLS=5 vs configured 18")
+	}
+}
+
 func TestApplyBeiDouBCNAV2MT34CarriesMT30TGD(t *testing.T) {
 	s := New(4)
 	now := time.Unix(1_700_000_000, 0)

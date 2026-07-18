@@ -87,29 +87,40 @@ const L2GroupDelayFactor = (1575.42 / 1227.60) * (1575.42 / 1227.60)
 const E5aGroupDelayFactor = (1575.420 / 1176.450) * (1575.420 / 1176.450)
 
 // UTCParams are the broadcast GNSS→UTC parameters (docs/MATH.md §4, §8).
+// The two-term A0/A1 set is the IS-GPS-200 LNAV shape; the CNAV-generation
+// messages (and BeiDou B-CNAV2 MT34, BDS-SIS-ICD-B2a v1.0 Table 7-20 — regression fix)
+// add the A2 drift-rate term and carry full (untruncated) reference weeks.
+// Zero-valued extras are harmless: a two-term source simply leaves them 0.
 type UTCParams struct {
 	A0    float64 // constant term, seconds
 	A1    float64 // rate, seconds/second
+	A2    float64 // drift-rate term, seconds/second² (0 for two-term sources)
 	Tot   float64 // reference time of the UTC data, seconds of week
-	DtLS  float64 // current leap-second count (whole seconds)
-	DtLSF float64 // scheduled future leap-second count
+	WNot  int     // reference week number of the UTC data (system week; 0 if the source set carries none)
+	DtLS  float64 // current (or past, pre-event) leap-second count (whole seconds)
+	DtLSF float64 // leap-second count after the WNLSF/DN event (current or future)
+	WNLSF int     // leap event reference week number
+	DN    int     // leap event day number within WNLSF (BeiDou: 0–6, Table 7-20; GPS LNAV: 1–7)
 }
 
 // UTCOffset returns the system→UTC offset (seconds) at time-of-week tow:
-// A0 + A1·(tow − tot) + ΔtLS, half-week corrected (IS-GPS-200 §20.3.3.5.2.4). The
-// scheduled leap (DtLSF/WNLSF/DN) governs the pending step and is handled by the
-// caller near a leap event; here we apply the current ΔtLS.
+// A0 + A1·(tow − tot) + A2·(tow − tot)² + ΔtLS, half-week corrected
+// (IS-GPS-200 §20.3.3.5.2.4; the A2 term per BDS-SIS-ICD-B2a v1.0 Eq. 7-25 is
+// zero for two-term sources). The scheduled leap (DtLSF/WNLSF/DN) governs the
+// pending step and is handled by the caller near a leap event; here we apply
+// the current ΔtLS.
 //
 // regression fix (recorded deviation, accepted): the ICD forms the A1 term over the
 // true week-spanning difference tE − tot + 604800·(WN − WNt); this
 // implementation substitutes the ±half-week wrap (EphAge) and carries no WNt,
 // which is identical within ±half a week of the reference and diverges beyond.
 // A1 is spec-bounded near 1e-15 s/s, so the divergence is sub-nanosecond
-// against the 2.5 ns integrity threshold — leave-as-is is the disposition. The
-// leap-transition arm of §20.3.3.5.2.4 (ΔtLSF applied across WN_LSF/DN) needs
-// WN_LSF/DN fields UTCParams does not yet carry; that extension is folded into
-// the standing regression fix broadcast-UTC-decode work.
+// against the 2.5 ns integrity threshold — leave-as-is is the disposition.
+// UTCParams now carries WNot/WNLSF/DN, so a caller with an absolute
+// epoch in hand can evaluate the exact week-spanning form and the
+// leap-transition arm itself (the navlistener feed does); this
+// tow-only convenience stays on the wrapped axis and the current ΔtLS.
 func UTCOffset(u UTCParams, tow float64) float64 {
 	dt := gnsstime.EphAge(tow, u.Tot)
-	return u.A0 + u.A1*dt + u.DtLS
+	return u.A0 + u.A1*dt + u.A2*dt*dt + u.DtLS
 }

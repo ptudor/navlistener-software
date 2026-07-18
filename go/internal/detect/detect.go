@@ -285,6 +285,30 @@ func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, emit em
 		})
 	}
 
+	// Broadcast-vs-configured leap-second cross-check : the SV's
+	// broadcast UTC set carries the current leap count (BeiDou B-CNAV2 MT34's
+	// BDT-UTC ΔtLS today); state compares it — through the fixed BDT↔GPST
+	// alignment — against the collector's configured GPS−UTC count (	// compiled-in/config value). A mismatch means every UTC conversion this
+	// collector performs is shifted by whole seconds: a stale config after a
+	// real leap event, or a bogus broadcast. Warning, not critical — the
+	// GNSS-side time axes (all leap-free) are unaffected; only UTC-facing
+	// output is. Absent (nil) = no UTC set decoded: no classification.
+	if sv.LeapMismatch != nil {
+		bad := *sv.LeapMismatch
+		sev := SevInfo
+		if bad {
+			sev = SevWarning
+		}
+		emit(name, "leap", boolState(bad, "mismatch", "ok"), func(old string) Event {
+			return Event{
+				Type: "leap_mismatch", OldValue: old, NewValue: boolState(bad, "mismatch", "ok"),
+				Severity: sev,
+				Message:  fmt.Sprintf("%s broadcast leap-second count %s configured value", sv.Name, map[bool]string{true: "disagrees with", false: "matches"}[bad]),
+				Params:   map[string]any{"sv": sv.Name, "leap_mismatch": bad, "dt_ls": derefInt(sv.DtLS)},
+			}
+		})
+	}
+
 	// Galileo OSNMA authentication presence (regression fix, INTEGRITY.md §7 v1): the
 	// promised osnma_change on↔off transition. Info severity per the
 	// INTEGRITY.md event table — presence going away is expected operational
@@ -416,4 +440,13 @@ func boolState(b bool, t, f string) string {
 		return t
 	}
 	return f
+}
+
+// derefInt renders an optional feed int for event params: the value, or nil when
+// the field was absent (never a fabricated zero).
+func derefInt(p *int) any {
+	if p == nil {
+		return nil
+	}
+	return *p
 }

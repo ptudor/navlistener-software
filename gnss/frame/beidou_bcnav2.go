@@ -29,6 +29,11 @@ const (
 	bcnavArefIGSO = 42162200.0 // IGSO/GEO
 
 	bcnavT0 = 300.0 // toe / toc step, seconds
+
+	// BDT-UTC scale factor (ICD Table 7-20, regression fix). p2m35 lives in
+	// gps_cnav.go and p2m51 in galileo_inav.go; 2^-68 is composed here because
+	// 1<<68 overflows uint64.
+	p2m68 = p2m34 * p2m34
 )
 
 // ErrBadCRC is returned when a frame fails its CRC-24Q check.
@@ -74,6 +79,11 @@ type BeiDouBCNAV2 struct {
 	ISCB2ad float64    // B2a data vs pilot component, seconds
 	TGDB1Cp float64    // B1C pilot vs B3I, seconds
 	BDGIM   [9]float64 // α1..α9, TECu (ICD Table 7-10; α5 carries the −2⁻³ scale)
+
+	// Message type 34 only : the broadcast BDT-UTC time offset
+	// parameter set (ICD §7.12, Figure 6-16, Table 7-20), already scaled to SI.
+	// Valid only when MesType == 34.
+	UTC clock.UTCParams
 
 	eph     kepler.Ephemeris
 	hasEph2 bool
@@ -191,6 +201,24 @@ func DecodeBeiDouBCNAV2(words []uint32) (*BeiDouBCNAV2, error) {
 			Af2: float64(s(122, 11)) * p2m66,
 		}
 		m.IODC = int(u(133, 10))
+		// the BDT-UTC time offset block at bits 143–239 (Figure 6-9
+		// places it after the IODC; internal layout Figure 6-16, scales/signs
+		// Table 7-20 — A0UTC(16, 2⁻³⁵ s) A1UTC(13, 2⁻⁵¹ s/s) A2UTC(7, 2⁻⁶⁸
+		// s/s²) ΔtLS(8, 1 s) tot(16, 2⁴ s, 0–604784) WNot(13, week) WNLSF(13,
+		// week) DN(3, 0–6 day) ΔtLSF(8, 1 s); the starred fields are two's
+		// complement). ΔtLS/ΔtLSF are the BDT-UTC leap counts ("current or
+		// past" / "current or future", Table 7-20) — BDT itself is leap-free.
+		m.UTC = clock.UTCParams{
+			A0:    float64(s(143, 16)) * p2m35,
+			A1:    float64(s(159, 13)) * p2m51,
+			A2:    float64(s(172, 7)) * p2m68,
+			DtLS:  float64(s(179, 8)),
+			Tot:   float64(u(187, 16)) * 16,
+			WNot:  int(u(203, 13)),
+			WNLSF: int(u(216, 13)),
+			DN:    int(u(229, 3)),
+			DtLSF: float64(s(232, 8)),
+		}
 		m.hasClk = true
 	case 40: // Fig 6-10: HS(2) flags SISAI_oe(5) SISAI_oc(22) midi almanac(156)
 		m.HS = int(u(30, 2))
