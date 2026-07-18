@@ -257,6 +257,41 @@ func TestURAAlertTransition(t *testing.T) {
 	}
 }
 
+// TestOsnmaChangeClassifies guards the served osnma flag must drive
+// its own debounced state machine, so authentication presence going away (or
+// arriving) fires the INTEGRITY.md-promised osnma_change — and an SV with no
+// OSNMA field observed (nil) is never classified (regression fix absence rule).
+func TestOsnmaChangeClassifies(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(6_000_000, 0)
+	on := true
+	sv := gps("E05", 5, 1)
+	sv.GnssID = 2
+	sv.Osnma = &on
+	d.Tick(t0, map[string]state.FeedSV{"E05@0": sv}, nil) // seed
+
+	off := false
+	sv.Osnma = &off
+	m := map[string]state.FeedSV{"E05@0": sv}
+	d.Tick(t0.Add(10*time.Second), m, nil)
+	evs := d.Tick(t0.Add(80*time.Second), m, nil)
+	e, ok := find(evs, "osnma_change")
+	if !ok || e.NewValue != "off" || e.OldValue != "on" || e.Severity != SevInfo {
+		t.Fatalf("osnma_change = %+v (ok=%v), want confirmed on→off at info severity", e, ok)
+	}
+
+	// nil (no OSNMA field observed): no classification, no phantom event.
+	d2 := New(time.Minute)
+	blank := gps("E07", 7, 1)
+	blank.GnssID = 2
+	d2.Tick(t0, map[string]state.FeedSV{"E07@0": blank}, nil)
+	if evs := d2.Tick(t0.Add(120*time.Second), map[string]state.FeedSV{"E07@0": blank}, nil); len(evs) != 0 {
+		if _, ok := find(evs, "osnma_change"); ok {
+			t.Fatal("OSNMA-less SV classified an osnma state")
+		}
+	}
+}
+
 // TestNoAccuracySentinelClassifies guards an SV whose broadcast accuracy
 // index is the "no accuracy prediction — use at own risk" sentinel serves no
 // sisa_m (there is no metres value) but does serve acc_index; the sisa classifier

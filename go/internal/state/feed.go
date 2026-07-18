@@ -59,11 +59,18 @@ type FeedSV struct {
 	// consumer can re-evaluate at its own epoch. All absent until decoded, and
 	// absent again after the §5.1.8 all-ones broadcast withdrawal — "absent =
 	// unknown", never a stale offset.
-	GpsOffsetNs    *float64 `json:"gps_offset_ns,omitempty"`
-	A0G            *float64 `json:"a0g,omitempty"`
-	A1G            *float64 `json:"a1g,omitempty"`
-	T0G            *int     `json:"t0g,omitempty"`
-	WN0G           *int     `json:"wn0g,omitempty"`
+	GpsOffsetNs *float64 `json:"gps_offset_ns,omitempty"`
+	A0G         *float64 `json:"a0g,omitempty"`
+	A1G         *float64 `json:"a1g,omitempty"`
+	T0G         *int     `json:"t0g,omitempty"`
+	WN0G        *int     `json:"wn0g,omitempty"`
+	// Osnma (regression fix, Galileo E1-B entries only — docs/OUTPUT.md §1.1): true =
+	// the SV's 40-bit I/NAV OSNMA field has carried live (nonzero) data within
+	// the last osnmaLiveWindow; false = the field is observed but all-zeros
+	// (the SV is outside the OSNMA-distributing subset, GAL-OSNMA-SIS-ICD §2);
+	// absent = no nominal page observed / not Galileo. Presence only
+	// (INTEGRITY.md §7 v1) — true does NOT mean the data authenticated.
+	Osnma          *bool    `json:"osnma,omitempty"`
 	IOD            *int     `json:"iod,omitempty"`
 	OrbitDiscoM    *float64 `json:"orbit_disco_m,omitempty"`
 	OrbitDiscoAgeS *float64 `json:"orbit_disco_age_s,omitempty"`
@@ -245,6 +252,10 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 	if st.haveAOD {
 		aodc, aode := st.aodc, st.aode
 		e.AODC, e.AODE = &aodc, &aode
+	}
+	if st.haveOSNMA {
+		on := !st.osnmaLastLive.IsZero() && now.Sub(st.osnmaLastLive) <= osnmaLiveWindow
+		e.Osnma = &on
 	}
 	if st.ggto != nil {
 		a0, a1 := st.ggto.a0g, st.ggto.a1g

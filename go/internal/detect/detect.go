@@ -285,6 +285,25 @@ func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, emit em
 		})
 	}
 
+	// Galileo OSNMA authentication presence (regression fix, INTEGRITY.md §7 v1): the
+	// promised osnma_change on↔off transition. Info severity per the
+	// INTEGRITY.md event table — presence going away is expected operational
+	// behavior (the distributing subset changes dynamically per the OSNMA ICD),
+	// but a fleet-wide flat-off during an active spoofing scenario is exactly
+	// the corroborating signal DEFENSE-PNT wants on record. Absent (nil) = no
+	// OSNMA field observed: no classification (regression fix rule).
+	if sv.Osnma != nil {
+		on := *sv.Osnma
+		emit(name, "osnma", boolState(on, "on", "off"), func(old string) Event {
+			return Event{
+				Type: "osnma_change", OldValue: old, NewValue: boolState(on, "on", "off"),
+				Severity: SevInfo,
+				Message:  fmt.Sprintf("%s OSNMA authentication %s", sv.Name, boolState(on, "on", "off")),
+				Params:   map[string]any{"sv": sv.Name, "osnma": on},
+			}
+		})
+	}
+
 	// Silence (observation lost).
 	silent := float64(sv.LastSeenS) > SilentThreshold
 	emit(name, "silence", boolState(silent, "silent", "seen"), func(old string) Event {

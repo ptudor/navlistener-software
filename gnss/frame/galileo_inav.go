@@ -138,9 +138,22 @@ type GalileoINAV struct {
 	A1G       float64 // s/s, two's complement ×2⁻⁵¹
 	T0G       float64 // s, ×3600
 	WN0G      int     // weeks, 6-bit truncated
-	eph       kepler.Ephemeris
-	clk       clock.Model
-	hasClk    bool
+	// OSNMA : the 40-bit OSNMA protocol-data field of the E1-B odd
+	// page part — page bits 146..185 (GAL-OS-SIS-ICD-2.2 Table 38: odd part =
+	// flags(2) + data 2/2(16) + OSNMA(40) + SAR(22) + spare(2) + CRC + SSP +
+	// tail; the field IS CRC-protected, so it arrives integrity-checked here).
+	// Structure per GAL-OSNMA-SIS-ICD §2: HKROOT portion (first 8 bits) then
+	// MACK portion (32 bits); a satellite not currently distributing OSNMA
+	// transmits a 40-bit all-zeros field. HasOSNMA is false for dummy words
+	// (type 63): the OSNMA ICD directs that data from the OSNMA field of dummy
+	// messages or alert pages be discarded (alert pages never reach here —
+	// regression fix rejects them earlier). v1 consumes presence only (live vs zeros,
+	// INTEGRITY.md §7); TESLA/Merkle verification is the documented later phase.
+	HasOSNMA bool
+	OSNMA    uint64 // the 40 raw bits, MSB-first (HKROOT<<32 | MACK)
+	eph      kepler.Ephemeris
+	clk      clock.Model
+	hasClk   bool
 }
 
 // DecodeGalileoINAV decodes one I/NAV page (eight words) into its word fields.
@@ -199,6 +212,13 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 	r := NewBitReaderN(content, 128)
 	wt, _ := r.Bits(0, 6)
 	w := &GalileoINAV{Type: int(wt)}
+	// the OSNMA field rides EVERY nominal page's odd part (page bits
+	// 146..185), independent of word type — except dummy messages (word type
+	// 63), whose OSNMA field the OSNMA ICD directs receivers to discard.
+	if wt != 63 {
+		osnma, _ := pr.Bits(146, 40)
+		w.HasOSNMA, w.OSNMA = true, osnma
+	}
 	semi := physconst.Pi
 	switch wt {
 	case 1:

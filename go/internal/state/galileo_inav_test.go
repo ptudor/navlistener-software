@@ -65,6 +65,81 @@ func galileoFrame(svid int, words []uint32, recv time.Time) *ingest.RawFrame {
 	return &ingest.RawFrame{GnssID: gnss.Galileo, SvID: svid, SigID: 0, Source: "obs-inav", Recv: recv, Words: words}
 }
 
+// inavWithOSNMA pokes a 40-bit OSNMA pattern into an already-built I/NAV page
+// (page bits 146..185, outside the nav-word content) and re-stamps the CRC,
+// which protects the field.
+func inavWithOSNMA(words []uint32, v uint64) []uint32 {
+	page := make([]byte, 32)
+	for i := 0; i < 8; i++ {
+		page[i*4] = byte(words[i] >> 24)
+		page[i*4+1] = byte(words[i] >> 16)
+		page[i*4+2] = byte(words[i] >> 8)
+		page[i*4+3] = byte(words[i])
+	}
+	for i := 0; i < 40; i++ {
+		p := 146 + i
+		if v&(1<<uint(39-i)) != 0 {
+			page[p>>3] |= 1 << uint(7-(p&7))
+		} else {
+			page[p>>3] &^= 1 << uint(7-(p&7))
+		}
+	}
+	for i := 0; i < 8; i++ {
+		words[i] = uint32(page[i*4])<<24 | uint32(page[i*4+1])<<16 | uint32(page[i*4+2])<<8 | uint32(page[i*4+3])
+	}
+	frame.StampGalileoINAVCRC(words)
+	return words
+}
+
+// TestFeedGalileoOSNMA guards state/feed half: a live (nonzero)
+// OSNMA field serves osnma=true; once the SV transmits only all-zero fields
+// for longer than the live window, the flag decays to false (the on→off
+// transition the osnma_change detector consumes); an SV with no I/NAV nominal
+// page at all serves no flag.
+func TestFeedGalileoOSNMA(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	const svid, iod = 19, 55
+
+	// Assembled entry with a live OSNMA field on one of its pages.
+	s.Apply(galileoFrame(svid, inavWithOSNMA(inavWordN(1, iod, nil), 0xDEADBEEF01), now))
+	s.Apply(galileoFrame(svid, inavWordN(2, iod, nil), now))
+	s.Apply(galileoFrame(svid, inavWordN(3, iod, nil), now))
+	s.Apply(galileoFrame(svid, inavWordN(4, iod, nil), now))
+
+	sv, ok := s.FeedSVs(now)["E19@0"]
+	if !ok {
+		t.Fatal("E19@0 missing from svs feed")
+	}
+	if sv.Osnma == nil || !*sv.Osnma {
+		t.Fatalf("osnma = %v after live field, want true", sv.Osnma)
+	}
+
+	// Zero-field pages keep arriving (word 5 here) but nothing live: within the
+	// window the flag holds true, past it it decays to false — served false,
+	// not absent, because the field IS observed (the SV just isn't in the
+	// distributing subset any more).
+	later := now.Add(2 * time.Minute)
+	s.Apply(galileoFrame(svid, inavWordN(1, iod, nil), later))
+	sv = s.FeedSVs(later)["E19@0"]
+	if sv.Osnma == nil || *sv.Osnma {
+		t.Fatalf("osnma = %v two minutes past the last live field, want false", sv.Osnma)
+	}
+
+	// An SV that never carried an OSNMA observation serves no flag at all: the
+	// F/NAV-only @3 entry (E5a carries no OSNMA — it is an E1-B-only field).
+	s2 := New(4)
+	for _, pt := range []int{1, 2, 3, 4} {
+		s2.Apply(&ingest.RawFrame{
+			GnssID: gnss.Galileo, SvID: 14, SigID: 3, Source: "obs-fnav", Recv: now,
+			Words: fnavPageWords(pt, 7),
+		})
+	}
+	if sv := s2.FeedSVs(now)["E14@3"]; sv.Osnma != nil {
+		t.Errorf("F/NAV @3 entry serves osnma = %v, want absent (E1-B-only field)", sv.Osnma)
+	}
+}
+
 // TestFeedGalileoGGTO guards state/feed half: an I/NAV word 10's
 // GST-GPS conversion set must reach the served entry as the raw a0g/a1g/t0g/
 // wn0g quartet plus gps_offset_ns evaluated at the feed instant (with a1g=0 the

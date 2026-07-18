@@ -386,6 +386,75 @@ func TestGalileoAssemblersRejectWrongSlots(t *testing.T) {
 	}
 }
 
+// setINAVPageBits pokes raw page bits into an already-built 8-word I/NAV page
+// (fields OUTSIDE the 128-bit nav-word content, e.g. the odd part's OSNMA
+// field) and re-stamps the CRC, which protects them.
+func setINAVPageBits(words []uint32, off int, v uint64, n int) {
+	page := make([]byte, 32)
+	for i := 0; i < 8; i++ {
+		page[i*4] = byte(words[i] >> 24)
+		page[i*4+1] = byte(words[i] >> 16)
+		page[i*4+2] = byte(words[i] >> 8)
+		page[i*4+3] = byte(words[i])
+	}
+	for i := 0; i < n; i++ {
+		p := off + i
+		if v&(1<<uint(n-1-i)) != 0 {
+			page[p>>3] |= 1 << uint(7-(p&7))
+		} else {
+			page[p>>3] &^= 1 << uint(7-(p&7))
+		}
+	}
+	for i := 0; i < 8; i++ {
+		words[i] = uint32(page[i*4])<<24 | uint32(page[i*4+1])<<16 | uint32(page[i*4+2])<<8 | uint32(page[i*4+3])
+	}
+	StampGalileoINAVCRC(words)
+}
+
+// TestDecodeGalileoINAVOSNMA guards the 40-bit OSNMA protocol-data
+// field of the E1-B odd page part (page bits 146..185, Table 38) must be
+// extracted on every nominal page regardless of word type, must round-trip a
+// known pattern (it is CRC-protected, so a mis-offset would also flunk the CRC
+// re-stamp), and must be discarded for dummy messages (word type 63) per the
+// OSNMA ICD.
+func TestDecodeGalileoINAVOSNMA(t *testing.T) {
+	const pattern = uint64(0xA1B2C3D4E5) // 40 bits, nonzero in every byte
+	content := make([]byte, 16)
+	setContentBits(content, 0, 1, 6) // word type 1
+	words := buildGalileoINAVWords(content)
+	setINAVPageBits(words, 146, pattern, 40)
+	w, err := DecodeGalileoINAV(words)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !w.HasOSNMA || w.OSNMA != pattern {
+		t.Errorf("HasOSNMA=%v OSNMA=%#x, want true/%#x", w.HasOSNMA, w.OSNMA, pattern)
+	}
+
+	// All-zeros field (SV not distributing): still observed, value 0.
+	words = buildGalileoINAVWords(content)
+	w, err = DecodeGalileoINAV(words)
+	if err != nil {
+		t.Fatalf("decode zero-field: %v", err)
+	}
+	if !w.HasOSNMA || w.OSNMA != 0 {
+		t.Errorf("zero field: HasOSNMA=%v OSNMA=%#x, want true/0", w.HasOSNMA, w.OSNMA)
+	}
+
+	// Dummy message (word type 63): the OSNMA field must be discarded.
+	dummy := make([]byte, 16)
+	setContentBits(dummy, 0, 63, 6)
+	words = buildGalileoINAVWords(dummy)
+	setINAVPageBits(words, 146, pattern, 40)
+	w, err = DecodeGalileoINAV(words)
+	if err != nil {
+		t.Fatalf("decode dummy: %v", err)
+	}
+	if w.HasOSNMA {
+		t.Errorf("dummy message: HasOSNMA=%v, want false (OSNMA ICD: discard)", w.HasOSNMA)
+	}
+}
+
 // TestDecodeGalileoINAVWord10GGTO guards regression fix (I/NAV side): word 10's
 // GST-GPS conversion parameters decode at the GAL-OS-SIS-ICD-2.2 Table 51
 // offsets (A0G@86 16 bits ×2⁻³⁵, A1G@102 12 bits ×2⁻⁵¹, t0G@114 8 bits ×3600,

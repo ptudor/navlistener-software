@@ -114,6 +114,17 @@ const (
 	// leaves havePos/pos untouched, so without this bound a stale-but-finite
 	// position would otherwise be served forever with an ever-fresher-looking tow).
 	posStaleBound = 120 * time.Second
+
+	// osnmaLiveWindow  is how recently a Galileo SV's 40-bit OSNMA
+	// field must have been nonzero for the served osnma flag to read true. The
+	// OSNMA stream is framed per 30 s I/NAV subframe (15 pages × 40 bits =
+	// one 120-bit HKROOT + one 480-bit MACK message, GAL-OSNMA-SIS-ICD §2), and
+	// a satellite that stops distributing transmits all-zeros in every page —
+	// so two full subframes of zeros (60 s) is a deliberate off, while an
+	// occasional all-zero page inside a live stream (zero-padding regions of a
+	// DSM/MACK block) is absorbed rather than flapping the flag. The detector's
+	// debounce then confirms the transition on top of this.
+	osnmaLiveWindow = 60 * time.Second
 )
 
 // gpsUTCOffset is the current GPS−UTC (ΔtLS), the leap-second count applied to
@@ -293,6 +304,17 @@ type svState struct {
 	// that detector is tracked P6 work, not yet built (the regression fix signposted
 	// remainder, like the NavIC deferral).
 	ggto *ggtoParams
+
+	// OSNMA presence (regression fix, Galileo E1-B @0 only — the INTEGRITY.md §7 v1
+	// slice: presence/absence, not TESLA verification). haveOSNMA: at least one
+	// nominal non-dummy page's 40-bit OSNMA field has been observed;
+	// osnmaLastLive: the last reception whose field was NONZERO. A satellite
+	// outside the OSNMA-distributing subset transmits all-zeros in the field
+	// (GAL-OSNMA-SIS-ICD §2), so "distributing" = nonzero-within-window, and
+	// "observed but off" (haveOSNMA with lastLive stale/never) is a real served
+	// state — the off half of the osnma_change on↔off transition.
+	haveOSNMA     bool
+	osnmaLastLive time.Time
 
 	pos     gnss.ECEF
 	havePos bool
@@ -779,6 +801,16 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 		sh.m[key] = st
 	}
 	st.lastSeen = recv
+
+	// OSNMA presence rides every nominal non-dummy page, whatever the
+	// word type — fold it before the per-word-type dispatch below so pages
+	// whose word types are otherwise ignored (0, 6-9, spare…) still feed it.
+	if w.HasOSNMA {
+		st.haveOSNMA = true
+		if w.OSNMA != 0 {
+			st.osnmaLastLive = recv
+		}
+	}
 
 	// Word type 5 carries E1B health and BGD (not part of the IODnav-matched
 	// ephemeris set); fold its health in as it arrives (docs/CONSTELLATIONS.md
