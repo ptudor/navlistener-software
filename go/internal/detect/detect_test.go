@@ -363,6 +363,38 @@ func TestNoAccuracySentinelClassifies(t *testing.T) {
 	}
 }
 
+// TestRawAccIndexChangeClassifies guards an accuracy index flagged
+// raw-only (BeiDou B-CNAV2 SISAI — no published metres table) must classify
+// each index VALUE as its own state, so a broadcast accuracy revision fires a
+// sisa_change (info severity, semantics unpublished) instead of collapsing
+// every value into one permanent "no_accuracy" state.
+func TestRawAccIndexChangeClassifies(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(6_000_000, 0)
+	idx := 1386
+	sv := gps("C26", 26, 1)
+	sv.GnssID, sv.SigID = 3, 8
+	sv.AccIndex, sv.AccIndexRawOnly = &idx, true
+	d.Tick(t0, map[string]state.FeedSV{"C26@8": sv}, nil) // seed
+
+	// Unchanged index past debounce: no event.
+	if evs := d.Tick(t0.Add(120*time.Second), map[string]state.FeedSV{"C26@8": sv}, nil); len(evs) != 0 {
+		if _, ok := find(evs, "sisa_change"); ok {
+			t.Fatal("unchanged raw index fired a sisa_change")
+		}
+	}
+
+	idx2 := 36202
+	sv.AccIndex = &idx2
+	m := map[string]state.FeedSV{"C26@8": sv}
+	d.Tick(t0.Add(200*time.Second), m, nil)
+	evs := d.Tick(t0.Add(270*time.Second), m, nil)
+	e, ok := find(evs, "sisa_change")
+	if !ok || e.NewValue != "raw_36202" || e.OldValue != "raw_1386" || e.Severity != SevInfo {
+		t.Fatalf("sisa_change = %+v (ok=%v), want confirmed raw_1386→raw_36202 at info severity", e, ok)
+	}
+}
+
 // TestQZSSHealthType confirms QZSS health transitions carry the qzss_health type,
 // not health_change (docs/INTEGRITY.md §5, the Japan extension).
 func TestQZSSHealthType(t *testing.T) {

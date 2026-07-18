@@ -85,6 +85,20 @@ type BeiDouBCNAV2 struct {
 	// Valid only when MesType == 34.
 	UTC clock.UTCParams
 
+	// SISAI — the broadcast signal-in-space accuracy indices (regression fix, ICD
+	// §7.16). The SISAIoc block (Figure 6-14: top(11) SISAIocb(5) SISAIoc1(3)
+	// SISAIoc2(3)) rides MT34 and MT40; SISAIoe(5) rides MT40 only. These are
+	// RAW indices, deliberately never converted to metres: v1.0 defines only
+	// the bit layout — "the specific definitions ... will be published in a
+	// future update of this ICD" (§7.16 verbatim), so no index→metres table
+	// exists to transcribe. SISAItop is the block's own prediction time of
+	// week (raw units likewise unpublished).
+	SISAItop int
+	SISAIocb int
+	SISAIoc1 int
+	SISAIoc2 int
+	SISAIoe  int // MT40 only
+
 	eph     kepler.Ephemeris
 	hasEph2 bool
 	hasClk  bool
@@ -193,6 +207,13 @@ func DecodeBeiDouBCNAV2(words []uint32) (*BeiDouBCNAV2, error) {
 	case 34: // Fig 6-9: HS(2) flags SISAI_oc(22) clock(69) IODC(10) BDT-UTC(97)
 		m.HS = int(u(30, 2))
 		flags(32)
+		// the SISAIoc block at bits 42–63 (Figure 6-9 places it after
+		// the flag block; internal layout Figure 6-14). Raw indices — see the
+		// struct doc; no metres conversion exists in v1.0.
+		m.SISAItop = int(u(42, 11))
+		m.SISAIocb = int(u(53, 5))
+		m.SISAIoc1 = int(u(58, 3))
+		m.SISAIoc2 = int(u(61, 3))
 		m.clk = clock.Model{
 			ID:  gnss.BeiDou,
 			Toc: float64(u(64, 11)) * bcnavT0,
@@ -223,6 +244,13 @@ func DecodeBeiDouBCNAV2(words []uint32) (*BeiDouBCNAV2, error) {
 	case 40: // Fig 6-10: HS(2) flags SISAI_oe(5) SISAI_oc(22) midi almanac(156)
 		m.HS = int(u(30, 2))
 		flags(32)
+		// SISAIoe at bits 42–46, then the same Figure 6-14 SISAIoc
+		// block at 47–68. The midi almanac (69–224) is not consumed.
+		m.SISAIoe = int(u(42, 5))
+		m.SISAItop = int(u(47, 11))
+		m.SISAIocb = int(u(58, 5))
+		m.SISAIoc1 = int(u(63, 3))
+		m.SISAIoc2 = int(u(66, 3))
 	}
 	return m, nil
 }

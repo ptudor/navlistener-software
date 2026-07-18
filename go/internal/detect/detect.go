@@ -232,6 +232,20 @@ func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, emit em
 				Params:  map[string]any{"sv": sv.Name, "sisa_m": *sv.SISAM},
 			}
 		})
+	case sv.AccIndex != nil && sv.AccIndexRawOnly:
+		// a raw accuracy index with NO published metres table (BeiDou
+		// B-CNAV2 SISAI — the B2a ICD v1.0 defers the tables). Unlike the
+		// sentinel branch below, every index value here is a distinct state,
+		// so a broadcast accuracy revision fires a sisa_change even though no
+		// metres threshold can ever classify it. Info severity: the semantics
+		// of the values are unpublished, so a change is notable, not an alarm.
+		emit(name, "sisa", fmt.Sprintf("raw_%d", *sv.AccIndex), func(old string) Event {
+			return Event{
+				Type: "sisa_change", OldValue: old, NewValue: fmt.Sprintf("raw_%d", *sv.AccIndex), Severity: SevInfo,
+				Message: fmt.Sprintf("%s broadcast raw accuracy index changed to %d (no published decode table)", sv.Name, *sv.AccIndex),
+				Params:  map[string]any{"sv": sv.Name, "acc_index": *sv.AccIndex},
+			}
+		})
 	case sv.AccIndex != nil:
 		emit(name, "sisa", "no_accuracy", func(old string) Event {
 			return Event{

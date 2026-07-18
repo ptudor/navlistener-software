@@ -39,6 +39,14 @@ type FeedSV struct {
 	// §20.3.3.3.1.3: use at own risk) was indistinguishable from "no accuracy
 	// field decoded yet", and the sentinel produced zero integrity signal.
 	AccIndex *int `json:"acc_index,omitempty"`
+	// AccIndexRawOnly (regression fix, detector-facing — not part of the JSON
+	// contract): true when AccIndex is a raw index for which NO metres table
+	// exists at all (BeiDou B-CNAV2 SISAI, packed oe<<11|ocb<<6|oc1<<3|oc2 —
+	// the accSISAIRaw doc), as opposed to a table-backed index currently at a
+	// "no accuracy prediction" sentinel. The sisa classifier uses it to track
+	// raw-index CHANGES instead of collapsing every value into one
+	// "no_accuracy" state.
+	AccIndexRawOnly bool `json:"-"`
 	// Alert is the GPS/QZSS broadcast URA-alert flag (regression fix/regression fix, IS-GPS-200N
 	// §20.3.3.2 HOW bit 18 / §6.4.6.3 CNAV bit 38): true = the SV itself declares
 	// its URA may be worse than broadcast — use at own risk. Absent until decoded
@@ -256,6 +264,7 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 	if st.accKind != accNone {
 		idx := st.accIdx
 		e.AccIndex = &idx // serve the raw index even when it maps to no metres value
+		e.AccIndexRawOnly = st.accKind == accSISAIRaw
 	}
 	if st.haveAlert {
 		a := st.alert
@@ -914,6 +923,11 @@ func sisaFor(kind uint8, idx int) (float64, bool) {
 	case accURAED:
 		return accuracy.URAEDMeters(idx) // CNAV signed URA_ED 
 	default:
+		// accSISAIRaw lands here BY DESIGN : the B2a ICD v1.0 defers
+		// the SISAI index→metres tables to "a future update", so there is
+		// nothing lawful to convert with — the raw packed index is served via
+		// acc_index and sisa_valid stays false. Do not add a table here
+		// without a published ICD revision to cite.
 		return 0, false
 	}
 }

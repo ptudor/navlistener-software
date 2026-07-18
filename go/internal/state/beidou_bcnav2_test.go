@@ -186,6 +186,68 @@ func TestApplyBeiDouBCNAV2StaleClockIODCNotLatched(t *testing.T) {
 	}
 }
 
+// TestFeedBeiDouSISAIRaw guards MT34/MT40's SISAI raw indices must be
+// stored (accSISAIRaw, packed oe<<11|ocb<<6|oc1<<3|oc2 with oe sticky across
+// MT34 updates) and served as acc_index with sisa_valid=false — the B2a ICD
+// v1.0 publishes no index→metres table, so no metres value may ever appear.
+func TestFeedBeiDouSISAIRaw(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	const prn = 26
+	apply := func(words []uint32) {
+		s.Apply(&ingest.RawFrame{GnssID: gnss.BeiDou, SvID: prn, SigID: 8, Recv: now, Words: words})
+	}
+	apply(bcnav2Frame(prn, 10, 252801, func(buf []byte) {
+		setAbsBits(buf, 53, 8, 7)
+		setAbsBits(buf, 61, 11, 10)
+		setAbsBits(buf, 72, 2, 3)
+	}))
+	apply(bcnav2Frame(prn, 11, 252801, nil))
+	// MT34: SISAIoc only (top excluded from the packed index by design).
+	apply(bcnav2Frame(prn, 34, 252804, func(buf []byte) {
+		setAbsBits(buf, 42, 11, 1234) // SISAItop — must NOT affect acc_index
+		setAbsBits(buf, 53, 5, 21)    // SISAIocb
+		setAbsBits(buf, 58, 3, 5)     // SISAIoc1
+		setAbsBits(buf, 61, 3, 2)     // SISAIoc2
+		setAbsBits(buf, 133, 10, 3)   // IODC
+	}))
+	sv := s.FeedSVs(now)["C26@8"]
+	want := 21<<6 | 5<<3 | 2
+	if sv.AccIndex == nil || *sv.AccIndex != want {
+		t.Fatalf("acc_index = %v, want %d (packed ocb/oc1/oc2)", sv.AccIndex, want)
+	}
+	if sv.SISAValid || sv.SISAM != nil {
+		t.Errorf("sisa_valid=%v sisa_m=%v, want false/absent — no metres table exists (ICD §7.16 defers it)", sv.SISAValid, sv.SISAM)
+	}
+	if !sv.AccIndexRawOnly {
+		t.Errorf("AccIndexRawOnly = false, want true (detector discriminator)")
+	}
+
+	// MT40 supplies SISAIoe; the packed index gains the oe<<11 component.
+	apply(bcnav2Frame(prn, 40, 252807, func(buf []byte) {
+		setAbsBits(buf, 42, 5, 17)   // SISAIoe
+		setAbsBits(buf, 47, 11, 999) // SISAItop
+		setAbsBits(buf, 58, 5, 21)   // SISAIocb
+		setAbsBits(buf, 63, 3, 5)    // SISAIoc1
+		setAbsBits(buf, 66, 3, 2)    // SISAIoc2
+	}))
+	want = 17<<11 | 21<<6 | 5<<3 | 2
+	if sv := s.FeedSVs(now)["C26@8"]; sv.AccIndex == nil || *sv.AccIndex != want {
+		t.Fatalf("acc_index after MT40 = %v, want %d (oe folded in)", sv.AccIndex, want)
+	}
+
+	// A later MT34 (no oe field) must keep the last-known oe — not zero it.
+	apply(bcnav2Frame(prn, 34, 252810, func(buf []byte) {
+		setAbsBits(buf, 53, 5, 21)
+		setAbsBits(buf, 58, 3, 5)
+		setAbsBits(buf, 61, 3, 2)
+		setAbsBits(buf, 133, 10, 3)
+	}))
+	if sv := s.FeedSVs(now)["C26@8"]; sv.AccIndex == nil || *sv.AccIndex != want {
+		t.Fatalf("acc_index after second MT34 = %v, want %d (oe sticky)", sv.AccIndex, want)
+	}
+}
+
 // TestFeedBeiDouBDTUTC guards an MT34's BDT-UTC set must be stored
 // freshest-wins, served as utc_offset_ns (Eq. 7-25 at the feed instant, with the
 // Eq. 7-29 ΔtLSF arm once the WNLSF/DN event is past) plus the raw leap

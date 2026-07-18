@@ -71,9 +71,13 @@ func TestBCNAV2RejectsReservedSatType(t *testing.T) {
 // ±1-bit offset regression or a signed/unsigned swap changes an asserted value.
 func TestBCNAV2MT34DecodesBDTUTC(t *testing.T) {
 	buf := make([]byte, 36)
-	setBits(buf, 0, 6, 30)  // PRN
-	setBits(buf, 6, 6, 34)  // MesType 34
-	setBits(buf, 12, 18, 1) // SOW raw (×3 s)
+	setBits(buf, 0, 6, 30)     // PRN
+	setBits(buf, 6, 6, 34)     // MesType 34
+	setBits(buf, 12, 18, 1)    // SOW raw (×3 s)
+	setBits(buf, 42, 11, 1234) // SISAItop 
+	setBits(buf, 53, 5, 21)    // SISAIocb
+	setBits(buf, 58, 3, 5)     // SISAIoc1
+	setBits(buf, 61, 3, 2)     // SISAIoc2
 	setBits(buf, 64, 11, 100)
 	setBits(buf, 133, 10, 7)         // IODC
 	setBits(buf, 143, 16, (1<<16)-2) // A0UTC raw −2 (two's complement)
@@ -117,6 +121,44 @@ func TestBCNAV2MT34DecodesBDTUTC(t *testing.T) {
 	// The clock fields sharing the message must be unaffected by the new block.
 	if m.clk.Toc != 100*bcnavT0 || m.IODC != 7 {
 		t.Errorf("MT34 clock Toc/IODC = %g/%d, want %g/7", m.clk.Toc, m.IODC, 100*bcnavT0)
+	}
+	// the SISAIoc block at 42–63 (Figure 6-14 internal layout).
+	if m.SISAItop != 1234 || m.SISAIocb != 21 || m.SISAIoc1 != 5 || m.SISAIoc2 != 2 {
+		t.Errorf("MT34 SISAIoc = top %d ocb %d oc1 %d oc2 %d, want 1234/21/5/2",
+			m.SISAItop, m.SISAIocb, m.SISAIoc1, m.SISAIoc2)
+	}
+}
+
+// TestBCNAV2MT40DecodesSISAI guards MT40 half: SISAIoe at bits 42–46
+// then the Figure 6-14 SISAIoc block at 47–68 (Figure 6-10). Raw indices only —
+// v1.0 publishes no decode table.
+func TestBCNAV2MT40DecodesSISAI(t *testing.T) {
+	buf := make([]byte, 36)
+	setBits(buf, 0, 6, 30)
+	setBits(buf, 6, 6, 40) // MesType 40
+	setBits(buf, 12, 18, 1)
+	setBits(buf, 30, 2, 1)    // HS
+	setBits(buf, 42, 5, 17)   // SISAIoe
+	setBits(buf, 47, 11, 999) // SISAItop
+	setBits(buf, 58, 5, 21)   // SISAIocb
+	setBits(buf, 63, 3, 5)    // SISAIoc1
+	setBits(buf, 66, 3, 2)    // SISAIoc2
+	c := CRC24Q(buf[:33])
+	buf[33], buf[34], buf[35] = byte(c>>16), byte(c>>8), byte(c)
+	words := make([]uint32, 9)
+	for i := range words {
+		words[i] = binary.BigEndian.Uint32(buf[i*4:])
+	}
+	m, err := DecodeBeiDouBCNAV2(words)
+	if err != nil {
+		t.Fatalf("MT40 rejected: %v", err)
+	}
+	if m.SISAIoe != 17 || m.SISAItop != 999 || m.SISAIocb != 21 || m.SISAIoc1 != 5 || m.SISAIoc2 != 2 {
+		t.Errorf("MT40 SISAI = oe %d top %d ocb %d oc1 %d oc2 %d, want 17/999/21/5/2",
+			m.SISAIoe, m.SISAItop, m.SISAIocb, m.SISAIoc1, m.SISAIoc2)
+	}
+	if m.HS != 1 {
+		t.Errorf("MT40 HS = %d, want 1", m.HS)
 	}
 }
 

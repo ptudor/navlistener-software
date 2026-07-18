@@ -391,6 +391,15 @@ const (
 	accURA   uint8 = 1 // GPS/QZSS/NavIC/BeiDou-B1I URA step table
 	accSISA  uint8 = 2 // Galileo SISA linear bands
 	accURAED uint8 = 3 // GPS/QZSS CNAV signed URA_ED (IS-GPS-200N §30.3.3.1.1.4), regression fix
+	// accSISAIRaw  is BeiDou B-CNAV2's SISAI, served as a RAW packed
+	// index: SISAIoe(5)<<11 | SISAIocb(5)<<6 | SISAIoc1(3)<<3 | SISAIoc2(3).
+	// The B2a ICD v1.0 defines only the bit layout — the index→metres tables
+	// are "published in a future update" (§7.16) — so sisaFor NEVER converts
+	// this kind (sisa_valid stays false; inventing a table is forbidden). The
+	// oe component is sticky across MT34 updates (MT40-only field); SISAItop
+	// (the prediction ToW) is deliberately excluded so routine prediction-epoch
+	// updates don't read as accuracy changes.
+	accSISAIRaw uint8 = 4
 )
 
 type shard struct {
@@ -1127,8 +1136,22 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		// alias the assembly buffer.
 		u := m.UTC
 		st.bdtUTC = &u
+		// fold the SISAIoc raw indices freshest-wins. MT34 carries no
+		// SISAIoe, so the packed index keeps the last-known oe component (the
+		// accSISAIRaw packing doc) rather than zeroing it on every MT34.
+		oe := 0
+		if st.accKind == accSISAIRaw {
+			oe = st.accIdx >> 11
+		}
+		st.accKind, st.accIdx = accSISAIRaw, oe<<11|m.SISAIocb<<6|m.SISAIoc1<<3|m.SISAIoc2
+	case 40:
+		// MT40 builds no ephemeris/clock state (midi almanac — capability
+		// evidence only, like 31/32/33), but its SISAI block is the only
+		// carrier of SISAIoe : fold and return.
+		st.accKind, st.accIdx = accSISAIRaw, m.SISAIoe<<11|m.SISAIocb<<6|m.SISAIoc1<<3|m.SISAIoc2
+		return
 	default:
-		return // types 31/32/33/40 (almanac/EOP/BGTO) not consumed here
+		return // types 31/32/33 (almanac/EOP/BGTO) not consumed here
 	}
 	if st.bc10 == nil || st.bc11 == nil {
 		return
