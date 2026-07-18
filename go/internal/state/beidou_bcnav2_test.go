@@ -186,6 +186,58 @@ func TestApplyBeiDouBCNAV2StaleClockIODCNotLatched(t *testing.T) {
 	}
 }
 
+// TestFeedBeiDouIntegrityFlagsAndHSRider guards the B2a per-signal
+// integrity flags (DIF/SIF/AIF, Table 7-23) + SISMAI must be folded
+// freshest-wins from every decoded message type and served; and the rider —
+// HS from MT30/34/40 (not just MT11) must reach served health, so an HS flip
+// riding a clock message is not invisible until the next MT11.
+func TestFeedBeiDouIntegrityFlagsAndHSRider(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	const prn = 27
+	apply := func(words []uint32) {
+		s.Apply(&ingest.RawFrame{GnssID: gnss.BeiDou, SvID: prn, SigID: 8, Recv: now, Words: words})
+	}
+	apply(bcnav2Frame(prn, 10, 252801, func(buf []byte) {
+		setAbsBits(buf, 53, 8, 7)
+		setAbsBits(buf, 61, 11, 10)
+		setAbsBits(buf, 72, 2, 3)
+	}))
+	apply(bcnav2Frame(prn, 11, 252801, nil)) // HS=0, flags clear
+	sv := s.FeedSVs(now)["C27@8"]
+	if sv.Dif == nil || *sv.Dif || sv.Sif == nil || *sv.Sif || sv.Aif == nil || *sv.Aif {
+		t.Fatalf("clear flag block not served as decoded-false: dif=%v sif=%v aif=%v", sv.Dif, sv.Sif, sv.Aif)
+	}
+	if sv.HealthCode != 1 {
+		t.Fatalf("initial health_code = %d, want 1", sv.HealthCode)
+	}
+
+	// An MT30 raises DIF and carries SISMAI 9 (flag block at bit 32).
+	apply(bcnav2Frame(prn, 30, 252804, func(buf []byte) {
+		setAbsBits(buf, 32, 1, 1)   // DIF(B2a)
+		setAbsBits(buf, 35, 4, 9)   // SISMAI
+		setAbsBits(buf, 111, 10, 3) // IODC
+	}))
+	sv = s.FeedSVs(now)["C27@8"]
+	if sv.Dif == nil || !*sv.Dif || sv.Sismai == nil || *sv.Sismai != 9 {
+		t.Errorf("MT30 flag raise not served: dif=%v sismai=%v", sv.Dif, sv.Sismai)
+	}
+
+	// An MT34 with HS=1 (no MT11 in sight) must flip served health — the HS
+	// rider — and its clear flag block replaces the MT30's raised DIF.
+	apply(bcnav2Frame(prn, 34, 252807, func(buf []byte) {
+		setAbsBits(buf, 30, 2, 1) // HS = 1
+		setAbsBits(buf, 133, 10, 3)
+	}))
+	sv = s.FeedSVs(now)["C27@8"]
+	if sv.HealthCode != 3 {
+		t.Errorf("health_code after MT34 HS=1 = %d, want 3 (HS folded from every HS-bearing type)", sv.HealthCode)
+	}
+	if sv.Dif == nil || *sv.Dif {
+		t.Errorf("freshest-wins flag fold: MT34's clear block must replace MT30's DIF, got %v", sv.Dif)
+	}
+}
+
 // TestFeedBeiDouSISAIRaw guards MT34/MT40's SISAI raw indices must be
 // stored (accSISAIRaw, packed oe<<11|ocb<<6|oc1<<3|oc2 with oe sticky across
 // MT34 updates) and served as acc_index with sisa_valid=false — the B2a ICD

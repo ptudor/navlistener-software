@@ -299,6 +299,35 @@ func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, emit em
 		})
 	}
 
+	// BeiDou B-CNAV2 per-signal integrity flags (regression fix, BDS-SIS-ICD-B2a v1.0
+	// Table 7-23): DIF/SIF/AIF are the constellation's own real-time
+	// per-signal integrity channel, broadcast in every message (~3 s) — a
+	// satellite actively flagging "my broadcast ephemeris exceeds its accuracy
+	// bound" (DIF) or "this signal is abnormal" (SIF) must surface even while
+	// HS still reads healthy. Each flag combination is its own debounced
+	// state; warning severity when any flag is raised (the ICD defers the
+	// flags' numeric thresholds to a future update, so a raise is a warning,
+	// not an automatic critical), info on return to clear. Absent (nil) = flag
+	// block never decoded: no classification (regression fix rule).
+	if sv.Dif != nil && sv.Sif != nil && sv.Aif != nil {
+		flagState := "ok"
+		if s := integrityFlagState(*sv.Dif, *sv.Sif, *sv.Aif); s != "" {
+			flagState = s
+		}
+		sev := SevInfo
+		if flagState != "ok" {
+			sev = SevWarning
+		}
+		emit(name, "bds_integrity", flagState, func(old string) Event {
+			return Event{
+				Type: "bds_integrity_flag", OldValue: old, NewValue: flagState, Severity: sev,
+				Message: fmt.Sprintf("%s B2a integrity flags %s", sv.Name, flagState),
+				Params: map[string]any{"sv": sv.Name, "dif": *sv.Dif, "sif": *sv.Sif,
+					"aif": *sv.Aif, "sismai": derefInt(sv.Sismai)},
+			}
+		})
+	}
+
 	// Broadcast-vs-configured leap-second cross-check : the SV's
 	// broadcast UTC set carries the current leap count (BeiDou B-CNAV2 MT34's
 	// BDT-UTC ΔtLS today); state compares it — through the fixed BDT↔GPST
@@ -463,4 +492,23 @@ func derefInt(p *int) any {
 		return nil
 	}
 	return *p
+}
+
+// integrityFlagState renders a raised-flag combination as a stable state string
+// ("dif", "dif+sif", …, in fixed DIF/SIF/AIF order), or "" when all are clear.
+func integrityFlagState(dif, sif, aif bool) string {
+	var s string
+	add := func(on bool, name string) {
+		if !on {
+			return
+		}
+		if s != "" {
+			s += "+"
+		}
+		s += name
+	}
+	add(dif, "dif")
+	add(sif, "sif")
+	add(aif, "aif")
+	return s
 }

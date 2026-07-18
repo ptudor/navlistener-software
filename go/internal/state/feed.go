@@ -72,6 +72,17 @@ type FeedSV struct {
 	A1G         *float64 `json:"a1g,omitempty"`
 	T0G         *int     `json:"t0g,omitempty"`
 	WN0G        *int     `json:"wn0g,omitempty"`
+	// Dif/Sif/Aif and Sismai (regression fix, BeiDou B-CNAV2 entries) are the B2a
+	// signal's broadcast real-time integrity flags, refreshed ~every 3 s
+	// (BDS-SIS-ICD-B2a v1.0 Table 7-23): dif=true — the broadcast message
+	// parameters exceed their predictive accuracy; sif=true — the signal is
+	// abnormal; aif=true — the SISMAI value is invalid. Sismai is the raw
+	// 4-bit monitoring-accuracy index (§7.17 — numeric semantics deferred by
+	// the ICD, served raw). Absent until the flag block has decoded.
+	Dif    *bool `json:"dif,omitempty"`
+	Sif    *bool `json:"sif,omitempty"`
+	Aif    *bool `json:"aif,omitempty"`
+	Sismai *int  `json:"sismai,omitempty"`
 	// UtcOffsetNs and the leap-schedule quartet are the SV's broadcast
 	// system→UTC offset (regression fix; BeiDou B-CNAV2 MT34's BDT-UTC set today,
 	// docs/OUTPUT.md §1.1 reserves the same fields for the other
@@ -306,6 +317,10 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 				e.GpsOffsetNs = &off
 			}
 		}
+	}
+	if st.haveBdsFlags {
+		dif, sif, aif, sismai := st.bdsDIF, st.bdsSIF, st.bdsAIF, st.bdsSISMAI
+		e.Dif, e.Sif, e.Aif, e.Sismai = &dif, &sif, &aif, &sismai
 	}
 	if st.bdtUTC != nil {
 		u := st.bdtUTC

@@ -138,6 +138,9 @@ func TestBCNAV2MT40DecodesSISAI(t *testing.T) {
 	setBits(buf, 6, 6, 40) // MesType 40
 	setBits(buf, 12, 18, 1)
 	setBits(buf, 30, 2, 1)    // HS
+	setBits(buf, 32, 1, 1)    // DIF(B2a) — regression fix flag block at 32
+	setBits(buf, 34, 1, 1)    // AIF(B2a)
+	setBits(buf, 35, 4, 9)    // SISMAI
 	setBits(buf, 42, 5, 17)   // SISAIoe
 	setBits(buf, 47, 11, 999) // SISAItop
 	setBits(buf, 58, 5, 21)   // SISAIocb
@@ -159,6 +162,11 @@ func TestBCNAV2MT40DecodesSISAI(t *testing.T) {
 	}
 	if m.HS != 1 {
 		t.Errorf("MT40 HS = %d, want 1", m.HS)
+	}
+	// the B2a flag triplet + SISMAI (Table 7-23) at bits 32–38.
+	if !m.DIF || m.SIF || !m.AIF || m.SISMAI != 9 {
+		t.Errorf("MT40 flags = DIF %v SIF %v AIF %v SISMAI %d, want true/false/true/9",
+			m.DIF, m.SIF, m.AIF, m.SISMAI)
 	}
 }
 

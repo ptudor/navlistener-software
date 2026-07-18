@@ -363,6 +363,50 @@ func TestNoAccuracySentinelClassifies(t *testing.T) {
 	}
 }
 
+// TestBdsIntegrityFlagClassifies guards a raised B2a integrity flag
+// (DIF/SIF/AIF) must fire a debounced bds_integrity_flag warning, each flag
+// combination its own state, and clear back at info severity; SVs with no flag
+// block decoded (nil) are never classified.
+func TestBdsIntegrityFlagClassifies(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(6_000_000, 0)
+	f, sm := false, 3
+	sv := gps("C27", 27, 1)
+	sv.GnssID, sv.SigID = 3, 8
+	sv.Dif, sv.Sif, sv.Aif, sv.Sismai = &f, &f, &f, &sm
+	d.Tick(t0, map[string]state.FeedSV{"C27@8": sv}, nil) // seeds "ok"
+
+	tr := true
+	sv.Dif = &tr
+	m := map[string]state.FeedSV{"C27@8": sv}
+	d.Tick(t0.Add(10*time.Second), m, nil)
+	evs := d.Tick(t0.Add(80*time.Second), m, nil)
+	e, ok := find(evs, "bds_integrity_flag")
+	if !ok || e.NewValue != "dif" || e.OldValue != "ok" || e.Severity != SevWarning {
+		t.Fatalf("bds_integrity_flag = %+v (ok=%v), want confirmed ok→dif at warning severity", e, ok)
+	}
+
+	// Clear again: back to ok at info severity.
+	sv.Dif = &f
+	m = map[string]state.FeedSV{"C27@8": sv}
+	d.Tick(t0.Add(200*time.Second), m, nil)
+	evs = d.Tick(t0.Add(270*time.Second), m, nil)
+	if e, ok := find(evs, "bds_integrity_flag"); !ok || e.NewValue != "ok" || e.Severity != SevInfo {
+		t.Fatalf("clear transition = %+v (ok=%v), want dif→ok at info severity", e, ok)
+	}
+
+	// nil flag block: no classification.
+	d2 := New(time.Minute)
+	blank := gps("C28", 28, 1)
+	blank.GnssID, blank.SigID = 3, 8
+	d2.Tick(t0, map[string]state.FeedSV{"C28@8": blank}, nil)
+	if evs := d2.Tick(t0.Add(120*time.Second), map[string]state.FeedSV{"C28@8": blank}, nil); len(evs) != 0 {
+		if _, ok := find(evs, "bds_integrity_flag"); ok {
+			t.Fatal("flag-less SV classified a bds_integrity state")
+		}
+	}
+}
+
 // TestRawAccIndexChangeClassifies guards an accuracy index flagged
 // raw-only (BeiDou B-CNAV2 SISAI — no published metres table) must classify
 // each index VALUE as its own state, so a broadcast accuracy revision fires a

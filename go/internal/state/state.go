@@ -322,6 +322,20 @@ type svState struct {
 	// remainder, like the NavIC deferral).
 	ggto *ggtoParams
 
+	// bdsDIF/bdsSIF/bdsAIF/bdsSISMAI  are the B2a signal's broadcast
+	// per-signal integrity flags (BDS-SIS-ICD-B2a v1.0 Table 7-23: DIF=1 "the
+	// error of message parameters broadcasted in this signal exceeds the
+	// predictive accuracy", SIF=1 "this signal is abnormal", AIF=1 "SISMAI
+	// value of this signal is invalid") and the SISMAI monitoring-accuracy
+	// index (§7.17 — numeric semantics deferred to a future ICD update, so
+	// SISMAI is served raw and never converted). The block rides every decoded
+	// B-CNAV2 message (~every 3 s — far faster than any HS or ephemeris
+	// changeover), so it is folded freshest-wins like health; haveBdsFlags
+	// follows the regression fix unknown-until-decoded discipline.
+	bdsDIF, bdsSIF, bdsAIF bool
+	bdsSISMAI              int
+	haveBdsFlags           bool
+
 	// bdtUTC is this SV's last-broadcast BDT-UTC time offset parameter set
 	// (regression fix, BeiDou B-CNAV2 MT34 — BDS-SIS-ICD-B2a v1.0 §7.12, Table 7-20),
 	// already scaled to SI. nil = never decoded. Freshest-wins per MT34 arrival
@@ -1110,16 +1124,30 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 	}
 	st.lastSeen = recv
 
+	// the per-signal integrity flag block (DIF/SIF/AIF(B2a) + SISMAI)
+	// rides every message type this decoder parses (Figures 6-3…6-10), and HS
+	// rides every type but 10 — fold both freshest-wins at arrival, BEFORE any
+	// assembly gating (the regression fix discipline: these are per-broadcast state,
+	// outside every IODE/IODC-scoped data set). Restricted to the decoded
+	// types: an unparsed MesType leaves m's flag fields zero, and folding
+	// those would fabricate a "flags clear" observation.
+	switch m.MesType {
+	case 10, 11, 30, 34, 40:
+		st.bdsDIF, st.bdsSIF, st.bdsAIF, st.bdsSISMAI, st.haveBdsFlags = m.DIF, m.SIF, m.AIF, m.SISMAI, true
+	}
+	switch m.MesType {
+	case 11, 30, 34, 40:
+		// The MT30/34/40 fold closes the regression fix rider: previously only MT11's
+		// HS reached st.health, so an HS flip was invisible until the next
+		// MT11 (a seconds-scale window, §6.2.3 — but a free fix while here).
+		st.health, st.haveHealth = m.HS, true
+	}
+
 	switch m.MesType {
 	case 10:
 		st.bc10 = m
 	case 11:
 		st.bc11 = m
-		// apply health at type-11 arrival, BEFORE the IODE/IODC gate below, so an HS
-		// flip in a re-broadcast type-11 (unchanged IODE, no fresh type-30) reaches live
-		// state. Type 11 is CRC-checked by DecodeBeiDouBCNAV2. The eph-gated assignment
-		// below stays (now a no-op).
-		st.health, st.haveHealth = m.HS, true
 	case 30:
 		st.bcClk = m
 		// the carried data-set property is the TRACKED signal's (B2a
@@ -1212,7 +1240,10 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		st.clkHasBcTGD = nextClkHasTGD
 		st.haveClk = true // regression fix family: af0/af1/af2 serve only once a type-30/34 has decoded
 	}
-	st.health, st.haveHealth = st.bc11.HS, true
+	// Health is NOT re-folded from st.bc11 here : the arrival-time
+	// freshest-wins fold above already applied this frame's HS, and re-applying
+	// the buffered type-11's HS at pair completion could overwrite a fresher
+	// HS from an intervening type-30/34/40 with a stale value.
 }
 
 func (s *Store) applyGLONASS(f *ingest.RawFrame) {
