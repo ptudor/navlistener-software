@@ -193,12 +193,40 @@ func TestNtripConnectParameterizedSourcetableRejected(t *testing.T) {
 	}
 }
 
+// TestNtripConnectNonStreamContentTypeRejected guards a 200 whose body is
+// declared text/* (captive-portal interstitial, an HTML error page on a
+// decommissioned mountpoint) or application/json is not an RTCM3 stream — accepting
+// it hands ASCII to scanRTCM, which emits zero frames while SourceUp sits at 1.
+func TestNtripConnectNonStreamContentTypeRejected(t *testing.T) {
+	for _, ct := range []string{
+		"text/html",
+		"text/html; charset=utf-8",
+		"TEXT/HTML",
+		"text/plain",
+		"application/json",
+	} {
+		client, server := net.Pipe()
+		reqCh := make(chan string, 1)
+		go fakeCaster(server, reqCh, "HTTP/1.1 200 OK\r\nContent-Type: "+ct+"\r\n\r\n",
+			[]byte("<html>mountpoint retired</html>"))
+		src := config.Source{Name: "crtn", Type: "ntrip", Addr: "caster.invalid:2101", Mountpoint: "GONE"}
+		if _, err := ntripConnect(client, src); err == nil {
+			t.Errorf("Content-Type %q accepted as a stream; want refusal", ct)
+		}
+		<-reqCh
+		client.Close()
+	}
+}
+
 // TestNtripConnectDataContentTypeAccepted confirms the fix spec's explicit carve-out: a v1
-// caster (no Content-Type at all) and an explicit gnss/data both still pass.
+// caster (no Content-Type at all) and an explicit gnss/data both still pass — and, for
+// deny-list, so must an unanticipated binary type (application/octet-stream):
+// the deny-list must never grow into a de-facto allow-list.
 func TestNtripConnectDataContentTypeAccepted(t *testing.T) {
 	for _, reply := range []string{
 		"ICY 200 OK\r\n\r\n", // v1: no Content-Type
 		"HTTP/1.1 200 OK\r\nContent-Type: gnss/data\r\n\r\n",
+		"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\r\n",
 	} {
 		client, server := net.Pipe()
 		reqCh := make(chan string, 1)

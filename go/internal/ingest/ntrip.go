@@ -109,6 +109,18 @@ func ntripConnect(conn net.Conn, src config.Source) (chunked bool, err error) {
 	if strings.EqualFold(mediaType, "gnss/sourcetable") {
 		return false, fmt.Errorf("ntrip caster returned a sourcetable for mountpoint %q (Content-Type: %s)", src.Mountpoint, contentType)
 	}
+	// a 200 whose body is declared text/* (a captive-portal/transparent-proxy
+	// interstitial, a caster answering a decommissioned mountpoint with an HTML error
+	// page) or application/json (a diagnostic) is a refusal-shaped response, not an
+	// RTCM3 byte stream — handing it to scanRTCM yields zero frames and a stream of
+	// rtcm_crc/rtcm_length errors while SourceUp sits at 1. Deny-list, not allow-list:
+	// NTRIP 1.0/ICY casters send no Content-Type at all and NTRIP 2.0 casters send
+	// gnss/data (docs/CONSTELLATIONS.md §2.3), and both must keep passing — as must any
+	// unanticipated binary type (application/octet-stream). The no-Content-Type
+	// impostor variant is covered by the regression fix frame-silence watchdog instead.
+	if mt := strings.ToLower(mediaType); strings.HasPrefix(mt, "text/") || mt == "application/json" {
+		return false, fmt.Errorf("ntrip caster returned non-stream Content-Type %q for mountpoint %q", contentType, src.Mountpoint)
+	}
 	return chunked, nil
 }
 

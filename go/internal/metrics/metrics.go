@@ -50,6 +50,19 @@ var (
 		Name: "navlistener_source_connects_total",
 		Help: "Connection attempts that succeeded, by source.",
 	}, []string{"source"})
+
+	// SourceLastFrameTimestamp is the Unix time each dial source last emitted a
+	// decoded frame. Alert on time() - this while source_up == 1: a
+	// receiver streaming bytes that never frame (an F9 reset to NMEA-only output,
+	// a mis-pointed TCP port) keeps source_up at 1 and frames_total frozen — byte
+	// silence trips the idle timeout, frame silence trips the watchdog and shows
+	// here. Timestamp, not age: the Prometheus idiom (age is computed at query
+	// time and cannot go stale between scrapes), mirroring
+	// serve_feed_refresh_timestamp_seconds.
+	SourceLastFrameTimestamp = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "navlistener_source_last_frame_timestamp_seconds",
+		Help: "Unix time of the last decoded frame per dial source.",
+	}, []string{"source"})
 	SourceSecurityDegraded = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "navlistener_source_security_degraded",
 		Help: "1 when a source is explicitly using a degraded unauthenticated transport.",

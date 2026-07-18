@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -187,6 +188,85 @@ func TestIngestBackoffGrowsOnAcceptThenClosePeer(t *testing.T) {
 	gap3 := times[3].Sub(times[2])
 	if gap2 <= gap1 || gap3 <= gap2 {
 		t.Errorf("backoff did not grow across reconnects: gap1=%v gap2=%v gap3=%v, want strictly increasing", gap1, gap2, gap3)
+	}
+}
+
+// TestRunScannerFrameSilenceWatchdog guards a connection that keeps
+// delivering bytes that never decode into a frame — an F9 reset to factory-default
+// NMEA-only output, a mis-pointed TCP port — must be torn down after
+// max_frame_silence instead of reporting healthy (SourceUp=1, FramesTotal frozen)
+// forever. Every read refreshes the idle deadline, so without the watchdog this
+// connection would never end. Uses the real scanUBX over a loopback stream of NMEA
+// sentences (the live-validation stream shape: interleaved NMEA, zero UBX syncs).
+func TestRunScannerFrameSilenceWatchdog(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		for ctx.Err() == nil { // chatter forever: bytes flow, no 0xB5 0x62 ever
+			if _, err := c.Write([]byte("$GNGGA,000000.00,,,,,0,00,99.99,,,,,,*56\r\n")); err != nil {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	src := config.Source{Name: "nmea-stuck", Type: "ubx", Addr: ln.Addr().String(),
+		MaxFrameSilence: 300 * time.Millisecond}
+	m := New(nil, make(chan *RawFrame, 8), quietManagerLog())
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.runScanner(context.Background(), scanUBX, conn, src, false)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "frame-silence watchdog") {
+			t.Fatalf("runScanner error = %v, want the frame-silence watchdog error", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("frame-silence watchdog never tore down a chatter-but-no-frames connection")
+	}
+	if got := testutil.ToFloat64(metrics.IngestErrorsTotal.WithLabelValues(src.Name, "frame_silence")); got != 1 {
+		t.Errorf("frame_silence errors = %v, want 1", got)
+	}
+}
+
+// TestRunScannerFrameSilenceHeldOffByFrames is negative half: a source
+// emitting frames (even slowly) must never be tripped by the watchdog, and the
+// last-frame gauge must track the emissions.
+func TestRunScannerFrameSilenceHeldOffByFrames(t *testing.T) {
+	src := config.Source{Name: "slow-but-alive", MaxFrameSilence: 250 * time.Millisecond}
+	sc := func(r io.Reader, _ string, _ func() time.Time, emit func(*RawFrame), _ func(string)) error {
+		for i := 0; i < 5; i++ { // ~500ms total, each gap well under the window
+			time.Sleep(100 * time.Millisecond)
+			emit(&RawFrame{}) // deliberately zero Recv: the watchdog must not read f.Recv
+		}
+		return io.EOF
+	}
+	m := New(nil, make(chan *RawFrame, 8), quietManagerLog())
+	before := time.Now()
+	_, err := m.runScanner(context.Background(), sc, &fakeDeadlineConn{}, src, false)
+	if err != io.EOF {
+		t.Fatalf("runScanner error = %v, want io.EOF (watchdog must not fire while frames flow)", err)
+	}
+	gauge := testutil.ToFloat64(metrics.SourceLastFrameTimestamp.WithLabelValues(src.Name))
+	if gauge < float64(before.Unix()) {
+		t.Errorf("last-frame gauge = %v, want >= connection start %v", gauge, before.Unix())
 	}
 }
 

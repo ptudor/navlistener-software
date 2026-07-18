@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ptudor/navlistener/internal/config"
@@ -181,6 +182,16 @@ func (m *Manager) runSource(ctx context.Context, src config.Source, sc scanner) 
 // accept-then-close peer : it ran for at least usefulConnectionDuration,
 // or emitted at least one frame, before returning. runSource uses this to decide
 // whether to reset backoff rather than resetting on bare TCP-connect success.
+//
+// a frame-silence watchdog closes the connection when bytes keep arriving
+// but no frame has been emitted for src.MaxFrameSilence — the idle timeout only
+// covers byte silence, so a receiver reset to NMEA-only output (or a caster
+// streaming an HTML error page) otherwise sits at SourceUp=1 with FramesTotal
+// frozen forever, indistinguishable from healthy. A watchdog trip surfaces as a
+// distinctly-labeled error and a logged reconnect. Note the trip is deliberately
+// still "useful" for regression fix backoff purposes (the connection ran for the whole
+// window), so the source is re-probed promptly and recovers fast once the
+// receiver is fixed.
 func (m *Manager) runScanner(ctx context.Context, sc scanner, conn net.Conn, src config.Source, chunked bool) (useful bool, err error) {
 	start := m.now()
 	var frameCount int
@@ -192,17 +203,59 @@ func (m *Manager) runScanner(ctx context.Context, sc scanner, conn net.Conn, src
 		}
 		useful = frameCount > 0 || m.now().Sub(start) >= usefulConnectionDuration
 	}()
+	// lastFrameNs is stamped by the emit wrapper (scanner goroutine) and read by the
+	// watchdog goroutine; it starts at connect time so a source that never frames is
+	// measured from the connection's start, not from zero.
+	var lastFrameNs atomic.Int64
+	lastFrameNs.Store(start.UnixNano())
+	var watchdogTripped atomic.Bool
+	if window := src.MaxFrameSilence; window > 0 {
+		watchStop := make(chan struct{})
+		defer close(watchStop)
+		go func() {
+			// Sample at window/4: a trip is detected within 1.25x the window
+			// without resetting a timer on every frame of a high-rate source.
+			tick := window / 4
+			if tick <= 0 {
+				tick = window
+			}
+			t := time.NewTicker(tick)
+			defer t.Stop()
+			for {
+				select {
+				case <-watchStop:
+					return
+				case <-t.C:
+					if m.now().Sub(time.Unix(0, lastFrameNs.Load())) > window {
+						watchdogTripped.Store(true)
+						_ = conn.Close() // unblocks the scanner's read; runSource re-dials
+						return
+					}
+				}
+			}
+		}()
+	}
 	var frames io.Reader = &idleConn{Conn: conn, timeout: dialIdleTimeout}
 	if chunked {
 		frames = httputil.NewChunkedReader(frames)
 	}
 	baseEmit := m.emit(ctx, src)
+	lastFrameGauge := metrics.SourceLastFrameTimestamp.WithLabelValues(src.Name)
 	err = sc(frames, src.Name, m.now, func(f *RawFrame) {
 		frameCount++
+		// m.now(), not f.Recv: the watchdog must not depend on every scanner
+		// stamping Recv (a zero Recv would read as year-1 silence and trip it).
+		now := m.now()
+		lastFrameNs.Store(now.UnixNano())
+		lastFrameGauge.Set(float64(now.Unix()))
 		baseEmit(f)
 	}, func(kind string) {
 		metrics.IngestErrorsTotal.WithLabelValues(src.Name, kind).Inc()
 	})
+	if watchdogTripped.Load() {
+		metrics.IngestErrorsTotal.WithLabelValues(src.Name, "frame_silence").Inc()
+		err = fmt.Errorf("no decodable frames for %v (frame-silence watchdog): %w", src.MaxFrameSilence, err)
+	}
 	return useful, err
 }
 

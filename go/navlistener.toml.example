@@ -73,6 +73,10 @@ ack_interval = "1s"
 
 # One [[ingest]] block per receiver we dial. type ∈ { ubx, sbf, rtcm, ntrip }.
 # Leave disabled = true to keep an entry without starting it.
+# Every source also accepts max_frame_silence (default "5m"): tear down and re-dial a
+# connection that keeps delivering bytes but no decodable frame for this long (a
+# receiver stuck in NMEA mode, a caster serving an error page) — byte silence is
+# covered by the built-in idle timeout, frame silence by this watchdog.
 
 # [[ingest]]
 # name = "observer16"           # our reference u-blox F9 box

@@ -236,6 +236,19 @@ type Source struct {
 	Capabilities []string     `toml:"capabilities,omitempty"`
 	CapDecl      []Capability `toml:"-"`
 
+	// MaxFrameSilences bounds how long a connected source may keep delivering bytes
+	// without a single decodable frame before the connection is torn down and
+	// re-dialed. The idle timeout covers byte silence (half-open peer);
+	// this covers the chatter-but-no-frames variant — an F9 reset to factory-default
+	// NMEA output, a mis-pointed TCP port, a caster streaming an HTML error page —
+	// which otherwise reports SourceUp=1 with FramesTotal frozen, indefinitely.
+	// Default 5m: the slowest legitimate cadence on any dial source is RTCM
+	// ephemeris messages tens of seconds apart (the dialIdleTimeout rationale), so
+	// 5 minutes is a ~10x margin, and a false trip costs one logged reconnect.
+	// Parsed into MaxFrameSilence.
+	MaxFrameSilences string        `toml:"max_frame_silence,omitempty"`
+	MaxFrameSilence  time.Duration `toml:"-"`
+
 	// NTRIP transport (type = "ntrip"): Addr is the caster host:port, Mountpoint is the stream
 	// to subscribe, and Username/Password are the basic-auth credentials. Real credentials live
 	// only in the deployed, git-ignored config — never in a committed example.
@@ -505,6 +518,10 @@ func (c *Config) finalize() error {
 			if err := validatePEMFile("ingest "+s.Name+" ca_file", s.NTRIPCAFile); err != nil {
 				return err
 			}
+		}
+		if err := parseDurPositive("ingest "+s.Name+" max_frame_silence",
+			s.MaxFrameSilences, &s.MaxFrameSilence, 5*time.Minute); err != nil {
+			return err
 		}
 		caps, err := parseCapabilities(s.Capabilities)
 		if err != nil {
