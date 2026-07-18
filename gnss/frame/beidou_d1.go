@@ -29,7 +29,8 @@ var ErrBadBCH = errors.New("frame: BeiDou D1 BCH check failed")
 // into a 224-bit information stream and read fields at their ICD offsets. Offsets
 // and scale factors follow BDS-SIS-ICD-B1I v3.0 Figures 5-8…5-10 and Tables
 // 5-5…5-10, and the decode cross-validates against the B-CNAV2 (B2a) decode of
-// the same SVs on real captured frames (frame test).
+// the same SVs on real captured frames (go/internal/ingest/realframes_test.go:
+// TestRealBeiDouD1, TestRealBeiDouD1AgreesWithBCNAV2).
 
 // BeiDou scale factors beyond the shared set (note Crc/Crs use 2^-6, not GPS 2^-5).
 const (

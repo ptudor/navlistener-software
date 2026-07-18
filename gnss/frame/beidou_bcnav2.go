@@ -16,12 +16,14 @@ import (
 // SOW(18) data(234) CRC-24Q(24) — that the satellite LDPC(96,48)-encodes to 576
 // symbols; the u-blox receiver decodes the LDPC and delivers exactly the 288
 // information bits as one 9-word SFRBX (verified: 3737/3737 captured frames pass
-// CRC-24Q as a plain 9-word big-endian bit stream). The ephemeris is split across
-// message types 10 (Ephemeris I) and 11 (Ephemeris II); type 30 carries the
-// clock, group delays, and the BDGIM ionosphere coefficients. Like GPS CNAV the
-// ephemeris uses the ΔA parameterization with rate terms: A(tk) = A_ref + ΔA +
-// Ȧ·tk, n = n₀ + Δn₀ + ½Δṅ₀·tk. All offsets and scales are ICD-cited; positions
-// cross-validate against the B1I D1 decode of the same SVs (frame test).
+// CRC-24Q as a plain 9-word big-endian bit stream — the capture suite lives in
+// go/internal/ingest/realframes_test.go, TestRealBeiDouBCNAV2). The ephemeris is
+// split across message types 10 (Ephemeris I) and 11 (Ephemeris II); type 30
+// carries the clock, group delays, and the BDGIM ionosphere coefficients. Like
+// GPS CNAV the ephemeris uses the ΔA parameterization with rate terms: A(tk) =
+// A_ref + ΔA + Ȧ·tk, n = n₀ + Δn₀ + ½Δṅ₀·tk. All offsets and scales are
+// ICD-cited; positions cross-validate against the B1I D1 decode of the same SVs
+// (TestRealBeiDouD1AgreesWithBCNAV2, same file).
 
 // B-CNAV2 semi-major-axis reference values (ICD Table 7-8), metres.
 const (
@@ -260,7 +262,11 @@ func DecodeBeiDouBCNAV2(words []uint32) (*BeiDouBCNAV2, error) {
 // clock model. Types 10 and 11 are broadcast continuously together (ICD §6.2.3)
 // and type 11 carries no IODE, so pairing is validated by broadcast adjacency:
 // the two SOWs must be within one frame (3 s) of each other. svid tags the
-// constellation; kepler applies the GEO rotation for C01–C05/C59–C63.
+// constellation. kepler would apply its B1I-sourced GEO rotation to a
+// C01–C05/C59–C63 ephemeris from ANY source, but the B2a ICD itself defines no
+// GEO branch (Table 7-9 is MEO/IGSO only) — unreachable today because BDS-3
+// GEOs don't broadcast B2a; see docs/MATH.md §2.1 "Provenance" before ever
+// relying on a B2a GEO position.
 //
 // mClk freshness : unlike the m10/m11 pairing check above, a stale mClk
 // does not fail the whole assembly — an ephemeris update must not be blocked

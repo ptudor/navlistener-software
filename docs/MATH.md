@@ -149,6 +149,23 @@ MEO/IGSO BeiDou SVs use the plain §2 algorithm.
 Detect GEO by SV id, not by inclination. Getting this wrong puts the GEO belt ~km off — a
 constant error a differential test against galmon catches immediately.
 
+**Provenance and scope of the −5° rotation :** the GEO branch above is sourced from
+**B1I** (BDS-SIS-ICD-B1I §5.2.4.12, whose user algorithm covers the D1/D2 message family).
+The **B2a ICD defines no GEO branch at all** — its Table 7-9 user algorithm ends at "coordinate
+of the MEO/IGSO satellite antenna phase center in BDCS", and no Rz·Rx(−5°) form appears anywhere
+in that document. Today this is moot: BDS-3 GEOs do not broadcast B2a, so no GEO ephemeris can
+arrive via B-CNAV2. But two latent edges are on record: (a) if a GEO (or test transmission)
+ever appears on B2a, `kepler` would apply the B1I rotation to it on the strength of the PRN
+list alone — behavior the B2a ICD neither prescribes nor forbids; resolving it needs a newer
+BDS ICD revision (the B2b/B1C ICDs define GEO handling) or CSNO clarification before code
+changes. (b) The C01–C05/C59–C63 list is an **operational fact, not an ICD constant** — a
+future GEO at a PRN outside it would get MEO math (a ~km constant error firing false critical
+orbit-disco) once a D2 decoder lands. The broadcast **SatType** (B2a Table 7-8: 01 GEO /
+10 IGSO / 11 MEO) is the authoritative per-ephemeris orbit type; carrying it into
+`kepler.Ephemeris` — overriding the PRN list when present, alerting on disagreement — is the
+planned fix, scheduled with the first second orbit-message source (D2 / B-CNAV1 / B-CNAV3,
+build-out), where it stops being dead plumbing.
+
 ### 2.2 Velocity and Doppler (needed for the delta-Hz integrity check, §9)
 
 Analytic velocity is available (IS-GPS-200 has the derivative form), but a **central finite

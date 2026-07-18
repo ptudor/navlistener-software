@@ -218,6 +218,16 @@ func beidouGEO(xp, yp, inc float64, e Ephemeris, p physconst.Params, tk float64)
 // isBeiDouGEO reports whether a BeiDou SV is a GEO satellite (C01–C05, C59–C63),
 // which uses the §2.1 rotation. Detection is by SV id, never by inclination
 // (docs/MATH.md §2.1).
+//
+// regression fix caveats, both currently latent (see MATH.md §2.1 "Provenance"):
+// the PRN list is an operational fact, not an ICD constant — a future GEO
+// outside it would silently get MEO math once a D2 decoder lands; and the −5°
+// rotation itself is B1I-sourced (§5.2.4.12) while the B2a ICD defines no GEO
+// branch, so a hypothetical GEO ephemeris arriving via B-CNAV2 would receive a
+// rotation that ICD never prescribes (unreachable today: BDS-3 GEOs don't
+// broadcast B2a). The planned fix is carrying the broadcast SatType (B2a
+// Table 7-8) into Ephemeris to override this list and alert on disagreement —
+// scheduled with the first D2/B-CNAV1/B-CNAV3 decoder, not before.
 func isBeiDouGEO(id gnss.GNSSID, svid int) bool {
 	if id != gnss.BeiDou {
 		return false
