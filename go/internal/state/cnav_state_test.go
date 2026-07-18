@@ -131,6 +131,59 @@ func TestCNAVStateWiring(t *testing.T) {
 	}
 }
 
+// TestCNAVClockAttachDoesNotRefreshEphAt checks that attaching a late coherent
+// MT30 to an unchanged ephemeris must not re-stamp ephAt — otherwise the wall-clock serving cap restarts from
+// the clock-attach time and a days-old extended-ops ephemeris can be served
+// past the ±half-week wrap, the exact window regression fix closes.
+func TestCNAVClockAttachDoesNotRefreshEphAt(t *testing.T) {
+	s := New(4)
+	t0 := time.Unix(1_700_000_000, 0)
+	const svid, sig = 5, 3
+	s.Apply(cnavStateFrame(gnss.GPS, svid, sig, cnavMT10(svid, 2288, 0, 2, 400), t0))
+	s.Apply(cnavStateFrame(gnss.GPS, svid, sig, cnavStateWords(svid, 11, func(buf []byte) {
+		setAbsBits(buf, 38, 11, 400)
+	}), t0))
+
+	// The clock arrives 2 h later (same toe): attach-only, no new ephemeris.
+	s.Apply(cnavStateFrame(gnss.GPS, svid, sig, cnavStateWords(svid, 30, func(buf []byte) {
+		setAbsBits(buf, 60, 11, 400)
+		setAbsBits(buf, 71, 26, 12345)
+	}), t0.Add(2*time.Hour)))
+
+	// 73 h after the EPHEMERIS was applied (71 h after the clock attach): the
+	// regression fix cap must key on the ephemeris apply time, so no position serves.
+	late := t0.Add(73 * time.Hour)
+	s.Propagate(late)
+	if sv := s.FeedSVs(late)["G05@3"]; sv.XM != nil {
+		t.Error("position served 73 h past the ephemeris apply time: clock attach re-stamped ephAt")
+	}
+}
+
+// TestCNAVMislabeledPRNIgnored checks the PRN gate before the MT10
+// freshest-wins scalars (health/URA_ED/WN) and the alert flag apply earlier — a
+// frame whose header PRN disagrees with the receiver's svId label (mislabeled
+// or corrupt) must not stamp another SV's indications onto this entry.
+func TestCNAVMislabeledPRNIgnored(t *testing.T) {
+	s := New(4)
+	t0 := time.Unix(1_700_000_000, 0)
+	const svid, sig = 5, 3
+	s.Apply(cnavStateFrame(gnss.GPS, svid, sig, cnavMT10(svid, 2288, 0, 2, 400), t0))
+	s.Apply(cnavStateFrame(gnss.GPS, svid, sig, cnavStateWords(svid, 11, func(buf []byte) {
+		setAbsBits(buf, 38, 11, 400)
+	}), t0))
+	if sv := s.FeedSVs(t0)["G05@3"]; sv.HealthCode != 1 {
+		t.Fatalf("setup: health = %d, want 1", sv.HealthCode)
+	}
+
+	// A frame labeled svId 5 but carrying PRN 6's MT10 with the L2 carrier
+	// flagged bad: must be rejected before any state mutation.
+	s.Apply(cnavStateFrame(gnss.GPS, svid, sig, cnavMT10(6, 2288, 0b010, 2, 400), t0))
+	sv := s.FeedSVs(t0)["G05@3"]
+	if sv.HealthCode != 1 {
+		t.Errorf("mislabeled PRN-6 frame flipped G05@3 health to %d, want 1 (rejected)", sv.HealthCode)
+	}
+}
+
 // TestCNAVCarrierBitSelection pins cnavCarrierHealth's sigId→carrier map to the
 // dispatch table (docs/CONSTELLATIONS.md §2.1): GPS 3/4 & QZSS 4/5 read the L2
 // bit, GPS 6/7 & QZSS 8/9 read the L5 bit, from the (L1,L2,L5) MSB-first field.

@@ -478,6 +478,17 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 	if m.MsgType != 10 && m.MsgType != 11 && (m.MsgType < 30 || m.MsgType > 37) {
 		return
 	}
+	// validation follow-up to regression fix/AssembleGPSCNAV's PRN gate
+	// protects only assembly, but the freshest-wins scalars below (alert,
+	// health, URA_ED, WN) apply before any assembly. A frame whose header PRN
+	// disagrees with the receiver's svId label is mislabeled or corrupt (GPS:
+	// PRN == svId; QZSS: the 6-LSB PRN ID 1–10 == svId, QZSS-PNT-006
+	// §4.3.1.2(2)) — reject it for state purposes so another SV's broadcast can
+	// never stamp this entry's health or alert.
+	if m.PRN != f.SvID {
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "cnav_prn").Inc()
+		return
+	}
 
 	key := Key{G: f.GnssID, Sv: f.SvID, Sig: f.SigID}
 	sh := s.shardFor(key)
@@ -489,7 +500,10 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 		sh.m[key] = st
 	}
 	st.lastSeen = recv
-	// the alert flag rides every CNAV header — freshest-wins, as LNAV.
+	// the alert flag rides every applied message's header (types
+	// outside 10/11/30–37 returned above) — freshest-wins, as LNAV. Alert is
+	// NOTE1 "CEI refinement" in IS-GPS-200N Table 6-I-1: it may change without a
+	// toe change, so it must never wait for a cutover.
 	st.alert, st.haveAlert = m.Alert, true
 
 	switch {
@@ -497,9 +511,11 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 		st.gc10 = m
 		// regression fix freshest-wins, BEFORE the toe-changeover gate below: per-carrier
 		// health, signed URA_ED, and the broadcast-WN cross-check reach live
-		// state on every MT10, not only at data-set cutovers (Alert/URA-class
-		// fields are the ICD's NOTE1 "CEI refinement" set — they may change
-		// without a toe change, IS-GPS-200N Table 6-I-1).
+		// state on every MT10, not only at data-set cutovers — a re-broadcast
+		// MT10 under an unchanged toe must not have refreshed indications
+		// dropped by the changeover gate (the regression fix defense in depth; unlike
+		// Alert above, these are not Table 6-I-1 NOTE1 fields, so this guards
+		// missed cutovers rather than spec-sanctioned mid-set changes).
 		st.health, st.haveHealth = cnavCarrierHealth(f.GnssID, f.SigID, m.Health), true
 		st.accKind, st.accIdx = accURAED, m.URAED
 		st.checkBroadcastWN(recv, m.WN, 13) // regression fix
@@ -525,20 +541,28 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 	if !ephChanged && !clkAttached {
 		return
 	}
-	if ephChanged && st.haveEph {
-		s.computeDisco(st, eph, clk, recv)
-		// Time-disco needs a coherent decoded clock on BOTH sides (the regression fix
-		// absent-not-zero rule); computeDisco differenced the zero model
-		// otherwise. Orbit-disco stands either way.
-		if !clkOK || !st.haveClk {
-			st.timeDiscoValid = false
+	if ephChanged {
+		if st.haveEph {
+			s.computeDisco(st, eph, clk, recv)
+			// Time-disco needs a coherent decoded clock on BOTH sides (the regression fix
+			// absent-not-zero rule); computeDisco differenced the zero model
+			// otherwise. Orbit-disco stands either way.
+			if !clkOK || !st.haveClk {
+				st.timeDiscoValid = false
+			}
 		}
+		// regression fix apply-time stamp (collector-local, regression fix), confined to a REAL
+		// ephemeris changeover — validation finding: stamping it on the
+		// clock-attach-only path too would restart wall-clock serving
+		// cap for an unchanged (possibly days-old, extended-ops) ephemeris when
+		// a late MT30 finally decodes, re-opening a sliver of the half-week-wrap
+		// window the cap exists to close. Mirrors the LNAV path's regression fix split.
+		st.ephAt = recv
 	}
 	if !clkOK {
 		clk = st.clk // keep the previously applied clock; haveClk gates serving it
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, int(eph.Toe), true
-	st.ephAt = recv // regression fix (collector-local, regression fix)
 	if clkOK {
 		st.haveClk = true
 	}
@@ -1466,6 +1490,10 @@ func (s *Store) Propagate(now time.Time) {
 			// reasoning as computeDisco's regression fix gate. Skipping (not zeroing) lets
 			// posStaleBound expire the previously-served position naturally.
 			if st.ephAt.IsZero() || now.Sub(st.ephAt) > propagateMaxEphAge {
+				// validation follow-up: register the label at (at least) 0 so
+				// LiveSVs drops to 0 when a constellation's last SV is cap-skipped,
+				// instead of latching at the last nonzero value.
+				counts[st.key.G.String()] += 0
 				continue
 			}
 			tow := towFor(st.key.G, now)
