@@ -1,0 +1,123 @@
+package state
+
+import (
+	"testing"
+	"time"
+
+	"github.com/ptudor/gnss"
+	"github.com/ptudor/gnss/frame"
+	"github.com/ptudor/navlistener/internal/ingest"
+)
+
+// inavContentWords packs a 128-bit I/NAV nav-word content blob into the raw
+// 8-word (256-bit) even+odd page DecodeGalileoINAV reads: content[0:112) at
+// page bit 2 (even data), content[112:128) at page bit 130 (odd data), the odd
+// part's Even/Odd flag (page bit 128) set to 1, CRC stamped. Mirrors the
+// gnss/frame test builder — the state tests exercise dispatch/fold-in wiring,
+// not field offsets (those are covered by the frame unit tests).
+func inavContentWords(content []byte) []uint32 {
+	page := make([]byte, 32)
+	page[16] = 0x80 // odd-part Even/Odd flag, page bit 128 (regression fix gate)
+	cp := func(dstOff, srcOff, n int) {
+		for i := 0; i < n; i++ {
+			sp := srcOff + i
+			if content[sp>>3]&(1<<uint(7-(sp&7))) != 0 {
+				dp := dstOff + i
+				page[dp>>3] |= 1 << uint(7-(dp&7))
+			}
+		}
+	}
+	cp(2, 0, 112)
+	cp(130, 112, 16)
+	words := make([]uint32, 8)
+	for i := 0; i < 8; i++ {
+		words[i] = uint32(page[i*4])<<24 | uint32(page[i*4+1])<<16 | uint32(page[i*4+2])<<8 | uint32(page[i*4+3])
+	}
+	frame.StampGalileoINAVCRC(words)
+	return words
+}
+
+// inavSetBits packs v's low n bits (MSB-first) at bit offset off of a 128-bit
+// content blob.
+func inavSetBits(content []byte, off int, v uint64, n int) {
+	for i := 0; i < n; i++ {
+		if v&(1<<uint(n-1-i)) != 0 {
+			p := off + i
+			content[p>>3] |= 1 << uint(7-(p&7))
+		}
+	}
+}
+
+// inavWordN builds a minimal I/NAV word of the given type with a matching
+// IODnav (words 1–4; word type at bit 0, IODnav at bit 6 per GAL-OS-SIS-ICD-2.2
+// Tables 42–45), with extra fields applied by mutate before packing.
+func inavWordN(wordType, iod int, mutate func(content []byte)) []uint32 {
+	content := make([]byte, 16)
+	inavSetBits(content, 0, uint64(wordType), 6)
+	inavSetBits(content, 6, uint64(iod), 10)
+	if mutate != nil {
+		mutate(content)
+	}
+	return inavContentWords(content)
+}
+
+func galileoFrame(svid int, words []uint32, recv time.Time) *ingest.RawFrame {
+	return &ingest.RawFrame{GnssID: gnss.Galileo, SvID: svid, SigID: 0, Source: "obs-inav", Recv: recv, Words: words}
+}
+
+// TestFeedGalileoSISANAPAServesAccIndex guards regression fix (the Galileo sibling of
+// URA-15 rule): an SV broadcasting SISA index 255 — "No Accuracy
+// Prediction Available (NAPA) … an indicator of a potential anomalous SIS"
+// (GAL-OS-SIS-ICD-2.2 §5.1.12 Table 91) — must not serve as a healthy entry
+// with the accuracy silently absent, indistinguishable from "word 3 not decoded
+// yet". The feed serves sisa_valid=false with no sisa_m (there is no metres
+// value) but exposes acc_index=255, which is what routes the SV into the
+// detector's no_accuracy classification so the transition into NAPA fires a
+// sisa_change event.
+func TestFeedGalileoSISANAPAServesAccIndex(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	const svid, iod = 11, 42
+
+	apply := func(sisa int) {
+		s.Apply(galileoFrame(svid, inavWordN(1, iod, nil), now))
+		s.Apply(galileoFrame(svid, inavWordN(2, iod, nil), now))
+		s.Apply(galileoFrame(svid, inavWordN(3, iod, func(c []byte) {
+			inavSetBits(c, 120, uint64(sisa), 8) // SISA(E1,E5b) @120, Table 44
+		}), now))
+		s.Apply(galileoFrame(svid, inavWordN(4, iod, nil), now))
+	}
+
+	apply(255)
+	sv, ok := s.FeedSVs(now)["E11@0"]
+	if !ok {
+		t.Fatal("E11@0 missing from svs feed")
+	}
+	if sv.SISAValid || sv.SISAM != nil {
+		t.Errorf("NAPA served as a real accuracy: sisa_valid=%v sisa_m=%v", sv.SISAValid, sv.SISAM)
+	}
+	if sv.AccIndex == nil || *sv.AccIndex != 255 {
+		t.Fatalf("acc_index = %v, want 255 (the NAPA sentinel itself must be served)", sv.AccIndex)
+	}
+
+	// A nominal index (same SV, new IODnav so the set re-assembles) serves both
+	// the metres value and the raw index: 107 → 2 m + 7×16 cm = 3.12 m (Table 91
+	// band 100–125).
+	s2 := New(4)
+	s2.Apply(galileoFrame(svid, inavWordN(1, iod, nil), now))
+	s2.Apply(galileoFrame(svid, inavWordN(2, iod, nil), now))
+	s2.Apply(galileoFrame(svid, inavWordN(3, iod, func(c []byte) {
+		inavSetBits(c, 120, 107, 8)
+	}), now))
+	s2.Apply(galileoFrame(svid, inavWordN(4, iod, nil), now))
+	sv = s2.FeedSVs(now)["E11@0"]
+	if !sv.SISAValid || sv.SISAM == nil {
+		t.Fatalf("SISA 107: sisa_valid=%v sisa_m=%v, want a decoded metres value", sv.SISAValid, sv.SISAM)
+	}
+	if got := *sv.SISAM; got < 3.119 || got > 3.121 {
+		t.Errorf("sisa_m = %v, want 3.12 (index 107, Table 91)", got)
+	}
+	if sv.AccIndex == nil || *sv.AccIndex != 107 {
+		t.Errorf("acc_index = %v, want 107", sv.AccIndex)
+	}
+}

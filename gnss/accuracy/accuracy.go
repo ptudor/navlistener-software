@@ -44,8 +44,16 @@ func URAEDMeters(n int) (float64, bool) {
 }
 
 // GalileoSISA decodes a Galileo SISA index (0–255) to metres in the four linear
-// bands of OS-SIS-ICD §5.1.12. 255 ("NO SISA AVAILABLE") and the 126–254 spare
-// range are not meaningful (valid=false).
+// bands of GAL-OS-SIS-ICD-2.2 §5.1.12 Table 91. 255 ("No Accuracy Prediction
+// Available (NAPA)") and the 126–254 spare range are not meaningful
+// (valid=false). regression fix (the Galileo sibling of URA-15 rule):
+// valid=false is NOT "nothing to report" — §5.1.12 states that SISA = NAPA "is
+// an indicator of a potential anomalous SIS", a broadcast integrity signal, not
+// a missing value. The caller must surface the raw index itself (the feed's
+// acc_index / the detector's no_accuracy state) so a consumer can distinguish
+// NAPA (255) and the spare range from "no accuracy field decoded yet"; folding
+// the sentinel into absence silenced the one broadcast field that disclaims the
+// SV's accuracy.
 func GalileoSISA(n int) (float64, bool) {
 	switch {
 	case n < 0:
@@ -58,7 +66,7 @@ func GalileoSISA(n int) (float64, bool) {
 		return 1.0 + float64(n-75)*0.04, true
 	case n <= 125: // 2–6 m, 16 cm steps
 		return 2.0 + float64(n-100)*0.16, true
-	default: // 126–254 spare, 255 = NO SISA AVAILABLE
+	default: // 126–254 spare, 255 = NAPA (Table 91) — sentinel, see doc comment
 		return 0, false
 	}
 }
