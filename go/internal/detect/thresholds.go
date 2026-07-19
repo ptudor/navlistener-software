@@ -140,6 +140,25 @@ const (
 	// TestWiredSpoofGatesMatchesImplementation enforces the pairing.
 	WiredSpoofGates = 1
 
+	// XSigDivergenceMeters  is the position-disagreement bound for the
+	// Galileo cross-signal agreement check (I/NAV E##@0 vs F/NAV E##@3). This is
+	// a GUARD BAND, not a physical tolerance: for one IODnav the I/NAV and
+	// F/NAV data sets carry the same CED (GAL-OS-SIS-ICD-2.2 §5.1.9.2 scopes
+	// IODnav to ephemeris/clock/SISA; validated bit-for-bit on live hardware
+	// 2026-07-12), both decoders scale the same fields with the
+	// same factors into the same kepler.Ephemeris, and the propagator is
+	// deterministic — so two agreeing signals compared at the identical
+	// propagation epoch differ by EXACTLY zero, and any nonzero distance means
+	// the two signals broadcast different element bits (a signal-selective
+	// fault or spoof). 1 cm is far above float noise (which is zero here) and
+	// far below the smallest single-LSB element flip's position effect (e.g.
+	// Cic's 2⁻²⁹ rad ≈ 5 cm at orbit radius). This tight bound is valid ONLY
+	// for same-IODnav Galileo pairs — GPS LNAV-vs-CNAV and BeiDou D1-vs-B-CNAV2
+	// are independent curve fits that legitimately differ by metres, and
+	// comparing them needs a real fit-difference tolerance analysis (deferred
+	// to their constellation passes; the classifier is Galileo-only until then).
+	XSigDivergenceMeters = 0.01
+
 	// Capability plausibility (docs/INTEGRITY.md §6, CONSTELLATIONS §7). A signal a node has
 	// *demonstrated* it can track (produced this many nav frames on) and then stops delivering,
 	// while the node is otherwise alive, is a targeted loss (jamming/spoofing/fault) — not the

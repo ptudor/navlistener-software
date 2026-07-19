@@ -141,8 +141,18 @@ type FeedSV struct {
 	XM        *float64 `json:"x_m,omitempty"`
 	YM        *float64 `json:"y_m,omitempty"`
 	ZM        *float64 `json:"z_m,omitempty"`
-	Tow       *int     `json:"tow,omitempty"`
-	Wn        *int     `json:"wn,omitempty"`
+	// PosAtUnixNs (regression fix, detector-facing — not part of the JSON contract) is
+	// the exact propagation epoch (svState.posAt) that produced x_m/y_m/z_m.
+	// The cross-signal agreement check must compare two signals' positions ONLY
+	// when both were propagated at the identical instant: Propagate uses one
+	// `now` per tick, but an entry whose propagation failed a tick retains its
+	// previous epoch, and an SV moves ~3–4 km/s — a sub-second epoch skew reads
+	// as kilometres of fake divergence. The served integer tow cannot make that
+	// distinction under a sub-second propagate_interval; this can. Zero = no
+	// fresh position.
+	PosAtUnixNs int64 `json:"-"`
+	Tow         *int  `json:"tow,omitempty"`
+	Wn          *int  `json:"wn,omitempty"`
 	LastSeenS int      `json:"last_seen_s"`
 	// Conf (regression fix, docs/OUTPUT.md §1.1 / INTEGRITY §6) is the corroboration
 	// count: distinct sources that delivered a structurally-decoded nav frame
@@ -301,6 +311,7 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 	if posFresh {
 		x, y, z := st.pos.X, st.pos.Y, st.pos.Z
 		e.XM, e.YM, e.ZM = &x, &y, &z
+		e.PosAtUnixNs = st.posAt.UnixNano() // exact epoch for the cross-signal compare
 	}
 	if st.orbitDiscoValid && finite(st.orbitDisco) {
 		v := st.orbitDisco

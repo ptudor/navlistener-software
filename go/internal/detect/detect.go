@@ -2,6 +2,7 @@ package detect
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -95,6 +96,7 @@ func (d *Detector) Tick(now time.Time, svs map[string]state.FeedSV, sbas map[str
 		for name, sv := range svs {
 			d.detectSV(name, sv, now, liveReceivers, emit)
 		}
+		d.detectXSig(svs, emit) // cross-signal broadcast agreement (needs the whole map)
 		for prn, s := range sbas {
 			d.detectSBAS(prn, s, emit)
 		}
@@ -179,6 +181,12 @@ func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, liveRec
 	// time, stamped centrally so no classifier can forget it — a consumer must
 	// always be able to tell "five stations agree" (conf ≥ 2) from "one station
 	// said so" (conf 1) on the event itself, not just the live feed.
+	// sigid rides beside it, because subjects are satellite×signal keys
+	// (E14@0 and E14@3 are separate detector subjects) and one physical SV with
+	// two decoded signals double-emits SV-level types at slightly different
+	// instants — params.sv (the physical name, no @sig) is the documented
+	// grouping key consumers coalesce on, and params.sigid disambiguates the
+	// emitting signal without string-parsing the subject (docs/OUTPUT.md §3).
 	emit := func(subject, metric, newState string, ev func(old string) Event) {
 		outer(subject, metric, newState, func(old string) Event {
 			e := ev(old)
@@ -186,6 +194,7 @@ func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, liveRec
 				e.Params = map[string]any{}
 			}
 			e.Params["conf"] = sv.Conf
+			e.Params["sigid"] = sv.SigID
 			return e
 		})
 	}
@@ -433,6 +442,77 @@ func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, liveRec
 			Params:   map[string]any{"sv": sv.Name},
 		}
 	})
+}
+
+// detectXSig checks cross-signal broadcast agreement. One physical Galileo SV
+// broadcasts the same IODnav-scoped CED on E1-B I/NAV (E##@0) and E5a F/NAV (E##@3), so the two
+// independently-decoded, independently-propagated positions must agree — a
+// disagreement under one IODnav means the two signals carried DIFFERENT element
+// bits, a signal-selective fault or spoof no single-signal detector can see.
+// Comparison preconditions (all skips leave the machine holding, regression fix rule):
+// both entries carry a fresh position, the same decoded IODnav (a changeover
+// skew where one signal cuts over first is designed behavior, not divergence),
+// and the identical propagation epoch (PosAtUnixNs — sub-second epoch skew
+// reads as km of fake divergence). Galileo-only: see XSigDivergenceMeters for
+// why the tight bound is unsound for GPS LNAV-vs-CNAV / BDS D1-vs-B-CNAV2
+// (independent curve fits). Subject is the physical SV name ("E14" — no @sig,
+// deliberately outside the satellite×signal subject space); warning severity in
+// v1 — a single-collector observation (one receiver may have a decode fault),
+// so it corroborates rather than convicts, per the DEFENSE-PNT single-metric
+// rule. It also counts toward plausibility-gate family.
+func (d *Detector) detectXSig(svs map[string]state.FeedSV, emit emitFunc) {
+	groups := map[string][]state.FeedSV{}
+	for _, sv := range svs {
+		if sv.GnssID != 2 { // Galileo only (see XSigDivergenceMeters)
+			continue
+		}
+		if sv.XM == nil || sv.YM == nil || sv.ZM == nil || sv.IOD == nil || sv.PosAtUnixNs == 0 {
+			continue
+		}
+		groups[sv.Name] = append(groups[sv.Name], sv)
+	}
+	for name, g := range groups {
+		if len(g) < 2 {
+			continue
+		}
+		// Deterministic pair reporting regardless of map iteration order.
+		sort.Slice(g, func(i, j int) bool { return g[i].SigID < g[j].SigID })
+		compared := false
+		worst := 0.0
+		var sigA, sigB, iod int
+		for i := 0; i < len(g); i++ {
+			for j := i + 1; j < len(g); j++ {
+				a, b := g[i], g[j]
+				if *a.IOD != *b.IOD || a.PosAtUnixNs != b.PosAtUnixNs {
+					continue
+				}
+				dx, dy, dz := *a.XM-*b.XM, *a.YM-*b.YM, *a.ZM-*b.ZM
+				dist := math.Sqrt(dx*dx + dy*dy + dz*dz)
+				if !compared || dist > worst {
+					worst, sigA, sigB, iod = dist, a.SigID, b.SigID, *a.IOD
+				}
+				compared = true
+			}
+		}
+		if !compared {
+			continue // no same-IODnav same-epoch pair: nothing comparable this tick
+		}
+		divergent := worst > XSigDivergenceMeters
+		sev := SevInfo
+		if divergent {
+			sev = SevWarning
+		}
+		emit(name, "xsig", boolState(divergent, "divergent", "ok"), func(old string) Event {
+			return Event{
+				Type: "xsig_divergence", OldValue: old, NewValue: boolState(divergent, "divergent", "ok"),
+				Severity: sev,
+				Message: fmt.Sprintf("%s signals %d/%d %s (Δ %.3f m, IODnav %d)",
+					name, sigA, sigB, map[bool]string{true: "broadcast diverging ephemerides", false: "agree"}[divergent], worst, iod),
+				Params: map[string]any{"sv": name, "sig_a": sigA, "sig_b": sigB,
+					"distance_m": worst, "iod": iod},
+			}
+		})
+	}
 }
 
 // detectSBAS runs the silence and augmentation-health classifiers for one SBAS

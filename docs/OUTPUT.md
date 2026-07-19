@@ -267,6 +267,15 @@ default every 60 s), `event: resolved`; reconnect via `Last-Event-ID` replays fr
 Event types and their thresholds/severities are defined once, in `docs/INTEGRITY.md §2/§5` —
 this section is the wire shape only.
 
+**Physical-SV grouping.** Subjects are satellite×signal keys, so one physical SV with
+two decoded signals (`E14@0` I/NAV and `E14@3` F/NAV, `C24@0` D1 and `C24@8` B-CNAV2) legitimately
+emits SV-level event types twice, typically at slightly different instants — per-signal health
+really is per-signal, so the duplication is information, not a bug. Consumers that want one alert
+per physical satellite coalesce on **`params.sv`** (the physical name, no `@sig` — present on
+every SV event) and disambiguate the emitting signal with **`params.sigid`**; no subject-string
+parsing needed. Station/SBAS/cross-signal events use their own subject spaces (station id,
+`S<prn>`, physical name).
+
 ---
 
 ## 4. Persistence contract

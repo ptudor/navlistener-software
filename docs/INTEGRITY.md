@@ -190,6 +190,7 @@ The baseline vocabulary and severities below are **verified against intsat's shi
 | `ura_alert` | GPS/QZSS URA-alert flag transition : LNAV HOW bit 18 / CNAV bit 38 — the SV's own "use at own risk" declaration (IS-GPS-200N §20.3.3.2, a §6.4.6.3 marginal condition) | 1 on raise, 0 on clear |
 | `wn_mismatch` | broadcast week number (LNAV 10-bit / CNAV 13-bit, rollover-disambiguated) disagrees with the collector wall-clock week  — the cheapest time-domain anomaly: upload error, SV clock fault, or a replayed/spoofed signal carrying a wrong week | 2 on mismatch, 0 on recovery |
 | `bds_integrity_flag` | a BeiDou B-CNAV2 SV's broadcast per-signal integrity flags (DIF/SIF/AIF, BDS-SIS-ICD-B2a Table 7-23) change state  — the constellation's own real-time integrity channel, e.g. DIF=1 "the error of message parameters broadcasted in this signal exceeds the predictive accuracy". Warning on any raise (the ICD defers the flags' numeric thresholds), info on clear | 1 on raise, 0 on clear |
+| `xsig_divergence` | one physical SV's two independently-decoded signals (Galileo E1-B I/NAV `E##@0` vs E5a F/NAV `E##@3`) broadcast diverging ephemerides under one IODnav  — a signal-selective fault or spoof; the cross-signal agreement evidence F/NAV was wired to provide. Subject is the physical SV name (`E14`, no `@sig`); Galileo-only (same-IODnav I/NAV and F/NAV carry the same CED per GAL-OS-SIS-ICD §5.1.9.2, so agreeing signals differ by exactly 0 m — GPS LNAV-vs-CNAV / BDS D1-vs-B-CNAV2 are independent curve fits needing their own tolerance analysis). Warning in v1: a single-collector observation corroborates rather than convicts | 1 on divergence, 0 on clear |
 | `leap_mismatch` | an SV's broadcast current leap-second count (BeiDou B-CNAV2 MT34's BDT-UTC ΔtLS today, via the fixed BDT = GPST − 14 s alignment) disagrees with the collector's configured GPS−UTC count (regression fix — the regression fix cross-check): a stale config after a real leap event, or a bogus broadcast. GNSS-side axes are unaffected; UTC-facing output is shifted by whole seconds | 1 on mismatch, 0 on recovery |
 
 The two `*_health` types cover QZSS and NavIC; the
@@ -270,6 +271,10 @@ of coverage:
 - **Jamming context** — *implemented* (`jamming_detected`/`station_rf_degraded`, DEFENSE-PNT
   §2/§4): u-blox MON-HW/MON-RF jamming/AGC indicators raise the prior on a receiver's
   environment being hostile, down-weighting its votes (`rf_trust`).
+- **Cross-signal broadcast agreement** — *implemented for Galileo (regression fix,
+  `xsig_divergence`)*: one SV's independently-decoded I/NAV and F/NAV positions compared under
+  one IODnav at one propagation epoch — the intra-SV analogue of §6's cross-receiver
+  broadcast-agreement check, catching a signal-selective fault/spoof.
 
 Every gate is a *plausibility* judgement, cheap and independent of signatures — the failures they
 catch (a replayed constellation, a lifted-and-shifted receiver, a bad upload) are exactly the ones
