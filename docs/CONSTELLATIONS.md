@@ -59,10 +59,15 @@ Decoder status: **★ core** (v1, must ship) · **▲ extended** (modern civil s
 | **SBAS** | 1 | S | L1 C/A **MT 0–63** (integrity, fast/long corrections, iono grid, almanac) | L1 1575.42, L5 1176.45 (DFMC, future) MHz | RTCA DO-229 (MOPS, D/E); ICAO Annex 10 SARPs; SBAS L5 DFMC ICD (L5) | ★ L1 MT; ◇ L5 DFMC |
 
 SBAS providers we name and geo-fence for coverage (the `sbas` feed, `docs/OUTPUT.md §1.5`): **WAAS**
-(US, PRN 131/133/135/…), **EGNOS** (EU, 121/123/136), **MSAS** (Japan, 129/137), **GAGAN**
-(India, 127/128/132), **SDCM** (Russia, 125/140/141), **BDSBAS** (China, 130/143/144),
-**KASS** (Korea, 134), **SouthPAN** (AU/NZ). QZSS also broadcasts an SBAS-like service on
-L1S; see §3.
+(US, PRN 131/133/135/138), **EGNOS** (EU, 120/121/123/126/136 — PRN 120 = Inmarsat-3F2 AOR-E,
+EGNOS's last holder of that code), **MSAS** (Japan, 129/137), **GAGAN** (India, 127/128/132),
+**SDCM** (Russia, 125/140/141), **BDSBAS** (China, 130/143/144), **KASS** (Korea, 134),
+**SouthPAN** (AU/NZ, 122/124 — PRN 124 reassigned from EGNOS to SouthPAN April 2024, regression fix; do
+NOT move it back). Unknown PRNs degrade to the generic `"SBAS"` provider rather than being
+dropped. **The shipped map + test are authoritative** (`gnss/frame/sbas_l1.go
+SBASProvider`, locked by `TestSBASProviderAssignments`) — PRN assignments are an operational
+registry, not an ICD constant, and this prose is synced to the code, not the other
+way around. QZSS also broadcasts an SBAS-like service on L1S; see §3.
 
 ---
 

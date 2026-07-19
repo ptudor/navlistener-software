@@ -176,7 +176,7 @@ The baseline vocabulary and severities below are **verified against intsat's shi
 | `station_offline` | observer unseen > 300 s | 1–2 |
 | `position_unknown` | a monitored SV has no computable position | 1 |
 | `osnma_change` | Galileo OSNMA authentication on↔off | 0 |
-| `sbas_health` | SBAS message-type-0 / health change | 0, → 2 on do-not-use |
+| `sbas_health` | SBAS message-type-0 / health change (do-not-use is latched on MT0 recency — `sbasType0Hold` — not the last message, so a test-mode MT0/2 interleave reads do-not-use, as a DO-229 receiver would) | sev 0 (info), → sev 2 (critical) on do-not-use — these are event *severities*; the served SBAS `health_code` itself is only ever 1 (OK) or 3 (do-not-use), per the §OUTPUT 2.2 enum  |
 | `qzss_health` | QZSS navigation health transition; L1S DC-report enrichment is planned | 1–2 |
 | `navic_health` *(planned)* | NavIC SPS health transition; unavailable until the NavIC decoder lands | 1–2 |
 | `jamming_detected` | station AGC/CW/noise evidence confirms jamming (`DEFENSE-PNT.md §4`) | 1, → 2 on severe/full-lock-loss evidence |

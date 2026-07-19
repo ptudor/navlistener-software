@@ -70,7 +70,7 @@ below):
 | `full_name` | string | human label, e.g. `"GPS-5"`, `"Galileo-14 (E1B)"` |
 | `name` | string | SV name `"G05"` (RINEX letter + PRN) |
 | `gnssid` | int | constellation id (`docs/CONSTELLATIONS.md §0`) |
-| `svid` | int | PRN within constellation |
+| `svid` | int | PRN within constellation — except **QZSS**, which serves the u-blox svId 1–10 (`J03` = svid 3 = PRN 195; PRN = svid + 192). Intentional: see `docs/CONSTELLATIONS.md §3.1` ("svId, not PRN") and the `"J03@0"` example below  |
 | `sigid` | int | signal id (0 = the constellation's primary civil signal) |
 | `health_code` | int | §2.2 enum: 0 unknown · 1 OK · 2 not-ok · 3 do-not-use |
 | `health_issue_level` | int | 0 none · 1 warning · 2 error |
@@ -193,8 +193,22 @@ all-SV view (acquisition-grade); `svs` remains the precision view. Fields:
 
 Object keyed by SBAS PRN (`"131"`, `"136"`, …): `provider` (string, e.g. `"WAAS"`,
 `"EGNOS"`, `"MSAS"`, `"GAGAN"` — the §CONSTELLATIONS provider table), `health_code`,
-`last_seen`, `last_seen_s`, `last_type_0`, `last_type_0_s`, `perrecv` (observer id →
-`{last_seen, last_seen_s}`).
+`last_seen`, `last_seen_s`, `last_type` (the raw message type of the most recent decoded
+message, 0–63 — regression fix), `last_type_0`, `last_type_0_s` (when the last MT0 was seen;
+absent until one has been).
+
+`health_code` is 1 (OK) or 3 (do-not-use) and **latches on MT0 recency** : it
+reads 3 while the last MT0 ("do not use for safety applications") is younger than the
+DO-229-family 60 s exclusion (`sbasType0Hold`, QZSS-L1S §4.1.2.3), because a system
+under test interleaves MT0 with its normal stream (the MT0/2 pattern, EGNOS-SDD-OS
+§4.1) and a DO-229 receiver excludes the GEO on any MT0 sighting — the last *message*
+being MT≠0 does not mean the GEO is usable. Consumers wanting the raw recency read
+`last_type_0_s`.
+
+`perrecv` (observer id → `{last_seen, last_seen_s}`) is **contract-reserved, not yet
+served** : the SBAS state is currently store-global per PRN, with no
+per-observer reception map; the field will appear when per-station SBAS attribution
+lands.
 
 ---
 
