@@ -50,7 +50,12 @@ func countDecodeFailure(f *ingest.RawFrame, kind string, err error) {
 	metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), kind).Inc()
 }
 
-// gpsEpochUnix is 1980-01-06T00:00:00Z.
+// gpsEpochUnix is 1980-01-06T00:00:00Z. every production epoch FOLD
+// (wall-clock → GPS/BDT week/TOW) now routes through gnsstime's single
+// epochGPSSeconds table; this local constant remains only for the tests'
+// independent re-derivations and weekSeconds for plain interval arithmetic
+// (leap-arm boundaries, RAWX epoch flattening) — never re-introduce a local
+// `gps − 14`/`− 1356·week`-style epoch reduction here.
 const (
 	gpsEpochUnix  = 315964800
 	weekSeconds   = 604800
@@ -1987,7 +1992,7 @@ const wnRolloverGraceS = 4 * 3600
 // ever appears (BDT TOW is shifted 14 s). Called with the shard lock held;
 // the result feeds wn_mismatch → the detector's debounced wn_mismatch event.
 func (st *svState) checkBroadcastWN(recv time.Time, sys gnsstime.System, wn, bits int) {
-	full := gnsstime.DisambiguateWeek(sys, wn, bits, float64(recv.Unix()))
+	full := gnsstime.DisambiguateWeek(sys, wn, bits, float64(recv.Unix()), float64(gpsUTCOffset))
 	expect, ok := gnsstime.WeekAt(sys, float64(recv.Unix()), float64(gpsUTCOffset))
 	if !ok {
 		return // no week numbering for this system; leave haveWN untouched
@@ -1999,23 +2004,38 @@ func (st *svState) checkBroadcastWN(recv time.Time, sys gnsstime.System, wn, bit
 	st.wnMismatch, st.haveWN = mismatch, true
 }
 
+// timeSysFor maps a constellation to the gnsstime.System its wall-clock week/TOW
+// reductions run on. BeiDou is the only one on a shifted axis (BDT =
+// GPST − 14 s, folded once into gnsstime's epoch table). GPS/QZSS share GPST by
+// definition; Galileo and NavIC map to SysGPS DELIBERATELY, not to their own
+// systems: their TOW is second-identical to GPS TOW (the epoch offsets are whole
+// weeks, regression fix), so propagation is unaffected, while the served wn stays
+// GPS-numbered — the regression fix serving convention weekFor's callers rely on (the
+// broadcast-side GST-week cross-check runs on SysGalileo in checkBroadcastWN,
+// which takes its System explicitly). GLONASS maps to SysGPS only to keep towFor
+// total — it never reaches the TOW path (gloTOD owns its time-of-day axis, and
+// weekFor early-returns before consulting this).
+func timeSysFor(g gnss.GNSSID) gnsstime.System {
+	if g == gnss.BeiDou {
+		return gnsstime.SysBeiDou
+	}
+	return gnsstime.SysGPS
+}
+
 // gpsTOW returns the GPS/QZSS time-of-week (seconds) for a wall-clock instant.
-// GST (Galileo) shares this time-of-week to nanoseconds.
+// GST (Galileo) shares this time-of-week to nanoseconds. reduced via
+// gnsstime's single epoch table rather than a local re-implementation.
 func gpsTOW(now time.Time) float64 {
-	gps := now.Unix() - gpsEpochUnix + gpsUTCOffset
-	return float64(((gps % weekSeconds) + weekSeconds) % weekSeconds)
+	tow, _ := gnsstime.TOWAt(gnsstime.SysGPS, float64(now.Unix()), float64(gpsUTCOffset)) // SysGPS cannot fail
+	return tow
 }
 
 // towFor returns the constellation's own time-of-week for propagation. GPS/QZSS/
 // Galileo share GPS SOW; BeiDou runs 14 s behind (BDT = GPST − 14 s), so its toe
-// is on a shifted scale and it must be propagated at the shifted SOW.
+// is on a shifted scale and it must be propagated at the shifted SOW. // the shift lives in gnsstime's epochGPSSeconds table (the audited regression fix/regression fix
+// constant), not in a second local literal.
 func towFor(g gnss.GNSSID, now time.Time) float64 {
-	tow := gpsTOW(now)
-	if g == gnss.BeiDou {
-		if tow -= 14; tow < 0 {
-			tow += weekSeconds
-		}
-	}
+	tow, _ := gnsstime.TOWAt(timeSysFor(g), float64(now.Unix()), float64(gpsUTCOffset)) // mapped sys cannot fail
 	return tow
 }
 

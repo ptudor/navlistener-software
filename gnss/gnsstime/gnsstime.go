@@ -139,6 +139,22 @@ func (t GNSSTime) ToUnix(gpsMinusUTC float64) (float64, bool) {
 	return gpsEpochUnix + gs - gpsMinusUTC, true
 }
 
+// SystemSeconds returns the continuous seconds elapsed since sys's own epoch
+// (week-0/TOW-0) at the given Unix instant — the single wall-clock→GNSS-axis
+// reduction every derived quantity below builds on : unix is converted
+// to GPS seconds with the caller-supplied current GPS−UTC leap offset, then
+// shifted by the audited epochGPSSeconds table, so every per-system epoch
+// constant (Galileo's week-1024 alignment, BeiDou's 1356-week + 14 s fold,
+// regression fix/regression fix/regression fix) lives in exactly ONE place. ok=false for GLONASS (not a
+// continuous-week system) or an unknown system.
+func SystemSeconds(sys System, unix, gpsMinusUTC float64) (float64, bool) {
+	off, ok := epochGPSSeconds[sys]
+	if !ok {
+		return 0, false
+	}
+	return unix - gpsEpochUnix + gpsMinusUTC - off, true
+}
+
 // WeekAt returns sys's own full (untruncated) week number at the given Unix
 // instant, using the caller-supplied current GPS−UTC leap offset (it only
 // selects the week, so whole-second accuracy is ample). this is the
@@ -148,28 +164,52 @@ func (t GNSSTime) ToUnix(gpsMinusUTC float64) (float64, bool) {
 // GPS week − 1024, etc.) instead of hardcoding the GPS axis. ok=false for
 // GLONASS (no week number) or an unknown system.
 func WeekAt(sys System, unix, gpsMinusUTC float64) (int, bool) {
-	off, ok := epochGPSSeconds[sys]
+	s, ok := SystemSeconds(sys, unix, gpsMinusUTC)
 	if !ok {
 		return 0, false
 	}
-	return int(math.Floor((unix - gpsEpochUnix + gpsMinusUTC - off) / WeekSeconds)), true
+	return int(math.Floor(s / WeekSeconds)), true
+}
+
+// TOWAt returns sys's own time-of-week (seconds, in [0, WeekSeconds)) at the
+// given Unix instant  — the wall-clock counterpart of a broadcast
+// toe/tow, used as the propagation target. Positive-modulo so instants before
+// a week boundary still land in the previous week's tail. ok=false for GLONASS
+// (time-of-day system — package glonass / the caller's gloTOD own that axis)
+// or an unknown system.
+func TOWAt(sys System, unix, gpsMinusUTC float64) (float64, bool) {
+	s, ok := SystemSeconds(sys, unix, gpsMinusUTC)
+	if !ok {
+		return 0, false
+	}
+	tow := math.Mod(s, WeekSeconds)
+	if tow < 0 {
+		tow += WeekSeconds
+	}
+	return tow, true
 }
 
 // DisambiguateWeek recovers a full week number from a truncated broadcast field.
 // LNAV sends a 10-bit GPS week (1024-week ambiguity); other messages send wider
-// fields. Given the truncated value, the field width in bits, and an approximate
+// fields. Given the truncated value, the field width in bits, an approximate
 // current Unix time (the ingest wall-clock — "we always know roughly what year it
-// is"), it returns the full week nearest that instant. The wall-clock is trusted
-// only to pick the rollover cycle, never the low bits (docs/MATH.md §1).
-func DisambiguateWeek(sys System, truncated, bits int, approxUnix float64) int {
-	off, ok := epochGPSSeconds[sys]
-	if !ok || bits <= 0 || bits >= 31 {
+// is"), and the current GPS−UTC leap offset, it returns the full week nearest
+// that instant. The wall-clock is trusted only to pick the rollover cycle, never
+// the low bits (docs/MATH.md §1). gpsMinusUTC is a parameter, not the
+// previous compiled-in 18 — the daemon's ΔtLS is settable ([state].leap_seconds,
+// regression fix), and a literal here would silently diverge from it after a real leap
+// event. The leap term only picks the cycle (it is divided by 604800 s), so even
+// a few seconds' error is harmless — but one source of truth is the point.
+func DisambiguateWeek(sys System, truncated, bits int, approxUnix, gpsMinusUTC float64) int {
+	if bits <= 0 || bits >= 31 {
+		return truncated
+	}
+	approxGPS, ok := SystemSeconds(sys, approxUnix, gpsMinusUTC)
+	if !ok {
 		return truncated
 	}
 	modulus := 1 << bits
-	// Approximate full week from the wall-clock, on the same GPS-seconds axis.
-	approxGPS := approxUnix - gpsEpochUnix + 18 // ~current GPS−UTC; only picks the cycle
-	approxWeek := (approxGPS - off) / WeekSeconds
+	approxWeek := approxGPS / WeekSeconds
 	base := int(math.Round(approxWeek/float64(modulus))) * modulus
 	full := base + truncated
 	// Snap to the nearest cycle in case truncated sits just across a boundary.

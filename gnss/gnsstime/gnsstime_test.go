@@ -182,7 +182,7 @@ func TestDisambiguateWeek(t *testing.T) {
 	full := 2200
 	trunc := full % 1024
 	approxUnix := gpsEpochUnix + float64(full)*WeekSeconds + 3*DaySeconds // mid-week
-	if got := DisambiguateWeek(SysGPS, trunc, 10, approxUnix); got != full {
+	if got := DisambiguateWeek(SysGPS, trunc, 10, approxUnix, 18); got != full {
 		t.Errorf("DisambiguateWeek = %d, want %d", got, full)
 	}
 
@@ -190,7 +190,84 @@ func TestDisambiguateWeek(t *testing.T) {
 	full = 1050
 	trunc = full % 1024
 	approxUnix = gpsEpochUnix + float64(full)*WeekSeconds + DaySeconds
-	if got := DisambiguateWeek(SysGPS, trunc, 10, approxUnix); got != full {
+	if got := DisambiguateWeek(SysGPS, trunc, 10, approxUnix, 18); got != full {
 		t.Errorf("DisambiguateWeek earlier cycle = %d, want %d", got, full)
+	}
+}
+
+// TestSystemSecondsWeekTOWIdentity : for every continuous system,
+// WeekAt·604800 + TOWAt must reconstruct SystemSeconds exactly — the wall-clock
+// (wn, tow) pair the daemon serves is only consistent if all three reduce
+// through the same epoch fold. Swept across a GPS week rollover and the 14 s
+// BDT skew window, the historical regression fix failure shape.
+func TestSystemSecondsWeekTOWIdentity(t *testing.T) {
+	const leap = 18.0
+	rollover := gpsEpochUnix - leap + 2200*WeekSeconds // GPS week 2200, TOW 0 in Unix time
+	for _, sys := range []System{SysGPS, SysGalileo, SysBeiDou, SysNavIC} {
+		for dt := -20.0; dt <= 20.0; dt++ {
+			unix := rollover + dt
+			s, ok1 := SystemSeconds(sys, unix, leap)
+			wn, ok2 := WeekAt(sys, unix, leap)
+			tow, ok3 := TOWAt(sys, unix, leap)
+			if !ok1 || !ok2 || !ok3 {
+				t.Fatalf("sys %d: ok = %v/%v/%v, want all true", sys, ok1, ok2, ok3)
+			}
+			if got := float64(wn)*WeekSeconds + tow; got != s {
+				t.Errorf("sys %d at dt=%+.0f: wn·week+tow = %.3f, SystemSeconds = %.3f", sys, dt, got, s)
+			}
+			if tow < 0 || tow >= WeekSeconds {
+				t.Errorf("sys %d at dt=%+.0f: tow = %.3f outside [0, week)", sys, dt, tow)
+			}
+		}
+	}
+}
+
+// TestWeekTOWKnownValues  pins the reductions at a known instant: at
+// GPS week 2200 / TOW 0 exactly, BDT (= GPST − 14 s, epoch 1356 weeks after
+// GPS) reads week 843 (2200 − 1356 − 1: the BDT week has not rolled yet) at
+// TOW 604786 — the 14 s skew window where deriving the BDT week from
+// unshifted GPS seconds was a full week off.
+func TestWeekTOWKnownValues(t *testing.T) {
+	const leap = 18.0
+	unix := gpsEpochUnix - leap + 2200*WeekSeconds
+	if wn, _ := WeekAt(SysGPS, unix, leap); wn != 2200 {
+		t.Errorf("GPS week = %d, want 2200", wn)
+	}
+	if tow, _ := TOWAt(SysGPS, unix, leap); tow != 0 {
+		t.Errorf("GPS tow = %.3f, want 0", tow)
+	}
+	if wn, _ := WeekAt(SysBeiDou, unix, leap); wn != 843 {
+		t.Errorf("BDT week = %d, want 843", wn)
+	}
+	if tow, _ := TOWAt(SysBeiDou, unix, leap); tow != 604786 {
+		t.Errorf("BDT tow = %.3f, want 604786", tow)
+	}
+	// One second before the GPS rollover: week 2199, tow 604799.
+	if wn, _ := WeekAt(SysGPS, unix-1, leap); wn != 2199 {
+		t.Errorf("GPS week (rollover−1s) = %d, want 2199", wn)
+	}
+	if tow, _ := TOWAt(SysGPS, unix-1, leap); tow != 604799 {
+		t.Errorf("GPS tow (rollover−1s) = %.3f, want 604799", tow)
+	}
+	// Galileo: same TOW as GPS to the second, week − 1024 (regression fix alignment).
+	if wn, _ := WeekAt(SysGalileo, unix, leap); wn != 2200-1024 {
+		t.Errorf("GST week = %d, want %d", wn, 2200-1024)
+	}
+	if tow, _ := TOWAt(SysGalileo, unix, leap); tow != 0 {
+		t.Errorf("GST tow = %.3f, want 0", tow)
+	}
+}
+
+// TestTOWAtGLONASSRejected: GLONASS is a time-of-day system — the continuous
+// week/TOW reductions must refuse it rather than fabricate a value.
+func TestTOWAtGLONASSRejected(t *testing.T) {
+	if _, ok := SystemSeconds(SysGLONASS, 1.7e9, 18); ok {
+		t.Error("SystemSeconds accepted GLONASS")
+	}
+	if _, ok := TOWAt(SysGLONASS, 1.7e9, 18); ok {
+		t.Error("TOWAt accepted GLONASS")
+	}
+	if got := DisambiguateWeek(SysGLONASS, 5, 10, 1.7e9, 18); got != 5 {
+		t.Errorf("DisambiguateWeek(GLONASS) = %d, want the truncated value back", got)
 	}
 }

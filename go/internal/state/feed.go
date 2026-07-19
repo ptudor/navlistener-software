@@ -359,11 +359,14 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 		// no wrap handling needed beyond the week disambiguation.
 		ref := gnsstime.GNSSTime{
 			Sys:  gnsstime.SysGalileo,
-			Week: gnsstime.DisambiguateWeek(gnsstime.SysGalileo, st.ggto.wn0g, 6, float64(now.Unix())),
+			Week: gnsstime.DisambiguateWeek(gnsstime.SysGalileo, st.ggto.wn0g, 6, float64(now.Unix()), float64(gpsUTCOffset)),
 			TOW:  st.ggto.t0g,
 		}
 		if refGPS, ok := ref.GPSSeconds(); ok {
-			dt := float64(now.Unix()-gpsEpochUnix+gpsUTCOffset) - refGPS
+			// the wall-clock side of dt reduces through the same
+			// epoch table as the reference (SysGPS offset is 0 by definition).
+			gpsNow, _ := gnsstime.SystemSeconds(gnsstime.SysGPS, float64(now.Unix()), float64(gpsUTCOffset))
+			dt := gpsNow - refGPS
 			if off := (a0 + a1*dt) * 1e9; finite(off) {
 				e.GpsOffsetNs = &off
 			}
@@ -386,15 +389,15 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 		// evaluate Eq. 7-25 (BDS-SIS-ICD-B2a v1.0 §7.12.2) at the feed
 		// instant on the continuous BDT axis. BDT = GPST − 14 s exactly (both
 		// leap-free scales; BDT epoch 2006-01-01 is 1356 GPS weeks after the
-		// GPS epoch — the weekFor/towFor regression fix constants), so BDT seconds since
-		// the BDT epoch is (gps − 14) − 1356·604800; WNot is the full 13-bit
-		// BDT week (no truncation to disambiguate, unlike the GGTO's 6-bit
-		// WN0G). The reference (WNot, tot) makes dt exact across week
-		// boundaries — no half-week wrap involved (the regression fix deviation does
-		// not apply here).
-		gps := now.Unix() - gpsEpochUnix + gpsUTCOffset
-		bdt := float64(gps-14) - 1356*weekSeconds
-		dt := bdt - (float64(u.WNot)*weekSeconds + u.Tot)
+		// GPS epoch), so BDT seconds since the BDT epoch come from gnsstime's
+		// SystemSeconds — the same audited epoch constant weekFor/towFor now
+		// reduce through, not a third local (gps−14)−1356·604800
+		// fold. WNot is the full 13-bit BDT week (no truncation to
+		// disambiguate, unlike the GGTO's 6-bit WN0G). The reference
+		// (WNot, tot) makes dt exact across week boundaries — no half-week
+		// wrap involved (the regression fix deviation does not apply here).
+		bdt, _ := gnsstime.SystemSeconds(gnsstime.SysBeiDou, float64(now.Unix()), float64(gpsUTCOffset)) // SysBeiDou cannot fail
+		dt := bdt - (float64(u.WNot)*gnsstime.WeekSeconds + u.Tot)
 		// Leap-arm choice (§7.12.2 cases 1/3, mirroring B1I §5.2.4.18 and
 		// IS-GPS-200 §20.3.3.5.2.4): ΔtLS before the WNLSF/DN event, ΔtLSF
 		// after. The event instant is the END of day DN of week WNLSF — DN is
@@ -1102,24 +1105,18 @@ func sisaFor(kind uint8, idx int) (float64, bool) {
 }
 
 // weekFor returns the full (rollover-disambiguated) week number for the SV's time
-// system at now: GPS week for GPS/Galileo/QZSS, BDT week (GPS week − 1356) for
-// BeiDou. GLONASS has no week number.
+// system at now: GPS week for GPS/Galileo/QZSS (the regression fix serving convention —
+// see timeSysFor), BDT week (GPS week − 1356) for BeiDou. GLONASS has no week
+// number. reduced via gnsstime's single epoch table, so the regression fix
+// guarantee — the BDT week and towFor's BDT tow derive from the SAME shifted
+// seconds, never disagreeing across the 14 s window each week where GPS tow ∈
+// [0, 14) — now holds structurally: both go through SystemSeconds(SysBeiDou)
+// and the one audited epoch constant, instead of two hand-kept literals.
 func weekFor(g gnss.GNSSID, now time.Time) (int, bool) {
-	gps := now.Unix() - gpsEpochUnix + gpsUTCOffset
-	switch g {
-	case gnss.GLONASS:
+	if g == gnss.GLONASS {
 		return 0, false
-	case gnss.BeiDou:
-		// the BDT week must come from the same BDT-shifted seconds
-		// (GPST − 14 s, matching towFor's shift) as the tow, not from unshifted
-		// GPS seconds — otherwise, during the 14 s each week where GPS tow ∈
-		// [0, 14), the unshifted week has already rolled over while the shifted
-		// tow still reports the tail of the previous BDT week, and a consumer
-		// reconstructing absolute BDT time from (wn, tow) is a full week off.
-		return int((gps-14)/weekSeconds) - 1356, true // BDT epoch is 2006-01-01, 1356 weeks after GPS
-	default:
-		return int(gps / weekSeconds), true
 	}
+	return gnsstime.WeekAt(timeSysFor(g), float64(now.Unix()), float64(gpsUTCOffset))
 }
 
 // fullName renders a human label like "GPS-5" or "QZSS-3", with a signal suffix for
