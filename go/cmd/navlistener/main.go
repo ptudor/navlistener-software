@@ -597,7 +597,10 @@ func detectTick(live *state.Store, det *detect.Detector, writer *eventPipeline, 
 		}
 	}()
 	now := time.Now()
-	events := det.Tick(now, live.FeedSVs(now), live.FeedSBAS(now))
+	// the live-receiver count gates the per-SV silence classifier — from a
+	// sub-constellation-footprint fleet, "unseen for an hour" is orbital mechanics,
+	// not an outage.
+	events := det.Tick(now, live.FeedSVs(now), live.FeedSBAS(now), live.LiveReceivers(now))
 	// Station-scoped PNT-defense events (jamming/spoofing/RF, docs/DEFENSE-PNT.md)
 	// share the debounce state machine and event pipeline.
 	events = append(events, det.TickStations(now, live.FeedStationRF(now))...)

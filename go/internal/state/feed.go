@@ -577,6 +577,13 @@ func (s *Store) FeedGlobal(now time.Time) GlobalFeed {
 // operating point moves.
 const liveReceiverWindow = 300 * time.Second
 
+// LiveReceivers is the exported live-station count for the detector's
+// fleet-footprint gate (regression fix, detect.SilenceMinReceivers): the same number
+// FeedGlobal serves as total_live_receivers, so the events channel and the
+// global feed can never disagree about the fleet size a suppression decision
+// was based on.
+func (s *Store) LiveReceivers(now time.Time) int { return s.countLiveReceivers(now) }
+
 // countLiveReceivers counts distinct stations seen (via either a decoded nav
 // frame or RF telemetry) within liveReceiverWindow of now — the union of
 // s.caps and s.rf, since a station can report one, the other, or both.

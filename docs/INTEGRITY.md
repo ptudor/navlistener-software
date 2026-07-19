@@ -56,7 +56,7 @@ consumer align to it.
 | **Orbit disco** | `> 1.45 m` (`OrbitDiscoThreshold`) → warn | `> 10 m` (`OrbitDiscoSevereThreshold`) → crit | GPS+Galileo only in intsat today; §3 |
 | **Time disco (clock jump)** | `> 2.5 ns` (`TimeDiscoThreshold`) → warn | `> 10 ns` (`TimeDiscoSevereThreshold`) → crit | Galileo only in intsat today; `ns/3.335 ≈ m`; §3 |
 | **SISA / URA change** | crosses `3.0 m` (`SISAAlertThreshold`) | warn | accuracy degradation |
-| **Silent SV** | unseen `> 3600 s` (`SilentThreshold`) | warn (`observation_lost`) | GPS/Galileo (constellations always in view) |
+| **Silent SV** | unseen `> 3600 s` (`SilentThreshold`), classified only with `≥ 4` live receivers (`SilenceMinReceivers`) | warn (`observation_lost`) | **precondition : "always in view" is true of the constellation as seen by a globally distributed fleet, not of one station's sky** — from a sub-footprint fleet every MEO/IGSO SV sets once per orbital pass and the classifier manufactured a false warning pair per pass. Below the floor the classifier is suppressed (machines hold, regression fix); constellation-outage coverage there comes from `eph_aged`/`position_unknown`/`capability_signal_lost`. The floor is a necessary-not-sufficient proxy until the observer-geometry pass lands the real gate (propagated elevation > mask from ≥ 1 live station) |
 | **Observer offline** | station unseen `> 300 s` (`ObserverOfflineThreshold`) | warn→crit (`station_offline`) | operator-actionable; shorter than SV silence |
 | **Fresh-receiver window** | `≤ 60 s` (`FreshReceiverThreshold`) | — | a receiver's vote only counts if it saw the SV this recently |
 | **Debounce** | `60 s` (`DebounceDuration`) | — | provisional state must persist this long to confirm |
@@ -172,7 +172,7 @@ The baseline vocabulary and severities below are **verified against intsat's shi
 | `orbit_disco` | orbit-disco band change (§2) | 1, → 2 above 10 m |
 | `clock_jump` | time-disco band change | 1, → 2 above 10 ns |
 | `sisa_change` | SISA/URA crosses 3 m, or the broadcast index decodes to the "no accuracy prediction — use at own risk" sentinel (`new_value` `no_accuracy`, regression fix) | 1 |
-| `observation_lost` | SV silent > 3600 s | 1 |
+| `observation_lost` | SV silent > 3600 s — classified only while `≥ SilenceMinReceivers` stations are live (below the fleet-footprint floor, silence is orbital mechanics, not an outage; §2) | 1 |
 | `station_offline` | observer unseen > 300 s | 1–2 |
 | `position_unknown` | a monitored SV has no computable position | 1 |
 | `osnma_change` | Galileo OSNMA authentication on↔off | 0 |

@@ -41,6 +41,28 @@ const (
 	SilentThreshold          = 3600.0
 	ObserverOfflineThreshold = 300.0
 
+	// SilenceMinReceivers  is the fleet-footprint floor below which the
+	// per-SV silence classifier does not run at all. observation_lost's premise is
+	// "the constellation is always in view" (docs/INTEGRITY.md §2) — true of the
+	// constellation as seen by a globally distributed fleet, NOT of any single
+	// station's sky: from one station every MEO/IGSO SV legitimately sets below
+	// the horizon once per orbital pass, and with sv_ttl (2 h) > SilentThreshold
+	// (1 h) each pass confirmed a false observation_lost/recovery warning pair —
+	// dozens per day of orbital-mechanics noise that trains operators to ignore
+	// the events channel. Until per-station geometry lands (the observer-geometry
+	// pass: propagated elevation > mask from ≥1 live station — the real gate),
+	// the live-receiver count is the only footprint signal available, so silence
+	// classification is suppressed entirely below this floor. 4 is a conservative
+	// NECESSARY-not-sufficient proxy: fewer than 4 stations cannot plausibly hold
+	// a MEO constellation in continuous view however they are placed, while 4+
+	// only *may* (they could all share one footprint) — operators with a
+	// concentrated 4+ fleet should expect residual rise/set noise until the
+	// geometry gate replaces this. Below the floor, constellation-outage coverage
+	// comes from the visibility-independent detectors instead: eph_aged,
+	// position_unknown, and capability_signal_lost (a demonstrated signal gone
+	// dark station-wide). Documented as the standard in docs/INTEGRITY.md §2.
+	SilenceMinReceivers = 4
+
 	// FreshReceiver bounds how recently a receiver must have seen an SV for its
 	// vote to count (docs/INTEGRITY.md §2/§6).
 	FreshReceiverThreshold = 60.0

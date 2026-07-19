@@ -85,13 +85,15 @@ func (d *Detector) observe(subject, metric, newState string, now time.Time) (cha
 // Tick classifies the current SV and SBAS metrics, advances every state machine, and
 // returns the transitions confirmed at this instant. Events are returned sorted for
 // deterministic output. now is the wall clock; the daemon supplies the live read
-// model (the same one the feeds serve).
-func (d *Detector) Tick(now time.Time, svs map[string]state.FeedSV, sbas map[string]state.SBASEntry) []Event {
+// model (the same one the feeds serve). liveReceivers is the current live-station
+// count (state.Store.LiveReceivers) — the fleet-footprint signal the silence
+// classifier is gated on (regression fix, SilenceMinReceivers).
+func (d *Detector) Tick(now time.Time, svs map[string]state.FeedSV, sbas map[string]state.SBASEntry, liveReceivers int) []Event {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.run(now, func(emit emitFunc) {
 		for name, sv := range svs {
-			d.detectSV(name, sv, now, emit)
+			d.detectSV(name, sv, now, liveReceivers, emit)
 		}
 		for prn, s := range sbas {
 			d.detectSBAS(prn, s, emit)
@@ -156,7 +158,7 @@ func (d *Detector) Reset() {
 type emitFunc func(subject, metric, newState string, ev func(old string) Event)
 
 // detectSV runs every SV-level classifier for one satellite×signal.
-func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, emit emitFunc) {
+func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, liveReceivers int, emit emitFunc) {
 	// Health transition. QZSS/NavIC get their own event types (docs/INTEGRITY.md §5).
 	// skip the classifier while health is unknown (health_code 0) — 0 is not a
 	// broadcast value (regression fix serves it until an SV's health bits decode, or for iono-only
@@ -371,16 +373,25 @@ func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, emit em
 		})
 	}
 
-	// Silence (observation lost).
-	silent := float64(sv.LastSeenS) > SilentThreshold
-	emit(name, "silence", boolState(silent, "silent", "seen"), func(old string) Event {
-		return Event{
-			Type: "observation_lost", OldValue: old, NewValue: boolState(silent, "silent", "seen"),
-			Severity: SevWarning,
-			Message:  fmt.Sprintf("%s unseen %ds", sv.Name, sv.LastSeenS),
-			Params:   map[string]any{"sv": sv.Name, "last_seen_s": sv.LastSeenS},
-		}
-	})
+	// Silence (observation lost). classified only when the fleet is at
+	// least plausibly constellation-footprint-sized (SilenceMinReceivers) — the
+	// event's "always in view" premise holds for a distributed fleet, not for one
+	// station's sky, where every non-GEO SV goes silent once per orbital pass and
+	// the classifier manufactured a confirmed false warning pair per pass. Below
+	// the floor the classifier is skipped entirely (the regression fix hold-state rule:
+	// machines keep their last confirmed state, and nothing seeds), so a fleet
+	// dipping below the floor mid-silence neither fires nor falsely recovers.
+	if liveReceivers >= SilenceMinReceivers {
+		silent := float64(sv.LastSeenS) > SilentThreshold
+		emit(name, "silence", boolState(silent, "silent", "seen"), func(old string) Event {
+			return Event{
+				Type: "observation_lost", OldValue: old, NewValue: boolState(silent, "silent", "seen"),
+				Severity: SevWarning,
+				Message:  fmt.Sprintf("%s unseen %ds", sv.Name, sv.LastSeenS),
+				Params:   map[string]any{"sv": sv.Name, "last_seen_s": sv.LastSeenS},
+			}
+		})
+	}
 
 	// A monitored SV with no computable position.
 	unknown := sv.XM == nil

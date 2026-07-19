@@ -51,7 +51,7 @@ func TestFeedSVEphemerisLessFieldsOmitted(t *testing.T) {
 	}
 
 	det := detect.New(0)
-	events := det.Tick(now, svs, nil)
+	events := det.Tick(now, svs, nil, 1)
 	for _, e := range events {
 		if e.Type == "eph_aged" {
 			t.Errorf("detector emitted eph_aged for an ephemeris-less SV: %+v", e)

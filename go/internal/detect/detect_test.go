@@ -31,7 +31,7 @@ func gps(name string, svid, health int) state.FeedSV {
 func TestSeedNoEvent(t *testing.T) {
 	d := New(time.Minute)
 	now := time.Unix(1_000_000, 0)
-	evs := d.Tick(now, map[string]state.FeedSV{"G05@0": gps("G05", 5, 1)}, nil)
+	evs := d.Tick(now, map[string]state.FeedSV{"G05@0": gps("G05", 5, 1)}, nil, 1)
 	if len(evs) != 0 {
 		t.Fatalf("first tick emitted %d events, want 0 (seed only)", len(evs))
 	}
@@ -47,18 +47,18 @@ func TestHealthUnknownNoPhantomEvent(t *testing.T) {
 
 	// Unknown → decoded OK past debounce: no phantom health_change 0→1.
 	unknown := map[string]state.FeedSV{"G05@0": gps("G05", 5, 0)}
-	d.Tick(t0, unknown, nil) // health unknown: not classified, nothing seeded
+	d.Tick(t0, unknown, nil, 1) // health unknown: not classified, nothing seeded
 	ok := map[string]state.FeedSV{"G05@0": gps("G05", 5, 1)}
-	d.Tick(t0.Add(10*time.Second), ok, nil) // seeds OK silently (first decoded health)
-	if evs := d.Tick(t0.Add(120*time.Second), ok, nil); len(evs) != 0 {
+	d.Tick(t0.Add(10*time.Second), ok, nil, 1) // seeds OK silently (first decoded health)
+	if evs := d.Tick(t0.Add(120*time.Second), ok, nil, 1); len(evs) != 0 {
 		t.Fatalf("unknown→OK fired %d events, want 0", len(evs))
 	}
 
 	// OK → unknown (RAWX-only) → OK, each held past debounce: no spurious 1→0 or 0→1.
-	if evs := d.Tick(t0.Add(200*time.Second), unknown, nil); len(evs) != 0 {
+	if evs := d.Tick(t0.Add(200*time.Second), unknown, nil, 1); len(evs) != 0 {
 		t.Fatalf("OK→unknown fired %d events, want 0", len(evs))
 	}
-	if evs := d.Tick(t0.Add(400*time.Second), ok, nil); len(evs) != 0 {
+	if evs := d.Tick(t0.Add(400*time.Second), ok, nil, 1); len(evs) != 0 {
 		t.Fatalf("unknown→OK reacquire fired %d events, want 0", len(evs))
 	}
 }
@@ -69,22 +69,22 @@ func TestHealthDebounce(t *testing.T) {
 	d := New(time.Minute)
 	t0 := time.Unix(1_000_000, 0)
 	svs := map[string]state.FeedSV{"G05@0": gps("G05", 5, 1)} // healthy
-	d.Tick(t0, svs, nil)                                      // seed OK
+	d.Tick(t0, svs, nil, 1)                                      // seed OK
 
 	// Unhealthy: this tick starts the provisional window (no event yet).
 	bad := map[string]state.FeedSV{"G05@0": gps("G05", 5, 2)}
-	if evs := d.Tick(t0.Add(30*time.Second), bad, nil); len(evs) != 0 {
+	if evs := d.Tick(t0.Add(30*time.Second), bad, nil, 1); len(evs) != 0 {
 		t.Fatalf("emitted %d events when provisional started, want 0", len(evs))
 	}
 	// Still inside the window (< 60 s since the provisional began): no event.
-	if evs := d.Tick(t0.Add(60*time.Second), bad, nil); len(evs) != 0 {
+	if evs := d.Tick(t0.Add(60*time.Second), bad, nil, 1); len(evs) != 0 {
 		t.Fatalf("emitted %d events before debounce elapsed, want 0", len(evs))
 	}
 	// Past the window (≥ 60 s since the provisional began): confirmed transition.
 	// code 2 is the ICD's "marginal" class (issue level 1), so the event is
 	// a WARNING — the old unconditional critical manufactured alerts for routine
 	// component codes.
-	evs := d.Tick(t0.Add(95*time.Second), bad, nil)
+	evs := d.Tick(t0.Add(95*time.Second), bad, nil, 1)
 	if len(evs) != 1 {
 		t.Fatalf("got %d events, want 1", len(evs))
 	}
@@ -98,8 +98,8 @@ func TestHealthDebounce(t *testing.T) {
 
 	// A do-not-use transition (code 3, issue level 2) stays CRITICAL.
 	worse := map[string]state.FeedSV{"G05@0": gps("G05", 5, 3)}
-	d.Tick(t0.Add(120*time.Second), worse, nil)
-	evs = d.Tick(t0.Add(200*time.Second), worse, nil)
+	d.Tick(t0.Add(120*time.Second), worse, nil, 1)
+	evs = d.Tick(t0.Add(200*time.Second), worse, nil, 1)
 	if len(evs) != 1 || evs[0].Type != "health_change" || evs[0].Severity != SevCritical {
 		t.Fatalf("do-not-use transition = %+v, want one health_change/2", evs)
 	}
@@ -112,10 +112,10 @@ func TestRevertBeforeConfirm(t *testing.T) {
 	t0 := time.Unix(2_000_000, 0)
 	ok := map[string]state.FeedSV{"G05@0": gps("G05", 5, 1)}
 	bad := map[string]state.FeedSV{"G05@0": gps("G05", 5, 2)}
-	d.Tick(t0, ok, nil)
-	d.Tick(t0.Add(20*time.Second), bad, nil) // provisional unhealthy
-	d.Tick(t0.Add(40*time.Second), ok, nil)  // reverts before 60 s
-	if evs := d.Tick(t0.Add(90*time.Second), ok, nil); len(evs) != 0 {
+	d.Tick(t0, ok, nil, 1)
+	d.Tick(t0.Add(20*time.Second), bad, nil, 1) // provisional unhealthy
+	d.Tick(t0.Add(40*time.Second), ok, nil, 1)  // reverts before 60 s
+	if evs := d.Tick(t0.Add(90*time.Second), ok, nil, 1); len(evs) != 0 {
 		t.Fatalf("flap emitted %d events, want 0", len(evs))
 	}
 }
@@ -126,12 +126,12 @@ func TestOrbitDiscoBands(t *testing.T) {
 	t0 := time.Unix(3_000_000, 0)
 	sv := gps("G05", 5, 1)
 	sv.OrbitDiscoM = ptrF(0.5) // ok
-	d.Tick(t0, map[string]state.FeedSV{"G05@0": sv}, nil)
+	d.Tick(t0, map[string]state.FeedSV{"G05@0": sv}, nil, 1)
 
 	sv.OrbitDiscoM = ptrF(12.0) // crit
 	m := map[string]state.FeedSV{"G05@0": sv}
-	d.Tick(t0.Add(10*time.Second), m, nil)
-	evs := d.Tick(t0.Add(80*time.Second), m, nil)
+	d.Tick(t0.Add(10*time.Second), m, nil, 1)
+	evs := d.Tick(t0.Add(80*time.Second), m, nil, 1)
 	var found *Event
 	for i := range evs {
 		if evs[i].Type == "orbit_disco" {
@@ -163,7 +163,7 @@ func TestSISAHysteresisDampensQuantizedDwell(t *testing.T) {
 
 	tick := func(sisaM float64, at time.Time) []Event {
 		sv.SISAM = ptrF(sisaM)
-		return d.Tick(at, map[string]state.FeedSV{"G05@0": sv}, nil)
+		return d.Tick(at, map[string]state.FeedSV{"G05@0": sv}, nil, 1)
 	}
 
 	// Seed ok at the lower quantized URA step (N=1, 2.8284 m).
@@ -211,13 +211,13 @@ func TestWNMismatchTransition(t *testing.T) {
 	f := false
 	sv := gps("G05", 5, 1)
 	sv.WnMismatch = &f
-	d.Tick(t0, map[string]state.FeedSV{"G05@0": sv}, nil) // seeds "ok"
+	d.Tick(t0, map[string]state.FeedSV{"G05@0": sv}, nil, 1) // seeds "ok"
 
 	tr := true
 	sv.WnMismatch = &tr
 	bad := map[string]state.FeedSV{"G05@0": sv}
-	d.Tick(t0.Add(10*time.Second), bad, nil)
-	evs := d.Tick(t0.Add(80*time.Second), bad, nil)
+	d.Tick(t0.Add(10*time.Second), bad, nil, 1)
+	evs := d.Tick(t0.Add(80*time.Second), bad, nil, 1)
 	e, ok := find(evs, "wn_mismatch")
 	if !ok || e.NewValue != "mismatch" || e.Severity != SevCritical {
 		t.Fatalf("wn_mismatch = %+v (ok=%v), want confirmed mismatch/2", e, ok)
@@ -234,13 +234,13 @@ func TestURAAlertTransition(t *testing.T) {
 	f := false
 	sv := gps("G05", 5, 1)
 	sv.Alert = &f
-	d.Tick(t0, map[string]state.FeedSV{"G05@0": sv}, nil) // seeds "clear"
+	d.Tick(t0, map[string]state.FeedSV{"G05@0": sv}, nil, 1) // seeds "clear"
 
 	tr := true
 	sv.Alert = &tr
 	raised := map[string]state.FeedSV{"G05@0": sv}
-	d.Tick(t0.Add(10*time.Second), raised, nil)
-	evs := d.Tick(t0.Add(80*time.Second), raised, nil)
+	d.Tick(t0.Add(10*time.Second), raised, nil, 1)
+	evs := d.Tick(t0.Add(80*time.Second), raised, nil, 1)
 	e, ok := find(evs, "ura_alert")
 	if !ok || e.NewValue != "raised" || e.Severity != SevWarning {
 		t.Fatalf("ura_alert = %+v (ok=%v), want confirmed raised/1", e, ok)
@@ -249,8 +249,8 @@ func TestURAAlertTransition(t *testing.T) {
 	// An SV whose alert flag was never decoded (nil) is not classified.
 	d2 := New(time.Minute)
 	blank := gps("G07", 7, 1)
-	d2.Tick(t0, map[string]state.FeedSV{"G07@0": blank}, nil)
-	if evs := d2.Tick(t0.Add(120*time.Second), map[string]state.FeedSV{"G07@0": blank}, nil); len(evs) != 0 {
+	d2.Tick(t0, map[string]state.FeedSV{"G07@0": blank}, nil, 1)
+	if evs := d2.Tick(t0.Add(120*time.Second), map[string]state.FeedSV{"G07@0": blank}, nil, 1); len(evs) != 0 {
 		if _, ok := find(evs, "ura_alert"); ok {
 			t.Fatal("undecoded alert flag classified a state")
 		}
@@ -268,13 +268,13 @@ func TestOsnmaChangeClassifies(t *testing.T) {
 	sv := gps("E05", 5, 1)
 	sv.GnssID = 2
 	sv.Osnma = &on
-	d.Tick(t0, map[string]state.FeedSV{"E05@0": sv}, nil) // seed
+	d.Tick(t0, map[string]state.FeedSV{"E05@0": sv}, nil, 1) // seed
 
 	off := false
 	sv.Osnma = &off
 	m := map[string]state.FeedSV{"E05@0": sv}
-	d.Tick(t0.Add(10*time.Second), m, nil)
-	evs := d.Tick(t0.Add(80*time.Second), m, nil)
+	d.Tick(t0.Add(10*time.Second), m, nil, 1)
+	evs := d.Tick(t0.Add(80*time.Second), m, nil, 1)
 	e, ok := find(evs, "osnma_change")
 	if !ok || e.NewValue != "off" || e.OldValue != "on" || e.Severity != SevInfo {
 		t.Fatalf("osnma_change = %+v (ok=%v), want confirmed on→off at info severity", e, ok)
@@ -284,8 +284,8 @@ func TestOsnmaChangeClassifies(t *testing.T) {
 	d2 := New(time.Minute)
 	blank := gps("E07", 7, 1)
 	blank.GnssID = 2
-	d2.Tick(t0, map[string]state.FeedSV{"E07@0": blank}, nil)
-	if evs := d2.Tick(t0.Add(120*time.Second), map[string]state.FeedSV{"E07@0": blank}, nil); len(evs) != 0 {
+	d2.Tick(t0, map[string]state.FeedSV{"E07@0": blank}, nil, 1)
+	if evs := d2.Tick(t0.Add(120*time.Second), map[string]state.FeedSV{"E07@0": blank}, nil, 1); len(evs) != 0 {
 		if _, ok := find(evs, "osnma_change"); ok {
 			t.Fatal("OSNMA-less SV classified an osnma state")
 		}
@@ -303,13 +303,13 @@ func TestLeapMismatchClassifies(t *testing.T) {
 	sv := gps("C24", 24, 1)
 	sv.GnssID = 3
 	sv.LeapMismatch, sv.DtLS = &okv, &dtLS
-	d.Tick(t0, map[string]state.FeedSV{"C24@8": sv}, nil) // seed
+	d.Tick(t0, map[string]state.FeedSV{"C24@8": sv}, nil, 1) // seed
 
 	bad := true
 	sv.LeapMismatch = &bad
 	m := map[string]state.FeedSV{"C24@8": sv}
-	d.Tick(t0.Add(10*time.Second), m, nil)
-	evs := d.Tick(t0.Add(80*time.Second), m, nil)
+	d.Tick(t0.Add(10*time.Second), m, nil, 1)
+	evs := d.Tick(t0.Add(80*time.Second), m, nil, 1)
 	e, ok := find(evs, "leap_mismatch")
 	if !ok || e.NewValue != "mismatch" || e.OldValue != "ok" || e.Severity != SevWarning {
 		t.Fatalf("leap_mismatch = %+v (ok=%v), want confirmed ok→mismatch at warning severity", e, ok)
@@ -319,8 +319,8 @@ func TestLeapMismatchClassifies(t *testing.T) {
 	d2 := New(time.Minute)
 	blank := gps("C25", 25, 1)
 	blank.GnssID = 3
-	d2.Tick(t0, map[string]state.FeedSV{"C25@8": blank}, nil)
-	if evs := d2.Tick(t0.Add(120*time.Second), map[string]state.FeedSV{"C25@8": blank}, nil); len(evs) != 0 {
+	d2.Tick(t0, map[string]state.FeedSV{"C25@8": blank}, nil, 1)
+	if evs := d2.Tick(t0.Add(120*time.Second), map[string]state.FeedSV{"C25@8": blank}, nil, 1); len(evs) != 0 {
 		if _, ok := find(evs, "leap_mismatch"); ok {
 			t.Fatal("UTC-set-less SV classified a leap state")
 		}
@@ -337,15 +337,15 @@ func TestNoAccuracySentinelClassifies(t *testing.T) {
 	t0 := time.Unix(6_000_000, 0)
 	sv := gps("G05", 5, 1)
 	sv.SISAM = ptrF(2.0) // normal accuracy: seeds "ok"
-	d.Tick(t0, map[string]state.FeedSV{"G05@0": sv}, nil)
+	d.Tick(t0, map[string]state.FeedSV{"G05@0": sv}, nil, 1)
 
 	// URA flips to index 15: sisa_m vanishes, acc_index carries the sentinel.
 	sv.SISAM = nil
 	idx := 15
 	sv.AccIndex = &idx
 	bad := map[string]state.FeedSV{"G05@0": sv}
-	d.Tick(t0.Add(10*time.Second), bad, nil)
-	evs := d.Tick(t0.Add(80*time.Second), bad, nil)
+	d.Tick(t0.Add(10*time.Second), bad, nil, 1)
+	evs := d.Tick(t0.Add(80*time.Second), bad, nil, 1)
 	e, ok := find(evs, "sisa_change")
 	if !ok || e.NewValue != "no_accuracy" || e.Severity != SevWarning {
 		t.Fatalf("sisa_change = %+v (ok=%v), want confirmed no_accuracy/1", e, ok)
@@ -355,8 +355,8 @@ func TestNoAccuracySentinelClassifies(t *testing.T) {
 	// absence stays "unknown", only the sentinel is a state.
 	d2 := New(time.Minute)
 	blank := gps("G07", 7, 1)
-	d2.Tick(t0, map[string]state.FeedSV{"G07@0": blank}, nil)
-	if evs := d2.Tick(t0.Add(120*time.Second), map[string]state.FeedSV{"G07@0": blank}, nil); len(evs) != 0 {
+	d2.Tick(t0, map[string]state.FeedSV{"G07@0": blank}, nil, 1)
+	if evs := d2.Tick(t0.Add(120*time.Second), map[string]state.FeedSV{"G07@0": blank}, nil, 1); len(evs) != 0 {
 		if _, ok := find(evs, "sisa_change"); ok {
 			t.Fatal("accuracy-less SV classified a sisa state")
 		}
@@ -374,13 +374,13 @@ func TestBdsIntegrityFlagClassifies(t *testing.T) {
 	sv := gps("C27", 27, 1)
 	sv.GnssID, sv.SigID = 3, 8
 	sv.Dif, sv.Sif, sv.Aif, sv.Sismai = &f, &f, &f, &sm
-	d.Tick(t0, map[string]state.FeedSV{"C27@8": sv}, nil) // seeds "ok"
+	d.Tick(t0, map[string]state.FeedSV{"C27@8": sv}, nil, 1) // seeds "ok"
 
 	tr := true
 	sv.Dif = &tr
 	m := map[string]state.FeedSV{"C27@8": sv}
-	d.Tick(t0.Add(10*time.Second), m, nil)
-	evs := d.Tick(t0.Add(80*time.Second), m, nil)
+	d.Tick(t0.Add(10*time.Second), m, nil, 1)
+	evs := d.Tick(t0.Add(80*time.Second), m, nil, 1)
 	e, ok := find(evs, "bds_integrity_flag")
 	if !ok || e.NewValue != "dif" || e.OldValue != "ok" || e.Severity != SevWarning {
 		t.Fatalf("bds_integrity_flag = %+v (ok=%v), want confirmed ok→dif at warning severity", e, ok)
@@ -389,8 +389,8 @@ func TestBdsIntegrityFlagClassifies(t *testing.T) {
 	// Clear again: back to ok at info severity.
 	sv.Dif = &f
 	m = map[string]state.FeedSV{"C27@8": sv}
-	d.Tick(t0.Add(200*time.Second), m, nil)
-	evs = d.Tick(t0.Add(270*time.Second), m, nil)
+	d.Tick(t0.Add(200*time.Second), m, nil, 1)
+	evs = d.Tick(t0.Add(270*time.Second), m, nil, 1)
 	if e, ok := find(evs, "bds_integrity_flag"); !ok || e.NewValue != "ok" || e.Severity != SevInfo {
 		t.Fatalf("clear transition = %+v (ok=%v), want dif→ok at info severity", e, ok)
 	}
@@ -399,8 +399,8 @@ func TestBdsIntegrityFlagClassifies(t *testing.T) {
 	d2 := New(time.Minute)
 	blank := gps("C28", 28, 1)
 	blank.GnssID, blank.SigID = 3, 8
-	d2.Tick(t0, map[string]state.FeedSV{"C28@8": blank}, nil)
-	if evs := d2.Tick(t0.Add(120*time.Second), map[string]state.FeedSV{"C28@8": blank}, nil); len(evs) != 0 {
+	d2.Tick(t0, map[string]state.FeedSV{"C28@8": blank}, nil, 1)
+	if evs := d2.Tick(t0.Add(120*time.Second), map[string]state.FeedSV{"C28@8": blank}, nil, 1); len(evs) != 0 {
 		if _, ok := find(evs, "bds_integrity_flag"); ok {
 			t.Fatal("flag-less SV classified a bds_integrity state")
 		}
@@ -419,10 +419,10 @@ func TestRawAccIndexChangeClassifies(t *testing.T) {
 	sv := gps("C26", 26, 1)
 	sv.GnssID, sv.SigID = 3, 8
 	sv.AccIndex, sv.AccIndexRawOnly = &idx, true
-	d.Tick(t0, map[string]state.FeedSV{"C26@8": sv}, nil) // seed
+	d.Tick(t0, map[string]state.FeedSV{"C26@8": sv}, nil, 1) // seed
 
 	// Unchanged index past debounce: no event.
-	if evs := d.Tick(t0.Add(120*time.Second), map[string]state.FeedSV{"C26@8": sv}, nil); len(evs) != 0 {
+	if evs := d.Tick(t0.Add(120*time.Second), map[string]state.FeedSV{"C26@8": sv}, nil, 1); len(evs) != 0 {
 		if _, ok := find(evs, "sisa_change"); ok {
 			t.Fatal("unchanged raw index fired a sisa_change")
 		}
@@ -431,8 +431,8 @@ func TestRawAccIndexChangeClassifies(t *testing.T) {
 	idx2 := 36202
 	sv.AccIndex = &idx2
 	m := map[string]state.FeedSV{"C26@8": sv}
-	d.Tick(t0.Add(200*time.Second), m, nil)
-	evs := d.Tick(t0.Add(270*time.Second), m, nil)
+	d.Tick(t0.Add(200*time.Second), m, nil, 1)
+	evs := d.Tick(t0.Add(270*time.Second), m, nil, 1)
 	e, ok := find(evs, "sisa_change")
 	if !ok || e.NewValue != "raw_36202" || e.OldValue != "raw_1386" || e.Severity != SevInfo {
 		t.Fatalf("sisa_change = %+v (ok=%v), want confirmed raw_1386→raw_36202 at info severity", e, ok)
@@ -445,13 +445,109 @@ func TestQZSSHealthType(t *testing.T) {
 	d := New(time.Minute)
 	t0 := time.Unix(4_000_000, 0)
 	j := state.FeedSV{Name: "J03", GnssID: 5, SvID: 3, HealthCode: 1, XM: ptrF(1), YM: ptrF(1), ZM: ptrF(1)}
-	d.Tick(t0, map[string]state.FeedSV{"J03@0": j}, nil)
+	d.Tick(t0, map[string]state.FeedSV{"J03@0": j}, nil, 1)
 	j.HealthCode, j.HealthIssueLevel = 3, 2 // do-not-use
 	bad := map[string]state.FeedSV{"J03@0": j}
-	d.Tick(t0.Add(10*time.Second), bad, nil)
-	evs := d.Tick(t0.Add(80*time.Second), bad, nil)
+	d.Tick(t0.Add(10*time.Second), bad, nil, 1)
+	evs := d.Tick(t0.Add(80*time.Second), bad, nil, 1)
 	if len(evs) != 1 || evs[0].Type != "qzss_health" || evs[0].Severity != SevCritical {
 		t.Fatalf("got %+v, want one qzss_health/2", evs)
+	}
+}
+
+// TestSilenceSuppressedBelowFleetFloor guards with fewer than
+// SilenceMinReceivers live stations, the per-SV silence classifier must not run
+// at all — an SV setting below one station's horizon (LastSeenS past
+// SilentThreshold, entry still inside sv_ttl) previously confirmed a false
+// observation_lost/recovery warning pair once per orbital pass.
+func TestSilenceSuppressedBelowFleetFloor(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(6_000_000, 0)
+	fleet := SilenceMinReceivers - 1
+
+	seen := gps("G05", 5, 1)
+	d.Tick(t0, map[string]state.FeedSV{"G05@0": seen}, nil, fleet)
+
+	// The SV sets: unseen for over an hour, held there past the debounce.
+	silent := gps("G05", 5, 1)
+	silent.LastSeenS = int(SilentThreshold) + 100
+	m := map[string]state.FeedSV{"G05@0": silent}
+	d.Tick(t0.Add(10*time.Second), m, nil, fleet)
+	for _, e := range d.Tick(t0.Add(120*time.Second), m, nil, fleet) {
+		if e.Type == "observation_lost" {
+			t.Fatalf("observation_lost fired with %d live receivers (floor %d): %+v",
+				fleet, SilenceMinReceivers, e)
+		}
+	}
+	// Reacquisition must likewise fire no recovery.
+	d.Tick(t0.Add(200*time.Second), map[string]state.FeedSV{"G05@0": seen}, nil, fleet)
+	for _, e := range d.Tick(t0.Add(400*time.Second), map[string]state.FeedSV{"G05@0": seen}, nil, fleet) {
+		if e.Type == "observation_lost" {
+			t.Fatalf("observation_lost recovery fired below the fleet floor: %+v", e)
+		}
+	}
+}
+
+// TestSilenceClassifiesAtFleetFloor confirms the silence classifier still works —
+// seed, confirm, recover — once the fleet is at the SilenceMinReceivers floor.
+func TestSilenceClassifiesAtFleetFloor(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(6_500_000, 0)
+	fleet := SilenceMinReceivers
+
+	seen := gps("G05", 5, 1)
+	d.Tick(t0, map[string]state.FeedSV{"G05@0": seen}, nil, fleet) // seeds "seen"
+
+	silent := gps("G05", 5, 1)
+	silent.LastSeenS = int(SilentThreshold) + 100
+	m := map[string]state.FeedSV{"G05@0": silent}
+	d.Tick(t0.Add(10*time.Second), m, nil, fleet)
+	evs := d.Tick(t0.Add(80*time.Second), m, nil, fleet)
+	var found *Event
+	for i := range evs {
+		if evs[i].Type == "observation_lost" {
+			found = &evs[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("no observation_lost at fleet floor %d: %+v", fleet, evs)
+	}
+	if found.NewValue != "silent" || found.Severity != SevWarning {
+		t.Errorf("observation_lost = %s/%d, want silent/1", found.NewValue, found.Severity)
+	}
+}
+
+// TestSilenceMachineHoldsAcrossFleetDip confirms the regression fix hold-state rule for the
+// fleet gate: a machine confirmed "silent" at full fleet neither re-fires nor falsely
+// recovers while the fleet is below the floor, and resumes classification after.
+func TestSilenceMachineHoldsAcrossFleetDip(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(7_000_000, 0)
+	full := SilenceMinReceivers
+
+	seen := gps("G05", 5, 1)
+	silent := gps("G05", 5, 1)
+	silent.LastSeenS = int(SilentThreshold) + 100
+
+	d.Tick(t0, map[string]state.FeedSV{"G05@0": seen}, nil, full) // seed "seen"
+	d.Tick(t0.Add(10*time.Second), map[string]state.FeedSV{"G05@0": silent}, nil, full)
+	if evs := d.Tick(t0.Add(80*time.Second), map[string]state.FeedSV{"G05@0": silent}, nil, full); len(evs) != 1 || evs[0].Type != "observation_lost" {
+		t.Fatalf("expected the confirmed observation_lost, got %+v", evs)
+	}
+
+	// Fleet dips below the floor while the SV is back in view: no false recovery.
+	if evs := d.Tick(t0.Add(100*time.Second), map[string]state.FeedSV{"G05@0": seen}, nil, full-1); len(evs) != 0 {
+		t.Fatalf("fleet dip emitted %+v, want none (machine must hold)", evs)
+	}
+	if evs := d.Tick(t0.Add(200*time.Second), map[string]state.FeedSV{"G05@0": seen}, nil, full-1); len(evs) != 0 {
+		t.Fatalf("fleet dip emitted %+v, want none (machine must hold)", evs)
+	}
+
+	// Fleet recovers: the seen→ recovery classifies and confirms normally.
+	d.Tick(t0.Add(220*time.Second), map[string]state.FeedSV{"G05@0": seen}, nil, full)
+	evs := d.Tick(t0.Add(300*time.Second), map[string]state.FeedSV{"G05@0": seen}, nil, full)
+	if len(evs) != 1 || evs[0].Type != "observation_lost" || evs[0].NewValue != "seen" {
+		t.Fatalf("expected the seen recovery after fleet restore, got %+v", evs)
 	}
 }
 
@@ -460,10 +556,10 @@ func TestSBASDoNotUse(t *testing.T) {
 	d := New(time.Minute)
 	t0 := time.Unix(5_000_000, 0)
 	ok := map[string]state.SBASEntry{"131": {Provider: "WAAS", HealthCode: 1}}
-	d.Tick(t0, nil, ok)
+	d.Tick(t0, nil, ok, 1)
 	bad := map[string]state.SBASEntry{"131": {Provider: "WAAS", HealthCode: 3}}
-	d.Tick(t0.Add(10*time.Second), nil, bad)
-	evs := d.Tick(t0.Add(80*time.Second), nil, bad)
+	d.Tick(t0.Add(10*time.Second), nil, bad, 1)
+	evs := d.Tick(t0.Add(80*time.Second), nil, bad, 1)
 	if len(evs) != 1 || evs[0].Type != "sbas_health" || evs[0].Severity != SevCritical {
 		t.Fatalf("got %+v, want one sbas_health/2", evs)
 	}
