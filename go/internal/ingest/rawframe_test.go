@@ -54,6 +54,10 @@ func TestNavTypeMatchesConstellationsTable(t *testing.T) {
 		{gnss.GLONASS, 3, 0, "GloUnknown"},
 		{gnss.NavIC, 0, 0, "NavicPlannedUnsupported"},
 		{gnss.SBAS, 0, 0x70, "SbasL1"},
+		// 0x71 SbasL5 (DFMC) is doc-reserved, not shipped — a non-L1
+		// SBAS sigId must map to 0, never be mislabeled SbasL1 in the historian.
+		{gnss.SBAS, 1, 0, "SbasL5ReservedUnsupported"},
+		{gnss.SBAS, 3, 0, "SbasUnknown"},
 	}
 	for _, c := range cases {
 		t.Run(fmt.Sprintf("%s/sig%d/%s", c.gnssID, c.sigID, c.name), func(t *testing.T) {

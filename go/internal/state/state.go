@@ -514,7 +514,11 @@ func (s *Store) shardFor(k Key) *shard {
 // metrics, not crashes.
 func (s *Store) Apply(f *ingest.RawFrame) {
 	if f.RF != nil {
-		s.applyRF(f)
+		s.applyRF(f) // station-scoped telemetry: carries no svId to validate
+		return
+	}
+	if !svIDInRange(f.GnssID, f.SvID) {
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "svid_range").Inc()
 		return
 	}
 	if f.Obs != nil {
@@ -589,6 +593,39 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "navic_deferred").Inc()
 	default:
 		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "unsupported").Inc()
+	}
+}
+
+// svIDInRange reports whether the svId carried OUTSIDE a nav message — in the
+// SFRBX header / GNF1 record, unauthenticated by the message's own CRC/parity —
+// is inside the constellation's defined satellite-ID envelope. The
+// SBAS case is the load-bearing one: DecodeSBASL1 validates only the message's
+// internal consistency, so before this gate a frame with an intact payload but
+// a corrupted/mis-set svId (receiver firmware bug, buggy feeder, replayed
+// garbage) fabricated a fully-served sbas-feed row keyed on the bogus PRN.
+// Envelopes, each from a vendored primary text:
+//   - SBAS: PRN 120–158 (EGNOS-SDD-OS §5: "Track SBAS satellites (PRNs from
+//     120 to 158)"; u-blox delivers the PRN directly as svId for gnssId 1).
+//   - QZSS: svId 1–10 — the u-blox svId is PRN−192 (documented at the LNAV
+//     decoder, gnss/frame/gps_lnav.go) and the QZSS PRN allocation is 193–202
+//     (QZSS-PNT-006 Table 4.2.2-5 and passim: PRN "Effective Range 193-202").
+//   - NavIC: svId 1–14 per the IRNSS SPS ICD's code-phase assignment
+//     (NAVIC-SPS-L5S §4.1 Table 7: PRN IDs 1–14).
+//
+// Other constellations pass unchecked here — their envelopes are the sibling
+// passes' scope (REVIEW-FABLE5_AUGMENTATION regression fix covers augmentation only).
+// Rejects are counted under the svid_range decode-error label so a receiver
+// that starts emitting out-of-envelope svIds is visible in /metrics.
+func svIDInRange(g gnss.GNSSID, sv int) bool {
+	switch g {
+	case gnss.SBAS:
+		return sv >= 120 && sv <= 158
+	case gnss.QZSS:
+		return sv >= 1 && sv <= 10
+	case gnss.NavIC:
+		return sv >= 1 && sv <= 14
+	default:
+		return true
 	}
 }
 

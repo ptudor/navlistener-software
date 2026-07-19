@@ -120,6 +120,64 @@ func TestSBASDoNotUseLatchesAcrossInterleavedMessages(t *testing.T) {
 	}
 }
 
+// TestApplyRejectsOutOfEnvelopeSvID guards the svId arrives in the
+// SFRBX/GNF1 header, OUTSIDE the nav message the CRC authenticates, so a
+// corrupted/mis-set svId with an intact payload previously fabricated a fully
+// served sbas-feed row (and, via RAWX, a phantom QZSS svs entry). The gate
+// enforces SBAS PRN 120–158 (EGNOS-SDD-OS §5), QZSS svId 1–10 (PRN 193–202,
+// QZSS-PNT-006 Table 4.2.2-5, minus the u-blox −192 offset), NavIC svId 1–14
+// (NAVIC-SPS-L5S Table 7).
+func TestApplyRejectsOutOfEnvelopeSvID(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+
+	// A CRC-valid SBAS message under a svId outside 120–158 must not create a
+	// feed row; boundary PRNs 120 and 158 must.
+	for _, sv := range []int{7, 119, 159, 255} {
+		s.Apply(&ingest.RawFrame{GnssID: gnss.SBAS, SvID: sv, SigID: 0, Recv: now,
+			Words: sbasRawWords(0x53, 2)})
+	}
+	if got := s.FeedSBAS(now); len(got) != 0 {
+		t.Errorf("out-of-envelope SBAS svIds served: %+v", got)
+	}
+	for _, sv := range []int{120, 158} {
+		s.Apply(&ingest.RawFrame{GnssID: gnss.SBAS, SvID: sv, SigID: 0, Recv: now,
+			Words: sbasRawWords(0x53, 2)})
+	}
+	if got := s.FeedSBAS(now); len(got) != 2 {
+		t.Errorf("boundary SBAS PRNs 120/158 not served: %+v", got)
+	}
+
+	// A RAWX observable under an impossible QZSS svId must not create a
+	// phantom J77@0 svs entry (the QZSS L1 carrier IS mapped, so only the
+	// envelope gate stops it).
+	s.Apply(&ingest.RawFrame{GnssID: gnss.QZSS, SvID: 77, SigID: 0, Recv: now, Source: "obs1",
+		Obs: &ingest.RawObs{RcvTow: 100000, PrM: 3.8e7, CpCyc: 3.8e7 / 0.19, LockTimeMs: 1000, CpValid: true}})
+	if svs := s.FeedSVs(now); len(svs) != 0 {
+		t.Errorf("out-of-envelope QZSS observable created svs entries: %+v", svs)
+	}
+	// An in-envelope QZSS observable still lands.
+	s.Apply(&ingest.RawFrame{GnssID: gnss.QZSS, SvID: 3, SigID: 0, Recv: now, Source: "obs1",
+		Obs: &ingest.RawObs{RcvTow: 100000, PrM: 3.8e7, CpCyc: 3.8e7 / 0.19, LockTimeMs: 1000, CpValid: true}})
+	if svs := s.FeedSVs(now); len(svs) != 1 {
+		t.Errorf("in-envelope QZSS observable missing from svs: %+v", svs)
+	}
+}
+
+// TestSBASObservableCreatesNoSVSEntry guards only one SBAS carrier is
+// mapped (L1), so a geometry-free pair can never form — an SBAS RAWX
+// pseudorange (every F9-class receiver emits one for a tracked GEO) must not
+// create a permanently data-less S###@0 svs entry duplicating the sbas feed.
+func TestSBASObservableCreatesNoSVSEntry(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	s.Apply(&ingest.RawFrame{GnssID: gnss.SBAS, SvID: 131, SigID: 0, Recv: now, Source: "obs1",
+		Obs: &ingest.RawObs{RcvTow: 100000, PrM: 3.8e7, CpCyc: 3.8e7 / 0.19, LockTimeMs: 1000, CpValid: true}})
+	if svs := s.FeedSVs(now); len(svs) != 0 {
+		t.Errorf("SBAS observable created svs entries: %+v", svs)
+	}
+}
+
 // TestApplySBASSkipsUpdateWhenPreambleNotOK guards a structurally
 // self-consistent (valid CRC-24Q) message whose preamble doesn't match one of
 // the three ICD-mandated SBAS values (0x53/0x9A/0xC6) must not update state at

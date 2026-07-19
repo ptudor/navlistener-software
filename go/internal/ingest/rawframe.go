@@ -184,7 +184,16 @@ func (f *RawFrame) NavType() int {
 	case gnss.NavIC:
 		return 0 // planned: no NavIC decoder; do not advertise false live support
 	case gnss.SBAS:
-		return 0x70 // SbasL1
+		if f.SigID == 0 {
+			return 0x70 // SbasL1
+		}
+		// 0x71 SbasL5 (DFMC, a different 250-bit layout with its own
+		// message types — docs/CONSTELLATIONS.md §6.1) is doc-reserved, not
+		// shipped. Mirror the regression fix rule: never advertise a nav type that
+		// wasn't verified, or a future L5-capable receiver's frames would be
+		// persisted as L1 messages and re-decoded through the wrong header
+		// layout on replay.
+		return 0
 	default:
 		return 0
 	}

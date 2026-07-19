@@ -105,6 +105,19 @@ func (s *Store) applyObservation(f *ingest.RawFrame) {
 	if f.GnssID == gnss.GLONASS {
 		return // FDMA inter-frequency biases need per-channel calibration; v2
 	}
+	if f.GnssID == gnss.SBAS {
+		// only one SBAS carrier is mapped (L1 — signalFreqHz has no
+		// second SBAS row until L5 DFMC ships, docs/CONSTELLATIONS.md §6.1's
+		// reserved SbasL5), so a geometry-free dual-frequency pair can never
+		// form: an L1 pseudorange of a tracked GEO would create a permanently
+		// data-less S###@0 svs entry (no position, no health, no iono delay)
+		// that duplicates — and contradicts — the dedicated sbas feed, and
+		// feeds the silence/position classifiers pure noise. SBAS health lives
+		// in s.sbas (docs/OUTPUT.md §1.5); drop the observable like the NavIC
+		// path already does implicitly (no carrier mapping). Revisit alongside
+		// the 0x71 SbasL5 work if an SBAS L5 carrier is ever mapped.
+		return
+	}
 
 	key := Key{G: f.GnssID, Sv: f.SvID, Sig: primarySig(f.GnssID)}
 	sh := s.shardFor(key)
