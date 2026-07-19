@@ -221,6 +221,15 @@ uniquely strong because *every* receiver in view should hear the *same* broadcas
   an SV's state — a render cue in the map (solid vs. hollow/dimmed/badged), exactly as
   radiolistener does for aircraft/ships.
 
+**As-built status :** `conf` is served on every `svs` entry and stamped into every SV
+event's `params` — counted from per-source decoded-nav-frame recency inside the 60 s
+fresh-receiver window (§2), so consumers can tell "five stations agree" from "one station said
+so". The **broadcast-agreement divergence detector** (same SV/IOD decoded to different bits by
+different receivers → hard alarm) additionally needs per-source element hashes and is tracked
+P7 work — it only becomes meaningful once the fleet converts to `navfeeder` push with per-observer
+identity. Until then every event's `conf` makes the corroboration level explicit rather than
+implied.
+
 ---
 
 ## 7. Galileo OSNMA (authentication as an integrity input)

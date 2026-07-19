@@ -455,6 +455,28 @@ func TestQZSSHealthType(t *testing.T) {
 	}
 }
 
+// TestEventParamsCarryConf guards every confirmed SV event must carry the
+// corroboration count in its params, so a consumer can tell a fleet-corroborated
+// event from a single receiver's testimony on the event itself.
+func TestEventParamsCarryConf(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(11_000_000, 0)
+	sv := gps("G05", 5, 1)
+	sv.Conf = 3
+	d.Tick(t0, map[string]state.FeedSV{"G05@0": sv}, nil, 1)
+	bad := gps("G05", 5, 3)
+	bad.Conf = 3
+	m := map[string]state.FeedSV{"G05@0": bad}
+	d.Tick(t0.Add(10*time.Second), m, nil, 1)
+	evs := d.Tick(t0.Add(80*time.Second), m, nil, 1)
+	if len(evs) != 1 {
+		t.Fatalf("got %d events, want 1", len(evs))
+	}
+	if got, ok := evs[0].Params["conf"]; !ok || got != 3 {
+		t.Fatalf("event params conf = %v (present=%v), want 3", got, ok)
+	}
+}
+
 // TestSilenceSuppressedBelowFleetFloor guards with fewer than
 // SilenceMinReceivers live stations, the per-SV silence classifier must not run
 // at all — an SV setting below one station's horizon (LastSeenS past

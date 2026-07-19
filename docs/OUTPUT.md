@@ -105,7 +105,7 @@ below):
 | `a0g`,`a1g`,`t0g`,`wn0g` | float/int | raw inter-system offset polynomial terms (Galileo: a0g s, a1g s/s, t0g s, wn0g raw 6-bit truncated week — consumers re-evaluating at their own epoch disambiguate wn0g mod-64, exact under §5.1.8's ±31-week bound) |
 | `af0`,`af1`,`af2` | float | raw SV clock polynomial (MATH.md §4) |
 | `aodc`,`aode` | int | BeiDou age-of-data (BeiDou only) |
-| `conf` | int | corroboration count — independent authenticated chains confirming this SV's state (INTEGRITY.md §6) |
+| `conf` | int | corroboration count (INTEGRITY.md §6): distinct sources with a structurally-decoded nav frame for this satellite×signal within the 60 s fresh-receiver window. Always present — 0 = no current nav corroboration (e.g. an observation-only entry), 1 = a single receiver's testimony, ≥ 2 = independently corroborated. Also stamped into every SV event's `params`. The §6 broadcast-agreement *divergence* detector (same SV/IOD, different bits → hard alarm) is tracked P7 work — conf counts presence, it does not yet compare element sets |
 | `perrecv` | object | per-observer reception, keyed by observer id (below) |
 
 `perrecv[<observer_id>]`:

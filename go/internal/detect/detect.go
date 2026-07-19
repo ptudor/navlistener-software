@@ -174,7 +174,21 @@ func (d *Detector) Reset() {
 type emitFunc func(subject, metric, newState string, ev func(old string) Event)
 
 // detectSV runs every SV-level classifier for one satellite×signal.
-func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, liveReceivers int, emit emitFunc) {
+func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, liveReceivers int, outer emitFunc) {
+	// every SV event carries the corroboration count at confirmation
+	// time, stamped centrally so no classifier can forget it — a consumer must
+	// always be able to tell "five stations agree" (conf ≥ 2) from "one station
+	// said so" (conf 1) on the event itself, not just the live feed.
+	emit := func(subject, metric, newState string, ev func(old string) Event) {
+		outer(subject, metric, newState, func(old string) Event {
+			e := ev(old)
+			if e.Params == nil {
+				e.Params = map[string]any{}
+			}
+			e.Params["conf"] = sv.Conf
+			return e
+		})
+	}
 	// Health transition. QZSS/NavIC get their own event types (docs/INTEGRITY.md §5).
 	// skip the classifier while health is unknown (health_code 0) — 0 is not a
 	// broadcast value (regression fix serves it until an SV's health bits decode, or for iono-only

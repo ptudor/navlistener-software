@@ -144,6 +144,15 @@ type FeedSV struct {
 	Tow       *int     `json:"tow,omitempty"`
 	Wn        *int     `json:"wn,omitempty"`
 	LastSeenS int      `json:"last_seen_s"`
+	// Conf (regression fix, docs/OUTPUT.md §1.1 / INTEGRITY §6) is the corroboration
+	// count: distinct sources that delivered a structurally-decoded nav frame
+	// for THIS satellite×signal within the fresh-receiver window. Always
+	// present — 0 is a known value ("no current nav corroboration", e.g. an
+	// iono-only RAWX entry), not an unknown. Until the §6 broadcast-agreement
+	// divergence detector lands (P7), this is the served honesty floor:
+	// consumers can tell a fleet-corroborated state (conf ≥ 2) from a
+	// single receiver's testimony (conf 1).
+	Conf int `json:"conf"`
 
 	Perrecv map[string]*FeedPerRecv `json:"perrecv,omitempty"`
 }
@@ -241,6 +250,14 @@ func (s *Store) FeedSVs(now time.Time) map[string]FeedSV {
 	return out
 }
 
+// freshReceiverWindow bounds how recently a source must have delivered a decoded
+// nav frame for its corroboration vote to count toward conf. Mirrors
+// detect.FreshReceiverThreshold ("a receiver's vote only counts if it saw the SV
+// this recently", docs/INTEGRITY.md §2) — duplicated as a local constant because
+// detect depends on state, not the reverse (the liveReceiverWindow precedent);
+// keep the two in sync if the operating point moves.
+const freshReceiverWindow = 60 * time.Second
+
 // feedSV projects one svState to a FeedSV. The caller holds the shard lock.
 func (st *svState) feedSV(now time.Time) FeedSV {
 	g := st.key.G
@@ -262,6 +279,17 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 		HealthIssueLevel: level,
 		HealthSubcode:    st.health,
 		LastSeenS:        int(now.Sub(st.lastSeen).Seconds()),
+	}
+	// count the sources corroborating this entry within the fresh
+	// window; prune the rest so the map stays bounded by the CURRENT fleet (a
+	// renamed source ages out here rather than lingering). Mutating under the
+	// shard lock the caller holds.
+	for src, at := range st.seenBy {
+		if now.Sub(at) <= freshReceiverWindow {
+			e.Conf++
+		} else {
+			delete(st.seenBy, src)
+		}
 	}
 	// posFresh gates both the position and (for Kepler-family below) its
 	// paired tow/wn on the same stored propagation epoch, so the two can never
