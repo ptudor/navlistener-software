@@ -514,7 +514,11 @@ func (s *Store) shardFor(k Key) *shard {
 // metrics, not crashes.
 func (s *Store) Apply(f *ingest.RawFrame) {
 	if f.RF != nil {
-		s.applyRF(f) // station-scoped telemetry: carries no svId to validate
+		// Station-scoped telemetry: the frame header carries no svId to
+		// validate. (The NAV-SAT Sats[] elements inside do carry per-SV ids,
+		// but those feed only the station-scoped C/N₀/RF gates, never a
+		// per-SV feed row — no fabrication path, so no envelope gate here.)
+		s.applyRF(f)
 		return
 	}
 	if !svIDInRange(f.GnssID, f.SvID) {
