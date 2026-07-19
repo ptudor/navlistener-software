@@ -741,6 +741,27 @@ func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
 // filter; the RAM entry itself is evicted later by ExpireStations.
 const sbasStaleAfter = rfStaleAfter
 
+// sbasType0Hold is how long one received MT0 ("do not use for safety
+// applications") keeps the served health_code latched at 3. MT0 is a
+// condition, not a message-by-message state: a system under test interleaves
+// MT0 with its normal correction stream — since 2003 typically as "MT0/2", an
+// MT2 body broadcast in the MT0 frame slot (EGNOS-SDD-OS §4.1 WARNING) — and a
+// DO-229 receiver excludes the GEO on any MT0 sighting rather than re-admitting
+// it one message later. Deriving health from the *last* message therefore read
+// "OK" for almost every feed build on a test-mode GEO (the exact wrong answer
+// this feed exists to report) and, sampled every 15 s under a 60 s debounce,
+// made the critical sbas_health event structurally unconfirmable.
+//
+// 60 s is the DO-229-family MT0 exclusion interval as stated by the vendored
+// QZSS-L1S §4.1.2.3: "When receiving MT 0, the receiver should delete all SLAS
+// messages of the QZS in the past, and SLAS messages of the QZS for the
+// subsequent 60 seconds must also not be used." RTCA DO-229 itself is paywalled
+// and not vendored (reference/REFERENCES.md "RTCA-DO-229"); re-verify this
+// constant against DO-229's own MT0 rule if that reference is ever acquired.
+// In steady test mode MT0 recurs well inside 60 s, so the latch holds
+// continuously; a single isolated MT0 ages out after its 60 s exclusion.
+const sbasType0Hold = 60 * time.Second
+
 // FeedSBAS builds the sbas augmentation-health feed as of now (docs/OUTPUT.md §1.5).
 func (s *Store) FeedSBAS(now time.Time) map[string]SBASEntry {
 	out := make(map[string]SBASEntry)
@@ -751,8 +772,8 @@ func (s *Store) FeedSBAS(now time.Time) map[string]SBASEntry {
 			continue
 		}
 		code := 1 // OK
-		if st.doNotUse {
-			code = 3 // do-not-use
+		if st.haveType0 && now.Sub(st.lastType0) < sbasType0Hold {
+			code = 3 // do-not-use, latched on MT0 recency 
 		}
 		ent := SBASEntry{
 			Provider:   st.provider,

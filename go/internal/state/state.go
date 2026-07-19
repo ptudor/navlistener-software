@@ -438,7 +438,14 @@ type shard struct {
 
 // sbasState is the per-GEO SBAS augmentation health tracked for the sbas feed
 // (docs/OUTPUT.md §1.5): the last message type seen, the last type-0 (do-not-use)
-// timestamp, and the provider derived from the PRN.
+// timestamp, and the provider derived from the PRN. There is deliberately NO
+// "current message was MT0" bool here : do-not-use is a *latched*
+// condition derived from lastType0 recency at feed-build time (feed.go
+// sbasType0Hold), never a per-message value — a test-mode provider interleaves
+// MT0 with its normal stream (the DO-229 "MT0/2" pattern, EGNOS-SDD-OS §4.1
+// WARNING), so keying health on the last message flapped OK↔do-not-use on
+// every message and made the critical sbas_health event unconfirmable through
+// the detector's 60 s debounce.
 type sbasState struct {
 	prn       int
 	provider  string
@@ -446,7 +453,6 @@ type sbasState struct {
 	lastSeen  time.Time
 	lastType0 time.Time
 	haveType0 bool
-	doNotUse  bool
 }
 
 // Store is the sharded live SV state plus the SBAS health map and the GLONASS almanac
@@ -771,8 +777,10 @@ func (s *Store) applySBAS(f *ingest.RawFrame) {
 	}
 	st.lastSeen = recv
 	st.lastType = m.Type
-	st.doNotUse = m.DoNotUse
 	if m.DoNotUse {
+		// only the MT0 timestamp is recorded; the served health_code
+		// latches on its recency (feed.go), not on whether the *latest* message
+		// happened to be MT0.
 		st.lastType0, st.haveType0 = recv, true
 	}
 }

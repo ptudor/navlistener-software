@@ -68,6 +68,58 @@ func TestFeedGlobalSBASAndZeroFill(t *testing.T) {
 	}
 }
 
+// TestSBASDoNotUseLatchesAcrossInterleavedMessages guards a test-mode
+// SBAS provider interleaves MT0 with its normal message stream (the DO-229
+// "MT0/2" pattern, EGNOS-SDD-OS §4.1), so the served health_code must latch on
+// MT0 recency (sbasType0Hold, QZSS-L1S §4.1.2.3's 60 s exclusion) rather than
+// flip back to OK on the very next non-MT0 message.
+func TestSBASDoNotUseLatchesAcrossInterleavedMessages(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+
+	// MT0 followed one second later by an ordinary MT2 (fast corrections) —
+	// the nominal 1 Hz interleaving of a system under test.
+	s.Apply(&ingest.RawFrame{GnssID: gnss.SBAS, SvID: 131, SigID: 0, Recv: now,
+		Words: sbasRawWords(0x53, 0)})
+	s.Apply(&ingest.RawFrame{GnssID: gnss.SBAS, SvID: 131, SigID: 0, Recv: now.Add(time.Second),
+		Words: sbasRawWords(0x9A, 2)})
+
+	ent, ok := s.FeedSBAS(now.Add(2 * time.Second))["131"]
+	if !ok {
+		t.Fatal("SBAS entry missing")
+	}
+	if ent.HealthCode != 3 {
+		t.Errorf("health_code after MT0→MT2 interleave = %d, want 3 (latched do-not-use)", ent.HealthCode)
+	}
+	if ent.LastType != 2 {
+		t.Errorf("last_type = %d, want 2 (the latch must not hide the raw message type)", ent.LastType)
+	}
+	if ent.LastType0 == nil {
+		t.Error("last_type_0 absent; consumers must see the raw MT0 recency")
+	}
+
+	// A fresh non-MT0 message keeps the entry alive past the hold window: with
+	// no further MT0, the exclusion ages out and the GEO reads OK again.
+	late := now.Add(sbasType0Hold + 30*time.Second)
+	s.Apply(&ingest.RawFrame{GnssID: gnss.SBAS, SvID: 131, SigID: 0, Recv: late,
+		Words: sbasRawWords(0xC6, 2)})
+	ent, ok = s.FeedSBAS(late.Add(time.Second))["131"]
+	if !ok {
+		t.Fatal("SBAS entry missing after hold expiry")
+	}
+	if ent.HealthCode != 1 {
+		t.Errorf("health_code %v after the last MT0 = %d, want 1 (hold expired)",
+			sbasType0Hold+31*time.Second, ent.HealthCode)
+	}
+
+	// A renewed MT0 re-arms the latch.
+	s.Apply(&ingest.RawFrame{GnssID: gnss.SBAS, SvID: 131, SigID: 0, Recv: late.Add(2 * time.Second),
+		Words: sbasRawWords(0x53, 0)})
+	if ent = s.FeedSBAS(late.Add(3 * time.Second))["131"]; ent.HealthCode != 3 {
+		t.Errorf("health_code after renewed MT0 = %d, want 3", ent.HealthCode)
+	}
+}
+
 // TestApplySBASSkipsUpdateWhenPreambleNotOK guards a structurally
 // self-consistent (valid CRC-24Q) message whose preamble doesn't match one of
 // the three ICD-mandated SBAS values (0x53/0x9A/0xC6) must not update state at
