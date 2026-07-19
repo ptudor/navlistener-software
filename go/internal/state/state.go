@@ -395,6 +395,16 @@ type svState struct {
 
 	pos     gnss.ECEF
 	havePos bool
+	// posIOD is the issue-of-data of the ephemeris that PRODUCED pos, stamped
+	// atomically with it in Propagate (regression fix verification follow-up): st.iod
+	// is the CURRENT data set, which can change between a changeover apply and
+	// the next Propagate tick — a feed built in that window would label a
+	// still-old position with the new IOD, and the cross-signal agreement check
+	// would compare two signals' positions from different data sets under one
+	// IOD label, reading a genuine changeover delta as divergence. Only
+	// meaningful for the Kepler family (GLONASS has no issue-of-data and the
+	// check is Galileo-only).
+	posIOD int
 	// posAt is the propagation epoch that produced pos : the exact instant
 	// Propagate passed to kepler.Propagate/glonass.Propagate, not "now" at feed
 	// build time. tow/wn must be served from this epoch, not recomputed later, or
@@ -1898,6 +1908,7 @@ func (s *Store) Propagate(now time.Time) {
 			tow := towFor(st.key.G, now)
 			if pos, err := kepler.Propagate(st.eph, tow); err == nil && finiteECEF(pos) {
 				st.pos, st.havePos, st.posAt = pos, true, now
+				st.posIOD = st.iod // the data set this position came from
 			}
 			counts[st.key.G.String()]++
 		}

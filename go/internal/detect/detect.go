@@ -450,10 +450,12 @@ func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, liveRec
 // disagreement under one IODnav means the two signals carried DIFFERENT element
 // bits, a signal-selective fault or spoof no single-signal detector can see.
 // Comparison preconditions (all skips leave the machine holding, regression fix rule):
-// both entries carry a fresh position, the same decoded IODnav (a changeover
-// skew where one signal cuts over first is designed behavior, not divergence),
-// and the identical propagation epoch (PosAtUnixNs — sub-second epoch skew
-// reads as km of fake divergence). Galileo-only: see XSigDivergenceMeters for
+// both entries carry a fresh position, the same POSITION-producing IODnav
+// (PosIOD, stamped with the position in Propagate — a changeover skew where one
+// signal cuts over first is designed behavior, not divergence; the served
+// current-data-set `iod` would mislabel a pre-changeover position in the window
+// between apply and the next Propagate tick), and the identical propagation
+// epoch (PosAtUnixNs — sub-second epoch skew reads as km of fake divergence). Galileo-only: see XSigDivergenceMeters for
 // why the tight bound is unsound for GPS LNAV-vs-CNAV / BDS D1-vs-B-CNAV2
 // (independent curve fits). Subject is the physical SV name ("E14" — no @sig,
 // deliberately outside the satellite×signal subject space); warning severity in
@@ -466,7 +468,7 @@ func (d *Detector) detectXSig(svs map[string]state.FeedSV, emit emitFunc) {
 		if sv.GnssID != 2 { // Galileo only (see XSigDivergenceMeters)
 			continue
 		}
-		if sv.XM == nil || sv.YM == nil || sv.ZM == nil || sv.IOD == nil || sv.PosAtUnixNs == 0 {
+		if sv.XM == nil || sv.YM == nil || sv.ZM == nil || sv.PosIOD == nil || sv.PosAtUnixNs == 0 {
 			continue
 		}
 		groups[sv.Name] = append(groups[sv.Name], sv)
@@ -483,13 +485,13 @@ func (d *Detector) detectXSig(svs map[string]state.FeedSV, emit emitFunc) {
 		for i := 0; i < len(g); i++ {
 			for j := i + 1; j < len(g); j++ {
 				a, b := g[i], g[j]
-				if *a.IOD != *b.IOD || a.PosAtUnixNs != b.PosAtUnixNs {
+				if *a.PosIOD != *b.PosIOD || a.PosAtUnixNs != b.PosAtUnixNs {
 					continue
 				}
 				dx, dy, dz := *a.XM-*b.XM, *a.YM-*b.YM, *a.ZM-*b.ZM
 				dist := math.Sqrt(dx*dx + dy*dy + dz*dz)
 				if !compared || dist > worst {
-					worst, sigA, sigB, iod = dist, a.SigID, b.SigID, *a.IOD
+					worst, sigA, sigB, iod = dist, a.SigID, b.SigID, *a.PosIOD
 				}
 				compared = true
 			}

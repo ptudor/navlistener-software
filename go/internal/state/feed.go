@@ -151,6 +151,14 @@ type FeedSV struct {
 	// distinction under a sub-second propagate_interval; this can. Zero = no
 	// fresh position.
 	PosAtUnixNs int64 `json:"-"`
+	// PosIOD (regression fix verification follow-up, detector-facing) is the
+	// issue-of-data of the ephemeris that produced x_m/y_m/z_m — stamped with
+	// the position in Propagate, unlike the served `iod` (the CURRENT data
+	// set). The cross-signal check keys its same-data-set precondition on THIS,
+	// so a feed built between a changeover apply and the next Propagate tick
+	// cannot pair an old position with a new IOD label and read the genuine
+	// changeover delta as divergence. Nil when no fresh Kepler position.
+	PosIOD *int `json:"-"`
 	Tow         *int  `json:"tow,omitempty"`
 	Wn          *int  `json:"wn,omitempty"`
 	LastSeenS int      `json:"last_seen_s"`
@@ -529,6 +537,8 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 			if wn, ok := weekFor(g, st.posAt); ok {
 				e.Wn = &wn
 			}
+			pi := st.posIOD // the position's own data set, not the current one
+			e.PosIOD = &pi
 		}
 		age := gnsstime.EphAgeMinutes(towFor(g, now), st.eph.Toe)
 		// the SOW-based age wraps to ±half-week, so past the serving cap a

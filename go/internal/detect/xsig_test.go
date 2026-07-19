@@ -9,12 +9,14 @@ import (
 
 func ptrI(v int) *int { return &v }
 
-// gal builds one Galileo satellite×signal entry with a fresh position, IODnav,
-// and propagation epoch — the cross-signal comparison's inputs.
+// gal builds one Galileo satellite×signal entry with a fresh position, its
+// position-producing IODnav (PosIOD — stamped at propagation, not the served
+// current-set iod), and propagation epoch — the cross-signal comparison's
+// inputs.
 func gal(svid, sigid, iod int, x, y, z float64, posAt int64) state.FeedSV {
 	return state.FeedSV{
 		Name: "E14", GnssID: 2, SvID: svid, SigID: sigid,
-		HealthCode: 1, IOD: ptrI(iod),
+		HealthCode: 1, IOD: ptrI(iod), PosIOD: ptrI(iod),
 		XM: &x, YM: &y, ZM: &z, PosAtUnixNs: posAt,
 	}
 }
@@ -110,7 +112,7 @@ func TestXSigGalileoOnly(t *testing.T) {
 	mk := func(sigid int, x float64) state.FeedSV {
 		sv := gps("G05", 5, 1)
 		sv.SigID = sigid
-		sv.IOD = ptrI(40)
+		sv.IOD, sv.PosIOD = ptrI(40), ptrI(40)
 		sv.XM, sv.YM, sv.ZM = &x, ptrF(2.0e7), ptrF(1.0e7)
 		sv.PosAtUnixNs = epoch
 		return sv

@@ -7,6 +7,40 @@ import (
 	"github.com/ptudor/gnss"
 )
 
+// TestPosIODStampedAtPropagation guards the regression fix verification follow-up: a
+// feed built between an ephemeris-changeover apply and the next Propagate tick
+// serves the NEW data set's iod but the OLD set's position — PosIOD must label
+// the position with the set that actually produced it, or the cross-signal
+// check pairs a changeover delta under one IOD label and reads it as
+// divergence.
+func TestPosIODStampedAtPropagation(t *testing.T) {
+	st := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	st.Apply(gpsFrame(sf1Words(85), now))
+	st.Apply(gpsFrame(sf2Words(85, 205075516), now))
+	st.Apply(gpsFrame(sf3Words(85), now))
+	st.Propagate(now)
+
+	// A new data set (IODE 86) applies; no Propagate has run yet.
+	st.Apply(gpsFrame(sf1Words(86), now.Add(time.Second)))
+	st.Apply(gpsFrame(sf2Words(86, 205075516), now.Add(time.Second)))
+	st.Apply(gpsFrame(sf3Words(86), now.Add(time.Second)))
+
+	sv := st.FeedSVs(now.Add(2 * time.Second))["G05@0"]
+	if sv.IOD == nil || *sv.IOD != 86 {
+		t.Fatalf("served iod = %v, want the current set 86", sv.IOD)
+	}
+	if sv.PosIOD == nil || *sv.PosIOD != 85 {
+		t.Fatalf("PosIOD = %v, want 85 (the set that produced the position)", sv.PosIOD)
+	}
+
+	st.Propagate(now.Add(3 * time.Second))
+	sv = st.FeedSVs(now.Add(4 * time.Second))["G05@0"]
+	if sv.PosIOD == nil || *sv.PosIOD != 86 {
+		t.Fatalf("PosIOD after re-propagation = %v, want 86", sv.PosIOD)
+	}
+}
+
 // TestWeekForBeiDouConsistentAcrossWeekBoundary guards weekFor and
 // towFor must derive from the same BDT-shifted (GPST − 14 s) seconds value, or
 // a consumer reconstructing an absolute BDT instant from the served (wn, tow)
