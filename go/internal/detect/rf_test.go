@@ -158,6 +158,45 @@ func TestRFSpoofQuorum(t *testing.T) {
 	}
 }
 
+// TestWiredSpoofGatesMatchesImplementation guards WiredSpoofGates is the
+// published coverage number (the spoof_gates_wired gauge), so it must equal the
+// maximum spoofGates can actually return — trip every wired gate at once and
+// count. Whoever adds a gate to spoofGates must bump the constant, or this fails.
+func TestWiredSpoofGatesMatchesImplementation(t *testing.T) {
+	resid, mean := 0.1, 55.0 // everything C/N₀ trips: aggregate AND per-constellation
+	all := state.StationRF{
+		Cn0Resid: &resid, Cn0Mean: &mean,
+		Cn0ByConstellation: map[int]state.Cn0Stats{
+			0: {Mean: 55, Resid: 0.1, NumSats: 8},
+			2: {Mean: 55, Resid: 0.1, NumSats: 8},
+		},
+	}
+	if got := spoofGates(all); got != WiredSpoofGates {
+		t.Fatalf("spoofGates max = %d, WiredSpoofGates = %d — the published coverage number is wrong", got, WiredSpoofGates)
+	}
+}
+
+// TestSpoofingSuspectedDormantWhileUnderQuorum documents the regression fix posture: with
+// WiredSpoofGates < SpoofGateQuorum, spoofing_suspected is arithmetically
+// unreachable — every wired gate tripping at once must still not fire it. When a
+// second gate lands this test must be REPLACED by a reachability test, not deleted.
+func TestSpoofingSuspectedDormantWhileUnderQuorum(t *testing.T) {
+	if WiredSpoofGates >= SpoofGateQuorum {
+		t.Skip("quorum now reachable; replace this test with a spoofing_suspected reachability test")
+	}
+	d := New(0)
+	t0 := time.Unix(1_700_000_000, 0)
+	resid, mean := 0.1, 55.0
+	spoof := map[string]state.StationRF{"s": {ID: "s", Cn0Resid: &resid, Cn0Mean: &mean,
+		Cn0ByConstellation: map[int]state.Cn0Stats{0: {Mean: 55, Resid: 0.1, NumSats: 8}}, RFTrust: 1}}
+	d.TickStations(t0, map[string]state.StationRF{"s": {ID: "s", RFTrust: 1}})
+	d.TickStations(t0.Add(10*time.Second), spoof)
+	evs := d.TickStations(t0.Add(120*time.Second), spoof)
+	if _, ok := find(evs, "spoofing_suspected"); ok {
+		t.Fatal("spoofing_suspected fired under quorum — the fusion rule is broken")
+	}
+}
+
 // A flat GPS group must remain visible beside a genuine Galileo sky.
 func TestRFSpoofGateUsesPerConstellationFit(t *testing.T) {
 	mean, resid := 42.0, 20.0 // non-tripping all-sky aggregate

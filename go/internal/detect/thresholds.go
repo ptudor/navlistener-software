@@ -120,6 +120,26 @@ const (
 	// v1 few gates are wired, so this keeps spoofing alerts corroborated, not trigger-happy.
 	SpoofGateQuorum = 2
 
+	// WiredSpoofGates  is the number of INDEPENDENT physics gates
+	// spoofGates can currently count — the maximum value it can return. v1
+	// wires exactly one: C/N₀-vs-elevation (the per-constellation and
+	// aggregate fits are two views of the SAME gate, so they never sum).
+	// Because WiredSpoofGates < SpoofGateQuorum, spoofing_suspected is
+	// ARITHMETICALLY UNREACHABLE today — a deliberate conservative posture
+	// (the quorum must not be lowered to 1; a single gate is a degradation
+	// signal, not an attack claim), but one that must be VISIBLE, not implied:
+	// main.go exports both numbers as gauges (navlistener_spoof_gates_wired /
+	// navlistener_spoof_gate_quorum) so an operator watching a permanently
+	// silent spoofing channel can distinguish "no spoofing observed" from
+	// "detection not yet armed" (wired < quorum ⇒ dormant), and INTEGRITY §8 /
+	// DEFENSE-PNT §3 mark the remaining gates' status explicitly. The named
+	// next gate is coherent delta-Hz (RAWX Doppler vs predicted range-rate) —
+	// blocked on station positions, which land with the observer-geometry
+	// pass; the Galileo cross-signal comparison  is the other
+	// candidate. BUMP THIS CONSTANT with every gate added to spoofGates —
+	// TestWiredSpoofGatesMatchesImplementation enforces the pairing.
+	WiredSpoofGates = 1
+
 	// Capability plausibility (docs/INTEGRITY.md §6, CONSTELLATIONS §7). A signal a node has
 	// *demonstrated* it can track (produced this many nav frames on) and then stops delivering,
 	// while the node is otherwise alive, is a targeted loss (jamming/spoofing/fault) — not the

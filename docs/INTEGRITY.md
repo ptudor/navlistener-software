@@ -182,7 +182,7 @@ The baseline vocabulary and severities below are **verified against intsat's shi
 | `qzss_health` | QZSS navigation health transition; L1S DC-report enrichment is planned | 1–2 |
 | `navic_health` *(planned)* | NavIC SPS health transition; unavailable until the NavIC decoder lands | 1–2 |
 | `jamming_detected` | station AGC/CW/noise evidence confirms jamming (`DEFENSE-PNT.md §4`) | 1, → 2 on severe/full-lock-loss evidence |
-| `spoofing_suspected` | ≥2 independent station physics gates agree (`DEFENSE-PNT.md §3–4`) | 2 |
+| `spoofing_suspected` | ≥2 independent station physics gates agree (`DEFENSE-PNT.md §3–4`). **Dormant in v1 : only 1 station-fusion gate is wired, so this cannot fire — see §8's dormancy disclosure and the `spoof_gates_wired`/`spoof_gate_quorum` gauges** | 2 |
 | `station_rf_degraded` | one station RF metric departs its baseline; early warning, not an attack claim | 1 |
 | `antenna_fault` | receiver antenna status reports open/short or equivalent confirmed fault | 1 |
 | `capability_signal_lost` | a demonstrated `(gnssId,sigId)` is unseen past `CapSignalLostAfter` while its station remains alive | 1 |
@@ -247,26 +247,43 @@ orbit-disco does. Both layers, again.
 
 ## 8. Spoofing & plausibility gates (physics first)
 
-Cheap, always-on gates that catch the common attacks and gross errors without any crypto:
+Cheap, always-on gates that catch the common attacks and gross errors without any crypto. **Each
+gate below carries its as-built status ** — this section is the design set, not a claim
+of coverage:
 
-- **No teleports / continuity:** an SV ECEF that jumps beyond orbital dynamics between
-  consecutive ephemerides (beyond the disco bands) → flag.
-- **Below-horizon impossibility:** a receiver reporting an SV at negative geometric elevation for
-  its known position → flag the *receiver*, not the SV.
-- **Doppler sanity:** observed Doppler outside the physically possible range for the SV's
-  range-rate (docs/MATH.md §2.2) → flag.
-- **Valid-range checks:** SV id / PRN in the constellation's assigned range; IOD monotonicity;
-  URA/SISA within table bounds; week number consistent with wall-clock.
-- **Cross-constellation clock coherence:** the broadcast inter-system offsets (§docs/MATH.md 8)
-  should be mutually consistent across receivers; a receiver whose time-offset decode disagrees
-  with the fleet is suspect.
-- **Jamming context:** u-blox MON-HW/MON-RF jamming/AGC indicators (the GNF1 `JammingStats`
-  telemetry type) raise the prior on a receiver's environment being hostile, down-weighting its
-  votes.
+- **No teleports / continuity** — *implemented as the per-SV disco detectors* (`orbit_disco`/
+  `clock_jump`, §3): an SV ECEF that jumps beyond orbital dynamics between consecutive
+  ephemerides → flag.
+- **Below-horizon impossibility** — *planned; blocked on station positions (the
+  observer-geometry pass)*: a receiver reporting an SV at negative geometric elevation for its
+  known position → flag the *receiver*, not the SV.
+- **Doppler sanity / coherent delta-Hz** — *planned; blocked on station positions for the
+  predicted range-rate*: observed Doppler outside the physically possible range for the SV's
+  range-rate (docs/MATH.md §2.2) → flag. This is the named NEXT station-fusion gate.
+- **Valid-range checks** — *partially implemented as per-SV classifiers and ingest gates*:
+  SV id / PRN envelopes, week number vs wall-clock (`wn_mismatch`, regression fix/
+  regression fix), URA/SISA table-bounded decode. IOD monotonicity — *planned*.
+- **Cross-constellation clock coherence** — *planned; input decode partial*: the broadcast
+  inter-system offsets (docs/MATH.md §8) should be mutually consistent across receivers.
+  Galileo GGTO and BeiDou BDT-UTC now decode; the coherence detector itself
+  is tracked P6+ work.
+- **Jamming context** — *implemented* (`jamming_detected`/`station_rf_degraded`, DEFENSE-PNT
+  §2/§4): u-blox MON-HW/MON-RF jamming/AGC indicators raise the prior on a receiver's
+  environment being hostile, down-weighting its votes (`rf_trust`).
 
 Every gate is a *plausibility* judgement, cheap and independent of signatures — the failures they
 catch (a replayed constellation, a lifted-and-shifted receiver, a bad upload) are exactly the ones
 signatures miss.
+
+> **Dormancy disclosure.** The station-level *fusion* (`spoofing_suspected`) requires
+> `SpoofGateQuorum` (2) independent gates agreeing, and exactly **one** station-fusion gate is
+> wired today (C/N₀-vs-elevation, `WiredSpoofGates = 1`) — so `spoofing_suspected` is
+> **arithmetically unreachable** in v1. That is a deliberate conservative posture (a single gate
+> is a degradation signal, not an attack claim — `station_rf_degraded` carries it), made visible
+> rather than implied: the daemon exports `navlistener_spoof_gates_wired` and
+> `navlistener_spoof_gate_quorum` gauges (alert on `wired < quorum`) and logs the dormancy at
+> startup. The per-SV plausibility gates above (`wn_mismatch`, discos, envelopes) fire
+> independently of the quorum.
 
 ---
 

@@ -141,6 +141,13 @@ func (d *Detector) detectStationOffline(id string, lastSeenS int, emit emitFunc)
 // spoofGates counts the independent spoofing physics gates currently tripped at a station
 // (docs/DEFENSE-PNT.md §3). v1: the C/N₀-vs-elevation gate — a residual variance that has
 // collapsed at an unnaturally high, uniform C/N₀ (the single-transmitter signature).
+//
+// the function's range is {0, 1} — the per-constellation loop and the
+// aggregate fit are two VIEWS of the same physical gate (the same C/N₀ evidence
+// through two regressions), so they must never sum to 2 and fake a quorum; the
+// early return on the first tripped constellation encodes that. The count of
+// distinct gates this function can see is WiredSpoofGates (thresholds.go) —
+// keep the two in lockstep when adding a gate here.
 func spoofGates(rf state.StationRF) int {
 	gates := 0
 	for _, stats := range rf.Cn0ByConstellation {

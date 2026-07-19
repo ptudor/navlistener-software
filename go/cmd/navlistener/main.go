@@ -307,6 +307,16 @@ func run() int {
 	// read model the feeds serve, persists confirmed events (firing pg_notify) and
 	// pushes them to the SSE broker (docs/INTEGRITY.md, docs/OUTPUT.md §3).
 	detector := detect.New(0)
+	// publish the spoofing detector's coverage so its dormancy is a
+	// fact on the operational surface, not an implication — with wired < quorum
+	// (the v1 posture) spoofing_suspected cannot fire, and an operator must be
+	// able to tell that from "no spoofing observed".
+	metrics.SpoofGatesWired.Set(float64(detect.WiredSpoofGates))
+	metrics.SpoofGateQuorumGauge.Set(float64(detect.SpoofGateQuorum))
+	if detect.WiredSpoofGates < detect.SpoofGateQuorum {
+		log.Warn("spoofing_suspected detector is dormant: fewer independent gates wired than the fusion quorum requires",
+			"wired", detect.WiredSpoofGates, "quorum", detect.SpoofGateQuorum)
+	}
 	// detectLoop/emitEvent take the eventWriter/eventPublisher interfaces, but
 	// historian/apiSrv are concrete pointers that are nil when their config section is
 	// off. A nil concrete pointer boxed into an interface is a non-nil interface, so the

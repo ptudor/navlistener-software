@@ -139,6 +139,16 @@ corroborated by a *neighbouring* station seeing the same anomaly on the same SVs
 corroboration is the strongest evidence, since a genuine broadcast is identical for every receiver
 in view). This mirrors the broadcast-agreement logic in `docs/INTEGRITY.md §6`.
 
+> **As-built status.** Of the gates above, exactly **one** is wired into the fusion
+> today: C/N₀-vs-elevation (`WiredSpoofGates = 1`). Doppler-vs-ephemeris and time-transient need
+> station positions/baselines (the observer-geometry pass); cross-constellation contradiction
+> needs the coherence detector over the now-decoded GGTO/BDT-UTC sets; measured-iono needs the
+> regression fix evaluator; SEC-SIG ingest is not yet transported. With the quorum at 2,
+> `spoofing_suspected` is therefore **arithmetically unreachable in v1** — deliberate (the quorum
+> is not lowered; a lone gate surfaces as `station_rf_degraded`), and disclosed operationally via
+> the `navlistener_spoof_gates_wired` / `navlistener_spoof_gate_quorum` gauges and a startup
+> warning (alert on `wired < quorum`). See `docs/INTEGRITY.md §8`'s per-gate status list.
+
 ---
 
 ## 4. The detector, thresholds, and events (extending INTEGRITY)
