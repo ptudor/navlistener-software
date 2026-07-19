@@ -600,10 +600,16 @@ func detectTick(live *state.Store, det *detect.Detector, writer *eventPipeline, 
 	// the live-receiver count gates the per-SV silence classifier — from a
 	// sub-constellation-footprint fleet, "unseen for an hour" is orbital mechanics,
 	// not an outage.
-	events := det.Tick(now, live.FeedSVs(now), live.FeedSBAS(now), live.LiveReceivers(now))
+	// the detector reads the UNFILTERED SBAS view (SBASDetect) so a dark
+	// GEO stays classifiable after the served feed drops it — the sbas_lost event
+	// has no input otherwise. The served /gnss feed keeps using FeedSBAS.
+	events := det.Tick(now, live.FeedSVs(now), live.SBASDetect(now), live.LiveReceivers(now))
 	// Station-scoped PNT-defense events (jamming/spoofing/RF, docs/DEFENSE-PNT.md)
 	// share the debounce state machine and event pipeline.
 	events = append(events, det.TickStations(now, live.FeedStationRF(now))...)
+	// Station liveness (station_offline, regression fix/regression fix) reads the unfiltered
+	// per-station age map — retained state, not the staleness-filtered RF view.
+	events = append(events, det.TickStationLiveness(now, live.StationLastSeen(now))...)
 	// Capability plausibility: a demonstrated signal gone silent, or a signal the
 	// node's silicon can't produce (docs/INTEGRITY.md §6, CONSTELLATIONS §7).
 	events = append(events, det.TickCapabilities(now, live.FeedCapabilityReports(now))...)

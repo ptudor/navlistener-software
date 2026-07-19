@@ -584,6 +584,39 @@ const liveReceiverWindow = 300 * time.Second
 // was based on.
 func (s *Store) LiveReceivers(now time.Time) int { return s.countLiveReceivers(now) }
 
+// StationLastSeen is the station_offline classifier's read model (regression fix, the
+// regression fix wiring): seconds since each known station last produced a decoded nav
+// frame or RF-telemetry sample — the same caps ∪ rf union countLiveReceivers
+// uses, but per-station and UNFILTERED, because the offline detector must keep
+// observing a station after it goes dark (the filtered FeedStationRF drops a
+// station at rfStaleAfter, which is why station_offline could never fire from
+// it). The capability map is never evicted (durability is its design), so a
+// long-dead station keeps its climbing age and the machine can hold "offline"
+// indefinitely rather than freezing mid-state when the rf entry is evicted
+//.
+func (s *Store) StationLastSeen(now time.Time) map[string]int {
+	last := map[string]time.Time{}
+	s.capMu.Lock()
+	for id, st := range s.caps {
+		if t, ok := last[id]; !ok || st.lastSeen.After(t) {
+			last[id] = st.lastSeen
+		}
+	}
+	s.capMu.Unlock()
+	s.rfMu.Lock()
+	for id, st := range s.rf {
+		if t, ok := last[id]; !ok || st.lastSeen.After(t) {
+			last[id] = st.lastSeen
+		}
+	}
+	s.rfMu.Unlock()
+	out := make(map[string]int, len(last))
+	for id, t := range last {
+		out[id] = int(now.Sub(t).Seconds())
+	}
+	return out
+}
+
 // countLiveReceivers counts distinct stations seen (via either a decoded nav
 // frame or RF telemetry) within liveReceiverWindow of now — the union of
 // s.caps and s.rf, since a station can report one, the other, or both.
@@ -771,11 +804,31 @@ const sbasType0Hold = 60 * time.Second
 
 // FeedSBAS builds the sbas augmentation-health feed as of now (docs/OUTPUT.md §1.5).
 func (s *Store) FeedSBAS(now time.Time) map[string]SBASEntry {
+	return s.buildSBAS(now, false)
+}
+
+// SBASDetect is the DETECTOR's view of the SBAS store : identical
+// entries to FeedSBAS, but with the sbasStaleAfter filter off, so a PRN that
+// has gone dark stays observable (with a climbing last_seen_s) until RAM
+// eviction (ExpireStations, regression fix) instead of silently vanishing. The silence
+// classifier must run over THIS view: classifying from the already-filtered
+// FeedSBAS meant a dark GEO simply disappeared from the map, its sbas_health
+// machine froze at the last confirmed state, and no event of any type fired —
+// the one constellation whose silence is unambiguous (geostationary, ~1 Hz
+// broadcast, no rise/set) was the one without a silence event.
+func (s *Store) SBASDetect(now time.Time) map[string]SBASEntry {
+	return s.buildSBAS(now, true)
+}
+
+// buildSBAS projects the per-PRN SBAS state to entries; includeStale keeps
+// entries past sbasStaleAfter (the detector view) instead of dropping them
+// (the served feed).
+func (s *Store) buildSBAS(now time.Time, includeStale bool) map[string]SBASEntry {
 	out := make(map[string]SBASEntry)
 	s.sbasMu.Lock()
 	defer s.sbasMu.Unlock()
 	for prn, st := range s.sbas {
-		if now.Sub(st.lastSeen) > sbasStaleAfter {
+		if !includeStale && now.Sub(st.lastSeen) > sbasStaleAfter {
 			continue
 		}
 		code := 1 // OK

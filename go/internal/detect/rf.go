@@ -115,6 +115,29 @@ func (d *Detector) detectStationRF(id string, rf state.StationRF, emit emitFunc)
 	}
 }
 
+// detectStationOffline classifies one observer's liveness (regression fix, wiring the
+// station_offline event regression fix defined but never emitted): a station unseen —
+// no decoded nav frame AND no RF telemetry — past ObserverOfflineThreshold is
+// offline. lastSeenS comes from the unfiltered caps ∪ rf union
+// (state.StationLastSeen); the capability half of that union is never evicted,
+// so the machine can observe (and hold) the offline state indefinitely rather
+// than freezing when the rf entry is evicted. Severity is warning in
+// both directions (the regression fix direction-blind-severity disposition shared by
+// every silence-family classifier; INTEGRITY §5's crit escalation tier is
+// reserved until a second threshold is defined). First sight of an
+// already-offline station seeds silently — no phantom event at daemon start.
+func (d *Detector) detectStationOffline(id string, lastSeenS int, emit emitFunc) {
+	offline := float64(lastSeenS) > ObserverOfflineThreshold
+	emit(id, "offline", boolState(offline, "offline", "online"), func(old string) Event {
+		return Event{
+			Type: "station_offline", OldValue: old, NewValue: boolState(offline, "offline", "online"),
+			Severity: SevWarning,
+			Message:  fmt.Sprintf("station %s %s (unseen %ds)", id, boolState(offline, "offline", "online"), lastSeenS),
+			Params:   map[string]any{"station": id, "last_seen_s": lastSeenS},
+		}
+	})
+}
+
 // spoofGates counts the independent spoofing physics gates currently tripped at a station
 // (docs/DEFENSE-PNT.md §3). v1: the C/N₀-vs-elevation gate — a residual variance that has
 // collapsed at an unnaturally high, uniform C/N₀ (the single-transmitter signature).

@@ -567,3 +567,104 @@ func TestSBASDoNotUse(t *testing.T) {
 		t.Errorf("subject = %s, want S131", evs[0].SV)
 	}
 }
+
+// TestSBASLost guards a dark SBAS GEO — the one always-in-view subject
+// class — must fire a warning sbas_lost once unseen past SBASSilentThreshold,
+// and a recovery once messages resume. Entries model state.SBASDetect's
+// unfiltered view (retained past the served feed's 5 min staleness drop).
+func TestSBASLost(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(8_000_000, 0)
+	fresh := map[string]state.SBASEntry{"133": {Provider: "WAAS", HealthCode: 1, LastSeenS: 2}}
+	d.Tick(t0, nil, fresh, 1) // seeds seen + health OK
+
+	dark := map[string]state.SBASEntry{"133": {Provider: "WAAS", HealthCode: 1, LastSeenS: int(SBASSilentThreshold) + 60}}
+	d.Tick(t0.Add(10*time.Second), nil, dark, 1)
+	evs := d.Tick(t0.Add(80*time.Second), nil, dark, 1)
+	if len(evs) != 1 || evs[0].Type != "sbas_lost" || evs[0].NewValue != "silent" || evs[0].Severity != SevWarning {
+		t.Fatalf("got %+v, want one sbas_lost silent/1", evs)
+	}
+	if evs[0].SV != "S133" {
+		t.Errorf("subject = %s, want S133", evs[0].SV)
+	}
+
+	// Reacquisition: the recovery confirms, and nothing else phantom-fires.
+	d.Tick(t0.Add(200*time.Second), nil, fresh, 1)
+	evs = d.Tick(t0.Add(280*time.Second), nil, fresh, 1)
+	if len(evs) != 1 || evs[0].Type != "sbas_lost" || evs[0].NewValue != "seen" {
+		t.Fatalf("got %+v, want one sbas_lost seen recovery", evs)
+	}
+}
+
+// TestSBASDarknessDoesNotFakeHealthRecovery guards the regression fix health-hold: a
+// test-mode GEO (health latched do_not_use per regression fix) that goes completely dark
+// must NOT fire a do_not_use→ok sbas_health "recovery" as the MT0 latch decays for
+// lack of input — past SBASHealthCurrentWindow the health machine holds, and the
+// only events are the sbas_lost pair.
+func TestSBASDarknessDoesNotFakeHealthRecovery(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(9_000_000, 0)
+	testMode := map[string]state.SBASEntry{"122": {Provider: "SouthPAN", HealthCode: 3, LastSeenS: 1}}
+	d.Tick(t0, nil, testMode, 1) // seeds health do_not_use silently
+
+	// Dark for 2 min: the MT0 latch has decayed (health_code reads 1 at feed
+	// build) but the entry is stale past SBASHealthCurrentWindow — hold.
+	decayed := map[string]state.SBASEntry{"122": {Provider: "SouthPAN", HealthCode: 1, LastSeenS: 120}}
+	d.Tick(t0.Add(10*time.Second), nil, decayed, 1)
+	for _, e := range d.Tick(t0.Add(80*time.Second), nil, decayed, 1) {
+		if e.Type == "sbas_health" {
+			t.Fatalf("stale-latch darkness fired a fabricated sbas_health recovery: %+v", e)
+		}
+	}
+
+	// Fully silent: only the sbas_lost warning fires.
+	dark := map[string]state.SBASEntry{"122": {Provider: "SouthPAN", HealthCode: 1, LastSeenS: int(SBASSilentThreshold) + 30}}
+	d.Tick(t0.Add(100*time.Second), nil, dark, 1)
+	evs := d.Tick(t0.Add(170*time.Second), nil, dark, 1)
+	if len(evs) != 1 || evs[0].Type != "sbas_lost" {
+		t.Fatalf("got %+v, want exactly the sbas_lost event", evs)
+	}
+
+	// Broadcast resumes still in test mode: no health event (do_not_use → do_not_use),
+	// just the silence recovery.
+	d.Tick(t0.Add(250*time.Second), nil, testMode, 1)
+	evs = d.Tick(t0.Add(330*time.Second), nil, testMode, 1)
+	if len(evs) != 1 || evs[0].Type != "sbas_lost" || evs[0].NewValue != "seen" {
+		t.Fatalf("got %+v, want only the sbas_lost recovery (health held at do_not_use throughout)", evs)
+	}
+}
+
+// TestStationOffline guards regression fix wiring: a station unseen past
+// ObserverOfflineThreshold fires a warning station_offline from the unfiltered
+// liveness map, and recovers when it returns. First sight of an already-offline
+// station seeds silently.
+func TestStationOffline(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(10_000_000, 0)
+
+	d.TickStationLiveness(t0, map[string]int{"observer16": 5}) // seeds online
+	gone := map[string]int{"observer16": int(ObserverOfflineThreshold) + 60}
+	d.TickStationLiveness(t0.Add(10*time.Second), gone)
+	evs := d.TickStationLiveness(t0.Add(80*time.Second), gone)
+	if len(evs) != 1 || evs[0].Type != "station_offline" || evs[0].NewValue != "offline" || evs[0].Severity != SevWarning {
+		t.Fatalf("got %+v, want one station_offline offline/1", evs)
+	}
+	if evs[0].SV != "observer16" {
+		t.Errorf("subject = %s, want observer16", evs[0].SV)
+	}
+
+	back := map[string]int{"observer16": 3}
+	d.TickStationLiveness(t0.Add(200*time.Second), back)
+	evs = d.TickStationLiveness(t0.Add(280*time.Second), back)
+	if len(evs) != 1 || evs[0].Type != "station_offline" || evs[0].NewValue != "online" {
+		t.Fatalf("got %+v, want the online recovery", evs)
+	}
+
+	// A station first seen already-offline (daemon restart mid-outage) seeds silently.
+	d2 := New(time.Minute)
+	dead := map[string]int{"colo9": 4000}
+	d2.TickStationLiveness(t0, dead)
+	if evs := d2.TickStationLiveness(t0.Add(120*time.Second), dead); len(evs) != 0 {
+		t.Fatalf("already-offline first sight fired %+v, want none (seed rule)", evs)
+	}
+}

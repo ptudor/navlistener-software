@@ -43,6 +43,48 @@ func TestFeedSBASExcludesStaleEntries(t *testing.T) {
 	}
 }
 
+// TestSBASDetectRetainsStaleEntries guards the DETECTOR's view must keep a
+// dark PRN observable (with its climbing last_seen_s) after the served feed drops
+// it, until RAM eviction — the sbas_lost classifier has no input otherwise.
+func TestSBASDetectRetainsStaleEntries(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	s.sbas[133] = &sbasState{prn: 133, provider: "WAAS", lastType: 1, lastSeen: now}
+
+	at := now.Add(sbasStaleAfter + time.Minute)
+	got := s.SBASDetect(at)
+	ent, ok := got["133"]
+	if !ok {
+		t.Fatalf("stale PRN missing from SBASDetect: %+v", got)
+	}
+	if want := int(at.Sub(now).Seconds()); ent.LastSeenS != want {
+		t.Errorf("LastSeenS = %d, want %d (the climbing age)", ent.LastSeenS, want)
+	}
+	// The served feed must still drop it (regression fix unchanged).
+	if served := s.FeedSBAS(at); len(served) != 0 {
+		t.Errorf("FeedSBAS still serves the stale PRN: %+v", served)
+	}
+}
+
+// TestStationLastSeen guards station_offline read model: the union of
+// nav-capability and RF recency, unfiltered, so a dark station keeps a climbing
+// age (the capability half is never evicted).
+func TestStationLastSeen(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	s.recordCapability("stnA", gnss.GPS, 0, now.Add(-10*time.Minute))
+	s.rf["stnA"] = &rfStation{id: "stnA", lastSeen: now.Add(-2 * time.Minute)} // fresher RF wins
+	s.recordCapability("stnB", gnss.GPS, 0, now.Add(-40*time.Minute))          // long-dark, caps only
+
+	ages := s.StationLastSeen(now)
+	if got, want := ages["stnA"], 120; got != want {
+		t.Errorf("stnA age = %d, want %d (the fresher of caps/rf)", got, want)
+	}
+	if got, want := ages["stnB"], 2400; got != want {
+		t.Errorf("stnB age = %d, want %d (retained well past every serving filter)", got, want)
+	}
+}
+
 // TestFeedGlobalSBASAndZeroFill guards the global feed must count fresh SBAS PRNs
 // (they live in s.sbas, not the shards) and zero-fill every per-constellation pair so a
 // count of 0 is an explicit value, not an absent key.

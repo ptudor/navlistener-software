@@ -67,6 +67,33 @@ const (
 	// vote to count (docs/INTEGRITY.md §2/§6).
 	FreshReceiverThreshold = 60.0
 
+	// SBASSilentThreshold : an SBAS PRN unseen this long is lost. SBAS
+	// GEOs need no visibility gate — geostationary, broadcasting ~1 message/s
+	// continuously — so silence is unambiguous where the MEO/IGSO threshold
+	// above needs the regression fix fleet floor. 300 s mirrors state.sbasStaleAfter
+	// (the boundary where the served sbas feed already drops the PRN as stale,
+	// regression fix), so the event confirms one debounce after the entry leaves the
+	// feed — the event channel and the feed tell the same story. Duplicated
+	// rather than imported because detect depends on state, not the reverse
+	// (the liveReceiverWindow precedent); keep the two in sync if either moves.
+	// This is an operational bound derived from the in-repo staleness standard,
+	// NOT a DO-229 message-timeout value — RTCA DO-229 is paywalled/unvendored
+	// (reference/REFERENCES.md "RTCA-DO-229"); if it is ever acquired, re-derive
+	// this from its timeout table (the regression fix flag).
+	SBASSilentThreshold = 300.0
+
+	// SBASHealthCurrentWindow  bounds how stale an SBAS entry may be
+	// before its health_code stops being classified. The served health is the
+	// regression fix MT0-recency latch, whose horizon is state.sbasType0Hold (60 s,
+	// the DO-229-family exclusion interval — mirrored here, keep in sync): once
+	// no message of ANY type has arrived for longer than that, the latch has
+	// decayed for lack of input, not because the provider cleared it, and
+	// classifying the resulting code-1 would fire a fabricated
+	// do_not_use → ok "recovery" on a test-mode GEO that simply went dark
+	// (~2 min into the outage, well before SBASSilentThreshold fires the real
+	// sbas_lost). Beyond this window the health machine holds (regression fix rule).
+	SBASHealthCurrentWindow = 60.0
+
 	// PNT-defense Tier-0 operating points (docs/DEFENSE-PNT.md §2/§3/§4). These are
 	// deliberately CONSERVATIVE and OBSERVATIONAL in v1: the design mandates learning
 	// per-station quiet-time distributions before freezing alert thresholds, so these

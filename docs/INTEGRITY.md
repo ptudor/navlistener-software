@@ -57,7 +57,8 @@ consumer align to it.
 | **Time disco (clock jump)** | `> 2.5 ns` (`TimeDiscoThreshold`) → warn | `> 10 ns` (`TimeDiscoSevereThreshold`) → crit | Galileo only in intsat today; `ns/3.335 ≈ m`; §3 |
 | **SISA / URA change** | crosses `3.0 m` (`SISAAlertThreshold`) | warn | accuracy degradation |
 | **Silent SV** | unseen `> 3600 s` (`SilentThreshold`), classified only with `≥ 4` live receivers (`SilenceMinReceivers`) | warn (`observation_lost`) | **precondition : "always in view" is true of the constellation as seen by a globally distributed fleet, not of one station's sky** — from a sub-footprint fleet every MEO/IGSO SV sets once per orbital pass and the classifier manufactured a false warning pair per pass. Below the floor the classifier is suppressed (machines hold, regression fix); constellation-outage coverage there comes from `eph_aged`/`position_unknown`/`capability_signal_lost`. The floor is a necessary-not-sufficient proxy until the observer-geometry pass lands the real gate (propagated elevation > mask from ≥ 1 live station) |
-| **Observer offline** | station unseen `> 300 s` (`ObserverOfflineThreshold`) | warn→crit (`station_offline`) | operator-actionable; shorter than SV silence |
+| **Silent SBAS GEO** | PRN unseen `> 300 s` (`SBASSilentThreshold`) | warn (`sbas_lost`) | no visibility caveat — geostationary, ~1 Hz broadcast, never rise/set noise. Mirrors `sbasStaleAfter` (the feed's own staleness drop), so the event confirms one debounce after the entry leaves the sbas feed. Classified from the detector's **unfiltered** store view (`SBASDetect`); while a PRN is unseen past `SBASHealthCurrentWindow` (60 s, the regression fix MT0-latch horizon) its `sbas_health` machine holds rather than reading the decayed latch as a fabricated recovery |
+| **Observer offline** | station unseen `> 300 s` (`ObserverOfflineThreshold`) | warn (`station_offline`) | operator-actionable; shorter than SV silence. Wired per regression fix (regression fix defined it but nothing emitted it): classified from the unfiltered caps ∪ rf liveness map, so a dark station stays observable indefinitely. The crit escalation tier is reserved until a second threshold is defined |
 | **Fresh-receiver window** | `≤ 60 s` (`FreshReceiverThreshold`) | — | a receiver's vote only counts if it saw the SV this recently |
 | **Debounce** | `60 s` (`DebounceDuration`) | — | provisional state must persist this long to confirm |
 
@@ -173,7 +174,8 @@ The baseline vocabulary and severities below are **verified against intsat's shi
 | `clock_jump` | time-disco band change | 1, → 2 above 10 ns |
 | `sisa_change` | SISA/URA crosses 3 m, or the broadcast index decodes to the "no accuracy prediction — use at own risk" sentinel (`new_value` `no_accuracy`, regression fix) | 1 |
 | `observation_lost` | SV silent > 3600 s — classified only while `≥ SilenceMinReceivers` stations are live (below the fleet-footprint floor, silence is orbital mechanics, not an outage; §2) | 1 |
-| `station_offline` | observer unseen > 300 s | 1–2 |
+| `station_offline` | observer unseen > 300 s — wired per regression fix (definition, from the unfiltered station-liveness map) | 1 |
+| `sbas_lost` | SBAS PRN unseen > 300 s  — the augmentation mirror of `observation_lost`, with no visibility caveat (GEOs never set); subject `S<prn>` | 1 |
 | `position_unknown` | a monitored SV has no computable position | 1 |
 | `osnma_change` | Galileo OSNMA authentication on↔off | 0 |
 | `sbas_health` | SBAS message-type-0 / health change (do-not-use is latched on MT0 recency — `sbasType0Hold` — not the last message, so a test-mode MT0/2 interleave reads do-not-use, as a DO-229 receiver would) | sev 0 (info), → sev 2 (critical) on do-not-use — these are event *severities*; the served SBAS `health_code` itself is only ever 1 (OK) or 3 (do-not-use), per the §OUTPUT 2.2 enum  |

@@ -115,6 +115,22 @@ func (d *Detector) TickStations(now time.Time, stations map[string]state.Station
 	})
 }
 
+// TickStationLiveness advances the station_offline classifier (regression fix, the regression fix
+// wiring) over the same debounced machines. lastSeen is the UNFILTERED per-station
+// age map (state.StationLastSeen): it must come from retained state, not the
+// staleness-filtered StationRF map TickStations consumes, or an offline station
+// vanishes from the read model before its machine can ever observe the outage —
+// the same trap regression fix closed for SBAS.
+func (d *Detector) TickStationLiveness(now time.Time, lastSeen map[string]int) []Event {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.run(now, func(emit emitFunc) {
+		for id, age := range lastSeen {
+			d.detectStationOffline(id, age, emit)
+		}
+	})
+}
+
 // run collects the events a classifier set produces, deterministically ordered. The
 // caller holds d.mu (observe mutates the shared machines).
 func (d *Detector) run(now time.Time, classify func(emit emitFunc)) []Event {
@@ -405,14 +421,41 @@ func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, liveRec
 	})
 }
 
-// detectSBAS runs the augmentation-health classifier for one SBAS PRN.
+// detectSBAS runs the silence and augmentation-health classifiers for one SBAS
+// PRN. The entry comes from state.SBASDetect — the UNFILTERED store view
+//  — so a dark PRN stays observable here after the served feed drops it.
 func (d *Detector) detectSBAS(prn string, s state.SBASEntry, emit emitFunc) {
+	subject := "S" + prn
+
+	// Silence (sbas_lost, regression fix): the SBAS mirror of observation_lost, with no
+	// visibility caveat — a GEO never sets, so a PRN unseen past the feed's own
+	// staleness boundary is a real regional-augmentation outage (or a station-side
+	// loss the station detectors corroborate), never rise/set noise.
+	silent := float64(s.LastSeenS) > SBASSilentThreshold
+	emit(subject, "sbas_silence", boolState(silent, "silent", "seen"), func(old string) Event {
+		return Event{
+			Type: "sbas_lost", OldValue: old, NewValue: boolState(silent, "silent", "seen"),
+			Severity: SevWarning,
+			Message:  fmt.Sprintf("SBAS %s (%s) unseen %ds", prn, s.Provider, s.LastSeenS),
+			Params:   map[string]any{"prn": prn, "provider": s.Provider, "last_seen_s": s.LastSeenS},
+		}
+	})
+	// Past the latch horizon, the stored health is the regression fix MT0 latch decayed
+	// for lack of input, not a current observation — hold the health machine
+	// rather than classify stale data (the regression fix unknown-is-not-ok rule; in
+	// particular a do-not-use latch must not "recover" to OK just because the
+	// MT0s stopped along with everything else when the PRN went dark). Note this
+	// window (60 s) is deliberately tighter than SBASSilentThreshold: between
+	// them, both machines hold and only the climbing last_seen_s tells the story.
+	if float64(s.LastSeenS) > SBASHealthCurrentWindow {
+		return
+	}
+
 	band := "ok"
 	sev := SevInfo
 	if s.HealthCode == 3 { // do-not-use
 		band, sev = "do_not_use", SevCritical
 	}
-	subject := "S" + prn
 	emit(subject, "sbas_health", band, func(old string) Event {
 		return Event{
 			Type: "sbas_health", OldValue: old, NewValue: band, Severity: sev,
