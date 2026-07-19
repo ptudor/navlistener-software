@@ -69,7 +69,7 @@ func TestHealthDebounce(t *testing.T) {
 	d := New(time.Minute)
 	t0 := time.Unix(1_000_000, 0)
 	svs := map[string]state.FeedSV{"G05@0": gps("G05", 5, 1)} // healthy
-	d.Tick(t0, svs, nil, 1)                                      // seed OK
+	d.Tick(t0, svs, nil, 1)                                   // seed OK
 
 	// Unhealthy: this tick starts the provisional window (no event yet).
 	bad := map[string]state.FeedSV{"G05@0": gps("G05", 5, 2)}

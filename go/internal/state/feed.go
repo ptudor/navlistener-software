@@ -137,10 +137,10 @@ type FeedSV struct {
 	// tracked signal's channel against the broadcast almanac's HnA-derived
 	// channel for the slot (docs/OUTPUT.md §1.4 freq_ch) — a mismatch means
 	// mis-identification or spoofing (the DEFENSE-PNT cross-check family).
-	FreqCh    *int     `json:"freq_ch,omitempty"`
-	XM        *float64 `json:"x_m,omitempty"`
-	YM        *float64 `json:"y_m,omitempty"`
-	ZM        *float64 `json:"z_m,omitempty"`
+	FreqCh *int     `json:"freq_ch,omitempty"`
+	XM     *float64 `json:"x_m,omitempty"`
+	YM     *float64 `json:"y_m,omitempty"`
+	ZM     *float64 `json:"z_m,omitempty"`
 	// PosAtUnixNs (regression fix, detector-facing — not part of the JSON contract) is
 	// the exact propagation epoch (svState.posAt) that produced x_m/y_m/z_m.
 	// The cross-signal agreement check must compare two signals' positions ONLY
@@ -158,10 +158,10 @@ type FeedSV struct {
 	// so a feed built between a changeover apply and the next Propagate tick
 	// cannot pair an old position with a new IOD label and read the genuine
 	// changeover delta as divergence. Nil when no fresh Kepler position.
-	PosIOD *int `json:"-"`
-	Tow         *int  `json:"tow,omitempty"`
-	Wn          *int  `json:"wn,omitempty"`
-	LastSeenS int      `json:"last_seen_s"`
+	PosIOD    *int `json:"-"`
+	Tow       *int `json:"tow,omitempty"`
+	Wn        *int `json:"wn,omitempty"`
+	LastSeenS int  `json:"last_seen_s"`
 	// Conf (regression fix, docs/OUTPUT.md §1.1 / INTEGRITY §6) is the corroboration
 	// count: distinct sources that delivered a structurally-decoded nav frame
 	// for THIS satellite×signal within the fresh-receiver window. Always
