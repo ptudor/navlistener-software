@@ -417,7 +417,7 @@ func (st *svState) foldGGTO(valid bool, a0g, a1g, t0g float64, wn0g int) {
 // accuracy-table selectors for accKind (docs/MATH.md §6).
 const (
 	accNone  uint8 = 0 // no accuracy captured for this constellation/signal
-	accURA   uint8 = 1 // GPS/QZSS/NavIC/BeiDou-B1I URA step table
+	accURA   uint8 = 1 // GPS/QZSS/NavIC/BeiDou-B1I URA step table (NavIC: same nominal formula + N=15 sentinel, NAVIC-SPS-L5S §6.2.1.4 Table 23 — regression fix)
 	accSISA  uint8 = 2 // Galileo SISA linear bands
 	accURAED uint8 = 3 // GPS/QZSS CNAV signed URA_ED (IS-GPS-200N §30.3.3.1.1.4), regression fix
 	// accSISAIRaw  is BeiDou B-CNAV2's SISAI, served as a RAW packed

@@ -963,7 +963,16 @@ func healthFor(g gnss.GNSSID, sig, raw int) (code, level int) {
 			// normal-operation patterns.
 			return 1, 0
 		}
-	default: // NavIC (decoder is a tracked stub, regression fix): conservative opaque mapping.
+	default:
+		// NavIC — UNREACHABLE placeholder : the decoder is a tracked
+		// stub (regression fix, gnss/frame/navic.go), nothing ever creates a NavIC
+		// svState, and this GPS-flavored opaque mapping was never ICD-derived.
+		// The IRNSS SPS ICD does NOT define a 6-bit health word: NavIC health
+		// is two ONE-BIT flags — "L5 flag" and "S flag", 1 = "Some or all
+		// navigation data on [that] SPS signal are bad" (NAVIC-SPS-L5S
+		// §6.2.1.6 Table 24). When the decoder lands, replace this arm with a
+		// per-signal Table 24 mapping (the CNAV per-carrier arms above are the
+		// shape to follow); do not let this placeholder go live as-is.
 		if raw == 0 {
 			return 1, 0
 		}

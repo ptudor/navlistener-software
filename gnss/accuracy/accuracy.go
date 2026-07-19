@@ -15,6 +15,13 @@ import "math"
 // must surface the sentinel index itself (the feed's acc_index / the detector's
 // no_accuracy state), or the one broadcast field that says "do not trust this
 // SV's accuracy" silently vanishes.
+//
+// the NavIC claim is not a GPS-shape assumption — the IRNSS SPS ICD
+// independently specifies the identical nominal-value formula ("If the value
+// of N is 6 or less, X = 2(1 + N/2) … but less than 15, X = 2(N − 2)") and the
+// same N=15 no-prediction sentinel (NAVIC-SPS-L5S §6.2.1.4, Table 23). Note
+// Table 23's rounding advice for N = 1/3/5 (2.8/5.7/11.3 m) matches
+// IS-GPS-200N's, so no NavIC-specific table is needed here.
 func URAMeters(n int) (float64, bool) {
 	if n < 0 || n >= 15 {
 		return 0, false
