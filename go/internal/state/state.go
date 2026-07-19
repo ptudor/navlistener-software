@@ -552,6 +552,17 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 		s.applyRF(f)
 		return
 	}
+	// regression fix defense in depth: both ingest boundaries (scanUBX/parseRAWX for
+	// dial, the GNF1 push handler) already reject out-of-domain gnssIds before
+	// a frame can reach FramesTotal or the historian, so this gate is for any
+	// FUTURE ingest path (e.g. central SBF decode) — it keeps the metric label
+	// domain honest by never printing the raw byte (the metrics.go contract:
+	// "numeric gnssId (0..7)"), using a clamped label instead. Placed before
+	// svIDInRange so an invalid constellation never consults the envelope table.
+	if !f.GnssID.Valid() {
+		metrics.DecodeErrorsTotal.WithLabelValues("out_of_range", "gnssid_range").Inc()
+		return
+	}
 	if !svIDInRange(f.GnssID, f.SvID) {
 		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "svid_range").Inc()
 		return

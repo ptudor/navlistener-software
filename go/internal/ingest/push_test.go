@@ -409,6 +409,52 @@ func TestPushHappyPath(t *testing.T) {
 	}
 }
 
+// TestPushRejectsOutOfDomainGnssID guards regression fix on the push path: a GNF1 nav
+// record whose gnssId byte is outside the documented domain is dropped at the
+// boundary (never reaching the decode channel, FramesTotal, or the historian)
+// and its sequence is acked — a corrupt id is not fixable by retransmit.
+func TestPushRejectsOutOfDomainGnssID(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	addr, out := startPushServer(t, ctx, tokenAuth("observer16", "s3cret", "ubx"))
+
+	conn := dialPush(t, addr)
+	defer conn.Close()
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx"}); err != nil {
+		t.Fatal(err)
+	}
+	if ft, _, err := wire.ReadFrame(conn); err != nil || ft != wire.Welcome {
+		t.Fatalf("welcome frame: ft=%d err=%v", ft, err)
+	}
+
+	bad := wire.RawRecord{RecvUnixNs: time.Now().UnixNano(), GnssID: 42, SvID: 5, Raw: make([]byte, 40)}
+	good := wire.RawRecord{RecvUnixNs: time.Now().UnixNano(), GnssID: gnss.GPS, SvID: 5, Raw: make([]byte, 40)}
+	if err := wire.WriteFrame(conn, wire.Data, wire.EncodeData(1, bad)); err != nil {
+		t.Fatal(err)
+	}
+	if err := wire.WriteFrame(conn, wire.Data, wire.EncodeData(2, good)); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case f := <-out:
+		if f.GnssID != gnss.GPS {
+			t.Fatalf("out-of-domain gnssId reached the decode channel: %+v", f)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the valid frame did not reach the decode channel")
+	}
+	select {
+	case f := <-out:
+		t.Fatalf("unexpected second frame: %+v", f)
+	case <-time.After(100 * time.Millisecond):
+	}
+	// Both sequences ack: the rejected record must not wedge the feeder's spool.
+	if seq := readAck(t, conn); seq != 2 {
+		t.Errorf("ack seq = %d, want 2 (rejected record still acked)", seq)
+	}
+}
+
 // TestPushReplayFromReconnect models a feeder resuming after a disconnect: it
 // replays unacked frames starting from a global sequence well past 1. The collector
 // must ack the highest sequence it saw this connection (not "contiguous from 1"),

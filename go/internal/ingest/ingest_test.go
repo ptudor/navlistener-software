@@ -72,6 +72,60 @@ func TestScanUBXSFRBX(t *testing.T) {
 	}
 }
 
+// TestScanUBXRejectsOutOfDomainGnssID guards the SFRBX gnssId byte is
+// receiver metadata outside any nav CRC, and nothing downstream re-checks it —
+// an out-of-domain id (IMES=4, 8..255) must be rejected at the boundary under
+// its own error label, before it can mint a FramesTotal series or persist a
+// nav_frames row outside the schema's documented 0..7 domain.
+func TestScanUBXRejectsOutOfDomainGnssID(t *testing.T) {
+	words := make([]uint32, 10)
+	for _, bad := range []gnss.GNSSID{4, 8, 42, 255} { // IMES and out-of-range
+		msg := buildUBX(ubxClassRXM, ubxIDSFRBX, buildSFRBXPayload(bad, 5, 0, 0, words))
+		frames, errs := collect(t, scanUBX, msg)
+		if len(frames) != 0 {
+			t.Errorf("gnssId %d emitted %d frames, want 0", bad, len(frames))
+		}
+		if len(errs) != 1 || errs[0] != "ubx_gnssid" {
+			t.Errorf("gnssId %d errors = %v, want [ubx_gnssid]", bad, errs)
+		}
+	}
+	// Boundary: NavIC (7) is the top of the valid domain and must pass.
+	msg := buildUBX(ubxClassRXM, ubxIDSFRBX, buildSFRBXPayload(gnss.NavIC, 5, 0, 0, words))
+	frames, errs := collect(t, scanUBX, msg)
+	if len(frames) != 1 || len(errs) != 0 {
+		t.Errorf("gnssId 7 frames/errs = %d/%v, want 1/none", len(frames), errs)
+	}
+}
+
+// TestScanUBXRAWXRejectsOutOfDomainGnssID : a RAWX measurement whose
+// gnssId byte is out of domain is dropped per-field (like the other invalid
+// measurement fields) while its well-formed siblings still emit.
+func TestScanUBXRAWXRejectsOutOfDomainGnssID(t *testing.T) {
+	body := make([]byte, 16+2*32)
+	binary.LittleEndian.PutUint64(body[0:], math.Float64bits(345601.25))
+	binary.LittleEndian.PutUint16(body[8:], 2372)
+	body[11] = 2
+	m0 := body[16:]
+	binary.LittleEndian.PutUint64(m0[0:], math.Float64bits(2.2e7))
+	m0[20], m0[21] = 42, 7 // out-of-domain gnssId
+	m0[30] = 0x01
+	m1 := body[48:]
+	binary.LittleEndian.PutUint64(m1[0:], math.Float64bits(2.2e7+5))
+	m1[20], m1[21] = 0, 7 // valid GPS
+	m1[30] = 0x01
+
+	msg := buildUBX(0x02, 0x15, body)
+	var got []*RawFrame
+	err := scanUBX(bytes.NewReader(msg), "test", fixedTime,
+		func(f *RawFrame) { got = append(got, f) }, func(string) {})
+	if err != io.EOF && err != io.ErrUnexpectedEOF {
+		t.Fatalf("scan err = %v", err)
+	}
+	if len(got) != 1 || got[0].GnssID != gnss.GPS {
+		t.Fatalf("emitted %d frames (want just the valid GPS measurement): %+v", len(got), got)
+	}
+}
+
 func TestScanUBXChecksumFailDropped(t *testing.T) {
 	payload := buildSFRBXPayload(gnss.GPS, 5, 0, 0, make([]uint32, 10))
 	msg := buildUBX(ubxClassRXM, ubxIDSFRBX, payload)

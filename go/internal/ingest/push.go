@@ -538,6 +538,21 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 			if err != nil {
 				metrics.PushErrorsTotal.WithLabelValues(observer, "short_record").Inc()
 				unforwarded++
+			} else if !IsTelemetryType(int(rec.FrameType)) && !rec.GnssID.Valid() {
+				// the GNF1 record's gnssId byte is outside every nav
+				// CRC — gate it on the documented 0..7-minus-IMES domain at the
+				// boundary (telemetry records don't carry a meaningful gnssId
+				// and are exempt), before the frame can mint a
+				// FramesTotal{gnssid=<raw>} series or persist a nav_frames row
+				// outside the schema's domain. A corrupt id is not fixable by
+				// retransmit, so the sequence is acked like bad_telemetry.
+				metrics.PushErrorsTotal.WithLabelValues(observer, "gnssid_range").Inc()
+				unforwarded++
+				mu.Lock()
+				if seq > highest {
+					highest = seq
+				}
+				mu.Unlock()
 			} else if f := recordToFrame(rec, feed, observer); f == nil {
 				metrics.PushErrorsTotal.WithLabelValues(observer, "bad_telemetry").Inc()
 				unforwarded++

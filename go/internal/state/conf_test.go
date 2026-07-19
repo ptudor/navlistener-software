@@ -46,6 +46,22 @@ func TestConfCountsFreshNavSources(t *testing.T) {
 	}
 }
 
+// TestApplyRejectsOutOfDomainGnssID guards defense-in-depth gate: a
+// frame whose gnssId is outside the documented 0..7-minus-IMES domain (already
+// unreachable from the gated ingest boundaries, but a future ingest path might
+// not gate) must create no state and must not consult the svId envelope table.
+func TestApplyRejectsOutOfDomainGnssID(t *testing.T) {
+	st := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	for _, bad := range []gnss.GNSSID{4, 8, 42, 255} {
+		st.Apply(&ingest.RawFrame{Recv: now, Source: "test", GnssID: bad, SvID: 5, SigID: 0,
+			Words: sf1Words(85)})
+	}
+	if svs := st.FeedSVs(now.Add(time.Second)); len(svs) != 0 {
+		t.Fatalf("out-of-domain gnssId created state: %+v", svs)
+	}
+}
+
 // TestConfZeroForObservationOnlyEntry: RAWX observables carry no nav bits, so
 // they corroborate no broadcast content — an iono-only entry serves conf 0
 // (a known value, not an unknown), matching its health_code 0.

@@ -73,10 +73,20 @@ func scanUBX(r io.Reader, source string, now func() time.Time, emit func(*RawFra
 		}
 		switch {
 		case cls == ubxClassRXM && id == ubxIDSFRBX:
-			if f := parseSFRBX(body, source, now()); f != nil {
-				emit(f)
-			} else {
+			// the gnssId byte is receiver metadata outside any nav
+			// CRC/parity — gate it on the documented domain (0..7 minus IMES,
+			// gnss.GNSSID.Valid) at the boundary, before the frame can mint a
+			// FramesTotal{gnssid=<raw>} series, persist a nav_frames row outside
+			// the schema's documented 0..7 domain (each bogus id also minting a
+			// compress_segmentby segment), or split the dedup-on-read identity.
+			// Distinct error label so a receiver emitting out-of-domain ids is
+			// visible in /metrics, not conflated with structural malformation.
+			if f := parseSFRBX(body, source, now()); f == nil {
 				onErr("ubx_sfrbx")
+			} else if !f.GnssID.Valid() {
+				onErr("ubx_gnssid")
+			} else {
+				emit(f)
 			}
 		case cls == ubxClassRXM && id == ubxIDRAWX:
 			// only STRUCTURAL malformation is a parse error. A well-formed
@@ -161,10 +171,19 @@ func parseRAWX(p []byte, source string, recv time.Time, emit func(*RawFrame)) (i
 			cpValid, arcBreak = false, true
 			cpCyc = 0
 		}
+		// per-measurement gnssId is receiver metadata like the fields
+		// above — an out-of-domain id (IMES, 8..255) would key phantom iono
+		// tracks and split the (gnssid, svid) identity downstream. Same
+		// boundary rule as the SFRBX gate; counted per-field like its siblings.
+		gnssID := gnss.GNSSID(m[20])
+		if !gnssID.Valid() {
+			metrics.RawObsInvalidTotal.WithLabelValues(source, "gnssid").Inc()
+			continue
+		}
 		emit(&RawFrame{
 			Recv:   recv,
 			Source: source,
-			GnssID: gnss.GNSSID(m[20]),
+			GnssID: gnssID,
 			SvID:   int(m[21]),
 			SigID:  int(m[22]),
 			FreqID: int(m[23]),
