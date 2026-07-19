@@ -786,6 +786,21 @@ func (s *Store) applySBAS(f *ingest.RawFrame) {
 		countDecodeFailure(f, "sbas", err)
 		return
 	}
+	// PreambleOK previously gated nothing — even a message whose preamble
+	// didn't match one of the three ICD-mandated SBAS values (0x53/0x9A/0xC6) still
+	// updated doNotUse/lastType. Now (with CRC-24Q check in DecodeSBASL1
+	// already ruling out most corruption) this is defense in depth: a structurally
+	// self-consistent but non-standard-preamble message is still not trusted for
+	// the do-not-use alarm.
+	// checked BEFORE the success metric and the capability fingerprint —
+	// a rejected message must not count as a successful decode, and above all
+	// must not install the durable (1,0) station capability (capStation never
+	// forgets a signal, trust-only-verified-decodes rule). Counted under
+	// its own label so the defense-in-depth gate is visible working in /metrics.
+	if !m.PreambleOK {
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "sbas_preamble").Inc()
+		return
+	}
 	metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "sbas").Inc()
 	// all recency below is the collector-local clock — staleness ages
 	// (sbasStaleAfter, capability windows) must never absorb feeder clock skew.
@@ -794,15 +809,6 @@ func (s *Store) applySBAS(f *ingest.RawFrame) {
 	// by design; record it only once decode has actually succeeded, never before.
 	if f.Source != "" {
 		s.recordCapability(f.Source, f.GnssID, f.SigID, recv)
-	}
-	// PreambleOK previously gated nothing — even a message whose preamble
-	// didn't match one of the three ICD-mandated SBAS values (0x53/0x9A/0xC6) still
-	// updated doNotUse/lastType. Now (with CRC-24Q check in DecodeSBASL1
-	// already ruling out most corruption) this is defense in depth: a structurally
-	// self-consistent but non-standard-preamble message is still not trusted for
-	// the do-not-use alarm.
-	if !m.PreambleOK {
-		return
 	}
 
 	s.sbasMu.Lock()

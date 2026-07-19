@@ -189,10 +189,17 @@ func TestApplySBASSkipsUpdateWhenPreambleNotOK(t *testing.T) {
 
 	// A message with a preamble not in {0x53, 0x9A, 0xC6}, type 0 (would set
 	// doNotUse if applied) -- must be entirely ignored.
-	s.Apply(&ingest.RawFrame{GnssID: gnss.SBAS, SvID: 133, SigID: 0, Recv: now,
+	s.Apply(&ingest.RawFrame{GnssID: gnss.SBAS, SvID: 133, SigID: 0, Recv: now, Source: "obs1",
 		Words: sbasRawWords(0x00, 0)})
 	if got := s.FeedSBAS(now); len(got) != 0 {
 		t.Fatalf("bad-preamble message must not create SBAS state: %+v", got)
+	}
+	// a preamble-rejected message is not a successful decode — it must
+	// not install the durable (1,0) station capability fingerprint either
+	// (capStation never forgets a signal; a poisoned entry later drives the
+	// capability_signal_lost / capability_impossible classifiers, regression fix).
+	if caps := s.FeedStationCapabilities(now); len(caps["obs1"]) != 0 {
+		t.Fatalf("bad-preamble message recorded a capability: %+v", caps["obs1"])
 	}
 
 	// A message with a valid preamble and the same type 0 -- must apply normally.
