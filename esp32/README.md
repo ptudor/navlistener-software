@@ -18,10 +18,30 @@ orbit math stay central in the collector (`../docs/DESIGN.md §1`).
 
 ## Build & flash
 
-Toolchain is the house ESP-IDF v5.5 at `~/esp/esp-idf`, with its Python venv built on
-**3.12** (MacPorts `/opt/local/bin/python3.12`) under `~/.espressif`. Drive it explicitly —
-the system `python3` is 3.14, which IDF 5.5 doesn't support yet, so `export.sh` must find the
-3.12 env, not one keyed to the system interpreter:
+Toolchain is the house ESP-IDF v5.5 at `~/esp/esp-idf`, with its tools and Python venv
+under `~/.espressif` (stay inside `~/Git`). The pinned venv is **3.12** (MacPorts
+`/opt/local/bin/python3.12`, `idf5.5_py3.12_env`), which is what `export.sh` resolves when it
+exists. It is a preference, not a hard requirement: `install.sh` builds its venv from the
+system interpreter, and IDF **5.5.4 builds this project against a `py3.14` env** — verified
+2026-07-24 on this machine, correcting the older note that 5.5 could not use 3.14.
+
+**One-time bootstrap on a machine that has never built this** (`~/.espressif` absent):
+
+```sh
+IDF_TOOLS_PATH=$HOME/.espressif $HOME/esp/esp-idf/install.sh esp32c6
+```
+
+Then build:
+
+```sh
+./build-navfeeder-esp.sh                        # set-target esp32c6 (guarded) + build
+./build-navfeeder-esp.sh flash                  # + flash & monitor; PORT= picks the device
+```
+
+The script exports `IDF_TOOLS_PATH`, prefers the 3.12 env, sources `export.sh`, and preflights
+the venv — a missing environment now prints the exact bootstrap command above and stops,
+instead of failing several steps later inside `export.sh` with a path for a Python version you
+never asked for. The equivalent by hand:
 
 ```sh
 export IDF_TOOLS_PATH=$HOME/.espressif
@@ -32,9 +52,6 @@ idf.py set-target esp32c6
 idf.py build
 idf.py -p /dev/cu.usbmodem* flash monitor      # C6 shows up as a USB-Serial-JTAG device
 ```
-
-`./build-navfeeder-esp.sh` wraps the first two steps (and `./build-navfeeder-esp.sh flash`
-flashes + monitors; set `PORT=` to pick the serial device).
 
 ## What each phase does
 

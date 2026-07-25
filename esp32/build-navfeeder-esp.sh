@@ -13,13 +13,47 @@ if [ ! -f "$IDF/export.sh" ]; then
     exit 1
 fi
 
-# Tools + Python env live under ~/.espressif (stay inside ~/Git). The IDF v5.5 venv is
-# built on Python 3.12 (idf5.5_py3.12_env); prepend it so export.sh resolves the matching env
-# instead of hunting for one keyed to the system python. Rebuild the env with:
-#   /opt/local/bin/python3.12 $IDF/tools/idf_tools.py install-python-env
+# Tools + Python env live under ~/.espressif (stay inside ~/Git). idf5.5_py3.12_env is
+# the pinned venv (MacPorts python3.12); prepend it so export.sh resolves that one rather
+# than hunting for an env keyed to whatever `python3` currently is. It is a preference, not a
+# requirement: `install.sh` builds its venv from the system interpreter, and IDF 5.5.4 does
+# build this project against a py3.14 env (verified 2026-07-24, regression fix) — so an env with a
+# different Python minor is accepted with a note, not an error.
 export IDF_TOOLS_PATH="${IDF_TOOLS_PATH:-$HOME/.espressif}"
 PYENV="$IDF_TOOLS_PATH/python_env/idf5.5_py3.12_env/bin"
-[ -d "$PYENV" ] && PATH="$PYENV:$PATH" && export PATH
+
+# regression fix preflight. This check used to be a comment: the PATH prepend was
+# `[ -d "$PYENV" ] && ...`, so a missing env silently no-op'd and export.sh then went hunting
+# for an env keyed to whatever `python3` happens to be (on this machine: a py3.14 env that
+# does not exist either), failing several steps later with a path nobody recognizes. Say what
+# is wrong and print the exact remediation BEFORE sourcing export.sh.
+if [ -d "$PYENV" ]; then
+    PATH="$PYENV:$PATH"; export PATH
+elif [ -n "$(ls -d "$IDF_TOOLS_PATH"/python_env/*/bin 2>/dev/null)" ]; then
+    # A different env exists (other IDF release or Python minor) — the normal state after a
+    # plain `install.sh`, which builds its venv from the system interpreter. Let export.sh
+    # resolve it and say which, so a version-specific failure later is not a mystery.
+    {
+        echo "NOTE: pinned $PYENV absent; export.sh will resolve one of:"
+        ls -d "$IDF_TOOLS_PATH"/python_env/*/ 2>/dev/null | sed 's/^/          /'
+    } >&2
+else
+    PY312="${IDF_PYTHON:-/opt/local/bin/python3.12}"   # MacPorts (house macOS toolchain)
+    {
+        echo "ESP-IDF Python environment not found under $IDF_TOOLS_PATH/python_env."
+        echo "Nothing can build until it is bootstrapped. Run ONE of:"
+        echo
+        echo "  # full toolchain + python env for this target (fresh machine):"
+        echo "  IDF_TOOLS_PATH=$IDF_TOOLS_PATH $IDF/install.sh esp32c6"
+        echo
+        echo "  # python env only (toolchain already installed):"
+        echo "  IDF_TOOLS_PATH=$IDF_TOOLS_PATH $PY312 $IDF/tools/idf_tools.py install-python-env"
+        echo
+        [ -x "$PY312" ] || echo "NOTE: $PY312 is missing too — install it (MacPorts: port install python312)"
+        echo "Then re-run: $0 $*"
+    } >&2
+    exit 1
+fi
 # shellcheck disable=SC1091
 . "$IDF/export.sh"
 
