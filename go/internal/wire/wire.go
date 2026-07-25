@@ -177,6 +177,20 @@ func ParseHello(payload []byte) (HelloMsg, error) {
 }
 
 // MarshalWelcome encodes a WelcomeMsg to its JSON frame payload.
+//
+// regression fix — NORMATIVE: the payload MUST be the compact `encoding/json` spelling, with no
+// space after the ':' and no pretty-printing. The C feeder and the ESP32 firmware accept the
+// handshake by matching the exact byte sequences `"ok":true` and `"zstd":true` with strstr
+// (feeder/navfeeder.c, esp32/components/gnf1/src/gnf1.c) rather than carrying a JSON parser
+// into a binary that has to fit on an OpenWrt router and an ESP32-C6. That is a deliberate
+// size trade, so the constraint belongs here, at the write site: reformatting this to
+// `json.MarshalIndent`, hand-rolling the JSON with a space after the colon, or interposing a
+// proxy that re-serializes the payload PERMANENTLY breaks authentication and zstd negotiation
+// for the whole fleet — the feeder would reconnect forever, never seeing an accepted welcome.
+// json.Marshal's output is compact by contract, so this line satisfies the requirement today;
+// the requirement is on the WIRE, and is stated in docs/DESIGN.md §GNF1 for any second
+// implementation. TestNavfeeder* (the real C feeder against this collector) is the
+// regression guard.
 func MarshalWelcome(m WelcomeMsg) ([]byte, error) {
 	return json.Marshal(m)
 }

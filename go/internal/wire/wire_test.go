@@ -106,6 +106,40 @@ func TestHelloWelcomeFrames(t *testing.T) {
 	}
 }
 
+// TestWelcomeCompactSpelling pins the regression fix wire requirement at the unit level: the
+// WELCOME payload must carry the compact `"ok":true` / `"zstd":true` byte sequences the edge
+// feeders match with strstr, because neither the OpenWrt binary nor the ESP32 firmware
+// carries a JSON parser. Reformatting this payload (MarshalIndent, a hand-rolled encoder
+// with a space after the colon, a re-serializing proxy) would leave the entire fleet in a
+// permanent reconnect loop, never seeing an accepted handshake. The C-feeder e2e suite
+// catches it too, but only where a C toolchain exists — this runs everywhere and names the
+// contract.
+func TestWelcomeCompactSpelling(t *testing.T) {
+	b, err := MarshalWelcome(WelcomeMsg{OK: true, Zstd: true, AckIntervalMS: 250})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"ok":true`, `"zstd":true`} {
+		if !bytes.Contains(b, []byte(want)) {
+			t.Errorf("WELCOME payload %s lacks the normative byte sequence %s", b, want)
+		}
+	}
+	// The negative form is what actually breaks the feeders, so assert it directly.
+	for _, bad := range []string{`"ok": true`, `"zstd": true`, "\n", "\t"} {
+		if bytes.Contains(b, []byte(bad)) {
+			t.Errorf("WELCOME payload %s contains non-compact JSON %q", b, bad)
+		}
+	}
+	// A rejection must be equally unambiguous: no `"ok":true` anywhere in it.
+	rej, err := MarshalWelcome(WelcomeMsg{OK: false, Error: "unauthorized"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(rej, []byte(`"ok":true`)) {
+		t.Errorf("rejection payload %s would be read as an acceptance", rej)
+	}
+}
+
 func TestAckRoundTrip(t *testing.T) {
 	got, err := DecodeAck(EncodeAck(9001))
 	if err != nil || got != 9001 {

@@ -1188,7 +1188,11 @@ static int handshake(struct tls_io *io, const struct opts *o, int *zstd_ok) {
 	 * the compact `"ok":true` and `"zstd":true` spellings emitted by Go's
 	 * encoding/json; a different GNF1 server must preserve those spellings (including
 	 * no whitespace around the colon) or the feeder treats the WELCOME as rejected.
-	 * Keep this coupling in mind before independently reformatting handshake JSON. */
+	 * Keep this coupling in mind before independently reformatting handshake JSON.
+	 * this is no longer just a local note — the compact spelling is NORMATIVE
+	 * in the GNF1 wire contract (docs/DESIGN.md §GNF1) and restated at the collector's
+	 * write site (wire.MarshalWelcome), so the requirement lives with the spec rather
+	 * than only with the code that would break. */
 	if (!strstr((char *)buf, "\"ok\":true")) {
 		log_msg("collector rejected handshake: %.*s", (int)len, buf);
 		return -2;

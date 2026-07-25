@@ -134,11 +134,21 @@ shape means one mental model and a near-verbatim port of `radiolistener/feeder/f
 | Frame | Dir | Payload |
 |---|---|---|
 | `HELLO` (0x01) | feeder→collector | JSON `{token, station, feed, sw, zstd?}` — `feed ∈ {ubx, rtcm}` (SBF is rejected because GNF1 `frame_type` cannot carry SBF block numbers; NMEA is unimplemented) |
-| `WELCOME` (0x02) | collector→feeder | JSON `{ok, error?, ack_interval_ms?, zstd?}` |
+| `WELCOME` (0x02) | collector→feeder | JSON `{ok, error?, ack_interval_ms?, zstd?}`. **Normative: the compact Go `encoding/json` spelling** — servers MUST emit `"ok":true` / `"zstd":true` with no space after the colon (see the note below) |
 | `DATA` (0x03) | feeder→collector | `[8B seq][framed raw record]` — see the record shape below |
 | `ACK` (0x04) | collector→feeder | `[8B seq]` highest sequence received this connection  — not "last contiguous"; reconnect replay makes any resulting duplicate harmless |
 | `PING`/`PONG` (0x05/0x06) | both | keepalive |
 | `SIGNED_DATA` (0x07) | feeder→collector | *(hardware tier, vNext)* a `DATA` batch + trailing ATECC ECDSA signature over `EUI-64 ‖ rtc_unix_ns ‖ sha256(payload) ‖ counter` |
+
+**`WELCOME`'s compact spelling is part of the wire contract, not an implementation detail**
+. The edge feeders — `feeder/navfeeder.c` on OpenWrt routers, `esp32/components/gnf1`
+on an ESP32-C6 — accept the handshake by matching the literal byte sequences `"ok":true` and
+`"zstd":true`, deliberately trading a JSON parser they cannot afford for a substring match.
+Whitespace-formatted-but-equivalent JSON (`"ok": true`) is therefore *rejected*: a second
+collector implementation, or a proxy that re-serializes the payload, would leave every feeder
+in a permanent reconnect loop with no accepted welcome. Emit compact JSON. The constraint is
+repeated at the write site (`wire.MarshalWelcome`) and regression-guarded end-to-end by the
+`TestNavfeeder*` suite, which runs the real C feeder against the real collector.
 
 **The raw record inside a `DATA` frame** carries just enough envelope for the collector to
 dispatch without decoding: `{recv_unix_ns (from the observer/RTC), gnssId, svId, sigId,

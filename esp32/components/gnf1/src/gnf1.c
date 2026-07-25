@@ -147,6 +147,10 @@ bool gnf1_welcome_ok(const char *welcome, size_t len)
     // terminator after read_frame). Substring matching avoids carrying a JSON
     // parser, but couples us to Go's compact `"ok":true` spelling: an
     // independently formatted WELCOME containing `"ok": true` is rejected.
+    // that coupling is NORMATIVE in the wire contract (docs/DESIGN.md §GNF1)
+    // and restated at the collector's write site (wire.MarshalWelcome) — a GNF1 server
+    // must emit the compact spelling, so this match is spec-conformant, not a shortcut
+    // that a future server is free to invalidate.
     (void)len;
     return strstr(welcome, "\"ok\":true") != NULL;
 }
