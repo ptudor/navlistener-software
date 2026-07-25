@@ -149,13 +149,14 @@ const (
 // gpsUTCOffset is the current GPS−UTC (ΔtLS), the leap-second count applied to
 // every wall-clock→GPS/BDT time-of-week conversion (gpsTOW, towFor, weekFor)
 // and served as the global feed's leap_seconds. the design mandates
-// "transcribe, don't invent" and the broadcast UTC-parameter decode is a stated
-// follow-up, but until that lands this compiled-in default is the only source —
-// a real leap event would otherwise shift every conversion by 1s (~3.9 km)
-// until a rebuild. SetLeapSeconds lets [state].leap_seconds override it as an
-// interim fix; it must be called during startup config wiring, before any
-// ingest/propagate goroutines start (it is a plain package var, not
-// synchronized for concurrent use).
+// "transcribe, don't invent." The BeiDou B-CNAV2 path decodes a satellite's
+// BDT-UTC parameters and cross-checks their leap count against this value, but
+// does not promote any one SV's broadcast into a process-wide setting. A real
+// leap event would otherwise shift every conversion by 1s (~3.9 km) until a
+// rebuild; SetLeapSeconds lets [state].leap_seconds override the default. It
+// must be called during startup config wiring, before any ingest/propagate
+// goroutines start (this is a plain package var, not synchronized for
+// concurrent use).
 var gpsUTCOffset int64 = 18
 
 // SetLeapSeconds overrides gpsUTCOffset. n <= 0 is a no-op (keeps the
@@ -190,11 +191,10 @@ type svState struct {
 	// wrote last, presented with the same authority a fleet-corroborated event
 	// would have — and the single-source status was invisible. Keyed by ingest
 	// source / observer id; bounded by fleet size; pruned at feed build. The §6
-	// broadcast-agreement comparison (same SV/IOD, different bits, different
-	// receivers → hard alarm) additionally needs per-source element hashes and
-	// is tracked P7 work (it only means something once the fleet converts to
-	// navfeeder) — conf is the honest interim: consumers can at least tell
-	// "five stations agree" from "one station said so".
+	// A same-SV/IOD broadcast-agreement comparison between receivers would also
+	// need per-source element hashes; this map intentionally does not retain
+	// them. conf therefore means "recently witnessed by N sources," not "N
+	// sources supplied identical bits."
 	seenBy map[string]time.Time
 
 	// LNAV subframe assembly buffers (GPS/QZSS).
@@ -555,9 +555,9 @@ func (s *Store) shardFor(k Key) *shard {
 }
 
 // Apply decodes a raw frame and folds it into live state. Unsupported frame types
-// are counted and dropped (their raw bytes are preserved upstream once the persist
-// stage lands). It never panics on malformed input — decode errors are returned as
-// metrics, not crashes.
+// are counted and dropped from live state; decodeLoop has already offered nav
+// frames to the optional historian before calling Apply. It never panics on
+// malformed input — decode errors are returned as metrics, not crashes.
 func (s *Store) Apply(f *ingest.RawFrame) {
 	if f.RF != nil {
 		// Station-scoped telemetry: the frame header carries no svId to

@@ -5,8 +5,8 @@
 // galmon's navmon.proto, which stays entirely inside the optional GPL bridge).
 //
 // This package defines the framing, the handshake messages, and the raw-record
-// envelope. Both the future authenticated push listener and the C feeder share it;
-// dial-mode ingest reads receiver bytes directly and does not use GNF1.
+// envelope. The authenticated PushServer and the C navfeeder share it; dial-mode
+// ingest reads receiver bytes directly and does not use GNF1.
 package wire
 
 import (

@@ -11,8 +11,10 @@ import (
 // CRC-16 (LE), ID (LE; low 13 bits = block number, high 3 = revision), Length (LE;
 // total block length incl the 8-byte header, a multiple of 4), then the body. The
 // CRC-16-CCITT covers ID+Length+body. SBF delivers already-de-interleaved ICD nav
-// bits, so the collector emits the raw block body tagged with its block number for
-// the (block-specific) decoders to consume.
+// bits, so the collector emits the raw block body tagged with its block number.
+// SBF sources are deliberately capture-only today: the block number and body are
+// retained for the historian/future replay, but no block-specific live-state
+// decoder is dispatched.
 const (
 	sbfSync1 = '$'
 	sbfSync2 = '@'

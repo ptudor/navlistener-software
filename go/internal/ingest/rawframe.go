@@ -3,9 +3,9 @@
 // thin connector (docs/DESIGN.md §1): read a local feed → frame → emit. All
 // decoding and orbit math is central — the edge is dumb.
 //
-// This build implements dial-mode connectors (the collector opens a TCP
-// connection to a known receiver on the LAN); the authenticated fleet push
-// endpoint is a later pass.
+// Dial connectors open receiver/caster TCP streams, while PushServer accepts
+// authenticated GNF1 feeder streams. Both normalize their input into RawFrame
+// so the downstream decoder and state store do not depend on transport mode.
 package ingest
 
 import (
@@ -17,9 +17,10 @@ import (
 
 // RawFrame is one raw broadcast nav frame lifted off a receiver, tagged with just
 // enough to dispatch it to the right decoder. Word-oriented frames (GPS/QZSS/
-// BeiDou/GLONASS/SBAS from UBX or SBF) carry Words; byte-oriented content (RTCM
-// messages, SBF blocks) carries Bytes. The decode stage picks by (GnssID, SigID)
-// or message type.
+// BeiDou/GLONASS/SBAS from UBX) carry Words; byte-oriented content (RTCM messages
+// and SBF blocks) carries Bytes. RTCM/SBF are currently capture-only: they reach
+// the historian but do not update live constellation state. Word-oriented
+// dispatch is selected by (GnssID, SigID).
 type RawFrame struct {
 	Recv    time.Time   // reception time (receiver/host clock; push path: the FEEDER's stamp)
 	Source  string      // ingest source name

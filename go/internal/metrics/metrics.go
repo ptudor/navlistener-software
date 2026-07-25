@@ -69,8 +69,9 @@ var (
 	}, []string{"source", "reason"})
 
 	// NavCRCFailTotal counts frames dropped for a failed parity/CRC check
-	// (docs/CONSTELLATIONS.md §2). The raw bytes are still preserved for the
-	// forensic record once the persist stage lands.
+	// (docs/CONSTELLATIONS.md §2). When the historian is enabled, raw bytes are
+	// enqueued before live-state decode and remain available for forensics even
+	// when this check rejects the frame.
 	NavCRCFailTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "navlistener_nav_crc_fail_total",
 		Help: "Nav frames dropped for failed parity/CRC, by gnssId, sigId, and source.",

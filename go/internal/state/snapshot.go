@@ -2,8 +2,8 @@ package state
 
 import "time"
 
-// Snapshot is the loopback /debug/state view of live SV state — a subset of the
-// future native v2 svs feed, used to verify the pipeline before that feed exists.
+// Snapshot is the compact /debug/state view of live SV state. It intentionally
+// remains a diagnostic subset of the richer native v2 svs feed.
 //
 // regression fix (recorded design fact, not a defect): this is an in-RAM debug view
 // only — there is NO cross-restart state persistence anywhere in the daemon.

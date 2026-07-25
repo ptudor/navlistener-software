@@ -2,7 +2,9 @@
 // a single batched writer goroutine using pgx CopyFrom (bulk load — never row-by-row
 // INSERT). It is off the live hot path: frames are handed over via a bounded queue
 // with an explicit drop-on-overflow policy, so a slow database degrades the
-// historian, never live decoding. Same discipline as the radiolistener sibling.
+// historian, never live decoding. Integrity events and periodic feed snapshots
+// are lower-rate direct writes through the same store; only raw-frame ingestion
+// uses the bounded batch queue. Same discipline as the radiolistener sibling.
 package store
 
 import (

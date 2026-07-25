@@ -6,7 +6,8 @@
 -- separate indexed column). Raw + decoded means a decoder fix can re-derive every
 -- historical ephemeris from `raw` without re-collecting.
 --
--- (gnss_events and gnss_snapshots from §4 are created by the integrity/serve passes.)
+-- The same startup schema also creates the durable integrity-event and periodic
+-- feed-snapshot tables below.
 
 CREATE TABLE IF NOT EXISTS nav_frames (
     ts          TIMESTAMPTZ NOT NULL,   -- ingest time (hypertable dimension)

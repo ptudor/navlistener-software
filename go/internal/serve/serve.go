@@ -58,10 +58,11 @@ type Server struct {
 	cache map[string][]byte
 }
 
-// New builds the v2 API server bound to addr. sources describes the configured
-// ingest connectors, published (dial mode) as the observer list until authenticated
-// push observers replace it. fast/slow are the refresh cadences (§5); zero uses the
-// defaults (30 s / 90 s).
+// New builds the v2 API server bound to addr. sources supplies the configured
+// dial observers; state-derived RF/capability reports add authenticated push
+// stations as they are seen, so the observer feed is the union of configured
+// dial sources and active push identities. fast/slow are the refresh cadences
+// (§5); zero uses the defaults (30 s / 90 s).
 func New(addr string, st *state.Store, events EventStore, sources []config.Source, fast, slow time.Duration, log *slog.Logger) *Server {
 	if fast <= 0 {
 		fast = 30 * time.Second
@@ -260,10 +261,10 @@ type envelope struct {
 	Data map[string]any `json:"data"`
 }
 
-// observer is one station record (docs/OUTPUT.md §1.3). In dial mode each configured
-// ingest connector is published as a receiver we control; the richer per-SV reception
-// (perrecv, position, azimuth/elevation) arrives with the authenticated push +
-// measurement path. RF carries the PNT-defense per-station RF-environment metrics when
+// observer is one station record (docs/OUTPUT.md §1.3). Configured dial connectors
+// and push stations discovered through live RF/capability state share this shape.
+// Per-SV reception details live in the svs feed's perrecv map. RF carries the
+// PNT-defense per-station RF-environment metrics when
 // the receiver reports MON-RF/NAV-SAT telemetry (docs/DEFENSE-PNT.md §6). Capabilities is the
 // node's demonstrated (gnssId, sigId) fingerprint — what signals it actually produces, so a
 // consumer (and the integrity layer) knows what it should be reporting (docs/CONSTELLATIONS.md

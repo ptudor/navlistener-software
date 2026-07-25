@@ -1,11 +1,10 @@
 // Package config loads the navlistener TOML configuration.
 //
 // Config is TOML at /usr/local/etc/navlistener/navlistener.toml (never .env),
-// passed via the -config flag. The struct anticipates every pipeline stage; a
-// stage stays dormant until its section is populated, so the file grows with the
-// build. This pass wires INGEST → DECODE → PROPAGATE, so it reads [logging],
-// [metrics], [state], and the [[ingest]] connector list; the persist/serve/push
-// sections arrive with those later passes (docs/DESIGN.md §5).
+// passed via the -config flag. It configures the complete collector pipeline:
+// dial and push ingest, live state, observability, persistence, and the native
+// read API. Optional stages stay dormant when their enabling address or DSN is
+// empty (docs/DESIGN.md §5).
 package config
 
 import (
@@ -129,8 +128,9 @@ type Store struct {
 	BatchEvery  time.Duration `toml:"-"`
 
 	// Retention (PostgreSQL INTERVAL literals). Raw frames are the short-window
-	// forensic record; the long-term ephemeris history lives in continuous
-	// aggregates (a later pass).
+	// forensic record. Confirmed events and feed snapshots live in separate
+	// tables/policies; this setting does not retain a long-term decoded
+	// ephemeris aggregate.
 	RawRetention string `toml:"raw_retention"` // default "7 days"
 	// CompressAfter is when a raw chunk is columnar-compressed (default "1 day").
 	CompressAfter string `toml:"compress_after"`
@@ -204,17 +204,19 @@ type State struct {
 	// LeapSeconds is ΔtLS (GPS−UTC), used to convert wall-clock time to GPS/BDT
 	// time-of-week for propagation and served in the global feed's leap_seconds
 	//. 0 (the default) means "use the compiled-in current value" — the
-	// design mandates "transcribe, don't invent" and the broadcast UTC-parameter
-	// decode is a stated future pass, but until that lands a leap second would
-	// otherwise shift every wall-clock→GNSS conversion by 1s (~3.9 km) until a
-	// rebuild. Set explicitly here to apply a new value without recompiling.
+	// design mandates "transcribe, don't invent." BeiDou B-CNAV2 UTC parameters
+	// are decoded and cross-checked, but the daemon does not derive a fleet-wide
+	// leap-second consensus or automatically replace this process-wide value.
+	// Set it explicitly after a leap event to avoid shifting every
+	// wall-clock→GNSS conversion by 1s (~3.9 km) until a rebuild.
 	LeapSeconds int `toml:"leap_seconds"`
 }
 
-// Source is one raw-frame ingest connector. Every navlistener ingest source is a
-// dial-out connector to a receiver we control on the LAN (the authenticated fleet
-// push endpoint is a separate mechanism — docs/DESIGN.md §1, a later pass). Type
-// selects the wire parser; Addr is the host:port to dial.
+// Source is one dial-out raw-frame ingest connector to a receiver or caster.
+// Authenticated fleet push is configured separately under [push] because its
+// observers connect inbound and have credentials/feed grants rather than dial
+// addresses (docs/DESIGN.md §1). Type selects the wire parser; Addr is the
+// host:port to dial.
 type Source struct {
 	Name        string `toml:"name"`
 	Type        string `toml:"type"`                   // ubx | sbf | rtcm

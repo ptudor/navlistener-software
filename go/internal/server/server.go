@@ -1,7 +1,9 @@
 // Package server runs the observability HTTP listener: Prometheus /metrics, a
 // /healthz endpoint, and an optional /debug/state live-state snapshot. It is
-// loopback-only and entirely separate from any app-facing read path (the native
-// v2 serve contract, a later pass) and the ingest path.
+// entirely separate from the native v2 read API and the ingest path. Production
+// configuration normally binds it to loopback; non-loopback binds are allowed
+// with a startup warning for remote Prometheus deployments, while main guards
+// /debug/state by the request peer address.
 package server
 
 import (
@@ -50,8 +52,8 @@ func (s *Server) AddProbe(name string, fn func() string) {
 }
 
 // New builds the server bound to addr (e.g. 127.0.0.1:9100). If debugState is
-// non-nil it is served at /debug/state — the loopback view of live per-SV state
-// used to verify the pipeline before the native v2 feeds exist.
+// non-nil it is served at /debug/state as a compact diagnostic view of live
+// per-SV state. The caller owns any access-control policy for that handler.
 func New(addr string, log *slog.Logger, debugState http.HandlerFunc) *Server {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())

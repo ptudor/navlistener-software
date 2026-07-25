@@ -46,8 +46,9 @@ const usefulConnectionDuration = 3 * time.Second
 // scanner reads a receiver stream and emits RawFrames until the stream errors.
 type scanner func(r io.Reader, source string, now func() time.Time, emit func(*RawFrame), onErr func(kind string)) error
 
-// scannerFor returns the stream scanner for a connector type, or nil if the type
-// is recognised by config but not yet implemented in this build.
+// scannerFor returns the stream scanner for a connector type. Load/finalize
+// normally rejects unknown types first; nil remains a defensive boundary for
+// programmatic callers that construct config.Source values directly.
 func scannerFor(typ string) scanner {
 	switch typ {
 	case "ubx":

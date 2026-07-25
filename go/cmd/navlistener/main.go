@@ -1,11 +1,14 @@
 // Command navlistener is the project GNSS navigation-message collector: the
 // central Go daemon that ingests raw broadcast nav frames from a fleet of
-// receivers, decodes every constellation, propagates orbits and clocks,
-// cross-checks broadcast-vs-observed for integrity, and (in later passes) stores
-// and serves the result behind the Integrity Constellation Map.
+// receivers, decodes supported signals across the GNSS constellations,
+// propagates orbits and clocks,
+// cross-checks broadcast-vs-observed for integrity, stores the forensic record,
+// and serves live feeds and integrity events behind the Integrity Constellation
+// Map.
 //
 // See the repository docs/DESIGN.md for the architecture and design reports.
-// This build wires the first three pipeline stages: INGEST → DECODE → PROPAGATE.
+// The optional store, read API, and authenticated push listener are enabled by
+// their respective non-empty configuration sections.
 package main
 
 import (

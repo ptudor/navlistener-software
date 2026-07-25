@@ -1,9 +1,9 @@
 # navlistener configuration — example.
 #
 # Copy to /usr/local/etc/navlistener/navlistener.toml and edit. Configuration is
-# TOML only (never a .env file). This file holds no secrets; when the persist and
-# push stages land, real credentials (DB DSN, TLS keys) go only in the deployed,
-# git-ignored file with 0600 permissions — never in this committed example.
+# TOML only (never a .env file). This file holds no secrets; persistence and push
+# credentials (DB DSN, TLS keys) belong only in the deployed, git-ignored file
+# with 0600 permissions — never in this committed example.
 #
 # The pipeline is INGEST (dial + authenticated push) → DECODE → PROPAGATE +
 # INTEGRITY → PERSIST → SERVE. Point [[ingest]] sources at receivers we control on
@@ -37,7 +37,7 @@ propagate_interval = "1s"   # cadence for re-propagating live SVs to "now"
 batch_size     = 1000    # rows per CopyFrom
 batch_interval = "1s"    # flush cadence
 compress_after = "1 day" # columnar-compress raw chunks older than this
-raw_retention  = "7 days" # drop raw frames older than this (long-term lives in aggregates)
+raw_retention  = "7 days" # drop raw frames older than this; events/snapshots have separate policies
 
 # Native v2 read API (docs/OUTPUT.md): /gnss/api/v2/{svs,global,observers,almanac,
 # sbas} + the /gnss/events SSE stream, served from RAM. Optional: leave addr empty to

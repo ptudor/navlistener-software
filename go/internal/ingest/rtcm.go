@@ -12,8 +12,9 @@ import (
 // reserved + 10-bit big-endian length, that many payload bytes, then a 3-byte
 // CRC-24Q over the preamble, length, and payload. The message number is the first
 // 12 bits of the payload. The collector emits the raw payload tagged with its
-// message number for the RTCM decoders (ephemeris 1019/1020/1041/1042/1044/1045/
-// 1046, SSR 1057–1068) to consume.
+// message number for persistence and future replay decoding. RTCM sources are
+// deliberately capture-only today: no live-state RTCM ephemeris/SSR decoder is
+// dispatched after framing.
 const (
 	rtcmPreamble = 0xD3
 	rtcmMaxLen   = 1023 // 10-bit length field

@@ -166,10 +166,12 @@ type FeedSV struct {
 	// count: distinct sources that delivered a structurally-decoded nav frame
 	// for THIS satellite×signal within the fresh-receiver window. Always
 	// present — 0 is a known value ("no current nav corroboration", e.g. an
-	// iono-only RAWX entry), not an unknown. Until the §6 broadcast-agreement
-	// divergence detector lands (P7), this is the served honesty floor:
-	// consumers can tell a fleet-corroborated state (conf ≥ 2) from a
-	// single receiver's testimony (conf 1).
+	// iono-only RAWX entry), not an unknown. It measures observation recency,
+	// not bit-for-bit agreement: per-source element hashes are not retained.
+	// The Galileo cross-signal detector is a separate comparison between two
+	// decoded signal paths. Consumers can use conf to distinguish multiple
+	// recent witnesses from a single receiver's testimony without treating it
+	// as proof that those witnesses delivered identical broadcast bits.
 	Conf int `json:"conf"`
 
 	Perrecv map[string]*FeedPerRecv `json:"perrecv,omitempty"`
@@ -187,8 +189,9 @@ type FeedPerRecv struct {
 // GlobalFeed is the system-wide counters view (docs/OUTPUT.md §1.2). Per-
 // constellation SV/signal counts plus live totals and the leap-second count. The
 // broadcast time-system offsets (gps_utc_offset_ns, …) are transcribed values, not
-// computed by us; they are populated once the UTC-parameter decode lands, so they
-// are omitted here rather than emitted as a guessed zero.
+// computed by us. Those offsets are satellite-scoped in FeedSV (currently
+// BeiDou B-CNAV2); no constellation-wide consensus is projected into this
+// global object, so unknown offsets remain absent rather than guessed as zero.
 type GlobalFeed struct {
 	LastSeen           int64          `json:"last_seen"`
 	LeapSeconds        int            `json:"leap_seconds"`
@@ -200,8 +203,9 @@ type GlobalFeed struct {
 
 // AlmanacEntry is one coarse-orbit entry (docs/OUTPUT.md §1.4). This build fills it
 // from the precise broadcast ephemeris for every currently-observed SV (eph_source
-// 0, observed true); almanac-only SVs appear once the almanac-subframe decode and
-// the TLE fill land.
+// 0, observed true). Decoded GLONASS almanac slots also contribute coarse,
+// potentially out-of-view entries; almanac-only coverage for other
+// constellations and the TLE fill remain future work.
 type AlmanacEntry struct {
 	Name           string  `json:"name"`
 	GnssID         int     `json:"gnssid"`
