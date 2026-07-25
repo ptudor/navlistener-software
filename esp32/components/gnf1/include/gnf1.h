@@ -2,7 +2,7 @@
 //
 // GNF1 is navlistener's length-prefixed feeder<->collector framing over TLS. It carries
 // raw broadcast nav frames; the collector decodes. This component is the byte-for-byte
-// counterpart of ../../../go/internal/wire/wire.go and ../../../feeder/navfeeder.c, authored
+// counterpart of ../../../../go/internal/wire/wire.go and ../../../../feeder/navfeeder.c, authored
 // fresh (clean-room; NOT galmon's navmon.proto). Pure buffer functions — no I/O, so it is
 // host-testable and the pusher does the actual esp-tls writes.
 //
@@ -49,9 +49,11 @@ extern "C" {
 
 // gnf1_frame_type maps (gnssId, sigId) to the GNF1 nav message type byte (CONSTELLATIONS.md
 // §6). It is a forensic label — the collector dispatches decode on (gnssId, sigId), so an
-// unmapped type (0) still decodes. For recognized signals it matches navfeeder.c and
-// RawFrame.NavType; for unknown GPS/Galileo/GLONASS/SBAS signal IDs this implementation
-// currently applies a broad constellation-family fallback (see the source comment).
+// unmapped type (0) still decodes. It is an exact allow-list matching navfeeder.c and Go's
+// RawFrame.NavType row-for-row; the shared authority is the golden matrix at
+// ../../../../testdata/gnf1_frame_type.tsv, which test/frame_type_matrix_test.c checks this
+// implementation against. Anything without a shipped, capture-verified decoder
+// maps to 0 — never to a constellation-family default.
 uint8_t gnf1_frame_type(unsigned gnss_id, unsigned sig_id);
 
 // gnf1_encode_record builds a raw-nav record (the payload the spool stores, without the seq)

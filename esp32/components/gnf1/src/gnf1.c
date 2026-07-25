@@ -1,5 +1,8 @@
 // gnf1 — GNF1 framing + record encoding. See include/gnf1.h.
-// Byte-for-byte matched to ../../../go/internal/wire/wire.go and ../../../feeder/navfeeder.c.
+// Byte-for-byte matched to ../../../../go/internal/wire/wire.go and
+// ../../../../feeder/navfeeder.c. The (gnssId,sigId) → frame_type map below is checked
+// against the shared golden matrix by test/frame_type_matrix_test.c — that claim is now
+// enforced, not asserted.
 
 #include "gnf1.h"
 
@@ -8,26 +11,39 @@
 
 uint8_t gnf1_frame_type(unsigned gnss_id, unsigned sig_id)
 {
-    // This byte is a forensic family label, not the collector's decode key.
-    // Unlike navfeeder.c's narrower allow-list, the GPS/Galileo/GLONASS/SBAS
-    // arms below label unknown signal IDs with their constellation's default
-    // family. The collector still dispatches on (gnssId, sigId), but captures
-    // of an unsupported signal can therefore carry a different msg_type
-    // depending on which feeder produced them.
+    // This byte is a forensic label, not the collector's decode key — but the historian's
+    // provenance depends on one input population never being split by which feeder saw it,
+    // so this is an EXACT allow-list matching ../../../../testdata/gnf1_frame_type.tsv
+    // row-for-row (the golden matrix generated from Go's RawFrame.NavType, regression fix).
+    //
+    // It previously applied constellation-family fallbacks on the GPS/Galileo/GLONASS/SBAS
+    // arms — any unknown GPS sigId became CNAV, any Galileo sigId became I/NAV, every
+    // GLONASS and SBAS sigId got its family's byte. That both contradicted this file's own
+    // "byte-for-byte matched to navfeeder.c" header and labelled unverified signals as
+    // supported message families: a future L5/DFMC or B-CNAV frame persisted under an L1
+    // type is re-decoded through the wrong layout on replay. The
+    // correct label for anything without a shipped, capture-verified decoder is 0 —
+    // unmapped still decodes, because dispatch is on (gnssId, sigId).
     switch (gnss_id) {
-    case 0: return sig_id == 0 ? 0x10 : 0x11;                        // GPS: LNAV / CNAV
-    case 5:                                                         // QZSS: shipped LNAV/CNAV only
+    case 0:                                                          // GPS: L1 C/A LNAV, L2C/L5 CNAV
+        if (sig_id == 0) return 0x10;
+        if (sig_id == 3 || sig_id == 4 || sig_id == 6 || sig_id == 7) return 0x11;
+        return 0;
+    case 5:                                                          // QZSS: shipped LNAV/CNAV only
         if (sig_id == 0) return 0x50;
         if (sig_id == 4 || sig_id == 5 || sig_id == 8 || sig_id == 9) return 0x51;
+        return 0;                                                    // L1S/L1C-CNAV2/L6 planned
+    case 2:                                                          // Galileo: E1-B/E5b I/NAV, E5a F/NAV
+        if (sig_id == 0 || sig_id == 1 || sig_id == 5 || sig_id == 6) return 0x20;
+        if (sig_id == 3 || sig_id == 4) return 0x21;
         return 0;
-    case 2: return (sig_id == 3 || sig_id == 4) ? 0x21 : 0x20;       // Galileo: F/NAV / I/NAV
     case 3:                                                          // BeiDou: shipped B1I D1 + B2a B-CNAV2 only
         if (sig_id == 0) return 0x30;
         if (sig_id == 8) return 0x33;
         return 0; // D2/B2I/B-CNAV1/B2a-companion planned: no verified decoder 
-    case 6: return 0x40;                                             // GLONASS
+    case 6: return (sig_id == 0 || sig_id == 2) ? 0x40 : 0;          // GLONASS L1OF/L2OF
     case 7: return 0;                                                // NavIC planned; no collector decoder
-    case 1: return 0x70;                                             // SBAS
+    case 1: return (sig_id == 0) ? 0x70 : 0;                         // SBAS L1 C/A; L5 DFMC (0x71) reserved
     default: return 0;
     }
 }

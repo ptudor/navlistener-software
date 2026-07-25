@@ -9,6 +9,11 @@ coverage.*
 # C feeder build artifact
 /feeder/navfeeder
 
+# ESP-IDF and host-test build output (esp32/build/ is idf.py's; the component test dirs
+# hold host-compiled unit-test binaries — see esp32/components/gnf1/test/Makefile)
+/esp32/build/
+/esp32/components/*/test/build/
+
 # GPL-quarantined bridge build artifact (out-of-process; never linked into the core)
 /galmon-bridge/galmon-bridge
 

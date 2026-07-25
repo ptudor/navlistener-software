@@ -357,6 +357,18 @@ The `GNF1` wire (transport in `docs/DESIGN.md`) carries typed raw frames.
 Its registry covers the constellation-specific navigation messages, augmentation
 payloads, and receiver telemetry described below.
 
+**The `(gnssId, sigId) → frame_type` mapping has exactly one authority: `testdata/gnf1_frame_type.tsv`**,
+the golden matrix generated from Go's canonical `RawFrame.NavType` (`go/internal/ingest/rawframe.go`).
+The tables below are the human-readable registry; the fixture is what the three
+implementations are tested against — Go (`TestNavTypeMatchesGolden`), the C feeder
+end-to-end through the real binary (`TestNavfeederFrameTypeMatrix`), and the ESP32
+(`TestESP32Gnf1FrameTypeMatchesGolden`, also runnable as
+`make -C esp32/components/gnf1/test`). They had drifted pairwise before the fixture existed
+. **A pair with no shipped, capture-verified decoder maps to `0`, never to its
+constellation's family byte** — an unverified label persists a frame that replay will
+re-decode through the wrong layout. `frame_type` is forensic
+metadata: the collector dispatches decode on `(gnssId, sigId)`, so `0` still decodes.
+
 ### 6.1 Raw-nav frame types
 
 | # | Name | Constellation / signal | Raw payload | Source |

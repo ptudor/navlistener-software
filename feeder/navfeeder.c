@@ -713,7 +713,14 @@ static void *reader_thread(void *arg) {
 /* frame_type maps (gnssId, sigId) to the GNF1 nav message type byte (docs/CONSTELLATIONS.md
  * §6), mirroring RawFrame.NavType() in the collector so the historian's msg_type is right.
  * The collector dispatches decoding on (gnssId, sigId), so an unmapped type (0) is still
- * decoded — the byte is a forensic label, not the dispatch key. */
+ * decoded — the byte is a forensic label, not the dispatch key.
+ *
+ * this is an EXACT allow-list, not a set of constellation-family defaults. Every
+ * arm must match ../testdata/gnf1_frame_type.tsv row-for-row — the golden matrix generated
+ * from RawFrame.NavType(), which the collector-side test TestNavfeederFrameTypeMatrix
+ * enforces against this binary end-to-end. Adding a signal here without a shipped,
+ * capture-verified decoder persists frames that replay will re-decode through the wrong
+ * layout; the correct label for anything unverified is 0. */
 static uint8_t frame_type(unsigned gnssId, unsigned sigId) {
 	switch (gnssId) {
 	case 0:
@@ -734,7 +741,14 @@ static uint8_t frame_type(unsigned gnssId, unsigned sigId) {
 		return 0; /* D2/B2I/B-CNAV1/B2a-companion planned: no verified decoder  */
 	case 6: return (sigId == 0 || sigId == 2) ? 0x40 : 0;    /* GLONASS L1/L2 OF */
 	case 7: return 0;                                        /* NavIC planned: capture without false type */
-	case 1: return 0x70;                                     /* SBAS */
+	case 1: return (sigId == 0) ? 0x70 : 0;                  /* SBAS L1 C/A only. this arm
+	                                                          * returned 0x70 for EVERY sigId, so an
+	                                                          * L5-capable receiver's DFMC frames (a
+	                                                          * different 250-bit layout, 0x71, doc-
+	                                                          * reserved and unshipped) would have been
+	                                                          * persisted as L1 — exactly what regression fix
+	                                                          * exists to prevent, live in the deployed
+	                                                          * feeder rather than hypothetical. */
 	default: return 0;
 	}
 }
