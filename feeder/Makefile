@@ -5,9 +5,9 @@
 # on macOS the user runs MacPorts, so OpenSSL + libzstd are under /opt/local; on Linux the
 # system libraries are used. Override SSL_PREFIX as needed.
 #
-# The real fleet target is a tiny binary on the OpenWrt/SBC observers — the `openwrt`
-# cross-build sketch below, wired up when the u-blox fleet (the .61 F9P, the F9T, and the
-# rest of the observers) is converted from dial-mode ingest to authenticated push (P7).
+# The real fleet target is a tiny binary on OpenWrt/SBC observers. The `openwrt`
+# target below is the cross-build entry point; deployment/enrollment is handled
+# separately from this Makefile.
 
 BINARY    := navfeeder
 CC        ?= cc

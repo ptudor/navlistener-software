@@ -41,8 +41,9 @@
  *   A telemetry record (frame_type < 0x10, §6.2) reuses the same DATA frame with a zeroed
  *   gnssId/svId/sigId/freqId and a type-specific body (see emit_monrf/emit_navsat).
  *
- * Still deferred: SBF/RTCM source modes (the fleet is u-blox; the collector's push path wires
- * ubx today), mTLS enrollment tooling, and the ATECC SIGNED_DATA (0x07) hardware tier.
+ * Still deferred in this executable: SBF/RTCM source parsers (the standalone feeder reads
+ * u-blox only, although the collector's GNF1 endpoint also accepts RTCM records), mTLS
+ * enrollment tooling, and the ATECC SIGNED_DATA (0x07) hardware tier.
  */
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE   /* glibc: expose usleep() + cfmakeraw() under -std=c11 */
@@ -681,7 +682,9 @@ static int read_frame(struct tls_io *io, uint8_t *type, unsigned char *buf, uint
 	return 0;
 }
 
-/* reader thread: apply ACKs (pruning the spool) until the connection drops. The collector
+/* reader thread: apply ACKs (pruning the spool) until the connection drops. ACK payloads
+ * may carry trailing extension bytes; only the first eight bytes are the acknowledged
+ * sequence, matching wire.DecodeAck on the collector side. The collector
  * socket carries an SO_RCVTIMEO (regression fix, set in tls_connect's tcp_dial call), so a genuinely
  * half-open peer (vanished, no RST) no longer leaves this thread blocked in SSL_read for the
  * full TCP retransmit window — it wakes on each timeout, checks g_disconnected (set by the
@@ -933,7 +936,10 @@ static int sync_ubx(struct rdbuf *b) {
  * corrupt frame is dropped and the reader resynchronises — a mid-stream connect never
  * derails it. Untrusted-input discipline (docs/INTEGRITY.md §9): every length and index is
  * bounds-checked before use. Returns nonzero if this connection proved "useful" — it
- * emitted >=1 frame, or survived USEFUL_CONN_S — 0 otherwise : a TCP bridge that
+ * received >=1 checksummed UBX message of a recognized class/id, or survived
+ * USEFUL_CONN_S — 0 otherwise. The counter advances after dispatch, even when a
+ * message's inner payload validation makes emit_* decline to spool it; it is a
+ * reconnect-backoff signal, not a delivered-frame count. A TCP bridge that
  * accepts and instantly closes (ser2net with the tty missing, port busy) makes this return
  * immediately on the very first read; producer_thread uses the return value to decide
  * whether resetting backoff is warranted, mirroring go/internal/ingest's regression fix fix. */
@@ -1164,6 +1170,11 @@ static int handshake(struct tls_io *io, const struct opts *o, int *zstd_ok) {
 	if (read_frame(io, &type, buf, sizeof buf, &len) != 0) return -1;
 	if (type != F_WELCOME) return -1;
 	buf[len < sizeof buf ? len : sizeof buf - 1] = 0;
+	/* This tiny fleet binary deliberately does not carry a JSON parser. It recognizes
+	 * the compact `"ok":true` and `"zstd":true` spellings emitted by Go's
+	 * encoding/json; a different GNF1 server must preserve those spellings (including
+	 * no whitespace around the colon) or the feeder treats the WELCOME as rejected.
+	 * Keep this coupling in mind before independently reformatting handshake JSON. */
 	if (!strstr((char *)buf, "\"ok\":true")) {
 		log_msg("collector rejected handshake: %.*s", (int)len, buf);
 		return -2;
