@@ -11,26 +11,19 @@
 
 #include <stdbool.h>
 #include "esp_err.h"
+#include "netcfg_check.h" // netcfg_t + netcfg_validate (pure, host-testable)
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef struct {
-    char wifi_ssid[33];
-    char wifi_pass[65];
-    char host[64];       // collector hostname
-    int  port;           // collector [push] port
-    char token[129];     // bearer token
-    char station[33];    // observer/station id
-    bool insecure;       // skip TLS verification (dev only)
-} netcfg_t;
-
 // netcfg_load fills out from NVS, falling back to the compiled Kconfig defaults for any key
-// absent from NVS. Returns true when SSID + host are set. It deliberately does not validate
-// token/station/port; a partial or externally-written NVS record can therefore leave station
-// mode repeatedly failing authentication rather than re-entering the portal.
-bool netcfg_load(netcfg_t *out);
+// absent from NVS. Returns netcfg_validate(out) — i.e. true only for a config complete enough
+// to run in station mode — and writes the failing reason into err when it returns false
+// (err may be NULL). it used to return a bare "SSID and host are non-empty" check,
+// so a device provisioned through Kconfig, a partial NVS write, or external NVS tooling could
+// skip the portal and then loop forever failing WiFi/TLS/auth, recoverable only over serial.
+bool netcfg_load(netcfg_t *out, char *err, size_t errcap);
 
 // netcfg_save persists cfg to NVS (namespace "navfeeder"). Returns ESP_OK on commit.
 esp_err_t netcfg_save(const netcfg_t *cfg);

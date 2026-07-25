@@ -48,7 +48,7 @@ static void get_str(nvs_handle_t h, const char *key, char *dst, size_t cap, cons
     }
 }
 
-bool netcfg_load(netcfg_t *out)
+bool netcfg_load(netcfg_t *out, char *err, size_t errcap)
 {
     memset(out, 0, sizeof *out);
     // Compiled Kconfig defaults first; NVS overrides any key present.
@@ -75,11 +75,13 @@ bool netcfg_load(netcfg_t *out)
         out->insecure = ins;
         nvs_close(h);
     }
-    // This is only the portal-vs-station-mode gate, not full config validation.
-    // save_post requires a token and bounds the port, but NVS/Kconfig may be
-    // populated by other means; those paths can pass this two-field check and
-    // fail later at WiFi/TLS/authentication.
-    return out->wifi_ssid[0] != '\0' && out->host[0] != '\0';
+    // one validation rule, shared with the portal's save path (netcfg_validate),
+    // so "provisioned enough to start station mode" and "accepted by the form" cannot
+    // disagree. The old two-field check let a config populated by Kconfig, a partial NVS
+    // write, or external NVS tooling skip the portal and then fail forever at
+    // WiFi/TLS/auth — with no runtime portal fallback, that is a serial-cable recovery,
+    // made worse on this board by the regression fix GPIO9 strapping hazard.
+    return netcfg_validate(out, err, errcap);
 }
 
 esp_err_t netcfg_save(const netcfg_t *cfg)
@@ -262,8 +264,10 @@ static esp_err_t save_post(httpd_req_t *req)
     }
 
     netcfg_t cfg;
-    netcfg_load(&cfg); // start from current so unspecified fields keep their value (                       // form_field no longer clears dst on "not found", so a field genuinely
-                       // absent from the body leaves this NVS-loaded value untouched)
+    // Start from the current config so unspecified fields keep their value (    // form_field no longer clears dst on "not found", so a field genuinely absent from the
+    // body leaves this NVS-loaded value untouched). The return value is deliberately
+    // ignored here — an INVALID current config is the normal case on the portal path.
+    netcfg_load(&cfg, NULL, 0);
     if (form_field(body, "ssid", cfg.wifi_ssid, sizeof cfg.wifi_ssid) == FORM_TRUNCATED ||
         form_field(body, "pass", cfg.wifi_pass, sizeof cfg.wifi_pass) == FORM_TRUNCATED ||
         form_field(body, "host", cfg.host, sizeof cfg.host) == FORM_TRUNCATED) {
@@ -277,20 +281,15 @@ static esp_err_t save_post(httpd_req_t *req)
         return ESP_FAIL;
     }
     if (port_result == FORM_OK && port[0]) {
-        int p = atoi(port); // reject an out-of-range port (a 99999/negative would
-        if (p < 1 || p > 65535) { // otherwise store verbatim into a provisioned-but-unconnectable unit)
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "port out of range (1-65535)");
-            return ESP_FAIL;
-        }
-        cfg.port = p;
+        // a 99999/negative/garbage port must not be stored verbatim into a
+        // provisioned-but-unconnectable unit. atoi's 0-on-garbage lands in the same
+        // rejected range, so the single netcfg_validate rule below catches every case
+        // (regression fix — this used to be a second, separate bound check right here).
+        cfg.port = atoi(port);
     }
     if (form_field(body, "station", cfg.station, sizeof cfg.station) == FORM_TRUNCATED ||
         form_field(body, "token", cfg.token, sizeof cfg.token) == FORM_TRUNCATED) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "form field too long");
-        return ESP_FAIL;
-    }
-    if (cfg.token[0] == '\0') {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bearer token is required");
         return ESP_FAIL;
     }
 #if CONFIG_NVF_ALLOW_INSECURE_PORTAL
@@ -304,6 +303,15 @@ static esp_err_t save_post(httpd_req_t *req)
     // With the portal control compiled out (regression fix, the shipped default), cfg.insecure
     // stays exactly what netcfg_load already populated (NVS or the Kconfig/NVF_INSECURE
     // default) — the form cannot change it either way.
+
+    // the same rule netcfg_load applies at boot. Saving a config the boot path
+    // would reject is how a unit ends up unprovisionable without a serial cable — refuse it
+    // here, with the specific field named, while the operator still has the portal open.
+    char reason[NETCFG_ERR_CAP];
+    if (!netcfg_validate(&cfg, reason, sizeof reason)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, reason);
+        return ESP_FAIL;
+    }
 
     esp_err_t err = netcfg_save(&cfg);
     if (err != ESP_OK) {

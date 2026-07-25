@@ -59,8 +59,11 @@ typedef struct {
 void display_render_status(const nvf_status_t *st);
 
 // display_show_portal renders the first-boot provisioning screen: the SoftAP SSID + password
-// and the setup URL, so an unprovisioned board can be configured from a phone.
-void display_show_portal(const char *ssid, const char *pass);
+// and the setup URL, so an unprovisioned board can be configured from a phone. reason (may be
+// NULL/empty) is why the portal came up — the netcfg_validate message naming the missing
+// field, so "factory fresh" and "provisioned but missing a token" are distinguishable on a
+// headless board. Keep it under ~26 chars: one line at STATUS_SCALE 2.
+void display_show_portal(const char *ssid, const char *pass, const char *reason);
 
 #ifdef __cplusplus
 }

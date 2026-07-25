@@ -74,8 +74,18 @@ esptool.py --chip esp32c6 --port /dev/cu.usbmodemXXXX erase-region 0x9000 0x6000
 ```
 
 Those offset/size values are the `nvs` row in `partitions.csv`; the LittleFS spool partition is
-left intact. On the next boot `netcfg_load` finds no provisioned SSID/host and raises a newly
+left intact. On the next boot `netcfg_load` finds no provisioned config and raises a newly
 passworded SoftAP portal. Use the actual serial device path for the board.
+
+**Incomplete configuration also raises the portal**. "Provisioned" means WiFi SSID,
+collector host, port in 1–65535, station id, and bearer token are all present — one rule
+(`netcfg_validate`), applied both at boot and by the portal before it writes NVS. A board
+configured only partly (Kconfig defaults, a partial NVS write, external NVS tooling) therefore
+comes up in the portal with the missing field named on the LCD, instead of looping forever on
+WiFi/TLS/auth failures that only a serial cable could diagnose. Note the deliberate limit: a
+*complete but wrong* config (bad password, unreachable host, revoked token) keeps retrying in
+station mode — a unit riding out a collector outage must not drop its uplink over a condition
+that is not its fault.
 
 ## Enrollment (the shared AAA control plane)
 

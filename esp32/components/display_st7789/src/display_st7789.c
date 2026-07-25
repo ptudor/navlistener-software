@@ -388,7 +388,7 @@ void display_render_status(const nvf_status_t *st)
     display_flush();
 }
 
-void display_show_portal(const char *ssid, const char *pass)
+void display_show_portal(const char *ssid, const char *pass, const char *reason)
 {
     if (!s_ready) return;
     int y = STATUS_Y0;
@@ -398,6 +398,10 @@ void display_show_portal(const char *ssid, const char *pass)
     status_line(&y, "pass:", COL_STATUS_FG);
     status_line(&y, pass ? pass : "?", COL_STATUS_FG);
     status_line(&y, "http://192.168.4.1", COL_STATUS_FG);
+    // why the portal came up. Six lines still fit — STATUS_Y0..Y1 is 136 px at
+    // STATUS_LINE_H 18, so seven lines are available; status_line drops anything that would
+    // overflow rather than scribbling into the banners.
+    if (reason && reason[0]) status_line(&y, reason, COL_DOWN);
     if (y < STATUS_Y1) fill_rect(0, y, LCD_H_RES, STATUS_Y1 - y, COL_STATUS_BG);
     display_flush();
 }

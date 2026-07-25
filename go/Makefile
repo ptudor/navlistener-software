@@ -10,7 +10,7 @@ CMD         := ./cmd/navlistener
 
 GO          := go
 
-.PHONY: all check check-e2e check-refs build build-linux build-linux-arm64 build-darwin build-darwin-arm64 \
+.PHONY: all check check-e2e check-refs check-esp32 build build-linux build-linux-arm64 build-darwin build-darwin-arm64 \
 		build-freebsd build-all install test race fuzz vet fmt fmt-check tidy clean run help
 
 # MODROOTS: the workspace's two modules — the daemon (.) and the reusable gnss math library
@@ -20,9 +20,17 @@ MODROOTS := . ../gnss
 
 all: check build
 
-# check runs the fast quality gate: fmt-check + vet + reference provenance + tests,
-# across both modules.
-check: fmt-check vet check-refs check-e2e test
+# check runs the fast quality gate: fmt-check + vet + reference provenance + ESP32 host
+# tests + tests, across both modules.
+check: fmt-check vet check-refs check-esp32 check-e2e test
+
+# check-esp32 runs the ESP32 component host tests — the firmware code that is pure C with no
+# ESP-IDF dependency (the GNF1 encoder/frame_type map, the netcfg validation rule). They need
+# only a C compiler, so a firmware regression in logic shared with the collector fails this
+# gate on a machine with no ESP-IDF installed. The real firmware build stays behind
+# esp32/build-navfeeder-esp.sh.
+check-esp32:
+	@$(MAKE) --no-print-directory -C ../esp32 host-test
 
 # check-refs gates the citation source of record : every committed ICD present and
 # matching the SHA-256 pinned in reference/SOURCES.tsv, so "cite the ICD section" can never
@@ -120,4 +128,4 @@ clean:
 	rm -rf $(BUILD_DIR)
 
 help:
-	@echo "targets: check check-e2e check-refs build build-freebsd build-linux-arm64 build-all install test race fuzz vet fmt tidy run clean"
+	@echo "targets: check check-e2e check-refs check-esp32 build build-freebsd build-linux-arm64 build-all install test race fuzz vet fmt tidy run clean"

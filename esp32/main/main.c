@@ -232,16 +232,25 @@ void app_main(void)
     }
 
     // Config precedence: NVS (field-provisioned) over Kconfig defaults.
-    bool provisioned = netcfg_load(&g_cfg);
+    // netcfg_load now applies the full station-mode rule (ssid/host/port/station/
+    // token), not just "ssid and host are set", and names the field that failed. A unit
+    // half-provisioned via Kconfig or external NVS tooling raises the portal instead of
+    // looping forever on WiFi/TLS/auth with no way back except a serial cable.
+    char cfg_err[NETCFG_ERR_CAP] = {0};
+    bool provisioned = netcfg_load(&g_cfg, cfg_err, sizeof cfg_err);
     if (!provisioned) {
-        // First boot / factory reset: raise the SoftAP provisioning portal and show its
-        // credentials on the LCD, so the board is configured from a phone (no serial console).
+        // First boot / factory reset / incomplete config: raise the SoftAP provisioning
+        // portal and show its credentials on the LCD, so the board is configured from a
+        // phone (no serial console).
         char ap_ssid[33] = {0}, ap_pass[16] = {0};
         if (netcfg_start_portal(ap_ssid, ap_pass) == ESP_OK) {
             status_led_state(LED_BOOT);
-            display_show_portal(ap_ssid, ap_pass);
-            ESP_LOGW(TAG, "unprovisioned: join AP '%s' and open http://192.168.4.1/ to configure",
-                     ap_ssid);
+            // The reason goes on the panel too: "wifi ssid is empty" (a factory-fresh board)
+            // and "bearer token is empty" (a half-provisioned one) are the same screen
+            // otherwise, and the second is the one an operator would never guess.
+            display_show_portal(ap_ssid, ap_pass, cfg_err);
+            ESP_LOGW(TAG, "unprovisioned (%s): join AP '%s' and open http://192.168.4.1/ to configure",
+                     cfg_err, ap_ssid);
             // the AP password normally appears ONLY on the LCD (never logged).
             // could ever join the AP. Physical serial-console access is equivalent trust to
             // reading the panel, so when the display is not ready, print the one-time password
