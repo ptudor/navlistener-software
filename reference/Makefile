@@ -7,14 +7,19 @@
 # from their official sources so any machine matches the team byte-for-byte, verifying each
 # download against the SHA-256 pinned in SOURCES.tsv.
 #
-#   make update   # fetch every ICD in SOURCES.tsv into icd/, then verify SHA-256
+#   make update   # fetch every ICD in SOURCES.tsv into icd/, then report SHA-256 status
 #   make fetch    # alias for update
-#   make verify   # check SHA-256 of the files already on disk (no download)
+#   make verify   # report SHA-256 of the files already on disk (no download)
 #   make missing  # fetch only the local-only ICDs absent from a fresh clone
 #   make list     # print the manifest
 #
 # The committed ICDs are already present after `git clone`; a fresh checkout typically only
 # needs `make missing` to pull the local-only (BeiDou/GLONASS/QZSS/NavIC) set.
+#
+# These are best-effort operator/reporting targets, not CI gates: per-file fetch,
+# missing-file, and hash failures are printed, but the recipe loops continue and
+# normally return success. A caller that requires fail-closed verification must
+# inspect the output or add explicit status propagation.
 
 ICD_DIR   := icd
 MANIFEST  := SOURCES.tsv
@@ -40,9 +45,9 @@ AWKROWS   := awk -F'\t' 'BEGIN{h=sprintf("%c",35)} NF>=5 && substr($$1,1,1)!=h {
 
 help:
 	@echo 'navlistener reference-library sync — targets:'
-	@echo '  make update   fetch every ICD in $(MANIFEST) into $(ICD_DIR)/, then verify SHA-256'
+	@echo '  make update   fetch every ICD in $(MANIFEST), then report SHA-256 status'
 	@echo '  make missing  fetch only ICDs not yet present on disk (typical after a fresh clone)'
-	@echo '  make verify   verify SHA-256 of files already on disk (no download)'
+	@echo '  make verify   report SHA-256 of files already on disk (no download)'
 	@echo '  make list     print the manifest (filename / policy / size / url)'
 	@echo ''
 	@echo 'Override the fetch User-Agent with:  make update UA="..."'
