@@ -37,6 +37,11 @@ func CheckCRC24Q(data []byte) bool {
 // message, CRC over bits 0-299 including its own trailing 24-bit CRC, has no
 // byte-aligned split at all). Equivalent to CRC24Q for a byte-aligned,
 // whole-byte range (TestCRC24QBitsMatchesByteWiseCRC24Q).
+//
+// The caller must supply a non-negative range wholly contained in data. This
+// low-level primitive deliberately does not repeat BitReader's bounds checks;
+// the frame decoders call it only with format constants after checking the
+// delivered frame length.
 func CRC24QBits(data []byte, bitOffset, bitLen int) uint32 {
 	const poly = 0x1864CFB
 	var crc uint32
@@ -55,7 +60,9 @@ func CRC24QBits(data []byte, bitOffset, bitLen int) uint32 {
 // CheckCRC24QBits reports whether the bit range [bitOffset, bitOffset+bitLen)
 // of data is self-consistent under CRC-24Q — the same "run the CRC over data
 // plus its own trailing CRC and check for zero remainder" idiom as
-// CheckCRC24Q, generalized to a non-byte-aligned range.
+// CheckCRC24Q, generalized to a non-byte-aligned range. As with CRC24QBits, the
+// range must already be known to fit in data; this helper only adds the minimum
+// 24-bit checksum-width check.
 func CheckCRC24QBits(data []byte, bitOffset, bitLen int) bool {
 	if bitLen < 24 {
 		return false

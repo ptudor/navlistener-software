@@ -53,7 +53,8 @@ func galileoINAVCRCMessage(page []byte, withCRC bool) []byte {
 
 // StampGalileoINAVCRC computes and writes the I/NAV CRC-24Q into an eight-word
 // nominal page. It exists for synthetic frame builders; live decoders should
-// only call DecodeGalileoINAV, which verifies the transmitted checksum.
+// only call DecodeGalileoINAV, which verifies the transmitted checksum. The
+// first eight words are mutated in place; a shorter slice is left unchanged.
 func StampGalileoINAVCRC(words []uint32) {
 	if len(words) < 8 {
 		return

@@ -200,6 +200,11 @@ func TOWAt(sys System, unix, gpsMinusUTC float64) (float64, bool) {
 // regression fix), and a literal here would silently diverge from it after a real leap
 // event. The leap term only picks the cycle (it is divided by 604800 s), so even
 // a few seconds' error is harmless — but one source of truth is the point.
+//
+// Invalid field widths (bits <= 0 or bits >= 31) and time systems without a
+// continuous week axis return truncated unchanged. This makes the helper safe
+// for optional metadata, but callers that require disambiguation must validate
+// those inputs themselves rather than treating the fallback as a full week.
 func DisambiguateWeek(sys System, truncated, bits int, approxUnix, gpsMinusUTC float64) int {
 	if bits <= 0 || bits >= 31 {
 		return truncated

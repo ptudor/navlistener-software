@@ -50,7 +50,9 @@ type Arc struct {
 }
 
 // Add accumulates one epoch's geometry-free pair: pGF = P₂−P₁, phiGF = Φ₁−Φ₂
-// (both metres; both equal I₁·(γ−1) plus their respective biases).
+// (both metres; both equal I₁·(γ−1) plus their respective biases). The caller
+// owns arc continuity: do not add samples across a loss of lock or cycle slip;
+// call Reset first when either is observed.
 func (a *Arc) Add(pGFm, phiGFm float64) {
 	a.n++
 	a.meanDiff += (pGFm - phiGFm - a.meanDiff) / float64(a.n)
@@ -91,7 +93,9 @@ const (
 )
 
 // Obliquity returns the thin-shell mapping factor M(E) ≥ 1 for elevation elRad:
-// sin χ = R_E/(R_E+h)·cos E, M = 1/cos χ. Vertical = slant / M.
+// sin χ = R_E/(R_E+h)·cos E, M = 1/cos χ. Vertical = slant / M. elRad is a
+// physical elevation angle; callers should exclude below-horizon observations
+// before using the resulting mapping in a measurement feed.
 func Obliquity(elRad float64) float64 {
 	sinChi := earthRadiusM / (earthRadiusM + ShellHeightM) * math.Cos(elRad)
 	return 1 / math.Sqrt(1-sinChi*sinChi)

@@ -292,6 +292,9 @@ func PredictedDoppler(e Ephemeris, tow, freqHz float64, recv gnss.ECEF) (float64
 	return doppler, nil
 }
 
+// finite reports whether every component can safely cross the library boundary;
+// it is the common final guard for propagation and caller-supplied receiver
+// coordinates.
 func finite(p gnss.ECEF) bool {
 	return !(math.IsNaN(p.X) || math.IsInf(p.X, 0) ||
 		math.IsNaN(p.Y) || math.IsInf(p.Y, 0) ||

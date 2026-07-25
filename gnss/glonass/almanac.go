@@ -284,7 +284,11 @@ func almPert(J, aeA2, incl, h, l, n, tau, lambda float64) pert {
 	return pert{da: da, dh: dh, dl: dl, dOmega: dOmega, di: di, dLambda: dLambda}
 }
 
-// solveKeplerEcc solves E = M + e·sin E by Newton iteration to the ICD's 1e-8 rad.
+// solveKeplerEcc solves E = M + e·sin E by fixed-point iteration. The caller has
+// already constrained 0 <= e < 1; twenty iterations with a 1e-12 stopping
+// threshold is tighter than the ICD's 1e-8 rad requirement. If the threshold is
+// not reached, the last iterate is returned and the enclosing propagation's
+// finite-value guard remains the final rejection boundary.
 func solveKeplerEcc(m, e float64) float64 {
 	ea := m
 	for i := 0; i < 20; i++ {

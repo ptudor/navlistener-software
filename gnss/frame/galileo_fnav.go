@@ -69,7 +69,8 @@ type GalileoFNAV struct {
 
 // StampGalileoFNAVCRC computes and writes the F/NAV CRC-24Q into a synthetic
 // eight-word page. OS-SIS-ICD 2.2 §4.2.2.3 protects the first 214 bits and
-// transmits the checksum in bits 214..237.
+// transmits the checksum in bits 214..237. The first eight words are mutated in
+// place; a shorter slice is left unchanged.
 func StampGalileoFNAVCRC(words []uint32) {
 	if len(words) < 8 {
 		return

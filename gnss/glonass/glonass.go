@@ -165,6 +165,8 @@ func deriv(s state, j accel) state {
 	return state{vx, vy, vz, ax, ay, az}
 }
 
+// addScaled forms s+h·d, the intermediate-state operation shared by the three
+// non-initial RK4 derivative evaluations.
 func addScaled(s state, d state, h float64) state {
 	var out state
 	for i := 0; i < 6; i++ {

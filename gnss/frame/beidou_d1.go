@@ -61,9 +61,10 @@ type BeiDouSubframe struct {
 	eph           kepler.Ephemeris
 }
 
-// beidouInfo builds the 224-bit information stream from the ten words: the top 26
-// bits of word 1 then the top 22 bits of words 2–10 (the BCH parity, already used
-// by the receiver, occupies the low bits).
+// beidouInfo builds the 224-bit information stream from the ten delivered
+// words: the top 26 bits of word 1 followed by the top 22 bits of words 2–10.
+// The omitted low bits are the BCH parity that DecodeBeiDouD1 verifies before
+// calling this helper.
 func beidouInfo(words []uint32) []byte {
 	buf := make([]byte, 28) // 224 bits
 	pos := 0
@@ -95,8 +96,9 @@ func bch15Valid(info uint16, parity uint16) bool {
 	return bch15Remainder((info<<4)|(parity&0xF)) == 0
 }
 
-// StampBeiDouD1BCH writes the parity bits for synthetic/test D1 words while
-// preserving their delivered information layout.
+// StampBeiDouD1BCH mutates the first ten words in place, writing parity bits for
+// a synthetic/test D1 subframe while preserving its delivered information
+// layout. It is a no-op when words is shorter than one complete subframe.
 func StampBeiDouD1BCH(words []uint32) {
 	if len(words) < 10 {
 		return
