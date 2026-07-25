@@ -88,6 +88,10 @@
 #define USEFUL_CONN_S 3       /* a source connection must survive this long, or emit >=1 frame,
                                 * before it resets producer_thread's backoff (else an accept-then-close
                                 * peer retries at ~1 Hz forever) */
+#define UBX_STATS_S 300       /* cadence of the producer's recognized/delivered stats line.
+                                * 5 min is quiet enough for syslog on a router that runs for months,
+                                * and fast enough that "link alive, nothing spooling" is noticed
+                                * within one operator glance rather than at the next disconnect. */
 
 /* UBX protocol constants (u-blox interface description). SFRBX carries raw nav words
  * per gnssId/sigId (docs/CONSTELLATIONS.md §2.1); MON-RF/MON-HW/NAV-SAT carry the RF-front-end
@@ -757,13 +761,15 @@ static uint8_t frame_type(unsigned gnssId, unsigned sigId) {
  * spool. Layout (F9/M9): gnssId, svId, sigId, freqId, numWords, reserved, version, reserved,
  * then numWords little-endian 32-bit dwrds each holding one native nav word right-aligned.
  * We re-serialize each word big-endian (the collector reads them back with BE, matching its
- * RawBytes()/bytesToWords round-trip), and stamp the host reception time. */
-static void emit_sfrbx(const unsigned char *p, unsigned len) {
-	if (len < 8) return;
+ * RawBytes()/bytesToWords round-trip), and stamp the host reception time.
+ * Returns 1 if a record was appended to the spool, 0 if the inner payload was rejected or the
+ * append failed  — run_ubx counts those separately from recognized messages. */
+static int emit_sfrbx(const unsigned char *p, unsigned len) {
+	if (len < 8) return 0;
 	unsigned gnssId = p[0], svId = p[1], sigId = p[2], freqId = p[3], numWords = p[4];
-	if (numWords == 0 || 8u + numWords * 4u > len) return;
+	if (numWords == 0 || 8u + numWords * 4u > len) return 0;
 	unsigned rawlen = numWords * 4u;
-	if (rawlen > MAX_RAW) return;
+	if (rawlen > MAX_RAW) return 0;
 
 	unsigned char rec[GNF_RECORD];
 	be64(rec, now_unix_ns());
@@ -777,22 +783,27 @@ static void emit_sfrbx(const unsigned char *p, unsigned len) {
 		uint32_t v = (uint32_t)w[0] | ((uint32_t)w[1] << 8) | ((uint32_t)w[2] << 16) | ((uint32_t)w[3] << 24);
 		be32(rec + RECORD_HDR + i * 4, v);
 	}
-	spool_append(&g_spool, rec, RECORD_HDR + rawlen);
+	/* report whether a record actually reached the spool. spool_append returns 0
+	 * only when the record could not be stored at all (malloc failure — counted as dropped
+	 * there), so this is a true delivered/not-delivered signal, distinct from run_ubx's
+	 * recognized-message count. */
+	return spool_append(&g_spool, rec, RECORD_HDR + rawlen) != 0;
 }
 
 /* emit_telem builds one GNF1 telemetry record (frame_type < 0x10 — a §6.2 receiver-side
  * sample) and spools it exactly like a nav frame: telemetry rides the same DATA/seq/ack/
  * replay stream. The record's gnssId/svId/sigId/freqId are zero (the sample is station-
  * scoped, keyed by the observer at the collector); the body is the type-specific payload
- * and MUST match ../go/internal/ingest/telemetry.go so the C↔Go cross-oracle stays exact. */
-static void emit_telem(uint8_t type, const unsigned char *body, unsigned bodylen) {
-	if (bodylen > MAX_RAW) return;
+ * and MUST match ../go/internal/ingest/telemetry.go so the C↔Go cross-oracle stays exact.
+ * Returns 1 if a record was appended. */
+static int emit_telem(uint8_t type, const unsigned char *body, unsigned bodylen) {
+	if (bodylen > MAX_RAW) return 0;
 	unsigned char rec[GNF_RECORD];
 	be64(rec, now_unix_ns());
 	rec[8] = rec[9] = rec[10] = rec[11] = 0; /* gnssId/svId/sigId/freqId: unused for telemetry */
 	rec[12] = type;
 	memcpy(rec + RECORD_HDR, body, bodylen);
-	spool_append(&g_spool, rec, RECORD_HDR + bodylen);
+	return spool_append(&g_spool, rec, RECORD_HDR + bodylen) != 0; /* regression fix */
 }
 
 /* emit_monrf converts a UBX-MON-RF payload (F9+ RF-front-end telemetry) into a JammingStats
@@ -801,13 +812,14 @@ static void emit_telem(uint8_t type, const unsigned char *body, unsigned bodylen
  * postStatus U4 @4, reserved U1[4] @8, noisePerMS U2 @12, agcCnt U2 @14, jamInd U1 @16
  * (previously read @14/@16/@20 — off by the 2-byte antStatus/antPower pair, so
  * NoiseLevel got agcCnt, AGC got jamInd|ofsI<<8, and CW got magQ). Body: [ver][nBands]
- * then per band [block][agc BE16][noise BE16][cw][jamState][antStatus]. Bounds-checked. */
-static void emit_monrf(const unsigned char *p, unsigned len) {
-	if (len < 4) return;
+ * then per band [block][agc BE16][noise BE16][cw][jamState][antStatus]. Bounds-checked.
+ * Returns 1 if a record was appended. */
+static int emit_monrf(const unsigned char *p, unsigned len) {
+	if (len < 4) return 0;
 	unsigned nBlocks = p[1];
-	if (nBlocks == 0 || 4u + nBlocks * 24u > len) return;
+	if (nBlocks == 0 || 4u + nBlocks * 24u > len) return 0;
 	unsigned bodylen = 2u + nBlocks * 8u;
-	if (bodylen > MAX_RAW) return;
+	if (bodylen > MAX_RAW) return 0;
 	unsigned char body[MAX_RAW];
 	body[0] = TELEM_VERSION;
 	body[1] = (unsigned char)nBlocks;
@@ -821,14 +833,14 @@ static void emit_monrf(const unsigned char *p, unsigned len) {
 		body[o + 6] = (unsigned char)(b[1] & 0x03); /* jammingState */
 		body[o + 7] = b[2];                       /* antStatus */
 	}
-	emit_telem(F_T_JAMMING, body, bodylen);
+	return emit_telem(F_T_JAMMING, body, bodylen);
 }
 
 /* emit_monhw converts a legacy UBX-MON-HW payload (60 bytes) into a single-band JammingStats
  * record: noisePerMS U2 @16, agcCnt U2 @18, aStatus U1 @20, flags X1 @22 (jammingState in
- * bits 2-3), jamInd U1 @45. Bounds-checked. */
-static void emit_monhw(const unsigned char *p, unsigned len) {
-	if (len < 60) return;
+ * bits 2-3), jamInd U1 @45. Bounds-checked. Returns 1 if a record was appended. */
+static int emit_monhw(const unsigned char *p, unsigned len) {
+	if (len < 60) return 0;
 	unsigned char body[2 + 8];
 	body[0] = TELEM_VERSION;
 	body[1] = 1;
@@ -838,18 +850,18 @@ static void emit_monhw(const unsigned char *p, unsigned len) {
 	body[7] = p[45];                        /* jamInd (CW) */
 	body[8] = (unsigned char)((p[22] >> 2) & 0x03); /* jammingState */
 	body[9] = p[20];                        /* aStatus */
-	emit_telem(F_T_JAMMING, body, sizeof body);
+	return emit_telem(F_T_JAMMING, body, sizeof body);
 }
 
 /* emit_navsat converts a UBX-NAV-SAT payload into a ReceptionData (0x01) record for the
  * C/N0-vs-elevation spoofing gate. Layout: iTOW U4, version U1, numSvs U1 @5, reserved U1[2],
  * then numSvs × 12-byte blocks — gnssId U1, svId U1, cno U1 @2, elev I1 @3, …, flags X4 @8
  * (bit 3 = svUsed). Body: [ver][nSats BE16] then per sat [gnssId][svId][cno][elev i8][flags];
- * capped at MAX_TELEM_SATS. Bounds-checked. */
-static void emit_navsat(const unsigned char *p, unsigned len) {
-	if (len < 8) return;
+ * capped at MAX_TELEM_SATS. Bounds-checked. Returns 1 if a record was appended. */
+static int emit_navsat(const unsigned char *p, unsigned len) {
+	if (len < 8) return 0;
 	unsigned numSvs = p[5];
-	if (numSvs == 0 || 8u + numSvs * 12u > len) return;
+	if (numSvs == 0 || 8u + numSvs * 12u > len) return 0;
 	unsigned n = numSvs > MAX_TELEM_SATS ? MAX_TELEM_SATS : numSvs;
 	unsigned char body[3 + MAX_TELEM_SATS * 5];
 	body[0] = TELEM_VERSION;
@@ -863,7 +875,7 @@ static void emit_navsat(const unsigned char *p, unsigned len) {
 		body[o + 3] = s[3];                 /* elev (I1, forwarded verbatim) */
 		body[o + 4] = (rd_le32(s + 8) & 0x08) ? 0x01 : 0x00; /* svUsed */
 	}
-	emit_telem(F_T_RECEPTION, body, 3u + n * 5u);
+	return emit_telem(F_T_RECEPTION, body, 3u + n * 5u);
 }
 
 /* rdbuf is a small buffered reader over the source fd (serial or TCP). */
@@ -945,6 +957,21 @@ static int sync_ubx(struct rdbuf *b) {
 	}
 }
 
+/* log_ubx_stats prints the producer's two counters. They are deliberately distinct:
+ * `recognized` is checksum-valid UBX of a class/id we handle — the liveness/backoff signal —
+ * while `delivered` is records that actually reached the spool. recognized > 0 with
+ * delivered == 0 is the one combination an operator cannot otherwise see: the link is healthy
+ * and the receiver is talking, but every inner payload is being rejected (a firmware/protocol
+ * mismatch, a truncating bridge), so nothing is being forwarded. Call it out in words rather
+ * than leaving it to be inferred from two numbers. */
+static void log_ubx_stats(const char *what, unsigned long recognized, unsigned long delivered) {
+	if (recognized > 0 && delivered == 0)
+		log_msg("%s: recognized=%lu delivered=%lu — source is alive but NOTHING is being spooled",
+			what, recognized, delivered);
+	else
+		log_msg("%s: recognized=%lu delivered=%lu", what, recognized, delivered);
+}
+
 /* run_ubx reads a UBX byte stream, validates each message's Fletcher checksum, and emits
  * every UBX-RXM-SFRBX to the spool. It returns when the source ends (reconnect trigger). A
  * corrupt frame is dropped and the reader resynchronises — a mid-stream connect never
@@ -956,12 +983,22 @@ static int sync_ubx(struct rdbuf *b) {
  * reconnect-backoff signal, not a delivered-frame count. A TCP bridge that
  * accepts and instantly closes (ser2net with the tty missing, port busy) makes this return
  * immediately on the very first read; producer_thread uses the return value to decide
- * whether resetting backoff is warranted, mirroring go/internal/ingest's regression fix fix. */
+ * whether resetting backoff is warranted, mirroring go/internal/ingest's regression fix fix.
+ *
+ * regression fix re-examined that policy and KEPT it: backoff exists to stop hammering a dead or
+ * instantly-closing source, and a source delivering checksum-valid, recognized-class UBX is
+ * alive. Reconnecting more slowly cannot fix an undecodable inner payload, so keying backoff
+ * on delivered records would only punish a live-but-degraded source for something a reconnect
+ * never repairs. What WAS missing is the operator's ability to see "link alive, nothing
+ * spooling": `delivered` counts the records that actually reached the spool, separately, and
+ * both counts are logged (periodically and at source close). Do not merge the two counters. */
 static int run_ubx(int fd) {
 	struct rdbuf rb; rb.fd = fd; rb.pos = rb.len = 0; rb.quiet = 0;
 	unsigned char head[4], payload[UBX_MAX_PAYLOAD], ck[2];
 	time_t start = monotonic_s(); /* interval, not wall-clock */
-	unsigned long frames = 0;
+	time_t last_stats = start;
+	unsigned long frames = 0;    /* recognized class/id messages — the regression fix backoff signal */
+	unsigned long delivered = 0; /* of those, records actually appended to the spool */
 	for (;;) {
 		if (sync_ubx(&rb) != 0) { log_msg("source closed"); break; }
 		if (rb_read(&rb, head, 4) != 0) break;                /* class, id, len(2, LE) */
@@ -975,14 +1012,21 @@ static int run_ubx(int fd) {
 		for (unsigned i = 0; i < len; i++) { a += payload[i]; bb += a; }
 		if (a != ck[0] || bb != ck[1]) continue;              /* bad checksum → drop, resync */
 		if (head[0] == UBX_CLASS_RXM && head[1] == UBX_ID_SFRBX)
-			{ emit_sfrbx(payload, len); frames++; }
+			{ delivered += emit_sfrbx(payload, len); frames++; }
 		else if (head[0] == UBX_CLASS_MON && head[1] == UBX_ID_MONRF)
-			{ emit_monrf(payload, len); frames++; }
+			{ delivered += emit_monrf(payload, len); frames++; }
 		else if (head[0] == UBX_CLASS_MON && head[1] == UBX_ID_MONHW)
-			{ emit_monhw(payload, len); frames++; }
+			{ delivered += emit_monhw(payload, len); frames++; }
 		else if (head[0] == UBX_CLASS_NAV && head[1] == UBX_ID_NAVSAT)
-			{ emit_navsat(payload, len); frames++; }
+			{ delivered += emit_navsat(payload, len); frames++; }
+		else
+			continue; /* unrecognized class/id: not counted, no stats tick needed */
+		if (monotonic_s() - last_stats >= UBX_STATS_S) {
+			log_ubx_stats("ubx", frames, delivered);
+			last_stats = monotonic_s();
+		}
 	}
+	log_ubx_stats("ubx session", frames, delivered);
 	return frames > 0 || (monotonic_s() - start) >= USEFUL_CONN_S;
 }
 
