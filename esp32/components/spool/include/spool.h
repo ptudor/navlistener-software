@@ -9,11 +9,25 @@
 // ../go/internal/wire/wire.go). The ack prunes the ring (navfeeder.c's spool, ported to
 // FreeRTOS).
 //
-// On overflow the OLDEST record is dropped and counted (a littlefs disk tier — the
-// reboot-surviving equivalent of navfeeder's --spool-file — is a later phase; until then the
-// ring is the whole buffer). Records are variable length (a nav frame is typically ~40-60 B),
-// so each is malloc'd; `cap` bounds the frame count, not the bytes — size it against the C6
-// SRAM budget with WiFi+TLS up (see docs/PLAN.md sizing note).
+// ⚠ DURABILITY ENVELOPE  — THIS SPOOL IS RAM-ONLY. There is no flash tier. The
+// partition table reserves 1.5 MiB for one (`spool`, partitions.csv) and docs/PLAN.md
+// §P-spool records the design, but nothing mounts or writes it today. Two consequences an
+// operator must plan around, not discover:
+//
+//   1. Outage depth is the ring, and only the ring. On overflow the OLDEST unacked record is
+//      dropped and counted. At the 1024-frame default that is roughly 100 s of a multi-GNSS
+//      receiver's output — see the arithmetic in ../../../README.md ("Durability envelope").
+//   2. A reboot or power cut loses EVERY unacked record, however short the outage. Records
+//      live in malloc'd RAM; nothing survives esp_restart(), a brownout, or a watchdog.
+//
+// The standalone C feeder (../../../feeder/navfeeder.c --spool-file) does have a disk tier,
+// so the deployed router-based fleet is unaffected by this. Until the tier lands, treat every
+// navfeeder-esp unit as loss-tolerant-only by explicit design: fine as an additional observer,
+// not as the sole witness of an event you need forensically complete.
+//
+// Records are variable length (a nav frame is typically ~40-60 B), so each is malloc'd; `cap`
+// bounds the frame count, not the bytes — size it against the C6 SRAM budget with WiFi+TLS up
+// (see docs/PLAN.md sizing note).
 
 #ifndef SPOOL_H
 #define SPOOL_H

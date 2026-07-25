@@ -67,7 +67,11 @@ menu "navfeeder-esp"
         int "Spool ring capacity (frames)"
         default 1024
         help
-            Bounded RAM ring of unacked records. Sized against the C6 SRAM budget with
-            WiFi+TLS up; overflow drops the oldest (a littlefs reboot tier is a later phase).
+            Bounded RAM ring of unacked records, sized against the C6 SRAM budget with
+            WiFi+TLS up. This is the WHOLE outage buffer: there is no flash tier, so
+            overflow drops the oldest record and any reboot discards every unacked one
+            (regression fix — see README.md "Durability envelope"). At the default, roughly 100 s
+            of a multi-GNSS receiver's output. Raising it buys outage depth only while the
+            unit stays powered, and costs heap that WiFi/TLS also needs.
 
 endmenu

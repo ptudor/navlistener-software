@@ -68,6 +68,49 @@ matched to `feeder/navfeeder.c`. No I/O — pure encode/parse over buffers.
   wifi + collector + token, persisted to NVS. Generated AP password, never a placeholder.
 - **Milestone:** a factory-fresh board is field-provisioned with no serial console.
 
+## P-spool — the flash spill tier *(designed, DEFERRED by decision 2026-07-24)*
+
+**Status: not implemented, and not silently pending.** The spool is RAM-only; the reserved
+1.5 MiB `spool` partition is unmounted; every unacked record dies on reboot. That envelope is
+stated to operators in `../README.md` §"Durability envelope", in `components/spool/include/spool.h`,
+and in `partitions.csv`. Until this phase runs, **navfeeder-esp is loss-tolerant-only by
+explicit design** and must not be deployed as the sole witness of anything forensically
+required. The router/SBC fleet is unaffected — `feeder/navfeeder.c --spool-file` has its disk
+tier.
+
+The design is recorded here so the deferral is a decision with a plan, not an open question:
+
+- **Spill on RAM overflow, not write-through.** Flash wear on a 1.5 MiB partition is the
+  binding constraint, so the tier must absorb only what the ring evicts. Write-through would
+  multiply erase cycles by the full record rate for no benefit while the uplink is healthy.
+- **Bounded append-only segments**, each record carrying its length, the existing monotonic
+  seq, and a CRC. Sequence continuity across RAM and flash is what makes replay-on-reconnect
+  correct; the collector acks the highest seq seen this connection, so the tier only
+  ever needs "everything above the ack watermark, in order".
+- **Boot-time recovery scan** that truncates the torn tail at the first bad CRC — a power cut
+  mid-append must cost the last record, never the segment.
+- **Prune a segment only once it is entirely ≤ the acked watermark**, which keeps erases at
+  segment granularity instead of per record.
+- **Explicit failure fallback**: flash full or write error ⇒ revert to RAM-only, count it, and
+  surface it on the LED/display. A silently degraded durability tier is worse than none.
+- **Sync policy inherits `navfeeder.c` regression fix**: flush, don't fsync every record — the
+  deliberate trade is "survives an orderly reboot/poweroff losslessly, not necessarily an
+  unclean power cut". Carry the same words into the component header so the guarantee is not
+  overstated.
+- **Measure the wear budget before enabling by default**: records/day × record size vs.
+  partition size × erase-cycle budget, written into the component header.
+- **Implementation choice is open and consequential.** The reserved partition is declared
+  `data, littlefs`, but ESP-IDF ships no in-tree LittleFS (it would mean adding the
+  `joltwallet/littlefs` managed component), and a filesystem's metadata churn works against
+  the wear constraint above. A raw `esp_partition` sector log — records with CRC, 4 KiB-sector
+  erase/prune, boot scan — has minimal write amplification and no external dependency, at the
+  cost of bespoke code and a partition subtype label that would want updating. Decide this
+  first; do not start coding against the label.
+- **Verification** (from the regression fix review): collector outages longer than RAM capacity;
+  reboot with unacked records in both RAM and flash, then verify replay order and sequence
+  continuity; injected torn writes, full flash, and delete/truncate failures; a power-cut rig
+  if practical.
+
 ## P-hw — hardware identity (the P9 high-assurance observer)
 
 - ESP32-S3 variant: bring in `apps/shepherdprotocol/esp32/components/atecc608c`; generate a
@@ -85,8 +128,14 @@ matched to `feeder/navfeeder.c`. No I/O — pure encode/parse over buffers.
 WiFi + mbedTLS + the panel framebuffer already claim a large share of the C6's 512 KB HP
 SRAM. The spool ring must be sized against what's left, not against the C feeder's 65536
 default. Start small (1024 frames), measure `esp_get_free_heap_size()` under load, and lean
-on the littlefs disk tier for outage depth rather than a large RAM ring. Document the
-measured budget in `spool`'s header when P2 lands.
+on the flash tier for outage depth rather than a large RAM ring. Document the measured budget
+in `spool`'s header when P2 lands.
+
+**Caveat while P-spool is deferred:** "lean on the flash tier for outage depth" describes the
+intended end state, not today's firmware — there is no flash tier, so the ring *is* the whole
+outage budget (~100 s at 1024 frames; see `../README.md` §"Durability envelope"). Sizing the
+ring conservatively is therefore a deliberate acceptance of that limit, not a deferral of it
+to a tier that exists.
 
 ## Testing methodology (keep using it)
 

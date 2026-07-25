@@ -87,6 +87,31 @@ WiFi/TLS/auth failures that only a serial cable could diagnose. Note the deliber
 station mode — a unit riding out a collector outage must not drop its uplink over a condition
 that is not its fault.
 
+## Durability envelope (read before deploying one as a primary observer)
+
+**The spool is RAM-only. There is no flash tier yet**. `partitions.csv` reserves
+1.5 MiB for one and `docs/PLAN.md §P-spool` records the design, but no component mounts or
+writes that partition today. What that means in the field:
+
+- **Outage depth = the RAM ring.** `CONFIG_NVF_SPOOL_FRAMES` (default **1024**) records; on
+  overflow the *oldest* unacked record is dropped and counted. Order-of-magnitude: a
+  multi-GNSS receiver tracking ~25–30 SVs emits roughly **10 records/s** (GPS subframes every
+  6 s per SV, Galileo I/NAV and GLONASS strings every 2 s), so 1024 frames ≈ **100 seconds**
+  of collector outage before the earliest records start falling off the back. Treat that as an
+  estimate from broadcast cadences and your own sky view — measure yours from the dashboard's
+  `dropped` counter, which is the authoritative signal.
+- **Any reboot loses every unacked record**, however brief the outage — records live in
+  malloc'd RAM, so `esp_restart()`, a brownout, a watchdog reset, or pulling USB all discard
+  them. This is the part with no workaround: it is not a "long outage" failure mode.
+- **The C feeder is unaffected**: `../feeder/navfeeder.c --spool-file` has the disk tier, so
+  the deployed router/SBC fleet keeps its outage durability. This limitation is specific to
+  navfeeder-esp.
+
+Deployment rule until the tier ships: **a navfeeder-esp unit is loss-tolerant-only by explicit
+design.** Good as an additional observer in a fleet where another station covers the same sky;
+not the sole witness of an event you need forensically complete. Watch the `dropped` counter
+on the dashboard — a non-zero value means records were lost, not merely delayed.
+
 ## Enrollment (the shared AAA control plane)
 
 A navfeeder-esp observer is just a `Device` in the control plane navlistener shares with
@@ -100,8 +125,10 @@ token → software mTLS cert → **ATECC608 cert** (the P-hw high-assurance clas
 
 - **Decode centrally** — never decode an ephemeris here. Frame and forward; fix decoder bugs once,
   centrally, and replay over stored raw frames.
-- **The receiver must never go down** — backoff-reconnect forever, spool across outages,
-  survive reboots (littlefs tier). Never `exit()`.
+- **The receiver must never go down** — backoff-reconnect forever, spool across outages, never
+  `exit()`. Surviving *reboots* is the one part of this rule the firmware does **not** yet
+  satisfy: the flash tier is designed (`docs/PLAN.md §P-spool`) and unimplemented — see
+  "Durability envelope" above. Do not describe navfeeder-esp as reboot-durable until it lands.
 - **Wire parity** — `gnf1`/`ubx` must stay byte-identical to `../go/internal/wire/wire.go` and
   `../feeder/navfeeder.c`. TLS 1.2 pinned; nav words big-endian on the wire.
 - **Clean-room** — author from the u-blox ICD and our own Apache-2.0 code, using the cited interface specifications.

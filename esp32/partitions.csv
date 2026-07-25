@@ -1,9 +1,12 @@
 # navfeeder-esp partition table (4 MB flash).
-# Single factory app (OTA is future work) + NVS config + space reserved for a
-# future LittleFS spool. The current spool component is RAM-only and does not
-# mount or write this partition; overflow/reboot can therefore lose unacked
-# records. The reserved partition is the planned equivalent of navfeeder.c's
-# --spool-file disk tier, not an implemented durability guarantee.
+# Single factory app (OTA is future work) + NVS config + space RESERVED for a
+# future flash spool tier. The spool component is RAM-only and does not mount or
+# write this partition, so overflow or ANY reboot loses unacked records — the
+# reservation is the planned equivalent of navfeeder.c's --spool-file disk tier,
+# not an implemented durability guarantee (regression fix; envelope in README.md
+# "Durability envelope", design and open implementation choice in docs/PLAN.md
+# §P-spool). The `littlefs` subtype records the original intent; the tier may yet
+# be built as a raw esp_partition log instead, which would want this label revised.
 # Name,      Type, SubType,  Offset,   Size
 nvs,         data, nvs,      0x9000,   0x6000
 phy_init,    data, phy,      0xf000,   0x1000
