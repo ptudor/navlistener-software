@@ -10,7 +10,7 @@ CMD         := ./cmd/navlistener
 
 GO          := go
 
-.PHONY: all check check-e2e build build-linux build-linux-arm64 build-darwin build-darwin-arm64 \
+.PHONY: all check check-e2e check-refs build build-linux build-linux-arm64 build-darwin build-darwin-arm64 \
 		build-freebsd build-all install test race fuzz vet fmt fmt-check tidy clean run help
 
 # MODROOTS: the workspace's two modules — the daemon (.) and the reusable gnss math library
@@ -20,8 +20,18 @@ MODROOTS := . ../gnss
 
 all: check build
 
-# check runs the fast quality gate: fmt-check + vet + tests, across both modules.
-check: fmt-check vet check-e2e test
+# check runs the fast quality gate: fmt-check + vet + reference provenance + tests,
+# across both modules.
+check: fmt-check vet check-refs check-e2e test
+
+# check-refs gates the citation source of record : every committed ICD present and
+# matching the SHA-256 pinned in reference/SOURCES.tsv, so "cite the ICD section" can never
+# silently mean a different edition of the document. Non-strict on purpose — the git-ignored
+# local-only ICDs (BeiDou/GLONASS/QZSS/NavIC) are legitimately absent from a fresh clone, so
+# requiring them here would fail a correct checkout. To prove the whole library:
+#   make -C ../reference missing && make -C ../reference verify STRICT=1
+check-refs:
+	@$(MAKE) --no-print-directory -C ../reference verify
 
 # Build the C oracle before the C↔Go GNF1 end-to-end tests. A missing C
 # toolchain fails here with a clear feeder build error; plain `go test ./...`
@@ -110,4 +120,4 @@ clean:
 	rm -rf $(BUILD_DIR)
 
 help:
-	@echo "targets: check check-e2e build build-freebsd build-linux-arm64 build-all install test race fuzz vet fmt tidy run clean"
+	@echo "targets: check check-e2e check-refs build build-freebsd build-linux-arm64 build-all install test race fuzz vet fmt tidy run clean"

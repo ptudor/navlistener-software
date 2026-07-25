@@ -7,22 +7,39 @@
 # from their official sources so any machine matches the team byte-for-byte, verifying each
 # download against the SHA-256 pinned in SOURCES.tsv.
 #
-#   make update   # fetch every ICD in SOURCES.tsv into icd/, then report SHA-256 status
+#   make update   # fetch every ICD in SOURCES.tsv into icd/, then verify SHA-256 (strict)
 #   make fetch    # alias for update
-#   make verify   # report SHA-256 of the files already on disk (no download)
+#   make verify   # verify SHA-256 of the files already on disk (no download)
 #   make missing  # fetch only the local-only ICDs absent from a fresh clone
 #   make list     # print the manifest
 #
 # The committed ICDs are already present after `git clone`; a fresh checkout typically only
 # needs `make missing` to pull the local-only (BeiDou/GLONASS/QZSS/NavIC) set.
 #
-# These are best-effort operator/reporting targets, not CI gates: per-file fetch,
-# missing-file, and hash failures are printed, but the recipe loops continue and
-# normally return success. A caller that requires fail-closed verification must
-# inspect the output or add explicit status propagation.
+# STATUS CONTRACT. Every target here is fail-closed: it reports ALL rows first,
+# then exits nonzero if any row failed. These are gates, not best-effort reports — a green
+# exit means "the citation source of record matches the pinned SHA-256, byte for byte."
+#
+#   MISMATCH                 always fails. A hash change means the local file is not the
+#                            document the code cites (corruption, or an upstream re-publish
+#                            that needs a new manifest row + a re-read of every citation).
+#   MISSING, policy=commit   always fails. Committed ICDs are in git and present after clone;
+#                            their absence is a broken checkout, not a normal state.
+#   MISSING, policy=local    fails only under STRICT=1. Local-only ICDs are git-ignored and
+#                            legitimately absent from a fresh clone until `make missing`, so
+#                            the default must not make a correct fresh clone un-verifiable.
+#   FETCH FAILED             always fails (`update`, `missing`).
+#
+# Automation that wants the whole library proven runs:  make missing && make verify STRICT=1
+# `go/Makefile check` runs the default (non-strict) `verify`, which gates the committed set.
 
 ICD_DIR   := icd
 MANIFEST  := SOURCES.tsv
+
+# STRICT=1 also requires the git-ignored local-only ICDs to be present (see the status
+# contract above). Default 0 so a fresh clone that has not yet run `make missing` still
+# gets a meaningful, passing check of everything git actually gave it.
+STRICT    ?= 0
 
 # User-Agent for every fetch. Several issuing sites (NAVCEN, beidou.gov.cn, isro.gov.in)
 # reject curl's default UA, so we send an identifiable browser-compatible one. Override on
@@ -44,59 +61,86 @@ AWKROWS   := awk -F'\t' 'BEGIN{h=sprintf("%c",35)} NF>=5 && substr($$1,1,1)!=h {
 .PHONY: help update fetch verify missing list clean-local
 
 help:
-	@echo 'navlistener reference-library sync — targets:'
-	@echo '  make update   fetch every ICD in $(MANIFEST), then report SHA-256 status'
+	@echo 'navlistener reference-library sync — targets (all fail-closed, exit nonzero on any bad row):'
+	@echo '  make update   fetch every ICD in $(MANIFEST), then verify SHA-256 (implies STRICT=1)'
 	@echo '  make missing  fetch only ICDs not yet present on disk (typical after a fresh clone)'
-	@echo '  make verify   report SHA-256 of files already on disk (no download)'
+	@echo '  make verify   verify SHA-256 of files already on disk (no download)'
 	@echo '  make list     print the manifest (filename / policy / size / url)'
 	@echo ''
+	@echo 'STRICT=1 also requires the git-ignored local-only ICDs:  make missing && make verify STRICT=1'
 	@echo 'Override the fetch User-Agent with:  make update UA="..."'
 
 fetch: update
 
+# Each recipe below runs its row loop inside a `{ ...; exit $$fail; }` group on the RIGHT
+# side of the pipe. The group IS the subshell make waits on, so a flag set inside the loop
+# survives to the pipeline's exit status — the naive `fail=1` set after the pipe would be
+# lost with the subshell. Rows all print before the status is decided, so a
+# failing run still shows the operator every problem, not just the first.
 update:
 	@mkdir -p $(ICD_DIR)
 	@echo '==> fetching (UA: $(UA))'
-	@$(AWKROWS) $(MANIFEST) | \
-	while IFS="$$(printf '\t')" read -r file policy sha bytes url; do \
-		printf '  %-28s ' "$$file"; \
-		if $(CURL) -o "$(ICD_DIR)/$$file.tmp" "$$url"; then \
-			got=$$($(SHACMD) "$(ICD_DIR)/$$file.tmp" | awk '{print $$1}'); \
-			if [ "$$got" = "$$sha" ]; then \
-				mv "$(ICD_DIR)/$$file.tmp" "$(ICD_DIR)/$$file"; echo 'OK'; \
+	@$(AWKROWS) $(MANIFEST) | { \
+		fail=0; \
+		while IFS="$$(printf '\t')" read -r file policy sha bytes url; do \
+			printf '  %-28s ' "$$file"; \
+			if $(CURL) -o "$(ICD_DIR)/$$file.tmp" "$$url"; then \
+				got=$$($(SHACMD) "$(ICD_DIR)/$$file.tmp" | awk '{print $$1}'); \
+				if [ "$$got" = "$$sha" ]; then \
+					mv "$(ICD_DIR)/$$file.tmp" "$(ICD_DIR)/$$file"; echo 'OK'; \
+				else \
+					rm -f "$(ICD_DIR)/$$file.tmp"; fail=1; \
+					echo "SHA MISMATCH (upstream re-published?) got $$got"; \
+				fi; \
 			else \
-				rm -f "$(ICD_DIR)/$$file.tmp"; \
-				echo "SHA MISMATCH (upstream re-published?) got $$got"; \
+				rm -f "$(ICD_DIR)/$$file.tmp"; fail=1; echo 'FETCH FAILED'; \
 			fi; \
-		else \
-			rm -f "$(ICD_DIR)/$$file.tmp"; echo 'FETCH FAILED'; \
-		fi; \
-	done
-	@$(MAKE) --no-print-directory verify
+		done; \
+		exit $$fail; \
+	}; st=$$?; \
+	$(MAKE) --no-print-directory verify STRICT=1 || st=1; \
+	if [ $$st -ne 0 ]; then echo '==> update FAILED (see rows above)'; fi; \
+	exit $$st
 
 missing:
 	@mkdir -p $(ICD_DIR)
-	@$(AWKROWS) $(MANIFEST) | \
-	while IFS="$$(printf '\t')" read -r file policy sha bytes url; do \
-		[ -f "$(ICD_DIR)/$$file" ] && continue; \
-		printf '  %-28s ' "$$file"; \
-		if $(CURL) -o "$(ICD_DIR)/$$file.tmp" "$$url"; then \
-			got=$$($(SHACMD) "$(ICD_DIR)/$$file.tmp" | awk '{print $$1}'); \
-			if [ "$$got" = "$$sha" ]; then mv "$(ICD_DIR)/$$file.tmp" "$(ICD_DIR)/$$file"; echo 'OK'; \
-			else rm -f "$(ICD_DIR)/$$file.tmp"; echo "SHA MISMATCH got $$got"; fi; \
-		else rm -f "$(ICD_DIR)/$$file.tmp"; echo 'FETCH FAILED'; fi; \
-	done
-	@echo '==> done (run `make verify` for a full check)'
+	@$(AWKROWS) $(MANIFEST) | { \
+		fail=0; \
+		while IFS="$$(printf '\t')" read -r file policy sha bytes url; do \
+			if [ -f "$(ICD_DIR)/$$file" ]; then continue; fi; \
+			printf '  %-28s ' "$$file"; \
+			if $(CURL) -o "$(ICD_DIR)/$$file.tmp" "$$url"; then \
+				got=$$($(SHACMD) "$(ICD_DIR)/$$file.tmp" | awk '{print $$1}'); \
+				if [ "$$got" = "$$sha" ]; then mv "$(ICD_DIR)/$$file.tmp" "$(ICD_DIR)/$$file"; echo 'OK'; \
+				else rm -f "$(ICD_DIR)/$$file.tmp"; fail=1; echo "SHA MISMATCH got $$got"; fi; \
+			else rm -f "$(ICD_DIR)/$$file.tmp"; fail=1; echo 'FETCH FAILED'; fi; \
+		done; \
+		if [ $$fail -ne 0 ]; then echo '==> missing FAILED (see rows above)'; \
+		else echo '==> done (run `make verify STRICT=1` for a full check)'; fi; \
+		exit $$fail; \
+	}
 
 verify:
-	@$(AWKROWS) $(MANIFEST) | \
-	while IFS="$$(printf '\t')" read -r file policy sha bytes url; do \
-		if [ ! -f "$(ICD_DIR)/$$file" ]; then printf '  %-28s MISSING\n' "$$file"; continue; fi; \
-		got=$$($(SHACMD) "$(ICD_DIR)/$$file" | awk '{print $$1}'); \
-		if [ "$$got" = "$$sha" ]; then printf '  %-28s OK\n' "$$file"; \
-		else printf '  %-28s MISMATCH (have %s)\n' "$$file" "$$got"; fi; \
-	done; \
-	echo '==> verify complete (MISSING = local-only ICD not yet fetched; run `make missing`)'
+	@$(AWKROWS) $(MANIFEST) | { \
+		fail=0; \
+		while IFS="$$(printf '\t')" read -r file policy sha bytes url; do \
+			if [ ! -f "$(ICD_DIR)/$$file" ]; then \
+				if [ "$$policy" = "local" ] && [ "$(STRICT)" != "1" ]; then \
+					printf '  %-28s MISSING (local-only, not fetched — run `make missing`)\n' "$$file"; \
+				else \
+					printf '  %-28s MISSING\n' "$$file"; fail=1; \
+				fi; \
+				continue; \
+			fi; \
+			got=$$($(SHACMD) "$(ICD_DIR)/$$file" | awk '{print $$1}'); \
+			if [ "$$got" = "$$sha" ]; then printf '  %-28s OK\n' "$$file"; \
+			else printf '  %-28s MISMATCH (have %s)\n' "$$file" "$$got"; fail=1; fi; \
+		done; \
+		if [ $$fail -ne 0 ]; then echo '==> verify FAILED (see rows above)'; \
+		elif [ "$(STRICT)" = "1" ]; then echo '==> verify OK (strict: every manifest row present and matching)'; \
+		else echo '==> verify OK (committed set; local-only ICDs are advisory — STRICT=1 to require them)'; fi; \
+		exit $$fail; \
+	}
 
 list:
 	@printf '%-28s %-7s %10s  %s\n' FILE POLICY BYTES URL

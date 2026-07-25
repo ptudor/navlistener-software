@@ -15,6 +15,12 @@ unverified rather than filling them in from memory.
   clone, `make -C reference missing` pulls just the local-only set. `make -C reference verify`
   checks the files already on disk. The fetch User-Agent is set (and overridable) in the
   Makefile — several issuers reject curl's default UA.
+- **The checks are fail-closed**. Every target reports all rows, then exits nonzero
+  if any row failed: a SHA-256 mismatch or a missing *committed* ICD always fails, a fetch
+  failure always fails, and a missing *local-only* ICD fails under `STRICT=1` (it is a normal
+  state on a fresh clone, so not by default). `make -C go check` runs the default `verify`, so
+  a corrupted or substituted committed ICD breaks the build gate; to prove the whole library,
+  `make -C reference missing && make -C reference verify STRICT=1`.
 
 **Retrieved:** 2026-07-17. **Editions are the current in-force ones as of that date;** a new
 upstream edition means a new row + SHA-256, not an in-place overwrite (that is what `verify`'s
