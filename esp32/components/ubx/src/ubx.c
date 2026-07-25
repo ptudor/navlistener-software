@@ -1,6 +1,8 @@
 // ubx — UBX framer + GNF1 record emitters. See include/ubx.h.
-// Byte-for-byte matched to ../../../feeder/navfeeder.c (emit_sfrbx/monrf/monhw/navsat) and the
-// collector's scanUBX, so the ESP32 and the C feeder produce identical GNF1 records.
+// The record-body layouts are byte-for-byte matched to ../../../feeder/navfeeder.c
+// (emit_sfrbx/monrf/monhw/navsat) and the collector's scanUBX. For supported signals the
+// complete records match; gnf1_frame_type documents the ESP32's broader fallback labels
+// for unknown signal IDs.
 
 #include "ubx.h"
 

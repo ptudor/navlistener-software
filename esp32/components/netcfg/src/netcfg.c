@@ -75,6 +75,10 @@ bool netcfg_load(netcfg_t *out)
         out->insecure = ins;
         nvs_close(h);
     }
+    // This is only the portal-vs-station-mode gate, not full config validation.
+    // save_post requires a token and bounds the port, but NVS/Kconfig may be
+    // populated by other means; those paths can pass this two-field check and
+    // fail later at WiFi/TLS/authentication.
     return out->wifi_ssid[0] != '\0' && out->host[0] != '\0';
 }
 

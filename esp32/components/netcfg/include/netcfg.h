@@ -27,7 +27,9 @@ typedef struct {
 } netcfg_t;
 
 // netcfg_load fills out from NVS, falling back to the compiled Kconfig defaults for any key
-// absent from NVS. Returns true if the result is "provisioned enough" to run (SSID + host set).
+// absent from NVS. Returns true when SSID + host are set. It deliberately does not validate
+// token/station/port; a partial or externally-written NVS record can therefore leave station
+// mode repeatedly failing authentication rather than re-entering the portal.
 bool netcfg_load(netcfg_t *out);
 
 // netcfg_save persists cfg to NVS (namespace "navfeeder"). Returns ESP_OK on commit.

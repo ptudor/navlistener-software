@@ -27,8 +27,10 @@ typedef struct {
     bool insecure;        // skip TLS verification (dev only)
 } pusher_cfg_t;
 
-// pusher_start copies cfg and spawns the push task. The spool must already be initialised.
-// Returns false if the task could not be created.
+// pusher_start copies cfg and spawns the push task. The spool must already be initialised,
+// and host/token/station must point to valid strings. Call once per boot; there is no
+// stop/reconfigure path. Returns false on allocation failure or if the task could not be
+// created.
 bool pusher_start(const pusher_cfg_t *cfg);
 
 // pusher_connected reports whether the push link is currently up (for the status display/LED).

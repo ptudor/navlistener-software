@@ -48,9 +48,10 @@ extern "C" {
 #define GNF1_DATA_MAX     (GNF1_FRAME_HDR + 8 + GNF1_RECORD_MAX)
 
 // gnf1_frame_type maps (gnssId, sigId) to the GNF1 nav message type byte (CONSTELLATIONS.md
-// §6), mirroring navfeeder.c's frame_type() and the collector's RawFrame.NavType(). It is a
-// forensic label — the collector dispatches decode on (gnssId, sigId), so an unmapped type
-// (0) still decodes.
+// §6). It is a forensic label — the collector dispatches decode on (gnssId, sigId), so an
+// unmapped type (0) still decodes. For recognized signals it matches navfeeder.c and
+// RawFrame.NavType; for unknown GPS/Galileo/GLONASS/SBAS signal IDs this implementation
+// currently applies a broad constellation-family fallback (see the source comment).
 uint8_t gnf1_frame_type(unsigned gnss_id, unsigned sig_id);
 
 // gnf1_encode_record builds a raw-nav record (the payload the spool stores, without the seq)
@@ -70,21 +71,27 @@ void gnf1_frame_header(uint8_t hdr[GNF1_FRAME_HDR], uint8_t type, uint32_t len);
 
 // gnf1_encode_data builds a full DATA frame [F_DATA][4B BE len][8B BE seq][record] into out,
 // which must be at least GNF1_FRAME_HDR + 8 + record_len bytes. Returns the total frame
-// length. Mirrors navfeeder.c send_data().
+// length. An oversized record_len is silently clamped to GNF1_RECORD_MAX, matching
+// navfeeder.c send_data(); normal callers pass records produced by the bounded encoders.
 size_t gnf1_encode_data(uint8_t *out, uint64_t seq, const uint8_t *record, size_t record_len);
 
 // gnf1_build_hello writes the HELLO JSON payload into out (capacity cap). Returns the length
-// written, or -1 on truncation. `token`/`cert` credentials are chosen by the caller.
+// written, or -1 on truncation. It carries the bearer token and station/feed identity;
+// TLS certificate configuration, if added, belongs to the connection layer.
 int gnf1_build_hello(char *out, size_t cap, const char *token, const char *station,
                      const char *feed, bool zstd);
 
 // gnf1_welcome_ok reports whether a WELCOME JSON payload accepted the handshake.
+// welcome must be NUL-terminated in addition to supplying len. The tiny parser
+// recognizes the compact `"ok":true` spelling emitted by Go encoding/json.
 bool gnf1_welcome_ok(const char *welcome, size_t len);
 
 // gnf1_welcome_zstd reports whether the collector confirmed zstd (only then compress).
+// It has the same NUL-termination and compact-JSON requirements as gnf1_welcome_ok.
 bool gnf1_welcome_zstd(const char *welcome, size_t len);
 
-// gnf1_decode_ack reads the 8-byte sequence from an ACK payload. Returns false if short.
+// gnf1_decode_ack reads the first 8 bytes of an ACK payload as the sequence. Returns
+// false if short and ignores any trailing extension bytes.
 bool gnf1_decode_ack(const uint8_t *payload, size_t len, uint64_t *seq_out);
 
 // --- byte order (big-endian on the wire) -----------------------------------------------

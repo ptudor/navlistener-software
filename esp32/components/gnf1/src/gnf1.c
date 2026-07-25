@@ -8,6 +8,12 @@
 
 uint8_t gnf1_frame_type(unsigned gnss_id, unsigned sig_id)
 {
+    // This byte is a forensic family label, not the collector's decode key.
+    // Unlike navfeeder.c's narrower allow-list, the GPS/Galileo/GLONASS/SBAS
+    // arms below label unknown signal IDs with their constellation's default
+    // family. The collector still dispatches on (gnssId, sigId), but captures
+    // of an unsupported signal can therefore carry a different msg_type
+    // depending on which feeder produced them.
     switch (gnss_id) {
     case 0: return sig_id == 0 ? 0x10 : 0x11;                        // GPS: LNAV / CNAV
     case 5:                                                         // QZSS: shipped LNAV/CNAV only
@@ -121,8 +127,10 @@ int gnf1_build_hello(char *out, size_t cap, const char *token, const char *stati
 
 bool gnf1_welcome_ok(const char *welcome, size_t len)
 {
-    // The payload is short, bounded JSON; a substring match mirrors navfeeder.c's handshake
-    // acceptance without pulling a JSON parser onto the node.
+    // The payload is short, bounded, NUL-terminated JSON (the pusher adds the
+    // terminator after read_frame). Substring matching avoids carrying a JSON
+    // parser, but couples us to Go's compact `"ok":true` spelling: an
+    // independently formatted WELCOME containing `"ok": true` is rejected.
     (void)len;
     return strstr(welcome, "\"ok\":true") != NULL;
 }
