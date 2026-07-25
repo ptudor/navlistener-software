@@ -57,9 +57,10 @@ const (
 var almIavg = 63.0 * physconst.Pi / 180.0
 
 var (
-	errAlmEcc  = errors.New("glonass: almanac eccentricity out of range [0,1)")
-	errAlmNaN  = errors.New("glonass: almanac propagation produced a non-finite value")
-	errAlmZero = errors.New("glonass: almanac has a zero/degenerate period")
+	errAlmEcc    = errors.New("glonass: almanac eccentricity out of range [0,1)")
+	errAlmNaN    = errors.New("glonass: almanac propagation produced a non-finite value")
+	errAlmZero   = errors.New("glonass: almanac has a zero/degenerate period")
+	errAlmKepler = errors.New("glonass: almanac Kepler solve did not converge")
 )
 
 // PropagateAlmanacECEF returns the PZ-90 ECEF position (metres) of the SV described
@@ -204,8 +205,13 @@ func propagateAlmanac(a Almanac, n0 int, ti float64, node nodeConvention, s0 flo
 	lambdaStar := mNode + a.Omega + n*tau + dLambda // unwrapped tau, not ti-tLambdaK
 	mI := lambdaStar - omegaI
 
-	// Solve the perturbed Kepler orbit and rotate into the chosen frame.
-	eaI := solveKeplerEcc(mI, epsI)
+	// Solve the perturbed Kepler orbit and rotate into the chosen frame. epsI is the
+	// PERTURBED eccentricity |(h+δh, l+δl)|, not the broadcast εnA, so the convergence
+	// guard applies to the value actually solved for.
+	eaI, err := solveKeplerEcc(mI, epsI)
+	if err != nil {
+		return gnss.ECEF{}, gnss.ECEF{}, err
+	}
 	nuI := 2 * math.Atan(math.Sqrt((1+epsI)/(1-epsI))*math.Tan(eaI/2))
 	uI := nuI + omegaI
 	rI := aI * (1 - epsI*math.Cos(eaI))
@@ -284,21 +290,49 @@ func almPert(J, aeA2, incl, h, l, n, tau, lambda float64) pert {
 	return pert{da: da, dh: dh, dl: dl, dOmega: dOmega, di: di, dLambda: dLambda}
 }
 
+// keplerResidualTol bounds the accepted Kepler-equation residual |E − e·sin E − M|.
+//
+// NOT a spec value: it is a systems threshold chosen between the two numbers that ARE
+// pinned — the 1e-12 fixed-point stopping delta below, and the 1e-8 rad accuracy the ICD
+// requires of the anomaly (cited in solveKeplerEcc). Anything a converged solve produces
+// sits at or below the stopping delta (the residual is bounded by e·|Eₙ₊₁ − Eₙ| < 1e-12),
+// so 1e-9 rejects only genuinely unconverged results while leaving four orders of margin
+// against float noise. At GLONASS radius 1e-9 rad is ~2.5e-5 m of along-track position —
+// far below any error this library cares about.
+const keplerResidualTol = 1e-9
+
 // solveKeplerEcc solves E = M + e·sin E by fixed-point iteration. The caller has
 // already constrained 0 <= e < 1; twenty iterations with a 1e-12 stopping
-// threshold is tighter than the ICD's 1e-8 rad requirement. If the threshold is
-// not reached, the last iterate is returned and the enclosing propagation's
-// finite-value guard remains the final rejection boundary.
-func solveKeplerEcc(m, e float64) float64 {
+// threshold is tighter than the ICD's 1e-8 rad requirement.
+//
+// it returns errAlmKepler rather than an unchecked last iterate when the
+// iteration has not converged. Broadcast almanacs cannot reach that state — εnA is a
+// 15-bit field at 2⁻²⁰ (frame/glonass_string.go), so a decoded e ≤ ~0.031 and fixed-point
+// iteration converges at rate ≈ e, well under 10 iterations. The exposure is the exported
+// API: propagateAlmanac accepts any e ∈ [0,1), and above e ≈ 0.75 twenty iterations from a
+// cold start cannot reach 1e-12, which used to return a finite, plausible-looking, silently
+// wrong anomaly. A plausible-but-wrong number out of the reusable math library is the worst
+// failure class in this codebase, and PropagateAlmanacECEF documents "an error — never a
+// NaN — on degenerate input"; the residual check is what makes that contract true for
+// non-finite AND merely-unconverged results alike.
+//
+// Checking the residual rather than the iteration count is deliberate: it validates the
+// answer, not the method, so a future switch to Newton/Halley (which would converge over the
+// whole e domain) inherits the guarantee without touching the caller.
+func solveKeplerEcc(m, e float64) (float64, error) {
 	ea := m
 	for i := 0; i < 20; i++ {
 		next := m + e*math.Sin(ea)
 		if math.Abs(next-ea) < 1e-12 {
-			return next
+			ea = next
+			break
 		}
 		ea = next
 	}
-	return ea
+	if r := ea - e*math.Sin(ea) - m; !(math.Abs(r) <= keplerResidualTol) { // NaN-safe
+		return 0, errAlmKepler
+	}
+	return ea, nil
 }
 
 func finiteVec(v gnss.ECEF) bool {
