@@ -17,8 +17,8 @@ import (
 // panicking decoder (same SV re-broadcasting the offending bit pattern) must
 // increment navlistener_decode_panics_total on EVERY recurrence — the alertable
 // signal decode_errors_total never carries — while the ERROR log line is
-// rate-limited per (gnssid, svid, msg_type) so months of recurrence cannot
-// flood the logfile at ingest rate.
+// rate-limited per (gnssid, svid, sigid)  so months of recurrence
+// cannot flood the logfile at ingest rate.
 func TestDecodePanicCountedEveryTimeLoggedOnce(t *testing.T) {
 	var buf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&buf, nil))
@@ -73,20 +73,45 @@ func TestExpireTickFor(t *testing.T) {
 
 // TestPanicLogLimiterReopensAfterInterval: the limiter is a cadence, not a
 // once-ever latch — after panicLogEvery the same signal logs again so a
-// long-running incident stays visible in the logfile.
+// long-running incident stays visible in the logfile. The third key component is
+// the SIGNAL id : sigid is what selects the panicking decoder and is
+// domain-checked to ~10 values, while push-path msg_type is an unvalidated wire
+// byte that would inflate the never-evicted key space ~24×.
 func TestPanicLogLimiterReopensAfterInterval(t *testing.T) {
 	lim := &panicLogLimiter{}
 	t0 := time.Unix(1_700_000_000, 0)
-	if !lim.allow(0, 7, 0x10, t0) {
+	if !lim.allow(0, 7, 0 /*sigid L1C/A*/, t0) {
 		t.Fatal("first occurrence must be allowed")
 	}
-	if lim.allow(0, 7, 0x10, t0.Add(panicLogEvery/2)) {
+	if lim.allow(0, 7, 0, t0.Add(panicLogEvery/2)) {
 		t.Error("recurrence inside the interval must be suppressed")
 	}
-	if !lim.allow(0, 7, 0x10, t0.Add(panicLogEvery+time.Second)) {
+	if !lim.allow(0, 7, 0, t0.Add(panicLogEvery+time.Second)) {
 		t.Error("recurrence after the interval must be allowed again")
 	}
-	if !lim.allow(0, 7, 0x11, t0) {
-		t.Error("a different msg_type is a distinct key and must be allowed")
+	if !lim.allow(0, 7, 3 /*sigid L2C*/, t0) {
+		t.Error("a different sigid is a distinct decoder path and must be allowed")
+	}
+	if !lim.allow(2, 7, 0, t0) {
+		t.Error("a different constellation is a distinct key and must be allowed")
+	}
+}
+
+// TestPanicLogLimiterIgnoresMsgType pins key choice: two frames of the
+// same (gnssid, svid, sigid) that differ only in msg_type run the SAME decoder, so
+// the second must be suppressed — msg_type must not multiply the never-evicted map
+// (a push-path wire byte with ~240 unvalidated values).
+func TestPanicLogLimiterIgnoresMsgType(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	lim := &panicLogLimiter{}
+	boom := func(fr *ingest.RawFrame) {
+		defer recoverDecodePanic(fr, log, lim)
+		panic("offending bit pattern")
+	}
+	boom(&ingest.RawFrame{GnssID: gnss.GPS, SvID: 9, SigID: 0, MsgType: 0x10, Source: "obs1"})
+	boom(&ingest.RawFrame{GnssID: gnss.GPS, SvID: 9, SigID: 0, MsgType: 0x11, Source: "obs1"})
+	if n := strings.Count(buf.String(), "decode panic recovered"); n != 1 {
+		t.Errorf("logged %d times for one (gnssid, svid, sigid) signal, want 1 (msg_type must not key the limiter)", n)
 	}
 }

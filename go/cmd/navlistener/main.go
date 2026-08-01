@@ -122,30 +122,7 @@ func run() int {
 
 	// Bind every configured listener before starting the historian or any producer.
 	// A startup address conflict therefore accepts zero frames and needs no drain.
-	debugState := func(w http.ResponseWriter, r *http.Request) {
-		// /debug/state dumps full live state + source names. Even when
-		// [metrics].addr is deliberately bound non-loopback (remote Prometheus),
-		// this endpoint stays loopback-only — a reverse proxy on this host still
-		// reaches it (its upstream connection originates from loopback).
-		if !isLoopbackPeer(r.RemoteAddr) {
-			http.Error(w, "forbidden: /debug/state is loopback-only", http.StatusForbidden)
-			return
-		}
-		// marshal to a buffer BEFORE committing a status, so an encode
-		// failure is a clean 500 + log instead of a silently truncated 200.
-		// Defense-in-depth: every float in SVEntry is finite-gated (snapshot.go),
-		// so this branch is unreachable today — kept so a future field can never
-		// reintroduce the truncation mode.
-		b, err := json.Marshal(live.Snapshot(time.Now()))
-		if err != nil {
-			log.Error("debug/state marshal failed", "error", err)
-			http.Error(w, "encode failed", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(b) // a mid-write client disconnect is the client's problem
-	}
-	obs := server.New(cfg.Metrics.Addr, log, debugState)
+	obs := server.New(cfg.Metrics.Addr, log, newDebugStateHandler(live, log))
 	obsLn, err := obs.Listen()
 	if err != nil {
 		log.Error("metrics server", "error", err)
@@ -467,29 +444,37 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live *state.Store, historian *st
 }
 
 // panicLogEvery is the per-signal decode-panic log cadence : one full
-// ERROR line per offending (gnssid, svid, msg_type) per interval; recurrences
+// ERROR line per offending (gnssid, svid, sigid) per interval; recurrences
 // within the interval increment DecodePanicsTotal silently.
 const panicLogEvery = time.Minute
 
 // panicLogLimiter rate-limits the decode-panic ERROR line per (gnssid, svid,
-// msg_type) : a decoder that panics on a specific bit pattern panics on
+// sigid) : a decoder that panics on a specific bit pattern panics on
 // every re-broadcast — the same SV every few seconds, for months — and per-frame
 // ERROR logging both fills the logfile and buries the one line an operator
 // needs. Only the LOG line is limited; the counter increments on every
-// recurrence. The key space is bounded (8 constellations × ≤63 SVs × a handful
-// of message types), so entries are kept forever rather than evicted.
+// recurrence.
+//
+// the third key component is the SIGNAL id, not msg_type. sigid is what
+// actually selects the panicking code path (decode dispatch is by gnssid+sigid,
+// never by msg_type) and it is domain-checked to ~10 values, whereas push-path
+// msg_type is an unvalidated wire byte ranging over ~240 values. The honest bound
+// is therefore 8 constellations × ≤256 SVs (svid is byte-wide — the ≤63 cap
+// applies only to SBAS/QZSS/NavIC, see state.svIDInRange) × ~10 sigIds; entries
+// are kept forever rather than evicted because that product is small and the map
+// only ever grows on ACTUAL panics.
 type panicLogLimiter struct {
 	mu   sync.Mutex
 	last map[[3]int]time.Time
 }
 
-func (l *panicLogLimiter) allow(gnssid, svid, msgType int, now time.Time) bool {
+func (l *panicLogLimiter) allow(gnssid, svid, sigid int, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.last == nil {
 		l.last = map[[3]int]time.Time{}
 	}
-	k := [3]int{gnssid, svid, msgType}
+	k := [3]int{gnssid, svid, sigid}
 	if t, ok := l.last[k]; ok && now.Sub(t) < panicLogEvery {
 		return false
 	}
@@ -509,7 +494,9 @@ func recoverDecodePanic(f *ingest.RawFrame, log *slog.Logger, lim *panicLogLimit
 		return
 	}
 	metrics.DecodePanicsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID))).Inc()
-	if lim.allow(int(f.GnssID), f.SvID, f.MsgType, time.Now()) {
+	// keyed on sigid (the decode-dispatch key), not msg_type; the log line
+	// still carries msg_type for the debugger.
+	if lim.allow(int(f.GnssID), f.SvID, f.SigID, time.Now()) {
 		log.Error("decode panic recovered; frame dropped",
 			"gnssid", int(f.GnssID), "svid", f.SvID, "sigid", f.SigID,
 			"source", f.Source, "msg_type", f.MsgType, "recover", fmt.Sprint(r))
@@ -1039,6 +1026,39 @@ func stateLoop(ctx context.Context, cfg config.State, store *state.Store) {
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// newDebugStateHandler builds the /debug/state handler: the regression fix loopback-peer
+// gate plus the regression fix marshal-before-status body. It is a package-level
+// constructor rather than a closure inside run() so the security gate — the sole
+// control keeping a full live-state + source-name dump off a deliberately
+// non-loopback metrics bind — is directly testable.
+func newDebugStateHandler(live *state.Store, log *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// /debug/state dumps full live state + source names. Even when
+		// [metrics].addr is deliberately bound non-loopback (remote Prometheus),
+		// this endpoint stays loopback-only — a reverse proxy on this host still
+		// reaches it (its upstream connection originates from loopback). The gate
+		// reads ONLY the transport peer: X-Forwarded-For and friends are attacker-
+		// settable headers and are deliberately never consulted.
+		if !isLoopbackPeer(r.RemoteAddr) {
+			http.Error(w, "forbidden: /debug/state is loopback-only", http.StatusForbidden)
+			return
+		}
+		// marshal to a buffer BEFORE committing a status, so an encode
+		// failure is a clean 500 + log instead of a silently truncated 200.
+		// Defense-in-depth: every float in SVEntry is finite-gated (snapshot.go),
+		// so this branch is unreachable today — kept so a future field can never
+		// reintroduce the truncation mode.
+		b, err := json.Marshal(live.Snapshot(time.Now()))
+		if err != nil {
+			log.Error("debug/state marshal failed", "error", err)
+			http.Error(w, "encode failed", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(b) // a mid-write client disconnect is the client's problem
 	}
 }
 
