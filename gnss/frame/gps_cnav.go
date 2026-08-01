@@ -185,9 +185,11 @@ func DecodeGPSCNAV(id gnss.GNSSID, words []uint32) (*GPSCNAV, error) {
 		m.hasClk = true
 		if m.MsgType == 30 { // group delay + ISCs : MT30-only, not common to 31-37
 			// regression fix — settled from the vendored primary text (2026-07-17), do not
-			// re-litigate: neither IS-GPS-200N (Table 30-IV; §6.2.7/6.2.8 define
-			// valid range as "the maximum range attainable with indicated bit
-			// allocation and scale factor") nor IS-GPS-705J (Table 20-IV) defines
+			// re-litigate: neither IS-GPS-200N (Table 30-IV, whose *** footnote
+			// reads "valid range is the maximum range attainable with indicated
+			// bit allocation and scale factor"; §6.2.7/6.2.8 define the generic
+			// Valid Range/Invalid concepts in different words — regression fix) nor
+			// IS-GPS-705J (Table 20-IV, same footnote) defines
 			// ANY "not available" bit-string sentinel for T_GD or the four ISCs —
 			// the recalled 1000000000000 (−4096) sentinel does not exist in the
 			// in-force editions. The raw two's-complement decode below is therefore

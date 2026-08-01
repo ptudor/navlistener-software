@@ -97,12 +97,13 @@ type GPSSubframe struct {
 	// 4 h (6–26 h by the IODC ranges of Table 20-XII — extended operations). A
 	// staleness/validity window that hard-assumes 4 h has no broadcast basis
 	// without this bit. QZSS redefines the values (0 = 2 h, always 0 in practice;
-	// QZSS-PNT-006 §4.1.2.5(3)) at the same bit position.
+	// QZSS-PNT-006 §4.1.2.4(3) — the Subframe 2 (Ephemeris 1) item list; regression fix)
+	// at the same bit position.
 	FitIntervalFlag bool
 	// AODO  is subframe-2 word 10 bits 18–22 × 900 s (IS-GPS-200N
 	// §20.3.3.4.1/§20.3.3.4.4): the age-of-data offset for the subframe-4 NMCT.
-	// 27900 (raw 31) means "NMCT unavailable" (§20.3.3.5.1.9); QZSS fixes it at
-	// that sentinel (QZSS-PNT-006 §4.1.2.5(4)). Seconds.
+	// 27900 (raw 31) means "NMCT unavailable" (§20.3.3.4.4 "NMCT Validity Time";
+	// regression fix); QZSS fixes it at that sentinel (QZSS-PNT-006 §4.1.2.4(4)). Seconds.
 	AODO int
 }
 

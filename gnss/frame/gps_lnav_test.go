@@ -172,7 +172,7 @@ func TestGPSLNAVHOWFlagsAndFitInterval(t *testing.T) {
 	}
 
 	// Alert+AS raised, fit flag set, AODO raw 31 (the 27900 s NMCT-unavailable
-	// sentinel, §20.3.3.5.1.9) — and toe/IODE must be unaffected by the new reads.
+	// sentinel, §20.3.3.4.4) — and toe/IODE must be unaffected by the new reads.
 	buf := buildSf2(t)
 	setField(buf, 2, 18, 1, 1)  // HOW alert
 	setField(buf, 2, 19, 1, 1)  // HOW anti-spoof
