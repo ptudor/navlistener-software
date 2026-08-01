@@ -4,8 +4,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/navlistener/internal/ingest"
+	"github.com/ptudor/navlistener/internal/metrics"
 )
 
 // TestConfCountsFreshNavSources guards conf is the number of distinct
@@ -50,15 +53,43 @@ func TestConfCountsFreshNavSources(t *testing.T) {
 // frame whose gnssId is outside the documented 0..7-minus-IMES domain (already
 // unreachable from the gated ingest boundaries, but a future ingest path might
 // not gate) must create no state and must not consult the svId envelope table.
+//
+// the "no state was created" half is NOT a guard — it holds with the
+// gate deleted, because svIDInRange defaults true for these ids and the dispatch
+// switch's default arm drops them regardless. The gate's only observable effect
+// is its METRIC label, so that is what this pins: the clamped
+// {out_of_range, gnssid_range} series takes one increment per rejected frame,
+// and no new series appears — a raw gnssId byte reaching a Prometheus label is
+// exactly the unbounded-cardinality leak the gate exists to stop (the metrics.go
+// contract). With the gate neutralized the frames fall through to the default
+// arm, which labels with the raw byte: the clamped delta goes to zero and four
+// {gnssid="4"|"8"|"42"|"255"} series appear.
 func TestApplyRejectsOutOfDomainGnssID(t *testing.T) {
 	st := New(4)
 	now := time.Unix(1_700_000_000, 0)
-	for _, bad := range []gnss.GNSSID{4, 8, 42, 255} {
-		st.Apply(&ingest.RawFrame{Recv: now, Source: "test", GnssID: bad, SvID: 5, SigID: 0,
+	bad := []gnss.GNSSID{4, 8, 42, 255}
+
+	// Touch the clamped child first so it is part of the baseline series count;
+	// any growth after Apply is then a NEW label value, not this one appearing.
+	clamped := metrics.DecodeErrorsTotal.WithLabelValues("out_of_range", "gnssid_range")
+	before := testutil.ToFloat64(clamped)
+	seriesBefore := testutil.CollectAndCount(metrics.DecodeErrorsTotal)
+
+	for _, g := range bad {
+		st.Apply(&ingest.RawFrame{Recv: now, Source: "test", GnssID: g, SvID: 5, SigID: 0,
 			Words: sf1Words(85)})
 	}
+
 	if svs := st.FeedSVs(now.Add(time.Second)); len(svs) != 0 {
 		t.Fatalf("out-of-domain gnssId created state: %+v", svs)
+	}
+	if got := testutil.ToFloat64(clamped) - before; got != float64(len(bad)) {
+		t.Errorf("decode_errors_total{out_of_range,gnssid_range} rose by %v, want %d (one per rejected frame)",
+			got, len(bad))
+	}
+	if got := testutil.CollectAndCount(metrics.DecodeErrorsTotal); got != seriesBefore {
+		t.Errorf("decode_errors_total series count %d → %d: a rejected frame's RAW gnssId byte reached a metric label",
+			seriesBefore, got)
 	}
 }
 

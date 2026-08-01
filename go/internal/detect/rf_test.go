@@ -180,20 +180,41 @@ func TestWiredSpoofGatesMatchesImplementation(t *testing.T) {
 // WiredSpoofGates < SpoofGateQuorum, spoofing_suspected is arithmetically
 // unreachable — every wired gate tripping at once must still not fire it. When a
 // second gate lands this test must be REPLACED by a reachability test, not deleted.
+//
+// the seed tick must supply a MEASURED, non-tripping C/N₀ fit (resid
+// 20 dB, mean 40 dB-Hz — the TestRFJammingConfirmed pattern). The old seed passed
+// nil Cn0Resid/Cn0Mean, which HOLDS the spoofing machine (rf.go's regression fix gate), so
+// the first tick carrying evidence became the silent seed: the machine seeded at
+// whatever it classified — "suspected" included — and could never transition, so
+// the no-event assertion held even with spoofGates neutralized to return the
+// quorum. The confirmed band is asserted directly for the same reason: a mutation
+// that trips every input equally moves the seed, not a transition.
 func TestSpoofingSuspectedDormantWhileUnderQuorum(t *testing.T) {
 	if WiredSpoofGates >= SpoofGateQuorum {
 		t.Skip("quorum now reachable; replace this test with a spoofing_suspected reachability test")
 	}
 	d := New(0)
 	t0 := time.Unix(1_700_000_000, 0)
+
+	baseResid, baseMean := 20.0, 40.0 // a real sky: high residual variance, ordinary C/N₀
+	clear := map[string]state.StationRF{"s": {ID: "s", Cn0Resid: &baseResid, Cn0Mean: &baseMean, RFTrust: 1}}
+	d.TickStations(t0, clear) // seeds the spoofing machine at "ok"
+	if band, _ := d.currentBand("s", "spoofing"); band != "ok" {
+		t.Fatalf("seeded spoofing band = %q, want ok — a non-tripping fit must classify ok", band)
+	}
+
+	// Every wired gate tripped at once: the per-constellation fit and the
+	// aggregate fit are two views of the same C/N₀ evidence.
 	resid, mean := 0.1, 55.0
 	spoof := map[string]state.StationRF{"s": {ID: "s", Cn0Resid: &resid, Cn0Mean: &mean,
 		Cn0ByConstellation: map[int]state.Cn0Stats{0: {Mean: 55, Resid: 0.1, NumSats: 8}}, RFTrust: 1}}
-	d.TickStations(t0, map[string]state.StationRF{"s": {ID: "s", RFTrust: 1}})
-	d.TickStations(t0.Add(10*time.Second), spoof)
-	evs := d.TickStations(t0.Add(120*time.Second), spoof)
-	if _, ok := find(evs, "spoofing_suspected"); ok {
-		t.Fatal("spoofing_suspected fired under quorum — the fusion rule is broken")
+	for _, off := range []time.Duration{10 * time.Second, 80 * time.Second, 150 * time.Second} {
+		if _, ok := find(d.TickStations(t0.Add(off), spoof), "spoofing_suspected"); ok {
+			t.Fatalf("spoofing_suspected fired under quorum at +%s — the fusion rule is broken", off)
+		}
+	}
+	if band, _ := d.currentBand("s", "spoofing"); band != "ok" {
+		t.Fatalf("confirmed spoofing band = %q after every wired gate tripped, want ok", band)
 	}
 }
 
