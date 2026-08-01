@@ -487,14 +487,16 @@ func matchPeerIdentity(chain []*x509.Certificate, observer string) error {
 }
 
 // stream reads DATA/PING frames, forwards decoded records to the decode stage, and
-// acks the highest sequence received on the configured cadence. The feeder assigns
-// monotonically increasing global sequences and, on every reconnect, replays all
-// frames past the last ack it received (docs/DESIGN.md §2). A fresh connection
-// therefore resumes at an arbitrary sequence, not 1, so the collector must ack the
-// highest seq seen this connection — acking "contiguous from zero" would never
-// advance past a replay and the feeder's spool would grow without bound. Frames are
-// forwarded to decode unconditionally (nav frames are idempotent, so a replayed
-// duplicate is harmless); the sequence governs only spool pruning.
+// acks the DURABLE watermark on the configured cadence (the highest
+// durably resolved sequence per the DurableTracker; receipt-based only in the
+// documented live-only mode). The feeder assigns monotonically increasing global
+// sequences and, on every reconnect, replays all frames past the last ack it
+// received (docs/DESIGN.md §2). A fresh connection therefore resumes at an
+// arbitrary sequence, not 1, so the watermark tracks sequences seen this
+// connection — acking "contiguous from zero" would never advance past a replay and
+// the feeder's spool would grow without bound. Frames are forwarded to decode
+// unconditionally (nav frames are idempotent, so a replayed duplicate is
+// harmless); the sequence governs only spool pruning.
 func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter, observer, feed, session string) {
 	var (
 		mu      sync.Mutex

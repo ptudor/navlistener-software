@@ -179,8 +179,8 @@ const (
 	// full single-LSB coverage is ever wanted the band can drop to ~1 mm (still
 	// infinitely above the exact-zero agreement value).
 	//
-	// This tight bound is valid ONLY
-	// for same-IODnav Galileo pairs — GPS LNAV-vs-CNAV and BeiDou D1-vs-B-CNAV2
+	// This tight bound is valid ONLY for same-IODnav Galileo pairs —
+	// GPS LNAV-vs-CNAV and BeiDou D1-vs-B-CNAV2
 	// are independent curve fits that legitimately differ by metres, and
 	// comparing them needs a real fit-difference tolerance analysis (deferred
 	// to their constellation passes; the classifier is Galileo-only until then).

@@ -275,8 +275,10 @@ func DecodeData(payload []byte) (seq uint64, rec RawRecord, err error) {
 	return seq, rec, nil
 }
 
-// EncodeAck / DecodeAck carry the highest sequence number received this
-// connection  -- see the Ack FrameType comment.
+// EncodeAck / DecodeAck carry the collector's ACK watermark: the highest
+// DURABLY RESOLVED sequence (regression fix; receipt-based only in documented
+// live-only mode), never-received sequences skipped per regression fix -- see the Ack
+// FrameType comment, which is authoritative.
 func EncodeAck(seq uint64) []byte {
 	b := make([]byte, 8)
 	binary.BigEndian.PutUint64(b, seq)

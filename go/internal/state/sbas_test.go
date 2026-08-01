@@ -112,7 +112,8 @@ func TestFeedGlobalSBASAndZeroFill(t *testing.T) {
 
 // TestSBASDoNotUseLatchesAcrossInterleavedMessages guards a test-mode
 // SBAS provider interleaves MT0 with its normal message stream (the DO-229
-// "MT0/2" pattern, EGNOS-SDD-OS §4.1), so the served health_code must latch on
+// "MT0/2" pattern — the WARNING following EGNOS-SDD-OS §4.1.2 Table 4,
+// canonical cite), so the served health_code must latch on
 // MT0 recency (sbasType0Hold, QZSS-L1S §4.1.2.3's 60 s exclusion) rather than
 // flip back to OK on the very next non-MT0 message.
 func TestSBASDoNotUseLatchesAcrossInterleavedMessages(t *testing.T) {
@@ -166,8 +167,9 @@ func TestSBASDoNotUseLatchesAcrossInterleavedMessages(t *testing.T) {
 // SFRBX/GNF1 header, OUTSIDE the nav message the CRC authenticates, so a
 // corrupted/mis-set svId with an intact payload previously fabricated a fully
 // served sbas-feed row (and, via RAWX, a phantom QZSS svs entry). The gate
-// enforces SBAS PRN 120–158 (EGNOS-SDD-OS §5), QZSS svId 1–10 (PRN 193–202,
-// QZSS-PNT-006 Table 4.2.2-5, minus the u-blox −192 offset), NavIC svId 1–14
+// enforces SBAS PRN 120–158 (EGNOS-SDD-OS §5), QZSS svId 1–10 (PRN 193–202:
+// QZSS-PNT-006 Table 3.2.1-1's SV-ID column is PRN−192, canonical
+// cite; Table 4.2.2-5's 193–202 effective range concurs), NavIC svId 1–14
 // (NAVIC-SPS-L5S Table 7).
 func TestApplyRejectsOutOfEnvelopeSvID(t *testing.T) {
 	s := New(4)

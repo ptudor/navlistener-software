@@ -10,6 +10,16 @@ import (
 	"github.com/ptudor/navlistener/internal/metrics"
 )
 
+// fmtAgeM renders a served *float64 age for failure messages — %v on the bare
+// pointer prints an address, not the minutes. The nil arm keeps the
+// short-circuited `== nil ||` assertions safe to format.
+func fmtAgeM(p *float64) any {
+	if p == nil {
+		return "<nil>"
+	}
+	return *p
+}
+
 // TestGLONASSPropagateEphAgeCap guards regression fix (the GLONASS twin of regression fix): a
 // GLONASS SV whose ephemeris apply time (gloEphAt) is beyond gloPropagateMaxEphAge
 // must stop having positions propagated. Before the fix, the frozen PZ-90 state was
@@ -124,7 +134,7 @@ func TestGLONASSFrozenTbGuard(t *testing.T) {
 		t.Error("frozen-tb set at +3 h still serving a position (wall gate blind to broadcast-time staleness)")
 	}
 	if sv.EphAgeM == nil || *sv.EphAgeM < 140 {
-		t.Errorf("eph_age_m = %v at +3 h frozen tb, want > 140 (wrapped broadcast age)", sv.EphAgeM)
+		t.Errorf("eph_age_m = %v at +3 h frozen tb, want > 140 (wrapped broadcast age)", fmtAgeM(sv.EphAgeM))
 	}
 
 	// 13 h in: the wrapped age would now read ≈ −660 min (the alias that
@@ -139,7 +149,7 @@ func TestGLONASSFrozenTbGuard(t *testing.T) {
 		t.Error("frozen-tb set at +13 h still serving a position (backward integration)")
 	}
 	if sv.EphAgeM == nil || *sv.EphAgeM < 770 {
-		t.Errorf("eph_age_m = %v at +13 h frozen tb, want ≥ 770 (monotone tb age; a wrapped/clamped value un-fires or plateaus eph_aged)", sv.EphAgeM)
+		t.Errorf("eph_age_m = %v at +13 h frozen tb, want ≥ 770 (monotone tb age; a wrapped/clamped value un-fires or plateaus eph_aged)", fmtAgeM(sv.EphAgeM))
 	}
 
 	// regression fix seam one: at +24 h the day-wrapped tk re-enters the legitimate
@@ -155,7 +165,7 @@ func TestGLONASSFrozenTbGuard(t *testing.T) {
 		t.Error("frozen-tb set at +24 h re-served a position (the day-periodic seam)")
 	}
 	if sv.EphAgeM == nil || *sv.EphAgeM < 1430 {
-		t.Errorf("eph_age_m = %v at +24 h frozen tb, want ≥ 1430 (a collapsed age falsely recovers eph_aged)", sv.EphAgeM)
+		t.Errorf("eph_age_m = %v at +24 h frozen tb, want ≥ 1430 (a collapsed age falsely recovers eph_aged)", fmtAgeM(sv.EphAgeM))
 	}
 
 	// regression fix seam two: reception dies DURING the episode (last reassembly at
@@ -240,7 +250,7 @@ func TestGLONASSReplayStaleEph(t *testing.T) {
 		t.Error("3 d old replayed GLONASS set (applied just now, tk in-window) served a position")
 	}
 	if sv.EphAgeM == nil || *sv.EphAgeM < 3*24*60-10 {
-		t.Errorf("eph_age_m = %v for a replayed 3 d old set, want ≈ %d (forensic age)", sv.EphAgeM, 3*24*60)
+		t.Errorf("eph_age_m = %v for a replayed 3 d old set, want ≈ %d (forensic age)", fmtAgeM(sv.EphAgeM), 3*24*60)
 	}
 }
 
@@ -282,6 +292,6 @@ func TestGLONASSReplayFrozenTbNotReserved(t *testing.T) {
 		t.Error("drained day-old frozen-tb set (tk in-window, recent reassembly) served a position")
 	}
 	if sv.EphAgeM == nil || *sv.EphAgeM < 24*60-10 {
-		t.Errorf("eph_age_m = %v for a day-old frozen tb, want ≈ %d (forensic tb age)", sv.EphAgeM, 24*60)
+		t.Errorf("eph_age_m = %v for a day-old frozen tb, want ≈ %d (forensic tb age)", fmtAgeM(sv.EphAgeM), 24*60)
 	}
 }

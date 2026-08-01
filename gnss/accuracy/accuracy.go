@@ -22,6 +22,12 @@ import "math"
 // same N=15 no-prediction sentinel (NAVIC-SPS-L5S §6.2.1.4, Table 23). Note
 // Table 23's rounding advice for N = 1/3/5 (2.8/5.7/11.3 m) matches
 // IS-GPS-200N's, so no NavIC-specific table is needed here.
+//
+// that rounding advice ("should be rounded to 2.8, 5.7, and 11.3
+// meters") is deliberately NOT applied — in both ICDs it is advisory, and the
+// served value is the exact nominal 2^(1+N/2), so consumers comparing against
+// the printed tables must expect 2.828/5.657/11.313 for N = 1/3/5. The same
+// decision applies to URAEDMeters below. Recorded so no pass re-litigates it.
 func URAMeters(n int) (float64, bool) {
 	if n < 0 || n >= 15 {
 		return 0, false

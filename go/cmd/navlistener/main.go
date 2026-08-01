@@ -457,7 +457,9 @@ const panicLogEvery = time.Minute
 //
 // the third key component is the SIGNAL id, not msg_type. sigid is what
 // actually selects the panicking code path (decode dispatch is by gnssid+sigid,
-// never by msg_type) and it is domain-checked to ~10 values, whereas push-path
+// never by msg_type) and dispatch NARROWS it to ~10 values that reach any
+// decoder — it is an unvalidated wire/receiver byte on arrival (not
+// range-checked; the recover also wraps pre-dispatch work), whereas push-path
 // msg_type is an unvalidated wire byte ranging over ~240 values. The honest bound
 // is therefore 8 constellations × ≤256 SVs (svid is byte-wide — the ≤63 cap
 // applies only to SBAS/QZSS/NavIC, see state.svIDInRange) × ~10 sigIds; entries

@@ -84,7 +84,8 @@ const (
 	// offsetAtApply, where offsetAtApply is the set's SOW age at its FIRST
 	// decode. Normal ops broadcast toe ~2 h ahead (offset ≈ −2 h, margin
 	// grows). Extended ops (IS-GPS-200N Table 20-XII: 26 h curve fit, 24 h
-	// transmission interval, toe ≈ transmission start + 13 h) can hand a
+	// transmission interval; Table 20-XIII's matching row places toc/toe 13 h
+	// after first valid transmission) can hand a
 	// collector whose first decode lands late in the window an offset up to
 	// ≈ +11 h nominal — the old 72 h cap left ≤ ~1 h of real slack there, and
 	// the CS-outage regime (an SV rebroadcasting one set past its window —
@@ -103,8 +104,12 @@ const (
 	propagateMaxEphAge = 71 * time.Hour
 
 	// gloPropagateMaxEphAge (regression fix, the GLONASS twin of propagateMaxEphAge) caps
-	// how long past its wall-clock apply time (svState.gloEphAt) a GLONASS
-	// immediate ephemeris keeps being propagated into served positions. GLONASS is
+	// how old a GLONASS immediate ephemeris may be and still be propagated into
+	// served positions. Since the regression fix the serving gate keys this cap on the
+	// broadcast-CONTENT age (now − svState.gloTbAt, the forensic instant the tb
+	// value last changed — regression fix) rather than the apply time gloEphAt it
+	// originally gated; the tb gate subsumes the apply-time gate because
+	// gloEphAt ≥ gloTbAt always. GLONASS is
 	// categorically sharper than the Kepler family here: the broadcast state
 	// vector is referred to the MIDDLE of its tb interval and updated every
 	// 30/45/60 min (GLO-ICD-5.1 §4.4, Table 4.3), the simplified J₂+constant-
@@ -115,8 +120,11 @@ const (
 	// eph_age_m flips negative (un-firing eph_aged on a worsening SV) and the RK4
 	// integrates the frozen state ~12 h BACKWARD — a position on the wrong side of
 	// the orbit, stamped fresh. 60 min = the maximum broadcast tb update interval
-	// (Table 4.3): one full missed changeover of margin over the fit interval,
-	// far below the 12 h wrap horizon, and deliberately NOT the 4 h discoTrustAge
+	// (Table 4.3): for the 30/45-min cadence classes that leaves a missed
+	// changeover of margin; a healthy 60-min-cadence SV grazes the strict > cap
+	// by only reassembly-latency seconds, and posStaleBound carries the served
+	// position across such a boundary tick (regression fix verification note). Far
+	// below the 12 h wrap horizon, and deliberately NOT the 4 h discoTrustAge
 	// (that gate bounds disco comparisons, not position validity). Past the cap,
 	// Propagate skips the SV (posAt stops advancing, posStaleBound retires the
 	// served position, position_unknown fires) while the entry keeps serving
@@ -126,12 +134,14 @@ const (
 
 	// gloServeMaxTk / gloServeMinTk (regression fix validation follow-up):
 	// bounds on the BROADCAST-TIME propagation interval tk = EphAgeDay(gloTOD,
-	// tb) a served GLONASS position may use. gloPropagateMaxEphAge above bounds
-	// reception staleness — but a satellite/CS failure that keeps transmitting
-	// valid-Hamming strings with a FROZEN tb keeps gloEphAt seconds-fresh
-	// forever (every same-tb reassembly re-stamps it), reaching the same ±12 h
-	// EphAgeDay wrap pathology through the other door: broadcast-time staleness
-	// with live reception. Legitimate tk while serving is tightly bounded: at
+	// tb) a served GLONASS position may use. The frozen-tb door this window was
+	// built for (a satellite/CS failure transmitting valid-Hamming strings with
+	// a frozen tb, keeping gloEphAt seconds-fresh forever) is now closed
+	// directly by the gloTbAt content-age gate; the window's
+	// remaining role is the FIRST-APPLY mis-epoch case — a first-seen set whose
+	// bogus tb sits far from the wall TOD mints a fresh gloTbAt, and only tk
+	// can see it (regression fix keying note). Legitimate tk while serving is tightly
+	// bounded: at
 	// apply, tb is the MIDDLE of an interval no longer than 60 min (GLO-ICD-5.1
 	// §4.4, Table 4.3), so |tk| ≤ 30 min at apply, and the wall cap adds at
 	// most 60 min forward — tk ∈ [−30, +90] min. Gate at [−45, +90] (15 min
@@ -1410,9 +1420,12 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 	// block, and this switch deliberately does NOT fold from them. That is the
 	// regression fix rule, not an oversight: those types are not structurally decoded
 	// here, so folding them would mean either fabricating zeros or growing new
-	// decode scope. The cost is bounded to seconds — 10/11/30 broadcast
-	// continuously (§6.2.3), so a flag flip is picked up on the next one. Fold
-	// 31/32/33 in only if/when their bodies are decoded (almanac support).
+	// decode scope. The cost is bounded to seconds — §6.2.3 guarantees types 10
+	// and 11 "shall be broadcast continuously together" (each carrying this
+	// flag block; the broadcast order of everything else may be dynamically
+	// adjusted, and no MT30 cadence is specified anywhere in the ICD — regression fix),
+	// so a flag flip is picked up on the next 10/11. Fold 31/32/33 in only
+	// if/when their bodies are decoded (almanac support).
 	switch m.MesType {
 	case 10, 11, 30, 34, 40:
 		st.bdsDIF, st.bdsSIF, st.bdsAIF, st.bdsSISMAI, st.haveBdsFlags = m.DIF, m.SIF, m.AIF, m.SISMAI, true
