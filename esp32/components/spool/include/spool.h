@@ -9,10 +9,11 @@
 // ../go/internal/wire/wire.go). The ack prunes the ring (navfeeder.c's spool, ported to
 // FreeRTOS).
 //
-// ⚠ DURABILITY ENVELOPE  — THIS SPOOL IS RAM-ONLY. There is no flash tier. The
-// partition table reserves 1.5 MiB for one (`spool`, partitions.csv) and docs/PLAN.md
-// §P-spool records the design, but nothing mounts or writes it today. Two consequences an
-// operator must plan around, not discover:
+// ⚠ DURABILITY ENVELOPE  — THIS SPOOL IS RAM-ONLY, BY DECISION. There is no flash
+// tier and none is planned for this board. The partition table reserves 1.5 MiB for one
+// (`spool`, partitions.csv) and docs/PLAN.md §P-spool records the design, but nothing mounts
+// or writes it. This firmware is non-durable across reboots; a flash-backed
+// spool remains a planned feature. Two consequences an operator must plan around, not discover:
 //
 //   1. Outage depth is the ring, and only the ring. On overflow the OLDEST unacked record is
 //      dropped and counted. At the 1024-frame default that is roughly 100 s of a multi-GNSS
@@ -20,10 +21,16 @@
 //   2. A reboot or power cut loses EVERY unacked record, however short the outage. Records
 //      live in malloc'd RAM; nothing survives esp_restart(), a brownout, or a watchdog.
 //
+// The acceptance in (2) is bounded at "the ring, and nothing else" ONLY because of // main.c mints a fresh GNF1 session every boot, so the sequence space this ring
+// restarts at 0 is a NEW space at the collector. Before that, a reboot also poisoned the
+// frames captured afterwards — they collided with the durable ledger's rows from the previous
+// run and were silently dropped as replays. Removing or persisting the per-boot session mint
+// therefore voids this whole envelope, it does not merely change the handshake.
+//
 // The standalone C feeder (../../../feeder/navfeeder.c --spool-file) does have a disk tier,
-// so the deployed router-based fleet is unaffected by this. Until the tier lands, treat every
-// navfeeder-esp unit as loss-tolerant-only by explicit design: fine as an additional observer,
-// not as the sole witness of an event you need forensically complete.
+// so the deployed router-based fleet is unaffected by this. Treat every navfeeder-esp unit as
+// loss-tolerant-only by explicit design: fine as an additional observer, not as the sole
+// witness of an event you need forensically complete.
 //
 // Records are variable length (a nav frame is typically ~40-60 B), so each is malloc'd; `cap`
 // bounds the frame count, not the bytes — size it against the C6 SRAM budget with WiFi+TLS up

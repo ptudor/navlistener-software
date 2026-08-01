@@ -15,6 +15,14 @@ orbit math stay central in the collector (`../docs/DESIGN.md §1`).
 - **u-blox receiver** on UART1: receiver **TX → GPIO9 (RX)**, receiver **RX → GPIO10 (TX)**,
   common ground. UBX output enabled (UBX-RXM-SFRBX; optionally MON-RF/MON-HW/NAV-SAT for the
   RF-integrity telemetry). Default line rate 460800 (u-blox USB-CDC ignores it).
+- **Deploy note — GPIO9 is a C6 boot-strapping pin** : a reset that lands while the
+  receiver is mid-byte can latch the chip into the ROM serial downloader, which needs a manual
+  power cycle to clear. Accepted as-is on these dev-class units by design —
+  no `DIS_DOWNLOAD_MODE` eFuse is burned; the fleet-production fix is the planned ESP32-S3
+  re-spin moving RX to a non-strapping GPIO. Practical mitigation today: keep units on stable
+  power (a brownout is the usual trigger) and prefer a lower line rate where the frame budget
+  allows, since idle-high UART is safe and the hazard scales with line occupancy. Full
+  technical explanation in `main/main.c` at `RX_PIN_RX`.
 
 ## Build & flash
 
@@ -89,9 +97,14 @@ that is not its fault.
 
 ## Durability envelope (read before deploying one as a primary observer)
 
-**The spool is RAM-only. There is no flash tier yet**. `partitions.csv` reserves
-1.5 MiB for one and `docs/PLAN.md §P-spool` records the design, but no component mounts or
-writes that partition today. What that means in the field:
+**The spool is RAM-only, and that is now a decision rather than a gap** (regression fix, closing
+regression fix). `partitions.csv` reserves 1.5 MiB for a flash tier and `docs/PLAN.md §P-spool`
+records its design, but no component mounts or writes that partition — and on **2026-07-31**
+the owner accepted the ESP32-C6 class as **RAM-only / non-durable across reboots** and
+deliberately did **not** commission the flash tier for this hardware
+(`technical validation`). Do not re-open it as a bug; it is a
+scoped limitation with a named successor (see "What would change it" below). What that means
+in the field:
 
 - **Outage depth = the RAM ring.** `CONFIG_NVF_SPOOL_FRAMES` (default **1024**) records; on
   overflow the *oldest* unacked record is dropped and counted. Order-of-magnitude: a
@@ -107,10 +120,26 @@ writes that partition today. What that means in the field:
   the deployed router/SBC fleet keeps its outage durability. This limitation is specific to
   navfeeder-esp.
 
-Deployment rule until the tier ships: **a navfeeder-esp unit is loss-tolerant-only by explicit
-design.** Good as an additional observer in a fleet where another station covers the same sky;
-not the sole witness of an event you need forensically complete. Watch the `dropped` counter
-on the dashboard — a non-zero value means records were lost, not merely delayed.
+**Why accepting it is sound — and what the acceptance depends on.** The loss is bounded at
+*exactly* the unacked ring only because of **regression fix** (the per-boot session identity in
+HELLO, landed 2026-07-31). Before the regression fix a reboot was strictly worse than "lose the ring": the
+feeder came back with its sequence space restarting at 0, those numbers collided with the
+durable ledger's rows from the previous run, and the collector silently discarded the *fresh,
+successfully captured* post-reboot frames as replays. A reboot therefore poisoned the future,
+not just the past. With a new session minted every boot, post-reboot frames land in a
+brand-new `(observer, session, seq)` space and are ingested normally. **This makes the regression fix
+acceptance conditional: if the per-boot mint is ever removed, or the session is persisted
+across boots (NVS, RTC memory, anywhere), the acceptance is void** — see `main.c`'s
+`session_init()`.
+
+**What would change it.** The planned **ESP32-S3 + ATECC608** board (see `../docs/HARDWARE-OBSERVER.md`) is where durability gets revisited: a spool tier is in scope for that class, along with
+the hardware identity and the non-strapping receiver RX pin (below). Nothing is planned for
+the C6 units.
+
+Deployment rule: **a navfeeder-esp unit is loss-tolerant-only by explicit design.** Good as an
+additional observer in a fleet where another station covers the same sky; not the sole witness
+of an event you need forensically complete. Watch the `dropped` counter on the dashboard — a
+non-zero value means records were lost, not merely delayed.
 
 ## Enrollment (the shared AAA control plane)
 
@@ -126,9 +155,11 @@ token → software mTLS cert → **ATECC608 cert** (the P-hw high-assurance clas
 - **Decode centrally** — never decode an ephemeris here. Frame and forward; fix decoder bugs once,
   centrally, and replay over stored raw frames.
 - **The receiver must never go down** — backoff-reconnect forever, spool across outages, never
-  `exit()`. Surviving *reboots* is the one part of this rule the firmware does **not** yet
-  satisfy: the flash tier is designed (`docs/PLAN.md §P-spool`) and unimplemented — see
-  "Durability envelope" above. Do not describe navfeeder-esp as reboot-durable until it lands.
+  `exit()`. Surviving *reboots* is the one part of this rule this hardware class does **not**
+  satisfy, by design : the flash tier is designed
+  (`docs/PLAN.md §P-spool`) and deliberately unbuilt for the C6 — see "Durability envelope"
+  above. Never describe navfeeder-esp as reboot-durable, and never remove the per-boot session
+  mint that bounds the loss.
 - **Wire parity** — `gnf1`/`ubx` must stay byte-identical to `../go/internal/wire/wire.go` and
   `../feeder/navfeeder.c`. TLS 1.2 pinned; nav words big-endian on the wire.
 - **Clean-room** — author from the u-blox ICD and our own Apache-2.0 code, using the cited interface specifications.

@@ -36,15 +36,18 @@
 static const char *TAG = "navfeeder";
 
 // Receiver wiring (Waveshare ESP32-C6-LCD-1.47 -> u-blox on UART1).
-// regression fix (hardware caveat): GPIO9 is a C6 boot STRAPPING pin — GPIO9=0 at chip reset selects
-// the ROM serial-download boot. UART idle is high (safe when quiet), but at 460800 with a
-// continuous SFRBX stream the line is low a large fraction of the time, so a power-on/
-// brownout/external reset landing mid-byte can latch the chip into the ROM downloader (a
-// field hang the watchdog can't recover — recovery needs a manual reset, which can re-strap
-// while the receiver keeps talking). This can't be fixed in firmware alone: on a board re-spin
-// move the receiver RX to a non-strapping GPIO; on production units of THIS board, burn the
-// DIS_DOWNLOAD_MODE eFuse (`espefuse.py burn_efuse DIS_DOWNLOAD_MODE`, also aligned with the
-// regression fix secure-provisioning direction) so the strap combination becomes harmless.
+// regression fix (hardware caveat — ACCEPTED, design constraint): GPIO9 is a C6 boot
+// STRAPPING pin — GPIO9=0 at chip reset selects the ROM serial-download boot. UART idle is
+// high (safe when quiet), but at 460800 with a continuous SFRBX stream the line is low a
+// large fraction of the time, so a power-on/brownout/external reset landing mid-byte can
+// latch the chip into the ROM downloader (a field hang the watchdog can't recover — recovery
+// needs a manual reset, which can re-strap while the receiver keeps talking). This cannot be
+// fixed in firmware: the pin is sampled by ROM before any of our code runs.
+//
+// Current C6 boards use this wiring and require stable power. A lower UART
+// line rate can reduce line occupancy where the frame budget permits.
+// DIS_DOWNLOAD_MODE is not burned: development boards retain serial recovery.
+// The custom ESP32-S3 board uses a non-strapping receiver RX pin.
 #define RX_UART     UART_NUM_1
 #define RX_PIN_RX   9
 #define RX_PIN_TX   10
