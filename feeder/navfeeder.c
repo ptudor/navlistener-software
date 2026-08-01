@@ -257,8 +257,21 @@ static time_t monotonic_s(void) {
  * per-process phase — enough entropy for herd-breaking without PRNG state. Only the
  * collector reconnect path uses this; the receiver-source backoff stays plain sleep()
  * (a local device, no herd to break). */
+/* RECONNECT_BACKOFF_MAX_S is the collector reconnect ladder's ceiling: the doubling
+ * cap and the auth-reject wait in main(), and the clamp sleep_with_jitter applies to
+ * its own argument. Named so the helper's bound and the ladder that feeds
+ * it cannot drift apart. */
+#define RECONNECT_BACKOFF_MAX_S 30
+
 static void sleep_with_jitter(unsigned s) {
 	struct timespec ts;
+	/* bound s inside the helper rather than trusting the caller. The jitter
+	 * base below computes s * 250 in a signed long; on the ILP32 fleet targets (mips,
+	 * armhf) long is 32-bit, so s > ~8.59M seconds overflows it — signed overflow is
+	 * UB, not a wrap. Unreachable from today's only caller (the ladder caps wait at
+	 * RECONNECT_BACKOFF_MAX_S), which is exactly why a future second caller would not
+	 * think to check. Clamping is free and keeps the helper self-contained. */
+	if (s > (unsigned)RECONNECT_BACKOFF_MAX_S) s = (unsigned)RECONNECT_BACKOFF_MAX_S;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	/* Modulo the FULL tv_nsec range (verification finding, this pass): dividing down
 	 * to milliseconds first would cap the entropy at [0,999] ms, flattening the
@@ -1889,11 +1902,13 @@ int main(int argc, char **argv) {
 		 * the Go collector's regression fix dial-side reset. Auth reject (-2) still backs off
 		 * hard; failed/slow connects (-1) never reset. */
 		if (rc == 0) backoff = 1;
-		int wait = rc == -2 ? 30 : backoff;
+		/* the same named ceiling sleep_with_jitter clamps to, so raising one
+		 * without the other cannot silently shorten the ladder's top rungs. */
+		int wait = rc == -2 ? RECONNECT_BACKOFF_MAX_S : backoff;
 		log_msg("reconnecting in %ds", wait);
 		sleep_with_jitter((unsigned)wait);
 		if (rc == -2) backoff = 1;
-		else { if ((backoff *= 2) > 30) backoff = 30; }
+		else { if ((backoff *= 2) > RECONNECT_BACKOFF_MAX_S) backoff = RECONNECT_BACKOFF_MAX_S; }
 	}
 	return 0;
 }
