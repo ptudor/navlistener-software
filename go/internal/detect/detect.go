@@ -72,6 +72,10 @@ type machine struct {
 	// hold rule) or its subject was absent from the read model — either way the
 	// pending provisional's dwell was not continuous.
 	lastGen uint64
+	// lastSeen is the wall time of the last observation, used to measure how
+	// LONG a lastGen gap actually held the machine : only a hold at
+	// least as long as the debounce window restarts the dwell.
+	lastSeen time.Time
 }
 
 // New builds a Detector with the standard debounce window. A non-positive debounce
@@ -91,7 +95,7 @@ func (d *Detector) observe(subject, metric, newState string, now time.Time, gen 
 	key := subject + "\x00" + metric
 	m := d.machines[key]
 	if m == nil {
-		d.machines[key] = &machine{current: newState, lastGen: gen}
+		d.machines[key] = &machine{current: newState, lastGen: gen, lastSeen: now}
 		return false, "" // seed; first sighting is not a transition
 	}
 	// the debounce promises a CONTINUOUS dwell — the provisional state
@@ -103,10 +107,19 @@ func (d *Detector) observe(subject, metric, newState string, now time.Time, gen 
 	// provisional captured just before a hold used to keep its pre-hold `since`
 	// and confirm on the FIRST post-resume observation with zero fresh dwell.
 	// The fleet-floor skip makes that fleet-wide: one dip below the floor holds
-	// every SV's silence machine at once. Restart the clock instead — an
-	// interrupted machine must re-earn the full window. Fixed here in the spine
-	// rather than at each hold site, so every present and future hold inherits
-	// it.
+	// every SV's silence machine at once. Fixed here in the spine rather than
+	// at each hold site, so every present and future hold inherits it.
+	//
+	// regression fix bounds the restart by the hold's WALL length: an unconditional
+	// restart on every interruption meant a machine held more often than once
+	// per debounce window (with detectInterval 15 s and a 60 s window, any hold
+	// recurring within 4 rounds) re-stamped `since` on every observation and
+	// could NEVER confirm — a silent, permanent classifier outage on a genuine
+	// continuous fault, the exact failure the defensive note below warns about.
+	// A hold shorter than the window can hide at most (window − ε) of unobserved
+	// state between two consistent observations that still span the full window,
+	// so the accumulated dwell is kept; only a hold at least one full window
+	// long forces the provisional to re-earn it from zero.
 	//
 	// The `!= gen` half is defensive: no current classifier observes one
 	// (subject, metric) twice in a round (subjects come from map keys, metrics
@@ -115,14 +128,16 @@ func (d *Detector) observe(subject, metric, newState string, now time.Time, gen 
 	// machine could never confirm — a silent detector outage. Only a genuine gap
 	// counts.
 	interrupted := m.lastGen != gen && m.lastGen != gen-1
+	heldFor := now.Sub(m.lastSeen)
 	m.lastGen = gen
+	m.lastSeen = now
 	switch {
 	case newState == m.current:
 		m.provisional = "" // pending change reverted
 		return false, ""
 	case newState == m.provisional:
-		if interrupted {
-			m.since = now // the dwell was broken by a hold: start it over
+		if interrupted && heldFor >= d.debounce {
+			m.since = now // held a full window: the dwell must start over
 			return false, ""
 		}
 		if now.Sub(m.since) >= d.debounce {

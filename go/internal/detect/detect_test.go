@@ -614,6 +614,72 @@ func TestProvisionalDoesNotSurviveHold(t *testing.T) {
 	}
 }
 
+// TestRecurringHoldDoesNotSuppressConfirmation guards // original unconditional dwell restart meant a classifier held more often than
+// once per debounce window (here: the fleet oscillating around the silence
+// floor every other 15 s tick) re-stamped `since` on every observation, so a
+// GENUINE continuous fault could never confirm — a silent, permanent detector
+// outage. A hold shorter than the window must keep the accumulated dwell: two
+// consistent observations spanning the full window are real evidence.
+func TestRecurringHoldDoesNotSuppressConfirmation(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(7_600_000, 0)
+	full := SilenceMinReceivers
+
+	seen := gps("G05", 5, 1)
+	silent := gps("G05", 5, 1)
+	silent.LastSeenS = int(SilentThreshold) + 100
+	seenM := map[string]state.FeedSV{"G05@0": seen}
+	silentM := map[string]state.FeedSV{"G05@0": silent}
+
+	d.Tick(t0, seenM, nil, full)                       // seeds "seen"
+	d.Tick(t0.Add(15*time.Second), silentM, nil, full) // provisional at t0+15
+	// The fleet dips below the floor on every other tick: each hold is a single
+	// 15 s round, far shorter than the 60 s window.
+	d.Tick(t0.Add(30*time.Second), silentM, nil, full-1) // held
+	if evs := d.Tick(t0.Add(45*time.Second), silentM, nil, full); len(evs) != 0 {
+		t.Fatalf("confirmed with only 30 s of dwell: %+v", evs)
+	}
+	d.Tick(t0.Add(60*time.Second), silentM, nil, full-1) // held again
+	// t0+75: the provisional has dwelt 60 s across three observations with two
+	// sub-window holds between them. It must confirm — never be suppressed.
+	evs := d.Tick(t0.Add(75*time.Second), silentM, nil, full)
+	if len(evs) != 1 || evs[0].Type != "observation_lost" || evs[0].NewValue != "silent" {
+		t.Fatalf("got %+v, want observation_lost confirmed despite recurring sub-window holds", evs)
+	}
+}
+
+// TestFullWindowHoldStillRestartsDwell pins the regression fix boundary: a hold that
+// lasts a full debounce window (or longer — original case) still
+// restarts the dwell, because the unobserved span alone could hide a whole
+// state excursion.
+func TestFullWindowHoldStillRestartsDwell(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(7_700_000, 0)
+	full := SilenceMinReceivers
+
+	seen := gps("G05", 5, 1)
+	silent := gps("G05", 5, 1)
+	silent.LastSeenS = int(SilentThreshold) + 100
+	seenM := map[string]state.FeedSV{"G05@0": seen}
+	silentM := map[string]state.FeedSV{"G05@0": silent}
+
+	d.Tick(t0, seenM, nil, full)                         // seeds "seen"
+	d.Tick(t0.Add(15*time.Second), silentM, nil, full)   // provisional at t0+15
+	d.Tick(t0.Add(30*time.Second), silentM, nil, full-1) // held...
+	d.Tick(t0.Add(60*time.Second), silentM, nil, full-1) // ...for a full window
+	// t0+75: wall dwell since the provisional is 60 s, but the machine was held
+	// for exactly one debounce window (t0+15 → t0+75 unobserved). Restart.
+	if evs := d.Tick(t0.Add(75*time.Second), silentM, nil, full); len(evs) != 0 {
+		t.Fatalf("confirmed across a full-window hold: %+v", evs)
+	}
+	// A fresh full observed dwell then confirms normally.
+	d.Tick(t0.Add(90*time.Second), silentM, nil, full)
+	evs := d.Tick(t0.Add(135*time.Second), silentM, nil, full)
+	if len(evs) != 1 || evs[0].Type != "observation_lost" {
+		t.Fatalf("got %+v, want observation_lost after the fresh post-hold dwell", evs)
+	}
+}
+
 // TestSBASDoNotUse confirms an SBAS PRN going do-not-use fires a critical sbas_health.
 func TestSBASDoNotUse(t *testing.T) {
 	d := New(time.Minute)
