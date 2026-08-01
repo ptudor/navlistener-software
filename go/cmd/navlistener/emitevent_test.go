@@ -379,3 +379,35 @@ func TestEmitEventSanitizesNonFiniteParamsBeforeMarshal(t *testing.T) {
 	}
 	emitEvent(ctx, ev, nil, nil, log) // must not panic
 }
+
+// TestPrepareEventDedupeKey guards client half: every confirmed
+// transition gets a dedupe key minted exactly once, BEFORE the first write
+// attempt, distinct across confirmations, and carried unchanged through the
+// pendingEvent a retry re-presents — the stability the store's
+// (time, dedupe_key) upsert depends on to return the committed id instead of
+// inserting a duplicate row.
+func TestPrepareEventDedupeKey(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	w := &scriptedEventWriter{ids: []int64{1, 2}, errs: []error{nil, nil}}
+
+	a := prepareEvent(detect.Event{Time: time.Now(), SV: "G01@0", Type: "orbit_disco"}, w, log)
+	b := prepareEvent(detect.Event{Time: time.Now(), SV: "G02@0", Type: "orbit_disco"}, w, log)
+	if a == nil || b == nil {
+		t.Fatal("prepareEvent returned nil with a live historian")
+	}
+	if a.row.DedupeKey == "" || len(a.row.DedupeKey) != 32 {
+		t.Errorf("dedupe key = %q, want 32 hex chars", a.row.DedupeKey)
+	}
+	if a.row.DedupeKey == b.row.DedupeKey {
+		t.Error("two confirmations shared one dedupe key")
+	}
+
+	// The queued copy a retry re-presents must carry the identical key: the row
+	// is immutable once prepared (the whole point of prepareEvent).
+	pipeline := newEventPipeline(nil, nil, log)
+	pipeline.enqueue(*a)
+	head, ok := pipeline.head()
+	if !ok || head.row.DedupeKey != a.row.DedupeKey {
+		t.Errorf("queued key %q, want the prepared key %q", head.row.DedupeKey, a.row.DedupeKey)
+	}
+}

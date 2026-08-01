@@ -222,6 +222,7 @@ func TestIntegrationQueryEventsTotalPastLastPage(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		if _, err := s.WriteEvent(ctx, EventRow{
 			Time: now.Add(time.Duration(i) * time.Second), SV: sv, Type: "orbit_disco", Severity: 1,
+			DedupeKey: fmt.Sprintf("r114-test-%d", i),
 		}); err != nil {
 			t.Fatalf("WriteEvent %d: %v", i, err)
 		}
@@ -407,6 +408,7 @@ func TestIntegrationNotifyPayloadBounded(t *testing.T) {
 	longMessage := strings.Repeat("x", 20_000) // well past pg_notify's ~8000-byte payload limit
 	id, err := s.WriteEvent(ctx, EventRow{
 		Time: time.Now(), SV: "G01-notify-test", Type: "test_event", Severity: 1, Message: longMessage,
+		DedupeKey: fmt.Sprintf("notify-test-%d", time.Now().UnixNano()),
 	})
 	if err != nil {
 		t.Fatalf("WriteEvent with a %d-byte message failed (pg_notify payload limit leaking into the INSERT): %v", len(longMessage), err)
@@ -429,5 +431,68 @@ func TestIntegrationNotifyPayloadBounded(t *testing.T) {
 	}
 	if !strings.Contains(n.Payload, fmt.Sprintf(`"id" : %d`, id)) { // json_build_object spaces its colons
 		t.Errorf("notification payload = %q, want it to carry the inserted event's id (%d)", n.Payload, id)
+	}
+}
+
+// TestIntegrationEventWriteIdempotent proves the regression fix contract against a
+// live database: retrying WriteEvent with the identical row (the ambiguous
+// commit-then-client-error case — PostgreSQL committed but the client saw a
+// timeout) returns the SAME already-committed id and leaves exactly one row,
+// while a distinct confirmation (its own dedupe key) still inserts freshly.
+func TestIntegrationEventWriteIdempotent(t *testing.T) {
+	dsn := testDSN(t)
+	ctx := context.Background()
+	cfg := config.Store{DSN: dsn, BatchSize: 100, BatchEvery: 50 * time.Millisecond, RawRetention: "7 days", CompressAfter: "1 day"}
+	s, err := New(ctx, cfg, integrationLog())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer s.pool.Close()
+
+	const sv = "R152-integration-sv"
+	if _, err := s.pool.Exec(ctx, `DELETE FROM gnss_events WHERE sv = $1`, sv); err != nil {
+		t.Fatalf("cleanup gnss_events: %v", err)
+	}
+
+	row := EventRow{
+		Time: time.Now(), SV: sv, Type: "orbit_disco", Severity: 2,
+		DedupeKey: fmt.Sprintf("r152-test-%d", time.Now().UnixNano()),
+	}
+	id1, err := s.WriteEvent(ctx, row)
+	if err != nil {
+		t.Fatalf("first WriteEvent: %v", err)
+	}
+	id2, err := s.WriteEvent(ctx, row) // the retry after an ambiguous result
+	if err != nil {
+		t.Fatalf("retried WriteEvent: %v", err)
+	}
+	if id1 != id2 {
+		t.Errorf("retry returned id %d, want the committed id %d", id2, id1)
+	}
+	var count int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM gnss_events WHERE sv = $1`, sv).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("rows after retry = %d, want 1", count)
+	}
+
+	// A different confirmation (fresh key) at the same instant still inserts.
+	row2 := row
+	row2.DedupeKey = row.DedupeKey + "-b"
+	id3, err := s.WriteEvent(ctx, row2)
+	if err != nil {
+		t.Fatalf("distinct-key WriteEvent: %v", err)
+	}
+	if id3 == id1 {
+		t.Errorf("distinct confirmation reused id %d", id1)
+	}
+
+	// An empty key is a caller bug and must be rejected, not silently unprotected.
+	if _, err := s.WriteEvent(ctx, EventRow{Time: time.Now(), SV: sv, Type: "orbit_disco"}); err == nil {
+		t.Error("WriteEvent accepted an empty dedupe key")
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM gnss_events WHERE sv = $1`, sv); err != nil {
+		t.Fatalf("cleanup gnss_events: %v", err)
 	}
 }

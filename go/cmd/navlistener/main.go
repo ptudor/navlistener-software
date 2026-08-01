@@ -13,6 +13,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -878,8 +880,26 @@ func prepareEvent(e detect.Event, historian eventWriter, log *slog.Logger) *pend
 	row := store.EventRow{
 		Time: e.Time, SV: e.SV, Type: e.Type, OldValue: e.OldValue,
 		NewValue: e.NewValue, Severity: e.Severity, Message: e.Message, Raw: rawJSON,
+		DedupeKey: newEventDedupeKey(),
 	}
 	return &pendingEvent{row: row, ev: e}
+}
+
+// newEventDedupeKey mints the regression fix idempotency identity for one confirmed
+// transition. It is generated HERE — once, before the first write attempt — and
+// carried unchanged in the immutable pendingEvent row, so every retry of the
+// same confirmation presents the same key and the store's (time, dedupe_key)
+// upsert returns the already-committed id instead of inserting a duplicate.
+// Random rather than content-derived: a content hash (type/sv/values/time)
+// would collide two legitimately identical transitions if a detector ever
+// confirmed them at the same timestamp, and the review's requirement is only
+// that the key be stable across retries of ONE confirmation. crypto/rand.Read
+// never returns an error (its Go 1.24+ contract; it crashes on entropy
+// failure, which is unreachable on supported platforms).
+func newEventDedupeKey() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 // writeAndPublish makes the durable write (bounded retry under a per-call timeout) and, on

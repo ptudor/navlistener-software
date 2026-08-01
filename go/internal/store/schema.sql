@@ -77,9 +77,23 @@ CREATE TABLE IF NOT EXISTS gnss_events (
     new_value  TEXT,
     severity   SMALLINT    NOT NULL DEFAULT 0,
     message    TEXT,
-    raw        JSONB
+    raw        JSONB,
+    dedupe_key TEXT                 -- regression fix idempotency key (see below); NULL on legacy rows
 );
 SELECT create_hypertable('gnss_events', 'time', if_not_exists => TRUE);
+-- WriteEvent's INSERT can commit while the client observes a
+-- timeout/connection error; the bounded retry would then store, notify, and
+-- serve the same confirmed transition twice (two rows, two durable SSE ids).
+-- Every event therefore carries an internal dedupe key generated once per
+-- confirmed transition, BEFORE the first write attempt (cmd prepareEvent), and
+-- the retry becomes an idempotent upsert against this index. A hypertable's
+-- unique index must include the partition column, so the key is (time,
+-- dedupe_key) — safe because retries reuse the identical EventRow, time
+-- included. The ALTER is the migration for deployments whose gnss_events
+-- pre-dates this column (CREATE TABLE IF NOT EXISTS never alters); NULL keys
+-- (legacy/intsat rows) never conflict under PostgreSQL's NULLS DISTINCT.
+ALTER TABLE gnss_events ADD COLUMN IF NOT EXISTS dedupe_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_gnss_events_dedupe ON gnss_events (time, dedupe_key);
 CREATE INDEX IF NOT EXISTS idx_gnss_events_sv_time       ON gnss_events (sv, time DESC);
 CREATE INDEX IF NOT EXISTS idx_gnss_events_type_time     ON gnss_events (event_type, time DESC);
 CREATE INDEX IF NOT EXISTS idx_gnss_events_severity_time ON gnss_events (severity, time DESC);

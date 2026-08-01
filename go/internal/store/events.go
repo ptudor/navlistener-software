@@ -10,32 +10,53 @@ import (
 // EventRow is one confirmed integrity event to persist (docs/OUTPUT.md §3/§4). Raw
 // is the event's params as a JSON document (or nil). The DB assigns the id and the
 // AFTER INSERT trigger fires pg_notify, so serve-side LISTENers see it immediately.
+//
+// DedupeKey  is the internal idempotency identity: an opaque value
+// generated exactly once per confirmed transition, before the first write
+// attempt, and carried unchanged across retries. It is never served — the
+// public StoredEvent/EventMsg/SSE shapes do not expose it.
 type EventRow struct {
-	Time     time.Time
-	SV       string
-	Type     string
-	OldValue string
-	NewValue string
-	Severity int
-	Message  string
-	Raw      []byte // JSON, or nil
+	Time      time.Time
+	SV        string
+	Type      string
+	OldValue  string
+	NewValue  string
+	Severity  int
+	Message   string
+	Raw       []byte // JSON, or nil
+	DedupeKey string // required; see the type comment
 }
 
 // WriteEvent inserts one integrity event and returns its assigned id. Events are
 // low-rate and individually meaningful, so they are written with a plain INSERT
 // (not the batched CopyFrom path the high-rate nav frames use). The insert fires
 // the notify trigger inside the same transaction.
+//
+// regression fix — the write is idempotent on (time, dedupe_key): PostgreSQL can
+// commit the INSERT while this client observes a timeout or connection error,
+// and the caller's bounded retry (cmd writeEventRetry) then re-runs it. The
+// no-op DO UPDATE below makes the conflicting retry return the ALREADY
+// COMMITTED row's id in one round trip instead of inserting a second row (a
+// second durable SSE id, a second page for one real transition). A conflict
+// fires no INSERT trigger, so pg_notify still fires exactly once, with the
+// first (committed) insert. The dead tuple a conflicting no-op update writes
+// is negligible at confirmed-integrity-event rates.
 func (s *Store) WriteEvent(ctx context.Context, e EventRow) (int64, error) {
+	if e.DedupeKey == "" {
+		return 0, fmt.Errorf("write event: missing dedupe key (every event needs a retry-stable identity)")
+	}
 	var raw any
 	if len(e.Raw) > 0 {
 		raw = string(e.Raw)
 	}
 	var id int64
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO gnss_events (time, sv, event_type, old_value, new_value, severity, message, raw)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+		`INSERT INTO gnss_events (time, sv, event_type, old_value, new_value, severity, message, raw, dedupe_key)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		 ON CONFLICT (time, dedupe_key) DO UPDATE SET dedupe_key = EXCLUDED.dedupe_key
+		 RETURNING id`,
 		e.Time, e.SV, e.Type, nilIfEmpty(e.OldValue), nilIfEmpty(e.NewValue),
-		int16(e.Severity), nilIfEmpty(e.Message), raw,
+		int16(e.Severity), nilIfEmpty(e.Message), raw, e.DedupeKey,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("write event: %w", err)
