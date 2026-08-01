@@ -351,6 +351,50 @@ func TestFeedBeiDouIntegrityFlagsAndHSRider(t *testing.T) {
 	}
 }
 
+// TestFeedBeiDouStaleHSNotReappliedAtPairCompletion pins the regression fix rider that
+// commit 49f3958 landed by DELETING a line: applyBeiDouBCNAV2 must not re-apply
+// the buffered type-11's HS at the tail of a pair-completion update. HS is
+// per-broadcast state, folded freshest-wins at arrival (§6.2.3); re-applying the
+// cached MT11's copy afterwards overwrites a FRESHER HS carried by the very
+// message that completed the pair.
+//
+// regression fix found the removal unguarded — re-introducing `st.health = st.bc11.HS`
+// passed both modules' full suites, because the named sibling test above never
+// reaches that line (its MT34 reuses the prior IODC, so the update returns at
+// the unchanged-eph/clk/tgd gate). This is the demonstrator that does reach it:
+// MT10 + MT11 with HS=0, then an MT30 with HS=1 carrying a FRESH IODC. That
+// MT30 is the SV's first clock, so clkChanged is true and the update runs all
+// the way to the tail — where the clobber would serve a do-not-use satellite as
+// healthy (health_code 1 instead of 3), the silent-wrong-answer class.
+func TestFeedBeiDouStaleHSNotReappliedAtPairCompletion(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	const prn = 19
+	apply := func(words []uint32) {
+		s.Apply(&ingest.RawFrame{GnssID: gnss.BeiDou, SvID: prn, SigID: 8, Recv: now, Words: words})
+	}
+	apply(bcnav2Frame(prn, 10, 252801, func(buf []byte) {
+		setAbsBits(buf, 53, 8, 7)
+		setAbsBits(buf, 61, 11, 10)
+		setAbsBits(buf, 72, 2, 3)
+	}))
+	apply(bcnav2Frame(prn, 11, 252801, nil)) // HS = 0 — the stale value to be clobbered with
+	if sv := s.FeedSVs(now)["C19@8"]; sv.HealthCode != 1 {
+		t.Fatalf("health_code after the healthy MT10/MT11 pair = %d, want 1", sv.HealthCode)
+	}
+
+	// The SV's first MT30: HS=1 (do-not-use) plus a fresh IODC, so clkChanged
+	// carries the update past the unchanged-eph/clk/tgd gate into the tail.
+	apply(bcnav2Frame(prn, 30, 252804, func(buf []byte) {
+		setAbsBits(buf, 30, 2, 1)   // HS = 1 (Fig 6-5: HS is the 2 bits after the SOW)
+		setAbsBits(buf, 111, 10, 3) // IODC — fresh; no clock has been applied yet
+	}))
+	if sv := s.FeedSVs(now)["C19@8"]; sv.HealthCode != 3 {
+		t.Fatalf("health_code after the MT30 (HS=1) that completed the pair = %d, want 3 — "+
+			"the buffered MT11's stale HS=0 must not be re-applied at pair completion", sv.HealthCode)
+	}
+}
+
 // TestFeedBeiDouSISAIRaw guards MT34/MT40's SISAI raw indices must be
 // stored (accSISAIRaw, packed oe<<11|ocb<<6|oc1<<3|oc2 with oe sticky across
 // MT34 updates) and served as acc_index with sisa_valid=false — the B2a ICD

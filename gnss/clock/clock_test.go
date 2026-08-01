@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/gnss/gnsstime"
 	"github.com/ptudor/gnss/kepler"
 	"github.com/ptudor/gnss/physconst"
 )
@@ -93,6 +94,62 @@ func TestUTCOffset(t *testing.T) {
 	want := -3.8e-9 + -1e-15*3600 + 18
 	if math.Abs(got-want) > 1e-18 {
 		t.Errorf("UTCOffset = %v, want %v", got, want)
+	}
+}
+
+// TestUTCOffsetQuadraticTerm pins the A2 (drift-rate) term of UTCOffset —
+// TestUTCOffset above exercises A2 = 0 only, and no navlistener code
+// calls UTCOffset (feed.go inlines its own Eq. 7-25 evaluation on the absolute
+// BDT axis), so deleting `+ u.A2*dt*dt` used to leave both modules' suites
+// green. gnss/ is the vendorable Apache-2.0 module: an external consumer is the
+// only caller of this exported three-term form, so the module must guard it.
+//
+// The vector is a legal broadcast set, not an arbitrary one. BDS-SIS-ICD-B2a
+// v1.0 Table 7-20 gives the BDT-UTC field widths and scales — A0UTC 16 bits
+// two's complement × 2⁻³⁵ s, A1UTC 13 bits × 2⁻⁵¹ s/s, A2UTC 7 bits × 2⁻⁶⁸
+// s/s², tot 16 bits × 2⁴ s over 0~604784 — so each coefficient below is
+// (raw integer within the signed field) × (Table 7-20 scale), and A2's raw 61
+// sits inside the 7-bit two's-complement range −64…63. Eq. 7-25 is the
+// governing polynomial (§7.12.2 case 1).
+func TestUTCOffsetQuadraticTerm(t *testing.T) {
+	const (
+		p2m35 = 1.0 / (1 << 35)
+		p2m51 = p2m35 / (1 << 16)
+		p2m68 = p2m51 / (1 << 17)
+	)
+	u := UTCParams{
+		A0:   -131 * p2m35, // raw −131 of 16 signed bits
+		A1:   -13 * p2m51,  // raw −13 of 13 signed bits
+		A2:   61 * p2m68,   // raw +61 of 7 signed bits — the term under test
+		Tot:  518400,       // 32400 × 2⁴, inside Table 7-20's 0~604784
+		DtLS: 18,
+	}
+	const tow = 259200 // dt = −259200 s: inside the ±half-week EphAge window, no wrap
+	dt := gnsstime.EphAge(tow, u.Tot)
+	if dt != -259200 {
+		t.Fatalf("test setup: EphAge(%v, %v) = %v, want -259200 (no half-week wrap)", tow, u.Tot, dt)
+	}
+
+	want := u.A0 + u.A1*dt + u.A2*dt*dt + u.DtLS
+	if got := UTCOffset(u, tow); math.Abs(got-want) > 1e-14 {
+		t.Errorf("UTCOffset = %.17g, want %.17g (three-term Eq. 7-25)", got, want)
+	}
+
+	// Isolate the quadratic contribution: the same set with A2 zeroed must
+	// differ by exactly A2·dt².
+	flat := u
+	flat.A2 = 0
+	quad := UTCOffset(u, tow) - UTCOffset(flat, tow)
+	wantQuad := u.A2 * dt * dt
+	if math.Abs(quad-wantQuad) > 1e-13 {
+		t.Errorf("A2 contribution = %.17g s, want %.17g s", quad, wantQuad)
+	}
+	// Sanity on the vector itself: a legal A2 at this dt is worth ~14 ns —
+	// several times the 2.5 ns time-disco threshold, so dropping the term is a
+	// real error, not a rounding artefact. (Guards against a future edit that
+	// keeps the assertions but neuters the vector.)
+	if math.Abs(wantQuad) < 1e-9 {
+		t.Fatalf("test vector is degenerate: A2 contributes only %.3e s", wantQuad)
 	}
 }
 

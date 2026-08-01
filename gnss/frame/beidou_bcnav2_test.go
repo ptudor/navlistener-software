@@ -129,6 +129,74 @@ func TestBCNAV2MT34DecodesBDTUTC(t *testing.T) {
 	}
 }
 
+// TestBCNAV2MT30DecodesBDGIM pins the MT30 BDGIM α1..α9 block (bits 145–218,
+// BDS-SIS-ICD-B2a v1.0 Figure 6-5 placement, Table 7-10 widths/scales/signs)
+// inside the vendorable gnss module itself.
+//
+// these decodes were previously guarded ONLY from go/internal/state
+// (TestFeedBeiDouBDGIMServed) — flipping α5's sign left this module's own suite
+// green, so anyone vendoring gnss/ standalone (the stated point of the module)
+// inherited an unpinned trap. Table 7-10 verbatim: α1 is 10 bits UNSIGNED ×2⁻³;
+// α2 is 8 bits two's complement ×2⁻³; α3 and α4 are 8 bits UNSIGNED ×2⁻³; α5 is
+// 8 bits UNSIGNED with the NEGATIVE scale −2⁻³ (the table's trap — it is the one
+// row whose "Scale factor" column reads −2⁻³); α6..α9 are 8 bits two's
+// complement ×2⁻³. All nine are TECu. Every raw below has its MSB pattern chosen
+// so a signed/unsigned swap, or a dropped minus sign, changes an asserted value.
+func TestBCNAV2MT30DecodesBDGIM(t *testing.T) {
+	buf := make([]byte, 36)
+	setBits(buf, 0, 6, 30)  // PRN
+	setBits(buf, 6, 6, 30)  // MesType 30
+	setBits(buf, 12, 18, 1) // SOW raw (×3 s)
+	setBits(buf, 42, 11, 100)
+	setBits(buf, 111, 10, 7)         // IODC — the field immediately before the block
+	setBits(buf, 145, 10, 900)       // α1 raw 900 unsigned (signed 10-bit would be −124)
+	setBits(buf, 155, 8, (1<<8)-4)   // α2 raw −4 signed (unsigned would be 252)
+	setBits(buf, 163, 8, 200)        // α3 raw 200 unsigned (signed would be −56)
+	setBits(buf, 171, 8, 130)        // α4 raw 130 unsigned (signed would be −126)
+	setBits(buf, 179, 8, 200)        // α5 raw 200 unsigned, NEGATIVE scale
+	setBits(buf, 187, 8, (1<<8)-8)   // α6 raw −8 signed
+	setBits(buf, 195, 8, 3)          // α7 raw +3
+	setBits(buf, 203, 8, (1<<8)-1)   // α8 raw −1 signed
+	setBits(buf, 211, 8, 100)        // α9 raw +100
+	setBits(buf, 219, 12, (1<<12)-6) // TGD_B1Cp raw −6 — the field immediately after
+	c := CRC24Q(buf[:33])
+	buf[33], buf[34], buf[35] = byte(c>>16), byte(c>>8), byte(c)
+	words := make([]uint32, 9)
+	for i := range words {
+		words[i] = binary.BigEndian.Uint32(buf[i*4:])
+	}
+	m, err := DecodeBeiDouBCNAV2(words)
+	if err != nil {
+		t.Fatalf("MT30 rejected: %v", err)
+	}
+
+	const q = 1.0 / 8.0 // 2⁻³ TECu
+	want := [9]float64{
+		900 * q,  // α1  = +112.5   unsigned 10-bit
+		-4 * q,   // α2  = −0.5     signed
+		200 * q,  // α3  = +25.0    unsigned
+		130 * q,  // α4  = +16.25   unsigned
+		200 * -q, // α5  = −25.0    unsigned × NEGATIVE 2⁻³ — Table 7-10's trap
+		-8 * q,   // α6  = −1.0     signed
+		3 * q,    // α7  = +0.375   signed
+		-1 * q,   // α8  = −0.125   signed
+		100 * q,  // α9  = +12.5    signed
+	}
+	for i, w := range want {
+		if m.BDGIM[i] != w {
+			t.Errorf("BDGIM α%d = %g, want %g", i+1, m.BDGIM[i], w)
+		}
+	}
+	// Neighbours of the block: an offset regression inside BDGIM usually shows
+	// up here first.
+	if m.IODC != 7 {
+		t.Errorf("IODC = %d, want 7 (field before the BDGIM block)", m.IODC)
+	}
+	if w := -6.0 / float64(uint64(1)<<34); m.TGDB1Cp != w {
+		t.Errorf("TGD_B1Cp = %g, want %g (−6 × 2⁻³⁴, field after the BDGIM block)", m.TGDB1Cp, w)
+	}
+}
+
 // TestBCNAV2MT40DecodesSISAI guards MT40 half: SISAIoe at bits 42–46
 // then the Figure 6-14 SISAIoc block at 47–68 (Figure 6-10). Raw indices only —
 // v1.0 publishes no decode table.
