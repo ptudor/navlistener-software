@@ -57,3 +57,29 @@ func TestExpireStationsEvictsFilteredResidue(t *testing.T) {
 		t.Error("capability fingerprint was evicted — it is durable by design (capability.go)")
 	}
 }
+
+// Detect's silence operating point, duplicated here deliberately  — the
+// same keep-in-sync idiom feed.go uses for liveReceiverWindow, and for the same
+// reason: detect imports state, so state cannot import detect's constants back.
+// If detect.SBASSilentThreshold / detect.ObserverOfflineThreshold /
+// detect.DebounceDuration move, update these and the test below will say whether
+// the eviction window still leaves the detectors room to confirm.
+const (
+	detectMaxSilenceThreshold = 300 * time.Second // max(SBASSilentThreshold, ObserverOfflineThreshold)
+	detectDebounceDuration    = 60 * time.Second  // detect.DebounceDuration
+)
+
+// TestStationEvictOutlastsDetect guards sbas_lost and station_offline can
+// only CONFIRM while the station's sbas/rf RAM entry still exists, so eviction must
+// outlast the slowest silence threshold plus the debounce. Nothing in the type
+// system enforces that (the thresholds live in detect, which depends on state, and
+// stationEvictAfter is unexported), so a future threshold raise would otherwise
+// silently disarm the darkness detector that eviction was built around.
+func TestStationEvictOutlastsDetect(t *testing.T) {
+	need := detectMaxSilenceThreshold + detectDebounceDuration
+	if stationEvictAfter <= need {
+		t.Fatalf("stationEvictAfter = %v must exceed max(silence threshold)+debounce = %v; "+
+			"eviction would delete the rf/sbas entry before sbas_lost/station_offline can confirm",
+			stationEvictAfter, need)
+	}
+}

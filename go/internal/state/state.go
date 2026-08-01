@@ -2067,6 +2067,22 @@ func (s *Store) Expire(now time.Time, ttl time.Duration) {
 // learned AGC baselines, while a renamed/mistyped source or a decommissioned
 // GEO eventually leaves RAM entirely instead of parking a filtered entry
 // forever. GLONASS almanac slots use their own (already multi-day) bound.
+//
+// regression fix — KEEP IN SYNC with the detect thresholds (the feed.go
+// liveReceiverWindow precedent): this constant is an unenforced UPPER BOUND on
+// the silence detectors that must outlast it. sbas_lost and station_offline can
+// only CONFIRM while the sbas/rf RAM entry still exists, so the operating point
+// must satisfy
+//
+//	max(detect.SBASSilentThreshold, detect.ObserverOfflineThreshold) +
+//		detect.DebounceDuration  <  stationEvictAfter
+//
+// Today that is 300 s + 60 s = 360 s vs 3600 s (~10× margin). The inequality
+// cannot be compile-checked — detect depends on state, not the reverse, and this
+// constant is unexported — so raising a detect threshold past
+// (stationEvictAfter − DebounceDuration) would silently DISARM the very darkness
+// detector eviction was designed to keep armed. TestStationEvictOutlastsDetect
+// duplicates the detect operating point so such a change trips a test instead.
 const stationEvictAfter = 12 * rfStaleAfter
 
 // ExpireStations deletes sbas, rf, and GLONASS-almanac entries whose last
