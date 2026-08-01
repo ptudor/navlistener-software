@@ -122,10 +122,25 @@ type Store struct {
 	persistOnce func(ctx context.Context, batch []*NavFrame) (int64, error)
 
 	// flushFailStreak counts CONSECUTIVE flush cycles that exhausted their
-	// bounded retries or wall budget; any successful persist resets it.
-	// It feeds Degraded() so /healthz can report a historian that has been
-	// dropping the forensic record for minutes, instead of staying green.
+	// bounded retries or wall budget; any successful persist resets it,
+	// as does the regression fix idle-recovery probe below. It feeds Degraded() so
+	// /healthz can report a historian that has been dropping the forensic record
+	// for minutes, instead of staying green. Incremented at most ONCE per
+	// top-level flush  — a poison bisection can produce several
+	// give-ups within one cycle, and counting each would reach Degraded()'s ≥2
+	// threshold after one cycle instead of the intended two consecutive ones.
 	flushFailStreak atomic.Int64
+
+	// ping probes pool liveness for the regression fix idle-recovery check
+	// (s.pingPool in production). It is a seam because tests construct a Store
+	// with a nil pool; a nil ping simply disables the probe.
+	ping func(ctx context.Context) error
+
+	// lastIdleProbe is when the idle-recovery probe last ran. Touched ONLY by
+	// the Run goroutine (from the flush closure), so it needs no
+	// synchronisation — unlike flushFailStreak, which Degraded() reads from the
+	// /healthz handler.
+	lastIdleProbe time.Time
 
 	// onDurable, when set (SetDurableNotify), is called once per sequenced
 	// frame the store has DURABLY RESOLVED — the regression fix ACK boundary:
@@ -211,8 +226,13 @@ func New(ctx context.Context, cfg config.Store, log *slog.Logger) (*Store, error
 	}
 	s.copy = s.copyRows
 	s.persistOnce = s.persistAtomicOnce
+	s.ping = s.pingPool
 	return s, nil
 }
+
+// pingPool is the production regression fix health probe: a pool acquire + round trip,
+// the cheapest honest "is the database reachable right now" question available.
+func (s *Store) pingPool(ctx context.Context) error { return s.pool.Ping(ctx) }
 
 // parseSimpleInterval parses the same "N minute(s)/hour(s)/day(s)/week(s)" shape
 // applyPolicies validates (intervalRe) into a time.Duration.
@@ -399,6 +419,45 @@ func applyPolicies(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, cf
 	return nil
 }
 
+// Idle-recovery probe budgets. idleHealthPingTO bounds one probe (the
+// Run goroutine is not reading its queue while it blocks, so it must be short);
+// idleHealthEvery bounds how often a probe runs, because the batch timer can tick
+// every second and a probe against a still-down DB costs a connection acquire and
+// a round trip each time.
+const (
+	idleHealthPingTO = 2 * time.Second
+	idleHealthEvery  = 10 * time.Second
+)
+
+// clearStreakIfIdleHealthy is the regression fix idle-recovery probe. flushFailStreak is
+// otherwise cleared ONLY by a successful non-empty persist, so a database that
+// fails for ≥2 cycles and then recovers during an ingest-silent window leaves
+// Degraded() latched: /healthz keeps reporting "frames are being dropped" against
+// a healthy DB until some frame happens to arrive. On an empty-batch cycle we can
+// ask the pool directly instead — a passing Ping is proof the historian is not
+// currently failing, so the stale streak is cleared.
+//
+// Deliberately narrow: it runs only while the streak is non-zero (a healthy idle
+// daemon never touches the DB on this path) and only on an empty batch (a
+// non-empty cycle carries its own verdict, which must not be overridden by a
+// Ping that succeeds while CopyFrom fails — e.g. a disk-full or schema fault).
+func (s *Store) clearStreakIfIdleHealthy(ctx context.Context, now time.Time) {
+	if s.ping == nil || s.flushFailStreak.Load() == 0 {
+		return
+	}
+	if !s.lastIdleProbe.IsZero() && now.Sub(s.lastIdleProbe) < idleHealthEvery {
+		return
+	}
+	s.lastIdleProbe = now
+	cctx, cancel := context.WithTimeout(ctx, idleHealthPingTO)
+	defer cancel()
+	if err := s.ping(cctx); err != nil {
+		return // still down: the latched streak is telling the truth
+	}
+	s.flushFailStreak.Store(0)
+	s.log.Info("historian reachable again during an ingest-idle window; clearing degraded status")
+}
+
 // Degraded reports a non-empty reason while the batched writer is persistently
 // failing : two or more CONSECUTIVE flush cycles exhausted their bounded
 // retries or wall budget — i.e. the historian has been unable to persist for over
@@ -444,6 +503,10 @@ func (s *Store) Run(ctx context.Context) {
 
 	flush := func() {
 		if len(batch) == 0 {
+			// no work to do, but a latched failure streak may be stale —
+			// probe the pool so a DB that recovered while ingest was silent does
+			// not keep /healthz reporting the historian degraded.
+			s.clearStreakIfIdleHealthy(ctx, time.Now())
 			return
 		}
 		// once shutdown has begun, never START a new normal-budget flush —
@@ -632,9 +695,18 @@ func (s *Store) persistAtomicOnce(ctx context.Context, batch []*NavFrame) (writt
 // resolved (a committed sub-batch, a quarantined poison row), retention is no
 // longer safe — re-flushing would duplicate the committed dial-mode rows — so an
 // interruption after partial work counts the remainder dropped instead.
-func (s *Store) persistAtomicRetry(ctx context.Context, batch []*NavFrame) (written int64, dropped int, aborted bool) {
+//
+// gaveUp reports that at least one (sub-)batch exhausted its retry
+// budget on a transient error. It is REPORTED, not counted, here: poison-row
+// bisection recurses, and incrementing flushFailStreak inside each recursive
+// give-up let one top-level flush bump the streak twice (two transient-failing
+// halves), reaching Degraded()'s ≥2 threshold after effectively one cycle rather
+// than the intended two consecutive ones. flush() folds it into a single Add.
+// Note aborted ⇒ !gaveUp by construction: aborted means nothing in this subtree
+// was resolved, and a give-up resolves rows (as dropped).
+func (s *Store) persistAtomicRetry(ctx context.Context, batch []*NavFrame) (written int64, dropped int, aborted, gaveUp bool) {
 	if len(batch) == 0 {
-		return 0, 0, false
+		return 0, 0, false, false
 	}
 	backoff := s.retry.backoff
 	for attempt := 1; ; attempt++ {
@@ -647,7 +719,7 @@ func (s *Store) persistAtomicRetry(ctx context.Context, batch []*NavFrame) (writ
 			// batch is durably resolved (persisted, or omitted because its
 			// ledger claim proves an earlier commit) and may now be acked.
 			s.notifyDurable(batch)
-			return n, 0, false
+			return n, 0, false, false
 		}
 		metrics.StoreErrorsTotal.Inc()
 		if isPoison(err) {
@@ -657,37 +729,39 @@ func (s *Store) persistAtomicRetry(ctx context.Context, batch []*NavFrame) (writ
 				// failure is deterministic row content, so replaying it forever
 				// against the same error would only wedge the feeder's spool.
 				s.notifyDurable(batch)
-				return 0, 1, false
+				return 0, 1, false, false
 			}
 			mid := len(batch) / 2
-			w1, d1, a1 := s.persistAtomicRetry(ctx, batch[:mid])
+			w1, d1, a1, g1 := s.persistAtomicRetry(ctx, batch[:mid])
 			if a1 {
 				// Nothing resolved in this call yet: propagate the abort so the
 				// top-level flush can retain the whole batch.
-				return 0, 0, true
+				return 0, 0, true, false
 			}
-			w2, d2, a2 := s.persistAtomicRetry(ctx, batch[mid:])
+			w2, d2, a2, g2 := s.persistAtomicRetry(ctx, batch[mid:])
 			if a2 {
 				// The first half already resolved rows, so retention is off the
 				// table — count the interrupted remainder dropped (the pre-regression fix
 				// accounting for a cut-short bisection).
-				return w1, d1 + len(batch[mid:]), false
+				return w1, d1 + len(batch[mid:]), false, g1
 			}
-			return w1 + w2, d1 + d2, false
+			// OR the halves' give-ups into ONE report for the caller.
+			return w1 + w2, d1 + d2, false, g1 || g2
 		}
 		if ctx.Err() != nil {
 			// Interrupted mid-retry with nothing resolved: signal abort; the caller
 			// (flush) decides retain-for-drain vs. budget-exhausted drop.
-			return 0, 0, true
+			return 0, 0, true, false
 		}
 		s.log.Warn("store flush failed; will retry", "error", err, "rows", len(batch), "attempt", attempt)
 		if attempt >= s.retry.attempts {
-			s.flushFailStreak.Add(1) // a whole retry cycle failed 
+			// regression fix/report the give-up; flush() counts it exactly once
+			// for the whole top-level cycle, however many sub-batches gave up.
 			s.log.Error("store flush giving up; leaving batch replayable", "rows", len(batch), "attempts", attempt)
-			return 0, len(batch), false
+			return 0, len(batch), false, true
 		}
 		if !sleepCtx(ctx, backoff) {
-			return 0, 0, true
+			return 0, 0, true, false
 		}
 		backoff *= 2
 	}
@@ -771,7 +845,7 @@ func (s *Store) flush(parent context.Context, batch []*NavFrame, deadline time.T
 	ctx, cancel := context.WithDeadline(parent, deadline)
 	defer cancel()
 	if s.atomicPersist {
-		written, dropped, aborted := s.persistAtomicRetry(ctx, batch)
+		written, dropped, aborted, gaveUp := s.persistAtomicRetry(ctx, batch)
 		if aborted {
 			if parent.Err() != nil {
 				s.log.Warn("store flush interrupted by shutdown; batch retained for the bounded drain", "rows", len(batch))
@@ -780,9 +854,14 @@ func (s *Store) flush(parent context.Context, batch []*NavFrame, deadline time.T
 			// The wall budget expired with the parent still live: the writer must
 			// stay live and memory-bounded through a long DB outage, so the batch
 			// is dropped (counted), exactly the pre-regression fix policy.
-			s.flushFailStreak.Add(1) // regression fix
+			gaveUp = true
 			dropped = len(batch)
 			s.log.Error("store flush budget exhausted; dropping batch", "rows", len(batch))
+		}
+		// regression fix/exactly one streak increment per top-level flush cycle,
+		// no matter how many sub-batches a poison bisection produced.
+		if gaveUp {
+			s.flushFailStreak.Add(1)
 		}
 		if written > 0 {
 			metrics.StoreRowsTotal.Add(float64(written))

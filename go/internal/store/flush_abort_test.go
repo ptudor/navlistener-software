@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -136,6 +137,124 @@ func TestDegradedAfterConsecutiveFlushGiveUps(t *testing.T) {
 	}
 }
 
+// TestDegradedClearedByIdleHealthProbe guards flushFailStreak used to be
+// cleared ONLY by a successful non-empty persist, so a DB that failed for ≥2
+// cycles and then recovered while no frames were arriving left /healthz reporting
+// the historian degraded indefinitely. An empty-batch cycle now probes the pool
+// directly; a passing probe clears the streak, a failing one leaves it (the
+// latched status is then true).
+func TestDegradedClearedByIdleHealthProbe(t *testing.T) {
+	degrade := func(s *Store) {
+		batch := []*NavFrame{{SourceID: "dial", Raw: []byte{1}}}
+		for i := 0; i < 2; i++ {
+			s.flush(context.Background(), batch, time.Now().Add(time.Second))
+		}
+		if s.Degraded() == "" {
+			t.Fatal("setup: two consecutive give-ups did not degrade")
+		}
+	}
+	// runIdle runs the writer loop with an EMPTY queue until cond or a timeout,
+	// exercising exactly the idle path (the batch timer firing with no work).
+	runIdle := func(t *testing.T, s *Store, budget time.Duration, cond func() bool) {
+		t.Helper()
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { defer close(done); s.Run(ctx) }()
+		deadline := time.Now().Add(budget)
+		for time.Now().Before(deadline) && !cond() {
+			time.Sleep(2 * time.Millisecond)
+		}
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Run did not return")
+		}
+	}
+
+	t.Run("healthy probe clears", func(t *testing.T) {
+		s := atomicStore(func(ctx context.Context, batch []*NavFrame) (int64, error) {
+			return 0, errors.New("db down")
+		})
+		s.retry = flushRetry{attempts: 2, backoff: time.Millisecond, attemptTO: time.Second}
+		s.batchEvery = 2 * time.Millisecond
+		degrade(s)
+		var pings atomic.Int64
+		s.ping = func(ctx context.Context) error { pings.Add(1); return nil }
+		runIdle(t, s, 2*time.Second, func() bool { return s.Degraded() == "" })
+		if s.Degraded() != "" {
+			t.Errorf("Degraded() = %q after the DB became reachable during ingest silence, want empty", s.Degraded())
+		}
+		if pings.Load() == 0 {
+			t.Error("idle cycles never probed the pool")
+		}
+	})
+
+	t.Run("failing probe keeps the streak", func(t *testing.T) {
+		s := atomicStore(func(ctx context.Context, batch []*NavFrame) (int64, error) {
+			return 0, errors.New("db down")
+		})
+		s.retry = flushRetry{attempts: 2, backoff: time.Millisecond, attemptTO: time.Second}
+		s.batchEvery = 2 * time.Millisecond
+		degrade(s)
+		var pings atomic.Int64
+		s.ping = func(ctx context.Context) error { pings.Add(1); return errors.New("db still down") }
+		runIdle(t, s, 2*time.Second, func() bool { return pings.Load() > 0 })
+		if s.Degraded() == "" {
+			t.Error("Degraded() cleared on a FAILING health probe — the historian is still down")
+		}
+	})
+
+	t.Run("healthy idle daemon never probes", func(t *testing.T) {
+		s := atomicStore(func(ctx context.Context, batch []*NavFrame) (int64, error) {
+			return int64(len(batch)), nil
+		})
+		s.batchEvery = 2 * time.Millisecond
+		var pings atomic.Int64
+		s.ping = func(ctx context.Context) error { pings.Add(1); return nil }
+		runIdle(t, s, 200*time.Millisecond, func() bool { return pings.Load() > 0 })
+		if n := pings.Load(); n != 0 {
+			t.Errorf("probed %d times with a zero failure streak, want 0 (an idle healthy daemon must not poll the DB)", n)
+		}
+	})
+}
+
+// TestPoisonBisectionCountsOneFlushFailure guards a poison-row
+// bisection whose sub-batches then fail transiently used to Add(1) per sub-batch,
+// so ONE flush cycle reached Degraded()'s ≥2 threshold — undercutting the
+// two-consecutive-cycles anti-flap intent. The streak must advance by exactly one
+// per top-level flush.
+func TestPoisonBisectionCountsOneFlushFailure(t *testing.T) {
+	// Whole batch → poison (bisect); each half → transient failure (give up).
+	fake := func(ctx context.Context, batch []*NavFrame) (int64, error) {
+		if len(batch) == 4 {
+			return 0, &pgconn.PgError{Code: "23505", Message: "duplicate key"}
+		}
+		return 0, errors.New("connection reset")
+	}
+	s := atomicStore(fake)
+	s.retry = flushRetry{attempts: 2, backoff: time.Millisecond, attemptTO: time.Second}
+	batch := []*NavFrame{
+		{SourceID: "dial", Raw: []byte{1}}, {SourceID: "dial", Raw: []byte{2}},
+		{SourceID: "dial", Raw: []byte{3}}, {SourceID: "dial", Raw: []byte{4}},
+	}
+
+	s.flush(context.Background(), batch, time.Now().Add(5*time.Second))
+	if n := s.flushFailStreak.Load(); n != 1 {
+		t.Errorf("flushFailStreak = %d after ONE bisecting flush cycle, want 1", n)
+	}
+	if s.Degraded() != "" {
+		t.Errorf("Degraded() = %q after one flush cycle, want empty (two consecutive cycles is the promised threshold)", s.Degraded())
+	}
+	s.flush(context.Background(), batch, time.Now().Add(5*time.Second))
+	if n := s.flushFailStreak.Load(); n != 2 {
+		t.Errorf("flushFailStreak = %d after two failing cycles, want 2", n)
+	}
+	if s.Degraded() == "" {
+		t.Error("Degraded() empty after two consecutive failing cycles, want a reason")
+	}
+}
+
 // TestNormalFlushBudgetExhaustionStillDrops: when the wall budget (deadline)
 // expires with the parent context still live — a long DB outage, no shutdown —
 // the batch must be dropped and counted exactly as before regression fix, so the writer
@@ -184,7 +303,7 @@ func TestPersistAtomicRetryAbortAfterPartialBisectionDropsRemainder(t *testing.T
 		{SourceID: "dial", Raw: []byte{1}}, {SourceID: "dial", Raw: []byte{2}},
 		{SourceID: "dial", Raw: []byte{3}}, {SourceID: "dial", Raw: []byte{4}},
 	}
-	written, dropped, aborted := s.persistAtomicRetry(ctx, batch)
+	written, dropped, aborted, _ := s.persistAtomicRetry(ctx, batch)
 	if aborted {
 		t.Fatal("aborted=true after the first half committed — retention here would duplicate committed rows")
 	}
