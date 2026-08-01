@@ -255,3 +255,88 @@ func TestNavfeederDiscardsHeaderlessSpool(t *testing.T) {
 	}
 	waitForSession(t, ferr)
 }
+
+// TestNavfeederEmptySpoolKeepsFreshSession pins the fix: a spool file
+// with a VALID session header but no complete record (a kill or power cut
+// between the header flush and the first record flush, or a torn first append
+// rolled back to the bare header) must NOT adopt the stored session. Adoption
+// with s->seq still 0 would reconnect the feeder as the previous session with
+// a sequence space restarting at 1 — the exact regression fix collision where the
+// collector's (observer, session, seq) ledger classifies fresh frames as
+// replays and silently drops them. There is nothing to replay from such a
+// spool, so the freshly-minted session keeps a clean sequence space.
+func TestNavfeederEmptySpoolKeepsFreshSession(t *testing.T) {
+	bin := feederBinary(t)
+	const stored = "deadbeefdeadbeefdeadbeefdeadbeef"
+
+	// Two variants of the regression fix spool: a bare 73-byte header, and a header
+	// followed by a torn partial record header (6 of 12 bytes).
+	for _, tc := range []struct {
+		name string
+		tail []byte
+	}{
+		{"bare_header", nil},
+		{"torn_first_record", []byte{0, 0, 0, 0, 0, 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spool := filepath.Join(t.TempDir(), "spool.bin")
+			hdr := make([]byte, 0, 73+len(tc.tail))
+			hdr = append(hdr, []byte("NAVSPO01")...)
+			hdr = append(hdr, byte(len(stored)))
+			sess := make([]byte, 64)
+			copy(sess, stored)
+			hdr = append(hdr, sess...)
+			hdr = append(hdr, tc.tail...)
+			if err := os.WriteFile(spool, hdr, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			srcLn, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer srcLn.Close()
+			go func() {
+				c, err := srcLn.Accept()
+				if err != nil {
+					return
+				}
+				defer c.Close()
+				<-ctx.Done()
+			}()
+
+			ferr := &syncBuf{}
+			cmd := exec.CommandContext(ctx, bin,
+				"--server", "127.0.0.1:1", // never reached before the check below
+				"--source", srcLn.Addr().String(),
+				"--station", "f9t-e2e", "--token", "s3cret", "--feed", "ubx",
+				"--insecure", "--spool", "8", "--spool-file", spool)
+			cmd.Stderr = ferr
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cmd.Process.Kill() })
+
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				if bytes.Contains([]byte(ferr.String()), []byte("no complete record")) {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("record-less spool was not discarded; stderr:\n%s", ferr.String())
+				}
+				time.Sleep(25 * time.Millisecond)
+			}
+			// The record-less file is unlinked, and the session in use is the
+			// fresh mint, NOT the stored one from the discarded header.
+			if _, err := os.Stat(spool); !os.IsNotExist(err) {
+				t.Errorf("record-less spool still exists (stat err %v); want unlinked", err)
+			}
+			if got := waitForSession(t, ferr); got == stored {
+				t.Errorf("feeder adopted the stored session %q from a record-less spool; want a fresh mint", got)
+			}
+		})
+	}
+}

@@ -358,9 +358,10 @@ static int session_charset_ok(const char *s, size_t n) {
 }
 
 /* spool_recover replays a spool file left by a previous run (a feeder restart mid-outage,
- * e.g. a router reboot): it validates the session header (adopting its session, regression fix),
- * scans the records, truncates any torn tail from an unclean exit, and resumes the
- * sequence so new frames continue past the recovered ones. */
+ * e.g. a router reboot): it validates the session header, scans the records, truncates any
+ * torn tail from an unclean exit, and — only if at least one complete record survived —
+ * adopts the stored session  and resumes the sequence so new frames continue past
+ * the recovered ones. A record-less spool keeps the fresh session (regression fix, below). */
 static void spool_recover(struct spool *s) {
 	FILE *r = fopen(s->path, "rb");
 	if (!r) return; /* no prior spool — first overflow opens it lazily */
@@ -377,10 +378,6 @@ static void spool_recover(struct spool *s) {
 		}
 		return; /* keep the freshly-minted session; seq starts at 0 in a clean new space */
 	}
-	/* Adopt the stored session: the recovered records already belong to it, and the
-	 * frames captured after this restart continue the same sequence space. */
-	memcpy(g_session, fhdr + SPOOL_MAGIC_LEN + 1, fhdr[SPOOL_MAGIC_LEN]);
-	g_session[fhdr[SPOOL_MAGIC_LEN]] = 0;
 	uint64_t max_seq = 0, good_bytes = SPOOL_HDR_LEN, count = 0;
 	for (;;) {
 		unsigned char hdr[12];
@@ -395,6 +392,14 @@ static void spool_recover(struct spool *s) {
 	}
 	fclose(r);
 	if (count == 0) {
+		/* a header-valid spool with NO complete record (a kill or power cut
+		 * between the header flush and the first record flush, or a torn first append
+		 * rolled back to the bare header) must NOT adopt the stored session — with
+		 * s->seq still 0 the feeder would reconnect as the PREVIOUS session with a
+		 * sequence space restarting at 1, colliding with that session's existing
+		 * ledger rows: exactly the regression fix replay-classification loss. There is
+		 * nothing to replay, so keep the freshly-minted session and its clean space. */
+		log_msg("disk spool has a session header but no complete record; discarding it (fresh session kept)");
 		if (unlink(s->path) != 0 && errno != ENOENT) {
 			s->disk_append_disabled = 1;
 			log_msg("empty/torn disk spool could not be removed (%s); disk overflow disabled",
@@ -402,6 +407,12 @@ static void spool_recover(struct spool *s) {
 		}
 		return;
 	}
+	/* Adopt the stored session ONLY now that recovered records exist: they already
+	 * belong to it, and the frames captured after this restart continue the same
+	 * (observer, session, seq) space. Adoption must follow the record scan — see the
+	 * regression fix comment above for why an empty spool keeps the fresh session instead. */
+	memcpy(g_session, fhdr + SPOOL_MAGIC_LEN + 1, fhdr[SPOOL_MAGIC_LEN]);
+	g_session[fhdr[SPOOL_MAGIC_LEN]] = 0;
 	/* if the tail truncate fails (EROFS/EACCES/EIO), do NOT unlink the whole spool and
 	 * restart seq at 0 — that re-enters the seq-reuse regime  where the
 	 * collector's (source_id, feeder_seq) ledger discards fresh frames as replays. Instead
