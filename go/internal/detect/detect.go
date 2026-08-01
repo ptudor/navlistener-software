@@ -37,7 +37,29 @@ type Detector struct {
 	// correctness requirement at this scale.
 	machines map[string]*machine
 	debounce time.Duration
+	// gen counts completed classification rounds, one counter per classifier
+	// family. Each Tick* entry point advances only its own counter and
+	// classifies a DISJOINT set of (subject, metric) machines, so "was this
+	// machine observed in the previous round?" is only a meaningful question
+	// within a family — the four entry points run on the same daemon cadence but
+	// are separate calls, and a shared counter would read every machine as
+	// perpetually skipped.
+	gen [numFamilies]uint64
 }
+
+// tickFamily identifies one classifier family's round counter. The key spaces are
+// disjoint by construction: SV/xsig/SBAS subjects and metrics from Tick, the four
+// RF metrics from TickStations, "offline" from TickStationLiveness, and
+// "cap_lost:*"/"cap_impossible" from TickCapabilities.
+type tickFamily int
+
+const (
+	familySV tickFamily = iota
+	familyStationRF
+	familyStationLiveness
+	familyCapability
+	numFamilies
+)
 
 // machine is one metric's state: the confirmed current classification, a pending
 // provisional one, and when the pending one was first seen.
@@ -45,6 +67,11 @@ type machine struct {
 	current     string
 	provisional string
 	since       time.Time
+	// lastGen is the round of this machine's classifier family in which it was
+	// last OBSERVED. A gap means the classifier held it (the regression fix
+	// hold rule) or its subject was absent from the read model — either way the
+	// pending provisional's dwell was not continuous.
+	lastGen uint64
 }
 
 // New builds a Detector with the standard debounce window. A non-positive debounce
@@ -59,18 +86,45 @@ func New(debounce time.Duration) *Detector {
 // observe folds a new classification for one (subject, metric) into its state
 // machine and reports whether this is a confirmed transition, with the old value.
 // The first-ever observation seeds the current state silently (no phantom event).
-func (d *Detector) observe(subject, metric, newState string, now time.Time) (changed bool, old string) {
+// gen is the current round of the caller's classifier family (see tickFamily).
+func (d *Detector) observe(subject, metric, newState string, now time.Time, gen uint64) (changed bool, old string) {
 	key := subject + "\x00" + metric
 	m := d.machines[key]
 	if m == nil {
-		d.machines[key] = &machine{current: newState}
+		d.machines[key] = &machine{current: newState, lastGen: gen}
 		return false, "" // seed; first sighting is not a transition
 	}
+	// the debounce promises a CONTINUOUS dwell — the provisional state
+	// must have been *observed* for the whole window, not merely have been
+	// pending across it. Every hold path (the regression fix rule: the fleet-floor
+	// silence skip below SilenceMinReceivers, an SBAS entry past
+	// SBASHealthCurrentWindow, a station gone dark in detectCapability, missing
+	// MON-RF bands, an absent subject) works by NOT calling observe, so a
+	// provisional captured just before a hold used to keep its pre-hold `since`
+	// and confirm on the FIRST post-resume observation with zero fresh dwell.
+	// The fleet-floor skip makes that fleet-wide: one dip below the floor holds
+	// every SV's silence machine at once. Restart the clock instead — an
+	// interrupted machine must re-earn the full window. Fixed here in the spine
+	// rather than at each hold site, so every present and future hold inherits
+	// it.
+	//
+	// The `!= gen` half is defensive: no current classifier observes one
+	// (subject, metric) twice in a round (subjects come from map keys, metrics
+	// are literals or per-signal keys), but if one ever did, reading the second
+	// observation as "interrupted" would re-stamp `since` forever and the
+	// machine could never confirm — a silent detector outage. Only a genuine gap
+	// counts.
+	interrupted := m.lastGen != gen && m.lastGen != gen-1
+	m.lastGen = gen
 	switch {
 	case newState == m.current:
 		m.provisional = "" // pending change reverted
 		return false, ""
 	case newState == m.provisional:
+		if interrupted {
+			m.since = now // the dwell was broken by a hold: start it over
+			return false, ""
+		}
 		if now.Sub(m.since) >= d.debounce {
 			old = m.current
 			m.current, m.provisional = newState, ""
@@ -92,7 +146,7 @@ func (d *Detector) observe(subject, metric, newState string, now time.Time) (cha
 func (d *Detector) Tick(now time.Time, svs map[string]state.FeedSV, sbas map[string]state.SBASEntry, liveReceivers int) []Event {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.run(now, func(emit emitFunc) {
+	return d.run(now, familySV, func(emit emitFunc) {
 		for name, sv := range svs {
 			d.detectSV(name, sv, now, liveReceivers, emit)
 		}
@@ -110,7 +164,7 @@ func (d *Detector) Tick(now time.Time, svs map[string]state.FeedSV, sbas map[str
 func (d *Detector) TickStations(now time.Time, stations map[string]state.StationRF) []Event {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.run(now, func(emit emitFunc) {
+	return d.run(now, familyStationRF, func(emit emitFunc) {
 		for id, rf := range stations {
 			d.detectStationRF(id, rf, emit)
 		}
@@ -126,7 +180,7 @@ func (d *Detector) TickStations(now time.Time, stations map[string]state.Station
 func (d *Detector) TickStationLiveness(now time.Time, lastSeen map[string]int) []Event {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.run(now, func(emit emitFunc) {
+	return d.run(now, familyStationLiveness, func(emit emitFunc) {
 		for id, age := range lastSeen {
 			d.detectStationOffline(id, age, emit)
 		}
@@ -134,11 +188,14 @@ func (d *Detector) TickStationLiveness(now time.Time, lastSeen map[string]int) [
 }
 
 // run collects the events a classifier set produces, deterministically ordered. The
-// caller holds d.mu (observe mutates the shared machines).
-func (d *Detector) run(now time.Time, classify func(emit emitFunc)) []Event {
+// caller holds d.mu (observe mutates the shared machines). fam names the classifier
+// family whose round counter this call advances — the regression fix hold detection.
+func (d *Detector) run(now time.Time, fam tickFamily, classify func(emit emitFunc)) []Event {
+	d.gen[fam]++
+	gen := d.gen[fam]
 	var events []Event
 	emit := func(subject, metric, newState string, ev func(old string) Event) {
-		if changed, old := d.observe(subject, metric, newState, now); changed {
+		if changed, old := d.observe(subject, metric, newState, now, gen); changed {
 			e := ev(old)
 			e.Time, e.SV = now, subject
 			events = append(events, e)
@@ -166,6 +223,9 @@ func (d *Detector) run(now time.Time, classify func(emit emitFunc)) []Event {
 }
 
 // Reset clears all state machines (used at shutdown/tests). It does not emit.
+// The round counters stay monotonic on purpose : every machine is gone,
+// so the next observation of any subject is a fresh silent seed stamped with the
+// current round — rewinding gen would buy nothing and could alias a stale lastGen.
 func (d *Detector) Reset() {
 	d.mu.Lock()
 	defer d.mu.Unlock()

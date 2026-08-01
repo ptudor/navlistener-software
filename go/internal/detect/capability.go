@@ -18,7 +18,7 @@ import (
 func (d *Detector) TickCapabilities(now time.Time, reports map[string]state.StationCapReport) []Event {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.run(now, func(emit emitFunc) {
+	return d.run(now, familyCapability, func(emit emitFunc) {
 		for id, rep := range reports {
 			d.detectCapability(id, rep, now, emit)
 		}

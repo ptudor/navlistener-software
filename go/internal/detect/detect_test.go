@@ -573,6 +573,47 @@ func TestSilenceMachineHoldsAcrossFleetDip(t *testing.T) {
 	}
 }
 
+// TestProvisionalDoesNotSurviveHold guards the debounce promises a
+// CONTINUOUS dwell, so a provisional captured just before a classifier enters a
+// hold window must not confirm on the first post-hold observation with its
+// pre-hold `since`. The fleet-floor silence skip is the sharpest case — it is
+// fleet-wide, so one dip below SilenceMinReceivers holds EVERY SV's silence
+// machine at once and a fleet oscillating around the floor could instant-confirm
+// whatever was pending at dip time. After the hold the pending change must
+// re-earn the full window; a fresh full dwell then confirms normally.
+func TestProvisionalDoesNotSurviveHold(t *testing.T) {
+	d := New(time.Minute)
+	t0 := time.Unix(7_500_000, 0)
+	full := SilenceMinReceivers
+
+	seen := gps("G05", 5, 1)
+	silent := gps("G05", 5, 1)
+	silent.LastSeenS = int(SilentThreshold) + 100
+	seenM := map[string]state.FeedSV{"G05@0": seen}
+	silentM := map[string]state.FeedSV{"G05@0": silent}
+
+	d.Tick(t0, seenM, nil, full)                         // seeds "seen"
+	d.Tick(t0.Add(10*time.Second), silentM, nil, full)   // provisional "silent" at t0+10
+	d.Tick(t0.Add(20*time.Second), silentM, nil, full-1) // fleet dips: classifier held
+	d.Tick(t0.Add(80*time.Second), silentM, nil, full-1) // still held, past the old dwell
+
+	// Fleet restored. The pre-hold provisional is now 80 s old — older than the
+	// debounce — but only ~10 s of that was actually observed, so this tick must
+	// only restart the dwell, not confirm.
+	if evs := d.Tick(t0.Add(90*time.Second), silentM, nil, full); len(evs) != 0 {
+		t.Fatalf("provisional survived the hold and confirmed instantly: %+v", evs)
+	}
+	// One more tick still inside the fresh window: still nothing.
+	if evs := d.Tick(t0.Add(130*time.Second), silentM, nil, full); len(evs) != 0 {
+		t.Fatalf("confirmed before the fresh debounce elapsed: %+v", evs)
+	}
+	// A full post-resume dwell confirms normally — the fix delays, never suppresses.
+	evs := d.Tick(t0.Add(160*time.Second), silentM, nil, full)
+	if len(evs) != 1 || evs[0].Type != "observation_lost" || evs[0].NewValue != "silent" {
+		t.Fatalf("got %+v, want the observation_lost after a fresh full dwell", evs)
+	}
+}
+
 // TestSBASDoNotUse confirms an SBAS PRN going do-not-use fires a critical sbas_health.
 func TestSBASDoNotUse(t *testing.T) {
 	d := New(time.Minute)
