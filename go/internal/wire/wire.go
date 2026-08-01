@@ -33,14 +33,23 @@ const (
 	Hello   FrameType = 0x01 // feeder→collector: JSON HelloMsg
 	Welcome FrameType = 0x02 // collector→feeder: JSON WelcomeMsg
 	Data    FrameType = 0x03 // feeder→collector: [8B seq][raw record]
-	// Ack : [8B seq] the highest sequence number received on this
-	// connection, not "last contiguous stored" -- the collector never buffers
-	// to wait for a gap to fill; a lost/reordered frame is simply skipped past.
-	// A second implementer following this comment alone would wait for
-	// contiguity and never prune across a gap; reconnect replay (the feeder
-	// resends everything after the last ack it received) makes any resulting
-	// duplicate harmless, which is what actually makes this safe.
-	Ack        FrameType = 0x04 // collector→feeder: [8B seq] highest sequence received this connection
+	// Ack (regression fix, revised by regression fix 2026-07-31): [8B seq] the DURABLE
+	// watermark for this session — the highest sequence N such that every
+	// sequenced frame ≤ N the collector RECEIVED has been durably resolved:
+	// committed by the historian (or deduped as a replay of an
+	// already-committed ledger claim), quarantined as unfixable poison, or
+	// classified never-persistable (telemetry, malformed body). The feeder
+	// prunes its spool up to the acked seq, so before this revision ACK meant
+	// "queued in RAM" and a DB outage after ACK permanently erased the raw
+	// evidence — now the ack simply stalls until the store commits, and the
+	// feeder's spool (plus its ack-stall reconnect watchdog) carries the
+	// outage. A collector running WITHOUT a historian acks on receipt — the
+	// explicit live-only mode. Two regression fix properties survive unchanged: the
+	// collector never waits for a RECEPTION gap to fill (a sequence that never
+	// arrived is skipped past — a second implementer must not wait for
+	// contiguity over unreceived sequences), and reconnect replay (the feeder
+	// resends everything after the last ack) makes any duplicate harmless.
+	Ack        FrameType = 0x04 // collector→feeder: [8B seq] durable watermark (live-only mode: highest received)
 	Ping       FrameType = 0x05 // keepalive
 	Pong       FrameType = 0x06 // keepalive
 	SignedData FrameType = 0x07 // hardware tier (vNext): Data batch + ATECC ECDSA

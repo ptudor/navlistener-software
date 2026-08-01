@@ -218,6 +218,16 @@ func run() int {
 		// surface persistent flush failure (the historian silently
 		// dropping the forensic record) as a degraded /healthz.
 		obs.AddProbe("historian", historian.Degraded)
+		// with a historian present, GNF1 ACK is the durability
+		// watermark — the feeder prunes its spool only for frames the store has
+		// durably resolved (committed / dedup-proven / quarantined-unfixable).
+		// Without a historian the tracker stays nil and push acks on receipt:
+		// the explicit live-only mode, documented in wire.go's Ack contract.
+		if pushSrv != nil {
+			tracker := ingest.NewDurableTracker()
+			pushSrv.SetDurableTracker(tracker)
+			historian.SetDurableNotify(tracker.Resolved)
+		}
 		log.Info("historian enabled")
 	} else {
 		close(storeDone)

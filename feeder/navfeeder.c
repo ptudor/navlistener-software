@@ -18,9 +18,15 @@
  * bounded in-memory ring (assigning a monotonic sequence); a consumer drains it to the
  * collector. Reading and sending are decoupled, so a collector restart or network blip does
  * NOT lose data — on every reconnect the consumer REPLAYS all unacked frames (galmon's rule:
- * "the receiver must never go down"). The collector ACKs the highest sequence it has RECEIVED
- * this connection  -- not "last contiguous," and not a durability guarantee that it has
- * actually reached the historian -- pruning the ring up to that seq. On overflow the OLDEST
+ * "the receiver must never go down"). The collector ACKs the DURABLE watermark ( * regression fix, 2026-07-31): the highest seq through which every received frame has been durably
+ * resolved — committed to the historian, deduped against an already-committed claim, or
+ * classified unfixable/never-persistable. Pruning the ring up to that seq is therefore
+ * safe against a collector-side DB outage: the ack simply stalls, this spool holds the
+ * frames, and the ACK_STALL_S watchdog cycles the connection so reconnect replay
+ * redelivers them once the collector recovers. (A collector running without a historian
+ * acks on receipt — live-only mode; the spool contract is then best-effort by explicit
+ * configuration, not by accident.) gap rule is unchanged: acks skip past
+ * sequences the collector never received. On overflow the OLDEST
  * frame spills to a disk spool (--spool-file) rather
  * than being dropped; the spool is recovered and replayed on restart, so an outage longer
  * than RAM, or an ORDERLY router reboot, still loses nothing. Disk-spooled frames are
@@ -88,6 +94,12 @@
 #define GNF_RECORD (RECORD_HDR + MAX_RAW)
 #define DRAIN_BATCH 512
 #define KEEPALIVE_S 30        /* PING when idle this long, to stay under the collector's idle timeout */
+#define ACK_STALL_S 600       /* cycle the connection when frames are outstanding and the
+                               * durable-ack watermark has not moved this long — reconnect replay is the
+                               * only path that redelivers batches the collector shed during a DB outage.
+                               * 10 min: far above the collector's ~35 s flush-retry budget and ack
+                               * cadence (no churn on a healthy or briefly-blipping historian), small
+                               * enough that recovery-to-redelivery latency stays minutes-scale. */
 #define USEFUL_CONN_S 3       /* a source connection must survive this long, or emit >=1 frame,
                                 * before it resets producer_thread's backoff (else an accept-then-close
                                 * peer retries at ~1 Hz forever) */
@@ -1560,7 +1572,30 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 	 * collector's idle timeout (idleReadTimeout, push.go) drops a healthy link. */
 	time_t last_tx = monotonic_s();
 	struct disk_cursor dcur = {0, 0}; /* fresh per connection */
+	/* regression fix ack-stall watchdog: ACK now advances only as the collector
+	 * DURABLY resolves frames (historian commit), so a healthy TCP link can carry
+	 * a stalled ack stream for as long as the collector's database is down. The
+	 * spool holds everything meanwhile; what needs forcing is REDELIVERY —
+	 * batches the collector dropped from its RAM writer queue during the outage
+	 * are re-sent only by reconnect replay. So: frames outstanding
+	 * (sent_upto > acked) with zero ack progress for ACK_STALL_S ⇒ cycle the
+	 * connection; the normal reconnect replays everything past the last ack into
+	 * the (possibly recovered) collector. Bounded churn: at most one replay per
+	 * ACK_STALL_S window during an outage, nothing when acks flow. Monotonic
+	 * clock per regression fix. */
+	uint64_t stall_acked = spool_acked(&g_spool);
+	time_t stall_since = monotonic_s();
 	while (!g_disconnected) {
+		uint64_t acked_now = spool_acked(&g_spool);
+		if (acked_now != stall_acked) {
+			stall_acked = acked_now;
+			stall_since = monotonic_s();
+		} else if (sent_upto > acked_now && monotonic_s() - stall_since >= ACK_STALL_S) {
+			log_msg("no ack progress in %d s with frames outstanding past seq %llu; cycling connection for replay",
+				ACK_STALL_S, (unsigned long long)acked_now);
+			g_disconnected = 1;
+			break;
+		}
 		disk_maybe_delete(&g_spool);
 		int d = disk_drain(&g_spool, &c, &sent_upto, &dcur); /* oldest unacked first (disk) */
 		if (d < 0) break;                              /* disconnected during disk replay */

@@ -135,7 +135,17 @@ type PushServer struct {
 	// mTLS (ClientCA unset), this is the only cap between the internet and
 	// unbounded goroutine/FD growth from a pre-auth connection flood.
 	conns chan struct{}
+
+	// durable, when non-nil, switches ACK to the regression fix durability
+	// watermark (see DurableTracker). nil = live-only mode (no historian):
+	// ACK on receipt, the pre-regression fix semantics. Set via SetDurableTracker
+	// before Run; main wires it exactly when the historian is enabled.
+	durable *DurableTracker
 }
+
+// SetDurableTracker installs the regression fix durability watermark source. Must be
+// called before Run/Serve (connections read the field without a lock).
+func (p *PushServer) SetDurableTracker(t *DurableTracker) { p.durable = t }
 
 // NewPushServer builds the listener from config. It loads the server certificate and,
 // if a client CA is configured, requires and verifies client certificates (mTLS).
@@ -502,10 +512,25 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 			case <-quit:
 				return
 			case <-ackTicker.C:
+				var last uint64
+				if p.durable != nil {
+					// ack the durability watermark — the feeder may
+					// prune only what the historian has durably resolved. In
+					// live-only mode (nil tracker, no historian) ack on receipt,
+					// the documented pre-regression fix semantics.
+					last = p.durable.Watermark(observer, session)
+				} else {
+					mu.Lock()
+					last = highest
+					mu.Unlock()
+				}
 				mu.Lock()
-				last, prev := highest, acked
+				prev := acked
 				mu.Unlock()
-				if last == prev {
+				// Monotone per connection: a reconnect's replayed low sequences can
+				// transiently regress the watermark (DurableTracker.Watermark);
+				// a regressed ack must never reach the wire.
+				if last <= prev {
 					continue
 				}
 				if err := w.write(wire.Ack, wire.EncodeAck(last)); err != nil {
@@ -558,6 +583,9 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				// retransmit, so the sequence is acked like bad_telemetry.
 				metrics.PushErrorsTotal.WithLabelValues(observer, "gnssid_range").Inc()
 				unforwarded++
+				if p.durable != nil { // unfixable by retransmit — never holds the watermark
+					p.durable.Received(observer, session, seq, false)
+				}
 				mu.Lock()
 				if seq > highest {
 					highest = seq
@@ -568,6 +596,9 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				unforwarded++
 				// The body is malformed; a retransmit cannot fix it, so this sequence is
 				// acked (matches the pre-existing behaviour for this branch, regression fix).
+				if p.durable != nil { // same rationale, watermark-transparent
+					p.durable.Received(observer, session, seq, false)
+				}
 				mu.Lock()
 				if seq > highest {
 					highest = seq
@@ -578,6 +609,13 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				f.Session = session                // boot-identity half of the dedup key 
 				if f.RF == nil && f.Words != nil { // byte frames use CapturedOnlyTotal, not gnssid=0
 					metrics.FramesTotal.WithLabelValues(observer, fmt.Sprint(int(f.GnssID))).Inc()
+				}
+				// register receipt BEFORE the decode handoff, so the
+				// store's resolution can never race its own arrival. Telemetry
+				// (RF/observables) never reaches the historian (decodeLoop skips
+				// it), so it advances the watermark without ever holding it.
+				if p.durable != nil {
+					p.durable.Received(observer, session, seq, f.RF == nil && f.Obs == nil)
 				}
 				select {
 				case p.out <- f:

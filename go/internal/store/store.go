@@ -126,6 +126,34 @@ type Store struct {
 	// It feeds Degraded() so /healthz can report a historian that has been
 	// dropping the forensic record for minutes, instead of staying green.
 	flushFailStreak atomic.Int64
+
+	// onDurable, when set (SetDurableNotify), is called once per sequenced
+	// frame the store has DURABLY RESOLVED — the regression fix ACK boundary:
+	// the batch's transaction committed (including frames omitted as replays
+	// of an already-committed claim), or a poison row was quarantined
+	// (deterministic row-content failure a retransmit cannot fix), or a
+	// nil-Raw frame was rejected at Enqueue (same unfixable class). It is
+	// deliberately NOT called for retry-exhaustion/budget drops: those frames
+	// were never committed, their ledger claims rolled back, and the feeder's
+	// spool still holds them — withholding the ack is exactly what lets
+	// reconnect replay redeliver them after the outage.
+	onDurable func(source, session string, seq uint64)
+}
+
+// SetDurableNotify installs the regression fix durable-resolution callback. Must be
+// called before Run (the writer goroutine reads the field without a lock).
+func (s *Store) SetDurableNotify(fn func(source, session string, seq uint64)) { s.onDurable = fn }
+
+// notifyDurable reports every sequenced frame in batch as durably resolved.
+func (s *Store) notifyDurable(batch []*NavFrame) {
+	if s.onDurable == nil {
+		return
+	}
+	for _, f := range batch {
+		if f.HasSourceSeq {
+			s.onDurable(f.SourceID, f.Session, f.SourceSeq)
+		}
+	}
 }
 
 // New connects, applies the schema idempotently, installs the compression/retention
@@ -393,6 +421,9 @@ func (s *Store) Enqueue(f *NavFrame) {
 	if f.Raw == nil {
 		metrics.StoreEmptyRawTotal.Inc()
 		s.log.Warn("dropping nav frame with nil Raw", "source", f.SourceID, "gnssid", f.GnssID, "svid", f.SvID)
+		// unfixable by retransmit (the frame's content is the problem);
+		// resolve it so it can be acked instead of wedging the watermark.
+		s.notifyDurable([]*NavFrame{f})
 		return
 	}
 	select {
@@ -612,12 +643,20 @@ func (s *Store) persistAtomicRetry(ctx context.Context, batch []*NavFrame) (writ
 		cancel()
 		if err == nil {
 			s.flushFailStreak.Store(0) // any successful persist ends a failure streak 
+			// the transaction committed — every sequenced frame in the
+			// batch is durably resolved (persisted, or omitted because its
+			// ledger claim proves an earlier commit) and may now be acked.
+			s.notifyDurable(batch)
 			return n, 0, false
 		}
 		metrics.StoreErrorsTotal.Inc()
 		if isPoison(err) {
 			if len(batch) == 1 {
 				s.log.Error("store quarantined a poison row", "error", err)
+				// quarantine is this frame's durable disposition — the
+				// failure is deterministic row content, so replaying it forever
+				// against the same error would only wedge the feeder's spool.
+				s.notifyDurable(batch)
 				return 0, 1, false
 			}
 			mid := len(batch) / 2
