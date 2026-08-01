@@ -242,6 +242,13 @@ func (m *Manager) runScanner(ctx context.Context, sc scanner, conn net.Conn, src
 	}
 	baseEmit := m.emit(ctx, src)
 	lastFrameGauge := metrics.SourceLastFrameTimestamp.WithLabelValues(src.Name)
+	// seed the gauge with the connection start — "last frame = connect
+	// time", the same reference lastFrameNs uses above. WithLabelValues alone
+	// instantiates the child at 0 (Unix 1970), so the documented alert shape
+	// `time() - this while source_up == 1` evaluated to ~56 years for the whole
+	// post-connect warm-up of every healthy source, false-firing on each
+	// (re)connect until the first frame arrived.
+	lastFrameGauge.Set(float64(start.Unix()))
 	err = sc(frames, src.Name, m.now, func(f *RawFrame) {
 		frameCount++
 		// m.now(), not f.Recv: the watchdog must not depend on every scanner

@@ -77,6 +77,9 @@ ack_interval = "1s"
 # connection that keeps delivering bytes but no decodable frame for this long (a
 # receiver stuck in NMEA mode, a caster serving an error page) — byte silence is
 # covered by the built-in idle timeout, frame silence by this watchdog.
+# max_frame_silence = "0s" is a CONFIG ERROR, not a way to disable the watchdog :
+# the collector refuses to start. Omit the key to get the default, or set a large duration
+# (e.g. "24h") if a legitimately glacial source needs the watchdog out of the way.
 
 # [[ingest]]
 # name = "observer16"           # our reference u-blox F9 box
