@@ -323,6 +323,132 @@ func TestFeedGalileoGGTO(t *testing.T) {
 	}
 }
 
+// TestFeedGalileoGGTOOffsetEpoch guards regression fix(c): TestFeedGalileoGGTO above
+// deliberately broadcasts a1g=0, which makes gps_offset_ns exactly a0g and
+// leaves the whole Eq. 24 epoch machinery unpinned — verification showed that
+// flipping dt's sign in feed.go, and even deleting the DisambiguateWeek call
+// outright, passed both suites. This case broadcasts a NONZERO a1g so the
+// A1G·dt rate term dominates the served offset, and derives the expected dt
+// from gnsstime.TOWAt — which knows nothing of DisambiguateWeek — so the
+// expectation is independent of the machinery it pins.
+//
+// The fixture: WN0G is broadcast as the low 6 bits of the CURRENT GST week, so
+// §5.1.8's ±31-week bound resolves the truncated field (mod 64) back to that
+// same week and the reference epoch lands inside the current week, making
+// dt = TOW_now − t0G exactly. Serve the truncated 6-bit value as if it were a
+// full week number instead and the reference jumps ~1216 weeks into the past
+// (dt ≈ 735 Ms, offset ≈ 653 µs instead of ≈ 192 ns); flip dt's sign and the
+// rate term inverts. Either regression misses this expectation by orders of
+// magnitude.
+func TestFeedGalileoGGTOOffsetEpoch(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	const svid, iod = 13, 44
+	const leap = 18 // matches gpsUTCOffset's compiled-in default
+
+	gstWeek, ok := gnsstime.WeekAt(gnsstime.SysGalileo, float64(now.Unix()), leap)
+	if !ok {
+		t.Fatal("WeekAt(SysGalileo) failed")
+	}
+	tow, ok := gnsstime.TOWAt(gnsstime.SysGalileo, float64(now.Unix()), leap)
+	if !ok {
+		t.Fatal("TOWAt(SysGalileo) failed")
+	}
+	const t0gRaw = 10 // × 3600 s = 36000 s, comfortably inside the week
+	const t0g = t0gRaw * 3600.0
+	if tow <= t0g {
+		t.Fatalf("fixture assumes t0G (%v) precedes the wall-clock TOW (%v) so dt > 0", t0g, tow)
+	}
+	wn0g := gstWeek % 64 // the 6-bit truncation the SV actually broadcasts
+
+	s.Apply(galileoFrame(svid, inavWordN(1, iod, nil), now))
+	s.Apply(galileoFrame(svid, inavWordN(2, iod, nil), now))
+	s.Apply(galileoFrame(svid, inavWordN(3, iod, nil), now))
+	s.Apply(galileoFrame(svid, inavWordN(4, iod, nil), now))
+
+	// A0G ≈ −0.58 ns; A1G positive and well inside its 12-bit signed range.
+	a0gRaw, a1gRaw := int64(-20), int64(2000)
+	content := make([]byte, 16)
+	inavSetBits(content, 0, 10, 6)
+	inavSetBits(content, 86, uint64(a0gRaw)&0xFFFF, 16)
+	inavSetBits(content, 102, uint64(a1gRaw), 12)
+	inavSetBits(content, 114, t0gRaw, 8)
+	inavSetBits(content, 122, uint64(wn0g), 6)
+	s.Apply(galileoFrame(svid, inavContentWords(content), now))
+
+	sv, ok := s.FeedSVs(now)["E13@0"]
+	if !ok {
+		t.Fatal("E13@0 missing from svs feed")
+	}
+	a0 := float64(a0gRaw) / float64(uint64(1)<<35)
+	a1 := float64(a1gRaw) / float64(uint64(1)<<51)
+	if sv.A1G == nil || *sv.A1G != a1 {
+		t.Fatalf("a1g = %v, want %v", sv.A1G, a1)
+	}
+	dt := tow - t0g // the reference week IS the current week — see the fixture note above
+	want := (a0 + a1*dt) * 1e9
+	if sv.GpsOffsetNs == nil {
+		t.Fatal("gps_offset_ns not served")
+	}
+	if diff := *sv.GpsOffsetNs - want; diff > 1e-6 || diff < -1e-6 {
+		t.Errorf("gps_offset_ns = %v ns, want %v ns (Eq. 24 with dt = TOW_now − t0G = %v s)",
+			*sv.GpsOffsetNs, want, dt)
+	}
+	// Belt and braces: the rate term must actually dominate, or this test would
+	// still pass with the A1G·dt term dropped entirely.
+	if rate := a1 * dt * 1e9; rate < 100 || rate < -a0*1e9*10 {
+		t.Fatalf("fixture no longer exercises the rate term: a1·dt = %v ns vs a0 = %v ns", rate, a0*1e9)
+	}
+}
+
+// TestApplyGalileoINAVTGDRefresh guards regression fix (I/NAV half): BGD sits OUTSIDE
+// the IODnav-covered data set (GAL-OS-SIS-ICD-2.2 §5.1.9.2/Table 78), so a
+// mid-data-set BGD revision arrives on a repeat of word 5 with no IODnav change
+// — and the same-IODnav early return in applyGalileoINAV means the assembly
+// path will never see it. The freshest-wins fold in the word-5 arm is the only
+// thing that carries it into the served clock; deleting that fold failed
+// nothing before this test existed.
+func TestApplyGalileoINAVTGDRefresh(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	const svid, iod = 15, 51
+	const bgdScale = 1.0 / float64(uint64(1)<<32)
+
+	// BGD(E1,E5b) at bit 57 (Table 46) is the I/NAV clock's group-delay pair
+	//  — BGD(E1,E5a) at bit 47 belongs to the F/NAV clock and must not
+	// move this TGD.
+	word5 := func(bgdE1E5bRaw uint64) []uint32 {
+		return inavWordN(5, 0, func(c []byte) { inavSetBits(c, 57, bgdE1E5bRaw&0x3FF, 10) })
+	}
+
+	// Word 5 arrives FIRST so the INITIAL TGD comes through the word-1..4
+	// assembly (which passes galW[5] to AssembleGalileo). Anything the second
+	// word 5 changes below is therefore attributable to the fold alone.
+	s.Apply(galileoFrame(svid, word5(41), now))
+	for _, wt := range []int{1, 2, 3, 4} {
+		s.Apply(galileoFrame(svid, inavWordN(wt, iod, nil), now))
+	}
+
+	key := Key{G: gnss.Galileo, Sv: svid, Sig: 0}
+	st := s.shardFor(key).m[key]
+	if st == nil || !st.haveEph {
+		t.Fatalf("I/NAV ephemeris not assembled: %+v", st)
+	}
+	if want := 41 * bgdScale; st.clk.TGD != want {
+		t.Fatalf("initial TGD = %v, want %v", st.clk.TGD, want)
+	}
+
+	// Same data set (IODnav unchanged), revised BGD — negative, so a sign
+	// regression in the refresh path cannot pass either.
+	s.Apply(galileoFrame(svid, word5(1013), now)) // 10-bit two's complement −11
+	if want := -11 * bgdScale; st.clk.TGD != want {
+		t.Errorf("TGD after BGD revision = %v, want %v — the word-5 freshest-wins fold did not refresh the served clock", st.clk.TGD, want)
+	}
+	if st.iod != iod {
+		t.Errorf("IODnav = %d, want %d (a BGD revision must not be mistaken for a new data set)", st.iod, iod)
+	}
+}
+
 // TestFeedGalileoSISANAPAServesAccIndex guards regression fix (the Galileo sibling of
 // URA-15 rule): an SV broadcasting SISA index 255 — "No Accuracy
 // Prediction Available (NAPA) … an indicator of a potential anomalous SIS"

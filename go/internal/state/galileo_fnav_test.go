@@ -6,6 +6,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/gnss/clock"
 	"github.com/ptudor/gnss/frame"
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/metrics"
@@ -32,6 +33,31 @@ func fnavPageWords(pageType, iod int) []uint32 {
 	} else {
 		setBits(6, uint64(iod), 10)
 	}
+	words := make([]uint32, 8)
+	for i := 0; i < 8; i++ {
+		words[i] = uint32(buf[i*4])<<24 | uint32(buf[i*4+1])<<16 | uint32(buf[i*4+2])<<8 | uint32(buf[i*4+3])
+	}
+	frame.StampGalileoFNAVCRC(words)
+	return words
+}
+
+// fnavPage1WithBGD builds an F/NAV page 1 carrying a raw BGD(E1,E5a) value at
+// bit 143 (GAL-OS-SIS-ICD-2.2 Table 30, 10-bit two's complement × 2⁻³²)
+// alongside the page type and IODnav — everything else zero, as in
+// fnavPageWords.
+func fnavPage1WithBGD(iod int, bgdRaw uint64) []uint32 {
+	buf := make([]byte, 32)
+	setBits := func(off int, v uint64, n int) {
+		for i := 0; i < n; i++ {
+			if v&(1<<uint(n-1-i)) != 0 {
+				p := off + i
+				buf[p>>3] |= 1 << uint(7-(p&7))
+			}
+		}
+	}
+	setBits(0, 1, 6) // page type 1
+	setBits(12, uint64(iod), 10)
+	setBits(143, bgdRaw&0x3FF, 10)
 	words := make([]uint32, 8)
 	for i := 0; i < 8; i++ {
 		words[i] = uint32(buf[i*4])<<24 | uint32(buf[i*4+1])<<16 | uint32(buf[i*4+2])<<8 | uint32(buf[i*4+3])
@@ -105,6 +131,56 @@ func TestApplyGalileoFNAVR119RejectsBadPageType(t *testing.T) {
 	}
 	if caps := s.FeedStationCapabilities(now)[source]; hasCap(caps, int(gnss.Galileo), 3) {
 		t.Errorf("a bad-page-type frame must not install durable (Galileo,3) capability: %+v", caps)
+	}
+}
+
+// TestApplyGalileoFNAVTGDRefresh guards regression fix (F/NAV half, the regression fix fold):
+// BGD(E1,E5a) rides page 1 but sits OUTSIDE the IODnav-covered data set
+// (GAL-OS-SIS-ICD-2.2 §5.1.9.2/Table 78), so a mid-data-set revision arrives on
+// a page-1 repeat with an unchanged IODnav — which the assembly path below the
+// fold early-returns on. Only the freshest-wins fold in the page-1 arm carries
+// it into the served @3 clock, and deleting that fold failed nothing before
+// this test. The expected value is the ALREADY-SCALED Eq. 19 group delay
+// ((f_E1/f_E5a)²·BGD), because the F/NAV entry's tracked signal E5a is the f2
+// of the (E1,E5a) clock pair — a fold that forwarded the raw BGD instead would
+// also fail here.
+func TestApplyGalileoFNAVTGDRefresh(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	const svid, iod, source = 19, 23, "obs-fnav-bgd"
+	const bgdScale = 1.0 / float64(uint64(1)<<32)
+
+	apply := func(words []uint32) {
+		s.Apply(&ingest.RawFrame{
+			GnssID: gnss.Galileo, SvID: svid, SigID: 3, Source: source, Recv: now, Words: words,
+		})
+	}
+
+	// Pages 2–4 first, then page 1: the INITIAL TGD therefore arrives through
+	// the assembly (the page-1 fold is a no-op while haveClk is still false),
+	// so whatever the second page 1 changes is attributable to the fold alone.
+	for _, pt := range []int{2, 3, 4} {
+		apply(fnavPageWords(pt, iod))
+	}
+	apply(fnavPage1WithBGD(iod, 41))
+
+	key := Key{G: gnss.Galileo, Sv: svid, Sig: 3}
+	st := s.shardFor(key).m[key]
+	if st == nil || !st.haveEph {
+		t.Fatalf("E5a F/NAV ephemeris not assembled: %+v", st)
+	}
+	if want := 41 * bgdScale * clock.E5aGroupDelayFactor; st.clk.TGD != want {
+		t.Fatalf("initial TGD = %v, want %v", st.clk.TGD, want)
+	}
+
+	// Same data set (IODnav unchanged), revised BGD — negative, so a sign
+	// regression in the refresh path cannot pass either.
+	apply(fnavPage1WithBGD(iod, 1013)) // 10-bit two's complement −11
+	if want := -11 * bgdScale * clock.E5aGroupDelayFactor; st.clk.TGD != want {
+		t.Errorf("TGD after BGD revision = %v, want %v — the page-1 freshest-wins fold did not refresh the served @3 clock", st.clk.TGD, want)
+	}
+	if st.iod != iod {
+		t.Errorf("IODnav = %d, want %d (a BGD revision must not be mistaken for a new data set)", st.iod, iod)
 	}
 }
 
