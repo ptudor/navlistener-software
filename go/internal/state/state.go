@@ -789,7 +789,7 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 		// missed cutovers rather than spec-sanctioned mid-set changes).
 		st.health, st.haveHealth = cnavCarrierHealth(f.GnssID, f.SigID, m.Health), true
 		st.accKind, st.accIdx = accURAED, m.URAED
-		st.checkBroadcastWN(recv, gnsstime.SysGPS, m.WN, 13) // regression fix (QZSS shares GPS week numbering)
+		st.checkBroadcastWN(f.Recv, gnsstime.SysGPS, m.WN, 13) // regression fix (QZSS shares GPS week numbering); f.Recv per regression fix
 	case m.MsgType == 11:
 		st.gc11 = m
 	default: // MT30–37 all carry the common clock block
@@ -922,8 +922,10 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 	switch sf.SubframeID {
 	case 1:
 		st.sf1 = sf
-		// cross-check the broadcast 10-bit WN against the wall-clock week.
-		st.checkBroadcastWN(recv, gnsstime.SysGPS, sf.WN, 10)
+		// cross-check the broadcast 10-bit WN against the wall-clock week
+		// of the frame's RECEPTION time (f.Recv, not the collector-local stamp —
+		// regression fix; see checkBroadcastWN).
+		st.checkBroadcastWN(f.Recv, gnsstime.SysGPS, sf.WN, 10)
 		// apply health/URA at subframe-1 arrival, BEFORE the IOD gate below, so a
 		// health-bit flip that arrives under an unchanged IODC (a re-broadcast subframe 1,
 		// or an IODC bump confined to its two high bits that leaves the low-8 IODE
@@ -1034,7 +1036,8 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 		// broadcast GST week against the collector wall clock (the regression fix
 		// gate, on the GST axis), so a satellite or spoofer transmitting a
 		// wrong GST week surfaces as wn_mismatch instead of being invisible.
-		st.checkBroadcastWN(recv, gnsstime.SysGalileo, w.WN, 12)
+		// f.Recv per the WN corresponds to reception time, not drain time.
+		st.checkBroadcastWN(f.Recv, gnsstime.SysGalileo, w.WN, 12)
 		if st.haveEph && st.galW[1] != nil && st.galW[2] != nil && st.galW[3] != nil && st.galW[4] != nil {
 			if _, clk, err := frame.AssembleGalileo(f.SvID, st.galW[1], st.galW[2], st.galW[3], st.galW[4], st.galW[5]); err == nil {
 				st.clk.TGD = clk.TGD
@@ -1151,7 +1154,8 @@ func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 		// regression fix (closing the regression fix F/NAV residual): page 1's live GST WN
 		// cross-checks against wall clock on this @3 entry, independently of
 		// the I/NAV @0 check — two signals, two broadcast time channels.
-		st.checkBroadcastWN(recv, gnsstime.SysGalileo, w.WN, 12)
+		// f.Recv per the WN corresponds to reception time, not drain time.
+		st.checkBroadcastWN(f.Recv, gnsstime.SysGalileo, w.WN, 12)
 		// BGD(E1,E5a) also rides page 1, but — like I/NAV's word-5 BGD —
 		// it is NOT in the IODnav-covered data set (GAL-OS-SIS-ICD-2.2 §5.1.9.2
 		// scopes the IODnav to ephemeris, clock correction and SISA), and the
@@ -2010,6 +2014,20 @@ const wnRolloverGraceS = 4 * 3600
 // gpsTOW, which GST shares to the second  — revisit if a BDT caller
 // ever appears (BDT TOW is shifted 14 s). Called with the shard lock held;
 // the result feeds wn_mismatch → the detector's debounced wn_mismatch event.
+//
+// regression fix — recv is the FORENSIC reception stamp (f.Recv), NOT LocalRecv():
+// the broadcast WN corresponds to the instant the frame was received off the
+// air, and this check is an absolute wall-clock comparison, not elapsed-time
+// math, so monotonic-domain rule does not apply. With the
+// collector-local stamp, a push spool drain crossing a week rollover
+// (recvReplayHorizon admits up to 7 d of replay) evaluated week-W frames
+// against the collector's week W+1 — and the grace window's gpsTOW(now)
+// ran on drain time, not reception time — firing false SevCritical
+// wn_mismatch across the whole replayed sky. f.Recv is already
+// plausibility-bounded at ingest (±recvTimestampSlack live / −recvReplayHorizon
+// replay), ±5 min cannot span a week outside the existing 4 h grace, and a
+// spoofed live replay is still caught because the feeder stamps its true
+// reception time. Dial frames are unaffected (Recv == local clock).
 func (st *svState) checkBroadcastWN(recv time.Time, sys gnsstime.System, wn, bits int) {
 	full := gnsstime.DisambiguateWeek(sys, wn, bits, float64(recv.Unix()), float64(gpsUTCOffset))
 	expect, ok := gnsstime.WeekAt(sys, float64(recv.Unix()), float64(gpsUTCOffset))

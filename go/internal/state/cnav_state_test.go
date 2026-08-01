@@ -312,3 +312,39 @@ func TestBroadcastWNCrossCheck(t *testing.T) {
 		t.Errorf("previous-week WN 12 h into the new week: wn_mismatch = %v, want true", m)
 	}
 }
+
+// TestBroadcastWNCrossCheckSpoolReplay guards the WN check is an
+// ABSOLUTE wall-clock comparison, so it must run on the frame's forensic
+// reception stamp (f.Recv), not the collector-local drain stamp. A multi-day
+// feeder outage spanning the GPS week rollover replays week-W frames while the
+// collector sits in week W+1 (recvReplayHorizon admits up to 7 d): with the
+// local stamp those healthy frames fired false SevCritical wn_mismatch for
+// every replayed WN-bearing page. A genuinely wrong WN on a replayed frame must
+// still flag — the feeder's stamp is its true reception time.
+func TestBroadcastWNCrossCheckSpoolReplay(t *testing.T) {
+	// Reception mid-week 2288 (WN 240); drained 5 days later — 12 h into week
+	// 2289, past the 4 h rollover grace that let the plain rollover case pass.
+	const wkStartUnix = 1_699_747_182                      // start of GPS week 2288 (see TestBroadcastWNCrossCheck)
+	recvAt := time.Unix(wkStartUnix+3*24*3600, 0)          // week 2288, mid-week
+	drainAt := time.Unix(wkStartUnix+7*24*3600+12*3600, 0) // week 2289 + 12 h
+
+	apply := func(wn int64) *bool {
+		s := New(4)
+		for _, w := range [][]uint32{sf1WordsWN(wn, 85), sf2Words(85, 205075516), sf3Words(85)} {
+			s.Apply(&ingest.RawFrame{
+				Recv: recvAt, RecvLocal: drainAt, Source: "test",
+				GnssID: gnss.GPS, SvID: 5, SigID: 0, Words: w,
+			})
+		}
+		return s.FeedSVs(drainAt)["G05@0"].WnMismatch
+	}
+
+	// The frame's WN matches its RECEPTION week: healthy replay, no mismatch.
+	if m := apply(240); m == nil || *m {
+		t.Errorf("replayed week-2288 frame with WN 240 drained in week 2289: wn_mismatch = %v, want false ", m)
+	}
+	// A genuinely wrong WN on the same replayed frame still flags.
+	if m := apply(100); m == nil || !*m {
+		t.Errorf("replayed frame with wrong WN 100: wn_mismatch = %v, want true", m)
+	}
+}
