@@ -42,6 +42,15 @@ type RawFrame struct {
 	Seq    uint64
 	HasSeq bool
 
+	// Session is the feeder's GNF1 boot/session identity,
+	// stamped from the authenticated HELLO on push-path frames only. Together
+	// with Source and Seq it forms the historian's replay-dedup key: a feeder
+	// whose sequence space restarts (reboot without spool recovery; every
+	// ESP32 boot) presents a fresh session, so its new seq 0.. can never
+	// collide with the durable ledger's old rows. Dial-mode frames leave it
+	// empty (they carry no sequence either).
+	Session string
+
 	// RecvLocal is the collector-local receipt instant, stamped from THIS host's
 	// clock (carrying Go's monotonic reading) at the push ingest boundary
 	//. On that path Recv is the feeder's wall-clock stamp — the

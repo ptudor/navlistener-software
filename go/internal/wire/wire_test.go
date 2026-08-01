@@ -94,7 +94,7 @@ func TestDecodeDataShort(t *testing.T) {
 
 func TestHelloWelcomeFrames(t *testing.T) {
 	var buf bytes.Buffer
-	if err := WriteHello(&buf, HelloMsg{Token: "t", Station: "s", Feed: "ubx"}); err != nil {
+	if err := WriteHello(&buf, HelloMsg{Token: "t", Station: "s", Feed: "ubx", Session: "boot-1"}); err != nil {
 		t.Fatal(err)
 	}
 	ft, payload, err := ReadFrame(&buf)
@@ -103,6 +103,38 @@ func TestHelloWelcomeFrames(t *testing.T) {
 	}
 	if !bytes.Contains(payload, []byte(`"feed":"ubx"`)) {
 		t.Errorf("hello JSON missing feed: %s", payload)
+	}
+	if !bytes.Contains(payload, []byte(`"session":"boot-1"`)) {
+		t.Errorf("hello JSON missing session : %s", payload)
+	}
+}
+
+// TestValidSession pins the regression fix session-identity domain: 1..SessionMaxLen
+// bytes of [A-Za-z0-9._-]. The charset must stay JSON/SQL-metacharacter-free —
+// the session lands in logs and the historian ledger verbatim.
+func TestValidSession(t *testing.T) {
+	long := make([]byte, SessionMaxLen)
+	for i := range long {
+		long[i] = 'a'
+	}
+	for _, tc := range []struct {
+		s  string
+		ok bool
+	}{
+		{"", false},
+		{"a", true},
+		{"0123456789abcdef0123456789abcdef", true}, // the reference 32-hex shape
+		{"boot-1.2_3", true},
+		{string(long), true},
+		{string(long) + "a", false},
+		{`boot"1`, false},
+		{"boot 1", false},
+		{"boot\x00", false},
+		{"séssion", false},
+	} {
+		if got := ValidSession(tc.s); got != tc.ok {
+			t.Errorf("ValidSession(%q) = %v, want %v", tc.s, got, tc.ok)
+		}
 	}
 }
 

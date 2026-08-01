@@ -35,22 +35,53 @@ CREATE INDEX IF NOT EXISTS idx_nav_frames_recv ON nav_frames (received_at DESC);
 -- not, or a routine reconnect (any collector restart, any regression fix-class hang) permanently
 -- duplicates rows for one receiver, polluting the dedup-on-read "N receivers saw this
 -- SV" integrity signal with single-receiver replay artifacts. nav_frames itself can't
--- carry a (source_id, feeder_seq) UNIQUE constraint — Timescale requires a hypertable's
+-- carry a UNIQUE dedup constraint — Timescale requires a hypertable's
 -- unique index to include its partition column, and `ts` legitimately differs between
 -- a frame and its replay (ingest time, not broadcast time). So the dedup key lives in
 -- a small side ledger with a real (non-partitioned) unique constraint: the writer
--- claims each push-path frame's (source_id, feeder_seq) here in the same transaction
--- that CopyFrom's the newly seen rows. A copy/commit failure therefore rolls the claim
--- back and leaves the edge replay retryable. Dial-mode
--- frames carry no feeder sequence and always pass through unfiltered — duplicates
--- across *different* receivers remain intentional and untouched by this table.
--- Pruned by the store on the same interval as raw_retention (store.go prunePolicy) —
--- entries older than that are moot, since nav_frames itself has already retired them.
+-- claims each push-path frame's (source_id, session_id, feeder_seq) here in the same
+-- transaction that CopyFrom's the newly seen rows. A copy/commit failure therefore
+-- rolls the claim back and leaves the edge replay retryable.
+--
+-- session_id  is the feeder's boot/session identity from the GNF1
+-- HELLO: replay identity is (canonical observer, session, seq), NOT
+-- (observer, seq). Without it, a feeder that restarted without a recoverable
+-- spool (or any ESP32 reboot — RAM-only ring) reset its sequence to zero and
+-- this ledger's old rows classified every fresh post-reboot frame as a replay
+-- until the new counter passed the old high-water mark — silent loss of fresh
+-- forensic raw frames after a routine reboot. A fresh session per sequence
+-- space makes that collision structurally impossible; the feeder persists the
+-- session in its disk-spool header so a spool-recovering restart continues
+-- session and sequence together.
+--
+-- Dial-mode frames carry no feeder sequence and always pass through unfiltered —
+-- duplicates across *different* receivers remain intentional and untouched by this
+-- table. Pruned by the store on the same interval as raw_retention (store.go
+-- prunePolicy) — entries older than that are moot, since nav_frames itself has
+-- already retired them.
+--
+-- Migration (regression fix, documented no-compat): a pre-session two-column ledger's
+-- rows can never match a session-carrying key (every post-upgrade key has a
+-- non-empty session), so the old-shape table is pure dead weight — drop and
+-- recreate. The ledger is rebuildable dedup state, not forensic record; the
+-- worst case is one bounded window of duplicate raw rows, which dedup-on-read
+-- tolerates by design.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables
+               WHERE table_schema = current_schema() AND table_name = 'nav_frames_seq_seen')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_schema = current_schema() AND table_name = 'nav_frames_seq_seen'
+                 AND column_name = 'session_id') THEN
+        DROP TABLE nav_frames_seq_seen;
+    END IF;
+END $$;
 CREATE TABLE IF NOT EXISTS nav_frames_seq_seen (
     source_id  TEXT        NOT NULL,
+    session_id TEXT        NOT NULL,
     feeder_seq BIGINT      NOT NULL,
     seen_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (source_id, feeder_seq)
+    PRIMARY KEY (source_id, session_id, feeder_seq)
 );
 CREATE INDEX IF NOT EXISTS idx_nav_frames_seq_seen_prune ON nav_frames_seq_seen (seen_at);
 

@@ -251,7 +251,7 @@ func TestPushMTLSBindsCertificateToObserver(t *testing.T) {
 	t.Run("matching SAN admitted", func(t *testing.T) {
 		conn := dialPushWithCert(t, addr, pki.issue(t, "observer16", "observer16"))
 		defer conn.Close()
-		if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx"}); err != nil {
+		if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx", Session: "boot-test"}); err != nil {
 			t.Fatal(err)
 		}
 		if _, payload, err := wire.ReadFrame(conn); err != nil {
@@ -276,7 +276,7 @@ func TestPushMTLSBindsCertificateToObserver(t *testing.T) {
 	t.Run("other station's cert with victim token rejected", func(t *testing.T) {
 		conn := dialPushWithCert(t, addr, pki.issue(t, "observer17", "observer17"))
 		defer conn.Close()
-		if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx"}); err != nil {
+		if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx", Session: "boot-test"}); err != nil {
 			t.Fatal(err)
 		}
 		if _, payload, err := wire.ReadFrame(conn); err != nil {
@@ -294,7 +294,7 @@ func TestPushMTLSBindsCertificateToObserver(t *testing.T) {
 	t.Run("legacy CN-only cert rejected", func(t *testing.T) {
 		conn := dialPushWithCert(t, addr, pki.issue(t, "observer16"))
 		defer conn.Close()
-		if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx"}); err != nil {
+		if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx", Session: "boot-test"}); err != nil {
 			t.Fatal(err)
 		}
 		if _, payload, err := wire.ReadFrame(conn); err != nil {
@@ -372,7 +372,7 @@ func TestPushHappyPath(t *testing.T) {
 
 	conn := dialPush(t, addr)
 	defer conn.Close()
-	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx"}); err != nil {
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx", Session: "boot-test"}); err != nil {
 		t.Fatal(err)
 	}
 	ft, payload, err := wire.ReadFrame(conn)
@@ -420,7 +420,7 @@ func TestPushRejectsOutOfDomainGnssID(t *testing.T) {
 
 	conn := dialPush(t, addr)
 	defer conn.Close()
-	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx"}); err != nil {
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx", Session: "boot-test"}); err != nil {
 		t.Fatal(err)
 	}
 	if ft, _, err := wire.ReadFrame(conn); err != nil || ft != wire.Welcome {
@@ -467,7 +467,7 @@ func TestPushReplayFromReconnect(t *testing.T) {
 
 	conn := dialPush(t, addr)
 	defer conn.Close()
-	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx"}); err != nil {
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx", Session: "boot-test"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, payload, err := wire.ReadFrame(conn); err != nil {
@@ -507,7 +507,7 @@ func TestPushZstdStream(t *testing.T) {
 
 	conn := dialPush(t, addr)
 	defer conn.Close()
-	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx", Zstd: true}); err != nil {
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx", Session: "boot-test", Zstd: true}); err != nil {
 		t.Fatal(err)
 	}
 	ft, payload, err := wire.ReadFrame(conn)
@@ -557,7 +557,7 @@ func TestPushZstdRejectsOversizedWindow(t *testing.T) {
 
 	conn := dialPush(t, addr)
 	defer conn.Close()
-	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx", Zstd: true}); err != nil {
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx", Session: "boot-test", Zstd: true}); err != nil {
 		t.Fatal(err)
 	}
 	ft, payload, err := wire.ReadFrame(conn)
@@ -604,7 +604,7 @@ func TestPushUnforwardedFloodTornDown(t *testing.T) {
 
 	conn := dialPush(t, addr)
 	defer conn.Close()
-	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "flood-e2e", Feed: "ubx", Zstd: true}); err != nil {
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "flood-e2e", Feed: "ubx", Session: "boot-test", Zstd: true}); err != nil {
 		t.Fatal(err)
 	}
 	ft, payload, err := wire.ReadFrame(conn)
@@ -657,7 +657,7 @@ func TestPushUnforwardedCountResetsOnDelivery(t *testing.T) {
 
 	conn := dialPush(t, addr)
 	defer conn.Close()
-	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "reset-e2e", Feed: "ubx"}); err != nil {
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "reset-e2e", Feed: "ubx", Session: "boot-test"}); err != nil {
 		t.Fatal(err)
 	}
 	if ft, payload, err := wire.ReadFrame(conn); err != nil || ft != wire.Welcome {
@@ -711,7 +711,7 @@ func TestPushRejectsBadToken(t *testing.T) {
 
 	conn := dialPush(t, addr)
 	defer conn.Close()
-	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "wrong", Station: "observer16", Feed: "ubx"}); err != nil {
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "wrong", Station: "observer16", Feed: "ubx", Session: "boot-test"}); err != nil {
 		t.Fatal(err)
 	}
 	ft, payload, err := wire.ReadFrame(conn)
@@ -721,6 +721,80 @@ func TestPushRejectsBadToken(t *testing.T) {
 	wmsg, _ := parseWelcome(payload)
 	if wmsg.OK {
 		t.Fatal("bad token was accepted")
+	}
+}
+
+// TestPushRejectsMissingSession guards contract revision: a HELLO
+// without a valid session identity is rejected before WELCOME — a sessionless
+// feeder would silently re-enter the seq-reuse regime where the replay ledger
+// discards fresh post-reboot frames — and no frame from it is admitted.
+func TestPushRejectsMissingSession(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	addr, out := startPushServer(t, ctx, tokenAuth("observer16", "s3cret", "ubx"))
+
+	for _, tc := range []struct{ name, session string }{
+		{"absent", ""},
+		{"overlong", strings.Repeat("a", wire.SessionMaxLen+1)},
+		{"bad charset", `boot"1`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := dialPush(t, addr)
+			defer conn.Close()
+			if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx", Session: tc.session}); err != nil {
+				t.Fatal(err)
+			}
+			ft, payload, err := wire.ReadFrame(conn)
+			if err != nil || ft != wire.Welcome {
+				t.Fatalf("welcome frame: ft=%d err=%v", ft, err)
+			}
+			wmsg, _ := parseWelcome(payload)
+			if wmsg.OK {
+				t.Fatalf("session %q was accepted", tc.session)
+			}
+			if wmsg.Error != "missing or invalid session" {
+				t.Errorf("error = %q, want the documented session rejection", wmsg.Error)
+			}
+			rec := wire.RawRecord{RecvUnixNs: time.Now().UnixNano(), GnssID: gnss.GPS, SvID: 5, Raw: make([]byte, 40)}
+			_ = wire.WriteFrame(conn, wire.Data, wire.EncodeData(1, rec))
+			select {
+			case f := <-out:
+				t.Fatalf("rejected connection enqueued a frame: %+v", f)
+			case <-time.After(100 * time.Millisecond):
+			}
+		})
+	}
+}
+
+// TestPushSessionStampedOnFrames pins the plumbing half of every
+// admitted push frame carries the HELLO's session so the historian's dedup key
+// is (observer, session, seq), not (observer, seq).
+func TestPushSessionStampedOnFrames(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	addr, out := startPushServer(t, ctx, tokenAuth("observer16", "s3cret", "ubx"))
+
+	conn := dialPush(t, addr)
+	defer conn.Close()
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx", Session: "boot-4242"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, payload, err := wire.ReadFrame(conn); err != nil {
+		t.Fatal(err)
+	} else if wmsg, _ := parseWelcome(payload); !wmsg.OK {
+		t.Fatalf("welcome = %+v, want ok", wmsg)
+	}
+	rec := wire.RawRecord{RecvUnixNs: time.Now().UnixNano(), GnssID: gnss.GPS, SvID: 5, Raw: make([]byte, 40)}
+	if err := wire.WriteFrame(conn, wire.Data, wire.EncodeData(7, rec)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case f := <-out:
+		if f.Session != "boot-4242" || !f.HasSeq || f.Seq != 7 {
+			t.Errorf("frame session/seq = %q/%d (has=%v), want boot-4242/7", f.Session, f.Seq, f.HasSeq)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("frame did not reach the decode channel")
 	}
 }
 
@@ -826,7 +900,7 @@ func TestPushHelloMaxSizeStillAuthenticates(t *testing.T) {
 
 	conn := dialPush(t, addr)
 	defer conn.Close()
-	if err := wire.WriteHello(conn, wire.HelloMsg{Token: bigToken, Station: "observer16", Feed: "ubx"}); err != nil {
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: bigToken, Station: "observer16", Feed: "ubx", Session: "boot-test"}); err != nil {
 		t.Fatal(err)
 	}
 	ft, payload, err := wire.ReadFrame(conn)
@@ -850,7 +924,7 @@ func TestPushRejectsStationMismatch(t *testing.T) {
 
 	conn := dialPush(t, addr)
 	defer conn.Close()
-	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "wrong-station", Feed: "ubx"}); err != nil {
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "wrong-station", Feed: "ubx", Session: "boot-test"}); err != nil {
 		t.Fatal(err)
 	}
 	_, payload, err := wire.ReadFrame(conn)
@@ -988,7 +1062,7 @@ func TestPushHandleReturnsOnDisconnect(t *testing.T) {
 	before := runtime.NumGoroutine()
 	for i := 0; i < 50; i++ {
 		conn := dialPush(t, addr)
-		if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx"}); err != nil {
+		if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx", Session: "boot-test"}); err != nil {
 			t.Fatal(err)
 		}
 		if _, payload, err := wire.ReadFrame(conn); err != nil {
@@ -1042,7 +1116,7 @@ func TestPushAckWaitsForBackpressure(t *testing.T) {
 
 	conn := dialPush(t, addr)
 	defer conn.Close()
-	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx"}); err != nil {
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "s3cret", Station: "observer16", Feed: "ubx", Session: "boot-test"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, payload, err := wire.ReadFrame(conn); err != nil {
@@ -1296,7 +1370,7 @@ func TestPushAckWriteFailureClosesConnection(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		p.stream(context.Background(), srvConn, w, "observer16", "ubx")
+		p.stream(context.Background(), srvConn, w, "observer16", "ubx", "boot-test")
 	}()
 
 	// Feed one DATA frame so `highest` advances past `acked` -- otherwise the ack

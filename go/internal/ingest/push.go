@@ -334,14 +334,14 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 		return
 	}
 	w := &connWriter{c: conn}
-	observer, feed, useZstd, ok := p.handshake(conn, w, remote)
+	observer, feed, session, useZstd, ok := p.handshake(conn, w, remote)
 	if !ok {
 		return
 	}
 	metrics.PushConnectsTotal.WithLabelValues(observer).Inc()
 	metrics.PushObserversUp.WithLabelValues(observer).Inc()
 	defer metrics.PushObserversUp.WithLabelValues(observer).Dec()
-	p.log.Info("push feeder authenticated", "observer", observer, "feed", feed, "remote", remote, "zstd", useZstd)
+	p.log.Info("push feeder authenticated", "observer", observer, "feed", feed, "remote", remote, "session", session, "zstd", useZstd)
 
 	// Everything after the handshake is read through idleConn (deadline discipline); when the
 	// feeder negotiated zstd, the DATA stream is decompressed first. ACKs/PONGs back to the
@@ -361,7 +361,7 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 		frames = zr
 	}
 
-	p.stream(ctx, frames, w, observer, feed)
+	p.stream(ctx, frames, w, observer, feed, session)
 }
 
 // maxConsecutiveUnforwarded bounds how many frames in a row a connection may
@@ -393,18 +393,18 @@ const maxConsecutiveUnforwarded = 256
 const helloMaxLen = 4096
 
 // handshake reads and authenticates the HELLO, replying WELCOME. It returns the
-// canonical observer id, feed, and whether the DATA stream is zstd-compressed
-// (confirmed only when the feeder requested it) on success.
-func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (observer, feed string, useZstd, ok bool) {
+// canonical observer id, feed, session identity, and whether the DATA stream is
+// zstd-compressed (confirmed only when the feeder requested it) on success.
+func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (observer, feed, session string, useZstd, ok bool) {
 	ft, payload, err := wire.ReadFrameMax(conn, helloMaxLen)
 	if err != nil || ft != wire.Hello {
 		p.log.Warn("push expected HELLO", "remote", remote, "frame", ft, "error", err)
-		return "", "", false, false
+		return "", "", "", false, false
 	}
 	h, err := wire.ParseHello(payload)
 	if err != nil {
 		p.log.Warn("push bad HELLO json", "remote", remote, "error", err)
-		return "", "", false, false
+		return "", "", "", false, false
 	}
 	obs, authed := p.auth.Authenticate(h.Token, h.Station, h.Feed)
 	if !authed {
@@ -412,14 +412,14 @@ func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (obs
 		metrics.PushAuthFailuresByReasonTotal.WithLabelValues("token_or_grant").Inc()
 		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "unauthorized"}))
 		p.log.Warn("push auth rejected", "remote", remote, "station", h.Station, "feed", h.Feed)
-		return "", "", false, false
+		return "", "", "", false, false
 	}
 	if p.tlsConfig.ClientAuth != tls.NoClientCert {
 		tlsConn, isTLS := conn.(*tls.Conn)
 		if !isTLS {
 			metrics.PushAuthFailuresTotal.Inc()
 			metrics.PushAuthFailuresByReasonTotal.WithLabelValues("certificate_identity").Inc()
-			return "", "", false, false
+			return "", "", "", false, false
 		}
 		state := tlsConn.ConnectionState()
 		if err := matchPeerIdentity(state.PeerCertificates, obs); err != nil {
@@ -427,7 +427,7 @@ func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (obs
 			metrics.PushAuthFailuresByReasonTotal.WithLabelValues("certificate_identity").Inc()
 			_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "certificate identity mismatch"}))
 			p.log.Warn("push certificate identity rejected", "remote", remote, "observer", obs, "error", err)
-			return "", "", false, false
+			return "", "", "", false, false
 		}
 	}
 	// regression fix/regression fix defense-in-depth: push has an explicit wire-contract allow-list,
@@ -435,14 +435,24 @@ func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (obs
 	// Dial-only sbf/ntrip must never reach recordToFrame's ubx/rtcm branches.
 	if h.Feed != "ubx" && h.Feed != "rtcm" {
 		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "unsupported feed"}))
-		return "", "", false, false
+		return "", "", "", false, false
+	}
+	// the session is the boot-identity half of the replay-dedup key
+	// (observer, session, seq) — see wire.HelloMsg.Session for the full contract.
+	// Checked after token auth (an unauthenticated probe learns nothing new) and
+	// rejected like the feed allow-list above: a feeder that cannot mint a
+	// session would silently re-enter the seq-reuse loss regime this field ends.
+	if !wire.ValidSession(h.Session) {
+		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "missing or invalid session"}))
+		p.log.Warn("push HELLO missing or invalid session", "remote", remote, "observer", obs)
+		return "", "", "", false, false
 	}
 	if err := w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{
 		OK: true, AckIntervalMS: int(p.ackInterval / time.Millisecond), Zstd: h.Zstd,
 	})); err != nil {
-		return "", "", false, false
+		return "", "", "", false, false
 	}
-	return obs, h.Feed, h.Zstd, true
+	return obs, h.Feed, h.Session, h.Zstd, true
 }
 
 // matchPeerIdentity binds an mTLS-authenticated leaf to the token's canonical
@@ -475,7 +485,7 @@ func matchPeerIdentity(chain []*x509.Certificate, observer string) error {
 // advance past a replay and the feeder's spool would grow without bound. Frames are
 // forwarded to decode unconditionally (nav frames are idempotent, so a replayed
 // duplicate is harmless); the sequence governs only spool pruning.
-func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter, observer, feed string) {
+func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter, observer, feed, session string) {
 	var (
 		mu      sync.Mutex
 		highest uint64 // highest sequence received this connection
@@ -565,6 +575,7 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				mu.Unlock()
 			} else {
 				f.Seq, f.HasSeq = seq, true        // historian dedup key : this connection may be a replay
+				f.Session = session                // boot-identity half of the dedup key 
 				if f.RF == nil && f.Words != nil { // byte frames use CapturedOnlyTotal, not gnssid=0
 					metrics.FramesTotal.WithLabelValues(observer, fmt.Sprint(int(f.GnssID))).Inc()
 				}

@@ -39,7 +39,7 @@ func TestRequiredColumnsCoversNavFrames(t *testing.T) {
 	if !ok {
 		t.Fatal("requiredColumns is missing nav_frames_seq_seen ")
 	}
-	want := []string{"source_id", "feeder_seq", "seen_at"}
+	want := []string{"source_id", "session_id", "feeder_seq", "seen_at"} // session_id: regression fix
 	if len(seq) != len(want) {
 		t.Fatalf("requiredColumns[nav_frames_seq_seen] = %v, want %v", seq, want)
 	}
@@ -125,22 +125,28 @@ func TestIsPoison(t *testing.T) {
 // regardless of fresh, and a first-seen sequence (present in fresh) passes too.
 func TestDedupBatchDropsReplayedSeq(t *testing.T) {
 	dial := &NavFrame{SourceID: "dial1", Raw: []byte{1}} // no sequence: always kept
-	firstSeen := &NavFrame{SourceID: "obs1", SourceSeq: 10, HasSourceSeq: true, Raw: []byte{2}}
-	replayed := &NavFrame{SourceID: "obs1", SourceSeq: 9, HasSourceSeq: true, Raw: []byte{3}}
+	firstSeen := &NavFrame{SourceID: "obs1", Session: "boot-a", SourceSeq: 10, HasSourceSeq: true, Raw: []byte{2}}
+	replayed := &NavFrame{SourceID: "obs1", Session: "boot-a", SourceSeq: 9, HasSourceSeq: true, Raw: []byte{3}}
+	// same source and seq as the replayed frame, but a NEW session —
+	// a rebooted feeder's fresh sequence space, never a replay of boot-a's seq 9.
+	rebooted := &NavFrame{SourceID: "obs1", Session: "boot-b", SourceSeq: 9, HasSourceSeq: true, Raw: []byte{4}}
 
-	fresh := map[seqKey]bool{{source: "obs1", seq: 10}: true} // 9 already in the ledger
-	out := dedupBatch([]*NavFrame{dial, firstSeen, replayed}, fresh)
+	fresh := map[seqKey]bool{
+		{source: "obs1", session: "boot-a", seq: 10}: true, // (boot-a, 9) already in the ledger
+		{source: "obs1", session: "boot-b", seq: 9}:  true, // the fresh session's claim is new
+	}
+	out := dedupBatch([]*NavFrame{dial, firstSeen, replayed, rebooted}, fresh)
 
-	if len(out) != 2 {
-		t.Fatalf("dedupBatch returned %d frames, want 2 (dial + first-seen)", len(out))
+	if len(out) != 3 {
+		t.Fatalf("dedupBatch returned %d frames, want 3 (dial + first-seen + rebooted)", len(out))
 	}
 	for _, f := range out {
 		if f == replayed {
 			t.Error("replayed sequence was not dropped")
 		}
 	}
-	if out[0] != dial || out[1] != firstSeen {
-		t.Errorf("dedupBatch = %+v, want [dial, firstSeen] in order", out)
+	if out[0] != dial || out[1] != firstSeen || out[2] != rebooted {
+		t.Errorf("dedupBatch = %+v, want [dial, firstSeen, rebooted] in order", out)
 	}
 }
 

@@ -95,6 +95,13 @@ type NavFrame struct {
 	// carry no such sequence and always persist (HasSourceSeq false).
 	SourceSeq    uint64
 	HasSourceSeq bool
+
+	// Session is the feeder's GNF1 boot/session identity, the
+	// third component of the dedup key (SourceID, Session, SourceSeq): a feeder
+	// whose sequence space restarted presents a fresh session, so its new
+	// seq 0.. can never be classified as a replay of the old ledger rows.
+	// Empty only for dial-mode frames (which carry no sequence either).
+	Session string
 }
 
 // Store owns the connection pool and the batched writer.
@@ -250,7 +257,7 @@ var requiredColumns = map[string][]string{
 	// (silent forensic-record loss while /healthz stays OK). nav_frames_seq_seen is the
 	// push-path dedup ledger; a drift there fails the atomic claim tx and drops the batch.
 	"nav_frames":          copyColumns,
-	"nav_frames_seq_seen": {"source_id", "feeder_seq", "seen_at"},
+	"nav_frames_seq_seen": {"source_id", "session_id", "feeder_seq", "seen_at"},
 }
 
 // verifyRequiredColumns fails fast with an actionable message if a required table
@@ -494,10 +501,14 @@ func (s *Store) copyRows(ctx context.Context, rows [][]any) (int64, error) {
 	return s.pool.CopyFrom(ctx, pgx.Identifier{"nav_frames"}, copyColumns, pgx.CopyFromRows(rows))
 }
 
-// seqKey identifies one feeder-assigned sequence for the regression fix replay-dedup ledger.
+// seqKey identifies one feeder-assigned sequence for the regression fix replay-dedup
+// ledger. session partitions one observer's sequence spaces across feeder
+// boots  — two frames with equal (source, seq) but different
+// sessions are DIFFERENT frames, never replays of each other.
 type seqKey struct {
-	source string
-	seq    uint64
+	source  string
+	session string
+	seq     uint64
 }
 
 // persistAtomicOnce claims replay keys and inserts their corresponding raw rows in
@@ -518,7 +529,7 @@ func (s *Store) persistAtomicOnce(ctx context.Context, batch []*NavFrame) (writt
 		if !f.HasSourceSeq {
 			continue
 		}
-		k := seqKey{f.SourceID, f.SourceSeq}
+		k := seqKey{f.SourceID, f.Session, f.SourceSeq}
 		if !seen[k] {
 			seen[k] = true
 			unique = append(unique, k)
@@ -528,26 +539,27 @@ func (s *Store) persistAtomicOnce(ctx context.Context, batch []*NavFrame) (writt
 	fresh := make(map[seqKey]bool, len(unique))
 	if len(unique) > 0 {
 		sources := make([]string, len(unique))
+		sessions := make([]string, len(unique))
 		seqs := make([]int64, len(unique))
 		for i, k := range unique {
-			sources[i], seqs[i] = k.source, int64(k.seq)
+			sources[i], sessions[i], seqs[i] = k.source, k.session, int64(k.seq)
 		}
 		rows, qerr := tx.Query(ctx,
-			`INSERT INTO nav_frames_seq_seen (source_id, feeder_seq)
-			 SELECT * FROM unnest($1::text[], $2::bigint[])
-			 ON CONFLICT (source_id, feeder_seq) DO NOTHING
-			 RETURNING source_id, feeder_seq`, sources, seqs)
+			`INSERT INTO nav_frames_seq_seen (source_id, session_id, feeder_seq)
+			 SELECT * FROM unnest($1::text[], $2::text[], $3::bigint[])
+			 ON CONFLICT (source_id, session_id, feeder_seq) DO NOTHING
+			 RETURNING source_id, session_id, feeder_seq`, sources, sessions, seqs)
 		if qerr != nil {
 			return 0, qerr
 		}
 		for rows.Next() {
-			var src string
+			var src, sess string
 			var seq int64
-			if qerr = rows.Scan(&src, &seq); qerr != nil {
+			if qerr = rows.Scan(&src, &sess, &seq); qerr != nil {
 				rows.Close()
 				return 0, qerr
 			}
-			fresh[seqKey{src, uint64(seq)}] = true
+			fresh[seqKey{src, sess, uint64(seq)}] = true
 		}
 		qerr = rows.Err()
 		rows.Close()
@@ -560,7 +572,7 @@ func (s *Store) persistAtomicOnce(ctx context.Context, batch []*NavFrame) (writt
 	emitted := make(map[seqKey]bool, len(fresh))
 	for _, f := range batch {
 		if f.HasSourceSeq {
-			k := seqKey{f.SourceID, f.SourceSeq}
+			k := seqKey{f.SourceID, f.Session, f.SourceSeq}
 			if !fresh[k] || emitted[k] {
 				continue
 			}
@@ -652,29 +664,31 @@ func (s *Store) checkSeqSeen(ctx context.Context, keys []seqKey) (map[seqKey]boo
 		return nil, nil
 	}
 	sources := make([]string, len(keys))
+	sessions := make([]string, len(keys))
 	seqs := make([]int64, len(keys))
 	for i, k := range keys {
 		sources[i] = k.source
+		sessions[i] = k.session
 		seqs[i] = int64(k.seq)
 	}
 	rows, err := s.pool.Query(ctx,
-		`INSERT INTO nav_frames_seq_seen (source_id, feeder_seq)
-		 SELECT * FROM unnest($1::text[], $2::bigint[])
-		 ON CONFLICT (source_id, feeder_seq) DO NOTHING
-		 RETURNING source_id, feeder_seq`,
-		sources, seqs)
+		`INSERT INTO nav_frames_seq_seen (source_id, session_id, feeder_seq)
+		 SELECT * FROM unnest($1::text[], $2::text[], $3::bigint[])
+		 ON CONFLICT (source_id, session_id, feeder_seq) DO NOTHING
+		 RETURNING source_id, session_id, feeder_seq`,
+		sources, sessions, seqs)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	fresh := make(map[seqKey]bool, len(keys))
 	for rows.Next() {
-		var src string
+		var src, sess string
 		var seq int64
-		if err := rows.Scan(&src, &seq); err != nil {
+		if err := rows.Scan(&src, &sess, &seq); err != nil {
 			return nil, err
 		}
-		fresh[seqKey{src, uint64(seq)}] = true
+		fresh[seqKey{src, sess, uint64(seq)}] = true
 	}
 	return fresh, rows.Err()
 }
@@ -687,7 +701,7 @@ func (s *Store) checkSeqSeen(ctx context.Context, keys []seqKey) (map[seqKey]boo
 func dedupBatch(batch []*NavFrame, fresh map[seqKey]bool) []*NavFrame {
 	out := make([]*NavFrame, 0, len(batch))
 	for _, f := range batch {
-		if !f.HasSourceSeq || fresh[seqKey{f.SourceID, f.SourceSeq}] {
+		if !f.HasSourceSeq || fresh[seqKey{f.SourceID, f.Session, f.SourceSeq}] {
 			out = append(out, f)
 		}
 	}
@@ -748,7 +762,7 @@ func (s *Store) flush(parent context.Context, batch []*NavFrame, deadline time.T
 	var keys []seqKey
 	for _, f := range batch {
 		if f.HasSourceSeq {
-			keys = append(keys, seqKey{f.SourceID, f.SourceSeq})
+			keys = append(keys, seqKey{f.SourceID, f.Session, f.SourceSeq})
 		}
 	}
 	if len(keys) > 0 {

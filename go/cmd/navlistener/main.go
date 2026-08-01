@@ -446,6 +446,7 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live *state.Store, historian *st
 				DecoderVer:   version.Version,
 				SourceSeq:    f.Seq,
 				HasSourceSeq: f.HasSeq,
+				Session:      f.Session, // dedup-key third component 
 			})
 		}
 		live.Apply(f)

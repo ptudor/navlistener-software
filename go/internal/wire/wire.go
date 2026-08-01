@@ -65,6 +65,46 @@ type HelloMsg struct {
 	Feed    string `json:"feed"`
 	SW      string `json:"sw"`
 	Zstd    bool   `json:"zstd,omitempty"`
+	// Session is the feeder's boot/session identity, REQUIRED —
+	// contract revision 2026-07-31: a HELLO without a ValidSession value is
+	// rejected before WELCOME (Error "missing or invalid session"); there are
+	// no legacy GNF1 peers to grandfather (design decision, cumulative July fix
+	// pass). It is an opaque token minted fresh whenever the feeder's DATA
+	// sequence space restarts from zero, and REUSED whenever that space
+	// continues: the C feeder stores it in its disk-spool header so a
+	// spool-recovering restart resumes session and sequence together, while
+	// the ESP32's RAM-only ring mints a new one every boot. The collector's
+	// replay-dedup identity is (canonical authenticated observer, session,
+	// seq) — session is NOT trusted as observer identity, it only partitions
+	// one observer's sequence spaces. Without it, a feeder restart that reset
+	// seq to 0 collided with the durable ledger's old rows and fresh
+	// post-reboot frames were silently discarded as replays — the product's
+	// worst failure class (silent loss of forensic raw frames).
+	Session string `json:"session"`
+}
+
+// SessionMaxLen bounds HelloMsg.Session. 64 comfortably covers the reference
+// implementations (32 hex chars) while keeping the pre-auth HELLO small.
+const SessionMaxLen = 64
+
+// ValidSession reports whether s is an acceptable GNF1 session identity:
+// 1..SessionMaxLen bytes of [A-Za-z0-9._-]. The charset mirrors the observer-id
+// discipline (config.ValidObserverID) so a session can never smuggle JSON/SQL
+// metacharacters into logs or the historian ledger.
+func ValidSession(s string) bool {
+	if len(s) == 0 || len(s) > SessionMaxLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
+			c == '.', c == '_', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // WelcomeMsg is the collector's handshake reply (JSON).

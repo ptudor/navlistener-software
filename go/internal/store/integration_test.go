@@ -94,23 +94,27 @@ func TestIntegrationReplayDedup(t *testing.T) {
 	go func() { defer close(done); s.Run(runCtx) }()
 
 	now := time.Now()
-	mk := func(source string, seq uint64, hasSeq bool, raw []byte) *NavFrame {
+	mk := func(source, session string, seq uint64, hasSeq bool, raw []byte) *NavFrame {
 		return &NavFrame{
 			Ts: time.Now(), ReceivedAt: now, SourceID: source,
 			GnssID: 0, SvID: 1, SigID: 0, MsgType: 1, Raw: raw,
-			SourceSeq: seq, HasSourceSeq: hasSeq,
+			SourceSeq: seq, HasSourceSeq: hasSeq, Session: session,
 		}
 	}
 
-	s.Enqueue(mk(obs, 100, true, []byte{1, 2, 3}))
-	s.Enqueue(mk(dial, 0, false, []byte{4, 5, 6}))
+	s.Enqueue(mk(obs, "boot-a", 100, true, []byte{1, 2, 3}))
+	s.Enqueue(mk(dial, "", 0, false, []byte{4, 5, 6}))
 	time.Sleep(250 * time.Millisecond)
 
 	// Reconnect replay of seq 100, plus a genuinely new seq 101; a second dial-mode
-	// frame with identical content (dial-mode never dedups).
-	s.Enqueue(mk(obs, 100, true, []byte{1, 2, 3}))
-	s.Enqueue(mk(obs, 101, true, []byte{7, 8, 9}))
-	s.Enqueue(mk(dial, 0, false, []byte{4, 5, 6}))
+	// frame with identical content (dial-mode never dedups). Then the regression fix
+	// scenario itself: a REBOOTED feeder (fresh session) reusing seq 100 — a
+	// different frame in a different sequence space that must persist, where the
+	// pre-session ledger silently discarded it as a replay.
+	s.Enqueue(mk(obs, "boot-a", 100, true, []byte{1, 2, 3}))
+	s.Enqueue(mk(obs, "boot-a", 101, true, []byte{7, 8, 9}))
+	s.Enqueue(mk(dial, "", 0, false, []byte{4, 5, 6}))
+	s.Enqueue(mk(obs, "boot-b", 100, true, []byte{10, 11, 12}))
 	time.Sleep(250 * time.Millisecond)
 
 	cancel()
@@ -172,7 +176,7 @@ func TestIntegrationAtomicReplayClaim(t *testing.T) {
 	now := time.Now()
 	frame := &NavFrame{Ts: now, ReceivedAt: now, SourceID: source, GnssID: 0, SvID: 1,
 		SigID: 0, MsgType: 0x10, Raw: []byte{1}, Decoded: []byte(`{not-json`),
-		SourceSeq: 1, HasSourceSeq: true}
+		SourceSeq: 1, HasSourceSeq: true, Session: "boot-r002"}
 	if _, err := s.persistAtomicOnce(ctx, []*NavFrame{frame}); err == nil {
 		t.Fatal("invalid JSON CopyFrom unexpectedly succeeded")
 	}
