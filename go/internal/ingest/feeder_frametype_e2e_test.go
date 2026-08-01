@@ -38,6 +38,22 @@ func TestNavfeederFrameTypeMatrix(t *testing.T) {
 		}
 		want[[2]int{r.gnssID, r.sigID}] = r.frameType
 	}
+	// out-of-matrix probes. sigId > 15 has no golden row, and the shared
+	// rule (TestNavTypeOutOfMatrixRange; the ESP32 matrix test's rule loop) demands
+	// frame_type 0 — stored raw but unclassified — so a family fallback hiding
+	// inside an enumerated constellation arm cannot survive. The C feeder is the
+	// one implementation reachable only through the deployed binary, and the push
+	// server forwards any sigId byte unvalidated, so the rule IS testable
+	// end-to-end here. gnssId > 7 is not: GNSSID.Valid() drops it before it
+	// becomes a RawFrame (same documented exclusion as IMES).
+	for g := 0; g < goldenGnssIDs; g++ {
+		if gnss.GNSSID(g) == gnss.IMES {
+			continue
+		}
+		for _, sig := range outOfMatrixSigProbes {
+			want[[2]int{g, sig}] = 0
+		}
+	}
 
 	capBytes := syntheticSFRBXMatrix(want)
 
@@ -120,8 +136,14 @@ func TestNavfeederFrameTypeMatrix(t *testing.T) {
 				key[0], key[1], g, w)
 		}
 	}
-	t.Logf("cross-checked %d (gnssId,sigId) frame_type mappings C-feeder↔golden matrix", len(want))
+	t.Logf("cross-checked %d (gnssId,sigId) frame_type mappings C-feeder↔golden matrix (incl. %d out-of-matrix probes)",
+		len(want), (goldenGnssIDs-1)*len(outOfMatrixSigProbes))
 }
+
+// outOfMatrixSigProbes are the sigId values the regression fix leg sends past the 16-column
+// golden matrix: the first out-of-matrix value and the top of the byte, both of which
+// must map to frame_type 0 in every constellation arm.
+var outOfMatrixSigProbes = []int{16, 255}
 
 // syntheticSFRBXMatrix builds a UBX stream with exactly one RXM-SFRBX per requested
 // (gnssId, sigId). Two nav words of arbitrary content are enough — the frame_type byte is
@@ -130,23 +152,31 @@ func TestNavfeederFrameTypeMatrix(t *testing.T) {
 // reserved, version, reserved, then numWords little-endian dwrds.
 func syntheticSFRBXMatrix(pairs map[[2]int]int) []byte {
 	var s []byte
-	// Deterministic order (gnssId, then sigId) so a failure log reads in matrix order.
+	rec := func(g, sig int) {
+		const numWords = 2
+		p := make([]byte, 8+numWords*4)
+		p[0] = byte(g)
+		p[1] = byte(sig%goldenSigIDs + 1) // svId: any in-range PRN; distinct per row for legibility
+		p[2] = byte(sig)
+		p[3] = 7 // freqId: GLONASS k=0; ignored elsewhere
+		p[4] = numWords
+		p[6] = 2 // version (F9/M9)
+		binary.LittleEndian.PutUint32(p[8:], 0x8B0000A5|uint32(g)<<8)
+		binary.LittleEndian.PutUint32(p[12:], 0x00C0FFEE)
+		s = append(s, ubxMsg(ubxClassRXM, ubxIDSFRBX, p)...)
+	}
+	// Deterministic order (gnssId, then sigId; out-of-matrix probes after the
+	// matrix columns) so a failure log reads in matrix order.
 	for g := 0; g < goldenGnssIDs; g++ {
 		for sig := 0; sig < goldenSigIDs; sig++ {
-			if _, ok := pairs[[2]int{g, sig}]; !ok {
-				continue
+			if _, ok := pairs[[2]int{g, sig}]; ok {
+				rec(g, sig)
 			}
-			const numWords = 2
-			p := make([]byte, 8+numWords*4)
-			p[0] = byte(g)
-			p[1] = byte(sig + 1) // svId: any in-range PRN; distinct per row for legibility
-			p[2] = byte(sig)
-			p[3] = 7 // freqId: GLONASS k=0; ignored elsewhere
-			p[4] = numWords
-			p[6] = 2 // version (F9/M9)
-			binary.LittleEndian.PutUint32(p[8:], 0x8B0000A5|uint32(g)<<8)
-			binary.LittleEndian.PutUint32(p[12:], 0x00C0FFEE)
-			s = append(s, ubxMsg(ubxClassRXM, ubxIDSFRBX, p)...)
+		}
+		for _, sig := range outOfMatrixSigProbes {
+			if _, ok := pairs[[2]int{g, sig}]; ok {
+				rec(g, sig)
+			}
 		}
 	}
 	return s

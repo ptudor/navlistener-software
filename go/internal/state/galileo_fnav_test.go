@@ -202,3 +202,38 @@ func TestApplyGalileoFNAVDummyPageIsNotError(t *testing.T) {
 		t.Errorf("dummy page created SV state: %+v", st)
 	}
 }
+
+// TestApplyGalileoFNAVBadCRCNoStateNoCapability pins the regression fix state-level
+// contract the frame-package tests cannot see: a CRC-failing sigId-3 page must
+// be rejected BEFORE any mutation — no @3 SV entry, no (Galileo,3) capability
+// evidence — and counted on the CRC metric, not the decode-error one. The
+// return-before-mutation ordering in applyGalileoFNAV is structurally correct
+// today; this test keeps a future reordering (capability recorded above the
+// error return, the exact regression fix regression class) from shipping silently.
+func TestApplyGalileoFNAVBadCRCNoStateNoCapability(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	const svid, source = 23, "obs-badcrc"
+	words := fnavPageWords(1, 64)
+	words[0] ^= 1 << 20 // flip a data bit AFTER the CRC stamp: structurally corrupt
+	crcCounter := metrics.NavCRCFailTotal.WithLabelValues("2", "3", source)
+	errCounter := metrics.DecodeErrorsTotal.WithLabelValues("2", "fnav")
+	crcBefore, errBefore := testutil.ToFloat64(crcCounter), testutil.ToFloat64(errCounter)
+	s.Apply(&ingest.RawFrame{
+		GnssID: gnss.Galileo, SvID: svid, SigID: 3, Source: source, Recv: now,
+		Words: words,
+	})
+	if got := testutil.ToFloat64(crcCounter) - crcBefore; got != 1 {
+		t.Errorf("nav_crc_fail_total delta = %v, want 1 (CRC rejection routes to the CRC metric)", got)
+	}
+	if got := testutil.ToFloat64(errCounter) - errBefore; got != 0 {
+		t.Errorf("decode-error delta = %v, want 0 (a CRC failure is not a structural decode error)", got)
+	}
+	key := Key{G: gnss.Galileo, Sv: svid, Sig: 3}
+	if st := s.shardFor(key).m[key]; st != nil {
+		t.Errorf("CRC-failing page created SV state: %+v", st)
+	}
+	if caps := s.FeedStationCapabilities(now)[source]; hasCap(caps, int(gnss.Galileo), 3) {
+		t.Error("CRC-failing page installed (Galileo,3) capability evidence")
+	}
+}
