@@ -990,8 +990,15 @@ func healthFor(g gnss.GNSSID, sig, raw int) (code, level int) {
 		// SHS (Signal Health Status), 2 bits — GAL-OS-SIS-ICD-2.2 Table 84:
 		// 0 = Signal OK, 1 = Signal out of service, 2 = Signal in Extended
 		// Operations Mode (EOM), 3 = Signal Component currently in Test.
-		// Issue 2.2 REDEFINED SHS=2 — the pre-2.2 gloss was "will be
-		// out of service", and mapping from that memory would mark every EOM
+		// SHS=2 was REDEFINED by Issue 2, Revision 1 (Issue 2.1,
+		// October 2023) — its change history reads "EOM introduced in section
+		// 5.1.9.3 and Table 84 updated with new interpretation for SHS=2
+		// status" — and is carried unchanged in the vendored Issue 2.2
+		// (November 2025), whose own change entry is errata/typos/formatting
+		// plus the E5a-QP signal. (this comment previously credited
+		// the redefinition to 2.2 itself; the mapping below is unaffected, only
+		// the provenance.) The pre-redefinition gloss was "will be out of
+		// service", and mapping from that memory would mark every EOM
 		// satellite (a usable, published operational mode) dead on the map. Do
 		// NOT promote SHS=2 to do-not-use. The 2/3 → not-ok(2)/warning(1)
 		// mapping below is a deliberate conservative choice for both EOM and

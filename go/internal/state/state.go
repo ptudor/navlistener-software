@@ -1129,14 +1129,26 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 	st.accKind, st.accIdx = accSISA, st.galW[3].SISA
 }
 
-// applyGalileoFNAV decodes a Galileo E5a F/NAV page (u-blox sigId 3 = E5a-I; 4 = E5a-Q, the
-// dataless pilot, mapped here for parity with rawframe.go's NavType) and folds it into a
-// SEPARATE per-signal SV state keyed on E5a (Sig:3) — the same secondary-signal pattern as
-// BeiDou B-CNAV2 (Sig:8), so E5a surfaces as its own name@3 feed entry instead of overwriting
+// applyGalileoFNAV decodes a Galileo E5a F/NAV page and folds it into a SEPARATE per-signal SV
+// state keyed on the FRAME'S OWN sigId (Key{Sig: f.SigID}) — the same secondary-signal pattern as
+// BeiDou B-CNAV2 (Sig:8), so E5a surfaces as its own name@sigid feed entry instead of overwriting
 // the E1-B I/NAV (Sig:0) set. NB: E5b-I (sigId 5) also carries I/NAV, not F/NAV — do not route
 // it here. F/NAV carries the same ephemeris as I/NAV on the E5a signal;
 // decoding it here is "wire F/NAV" half and produces the cross-signal (I/NAV-vs-F/NAV)
 // evidence the P6 integrity pass consumes (docs/CONSTELLATIONS.md §2.2).
+//
+// regression fix — what "keyed on E5a" actually means, since this header used to claim a fixed Sig:3.
+// The dispatch (see the sigId 3||4 arm above) routes BOTH u-blox E5a sigIds here, and the key
+// carries whichever arrived: sigId 3 = E5a-I, the data component, is the real-traffic case and
+// mints E##@3; sigId 4 = E5a-Q, the PILOT component, would mint a parallel E##@4 entry with its
+// own GGTO, broadcast-WN gate and TGD fold. That path is unreachable in practice — E5a-Q is
+// dataless, u-blox emits no RXM-SFRBX for it, and a frame mislabelled onto it would have to
+// survive the F/NAV CRC-24Q check to get this far — so the sigId-4 arm exists only for
+// rawframe-parity with NavType, and choice to keep it stands: a fix pass does not change
+// runtime dispatch. If a non-u-blox source ever does deliver sigId 4, the resulting @4 entry is
+// a real (if phantom) served entry, which is the tradeoff being accepted here, not an oversight.
+// Do not re-litigate this without a live E5a-Q capture — reconciling the comment to the code was
+// the decision.
 //
 // ⚠️ LIGHTLY TESTED ON REAL HARDWARE. First validated 2026-07-12 against a live E5a-I
 // stream from a u-blox on capture-station → this collector on collector-host: 136 F/NAV pages decoded with
@@ -1179,7 +1191,7 @@ func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 		return
 	}
 
-	key := Key{G: f.GnssID, Sv: f.SvID, Sig: f.SigID} // E5a keyed on its own sigId (3/4)
+	key := Key{G: f.GnssID, Sv: f.SvID, Sig: f.SigID} // E5a keyed on its own sigId (3 = E5a-I; 4 = E5a-Q, regression fix)
 	sh := s.shardFor(key)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()

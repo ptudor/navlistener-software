@@ -187,11 +187,13 @@ func TestQZSSHealthWord(t *testing.T) {
 
 // TestGalileoSHSMapping guards the SHS enum per GAL-OS-SIS-ICD-2.2
 // Table 84 — 0 Signal OK, 1 Signal out of service, 2 Signal in Extended
-// Operations Mode (EOM, REDEFINED in Issue 2.2 from the old "will be out of
-// service"), 3 Signal Component currently in Test. EOM is a usable published
-// operational mode: it must map to not-ok/warning like in-test, never to
-// do-not-use — the regression this test pins is someone "fixing" SHS=2 to
-// (3,2) from the superseded pre-2.2 semantics.
+// Operations Mode (EOM), 3 Signal Component currently in Test. the
+// EOM redefinition of SHS=2 (away from the old "will be out of service") came
+// in with Issue 2, Revision 1 (Issue 2.1, October 2023) and is carried in the
+// vendored Issue 2.2 — 2.2 itself is errata/formatting plus E5a-QP. EOM is a
+// usable published operational mode: it must map to not-ok/warning like
+// in-test, never to do-not-use — the regression this test pins is someone
+// "fixing" SHS=2 to (3,2) from the superseded pre-2.1 semantics.
 func TestGalileoSHSMapping(t *testing.T) {
 	cases := []struct {
 		raw                 int
@@ -200,7 +202,7 @@ func TestGalileoSHSMapping(t *testing.T) {
 	}{
 		{0, 1, 0, "Signal OK"},
 		{1, 3, 2, "Signal out of service: do-not-use"},
-		{2, 2, 1, "EOM (Issue 2.2 redefinition): usable mode — warning, NOT do-not-use"},
+		{2, 2, 1, "EOM (Issue 2.1 redefinition, carried in 2.2): usable mode — warning, NOT do-not-use"},
 		{3, 2, 1, "Signal Component currently in Test: warning"},
 	}
 	for _, c := range cases {
