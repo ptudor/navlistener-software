@@ -1738,52 +1738,69 @@ const gloDiscoMaxTk = 60 * time.Minute
 // st.gloEph is replaced, with the shard lock held. Reuses
 // st.orbitDisco*/timeDisco*/discoAt so the feed and detector consume it unchanged.
 func (s *Store) computeGloDisco(st *svState, newEph glonass.Ephemeris, now time.Time) {
-	st.discoAt = now
-	st.orbitDiscoValid = false
-	st.timeDiscoValid = false
-	// A deferred time-disco pending from an OLDER changeover is obsolete at any
-	// new one (its old-clock snapshot describes a set two generations back) —
-	// clear it on every path, the early returns included, so it can never
-	// complete against the wrong pair (regression fix hygiene; the tb match alone
-	// already made a wrong completion unlikely, this makes it structural).
-	st.discoPendClk = false
+	// regression fix (as computeDisco): compute into locals; publish in one trailing
+	// block of plain assignments. A panic in glonass.Propagate (the RK4 is the
+	// GLONASS apply path's panic-capable code) then leaves the record exactly
+	// as the previous changeover published it — never half-written.
+	var (
+		orbitDisco, timeDiscoNs         float64
+		orbitDiscoOK, timeDiscoOK       bool
+		pendClk                         bool
+		pendTb, oldTau, oldGamma, oldTb float64
+	)
+	// publish is the ONLY writer to st. A deferred time-disco pending from an
+	// OLDER changeover is obsolete at any new one (its old-clock snapshot
+	// describes a set two generations back) — every path clears it unless this
+	// changeover itself defers (regression fix hygiene; the tb match alone already
+	// made a wrong completion unlikely, this makes it structural).
+	publish := func() {
+		st.discoAt = now
+		st.orbitDisco, st.orbitDiscoValid = orbitDisco, orbitDiscoOK
+		st.timeDiscoNs, st.timeDiscoValid = timeDiscoNs, timeDiscoOK
+		st.discoPendClk = pendClk
+		if pendClk {
+			st.discoPendTb = pendTb
+			st.discoOldTau, st.discoOldGamma, st.discoOldTb = oldTau, oldGamma, oldTb
+		}
+	}
 	if st.gloEphAt.IsZero() || now.Sub(st.gloEphAt) >= discoTrustAge {
+		publish()
 		return
 	}
 	// The day-wrapped broadcast-time distance from the outgoing tb to the incoming tb.
 	tkOld := gnsstime.EphAgeDay(newEph.Tb, st.gloEph.Tb)
 	if math.Abs(tkOld) > gloDiscoMaxTk.Seconds() {
-		return // non-adjacent sets (missed changeovers): disco undefined, absent 
+		publish() // non-adjacent sets (missed changeovers): disco undefined, absent 
+		return
 	}
 	// difference at the midpoint — outgoing forward tk/2, incoming backward tk/2.
 	oldPos, e1 := glonass.Propagate(st.gloEph, tkOld/2)
 	newPos, e2 := glonass.Propagate(newEph, -tkOld/2)
 	if e1 == nil && e2 == nil {
 		if d := newPos.Sub(oldPos).Norm(); finite(d) {
-			st.orbitDisco = d
-			st.orbitDiscoValid = true
+			orbitDisco, orbitDiscoOK = d, true
 		}
 	}
 	// Time-disco: difference the two SV clock corrections at the common epoch (the new tb).
 	// The old model evaluated at the new tb is τn − γn·(tb_new − tb_old); the new model at
 	// its own tb is τn (the γ term vanishes). The outgoing set must carry a clock to compare
 	// against; otherwise time-disco is genuinely unknowable and skipped (the regression fix rule).
-	if !st.gloEph.ClockKnown {
-		return
-	}
-	if newEph.ClockKnown {
-		oldOff := st.gloEph.TauN - st.gloEph.GammaN*tkOld
-		if d := math.Abs(newEph.TauN-oldOff) * 1e9; finite(d) {
-			st.timeDiscoNs = d
-			st.timeDiscoValid = true
+	if st.gloEph.ClockKnown {
+		if newEph.ClockKnown {
+			oldOff := st.gloEph.TauN - st.gloEph.GammaN*tkOld
+			if d := math.Abs(newEph.TauN-oldOff) * 1e9; finite(d) {
+				timeDiscoNs, timeDiscoOK = d, true
+			}
+		} else {
+			// The incoming set is clockless at the changeover (string 4 not yet in
+			// this frame): retain the outgoing clock and defer the time-disco until
+			// string 4 completes the same-tb set.
+			pendClk = true
+			pendTb = newEph.Tb
+			oldTau, oldGamma, oldTb = st.gloEph.TauN, st.gloEph.GammaN, st.gloEph.Tb
 		}
-		return
 	}
-	// The incoming set is clockless at the changeover (string 4 not yet in this frame): retain
-	// the outgoing clock and defer the time-disco until string 4 completes the same-tb set.
-	st.discoPendClk = true
-	st.discoPendTb = newEph.Tb
-	st.discoOldTau, st.discoOldGamma, st.discoOldTb = st.gloEph.TauN, st.gloEph.GammaN, st.gloEph.Tb
+	publish()
 }
 
 // setGloNA records the frame day-number NA (the day the almanac elements refer to),
@@ -1859,6 +1876,18 @@ func finiteECEF(p gnss.ECEF) bool {
 // require both propagations to succeed; this is not the first ephemeris
 // (guaranteed by the caller). A violated guard leaves the field invalid (absent in
 // the feed), never a sentinel.
+//
+// regression fix (the regression fix partial-state deferral, minimum variant): this function
+// runs MID-apply, before the caller's eph/clk/iod swap, and contains the
+// apply path's only panic-capable code (kepler.Propagate / clock.OffsetFor
+// slice indexing). It therefore computes into LOCALS and publishes to st in
+// one trailing block of plain assignments — a panic caught by
+// recoverDecodePanic can no longer leave half-written disco fields alongside
+// the still-old ephemeris. The callers' own writes after this call are all
+// plain, contiguous assignments (verified per apply* path), so the fields
+// readers trust together (eph+clk+iod+have*) change effectively atomically
+// under the shard lock. The full build-then-swap of every apply* remains the
+// recorded constellation-pass refactor.
 func (s *Store) computeDisco(st *svState, newEph kepler.Ephemeris, newClk clock.Model, now time.Time) {
 	tstar := newEph.Toe
 
@@ -1894,18 +1923,17 @@ func (s *Store) computeDisco(st *svState, newEph kepler.Ephemeris, newClk clock.
 		return
 	}
 
+	// all panic-capable math happens here, on locals only.
+	var (
+		orbitDisco, timeDiscoNs   float64
+		orbitDiscoOK, timeDiscoOK bool
+	)
 	oldPos, e1 := kepler.Propagate(st.eph, tstar)
 	newPos, e2 := kepler.Propagate(newEph, tstar)
 	if e1 == nil && e2 == nil {
-		disco := newPos.Sub(oldPos).Norm()
-		if !math.IsNaN(disco) && !math.IsInf(disco, 0) {
-			st.orbitDisco = disco
-			st.orbitDiscoValid = true
-		} else {
-			st.orbitDiscoValid = false
+		if d := newPos.Sub(oldPos).Norm(); !math.IsNaN(d) && !math.IsInf(d, 0) {
+			orbitDisco, orbitDiscoOK = d, true
 		}
-	} else {
-		st.orbitDiscoValid = false
 	}
 	// regression fix / docs/INTEGRITY.md §3: a changeover discontinuity compares the
 	// satellite clock polynomial plus relativity. Group delay is a signal bias,
@@ -1915,16 +1943,13 @@ func (s *Store) computeDisco(st *svState, newEph kepler.Ephemeris, newClk clock.
 	oOff, e3 := clock.OffsetFor(oldDiscoClk, st.eph, tstar)
 	nOff, e4 := clock.OffsetFor(newDiscoClk, newEph, tstar)
 	if e3 == nil && e4 == nil {
-		disco := math.Abs(nOff-oOff) * 1e9
-		if !math.IsNaN(disco) && !math.IsInf(disco, 0) {
-			st.timeDiscoNs = disco
-			st.timeDiscoValid = true
-		} else {
-			st.timeDiscoValid = false
+		if d := math.Abs(nOff-oOff) * 1e9; !math.IsNaN(d) && !math.IsInf(d, 0) {
+			timeDiscoNs, timeDiscoOK = d, true
 		}
-	} else {
-		st.timeDiscoValid = false
 	}
+	// publish — plain assignments only past this point.
+	st.orbitDisco, st.orbitDiscoValid = orbitDisco, orbitDiscoOK
+	st.timeDiscoNs, st.timeDiscoValid = timeDiscoNs, timeDiscoOK
 	st.discoAt = now
 }
 
