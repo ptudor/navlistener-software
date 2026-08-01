@@ -24,8 +24,21 @@ import (
 const (
 	rfBaselineRing = 64
 	agcLearnBand   = 400 // AGC counts; departures beyond this don't update the baseline
-	rfStaleAfter   = 5 * time.Minute
-	cn0MinSats     = 5 // fewest tracked SVs before the C/N₀-vs-elevation gate is meaningful
+	// rfStaleAfter is THE staleness operating point for station-scoped feeds —
+	// and, through the feed.go alias `sbasStaleAfter = rfStaleAfter`, for the
+	// served SBAS feed as well. two other constants are pinned to this
+	// value and neither is reachable from here by grep, so retuning it silently
+	// desynchronizes them:
+	//   - state.sbasStaleAfter (feed.go) — the alias; moves automatically.
+	//   - detect.SBASSilentThreshold (300.0 s) — a duplicated literal that does
+	//     NOT move (detect depends on state, not the reverse, so it cannot
+	//     import this). It exists so sbas_lost confirms one debounce after the
+	//     PRN leaves the served feed; if the two diverge, either a PRN vanishes
+	//     from the feed with no darkness event, or the event fires while the
+	//     feed still serves it.
+	// Retune all three together, or state the divergence deliberately.
+	rfStaleAfter = 5 * time.Minute
+	cn0MinSats   = 5 // fewest tracked SVs before the C/N₀-vs-elevation gate is meaningful
 )
 
 // rfBand is one RF path's learned state at a station: the latest receiver numbers plus

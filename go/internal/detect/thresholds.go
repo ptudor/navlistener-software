@@ -64,7 +64,11 @@ const (
 	SilenceMinReceivers = 4
 
 	// FreshReceiver bounds how recently a receiver must have seen an SV for its
-	// vote to count (docs/INTEGRITY.md §2/§6).
+	// vote to count (docs/INTEGRITY.md §2/§6). regression fix (the reverse note):
+	// state.freshReceiverWindow (feed.go) is the constant that actually COMPUTES
+	// the served conf — it is duplicated there because detect depends on state,
+	// not the reverse — so this value alone tunes nothing. Move both together or
+	// the documented corroboration window stops describing the served one.
 	FreshReceiverThreshold = 60.0
 
 	// SBASSilentThreshold : an SBAS PRN unseen this long is lost. SBAS
@@ -76,6 +80,11 @@ const (
 	// feed — the event channel and the feed tell the same story. Duplicated
 	// rather than imported because detect depends on state, not the reverse
 	// (the liveReceiverWindow precedent); keep the two in sync if either moves.
+	// state.sbasStaleAfter is only an ALIAS — the true operating point
+	// is state.rfStaleAfter (rf.go), which carries the reverse note. Retuning
+	// rfStaleAfter moves the feed's SBAS staleness boundary while this literal
+	// stays put, and a maintainer following the old comment chain would see the
+	// named pair still "agree". Follow the chain to rfStaleAfter.
 	// This is an operational bound derived from the in-repo staleness standard,
 	// NOT a DO-229 message-timeout value — RTCA DO-229 is paywalled/unvendored
 	// (reference/REFERENCES.md "RTCA-DO-229"); if it is ever acquired, re-derive
@@ -150,9 +159,27 @@ const (
 	// deterministic — so two agreeing signals compared at the identical
 	// propagation epoch differ by EXACTLY zero, and any nonzero distance means
 	// the two signals broadcast different element bits (a signal-selective
-	// fault or spoof). 1 cm is far above float noise (which is zero here) and
-	// far below the smallest single-LSB element flip's position effect (e.g.
-	// Cic's 2⁻²⁹ rad ≈ 5 cm at orbit radius). This tight bound is valid ONLY
+	// fault or spoof). 1 cm is far above float noise (which is zero here).
+	//
+	// regression fix, the honest single-LSB coverage (scale factors per
+	// GAL-OS-SIS-ICD-2.2 Table 67; ~29,600 km orbit radius):
+	//   - CAUGHT — every angle, harmonic and √A LSB flip: √A (2⁻¹⁹ m^½) is the
+	//     tightest at ≈2 cm, the 2⁻³¹-semicircle angles ≈4 cm, Crc/Crs (2⁻⁵ m)
+	//     ≈3 cm, Cuc/Cus/Cic/Cis (2⁻²⁹ rad) ≈5 cm. All comfortably above 1 cm.
+	//   - NOT caught — an eccentricity LSB (e is scaled 2⁻³³,
+	//     gnss/frame/galileo_inav.go) moves the position ≈7 mm at most over the
+	//     full ±2 h window, and the 2⁻⁴³ rate terms (Ω̇/Δn/IDOT) stay under
+	//     10 mm within ~15-25 min of toe. Those fall INSIDE the band and
+	//     classify "agree" forever.
+	// That blind spot is deliberate and benign: every realistic
+	// signal-selective fault or spoof is metre-scale, and same-IODnav agreement
+	// is exactly 0 m, so the band's primary job (never fire on agreement) is
+	// met with enormous margin. Do NOT restate this as "any bit flip is
+	// caught" — a follow-on detector scoped on that claim would be wrong. If
+	// full single-LSB coverage is ever wanted the band can drop to ~1 mm (still
+	// infinitely above the exact-zero agreement value).
+	//
+	// This tight bound is valid ONLY
 	// for same-IODnav Galileo pairs — GPS LNAV-vs-CNAV and BeiDou D1-vs-B-CNAV2
 	// are independent curve fits that legitimately differ by metres, and
 	// comparing them needs a real fit-difference tolerance analysis (deferred

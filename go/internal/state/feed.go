@@ -874,6 +874,14 @@ const sbasStaleAfter = rfStaleAfter
 // constant against DO-229's own MT0 rule if that reference is ever acquired.
 // In steady test mode MT0 recurs well inside 60 s, so the latch holds
 // continuously; a single isolated MT0 ages out after its 60 s exclusion.
+//
+// regression fix (the reverse note): detect.SBASHealthCurrentWindow (60.0) mirrors this
+// horizon as a duplicated literal — it is how the detector knows a served
+// health_code is a current observation rather than a latch that decayed for lack
+// of input, and it cannot import this constant (detect depends on state, not the
+// reverse). Retuning the exclusion interval here without moving it there either
+// classifies stale health as current, or holds the health machine while the
+// latch is still live. Move both.
 const sbasType0Hold = 60 * time.Second
 
 // FeedSBAS builds the sbas augmentation-health feed as of now (docs/OUTPUT.md §1.5).

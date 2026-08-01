@@ -5,6 +5,15 @@
 // shape as the radiolistener sibling. Labels stay low-cardinality: source name,
 // numeric gnssId (0..7), signal id, and short kinds — never a per-SV identifier.
 //
+// One bounded exception to the numeric gnssId domain : the regression fix
+// defense-in-depth gate in state.Apply rejects a frame whose gnssId is outside
+// 0..7-minus-IMES and records it as DecodeErrorsTotal{gnssid="out_of_range",
+// kind="gnssid_range"} — the raw byte is deliberately NOT printed, since an
+// attacker-supplied id would otherwise mint an unbounded label set. So the
+// gnssid label's domain is the numeric ids PLUS that one fixed sentinel;
+// cardinality stays bounded. A query written against `gnssid=~"[0-7]"` silently
+// drops the very series that flags id corruption — match the sentinel too.
+//
 // The reusable github.com/ptudor/gnss library never imports this package; the
 // daemon records metrics from the typed results and errors the library returns.
 package metrics
@@ -91,9 +100,11 @@ var (
 
 	// DecodeErrorsTotal counts frames the dispatcher/decoder rejected for a
 	// reason other than CRC (unknown type, out-of-range field, short frame).
+	// this is the one collector whose gnssid label can carry the
+	// non-numeric "out_of_range" sentinel — see the package doc above.
 	DecodeErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "navlistener_decode_errors_total",
-		Help: "Nav frames rejected by decode (non-CRC), by gnssId and kind.",
+		Help: `Nav frames rejected by decode (non-CRC), by gnssId and kind. gnssId is numeric (0..7) except for the clamped "out_of_range" sentinel emitted when the id itself is outside the domain.`,
 	}, []string{"gnssid", "kind"})
 
 	// DecodePanicsTotal counts frames dropped by decodeLoop's per-frame recover
