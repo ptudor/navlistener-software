@@ -67,24 +67,40 @@ const (
 	// while comfortably rejecting a stale string left over from ~30 minutes prior.
 	glonassFrameWindow = 8 * time.Second
 
-	// propagateMaxEphAge (regression fix, the documented regression fix remainder) caps how long
-	// past its wall-clock apply time (svState.ephAt) a Kepler-family ephemeris may
-	// keep being propagated into served positions. The propagation age tk is
-	// derived from gnsstime.EphAge, which wraps to ±half-week (302400 s): past
-	// ~3.5 days every derived signal self-defeats simultaneously — the propagated
-	// position is thousands of km wrong but finite (so posAt keeps advancing and
-	// posStaleBound never fires), eph_age_m wraps back toward zero, and the
-	// eph_aged detector consumes that wrapped near-zero value — silent wrong
-	// output stamped fresh. Reachable via the regression fix window: RAWX observables keep
-	// an SV lastSeen-fresh for days while its nav decode is dead. 72 h sits
-	// safely below the 302400 s wrap (12 h margin), so a served position can
-	// never come from a wrapped ephemeris and the SOW-based eph_age_m stays
-	// truthful over the whole served regime; routine hours-past-fit extrapolation
-	// (surfaced via eph_age_m / eph_aged) is untouched by design. Past the cap,
-	// Propagate skips the SV, posAt stops advancing, and posStaleBound expires
-	// the served position naturally (position_unknown then fires). The GLONASS
-	// twin of this cap is gloPropagateMaxEphAge.
-	propagateMaxEphAge = 72 * time.Hour
+	// propagateMaxEphAge (regression fix, the documented regression fix remainder; margin
+	// re-derived by regression fix) caps how long past its wall-clock apply time
+	// (svState.ephAt) a Kepler-family ephemeris may keep being propagated into
+	// served positions. The propagation age tk is derived from gnsstime.EphAge,
+	// which wraps to ±half-week (302400 s = 84 h): past ~3.5 days every derived
+	// signal self-defeats simultaneously — the propagated position is thousands
+	// of km wrong but finite (so posAt keeps advancing and posStaleBound never
+	// fires), eph_age_m wraps back toward zero, and the eph_aged detector
+	// consumes that wrapped near-zero value — silent wrong output stamped
+	// fresh. Reachable via the regression fix window: RAWX observables keep an SV
+	// lastSeen-fresh for days while its nav decode is dead.
+	//
+	// regression fix — the margin arithmetic: the gate measures now − ephAt, but the
+	// quantity the wrap cares about is the true SOW age, (now − ephAt) +
+	// offsetAtApply, where offsetAtApply is the set's SOW age at its FIRST
+	// decode. Normal ops broadcast toe ~2 h ahead (offset ≈ −2 h, margin
+	// grows). Extended ops (IS-GPS-200N Table 20-XII: 26 h curve fit, 24 h
+	// transmission interval, toe ≈ transmission start + 13 h) can hand a
+	// collector whose first decode lands late in the window an offset up to
+	// ≈ +11 h nominal — the old 72 h cap left ≤ ~1 h of real slack there, and
+	// the CS-outage regime (an SV rebroadcasting one set past its window —
+	// precisely this monitor's target anomaly) could push it negative.
+	// 71 h = 84 h − 13 h budgets a full 13 h of at-apply SOW age: the +11 h
+	// nominal worst case plus 2 h of off-nominal rebroadcast slack. Beyond
+	// +13 h at-apply offset (deep off-nominal) the guarantee degrades; the
+	// regression fix fit-interval-aware ceiling remains the tracked refinement, and
+	// forensic-stamp gate bounds the replay vector independently.
+	//
+	// Routine hours-past-fit extrapolation (surfaced via eph_age_m/eph_aged)
+	// is untouched by design. Past the cap, Propagate skips the SV, posAt
+	// stops advancing, and posStaleBound expires the served position
+	// naturally (position_unknown then fires). The GLONASS twin of this cap
+	// is gloPropagateMaxEphAge.
+	propagateMaxEphAge = 71 * time.Hour
 
 	// gloPropagateMaxEphAge (regression fix, the GLONASS twin of propagateMaxEphAge) caps
 	// how long past its wall-clock apply time (svState.gloEphAt) a GLONASS
