@@ -417,11 +417,20 @@ func setINAVPageBits(words []uint32, off int, v uint64, n int) {
 }
 
 // TestDecodeGalileoINAVOSNMA guards the 40-bit OSNMA protocol-data
-// field of the E1-B odd page part (page bits 146..185, Table 38) must be
-// extracted on every nominal page regardless of word type, must round-trip a
-// known pattern (it is CRC-protected, so a mis-offset would also flunk the CRC
-// re-stamp), and must be discarded for dummy messages (word type 63) per the
-// OSNMA ICD.
+// field of the E1-B odd page part (page bits 146..185, Table 38 — odd part
+// starts at page bit 128, then Even/odd(1) PageType(1) Data2/2(16) → OSNMA@146)
+// must be extracted on every nominal page regardless of word type, must
+// round-trip a known pattern, and must be discarded for dummy messages (word
+// type 63) per the OSNMA ICD.
+//
+// what pins offset 146 here is the PATTERN ROUND-TRIP, not the CRC.
+// setINAVPageBits re-stamps the CRC after poking, so the frame is self-
+// consistent at whatever offset the poke used — the CRC would pass for a
+// wrong offset too. The oracle is that the poke offset (146, from Table 38)
+// and the decoder's read offset must agree bit-for-bit on a pattern that is
+// nonzero in every byte: move the decoder's offset unilaterally and the
+// recovered 40 bits differ. (Moving BOTH in step would still pass — that is
+// what the Table 38 citation above, not the test, guards against.)
 func TestDecodeGalileoINAVOSNMA(t *testing.T) {
 	const pattern = uint64(0xA1B2C3D4E5) // 40 bits, nonzero in every byte
 	content := make([]byte, 16)
@@ -529,8 +538,17 @@ func TestDecodeGalileoINAVWord10GGTO(t *testing.T) {
 
 // TestDecodeGalileoFNAVPage4GGTO guards regression fix (F/NAV side): page 4 transmits
 // the same GGTO quartet at Table 33's offsets — and in a DIFFERENT field order
-// than I/NAV (t0G@147 BEFORE A0G@155, then A1G@167, WN0G@179). Distinct values
+// than I/NAV (t0G@147 BEFORE A0G@155, then A1G@171, WN0G@183). Distinct values
 // per field pin the order; the all-ones withdrawal must behave as on I/NAV.
+//
+// the offsets above are re-derived from GAL-OS-SIS-ICD-2.2 Table 33's
+// own width ledger — Type(6) IODnav(10) Cic(16) Cis(16) A0(32) A1(24) ΔtLs(8)
+// t0t(8) WN0t(8) WNLSF(8) DN(3) ΔtLSF(8) → t0G@147, +8 → A0G@155, +16 →
+// A1G@171, +12 → WN0G@183. An abandoned first draft of this test wrote
+// A1G@167/WN0G@179 (it advanced past A0G by 12 rather than its true 16 bits);
+// the slip was caught before commit but survived in this comment until
+// regression fix. The body and galileo_fnav.go have always been right — do NOT "fix"
+// them to match an older comment.
 func TestDecodeGalileoFNAVPage4GGTO(t *testing.T) {
 	p2m35 := 1.0 / float64(uint64(1)<<35)
 	p2m51 := 1.0 / float64(uint64(1)<<51)

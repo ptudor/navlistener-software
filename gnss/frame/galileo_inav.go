@@ -340,6 +340,20 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 		w.GGTOValid = !(a0gRaw == 0xFFFF && a1gRaw == 0xFFF && t0gRaw == 0xFF && wn0gRaw == 0x3F)
 		w.A0G = float64(a0g) * p2m35
 		w.A1G = float64(a1g) * p2m51
+		// regression fix — t0G plausibility is DELIBERATELY not checked here. t0G is
+		// 8 bits × 3600 s, so it reaches 918 000 s and raws 168–255 name an
+		// epoch beyond the 604 800 s week; a reader will reasonably ask whether
+		// that should be rejected or clamped. It is not, for two reasons: Table
+		// 76 specifies t0G by bits/scale/unit ALONE (there is no range column
+		// and no stated restriction), and §5.1.8 defines exactly one GGTO
+		// sentinel — the four-field all-ones withdrawal handled above. Inventing
+		// a tighter bound would be exactly the "spec value from memory" this
+		// repo forbids, so the decoder serves the raw broadcast value and lets
+		// consumers see what the SV actually sent. The numeric exposure is
+		// negligible: an out-of-week t0G shifts Eq. 24's dt by at most
+		// 918 000 − 604 800 = 313 200 s, and |A1G| is capped by its 12-bit
+		// ×2⁻⁵¹ coding at 2¹¹×2⁻⁵¹ s/s, so the served gps_offset_ns moves by
+		// ≤ ~0.28 µs. (The F/NAV twin in galileo_fnav.go carries the same note.)
 		w.T0G = float64(t0gRaw) * galT0G
 		w.WN0G = int(wn0gRaw)
 	}

@@ -117,9 +117,11 @@ func DecodeGalileoFNAV(words []uint32) (*GalileoFNAV, error) {
 	semi := physconst.Pi
 	switch pt {
 	case 1:
-		// SVID(6) IODnav(10) t0c(14) af0(31) af1(21) af2(6) SISA(8) ai0(11) ai1(11)
-		// ai2(14) Region1-5(5) BGD(E1,E5a)(10) E5aHS(2) WN(12) TOW(20) E5aDVS(1)
-		// Spare(26) CRC(24) Tail(6) — OS-SIS-ICD Issue 2.2 Table 30. Cumulative
+		// Type(6) SVID(6) IODnav(10) t0c(14) af0(31) af1(21) af2(6) SISA(8) ai0(11)
+		// ai1(11) ai2(14) Region1-5(5) BGD(E1,E5a)(10) E5aHS(2) WN(12) TOW(20)
+		// E5aDVS(1) Spare(26) CRC(24) Tail(6) — OS-SIS-ICD Issue 2.2 Table 30.
+		// the leading 6-bit page Type was missing from this named list,
+		// so it summed to 238 against the 244 ledger below it. Cumulative
 		// offsets from that ledger: BGD@143, E5aHS@153, WN@155, TOW@167, E5aDVS@187
 		// (6+6+10+14+31+21+6+8+11+11+14+5 = 143; +10+2 = 155; +12 = 167; +20 = 187).
 		// regression fix added SISA/E5aHS; regression fix added E5aDVS; the ionospheric (NeQuick
@@ -185,6 +187,14 @@ func DecodeGalileoFNAV(words []uint32) (*GalileoFNAV, error) {
 		w.GGTOValid = !(a0gRaw == 0xFFFF && a1gRaw == 0xFFF && t0gRaw == 0xFF && wn0gRaw == 0x3F)
 		w.A0G = float64(s(155, 16)) * p2m35
 		w.A1G = float64(s(171, 12)) * p2m51
+		// regression fix (t0G plausibility — a deliberate non-check, see the I/NAV twin
+		// for the full rationale): 8 bits × 3600 s reaches 918 000 s, so raws
+		// 168–255 name an epoch past the 604 800 s week. Table 76 gives t0G only
+		// bits/scale/unit — it prints no range column and no restriction — and
+		// §5.1.8's only defined sentinel is the four-field all-ones withdrawal
+		// above, so we accept and serve the raw value by contract rather than
+		// invent a bound. Worst case via Eq. 24's A1G·dt term: 313 200 s of
+		// excess × |A1G|max (2¹¹×2⁻⁵¹ s/s) ≈ 0.28 µs on gps_offset_ns.
 		w.T0G = float64(t0gRaw) * galT0G
 		w.WN0G = int(wn0gRaw)
 	}

@@ -40,6 +40,23 @@ func URAMeters(n int) (float64, bool) {
 // absence of an accuracy prediction and shall advise the standard positioning
 // service user to use that SV at his own risk" (valid=false; surface the raw
 // index per regression fix, as with URAMeters).
+//
+// regression fix asked for this attribution to be reassigned to LNAV §20.3.3.3.1.3 on
+// the premise that §30.3.3.1.1.4 "prints no formula". Re-verified against the
+// vendored IS-GPS-200N (01-AUG-2022) and NOT changed: §30.3.3.1.1.4 does print
+// it, immediately below its band table and before the §30.3.3.1.2 heading —
+// "For each URAED index (N), users may compute a nominal URAED value (X) as
+// given by: • If the value of N is 6 or less, but more than -16, X = 2(1+N/2),
+// • If the value of N is 6 or more, but less than 15, X = 2(N-2)". The signed
+// guard ("but more than -16") is the CNAV section's own wording, so citing
+// §30.3.3.1.1.4 is the accurate provenance; re-pointing it at LNAV would be a
+// citation regression. residual observation does stand and is worth
+// recording: the nominal values do not all sit inside their tabulated bands —
+// N = −15 nominally yields 2^−6.5 ≈ 0.011 m against that row's "URAED ≤ 0.01"
+// ceiling. That is an ICD-internal rounding artefact at the most-accurate
+// index, sub-centimetre, and no consumer of sisa_m distinguishes 0.010 from
+// 0.011 m, so the nominal formula (which the ICD instructs users to apply)
+// stays authoritative here.
 func URAEDMeters(n int) (float64, bool) {
 	if n <= -16 || n >= 15 {
 		return 0, false
