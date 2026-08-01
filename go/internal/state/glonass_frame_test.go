@@ -309,7 +309,9 @@ func glonassLnFrame(svID, number, ln int, recv time.Time) *ingest.RawFrame {
 // (≤10 s latency by design, GLO-ICD-5.1 §5.3 note) must reach served health the
 // moment any carrying string decodes — up to ~50 s before Bn catches up — and a
 // cleared ℓn must restore health. The served health_subcode is the packed
-// Bn | ℓn<<3 (docs/OUTPUT.md §2.2), so the Bn-vs-ℓn disagreement window is visible.
+// Bn | ℓn<<3, documented in the health_subcode row of docs/OUTPUT.md §1.1's svs
+// field table (not §2.2 — that is the frozen-enums table and carries no
+// health_subcode row), so the Bn-vs-ℓn disagreement window is visible.
 func TestGLONASSLnHealth(t *testing.T) {
 	st := New(4)
 	t0 := time.Unix(1_700_000_000, 0)

@@ -418,10 +418,14 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 		// case-2 accommodation span as "six hours prior to the leap second
 		// time ... six hours after", whose upper edge B1I prints as "DN+5/4"
 		// (days) — together fixing the event at (DN+1)·86400. (B1I's printed
-		// LOWER edge is the asymmetric "DN+2/3", where IS-GPS-200 has DN+3/4;
-		// an apparent ICD typo, and either way it does not move the event
-		// instant this boundary hangs on.) Within ±6 h of a real leap the
-		// served value follows this instant rather than the case-2 day-wrap
+		// LOWER edge is the asymmetric "DN+2/3"; older IS-GPS-200 revisions
+		// (pre-N; not vendored here) printed the corresponding pair as DN+3/4 —
+		// the vendored IS-GPS-200N uses no day-fraction notation at all,
+		// phrasing §20.3.3.5.2.4's case-b window as "six hours prior to the
+		// effectivity time to six hours after the effectivity time".
+		// Either way the B1I asymmetry is an apparent ICD typo and does not
+		// move the event instant this boundary hangs on.) Within ±6 h of a real
+		// leap the served value follows this instant rather than the case-2 day-wrap
 		// presentation, which affects tUTC's modulo form, not the offset
 		// magnitude served here.
 		leap := u.DtLS
@@ -859,7 +863,9 @@ const sbasStaleAfter = rfStaleAfter
 // applications") keeps the served health_code latched at 3. MT0 is a
 // condition, not a message-by-message state: a system under test interleaves
 // MT0 with its normal correction stream — since 2003 typically as "MT0/2", an
-// MT2 body broadcast in the MT0 frame slot (EGNOS-SDD-OS §4.1 WARNING) — and a
+// MT2 body broadcast in the MT0 frame slot (EGNOS-SDD-OS §4.1.2 "EGNOS SIS
+// Message Characteristics", the WARNING that follows Table 4; the SDD's own
+// cross-reference style is "Refer to WARNING in section 4.1.2" — regression fix) — and a
 // DO-229 receiver excludes the GEO on any MT0 sighting rather than re-admitting
 // it one message later. Deriving health from the *last* message therefore read
 // "OK" for almost every feed build on a test-mode GEO (the exact wrong answer
@@ -943,8 +949,10 @@ const gloBnMalfunctionBit = 0x4
 // packed encoding Bn | ℓn<<3 — the raw 3-bit Bn word in the low bits plus the
 // GLONASS-M ℓn fast malfunction flag (GLO-ICD-5.1 §4.4; ≤10 s latency vs Bn's
 // ≤1 min, §5.3 note) one bit above it, so the served subcode preserves both
-// flags and a Bn-vs-ℓn disagreement window is visible to consumers
-// (docs/OUTPUT.md §2.2). Either malfunction bit gates usability: ICD Table 5.1
+// flags and a Bn-vs-ℓn disagreement window is visible to consumers (the
+// health_subcode row of docs/OUTPUT.md §1.1's svs field table — NOT
+// §2.2, which is the frozen-enums table and has no health_subcode row).
+// Either malfunction bit gates usability: ICD Table 5.1
 // defines operability over Bn(ℓn) jointly.
 const (
 	gloLnShift          = 3
@@ -1108,8 +1116,25 @@ func healthFor(g gnss.GNSSID, sig, raw int) (code, level int) {
 			// summary reads healthy: inconsistent broadcast — surface as marginal.
 			return 2, 1
 		default:
-			// 0, or exactly one of the L1C/A / L1C/B pair set — the designed
-			// normal-operation patterns.
+			// regression fix — what the spec actually designs, and what we do with the
+			// rest. QZSS-PNT-006 Table 5.4.1-2 states the pair is exclusive AND
+			// that the UNTRANSMITTED member's health bit is pinned high: L1C/A
+			// Health is "Fixed to '1' when the L1C/B signal is transmitted",
+			// L1C/B Health is "Fixed to '1' when the L1C/A signal is
+			// transmitted". So with everything else clear there are exactly TWO
+			// designed normal-operation words — 000001 (L1C/A transmitted,
+			// L1C/B's bit pinned) and 010000 (the mirror). All-zeros is
+			// therefore off-nominal, not "designed": a conforming SV cannot
+			// broadcast it, because one of the pair is always pinned to 1.
+			//
+			// We nonetheless fail OPEN on it (healthy), deliberately: no signal
+			// is *indicated* unhealthy in an all-zero word, so escalating it
+			// would manufacture a health_change out of a receiver/decoder
+			// artifact rather than a broadcast fault. Adding the symmetric
+			// inconsistent arm (raw&(L1CA|L1CB)==0 → marginal, mirroring the
+			// both-set case above) is a defensible future change; it is a
+			// behavior change and was judged out of scope for a comment-level
+			// finding — see regression fix before re-litigating.
 			return 1, 0
 		}
 	default:

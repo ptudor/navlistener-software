@@ -15,10 +15,13 @@ import (
 // Tables 7-5…7-10). Each frame carries a 288-bit message — PRN(6) MesType(6)
 // SOW(18) data(234) CRC-24Q(24) — that the satellite LDPC(96,48)-encodes to 576
 // symbols; the u-blox receiver decodes the LDPC and delivers exactly the 288
-// information bits as one 9-word SFRBX (verified: 3737/3737 captured frames pass
-// CRC-24Q as a plain 9-word big-endian bit stream — the capture suite lives in
-// go/internal/ingest/realframes_test.go, TestRealBeiDouBCNAV2). The ephemeris is
-// split across message types 10 (Ephemeris I) and 11 (Ephemeris II); type 30
+// information bits as one 9-word SFRBX. Verified 3737/3737 frames pass CRC-24Q
+// as a plain 9-word big-endian bit stream on the 2026-07 live dev capture — that
+// capture is NOT committed, so the figure is attributed rather than reproducible
+// from the tree. What IS committed is the 270-frame regression fixture
+// go/internal/ingest/testdata/f9t_capture.ubx (270/270 decode clean), exercised
+// by go/internal/ingest/realframes_test.go, TestRealBeiDouBCNAV2. The ephemeris
+// is split across message types 10 (Ephemeris I) and 11 (Ephemeris II); type 30
 // carries the clock, group delays, and the BDGIM ionosphere coefficients. Like
 // GPS CNAV the ephemeris uses the ΔA parameterization with rate terms: A(tk) =
 // A_ref + ΔA + Ȧ·tk, n = n₀ + Δn₀ + ½Δṅ₀·tk. All offsets and scales are

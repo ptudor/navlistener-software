@@ -716,8 +716,15 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 //   - SBAS: PRN 120–158 (EGNOS-SDD-OS §5: "Track SBAS satellites (PRNs from
 //     120 to 158)"; u-blox delivers the PRN directly as svId for gnssId 1).
 //   - QZSS: svId 1–10 — the u-blox svId is PRN−192 (documented at the LNAV
-//     decoder, gnss/frame/gps_lnav.go) and the QZSS PRN allocation is 193–202
-//     (QZSS-PNT-006 Table 4.2.2-5 and passim: PRN "Effective Range 193-202").
+//     decoder, gnss/frame/gps_lnav.go) and the QZSS PRN allocation is 193–202.
+//     Canonical authority is QZSS-PNT-006 Table 3.2.1-1 "Assignment of the PRN
+//     Numbers by Satellite Categories", whose SV ID column literally equals
+//     PRN−192 on every assigned row (194→2, 195→3, 196→4, 197→5, 199→7, 200→8,
+//     201→9), independently proving the offset this envelope relies on;
+//     Table 4.2.2-5 (a CNAV2 message parameter table) states the same span as
+//     PRN "Effective Range 193-202". Table 3.2.1-1 also records the
+//     alternate L1C/B PRNs 203–206 — outside this svId envelope, and relevant
+//     only if raw L1C/B PRNs ever become consumable.
 //   - NavIC: svId 1–14 per the IRNSS SPS ICD's code-phase assignment
 //     (NAVIC-SPS-L5S §4.1 Table 7: PRN IDs 1–14).
 //
@@ -753,6 +760,16 @@ func isCNAVSignal(id gnss.GNSSID, sig int) bool {
 // dispatch map (isCNAVSignal, docs/CONSTELLATIONS.md §2.1) says GPS sigId 3/4
 // and QZSS sigId 4/5 are L2C, GPS 6/7 and QZSS 8/9 are L5. Storing only the
 // tracked carrier's bit keeps healthFor's per-signal arm a plain 0/1 test.
+//
+// regression fix — the L1 bit (the MSB of the 3-bit field) is DELIBERATELY dropped
+// here, not overlooked. This function feeds a per-signal svState keyed on the
+// L2C/L5 sigId; the L1 entry (`@0`) carries its own, independently decoded
+// subframe-1 health word, so nothing downstream currently has a place to put a
+// second opinion of L1. MT10's L1 bit is nevertheless the natural input to the
+// LNAV-vs-CNAV cross-signal health comparison the INTEGRITY doc gestures at —
+// surface it onto the physical SV's CNAV evidence when such a detector lands
+// (cross-signal scope was position/clock only). Until then this is a
+// recorded scope decision: do not re-flag the unused bit.
 func cnavCarrierHealth(id gnss.GNSSID, sig, h3 int) int {
 	l2, l5 := (h3>>1)&1, h3&1
 	if id == gnss.GPS {
@@ -1382,6 +1399,15 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 	// outside every IODE/IODC-scoped data set). Restricted to the decoded
 	// types: an unparsed MesType leaves m's flag fields zero, and folding
 	// those would fabricate a "flags clear" observation.
+	//
+	// regression fix — recorded so future passes stop re-flagging it: MT31/32/33
+	// (almanac/EOP/BGTO, Figures 6-6/6-7/6-8) carry the SAME DIF/SIF/AIF/SISMAI
+	// block, and this switch deliberately does NOT fold from them. That is the
+	// regression fix rule, not an oversight: those types are not structurally decoded
+	// here, so folding them would mean either fabricating zeros or growing new
+	// decode scope. The cost is bounded to seconds — 10/11/30 broadcast
+	// continuously (§6.2.3), so a flag flip is picked up on the next one. Fold
+	// 31/32/33 in only if/when their bodies are decoded (almanac support).
 	switch m.MesType {
 	case 10, 11, 30, 34, 40:
 		st.bdsDIF, st.bdsSIF, st.bdsAIF, st.bdsSISMAI, st.haveBdsFlags = m.DIF, m.SIF, m.AIF, m.SISMAI, true
@@ -1404,8 +1430,14 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		// the carried data-set property is the TRACKED signal's (B2a
 		// data component, sigId 8) full group delay, eq. 7-5's TGD_B2ap +
 		// ISC_B2ad (BDS-SIS-ICD-B2a v1.0 §7.6.2, Table 7-6) — TGD_B2ap alone is
-		// the pilot component's eq. 7-4 correction. Both addends are IODC-scoped
-		// MT30 fields, so an ISC-only revision is a legitimate tgdRefresh below.
+		// the pilot component's eq. 7-4 correction. both addends are
+		// MT30 fields broadcast ALONGSIDE the IODC-scoped clock set, not
+		// themselves IODC-scoped — §7.4.2 binds IODC to "a set of clock
+		// correction parameters", and that set is Table 7-5's toc/a0/a1/a2
+		// block; Table 7-6 (TGD_B1Cp/TGD_B2ap/ISC_B2ad) carries no
+		// issue-of-data statement at all. The carry below therefore keys on the
+		// VALUE changing, not on IODC — so an ISC-only revision is still a
+		// legitimate tgdRefresh, and nothing here may be cached against IODC.
 		st.bcTGD, st.haveBcTGD = m.TGDB2ap+m.ISCB2ad, true
 		// MT30 is the BDGIM carrier; fold the coefficient set
 		// freshest-wins so it is served/persisted rather than dropped.
