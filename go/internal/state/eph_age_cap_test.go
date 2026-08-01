@@ -3,6 +3,9 @@ package state
 import (
 	"testing"
 	"time"
+
+	"github.com/ptudor/gnss"
+	"github.com/ptudor/navlistener/internal/ingest"
 )
 
 // TestPropagateEphAgeCap guards regression fix (the documented regression fix remainder): an SV
@@ -54,5 +57,40 @@ func TestPropagateEphAgeCap(t *testing.T) {
 	if *sv.EphAgeM < 72*60 {
 		t.Errorf("eph_age_m = %.1f min for a 7 d old ephemeris, want ≥ %d (wall-clock, not the wrapped SOW age)",
 			*sv.EphAgeM, 72*60)
+	}
+}
+
+// TestPropagateEphAgeCapReplayBlind guards the regression fix cap gates on the
+// collector-local apply time (ephAt), which a push spool drain resets to ≈ now
+// when it applies a days-old replayed set — so the cap passed, kepler.Propagate
+// evaluated the orbit at a half-week-wrapped tk (a position wrong by thousands
+// of km served fresh), and the feed's eph_age_m read the wrapped-small SOW age,
+// blinding eph_aged. The forensic reception stamp (ephRecvAt = f.Recv) must
+// close both: no position, and a monotone multi-day age.
+func TestPropagateEphAgeCapReplayBlind(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	recvAt := now.Add(-5 * 24 * time.Hour) // broadcast/received 5 days ago; drained now
+
+	for _, w := range [][]uint32{sf1Words(85), sf2Words(85, 205075516), sf3Words(85)} {
+		s.Apply(&ingest.RawFrame{
+			Recv: recvAt, RecvLocal: now, Source: "test",
+			GnssID: gnss.GPS, SvID: 5, SigID: 0, Words: w,
+		})
+	}
+
+	s.Propagate(now)
+	sv := s.FeedSVs(now)["G05@0"]
+	if sv.XM != nil {
+		t.Error("5 d old replayed ephemeris (applied just now) served a position: the serving cap is replay-blind")
+	}
+	if sv.EphAgeM == nil {
+		t.Fatal("eph_age_m absent for a replayed 5 d old ephemeris")
+	}
+	// The SOW age at 5 d wraps to ≈ −2 d; the served age must instead be the
+	// monotone forensic wall-clock age (≈ 7200 min), far past the 140 min alert.
+	if *sv.EphAgeM < 71*60 {
+		t.Errorf("eph_age_m = %.1f min for a replayed 5 d old set, want ≥ %d (forensic age, not the wrapped SOW age)",
+			*sv.EphAgeM, 71*60)
 	}
 }

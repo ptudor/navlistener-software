@@ -483,22 +483,31 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 			// MIDDLE of the interval (GLO-ICD-5.1 §4.4) — documented in
 			// docs/OUTPUT.md §1.1, not a bug.
 			age := gnsstime.EphAgeDay(gloTOD(now), st.gloEph.Tb) / 60.0
-			// regression fix (the regression fix discipline at GLONASS's ±12 h horizon): the
-			// EphAgeDay wrap saturates at +720 min and then goes negative, so a
-			// worsening SV's served age would lie and flip the eph_aged detector
-			// back to "fresh". Past the serving cap switch to the wall-clock age
-			// since apply — a lower bound on the true broadcast age, monotone,
-			// cannot wrap — so eph_aged latches correctly with no further change.
-			if wall := now.Sub(st.gloEphAt); !st.gloEphAt.IsZero() && wall > gloPropagateMaxEphAge {
-				age = wall.Minutes()
+			// regression fix (replacing the regression fix wall-switch + 720-clamp pair, which
+			// was day-PERIODIC — at +24 h a frozen tb's wrapped age re-read ≈ 0
+			// and eph_aged debounce-confirmed a false recovery daily, and a
+			// reception loss mid-episode stepped the served age DOWN from 720 to
+			// 60): past the serving bound, serve the wall-clock time since the tb
+			// VALUE last changed (gloTbAt) — monotone in every regime, no wrap,
+			// no step-down. It can LEAD the broadcast-epoch age by up to half a
+			// tb interval (tb is the interval MIDDLE, GLO-ICD-5.1 §4.4, so its
+			// strings begin ≤ 30 min before tb's own epoch) — a conservative
+			// bias, acceptable in a fault regime far past the 140 min eph_aged
+			// threshold. a replayed stale set has gloTbAt ≈ now but a
+			// days-old forensic stamp — take the larger of the two ages.
+			tbAge := now.Sub(st.gloTbAt)
+			if fr := now.Sub(st.gloEphRecvAt); !st.gloEphRecvAt.IsZero() && fr > tbAge {
+				tbAge = fr
+			}
+			if !st.gloTbAt.IsZero() && tbAge > gloPropagateMaxEphAge {
+				age = tbAge.Minutes()
 			} else if age < gloServeMinTk.Minutes() {
-				// regression fix follow-up, frozen-tb regime: reception is live (the wall
-				// switch above did not fire) but the day-wrapped age has left the
-				// legitimate window — past +12 h it re-wraps NEGATIVE, which would
-				// un-fire eph_aged on a worsening SV. The true broadcast age is
-				// unknowable here without extra state, but it is ≥ half a day, so
-				// clamp to the wrap ceiling (+720 min) — monotone enough to keep
-				// eph_aged latched, and honest as a lower bound.
+				// First-apply mis-epoch residual (regression fix follow-up, narrowed by
+				// regression fix — the frozen-tb re-wrap case is handled above): a
+				// freshly-received, bogus-but-Hamming-valid tb far from the wall
+				// TOD reads wrapped-negative here while gloTbAt is fresh. The true
+				// broadcast age is unknowable; clamp to the +720 wrap ceiling so a
+				// negative alias can never read "fresher than fresh".
 				age = 720
 			}
 			if finite(age) {
@@ -554,7 +563,16 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 		// eph_aged latched. Inside the cap the ICD-defined SOW age (which can be
 		// legitimately negative before toe) is served unchanged, per the §1.1
 		// contract.
-		if wall := now.Sub(st.ephAt); !st.ephAt.IsZero() && wall > propagateMaxEphAge {
+		// the apply-time age alone is replay-blind — a spool drain
+		// applies a days-old set with ephAt ≈ now while the SOW age wraps small,
+		// exactly the lie this fallback exists to prevent. Take the larger of the
+		// apply-time and forensic-reception ages (they agree to ±5 min live;
+		// replay makes the forensic age the honest one) and switch on the cap.
+		wall := now.Sub(st.ephAt)
+		if wr := now.Sub(st.ephRecvAt); !st.ephRecvAt.IsZero() && wr > wall {
+			wall = wr
+		}
+		if !st.ephAt.IsZero() && wall > propagateMaxEphAge {
 			age = wall.Minutes()
 		}
 		if finite(age) {

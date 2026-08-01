@@ -240,6 +240,27 @@ type svState struct {
 	// gloEphAt is the wall-clock apply time of the current GLONASS ephemeris,
 	// the analog of ephAt: the GLONASS disco staleness gate uses it.
 	gloEphAt time.Time
+	// gloTbAt  is the collector wall-clock instant the broadcast tb
+	// VALUE last changed. Unlike gloEphAt it is NOT re-stamped by same-tb
+	// reassemblies, so it measures broadcast-CONTENT staleness where gloEphAt
+	// measures reception staleness. A healthy SV updates tb every 30/45/60 min
+	// (GLO-ICD-5.1 §4.4, Table 4.3), so now−gloTbAt ≤ 60 min in normal ops; a
+	// frozen-tb fault (DEFENSE-PNT's stale-broadcast class) grows it without
+	// bound. The serving gate keys on it — subsuming the regression fix reception-wall
+	// gate, since gloEphAt ≥ gloTbAt always — and past the cap feedSV serves
+	// now−gloTbAt as eph_age_m: monotone in every regime (frozen-tb live,
+	// frozen-tb-then-dark, plain reception loss), no day-wrap, no step-down.
+	// The previous wall-switch + 720-clamp pair was day-PERIODIC: at +24 h a
+	// frozen tb's day-wrapped tk re-entered the legitimate window, re-serving
+	// day-old positions as fresh for ~2¼ h every day while eph_aged
+	// false-recovered.
+	gloTbAt time.Time
+	// gloEphRecvAt  is the forensic reception stamp (f.Recv) of the
+	// current GLONASS set — the replay-aware twin of ephRecvAt: a spool drain
+	// applies days-old sets with gloTbAt/gloEphAt ≈ now, and a replayed tb
+	// whose time-of-day happens to land inside the tk window (~9 % of a day's
+	// sets) would otherwise serve a days-old state vector as fresh.
+	gloEphRecvAt time.Time
 	// GLONASS time-disco is deferred : the tb changeover is detected at the string-3
 	// (clockless) assembly, but the incoming clock (τn/γn) rides string 4, which completes
 	// the same-tb set ~2 s later. At the changeover we retain the OUTGOING clock and the
@@ -286,6 +307,17 @@ type svState struct {
 	// to ±half-week, so an outgoing ephemeris ~1 week stale reads as fresh and produces the
 	// exact phantom critical disco the regression fix gate exists to prevent. Wall-clock cannot wrap.
 	ephAt time.Time
+	// ephRecvAt  is the FORENSIC reception stamp (f.Recv) of the same
+	// applied ephemeris — the feeder's wall clock, not this collector's. ephAt
+	// alone is replay-blind: a push spool drain applies days-old sets with
+	// ephAt ≈ now, so the regression fix serving cap and the feed's eph_aged fallback
+	// pass while EphAge half-week-wraps and Propagate serves phase-aliased
+	// positions stamped fresh. Both gates therefore ALSO require this stamp to
+	// be within the cap. The feeder stamp's ±5 min ingest slack is negligible
+	// against the multi-hour caps, and a broken feeder clock fails conservative
+	// (position absent, other stations corroborate) instead of serving aliases.
+	// Elapsed-time math (lastSeen/expiry) must never read this — regression fix.
+	ephRecvAt time.Time
 	// bcIODC is BeiDou B-CNAV2's type-30/34 clock IODC, tracked separately
 	// from iod (the type-10/11 ephemeris IODE) so a clock-only refresh (same
 	// ephemeris, new af0/af1/af2) is not silently dropped by the ephemeris IODE
@@ -829,6 +861,7 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 		// a late MT30 finally decodes, re-opening a sliver of the half-week-wrap
 		// window the cap exists to close. Mirrors the LNAV path's regression fix split.
 		st.ephAt = recv
+		st.ephRecvAt = f.Recv // forensic stamp for the replay-aware serving cap
 	}
 	if !clkOK {
 		clk = st.clk // keep the previously applied clock; haveClk gates serving it
@@ -972,7 +1005,8 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 			s.computeDisco(st, eph, clk, recv)
 		}
 		st.eph, st.iod, st.haveEph = eph, newIOD, true
-		st.ephAt = recv // collector-local apply time for the disco staleness gate 
+		st.ephAt = recv       // collector-local apply time for the disco staleness gate 
+		st.ephRecvAt = f.Recv // forensic stamp for the replay-aware serving cap
 	}
 	// The clock comes wholly from subframe 1 (af0/af1/af2/Toc/TGD), so it is
 	// self-coherent even on a clock-only refresh; residual (recorded): after a
@@ -1073,8 +1107,9 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 		s.computeDisco(st, eph, clk, recv)
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
-	st.haveClk = true // this format's ephemeris set always carries the clock
-	st.ephAt = recv   // regression fix (collector-local, regression fix)
+	st.haveClk = true     // this format's ephemeris set always carries the clock
+	st.ephAt = recv       // regression fix (collector-local, regression fix)
+	st.ephRecvAt = f.Recv // forensic stamp for the replay-aware serving cap
 	st.accKind, st.accIdx = accSISA, st.galW[3].SISA
 }
 
@@ -1188,8 +1223,9 @@ func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 		s.computeDisco(st, eph, clk, recv)
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
-	st.haveClk = true // this format's ephemeris set always carries the clock
-	st.ephAt = recv   // regression fix (collector-local, regression fix)
+	st.haveClk = true     // this format's ephemeris set always carries the clock
+	st.ephAt = recv       // regression fix (collector-local, regression fix)
+	st.ephRecvAt = f.Recv // forensic stamp for the replay-aware serving cap
 	st.accKind, st.accIdx = accSISA, st.fnav[1].SISA
 }
 
@@ -1257,8 +1293,9 @@ func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 		s.computeDisco(st, eph, clk, recv)
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, newIOD, true
-	st.haveClk = true // this format's ephemeris set always carries the clock
-	st.ephAt = recv   // regression fix (collector-local, regression fix)
+	st.haveClk = true     // this format's ephemeris set always carries the clock
+	st.ephAt = recv       // regression fix (collector-local, regression fix)
+	st.ephRecvAt = f.Recv // forensic stamp for the replay-aware serving cap
 	st.health, st.haveHealth = st.bd1.Health, true
 	st.accKind, st.accIdx = accURA, st.bd1.URAI
 	st.aodc, st.aode, st.haveAOD = st.bd1.AODC, st.bd1.AODE, true
@@ -1423,7 +1460,8 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		}
 	}
 	st.eph, st.clk, st.iod, st.haveEph = eph, clk, st.bc10.IODE, true
-	st.ephAt = recv // regression fix (collector-local, regression fix)
+	st.ephAt = recv       // regression fix (collector-local, regression fix)
+	st.ephRecvAt = f.Recv // forensic stamp for the replay-aware serving cap
 	if clkOK {
 		st.bcIODC, st.haveBcIOD = st.bcClk.IODC, true
 		st.clkHasBcTGD = nextClkHasTGD
@@ -1632,8 +1670,17 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		}
 		st.discoPendClk = false
 	}
+	// stamp gloTbAt only when the tb VALUE changes (or on the first
+	// set) — a same-tb reassembly refreshes gloEphAt (reception is live) but
+	// must NOT refresh gloTbAt, which is exactly what lets it see through a
+	// frozen-tb fault. The IsZero arm only backfills a state that somehow has
+	// an ephemeris without a stamp (defensive; Apply always sets both).
+	if !st.haveGloEph || eph.Tb != st.gloEph.Tb || st.gloTbAt.IsZero() {
+		st.gloTbAt = recv
+	}
 	st.gloEph, st.haveGloEph = eph, true
-	st.gloEphAt = recv // collector-local, as ephAt
+	st.gloEphAt = recv       // collector-local, as ephAt
+	st.gloEphRecvAt = f.Recv // forensic stamp for the replay-aware serving gate
 }
 
 // gloDiscoMaxTk  bounds the broadcast-time distance |tb_new − tb_old|
@@ -1877,21 +1924,31 @@ func (s *Store) Propagate(now time.Time) {
 				if !st.haveGloEph {
 					continue
 				}
-				// refuse to serve positions from a GLONASS ephemeris past its
-				// wall-clock validity cap (see gloPropagateMaxEphAge). Without this gate
-				// the frozen state was re-integrated and re-stamped fresh on every tick
-				// forever — through the km-wrong 0.5–2 h regime (reachable from a plain
-				// reception gap: any decoded string refreshes lastSeen, so choppy
-				// reception keeps the entry alive without completing a 1/2/3 set) and
-				// past the ±12 h EphAgeDay wrap into backward integration. Wall clock
-				// (now − gloEphAt) cannot wrap. Skipping (not zeroing) lets posStaleBound
-				// expire the previously-served position naturally.
-				if st.gloEphAt.IsZero() || now.Sub(st.gloEphAt) > gloPropagateMaxEphAge {
+				// regression fix (refining regression fix): gate serving on broadcast-CONTENT
+				// staleness — the wall-clock time since the tb VALUE last changed.
+				// tb updates every 30/45/60 min on a healthy SV (GLO-ICD-5.1 §4.4,
+				// Table 4.3), so now−gloTbAt ≤ gloPropagateMaxEphAge in normal ops.
+				// This subsumes the regression fix reception-staleness wall gate (gloEphAt ≥
+				// gloTbAt always, so the tb gate fires no later) and — unlike the tk
+				// window alone — is NOT day-periodic: the previous guard pair
+				// re-admitted a frozen-tb set at +24 h (and every 24 h after) when
+				// its day-wrapped tk re-entered the legitimate window, re-serving
+				// day-old positions as fresh for ~2¼ h daily. Wall clock cannot
+				// wrap. Skipping (not zeroing) lets posStaleBound expire the
+				// previously-served position naturally.
+				if st.gloTbAt.IsZero() || now.Sub(st.gloTbAt) > gloPropagateMaxEphAge {
+					continue
+				}
+				// replay guard — a spool drain applies days-old sets with
+				// gloTbAt ≈ now; the FORENSIC reception stamp must also be fresh.
+				if !st.gloEphRecvAt.IsZero() && now.Sub(st.gloEphRecvAt) > gloPropagateMaxEphAge {
 					continue
 				}
 				tk := gnsstime.EphAgeDay(gloTOD(now), st.gloEph.Tb)
-				// Frozen-tb / wrap-alias guard (see gloServeMaxTk): the wall gate
-				// above cannot see broadcast-time staleness when reception is live.
+				// Broadcast-time window (see gloServeMaxTk), kept alongside the
+				// gloTbAt gate: it still guards the FIRST-APPLY mis-epoch case —
+				// a bogus-but-Hamming-valid tb far from the wall TOD arrives with
+				// a fresh gloTbAt, and only tk can see it.
 				if tk > gloServeMaxTk.Seconds() || tk < gloServeMinTk.Seconds() {
 					continue
 				}
@@ -1910,7 +1967,11 @@ func (s *Store) Propagate(now time.Time) {
 			// staleness signal at once. Wall clock (now − ephAt) cannot wrap, the same
 			// reasoning as computeDisco's regression fix gate. Skipping (not zeroing) lets
 			// posStaleBound expire the previously-served position naturally.
-			if st.ephAt.IsZero() || now.Sub(st.ephAt) > propagateMaxEphAge {
+			// the apply-time gate alone is replay-blind — a spool drain
+			// applies days-old sets with ephAt ≈ now — so the FORENSIC reception
+			// stamp must also be inside the cap (see svState.ephRecvAt).
+			if st.ephAt.IsZero() || now.Sub(st.ephAt) > propagateMaxEphAge ||
+				(!st.ephRecvAt.IsZero() && now.Sub(st.ephRecvAt) > propagateMaxEphAge) {
 				// validation follow-up: register the label at (at least) 0 so
 				// LiveSVs drops to 0 when a constellation's last SV is cap-skipped,
 				// instead of latching at the last nonzero value.
