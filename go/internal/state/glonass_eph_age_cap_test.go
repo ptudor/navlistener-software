@@ -243,3 +243,45 @@ func TestGLONASSReplayStaleEph(t *testing.T) {
 		t.Errorf("eph_age_m = %v for a replayed 3 d old set, want ≈ %d (forensic age)", sv.EphAgeM, 3*24*60)
 	}
 }
+
+// TestGLONASSReplayFrozenTbNotReserved guards a spool drain replaying a
+// ≥24 h frozen-tb episode into an expired (re-created) SV entry must not re-open
+// a serving window. The seam: the tb-change frame in the replay is forensically
+// old (f.Recv ≈ a day ago), but the drain's LAST same-tb reassembly is
+// forensically recent, so gloEphRecvAt passes the regression fix gate; with gloTbAt
+// stamped from the collector clock the tb gate also passed, and only the
+// day-periodic tk window remained — which the day-wrapped frozen tb re-enters by
+// construction. gloTbAt must carry the tb change's FORENSIC time so the
+// broadcast-content gate sees through the drain.
+func TestGLONASSReplayFrozenTbNotReserved(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	changeAt := now.Add(-24 * time.Hour) // the tb VALUE last changed a day ago
+	// The tb-change assembly, replayed from the spool: forensically a day old.
+	for _, f := range []*ingest.RawFrame{
+		glonassStringFrame(7, 1, 20000000, 10, 1, 0, 0, changeAt),
+		glonassStringFrame(7, 2, 20000000, 20, 2, 0, 5, changeAt.Add(2*time.Second)),
+		glonassStringFrame(7, 3, 20000000, 30, 3, 0, 0, changeAt.Add(4*time.Second)),
+	} {
+		f.RecvLocal = now
+		s.Apply(f)
+	}
+	// The drain reaches the episode's most recent frames: same tb, forensically
+	// fresh — gloEphRecvAt refreshes and the regression fix reception gate passes.
+	for _, f := range []*ingest.RawFrame{
+		glonassStringFrame(7, 1, 20000000, 10, 1, 0, 0, now.Add(-30*time.Second)),
+		glonassStringFrame(7, 2, 20000000, 20, 2, 0, 5, now.Add(-28*time.Second)),
+		glonassStringFrame(7, 3, 20000000, 30, 3, 0, 0, now.Add(-26*time.Second)),
+	} {
+		f.RecvLocal = now
+		s.Apply(f)
+	}
+	s.Propagate(now)
+	sv := s.FeedSVs(now)["R07@0"]
+	if sv.XM != nil {
+		t.Error("drained day-old frozen-tb set (tk in-window, recent reassembly) served a position")
+	}
+	if sv.EphAgeM == nil || *sv.EphAgeM < 24*60-10 {
+		t.Errorf("eph_age_m = %v for a day-old frozen tb, want ≈ %d (forensic tb age)", sv.EphAgeM, 24*60)
+	}
+}

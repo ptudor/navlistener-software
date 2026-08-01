@@ -256,20 +256,25 @@ type svState struct {
 	// gloEphAt is the wall-clock apply time of the current GLONASS ephemeris,
 	// the analog of ephAt: the GLONASS disco staleness gate uses it.
 	gloEphAt time.Time
-	// gloTbAt  is the collector wall-clock instant the broadcast tb
-	// VALUE last changed. Unlike gloEphAt it is NOT re-stamped by same-tb
-	// reassemblies, so it measures broadcast-CONTENT staleness where gloEphAt
-	// measures reception staleness. A healthy SV updates tb every 30/45/60 min
-	// (GLO-ICD-5.1 §4.4, Table 4.3), so now−gloTbAt ≤ 60 min in normal ops; a
+	// gloTbAt  is the FORENSIC reception instant (f.Recv, regression fix) the
+	// broadcast tb VALUE last changed. Unlike gloEphAt it is NOT re-stamped by
+	// same-tb reassemblies, so it measures broadcast-CONTENT staleness where
+	// gloEphAt measures reception staleness. A healthy SV updates tb every
+	// 30/45/60 min (GLO-ICD-5.1 §4.4, Table 4.3), so now−gloTbAt ≤ 60 min in
+	// normal live ops (f.Recv ≈ collector time when reception is live); a
 	// frozen-tb fault (DEFENSE-PNT's stale-broadcast class) grows it without
 	// bound. The serving gate keys on it — subsuming the regression fix reception-wall
 	// gate, since gloEphAt ≥ gloTbAt always — and past the cap feedSV serves
 	// now−gloTbAt as eph_age_m: monotone in every regime (frozen-tb live,
-	// frozen-tb-then-dark, plain reception loss), no day-wrap, no step-down.
-	// The previous wall-switch + 720-clamp pair was day-PERIODIC: at +24 h a
-	// frozen tb's day-wrapped tk re-entered the legitimate window, re-serving
-	// day-old positions as fresh for ~2¼ h every day while eph_aged
-	// false-recovered.
+	// frozen-tb-then-dark, plain reception loss, spool drain), no day-wrap, no
+	// step-down. The previous wall-switch + 720-clamp pair was day-PERIODIC: at
+	// +24 h a frozen tb's day-wrapped tk re-entered the legitimate window,
+	// re-serving day-old positions as fresh for ~2¼ h every day while eph_aged
+	// false-recovered. The forensic stamp  closes the drain seam: a
+	// replayed ≥24 h frozen-tb episode re-creating an expired SV entry used to
+	// get a collector-time gloTbAt ≈ drain start, and — with gloEphRecvAt
+	// marching to ≈now as the drain reached recent frames — served day-old
+	// positions for up to 60 min until the latch armed.
 	gloTbAt time.Time
 	// gloEphRecvAt  is the forensic reception stamp (f.Recv) of the
 	// current GLONASS set — the replay-aware twin of ephRecvAt: a spool drain
@@ -1735,8 +1740,15 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 	// must NOT refresh gloTbAt, which is exactly what lets it see through a
 	// frozen-tb fault. The IsZero arm only backfills a state that somehow has
 	// an ephemeris without a stamp (defensive; Apply always sets both).
+	// the stamp is the FORENSIC f.Recv, not the collector clock — a
+	// spool drain replaying a frozen-tb episode into an expired (re-created) SV
+	// entry would otherwise mint a fresh collector-time gloTbAt for a tb that
+	// actually changed a day ago, and serve day-old positions for up to 60 min
+	// while gloEphRecvAt (refreshed by the drain's recent same-tb frames)
+	// passes the regression fix gate. Live reception is unaffected: f.Recv ≈ the
+	// collector clock when frames arrive as broadcast.
 	if !st.haveGloEph || eph.Tb != st.gloEph.Tb || st.gloTbAt.IsZero() {
-		st.gloTbAt = recv
+		st.gloTbAt = f.Recv
 	}
 	st.gloEph, st.haveGloEph = eph, true
 	st.gloEphAt = recv       // collector-local, as ephAt
