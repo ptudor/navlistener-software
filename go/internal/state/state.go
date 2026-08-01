@@ -1928,11 +1928,26 @@ func (s *Store) computeDisco(st *svState, newEph kepler.Ephemeris, newClk clock.
 	st.discoAt = now
 }
 
+// liveSVConstellations is the closed set of LiveSVs gauge labels: exactly the
+// constellations with a wired position-serving decoder (docs/CONSTELLATIONS.md
+// §2 — GLONASS via the RK4 branch, the rest via kepler). Propagate
+// zero-fills ALL of them every tick, because a gauge label that is only
+// written on the code path that serves a position LATCHES at its last nonzero
+// value when every SV of that constellation is cap-skipped, tk-skipped, or
+// Expire'd away — a dashboard then shows a constellation "live" after it has
+// gone dark. Extend this list when a new constellation's decoder lands
+// (NavIC), or its gauge will silently never exist — and never latch either
+// (SBAS/IMES/NavIC deliberately absent today: no position path, no series).
+var liveSVConstellations = []string{"gps", "qzss", "galileo", "beidou", "glonass"}
+
 // Propagate re-propagates every SV with a current ephemeris to the wall-clock time
 // now, updating its ECEF position, and refreshes the live-SV gauge. Called on the
 // state tick.
 func (s *Store) Propagate(now time.Time) {
 	counts := map[string]int{}
+	for _, c := range liveSVConstellations {
+		counts[c] = 0 // see liveSVConstellations — no skip path may latch the gauge
+	}
 	for _, sh := range s.shards {
 		sh.mu.Lock()
 		for _, st := range sh.m {
@@ -1988,10 +2003,9 @@ func (s *Store) Propagate(now time.Time) {
 			// stamp must also be inside the cap (see svState.ephRecvAt).
 			if st.ephAt.IsZero() || now.Sub(st.ephAt) > propagateMaxEphAge ||
 				(!st.ephRecvAt.IsZero() && now.Sub(st.ephRecvAt) > propagateMaxEphAge) {
-				// validation follow-up: register the label at (at least) 0 so
-				// LiveSVs drops to 0 when a constellation's last SV is cap-skipped,
-				// instead of latching at the last nonzero value.
-				counts[st.key.G.String()] += 0
+				// no per-path `+= 0` needed — the zero-fill at the top
+				// covers every skip path (this one, the GLONASS gates, and
+				// fully-expired constellations) uniformly.
 				continue
 			}
 			tow := towFor(st.key.G, now)

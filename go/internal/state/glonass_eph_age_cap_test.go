@@ -4,7 +4,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/ptudor/navlistener/internal/ingest"
+	"github.com/ptudor/navlistener/internal/metrics"
 )
 
 // TestGLONASSPropagateEphAgeCap guards regression fix (the GLONASS twin of regression fix): a
@@ -168,6 +171,46 @@ func TestGLONASSFrozenTbGuard(t *testing.T) {
 	if sv.EphAgeM == nil || *sv.EphAgeM < 1430+89 {
 		t.Errorf("eph_age_m = %v after reception loss mid-episode, want ≥ %d (a step down to ~90 un-fires eph_aged)",
 			sv.EphAgeM, 1430+89)
+	}
+}
+
+// TestLiveSVsGaugeDoesNotLatch guards the LiveSVs gauge was written
+// only on the code paths that served a position, so when a constellation's last
+// SV was cap-skipped (GLONASS gates especially) or expired away entirely, the
+// gauge latched at its last nonzero value — a dashboard showing "live" for a
+// constellation gone dark. Propagate must zero-fill every position-serving
+// constellation label each tick.
+func TestLiveSVsGaugeDoesNotLatch(t *testing.T) {
+	s := New(4)
+	t0 := time.Unix(1_700_000_000, 0)
+	gauge := func(c string) float64 { return testutil.ToFloat64(metrics.LiveSVs.WithLabelValues(c)) }
+
+	// GLONASS: serve once, then let the gloTbAt gate skip it.
+	s.Apply(glonassStringFrame(7, 1, 20000000, 10, 1, 0, 0, t0))
+	s.Apply(glonassStringFrame(7, 2, 20000000, 20, 2, 0, 5, t0.Add(2*time.Second)))
+	s.Apply(glonassStringFrame(7, 3, 20000000, 30, 3, 0, 0, t0.Add(4*time.Second)))
+	s.Propagate(t0.Add(5 * time.Second))
+	if got := gauge("glonass"); got != 1 {
+		t.Fatalf("glonass gauge = %v after serving, want 1", got)
+	}
+	s.Propagate(t0.Add(2 * time.Hour)) // past every GLONASS gate; entry still in the map
+	if got := gauge("glonass"); got != 0 {
+		t.Errorf("glonass gauge = %v with its only SV cap-skipped, want 0 (the regression fix latch)", got)
+	}
+
+	// GPS: serve once, then Expire the entry away entirely (the fully-absent-
+	// constellation latch, case (b)).
+	s.Apply(gpsFrame(sf1Words(85), t0))
+	s.Apply(gpsFrame(sf2Words(85, 205075516), t0))
+	s.Apply(gpsFrame(sf3Words(85), t0))
+	s.Propagate(t0)
+	if got := gauge("gps"); got != 1 {
+		t.Fatalf("gps gauge = %v after serving, want 1", got)
+	}
+	s.Expire(t0.Add(3*time.Hour), 2*time.Hour)
+	s.Propagate(t0.Add(3 * time.Hour))
+	if got := gauge("gps"); got != 0 {
+		t.Errorf("gps gauge = %v after its only SV expired, want 0 (the fully-absent latch)", got)
 	}
 }
 
