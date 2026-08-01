@@ -505,6 +505,28 @@ func TestDecodeGalileoINAVWord10GGTO(t *testing.T) {
 		t.Errorf("WN0G = %d, want 37", w.WN0G)
 	}
 
+	// regression fix(a): A1G is two's complement (Table 76 asterisks A0G and A1G, "with
+	// the sign bit (+ or −) occupying the MSB"), but every vector above and
+	// below uses a POSITIVE raw, so a decoder reading it unsigned passed the
+	// whole suite. A real negative rate — Δt_systems shrinking — would then read
+	// as raw+4096: −5 becomes +4091, a ~1.8e-12 s/s error that accumulates
+	// ~150 ns/day into the served gps_offset_ns via Eq. 24's A1G·dt term. A0G is
+	// positive here so a field swap cannot masquerade as a sign bug.
+	negA1G := make([]byte, 16)
+	setContentBits(negA1G, 0, 10, 6)
+	setContentBits(negA1G, 86, 300, 16)    // A0G raw = +300
+	setContentBits(negA1G, 102, 0xFF9, 12) // A1G raw = −7 (12-bit two's complement)
+	w, err = DecodeGalileoINAV(buildGalileoINAVWords(negA1G))
+	if err != nil {
+		t.Fatalf("decode negative A1G: %v", err)
+	}
+	if want := 300 * p2m35; w.A0G != want {
+		t.Errorf("A0G = %v, want %v", w.A0G, want)
+	}
+	if want := -7 * p2m51; w.A1G != want {
+		t.Errorf("A1G = %v, want %v (12-bit two's complement, Table 76)", w.A1G, want)
+	}
+
 	// All four fields all-ones: the §5.1.8 withdrawal.
 	allOnes := make([]byte, 16)
 	setContentBits(allOnes, 0, 10, 6)
@@ -581,6 +603,28 @@ func TestDecodeGalileoFNAVPage4GGTO(t *testing.T) {
 		t.Errorf("WN0G = %d, want 21", w.WN0G)
 	}
 
+	// regression fix(a), F/NAV half: A1G is two's complement (Table 76's asterisk), and
+	// the vector above uses a positive raw, so an unsigned read survived. See
+	// the I/NAV twin for the error magnitude this pins.
+	neg := make([]byte, 32)
+	setFNAVBufBits(neg, 0, 4, 6)
+	setFNAVBufBits(neg, 147, 3, 8)      // t0G raw = 3 → 10800 s
+	setFNAVBufBits(neg, 155, 300, 16)   // A0G raw = +300
+	setFNAVBufBits(neg, 171, 0xFF7, 12) // A1G raw = −9 (12-bit two's complement)
+	setFNAVBufBits(neg, 183, 21, 6)
+	words = fnavBufToWords(neg)
+	StampGalileoFNAVCRC(words)
+	w, err = DecodeGalileoFNAV(words)
+	if err != nil {
+		t.Fatalf("decode negative A1G: %v", err)
+	}
+	if want := 300 * p2m35; w.A0G != want {
+		t.Errorf("A0G = %v, want %v", w.A0G, want)
+	}
+	if want := -9 * p2m51; w.A1G != want {
+		t.Errorf("A1G = %v, want %v (12-bit two's complement, Table 76)", w.A1G, want)
+	}
+
 	all := make([]byte, 32)
 	setFNAVBufBits(all, 0, 4, 6)
 	setFNAVBufBits(all, 147, 0xFF, 8)
@@ -595,6 +639,28 @@ func TestDecodeGalileoFNAVPage4GGTO(t *testing.T) {
 	}
 	if !w.HasGGTO || w.GGTOValid {
 		t.Errorf("all-ones GGTO: HasGGTO=%v GGTOValid=%v, want true/false", w.HasGGTO, w.GGTOValid)
+	}
+
+	// regression fix(b): A0G all-ones ALONE (raw −1) with the other three fields zero
+	// is a legal VALUE, not the §5.1.8 withdrawal — the sentinel is the
+	// four-field conjunction ("When a user receives all four parameters set to
+	// all ones the GGTO is considered as not valid"). The I/NAV decoder had
+	// this case; the F/NAV withdrawal check is separate code, so its `&&`s went
+	// unpinned and could be loosened to `||` without failing any test.
+	minusOne := make([]byte, 32)
+	setFNAVBufBits(minusOne, 0, 4, 6)
+	setFNAVBufBits(minusOne, 155, 0xFFFF, 16)
+	words = fnavBufToWords(minusOne)
+	StampGalileoFNAVCRC(words)
+	w, err = DecodeGalileoFNAV(words)
+	if err != nil {
+		t.Fatalf("decode A0G=-1: %v", err)
+	}
+	if !w.GGTOValid {
+		t.Error("A0G=−1 with other fields zero flagged as withdrawal; the sentinel is the four-field conjunction")
+	}
+	if want := -1 * p2m35; w.A0G != want {
+		t.Errorf("A0G = %v, want %v", w.A0G, want)
 	}
 }
 
