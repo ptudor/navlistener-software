@@ -23,14 +23,20 @@ typedef struct {
     const char *token;    // bearer token (NVS-first; Kconfig is the development fallback)
     const char *station;  // observer/station id
     const char *feed;     // "ubx"
+    // session is the GNF1 boot/session identity sent in every HELLO, REQUIRED:
+    // the collector's replay-dedup key is (observer, session, seq) and it rejects a
+    // sessionless HELLO outright. It is minted once per boot by app_main (never operator-
+    // supplied, never stored) because this feeder's spool is RAM-only — see main.c and
+    // spool.h. Must satisfy gnf1_session_valid().
+    const char *session;
     const char *ca_pem;   // PEM CA to verify the collector; NULL => Mozilla bundle
     bool insecure;        // skip TLS verification (dev only)
 } pusher_cfg_t;
 
 // pusher_start copies cfg and spawns the push task. The spool must already be initialised,
-// and host/token/station must point to valid strings. Call once per boot; there is no
-// stop/reconfigure path. Returns false on allocation failure or if the task could not be
-// created.
+// and host/token/station/session must point to valid strings. Call once per boot; there is no
+// stop/reconfigure path. Returns false on allocation failure, an invalid session, or if the
+// task could not be created.
 bool pusher_start(const pusher_cfg_t *cfg);
 
 // pusher_connected reports whether the push link is currently up (for the status display/LED).

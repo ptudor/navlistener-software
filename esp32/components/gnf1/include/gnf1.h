@@ -77,11 +77,30 @@ void gnf1_frame_header(uint8_t hdr[GNF1_FRAME_HDR], uint8_t type, uint32_t len);
 // navfeeder.c send_data(); normal callers pass records produced by the bounded encoders.
 size_t gnf1_encode_data(uint8_t *out, uint64_t seq, const uint8_t *record, size_t record_len);
 
+// GNF1_SESSION_MAX bounds the HELLO session identity, matching wire.SessionMaxLen (Go) and
+// SPOOL_SESSION_CAP (navfeeder.c). Both reference feeders mint 32 hex characters.
+#define GNF1_SESSION_MAX 64
+
+// gnf1_session_valid reports whether s is an acceptable GNF1 session identity: 1..
+// GNF1_SESSION_MAX bytes of [A-Za-z0-9._-], the same domain as the collector's
+// wire.ValidSession. Exposed so a caller can check a session before it reaches the wire (and
+// so the host tests can pin the domain).
+bool gnf1_session_valid(const char *s);
+
 // gnf1_build_hello writes the HELLO JSON payload into out (capacity cap). Returns the length
-// written, or -1 on truncation. It carries the bearer token and station/feed identity;
-// TLS certificate configuration, if added, belongs to the connection layer.
+// written, or -1 on truncation or an invalid/missing session. It carries the bearer token,
+// the station/feed identity, and the regression fix session; TLS certificate configuration, if
+// added, belongs to the connection layer.
+//
+// session (regression fix, REQUIRED since the 2026-07-31 contract revision) is the feeder's
+// boot/session identity: the collector's replay-dedup key is (observer, session, seq), so the
+// value must be fresh whenever the DATA sequence space restarts from zero and stable while it
+// continues. navfeeder-esp's spool is RAM-only, so its sequence space ALWAYS
+// restarts at boot and app_main mints a new session every boot — that is exactly what keeps
+// post-reboot frames from colliding with the previous boot's ledger rows. Must satisfy
+// gnf1_session_valid; it is emitted unescaped.
 int gnf1_build_hello(char *out, size_t cap, const char *token, const char *station,
-                     const char *feed, bool zstd);
+                     const char *feed, const char *session, bool zstd);
 
 // gnf1_welcome_ok reports whether a WELCOME JSON payload accepted the handshake.
 // welcome must be NUL-terminated in addition to supplying len. The tiny parser

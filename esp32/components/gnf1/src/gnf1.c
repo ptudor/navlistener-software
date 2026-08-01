@@ -126,16 +126,47 @@ static void gnf1_json_escape(char *dst, size_t dstcap, const char *src)
     dst[di] = 0;
 }
 
-int gnf1_build_hello(char *out, size_t cap, const char *token, const char *station,
-                     const char *feed, bool zstd)
+bool gnf1_session_valid(const char *s)
 {
+    // Mirrors the collector's wire.ValidSession and navfeeder.c's session_charset_ok:
+    // 1..GNF1_SESSION_MAX bytes of [A-Za-z0-9._-]. The session lands verbatim inside the
+    // HELLO JSON (it is deliberately NOT escaped — see gnf1_build_hello) and then in the
+    // collector's logs and historian ledger, so the charset is the thing that keeps it from
+    // smuggling quotes, control bytes, or SQL/JSON metacharacters across the boundary.
+    if (!s) return false;
+    size_t n = 0;
+    for (; s[n]; n++) {
+        char c = s[n];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+              c == '.' || c == '_' || c == '-'))
+            return false;
+    }
+    return n >= 1 && n <= GNF1_SESSION_MAX;
+}
+
+int gnf1_build_hello(char *out, size_t cap, const char *token, const char *station,
+                     const char *feed, const char *session, bool zstd)
+{
+    // session : the boot-identity half of the collector's replay-dedup key
+    // (observer, session, seq) — REQUIRED since the 2026-07-31 GNF1 contract revision. A
+    // HELLO without a valid session is rejected before WELCOME
+    // (`{"ok":false,"error":"missing or invalid session"}`), and there is no legacy tier to
+    // fall back on, so refusing to build the frame here is strictly better than emitting one
+    // the collector will certainly reject. Field ORDER and spelling match navfeeder.c's
+    // handshake() byte-for-byte (after "sw", before the optional ",\"zstd\":true"): the JSON
+    // is order-insensitive to Go's decoder, but a byte-identical HELLO across the two feeders
+    // keeps the wire diffable in a packet capture.
+    if (!gnf1_session_valid(session)) return -1;
     char token_esc[512], station_esc[256], feed_esc[128];
     gnf1_json_escape(token_esc, sizeof token_esc, token ? token : "");
     gnf1_json_escape(station_esc, sizeof station_esc, station ? station : "");
     gnf1_json_escape(feed_esc, sizeof feed_esc, feed ? feed : "ubx");
+    // session needs no escaping: gnf1_session_valid just proved it holds no '"', '\', or
+    // control characters.
     int n = snprintf(out, cap,
-                     "{\"token\":\"%s\",\"station\":\"%s\",\"feed\":\"%s\",\"sw\":\"navfeeder-esp/1\"%s}",
-                     token_esc, station_esc, feed_esc,
+                     "{\"token\":\"%s\",\"station\":\"%s\",\"feed\":\"%s\",\"sw\":\"navfeeder-esp/1\","
+                     "\"session\":\"%s\"%s}",
+                     token_esc, station_esc, feed_esc, session,
                      zstd ? ",\"zstd\":true" : "");
     if (n < 0 || (size_t)n >= cap) return -1;
     return n;

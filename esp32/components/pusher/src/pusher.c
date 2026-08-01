@@ -68,6 +68,7 @@ static void pusher_cfg_free(void)
     free((char *)s_cfg.token);
     free((char *)s_cfg.station);
     free((char *)s_cfg.feed);
+    free((char *)s_cfg.session);
     free((char *)s_cfg.ca_pem);
     memset(&s_cfg, 0, sizeof s_cfg);
 }
@@ -226,8 +227,14 @@ static int handshake(esp_tls_t *tls)
     if (tls_write_all(tls, (const uint8_t *)GNF1_MAGIC, 4) != 0) return -1;
 
     char hello[512];
-    int hn = gnf1_build_hello(hello, sizeof hello, s_cfg.token, s_cfg.station, s_cfg.feed, false);
-    if (hn < 0) return -1;
+    // s_cfg.session is validated once in pusher_start, so the only way this build can fail is
+    // truncation from an over-long token/station (regression fix adds ~45 bytes to the HELLO).
+    int hn = gnf1_build_hello(hello, sizeof hello, s_cfg.token, s_cfg.station, s_cfg.feed,
+                              s_cfg.session, false);
+    if (hn < 0) {
+        ESP_LOGE(TAG, "could not build HELLO (token/station too long?); dropping connection");
+        return -1;
+    }
     uint8_t hdr[GNF1_FRAME_HDR];
     gnf1_frame_header(hdr, GNF1_F_HELLO, (uint32_t)hn);
     if (tls_write_all(tls, hdr, sizeof hdr) != 0) return -1;
@@ -369,17 +376,28 @@ static bool pusher_str_ok(const char *in, const char *out) { return !in || out; 
 
 bool pusher_start(const pusher_cfg_t *cfg)
 {
+    // refuse to start without a usable session identity. Unreachable by
+    // construction (app_main mints one before it builds this config), but the failure it
+    // guards is deliberately loud rather than silent: an absent or malformed session makes
+    // every single HELLO unbuildable/rejected, which would otherwise present as an endless
+    // "reconnecting in N ms" loop with no stated cause.
+    if (!gnf1_session_valid(cfg->session)) {
+        ESP_LOGE(TAG, "pusher_start: missing or invalid GNF1 session identity; pusher not started");
+        return false;
+    }
     s_cfg = *cfg;
     // Duplicate the strings so the caller's buffers need not outlive us.
     s_cfg.host = dup_or_null(cfg->host);
     s_cfg.token = dup_or_null(cfg->token);
     s_cfg.station = dup_or_null(cfg->station);
     s_cfg.feed = dup_or_null(cfg->feed ? cfg->feed : "ubx");
+    s_cfg.session = dup_or_null(cfg->session);
     s_cfg.ca_pem = dup_or_null(cfg->ca_pem);
     if (!pusher_str_ok(cfg->host, s_cfg.host) ||
         !pusher_str_ok(cfg->token, s_cfg.token) ||
         !pusher_str_ok(cfg->station, s_cfg.station) ||
         !s_cfg.feed || // feed's input is never NULL (falls back to "ubx"), so its dup must succeed
+        !s_cfg.session || // validated non-NULL above, so its dup must succeed too
         !pusher_str_ok(cfg->ca_pem, s_cfg.ca_pem)) {
         ESP_LOGE(TAG, "pusher_start: out of memory duplicating config strings; pusher not started");
         pusher_cfg_free();

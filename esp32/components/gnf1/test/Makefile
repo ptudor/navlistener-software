@@ -14,13 +14,21 @@ CFLAGS  ?= -O1 -Wall -Wextra -std=c11
 BUILD   := build
 GOLDEN  := ../../../../testdata/gnf1_frame_type.tsv
 
-TESTS   := frame_type_matrix_test
+# frame_type_matrix_test takes the golden-matrix path as argv[1]; every other suite here is
+# self-contained and takes no arguments.
+TESTS   := frame_type_matrix_test hello_test
 
 .PHONY: all run clean
 all: run
 
 run: $(addprefix $(BUILD)/,$(TESTS))
-	@set -e; for t in $(addprefix $(BUILD)/,$(TESTS)); do echo "==> $$t"; ./$$t $(GOLDEN); done
+	@set -e; for t in $(TESTS); do \
+	    echo "==> $(BUILD)/$$t"; \
+	    case $$t in \
+	    frame_type_matrix_test) ./$(BUILD)/$$t $(GOLDEN) ;; \
+	    *) ./$(BUILD)/$$t ;; \
+	    esac; \
+	done
 
 $(BUILD)/%: %.c ../src/gnf1.c ../include/gnf1.h
 	@mkdir -p $(BUILD)

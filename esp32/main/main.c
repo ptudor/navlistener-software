@@ -10,6 +10,7 @@
 // its one-time credentials on the display (or the physically trusted serial console fallback).
 
 #include <stdatomic.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -17,6 +18,7 @@
 #include "freertos/task.h"
 #include "driver/uart.h"
 #include "esp_log.h"
+#include "esp_random.h"   // esp_fill_random (regression fix session identity)
 #include "esp_system.h"   // esp_restart 
 #include "esp_task_wdt.h" // task watchdog subscription 
 #include "esp_event.h"
@@ -52,6 +54,34 @@ static atomic_bool s_wifi_up;
 static char s_collector[80];      // "host:port" once provisioned, else empty
 static netcfg_t g_cfg;            // live config (NVS over Kconfig defaults)
 static ubx_parser_t s_parser;     // static: its buffers are too large for a task stack
+
+// s_session is the GNF1 boot/session identity sent in every HELLO : 32 hex
+// characters, the same shape navfeeder.c mints. Written once by session_init() during
+// single-threaded startup, read-only afterwards (the pusher takes its own copy).
+//
+// WHY a NEW value every boot, unconditionally: the collector's replay-dedup key is
+// (observer, session, seq), and it must change exactly when the feeder's DATA sequence space
+// restarts from zero. The C feeder can *re-use* a session because it persists one in its disk
+// spool header and resumes the sequence with it; navfeeder-esp cannot and must not — its
+// spool is a RAM-only ring (regression fix / regression fix, spool.h), so every reboot both empties the
+// ring and restarts seq at 0. Minting fresh here is precisely what makes that acceptable:
+// post-reboot frames land in a brand-new sequence space instead of colliding with the
+// previous boot's durable ledger rows and being silently discarded as replays. It is also
+// mandatory on the wire — since the 2026-07-31 GNF1 contract revision the collector rejects a
+// HELLO without a valid session (`{"ok":false,"error":"missing or invalid session"}`).
+static char s_session[33];        // 32 hex chars + NUL (wire.SessionMaxLen is 64)
+
+static void session_init(void)
+{
+    // Called AFTER wifi_start(): esp_random()/esp_fill_random only guarantee true random
+    // numbers while the RF subsystem is enabled (ESP-IDF "Random Number Generation"), and the
+    // one property this value must have is that it differs from the previous boot's — a
+    // deterministic pre-RF seed would silently reinstate the exact collision regression fix fixes.
+    uint8_t b[16];
+    esp_fill_random(b, sizeof b);
+    for (size_t i = 0; i < sizeof b; i++)
+        snprintf(s_session + 2 * i, 3, "%02x", b[i]);
+}
 
 // app_now_ns returns the reception timestamp stamped into each GNF1 record. Until SNTP/RTC
 // lands (P-hw), there is no trustworthy wall clock, so we return 0 and the collector stamps
@@ -271,12 +301,20 @@ void app_main(void)
         ESP_LOGW(TAG, "failed to create ui task; continuing without the dashboard");
     wifi_start();
 
+    // mint the boot session before the pusher can send its first HELLO (see
+    // s_session). Logged because it is the field-side handle for "which boot's sequence space
+    // is this?" when reading the collector's ingest log — it is an opaque per-boot label, not
+    // a credential, so unlike the bearer token it is safe to print.
+    session_init();
+    ESP_LOGI(TAG, "session %s", s_session);
+
     pusher_cfg_t pc = {
         .host = g_cfg.host,
         .port = g_cfg.port,
         .token = g_cfg.token,
         .station = g_cfg.station,
         .feed = "ubx",
+        .session = s_session,
         .ca_pem = NULL, // P-hw: pin the collector CA; today rely on the Mozilla bundle or insecure
         .insecure = g_cfg.insecure,
     };
