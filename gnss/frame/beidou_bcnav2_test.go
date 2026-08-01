@@ -242,11 +242,11 @@ func TestAssembleBeiDouBCNAV2RejectsWrongSlots(t *testing.T) {
 	m10 := &BeiDouBCNAV2{MesType: 10, SOW: 100}
 	m11 := &BeiDouBCNAV2{MesType: 11, SOW: 103, hasEph2: true}
 	clk := &BeiDouBCNAV2{MesType: 30, SOW: 103, hasClk: true}
-	if _, _, _, err := AssembleBeiDouBCNAV2(1, m11, m10, nil); err != errWrongMsgType {
-		t.Errorf("transposed args error = %v, want errWrongMsgType", err)
+	if _, _, _, err := AssembleBeiDouBCNAV2(1, m11, m10, nil); err != ErrWrongMsgType {
+		t.Errorf("transposed args error = %v, want ErrWrongMsgType", err)
 	}
-	if _, _, _, err := AssembleBeiDouBCNAV2(1, m10, clk, nil); err != errWrongMsgType {
-		t.Errorf("clock-as-m11 error = %v, want errWrongMsgType", err)
+	if _, _, _, err := AssembleBeiDouBCNAV2(1, m10, clk, nil); err != ErrWrongMsgType {
+		t.Errorf("clock-as-m11 error = %v, want ErrWrongMsgType", err)
 	}
 }
 

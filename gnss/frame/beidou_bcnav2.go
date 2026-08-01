@@ -285,7 +285,7 @@ func AssembleBeiDouBCNAV2(svid int, m10, m11, mClk *BeiDouBCNAV2) (eph kepler.Ep
 		return kepler.Ephemeris{}, clock.Model{}, false, ErrShortFrame
 	}
 	if m10.MesType != 10 || m11.MesType != 11 || !m11.hasEph2 {
-		return kepler.Ephemeris{}, clock.Model{}, false, errWrongMsgType
+		return kepler.Ephemeris{}, clock.Model{}, false, ErrWrongMsgType
 	}
 	// Both deltas wrap mod 604800 : a 10/11 pair or a current clock
 	// straddling the weekly SOW rollover (e.g. 604797 → 0) is broadcast-adjacent

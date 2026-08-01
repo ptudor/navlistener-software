@@ -148,8 +148,8 @@ func TestAssembleGPSCNAVRejectsWrongSlotsAndClock(t *testing.T) {
 	}
 	m10 := dec(cnavMsg10Words(2296, 0, 2, 0))
 	m11 := dec(cnavMsg11Words(0))
-	if _, _, _, err := AssembleGPSCNAV(gnss.GPS, 5, m11, m10, nil); err != errWrongMsgType {
-		t.Errorf("transposed args error = %v, want errWrongMsgType", err)
+	if _, _, _, err := AssembleGPSCNAV(gnss.GPS, 5, m11, m10, nil); err != ErrWrongMsgType {
+		t.Errorf("transposed args error = %v, want ErrWrongMsgType", err)
 	}
 	if _, _, ok, err := AssembleGPSCNAV(gnss.GPS, 5, m10, m11, m10); err != nil || ok {
 		t.Errorf("non-clock MT10 attached as clock: ok=%v err=%v", ok, err)

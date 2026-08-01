@@ -37,9 +37,12 @@ var ErrShortFrame = errors.New("frame: short frame")
 // issue-of-data tags (they belong to different data sets).
 var errIODMismatch = errors.New("frame: ephemeris IOD mismatch")
 
-// errWrongMsgType is returned when an assembler/exported decoder receives a
-// valid object in the wrong positional slot.
-var errWrongMsgType = errors.New("frame: wrong navigation message type for argument")
+// ErrWrongMsgType is returned when an assembler/exported decoder receives a
+// valid object in the wrong positional slot. Exported (audience is
+// external consumers of this library) so callers can errors.Is an argument
+// transposition apart from an IOD mismatch or a short frame, matching the
+// ErrShortFrame precedent.
+var ErrWrongMsgType = errors.New("frame: wrong navigation message type for argument")
 
 // errBadSubframe  is returned when a length-valid LNAV frame carries an
 // out-of-range subframe id (not 1..5) — a mis-tagged or corrupt frame.
@@ -263,7 +266,7 @@ func AssembleGPS(id gnss.GNSSID, svid int, sf1, sf2, sf3 *GPSSubframe) (kepler.E
 		return kepler.Ephemeris{}, clock.Model{}, ErrShortFrame
 	}
 	if sf1.SubframeID != 1 || sf2.SubframeID != 2 || sf3.SubframeID != 3 {
-		return kepler.Ephemeris{}, clock.Model{}, errWrongMsgType
+		return kepler.Ephemeris{}, clock.Model{}, ErrWrongMsgType
 	}
 	if sf2.IODE != sf3.IODE || sf2.IODE != (sf1.IODC&0xFF) {
 		return kepler.Ephemeris{}, clock.Model{}, errors.New("frame: LNAV IODE/IODC mismatch")

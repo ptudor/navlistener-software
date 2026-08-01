@@ -126,8 +126,8 @@ func TestAssembleGPSRejectsWrongSlots(t *testing.T) {
 	sf1 := decodeBuf(t, buildSf1(t))
 	sf2 := decodeBuf(t, buildSf2(t))
 	sf3 := decodeBuf(t, buildSf3(t))
-	if _, _, err := AssembleGPS(gnss.GPS, 5, sf2, sf1, sf3); err != errWrongMsgType {
-		t.Errorf("transposed args error = %v, want errWrongMsgType", err)
+	if _, _, err := AssembleGPS(gnss.GPS, 5, sf2, sf1, sf3); err != ErrWrongMsgType {
+		t.Errorf("transposed args error = %v, want ErrWrongMsgType", err)
 	}
 }
 

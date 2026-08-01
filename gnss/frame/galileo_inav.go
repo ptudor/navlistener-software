@@ -370,7 +370,7 @@ func AssembleGalileo(svid int, w1, w2, w3, w4, w5 *GalileoINAV) (kepler.Ephemeri
 		return kepler.Ephemeris{}, clock.Model{}, ErrShortFrame
 	}
 	if w1.Type != 1 || w2.Type != 2 || w3.Type != 3 || w4.Type != 4 || (w5 != nil && w5.Type != 5) {
-		return kepler.Ephemeris{}, clock.Model{}, errWrongMsgType
+		return kepler.Ephemeris{}, clock.Model{}, ErrWrongMsgType
 	}
 	if w1.IODnav != w2.IODnav || w1.IODnav != w3.IODnav || w1.IODnav != w4.IODnav {
 		return kepler.Ephemeris{}, clock.Model{}, errIODMismatch

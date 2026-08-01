@@ -216,7 +216,7 @@ func AssembleGalileoFNAV(svid int, p1, p2, p3, p4 *GalileoFNAV) (kepler.Ephemeri
 		return kepler.Ephemeris{}, clock.Model{}, ErrShortFrame
 	}
 	if p1.PageType != 1 || p2.PageType != 2 || p3.PageType != 3 || p4.PageType != 4 {
-		return kepler.Ephemeris{}, clock.Model{}, errWrongMsgType
+		return kepler.Ephemeris{}, clock.Model{}, ErrWrongMsgType
 	}
 	if p1.IODnav != p2.IODnav || p2.IODnav != p3.IODnav || p2.IODnav != p4.IODnav {
 		return kepler.Ephemeris{}, clock.Model{}, errIODMismatch

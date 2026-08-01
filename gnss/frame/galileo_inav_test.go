@@ -379,15 +379,15 @@ func TestAssembleGalileoFNAVChecksPage1IODnav(t *testing.T) {
 func TestGalileoAssemblersRejectWrongSlots(t *testing.T) {
 	const iod = 7
 	w1, w2, w3, w4 := buildGalileoINAVWord1234(t, iod)
-	if _, _, err := AssembleGalileo(14, w1, w2, w4, w3, nil); err != errWrongMsgType {
-		t.Errorf("I/NAV w3/w4 swap error = %v, want errWrongMsgType", err)
+	if _, _, err := AssembleGalileo(14, w1, w2, w4, w3, nil); err != ErrWrongMsgType {
+		t.Errorf("I/NAV w3/w4 swap error = %v, want ErrWrongMsgType", err)
 	}
 	p1 := buildFNAVPage(t, 1, iod)
 	p2 := buildFNAVPage(t, 2, iod)
 	p3 := buildFNAVPage(t, 3, iod)
 	p4 := buildFNAVPage(t, 4, iod)
-	if _, _, err := AssembleGalileoFNAV(14, p2, p1, p3, p4); err != errWrongMsgType {
-		t.Errorf("F/NAV p1/p2 swap error = %v, want errWrongMsgType", err)
+	if _, _, err := AssembleGalileoFNAV(14, p2, p1, p3, p4); err != ErrWrongMsgType {
+		t.Errorf("F/NAV p1/p2 swap error = %v, want ErrWrongMsgType", err)
 	}
 }
 

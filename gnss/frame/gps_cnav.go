@@ -217,7 +217,7 @@ func AssembleGPSCNAV(id gnss.GNSSID, svid int, m10, m11, mClk *GPSCNAV) (kepler.
 		return kepler.Ephemeris{}, clock.Model{}, false, ErrShortFrame
 	}
 	if m10.MsgType != 10 || m11.MsgType != 11 || !m11.hasEph2 {
-		return kepler.Ephemeris{}, clock.Model{}, false, errWrongMsgType
+		return kepler.Ephemeris{}, clock.Model{}, false, ErrWrongMsgType
 	}
 	// the header PRN is the SV discriminator the toe check below cannot
 	// be. For GPS the 6-bit field is the PRN itself (IS-GPS-200N §30.3.3), equal
