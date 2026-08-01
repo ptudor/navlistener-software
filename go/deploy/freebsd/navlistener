@@ -16,8 +16,12 @@
 # without the gate a bad config reported success into a 5 s supervisor crash-loop.
 # -check-config has full startup parity : it loads the [push] TLS keypair/client CA,
 # parses the store DSN, and validates ntrip CA files, so provision certs BEFORE first start;
-# on a bare host it fails by design. Non-fatal "WARNING:" lines (world-readable secrets
-# file, non-loopback binds) are echoed at start without blocking it.
+# on a bare host it fails by design. It runs AS ${navlistener_user}  so its file
+# access rights match the daemon's. Non-fatal "WARNING:" lines (world-readable secrets file,
+# non-loopback binds) are echoed at start without blocking it.
+# Provisioning consequence: ${navlistener_user} must be able to READ the config and every
+# file it references (tls_cert / tls_key / client_ca / ntrip ca_file) — chown them to the
+# daemon user and keep tls_key 0600 (regression fix rejects a world-readable key outright).
 #
 # Log rotation : daemon(8) is invoked with -H so it reopens ${navlistener_logfile}
 # on SIGHUP; ship deploy/freebsd/newsyslog.conf.d/navlistener.conf to
@@ -64,11 +68,23 @@ navlistener_start() {
 		echo "${name} already running? (pid=$(cat ${pidfile}))."
 		return 1
 	fi
-	# gate the start on the regression fix preflight. Runs as root (the rc framework);
-	# a file readable by root but not ${navlistener_user} would still pass here and
-	# fail in the child — visible in ${navlistener_logfile}, not silently green.
-	if ! _preflight="$("${navlistener_program}" -check-config -config "${navlistener_config}" 2>&1)"; then
-		echo "${name}: config validation failed; not starting:"
+	# gate the start on the regression fix preflight. run it AS
+	# ${navlistener_user}, not as root. Root bypasses file permissions, so a config,
+	# TLS key/cert, client CA, or ntrip CA readable by root but NOT by the daemon user
+	# passed a root-run gate and then failed in the child — `service start` still exits
+	# 0 and prints "Starting navlistener.", so the operator-visible surface was green
+	# and only ${navlistener_logfile} showed the 5 s supervisor crash-loop. Running the
+	# check as the daemon user closes that privilege skew instead of documenting it.
+	#
+	# su(1) idiom copied from rc.subr's own ${name}_user handling: -m keeps the
+	# invoking environment (so the daemon user's /usr/sbin/nologin shell is not an
+	# obstacle — with -m the CALLER's shell is invoked), and the inner `sh -c` forces
+	# POSIX-sh semantics because root's login shell on FreeBSD is csh.
+	_check="${navlistener_program} -check-config -config ${navlistener_config}"
+	if ! _preflight="$(su -m "${navlistener_user}" -c "sh -c \"${_check}\"" 2>&1)"; then
+		# Name the user: with regression fix a permission-denied here is a provisioning
+		# fact about ${navlistener_user}, not about root, and the message must say so.
+		echo "${name}: config validation as user ${navlistener_user} failed; not starting:"
 		echo "${_preflight}"
 		return 1
 	fi
