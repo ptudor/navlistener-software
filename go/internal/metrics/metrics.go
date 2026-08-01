@@ -67,7 +67,12 @@ var (
 	// silence trips the idle timeout, frame silence trips the watchdog and shows
 	// here. Timestamp, not age: the Prometheus idiom (age is computed at query
 	// time and cannot go stale between scrapes), mirroring
-	// serve_feed_refresh_timestamp_seconds.
+	// serve_feed_refresh_timestamp_seconds. regression fix alert-threshold caveat: the
+	// regression fix connect-time seed means every watchdog-driven re-dial resets this
+	// gauge, capping the observable age near max_frame_silence + backoff — an
+	// age alert only fires reliably for thresholds BELOW max_frame_silence; the
+	// frame_silence error counter is the unconditional signal for longer
+	// outages.
 	SourceLastFrameTimestamp = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "navlistener_source_last_frame_timestamp_seconds",
 		Help: "Unix time of the last decoded frame per dial source.",

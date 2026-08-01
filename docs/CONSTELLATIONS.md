@@ -74,9 +74,10 @@ way around. QZSS also broadcasts an SBAS-like service on L1S; see §3.
 ## 2. Nav-frame ingestion path
 
 Three raw-frame sources are supported. Each is forwarded verbatim by `navfeeder` and decoded
-in `navlistener/internal/gnss/frame/<constellation>.go`. The parser's contract: **untrusted input**
+in `gnss/frame/<constellation>.go` (the top-level `gnss` module). The parser's contract: **untrusted input**
 — every length, index, and bit-read is bounds-checked. A frame that fails parity/CRC is
-counted (`navlistener_nav_crc_fail_total{gnssid,sigid}`) and dropped, never assembled.
+counted (`navlistener_nav_crc_fail_total{gnssid,sigid,source}` — the `source` label is
+per-link noise visibility) and dropped, never assembled.
 
 ### 2.1 u-blox — UBX-RXM-SFRBX
 

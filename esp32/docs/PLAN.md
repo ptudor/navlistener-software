@@ -26,9 +26,14 @@ matched to `feeder/navfeeder.c`. No I/O — pure encode/parse over buffers.
 - `ubx`: sync-hunt + Fletcher-8 framer; `emit_sfrbx` (LE dwrd → BE nav word); `emit_monrf`,
   `emit_monhw`, `emit_navsat` telemetry (UBX LE → GNF1 BE), all bounds-checked (INTEGRITY
   §9 untrusted-input discipline).
-- **Milestone:** a host build (`components/*/test/`, `idf.py`-independent) runs the same
-  fixtures the Go `feeder_e2e_test.go` uses and produces byte-identical GNF1 records. This
-  is the differential check that the firmware and the C feeder agree.
+- **Milestone (partially delivered — regression fix):** the host suite (`components/gnf1/test/`,
+  `idf.py`-independent) pins `gnf1_frame_type` against the shared 8×16 golden matrix and
+  `gnf1_build_hello` byte-for-byte against the C feeder's spelling. **Still open
+  :** host tests for `gnf1_encode_record`/`gnf1_encode_telem`/`gnf1_encode_data`
+  and the `ubx` emitters (`emit_sfrbx`/`emit_monrf`/`emit_monhw`/`emit_navsat`) against the
+  Go `feeder_e2e_test.go` fixtures — the byte-identical-records differential that would
+  catch an regression fix-class field transposition on this leg (Go↔C telemetry parity is already
+  covered by `TestNavfeederTelemetryEndToEnd`; only the ESP32 leg lacks it).
 
 ## P2 — spool: bounded RAM ring + seq/ack/replay
 

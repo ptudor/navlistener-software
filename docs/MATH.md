@@ -1,7 +1,7 @@
 # navlistener — the GNSS math, laid out for the developer
 
 **Status: design (2026-07-07).** This is the complete reference for every calculation
-`internal/gnss` performs. It is written so a developer with no GNSS background can implement
+the `gnss` module performs. It is written so a developer with no GNSS background can implement
 each function from this page plus the cited ICD section — **the ICD is the authority; this page
 is the map through it.** Every equation carries its source. galmon is used only as a
 *differential-test oracle* (§12), never as a source of code.
@@ -321,7 +321,11 @@ alert at 3 m):
 - **Galileo SISA (0–255)** → metres in four linear bands (OS-SIS-ICD §5.1.12): `0–49: 0–0.49 m`
   (1 cm step), `50–74: 0.5–0.98 m` (2 cm), `75–99: 1–1.96 m` (4 cm), `100–125: 2–6 m` (16 cm),
   `126–254` spare, `255` = **"NO SISA AVAILABLE"** (SISA-invalid → `sisa_valid=false`).
-- **GLONASS F_T (0–15)** → metres by the ICD F_T table; `NONE`/absent ⇒ `sisa_valid=false`.
+- **GLONASS F_T (0–15)** → metres by the ICD F_T table (GLO-ICD-5.1 Table 4.4) — **mapping
+  implemented (`accuracy.GlonassFT`) but deliberately unserved** (regression fix, pending calibration:
+  serve as `sisa_m` vs declare P6+ scope; the string-4 F_T field, bits 30–33, is not yet
+  decoded — see `gnss/frame/glonass_string.go`'s deferral ledger). `NONE`/absent ⇒
+  `sisa_valid=false` once served.
 - **BeiDou** — B1I URAI table (like GPS). B-CNAV2 broadcasts four SIS accuracy indices
   (SISAIoe/SISAIocb/SISAIoc1/SISAIoc2); **their index→metres mapping is deliberately
   deferred** : the B2a ICD's §7.16 tables have not been implemented, so `C##@8`
@@ -535,7 +539,7 @@ Three independent oracles, in CI:
    before interpreting a numerical difference. The comparison uses numerical
    outputs from independently authored implementations.
 
-Every `internal/gnss` decoder is **fuzzed** (`go test -fuzz`) against malformed frames, including
+Every `gnss/frame` decoder is **fuzzed** (`go test -fuzz`) against malformed frames, including
 invalid lengths, out-of-bounds reads, and arithmetic underflows,
 and every propagator has property tests (energy/momentum sanity, continuity across the week
 boundary, non-NaN under degenerate input).

@@ -50,7 +50,7 @@ values, not a receiver's smoothed solution. This is galmon's central insight and
 
 ```
   INGEST (N receivers)  →  DECODE  →  PROPAGATE + INTEGRITY  →  PERSIST   →   SERVE
-  raw nav frames over      internal/gnss    per-SV ephemeris store;   TimescaleDB    the native v2 API:
+  raw nav frames over      gnss module      per-SV ephemeris store;   TimescaleDB    the native v2 API:
   GNF1 (authenticated      frame decoders   Kepler/RK4 ECEF; orbit-   (raw frames +  svs/global/observers/
   push) + dev-LAN pull     → typed nav      disco + clock-disco vs    decoded +      almanac/sbas feeds,
   from our own receivers   messages         last eph; delta-Hz;       events)        events + SSE
@@ -71,7 +71,7 @@ nav-frame output and forward it untouched. Per source:
 | **Septentrio** | mosaic-X5 / PolaRx | **Capture-only:** SBF blocks are framed, CRC-checked, and raw-persisted; live navigation decode is planned. |
 | **RTCM3** | any RTCM source / caster | **Capture-only:** ephemeris/SSR messages are framed, CRC-checked, and raw-persisted; live navigation/SSR decode is planned. |
 
-The `internal/gnss/frame` decoders live centrally; the feeder is dumb. Ingest is a **registry
+The `gnss/frame` decoders live centrally; the feeder is dumb. Ingest is a **registry
 of thin connectors** — read a local feed → frame → ship — so a new receiver type (Unicore,
 Quectel, a bare NMEA+RTCM caster) is one connector, not a rewrite.
 
@@ -81,7 +81,7 @@ Two ingest modes, exactly as radiolistener:
 - **Push** (the fleet): the C `navfeeder` on each receiver connects *out* to the collector's
   authenticated push endpoint over TLS (GNF1). This is the production path.
 
-### Stage 2 — Decode: the `internal/gnss` library
+### Stage 2 — Decode: the `gnss` library (top-level module)
 
 Each raw frame is dispatched by `(gnssId, sigId)` to its ICD decoder, which reverses the
 receiver's word packing back to ICD bit order, checks parity/CRC, and fills a typed nav

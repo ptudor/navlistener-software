@@ -84,6 +84,9 @@ noise_floor_dB  = broadcast MON-RF noise level
 jam_state       = worst-of(receiver jamInd, our agc/cw classification)
 ```
 
+(These are internal derived-quantity names. The **served** feed keys are `cw_suppress` and
+the raw-indicator `noise_level` — §6, regression fix; no dB unit is claimed on the wire.)
+
 A jamming event is **corroborated**, not taken from one box: a real jammer near a station shows
 as `agc_departure` + `cw_suppression` + a C/N₀ collapse across *all* SVs that station tracks,
 simultaneously. A single metric moving alone is more likely a receiver/antenna fault than an

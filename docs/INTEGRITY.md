@@ -242,7 +242,8 @@ Galileo's Open Service Navigation Message Authentication (OSNMA) lets a receiver
 verify that the I/NAV data came from Galileo (TESLA-based, delayed-key). We do **not** re-run the
 full OSNMA verification chain in v1 (it needs the Merkle root / public-key infrastructure and
 tight timing); we **decode and republish the OSNMA status bits** the receiver/frame exposes and
-alert on the `osnma_change` transition (authentication present ↔ absent). Full on-box OSNMA
+alert on the `osnma_change` transition (OSNMA protocol data present ↔ absent — presence, not
+verification, per the regression fix contract note in OUTPUT.md §1.1). Full on-box OSNMA
 verification is a stretch goal (OS-SIS-ICD OSNMA annex). Note the framing: OSNMA proves the *data*
 is genuinely Galileo's — it is provenance, and it still doesn't tell you the *orbit* is good;
 orbit-disco does. Both layers, again.
@@ -324,6 +325,12 @@ synchronized access to shared state:
 | OSNMA | `osnma` | `osnma_change` |
 | silence | `last_seen_s` | `observation_lost` (SV), `station_offline` (observer), `sbas_lost` (SBAS PRN; regression fix) |
 | corroboration | `conf`, `perrecv` | — |
+
+**Scope :** this table maps the core per-SV integrity signals to their primary feed
+fields; it is deliberately **not** the full event vocabulary. The authoritative, complete event
+list — including `ura_alert`, `wn_mismatch`, `leap_mismatch`, `bds_integrity_flag`,
+`position_unknown`, `xsig_divergence`, the two capability events, and the four station-RF
+events — is §5's table, which is kept matched to the shipped `Type:` literals.
 
 Field names and event vocabulary are defined once, in `docs/OUTPUT.md`; the integrity layer
 emits to that standard and consumers read it from there.
