@@ -322,7 +322,11 @@ alert at 3 m):
   (1 cm step), `50–74: 0.5–0.98 m` (2 cm), `75–99: 1–1.96 m` (4 cm), `100–125: 2–6 m` (16 cm),
   `126–254` spare, `255` = **"NO SISA AVAILABLE"** (SISA-invalid → `sisa_valid=false`).
 - **GLONASS F_T (0–15)** → metres by the ICD F_T table; `NONE`/absent ⇒ `sisa_valid=false`.
-- **BeiDou** — B1I URAI table (like GPS), B-CNAV uses SISAoe/SISAoc + a separate accuracy set.
+- **BeiDou** — B1I URAI table (like GPS). B-CNAV2 broadcasts four SIS accuracy indices
+  (SISAIoe/SISAIocb/SISAIoc1/SISAIoc2); **their index→metres mapping is deliberately
+  deferred** : the B2a ICD's §7.16 tables have not been implemented, so `C##@8`
+  entries serve the raw packed composite in `acc_index` (bit layout in OUTPUT.md §1.1)
+  with `sisa_valid=false` and never a metres value.
 
 `sisa_valid` captures the "no accuracy available" sentinels and `sisa_m` carries the metres —
 clients never parse English accuracy strings (`docs/OUTPUT.md §1.1`).

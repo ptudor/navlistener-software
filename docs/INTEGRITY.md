@@ -172,7 +172,7 @@ The baseline vocabulary and severities below are **verified against intsat's shi
 | `eph_aged` | ephemeris age crosses the constellation threshold (§2) | 1 |
 | `orbit_disco` | orbit-disco band change (§2) | 1, → 2 above 10 m |
 | `clock_jump` | time-disco band change | 1, → 2 above 10 ns |
-| `sisa_change` | SISA/URA crosses 3 m, or the broadcast index decodes to the "no accuracy prediction — use at own risk" sentinel (`new_value` `no_accuracy`, regression fix) | 1 |
+| `sisa_change` | SISA/URA crosses 3 m, or the broadcast index decodes to the "no accuracy prediction — use at own risk" sentinel (`new_value` `no_accuracy`, regression fix). BeiDou `C##@8` (packed B-CNAV2 SISAI, OUTPUT.md §1.1 `acc_index`): no metres decode exists, so transitions carry `raw_<packed>` values at **info** severity instead of the 3 m band  | 1 |
 | `observation_lost` | SV silent > 3600 s — classified only while `≥ SilenceMinReceivers` stations are live (below the fleet-footprint floor, silence is orbital mechanics, not an outage; §2) | 1 |
 | `station_offline` | observer unseen > 300 s — wired per regression fix (definition, from the unfiltered station-liveness map) | 1 |
 | `sbas_lost` | SBAS PRN unseen > 300 s  — the augmentation mirror of `observation_lost`, with no visibility caveat (GEOs never set); subject `S<prn>` | 1 |
@@ -222,8 +222,11 @@ uniquely strong because *every* receiver in view should hear the *same* broadcas
   an SV's state — a render cue in the map (solid vs. hollow/dimmed/badged), exactly as
   radiolistener does for aircraft/ships.
 
-**As-built status :** `conf` is served on every `svs` entry and stamped into every SV
-event's `params` — counted from per-source decoded-nav-frame recency inside the 60 s
+**As-built status :** `conf` is served on every `svs` entry and stamped into every
+**satellite×signal (svs-subject) event's** `params` — the station-subject, SBAS-subject
+(`S##`), and cross-signal (`xsig_divergence`) event families deliberately carry no `conf`
+(their subjects are not satellite×signal keys; regression fix) — counted from per-source
+decoded-nav-frame recency inside the 60 s
 fresh-receiver window (§2), so consumers can tell "five stations agree" from "one station said
 so". The **broadcast-agreement divergence detector** (same SV/IOD decoded to different bits by
 different receivers → hard alarm) additionally needs per-source element hashes and is tracked
@@ -319,7 +322,7 @@ synchronized access to shared state:
 | accuracy | `sisa_valid`, `sisa_m`, `acc_index` | `sisa_change` |
 | per-receiver Doppler | `perrecv.delta_hz(_corr)` | (feeds coherent-delta detection) |
 | OSNMA | `osnma` | `osnma_change` |
-| silence | `last_seen_s` | `observation_lost` (SV), `station_offline` (observer) |
+| silence | `last_seen_s` | `observation_lost` (SV), `station_offline` (observer), `sbas_lost` (SBAS PRN; regression fix) |
 | corroboration | `conf`, `perrecv` | — |
 
 Field names and event vocabulary are defined once, in `docs/OUTPUT.md`; the integrity layer

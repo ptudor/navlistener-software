@@ -78,14 +78,14 @@ below):
 | `eph_age_m` | float | ephemeris age, minutes = `ephAge(tow,t0e)/60` (MATH.md §1.1). **Sign convention :** legitimately **negative** while now precedes the reference epoch — for GLONASS that is the steady state for roughly the first half of every tb interval, because the immediate data are referred to the *middle* of the interval (GLO-ICD-5.1 §4.4); Kepler-family ages can likewise be briefly negative before toe. Consumers must not assert `eph_age_m ≥ 0`. Past the constellation's serving cap the value switches to the monotone wall-clock age since apply  |
 | `sisa_valid` | bool | false when the broadcast accuracy is a "none/no accuracy" sentinel |
 | `sisa_m` | float | URA/SISA in metres (MATH.md §6); meaningful only when `sisa_valid` |
-| `acc_index` | int | raw broadcast accuracy index (URA / URA_ED / SISA per constellation, MATH.md §6); present whenever an accuracy field has been decoded — including the "no accuracy prediction, use at own risk" sentinels (GPS/QZSS URA 15, IS-GPS-200N §20.3.3.3.1.3; CNAV URA_ED 15/−16; Galileo SISA 255) that `sisa_valid=false` alone can't distinguish from "not yet decoded"  |
+| `acc_index` | int | raw broadcast accuracy index (URA / URA_ED / SISA per constellation, MATH.md §6); present whenever an accuracy field has been decoded — including the "no accuracy prediction, use at own risk" sentinels (GPS/QZSS URA 15, IS-GPS-200N §20.3.3.3.1.3; CNAV URA_ED 15/−16; Galileo SISA 255) that `sisa_valid=false` alone can't distinguish from "not yet decoded". **Signedness follows the signal's ICD accuracy field** : LNAV URA on `@0` rows is unsigned 0..15; CNAV URA_ED on `@3`/`@6`-family rows is signed −16..15 — a consumer re-deriving metres must treat CNAV values as signed (prefer `sisa_m`, the decoded value). **BeiDou `C##@8` rows are a packed composite** : B-CNAV2's four SIS accuracy indices as `SISAIoe<<11 \| SISAIocb<<6 \| SISAIoc1<<3 \| SISAIoc2` (17 bits), served with `sisa_valid` permanently `false` because the index→metres mapping is deferred to the B2a ICD's §7.16 tables — do **not** push a `@8` `acc_index` through a URA/SISA table |
 | `alert` | bool | GPS/QZSS broadcast URA-alert flag (regression fix/regression fix; IS-GPS-200N §20.3.3.2 LNAV HOW bit 18, CNAV header bit 38): true = the SV declares its URA may be worse than broadcast — use at own risk; absent until decoded |
 | `wn_mismatch` | bool | broadcast week number disagrees with the collector wall-clock week after rollover disambiguation; absent until a broadcast WN has been decoded |
 | `iod` | int | issue-of-data (IODE/IODnav/AODE per constellation) |
 | `orbit_disco_m` | float | position discontinuity at last ephemeris changeover, metres (INTEGRITY.md §3); **absent** when not yet computable (first ephemeris, stale, failed guard) — never a sentinel number |
 | `orbit_disco_age_s` | float | seconds since that changeover |
 | `time_disco_ns` | float | clock discontinuity at changeover, nanoseconds; absent like `orbit_disco_m` |
-| `osnma` | bool | Galileo OSNMA authentication seen active (absent for non-Galileo) |
+| `osnma` | bool | Galileo OSNMA protocol data seen live within the last 60 s (absent for non-Galileo). **Presence only — v1 does not verify: `true` ≠ authenticated** (no TESLA/DSM cryptographic verification is performed; INTEGRITY.md §7; regression fix). `false` means *no live OSNMA inside the window* — either the SV broadcasts all-zeros / sits outside the distributing subset, **or the SV simply has not been received recently** (set below the horizon, lost lock; regression fix) — so `false` is not evidence the SV transmits without OSNMA. Consumers must not render either value as a cryptographic-security claim |
 | `alma_dist_m` | float | broadcast-ephemeris vs almanac/TLE position distance (cross-check) |
 | `last_seen_s` | int | seconds since any receiver last reported this SV |
 | `freq_ch` | int | GLONASS-only : the FDMA frequency channel k ∈ [−7,+6] the tracked signal was received on (receiver `freqId − 7`, boundary-validated). Cross-checkable against the almanac entry's `freq_ch` (HnA-derived) for the same slot — a mismatch means mis-identification or spoofing. Absent for other constellations |
@@ -105,7 +105,7 @@ below):
 | `a0g`,`a1g`,`t0g`,`wn0g` | float/int | raw inter-system offset polynomial terms (Galileo: a0g s, a1g s/s, t0g s, wn0g raw 6-bit truncated week — consumers re-evaluating at their own epoch disambiguate wn0g mod-64, exact under §5.1.8's ±31-week bound) |
 | `af0`,`af1`,`af2` | float | raw SV clock polynomial (MATH.md §4) |
 | `aodc`,`aode` | int | BeiDou age-of-data (BeiDou only) |
-| `conf` | int | corroboration count (INTEGRITY.md §6): distinct sources with a structurally-decoded nav frame for this satellite×signal within the 60 s fresh-receiver window. Always present — 0 = no current nav corroboration (e.g. an observation-only entry), 1 = a single receiver's testimony, ≥ 2 = independently corroborated. Also stamped into every SV event's `params`. The §6 broadcast-agreement *divergence* detector (same SV/IOD, different bits → hard alarm) is tracked P7 work — conf counts presence, it does not yet compare element sets |
+| `conf` | int | corroboration count (INTEGRITY.md §6): distinct sources with a structurally-decoded nav frame for this satellite×signal within the 60 s fresh-receiver window. Always present — 0 = no current nav corroboration (e.g. an observation-only entry), 1 = a single receiver's testimony, ≥ 2 = independently corroborated. Also stamped into every **satellite×signal (svs-subject) event's** `params` — station-subject (`jamming_detected`/`station_offline`…), SBAS-subject (`S##`), and cross-signal (`xsig_divergence`, physical-name subject) events carry no `conf`. The §6 broadcast-agreement *divergence* detector (same SV/IOD, different bits → hard alarm) is tracked P7 work — conf counts presence, it does not yet compare element sets |
 | `perrecv` | object | per-observer reception, keyed by observer id (below) |
 
 `perrecv[<observer_id>]`:
@@ -294,12 +294,17 @@ CREATE TABLE gnss_events (
     old_value  TEXT, new_value TEXT,
     severity   SMALLINT    NOT NULL DEFAULT 0,
     message    TEXT,
-    raw        JSONB
+    raw        JSONB,
+    dedupe_key TEXT                     -- internal retry-idempotency key, never served
 );
 SELECT create_hypertable('gnss_events','time', if_not_exists => TRUE);
 CREATE INDEX idx_gnss_events_sv_time       ON gnss_events (sv, time DESC);
 CREATE INDEX idx_gnss_events_type_time     ON gnss_events (event_type, time DESC);
 CREATE INDEX idx_gnss_events_severity_time ON gnss_events (severity, time DESC);
+-- the writer's INSERT is an upsert on (time, dedupe_key) — a retry after an
+-- ambiguous commit (client saw a timeout, PostgreSQL committed) returns the committed
+-- row's id instead of storing/notifying one real transition twice. NULL on legacy rows.
+CREATE UNIQUE INDEX idx_gnss_events_dedupe ON gnss_events (time, dedupe_key);
 -- notify_gnss_event(): pg_notify('gnss_event', json{id,sv,type,severity})
 -- The payload identifies the row; LISTENers fetch the full row (including message) by id.
 CREATE TRIGGER gnss_event_notify AFTER INSERT ON gnss_events
@@ -337,6 +342,20 @@ CREATE TABLE nav_frames (
 SELECT create_hypertable('nav_frames','ts', chunk_time_interval => INTERVAL '1 hour');
 -- compress_segmentby = 'gnssid', compress_orderby = 'svid, ts DESC'; short raw retention,
 -- long-term lives in per-SV continuous aggregates (ephemeris history).
+
+-- Push-path replay-dedup ledger (regression fix + regression fix): the writer claims each frame's
+-- (source_id, session_id, feeder_seq) in the same transaction that CopyFroms the rows,
+-- so reconnect replay cannot duplicate and a failed commit rolls the claim back.
+-- session_id is the feeder's GNF1 boot identity (DESIGN.md §2): a rebooted feeder's
+-- fresh session makes its restarted sequence space structurally collision-free against
+-- old claims. Dial-mode frames carry no sequence and always pass through.
+CREATE TABLE nav_frames_seq_seen (
+    source_id  TEXT        NOT NULL,
+    session_id TEXT        NOT NULL,
+    feeder_seq BIGINT      NOT NULL,
+    seen_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (source_id, session_id, feeder_seq)
+);
 ```
 
 Raw-plus-decoded means a decoder bug fix lets us **re-derive every historical ephemeris**
