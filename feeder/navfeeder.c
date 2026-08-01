@@ -1614,7 +1614,15 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 		if (acked_now != stall_acked) {
 			stall_acked = acked_now;
 			stall_since = monotonic_s();
-		} else if (sent_upto > acked_now && monotonic_s() - stall_since >= ACK_STALL_S) {
+		} else if (sent_upto <= acked_now) {
+			/* nothing outstanding — keep the stall clock parked. Without
+			 * this, a connection idle >= ACK_STALL_S (silent source: receiver
+			 * unplugged or no fix) satisfied the age test the instant its FIRST
+			 * new frame made sent_upto > acked_now and cycled a healthy link
+			 * exactly at receiver recovery. The stall window must start when
+			 * frames become outstanding, not at connect. */
+			stall_since = monotonic_s();
+		} else if (monotonic_s() - stall_since >= ACK_STALL_S) {
 			log_msg("no ack progress in %d s with frames outstanding past seq %llu; cycling connection for replay",
 				ACK_STALL_S, (unsigned long long)acked_now);
 			g_disconnected = 1;
