@@ -321,10 +321,13 @@ func DecodeGLONASSString(words []uint32) (*GLONASSString, error) {
 	// each awaiting a concrete consumer: tk (string 1 bits 65–76 — frame timestamp
 	// within the day; a tk-vs-tb plausibility gate), P2 (string 2 bit 77 — tb
 	// oddness flag), P4 (string 4 bit 34 — updated-ephemeris-ahead flag), M
-	// (string 4 bits 9–10 — GLONASS/GLONASS-M satellite type, which formally
-	// scopes ℓn/En/P1 per Table 4.5 Remark 1), n (string 4 bits 11–15 — the
-	// broadcast slot number; would enable svId-vs-n cross-checks and unknown-slot
-	// recovery, regression fix), FT (string 4 bits 30–33 — accuracy, tracked as regression fix).
+	// (string 4 bits 9–10 — GLONASS/GLONASS-M satellite type; Table 4.5
+	// Remark 1 scopes the GLONASS-M-only words — M itself plus ℓn, P4, FT,
+	// NT, n, P — while En and P1 are legacy words carried by both
+	// generations, their rows unmarked in Table 4.5; regression fix), n (string 4
+	// bits 11–15 — the broadcast slot number; would enable svId-vs-n
+	// cross-checks and unknown-slot recovery, regression fix), FT (string 4 bits
+	// 30–33 — accuracy, tracked as regression fix).
 	return s, nil
 }
 
