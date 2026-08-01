@@ -179,6 +179,9 @@ func TestDegradedClearedByIdleHealthProbe(t *testing.T) {
 		s.retry = flushRetry{attempts: 2, backoff: time.Millisecond, attemptTO: time.Second}
 		s.batchEvery = 2 * time.Millisecond
 		degrade(s)
+		// the probe clears only after a genuinely quiet window with no
+		// write attempts; model that the failing flushes stopped a while ago.
+		s.lastWriteAttempt = time.Now().Add(-idleQuietWindow)
 		var pings atomic.Int64
 		s.ping = func(ctx context.Context) error { pings.Add(1); return nil }
 		runIdle(t, s, 2*time.Second, func() bool { return s.Degraded() == "" })
@@ -197,11 +200,35 @@ func TestDegradedClearedByIdleHealthProbe(t *testing.T) {
 		s.retry = flushRetry{attempts: 2, backoff: time.Millisecond, attemptTO: time.Second}
 		s.batchEvery = 2 * time.Millisecond
 		degrade(s)
+		s.lastWriteAttempt = time.Now().Add(-idleQuietWindow) // quiet: probe may run 
 		var pings atomic.Int64
 		s.ping = func(ctx context.Context) error { pings.Add(1); return errors.New("db still down") }
 		runIdle(t, s, 2*time.Second, func() bool { return pings.Load() > 0 })
 		if s.Degraded() == "" {
 			t.Error("Degraded() cleared on a FAILING health probe — the historian is still down")
+		}
+	})
+
+	// under a write-side-only fault (read-only standby, disk full,
+	// revoked INSERT) Ping passes while every flush fails. With write attempts
+	// still recent, empty-batch cycles must NOT probe or clear — otherwise, at
+	// any frame rate low enough for the batch to empty between failing cycles,
+	// the probe zeroes the streak between them and Degraded() never latches.
+	t.Run("recent failing writes gate the probe", func(t *testing.T) {
+		s := atomicStore(func(ctx context.Context, batch []*NavFrame) (int64, error) {
+			return 0, errors.New("cannot execute COPY in a read-only transaction")
+		})
+		s.retry = flushRetry{attempts: 2, backoff: time.Millisecond, attemptTO: time.Second}
+		s.batchEvery = 2 * time.Millisecond
+		degrade(s) // the last failing write attempt was moments ago
+		var pings atomic.Int64
+		s.ping = func(ctx context.Context) error { pings.Add(1); return nil }
+		runIdle(t, s, 300*time.Millisecond, func() bool { return s.Degraded() == "" })
+		if s.Degraded() == "" {
+			t.Error("idle probe cleared the streak while writes were actively failing — the regression fix masking regression")
+		}
+		if n := pings.Load(); n != 0 {
+			t.Errorf("probe ran %d times inside the quiet window, want 0 (recent attempts own the verdict)", n)
 		}
 	})
 
@@ -275,6 +302,12 @@ func TestNormalFlushBudgetExhaustionStillDrops(t *testing.T) {
 	}
 	if d := testutil.ToFloat64(metrics.StoreQuarantinedTotal) - droppedBefore; d != 2 {
 		t.Errorf("StoreQuarantinedTotal delta = %v, want 2 (budget-exhausted batch dropped and counted)", d)
+	}
+	// regression fix names the wall budget as a failure class the streak must count;
+	// this pin was missing (mutating the budget-expiry branch's gaveUp=true to
+	// false left the suite green).
+	if n := s.flushFailStreak.Load(); n != 1 {
+		t.Errorf("flushFailStreak = %d after a wall-budget give-up, want 1", n)
 	}
 }
 

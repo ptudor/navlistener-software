@@ -142,6 +142,13 @@ type Store struct {
 	// /healthz handler.
 	lastIdleProbe time.Time
 
+	// lastWriteAttempt is when a non-empty flush last ran (success or failure),
+	// stamped at the top of flush(). The regression fix quiet gate: the idle probe may
+	// clear a latched streak only when no write has been ATTEMPTED for a full
+	// idleQuietWindow, because recent write attempts carry their own verdict.
+	// Run-goroutine-only, like lastIdleProbe.
+	lastWriteAttempt time.Time
+
 	// onDurable, when set (SetDurableNotify), is called once per sequenced
 	// frame the store has DURABLY RESOLVED — the regression fix ACK boundary:
 	// the batch's transaction committed (including frames omitted as replays
@@ -423,10 +430,16 @@ func applyPolicies(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, cf
 // Run goroutine is not reading its queue while it blocks, so it must be short);
 // idleHealthEvery bounds how often a probe runs, because the batch timer can tick
 // every second and a probe against a still-down DB costs a connection acquire and
-// a round trip each time.
+// a round trip each time. idleQuietWindow is the regression fix gate: the probe clears a
+// latched streak only after a full minute with NO write attempts, so it can never
+// override the verdict of flushes that are actively failing (see
+// clearStreakIfIdleHealthy). A minute comfortably exceeds any flush cadence
+// (normalFlushBudget is ~35 s) while keeping the genuine ingest-silent recovery
+// bounded at ~idleQuietWindow + idleHealthEvery.
 const (
 	idleHealthPingTO = 2 * time.Second
 	idleHealthEvery  = 10 * time.Second
+	idleQuietWindow  = time.Minute
 )
 
 // clearStreakIfIdleHealthy is the regression fix idle-recovery probe. flushFailStreak is
@@ -441,9 +454,21 @@ const (
 // daemon never touches the DB on this path) and only on an empty batch (a
 // non-empty cycle carries its own verdict, which must not be overridden by a
 // Ping that succeeds while CopyFrom fails — e.g. a disk-full or schema fault).
+//
+// the empty-batch condition alone is not enough. Under a write-side-only
+// fault (failover to a read-only standby, disk full, revoked INSERT) Ping keeps
+// passing while every flush fails, and at any frame rate low enough for the batch
+// to empty between failing cycles the probe would zero the streak between them —
+// Degraded() would never reach 2 and /healthz would report healthy through an
+// outage that is dropping every frame. The probe therefore also requires a full
+// idleQuietWindow with no write ATTEMPT at all: recent attempts, failed or not,
+// own the verdict; the probe speaks only for genuinely ingest-silent stretches.
 func (s *Store) clearStreakIfIdleHealthy(ctx context.Context, now time.Time) {
 	if s.ping == nil || s.flushFailStreak.Load() == 0 {
 		return
+	}
+	if !s.lastWriteAttempt.IsZero() && now.Sub(s.lastWriteAttempt) < idleQuietWindow {
+		return // writes were attempted recently: their verdict stands 
 	}
 	if !s.lastIdleProbe.IsZero() && now.Sub(s.lastIdleProbe) < idleHealthEvery {
 		return
@@ -842,6 +867,7 @@ func (s *Store) flush(parent context.Context, batch []*NavFrame, deadline time.T
 	if len(batch) == 0 {
 		return true
 	}
+	s.lastWriteAttempt = time.Now() // recent attempts gate the idle probe
 	ctx, cancel := context.WithDeadline(parent, deadline)
 	defer cancel()
 	if s.atomicPersist {
