@@ -33,6 +33,16 @@ func TestEventsQueryFilterLengthBounds(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Errorf("at-limit filters: status %d, want 200: %s", rr.Code, rr.Body.String())
 	}
+
+	// for station-scoped events (jamming/spoofing/rf/antenna/offline)
+	// the sv column holds a station id, which under the documented fleet naming
+	// is a DNS FQDN — the exact triage filter the old 32-byte cap rejected.
+	rr = httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
+		"/gnss/api/events?sv=rx-observer16.example.invalid", nil))
+	if rr.Code != http.StatusOK {
+		t.Errorf("station-id sv filter: status %d, want 200: %s", rr.Code, rr.Body.String())
+	}
 }
 
 // TestEventsQueryFutureSinceWithOmittedUntil guards since=<future> with

@@ -30,9 +30,15 @@ const (
 	// client-supplied filter strings, unlike receiver-originated ones
 	// (bounded by sanitize/maxStringField=256), reached the DB with no length
 	// bound — a multi-MB sv= became a large bind value compared per row.
-	// Generous over the real shapes: SV keys are name@sigid (≤ ~8 chars), event
-	// types are short enums.
-	eventsMaxSVParam   = 32
+	// the sv column's value space is NOT just name@sigid keys (≤ ~8
+	// chars) — for station-scoped events (jamming_detected, spoofing_suspected,
+	// station_rf_degraded, antenna_fault, station_offline) it holds the STATION
+	// id (store/events.go), which for push observers may be a DNS FQDN up to
+	// 253 bytes (config.ValidObserverID; the mTLS class requires the id to
+	// equal a DNS SAN) and for dial sources is the configured source name. 256
+	// matches the receiver-string precedent maxStringField (sanitize.go) while
+	// still meeting the original DB-nuisance goal.
+	eventsMaxSVParam   = 256
 	eventsMaxTypeParam = 64
 )
 
