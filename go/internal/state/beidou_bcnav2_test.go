@@ -226,10 +226,13 @@ func TestFeedBeiDouBDGIMServed(t *testing.T) {
 	}
 }
 
-// TestApplyBeiDouBCNAV2PRNMismatchDropped guards a CRC-valid B-CNAV2
-// message whose in-payload PRN (Table 7-2, inside the CRC boundary) disagrees
-// with the transport SFRBX svId is mis-attributed and must be dropped under its
-// own metric label — never folded into the (wrong) SV's state.
+// TestApplyBeiDouBCNAV2PRNMismatchDropped guards regression fix/a CRC-valid
+// B-CNAV2 message whose in-payload PRN (Figure 6-1 — the leading 6 bits,
+// inside the CRC-24Q boundary; §7.1 effective range 1–63) disagrees with the
+// transport SFRBX svId is mis-attributed and must be dropped under its own
+// metric label — never folded into the (wrong) SV's state. PRN 0 is
+// outside §7.1's effective range, so the degenerate PRN == svId == 0 match is
+// rejected too.
 func TestApplyBeiDouBCNAV2PRNMismatchDropped(t *testing.T) {
 	s := New(4)
 	now := time.Unix(1_700_000_000, 0)
@@ -251,6 +254,21 @@ func TestApplyBeiDouBCNAV2PRNMismatchDropped(t *testing.T) {
 		if st := s.shardFor(key).m[key]; st != nil {
 			t.Errorf("mis-tagged frame built state for C%02d: %+v", sv, st)
 		}
+	}
+
+	// PRN 0 == svId 0 satisfies bare equality, but §7.1's effective
+	// range is 1–63 — a crafted frame must not mint a "C00@8" state.
+	before = testutil.ToFloat64(counter)
+	m34zero := bcnav2Frame(0, 34, 252804, func(buf []byte) {
+		setAbsBits(buf, 133, 10, 3)
+	})
+	s.Apply(&ingest.RawFrame{GnssID: gnss.BeiDou, SvID: 0, SigID: 8, Recv: now, Words: m34zero})
+	if got := testutil.ToFloat64(counter) - before; got != 1 {
+		t.Errorf("prn_mismatch delta for PRN==svId==0 = %v, want 1", got)
+	}
+	key0 := Key{G: gnss.BeiDou, Sv: 0, Sig: 8}
+	if st := s.shardFor(key0).m[key0]; st != nil {
+		t.Errorf("degenerate PRN==svId==0 frame built state: %+v", st)
 	}
 }
 

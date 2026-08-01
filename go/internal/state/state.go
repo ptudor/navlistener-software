@@ -1266,16 +1266,24 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		countDecodeFailure(f, "bcnav2", err)
 		return
 	}
-	// every B-CNAV2 message carries the satellite's own PRN inside
-	// the CRC-24Q boundary (ICD Table 7-2), while the SFRBX svId is receiver
-	// metadata outside it. A disagreement means the frame is internally valid
-	// but mis-attributed (header corruption upstream of the CRC'd payload, a
-	// firmware quirk, or a hostile feeder under FEDERATION.md's trust model)
-	// — accepting it would attach SV A's ephemeris/clock/health to SV B's
-	// state, a silent wrong answer that fires false discos on the victim SV.
-	// Dropped before any capability/state effect. (GPS CNAV's PRN field
-	// deserves the same guard — cross-referenced for the next GPS pass.)
-	if m.PRN != f.SvID {
+	// regression fix/every B-CNAV2 message carries the satellite's own PRN
+	// inside the CRC-24Q boundary — BDS-SIS-B2a-1.0 Figure 6-1 (frame
+	// structure: PRN is the leading 6 bits, and "PRN, MesType, SOW, and
+	// message data participate in the CRC calculation") — while the SFRBX
+	// svId is receiver metadata outside it. §7.1 defines PRN as a 6-bit
+	// unsigned integer with effective value 1–63. A disagreement means the
+	// frame is internally valid but mis-attributed (header corruption
+	// upstream of the CRC'd payload, a firmware quirk, or a hostile feeder
+	// under FEDERATION.md's trust model) — accepting it would attach SV A's
+	// ephemeris/clock/health to SV B's state, a silent wrong answer that
+	// fires false discos on the victim SV. Dropped before any
+	// capability/state effect. PRN 0 is outside §7.1's effective range and
+	// never a legitimate broadcast, so the degenerate PRN == svId == 0
+	// crafted-frame match is rejected under the same label (regression fix —
+	// BeiDou has no svId ingest envelope, so equality alone would pass it).
+	// (GPS CNAV's PRN field deserves the same guard — cross-referenced for
+	// the next GPS pass.)
+	if m.PRN == 0 || m.PRN != f.SvID {
 		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "prn_mismatch").Inc()
 		return
 	}
