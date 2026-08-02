@@ -14,7 +14,8 @@ importantly, tells you when the index is a *sentinel* rather than a value.
 | `accuracy_test.go` | Per-constellation known-value checks, the band boundaries, sentinel handling, and a monotonicity property test. |
 | `README.md` | This file. |
 
-**Zero dependencies** — not even the root `gnss` package. Pure integer-in, float-out.
+**No module-internal dependencies** — not even the root `gnss` package; stdlib `math` is the only
+import. Pure integer-in, float-out.
 
 ---
 
@@ -87,10 +88,11 @@ CNAV's URA_ED is a **signed two's-complement integer in the range +15 to −16**
 
 **Both N = 15 and N = −16 are "no accuracy prediction" sentinels** and return `valid = false`.
 
-The signedness is not a footnote. Modern SVs routinely broadcast negative URA_ED (URA < 2.4 m),
-and reading the field as unsigned mis-decodes *over half the domain* — bits `11111` read as 31
-instead of −1. That was a real bug in the frame decoder, closed as regression fix; this package's contract
-is the other half of the fix.
+The signedness is not a footnote. Modern SVs routinely broadcast negative URA_ED — index 0's
+tabulated band is 1.70 < URA_ED ≤ 2.40 m, so any better prediction indexes below zero — and
+reading the field as unsigned mis-decodes *half the domain* (16 of the 32 values): bits `11111`
+read as 31 instead of −1. That was a real bug in the frame decoder, closed as regression fix; this
+package's contract is the other half of the fix.
 
 **On the citation** (regression fix, re-verified and deliberately unchanged): a review pass proposed
 re-attributing this formula to LNAV §20.3.3.3.1.3 on the premise that §30.3.3.1.1.4 "prints no
@@ -122,7 +124,7 @@ the same absence, the monitor cannot tell them apart.
 
 ### `GlonassFT` — a table, not a formula
 
-GLONASS ICD Ed. 5.1's F_T accuracy table, in metres:
+GLONASS ICD Ed. 5.1's F_T accuracy table (GLO-ICD-5.1 **Table 4.4**, "Word F_T"), in metres:
 
 ```
 index:  0   1   2    3  4  5   6   7   8   9  10  11   12   13   14   15
@@ -141,7 +143,7 @@ Index 15 is "not used" and returns `valid = false`, as does any out-of-range inp
 | `TestURAEDMeters` | The signed domain including negative indices, plus both sentinels (15 and −16). |
 | `TestGalileoSISABands` | All four band boundaries — the off-by-one-prone spots — plus the spare range and NAPA. |
 | `TestGlonassFT` | Table values and the index-15 "not used" case. |
-| `TestURAMonotonic` | A property test: decoded accuracy is non-decreasing in the index. A transposed table entry fails here even if every individual value looks plausible. |
+| `TestURAMonotonic` | A property test over `URAMeters` N = 0–14: decoded accuracy is non-decreasing in the index, so the two formula branches cannot invert at their N = 6/7 join. `URAMeters` only — the literal `glonassFT` table is unswept. |
 
 Run with `go test ./accuracy/` from `gnss/`.
 
@@ -153,7 +155,7 @@ Run with `go test ./accuracy/` from `gnss/`.
 
 - **IS-GPS-200N §20.3.3.3.1.3** (LNAV URA) and **§30.3.3.1.1.4** (CNAV URA_ED, signed).
 - **GAL-OS-SIS-ICD-2.2 §5.1.12, Table 91** (SISA bands and NAPA).
-- **GLO-ICD-5.1** (the F_T table).
+- **GLO-ICD-5.1 §4.4, Table 4.4** (the F_T word).
 - **NAVIC-SPS-L5S §6.2.1.4, Table 23** (NavIC's independent statement of the URA formula).
 
 See `reference/REFERENCES.md`.

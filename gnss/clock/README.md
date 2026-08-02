@@ -96,7 +96,9 @@ func OffsetFor(c Model, e kepler.Ephemeris, tow float64) (float64, error)
 ```
 
 - **`Relativistic`** is the bare Δtr = F·e·√A·sin E. Zero for a circular orbit (e = 0) and zero
-  for GLONASS (F = 0 — its Cartesian model folds relativity into the broadcast τn already).
+  for GLONASS (F = 0 — the Cartesian model has no such term, and the broadcast γn is already
+  referenced to a predicted carrier frequency that accounts for gravitational and relativistic
+  effects, GLO-ICD-5.1 §4.4).
 - **`Offset`** is the full polynomial. It looks up F from `physconst` by `Model.ID`; an unknown
   constellation yields relF = 0, which degrades to the polynomial-only correction rather than
   erroring — reasonable, since the polynomial is still valid.
@@ -145,13 +147,13 @@ exactly that; this tow-only helper stays on the wrapped axis with the current Δ
 | Test | What it pins |
 |---|---|
 | `TestRelativisticZeroForCircular` | Δtr = 0 at e = 0. |
-| `TestRelativisticMagnitude` | Δtr lands in the right order of magnitude for a real orbit (tens of ns). |
+| `TestRelativisticMagnitude` | Δtr lands in the right order of magnitude for a real orbit (1–100 ns) and comes out negative for positive sin E, pinning F < 0. |
 | `TestOffsetPolynomial` / `TestOffsetLinearGrowth` | The polynomial evaluates correctly and grows linearly in Δt where af1 dominates. |
 | `TestOffsetForReusesSolveE` | `OffsetFor` really does reuse the solve's E rather than re-deriving it. |
 | `TestOffsetForPropagatesError` | A degenerate ephemeris surfaces as an error, not a number. |
 | `TestTimeDiscoShape` | The difference between two clock models has the shape the integrity detector expects. |
 | `TestUTCOffset` / `TestUTCOffsetQuadraticTerm` | The two-term and three-term forms, including A2. |
-| `TestL2GroupDelayFactor` / `TestE5aGroupDelayFactor` | Both constants equal their (f1/f2)² definitions. |
+| `TestL2GroupDelayFactor` / `TestE5aGroupDelayFactor` | Both constants match their (f1/f2)² values — ≈1.6469 and ≈1.7933 — to 1e-3. |
 
 Run with `go test ./clock/` from `gnss/`.
 
@@ -163,7 +165,8 @@ Run with `go test ./clock/` from `gnss/`.
 
 - **IS-GPS-200N §20.3.3.3.3.1** (the polynomial and Δtr), **§20.3.3.3.3.2** (γ and TGD),
   **§20.3.3.5.2.4** (UTC).
-- **GAL-OS-SIS-ICD-2.2 §5.1.5** Eq. 18/19 and Tables 71/72 (which clock pairs with which signal).
+- **GAL-OS-SIS-ICD-2.2 §5.1.5** Eq. 18/19, **Table 71** (which clock model pairs with which
+  message type and service), and **Table 2** (the carrier frequencies behind the E5a factor).
 - **BDS-SIS-B2a-1.0 §7.6.2** eq. 7-4/7-5, **Table 7-20** and eq. 7-25 (BDT-UTC with A2).
 - **GLO-ICD-5.1 Table 4.5** — τn/γn/Δτn, decoded in `gnss/frame` and carried on
   `glonass.Ephemeris` rather than through this package's `Model`.

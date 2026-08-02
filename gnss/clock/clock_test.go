@@ -83,7 +83,7 @@ func TestTimeDiscoShape(t *testing.T) {
 	neu := Model{ID: gnss.Galileo, Af0: 1.001e-4, Toc: 100000}
 	const ecc, sqrtA, E = 0.0002, 5440.0, 0.5
 	disco := math.Abs(Offset(neu, 100000, ecc, sqrtA, E) - Offset(old, 100000, ecc, sqrtA, E))
-	if math.Abs(disco-1e-7) > 1e-12 { // 0.1 ns step
+	if math.Abs(disco-1e-7) > 1e-12 { // the 100 ns af0 step
 		t.Errorf("time-disco = %.3e s, want 1e-7", disco)
 	}
 }
