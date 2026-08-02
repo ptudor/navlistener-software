@@ -231,7 +231,7 @@ Three layers, and they catch different things:
 1. **Analytic and property tests, per package.** Closed-form base cases, radius windows,
    reversibility, round-trips, determinism, and a full degenerate-input matrix asserting errors
    rather than NaN. Fast, and they catch most mistakes.
-2. **Fuzzing, in `frame`.** Thirteen targets, one per exported decoder plus the primitives. The
+2. **Fuzzing, in `frame`.** Fourteen targets, one per exported decoder plus the primitives. The
    contract: arbitrary input never panics, malformed input errors, a nil result never accompanies
    a nil error. Fuzzing exercises unchecked lengths and out-of-bounds reads.
 3. **External truth vectors, in `truth_test.go`.** Real broadcast ephemerides propagated against

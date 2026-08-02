@@ -125,9 +125,9 @@ var IntervalRe = regexp.MustCompile(`^[1-9][0-9]* (minute|hour|day|week)s?$`)
 ```
 
 The allowlist for `[store]`'s `raw_retention` and `compress_after` (`"7 days"`, `"1 hour"`). This
-is the **sole definition** — `store.go` references this one rather than keeping a copy  —
-and it doubles as the **injection guard** for that string's later interpolation into Timescale
-policy DDL. It must never be relaxed.
+is the **sole definition** — `../store/store.go` references this one rather than keeping a copy
+ — and it doubles as the **injection guard** for that string's later interpolation into
+Timescale policy DDL. It must never be relaxed.
 
 ### Warnings vs errors
 

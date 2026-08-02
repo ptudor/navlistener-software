@@ -49,13 +49,36 @@ func (s *Store) Degraded() string
 
 ### The bounded queue and the drop policy
 
-`Enqueue` is non-blocking. When the queue is full, the frame is **dropped and counted** — an
-explicit, metered policy rather than blocking ingest or growing without bound.
+`Enqueue` is non-blocking. When the queue is full, the frame is **dropped and counted**
+(`store_dropped_total`) — an explicit, metered policy rather than blocking ingest or growing
+without bound.
 
 This is the deliberate priority ordering: **live decoding and the integrity monitor matter more
 than the forensic archive.** If the database stalls, the daemon keeps decoding, keeps detecting,
 and keeps serving; what degrades is history. `Degraded()` surfaces that to `/healthz` as
 `degraded` (HTTP 200, not 503) so a DB blip can't flap rc.d into a restart loop.
+
+One frame never reaches the queue at all: a `NavFrame` with a **nil `Raw`**. `raw` is
+`BYTEA NOT NULL`, so a nil would map to SQL NULL and **poison the whole batch** — bisected,
+quarantined, and dropped with only a generic log. It is rejected up front, counted as
+`store_empty_raw_total`, **and resolved for the durability watermark**, because it is unfixable
+by retransmit (the frame's own content is the problem) and leaving it outstanding would wedge the
+feeder's ACK forever. A non-nil empty `[]byte{}` is a legitimate empty bytea and passes through.
+
+### What a failing flush does
+
+The writer's failure handling is layered, and each layer has a different accounting:
+
+| Situation | Behavior | Metric |
+|---|---|---|
+| Retryable DB error | Bounded retry with backoff. | — |
+| A poison row inside a batch | The batch is **bisected** to isolate it; the bad rows are quarantined and the good ones commit. | `store_quarantined_total` |
+| Wall budget expires, parent still live | The batch is dropped and counted — the writer must stay live and memory-bounded through a long outage. | `store_quarantined_total` |
+| Shutdown interrupts a flush | The batch is **retained** for the bounded shutdown drain rather than cleared. Nothing was committed, and the atomic claim+copy transaction rolled its replay-key claims back, so the re-flush cannot duplicate. | — |
+
+The claim-and-copy being one transaction is what makes that last row safe: bisection, retry, and
+retained re-flush all preserve the invariant that a dedup claim exists if and only if the row
+committed.
 
 ### `nav_frames` — the forensic record
 

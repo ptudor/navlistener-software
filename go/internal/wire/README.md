@@ -101,8 +101,8 @@ Reformatting to `json.MarshalIndent`, hand-rolling the JSON with a space after t
 interposing a proxy that re-serializes the payload **permanently breaks authentication and zstd
 negotiation for the whole fleet** — feeders would reconnect forever, never seeing an accepted
 welcome. `json.Marshal`'s output is compact by contract, so today's line satisfies it; the
-requirement is on the **wire**, and it's stated in `docs/DESIGN.md §GNF1` for any second
-implementation. `TestNavfeeder*` — the real C feeder run against this collector — is the
+requirement is on the **wire**, and it's stated in `docs/DESIGN.md §2 (The GNF1 wire)` for any
+second implementation. `TestNavfeeder*` — the real C feeder run against this collector — is the
 regression guard.
 
 ### `ValidSession`

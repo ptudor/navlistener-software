@@ -17,7 +17,7 @@ stream of bits into an opinion about whether a satellite is behaving.
 | `rf.go` | PNT-defense Tier-0: RF telemetry → per-station jamming and spoof-gate metrics. |
 | `iono.go` | The measured dual-frequency ionosphere per receiver. |
 | `snapshot.go` | The compact `/debug/state` diagnostic view. |
-| `*_test.go` | ~27 test files — per-constellation folding, disco computation, health, expiry, capability, RF, and the regression guards. |
+| `*_test.go` | 27 test files — per-constellation folding, disco computation, health, expiry, capability, RF, and the regression guards. |
 | `README.md` | This file. |
 
 Imports `github.com/ptudor/gnss` (all of it), `internal/ingest` (for `RawFrame`), and

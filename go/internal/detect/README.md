@@ -62,8 +62,9 @@ event contract (`docs/OUTPUT.md §3`).
 
 **SBAS** (`Tick`): `sbas_lost`, `sbas_health`.
 
-**Station RF** (`TickStations`): `station_rf_degraded`, and station liveness via
-`TickStationLiveness` → `station_offline`.
+**Station RF** (`TickStations`): the four station-scoped classifiers — `jamming_detected`,
+`spoofing_suspected` (always `SevCritical`), `antenna_fault`, and `station_rf_degraded`. Station
+liveness comes separately from `TickStationLiveness` → `station_offline`.
 
 **Capability** (`TickCapabilities`): `capability_impossible`, `capability_signal_lost`.
 
@@ -117,8 +118,8 @@ detectors: `eph_aged`, `position_unknown`, and `capability_signal_lost` (a demon
 gone dark station-wide).
 
 **`FreshReceiverThreshold` tunes nothing on its own.** `state.freshReceiverWindow` in
-`feed.go` is the constant that actually *computes* the served confirmation count; it's duplicated
-there because `detect` depends on `state` and not the reverse. **Move both together**, or the
+`../state/feed.go` is the constant that actually *computes* the served confirmation count; it's
+duplicated there because `detect` depends on `state` and not the reverse. **Move both together**, or the
 documented corroboration window stops describing the served one.
 
 ### The station RF classifiers

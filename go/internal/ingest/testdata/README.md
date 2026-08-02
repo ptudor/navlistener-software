@@ -59,7 +59,11 @@ useful pages still assemble, but they would silently skip individual CRC failure
 won't. It reads all three fixtures with `t.Fatalf` on a missing file rather than skipping,
 because the whole point is total coverage.
 
-`TestRealGPSCNAV*` similarly exercises the regression fix preamble and CRC path against real frames.
+`TestRealGalileoFNAVIntegrityAllCaptures` is the F/NAV twin of the same guard, and
+`TestRealGalileoGSTAgreesWithGPS` cross-checks the decoded GST week/TOW against the GPS axis.
+`TestRealSBAS`, `TestRealGLONASS`, `TestRealBeiDouD1`, `TestRealBeiDouBCNAV2`, and
+`TestRealGalileoINAV` each cover their own constellation's decode-and-assemble path against these
+same bytes.
 
 ---
 

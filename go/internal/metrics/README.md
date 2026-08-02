@@ -139,9 +139,12 @@ matters, because an expired push certificate takes the entire fleet offline at o
 | `navlistener_spoof_gates_wired` | gauge |
 | `navlistener_spoof_gate_quorum` | gauge |
 
-The two spoof-gate metrics make the PNT-defense fusion rule observable: how many gates are
-actually wired, and what quorum is currently required. A fusion rule you can't see the state of
-is a fusion rule you can't trust.
+The two spoof-gate metrics make the PNT-defense fusion rule observable: `spoof_gates_wired` is
+how many independent physics gates are actually implemented (the maximum the fusion can count),
+and `spoof_gate_quorum` is how many must agree before `spoofing_suspected` fires. **`wired <
+quorum` means the detector is dormant** — it cannot fire at all. That is exactly the kind of
+silently-disabled state a fusion rule needs to expose, and it's why both gauges exist rather than
+just one.
 
 ### Store
 

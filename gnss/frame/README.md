@@ -38,8 +38,8 @@ every decoder is fuzzed. It starts hardened, on purpose.
 `primitives_test.go`, `bitreader_test.go`, `bitreader_signed_test.go`, `crc_test.go`,
 `gps_lnav_test.go`, `gps_cnav_test.go`, `galileo_inav_test.go`, `beidou_d1_test.go`,
 `beidou_bcnav2_test.go`, `glonass_string_test.go`, `glonass_almanac_guard_test.go`,
-`sbas_l1_test.go`, `navic_test.go`, and `fuzz_test.go` — thirteen fuzz targets covering every
-exported decoder.
+`sbas_l1_test.go`, `navic_test.go`, and `fuzz_test.go` — fourteen fuzz targets covering every
+exported decoder plus the primitives.
 
 Imports: the root `gnss` package, `clock`, `kepler`, `glonass`, `physconst`, and `gnsstime`. It is
 the top of the module's dependency graph — everything else imports *into* here.

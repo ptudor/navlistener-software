@@ -114,8 +114,8 @@ freshly-rotated path. Requires `daemon(8)` 13.x or later.
 
 The signal goes to the **supervisor pidfile**, never the child's. The collector is never
 signalled, so its ordered drain and the historian's in-flight batch are never interrupted.
-A `SIGHUP` delivered to the collector itself is ignored in `main.go` as belt and braces — but
-rotation must target the supervisor regardless.
+A `SIGHUP` delivered to the collector itself is ignored in `../cmd/navlistener/main.go` as belt
+and braces — but rotation must target the supervisor regardless.
 
 Rotation: 7 generations, at 10 MB, mode 640, owned by the daemon user, with `J` (bzip2) and `C`
 (create if missing).

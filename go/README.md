@@ -74,8 +74,8 @@ the daemon can run collector-only or without a database.
   ingest. The `nav_frames` hypertable is the durable record, and offline replay is the recovery
   path — not a state file.
 - **Untrusted input everywhere.** Nav frames, feeder handshakes, and observer-supplied strings
-  are all hostile until validated. `gnss/frame` bounds every bit read; `serve/sanitize.go` bounds
-  every string that reaches a feed.
+  are all hostile until validated. `gnss/frame` bounds every bit read;
+  `internal/serve/sanitize.go` bounds every string that reaches a feed.
 
 ---
 
@@ -163,7 +163,7 @@ file-access rights match the daemon's; chown the config and every file it refere
 Log rotation ships as `deploy/freebsd/newsyslog.conf.d/navlistener.conf`. The SIGHUP goes to the
 **`daemon(8)` supervisor pidfile**, never the collector's own — `daemon(8)` runs with `-H` and
 reopens the output file, while the collector is never signalled and its ordered drain is never
-interrupted. (A SIGHUP delivered to the collector is ignored in `main.go` as belt and braces, but
+interrupted. (A SIGHUP delivered to the collector is ignored in `cmd/navlistener/main.go` as belt and braces, but
 rotation must target the supervisor.)
 
 ---
