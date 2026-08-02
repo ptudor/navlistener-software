@@ -36,11 +36,38 @@ func TestKlobucharLowElevationLarger(t *testing.T) {
 
 func TestKlobucharNightFloor(t *testing.T) {
 	// With zero coefficients the amplitude term vanishes, leaving the F·5 ns
-	// night-time floor. At zenith the obliquity factor F ≈ 1.
+	// night-time floor. At zenith the obliquity factor F ≈ 1. Note tow=43200
+	// lands *inside* the cosine window (x ≈ −0.63) — with amp = 0 both branches
+	// agree, so the |x| ≥ 1.57 branch itself is pinned separately below.
 	el := 90 * math.Pi / 180
 	got := Klobuchar([4]float64{}, [4]float64{}, 0, 0, 0, el, 43200)
 	if math.Abs(got-5e-9) > 1e-11 {
 		t.Errorf("night floor = %.4e s, want ≈5e-9", got)
+	}
+}
+
+// TestKlobucharOutsideWindowFloor exercises the |x| >= 1.57 branch, which
+// TestKlobucharNightFloor cannot distinguish (its zero coefficients make both
+// branches equal). With a nonzero amplitude, deep-night local time must return
+// exactly F·5 ns — the cosine term contributing here would mean the window
+// comparison leaked.
+func TestKlobucharOutsideWindowFloor(t *testing.T) {
+	alpha := [4]float64{1e-7, 0, 0, 0} // constant amp = 1e-7 s, 20× the floor
+	var beta [4]float64                // per floors to 72000 s
+	el := 90 * math.Pi / 180
+	// lat = lon = 0 and az = 0 make the IPP local time ≈ tow itself; at
+	// tow = 7200 (02:00), x = 2π(7200−50400)/72000 ≈ −3.77, well outside 1.57.
+	got := Klobuchar(alpha, beta, 0, 0, 0, el, 7200)
+	f := 1 + 16*math.Pow(0.53-0.5, 3) // obliquity at zenith (el = 0.5 semicircles)
+	want := f * 5e-9
+	if math.Abs(got-want) > 1e-13 {
+		t.Errorf("outside-window delay = %.6e s, want F·5e-9 = %.6e", got, want)
+	}
+	// The same inputs at 14:00 local (x = 0) must exceed the floor — proving the
+	// two branches genuinely differ under this alpha, so the assertion above is
+	// checking the branch, not a coincidence.
+	if day := Klobuchar(alpha, beta, 0, 0, 0, el, 50400); day <= want {
+		t.Errorf("in-window delay %.6e s should exceed the floor %.6e s", day, want)
 	}
 }
 

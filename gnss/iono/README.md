@@ -199,7 +199,8 @@ clamp.
 | `TestKlobucharPublishedVector` | The one that matters most — the classic worked example from Klobuchar's own chapter (Parkinson & Spilker Vol. I ch. 12: 40°N, 100°W, az 210°, el 20°, 2000-01-01 20:45 UTC) must produce 23.784 m of slant L1 delay within 20 mm. The expected value is the one Orekit's `KlobucharModelTest` pins to ±1 mm — an independent implementation, so this is an external oracle and a structural error fails by metres. |
 | `TestKlobucharZenithPlausible` | Zenith delay lands in a physically sane range. |
 | `TestKlobucharLowElevationLarger` | Low elevation gives more delay than high — the obliquity factor working in the right direction. |
-| `TestKlobucharNightFloor` | With zero coefficients the amplitude term vanishes and only the 5 ns floor survives, checked at zenith where F ≈ 1. Note this lands *inside* the cosine window (x ≈ −0.63); the \|x\| ≥ 1.57 branch is not separately covered. |
+| `TestKlobucharNightFloor` | With zero coefficients the amplitude term vanishes and only the 5 ns floor survives, checked at zenith where F ≈ 1 (inside the cosine window, x ≈ −0.63). |
+| `TestKlobucharOutsideWindowFloor` | The \|x\| ≥ 1.57 branch: with a nonzero amplitude, deep-night local time (02:00, x ≈ −3.77) returns exactly F·5 ns, while 14:00 local exceeds the floor — the two branches provably differ. |
 | `TestKlobucharNegativeElevationGuarded` | negative elevation is clamped, not divided by zero. |
 | `TestScaleDelay` | (f_L1/f)² scaling. |
 | `TestNeQuickEffectiveIonisation` | Az = a0 + a1·MODIP + a2·MODIP². |
