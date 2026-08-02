@@ -106,8 +106,11 @@ func (g GNSSID) String() string {
 	}
 }
 
-// Valid reports whether g is a constellation navlistener decodes (every id except
-// IMES, which is never emitted, and out-of-range values).
+// Valid reports whether g is a well-formed constellation id — every id except
+// IMES (never emitted) and out-of-range values. This is id-plausibility, not
+// decode support: NavIC is Valid so its frames pass ingest and are counted
+// (the navic_deferred metric label) even though its decoder is a deferred stub
+// (frame/navic.go).
 func (g GNSSID) Valid() bool {
 	return g <= NavIC && g != IMES
 }

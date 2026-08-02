@@ -1,9 +1,10 @@
 # `gnss/testdata` — external truth fixtures
 
 **Headline:** two small files that are the only numbers in this library produced entirely outside
-it. One real broadcast ephemeris per constellation, and the precise orbit that says where those
-satellites actually were. Everything else in `gnss` can be self-consistently wrong; these two
-files are what make that impossible.
+it. Five real broadcast ephemerides — GPS, Galileo, BeiDou, QZSS, GLONASS — and the precise orbit
+that says where those satellites actually were. Everything else in `gnss` can be self-consistently
+wrong; these fixtures provide an independent check of the selected records and epochs,
+not a proof of correctness across all inputs or constellations.
 
 ---
 
@@ -63,6 +64,11 @@ data rather than living only here.
 Kepler propagation is the same code path with GPS-compatible constants (see `gnss/physconst`), so
 it inherits this validation indirectly; there is simply no independent truth to check it against.
 That matches the deferred state of the NavIC decoder itself.
+
+**SBAS is absent for a different reason** — the library decodes SBAS L1 message headers but has no
+SBAS orbit propagator at all (`physconst.For` returns `ok=false` for it), so there is nothing here
+to validate. `loadNavRecords` still recognises an `S` record's 3-continuation-line layout, which is
+why the parser notes below mention SBAS.
 
 ### The truth fixture — `ESA0MGNFIN_20240100000_truth.sp3`
 

@@ -17,14 +17,14 @@ it is deliberately its own module, so anything can link it.
 | **`.` (root)** | `ECEF` and `GNSSID` — the two value types shared by everything else. | — |
 | **`accuracy/`** | URA / URA_ED / SISA / F_T index → metres, and the "no prediction" sentinels. | — |
 | **`clock/`** | SV clock polynomial, relativistic term, group delay, broadcast GNSS→UTC. | root, gnsstime, kepler, physconst |
-| **`frame/`** | Raw-frame bit decoders for every signal we ingest. **The untrusted-input boundary.** | root, clock, glonass, gnsstime, kepler, physconst |
+| **`frame/`** | Raw-frame bit decoders for every broadcast signal we decode. **The untrusted-input boundary.** | root, clock, glonass, gnsstime, kepler, physconst |
 | **`geo/`** | ECEF ↔ geodetic, topocentric azimuth/elevation. | root, physconst |
 | **`glonass/`** | PZ-90 RK4 numerical propagation + the analytic almanac model. | root, physconst |
 | **`gnsstime/`** | Time systems, week/TOW arithmetic, the half-week wrap, rollover disambiguation. | — |
 | **`iono/`** | Klobuchar and the coefficient carriers; dual-frequency geometry-free measurement. | — |
 | **`kepler/`** | The generic Keplerian ECEF propagator + BeiDou GEO + velocity + Doppler. | root, gnsstime, physconst |
 | **`physconst/`** | Per-constellation physical constants and reference ellipsoids. | root |
-| **`testdata/`** | External truth fixtures — one real broadcast ephemeris per constellation, plus the precise orbit. | — |
+| **`testdata/`** | External truth fixtures — five real broadcast ephemerides (GPS, Galileo, BeiDou, QZSS, GLONASS) plus the precise orbit. | — |
 
 Every package has its own README with the full detail; this one is the map.
 
@@ -86,7 +86,7 @@ Four promises, enforced package-wide:
    three layers away with no stack trace. Every propagation checks finiteness before returning.
 3. **Never panic on untrusted input.** `frame` is fuzzed for exactly this. A malformed frame is an
    error value, not a crash.
-4. **No third-party dependencies.** The `go.mod` require block is empty. A vendored math library
+4. **No third-party dependencies.** The `go.mod` has no `require` block. A vendored math library
    is a supply-chain surface and a provenance question we don't need.
 
 ### Why it's a separate module
@@ -134,8 +134,10 @@ This is what UBX-RXM-SFRBX carries, so ingest needs no remap and the feeds emit 
 
 - `Letter()` returns the RINEX 3.x / IGS letter, or `'?'` for IMES and unknown ids.
 - `String()` returns the lowercase name used for metric labels and per-constellation feed counts.
-- `Valid()` is true for every constellation we decode — that is, everything except IMES (never
-  emitted) and out-of-range values.
+- `Valid()` is true for every well-formed constellation id — everything except IMES (never
+  emitted) and out-of-range values. It is id-plausibility, not decode support: NavIC is `Valid`
+  so its frames pass ingest and get counted (`navic_deferred`) even though its decoder is a
+  deferred stub.
 
 **SV keys in the feeds are `name@sigid`** — `E14@0`, `J03@0`, `E14@3` for the same Galileo SV on
 E5a. Consumers key on the **numeric id** and never parse the letter.
@@ -240,10 +242,13 @@ Three layers, and they catch different things:
    cannot. See `testdata/README.md` for why the tolerances are metres and not centimetres.
 
 **Real-frame regression lives in the daemon**, not here, because it needs captured UBX:
-`go/internal/ingest/realframes_test.go` runs a committed 270-frame fixture through these decoders,
-including two cross-validations that would catch a wrong-but-plausible offset —
-`TestRealBeiDouD1AgreesWithBCNAV2` (B1I vs B2a) and `TestRealGalileoFNAVAgreesWithINAV` (E5a vs
-E1-B).
+`go/internal/ingest/realframes_test.go` runs committed live u-blox captures through these decoders
+— `f9t_capture.ubx` alone carries 1464 SFRBX frames, of which the 270 BeiDou B-CNAV2 ones decode
+clean (that 270 is the B-CNAV2 subset, not the fixture's size — the same figure is cited in
+`frame/beidou_bcnav2.go`). Three of those tests are cross-signal validations that would catch a
+wrong-but-plausible offset: `TestRealBeiDouD1AgreesWithBCNAV2` (B1I vs B2a),
+`TestRealGalileoFNAVAgreesWithINAV` (E5a vs E1-B), and `TestRealGPSCNAVAgreesWithLNAV` (L2C vs
+L1 C/A).
 
 ---
 
