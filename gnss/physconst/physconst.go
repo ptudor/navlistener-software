@@ -51,9 +51,16 @@ type Params struct {
 }
 
 // paramsByID indexes Params by constellation. QZSS and NavIC use the GPS
-// gravitational/rotation constants (GPS-compatible time and datum); Galileo and
-// BeiDou use the smaller 3.986004418e14 μ from their own ICDs; GLONASS is a
-// Cartesian model with no relativity F term (docs/MATH.md §0).
+// gravitational/rotation constants on the WGS-84 ellipsoid (QZSS-PNT-006 §5.3.4
+// prints the GPS μ verbatim; QZSST is GPST, while NavIC runs its own IRNWT but
+// keeps the GPS constants — docs/MATH.md §0); Galileo and BeiDou use the smaller
+// 3.986004418e14 μ from their own ICDs; GLONASS is a Cartesian model with no
+// relativity F term (docs/MATH.md §0).
+//
+// Galileo's Datum is WGS84 deliberately, not an oversight: the broadcast frame
+// is GTRF (GAL-OS-SIS-ICD-2.2 Table 68 — "GTRF coordinates of the SV antenna
+// phase centre"), but that ICD defines no ellipsoid for GTRF (Table 68 supplies
+// only μ, ωe, c, and π), so ECEF↔geodetic conversion uses the WGS-84 ellipsoid.
 //
 // BeiDou's F (regression fix, verified against BDS-SIS-B1I-3.0 §5.2.4.9): the BDS ICD
 // publishes no rounded digit string — it defines F = −2μ^½/C² with

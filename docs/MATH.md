@@ -20,15 +20,20 @@ bit-for-bit.
 
 | Constellation | Datum | `μ` (GM, m³/s²) | `ωe` (rad/s) | Relativity `F = −2√μ/c²` (s/√m) | ICD |
 |---|---|---|---|---|---|
-| **GPS** | WGS-84 | `3.986005e14` | `7.2921151467e-5` | `−4.442807633e-10` | IS-GPS-200, §20.3.3.4.3 |
-| **QZSS** | (GPS-compat) | `3.986005e14` | `7.2921151467e-5` | `−4.442807633e-10` | IS-QZSS-PNT, §5.2 |
-| **NavIC** | WGS-84 | `3.986005e14` | `7.2921151467e-5` | `−4.442807633e-10` | IRNSS SPS ICD v1.1, §6 |
-| **Galileo** | GTRF | `3.986004418e14` | `7.2921151467e-5` | `−4.442807309e-10` | OS-SIS-ICD Issue 2.1, §5.1.1 |
-| **BeiDou** | CGCS2000 | `3.986004418e14` | `7.2921150e-5` | `−4.442807309e-10` | BDS-SIS-ICD-B1I v3.0, §5.2.4 |
-| **GLONASS** | PZ-90.11 | `3.986004418e14` | `7.2921150e-5` | (Cartesian model; no F term) | GLONASS ICD Ed. 5.1, App. |
+| **GPS** | WGS-84 | `3.986005e14` | `7.2921151467e-5` | `−4.442807633e-10` | IS-GPS-200N, §20.3.3.4.3 |
+| **QZSS** | (GPS-compat) | `3.986005e14` | `7.2921151467e-5` | `−4.442807633e-10` | QZSS-PNT-006, §5.3.3–§5.3.4, Table 5.6.2-2 |
+| **NavIC** | WGS-84 | `3.986005e14` | `7.2921151467e-5` | `−4.442807633e-10` | NAVIC-SPS-L5S v1.1, §6 |
+| **Galileo** | GTRF | `3.986004418e14` | `7.2921151467e-5` | `−4.442807309e-10` | GAL-OS-SIS-ICD-2.2, Table 68 |
+| **BeiDou** | CGCS2000 | `3.986004418e14` | `7.2921150e-5` | `−4.442807309e-10` | BDS-SIS-B1I-3.0, §5.2.4 |
+| **GLONASS** | PZ-90.11 | `3.986004418e14` | `7.2921150e-5` | (Cartesian model; no F term) | GLO-ICD-5.1, App. |
 
 GLONASS also needs `aₑ = 6378136 m` (PZ-90 equatorial radius) and `J₂ = 1.0826257e-3` (second
 zonal harmonic; the ICD writes `C₂₀ = −J₂`).
+
+Galileo's **GTRF** row names the broadcast *frame* (GAL-OS-SIS-ICD-2.2 Table 68: "GTRF
+coordinates of the SV antenna phase centre"), not a conversion ellipsoid — the ICD defines no
+ellipsoid for GTRF (Table 68 supplies only μ, ωe, c, and π). `gnss/physconst` therefore carries
+the WGS-84 ellipsoid as Galileo's `Datum` for ECEF↔geodetic conversion.
 
 > **Per-constellation constants.** GPS specifies `μ = 3.986005e14`; the
 > Galileo and BeiDou ICDs specify `3.986004418e14`. The choice also changes the

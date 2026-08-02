@@ -122,6 +122,11 @@ func (e Ellipsoid) E2() float64  // first eccentricity squared, e² = 2f − f²
 | `PZ90` | 6378136 | 298.25784 | GLONASS (PZ-90.11) |
 | `CGCS2000` | 6378137 | 298.257222101 | BeiDou |
 
+WGS-84 serving Galileo is deliberate, not an oversight: Galileo broadcasts in GTRF
+(GAL-OS-SIS-ICD-2.2 Table 68), but the ICD defines no ellipsoid for GTRF — Table 68 supplies
+only μ, ωe, c, and π — so geodetic conversion uses WGS-84. `docs/MATH.md §0` records the frame
+name; this package records the conversion ellipsoid.
+
 The three differ by a metre at most — PZ-90.11's semi-major axis is 1 m shorter than WGS-84's
 (about a metre of geodetic height), while CGCS2000 agrees with WGS-84 to a tenth of a millimetre
 — which is below anything this system alerts on. We carry them separately anyway — partly
