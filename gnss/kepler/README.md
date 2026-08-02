@@ -16,8 +16,9 @@ predicted Doppler on top of it.
 | `kepler_test.go` | Analytic checks, realistic-orbit property tests, the three BeiDou-GEO tests, the error-guard matrix, determinism, and Doppler plausibility. |
 | `README.md` | This file. |
 
-Imports: the root `gnss` package (for `ECEF`/`GNSSID`), `gnsstime` (for `EphAge`), and
-`physconst` (for μ, ωe, and the datum). Nothing else — no I/O, no logging, no globals.
+Imports: the root `gnss` package (for `ECEF`/`GNSSID`), `gnsstime` (for `EphAge` and
+`HalfWeek`), and `physconst` (for μ, ωe, and c). Nothing else — no I/O, no logging, no mutable
+state. The datum in `physconst.Params` is never read here; propagation is pure ECEF.
 
 ---
 
@@ -31,7 +32,7 @@ plausible-looking wrong answer.
 The library-wide rule matters most here: **this package returns errors, never NaN.** A NaN
 position doesn't crash anything — it propagates into the live feed, freezes a map marker, and
 poisons an integrity threshold three layers away with no stack trace. So every degenerate input
-gets a typed error at the boundary, and the final result is checked for finiteness before it's
+gets a sentinel error at the boundary, and the final result is checked for finiteness before it's
 allowed to leave.
 
 ---
@@ -85,23 +86,27 @@ equation twice at the same epoch and hoping both solves agree.
 The sequence follows IS-GPS-200N §20.3.3.4.3.1 Table 20-IV — which every other Kepler-family ICD
 reproduces near-verbatim:
 
-1. **A** = √A², and n₀ = √(μ/A³) from `physconst`.
+1. **A** = (√A)², and n₀ = √(μ/A³) with μ from `physconst`.
 2. **tk** = `gnsstime.EphAge(tow, toe)` — half-week corrected, always.
-3. **CNAV time-varying terms:** A(tk) = A₀ + Ȧ·tk, and n = n₀ + Δn₀ + ½Δṅ₀·tk. Zero for legacy
-   messages. (IS-GPS-705J / BDS-SIS-B2a-1.0 Table 7-9.)
+3. **CNAV time-varying terms:** A(tk) = A₀ + Ȧ·tk, and n = n₀ + Δn₀ + ½Δṅ₀·tk — both rate terms
+   are zero for legacy messages, and n₀ itself stays computed from A₀, not A(tk).
+   (IS-GPS-705J / BDS-SIS-B2a-1.0 Table 7-9.)
 4. **M** = M₀ + n·tk.
 5. **Kepler's equation** M = E − e·sin E by Newton–Raphson, seeded at E₀ = M, tolerance 1e-12
    rad, 15 iterations max.
 6. **ν** (true anomaly) and **Φ** = ν + ω (argument of latitude).
 7. **Second-harmonic corrections** at 2Φ: δu, δr, δi from the six C-coefficients.
-8. **u, r, i** corrected; in-plane x′ = r·cos u, y′ = r·sin u.
+8. **u, r, i** corrected — r = A(tk)·(1 − e·cos E) + δr, the one place the Ȧ rate reaches the
+   geometry; in-plane x′ = r·cos u, y′ = r·sin u.
 9. **Node and rotation into ECEF:** Ω = Ω₀ + (Ω̇ − ωe)·tk − ωe·toe, then the standard rotation.
 
 Step 9 is where the BeiDou GEO exception splits off — see below.
 
 ### The guards, and why each one exists
 
-Every one of these is a real bug that was found and closed, not speculative hardening:
+Every one of these is a real bug that was found and closed, not speculative hardening. All of the
+sentinels are package-private — outside `kepler` they are `error` values to check against `nil`,
+not to match with `errors.Is`:
 
 | Guard | Trigger | Why |
 |---|---|---|
@@ -109,16 +114,17 @@ Every one of these is a real bug that was found and closed, not speculative hard
 | `errBadSemiAxis` | A ≤ 0 or NaN, before **and** after the Ȧ·tk correction | A rate term can drive a valid A₀ negative over a long tk. |
 | `errBadEcc` | e < 0, e ≥ `eccMax` (0.25), or NaN | See below. |
 | `errNoConverge` | \|dE\| still ≥ 1e-12 after 15 iterations | regression fix. The loop only breaks *early* on convergence; without this check a non-converging ephemeris silently returns the last iterate as if it were a solution. |
-| `errNaN` | Any non-finite component of the final position | The last line of defense on the errors-never-NaN contract. |
-| `errHalfWeekStraddle` | `Velocity` called within 0.5 s of the ±half-week wrap | See `Velocity` below. |
+| `errNaN` | Any non-finite component of the final position — and, in `PredictedDoppler`, a zero/non-finite range or a non-finite result | The last line of defense on the errors-never-NaN contract. |
+| `errHalfWeekStraddle` | `Velocity` called when tk is within 1.0 s of the ±half-week wrap | See `Velocity` below. |
 | `errBadFreq` / `errBadReceiver` | `PredictedDoppler` given a non-finite/non-positive frequency or a non-finite receiver ECEF | regression fix. These are public inputs the propagation path never validates, so without the check a NaN sails through to the final multiplication and returns non-finite with `err == nil`. |
 
 **`eccMax = 0.25` deserves the long explanation**. The obvious guard is `e < 1` — that's
-the mathematically degenerate bound. But every real GNSS orbit has e < ~0.02–0.03 (QZSS's QZO is
-the extreme at ~0.075), and Newton–Raphson seeded at E₀ = M is only *guaranteed* to converge for
-modest eccentricity. A malformed or spoofed ephemeris with e near 1 and M near π can fail to
-converge and return a wrong-but-finite position. This library feeds an anti-spoof integrity
-monitor that ingests untrusted broadcasts by design, so "plausible but wrong" is the worst
+the mathematically degenerate bound. But every real GNSS orbit has e < ~0.02–0.03, and even the
+outlier — QZSS's QZO, the highest eccentricity any live constellation broadcasts — is only
+≈0.075 (`gnss/truth_test.go`), while Newton–Raphson seeded at E₀ = M is only *guaranteed* to
+converge for modest eccentricity. A malformed or spoofed ephemeris with e near 1 and M near π
+can fail to converge and return a wrong-but-finite position. This library feeds an anti-spoof
+integrity monitor that ingests untrusted broadcasts by design, so "plausible but wrong" is the worst
 possible failure mode. 0.25 leaves generous room above any legitimate broadcast while staying far
 from where convergence gets risky.
 
@@ -128,7 +134,8 @@ BeiDou's GEO satellites (C01–C05, C59–C63) use a different final rotation
 (BDS-SIS-B1I-3.0 §5.2.4.12, `docs/MATH.md §2.1`):
 
 - The node angle is **Ω_GEO = Ω₀ + Ω̇·tk − ωe·toe** — note this is *not* the standard
-  (Ω̇ − ωe)·tk form. Missing that is a several-hundred-kilometre error.
+  (Ω̇ − ωe)·tk form. The two differ by exactly ωe·tk, so using the wrong one puts the node off by
+  ~15°/hour of ephemeris age — thousands of kilometres at GEO radius within the first hour.
 - The result is then rotated `[X,Y,Z]ᵀ = Rz(ωe·tk)·Rx(−5°)·[X_GK,Y_GK,Z_GK]ᵀ` — **Rx first, Rz
   last.**
 
@@ -158,9 +165,10 @@ exactly 1.0 s, the difference *is* the velocity — no division needed.
 The interesting part is what it refuses. Each `Propagate` call re-derives its own half-week-
 wrapped tk independently. When tow − toe sits within 0.5 s of ±half-week, **only one of the two
 shifted instants crosses the wrap threshold** — so the "velocity" you'd get is the position delta
-across a full ~604,800 s jump, not 1 s. That's only reachable with a ~3.5-day-stale ephemeris,
-but the library's contract is to refuse a degenerate result rather than emit one, so it returns
-`errHalfWeekStraddle`. `TestVelocityRejectsHalfWeekStraddle` pins it.
+across a full ~604,800 s jump, not 1 s. That's only reachable with a ~3.5-day-stale ephemeris
+(`HalfWeek` = 302,400 s), but the library's contract is to refuse a degenerate result rather than
+emit one, so it returns `errHalfWeekStraddle`  whenever tk lands within 1.0 s of the wrap
+— twice the ±0.5 s difference offset, for margin. `TestVelocityRejectsHalfWeekStraddle` pins it.
 
 ### `PredictedDoppler`
 
@@ -185,10 +193,10 @@ distance sails straight past an equality test.
 | `TestCircularEquatorialAnalytic` | A circular equatorial orbit against a closed-form position — the base-case correctness check. |
 | `TestRealisticGPSRadiusAndSpeed` | A realistic GPS ephemeris stays in the right radius window at the right speed. |
 | `TestBeiDouGEOBranch` | The GEO path is taken for GEO PRNs and not for MEO ones. |
-| `TestBeiDouGEOStationarity` | A GEO stays put in ECEF over time — which the wrong node formula would not. |
-| `TestBeiDouGEOTiltDirection` | The Rx(−5°) rotation tilts the right way; a sign flip fails here. |
-| `TestVelocityRejectsHalfWeekStraddle` | regression fix, above. |
-| `TestErrorGuards` | The full degenerate-input matrix returns errors, never NaN. |
+| `TestBeiDouGEOStationarity` | regression fix. A GEO traces only a small analemma (bounded at 3000 km over an hour here); a flipped `Rz`/`Rx` rotation sign would sweep it ~22 000 km, which the ≥1 km branch-switch assertion above cannot see. |
+| `TestBeiDouGEOTiltDirection` | regression fix. The Rx(−5°) rotation tilts the right way — analytically, at tk = 0 with i = 0 and x′ = 0; changing the tilt to +5° flips Z. |
+| `TestVelocityRejectsHalfWeekStraddle` | regression fix, above — rejection exactly at toe ± `HalfWeek`, and a sane speed a full day clear of it. |
+| `TestErrorGuards` | Zero √A, e = 1.5, a spoof-shaped e = 0.9 at M₀ = π, SBAS, and GLONASS (`errNoParams`) all return errors — while a legitimate e = 0.03 still propagates. |
 | `TestDeterministic` | Same input, same output, every time — no map-iteration or float-accumulation nondeterminism. |
 | `TestDopplerPlausible` / `TestDopplerRejectsInvalidInputs` | Doppler magnitude is physically sane; bad frequency/receiver inputs error out. |
 
