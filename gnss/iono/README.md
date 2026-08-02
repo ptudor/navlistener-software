@@ -25,9 +25,11 @@ package dependency-free.
 
 ## Summary
 
-**Broadcast side (`iono.go`).** GPS and QZSS broadcast eight Klobuchar coefficients (α₀–α₃,
-β₀–β₃) describing a half-cosine diurnal model. That's implemented in full and returns L1
-group delay in seconds. Galileo's NeQuick-G and BeiDou's BDGIM are represented by their
+**Broadcast side (`iono.go`).** GPS, QZSS, and NavIC broadcast eight Klobuchar coefficients
+(α₀–α₃, β₀–β₃) describing a half-cosine diurnal model — NavIC's NAVIC-SPS-L5S App. H
+prescribes the *identical* algorithm to IS-GPS-200N Figure 20-4, verified term for term
+(`docs/MATH.md §7.1`). It's implemented in full and returns group delay in seconds at the
+coefficient set's reference frequency (L1 for GPS/QZSS; **L5** for NavIC). Galileo's NeQuick-G and BeiDou's BDGIM are represented by their
 coefficient structs — NeQuick-G's driving scalar is computed, `BDGIM` is a bare carrier — but the
 full profile integration and spherical-harmonic evaluation are documented follow-ups, not shipped
 math. BeiDou B1I's own distinct Klobuchar-shaped model is also a follow-up. This is stated
@@ -40,8 +42,9 @@ unbiased but noisy estimate; carrier phase gives a smooth one carrying an unknow
 ambiguity. The classic answer — implemented here — is to level the phase to the code over a
 continuous tracking arc.
 
-**Units convention:** broadcast-side delay is **seconds** of L1-equivalent group delay.
-Measured-side slant delay is **metres**. That's not sloppiness — it matches how each side is
+**Units convention:** broadcast-side delay is **seconds** of group delay at the coefficient
+set's reference frequency (L1 for GPS/QZSS, L5 for NavIC). Measured-side slant delay is
+**metres**. That's not sloppiness — it matches how each side is
 consumed — but it does mean you should read the signature before assuming.
 
 ---
@@ -51,12 +54,16 @@ consumed — but it does mean you should read the signature before assuming.
 ### `Klobuchar`
 
 ```go
-func Klobuchar(alpha, beta [4]float64, userLat, userLon, az, el, gpsTOW float64) float64
+func Klobuchar(alpha, beta [4]float64, userLat, userLon, az, el, tow float64) float64
 ```
 
-Follows IS-GPS-200N §20.3.3.5.2.5 (`docs/MATH.md §7.1`). Latitudes, longitudes, and elevation
-work in **semicircles** internally; azimuth stays in **radians**. Mixing those up is the classic
-Klobuchar bug, so the conversion happens once at the top and the units are named in the code.
+Follows IS-GPS-200N §20.3.3.5.2.5 (`docs/MATH.md §7.1`); NAVIC-SPS-L5S App. H prescribes the
+identical algorithm for NavIC, so one function serves GPS L1, QZSS, and NavIC — `tow` is the
+broadcasting constellation's own time of week (IRNSS time for NavIC), and the result is
+referred to that constellation's reference frequency (L1, or L5 for NavIC). Latitudes,
+longitudes, and elevation work in **semicircles** internally; azimuth stays in **radians**.
+Mixing those up is the classic Klobuchar bug, so the conversion happens once at the top and
+the units are named in the code.
 
 The sequence: earth-centred angle ψ → ionospheric pierce point latitude φ_I (clamped to ±0.416
 semicircles) → IPP longitude λ_I → geomagnetic latitude φ_M → local time at the IPP (mod 86400)
@@ -74,9 +81,13 @@ so the input is **clamped, not rejected** — matching this package's no-error g
 below-horizon SV is a caller bug elsewhere; it's not something a pure math function should panic
 or error over.
 
-**Scope:** GPS L1 and QZSS only. BeiDou B1I broadcasts a materially different model
-(BDS-SIS-B1I-3.0 §5.2.4.7) and must not be run through this function — even though its α/β
-coefficients are decoded and carried on `frame.BeiDouSubframe`.
+**Scope:** GPS L1, QZSS, and NavIC. The NavIC verification (2026-08-02, `docs/MATH.md §7.1`)
+compared NAVIC-SPS-L5S App. H against IS-GPS-200N Figure 20-4 on the rendered PDF pages and
+found the identical algorithm and identical coefficient encoding (MT11 Table 17 ≡ Table 20-X);
+the only application differences are the reference frequency (L5, with S-band scaling by
+(f_L5/f_S)²) and IRNSS time as the time base. BeiDou B1I broadcasts a materially different
+model (BDS-SIS-B1I-3.0 §5.2.4.7) and must not be run through this function — even though its
+α/β coefficients are decoded and carried on `frame.BeiDouSubframe`.
 
 ### `ScaleDelay` and the carrier frequencies
 
@@ -88,7 +99,8 @@ func ScaleDelay(delayL1, fHz float64) float64  // × (f_L1/f)²
 ```
 
 Ionospheric delay is dispersive and scales as (f_L1/f)². `ScaleDelay` converts an L1 delay to any
-other carrier.
+other carrier. It is **L1-referred only** — NavIC Klobuchar output is L5-referred and scales by
+(f_L5/f)², so don't feed it through this helper.
 
 ### `NeQuickG` and `BDGIM` — coefficient carriers
 
@@ -111,10 +123,11 @@ Being explicit beats a half-model that quietly returns plausible numbers:
 | Model | Status |
 |---|---|
 | GPS/QZSS Klobuchar | **Implemented in full.** |
+| NavIC Klobuchar (NAVIC-SPS-L5S App. H) | **Algorithm verified identical to GPS's and computed by the same `Klobuchar` function** (L5-referred output, IRNSS time base — `docs/MATH.md §7.1`). Not yet fed: the NavIC frame decoder (MT11 carries α/β) is deferred. |
+| NavIC grid model (MT5/App. D) | **Not implemented** — SBAS-style regional GIVD/GIVEI interpolation, a separate model from Klobuchar. |
 | Galileo NeQuick-G | Coefficients decoded; `EffectiveIonisation` implemented; **profile integration is a documented follow-up.** |
 | BeiDou B1I Klobuchar-shaped model | **Not implemented** — coefficients are decoded in `gnss/frame` (D1 subframe 1) but there is no evaluator. |
 | BeiDou BDGIM | Coefficients decoded and carried; **spherical-harmonic evaluation is a documented follow-up.** |
-| NavIC | **Not implemented** — no verified model, matching the deferred NavIC decoder. |
 
 The F/NAV decoder in `gnss/frame` leaves Galileo's ai0/ai1/ai2 undecoded for the same honest
 reason: there's no NeQuick model here to consume them yet.
@@ -226,6 +239,8 @@ Run with `go test ./iono/` from `gnss/`.
 `docs/MATH.md §7` (§7.1 Klobuchar, §7.2 NeQuick-G, §7.4 geometry-free). Primary ICDs:
 
 - **IS-GPS-200N §20.3.3.5.2.5** — Klobuchar.
+- **NAVIC-SPS-L5S App. H + Table 17 (MT11)** — NavIC's identical Klobuchar prescription
+  (L5-referred; verified side-by-side, `docs/MATH.md §7.1`).
 - **GAL-OS-SIS-ICD-2.2** — the NeQuick-G effective-ionisation coefficients.
 - **BDS-SIS-B1I-3.0 §5.2.4.7** — BeiDou's distinct B1I model (not implemented here).
 - **BDS-SIS-B1C-1.0 §7.8** (identically BDS-SIS-B2a-1.0 §7.8) — BDGIM coefficients.

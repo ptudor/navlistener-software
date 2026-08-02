@@ -351,15 +351,19 @@ clients never parse English accuracy strings (`docs/OUTPUT.md §1.1`).
 
 Broadcast ionosphere models support calculating signal delay for clients and
 modeling a single-frequency user's expected pseudorange. Delay is per signal frequency `f`:
-`delay(f) = delay(L1)·(f_L1/f)²` for the frequency-scaled models.
+`delay(f) = delay(f_ref)·(f_ref/f)²` for the frequency-scaled models, where `f_ref` is the
+frequency the broadcast coefficients are referred to — **L1 for GPS/QZSS, L5 for NavIC**
+(NAVIC-SPS-L5S App. H: "Tiono is referred to the L5 frequency").
 
-### 7.1 Klobuchar (GPS L1 and QZSS) — full algorithm
+### 7.1 Klobuchar (GPS L1, QZSS, and NavIC) — full algorithm
 
 8 coefficients `α0..α3, β0..β3` (broadcast). Inputs: user geodetic `(φu, λu)` and SV
 elevation `E` in semicircles; SV azimuth `A` **in radians** — IS-GPS-200 lists `A` among the
 semicircle inputs, but every `cos A`/`sin A` in the algorithm below is evaluated with `A` in
-radians (the universal reading, and what `iono.go` does; regression fix). Only `E` and the
-latitudes/longitudes are semicircles. Source: IS-GPS-200 §20.3.3.5.2.5.
+radians (the universal reading, and what `iono.go` does; regression fix). NavIC's ICD states that
+reading outright where IS-GPS-200 is silent — NAVIC-SPS-L5S App. H: "All the parameters used
+in trigonometric functions are converted to radians before applying the specific operation."
+Only `E` and the latitudes/longitudes are semicircles. Source: IS-GPS-200 §20.3.3.5.2.5.
 
 ```
 ψ    = 0.0137/(E + 0.11) − 0.022                     // earth-centred angle (semicircles)
@@ -375,8 +379,33 @@ Tiono = F·(5e-9 + AMP·(1 − x²/2 + x⁴/24))   if |x|<1.57
         F·5e-9                                if |x|≥1.57      // seconds of L1 delay
 ```
 
-`gnss/iono.Klobuchar` implements this GPS/QZSS algorithm only. It must not be used for NavIC
-until the IRNSS/NavIC SPS ICD has been verified to prescribe the identical form.
+**NavIC — verified to prescribe the identical form** (full side-by-side against the primary
+PDFs, 2026-08-02). NAVIC-SPS-L5S v1.1 **Appendix H** is this exact algorithm, term for term:
+the same `ψ = 0.0137/(El+0.11) − 0.022` → `φi` (±0.416 clamp) → `λi` → `φm` (0.064/1.617
+geomagnetic terms, 350 km assumed mean ionospheric height) pierce-point chain, the same
+AMP/PER cubics with the 0 and 72000 floors, the same `x = 2π(t−50400)/PER`, the same
+obliquity `1 + 16(0.53 − El)³`, and the same `|x| < 1.57` day branch over the `5·10⁻⁹ s`
+night floor. Two presentation notes from the comparison: App. H prints the cosine series as
+`1 − x²/2! + x⁴/4!` — the same numbers Figure 20-4 writes as `x²/2`, `x⁴/24` — and **both**
+PDFs carry the absolute-value bars on `|x|` (pdftotext silently drops them; verified on the
+rendered pages, so don't re-litigate from a text extraction). The coefficient encoding is
+identical too: α/β are 8-bit two's-complement with scale factors `2⁻³⁰ 2⁻²⁷ 2⁻²⁴ 2⁻²⁴` /
+`2¹¹ 2¹⁴ 2¹⁶ 2¹⁶` and the same units — NAVIC-SPS-L5S Table 17 (MT11) ≡ IS-GPS-200N
+Table 20-X. Two application differences, neither a change of algorithm form:
+
+- **The reference frequency is L5, not L1.** App. H: "Tiono is referred to the L5 frequency";
+  an S-band user multiplies by `(f_L5/f_S)²`. NavIC coefficients therefore yield L5 delay
+  directly — scale NavIC results with `f_ref = L5`, never `(f_L1/f)²`. (Distinct from
+  §6.2.1.5's TGD factor `γ = (f_S/f_L5)²` — different correction, inverse ratio, both as
+  printed.)
+- **Local time uses IRNSS system time**: `t = 4.32·10⁴·λi + IRNSS time`, same
+  `0 ≤ t < 86400` wrap — i.e. the constellation's own TOW, exactly as GPS uses GPS time.
+
+`gnss/iono.Klobuchar` therefore computes the NavIC model as-is: pass IRNSS TOW and read the
+result as **L5** delay. Wiring awaits the deferred NavIC frame decoder (MT11 carries the
+α/β). NavIC additionally broadcasts a regional **grid** iono model for Indian-region L5
+users (MT5 GIVD/GIVEI over IGPs, algorithm in App. D — SBAS-style IPP interpolation); that
+is a separate model and a separate follow-up, not a Klobuchar variant.
 
 BeiDou B1I broadcasts eight `α/β` coefficients, but BDS-SIS-ICD-B1I §5.2.4.7 specifies a
 different model: spherical-trigonometric IPP geometry with `R=6378 km` and `h=375 km`,

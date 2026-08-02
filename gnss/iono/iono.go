@@ -1,20 +1,32 @@
-// Package iono computes broadcast ionospheric delay. The GPS/QZSS
-// single-frequency Klobuchar model is implemented in full. Galileo NeQuick-G,
-// BeiDou's distinct B1I model and BDGIM, and a verified NavIC model are documented
-// follow-ups (docs/MATH.md §7). Delay is returned in seconds of L1-equivalent
-// group delay and scales to other frequencies by (f_L1/f)².
+// Package iono computes broadcast ionospheric delay. The single-frequency
+// Klobuchar model is implemented in full and serves GPS L1, QZSS, and NavIC —
+// NAVIC-SPS-L5S App. H prescribes the identical algorithm, verified term for
+// term against IS-GPS-200N Figure 20-4 (docs/MATH.md §7.1). Galileo NeQuick-G
+// and BeiDou's distinct B1I model and BDGIM are documented follow-ups
+// (docs/MATH.md §7). Delay is returned in seconds at the coefficient set's
+// reference frequency — L1 for GPS/QZSS, L5 for NavIC (App. H: "Tiono is
+// referred to the L5 frequency") — and scales to another frequency by
+// (f_ref/f)².
 package iono
 
 import "math"
 
-// Klobuchar returns the L1 ionospheric group delay (seconds) from the 8 broadcast
+// Klobuchar returns the ionospheric group delay (seconds) from the 8 broadcast
 // coefficients, for a user at geodetic (userLat, userLon) observing a satellite at
-// azimuth az and elevation el (all radians), at GPS time-of-week gpsTOW (seconds).
-// The algorithm follows IS-GPS-200N §20.3.3.5.2.5 (docs/MATH.md §7.1): latitudes,
-// longitudes, and elevation work in semicircles internally; azimuth is used in
-// radians. This function is scoped to GPS L1 and QZSS; BeiDou B1I uses the
-// materially different BDS-SIS-B1I-3.0 §5.2.4.7 model.
-func Klobuchar(alpha, beta [4]float64, userLat, userLon, az, el, gpsTOW float64) float64 {
+// azimuth az and elevation el (all radians), at time-of-week tow (seconds) in the
+// broadcasting constellation's own system time (GPS/QZSS TOW, or IRNSS time for
+// NavIC — NAVIC-SPS-L5S App. H). The algorithm follows IS-GPS-200N §20.3.3.5.2.5
+// (docs/MATH.md §7.1): latitudes, longitudes, and elevation work in semicircles
+// internally; azimuth is used in radians (regression fix — NAVIC-SPS-L5S App. H states
+// that reading explicitly: "All the parameters used in trigonometric functions
+// are converted to radians before applying the specific operation").
+//
+// The result is referred to the coefficient set's reference frequency: L1 for
+// GPS/QZSS, L5 for NavIC (App. H; an S-band user scales by (f_L5/f_S)²) — the
+// side-by-side verification is recorded in docs/MATH.md §7.1. BeiDou B1I uses
+// the materially different BDS-SIS-B1I-3.0 §5.2.4.7 model and must not be run
+// through this function.
+func Klobuchar(alpha, beta [4]float64, userLat, userLon, az, el, tow float64) float64 {
 	// the model is defined for el >= 0 (IS-GPS-200N §20.3.3.5.2.5); at
 	// el = -0.11π rad (-19.8°) the earth-centred-angle term below divides by
 	// zero, and any negative elevation (AzEl can produce one — regression fix) yields an
@@ -42,7 +54,7 @@ func Klobuchar(alpha, beta [4]float64, userLat, userLon, az, el, gpsTOW float64)
 	lamI := lamU + psi*math.Sin(az)/math.Cos(phiI*math.Pi) // IPP longitude
 	phiM := phiI + 0.064*math.Cos((lamI-1.617)*math.Pi)    // geomagnetic latitude
 
-	t := 43200*lamI + gpsTOW // local time at the IPP, seconds
+	t := 43200*lamI + tow // local time at the IPP, seconds
 	t = math.Mod(t, 86400)
 	if t < 0 {
 		t += 86400
@@ -81,7 +93,9 @@ const (
 )
 
 // ScaleDelay converts an L1 delay (seconds) to the delay on frequency fHz, using
-// the dispersive (f_L1/f)² relation (docs/MATH.md §7).
+// the dispersive (f_L1/f)² relation (docs/MATH.md §7). L1-referred only: NavIC
+// Klobuchar output is L5-referred (NAVIC-SPS-L5S App. H) and must be scaled from
+// L5, not fed through this helper.
 func ScaleDelay(delayL1, fHz float64) float64 {
 	r := L1Hz / fHz
 	return delayL1 * r * r
