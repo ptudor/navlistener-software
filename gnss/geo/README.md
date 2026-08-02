@@ -24,8 +24,8 @@ Imports the root `gnss` package (for `ECEF`) and `physconst` (for `Ellipsoid`). 
 Four operations, and they compose:
 
 1. **`GeodeticToECEF`** — lat/lon/height on an ellipsoid → ECEF metres. Closed form, no iteration.
-2. **`ECEFToGeodetic`** — the inverse, by iterating the Bowring latitude/height solution to
-   convergence.
+2. **`ECEFToGeodetic`** — the inverse, by the standard fixed-point latitude/height iteration
+   (Bowring's closed form is the non-iterative alternative — `docs/MATH.md §5.1`).
 3. **`AzEl`** — given an SV's ECEF position and a receiver's geodetic position, the topocentric
    azimuth and elevation. This is what drives the map's sky view and every elevation-gated
    integrity check.
@@ -33,8 +33,10 @@ Four operations, and they compose:
    everything internal works in radians.
 
 The datum-as-a-parameter choice is the design decision worth stating outright. WGS-84, PZ-90.11,
-and CGCS2000 differ at the centimetre level — genuinely below anything this system alerts on. We
-could have hardcoded WGS-84 and been fine. We didn't, because a function signature that forces
+and CGCS2000 are nearly interchangeable — PZ-90.11's semi-major axis is 1 m shorter than
+WGS-84's, which moves geodetic height by about a metre and az/el by effectively nothing, and
+CGCS2000 agrees with WGS-84 to a tenth of a millimetre — genuinely below anything this system
+alerts on. We could have hardcoded WGS-84 and been fine. We didn't, because a function signature that forces
 the caller to name a datum is a function nobody can accidentally misuse, and `physconst` already
 carries the right one per constellation on `Params.Datum`.
 
@@ -70,14 +72,16 @@ consistent.
 ### `ECEFToGeodetic`
 
 Longitude is exact and immediate (`atan2(Y, X)`). Latitude and height are the hard part, and
-this uses the iterative Bowring form (`docs/MATH.md §5.1`) with three pieces of care:
+this uses the standard fixed-point iteration (`docs/MATH.md §5.1`) with three pieces of care:
 
 **The pole case.** When the horizontal distance √(X²+Y²) drops below 1e-9 m, latitude is ±90° by
 construction and height is |Z| − b, where b = A√(1−e²) is the semi-minor axis. Without this
 branch the iteration divides by a vanishing `cos(lat)`.
 
 **Convergence.** Up to 10 iterations, breaking when successive latitudes agree to 1e-12 rad
-(roughly 6 µm at the Earth's surface). GNSS-relevant inputs converge in two or three.
+(roughly 6 µm at the Earth's surface). A ground station converges in one to four passes (a height
+of exactly 0 makes the seed exact, so it takes one); the SV-altitude positions the feed actually
+converts take about five.
 
 **The final height form is chosen by conditioning, not convenience:**
 
@@ -111,12 +115,15 @@ up    = ( cos φ cos λ,  cos φ sin λ, sin φ)
 Azimuth is `atan2(e, n)`, normalized to [0, 2π) — clockwise from north, the surveying and
 astronomy convention. Elevation is in [−π/2, π/2].
 
-**Two NaN guards, both from real regressions:**
+**Two degenerate-geometry guards, both from real regressions:**
 
 - **regression fix — coincident points.** If the SV and receiver are at the same ECEF position, `d` has
-  zero norm and the elevation ratio divides by zero. Physically impossible (no broadcast
-  satellite coincides with a ground receiver), but it would silently propagate NaN into the feed,
-  so it returns elevation = π/2. Directly overhead is the natural convention for zero separation.
+  zero norm. Physically impossible (no broadcast satellite coincides with a ground receiver), but
+  the then-current `asin(u/norm)` divided by zero and silently propagated NaN into the feed, so
+  the `norm != 0` branch returns elevation = π/2. Directly overhead is the natural convention for
+  zero separation. Since the regression fix replaced the ratio, the same input would now fall through to
+  `atan2(0, 0)` = 0 instead — finite, but the horizon, so the branch still earns its keep by
+  pinning the convention rather than by preventing a NaN.
 - **regression fix — the overhead domain error.** Elevation used to be `asin(u/norm)`. For an SV *exactly*
   overhead, `u = d.Dot(up)` and `norm = d.Norm()` come from different floating-point paths, so
   rounding can push the ratio to 1+ε — outside `asin`'s domain, returning NaN. The fix is
@@ -139,7 +146,7 @@ mapping.
 | Test | What it pins |
 |---|---|
 | `TestGeodeticToECEFEquator` | A known equatorial point maps to the expected ECEF. |
-| `TestGeodeticRoundTrip` | Geodetic → ECEF → geodetic returns the input, across the latitude range. |
+| `TestGeodeticRoundTrip` | Geodetic → ECEF → geodetic returns the input, from the equator to 89.9° and from sea level to 20 000 km (SV altitude). |
 | `TestECEFToGeodeticPole` | The polar branch, where the general iteration would divide by zero. |
 | `TestAzElOverhead` | An SV directly above gives elevation 90°. |
 | `TestAzElNorthHorizon` | An SV due north on the horizon gives az 0°, el 0°. |

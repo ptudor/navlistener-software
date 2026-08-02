@@ -28,10 +28,10 @@ package dependency-free.
 **Broadcast side (`iono.go`).** GPS and QZSS broadcast eight Klobuchar coefficients (α₀–α₃,
 β₀–β₃) describing a half-cosine diurnal model. That's implemented in full and returns L1
 group delay in seconds. Galileo's NeQuick-G and BeiDou's BDGIM are represented by their
-coefficient structs with the driving scalar computed, but the full profile integration and
-spherical-harmonic evaluation are documented follow-ups, not shipped math. BeiDou B1I's own
-distinct Klobuchar-shaped model is also a follow-up. This is stated plainly rather than
-half-implemented — see "What's deliberately not here."
+coefficient structs — NeQuick-G's driving scalar is computed, `BDGIM` is a bare carrier — but the
+full profile integration and spherical-harmonic evaluation are documented follow-ups, not shipped
+math. BeiDou B1I's own distinct Klobuchar-shaped model is also a follow-up. This is stated
+plainly rather than half-implemented — see "What's deliberately not here."
 
 **Measured side (`geomfree.go`).** A receiver tracking two frequencies of one satellite measures
 the actual first-order slant ionospheric delay on that line of sight, because orbit, clocks, and
@@ -61,12 +61,14 @@ Klobuchar bug, so the conversion happens once at the top and the units are named
 The sequence: earth-centred angle ψ → ionospheric pierce point latitude φ_I (clamped to ±0.416
 semicircles) → IPP longitude λ_I → geomagnetic latitude φ_M → local time at the IPP (mod 86400)
 → amplitude and period as cubics in φ_M (amplitude floored at 0, period floored at 72000 s) →
-the half-cosine phase term → the obliquity factor F = 1 + 16(0.53 − E)³.
+the half-cosine phase term → the obliquity factor F = 1 + 16(0.53 − E)³, with E the elevation
+**in semicircles**.
 
 Outside |x| < 1.57 the model returns just the 5 ns night-time floor times obliquity.
 
-**The negative-elevation clamp** : the model is defined for E ≥ 0. At E = −0.11π rad
-(−19.8°) the earth-centred-angle term divides by zero outright, and any negative elevation gives
+**The negative-elevation clamp** : the model is defined for non-negative elevation. At an
+elevation of −0.11π rad (−19.8°, i.e. −0.11 semicircles, where the `e + 0.11` denominator
+vanishes) the earth-centred-angle term divides by zero outright, and any negative elevation gives
 an out-of-validity obliquity. `geo.AzEl` can legitimately produce a negative elevation,
 so the input is **clamped, not rejected** — matching this package's no-error guard style. A
 below-horizon SV is a caller bug elsewhere; it's not something a pure math function should panic
@@ -153,9 +155,9 @@ const MinArc = 10
 
 Feed one (code, phase) geometry-free pair per epoch: `pGF = P₂ − P₁` and `phiGF = Φ₁ − Φ₂`, both
 in metres, both equal to I₁·(γ−1) plus their respective biases. `Add` maintains a running mean of
-(P_GF − Φ_GF), which *is* the ambiguity estimate. `Slant` then returns the smooth phase plus that
-running mean — so its noise falls as the arc grows instead of tracking the code noise epoch by
-epoch.
+(P_GF − Φ_GF), which *is* the ambiguity estimate. `Slant` then forms (Φ_GF + running mean −
+bias)/(γ − 1) — the same conversion `SlantFromCode` does, but over a leveled numerator — so its
+noise falls as the arc grows instead of tracking the code noise epoch by epoch.
 
 **Arc continuity is the caller's responsibility.** Do not add samples across a loss of lock or a
 cycle slip; call `Reset` first. Upstream, the receiver's lock-time counter going backwards is the
@@ -176,7 +178,8 @@ func VTEC(slantM, fHz, elRad float64) float64  // slant → vertical TEC, TECU
 ```
 
 The standard single-layer model: the ray pierces a thin shell at 350 km, and sin χ =
-R_E/(R_E+h)·cos E gives the obliquity M = 1/cos χ. Vertical = slant / M.
+R_E/(R_E+h)·cos E gives the obliquity M = 1/cos χ. Vertical = slant / M. R_E is the unexported
+`earthRadiusM = 6371 km` mean Earth radius — only `ShellHeightM` is exported.
 
 `TECUToMetres` is the dispersive constant — 0.162 m/TECU at GPS L1, which is the number worth
 memorizing as a sanity check.
@@ -193,10 +196,10 @@ clamp.
 
 | Test | What it pins |
 |---|---|
-| `TestKlobucharPublishedVector` | The one that matters most — a published worked example (40°N, 100°W, az 210°, el 20°, 2000-01-01 20:45 UTC) must produce 23.784 m of delay within 20 mm. An external vector, so a structural error fails by metres. |
+| `TestKlobucharPublishedVector` | The one that matters most — the classic worked example from Klobuchar's own chapter (Parkinson & Spilker Vol. I ch. 12: 40°N, 100°W, az 210°, el 20°, 2000-01-01 20:45 UTC) must produce 23.784 m of slant L1 delay within 20 mm. The expected value is the one Orekit's `KlobucharModelTest` pins to ±1 mm — an independent implementation, so this is an external oracle and a structural error fails by metres. |
 | `TestKlobucharZenithPlausible` | Zenith delay lands in a physically sane range. |
 | `TestKlobucharLowElevationLarger` | Low elevation gives more delay than high — the obliquity factor working in the right direction. |
-| `TestKlobucharNightFloor` | The 5 ns night-time floor is applied outside the cosine window. |
+| `TestKlobucharNightFloor` | With zero coefficients the amplitude term vanishes and only the 5 ns floor survives, checked at zenith where F ≈ 1. Note this lands *inside* the cosine window (x ≈ −0.63); the \|x\| ≥ 1.57 branch is not separately covered. |
 | `TestKlobucharNegativeElevationGuarded` | negative elevation is clamped, not divided by zero. |
 | `TestScaleDelay` | (f_L1/f)² scaling. |
 | `TestNeQuickEffectiveIonisation` | Az = a0 + a1·MODIP + a2·MODIP². |
@@ -205,12 +208,12 @@ clamp.
 
 | Test | What it pins |
 |---|---|
-| `TestSlantFromCodeRecoversExactly` | A synthetic pair built from a known I₁ round-trips exactly. |
+| `TestSlantFromCodeRecoversExactly` | A synthetic pair built from a known I₁ round-trips exactly; also the regression fix same-frequency rejection. |
 | `TestSlantFromCodeBiasSign` | The bias enters with the correct sign — an easy thing to get backwards. |
-| `TestArcLevelingBeatsCodeNoise` | The leveled phase estimate is measurably less noisy than raw code, which is the entire justification for `Arc` existing. |
+| `TestArcLevelingBeatsCodeNoise` | After 300 epochs of 0.5 m code noise the leveled slant lands within 0.20 m of truth — the noise reduction that is the entire justification for `Arc` existing. It is an absolute-error gate, not a head-to-head comparison against the single-epoch code estimate. |
 | `TestArcImmatureAndReset` | `MinArc` gating and `Reset` behavior. |
-| `TestObliquity` | The thin-shell mapping factor at known elevations. |
-| `TestTECUConversion` | 40.308e16/f², cross-checked at L1. |
+| `TestObliquity` | The thin-shell mapping factor at known elevations, and monotonic from 85° down to 5°. |
+| `TestTECUConversion` | 40.308e16/f², cross-checked at L1, plus a `VTEC` round trip at zenith. |
 | `TestGammaAgainstScaleDelay` | γ and `ScaleDelay` agree — they're the same physics from two directions. |
 
 Run with `go test ./iono/` from `gnss/`.

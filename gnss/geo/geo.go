@@ -1,8 +1,8 @@
 // Package geo converts between ECEF and geodetic coordinates and computes
 // topocentric azimuth/elevation. Source: docs/MATH.md §5. Each function takes the
 // reference ellipsoid explicitly so the caller carries the right datum per
-// constellation (WGS-84 / PZ-90.11 / CGCS2000); the differences are cm-level but
-// we keep them correct.
+// constellation (WGS-84 / PZ-90.11 / CGCS2000); the differences are a metre of
+// semi-major axis at worst, but we keep them correct.
 package geo
 
 import (
@@ -31,8 +31,9 @@ func GeodeticToECEF(g Geodetic, ell physconst.Ellipsoid) gnss.ECEF {
 	}
 }
 
-// ECEFToGeodetic converts ECEF metres to geodetic on ellipsoid ell, iterating the
-// closed-form Bowring latitude/height solution to convergence (docs/MATH.md §5.1).
+// ECEFToGeodetic converts ECEF metres to geodetic on ellipsoid ell by the standard
+// fixed-point latitude/height iteration (docs/MATH.md §5.1; Bowring's closed form
+// is the non-iterative alternative given there).
 func ECEFToGeodetic(p gnss.ECEF, ell physconst.Ellipsoid) Geodetic {
 	e2 := ell.E2()
 	lon := math.Atan2(p.Y, p.X)
