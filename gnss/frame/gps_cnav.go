@@ -52,9 +52,10 @@ const (
 	p2m60 = 1.0 / float64(uint64(1)<<60)
 
 	cnavArefGPS  = 26559710.0 // GPS reference semi-major axis, metres
-	cnavArefQZSS = 42164200.0 // QZSS reference, IS-QZSS-PNT-005 Table 4.3.2-16
-	// IS-QZSS-PNT-005 redefines A_REF but not the MT11 reference nodal rate;
-	// GPS and QZSS therefore intentionally share cnavOmgD.
+	cnavArefQZSS = 42164200.0 // QZSS reference, QZSS-PNT-006 §5.6.2 Table 5.6.2-2
+	// QZSS redefines A_REF but not the MT11 reference nodal rate: the same
+	// Table 5.6.2-2 lists Ω̇_REF = −2.6×10⁻⁹ semicircles/s, identical to GPS's
+	// (IS-GPS-200N §30.3.3.1.1), so GPS and QZSS intentionally share cnavOmgD.
 	cnavOmgD = -2.6e-9 // reference rate of right ascension, semicircles/s
 	cnavT0   = 300.0   // toe/toc step, seconds
 )

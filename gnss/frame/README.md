@@ -230,8 +230,9 @@ here.
 
 Unlike LNAV, CNAV uses the **ΔA parameterization**: A = A_ref + ΔA, plus rate terms Ȧ and Δṅ₀.
 A_ref differs by constellation — 26,559,710 m for GPS, 42,164,200 m for QZSS
-(IS-QZSS-PNT-005 Table 4.3.2-16). The MT11 reference nodal rate is *not* redefined by IS-QZSS, so
-GPS and QZSS intentionally share `cnavOmgD = −2.6e-9 semicircles/s`.
+(QZSS-PNT-006 §5.6.2 Table 5.6.2-2). The MT11 reference nodal rate is *not* redefined — the same
+QZSS table lists Ω̇_REF = −2.6×10⁻⁹ semicircles/s, identical to GPS's — so GPS and QZSS
+intentionally share `cnavOmgD = −2.6e-9 semicircles/s`.
 
 Ephemeris is split across **MT10** (Ephemeris 1) and **MT11** (Ephemeris 2); the clock is in
 **MT30–37**.
