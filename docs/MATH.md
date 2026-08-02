@@ -392,8 +392,8 @@ behind a feature flag, but the target is the real model.)
 
 BeiDou's modern signals carry the **BeiDou Global Ionospheric delay correction Model** — 9
 broadcast coefficients `α1..α9` over a spherical-harmonic basis with predicted coefficients from
-an embedded model. Implement per **BDS-SIS-ICD-B-CNAV1 §7.4**; cross-check against BeiDou's
-published examples.
+an embedded model. Implement per **BDS-SIS-B1C-1.0 §7.8** (the B2a ICD prints the identical
+model chapter as its own §7.8); cross-check against BeiDou's published examples.
 
 ### 7.4 Measured slant ionosphere — the geometry-free dual-frequency combination
 

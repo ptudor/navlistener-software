@@ -102,7 +102,8 @@ func (n NeQuickG) EffectiveIonisation(modipDeg float64) float64 {
 }
 
 // BDGIM holds the nine BeiDou Global Ionospheric delay correction Model
-// coefficients from B-CNAV (BDS-SIS-ICD-B-CNAV1 §7.4). The spherical-harmonic
+// coefficients from B-CNAV (BDS-SIS-B1C-1.0 §7.8; identically BDS-SIS-B2a-1.0
+// §7.8 — both ICDs print the same model chapter). The spherical-harmonic
 // evaluation is a documented follow-up; this carries the decoded coefficients.
 type BDGIM struct {
 	Alpha [9]float64

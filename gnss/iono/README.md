@@ -227,6 +227,6 @@ Run with `go test ./iono/` from `gnss/`.
 - **IS-GPS-200N §20.3.3.5.2.5** — Klobuchar.
 - **GAL-OS-SIS-ICD-2.2** — the NeQuick-G effective-ionisation coefficients.
 - **BDS-SIS-B1I-3.0 §5.2.4.7** — BeiDou's distinct B1I model (not implemented here).
-- **BDS-SIS-B1C-1.0 §7.4** — BDGIM coefficients.
+- **BDS-SIS-B1C-1.0 §7.8** (identically BDS-SIS-B2a-1.0 §7.8) — BDGIM coefficients.
 
 See `reference/REFERENCES.md`.
