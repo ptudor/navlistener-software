@@ -3,7 +3,7 @@
 **Headline:** every constellation runs its own leap-free clock with its own epoch and its own
 week numbering, and all of them wrap. This package owns the arithmetic that makes those clocks
 comparable — most importantly the ±half-week correction that shows up in literally every
-propagation and clock evaluation in the library.
+Keplerian propagation and clock evaluation in the library.
 
 ---
 
@@ -15,9 +15,9 @@ propagation and clock evaluation in the library.
 | `gnsstime_test.go` | Epoch-constant pins, wrap behavior in both directions, known-value week/TOW checks, and the GLONASS rejection cases. |
 | `README.md` | This file. |
 
-This package has **zero dependencies** — not even the root `gnss` package. It's pure arithmetic
-over `float64` and `int`, which is what lets `kepler`, `clock`, and `frame` all import it without
-any risk of a cycle.
+This package's only import is stdlib `math` — **not even the root `gnss` package**. It's pure
+arithmetic over `float64` and `int`, which is what lets `kepler`, `clock`, and `frame` all import
+it without any risk of a cycle.
 
 ---
 
@@ -32,7 +32,7 @@ to UTC:
 | QZSS | (GPST) | — | identical to GPST; no separate `System` constant |
 | Galileo | GST | 1999-08-21T23:59:47 UTC | GST week = GPS week − 1024, TOW aligned |
 | BeiDou | BDT | 2006-01-01 | BDT = GPST − 14 s |
-| NavIC | IRNWT | 1999-08-22 (Galileo convention) | same epoch/alignment as GST |
+| NavIC | IRNWT | = GST(0,0) (nominal date 1999-08-22) | same epoch constant and alignment as GST |
 | GLONASS | GLONASST | — | UTC(SU)+3h, **leap-stepped**, no week, no TOW |
 
 GLONASS is the odd one out and is deliberately refused by every function on the continuous-week
@@ -71,10 +71,11 @@ Returns tk = tow − ref, corrected by ±one week when the difference exceeds ha
 an ephemeris reference epoch (toe) or a clock reference (toc), both in seconds-of-week.
 
 This correction is **mandatory**, not defensive. A measurement taken just after a week rollover
-against a reference from just before it produces a raw difference of ~604,800 s; without the wrap
-you'd propagate an orbit a full week forward and get a position that is wrong by the entire
-orbit. Apply this correction consistently, in `kepler.Solve`, `clock.Offset`, `clock.UTCOffset`, and
-`kepler.Velocity`'s straddle guard.
+against a reference from just before it produces a raw difference of ≈ −604,800 s; without the
+wrap you'd propagate the orbit a full week *backward* — and the mirror case, a late-week
+measurement against a just-rolled reference, a full week forward. Either way the position is
+wrong by the entire orbit. Apply the correction consistently, in `kepler.Solve`, `clock.Offset`,
+`clock.UTCOffset`, and `kepler.Velocity`'s straddle guard.
 
 Companions:
 

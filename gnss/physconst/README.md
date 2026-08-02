@@ -74,10 +74,12 @@ Read that table carefully, because three of its rows are the entire point of the
   of the relativity constant F — which is exactly the scale the 2.5 ns clock-disco integrity
   threshold operates at. This is the single most consequential constant in the package, and
   `TestGalileoBeidouMuDiffersFromGPS` exists solely to fail if anyone ever "simplifies" it back.
-- **QZSS and NavIC DO share the GPS values,** deliberately. Both are GPS-compatible by design
-  (GPS-compatible time scale, GPS-compatible datum), so sharing is correct here and the same test
-  asserts it in the opposite direction — it fails if someone splits them out on the assumption
-  that "different constellation" always means "different constants."
+- **QZSS and NavIC DO share the GPS values,** deliberately. QZSS is GPS-compatible end to end
+  (QZSST *is* GPST, GPS-compatible datum); NavIC runs its own time scale (IRNWT — see
+  `gnss/gnsstime`), but its ICD specifies the GPS gravitational constants on WGS-84
+  (`docs/MATH.md §0`). Sharing is correct in both cases, and the same test asserts it in the
+  opposite direction — it fails if someone splits them out on the assumption that "different
+  constellation" always means "different constants."
 - **GLONASS has no F term.** It broadcasts a Cartesian state vector, not Keplerian elements, and
   the relativistic correction is already folded into the broadcast τn. Setting `RelF: 0` is not a
   placeholder; it's the correct value, and `TestGlonassHasNoRelativityF` pins it.
@@ -120,9 +122,11 @@ func (e Ellipsoid) E2() float64  // first eccentricity squared, e² = 2f − f²
 | `PZ90` | 6378136 | 298.25784 | GLONASS (PZ-90.11) |
 | `CGCS2000` | 6378137 | 298.257222101 | BeiDou |
 
-The three differ at the centimetre level, which is below anything this system alerts on. We carry
-them separately anyway — partly because it costs nothing, and partly because "close enough"
-reasoning about datums is how a centimetre becomes a metre three refactors later. `geo` takes the
+The three differ by a metre at most — PZ-90.11's semi-major axis is 1 m shorter than WGS-84's
+(about a metre of geodetic height), while CGCS2000 agrees with WGS-84 to a tenth of a millimetre
+— which is below anything this system alerts on. We carry them separately anyway — partly
+because it costs nothing, and partly because "close enough" reasoning about datums is how a
+small discrepancy becomes a large one three refactors later. `geo` takes the
 ellipsoid as an explicit argument for the same reason: the caller has to say which datum it means.
 
 ### `SpeedOfLight` and `Pi`
@@ -130,9 +134,9 @@ ellipsoid as an explicit argument for the same reason: the caller has to say whi
 `SpeedOfLight = 299792458.0` is exact by definition and shared by every constellation.
 
 `Pi = 3.1415926535898` is **not** `math.Pi`, and that's on purpose. The ICDs mandate this
-13-digit value for converting broadcast angles from semicircles to radians (radians = semicircles
-× Pi). Using it rather than the full-precision `math.Pi` makes decoded angles match the ICD
-bit-for-bit. The frame decoders apply it at decode time — every `* semi` you see in
+13-decimal-place value for converting broadcast angles from semicircles to radians (radians =
+semicircles × Pi). Using it rather than the full-precision `math.Pi` makes decoded angles match
+the ICD bit-for-bit. The frame decoders apply it at decode time — every `* semi` you see in
 `gnss/frame/*.go` is this constant. If you ever see `math.Pi` used to scale a broadcast angle,
 that's a bug.
 
@@ -148,9 +152,9 @@ GloOmegaE = 7.2921150e-5  // PZ-90 Earth rotation rate, rad/s
 These are separate from the `Params` table because the GLONASS equations of motion in the ICD's
 Appendix are written in kilometres, and `gnss/glonass` integrates in those units and converts to
 metres only at the boundary. Note the sign convention on J₂: the ICD publishes C₂₀ = −J₂, so the
-value here is the *positive* J₂ and the propagator's `deriv` uses it accordingly. That sign is the
-kind of thing that produces a plausible-looking orbit that's wrong by kilometres, so it's called
-out in both places.
+value here is the *positive* J₂ and the propagator's `deriv` uses it accordingly (`k = 1.5·J₂·ρ²`,
+no sign flip). That sign is the kind of thing that produces a plausible-looking orbit that's wrong
+by kilometres, so it's called out here and in `docs/MATH.md §0`.
 
 ---
 
@@ -158,7 +162,7 @@ out in both places.
 
 | Test | What it pins |
 |---|---|
-| `TestRelativityConstant` | Each constellation's F is consistent with its own μ via F = −2√μ/c² (1e-5 relative tolerance, because the ICD values are rounded). Catches pairing one constellation's F with another's μ. |
+| `TestRelativityConstant` | Each Kepler-family constellation's F is consistent with its own μ via F = −2√μ/c² (1e-5 relative tolerance, because the ICD values are rounded). Catches pairing one constellation's F with another's μ. |
 | `TestGalileoBeidouMuDiffersFromGPS` | Galileo and BeiDou must **not** carry the GPS μ; QZSS and NavIC **must**. Both directions asserted. |
 | `TestEllipsoidE2` | WGS-84 e² equals the standard 0.0066943799901; PZ-90's semi-major axis differs from WGS-84's. |
 | `TestForUnknown` | SBAS has no Keplerian params; GPS does. |
