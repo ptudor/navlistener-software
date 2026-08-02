@@ -93,14 +93,17 @@ scalings from the frame decoder. Source: **IS-GPS-200 §20.3.3.4.3.1, Table 20-I
 identical algorithm in each other ICD).
 
 **Broadcast elements** (after decode + scaling): `√A, e, M₀, Δn, i₀, IDOT, Ω₀, Ω̇, ω, Cuc, Cus,
-Crc, Crs, Cic, Cis, toe`. (BeiDou GEO adds a step — §2.1.)
+Crc, Crs, Cic, Cis, toe`. The CNAV families (L2C/L5, B-CNAV2) add the rate terms `Ȧ` and `Δṅ`
+and broadcast `ΔA` against a per-constellation `A_ref` instead of `√A` (IS-GPS-705J /
+BDS-SIS-B2a-1.0 Table 7-9; the frame decoder reconstructs A₀). (BeiDou GEO adds a step — §2.1.)
 
 ```
-A   = (√A)²                                   // semi-major axis
-n0  = √(μ / A³)                               // computed mean motion  (μ per §0)
+A₀  = (√A)²                                   // semi-major axis at toe
+n0  = √(μ / A₀³)                              // computed mean motion (μ per §0) — always from A₀
 tk  = ephAge(t.tow, toe)                       // §1.1, half-week corrected
-n   = n0 + Δn                                  // corrected mean motion
-M   = M₀ + n·tk                                // mean anomaly
+A   = A₀ + Ȧ·tk                                // CNAV-family rate terms; Ȧ = Δṅ = 0 for
+n   = n0 + Δn + ½·Δṅ·tk                        //   LNAV/D1/I-NAV, collapsing to the classic
+M   = M₀ + n·tk                                //   A = A₀, n = n0 + Δn
 
 // Kepler's equation  M = E − e·sin E   — solve for eccentric anomaly E:
 E = M
