@@ -44,7 +44,8 @@ func TestEllipsoidE2(t *testing.T) {
 	if got := WGS84.E2(); math.Abs(got-0.0066943799901) > 1e-12 {
 		t.Errorf("WGS84 e² = %.13f, want 0.0066943799901", got)
 	}
-	// The three datums differ, but only at the cm level.
+	// The three ellipsoids are close but not interchangeable: PZ-90.11's
+	// semi-major axis is a full metre shorter than WGS-84's.
 	if PZ90.A == WGS84.A {
 		t.Error("PZ-90.11 semi-major axis should differ from WGS-84 (6378136 vs 6378137)")
 	}

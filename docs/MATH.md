@@ -146,8 +146,9 @@ Z_GK  = y′·sin i
 then rotate by `−5°` about X and then by `ωe·tk` about Z into CGCS2000 ECEF (BDS-SIS-ICD-B1I
 §5.2.4.12: `[X,Y,Z]ᵀ = Rz(ωe·tk)·Rx(−5°)·[X_GK,Y_GK,Z_GK]ᵀ` — Rx applied first, Rz last).
 MEO/IGSO BeiDou SVs use the plain §2 algorithm.
-Detect GEO by SV id, not by inclination. Getting this wrong puts the GEO belt ~km off — a
-constant error a differential test against galmon catches immediately.
+Detect GEO by SV id, not by inclination. Getting this wrong swings the GEO belt off by ωe·tk —
+about 15° per hour of ephemeris age, thousands of km at GEO radius — an error a differential
+test against galmon catches immediately.
 
 **Provenance and scope of the −5° rotation :** the GEO branch above is sourced from
 **B1I** (BDS-SIS-ICD-B1I §5.2.4.12, whose user algorithm covers the D1/D2 message family).
@@ -275,7 +276,8 @@ DN`) from the broadcast UTC parameters (IS-GPS-200 §20.3.3.5.2.4).
 ### 5.1 ECEF → geodetic (lat, lon, height) — Bowring/closed-form
 
 Per datum ellipsoid `(a, f)`: WGS-84 `a=6378137, 1/f=298.257223563`; PZ-90.11 `a=6378136,
-1/f=298.25784`; CGCS2000 `a=6378137, 1/f=298.257222101`. The differences are cm-level but we
+1/f=298.25784`; CGCS2000 `a=6378137, 1/f=298.257222101`. The differences are small — a metre of
+semi-major axis at worst, about a metre of geodetic height if the wrong one is used — and we
 carry the right ellipsoid per constellation for correctness.
 
 ```
