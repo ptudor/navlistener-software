@@ -52,7 +52,8 @@ type Params struct {
 
 // paramsByID indexes Params by constellation. QZSS and NavIC use the GPS
 // gravitational/rotation constants on the WGS-84 ellipsoid (QZSS-PNT-006 §5.3.4
-// prints the GPS μ verbatim; QZSST is GPST, while NavIC runs its own IRNWT but
+// and NAVIC-SPS-L5S App. A/B print the GPS F, μ, and ωe verbatim as "WGS 84
+// value[s]"; QZSST is GPST, while NavIC runs its own IRNWT but
 // keeps the GPS constants — docs/MATH.md §0); Galileo and BeiDou use the smaller
 // 3.986004418e14 μ from their own ICDs; GLONASS is a Cartesian model with no
 // relativity F term (docs/MATH.md §0).

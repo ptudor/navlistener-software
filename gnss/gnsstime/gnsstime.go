@@ -111,8 +111,13 @@ var epochGPSSeconds = map[System]float64{
 	SysGalileo: 935280000 - gpsEpochUnix,
 	// BDT epoch 2006-01-01T00:00:00Z, TAI−UTC = 33 → GPS−UTC = 14 (BDT = GPST − 14 s).
 	SysBeiDou: (1136073600 - gpsEpochUnix) + (33 - gpsTAIminusUTC),
-	// IRNWT shares the Galileo epoch/convention (1999-08-22, WN+1024=GPS WN,
-	// TOW aligned) per docs/MATH.md §1 -- same correction as SysGalileo above.
+	// IRNWT shares the Galileo epoch/convention (WN+1024 = GPS WN, TOW
+	// aligned) -- same correction as SysGalileo above. Verified against
+	// NAVIC-SPS-L5S §5.7 ("IRNSS System Time"): "start epoch shall be 00:00 UT
+	// on Sunday August 22nd 1999", "ahead of UTC by 13 leap seconds. (i.e.
+	// IRNSS time, August 22nd 1999, 00:00:00 corresponds to UTC time August
+	// 21st 1999, 23:59:47)" -- the GST(0,0) instant verbatim, 13-s subtlety
+	// included (docs/MATH.md §1).
 	SysNavIC: 935280000 - gpsEpochUnix,
 }
 
