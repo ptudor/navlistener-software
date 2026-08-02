@@ -104,7 +104,7 @@ func TestUTCOffset(t *testing.T) {
 // green. gnss/ is the vendorable Apache-2.0 module: an external consumer is the
 // only caller of this exported three-term form, so the module must guard it.
 //
-// The vector is a legal broadcast set, not an arbitrary one. BDS-SIS-ICD-B2a
+// The vector is a legal broadcast set, not an arbitrary one. BDS-SIS-B2a-1.0
 // v1.0 Table 7-20 gives the BDT-UTC field widths and scales — A0UTC 16 bits
 // two's complement × 2⁻³⁵ s, A1UTC 13 bits × 2⁻⁵¹ s/s, A2UTC 7 bits × 2⁻⁶⁸
 // s/s², tot 16 bits × 2⁴ s over 0~604784 — so each coefficient below is

@@ -72,7 +72,7 @@ func TestAlmanacCycleBoundaryWrap(t *testing.T) {
 	}
 }
 
-// TestAlmanacICDExample reproduces the GLONASS ICD Ed. 5.1 §A.3.2.3 worked example
+// TestAlmanacICDExample reproduces the GLO-ICD-5.1 §A.3.2.3 worked example
 // bit-for-bit: the same almanac element set, the same evaluation instant and
 // Greenwich sidereal time, must yield the ICD's published absolute-frame (OXaYaZa)
 // coordinates and velocity. This is the definitive clean-room validation — the

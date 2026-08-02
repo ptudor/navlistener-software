@@ -101,7 +101,7 @@ func GalileoSISA(n int) (float64, bool) {
 	}
 }
 
-// glonassFT is the GLONASS F_T accuracy table in metres (GLONASS ICD Ed. 5.1);
+// glonassFT is the GLONASS F_T accuracy table in metres (GLO-ICD-5.1);
 // index 15 is "not used" (valid=false).
 var glonassFT = [15]float64{1, 2, 2.5, 4, 5, 7, 10, 12, 14, 16, 32, 64, 128, 256, 512}
 

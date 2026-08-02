@@ -65,7 +65,7 @@ func TestBCNAV2RejectsReservedSatType(t *testing.T) {
 }
 
 // TestBCNAV2MT34DecodesBDTUTC guards the MT34 BDT-UTC time offset
-// block at bits 143–239 (BDS-SIS-ICD-B2a v1.0 Figure 6-9 placement, Figure 6-16
+// block at bits 143–239 (BDS-SIS-B2a-1.0 Figure 6-9 placement, Figure 6-16
 // layout, Table 7-20 scales/signs) must decode field-for-field, including the
 // two's-complement handling of every starred field. Raw values are chosen so a
 // ±1-bit offset regression or a signed/unsigned swap changes an asserted value.
@@ -130,7 +130,7 @@ func TestBCNAV2MT34DecodesBDTUTC(t *testing.T) {
 }
 
 // TestBCNAV2MT30DecodesBDGIM pins the MT30 BDGIM α1..α9 block (bits 145–218,
-// BDS-SIS-ICD-B2a v1.0 Figure 6-5 placement, Table 7-10 widths/scales/signs)
+// BDS-SIS-B2a-1.0 Figure 6-5 placement, Table 7-10 widths/scales/signs)
 // inside the vendorable gnss module itself.
 //
 // these decodes were previously guarded ONLY from go/internal/state
@@ -253,7 +253,7 @@ func TestAssembleBeiDouBCNAV2RejectsWrongSlots(t *testing.T) {
 // TestAssembleBCNAV2ClockCarriesDataComponentTGD guards the tracked
 // signal is the B2a DATA component (B-CNAV2 rides on B2a-data, u-blox sigId 8),
 // so the assembled Model.TGD must be eq. 7-5's TGD_B2ap + ISC_B2ad
-// (BDS-SIS-ICD-B2a v1.0 §7.6.2, Table 7-6) — not the pilot-only eq. 7-4 value.
+// (BDS-SIS-B2a-1.0 §7.6.2, Table 7-6) — not the pilot-only eq. 7-4 value.
 func TestAssembleBCNAV2ClockCarriesDataComponentTGD(t *testing.T) {
 	const tgdB2ap, iscB2ad = -137.0 / (1 << 30) / 16, 59.0 / (1 << 30) / 16 // −137·2⁻³⁴, +59·2⁻³⁴ s
 	m10 := &BeiDouBCNAV2{MesType: 10, SOW: 100}

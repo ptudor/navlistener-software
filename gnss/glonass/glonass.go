@@ -3,7 +3,7 @@
 // reference time tb — position, velocity, and luni-solar acceleration — and the
 // position at another epoch is found by numerically integrating the equations of
 // motion (with the J₂ oblateness term) directly in the PZ-90 rotating frame.
-// Source: docs/MATH.md §3, GLONASS ICD Ed. 5.1 Appendix (algorithm J.1/J.2).
+// Source: docs/MATH.md §3, GLO-ICD-5.1 Appendix (algorithm J.1/J.2).
 //
 // The integration works in kilometres (the ICD's units) and multiplies the result
 // by 1000 to return metres. Every decoded field is initialised, a zero/timeless
@@ -29,7 +29,7 @@ type Ephemeris struct {
 	Tb       float64 // reference time (seconds of day)
 	TodKnown bool    // true once string 2 anchored the time-of-day (tb; docs/MATH.md §3)
 
-	// SV clock terms (regression fix; GLONASS ICD Ed. 5.1 Table 4.5), stored exactly as
+	// SV clock terms (regression fix; GLO-ICD-5.1 Table 4.5), stored exactly as
 	// broadcast: TauN is τn(tb), the correction of the SV time scale to GLONASS
 	// time at tb, seconds (applied as t_GLO = t_sv + τn − γn·(t_sv − tb));
 	// GammaN is γn(tb), the relative frequency deviation, dimensionless;

@@ -10,12 +10,12 @@ import "math"
 // Klobuchar returns the L1 ionospheric group delay (seconds) from the 8 broadcast
 // coefficients, for a user at geodetic (userLat, userLon) observing a satellite at
 // azimuth az and elevation el (all radians), at GPS time-of-week gpsTOW (seconds).
-// The algorithm follows IS-GPS-200 §20.3.3.5.2.5 (docs/MATH.md §7.1): latitudes,
+// The algorithm follows IS-GPS-200N §20.3.3.5.2.5 (docs/MATH.md §7.1): latitudes,
 // longitudes, and elevation work in semicircles internally; azimuth is used in
 // radians. This function is scoped to GPS L1 and QZSS; BeiDou B1I uses the
-// materially different BDS-SIS-ICD-B1I §5.2.4.7 model.
+// materially different BDS-SIS-B1I-3.0 §5.2.4.7 model.
 func Klobuchar(alpha, beta [4]float64, userLat, userLon, az, el, gpsTOW float64) float64 {
-	// the model is defined for el >= 0 (IS-GPS-200 §20.3.3.5.2.5); at
+	// the model is defined for el >= 0 (IS-GPS-200N §20.3.3.5.2.5); at
 	// el = -0.11π rad (-19.8°) the earth-centred-angle term below divides by
 	// zero, and any negative elevation (AzEl can produce one — regression fix) yields an
 	// out-of-validity obliquity. Clamped, not rejected, matching this package's

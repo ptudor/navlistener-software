@@ -94,7 +94,7 @@ func TestRealF9TCapture(t *testing.T) {
 
 // TestRealBeiDouBCNAV2 validates the B2a B-CNAV2 decoder against the F9T capture:
 // message types 10/11 assemble per SV and must propagate to the BeiDou MEO shell
-// (~27906 km) with the ~55° MEO inclination. Offsets are the BDS-SIS-ICD-B2a
+// (~27906 km) with the ~55° MEO inclination. Offsets are the BDS-SIS-B2a-1.0
 // Table 7-8 layout (this closes the earlier compliance gap).
 func TestRealBeiDouBCNAV2(t *testing.T) {
 	data, err := os.ReadFile("testdata/f9t_capture.ubx")

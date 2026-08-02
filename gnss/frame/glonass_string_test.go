@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// gloSetSignMag writes a sign-magnitude field (MSB sign, per GLONASS ICD Ed. 5.1
+// gloSetSignMag writes a sign-magnitude field (MSB sign, per GLO-ICD-5.1
 // Table 4.5 Note 2) at absolute block-bit offset start, width n — the encoding
 // BitReader.SignMag reads back.
 func gloSetSignMag(buf []byte, start, n int, value int64) {
@@ -307,7 +307,7 @@ func TestDecodeGLONASSStringTbRange(t *testing.T) {
 }
 
 // TestDecodeGLONASSStringClockTerms guards γn(tb) from string 3 and
-// τn(tb)/Δτn from string 4, at the GLONASS ICD Ed. 5.1 Table 4.6 positions
+// τn(tb)/Δτn from string 4, at the GLO-ICD-5.1 Table 4.6 positions
 // (γn bits 69–79 → block offset 6, width 11; τn bits 59–80 → offset 5, width 22;
 // Δτn bits 54–58 → offset 27, width 5), sign-magnitude, scales 2⁻⁴⁰/2⁻³⁰/2⁻³⁰
 // (Table 4.5). Negative values exercise the MSB-sign convention.

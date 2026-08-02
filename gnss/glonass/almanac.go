@@ -3,7 +3,7 @@ package glonass
 // GLONASS almanac orbit propagation — the analytic long-term motion model that
 // turns the coarse, long-life almanac elements into a position, for the all-SV
 // acquisition-grade almanac feed (docs/OUTPUT.md §1.4) including GLONASS SVs that
-// are currently out of ephemeris view. Source: GLONASS ICD Edition 5.1 (2008),
+// are currently out of ephemeris view. Source: GLO-ICD-5.1 (2008),
 // Appendix 3, §A.3.2.2 "Algorithm of calculation of satellite motion parameters
 // using almanac" — authored from that ICD text, validated against the ICD's own
 // worked numerical example (§A.3.2.3) in almanac_test.go.
@@ -41,7 +41,7 @@ type Almanac struct {
 	FreqCh    int     // FDMA channel k = freqId − 7
 }
 
-// GLONASS ICD Ed. 5.1 §A.3.2.2 constants (kilometre/second units, the ICD's).
+// GLO-ICD-5.1 §A.3.2.2 constants (kilometre/second units, the ICD's).
 const (
 	almMu   = 398600.44    // gravitational constant μ, km³/s²
 	almAe   = 6378.136     // equatorial radius a_e, km

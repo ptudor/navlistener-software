@@ -2,7 +2,7 @@ package frame
 
 import "math/bits"
 
-// GPS/QZSS LNAV parity (IS-GPS-200 §20.3.5). Each 30-bit word carries 24 data bits
+// GPS/QZSS LNAV parity (IS-GPS-200N §20.3.5). Each 30-bit word carries 24 data bits
 // d1..d24 (MSB first) and 6 parity bits D25..D30, computed over the data bits and
 // the last two parity bits of the previous word (D29*, D30*). If D30* is set, the
 // 24 data bits are transmitted complemented and must be inverted before use.
@@ -19,7 +19,7 @@ var parityMasks = [6]uint32{
 }
 
 // prevBit[k] is which previous-word parity bit (D29* or D30*) XORs into parity bit
-// D(25+k): false = D29*, true = D30* (IS-GPS-200 Table 20-XIV).
+// D(25+k): false = D29*, true = D30* (IS-GPS-200N Table 20-XIV).
 var prevIsD30 = [6]bool{false, true, false, true, true, false}
 
 func maskFromIdx(idx ...int) uint32 {

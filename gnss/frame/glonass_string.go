@@ -21,7 +21,7 @@ var ErrGLONASSHamming = errors.New("frame: GLONASS string Hamming check failed")
 
 // errBadTb  is returned for a string 2 whose tb index is outside the ICD's
 // effective range. tb is a 7-bit index of a 15-min interval within the current day
-// (GLONASS ICD Ed. 5.1 §4.4), so the codespace (0..127 ≈ 31.75 h) exceeds a day;
+// (GLO-ICD-5.1 §4.4), so the codespace (0..127 ≈ 31.75 h) exceeds a day;
 // Table 4.5 bounds the effective range to 15…1425 minutes — index 1..95. An
 // out-of-range tb decodes to a finite-but-garbage epoch that EphAgeDay's single
 // ±43 200 s wrap then aliases into an in-domain RK4 propagation interval, defeating
@@ -48,7 +48,7 @@ func gloHammingRange(lo, hi int) []int {
 }
 
 // gloHammingSets are the data-bit (ICD b_N) sets for check bits β1..β7 (index 0..6),
-// GLONASS ICD Ed. 5.1 §4.7 / Table 4.13.
+// GLO-ICD-5.1 §4.7 / Table 4.13.
 var gloHammingSets = func() [7][]int {
 	cat := func(parts ...[]int) []int {
 		var out []int
@@ -68,7 +68,7 @@ var gloHammingSets = func() [7][]int {
 	}
 }()
 
-// glonassHammingValid verifies the GLONASS ICD Ed. 5.1 §4.7 / Table 4.13 Hamming check
+// glonassHammingValid verifies the GLO-ICD-5.1 §4.7 / Table 4.13 Hamming check
 // bits over the 85-bit string. ICD bit b_N maps to block offset 85−N (the same
 // convention DecodeGLONASSString's field offsets use): check bits β1..β8 are ICD bits 1..8,
 // data bits b9..b85 are ICD bits 9..85. Each Cj = βj ⊕ (parity of a fixed data-bit set),
@@ -154,7 +154,7 @@ func StampGLONASSHamming(words []uint32) {
 // 128-bit block and returns a bit reader over it. The 85-bit ICD string maps into the
 // block as block bit = 85 − (ICD bit number), so an ICD field spanning bits [lo..hi]
 // (hi = MSB / sign) is read at block offset 85−hi, width hi−lo+1 (the offsets below
-// are pre-computed from GLONASS ICD Ed. 5.1 Tables 4.11 that way).
+// are pre-computed from GLO-ICD-5.1 Tables 4.11 that way).
 func glonassBlock(words []uint32) *BitReader {
 	buf := make([]byte, 16)
 	for i := 0; i < 4; i++ {
@@ -163,7 +163,7 @@ func glonassBlock(words []uint32) *BitReader {
 	return NewBitReaderN(buf, 128)
 }
 
-// GLONASS L1OF/L2OF string decoding (GLONASS ICD Ed. 5.1 §4). u-blox delivers each
+// GLONASS L1OF/L2OF string decoding (GLO-ICD-5.1 §4). u-blox delivers each
 // 85-bit string as one UBX-RXM-SFRBX of four 32-bit words = a 128-bit block; the
 // string number m sits at bits 1–4 and the string content follows (bit N of the
 // 85-bit string maps to block bit 85−N). Strings 1–4 carry the immediate ephemeris
@@ -253,7 +253,7 @@ func DecodeGLONASSString(words []uint32) (*GLONASSString, error) {
 		return nil, ErrGLONASSHamming
 	}
 	m, _ := r.Bits(1, 4)
-	// string number must be 1..15 (GLONASS ICD Ed. 5.1 §4.1). A length-valid block
+	// string number must be 1..15 (GLO-ICD-5.1 §4.1). A length-valid block
 	// with string number 0 is mis-tagged or corrupt — reject so the caller counts a decode
 	// error and records no capability off garbage.
 	if m < 1 || m > 15 {
@@ -342,7 +342,7 @@ func (s *GLONASSString) Unhealthy() bool {
 	return s.Health&0x4 != 0 || (s.LnKnown && s.Ln != 0)
 }
 
-// GLONASS almanac scale factors (GLONASS ICD Ed. 5.1 Table 4.9). Angular words are in
+// GLONASS almanac scale factors (GLO-ICD-5.1 Table 4.9). Angular words are in
 // semicircles; ×π converts to radians.
 const (
 	gloAlm2m20 = 1.0 / (1 << 20) // λ, Δi (semicircle), ε (dimensionless)
@@ -353,7 +353,7 @@ const (
 	gloAlm2m18 = 1.0 / (1 << 18) // τ (s)
 )
 
-// GLONASSAlmanacEntry is one satellite's decoded almanac (GLONASS ICD Ed. 5.1 §4.5),
+// GLONASSAlmanacEntry is one satellite's decoded almanac (GLO-ICD-5.1 §4.5),
 // assembled from its two-string pair and the frame's NA day number (string 5). Alm is
 // the SI-scaled element set the analytic propagator consumes; Cn is the generalized
 // health flag broadcast at almanac upload (1 = operable).
@@ -431,7 +431,7 @@ func DecodeGLONASSAlmanac(first, second []uint32, na int) (GLONASSAlmanacEntry, 
 }
 
 // gloHnToChannel maps the broadcast frequency-number word HnA to the FDMA channel k
-// (GLONASS ICD Ed. 5.1 Table 4.10: values 25..31 encode channels −7..−1; 0..6 are
+// (GLO-ICD-5.1 Table 4.10: values 25..31 encode channels −7..−1; 0..6 are
 // the non-negative channels verbatim). HnA 7..24 encodes no valid channel
 // under the post-2005 frequency plan (§3.3.1.1) — ok is false and the caller must
 // reject rather than store an impossible k as identity metadata.

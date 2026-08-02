@@ -356,7 +356,7 @@ type svState struct {
 	bcIODC    int
 	haveBcIOD bool
 	// bcTGD is the tracked B2a data component's group delay TGD_B2ap + ISC_B2ad
-	// (regression fix, BDS-SIS-ICD-B2a v1.0 §7.6.2 eq. 7-5), a quasi-static data-set
+	// (regression fix, BDS-SIS-B2a-1.0 §7.6.2 eq. 7-5), a quasi-static data-set
 	// property sourced only from MT30. Track its provenance separately so MT34
 	// clocks never turn an unknown TGD into a decoded zero or create a false
 	// time discontinuity.
@@ -405,7 +405,7 @@ type svState struct {
 	ggto *ggtoParams
 
 	// bdsKlobAlpha/bdsKlobBeta  are the B1I D1 subframe-1 broadcast
-	// ionosphere coefficients (BDS-SIS-ICD-B1I v3.0 §5.2.4.7, Table 5-5 —
+	// ionosphere coefficients (BDS-SIS-B1I-3.0 §5.2.4.7, Table 5-5 —
 	// NOTE: a materially different model from GPS's Klobuchar: geographic not
 	// geomagnetic latitude, its own ionospheric height and night behavior, so
 	// the GPS evaluator in gnss/iono must never be fed these; the BDS
@@ -420,7 +420,7 @@ type svState struct {
 	haveBDGIM                 bool
 
 	// bdsDIF/bdsSIF/bdsAIF/bdsSISMAI  are the B2a signal's broadcast
-	// per-signal integrity flags (BDS-SIS-ICD-B2a v1.0 Table 7-23: DIF=1 "the
+	// per-signal integrity flags (BDS-SIS-B2a-1.0 Table 7-23: DIF=1 "the
 	// error of message parameters broadcasted in this signal exceeds the
 	// predictive accuracy", SIF=1 "this signal is abnormal", AIF=1 "SISMAI
 	// value of this signal is invalid") and the SISMAI monitoring-accuracy
@@ -434,7 +434,7 @@ type svState struct {
 	haveBdsFlags           bool
 
 	// bdtUTC is this SV's last-broadcast BDT-UTC time offset parameter set
-	// (regression fix, BeiDou B-CNAV2 MT34 — BDS-SIS-ICD-B2a v1.0 §7.12, Table 7-20),
+	// (regression fix, BeiDou B-CNAV2 MT34 — BDS-SIS-B2a-1.0 §7.12, Table 7-20),
 	// already scaled to SI. nil = never decoded. Freshest-wins per MT34 arrival
 	// (like health and the Galileo GGTO: the set is quasi-static and outside
 	// the IODE-gated ephemeris data set), and stored per-SV deliberately — every
@@ -1447,7 +1447,7 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		st.bcClk = m
 		// the carried data-set property is the TRACKED signal's (B2a
 		// data component, sigId 8) full group delay, eq. 7-5's TGD_B2ap +
-		// ISC_B2ad (BDS-SIS-ICD-B2a v1.0 §7.6.2, Table 7-6) — TGD_B2ap alone is
+		// ISC_B2ad (BDS-SIS-B2a-1.0 §7.6.2, Table 7-6) — TGD_B2ap alone is
 		// the pilot component's eq. 7-4 correction. both addends are
 		// MT30 fields broadcast ALONGSIDE the IODC-scoped clock set, not
 		// themselves IODC-scoped — §7.4.2 binds IODC to "a set of clock

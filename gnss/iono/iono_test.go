@@ -44,7 +44,7 @@ func TestKlobucharNightFloor(t *testing.T) {
 	}
 }
 
-// TestKlobucharNegativeElevationGuarded guards IS-GPS-200 defines the
+// TestKlobucharNegativeElevationGuarded guards IS-GPS-200N defines the
 // model for el >= 0. At el = -19.8 deg (-0.11*pi rad) the earth-centred-angle
 // term 0.0137/(e+0.11) - 0.022 divides by zero (e+0.11 == 0), yielding ±Inf ->
 // NaN/Inf delay before the fix; any negative elevation must now clamp to el=0

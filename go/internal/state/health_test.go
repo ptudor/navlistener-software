@@ -214,7 +214,7 @@ func TestGalileoSHSMapping(t *testing.T) {
 	}
 }
 
-// TestBeiDouHealthMapping guards B-CNAV2 HS=1 is BDS-SIS-ICD-B2a v1.0
+// TestBeiDouHealthMapping guards B-CNAV2 HS=1 is BDS-SIS-B2a-1.0
 // Table 7-22's "The satellite does not provide services" — do-not-use (3), the
 // same enum GPS's nav-data-bad and Galileo's SHS=1 get — and D1's 1-bit SatH1=1
 // (B1I v3.0 §5.2.4.6 "not good") shares that arm. The reserved HS values 2/3
@@ -257,8 +257,8 @@ func TestCNAVCarrierHealthMapping(t *testing.T) {
 }
 
 // TestGLONASSHealthMasksToMSB guards frame.DecodeGLONASSString stores
-// the raw 3-bit Bn field, and only bit 2 (value 4, the MSB) is the GLONASS ICD
-// Ed. 5.1 malfunction flag -- the two low-order bits are other status, not
+// the raw 3-bit Bn field, and only bit 2 (value 4, the MSB) is the GLO-ICD-5.1
+// malfunction flag -- the two low-order bits are other status, not
 // overall SV health, and must not alone flip a healthy SV to not-ok.
 func TestGLONASSHealthMasksToMSB(t *testing.T) {
 	cases := []struct {

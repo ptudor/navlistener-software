@@ -9,7 +9,7 @@ import (
 	"github.com/ptudor/gnss/physconst"
 )
 
-// GPS/QZSS LNAV decoding (IS-GPS-200 §20.3.3; IS-QZSS-PNT defers to it, so QZSS L1
+// GPS/QZSS LNAV decoding (IS-GPS-200N §20.3.3; QZSS-PNT-006 defers to it, so QZSS L1
 // C/A shares this path with gnssId=5 and PRN = svId+192). A subframe is 10 words ×
 // 30 bits; the 24 data bits of each word are extracted after a parity check and
 // laid contiguously, then fields are read at their ICD offsets. Scale factors and
@@ -49,7 +49,7 @@ var ErrWrongMsgType = errors.New("frame: wrong navigation message type for argum
 var errBadSubframe = errors.New("frame: LNAV subframe id out of range (1..5)")
 
 // ErrBadTLMPreamble is returned when word 1 does not carry the fixed 0x8B
-// telemetry-message preamble (IS-GPS-200 §20.3.3.1; QZSS defers to it).
+// telemetry-message preamble (IS-GPS-200N §20.3.3.1; QZSS defers to it).
 var ErrBadTLMPreamble = errors.New("frame: LNAV TLM preamble mismatch")
 
 // errBadTOWCount  is returned when the HOW's truncated TOW count
@@ -259,7 +259,7 @@ func decodeGPSSf3(r *BitReader, sf *GPSSubframe) {
 // AssembleGPS combines a matching subframe 1/2/3 triple for one SV into the
 // kepler ephemeris and clock model the propagators consume. It requires the IODE
 // of subframes 2 and 3 to agree and their low 8 bits to match the IODC (the LNAV
-// data-set consistency rule, IS-GPS-200 §20.3.4.4). id/svid tag the constellation
+// data-set consistency rule, IS-GPS-200N §20.3.4.4). id/svid tag the constellation
 // (GPS or QZSS with PRN = svid+192).
 func AssembleGPS(id gnss.GNSSID, svid int, sf1, sf2, sf3 *GPSSubframe) (kepler.Ephemeris, clock.Model, error) {
 	if sf1 == nil || sf2 == nil || sf3 == nil {

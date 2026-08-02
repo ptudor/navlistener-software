@@ -1,6 +1,6 @@
 // Package clock computes the satellite clock correction: the broadcast
 // polynomial, the relativistic periodic term, and the group-delay bias, plus the
-// broadcast system→UTC offset. Source: docs/MATH.md §4, IS-GPS-200 §20.3.3.3.3.1.
+// broadcast system→UTC offset. Source: docs/MATH.md §4, IS-GPS-200N §20.3.3.3.3.1.
 // The relativistic term reuses the eccentric anomaly E from the kepler solve at
 // the same epoch — it is not re-derived (docs/MATH.md §4).
 package clock
@@ -87,8 +87,8 @@ const L2GroupDelayFactor = (1575.42 / 1227.60) * (1575.42 / 1227.60)
 const E5aGroupDelayFactor = (1575.420 / 1176.450) * (1575.420 / 1176.450)
 
 // UTCParams are the broadcast GNSS→UTC parameters (docs/MATH.md §4, §8).
-// The two-term A0/A1 set is the IS-GPS-200 LNAV shape; the CNAV-generation
-// messages (and BeiDou B-CNAV2 MT34, BDS-SIS-ICD-B2a v1.0 Table 7-20 — regression fix)
+// The two-term A0/A1 set is the IS-GPS-200N LNAV shape; the CNAV-generation
+// messages (and BeiDou B-CNAV2 MT34, BDS-SIS-B2a-1.0 Table 7-20 — regression fix)
 // add the A2 drift-rate term and carry full (untruncated) reference weeks.
 // Zero-valued extras are harmless: a two-term source simply leaves them 0.
 type UTCParams struct {
@@ -105,7 +105,7 @@ type UTCParams struct {
 
 // UTCOffset returns the system→UTC offset (seconds) at time-of-week tow:
 // A0 + A1·(tow − tot) + A2·(tow − tot)² + ΔtLS, half-week corrected
-// (IS-GPS-200 §20.3.3.5.2.4; the A2 term per BDS-SIS-ICD-B2a v1.0 Eq. 7-25 is
+// (IS-GPS-200N §20.3.3.5.2.4; the A2 term per BDS-SIS-B2a-1.0 Eq. 7-25 is
 // zero for two-term sources). The scheduled leap (DtLSF/WNLSF/DN) governs the
 // pending step and is handled by the caller near a leap event; here we apply
 // the current ΔtLS.

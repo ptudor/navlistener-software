@@ -9,7 +9,7 @@ import (
 	"github.com/ptudor/gnss/physconst"
 )
 
-// Galileo E5a F/NAV decoding (OS-SIS-ICD Issue 2.2 §4.2). u-blox delivers each
+// Galileo E5a F/NAV decoding (GAL-OS-SIS-ICD-2.2 §4.2). u-blox delivers each
 // F/NAV page as one 8-word SFRBX (256-bit block); the page type is the first 6
 // bits and the clock (page 1) + ephemeris (pages 2/3/4) fields follow at fixed
 // offsets in that block. F/NAV carries the same ephemeris as E1-B I/NAV, on the
@@ -119,7 +119,7 @@ func DecodeGalileoFNAV(words []uint32) (*GalileoFNAV, error) {
 	case 1:
 		// Type(6) SVID(6) IODnav(10) t0c(14) af0(31) af1(21) af2(6) SISA(8) ai0(11)
 		// ai1(11) ai2(14) Region1-5(5) BGD(E1,E5a)(10) E5aHS(2) WN(12) TOW(20)
-		// E5aDVS(1) Spare(26) CRC(24) Tail(6) — OS-SIS-ICD Issue 2.2 Table 30.
+		// E5aDVS(1) Spare(26) CRC(24) Tail(6) — GAL-OS-SIS-ICD-2.2 Table 30.
 		// the leading 6-bit page Type was missing from this named list,
 		// so it summed to 238 against the 244 ledger below it. Cumulative
 		// offsets from that ledger: BGD@143, E5aHS@153, WN@155, TOW@167, E5aDVS@187

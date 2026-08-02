@@ -86,7 +86,7 @@ type FeedSV struct {
 	Bdgim     *[9]float64 `json:"bdgim,omitempty"`
 	// Dif/Sif/Aif and Sismai (regression fix, BeiDou B-CNAV2 entries) are the B2a
 	// signal's broadcast real-time integrity flags, refreshed ~every 3 s
-	// (BDS-SIS-ICD-B2a v1.0 Table 7-23): dif=true — the broadcast message
+	// (BDS-SIS-B2a-1.0 Table 7-23): dif=true — the broadcast message
 	// parameters exceed their predictive accuracy; sif=true — the signal is
 	// abnormal; aif=true — the SISMAI value is invalid. Sismai is the raw
 	// 4-bit monitoring-accuracy index (§7.17 — numeric semantics deferred by
@@ -98,7 +98,7 @@ type FeedSV struct {
 	// UtcOffsetNs and the leap-schedule quartet are the SV's broadcast
 	// system→UTC offset (regression fix; BeiDou B-CNAV2 MT34's BDT-UTC set today,
 	// docs/OUTPUT.md §1.1 reserves the same fields for the other
-	// constellations' UTC sets). UtcOffsetNs is BDS-SIS-ICD-B2a v1.0 Eq. 7-25's
+	// constellations' UTC sets). UtcOffsetNs is BDS-SIS-B2a-1.0 Eq. 7-25's
 	// ΔtUTC = ΔtLS + A0UTC + A1UTC·dt + A2UTC·dt² evaluated at the feed
 	// instant (positive = the system's time scale is AHEAD of UTC), with the
 	// Eq. 7-29 arm's ΔtLSF substituted once the WNLSF/DN leap event is in the
@@ -398,7 +398,7 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 	}
 	if st.bdtUTC != nil {
 		u := st.bdtUTC
-		// evaluate Eq. 7-25 (BDS-SIS-ICD-B2a v1.0 §7.12.2) at the feed
+		// evaluate Eq. 7-25 (BDS-SIS-B2a-1.0 §7.12.2) at the feed
 		// instant on the continuous BDT axis. BDT = GPST − 14 s exactly (both
 		// leap-free scales; BDT epoch 2006-01-01 is 1356 GPS weeks after the
 		// GPS epoch), so BDT seconds since the BDT epoch come from gnsstime's
@@ -411,14 +411,14 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 		bdt, _ := gnsstime.SystemSeconds(gnsstime.SysBeiDou, float64(now.Unix()), float64(gpsUTCOffset)) // SysBeiDou cannot fail
 		dt := bdt - (float64(u.WNot)*gnsstime.WeekSeconds + u.Tot)
 		// Leap-arm choice (§7.12.2 cases 1/3, mirroring B1I §5.2.4.18 and
-		// IS-GPS-200 §20.3.3.5.2.4): ΔtLS before the WNLSF/DN event, ΔtLSF
+		// IS-GPS-200N §20.3.3.5.2.4): ΔtLS before the WNLSF/DN event, ΔtLSF
 		// after. The event instant is the END of day DN of week WNLSF — DN is
 		// 0–6 (Table 7-20, ruling out GPS's 1-based 1–7 reading), so day DN
 		// spans [DN·86400, (DN+1)·86400) of the week; B2a §7.12.2 defines the
 		// case-2 accommodation span as "six hours prior to the leap second
 		// time ... six hours after", whose upper edge B1I prints as "DN+5/4"
 		// (days) — together fixing the event at (DN+1)·86400. (B1I's printed
-		// LOWER edge is the asymmetric "DN+2/3"; older IS-GPS-200 revisions
+		// LOWER edge is the asymmetric "DN+2/3"; older IS-GPS-200N revisions
 		// (pre-N; not vendored here) printed the corresponding pair as DN+3/4 —
 		// the vendored IS-GPS-200N uses no day-fraction notation at all,
 		// phrasing §20.3.3.5.2.4's case-b window as "six hours prior to the
@@ -941,7 +941,7 @@ func (s *Store) buildSBAS(now time.Time, includeStale bool) map[string]SBASEntry
 }
 
 // gloBnMalfunctionBit is the GLONASS Bn health word's MSB (bit 2 of the 3-bit
-// field): 1 = malfunctioning, 0 = operable (GLONASS ICD Ed. 5.1). The two
+// field): 1 = malfunctioning, 0 = operable (GLO-ICD-5.1). The two
 // low-order bits carry other status, not overall SV health.
 const gloBnMalfunctionBit = 0x4
 
@@ -1023,14 +1023,14 @@ func healthFor(g gnss.GNSSID, sig, raw int) (code, level int) {
 			return 2, 1
 		}
 	case gnss.BeiDou:
-		// D1 SatH1 / B-CNAV2 HS. HS=1 is BDS-SIS-ICD-B2a v1.0 Table
+		// D1 SatH1 / B-CNAV2 HS. HS=1 is BDS-SIS-B2a-1.0 Table
 		// 7-22 — "The satellite is unhealthy or in the test / The satellite
 		// does not provide services" — the same do-not-use semantic as GPS's
 		// nav-data-bad word and Galileo's SHS=1 ("out of service"), both mapped
 		// to 3 above/below; leaving BeiDou at 2 rendered the single most
 		// operationally important BDS health state as merely "not-ok" on the
 		// map. SatH1 shares the raw==1 arm: it is 1 bit ("0 means broadcasting
-		// satellite is good and 1 means not", BDS-SIS-ICD-B1I v3.0 §5.2.4.6 —
+		// satellite is good and 1 means not", BDS-SIS-B1I-3.0 §5.2.4.6 —
 		// no explicit "shall not be used" phrasing, but treating a B1I
 		// "not good" satellite as do-not-use matches BDS operational practice
 		// and keeps the two message families' shared st.health unambiguous).
@@ -1046,7 +1046,7 @@ func healthFor(g gnss.GNSSID, sig, raw int) (code, level int) {
 		}
 	case gnss.GLONASS:
 		// raw's low 3 bits are the RAW Bn field (r.Bits(5,3)), not just its
-		// MSB -- the two low-order bits carry other GLONASS ICD Ed. 5.1 flags, not
+		// MSB -- the two low-order bits carry other GLO-ICD-5.1 flags, not
 		// overall SV health. Only bit 2 (value 4, the MSB) is the malfunction
 		// indicator, so mask to it before the zero test: without the mask, a
 		// benign low bit alone (raw 1 or 2) would flag a healthy SV as not-ok and
@@ -1093,7 +1093,7 @@ func healthFor(g gnss.GNSSID, sig, raw int) (code, level int) {
 	case gnss.QZSS:
 		if sig != 0 {
 			// Same CNAV per-carrier bit as GPS (QZSS-PNT-006 §4.3.2 mirrors
-			// IS-GPS-200's MT10 health field).
+			// IS-GPS-200N's MT10 health field).
 			if raw == 0 {
 				return 1, 0
 			}

@@ -55,7 +55,7 @@ type Params struct {
 // BeiDou use the smaller 3.986004418e14 μ from their own ICDs; GLONASS is a
 // Cartesian model with no relativity F term (docs/MATH.md §0).
 //
-// BeiDou's F (regression fix, verified against BDS-SIS-ICD-B1I-3.0 §5.2.4.9): the BDS ICD
+// BeiDou's F (regression fix, verified against BDS-SIS-B1I-3.0 §5.2.4.9): the BDS ICD
 // publishes no rounded digit string — it defines F = −2μ^½/C² with
 // μ = 3.986004418e14 and C = 2.99792458e8, so the computed value below (equal to
 // Galileo's, since the μ is identical) is exactly the ICD-prescribed constant.

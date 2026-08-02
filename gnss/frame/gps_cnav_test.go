@@ -258,7 +258,7 @@ func cnavMsg31Words(toc uint64, af0, af1, af2 int64) []uint32 {
 }
 
 // TestDecodeGPSCNAVMsg30GroupDelayAndISCs guards message type 30's T_GD
-// (IS-GPS-200 Table 30-IV, ICD bit 127, 13 bits, 2⁻³⁵) and the four ISCs
+// (IS-GPS-200N Table 30-IV, ICD bit 127, 13 bits, 2⁻³⁵) and the four ISCs
 // immediately following it were never decoded — clk.TGD stayed 0 for every
 // CNAV-derived clock, biasing the clock offset by up to ~13 ns. Exercises
 // positive and negative (two's-complement) raw values at all five fields, and

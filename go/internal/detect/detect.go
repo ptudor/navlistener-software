@@ -415,7 +415,7 @@ func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, liveRec
 		})
 	}
 
-	// BeiDou B-CNAV2 per-signal integrity flags (regression fix, BDS-SIS-ICD-B2a v1.0
+	// BeiDou B-CNAV2 per-signal integrity flags (regression fix, BDS-SIS-B2a-1.0
 	// Table 7-23): DIF/SIF/AIF are the constellation's own real-time
 	// per-signal integrity channel, broadcast in every message (~3 s) — a
 	// satellite actively flagging "my broadcast ephemeris exceeds its accuracy

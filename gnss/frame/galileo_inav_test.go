@@ -209,7 +209,7 @@ func TestDecodeGalileoINAVRejectsAlertPage(t *testing.T) {
 }
 
 // TestDecodeGalileoINAVWord5TimeAndDVS guards word 5 must decode GST
-// WN/TOW and both DVS bits, at the exact OS-SIS-ICD Issue 2.2 Table 46 offsets
+// WN/TOW and both DVS bits, at the exact GAL-OS-SIS-ICD-2.2 Table 46 offsets
 // (WN@73, 12 bits; TOW@85, 20 bits; E5bDVS@71; E1BDVS@72) — confirmed against
 // the published ICD text, not assumed. WN must be able to hold a full 12-bit
 // value (up to 4095) without truncation, distinguishing it from GPS's 10-bit WN.
@@ -260,7 +260,7 @@ func fnavBufToWords(buf []byte) []uint32 {
 
 // TestDecodeGalileoFNAVPage1SISAHealth guards regression fix and F/NAV page 1
 // must decode SISA(E1,E5a), the E5a Signal Health Status, AND the E5a Data
-// Validity Status, at the exact OS-SIS-ICD Issue 2.2 Table 30 offsets (SISA@94,
+// Validity Status, at the exact GAL-OS-SIS-ICD-2.2 Table 30 offsets (SISA@94,
 // 8 bits; E5aHS@153, 2 bits; E5aDVS@187, 1 bit) — confirmed against the
 // published ICD text, not assumed. SHS and DVS are the signal's TWO integrity
 // flags; the maintenance-window signature is exactly E5aHS=0 with E5aDVS=1, so

@@ -11,12 +11,12 @@ import (
 	"github.com/ptudor/gnss/physconst"
 )
 
-// GPS/QZSS L2C·L5 CNAV decoding (IS-GPS-200 §30.3.3; IS-QZSS mirrors it). u-blox
+// GPS/QZSS L2C·L5 CNAV decoding (IS-GPS-200N §30.3.3; QZSS-PNT-006 mirrors it). u-blox
 // delivers each 300-bit CNAV message as one 10-word SFRBX, packed MSB-first across
 // the full 32-bit words (preamble 0x8B in word 0's top byte). Ephemeris is split
 // across message types 10 and 11; the clock is in message types 30–37. Unlike
 // LNAV, CNAV uses the ΔA parameterization: A = A_ref + ΔA. Fields and offsets are
-// the documented IS-GPS-200 Table 30-I/II/III layout, confirmed against real
+// the documented IS-GPS-200N Table 30-I/II/III layout, confirmed against real
 // ZED-F9P frames (a≈26560 km, i₀≈55°, and CNAV position agrees with LNAV to <5 m).
 //
 // Unlike LNAV/I-NAV, no documented u-blox guarantee was found (regression fix, investigated
@@ -64,7 +64,7 @@ type GPSCNAV struct {
 	MsgType int
 	PRN     int
 	// TOW is the message TOW count × 6. per IS-GPS-200N this is the SOW at the start
-	// of the NEXT 12-second message (6 s for L5 CNAV per IS-GPS-705 — the offset is
+	// of the NEXT 12-second message (6 s for L5 CNAV per IS-GPS-705J — the offset is
 	// signal-dependent), not this message. No internal consumer reads it today; documented
 	// so a library user doesn't mis-time frames by 6/12 s.
 	TOW float64
@@ -86,17 +86,17 @@ type GPSCNAV struct {
 	// Health/URAIndex) but previously dropped for CNAV. Purely additive; ephemeris/
 	// clock field offsets above are unchanged. Populated only when MsgType == 10.
 	WN     int
-	Health int // raw 3-bit L1/L2/L5 signal-health field (IS-GPS-200 §30.3.3.1.1.2), unmasked
+	Health int // raw 3-bit L1/L2/L5 signal-health field (IS-GPS-200N §30.3.3.1.1.2), unmasked
 	URAED  int
 
 	// Message-30-only group delay differential correction terms : T_GD is set
-	// directly into clk.TGD (IS-GPS-200 Table 30-IV; 13 bits, 2⁻³⁵ — wider than LNAV's
+	// directly into clk.TGD (IS-GPS-200N Table 30-IV; 13 bits, 2⁻³⁵ — wider than LNAV's
 	// 8-bit T_GD, so it is NOT the same field width/scale), packed contiguously right
 	// after Af2 (bits 117-126), so T_GD starts at bit 127 — confirmed against this
 	// codebase's existing, already-verified Toc/Af0/Af1/Af2 offsets, each of which
 	// starts exactly where the previous field ends. The four ISCs immediately follow
 	// T_GD and are captured here, additive: which ISC applies is signal-pair-specific
-	// (IS-GPS-200 §30.3.3.3.1.1) and folding one into the generic clock polynomial
+	// (IS-GPS-200N §30.3.3.3.1.1) and folding one into the generic clock polynomial
 	// would be wrong for every signal that doesn't use it, so none is applied
 	// automatically. Populated only when MsgType == 30.
 	ISCL1CA float64
@@ -134,7 +134,7 @@ func DecodeGPSCNAV(id gnss.GNSSID, words []uint32) (*GPSCNAV, error) {
 	semi := physconst.Pi
 	switch {
 	case m.MsgType == 10: // Ephemeris 1
-		// WN/Health/URA_ED : IS-GPS-200 Table 30-I cites these as 1-indexed bit
+		// WN/Health/URA_ED : IS-GPS-200N Table 30-I cites these as 1-indexed bit
 		// numbers 39-51/52-54/66-70; BitReader.Bits uses 0-indexed absolute offsets (one
 		// less, the same translation PRN/MsgType/TOW above already use — e.g. PRN's
 		// ICD "bits 9-14" is coded as u(8,6)). URA_ED's 0-indexed span (65-69) ends

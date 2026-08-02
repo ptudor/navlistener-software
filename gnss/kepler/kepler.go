@@ -1,7 +1,7 @@
 // Package kepler implements the generic Keplerian ECEF propagation shared by
 // GPS, Galileo, BeiDou (MEO/IGSO), QZSS, and NavIC, plus the BeiDou-GEO rotation
 // exception and finite-difference velocity/Doppler. Source: docs/MATH.md §2,
-// IS-GPS-200 §20.3.3.4.3.1 Table 20-IV (and the identical algorithm in each other
+// IS-GPS-200N §20.3.3.4.3.1 Table 20-IV (and the identical algorithm in each other
 // ICD). The only per-constellation inputs are the constants from package
 // physconst and the decoded broadcast elements.
 package kepler
@@ -109,7 +109,7 @@ func Solve(e Ephemeris, tow float64) (Solution, error) {
 
 	n0 := math.Sqrt(p.Mu / (a * a * a)) // computed mean motion from A at reference
 	tk := gnsstime.EphAge(tow, e.Toe)   // §1.1 half-week corrected
-	// CNAV-family time-varying terms (IS-GPS-705 / BDS-SIS-ICD-B2a Table 7-9):
+	// CNAV-family time-varying terms (IS-GPS-705J / BDS-SIS-B2a-1.0 Table 7-9):
 	// A(tk) = A₀ + Ȧ·tk and n = n₀ + Δn₀ + ½Δṅ₀·tk. Zero for LNAV/D1/INAV.
 	ak := a + e.ADot*tk
 	if ak <= 0 || math.IsNaN(ak) {
@@ -185,7 +185,7 @@ func Propagate(e Ephemeris, tow float64) (gnss.ECEF, error) {
 }
 
 // beidouGEO applies the BeiDou GEO final rotation (docs/MATH.md §2.1,
-// BDS-SIS-ICD-B1I §5.2.4.12): compute the position in the inertial-like GK frame
+// BDS-SIS-B1I-3.0 §5.2.4.12): compute the position in the inertial-like GK frame
 // with Ω_GEO = Ω₀ + Ω̇·tk − ωe·toe (note: NOT (Ω̇ − ωe)·tk), then rotate
 // [X,Y,Z]ᵀ = Rz(ωe·tk)·Rx(−5°)·[X_GK,Y_GK,Z_GK]ᵀ (Rx first, Rz last).
 func beidouGEO(xp, yp, inc float64, e Ephemeris, p physconst.Params, tk float64) gnss.ECEF {

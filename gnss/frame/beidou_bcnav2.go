@@ -11,7 +11,7 @@ import (
 	"github.com/ptudor/gnss/physconst"
 )
 
-// BeiDou B2a B-CNAV2 decoding (BDS-SIS-ICD-B2a v1.0 §6.2 Figures 6-1…6-15, §7
+// BeiDou B2a B-CNAV2 decoding (BDS-SIS-B2a-1.0 §6.2 Figures 6-1…6-15, §7
 // Tables 7-5…7-10). Each frame carries a 288-bit message — PRN(6) MesType(6)
 // SOW(18) data(234) CRC-24Q(24) — that the satellite LDPC(96,48)-encodes to 576
 // symbols; the u-blox receiver decodes the LDPC and delivers exactly the 288
@@ -314,7 +314,7 @@ func AssembleBeiDouBCNAV2(svid int, m10, m11, mClk *BeiDouBCNAV2) (eph kepler.Ep
 		// the tracked signal is the B2a DATA component (B-CNAV2 is
 		// itself carried on B2a-data; u-blox delivers it as sigId 8), so the
 		// correction that belongs in Model.TGD ("group delay for the tracked
-		// signal") is BDS-SIS-ICD-B2a v1.0 §7.6.2 eq. 7-5:
+		// signal") is BDS-SIS-B2a-1.0 §7.6.2 eq. 7-5:
 		//     (Δt_SV)B2ad = Δt_SV − TGD_B2ap − ISC_B2ad
 		// i.e. TGD = TGD_B2ap + ISC_B2ad (ISC_B2ad is the B2a data-vs-pilot
 		// group-delay differential, Table 7-6). TGD_B2ap alone is eq. 7-4, the

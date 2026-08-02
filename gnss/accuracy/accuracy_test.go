@@ -6,7 +6,7 @@ import (
 )
 
 func TestURAMeters(t *testing.T) {
-	// The IS-GPS-200 nominal URA values at representative indices.
+	// The IS-GPS-200N nominal URA values at representative indices.
 	cases := map[int]float64{0: 2.0, 1: 2.8284, 2: 4.0, 4: 8.0, 6: 16.0, 7: 32.0, 14: 4096.0}
 	for n, want := range cases {
 		got, ok := URAMeters(n)

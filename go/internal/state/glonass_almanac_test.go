@@ -10,7 +10,7 @@ import (
 	"github.com/ptudor/gnss/glonass"
 )
 
-// icdAlmanac is the validated GLONASS ICD Ed. 5.1 §A.3.2.3 element set (SI-scaled),
+// icdAlmanac is the validated GLO-ICD-5.1 §A.3.2.3 element set (SI-scaled),
 // reused as a known-good almanac to drive the feed wiring.
 func icdAlmanac(slot int) frame.GLONASSAlmanacEntry {
 	return frame.GLONASSAlmanacEntry{

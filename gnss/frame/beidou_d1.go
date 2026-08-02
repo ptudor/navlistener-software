@@ -18,16 +18,16 @@ var errBeiDouSOWGap = errors.New("frame: BeiDou D1 subframes not broadcast-adjac
 var errBadFraID = errors.New("frame: BeiDou D1 FraID out of range (1..5)")
 
 // ErrBadBCH is returned when a delivered BCH(15,11,1) code block fails its
-// x^4+x+1 parity check (BDS-SIS-ICD-B1I §5.1.3).
+// x^4+x+1 parity check (BDS-SIS-B1I-3.0 §5.1.3).
 var ErrBadBCH = errors.New("frame: BeiDou D1 BCH check failed")
 
-// BeiDou D1 NAV decoding (BDS-SIS-ICD-B1I v3.0 §5.2.4), for MEO/IGSO SVs. u-blox
+// BeiDou D1 NAV decoding (BDS-SIS-B1I-3.0 §5.2.4), for MEO/IGSO SVs. u-blox
 // delivers each 300-bit subframe as one UBX-RXM-SFRBX of ten 30-bit words. The
 // receiver delivers the BCH(15,11) parity in the low bits: four bits in word 1
 // and eight bits (two de-interleaved blocks) in words 2–10. After verifying it,
 // we concatenate the information bits
 // into a 224-bit information stream and read fields at their ICD offsets. Offsets
-// and scale factors follow BDS-SIS-ICD-B1I v3.0 Figures 5-8…5-10 and Tables
+// and scale factors follow BDS-SIS-B1I-3.0 Figures 5-8…5-10 and Tables
 // 5-5…5-10, and the decode cross-validates against the B-CNAV2 (B2a) decode of
 // the same SVs on real captured frames (go/internal/ingest/realframes_test.go:
 // TestRealBeiDouD1, TestRealBeiDouD1AgreesWithBCNAV2).
@@ -183,7 +183,7 @@ func DecodeBeiDouD1(words []uint32) (*BeiDouSubframe, error) {
 		// Figure 5-10 field order: toe(15 LSB), i0, Cic, Ω̇, Cis, IDOT, Ω0, ω —
 		// note IDOT sits BETWEEN Cis and Ω0 (the word-split fields are
 		// contiguous in the parity-stripped information stream). Verified
-		// against BDS-SIS-ICD-B1I v3.0 and cross-validated against the
+		// against BDS-SIS-B1I-3.0 and cross-validated against the
 		// ICD-authoritative B-CNAV2 decode of the same SVs (frame test).
 		sf.toeLSB = int(u(38, 15))
 		sf.eph.I0 = float64(s(53, 32)) * p2m31 * semi
@@ -196,7 +196,7 @@ func DecodeBeiDouD1(words []uint32) (*BeiDouSubframe, error) {
 	case 4, 5:
 		// Almanac/integrity pages: a structurally valid FraID, not decoded here.
 	default:
-		// FraID must be 1..5 (BDS-SIS-ICD-B1I §5.2). A length-valid frame with an
+		// FraID must be 1..5 (BDS-SIS-B1I-3.0 §5.2). A length-valid frame with an
 		// out-of-range FraID (0/6/7) is mis-tagged or corrupt — reject so the caller counts
 		// a decode error and records no capability off garbage.
 		return nil, errBadFraID

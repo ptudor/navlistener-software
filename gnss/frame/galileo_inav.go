@@ -78,7 +78,7 @@ func StampGalileoINAVCRC(words []uint32) {
 	}
 }
 
-// Galileo E1-B I/NAV decoding (OS-SIS-ICD Issue 2.2 §4.3). u-blox delivers each
+// Galileo E1-B I/NAV decoding (GAL-OS-SIS-ICD-2.2 §4.3). u-blox delivers each
 // I/NAV nominal page as one UBX-RXM-SFRBX of eight 32-bit words = a 256-bit page:
 // the even page part (words 0–3) then the odd page part (words 4–7), each starting
 // with Even/Odd(1)+PageType(1). The 128-bit nav "word" is the even part's 112 data
@@ -126,7 +126,7 @@ type GalileoINAV struct {
 	E5bDVS int // E5b Data Validity Status (word 5): 0 valid, 1 working without guarantee
 	E1BDVS int // E1B Data Validity Status (word 5)
 	// Broadcast group delays (word 5, seconds). I/NAV is the (E1,E5b) clock
-	// (OS-SIS-ICD Issue 2.2 Table 71), so an E1 single-frequency user corrects with BGD(E1,E5b);
+	// (GAL-OS-SIS-ICD-2.2 Table 71), so an E1 single-frequency user corrects with BGD(E1,E5b);
 	// BGD(E1,E5a) belongs to the F/NAV (E1,E5a) clock. Both are decoded so each clock can
 	// pick its own pair.
 	BGDE1E5a float64
@@ -290,7 +290,7 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 		}
 		w.hasClk = true
 	case 5:
-		// Ionosphere, BGD, health, DVS, GST (OS-SIS-ICD Issue 2.2 Table 46). Layout
+		// Ionosphere, BGD, health, DVS, GST (GAL-OS-SIS-ICD-2.2 Table 46). Layout
 		// after BGD_E1E5a(47-56): BGD_E1E5b(57-66), E5b_HS(67-68), E1B_HS(69-70),
 		// E5bDVS(71), E1BDVS(72), WN(73-84, 12 bits), TOW(85-104, 20 bits), Spare
 		// (105-127) — bit 67 is E5b health, not E1B health. WN/TOW are plain integer
@@ -313,7 +313,7 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 		const bgdScale = 1.0 / float64(uint64(1)<<32)
 		w.BGDE1E5a = float64(bgdA) * bgdScale
 		w.BGDE1E5b = float64(bgdB) * bgdScale
-		// the I/NAV clock is (E1,E5b) type (OS-SIS-ICD Issue 2.2 Table 71), so its group
+		// the I/NAV clock is (E1,E5b) type (GAL-OS-SIS-ICD-2.2 Table 71), so its group
 		// delay for an E1 single-frequency user is BGD(E1,E5b) — not BGD(E1,E5a), which the
 		// old code applied. clock.Model.TGD is "group delay for the tracked signal".
 		w.clk.TGD = w.BGDE1E5b
