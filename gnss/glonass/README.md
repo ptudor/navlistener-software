@@ -42,8 +42,8 @@ perturbations of the C20 zonal harmonic, then solve a perturbed Keplerian orbit.
 feeds the all-SV acquisition-grade almanac feed (`docs/OUTPUT.md §1.4`), including GLONASS
 satellites currently out of ephemeris view.
 
-Both refuse degenerate input with a typed error rather than returning a NaN, same as the rest of
-the library.
+Both refuse degenerate input with a sentinel error rather than returning a NaN, same as the rest
+of the library.
 
 ---
 
@@ -171,8 +171,8 @@ about. A single-epoch test will happily pass with a wrong frame convention.
 
 The package keeps both conventions internally via `nodeConvention`: `ecefNode` (the rotating
 Greenwich frame, what `PropagateAlmanacECEF` uses) and `inertialNode` (the ICD's absolute OXaYaZa
-frame with s = S₀ + ωe(tλk − 3h), used only by the §A.3.2.3 example test). Having both is what
-lets one test compare against the ICD's published numbers while the shipped path stays ECEF.
+frame with s = S₀ + ωe(tλk − 3h), used only by the two §A.3.2.3-anchored tests). Having both is
+what lets the tests compare against the ICD's published numbers while the shipped path stays ECEF.
 
 ### Two wraps and a velocity correction, each from a real bug
 
@@ -205,16 +205,17 @@ ICD's 1e-8 rad requirement.
 The interesting part is **why it returns an error instead of the last iterate**.
 Broadcast almanacs can't reach the failure state: εnA is a 15-bit field at 2⁻²⁰, so decoded e ≤
 ~0.031 and fixed-point iteration converges at rate ≈ e in well under 10 steps. The exposure is
-the *exported API* — `propagateAlmanac` accepts any e ∈ [0,1), and above e ≈ 0.75 twenty
-iterations from a cold start can't reach 1e-12, which used to return a finite, plausible-looking,
-silently wrong anomaly. A plausible-but-wrong number out of the reusable math library is the
-worst failure class in this codebase.
+the *exported API* — `PropagateAlmanacECEF` forwards to `propagateAlmanac`, which accepts any
+e ∈ [0,1), and past e ≈ 0.45 the hard region near M → 0 stops converging within twenty iterations
+from a cold start (`kepler_convergence_test.go` measures that boundary), which used to return a
+finite, plausible-looking, silently wrong anomaly. A plausible-but-wrong number out of the
+reusable math library is the worst failure class in this codebase.
 
 `keplerResidualTol = 1e-9` is explicitly **not a spec value**. It's a systems threshold chosen
 between the two numbers that *are* pinned: the 1e-12 stopping delta below it and the ICD's 1e-8
 rad accuracy requirement above it. A converged solve's residual is bounded by e·|Eₙ₊₁ − Eₙ| <
 1e-12, so 1e-9 rejects only genuinely unconverged results with four orders of margin against
-float noise. At GLONASS radius, 1e-9 rad is ~2.5e-5 m of along-track position.
+float noise. At GLONASS radius, 1e-9 rad is ~2.5e-5 km — 2.5 cm — of along-track position.
 
 Checking the *residual* rather than the iteration count is deliberate: it validates the answer,
 not the method, so a future switch to Newton or Halley inherits the guarantee for free.
@@ -230,12 +231,12 @@ Note also that the convergence guard applies to `epsI` — the **perturbed** ecc
 
 | Test | What it pins |
 |---|---|
-| `TestPropagateZeroReturnsState` | tk = 0 returns the input state unchanged. |
-| `TestRadiusSaneOverSpan` | The orbit stays on-shell (~25,510 km) across the propagation span. |
+| `TestPropagateZeroReturnsState` | tk = 0 returns the input state unchanged, ×1000 into metres. |
+| `TestRadiusSaneOverSpan` | The orbit stays on-shell (the synthetic fixture sits at ~25,100 km) across the propagation span. |
 | `TestReversibility` | Forward then backward returns to the start — the integrator's self-consistency. |
 | `TestGuardTimeless` / `TestGuardZeroState` / `TestGuardTkDomain` | The three refusals, including domain ceiling. |
 | `TestDeterministic` | Same input, same output. |
-| `TestVelocityMagnitude` | Orbital speed is physically right. |
+| `TestVelocityMagnitude` | The fixture's speed is near the circular value (~3.99 km/s) — it guards the test state, not `Propagate` itself. |
 
 **Almanac (`almanac_test.go`, `kepler_convergence_test.go`):**
 

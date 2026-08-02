@@ -297,7 +297,7 @@ func almPert(J, aeA2, incl, h, l, n, tau, lambda float64) pert {
 // requires of the anomaly (cited in solveKeplerEcc). Anything a converged solve produces
 // sits at or below the stopping delta (the residual is bounded by e·|Eₙ₊₁ − Eₙ| < 1e-12),
 // so 1e-9 rejects only genuinely unconverged results while leaving four orders of margin
-// against float noise. At GLONASS radius 1e-9 rad is ~2.5e-5 m of along-track position —
+// against float noise. At GLONASS radius 1e-9 rad is ~2.5 cm of along-track position —
 // far below any error this library cares about.
 const keplerResidualTol = 1e-9
 
@@ -309,10 +309,12 @@ const keplerResidualTol = 1e-9
 // iteration has not converged. Broadcast almanacs cannot reach that state — εnA is a
 // 15-bit field at 2⁻²⁰ (frame/glonass_string.go), so a decoded e ≤ ~0.031 and fixed-point
 // iteration converges at rate ≈ e, well under 10 iterations. The exposure is the exported
-// API: propagateAlmanac accepts any e ∈ [0,1), and above e ≈ 0.75 twenty iterations from a
-// cold start cannot reach 1e-12, which used to return a finite, plausible-looking, silently
-// wrong anomaly. A plausible-but-wrong number out of the reusable math library is the worst
-// failure class in this codebase, and PropagateAlmanacECEF documents "an error — never a
+// API: PropagateAlmanacECEF forwards any e ∈ [0,1), and past e ≈ 0.45 (the boundary
+// kepler_convergence_test.go measures — the hard anomalies near M → 0 fail first) twenty
+// iterations from a cold start can fail to reach 1e-12, which used to return a finite,
+// plausible-looking, silently wrong anomaly. A plausible-but-wrong number out of the
+// reusable math library is the worst failure class in this codebase, and
+// PropagateAlmanacECEF documents "an error — never a
 // NaN — on degenerate input"; the residual check is what makes that contract true for
 // non-finite AND merely-unconverged results alike.
 //

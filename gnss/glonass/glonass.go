@@ -27,7 +27,7 @@ type Ephemeris struct {
 	Ax, Ay, Az float64 // luni-solar acceleration, km/s² (≈constant over the span)
 
 	Tb       float64 // reference time (seconds of day)
-	TodKnown bool    // true once string 5 anchored the time-of-day (docs/MATH.md §3)
+	TodKnown bool    // true once string 2 anchored the time-of-day (tb; docs/MATH.md §3)
 
 	// SV clock terms (regression fix; GLONASS ICD Ed. 5.1 Table 4.5), stored exactly as
 	// broadcast: TauN is τn(tb), the correction of the SV time scale to GLONASS
