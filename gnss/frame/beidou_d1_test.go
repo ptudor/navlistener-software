@@ -67,6 +67,32 @@ func TestAssembleBeiDouSOWAdjacency(t *testing.T) {
 	}
 }
 
+// TestAssembleBeiDouRejectsWrongSlots covers the FraID slot assertion: D1
+// carries no cross-subframe pairing tag, so a transposed argument list
+// whose SOWs still march +6/+6 passes the adjacency rule — only the FraID
+// identity check can reject it before toe splices sf2/sf3 fields from the
+// wrong pages.
+func TestAssembleBeiDouRejectsWrongSlots(t *testing.T) {
+	sf1 := &BeiDouSubframe{FraID: 1, SOW: 100}
+	sf2 := &BeiDouSubframe{FraID: 2, SOW: 106}
+	sf3 := &BeiDouSubframe{FraID: 3, SOW: 112}
+	if _, _, err := AssembleBeiDou(1, sf1, sf2, sf3); err != nil {
+		t.Fatalf("correct slots rejected: %v", err)
+	}
+	// The dangerous transposition: subframe 3 then 2 with SOWs crafted to stay
+	// +6/+6, so the timing rule cannot catch it.
+	x3 := &BeiDouSubframe{FraID: 3, SOW: 106}
+	x2 := &BeiDouSubframe{FraID: 2, SOW: 112}
+	if _, _, err := AssembleBeiDou(1, sf1, x3, x2); err != ErrWrongMsgType {
+		t.Errorf("err = %v, want ErrWrongMsgType (3/2 transposed, clean SOWs)", err)
+	}
+	// An almanac page (FraID 4) in an ephemeris slot.
+	alm := &BeiDouSubframe{FraID: 4, SOW: 106}
+	if _, _, err := AssembleBeiDou(1, sf1, alm, sf3); err != ErrWrongMsgType {
+		t.Errorf("err = %v, want ErrWrongMsgType (FraID 4 in slot 2)", err)
+	}
+}
+
 // TestAssembleBeiDouSOWWeekRollover guards the one legitimate D1 frame
 // per week straddles the BDT SOW rollover (604794 → 0 → 6) and must assemble;
 // the adjacency comparison wraps mod 604800 rather than subtracting raw SOWs.
@@ -83,13 +109,17 @@ func TestAssembleBeiDouSOWWeekRollover(t *testing.T) {
 	// sf2 straddling the boundary too: (604788, 604794, 0) is a valid frame.
 	early1 := &BeiDouSubframe{FraID: 1, SOW: 604788}
 	early2 := &BeiDouSubframe{FraID: 2, SOW: 604794}
-	if _, _, err := AssembleBeiDou(1, early1, early2, sf2); err != nil {
+	early3 := &BeiDouSubframe{FraID: 3, SOW: 0}
+	if _, _, err := AssembleBeiDou(1, early1, early2, early3); err != nil {
 		t.Errorf("rollover triple (604788,604794,0) rejected: %v", err)
 	}
 
 	// Reordered across the boundary (sf2 from the new week, sf3 from the old)
-	// is a splice, not a frame — the wrap must not admit it.
-	if _, _, err := AssembleBeiDou(1, sf1, sf3, sf2); err != errBeiDouSOWGap {
+	// is a splice, not a frame — the wrap must not admit it. Tags are correct
+	// per slot so the timing rule, not the FraID identity check, rejects it.
+	splice2 := &BeiDouSubframe{FraID: 2, SOW: 6}
+	splice3 := &BeiDouSubframe{FraID: 3, SOW: 0}
+	if _, _, err := AssembleBeiDou(1, sf1, splice2, splice3); err != errBeiDouSOWGap {
 		t.Errorf("err = %v, want errBeiDouSOWGap (reordered rollover)", err)
 	}
 

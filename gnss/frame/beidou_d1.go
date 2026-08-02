@@ -211,6 +211,14 @@ func AssembleBeiDou(svid int, sf1, sf2, sf3 *BeiDouSubframe) (kepler.Ephemeris, 
 	if sf1 == nil || sf2 == nil || sf3 == nil {
 		return kepler.Ephemeris{}, clock.Model{}, ErrShortFrame
 	}
+	// Defense-in-depth against a mis-wired caller, same as every sibling
+	// assembler (the regression fix idiom): a transposed argument list whose SOWs still
+	// march +6/+6 passes the adjacency rule below, and toe is split across
+	// sf2/sf3, so slot identity must be checked on FraID (already validated
+	// 1..5 at decode), not inferred from timing.
+	if sf1.FraID != 1 || sf2.FraID != 2 || sf3.FraID != 3 {
+		return kepler.Ephemeris{}, clock.Model{}, ErrWrongMsgType
+	}
 	// D1 carries no AODE-style pairing tag across subframes (unlike GPS
 	// IODE/IODC, Galileo IODnav, or B-CNAV2's SOW-adjacency check on m10/m11), so
 	// broadcast adjacency — sf1/sf2/sf3 are each exactly 6s apart within one 30s

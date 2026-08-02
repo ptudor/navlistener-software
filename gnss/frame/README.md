@@ -385,8 +385,10 @@ Three layout quirks that will trip you up if you assume GPS shapes:
 
 `toe` is 17 bits split across subframes 2 (2 MSB) and 3 (15 LSB).
 
-**`AssembleBeiDou(svid, sf1, sf2, sf3)`** and the adjacency rule : D1 carries **no
-IOD-style pairing tag at all** — no IODE, no IODC, no IODnav. Broadcast adjacency is the only
+**`AssembleBeiDou(svid, sf1, sf2, sf3)`** asserts the arguments really are subframes 1/2/3
+(`ErrWrongMsgType` — a transposed call whose SOWs still march +6/+6 passes the timing rule, so
+slot identity rides FraID), then applies the adjacency rule : D1 carries **no IOD-style
+pairing tag at all** — no IODE, no IODC, no IODnav. Broadcast adjacency is the only
 valid rule, so sf1/sf2/sf3 must each be exactly 6 s apart within one 30 s D1 frame. Without it, a
 stale sf2 (say, from before an hourly changeover after a subframe-2 loss) pairs with a fresh
 sf1/sf3 — and since toe is *split across sf2 and sf3*, that splices a toe belonging to neither,
@@ -642,8 +644,8 @@ Unit coverage highlights, by theme rather than exhaustively:
   chimera), `TestAssembleBeiDouSOWAdjacency` + `TestAssembleBeiDouSOWWeekRollover`,
   `TestBCNAV2PairAdjacency` + `TestBCNAV2PairAndClockWeekRollover`, and the stale-clock drops on
   both CNAV families (`TestAssembleGPSCNAVStaleClockDropped`, `TestBCNAV2StaleClockDropped`).
-  Four wrong-slot tests cover `ErrWrongMsgType` argument transposition (LNAV, CNAV, Galileo,
-  B-CNAV2); GLONASS's string-order equivalent rides `TestAssembleGLONASSClock`.
+  Five wrong-slot tests cover `ErrWrongMsgType` argument transposition (LNAV, CNAV, Galileo,
+  B-CNAV2, D1); GLONASS's string-order equivalent rides `TestAssembleGLONASSClock`.
 - **Field-level regressions:** `TestDecodeGPSCNAVMsg10Integrity` (signed URA_ED),
   `TestDecodeGalileoINAVWord5Health` (bit 67 vs 69), `TestAssembleGalileoBGD` /
   `TestAssembleGalileoFNAVBGD` (the right BGD on the right clock),
