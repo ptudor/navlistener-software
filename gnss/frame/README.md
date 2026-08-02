@@ -15,7 +15,7 @@ every decoder is fuzzed. It starts hardened, on purpose.
 | File | What it is |
 |---|---|
 | `bitreader.go` | `BitReader` — MSB-first, absolute-bit-offset, fully bounds-checked field extraction. `Bits`, `Signed`, `SignMag`, `Concat`, `ConcatSigned`. |
-| `crc.go` | CRC-24Q (polynomial 0x1864CFB) in byte-aligned and arbitrary-bit-range forms. Used by Galileo, BeiDou B-CNAV, NavIC, SBAS, RTCM3. |
+| `crc.go` | CRC-24Q (polynomial 0x1864CFB) in byte-aligned and arbitrary-bit-range forms. Used by GPS/QZSS CNAV, Galileo, BeiDou B-CNAV, NavIC, SBAS, RTCM3. |
 | `parity.go` | GPS/QZSS LNAV Hamming parity (IS-GPS-200N §20.3.5), including the D30* data-complement rule. |
 | `sow.go` | `sowDelta` — the domain-checked week-ring difference used by every broadcast-adjacency rule. |
 
@@ -25,7 +25,7 @@ every decoder is fuzzed. It starts hardened, on purpose.
 |---|---|---|---|
 | `gps_lnav.go` | GPS L1 C/A + QZSS L1 C/A LNAV | 10 × 30-bit words | TLM preamble, TOW range, subframe id (parity pre-validated by the receiver) |
 | `gps_cnav.go` | GPS/QZSS L2C·L5 CNAV | 10 × 32-bit words (300 bits) | preamble + CRC-24Q over all 300 bits |
-| `galileo_inav.go` | Galileo E1-B I/NAV | 8 × 32-bit words (256-bit page) | page-type flags + CRC-24Q over the reconstructed 220 protected bits |
+| `galileo_inav.go` | Galileo E1-B I/NAV | 8 × 32-bit words (256-bit page) | page-type flags + CRC-24Q over the reconstructed 196 protected bits + their CRC |
 | `galileo_fnav.go` | Galileo E5a F/NAV | 8 × 32-bit words | CRC-24Q over 238 bits |
 | `beidou_d1.go` | BeiDou B1I D1 NAV (MEO/IGSO) | 10 × 30-bit words | BCH(15,11,1) on every code block |
 | `beidou_bcnav2.go` | BeiDou B2a B-CNAV2 | 9 × 32-bit words (288 bits) | CRC-24Q |
@@ -39,7 +39,8 @@ every decoder is fuzzed. It starts hardened, on purpose.
 `gps_lnav_test.go`, `gps_cnav_test.go`, `galileo_inav_test.go`, `beidou_d1_test.go`,
 `beidou_bcnav2_test.go`, `glonass_string_test.go`, `glonass_almanac_guard_test.go`,
 `sbas_l1_test.go`, `navic_test.go`, and `fuzz_test.go` — fourteen fuzz targets covering every
-exported decoder plus the primitives.
+exported decoder except the constant-error NavIC stub (which parses nothing), plus the
+primitives.
 
 Imports: the root `gnss` package, `clock`, `kepler`, `glonass`, `physconst`, and `gnsstime`. It is
 the top of the module's dependency graph — everything else imports *into* here.
@@ -52,8 +53,8 @@ The job is narrow and the threat model is not. A navigation frame arrives as a h
 words from a receiver, or from a remote feeder over GNF1, or from a federation peer. It may be
 truncated, corrupted, mis-tagged, replayed, or deliberately fabricated. The decoders turn it into
 a `kepler.Ephemeris` + `clock.Model` (or a `glonass.Ephemeris`), or they return an error. They
-never panic, never read out of bounds, and never emit a partially-decoded struct alongside a nil
-error.
+never panic, never read out of bounds, and never pair a nil result with a nil error; a frame that
+fails its integrity check is rejected outright rather than partially decoded.
 
 Three principles run through every file:
 
@@ -126,8 +127,8 @@ func CRC24QBits(data []byte, bitOffset, bitLen int) uint32
 func CheckCRC24QBits(data []byte, bitOffset, bitLen int) bool
 ```
 
-Polynomial 0x1864CFB, init 0, no reflection, MSB-first. Used by Galileo I/NAV·F/NAV·C/NAV, BeiDou
-B-CNAV, NavIC SPS, SBAS, and RTCM3.
+Polynomial 0x1864CFB, init 0, no reflection, MSB-first. Used by GPS/QZSS CNAV, Galileo
+I/NAV·F/NAV·C/NAV, BeiDou B-CNAV, NavIC SPS, SBAS, and RTCM3.
 
 The `Check*` functions use the zero-remainder idiom: run the CRC over the message *including* its
 own trailing checksum and the result is zero exactly when the checksum is right.
@@ -216,8 +217,10 @@ one. Timing this frame's epoch means using TOW − 6. No internal consumer reads
 documented so an external one doesn't mis-time frames by 6 s.
 
 **`AssembleGPS(id, svid, sf1, sf2, sf3)`** requires the IODE of subframes 2 and 3 to agree *and*
-their low 8 bits to match subframe 1's IODC — the LNAV data-set consistency rule
-(§20.3.4.4). It also asserts the arguments are actually in slots 1/2/3 (`ErrWrongMsgType`).
+to equal the low 8 bits of subframe 1's IODC — the LNAV data-set consistency rule
+(§20.3.4.4). It also asserts the arguments are actually in slots 1/2/3 (`ErrWrongMsgType`). The
+IODE/IODC failure returns a locally-constructed error, not the shared `errIODMismatch` sentinel
+the other assemblers use.
 
 ### GPS/QZSS L2C·L5 CNAV (`gps_cnav.go`)
 
@@ -261,9 +264,11 @@ WN (starting at 39) — and rides every CNAV message type.
   this library's svid convention.
 - **Shared toe** between MT10 and MT11.
 - **Clock coherence**. §30.3.4.4 says "the toe shall be equal to the toc of the same CNAV
-  CEI data set," so the clock attaches only when the cached MT30–37's Toc matches. A returned
-  `clkOK bool` distinguishes "no or stale clock" from a real one — necessary because a zero
-  `clock.Model` (af0 = 0, Toc = 0) is otherwise indistinguishable from a decoded one.
+  CEI data set," so the clock attaches only when the cached MT30–37 carries this SV's PRN *and*
+  its Toc matches. A returned `clkOK bool` distinguishes "no, wrong-SV, or stale clock" from a
+  real one — necessary because a zero `clock.Model` (af0 = 0, Toc = 0) is otherwise
+  indistinguishable from a decoded one. A wrong-SV or stale clock is dropped, not an assembly
+  error: the ephemeris pair itself is still coherent.
 
 ### Galileo E1-B I/NAV (`galileo_inav.go`)
 
@@ -284,8 +289,8 @@ join, the content must be made contiguous before reading.
   type" must be distinguishable from bit-rot.
 - **regression fix — CRC-24Q.** The protected message is non-contiguous in the delivered page
   (even flags + 112 data, then odd flags + 16 data + 64 auxiliary/reserved, then the 24-bit CRC),
-  so `galileoINAVCRCMessage` reconstructs the 220 protected bits and the standard zero-remainder
-  check runs over that.
+  so `galileoINAVCRCMessage` reconstructs the 196 protected bits followed by the transmitted CRC
+  and the standard zero-remainder check runs over that 220-bit message.
 
 **Word types decoded:** 1–3 (ephemeris elements + SISA), 4 (Cic/Cis + the clock polynomial), 5
 (BGDs, health, DVS, GST week/TOW), and 10 (the GST-GPS conversion parameters).
@@ -337,7 +342,8 @@ are the ephemeris; page 4 is Cic/Cis plus the GST-UTC and GST-GPS blocks.
 
 Every field offset here was pinned by decoding the same SV through the already-validated I/NAV
 path and matching raw values bit-for-bit — and `TestRealGalileoFNAVAgreesWithINAV` (in the
-daemon's ingest tests) requires the F/NAV position to agree with I/NAV to the metre.
+daemon's ingest tests) requires the F/NAV position to agree with I/NAV to within 5 m, across at
+least three SVs of the capture.
 
 **The group-delay scaling is applied here, and only here**. `clock.Model.TGD`'s contract
 is "group delay for the tracked signal, already scaled." The tracked signal on this path is E5a —
@@ -366,7 +372,7 @@ assembled.
 FraID must be 1..5 (`errBadFraID`, regression fix). FraID 1 is clock + Klobuchar; 2 and 3 are the
 ephemeris halves; 4 and 5 are almanac/integrity pages, structurally valid but not decoded.
 
-Two layout quirks that will trip you up if you assume GPS shapes:
+Three layout quirks that will trip you up if you assume GPS shapes:
 
 - **Crc/Crs use 2⁻⁶, not GPS's 2⁻⁵.**
 - **Subframe 1 broadcasts a2 *before* a0 and a1** (a2@162, a0@173, a1@197), and the **Klobuchar
@@ -476,9 +482,15 @@ first ∈ {6,8,10,12,14}, second must be first+1 — plus the frame's NA day num
 
 **`AssembleGLONASS(slot, freqID, s1, s2, s3, s4)`** asserts the string numbers are really 1/2/3
 (regression fix, defense-in-depth against a mis-wired caller silently combining x/y/z from the wrong
-strings), validates freqID ∈ 0..13, and takes `s4` nil-tolerantly : with it, τn/Δτn and
-`ClockKnown = true`; without it, the ephemeris assembles clockless, which is fine because position
-math needs none of those terms.
+strings), validates freqID ∈ 0..13, and takes `s4` nil-tolerantly : when present it must
+really be a string 4, and contributes τn/Δτn and `ClockKnown = true`; without it, the ephemeris
+assembles clockless, which is fine because position math needs none of those terms (γn rides
+string 3 either way).
+
+regression fix also *decoded* two long-ignored words that had a consumer waiting: string 1's **P1** (the
+raw 2-bit tb-update-interval flag, the broadcast input to any adaptive validity window over tb)
+and string 4's **En** (the SV-declared age of the immediate data in whole days — a large En at a
+fresh tb is an upload anomaly).
 
 **Deliberate deferrals, documented rather than forgotten** : tk (string 1 — a tk-vs-tb
 plausibility gate), P2, P4, M (satellite type), n (the broadcast slot number, which would enable
@@ -586,9 +598,9 @@ that a hardened decoder will actually accept. They exist because verifying integ
 every test fixture must carry a valid one. Live decode paths should never call them — they're used
 by this package's tests and by the daemon's `internal/state` and `internal/serve` tests.
 
-One asymmetry to know: the CRC stampers no-op on a short slice, while `StampGLONASSHamming`
-**requires at least four words and will panic on a shorter one.** Production ingest never
-synthesizes strings.
+One asymmetry to know: the other three stampers no-op on a short slice, while
+`StampGLONASSHamming` **requires at least four words and will panic on a shorter one.**
+Production ingest never synthesizes strings.
 
 ---
 
@@ -626,7 +638,9 @@ Unit coverage highlights, by theme rather than exhaustively:
 - **Pairing:** `TestGPSLNAVIODEMismatch`, `TestAssembleGPSCNAVRejectsCrossSVPair` (the regression fix
   chimera), `TestAssembleBeiDouSOWAdjacency` + `TestAssembleBeiDouSOWWeekRollover`,
   `TestBCNAV2PairAdjacency` + `TestBCNAV2PairAndClockWeekRollover`, and the stale-clock drops on
-  both CNAV families. Four separate `...RejectsWrongSlots` tests cover argument transposition.
+  both CNAV families (`TestAssembleGPSCNAVStaleClockDropped`, `TestBCNAV2StaleClockDropped`).
+  Four wrong-slot tests cover `ErrWrongMsgType` argument transposition (LNAV, CNAV, Galileo,
+  B-CNAV2); GLONASS's string-order equivalent rides `TestAssembleGLONASSClock`.
 - **Field-level regressions:** `TestDecodeGPSCNAVMsg10Integrity` (signed URA_ED),
   `TestDecodeGalileoINAVWord5Health` (bit 67 vs 69), `TestAssembleGalileoBGD` /
   `TestAssembleGalileoFNAVBGD` (the right BGD on the right clock),
@@ -640,10 +654,12 @@ go test ./frame/ -run Fuzz -fuzz FuzzDecodeGPSCNAV # one target, extended
 ```
 
 **Real-frame validation lives outside this package**, in the daemon:
-`go/internal/ingest/realframes_test.go` runs the committed 270-frame `f9t_capture.ubx` fixture
-through these decoders and cross-validates constellations against themselves —
-`TestRealBeiDouD1AgreesWithBCNAV2` (B1I vs B2a) and `TestRealGalileoFNAVAgreesWithINAV` (E5a vs
-E1-B) are the two that would catch a wrong offset that still produces a plausible number.
+`go/internal/ingest/realframes_test.go` replays the committed live-receiver UBX captures
+(`f9t_capture.ubx`, `f9p_capture.ubx`, `glo_superframe_capture.ubx`) through these decoders and
+cross-validates constellations against themselves —
+`TestRealBeiDouD1AgreesWithBCNAV2` (B1I vs B2a), `TestRealGalileoFNAVAgreesWithINAV` (E5a vs
+E1-B), and `TestRealGPSCNAVAgreesWithLNAV` (L2C vs L1 C/A) are the three that would catch a
+wrong offset that still produces a plausible number.
 
 ---
 
