@@ -151,8 +151,10 @@ computed over those data bits plus the previous word's last two parity bits (D29
 **when D30* is set the 24 data bits are transmitted complemented** and must be inverted first.
 
 Here is the honest situation: **`DecodeGPSLNAV` does not call this function.** u-blox
-UBX-RXM-SFRBX (and, verified against real ZED-F9T frames, SBF GPSRawCA) delivers LNAV words the
-receiver has *already* parity-checked and D30*-normalized. Re-running the broadcast parity on
+UBX-RXM-SFRBX — verified against real ZED-F9T frames — delivers LNAV words the receiver has
+*already* parity-checked and D30*-normalized. (Septentrio's SBF GPSRawCA documents the same
+normalized delivery, so it should decode identically; that remains speculative — we own no
+Septentrio hardware and no SBF capture has been run.) Re-running the broadcast parity on
 receiver-normalized words fails, because they aren't the raw broadcast words any more — this is
 the same reason RTKLIB trusts u-blox SFRBX. So the decoder extracts the 24 data bits directly and
 validates what it *can* validate: the TLM preamble, the HOW TOW count range, and the subframe id.

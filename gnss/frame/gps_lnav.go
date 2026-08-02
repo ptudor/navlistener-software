@@ -111,7 +111,9 @@ type GPSSubframe struct {
 }
 
 // DecodeGPSLNAV decodes one LNAV subframe from ten 30-bit words as delivered by
-// UBX-RXM-SFRBX (and, verified against real ZED-F9T frames, SBF GPSRawCA): the
+// UBX-RXM-SFRBX, verified against real ZED-F9T frames. (Septentrio's SBF GPSRawCA
+// documents the same normalized-word delivery, so it should decode identically —
+// speculative: we own no Septentrio hardware and no SBF capture has been run.) The
 // receiver has already validated parity and resolved the D30* data inversion, so
 // each word carries the true 24 data bits in bits 29..6. We extract those directly
 // — re-running the broadcast parity on receiver-supplied words fails, because the
