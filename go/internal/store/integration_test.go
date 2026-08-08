@@ -33,10 +33,20 @@ func testDSN(t *testing.T) string {
 
 func integrationLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-// isolatedDSN returns the DSN for a *fresh, empty* database — distinct from
-// testDSN's shared instance — for tests that need to control initial table state
-// (e.g. simulating a pre-existing intsat deployment) before store.New applies
-// schema.sql. Skips if NAVLISTENER_TEST_DSN_ISOLATED is unset.
+// isolatedDSN returns the DSN for a database with **no navlistener tables** —
+// distinct from testDSN's shared instance — for tests that need to control initial
+// table state (e.g. simulating a pre-existing intsat deployment) before store.New
+// applies schema.sql. Skips if NAVLISTENER_TEST_DSN_ISOLATED is unset.
+//
+// Setup, both parts required:
+//
+//	createdb navlistener_test_isolated
+//	psql -d navlistener_test_isolated -c 'CREATE EXTENSION timescaledb'
+//
+// "Empty" means empty of *our* tables, not of the extension: store.New requires
+// TimescaleDB to be present already and deliberately does not install it (that needs
+// a superuser), so a genuinely bare database fails these tests on the extension check
+// long before reaching the column-drift check they exist to exercise.
 func isolatedDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("NAVLISTENER_TEST_DSN_ISOLATED")
