@@ -190,7 +190,10 @@ Three credential tiers → trust (radiolistener's ladder, unchanged):
 2. **Software mTLS cert** — a single DNS SAN = `receiver_id` (see the note below; the *SAN*, not
    the CN, is what the collector matches).
 3. **ATECC608-anchored mTLS cert** — the **high-assurance receiver class**. The board is the
-   ESP32-S3 + ATECC608B + DS3231 RTC + EUI-64 design in `radiolistener/docs/HARDWARE-OBSERVER.md`,
+   ESP32 + secure-element + RTC + EUI-64 design in `radiolistener/docs/HARDWARE-OBSERVER.md`,
+   with this product's part choices and their `shepherdprotocol` alignment in
+   `docs/HARDWARE-OBSERVER.md` (**ATECC608C**, MCP79412 — note radiolistener's doc still names
+   the 608B and a DS3231, which predates the shared `esp32-hardware-discovery` conventions),
    ported here as `firmware/navfeeder-esp`. The ATECC generates a non-extractable P-256 key,
    signs a CSR carrying the EUI-64-derived `receiver_id` as **exactly one DNS SAN** that the
    Django CA signs; the private key

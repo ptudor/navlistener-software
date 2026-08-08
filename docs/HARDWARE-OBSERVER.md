@@ -70,25 +70,32 @@ for it.
 | MCU | `CAT_MCU` | ESP32-S3 (`MCU_ESP32_S3`) | Feeder. S3 rather than C6 — see §7.1. |
 | Receiver | `CAT_GPS` | NEO-format M9/M10/F10 | Raw nav frames + PPS. |
 | Identity, public | `CAT_RTC` | MCP79412 (`RTC_MCP79412`) | RTCC + SRAM + EEPROM + **factory EUI-64** — the observer's public name. |
-| Identity, private | `CAT_CRYPTO` | ATECC608B | Non-extractable P-256 key; the proof of entitlement to that name. |
-| Hardware manifest | `CAT_MEMORY` | 24AA02E64 (`MEMORY_24AA02E64`) | The installed-hardware descriptor array; carries its own EUI-64 (see §4.3). |
-| Status display | `CAT_LED` | APA102 ×8 (`LED_APA102`) | Constellation/health indication. |
-| Pressure | `CAT_PRESSURE` | BMP280 / BMP388 / MS5611 | **Vertical spoofing gate** — §6.1. |
+| Identity, private | `CAT_CRYPTO` | **ATECC608C** (`CRYPTO_ATECC608C`), I²C `0x60` | Non-extractable P-256 key; the proof of entitlement to that name. House part — §9. |
+| Hardware manifest | `CAT_MEMORY` | 24AA02E64 (`MEMORY_24AA02E64`), I²C `0x50–0x57` | The installed-hardware descriptor array; carries its own EUI-64 (see §4.3). |
+| Status display | `CAT_LED` | **WS2812B** ×8 (`LED_WS2812B`) | Constellation/health indication. House part — §9. |
+| Pressure | `CAT_PRESSURE` | **BMP390** (needs an enum entry, §5.3) | **Vertical spoofing gate** — §6.1. House part — §9. |
 | Temperature | `CAT_TEMP` | BME280 / MCP9808 | Clock-drift compensation and thermal health — §6.2. |
 | Backup | `CAT_BATTERY` | 2 × CR2032 (needs enum entries, §5.3) | Two independent domains — §3. |
 | Antenna | `CAT_ANTENNA` | active, u.FL/SMA | Bias + supervision → `MON-HW` `antStatus`. |
 
-**APA102, not WS2812.** WS2812's single-wire protocol is timing-critical and glitches under
-ESP32 Wi-Fi interrupt load; APA102 is clocked SPI and immune to that jitter. Both exist in the
-enum (`LED_WS2812B = 1`, `LED_APA102 = 2`) — this product specifies APA102.
+**WS2812B, aligning with shepherdprotocol** (§9). An earlier draft of this document specified
+APA102 on the argument that WS2812's single-wire protocol is timing-critical and glitches under
+Wi-Fi interrupt load. That argument is materially weaker on ESP32 than it is in general: the
+**RMT peripheral clocks the waveform in hardware**, so the jitter APA102 avoids is largely
+already avoided. Set against a real WS2812B driver stack in the sibling product — including
+`esp32/main/leds/led_pps_sync.c`, which already blinks a strip off **GPS PPS** and is directly
+reusable on a board that has PPS wired anyway — code reuse wins. `LED_APA102 = 2` stays in the
+enum if a future board has a specific reason to want clocked SPI.
 
 Eight LEDs is the natural width: the gnssId space has exactly seven constellations (GPS 0,
 SBAS 1, Galileo 2, BeiDou 3, QZSS 5, GLONASS 6, NavIC 7 — IMES 4 is never emitted), leaving one
 for link/health. Assign **position per constellation and colour per state** — seven
 distinguishable hues is a worse encoding than seven fixed positions, and state maps onto
 semantics the feed already has (not tracked / tracked / ephemeris current / `eph_aged` or
-integrity event). Budget the rail or cap brightness in firmware: eight APA102 at full white is
-on the order of half an amp **[verify]**.
+integrity event). Budget the rail or cap brightness in firmware: eight WS2812B at full white is
+on the order of half an amp **[verify]**. Shepherd's Waveshare profile carries an independent
+thermal warning about sustained full brightness on that dev board's panel — the same caution
+applies to a sealed clear enclosure.
 
 ---
 
@@ -128,7 +135,7 @@ added series diode only eats backup headroom.
 
 - **MCP79412 EUI-64 → the public identifier.** Readable over I²C by anyone holding the board.
   It is a *name*, never a credential.
-- **ATECC608B → the private authenticator.** Generates a non-extractable P-256 keypair, signs
+- **ATECC608C → the private authenticator.** Generates a non-extractable P-256 keypair, signs
   the CSR, signs the mTLS handshake, and optionally signs `SIGNED_DATA` (0x07) batches over
   `EUI-64 ‖ rtc_unix_ns ‖ sha256(payload) ‖ counter`.
 
@@ -175,7 +182,7 @@ exactly once:
      but the EUI-64 is already globally unique, so it buys nothing here.
 3. **Exactly one SAN** — zero or two are both rejected.
 
-**Buy the provisionable ATECC608B.** Trust&Go / TrustFLEX parts ship pre-provisioned and locked
+**Buy the provisionable ATECC608C.** Trust&Go / TrustFLEX parts ship pre-provisioned and locked
 to Microchip's certificate chain; this design has the device generate its own key and the
 **Django CA** sign its CSR. The config-zone lock is permanent, so validate the slot
 configuration on a scrap part before locking production units.
@@ -232,7 +239,7 @@ The enums are a baseline. These entries do not exist yet and are required:
 | Enum | Add | Why |
 |---|---|---|
 | `eeprom_gps_id_t` | `GPS_NEO_M10`, `GPS_NEO_F10N`, `GPS_NEO_F10T`, `GPS_ZED_F9T` | Variant A's actual candidates; the F9T is most of the current fleet and is absent. |
-| `eeprom_crypto_id_t` | `CRYPTO_ATECC608B` | 608A/608C/508A and ATSHA204A are listed; the B is not, and the B is what this design specifies. |
+| `eeprom_pressure_id_t` | `PRESSURE_BMP390` | The house pressure part (shepherd's C6 rover bus) is absent; the enum lists BMP280/BMP388/MS5611 only. |
 | `eeprom_battery_id_t` | `BATTERY_CR2032`, `BATTERY_CR123A` | The enum currently covers LiPo/18650/solar/PoE only — no primary coin cells, which is what §3 uses. |
 
 **The band discriminator is the one that matters for integrity.** `GPS_ZED_F9P = 1` names a part
@@ -349,8 +356,15 @@ mid-byte can latch the chip into the ROM serial downloader until someone power-c
 Accepted on dev-class C6 units by design, with the stated fix being "the
 planned ESP32-S3 re-spin moving RX to a non-strapping GPIO."
 
-**This board is that re-spin.** Route receiver TX to a non-strapping GPIO. It costs nothing at
-layout time and retires a documented field hazard.
+**The fix already exists as project convention.** `shepherdprotocol/esp32/ESP32C6_PINOUT.md` puts
+GPS on **GPIO4 (TX) / GPIO5 (RX)** with **PPS on GPIO10** — deliberately clear of GPIO9. Adopt
+that map rather than inventing a third one; it retires the hazard at zero layout cost and makes
+the two products' firmware pin tables comparable.
+
+This has a consequence worth confronting rather than inheriting (§8): the *stated* justification
+for the ESP32-S3 re-spin was moving RX off a strapping pin. If shepherd's pinout already does
+that on a C6, the S3 needs its own justification — the persistent spool tier — or the variant
+should stay on the C6 the sibling product already targets.
 
 ### 7.2 PPS
 
@@ -373,14 +387,57 @@ This is where layout effort belongs — not the LED array.
 
 ### 7.5 I²C
 
-Everything in §2 shares one bus. Two constraints to resolve on paper *before* anything is locked:
-the 24AA02E64 occupies two addresses (the EEPROM array and the protected EUI block), and the
-**ATECC's address is set in its config zone**, which is fixed permanently at lock time. Confirm
-every address against its datasheet rather than assumed defaults.
+**One shared bus at 400 kHz**, matching `ESP32C6_PINOUT.md` ("All I²C devices share one bus").
+Known house addresses: **ATECC608C `0x60`**, **24AA02E64 `0x50–0x57`** (A0–A2 strapped),
+IMU `0x68`.
+
+Two constraints to resolve on paper *before* anything is locked: the 24AA02E64 occupies two
+address ranges (the EEPROM array and the protected EUI block), and the **ATECC's address is set
+in its config zone**, fixed permanently at lock time. Confirm every address against its datasheet
+rather than assumed defaults — noting that the RTC's conventional `0x68` collides with the IMU
+address shepherd uses, which is a non-issue here (no IMU on this board) but must not be
+copy-pasted forward onto a variant that adds one.
+
+The manifest EEPROM's 8-byte page-write hazard is **already handled** in the shared component —
+`esp_hardware_discovery.c` chunks writes to page boundaries and ACK-polls after each — so a
+descriptor array larger than one page (this board's ~10 slots is ~40 bytes) writes correctly.
+Nothing to do here; recorded so it isn't re-derived.
 
 ---
 
-## 8. Open decisions
+## 8. Alignment with `shepherdprotocol`
+
+Both products build ESP32 boards around the same `esp32-hardware-discovery` manifest, so parts
+and conventions are shared by default and divergence needs a reason. What this document adopted
+from the sibling, and where it deliberately does not:
+
+| Topic | shepherd | here | Status |
+|---|---|---|---|
+| Secure element | ATECC608**C** @ `0x60` | ATECC608**C** | **corrected** — an earlier draft said 608B |
+| RTC | MCP79412 | MCP79412 | aligned |
+| Manifest EEPROM | 24AA02E64 @ `0x50–0x57` | same | aligned |
+| Pressure | BMP390 | BMP390 | **corrected** — earlier draft picked from the enum list, not the house bus |
+| RGB LEDs | WS2812B (+ `led_pps_sync.c`) | WS2812B | **corrected** — earlier draft specified APA102 |
+| I²C | one shared bus, 400 kHz | same | aligned |
+| GPS UART + PPS | UART1, PPS on its own GPIO, clear of GPIO9 | same | **adopted** — this is the fix (§7.1) |
+| Board selection | compile-time profiles in `board/board_config.h` with feature flags | adopt for variants A/B/C | **adopt** — §1 variants are exactly this shape |
+| Dev board | Waveshare ESP32-C6-LCD-1.47 | same | already aligned (`esp32/README.md`) |
+| MCU | C6 and ESP32 (Xtensa) | S3 planned | **open** — see §9.6 |
+| Identity root | rover pubkey + ATECC serial | EUI-64 name + ATECC proof | **deliberate divergence** |
+
+**On the identity divergence.** Shepherd's rovers join a Thread fleet against an operator pubkey;
+navlistener observers present mTLS to a collector behind the Django CA that radiolistener already
+runs. navlistener and radiolistener share one CA and one `devices` table, so this product follows
+*that* convention (EUI-64 as the certificate name), and the ATECC serial is recorded at enrollment
+rather than being the name itself. The two models are compatible — ours is a superset — but they
+are not interchangeable, and a future shared provisioning tool must not assume one.
+
+**Reuse worth taking beyond parts:** `led_pps_sync.c` already drives a strip from GPS PPS, which
+is a feature this board wants and a reason the WS2812B alignment pays for itself immediately.
+
+---
+
+## 9. Open decisions
 
 1. **Band discriminator encoding** — variant-level GPS enum entries vs a band bitmap in the
    descriptor's reserved bytes (§5.3). Blocks writing the first EEPROMs.
@@ -393,3 +450,8 @@ every address against its datasheet rather than assumed defaults.
    per-batch is specified, per-observation is not ruled out.
 5. **Whether variant A ships L1-only or L1/L5** (§1.1) — a cost decision that determines whether
    these boards can contribute to the ionosphere and NavIC work or only to L1 collection.
+6. **C6 or S3** (§7.1, §8). The S3 re-spin's stated purpose was moving UART RX off a strapping
+   pin, and shepherd's GPIO4/5 map already achieves that on a C6. If the persistent spool tier
+   does not independently require the S3, staying on the C6 keeps both products on one MCU
+   family, one pinout document, and one board-profile system. Decide before layout — it changes
+   the footprint, not just a `#define`.
