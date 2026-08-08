@@ -67,6 +67,15 @@ consumer align to it.
 > its shipped detector never references them — only 1.45/10 m and 2.5/10 ns actually branch.
 > **The standard is two bands (warn/crit); the 5.0 constants are not part of it.**
 
+> **Pending calibration decision — regression fix (2026-08-08, not yet the standard).** The first
+> live GLONASS calibration (125 routine tb changeovers, single site/session;
+> measured with `go/cmd/gloreplay`) measured routine orbit-disco
+> p95 1.75 m / max 4.13 m with **15.2% of routine changeovers ≥ the 1.45 m warn band**, and
+> routine time-disco p95 1.86 ns / max **9.99 ns — 0.1% below the 10 ns crit band**. Proposed
+> GLONASS-specific pair, awaiting ratification: orbit warn 1.45 → **5 m** (crit 10 m keeps),
+> time crit 10 → **25 ns** (warn 2.5 ns keeps). Until this table changes, the detector
+> applies the shared bands above to GLONASS unchanged.
+
 Severity encoding (the SSE/`gnss_events` contract): `0 = info`, `1 = warning`, `2 = critical`.
 The standard applies each event type across the **full monitored set** below. intsat's as-built
 restrictions (orbit_disco: GPS+Galileo; clock_jump: Galileo-only; observation_lost:
