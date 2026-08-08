@@ -592,6 +592,22 @@ Nothing to do here; recorded so it isn't re-derived.
   charger.
 - ESD array on D+/D−/VBUS. `ECLAMP8052P` is already validated in the sibling designs.
 
+### 7.7 Flash tiers — this board is standard-tier by construction
+
+Project convention (shared with shepherd; reference layouts are its
+`esp32/partitions-4mb.csv` / `partitions-8mb.csv`): **standard** units have 8 MB+ flash and
+carry an OTA-ready two-slot partition layout from day one — partition tables cannot change in
+the field without serial access, but app code can, so OTA-capable layouts ship before any
+updater exists. **Restricted** units are 4 MB, single factory slot, serial-reflash only —
+bench/dev class (the non-touch Waveshare C6-LCD-1.47 dev units are this tier). Both tiers
+share one app-size ceiling so a single binary serves a mixed fleet.
+
+The §2 MCU choice already settles this board's tier: `ESP32-S3-WROOM-1U-N16R8` has 16 MB
+flash — two OTA slots *and* the deep offline spool that motivated the module (§9.6) fit
+without contention. The observer's concrete partition map is authored with the firmware, not
+here; what this section fixes is only the tier: **an observer that ships is never
+restricted-tier.**
+
 ---
 
 ## 8. Alignment with `shepherdprotocol`
