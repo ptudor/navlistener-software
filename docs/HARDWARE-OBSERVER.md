@@ -192,6 +192,37 @@ The collector already enforces the separation: `matchPeerIdentity`
 (`go/internal/ingest/push.go:472`) resolves the observer from the verified certificate, so a
 self-reported name in the GNF1 HELLO cannot override it.
 
+### 4.1a ATECC slot map — the shared slot map, not a new one
+
+The slot layout is shared with `shepherdprotocol`, whose live map is
+`esp32/components/atecc608c/include/atecc608c_slots_unified.h` (the enum in `atecc608c.h` is
+legacy; the unified header is what `swarm_split.c`, `unified_provisioning.c` and
+`trust_hierarchy.h` actually use). **All sixteen slots are already allocated.**
+
+One shared slot map, not one per product, for a reason that admits no do-over: **the config zone locks
+permanently and cannot be read back afterwards.** Two diverging maps means two provisioning
+tools, two validated configs, and two chances to brick a reel of parts.
+
+Two slots map onto this product unchanged:
+
+| Slot | Shepherd name | Use here |
+|---|---|---|
+| 0 | `SLOT_ROVER_IDENTITY` | the observer's operational P-256 key — signs the CSR and the mTLS handshake |
+| 1 | `SLOT_PRIMARY_SHEPHERD` | the CA trust anchor that signs for it |
+
+Slot 4 (`SLOT_PNT_AUTH_PRIMARY`) is already scoped to GNSS ephemeris and correction verification,
+which is this product's subject matter — unused for now, but the natural home if broadcast
+authentication (OSNMA and successors) ever needs an on-device key.
+
+**Open: the manufacturer-attestation slot.** Selling boards (funded federation nodes,
+`docs/FEDERATION.md`) wants a *second*, non-regenerable key generated at the bench and signed by
+the manufacturer CA — proof a unit is genuine hardware of known provenance, independent of
+whichever fleet later enrolls it. Slot 0 cannot serve: a buyer running their own collector must
+be able to regenerate it. There is no free slot, so this requires **retiring one of shepherd's**,
+and since the choice is permanent it is deliberately left to the owner rather than assumed here.
+Slots 11–13 (`TERRESTRIAL_OPS` / `MARINE_OPS` / `AERIAL_OPS`) are the candidates a stationary
+observer provably never uses; whether the rover fleet can spare one is not this document's call.
+
 ### 4.2 Provisioning constraints — get these right before writing five parts
 
 Each is enforced by code today, and each is baked into a certificate that an ATECC will sign
