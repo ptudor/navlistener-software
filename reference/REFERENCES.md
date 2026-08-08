@@ -90,6 +90,23 @@ citable; only the *bytes* are not redistributed by us.
 own host (`russianspacesystems.ru`) serves it behind a Russian-government CA the default trust
 store rejects.
 
+### 2a. Component datasheets (local-only)
+
+Not GNSS ICDs, but citation sources of record all the same: the hardware-observer identity
+design (`docs/HARDWARE-OBSERVER.md §4.1a/4.1b`) and the shared `shepherdprotocol` ATECC slot
+map pin their slot-size, key-format, `Verify(Stored)` and slot-locking claims to these.
+
+| cite-key | title | authority | edition | date | why local-only | SHA-256 |
+|---|---|---|---|---|---|---|
+| **ATECC508A** | ATECC508A CryptoAuthentication Device **Complete** Data Sheet (EEPROM data zone, key formats, full command set) | Microchip | DS20005927A | 2017 | © Microchip, no redistribution grant. Microchip now gates the 608-family *complete* datasheets behind NDA; the 508A shares the identical data-zone architecture (Table 2-3 size classes, §2.4.3 slot locking, §4.1.1 key formats, §9.20 Verify) and remains publicly mirrored (fetched from SparkFun's CDN) | `3e79484ff38cde1980159af097487ea336774016d4e64965b0ba666bb8d66bc0` |
+| **ATECC608C-SUMMARY** | ATECC608C CryptoAuthentication Summary Data Sheet — the purchased part (`ATECC608C-SSHDA-T`) | Microchip | DS40002513 | 2023 | © Microchip, no redistribution grant | `c88378258d593053aa602e2a764700b64de2a7230ebf5359e14223348c6d4d0a` |
+
+608-family-specific behavior beyond the 508A base (KDF/AES/SecureBoot commands, 608-specific
+KeyConfig bits) has **no fetchable public complete datasheet** — Microchip supplies it under
+NDA. Claims in that category must be validated on silicon (the scrap-part step in
+`docs/HARDWARE-OBSERVER.md §4.2`) or against the NDA document, and flagged if neither has
+happened yet.
+
 ---
 
 ## 3. Reference-by-citation only — **not obtained / not redistributable**

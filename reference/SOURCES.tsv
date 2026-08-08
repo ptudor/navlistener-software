@@ -60,3 +60,11 @@ BDS-SIS-B3I-1.0.pdf	local	b924b861c79d1e70048dc13ec41c833c3bc231fd92e50b1089f055
 BDS-SIS-B2I-2.1.pdf	local	e59e5e225524eb1b2ef2288d2dbf97a846b377e777327182cbf4afeffe8ac345	1685079	http://www.beidou.gov.cn/xt/gfxz/201805/P020180507527106075323.pdf
 BDS-PPP-B2b-1.0.pdf	local	a70c08357b420f0fb662e5bc02a15df6a66ff6ab5c40686bbb7d5a763791d742	1388902	http://en.beidou.gov.cn/SYSTEMS/ICD/202008/P020231201538195573144.pdf
 BDS-BDSBAS-B1C-1.0.pdf	local	22ae917b179c55ab460489c895f538cc6996ef4870eb8eb0532737feb07328ca	1396926	http://en.beidou.gov.cn/SYSTEMS/ICD/202008/P020200803538292532733.pdf
+
+# ---- Component datasheets (Microchip) — (c) Microchip, no redistribution grant; local only. ----
+# ATECC508A is the complete (command-level) CryptoAuthentication datasheet, DS20005927A; Microchip
+# now gates the 608-family complete datasheets behind NDA, but the 508A shares the identical EEPROM
+# data-zone architecture (Table 2-3 slot size classes, slot locking, key formats) and remains
+# publicly mirrored by SparkFun. ATECC608C-SUMMARY documents the purchased part (ATECC608C-SSHDA-T).
+ATECC508A.pdf	local	3e79484ff38cde1980159af097487ea336774016d4e64965b0ba666bb8d66bc0	841710	https://cdn.sparkfun.com/assets/learn_tutorials/1/0/0/3/Microchip_ATECC508A_Datasheet.pdf
+ATECC608C-SUMMARY.pdf	local	c88378258d593053aa602e2a764700b64de2a7230ebf5359e14223348c6d4d0a	1193722	https://ww1.microchip.com/downloads/aemDocuments/documents/SCBU/ProductDocuments/DataSheets/ATECC608C-CryptoAuthentication-Summary-Data-Sheet-DS40002513.pdf
