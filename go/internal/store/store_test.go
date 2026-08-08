@@ -190,23 +190,67 @@ func TestNavFrameToRow(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	f := &NavFrame{
 		Ts: now, ReceivedAt: now, SourceID: "obs1",
-		GnssID: 0, SvID: 5, SigID: 0, MsgType: 0x10,
+		GnssID: 0, SvID: 5, SigID: 0, FreqID: 0, MsgType: 0x10,
 		Raw: []byte{1, 2, 3}, Decoded: []byte(`{"a":1}`), DecoderVer: "v1",
 	}
 	r := navFrameToRow(f)
 	if len(r) != len(copyColumns) {
 		t.Fatalf("row has %d cols, want %d", len(r), len(copyColumns))
 	}
-	if r[3] != int16(0) || r[4] != int16(5) || r[6] != int16(0x10) {
-		t.Errorf("id columns wrong: %v", r[3:7])
+	idx := func(col string) int {
+		for i, c := range copyColumns {
+			if c == col {
+				return i
+			}
+		}
+		t.Fatalf("copyColumns has no %q", col)
+		return -1
 	}
-	if r[8] != `{"a":1}` {
-		t.Errorf("decoded = %v, want the JSON string", r[8])
+	if r[idx("gnssid")] != int16(0) || r[idx("svid")] != int16(5) || r[idx("msg_type")] != int16(0x10) {
+		t.Errorf("id columns wrong: gnssid=%v svid=%v msg_type=%v",
+			r[idx("gnssid")], r[idx("svid")], r[idx("msg_type")])
+	}
+	if r[idx("decoded")] != `{"a":1}` {
+		t.Errorf("decoded = %v, want the JSON string", r[idx("decoded")])
 	}
 	// nil decoded when empty.
 	f.Decoded = nil
-	if navFrameToRow(f)[8] != nil {
+	if navFrameToRow(f)[idx("decoded")] != nil {
 		t.Error("empty decoded should map to nil")
+	}
+}
+
+// TestNavFrameRowMatchesColumnOrder pins each value to the column it is named for,
+// by position. CopyFrom binds positionally, so inserting a column mid-list (freqid
+// went in before msg_type) silently shifts every later value into the wrong column
+// unless navFrameToRow moves with it — a corruption Postgres cannot catch when the
+// neighbours share a type, as SMALLINT sigid/freqid/msg_type do.
+func TestNavFrameRowMatchesColumnOrder(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	// Distinct values so a transposition cannot coincidentally pass.
+	f := &NavFrame{
+		Ts: now, ReceivedAt: now.Add(time.Second), SourceID: "obs1",
+		GnssID: 6, SvID: 5, SigID: 2, FreqID: 9, MsgType: 0x10,
+		Raw: []byte{1, 2, 3}, Decoded: []byte(`{"a":1}`), DecoderVer: "v1",
+	}
+	r := navFrameToRow(f)
+	if len(r) != len(copyColumns) {
+		t.Fatalf("row has %d cols, want %d", len(r), len(copyColumns))
+	}
+	want := map[string]any{
+		"ts": now, "received_at": now.Add(time.Second), "source_id": "obs1",
+		"gnssid": int16(6), "svid": int16(5), "sigid": int16(2),
+		"freqid": int16(9), "msg_type": int16(0x10),
+		"decoded": `{"a":1}`, "decoder_ver": "v1",
+	}
+	for i, col := range copyColumns {
+		w, ok := want[col]
+		if !ok {
+			continue // raw is a byte slice, not comparable with !=
+		}
+		if r[i] != w {
+			t.Errorf("column %q (index %d) = %v, want %v", col, i, r[i], w)
+		}
 	}
 }
 

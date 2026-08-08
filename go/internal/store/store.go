@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -69,7 +70,7 @@ type flushRetry struct {
 type copyRowsFunc func(ctx context.Context, rows [][]any) (int64, error)
 
 var copyColumns = []string{
-	"ts", "received_at", "source_id", "gnssid", "svid", "sigid", "msg_type",
+	"ts", "received_at", "source_id", "gnssid", "svid", "sigid", "freqid", "msg_type",
 	"raw", "decoded", "decoder_ver",
 }
 
@@ -83,6 +84,12 @@ type NavFrame struct {
 	GnssID     int
 	SvID       int
 	SigID      int
+	// FreqID is the GLONASS FDMA channel carrier as the receiver reported it
+	// (k = FreqID - 7). Always written: it is receiver metadata that never appears
+	// in Raw (RawBytes serialises only the nav words), so a GLONASS frame cannot be
+	// replayed faithfully without it. Meaningless for other constellations, where
+	// the ingest layer leaves it 0.
+	FreqID     int
 	MsgType    int
 	Raw        []byte
 	Decoded    []byte // JSON, or nil
@@ -107,6 +114,7 @@ type NavFrame struct {
 // Store owns the connection pool and the batched writer.
 type Store struct {
 	pool             *pgxpool.Pool
+	closeOnce        sync.Once // guards Close() against Run's own pool shutdown
 	in               chan *NavFrame
 	batchSize        int
 	batchEvery       time.Duration
@@ -1019,7 +1027,7 @@ func navFrameToRow(f *NavFrame) []any {
 	}
 	return []any{
 		f.Ts, f.ReceivedAt, f.SourceID,
-		int16(f.GnssID), int16(f.SvID), int16(f.SigID), int16(f.MsgType),
+		int16(f.GnssID), int16(f.SvID), int16(f.SigID), int16(f.FreqID), int16(f.MsgType),
 		f.Raw, decoded, nilIfEmpty(f.DecoderVer),
 	}
 }

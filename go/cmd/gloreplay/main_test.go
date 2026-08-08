@@ -2,7 +2,10 @@ package main
 
 import (
 	"math"
+	"strings"
 	"testing"
+
+	"github.com/ptudor/navlistener/internal/ingest"
 )
 
 // TestTbWatchDetectsChangeover walks one SV through the age sequence a real
@@ -92,5 +95,47 @@ func TestPercentileIsAMeasuredValue(t *testing.T) {
 		if !found {
 			t.Errorf("percentile(p%v) = %v is not one of the measured values %v", p, got, v)
 		}
+	}
+}
+
+// TestWordsFromRawRoundTrip pins the reconstruction against the writer it must
+// reverse: ingest.RawFrame.RawBytes serialises nav words big-endian back to back,
+// and a store replay has only those bytes to rebuild the frame from. A disagreement
+// here would not fail loudly — it would decode into plausible-looking garbage.
+func TestWordsFromRawRoundTrip(t *testing.T) {
+	words := []uint32{0x01020304, 0xDEADBEEF, 0x00000000, 0xFFFFFFFF}
+	f := &ingest.RawFrame{Words: words}
+	got := wordsFromRaw(f.RawBytes())
+	if len(got) != len(words) {
+		t.Fatalf("got %d words, want %d", len(got), len(words))
+	}
+	for i := range words {
+		if got[i] != words[i] {
+			t.Errorf("word %d = %#08x, want %#08x", i, got[i], words[i])
+		}
+	}
+}
+
+// TestWordsFromRawDropsPartialWord pins that a trailing partial word is dropped
+// rather than zero-extended. Zero-extending would invent bits the satellite never
+// broadcast and hand them to a CRC check that might even pass.
+func TestWordsFromRawDropsPartialWord(t *testing.T) {
+	if got := wordsFromRaw([]byte{1, 2, 3, 4, 5, 6}); len(got) != 1 || got[0] != 0x01020304 {
+		t.Errorf("wordsFromRaw(6 bytes) = %#v, want exactly [0x01020304]", got)
+	}
+	if got := wordsFromRaw(nil); len(got) != 0 {
+		t.Errorf("wordsFromRaw(nil) = %#v, want empty", got)
+	}
+}
+
+// TestRedactDSN pins that a password never reaches stdout: QA output gets pasted
+// into review docs and tickets.
+func TestRedactDSN(t *testing.T) {
+	got := redactDSN("postgres://app:s3cret@db.invalid:5432/nav")
+	if strings.Contains(got, "s3cret") {
+		t.Errorf("redactDSN leaked the password: %q", got)
+	}
+	if !strings.Contains(got, "db.invalid") {
+		t.Errorf("redactDSN dropped the host, leaving nothing identifiable: %q", got)
 	}
 }

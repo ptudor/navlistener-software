@@ -428,6 +428,7 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live *state.Store, historian *st
 				GnssID:       int(f.GnssID),
 				SvID:         f.SvID,
 				SigID:        f.SigID,
+				FreqID:       f.FreqID,
 				MsgType:      persistMsgType(f),
 				Raw:          f.RawBytes(),
 				DecoderVer:   version.Version,

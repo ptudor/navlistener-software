@@ -2,22 +2,26 @@
 // live-state path and reports the distribution of the GLONASS orbit/time
 // discontinuity measured at every tb changeover.
 //
-// This is the measurement half of regression fix (technical validation
-// and technical validation regression fix). The structural fix landed — the
-// position difference is taken at the changeover midpoint and both metrics gate on
-// tb adjacency — but the remaining question is calibration: whether a ROUTINE
-// changeover still crosses the 1.45 m warn band the sub-metre-continuity Kepler
-// family uses, i.e. whether GLONASS needs its own threshold pair (the review's
-// option (c)). That cannot be answered from first principles, only measured, and
-// the rule is that thresholds change only with the measurement in hand.
+// Position differences are measured at the changeover midpoint, with both metrics
+// gated on tb adjacency. Measurements determine whether GLONASS needs separate
+// thresholds from the Kepler family. Change thresholds only after calibration.
 //
-// Usage:
+// Two sources, same measurement:
 //
-//	gloreplay -capture glo_20260807_1400.ubx [-duration 6h] [-json out.json]
+//	gloreplay -from-store "$DSN" -since 2026-08-08T02:50:09Z [-until …] [-source obs]
+//	gloreplay -capture glo_20260807_1400.ubx [-duration 6h]
 //
-// The capture is a raw UBX byte stream (what `cat /dev/ttyACM0 > file.ubx`
-// produces with UBX-RXM-SFRBX enabled). It carries no timestamps, so gloreplay
-// imposes a synthetic receive clock that advances uniformly across the frames.
+// **Prefer -from-store.** It is the historian's own record, so no capture has to
+// have been taken in advance, any collector's history is queryable, and every frame
+// carries the receiver's real reception time — none of the synthetic-clock reasoning
+// below applies. This is the design's "replayable over stored raw frames" promise
+// (docs/DESIGN.md §1) actually exercised rather than asserted.
+//
+// -capture is the fallback for when there is no collector to have persisted to (an
+// outage, or a receiver on a bench). It reads a raw UBX byte stream — what a plain
+// redirect of the serial port produces with UBX-RXM-SFRBX enabled. That stream
+// carries no timestamps, so gloreplay imposes a synthetic receive clock that advances
+// uniformly across the frames.
 //
 // On why that is sound: the only wall-clock input to computeGloDisco is the
 // discoTrustAge (4 h) freshness gate on the OUTGOING set. Non-adjacent sets — the
@@ -32,16 +36,24 @@
 package main
 
 import (
+	"context"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/state"
+	"github.com/ptudor/navlistener/internal/store"
 )
 
 // Warn/alert bands the shipped detector applies to these metrics. GLONASS
@@ -100,16 +112,31 @@ type changeover struct {
 func main() {
 	capture := flag.String("capture", "", "path to a raw UBX capture (UBX-RXM-SFRBX stream)")
 	duration := flag.Duration("duration", 0, "true wall-clock span of the capture; 0 compresses (see package doc)")
+	dsn := flag.String("from-store", "", "replay from the historian instead of a file: a TimescaleDB DSN")
+	since := flag.String("since", "", "-from-store: window start, RFC3339 (required)")
+	until := flag.String("until", "", "-from-store: window end, RFC3339 (default: no upper bound)")
+	source := flag.String("source", "", "-from-store: restrict to one ingest source / observer id")
 	shards := flag.Int("shards", 16, "live-state shard count")
 	jsonOut := flag.String("json", "", "also write the per-changeover samples to this JSON file")
 	flag.Parse()
 
-	if *capture == "" {
-		fmt.Fprintln(os.Stderr, "gloreplay: -capture is required")
+	switch {
+	case *capture == "" && *dsn == "":
+		fmt.Fprintln(os.Stderr, "gloreplay: one of -capture or -from-store is required")
 		flag.Usage()
 		os.Exit(2)
+	case *capture != "" && *dsn != "":
+		fmt.Fprintln(os.Stderr, "gloreplay: -capture and -from-store are mutually exclusive")
+		os.Exit(2)
 	}
-	if err := run(*capture, *duration, *shards, *jsonOut); err != nil {
+
+	var err error
+	if *dsn != "" {
+		err = runStore(*dsn, *since, *until, *source, *shards, *jsonOut)
+	} else {
+		err = run(*capture, *duration, *shards, *jsonOut)
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "gloreplay: %v\n", err)
 		os.Exit(1)
 	}
@@ -142,18 +169,108 @@ func run(capture string, duration time.Duration, shards int, jsonOut string) err
 
 	report(capture, total, gloFrames, spacing, samples, parseErrs)
 
-	if jsonOut != "" {
-		b, err := json.MarshalIndent(samples, "", "  ")
-		if err != nil {
-			return fmt.Errorf("encode samples: %w", err)
-		}
-		// 0644: a measurement artifact, not a secret.
-		if err := os.WriteFile(jsonOut, b, 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", jsonOut, err)
-		}
-		fmt.Printf("\nwrote %d samples to %s\n", len(samples), jsonOut)
+	return writeJSON(jsonOut, samples)
+}
+
+// writeJSON persists the per-changeover samples. A no-op when no path was given.
+func writeJSON(path string, samples []changeover) error {
+	if path == "" {
+		return nil
 	}
+	b, err := json.MarshalIndent(samples, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode samples: %w", err)
+	}
+	// 0644: a measurement artifact, not a secret.
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	fmt.Printf("\nwrote %d samples to %s\n", len(samples), path)
 	return nil
+}
+
+// runStore replays from the historian. This is the path that makes the design's
+// "replayable over stored raw frames" promise real: no capture file has to have been
+// taken in advance, any collector's history is queryable, and — the substantive
+// difference from a file — every frame carries the receiver's own reception time, so
+// none of the file path's synthetic-clock reasoning applies.
+func runStore(dsn, sinceStr, untilStr, source string, shards int, jsonOut string) error {
+	if sinceStr == "" {
+		return fmt.Errorf("-since is required with -from-store (RFC3339)")
+	}
+	since, err := time.Parse(time.RFC3339, sinceStr)
+	if err != nil {
+		return fmt.Errorf("parse -since: %w", err)
+	}
+	var until time.Time
+	if untilStr != "" {
+		if until, err = time.Parse(time.RFC3339, untilStr); err != nil {
+			return fmt.Errorf("parse -until: %w", err)
+		}
+	}
+
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	st, err := store.New(ctx, config.Store{DSN: dsn}, log)
+	if err != nil {
+		return fmt.Errorf("open historian: %w", err)
+	}
+	defer st.Close()
+
+	glo := int(gnss.GLONASS)
+	live := state.New(shards)
+	smp := samplerOn(live)
+
+	qErr := st.QueryNavFrames(ctx, store.NavFrameQuery{
+		GnssID: &glo, SourceID: source, Since: since, Until: until,
+	}, func(r store.StoredNavFrame) error {
+		fr := &ingest.RawFrame{
+			Recv:   r.ReceivedAt,
+			Source: r.SourceID,
+			GnssID: gnss.GNSSID(r.GnssID),
+			SvID:   r.SvID,
+			SigID:  r.SigID,
+			FreqID: r.FreqID,
+			Words:  wordsFromRaw(r.Raw),
+		}
+		smp.apply(fr, r.ReceivedAt)
+		return nil
+	})
+	if qErr != nil && !errors.Is(qErr, store.ErrNavFrameLimit) {
+		return qErr
+	}
+
+	fmt.Printf("source:       historian %s\n", redactDSN(dsn))
+	fmt.Printf("window:       %s .. %s\n", since.Format(time.RFC3339), untilStr)
+	fmt.Printf("frames:       %d GLONASS replayed with real reception times\n", smp.frames)
+	if errors.Is(qErr, store.ErrNavFrameLimit) {
+		fmt.Printf("\nWARNING: %v\n", qErr)
+		fmt.Println("The distribution below is built from a TRUNCATED head of the window and understates it.")
+	}
+	fmt.Printf("changeovers:  %d observed\n", len(smp.samples))
+	reportSamples(smp.samples)
+
+	return writeJSON(jsonOut, smp.samples)
+}
+
+// wordsFromRaw reverses RawBytes for a word-oriented frame: the persisted `raw` is
+// the nav words stored big-endian back to back. A trailing partial word cannot occur
+// for SFRBX and is dropped rather than zero-extended, which would invent bits.
+func wordsFromRaw(b []byte) []uint32 {
+	w := make([]uint32, 0, len(b)/4)
+	for i := 0; i+4 <= len(b); i += 4 {
+		w = append(w, binary.BigEndian.Uint32(b[i:i+4]))
+	}
+	return w
+}
+
+// redactDSN keeps a connection string out of stdout: a QA run's output gets pasted
+// into review docs and tickets, and the DSN carries a password.
+func redactDSN(dsn string) string {
+	if i := strings.Index(dsn, "@"); i >= 0 {
+		return "…@" + dsn[i+1:]
+	}
+	return "(local)"
 }
 
 // countFrames is the sizing pass: the synthetic clock's spacing depends on how
@@ -197,38 +314,59 @@ func replay(path string, spacing time.Duration, shards int) ([]changeover, map[s
 	}
 
 	parseErrs := map[string]int{}
-	watch := newTbWatch()
-	var samples []changeover
+	smp := samplerOn(st)
 
 	err = ingest.ReplayUBX(f, "gloreplay", clock, func(fr *ingest.RawFrame) {
-		st.Apply(fr)
-		if fr.GnssID != gnss.GLONASS {
-			return
-		}
-		// Only this SV's entry can have changed, so read it by key rather than
-		// scanning the whole feed per frame.
-		key := state.Key{G: fr.GnssID, Sv: fr.SvID, Sig: fr.SigID}.Name()
-		sv, ok := st.FeedSVs(now)[key]
-		if !ok || sv.EphAgeM == nil {
-			return
-		}
-		if !watch.observe(key, *sv.EphAgeM) {
-			return // no new tb adopted at this frame
-		}
-		// A changeover was just published. Absent disco is a real outcome, not a
-		// gap in the data: it means the adjacency or freshness gate declined to
-		// define one, and the rate of that is itself part of the measurement.
-		samples = append(samples, changeover{
-			SV:         key,
-			OrbitM:     sv.OrbitDiscoM,
-			TimeNs:     sv.TimeDiscoNs,
-			FrameIndex: frame,
-		})
+		smp.apply(fr, now)
 	}, func(kind string) { parseErrs[kind]++ })
 	if err != nil {
 		return nil, nil, err
 	}
-	return samples, parseErrs, nil
+	return smp.samples, parseErrs, nil
+}
+
+// sampler feeds frames through live state and records every GLONASS tb changeover
+// the store publishes. Shared by both replay sources so a file replay and a store
+// replay measure identically — the point of replay is that the numbers describe what
+// the collector computes, which fails the moment two paths sample differently.
+type sampler struct {
+	st      *state.Store
+	watch   *tbWatch
+	samples []changeover
+	frames  int
+}
+
+func samplerOn(st *state.Store) *sampler {
+	return &sampler{st: st, watch: newTbWatch()}
+}
+
+// apply feeds one frame through live state. now must be the frame's reception time:
+// the file path synthesises it, the store path has the receiver's real stamp.
+func (s *sampler) apply(fr *ingest.RawFrame, now time.Time) {
+	s.frames++
+	s.st.Apply(fr)
+	if fr.GnssID != gnss.GLONASS {
+		return
+	}
+	// Only this SV's entry can have changed, so read it by key rather than
+	// scanning the whole feed per frame.
+	key := state.Key{G: fr.GnssID, Sv: fr.SvID, Sig: fr.SigID}.Name()
+	sv, ok := s.st.FeedSVs(now)[key]
+	if !ok || sv.EphAgeM == nil {
+		return
+	}
+	if !s.watch.observe(key, *sv.EphAgeM) {
+		return // no new tb adopted at this frame
+	}
+	// A changeover was just published. Absent disco is a real outcome, not a gap in
+	// the data: it means the adjacency or freshness gate declined to define one, and
+	// the rate of that is itself part of the measurement.
+	s.samples = append(s.samples, changeover{
+		SV:         key,
+		OrbitM:     sv.OrbitDiscoM,
+		TimeNs:     sv.TimeDiscoNs,
+		FrameIndex: s.frames,
+	})
 }
 
 func report(path string, total, gloFrames int, spacing time.Duration, samples []changeover, parseErrs map[string]int) {
@@ -239,9 +377,15 @@ func report(path string, total, gloFrames int, spacing time.Duration, samples []
 		fmt.Printf("parse errors: %v\n", parseErrs)
 	}
 	fmt.Printf("changeovers:  %d observed\n", len(samples))
+	reportSamples(samples)
+}
+
+// reportSamples prints the distribution. Shared by both sources so a file replay and
+// a store replay are compared on identical arithmetic.
+func reportSamples(samples []changeover) {
 	if len(samples) == 0 {
-		fmt.Println("\nNo tb changeover occurred in this capture. GLONASS updates tb every 30-60 min")
-		fmt.Println("(GLO-ICD-5.1 Table 4.3), so a capture must span at least that to measure one;")
+		fmt.Println("\nNo tb changeover occurred in this window. GLONASS updates tb every 30-60 min")
+		fmt.Println("(GLO-ICD-5.1 Table 4.3), so a window must span at least that to measure one;")
 		fmt.Println("regression fix asks for >= 6 h to get a population rather than a single sample.")
 		return
 	}

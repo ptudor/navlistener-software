@@ -16,6 +16,13 @@ CREATE TABLE IF NOT EXISTS nav_frames (
     gnssid      SMALLINT    NOT NULL,   -- gnssId 0..7 (docs/CONSTELLATIONS.md §0)
     svid        SMALLINT    NOT NULL,
     sigid       SMALLINT    NOT NULL,
+    -- GLONASS FDMA channel carrier as the receiver reported it (k = freqid - 7,
+    -- docs/CONSTELLATIONS.md §5). Receiver metadata that does NOT survive in `raw`
+    -- (RawBytes serialises only the nav words), so a GLONASS frame cannot be replayed
+    -- faithfully without it. NOT NULL by design decision: the alternative was a nullable
+    -- column plus a "was this recorded?" flag threaded through every layer, permanently,
+    -- to serve rows that raw_retention deletes within a week anyway.
+    freqid      SMALLINT    NOT NULL,
     msg_type    SMALLINT    NOT NULL,   -- GNF1 nav message type (docs/CONSTELLATIONS.md §6)
     raw         BYTEA       NOT NULL,   -- the broadcast nav frame, untouched (re-decodable)
     decoded     JSONB,                  -- normalized projection (ephemeris/almanac params), nullable
@@ -84,6 +91,22 @@ CREATE TABLE IF NOT EXISTS nav_frames_seq_seen (
     PRIMARY KEY (source_id, session_id, feeder_seq)
 );
 CREATE INDEX IF NOT EXISTS idx_nav_frames_seq_seen_prune ON nav_frames_seq_seen (seen_at);
+
+-- Upgrade note — nav_frames.freqid (design decision, no back-compat). There is
+-- deliberately NO `ALTER TABLE ... ADD COLUMN` here. The column is NOT NULL and old
+-- rows cannot be back-filled (freqid never appears in `raw`), so the only honest
+-- options were to invent a channel for historical GLONASS frames or to drop them.
+-- Dropping wins on the merits: nav_frames is a short-window forensic record
+-- (raw_retention defaults to 7 days), so any pre-migration row expires within a week
+-- regardless, and the coming rollout is already a coordinated no-compat deploy.
+--
+-- This file will NOT destroy data at startup. On an existing deployment the regression fix
+-- column check fails fast with an actionable message; the operator then drops the
+-- table and restarts, and CREATE TABLE above rebuilds it:
+--
+--     DROP TABLE nav_frames CASCADE;
+--
+-- Fresh installs need no action.
 
 -- Columnar compression: segment by constellation, order by SV then time so the
 -- repetitive nav bitstream compresses hard. The compress/retention POLICIES are
