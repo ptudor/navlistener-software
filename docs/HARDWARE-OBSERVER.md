@@ -214,14 +214,48 @@ Slot 4 (`SLOT_PNT_AUTH_PRIMARY`) is already scoped to GNSS ephemeris and correct
 which is this product's subject matter — unused for now, but the natural home if broadcast
 authentication (OSNMA and successors) ever needs an on-device key.
 
-**Open: the manufacturer-attestation slot.** Selling boards (funded federation nodes,
-`docs/FEDERATION.md`) wants a *second*, non-regenerable key generated at the bench and signed by
-the manufacturer CA — proof a unit is genuine hardware of known provenance, independent of
-whichever fleet later enrolls it. Slot 0 cannot serve: a buyer running their own collector must
-be able to regenerate it. There is no free slot, so this requires **retiring one of shepherd's**,
-and since the choice is permanent it is deliberately left to the owner rather than assumed here.
-Slots 11–13 (`TERRESTRIAL_OPS` / `MARINE_OPS` / `AERIAL_OPS`) are the candidates a stationary
-observer provably never uses; whether the rover fleet can spare one is not this document's call.
+### 4.1b Manufacturer attestation — a signature, not a key
+
+Selling boards (funded federation nodes, `docs/FEDERATION.md`) wants proof that a unit is genuine
+hardware of known provenance, independent of whichever fleet later enrolls it. The obvious design
+is a second private key — generated at the bench, non-regenerable — but every ATECC slot is
+already allocated, so that would mean permanently retiring one of shepherd's.
+
+**It does not need an on-device key at all.**
+
+Shepherd already stores provenance in the shared slot map, as *data* rather than a key: slot 15's
+32-byte "genealogy" record (`atecc_provisioning.c`). That is the right shape, and it generalises.
+
+The ATECC's **9-byte factory serial is immutable, unclonable and publicly readable**. So the
+manufacturer signs a statement about it — `serial || EUI-64 || board_rev` — with the CA key,
+**off-device, at the bench**, and stores the resulting signature in a data slot. Verification
+needs only the manufacturer's public key. A counterfeiter can copy the layout and the BOM; they
+cannot produce a valid signature over a serial they do not control.
+
+What that buys:
+
+- Provable "genuine hardware from this manufacturer," independent of the operational identity.
+- **Zero key-slot contention** — no slot retired, no permanent decision forced on the rover fleet.
+- A buyer still regenerates slot 0 freely against their own CA, and **the attestation survives
+  it**, because it attests to *silicon*, not to the operational key.
+- The same shape as the existing genealogy record, so one provisioning tool writes both.
+
+**Sizing (ATECC608A datasheet, Table 2-3 "Data Zone"):**
+
+| Slots | Blocks | Bytes | Datasheet's stated use |
+|---|---|---|---|
+| 0-7 | 2 | 36 | private/secret key — **too small** for a 64-byte signature |
+| 8 | 13 | 416 | data |
+| 9-15 | 3 | 72 | *"Public Key, Signature or Certificate... large enough to contain... the R and S components of an ECDSA signature"* |
+
+A P-256 signature is 64 bytes, so it must live in slots 9-15. **Slot 15 cannot host it** — the
+32-byte genealogy already occupies part of its 72, and 32 + 64 = 96 overflows.
+
+**Proposed: slot 13 (`SLOT_AERIAL_OPS`)** — 72 bytes, the datasheet's own size class for an ECDSA
+signature, and a domain-ops slot that neither a ground rover fleet nor a fixed GNSS observer will
+ever use. Slot 12 (`MARINE_OPS`) is the equivalent fallback. Both are far cheaper asks than 14
+(`MESH_NETWORK`), which shepherd's Thread mesh plausibly does want. Still the owner's call, since
+the slot policy locks permanently — but it is now a *data*-slot request, not a key-slot one.
 
 ### 4.2 Provisioning constraints — get these right before writing five parts
 
