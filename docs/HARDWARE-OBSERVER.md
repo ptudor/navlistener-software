@@ -194,68 +194,86 @@ self-reported name in the GNF1 HELLO cannot override it.
 
 ### 4.1a ATECC slot map — the shared slot map, not a new one
 
-The slot layout is shared with `shepherdprotocol`, whose live map is
-`esp32/components/atecc608c/include/atecc608c_slots_unified.h` (the enum in `atecc608c.h` is
-legacy; the unified header is what `swarm_split.c`, `unified_provisioning.c` and
-`trust_hierarchy.h` actually use). **All sixteen slots are already allocated.**
+The slot layout is shared with `shepherdprotocol`, whose
+`esp32/components/atecc608c/include/atecc608c_slots_unified.h` is the single source of truth
+(**v2**, jointly revised 2026-08-08; the spec is `ATECC_SLOTS_UNIFIED.md` beside it).
 
 One shared slot map, not one per product, for a reason that admits no do-over: **the config zone locks
 permanently and cannot be read back afterwards.** Two diverging maps means two provisioning
 tools, two validated configs, and two chances to brick a reel of parts.
 
-Two slots map onto this product unchanged:
+v2 exists because v1 — including the version this document briefly adopted — was never checked
+against the silicon. The ATECC data zone has **size classes** (`ATECC508A` §2.1 Table 2-3;
+cite-keys per `reference/REFERENCES.md §2a`, which also records why the 508A complete datasheet
+stands in for the NDA-gated 608 one): slots 0–7 are 36-byte private/secret-key slots, slot 8 is
+the single 416-byte data slot, and slots 9–15 are 72-byte public-key/signature slots. §2.1
+states that *only slots 8–15 can store an ECC public key* (the stored format is 72 bytes,
+§4.1.1, and `Verify(Stored)` reads it from the slot, §9.20) — yet v1 placed its verification
+public keys, including the slot-1 "CA trust anchor" this document had adopted, in 36-byte slots
+where they physically cannot live. v2 sorts every role into its size class; the full map and
+per-slot policy live in shepherd's spec.
 
-| Slot | Shepherd name | Use here |
+What this product uses:
+
+| Slot | Slot name | Use here |
 |---|---|---|
-| 0 | `SLOT_ROVER_IDENTITY` | the observer's operational P-256 key — signs the CSR and the mTLS handshake |
-| 1 | `SLOT_PRIMARY_SHEPHERD` | the CA trust anchor that signs for it |
+| 0 | `SLOT_ROVER_IDENTITY` (alias `SLOT_DEVICE_IDENTITY`) | the observer's operational P-256 key — signs the CSR and the mTLS handshake. GenKey-regenerable, never slot-locked, so a sold board re-enrolls against the buyer's CA. |
+| 13 | `SLOT_TRUST_ANCHOR` | optional pinned copy of the Django CA public key. The mTLS chain is verified in the TLS stack with the CA cert in flash — this slot only matters if the observer ever verifies signed commands/updates outside TLS. |
+| 14 | `SLOT_MFG_ATTESTATION` | the manufacturer authenticity signature — §4.1b. |
+| 15 | `SLOT_DEVICE_CONFIG` | genealogy/provenance record (mutable), shared shape with shepherd. |
 
-Slot 4 (`SLOT_PNT_AUTH_PRIMARY`) is already scoped to GNSS ephemeris and correction verification,
-which is this product's subject matter — unused for now, but the natural home if broadcast
-authentication (OSNMA and successors) ever needs an on-device key.
+Slot 12 (`SLOT_PNT_AUTH_PRIMARY`) remains scoped to GNSS broadcast and correction
+authentication — unused for now (navlistener verifies OSNMA centrally), but the natural home if
+broadcast authentication ever needs an on-device key at the edge.
 
 ### 4.1b Manufacturer attestation — a signature, not a key
 
 Selling boards (funded federation nodes, `docs/FEDERATION.md`) wants proof that a unit is genuine
 hardware of known provenance, independent of whichever fleet later enrolls it. The obvious design
-is a second private key — generated at the bench, non-regenerable — but every ATECC slot is
-already allocated, so that would mean permanently retiring one of shepherd's.
+is a second private key — generated at the bench, non-regenerable — but **it does not need an
+on-device key at all.**
 
-**It does not need an on-device key at all.**
-
-Shepherd already stores provenance in the shared slot map, as *data* rather than a key: slot 15's
+Shepherd already stores provenance in the shared slot map as *data* rather than a key: slot 15's
 32-byte "genealogy" record (`atecc_provisioning.c`). That is the right shape, and it generalises.
 
-The ATECC's **9-byte factory serial is immutable, unclonable and publicly readable**. So the
-manufacturer signs a statement about it — `serial || EUI-64 || board_rev` — with the CA key,
-**off-device, at the bench**, and stores the resulting signature in a data slot. Verification
-needs only the manufacturer's public key. A counterfeiter can copy the layout and the BOM; they
-cannot produce a valid signature over a serial they do not control.
+The ATECC's **9-byte factory serial is immutable, unclonable and publicly readable**
+(`ATECC508A` §2.2, SN<0:8>). So the manufacturer signs a statement binding it to the board identity —
+**off-device, at the bench, with the manufacturer attestation key** — and the signature is stored
+in a data slot. The signer is a distinct *role* from the enrolling CA (even while the same
+organization holds both): verification must not depend on which CA later signs the operational
+certificate. Verification needs only the manufacturer's public key. A counterfeiter can copy the
+layout and the BOM; they cannot produce a valid signature over a serial they do not control.
 
 What that buys:
 
-- Provable "genuine hardware from this manufacturer," independent of the operational identity.
-- **Zero key-slot contention** — no slot retired, no permanent decision forced on the rover fleet.
-- A buyer still regenerates slot 0 freely against their own CA, and **the attestation survives
-  it**, because it attests to *silicon*, not to the operational key.
+- Provable "genuine hardware from this manufacturer," independent of the operational identity —
+  a board can be sold **"clean"** (no operational key provisioned) and still carry its
+  authenticity signature.
+- **Zero key-slot contention** — no on-device private key, no slot retired from any fleet.
+- A buyer regenerates slot 0 freely against their own CA, and **the attestation survives it**,
+  because it attests to *silicon*, not to the operational key.
 - The same shape as the existing genealogy record, so one provisioning tool writes both.
 
-**Sizing (ATECC608A datasheet, Table 2-3 "Data Zone"):**
+A P-256 signature is 64 bytes — the 72-byte slot class (9–15) is the datasheet's own size class
+for *"the R and S components of an ECDSA signature"* (Table 2-3); slot 15 cannot also host it
+because the genealogy already occupies 32 of its 72 bytes. Under v2 the attestation is
+first-class rather than squatting on a repurposed domain slot: **slot 14, `SLOT_MFG_ATTESTATION`**.
 
-| Slots | Blocks | Bytes | Datasheet's stated use |
-|---|---|---|---|
-| 0-7 | 2 | 36 | private/secret key — **too small** for a 64-byte signature |
-| 8 | 13 | 416 | data |
-| 9-15 | 3 | 72 | *"Public Key, Signature or Certificate... large enough to contain... the R and S components of an ECDSA signature"* |
+The record and message formats are normative in `atecc608c_slots_unified.h`
+(`ATECC_MFG_ATTEST_*`): the slot holds `[version 0x01][7 reserved][R‖S 64]`, and the signature is
+over `SHA-256("ATECC-MFG-ATTEST-v1" ‖ serial[9] ‖ eui64[8] ‖ board_rev_u16be)` — the ASCII prefix
+is domain separation, and the EUI-64 is this board's MCP79412 identity (§4.1), binding chip to
+board. One shared formatter must be the only writer/parser, so the bench tool and firmware cannot
+disagree.
 
-A P-256 signature is 64 bytes, so it must live in slots 9-15. **Slot 15 cannot host it** — the
-32-byte genealogy already occupies part of its 72, and 32 + 64 = 96 overflows.
+Two properties are enforced at the bench, not hoped for:
 
-**Proposed: slot 13 (`SLOT_AERIAL_OPS`)** — 72 bytes, the datasheet's own size class for an ECDSA
-signature, and a domain-ops slot that neither a ground rover fleet nor a fixed GNSS observer will
-ever use. Slot 12 (`MARINE_OPS`) is the equivalent fallback. Both are far cheaper asks than 14
-(`MESH_NETWORK`), which shepherd's Thread mesh plausibly does want. Still the owner's call, since
-the slot policy locks permanently — but it is now a *data*-slot request, not a key-slot one.
+- **The slot is permanently slot-locked after write and readback-verify** (`ATECC508A` §2.4.3).
+  The signature is unforgeable either way, but an unlocked slot would let an attacker *corrupt*
+  the record — denial of provenance.
+- **Slot 0 stays regenerable and is never slot-locked** (SlotConfig bit 13 = 1 keeps GenKey
+  legal after the data zone locks, `ATECC508A` §9.7) — that is what makes the "clean chip with
+  an authenticity signature" sale work.
 
 ### 4.2 Provisioning constraints — get these right before writing five parts
 
@@ -585,6 +603,7 @@ from the sibling, and where it deliberately does not:
 | Topic | shepherd | here | Status |
 |---|---|---|---|
 | Secure element | ATECC608**C** @ `0x60` | ATECC608**C** | **corrected** — an earlier draft said 608B |
+| ATECC slot map | `atecc608c_slots_unified.h` **v2** | same header, same numbers | **aligned** — jointly revised 2026-08-08 to the silicon's size classes (§4.1a); one config, one provisioning tool |
 | RTC | MCP79412 | MCP79412 | aligned |
 | Manifest EEPROM | 24AA02E64 @ `0x50–0x57` | same | aligned |
 | Pressure | BMP390 | BMP388 placed, 390/580 alternates | inventory-led — §2, §6.1 |
@@ -641,3 +660,7 @@ is a feature this board wants and a reason the WS2812B alignment pays for itself
    460 800-baud UART that a single 160 MHz core does not. The **1U** variant is not optional —
    its u.FL lets the Wi-Fi radiator move physically away from the GNSS front end, which is the
    strongest available mitigation for §7.4 and impossible with a PCB-antenna module.
+7. **ATECC config-zone bytes.** The slot *map* is decided (v2, §4.1a) — the per-slot
+   SlotConfig/KeyConfig words and the I²C address (itself config-zone data) are not yet
+   authored. They get written against the datasheet's §2.2 tables and validated on a scrap
+   ATECC608C before any production part locks (§4.2).
