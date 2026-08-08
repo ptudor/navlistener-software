@@ -34,19 +34,31 @@ deferred to the expensive board.
 
 ### 1.1 Receiver choice within variant A
 
-| Part | Bands | Notes |
-|---|---|---|
-| NEO-M9N | L1 only **[verify]** | Already in the manifest enum (`GPS_NEO_M9N`). |
-| NEO-M10 | L1 only **[verify]** | Needs an enum entry (§5.3). |
-| **NEO-F10N / F10T** | **L1 + L5 [verify]** | Needs an enum entry. The dual-band option, and the only one in this list that can hear NavIC at all. |
+**The footprint is the decision; the module is a populate-time choice.** `NEO-M9N`, `NEO-M10`,
+`NEO-F10N`, `NEO-F10T`, `NEO-M8T`, `NEO-M8Q`, `NEO-M8U` and `NEO-D9C` all share the same 24-pin
+NEO land pattern (`GPSM-SMD_24P-L16.0-W12.2-P1.10` in LCSC's library). Lay that down and the
+L1-only-versus-L1/L5 question stops being a board decision.
 
-The band split is not cosmetic — it decides what the board can contribute:
+| Part | Bands | Status |
+|---|---|---|
+| **NEO-M9N-00B** (`C5119087`) | L1 only **[verify]** | **First populate.** Best availability of the modern parts by a wide margin; already `GPS_NEO_M9N` in the manifest enum. |
+| NEO-F10N-00B (`C21709333`) | L1 + L5 **[verify]** | The upgrade. Same footprint, roughly 2× the cost, thin stock. Needs an enum entry (§5.3). |
+| NEO-F10T-00B | L1 + L5 **[verify]** | Timing variant; ~8× the cost for features this board does not use. |
+| NEO-M10 | L1 only **[verify]** | Needs an enum entry. No existing design uses one. |
+
+The band split decides what the board can contribute:
 
 - **L1-only** is a complete, useful observer: GPS L1 C/A, GLONASS L1OF, Galileo E1, BeiDou B1I,
-  QZSS L1. Most of the existing fleet is exactly this.
+  QZSS L1. Most of the existing fleet is exactly this — and **GLONASS L1OF is what the regression fix
+  calibration work consumes**, so an M9N board contributes to the active task from day one.
 - **L1/L5** additionally reaches GPS L5 CNAV, Galileo E5a F/NAV, QZSS L5 and BeiDou B2a; enables
   RXM-RAWX dual-frequency work, which is the standing blocker on measured-ionosphere and
   receiver-DCB calibration; and is a precondition for NavIC.
+
+**Verify before assuming the ionosphere work is a firmware toggle:** whether the M9N supports
+`RXM-RAWX` at all. Raw measurements are often restricted to timing and high-precision parts, and
+if the M9N lacks it, dual-frequency work waits for an F10N rather than a config change. It does
+not affect nav-message collection either way.
 
 **NavIC caveat:** L5 silicon is necessary but not sufficient — NavIC is below the horizon from
 California. An L1/L5 board only becomes the NavIC unlock if it is deployed within the
@@ -67,35 +79,67 @@ for it.
 
 | Slot | Category | Part | Purpose |
 |---|---|---|---|
-| MCU | `CAT_MCU` | ESP32-S3 (`MCU_ESP32_S3`) | Feeder. S3 rather than C6 — see §7.1. |
-| Receiver | `CAT_GPS` | NEO-format M9/M10/F10 | Raw nav frames + PPS. |
-| Identity, public | `CAT_RTC` | MCP79412 (`RTC_MCP79412`) | RTCC + SRAM + EEPROM + **factory EUI-64** — the observer's public name. |
-| Identity, private | `CAT_CRYPTO` | **ATECC608C** (`CRYPTO_ATECC608C`), I²C `0x60` | Non-extractable P-256 key; the proof of entitlement to that name. House part — §9. |
-| Hardware manifest | `CAT_MEMORY` | 24AA02E64 (`MEMORY_24AA02E64`), I²C `0x50–0x57` | The installed-hardware descriptor array; carries its own EUI-64 (see §4.3). |
-| Status display | `CAT_LED` | **WS2812B** ×8 (`LED_WS2812B`) | Constellation/health indication. House part — §9. |
-| Pressure | `CAT_PRESSURE` | **BMP390** (needs an enum entry, §5.3) | **Vertical spoofing gate** — §6.1. House part — §9. |
-| Temperature | `CAT_TEMP` | BME280 / MCP9808 | Clock-drift compensation and thermal health — §6.2. |
-| Backup | `CAT_BATTERY` | 2 × CR2032 (needs enum entries, §5.3) | Two independent domains — §3. |
-| Antenna | `CAT_ANTENNA` | active, u.FL/SMA | Bias + supervision → `MON-HW` `antStatus`. |
+| MCU | `CAT_MCU` | **ESP32-S3-WROOM-1U-N16R8** (`MCU_ESP32_S3`) | Feeder. S3 and the **1U** (u.FL) variant both matter — §7.1. |
+| Receiver | `CAT_GPS` | **NEO-M9N-00B** (`C5119087`) on the shared 24-pin NEO land pattern | Raw nav frames + PPS. F10N/F10T drop in without a respin — §1.1. |
+| Identity, public | `CAT_RTC` | **MCP79412** + 32.768 kHz crystal (`RTC_MCP79412`) | RTCC + SRAM + EEPROM + **factory EUI-64** — the observer's public name. |
+| Identity, private | `CAT_CRYPTO` | **ATECC608C-SSHDA-T** (`C28975195`, `CRYPTO_ATECC608C`) | Non-extractable P-256 key; the proof of entitlement to that name. |
+| Hardware manifest | `CAT_MEMORY` | **one** 24AA02E64 (`MEMORY_24AA02E64`) | The installed-hardware descriptor array. **One, not two** — see below. |
+| Status panel | `CAT_LED` | 16 × 0805 (8 green + 8 yellow) via 2 × **TLC5916** | Constellation/health indication — §2.1. |
+| Pressure | `CAT_PRESSURE` | **BMP388** placed; BMP390 and BMP580 are footprint alternates | **Vertical spoofing gate** — §6.1. |
+| Temperature | `CAT_TEMP` | **MCP9808-E/MS** (`C94847`) | Crystal-drift characterisation and thermal health — §6.2. |
+| Humidity | `CAT_SENSOR` | **HDC2080** | Dew point / enclosure-seal diagnostic — §6.4. Not GNSS math. |
+| Backup | `CAT_BATTERY` | 2 × CR2032, `BS-0202-DK-0B` holders (needs enum entries, §5.3) | Two independent domains — §3. |
+| GNSS antenna | `CAT_ANTENNA` | SMA jack, right-angle, 4-leg THT (Amphenol `132289` class) | Bias + supervision → `MON-HW` `antStatus` — §7.3. |
+| Wi-Fi antenna | `CAT_ANTENNA` | u.FL → RP-SMA pigtail off the 1U module | Physically separable from the GNSS path — §7.1. |
+| USB | `CAT_CONNECTOR` | USB-C, 16-pin USB 2.0, THT shield legs | §7.6. |
 
-**WS2812B, aligning with shepherdprotocol** (§9). An earlier draft of this document specified
-APA102 on the argument that WS2812's single-wire protocol is timing-critical and glitches under
-Wi-Fi interrupt load. That argument is materially weaker on ESP32 than it is in general: the
-**RMT peripheral clocks the waveform in hardware**, so the jitter APA102 avoids is largely
-already avoided. Set against a real WS2812B driver stack in the sibling product — including
-`esp32/main/leds/led_pps_sync.c`, which already blinks a strip off **GPS PPS** and is directly
-reusable on a board that has PPS wired anyway — code reuse wins. `LED_APA102 = 2` stays in the
-enum if a future board has a specific reason to want clocked SPI.
+**One EEPROM, not two.** An earlier revision specced two. The 24AA02E64's A0/A1/A2 pins are
+**not functional** — confirmed from the schematic symbol, which shows pads 1/2/3 as NC — so the
+part answers at a fixed address and two of them cannot share a bus. No strapping resolves it.
+The single EEPROM plus a real ATECC608C is the resolution, and it is also simpler: the ATECC
+carries the private identity that a second EEPROM could never have provided.
 
-Eight LEDs is the natural width: the gnssId space has exactly seven constellations (GPS 0,
-SBAS 1, Galileo 2, BeiDou 3, QZSS 5, GLONASS 6, NavIC 7 — IMES 4 is never emitted), leaving one
-for link/health. Assign **position per constellation and colour per state** — seven
-distinguishable hues is a worse encoding than seven fixed positions, and state maps onto
-semantics the feed already has (not tracked / tracked / ephemeris current / `eph_aged` or
-integrity event). Budget the rail or cap brightness in firmware: eight WS2812B at full white is
-on the order of half an amp **[verify]**. Shepherd's Waveshare profile carries an independent
-thermal warning about sustained full brightness on that dev board's panel — the same caution
-applies to a sealed clear enclosure.
+**The ATECC608C and the 24AA02E64 share a pinout** (1/2/3 NC, 4 GND/VSS, 5 SDA, 6 SCL, 7 NC,
+8 VCC), so one SOIC-8 land pattern serves either. If a variant ever wants to swap them, leave
+pads 1/2/3/7 unconnected so neither part cares what is on them.
+
+### 2.1 The status panel
+
+**Discrete LEDs on constant-current drivers, not addressable pixels.** Earlier revisions of
+this document specified APA102, then WS2812B. Both were over-specified: the encoding this board
+actually needs is four states per position, and an RGB pixel is sixteen million colours wearing
+a two-bit job.
+
+Eight positions is the natural width — the gnssId space has exactly seven constellations (GPS 0,
+SBAS 1, Galileo 2, BeiDou 3, QZSS 5, GLONASS 6, NavIC 7; IMES 4 is never emitted) plus one for
+uplink health. Each position is a **green over a yellow**, giving off / yellow / green / both,
+which maps onto semantics the feed already has: not tracked / tracked without ephemeris /
+ephemeris current / `eph_aged` or integrity event.
+
+Two drivers, **one per colour**, chained. That is not arbitrary: TLC5916 sets its channel
+current with a single external resistor, so one driver per colour lets green and yellow be
+trimmed to **matched apparent brightness** despite different luminous efficiency — no per-LED
+ballast resistors, no firmware compensation. Bringing the two `OE` pins out separately also buys
+independent per-colour PWM dimming.
+
+Independent channels rather than the complementary-inverter trick (one signal driving a
+green/yellow pair in opposition), because a **fully dark row is a meaningful state** here — the
+constellation is not tracked at all — and because independent channels allow top-to-bottom
+animation and a distinct pattern for uplink delay or loss.
+
+Run them lean: 5–8 mA per channel is plenty behind a diffuser, and sixteen channels at 20 mA is
+320 mA of heat in an enclosure that already runs hot. `TLC5916`'s shift-then-latch structure
+means all sixteen change on one edge, so animation cannot tear.
+
+**Package:** 0805 for the first spin, because PLCC-2/3528 is usually a JLC *Extended* part while
+0805 in standard colours is *Basic* — and at quantity five the per-part feeder fee is a real
+fraction of the build. Take both colours from the same manufacturer series so lens, height and
+beam pattern match. The 5 mm through-hole frosted parts remain a second-spin option: driver,
+current setting and firmware are unchanged, only the footprint and the per-colour R-EXT trim.
+
+**Rail:** drive the LED anodes from **5 V**, not 3.3 V. TLC5916 sinks current, so the rail sets
+its compliance headroom, and 5 V keeps blue/white available for a future indicator (Vf ≈ 3.0–3.2 V
+would not light from 3.3 V at all).
 
 ---
 
@@ -240,7 +284,8 @@ The enums are a baseline. These entries do not exist yet and are required:
 |---|---|---|
 | `eeprom_gps_id_t` | `GPS_NEO_M10`, `GPS_NEO_F10N`, `GPS_NEO_F10T`, `GPS_ZED_F9T` | Variant A's actual candidates; the F9T is most of the current fleet and is absent. |
 | `eeprom_pressure_id_t` | `PRESSURE_BMP390` | The house pressure part (shepherd's C6 rover bus) is absent; the enum lists BMP280/BMP388/MS5611 only. |
-| `eeprom_battery_id_t` | `BATTERY_CR2032`, `BATTERY_CR123A` | The enum currently covers LiPo/18650/solar/PoE only — no primary coin cells, which is what §3 uses. |
+| `eeprom_battery_id_t` | `BATTERY_CR2032` | The enum currently covers LiPo/18650/solar/PoE only — no primary coin cells, and this board fits two. |
+| `eeprom_sensor_id_t` | `SENSOR_HDC2080` | The combined temperature/humidity part (§6.4); `TEMP_MCP9808` already exists for the dedicated sensor. |
 
 **The band discriminator is the one that matters for integrity.** `GPS_ZED_F9P = 1` names a part
 family, not a band capability — but DESIGN.md's worked example is precisely the **F9T-00B (L1+L2)
@@ -345,6 +390,27 @@ noise floor, so the threshold must be set above the characterised drift, not bel
 observer's time claim should drop a tier at the collector rather than be taken at face value —
 one I²C read at boot, one field on the `Device` row.
 
+### 6.4 Humidity — a diagnostic, not a GNSS input
+
+Stated plainly so it is not oversold: navlistener decodes broadcast navigation messages and does
+no ranging, so there is **no tropospheric-delay use** for humidity here. It earns a slot for two
+other reasons, both real for this fleet:
+
+- **Dew point.** A board in a hot attic that cools overnight can cross the dew point, and
+  condensation is a corrosion and intermittent-contact mechanism. This fleet has already lost a
+  receiver off a USB bus after a hot spell (2026-08-05); temperature and humidity together make
+  that correlation visible instead of anecdotal.
+- **Enclosure-seal integrity.** In a sealed clear case, an interior humidity trace that begins
+  tracking outdoor conditions means the seal has failed. There is no other cheap way to see that.
+
+Accuracy requirements are correspondingly modest — dew point needs a few percent RH, not a
+precision hygrometer. `HDC2080` covers temperature and humidity in one part and one address;
+precision Honeywell HIH parts would be wasted here.
+
+**Do not consolidate the barometer into it.** A combined P/T/H part (BME280) would collapse three
+slots into one, but its pressure noise is worse than a dedicated barometer's — and pressure noise
+is precisely the specification §6.1's gate lives on. Keep the good barometer separate.
+
 ---
 
 ## 7. Interface and layout notes
@@ -361,15 +427,43 @@ GPS on **GPIO4 (TX) / GPIO5 (RX)** with **PPS on GPIO10** — deliberately clear
 that map rather than inventing a third one; it retires the hazard at zero layout cost and makes
 the two products' firmware pin tables comparable.
 
-This has a consequence worth confronting rather than inheriting (§8): the *stated* justification
-for the ESP32-S3 re-spin was moving RX off a strapping pin. If shepherd's pinout already does
-that on a C6, the S3 needs its own justification — the persistent spool tier — or the variant
-should stay on the C6 the sibling product already targets.
+This retired the *stated* justification for the S3 re-spin, which was exactly this hazard. The
+S3 was then chosen on its own merits instead — see §9.6, now closed.
 
-### 7.2 PPS
+### 7.2 PPS, and the two lights that survive a crash
 
-Bring the receiver's `TIMEPULSE` output to a GPIO. It is easy to omit and impossible to add
-later, and §6.3 depends on it.
+Bring the receiver's `TIMEPULSE` output to a GPIO — easy to omit, impossible to add later,
+and §6.3 depends on it. **Also drive an LED from the buffered PPS line
+directly**, not through the LED drivers. It then blinks at 1 Hz whenever the receiver has time
+lock, independent of the ESP32 entirely.
+
+Paired with a **power LED hardwired to the input rail** — outside any switch — that gives two
+truths which survive wedged or crashed firmware: *there is power*, and *the GNSS is locked*. For
+a fleet that has already had a receiver silently drop off a USB bus for two days, being able to
+distinguish "dead" from "alive but not reporting" from across the room is worth two LEDs.
+
+Buffer PPS for fan-out, not for level: the receiver and the MCU are both 3.3 V, so nothing needs
+translating. A `74LVC1G17` Schmitt buffer is the right shape if PPS also reaches a test point or
+a second load. Its propagation delay is a few nanoseconds and constant — harmless, but remember
+it exists if the RTC is ever characterised against PPS (§6.3).
+
+**Blanking the panel.** An N-channel MOSFET (`AO3400A` class) in the low side of the PPS LED,
+gate pulled to **3.3 V** through 100 kΩ, MCU GPIO pulling it low to blank. Two constraints:
+
+- **Pull the gate to 3.3 V, never to the 5 V rail.** ESP32 GPIOs are not 5 V tolerant, and the
+  pin is high-impedance at every reset and through boot — so a pull-up to 5 V puts 5 V on it
+  before firmware ever runs.
+- 100 kΩ, not 1 kΩ. The gate is high-impedance; a 1 kΩ pull-up just sinks milliamps through the
+  GPIO for the entire time the panel is blanked.
+
+The fail-safe direction is then correct by construction: high-Z at reset means the pull-up wins
+and **the lights are on by default** — before firmware runs, during a crash that predates the
+blank command, and if the firmware never boots at all. The diagnostic survives exactly the
+failures it exists to reveal.
+
+Keep the **power LED off the switched rail**. If software can extinguish it, "no light" stops
+meaning "no power" and the ground truth is gone. Run it lean — 1–2 mA is legible across a room,
+and it is lit continuously for years in a hot box.
 
 ### 7.3 Antenna
 
@@ -403,6 +497,18 @@ The manifest EEPROM's 8-byte page-write hazard is **already handled** in the sha
 descriptor array larger than one page (this board's ~10 slots is ~40 bytes) writes correctly.
 Nothing to do here; recorded so it isn't re-derived.
 
+### 7.6 USB-C
+
+**16-pin USB 2.0 receptacle**, not the 24-pin. The S3's native USB is the only data path; the
+24-pin part's SuperSpeed pairs are routing hazards with nothing on the other end.
+
+- **Through-hole shield legs.** A pure-SMD USB-C peels off the board after enough insertions.
+- **Two 5.1 kΩ pulldowns, one on CC1 and one on CC2, each to GND.** Not one shared resistor.
+  Without them a USB-C source never enables VBUS, and the board is dead on a C-to-C cable while
+  working fine off a legacy A-to-C — which is how the bug hides until someone uses a modern
+  charger.
+- ESD array on D+/D−/VBUS. `ECLAMP8052P` is already validated in the sibling designs.
+
 ---
 
 ## 8. Alignment with `shepherdprotocol`
@@ -416,8 +522,8 @@ from the sibling, and where it deliberately does not:
 | Secure element | ATECC608**C** @ `0x60` | ATECC608**C** | **corrected** — an earlier draft said 608B |
 | RTC | MCP79412 | MCP79412 | aligned |
 | Manifest EEPROM | 24AA02E64 @ `0x50–0x57` | same | aligned |
-| Pressure | BMP390 | BMP390 | **corrected** — earlier draft picked from the enum list, not the house bus |
-| RGB LEDs | WS2812B (+ `led_pps_sync.c`) | WS2812B | **corrected** — earlier draft specified APA102 |
+| Pressure | BMP390 | BMP388 placed, 390/580 alternates | inventory-led — §2, §6.1 |
+| Status LEDs | WS2812B (+ `led_pps_sync.c`) | discrete green/yellow on 2 × TLC5916 | **deliberate divergence** — §2.1 |
 | I²C | one shared bus, 400 kHz | same | aligned |
 | GPS UART + PPS | UART1, PPS on its own GPIO, clear of GPIO9 | same | **adopted** — this is the fix (§7.1) |
 | Board selection | compile-time profiles in `board/board_config.h` with feature flags | adopt for variants A/B/C | **adopt** — §1 variants are exactly this shape |
@@ -431,6 +537,14 @@ runs. navlistener and radiolistener share one CA and one `devices` table, so thi
 *that* convention (EUI-64 as the certificate name), and the ATECC serial is recorded at enrollment
 rather than being the name itself. The two models are compatible — ours is a superset — but they
 are not interchangeable, and a future shared provisioning tool must not assume one.
+
+**On the status-LED divergence.** Shepherd drives WS2812B strips, including `led_pps_sync.c`.
+This board needs four states per position and nothing more (§2.1), so an addressable RGB pixel is
+sixteen million colours doing a two-bit job — and discrete LEDs on constant-current drivers avoid
+the 5 V-versus-3.3 V logic question, the chain-failure mode where one dead pixel blanks
+everything downstream, and roughly an amp of worst-case supply budget. The PPS-blink *idea* from
+`led_pps_sync.c` is kept and improved on: here it is wired in hardware (§7.2) so it survives the
+firmware dying, which a strip driven from an RMT channel cannot.
 
 **Reuse worth taking beyond parts:** `led_pps_sync.c` already drives a strip from GPS PPS, which
 is a feature this board wants and a reason the WS2812B alignment pays for itself immediately.
@@ -448,10 +562,17 @@ is a feature this board wants and a reason the WS2812B alignment pays for itself
    operational runbook does not exist.
 4. **`SIGNED_DATA` (0x07) granularity** — inherited open question from radiolistener's doc;
    per-batch is specified, per-observation is not ruled out.
-5. **Whether variant A ships L1-only or L1/L5** (§1.1) — a cost decision that determines whether
-   these boards can contribute to the ionosphere and NavIC work or only to L1 collection.
-6. **C6 or S3** (§7.1, §8). The S3 re-spin's stated purpose was moving UART RX off a strapping
-   pin, and shepherd's GPIO4/5 map already achieves that on a C6. If the persistent spool tier
-   does not independently require the S3, staying on the C6 keeps both products on one MCU
-   family, one pinout document, and one board-profile system. Decide before layout — it changes
-   the footprint, not just a `#define`.
+5. ~~L1-only or L1/L5~~ — **dissolved** (§1.1). Both share the 24-pin NEO land pattern, so it is
+   a populate-time choice, not a board decision. First spin stuffs **NEO-M9N-00B** on
+   availability; **NEO-F10N-00B** drops in later without a respin. What remains open is narrower:
+   confirm whether the M9N supports `RXM-RAWX`, since that determines whether the ionosphere work
+   waits for an F10N.
+6. ~~C6 or S3~~ — **decided: `ESP32-S3-WROOM-1U-N16R8`.** Shepherd's GPIO4/5 map retires the
+   strapping-pin argument, so the S3 was chosen on three independent merits: its native USB OTG
+   can enumerate as composite multi-CDC (MCU console *and* a transparent GNSS passthrough on one
+   cable), which retires the USB-bridge question in firmware with no added silicon near the GNSS
+   band; PSRAM and 16 MB of flash give the spool real depth, which matters when a collector can
+   be offline for a week; and dual-core 240 MHz leaves headroom for TLS, zstd and a continuous
+   460 800-baud UART that a single 160 MHz core does not. The **1U** variant is not optional —
+   its u.FL lets the Wi-Fi radiator move physically away from the GNSS front end, which is the
+   strongest available mitigation for §7.4 and impossible with a PCB-antenna module.
