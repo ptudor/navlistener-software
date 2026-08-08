@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -142,14 +143,19 @@ func TestIntegrationReplayDedup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if navCount != 2 {
-		t.Errorf("nav_frames rows for %s = %d, want 2 (seq 100 once, seq 101 once — the replay of 100 must be dropped)", obs, navCount)
+	// Three, not two: (boot-a,100), (boot-a,101), and (boot-b,100). The last is the
+	// regression fix case this test's own body was extended to cover — a rebooted feeder
+	// reusing seq 100 in a fresh sequence space — which the session dimension of the
+	// dedup key must let through. The expectation was left at 2 when that case was
+	// added, and no local TimescaleDB could run this test to catch it.
+	if navCount != 3 {
+		t.Errorf("nav_frames rows for %s = %d, want 3 (boot-a seq 100 once with its replay dropped, boot-a seq 101, and boot-b seq 100 from the rebooted feeder)", obs, navCount)
 	}
 	if dialCount != 2 {
 		t.Errorf("nav_frames rows for %s = %d, want 2 (dial-mode frames are never deduplicated)", dial, dialCount)
 	}
-	if ledgerCount != 2 {
-		t.Errorf("nav_frames_seq_seen rows for %s = %d, want 2 (seq 100 and 101)", obs, ledgerCount)
+	if ledgerCount != 3 {
+		t.Errorf("nav_frames_seq_seen rows for %s = %d, want 3 (boot-a seq 100, boot-a seq 101, boot-b seq 100 — the ledger is keyed on session too)", obs, ledgerCount)
 	}
 }
 
@@ -271,8 +277,11 @@ func TestIntegrationPruneSeqSeen(t *testing.T) {
 	}
 	old := time.Now().Add(-30 * 24 * time.Hour)
 	recent := time.Now()
+	// session_id is part of the ledger's primary key since the regression fix revision
+	// and is NOT NULL; seeding without it violated the constraint. The prune is
+	// keyed on seen_at alone, so one session is enough to exercise it.
 	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO nav_frames_seq_seen (source_id, feeder_seq, seen_at) VALUES ($1, 1, $2), ($1, 2, $3)`,
+		`INSERT INTO nav_frames_seq_seen (source_id, session_id, feeder_seq, seen_at) VALUES ($1, 'boot-prune', 1, $2), ($1, 'boot-prune', 2, $3)`,
 		source, old, recent); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -498,5 +507,125 @@ func TestIntegrationEventWriteIdempotent(t *testing.T) {
 	}
 	if _, err := s.pool.Exec(ctx, `DELETE FROM gnss_events WHERE sv = $1`, sv); err != nil {
 		t.Fatalf("cleanup gnss_events: %v", err)
+	}
+}
+
+// TestIntegrationQueryNavFramesAcrossChunks exercises QueryNavFrames against a real
+// hypertable, which is the only place its ordering contract can actually be tested.
+// schema.sql sets chunk_time_interval to 1 hour, and a QA replay window spans many
+// hours, so the rows a replay consumes are physically spread across chunks. A plain
+// table — the workaround used while local TimescaleDB was Apache-licensed and could
+// not apply schema.sql — stores them in one heap and would report a total order the
+// hypertable does not owe us.
+//
+// It also pins the two properties a replay depends on and a unit test cannot reach:
+// the window is half-open (Since inclusive, Until exclusive), and freqid survives the
+// round trip, which is the whole reason the column exists (a GLONASS frame cannot be
+// replayed without its FDMA channel, and it is absent from raw).
+func TestIntegrationQueryNavFramesAcrossChunks(t *testing.T) {
+	dsn := testDSN(t)
+	ctx := context.Background()
+	cfg := config.Store{DSN: dsn, BatchSize: 100, BatchEvery: 50 * time.Millisecond, RawRetention: "7 days", CompressAfter: "1 day"}
+	s, err := New(ctx, cfg, integrationLog())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer s.Close()
+
+	const source = "qnf-integration"
+	if _, err := s.pool.Exec(ctx, `DELETE FROM nav_frames WHERE source_id = $1`, source); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+
+	// Six frames at 90-minute spacing: with a 1-hour chunk interval every frame lands
+	// in a different chunk, so a correct result cannot come from within-chunk order.
+	base := time.Now().Add(-24 * time.Hour).Truncate(time.Hour)
+	const step = 90 * time.Minute
+	const n = 6
+	rows := make([][]any, 0, n)
+	for i := range n {
+		at := base.Add(time.Duration(i) * step)
+		rows = append(rows, navFrameToRow(&NavFrame{
+			Ts: at, ReceivedAt: at, SourceID: source,
+			GnssID: 6, SvID: 1 + i, SigID: 0, FreqID: i, MsgType: 0x30,
+			Raw: []byte{byte(i), 0, 0, 0}, DecoderVer: "test",
+		}))
+	}
+	// Insert deliberately out of order so a pass cannot come from physical row order.
+	for i := len(rows) - 1; i >= 0; i-- {
+		if _, err := s.copyRows(ctx, rows[i:i+1]); err != nil {
+			t.Fatalf("seed row %d: %v", i, err)
+		}
+	}
+
+	glo := 6
+	var got []StoredNavFrame
+	// Half-open window: [base, base+step*(n-1)) must exclude the final frame.
+	if err := s.QueryNavFrames(ctx, NavFrameQuery{
+		GnssID: &glo, SourceID: source,
+		Since: base, Until: base.Add(step * time.Duration(n-1)),
+	}, func(f StoredNavFrame) error {
+		got = append(got, f)
+		return nil
+	}); err != nil {
+		t.Fatalf("QueryNavFrames: %v", err)
+	}
+
+	if len(got) != n-1 {
+		t.Fatalf("got %d frames, want %d (Until is exclusive, so the last frame is out)", len(got), n-1)
+	}
+	for i, f := range got {
+		if want := base.Add(time.Duration(i) * step); !f.ReceivedAt.Equal(want) {
+			t.Errorf("frame %d received_at = %s, want %s (rows must come back in reception order across chunks)",
+				i, f.ReceivedAt, want)
+		}
+		if f.FreqID != i {
+			t.Errorf("frame %d freqid = %d, want %d — the GLONASS channel did not survive the round trip", i, f.FreqID, i)
+		}
+		if f.SvID != 1+i {
+			t.Errorf("frame %d svid = %d, want %d", i, f.SvID, 1+i)
+		}
+	}
+}
+
+// TestIntegrationQueryNavFramesLimitIsLoud pins that hitting the row cap reports
+// ErrNavFrameLimit rather than truncating silently. A distribution built from a
+// quietly clipped head is wrong in a way that still looks entirely plausible, so the
+// caller has to be told.
+func TestIntegrationQueryNavFramesLimitIsLoud(t *testing.T) {
+	dsn := testDSN(t)
+	ctx := context.Background()
+	cfg := config.Store{DSN: dsn, BatchSize: 100, BatchEvery: 50 * time.Millisecond, RawRetention: "7 days", CompressAfter: "1 day"}
+	s, err := New(ctx, cfg, integrationLog())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer s.Close()
+
+	const source = "qnf-limit-integration"
+	if _, err := s.pool.Exec(ctx, `DELETE FROM nav_frames WHERE source_id = $1`, source); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	base := time.Now().Add(-3 * time.Hour).Truncate(time.Hour)
+	for i := range 4 {
+		at := base.Add(time.Duration(i) * time.Minute)
+		if _, err := s.copyRows(ctx, [][]any{navFrameToRow(&NavFrame{
+			Ts: at, ReceivedAt: at, SourceID: source,
+			GnssID: 6, SvID: 1, SigID: 0, FreqID: 0, MsgType: 0x30,
+			Raw: []byte{0, 0, 0, 0}, DecoderVer: "test",
+		})}); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	seen := 0
+	err = s.QueryNavFrames(ctx, NavFrameQuery{
+		SourceID: source, Since: base, Limit: 2,
+	}, func(StoredNavFrame) error { seen++; return nil })
+	if !errors.Is(err, ErrNavFrameLimit) {
+		t.Fatalf("err = %v, want ErrNavFrameLimit", err)
+	}
+	if seen != 2 {
+		t.Errorf("delivered %d frames before the cap, want 2", seen)
 	}
 }
