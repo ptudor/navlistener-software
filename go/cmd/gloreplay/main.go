@@ -9,7 +9,16 @@
 // Two sources, same measurement:
 //
 //	gloreplay -from-store "$DSN" -since 2026-08-08T02:50:09Z [-until …] [-source obs]
-//	gloreplay -capture glo_20260807_1400.ubx [-duration 6h]
+//	gloreplay -capture glo_20260807_1400.ubx -start 2026-08-07T14:00:00Z -duration 6h
+//
+// Beyond the changeover disco distributions, the tool follows every DEFERRED
+// time-disco to its outcome. State adopts a new tb at the string-3-triggered
+// assembly, before the same frame's string 4 (the SV clock) has arrived — so at
+// the changeover instant the time-disco is pending by construction, and a
+// sampler that reads the feed only at that instant misfiles nearly every
+// completed measurement as absent (the first regression fix run's "111 gated"). The
+// resolution section reports immediate/completed/superseded/censored counts,
+// completion lags, and per-SV string delivery; see resolve.go.
 //
 // **Prefer -from-store.** It is the historian's own record, so no capture has to
 // have been taken in advance, any collector's history is queryable, and every frame
@@ -23,16 +32,21 @@
 // carries no timestamps, so gloreplay imposes a synthetic receive clock that advances
 // uniformly across the frames.
 //
-// On why that is sound: the only wall-clock input to computeGloDisco is the
-// discoTrustAge (4 h) freshness gate on the OUTGOING set. Non-adjacent sets — the
-// case that gate is really protecting against — are already excluded by the
-// independent tb-adjacency gate (gloDiscoMaxTk = 60 min, GLO-ICD-5.1 Table 4.3),
-// which reads broadcast time out of the frames themselves and so is unaffected by
-// the synthetic clock. The default clock therefore COMPRESSES the capture (1 ms
-// per frame), which keeps every outgoing set trivially "fresh" and lets the tb
-// gate do the real work. Pass -duration with the capture's true wall-clock span
-// when you want the freshness gate exercised as it would be in production — which
-// matters only for a capture containing multi-hour reception gaps.
+// The synthetic clock has TWO consumers on the GLONASS path, so -duration is
+// effectively required alongside -start, not an option: (1) computeGloDisco's
+// discoTrustAge (4 h) freshness gate on the outgoing set — non-adjacent sets are
+// independently excluded by the tb-adjacency gate (gloDiscoMaxTk = 60 min,
+// GLO-ICD-5.1 Table 4.3), which reads broadcast time out of the frames and is
+// clock-immune; and (2) the regression fix/regression fix frame-coherence windows over string
+// reception times (state's glonassFrameWindow, 8 s), which decide WHICH strings
+// may assemble into one set — including whether string 4's clock joins it. The
+// default compressed clock (1 ms per frame) keeps (1) trivially satisfied but
+// breaks (2)'s premise: at typical capture frame rates ~30 s of broadcast
+// compresses inside the 8 s window, so strings from DIFFERENT broadcast frames
+// pass the coherence gate and can assemble chimera sets at changeovers, and
+// every reported completion lag is compressed with the clock. Pass the
+// capture's true wall-clock span for any real measurement; the compressed
+// default is only good as a parse smoke check.
 package main
 
 import (
@@ -101,12 +115,25 @@ func (w *tbWatch) observe(sv string, age float64) bool {
 	return seen && prev-age >= ephAgeDropMin
 }
 
-// changeover is one observed GLONASS tb transition for one SV.
+// changeover is one observed GLONASS tb transition for one SV. OrbitM/TimeNs
+// are the served values AT the changeover instant; the Time* tail fields are
+// the deferral's eventual outcome (resolve.go) — TimeNs nil with TimeNsLate set
+// means the pendClk path completed the measurement after the sampler's first
+// look, which is its designed behavior, not a gap in the data.
 type changeover struct {
 	SV         string   `json:"sv"`
 	OrbitM     *float64 `json:"orbit_disco_m"`
 	TimeNs     *float64 `json:"time_disco_ns"`
 	FrameIndex int      `json:"frame_index"`
+	// TimeOutcome is one of the outcome* constants (resolve.go).
+	TimeOutcome string `json:"time_outcome"`
+	// TimeNsLate/TimeLagS: the completed value and how long after the changeover
+	// the feed first served it. S4LagS: how long after the changeover the first
+	// string 4 was SEEN for this SV (set for completed/superseded/censored alike
+	// — its presence without a completion is the state-side failure signature).
+	TimeNsLate *float64 `json:"time_disco_ns_late,omitempty"`
+	TimeLagS   *float64 `json:"time_disco_lag_s,omitempty"`
+	S4LagS     *float64 `json:"first_string4_lag_s,omitempty"`
 }
 
 func main() {
@@ -161,6 +188,16 @@ func run(capture string, duration time.Duration, startAt string, shards int, jso
 		if spacing <= 0 {
 			spacing = time.Nanosecond
 		}
+	} else {
+		// See the package doc: the regression fix/regression fix frame-coherence windows read the
+		// replay clock too, and under the compressed default ~30 s of broadcast
+		// fits inside state's 8 s window — cross-frame chimera assemblies at
+		// changeovers, and every completion lag compressed. Same severity as the
+		// missing -start warning below: results are unreliable, not just coarse.
+		fmt.Fprintln(os.Stderr, "gloreplay: WARNING -duration not given; the synthetic clock compresses the")
+		fmt.Fprintln(os.Stderr, "  capture to 1 ms/frame, so strings from DIFFERENT broadcast frames fit the")
+		fmt.Fprintln(os.Stderr, "  8 s frame-coherence window  and can assemble chimera sets at")
+		fmt.Fprintln(os.Stderr, "  changeovers. Pass the capture's true wall-clock span for a real measurement.")
 	}
 
 	base := time.Unix(1_700_000_000, 0).UTC()
@@ -176,18 +213,18 @@ func run(capture string, duration time.Duration, startAt string, shards int, jso
 		fmt.Fprintln(os.Stderr, "  across the EphAgeDay +/-12 h wrap. Results are unreliable without it.")
 	}
 
-	samples, parseErrs, diag, err := replay(capture, base, spacing, shards)
+	smp, parseErrs, diag, err := replay(capture, base, spacing, shards)
 	if err != nil {
 		return err
 	}
 
-	report(capture, total, gloFrames, spacing, samples, parseErrs)
+	report(capture, total, gloFrames, spacing, smp, parseErrs)
 	if diag != nil {
 		fmt.Println("\n--- diagnostic: final GLONASS feed state ---")
 		diag()
 	}
 
-	return writeJSON(jsonOut, samples)
+	return writeJSON(jsonOut, smp.samples)
 }
 
 // writeJSON persists the per-changeover samples. A no-op when no path was given.
@@ -257,6 +294,7 @@ func runStore(dsn, sinceStr, untilStr, source string, shards int, jsonOut string
 	if qErr != nil && !errors.Is(qErr, store.ErrNavFrameLimit) {
 		return qErr
 	}
+	smp.finish() // censor deferrals still pending at the window's end
 
 	fmt.Printf("source:       historian %s\n", redactDSN(dsn))
 	fmt.Printf("window:       %s .. %s\n", since.Format(time.RFC3339), untilStr)
@@ -266,7 +304,7 @@ func runStore(dsn, sinceStr, untilStr, source string, shards int, jsonOut string
 		fmt.Println("The distribution below is built from a TRUNCATED head of the window and understates it.")
 	}
 	fmt.Printf("changeovers:  %d observed\n", len(smp.samples))
-	reportSamples(smp.samples)
+	reportSamples(smp.samples, smp.strs)
 
 	return writeJSON(jsonOut, smp.samples)
 }
@@ -311,10 +349,11 @@ func countFrames(path string) (total, glonass int, err error) {
 
 // replay runs the capture through the real live-state Apply path, sampling the
 // served feed after every GLONASS frame to catch each tb changeover as it is
-// published. Sampling through the feed (rather than reaching into svState) keeps
-// this tool on the same exported surface the collector serves, so what it
-// measures is what a consumer would see.
-func replay(path string, base time.Time, spacing time.Duration, shards int) ([]changeover, map[string]int, func(), error) {
+// published — and every frame after a deferring changeover, to catch the pendClk
+// completion when the feed first serves it. Sampling through the feed (rather
+// than reaching into svState) keeps this tool on the same exported surface the
+// collector serves, so what it measures is what a consumer would see.
+func replay(path string, base time.Time, spacing time.Duration, shards int) (*sampler, map[string]int, func(), error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, nil, nil, err
@@ -339,6 +378,7 @@ func replay(path string, base time.Time, spacing time.Duration, shards int) ([]c
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	smp.finish() // censor deferrals still pending at the capture's end
 	diag := func() {
 		feed := st.FeedSVs(now)
 		n := 0
@@ -363,7 +403,7 @@ func replay(path string, base time.Time, spacing time.Duration, shards int) ([]c
 		}
 		fmt.Printf("  (%d GLONASS entries in feed of %d total)\n", n, len(feed))
 	}
-	return smp.samples, parseErrs, diag, nil
+	return smp, parseErrs, diag, nil
 }
 
 // sampler feeds frames through live state and records every GLONASS tb changeover
@@ -373,13 +413,29 @@ func replay(path string, base time.Time, spacing time.Duration, shards int) ([]c
 type sampler struct {
 	st      *state.Store
 	watch   *tbWatch
+	pend    *pendSet
+	strs    map[string]*svStrings
 	samples []changeover
 	frames  int
 }
 
 func samplerOn(st *state.Store) *sampler {
-	return &sampler{st: st, watch: newTbWatch()}
+	return &sampler{st: st, watch: newTbWatch(), pend: newPendSet(), strs: map[string]*svStrings{}}
 }
+
+// strings returns (creating if needed) the per-SV string-delivery counters.
+func (s *sampler) strings(key string) *svStrings {
+	c := s.strs[key]
+	if c == nil {
+		c = &svStrings{}
+		s.strs[key] = c
+	}
+	return c
+}
+
+// finish finalizes deferrals still pending when the replay's data ran out.
+// Call once, after the last frame and before reporting.
+func (s *sampler) finish() { s.pend.finish(s.samples) }
 
 // apply feeds one frame through live state. now must be the frame's reception time:
 // the file path synthesises it, the store path has the receiver's real stamp.
@@ -389,76 +445,127 @@ func (s *sampler) apply(fr *ingest.RawFrame, now time.Time) {
 	if fr.GnssID != gnss.GLONASS {
 		return
 	}
+	// State keys every GLONASS signal into one Sig-0 entry (applyGlonass; 	// L2OF shares the L1OF entry) — sample the feed at that key regardless of the
+	// frame's own SigID. Keying by fr.SigID made every L2OF frame look up a
+	// nonexistent feed entry, so an L2OF-triggered adoption or completion was
+	// only observed at the next L1OF frame, charging seconds of sampling delay
+	// to the detector.
+	key := state.Key{G: fr.GnssID, Sv: fr.SvID, Sig: 0}.Name()
+	// Count decoded string numbers for the delivery table, mirroring state's own
+	// slot guard (1..24, regression fix): out-of-range frames never reach an svState,
+	// so counting them would describe traffic the detector cannot see.
+	isS4 := false
+	if fr.SvID >= 1 && fr.SvID <= 24 {
+		if num, err := gloStringNumber(fr.Words); err != nil {
+			s.strings(key).err++
+		} else {
+			s.strings(key).count(num)
+			isS4 = num == 4
+		}
+	}
+	if isS4 {
+		s.pend.sawS4(key, now)
+	}
 	// Only this SV's entry can have changed, so read it by key rather than
 	// scanning the whole feed per frame.
-	key := state.Key{G: fr.GnssID, Sv: fr.SvID, Sig: fr.SigID}.Name()
 	sv, ok := s.st.FeedSVs(now)[key]
 	if !ok || sv.EphAgeM == nil {
 		return
 	}
-	if !s.watch.observe(key, *sv.EphAgeM) {
-		return // no new tb adopted at this frame
+	if s.watch.observe(key, *sv.EphAgeM) {
+		// A changeover was just published. Absent orbit disco is a real outcome,
+		// not a gap in the data: the adjacency or freshness gate declined to
+		// define one, and the rate of that is itself part of the measurement.
+		// An absent time-disco is different — state defers it while the incoming
+		// set is clockless (string 4 arrives ~2 s after string 3), so finalize
+		// the previous deferral (the pend is voided inside computeGloDisco's
+		// publish at every changeover) and start watching this one.
+		s.pend.supersede(s.samples, key)
+		c := changeover{SV: key, OrbitM: sv.OrbitDiscoM, TimeNs: sv.TimeDiscoNs, FrameIndex: s.frames}
+		if sv.TimeDiscoNs != nil {
+			c.TimeOutcome = outcomeImmediate
+		} else {
+			s.pend.arm(key, len(s.samples), now)
+		}
+		s.samples = append(s.samples, c)
+		return
 	}
-	// A changeover was just published. Absent disco is a real outcome, not a gap in
-	// the data: it means the adjacency or freshness gate declined to define one, and
-	// the rate of that is itself part of the measurement.
-	s.samples = append(s.samples, changeover{
-		SV:         key,
-		OrbitM:     sv.OrbitDiscoM,
-		TimeNs:     sv.TimeDiscoNs,
-		FrameIndex: s.frames,
-	})
+	if sv.TimeDiscoNs != nil {
+		// Between changeovers the only nil→value writer on the served
+		// time_disco_ns is the pendClk completion (applyGlonass), so a value
+		// appearing while a deferral is armed belongs to that changeover.
+		// No-op when nothing is pending.
+		s.pend.complete(s.samples, key, *sv.TimeDiscoNs, now)
+	}
 }
 
-func report(path string, total, gloFrames int, spacing time.Duration, samples []changeover, parseErrs map[string]int) {
+func report(path string, total, gloFrames int, spacing time.Duration, smp *sampler, parseErrs map[string]int) {
 	fmt.Printf("capture:      %s\n", path)
 	fmt.Printf("frames:       %d total, %d GLONASS\n", total, gloFrames)
 	fmt.Printf("synth clock:  %v per frame (%v span)\n", spacing, time.Duration(total)*spacing)
 	if len(parseErrs) > 0 {
 		fmt.Printf("parse errors: %v\n", parseErrs)
 	}
-	fmt.Printf("changeovers:  %d observed\n", len(samples))
-	reportSamples(samples)
+	fmt.Printf("changeovers:  %d observed\n", len(smp.samples))
+	reportSamples(smp.samples, smp.strs)
 }
 
-// reportSamples prints the distribution. Shared by both sources so a file replay and
-// a store replay are compared on identical arithmetic.
-func reportSamples(samples []changeover) {
+// reportSamples prints the distributions and the deferral resolution. Shared by
+// both sources so a file replay and a store replay are compared on identical
+// arithmetic.
+func reportSamples(samples []changeover, strs map[string]*svStrings) {
 	if len(samples) == 0 {
 		fmt.Println("\nNo tb changeover occurred in this window. GLONASS updates tb every 30-60 min")
 		fmt.Println("(GLO-ICD-5.1 Table 4.3), so a window must span at least that to measure one;")
 		fmt.Println("regression fix asks for >= 6 h to get a population rather than a single sample.")
+		reportStrings(strs)
 		return
 	}
 
 	orbit := make([]float64, 0, len(samples))
 	timeNs := make([]float64, 0, len(samples))
-	var orbitAbsent, timeAbsent int
+	timeAll := make([]float64, 0, len(samples))
+	var orbitAbsent, timeAbsent, timeUnresolved int
 	for _, s := range samples {
 		if s.OrbitM != nil {
 			orbit = append(orbit, *s.OrbitM)
 		} else {
 			orbitAbsent++
 		}
-		if s.TimeNs != nil {
+		switch {
+		case s.TimeNs != nil:
 			timeNs = append(timeNs, *s.TimeNs)
-		} else {
+			timeAll = append(timeAll, *s.TimeNs)
+		case s.TimeNsLate != nil:
 			timeAbsent++
+			timeAll = append(timeAll, *s.TimeNsLate)
+		default:
+			timeAbsent++
+			timeUnresolved++
 		}
 	}
 
 	fmt.Println()
-	summarize("orbit_disco_m", orbit, orbitAbsent, orbitDiscoWarnM, orbitDiscoAlertM)
+	summarize("orbit_disco_m", orbit, orbitAbsent, "absent (gated)", orbitDiscoWarnM, orbitDiscoAlertM)
 	fmt.Println()
-	summarize("time_disco_ns", timeNs, timeAbsent, timeDiscoWarnNs, timeDiscoAlertNs)
+	summarize("time_disco_ns (at the changeover instant)", timeNs, timeAbsent,
+		"deferred at the instant — resolution below", timeDiscoWarnNs, timeDiscoAlertNs)
+	fmt.Println()
+	reportResolution(samples)
+	fmt.Println()
+	summarize("time_disco_ns (combined: immediate + completed)", timeAll, timeUnresolved,
+		"never resolved (superseded or censored)", timeDiscoWarnNs, timeDiscoAlertNs)
 
-	fmt.Println("\nRJU-334 option (c) decision input: if a large fraction of ROUTINE changeovers")
-	fmt.Println("exceeds the warn band above, the band is mis-set for GLONASS and the constellation")
-	fmt.Println("needs its own pair; if p95 sits well inside it, the shared band stands as shipped.")
+	fmt.Println("\nRJU-334 option (c) decision input: judge orbit_disco_m and the COMBINED")
+	fmt.Println("time_disco_ns. If a large fraction of ROUTINE changeovers exceeds a warn band,")
+	fmt.Println("that band is mis-set for GLONASS and the constellation needs its own pair; if")
+	fmt.Println("p95 sits well inside it, the shared band stands as shipped.")
+
+	reportStrings(strs)
 }
 
-func summarize(name string, v []float64, absent int, warn, alert float64) {
-	fmt.Printf("%s: %d measured, %d absent (gated)\n", name, len(v), absent)
+func summarize(name string, v []float64, absent int, absentLabel string, warn, alert float64) {
+	fmt.Printf("%s: %d measured, %d %s\n", name, len(v), absent, absentLabel)
 	if len(v) == 0 {
 		return
 	}

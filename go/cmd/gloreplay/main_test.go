@@ -4,6 +4,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ptudor/navlistener/internal/ingest"
 )
@@ -125,6 +126,144 @@ func TestWordsFromRawDropsPartialWord(t *testing.T) {
 	}
 	if got := wordsFromRaw(nil); len(got) != 0 {
 		t.Errorf("wordsFromRaw(nil) = %#v, want empty", got)
+	}
+}
+
+// TestPendSetCompletesDeferral walks the designed pendClk shape: a changeover
+// defers (clockless adoption), string 4 is sighted ~2 s later, and the feed
+// serves the completed value in the same apply — the sample must carry the late
+// value, both lags, and the completed outcome, and the pend must be consumed so
+// later served values (every subsequent frame re-serves the completed disco)
+// cannot re-attribute to it.
+func TestPendSetCompletesDeferral(t *testing.T) {
+	t0 := time.Unix(1_700_000_000, 0)
+	samples := []changeover{{SV: "R07@0"}}
+	p := newPendSet()
+	p.arm("R07@0", 0, t0)
+	p.sawS4("R07@0", t0.Add(2*time.Second))
+	p.complete(samples, "R07@0", 42.5, t0.Add(2*time.Second))
+
+	s := samples[0]
+	if s.TimeOutcome != outcomeCompleted {
+		t.Fatalf("outcome = %q, want %q", s.TimeOutcome, outcomeCompleted)
+	}
+	if s.TimeNsLate == nil || *s.TimeNsLate != 42.5 {
+		t.Errorf("TimeNsLate = %v, want 42.5", s.TimeNsLate)
+	}
+	if s.TimeLagS == nil || math.Abs(*s.TimeLagS-2.0) > 1e-9 {
+		t.Errorf("TimeLagS = %v, want 2.0", s.TimeLagS)
+	}
+	if s.S4LagS == nil || math.Abs(*s.S4LagS-2.0) > 1e-9 {
+		t.Errorf("S4LagS = %v, want 2.0", s.S4LagS)
+	}
+	// The pend was consumed: a later served value must not rewrite the sample.
+	p.complete(samples, "R07@0", 99.9, t0.Add(30*time.Second))
+	if *samples[0].TimeNsLate != 42.5 {
+		t.Errorf("consumed pend re-completed: TimeNsLate = %v, want 42.5", *samples[0].TimeNsLate)
+	}
+}
+
+// TestPendSetFirstS4LagWins pins that s4LagS records the FIRST sighting: string 4
+// repeats every ~30 s frame (and arrives twice per frame with both bands), and
+// the delay question is "how soon after the changeover did one arrive".
+func TestPendSetFirstS4LagWins(t *testing.T) {
+	t0 := time.Unix(1_700_000_000, 0)
+	samples := []changeover{{SV: "R07@0"}}
+	p := newPendSet()
+	p.arm("R07@0", 0, t0)
+	p.sawS4("R07@0", t0.Add(2*time.Second))
+	p.sawS4("R07@0", t0.Add(32*time.Second))
+	p.supersede(samples, "R07@0")
+	if samples[0].S4LagS == nil || math.Abs(*samples[0].S4LagS-2.0) > 1e-9 {
+		t.Errorf("S4LagS = %v, want 2.0 (first sighting)", samples[0].S4LagS)
+	}
+}
+
+// TestPendSetSupersedeSeparatesReceptionFromStateFailure pins the diagnostic
+// distinction the whole extension exists for: a superseded pend WITHOUT a
+// string-4 sighting is a reception gap, one WITH a sighting is a completion
+// that should have fired — S4LagS present/absent is that evidence.
+func TestPendSetSupersedeSeparatesReceptionFromStateFailure(t *testing.T) {
+	t0 := time.Unix(1_700_000_000, 0)
+	samples := []changeover{{SV: "R03@0"}, {SV: "R04@0"}}
+	p := newPendSet()
+	p.arm("R03@0", 0, t0)
+	p.arm("R04@0", 1, t0)
+	p.sawS4("R04@0", t0.Add(4*time.Second))
+	p.supersede(samples, "R03@0")
+	p.supersede(samples, "R04@0")
+
+	if samples[0].TimeOutcome != outcomeSuperseded || samples[1].TimeOutcome != outcomeSuperseded {
+		t.Fatalf("outcomes = %q/%q, want both %q", samples[0].TimeOutcome, samples[1].TimeOutcome, outcomeSuperseded)
+	}
+	if samples[0].S4LagS != nil {
+		t.Errorf("R03 S4LagS = %v, want nil (no string 4 seen: reception gap)", *samples[0].S4LagS)
+	}
+	if samples[1].S4LagS == nil {
+		t.Error("R04 S4LagS = nil, want set (string 4 seen but never completed: state-side signal)")
+	}
+	if samples[0].TimeNsLate != nil || samples[1].TimeNsLate != nil {
+		t.Error("superseded samples must not carry a late value")
+	}
+}
+
+// TestPendSetFinishCensors pins that end-of-replay finalization marks pending
+// deferrals as censored rather than leaving an empty outcome (which would read
+// as unaccounted in the resolution tally) or counting them as failures.
+func TestPendSetFinishCensors(t *testing.T) {
+	t0 := time.Unix(1_700_000_000, 0)
+	samples := []changeover{{SV: "R11@0"}, {SV: "R12@0"}}
+	p := newPendSet()
+	p.arm("R11@0", 0, t0)
+	p.arm("R12@0", 1, t0)
+	p.sawS4("R12@0", t0.Add(6*time.Second))
+	p.finish(samples)
+	if samples[0].TimeOutcome != outcomeEOF || samples[1].TimeOutcome != outcomeEOF {
+		t.Fatalf("outcomes = %q/%q, want both %q", samples[0].TimeOutcome, samples[1].TimeOutcome, outcomeEOF)
+	}
+	if samples[1].S4LagS == nil {
+		t.Error("censored pend lost its string-4 sighting evidence")
+	}
+	// finish drained the set: a second call must not touch the samples again.
+	samples[0].TimeOutcome = "sentinel"
+	p.finish(samples)
+	if samples[0].TimeOutcome != "sentinel" {
+		t.Error("finish ran twice over the same pend")
+	}
+}
+
+// TestPendSetUnarmedNoOps pins that sightings and completions for an SV with no
+// pending deferral are ignored: after a completion (or an immediate changeover)
+// the feed keeps serving a non-nil time_disco_ns on every subsequent frame, and
+// each of those reads reaches the pend set.
+func TestPendSetUnarmedNoOps(t *testing.T) {
+	t0 := time.Unix(1_700_000_000, 0)
+	samples := []changeover{{SV: "R07@0", TimeOutcome: outcomeImmediate}}
+	p := newPendSet()
+	p.sawS4("R07@0", t0)
+	p.complete(samples, "R07@0", 13.5, t0)
+	p.supersede(samples, "R07@0")
+	s := samples[0]
+	if s.TimeOutcome != outcomeImmediate || s.TimeNsLate != nil || s.TimeLagS != nil || s.S4LagS != nil {
+		t.Errorf("unarmed no-ops mutated the sample: %+v", s)
+	}
+}
+
+// TestSvStringsCount pins the bucket mapping, including the 5..15 lump: the
+// delivery diagnosis rests on s1..s4 being individually distinguishable while
+// almanac traffic stays out of their columns.
+func TestSvStringsCount(t *testing.T) {
+	var c svStrings
+	for num, times := range map[int]int{1: 3, 2: 4, 3: 5, 4: 2, 5: 7, 15: 1} {
+		for i := 0; i < times; i++ {
+			c.count(num)
+		}
+	}
+	if c.s1 != 3 || c.s2 != 4 || c.s3 != 5 || c.s4 != 2 {
+		t.Errorf("s1..s4 = %d/%d/%d/%d, want 3/4/5/2", c.s1, c.s2, c.s3, c.s4)
+	}
+	if c.other != 8 {
+		t.Errorf("other = %d, want 8 (strings 5 and 15)", c.other)
 	}
 }
 
