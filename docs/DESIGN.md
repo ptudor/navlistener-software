@@ -187,15 +187,27 @@ re-invent it — we add GNSS feed types and reuse the CA, enrollment, revocation
 
 Three credential tiers → trust (radiolistener's ladder, unchanged):
 1. **Bearer token** (bootstrap) — SHA-256 stored, shown once.
-2. **Software mTLS cert** — CN = `receiver_id`.
+2. **Software mTLS cert** — a single DNS SAN = `receiver_id` (see the note below; the *SAN*, not
+   the CN, is what the collector matches).
 3. **ATECC608-anchored mTLS cert** — the **high-assurance receiver class**. The board is the
    ESP32-S3 + ATECC608B + DS3231 RTC + EUI-64 design in `radiolistener/docs/HARDWARE-OBSERVER.md`,
    ported here as `firmware/navfeeder-esp`. The ATECC generates a non-extractable P-256 key,
-   signs a CSR (`CN = EUI-64-derived receiver_id`) that the Django CA signs; the private key
+   signs a CSR carrying the EUI-64-derived `receiver_id` as **exactly one DNS SAN** that the
+   Django CA signs; the private key
    never leaves silicon. The DS3231 stamps a **trusted time-of-transmission** — and for GNSS
    there's a bonus: the receiver *is* a clock source, so the board can discipline the RTC from
-   GPS PPS, closing the loop. The optional `SIGNED_DATA` frame (0x07) raises the provenance
+   GPS PPS, closing the loop — but see `docs/HARDWARE-OBSERVER.md §6.3`: disciplining the RTC
+   from the signal it exists to cross-check is a coupling to bound, not to close blindly.
+   The optional `SIGNED_DATA` frame (0x07) raises the provenance
    tier to hardware-signed batches.
+
+**The exact certificate shape is enforced, not conventional** (`matchPeerIdentity`,
+`go/internal/ingest/push.go:472`): the chain's leaf must carry **exactly one DNS SAN**, byte-equal
+to the canonical observer id, and that id must satisfy `config.ValidObserverID` — `[A-Za-z0-9.-]`
+only. The comparison is byte-exact rather than DNS-case-insensitive, so the rendering is fixed by
+convention and not negotiable per device: **lowercase, hyphen-separated byte pairs, bare label**
+(`00-04-a3-ff-fe-12-34-56`). Rationale and the rejected alternatives are in
+`docs/HARDWARE-OBSERVER.md §4.2`. A CSR that sets only a CN is rejected at handshake.
 
 > Hardware auth proves *who* sent a frame and *when* — it cannot make a spoofed *signal*
 > honest. A hardware observer fed a spoofing transmitter still emits perfectly-signed garbage.

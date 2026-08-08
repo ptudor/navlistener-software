@@ -151,8 +151,28 @@ exactly once:
    is stale relative to the implementation. A CSR carrying only a CN is rejected at handshake.
 2. **Character set.** `config.ValidObserverID` (`go/internal/config/config.go:683`) permits only
    `[A-Za-z0-9.-]`, max 253. The conventional `00:04:A3:FF:FE:12:34:56` EUI-64 rendering is
-   therefore invalid — as an observer id *and* as a DNS name. Choose a hyphen-separated or
-   bare-hex rendering and freeze it before provisioning.
+   therefore invalid — as an observer id *and* as a DNS name.
+
+   **Decided: lowercase, hyphen-separated byte pairs, as a bare label** —
+   `00-04-a3-ff-fe-12-34-56`. Applies to radiolistener too; the two products share one CA and
+   one `devices` table.
+
+   - *Not bare hex* (`0004a3fffe123456`): a hex string is not guaranteed to contain a letter,
+     and an all-numeric single DNS label is a known trouble class (parsers that attempt it as
+     an IPv4 literal). Hyphens make that impossible by construction rather than improbable.
+   - *Lowercase is load-bearing, not cosmetic.* `matchPeerIdentity` compares byte-exactly
+     (`names[0] != observer`), not with DNS case-insensitivity, so a cert provisioned in
+     uppercase against a lowercase config fails the handshake — reporting "DNS SAN does not
+     exactly match canonical observer", which does not point at capitalisation.
+   - Byte-pair grouping matches how the value is printed on a chip marking or case label, so
+     transcription is direct; and it is far easier to compare by eye than 16 undifferentiated
+     hex characters in a handshake error.
+   - No RFC 5891 IDNA conflict: that reserves `--` in the third-and-fourth position, and this
+     pattern has `-` at 3 and a hex digit at 4.
+   - **Bare label, not a FQDN.** The feeder dials out and is never dialled, so the id needs no
+     resolvability. Fleet/org namespacing (`….obs.intsat.space`) would have to be chosen now —
+     it is baked into every certificate and retrofitting it means re-enrolling every board —
+     but the EUI-64 is already globally unique, so it buys nothing here.
 3. **Exactly one SAN** — zero or two are both rejected.
 
 **Buy the provisionable ATECC608B.** Trust&Go / TrustFLEX parts ship pre-provisioned and locked
@@ -364,8 +384,9 @@ every address against its datasheet rather than assumed defaults.
 
 1. **Band discriminator encoding** — variant-level GPS enum entries vs a band bitmap in the
    descriptor's reserved bytes (§5.3). Blocks writing the first EEPROMs.
-2. **EUI-64 text rendering** — hyphenated or bare hex (§4.2). Blocks provisioning; baked into
-   every certificate.
+2. ~~EUI-64 text rendering~~ — **decided** (§4.2): lowercase hyphen-separated byte pairs, bare
+   label. Remaining work is mechanical: a shared formatter/parser so the C feeder, the
+   provisioning flow and the collector cannot disagree on it.
 3. **Re-enrollment policy on RTC replacement** (§4.3) — accepted as an auditable event, but the
    operational runbook does not exist.
 4. **`SIGNED_DATA` (0x07) granularity** — inherited open question from radiolistener's doc;
