@@ -2,6 +2,7 @@ package state
 
 import (
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -439,5 +440,169 @@ func TestGLONASSClockFromString4(t *testing.T) {
 	}
 	if eph.ClockKnown {
 		t.Error("stale string 4 from the previous frame attached to a fresh triple")
+	}
+}
+
+// glonassString3GammaFrame builds a string 3 that carries γn alongside the
+// z-axis coordinate words: γn(tb) at block offset 6 width 11 (ICD Table 4.6:
+// string 3 bits 69–79, 85−79 = 6), sign-magnitude per Table 4.5 Note 2, raw
+// pre-scale (LSB 2⁻⁴⁰) units — the same layout DecodeGLONASSString reads. The
+// shared glonassStringWords builder leaves γn zero, which would make a dropped
+// γ·tk term in the deferred time-disco completion invisible to a test.
+func glonassString3GammaFrame(svID int, coord, vel, accel, gammaRaw int64, recv time.Time) *ingest.RawFrame {
+	words := gloWords(3, func(buf []byte) {
+		setSignMag(buf, 50, 27, coord)
+		setSignMag(buf, 21, 24, vel)
+		setSignMag(buf, 45, 5, accel)
+		setSignMag(buf, 6, 11, gammaRaw)
+	})
+	return &ingest.RawFrame{
+		Recv: recv, Source: "test", GnssID: gnss.GLONASS, SvID: svID, SigID: 0, FreqID: 7,
+		Words: words,
+	}
+}
+
+// TestGLONASSTimeDiscoDeferredCompletion pins the regression fix/regression fix pendClk
+// lifecycle end to end, in broadcast order (strings 1,2,3,4 ~2 s apart,
+// GLO-ICD-5.1 §4.4): a tb changeover is adopted at the string-3-triggered
+// assembly, before the new frame's string 4 has arrived, so the time-disco
+// must DEFER — orbit disco served, time disco absent at that instant — and
+// then complete when string 4 reassembles the same-tb set, with the old
+// clock model evaluated at the new tb: |τ_new − (τ_old − γ_old·tk)|. The
+// γ_old·tk term uses a nonzero γ so a completion path that dropped it (the
+// immediate path's formula lives in computeGloDisco, the deferred one in
+// applyGlonass — two sites that must stay in lockstep) fails loudly here.
+func TestGLONASSTimeDiscoDeferredCompletion(t *testing.T) {
+	st := New(4)
+	t0 := time.Unix(1_700_000_000, 0)
+	const (
+		tau1Raw   = -100000 // set 1 τn, raw 2⁻³⁰ s units
+		tau2Raw   = -60000  // set 2 τn
+		gamma1Raw = 40      // set 1 γn, raw 2⁻⁴⁰ units — must survive into the completion
+		tb1, tb2  = 48, 49  // adjacent tb indices (LSB 900 s): tk = +900 s
+	)
+
+	// Set 1 (tb 48), full frame with clock and a nonzero γ.
+	st.Apply(glonassStringFrame(7, 1, 20000000, 10, 1, 0, 0, t0))
+	st.Apply(glonassStringFrame(7, 2, 20000000, 20, 2, 0, tb1, t0.Add(2*time.Second)))
+	st.Apply(glonassString3GammaFrame(7, 20000000, 30, 3, gamma1Raw, t0.Add(4*time.Second)))
+	st.Apply(glonassString4Frame(7, tau1Raw, 5, t0.Add(6*time.Second)))
+
+	// Set 2 (tb 49) 15 min later: the changeover is adopted at string 3, when
+	// the new frame's string 4 does not exist yet.
+	t1 := t0.Add(15 * time.Minute)
+	st.Apply(glonassStringFrame(7, 1, 20500000, 10, 1, 0, 0, t1))
+	st.Apply(glonassStringFrame(7, 2, 20000000, 20, 2, 0, tb2, t1.Add(2*time.Second)))
+	st.Apply(glonassStringFrame(7, 3, 20000000, 30, 3, 0, 0, t1.Add(4*time.Second)))
+
+	sv, ok := st.FeedSVs(t1.Add(4 * time.Second))["R07@0"]
+	if !ok {
+		t.Fatal("R07@0 missing from svs feed")
+	}
+	if sv.OrbitDiscoM == nil {
+		t.Error("orbit_disco_m absent at the changeover — the deferral must not block the orbit metric")
+	}
+	if sv.TimeDiscoNs != nil {
+		t.Fatalf("time_disco_ns = %v at the clockless adoption, want absent (deferred)", *sv.TimeDiscoNs)
+	}
+	key := Key{G: gnss.GLONASS, Sv: 7, Sig: 0}
+	sh := st.shardFor(key)
+	sh.mu.Lock()
+	pend, pendTb := sh.m[key].discoPendClk, sh.m[key].discoPendTb
+	sh.mu.Unlock()
+	if !pend {
+		t.Fatal("discoPendClk not armed at a clockless changeover with a clocked outgoing set")
+	}
+	if want := float64(tb2) * 900; pendTb != want {
+		t.Fatalf("discoPendTb = %v, want %v", pendTb, want)
+	}
+
+	// String 4 completes the same-tb frame ~2 s later: the deferred time-disco
+	// must publish, differencing the two clock models at the NEW tb.
+	st.Apply(glonassString4Frame(7, tau2Raw, 5, t1.Add(6*time.Second)))
+	sv, ok = st.FeedSVs(t1.Add(6 * time.Second))["R07@0"]
+	if !ok {
+		t.Fatal("R07@0 missing from svs feed after completion")
+	}
+	if sv.TimeDiscoNs == nil {
+		t.Fatal("time_disco_ns still absent after the same-tb string 4 arrived — deferral never completed")
+	}
+	const tk = 900.0 // (tb2−tb1)×900 s, the day-wrapped broadcast-time distance
+	tau1 := float64(tau1Raw) / (1 << 30)
+	tau2 := float64(tau2Raw) / (1 << 30)
+	gamma1 := float64(gamma1Raw) / float64(uint64(1)<<40)
+	want := math.Abs(tau2-(tau1-gamma1*tk)) * 1e9
+	if math.Abs(*sv.TimeDiscoNs-want) > 1e-6 {
+		t.Errorf("completed time_disco_ns = %v, want %v (γ·tk term = %v ns)", *sv.TimeDiscoNs, want, gamma1*tk*1e9)
+	}
+	sh.mu.Lock()
+	pend = sh.m[key].discoPendClk
+	sh.mu.Unlock()
+	if pend {
+		t.Error("discoPendClk still armed after completion")
+	}
+}
+
+// TestGLONASSPendVoidedAtNextChangeover pins the deferral's failure hygiene:
+// a pend whose string 4 never arrives is cleared by the NEXT changeover's
+// publish (its old-clock snapshot describes a set two generations back), and
+// the new set's string 4 must not complete it cross-tb. It also pins the
+// regression fix rule at the follow-on changeover: with the outgoing set clockless,
+// the time-disco is unknowable — skipped, and no new pend is armed.
+func TestGLONASSPendVoidedAtNextChangeover(t *testing.T) {
+	st := New(4)
+	t0 := time.Unix(1_700_000_000, 0)
+
+	// Set 1 (tb 48) with clock.
+	st.Apply(glonassStringFrame(7, 1, 20000000, 10, 1, 0, 0, t0))
+	st.Apply(glonassStringFrame(7, 2, 20000000, 20, 2, 0, 48, t0.Add(2*time.Second)))
+	st.Apply(glonassStringFrame(7, 3, 20000000, 30, 3, 0, 0, t0.Add(4*time.Second)))
+	st.Apply(glonassString4Frame(7, -100000, 5, t0.Add(6*time.Second)))
+
+	// Set 2 (tb 49): strings 1–3 only — its string 4 never arrives (a fade).
+	t1 := t0.Add(15 * time.Minute)
+	st.Apply(glonassStringFrame(7, 1, 20500000, 10, 1, 0, 0, t1))
+	st.Apply(glonassStringFrame(7, 2, 20000000, 20, 2, 0, 49, t1.Add(2*time.Second)))
+	st.Apply(glonassStringFrame(7, 3, 20000000, 30, 3, 0, 0, t1.Add(4*time.Second)))
+
+	key := Key{G: gnss.GLONASS, Sv: 7, Sig: 0}
+	sh := st.shardFor(key)
+	sh.mu.Lock()
+	pend := sh.m[key].discoPendClk
+	sh.mu.Unlock()
+	if !pend {
+		t.Fatal("setup: pend not armed at the clockless changeover")
+	}
+
+	// Set 3 (tb 50): the next changeover arrives with the tb-49 pend still
+	// open. Its publish must void the stale pend, and — the outgoing tb-49 set
+	// being clockless — must not arm a new one (time-disco unknowable, regression fix).
+	t2 := t1.Add(15 * time.Minute)
+	st.Apply(glonassStringFrame(7, 1, 21000000, 10, 1, 0, 0, t2))
+	st.Apply(glonassStringFrame(7, 2, 20000000, 20, 2, 0, 50, t2.Add(2*time.Second)))
+	st.Apply(glonassStringFrame(7, 3, 20000000, 30, 3, 0, 0, t2.Add(4*time.Second)))
+
+	sh.mu.Lock()
+	pend = sh.m[key].discoPendClk
+	sh.mu.Unlock()
+	if pend {
+		t.Fatal("stale pend survived the next changeover's publish")
+	}
+
+	// Set 3's own string 4: a clock for tb 50 must not complete a deferral that
+	// was armed for tb 49 — time-disco stays absent for both changeovers.
+	st.Apply(glonassString4Frame(7, -60000, 5, t2.Add(6*time.Second)))
+	sv, ok := st.FeedSVs(t2.Add(6 * time.Second))["R07@0"]
+	if !ok {
+		t.Fatal("R07@0 missing from svs feed")
+	}
+	if sv.TimeDiscoNs != nil {
+		t.Errorf("time_disco_ns = %v, want absent: the tb-49→50 jump's old side never had a clock", *sv.TimeDiscoNs)
+	}
+	sh.mu.Lock()
+	pend = sh.m[key].discoPendClk
+	sh.mu.Unlock()
+	if pend {
+		t.Error("a new pend was armed for a changeover whose outgoing set was clockless")
 	}
 }
