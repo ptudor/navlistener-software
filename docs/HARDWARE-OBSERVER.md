@@ -660,7 +660,10 @@ is a feature this board wants and a reason the WS2812B alignment pays for itself
    460 800-baud UART that a single 160 MHz core does not. The **1U** variant is not optional —
    its u.FL lets the Wi-Fi radiator move physically away from the GNSS front end, which is the
    strongest available mitigation for §7.4 and impossible with a PCB-antenna module.
-7. **ATECC config-zone bytes.** The slot *map* is decided (v2, §4.1a) — the per-slot
-   SlotConfig/KeyConfig words and the I²C address (itself config-zone data) are not yet
-   authored. They get written against the datasheet's §2.2 tables and validated on a scrap
-   ATECC608C before any production part locks (§4.2).
+7. **ATECC config-zone bytes — authored, not silicon-validated.** The per-slot
+   SlotConfig/KeyConfig words and writable scalars now live in shepherd's
+   `atecc608c_config_profile.h` (a field overlay citing `ATECC508A` per table; the
+   608-only ChipOptions/UseLock/SecureBoot fields follow the NDA-gated 608 datasheet and
+   are flagged as such). What remains is the §4.2 step this document already required:
+   write the profile to a scrap ATECC608C, exercise every slot class, then freeze it.
+   Nothing locks before that pass.
