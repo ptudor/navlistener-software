@@ -163,9 +163,24 @@ Rules that make the split work:
 - **I²C pull-ups tie to `3V3_SENS`** — the slaves' rail. If the sensor rail ever
   collapses with the MCU alive, the bus reads stuck-low (detectable); pull-ups on the
   MCU rail instead would back-power the dead rail through every slave's ESD clamps.
-- **All three regulator enables strap to VBUS** — the rails rise together and there is
-  no sequencing window in which one domain back-feeds another. Nothing needs software
-  sequencing.
+- **`3V3_SYS`'s enable straps to VBUS; the GNSS and sensor rails are GPIO-gated,
+  default-on.** The MCU cannot be allowed to gate its own brain, but the other two EN
+  pins go to S3 GPIOs with 100 kΩ pull-ups **to `3V3_SYS`** — never to VBUS: the S3's
+  GPIOs are not 5 V tolerant, the same trap §7.2 documents for the blanking MOSFET.
+  High-Z at reset means the pull-ups win and both rails are ON before firmware runs,
+  through a crash, and if firmware never boots — the §7.2 fail-safe argument, applied
+  to power. Sequencing falls out naturally: `3V3_SYS` rises first, the peripheral
+  rails follow it through their pull-ups.
+
+  Why gate at all: **remote power-cycle is the fix for this fleet's observed failure
+  mode.** The F9P on `observer16` dropped off its bus after a hot spell (2026-08-05,
+  §6.2) and stayed dark until someone could reach it. A wedged receiver or a hung I²C
+  slave holding SDA low both clear with a rail cycle, and a GNSS-rail cycle is a *warm*
+  restart — `V_BCKP` rides the coin cell (§3.2), so ephemeris, almanac and receiver
+  time survive the bounce. Firmware contract: idle/tristate every pin driving into a
+  domain before de-asserting its EN (a driven UART TX or pulled-up I²C line would
+  back-power the dead rail through ESD clamps), hold off long enough for the domain's
+  capacitance to bleed, re-init on the way back up.
 - **Budget sanity** (all **[verify]** at datasheet time): S3 ≤ 500 mA bursts, GNSS
   ~35 mA + up to 50 mA antenna bias, sensors < 25 mA, panel ~110 mA on VBUS. Aggregate
   worst case is ~700 mA-class at 5 V — inside USB-C's advertised-current regime but
@@ -174,10 +189,16 @@ Rules that make the split work:
   dimming are the practical mitigations, and the bench check belongs on the first
   prototype **[verify]**.
 
-The regulators are deliberately **not** manifest slots (§5): the manifest describes
-hardware firmware can probe, and an LDO has no bus presence — a failed rail announces
-itself as the death of every device on it. They are BOM, not discoverable hardware
-(`CAT_POWER` stays reserved for probeable parts like current monitors).
+The two **gated** regulators are manifest slots after all — an earlier revision of
+this section exempted them as "nothing to probe," which was wrong the moment their EN
+pins landed on GPIOs: a rail firmware can switch is firmware-relevant hardware, and
+the manifest already encodes GPIO-addressed entries (`CAT_BUTTON`, addr = GPIO pin).
+So `3V3_GNSS` and `3V3_SENS` get `CAT_POWER` entries with the descriptor's address
+byte carrying the EN GPIO (enum additions in §5.3), and the status byte earns its
+keep: `INSTALLED` = gated rail, `NOT_POPULATED` = a build variant that strapped the
+EN — which tells the collector whether "power-cycle the receiver" is a command this
+node can execute. Only the always-on `3V3_SYS` regulator stays plain BOM: no control,
+no bus presence, and its failure announces itself as the death of everything on it.
 
 The backup cells below are independent of all three rails by design.
 
@@ -407,6 +428,7 @@ The enums are a baseline. These entries do not exist yet and are required:
 | `eeprom_pressure_id_t` | `PRESSURE_BMP390` | The house pressure part (shepherd's C6 rover bus) is absent; the enum lists BMP280/BMP388/MS5611 only. |
 | `eeprom_battery_id_t` | `BATTERY_CR2032` | The enum currently covers LiPo/18650/solar/PoE only — no primary coin cells, and this board fits two. |
 | `eeprom_sensor_id_t` | `SENSOR_HDC2080` | The combined temperature/humidity part (§6.4); `TEMP_MCP9808` already exists for the dedicated sensor. |
+| `eeprom_power_id_t` | `POWER_ADM7150`, `POWER_RT9193` | The GPIO-gated rails (§3.1); descriptor address byte = the EN GPIO, following `CAT_BUTTON`'s addr-is-GPIO convention. The enum currently lists only probeable monitors/chargers. |
 
 **The band discriminator is the one that matters for integrity.** `GPS_ZED_F9P = 1` names a part
 family, not a band capability — but DESIGN.md's worked example is precisely the **F9T-00B (L1+L2)
