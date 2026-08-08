@@ -65,19 +65,26 @@ import (
 
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/navlistener/internal/config"
+	"github.com/ptudor/navlistener/internal/detect"
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/state"
 	"github.com/ptudor/navlistener/internal/store"
 )
 
-// Warn/alert bands the shipped detector applies to these metrics. GLONASS
-// currently shares the Kepler family's pair; whether it should is exactly what
-// this tool measures (regression fix option (c)).
+// Warn/alert bands the shipped detector applies to these metrics, sourced from
+// the detector's own constants so the tool cannot drift from what ships. The
+// first regression fix run printed a 25 ns alert band — a literal transcribed from the
+// regression fix runbook, which mis-stated TimeDiscoSevereThreshold; the detector has
+// shipped 10 ns all along (detect/thresholds.go, docs/INTEGRITY.md §2), and
+// against the real band the 2026-08-08 capture's routine time-disco max of
+// 9.99 ns sits 0.1% below CRIT — the calibration fact the duplicate hid.
+// GLONASS currently shares the Kepler family's pair; whether it should is
+// exactly what this tool measures (regression fix option (c)).
 const (
-	orbitDiscoWarnM   = 1.45
-	orbitDiscoAlertM  = 10.0
-	timeDiscoWarnNs   = 2.5
-	timeDiscoAlertNs  = 25.0
+	orbitDiscoWarnM   = detect.OrbitDiscoThreshold
+	orbitDiscoAlertM  = detect.OrbitDiscoSevereThreshold
+	timeDiscoWarnNs   = detect.TimeDiscoThreshold
+	timeDiscoAlertNs  = detect.TimeDiscoSevereThreshold
 	defaultFrameSpace = time.Millisecond
 )
 
