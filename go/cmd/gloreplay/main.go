@@ -112,6 +112,7 @@ type changeover struct {
 func main() {
 	capture := flag.String("capture", "", "path to a raw UBX capture (UBX-RXM-SFRBX stream)")
 	duration := flag.Duration("duration", 0, "true wall-clock span of the capture; 0 compresses (see package doc)")
+	startAt := flag.String("start", "", "capture's real start time, RFC3339 — REQUIRED for GLONASS (see package doc)")
 	dsn := flag.String("from-store", "", "replay from the historian instead of a file: a TimescaleDB DSN")
 	since := flag.String("since", "", "-from-store: window start, RFC3339 (required)")
 	until := flag.String("until", "", "-from-store: window end, RFC3339 (default: no upper bound)")
@@ -134,7 +135,7 @@ func main() {
 	if *dsn != "" {
 		err = runStore(*dsn, *since, *until, *source, *shards, *jsonOut)
 	} else {
-		err = run(*capture, *duration, *shards, *jsonOut)
+		err = run(*capture, *duration, *startAt, *shards, *jsonOut)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gloreplay: %v\n", err)
@@ -142,7 +143,7 @@ func main() {
 	}
 }
 
-func run(capture string, duration time.Duration, shards int, jsonOut string) error {
+func run(capture string, duration time.Duration, startAt string, shards int, jsonOut string) error {
 	total, gloFrames, err := countFrames(capture)
 	if err != nil {
 		return err
@@ -162,12 +163,29 @@ func run(capture string, duration time.Duration, shards int, jsonOut string) err
 		}
 	}
 
-	samples, parseErrs, err := replay(capture, spacing, shards)
+	base := time.Unix(1_700_000_000, 0).UTC()
+	if startAt != "" {
+		t, perr := time.Parse(time.RFC3339, startAt)
+		if perr != nil {
+			return fmt.Errorf("parse -start: %w", perr)
+		}
+		base = t.UTC()
+	} else {
+		fmt.Fprintln(os.Stderr, "gloreplay: WARNING -start not given; GLONASS tb is a time-of-DAY,")
+		fmt.Fprintln(os.Stderr, "  so an arbitrary epoch offsets every eph_age and can fold changeovers")
+		fmt.Fprintln(os.Stderr, "  across the EphAgeDay +/-12 h wrap. Results are unreliable without it.")
+	}
+
+	samples, parseErrs, diag, err := replay(capture, base, spacing, shards)
 	if err != nil {
 		return err
 	}
 
 	report(capture, total, gloFrames, spacing, samples, parseErrs)
+	if diag != nil {
+		fmt.Println("\n--- diagnostic: final GLONASS feed state ---")
+		diag()
+	}
 
 	return writeJSON(jsonOut, samples)
 }
@@ -296,15 +314,14 @@ func countFrames(path string) (total, glonass int, err error) {
 // published. Sampling through the feed (rather than reaching into svState) keeps
 // this tool on the same exported surface the collector serves, so what it
 // measures is what a consumer would see.
-func replay(path string, spacing time.Duration, shards int) ([]changeover, map[string]int, error) {
+func replay(path string, base time.Time, spacing time.Duration, shards int) ([]changeover, map[string]int, func(), error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer f.Close()
 
 	st := state.New(shards)
-	base := time.Unix(1_700_000_000, 0).UTC()
 	frame := 0
 	now := base
 	clock := func() time.Time {
@@ -320,9 +337,33 @@ func replay(path string, spacing time.Duration, shards int) ([]changeover, map[s
 		smp.apply(fr, now)
 	}, func(kind string) { parseErrs[kind]++ })
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return smp.samples, parseErrs, nil
+	diag := func() {
+		feed := st.FeedSVs(now)
+		n := 0
+		for k, sv := range feed {
+			if k == "" || k[0] != 'R' {
+				continue
+			}
+			n++
+			age := "nil"
+			if sv.EphAgeM != nil {
+				age = fmt.Sprintf("%.1f min", *sv.EphAgeM)
+			}
+			pos := "no"
+			if sv.XM != nil {
+				pos = "yes"
+			}
+			ch := "nil"
+			if sv.FreqCh != nil {
+				ch = fmt.Sprintf("%d", *sv.FreqCh)
+			}
+			fmt.Printf("  %-8s eph_age=%-12s pos=%-4s freq_ch=%s\n", k, age, pos, ch)
+		}
+		fmt.Printf("  (%d GLONASS entries in feed of %d total)\n", n, len(feed))
+	}
+	return smp.samples, parseErrs, diag, nil
 }
 
 // sampler feeds frames through live state and records every GLONASS tb changeover
