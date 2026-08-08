@@ -1,5 +1,6 @@
 # Go build artifacts
 /go/navlistener
+/go/gloreplay
 /go/build/
 /go/dist/
 *.test
