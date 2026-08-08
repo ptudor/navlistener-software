@@ -88,7 +88,7 @@ for it.
 | Pressure | `CAT_PRESSURE` | **BMP388** placed; BMP390 and BMP580 are footprint alternates | **Vertical spoofing gate** — §6.1. |
 | Temperature | `CAT_TEMP` | **MCP9808-E/MS** (`C94847`) | Crystal-drift characterisation and thermal health — §6.2. |
 | Humidity | `CAT_SENSOR` | **HDC2080** | Dew point / enclosure-seal diagnostic — §6.4. Not GNSS math. |
-| Backup | `CAT_BATTERY` | 2 × CR2032, `BS-0202-DK-0B` holders (needs enum entries, §5.3) | Two independent domains — §3. |
+| Backup | `CAT_BATTERY` | 2 × CR2032, `BS-0202-DK-0B` holders (needs enum entries, §5.3) | Two independent domains — §3.2. |
 | GNSS antenna | `CAT_ANTENNA` | SMA jack, right-angle, 4-leg THT (Amphenol `132289` class) | Bias + supervision → `MON-HW` `antStatus` — §7.3. |
 | Wi-Fi antenna | `CAT_ANTENNA` | u.FL → RP-SMA pigtail off the 1U module | Physically separable from the GNSS path — §7.1. |
 | USB | `CAT_CONNECTOR` | USB-C, 16-pin USB 2.0, THT shield legs | §7.6. |
@@ -144,6 +144,44 @@ would not light from 3.3 V at all).
 ---
 
 ## 3. Power and backup domains
+
+### 3.1 The rail tree — three regulators, three noise domains
+
+VBUS (USB-C, §7.6) is the board's only input; the LED panel anodes already sit on it
+directly (§2.1). Everything else splits into three 3.3 V rails, one per noise domain,
+each a linear regulator fed straight from VBUS — no switcher anywhere near a 1575 MHz
+front end, and no cascaded LDOs:
+
+| Rail | Regulator | Feeds | Why this part |
+|---|---|---|---|
+| `3V3_SYS` | **LDL1117-3.3** (SOT-223, 1.2 A **[verify]**); AMS1117-3.3 is the JLC-Basic fallback with its output-capacitor stability caveats **[verify]** | ESP32-S3 module, USB logic, TLC5916 `VDD` | Espressif's module datasheet recommends a ≥ 0.5 A supply; digital rail, so current and thermals matter, noise does not. Worst case from 5 V: (5.0 − 3.3) V × 0.5 A ≈ 0.85 W — survivable on a SOT-223 with a real copper pour at Wi-Fi burst duty, marginal at sustained 100 % TX **[verify against θJA on the actual pour]**. |
+| `3V3_GNSS` | **ADM7150ARDZ-3.3** (SOIC-8-EP, 800 mA, 1.0 µVrms 100 Hz–100 kHz, PSRR > 90 dB 1 kHz–100 kHz at 400 mA, VIN 4.5–16 V — so it must feed from VBUS, not from 3V3) | NEO `VCC`, SAW/LNA (§7.4), antenna bias + supervision (§7.3) | The receiver's RF chain is the one place supply noise is directly signal noise. 800 mA is deliberate headroom: variant B's ZED-F9P (~130 mA **[verify]**) reuses this rail unchanged. |
+| `3V3_SENS` | **RT9193-33** (SOT-23-5, 300 mA **[verify]**), with the 22 nF bypass capacitor populated for its low-noise mode **[verify]** | ATECC608C, 24AA02E64, MCP79412 `VCC`, MCP9808, HDC2080, BMP388 | The vertical gate lives on the barometer's noise floor (§6.1); supply noise on the BMP388 is spent directly out of that budget. Load is trivial — the ATECC's ECC operations dominate at ~16 mA **[verify]**; everything else is microamps to low milliamps. |
+
+Rules that make the split work:
+
+- **I²C pull-ups tie to `3V3_SENS`** — the slaves' rail. If the sensor rail ever
+  collapses with the MCU alive, the bus reads stuck-low (detectable); pull-ups on the
+  MCU rail instead would back-power the dead rail through every slave's ESD clamps.
+- **All three regulator enables strap to VBUS** — the rails rise together and there is
+  no sequencing window in which one domain back-feeds another. Nothing needs software
+  sequencing.
+- **Budget sanity** (all **[verify]** at datasheet time): S3 ≤ 500 mA bursts, GNSS
+  ~35 mA + up to 50 mA antenna bias, sensors < 25 mA, panel ~110 mA on VBUS. Aggregate
+  worst case is ~700 mA-class at 5 V — inside USB-C's advertised-current regime but
+  above legacy USB 2.0's 500 mA default, so a pessimistic C-to-C source could brown
+  out under simultaneous Wi-Fi TX + full panel; TX burstiness and §2.1's panel
+  dimming are the practical mitigations, and the bench check belongs on the first
+  prototype **[verify]**.
+
+The regulators are deliberately **not** manifest slots (§5): the manifest describes
+hardware firmware can probe, and an LDO has no bus presence — a failed rail announces
+itself as the death of every device on it. They are BOM, not discoverable hardware
+(`CAT_POWER` stays reserved for probeable parts like current monitors).
+
+The backup cells below are independent of all three rails by design.
+
+### 3.2 Backup cells — two domains
 
 Two cells, two domains — **not** two cells on one rail:
 
