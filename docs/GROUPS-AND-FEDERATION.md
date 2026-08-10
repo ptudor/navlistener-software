@@ -197,6 +197,16 @@ Definitions:
 - `raw_export` is separately gated because original frames, timestamps, and signatures are
   more identifying than a computed satellite state.
 
+**Per-SV geometry is location.** Azimuth/elevation look angles, pseudorange
+residuals, and measured-iono slant terms are location-equivalent: satellite positions are
+public, so the az/el of two satellites at one epoch solve the antenna position outright, and
+one satellite's angles over time do the same. "Omits exact coordinates" therefore extends to
+the per-SV maps: every `station_metadata` tier below `full` serves **no per-SV geometry** to
+that audience (no `svs` look angles, no `perrecv` entry, no residuals), regardless of what
+the other grants allow — coarsening the published coordinates while serving true look angles
+would un-coarsen them. Constellation counts and health summaries carry no geometry and
+remain the pseudonymous row's content.
+
 ### 3.1 Policy inheritance and precedence
 
 The organization sets the maximum disclosure. Collection and device policy may narrow it;
@@ -325,6 +335,14 @@ not relabel history. Authorized reprocessing re-evaluates export at read time; i
 old “public” state as irrevocably downloadable after a legal withdrawal unless retention law
 requires it.
 
+**The intersection rule, stated once for both paths :** a historical row's
+visibility — to a read audience or a federation export alike — is the intersection of its
+receipt-time decision and the current policy. Re-evaluation only narrows. Widening never
+follows from a policy edit: observations collected under a more private policy become visible
+to a wider audience only through an explicit owner-initiated republication action that
+relabels the rows in an audited migration. §7.2's export rule is this same intersection
+stated for the federation edge.
+
 ### 5.3 Audience-safe live state
 
 Privacy is enforced **before aggregation**. Building one global state and deleting observer
@@ -381,6 +399,15 @@ The native field shapes remain v2. Audience is request context, not a new satell
 Cache keys include audience and authorization policy revision. Shared proxy caches must never
 cache a private response as public; private responses use `Cache-Control: private` and `Vary`
 on the authorization/audience selector. Anonymous public responses remain cacheable.
+
+**Event ids and SSE cursors are audience-scoped.** The historian may keep one
+internal BIGSERIAL, but the served event `id` / `Last-Event-ID` cursor must be per-audience
+(a per-audience monotone counter or an opaque cursor mapping). A single visible sequence
+shared across audiences leaks through its gaps — a public client counting missing ids learns
+the existence, volume, and timing of private events — and a private-only source allocating
+ids would perturb the id bytes of subsequent public events, breaking §10.4 and the stage-5
+byte-parity test literally. In a single-audience deployment the public cursor may remain the
+row id, so `OUTPUT.md §3` is unchanged until a second audience exists.
 
 ### 6.2 Public surface
 
@@ -501,7 +528,8 @@ Implementation is staged; each stage has a safe compatibility mode:
 4. **Scoped persistence:** immutable context columns and audience fields; existing rows migrate
    to private `legacy-unassigned`, never public.
 5. **Scoped state/detectors:** audience-selected inputs; parity tests proving public output is
-   byte-identical when all sources are public and unaffected by a private-only source.
+   byte-identical when all sources are public and unaffected by a private-only source (this
+   holds literally only with audience-scoped event cursors).
 6. **Read authorization:** public audience, authenticated org/collection audiences, cache
    separation, redacted station/search/event/SSE consistency.
 7. **Clients:** authenticated discovery and selection, secure credentials, audience-partitioned
@@ -524,8 +552,10 @@ Tests and review must keep these statements true:
 2. A certificate or HELLO cannot self-assign organization, enrollment, audience, or policy.
 3. Unknown policy is private and non-exportable.
 4. Adding a private observer cannot change any byte of the public feeds, events, SSE, station
-   search, confidence, or counters unless anonymous public aggregation is explicitly granted.
-5. A client never receives unauthorized data and filters it locally.
+   search, confidence, or counters — including event-id sequences and cursors  —
+   unless anonymous public aggregation is explicitly granted.
+5. A client never receives unauthorized data; audience filtering and redaction happen
+   server-side, never by the client discarding fields from an over-complete response.
 6. A peer's inbound trust never grants that peer outbound access.
 7. Federation export is the intersection of source policy and destination grant, checked at
    every hop.
@@ -535,6 +565,8 @@ Tests and review must keep these statements true:
 11. Public caches cannot contain private responses; private caches cannot cross principals or
     audiences.
 12. Manufacturer attestation and operational CA issuance remain separate trust roots.
+13. No audience receives per-SV geometry (look angles, residuals, measured-iono terms) for a
+    station whose metadata tier withholds its precise location.
 
 These invariants are more important than a particular table or endpoint spelling. Any future
 implementation that preserves them can evolve without repeating the identity/privacy design.
