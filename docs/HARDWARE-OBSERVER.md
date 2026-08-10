@@ -256,10 +256,18 @@ cell is a convenience with one genuine integrity dividend: a cold-starting recei
 whatever the sky appears to say, whereas one with retained almanac has a prior to disagree with.
 That is a weak signal, but it is free.
 
-**Heat.** These units run hot, and hot enclosures are where coin cells self-discharge fast and
-leak. Mount the cells **off-board on a JST lead** rather than inside the sealed case: it keeps
-them out of the thermal mass, and it turns replacement across five units into a ten-second job
-instead of a disassembly.
+**Heat and first-spin assembly.** Keep both CR2032 holders off the main PCB and use
+separate pre-wired holders mounted in a cool part of the enclosure. Each plugs into
+its own JST PH 2.0 mm two-pin header: genuine JST
+`B2B-PH-SM4-TB(LF)(SN)`, LCSC/EasyEDA `C160352`, the vertical SMT version with
+mechanical solder tabs so JLC can place it during normal SMT assembly. The mating
+housing is `PHR-2`. Name and label the main-board connectors `RTC BAT` and
+`GNSS BAT`; on both, define pin 1 as battery positive and pin 2 as GND. Marketplace
+"RTC battery" leads do not have a universal polarity convention: continuity-check
+every purchased holder and, if necessary, release and swap its two housing contacts
+before connection. The removable leads keep the large holders out of the placement
+and routing area and turn replacement across five units into a ten-second job rather
+than a board disassembly.
 
 No external switchover diode — the RTCs specified here have internal VCC/VBAT switchover, and an
 added series diode only eats backup headroom.
