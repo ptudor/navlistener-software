@@ -175,7 +175,7 @@ use.
 `PublicationPolicy` therefore has independent grants:
 
 ```text
-station_metadata   none | pseudonymous | coarse_location | full
+station_metadata   none | coarse | full
 aggregate_use      private | public_anonymous | public_attributed
 event_visibility   private | public_redacted | public
 raw_export         deny | named_peers | public
@@ -185,9 +185,11 @@ constellations     optional (gnssId, sigId) allow-list; empty means all supporte
 
 Definitions:
 
-- `station_metadata` controls the observers/stations surface. `pseudonymous` uses an
-  audience-stable alias and omits exact coordinates, site, hardware serials, RF detail, and
-  owner. It is not a weak hash of the global EUI-64.
+- `station_metadata` controls the observers/stations surface. `coarse` serves the public
+  station row with coordinates rounded to 0.1° (~10 km) and withholds site detail; `full`
+  serves the operator-entered position. Both serve the station's per-SV observations —
+  that is the product. Hardware serials and RF security detail stay off the public surface
+  at every tier (§6.2).
 - `aggregate_use=private` means the observation contributes only to its organization's
   authorized views. It cannot affect public positions, confidence, events, or counters.
 - `public_anonymous` permits contribution to public state but never a `perrecv` entry or
@@ -197,15 +199,20 @@ Definitions:
 - `raw_export` is separately gated because original frames, timestamps, and signatures are
   more identifying than a computed satellite state.
 
-**Per-SV geometry is location.** Azimuth/elevation look angles, pseudorange
-residuals, and measured-iono slant terms are location-equivalent: satellite positions are
-public, so the az/el of two satellites at one epoch solve the antenna position outright, and
-one satellite's angles over time do the same. "Omits exact coordinates" therefore extends to
-the per-SV maps: every `station_metadata` tier below `full` serves **no per-SV geometry** to
-that audience (no `svs` look angles, no `perrecv` entry, no residuals), regardless of what
-the other grants allow — coarsening the published coordinates while serving true look angles
-would un-coarsen them. Constellation counts and health summaries carry no geometry and
-remain the pseudonymous row's content.
+**Per-SV geometry is location — accepted, not defended against (regression fix, resolved
+2026-08-10).** Azimuth/elevation look angles, pseudorange residuals, and measured-iono slant
+terms are location-equivalent: satellite positions are public, so the az/el of two satellites
+at one epoch solve the antenna position outright, and one satellite's angles over time do the
+same. The original finding proposed redacting geometry below `full`; the product decision
+goes the other way, because a GNSS monitor network's data *is* observer-located geometry —
+redacting it guts the product, and a "pseudonymous" tier that still serves observations is a
+promise the physics breaks. So the contract is honest instead: **a public station is
+locatable, period.** `coarse` is display courtesy (don't print someone's rooftop to seven
+decimals), never an anonymity claim, and no tier may be documented or marketed as hiding a
+publishing station's position. An owner for whom ~10 km courtesy rounding is not enough sets
+`station_metadata=none` / stays off the public audience — the private organization and
+operator audiences (§5.3) still see everything. This is the galmon posture (public observer
+list, meters-scale position fuzz) made explicit.
 
 ### 3.1 Policy inheritance and precedence
 
@@ -411,7 +418,7 @@ row id, so `OUTPUT.md §3` is unchanged until a second audience exists.
 
 ### 6.2 Public surface
 
-The public `observers` view includes only policy-approved attributed or pseudonymous stations.
+The public `observers` view includes only policy-approved public stations (`coarse` or `full`).
 Hardware serials, exact site, exact location, internal organization ids, policy, CA, peer path,
 and RF security detail are absent unless individually authorized for public release.
 
@@ -487,7 +494,7 @@ export requires deliberate contractual approval.
 Full `origin_receiver_id`, leaf-cert fingerprint, and observer certificate are provided only
 for `signed_raw` grants that require end-to-end verification. Anonymous aggregate grants use a
 peer-scoped opaque source assertion and cannot be promoted to `trusted` observer provenance.
-Pseudonymization never pretends to preserve ATECC end-to-end identity.
+Anonymized federation data never pretends to preserve ATECC end-to-end identity.
 
 `path[]` and loop prevention remain required. Every relay re-checks its own outbound grant;
 permission from the origin to peer A does not imply permission from A to peer C. Federation is
@@ -559,14 +566,15 @@ Tests and review must keep these statements true:
 6. A peer's inbound trust never grants that peer outbound access.
 7. Federation export is the intersection of source policy and destination grant, checked at
    every hop.
-8. Anonymous/pseudonymous federation data cannot be presented as end-to-end hardware signed.
+8. Anonymized federation data cannot be presented as end-to-end hardware signed.
 9. Revocation closes active ingest/read/peer authority within the documented cache bound.
 10. Historical rows preserve the identity/enrollment/policy decision at receipt.
 11. Public caches cannot contain private responses; private caches cannot cross principals or
     audiences.
 12. Manufacturer attestation and operational CA issuance remain separate trust roots.
-13. No audience receives per-SV geometry (look angles, residuals, measured-iono terms) for a
-    station whose metadata tier withholds its precise location.
+13. Public station metadata tiers are display precision, not anonymity: any publishing
+    station is locatable from its served per-SV geometry, and no tier, doc, or UI may claim
+    otherwise (regression fix, resolved). The only non-locatable station is a non-public one.
 
 These invariants are more important than a particular table or endpoint spelling. Any future
 implementation that preserves them can evolve without repeating the identity/privacy design.
