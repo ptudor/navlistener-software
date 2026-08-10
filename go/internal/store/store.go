@@ -70,7 +70,10 @@ type flushRetry struct {
 type copyRowsFunc func(ctx context.Context, rows [][]any) (int64, error)
 
 var copyColumns = []string{
-	"ts", "received_at", "source_id", "gnssid", "svid", "sigid", "freqid", "msg_type",
+	"ts", "received_at", "source_id", "organization_id", "enrollment_id",
+	"collector_instance_id", "collection_ids", "provenance", "credential_tier",
+	"attestation_tier", "aggregate_use", "station_metadata", "policy_revision",
+	"gnssid", "svid", "sigid", "freqid", "msg_type",
 	"raw", "decoded", "decoder_ver",
 }
 
@@ -81,9 +84,23 @@ type NavFrame struct {
 	Ts         time.Time
 	ReceivedAt time.Time
 	SourceID   string
-	GnssID     int
-	SvID       int
-	SigID      int
+	// The following fields are the immutable server-resolved ownership,
+	// enrollment, and receipt-time publication decision. They are deliberately
+	// denormalized so historical evidence never changes meaning after a transfer
+	// or policy edit (docs/GROUPS-AND-FEDERATION.md §5.2/§5.4).
+	OrganizationID      string
+	EnrollmentID        string
+	CollectorInstanceID string
+	CollectionIDs       []string
+	Provenance          string
+	CredentialTier      string
+	AttestationTier     string
+	AggregateUse        string
+	StationMetadata     string
+	PolicyRevision      string
+	GnssID              int
+	SvID                int
+	SigID               int
 	// FreqID is the GLONASS FDMA channel carrier as the receiver reported it
 	// (k = FreqID - 7). Always written: it is receiver metadata that never appears
 	// in Raw (RawBytes serialises only the nav words), so a GLONASS frame cannot be
@@ -1025,11 +1042,27 @@ func navFrameToRow(f *NavFrame) []any {
 	if len(f.Decoded) > 0 {
 		decoded = string(f.Decoded)
 	}
+	collections := f.CollectionIDs
+	if collections == nil {
+		collections = []string{}
+	}
 	return []any{
 		f.Ts, f.ReceivedAt, f.SourceID,
+		valueOr(f.OrganizationID, "local-unassigned"), valueOr(f.EnrollmentID, "legacy-unassigned"),
+		valueOr(f.CollectorInstanceID, "local"), collections, valueOr(f.Provenance, "local"),
+		valueOr(f.CredentialTier, "local_dial"), valueOr(f.AttestationTier, "none"),
+		valueOr(f.AggregateUse, "private"), valueOr(f.StationMetadata, "none"),
+		valueOr(f.PolicyRevision, "legacy-private-v1"),
 		int16(f.GnssID), int16(f.SvID), int16(f.SigID), int16(f.FreqID), int16(f.MsgType),
 		f.Raw, decoded, nilIfEmpty(f.DecoderVer),
 	}
+}
+
+func valueOr(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
 }
 
 func nilIfEmpty(s string) any {

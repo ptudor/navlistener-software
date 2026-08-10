@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/navlistener/internal/identity"
 )
 
 // RawFrame is one raw broadcast nav frame lifted off a receiver, tagged with just
@@ -65,6 +66,12 @@ type RawFrame struct {
 	// LocalRecv(), never Recv. Dial-mode connectors stamp Recv from this host's
 	// clock already and leave RecvLocal zero.
 	RecvLocal time.Time
+
+	// Observer is the server-resolved administrative/publication context stamped
+	// at the authenticated push boundary or dial-source config boundary. DATA
+	// records cannot populate it. A zero value is legacy/test input and is treated
+	// as private local-unassigned by audience code.
+	Observer identity.ObserverContext
 }
 
 // LocalRecv returns the collector-local receipt time for elapsed-time math

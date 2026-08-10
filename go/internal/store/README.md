@@ -86,6 +86,11 @@ committed.
 ts          TIMESTAMPTZ  -- INGEST time (the hypertable dimension)
 received_at TIMESTAMPTZ  -- receiver/host reception time (separately indexed)
 source_id   TEXT
+organization_id, enrollment_id, collector_instance_id  TEXT
+collection_ids  TEXT[]     -- receipt-time collection memberships
+provenance      TEXT       -- local or an inbound federation peer
+credential_tier, attestation_tier  TEXT
+aggregate_use, station_metadata, policy_revision  TEXT
 gnssid, svid, sigid, msg_type  SMALLINT
 raw         BYTEA        -- the broadcast frame, untouched
 decoded     JSONB        -- normalized projection, nullable
@@ -102,6 +107,12 @@ ephemeris from stored bytes. `decoded` means the common queries don't have to. `
 records which version produced a projection, so a re-decode pass knows what to redo. This is the
 same discipline as the radiolistener sibling, and it's why the daemon needs no cross-restart
 state file  — the historian *is* the durable record.
+
+**Why the administrative columns live on every receipt:** organizations, group membership, and
+publication consent change over time. Rejoining historical raw data to today's control-plane row
+would silently rewrite the policy under which it was received. These columns are therefore an
+immutable authorization snapshot. Legacy rows and omitted config default to
+`local-unassigned/private`, never public.
 
 ### The dedup ledger — `nav_frames_seq_seen`
 

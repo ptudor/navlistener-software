@@ -110,13 +110,18 @@ Authentication is layered:
 
 ```go
 type Authenticator interface {
-    Authenticate(token, station, feed string) (observerID string, ok bool)
+    Authenticate(token, station, feed string) (identity.ObserverContext, ok bool)
 }
 ```
 
-`NewConfigAuthenticator` is the config-backed bootstrap implementation. A Django/DB-backed one —
-the shared AAA control plane (`docs/DESIGN.md §3`) — satisfies the same interface later without
-touching this package.
+Authentication resolves more than the canonical station string. The returned context contains
+the server-owned organization, enrollment, collector instance, collection memberships,
+credential/attestation evidence, and receipt-time publication revision. `stream` stamps that
+context onto every `RawFrame`; no feeder DATA field can set or override it.
+
+`NewConfigAuthenticator` is the fail-closed bootstrap implementation. Omitted scope becomes
+`local-unassigned/private`; a configured public policy must be explicit. A Django/DB-backed
+shared AAA provider can satisfy the same interface without changing frame processing.
 
 `Listen()` is called **synchronously at startup**, before any producer or historian goroutine, so
 a bad certificate or an already-bound address kills the process rather than leaving a

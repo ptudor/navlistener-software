@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ptudor/navlistener/internal/config"
+	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/metrics"
 )
 
@@ -270,7 +271,14 @@ func (m *Manager) runScanner(ctx context.Context, sc scanner, conn net.Conn, src
 // emit returns the per-source emit closure: count the frame and hand it to the
 // decode stage, honouring shutdown.
 func (m *Manager) emit(ctx context.Context, src config.Source) func(*RawFrame) {
+	observer := src.ObserverContext
+	if observer.ObserverID == "" {
+		// Programmatic tests/callers can bypass config.finalize. Preserve the
+		// production invariant here too: missing policy becomes private, never public.
+		observer = identity.NewPrivateContext(src.Name, identity.CredentialLocalDial)
+	}
 	return func(f *RawFrame) {
+		f.Observer = observer
 		if f.Obs == nil && f.RF == nil && f.Words != nil { // byte frames use CapturedOnlyTotal
 			metrics.FramesTotal.WithLabelValues(src.Name, strconv.Itoa(int(f.GnssID))).Inc()
 		}

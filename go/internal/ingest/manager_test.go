@@ -41,7 +41,10 @@ func TestEmitExcludesObsAndRFFromFramesTotal(t *testing.T) {
 	// Drain what emit() sent to out so the test doesn't depend on channel capacity.
 	for i := 0; i < 4; i++ {
 		select {
-		case <-out:
+		case f := <-out:
+			if f.Observer.ObserverID != src.Name || f.Observer.PublicEligible() {
+				t.Errorf("dial frame context = %+v, want private %q", f.Observer, src.Name)
+			}
 		case <-time.After(time.Second):
 			t.Fatal("emit did not forward a frame to out")
 		}

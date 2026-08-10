@@ -31,6 +31,7 @@ import (
 
 	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/detect"
+	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/metrics"
 	"github.com/ptudor/navlistener/internal/serve"
@@ -421,20 +422,37 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live *state.Store, historian *st
 		lastFrame.Store(time.Now().UnixNano())
 		defer recoverDecodePanic(f, log, lim)
 		if historian != nil && f.Obs == nil && f.RF == nil { // telemetry (observables, RF) is not a nav-frame record
+			observer := f.Observer
+			if observer.ObserverID == "" {
+				// Legacy/programmatic RawFrames have no trusted context. Persistence
+				// still records an explicit private/unassigned decision rather than NULL
+				// fields that a future reader might accidentally interpret as public.
+				observer = identity.NewPrivateContext(f.Source, identity.CredentialLocalDial)
+			}
 			historian.Enqueue(&store.NavFrame{
-				Ts:           time.Now(),
-				ReceivedAt:   f.Recv,
-				SourceID:     f.Source,
-				GnssID:       int(f.GnssID),
-				SvID:         f.SvID,
-				SigID:        f.SigID,
-				FreqID:       f.FreqID,
-				MsgType:      persistMsgType(f),
-				Raw:          f.RawBytes(),
-				DecoderVer:   version.Version,
-				SourceSeq:    f.Seq,
-				HasSourceSeq: f.HasSeq,
-				Session:      f.Session, // dedup-key third component 
+				Ts:                  time.Now(),
+				ReceivedAt:          f.Recv,
+				SourceID:            f.Source,
+				OrganizationID:      observer.OrganizationID,
+				EnrollmentID:        observer.EnrollmentID,
+				CollectorInstanceID: observer.CollectorInstanceID,
+				CollectionIDs:       append([]string(nil), observer.CollectionIDs...),
+				Provenance:          "local",
+				CredentialTier:      string(observer.CredentialTier),
+				AttestationTier:     string(observer.AttestationTier),
+				AggregateUse:        string(observer.Publication.AggregateUse),
+				StationMetadata:     string(observer.Publication.StationMetadata),
+				PolicyRevision:      observer.Publication.Revision,
+				GnssID:              int(f.GnssID),
+				SvID:                f.SvID,
+				SigID:               f.SigID,
+				FreqID:              f.FreqID,
+				MsgType:             persistMsgType(f),
+				Raw:                 f.RawBytes(),
+				DecoderVer:          version.Version,
+				SourceSeq:           f.Seq,
+				HasSourceSeq:        f.HasSeq,
+				Session:             f.Session, // dedup-key third component 
 			})
 		}
 		live.Apply(f)

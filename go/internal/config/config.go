@@ -21,6 +21,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	toml "github.com/pelletier/go-toml/v2"
+	"github.com/ptudor/navlistener/internal/identity"
 )
 
 // IntervalRe is the simple-interval allowlist for store.Store's raw_retention and
@@ -170,6 +171,19 @@ type PushObserver struct {
 	TokenSHA256 string   `toml:"token_sha256"`
 	Feeds       []string `toml:"feeds"`
 
+	// Config-backed bootstrap form of the server-resolved administrative and
+	// publication context (docs/GROUPS-AND-FEDERATION.md §5.1). Omitted values
+	// fail closed to local-unassigned/private. Production replaces this provider
+	// with shared AAA rows; static config can never claim hardware attestation.
+	OrganizationID      string                   `toml:"organization,omitempty"`
+	EnrollmentID        string                   `toml:"enrollment,omitempty"`
+	CollectorInstanceID string                   `toml:"collector_instance,omitempty"`
+	CollectionIDs       []string                 `toml:"collections,omitempty"`
+	AggregateUse        string                   `toml:"aggregate_use,omitempty"`
+	StationMetadata     string                   `toml:"station_metadata,omitempty"`
+	PolicyRevision      string                   `toml:"policy_revision,omitempty"`
+	ObserverContext     identity.ObserverContext `toml:"-"`
+
 	// Capabilities is the declared tudorgps fingerprint ("gnss:sig" list), as on Source.
 	Capabilities []string     `toml:"capabilities,omitempty"`
 	CapDecl      []Capability `toml:"-"`
@@ -230,6 +244,18 @@ type Source struct {
 	// to -- publishing it would disclose network topology and the exact
 	// host:port of an unauthenticated raw receiver TCP stream. Empty by default.
 	Remark string `toml:"remark,omitempty"`
+
+	// Dial sources do not authenticate through HELLO, but they still carry the
+	// same immutable ownership/publication stamp as push observers. Defaults are
+	// deliberately local-unassigned/private; public use must be explicit.
+	OrganizationID      string                   `toml:"organization,omitempty"`
+	EnrollmentID        string                   `toml:"enrollment,omitempty"`
+	CollectorInstanceID string                   `toml:"collector_instance,omitempty"`
+	CollectionIDs       []string                 `toml:"collections,omitempty"`
+	AggregateUse        string                   `toml:"aggregate_use,omitempty"`
+	StationMetadata     string                   `toml:"station_metadata,omitempty"`
+	PolicyRevision      string                   `toml:"policy_revision,omitempty"`
+	ObserverContext     identity.ObserverContext `toml:"-"`
 
 	// Capabilities is this node's declared tudorgps fingerprint: the "gnss:sig" signals its
 	// silicon can produce (docs/CONSTELLATIONS.md §7). The integrity layer compares it against
@@ -530,6 +556,14 @@ func (c *Config) finalize() error {
 			return fmt.Errorf("ingest %q: %w", s.Name, err)
 		}
 		s.CapDecl = caps
+		s.ObserverContext, err = finalizeObserverContext(
+			s.Name, s.OrganizationID, s.EnrollmentID, s.CollectorInstanceID,
+			s.CollectionIDs, s.AggregateUse, s.StationMetadata, s.PolicyRevision,
+			identity.CredentialLocalDial,
+		)
+		if err != nil {
+			return fmt.Errorf("ingest %q identity: %w", s.Name, err)
+		}
 	}
 	return nil
 }
@@ -586,6 +620,38 @@ func parseCapabilities(raw []string) ([]Capability, error) {
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+// finalizeObserverContext builds the config-backed bootstrap identity. Empty
+// administrative fields are filled only with fail-closed local/private defaults;
+// no config source can claim a manufacturer-attested tier.
+func finalizeObserverContext(observer, organization, enrollment, collector string,
+	collections []string, aggregate, metadata, revision string,
+	credential identity.CredentialTier,
+) (identity.ObserverContext, error) {
+	c := identity.NewPrivateContext(observer, credential)
+	if organization != "" {
+		c.OrganizationID = organization
+	}
+	if enrollment != "" {
+		c.EnrollmentID = enrollment
+	}
+	if collector != "" {
+		c.CollectorInstanceID = collector
+	}
+	if len(collections) > 0 {
+		c.CollectionIDs = append([]string(nil), collections...)
+	}
+	if aggregate != "" {
+		c.Publication.AggregateUse = identity.AggregateUse(aggregate)
+	}
+	if metadata != "" {
+		c.Publication.StationMetadata = identity.StationMetadata(metadata)
+	}
+	if revision != "" {
+		c.Publication.Revision = revision
+	}
+	return c.Normalize()
 }
 
 // finalizePush validates and defaults the push endpoint. When disabled (no addr) it
@@ -668,6 +734,14 @@ func (c *Config) finalizePush() error {
 			return fmt.Errorf("push.observer %q: %w", o.Station, err)
 		}
 		o.CapDecl = caps
+		o.ObserverContext, err = finalizeObserverContext(
+			o.Station, o.OrganizationID, o.EnrollmentID, o.CollectorInstanceID,
+			o.CollectionIDs, o.AggregateUse, o.StationMetadata, o.PolicyRevision,
+			identity.CredentialToken,
+		)
+		if err != nil {
+			return fmt.Errorf("push.observer %q identity: %w", o.Station, err)
+		}
 	}
 	return nil
 }

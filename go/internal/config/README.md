@@ -48,8 +48,8 @@ fleet ingest. The daemon runs happily as a collector-only process.
 | `[store]` | `dsn` set | TimescaleDB historian, `raw_retention`, `compress_after` |
 | `[serve]` | `addr` set | the native v2 read API and its refresh cadences |
 | `[push]` | `addr` set | the authenticated GNF1 fleet listener; TLS mandatory |
-| `[[push.observer]]` | — | per-observer station name, token hash, feed grants, capabilities |
-| `[[ingest]]` | per entry | dial connectors: ubx / sbf / rtcm / ntrip |
+| `[[push.observer]]` | — | credential/feed grant plus server-owned organization and publication context |
+| `[[ingest]]` | per entry | dial connector plus the same server-owned organization/publication context |
 
 ---
 
@@ -76,6 +76,12 @@ capabilities = ["0:0", "2:0", "2:3", "3:0", "6:0"]
 - **`capture_only`** persists raw frames without decoding into live state. Required for the byte
   sources (SBF, RTCM) until their central decoders land.
 - **`disabled`** keeps an entry in the file but doesn't start it — pause without deleting.
+- **Identity and policy fields** are `organization`, `enrollment`, `collector_instance`,
+  `collections`, `aggregate_use`, `station_metadata`, and `policy_revision`. They are resolved by
+  this collector, stamped on every frame, and persisted with the raw receipt. Omitting them is
+  deliberately safe: `local-unassigned`, `private`, and no station metadata. A receiver cannot
+  send or override them. Production will source the same context from shared AAA rows; config is
+  the bootstrap provider for local and standalone installations.
 - **`max_frame_silence`** (default 5m, regression fix) tears down and re-dials a source that keeps
   delivering *bytes* but no decodable *frames*. The idle timeout covers byte silence (a half-open
   peer); this covers the chatter-but-no-frames variant — an F9 reset to factory NMEA output, a
@@ -103,6 +109,9 @@ addresses.
   Production should gate admission at the TLS layer via `client_ca`; when it isn't set, this is
   the only thing between the internet and unbounded goroutine and file-descriptor growth.
 - **`ack_interval`** (default 1s) is the GNF1 ACK cadence.
+- **Organization and publication fields** have the same meanings and fail-closed defaults as on
+  `[[ingest]]`. They are authorization output, not feeder assertions. Config-backed observers
+  can prove `token` or `software_mtls`; config alone can never claim hardware attestation.
 
 ### The two identity validators
 

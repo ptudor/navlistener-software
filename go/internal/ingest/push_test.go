@@ -28,6 +28,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/navlistener/internal/config"
+	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/metrics"
 	"github.com/ptudor/navlistener/internal/wire"
 )
@@ -397,6 +398,9 @@ func TestPushHappyPath(t *testing.T) {
 	case f := <-out:
 		if f.Source != "observer16" || f.GnssID != gnss.GPS || f.SvID != 5 || len(f.Words) != 10 {
 			t.Errorf("frame = %+v, want observer16/GPS/5/10words", f)
+		}
+		if f.Observer.ObserverID != "observer16" || f.Observer.OrganizationID != identity.UnassignedOrganization || f.Observer.PublicEligible() {
+			t.Errorf("server-resolved context = %+v, want private local-unassigned observer16", f.Observer)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("frame did not reach the decode channel")
@@ -1370,7 +1374,7 @@ func TestPushAckWriteFailureClosesConnection(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		p.stream(context.Background(), srvConn, w, "observer16", "ubx", "boot-test")
+		p.stream(context.Background(), srvConn, w, identity.NewPrivateContext("observer16", identity.CredentialToken), "ubx", "boot-test")
 	}()
 
 	// Feed one DATA frame so `highest` advances past `acked` -- otherwise the ack

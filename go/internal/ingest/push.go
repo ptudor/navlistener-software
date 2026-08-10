@@ -18,6 +18,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/ptudor/navlistener/internal/config"
+	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/metrics"
 	"github.com/ptudor/navlistener/internal/wire"
 )
@@ -63,13 +64,12 @@ func (c *idleConn) Read(p []byte) (int, error) {
 	return c.Conn.Read(p)
 }
 
-// Authenticator validates an edge feeder's HELLO. It returns the canonical observer
-// id (the source tag stamped on every frame) and whether the token authorizes this
-// station for this feed type. Implementations must be safe for concurrent use. The
-// config-backed authenticator here is the bootstrap tier; a Django/DB-backed one
-// (the shared AAA plane, docs/DESIGN.md §3) satisfies the same interface later.
+// Authenticator validates an edge feeder's HELLO. It returns the complete
+// server-resolved observer context (identity, ownership, enrollment and
+// publication policy), not just the source tag. Implementations must be safe for
+// concurrent use. Ordinary DATA can never override this result.
 type Authenticator interface {
-	Authenticate(token, station, feed string) (observerID string, ok bool)
+	Authenticate(token, station, feed string) (identity.ObserverContext, bool)
 }
 
 // configAuth authenticates against the [[push.observer]] table: it matches the
@@ -87,25 +87,33 @@ func NewConfigAuthenticator(observers []config.PushObserver) Authenticator {
 	return &configAuth{byHash: m}
 }
 
-func (a *configAuth) Authenticate(token, station, feed string) (string, bool) {
+func (a *configAuth) Authenticate(token, station, feed string) (identity.ObserverContext, bool) {
 	sum := sha256.Sum256([]byte(token))
 	o, ok := a.byHash[hex.EncodeToString(sum[:])]
 	if !ok {
-		return "", false
+		return identity.ObserverContext{}, false
 	}
 	// The token is the identity; station is a misconfiguration guard  — a
 	// feeder pointed at the wrong station id (valid token, wrong presented name)
 	// is rejected rather than silently accepted under the token's canonical
 	// identity. handshake()'s caller already logs the rejected station/feed.
 	if station != o.Station {
-		return "", false
+		return identity.ObserverContext{}, false
 	}
 	for _, f := range o.Feeds {
 		if f == feed {
-			return o.Station, true
+			ctx := o.ObserverContext
+			if ctx.ObserverID == "" { // tests/programmatic callers may bypass config.finalize
+				ctx = identity.NewPrivateContext(o.Station, identity.CredentialToken)
+			}
+			ctx, err := ctx.Normalize()
+			if err != nil || ctx.ObserverID != o.Station {
+				return identity.ObserverContext{}, false
+			}
+			return ctx, true
 		}
 	}
-	return "", false // authenticated, but not granted this feed
+	return identity.ObserverContext{}, false // authenticated, but not granted this feed
 }
 
 func normalizeHex(s string) string {
@@ -344,10 +352,11 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 		return
 	}
 	w := &connWriter{c: conn}
-	observer, feed, session, useZstd, ok := p.handshake(conn, w, remote)
+	observerContext, feed, session, useZstd, ok := p.handshake(conn, w, remote)
 	if !ok {
 		return
 	}
+	observer = observerContext.ObserverID
 	metrics.PushConnectsTotal.WithLabelValues(observer).Inc()
 	metrics.PushObserversUp.WithLabelValues(observer).Inc()
 	defer metrics.PushObserversUp.WithLabelValues(observer).Dec()
@@ -371,7 +380,7 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 		frames = zr
 	}
 
-	p.stream(ctx, frames, w, observer, feed, session)
+	p.stream(ctx, frames, w, observerContext, feed, session)
 }
 
 // maxConsecutiveUnforwarded bounds how many frames in a row a connection may
@@ -405,31 +414,32 @@ const helloMaxLen = 4096
 // handshake reads and authenticates the HELLO, replying WELCOME. It returns the
 // canonical observer id, feed, session identity, and whether the DATA stream is
 // zstd-compressed (confirmed only when the feeder requested it) on success.
-func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (observer, feed, session string, useZstd, ok bool) {
+func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (observer identity.ObserverContext, feed, session string, useZstd, ok bool) {
 	ft, payload, err := wire.ReadFrameMax(conn, helloMaxLen)
 	if err != nil || ft != wire.Hello {
 		p.log.Warn("push expected HELLO", "remote", remote, "frame", ft, "error", err)
-		return "", "", "", false, false
+		return identity.ObserverContext{}, "", "", false, false
 	}
 	h, err := wire.ParseHello(payload)
 	if err != nil {
 		p.log.Warn("push bad HELLO json", "remote", remote, "error", err)
-		return "", "", "", false, false
+		return identity.ObserverContext{}, "", "", false, false
 	}
-	obs, authed := p.auth.Authenticate(h.Token, h.Station, h.Feed)
+	observerContext, authed := p.auth.Authenticate(h.Token, h.Station, h.Feed)
 	if !authed {
 		metrics.PushAuthFailuresTotal.Inc()
 		metrics.PushAuthFailuresByReasonTotal.WithLabelValues("token_or_grant").Inc()
 		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "unauthorized"}))
 		p.log.Warn("push auth rejected", "remote", remote, "station", h.Station, "feed", h.Feed)
-		return "", "", "", false, false
+		return identity.ObserverContext{}, "", "", false, false
 	}
+	obs := observerContext.ObserverID
 	if p.tlsConfig.ClientAuth != tls.NoClientCert {
 		tlsConn, isTLS := conn.(*tls.Conn)
 		if !isTLS {
 			metrics.PushAuthFailuresTotal.Inc()
 			metrics.PushAuthFailuresByReasonTotal.WithLabelValues("certificate_identity").Inc()
-			return "", "", "", false, false
+			return identity.ObserverContext{}, "", "", false, false
 		}
 		state := tlsConn.ConnectionState()
 		if err := matchPeerIdentity(state.PeerCertificates, obs); err != nil {
@@ -437,7 +447,12 @@ func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (obs
 			metrics.PushAuthFailuresByReasonTotal.WithLabelValues("certificate_identity").Inc()
 			_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "certificate identity mismatch"}))
 			p.log.Warn("push certificate identity rejected", "remote", remote, "observer", obs, "error", err)
-			return "", "", "", false, false
+			return identity.ObserverContext{}, "", "", false, false
+		}
+		// Config-backed mTLS establishes an extractable/software certificate tier.
+		// Only the future AAA/attestation verifier may return hardware_mtls.
+		if observerContext.CredentialTier != identity.CredentialHardwareMTLS {
+			observerContext = observerContext.WithCredentialTier(identity.CredentialSoftwareMTLS)
 		}
 	}
 	// regression fix/regression fix defense-in-depth: push has an explicit wire-contract allow-list,
@@ -445,7 +460,7 @@ func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (obs
 	// Dial-only sbf/ntrip must never reach recordToFrame's ubx/rtcm branches.
 	if h.Feed != "ubx" && h.Feed != "rtcm" {
 		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "unsupported feed"}))
-		return "", "", "", false, false
+		return identity.ObserverContext{}, "", "", false, false
 	}
 	// the session is the boot-identity half of the replay-dedup key
 	// (observer, session, seq) — see wire.HelloMsg.Session for the full contract.
@@ -455,14 +470,14 @@ func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (obs
 	if !wire.ValidSession(h.Session) {
 		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "missing or invalid session"}))
 		p.log.Warn("push HELLO missing or invalid session", "remote", remote, "observer", obs)
-		return "", "", "", false, false
+		return identity.ObserverContext{}, "", "", false, false
 	}
 	if err := w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{
 		OK: true, AckIntervalMS: int(p.ackInterval / time.Millisecond), Zstd: h.Zstd,
 	})); err != nil {
-		return "", "", "", false, false
+		return identity.ObserverContext{}, "", "", false, false
 	}
-	return obs, h.Feed, h.Session, h.Zstd, true
+	return observerContext, h.Feed, h.Session, h.Zstd, true
 }
 
 // matchPeerIdentity binds an mTLS-authenticated leaf to the token's canonical
@@ -497,7 +512,8 @@ func matchPeerIdentity(chain []*x509.Certificate, observer string) error {
 // the feeder's spool would grow without bound. Frames are forwarded to decode
 // unconditionally (nav frames are idempotent, so a replayed duplicate is
 // harmless); the sequence governs only spool pruning.
-func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter, observer, feed, session string) {
+func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter, observerContext identity.ObserverContext, feed, session string) {
+	observer := observerContext.ObserverID
 	var (
 		mu      sync.Mutex
 		highest uint64 // highest sequence received this connection
@@ -607,6 +623,7 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				}
 				mu.Unlock()
 			} else {
+				f.Observer = observerContext       // trusted handshake result; never record metadata
 				f.Seq, f.HasSeq = seq, true        // historian dedup key : this connection may be a replay
 				f.Session = session                // boot-identity half of the dedup key 
 				if f.RF == nil && f.Words != nil { // byte frames use CapturedOnlyTotal, not gnssid=0

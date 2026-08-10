@@ -13,6 +13,19 @@ CREATE TABLE IF NOT EXISTS nav_frames (
     ts          TIMESTAMPTZ NOT NULL,   -- ingest time (hypertable dimension)
     received_at TIMESTAMPTZ NOT NULL,   -- receiver/host reception time (indexed)
     source_id   TEXT        NOT NULL,   -- ingest source / observer id
+    -- Server-resolved receipt-time scope (GROUPS-AND-FEDERATION.md §5). These
+    -- fields are immutable evidence: a later transfer/policy change must not
+    -- rewrite what authority admitted or disclosed this observation.
+    organization_id       TEXT   NOT NULL DEFAULT 'local-unassigned',
+    enrollment_id         TEXT   NOT NULL DEFAULT 'legacy-unassigned',
+    collector_instance_id TEXT   NOT NULL DEFAULT 'local',
+    collection_ids        TEXT[] NOT NULL DEFAULT '{}',
+    provenance            TEXT   NOT NULL DEFAULT 'local',
+    credential_tier       TEXT   NOT NULL DEFAULT 'local_dial',
+    attestation_tier      TEXT   NOT NULL DEFAULT 'none',
+    aggregate_use         TEXT   NOT NULL DEFAULT 'private',
+    station_metadata      TEXT   NOT NULL DEFAULT 'none',
+    policy_revision       TEXT   NOT NULL DEFAULT 'legacy-private-v1',
     gnssid      SMALLINT    NOT NULL,   -- gnssId 0..7 (docs/CONSTELLATIONS.md §0)
     svid        SMALLINT    NOT NULL,
     sigid       SMALLINT    NOT NULL,
@@ -32,9 +45,24 @@ CREATE TABLE IF NOT EXISTS nav_frames (
 SELECT create_hypertable('nav_frames', 'ts',
     chunk_time_interval => INTERVAL '1 hour', if_not_exists => TRUE);
 
+-- Additive migration for deployments created before audience/provenance
+-- scoping. Every legacy row becomes explicitly private/unassigned; no absence
+-- can be interpreted as public by a newer read/export path.
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS organization_id       TEXT   NOT NULL DEFAULT 'local-unassigned';
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS enrollment_id         TEXT   NOT NULL DEFAULT 'legacy-unassigned';
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS collector_instance_id TEXT   NOT NULL DEFAULT 'local';
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS collection_ids        TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS provenance            TEXT   NOT NULL DEFAULT 'local';
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS credential_tier       TEXT   NOT NULL DEFAULT 'local_dial';
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS attestation_tier      TEXT   NOT NULL DEFAULT 'none';
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS aggregate_use         TEXT   NOT NULL DEFAULT 'private';
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS station_metadata      TEXT   NOT NULL DEFAULT 'none';
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS policy_revision       TEXT   NOT NULL DEFAULT 'legacy-private-v1';
+
 -- Query paths: per-SV history, and the recent-by-reception forensic scan.
 CREATE INDEX IF NOT EXISTS idx_nav_frames_sv   ON nav_frames (gnssid, svid, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_nav_frames_recv ON nav_frames (received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_nav_frames_org_recv ON nav_frames (organization_id, received_at DESC);
 
 -- Dedup contract : on feeder reconnect, navfeeder replays every DATA frame
 -- past the last ack it received (docs/DESIGN.md §2). decode/live-state tolerate the

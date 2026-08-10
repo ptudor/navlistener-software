@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/wire"
 )
 
@@ -121,7 +122,7 @@ func TestPushStreamAcksDurableWatermark(t *testing.T) {
 			log: slog.New(slog.NewTextHandler(io.Discard, nil)), durable: tr}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		go p.stream(ctx, srvConn, &connWriter{c: srvConn}, "obs1", "ubx", "boot-a")
+		go p.stream(ctx, srvConn, &connWriter{c: srvConn}, identity.NewPrivateContext("obs1", identity.CredentialToken), "ubx", "boot-a")
 
 		for seq := uint64(1); seq <= 2; seq++ {
 			if err := wire.WriteFrame(cliConn, wire.Data, wire.EncodeData(seq, mkRec())); err != nil {
@@ -153,7 +154,7 @@ func TestPushStreamAcksDurableWatermark(t *testing.T) {
 			log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		go p.stream(ctx, srvConn, &connWriter{c: srvConn}, "obs1", "ubx", "boot-a")
+		go p.stream(ctx, srvConn, &connWriter{c: srvConn}, identity.NewPrivateContext("obs1", identity.CredentialToken), "ubx", "boot-a")
 
 		if err := wire.WriteFrame(cliConn, wire.Data, wire.EncodeData(7, mkRec())); err != nil {
 			t.Fatal(err)

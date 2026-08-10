@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ptudor/navlistener/internal/identity"
 )
 
 const goodHash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -396,6 +398,36 @@ func TestPushValid(t *testing.T) {
 	}
 	if c.Push.AckInterval.String() != "500ms" {
 		t.Errorf("ack interval = %v, want 500ms", c.Push.AckInterval)
+	}
+	ctx := c.Push.Observers[0].ObserverContext
+	if ctx.OrganizationID != identity.UnassignedOrganization || ctx.PublicEligible() {
+		t.Errorf("omitted observer policy widened beyond private/unassigned: %+v", ctx)
+	}
+}
+
+func TestObserverPublicationContextValidation(t *testing.T) {
+	c, err := finalizeObserverContext(
+		"observer16", "institution-c", "enrollment-1", "hosted-west",
+		[]string{"institution-c-roof", "public-community"},
+		"public_attributed", "pseudonymous", "policy-3", identity.CredentialToken,
+	)
+	if err != nil {
+		t.Fatalf("valid publication context rejected: %v", err)
+	}
+	if !c.PublicEligible() || !c.PublicAttributed() || c.OrganizationID != "institution-c" {
+		t.Fatalf("publication context normalized incorrectly: %+v", c)
+	}
+	if _, err := finalizeObserverContext(
+		"observer16", "customer a", "", "", nil,
+		"private", "none", "", identity.CredentialToken,
+	); err == nil {
+		t.Fatal("invalid organization scope accepted")
+	}
+	if _, err := finalizeObserverContext(
+		"observer16", "institution-c", "", "", nil,
+		"public_attributed", "none", "", identity.CredentialToken,
+	); err == nil {
+		t.Fatal("attributed public policy without metadata accepted")
 	}
 }
 

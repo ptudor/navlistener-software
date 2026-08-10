@@ -45,14 +45,24 @@ var ErrNavFrameLimit = fmt.Errorf("nav frame query hit its row limit; narrow the
 // ingest.RawFrame. Words are not stored as such — Raw holds the frame bytes, which
 // for a word-oriented source is the big-endian nav words back to back.
 type StoredNavFrame struct {
-	ReceivedAt time.Time
-	SourceID   string
-	GnssID     int
-	SvID       int
-	SigID      int
-	FreqID     int // GLONASS FDMA channel (k = FreqID - 7); 0 for other constellations
-	MsgType    int
-	Raw        []byte
+	ReceivedAt          time.Time
+	SourceID            string
+	OrganizationID      string
+	EnrollmentID        string
+	CollectorInstanceID string
+	CollectionIDs       []string
+	Provenance          string
+	CredentialTier      string
+	AttestationTier     string
+	AggregateUse        string
+	StationMetadata     string
+	PolicyRevision      string
+	GnssID              int
+	SvID                int
+	SigID               int
+	FreqID              int // GLONASS FDMA channel (k = FreqID - 7); 0 for other constellations
+	MsgType             int
+	Raw                 []byte
 }
 
 // Close releases the connection pool.
@@ -94,7 +104,10 @@ func (s *Store) QueryNavFrames(ctx context.Context, q NavFrameQuery, fn func(Sto
 	// feeder reconnect replay. The trailing keys make the order total, so a rerun of
 	// the same window replays identically rather than permuting frames that share a
 	// timestamp.
-	sql := `SELECT received_at, source_id, gnssid, svid, sigid, freqid, msg_type, raw
+	sql := `SELECT received_at, source_id, organization_id, enrollment_id,
+	               collector_instance_id, collection_ids, provenance, credential_tier,
+	               attestation_tier, aggregate_use, station_metadata, policy_revision,
+	               gnssid, svid, sigid, freqid, msg_type, raw
 	          FROM nav_frames
 	         WHERE received_at >= $1
 	           AND ($2::timestamptz IS NULL OR received_at < $2)
@@ -130,7 +143,12 @@ func (s *Store) QueryNavFrames(ctx context.Context, q NavFrameQuery, fn func(Sto
 			f                         StoredNavFrame
 			gid, sv, sig, freq, mtype int16
 		)
-		if err := rows.Scan(&f.ReceivedAt, &f.SourceID, &gid, &sv, &sig, &freq, &mtype, &f.Raw); err != nil {
+		if err := rows.Scan(
+			&f.ReceivedAt, &f.SourceID, &f.OrganizationID, &f.EnrollmentID,
+			&f.CollectorInstanceID, &f.CollectionIDs, &f.Provenance, &f.CredentialTier,
+			&f.AttestationTier, &f.AggregateUse, &f.StationMetadata, &f.PolicyRevision,
+			&gid, &sv, &sig, &freq, &mtype, &f.Raw,
+		); err != nil {
 			return fmt.Errorf("query nav frames: scan: %w", err)
 		}
 		f.GnssID, f.SvID, f.SigID = int(gid), int(sv), int(sig)
