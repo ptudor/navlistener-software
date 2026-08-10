@@ -222,13 +222,15 @@ CREATE TRIGGER gnss_event_notify AFTER INSERT ON gnss_events
 -- gnss_snapshots: periodic feed dumps for replay/backfill (docs/OUTPUT.md §4).
 CREATE TABLE IF NOT EXISTS gnss_snapshots (
     time     TIMESTAMPTZ NOT NULL,
+    audience TEXT        NOT NULL DEFAULT 'legacy-operator',
     endpoint TEXT        NOT NULL,  -- 'svs' | 'global' | 'observers' | 'almanac' | 'sbas'
     data     JSONB       NOT NULL
 );
 SELECT create_hypertable('gnss_snapshots', 'time', if_not_exists => TRUE);
-CREATE INDEX IF NOT EXISTS idx_gnss_snapshots_endpoint ON gnss_snapshots (endpoint, time DESC);
+ALTER TABLE gnss_snapshots ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'legacy-operator';
+CREATE INDEX IF NOT EXISTS idx_gnss_snapshots_audience_endpoint ON gnss_snapshots (audience, endpoint, time DESC);
 ALTER TABLE gnss_snapshots SET (
     timescaledb.compress,
-    timescaledb.compress_segmentby = 'endpoint',
+    timescaledb.compress_segmentby = 'audience,endpoint',
     timescaledb.compress_orderby   = 'time DESC'
 );

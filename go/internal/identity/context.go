@@ -54,10 +54,9 @@ const (
 type StationMetadata string
 
 const (
-	MetadataNone         StationMetadata = "none"
-	MetadataPseudonymous StationMetadata = "pseudonymous"
-	MetadataCoarse       StationMetadata = "coarse_location"
-	MetadataFull         StationMetadata = "full"
+	MetadataNone   StationMetadata = "none"
+	MetadataCoarse StationMetadata = "coarse"
+	MetadataFull   StationMetadata = "full"
 )
 
 // PublicationPolicy is the receipt-time policy snapshot relevant to the first
@@ -168,12 +167,14 @@ func (c ObserverContext) Normalize() (ObserverContext, error) {
 		c.Publication.StationMetadata = MetadataNone
 	}
 	switch c.Publication.StationMetadata {
-	case MetadataNone, MetadataPseudonymous, MetadataCoarse, MetadataFull:
+	case MetadataNone, MetadataCoarse, MetadataFull:
 	default:
 		return c, fmt.Errorf("station metadata %q is invalid", c.Publication.StationMetadata)
 	}
-	if c.Publication.AggregateUse == AggregatePublicAttributed && c.Publication.StationMetadata == MetadataNone {
-		return c, fmt.Errorf("public_attributed aggregate use requires public station metadata")
+	if c.Publication.AggregateUse == AggregatePublicAttributed &&
+		c.Publication.StationMetadata != MetadataCoarse &&
+		c.Publication.StationMetadata != MetadataFull {
+		return c, fmt.Errorf("public_attributed aggregate use requires coarse or full station metadata")
 	}
 	if c.Publication.Revision == "" {
 		c.Publication.Revision = "config-private-v1"

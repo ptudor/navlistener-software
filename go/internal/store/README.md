@@ -29,7 +29,7 @@ func New(ctx, cfg config.Store, log *slog.Logger) (*Store, error)
 func (s *Store) Run(ctx context.Context)                         // the writer goroutine
 func (s *Store) Enqueue(f *NavFrame)                             // bounded, drop-on-overflow
 func (s *Store) WriteEvent(ctx, e EventRow) (int64, error)        // direct, idempotent
-func (s *Store) WriteSnapshot(ctx, at, endpoint string, data []byte) error
+func (s *Store) WriteSnapshot(ctx, at, audience, endpoint string, data []byte) error
 func (s *Store) QueryEvents(ctx, q EventQuery) ([]StoredEvent, int, error)
 func (s *Store) SummarizeEvents(ctx, since, until) (EventSummary, error)
 func (s *Store) SetDurableNotify(fn func(source, session string, seq uint64))
@@ -187,8 +187,9 @@ have been invisible from inside this repo.
 
 Periodic dumps of each served feed's current body (`svs`, `global`, `observers`, `almanac`,
 `sbas`) for replay and backfill. Active only when both `[serve].addr` and `[store].dsn` are set;
-cadence is `[serve].snapshot_interval` (default 5m, `0s` disables). Compressed, segmented by
-endpoint.
+cadence is `[serve].snapshot_interval` (default 5m, `0s` disables). Every row is keyed and
+compressed by `(audience, endpoint)`, so an operator payload cannot be replayed through a public
+cache.
 
 ### Retention and compression policies
 

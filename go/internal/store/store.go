@@ -329,7 +329,7 @@ func applySchema(ctx context.Context, pool *pgxpool.Pool) error {
 // that into a clear, fail-fast error instead.
 var requiredColumns = map[string][]string{
 	"gnss_events":    {"id", "time", "sv", "event_type", "old_value", "new_value", "severity", "message", "raw", "dedupe_key"},
-	"gnss_snapshots": {"time", "endpoint", "data"},
+	"gnss_snapshots": {"time", "audience", "endpoint", "data"},
 	// navlistener's own raw-frame tables get the same fail-fast drift check. A future
 	// build that adds a copyColumns column against an existing deployment's older nav_frames
 	// starts cleanly (CREATE TABLE IF NOT EXISTS is a no-op), then every CopyFrom fails 42703

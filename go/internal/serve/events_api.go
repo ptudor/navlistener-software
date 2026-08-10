@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/store"
 )
 
@@ -48,6 +49,11 @@ const (
 // events (newest first) and the total before pagination.
 func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 	if methodNotAllowedGetHead(w, r) {
+		return
+	}
+	if s.audience.Kind == identity.AudiencePublic {
+		s.setAudienceCacheHeaders(w)
+		writeError(w, http.StatusServiceUnavailable, "public event history unavailable until audience-scoped event persistence is enabled")
 		return
 	}
 	if s.events == nil {
@@ -159,6 +165,11 @@ func (s *Server) serveEventsSummary(w http.ResponseWriter, r *http.Request) {
 	if methodNotAllowedGetHead(w, r) {
 		return
 	}
+	if s.audience.Kind == identity.AudiencePublic {
+		s.setAudienceCacheHeaders(w)
+		writeError(w, http.StatusServiceUnavailable, "public event summary unavailable until audience-scoped event persistence is enabled")
+		return
+	}
 	if s.events == nil {
 		writeError(w, http.StatusServiceUnavailable, "events history unavailable (historian disabled)")
 		return
@@ -207,6 +218,7 @@ func (s *Server) writeEnvelope(w http.ResponseWriter, now time.Time, data map[st
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	s.setAudienceCacheHeaders(w)
 	_, _ = w.Write(body)
 }
 

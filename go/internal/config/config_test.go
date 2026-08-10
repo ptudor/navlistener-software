@@ -107,6 +107,30 @@ func TestSnapshotInterval(t *testing.T) {
 	}
 }
 
+func TestServeAudienceFailsClosed(t *testing.T) {
+	def := defaults()
+	if err := def.finalize(); err != nil {
+		t.Fatal(err)
+	}
+	if def.Serve.Audience != "public" || def.Serve.AudienceContext.Kind != identity.AudiencePublic {
+		t.Fatalf("default serve audience = %+v / %q, want public", def.Serve.AudienceContext, def.Serve.Audience)
+	}
+
+	op := defaults()
+	op.Serve.Audience = "operator"
+	if err := op.finalize(); err != nil || op.Serve.AudienceContext.Kind != identity.AudienceOperator {
+		t.Fatalf("operator audience rejected: %+v (err %v)", op.Serve.AudienceContext, err)
+	}
+
+	for _, unsafe := range []string{"organization:customer-a", "collection:public", "anything"} {
+		c := defaults()
+		c.Serve.Audience = unsafe
+		if err := c.finalize(); err == nil {
+			t.Errorf("unauthenticated audience %q accepted", unsafe)
+		}
+	}
+}
+
 // TestLeapSecondsValidated guards state.leap_seconds is an interim override
 // for the compiled-in ΔtLS default; unset (0) must pass validation as a no-op, an
 // ICD-plausible value must pass, and an out-of-band value (a fat-fingered config,
@@ -409,7 +433,7 @@ func TestObserverPublicationContextValidation(t *testing.T) {
 	c, err := finalizeObserverContext(
 		"observer16", "institution-c", "enrollment-1", "hosted-west",
 		[]string{"institution-c-roof", "public-community"},
-		"public_attributed", "pseudonymous", "policy-3", identity.CredentialToken,
+		"public_attributed", "coarse", "policy-3", identity.CredentialToken,
 	)
 	if err != nil {
 		t.Fatalf("valid publication context rejected: %v", err)

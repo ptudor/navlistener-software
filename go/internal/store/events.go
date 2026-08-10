@@ -261,11 +261,16 @@ func (s *Store) SummarizeEvents(ctx context.Context, since, until time.Time) (Ev
 }
 
 // WriteSnapshot stores one feed dump for replay/backfill (docs/OUTPUT.md §4).
-// endpoint is the feed name; data is the marshalled JSON body.
-func (s *Store) WriteSnapshot(ctx context.Context, at time.Time, endpoint string, data []byte) error {
+// audience is the materialized authorization view and endpoint is the feed
+// name; data is the marshalled JSON body. Keeping audience in the row and index
+// prevents an operator snapshot from ever being replayed as public.
+func (s *Store) WriteSnapshot(ctx context.Context, at time.Time, audience, endpoint string, data []byte) error {
+	if audience == "" {
+		return fmt.Errorf("write snapshot: audience is required")
+	}
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO gnss_snapshots (time, endpoint, data) VALUES ($1, $2, $3)`,
-		at, endpoint, string(data))
+		`INSERT INTO gnss_snapshots (time, audience, endpoint, data) VALUES ($1, $2, $3, $4)`,
+		at, audience, endpoint, string(data))
 	if err != nil {
 		return fmt.Errorf("write snapshot: %w", err)
 	}

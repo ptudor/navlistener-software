@@ -25,6 +25,7 @@ import (
 func TestDecodeLoopDrainsAllFramesBeforeClose(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	live := state.New(1)
+	publicLive := state.New(1)
 	frames := make(chan *ingest.RawFrame)
 
 	const n = 50
@@ -44,7 +45,7 @@ func TestDecodeLoopDrainsAllFramesBeforeClose(t *testing.T) {
 	decodeDone := make(chan struct{})
 	go func() {
 		defer close(decodeDone)
-		decodeLoop(frames, live, nil, log, &lastFrame)
+		decodeLoop(frames, live, publicLive, nil, log, &lastFrame)
 	}()
 
 	select {

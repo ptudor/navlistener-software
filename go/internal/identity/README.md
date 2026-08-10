@@ -13,8 +13,12 @@ The zero/omitted behavior is fail-closed:
 
 - organization: `local-unassigned`
 - aggregate use: `private`
-- station metadata: `none`
+- station metadata: `none` (`coarse` and `full` are public display tiers, not anonymity)
 - attestation: `none`
+
+`public_anonymous` is the only non-attributed public mode. A station published as `coarse` or
+`full` is still locatable from its per-SV geometry; coarse is a display courtesy, never a
+privacy promise.
 
 The context separates evidence (`CredentialTier`, `AttestationTier`) from authorization
 (`PublicationPolicy`). A genuine board is not automatically public, and a public contribution is

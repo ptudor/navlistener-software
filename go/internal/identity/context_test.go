@@ -39,7 +39,7 @@ func TestPublicPolicyModes(t *testing.T) {
 
 	attributed := anon
 	attributed.Publication.AggregateUse = AggregatePublicAttributed
-	attributed.Publication.StationMetadata = MetadataPseudonymous
+	attributed.Publication.StationMetadata = MetadataCoarse
 	attributed, err = attributed.Normalize()
 	if err != nil {
 		t.Fatal(err)

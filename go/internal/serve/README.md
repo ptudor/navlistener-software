@@ -52,13 +52,22 @@ Every JSON response is wrapped in the standard v2 envelope (`docs/OUTPUT.md §0`
 ```go
 func New(addr string, st *state.Store, events EventStore, sources []config.Source,
          fast, slow time.Duration, log *slog.Logger) *Server
+func NewForAudience(addr string, st *state.Store, events EventStore, sources []config.Source,
+         fast, slow time.Duration, log *slog.Logger, audience identity.Audience) *Server
 func (s *Server) Listen() (net.Listener, error)
 func (s *Server) Start(ln net.Listener) error
 func (s *Server) Run(ctx context.Context)          // the refresh loop
 func (s *Server) Shutdown(ctx context.Context) error
 func (s *Server) PublishEvent(e EventMsg)
 func (s *Server) SnapshotFeeds() map[string][]byte  // for the historian's snapshot writer
+func (s *Server) Audience() identity.Audience
 ```
+
+`NewForAudience` requires an already isolated state store; it never filters one global
+aggregate at serialization time. Runtime configuration defaults to the `public` projection.
+The explicit `operator` view is private/no-store and must sit behind authenticated access.
+`New` remains the operator-view convenience constructor for internal tests and single-user
+embedding.
 
 ---
 
@@ -81,8 +90,14 @@ A marshalling failure is logged and **leaves the previous body in place** rather
 broken or empty feed.
 
 `SnapshotFeeds()` returns a copy of every warmed feed's current envelope — that's what the
-historian persists to `gnss_snapshots` for replay and backfill, and it means the snapshot is
-byte-identical to what consumers actually saw.
+historian persists to `gnss_snapshots` under `Server.Audience()` for replay and backfill, and it
+means the snapshot is byte-identical to what consumers actually saw without crossing audience
+caches.
+
+Public feed responses are cacheable and identify `data.audience = "public"`. Operator responses
+send `Cache-Control: private, no-store` and vary on authorization/audience selectors. Until event
+rows and cursors carry an audience, the public events query, summary, and SSE endpoints return
+503 and `PublishEvent` drops the operator event rather than leaking it.
 
 ### The events query API and its bounds
 

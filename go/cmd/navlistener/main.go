@@ -29,6 +29,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ptudor/navlistener/internal/audience"
 	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/detect"
 	"github.com/ptudor/navlistener/internal/identity"
@@ -94,9 +95,13 @@ func run() int {
 	// Pipeline: ingest → decode → live state (+ optional persist historian).
 	state.SetLeapSeconds(cfg.State.LeapSeconds) // interim config override for ΔtLS
 	live := state.New(cfg.State.Shards)
+	publicLive := state.New(cfg.State.Shards)
 	if decl := declaredCapabilities(cfg); len(decl) > 0 {
 		live.SetDeclaredCapabilities(decl)
 		log.Info("declared capabilities loaded", "stations", len(decl))
+	}
+	if decl := declaredPublicCapabilities(cfg); len(decl) > 0 {
+		publicLive.SetDeclaredCapabilities(decl)
 	}
 	frames := make(chan *ingest.RawFrame, frameQueue)
 	mgr := ingest.New(cfg.Ingest, frames, log)
@@ -221,10 +226,12 @@ func run() int {
 
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go func() { defer wg.Done(); decodeLoop(frames, live, historian, log, &lastFrameNano) }()
+	go func() { defer wg.Done(); decodeLoop(frames, live, publicLive, historian, log, &lastFrameNano) }()
 
 	wg.Add(1)
-	go func() { defer wg.Done(); stateLoop(ctx, cfg.State, live) }()
+	// Run the public projection first and the operator state last so legacy
+	// process-wide gauges retain their all-source/operator meaning.
+	go func() { defer wg.Done(); stateLoop(ctx, cfg.State, publicLive, live) }()
 
 	// Any required listener that terminates after readiness fails health and drives
 	// the same ordered shutdown path as a signal.
@@ -258,7 +265,14 @@ func run() int {
 		if historian != nil {
 			eventStore = historian
 		}
-		apiSrv = serve.New(cfg.Serve.Addr, live, eventStore, cfg.Ingest, cfg.Serve.RefreshFast, cfg.Serve.RefreshSlow, log)
+		serveState := publicLive
+		serveSources := audience.PublicSources(cfg.Ingest)
+		if cfg.Serve.Audience == "operator" {
+			serveState = live
+			serveSources = cfg.Ingest
+		}
+		apiSrv = serve.NewForAudience(cfg.Serve.Addr, serveState, eventStore, serveSources,
+			cfg.Serve.RefreshFast, cfg.Serve.RefreshSlow, log, cfg.Serve.AudienceContext)
 		wg.Add(1)
 		go func() { defer wg.Done(); apiSrv.Run(ctx) }()
 		go func() {
@@ -414,7 +428,7 @@ func persistMsgType(f *ingest.RawFrame) int {
 // : it simply ranges frames until the channel is closed, which the owner
 // (run, above) does only after every producer has confirmed it will never send
 // again — so every already-enqueued frame is applied with no drain race.
-func decodeLoop(frames <-chan *ingest.RawFrame, live *state.Store, historian *store.Store, log *slog.Logger, lastFrame *atomic.Int64) {
+func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive *state.Store, historian *store.Store, log *slog.Logger, lastFrame *atomic.Int64) {
 	lim := &panicLogLimiter{}
 	apply := func(f *ingest.RawFrame) {
 		// every dial and push frame funnels through here, so this one
@@ -456,6 +470,9 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live *state.Store, historian *st
 			})
 		}
 		live.Apply(f)
+		if publicFrame, ok := audience.ProjectPublic(f); ok {
+			publicLive.Apply(publicFrame)
+		}
 	}
 	for f := range frames {
 		apply(f)
@@ -549,6 +566,42 @@ func declaredCapabilities(cfg *config.Config) map[string][]state.CapSignal {
 	return out
 }
 
+// declaredPublicCapabilities projects the server-owned declarations into the
+// same source keys used by public state. Anonymous contributors collapse into
+// one bucket, so their declared signal sets are unioned; private sources vanish.
+func declaredPublicCapabilities(cfg *config.Config) map[string][]state.CapSignal {
+	sets := map[string]map[state.CapSignal]bool{}
+	add := func(c identity.ObserverContext, decl []config.Capability) {
+		c, err := c.Normalize()
+		if err != nil || !c.PublicEligible() || len(decl) == 0 {
+			return
+		}
+		id := c.ObserverID
+		if c.Publication.AggregateUse == identity.AggregatePublicAnonymous {
+			id = audience.AnonymousPublicSource
+		}
+		if sets[id] == nil {
+			sets[id] = map[state.CapSignal]bool{}
+		}
+		for _, capability := range decl {
+			sets[id][state.CapSignal{Gnss: capability.Gnss, Sig: capability.Sig}] = true
+		}
+	}
+	for _, s := range cfg.Ingest {
+		add(s.ObserverContext, s.CapDecl)
+	}
+	for _, o := range cfg.Push.Observers {
+		add(o.ObserverContext, o.CapDecl)
+	}
+	out := make(map[string][]state.CapSignal, len(sets))
+	for id, set := range sets {
+		for sig := range set {
+			out[id] = append(out[id], sig)
+		}
+	}
+	return out
+}
+
 // snapshotLoop persists each served v2 feed's current body to the historian on the
 // configured cadence — the light replay/backfill record (docs/OUTPUT.md §4), complementary
 // to the raw-nav-frame hypertable. A write failure is logged and the loop continues: a
@@ -565,7 +618,7 @@ func snapshotLoop(ctx context.Context, api *serve.Server, historian *store.Store
 				// Per-call deadline : ctx is cancel-only, so a hung DB connection
 				// must not block this loop indefinitely on OS TCP timeouts.
 				callCtx, cancel := context.WithTimeout(ctx, snapshotWriteTimeout)
-				err := historian.WriteSnapshot(callCtx, now, feed, body)
+				err := historian.WriteSnapshot(callCtx, now, api.Audience().Key(), feed, body)
 				cancel()
 				if err != nil {
 					if ctx.Err() != nil {
@@ -1031,7 +1084,7 @@ func expireTickFor(ttl time.Duration) time.Duration {
 }
 
 // stateLoop re-propagates live SVs on the configured cadence and expires stale ones.
-func stateLoop(ctx context.Context, cfg config.State, store *state.Store) {
+func stateLoop(ctx context.Context, cfg config.State, stores ...*state.Store) {
 	prop := time.NewTicker(cfg.PropagateEvery)
 	defer prop.Stop()
 	expire := time.NewTicker(expireTickFor(cfg.SVTTL))
@@ -1039,11 +1092,16 @@ func stateLoop(ctx context.Context, cfg config.State, store *state.Store) {
 	for {
 		select {
 		case <-prop.C:
-			store.Propagate(time.Now())
+			now := time.Now()
+			for _, store := range stores {
+				store.Propagate(now)
+			}
 		case <-expire.C:
 			now := time.Now()
-			store.Expire(now, cfg.SVTTL)
-			store.ExpireStations(now) // sbas/rf/almanac RAM eviction
+			for _, store := range stores {
+				store.Expire(now, cfg.SVTTL)
+				store.ExpireStations(now) // sbas/rf/almanac RAM eviction
+			}
 		case <-ctx.Done():
 			return
 		}
@@ -1103,6 +1161,7 @@ func printConfigSummary(cfg *config.Config) {
 		serveAddr = "(disabled)"
 	}
 	fmt.Printf("  serve addr:     %s\n", serveAddr)
+	fmt.Printf("  serve audience: %s\n", cfg.Serve.Audience)
 	pushAddr := cfg.Push.Addr
 	if pushAddr == "" {
 		pushAddr = "(disabled)"

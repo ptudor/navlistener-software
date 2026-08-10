@@ -130,6 +130,11 @@ Sections: `[logging]`, `[metrics]`, `[state]`, `[store]`, `[serve]`, `[push]` (w
 `[[push.observer]]`), and `[[ingest]]`. See `internal/config/README.md` for the full surface and
 `navlistener.toml.example` for a commented reference.
 
+`[serve].audience` defaults to `public`, which is populated from an isolated pre-aggregation
+projection: private receivers cannot affect its confidence, counters, selected ephemeris, or
+observer list. Set `audience = "operator"` only for an authenticated private front; those
+responses are marked `private, no-store`.
+
 ```sh
 ./navlistener -check-config -config /usr/local/etc/navlistener/navlistener.toml
 ```

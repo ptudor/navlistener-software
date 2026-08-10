@@ -46,7 +46,7 @@ fleet ingest. The daemon runs happily as a collector-only process.
 | `[metrics]` | `addr` set | Prometheus `/metrics` + `/healthz`, loopback-bound |
 | `[state]` | always | shard count, propagate cadence, SV TTL, `leap_seconds` |
 | `[store]` | `dsn` set | TimescaleDB historian, `raw_retention`, `compress_after` |
-| `[serve]` | `addr` set | the native v2 read API and its refresh cadences |
+| `[serve]` | `addr` set | the native v2 read API, `audience` (`public` default or explicit `operator`), and refresh cadences |
 | `[push]` | `addr` set | the authenticated GNF1 fleet listener; TLS mandatory |
 | `[[push.observer]]` | — | credential/feed grant plus server-owned organization and publication context |
 | `[[ingest]]` | per entry | dial connector plus the same server-owned organization/publication context |
@@ -54,6 +54,17 @@ fleet ingest. The daemon runs happily as a collector-only process.
 ---
 
 ## Details
+
+### `[serve]` — one isolated read audience
+
+`audience = "public"` is the fail-closed default. The collector builds this state only from
+sources whose server-resolved policy grants public aggregate use; private observations never
+enter it. `audience = "operator"` selects the all-source local operations view and must be
+protected by an authenticated private front. Free-form organization or collection audiences
+are rejected until the read-auth layer can resolve them from a principal's server-side grants.
+
+The public events endpoints stay unavailable rather than borrowing unscoped operator event
+history. Feed snapshots are persisted with their audience key.
 
 ### `[[ingest]]` — dial sources
 

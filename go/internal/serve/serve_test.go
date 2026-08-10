@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -12,7 +13,9 @@ import (
 
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/gnss/frame"
+	"github.com/ptudor/navlistener/internal/audience"
 	"github.com/ptudor/navlistener/internal/config"
+	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/state"
 )
@@ -36,6 +39,78 @@ func TestServerIdleTimeoutSet(t *testing.T) {
 	}
 	if s.http.WriteTimeout != 0 {
 		t.Errorf("http.Server.WriteTimeout = %v, want unset (SSE streams need long-lived writes)", s.http.WriteTimeout)
+	}
+}
+
+func TestPublicAudienceHeadersAndAnonymousObserverFiltering(t *testing.T) {
+	s := NewForAudience("127.0.0.1:0", state.New(1), nil, nil, time.Minute, time.Minute,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), identity.Audience{Kind: identity.AudiencePublic})
+	now := time.Now()
+	s.store.Apply(&ingest.RawFrame{Source: audience.AnonymousPublicSource, Recv: now, RF: &ingest.RawRF{
+		Bands: []ingest.RFBand{{Block: 0, AGC: 3000}},
+	}})
+	s.refresh("observers")
+	rr := httptest.NewRecorder()
+	s.serveFeed("observers")(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/observers", nil))
+	if got := rr.Header().Get("Cache-Control"); !strings.HasPrefix(got, "public") {
+		t.Fatalf("public cache header = %q", got)
+	}
+	if strings.Contains(rr.Body.String(), audience.AnonymousPublicSource) {
+		t.Fatalf("anonymous source leaked into observer feed: %s", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"audience":"public"`) {
+		t.Fatalf("audience key missing from envelope data: %s", rr.Body.String())
+	}
+
+	events := httptest.NewRecorder()
+	s.serveEventsQuery(events, httptest.NewRequest(http.MethodGet, "/gnss/api/events", nil))
+	if events.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unscoped public events status = %d, want 503", events.Code)
+	}
+}
+
+func TestOperatorAudienceResponsesArePrivate(t *testing.T) {
+	s := testServer(nil)
+	s.refresh("global")
+	rr := httptest.NewRecorder()
+	s.serveFeed("global")(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/global", nil))
+	if got := rr.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("operator cache header = %q", got)
+	}
+	if got := rr.Header().Get("Vary"); !strings.Contains(got, "Authorization") {
+		t.Fatalf("operator Vary = %q", got)
+	}
+}
+
+// TestPrivateObservationCannotChangePublicFeedBytes is the stage-5 privacy
+// parity invariant: a private-only source is rejected before aggregation, so
+// every public feed remains byte-for-byte identical at a fixed refresh instant.
+func TestPrivateObservationCannotChangePublicFeedBytes(t *testing.T) {
+	publicState := state.New(1)
+	s := NewForAudience("127.0.0.1:0", publicState, nil, nil, time.Minute, time.Minute,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), identity.Audience{Kind: identity.AudiencePublic})
+	fixed := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return fixed }
+	s.refreshAll()
+	before := s.SnapshotFeeds()
+
+	private := &ingest.RawFrame{
+		Source: "customer-a-secret-roof", Recv: fixed,
+		Observer: identity.NewPrivateContext("customer-a-secret-roof", identity.CredentialHardwareMTLS),
+		RF:       &ingest.RawRF{Bands: []ingest.RFBand{{Block: 0, AGC: 1, JamState: 3}}},
+	}
+	if projected, ok := audience.ProjectPublic(private); ok {
+		publicState.Apply(projected)
+	}
+	s.refreshAll()
+	after := s.SnapshotFeeds()
+	if len(before) != len(after) {
+		t.Fatalf("feed count changed: %d -> %d", len(before), len(after))
+	}
+	for feed, want := range before {
+		if got := after[feed]; !bytes.Equal(got, want) {
+			t.Errorf("private frame changed public %s bytes\nbefore=%s\nafter=%s", feed, want, got)
+		}
 	}
 }
 

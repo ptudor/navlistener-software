@@ -17,7 +17,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ptudor/navlistener/internal/audience"
 	"github.com/ptudor/navlistener/internal/config"
+	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/metrics"
 	"github.com/ptudor/navlistener/internal/state"
 	"github.com/ptudor/navlistener/internal/store"
@@ -42,12 +44,13 @@ var fastFeeds = []string{"svs", "global", "observers", "sbas"}
 // under an RWMutex on refresh, so a request never blocks on state-lock contention or
 // JSON encoding — it copies a ready []byte.
 type Server struct {
-	http    *http.Server
-	store   *state.Store
-	events  EventStore
-	sources []config.Source
-	log     *slog.Logger
-	now     func() time.Time
+	http     *http.Server
+	store    *state.Store
+	events   EventStore
+	sources  []config.Source
+	log      *slog.Logger
+	now      func() time.Time
+	audience identity.Audience
 
 	fast time.Duration
 	slow time.Duration
@@ -64,6 +67,16 @@ type Server struct {
 // dial sources and active push identities. fast/slow are the refresh cadences
 // (§5); zero uses the defaults (30 s / 90 s).
 func New(addr string, st *state.Store, events EventStore, sources []config.Source, fast, slow time.Duration, log *slog.Logger) *Server {
+	return NewForAudience(addr, st, events, sources, fast, slow, log,
+		identity.Audience{Kind: identity.AudienceOperator, ID: identity.LocalCollectorInstance})
+}
+
+// NewForAudience builds one physically separated audience view. Callers must
+// pass a state store that was populated only with contributions authorized for
+// this audience; Server never attempts to redact a global aggregate after the
+// fact. Organization/collection audiences require a separately authenticated
+// read front before they may be constructed.
+func NewForAudience(addr string, st *state.Store, events EventStore, sources []config.Source, fast, slow time.Duration, log *slog.Logger, selected identity.Audience) *Server {
 	if fast <= 0 {
 		fast = 30 * time.Second
 	}
@@ -71,15 +84,16 @@ func New(addr string, st *state.Store, events EventStore, sources []config.Sourc
 		slow = 90 * time.Second
 	}
 	s := &Server{
-		store:   st,
-		events:  events,
-		sources: sources,
-		log:     log,
-		now:     time.Now,
-		fast:    fast,
-		slow:    slow,
-		broker:  newBroker(),
-		cache:   map[string][]byte{},
+		store:    st,
+		events:   events,
+		sources:  sources,
+		log:      log,
+		now:      time.Now,
+		audience: selected,
+		fast:     fast,
+		slow:     slow,
+		broker:   newBroker(),
+		cache:    map[string][]byte{},
 	}
 	s.broker.log = log // SSE marshal failures log through the server's real logger
 	mux := http.NewServeMux()
@@ -90,7 +104,14 @@ func New(addr string, st *state.Store, events EventStore, sources []config.Sourc
 	mux.HandleFunc("/gnss/api/v2/sbas", s.serveFeed("sbas"))
 	mux.HandleFunc("/gnss/api/events/summary", s.serveEventsSummary)
 	mux.HandleFunc("/gnss/api/events", s.serveEventsQuery)
-	mux.HandleFunc("/gnss/events", s.broker.serveEvents)
+	if selected.Kind == identity.AudiencePublic {
+		// Historical events and SSE remain unavailable until their persistence
+		// and cursors are audience-scoped. Empty-looking success would be a lie;
+		// serving the operator stream would be a privacy breach.
+		mux.HandleFunc("/gnss/events", s.serveEventsUnavailable)
+	} else {
+		mux.HandleFunc("/gnss/events", s.broker.serveEvents)
+	}
 	s.http = &http.Server{
 		Addr:              addr,
 		Handler:           mux,
@@ -158,8 +179,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // PublishEvent fans a confirmed integrity event out to the SSE clients and records
 // it in the reconnect-replay ring (docs/OUTPUT.md §3).
 func (s *Server) PublishEvent(e EventMsg) {
+	if s.audience.Kind == identity.AudiencePublic {
+		return // fail closed until event rows/cursors carry an audience
+	}
 	s.broker.Publish(e)
 }
+
+// Audience returns the immutable view key served and snapshotted by this server.
+func (s *Server) Audience() identity.Audience { return s.audience }
 
 // SnapshotFeeds returns a copy of every warmed feed's current marshalled envelope, keyed
 // by feed name, for the historian's replay/backfill record (docs/OUTPUT.md §4). Feeds not
@@ -191,7 +218,7 @@ func (s *Server) refreshAll() {
 // and leaves the previous (stale) bytes in place rather than serving a broken body.
 func (s *Server) refresh(feed string) {
 	now := s.now()
-	data := map[string]any{"schema": schemaVersion}
+	data := map[string]any{"schema": schemaVersion, "audience": s.audience.Key()}
 	switch feed {
 	case "svs":
 		data["svs"] = s.store.FeedSVs(now)
@@ -246,6 +273,7 @@ func (s *Server) serveFeed(feed string) http.HandlerFunc {
 			s.mu.RUnlock()
 		}
 		w.Header().Set("Content-Type", "application/json")
+		s.setAudienceCacheHeaders(w)
 		if body == nil {
 			writeError(w, http.StatusServiceUnavailable, "feed not ready")
 			return
@@ -320,13 +348,13 @@ func (s *Server) observers(now time.Time) []observer {
 	// (vendor/remark/disabled) simply absent. Sorted for a stable feed.
 	extra := make([]string, 0)
 	for id := range rf {
-		if !seen[id] {
+		if !seen[id] && !(s.audience.Kind == identity.AudiencePublic && audience.IsAnonymousPublicSource(id)) {
 			seen[id] = true
 			extra = append(extra, id)
 		}
 	}
 	for id := range reps {
-		if !seen[id] {
+		if !seen[id] && !(s.audience.Kind == identity.AudiencePublic && audience.IsAnonymousPublicSource(id)) {
 			seen[id] = true
 			extra = append(extra, id)
 		}
@@ -345,6 +373,23 @@ func (s *Server) observers(now time.Time) []observer {
 		out = append(out, o)
 	}
 	return out
+}
+
+func (s *Server) setAudienceCacheHeaders(w http.ResponseWriter) {
+	if s.audience.Kind == identity.AudiencePublic {
+		w.Header().Set("Cache-Control", "public, max-age=30")
+		return
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("Vary", "Authorization, X-GNSS-Audience")
+}
+
+func (s *Server) serveEventsUnavailable(w http.ResponseWriter, r *http.Request) {
+	if methodNotAllowedGetHead(w, r) {
+		return
+	}
+	s.setAudienceCacheHeaders(w)
+	writeError(w, http.StatusServiceUnavailable, "public event stream unavailable until audience-scoped event persistence is enabled")
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {

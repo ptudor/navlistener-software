@@ -105,6 +105,13 @@ type Config struct {
 // the daemon can run collector-only. The refresh cadences default per §5.
 type Serve struct {
 	Addr string `toml:"addr"` // e.g. 127.0.0.1:8080; empty = serve disabled
+	// Audience selects the one materialized view this unauthenticated listener
+	// serves. "public" is the fail-closed default. "operator" exposes the local
+	// all-source view and therefore requires an authenticated private front.
+	// Organization/collection selection belongs to the read-auth layer and is
+	// intentionally not accepted as a free-form config/query value here.
+	Audience        string            `toml:"audience"`
+	AudienceContext identity.Audience `toml:"-"`
 
 	RefreshFasts string        `toml:"refresh_interval"` // svs/global/observers/sbas, default "30s"
 	RefreshFast  time.Duration `toml:"-"`
@@ -369,6 +376,7 @@ func defaults() *Config {
 		Metrics:         Metrics{Addr: "127.0.0.1:9100"},
 		State:           State{Shards: 16, SVTTLs: "2h", PropagateEverys: "1s"},
 		Store:           Store{BatchSize: 1000, BatchEverys: "1s", RawRetention: "7 days", CompressAfter: "1 day"},
+		Serve:           Serve{Audience: "public"},
 		Push:            Push{MaxConns: 512},
 		ShutdownTimeout: 15 * time.Second,
 	}
@@ -463,6 +471,15 @@ func (c *Config) finalize() error {
 	}
 	if err := parseDurPositive("serve.almanac_refresh_interval", c.Serve.RefreshSlows, &c.Serve.RefreshSlow, 90*time.Second); err != nil {
 		return err
+	}
+	switch c.Serve.Audience {
+	case "", "public":
+		c.Serve.Audience = "public"
+		c.Serve.AudienceContext = identity.Audience{Kind: identity.AudiencePublic}
+	case "operator":
+		c.Serve.AudienceContext = identity.Audience{Kind: identity.AudienceOperator, ID: identity.LocalCollectorInstance}
+	default:
+		return fmt.Errorf("serve.audience %q: want public or operator (organization/collection audiences require authenticated read grants)", c.Serve.Audience)
 	}
 	if err := parseDur(c.Serve.SnapshotEverys, &c.Serve.SnapshotEvery); err != nil {
 		return fmt.Errorf("serve.snapshot_interval: %w", err)

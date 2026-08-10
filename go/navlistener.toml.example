@@ -45,6 +45,7 @@ raw_retention  = "7 days" # drop raw frames older than this; events/snapshots ha
 # intsat.space. Satellites move slowly, so the refresh cadences are deliberately slow.
 [serve]
 # addr                    = "127.0.0.1:8080"
+audience                 = "public" # public (default) | operator; operator requires an authenticated private front
 refresh_interval        = "30s"  # svs/global/observers/sbas
 almanac_refresh_interval = "90s" # almanac (longer-life, all-SV view)
 snapshot_interval        = "5m"  # persist each feed to the historian for replay/backfill; "0s" disables (needs [store].dsn)
@@ -72,7 +73,7 @@ ack_interval = "1s"
 # collector_instance = "intsat-production"
 # collections = ["customer-a-primary"]
 # aggregate_use = "private"                # private | public_anonymous | public_attributed
-# station_metadata = "none"                # none | pseudonymous | coarse_location | full
+# station_metadata = "none"                # none | coarse | full; coarse is display precision, not anonymity
 # policy_revision = "customer-a-policy-v1" # receipt-time policy stamped into every raw row
 # capabilities = ["0:0", "2:0", "6:0"]  # declared tudorgps fingerprint, same "gnss:sig"
 #                             # form as on [[ingest]] below; a push observer's declaration
