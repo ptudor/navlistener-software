@@ -95,9 +95,10 @@ means the snapshot is byte-identical to what consumers actually saw without cros
 caches.
 
 Public feed responses are cacheable and identify `data.audience = "public"`. Operator responses
-send `Cache-Control: private, no-store` and vary on authorization/audience selectors. Until event
-rows and cursors carry an audience, the public events query, summary, and SSE endpoints return
-503 and `PublishEvent` drops the operator event rather than leaking it.
+send `Cache-Control: private, no-store` and vary on authorization/audience selectors. Event
+queries are forced to `Server.Audience()`; clients cannot supply a free-form scope. SSE receives
+only the matching detector pipeline, and its ids are that audience's private monotone sequence,
+not the historian's global row id.
 
 ### The events query API and its bounds
 
@@ -125,9 +126,11 @@ of thing that gets found later.
 
 ### SSE — the `Broker`
 
-`GET /gnss/events` streams confirmed integrity events. The broker fans out to connected clients
-and keeps a **bounded ring of recent events for `Last-Event-ID` reconnect replay**, so a client
-that drops and reconnects gets what it missed instead of a silent gap. Heartbeat every 60 s.
+`GET /gnss/events` streams confirmed integrity events for this server's audience. The broker fans
+out to connected clients and keeps a **bounded ring of recent events for `Last-Event-ID` reconnect replay**, so a client
+that drops and reconnects gets what it missed instead of a silent gap. The cursor is monotone only
+within that audience, so private incidents cannot be inferred from gaps in public ids. Heartbeat
+every 60 s.
 
 This is the *server-driven push* side of the events contract. The database trigger's `pg_notify`
 serves external LISTENers separately — two independent paths, deliberately, so an external

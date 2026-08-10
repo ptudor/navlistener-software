@@ -249,7 +249,7 @@ Event object (SSE `data:` payload and API rows; the JSON key is `type` — the D
 
 | Field | Type | Meaning |
 |---|---|---|
-| `id` | int64 | monotonic event id (BIGSERIAL) |
+| `id` | int64 | monotonic within the selected audience; not the internal BIGSERIAL row id  |
 | `time` | RFC3339 | confirmation time (post-debounce) |
 | `sv` | string | `name@sigid` |
 | `type` | string | event type (INTEGRITY.md §5 — the authoritative vocabulary) |
@@ -264,6 +264,11 @@ named events `event: gnss` (an integrity event, `id:` set), `event: status` (hea
 default every 60 s), `event: resolved`; reconnect via `Last-Event-ID` replays from that id
 (bounded), else the most recent N (default 20). `Content-Type: text/event-stream`,
 `X-Accel-Buffering: no`.
+
+The query, summary, live detector, SSE ring, and `Last-Event-ID` cursor are all scoped to the
+server-resolved audience. Each audience has an independent monotone sequence. Operator-only
+events therefore create no observable gaps in public ids, and clients partition reconnect
+cursors by `(server, principal, audience)`.
 
 Event types and their thresholds/severities are defined once, in `docs/INTEGRITY.md §2/§5` —
 this section is the wire shape only.
@@ -290,6 +295,9 @@ working while it is still the serve front; the additions are ours.
 CREATE TABLE gnss_events (
     id         BIGSERIAL,
     time       TIMESTAMPTZ NOT NULL,
+    audience   TEXT        NOT NULL,
+    audience_seq BIGINT    NOT NULL,
+    redaction_class TEXT   NOT NULL,
     sv         TEXT        NOT NULL,
     event_type TEXT        NOT NULL,
     old_value  TEXT, new_value TEXT,
@@ -298,22 +306,29 @@ CREATE TABLE gnss_events (
     raw        JSONB,
     dedupe_key TEXT                     -- internal retry-idempotency key, never served
 );
+CREATE TABLE gnss_event_audience_cursors (
+    audience TEXT PRIMARY KEY,
+    last_seq BIGINT NOT NULL
+);
 SELECT create_hypertable('gnss_events','time', if_not_exists => TRUE);
 CREATE INDEX idx_gnss_events_sv_time       ON gnss_events (sv, time DESC);
 CREATE INDEX idx_gnss_events_type_time     ON gnss_events (event_type, time DESC);
 CREATE INDEX idx_gnss_events_severity_time ON gnss_events (severity, time DESC);
 -- the writer's INSERT is an upsert on (time, dedupe_key) — a retry after an
 -- ambiguous commit (client saw a timeout, PostgreSQL committed) returns the committed
--- row's id instead of storing/notifying one real transition twice. NULL on legacy rows.
+-- row's audience_seq instead of storing/notifying one real transition twice. NULL on legacy rows.
 CREATE UNIQUE INDEX idx_gnss_events_dedupe ON gnss_events (time, dedupe_key);
--- notify_gnss_event(): pg_notify('gnss_event', json{id,sv,type,severity})
--- The payload identifies the row; LISTENers fetch the full row (including message) by id.
+CREATE INDEX idx_gnss_events_audience_seq ON gnss_events (audience, audience_seq DESC);
+-- notify_gnss_event(): public rows only, on gnss_event_v2,
+-- json{id=audience_seq,row_id,audience,sv,type,severity}. Migrated LISTENers use
+-- gnss_events_public or (audience,audience_seq); the legacy unscoped channel is silent.
 CREATE TRIGGER gnss_event_notify AFTER INSERT ON gnss_events
     FOR EACH ROW EXECUTE FUNCTION notify_gnss_event();
 
 -- Endpoint snapshots (feed dumps for replay/backfill)
 CREATE TABLE gnss_snapshots (
     time     TIMESTAMPTZ NOT NULL,
+    audience TEXT        NOT NULL,
     endpoint TEXT        NOT NULL,   -- 'svs' | 'global' | 'observers' | 'almanac' | 'sbas'
     data     JSONB       NOT NULL
 );
@@ -332,6 +347,17 @@ CREATE TABLE nav_frames (
     ts          TIMESTAMPTZ NOT NULL,   -- ingest time (hypertable dimension)
     received_at TIMESTAMPTZ NOT NULL,   -- receiver reception time (indexed)
     source_id   TEXT        NOT NULL,   -- GNF1 sourceID (observer)
+    organization_id TEXT NOT NULL,
+    enrollment_id TEXT NOT NULL,
+    collector_instance_id TEXT NOT NULL,
+    collection_ids TEXT[] NOT NULL,
+    provenance TEXT NOT NULL,
+    credential_tier TEXT NOT NULL,
+    attestation_tier TEXT NOT NULL,
+    aggregate_use TEXT NOT NULL,
+    station_metadata TEXT NOT NULL,
+    event_visibility TEXT NOT NULL,
+    policy_revision TEXT NOT NULL,
     gnssid      SMALLINT    NOT NULL,   -- gnssId (0..7, CONSTELLATIONS.md §0)
     svid        SMALLINT    NOT NULL,
     sigid       SMALLINT    NOT NULL,

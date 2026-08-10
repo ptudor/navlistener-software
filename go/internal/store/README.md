@@ -90,7 +90,7 @@ organization_id, enrollment_id, collector_instance_id  TEXT
 collection_ids  TEXT[]     -- receipt-time collection memberships
 provenance      TEXT       -- local or an inbound federation peer
 credential_tier, attestation_tier  TEXT
-aggregate_use, station_metadata, policy_revision  TEXT
+aggregate_use, station_metadata, event_visibility, policy_revision  TEXT
 gnssid, svid, sigid, msg_type  SMALLINT
 raw         BYTEA        -- the broadcast frame, untouched
 decoded     JSONB        -- normalized projection, nullable
@@ -158,7 +158,7 @@ The durable record of confirmed integrity transitions. It is a **superset of int
 **No retention policy, ever.** Confirmed integrity transitions are the durable record. That is
 precisely why compression matters here: a flapping detector over a multi-month run would
 otherwise accumulate uncompressed row-oriented chunks without bound. Compression is *enabled* in
-the DDL (segment by `event_type`) and the 30-day *policy* is applied by the store at startup —
+the DDL (segment by `audience,event_type`) and the 30-day *policy* is applied by the store at startup —
 and note that enabling compression later requires the `ALTER` first; a policy alone cannot do it
 .
 
@@ -171,13 +171,23 @@ unique index must include the partition column — safe, because retries reuse t
 `EventRow`, `time` included. Legacy and intsat rows have NULL keys and never conflict under
 PostgreSQL's NULLS DISTINCT.
 
-**The notify contract.** An `AFTER INSERT` trigger fires `pg_notify('gnss_event', …)` carrying
-**only** `id`, `sv`, `type`, and `severity`. `message` is intentionally omitted rather than
-truncated: `pg_notify` has a hard ~8000-byte payload limit, and a long message would *raise in
-the trigger and fail the whole INSERT in the same transaction*. LISTENers fetch the full
-row by `id`.
+**Audience-local cursors.** Every row carries `audience`, `audience_seq`, and
+`redaction_class`. `WriteEvent` atomically increments `gnss_event_audience_cursors` and returns
+`audience_seq` to SSE. Public ids therefore do not acquire gaps when operator-only events occur.
+The idempotent retry first finds an already committed `dedupe_key`, so a commit-ack timeout does
+not consume a second visible sequence. Queries and summaries require one audience predicate.
+Legacy rows migrate to `legacy-operator` with their old internal id as a one-time private cursor.
 
-Which is why `idx_gnss_events_id` exists : a hypertable PK must include the partition
+**The notify contract.** An `AFTER INSERT` trigger fires `pg_notify('gnss_event_v2', …)` for
+the `public` audience only, carrying the audience-local `id`, internal `row_id`, audience,
+`sv`, `type`, and `severity`. `message` is intentionally omitted rather than truncated:
+`pg_notify` has a hard ~8000-byte payload limit, and a long message would *raise in the trigger
+and fail the whole INSERT in the same transaction*. Migrated consumers read the
+`gnss_events_public` view or fetch by `(audience, audience_seq)`. The legacy unscoped channel is
+not emitted; letting an old consumer interpret a public sequence as a global row id could fetch
+private data.
+
+`idx_gnss_events_id` remains for the internal `row_id` lookup : a hypertable PK must include the partition
 column, so `id` has no index by default — and without an explicit one, every notify-driven
 `SELECT ... WHERE id = $1` seq-scans **every chunk** of this retention-less table. That cost
 lands entirely on the external consumer, since navlistener itself never queries by id. It would

@@ -67,6 +67,29 @@ func TestProjectPublicAttributedKeepsGeometryButNotRF(t *testing.T) {
 	}
 }
 
+func TestProjectPublicEventsIsIndependentlyGatedAndRedacted(t *testing.T) {
+	in := &ingest.RawFrame{
+		Source: "hardware-id", Recv: time.Now(),
+		Observer: contextFor(identity.AggregatePublicAttributed, identity.MetadataFull),
+		Obs:      &ingest.RawObs{PrM: 20_000_000},
+	}
+	if _, ok := ProjectPublicEvents(in); ok {
+		t.Fatal("default private event policy entered public detector state")
+	}
+
+	in.Observer.Publication.EventVisibility = identity.EventsPublicRedacted
+	redacted, ok := ProjectPublicEvents(in)
+	if !ok || redacted.Source != AnonymousPublicSource || redacted.Obs != nil {
+		t.Fatalf("redacted event projection wrong: %+v, %v", redacted, ok)
+	}
+
+	in.Observer.Publication.EventVisibility = identity.EventsPublic
+	public, ok := ProjectPublicEvents(in)
+	if !ok || public.Source != "eui64-observer" || public.Obs == nil {
+		t.Fatalf("public event projection wrong: %+v, %v", public, ok)
+	}
+}
+
 func TestPublicSourcesExposeOnlyAttributedPresentation(t *testing.T) {
 	private := config.Source{Name: "private", Remark: "secret site"}
 	coarse := config.Source{Name: "coarse", Remark: "exact rooftop", ObserverContext: contextFor(identity.AggregatePublicAttributed, identity.MetadataCoarse)}

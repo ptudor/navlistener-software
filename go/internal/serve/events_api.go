@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/store"
 )
 
@@ -49,11 +48,6 @@ const (
 // events (newest first) and the total before pagination.
 func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 	if methodNotAllowedGetHead(w, r) {
-		return
-	}
-	if s.audience.Kind == identity.AudiencePublic {
-		s.setAudienceCacheHeaders(w)
-		writeError(w, http.StatusServiceUnavailable, "public event history unavailable until audience-scoped event persistence is enabled")
 		return
 	}
 	if s.events == nil {
@@ -132,6 +126,7 @@ func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 		since = until.Add(-eventsMaxWindow)
 	}
 	query := store.EventQuery{
+		Audience:    s.audience.Key(),
 		SV:          q.Get("sv"),
 		Type:        q.Get("type"),
 		MinSeverity: severity,
@@ -165,11 +160,6 @@ func (s *Server) serveEventsSummary(w http.ResponseWriter, r *http.Request) {
 	if methodNotAllowedGetHead(w, r) {
 		return
 	}
-	if s.audience.Kind == identity.AudiencePublic {
-		s.setAudienceCacheHeaders(w)
-		writeError(w, http.StatusServiceUnavailable, "public event summary unavailable until audience-scoped event persistence is enabled")
-		return
-	}
 	if s.events == nil {
 		writeError(w, http.StatusServiceUnavailable, "events history unavailable (historian disabled)")
 		return
@@ -183,7 +173,7 @@ func (s *Server) serveEventsSummary(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
 	ctx, cancel := context.WithTimeout(r.Context(), eventsQueryTimeout)
 	defer cancel()
-	sum, err := s.events.SummarizeEvents(ctx, now.Add(-time.Duration(hours)*time.Hour), now)
+	sum, err := s.events.SummarizeEventsForAudience(ctx, s.audience.Key(), now.Add(-time.Duration(hours)*time.Hour), now)
 	if err != nil {
 		s.log.Error("events summary failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "events summary failed")

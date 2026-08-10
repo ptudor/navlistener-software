@@ -232,7 +232,7 @@ func TestNavFrameRowMatchesColumnOrder(t *testing.T) {
 		Ts: now, ReceivedAt: now.Add(time.Second), SourceID: "obs1",
 		OrganizationID: "customer-a", EnrollmentID: "enroll-9", CollectorInstanceID: "hosted-west",
 		Provenance: "local", CredentialTier: "hardware_mtls", AttestationTier: "verified_v2_complete",
-		AggregateUse: "private", StationMetadata: "none", PolicyRevision: "policy-7",
+		AggregateUse: "private", StationMetadata: "none", EventVisibility: "private", PolicyRevision: "policy-7",
 		GnssID: 6, SvID: 5, SigID: 2, FreqID: 9, MsgType: 0x10,
 		Raw: []byte{1, 2, 3}, Decoded: []byte(`{"a":1}`), DecoderVer: "v1",
 	}
@@ -245,7 +245,7 @@ func TestNavFrameRowMatchesColumnOrder(t *testing.T) {
 		"organization_id": "customer-a", "enrollment_id": "enroll-9",
 		"collector_instance_id": "hosted-west", "provenance": "local",
 		"credential_tier": "hardware_mtls", "attestation_tier": "verified_v2_complete",
-		"aggregate_use": "private", "station_metadata": "none", "policy_revision": "policy-7",
+		"aggregate_use": "private", "station_metadata": "none", "event_visibility": "private", "policy_revision": "policy-7",
 		"gnssid": int16(6), "svid": int16(5), "sigid": int16(2),
 		"freqid": int16(9), "msg_type": int16(0x10),
 		"decoded": `{"a":1}`, "decoder_ver": "v1",

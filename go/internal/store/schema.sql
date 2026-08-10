@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS nav_frames (
     attestation_tier      TEXT   NOT NULL DEFAULT 'none',
     aggregate_use         TEXT   NOT NULL DEFAULT 'private',
     station_metadata      TEXT   NOT NULL DEFAULT 'none',
+    event_visibility      TEXT   NOT NULL DEFAULT 'private',
     policy_revision       TEXT   NOT NULL DEFAULT 'legacy-private-v1',
     gnssid      SMALLINT    NOT NULL,   -- gnssId 0..7 (docs/CONSTELLATIONS.md §0)
     svid        SMALLINT    NOT NULL,
@@ -57,6 +58,7 @@ ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS credential_tier       TEXT   NOT
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS attestation_tier      TEXT   NOT NULL DEFAULT 'none';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS aggregate_use         TEXT   NOT NULL DEFAULT 'private';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS station_metadata      TEXT   NOT NULL DEFAULT 'none';
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS event_visibility      TEXT   NOT NULL DEFAULT 'private';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS policy_revision       TEXT   NOT NULL DEFAULT 'legacy-private-v1';
 
 -- Query paths: per-SV history, and the recent-by-reception forensic scan.
@@ -146,13 +148,16 @@ ALTER TABLE nav_frames SET (
 );
 
 -- gnss_events: confirmed integrity transitions (docs/OUTPUT.md §4). navlistener
--- writes; a serve-side process (this daemon's SSE broker, or intsat) consumes.
--- The AFTER INSERT trigger fires pg_notify('gnss_event', …) so external LISTENers
--- see events without polling. This schema is a superset of intsat's 001_init.sql,
--- so its read path keeps working while it is still the serve front.
+-- writes; the native SSE broker publishes its selected audience directly. A
+-- public-only v2 NOTIFY channel is provided for migrated external consumers;
+-- the legacy unscoped channel is intentionally not used because its global ids
+-- leak private event volume and can make an old consumer fetch the wrong row.
 CREATE TABLE IF NOT EXISTS gnss_events (
     id         BIGSERIAL,
     time       TIMESTAMPTZ NOT NULL,
+    audience   TEXT        NOT NULL DEFAULT 'legacy-operator',
+    audience_seq BIGINT    NOT NULL,
+    redaction_class TEXT   NOT NULL DEFAULT 'private',
     sv         TEXT        NOT NULL,
     event_type TEXT        NOT NULL,
     old_value  TEXT,
@@ -175,7 +180,27 @@ SELECT create_hypertable('gnss_events', 'time', if_not_exists => TRUE);
 -- pre-dates this column (CREATE TABLE IF NOT EXISTS never alters); NULL keys
 -- (legacy/intsat rows) never conflict under PostgreSQL's NULLS DISTINCT.
 ALTER TABLE gnss_events ADD COLUMN IF NOT EXISTS dedupe_key TEXT;
+ALTER TABLE gnss_events ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'legacy-operator';
+ALTER TABLE gnss_events ADD COLUMN IF NOT EXISTS redaction_class TEXT NOT NULL DEFAULT 'private';
+ALTER TABLE gnss_events ADD COLUMN IF NOT EXISTS audience_seq BIGINT;
+-- Legacy rows are operator-only. Their old global id is safe as a one-time
+-- sequence inside that non-public audience; new public/private streams allocate
+-- independently below.
+UPDATE gnss_events SET audience_seq = id WHERE audience_seq IS NULL;
+ALTER TABLE gnss_events ALTER COLUMN audience_seq SET NOT NULL;
+
+CREATE TABLE IF NOT EXISTS gnss_event_audience_cursors (
+    audience TEXT PRIMARY KEY,
+    last_seq BIGINT NOT NULL CHECK (last_seq > 0)
+);
+INSERT INTO gnss_event_audience_cursors (audience, last_seq)
+SELECT audience, max(audience_seq) FROM gnss_events GROUP BY audience
+ON CONFLICT (audience) DO UPDATE
+SET last_seq = GREATEST(gnss_event_audience_cursors.last_seq, EXCLUDED.last_seq);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_gnss_events_dedupe ON gnss_events (time, dedupe_key);
+CREATE INDEX IF NOT EXISTS idx_gnss_events_audience_seq  ON gnss_events (audience, audience_seq DESC);
+CREATE INDEX IF NOT EXISTS idx_gnss_events_audience_time ON gnss_events (audience, time DESC);
 CREATE INDEX IF NOT EXISTS idx_gnss_events_sv_time       ON gnss_events (sv, time DESC);
 CREATE INDEX IF NOT EXISTS idx_gnss_events_type_time     ON gnss_events (event_type, time DESC);
 CREATE INDEX IF NOT EXISTS idx_gnss_events_severity_time ON gnss_events (severity, time DESC);
@@ -193,24 +218,26 @@ CREATE INDEX IF NOT EXISTS idx_gnss_events_id            ON gnss_events (id);
 -- accumulates uncompressed chunks without bound, and enabling compression later
 -- requires this ALTER first — a policy alone cannot do it. The compression
 -- POLICY (30 days) is applied by the store at startup (applyPolicies), like
--- nav_frames'. Segment by event_type (the dominant query axis alongside time).
+-- nav_frames'. Segment by audience + event_type so compressed scans cannot
+-- cross an authorization boundary.
 ALTER TABLE gnss_events SET (
     timescaledb.compress,
-    timescaledb.compress_segmentby = 'event_type',
+    timescaledb.compress_segmentby = 'audience,event_type',
     timescaledb.compress_orderby   = 'time DESC'
 );
 
 -- pg_notify has a hard ~8000-byte payload limit; a long NEW.message would raise in
 -- this trigger and fail the whole INSERT in the same transaction. The
--- payload carries only the fields needed to identify the row (id/sv/type/severity)
--- — message is intentionally omitted, not truncated, since LISTENers fetch the
--- full row by id anyway (id is the load-bearing field; the channel name and the
--- id-carrying contract are unchanged).
+-- payload carries only the fields needed to identify the public row. `id` is
+-- the public audience-local cursor; row_id is internal lookup provenance. Only
+-- public events notify, so an operator incident cannot perturb the channel.
 CREATE OR REPLACE FUNCTION notify_gnss_event() RETURNS trigger AS $$
 BEGIN
-    PERFORM pg_notify('gnss_event', json_build_object(
-        'id', NEW.id, 'sv', NEW.sv, 'type', NEW.event_type,
-        'severity', NEW.severity)::text);
+    IF NEW.audience = 'public' THEN
+        PERFORM pg_notify('gnss_event_v2', json_build_object(
+            'id', NEW.audience_seq, 'row_id', NEW.id, 'audience', NEW.audience,
+            'sv', NEW.sv, 'type', NEW.event_type, 'severity', NEW.severity)::text);
+    END IF;
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -218,6 +245,12 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS gnss_event_notify ON gnss_events;
 CREATE TRIGGER gnss_event_notify AFTER INSERT ON gnss_events
     FOR EACH ROW EXECUTE FUNCTION notify_gnss_event();
+
+CREATE OR REPLACE VIEW gnss_events_public AS
+SELECT audience_seq AS id, time, sv, event_type, old_value, new_value,
+       severity, message, raw, redaction_class
+  FROM gnss_events
+ WHERE audience = 'public';
 
 -- gnss_snapshots: periodic feed dumps for replay/backfill (docs/OUTPUT.md §4).
 CREATE TABLE IF NOT EXISTS gnss_snapshots (

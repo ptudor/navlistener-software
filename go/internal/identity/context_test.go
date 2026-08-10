@@ -48,3 +48,16 @@ func TestPublicPolicyModes(t *testing.T) {
 		t.Fatalf("attributed policy classification wrong: %+v", attributed)
 	}
 }
+
+func TestPublicEventsRequirePublicAggregate(t *testing.T) {
+	c := NewPrivateContext("obs", CredentialToken)
+	c.Publication.EventVisibility = EventsPublic
+	if _, err := c.Normalize(); err == nil {
+		t.Fatal("private aggregate accepted public event visibility")
+	}
+
+	c.Publication.AggregateUse = AggregatePublicAnonymous
+	if got, err := c.Normalize(); err != nil || got.Publication.EventVisibility != EventsPublic {
+		t.Fatalf("public event policy rejected: %+v, %v", got, err)
+	}
+}

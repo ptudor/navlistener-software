@@ -96,12 +96,16 @@ func run() int {
 	state.SetLeapSeconds(cfg.State.LeapSeconds) // interim config override for ΔtLS
 	live := state.New(cfg.State.Shards)
 	publicLive := state.New(cfg.State.Shards)
+	publicEventsLive := state.New(cfg.State.Shards)
 	if decl := declaredCapabilities(cfg); len(decl) > 0 {
 		live.SetDeclaredCapabilities(decl)
 		log.Info("declared capabilities loaded", "stations", len(decl))
 	}
-	if decl := declaredPublicCapabilities(cfg); len(decl) > 0 {
+	if decl := declaredPublicCapabilities(cfg, false); len(decl) > 0 {
 		publicLive.SetDeclaredCapabilities(decl)
+	}
+	if decl := declaredPublicCapabilities(cfg, true); len(decl) > 0 {
+		publicEventsLive.SetDeclaredCapabilities(decl)
 	}
 	frames := make(chan *ingest.RawFrame, frameQueue)
 	mgr := ingest.New(cfg.Ingest, frames, log)
@@ -226,12 +230,15 @@ func run() int {
 
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go func() { defer wg.Done(); decodeLoop(frames, live, publicLive, historian, log, &lastFrameNano) }()
+	go func() {
+		defer wg.Done()
+		decodeLoop(frames, live, publicLive, publicEventsLive, historian, log, &lastFrameNano)
+	}()
 
 	wg.Add(1)
 	// Run the public projection first and the operator state last so legacy
 	// process-wide gauges retain their all-source/operator meaning.
-	go func() { defer wg.Done(); stateLoop(ctx, cfg.State, publicLive, live) }()
+	go func() { defer wg.Done(); stateLoop(ctx, cfg.State, publicEventsLive, publicLive, live) }()
 
 	// Any required listener that terminates after readiness fails health and drives
 	// the same ordered shutdown path as a signal.
@@ -314,6 +321,7 @@ func run() int {
 	// read model the feeds serve, persists confirmed events (firing pg_notify) and
 	// pushes them to the SSE broker (docs/INTEGRITY.md, docs/OUTPUT.md §3).
 	detector := detect.New(0)
+	publicDetector := detect.New(0)
 	// publish the spoofing detector's coverage so its dormancy is a
 	// fact on the operational surface, not an implication — with wired < quorum
 	// (the v1 posture) spoofing_suspected cannot fire, and an operator must be
@@ -332,8 +340,19 @@ func run() int {
 	// same pattern used for serve.EventStore above.
 	ew := asEventWriter(historian)
 	ep := asEventPublisher(apiSrv)
+	var operatorPublisher, publicPublisher eventPublisher
+	if apiSrv != nil && apiSrv.Audience().Kind == identity.AudiencePublic {
+		publicPublisher = ep
+	} else {
+		operatorPublisher = ep
+	}
 	wg.Add(1)
-	go func() { defer wg.Done(); detectLoop(ctx, live, detector, ew, ep, log) }()
+	go func() { defer wg.Done(); detectLoop(ctx, live, detector, ew, operatorPublisher, log, "operator:local") }()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		detectLoop(ctx, publicEventsLive, publicDetector, ew, publicPublisher, log, "public")
+	}()
 
 	log.Info("ready", "ingest_sources", len(cfg.Ingest), "metrics_addr", cfg.Metrics.Addr, "serve_addr", cfg.Serve.Addr, "shards", cfg.State.Shards)
 	if len(cfg.Ingest) == 0 {
@@ -428,7 +447,7 @@ func persistMsgType(f *ingest.RawFrame) int {
 // : it simply ranges frames until the channel is closed, which the owner
 // (run, above) does only after every producer has confirmed it will never send
 // again — so every already-enqueued frame is applied with no drain race.
-func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive *state.Store, historian *store.Store, log *slog.Logger, lastFrame *atomic.Int64) {
+func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLive *state.Store, historian *store.Store, log *slog.Logger, lastFrame *atomic.Int64) {
 	lim := &panicLogLimiter{}
 	apply := func(f *ingest.RawFrame) {
 		// every dial and push frame funnels through here, so this one
@@ -456,6 +475,7 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive *state.Store, h
 				AttestationTier:     string(observer.AttestationTier),
 				AggregateUse:        string(observer.Publication.AggregateUse),
 				StationMetadata:     string(observer.Publication.StationMetadata),
+				EventVisibility:     string(observer.Publication.EventVisibility),
 				PolicyRevision:      observer.Publication.Revision,
 				GnssID:              int(f.GnssID),
 				SvID:                f.SvID,
@@ -472,6 +492,9 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive *state.Store, h
 		live.Apply(f)
 		if publicFrame, ok := audience.ProjectPublic(f); ok {
 			publicLive.Apply(publicFrame)
+		}
+		if publicEventFrame, ok := audience.ProjectPublicEvents(f); ok {
+			publicEventsLive.Apply(publicEventFrame)
 		}
 	}
 	for f := range frames {
@@ -569,11 +592,14 @@ func declaredCapabilities(cfg *config.Config) map[string][]state.CapSignal {
 // declaredPublicCapabilities projects the server-owned declarations into the
 // same source keys used by public state. Anonymous contributors collapse into
 // one bucket, so their declared signal sets are unioned; private sources vanish.
-func declaredPublicCapabilities(cfg *config.Config) map[string][]state.CapSignal {
+func declaredPublicCapabilities(cfg *config.Config, eventsOnly bool) map[string][]state.CapSignal {
 	sets := map[string]map[state.CapSignal]bool{}
 	add := func(c identity.ObserverContext, decl []config.Capability) {
 		c, err := c.Normalize()
 		if err != nil || !c.PublicEligible() || len(decl) == 0 {
+			return
+		}
+		if eventsOnly && c.Publication.EventVisibility == identity.EventsPrivate {
 			return
 		}
 		id := c.ObserverID
@@ -645,14 +671,14 @@ const detectInterval = 15 * time.Second
 // debounced detector, and routes each confirmed event to the historian (which
 // assigns the id and fires pg_notify) and the SSE broker. Only durable events are
 // published, so the database id is the sole replay cursor domain.
-func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, historian eventWriter, api eventPublisher, log *slog.Logger) {
+func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, historian eventWriter, api eventPublisher, log *slog.Logger, audienceKey ...string) {
 	tick := time.NewTicker(detectInterval)
 	defer tick.Stop()
 	// regression fix/detector sampling and durable writes have separate owners. The
 	// detector only appends to the bounded FIFO; a slow historian therefore cannot
 	// stall the 15-second sampling cadence or let a newer transition bypass an older
 	// queued one.
-	writer := newEventPipeline(historian, api, log)
+	writer := newEventPipeline(historian, api, log, audienceKey...)
 	writerDone := make(chan struct{})
 	go func() {
 		defer close(writerDone)
@@ -696,12 +722,22 @@ func detectTick(live *state.Store, det *detect.Detector, writer *eventPipeline, 
 	events = append(events, det.TickStations(now, live.FeedStationRF(now))...)
 	// Station liveness (station_offline, regression fix/regression fix) reads the unfiltered
 	// per-station age map — retained state, not the staleness-filtered RF view.
-	events = append(events, det.TickStationLiveness(now, live.StationLastSeen(now))...)
+	stationLastSeen := live.StationLastSeen(now)
+	capabilityReports := live.FeedCapabilityReports(now)
+	if writer.audience == "public" {
+		// Anonymous/redacted contributors may affect satellite-level public
+		// detection, but the synthetic bucket must never become a station event.
+		delete(stationLastSeen, audience.AnonymousPublicSource)
+		delete(capabilityReports, audience.AnonymousPublicSource)
+	}
+	events = append(events, det.TickStationLiveness(now, stationLastSeen)...)
 	// Capability plausibility: a demonstrated signal gone silent, or a signal the
 	// node's silicon can't produce (docs/INTEGRITY.md §6, CONSTELLATIONS §7).
-	events = append(events, det.TickCapabilities(now, live.FeedCapabilityReports(now))...)
+	events = append(events, det.TickCapabilities(now, capabilityReports)...)
 	for _, e := range events {
 		if pe := prepareEvent(e, writer.historian, log); pe != nil {
+			pe.row.Audience = writer.audience
+			pe.row.RedactionClass = writer.redactionClass
 			writer.enqueue(*pe)
 		}
 	}
@@ -771,22 +807,34 @@ type pendingEvent struct {
 // slice while it is being written; enqueue therefore knows not to discard that in-flight
 // item when applying the established oldest-drop policy at capacity.
 type eventPipeline struct {
-	mu        sync.Mutex
-	pending   []pendingEvent
-	writing   bool
-	wake      chan struct{}
-	historian eventWriter
-	publisher eventPublisher
-	log       *slog.Logger
+	mu             sync.Mutex
+	pending        []pendingEvent
+	writing        bool
+	wake           chan struct{}
+	historian      eventWriter
+	publisher      eventPublisher
+	log            *slog.Logger
+	audience       string
+	redactionClass string
 }
 
-func newEventPipeline(historian eventWriter, publisher eventPublisher, log *slog.Logger) *eventPipeline {
+func newEventPipeline(historian eventWriter, publisher eventPublisher, log *slog.Logger, audienceKey ...string) *eventPipeline {
+	audienceKeyValue := "operator:local"
+	redactionClass := "private"
+	if len(audienceKey) > 0 && audienceKey[0] != "" {
+		audienceKeyValue = audienceKey[0]
+	}
+	if audienceKeyValue == "public" {
+		redactionClass = "public_policy_filtered"
+	}
 	return &eventPipeline{
-		pending:   make([]pendingEvent, 0, eventPendingMax),
-		wake:      make(chan struct{}, 1),
-		historian: historian,
-		publisher: publisher,
-		log:       log,
+		pending:        make([]pendingEvent, 0, eventPendingMax),
+		wake:           make(chan struct{}, 1),
+		historian:      historian,
+		publisher:      publisher,
+		log:            log,
+		audience:       audienceKeyValue,
+		redactionClass: redactionClass,
 	}
 }
 
@@ -794,6 +842,12 @@ func newEventPipeline(historian eventWriter, publisher eventPublisher, log *slog
 // database call and drops the oldest waiting item; otherwise it drops the oldest item,
 // matching bounded-queue accounting without racing the writer.
 func (p *eventPipeline) enqueue(pe pendingEvent) {
+	if pe.row.Audience == "" {
+		pe.row.Audience = p.audience
+	}
+	if pe.row.RedactionClass == "" {
+		pe.row.RedactionClass = p.redactionClass
+	}
 	p.mu.Lock()
 	if len(p.pending) >= eventPendingMax {
 		dropAt := 0
@@ -994,7 +1048,7 @@ func writeAndPublishRetry(ctx context.Context, row store.EventRow, e detect.Even
 		log.Error(msg, "type", e.Type, "sv", e.SV, "error", err)
 		return false
 	}
-	log.Info("integrity event", "id", id, "sv", e.SV, "type", e.Type,
+	log.Info("integrity event", "id", id, "audience", row.Audience, "sv", e.SV, "type", e.Type,
 		"severity", e.Severity, "old", e.OldValue, "new", e.NewValue)
 
 	if api != nil {

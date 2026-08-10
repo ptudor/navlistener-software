@@ -30,7 +30,7 @@ import (
 // historian is disabled, in which case the events query endpoints report unavailable.
 type EventStore interface {
 	QueryEvents(ctx context.Context, q store.EventQuery) ([]store.StoredEvent, int, error)
-	SummarizeEvents(ctx context.Context, since, until time.Time) (store.EventSummary, error)
+	SummarizeEventsForAudience(ctx context.Context, audience string, since, until time.Time) (store.EventSummary, error)
 }
 
 // schemaVersion is the OUTPUT contract version carried in every feed's data object.
@@ -104,14 +104,7 @@ func NewForAudience(addr string, st *state.Store, events EventStore, sources []c
 	mux.HandleFunc("/gnss/api/v2/sbas", s.serveFeed("sbas"))
 	mux.HandleFunc("/gnss/api/events/summary", s.serveEventsSummary)
 	mux.HandleFunc("/gnss/api/events", s.serveEventsQuery)
-	if selected.Kind == identity.AudiencePublic {
-		// Historical events and SSE remain unavailable until their persistence
-		// and cursors are audience-scoped. Empty-looking success would be a lie;
-		// serving the operator stream would be a privacy breach.
-		mux.HandleFunc("/gnss/events", s.serveEventsUnavailable)
-	} else {
-		mux.HandleFunc("/gnss/events", s.broker.serveEvents)
-	}
+	mux.HandleFunc("/gnss/events", s.serveEventStream)
 	s.http = &http.Server{
 		Addr:              addr,
 		Handler:           mux,
@@ -179,9 +172,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // PublishEvent fans a confirmed integrity event out to the SSE clients and records
 // it in the reconnect-replay ring (docs/OUTPUT.md §3).
 func (s *Server) PublishEvent(e EventMsg) {
-	if s.audience.Kind == identity.AudiencePublic {
-		return // fail closed until event rows/cursors carry an audience
-	}
 	s.broker.Publish(e)
 }
 
@@ -384,12 +374,11 @@ func (s *Server) setAudienceCacheHeaders(w http.ResponseWriter) {
 	w.Header().Set("Vary", "Authorization, X-GNSS-Audience")
 }
 
-func (s *Server) serveEventsUnavailable(w http.ResponseWriter, r *http.Request) {
-	if methodNotAllowedGetHead(w, r) {
-		return
+func (s *Server) serveEventStream(w http.ResponseWriter, r *http.Request) {
+	if s.audience.Kind != identity.AudiencePublic {
+		w.Header().Set("Vary", "Authorization, X-GNSS-Audience")
 	}
-	s.setAudienceCacheHeaders(w)
-	writeError(w, http.StatusServiceUnavailable, "public event stream unavailable until audience-scoped event persistence is enabled")
+	s.broker.serveEvents(w, r)
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {

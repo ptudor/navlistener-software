@@ -188,6 +188,7 @@ type PushObserver struct {
 	CollectionIDs       []string                 `toml:"collections,omitempty"`
 	AggregateUse        string                   `toml:"aggregate_use,omitempty"`
 	StationMetadata     string                   `toml:"station_metadata,omitempty"`
+	EventVisibility     string                   `toml:"event_visibility,omitempty"`
 	PolicyRevision      string                   `toml:"policy_revision,omitempty"`
 	ObserverContext     identity.ObserverContext `toml:"-"`
 
@@ -261,6 +262,7 @@ type Source struct {
 	CollectionIDs       []string                 `toml:"collections,omitempty"`
 	AggregateUse        string                   `toml:"aggregate_use,omitempty"`
 	StationMetadata     string                   `toml:"station_metadata,omitempty"`
+	EventVisibility     string                   `toml:"event_visibility,omitempty"`
 	PolicyRevision      string                   `toml:"policy_revision,omitempty"`
 	ObserverContext     identity.ObserverContext `toml:"-"`
 
@@ -575,7 +577,7 @@ func (c *Config) finalize() error {
 		s.CapDecl = caps
 		s.ObserverContext, err = finalizeObserverContext(
 			s.Name, s.OrganizationID, s.EnrollmentID, s.CollectorInstanceID,
-			s.CollectionIDs, s.AggregateUse, s.StationMetadata, s.PolicyRevision,
+			s.CollectionIDs, s.AggregateUse, s.StationMetadata, s.EventVisibility, s.PolicyRevision,
 			identity.CredentialLocalDial,
 		)
 		if err != nil {
@@ -643,7 +645,7 @@ func parseCapabilities(raw []string) ([]Capability, error) {
 // administrative fields are filled only with fail-closed local/private defaults;
 // no config source can claim a manufacturer-attested tier.
 func finalizeObserverContext(observer, organization, enrollment, collector string,
-	collections []string, aggregate, metadata, revision string,
+	collections []string, aggregate, metadata, events, revision string,
 	credential identity.CredentialTier,
 ) (identity.ObserverContext, error) {
 	c := identity.NewPrivateContext(observer, credential)
@@ -664,6 +666,9 @@ func finalizeObserverContext(observer, organization, enrollment, collector strin
 	}
 	if metadata != "" {
 		c.Publication.StationMetadata = identity.StationMetadata(metadata)
+	}
+	if events != "" {
+		c.Publication.EventVisibility = identity.EventVisibility(events)
 	}
 	if revision != "" {
 		c.Publication.Revision = revision
@@ -753,7 +758,7 @@ func (c *Config) finalizePush() error {
 		o.CapDecl = caps
 		o.ObserverContext, err = finalizeObserverContext(
 			o.Station, o.OrganizationID, o.EnrollmentID, o.CollectorInstanceID,
-			o.CollectionIDs, o.AggregateUse, o.StationMetadata, o.PolicyRevision,
+			o.CollectionIDs, o.AggregateUse, o.StationMetadata, o.EventVisibility, o.PolicyRevision,
 			identity.CredentialToken,
 		)
 		if err != nil {

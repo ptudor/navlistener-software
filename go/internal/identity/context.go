@@ -49,6 +49,17 @@ const (
 	AggregatePublicAttributed AggregateUse = "public_attributed"
 )
 
+// EventVisibility independently controls whether integrity transitions derived
+// from an observation may enter a public detector/event stream. PublicRedacted
+// contributes without station identity; Public may retain an attributed source.
+type EventVisibility string
+
+const (
+	EventsPrivate        EventVisibility = "private"
+	EventsPublicRedacted EventVisibility = "public_redacted"
+	EventsPublic         EventVisibility = "public"
+)
+
 // StationMetadata controls the most identifying station representation that a
 // public read side may emit. It is independent of aggregate eligibility.
 type StationMetadata string
@@ -65,6 +76,7 @@ const (
 type PublicationPolicy struct {
 	AggregateUse    AggregateUse
 	StationMetadata StationMetadata
+	EventVisibility EventVisibility
 	Revision        string
 }
 
@@ -100,6 +112,7 @@ func NewPrivateContext(observerID string, tier CredentialTier) ObserverContext {
 		Publication: PublicationPolicy{
 			AggregateUse:    AggregatePrivate,
 			StationMetadata: MetadataNone,
+			EventVisibility: EventsPrivate,
 			Revision:        "config-private-v1",
 		},
 	}
@@ -175,6 +188,17 @@ func (c ObserverContext) Normalize() (ObserverContext, error) {
 		c.Publication.StationMetadata != MetadataCoarse &&
 		c.Publication.StationMetadata != MetadataFull {
 		return c, fmt.Errorf("public_attributed aggregate use requires coarse or full station metadata")
+	}
+	if c.Publication.EventVisibility == "" {
+		c.Publication.EventVisibility = EventsPrivate
+	}
+	switch c.Publication.EventVisibility {
+	case EventsPrivate, EventsPublicRedacted, EventsPublic:
+	default:
+		return c, fmt.Errorf("event visibility %q is invalid", c.Publication.EventVisibility)
+	}
+	if c.Publication.AggregateUse == AggregatePrivate && c.Publication.EventVisibility != EventsPrivate {
+		return c, fmt.Errorf("public event visibility requires public aggregate use")
 	}
 	if c.Publication.Revision == "" {
 		c.Publication.Revision = "config-private-v1"

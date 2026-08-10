@@ -82,6 +82,20 @@ func TestOperatorAudienceResponsesArePrivate(t *testing.T) {
 	}
 }
 
+func TestPublicEventHistoryUsesPublicAudience(t *testing.T) {
+	events := &fakeEvents{}
+	s := NewForAudience("127.0.0.1:0", state.New(1), events, nil, time.Minute, time.Minute,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), identity.Audience{Kind: identity.AudiencePublic})
+	rr := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/events", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("public scoped event query status = %d: %s", rr.Code, rr.Body.String())
+	}
+	if events.lastQuery.Audience != "public" {
+		t.Fatalf("event query audience = %q, want public", events.lastQuery.Audience)
+	}
+}
+
 // TestPrivateObservationCannotChangePublicFeedBytes is the stage-5 privacy
 // parity invariant: a private-only source is rejected before aggregation, so
 // every public feed remains byte-for-byte identical at a fixed refresh instant.

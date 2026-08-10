@@ -411,3 +411,18 @@ func TestPrepareEventDedupeKey(t *testing.T) {
 		t.Errorf("queued key %q, want the prepared key %q", head.row.DedupeKey, a.row.DedupeKey)
 	}
 }
+
+func TestPublicEventPipelineStampsAudienceAndRedaction(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	w := &switchEventWriter{available: true}
+	pipeline := newEventPipeline(w, nil, log, "public")
+	pe := prepareEvent(detect.Event{Time: time.Now(), SV: "G01@0", Type: "orbit_disco"}, w, log)
+	pipeline.enqueue(*pe)
+	head, ok := pipeline.head()
+	if !ok {
+		t.Fatal("public event was not queued")
+	}
+	if head.row.Audience != "public" || head.row.RedactionClass != "public_policy_filtered" {
+		t.Fatalf("public event scope = %+v", head.row)
+	}
+}

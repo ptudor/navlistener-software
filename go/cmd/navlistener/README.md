@@ -34,7 +34,8 @@ genuinely belong to the process rather than to a package.
 - **The decode loop** — pulling `RawFrame`s off the channel into `state.Store.Apply`, wrapped in a
   per-frame `recover`.
 - **The periodic tickers** — propagate, expire, detect, and feed-snapshot cadences.
-- **The event pipeline** — detector events → historian row → SSE publish, with retry.
+- **The event pipelines** — isolated operator/public detector states → audience-stamped historian
+  row → matching SSE audience, with retry and audience-local cursors.
 - **`/debug/state` access control** — the `server` package serves the handler; the *policy* about
   who may call it is the process's to own.
 

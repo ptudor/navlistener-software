@@ -57,6 +57,29 @@ func ProjectPublic(f *ingest.RawFrame) (*ingest.RawFrame, bool) {
 	return &out, true
 }
 
+// ProjectPublicEvents returns the contribution allowed to influence public
+// detector state. Event permission is independent from public feed permission:
+// EventsPrivate is rejected, PublicRedacted collapses source evidence into the
+// anonymous bucket, and EventsPublic follows the ordinary public projection.
+func ProjectPublicEvents(f *ingest.RawFrame) (*ingest.RawFrame, bool) {
+	out, ok := ProjectPublic(f)
+	if !ok {
+		return nil, false
+	}
+	switch out.Observer.Publication.EventVisibility {
+	case identity.EventsPrivate:
+		return nil, false
+	case identity.EventsPublicRedacted:
+		out.Source = AnonymousPublicSource
+		out.Obs = nil
+	case identity.EventsPublic:
+		// ProjectPublic already applied the aggregate attribution policy.
+	default:
+		return nil, false
+	}
+	return out, true
+}
+
 // PublicSources projects configured dial-source presentation metadata for the
 // public observer feed. Anonymous/private sources have no row. Coarse stations
 // omit the free-form site remark; full stations may publish it. Internal dial

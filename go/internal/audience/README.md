@@ -14,3 +14,8 @@ The public projection has three outcomes:
   observations; both `coarse` and `full` are locatable product tiers.
 
 RF security telemetry is operator-only until a separate explicit public grant exists.
+
+Public detector state is a further projection. `event_visibility=private` contributes no
+public detector input; `public_redacted` uses the anonymous bucket; `public` retains only the
+attribution already allowed by `aggregate_use`. This ensures an event grant cannot widen the
+underlying feed grant.

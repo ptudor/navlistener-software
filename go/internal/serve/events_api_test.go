@@ -15,12 +15,13 @@ import (
 // it received and returns canned results, so the handler's param parsing and envelope
 // shaping are tested without a database.
 type fakeEvents struct {
-	lastQuery store.EventQuery
-	lastCtx   context.Context
-	events    []store.StoredEvent
-	total     int
-	summary   store.EventSummary
-	err       error
+	lastQuery    store.EventQuery
+	lastAudience string
+	lastCtx      context.Context
+	events       []store.StoredEvent
+	total        int
+	summary      store.EventSummary
+	err          error
 }
 
 func (f *fakeEvents) QueryEvents(ctx context.Context, q store.EventQuery) ([]store.StoredEvent, int, error) {
@@ -29,8 +30,9 @@ func (f *fakeEvents) QueryEvents(ctx context.Context, q store.EventQuery) ([]sto
 	return f.events, f.total, f.err
 }
 
-func (f *fakeEvents) SummarizeEvents(ctx context.Context, _, _ time.Time) (store.EventSummary, error) {
+func (f *fakeEvents) SummarizeEventsForAudience(ctx context.Context, audience string, _, _ time.Time) (store.EventSummary, error) {
 	f.lastCtx = ctx
+	f.lastAudience = audience
 	return f.summary, f.err
 }
 
@@ -86,6 +88,9 @@ func TestEventsQueryParamsAndShape(t *testing.T) {
 	// Params reached the store, with limit clamped to the max and the filters passed through.
 	if fe.lastQuery.SV != "E14@1" || fe.lastQuery.Type != "orbit_disco" || fe.lastQuery.MinSeverity != 1 {
 		t.Errorf("filters not passed: %+v", fe.lastQuery)
+	}
+	if fe.lastQuery.Audience != "operator:local" {
+		t.Errorf("query audience = %q, want operator:local", fe.lastQuery.Audience)
 	}
 	if fe.lastQuery.Limit != eventsMaxLimit {
 		t.Errorf("limit = %d, want clamp to %d", fe.lastQuery.Limit, eventsMaxLimit)

@@ -433,7 +433,7 @@ func TestObserverPublicationContextValidation(t *testing.T) {
 	c, err := finalizeObserverContext(
 		"observer16", "institution-c", "enrollment-1", "hosted-west",
 		[]string{"institution-c-roof", "public-community"},
-		"public_attributed", "coarse", "policy-3", identity.CredentialToken,
+		"public_attributed", "coarse", "public", "policy-3", identity.CredentialToken,
 	)
 	if err != nil {
 		t.Fatalf("valid publication context rejected: %v", err)
@@ -441,15 +441,18 @@ func TestObserverPublicationContextValidation(t *testing.T) {
 	if !c.PublicEligible() || !c.PublicAttributed() || c.OrganizationID != "institution-c" {
 		t.Fatalf("publication context normalized incorrectly: %+v", c)
 	}
+	if c.Publication.EventVisibility != identity.EventsPublic {
+		t.Fatalf("event visibility = %q", c.Publication.EventVisibility)
+	}
 	if _, err := finalizeObserverContext(
 		"observer16", "customer a", "", "", nil,
-		"private", "none", "", identity.CredentialToken,
+		"private", "none", "private", "", identity.CredentialToken,
 	); err == nil {
 		t.Fatal("invalid organization scope accepted")
 	}
 	if _, err := finalizeObserverContext(
 		"observer16", "institution-c", "", "", nil,
-		"public_attributed", "none", "", identity.CredentialToken,
+		"public_attributed", "none", "public", "", identity.CredentialToken,
 	); err == nil {
 		t.Fatal("attributed public policy without metadata accepted")
 	}

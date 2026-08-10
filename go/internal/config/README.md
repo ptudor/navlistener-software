@@ -88,7 +88,8 @@ capabilities = ["0:0", "2:0", "2:3", "3:0", "6:0"]
   sources (SBF, RTCM) until their central decoders land.
 - **`disabled`** keeps an entry in the file but doesn't start it — pause without deleting.
 - **Identity and policy fields** are `organization`, `enrollment`, `collector_instance`,
-  `collections`, `aggregate_use`, `station_metadata`, and `policy_revision`. They are resolved by
+  `collections`, `aggregate_use`, `station_metadata`, `event_visibility`, and
+  `policy_revision`. They are resolved by
   this collector, stamped on every frame, and persisted with the raw receipt. Omitting them is
   deliberately safe: `local-unassigned`, `private`, and no station metadata. A receiver cannot
   send or override them. Production will source the same context from shared AAA rows; config is
@@ -123,6 +124,10 @@ addresses.
 - **Organization and publication fields** have the same meanings and fail-closed defaults as on
   `[[ingest]]`. They are authorization output, not feeder assertions. Config-backed observers
   can prove `token` or `software_mtls`; config alone can never claim hardware attestation.
+- **`event_visibility`** is independent from aggregate use and defaults to `private`.
+  `public_redacted` contributes to a public detector without a station identity; `public`
+  retains only attribution already allowed by `aggregate_use`. A private aggregate can never
+  grant public events.
 
 ### The two identity validators
 

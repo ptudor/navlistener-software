@@ -424,12 +424,13 @@ func TestIntegrationNotifyPayloadBounded(t *testing.T) {
 		t.Fatalf("acquire: %v", err)
 	}
 	defer conn.Release()
-	if _, err := conn.Exec(ctx, "LISTEN gnss_event"); err != nil {
+	if _, err := conn.Exec(ctx, "LISTEN gnss_event_v2"); err != nil {
 		t.Fatalf("LISTEN: %v", err)
 	}
 
 	longMessage := strings.Repeat("x", 20_000) // well past pg_notify's ~8000-byte payload limit
 	id, err := s.WriteEvent(ctx, EventRow{
+		Audience: "public", RedactionClass: "public_policy_filtered",
 		Time: time.Now(), SV: "G01-notify-test", Type: "test_event", Severity: 1, Message: longMessage,
 		DedupeKey: fmt.Sprintf("notify-test-%d", time.Now().UnixNano()),
 	})
@@ -443,8 +444,8 @@ func TestIntegrationNotifyPayloadBounded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WaitForNotification: %v", err)
 	}
-	if n.Channel != "gnss_event" {
-		t.Errorf("notification channel = %q, want gnss_event", n.Channel)
+	if n.Channel != "gnss_event_v2" {
+		t.Errorf("notification channel = %q, want gnss_event_v2", n.Channel)
 	}
 	if len(n.Payload) > 1000 {
 		t.Errorf("notification payload is %d bytes, want well under pg_notify's ~8000-byte limit", len(n.Payload))
@@ -454,6 +455,51 @@ func TestIntegrationNotifyPayloadBounded(t *testing.T) {
 	}
 	if !strings.Contains(n.Payload, fmt.Sprintf(`"id" : %d`, id)) { // json_build_object spaces its colons
 		t.Errorf("notification payload = %q, want it to carry the inserted event's id (%d)", n.Payload, id)
+	}
+}
+
+// TestIntegrationEventAudienceSequencesDoNotCross proves regression fix against the
+// real cursor table: an operator-only event between two public events cannot
+// create a gap in the public SSE/query id sequence.
+func TestIntegrationEventAudienceSequencesDoNotCross(t *testing.T) {
+	dsn := testDSN(t)
+	ctx := context.Background()
+	cfg := config.Store{DSN: dsn, BatchSize: 100, BatchEvery: 50 * time.Millisecond, RawRetention: "7 days", CompressAfter: "1 day"}
+	s, err := New(ctx, cfg, integrationLog())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer s.pool.Close()
+
+	stamp := fmt.Sprintf("rju439-%d", time.Now().UnixNano())
+	write := func(audience, suffix string) int64 {
+		t.Helper()
+		seq, err := s.WriteEvent(ctx, EventRow{
+			Audience: audience, RedactionClass: "test", Time: time.Now(),
+			SV: stamp, Type: "test_event", DedupeKey: stamp + "-" + suffix,
+		})
+		if err != nil {
+			t.Fatalf("WriteEvent(%s): %v", audience, err)
+		}
+		return seq
+	}
+	public1 := write("public", "public-a")
+	_ = write("operator:local", "private-between")
+	public2 := write("public", "public-b")
+	if public2 != public1+1 {
+		t.Fatalf("public sequence jumped %d -> %d after private event", public1, public2)
+	}
+
+	pub, total, err := s.QueryEvents(ctx, EventQuery{Audience: "public", SV: stamp, Limit: 10})
+	if err != nil || total != 2 || len(pub) != 2 {
+		t.Fatalf("public query = %d/%d, %v", len(pub), total, err)
+	}
+	op, total, err := s.QueryEvents(ctx, EventQuery{Audience: "operator:local", SV: stamp, Limit: 10})
+	if err != nil || total != 1 || len(op) != 1 {
+		t.Fatalf("operator query = %d/%d, %v", len(op), total, err)
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM gnss_events WHERE sv = $1`, stamp); err != nil {
+		t.Fatalf("cleanup: %v", err)
 	}
 }
 

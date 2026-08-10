@@ -74,6 +74,7 @@ ack_interval = "1s"
 # collections = ["customer-a-primary"]
 # aggregate_use = "private"                # private | public_anonymous | public_attributed
 # station_metadata = "none"                # none | coarse | full; coarse is display precision, not anonymity
+# event_visibility = "private"              # private | public_redacted | public
 # policy_revision = "customer-a-policy-v1" # receipt-time policy stamped into every raw row
 # capabilities = ["0:0", "2:0", "6:0"]  # declared tudorgps fingerprint, same "gnss:sig"
 #                             # form as on [[ingest]] below; a push observer's declaration
@@ -99,6 +100,7 @@ ack_interval = "1s"
 # collections = ["community-feeders"]
 # aggregate_use = "public_attributed"
 # station_metadata = "full"
+# event_visibility = "public"
 # policy_revision = "community-open-v1"
 # remark = "roof antenna, San Diego"  # the PUBLIC station label: the ONLY operator field
 #                             # that reaches the observers feed (regression fix — addr never does).

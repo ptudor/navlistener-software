@@ -72,7 +72,7 @@ type copyRowsFunc func(ctx context.Context, rows [][]any) (int64, error)
 var copyColumns = []string{
 	"ts", "received_at", "source_id", "organization_id", "enrollment_id",
 	"collector_instance_id", "collection_ids", "provenance", "credential_tier",
-	"attestation_tier", "aggregate_use", "station_metadata", "policy_revision",
+	"attestation_tier", "aggregate_use", "station_metadata", "event_visibility", "policy_revision",
 	"gnssid", "svid", "sigid", "freqid", "msg_type",
 	"raw", "decoded", "decoder_ver",
 }
@@ -97,6 +97,7 @@ type NavFrame struct {
 	AttestationTier     string
 	AggregateUse        string
 	StationMetadata     string
+	EventVisibility     string
 	PolicyRevision      string
 	GnssID              int
 	SvID                int
@@ -328,8 +329,9 @@ func applySchema(ctx context.Context, pool *pgxpool.Pool) error {
 // first INSERT/SELECT touching a missing column, not at startup. This check turns
 // that into a clear, fail-fast error instead.
 var requiredColumns = map[string][]string{
-	"gnss_events":    {"id", "time", "sv", "event_type", "old_value", "new_value", "severity", "message", "raw", "dedupe_key"},
-	"gnss_snapshots": {"time", "audience", "endpoint", "data"},
+	"gnss_events":                 {"id", "time", "audience", "audience_seq", "redaction_class", "sv", "event_type", "old_value", "new_value", "severity", "message", "raw", "dedupe_key"},
+	"gnss_event_audience_cursors": {"audience", "last_seq"},
+	"gnss_snapshots":              {"time", "audience", "endpoint", "data"},
 	// navlistener's own raw-frame tables get the same fail-fast drift check. A future
 	// build that adds a copyColumns column against an existing deployment's older nav_frames
 	// starts cleanly (CREATE TABLE IF NOT EXISTS is a no-op), then every CopyFrom fails 42703
@@ -1051,7 +1053,7 @@ func navFrameToRow(f *NavFrame) []any {
 		valueOr(f.OrganizationID, "local-unassigned"), valueOr(f.EnrollmentID, "legacy-unassigned"),
 		valueOr(f.CollectorInstanceID, "local"), collections, valueOr(f.Provenance, "local"),
 		valueOr(f.CredentialTier, "local_dial"), valueOr(f.AttestationTier, "none"),
-		valueOr(f.AggregateUse, "private"), valueOr(f.StationMetadata, "none"),
+		valueOr(f.AggregateUse, "private"), valueOr(f.StationMetadata, "none"), valueOr(f.EventVisibility, "private"),
 		valueOr(f.PolicyRevision, "legacy-private-v1"),
 		int16(f.GnssID), int16(f.SvID), int16(f.SigID), int16(f.FreqID), int16(f.MsgType),
 		f.Raw, decoded, nilIfEmpty(f.DecoderVer),

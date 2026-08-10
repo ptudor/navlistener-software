@@ -8,39 +8,42 @@ import (
 )
 
 // EventRow is one confirmed integrity event to persist (docs/OUTPUT.md §3/§4). Raw
-// is the event's params as a JSON document (or nil). The DB assigns the id and the
-// AFTER INSERT trigger fires pg_notify, so serve-side LISTENers see it immediately.
+// is the event's params as a JSON document (or nil). The DB assigns an internal
+// row id and an audience-local cursor; only public rows notify the scoped v2
+// external channel. The native SSE broker publishes directly after commit.
 //
 // DedupeKey  is the internal idempotency identity: an opaque value
 // generated exactly once per confirmed transition, before the first write
 // attempt, and carried unchanged across retries. It is never served — the
 // public StoredEvent/EventMsg/SSE shapes do not expose it.
 type EventRow struct {
-	Time      time.Time
-	SV        string
-	Type      string
-	OldValue  string
-	NewValue  string
-	Severity  int
-	Message   string
-	Raw       []byte // JSON, or nil
-	DedupeKey string // required; see the type comment
+	Audience       string
+	RedactionClass string
+	Time           time.Time
+	SV             string
+	Type           string
+	OldValue       string
+	NewValue       string
+	Severity       int
+	Message        string
+	Raw            []byte // JSON, or nil
+	DedupeKey      string // required; see the type comment
 }
 
-// WriteEvent inserts one integrity event and returns its assigned id. Events are
-// low-rate and individually meaningful, so they are written with a plain INSERT
+const defaultEventAudience = "operator:local"
+
+// WriteEvent inserts one integrity event and returns its audience-local sequence.
+// Events are low-rate and individually meaningful, so they are written with a plain INSERT
 // (not the batched CopyFrom path the high-rate nav frames use). The insert fires
 // the notify trigger inside the same transaction.
 //
 // regression fix — the write is idempotent on (time, dedupe_key): PostgreSQL can
 // commit the INSERT while this client observes a timeout or connection error,
 // and the caller's bounded retry (cmd writeEventRetry) then re-runs it. The
-// no-op DO UPDATE below makes the conflicting retry return the ALREADY
-// COMMITTED row's id in one round trip instead of inserting a second row (a
-// second durable SSE id, a second page for one real transition). A conflict
-// fires no INSERT trigger, so pg_notify still fires exactly once, with the
-// first (committed) insert. The dead tuple a conflicting no-op update writes
-// is negligible at confirmed-integrity-event rates.
+// existing CTE finds the already committed row before incrementing the audience
+// cursor, and the conflict-safe INSERT returns its audience_seq instead of
+// inserting or notifying twice. This is load-bearing for an ambiguous
+// commit may not create a visible gap in the public cursor.
 func (s *Store) WriteEvent(ctx context.Context, e EventRow) (int64, error) {
 	if e.DedupeKey == "" {
 		return 0, fmt.Errorf("write event: missing dedupe key (every event needs a retry-stable identity)")
@@ -49,19 +52,43 @@ func (s *Store) WriteEvent(ctx context.Context, e EventRow) (int64, error) {
 	if len(e.Raw) > 0 {
 		raw = string(e.Raw)
 	}
-	var id int64
+	audience := e.Audience
+	if audience == "" {
+		audience = defaultEventAudience
+	}
+	redaction := e.RedactionClass
+	if redaction == "" {
+		redaction = "private"
+	}
+	var audienceSeq int64
 	err := s.pool.QueryRow(ctx,
-		`INSERT INTO gnss_events (time, sv, event_type, old_value, new_value, severity, message, raw, dedupe_key)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		`WITH existing AS MATERIALIZED (
+		     SELECT audience_seq FROM gnss_events WHERE time = $1 AND dedupe_key = $11
+		 ), next_seq AS (
+		     INSERT INTO gnss_event_audience_cursors (audience, last_seq)
+		     SELECT $2, 1 WHERE NOT EXISTS (SELECT 1 FROM existing)
+		     ON CONFLICT (audience) DO UPDATE
+		       SET last_seq = gnss_event_audience_cursors.last_seq + 1
+		     RETURNING last_seq
+		 ), chosen AS (
+		     SELECT audience_seq FROM existing
+		     UNION ALL SELECT last_seq FROM next_seq
+		     LIMIT 1
+		 )
+		 INSERT INTO gnss_events
+		        (time, audience, audience_seq, redaction_class, sv, event_type,
+		         old_value, new_value, severity, message, raw, dedupe_key)
+		 SELECT $1, $2, chosen.audience_seq, $3, $4, $5, $6, $7, $8, $9, $10, $11
+		   FROM chosen
 		 ON CONFLICT (time, dedupe_key) DO UPDATE SET dedupe_key = EXCLUDED.dedupe_key
-		 RETURNING id`,
-		e.Time, e.SV, e.Type, nilIfEmpty(e.OldValue), nilIfEmpty(e.NewValue),
+		 RETURNING audience_seq`,
+		e.Time, audience, redaction, e.SV, e.Type, nilIfEmpty(e.OldValue), nilIfEmpty(e.NewValue),
 		int16(e.Severity), nilIfEmpty(e.Message), raw, e.DedupeKey,
-	).Scan(&id)
+	).Scan(&audienceSeq)
 	if err != nil {
 		return 0, fmt.Errorf("write event: %w", err)
 	}
-	return id, nil
+	return audienceSeq, nil
 }
 
 // clampSeverity bounds a caller-supplied MinSeverity into the valid 0..2 (info/warning/
@@ -83,6 +110,7 @@ func clampSeverity(v int) int {
 // string/severity field is "any"; a zero Since/Until is "unbounded on that side". Limit
 // and Offset paginate; the caller clamps them.
 type EventQuery struct {
+	Audience    string
 	SV          string
 	Type        string
 	MinSeverity int
@@ -127,6 +155,10 @@ type EventSummary struct {
 // interpolated) — untrusted query input cannot reach the SQL. The window is [Since, Until];
 // an unset bound is treated as open on that side.
 func (s *Store) QueryEvents(ctx context.Context, q EventQuery) ([]StoredEvent, int, error) {
+	audience := q.Audience
+	if audience == "" {
+		audience = defaultEventAudience
+	}
 	since := q.Since
 	if since.IsZero() {
 		since = time.Unix(0, 0)
@@ -136,16 +168,17 @@ func (s *Store) QueryEvents(ctx context.Context, q EventQuery) ([]StoredEvent, i
 		until = time.Now().Add(24 * time.Hour) // generous open upper bound
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, time, sv, event_type, COALESCE(old_value,''), COALESCE(new_value,''),
+		`SELECT audience_seq, time, sv, event_type, COALESCE(old_value,''), COALESCE(new_value,''),
 		        severity, COALESCE(message,''), raw, count(*) OVER()
 		   FROM gnss_events
-		  WHERE ($1 = '' OR sv = $1)
-		    AND ($2 = '' OR event_type = $2)
-		    AND severity >= $3
-		    AND time >= $4 AND time <= $5
-		  ORDER BY time DESC, id DESC
-		  LIMIT $6 OFFSET $7`,
-		q.SV, q.Type, int16(clampSeverity(q.MinSeverity)), since, until, q.Limit, q.Offset)
+		  WHERE audience = $1
+		    AND ($2 = '' OR sv = $2)
+		    AND ($3 = '' OR event_type = $3)
+		    AND severity >= $4
+		    AND time >= $5 AND time <= $6
+		  ORDER BY time DESC, audience_seq DESC
+		  LIMIT $7 OFFSET $8`,
+		audience, q.SV, q.Type, int16(clampSeverity(q.MinSeverity)), since, until, q.Limit, q.Offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("query events: %w", err)
 	}
@@ -179,11 +212,12 @@ func (s *Store) QueryEvents(ctx context.Context, q EventQuery) ([]StoredEvent, i
 	if len(out) == 0 {
 		if err := s.pool.QueryRow(ctx,
 			`SELECT count(*) FROM gnss_events
-			  WHERE ($1 = '' OR sv = $1)
-			    AND ($2 = '' OR event_type = $2)
-			    AND severity >= $3
-			    AND time >= $4 AND time <= $5`,
-			q.SV, q.Type, int16(clampSeverity(q.MinSeverity)), since, until,
+			  WHERE audience = $1
+			    AND ($2 = '' OR sv = $2)
+			    AND ($3 = '' OR event_type = $3)
+			    AND severity >= $4
+			    AND time >= $5 AND time <= $6`,
+			audience, q.SV, q.Type, int16(clampSeverity(q.MinSeverity)), since, until,
 		).Scan(&total); err != nil {
 			return nil, 0, fmt.Errorf("count events: %w", err)
 		}
@@ -202,6 +236,14 @@ var constellationByLetter = map[byte]string{
 // severity, with the most recent critical timestamp. The counting is done in SQL (a small
 // grouped result) so the window can be large without streaming every row.
 func (s *Store) SummarizeEvents(ctx context.Context, since, until time.Time) (EventSummary, error) {
+	return s.SummarizeEventsForAudience(ctx, defaultEventAudience, since, until)
+}
+
+// SummarizeEventsForAudience aggregates only one authorized event stream.
+func (s *Store) SummarizeEventsForAudience(ctx context.Context, audience string, since, until time.Time) (EventSummary, error) {
+	if audience == "" {
+		audience = defaultEventAudience
+	}
 	sum := EventSummary{ByType: map[string]int{}, ByConstellation: map[string]int{}}
 	// only SV-scoped events (sv shaped like G05@0 / E14@1) contribute to the
 	// by-constellation breakdown. Station-scoped events (jamming/spoofing/capability) store
@@ -214,9 +256,9 @@ func (s *Store) SummarizeEvents(ctx context.Context, since, until time.Time) (Ev
 		        CASE WHEN sv ~ '^[GRECJIS][0-9]{2}@' THEN LEFT(sv,1) ELSE '' END,
 		        severity, count(*)
 		   FROM gnss_events
-		  WHERE time >= $1 AND time <= $2
+		  WHERE audience = $1 AND time >= $2 AND time <= $3
 		  GROUP BY event_type, 2, severity`,
-		since, until)
+		audience, since, until)
 	if err != nil {
 		return sum, fmt.Errorf("summarize events: %w", err)
 	}
@@ -249,8 +291,8 @@ func (s *Store) SummarizeEvents(ctx context.Context, since, until time.Time) (Ev
 	// max(time) is NULL when the window has no critical events — scan into a pointer.
 	var t *time.Time
 	if err := s.pool.QueryRow(ctx,
-		`SELECT max(time) FROM gnss_events WHERE severity >= 2 AND time >= $1 AND time <= $2`,
-		since, until).Scan(&t); err != nil {
+		`SELECT max(time) FROM gnss_events WHERE audience = $1 AND severity >= 2 AND time >= $2 AND time <= $3`,
+		audience, since, until).Scan(&t); err != nil {
 		return sum, fmt.Errorf("summarize last_critical: %w", err)
 	}
 	if t != nil {
