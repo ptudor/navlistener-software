@@ -83,7 +83,7 @@ for it.
 | Receiver | `CAT_GPS` | **NEO-M9N-00B** (`C5119087`) on the shared 24-pin NEO land pattern | Raw nav frames + PPS. F10N/F10T drop in without a respin — §1.1. |
 | Identity, public | `CAT_RTC` | **MCP79412** + 32.768 kHz crystal (`RTC_MCP79412`) | RTCC + SRAM + EEPROM + **factory EUI-64** — the observer's public name. |
 | Identity, private | `CAT_CRYPTO` | **ATECC608C-SSHDA-T** (`C28975195`, `CRYPTO_ATECC608C`) | Non-extractable P-256 key; the proof of entitlement to that name. |
-| Hardware manifest | `CAT_MEMORY` | **one** 24AA02E64 (`MEMORY_24AA02E64`) | The installed-hardware descriptor array. **One, not two** — see below. |
+| Hardware manifest | `CAT_MEMORY` | `24AA025E64T-I/SN` (LCSC `C615601`; new `MEMORY_24AA025E64`) | The installed-hardware descriptor array and board EUI-64. The addressable `025` variant is required — see below. |
 | Status panel | `CAT_LED` | 16 × 0805 (8 green + 8 yellow) via 2 × **TLC5916** | Constellation/health indication — §2.1. |
 | Pressure | `CAT_PRESSURE` | **BMP388** placed; BMP390 and BMP580 are footprint alternates | **Vertical spoofing gate** — §6.1. |
 | Temperature | `CAT_TEMP` | **MCP9808-E/MS** (`C94847`) | Crystal-drift characterisation and thermal health — §6.2. |
@@ -93,15 +93,16 @@ for it.
 | Wi-Fi antenna | `CAT_ANTENNA` | u.FL → RP-SMA pigtail off the 1U module | Physically separable from the GNSS path — §7.1. |
 | USB | `CAT_CONNECTOR` | USB-C, 16-pin USB 2.0, THT shield legs | §7.6. |
 
-**One EEPROM, not two.** An earlier revision specced two. The 24AA02E64's A0/A1/A2 pins are
-**not functional** — confirmed from the schematic symbol, which shows pads 1/2/3 as NC — so the
-part answers at a fixed address and two of them cannot share a bus. No strapping resolves it.
-The single EEPROM plus a real ATECC608C is the resolution, and it is also simpler: the ATECC
-carries the private identity that a second EEPROM could never have provided.
-
-**The ATECC608C and the 24AA02E64 share a pinout** (1/2/3 NC, 4 GND/VSS, 5 SDA, 6 SCL, 7 NC,
-8 VCC), so one SOIC-8 land pattern serves either. If a variant ever wants to swap them, leave
-pads 1/2/3/7 unconnected so neither part cares what is on them.
+**Use the addressable `24AA025E64`, not the non-addressable `24AA02E64`.** The
+`24AA02E64` treats address bits A0/A1/A2 as don't-cares and therefore acknowledges
+the entire `0x50–0x57` range. That collides with the MCP79412's EEPROM/EUI-64 at
+`0x57`, making the observer identity unreadable. Use the addressable
+**`24AA025E64T-I/SN`** instead: strap pins 1/A0, 2/A1 and 3/A2 to GND so only
+`0x50` is acknowledged. Pin 4 is GND/VSS, pin 5 SDA, pin 6 SCL, pin 7 NC and
+pin 8 `3V3_SENS`. The manifest is stored in the `24AA025E64`; the ATECC608C
+holds the non-extractable private key. LCSC `C615601` is the SOIC-8 device,
+although it was out of stock on 2026-08-09 and may need JLC global sourcing or
+distributor purchase.
 
 ### 2.1 The status panel
 
@@ -147,25 +148,27 @@ would not light from 3.3 V at all).
 
 ### 3.1 The rail tree — three regulators, three noise domains
 
-VBUS (USB-C, §7.6) is the board's only input; the LED panel anodes already sit on it
-directly (§2.1). Everything else splits into three 3.3 V rails, one per noise domain,
-each a linear regulator fed straight from VBUS — no switcher anywhere near a 1575 MHz
-front end, and no cascaded LDOs:
+VBUS (USB-C, §7.6) is the board's only input; after the connector protection and eFuse,
+the resulting `+5V` rail feeds the LED panel anodes directly (§2.1). Everything else
+splits into three 3.3 V rails, one per noise domain, each a linear regulator fed from
+that protected `+5V` node — no switcher anywhere near a 1575 MHz front end, and no
+cascaded LDOs:
 
 | Rail | Regulator | Feeds | Why this part |
 |---|---|---|---|
-| `3V3_SYS` | **LDL1117-3.3** (SOT-223, 1.2 A **[verify]**); AMS1117-3.3 is the JLC-Basic fallback with its output-capacitor stability caveats **[verify]** | ESP32-S3 module, USB logic, TLC5916 `VDD` | Espressif's module datasheet recommends a ≥ 0.5 A supply; digital rail, so current and thermals matter, noise does not. Worst case from 5 V: (5.0 − 3.3) V × 0.5 A ≈ 0.85 W — survivable on a SOT-223 with a real copper pour at Wi-Fi burst duty, marginal at sustained 100 % TX **[verify against θJA on the actual pour]**. |
-| `3V3_GNSS` | **ADM7150ARDZ-3.3** (SOIC-8-EP, 800 mA, 1.0 µVrms 100 Hz–100 kHz, PSRR > 90 dB 1 kHz–100 kHz at 400 mA, VIN 4.5–16 V — so it must feed from VBUS, not from 3V3) | NEO `VCC`, SAW/LNA (§7.4), antenna bias + supervision (§7.3) | The receiver's RF chain is the one place supply noise is directly signal noise. 800 mA is deliberate headroom: variant B's ZED-F9P (~130 mA **[verify]**) reuses this rail unchanged. |
-| `3V3_SENS` | **RT9193-33** (SOT-23-5, 300 mA **[verify]**), with the 22 nF bypass capacitor populated for its low-noise mode **[verify]** | ATECC608C, 24AA02E64, MCP79412 `VCC`, MCP9808, HDC2080, BMP388 | The vertical gate lives on the barometer's noise floor (§6.1); supply noise on the BMP388 is spent directly out of that budget. Load is trivial — the ATECC's ECC operations dominate at ~16 mA **[verify]**; everything else is microamps to low milliamps. |
+| `3V3_SYS` | **`LDL1117S33R`** (ST, SOT-223-4, 1.2 A, LCSC `C435835`). Do not substitute the similarly pinned AMS1117 without rechecking its output-capacitor ESR requirements. | ESP32-S3 module, USB logic, TLC5916 `VDD` | Espressif recommends a supply capable of at least 0.5 A; digital rail, so current and thermals matter, noise does not. Worst case from 5 V: (5.0 − 3.3) V × 0.5 A ≈ 0.85 W — acceptable for burst duty only with a real `3V3_SYS` copper heat spreader around the SOT-223 tab, and a first-prototype thermal test remains mandatory. |
+| `3V3_GNSS` | **ADM7150ARDZ-3.3** (SOIC-8-EP, 800 mA, 1.0 µVrms 100 Hz–100 kHz, PSRR > 90 dB 1 kHz–100 kHz at 400 mA, VIN 4.5–16 V — so it must feed from protected `+5V`, not from 3V3) | NEO `VCC`, SAW/LNA (§7.4), antenna bias + supervision (§7.3) | The receiver's RF chain is the one place supply noise is directly signal noise. 800 mA is deliberate headroom: variant B's ZED-F9P (~130 mA **[verify]**) reuses this rail unchanged. |
+| `3V3_SENS` | **`RT9193-33GB`** (genuine Richtek, SOT-23-5, 300 mA, LCSC `C15651`), with its required 22 nF BP capacitor populated for low-noise mode | ATECC608C, 24AA025E64, MCP79412 `VCC`, MCP9808, HDC2080, BMP388 | The vertical gate lives on the barometer's noise floor (§6.1); supply noise on the BMP388 is spent directly out of that budget. Load is trivial — the ATECC's ECC operations dominate at ~16 mA **[verify]**; everything else is microamps to low milliamps. |
 
 Rules that make the split work:
 
 - **I²C pull-ups tie to `3V3_SENS`** — the slaves' rail. If the sensor rail ever
   collapses with the MCU alive, the bus reads stuck-low (detectable); pull-ups on the
   MCU rail instead would back-power the dead rail through every slave's ESD clamps.
-- **`3V3_SYS`'s enable straps to VBUS; the GNSS and sensor rails are GPIO-gated,
-  default-on.** The MCU cannot be allowed to gate its own brain, but the other two EN
-  pins go to S3 GPIOs with 100 kΩ pull-ups **to `3V3_SYS`** — never to VBUS: the S3's
+- **`3V3_SYS` is always on; the GNSS and sensor rails are GPIO-gated,
+  default-on.** The LDL1117 has no enable and the MCU cannot be allowed to gate its
+  own brain, but the other two EN pins go to S3 GPIOs with 100 kΩ pull-ups **to
+  `3V3_SYS`** — never to VBUS: the S3's
   GPIOs are not 5 V tolerant, the same trap §7.2 documents for the blanking MOSFET.
   High-Z at reset means the pull-ups win and both rails are ON before firmware runs,
   through a crash, and if firmware never boots — the §7.2 fail-safe argument, applied
@@ -188,6 +191,37 @@ Rules that make the split work:
   out under simultaneous Wi-Fi TX + full panel; TX burstiness and §2.1's panel
   dimming are the practical mitigations, and the bench check belongs on the first
   prototype **[verify]**.
+
+First-spin regulator networks, all fed from the protected `+5V` node after the
+TPS259531 eFuse:
+
+- **`3V3_SYS`, `LDL1117S33R`:** pin 3 `VIN` to `+5V`; pin 1 to GND; pin 2 and
+  tab/pin 4 together to `3V3_SYS`. Place 10 µF, 10 V, X7R from `VIN` to GND and
+  22 µF, 10 V, X7R from `3V3_SYS` to GND at the regulator. ST's stability minima
+  are 1 µF input and 4.7 µF output; the larger fitted values also cover the S3's
+  burst load. The tab is **output, not ground**: use `3V3_SYS` copper for its heat
+  spreader and keep the ground plane intact immediately below it.
+- **`3V3_SENS`, `RT9193-33GB`:** pin 1 `VIN` to `+5V`; pin 2 to GND; pin 3 to
+  `SENS_EN`; pin 4 `BP` through 22 nF directly to GND; pin 5 to `3V3_SENS`.
+  Fit 2.2 µF, 10 V, X7R at both `VIN` and `VOUT`. Pull `SENS_EN` up to
+  `3V3_SYS` with 100 kΩ and also take it to **GPIO21 (module pin 23)**, so it is
+  on by default but firmware can power-cycle it. **Library audit:** the EasyEDA
+  symbol seen on 2026-08-09 incorrectly called pin 4 `NC`; the Richtek data sheet
+  calls it `BP`, says it cannot float, and requires 22 nF or more to GND.
+- **`3V3_GNSS`, `ADM7150ARDZ-3.3-R7`** (ADI, SOIC-8-EP, LCSC `C658444`):
+  pin 8 `VIN` to `+5V` with 10 µF to GND; pin 7 to `GNSS_EN`; pin 6 `REF`
+  shorted to pin 5 `REF_SENSE`, with 1 µF from that pair to GND; pin 4 and EP to
+  GND; pin 3 `BYP` through 1 µF to GND; pin 2 `VOUT` to `3V3_GNSS` with 10 µF
+  to GND; pin 1 `VREG` through 10 µF to GND. Pull `GNSS_EN` up to `3V3_SYS`
+  with 100 kΩ and take it to **GPIO38 (module pin 31)**. The four local
+  capacitors are not interchangeable decoration: each serves a named internal
+  node and belongs at its corresponding pin.
+
+The control GPIO choices are closed: `SENS_EN` is GPIO21, `GNSS_EN` is GPIO38,
+and the open-drain `EFUSE_FAULT_N` input is GPIO9. The regulator enables avoid
+both the S3 strapping pins and the GPIO1-through-GPIO18 group that can emit a
+short low-level glitch during power-up. GPIO9's startup-low pulse is harmless
+on the pulled-up, open-drain fault net and occurs before firmware samples it.
 
 The two **gated** regulators are manifest slots after all — an earlier revision of
 this section exempted them as "nothing to probe," which was wrong the moment their EN
@@ -375,13 +409,13 @@ configuration on a scrap part before locking production units.
 
 ### 4.3 Three unique IDs on one board
 
-The MCP79412 and the 24AA02E64 each carry a factory EUI-64, and the ATECC carries a 9-byte
+The MCP79412 and the 24AA025E64 each carry a factory EUI-64, and the ATECC carries a 9-byte
 serial. Assign them distinct roles and record all three at enrollment:
 
 | Source | Role |
 |---|---|
 | MCP79412 EUI-64 | **observer identity** — the `receiver_id` in the cert SAN and the `devices` row |
-| 24AA02E64 EUI-64 | **board serial** — identifies the PCB, not the network node |
+| 24AA025E64 EUI-64 | **board serial** — identifies the PCB, not the network node |
 | ATECC serial | binds the key material to the enrollment record |
 
 Consequence to accept deliberately: a dead RTC changes the observer's identity and forces
@@ -429,6 +463,7 @@ The enums are a baseline. These entries do not exist yet and are required:
 | `eeprom_battery_id_t` | `BATTERY_CR2032` | The enum currently covers LiPo/18650/solar/PoE only — no primary coin cells, and this board fits two. |
 | `eeprom_sensor_id_t` | `SENSOR_HDC2080` | The combined temperature/humidity part (§6.4); `TEMP_MCP9808` already exists for the dedicated sensor. |
 | `eeprom_power_id_t` | `POWER_ADM7150`, `POWER_RT9193` | The GPIO-gated rails (§3.1); descriptor address byte = the EN GPIO, following `CAT_BUTTON`'s addr-is-GPIO convention. The enum currently lists only probeable monitors/chargers. |
+| `eeprom_memory_id_t` | `MEMORY_24AA025E64` | The addressable manifest EEPROM required to coexist with the MCP79412's EEPROM/EUI at `0x57`; the baseline only names the colliding `24AA02E64`. |
 
 **The band discriminator is the one that matters for integrity.** `GPS_ZED_F9P = 1` names a part
 family, not a band capability — but DESIGN.md's worked example is precisely the **F9T-00B (L1+L2)
@@ -570,6 +605,12 @@ GPS on **GPIO4 (TX) / GPIO5 (RX)** with **PPS on GPIO10** — deliberately clear
 that map rather than inventing a third one; it retires the hazard at zero layout cost and makes
 the two products' firmware pin tables comparable.
 
+The S3 adds one wrinkle the C6 convention did not have: GPIO4, GPIO5 and GPIO10
+can briefly drive low during S3 power-up. Fit 330 Ω in series in both UART paths
+and between the PPS buffer and GPIO10. At 460800 baud their edge delay is
+negligible, while the GPIO5 and GPIO10 resistors limit contention if the
+already-powered receiver or PPS buffer is high during an ESP-only reset.
+
 This retired the *stated* justification for the S3 re-spin, which was exactly this hazard. The
 S3 was then chosen on its own merits instead — see §9.6, now closed.
 
@@ -624,19 +665,33 @@ This is where layout effort belongs — not the LED array.
 
 ### 7.5 I²C
 
-**One shared bus at 400 kHz**, matching `ESP32C6_PINOUT.md` ("All I²C devices share one bus").
-Known house addresses: **ATECC608C `0x60`**, **24AA02E64 `0x50–0x57`** (A0–A2 strapped),
-IMU `0x68`.
+**One shared bus at 400 kHz:** `I2C_SDA` is GPIO6 and `I2C_SCL` is GPIO7,
+matching `ESP32C6_PINOUT.md`. Fit one 2.2 kΩ pull-up from each line to
+`3V3_SENS`; individual devices do not get additional pull-ups.
+Relevant addresses are **manifest 24AA025E64 `0x50`** (A0/A1/A2 to GND),
+**MCP79412 EEPROM/EUI `0x57`**, **ATECC608C `0x60`**, and **MCP79412 RTCC
+`0x6F`**. The sensor addresses are assigned on their individual sheet.
 
-Two constraints to resolve on paper *before* anything is locked: the 24AA02E64 occupies two
-address ranges (the EEPROM array and the protected EUI block), and the **ATECC's address is set
-in its config zone**, fixed permanently at lock time. Confirm every address against its datasheet
+Two constraints to resolve on paper *before* anything is locked: the manifest EEPROM and the
+MCP79412 each expose a protected EUI block, and the **ATECC's address is set in
+its config zone**, fixed permanently at lock time. Confirm every address against its datasheet
 rather than assumed defaults — noting that the RTC's conventional `0x68` collides with the IMU
 address shepherd uses, which is a non-issue here (no IMU on this board) but must not be
 copy-pasted forward onto a variant that adds one.
 
-The manifest EEPROM's 8-byte page-write hazard is **already handled** in the shared component —
-`esp_hardware_discovery.c` chunks writes to page boundaries and ACK-polls after each — so a
+The first-spin interrupt nets are also closed. MCP9808 `Alert` is the
+open-drain `TEMP_ALERT_N` on GPIO8, and MCP79412 `MFP` is the open-drain
+`RTC_MFP_N` on GPIO15; give each a 10 kΩ pull-up to `3V3_SENS`. Configure the
+BMP388 interrupt as open-drain active-low and route `BARO_INT_N` to GPIO41 with
+a 10 kΩ pull-up to `3V3_SENS`. HDC2080 `DRDY/INT` is push-pull; configure it
+active-low as `HUM_INT_N` and route it to GPIO39. GPIO39 and GPIO41 are pad-JTAG
+pins, but this board deliberately uses native USB-JTAG and does not expose pad
+JTAG. Keeping the two push-pull sensor outputs on these no-glitch input pins
+avoids reset-time output contention.
+
+The manifest EEPROM's page-write hazard is **already handled** in the shared component —
+`esp_hardware_discovery.c` conservatively chunks writes to 8-byte boundaries and ACK-polls
+after each; that is safe on the 24AA025E64's 16-byte physical pages — so a
 descriptor array larger than one page (this board's ~10 slots is ~40 bytes) writes correctly.
 Nothing to do here; recorded so it isn't re-derived.
 
@@ -650,9 +705,149 @@ Nothing to do here; recorded so it isn't re-derived.
   Without them a USB-C source never enables VBUS, and the board is dead on a C-to-C cable while
   working fine off a legacy A-to-C — which is how the bug hides until someone uses a modern
   charger.
-- ESD array on D+/D−/VBUS. `ECLAMP8052P` is already validated in the sibling designs.
+- **Direct shell bond for this enclosure.** `EH1`–`EH4` go directly to the board
+  GND with short, wide copper and nearby stitching vias. There is no separate
+  metal chassis in the plastic enclosure, so do not fit a lone 100 nF
+  shield-to-ground capacitor.
+- `A6` and `B6` join as `USB_DP_CONN`; `A7` and `B7` join as `USB_DM_CONN`.
+  `A8`/`B8` (`SBU1`/`SBU2`) receive explicit no-connect flags.
+- `ECLAMP8052P.TCT` (LCSC `C2662214`) protects the **data pair only**: pin 1
+  `USB_DP_CONN`, pin 2 `USB_DM_CONN`, pin 4 GND, pin 5
+  `USB_DM_FILTERED`, pin 6 `USB_DP_FILTERED`. The EasyEDA/LCSC device uses the
+  physical package numbering `1, 2, 4, 5, 6`; do not reinterpret it as
+  sequential pins 1 through 5. Pins 1/6 form the D+ path and pins 2/5 form the
+  D- path. Continue through separate 22 Ω
+  series resistors to `USB_DM`/GPIO19 and `USB_DP`/GPIO20 respectively. Reserve
+  one DNP 0603 shunt-capacitor footprint on each MCU-side data net for EMC tuning;
+  ship the first boards unpopulated.
+- VBUS uses a separate unidirectional `SMF6.0A_R1_00001` TVS (LCSC `C391709`),
+  cathode to `USB_VBUS_RAW` and anode to GND. Place it, 4.7 µF 16 V X7R and
+  100 nF 16 V X7R at the connector. The 4.7 µF part is ceramic, not tantalum.
+- `USB_VBUS_RAW` feeds `TPS259531DSGR` (LCSC `C2155674`): pins 3/4 `IN` and
+  pin 2 `EN/UVLO` to raw VBUS; pins 8/EP to GND; pin 7 `ILM` through 1.78 kΩ
+  1% to GND (about 1.17 A nominal limit); pin 1 `dVdt` through 47 nF to GND;
+  pin 5 `OUT` becomes `+5V` with 22 µF 10 V X7R to GND. Pin 6 `FLT` is
+  `EFUSE_FAULT_N`, pulled up to **`3V3_SYS`**, never `+5V`, through 10 kΩ and
+  routed to GPIO9.
+- No separate 1206 PTC is fitted: the TPS259531 supplies the resettable current
+  limit, soft start, short-circuit and thermal protection without adding another
+  series drop.
 
-### 7.7 Flash tiers — this board is standard-tier by construction
+The product power contract is **5 V, 1.5 A minimum**, printed next to the USB-C
+connector. The two passive Rd resistors do not report the source's advertised
+current to firmware. A source that offers only USB default current may reset-loop
+at simultaneous Wi-Fi and LED load and is explicitly unsupported; a USB-C source
+that advertises at least 1.5 A is the intended supply.
+
+### 7.7 ESP32-S3 module support and recovery
+
+The module is `ESP32-S3-WROOM-1U-N16R8`, not a bare S3 and not the PCB-antenna
+WROOM-1. Audit the EasyEDA symbol-to-footprint association before routing. Connect
+module pins 1, 40 and exposed pad 41 to GND; pin 2 to `3V3_SYS`. Place 10 µF,
+6.3 V or 10 V, X7R and 100 nF from pin 2 to GND immediately beside the module,
+each with a short return into the ground plane. These are in addition to the
+LDL1117's output capacitor: one stabilizes the regulator, the other supplies the
+load at the point of use.
+
+Use the standard manual recovery circuit:
+
+- `ESP_EN` (module pin 3): 10 kΩ to `3V3_SYS`, 1 µF X7R to GND, and a normally
+  open **RESET** button to GND. Keep this trace short.
+- `ESP_BOOT` / GPIO0 (module pin 27): 10 kΩ to `3V3_SYS` and a normally open
+  **BOOT/DOWNLOAD** button to GND. Do not place a large capacitor on GPIO0.
+- Reserve GPIO46 as a strap/recovery input and fit 10 kΩ to GND so Joint Download
+  Boot remains available. Avoid external reset-time pulls on the other strapping
+  pins GPIO3 and GPIO45.
+- For the N16R8 module, do not allocate GPIO35–GPIO37: they are consumed by its
+  octal PSRAM interface.
+
+Use the same tactile switch family already present in the recent Eagle boards for
+both buttons: **C&K `PTS810SJG250SMTRLFS`**, 4.2 × 3.2 mm SMT, 2.5 mm high,
+4.0 N nominal operating force, LCSC/EasyEDA `C221895`. This firmer `SJG` variant
+is the price-selected first-spin part; it is rated for 100,000 operations and is
+footprint-compatible with the softer `SJM` variant. Verify the four-pad footprint's
+internally common pad pairs; connect one contact pair to the signal and the opposite
+pair to GND.
+
+Native USB is the primary downloader/debug interface, so this board does not need
+a USB-to-UART bridge or its DTR/RTS transistor auto-reset circuit. Preserve UART0
+as recovery and manufacturing access nevertheless: expose GND, `U0TXD`/GPIO43,
+and `U0RXD`/GPIO44 on a keyed header or clearly marked test pads, plus `ESP_EN`
+and `ESP_BOOT` pads. If a 3.3 V reference is exposed, mark it **3V3 REF ONLY**;
+external TTL adapters must use 3.3 V logic and must not power the board through
+that pin.
+
+The first-spin GPIO allocation is the schematic source of truth:
+
+| GPIO | Net | Direction / note |
+|---:|---|---|
+| 0 | `ESP_BOOT` | Boot strap and DOWNLOAD button; 10 kΩ to `3V3_SYS`. |
+| 1 | `GNSS_VBCKP_SENSE` | Reserved ADC1 input; measurement network still to be closed. |
+| 2 | `RTC_VBAT_SENSE` | Reserved ADC1 input; measurement network still to be closed. |
+| 3 | — | Strapping pin; do not connect. |
+| 4 | `GNSS_UART_TX` | ESP TX to receiver RX through 330 Ω. Shepherd parity. |
+| 5 | `GNSS_UART_RX` | Receiver TX to ESP RX through 330 Ω. Shepherd parity. |
+| 6 | `I2C_SDA` | Shared 400 kHz bus; 2.2 kΩ to `3V3_SENS`. Shepherd parity. |
+| 7 | `I2C_SCL` | Shared 400 kHz bus; 2.2 kΩ to `3V3_SENS`. Shepherd parity. |
+| 8 | `TEMP_ALERT_N` | MCP9808 open-drain alert; 10 kΩ to `3V3_SENS`. |
+| 9 | `EFUSE_FAULT_N` | TPS259531 open-drain fault; 10 kΩ to `3V3_SYS`. |
+| 10 | `GNSS_PPS` | Buffered PPS input through 330 Ω. Shepherd parity. |
+| 11 | `LED_SCLK` | TLC5916 shared shift clock. |
+| 12 | `LED_LATCH` | TLC5916 shared latch-enable. |
+| 13 | — | Spare. |
+| 14 | `LED_SDI` | TLC5916 chain data; preserves Shepherd's status-data pin. |
+| 15 | `RTC_MFP_N` | MCP79412 open-drain alarm/clock output; 10 kΩ to `3V3_SENS`. |
+| 16 | — | Spare. |
+| 17 | `PPS_LED_BLANK_N` | Pull gate high with 100 kΩ; drive low to blank. |
+| 18 | — | Spare. |
+| 19 | `USB_DM_ESP` | Native USB D−. |
+| 20 | `USB_DP_ESP` | Native USB D+. |
+| 21 | `SENS_EN` | Default-on sensor-rail enable; 100 kΩ to `3V3_SYS`. |
+| 35–37 | — | Unavailable: N16R8 octal PSRAM. |
+| 38 | `GNSS_EN` | Default-on GNSS-rail enable; 100 kΩ to `3V3_SYS`. |
+| 39 | `HUM_INT_N` | HDC2080 push-pull interrupt, configured active-low. |
+| 40 | — | Spare; pad-JTAG group. |
+| 41 | `BARO_INT_N` | BMP388 open-drain interrupt; 10 kΩ to `3V3_SENS`. |
+| 42 | — | Spare; pad-JTAG group. |
+| 43 | `U0TXD` | UART0 recovery/test pad. |
+| 44 | `U0RXD` | UART0 recovery/test pad. |
+| 45 | — | Strapping pin; do not connect. |
+| 46 | `ESP_STRAP46` | 10 kΩ to GND; otherwise no functional load. |
+| 47 | `LED_GREEN_OE_N` | Green TLC5916 output enable; 10 kΩ to `3V3_SYS`. |
+| 48 | `LED_YELLOW_OE_N` | Yellow TLC5916 output enable; 10 kΩ to `3V3_SYS`. |
+
+### 7.8 Four-layer PCB policy
+
+Convert the board before routing: in EasyEDA Pro open `PCB1`, choose **Tools →
+Layer Manager**, add two copper layers, and make both positive-film **Signal**
+layers. The first-spin stack and ownership are:
+
+1. **Top:** components, USB differential pair, RF and other critical short routes.
+2. **Inner 1:** an uninterrupted full-board GND copper region; no signal routing.
+3. **Inner 2:** `+5V`, `3V3_SYS`, `3V3_GNSS`, and `3V3_SENS` regions plus only
+   slow signals where necessary.
+4. **Bottom:** remaining slow signals and a GND pour.
+
+After every schematic tranche is complete, use **PCB → Design → Import Changes
+from Schematic**, including wire-net updates, and confirm that pads show real net
+names rather than `None`. Ratlines are the routing work list; zero ratlines on an
+unrouted board means the schematic netlist has not reached the PCB, not that the
+board is finished.
+
+Pour Inner 1 as GND over the whole board with islands disabled and refill with
+`Shift+B`; add top/bottom GND pours and stitching vias after routing. Never split
+Inner 1 beneath USB, clocks, RF, or any fast edge. Route USB D+/D− together on Top,
+without vias, over Inner 1, and derive the 90 Ω differential geometry from the
+fabricator's selected four-layer stackup rather than guessing width/spacing.
+Likewise calculate the GNSS feed for 50 Ω. Keep the USB/eFuse/SYS-regulator area
+physically away from the GNSS module and antenna path.
+
+The implementation order is deliberate: close USB power, then all three
+regulators, then the ESP support/recovery circuit, then every peripheral sheet,
+then ERC and pin-allocation audit, and only then component placement, pours and
+routing.
+
+### 7.9 Flash tiers — this board is standard-tier by construction
 
 Project convention (shared with shepherd; reference layouts are its
 `esp32/partitions-4mb.csv` / `partitions-8mb.csv`): **standard** units have 8 MB+ flash and
@@ -681,7 +876,7 @@ from the sibling, and where it deliberately does not:
 | Secure element | ATECC608**C** @ `0x60` | ATECC608**C** | **corrected** — an earlier draft said 608B |
 | ATECC slot map | `atecc608c_slots_unified.h` **v2** | same header, same numbers | **aligned** — jointly revised 2026-08-08 to the silicon's size classes (§4.1a); one config, one provisioning tool |
 | RTC | MCP79412 | MCP79412 | aligned |
-| Manifest EEPROM | 24AA02E64 @ `0x50–0x57` | same | aligned |
+| Manifest EEPROM | 24AA025E64 @ `0x50` | 24AA02E64 @ `0x50–0x57` | **deliberate electrical fix** — the Shepherd part collides with MCP79412 EEPROM/EUI `0x57` (§7.5) |
 | Pressure | BMP390 | BMP388 placed, 390/580 alternates | inventory-led — §2, §6.1 |
 | Status LEDs | WS2812B (+ `led_pps_sync.c`) | discrete green/yellow on 2 × TLC5916 | **deliberate divergence** — §2.1 |
 | I²C | one shared bus, 400 kHz | same | aligned |

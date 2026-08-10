@@ -7,6 +7,12 @@
 *.out
 coverage.*
 
+# Local editor / OS artifacts
+.DS_Store
+
+# EasyEDA automatic timestamped snapshots; commit the live .eprj2 project instead
+/pcb/projects/*_backup/
+
 # C feeder build artifact
 /feeder/navfeeder
 
