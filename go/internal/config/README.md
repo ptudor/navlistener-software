@@ -46,6 +46,7 @@ fleet ingest. The daemon runs happily as a collector-only process.
 | `[metrics]` | `addr` set | Prometheus `/metrics` + `/healthz`, loopback-bound |
 | `[state]` | always | shard count, propagate cadence, SV TTL, `leap_seconds` |
 | `[store]` | `dsn` set | TimescaleDB historian, `raw_retention`, `compress_after` |
+| `[authorization]` | `dsn` set | DB-backed observer grants, bounded cache, active-session recheck |
 | `[serve]` | `addr` set | the native v2 read API, `audience` (`public` default or explicit `operator`), and refresh cadences |
 | `[push]` | `addr` set | the authenticated GNF1 fleet listener; TLS mandatory |
 | `[[federation.export_grant]]` | no transport | explicit directed export authorization, validated before peer transport exists |
@@ -55,6 +56,20 @@ fleet ingest. The daemon runs happily as a collector-only process.
 ---
 
 ## Details
+
+### `[authorization]` — production control-plane resolution
+
+Setting `dsn` replaces static credential rows; it never supplements or falls back to them.
+The collector reads the stable `navlistener_observer_authorization_v1` view documented in
+`internal/authorization`, caches positive and negative decisions by token digest, and listens
+for `NOTIFY navlistener_authorization_changed`. `cache_ttl` (default 30s, maximum 5m) is the
+stale-authority ceiling when notifications are interrupted. `session_recheck_interval`
+(default 10s, maximum 5m) closes active feeder/read sessions after a revoked or changed row is
+observed. The worst case without NOTIFY is their sum.
+
+The authorization DSN should use a read-only database role with access only to the versioned
+views and notification channel. Because it contains credentials, normal config-permission
+warnings include this DSN. `-check-config` validates its syntax but does not connect.
 
 ### `[serve]` — one isolated read audience
 

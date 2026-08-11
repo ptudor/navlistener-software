@@ -94,6 +94,7 @@ func NewPushServer(cfg config.Push, out chan<- *RawFrame, auth Authenticator, lo
 func (p *PushServer) Listen() (net.Listener, error)
 func (p *PushServer) Serve(ctx context.Context, ln net.Listener) error
 func (p *PushServer) SetDurableTracker(t *DurableTracker)
+func (p *PushServer) SetReauthorizationInterval(every time.Duration)
 ```
 
 Terminates TLS, authenticates each feeder, and forwards decoded frames into **the same channel
@@ -110,7 +111,7 @@ Authentication is layered:
 
 ```go
 type Authenticator interface {
-    Authenticate(token, station, feed string) (identity.ObserverContext, ok bool)
+    Authenticate(ctx context.Context, token, station, feed string) (identity.ObserverContext, ok bool)
 }
 ```
 
@@ -120,8 +121,16 @@ credential/attestation evidence, and receipt-time publication revision. `stream`
 context onto every `RawFrame`; no feeder DATA field can set or override it.
 
 `NewConfigAuthenticator` is the fail-closed bootstrap implementation. Omitted scope becomes
-`local-unassigned/private`; a configured public policy must be explicit. A Django/DB-backed
-shared AAA provider can satisfy the same interface without changing frame processing.
+`local-unassigned/private`; a configured public policy must be explicit. The production
+`internal/authorization.Provider` reads a versioned control-plane view, retains only bearer
+token digests in its bounded cache, and invalidates on PostgreSQL `NOTIFY`.
+
+When mTLS is enabled, the resolved active credential fingerprint must match the exact leaf
+certificate used on the connection. A `hardware_mtls` row additionally requires verified
+manufacturer attestation; without both proofs the handshake fails rather than downgrading or
+retaining a misleading hardware label. Every active connection is re-authorized on the
+configured cadence and is closed if credential, enrollment, ownership, memberships,
+attestation, or publication context changes.
 
 `Listen()` is called **synchronously at startup**, before any producer or historian goroutine, so
 a bad certificate or an already-bound address kills the process rather than leaving a

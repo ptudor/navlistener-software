@@ -12,6 +12,7 @@ which direction the dependencies point. Each has its own README with the detail.
 | [`config/`](config/) | — | TOML loading, validation, defaults, and the identity validators. |
 | [`identity/`](identity/) | — | Trusted observer context and audience authorization keys. |
 | [`attestation/`](attestation/) | — | Manufacturer v1/v2 originality statement formatting and verification. |
+| [`authorization/`](authorization/) | — | DB-backed observer grants, digest-only bounded cache, and PostgreSQL invalidation. |
 | [`audience/`](audience/) | — | Pre-aggregation public/event privacy projection. |
 | [`federation/`](federation/) | — | Receipt/current policy ∩ destination export-grant evaluator. |
 | [`wire/`](wire/) | — | GNF1: the feeder↔collector framing, handshake, and the durable-ACK contract. |

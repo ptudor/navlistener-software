@@ -353,6 +353,7 @@ CREATE TABLE nav_frames (
     collection_ids TEXT[] NOT NULL,
     provenance TEXT NOT NULL,
     credential_tier TEXT NOT NULL,
+    credential_fingerprint TEXT NOT NULL,
     attestation_tier TEXT NOT NULL,
     aggregate_use TEXT NOT NULL,
     station_metadata TEXT NOT NULL,

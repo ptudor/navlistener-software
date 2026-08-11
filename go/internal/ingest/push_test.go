@@ -35,6 +35,12 @@ import (
 
 type terminalListener struct{ err error }
 
+type authenticatorFunc func(context.Context, string, string, string) (identity.ObserverContext, bool)
+
+func (f authenticatorFunc) Authenticate(ctx context.Context, token, station, feed string) (identity.ObserverContext, bool) {
+	return f(ctx, token, station, feed)
+}
+
 func (l terminalListener) Accept() (net.Conn, error) { return nil, l.err }
 func (terminalListener) Close() error                { return nil }
 func (terminalListener) Addr() net.Addr              { return &net.TCPAddr{} }
@@ -304,6 +310,105 @@ func TestPushMTLSBindsCertificateToObserver(t *testing.T) {
 			t.Fatal("CN-only certificate was accepted")
 		}
 	})
+}
+
+func TestPushMTLSBindsExactActiveCredentialFingerprint(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pki := newMtlsPKI(t)
+	clientCert := pki.issue(t, "observer16", "observer16")
+	fingerprint := sha256.Sum256(clientCert.Certificate[0])
+	resolved := identity.NewPrivateContext("observer16", identity.CredentialHardwareMTLS)
+	resolved.CredentialFingerprint = hex.EncodeToString(fingerprint[:])
+	resolved.AttestationTier = identity.AttestationVerifiedV2
+	auth := authenticatorFunc(func(context.Context, string, string, string) (identity.ObserverContext, bool) {
+		return resolved, true
+	})
+	addr, out := startMTLSPushServer(t, ctx, auth, pki.pool)
+
+	conn := dialPushWithCert(t, addr, clientCert)
+	defer conn.Close()
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "token", Station: "observer16", Feed: "ubx", Session: "boot-test"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, payload, err := wire.ReadFrame(conn); err != nil {
+		t.Fatal(err)
+	} else if welcome, _ := parseWelcome(payload); !welcome.OK {
+		t.Fatalf("matching active certificate rejected: %+v", welcome)
+	}
+	rec := wire.RawRecord{RecvUnixNs: time.Now().UnixNano(), GnssID: gnss.GPS, SvID: 5, Raw: make([]byte, 40)}
+	if err := wire.WriteFrame(conn, wire.Data, wire.EncodeData(1, rec)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case frame := <-out:
+		if frame.Observer.CredentialTier != identity.CredentialHardwareMTLS ||
+			frame.Observer.CredentialFingerprint != resolved.CredentialFingerprint {
+			t.Fatalf("session evidence = %+v", frame.Observer)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("hardware-authenticated frame did not arrive")
+	}
+}
+
+func TestPushRejectsHardwareLabelWithoutMTLS(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	resolved := identity.NewPrivateContext("observer16", identity.CredentialHardwareMTLS)
+	resolved.CredentialFingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	resolved.AttestationTier = identity.AttestationVerifiedV2
+	auth := authenticatorFunc(func(context.Context, string, string, string) (identity.ObserverContext, bool) {
+		return resolved, true
+	})
+	addr, _ := startPushServer(t, ctx, auth)
+	conn := dialPush(t, addr)
+	defer conn.Close()
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "token", Station: "observer16", Feed: "ubx", Session: "boot-test"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, payload, err := wire.ReadFrame(conn); err != nil {
+		t.Fatal(err)
+	} else if welcome, _ := parseWelcome(payload); welcome.OK {
+		t.Fatal("token-only connection retained database hardware_mtls label")
+	}
+}
+
+func TestPushActiveSessionClosesAfterAuthorizationRevocation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var enabled atomic.Bool
+	enabled.Store(true)
+	auth := authenticatorFunc(func(context.Context, string, string, string) (identity.ObserverContext, bool) {
+		return identity.NewPrivateContext("observer16", identity.CredentialToken), enabled.Load()
+	})
+	out := make(chan *RawFrame, 1)
+	tc := &tls.Config{Certificates: []tls.Certificate{selfSigned(t)}, MinVersion: tls.VersionTLS12}
+	srv := newPushServer("127.0.0.1:0", tc, out, auth, 25*time.Millisecond, 0,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv.SetReauthorizationInterval(20 * time.Millisecond)
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", tc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.serve(ctx, ln) }()
+
+	conn := dialPush(t, ln.Addr().String())
+	defer conn.Close()
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "token", Station: "observer16", Feed: "ubx", Session: "boot-test"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, payload, err := wire.ReadFrame(conn); err != nil {
+		t.Fatal(err)
+	} else if welcome, _ := parseWelcome(payload); !welcome.OK {
+		t.Fatalf("initial authorization rejected: %+v", welcome)
+	}
+	enabled.Store(false)
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := wire.ReadFrame(conn); err == nil {
+		t.Fatal("revoked active session remained open")
+	}
 }
 
 // selfSigned builds an in-memory self-signed server certificate for the test TLS

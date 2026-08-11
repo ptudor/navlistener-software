@@ -131,6 +131,33 @@ func TestServeAudienceFailsClosed(t *testing.T) {
 	}
 }
 
+func TestDatabaseAuthorizationIsBoundedAndHasNoStaticFallback(t *testing.T) {
+	c := defaults()
+	c.Authorization.DSN = "postgres://navlistener:secret@localhost/controlplane"
+	if err := c.finalize(); err != nil {
+		t.Fatalf("database authorization config rejected: %v", err)
+	}
+	if c.Authorization.CacheTTL != 30*time.Second || c.Authorization.RecheckEvery != 10*time.Second {
+		t.Fatalf("authorization bounds = %v/%v", c.Authorization.CacheTTL, c.Authorization.RecheckEvery)
+	}
+	if !c.holdsSecrets() {
+		t.Fatal("authorization DSN was not classified as config secret material")
+	}
+
+	ambiguous := defaults()
+	ambiguous.Authorization.DSN = c.Authorization.DSN
+	ambiguous.Push.Observers = []PushObserver{{Station: "observer-a"}}
+	if err := ambiguous.finalize(); err == nil {
+		t.Fatal("database authorization accepted a static credential fallback")
+	}
+
+	unbounded := defaults()
+	unbounded.Authorization.CacheTTLs = "6m"
+	if err := unbounded.finalize(); err == nil {
+		t.Fatal("authorization cache TTL beyond revocation bound accepted")
+	}
+}
+
 // TestLeapSecondsValidated guards state.leap_seconds is an interim override
 // for the compiled-in ΔtLS default; unset (0) must pass validation as a no-op, an
 // ICD-plausible value must pass, and an out-of-band value (a fat-fingered config,

@@ -39,6 +39,14 @@ batch_interval = "1s"    # flush cadence
 compress_after = "1 day" # columnar-compress raw chunks older than this
 raw_retention  = "7 days" # drop raw frames older than this; events/snapshots have separate policies
 
+# Production ownership, enrollment, credential, membership, and publication
+# resolution. When dsn is set, [[push.observer]] bootstrap rows are forbidden—DB
+# failure denies authorization; it never falls back to static policy.
+[authorization]
+# dsn = "postgres://navlistener_auth:SECRET@localhost/controlplane"
+cache_ttl = "30s"                 # stale-authority ceiling if NOTIFY is unavailable
+session_recheck_interval = "10s" # active feeder sessions close after revocation
+
 # Native v2 read API (docs/OUTPUT.md): /gnss/api/v2/{svs,global,observers,almanac,
 # sbas} + the /gnss/events SSE stream, served from RAM. Optional: leave addr empty to
 # run collector-only. Loopback only; a reverse proxy terminates TLS and fronts it as

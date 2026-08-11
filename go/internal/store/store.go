@@ -72,7 +72,7 @@ type copyRowsFunc func(ctx context.Context, rows [][]any) (int64, error)
 var copyColumns = []string{
 	"ts", "received_at", "source_id", "organization_id", "enrollment_id",
 	"collector_instance_id", "collection_ids", "provenance", "credential_tier",
-	"attestation_tier", "aggregate_use", "station_metadata", "event_visibility",
+	"credential_fingerprint", "attestation_tier", "aggregate_use", "station_metadata", "event_visibility",
 	"raw_export", "federation_peers", "publish_signals", "policy_revision",
 	"gnssid", "svid", "sigid", "freqid", "msg_type",
 	"raw", "decoded", "decoder_ver",
@@ -89,23 +89,24 @@ type NavFrame struct {
 	// enrollment, and receipt-time publication decision. They are deliberately
 	// denormalized so historical evidence never changes meaning after a transfer
 	// or policy edit (docs/GROUPS-AND-FEDERATION.md §5.2/§5.4).
-	OrganizationID      string
-	EnrollmentID        string
-	CollectorInstanceID string
-	CollectionIDs       []string
-	Provenance          string
-	CredentialTier      string
-	AttestationTier     string
-	AggregateUse        string
-	StationMetadata     string
-	EventVisibility     string
-	RawExport           string
-	FederationPeers     []string
-	PublishSignals      []string
-	PolicyRevision      string
-	GnssID              int
-	SvID                int
-	SigID               int
+	OrganizationID        string
+	EnrollmentID          string
+	CollectorInstanceID   string
+	CollectionIDs         []string
+	Provenance            string
+	CredentialTier        string
+	CredentialFingerprint string
+	AttestationTier       string
+	AggregateUse          string
+	StationMetadata       string
+	EventVisibility       string
+	RawExport             string
+	FederationPeers       []string
+	PublishSignals        []string
+	PolicyRevision        string
+	GnssID                int
+	SvID                  int
+	SigID                 int
 	// FreqID is the GLONASS FDMA channel carrier as the receiver reported it
 	// (k = FreqID - 7). Always written: it is receiver metadata that never appears
 	// in Raw (RawBytes serialises only the nav words), so a GLONASS frame cannot be
@@ -1064,7 +1065,7 @@ func navFrameToRow(f *NavFrame) []any {
 		f.Ts, f.ReceivedAt, f.SourceID,
 		valueOr(f.OrganizationID, "local-unassigned"), valueOr(f.EnrollmentID, "legacy-unassigned"),
 		valueOr(f.CollectorInstanceID, "local"), collections, valueOr(f.Provenance, "local"),
-		valueOr(f.CredentialTier, "local_dial"), valueOr(f.AttestationTier, "none"),
+		valueOr(f.CredentialTier, "local_dial"), f.CredentialFingerprint, valueOr(f.AttestationTier, "none"),
 		valueOr(f.AggregateUse, "private"), valueOr(f.StationMetadata, "none"), valueOr(f.EventVisibility, "private"),
 		valueOr(f.RawExport, "deny"), peers, signals,
 		valueOr(f.PolicyRevision, "legacy-private-v1"),

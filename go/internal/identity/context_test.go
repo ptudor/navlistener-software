@@ -81,3 +81,24 @@ func TestRawExportAndSignalPolicyValidation(t *testing.T) {
 		t.Fatal("signal allow-list mismatch")
 	}
 }
+
+func TestCredentialFingerprintAndAuthorizationEquality(t *testing.T) {
+	c := NewPrivateContext("obs", CredentialSoftwareMTLS)
+	c.CredentialFingerprint = "ABC"
+	if _, err := c.Normalize(); err == nil {
+		t.Fatal("malformed certificate fingerprint accepted")
+	}
+	c.CredentialFingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	c, err := c.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.AuthorizationEqual(c) {
+		t.Fatal("identical authorization contexts differ")
+	}
+	changed := c
+	changed.Publication.Revision = "withdrawn-v2"
+	if c.AuthorizationEqual(changed) {
+		t.Fatal("policy revision change did not invalidate authorization")
+	}
+}

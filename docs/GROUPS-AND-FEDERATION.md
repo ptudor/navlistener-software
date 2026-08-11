@@ -36,9 +36,9 @@ and server-side enrollment record establish the current jurisdiction.
 
 ---
 
-## 1. Current implementation and the gaps this contract closes
+## 1. Implementation ledger and the gaps this contract closes
 
-### 1.1 Already implemented
+### 1.1 Implemented in navlistener
 
 - The hardware design assigns distinct roles to RTC EUI-64, EEPROM EUI-64, and ATECC serial.
 - The feeder/collector mTLS handshake binds exactly one DNS SAN byte-for-byte to the canonical
@@ -46,28 +46,34 @@ and server-side enrollment record establish the current jurisdiction.
 - The shared radiolistener Django control plane has `Organization`, role-carrying
   `Membership`, and `Device.organization`, plus credential history, feed grants, enablement,
   EUI-64, ATECC serial, label, and site.
-- navlistener authenticates a configured observer, stamps a canonical `source_id`, enforces
-  feed grants, and persists replay-safe raw frames.
-- `FEDERATION.md` defines a future collector-peer graph, directional inbound trust,
+- navlistener authentication returns a complete server-owned `ObserverContext`; both config
+  bootstrap and the versioned DB view provider fail closed. The DB provider has a bounded
+  digest-only cache, PostgreSQL `NOTIFY` invalidation, active-session rechecks, exact leaf
+  fingerprint binding, and refuses hardware-mTLS labels without verified attestation.
+- Every raw row retains immutable ownership, enrollment, collection, credential/attestation,
+  publication, signal, and export-policy evidence from receipt.
+- Public and operator live state, detector state, events, cursors, snapshots, and caches are
+  separated before aggregation; private input cannot change public bytes.
+- Manufacturer attestation v1/v2 formatting, signing, verification, and the bench CLI are
+  implemented; v2 binds ATECC + RTC + EEPROM identities and board revision.
+- The transport-independent federation egress gate intersects receipt policy, current policy,
+  and an explicit directed destination grant before any peer transport exists.
+- `FEDERATION.md` defines the remaining collector-peer transport, directional inbound trust,
   end-to-end observer-signature passthrough, and trust quarantine.
 
-### 1.2 Not implemented before this contract
+### 1.2 Baseline gaps identified by this contract
 
-- navlistener's config-backed authenticator returns only an observer id, not ownership or
-  publication context; the shared Django AAA model is not wired into navlistener.
 - There is no named server-side collection/group. The planned Swift/Kotlin clients' “My
   Stations” lists are local bookmarks, not authorization boundaries.
-- There is no public/private or audience policy. The v2 serve listener is a single view, and
-  `svs.perrecv`, confidence, events, RF state, and the observer feed can reveal a station.
-- `nav_frames` carries only `source_id`; events and snapshots have no organization,
-  collection, audience, enrollment, collector-instance, or provenance scope.
-- Federation specifies inbound trust (what peer data may do here) but not outbound export
-  authorization (which local data the peer is allowed to receive).
 - The hardware document says all three factory identifiers are recorded, but the shared
   `Device` row has no separate EEPROM/board EUI-64. Manufacturer attestation v1 binds the
   ATECC serial, RTC EUI-64, and board revision, but not the EEPROM EUI-64.
 - The current CA implementation is one CA pair per deployment. That supports an Airport F
   standalone installation, but not several unrelated CA realms inside one process.
+
+The remaining collector-side gap is authenticated organization/collection read selection and
+client discovery. The shared Django schema/migrations and client applications live outside this
+repository and must consume the versioned contracts rather than inventing local group meaning.
 
 No deployment may claim tenant privacy or safe federation until the applicable items above
 are migrated.
@@ -309,6 +315,7 @@ ObserverContext
   enrollment_id
   collector_instance_id
   credential_tier          token | software_mtls | hardware_mtls
+  credential_fingerprint   exact active leaf SHA-256 for mTLS sessions
   attestation_tier
   feed_grants
   declared_capabilities
@@ -330,7 +337,7 @@ field is explicitly configured. Configuration cannot claim manufacturer attestat
 
 ```text
 source_id, organization_id, enrollment_id, collector_instance_id,
-provenance, credential_tier, attestation_tier, policy_revision
+provenance, credential_tier, credential_fingerprint, attestation_tier, policy_revision
 ```
 
 Federated observations additionally carry immutable origin observer/peer/certificate

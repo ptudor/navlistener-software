@@ -45,28 +45,29 @@ var ErrNavFrameLimit = fmt.Errorf("nav frame query hit its row limit; narrow the
 // ingest.RawFrame. Words are not stored as such — Raw holds the frame bytes, which
 // for a word-oriented source is the big-endian nav words back to back.
 type StoredNavFrame struct {
-	ReceivedAt          time.Time
-	SourceID            string
-	OrganizationID      string
-	EnrollmentID        string
-	CollectorInstanceID string
-	CollectionIDs       []string
-	Provenance          string
-	CredentialTier      string
-	AttestationTier     string
-	AggregateUse        string
-	StationMetadata     string
-	EventVisibility     string
-	RawExport           string
-	FederationPeers     []string
-	PublishSignals      []string
-	PolicyRevision      string
-	GnssID              int
-	SvID                int
-	SigID               int
-	FreqID              int // GLONASS FDMA channel (k = FreqID - 7); 0 for other constellations
-	MsgType             int
-	Raw                 []byte
+	ReceivedAt            time.Time
+	SourceID              string
+	OrganizationID        string
+	EnrollmentID          string
+	CollectorInstanceID   string
+	CollectionIDs         []string
+	Provenance            string
+	CredentialTier        string
+	CredentialFingerprint string
+	AttestationTier       string
+	AggregateUse          string
+	StationMetadata       string
+	EventVisibility       string
+	RawExport             string
+	FederationPeers       []string
+	PublishSignals        []string
+	PolicyRevision        string
+	GnssID                int
+	SvID                  int
+	SigID                 int
+	FreqID                int // GLONASS FDMA channel (k = FreqID - 7); 0 for other constellations
+	MsgType               int
+	Raw                   []byte
 }
 
 // Close releases the connection pool.
@@ -110,7 +111,7 @@ func (s *Store) QueryNavFrames(ctx context.Context, q NavFrameQuery, fn func(Sto
 	// timestamp.
 	sql := `SELECT received_at, source_id, organization_id, enrollment_id,
 	               collector_instance_id, collection_ids, provenance, credential_tier,
-	               attestation_tier, aggregate_use, station_metadata, event_visibility,
+	               credential_fingerprint, attestation_tier, aggregate_use, station_metadata, event_visibility,
 	               raw_export, federation_peers, publish_signals, policy_revision,
 	               gnssid, svid, sigid, freqid, msg_type, raw
 	          FROM nav_frames
@@ -151,7 +152,7 @@ func (s *Store) QueryNavFrames(ctx context.Context, q NavFrameQuery, fn func(Sto
 		if err := rows.Scan(
 			&f.ReceivedAt, &f.SourceID, &f.OrganizationID, &f.EnrollmentID,
 			&f.CollectorInstanceID, &f.CollectionIDs, &f.Provenance, &f.CredentialTier,
-			&f.AttestationTier, &f.AggregateUse, &f.StationMetadata, &f.EventVisibility,
+			&f.CredentialFingerprint, &f.AttestationTier, &f.AggregateUse, &f.StationMetadata, &f.EventVisibility,
 			&f.RawExport, &f.FederationPeers, &f.PublishSignals, &f.PolicyRevision,
 			&gid, &sv, &sig, &freq, &mtype, &f.Raw,
 		); err != nil {

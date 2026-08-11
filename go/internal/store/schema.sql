@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS nav_frames (
     collection_ids        TEXT[] NOT NULL DEFAULT '{}',
     provenance            TEXT   NOT NULL DEFAULT 'local',
     credential_tier       TEXT   NOT NULL DEFAULT 'local_dial',
+    credential_fingerprint TEXT  NOT NULL DEFAULT '',
     attestation_tier      TEXT   NOT NULL DEFAULT 'none',
     aggregate_use         TEXT   NOT NULL DEFAULT 'private',
     station_metadata      TEXT   NOT NULL DEFAULT 'none',
@@ -58,6 +59,7 @@ ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS collector_instance_id TEXT   NOT
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS collection_ids        TEXT[] NOT NULL DEFAULT '{}';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS provenance            TEXT   NOT NULL DEFAULT 'local';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS credential_tier       TEXT   NOT NULL DEFAULT 'local_dial';
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS credential_fingerprint TEXT  NOT NULL DEFAULT '';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS attestation_tier      TEXT   NOT NULL DEFAULT 'none';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS aggregate_use         TEXT   NOT NULL DEFAULT 'private';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS station_metadata      TEXT   NOT NULL DEFAULT 'none';

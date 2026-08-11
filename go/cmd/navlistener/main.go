@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/ptudor/navlistener/internal/audience"
+	"github.com/ptudor/navlistener/internal/authorization"
 	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/detect"
 	"github.com/ptudor/navlistener/internal/identity"
@@ -95,6 +96,25 @@ func run() int {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	var authProvider *authorization.Provider
+	if cfg.Authorization.DSN != "" {
+		connectCtx, connectCancel := context.WithTimeout(ctx, 10*time.Second)
+		authProvider, err = authorization.NewDatabase(connectCtx, cfg.Authorization.DSN, cfg.Authorization.CacheTTL, log)
+		connectCancel()
+		if err != nil {
+			log.Error("control-plane authorization init failed", "error", err)
+			return 1
+		}
+		// Cancel the LISTEN waiter before closing its pool; pgxpool.Close waits
+		// for acquired connections to return.
+		defer func() {
+			cancel()
+			authProvider.Close()
+		}()
+		go authProvider.RunInvalidation(ctx)
+		log.Info("database authorization enabled", "cache_ttl", cfg.Authorization.CacheTTL,
+			"session_recheck_interval", cfg.Authorization.RecheckEvery)
+	}
 
 	// Pipeline: ingest → decode → live state (+ optional persist historian).
 	state.SetLeapSeconds(cfg.State.LeapSeconds) // interim config override for ΔtLS
@@ -126,12 +146,18 @@ func run() int {
 	// alongside the other pipeline goroutines.
 	var pushSrv *ingest.PushServer
 	if cfg.Push.Addr != "" {
-		auth := ingest.NewConfigAuthenticator(cfg.Push.Observers)
+		var auth ingest.Authenticator
+		if authProvider != nil {
+			auth = authProvider
+		} else {
+			auth = ingest.NewConfigAuthenticator(cfg.Push.Observers)
+		}
 		pushSrv, err = ingest.NewPushServer(cfg.Push, frames, auth, log)
 		if err != nil {
 			log.Error("push endpoint init failed", "error", err)
 			return 1
 		}
+		pushSrv.SetReauthorizationInterval(cfg.Authorization.RecheckEvery)
 	}
 
 	// Bind every configured listener before starting the historian or any producer.
@@ -318,7 +344,11 @@ func run() int {
 				reportFatal("push endpoint", err)
 			}
 		}()
-		log.Info("push endpoint enabled", "addr", cfg.Push.Addr, "observers", len(cfg.Push.Observers))
+		authSource := "config"
+		if authProvider != nil {
+			authSource = "database"
+		}
+		log.Info("push endpoint enabled", "addr", cfg.Push.Addr, "observers", len(cfg.Push.Observers), "authorization", authSource)
 	}
 
 	// Integrity DETECT: the debounced detector runs on a cadence over the same live
@@ -467,33 +497,34 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLi
 				observer = identity.NewPrivateContext(f.Source, identity.CredentialLocalDial)
 			}
 			historian.Enqueue(&store.NavFrame{
-				Ts:                  time.Now(),
-				ReceivedAt:          f.Recv,
-				SourceID:            f.Source,
-				OrganizationID:      observer.OrganizationID,
-				EnrollmentID:        observer.EnrollmentID,
-				CollectorInstanceID: observer.CollectorInstanceID,
-				CollectionIDs:       append([]string(nil), observer.CollectionIDs...),
-				Provenance:          "local",
-				CredentialTier:      string(observer.CredentialTier),
-				AttestationTier:     string(observer.AttestationTier),
-				AggregateUse:        string(observer.Publication.AggregateUse),
-				StationMetadata:     string(observer.Publication.StationMetadata),
-				EventVisibility:     string(observer.Publication.EventVisibility),
-				RawExport:           string(observer.Publication.RawExport),
-				FederationPeers:     append([]string(nil), observer.Publication.FederationPeers...),
-				PublishSignals:      policySignalStrings(observer.Publication.Signals),
-				PolicyRevision:      observer.Publication.Revision,
-				GnssID:              int(f.GnssID),
-				SvID:                f.SvID,
-				SigID:               f.SigID,
-				FreqID:              f.FreqID,
-				MsgType:             persistMsgType(f),
-				Raw:                 f.RawBytes(),
-				DecoderVer:          version.Version,
-				SourceSeq:           f.Seq,
-				HasSourceSeq:        f.HasSeq,
-				Session:             f.Session, // dedup-key third component 
+				Ts:                    time.Now(),
+				ReceivedAt:            f.Recv,
+				SourceID:              f.Source,
+				OrganizationID:        observer.OrganizationID,
+				EnrollmentID:          observer.EnrollmentID,
+				CollectorInstanceID:   observer.CollectorInstanceID,
+				CollectionIDs:         append([]string(nil), observer.CollectionIDs...),
+				Provenance:            "local",
+				CredentialTier:        string(observer.CredentialTier),
+				CredentialFingerprint: observer.CredentialFingerprint,
+				AttestationTier:       string(observer.AttestationTier),
+				AggregateUse:          string(observer.Publication.AggregateUse),
+				StationMetadata:       string(observer.Publication.StationMetadata),
+				EventVisibility:       string(observer.Publication.EventVisibility),
+				RawExport:             string(observer.Publication.RawExport),
+				FederationPeers:       append([]string(nil), observer.Publication.FederationPeers...),
+				PublishSignals:        policySignalStrings(observer.Publication.Signals),
+				PolicyRevision:        observer.Publication.Revision,
+				GnssID:                int(f.GnssID),
+				SvID:                  f.SvID,
+				SigID:                 f.SigID,
+				FreqID:                f.FreqID,
+				MsgType:               persistMsgType(f),
+				Raw:                   f.RawBytes(),
+				DecoderVer:            version.Version,
+				SourceSeq:             f.Seq,
+				HasSourceSeq:          f.HasSeq,
+				Session:               f.Session, // dedup-key third component 
 			})
 		}
 		live.Apply(f)
@@ -1236,6 +1267,11 @@ func printConfigSummary(cfg *config.Config) {
 		pushAddr = "(disabled)"
 	}
 	fmt.Printf("  push addr:      %s (%d observers)\n", pushAddr, len(cfg.Push.Observers))
+	authSource := "config bootstrap"
+	if cfg.Authorization.DSN != "" {
+		authSource = fmt.Sprintf("database (TTL %s, recheck %s)", cfg.Authorization.CacheTTL, cfg.Authorization.RecheckEvery)
+	}
+	fmt.Printf("  authorization:  %s\n", authSource)
 	fmt.Printf("  log:            %s / %s\n", cfg.Logging.Level, cfg.Logging.Format)
 	fmt.Printf("  state shards:   %d\n", cfg.State.Shards)
 	fmt.Printf("  sv ttl:         %s\n", cfg.State.SVTTL)

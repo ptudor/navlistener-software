@@ -81,14 +81,15 @@ var knownDialTypes = map[string]bool{
 
 // Config is the whole-daemon configuration.
 type Config struct {
-	Logging    Logging    `toml:"logging"`
-	Metrics    Metrics    `toml:"metrics"`
-	State      State      `toml:"state"`
-	Store      Store      `toml:"store"`
-	Serve      Serve      `toml:"serve"`
-	Push       Push       `toml:"push"`
-	Federation Federation `toml:"federation"`
-	Ingest     []Source   `toml:"ingest"`
+	Logging       Logging       `toml:"logging"`
+	Metrics       Metrics       `toml:"metrics"`
+	State         State         `toml:"state"`
+	Store         Store         `toml:"store"`
+	Serve         Serve         `toml:"serve"`
+	Push          Push          `toml:"push"`
+	Authorization Authorization `toml:"authorization"`
+	Federation    Federation    `toml:"federation"`
+	Ingest        []Source      `toml:"ingest"`
 
 	// ShutdownTimeout bounds graceful shutdown; kept out of the wire format.
 	ShutdownTimeout time.Duration `toml:"-"`
@@ -144,6 +145,18 @@ type Store struct {
 	RawRetention string `toml:"raw_retention"` // default "7 days"
 	// CompressAfter is when a raw chunk is columnar-compressed (default "1 day").
 	CompressAfter string `toml:"compress_after"`
+}
+
+// Authorization selects the shared, read-only ingest control-plane provider. When DSN
+// is set, static push credential rows are not a fallback. CacheTTL bounds
+// stale authority if NOTIFY is unavailable; RecheckEvery bounds active-feeder-session
+// closure after cache invalidation/expiry.
+type Authorization struct {
+	DSN           string        `toml:"dsn"`
+	CacheTTLs     string        `toml:"cache_ttl"`
+	CacheTTL      time.Duration `toml:"-"`
+	RecheckEverys string        `toml:"session_recheck_interval"`
+	RecheckEvery  time.Duration `toml:"-"`
 }
 
 // Push is the authenticated GNF1 fleet push endpoint (docs/DESIGN.md §1/§2): the
@@ -391,7 +404,7 @@ func (c *Config) addPermissionWarnings(path string) {
 	}
 	if m := fi.Mode().Perm(); m&0o077 != 0 {
 		c.Warnings = append(c.Warnings, fmt.Sprintf(
-			"config %s holds credentials (store.dsn or ntrip username/password) but is group/world-readable (mode %04o) — chmod 600 it", path, m))
+			"config %s holds credentials (store/authorization DSN or ntrip username/password) but is group/world-readable (mode %04o) — chmod 600 it", path, m))
 	}
 }
 
@@ -399,7 +412,7 @@ func (c *Config) addPermissionWarnings(path string) {
 // cleartext. Any non-empty DSN counts (conservative: most embed a password);
 // push token hashes are SHA-256 digests, not secrets, and are excluded.
 func (c *Config) holdsSecrets() bool {
-	if c.Store.DSN != "" {
+	if c.Store.DSN != "" || c.Authorization.DSN != "" {
 		return true
 	}
 	for _, s := range c.Ingest {
@@ -416,6 +429,7 @@ func defaults() *Config {
 		Metrics:         Metrics{Addr: "127.0.0.1:9100"},
 		State:           State{Shards: 16, SVTTLs: "2h", PropagateEverys: "1s"},
 		Store:           Store{BatchSize: 1000, BatchEverys: "1s", RawRetention: "7 days", CompressAfter: "1 day"},
+		Authorization:   Authorization{CacheTTLs: "30s", RecheckEverys: "10s"},
 		Serve:           Serve{Audience: "public"},
 		Push:            Push{MaxConns: 512},
 		ShutdownTimeout: 15 * time.Second,
@@ -503,6 +517,26 @@ func (c *Config) finalize() error {
 	if c.Store.DSN != "" {
 		if _, err := pgxpool.ParseConfig(c.Store.DSN); err != nil {
 			return fmt.Errorf("store.dsn: %w", err)
+		}
+	}
+	if err := parseDurPositive("authorization.cache_ttl", c.Authorization.CacheTTLs, &c.Authorization.CacheTTL, 30*time.Second); err != nil {
+		return err
+	}
+	if err := parseDurPositive("authorization.session_recheck_interval", c.Authorization.RecheckEverys, &c.Authorization.RecheckEvery, 10*time.Second); err != nil {
+		return err
+	}
+	if c.Authorization.CacheTTL > 5*time.Minute {
+		return fmt.Errorf("authorization.cache_ttl %s: must not exceed 5m", c.Authorization.CacheTTL)
+	}
+	if c.Authorization.RecheckEvery > 5*time.Minute {
+		return fmt.Errorf("authorization.session_recheck_interval %s: must not exceed 5m", c.Authorization.RecheckEvery)
+	}
+	if c.Authorization.DSN != "" {
+		if _, err := pgxpool.ParseConfig(c.Authorization.DSN); err != nil {
+			return fmt.Errorf("authorization.dsn: %w", err)
+		}
+		if len(c.Push.Observers) != 0 {
+			return fmt.Errorf("authorization.dsn and [[push.observer]] cannot both be set: database authorization has no config fallback")
 		}
 	}
 

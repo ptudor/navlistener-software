@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
@@ -69,7 +70,7 @@ func (c *idleConn) Read(p []byte) (int, error) {
 // publication policy), not just the source tag. Implementations must be safe for
 // concurrent use. Ordinary DATA can never override this result.
 type Authenticator interface {
-	Authenticate(token, station, feed string) (identity.ObserverContext, bool)
+	Authenticate(context.Context, string, string, string) (identity.ObserverContext, bool)
 }
 
 // configAuth authenticates against the [[push.observer]] table: it matches the
@@ -87,7 +88,7 @@ func NewConfigAuthenticator(observers []config.PushObserver) Authenticator {
 	return &configAuth{byHash: m}
 }
 
-func (a *configAuth) Authenticate(token, station, feed string) (identity.ObserverContext, bool) {
+func (a *configAuth) Authenticate(_ context.Context, token, station, feed string) (identity.ObserverContext, bool) {
 	sum := sha256.Sum256([]byte(token))
 	o, ok := a.byHash[hex.EncodeToString(sum[:])]
 	if !ok {
@@ -149,11 +150,24 @@ type PushServer struct {
 	// ACK on receipt, the pre-regression fix semantics. Set via SetDurableTracker
 	// before Run; main wires it exactly when the historian is enabled.
 	durable *DurableTracker
+
+	// reauthorizeEvery bounds how long an active feeder can retain authority
+	// after a credential/enrollment/policy revocation. The provider's cache TTL
+	// is the other half of the documented bound.
+	reauthorizeEvery time.Duration
 }
 
 // SetDurableTracker installs the regression fix durability watermark source. Must be
 // called before Run/Serve (connections read the field without a lock).
 func (p *PushServer) SetDurableTracker(t *DurableTracker) { p.durable = t }
+
+// SetReauthorizationInterval changes the active-session authorization cadence.
+// Config validation requires a positive bounded value.
+func (p *PushServer) SetReauthorizationInterval(every time.Duration) {
+	if every > 0 {
+		p.reauthorizeEvery = every
+	}
+}
 
 // NewPushServer builds the listener from config. It loads the server certificate and,
 // if a client CA is configured, requires and verifies client certificates (mTLS).
@@ -211,7 +225,8 @@ func newPushServer(addr string, tc *tls.Config, out chan<- *RawFrame, auth Authe
 	if maxConns <= 0 {
 		maxConns = 512
 	}
-	return &PushServer{addr: addr, tlsConfig: tc, auth: auth, out: out, ackInterval: ack, log: log, conns: make(chan struct{}, maxConns)}
+	return &PushServer{addr: addr, tlsConfig: tc, auth: auth, out: out, ackInterval: ack,
+		reauthorizeEvery: 30 * time.Second, log: log, conns: make(chan struct{}, maxConns)}
 }
 
 // Run listens until ctx is cancelled, handling each feeder connection concurrently.
@@ -352,7 +367,9 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 		return
 	}
 	w := &connWriter{c: conn}
-	observerContext, feed, session, useZstd, ok := p.handshake(conn, w, remote)
+	sessionCtx, sessionCancel := context.WithCancel(ctx)
+	defer sessionCancel()
+	observerContext, feed, session, useZstd, ok := p.handshake(sessionCtx, conn, w, remote)
 	if !ok {
 		return
 	}
@@ -414,7 +431,7 @@ const helloMaxLen = 4096
 // handshake reads and authenticates the HELLO, replying WELCOME. It returns the
 // canonical observer id, feed, session identity, and whether the DATA stream is
 // zstd-compressed (confirmed only when the feeder requested it) on success.
-func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (observer identity.ObserverContext, feed, session string, useZstd, ok bool) {
+func (p *PushServer) handshake(ctx context.Context, conn net.Conn, w *connWriter, remote string) (observer identity.ObserverContext, feed, session string, useZstd, ok bool) {
 	ft, payload, err := wire.ReadFrameMax(conn, helloMaxLen)
 	if err != nil || ft != wire.Hello {
 		p.log.Warn("push expected HELLO", "remote", remote, "frame", ft, "error", err)
@@ -425,36 +442,19 @@ func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (obs
 		p.log.Warn("push bad HELLO json", "remote", remote, "error", err)
 		return identity.ObserverContext{}, "", "", false, false
 	}
-	observerContext, authed := p.auth.Authenticate(h.Token, h.Station, h.Feed)
+	observerContext, authed, authErr := p.authorize(ctx, conn, h.Token, h.Station, h.Feed)
 	if !authed {
 		metrics.PushAuthFailuresTotal.Inc()
-		metrics.PushAuthFailuresByReasonTotal.WithLabelValues("token_or_grant").Inc()
+		reason := "token_or_grant"
+		if authErr != nil {
+			reason = "certificate_identity"
+		}
+		metrics.PushAuthFailuresByReasonTotal.WithLabelValues(reason).Inc()
 		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "unauthorized"}))
-		p.log.Warn("push auth rejected", "remote", remote, "station", h.Station, "feed", h.Feed)
+		p.log.Warn("push auth rejected", "remote", remote, "station", h.Station, "feed", h.Feed, "error", authErr)
 		return identity.ObserverContext{}, "", "", false, false
 	}
 	obs := observerContext.ObserverID
-	if p.tlsConfig.ClientAuth != tls.NoClientCert {
-		tlsConn, isTLS := conn.(*tls.Conn)
-		if !isTLS {
-			metrics.PushAuthFailuresTotal.Inc()
-			metrics.PushAuthFailuresByReasonTotal.WithLabelValues("certificate_identity").Inc()
-			return identity.ObserverContext{}, "", "", false, false
-		}
-		state := tlsConn.ConnectionState()
-		if err := matchPeerIdentity(state.PeerCertificates, obs); err != nil {
-			metrics.PushAuthFailuresTotal.Inc()
-			metrics.PushAuthFailuresByReasonTotal.WithLabelValues("certificate_identity").Inc()
-			_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "certificate identity mismatch"}))
-			p.log.Warn("push certificate identity rejected", "remote", remote, "observer", obs, "error", err)
-			return identity.ObserverContext{}, "", "", false, false
-		}
-		// Config-backed mTLS establishes an extractable/software certificate tier.
-		// Only the future AAA/attestation verifier may return hardware_mtls.
-		if observerContext.CredentialTier != identity.CredentialHardwareMTLS {
-			observerContext = observerContext.WithCredentialTier(identity.CredentialSoftwareMTLS)
-		}
-	}
 	// regression fix/regression fix defense-in-depth: push has an explicit wire-contract allow-list,
 	// independent of what a future non-config Authenticator may accidentally grant.
 	// Dial-only sbf/ntrip must never reach recordToFrame's ubx/rtcm branches.
@@ -477,7 +477,84 @@ func (p *PushServer) handshake(conn net.Conn, w *connWriter, remote string) (obs
 	})); err != nil {
 		return identity.ObserverContext{}, "", "", false, false
 	}
+	go p.watchAuthorization(ctx, conn, h.Token, h.Station, h.Feed, observerContext)
 	return observerContext, h.Feed, h.Session, h.Zstd, true
+}
+
+// authorize binds a server-side grant to the proof actually presented on this
+// connection. A control-plane hardware label is rejected unless this is mTLS,
+// the active leaf fingerprint matches, and manufacturer attestation is present.
+func (p *PushServer) authorize(ctx context.Context, conn net.Conn, token, station, feed string) (identity.ObserverContext, bool, error) {
+	resolved, ok := p.auth.Authenticate(ctx, token, station, feed)
+	if !ok {
+		return identity.ObserverContext{}, false, nil
+	}
+	if p.tlsConfig.ClientAuth == tls.NoClientCert {
+		if resolved.CredentialTier == identity.CredentialSoftwareMTLS ||
+			resolved.CredentialTier == identity.CredentialHardwareMTLS || resolved.CredentialFingerprint != "" {
+			return identity.ObserverContext{}, false, errors.New("control-plane credential requires an mTLS client certificate")
+		}
+		resolved.CredentialTier = identity.CredentialToken
+		resolved.CredentialFingerprint = ""
+		resolved, err := resolved.Normalize()
+		return resolved, err == nil, err
+	}
+
+	tlsConn, isTLS := conn.(*tls.Conn)
+	if !isTLS {
+		return identity.ObserverContext{}, false, errors.New("verified TLS connection missing")
+	}
+	state := tlsConn.ConnectionState()
+	if err := matchPeerIdentity(state.PeerCertificates, resolved.ObserverID); err != nil {
+		return identity.ObserverContext{}, false, err
+	}
+	leaf := state.PeerCertificates[0]
+	fingerprintBytes := sha256.Sum256(leaf.Raw)
+	actualFingerprint := hex.EncodeToString(fingerprintBytes[:])
+	expectedFingerprint := resolved.CredentialFingerprint
+	if (resolved.CredentialTier == identity.CredentialSoftwareMTLS ||
+		resolved.CredentialTier == identity.CredentialHardwareMTLS) && expectedFingerprint == "" {
+		return identity.ObserverContext{}, false, errors.New("mTLS control-plane credential has no active leaf fingerprint")
+	}
+	if expectedFingerprint != "" && subtle.ConstantTimeCompare([]byte(expectedFingerprint), []byte(actualFingerprint)) != 1 {
+		return identity.ObserverContext{}, false, errors.New("client certificate fingerprint does not match active credential")
+	}
+	resolved.CredentialFingerprint = actualFingerprint
+	if resolved.CredentialTier == identity.CredentialHardwareMTLS {
+		if resolved.AttestationTier == identity.AttestationNone {
+			return identity.ObserverContext{}, false, errors.New("hardware mTLS credential lacks verified manufacturer attestation")
+		}
+	} else {
+		// A config/bootstrap token plus a CA-verified certificate proves software
+		// mTLS, but can never promote itself to hardware mTLS.
+		resolved.CredentialTier = identity.CredentialSoftwareMTLS
+	}
+	resolved, err := resolved.Normalize()
+	return resolved, err == nil, err
+}
+
+func (p *PushServer) watchAuthorization(ctx context.Context, conn net.Conn, token, station, feed string, initial identity.ObserverContext) {
+	if p.reauthorizeEvery <= 0 {
+		return
+	}
+	ticker := time.NewTicker(p.reauthorizeEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			current, ok, err := p.authorize(checkCtx, conn, token, station, feed)
+			cancel()
+			if !ok || !initial.AuthorizationEqual(current) {
+				p.log.Warn("push feeder authorization changed; closing active session",
+					"observer", initial.ObserverID, "authorized", ok, "error", err)
+				_ = conn.Close()
+				return
+			}
+		}
+	}
 }
 
 // matchPeerIdentity binds an mTLS-authenticated leaf to the token's canonical

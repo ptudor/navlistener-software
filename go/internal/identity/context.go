@@ -110,13 +110,18 @@ type ObserverContext struct {
 	CollectorInstanceID string
 	CollectionIDs       []string
 	CredentialTier      CredentialTier
-	AttestationTier     AttestationTier
-	Publication         PublicationPolicy
+	// CredentialFingerprint is the lowercase SHA-256 of the exact operational
+	// leaf certificate used for this session. It is empty for token/local
+	// sessions and is resolved by the collector, never accepted from DATA.
+	CredentialFingerprint string
+	AttestationTier       AttestationTier
+	Publication           PublicationPolicy
 }
 
 // scopeIDRe is deliberately narrower than arbitrary display text: these ids are
 // persisted, logged, used in cache/audience keys, and may later appear in URLs.
 var scopeIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,252}$`)
+var certificateFingerprintRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // ValidScopeID reports whether an administrative id is safe as an opaque key.
 func ValidScopeID(s string) bool { return scopeIDRe.MatchString(s) }
@@ -181,6 +186,9 @@ func (c ObserverContext) Normalize() (ObserverContext, error) {
 	case CredentialLocalDial, CredentialToken, CredentialSoftwareMTLS, CredentialHardwareMTLS:
 	default:
 		return c, fmt.Errorf("credential tier %q is invalid", c.CredentialTier)
+	}
+	if c.CredentialFingerprint != "" && !certificateFingerprintRe.MatchString(c.CredentialFingerprint) {
+		return c, fmt.Errorf("credential fingerprint must be 64 lowercase hexadecimal characters")
 	}
 	if c.AttestationTier == "" {
 		c.AttestationTier = AttestationNone
@@ -277,6 +285,49 @@ func (c ObserverContext) PublicAttributed() bool {
 func (c ObserverContext) WithCredentialTier(tier CredentialTier) ObserverContext {
 	c.CredentialTier = tier
 	return c
+}
+
+// AuthorizationEqual compares every server-resolved authorization/evidence
+// field. Active sessions close when this becomes false so changed ownership,
+// membership, credentials, attestation, or publication takes effect within the
+// documented cache/recheck bound.
+func (c ObserverContext) AuthorizationEqual(other ObserverContext) bool {
+	return c.ObserverID == other.ObserverID && c.OrganizationID == other.OrganizationID &&
+		c.EnrollmentID == other.EnrollmentID && c.CollectorInstanceID == other.CollectorInstanceID &&
+		c.CredentialTier == other.CredentialTier && c.CredentialFingerprint == other.CredentialFingerprint &&
+		c.AttestationTier == other.AttestationTier &&
+		c.Publication.AggregateUse == other.Publication.AggregateUse &&
+		c.Publication.StationMetadata == other.Publication.StationMetadata &&
+		c.Publication.EventVisibility == other.Publication.EventVisibility &&
+		c.Publication.RawExport == other.Publication.RawExport &&
+		c.Publication.Revision == other.Publication.Revision &&
+		equalStrings(c.CollectionIDs, other.CollectionIDs) &&
+		equalStrings(c.Publication.FederationPeers, other.Publication.FederationPeers) &&
+		equalSignals(c.Publication.Signals, other.Publication.Signals)
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalSignals(a, b []Signal) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // AllowsSignal reports whether this policy permits the signal. Empty means all
