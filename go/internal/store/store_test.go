@@ -233,6 +233,7 @@ func TestNavFrameRowMatchesColumnOrder(t *testing.T) {
 		OrganizationID: "customer-a", EnrollmentID: "enroll-9", CollectorInstanceID: "hosted-west",
 		Provenance: "local", CredentialTier: "hardware_mtls", AttestationTier: "verified_v2_complete",
 		AggregateUse: "private", StationMetadata: "none", EventVisibility: "private", PolicyRevision: "policy-7",
+		RawExport: "named_peers", FederationPeers: []string{"peer-b"}, PublishSignals: []string{"0:0"},
 		GnssID: 6, SvID: 5, SigID: 2, FreqID: 9, MsgType: 0x10,
 		Raw: []byte{1, 2, 3}, Decoded: []byte(`{"a":1}`), DecoderVer: "v1",
 	}
@@ -246,7 +247,8 @@ func TestNavFrameRowMatchesColumnOrder(t *testing.T) {
 		"collector_instance_id": "hosted-west", "provenance": "local",
 		"credential_tier": "hardware_mtls", "attestation_tier": "verified_v2_complete",
 		"aggregate_use": "private", "station_metadata": "none", "event_visibility": "private", "policy_revision": "policy-7",
-		"gnssid": int16(6), "svid": int16(5), "sigid": int16(2),
+		"raw_export": "named_peers",
+		"gnssid":     int16(6), "svid": int16(5), "sigid": int16(2),
 		"freqid": int16(9), "msg_type": int16(0x10),
 		"decoded": `{"a":1}`, "decoder_ver": "v1",
 	}

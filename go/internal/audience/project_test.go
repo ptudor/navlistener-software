@@ -90,6 +90,17 @@ func TestProjectPublicEventsIsIndependentlyGatedAndRedacted(t *testing.T) {
 	}
 }
 
+func TestProjectPublicHonorsSignalAllowList(t *testing.T) {
+	c := contextFor(identity.AggregatePublicAnonymous, identity.MetadataNone)
+	c.Publication.Signals = []identity.Signal{{GnssID: int(gnss.Galileo), SigID: 0}}
+	if _, ok := ProjectPublic(&ingest.RawFrame{Source: "obs", Observer: c, GnssID: gnss.GPS, SigID: 0}); ok {
+		t.Fatal("disallowed GPS signal entered public state")
+	}
+	if _, ok := ProjectPublic(&ingest.RawFrame{Source: "obs", Observer: c, GnssID: gnss.Galileo, SigID: 0}); !ok {
+		t.Fatal("allowed Galileo signal rejected")
+	}
+}
+
 func TestPublicSourcesExposeOnlyAttributedPresentation(t *testing.T) {
 	private := config.Source{Name: "private", Remark: "secret site"}
 	coarse := config.Source{Name: "coarse", Remark: "exact rooftop", ObserverContext: contextFor(identity.AggregatePublicAttributed, identity.MetadataCoarse)}

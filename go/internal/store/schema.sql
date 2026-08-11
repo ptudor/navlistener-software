@@ -26,6 +26,9 @@ CREATE TABLE IF NOT EXISTS nav_frames (
     aggregate_use         TEXT   NOT NULL DEFAULT 'private',
     station_metadata      TEXT   NOT NULL DEFAULT 'none',
     event_visibility      TEXT   NOT NULL DEFAULT 'private',
+    raw_export            TEXT   NOT NULL DEFAULT 'deny',
+    federation_peers      TEXT[] NOT NULL DEFAULT '{}',
+    publish_signals       TEXT[] NOT NULL DEFAULT '{}',
     policy_revision       TEXT   NOT NULL DEFAULT 'legacy-private-v1',
     gnssid      SMALLINT    NOT NULL,   -- gnssId 0..7 (docs/CONSTELLATIONS.md §0)
     svid        SMALLINT    NOT NULL,
@@ -59,6 +62,9 @@ ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS attestation_tier      TEXT   NOT
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS aggregate_use         TEXT   NOT NULL DEFAULT 'private';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS station_metadata      TEXT   NOT NULL DEFAULT 'none';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS event_visibility      TEXT   NOT NULL DEFAULT 'private';
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS raw_export            TEXT   NOT NULL DEFAULT 'deny';
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS federation_peers      TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS publish_signals       TEXT[] NOT NULL DEFAULT '{}';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS policy_revision       TEXT   NOT NULL DEFAULT 'legacy-private-v1';
 
 -- Query paths: per-SV history, and the recent-by-reception forensic scan.

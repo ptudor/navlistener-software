@@ -433,7 +433,8 @@ func TestObserverPublicationContextValidation(t *testing.T) {
 	c, err := finalizeObserverContext(
 		"observer16", "institution-c", "enrollment-1", "hosted-west",
 		[]string{"institution-c-roof", "public-community"},
-		"public_attributed", "coarse", "public", "policy-3", identity.CredentialToken,
+		"public_attributed", "coarse", "public", "named_peers", []string{"peer-b"}, []string{"0:0", "2:3"},
+		"policy-3", identity.CredentialToken,
 	)
 	if err != nil {
 		t.Fatalf("valid publication context rejected: %v", err)
@@ -444,17 +445,50 @@ func TestObserverPublicationContextValidation(t *testing.T) {
 	if c.Publication.EventVisibility != identity.EventsPublic {
 		t.Fatalf("event visibility = %q", c.Publication.EventVisibility)
 	}
+	if c.Publication.RawExport != identity.RawExportNamedPeers || !c.Publication.NamesFederationPeer("peer-b") || !c.Publication.AllowsSignal(2, 3) {
+		t.Fatalf("export policy normalized incorrectly: %+v", c.Publication)
+	}
 	if _, err := finalizeObserverContext(
 		"observer16", "customer a", "", "", nil,
-		"private", "none", "private", "", identity.CredentialToken,
+		"private", "none", "private", "deny", nil, nil, "", identity.CredentialToken,
 	); err == nil {
 		t.Fatal("invalid organization scope accepted")
 	}
 	if _, err := finalizeObserverContext(
 		"observer16", "institution-c", "", "", nil,
-		"public_attributed", "none", "public", "", identity.CredentialToken,
+		"public_attributed", "none", "public", "deny", nil, nil, "", identity.CredentialToken,
 	); err == nil {
 		t.Fatal("attributed public policy without metadata accepted")
+	}
+}
+
+func TestFederationExportGrantValidation(t *testing.T) {
+	c := defaults()
+	c.Federation.ExportGrants = []FederationExportGrant{{
+		SourceCollector: "collector-a", DestinationPeer: "peer-b",
+		Organizations: []string{"customer-a"}, Signals: []string{"0:0", "2:3"},
+		DataClasses: []string{"aggregate", "raw"}, Attribution: "origin_id",
+		MaxRetentions: "24h", Purposes: []string{"integrity-monitoring"},
+		ValidFroms: "2026-08-10T00:00:00Z", ValidUntils: "2027-08-10T00:00:00Z",
+		ApprovedBy: "owner-a", Revision: "grant-v1", Enabled: true,
+	}}
+	if err := c.finalize(); err != nil {
+		t.Fatalf("valid federation grant rejected: %v", err)
+	}
+	grant := c.Federation.ExportGrants[0].Grant
+	if grant.DestinationPeerID != "peer-b" || grant.MaxRetention != 24*time.Hour || len(grant.Signals) != 2 {
+		t.Fatalf("grant normalized incorrectly: %+v", grant)
+	}
+
+	unsafe := defaults()
+	unsafe.Federation.ExportGrants = []FederationExportGrant{{
+		SourceCollector: "collector-a", DestinationPeer: "peer-b",
+		DataClasses: []string{"raw"}, Attribution: "full_provenance", MaxRetentions: "24h",
+		Purposes: []string{"anything"}, ValidFroms: "2026-08-10T00:00:00Z", ValidUntils: "2027-08-10T00:00:00Z",
+		ApprovedBy: "owner-a", Revision: "grant-v1", Enabled: true,
+	}}
+	if err := unsafe.finalize(); err == nil {
+		t.Fatal("selector-free wildcard export grant accepted")
 	}
 }
 

@@ -13,6 +13,7 @@ which direction the dependencies point. Each has its own README with the detail.
 | [`identity/`](identity/) | — | Trusted observer context and audience authorization keys. |
 | [`attestation/`](attestation/) | — | Manufacturer v1/v2 originality statement formatting and verification. |
 | [`audience/`](audience/) | — | Pre-aggregation public/event privacy projection. |
+| [`federation/`](federation/) | — | Receipt/current policy ∩ destination export-grant evaluator. |
 | [`wire/`](wire/) | — | GNF1: the feeder↔collector framing, handshake, and the durable-ACK contract. |
 | [`ingest/`](ingest/) | **INGEST** | Dial connectors (UBX/SBF/RTCM/NTRIP) and the authenticated push server. Normalizes both into `RawFrame`. |
 | [`state/`](state/) | **STATE** | Live per-SV state, decode dispatch, propagation, and the integrity *compute*. |

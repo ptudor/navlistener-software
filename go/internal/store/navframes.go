@@ -57,6 +57,9 @@ type StoredNavFrame struct {
 	AggregateUse        string
 	StationMetadata     string
 	EventVisibility     string
+	RawExport           string
+	FederationPeers     []string
+	PublishSignals      []string
 	PolicyRevision      string
 	GnssID              int
 	SvID                int
@@ -107,7 +110,8 @@ func (s *Store) QueryNavFrames(ctx context.Context, q NavFrameQuery, fn func(Sto
 	// timestamp.
 	sql := `SELECT received_at, source_id, organization_id, enrollment_id,
 	               collector_instance_id, collection_ids, provenance, credential_tier,
-	               attestation_tier, aggregate_use, station_metadata, event_visibility, policy_revision,
+	               attestation_tier, aggregate_use, station_metadata, event_visibility,
+	               raw_export, federation_peers, publish_signals, policy_revision,
 	               gnssid, svid, sigid, freqid, msg_type, raw
 	          FROM nav_frames
 	         WHERE received_at >= $1
@@ -147,7 +151,8 @@ func (s *Store) QueryNavFrames(ctx context.Context, q NavFrameQuery, fn func(Sto
 		if err := rows.Scan(
 			&f.ReceivedAt, &f.SourceID, &f.OrganizationID, &f.EnrollmentID,
 			&f.CollectorInstanceID, &f.CollectionIDs, &f.Provenance, &f.CredentialTier,
-			&f.AttestationTier, &f.AggregateUse, &f.StationMetadata, &f.EventVisibility, &f.PolicyRevision,
+			&f.AttestationTier, &f.AggregateUse, &f.StationMetadata, &f.EventVisibility,
+			&f.RawExport, &f.FederationPeers, &f.PublishSignals, &f.PolicyRevision,
 			&gid, &sv, &sig, &freq, &mtype, &f.Raw,
 		); err != nil {
 			return fmt.Errorf("query nav frames: scan: %w", err)

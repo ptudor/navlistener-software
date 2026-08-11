@@ -357,6 +357,9 @@ CREATE TABLE nav_frames (
     aggregate_use TEXT NOT NULL,
     station_metadata TEXT NOT NULL,
     event_visibility TEXT NOT NULL,
+    raw_export TEXT NOT NULL,
+    federation_peers TEXT[] NOT NULL,
+    publish_signals TEXT[] NOT NULL,
     policy_revision TEXT NOT NULL,
     gnssid      SMALLINT    NOT NULL,   -- gnssId (0..7, CONSTELLATIONS.md §0)
     svid        SMALLINT    NOT NULL,

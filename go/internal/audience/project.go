@@ -39,6 +39,9 @@ func ProjectPublic(f *ingest.RawFrame) (*ingest.RawFrame, bool) {
 	if err != nil || !c.PublicEligible() {
 		return nil, false
 	}
+	if !c.Publication.AllowsSignal(int(f.GnssID), f.SigID) {
+		return nil, false
+	}
 
 	out := *f
 	out.Observer = c

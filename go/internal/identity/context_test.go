@@ -61,3 +61,23 @@ func TestPublicEventsRequirePublicAggregate(t *testing.T) {
 		t.Fatalf("public event policy rejected: %+v, %v", got, err)
 	}
 }
+
+func TestRawExportAndSignalPolicyValidation(t *testing.T) {
+	c := NewPrivateContext("obs", CredentialHardwareMTLS)
+	c.Publication.RawExport = RawExportNamedPeers
+	if _, err := c.Normalize(); err == nil {
+		t.Fatal("named_peers without a peer accepted")
+	}
+	c.Publication.FederationPeers = []string{"peer-b"}
+	c.Publication.Signals = []Signal{{GnssID: 0, SigID: 0}, {GnssID: 2, SigID: 3}}
+	c, err := c.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Publication.NamesFederationPeer("peer-b") || c.Publication.NamesFederationPeer("peer-c") {
+		t.Fatal("peer allow-list mismatch")
+	}
+	if !c.Publication.AllowsSignal(2, 3) || c.Publication.AllowsSignal(6, 0) {
+		t.Fatal("signal allow-list mismatch")
+	}
+}

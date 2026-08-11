@@ -48,6 +48,7 @@ fleet ingest. The daemon runs happily as a collector-only process.
 | `[store]` | `dsn` set | TimescaleDB historian, `raw_retention`, `compress_after` |
 | `[serve]` | `addr` set | the native v2 read API, `audience` (`public` default or explicit `operator`), and refresh cadences |
 | `[push]` | `addr` set | the authenticated GNF1 fleet listener; TLS mandatory |
+| `[[federation.export_grant]]` | no transport | explicit directed export authorization, validated before peer transport exists |
 | `[[push.observer]]` | — | credential/feed grant plus server-owned organization and publication context |
 | `[[ingest]]` | per entry | dial connector plus the same server-owned organization/publication context |
 
@@ -88,8 +89,8 @@ capabilities = ["0:0", "2:0", "2:3", "3:0", "6:0"]
   sources (SBF, RTCM) until their central decoders land.
 - **`disabled`** keeps an entry in the file but doesn't start it — pause without deleting.
 - **Identity and policy fields** are `organization`, `enrollment`, `collector_instance`,
-  `collections`, `aggregate_use`, `station_metadata`, `event_visibility`, and
-  `policy_revision`. They are resolved by
+  `collections`, `aggregate_use`, `station_metadata`, `event_visibility`, `raw_export`,
+  `federation_peers`, `publish_signals`, and `policy_revision`. They are resolved by
   this collector, stamped on every frame, and persisted with the raw receipt. Omitting them is
   deliberately safe: `local-unassigned`, `private`, and no station metadata. A receiver cannot
   send or override them. Production will source the same context from shared AAA rows; config is
@@ -128,6 +129,24 @@ addresses.
   `public_redacted` contributes to a public detector without a station identity; `public`
   retains only attribution already allowed by `aggregate_use`. A private aggregate can never
   grant public events.
+- **Raw/federation fields** default to `deny` and an empty peer set. `named_peers` requires at
+  least one explicit collector-instance id. `public` means the receipt policy does not narrow
+  by destination, but an enabled destination `ExportGrant` is still mandatory—there is no
+  wildcard transmission. `publish_signals` narrows both public state and export by
+  `"gnss:sig"`; empty means all supported signals.
+
+### `[[federation.export_grant]]` — directed egress authorization
+
+These rows do not start a peer connection. They are parsed into the transport-independent
+`internal/federation.ExportGrant` gate now so a later transport cannot exist without the policy
+edge already being testable. Every grant names one source collector and destination peer, at
+least one organization/collection/observer selector, allowed signals/data classes, maximum
+attribution and retention, one or more purposes, a required validity window, approver,
+revision, and enabled state. A selector-free row is rejected rather than interpreted as a
+wildcard.
+
+The grant is only half the decision: each send must also pass the immutable receipt policy and
+the current owner policy. A peer HELLO/subscription may narrow these values but never widen them.
 
 ### The two identity validators
 

@@ -21,6 +21,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	toml "github.com/pelletier/go-toml/v2"
+	"github.com/ptudor/navlistener/internal/federation"
 	"github.com/ptudor/navlistener/internal/identity"
 )
 
@@ -80,13 +81,14 @@ var knownDialTypes = map[string]bool{
 
 // Config is the whole-daemon configuration.
 type Config struct {
-	Logging Logging  `toml:"logging"`
-	Metrics Metrics  `toml:"metrics"`
-	State   State    `toml:"state"`
-	Store   Store    `toml:"store"`
-	Serve   Serve    `toml:"serve"`
-	Push    Push     `toml:"push"`
-	Ingest  []Source `toml:"ingest"`
+	Logging    Logging    `toml:"logging"`
+	Metrics    Metrics    `toml:"metrics"`
+	State      State      `toml:"state"`
+	Store      Store      `toml:"store"`
+	Serve      Serve      `toml:"serve"`
+	Push       Push       `toml:"push"`
+	Federation Federation `toml:"federation"`
+	Ingest     []Source   `toml:"ingest"`
 
 	// ShutdownTimeout bounds graceful shutdown; kept out of the wire format.
 	ShutdownTimeout time.Duration `toml:"-"`
@@ -170,6 +172,36 @@ type Push struct {
 	Observers []PushObserver `toml:"observer"`
 }
 
+// Federation contains outbound authorization rows only. Defining a grant does
+// not start a peer transport; it makes the safety gate deployable/testable
+// before transport exists, as required by GROUPS-AND-FEDERATION stage 8.
+type Federation struct {
+	ExportGrants []FederationExportGrant `toml:"export_grant"`
+}
+
+// FederationExportGrant is the TOML form of federation.ExportGrant. Durations
+// and timestamps stay strings until finalize so -check-config reports precise
+// field errors and the runtime evaluator sees typed values only.
+type FederationExportGrant struct {
+	SourceCollector string   `toml:"source_collector"`
+	DestinationPeer string   `toml:"destination_peer"`
+	Organizations   []string `toml:"organizations,omitempty"`
+	Collections     []string `toml:"collections,omitempty"`
+	Observers       []string `toml:"observers,omitempty"`
+	Signals         []string `toml:"signals,omitempty"`
+	DataClasses     []string `toml:"data_classes"`
+	Attribution     string   `toml:"attribution"`
+	MaxRetentions   string   `toml:"max_retention"`
+	Purposes        []string `toml:"purposes"`
+	ValidFroms      string   `toml:"valid_from"`
+	ValidUntils     string   `toml:"valid_until"`
+	ApprovedBy      string   `toml:"approved_by"`
+	Revision        string   `toml:"revision"`
+	Enabled         bool     `toml:"enabled"`
+
+	Grant federation.ExportGrant `toml:"-"`
+}
+
 // PushObserver is one enrolled edge feeder's credential and feed grant. TokenSHA256
 // is the hex-encoded SHA-256 of the bearer token; Feeds is the allow-list of feed
 // types this observer may push (the as-built Device.feed_types grant, DESIGN §3).
@@ -189,6 +221,9 @@ type PushObserver struct {
 	AggregateUse        string                   `toml:"aggregate_use,omitempty"`
 	StationMetadata     string                   `toml:"station_metadata,omitempty"`
 	EventVisibility     string                   `toml:"event_visibility,omitempty"`
+	RawExport           string                   `toml:"raw_export,omitempty"`
+	FederationPeers     []string                 `toml:"federation_peers,omitempty"`
+	PublishSignals      []string                 `toml:"publish_signals,omitempty"`
 	PolicyRevision      string                   `toml:"policy_revision,omitempty"`
 	ObserverContext     identity.ObserverContext `toml:"-"`
 
@@ -263,6 +298,9 @@ type Source struct {
 	AggregateUse        string                   `toml:"aggregate_use,omitempty"`
 	StationMetadata     string                   `toml:"station_metadata,omitempty"`
 	EventVisibility     string                   `toml:"event_visibility,omitempty"`
+	RawExport           string                   `toml:"raw_export,omitempty"`
+	FederationPeers     []string                 `toml:"federation_peers,omitempty"`
+	PublishSignals      []string                 `toml:"publish_signals,omitempty"`
 	PolicyRevision      string                   `toml:"policy_revision,omitempty"`
 	ObserverContext     identity.ObserverContext `toml:"-"`
 
@@ -495,6 +533,9 @@ func (c *Config) finalize() error {
 	if err := c.finalizePush(); err != nil {
 		return err
 	}
+	if err := c.finalizeFederation(); err != nil {
+		return err
+	}
 
 	seen := make(map[string]bool, len(c.Ingest))
 	for i := range c.Ingest {
@@ -577,12 +618,67 @@ func (c *Config) finalize() error {
 		s.CapDecl = caps
 		s.ObserverContext, err = finalizeObserverContext(
 			s.Name, s.OrganizationID, s.EnrollmentID, s.CollectorInstanceID,
-			s.CollectionIDs, s.AggregateUse, s.StationMetadata, s.EventVisibility, s.PolicyRevision,
+			s.CollectionIDs, s.AggregateUse, s.StationMetadata, s.EventVisibility,
+			s.RawExport, s.FederationPeers, s.PublishSignals, s.PolicyRevision,
 			identity.CredentialLocalDial,
 		)
 		if err != nil {
 			return fmt.Errorf("ingest %q identity: %w", s.Name, err)
 		}
+	}
+	return nil
+}
+
+func (c *Config) finalizeFederation() error {
+	seen := make(map[string]bool, len(c.Federation.ExportGrants))
+	for i := range c.Federation.ExportGrants {
+		raw := &c.Federation.ExportGrants[i]
+		grant := federation.ExportGrant{
+			SourceCollectorInstanceID: raw.SourceCollector,
+			DestinationPeerID:         raw.DestinationPeer,
+			OrganizationIDs:           append([]string(nil), raw.Organizations...),
+			CollectionIDs:             append([]string(nil), raw.Collections...),
+			ObserverIDs:               append([]string(nil), raw.Observers...),
+			MaxAttribution:            federation.Attribution(raw.Attribution),
+			Purposes:                  append([]string(nil), raw.Purposes...),
+			ApprovedBy:                raw.ApprovedBy,
+			Revision:                  raw.Revision,
+			Enabled:                   raw.Enabled,
+		}
+		for _, class := range raw.DataClasses {
+			grant.DataClasses = append(grant.DataClasses, federation.DataClass(class))
+		}
+		signals, err := parseSignals(raw.Signals, "federation signal")
+		if err != nil {
+			return fmt.Errorf("federation.export_grant[%d]: %w", i, err)
+		}
+		for _, signal := range signals {
+			grant.Signals = append(grant.Signals, identity.Signal{GnssID: signal.Gnss, SigID: signal.Sig})
+		}
+		grant.MaxRetention, err = time.ParseDuration(raw.MaxRetentions)
+		if err != nil {
+			return fmt.Errorf("federation.export_grant[%d].max_retention: %w", i, err)
+		}
+		if raw.ValidFroms == "" || raw.ValidUntils == "" {
+			return fmt.Errorf("federation.export_grant[%d]: valid_from and valid_until are required RFC3339 timestamps", i)
+		}
+		grant.ValidFrom, err = time.Parse(time.RFC3339, raw.ValidFroms)
+		if err != nil {
+			return fmt.Errorf("federation.export_grant[%d].valid_from: %w", i, err)
+		}
+		grant.ValidUntil, err = time.Parse(time.RFC3339, raw.ValidUntils)
+		if err != nil {
+			return fmt.Errorf("federation.export_grant[%d].valid_until: %w", i, err)
+		}
+		if err := federation.ValidateGrant(grant); err != nil {
+			return fmt.Errorf("federation.export_grant[%d]: %w", i, err)
+		}
+		key := grant.SourceCollectorInstanceID + "\x00" + grant.DestinationPeerID + "\x00" + grant.Revision
+		if seen[key] {
+			return fmt.Errorf("federation.export_grant[%d]: duplicate source/destination/revision", i)
+		}
+		seen[key] = true
+		raw.Grant = grant
 	}
 	return nil
 }
@@ -613,6 +709,10 @@ func configIntervalDuration(s string) (time.Duration, error) {
 // numbering against the u-blox gnssId range (docs/CONSTELLATIONS.md §0). An empty list yields
 // nil (no declared fingerprint — the observed-only detectors still run).
 func parseCapabilities(raw []string) ([]Capability, error) {
+	return parseSignals(raw, "capability")
+}
+
+func parseSignals(raw []string, label string) ([]Capability, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
@@ -621,19 +721,19 @@ func parseCapabilities(raw []string) ([]Capability, error) {
 	for _, s := range raw {
 		g, sig, ok := strings.Cut(s, ":")
 		if !ok {
-			return nil, fmt.Errorf("capability %q: want \"gnss:sig\" (e.g. \"2:3\")", s)
+			return nil, fmt.Errorf("%s %q: want \"gnss:sig\" (e.g. \"2:3\")", label, s)
 		}
 		gi, err := strconv.Atoi(strings.TrimSpace(g))
 		if err != nil || gi < 0 || gi > 7 {
-			return nil, fmt.Errorf("capability %q: gnssId must be 0..7", s)
+			return nil, fmt.Errorf("%s %q: gnssId must be 0..7", label, s)
 		}
 		si, err := strconv.Atoi(strings.TrimSpace(sig))
 		if err != nil || si < 0 || si > 255 {
-			return nil, fmt.Errorf("capability %q: sigId must be 0..255", s)
+			return nil, fmt.Errorf("%s %q: sigId must be 0..255", label, s)
 		}
 		c := Capability{Gnss: gi, Sig: si}
 		if seen[c] {
-			return nil, fmt.Errorf("capability %q: duplicate", s)
+			return nil, fmt.Errorf("%s %q: duplicate", label, s)
 		}
 		seen[c] = true
 		out = append(out, c)
@@ -645,7 +745,8 @@ func parseCapabilities(raw []string) ([]Capability, error) {
 // administrative fields are filled only with fail-closed local/private defaults;
 // no config source can claim a manufacturer-attested tier.
 func finalizeObserverContext(observer, organization, enrollment, collector string,
-	collections []string, aggregate, metadata, events, revision string,
+	collections []string, aggregate, metadata, events, rawExport string,
+	federationPeers, publishSignals []string, revision string,
 	credential identity.CredentialTier,
 ) (identity.ObserverContext, error) {
 	c := identity.NewPrivateContext(observer, credential)
@@ -669,6 +770,19 @@ func finalizeObserverContext(observer, organization, enrollment, collector strin
 	}
 	if events != "" {
 		c.Publication.EventVisibility = identity.EventVisibility(events)
+	}
+	if rawExport != "" {
+		c.Publication.RawExport = identity.RawExport(rawExport)
+	}
+	if len(federationPeers) > 0 {
+		c.Publication.FederationPeers = append([]string(nil), federationPeers...)
+	}
+	signals, err := parseSignals(publishSignals, "publish signal")
+	if err != nil {
+		return c, err
+	}
+	for _, signal := range signals {
+		c.Publication.Signals = append(c.Publication.Signals, identity.Signal{GnssID: signal.Gnss, SigID: signal.Sig})
 	}
 	if revision != "" {
 		c.Publication.Revision = revision
@@ -758,7 +872,8 @@ func (c *Config) finalizePush() error {
 		o.CapDecl = caps
 		o.ObserverContext, err = finalizeObserverContext(
 			o.Station, o.OrganizationID, o.EnrollmentID, o.CollectorInstanceID,
-			o.CollectionIDs, o.AggregateUse, o.StationMetadata, o.EventVisibility, o.PolicyRevision,
+			o.CollectionIDs, o.AggregateUse, o.StationMetadata, o.EventVisibility,
+			o.RawExport, o.FederationPeers, o.PublishSignals, o.PolicyRevision,
 			identity.CredentialToken,
 		)
 		if err != nil {

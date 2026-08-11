@@ -72,7 +72,8 @@ type copyRowsFunc func(ctx context.Context, rows [][]any) (int64, error)
 var copyColumns = []string{
 	"ts", "received_at", "source_id", "organization_id", "enrollment_id",
 	"collector_instance_id", "collection_ids", "provenance", "credential_tier",
-	"attestation_tier", "aggregate_use", "station_metadata", "event_visibility", "policy_revision",
+	"attestation_tier", "aggregate_use", "station_metadata", "event_visibility",
+	"raw_export", "federation_peers", "publish_signals", "policy_revision",
 	"gnssid", "svid", "sigid", "freqid", "msg_type",
 	"raw", "decoded", "decoder_ver",
 }
@@ -98,6 +99,9 @@ type NavFrame struct {
 	AggregateUse        string
 	StationMetadata     string
 	EventVisibility     string
+	RawExport           string
+	FederationPeers     []string
+	PublishSignals      []string
 	PolicyRevision      string
 	GnssID              int
 	SvID                int
@@ -1048,12 +1052,21 @@ func navFrameToRow(f *NavFrame) []any {
 	if collections == nil {
 		collections = []string{}
 	}
+	peers := f.FederationPeers
+	if peers == nil {
+		peers = []string{}
+	}
+	signals := f.PublishSignals
+	if signals == nil {
+		signals = []string{}
+	}
 	return []any{
 		f.Ts, f.ReceivedAt, f.SourceID,
 		valueOr(f.OrganizationID, "local-unassigned"), valueOr(f.EnrollmentID, "legacy-unassigned"),
 		valueOr(f.CollectorInstanceID, "local"), collections, valueOr(f.Provenance, "local"),
 		valueOr(f.CredentialTier, "local_dial"), valueOr(f.AttestationTier, "none"),
 		valueOr(f.AggregateUse, "private"), valueOr(f.StationMetadata, "none"), valueOr(f.EventVisibility, "private"),
+		valueOr(f.RawExport, "deny"), peers, signals,
 		valueOr(f.PolicyRevision, "legacy-private-v1"),
 		int16(f.GnssID), int16(f.SvID), int16(f.SigID), int16(f.FreqID), int16(f.MsgType),
 		f.Raw, decoded, nilIfEmpty(f.DecoderVer),

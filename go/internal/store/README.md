@@ -90,7 +90,8 @@ organization_id, enrollment_id, collector_instance_id  TEXT
 collection_ids  TEXT[]     -- receipt-time collection memberships
 provenance      TEXT       -- local or an inbound federation peer
 credential_tier, attestation_tier  TEXT
-aggregate_use, station_metadata, event_visibility, policy_revision  TEXT
+aggregate_use, station_metadata, event_visibility, raw_export, policy_revision  TEXT
+federation_peers, publish_signals  TEXT[]
 gnssid, svid, sigid, msg_type  SMALLINT
 raw         BYTEA        -- the broadcast frame, untouched
 decoded     JSONB        -- normalized projection, nullable

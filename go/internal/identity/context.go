@@ -60,6 +60,24 @@ const (
 	EventsPublic         EventVisibility = "public"
 )
 
+// RawExport controls the maximum destination class for original observations.
+// A current destination grant is always additionally required; "public" never
+// means broadcast to every peer automatically.
+type RawExport string
+
+const (
+	RawExportDeny       RawExport = "deny"
+	RawExportNamedPeers RawExport = "named_peers"
+	RawExportPublic     RawExport = "public"
+)
+
+// Signal is one normalized constellation/signal selector. An empty policy list
+// means all collector-supported signals; it never bypasses an export grant.
+type Signal struct {
+	GnssID int
+	SigID  int
+}
+
 // StationMetadata controls the most identifying station representation that a
 // public read side may emit. It is independent of aggregate eligibility.
 type StationMetadata string
@@ -77,6 +95,9 @@ type PublicationPolicy struct {
 	AggregateUse    AggregateUse
 	StationMetadata StationMetadata
 	EventVisibility EventVisibility
+	RawExport       RawExport
+	FederationPeers []string
+	Signals         []Signal
 	Revision        string
 }
 
@@ -113,6 +134,7 @@ func NewPrivateContext(observerID string, tier CredentialTier) ObserverContext {
 			AggregateUse:    AggregatePrivate,
 			StationMetadata: MetadataNone,
 			EventVisibility: EventsPrivate,
+			RawExport:       RawExportDeny,
 			Revision:        "config-private-v1",
 		},
 	}
@@ -200,6 +222,37 @@ func (c ObserverContext) Normalize() (ObserverContext, error) {
 	if c.Publication.AggregateUse == AggregatePrivate && c.Publication.EventVisibility != EventsPrivate {
 		return c, fmt.Errorf("public event visibility requires public aggregate use")
 	}
+	if c.Publication.RawExport == "" {
+		c.Publication.RawExport = RawExportDeny
+	}
+	switch c.Publication.RawExport {
+	case RawExportDeny, RawExportNamedPeers, RawExportPublic:
+	default:
+		return c, fmt.Errorf("raw export %q is invalid", c.Publication.RawExport)
+	}
+	seenPeers := make(map[string]bool, len(c.Publication.FederationPeers))
+	for _, peer := range c.Publication.FederationPeers {
+		if !ValidScopeID(peer) {
+			return c, fmt.Errorf("federation peer id %q is invalid", peer)
+		}
+		if seenPeers[peer] {
+			return c, fmt.Errorf("federation peer id %q is duplicated", peer)
+		}
+		seenPeers[peer] = true
+	}
+	if c.Publication.RawExport == RawExportNamedPeers && len(c.Publication.FederationPeers) == 0 {
+		return c, fmt.Errorf("named_peers raw export requires at least one federation peer")
+	}
+	seenSignals := make(map[Signal]bool, len(c.Publication.Signals))
+	for _, signal := range c.Publication.Signals {
+		if signal.GnssID < 0 || signal.GnssID > 7 || signal.SigID < 0 || signal.SigID > 255 {
+			return c, fmt.Errorf("publication signal %d:%d is outside the wire domain", signal.GnssID, signal.SigID)
+		}
+		if seenSignals[signal] {
+			return c, fmt.Errorf("publication signal %d:%d is duplicated", signal.GnssID, signal.SigID)
+		}
+		seenSignals[signal] = true
+	}
 	if c.Publication.Revision == "" {
 		c.Publication.Revision = "config-private-v1"
 	}
@@ -224,4 +277,28 @@ func (c ObserverContext) PublicAttributed() bool {
 func (c ObserverContext) WithCredentialTier(tier CredentialTier) ObserverContext {
 	c.CredentialTier = tier
 	return c
+}
+
+// AllowsSignal reports whether this policy permits the signal. Empty means all
+// supported signals, matching the normative publication contract.
+func (p PublicationPolicy) AllowsSignal(gnssID, sigID int) bool {
+	if len(p.Signals) == 0 {
+		return true
+	}
+	for _, signal := range p.Signals {
+		if signal.GnssID == gnssID && signal.SigID == sigID {
+			return true
+		}
+	}
+	return false
+}
+
+// NamesFederationPeer checks the explicit receipt/current peer allow-list.
+func (p PublicationPolicy) NamesFederationPeer(peer string) bool {
+	for _, allowed := range p.FederationPeers {
+		if allowed == peer {
+			return true
+		}
+	}
+	return false
 }

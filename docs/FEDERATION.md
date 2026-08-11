@@ -1,11 +1,14 @@
 # navlistener — federation & inter-collector trust, design report
 
-**Status: design (2026-07-14).** No code yet; this is the agreed spec-level shape for how
-`navlistener` collectors **federate** — pool observations across administrative and geographic
-boundaries and establish trust between one another. It sits between `docs/DESIGN.md §3` (node
-identity, the *feeder→collector* edge) and `docs/INTEGRITY.md` (the physics gates that make
-federated data safe to accept). Read `DESIGN.md` first; this doc only adds the new
-**collector↔collector** edge.
+**Status: design plus outbound policy gate (updated 2026-08-10).** The transport-independent
+authorization gate is implemented in `go/internal/federation`: every proposed export must pass
+the immutable receipt policy, the current policy, and one explicit destination grant. Peer
+transport, inbound trust synchronization, and journal replication remain design work. This
+document describes how `navlistener` collectors **federate** — pool observations across
+administrative and geographic boundaries and establish trust between one another. It sits
+between `docs/DESIGN.md §3` (node identity, the *feeder→collector* edge),
+`docs/GROUPS-AND-FEDERATION.md` (ownership, collections, publication, and export authority), and
+`docs/INTEGRITY.md` (the physics gates that make federated data safe to accept).
 
 > One line: **collectors form a small, human-vetted peer graph; each directed edge carries a
 > per-constellation trust level; observations flow as GNF1 records with the *original
@@ -359,15 +362,20 @@ Federation is **post-P8** (after intsat collect/detect is absorbed and the singl
 contract is proven end to end). Proposed **P10 — federation**, staged so each step is useful
 alone:
 
-1. **Instance identity + peer session:** `InstanceCertificate`, the `role:"peer"` GNF1 session,
+1. **Outbound authorization gate (implemented):** immutable receipt policy intersected with
+   current policy and an explicit, directed `[federation.export_grant]`; source selectors,
+   signals, data classes, attribution, retention, purpose, validity, approval, and path-loop
+   checks all fail closed before any transport exists. Inbound trust never implies export
+   permission.
+2. **Instance identity + peer session:** `InstanceCertificate`, the `role:"peer"` GNF1 session,
    mTLS peering with pinned instance certs. Two of our own collectors peer; no trust tiers yet
    (both implicitly `trusted`, intra-org CA).
-2. **Trust map + quarantine:** the per-constellation trust enum, the quarantine historian
+3. **Trust map + quarantine:** the per-constellation trust enum, the quarantine historian
    partition, `read_only` corroboration-only ingest.
-3. **Observer-cert directory + end-to-end verify:** passthrough `SIGNED_DATA` relay, the
+4. **Observer-cert directory + end-to-end verify:** passthrough `SIGNED_DATA` relay, the
    observer-cert directory, §9 transitive-trust enforcement.
-4. **Control-plane journal:** hash-chained `JOURNAL` frames, revocation propagation.
-5. **First real cross-org peer — NavIC unlock:** stand up a `trusted` regional peer and finish
+5. **Control-plane journal:** hash-chained `JOURNAL` frames, revocation propagation.
+6. **First real cross-org peer — NavIC unlock:** stand up a `trusted` regional peer and finish
    `DecodeNavICSPS` against the live stream it provides.
 
 ---

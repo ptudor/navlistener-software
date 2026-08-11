@@ -88,6 +88,10 @@ func run() int {
 		log.Warn("config warning", "warning", w)
 	}
 	metrics.Init()
+	if len(cfg.Federation.ExportGrants) > 0 {
+		log.Info("federation export grants loaded; peer transport remains disabled",
+			"grants", len(cfg.Federation.ExportGrants))
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -476,6 +480,9 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLi
 				AggregateUse:        string(observer.Publication.AggregateUse),
 				StationMetadata:     string(observer.Publication.StationMetadata),
 				EventVisibility:     string(observer.Publication.EventVisibility),
+				RawExport:           string(observer.Publication.RawExport),
+				FederationPeers:     append([]string(nil), observer.Publication.FederationPeers...),
+				PublishSignals:      policySignalStrings(observer.Publication.Signals),
 				PolicyRevision:      observer.Publication.Revision,
 				GnssID:              int(f.GnssID),
 				SvID:                f.SvID,
@@ -500,6 +507,14 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLi
 	for f := range frames {
 		apply(f)
 	}
+}
+
+func policySignalStrings(signals []identity.Signal) []string {
+	out := make([]string, len(signals))
+	for i, signal := range signals {
+		out[i] = fmt.Sprintf("%d:%d", signal.GnssID, signal.SigID)
+	}
+	return out
 }
 
 // panicLogEvery is the per-signal decode-panic log cadence : one full
@@ -1225,6 +1240,7 @@ func printConfigSummary(cfg *config.Config) {
 	fmt.Printf("  state shards:   %d\n", cfg.State.Shards)
 	fmt.Printf("  sv ttl:         %s\n", cfg.State.SVTTL)
 	fmt.Printf("  ingest sources: %d\n", len(cfg.Ingest))
+	fmt.Printf("  export grants:  %d (transport disabled)\n", len(cfg.Federation.ExportGrants))
 	for _, s := range cfg.Ingest {
 		status := "enabled"
 		if s.Disabled {
