@@ -319,6 +319,32 @@ func TestSnapshotFeeds(t *testing.T) {
 	}
 }
 
+func TestSnapshotAllFeedsKeepsPrivateAudiencesSeparate(t *testing.T) {
+	ctxA := identity.NewPrivateContext("observer-a", identity.CredentialToken)
+	ctxA.OrganizationID = "customer-a"
+	ctxB := identity.NewPrivateContext("observer-b", identity.CredentialToken)
+	ctxB.OrganizationID = "customer-b"
+	registry := audience.NewRegistry(1, nil)
+	publicState := state.New(1)
+	registry.Register(identity.Audience{Kind: identity.AudiencePublic}, publicState, nil)
+	now := time.Now()
+	registry.ApplyPrivate(&ingest.RawFrame{Recv: now, Source: "observer-a", Observer: ctxA, RF: &ingest.RawRF{Bands: []ingest.RFBand{{AGC: 100}}}})
+	registry.ApplyPrivate(&ingest.RawFrame{Recv: now, Source: "observer-b", Observer: ctxB, RF: &ingest.RawRF{Bands: []ingest.RFBand{{AGC: 200}}}})
+	s := NewForAudience("127.0.0.1:0", publicState, nil, nil, time.Minute, time.Minute,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), identity.Audience{Kind: identity.AudiencePublic})
+	s.resolver = registry
+	s.refreshAll()
+	var bodyA string
+	for _, snapshot := range s.SnapshotAllFeeds() {
+		if snapshot.Audience.Key() == "organization:customer-a" && snapshot.Feed == "observers" {
+			bodyA = string(snapshot.Body)
+		}
+	}
+	if bodyA == "" || !strings.Contains(bodyA, "observer-a") || strings.Contains(bodyA, "observer-b") {
+		t.Fatalf("customer-a snapshot crossed audience state: %s", bodyA)
+	}
+}
+
 // TestGlobalCounters verifies the global feed carries the flat leap-second and
 // live-total scalars (docs/OUTPUT.md §1.2).
 func TestGlobalCounters(t *testing.T) {

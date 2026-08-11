@@ -570,6 +570,8 @@ type sbasState struct {
 type Store struct {
 	shards []*shard
 
+	generation storeGeneration
+
 	sbasMu sync.Mutex
 	sbas   map[int]*sbasState
 

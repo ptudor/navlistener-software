@@ -94,16 +94,18 @@ Two cadences, because two kinds of data move at different speeds:
 A marshalling failure is logged and **leaves the previous body in place** rather than serving a
 broken or empty feed.
 
-`SnapshotFeeds()` returns a copy of every warmed feed's current envelope — that's what the
-historian persists to `gnss_snapshots` under `Server.Audience()` for replay and backfill, and it
-means the snapshot is byte-identical to what consumers actually saw without crossing audience
-caches.
+`SnapshotFeeds()` returns a copy of the fixed/default warmed envelopes. `SnapshotAllFeeds()` is
+the historian path: it keeps those exact bytes and separately renders every trusted materialized
+organization/collection/operator view. Private renders never enter the shared response cache,
+and every persisted row carries its own audience key.
 
 Public feed responses are cacheable and identify `data.audience = "public"`. Private responses
 send `Cache-Control: private, no-store` and vary on authorization/audience selectors. Event
 queries are forced to the request's server-resolved audience; clients cannot turn a free-form
 scope into authority. SSE receives only the matching detector pipeline, re-authorizes long-lived
 sessions, and uses that audience's private monotone sequence rather than the global row id.
+Policy invalidation clears warmed default bodies, empties the affected SSE replay ring, forces
+connected streams to re-authorize, and clamps history to the audience's current policy epoch.
 
 ### The events query API and its bounds
 

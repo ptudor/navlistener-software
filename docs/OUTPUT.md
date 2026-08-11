@@ -58,6 +58,12 @@ Public responses remain shared-cacheable. Every authenticated response sends
 are rendered outside the shared public cache. Clients partition local caches and
 `Last-Event-ID` by `(server, principal, audience)` and erase them on logout or `401`/`403`.
 
+Historical event windows are additionally clamped to the collector's current policy epoch.
+The conservative epoch starts at process boot and advances for every audience affected by an
+ingest-authorization change; older durable rows remain forensic evidence but are not silently
+republished under a later policy. The affected SSE replay ring is cleared and connected clients
+must reconnect/re-authorize across the same boundary.
+
 Current consumer behaviors, pinned 2026-07-07 (migration facts, not design constraints):
 
 - **mapintsat** (`dotnet/IntegrityMap/Services/FeedClient.cs`; converters/models in

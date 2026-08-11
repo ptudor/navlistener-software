@@ -97,6 +97,18 @@ func (b *Broker) Close() {
 	b.closeOnce.Do(func() { close(b.done) })
 }
 
+// Reset crosses a policy epoch without permanently closing the broker. Existing
+// streams reconnect and the replay ring is emptied, so no pre-withdrawal event
+// can be replayed or delivered after the transition.
+func (b *Broker) Reset() {
+	b.mu.Lock()
+	b.recent = nil
+	for client := range b.clients {
+		client.drop()
+	}
+	b.mu.Unlock()
+}
+
 // Publish records an event in the replay ring and delivers it to every connected
 // client. A client whose buffer is full is kicked rather than silently skipped, forcing
 // EventSource to reconnect and replay the gap. Replay can recover only events still in

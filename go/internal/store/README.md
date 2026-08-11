@@ -201,7 +201,8 @@ Periodic dumps of each served feed's current body (`svs`, `global`, `observers`,
 `sbas`) for replay and backfill. Active only when both `[serve].addr` and `[store].dsn` are set;
 cadence is `[serve].snapshot_interval` (default 5m, `0s` disables). Every row is keyed and
 compressed by `(audience, endpoint)`, so an operator payload cannot be replayed through a public
-cache.
+cache. The snapshot loop writes all materialized audience views, not only the listener's default
+public/operator view.
 
 ### Retention and compression policies
 

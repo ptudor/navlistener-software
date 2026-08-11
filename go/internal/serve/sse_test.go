@@ -95,6 +95,25 @@ func TestBrokerReplayFrom(t *testing.T) {
 	}
 }
 
+func TestBrokerPolicyResetClearsReplayAndKicksClients(t *testing.T) {
+	b := newBroker()
+	b.Publish(EventMsg{ID: 1})
+	client, ok := b.subscribe()
+	if !ok {
+		t.Fatal("subscribe rejected")
+	}
+	defer b.unsubscribe(client)
+	b.Reset()
+	if replay := b.replayFrom(0, false); len(replay) != 0 {
+		t.Fatalf("pre-policy replay survived reset: %+v", replay)
+	}
+	select {
+	case <-client.kick:
+	default:
+		t.Fatal("active SSE client was not forced across the policy boundary")
+	}
+}
+
 // TestWriteSSELogsMarshalFailure guards a non-finite float in an event's
 // params makes json.Marshal fail; writeSSE must log the failure (with the event's
 // type/sv) rather than silently dropping the event with no signal anywhere. The

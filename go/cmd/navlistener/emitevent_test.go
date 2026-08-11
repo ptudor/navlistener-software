@@ -13,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ptudor/navlistener/internal/audience"
 	"github.com/ptudor/navlistener/internal/detect"
+	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/serve"
 	"github.com/ptudor/navlistener/internal/store"
 )
@@ -424,5 +426,24 @@ func TestPublicEventPipelineStampsAudienceAndRedaction(t *testing.T) {
 	}
 	if head.row.Audience != "public" || head.row.RedactionClass != "public_policy_filtered" {
 		t.Fatalf("public event scope = %+v", head.row)
+	}
+}
+
+func TestEventPipelineDropsPendingEventAcrossPolicyEpoch(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	started := time.Now()
+	epochs := audience.NewPolicyEpochs(started)
+	w := &scriptedEventWriter{ids: []int64{1}, errs: []error{nil}}
+	p := &capturePublisher{}
+	pipeline := newEventPipeline(w, p, log, "public")
+	pipeline.epochs = epochs
+	pe := prepareEvent(detect.Event{Time: started, SV: "G01@0", Type: "orbit_disco"}, w, log)
+	pe.policyGeneration = pipeline.policyGeneration()
+	epochs.Advance([]identity.Audience{{Kind: identity.AudiencePublic}}, started.Add(time.Second))
+	if ok := pipeline.writeSafely(context.Background(), *pe, defaultEventRetry, true); !ok {
+		t.Fatal("revoked event was retained for retry instead of being discarded")
+	}
+	if w.n != 0 || len(p.events) != 0 {
+		t.Fatalf("revoked event reached writer/publisher: writes=%d events=%d", w.n, len(p.events))
 	}
 }

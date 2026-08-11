@@ -208,6 +208,12 @@ absent until each SV re-broadcasts a full set, discos absent until a second post
 ephemeris. That's consistent with the "re-decode from raw frames" design: `nav_frames` is the
 durable record and offline replay is the recovery path.
 
+`Reset()` is the privacy-withdrawal counterpart: it drops a complete audience materialization
+and advances its generation. Whole-view reset is intentional because merged ephemeris,
+confidence, RF, capability, and almanac state cannot subtract one withdrawn source exactly.
+Feed rendering retries if the generation changes mid-build, preventing a mixed pre/post-policy
+body.
+
 ### Optional fields are pointers
 
 Throughout the feed models, an unknown or not-yet-computable value is a `nil` pointer and is

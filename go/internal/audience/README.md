@@ -19,3 +19,11 @@ Public detector state is a further projection. `event_visibility=private` contri
 public detector input; `public_redacted` uses the anonymous bucket; `public` retains only the
 attribution already allowed by `aggregate_use`. This ensures an event grant cannot widen the
 underlying feed grant.
+
+`Registry` owns physically separate organization/collection stores created only by trusted
+receipt scope. On an authorization transition it resets every view touched by the old context;
+merged state cannot soundly subtract one receiver after freshest-value and confidence selection.
+`PolicyEpochs` supplies the matching current-policy boundary for pending events, historical
+queries, and SSE replay. Its startup boundary is intentionally conservative: aggregate event
+rows from an earlier process are forensic records until explicitly republished, not implicitly
+visible under a possibly changed current policy.

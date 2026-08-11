@@ -420,12 +420,34 @@ func TestPushActiveSessionClosesAfterAuthorizationRevocation(t *testing.T) {
 	} else if welcome, _ := parseWelcome(payload); !welcome.OK {
 		t.Fatalf("initial authorization rejected: %+v", welcome)
 	}
+	rec := wire.RawRecord{RecvUnixNs: time.Now().UnixNano(), GnssID: gnss.GPS, SvID: 5, Raw: make([]byte, 40)}
+	if err := wire.WriteFrame(conn, wire.Data, wire.EncodeData(1, rec)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case frame := <-out:
+		if frame.ScopeRevocation != nil {
+			t.Fatal("scope barrier arrived before the session's DATA")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session DATA was not forwarded")
+	}
 	enabled.Store(false)
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := wire.ReadFrame(conn); err == nil {
-		t.Fatal("revoked active session remained open")
+	for {
+		if _, _, err := wire.ReadFrame(conn); err != nil {
+			break
+		}
+	}
+	select {
+	case marker := <-out:
+		if marker.ScopeRevocation == nil || marker.ScopeRevocation.Previous.ObserverID != "observer16" {
+			t.Fatalf("authorization change marker = %+v", marker)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("authorization change did not emit an ordered scope barrier")
 	}
 }
 

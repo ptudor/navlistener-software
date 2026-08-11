@@ -61,6 +61,11 @@ and server-side enrollment record establish the current jurisdiction.
 - Authenticated read principals discover only their server-side grants and select physically
   separated organization/collection state. Private feed/history/SSE responses are no-store,
   long-lived streams are re-authorized, and scoped detectors use independent event cursors.
+- A changed active ingest context emits an ordered scope barrier. Every audience touched by the
+  old context is conservatively reset and rebuilt from post-change receipts; detectors re-seed,
+  SSE replay/clients cross the policy epoch, pending stale events are discarded, historical
+  event reads cannot cross the process/current-policy epoch, and snapshots cover each
+  materialized audience independently.
 - Manufacturer attestation v1/v2 formatting, signing, verification, and the bench CLI are
   implemented; v2 binds ATECC + RTC + EEPROM identities and board revision.
 - The transport-independent federation egress gate intersects receipt policy, current policy,
@@ -356,6 +361,12 @@ Historian rows retain the policy/audience decision made at receipt. Later policy
 not relabel history. Authorized reprocessing re-evaluates export at read time; it never treats
 old “public” state as irrevocably downloadable after a legal withdrawal unless retention law
 requires it.
+
+Because a derived aggregate event does not retain an exact causal source set yet, navlistener
+uses a deliberately conservative current-policy rule: event history exposed by one process
+begins at that process start and advances for an affected audience on every authorization
+transition. Older rows remain forensic records but are not served automatically. Explicit,
+audited republication is the future widening mechanism; a restart or policy edit never widens.
 
 **The intersection rule, stated once for both paths :** a historical row's
 visibility — to a read audience or a federation export alike — is the intersection of its

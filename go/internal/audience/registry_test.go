@@ -41,3 +41,30 @@ func TestRegistryDoesNotMintUnassignedOrganizationAudience(t *testing.T) {
 		t.Fatal("unassigned migration bucket became a tenant audience")
 	}
 }
+
+func TestRegistryPolicyResetIsConservativeAndAudienceScoped(t *testing.T) {
+	ctxA := identity.NewPrivateContext("observer-a", identity.CredentialToken)
+	ctxA.OrganizationID = "customer-a"
+	ctxA.CollectionIDs = []string{"fleet-a"}
+	ctxB := identity.NewPrivateContext("observer-b", identity.CredentialToken)
+	ctxB.OrganizationID = "customer-b"
+	registry := NewRegistry(1, nil)
+	now := time.Now()
+	registry.ApplyPrivate(&ingest.RawFrame{Recv: now, Source: "observer-a", Observer: ctxA, RF: &ingest.RawRF{Bands: []ingest.RFBand{{AGC: 100}}}})
+	registry.ApplyPrivate(&ingest.RawFrame{Recv: now, Source: "observer-b", Observer: ctxB, RF: &ingest.RawRF{Bands: []ingest.RFBand{{AGC: 200}}}})
+	audienceA := identity.Audience{Kind: identity.AudienceOrganization, ID: "customer-a"}
+	audienceB := identity.Audience{Kind: identity.AudienceOrganization, ID: "customer-b"}
+	storeA, _, _ := registry.Resolve(audienceA)
+	before := storeA.Generation()
+	affected := registry.ResetContext(ctxA)
+	if len(affected) != 2 || affected[0].Key() != "collection:fleet-a" || affected[1] != audienceA {
+		t.Fatalf("affected audiences = %+v", affected)
+	}
+	if storeA.Generation() != before+1 || len(storeA.FeedStationRF(now)) != 0 {
+		t.Fatal("withdrawn organization retained materialized state")
+	}
+	storeB, _, _ := registry.Resolve(audienceB)
+	if _, ok := storeB.FeedStationRF(now)["observer-b"]; !ok {
+		t.Fatal("unrelated organization was reset")
+	}
+}

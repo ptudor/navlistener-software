@@ -42,6 +42,10 @@ type ViewResolver interface {
 	Resolve(identity.Audience) (*state.Store, []config.Source, bool)
 }
 
+type viewLister interface {
+	Audiences() []identity.Audience
+}
+
 type requestView struct {
 	audience  identity.Audience
 	store     *state.Store
@@ -79,6 +83,7 @@ type Server struct {
 	readAuth         ReadAuthorizer
 	resolver         ViewResolver
 	reauthorizeEvery time.Duration
+	policyEpochs     *audience.PolicyEpochs
 
 	mu    sync.RWMutex
 	cache map[string][]byte
@@ -107,17 +112,18 @@ func NewForAudience(addr string, st *state.Store, events EventStore, sources []c
 		slow = 90 * time.Second
 	}
 	s := &Server{
-		store:    st,
-		events:   events,
-		sources:  sources,
-		log:      log,
-		now:      time.Now,
-		audience: selected,
-		fast:     fast,
-		slow:     slow,
-		broker:   newBroker(),
-		cache:    map[string][]byte{},
-		brokers:  map[string]*Broker{},
+		store:        st,
+		events:       events,
+		sources:      sources,
+		log:          log,
+		now:          time.Now,
+		audience:     selected,
+		fast:         fast,
+		slow:         slow,
+		broker:       newBroker(),
+		cache:        map[string][]byte{},
+		brokers:      map[string]*Broker{},
+		policyEpochs: audience.NewPolicyEpochs(time.Now()),
 	}
 	s.broker.log = log // SSE marshal failures log through the server's real logger
 	s.brokers[selected.Key()] = s.broker
@@ -144,6 +150,14 @@ func NewForAudience(addr string, st *state.Store, events EventStore, sources []c
 	// to release its handlers when a graceful shutdown begins.
 	s.http.RegisterOnShutdown(s.closeBrokers)
 	return s
+}
+
+// SetPolicyEpochs shares the collector's current-policy boundary with history,
+// pending-event, and SSE invalidation. It must be called before serving.
+func (s *Server) SetPolicyEpochs(epochs *audience.PolicyEpochs) {
+	if epochs != nil {
+		s.policyEpochs = epochs
+	}
 }
 
 // EnableAudienceSelection installs authenticated organization/collection view
@@ -217,6 +231,25 @@ func (s *Server) PublishEventForAudience(a identity.Audience, e EventMsg) {
 	s.brokerFor(a).Publish(e)
 }
 
+// InvalidateAudiences removes warmed bodies and SSE replay/live clients after
+// a source-policy transition. Private bodies are never shared-cached, but their
+// brokers still need the same boundary.
+func (s *Server) InvalidateAudiences(audiences []identity.Audience) {
+	for _, selected := range audiences {
+		if selected == s.audience {
+			s.mu.Lock()
+			clear(s.cache)
+			s.mu.Unlock()
+		}
+		s.brokerMu.Lock()
+		broker := s.brokers[selected.Key()]
+		s.brokerMu.Unlock()
+		if broker != nil {
+			broker.Reset()
+		}
+	}
+}
+
 func (s *Server) brokerFor(a identity.Audience) *Broker {
 	key := a.Key()
 	s.brokerMu.Lock()
@@ -264,6 +297,52 @@ func (s *Server) SnapshotFeeds() map[string][]byte {
 	return out
 }
 
+type FeedSnapshot struct {
+	Audience identity.Audience
+	Feed     string
+	Body     []byte
+}
+
+// SnapshotAllFeeds returns every materialized audience as an independently
+// rendered record. The fixed/default audience reuses the exact warmed bytes
+// consumers received; private/dynamic audiences are rendered directly and are
+// never inserted into the shared response cache.
+func (s *Server) SnapshotAllFeeds() []FeedSnapshot {
+	defaultFeeds := s.SnapshotFeeds()
+	audiences := []identity.Audience{s.audience}
+	if lister, ok := s.resolver.(viewLister); ok {
+		audiences = lister.Audiences()
+	}
+	now := s.now()
+	out := make([]FeedSnapshot, 0, len(audiences)*len(fastFeeds))
+	for _, selected := range audiences {
+		if selected == s.audience {
+			for _, feed := range append(append([]string(nil), fastFeeds...), "almanac") {
+				if body := defaultFeeds[feed]; len(body) > 0 {
+					out = append(out, FeedSnapshot{Audience: selected, Feed: feed, Body: body})
+				}
+			}
+			continue
+		}
+		if s.resolver == nil {
+			continue
+		}
+		st, sources, ok := s.resolver.Resolve(selected)
+		if !ok {
+			continue
+		}
+		for _, feed := range append(append([]string(nil), fastFeeds...), "almanac") {
+			body, err := s.buildFeed(feed, selected, st, sources, now)
+			if err != nil {
+				s.log.Error("snapshot scoped feed marshal failed", "audience", selected.Key(), "feed", feed, "error", err)
+				continue
+			}
+			out = append(out, FeedSnapshot{Audience: selected, Feed: feed, Body: body})
+		}
+	}
+	return out
+}
+
 func (s *Server) refreshAll() {
 	for _, f := range fastFeeds {
 		s.refresh(f)
@@ -291,6 +370,20 @@ func (s *Server) buildFeed(feed string, selected identity.Audience, st *state.St
 	if st == nil {
 		return nil, fmt.Errorf("audience state is unavailable")
 	}
+	for range 3 {
+		generation := st.Generation()
+		body, err := s.buildFeedOnce(feed, selected, st, sources, now)
+		if err != nil {
+			return nil, err
+		}
+		if generation == st.Generation() {
+			return body, nil
+		}
+	}
+	return nil, fmt.Errorf("audience %s changed repeatedly while rendering %s", selected.Key(), feed)
+}
+
+func (s *Server) buildFeedOnce(feed string, selected identity.Audience, st *state.Store, sources []config.Source, now time.Time) ([]byte, error) {
 	data := map[string]any{"schema": schemaVersion, "audience": selected.Key()}
 	switch feed {
 	case "svs":

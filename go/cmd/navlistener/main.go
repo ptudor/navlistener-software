@@ -147,6 +147,14 @@ func run() int {
 	audienceRegistry := audience.NewRegistry(cfg.State.Shards, cfg.Ingest)
 	audienceRegistry.Register(identity.Audience{Kind: identity.AudiencePublic}, publicLive, audience.PublicSources(cfg.Ingest))
 	audienceRegistry.Register(identity.Audience{Kind: identity.AudienceOperator, ID: cfg.Collector.InstanceID}, live, cfg.Ingest)
+	policyEpochs := audience.NewPolicyEpochs(time.Now())
+	detector := detect.New(0)
+	publicDetector := detect.New(0)
+	scopeController := &scopeController{
+		registry: audienceRegistry, publicEvents: publicEventsLive,
+		operatorDetector: detector, publicDetector: publicDetector,
+		epochs: policyEpochs, log: log,
+	}
 	if decl := declaredCapabilities(cfg); len(decl) > 0 {
 		live.SetDeclaredCapabilities(decl)
 		log.Info("declared capabilities loaded", "stations", len(decl))
@@ -289,7 +297,7 @@ func run() int {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		decodeLoop(frames, live, publicLive, publicEventsLive, historian, log, &lastFrameNano, audienceRegistry)
+		decodeLoop(frames, live, publicLive, publicEventsLive, historian, log, &lastFrameNano, audienceRegistry, scopeController.Apply)
 	}()
 
 	wg.Add(1)
@@ -337,6 +345,8 @@ func run() int {
 		}
 		apiSrv = serve.NewForAudience(cfg.Serve.Addr, serveState, eventStore, serveSources,
 			cfg.Serve.RefreshFast, cfg.Serve.RefreshSlow, log, cfg.Serve.AudienceContext)
+		apiSrv.SetPolicyEpochs(policyEpochs)
+		scopeController.AttachServer(apiSrv)
 		if readAuthorizer != nil {
 			apiSrv.EnableAudienceSelection(readAuthorizer, audienceRegistry, cfg.Authorization.RecheckEvery)
 			log.Info("authenticated read audience selection enabled", "static_principals", len(cfg.Serve.Principals))
@@ -385,8 +395,6 @@ func run() int {
 	// Integrity DETECT: the debounced detector runs on a cadence over the same live
 	// read model the feeds serve, persists confirmed events (firing pg_notify) and
 	// pushes them to the SSE broker (docs/INTEGRITY.md, docs/OUTPUT.md §3).
-	detector := detect.New(0)
-	publicDetector := detect.New(0)
 	// publish the spoofing detector's coverage so its dormancy is a
 	// fact on the operational surface, not an implication — with wired < quorum
 	// (the v1 posture) spoofing_suspected cannot fire, and an operator must be
@@ -414,19 +422,19 @@ func run() int {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		detectLoop(ctx, live, detector, ew, operatorPublisher, log,
+		detectLoop(ctx, live, detector, ew, operatorPublisher, policyEpochs, log,
 			(identity.Audience{Kind: identity.AudienceOperator, ID: cfg.Collector.InstanceID}).Key())
 	}()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		detectLoop(ctx, publicEventsLive, publicDetector, ew, publicPublisher, log, "public")
+		detectLoop(ctx, publicEventsLive, publicDetector, ew, publicPublisher, policyEpochs, log, "public")
 	}()
 	if readAuthorizer != nil && historian != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			scopedDetectLoop(ctx, audienceRegistry, ew, apiSrv, log)
+			scopedDetectLoop(ctx, audienceRegistry, ew, apiSrv, policyEpochs, log)
 		}()
 	}
 
@@ -515,6 +523,67 @@ func persistMsgType(f *ingest.RawFrame) int {
 	return f.MsgType
 }
 
+type scopeController struct {
+	registry         *audience.Registry
+	publicEvents     *state.Store
+	operatorDetector *detect.Detector
+	publicDetector   *detect.Detector
+	epochs           *audience.PolicyEpochs
+	log              *slog.Logger
+
+	mu     sync.RWMutex
+	server *serve.Server
+}
+
+func (c *scopeController) AttachServer(server *serve.Server) {
+	c.mu.Lock()
+	c.server = server
+	c.mu.Unlock()
+}
+
+// Apply is called from the ordered decode channel after every DATA record from
+// the changed session. Whole-audience invalidation is conservative but sound:
+// merged ephemeris/confidence/detector state cannot subtract one source exactly.
+func (c *scopeController) Apply(revocation *ingest.ScopeRevocation) {
+	if c == nil || revocation == nil || c.registry == nil {
+		return
+	}
+	affected := c.registry.ResetContext(revocation.Previous)
+	if len(affected) == 0 {
+		return
+	}
+	for _, selected := range affected {
+		switch selected.Kind {
+		case identity.AudiencePublic:
+			if c.publicEvents != nil {
+				c.publicEvents.Reset()
+			}
+			if c.publicDetector != nil {
+				c.publicDetector.Reset()
+			}
+		case identity.AudienceOperator:
+			if c.operatorDetector != nil {
+				c.operatorDetector.Reset()
+			}
+		}
+	}
+	var changed []string
+	if c.epochs != nil {
+		changed = c.epochs.Advance(affected, revocation.ChangedAt)
+	}
+	c.mu.RLock()
+	server := c.server
+	c.mu.RUnlock()
+	if server != nil {
+		server.InvalidateAudiences(affected)
+	}
+	if c.log != nil {
+		c.log.Warn("authorization scope changed; rebuilt affected audiences from post-change receipts",
+			"observer", revocation.Previous.ObserverID, "audiences", changed,
+			"previous_policy_revision", revocation.Previous.Publication.Revision)
+	}
+}
+
 // decodeLoop folds every ingested frame into live state and, when the historian
 // is enabled, enqueues the raw frame for the forensic record — persistence is
 // independent of decode success, so a decoder bug never loses evidence. Each
@@ -523,9 +592,15 @@ func persistMsgType(f *ingest.RawFrame) int {
 // : it simply ranges frames until the channel is closed, which the owner
 // (run, above) does only after every producer has confirmed it will never send
 // again — so every already-enqueued frame is applied with no drain race.
-func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLive *state.Store, historian *store.Store, log *slog.Logger, lastFrame *atomic.Int64, scoped ...*audience.Registry) {
+func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLive *state.Store, historian *store.Store, log *slog.Logger, lastFrame *atomic.Int64, scoped *audience.Registry, revoke func(*ingest.ScopeRevocation)) {
 	lim := &panicLogLimiter{}
 	apply := func(f *ingest.RawFrame) {
+		if f != nil && f.ScopeRevocation != nil {
+			if revoke != nil {
+				revoke(f.ScopeRevocation)
+			}
+			return
+		}
 		// every dial and push frame funnels through here, so this one
 		// stamp is the whole data plane's liveness signal for /healthz.
 		lastFrame.Store(time.Now().UnixNano())
@@ -572,8 +647,8 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLi
 			})
 		}
 		live.Apply(f)
-		if len(scoped) > 0 && scoped[0] != nil {
-			scoped[0].ApplyPrivate(f)
+		if scoped != nil {
+			scoped.ApplyPrivate(f)
 		}
 		if publicFrame, ok := audience.ProjectPublic(f); ok {
 			publicLive.Apply(publicFrame)
@@ -733,17 +808,17 @@ func snapshotLoop(ctx context.Context, api *serve.Server, historian *store.Store
 		select {
 		case <-tick.C:
 			now := time.Now()
-			for feed, body := range api.SnapshotFeeds() {
+			for _, snapshot := range api.SnapshotAllFeeds() {
 				// Per-call deadline : ctx is cancel-only, so a hung DB connection
 				// must not block this loop indefinitely on OS TCP timeouts.
 				callCtx, cancel := context.WithTimeout(ctx, snapshotWriteTimeout)
-				err := historian.WriteSnapshot(callCtx, now, api.Audience().Key(), feed, body)
+				err := historian.WriteSnapshot(callCtx, now, snapshot.Audience.Key(), snapshot.Feed, snapshot.Body)
 				cancel()
 				if err != nil {
 					if ctx.Err() != nil {
 						return // shutting down: the historian context is going away
 					}
-					log.Warn("feed snapshot write failed", "feed", feed, "error", err)
+					log.Warn("feed snapshot write failed", "audience", snapshot.Audience.Key(), "feed", snapshot.Feed, "error", err)
 				}
 			}
 		case <-ctx.Done():
@@ -764,7 +839,7 @@ const detectInterval = 15 * time.Second
 // debounced detector, and routes each confirmed event to the historian (which
 // assigns the id and fires pg_notify) and the SSE broker. Only durable events are
 // published, so the database id is the sole replay cursor domain.
-func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, historian eventWriter, api eventPublisher, log *slog.Logger, audienceKey ...string) {
+func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, historian eventWriter, api eventPublisher, epochs *audience.PolicyEpochs, log *slog.Logger, audienceKey ...string) {
 	tick := time.NewTicker(detectInterval)
 	defer tick.Stop()
 	// regression fix/detector sampling and durable writes have separate owners. The
@@ -772,6 +847,7 @@ func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, hi
 	// stall the 15-second sampling cadence or let a newer transition bypass an older
 	// queued one.
 	writer := newEventPipeline(historian, api, log, audienceKey...)
+	writer.epochs = epochs
 	writerDone := make(chan struct{})
 	go func() {
 		defer close(writerDone)
@@ -802,10 +878,12 @@ func detectTick(live *state.Store, det *detect.Detector, writer *eventPipeline, 
 			log.Error("detect tick panicked; skipping", "panic", r)
 		}
 	}()
+	generation := writer.policyGeneration()
 	for _, e := range detectEvents(live, det, writer.audience) {
 		if pe := prepareEvent(e, writer.historian, log); pe != nil {
 			pe.row.Audience = writer.audience
 			pe.row.RedactionClass = writer.redactionClass
+			pe.policyGeneration = generation
 			writer.enqueue(*pe)
 		}
 	}
@@ -863,14 +941,15 @@ func (p scopedEventPublisher) PublishEvent(event serve.EventMsg) {
 // scopedDetectLoop gives each organization/collection an independent detector
 // state machine and durable audience cursor. Writer goroutines are allocated
 // lazily only after a view confirms its first event.
-func scopedDetectLoop(ctx context.Context, registry *audience.Registry, historian eventWriter, api *serve.Server, log *slog.Logger) {
+func scopedDetectLoop(ctx context.Context, registry *audience.Registry, historian eventWriter, api *serve.Server, epochs *audience.PolicyEpochs, log *slog.Logger) {
 	tick := time.NewTicker(detectInterval)
 	defer tick.Stop()
 	type scopedState struct {
-		detector *detect.Detector
-		writer   *eventPipeline
-		done     chan struct{}
-		audience identity.Audience
+		detector   *detect.Detector
+		writer     *eventPipeline
+		done       chan struct{}
+		audience   identity.Audience
+		generation uint64
 	}
 	states := make(map[string]*scopedState)
 	for {
@@ -883,9 +962,14 @@ func scopedDetectLoop(ctx context.Context, registry *audience.Registry, historia
 				key := view.Audience.Key()
 				scoped := states[key]
 				if scoped == nil {
-					scoped = &scopedState{detector: detect.New(0), audience: view.Audience}
+					scoped = &scopedState{detector: detect.New(0), audience: view.Audience, generation: view.Store.Generation()}
 					states[key] = scoped
 				}
+				if generation := view.Store.Generation(); generation != scoped.generation {
+					scoped.detector.Reset()
+					scoped.generation = generation
+				}
+				policyGeneration, _ := epochs.Current(key)
 				events := detectEventsSafely(view.Store, scoped.detector, key, log)
 				if len(events) == 0 {
 					continue
@@ -896,6 +980,7 @@ func scopedDetectLoop(ctx context.Context, registry *audience.Registry, historia
 						publisher = scopedEventPublisher{server: api, audience: scoped.audience}
 					}
 					scoped.writer = newEventPipeline(historian, publisher, log, key)
+					scoped.writer.epochs = epochs
 					scoped.done = make(chan struct{})
 					go func(state *scopedState) {
 						defer close(state.done)
@@ -906,6 +991,7 @@ func scopedDetectLoop(ctx context.Context, registry *audience.Registry, historia
 					if pending := prepareEvent(event, scoped.writer.historian, log); pending != nil {
 						pending.row.Audience = key
 						pending.row.RedactionClass = "private"
+						pending.policyGeneration = policyGeneration
 						scoped.writer.enqueue(*pending)
 					}
 				}
@@ -976,8 +1062,9 @@ const eventPendingMax = 256
 // re-attempt on a later detector tick. row is the fully-built insert; ev carries the
 // already-sanitized fields the SSE publish needs once the id is assigned.
 type pendingEvent struct {
-	row store.EventRow
-	ev  detect.Event
+	row              store.EventRow
+	ev               detect.Event
+	policyGeneration uint64
 }
 
 // eventPipeline owns the ordered durable-write queue. The detector only holds mu long
@@ -994,6 +1081,19 @@ type eventPipeline struct {
 	log            *slog.Logger
 	audience       string
 	redactionClass string
+	epochs         *audience.PolicyEpochs
+}
+
+func (p *eventPipeline) policyGeneration() uint64 {
+	if p.epochs == nil {
+		return 0
+	}
+	generation, _ := p.epochs.Current(p.audience)
+	return generation
+}
+
+func (p *eventPipeline) generationCurrent(generation uint64) bool {
+	return p.epochs == nil || p.policyGeneration() == generation
 }
 
 func newEventPipeline(historian eventWriter, publisher eventPublisher, log *slog.Logger, audienceKey ...string) *eventPipeline {
@@ -1111,7 +1211,8 @@ func (p *eventPipeline) writeSafely(ctx context.Context, pe pendingEvent, retry 
 			ok = false
 		}
 	}()
-	return writeAndPublishRetry(ctx, pe.row, pe.ev, p.historian, p.publisher, p.log, retry, queued)
+	guard := func() bool { return p.generationCurrent(pe.policyGeneration) }
+	return writeAndPublishRetry(ctx, pe.row, pe.ev, p.historian, p.publisher, p.log, retry, queued, guard)
 }
 
 // flushFinal uses a fresh shared deadline because the detector's parent context is already
@@ -1212,10 +1313,15 @@ func newEventDedupeKey() string {
 // failed and the event must remain queued. It does NOT touch EventsTotal, so a retry never
 // double-counts the event.
 func writeAndPublish(ctx context.Context, row store.EventRow, e detect.Event, historian eventWriter, api eventPublisher, log *slog.Logger) bool {
-	return writeAndPublishRetry(ctx, row, e, historian, api, log, defaultEventRetry, true)
+	return writeAndPublishRetry(ctx, row, e, historian, api, log, defaultEventRetry, true, nil)
 }
 
-func writeAndPublishRetry(ctx context.Context, row store.EventRow, e detect.Event, historian eventWriter, api eventPublisher, log *slog.Logger, retry eventRetry, queued bool) bool {
+func writeAndPublishRetry(ctx context.Context, row store.EventRow, e detect.Event, historian eventWriter, api eventPublisher, log *slog.Logger, retry eventRetry, queued bool, authorized func() bool) bool {
+	if authorized != nil && !authorized() {
+		log.Warn("dropping integrity event invalidated by an audience policy transition",
+			"audience", row.Audience, "type", e.Type, "sv", e.SV)
+		return true
+	}
 	id, err := writeEventRetry(ctx, historian, row, retry, log)
 	if err != nil {
 		metrics.EventWriteErrorsTotal.Inc()
@@ -1225,6 +1331,13 @@ func writeAndPublishRetry(ctx context.Context, row store.EventRow, e detect.Even
 		}
 		log.Error(msg, "type", e.Type, "sv", e.SV, "error", err)
 		return false
+	}
+	if authorized != nil && !authorized() {
+		// The write may have committed while the policy changed. Historical reads
+		// are clamped to the new epoch; do not put the stale event back into SSE.
+		log.Warn("withholding committed integrity event after an audience policy transition",
+			"audience", row.Audience, "id", id, "type", e.Type, "sv", e.SV)
+		return true
 	}
 	log.Info("integrity event", "id", id, "audience", row.Audience, "sv", e.SV, "type", e.Type,
 		"severity", e.Severity, "old", e.OldValue, "new", e.NewValue)

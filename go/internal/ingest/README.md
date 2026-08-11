@@ -126,6 +126,12 @@ can set or override it. Its collector instance must match this deployment's conf
 `internal/authorization.Provider` reads a versioned control-plane view, retains only bearer
 token digests in its bounded cache, and invalidates on PostgreSQL `NOTIFY`.
 
+Active-session reauthorization does more than close the socket. After the changed session stops
+forwarding DATA, the handler emits an ordered `ScopeRevocation` barrier through the same decode
+channel. The collector can therefore invalidate every audience built from the previous context
+after that session's queued receipts, never before them. The last context per observer also
+catches a transfer that occurred while the feeder was disconnected, before its next DATA frame.
+
 When mTLS is enabled, the resolved active credential fingerprint must match the exact leaf
 certificate used on the connection. A `hardware_mtls` row additionally requires verified
 manufacturer attestation; without both proofs the handshake fails rather than downgrading or

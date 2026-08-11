@@ -1,6 +1,7 @@
 package audience
 
 import (
+	"sort"
 	"sync"
 
 	"github.com/ptudor/navlistener/internal/config"
@@ -19,6 +20,43 @@ type View struct {
 	Audience identity.Audience
 	Store    *state.Store
 	Sources  []config.Source
+}
+
+// ResetContext invalidates every audience that could contain contributions
+// admitted under previous. Whole-view reset is intentional: state is merged and
+// cannot safely subtract one observer after freshest-value/aggregate selection.
+func (r *Registry) ResetContext(previous identity.ObserverContext) []identity.Audience {
+	previous, err := previous.Normalize()
+	if err != nil {
+		return nil
+	}
+	audiences := []identity.Audience{{Kind: identity.AudienceOperator, ID: previous.CollectorInstanceID}}
+	if previous.OrganizationID != identity.UnassignedOrganization {
+		audiences = append(audiences, identity.Audience{Kind: identity.AudienceOrganization, ID: previous.OrganizationID})
+	}
+	for _, id := range previous.CollectionIDs {
+		audiences = append(audiences, identity.Audience{Kind: identity.AudienceCollection, ID: id})
+	}
+	if previous.PublicEligible() {
+		audiences = append(audiences, identity.Audience{Kind: identity.AudiencePublic})
+	}
+	seen := make(map[string]bool, len(audiences))
+	affected := make([]identity.Audience, 0, len(audiences))
+	r.mu.RLock()
+	for _, selected := range audiences {
+		key := selected.Key()
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if view, ok := r.views[key]; ok {
+			view.Store.Reset()
+			affected = append(affected, selected)
+		}
+	}
+	r.mu.RUnlock()
+	sort.Slice(affected, func(i, j int) bool { return affected[i].Key() < affected[j].Key() })
+	return affected
 }
 
 // Registry owns physically separated live state for organization/collection
@@ -140,5 +178,18 @@ func (r *Registry) Views() []View {
 		view.Sources = append([]config.Source(nil), view.Sources...)
 		out = append(out, view)
 	}
+	return out
+}
+
+// Audiences returns canonical keys for every trusted materialized view. It is
+// used for scoped snapshots/detectors, never to authorize a read principal.
+func (r *Registry) Audiences() []identity.Audience {
+	r.mu.RLock()
+	out := make([]identity.Audience, 0, len(r.views))
+	for _, view := range r.views {
+		out = append(out, view.Audience)
+	}
+	r.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].Key() < out[j].Key() })
 	return out
 }

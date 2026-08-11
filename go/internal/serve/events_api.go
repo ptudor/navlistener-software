@@ -130,6 +130,12 @@ func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 		// the caller's anchor; since is pulled forward to eventsMaxWindow before it.
 		since = until.Add(-eventsMaxWindow)
 	}
+	if s.policyEpochs != nil {
+		_, visibleAt := s.policyEpochs.Current(view.audience.Key())
+		if since.Before(visibleAt) {
+			since = visibleAt
+		}
+	}
 	query := store.EventQuery{
 		Audience:    view.audience.Key(),
 		SV:          q.Get("sv"),
@@ -182,7 +188,14 @@ func (s *Server) serveEventsSummary(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
 	ctx, cancel := context.WithTimeout(r.Context(), eventsQueryTimeout)
 	defer cancel()
-	sum, err := s.events.SummarizeEventsForAudience(ctx, view.audience.Key(), now.Add(-time.Duration(hours)*time.Hour), now)
+	since := now.Add(-time.Duration(hours) * time.Hour)
+	if s.policyEpochs != nil {
+		_, visibleAt := s.policyEpochs.Current(view.audience.Key())
+		if since.Before(visibleAt) {
+			since = visibleAt
+		}
+	}
+	sum, err := s.events.SummarizeEventsForAudience(ctx, view.audience.Key(), since, now)
 	if err != nil {
 		s.log.Error("events summary failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "events summary failed")

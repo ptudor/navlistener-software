@@ -72,6 +72,17 @@ type RawFrame struct {
 	// records cannot populate it. A zero value is legacy/test input and is treated
 	// as private local-unassigned by audience code.
 	Observer identity.ObserverContext
+
+	// ScopeRevocation is an ordered control-plane barrier, not a GNSS frame.
+	// The push handler emits it only after the changed session has stopped
+	// forwarding DATA, so decode can invalidate every audience built from the
+	// previous immutable context after all of that session's queued receipts.
+	ScopeRevocation *ScopeRevocation
+}
+
+type ScopeRevocation struct {
+	Previous  identity.ObserverContext
+	ChangedAt time.Time
 }
 
 // LocalRecv returns the collector-local receipt time for elapsed-time math

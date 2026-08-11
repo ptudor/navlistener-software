@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ptudor/navlistener/internal/audience"
+	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/store"
 )
 
@@ -18,6 +20,8 @@ type fakeEvents struct {
 	lastQuery    store.EventQuery
 	lastAudience string
 	lastCtx      context.Context
+	lastSince    time.Time
+	lastUntil    time.Time
 	events       []store.StoredEvent
 	total        int
 	summary      store.EventSummary
@@ -30,10 +34,37 @@ func (f *fakeEvents) QueryEvents(ctx context.Context, q store.EventQuery) ([]sto
 	return f.events, f.total, f.err
 }
 
-func (f *fakeEvents) SummarizeEventsForAudience(ctx context.Context, audience string, _, _ time.Time) (store.EventSummary, error) {
+func (f *fakeEvents) SummarizeEventsForAudience(ctx context.Context, audience string, since, until time.Time) (store.EventSummary, error) {
 	f.lastCtx = ctx
 	f.lastAudience = audience
+	f.lastSince, f.lastUntil = since, until
 	return f.summary, f.err
+}
+
+func TestEventHistoryIsClampedToCurrentPolicyEpoch(t *testing.T) {
+	started := time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC)
+	transition := started.Add(time.Hour)
+	now := transition.Add(time.Hour)
+	epochs := audience.NewPolicyEpochs(started)
+	operator := identity.Audience{Kind: identity.AudienceOperator, ID: identity.LocalCollectorInstance}
+	epochs.Advance([]identity.Audience{operator}, transition)
+	fe := &fakeEvents{summary: store.EventSummary{ByType: map[string]int{}, ByConstellation: map[string]int{}}}
+	s := newTestServer(nil, fe)
+	s.SetPolicyEpochs(epochs)
+	s.now = func() time.Time { return now }
+
+	query := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(query, httptest.NewRequest(http.MethodGet,
+		"/gnss/api/events?since=2026-08-01T00:00:00Z&until=2026-08-10T12:00:00Z", nil))
+	if query.Code != http.StatusOK || !fe.lastQuery.Since.Equal(transition) {
+		t.Fatalf("query policy boundary = status %d since %v", query.Code, fe.lastQuery.Since)
+	}
+
+	summary := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(summary, httptest.NewRequest(http.MethodGet, "/gnss/api/events/summary?hours=24", nil))
+	if summary.Code != http.StatusOK || !fe.lastSince.Equal(transition) {
+		t.Fatalf("summary policy boundary = status %d since %v", summary.Code, fe.lastSince)
+	}
 }
 
 func decodeEnvelope(t *testing.T, rr *httptest.ResponseRecorder) map[string]any {

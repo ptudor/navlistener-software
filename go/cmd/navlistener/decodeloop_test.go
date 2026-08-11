@@ -46,7 +46,7 @@ func TestDecodeLoopDrainsAllFramesBeforeClose(t *testing.T) {
 	decodeDone := make(chan struct{})
 	go func() {
 		defer close(decodeDone)
-		decodeLoop(frames, live, publicLive, publicEventsLive, nil, log, &lastFrame)
+		decodeLoop(frames, live, publicLive, publicEventsLive, nil, log, &lastFrame, nil, nil)
 	}()
 
 	select {
