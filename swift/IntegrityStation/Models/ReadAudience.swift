@@ -125,6 +125,13 @@ struct AudienceCacheKey: Codable, Hashable, Sendable {
         let input = "\(server)\u{0}\(principal)\u{0}\(audience.rawValue)\u{0}\(authorizationRevision)"
         return SHA256.hash(data: Data(input.utf8)).map { String(format: "%02x", $0) }.joined()
     }
+
+    /// Presentation preferences survive a policy revision but remain isolated
+    /// across servers, principals, and audiences. Payloads/cursors use storageID.
+    var preferenceID: String {
+        let input = "\(server)\u{0}\(principal)\u{0}\(audience.rawValue)"
+        return SHA256.hash(data: Data(input.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
 }
 
 /// One authorized read context. Private contexts retain a read-side bearer

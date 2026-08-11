@@ -45,6 +45,17 @@ func appSettingsPartitionsStationsAndLabelsByReadScope() throws {
     #expect(reloaded.appearance == .system)
     #expect(reloaded.preferredAudience(forServer: organizationKey.server) == organization)
 
+    let revisedOrganizationKey = AudienceCacheKey(
+        server: organizationKey.server,
+        principal: organizationKey.principal,
+        audience: organization,
+        authorizationRevision: "grant-v2"
+    )
+    reloaded.activateScope(revisedOrganizationKey)
+    #expect(reloaded.stationIDs == ["rx-observer16.example.invalid"])
+    #expect(revisedOrganizationKey.storageID != organizationKey.storageID)
+    #expect(revisedOrganizationKey.preferenceID == organizationKey.preferenceID)
+
     reloaded.activateScope(publicKey)
     #expect(reloaded.stationIDs == ["public-station"])
     #expect(reloaded.label(for: "rx-observer16.example.invalid") == nil)

@@ -64,9 +64,10 @@ and server-side enrollment record establish the current jurisdiction.
 - Audience discovery exposes an opaque revision over the read authorization, materialized
   grant set, process boundary, and current audience-policy epochs. Integrity Station stores
   the collector URL/read token in Keychain, accepts only discovered audiences, applies the
-  selector to polls/history/SSE, and partitions snapshots, cursors, station bookmarks, and
-  labels by server/principal/audience/revision. `401`, `403`, audience loss, revision change,
-  logout, and server/principal changes erase the applicable private cache family.
+  selector to polls/history/SSE, partitions snapshots/cursors by server/principal/audience/
+  revision, and scopes station bookmarks/labels to the stable first three fields. `401`, `403`,
+  audience loss, revision change, logout, and server/principal changes erase the applicable
+  private cache family.
 - A changed active ingest context emits an ordered scope barrier. Every audience touched by the
   old context is conservatively reset and rebuilt from post-change receipts; detectors re-seed,
   SSE replay/clients cross the policy epoch, pending stale events are discarded, historical
@@ -91,10 +92,11 @@ and server-side enrollment record establish the current jurisdiction.
 - The current CA implementation is one CA pair per deployment. That supports an Airport F
   standalone installation, but not several unrelated CA realms inside one process.
 
-The shared Django schema/migrations and Kotlin/.NET/web clients live outside this repository
-and must consume these versioned authorization/discovery contracts rather than inventing local
-group meaning. The repo-local Swift Integrity Station is the reference operator-client
-implementation; it does not make the other client migrations implicit.
+The shared Django schema/migrations and .NET/web clients live outside this repository and must
+consume these versioned authorization/discovery contracts rather than inventing local group
+meaning. The repo-local Swift Integrity Station is the reference operator-client
+implementation. `kotlin/` currently contains the Android specification but no source scaffold;
+neither that absence nor the external clients' locations makes their migrations implicit.
 
 No deployment may claim tenant privacy or safe federation until the applicable items above
 are migrated.
@@ -583,7 +585,8 @@ Implementation is staged; each stage has a safe compatibility mode:
 7. **Clients:** the repo-local Swift Integrity Station implements authenticated discovery and
    selection, Keychain credentials, revisioned audience cache/cursor partitions, scoped local
    preferences, authorization-loss erasure, and system-trusted standalone URL/CA support.
-   Kotlin/.NET/web parity remains in their owning repositories.
+   The repo-local Kotlin implementation and external .NET/web parity remain outstanding in
+   their owning workstreams.
 8. **Federation egress before federation transport:** export-grant evaluation and audit are
    implemented/tested before the first peer can receive a frame.
 9. **Federation transport/inbound trust:** proceed with `FEDERATION.md` P10 using the egress

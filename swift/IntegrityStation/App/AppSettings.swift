@@ -72,7 +72,7 @@ final class AppSettings {
     }
 
     func activateScope(_ key: AudienceCacheKey) {
-        let scopeID = key.storageID
+        let scopeID = key.preferenceID
         guard activeScopeID != scopeID else { return }
 
         isActivatingScope = true
@@ -99,7 +99,7 @@ final class AppSettings {
     }
 
     func clearScope(_ key: AudienceCacheKey) {
-        let scopeID = key.storageID
+        let scopeID = key.preferenceID
         stationIDsByScope.removeValue(forKey: scopeID)
         labelsByScope.removeValue(forKey: scopeID)
         if activeScopeID == scopeID {
