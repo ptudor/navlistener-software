@@ -71,7 +71,8 @@ type copyRowsFunc func(ctx context.Context, rows [][]any) (int64, error)
 
 var copyColumns = []string{
 	"ts", "received_at", "source_id", "organization_id", "enrollment_id",
-	"collector_instance_id", "collection_ids", "provenance", "credential_tier",
+	"collector_instance_id", "collection_ids", "feed_grants", "declared_capabilities",
+	"provenance", "credential_tier",
 	"credential_fingerprint", "attestation_tier", "aggregate_use", "station_metadata", "event_visibility",
 	"raw_export", "federation_peers", "publish_signals", "policy_revision",
 	"gnssid", "svid", "sigid", "freqid", "msg_type",
@@ -93,6 +94,8 @@ type NavFrame struct {
 	EnrollmentID          string
 	CollectorInstanceID   string
 	CollectionIDs         []string
+	FeedGrants            []string
+	DeclaredCapabilities  []string
 	Provenance            string
 	CredentialTier        string
 	CredentialFingerprint string
@@ -1053,6 +1056,14 @@ func navFrameToRow(f *NavFrame) []any {
 	if collections == nil {
 		collections = []string{}
 	}
+	feedGrants := f.FeedGrants
+	if feedGrants == nil {
+		feedGrants = []string{}
+	}
+	declaredCapabilities := f.DeclaredCapabilities
+	if declaredCapabilities == nil {
+		declaredCapabilities = []string{}
+	}
 	peers := f.FederationPeers
 	if peers == nil {
 		peers = []string{}
@@ -1064,7 +1075,8 @@ func navFrameToRow(f *NavFrame) []any {
 	return []any{
 		f.Ts, f.ReceivedAt, f.SourceID,
 		valueOr(f.OrganizationID, "local-unassigned"), valueOr(f.EnrollmentID, "legacy-unassigned"),
-		valueOr(f.CollectorInstanceID, "local"), collections, valueOr(f.Provenance, "local"),
+		valueOr(f.CollectorInstanceID, "local"), collections, feedGrants, declaredCapabilities,
+		valueOr(f.Provenance, "local"),
 		valueOr(f.CredentialTier, "local_dial"), f.CredentialFingerprint, valueOr(f.AttestationTier, "none"),
 		valueOr(f.AggregateUse, "private"), valueOr(f.StationMetadata, "none"), valueOr(f.EventVisibility, "private"),
 		valueOr(f.RawExport, "deny"), peers, signals,

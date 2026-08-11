@@ -117,10 +117,8 @@ func sortCapSignals(cs []CapSignal) {
 // station id. Called once at startup from config; a station with no entry simply has no
 // declared set, and only the observed-only detectors (signal-lost) apply to it.
 //
-// Set-once invariant : this is the only place s.declared is written, and it installs
-// freshly-copied slices, so StationCapReport.Declared (below) can safely alias s.declared[id]
-// directly — no per-read copy needed. If declared sets are ever made mutable post-startup (a
-// live-reload path, say), that aliasing must be revisited and Declared must copy on read.
+// Every slice is copied on write and read. Authenticated push contexts may add or
+// revise one station after startup, so declarations are no longer process-static.
 func (s *Store) SetDeclaredCapabilities(decl map[string][]CapSignal) {
 	s.capMu.Lock()
 	defer s.capMu.Unlock()
@@ -131,6 +129,37 @@ func (s *Store) SetDeclaredCapabilities(decl map[string][]CapSignal) {
 		m[id] = cp
 	}
 	s.declared = m
+}
+
+// SetDeclaredCapabilitiesFor installs the declaration stamped on one trusted
+// observer receipt. It is idempotent and safe for live control-plane updates.
+func (s *Store) SetDeclaredCapabilitiesFor(id string, declared []CapSignal) {
+	if id == "" {
+		return
+	}
+	cp := append([]CapSignal(nil), declared...)
+	sortCapSignals(cp)
+	s.capMu.Lock()
+	if s.declared == nil {
+		s.declared = make(map[string][]CapSignal)
+	}
+	current := s.declared[id]
+	if !equalCapSignals(current, cp) {
+		s.declared[id] = cp
+	}
+	s.capMu.Unlock()
+}
+
+func equalCapSignals(a, b []CapSignal) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // StationCapReport is the detector's per-station capability read model (docs/INTEGRITY.md §6):
@@ -157,18 +186,19 @@ func (s *Store) FeedCapabilityReports(now time.Time) map[string]StationCapReport
 	observed := s.stationCapabilitiesLocked()
 	out := make(map[string]StationCapReport, len(s.caps))
 	for id, st := range s.caps {
+		declared := append([]CapSignal(nil), s.declared[id]...)
 		out[id] = StationCapReport{
 			ID:              id,
 			StationLastSeen: st.lastSeen.Unix(),
 			Observed:        observed[id],
-			Declared:        s.declared[id],
+			Declared:        declared,
 		}
 	}
 	for id, decl := range s.declared {
 		if _, ok := out[id]; ok {
 			continue
 		}
-		out[id] = StationCapReport{ID: id, Declared: decl} // declared but nothing observed yet
+		out[id] = StationCapReport{ID: id, Declared: append([]CapSignal(nil), decl...)} // declared but nothing observed yet
 	}
 	s.capMu.Unlock()
 

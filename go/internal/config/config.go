@@ -81,6 +81,7 @@ var knownDialTypes = map[string]bool{
 
 // Config is the whole-daemon configuration.
 type Config struct {
+	Collector     Collector     `toml:"collector"`
 	Logging       Logging       `toml:"logging"`
 	Metrics       Metrics       `toml:"metrics"`
 	State         State         `toml:"state"`
@@ -101,6 +102,12 @@ type Config struct {
 	// dev config; remote Prometheus scraping behind a firewall) — but never a
 	// silent one. Populated by Load/finalize.
 	Warnings []string `toml:"-"`
+}
+
+// Collector names this deployment's stable trust/authorization realm. It is
+// deliberately process configuration, not an observer- or request-supplied id.
+type Collector struct {
+	InstanceID string `toml:"instance_id"`
 }
 
 // Serve is the native v2 read API listener (docs/OUTPUT.md). It binds loopback and
@@ -437,6 +444,7 @@ func (c *Config) holdsSecrets() bool {
 
 func defaults() *Config {
 	return &Config{
+		Collector:       Collector{InstanceID: identity.LocalCollectorInstance},
 		Logging:         Logging{Level: "info", Format: "json"},
 		Metrics:         Metrics{Addr: "127.0.0.1:9100"},
 		State:           State{Shards: 16, SVTTLs: "2h", PropagateEverys: "1s"},
@@ -452,6 +460,9 @@ func defaults() *Config {
 // strict and fatal: an unknown connector type or a duplicate source name is a
 // configuration error, not a warning.
 func (c *Config) finalize() error {
+	if !identity.ValidScopeID(c.Collector.InstanceID) {
+		return fmt.Errorf("collector.instance_id %q is invalid", c.Collector.InstanceID)
+	}
 	switch c.Logging.Format {
 	case "", "json", "text":
 	default:
@@ -566,7 +577,7 @@ func (c *Config) finalize() error {
 		c.Serve.Audience = "public"
 		c.Serve.AudienceContext = identity.Audience{Kind: identity.AudiencePublic}
 	case "operator":
-		c.Serve.AudienceContext = identity.Audience{Kind: identity.AudienceOperator, ID: identity.LocalCollectorInstance}
+		c.Serve.AudienceContext = identity.Audience{Kind: identity.AudienceOperator, ID: c.Collector.InstanceID}
 	default:
 		return fmt.Errorf("serve.audience %q: want public or operator (organization/collection audiences require authenticated read grants)", c.Serve.Audience)
 	}
@@ -587,6 +598,11 @@ func (c *Config) finalize() error {
 	}
 	if err := c.finalizeFederation(); err != nil {
 		return err
+	}
+	for i, raw := range c.Federation.ExportGrants {
+		if raw.Grant.SourceCollectorInstanceID != c.Collector.InstanceID {
+			return fmt.Errorf("federation.export_grant[%d].source_collector %q does not match collector.instance_id %q", i, raw.Grant.SourceCollectorInstanceID, c.Collector.InstanceID)
+		}
 	}
 
 	seen := make(map[string]bool, len(c.Ingest))
@@ -668,14 +684,26 @@ func (c *Config) finalize() error {
 			return fmt.Errorf("ingest %q: %w", s.Name, err)
 		}
 		s.CapDecl = caps
+		collector := s.CollectorInstanceID
+		if collector == "" {
+			collector = c.Collector.InstanceID
+		} else if collector != c.Collector.InstanceID {
+			return fmt.Errorf("ingest %q collector_instance %q does not match collector.instance_id %q", s.Name, collector, c.Collector.InstanceID)
+		}
 		s.ObserverContext, err = finalizeObserverContext(
-			s.Name, s.OrganizationID, s.EnrollmentID, s.CollectorInstanceID,
+			s.Name, s.OrganizationID, s.EnrollmentID, collector,
 			s.CollectionIDs, s.AggregateUse, s.StationMetadata, s.EventVisibility,
 			s.RawExport, s.FederationPeers, s.PublishSignals, s.PolicyRevision,
 			identity.CredentialLocalDial,
 		)
 		if err != nil {
 			return fmt.Errorf("ingest %q identity: %w", s.Name, err)
+		}
+		s.ObserverContext.FeedGrants = []string{s.Type}
+		s.ObserverContext.DeclaredCapabilities = capabilitySignals(s.CapDecl)
+		s.ObserverContext, err = s.ObserverContext.Normalize()
+		if err != nil {
+			return fmt.Errorf("ingest %q identity evidence: %w", s.Name, err)
 		}
 	}
 	return nil
@@ -952,8 +980,14 @@ func (c *Config) finalizePush() error {
 			return fmt.Errorf("push.observer %q: %w", o.Station, err)
 		}
 		o.CapDecl = caps
+		collector := o.CollectorInstanceID
+		if collector == "" {
+			collector = c.Collector.InstanceID
+		} else if collector != c.Collector.InstanceID {
+			return fmt.Errorf("push.observer %q collector_instance %q does not match collector.instance_id %q", o.Station, collector, c.Collector.InstanceID)
+		}
 		o.ObserverContext, err = finalizeObserverContext(
-			o.Station, o.OrganizationID, o.EnrollmentID, o.CollectorInstanceID,
+			o.Station, o.OrganizationID, o.EnrollmentID, collector,
 			o.CollectionIDs, o.AggregateUse, o.StationMetadata, o.EventVisibility,
 			o.RawExport, o.FederationPeers, o.PublishSignals, o.PolicyRevision,
 			identity.CredentialToken,
@@ -961,8 +995,22 @@ func (c *Config) finalizePush() error {
 		if err != nil {
 			return fmt.Errorf("push.observer %q identity: %w", o.Station, err)
 		}
+		o.ObserverContext.FeedGrants = append([]string(nil), o.Feeds...)
+		o.ObserverContext.DeclaredCapabilities = capabilitySignals(o.CapDecl)
+		o.ObserverContext, err = o.ObserverContext.Normalize()
+		if err != nil {
+			return fmt.Errorf("push.observer %q identity evidence: %w", o.Station, err)
+		}
 	}
 	return nil
+}
+
+func capabilitySignals(capabilities []Capability) []identity.Signal {
+	out := make([]identity.Signal, 0, len(capabilities))
+	for _, capability := range capabilities {
+		out = append(out, identity.Signal{GnssID: capability.Gnss, SigID: capability.Sig})
+	}
+	return out
 }
 
 // ValidObserverID reports whether station can serve as a canonical observer

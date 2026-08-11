@@ -22,6 +22,10 @@ The zero/omitted behavior is fail-closed:
 `full` is still locatable from its per-SV geometry; coarse is a display courtesy, never a
 privacy promise.
 
+The context also retains the server-resolved feed grants and declared receiver capabilities that
+were in force at receipt. These are canonicalized sets and persisted beside the policy snapshot;
+they never come from ordinary DATA metadata.
+
 The context separates evidence (`CredentialTier`, `AttestationTier`) from authorization
 (`PublicationPolicy`). A genuine board is not automatically public, and a public contribution is
 not automatically allowed to disclose its station identity.

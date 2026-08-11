@@ -7,6 +7,7 @@ package identity
 import (
 	"fmt"
 	"regexp"
+	"sort"
 )
 
 const (
@@ -109,7 +110,12 @@ type ObserverContext struct {
 	EnrollmentID        string
 	CollectorInstanceID string
 	CollectionIDs       []string
-	CredentialTier      CredentialTier
+	// FeedGrants and DeclaredCapabilities are server-owned admission evidence.
+	// They are stamped at authentication and retained with the receipt; DATA
+	// records cannot add a feed or claim hardware the control plane did not grant.
+	FeedGrants           []string
+	DeclaredCapabilities []Signal
+	CredentialTier       CredentialTier
 	// CredentialFingerprint is the lowercase SHA-256 of the exact operational
 	// leaf certificate used for this session. It is empty for token/local
 	// sessions and is resolved by the collector, never accepted from DATA.
@@ -133,6 +139,7 @@ func NewPrivateContext(observerID string, tier CredentialTier) ObserverContext {
 		OrganizationID:      UnassignedOrganization,
 		EnrollmentID:        "config:" + observerID,
 		CollectorInstanceID: LocalCollectorInstance,
+		FeedGrants:          []string{"local"},
 		CredentialTier:      tier,
 		AttestationTier:     AttestationNone,
 		Publication: PublicationPolicy{
@@ -148,6 +155,14 @@ func NewPrivateContext(observerID string, tier CredentialTier) ObserverContext {
 // Normalize validates an externally constructed context and fills only the
 // fail-closed defaults. It never defaults an observation to public.
 func (c ObserverContext) Normalize() (ObserverContext, error) {
+	// Normalize canonicalizes set-like slices. Copy them first so validating a
+	// cached/session context can never mutate the caller through a shared backing
+	// array (RawFrame contexts are immutable receipt evidence).
+	c.CollectionIDs = append([]string(nil), c.CollectionIDs...)
+	c.FeedGrants = append([]string(nil), c.FeedGrants...)
+	c.DeclaredCapabilities = append([]Signal(nil), c.DeclaredCapabilities...)
+	c.Publication.FederationPeers = append([]string(nil), c.Publication.FederationPeers...)
+	c.Publication.Signals = append([]Signal(nil), c.Publication.Signals...)
 	if c.ObserverID == "" {
 		return c, fmt.Errorf("observer id is required")
 	}
@@ -182,6 +197,43 @@ func (c ObserverContext) Normalize() (ObserverContext, error) {
 		}
 		seenCollections[id] = true
 	}
+	sort.Strings(c.CollectionIDs)
+	if len(c.FeedGrants) == 0 {
+		return c, fmt.Errorf("at least one feed grant is required")
+	}
+	if len(c.FeedGrants) > 16 {
+		return c, fmt.Errorf("feed grant count %d exceeds 16", len(c.FeedGrants))
+	}
+	seenFeeds := make(map[string]bool, len(c.FeedGrants))
+	for _, feed := range c.FeedGrants {
+		if !ValidScopeID(feed) {
+			return c, fmt.Errorf("feed grant %q is invalid", feed)
+		}
+		if seenFeeds[feed] {
+			return c, fmt.Errorf("feed grant %q is duplicated", feed)
+		}
+		seenFeeds[feed] = true
+	}
+	sort.Strings(c.FeedGrants)
+	if len(c.DeclaredCapabilities) > 256 {
+		return c, fmt.Errorf("declared capability count %d exceeds 256", len(c.DeclaredCapabilities))
+	}
+	seenCapabilities := make(map[Signal]bool, len(c.DeclaredCapabilities))
+	for _, capability := range c.DeclaredCapabilities {
+		if capability.GnssID < 0 || capability.GnssID > 7 || capability.SigID < 0 || capability.SigID > 255 {
+			return c, fmt.Errorf("declared capability %d:%d is outside the wire domain", capability.GnssID, capability.SigID)
+		}
+		if seenCapabilities[capability] {
+			return c, fmt.Errorf("declared capability %d:%d is duplicated", capability.GnssID, capability.SigID)
+		}
+		seenCapabilities[capability] = true
+	}
+	sort.Slice(c.DeclaredCapabilities, func(i, j int) bool {
+		if c.DeclaredCapabilities[i].GnssID != c.DeclaredCapabilities[j].GnssID {
+			return c.DeclaredCapabilities[i].GnssID < c.DeclaredCapabilities[j].GnssID
+		}
+		return c.DeclaredCapabilities[i].SigID < c.DeclaredCapabilities[j].SigID
+	})
 	if c.CredentialTier == "" {
 		c.CredentialTier = CredentialToken
 	}
@@ -251,6 +303,7 @@ func (c ObserverContext) Normalize() (ObserverContext, error) {
 		}
 		seenPeers[peer] = true
 	}
+	sort.Strings(c.Publication.FederationPeers)
 	if c.Publication.RawExport == RawExportNamedPeers && len(c.Publication.FederationPeers) == 0 {
 		return c, fmt.Errorf("named_peers raw export requires at least one federation peer")
 	}
@@ -264,6 +317,12 @@ func (c ObserverContext) Normalize() (ObserverContext, error) {
 		}
 		seenSignals[signal] = true
 	}
+	sort.Slice(c.Publication.Signals, func(i, j int) bool {
+		if c.Publication.Signals[i].GnssID != c.Publication.Signals[j].GnssID {
+			return c.Publication.Signals[i].GnssID < c.Publication.Signals[j].GnssID
+		}
+		return c.Publication.Signals[i].SigID < c.Publication.Signals[j].SigID
+	})
 	if c.Publication.Revision == "" {
 		c.Publication.Revision = "config-private-v1"
 	}
@@ -305,6 +364,8 @@ func (c ObserverContext) AuthorizationEqual(other ObserverContext) bool {
 		c.Publication.RawExport == other.Publication.RawExport &&
 		c.Publication.Revision == other.Publication.Revision &&
 		equalStrings(c.CollectionIDs, other.CollectionIDs) &&
+		equalStrings(c.FeedGrants, other.FeedGrants) &&
+		equalSignals(c.DeclaredCapabilities, other.DeclaredCapabilities) &&
 		equalStrings(c.Publication.FederationPeers, other.Publication.FederationPeers) &&
 		equalSignals(c.Publication.Signals, other.Publication.Signals)
 }

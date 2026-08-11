@@ -102,3 +102,26 @@ func TestCredentialFingerprintAndAuthorizationEquality(t *testing.T) {
 		t.Fatal("policy revision change did not invalidate authorization")
 	}
 }
+
+func TestReceiptEvidenceIsRequiredCanonicalAndAuthorizationRelevant(t *testing.T) {
+	c := NewPrivateContext("obs", CredentialToken)
+	c.FeedGrants = []string{"rtcm", "ubx"}
+	c.DeclaredCapabilities = []Signal{{GnssID: 2, SigID: 3}, {GnssID: 0, SigID: 0}}
+	c.CollectionIDs = []string{"fleet-b", "fleet-a"}
+	c, err := c.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.FeedGrants[0] != "rtcm" || c.CollectionIDs[0] != "fleet-a" || c.DeclaredCapabilities[0] != (Signal{GnssID: 0, SigID: 0}) {
+		t.Fatalf("receipt evidence was not canonicalized: %+v", c)
+	}
+	changed := c
+	changed.FeedGrants = []string{"ubx"}
+	if c.AuthorizationEqual(changed) {
+		t.Fatal("feed grant change did not invalidate active authority")
+	}
+	c.FeedGrants = nil
+	if _, err := c.Normalize(); err == nil {
+		t.Fatal("context without retained feed authority was accepted")
+	}
+}

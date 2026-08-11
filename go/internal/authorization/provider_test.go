@@ -17,6 +17,8 @@ func testContext() identity.ObserverContext {
 	c.EnrollmentID = "enrollment-a"
 	c.CollectorInstanceID = "collector-a"
 	c.CollectionIDs = []string{"fleet-a"}
+	c.FeedGrants = []string{"ubx", "rtcm"}
+	c.DeclaredCapabilities = []identity.Signal{{GnssID: 0, SigID: 0}}
 	c.CredentialFingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	c.AttestationTier = identity.AttestationVerifiedV2
 	c.Publication.Revision = "policy-v1"
@@ -44,8 +46,11 @@ func TestObserverAuthorizationCachesDigestAndInvalidates(t *testing.T) {
 		t.Fatalf("first authorization = %+v/%v calls=%d", first, ok, calls)
 	}
 	first.CollectionIDs[0] = "mutated"
+	first.FeedGrants[0] = "mutated"
+	first.DeclaredCapabilities[0].SigID = 99
 	second, ok := p.Authenticate(context.Background(), "secret", "observer-a", "ubx")
-	if !ok || second.CollectionIDs[0] != "fleet-a" || calls != 1 {
+	if !ok || second.CollectionIDs[0] != "fleet-a" || second.FeedGrants[0] != "rtcm" ||
+		second.DeclaredCapabilities[0].SigID != 0 || calls != 1 {
 		t.Fatalf("cache was not defensive: %+v/%v calls=%d", second, ok, calls)
 	}
 	p.InvalidateAll()

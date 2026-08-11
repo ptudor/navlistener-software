@@ -184,3 +184,17 @@ func TestFeedGlobalTotalLiveReceivers(t *testing.T) {
 		t.Errorf("total_live_receivers = %d, want 3 (obsA counted once across both sources)", got)
 	}
 }
+
+func TestDeclaredCapabilitiesCanArriveFromAuthenticatedContext(t *testing.T) {
+	s := New(1)
+	s.SetDeclaredCapabilitiesFor("observer-a", []CapSignal{{Gnss: 2, Sig: 3}, {Gnss: 0, Sig: 0}})
+	report := s.FeedCapabilityReports(time.Now())["observer-a"]
+	if len(report.Declared) != 2 || report.Declared[0] != (CapSignal{Gnss: 0, Sig: 0}) {
+		t.Fatalf("dynamic declaration = %+v", report.Declared)
+	}
+	report.Declared[0].Sig = 99
+	again := s.FeedCapabilityReports(time.Now())["observer-a"]
+	if again.Declared[0].Sig != 0 {
+		t.Fatal("declared capability read aliased live authorization state")
+	}
+}

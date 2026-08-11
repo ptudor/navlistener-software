@@ -622,6 +622,13 @@ func (s *Store) shardFor(k Key) *shard {
 // frames to the optional historian before calling Apply. It never panics on
 // malformed input — decode errors are returned as metrics, not crashes.
 func (s *Store) Apply(f *ingest.RawFrame) {
+	if f != nil && len(f.Observer.DeclaredCapabilities) > 0 {
+		declared := make([]CapSignal, 0, len(f.Observer.DeclaredCapabilities))
+		for _, capability := range f.Observer.DeclaredCapabilities {
+			declared = append(declared, CapSignal{Gnss: capability.GnssID, Sig: capability.SigID})
+		}
+		s.SetDeclaredCapabilitiesFor(f.Source, declared)
+	}
 	if f.RF != nil {
 		// Station-scoped telemetry: the frame header carries no svId to
 		// validate. (The NAV-SAT Sats[] elements inside do carry per-SV ids,

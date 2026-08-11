@@ -146,7 +146,7 @@ func run() int {
 	publicEventsLive := state.New(cfg.State.Shards)
 	audienceRegistry := audience.NewRegistry(cfg.State.Shards, cfg.Ingest)
 	audienceRegistry.Register(identity.Audience{Kind: identity.AudiencePublic}, publicLive, audience.PublicSources(cfg.Ingest))
-	audienceRegistry.Register(identity.Audience{Kind: identity.AudienceOperator, ID: identity.LocalCollectorInstance}, live, cfg.Ingest)
+	audienceRegistry.Register(identity.Audience{Kind: identity.AudienceOperator, ID: cfg.Collector.InstanceID}, live, cfg.Ingest)
 	if decl := declaredCapabilities(cfg); len(decl) > 0 {
 		live.SetDeclaredCapabilities(decl)
 		log.Info("declared capabilities loaded", "stations", len(decl))
@@ -184,6 +184,7 @@ func run() int {
 			return 1
 		}
 		pushSrv.SetReauthorizationInterval(cfg.Authorization.RecheckEvery)
+		pushSrv.SetCollectorInstance(cfg.Collector.InstanceID)
 	}
 
 	// Bind every configured listener before starting the historian or any producer.
@@ -411,7 +412,11 @@ func run() int {
 		operatorPublisher = ep
 	}
 	wg.Add(1)
-	go func() { defer wg.Done(); detectLoop(ctx, live, detector, ew, operatorPublisher, log, "operator:local") }()
+	go func() {
+		defer wg.Done()
+		detectLoop(ctx, live, detector, ew, operatorPublisher, log,
+			(identity.Audience{Kind: identity.AudienceOperator, ID: cfg.Collector.InstanceID}).Key())
+	}()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -541,6 +546,8 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLi
 				EnrollmentID:          observer.EnrollmentID,
 				CollectorInstanceID:   observer.CollectorInstanceID,
 				CollectionIDs:         append([]string(nil), observer.CollectionIDs...),
+				FeedGrants:            append([]string(nil), observer.FeedGrants...),
+				DeclaredCapabilities:  policySignalStrings(observer.DeclaredCapabilities),
 				Provenance:            "local",
 				CredentialTier:        string(observer.CredentialTier),
 				CredentialFingerprint: observer.CredentialFingerprint,
@@ -1380,6 +1387,7 @@ func isLoopbackPeer(remoteAddr string) bool {
 
 func printConfigSummary(cfg *config.Config) {
 	fmt.Println("Configuration valid.")
+	fmt.Printf("  collector realm: %s\n", cfg.Collector.InstanceID)
 	fmt.Printf("  metrics addr:   %s\n", cfg.Metrics.Addr)
 	serveAddr := cfg.Serve.Addr
 	if serveAddr == "" {

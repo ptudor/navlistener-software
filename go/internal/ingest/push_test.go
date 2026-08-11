@@ -319,6 +319,7 @@ func TestPushMTLSBindsExactActiveCredentialFingerprint(t *testing.T) {
 	clientCert := pki.issue(t, "observer16", "observer16")
 	fingerprint := sha256.Sum256(clientCert.Certificate[0])
 	resolved := identity.NewPrivateContext("observer16", identity.CredentialHardwareMTLS)
+	resolved.FeedGrants = []string{"ubx"}
 	resolved.CredentialFingerprint = hex.EncodeToString(fingerprint[:])
 	resolved.AttestationTier = identity.AttestationVerifiedV2
 	auth := authenticatorFunc(func(context.Context, string, string, string) (identity.ObserverContext, bool) {
@@ -355,6 +356,7 @@ func TestPushRejectsHardwareLabelWithoutMTLS(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	resolved := identity.NewPrivateContext("observer16", identity.CredentialHardwareMTLS)
+	resolved.FeedGrants = []string{"ubx"}
 	resolved.CredentialFingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	resolved.AttestationTier = identity.AttestationVerifiedV2
 	auth := authenticatorFunc(func(context.Context, string, string, string) (identity.ObserverContext, bool) {
@@ -373,13 +375,29 @@ func TestPushRejectsHardwareLabelWithoutMTLS(t *testing.T) {
 	}
 }
 
+func TestPushRejectsEnrollmentFromAnotherCollectorRealm(t *testing.T) {
+	resolved := identity.NewPrivateContext("observer16", identity.CredentialToken)
+	resolved.FeedGrants = []string{"ubx"}
+	auth := authenticatorFunc(func(context.Context, string, string, string) (identity.ObserverContext, bool) {
+		return resolved, true
+	})
+	srv := newPushServer("127.0.0.1:0", &tls.Config{}, make(chan *RawFrame, 1), auth,
+		time.Second, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv.SetCollectorInstance("airport-f-onsite")
+	if _, ok, err := srv.authorize(context.Background(), nil, "token", "observer16", "ubx"); ok || err == nil {
+		t.Fatalf("foreign collector enrollment accepted: ok=%v err=%v", ok, err)
+	}
+}
+
 func TestPushActiveSessionClosesAfterAuthorizationRevocation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var enabled atomic.Bool
 	enabled.Store(true)
 	auth := authenticatorFunc(func(context.Context, string, string, string) (identity.ObserverContext, bool) {
-		return identity.NewPrivateContext("observer16", identity.CredentialToken), enabled.Load()
+		resolved := identity.NewPrivateContext("observer16", identity.CredentialToken)
+		resolved.FeedGrants = []string{"ubx"}
+		return resolved, enabled.Load()
 	})
 	out := make(chan *RawFrame, 1)
 	tc := &tls.Config{Certificates: []tls.Certificate{selfSigned(t)}, MinVersion: tls.VersionTLS12}

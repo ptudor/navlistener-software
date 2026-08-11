@@ -1,12 +1,12 @@
 # `internal/authorization` — control-plane authorization cache
 
 The production collector reads a stable, read-only SQL contract rather than joining Django
-tables on its ingest hot path. `navlistener_observer_authorization_v1` has one enabled row per
+tables on its ingest hot path. `navlistener_observer_authorization_v2` has one enabled row per
 active operational credential and exposes:
 
 ```text
 token_sha256, observer_id, organization_id, enrollment_id, collector_instance_id,
-collection_ids[], feed_grants[], credential_tier, credential_fingerprint,
+collection_ids[], feed_grants[], declared_capabilities[], credential_tier, credential_fingerprint,
 attestation_tier, aggregate_use, station_metadata, event_visibility, raw_export,
 federation_peers[], publish_signals[], policy_revision, enabled
 ```

@@ -2,6 +2,7 @@ package identity
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -36,6 +37,7 @@ type ReadPrincipal struct {
 // redundant public grants. Public is always discoverable without a credential;
 // every stored grant is therefore a private authorization boundary.
 func NormalizeReadPrincipal(p ReadPrincipal) (ReadPrincipal, error) {
+	p.AudienceGrants = append([]Audience(nil), p.AudienceGrants...)
 	if !ValidScopeID(p.ID) {
 		return p, fmt.Errorf("read principal id %q is invalid", p.ID)
 	}
@@ -57,6 +59,9 @@ func NormalizeReadPrincipal(p ReadPrincipal) (ReadPrincipal, error) {
 		}
 		seen[key] = true
 	}
+	sort.Slice(p.AudienceGrants, func(i, j int) bool {
+		return p.AudienceGrants[i].Key() < p.AudienceGrants[j].Key()
+	})
 	return p, nil
 }
 

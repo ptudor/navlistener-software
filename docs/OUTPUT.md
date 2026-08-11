@@ -369,6 +369,8 @@ CREATE TABLE nav_frames (
     enrollment_id TEXT NOT NULL,
     collector_instance_id TEXT NOT NULL,
     collection_ids TEXT[] NOT NULL,
+	feed_grants TEXT[] NOT NULL,
+	declared_capabilities TEXT[] NOT NULL,
     provenance TEXT NOT NULL,
     credential_tier TEXT NOT NULL,
     credential_fingerprint TEXT NOT NULL,

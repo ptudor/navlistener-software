@@ -88,6 +88,7 @@ received_at TIMESTAMPTZ  -- receiver/host reception time (separately indexed)
 source_id   TEXT
 organization_id, enrollment_id, collector_instance_id  TEXT
 collection_ids  TEXT[]     -- receipt-time collection memberships
+feed_grants, declared_capabilities  TEXT[]  -- receipt-time admission/capability evidence
 provenance      TEXT       -- local or an inbound federation peer
 credential_tier, credential_fingerprint, attestation_tier  TEXT
 aggregate_use, station_metadata, event_visibility, raw_export, policy_revision  TEXT

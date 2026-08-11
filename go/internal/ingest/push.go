@@ -107,6 +107,16 @@ func (a *configAuth) Authenticate(_ context.Context, token, station, feed string
 			if ctx.ObserverID == "" { // tests/programmatic callers may bypass config.finalize
 				ctx = identity.NewPrivateContext(o.Station, identity.CredentialToken)
 			}
+			// Preserve the complete server-side receipt evidence even for
+			// programmatic callers that bypass config.finalize.
+			ctx.FeedGrants = append([]string(nil), o.Feeds...)
+			if len(ctx.DeclaredCapabilities) == 0 {
+				for _, capability := range o.CapDecl {
+					ctx.DeclaredCapabilities = append(ctx.DeclaredCapabilities, identity.Signal{
+						GnssID: capability.Gnss, SigID: capability.Sig,
+					})
+				}
+			}
 			ctx, err := ctx.Normalize()
 			if err != nil || ctx.ObserverID != o.Station {
 				return identity.ObserverContext{}, false
@@ -155,6 +165,11 @@ type PushServer struct {
 	// after a credential/enrollment/policy revocation. The provider's cache TTL
 	// is the other half of the documented bound.
 	reauthorizeEvery time.Duration
+
+	// collectorInstanceID is this deployment's stable realm. A control-plane
+	// row for another instance is rejected even if its credential otherwise
+	// verifies, preventing one database/view mistake from crossing CA realms.
+	collectorInstanceID string
 }
 
 // SetDurableTracker installs the regression fix durability watermark source. Must be
@@ -166,6 +181,14 @@ func (p *PushServer) SetDurableTracker(t *DurableTracker) { p.durable = t }
 func (p *PushServer) SetReauthorizationInterval(every time.Duration) {
 	if every > 0 {
 		p.reauthorizeEvery = every
+	}
+}
+
+// SetCollectorInstance binds every admitted observer to this collector realm.
+// Configuration validation supplies a normalized non-empty value.
+func (p *PushServer) SetCollectorInstance(instanceID string) {
+	if identity.ValidScopeID(instanceID) {
+		p.collectorInstanceID = instanceID
 	}
 }
 
@@ -226,7 +249,8 @@ func newPushServer(addr string, tc *tls.Config, out chan<- *RawFrame, auth Authe
 		maxConns = 512
 	}
 	return &PushServer{addr: addr, tlsConfig: tc, auth: auth, out: out, ackInterval: ack,
-		reauthorizeEvery: 30 * time.Second, log: log, conns: make(chan struct{}, maxConns)}
+		reauthorizeEvery: 30 * time.Second, collectorInstanceID: identity.LocalCollectorInstance,
+		log: log, conns: make(chan struct{}, maxConns)}
 }
 
 // Run listens until ctx is cancelled, handling each feeder connection concurrently.
@@ -488,6 +512,19 @@ func (p *PushServer) authorize(ctx context.Context, conn net.Conn, token, statio
 	resolved, ok := p.auth.Authenticate(ctx, token, station, feed)
 	if !ok {
 		return identity.ObserverContext{}, false, nil
+	}
+	if resolved.CollectorInstanceID != p.collectorInstanceID {
+		return identity.ObserverContext{}, false, errors.New("observer enrollment belongs to a different collector instance")
+	}
+	feedGranted := false
+	for _, granted := range resolved.FeedGrants {
+		if granted == feed {
+			feedGranted = true
+			break
+		}
+	}
+	if !feedGranted {
+		return identity.ObserverContext{}, false, errors.New("resolved context does not retain the presented feed grant")
 	}
 	if p.tlsConfig.ClientAuth == tls.NoClientCert {
 		if resolved.CredentialTier == identity.CredentialSoftwareMTLS ||

@@ -10,6 +10,12 @@
 # the LAN; enroll fleet feeders under [[push.observer]]; all decoding, orbit math,
 # and integrity detection is central.
 
+# Stable deployment/trust-domain identity. It is the operator audience key,
+# enrollment realm, and source side of every federation export grant. Hosted
+# and standalone/on-site collectors both need their own durable value.
+[collector]
+instance_id = "local" # e.g. "intsat-production" or "airport-f-onsite"
+
 [logging]
 level  = "info"   # debug | info | warn | error
 format = "json"   # json | text

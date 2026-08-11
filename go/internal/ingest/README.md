@@ -117,8 +117,9 @@ type Authenticator interface {
 
 Authentication resolves more than the canonical station string. The returned context contains
 the server-owned organization, enrollment, collector instance, collection memberships,
-credential/attestation evidence, and receipt-time publication revision. `stream` stamps that
-context onto every `RawFrame`; no feeder DATA field can set or override it.
+feed grants, declared hardware capabilities, credential/attestation evidence, and receipt-time
+publication revision. `stream` stamps that context onto every `RawFrame`; no feeder DATA field
+can set or override it. Its collector instance must match this deployment's configured realm.
 
 `NewConfigAuthenticator` is the fail-closed bootstrap implementation. Omitted scope becomes
 `local-unassigned/private`; a configured public policy must be explicit. The production

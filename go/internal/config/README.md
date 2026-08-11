@@ -42,6 +42,7 @@ fleet ingest. The daemon runs happily as a collector-only process.
 
 | Section | Enables | Key fields |
 |---|---|---|
+| `[collector]` | always | stable `instance_id` for the deployment/CA/operator audience realm |
 | `[logging]` | always | `level` (debug/info/warn/error), `format` (json/text) |
 | `[metrics]` | `addr` set | Prometheus `/metrics` + `/healthz`, loopback-bound |
 | `[state]` | always | shard count, propagate cadence, SV TTL, `leap_seconds` |
@@ -61,7 +62,7 @@ fleet ingest. The daemon runs happily as a collector-only process.
 ### `[authorization]` — production control-plane resolution
 
 Setting `dsn` replaces static credential rows; it never supplements or falls back to them.
-The collector reads the stable `navlistener_observer_authorization_v1` and
+The collector reads the stable `navlistener_observer_authorization_v2` and
 `navlistener_read_authorization_v1` views documented in
 `internal/authorization`, caches positive and negative decisions by token digest, and listens
 for `NOTIFY navlistener_authorization_changed`. `cache_ttl` (default 30s, maximum 5m) is the
@@ -91,6 +92,14 @@ is always credential-free and is rejected as a stored grant.
 Events queries and SSE use the same resolved key as polling. Organization/collection detector
 state and event-id sequences are separate; a private event in one audience cannot create a
 cursor gap in another.
+
+### `[collector]` — one stable deployment realm
+
+`instance_id` defaults to `local` for development and must be set deliberately in production.
+Every static observer context and federation grant must match it, the operator audience is
+`operator:<instance_id>`, and database-authorized push sessions are rejected if their enrollment
+belongs to another collector instance. This is what makes `airport-f-onsite` a distinct,
+standalone licensing/CA jurisdiction rather than a label supplied by a feeder.
 
 ### `[[ingest]]` — dial sources
 

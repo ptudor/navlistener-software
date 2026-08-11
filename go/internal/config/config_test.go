@@ -518,6 +518,7 @@ func TestObserverPublicationContextValidation(t *testing.T) {
 
 func TestFederationExportGrantValidation(t *testing.T) {
 	c := defaults()
+	c.Collector.InstanceID = "collector-a"
 	c.Federation.ExportGrants = []FederationExportGrant{{
 		SourceCollector: "collector-a", DestinationPeer: "peer-b",
 		Organizations: []string{"customer-a"}, Signals: []string{"0:0", "2:3"},
@@ -535,6 +536,7 @@ func TestFederationExportGrantValidation(t *testing.T) {
 	}
 
 	unsafe := defaults()
+	unsafe.Collector.InstanceID = "collector-a"
 	unsafe.Federation.ExportGrants = []FederationExportGrant{{
 		SourceCollector: "collector-a", DestinationPeer: "peer-b",
 		DataClasses: []string{"raw"}, Attribution: "full_provenance", MaxRetentions: "24h",

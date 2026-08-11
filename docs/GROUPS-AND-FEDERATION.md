@@ -50,6 +50,10 @@ and server-side enrollment record establish the current jurisdiction.
   bootstrap and the versioned DB view provider fail closed. The DB provider has a bounded
   digest-only cache, PostgreSQL `NOTIFY` invalidation, active-session rechecks, exact leaf
   fingerprint binding, and refuses hardware-mTLS labels without verified attestation.
+- The collector instance is a stable deployment setting and the operator audience, static
+  contexts, database-authorized enrollments, and federation-grant source must agree with it.
+  Feed grants and declared hardware capabilities are canonical receipt evidence, not merely
+  handshake/config checks.
 - Every raw row retains immutable ownership, enrollment, collection, credential/attestation,
   publication, signal, and export-policy evidence from receipt.
 - Public and operator live state, detector state, events, cursors, snapshots, and caches are
@@ -340,7 +344,8 @@ field is explicitly configured. Configuration cannot claim manufacturer attestat
 
 ```text
 source_id, organization_id, enrollment_id, collector_instance_id,
-provenance, credential_tier, credential_fingerprint, attestation_tier, policy_revision
+feed_grants, declared_capabilities, provenance, credential_tier,
+credential_fingerprint, attestation_tier, policy_revision
 ```
 
 Federated observations additionally carry immutable origin observer/peer/certificate
@@ -386,8 +391,8 @@ hidden observer unless the contributing policy explicitly permits anonymous aggr
 The target schema adds immutable scope columns to raw frames, events, and snapshots, and
 separate membership/grant tables in the control plane. At minimum:
 
-- `nav_frames`: organization, enrollment, collector instance, provenance, credential tier,
-  attestation tier, policy revision.
+- `nav_frames`: organization, enrollment, collector instance, feed grants, declared
+  capabilities, provenance, credential tier, attestation tier, policy revision.
 - `gnss_events`: audience id/type and redaction class.
 - `gnss_snapshots`: audience id/type in both uniqueness/query indexes.
 - quarantine: origin peer and received trust tier, physically/logically excluded from

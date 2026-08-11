@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	observerAuthorizationView = "navlistener_observer_authorization_v1"
+	observerAuthorizationView = "navlistener_observer_authorization_v2"
 	readAuthorizationView     = "navlistener_read_authorization_v1"
 	changeNotifyChannel       = "navlistener_authorization_changed"
 	defaultCacheTTL           = 30 * time.Second
@@ -92,7 +92,7 @@ func NewDatabase(ctx context.Context, dsn string, ttl time.Duration, log *slog.L
 func (p *Provider) VerifyContracts(ctx context.Context, observer, read bool) error {
 	if observer {
 		const query = `SELECT token_sha256, observer_id, organization_id, enrollment_id,
-       collector_instance_id, collection_ids, feed_grants, credential_tier,
+	   collector_instance_id, collection_ids, feed_grants, declared_capabilities, credential_tier,
        credential_fingerprint, attestation_tier, aggregate_use, station_metadata,
        event_visibility, raw_export, federation_peers, publish_signals,
        policy_revision, enabled
@@ -223,7 +223,8 @@ func (p *Provider) Authenticate(ctx context.Context, token, station, feed string
 
 func (p *Provider) lookupObserverDatabase(ctx context.Context, tokenSHA256, station, feed string) (identity.ObserverContext, bool, error) {
 	const query = `SELECT observer_id, organization_id, enrollment_id, collector_instance_id,
-       collection_ids, credential_tier, credential_fingerprint, attestation_tier,
+	   collection_ids, feed_grants, declared_capabilities,
+	   credential_tier, credential_fingerprint, attestation_tier,
        aggregate_use, station_metadata, event_visibility, raw_export,
        federation_peers, publish_signals, policy_revision
   FROM ` + observerAuthorizationView + `
@@ -234,9 +235,10 @@ func (p *Provider) lookupObserverDatabase(ctx context.Context, tokenSHA256, stat
 	}
 	defer rows.Close()
 	var (
-		resolved identity.ObserverContext
-		signals  []string
-		count    int
+		resolved             identity.ObserverContext
+		declaredCapabilities []string
+		publishSignals       []string
+		count                int
 	)
 	for rows.Next() {
 		count++
@@ -245,10 +247,11 @@ func (p *Provider) lookupObserverDatabase(ctx context.Context, tokenSHA256, stat
 		}
 		if err := rows.Scan(
 			&resolved.ObserverID, &resolved.OrganizationID, &resolved.EnrollmentID, &resolved.CollectorInstanceID,
-			&resolved.CollectionIDs, &resolved.CredentialTier, &resolved.CredentialFingerprint, &resolved.AttestationTier,
+			&resolved.CollectionIDs, &resolved.FeedGrants, &declaredCapabilities,
+			&resolved.CredentialTier, &resolved.CredentialFingerprint, &resolved.AttestationTier,
 			&resolved.Publication.AggregateUse, &resolved.Publication.StationMetadata,
 			&resolved.Publication.EventVisibility, &resolved.Publication.RawExport,
-			&resolved.Publication.FederationPeers, &signals, &resolved.Publication.Revision,
+			&resolved.Publication.FederationPeers, &publishSignals, &resolved.Publication.Revision,
 		); err != nil {
 			return identity.ObserverContext{}, false, err
 		}
@@ -259,11 +262,15 @@ func (p *Provider) lookupObserverDatabase(ctx context.Context, tokenSHA256, stat
 	if count == 0 {
 		return identity.ObserverContext{}, false, nil
 	}
-	parsed, err := parseSignals(signals)
+	parsed, err := parseSignals(publishSignals)
 	if err != nil {
 		return identity.ObserverContext{}, false, err
 	}
 	resolved.Publication.Signals = parsed
+	resolved.DeclaredCapabilities, err = parseSignals(declaredCapabilities)
+	if err != nil {
+		return identity.ObserverContext{}, false, err
+	}
 	return resolved, true, nil
 }
 
@@ -332,6 +339,8 @@ func parseSignals(raw []string) ([]identity.Signal, error) {
 func cloneObserverContext(in identity.ObserverContext) identity.ObserverContext {
 	out := in
 	out.CollectionIDs = append([]string(nil), in.CollectionIDs...)
+	out.FeedGrants = append([]string(nil), in.FeedGrants...)
+	out.DeclaredCapabilities = append([]identity.Signal(nil), in.DeclaredCapabilities...)
 	out.Publication.FederationPeers = append([]string(nil), in.Publication.FederationPeers...)
 	out.Publication.Signals = append([]identity.Signal(nil), in.Publication.Signals...)
 	return out

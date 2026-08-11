@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS nav_frames (
     enrollment_id         TEXT   NOT NULL DEFAULT 'legacy-unassigned',
     collector_instance_id TEXT   NOT NULL DEFAULT 'local',
     collection_ids        TEXT[] NOT NULL DEFAULT '{}',
+	feed_grants           TEXT[] NOT NULL DEFAULT '{}',
+	declared_capabilities TEXT[] NOT NULL DEFAULT '{}',
     provenance            TEXT   NOT NULL DEFAULT 'local',
     credential_tier       TEXT   NOT NULL DEFAULT 'local_dial',
     credential_fingerprint TEXT  NOT NULL DEFAULT '',
@@ -57,6 +59,8 @@ ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS organization_id       TEXT   NOT
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS enrollment_id         TEXT   NOT NULL DEFAULT 'legacy-unassigned';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS collector_instance_id TEXT   NOT NULL DEFAULT 'local';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS collection_ids        TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS feed_grants           TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS declared_capabilities TEXT[] NOT NULL DEFAULT '{}';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS provenance            TEXT   NOT NULL DEFAULT 'local';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS credential_tier       TEXT   NOT NULL DEFAULT 'local_dial';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS credential_fingerprint TEXT  NOT NULL DEFAULT '';

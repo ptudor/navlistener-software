@@ -44,7 +44,11 @@ func ProjectPublic(f *ingest.RawFrame) (*ingest.RawFrame, bool) {
 	}
 
 	out := *f
+	// The public capability claim is narrowed by the same signal policy as the
+	// observation. Otherwise a privately withheld band could reappear as a
+	// public "declared but missing" capability/event.
 	out.Observer = c
+	out.Observer.DeclaredCapabilities = filterSignals(c.DeclaredCapabilities, c.Publication)
 	out.RF = nil // no current policy grant exposes RF/security telemetry publicly
 	switch c.Publication.AggregateUse {
 	case identity.AggregatePublicAnonymous:
@@ -58,6 +62,16 @@ func ProjectPublic(f *ingest.RawFrame) (*ingest.RawFrame, bool) {
 		return nil, false
 	}
 	return &out, true
+}
+
+func filterSignals(signals []identity.Signal, policy identity.PublicationPolicy) []identity.Signal {
+	out := make([]identity.Signal, 0, len(signals))
+	for _, signal := range signals {
+		if policy.AllowsSignal(signal.GnssID, signal.SigID) {
+			out = append(out, signal)
+		}
+	}
+	return out
 }
 
 // ProjectPublicEvents returns the contribution allowed to influence public
