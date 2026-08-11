@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Transparent house mark. The renderer supplies a fresh starfield per size. -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Four receiver-dial quadrants with cardinal gaps. -->
+    <path d="M 547.53 173.86 A 340 340 0 0 1 850.14 476.47" stroke="#2dd4bf" stroke-width="64"/>
+    <path d="M 850.14 547.53 A 340 340 0 0 1 547.53 850.14" stroke="#58a6ff" stroke-width="64"/>
+    <path d="M 476.47 850.14 A 340 340 0 0 1 173.86 547.53" stroke="#bc8cff" stroke-width="64"/>
+    <path d="M 173.86 476.47 A 340 340 0 0 1 476.47 173.86" stroke="#f0883e" stroke-width="64"/>
+
+    <!-- Reticle ticks keep the mark in the intsat/mapintsat visual family. -->
+    <g stroke="#c9d1d9" stroke-width="18">
+      <path d="M 512 126 L 512 190"/>
+      <path d="M 898 512 L 834 512"/>
+      <path d="M 512 898 L 512 834"/>
+      <path d="M 126 512 L 190 512"/>
+    </g>
+
+    <!-- A roof GNSS radome receiving the sky, distinct from the map skyplot. -->
+    <path d="M 352 387 Q 512 224 672 387" stroke="#8b949e" stroke-width="18" opacity="0.66"/>
+    <path d="M 405 409 Q 512 300 619 409" stroke="#c9d1d9" stroke-width="20" opacity="0.82"/>
+    <path d="M 455 428 Q 512 370 569 428" stroke="#2dd4bf" stroke-width="22"/>
+
+    <!-- Mast and tripod are deliberately broad enough to survive the 16 px icon. -->
+    <path d="M 512 470 L 512 650" stroke="#c9d1d9" stroke-width="30"/>
+    <path d="M 512 594 L 428 724 M 512 594 L 596 724 M 405 724 L 619 724" stroke="#8b949e" stroke-width="30"/>
+  </g>
+  <path d="M 431 463 Q 512 382 593 463 L 581 493 H 443 Z" fill="#2dd4bf" stroke="#0d1117" stroke-width="14" stroke-linejoin="round"/>
+  <circle cx="512" cy="464" r="13" fill="#f0f6fc"/>
+</svg>
