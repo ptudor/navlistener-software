@@ -46,7 +46,6 @@ targets:
         PRODUCT_MODULE_NAME: IntegrityStation
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
-        SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
 
   IntegrityStationMac:
     type: application
@@ -71,7 +70,6 @@ targets:
         PRODUCT_NAME: Integrity Station
         PRODUCT_MODULE_NAME: IntegrityStation
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
-        SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
         ENABLE_HARDENED_RUNTIME: true
 
   IntegrityStationTests:
