@@ -1,6 +1,24 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "error.http" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Collector returned HTTP %d." } } }
+    },
+    "error.invalid_base_url" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Enter a valid HTTP or HTTPS collector URL." } } }
+    },
+    "error.invalid_response" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Collector returned an invalid response." } } }
+    },
+    "error.missing_data" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Collector response did not contain data." } } }
+    },
+    "error.server" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Collector reported an error." } } }
+    },
+    "error.stream_ended" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Live event stream ended. Reconnecting." } } }
+    },
     "events.empty.description" : {
       "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Live integrity events will appear here." } } }
     },
