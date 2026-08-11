@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ptudor/navlistener/internal/metrics"
@@ -43,6 +44,7 @@ const (
 // const (like sseWriteTimeout above), so tests can shrink it instead of opening 1000 real
 // connections.
 var sseMaxClients = 1000
+var sseClients atomic.Int64
 
 // sseWriteTimeout bounds every write+flush : a client whose TCP receive
 // window is full (dead-but-not-reset) must not be able to park the handler
@@ -143,7 +145,8 @@ func (b *Broker) replayFrom(lastID int64, hasLast bool) []EventMsg {
 func (b *Broker) subscribe() (client *sseClient, ok bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if len(b.clients) >= sseMaxClients {
+	if total := sseClients.Add(1); total > int64(sseMaxClients) {
+		sseClients.Add(-1)
 		metrics.SSESubscribeRejectedTotal.Inc() // cap pressure/attack signal
 		return nil, false
 	}
@@ -151,14 +154,17 @@ func (b *Broker) subscribe() (client *sseClient, ok bool) {
 	b.clients[client] = struct{}{}
 	// gauge set from the authoritative map size under the lock (never
 	// inc/dec'd separately, so it cannot drift from reality).
-	metrics.SSEClients.Set(float64(len(b.clients)))
+	metrics.SSEClients.Set(float64(sseClients.Load()))
 	return client, true
 }
 
 func (b *Broker) unsubscribe(client *sseClient) {
 	b.mu.Lock()
-	delete(b.clients, client)
-	metrics.SSEClients.Set(float64(len(b.clients))) // regression fix
+	if _, exists := b.clients[client]; exists {
+		delete(b.clients, client)
+		sseClients.Add(-1)
+	}
+	metrics.SSEClients.Set(float64(sseClients.Load())) // regression fix
 	b.mu.Unlock()
 }
 

@@ -58,6 +58,14 @@ refresh_interval        = "30s"  # svs/global/observers/sbas
 almanac_refresh_interval = "90s" # almanac (longer-life, all-SV view)
 snapshot_interval        = "5m"  # persist each feed to the historian for replay/backfill; "0s" disables (needs [store].dsn)
 
+# Standalone/bootstrap read grant. Production uses
+# navlistener_read_authorization_v1 through [authorization].dsn instead; never both.
+# [[serve.principal]]
+# id = "airport-f-operator"
+# token_sha256 = "….64 hex chars.…"
+# audiences = ["organization:airport-f", "collection:airport-f-site"]
+# revision = "airport-f-read-v1"
+
 # Authenticated GNF1 fleet push endpoint (docs/DESIGN.md §1/§2): the production
 # ingest path where navfeeder edge feeders connect out to us over TLS. Optional:
 # leave addr empty to accept dial-mode ingest only. When enabled, TLS is mandatory;

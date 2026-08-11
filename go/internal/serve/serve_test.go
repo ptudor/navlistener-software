@@ -2,12 +2,14 @@ package serve
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +21,22 @@ import (
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/state"
 )
+
+type fixedReadAuthorizer map[string]identity.ReadPrincipal
+
+func (a fixedReadAuthorizer) AuthorizeRead(_ context.Context, token string) (identity.ReadPrincipal, bool) {
+	principal, ok := a[token]
+	return principal, ok
+}
+
+type toggleReadAuthorizer struct {
+	enabled   atomic.Bool
+	principal identity.ReadPrincipal
+}
+
+func (a *toggleReadAuthorizer) AuthorizeRead(_ context.Context, _ string) (identity.ReadPrincipal, bool) {
+	return a.principal, a.enabled.Load()
+}
 
 func testServer(sources []config.Source) *Server {
 	return newTestServer(sources, nil)
@@ -93,6 +111,110 @@ func TestPublicEventHistoryUsesPublicAudience(t *testing.T) {
 	}
 	if events.lastQuery.Audience != "public" {
 		t.Fatalf("event query audience = %q, want public", events.lastQuery.Audience)
+	}
+}
+
+func TestAuthenticatedAudienceSelectionNeverServesAnOperatorSuperset(t *testing.T) {
+	ctxA := identity.NewPrivateContext("observer-a", identity.CredentialToken)
+	ctxA.OrganizationID = "customer-a"
+	ctxA.CollectionIDs = []string{"fleet-a"}
+	ctxB := identity.NewPrivateContext("observer-b", identity.CredentialToken)
+	ctxB.OrganizationID = "customer-b"
+	registry := audience.NewRegistry(1, []config.Source{
+		{Name: "observer-a", Type: "ubx", ObserverContext: ctxA},
+		{Name: "observer-b", Type: "ubx", ObserverContext: ctxB},
+	})
+	publicState := state.New(1)
+	registry.Register(identity.Audience{Kind: identity.AudiencePublic}, publicState, nil)
+	now := time.Now()
+	registry.ApplyPrivate(&ingest.RawFrame{Recv: now, Source: "observer-a", Observer: ctxA, RF: &ingest.RawRF{Bands: []ingest.RFBand{{Block: 0, AGC: 100}}}})
+	registry.ApplyPrivate(&ingest.RawFrame{Recv: now, Source: "observer-b", Observer: ctxB, RF: &ingest.RawRF{Bands: []ingest.RFBand{{Block: 0, AGC: 200}}}})
+	principalA := identity.ReadPrincipal{ID: "viewer-a", Revision: "grant-v1", AudienceGrants: []identity.Audience{{Kind: identity.AudienceOrganization, ID: "customer-a"}, {Kind: identity.AudienceCollection, ID: "fleet-a"}}}
+	principalB := identity.ReadPrincipal{ID: "viewer-b", Revision: "grant-v1", AudienceGrants: []identity.Audience{{Kind: identity.AudienceOrganization, ID: "customer-b"}}}
+	auth := fixedReadAuthorizer{"token-a": principalA, "token-b": principalB}
+	events := &fakeEvents{}
+	s := NewForAudience("127.0.0.1:0", publicState, events, nil, time.Minute, time.Minute,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), identity.Audience{Kind: identity.AudiencePublic})
+	s.EnableAudienceSelection(auth, registry, 10*time.Millisecond)
+
+	req := httptest.NewRequest(http.MethodGet, "/gnss/api/v2/observers", nil)
+	req.Header.Set("Authorization", "Bearer token-a")
+	req.Header.Set("X-GNSS-Audience", "organization:customer-a")
+	rr := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "observer-a") || strings.Contains(rr.Body.String(), "observer-b") {
+		t.Fatalf("organization view leaked or omitted a station: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("private audience cache header = %q", got)
+	}
+
+	for name, tc := range map[string]struct {
+		token string
+		want  int
+	}{
+		"missing credential": {"", http.StatusUnauthorized},
+		"wrong principal":    {"token-b", http.StatusForbidden},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/gnss/api/v2/global", nil)
+			if tc.token != "" {
+				req.Header.Set("Authorization", "Bearer "+tc.token)
+			}
+			req.Header.Set("X-GNSS-Audience", "organization:customer-a")
+			rr := httptest.NewRecorder()
+			s.http.Handler.ServeHTTP(rr, req)
+			if rr.Code != tc.want {
+				t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+
+	discovery := httptest.NewRequest(http.MethodGet, "/gnss/api/v2/audiences", nil)
+	discovery.Header.Set("Authorization", "Bearer token-a")
+	discoveryRR := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(discoveryRR, discovery)
+	body := discoveryRR.Body.String()
+	if discoveryRR.Code != http.StatusOK || !strings.Contains(body, "organization:customer-a") ||
+		!strings.Contains(body, "collection:fleet-a") || strings.Contains(body, "customer-b") {
+		t.Fatalf("audience discovery = status %d body %s", discoveryRR.Code, body)
+	}
+
+	eventReq := httptest.NewRequest(http.MethodGet, "/gnss/api/events", nil)
+	eventReq.Header.Set("Authorization", "Bearer token-a")
+	eventReq.Header.Set("X-GNSS-Audience", "organization:customer-a")
+	eventRR := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(eventRR, eventReq)
+	if eventRR.Code != http.StatusOK || events.lastQuery.Audience != "organization:customer-a" {
+		t.Fatalf("scoped event query = status %d audience %q", eventRR.Code, events.lastQuery.Audience)
+	}
+}
+
+func TestActiveReadSessionReauthorizationCancelsAfterRevocation(t *testing.T) {
+	principal := identity.ReadPrincipal{ID: "viewer-a", Revision: "grant-v1", AudienceGrants: []identity.Audience{{Kind: identity.AudienceOrganization, ID: "customer-a"}}}
+	auth := &toggleReadAuthorizer{principal: principal}
+	auth.enabled.Store(true)
+	s := testServer(nil)
+	s.readAuth = auth
+	s.reauthorizeEvery = 5 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	view := requestView{audience: principal.AudienceGrants[0], principal: principal, token: "secret"}
+	done := make(chan struct{})
+	go func() {
+		s.watchReadAuthorization(ctx, cancel, view)
+		close(done)
+	}()
+	auth.enabled.Store(false)
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("revoked read session was not canceled")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("read reauthorization watcher did not exit")
 	}
 }
 

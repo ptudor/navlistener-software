@@ -15,7 +15,7 @@ It is the output standard, designed here. The existing clients (intsat, mapintsa
 
 ## 0. The contract at a glance
 
-- **One API**, versioned: `/gnss/api/v2/{svs, global, observers, almanac, sbas}` plus the
+- **One API**, versioned: `/gnss/api/v2/{audiences, svs, global, observers, almanac, sbas}` plus the
   operational endpoints (§2), the event API and SSE stream (§3).
 - **Envelope** on every JSON response:
 
@@ -39,6 +39,24 @@ It is the output standard, designed here. The existing clients (intsat, mapintsa
 - **GLONASS is a first-class constellation**: its `x_m/y_m/z_m` appear in `svs` like every
   other SV (from the PZ-90 RK4 propagator, MATH.md §3). No feed omits a constellation's
   position as a special case.
+
+### 0.1 Audience discovery and selection
+
+`GET /gnss/api/v2/audiences` returns `public` without credentials. With
+`Authorization: Bearer <read-token>`, it additionally returns only the server-resolved,
+currently materialized `operator:<instance>`, `organization:<id>`, and `collection:<id>`
+grants for that principal. Ingest credentials are not read credentials.
+
+A client selects one returned key with `X-GNSS-Audience` on every feed, events query, and SSE
+request. The header is a selector, not authority: the collector validates it against the
+principal before resolving the physically separate live state and detector/event cursor.
+Unknown or ungranted values return `403`/`404`; the server never returns an operator superset
+for client filtering. Every feed carries the effective key as `data.audience`.
+
+Public responses remain shared-cacheable. Every authenticated response sends
+`Cache-Control: private, no-store` and `Vary: Authorization, X-GNSS-Audience`; private bodies
+are rendered outside the shared public cache. Clients partition local caches and
+`Last-Event-ID` by `(server, principal, audience)` and erase them on logout or `401`/`403`.
 
 Current consumer behaviors, pinned 2026-07-07 (migration facts, not design constraints):
 

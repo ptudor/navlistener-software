@@ -20,3 +20,15 @@ The cache key contains only the token digest plus presented station/feed. Postgr
 the configured TTL remains the revocation bound if the listener is disconnected. Lookup or
 row-validation failure denies the connection. There is no config fallback when database
 authorization is enabled.
+
+`navlistener_read_authorization_v1` is the corresponding read contract:
+
+```text
+token_sha256, principal_id, audience_grants[], revision, enabled
+```
+
+Each `audience_grants` entry is canonical `operator:<instance>`,
+`organization:<organization>`, or `collection:<collection>`. Public needs no credential and is
+rejected as a stored private grant. Duplicate rows, malformed audiences, and empty grant sets
+fail closed. The same cache TTL, generation-safe invalidation, and digest-only key discipline
+apply to read credentials.

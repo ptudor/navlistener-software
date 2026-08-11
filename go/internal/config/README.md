@@ -46,8 +46,9 @@ fleet ingest. The daemon runs happily as a collector-only process.
 | `[metrics]` | `addr` set | Prometheus `/metrics` + `/healthz`, loopback-bound |
 | `[state]` | always | shard count, propagate cadence, SV TTL, `leap_seconds` |
 | `[store]` | `dsn` set | TimescaleDB historian, `raw_retention`, `compress_after` |
-| `[authorization]` | `dsn` set | DB-backed observer grants, bounded cache, active-session recheck |
-| `[serve]` | `addr` set | the native v2 read API, `audience` (`public` default or explicit `operator`), and refresh cadences |
+| `[authorization]` | `dsn` set | DB-backed observer/read grants, bounded cache, active-session recheck |
+| `[serve]` | `addr` set | native v2 API, public default, authenticated audience selection, refresh cadences |
+| `[[serve.principal]]` | no DB auth | standalone/bootstrap read token and explicit private audience grants |
 | `[push]` | `addr` set | the authenticated GNF1 fleet listener; TLS mandatory |
 | `[[federation.export_grant]]` | no transport | explicit directed export authorization, validated before peer transport exists |
 | `[[push.observer]]` | — | credential/feed grant plus server-owned organization and publication context |
@@ -60,7 +61,8 @@ fleet ingest. The daemon runs happily as a collector-only process.
 ### `[authorization]` — production control-plane resolution
 
 Setting `dsn` replaces static credential rows; it never supplements or falls back to them.
-The collector reads the stable `navlistener_observer_authorization_v1` view documented in
+The collector reads the stable `navlistener_observer_authorization_v1` and
+`navlistener_read_authorization_v1` views documented in
 `internal/authorization`, caches positive and negative decisions by token digest, and listens
 for `NOTIFY navlistener_authorization_changed`. `cache_ttl` (default 30s, maximum 5m) is the
 stale-authority ceiling when notifications are interrupted. `session_recheck_interval`
@@ -71,16 +73,24 @@ The authorization DSN should use a read-only database role with access only to t
 views and notification channel. Because it contains credentials, normal config-permission
 warnings include this DSN. `-check-config` validates its syntax but does not connect.
 
-### `[serve]` — one isolated read audience
+### `[serve]` — isolated and authenticated read audiences
 
 `audience = "public"` is the fail-closed default. The collector builds this state only from
 sources whose server-resolved policy grants public aggregate use; private observations never
 enter it. `audience = "operator"` selects the all-source local operations view and must be
-protected by an authenticated private front. Free-form organization or collection audiences
-are rejected until the read-auth layer can resolve them from a principal's server-side grants.
+protected by an authenticated private front. When database authorization or validated
+`[[serve.principal]]` bootstrap rows are present, `/gnss/api/v2/audiences` discovers the
+principal's server-side grants and `X-GNSS-Audience` selects one. Selection never creates a view
+and never widens authority; the view must already have been materialized from trusted frame
+ownership/membership.
 
-The public events endpoints stay unavailable rather than borrowing unscoped operator event
-history. Feed snapshots are persisted with their audience key.
+Static read rows store only SHA-256 token digests and are mutually exclusive with
+`[authorization].dsn`. Their `audiences` values must be explicit canonical private keys; public
+is always credential-free and is rejected as a stored grant.
+
+Events queries and SSE use the same resolved key as polling. Organization/collection detector
+state and event-id sequences are separate; a private event in one audience cannot create a
+cursor gap in another.
 
 ### `[[ingest]]` — dial sources
 

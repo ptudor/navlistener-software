@@ -100,8 +100,14 @@ func run() int {
 	if cfg.Authorization.DSN != "" {
 		connectCtx, connectCancel := context.WithTimeout(ctx, 10*time.Second)
 		authProvider, err = authorization.NewDatabase(connectCtx, cfg.Authorization.DSN, cfg.Authorization.CacheTTL, log)
+		if err == nil {
+			err = authProvider.VerifyContracts(connectCtx, cfg.Push.Addr != "", cfg.Serve.Addr != "")
+		}
 		connectCancel()
 		if err != nil {
+			if authProvider != nil {
+				authProvider.Close()
+			}
 			log.Error("control-plane authorization init failed", "error", err)
 			return 1
 		}
@@ -115,12 +121,32 @@ func run() int {
 		log.Info("database authorization enabled", "cache_ttl", cfg.Authorization.CacheTTL,
 			"session_recheck_interval", cfg.Authorization.RecheckEvery)
 	}
+	var readAuthorizer serve.ReadAuthorizer
+	if authProvider != nil {
+		readAuthorizer = authProvider
+	} else if len(cfg.Serve.Principals) > 0 {
+		grants := make([]authorization.StaticReadGrant, 0, len(cfg.Serve.Principals))
+		for _, configured := range cfg.Serve.Principals {
+			grants = append(grants, authorization.StaticReadGrant{
+				TokenSHA256: configured.TokenSHA256,
+				Principal:   configured.Principal,
+			})
+		}
+		readAuthorizer, err = authorization.NewStaticReadAuthorizer(grants)
+		if err != nil {
+			log.Error("static read authorization init failed", "error", err)
+			return 1
+		}
+	}
 
 	// Pipeline: ingest → decode → live state (+ optional persist historian).
 	state.SetLeapSeconds(cfg.State.LeapSeconds) // interim config override for ΔtLS
 	live := state.New(cfg.State.Shards)
 	publicLive := state.New(cfg.State.Shards)
 	publicEventsLive := state.New(cfg.State.Shards)
+	audienceRegistry := audience.NewRegistry(cfg.State.Shards, cfg.Ingest)
+	audienceRegistry.Register(identity.Audience{Kind: identity.AudiencePublic}, publicLive, audience.PublicSources(cfg.Ingest))
+	audienceRegistry.Register(identity.Audience{Kind: identity.AudienceOperator, ID: identity.LocalCollectorInstance}, live, cfg.Ingest)
 	if decl := declaredCapabilities(cfg); len(decl) > 0 {
 		live.SetDeclaredCapabilities(decl)
 		log.Info("declared capabilities loaded", "stations", len(decl))
@@ -262,7 +288,7 @@ func run() int {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		decodeLoop(frames, live, publicLive, publicEventsLive, historian, log, &lastFrameNano)
+		decodeLoop(frames, live, publicLive, publicEventsLive, historian, log, &lastFrameNano, audienceRegistry)
 	}()
 
 	wg.Add(1)
@@ -310,6 +336,10 @@ func run() int {
 		}
 		apiSrv = serve.NewForAudience(cfg.Serve.Addr, serveState, eventStore, serveSources,
 			cfg.Serve.RefreshFast, cfg.Serve.RefreshSlow, log, cfg.Serve.AudienceContext)
+		if readAuthorizer != nil {
+			apiSrv.EnableAudienceSelection(readAuthorizer, audienceRegistry, cfg.Authorization.RecheckEvery)
+			log.Info("authenticated read audience selection enabled", "static_principals", len(cfg.Serve.Principals))
+		}
 		wg.Add(1)
 		go func() { defer wg.Done(); apiSrv.Run(ctx) }()
 		go func() {
@@ -387,6 +417,13 @@ func run() int {
 		defer wg.Done()
 		detectLoop(ctx, publicEventsLive, publicDetector, ew, publicPublisher, log, "public")
 	}()
+	if readAuthorizer != nil && historian != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			scopedDetectLoop(ctx, audienceRegistry, ew, apiSrv, log)
+		}()
+	}
 
 	log.Info("ready", "ingest_sources", len(cfg.Ingest), "metrics_addr", cfg.Metrics.Addr, "serve_addr", cfg.Serve.Addr, "shards", cfg.State.Shards)
 	if len(cfg.Ingest) == 0 {
@@ -481,7 +518,7 @@ func persistMsgType(f *ingest.RawFrame) int {
 // : it simply ranges frames until the channel is closed, which the owner
 // (run, above) does only after every producer has confirmed it will never send
 // again — so every already-enqueued frame is applied with no drain race.
-func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLive *state.Store, historian *store.Store, log *slog.Logger, lastFrame *atomic.Int64) {
+func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLive *state.Store, historian *store.Store, log *slog.Logger, lastFrame *atomic.Int64, scoped ...*audience.Registry) {
 	lim := &panicLogLimiter{}
 	apply := func(f *ingest.RawFrame) {
 		// every dial and push frame funnels through here, so this one
@@ -528,6 +565,9 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLi
 			})
 		}
 		live.Apply(f)
+		if len(scoped) > 0 && scoped[0] != nil {
+			scoped[0].ApplyPrivate(f)
+		}
 		if publicFrame, ok := audience.ProjectPublic(f); ok {
 			publicLive.Apply(publicFrame)
 		}
@@ -755,6 +795,16 @@ func detectTick(live *state.Store, det *detect.Detector, writer *eventPipeline, 
 			log.Error("detect tick panicked; skipping", "panic", r)
 		}
 	}()
+	for _, e := range detectEvents(live, det, writer.audience) {
+		if pe := prepareEvent(e, writer.historian, log); pe != nil {
+			pe.row.Audience = writer.audience
+			pe.row.RedactionClass = writer.redactionClass
+			writer.enqueue(*pe)
+		}
+	}
+}
+
+func detectEvents(live *state.Store, det *detect.Detector, audienceKey string) []detect.Event {
 	now := time.Now()
 	// the live-receiver count gates the per-SV silence classifier — from a
 	// sub-constellation-footprint fleet, "unseen for an hour" is orbital mechanics,
@@ -770,7 +820,7 @@ func detectTick(live *state.Store, det *detect.Detector, writer *eventPipeline, 
 	// per-station age map — retained state, not the staleness-filtered RF view.
 	stationLastSeen := live.StationLastSeen(now)
 	capabilityReports := live.FeedCapabilityReports(now)
-	if writer.audience == "public" {
+	if audienceKey == "public" {
 		// Anonymous/redacted contributors may affect satellite-level public
 		// detection, but the synthetic bucket must never become a station event.
 		delete(stationLastSeen, audience.AnonymousPublicSource)
@@ -780,11 +830,86 @@ func detectTick(live *state.Store, det *detect.Detector, writer *eventPipeline, 
 	// Capability plausibility: a demonstrated signal gone silent, or a signal the
 	// node's silicon can't produce (docs/INTEGRITY.md §6, CONSTELLATIONS §7).
 	events = append(events, det.TickCapabilities(now, capabilityReports)...)
-	for _, e := range events {
-		if pe := prepareEvent(e, writer.historian, log); pe != nil {
-			pe.row.Audience = writer.audience
-			pe.row.RedactionClass = writer.redactionClass
-			writer.enqueue(*pe)
+	return events
+}
+
+func detectEventsSafely(live *state.Store, det *detect.Detector, audienceKey string, log *slog.Logger) (events []detect.Event) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			metrics.EventWriteErrorsTotal.Inc()
+			log.Error("scoped detect tick panicked; skipping", "audience", audienceKey, "panic", recovered)
+			events = nil
+		}
+	}()
+	return detectEvents(live, det, audienceKey)
+}
+
+type scopedEventPublisher struct {
+	server   *serve.Server
+	audience identity.Audience
+}
+
+func (p scopedEventPublisher) PublishEvent(event serve.EventMsg) {
+	p.server.PublishEventForAudience(p.audience, event)
+}
+
+// scopedDetectLoop gives each organization/collection an independent detector
+// state machine and durable audience cursor. Writer goroutines are allocated
+// lazily only after a view confirms its first event.
+func scopedDetectLoop(ctx context.Context, registry *audience.Registry, historian eventWriter, api *serve.Server, log *slog.Logger) {
+	tick := time.NewTicker(detectInterval)
+	defer tick.Stop()
+	type scopedState struct {
+		detector *detect.Detector
+		writer   *eventPipeline
+		done     chan struct{}
+		audience identity.Audience
+	}
+	states := make(map[string]*scopedState)
+	for {
+		select {
+		case <-tick.C:
+			for _, view := range registry.Views() {
+				if view.Audience.Kind != identity.AudienceOrganization && view.Audience.Kind != identity.AudienceCollection {
+					continue
+				}
+				key := view.Audience.Key()
+				scoped := states[key]
+				if scoped == nil {
+					scoped = &scopedState{detector: detect.New(0), audience: view.Audience}
+					states[key] = scoped
+				}
+				events := detectEventsSafely(view.Store, scoped.detector, key, log)
+				if len(events) == 0 {
+					continue
+				}
+				if scoped.writer == nil {
+					var publisher eventPublisher
+					if api != nil {
+						publisher = scopedEventPublisher{server: api, audience: scoped.audience}
+					}
+					scoped.writer = newEventPipeline(historian, publisher, log, key)
+					scoped.done = make(chan struct{})
+					go func(state *scopedState) {
+						defer close(state.done)
+						state.writer.run(ctx)
+					}(scoped)
+				}
+				for _, event := range events {
+					if pending := prepareEvent(event, scoped.writer.historian, log); pending != nil {
+						pending.row.Audience = key
+						pending.row.RedactionClass = "private"
+						scoped.writer.enqueue(*pending)
+					}
+				}
+			}
+		case <-ctx.Done():
+			for _, scoped := range states {
+				if scoped.done != nil {
+					<-scoped.done
+				}
+			}
+			return
 		}
 	}
 }

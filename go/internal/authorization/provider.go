@@ -1,4 +1,4 @@
-// Package authorization resolves server-owned ingest grants from the
+// Package authorization resolves server-owned ingest and read grants from the
 // control plane. Presented bearer tokens are hashed before lookup/cache keys;
 // plaintext credentials are never retained by this package.
 package authorization
@@ -22,11 +22,13 @@ import (
 
 const (
 	observerAuthorizationView = "navlistener_observer_authorization_v1"
+	readAuthorizationView     = "navlistener_read_authorization_v1"
 	changeNotifyChannel       = "navlistener_authorization_changed"
 	defaultCacheTTL           = 30 * time.Second
 )
 
 type observerLookup func(context.Context, string, string, string) (identity.ObserverContext, bool, error)
+type readLookup func(context.Context, string) (identity.ReadPrincipal, bool, error)
 
 type observerCacheKey struct {
 	tokenSHA256 string
@@ -40,6 +42,12 @@ type observerCacheEntry struct {
 	expires time.Time
 }
 
+type readCacheEntry struct {
+	principal identity.ReadPrincipal
+	allowed   bool
+	expires   time.Time
+}
+
 // Provider is a bounded ingest-authorization cache over a stable control-plane SQL
 // views. A NOTIFY clears it immediately; TTL remains the fail-safe bound when a
 // notification connection is interrupted.
@@ -50,9 +58,11 @@ type Provider struct {
 	log  *slog.Logger
 
 	lookupObserver observerLookup
+	lookupRead     readLookup
 
 	mu         sync.Mutex
 	observers  map[observerCacheKey]observerCacheEntry
+	readers    map[string]readCacheEntry
 	generation uint64
 }
 
@@ -73,7 +83,36 @@ func NewDatabase(ctx context.Context, dsn string, ttl time.Duration, log *slog.L
 	p := newProvider(ttl, log, nil)
 	p.pool = pool
 	p.lookupObserver = p.lookupObserverDatabase
+	p.lookupRead = p.lookupReadDatabase
 	return p, nil
+}
+
+// VerifyContracts fails startup before listeners bind when an enabled surface's
+// versioned SQL view or required columns are missing.
+func (p *Provider) VerifyContracts(ctx context.Context, observer, read bool) error {
+	if observer {
+		const query = `SELECT token_sha256, observer_id, organization_id, enrollment_id,
+       collector_instance_id, collection_ids, feed_grants, credential_tier,
+       credential_fingerprint, attestation_tier, aggregate_use, station_metadata,
+       event_visibility, raw_export, federation_peers, publish_signals,
+       policy_revision, enabled
+  FROM ` + observerAuthorizationView + ` LIMIT 0`
+		rows, err := p.pool.Query(ctx, query)
+		if err != nil {
+			return fmt.Errorf("observer authorization view contract: %w", err)
+		}
+		rows.Close()
+	}
+	if read {
+		const query = `SELECT token_sha256, principal_id, audience_grants, revision, enabled
+  FROM ` + readAuthorizationView + ` LIMIT 0`
+		rows, err := p.pool.Query(ctx, query)
+		if err != nil {
+			return fmt.Errorf("read authorization view contract: %w", err)
+		}
+		rows.Close()
+	}
+	return nil
 }
 
 func newProvider(ttl time.Duration, log *slog.Logger, lookup observerLookup) *Provider {
@@ -86,7 +125,52 @@ func newProvider(ttl time.Duration, log *slog.Logger, lookup observerLookup) *Pr
 	return &Provider{
 		ttl: ttl, now: time.Now, log: log, lookupObserver: lookup,
 		observers: make(map[observerCacheKey]observerCacheEntry),
+		readers:   make(map[string]readCacheEntry),
 	}
+}
+
+// AuthorizeRead resolves a bearer token to one principal and its explicit
+// private audience grants. The cache key is only the token digest.
+func (p *Provider) AuthorizeRead(ctx context.Context, token string) (identity.ReadPrincipal, bool) {
+	if p.lookupRead == nil {
+		return identity.ReadPrincipal{}, false
+	}
+	sum := sha256.Sum256([]byte(token))
+	digest := hex.EncodeToString(sum[:])
+	now := p.now()
+	p.mu.Lock()
+	entry, ok := p.readers[digest]
+	if ok && now.Before(entry.expires) {
+		p.mu.Unlock()
+		return cloneReadPrincipal(entry.principal), entry.allowed
+	}
+	if ok {
+		delete(p.readers, digest)
+	}
+	lookupGeneration := p.generation
+	p.mu.Unlock()
+
+	principal, allowed, err := p.lookupRead(ctx, digest)
+	if err != nil {
+		p.log.Warn("control-plane read authorization lookup failed", "error", err)
+		return identity.ReadPrincipal{}, false
+	}
+	if allowed {
+		principal, err = identity.NormalizeReadPrincipal(principal)
+		if err != nil {
+			p.log.Error("control-plane read authorization row rejected", "error", err)
+			return identity.ReadPrincipal{}, false
+		}
+	}
+	entry = readCacheEntry{principal: cloneReadPrincipal(principal), allowed: allowed, expires: now.Add(p.ttl)}
+	p.mu.Lock()
+	if p.generation != lookupGeneration {
+		p.mu.Unlock()
+		return identity.ReadPrincipal{}, false
+	}
+	p.readers[digest] = entry
+	p.mu.Unlock()
+	return cloneReadPrincipal(principal), allowed
 }
 
 // Authenticate implements ingest.Authenticator structurally without importing
@@ -183,6 +267,45 @@ func (p *Provider) lookupObserverDatabase(ctx context.Context, tokenSHA256, stat
 	return resolved, true, nil
 }
 
+func (p *Provider) lookupReadDatabase(ctx context.Context, tokenSHA256 string) (identity.ReadPrincipal, bool, error) {
+	const query = `SELECT principal_id, audience_grants, revision
+  FROM ` + readAuthorizationView + `
+ WHERE token_sha256 = $1 AND enabled`
+	rows, err := p.pool.Query(ctx, query, tokenSHA256)
+	if err != nil {
+		return identity.ReadPrincipal{}, false, err
+	}
+	defer rows.Close()
+	var (
+		principal identity.ReadPrincipal
+		rawGrants []string
+		count     int
+	)
+	for rows.Next() {
+		count++
+		if count > 1 {
+			return identity.ReadPrincipal{}, false, errors.New("duplicate active read authorization rows")
+		}
+		if err := rows.Scan(&principal.ID, &rawGrants, &principal.Revision); err != nil {
+			return identity.ReadPrincipal{}, false, err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return identity.ReadPrincipal{}, false, err
+	}
+	if count == 0 {
+		return identity.ReadPrincipal{}, false, nil
+	}
+	for _, raw := range rawGrants {
+		grant, err := identity.ParseAudience(raw)
+		if err != nil {
+			return identity.ReadPrincipal{}, false, err
+		}
+		principal.AudienceGrants = append(principal.AudienceGrants, grant)
+	}
+	return principal, true, nil
+}
+
 func parseSignals(raw []string) ([]identity.Signal, error) {
 	if len(raw) == 0 {
 		return nil, nil
@@ -214,10 +337,17 @@ func cloneObserverContext(in identity.ObserverContext) identity.ObserverContext 
 	return out
 }
 
+func cloneReadPrincipal(in identity.ReadPrincipal) identity.ReadPrincipal {
+	out := in
+	out.AudienceGrants = append([]identity.Audience(nil), in.AudienceGrants...)
+	return out
+}
+
 // InvalidateAll clears positive and negative authorization caches.
 func (p *Provider) InvalidateAll() {
 	p.mu.Lock()
 	clear(p.observers)
+	clear(p.readers)
 	p.generation++
 	p.mu.Unlock()
 }

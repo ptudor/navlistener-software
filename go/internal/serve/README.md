@@ -30,6 +30,7 @@ when `[serve].addr` is set.
 
 | Path | What it serves |
 |---|---|
+| `GET /gnss/api/v2/audiences` | Public plus the authenticated principal's materialized audience grants. |
 | `GET /gnss/api/v2/svs` | Per-satellite×signal live state — the main feed. |
 | `GET /gnss/api/v2/global` | Fleet-wide counts, per-constellation totals, leap seconds. |
 | `GET /gnss/api/v2/observers` | Station list (only `remark` from config — never dial addresses). |
@@ -54,11 +55,14 @@ func New(addr string, st *state.Store, events EventStore, sources []config.Sourc
          fast, slow time.Duration, log *slog.Logger) *Server
 func NewForAudience(addr string, st *state.Store, events EventStore, sources []config.Source,
          fast, slow time.Duration, log *slog.Logger, audience identity.Audience) *Server
+func (s *Server) EnableAudienceSelection(auth ReadAuthorizer, resolver ViewResolver,
+         reauthorizeEvery time.Duration)
 func (s *Server) Listen() (net.Listener, error)
 func (s *Server) Start(ln net.Listener) error
 func (s *Server) Run(ctx context.Context)          // the refresh loop
 func (s *Server) Shutdown(ctx context.Context) error
 func (s *Server) PublishEvent(e EventMsg)
+func (s *Server) PublishEventForAudience(a identity.Audience, e EventMsg)
 func (s *Server) SnapshotFeeds() map[string][]byte  // for the historian's snapshot writer
 func (s *Server) Audience() identity.Audience
 ```
@@ -73,11 +77,12 @@ embedding.
 
 ## Details
 
-### Cached envelopes, not per-request marshalling
+### Public cache and isolated private rendering
 
-The server **marshals each feed's complete envelope on a timer and swaps the byte slice
-atomically.** A request is then a header write and a `[]byte` copy — no lock on the state store,
-no JSON encoding, no allocation proportional to constellation size.
+The server **marshals the default/public feed's complete envelope on a timer and swaps the byte
+slice atomically.** Authenticated organization/collection bodies are rendered from their
+physically separate state after authorization and are not put in the shared cache; this keeps
+private entries from crossing principals or audiences.
 
 Two cadences, because two kinds of data move at different speeds:
 
@@ -94,11 +99,11 @@ historian persists to `gnss_snapshots` under `Server.Audience()` for replay and 
 means the snapshot is byte-identical to what consumers actually saw without crossing audience
 caches.
 
-Public feed responses are cacheable and identify `data.audience = "public"`. Operator responses
+Public feed responses are cacheable and identify `data.audience = "public"`. Private responses
 send `Cache-Control: private, no-store` and vary on authorization/audience selectors. Event
-queries are forced to `Server.Audience()`; clients cannot supply a free-form scope. SSE receives
-only the matching detector pipeline, and its ids are that audience's private monotone sequence,
-not the historian's global row id.
+queries are forced to the request's server-resolved audience; clients cannot turn a free-form
+scope into authority. SSE receives only the matching detector pipeline, re-authorizes long-lived
+sessions, and uses that audience's private monotone sequence rather than the global row id.
 
 ### The events query API and its bounds
 

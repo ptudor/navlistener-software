@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +32,22 @@ import (
 type EventStore interface {
 	QueryEvents(ctx context.Context, q store.EventQuery) ([]store.StoredEvent, int, error)
 	SummarizeEventsForAudience(ctx context.Context, audience string, since, until time.Time) (store.EventSummary, error)
+}
+
+type ReadAuthorizer interface {
+	AuthorizeRead(context.Context, string) (identity.ReadPrincipal, bool)
+}
+
+type ViewResolver interface {
+	Resolve(identity.Audience) (*state.Store, []config.Source, bool)
+}
+
+type requestView struct {
+	audience  identity.Audience
+	store     *state.Store
+	sources   []config.Source
+	principal identity.ReadPrincipal
+	token     string
 }
 
 // schemaVersion is the OUTPUT contract version carried in every feed's data object.
@@ -55,7 +72,13 @@ type Server struct {
 	fast time.Duration
 	slow time.Duration
 
-	broker *Broker
+	broker   *Broker
+	brokerMu sync.Mutex
+	brokers  map[string]*Broker
+
+	readAuth         ReadAuthorizer
+	resolver         ViewResolver
+	reauthorizeEvery time.Duration
 
 	mu    sync.RWMutex
 	cache map[string][]byte
@@ -94,14 +117,17 @@ func NewForAudience(addr string, st *state.Store, events EventStore, sources []c
 		slow:     slow,
 		broker:   newBroker(),
 		cache:    map[string][]byte{},
+		brokers:  map[string]*Broker{},
 	}
 	s.broker.log = log // SSE marshal failures log through the server's real logger
+	s.brokers[selected.Key()] = s.broker
 	mux := http.NewServeMux()
 	mux.HandleFunc("/gnss/api/v2/svs", s.serveFeed("svs"))
 	mux.HandleFunc("/gnss/api/v2/global", s.serveFeed("global"))
 	mux.HandleFunc("/gnss/api/v2/observers", s.serveFeed("observers"))
 	mux.HandleFunc("/gnss/api/v2/almanac", s.serveFeed("almanac"))
 	mux.HandleFunc("/gnss/api/v2/sbas", s.serveFeed("sbas"))
+	mux.HandleFunc("/gnss/api/v2/audiences", s.serveAudiences)
 	mux.HandleFunc("/gnss/api/events/summary", s.serveEventsSummary)
 	mux.HandleFunc("/gnss/api/events", s.serveEventsQuery)
 	mux.HandleFunc("/gnss/events", s.serveEventStream)
@@ -116,8 +142,20 @@ func NewForAudience(addr string, st *state.Store, events EventStore, sources []c
 	}
 	// Shutdown() doesn't cancel in-flight SSE request contexts, so signal the broker
 	// to release its handlers when a graceful shutdown begins.
-	s.http.RegisterOnShutdown(s.broker.Close)
+	s.http.RegisterOnShutdown(s.closeBrokers)
 	return s
+}
+
+// EnableAudienceSelection installs authenticated organization/collection view
+// selection. It must be called before Listen/Start. Public remains credential-
+// free; every private request is authorized server-side on its canonical key.
+func (s *Server) EnableAudienceSelection(auth ReadAuthorizer, resolver ViewResolver, reauthorizeEvery time.Duration) {
+	s.readAuth = auth
+	s.resolver = resolver
+	if reauthorizeEvery <= 0 {
+		reauthorizeEvery = 10 * time.Second
+	}
+	s.reauthorizeEvery = reauthorizeEvery
 }
 
 // Listen binds the v2 API listener synchronously : call this at startup, before
@@ -172,7 +210,36 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // PublishEvent fans a confirmed integrity event out to the SSE clients and records
 // it in the reconnect-replay ring (docs/OUTPUT.md §3).
 func (s *Server) PublishEvent(e EventMsg) {
-	s.broker.Publish(e)
+	s.PublishEventForAudience(s.audience, e)
+}
+
+func (s *Server) PublishEventForAudience(a identity.Audience, e EventMsg) {
+	s.brokerFor(a).Publish(e)
+}
+
+func (s *Server) brokerFor(a identity.Audience) *Broker {
+	key := a.Key()
+	s.brokerMu.Lock()
+	defer s.brokerMu.Unlock()
+	if broker := s.brokers[key]; broker != nil {
+		return broker
+	}
+	broker := newBroker()
+	broker.log = s.log
+	s.brokers[key] = broker
+	return broker
+}
+
+func (s *Server) closeBrokers() {
+	s.brokerMu.Lock()
+	brokers := make([]*Broker, 0, len(s.brokers))
+	for _, broker := range s.brokers {
+		brokers = append(brokers, broker)
+	}
+	s.brokerMu.Unlock()
+	for _, broker := range brokers {
+		broker.Close()
+	}
 }
 
 // Audience returns the immutable view key served and snapshotted by this server.
@@ -208,12 +275,28 @@ func (s *Server) refreshAll() {
 // and leaves the previous (stale) bytes in place rather than serving a broken body.
 func (s *Server) refresh(feed string) {
 	now := s.now()
-	data := map[string]any{"schema": schemaVersion, "audience": s.audience.Key()}
+	body, err := s.buildFeed(feed, s.audience, s.store, s.sources, now)
+	if err != nil {
+		metrics.ServeFeedMarshalErrorsTotal.WithLabelValues(feed).Inc()
+		s.log.Error("serve feed marshal failed", "feed", feed, "audience", s.audience.Key(), "error", err)
+		return
+	}
+	s.mu.Lock()
+	s.cache[feed] = body
+	s.mu.Unlock()
+	metrics.ServeFeedRefreshTimestamp.WithLabelValues(feed).SetToCurrentTime()
+}
+
+func (s *Server) buildFeed(feed string, selected identity.Audience, st *state.Store, sources []config.Source, now time.Time) ([]byte, error) {
+	if st == nil {
+		return nil, fmt.Errorf("audience state is unavailable")
+	}
+	data := map[string]any{"schema": schemaVersion, "audience": selected.Key()}
 	switch feed {
 	case "svs":
-		data["svs"] = s.store.FeedSVs(now)
+		data["svs"] = st.FeedSVs(now)
 	case "global":
-		g := s.store.FeedGlobal(now)
+		g := st.FeedGlobal(now)
 		for k, v := range g.Counts {
 			data[k] = v
 		}
@@ -223,27 +306,19 @@ func (s *Server) refresh(feed string) {
 		data["total_live_signals"] = g.TotalLiveSignals
 		data["total_live_receivers"] = g.TotalLiveReceivers
 	case "observers":
-		data["observers"] = s.observers(now)
+		data["observers"] = s.observers(now, st, sources, selected)
 	case "almanac":
-		data["almanac"] = s.store.FeedAlmanac(now)
+		data["almanac"] = st.FeedAlmanac(now)
 	case "sbas":
-		data["sbas"] = s.store.FeedSBAS(now)
+		data["sbas"] = st.FeedSBAS(now)
 	default:
-		return
+		return nil, fmt.Errorf("unknown feed %q", feed)
 	}
 	body, err := json.Marshal(envelope{OK: true, Time: now.UTC().Format(time.RFC3339), Data: data})
 	if err != nil {
-		// counted, not just logged — the cache keeps serving the
-		// previous (stale) bytes, and without a counter + the refresh-timestamp
-		// gauge below, a feed frozen weeks ago is invisible to alerting.
-		metrics.ServeFeedMarshalErrorsTotal.WithLabelValues(feed).Inc()
-		s.log.Error("serve feed marshal failed", "feed", feed, "error", err)
-		return
+		return nil, err
 	}
-	s.mu.Lock()
-	s.cache[feed] = body
-	s.mu.Unlock()
-	metrics.ServeFeedRefreshTimestamp.WithLabelValues(feed).SetToCurrentTime()
+	return body, nil
 }
 
 // serveFeed returns the handler for one cached feed. GET/HEAD only; other methods
@@ -251,6 +326,27 @@ func (s *Server) refresh(feed string) {
 func (s *Server) serveFeed(feed string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if methodNotAllowedGetHead(w, r) {
+			return
+		}
+		view, ok := s.resolveRequestView(w, r)
+		if !ok {
+			return
+		}
+		// Only the fixed/default view uses the shared warmed cache. Authenticated
+		// private responses are rendered per request so cache entries never cross
+		// principals or audiences.
+		if view.principal.ID != "" || view.audience != s.audience {
+			body, err := s.buildFeed(feed, view.audience, view.store, view.sources, s.now())
+			if err != nil {
+				s.log.Error("serve scoped feed marshal failed", "feed", feed, "audience", view.audience.Key(), "error", err)
+				writeError(w, http.StatusInternalServerError, "feed encode failed")
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			s.setAudienceCacheHeaders(w, view.audience)
+			if r.Method != http.MethodHead {
+				_, _ = w.Write(body)
+			}
 			return
 		}
 		s.mu.RLock()
@@ -263,12 +359,14 @@ func (s *Server) serveFeed(feed string) http.HandlerFunc {
 			s.mu.RUnlock()
 		}
 		w.Header().Set("Content-Type", "application/json")
-		s.setAudienceCacheHeaders(w)
+		s.setAudienceCacheHeaders(w, view.audience)
 		if body == nil {
 			writeError(w, http.StatusServiceUnavailable, "feed not ready")
 			return
 		}
-		_, _ = w.Write(body)
+		if r.Method != http.MethodHead {
+			_, _ = w.Write(body)
+		}
 	}
 }
 
@@ -303,12 +401,12 @@ type observer struct {
 	Missing    []state.CapSignal `json:"missing_capabilities,omitempty"`
 }
 
-func (s *Server) observers(now time.Time) []observer {
-	rf := s.store.FeedStationRF(now)
-	reps := s.store.FeedCapabilityReports(now)
-	seen := make(map[string]bool, len(s.sources))
-	out := make([]observer, 0, len(s.sources))
-	for _, src := range s.sources {
+func (s *Server) observers(now time.Time, st *state.Store, sources []config.Source, selected identity.Audience) []observer {
+	rf := st.FeedStationRF(now)
+	reps := st.FeedCapabilityReports(now)
+	seen := make(map[string]bool, len(sources))
+	out := make([]observer, 0, len(sources))
+	for _, src := range sources {
 		seen[src.Name] = true
 		o := observer{
 			ID: sanitize(src.Name),
@@ -338,13 +436,13 @@ func (s *Server) observers(now time.Time) []observer {
 	// (vendor/remark/disabled) simply absent. Sorted for a stable feed.
 	extra := make([]string, 0)
 	for id := range rf {
-		if !seen[id] && !(s.audience.Kind == identity.AudiencePublic && audience.IsAnonymousPublicSource(id)) {
+		if !seen[id] && !(selected.Kind == identity.AudiencePublic && audience.IsAnonymousPublicSource(id)) {
 			seen[id] = true
 			extra = append(extra, id)
 		}
 	}
 	for id := range reps {
-		if !seen[id] && !(s.audience.Kind == identity.AudiencePublic && audience.IsAnonymousPublicSource(id)) {
+		if !seen[id] && !(selected.Kind == identity.AudiencePublic && audience.IsAnonymousPublicSource(id)) {
 			seen[id] = true
 			extra = append(extra, id)
 		}
@@ -365,8 +463,8 @@ func (s *Server) observers(now time.Time) []observer {
 	return out
 }
 
-func (s *Server) setAudienceCacheHeaders(w http.ResponseWriter) {
-	if s.audience.Kind == identity.AudiencePublic {
+func (s *Server) setAudienceCacheHeaders(w http.ResponseWriter, selected identity.Audience) {
+	if selected.Kind == identity.AudiencePublic {
 		w.Header().Set("Cache-Control", "public, max-age=30")
 		return
 	}
@@ -375,10 +473,182 @@ func (s *Server) setAudienceCacheHeaders(w http.ResponseWriter) {
 }
 
 func (s *Server) serveEventStream(w http.ResponseWriter, r *http.Request) {
-	if s.audience.Kind != identity.AudiencePublic {
+	view, ok := s.resolveRequestView(w, r)
+	if !ok {
+		return
+	}
+	if view.audience.Kind != identity.AudiencePublic {
 		w.Header().Set("Vary", "Authorization, X-GNSS-Audience")
 	}
-	s.broker.serveEvents(w, r)
+	if view.principal.ID == "" {
+		s.brokerFor(view.audience).serveEvents(w, r)
+		return
+	}
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	go s.watchReadAuthorization(ctx, cancel, view)
+	s.brokerFor(view.audience).serveEvents(w, r.WithContext(ctx))
+}
+
+func (s *Server) resolveRequestView(w http.ResponseWriter, r *http.Request) (requestView, bool) {
+	selected := s.audience
+	if values := r.Header.Values("X-GNSS-Audience"); len(values) > 1 {
+		writeError(w, http.StatusBadRequest, "multiple audience headers")
+		return requestView{}, false
+	} else if len(values) == 1 && strings.TrimSpace(values[0]) != "" {
+		var err error
+		selected, err = identity.ParseAudience(strings.TrimSpace(values[0]))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return requestView{}, false
+		}
+	}
+	resolve := func() (*state.Store, []config.Source, bool) {
+		if s.resolver != nil {
+			if st, sources, ok := s.resolver.Resolve(selected); ok {
+				return st, sources, true
+			}
+		}
+		if selected == s.audience {
+			return s.store, append([]config.Source(nil), s.sources...), s.store != nil
+		}
+		return nil, nil, false
+	}
+	if selected.Kind == identity.AudiencePublic {
+		st, sources, ok := resolve()
+		if !ok {
+			writeError(w, http.StatusServiceUnavailable, "public audience unavailable")
+			return requestView{}, false
+		}
+		return requestView{audience: selected, store: st, sources: sources}, true
+	}
+	if s.readAuth == nil {
+		if selected != s.audience {
+			writeError(w, http.StatusForbidden, "audience selection requires read authorization")
+			return requestView{}, false
+		}
+		st, sources, ok := resolve()
+		if !ok {
+			writeError(w, http.StatusServiceUnavailable, "audience state unavailable")
+			return requestView{}, false
+		}
+		return requestView{audience: selected, store: st, sources: sources}, true
+	}
+	token, err := readBearerToken(r)
+	if err != nil {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="navlistener"`)
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return requestView{}, false
+	}
+	principal, ok := s.readAuth.AuthorizeRead(r.Context(), token)
+	if !ok {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="navlistener"`)
+		writeError(w, http.StatusUnauthorized, "invalid read credential")
+		return requestView{}, false
+	}
+	if !principal.Allows(selected) {
+		writeError(w, http.StatusForbidden, "audience is not granted")
+		return requestView{}, false
+	}
+	st, sources, ok := resolve()
+	if !ok {
+		writeError(w, http.StatusNotFound, "audience has no materialized state")
+		return requestView{}, false
+	}
+	return requestView{audience: selected, store: st, sources: sources, principal: principal, token: token}, true
+}
+
+func readBearerToken(r *http.Request) (string, error) {
+	values := r.Header.Values("Authorization")
+	if len(values) != 1 {
+		return "", fmt.Errorf("one bearer authorization header is required")
+	}
+	const prefix = "Bearer "
+	if !strings.HasPrefix(values[0], prefix) {
+		return "", fmt.Errorf("bearer authorization is required")
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(values[0], prefix))
+	if token == "" || len(token) > 4096 || strings.ContainsAny(token, " \t\r\n") {
+		return "", fmt.Errorf("bearer credential is malformed")
+	}
+	return token, nil
+}
+
+func (s *Server) serveAudiences(w http.ResponseWriter, r *http.Request) {
+	if methodNotAllowedGetHead(w, r) {
+		return
+	}
+	audiences := []string{"public"}
+	principalID := ""
+	if len(r.Header.Values("Authorization")) > 0 {
+		if s.readAuth == nil {
+			writeError(w, http.StatusUnauthorized, "read authorization is not configured")
+			return
+		}
+		token, err := readBearerToken(r)
+		if err != nil {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="navlistener"`)
+			writeError(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		principal, ok := s.readAuth.AuthorizeRead(r.Context(), token)
+		if !ok {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="navlistener"`)
+			writeError(w, http.StatusUnauthorized, "invalid read credential")
+			return
+		}
+		principalID = principal.ID
+		for _, grant := range principal.AudienceGrants {
+			if s.resolver == nil {
+				if grant == s.audience {
+					audiences = append(audiences, grant.Key())
+				}
+				continue
+			}
+			if _, _, exists := s.resolver.Resolve(grant); exists {
+				audiences = append(audiences, grant.Key())
+			}
+		}
+	}
+	now := s.now()
+	data := map[string]any{"schema": schemaVersion, "audiences": audiences}
+	if principalID != "" {
+		data["principal"] = principalID
+	}
+	body, err := json.Marshal(envelope{OK: true, Time: now.UTC().Format(time.RFC3339), Data: data})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "encode failed")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if principalID == "" {
+		s.setAudienceCacheHeaders(w, identity.Audience{Kind: identity.AudiencePublic})
+	} else {
+		w.Header().Set("Cache-Control", "private, no-store")
+		w.Header().Set("Vary", "Authorization")
+	}
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(body)
+	}
+}
+
+func (s *Server) watchReadAuthorization(ctx context.Context, cancel context.CancelFunc, view requestView) {
+	ticker := time.NewTicker(s.reauthorizeEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			checkCtx, checkCancel := context.WithTimeout(ctx, 5*time.Second)
+			principal, ok := s.readAuth.AuthorizeRead(checkCtx, view.token)
+			checkCancel()
+			if !ok || !view.principal.AuthorizationEqual(principal) || !principal.Allows(view.audience) {
+				cancel()
+				return
+			}
+		}
+	}
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {

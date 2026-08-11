@@ -26,4 +26,9 @@ The context separates evidence (`CredentialTier`, `AttestationTier`) from author
 (`PublicationPolicy`). A genuine board is not automatically public, and a public contribution is
 not automatically allowed to disclose its station identity.
 
+`ReadPrincipal` is the corresponding client-side authorization result: a stable principal id,
+grant revision, and explicit canonical operator/organization/collection audience keys. Parsing
+an audience validates syntax only; `ReadPrincipal.Allows` is still required before a server
+resolves it. Public is credential-free and is never stored as a private grant.
+
 See `../../../docs/GROUPS-AND-FEDERATION.md` for the complete model and migration plan.

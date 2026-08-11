@@ -101,3 +101,29 @@ func TestInvalidationRacingLookupCannotRepopulateStaleAuthority(t *testing.T) {
 		t.Fatalf("fresh post-invalidation lookup failed, calls=%d", calls)
 	}
 }
+
+func TestReadAuthorizationIsDigestCachedAndExplicit(t *testing.T) {
+	var calls int
+	p := newProvider(time.Minute, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	p.lookupRead = func(_ context.Context, digest string) (identity.ReadPrincipal, bool, error) {
+		calls++
+		if digest == "secret" {
+			t.Fatal("plaintext read token reached lookup")
+		}
+		return identity.ReadPrincipal{ID: "viewer-a", Revision: "grant-v1", AudienceGrants: []identity.Audience{{Kind: identity.AudienceOrganization, ID: "customer-a"}}}, true, nil
+	}
+	p.now = func() time.Time { return time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC) }
+	first, ok := p.AuthorizeRead(context.Background(), "secret")
+	if !ok || !first.Allows(identity.Audience{Kind: identity.AudienceOrganization, ID: "customer-a"}) || calls != 1 {
+		t.Fatalf("read authorization = %+v/%v calls=%d", first, ok, calls)
+	}
+	first.AudienceGrants[0].ID = "mutated"
+	second, ok := p.AuthorizeRead(context.Background(), "secret")
+	if !ok || second.AudienceGrants[0].ID != "customer-a" || calls != 1 {
+		t.Fatalf("read cache was not defensive: %+v/%v calls=%d", second, ok, calls)
+	}
+	p.InvalidateAll()
+	if _, ok := p.AuthorizeRead(context.Background(), "secret"); !ok || calls != 2 {
+		t.Fatalf("read invalidation did not force lookup, calls=%d", calls)
+	}
+}

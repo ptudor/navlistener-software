@@ -125,6 +125,18 @@ type Serve struct {
 	// both [serve].addr and [store].dsn are set. Default "5m"; "0s" disables.
 	SnapshotEverys string        `toml:"snapshot_interval"`
 	SnapshotEvery  time.Duration `toml:"-"`
+
+	// Principals are standalone/bootstrap read grants. Production uses the
+	// versioned DB view instead; the two modes are mutually exclusive.
+	Principals []ServePrincipal `toml:"principal"`
+}
+
+type ServePrincipal struct {
+	ID          string                 `toml:"id"`
+	TokenSHA256 string                 `toml:"token_sha256"`
+	Audiences   []string               `toml:"audiences"`
+	Revision    string                 `toml:"revision"`
+	Principal   identity.ReadPrincipal `toml:"-"`
 }
 
 // Store is the TimescaleDB raw-nav-frame historian (docs/OUTPUT.md §4). It is
@@ -538,6 +550,9 @@ func (c *Config) finalize() error {
 		if len(c.Push.Observers) != 0 {
 			return fmt.Errorf("authorization.dsn and [[push.observer]] cannot both be set: database authorization has no config fallback")
 		}
+		if len(c.Serve.Principals) != 0 {
+			return fmt.Errorf("authorization.dsn and [[serve.principal]] cannot both be set: database authorization has no config fallback")
+		}
 	}
 
 	if err := parseDurPositive("serve.refresh_interval", c.Serve.RefreshFasts, &c.Serve.RefreshFast, 30*time.Second); err != nil {
@@ -562,6 +577,9 @@ func (c *Config) finalize() error {
 		c.Serve.SnapshotEvery = 5 * time.Minute
 	} else if c.Serve.SnapshotEvery < 0 {
 		return fmt.Errorf("serve.snapshot_interval: must be non-negative (0 disables)")
+	}
+	if err := c.finalizeServePrincipals(); err != nil {
+		return err
 	}
 
 	if err := c.finalizePush(); err != nil {
@@ -659,6 +677,36 @@ func (c *Config) finalize() error {
 		if err != nil {
 			return fmt.Errorf("ingest %q identity: %w", s.Name, err)
 		}
+	}
+	return nil
+}
+
+func (c *Config) finalizeServePrincipals() error {
+	seenTokens := make(map[string]string, len(c.Serve.Principals))
+	for i := range c.Serve.Principals {
+		raw := &c.Serve.Principals[i]
+		if len(raw.TokenSHA256) != 64 || !isHex(raw.TokenSHA256) {
+			return fmt.Errorf("serve.principal[%d] token_sha256 must be 64 hex chars", i)
+		}
+		raw.TokenSHA256 = strings.ToLower(raw.TokenSHA256)
+		if prior, ok := seenTokens[raw.TokenSHA256]; ok {
+			return fmt.Errorf("serve.principal[%d] token duplicates principal %q", i, prior)
+		}
+		seenTokens[raw.TokenSHA256] = raw.ID
+		principal := identity.ReadPrincipal{ID: raw.ID, Revision: raw.Revision}
+		for _, value := range raw.Audiences {
+			audience, err := identity.ParseAudience(value)
+			if err != nil {
+				return fmt.Errorf("serve.principal[%d]: %w", i, err)
+			}
+			principal.AudienceGrants = append(principal.AudienceGrants, audience)
+		}
+		var err error
+		principal, err = identity.NormalizeReadPrincipal(principal)
+		if err != nil {
+			return fmt.Errorf("serve.principal[%d]: %w", i, err)
+		}
+		raw.Principal = principal
 	}
 	return nil
 }

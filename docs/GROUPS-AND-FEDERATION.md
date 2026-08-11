@@ -54,6 +54,9 @@ and server-side enrollment record establish the current jurisdiction.
   publication, signal, and export-policy evidence from receipt.
 - Public and operator live state, detector state, events, cursors, snapshots, and caches are
   separated before aggregation; private input cannot change public bytes.
+- Authenticated read principals discover only their server-side grants and select physically
+  separated organization/collection state. Private feed/history/SSE responses are no-store,
+  long-lived streams are re-authorized, and scoped detectors use independent event cursors.
 - Manufacturer attestation v1/v2 formatting, signing, verification, and the bench CLI are
   implemented; v2 binds ATECC + RTC + EEPROM identities and board revision.
 - The transport-independent federation egress gate intersects receipt policy, current policy,
@@ -71,9 +74,9 @@ and server-side enrollment record establish the current jurisdiction.
 - The current CA implementation is one CA pair per deployment. That supports an Airport F
   standalone installation, but not several unrelated CA realms inside one process.
 
-The remaining collector-side gap is authenticated organization/collection read selection and
-client discovery. The shared Django schema/migrations and client applications live outside this
-repository and must consume the versioned contracts rather than inventing local group meaning.
+The shared Django schema/migrations and client applications live outside this repository and
+must consume these versioned authorization/discovery contracts rather than inventing local
+group meaning.
 
 No deployment may claim tenant privacy or safe federation until the applicable items above
 are migrated.

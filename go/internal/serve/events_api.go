@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/store"
 )
 
@@ -48,6 +49,10 @@ const (
 // events (newest first) and the total before pagination.
 func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 	if methodNotAllowedGetHead(w, r) {
+		return
+	}
+	view, ok := s.resolveRequestView(w, r)
+	if !ok {
 		return
 	}
 	if s.events == nil {
@@ -126,7 +131,7 @@ func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 		since = until.Add(-eventsMaxWindow)
 	}
 	query := store.EventQuery{
-		Audience:    s.audience.Key(),
+		Audience:    view.audience.Key(),
 		SV:          q.Get("sv"),
 		Type:        q.Get("type"),
 		MinSeverity: severity,
@@ -146,7 +151,7 @@ func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 	if events == nil {
 		events = []store.StoredEvent{}
 	}
-	s.writeEnvelope(w, now, map[string]any{
+	s.writeEnvelope(w, now, view.audience, map[string]any{
 		"schema": schemaVersion,
 		"total":  total,
 		"events": events,
@@ -158,6 +163,10 @@ func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 // time, and breakdowns by event type and constellation (docs/OUTPUT.md §2.1).
 func (s *Server) serveEventsSummary(w http.ResponseWriter, r *http.Request) {
 	if methodNotAllowedGetHead(w, r) {
+		return
+	}
+	view, ok := s.resolveRequestView(w, r)
+	if !ok {
 		return
 	}
 	if s.events == nil {
@@ -173,7 +182,7 @@ func (s *Server) serveEventsSummary(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
 	ctx, cancel := context.WithTimeout(r.Context(), eventsQueryTimeout)
 	defer cancel()
-	sum, err := s.events.SummarizeEventsForAudience(ctx, s.audience.Key(), now.Add(-time.Duration(hours)*time.Hour), now)
+	sum, err := s.events.SummarizeEventsForAudience(ctx, view.audience.Key(), now.Add(-time.Duration(hours)*time.Hour), now)
 	if err != nil {
 		s.log.Error("events summary failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "events summary failed")
@@ -187,7 +196,7 @@ func (s *Server) serveEventsSummary(w http.ResponseWriter, r *http.Request) {
 	if sum.TotalEvents == 0 {
 		idleMessage = fmt.Sprintf("No events in the last %d hours", hours)
 	}
-	s.writeEnvelope(w, now, map[string]any{
+	s.writeEnvelope(w, now, view.audience, map[string]any{
 		"schema":           schemaVersion,
 		"period_hours":     hours,
 		"total_events":     sum.TotalEvents,
@@ -201,14 +210,14 @@ func (s *Server) serveEventsSummary(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeEnvelope marshals data inside the standard v2 response envelope (docs/OUTPUT.md §0).
-func (s *Server) writeEnvelope(w http.ResponseWriter, now time.Time, data map[string]any) {
+func (s *Server) writeEnvelope(w http.ResponseWriter, now time.Time, selected identity.Audience, data map[string]any) {
 	body, err := json.Marshal(envelope{OK: true, Time: now.UTC().Format(time.RFC3339), Data: data})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "encode failed")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	s.setAudienceCacheHeaders(w)
+	s.setAudienceCacheHeaders(w, selected)
 	_, _ = w.Write(body)
 }
 

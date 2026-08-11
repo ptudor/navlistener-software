@@ -170,6 +170,9 @@ func (c ObserverContext) Normalize() (ObserverContext, error) {
 		}
 	}
 	seenCollections := make(map[string]bool, len(c.CollectionIDs))
+	if len(c.CollectionIDs) > 64 {
+		return c, fmt.Errorf("collection membership count %d exceeds 64", len(c.CollectionIDs))
+	}
 	for _, id := range c.CollectionIDs {
 		if !ValidScopeID(id) {
 			return c, fmt.Errorf("collection id %q is invalid", id)

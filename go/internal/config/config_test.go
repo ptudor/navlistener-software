@@ -158,6 +158,33 @@ func TestDatabaseAuthorizationIsBoundedAndHasNoStaticFallback(t *testing.T) {
 	}
 }
 
+func TestStaticReadPrincipalsRequireExplicitPrivateAudienceGrants(t *testing.T) {
+	c := defaults()
+	c.Serve.Principals = []ServePrincipal{{
+		ID: "viewer-a", TokenSHA256: goodHash, Revision: "grant-v1",
+		Audiences: []string{"organization:customer-a", "collection:fleet-a"},
+	}}
+	if err := c.finalize(); err != nil {
+		t.Fatalf("valid static read principal rejected: %v", err)
+	}
+	if !c.Serve.Principals[0].Principal.Allows(identity.Audience{Kind: identity.AudienceCollection, ID: "fleet-a"}) {
+		t.Fatal("static read audience was not normalized")
+	}
+
+	public := defaults()
+	public.Serve.Principals = []ServePrincipal{{ID: "viewer-a", TokenSHA256: goodHash, Revision: "grant-v1", Audiences: []string{"public"}}}
+	if err := public.finalize(); err == nil {
+		t.Fatal("public stored as a private read grant")
+	}
+
+	database := defaults()
+	database.Authorization.DSN = "postgres://navlistener:secret@localhost/controlplane"
+	database.Serve.Principals = c.Serve.Principals
+	if err := database.finalize(); err == nil {
+		t.Fatal("database read authorization accepted a static fallback")
+	}
+}
+
 // TestLeapSecondsValidated guards state.leap_seconds is an interim override
 // for the compiled-in ΔtLS default; unset (0) must pass validation as a no-op, an
 // ICD-plausible value must pass, and an out-of-band value (a fat-fingered config,

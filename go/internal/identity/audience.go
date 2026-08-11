@@ -24,6 +24,68 @@ type Audience struct {
 	ID   string
 }
 
+// ReadPrincipal is the server-resolved identity behind a read bearer token.
+// AudienceGrants are authorization output, never trusted request claims.
+type ReadPrincipal struct {
+	ID             string
+	AudienceGrants []Audience
+	Revision       string
+}
+
+// NormalizeReadPrincipal validates a control-plane/config principal and rejects
+// redundant public grants. Public is always discoverable without a credential;
+// every stored grant is therefore a private authorization boundary.
+func NormalizeReadPrincipal(p ReadPrincipal) (ReadPrincipal, error) {
+	if !ValidScopeID(p.ID) {
+		return p, fmt.Errorf("read principal id %q is invalid", p.ID)
+	}
+	if !ValidScopeID(p.Revision) {
+		return p, fmt.Errorf("read principal revision %q is invalid", p.Revision)
+	}
+	if len(p.AudienceGrants) == 0 {
+		return p, fmt.Errorf("read principal requires at least one private audience grant")
+	}
+	seen := make(map[string]bool, len(p.AudienceGrants))
+	for _, grant := range p.AudienceGrants {
+		key := grant.Key()
+		parsed, err := ParseAudience(key)
+		if err != nil || parsed != grant || grant.Kind == AudiencePublic {
+			return p, fmt.Errorf("read audience grant %q is invalid or public", key)
+		}
+		if seen[key] {
+			return p, fmt.Errorf("read audience grant %q is duplicated", key)
+		}
+		seen[key] = true
+	}
+	return p, nil
+}
+
+// Allows reports whether the principal was explicitly granted a private
+// audience. Public requests do not need this method or a principal.
+func (p ReadPrincipal) Allows(a Audience) bool {
+	if a.Kind == AudiencePublic {
+		return true
+	}
+	for _, grant := range p.AudienceGrants {
+		if grant == a {
+			return true
+		}
+	}
+	return false
+}
+
+func (p ReadPrincipal) AuthorizationEqual(other ReadPrincipal) bool {
+	if p.ID != other.ID || p.Revision != other.Revision || len(p.AudienceGrants) != len(other.AudienceGrants) {
+		return false
+	}
+	for i := range p.AudienceGrants {
+		if p.AudienceGrants[i] != other.AudienceGrants[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // ParseAudience parses the canonical public or kind:id representation. Parsing
 // validates syntax only; read-side authentication must separately grant it.
 func ParseAudience(s string) (Audience, error) {
