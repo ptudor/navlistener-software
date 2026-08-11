@@ -40,6 +40,10 @@ final class StationStore {
         return observers.filter { selected.contains($0.id) }
     }
 
+    func activeEvents(for stationID: String) -> [GNSSAPIEvent] {
+        activeEvents.values.filter { $0.stationID == stationID }
+    }
+
     var rollupHealth: HealthState {
         HealthState.rollup(selectedStationIDs.map(health(for:)))
     }
@@ -67,7 +71,7 @@ final class StationStore {
 
         pollTask = Task { [weak self] in
             guard let self else { return }
-            await restoreCache()
+            await restoreCache(baseURL: baseURL)
             while !Task.isCancelled {
                 await refresh(baseURL: baseURL)
                 do {
@@ -100,6 +104,7 @@ final class StationStore {
             guard let payload = envelope.data else { throw FeedError.missingData }
             let snapshot = ObserversSnapshot(
                 receivedAt: Date(),
+                serverBaseURL: baseURL.absoluteString,
                 serverTime: envelope.time,
                 payload: payload
             )
@@ -125,10 +130,11 @@ final class StationStore {
         }
     }
 
-    private func restoreCache() async {
+    private func restoreCache(baseURL: URL) async {
         guard observers.isEmpty else { return }
         do {
-            if let snapshot = try await cache.loadObservers() {
+            if let snapshot = try await cache.loadObservers(),
+               snapshot.serverBaseURL == baseURL.absoluteString {
                 apply(snapshot, cached: true)
             }
         } catch {

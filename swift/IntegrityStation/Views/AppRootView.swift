@@ -1,25 +1,19 @@
 import SwiftUI
 
 struct AppRootView: View {
+    @Environment(AppController.self) private var controller
+
     var body: some View {
         TabView {
-            ContentUnavailableView(
-                String(localized: "stations.empty.title"),
-                systemImage: "antenna.radiowaves.left.and.right",
-                description: Text("stations.empty.description")
-            )
-            .tabItem {
-                Label(String(localized: "stations.title"), systemImage: "antenna.radiowaves.left.and.right")
-            }
+            StationsView()
+                .tabItem {
+                    Label(String(localized: "stations.title"), systemImage: "antenna.radiowaves.left.and.right")
+                }
 
-            ContentUnavailableView(
-                String(localized: "events.empty.title"),
-                systemImage: "waveform.path.ecg",
-                description: Text("events.empty.description")
-            )
-            .tabItem {
-                Label(String(localized: "events.title"), systemImage: "waveform.path.ecg")
-            }
+            EventsView()
+                .tabItem {
+                    Label(String(localized: "events.title"), systemImage: "waveform.path.ecg")
+                }
 
             #if os(iOS)
             SettingsView()
@@ -29,38 +23,47 @@ struct AppRootView: View {
             #endif
         }
         .tint(.accentColor)
-    }
-}
-
-struct SettingsView: View {
-    var body: some View {
-        Form {
-            Section(String(localized: "settings.server.section")) {
-                LabeledContent(String(localized: "settings.server.url"), value: "https://collector.invalid")
-            }
-
-            Section(String(localized: "settings.about.section")) {
-                LabeledContent(String(localized: "settings.about.name"), value: "Integrity Station")
-                LabeledContent(String(localized: "settings.about.version"), value: "0.1")
-            }
-        }
-        .formStyle(.grouped)
-        .navigationTitle(Text("settings.title"))
+        .preferredColorScheme(controller.settings.appearance.colorScheme)
+        .task { controller.start() }
     }
 }
 
 #if os(macOS)
 struct MenuBarStatusView: View {
+    @Environment(AppController.self) private var controller
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label(String(localized: "menu_bar.unknown"), systemImage: "circle.dotted")
-                .font(.headline)
-            Text("menu_bar.configure")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            VStack(alignment: .leading, spacing: 10) {
+                HealthLabel(state: controller.store.rollupHealth)
+                    .font(.headline)
+
+                if controller.settings.stationIDs.isEmpty {
+                    Text("menu_bar.configure")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Divider()
+                    ForEach(controller.settings.stationIDs, id: \.self) { stationID in
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(StationPalette.health(controller.store.health(for: stationID)))
+                                .frame(width: 8, height: 8)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(controller.settings.label(for: stationID) ?? stationID)
+                                    .font(.caption.weight(.semibold))
+                                Text(StationFormat.age(seconds: controller.store.currentLastSeenAge(for: stationID)))
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                    }
+                }
+            }
+            .padding(14)
+            .frame(width: 290, alignment: .leading)
         }
-        .padding(14)
-        .frame(width: 280, alignment: .leading)
     }
 }
 #endif

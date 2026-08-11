@@ -84,6 +84,7 @@ func observersSnapshotCacheRoundTrips() async throws {
     let payload = try JSONDecoder().decode(ObserversPayload.self, from: json)
     let snapshot = ObserversSnapshot(
         receivedAt: Date(timeIntervalSince1970: 1_786_388_400),
+        serverBaseURL: "https://collector.invalid",
         serverTime: "2026-08-10T12:00:00Z",
         payload: payload
     )
@@ -92,6 +93,7 @@ func observersSnapshotCacheRoundTrips() async throws {
     try await cache.saveObservers(snapshot)
     let loaded = try #require(try await cache.loadObservers())
     #expect(loaded.payload.schema == "2.0")
+    #expect(loaded.serverBaseURL == "https://collector.invalid")
     #expect(loaded.payload.observers?.first?.id == "station-1")
     #expect(loaded.payload.observers?.first?.hwVersion == nil)
 }
