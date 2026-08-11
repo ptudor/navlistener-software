@@ -1,0 +1,51 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "events.empty.description" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Live integrity events will appear here." } } }
+    },
+    "events.empty.title" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "No station events" } } }
+    },
+    "events.title" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Events" } } }
+    },
+    "menu_bar.configure" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Choose a collector and add a station in the app." } } }
+    },
+    "menu_bar.title" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Integrity Station" } } }
+    },
+    "menu_bar.unknown" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Station status unknown" } } }
+    },
+    "settings.about.name" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Name" } } }
+    },
+    "settings.about.section" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "About" } } }
+    },
+    "settings.about.version" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Version" } } }
+    },
+    "settings.server.section" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Server" } } }
+    },
+    "settings.server.url" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Collector URL" } } }
+    },
+    "settings.title" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Settings" } } }
+    },
+    "stations.empty.description" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Add a station to see its signal and RF health." } } }
+    },
+    "stations.empty.title" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "No stations yet" } } }
+    },
+    "stations.title" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Stations" } } }
+    }
+  },
+  "version" : "1.0"
+}

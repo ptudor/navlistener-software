@@ -1,0 +1,105 @@
+name: IntegrityStation
+
+# XcodeGen is the source of truth. The generated project and Info.plists are
+# ignored; both platform targets compile the same SwiftUI source tree.
+options:
+  bundleIdPrefix: net.intsat
+  deploymentTarget:
+    iOS: "18.0"
+    macOS: "15.0"
+  xcodeVersion: "26.0"
+  createIntermediateGroups: true
+  developmentLanguage: en
+
+settings:
+  base:
+    SWIFT_VERSION: "6"
+    SWIFT_STRICT_CONCURRENCY: complete
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    LOCALIZATION_PREFERS_STRING_CATALOGS: true
+
+targets:
+  IntegrityStation:
+    type: application
+    platform: iOS
+    sources:
+      - path: IntegrityStation
+        excludes:
+          - Info-iOS.plist
+          - Info-macOS.plist
+    info:
+      path: IntegrityStation/Info-iOS.plist
+      properties:
+        CFBundleDisplayName: Integrity Station
+        LSApplicationCategoryType: public.app-category.utilities
+        ITSAppUsesNonExemptEncryption: false
+        UILaunchScreen: {}
+        NSLocalNetworkUsageDescription: Integrity Station reads status from your GNSS collector on the local network.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.intsat.station
+        PRODUCT_NAME: Integrity Station
+        PRODUCT_MODULE_NAME: IntegrityStation
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+
+  IntegrityStationMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: IntegrityStation
+        excludes:
+          - Info-iOS.plist
+          - Info-macOS.plist
+    info:
+      path: IntegrityStation/Info-macOS.plist
+      properties:
+        CFBundleDisplayName: Integrity Station
+        LSApplicationCategoryType: public.app-category.utilities
+        ITSAppUsesNonExemptEncryption: false
+        NSLocalNetworkUsageDescription: Integrity Station reads status from your GNSS collector on the local network.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.intsat.station
+        PRODUCT_NAME: Integrity Station
+        PRODUCT_MODULE_NAME: IntegrityStation
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+        ENABLE_HARDENED_RUNTIME: true
+
+  IntegrityStationTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: IntegrityStationTests
+    dependencies:
+      - target: IntegrityStationMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.intsat.station.tests
+        GENERATE_INFOPLIST_FILE: true
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Integrity Station.app/Contents/MacOS/Integrity Station"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+schemes:
+  IntegrityStation:
+    build:
+      targets:
+        IntegrityStation: all
+
+  IntegrityStationMac:
+    build:
+      targets:
+        IntegrityStationMac: all
+        IntegrityStationTests: [test]
+    test:
+      gatherCoverageData: true
+      targets:
+        - IntegrityStationTests

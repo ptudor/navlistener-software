@@ -21,6 +21,12 @@ coverage.*
 /esp32/build/
 /esp32/components/*/test/build/
 
+# Swift/XcodeGen output — project.yml is the source of truth.
+/swift/*.xcodeproj/
+/swift/build/
+/swift/IntegrityStation/Info-iOS.plist
+/swift/IntegrityStation/Info-macOS.plist
+
 # GPL-quarantined bridge build artifact (out-of-process; never linked into the core)
 /galmon-bridge/galmon-bridge
 
