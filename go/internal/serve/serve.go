@@ -8,6 +8,7 @@ package serve
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -673,6 +674,7 @@ func (s *Server) serveAudiences(w http.ResponseWriter, r *http.Request) {
 	}
 	audiences := []string{"public"}
 	principalID := ""
+	principalRevision := ""
 	if len(r.Header.Values("Authorization")) > 0 {
 		if s.readAuth == nil {
 			writeError(w, http.StatusUnauthorized, "read authorization is not configured")
@@ -691,6 +693,7 @@ func (s *Server) serveAudiences(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		principalID = principal.ID
+		principalRevision = principal.Revision
 		for _, grant := range principal.AudienceGrants {
 			if s.resolver == nil {
 				if grant == s.audience {
@@ -704,7 +707,11 @@ func (s *Server) serveAudiences(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	now := s.now()
-	data := map[string]any{"schema": schemaVersion, "audiences": audiences}
+	data := map[string]any{
+		"schema":    schemaVersion,
+		"audiences": audiences,
+		"revision":  s.discoveryRevision(principalRevision, audiences),
+	}
 	if principalID != "" {
 		data["principal"] = principalID
 	}
@@ -723,6 +730,23 @@ func (s *Server) serveAudiences(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(body)
 	}
+}
+
+// discoveryRevision is an opaque client cache boundary. It changes when the
+// read principal revision, visible grant set, collector process epoch, or any
+// selected audience's current-policy epoch changes. Exposing the hash rather
+// than its inputs avoids turning policy timing into new read-side metadata.
+func (s *Server) discoveryRevision(principalRevision string, audiences []string) string {
+	keys := append([]string(nil), audiences...)
+	sort.Strings(keys)
+	var material strings.Builder
+	material.WriteString(principalRevision)
+	for _, key := range keys {
+		generation, visibleAt := s.policyEpochs.Current(key)
+		fmt.Fprintf(&material, "\x00%s\x00%d\x00%d", key, generation, visibleAt.UnixNano())
+	}
+	sum := sha256.Sum256([]byte(material.String()))
+	return fmt.Sprintf("%x", sum)
 }
 
 func (s *Server) watchReadAuthorization(ctx context.Context, cancel context.CancelFunc, view requestView) {

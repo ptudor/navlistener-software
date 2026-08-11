@@ -176,8 +176,36 @@ func TestAuthenticatedAudienceSelectionNeverServesAnOperatorSuperset(t *testing.
 	s.http.Handler.ServeHTTP(discoveryRR, discovery)
 	body := discoveryRR.Body.String()
 	if discoveryRR.Code != http.StatusOK || !strings.Contains(body, "organization:customer-a") ||
-		!strings.Contains(body, "collection:fleet-a") || strings.Contains(body, "customer-b") {
+		!strings.Contains(body, "collection:fleet-a") || !strings.Contains(body, `"revision":"`) ||
+		strings.Contains(body, "customer-b") {
 		t.Fatalf("audience discovery = status %d body %s", discoveryRR.Code, body)
+	}
+	var discovered struct {
+		Data struct {
+			Revision string `json:"revision"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(discoveryRR.Body.Bytes(), &discovered); err != nil || len(discovered.Data.Revision) != 64 {
+		t.Fatalf("audience discovery revision is not opaque SHA-256: %v body=%s", err, body)
+	}
+	s.policyEpochs.Advance([]identity.Audience{{Kind: identity.AudienceOrganization, ID: "customer-a"}}, now.Add(time.Second))
+	revisedDiscovery := httptest.NewRequest(http.MethodGet, "/gnss/api/v2/audiences", nil)
+	revisedDiscovery.Header.Set("Authorization", "Bearer token-a")
+	revisedRR := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(revisedRR, revisedDiscovery)
+	var revised struct {
+		Data struct {
+			Revision string `json:"revision"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(revisedRR.Body.Bytes(), &revised); err != nil || revised.Data.Revision == discovered.Data.Revision {
+		t.Fatalf("policy epoch did not advance discovery revision: %v before=%q after=%q", err, discovered.Data.Revision, revised.Data.Revision)
+	}
+	publicDiscovery := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(publicDiscovery, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/audiences", nil))
+	if publicDiscovery.Code != http.StatusOK || !strings.Contains(publicDiscovery.Body.String(), `"audiences":["public"]`) ||
+		strings.Contains(publicDiscovery.Body.String(), `"principal"`) || !strings.Contains(publicDiscovery.Body.String(), `"revision":"`) {
+		t.Fatalf("anonymous audience discovery leaked auth metadata: status %d body %s", publicDiscovery.Code, publicDiscovery.Body.String())
 	}
 
 	eventReq := httptest.NewRequest(http.MethodGet, "/gnss/api/events", nil)

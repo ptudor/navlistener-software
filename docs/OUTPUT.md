@@ -42,10 +42,18 @@ It is the output standard, designed here. The existing clients (intsat, mapintsa
 
 ### 0.1 Audience discovery and selection
 
-`GET /gnss/api/v2/audiences` returns `public` without credentials. With
+`GET /gnss/api/v2/audiences` returns `public` and its opaque policy revision without
+credentials. With
 `Authorization: Bearer <read-token>`, it additionally returns only the server-resolved,
 currently materialized `operator:<instance>`, `organization:<id>`, and `collection:<id>`
-grants for that principal. Ingest credentials are not read credentials.
+grants for that principal, plus the principal id and an opaque discovery `revision`. The
+revision covers the read-principal revision, visible grant set, process boundary, and current
+policy epoch of every returned audience. Ingest credentials are not read credentials. An
+authenticated example is:
+
+```json
+{"ok":true,"time":"2026-08-10T12:00:00Z","data":{"schema":"2.0","principal":"viewer-a","revision":"8b66e5b4b193719af7cbfa16e0613a555cf9d0f110dccec012fd6057793d6e5b","audiences":["public","organization:customer-a"]}}
+```
 
 A client selects one returned key with `X-GNSS-Audience` on every feed, events query, and SSE
 request. The header is a selector, not authority: the collector validates it against the
@@ -56,7 +64,9 @@ for client filtering. Every feed carries the effective key as `data.audience`.
 Public responses remain shared-cacheable. Every authenticated response sends
 `Cache-Control: private, no-store` and `Vary: Authorization, X-GNSS-Audience`; private bodies
 are rendered outside the shared public cache. Clients partition local caches and
-`Last-Event-ID` by `(server, principal, audience)` and erase them on logout or `401`/`403`.
+`Last-Event-ID` by `(server, principal, audience, authorization revision)` and erase the
+applicable private cache family on logout, revision change, audience loss, server/principal
+change, or `401`/`403`.
 
 Historical event windows are additionally clamped to the collector's current policy epoch.
 The conservative epoch starts at process boot and advances for every audience affected by an
@@ -292,7 +302,7 @@ default every 60 s), `event: resolved`; reconnect via `Last-Event-ID` replays fr
 The query, summary, live detector, SSE ring, and `Last-Event-ID` cursor are all scoped to the
 server-resolved audience. Each audience has an independent monotone sequence. Operator-only
 events therefore create no observable gaps in public ids, and clients partition reconnect
-cursors by `(server, principal, audience)`.
+cursors by `(server, principal, audience, authorization revision)`.
 
 Event types and their thresholds/severities are defined once, in `docs/INTEGRITY.md §2/§5` —
 this section is the wire shape only.

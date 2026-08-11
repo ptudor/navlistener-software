@@ -81,9 +81,9 @@ sources whose server-resolved policy grants public aggregate use; private observ
 enter it. `audience = "operator"` selects the all-source local operations view and must be
 protected by an authenticated private front. When database authorization or validated
 `[[serve.principal]]` bootstrap rows are present, `/gnss/api/v2/audiences` discovers the
-principal's server-side grants and `X-GNSS-Audience` selects one. Selection never creates a view
-and never widens authority; the view must already have been materialized from trusted frame
-ownership/membership.
+principal's server-side grants and opaque authorization/policy revision, and `X-GNSS-Audience`
+selects one. Selection never creates a view and never widens authority; the view must already
+have been materialized from trusted frame ownership/membership.
 
 Static read rows store only SHA-256 token digests and are mutually exclusive with
 `[authorization].dsn`. Their `audiences` values must be explicit canonical private keys; public

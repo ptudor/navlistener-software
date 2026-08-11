@@ -30,7 +30,7 @@ when `[serve].addr` is set.
 
 | Path | What it serves |
 |---|---|
-| `GET /gnss/api/v2/audiences` | Public plus the authenticated principal's materialized audience grants. |
+| `GET /gnss/api/v2/audiences` | Public plus the authenticated principal id, opaque authorization/policy revision, and materialized audience grants. |
 | `GET /gnss/api/v2/svs` | Per-satellite×signal live state — the main feed. |
 | `GET /gnss/api/v2/global` | Fleet-wide counts, per-constellation totals, leap seconds. |
 | `GET /gnss/api/v2/observers` | Station list (only `remark` from config — never dial addresses). |
