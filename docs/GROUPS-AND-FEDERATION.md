@@ -61,6 +61,12 @@ and server-side enrollment record establish the current jurisdiction.
 - Authenticated read principals discover only their server-side grants and select physically
   separated organization/collection state. Private feed/history/SSE responses are no-store,
   long-lived streams are re-authorized, and scoped detectors use independent event cursors.
+- Audience discovery exposes an opaque revision over the read authorization, materialized
+  grant set, process boundary, and current audience-policy epochs. Integrity Station stores
+  the collector URL/read token in Keychain, accepts only discovered audiences, applies the
+  selector to polls/history/SSE, and partitions snapshots, cursors, station bookmarks, and
+  labels by server/principal/audience/revision. `401`, `403`, audience loss, revision change,
+  logout, and server/principal changes erase the applicable private cache family.
 - A changed active ingest context emits an ordered scope barrier. Every audience touched by the
   old context is conservatively reset and rebuilt from post-change receipts; detectors re-seed,
   SSE replay/clients cross the policy epoch, pending stale events are discarded, historical
@@ -75,17 +81,20 @@ and server-side enrollment record establish the current jurisdiction.
 
 ### 1.2 Baseline gaps identified by this contract
 
-- There is no named server-side collection/group. The planned Swift/Kotlin clients' “My
-  Stations” lists are local bookmarks, not authorization boundaries.
-- The hardware document says all three factory identifiers are recorded, but the shared
-  `Device` row has no separate EEPROM/board EUI-64. Manufacturer attestation v1 binds the
-  ATECC serial, RTC EUI-64, and board revision, but not the EEPROM EUI-64.
+- The collector now has named collection audiences and accepts collection memberships only
+  from its trusted authorization contract, but the external shared Django control plane still
+  needs the authoritative collection/membership/publication/export schema and migrations.
+  Integrity Station's “My Stations” remains a scoped presentation preference, never authority.
+- Manufacturer attestation v2 binds ATECC + RTC + EEPROM identities and board revision, but
+  the external shared `Device` schema/firmware enrollment path still needs its separate board
+  EUI-64 migration. V1 remains explicitly partial evidence.
 - The current CA implementation is one CA pair per deployment. That supports an Airport F
   standalone installation, but not several unrelated CA realms inside one process.
 
-The shared Django schema/migrations and client applications live outside this repository and
-must consume these versioned authorization/discovery contracts rather than inventing local
-group meaning.
+The shared Django schema/migrations and Kotlin/.NET/web clients live outside this repository
+and must consume these versioned authorization/discovery contracts rather than inventing local
+group meaning. The repo-local Swift Integrity Station is the reference operator-client
+implementation; it does not make the other client migrations implicit.
 
 No deployment may claim tenant privacy or safe federation until the applicable items above
 are migrated.
@@ -433,6 +442,10 @@ Cache keys include audience and authorization policy revision. Shared proxy cach
 cache a private response as public; private responses use `Cache-Control: private` and `Vary`
 on the authorization/audience selector. Anonymous public responses remain cacheable.
 
+Discovery includes an opaque authorization/policy `revision`; clients
+must treat a revision change as an authorization boundary, discard that principal's private
+payloads/cursors for the server, and create the new cache partition before reading data.
+
 **Event ids and SSE cursors are audience-scoped.** The historian may keep one
 internal BIGSERIAL, but the served event `id` / `Last-Event-ID` cursor must be per-audience
 (a per-audience monotone counter or an opaque cursor mapping). A single visible sequence
@@ -463,7 +476,9 @@ Swift, Kotlin, .NET, and web clients share these rules:
 - Include the selected audience on polling, history, station lookup, and SSE reconnect.
 - Treat `403` as loss of authorization, not an empty group; erase private cached payloads on
   logout, revocation, server change, or audience loss.
-- Partition last-good caches and SSE cursors by `(server, principal, audience)`.
+- Partition last-good caches and SSE cursors by `(server, principal, audience, authorization
+  revision)`; the first three fields are the stable identity and the revision prevents reuse
+  across policy changes.
 - Certificate-pin or explicitly trust the on-site CA for standalone deployments according to
   platform policy; never disable TLS verification in release builds.
 
@@ -565,8 +580,10 @@ Implementation is staged; each stage has a safe compatibility mode:
    holds literally only with audience-scoped event cursors).
 6. **Read authorization:** public audience, authenticated org/collection audiences, cache
    separation, redacted station/search/event/SSE consistency.
-7. **Clients:** authenticated discovery and selection, secure credentials, audience-partitioned
-   caches/cursors, standalone URL/CA support.
+7. **Clients:** the repo-local Swift Integrity Station implements authenticated discovery and
+   selection, Keychain credentials, revisioned audience cache/cursor partitions, scoped local
+   preferences, authorization-loss erasure, and system-trusted standalone URL/CA support.
+   Kotlin/.NET/web parity remains in their owning repositories.
 8. **Federation egress before federation transport:** export-grant evaluation and audit are
    implemented/tested before the first peer can receive a frame.
 9. **Federation transport/inbound trust:** proceed with `FEDERATION.md` P10 using the egress
@@ -595,8 +612,8 @@ Tests and review must keep these statements true:
 8. Anonymized federation data cannot be presented as end-to-end hardware signed.
 9. Revocation closes active ingest/read/peer authority within the documented cache bound.
 10. Historical rows preserve the identity/enrollment/policy decision at receipt.
-11. Public caches cannot contain private responses; private caches cannot cross principals or
-    audiences.
+11. Public caches cannot contain private responses; private caches cannot cross principals,
+    audiences, or authorization revisions.
 12. Manufacturer attestation and operational CA issuance remain separate trust roots.
 13. Public station metadata tiers are display precision, not anonymity: any publishing
     station is locatable from its served per-SV geometry, and no tier, doc, or UI may claim

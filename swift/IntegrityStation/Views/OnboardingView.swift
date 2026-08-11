@@ -3,6 +3,7 @@ import SwiftUI
 struct OnboardingView: View {
     @Environment(AppController.self) private var controller
     @State private var serverDraft = ""
+    @State private var tokenDraft = ""
     @State private var manualStationID = ""
     @State private var validationMessage: String?
 
@@ -32,17 +33,46 @@ struct OnboardingView: View {
                     #endif
                     .font(.body.monospaced())
 
+                    SecureField(
+                        String(localized: "settings.server.read_token"),
+                        text: $tokenDraft
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .font(.body.monospaced())
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    #endif
+                    if controller.hasStoredCredential && tokenDraft.isEmpty {
+                        Text("settings.server.credential_saved")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("settings.server.credential_note")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     Button {
-                        connect()
+                        Task { await connect() }
                     } label: {
                         Label(String(localized: "onboarding.connect"), systemImage: "arrow.right.circle.fill")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(serverDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(
+                        serverDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || controller.isConnecting
+                    )
+
+                    if controller.isConnecting {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                    }
                 }
 
                 if controller.serverURL != nil {
+                    audienceCard
+
                     InstrumentCard("onboarding.station.title", systemImage: "antenna.radiowaves.left.and.right") {
                         if controller.store.observers.isEmpty {
                             Text("onboarding.station.no_discovery")
@@ -84,6 +114,8 @@ struct OnboardingView: View {
 
                 if let validationMessage {
                     FeedErrorBanner(message: validationMessage)
+                } else if let error = controller.connectionError {
+                    FeedErrorBanner(message: error)
                 } else if let error = controller.store.errorMessage {
                     FeedErrorBanner(message: error)
                 }
@@ -97,9 +129,50 @@ struct OnboardingView: View {
         }
     }
 
-    private func connect() {
+    @ViewBuilder
+    private var audienceCard: some View {
+        InstrumentCard("settings.audience.section", systemImage: "person.2.badge.key") {
+            Picker(
+                String(localized: "settings.audience.selection"),
+                selection: Binding(
+                    get: { controller.selectedAudience },
+                    set: { audience in Task { await select(audience) } }
+                )
+            ) {
+                ForEach(controller.availableAudiences) { audience in
+                    Text(audience.rawValue).tag(audience)
+                }
+            }
+            .pickerStyle(.menu)
+
+            LabeledContent(
+                String(localized: "settings.audience.principal"),
+                value: controller.principalID
+            )
+            .font(.caption.monospaced())
+            Text("settings.audience.note")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func connect() async {
         do {
-            try controller.connect(to: serverDraft)
+            let enteredToken = tokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+            try await controller.connect(
+                to: serverDraft,
+                readToken: enteredToken.isEmpty ? nil : enteredToken
+            )
+            tokenDraft = ""
+            validationMessage = nil
+        } catch {
+            validationMessage = error.localizedDescription
+        }
+    }
+
+    private func select(_ audience: ReadAudience) async {
+        do {
+            try await controller.selectAudience(audience)
             validationMessage = nil
         } catch {
             validationMessage = error.localizedDescription

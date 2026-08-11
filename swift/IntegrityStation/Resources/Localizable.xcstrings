@@ -1,11 +1,20 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "error.audience_lost" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "This audience is no longer granted. Sign in again or choose an available audience." } } }
+    },
+    "error.forbidden" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "The collector no longer grants this audience." } } }
+    },
     "error.http" : {
       "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Collector returned HTTP %d." } } }
     },
     "error.invalid_base_url" : {
       "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Enter a valid HTTP or HTTPS collector URL." } } }
+    },
+    "error.invalid_credential" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Enter a valid read-side token without spaces. Do not use a feeder credential." } } }
     },
     "error.invalid_response" : {
       "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Collector returned an invalid response." } } }
@@ -16,8 +25,17 @@
     "error.server" : {
       "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Collector reported an error." } } }
     },
+    "error.secure_storage" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Integrity Station could not access the protected connection in Keychain." } } }
+    },
+    "error.secure_storage_value" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "The protected connection value is invalid." } } }
+    },
     "error.stream_ended" : {
       "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Live event stream ended. Reconnecting." } } }
+    },
+    "error.unauthorized" : {
+      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "The read credential is missing, expired, or revoked." } } }
     },
     "events.empty.description" : {
       "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Live integrity events will appear here." } } }

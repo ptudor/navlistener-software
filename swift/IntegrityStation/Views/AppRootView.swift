@@ -24,7 +24,7 @@ struct AppRootView: View {
         }
         .tint(.accentColor)
         .preferredColorScheme(controller.settings.appearance.colorScheme)
-        .task { controller.start() }
+        .task { await controller.start() }
     }
 }
 

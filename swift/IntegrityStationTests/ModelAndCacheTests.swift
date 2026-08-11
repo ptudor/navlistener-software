@@ -10,6 +10,7 @@ func observerDecodingKeepsAbsentFieldsUnknown() throws {
       "time": "2026-08-10T12:00:00Z",
       "data": {
         "schema": "2.0",
+        "audience": "public",
         "observers": [{
           "id": "00-04-a3-ff-fe-12-34-56",
           "remark": "roof",
@@ -79,21 +80,127 @@ func observersSnapshotCacheRoundTrips() async throws {
     defer { try? FileManager.default.removeItem(at: directory) }
 
     let json = Data(#"""
-    {"schema":"2.0","observers":[{"id":"station-1","remark":"ridge"}]}
+    {"schema":"2.0","audience":"organization:customer-a","observers":[{"id":"station-1","remark":"ridge"}]}
     """#.utf8)
     let payload = try JSONDecoder().decode(ObserversPayload.self, from: json)
+    let audience = try #require(ReadAudience("organization:customer-a"))
+    let key = AudienceCacheKey(
+        server: "https://collector.invalid",
+        principal: "viewer-a",
+        audience: audience,
+        authorizationRevision: "grant-v1"
+    )
     let snapshot = ObserversSnapshot(
         receivedAt: Date(timeIntervalSince1970: 1_786_388_400),
-        serverBaseURL: "https://collector.invalid",
+        scope: key,
         serverTime: "2026-08-10T12:00:00Z",
         payload: payload
     )
     let cache = SnapshotCache(directory: directory)
 
-    try await cache.saveObservers(snapshot)
-    let loaded = try #require(try await cache.loadObservers())
+    try await cache.saveObservers(snapshot, for: key)
+    try await cache.saveCursor("private-cursor-12", for: key)
+    let loaded = try #require(try await cache.loadObservers(for: key))
     #expect(loaded.payload.schema == "2.0")
-    #expect(loaded.serverBaseURL == "https://collector.invalid")
+    #expect(loaded.scope == key)
     #expect(loaded.payload.observers?.first?.id == "station-1")
     #expect(loaded.payload.observers?.first?.hwVersion == nil)
+    #expect(try await cache.loadCursor(for: key) == "private-cursor-12")
+
+    let otherKey = AudienceCacheKey(
+        server: key.server,
+        principal: AudienceCacheKey.anonymousPrincipal,
+        audience: .publicAudience,
+        authorizationRevision: "public"
+    )
+    #expect(try await cache.loadObservers(for: otherKey) == nil)
+    #expect(try await cache.loadCursor(for: otherKey) == nil)
+
+    let revisedKey = AudienceCacheKey(
+        server: key.server,
+        principal: key.principal,
+        audience: audience,
+        authorizationRevision: "grant-v2"
+    )
+    #expect(try await cache.loadObservers(for: revisedKey) == nil)
+    #expect(try await cache.loadCursor(for: revisedKey) == nil)
+
+    let publicPayload = try JSONDecoder().decode(
+        ObserversPayload.self,
+        from: Data(#"{"schema":"2.0","audience":"public","observers":[{"id":"public-station"}]}"#.utf8)
+    )
+    try await cache.saveObservers(
+        ObserversSnapshot(
+            receivedAt: snapshot.receivedAt,
+            scope: otherKey,
+            serverTime: snapshot.serverTime,
+            payload: publicPayload
+        ),
+        for: otherKey
+    )
+    try await cache.clearPrivate(forServer: key.server, principal: key.principal)
+    #expect(try await cache.loadObservers(for: key) == nil)
+    #expect(try await cache.loadObservers(for: otherKey)?.payload.observers?.first?.id == "public-station")
+}
+
+@Test
+func audienceKeysAreCanonicalAndSessionsFailClosed() throws {
+    #expect(ReadAudience("public") == .publicAudience)
+    #expect(ReadAudience("organization:customer-a")?.kind == .organization)
+    #expect(ReadAudience("collection:airport:f")?.kind == .collection)
+    #expect(ReadAudience("customer-a") == nil)
+    #expect(ReadAudience("organization:") == nil)
+    #expect(ReadAudience("unknown:customer-a") == nil)
+
+    let baseURL = try #require(URL(string: "https://collector.invalid"))
+    let privateAudience = try #require(ReadAudience("organization:customer-a"))
+    #expect(ReadSession(
+        baseURL: baseURL,
+        principalID: "viewer-a",
+        audience: privateAudience,
+        authorizationRevision: "grant-v1",
+        token: nil
+    ) == nil)
+    #expect(ReadSession(
+        baseURL: baseURL,
+        principalID: "viewer-a",
+        audience: privateAudience,
+        authorizationRevision: "grant-v1",
+        token: "read-token"
+    ) != nil)
+    #expect(ReadSession(
+        baseURL: baseURL,
+        principalID: "viewer-a",
+        audience: privateAudience,
+        authorizationRevision: nil,
+        token: "read-token"
+    ) == nil)
+
+    let publicSession = try #require(
+        ReadSession(
+            baseURL: baseURL,
+            principalID: "viewer-a",
+            audience: .publicAudience,
+            authorizationRevision: "grant-v1",
+            token: "read-token"
+        )
+    )
+    #expect(publicSession.principalID == AudienceCacheKey.anonymousPrincipal)
+    #expect(publicSession.authorizationRevision == "grant-v1")
+    #expect(publicSession.token == nil)
+}
+
+@Test
+func audienceDiscoveryRequiresAuthorizationRevisionForPrivateGrants() throws {
+    let valid = try JSONDecoder().decode(
+        AudienceDiscoveryPayload.self,
+        from: Data(#"{"schema":"2.0","principal":"viewer-a","revision":"grant-v1","audiences":["public","organization:customer-a"]}"#.utf8)
+    )
+    #expect(valid.validated()?.authorizationRevision == "grant-v1")
+
+    let missingRevision = try JSONDecoder().decode(
+        AudienceDiscoveryPayload.self,
+        from: Data(#"{"schema":"2.0","principal":"viewer-a","audiences":["public","organization:customer-a"]}"#.utf8)
+    )
+    #expect(missingRevision.validated() == nil)
 }

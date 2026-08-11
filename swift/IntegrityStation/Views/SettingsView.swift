@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(AppController.self) private var controller
     @State private var serverDraft = ""
+    @State private var tokenDraft = ""
     @State private var serverError: String?
 
     var body: some View {
@@ -109,11 +110,61 @@ struct SettingsView: View {
             .textInputAutocapitalization(.never)
             .keyboardType(.URL)
             #endif
-            if let serverError {
-                Text(serverError).font(.caption).foregroundStyle(StationPalette.warning)
+            SecureField(String(localized: "settings.server.read_token"), text: $tokenDraft)
+                .font(.body.monospaced())
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                #endif
+            if controller.hasStoredCredential && tokenDraft.isEmpty {
+                Text("settings.server.credential_saved")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("settings.server.credential_note")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            Button(String(localized: "action.save")) { saveServer() }
-                .disabled(serverDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if let error = serverError ?? controller.connectionError {
+                Text(error).font(.caption).foregroundStyle(StationPalette.warning)
+            }
+            Button(String(localized: "action.save")) {
+                Task { await saveServer() }
+            }
+            .disabled(
+                serverDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || controller.isConnecting
+            )
+
+            if !controller.availableAudiences.isEmpty {
+                Picker(
+                    String(localized: "settings.audience.selection"),
+                    selection: Binding(
+                        get: { controller.selectedAudience },
+                        set: { audience in Task { await select(audience) } }
+                    )
+                ) {
+                    ForEach(controller.availableAudiences) { audience in
+                        Text(audience.rawValue).tag(audience)
+                    }
+                }
+                LabeledContent(
+                    String(localized: "settings.audience.principal"),
+                    value: controller.principalID
+                )
+                .font(.caption.monospaced())
+            }
+
+            if controller.hasStoredCredential {
+                Button(String(localized: "settings.server.logout"), role: .destructive) {
+                    Task {
+                        await controller.logout()
+                        tokenDraft = ""
+                    }
+                }
+            }
+            Text("settings.server.tls_note")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -161,9 +212,23 @@ struct SettingsView: View {
         if serverDraft.isEmpty { serverDraft = controller.settings.serverURLString }
     }
 
-    private func saveServer() {
+    private func saveServer() async {
         do {
-            try controller.connect(to: serverDraft)
+            let enteredToken = tokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+            try await controller.connect(
+                to: serverDraft,
+                readToken: enteredToken.isEmpty ? nil : enteredToken
+            )
+            tokenDraft = ""
+            serverError = nil
+        } catch {
+            serverError = error.localizedDescription
+        }
+    }
+
+    private func select(_ audience: ReadAudience) async {
+        do {
+            try await controller.selectAudience(audience)
             serverError = nil
         } catch {
             serverError = error.localizedDescription

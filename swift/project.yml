@@ -46,6 +46,9 @@ targets:
         PRODUCT_MODULE_NAME: IntegrityStation
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+    dependencies:
+      - sdk: CryptoKit.framework
+      - sdk: Security.framework
 
   IntegrityStationMac:
     type: application
@@ -71,6 +74,9 @@ targets:
         PRODUCT_MODULE_NAME: IntegrityStation
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ENABLE_HARDENED_RUNTIME: true
+    dependencies:
+      - sdk: CryptoKit.framework
+      - sdk: Security.framework
 
   IntegrityStationTests:
     type: bundle.unit-test

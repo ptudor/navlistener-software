@@ -160,7 +160,7 @@ struct CapabilitySignal: Codable, Hashable, Sendable {
 
 struct ObserversSnapshot: Codable, Sendable {
     let receivedAt: Date
-    let serverBaseURL: String?
+    let scope: AudienceCacheKey
     let serverTime: String?
     let payload: ObserversPayload
 }

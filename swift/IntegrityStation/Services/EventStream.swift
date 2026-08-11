@@ -15,8 +15,8 @@ struct EventStream: Sendable {
 
     /// Opens docs/OUTPUT.md §3's SSE stream. The caller persists and supplies
     /// the audience-scoped Last-Event-ID cursor on reconnect.
-    func updates(baseURL: URL, lastEventID: String?) throws -> AsyncThrowingStream<EventStreamUpdate, Error> {
-        let url = try CollectorEndpoint.url(baseURL: baseURL, path: "gnss/events")
+    func updates(session readSession: ReadSession, lastEventID: String?) throws -> AsyncThrowingStream<EventStreamUpdate, Error> {
+        let url = try CollectorEndpoint.url(baseURL: readSession.baseURL, path: "gnss/events")
         let session = session
 
         return AsyncThrowingStream { continuation in
@@ -26,13 +26,20 @@ struct EventStream: Sendable {
                     request.timeoutInterval = 75
                     request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
                     request.setValue("IntegrityStation/0.1", forHTTPHeaderField: "User-Agent")
+                    try ReadRequestHeaders.apply(session: readSession, to: &request)
                     if let lastEventID, !lastEventID.isEmpty {
+                        guard lastEventID.utf8.count <= 4_096,
+                              !lastEventID.contains("\r"),
+                              !lastEventID.contains("\n")
+                        else { throw FeedError.invalidResponse }
                         request.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID")
                     }
 
                     let (bytes, response) = try await session.bytes(for: request)
                     guard let http = response as? HTTPURLResponse else { throw FeedError.invalidResponse }
-                    guard (200...299).contains(http.statusCode) else { throw FeedError.http(http.statusCode) }
+                    guard (200...299).contains(http.statusCode) else {
+                        throw FeedClient.responseError(status: http.statusCode)
+                    }
 
                     var accumulator = SSEAccumulator()
                     var line: [UInt8] = []
