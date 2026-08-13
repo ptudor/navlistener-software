@@ -24,7 +24,7 @@ extend, not a fixed menu** — §5.3 lists the entries this product needs added.
 
 | Variant | Receiver | RTC | Why |
 |---|---|---|---|
-| **A — first spin** (`GNSS_PCB_MAIN`) | **NEO-format** M9 / M10 / F10 | MCP79412 + 32.768 kHz crystal | NEO's larger pitch and edge-castellated pads survive a missed airwire and a rework iteration. A ZED footprint punishes a first board for a routing mistake that costs a bodge wire on a NEO. |
+| **A — first spin** (`GNSS_PCB_MAIN`) | **NEO-format** M9 / M10 / F10 | MCP79412 + Seiko 7 pF 32.768 kHz crystal (`C97604`) | NEO's larger pitch and edge-castellated pads survive a missed airwire and a rework iteration. A ZED footprint punishes a first board for a routing mistake that costs a bodge wire on a NEO. |
 | **B — precision** | ZED-format (F9P / F9T) | DS3231 | Spend the TCXO where the receiver already justifies the board cost. |
 | **C — modular** | pin headers, third-party module | either | Every vendor breakout has its own pinout; an project all-in-one PCB beats a breadboard stack. See §5.4 — a socketed receiver **cannot** be trusted from the manifest. |
 
@@ -81,14 +81,14 @@ for it.
 |---|---|---|---|
 | MCU | `CAT_MCU` | **ESP32-S3-WROOM-1U-N16R8** (`MCU_ESP32_S3`) | Feeder. S3 and the **1U** (u.FL) variant both matter — §7.1. |
 | Receiver | `CAT_GPS` | **NEO-M9N-00B** (`C5119087`) on the shared 24-pin NEO land pattern | Raw nav frames + PPS. F10N/F10T drop in without a respin — §1.1. |
-| Identity, public | `CAT_RTC` | **MCP79412** + 32.768 kHz crystal (`RTC_MCP79412`) | RTCC + SRAM + EEPROM + **factory EUI-64** — the observer's public name. |
+| Identity, public | `CAT_RTC` | **MCP79412T-I/SN** + Seiko `SC-32S32.768kHz20PPM7pF` crystal (LCSC/EasyEDA `C97604`; `RTC_MCP79412`) | RTCC + SRAM + EEPROM + **factory EUI-64** — the observer's public name. |
 | Identity, private | `CAT_CRYPTO` | **ATECC608C-SSHDA-T** (`C28975195`, `CRYPTO_ATECC608C`) | Non-extractable P-256 key; the proof of entitlement to that name. |
 | Hardware manifest | `CAT_MEMORY` | `24AA025E64T-I/SN` (LCSC `C615601`; new `MEMORY_24AA025E64`) | The installed-hardware descriptor array and board EUI-64. The addressable `025` variant is required — see below. |
 | Status panel | `CAT_LED` | 16 × 0805 (8 green + 8 yellow) via 2 × **TLC5916** | Constellation/health indication — §2.1. |
 | Pressure | `CAT_PRESSURE` | **BMP388** placed; BMP390 and BMP580 are footprint alternates | **Vertical spoofing gate** — §6.1. |
 | Temperature | `CAT_TEMP` | **MCP9808-E/MS** (`C94847`) | Crystal-drift characterisation and thermal health — §6.2. |
 | Humidity | `CAT_SENSOR` | **HDC2080** | Dew point / enclosure-seal diagnostic — §6.4. Not GNSS math. |
-| Backup | `CAT_BATTERY` | 2 × CR2032, `BS-0202-DK-0B` holders (needs enum entries, §5.3) | Two independent domains — §3.2. |
+| Backup | `CAT_BATTERY` | 1 × primary 3 V CR123A in MYOUNG `BH-123A-A1CJ002` holder (LCSC/EasyEDA `C5290177`; needs enum entry, §5.3) | Shared GNSS/RTC backup with annual replacement — §3.2. |
 | GNSS antenna | `CAT_ANTENNA` | SMA jack, right-angle, 4-leg THT (Amphenol `132289` class) | Bias + supervision → `MON-HW` `antStatus` — §7.3. |
 | Wi-Fi antenna | `CAT_ANTENNA` | u.FL → RP-SMA pigtail off the 1U module | Physically separable from the GNSS path — §7.1. |
 | USB | `CAT_CONNECTOR` | USB-C, 16-pin USB 2.0, THT shield legs | §7.6. |
@@ -179,7 +179,7 @@ Rules that make the split work:
   mode.** The F9P on `observer16` dropped off its bus after a hot spell (2026-08-05,
   §6.2) and stayed dark until someone could reach it. A wedged receiver or a hung I²C
   slave holding SDA low both clear with a rail cycle, and a GNSS-rail cycle is a *warm*
-  restart — `V_BCKP` rides the coin cell (§3.2), so ephemeris, almanac and receiver
+  restart — `V_BCKP` rides the shared CR123A (§3.2), so ephemeris, almanac and receiver
   time survive the bounce. Firmware contract: idle/tristate every pin driving into a
   domain before de-asserting its EN (a driven UART TX or pulled-up I²C line would
   back-power the dead rail through ESD clamps), hold off long enough for the domain's
@@ -234,43 +234,58 @@ EN — which tells the collector whether "power-cycle the receiver" is a command
 node can execute. Only the always-on `3V3_SYS` regulator stays plain BOM: no control,
 no bus presence, and its failure announces itself as the death of everything on it.
 
-The backup cells below are independent of all three rails by design.
+The shared backup cell below is independent of all three regulated rails by design.
 
-### 3.2 Backup cells — two domains
+### 3.2 Backup supply — one annually serviced CR123A
 
-Two cells, two domains — **not** two cells on one rail:
+One **primary 3 V CR123A** supplies both backup functions:
 
-- **Receiver `V_BCKP`** — preserves battery-backed RAM: ephemeris, almanac, last position, the
-  receiver's own clock. Buys hot/warm start.
-- **RTC backup** — preserves the observer's independent time reference.
+- **Receiver `GNSS_VBCKP`** preserves battery-backed RAM, orbit data, last
+  position and the receiver's clock, buying hot/warm starts.
+- **RTC `RTC_VBAT`** preserves the observer's independent time reference.
 
-They are kept separate because they fail differently and matter differently.
+This deliberately makes the battery a shared failure domain. A missing or dead
+cell loses both warm-start state and independent RTC time; the design accepts that
+trade for the simpler, mechanically cleaner first spin. Replace the cell during
+annual maintenance **while USB power is present**, so normal VCC preserves both
+devices' state during the swap, and write the installation date on the enclosure
+label. If a cell is instead left for two or three years and the receiver begins
+cold-starting or the RTC reports oscillator stop, treat the overdue battery as
+the first suspect, not an unexplained board failure.
 
-**Drain is asymmetric.** `V_BCKP` draws substantially more than an RTC backup **[verify against
-both datasheets]**, so the receiver cell dies first — and it dies *silently*: the receiver
-cold-starts, which presents as "slow to reacquire," not as a fault. Read and report both cells'
-health rather than discovering this in a log six months later.
+Use a polarized MYOUNG `BH-123A-A1CJ002` horizontal through-hole holder,
+LCSC/EasyEDA `C5290177`, in the center of the main PCB. Place the complete EasyEDA
+device by its LCSC number so its two electrical pads and anti-misinsert locating
+post come from the matched library footprint; do not substitute a generic CR123A
+footprint. Its long, narrow body preserves the status-LED edge and allows the
+low-current devices to form a row above it. Keep the holder courtyard and the cell
+insertion/removal sweep free of top-side components; keep USB and RF traces out
+from under it.
+Hand-solder the holder after normal SMT assembly and insert the cell only after
+all soldering and cleaning are complete. If the enclosure can be dropped or
+vibrated, place a PCB support or enclosure boss near the holder so the 16 g cell
+does not flex the board.
 
-**What each is worth to this product.** The RTC cell is load-bearing (§4.2, §6.3). The receiver
-cell is a convenience with one genuine integrity dividend: a cold-starting receiver accepts
-whatever the sky appears to say, whereas one with retained almanac has a prior to disagree with.
-That is a weak signal, but it is free.
+Connect holder negative to GND and holder positive to a source net named
+`BACKUP_BAT`. Split `BACKUP_BAT` through two separately removable 0 Ω, 0603 links:
+one to `GNSS_VBCKP` and one to `RTC_VBAT`. The links add no intentional voltage
+drop but let either load be isolated during bring-up and current measurement. Add
+a `BACKUP_BAT` test point accessible with the enclosure open. Do not add external
+switchover or isolation diodes; both loads already implement their required
+switchover, and diode drop only consumes backup headroom.
 
-**Heat and first-spin assembly.** Keep both CR2032 holders off the main PCB and use
-separate pre-wired holders mounted in a cool part of the enclosure. Each plugs into
-its own JST PH 2.0 mm two-pin header: genuine JST
-`B2B-PH-SM4-TB(LF)(SN)`, LCSC/EasyEDA `C160352`, the vertical SMT version with
-mechanical solder tabs so JLC can place it during normal SMT assembly. The mating
-housing is `PHR-2`. Name and label the main-board connectors `RTC BAT` and
-`GNSS BAT`; on both, define pin 1 as battery positive and pin 2 as GND. Marketplace
-"RTC battery" leads do not have a universal polarity convention: continuity-check
-every purchased holder and, if necessary, release and swap its two housing contacts
-before connection. The removable leads keep the large holders out of the placement
-and routing area and turn replacement across five units into a ten-second job rather
-than a board disassembly.
+The NEO-M9N specifies 45 µA from `V_BCKP` at 3 V with VCC absent. A nominal
+1550 mAh CR123A therefore represents about 3.9 ideal years of *continuous
+unpowered* GNSS backup before capacity and temperature derating; it is not a
+five-year continuous-off guarantee. In the intended normally USB-powered service,
+the cell supplies that load only during outages, so annual replacement is highly
+conservative. Reserve one optional `BACKUP_BAT_SENSE` path on GPIO1, but leave its
+divider DNP until the off-state isolation is closed: a plain always-connected ADC
+divider can inject current into an unpowered ESP32. GPIO2 returns to the spare pool.
 
-No external switchover diode — the RTCs specified here have internal VCC/VBAT switchover, and an
-added series diode only eats backup headroom.
+Silkscreen the holder **CR123A 3 V PRIMARY ONLY — NO RCR123/16340**. A rechargeable
+RCR123/16340 cell can reach 4.2 V and would exceed the NEO-M9N `V_BCKP` absolute
+maximum.
 
 ---
 
@@ -468,7 +483,7 @@ The enums are a baseline. These entries do not exist yet and are required:
 |---|---|---|
 | `eeprom_gps_id_t` | `GPS_NEO_M10`, `GPS_NEO_F10N`, `GPS_NEO_F10T`, `GPS_ZED_F9T` | Variant A's actual candidates; the F9T is most of the current fleet and is absent. |
 | `eeprom_pressure_id_t` | `PRESSURE_BMP390` | The house pressure part (shepherd's C6 rover bus) is absent; the enum lists BMP280/BMP388/MS5611 only. |
-| `eeprom_battery_id_t` | `BATTERY_CR2032` | The enum currently covers LiPo/18650/solar/PoE only — no primary coin cells, and this board fits two. |
+| `eeprom_battery_id_t` | `BATTERY_CR123A` | The enum currently covers LiPo/18650/solar/PoE but not this board's primary 3 V cylindrical backup cell. |
 | `eeprom_sensor_id_t` | `SENSOR_HDC2080` | The combined temperature/humidity part (§6.4); `TEMP_MCP9808` already exists for the dedicated sensor. |
 | `eeprom_power_id_t` | `POWER_ADM7150`, `POWER_RT9193` | The GPIO-gated rails (§3.1); descriptor address byte = the EN GPIO, following `CAT_BUTTON`'s addr-is-GPIO convention. The enum currently lists only probeable monitors/chargers. |
 | `eeprom_memory_id_t` | `MEMORY_24AA025E64` | The addressable manifest EEPROM required to coexist with the MCP79412's EEPROM/EUI at `0x57`; the baseline only names the colliding `24AA02E64`. |
@@ -676,9 +691,81 @@ This is where layout effort belongs — not the LED array.
 **One shared bus at 400 kHz:** `I2C_SDA` is GPIO6 and `I2C_SCL` is GPIO7,
 matching `ESP32C6_PINOUT.md`. Fit one 2.2 kΩ pull-up from each line to
 `3V3_SENS`; individual devices do not get additional pull-ups.
-Relevant addresses are **manifest 24AA025E64 `0x50`** (A0/A1/A2 to GND),
-**MCP79412 EEPROM/EUI `0x57`**, **ATECC608C `0x60`**, and **MCP79412 RTCC
-`0x6F`**. The sensor addresses are assigned on their individual sheet.
+In EasyEDA Pro, place those names directly on the short wire at every pin; the
+net label is the wire's Name property. Because these are ordinary pages under one
+`Board1` / `Schematic1`, matching names form the shared project net without a
+hierarchical net port. Before importing changes to the PCB, inspect the schematic
+Net panel: each of `I2C_SDA` and `I2C_SCL` should contain nine endpoints—ESP32,
+one pull-up, Qwiic, and the six slaves listed below.
+
+Fit one board-edge **Qwiic-compatible service/expansion connector** on this bus:
+HCTL `HC-1.0-4PWT`, LCSC/EasyEDA `C2845363`, a right-angle 4-position 1.0 mm
+SH-series SMD header. Place the complete EasyEDA device by its LCSC number. Wire
+the Qwiic pinout as pin 1 GND, pin 2 `3V3_SENS`, pin 3 `I2C_SDA`, pin 4
+`I2C_SCL`; mark pin 1 and **3V3 ONLY** on silkscreen. Put a removable 0 Ω 0603
+link between pin 2 and `3V3_SENS`. Normally fit the link so the observer can power
+an external Qwiic sensor. Remove it before attaching a powered external I²C host,
+then keep the observer USB-powered with `3V3_SENS` enabled, hold `ESP_EN` low so
+the ESP32 is not a competing bus master, and use the host only for SDA/SCL/GND.
+Never let an adapter drive the gated sensor rail while it is off;
+that defeats rail power-cycling and can back-power the slaves. The connector gets
+no additional pull-ups, and external modules with their own pull-ups must be
+counted in the bus's combined pull-up resistance.
+
+The three environmental sensors connect as follows; the ESP32 module-pad numbers
+are included because they are not the same as GPIO numbers:
+
+| Device | Device pin connections | Address / MCU connection |
+|---|---|---|
+| BMP388 | 1 `VDDIO` → `3V3_SENS`; 2 `SCK` → `I2C_SCL`; 3, 8, 9 `VSS` → GND; 4 `SDI` → `I2C_SDA`; 5 `SDO` → GND; 6 `CSB` → `3V3_SENS`; 7 `INT` → `BARO_INT_N`; 10 `VDD` → `3V3_SENS`. Fit separate 100 nF capacitors at pins 1 and 10. | `0x76`; `BARO_INT_N` → GPIO41, ESP module pad 34, with 10 kΩ to `3V3_SENS`. Configure open-drain, active-low. |
+| MCP9808-E/MS | 1 `SDA` → `I2C_SDA`; 2 `SCL` → `I2C_SCL`; 3 `Alert` → `TEMP_ALERT_N`; 4 GND; 5/A2, 6/A1, 7/A0 → GND; 8 `VDD` → `3V3_SENS`, with 100 nF at the pin. | `0x18`; `TEMP_ALERT_N` → GPIO8, ESP module pad 12, with 10 kΩ to `3V3_SENS`. Configure active-low. |
+| HDC2080DMBR | 1 `SDA` → `I2C_SDA`; 2 GND; 3 `ADDR` → GND; 4 `DRDY/INT` → `HUM_INT_N`; 5 `VDD` → `3V3_SENS`, with 100 nF at the pin; 6 `SCL` → `I2C_SCL`; exposed pad 7 soldered to an isolated **floating** land, not GND. | `0x40`; push-pull `HUM_INT_N` → GPIO39, ESP module pad 32, with **no pull-up**. Configure active-low. |
+
+The **MCP79412T-I/SN RTC and its oscillator** are wired as one close-coupled
+block:
+
+| RTC pin | Connection |
+|---:|---|
+| 1 `X1` | One end of the 32.768 kHz crystal; one 10 pF C0G/NP0 0603 capacitor from this pin to GND. |
+| 2 `X2` | Other end of the crystal; a separate 10 pF C0G/NP0 0603 capacitor from this pin to GND. |
+| 3 `VBAT` | `RTC_VBAT`, supplied from `BACKUP_BAT` through its removable 0 Ω link; no added diode and no local bulk capacitor. |
+| 4 `VSS` | GND. |
+| 5 `SDA` | `I2C_SDA`; no device-local bus pull-up. |
+| 6 `SCL` | `I2C_SCL`; no device-local bus pull-up. |
+| 7 `MFP` | `RTC_MFP_N` → GPIO15, ESP module pad 8, with 10 kΩ to `3V3_SENS`; open-drain alarm output. |
+| 8 `VCC` | `3V3_SENS`, with 100 nF X7R 0603 directly between pins 8 and 4. |
+
+Use Seiko `SC-32S32.768kHz20PPM7pF`, LCSC/EasyEDA **`C97604`**:
+32.768 kHz, ±20 ppm, 7 pF load, 70 kΩ maximum ESR, SMD3215-2P. The two
+10 pF load parts may be KEMET `C0603C100J5GACAUTO`, LCSC **`C129620`**, or an
+equivalent 10 pF ±5% C0G/NP0 0603. Use the board's common 100 nF X7R 0603
+part for the VCC bypass (Samsung `CL10B104KB8NNNC`, LCSC **`C1591`**, is one
+suitable choice).
+
+Do **not** fit huaxindianzi `3K32.768XQ`, LCSC `C19723454`, in this RTC
+position. Although it has the same SMD3215-2P package and an acceptable 70 kΩ
+ESR, it specifies a 12.5 pF load; the MCP79412 data sheet says its oscillator is
+optimized for 6–9 pF crystals and explicitly does not recommend 12.5 pF parts.
+Capacitor changes do not make that a preferred first-spin combination.
+
+Place the RTC, crystal and both 10 pF capacitors on the same side of the PCB.
+Put the crystal immediately beside pins 1 and 2, with the capacitors beside the
+crystal and very short, symmetric traces. Surround the oscillator block with a
+ground guard returned directly to pin 4, but put **no copper, signal, or power
+trace beneath the crystal on any layer**. The crystal manufacturer likewise
+requires no PCB pattern under its body. Do not probe X1/X2 with an ordinary
+oscilloscope probe; its capacitance can stop this low-power oscillator. For
+bring-up, set the RTC `ST` bit to start the crystal, set `VBATEN` before testing
+backup operation, and validate frequency at `MFP` in 32.768 kHz square-wave mode
+before returning that pin to alarm service. The two 10 pF values are the
+calculated first-spin load for a short layout including the RTC's typical 3 pF
+pin capacitance; retain accessible 0603 pads so one value can be trimmed after
+measuring the assembled board.
+
+The complete fixed address map is **MCP9808 `0x18`**, **HDC2080 `0x40`**,
+**manifest 24AA025E64 `0x50`** (A0/A1/A2 to GND), **MCP79412
+EEPROM/EUI `0x57`**, **ATECC608C `0x60`**, **MCP79412 RTCC `0x6F`**, and
+**BMP388 `0x76`** (SDO to GND).
 
 Two constraints to resolve on paper *before* anything is locked: the manifest EEPROM and the
 MCP79412 each expose a protected EUI block, and the **ATECC's address is set in
@@ -692,10 +779,10 @@ open-drain `TEMP_ALERT_N` on GPIO8, and MCP79412 `MFP` is the open-drain
 `RTC_MFP_N` on GPIO15; give each a 10 kΩ pull-up to `3V3_SENS`. Configure the
 BMP388 interrupt as open-drain active-low and route `BARO_INT_N` to GPIO41 with
 a 10 kΩ pull-up to `3V3_SENS`. HDC2080 `DRDY/INT` is push-pull; configure it
-active-low as `HUM_INT_N` and route it to GPIO39. GPIO39 and GPIO41 are pad-JTAG
-pins, but this board deliberately uses native USB-JTAG and does not expose pad
-JTAG. Keeping the two push-pull sensor outputs on these no-glitch input pins
-avoids reset-time output contention.
+active-low as `HUM_INT_N` and route it to GPIO39 with no pull-up. GPIO39 and
+GPIO41 are pad-JTAG pins, but this board deliberately uses native USB-JTAG and
+does not expose pad JTAG. Both are input-only in this design, avoiding reset-time
+output contention.
 
 The manifest EEPROM's page-write hazard is **already handled** in the shared component —
 `esp_hardware_discovery.c` conservatively chunks writes to 8-byte boundaries and ACK-polls
@@ -779,19 +866,21 @@ pair to GND.
 
 Native USB is the primary downloader/debug interface, so this board does not need
 a USB-to-UART bridge or its DTR/RTS transistor auto-reset circuit. Preserve UART0
-as recovery and manufacturing access nevertheless: expose GND, `U0TXD`/GPIO43,
-and `U0RXD`/GPIO44 on a keyed header or clearly marked test pads, plus `ESP_EN`
-and `ESP_BOOT` pads. If a 3.3 V reference is exposed, mark it **3V3 REF ONLY**;
-external TTL adapters must use 3.3 V logic and must not power the board through
-that pin.
+as recovery and manufacturing access nevertheless. Use hanxia
+`HX PH254-01-03-Z-L11.5` (LCSC/EasyEDA `C52016391`), a straight 1×3, 2.54 mm
+through-hole male header, with pin 1 `GND`, pin 2 `U0TXD`/GPIO43, and pin 3
+`U0RXD`/GPIO44. Label the board-side signal names clearly; the adapter connects
+RX to `U0TXD` and TX to `U0RXD`. This header deliberately omits a power pin.
+External TTL adapters must use 3.3 V logic and must not power the board. Retain
+separate clearly marked `ESP_EN` and `ESP_BOOT` recovery pads.
 
 The first-spin GPIO allocation is the schematic source of truth:
 
 | GPIO | Net | Direction / note |
 |---:|---|---|
 | 0 | `ESP_BOOT` | Boot strap and DOWNLOAD button; 10 kΩ to `3V3_SYS`. |
-| 1 | `GNSS_VBCKP_SENSE` | Reserved ADC1 input; measurement network still to be closed. |
-| 2 | `RTC_VBAT_SENSE` | Reserved ADC1 input; measurement network still to be closed. |
+| 1 | `BACKUP_BAT_SENSE` | Reserved ADC1 input; optional shared-cell measurement network remains DNP until off-state isolation is closed. |
+| 2 | — | Spare; released by the move from two cells to one shared CR123A. |
 | 3 | — | Strapping pin; do not connect. |
 | 4 | `GNSS_UART_TX` | ESP TX to receiver RX through 330 Ω. Shepherd parity. |
 | 5 | `GNSS_UART_RX` | Receiver TX to ESP RX through 330 Ω. Shepherd parity. |
@@ -825,6 +914,16 @@ The first-spin GPIO allocation is the schematic source of truth:
 | 48 | `LED_YELLOW_OE_N` | Yellow TLC5916 output enable; 10 kΩ to `3V3_SYS`. |
 
 ### 7.8 Four-layer PCB policy
+
+Fit four **3.5 mm unplated M3 clearance holes** as EasyEDA Pro PCB primitives:
+on `PCB1`, use **Place → Slot Region**, select a circular region, and set its
+diameter to 3.5 mm. EasyEDA Pro emits circular slot regions up to 6.5 mm in the
+NPTH drill file, so these holes need no schematic device or library footprint.
+Lock them after setting their exact coordinates, and verify all four in the NPTH
+Gerber/drill preview before ordering. Keep each center about 5 mm from its adjacent
+board edges and reserve at least a 7 mm diameter component/copper-free washer
+area. Do not connect the mounting hardware to GND; this revision has a plastic
+enclosure and no defined chassis bond.
 
 Convert the board before routing: in EasyEDA Pro open `PCB1`, choose **Tools →
 Layer Manager**, add two copper layers, and make both positive-film **Signal**
