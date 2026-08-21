@@ -864,6 +864,19 @@ footprint-compatible with the softer `SJM` variant. Verify the four-pad footprin
 internally common pad pairs; connect one contact pair to the signal and the opposite
 pair to GND.
 
+Do not add a third Wi-Fi-reset switch or jumper. While the application is running,
+holding **BOOT/DOWNLOAD** for eight seconds is the physical configuration-recovery
+gesture. The TLC status panel must show an unmistakable confirmation pattern before
+the action is armed; erase the `navfeeder` configuration namespace only after the
+button is released, then reboot into the password-protected SoftAP provisioning
+portal. This clears Wi-Fi, collector, station and bearer-token settings, but must not
+erase the ATECC key, RTC or manifest identities, or enrollment material stored outside
+that namespace. Do not define the gesture as “hold BOOT during reset”: GPIO0 low at
+reset intentionally enters the ESP ROM downloader instead of the application. If the
+application is too damaged to recognize the long press, use BOOT plus RESET to enter
+the ROM downloader over native USB and erase only the configuration NVS; a complete
+firmware reflash is not required for credential recovery.
+
 Native USB is the primary downloader/debug interface, so this board does not need
 a USB-to-UART bridge or its DTR/RTS transistor auto-reset circuit. Preserve UART0
 as recovery and manufacturing access nevertheless. Use hanxia

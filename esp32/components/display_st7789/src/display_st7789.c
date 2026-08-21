@@ -405,3 +405,16 @@ void display_show_portal(const char *ssid, const char *pass, const char *reason)
     if (y < STATUS_Y1) fill_rect(0, y, LCD_H_RES, STATUS_Y1 - y, COL_STATUS_BG);
     display_flush();
 }
+
+void display_show_config_reset_armed(void)
+{
+    if (!s_ready) return;
+    int y = STATUS_Y0;
+    fill_rect(0, STATUS_Y0, LCD_H_RES, STATUS_Y1 - STATUS_Y0, COL_STATUS_BG);
+    status_line(&y, "CONFIG RESET ARMED", COL_DOWN);
+    status_line(&y, "RELEASE BUTTON", COL_STATUS_FG);
+    status_line(&y, "TO ERASE SETTINGS", COL_STATUS_FG);
+    status_line(&y, "POWER CYCLE TO CANCEL", COL_UP);
+    if (y < STATUS_Y1) fill_rect(0, y, LCD_H_RES, STATUS_Y1 - y, COL_STATUS_BG);
+    display_flush();
+}

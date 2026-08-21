@@ -25,6 +25,7 @@
 
 static const char *TAG = "netcfg";
 #define NVS_NS "navfeeder"
+#define NVS_RESET_KEY "reset"
 
 // A Kconfig bool left at 'n' emits no #define.
 #ifndef CONFIG_NVF_INSECURE
@@ -62,6 +63,15 @@ bool netcfg_load(netcfg_t *out, char *err, size_t errcap)
 
     nvs_handle_t h;
     if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+        uint8_t reset = 0;
+        if (nvs_get_u8(h, NVS_RESET_KEY, &reset) == ESP_OK && reset == 1) {
+            // A physical reset must force the portal even in a development build carrying
+            // complete Kconfig defaults. Without this marker, erasing the namespace would
+            // merely uncover those defaults and appear to do nothing.
+            memset(out, 0, sizeof *out);
+            nvs_close(h);
+            return netcfg_validate(out, err, errcap);
+        }
         get_str(h, "ssid", out->wifi_ssid, sizeof out->wifi_ssid, out->wifi_ssid);
         get_str(h, "pass", out->wifi_pass, sizeof out->wifi_pass, out->wifi_pass);
         get_str(h, "host", out->host, sizeof out->host, out->host);
@@ -103,10 +113,30 @@ esp_err_t netcfg_save(const netcfg_t *cfg)
     NVS_TRY(nvs_set_str(h, "token", cfg->token));
     NVS_TRY(nvs_set_str(h, "station", cfg->station));
     NVS_TRY(nvs_set_u8(h, "insecure", cfg->insecure ? 1 : 0));
+    // Retire the physical-reset marker only after every replacement field was accepted.
+    // If any set failed, leaving the previously committed marker at 1 guarantees the next
+    // boot returns to provisioning instead of exposing compiled development defaults.
+    if (first_err == ESP_OK) NVS_TRY(nvs_set_u8(h, NVS_RESET_KEY, 0));
 #undef NVS_TRY
     esp_err_t commit_err = nvs_commit(h);
     nvs_close(h);
     return first_err != ESP_OK ? first_err : commit_err;
+}
+
+esp_err_t netcfg_reset_provisioning(void)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+
+    // This namespace contains only operator-editable network/collector configuration. The
+    // marker is intentionally written after erase_all so netcfg_load cannot fall back to
+    // compiled bench credentials and silently skip the provisioning portal.
+    err = nvs_erase_all(h);
+    if (err == ESP_OK) err = nvs_set_u8(h, NVS_RESET_KEY, 1);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err;
 }
 
 // --- provisioning portal -----------------------------------------------------------------

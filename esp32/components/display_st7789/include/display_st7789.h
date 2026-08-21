@@ -65,6 +65,11 @@ void display_render_status(const nvf_status_t *st);
 // headless board. Keep it under ~26 chars: one line at STATUS_SCALE 2.
 void display_show_portal(const char *ssid, const char *pass, const char *reason);
 
+// display_show_config_reset_armed replaces the live dashboard with the destructive-action
+// confirmation. The caller keeps it visible until the button is released or the gesture is
+// cancelled; rendering it repeatedly is safe.
+void display_show_config_reset_armed(void);
+
 #ifdef __cplusplus
 }
 #endif

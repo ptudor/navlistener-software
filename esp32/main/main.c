@@ -16,6 +16,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_log.h"
 #include "esp_random.h"   // esp_fill_random (regression fix session identity)
@@ -32,6 +33,7 @@
 #include "display_st7789.h"
 #include "status_led.h"
 #include "netcfg.h"
+#include "config_recovery.h"
 
 static const char *TAG = "navfeeder";
 
@@ -54,9 +56,80 @@ static const char *TAG = "navfeeder";
 #define RX_BUF_SIZE 4096
 
 static atomic_bool s_wifi_up;
+static atomic_bool s_config_reset_armed;
 static char s_collector[80];      // "host:port" once provisioned, else empty
 static netcfg_t g_cfg;            // live config (NVS over Kconfig defaults)
 static ubx_parser_t s_parser;     // static: its buffers are too large for a task stack
+
+#ifndef CONFIG_NVF_CONFIG_RESET_GPIO
+// Older generated sdkconfig files predate the option. Fail closed rather than treating an
+// undefined preprocessor symbol as numeric zero and unexpectedly claiming GPIO0.
+#define CONFIG_NVF_CONFIG_RESET_GPIO -1
+#endif
+
+#if CONFIG_NVF_CONFIG_RESET_GPIO >= 0
+#define CONFIG_RESET_POLL_MS 20u
+
+// config_reset_task recognizes the destructive gesture independently of Wi-Fi/link state,
+// so a complete-but-wrong configuration remains recoverable. GPIO0 is sampled only after
+// ROM has already latched the S3 boot straps; holding it across reset still enters the ROM
+// downloader and never reaches this task, which is the intended emergency fallback.
+static void config_reset_task(void *arg)
+{
+    (void)arg;
+    const gpio_num_t pin = (gpio_num_t)CONFIG_NVF_CONFIG_RESET_GPIO;
+    const gpio_config_t button = {
+        .pin_bit_mask = 1ULL << pin,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,   // the schematic supplies a 10 kΩ pull-up
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    esp_err_t err = gpio_config(&button);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "configuration-reset GPIO %d init failed: %s", (int)pin,
+                 esp_err_to_name(err));
+        vTaskDelete(NULL);
+        return;
+    }
+
+    config_recovery_t gesture;
+    config_recovery_init(&gesture);
+    for (;;) {
+        bool pressed = gpio_get_level(pin) == 0;
+        config_recovery_event_t event =
+            config_recovery_update(&gesture, pressed, CONFIG_RESET_POLL_MS);
+        if (event == CONFIG_RECOVERY_EVENT_ARMED) {
+            atomic_store_explicit(&s_config_reset_armed, true, memory_order_relaxed);
+            ESP_LOGW(TAG, "configuration reset armed; release BOOT to erase settings");
+        } else if (event == CONFIG_RECOVERY_EVENT_CONFIRMED) {
+            ESP_LOGW(TAG, "physical configuration reset confirmed; erasing navfeeder settings");
+            err = netcfg_reset_provisioning();
+            if (err != ESP_OK) {
+                atomic_store_explicit(&s_config_reset_armed, false, memory_order_relaxed);
+                ESP_LOGE(TAG, "configuration reset failed: %s", esp_err_to_name(err));
+            } else {
+                // Give the display/RMT transfer and the final log line time to complete. The
+                // reset marker suppresses compiled defaults, so the next boot raises SoftAP.
+                vTaskDelay(pdMS_TO_TICKS(250));
+                esp_restart();
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(CONFIG_RESET_POLL_MS));
+    }
+}
+
+static void config_reset_start(void)
+{
+    if (xTaskCreate(config_reset_task, "cfg_reset", 3072, NULL, 5, NULL) != pdPASS)
+        ESP_LOGE(TAG, "failed to create configuration-reset task");
+}
+#else
+static void config_reset_start(void)
+{
+    ESP_LOGI(TAG, "runtime configuration reset disabled for this board target");
+}
+#endif
 
 // s_session is the GNF1 boot/session identity sent in every HELLO : 32 hex
 // characters, the same shape navfeeder.c mints. Written once by session_init() during
@@ -128,6 +201,15 @@ static void ui_task(void *arg)
     uint32_t last_nav = 0;
     led_state_t last_led = LED_BOOT;
     for (;;) {
+        if (atomic_load_explicit(&s_config_reset_armed, memory_order_relaxed)) {
+            // The erase happens only on release. Until then this persistent screen/color is
+            // the operator's chance to cancel by power-cycling without releasing into the app.
+            display_show_config_reset_armed();
+            status_led_set_rgb(255, 0, 255); // magenta: deliberately unlike every run state
+            vTaskDelay(pdMS_TO_TICKS(200));
+            continue;
+        }
+
         uint64_t dropped = 0;
         size_t depth = 0;
         spool_stats(NULL, &dropped, &depth);
@@ -302,6 +384,7 @@ void app_main(void)
     // the UI is non-essential — log a create failure but keep forwarding.
     if (xTaskCreate(ui_task, "ui", 4096, &s_parser, 4, NULL) != pdPASS)
         ESP_LOGW(TAG, "failed to create ui task; continuing without the dashboard");
+    config_reset_start();
     wifi_start();
 
     // mint the boot session before the pusher can send its first HELLO (see

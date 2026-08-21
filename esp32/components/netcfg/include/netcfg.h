@@ -28,6 +28,11 @@ bool netcfg_load(netcfg_t *out, char *err, size_t errcap);
 // netcfg_save persists cfg to NVS (namespace "navfeeder"). Returns ESP_OK on commit.
 esp_err_t netcfg_save(const netcfg_t *cfg);
 
+// netcfg_reset_provisioning clears only the "navfeeder" configuration namespace and
+// leaves a reset marker that suppresses compiled development defaults on the next boot.
+// Hardware identity and enrollment material must live outside this namespace.
+esp_err_t netcfg_reset_provisioning(void);
+
 // netcfg_start_portal brings up a SoftAP + an HTTP config form for an unprovisioned board.
 // It generates a strong one-time AP password (never a placeholder) and copies the AP SSID +
 // password into ap_ssid/ap_pass so the caller can show them on the LCD. On a successful form

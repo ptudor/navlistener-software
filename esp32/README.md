@@ -74,8 +74,17 @@ reboots into station mode. (For dev you can still pre-seed everything via `idf.p
 → "navfeeder-esp".) Remaining: P-hw (ATECC608 identity + `SIGNED_DATA`) and the u8g2 font
 upgrade.
 
-**Factory-reset recovery:** if a well-formed but wrong SSID, password, collector host, or token
-was saved, connect the board over USB and erase only the NVS partition, then reset it:
+**Configuration-reset recovery:** on the custom ESP32-S3 observer, boot the application
+normally, then hold **BOOT/DOWNLOAD for eight seconds**. Once the status panel shows the
+armed pattern, release the button. Firmware erases only the `navfeeder` configuration
+namespace, reboots, and raises a newly passworded SoftAP portal. A short press does nothing,
+and merely reaching the hold threshold does not erase anything until a debounced release.
+
+Do not hold BOOT while resetting for this gesture: that enters the ROM downloader instead.
+The runtime gesture is intentionally disabled on the current Waveshare ESP32-C6-LCD-1.47
+build because its GPIO9 BOOT button shares the receiver UART RX node; pressing it while the
+receiver drives TX would create electrical contention. For that dev board—or if application
+firmware cannot run on the S3—connect over USB and erase the NVS partition, then reset:
 
 ```sh
 esptool.py --chip esp32c6 --port /dev/cu.usbmodemXXXX erase-region 0x9000 0x6000
@@ -83,7 +92,8 @@ esptool.py --chip esp32c6 --port /dev/cu.usbmodemXXXX erase-region 0x9000 0x6000
 
 Those offset/size values are the `nvs` row in `partitions.csv`; the LittleFS spool partition is
 left intact. On the next boot `netcfg_load` finds no provisioned config and raises a newly
-passworded SoftAP portal. Use the actual serial device path for the board.
+passworded SoftAP portal. Use the actual serial device path for the board. This is a
+configuration erase, not a firmware reflash.
 
 **Incomplete configuration also raises the portal**. "Provisioned" means WiFi SSID,
 collector host, port in 1–65535, station id, and bearer token are all present — one rule

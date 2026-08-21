@@ -59,6 +59,21 @@ menu "navfeeder-esp"
             only (NVF_INSECURE above, or a direct NVS write on the bench). Turn this on only
             for a dev/bench build where a field-settable TLS downgrade is acceptable.
 
+    config NVF_CONFIG_RESET_GPIO
+        int "Runtime configuration-reset button GPIO (-1 disables)"
+        range -1 48
+        default 0 if IDF_TARGET_ESP32S3
+        default -1
+        help
+            Active-low button sampled only after the application boots. Hold for eight
+            seconds and release to erase the navfeeder configuration namespace and reopen
+            the provisioning portal. The custom ESP32-S3 observer uses its BOOT/DOWNLOAD
+            button on GPIO0.
+
+            Keep this disabled on the Waveshare ESP32-C6-LCD-1.47 build: that board's BOOT
+            button is GPIO9, which this firmware also uses as the receiver's UART RX. A
+            runtime press would electrically contend with the receiver's push-pull TX.
+
     config NVF_RX_BAUD
         int "Receiver UART baud"
         default 460800
