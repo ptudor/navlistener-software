@@ -89,7 +89,7 @@ for it.
 | Temperature | `CAT_TEMP` | **MCP9808-E/MS** (`C94847`) | Crystal-drift characterisation and thermal health — §6.2. |
 | Humidity | `CAT_SENSOR` | **HDC2080** | Dew point / enclosure-seal diagnostic — §6.4. Not GNSS math. |
 | Backup | `CAT_BATTERY` | 1 × primary 3 V CR123A in MYOUNG `BH-123A-A1CJ002` holder (LCSC/EasyEDA `C5290177`; needs enum entry, §5.3) | Shared GNSS/RTC backup with annual replacement — §3.2. |
-| GNSS antenna | `CAT_ANTENNA` | SMA jack, right-angle, 4-leg THT (Amphenol `132289` class) | Bias + supervision → `MON-HW` `antStatus` — §7.3. |
+| GNSS antenna | `CAT_ANTENNA` | SMA jack, right-angle, 4-leg THT (Amphenol `132289` class) | Protected `VCC_RF` active-antenna bias tee; no first-spin open/short supervisor — §7.3. |
 | Wi-Fi antenna | `CAT_ANTENNA` | u.FL → RP-SMA pigtail off the 1U module | Physically separable from the GNSS path — §7.1. |
 | USB | `CAT_CONNECTOR` | USB-C, 16-pin USB 2.0, THT shield legs | §7.6. |
 
@@ -128,6 +128,12 @@ green/yellow pair in opposition), because a **fully dark row is a meaningful sta
 constellation is not tracked at all — and because independent channels allow top-to-bottom
 animation and a distinct pattern for uplink delay or loss.
 
+Do not add a dedicated `JAM` or `SPOOF` LED. Those are interpreted receiver/firmware
+states rather than direct hardware truths, and their definitions may evolve. Reserve an
+unmistakable panel-wide flashing pattern for jamming, spoofing, clock-integrity, or other
+operator-attention alarms. The two discrete red LEDs remain narrowly defined: always-on
+`3V3_SYS` present and hardware-buffered GNSS PPS present.
+
 Run them lean: 5–8 mA per channel is plenty behind a diffuser, and sixteen channels at 20 mA is
 320 mA of heat in an enclosure that already runs hot. `TLC5916`'s shift-then-latch structure
 means all sixteen change on one edge, so animation cannot tear.
@@ -141,6 +147,29 @@ current setting and firmware are unchanged, only the footprint and the per-colou
 **Rail:** drive the LED anodes from **5 V**, not 3.3 V. TLC5916 sinks current, so the rail sets
 its compliance headroom, and 5 V keeps blue/white available for a future indicator (Vf ≈ 3.0–3.2 V
 would not light from 3.3 V at all).
+
+**First-spin schematic contract.** Call the green driver `U12` and the yellow
+driver `U13`; the top physical LED row is green and the bottom row is yellow.
+Both drivers use this pin-level circuit:
+
+| TLC5916 pin | Connection |
+|---:|---|
+| 1 `GND` | GND plane. |
+| 2 `SDI` | `U12`: `LED_SDI` from ESP GPIO14. `U13`: `U12` pin 14 `SDO`. |
+| 3 `CLK` | Shared `LED_SCLK`, ESP GPIO11. |
+| 4 `LE` | Shared `LED_LATCH`, ESP GPIO12. The internal pull-down is sufficient while both drivers are blanked at reset. |
+| 5–12 `OUT0`–`OUT7` | Corresponding LED **cathodes**. All LED anodes go directly to protected `+5V`; fit no per-LED ballast resistors. |
+| 13 `OE/ED2` | `U12`: `LED_GREEN_OE_N`, GPIO47. `U13`: `LED_YELLOW_OE_N`, GPIO48. Fit one 10 kΩ pull-up to `3V3_SYS` on each net so reset means blank. |
+| 14 `SDO` | `U12` to `U13` pin 2. `U13` to `LED_SDO`, ESP GPIO13, preserving error-register readback. |
+| 15 `R-EXT` | 2.49 kΩ, 1%, 0603 to GND. The power-on current is approximately 7.5 mA/channel; trim the two values independently after the diffuser is chosen. |
+| 16 `VDD` | `3V3_SYS`, with 100 nF X7R directly from pin 16 to pin 1. Do **not** power TLC logic from 5 V: its guaranteed high threshold is 0.7 × VDD, so a 3.3 V ESP output would not be a guaranteed high. |
+
+Use the same channel order in both colours: `OUT0` GPS, `OUT1` SBAS,
+`OUT2` Galileo, `OUT3` BeiDou, `OUT4` QZSS, `OUT5` GLONASS, `OUT6`
+NavIC, `OUT7` uplink. Since the data enters `U12` first, firmware transmits the
+yellow byte first and the green byte second before pulsing `LED_LATCH`. Place one
+10 µF, 10 V X7R bulk capacitor from the `+5V` LED-anode bus to GND near the
+middle of the row; it is in addition to the 100 nF logic bypass at each driver.
 
 ---
 
@@ -157,7 +186,7 @@ cascaded LDOs:
 | Rail | Regulator | Feeds | Why this part |
 |---|---|---|---|
 | `3V3_SYS` | **`LDL1117S33R`** (ST, SOT-223-4, 1.2 A, LCSC `C435835`). Do not substitute the similarly pinned AMS1117 without rechecking its output-capacitor ESR requirements. | ESP32-S3 module, USB logic, TLC5916 `VDD` | Espressif recommends a supply capable of at least 0.5 A; digital rail, so current and thermals matter, noise does not. Worst case from 5 V: (5.0 − 3.3) V × 0.5 A ≈ 0.85 W — acceptable for burst duty only with a real `3V3_SYS` copper heat spreader around the SOT-223 tab, and a first-prototype thermal test remains mandatory. |
-| `3V3_GNSS` | **ADM7150ARDZ-3.3** (SOIC-8-EP, 800 mA, 1.0 µVrms 100 Hz–100 kHz, PSRR > 90 dB 1 kHz–100 kHz at 400 mA, VIN 4.5–16 V — so it must feed from protected `+5V`, not from 3V3) | NEO `VCC`, SAW/LNA (§7.4), antenna bias + supervision (§7.3) | The receiver's RF chain is the one place supply noise is directly signal noise. 800 mA is deliberate headroom: variant B's ZED-F9P (~130 mA **[verify]**) reuses this rail unchanged. |
+| `3V3_GNSS` | **ADM7150ARDZ-3.3** (SOIC-8-EP, 800 mA, 1.0 µVrms 100 Hz–100 kHz, PSRR > 90 dB 1 kHz–100 kHz at 400 mA, VIN 4.5–16 V — so it must feed from protected `+5V`, not from 3V3) | NEO `VCC`; the NEO generates its own filtered `VCC_RF` active-antenna bias output (§7.3) | The receiver's RF chain is the one place supply noise is directly signal noise. 800 mA is deliberate headroom: variant B's ZED-F9P (~130 mA **[verify]**) reuses this rail unchanged. |
 | `3V3_SENS` | **`RT9193-33GB`** (genuine Richtek, SOT-23-5, 300 mA, LCSC `C15651`), with its required 22 nF BP capacitor populated for low-noise mode | ATECC608C, 24AA025E64, MCP79412 `VCC`, MCP9808, HDC2080, BMP388 | The vertical gate lives on the barometer's noise floor (§6.1); supply noise on the BMP388 is spent directly out of that budget. Load is trivial — the ATECC's ECC operations dominate at ~16 mA **[verify]**; everything else is microamps to low milliamps. |
 
 Rules that make the split work:
@@ -270,9 +299,16 @@ Connect holder negative to GND and holder positive to a source net named
 `BACKUP_BAT`. Split `BACKUP_BAT` through two separately removable 0 Ω, 0603 links:
 one to `GNSS_VBCKP` and one to `RTC_VBAT`. The links add no intentional voltage
 drop but let either load be isolated during bring-up and current measurement. Add
-a `BACKUP_BAT` test point accessible with the enclosure open. Do not add external
+a `BACKUP_BAT` test point accessible with the enclosure open. Fit 100 nF X7R from
+`GNSS_VBCKP` to GND directly beside NEO pin 22; the cell is still connected with
+negligible intentional series resistance, as u-blox requires during the backup
+switchover current transient. Do not add external
 switchover or isolation diodes; both loads already implement their required
-switchover, and diode drop only consumes backup headroom.
+switchover, and diode drop only consumes backup headroom. Leave `RTC_VBAT`
+directly connected after its 0 Ω link: the MCP79412 reference connection does
+not require a local capacitor, and leaky bulk capacitance would be counterproductive
+on a sub-microamp backup load. Do not fit tantalum, electrolytic, or supercapacitor
+bulk on either backup branch.
 
 The NEO-M9N specifies 45 µA from `V_BCKP` at 3 V with VCC absent. A nominal
 1550 mAh CR123A therefore represents about 3.9 ideal years of *continuous
@@ -633,6 +669,68 @@ can briefly drive low during S3 power-up. Fit 330 Ω in series in both UART path
 and between the PPS buffer and GPIO10. At 460800 baud their edge delay is
 negligible, while the GPIO5 and GPIO10 resistors limit contention if the
 already-powered receiver or PPS buffer is high during an ESP-only reset.
+These resistors are not fuses, external-short protection, or power-domain
+isolation; firmware must still leave the UART and PPS GPIOs high-impedance before
+turning `3V3_GNSS` off. Their contention limit is about 10 mA for a direct 3.3 V
+logic fight (`3.3 V / 330 Ω`).
+Do not add additional series ferrite beads to the first-spin UART. The generic
+ZED-F9P EMI guidance recommends grounding, shielding, layout optimization and
+low-pass filtering of digital noise sources, but does not specify ferrites as a
+UART requirement; the NEO-M9N guidance likewise emphasizes a continuous ground
+reference and via shielding around serial lines. The existing 330 Ω series parts
+provide predictable edge damping and contention protection. Route both lines over
+the uninterrupted ground plane and away from `RF_IN`; place the resistor in the
+NEO-to-ESP receive path close to the NEO TXD driver and the resistor in the
+ESP-to-NEO path close to the ESP GPIO4 driver.
+
+#### NEO-M9N local support and recovery circuit
+
+At NEO pin 23 `VCC`, place **1 µF X7R directly at the pad** and a 4.7 µF,
+10 V X7R bulk capacitor beside it, both to the nearest ground pins. Feed the pad
+from `3V3_GNSS` with a short, wide connection and no bead or series resistor;
+u-blox permits less than 0.2 Ω in the VCC path and specifies a 100 mA-class peak.
+Pin 22 `V_BCKP` is `GNSS_VBCKP` with the local 100 nF capacitor specified in
+§3.2. Connect pins 10, 12, 13 and 24 to the uninterrupted ground plane with short
+returns and local vias.
+
+Use UART mode: leave pin 2 `D_SEL` open; pin 20 `TXD` goes through 330 Ω to
+`GNSS_UART_RX` / ESP GPIO5 and pin 21 `RXD` goes through 330 Ω to
+`GNSS_UART_TX` / ESP GPIO4. Leave pins 4, 14–19 unconnected on this revision
+(`EXTINT`, `LNA_EN`, reserved pins, and the unused NEO I²C pins). The active
+antenna is biased from pin 9 `VCC_RF` as §7.3 specifies, so `LNA_EN` is not part
+of that circuit. In particular, do not connect NEO pins 18/19 to the sensor I²C
+bus: its pull-ups are on switched `3V3_SENS`, while the module I/O domain is on
+independently switched `3V3_GNSS`; joining them defeats clean power cycling and
+can back-power a disabled domain. A future GNSS I²C option requires its own
+GNSS-referenced pull-ups or explicit isolation.
+
+Expose module-side test pads for `NEO_TXD`, `NEO_RXD`, `NEO_SAFEBOOT_N` pin 1,
+`NEO_RESET_N` pin 8, and GND. Do not add capacitors to RESET or external pull-ups
+to RESET/SAFEBOOT; the module supplies them. Pulling RESET low for at least
+100 ms performs a destructive cold start, while holding SAFEBOOT low during
+power-up enters recovery mode. SAFEBOOT recovery **cannot use USB**—it must use
+UART, I²C or SPI—so these pads remain useful even after adding the normal USB
+service port.
+
+Fit an unpopulated four-pin 2.54 mm service-header footprint such as Ckmtw
+`B-2100S04P-A110`, LCSC/EasyEDA `C124378`, in USB order: pin 1
+`NEO_USB_VBUS`, pin 2 `NEO_USB_DM_CONN`, pin 3 `NEO_USB_DP_CONN`, pin 4 GND.
+This is a self-powered USB port: **do not connect `NEO_USB_VBUS` to board VBUS
+or `+5V`**; the board remains powered through its main USB-C connector.
+
+Implement the NEO USB supply exactly as a host-present supply. Reuse one
+`RT9193-33GB` (`C15651`): `NEO_USB_VBUS` to pin 1 `VIN` with 1 µF X7R to GND,
+pin 2 GND, pin 3 `EN` to `3V3_GNSS`, pin 4 `BP` through 22 nF to GND, and pin 5
+to net `NEO_VUSB` with 1 µF X7R to GND; `NEO_VUSB` then feeds NEO pin 7. Thus
+the host's VBUS creates the required 3.3 V detect rail only while the receiver is
+powered. Add 100 kΩ from `NEO_VUSB` to GND so the detect input is decisively low
+when the service cable is absent. Protect the header with ST `USBLC6-2SC6`,
+LCSC `C7519`, placed beside the header; connect its VBUS reference to
+`NEO_USB_VBUS`. Fit **27 Ω, 5%** from `NEO_USB_DM_CONN` to `NEO_USB_DM` and
+from `NEO_USB_DP_CONN` to `NEO_USB_DP`, close to NEO pins 5 and 6 respectively.
+Route D−/D+ together as a 90 Ω differential pair with no branches. This USB port
+supports ordinary communication and firmware update; the separate SAFEBOOT/UART
+pads cover corrupted-flash recovery.
 
 This retired the *stated* justification for the S3 re-spin, which was exactly this hazard. The
 S3 was then chosen on its own merits instead — see §9.6, now closed.
@@ -641,50 +739,107 @@ S3 was then chosen on its own merits instead — see §9.6, now closed.
 
 Bring the receiver's `TIMEPULSE` output to a GPIO — easy to omit, impossible to add later,
 and §6.3 depends on it. **Also drive an LED from the buffered PPS line
-directly**, not through the LED drivers. It then blinks at 1 Hz whenever the receiver has time
-lock, independent of the ESP32 entirely.
+directly**, not through the LED drivers. It then blinks whenever the receiver emits
+TIMEPULSE, independent of the ESP32 entirely. It is a time-lock indication only when
+the receiver is configured to suppress or distinguish TIMEPULSE before valid time.
 
-Paired with a **power LED hardwired to the input rail** — outside any switch — that gives two
-truths which survive wedged or crashed firmware: *there is power*, and *the GNSS is locked*. For
-a fleet that has already had a receiver silently drop off a USB bus for two days, being able to
-distinguish "dead" from "alive but not reporting" from across the room is worth two LEDs.
+Pair it with a red **power LED hardwired to the always-on `3V3_SYS` output**:
+`3V3_SYS` through 1 kΩ to the LED anode, with its cathode directly to GND. A typical
+1.8–2.2 V red LED then draws about 1.1–1.5 mA. No transistor or GPIO belongs in this
+path. This verifies the eFuse plus main 3.3 V regulator—the useful board-level power
+truth—while raw VBUS remains a multimeter diagnostic. The two discrete LEDs therefore
+survive wedged or crashed firmware: one says *the system rail is alive* and one says
+*the receiver is emitting PPS*. The TLC panel supplies all MCU-controlled status and
+fault indications; do not add redundant dedicated MCU LEDs.
 
-Buffer PPS for fan-out, not for level: the receiver and the MCU are both 3.3 V, so nothing needs
-translating. A `74LVC1G17` Schmitt buffer is the right shape if PPS also reaches a test point or
-a second load. Its propagation delay is a few nanoseconds and constant — harmless, but remember
-it exists if the RTC is ever characterised against PPS (§6.3).
+Buffer PPS for fan-out, not for level: the receiver and the MCU are both 3.3 V,
+so nothing needs translating. Fit a dual Nexperia `74LVC2G17GV,125`,
+LCSC/EasyEDA `C513289` (SC-74-6), powered from `3V3_SYS`: pin 5 VCC, pin 2 GND,
+and 100 nF X7R directly between them. NEO pin 3 `TIMEPULSE` is net
+`GNSS_PPS_RAW`; connect it to both buffer inputs, pins 1 `1A` and 3 `2A`, and
+fit 100 kΩ from that raw net to GND so both outputs remain low while the GNSS
+rail is off.
 
-**Blanking the panel.** An N-channel MOSFET (`AO3400A` class) in the low side of the PPS LED,
-gate pulled to **3.3 V** through 100 kΩ, MCU GPIO pulling it low to blank. Two constraints:
+Powering this buffer from `3V3_GNSS` is also electrically valid: the selected
+Nexperia part has `I_OFF` partial-power-down protection, so a live ESP GPIO cannot
+back-power the disabled buffer. It is not the preferred first-spin connection,
+because both outputs become high-impedance instead of actively low when GNSS is
+disabled, and the visual output would draw its 1–2 mA LED pulse from the quiet
+GNSS rail. If layout forces that choice, retain the raw-input pull-down and add
+100 kΩ from `GNSS_PPS_BUF` to GND so GPIO10 has a defined low state while the
+buffer is off.
 
-- **Pull the gate to 3.3 V, never to the 5 V rail.** ESP32 GPIOs are not 5 V tolerant, and the
-  pin is high-impedance at every reset and through boot — so a pull-up to 5 V puts 5 V on it
-  before firmware ever runs.
-- 100 kΩ, not 1 kΩ. The gate is high-impedance; a 1 kΩ pull-up just sinks milliamps through the
-  GPIO for the entire time the panel is blanked.
+Pin 6 `1Y` is the timing path. Name it `GNSS_PPS_BUF`, place a labeled PPS test
+pad and a neighboring GND pad on that net, then pass it through the existing
+**330 Ω** contention resistor to `GNSS_PPS` / ESP GPIO10. The test pad belongs
+on the buffer side of the resistor so a scope sees the clean edge. Do not replace
+330 Ω with the board's existing 22 Ω value: 22 Ω is source damping, while this
+resistor also protects against GPIO10's documented power-up low glitch. The
+buffer's few-nanosecond propagation delay is constant and can be calibrated if
+the RTC is characterised against PPS (§6.3).
 
-The fail-safe direction is then correct by construction: high-Z at reset means the pull-up wins
-and **the lights are on by default** — before firmware runs, during a crash that predates the
-blank command, and if the firmware never boots at all. The diagnostic survives exactly the
-failures it exists to reveal.
+Pin 4 `2Y` is the visual path, so LED current never disturbs the measured PPS
+edge. Run it through 1 kΩ to the PPS LED anode and connect the LED cathode directly
+to GND. The resulting roughly 1–2 mA pulse is bright enough for a diagnostic and
+comfortably inside the buffer's drive.
 
-Keep the **power LED off the switched rail**. If software can extinguish it, "no light" stops
-meaning "no power" and the ground truth is gone. Run it lean — 1–2 mA is legible across a room,
-and it is lit continuously for years in a hot box.
+The first spin deliberately has no PPS-blanking MOSFET. Direct grounding removes a
+component, a pull-up, a control route, a GPIO assignment, and a failure point while
+making PPS a hardware truth that firmware cannot suppress. The TLC panel already
+provides software dimming and this LED-centric board is not intended to become fully
+dark; a later enclosure-specific revision can restore blanking if field use demands it.
+
+Keep the **power LED on `3V3_SYS`, not either switched rail and not a GPIO**. If
+software can extinguish it, "no light" stops meaning "the system rail is absent" and
+the ground truth is gone. Run it lean—1–2 mA is legible across a room, and it is lit
+continuously for years in a hot box.
 
 ### 7.3 Antenna
 
-Prefer u.FL/SMA for an external active antenna over an on-board patch — antenna quality dominates
-data quality by a wider margin than any silicon choice on this board. Wire the antenna supervisor
-(bias, short/open detection): u-blox reports it in `MON-HW` `antStatus`, and the GNF1 telemetry
-codec already carries that field, so supervision becomes fleet telemetry rather than a dead byte.
+Prefer SMA for an external **2.7–3.3 V active antenna** over an on-board patch —
+antenna quality dominates data quality by a wider margin than any silicon choice
+on this board. The NEO-M9N already contains the LNA, SAW filter, LTE band-13
+notch, RF input DC block and 50 Ω match. Do not add another series DC-block
+capacitor, matching network, SAW or LNA on the first spin.
+
+Build the u-blox bias tee from pin 9 `VCC_RF`: use a 22 Ω, at least 0.5 W series
+resistor—Yageo `RC2010JK-0722RL`, LCSC/EasyEDA `C137041`, is a 0.75 W 2010
+choice with an available EasyEDA model—to net `ANT_BIAS`; place 100 nF, 16 V,
+X7R from `ANT_BIAS` to GND; then
+connect `ANT_BIAS` through a 27 nH RF inductor to the antenna feed near the SMA.
+Use Murata `LQG15HN27NJ02D`, LCSC/EasyEDA `C115488`: 0402, 300 mA, 1.6 GHz
+minimum self-resonance. The 22 Ω value follows u-blox's later short-circuit
+requirement of at least 19 Ω at 3.3 V and keeps a hard coax short below roughly
+150 mA; its wattage is deliberate because a cable short can be continuous.
+
+Connect NEO pin 11 `RF_IN` directly to the same 50 Ω feed. At the SMA, shunt the
+feed to the ground plane through TI `TPD1E01B04DPYRQ1`, LCSC/EasyEDA
+`C3705129`, a 0.2 pF RF-capable ESD diode; its ground pad gets an immediate via.
+Put the ESD diode first at the connector, and attach the bias-inductor branch
+without creating a long RF stub. The 2010 resistor is not an RF-path component:
+place it behind the 27 nH inductor and bypass capacitor, outside the straight
+`RF_IN`-to-SMA routing corridor. This passive bias/current-limit network does
+**not** measure open or short current and therefore does not create valid
+`MON-HW antStatus` telemetry. Report antenna status as unknown on this revision;
+a later active current-limiter/supervisor can close that feature explicitly.
 
 ### 7.4 RF coexistence
 
 An ESP32 radio at 2.4 GHz and USB's broadband noise both sit close enough to desense a 1575 MHz
 front end, and a clear enclosure provides no shielding. Separate the GNSS RF path from the ESP32
-antenna keep-out and USB routing, pour solid ground, and consider a SAW/LNA ahead of the module.
-This is where layout effort belongs — not the LED array.
+antenna keep-out and USB routing and pour solid ground; the module already supplies its SAW/LNA.
+Use the JLCPCB `JLC04161H-7628` 1.6 mm four-layer controlled-impedance
+stack-up, with 1 oz outer and 0.5 oz inner copper. Route `RF_IN` to SMA on layer
+1 as a 50 Ω grounded coplanar waveguide referenced to an uninterrupted layer-2
+GND plane. Start the EasyEDA rule at **0.34 mm (13.5 mil) trace width** and
+**0.15 mm (6 mil) clearance to the layer-1 GND pour**, then enter those choices
+in JLCPCB's current impedance calculator at order time and use its returned
+production width. Keep solder mask over the trace. Use no layer changes, no
+routing under the CR123A holder, and no L2 splits, tracks or voids below it.
+Fence both sides with GND vias at 1.0–1.5 mm pitch and place the first vias beside
+the SMA ground legs. Place the NEO USB LDO/header below or left of the module,
+never between `RF_IN` and SMA. This is where layout effort belongs—not the LED
+array.
 
 ### 7.5 I²C
 
@@ -904,11 +1059,11 @@ The first-spin GPIO allocation is the schematic source of truth:
 | 10 | `GNSS_PPS` | Buffered PPS input through 330 Ω. Shepherd parity. |
 | 11 | `LED_SCLK` | TLC5916 shared shift clock. |
 | 12 | `LED_LATCH` | TLC5916 shared latch-enable. |
-| 13 | — | Spare. |
+| 13 | `LED_SDO` | Final TLC5916 serial/error readback (`U13` pin 14). |
 | 14 | `LED_SDI` | TLC5916 chain data; preserves Shepherd's status-data pin. |
 | 15 | `RTC_MFP_N` | MCP79412 open-drain alarm/clock output; 10 kΩ to `3V3_SENS`. |
 | 16 | — | Spare. |
-| 17 | `PPS_LED_BLANK_N` | Pull gate high with 100 kΩ; drive low to blank. |
+| 17 | — | Spare; the first-spin PPS LED is not software-blanked. |
 | 18 | — | Spare. |
 | 19 | `USB_DM_ESP` | Native USB D−. |
 | 20 | `USB_DP_ESP` | Native USB D+. |
@@ -947,6 +1102,26 @@ layers. The first-spin stack and ownership are:
 3. **Inner 2:** `+5V`, `3V3_SYS`, `3V3_GNSS`, and `3V3_SENS` regions plus only
    slow signals where necessary.
 4. **Bottom:** remaining slow signals and a GND pour.
+
+Shape the Inner 2 regions around source-to-load current paths, not as boxes around
+functional blocks. The protected `+5V` region is a wide trunk from the eFuse output
+to all three LDO inputs and the LED anodes. `3V3_SYS` is the largest 3.3 V region and
+runs from the LDL1117 output/tab to the ESP32-S3, TLC5916s, and USB-side logic.
+`3V3_SENS` is a modest region from the RT9193 output to the sensor/secure-element/
+EEPROM/RTC cluster and I2C pull-ups. `3V3_GNSS` is a compact quiet region from the
+ADM7150 output and output capacitor directly to the NEO `VCC`; keep it away from
+LED and USB power paths and out from under the RF feed. Route `GNSS_VBCKP` and RTC
+`VBAT` as ordinary clean traces, not plane regions.
+
+Each Inner 2 region needs explicit vias at its regulator output and at every load's
+local bypass-capacitor node. Use several vias at the LDL1117 output/tab and ESP32
+supply entry, and one or two at each low-current GNSS or sensor entry. Put the
+bypass capacitor's GND via directly beside its ground pad into Inner 1. Avoid narrow
+necks, isolated slivers, or forcing load current through a capacitor pad in series.
+Do not route a fast Bottom-layer signal across a boundary between Inner 2 regions;
+USB and RF stay on Top over the continuous Inner 1 ground plane. Remaining Inner 2
+area may become a low-priority GND fill after the power regions stabilize, but
+Inner 1 remains the primary return plane.
 
 After every schematic tranche is complete, use **PCB → Design → Import Changes
 from Schematic**, including wire-net updates, and confirm that pads show real net
