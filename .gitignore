@@ -72,3 +72,6 @@ reference/icd/*.pdf
 # local-only — their terms grant no redistribution (or NavIC-L5S forbids it). NavIC-L1
 # carries only a conditional non-profit grant and is held local-only by decision.
 # See reference/REFERENCES.md for per-document terms.
+
+# Python bytecode from the pcb build scripts
+__pycache__/
