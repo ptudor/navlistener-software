@@ -1,9 +1,16 @@
 # NavListen — static Vue 3 project site at navlisten.com
 # Periodically run: npx npm-check-updates -u && npm install
 #
+# The site root is named for the PRODUCT SLUG (navlistener), not the domain
+# (navlisten.com) and not the brand in the page. That is the design rule on
+# junia wherever the two differ -- rcktfl.com serves /usr/local/www/rocketfuel
+# -- and the Ground sibling already does it: radiolistener's Django tree is
+# /usr/local/www/radiolistener/django. Do not shorten this to match the
+# hostname; navlisten.com.conf's DocumentRoot is the other half of the pair.
+#
 # Keep the generated site in a web/ subdirectory so rsync --delete is scoped
-# away from any future sibling trees under /usr/local/www/navlisten/.
-SITE_DIR   = /usr/local/www/navlisten
+# away from any future sibling trees under /usr/local/www/navlistener/.
+SITE_DIR   = /usr/local/www/navlistener
 DEPLOY_DIR = $(SITE_DIR)/web
 
 default: build
