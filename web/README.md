@@ -21,6 +21,7 @@ npm run dev       # http://localhost:5177/
 npm test
 npm run build     # semantic static site -> dist/
 npm run preview
+make deploy       # build + SHA-256 digests + rsync to /usr/local/www/navlisten/web/
 ```
 
 The build runs the copy guards, creates the client bundle, server-renders `App.vue` into the
@@ -29,7 +30,17 @@ metadata, CSP compatibility, and required brand assets.
 
 ## Deploy
 
-Publish the contents of `dist/` at the domain root. For Apache httpd, the essential shape is:
+`make deploy` follows the sibling-site convention: it runs the tests and production build,
+writes a `.sha256` file beside every generated file, then uses `rsync --delete --delay-updates`
+to publish `dist/` at `/usr/local/www/navlisten/web/`. Run it on the web server, or override
+`DEPLOY_DIR` for another host:
+
+```sh
+make deploy
+make deploy DEPLOY_DIR=/another/document/root
+```
+
+For Apache httpd, the essential shape is:
 
 ```apache
 ServerName navlisten.com
