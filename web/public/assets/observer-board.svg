@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 500" role="img" aria-labelledby="title desc">
+  <title id="title">NavListen GNSS Color NEO observer board</title>
+  <desc id="desc">A long four-layer teal circuit board with an ESP32-S3, NEO GNSS receiver, secure element, sensors, battery, antenna connectors, and two rows of constellation status LEDs.</desc>
+  <defs>
+    <linearGradient id="board" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#126b5c"/>
+      <stop offset=".48" stop-color="#0c4e44"/>
+      <stop offset="1" stop-color="#073c35"/>
+    </linearGradient>
+    <linearGradient id="metal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f0f3e7"/>
+      <stop offset=".45" stop-color="#889a94"/>
+      <stop offset="1" stop-color="#d3ded8"/>
+    </linearGradient>
+    <linearGradient id="battery" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#172320"/>
+      <stop offset=".48" stop-color="#35433e"/>
+      <stop offset="1" stop-color="#111a18"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="20" stdDeviation="16" flood-color="#000" flood-opacity=".5"/>
+    </filter>
+    <pattern id="traces" width="62" height="62" patternUnits="userSpaceOnUse">
+      <path d="M0 15H23l8 8h31M12 62V40l9-9V0M45 62V49l8-8h9" fill="none" stroke="#a9e4c9" stroke-opacity=".11" stroke-width="2"/>
+      <circle cx="31" cy="23" r="2.5" fill="#e7c969" fill-opacity=".42"/>
+      <circle cx="21" cy="31" r="2" fill="#e7c969" fill-opacity=".3"/>
+    </pattern>
+  </defs>
+
+  <g filter="url(#shadow)">
+    <rect x="25" y="62" width="950" height="380" rx="38" fill="url(#board)" stroke="#68c0a5" stroke-width="4"/>
+    <rect x="30" y="67" width="940" height="370" rx="34" fill="url(#traces)"/>
+    <path d="M55 337H197l30-30h104l28 28h180l30-36h172l34 35h150" fill="none" stroke="#f0d16c" stroke-opacity=".35" stroke-width="3"/>
+    <path d="M89 190h144l22 22h96l31-31h197l22 22h247" fill="none" stroke="#a0ffdf" stroke-opacity=".22" stroke-width="2"/>
+
+    <circle cx="72" cy="109" r="18" fill="#071612" stroke="#c6d5ce" stroke-width="4"/>
+    <circle cx="928" cy="109" r="18" fill="#071612" stroke="#c6d5ce" stroke-width="4"/>
+    <circle cx="72" cy="395" r="18" fill="#071612" stroke="#c6d5ce" stroke-width="4"/>
+    <circle cx="928" cy="395" r="18" fill="#071612" stroke="#c6d5ce" stroke-width="4"/>
+
+    <g>
+      <rect x="-4" y="287" width="82" height="58" rx="7" fill="url(#metal)" stroke="#4d5e58" stroke-width="3"/>
+      <rect x="-5" y="301" width="45" height="30" rx="5" fill="#131d1a"/>
+      <path d="M40 297v38M54 297v38" stroke="#596b65" stroke-width="3"/>
+      <text x="20" y="369" fill="#bbd8cc" font-family="monospace" font-size="15" letter-spacing="2">USB-C</text>
+    </g>
+
+    <g>
+      <rect x="76" y="142" width="196" height="139" rx="8" fill="#10231e" stroke="#b6c8bf" stroke-width="2"/>
+      <rect x="92" y="158" width="164" height="79" rx="4" fill="url(#metal)"/>
+      <path d="M112 174h124v47H112z" fill="#9daea7" stroke="#eef4ef" stroke-width="2"/>
+      <path d="M105 253h138" stroke="#e4c963" stroke-width="6" stroke-dasharray="5 7"/>
+      <text x="174" y="190" text-anchor="middle" fill="#26322e" font-family="monospace" font-size="17" font-weight="700">ESP32-S3</text>
+      <text x="174" y="211" text-anchor="middle" fill="#42534d" font-family="monospace" font-size="11">N16R8 / 1U</text>
+      <circle cx="236" cy="173" r="5" fill="#f0d16c"/>
+      <text x="174" y="271" text-anchor="middle" fill="#9ed6c4" font-family="monospace" font-size="10" letter-spacing="2">EDGE FEEDER</text>
+    </g>
+
+    <g>
+      <rect x="297" y="108" width="72" height="52" rx="5" fill="#111d1a" stroke="#798e86" stroke-width="2"/>
+      <path d="M304 102v12M316 102v12M328 102v12M340 102v12M352 102v12M364 102v12M304 154v12M316 154v12M328 154v12M340 154v12M352 154v12M364 154v12" stroke="#d5c46b" stroke-width="4"/>
+      <text x="333" y="133" text-anchor="middle" fill="#8fe8cb" font-family="monospace" font-size="9">ATECC</text>
+      <text x="333" y="145" text-anchor="middle" fill="#7b978d" font-family="monospace" font-size="7">IDENTITY</text>
+    </g>
+
+    <g>
+      <rect x="295" y="184" width="78" height="58" rx="5" fill="#17221f" stroke="#71867e" stroke-width="2"/>
+      <circle cx="317" cy="213" r="11" fill="#263a34" stroke="#c5d1cc" stroke-width="2"/>
+      <path d="M342 196v34M350 196v34M358 196v34" stroke="#a6b7b0" stroke-width="3"/>
+      <text x="334" y="258" text-anchor="middle" fill="#8ab2a5" font-family="monospace" font-size="8">SENSORS</text>
+    </g>
+
+    <g>
+      <rect x="396" y="112" width="285" height="212" rx="25" fill="#111b18" stroke="#6f827c" stroke-width="4"/>
+      <rect x="414" y="130" width="249" height="176" rx="76" fill="url(#battery)" stroke="#a5b3ad" stroke-width="3"/>
+      <rect x="435" y="143" width="208" height="150" rx="64" fill="#28332f" stroke="#52625d" stroke-width="2"/>
+      <path d="M474 143v150M608 143v150" stroke="#b8c4bf" stroke-width="6" opacity=".55"/>
+      <text x="539" y="200" text-anchor="middle" fill="#dce5e0" font-family="monospace" font-size="24" font-weight="700" letter-spacing="4">CR123A</text>
+      <text x="539" y="227" text-anchor="middle" fill="#879a93" font-family="monospace" font-size="11" letter-spacing="2">RTC + GNSS BACKUP</text>
+      <path d="M526 255h26M539 242v26" stroke="#d4c661" stroke-width="3"/>
+      <text x="539" y="342" text-anchor="middle" fill="#83b7a6" font-family="monospace" font-size="9" letter-spacing="2">TIME SURVIVES THE OUTAGE</text>
+    </g>
+
+    <g>
+      <rect x="716" y="135" width="177" height="146" rx="8" fill="url(#metal)" stroke="#edf5f0" stroke-width="3"/>
+      <rect x="731" y="150" width="147" height="116" rx="4" fill="#bbc8c2"/>
+      <path d="M747 164h115v82H747z" fill="#93a39c" stroke="#e1e9e5" stroke-width="2"/>
+      <text x="804" y="198" text-anchor="middle" fill="#1b2925" font-family="monospace" font-size="20" font-weight="700">NEO</text>
+      <text x="804" y="221" text-anchor="middle" fill="#33443e" font-family="monospace" font-size="11">M9 / M10 / F10</text>
+      <text x="804" y="241" text-anchor="middle" fill="#445650" font-family="monospace" font-size="8" letter-spacing="2">RAW NAVIGATION</text>
+    </g>
+
+    <g>
+      <rect x="883" y="170" width="104" height="82" rx="7" fill="url(#metal)" stroke="#53645e" stroke-width="3"/>
+      <rect x="941" y="184" width="59" height="54" rx="7" fill="#b9c7c1" stroke="#56665f" stroke-width="3"/>
+      <circle cx="969" cy="211" r="16" fill="#1a2521" stroke="#e0b94a" stroke-width="5"/>
+      <circle cx="969" cy="211" r="6" fill="#d5c76e"/>
+      <text x="926" y="272" text-anchor="middle" fill="#a9d3c5" font-family="monospace" font-size="10">GNSS ANTENNA</text>
+    </g>
+
+    <g>
+      <rect x="738" y="346" width="168" height="70" rx="6" fill="#092d27" stroke="#6f9d8f" stroke-width="2"/>
+      <text x="822" y="365" text-anchor="middle" fill="#a0dcca" font-family="monospace" font-size="8" letter-spacing="2">CONSTELLATION STATUS</text>
+      <g fill="#67f5c7" stroke="#b4ffe7">
+        <circle cx="759" cy="385" r="7"/><circle cx="777" cy="385" r="7"/><circle cx="795" cy="385" r="7"/><circle cx="813" cy="385" r="7"/><circle cx="831" cy="385" r="7"/><circle cx="849" cy="385" r="7"/><circle cx="867" cy="385" r="7"/><circle cx="885" cy="385" r="7"/>
+      </g>
+      <g fill="#efc95b" stroke="#fff0a0">
+        <circle cx="759" cy="403" r="7"/><circle cx="777" cy="403" r="7"/><circle cx="795" cy="403" r="7"/><circle cx="813" cy="403" r="7"/><circle cx="831" cy="403" r="7"/><circle cx="849" cy="403" r="7"/><circle cx="867" cy="403" r="7"/><circle cx="885" cy="403" r="7"/>
+      </g>
+    </g>
+
+    <g>
+      <circle cx="255" cy="365" r="13" fill="#ff6b5f" stroke="#ffaaa3" stroke-width="3"/>
+      <circle cx="290" cy="365" r="13" fill="#efc95b" stroke="#fff0a0" stroke-width="3"/>
+      <text x="272" y="399" text-anchor="middle" fill="#9bc4b6" font-family="monospace" font-size="8" letter-spacing="1">POWER / PPS</text>
+    </g>
+
+    <text x="96" y="405" fill="#a2e2cc" font-family="monospace" font-size="13" font-weight="700" letter-spacing="3">NAVLISTEN</text>
+    <text x="96" y="423" fill="#73a697" font-family="monospace" font-size="8" letter-spacing="2">OPEN NAVIGATION OBSERVER</text>
+  </g>
+</svg>

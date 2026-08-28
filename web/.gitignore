@@ -1,0 +1,4 @@
+node_modules/
+dist/
+.static-ssr/
+.DS_Store

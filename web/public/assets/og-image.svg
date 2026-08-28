@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-label="NavListen — Navigation is a broadcast. We’re listening.">
+  <defs>
+    <radialGradient id="glow" cx="75%" cy="25%" r="70%">
+      <stop offset="0" stop-color="#1c8067" stop-opacity=".42"/>
+      <stop offset="1" stop-color="#06100f" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M48 0H0V48" fill="none" stroke="#67f5c7" stroke-opacity=".06"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="630" fill="#06100f"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+  <rect x="700" width="500" height="630" fill="url(#grid)"/>
+  <g transform="translate(74 66)">
+    <rect width="64" height="64" rx="18" fill="#0b1a16" stroke="#67f5c7" stroke-opacity=".2"/>
+    <circle cx="32" cy="34" r="4" fill="#67f5c7"/>
+    <path d="M18 34a14 14 0 0 1 28 0M11 34a21 21 0 0 1 42 0M32 38v15M24.5 53h15" fill="none" stroke="#67f5c7" stroke-width="3" stroke-linecap="round"/>
+    <text x="82" y="43" fill="#f1f3e9" font-family="Arial, sans-serif" font-size="30" font-weight="700">navlisten</text>
+  </g>
+  <text x="74" y="282" fill="#f1f3e9" font-family="Arial, sans-serif" font-size="72" font-weight="650" letter-spacing="-3">Navigation is a broadcast.</text>
+  <text x="74" y="366" fill="#67f5c7" font-family="Georgia, serif" font-size="79" font-style="italic">We’re listening.</text>
+  <text x="78" y="466" fill="#9bada6" font-family="Arial, sans-serif" font-size="24">Open hardware and software for understanding the signals above us.</text>
+  <g fill="none" stroke="#67f5c7" stroke-opacity=".28">
+    <ellipse cx="1005" cy="177" rx="160" ry="91" transform="rotate(-18 1005 177)"/>
+    <ellipse cx="1005" cy="177" rx="120" ry="174" transform="rotate(31 1005 177)"/>
+    <circle cx="1005" cy="177" r="46" fill="#0d2b23" stroke-opacity=".7"/>
+  </g>
+  <circle cx="867" cy="228" r="7" fill="#67f5c7"/>
+  <circle cx="1085" cy="67" r="7" fill="#efc95b"/>
+  <circle cx="1124" cy="278" r="7" fill="#bc8cff"/>
+  <path d="M1005 223v188" stroke="#67f5c7" stroke-opacity=".28"/>
+  <circle cx="1005" cy="427" r="9" fill="#06100f" stroke="#67f5c7" stroke-width="3"/>
+  <circle cx="1005" cy="427" r="28" fill="none" stroke="#67f5c7" stroke-opacity=".22"/>
+  <text x="78" y="567" fill="#67f5c7" font-family="monospace" font-size="17" letter-spacing="4">NAVLISTEN.COM  /  JOIN THE OPEN OBSERVATORY</text>
+</svg>
