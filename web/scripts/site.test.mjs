@@ -31,6 +31,16 @@ test('every constellation has a distinct Integrity Station identity', async () =
   for (const name of names) assert.ok(app.includes(`name: '${name}'`), `missing ${name}`)
 })
 
+test('the system story represents both supported receiver families', async () => {
+  const app = await readFile(path.join(webRoot, 'src', 'App.vue'), 'utf8')
+  assert.match(app, /u-blox \+ Septentrio/)
+  assert.match(app, /purpose-built ESP32 observer/)
+  assert.match(app, /hardware-backed ECC identity/)
+  assert.doesNotMatch(app, /tags: \['NEO receiver'/)
+  assert.doesNotMatch(app, /purpose-built ESP32-S3 observer/)
+  assert.doesNotMatch(app, /existing station/i)
+})
+
 test('public copy avoids adversarial contrast and deficit framing', async () => {
   const app = await readFile(path.join(webRoot, 'src', 'App.vue'), 'utf8')
   const discouraged = [

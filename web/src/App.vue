@@ -18,8 +18,8 @@ const layers = [
     number: '01',
     eyebrow: 'The observer',
     title: 'Listen at the edge',
-    copy: 'A purpose-built ESP32-S3 board sits beneath the antenna and forwards the raw navigation messages satellites actually broadcast.',
-    tags: ['NEO receiver', 'Secure identity', 'Environmental sensors'],
+    copy: 'Our purpose-built ESP32 observer pairs a u-blox or Septentrio receiver with hardware-backed ECC identity, then forwards the raw navigation messages satellites actually broadcast.',
+    tags: ['u-blox + Septentrio', 'Hardware ECC identity', 'Environmental sensors'],
   },
   {
     number: '02',
