@@ -1,3 +1,43 @@
+@font-face {
+  font-family: "Public Sans";
+  src: url("/fonts/PublicSans-VariableFont_wght.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("/fonts/SpaceGrotesk-VariableFont_wght.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("/fonts/IBMPlexMono-Regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("/fonts/IBMPlexMono-Medium.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Charis";
+  src: url("/fonts/Charis-Italic.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+}
+
 :root {
   color-scheme: dark;
   --ink: #06100f;
@@ -10,6 +50,7 @@
   --signal: #67f5c7;
   --signal-bright: #a0ffdf;
   --signal-dark: #0a8a68;
+  --status-ok: #58a6ff;
   --amber: #efc95b;
   --red: #ff6b5f;
   --line: rgba(160, 255, 223, 0.17);
@@ -17,8 +58,10 @@
   --container: 1180px;
   --nav-height: 76px;
   --radius: 22px;
-  --font-sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --font-sans: "Public Sans", "Avenir Next", Avenir, "Segoe UI", sans-serif;
+  --font-display: "Space Grotesk", "Public Sans", "Avenir Next", sans-serif;
+  --font-serif: "Charis", "Iowan Old Style", Palatino, Georgia, serif;
+  --font-mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -82,6 +125,7 @@ ul {
 h1,
 h2,
 h3 {
+  font-family: var(--font-display);
   line-height: 1.04;
   letter-spacing: -0.045em;
 }
@@ -95,7 +139,8 @@ h1 {
 h1 em,
 .statement em {
   color: var(--signal);
-  font-family: Georgia, "Times New Roman", serif;
+  font-family: var(--font-serif);
+  font-style: italic;
   font-weight: 400;
 }
 
@@ -1024,7 +1069,7 @@ ul {
 
 .console-summary span { color: #657b73; }
 .console-summary strong { display: flex; margin-top: 0.45rem; align-items: center; gap: 0.45rem; color: #d9e7e2; font-size: 0.75rem; font-weight: 500; }
-.console-summary strong i { width: 7px; height: 7px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 10px var(--signal); }
+.console-summary strong i { width: 7px; height: 7px; border-radius: 50%; background: var(--status-ok); box-shadow: 0 0 10px var(--status-ok); }
 
 .station-card {
   padding: 1.2rem;
@@ -1044,8 +1089,8 @@ ul {
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: var(--signal);
-  box-shadow: 0 0 12px var(--signal);
+  background: var(--status-ok);
+  box-shadow: 0 0 12px var(--status-ok);
 }
 
 .station-head strong { display: block; font-size: 0.78rem; font-weight: 600; }
@@ -1114,7 +1159,7 @@ ul {
 }
 
 .event-row span { display: flex; align-items: center; gap: 0.45rem; }
-.event-row span i { width: 6px; height: 6px; border-radius: 50%; background: var(--signal); }
+.event-row span i { width: 6px; height: 6px; border-radius: 50%; background: var(--status-ok); }
 .event-row strong { color: #d8e6e1; font-size: 0.64rem; font-weight: 500; }
 .event-row small { grid-column: 2; color: #52665f; }
 

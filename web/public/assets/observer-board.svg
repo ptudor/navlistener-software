@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 500" role="img" aria-labelledby="title desc">
-  <title id="title">NavListen GNSS Color NEO observer board</title>
-  <desc id="desc">A long four-layer teal circuit board with an ESP32-S3, NEO GNSS receiver, secure element, sensors, battery, antenna connectors, and two rows of constellation status LEDs.</desc>
+  <title id="title">NavListen GNSS observer board</title>
+  <desc id="desc">A long four-layer teal circuit board with an ESP32, GNSS receiver, secure element, sensors, battery, antenna connectors, and two rows of constellation status LEDs.</desc>
   <defs>
     <linearGradient id="board" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#126b5c"/>
@@ -50,7 +50,7 @@
       <rect x="92" y="158" width="164" height="79" rx="4" fill="url(#metal)"/>
       <path d="M112 174h124v47H112z" fill="#9daea7" stroke="#eef4ef" stroke-width="2"/>
       <path d="M105 253h138" stroke="#e4c963" stroke-width="6" stroke-dasharray="5 7"/>
-      <text x="174" y="190" text-anchor="middle" fill="#26322e" font-family="monospace" font-size="17" font-weight="700">ESP32-S3</text>
+      <text x="174" y="190" text-anchor="middle" fill="#26322e" font-family="monospace" font-size="17" font-weight="700">ESP32</text>
       <text x="174" y="211" text-anchor="middle" fill="#42534d" font-family="monospace" font-size="11">N16R8 / 1U</text>
       <circle cx="236" cy="173" r="5" fill="#f0d16c"/>
       <text x="174" y="271" text-anchor="middle" fill="#9ed6c4" font-family="monospace" font-size="10" letter-spacing="2">EDGE FEEDER</text>
@@ -85,7 +85,7 @@
       <rect x="716" y="135" width="177" height="146" rx="8" fill="url(#metal)" stroke="#edf5f0" stroke-width="3"/>
       <rect x="731" y="150" width="147" height="116" rx="4" fill="#bbc8c2"/>
       <path d="M747 164h115v82H747z" fill="#93a39c" stroke="#e1e9e5" stroke-width="2"/>
-      <text x="804" y="198" text-anchor="middle" fill="#1b2925" font-family="monospace" font-size="20" font-weight="700">NEO</text>
+      <text x="804" y="198" text-anchor="middle" fill="#1b2925" font-family="monospace" font-size="20" font-weight="700">GNSS</text>
       <text x="804" y="221" text-anchor="middle" fill="#33443e" font-family="monospace" font-size="11">M9 / M10 / F10</text>
       <text x="804" y="241" text-anchor="middle" fill="#445650" font-family="monospace" font-size="8" letter-spacing="2">RAW NAVIGATION</text>
     </g>

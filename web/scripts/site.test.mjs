@@ -36,8 +36,8 @@ test('the system story represents both supported receiver families', async () =>
   assert.match(app, /u-blox \+ Septentrio/)
   assert.match(app, /purpose-built ESP32 observer/)
   assert.match(app, /hardware-backed ECC identity/)
-  assert.doesNotMatch(app, /tags: \['NEO receiver'/)
-  assert.doesNotMatch(app, /purpose-built ESP32-S3 observer/)
+  assert.doesNotMatch(app, /\bNEO\b/)
+  assert.doesNotMatch(app, /ESP32-S3/)
   assert.doesNotMatch(app, /existing station/i)
 })
 
@@ -54,4 +54,18 @@ test('public copy avoids adversarial contrast and deficit framing', async () => 
   for (const [pattern, label] of discouraged) {
     assert.doesNotMatch(app, pattern, label)
   }
+})
+
+test('the site uses family typography and IntSat health semantics', async () => {
+  const styles = await readFile(path.join(webRoot, 'src', 'styles.css'), 'utf8')
+
+  for (const family of ['Public Sans', 'Space Grotesk', 'IBM Plex Mono', 'Charis']) {
+    assert.match(styles, new RegExp(`font-family: "${family}"`), `missing ${family}`)
+  }
+
+  assert.match(styles, /--signal: #67f5c7;/, 'NavListen turquoise identity')
+  assert.match(styles, /--status-ok: #58a6ff;/, 'IntSat healthy\/info blue')
+  assert.match(styles, /\.station-pulse[\s\S]*?background: var\(--status-ok\);/)
+  assert.match(styles, /\.console-summary strong i[^\n]*background: var\(--status-ok\);/)
+  assert.match(styles, /\.spark-line[^\n]*stroke: var\(--signal\);/, 'signal data remains turquoise')
 })

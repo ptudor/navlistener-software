@@ -8,10 +8,12 @@ The Vue 3 static recruiting site for `https://navlisten.com/`.
 - Server-rendered at build time: the shipped `dist/index.html` contains the full semantic page,
   while Vue hydrates it for the mobile navigation. JavaScript is an enhancement, not a reading
   requirement.
-- One self-contained stylesheet and local SVG/PNG artwork. No webfonts, analytics, embeds, or
-  third-party runtime requests; the page runs under a strict same-origin CSP.
+- Self-hosted Public Sans, Space Grotesk, Charis Italic, and IBM Plex Mono from the `ptudornet`
+  family stack, plus local SVG/PNG artwork. There are no analytics, embeds, or third-party
+  runtime requests; the page runs under a strict same-origin CSP.
 - Product colors and constellation identities come from the Integrity Station client. The board
-  illustration follows the 127 × 50.8 mm GNSS Color NEO Rev A layout and its real component set.
+  illustration follows the observer's 127 × 50.8 mm Rev A layout and real component set while
+  keeping receiver and ESP32 variant labels generic.
 
 ## Develop
 

@@ -220,12 +220,12 @@ function emailHref(subject) {
     <section id="hardware" class="hardware section-pad">
       <div class="container hardware-grid">
         <div class="board-stage">
-          <div class="board-meta board-meta-top"><span>GNSS-COLOR-NEO</span><span>REV A</span></div>
+          <div class="board-meta board-meta-top"><span>NAVLISTEN OBSERVER</span><span>REV A</span></div>
           <img
             src="/assets/observer-board.svg"
             width="1000"
             height="500"
-            alt="Illustrated layout of the NavListen GNSS Color NEO observer board"
+            alt="Illustrated layout of the NavListen GNSS observer board"
             loading="lazy"
           />
           <div class="board-meta board-meta-bottom"><span>127.0 × 50.8 MM</span><span>4 LAYER</span></div>
@@ -240,8 +240,8 @@ function emailHref(subject) {
             observation keep its identity across the network.
           </p>
           <dl class="hardware-specs">
-            <div><dt>Receiver</dt><dd>u-blox NEO footprint<br /><span>M9 today, dual-band ready</span></dd></div>
-            <div><dt>Edge</dt><dd>ESP32-S3<br /><span>Wi-Fi, USB-C, resilient feeder</span></dd></div>
+            <div><dt>Receiver</dt><dd>u-blox or Septentrio<br /><span>single- and dual-band options</span></dd></div>
+            <div><dt>Edge</dt><dd>ESP32<br /><span>Wi-Fi, USB-C, resilient feeder</span></dd></div>
             <div><dt>Identity</dt><dd>ATECC608 + EUI-64<br /><span>Non-extractable station key</span></dd></div>
             <div><dt>Senses</dt><dd>Pressure · temperature · humidity<br /><span>Context for physical integrity gates</span></dd></div>
           </dl>
