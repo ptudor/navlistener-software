@@ -61,7 +61,7 @@ const contributionPaths = [
   },
   {
     icon: '✦',
-    title: 'Bring the missing perspective',
+    title: 'Bring your perspective',
     copy: 'Navigation needs RF engineers, researchers, technical writers, fabricators, operators, and curious people who ask better questions.',
     action: 'I have another idea',
     subject: 'An idea for NavListen',
@@ -169,7 +169,7 @@ function emailHref(subject) {
       <div class="container manifesto-grid">
         <div>
           <p class="section-kicker">Why this exists</p>
-          <h2>The world trusts coordinates it rarely checks.</h2>
+          <h2>Coordinates deserve an independent witness.</h2>
         </div>
         <div class="manifesto-copy">
           <p>
@@ -198,7 +198,7 @@ function emailHref(subject) {
           <h2>From antenna to evidence.</h2>
         </div>
         <p>
-          No mystery boxes. Each layer has a narrow job, an open interface, and a record you can inspect.
+          Each layer has a narrow job, a documented interface, and an inspectable record.
         </p>
       </div>
 
@@ -235,7 +235,7 @@ function emailHref(subject) {
           <p class="section-kicker">Open hardware, with a pulse</p>
           <h2>Meet the observer.</h2>
           <p class="hardware-lede">
-            A fabrication-ready four-layer board built to watch navigation, not consume it. The
+            A fabrication-ready four-layer board built specifically to observe navigation. The
             receiver listens. The sensors add physical context. The secure element lets every
             observation keep its identity across the network.
           </p>
@@ -288,10 +288,11 @@ function emailHref(subject) {
 
         <div class="software-copy">
           <p class="section-kicker">Software that remembers</p>
-          <h2>Ask what the sky said—not what an API remembered.</h2>
+          <h2>Ask what the sky said.</h2>
           <p>
-            NavListen stores raw navigation frames beside decoded state. When the math improves,
-            history improves with it. When two receivers disagree, the original evidence is still there.
+            NavListen stores raw navigation frames beside decoded state. The archive can be replayed
+            when a decoder is corrected or a new signal is added. When two receivers disagree, the
+            original observation is still there.
           </p>
           <ul class="check-list">
             <li><span>01</span><div><strong>Clean-room GNSS math</strong><p>Go decoders and orbit models authored from public interface specifications.</p></div></li>
@@ -332,7 +333,7 @@ function emailHref(subject) {
         <h2>Come help us listen.</h2>
         <p>
           This project gets better with more disciplines, more stations, and more points of view.
-          You do not need to arrive as a GNSS expert.
+          Curiosity is enough to begin; GNSS expertise can come later.
         </p>
       </div>
 

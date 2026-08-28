@@ -30,3 +30,18 @@ test('every constellation has a distinct Integrity Station identity', async () =
   const names = ['GPS', 'SBAS', 'Galileo', 'BeiDou', 'QZSS', 'GLONASS', 'NavIC']
   for (const name of names) assert.ok(app.includes(`name: '${name}'`), `missing ${name}`)
 })
+
+test('public copy avoids adversarial contrast and deficit framing', async () => {
+  const app = await readFile(path.join(webRoot, 'src', 'App.vue'), 'utf8')
+  const discouraged = [
+    [/—not\b/i, 'em-dash false contrast'],
+    [/,\s+not\s+\w+/i, 'comma false contrast'],
+    [/no mystery boxes/i, 'combative shortcut'],
+    [/rarely checks/i, 'reader accusation'],
+    [/missing perspective/i, 'deficit framing'],
+  ]
+
+  for (const [pattern, label] of discouraged) {
+    assert.doesNotMatch(app, pattern, label)
+  }
+})
