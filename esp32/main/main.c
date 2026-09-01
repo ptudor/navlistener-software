@@ -34,6 +34,7 @@
 #include "status_led.h"
 #include "netcfg.h"
 #include "config_recovery.h"
+#include "hardware_manifest.h"
 
 static const char *TAG = "navfeeder";
 
@@ -51,8 +52,13 @@ static const char *TAG = "navfeeder";
 // DIS_DOWNLOAD_MODE is not burned: development boards retain serial recovery.
 // The custom ESP32-S3 board uses a non-strapping receiver RX pin.
 #define RX_UART     UART_NUM_1
+#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+#define RX_PIN_RX   5
+#define RX_PIN_TX   4
+#else
 #define RX_PIN_RX   9
 #define RX_PIN_TX   10
+#endif
 #define RX_BUF_SIZE 4096
 
 static atomic_bool s_wifi_up;
@@ -65,6 +71,12 @@ static ubx_parser_t s_parser;     // static: its buffers are too large for a tas
 // Older generated sdkconfig files predate the option. Fail closed rather than treating an
 // undefined preprocessor symbol as numeric zero and unexpectedly claiming GPIO0.
 #define CONFIG_NVF_CONFIG_RESET_GPIO -1
+#endif
+
+#ifndef CONFIG_NVF_MANIFEST_FACTORY_INIT
+// Kconfig does not emit a C macro for a disabled bool. Keep the call site a
+// literal false in ordinary builds instead of requiring scattered #ifdefs.
+#define CONFIG_NVF_MANIFEST_FACTORY_INIT 0
 #endif
 
 #if CONFIG_NVF_CONFIG_RESET_GPIO >= 0
@@ -314,15 +326,52 @@ void app_main(void)
 {
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+        // The default NVS partition also holds the last adopted manifest
+        // EEPROM EUI-64. Erasing it automatically would turn a previously
+        // known blank/replaced EEPROM into an apparent first boot. Preserve
+        // that safety boundary and require an explicit service operation.
+        ESP_LOGE(TAG, "NVS requires whole-partition erase; refusing automatic "
+                      "erase because it contains hardware identity history");
+        ESP_ERROR_CHECK(err);
+#else
         ESP_ERROR_CHECK(nvs_flash_erase());
-        ESP_ERROR_CHECK(nvs_flash_init());
+        err = nvs_flash_init();
+#endif
     }
+    ESP_ERROR_CHECK(err);
 
     ESP_LOGI(TAG, "navfeeder-esp starting (GNF1 edge feeder for navlistener)");
 
+#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+    hardware_manifest_result_t manifest;
+    err = hardware_manifest_boot(CONFIG_NVF_MANIFEST_FACTORY_INIT, &manifest);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "hardware manifest inspection failed: %s", esp_err_to_name(err));
+    } else if (manifest.action == HARDWARE_MANIFEST_ACTION_USE) {
+        const eeprom_ic_descriptor_t *gps =
+            eeprom_find_category(&manifest.capabilities, CAT_GPS);
+        ESP_LOGI(TAG, "discovered GNSS main board revision %u with %u components%s%s",
+                 manifest.capabilities.revision,
+                 manifest.capabilities.component_count,
+                 gps ? "; receiver " : "",
+                 gps ? eeprom_ic_name(gps) : "");
+    } else {
+        ESP_LOGW(TAG, "hardware manifest unavailable: %s",
+                 hardware_manifest_action_name(manifest.action));
+    }
+#endif
+
     // Display + LED first, so the board shows life (and any problem) even if unprovisioned.
+#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+    // This board has two TLC5916s and no LCD/WS2812. Their driver will consume
+    // the discovered manifest later; keeping the Waveshare drivers dormant is
+    // essential because their fixed GPIO6/GPIO7 pins are this board's I2C bus.
+    ESP_LOGI(TAG, "custom observer: Waveshare LCD/WS2812 drivers disabled");
+#else
     if (display_init() != ESP_OK) ESP_LOGW(TAG, "display init failed — continuing headless");
     if (status_led_init() != ESP_OK) ESP_LOGW(TAG, "status LED init failed");
+#endif
 
     if (!spool_init(CONFIG_NVF_SPOOL_FRAMES)) {
         ESP_LOGE(TAG, "spool init failed (cap=%d) — out of memory; rebooting", CONFIG_NVF_SPOOL_FRAMES);

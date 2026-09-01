@@ -197,7 +197,7 @@ Three credential tiers → trust (radiolistener's ladder, unchanged):
    ported here as `firmware/navfeeder-esp`. The ATECC generates a non-extractable P-256 key,
    signs a CSR carrying the EUI-64-derived `receiver_id` as **exactly one DNS SAN** that the
    Django CA signs; the private key
-   never leaves silicon. The DS3231 stamps a **trusted time-of-transmission** — and for GNSS
+   never leaves silicon. The MCP79412 stamps a **trusted time-of-transmission** — and for GNSS
    there's a bonus: the receiver *is* a clock source, so the board can discipline the RTC from
    GPS PPS, closing the loop — but see `docs/HARDWARE-OBSERVER.md §6.3`: disciplining the RTC
    from the signal it exists to cross-check is a coupling to bound, not to close blindly.

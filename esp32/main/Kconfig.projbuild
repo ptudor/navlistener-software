@@ -74,6 +74,31 @@ menu "navfeeder-esp"
             button is GPIO9, which this firmware also uses as the receiver's UART RX. A
             runtime press would electrically contend with the receiver's push-pull TX.
 
+    config NVF_BOARD_GNSS_COLOR_NEO
+        bool "Custom GNSS color observer (ESP32-S3)"
+        depends on IDF_TARGET_ESP32S3
+        default n
+        help
+            Select the project ESP32-S3/NEO observer PCB. This enables the
+            GPIO6/GPIO7 hardware-manifest bus, uses GPIO4/GPIO5 for receiver
+            UART TX/RX, and suppresses the Waveshare C6 LCD/WS2812 drivers whose
+            fixed pins conflict with this board.
+
+    config NVF_MANIFEST_FACTORY_INIT
+        bool "Initialize a never-seen blank manifest from board defaults"
+        depends on NVF_BOARD_GNSS_COLOR_NEO
+        default n
+        help
+            Manufacturing-only permission. If the complete writable region of
+            the 24AA025E64 at 0x50 is uniformly blank,
+            its factory EUI-64 is valid, and that EUI has never been recorded in
+            the independent hwmanifest NVS namespace, program the compiled
+            GNSS_PCB_MAIN revision-A component list and verify it by readback.
+
+            Leave this off in ordinary firmware. I2C errors, malformed records,
+            a blank previously-known EEPROM, and a different/replacement EUI
+            are always refused regardless of this option.
+
     config NVF_RX_BAUD
         int "Receiver UART baud"
         default 460800

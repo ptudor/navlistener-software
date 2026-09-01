@@ -83,7 +83,7 @@ for it.
 | Receiver | `CAT_GPS` | **NEO-M9N-00B** (`C5119087`) on the shared 24-pin NEO land pattern | Raw nav frames + PPS. F10N/F10T drop in without a respin — §1.1. |
 | Identity, public | `CAT_RTC` | **MCP79412T-I/SN** + Seiko `SC-32S32.768kHz20PPM7pF` crystal (LCSC/EasyEDA `C97604`; `RTC_MCP79412`) | RTCC + SRAM + EEPROM + **factory EUI-64** — the observer's public name. |
 | Identity, private | `CAT_CRYPTO` | **ATECC608C-SSHDA-T** (`C28975195`, `CRYPTO_ATECC608C`) | Non-extractable P-256 key; the proof of entitlement to that name. |
-| Hardware manifest | `CAT_MEMORY` | `24AA025E64T-I/SN` (LCSC `C615601`; new `MEMORY_24AA025E64`) | The installed-hardware descriptor array and board EUI-64. The addressable `025` variant is required — see below. |
+| Hardware manifest | `CAT_MEMORY` | `24AA025E64T-I/SN` (LCSC `C615601`; `MEMORY_24AA025E64`) | The installed-hardware descriptor array and board EUI-64. The addressable `025` variant is required — see below. |
 | Status panel | `CAT_LED` | 16 × 0805 (8 green + 8 yellow) via 2 × **TLC5916** | Constellation/health indication — §2.1. |
 | Pressure | `CAT_PRESSURE` | **BMP388** placed; BMP390 and BMP580 are footprint alternates | **Vertical spoofing gate** — §6.1. |
 | Temperature | `CAT_TEMP` | **MCP9808-E/MS** (`C94847`) | Crystal-drift characterisation and thermal health — §6.2. |
@@ -505,24 +505,56 @@ died" — which the detectors in §6 need in order to disable themselves rather 
 
 ### 5.2 How navlistener consumes it
 
-The feeder reports its manifest at enrollment and on change; the collector stores it on the
-`Device` row and derives the expected `(gnssId, sigId)` set from the `CAT_GPS` entry. That set
-is the reference the existing capability detectors compare observed frames against — the
-machinery already exists (`go/internal/state/capability.go`); this supplies its declared side
-with something hardware-rooted instead of configured by hand.
+The ESP32 feeder now reads and validates the manifest during custom-board startup and exposes
+the shared I2C bus for the RTC, sensor and secure-element drivers. It logs the discovered GNSS
+model rather than treating the compiled board choice as the installed-hardware truth. The
+next adoption step is control-plane reporting: the feeder should report the validated manifest
+at enrollment and on change; the collector can then store it with the device and derive the expected
+`(gnssId, sigId)` set from the `CAT_GPS` entry. That set is the reference the existing
+capability detectors compare observed frames against — the detector machinery already exists;
+this supplies its declared side with something hardware-rooted instead of configured by hand.
 
-### 5.3 Baseline extensions this product needs
+Blank EEPROM handling is deliberately narrower than “magic byte absent means write.” Startup
+first reads the immutable factory EUI-64 and compares it with the EUI remembered in the separate
+`hwmanifest` NVS namespace:
 
-The enums are a baseline. These entries do not exist yet and are required:
+| EEPROM observation | Known EUI state | Action |
+|---|---|---|
+| valid programmed manifest | none or same | use it; remember the EUI when first adopted |
+| blank | never seen | offer/use the compiled defaults only in an explicit factory-init build |
+| blank | same EUI was already adopted | recovery required; never silently overwrite |
+| blank or programmed | different EUI | replacement confirmation required |
+| malformed manifest, unreadable EUI or I2C error | any | reject; never write |
+
+`CONFIG_NVF_MANIFEST_FACTORY_INIT` is off by default. When deliberately enabled by the
+programmer, it writes only the blank/never-seen row, uses `force=false`, reads the complete
+image back, validates the 24AA025E64 self-reference at `0x50`, and only then records the EUI.
+The ordinary eight-second configuration-reset gesture erases only `navfeeder`; it does not
+erase `hwmanifest`. The custom-board build also refuses the generic fallback that automatically
+erases the complete default NVS partition when its format is incompatible or full, because that
+would discard the locally known EUI and weaken the replacement check. A deliberate whole-flash
+erase can still remove local history; once control-plane reporting lands, the collector's last
+adopted EUI is the durable authority for that recovery case.
+
+### 5.3 Baseline extensions supplied for this product
+
+The shared public library now includes these stable entries:
 
 | Enum | Add | Why |
 |---|---|---|
-| `eeprom_gps_id_t` | `GPS_NEO_M10`, `GPS_NEO_F10N`, `GPS_NEO_F10T`, `GPS_ZED_F9T` | Variant A's actual candidates; the F9T is most of the current fleet and is absent. |
-| `eeprom_pressure_id_t` | `PRESSURE_BMP390` | The house pressure part (shepherd's C6 rover bus) is absent; the enum lists BMP280/BMP388/MS5611 only. |
-| `eeprom_battery_id_t` | `BATTERY_CR123A` | The enum currently covers LiPo/18650/solar/PoE but not this board's primary 3 V cylindrical backup cell. |
+| `eeprom_gps_id_t` | `GPS_NEO_M10`, `GPS_NEO_F10N`, `GPS_NEO_F10T`, `GPS_ZED_F9T` | Variant A candidates and the F9T fleet part. |
+| `eeprom_pressure_id_t` | `PRESSURE_BMP390` | The BMP390 footprint alternate. |
+| `eeprom_battery_id_t` | `BATTERY_CR123A` | This board's primary 3 V cylindrical backup cell. |
 | `eeprom_sensor_id_t` | `SENSOR_HDC2080` | The combined temperature/humidity part (§6.4); `TEMP_MCP9808` already exists for the dedicated sensor. |
-| `eeprom_power_id_t` | `POWER_ADM7150`, `POWER_RT9193` | The GPIO-gated rails (§3.1); descriptor address byte = the EN GPIO, following `CAT_BUTTON`'s addr-is-GPIO convention. The enum currently lists only probeable monitors/chargers. |
-| `eeprom_memory_id_t` | `MEMORY_24AA025E64` | The addressable manifest EEPROM required to coexist with the MCP79412's EEPROM/EUI at `0x57`; the baseline only names the colliding `24AA02E64`. |
+| `eeprom_power_id_t` | `POWER_ADM7150`, `POWER_RT9193` | The GPIO-gated rails (§3.1); descriptor address byte = the EN GPIO, following `CAT_BUTTON`'s addr-is-GPIO convention. |
+
+`MEMORY_24AA025E64 = 6` is now part of the shared baseline rather than a
+navlistener-specific extension. This board's manufacturing manifest must use:
+
+```c
+caps.components[0] =
+    IC_EEPROM_SELF_24AA025E64(EEPROM_I2C_ADDR_0);  // U28, A0/A1/A2 low => 0x50
+```
 
 **The band discriminator is the one that matters for integrity.** `GPS_ZED_F9P = 1` names a part
 family, not a band capability — but DESIGN.md's worked example is precisely the **F9T-00B (L1+L2)
@@ -533,7 +565,9 @@ vs F9T-10B (L1+L5)** distinction, and the id byte cannot express it. Two options
   for "feature flags" with an explicit forward-compatibility rule.
 
 The bitmap is the better fit: bands are orthogonal to part identity, and it keeps one enum entry
-per part. This is the decision to settle *before* the first EEPROMs are written.
+per part. This remains a schema decision to settle before writing a production manifest for a
+receiver whose orderable variants share a model ID but differ in bands. It does not block the
+first-spin NEO-M9N manifest or model-level RTC/GNSS discovery.
 
 ### 5.4 A socketed receiver cannot be trusted from the manifest
 
@@ -1204,20 +1238,25 @@ is a feature this board wants and a reason the WS2812B alignment pays for itself
 ## 9. Open decisions
 
 1. **Band discriminator encoding** — variant-level GPS enum entries vs a band bitmap in the
-   descriptor's reserved bytes (§5.3). Blocks writing the first EEPROMs.
-2. ~~EUI-64 text rendering~~ — **decided** (§4.2): lowercase hyphen-separated byte pairs, bare
+   descriptor's reserved bytes (§5.3). It blocks a trustworthy manifest for same-model variants
+   with different bands, but not the fixed NEO-M9N first-spin manifest.
+2. **Manifest integrity checksum** — magic, bounds and the EEPROM self-reference reject obvious
+   malformed images, but the current format has no CRC for bit corruption in otherwise plausible
+   header or descriptor bytes. Reserve and specify a versioned CRC before production programming;
+   the mutable runtime-status byte needs to be excluded or updated transactionally.
+3. ~~EUI-64 text rendering~~ — **decided** (§4.2): lowercase hyphen-separated byte pairs, bare
    label. Remaining work is mechanical: a shared formatter/parser so the C feeder, the
    provisioning flow and the collector cannot disagree on it.
-3. **Re-enrollment policy on RTC replacement** (§4.3) — accepted as an auditable event, but the
+4. **Re-enrollment policy on RTC replacement** (§4.3) — accepted as an auditable event, but the
    operational runbook does not exist.
-4. **`SIGNED_DATA` (0x07) granularity** — inherited open question from radiolistener's doc;
+5. **`SIGNED_DATA` (0x07) granularity** — inherited open question from radiolistener's doc;
    per-batch is specified, per-observation is not ruled out.
-5. ~~L1-only or L1/L5~~ — **dissolved** (§1.1). Both share the 24-pin NEO land pattern, so it is
+6. ~~L1-only or L1/L5~~ — **dissolved** (§1.1). Both share the 24-pin NEO land pattern, so it is
    a populate-time choice, not a board decision. First spin stuffs **NEO-M9N-00B** on
    availability; **NEO-F10N-00B** drops in later without a respin. What remains open is narrower:
    confirm whether the M9N supports `RXM-RAWX`, since that determines whether the ionosphere work
    waits for an F10N.
-6. ~~C6 or S3~~ — **decided: `ESP32-S3-WROOM-1U-N16R8`.** Shepherd's GPIO4/5 map retires the
+7. ~~C6 or S3~~ — **decided: `ESP32-S3-WROOM-1U-N16R8`.** Shepherd's GPIO4/5 map retires the
    strapping-pin argument, so the S3 was chosen on three independent merits: its native USB OTG
    can enumerate as composite multi-CDC (MCU console *and* a transparent GNSS passthrough on one
    cable), which retires the USB-bridge question in firmware with no added silicon near the GNSS
@@ -1226,7 +1265,7 @@ is a feature this board wants and a reason the WS2812B alignment pays for itself
    460 800-baud UART that a single 160 MHz core does not. The **1U** variant is not optional —
    its u.FL lets the Wi-Fi radiator move physically away from the GNSS front end, which is the
    strongest available mitigation for §7.4 and impossible with a PCB-antenna module.
-7. **ATECC config-zone bytes — authored, not silicon-validated.** The per-slot
+8. **ATECC config-zone bytes — authored, not silicon-validated.** The per-slot
    SlotConfig/KeyConfig words and writable scalars now live in shepherd's
    `atecc608c_config_profile.h` (a field overlay citing `ATECC508A` per table; the
    608-only ChipOptions/UseLock/SecureBoot fields follow the NDA-gated 608 datasheet and

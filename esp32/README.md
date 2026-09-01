@@ -23,6 +23,12 @@ orbit math stay central in the collector (`../docs/DESIGN.md §1`).
   power (a brownout is the usual trigger) and prefer a lower line rate where the frame budget
   allows, since idle-high UART is safe and the hazard scales with line occupancy. Full
   technical explanation in `main/main.c` at `RX_PIN_RX`.
+- **Custom GNSS color observer:** ESP32-S3, receiver UART on GPIO4/GPIO5, shared I2C on
+  GPIO6/GPIO7, and an addressable 24AA025E64 manifest at `0x50`. Select
+  `NVF_BOARD_GNSS_COLOR_NEO` in menuconfig. Its startup reads the factory EUI-64 and manifest;
+  `NVF_MANIFEST_FACTORY_INIT` is a manufacturing-only, default-off permission to initialize a
+  blank, never-seen EEPROM from the compiled revision-A component list. It never writes after an
+  I2C error, to a known-but-blank EEPROM, or across an EUI replacement.
 
 ## Build & flash
 
