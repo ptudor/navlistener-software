@@ -1,4 +1,4 @@
 dependencies:
   esp_hardware_discovery:
     git: https://github.com/ptudor/esp32-hardware-discovery.git
-    version: 5d7e533734c35a6256c1f70a4875ff4cd495b392
+    version: main
