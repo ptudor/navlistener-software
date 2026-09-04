@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"container/heap"
 	"sync"
 	"time"
 )
@@ -25,28 +26,56 @@ import (
 // mode, where stream() acks on receipt exactly as before (documented in
 // wire.go's Ack contract).
 type DurableTracker struct {
-	mu sync.Mutex
-	m  map[durableKey]*sessionDurable
+	mu                                                      sync.Mutex
+	m                                                       map[durableKey]*sessionDurable
+	outstanding, maxOutstanding, maxPerSession, maxSessions int
+	nextPrune                                               time.Time
 }
 
 type durableKey struct{ source, session string }
 
 type sessionDurable struct {
-	highest     uint64              // highest sequence received, any class
-	outstanding map[uint64]struct{} // received persistable frames not yet durably resolved
+	highest     uint64         // highest sequence received, any class
+	outstanding map[uint64]int // sequence -> index in pending min-heap
+	pending     []uint64
 	touched     time.Time
 }
 
-// durableSessionIdle bounds how long an untouched session's accounting is
-// kept. Sessions are per feeder boot : after a week of silence the
-// feeder either reconnected (touching it) or rebooted into a new session, so
-// the entry can only be dead weight. Generous versus the feeders' minutes-
-// scale reconnect ladder.
+// Resolved idle sessions can be reclaimed; unresolved holes are never expired.
 const durableSessionIdle = 7 * 24 * time.Hour
+const (
+	maxDurableSessions    = 1024
+	maxDurableOutstanding = 65536
+	maxDurablePerSession  = 4096
+)
+
+// Indexed min-heap: ACK lookup is O(1); receipt and arbitrary commit resolution
+// are O(log per-session budget), without scanning other observers' holes.
+type pendingHeap struct{ s *sessionDurable }
+
+func (h pendingHeap) Len() int           { return len(h.s.pending) }
+func (h pendingHeap) Less(i, j int) bool { return h.s.pending[i] < h.s.pending[j] }
+func (h pendingHeap) Swap(i, j int) {
+	h.s.pending[i], h.s.pending[j] = h.s.pending[j], h.s.pending[i]
+	h.s.outstanding[h.s.pending[i]] = i
+	h.s.outstanding[h.s.pending[j]] = j
+}
+func (h pendingHeap) Push(v any) {
+	seq := v.(uint64)
+	h.s.outstanding[seq] = len(h.s.pending)
+	h.s.pending = append(h.s.pending, seq)
+}
+func (h pendingHeap) Pop() any {
+	n := len(h.s.pending) - 1
+	seq := h.s.pending[n]
+	h.s.pending = h.s.pending[:n]
+	delete(h.s.outstanding, seq)
+	return seq
+}
 
 // NewDurableTracker builds an empty tracker.
 func NewDurableTracker() *DurableTracker {
-	return &DurableTracker{m: map[durableKey]*sessionDurable{}}
+	return &DurableTracker{m: map[durableKey]*sessionDurable{}, maxSessions: maxDurableSessions, maxOutstanding: maxDurableOutstanding, maxPerSession: maxDurablePerSession}
 }
 
 // Received records one sequenced frame's arrival BEFORE it is handed to the
@@ -54,12 +83,15 @@ func NewDurableTracker() *DurableTracker {
 // is false for frames that will never reach the historian — telemetry
 // (RF/observables) and the acked-immediately malformed classes — which
 // advance the watermark without ever holding it.
-func (t *DurableTracker) Received(source, session string, seq uint64, persistable bool) {
+// Received returns false before admitting a frame when the tracking budget is full.
+// The caller must close the stream before handoff; reconnect can replay already
+// tracked holes even at capacity and thereby release budget after commit.
+func (t *DurableTracker) Received(source, session string, seq uint64, persistable bool) bool {
 	// GNF1 sequences start at 1 (the C feeder's ++seq); 0 is never a valid
 	// assigned sequence. Ignoring it here keeps a buggy/hostile seq-0 DATA
 	// frame from wedging the watermark at oldest-1 underflow.
 	if seq == 0 {
-		return
+		return true
 	}
 	now := time.Now()
 	t.mu.Lock()
@@ -67,19 +99,32 @@ func (t *DurableTracker) Received(source, session string, seq uint64, persistabl
 	k := durableKey{source, session}
 	s := t.m[k]
 	if s == nil {
-		if len(t.m) >= 128 {
-			t.pruneLocked(now) // opportunistic; the fleet is dozens of sessions, not thousands
+		if len(t.m) >= t.maxSessions && !now.Before(t.nextPrune) {
+			t.pruneLocked(now)
+			t.nextPrune = now.Add(time.Minute)
 		}
-		s = &sessionDurable{outstanding: map[uint64]struct{}{}}
+		if len(t.m) >= t.maxSessions {
+			return false
+		}
+		// Do not allocate a session for a frame the global budget cannot admit.
+		if persistable && t.outstanding >= t.maxOutstanding {
+			return false
+		}
+		s = &sessionDurable{outstanding: map[uint64]int{}}
 		t.m[k] = s
+	}
+	if _, exists := s.outstanding[seq]; persistable && !exists {
+		if len(s.pending) >= t.maxPerSession || t.outstanding >= t.maxOutstanding {
+			return false
+		}
+		heap.Push(pendingHeap{s}, seq)
+		t.outstanding++
 	}
 	s.touched = now
 	if seq > s.highest {
 		s.highest = seq
 	}
-	if persistable {
-		s.outstanding[seq] = struct{}{}
-	}
+	return true
 }
 
 // Resolved marks one sequenced frame durably resolved (the store's
@@ -94,7 +139,10 @@ func (t *DurableTracker) Resolved(source, session string, seq uint64) {
 		return
 	}
 	s.touched = time.Now()
-	delete(s.outstanding, seq)
+	if index, ok := s.outstanding[seq]; ok {
+		heap.Remove(pendingHeap{s}, index)
+		t.outstanding--
+	}
 }
 
 // Watermark returns the current ACK value for the session: the highest
@@ -113,20 +161,15 @@ func (t *DurableTracker) Watermark(source, session string) uint64 {
 	if len(s.outstanding) == 0 {
 		return s.highest
 	}
-	oldest := uint64(0)
-	first := true
-	for seq := range s.outstanding {
-		if first || seq < oldest {
-			oldest, first = seq, false
-		}
-	}
-	return oldest - 1
+	return s.pending[0] - 1
 }
 
-// pruneLocked drops sessions untouched for durableSessionIdle. Caller holds mu.
+// pruneLocked drops only resolved sessions untouched for durableSessionIdle.
+// At capacity, new sessions fail closed until these entries expire or restart.
+// Unresolved sessions remain available for replay regardless of age. Caller holds mu.
 func (t *DurableTracker) pruneLocked(now time.Time) {
 	for k, s := range t.m {
-		if now.Sub(s.touched) > durableSessionIdle {
+		if len(s.pending) == 0 && now.Sub(s.touched) > durableSessionIdle {
 			delete(t.m, k)
 		}
 	}

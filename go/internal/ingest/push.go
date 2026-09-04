@@ -681,6 +681,7 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 	defer ackTicker.Stop()
 	ackDone := make(chan struct{})
 	quit := make(chan struct{})
+	defer func() { close(quit); <-ackDone }()
 	go func() {
 		defer close(ackDone)
 		for {
@@ -731,8 +732,6 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 	unforwarded := 0
 	for {
 		if ctx.Err() != nil {
-			close(quit)
-			<-ackDone
 			return
 		}
 		// The idle-timeout deadline is refreshed by idleConn on every underlying read, so a
@@ -744,8 +743,6 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 			} else {
 				p.log.Warn("push feeder idle timeout", "observer", observer)
 			}
-			close(quit)
-			<-ackDone
 			return
 		}
 		switch ft {
@@ -765,7 +762,10 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				metrics.PushErrorsTotal.WithLabelValues(observer, "gnssid_range").Inc()
 				unforwarded++
 				if p.durable != nil { // unfixable by retransmit — never holds the watermark
-					p.durable.Received(observer, session, seq, false)
+					if !p.durable.Received(observer, session, seq, false) {
+						p.log.Warn("durability tracking budget full; closing for replay", "observer", observer)
+						return
+					}
 				}
 				mu.Lock()
 				if seq > highest {
@@ -778,7 +778,10 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				// The body is malformed; a retransmit cannot fix it, so this sequence is
 				// acked (matches the pre-existing behaviour for this branch, regression fix).
 				if p.durable != nil { // same rationale, watermark-transparent
-					p.durable.Received(observer, session, seq, false)
+					if !p.durable.Received(observer, session, seq, false) {
+						p.log.Warn("durability tracking budget full; closing for replay", "observer", observer)
+						return
+					}
 				}
 				mu.Lock()
 				if seq > highest {
@@ -798,7 +801,10 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				// (RF/observables) never reaches the historian (decodeLoop skips
 				// it), so it advances the watermark without ever holding it.
 				if p.durable != nil {
-					p.durable.Received(observer, session, seq, f.RF == nil && f.Obs == nil)
+					if !p.durable.Received(observer, session, seq, f.RF == nil && f.Obs == nil) {
+						p.log.Warn("durability tracking budget full; closing for replay", "observer", observer)
+						return
+					}
 				}
 				select {
 				case p.out <- f:
@@ -809,8 +815,6 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 					}
 					mu.Unlock()
 				case <-ctx.Done(): // daemon teardown; frame is unacked, feeder replays on reconnect
-					close(quit)
-					<-ackDone
 					return
 				}
 			}
@@ -828,8 +832,6 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 			metrics.PushErrorsTotal.WithLabelValues(observer, "unforwarded_flood").Inc()
 			p.log.Warn("push feeder sent too many consecutive unusable frames; closing connection",
 				"observer", observer, "limit", maxConsecutiveUnforwarded)
-			close(quit)
-			<-ackDone
 			return
 		}
 	}
