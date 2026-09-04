@@ -311,6 +311,28 @@ func (p *Provider) lookupObserverDatabase(ctx context.Context, tokenSHA256, stat
 	return resolved, true, nil
 }
 
+// ReconcileObserver bypasses caches for retained contributors, even while the
+// device is offline. Only digests from successful admissions reach this method.
+func (p *Provider) ReconcileObserver(ctx context.Context, digest, station, feed string) (identity.ObserverContext, bool) {
+	ctx, cancel := context.WithTimeout(ctx, p.lookupTimeout)
+	defer cancel()
+	p.mu.Lock()
+	generation := p.generation
+	p.mu.Unlock()
+	current, allowed, err := p.lookupObserver(ctx, digest, station, feed)
+	if err != nil || !allowed || ctx.Err() != nil {
+		return identity.ObserverContext{}, false
+	}
+	current, err = current.Normalize()
+	p.mu.Lock()
+	unchanged := generation == p.generation
+	p.mu.Unlock()
+	if err != nil || !unchanged || current.ObserverID != station {
+		return identity.ObserverContext{}, false
+	}
+	return current, true
+}
+
 func (p *Provider) lookupReadDatabase(ctx context.Context, tokenSHA256 string) (identity.ReadPrincipal, bool, error) {
 	const query = `SELECT principal_id, audience_grants, revision
   FROM ` + readAuthorizationView + `

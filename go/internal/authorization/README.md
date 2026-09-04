@@ -32,3 +32,15 @@ Each `audience_grants` entry is canonical `operator:<instance>`,
 rejected as a stored private grant. Duplicate rows, malformed audiences, and empty grant sets
 fail closed. The same cache TTL, generation-safe invalidation, and digest-only key discipline
 apply to read credentials.
+
+Retained push contributors are also reconciled while disconnected. The push server retains
+only credential digests, with a ceiling of 1,024 observer policy identities and eight
+credential/feed pairs per current policy. New admissions beyond those ceilings fail closed;
+existing unresolved policy evidence is not evicted to make room. Every configured recheck
+interval, up to 16 workers bypass the authorization cache under one five-second sweep
+budget. Unreconciled or changed identities advance the ingest policy generation and enqueue
+an ordered audience reset, independent of another device connection. The offline withdrawal
+bound is the recheck interval plus five seconds and ordered decoder-drain latency; overload
+or database failure withdraws unverified derived visibility instead of extending that bound.
+Raw history keeps its immutable receipt-time context. A process restart starts a new derived
+history epoch. Normal shutdown cancels and joins reconciliation before closing ingest.

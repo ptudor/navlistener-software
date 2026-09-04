@@ -298,6 +298,9 @@ func (p *PushServer) serve(ctx context.Context, ln net.Listener) error {
 	// child context this function can cancel itself, so wg.Wait() completes on that path.
 	hctx, hcancel := context.WithCancel(ctx)
 	defer hcancel()
+	reconciled := make(chan struct{})
+	go func() { defer close(reconciled); p.runReconciliation(hctx) }()
+	defer func() { hcancel(); <-reconciled }()
 
 	var wg sync.WaitGroup
 	backoff := acceptBackoffInitial
@@ -429,7 +432,8 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 	// Compare with the most recent context seen for this observer. This catches a
 	// policy transfer that occurred while the feeder was disconnected, before a
 	// single newly-authorized DATA record can enter live state.
-	admission := p.admit(ctx, observerContext, authorized.policyGeneration, func() { sessionCancel(); _ = conn.Close() })
+	digest := sha256.Sum256([]byte(authorized.token))
+	admission := p.admit(ctx, observerContext, authorized.policyGeneration, func() { sessionCancel(); _ = conn.Close() }, policyCredential{digest: hex.EncodeToString(digest[:]), feed: feed})
 	if admission == nil {
 		return
 	}

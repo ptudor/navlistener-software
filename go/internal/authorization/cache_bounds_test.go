@@ -99,3 +99,24 @@ func TestReadInvalidationRacingLookupRejectsStaleResult(t *testing.T) {
 		t.Fatal("stale read cache repopulated")
 	}
 }
+
+func TestReconciliationBypassesCachedAuthority(t *testing.T) {
+	allowed := true
+	p := newProvider(time.Minute, nil, func(context.Context, string, string, string) (identity.ObserverContext, bool, error) {
+		return testContext(), allowed, nil
+	})
+	if _, ok := p.Authenticate(context.Background(), "token", "observer-a", "ubx"); !ok {
+		t.Fatal("initial authority denied")
+	}
+	allowed = false
+	if _, ok := p.ReconcileObserver(context.Background(), "digest", "observer-a", "ubx"); ok {
+		t.Fatal("offline recheck used cached authority")
+	}
+	p.lookupObserver = func(context.Context, string, string, string) (identity.ObserverContext, bool, error) {
+		p.InvalidateAll()
+		return testContext(), true, nil
+	}
+	if _, ok := p.ReconcileObserver(context.Background(), "digest", "observer-a", "ubx"); ok {
+		t.Fatal("racing invalidation returned stale reconciliation")
+	}
+}

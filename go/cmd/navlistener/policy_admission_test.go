@@ -37,6 +37,10 @@ func (a *policyTestAuth) Authenticate(context.Context, string, string, string) (
 	return *c, true
 }
 
+func (a *policyTestAuth) ReconcileObserver(ctx context.Context, digest, station, feed string) (identity.ObserverContext, bool) {
+	return a.Authenticate(ctx, digest, station, feed)
+}
+
 func policyTestPush(t *testing.T, auth ingest.Authenticator) (string, <-chan *ingest.RawFrame) {
 	t.Helper()
 	fixture := httptest.NewTLSServer(http.NotFoundHandler())
