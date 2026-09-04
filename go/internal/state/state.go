@@ -234,6 +234,7 @@ type svState struct {
 	// GPS/QZSS L2C/L5 CNAV message assembly buffers, keyed like BeiDou
 	// B-CNAV2's bc10/bc11/bcClk: gcClk is the last clock-bearing MT30–37.
 	gc10, gc11, gcClk *frame.GPSCNAV
+	gc30              *frame.GPSCNAV // last SV-specific TGD/ISC set; MT31–37 carry no replacement
 	// Galileo I/NAV word assembly buffers, indexed by word type 1–5 (word 5 carries
 	// BGD/health, not part of the ephemeris set; index 0 unused).
 	galW [6]*frame.GalileoINAV
@@ -920,6 +921,9 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 		st.gc11 = m
 	default: // MT30–37 all carry the common clock block
 		st.gcClk = m
+		if m.MsgType == 30 {
+			st.gc30 = m
+		}
 	}
 	if st.gc10 == nil || st.gc11 == nil {
 		return
@@ -928,14 +932,16 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 	if err != nil {
 		return // MT10/MT11 from different data sets (toe mismatch); wait for a coherent pair
 	}
-	// CNAV carries no IODE/IODC: toe IS the data-set key (IS-GPS-200N §30.3.4.4
-	// — updates to curve-fit parameters "shall prompt changes in toe/toc"; the
-	// BeiDou D1 toe-keyed precedent). The clock shares that key (toc == toe when
-	// clkOK, regression fix), so the only same-toe refresh to catch is a coherent clock
-	// arriving after a clockless assembly.
+	// Orbital TOE and clock content are independent update gates.
+	// MT30 group-delay/ISC values are SV hardware corrections (IS-GPS-200N
+	// §30.3.3.3.1.1.1), retained across clock-only MT31–37 messages. The
+	// PRN gate above keeps this correction cache in its own SV/signal family.
+	if clkOK && st.gc30 != nil {
+		clk.TGD = st.gc30.TGD
+	}
 	ephChanged := !st.haveEph || int(eph.Toe) != st.iod
-	clkAttached := clkOK && !st.haveClk
-	if !ephChanged && !clkAttached {
+	clkChanged := clkOK && (!st.haveClk || clk != st.clk)
+	if !ephChanged && !clkChanged {
 		return
 	}
 	if ephChanged {
@@ -956,13 +962,13 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 		// window the cap exists to close. Mirrors the LNAV path's regression fix split.
 		st.ephAt = recv
 		st.ephRecvAt = f.Recv // forensic stamp for the replay-aware serving cap
+		st.eph, st.iod, st.haveEph = eph, int(eph.Toe), true
 	}
-	if !clkOK {
-		clk = st.clk // keep the previously applied clock; haveClk gates serving it
-	}
-	st.eph, st.clk, st.iod, st.haveEph = eph, clk, int(eph.Toe), true
 	if clkOK {
-		st.haveClk = true
+		st.clk, st.haveClk = clk, true
+	} else if ephChanged {
+		// A clock for the previous TOE cannot describe this new orbit.
+		st.clk, st.haveClk = clock.Model{}, false
 	}
 }
 

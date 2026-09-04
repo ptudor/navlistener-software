@@ -348,3 +348,71 @@ func TestBroadcastWNCrossCheckSpoolReplay(t *testing.T) {
 		t.Errorf("replayed frame with wrong WN 100: wn_mismatch = %v, want true", m)
 	}
 }
+
+func TestCNAVClockContentRefreshAndCoherentAvailability(t *testing.T) {
+	for _, id := range []gnss.GNSSID{gnss.GPS, gnss.QZSS} {
+		t.Run(id.String(), func(t *testing.T) {
+			s := New(1)
+			t0 := time.Unix(1700000000, 0)
+			sig := 3
+			if id == gnss.QZSS {
+				sig = 4
+			}
+			key := Key{G: id, Sv: 5, Sig: sig}
+			apply := func(words []uint32, at time.Time) { s.Apply(cnavStateFrame(id, 5, sig, words, at)) }
+			orbit := func(toe uint64, at time.Time) {
+				apply(cnavMT10(5, 2288, 0, 2, toe), at)
+				apply(cnavStateWords(5, 11, func(b []byte) { setAbsBits(b, 38, 11, toe) }), at)
+			}
+			clockWords := func(mt int, toe, af0, tgd uint64) []uint32 {
+				return cnavStateWords(5, mt, func(b []byte) {
+					setAbsBits(b, 60, 11, toe)
+					setAbsBits(b, 71, 26, af0)
+					if mt == 30 {
+						setAbsBits(b, 127, 13, tgd)
+						setAbsBits(b, 140, 13, 11)
+						setAbsBits(b, 153, 13, 22)
+						setAbsBits(b, 166, 13, 33)
+						setAbsBits(b, 179, 13, 44)
+					}
+				})
+			}
+			orbit(400, t0)
+			apply(clockWords(30, 400, 12345, 7), t0.Add(time.Second))
+			st := s.shardFor(key).m[key]
+			ephAt, ephRecvAt := st.ephAt, st.ephRecvAt
+			apply(clockWords(30, 400, 67890, 9), t0.Add(2*time.Second))
+			sv := s.FeedSVs(t0.Add(2 * time.Second))[key.Name()]
+			if sv.Af0 == nil || *sv.Af0 != math.Ldexp(67890, -35) {
+				t.Fatalf("clock refresh af0=%v", sv.Af0)
+			}
+			if st.ephAt != ephAt || st.ephRecvAt != ephRecvAt || st.orbitDiscoValid || st.timeDiscoValid {
+				t.Fatal("clock-only update changed orbital age/discontinuity")
+			}
+			corrections := *st.gc30
+			for mt := 31; mt <= 37; mt++ {
+				apply(clockWords(mt, 400, uint64(70000+mt), 0), t0.Add(time.Duration(mt)*time.Second))
+				if st.clk.Af0 != math.Ldexp(float64(70000+mt), -35) || st.clk.TGD != math.Ldexp(9, -35) {
+					t.Fatalf("MT%d erased known correction or failed clock update", mt)
+				}
+				if *st.gc30 != corrections || st.ephAt != ephAt || st.ephRecvAt != ephRecvAt {
+					t.Fatalf("MT%d replaced MT30 ISC data or orbit timestamps", mt)
+				}
+			}
+			orbit(401, t0.Add(time.Minute))
+			sv = s.FeedSVs(t0.Add(time.Minute))[key.Name()]
+			if st.haveClk || sv.Af0 != nil || sv.Af1 != nil || sv.Af2 != nil {
+				t.Fatal("new TOE exposed incompatible old clock")
+			}
+			newEphAt, newEphRecvAt := st.ephAt, st.ephRecvAt
+			apply(clockWords(31, 401, 80000, 0), t0.Add(2*time.Minute))
+			sv = s.FeedSVs(t0.Add(2 * time.Minute))[key.Name()]
+			if !st.haveClk || sv.Af0 == nil || *sv.Af0 != math.Ldexp(80000, -35) || st.clk.TGD != math.Ldexp(9, -35) {
+				t.Fatal("late matching clock or retained SV correction missing")
+			}
+			if st.ephAt != newEphAt || st.ephRecvAt != newEphRecvAt || st.timeDiscoValid {
+				t.Fatal("late clock refreshed orbit or invented time discontinuity")
+			}
+		})
+	}
+}

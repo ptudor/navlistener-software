@@ -100,6 +100,7 @@ type GPSCNAV struct {
 	// (IS-GPS-200N §30.3.3.3.1.1) and folding one into the generic clock polynomial
 	// would be wrong for every signal that doesn't use it, so none is applied
 	// automatically. Populated only when MsgType == 30.
+	TGD     float64 // MT30 broadcast group delay, seconds; clock-only types do not carry it
 	ISCL1CA float64
 	ISCL2C  float64
 	ISCL5I5 float64
@@ -200,7 +201,8 @@ func DecodeGPSCNAV(id gnss.GNSSID, words []uint32) (*GPSCNAV, error) {
 			// T_GD starts at 127) — confirmed against the existing, already-verified
 			// Toc/Af0/Af1/Af2 offsets, each of which starts exactly where the
 			// previous field ends.
-			m.clk.TGD = float64(s(127, 13)) * p2m35
+			m.TGD = float64(s(127, 13)) * p2m35
+			m.clk.TGD = m.TGD
 			m.ISCL1CA = float64(s(140, 13)) * p2m35
 			m.ISCL2C = float64(s(153, 13)) * p2m35
 			m.ISCL5I5 = float64(s(166, 13)) * p2m35
