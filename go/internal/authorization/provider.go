@@ -27,7 +27,8 @@ const (
 	defaultCacheTTL           = 30 * time.Second
 	// Per-method positive-entry budget; denied results are deliberately uncached.
 	// Admission is bounded even if requests cycle through never-reused tokens.
-	defaultCacheLimit = 1024
+	defaultCacheLimit    = 1024
+	defaultLookupTimeout = 5 * time.Second
 )
 
 type observerLookup func(context.Context, string, string, string) (identity.ObserverContext, bool, error)
@@ -63,11 +64,12 @@ type Provider struct {
 	lookupObserver observerLookup
 	lookupRead     readLookup
 
-	mu         sync.Mutex
-	observers  map[observerCacheKey]observerCacheEntry
-	readers    map[string]readCacheEntry
-	generation uint64
-	cacheLimit int
+	mu            sync.Mutex
+	observers     map[observerCacheKey]observerCacheEntry
+	readers       map[string]readCacheEntry
+	generation    uint64
+	cacheLimit    int
+	lookupTimeout time.Duration
 }
 
 // NewDatabase connects to the read-only control-plane database and verifies it
@@ -128,9 +130,10 @@ func newProvider(ttl time.Duration, log *slog.Logger, lookup observerLookup) *Pr
 	}
 	return &Provider{
 		ttl: ttl, now: time.Now, log: log, lookupObserver: lookup,
-		observers:  make(map[observerCacheKey]observerCacheEntry),
-		readers:    make(map[string]readCacheEntry),
-		cacheLimit: defaultCacheLimit,
+		observers:     make(map[observerCacheKey]observerCacheEntry),
+		readers:       make(map[string]readCacheEntry),
+		cacheLimit:    defaultCacheLimit,
+		lookupTimeout: defaultLookupTimeout,
 	}
 }
 
@@ -155,7 +158,12 @@ func (p *Provider) AuthorizeRead(ctx context.Context, token string) (identity.Re
 	lookupGeneration := p.generation
 	p.mu.Unlock()
 
-	principal, allowed, err := p.lookupRead(ctx, digest)
+	lookupCtx, cancel := context.WithTimeout(ctx, p.lookupTimeout)
+	defer cancel()
+	principal, allowed, err := p.lookupRead(lookupCtx, digest)
+	if err == nil {
+		err = lookupCtx.Err()
+	}
 	if err != nil {
 		p.log.Warn("control-plane read authorization lookup failed", "error", err)
 		return identity.ReadPrincipal{}, false
@@ -207,7 +215,12 @@ func (p *Provider) Authenticate(ctx context.Context, token, station, feed string
 	lookupGeneration := p.generation
 	p.mu.Unlock()
 
-	resolved, allowed, err := p.lookupObserver(ctx, key.tokenSHA256, station, feed)
+	lookupCtx, cancel := context.WithTimeout(ctx, p.lookupTimeout)
+	defer cancel()
+	resolved, allowed, err := p.lookupObserver(lookupCtx, key.tokenSHA256, station, feed)
+	if err == nil {
+		err = lookupCtx.Err()
+	}
 	if err != nil {
 		p.log.Warn("control-plane observer authorization lookup failed", "station", station, "feed", feed, "error", err)
 		return identity.ObserverContext{}, false
