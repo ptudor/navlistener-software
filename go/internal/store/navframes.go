@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // NavFrameQuery selects persisted raw nav frames for replay.
@@ -93,6 +95,17 @@ func (s *Store) QueryNavFrames(ctx context.Context, q NavFrameQuery, fn func(Sto
 	if s == nil || s.pool == nil {
 		return fmt.Errorf("query nav frames: no database configured")
 	}
+	return queryNavFrames(ctx, s.pool, q, fn)
+}
+
+const navFrameSelect = `SELECT received_at, source_id, organization_id, enrollment_id,
+	               collector_instance_id, collection_ids, provenance, credential_tier,
+	               credential_fingerprint, attestation_tier, aggregate_use, station_metadata, event_visibility,
+	               raw_export, federation_peers, publish_signals, policy_revision,
+	               gnssid, svid, sigid, freqid, msg_type, raw
+	          FROM nav_frames`
+
+func queryNavFrames(ctx context.Context, pool *pgxpool.Pool, q NavFrameQuery, fn func(StoredNavFrame) error) error {
 	if q.Since.IsZero() {
 		return fmt.Errorf("query nav frames: Since is required (an unbounded scan of a hypertable is never what a replay wants)")
 	}
@@ -109,12 +122,7 @@ func (s *Store) QueryNavFrames(ctx context.Context, q NavFrameQuery, fn func(Sto
 	// feeder reconnect replay. The trailing keys make the order total, so a rerun of
 	// the same window replays identically rather than permuting frames that share a
 	// timestamp.
-	sql := `SELECT received_at, source_id, organization_id, enrollment_id,
-	               collector_instance_id, collection_ids, provenance, credential_tier,
-	               credential_fingerprint, attestation_tier, aggregate_use, station_metadata, event_visibility,
-	               raw_export, federation_peers, publish_signals, policy_revision,
-	               gnssid, svid, sigid, freqid, msg_type, raw
-	          FROM nav_frames
+	sql := navFrameSelect + `
 	         WHERE received_at >= $1
 	           AND ($2::timestamptz IS NULL OR received_at < $2)
 	           AND ($3::smallint   IS NULL OR gnssid = $3)
@@ -133,7 +141,7 @@ func (s *Store) QueryNavFrames(ctx context.Context, q NavFrameQuery, fn func(Sto
 		source = q.SourceID
 	}
 
-	rows, err := s.pool.Query(ctx, sql, q.Since, until, gnssID, source, limit+1)
+	rows, err := pool.Query(ctx, sql, q.Since, until, gnssID, source, limit+1)
 	if err != nil {
 		return fmt.Errorf("query nav frames: %w", err)
 	}

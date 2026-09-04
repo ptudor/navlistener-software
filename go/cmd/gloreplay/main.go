@@ -56,15 +56,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
-	"log/slog"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/ptudor/gnss"
-	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/detect"
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/state"
@@ -272,8 +269,7 @@ func runStore(dsn, sinceStr, untilStr, source string, shards int, jsonOut string
 	}
 
 	ctx := context.Background()
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	st, err := store.New(ctx, config.Store{DSN: dsn}, log)
+	st, err := store.OpenReader(ctx, dsn)
 	if err != nil {
 		return fmt.Errorf("open historian: %w", err)
 	}
