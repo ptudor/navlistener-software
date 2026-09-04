@@ -25,6 +25,9 @@ const (
 	readAuthorizationView     = "navlistener_read_authorization_v1"
 	changeNotifyChannel       = "navlistener_authorization_changed"
 	defaultCacheTTL           = 30 * time.Second
+	// Per-method positive-entry budget; denied results are deliberately uncached.
+	// Admission is bounded even if requests cycle through never-reused tokens.
+	defaultCacheLimit = 1024
 )
 
 type observerLookup func(context.Context, string, string, string) (identity.ObserverContext, bool, error)
@@ -64,6 +67,7 @@ type Provider struct {
 	observers  map[observerCacheKey]observerCacheEntry
 	readers    map[string]readCacheEntry
 	generation uint64
+	cacheLimit int
 }
 
 // NewDatabase connects to the read-only control-plane database and verifies it
@@ -124,8 +128,9 @@ func newProvider(ttl time.Duration, log *slog.Logger, lookup observerLookup) *Pr
 	}
 	return &Provider{
 		ttl: ttl, now: time.Now, log: log, lookupObserver: lookup,
-		observers: make(map[observerCacheKey]observerCacheEntry),
-		readers:   make(map[string]readCacheEntry),
+		observers:  make(map[observerCacheKey]observerCacheEntry),
+		readers:    make(map[string]readCacheEntry),
+		cacheLimit: defaultCacheLimit,
 	}
 }
 
@@ -168,7 +173,17 @@ func (p *Provider) AuthorizeRead(ctx context.Context, token string) (identity.Re
 		p.mu.Unlock()
 		return identity.ReadPrincipal{}, false
 	}
-	p.readers[digest] = entry
+	if allowed {
+		p.pruneExpiredLocked(p.now())
+		if len(p.readers) >= p.cacheLimit {
+			// Any eviction is safe: it only forces a fresh, fail-closed lookup.
+			for key := range p.readers {
+				delete(p.readers, key)
+				break
+			}
+		}
+		p.readers[digest] = entry
+	}
 	p.mu.Unlock()
 	return cloneReadPrincipal(principal), allowed
 }
@@ -216,7 +231,16 @@ func (p *Provider) Authenticate(ctx context.Context, token, station, feed string
 		p.mu.Unlock()
 		return identity.ObserverContext{}, false
 	}
-	p.observers[key] = entry
+	if allowed {
+		p.pruneExpiredLocked(p.now())
+		if len(p.observers) >= p.cacheLimit {
+			for key := range p.observers {
+				delete(p.observers, key)
+				break
+			}
+		}
+		p.observers[key] = entry
+	}
 	p.mu.Unlock()
 	return cloneObserverContext(resolved), allowed
 }
@@ -365,7 +389,14 @@ func (p *Provider) InvalidateAll() {
 // the cache because notifications may have been missed while disconnected.
 // Connection loss is non-fatal: TTL continues to bound stale authority.
 func (p *Provider) RunInvalidation(ctx context.Context) {
+	// Expiry must not depend on NOTIFY traffic, database availability, or a
+	// client reusing a particular token. Join the sweeper on normal shutdown.
+	sweepCtx, stopSweep := context.WithCancel(ctx)
+	swept := make(chan struct{})
+	go func() { defer close(swept); p.runCacheExpiry(sweepCtx) }()
+	defer func() { stopSweep(); <-swept }()
 	if p.pool == nil {
+		<-ctx.Done()
 		return
 	}
 	backoff := 250 * time.Millisecond
@@ -399,6 +430,34 @@ func (p *Provider) RunInvalidation(ctx context.Context) {
 			if backoff > 5*time.Second {
 				backoff = 5 * time.Second
 			}
+		}
+	}
+}
+
+func (p *Provider) pruneExpiredLocked(now time.Time) {
+	for key, entry := range p.readers {
+		if !now.Before(entry.expires) {
+			delete(p.readers, key)
+		}
+	}
+	for key, entry := range p.observers {
+		if !now.Before(entry.expires) {
+			delete(p.observers, key)
+		}
+	}
+}
+
+func (p *Provider) runCacheExpiry(ctx context.Context) {
+	ticker := time.NewTicker(min(p.ttl, time.Second))
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.mu.Lock()
+			p.pruneExpiredLocked(p.now())
+			p.mu.Unlock()
 		}
 	}
 }
