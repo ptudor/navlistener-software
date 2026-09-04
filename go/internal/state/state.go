@@ -1415,6 +1415,13 @@ func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 	// the ephemeris reference time toe.
 	newIOD := int(eph.Toe)
 	if st.haveEph && newIOD == st.iod {
+		// the adjacent triplet can carry a revised clock epoch,
+		// polynomial, or group delay without changing the orbital TOE.
+		// Assembly has already checked +6/+6 SOW coherence (including rollover).
+		// Leave orbital freshness and discontinuities attached to the orbit.
+		if !st.haveClk || clk != st.clk {
+			st.clk, st.haveClk = clk, true
+		}
 		return
 	}
 	if st.haveEph {

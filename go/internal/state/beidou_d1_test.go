@@ -1,6 +1,8 @@
 package state
 
 import (
+	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -186,5 +188,55 @@ func TestBeiDouD1ChangeoverWithDroppedSubframe(t *testing.T) {
 	sh.mu.Unlock()
 	if finalIOD == firstIOD {
 		t.Error("coherent changeover triple did not update st.iod")
+	}
+}
+
+func d1ClockFrame(sow, toc, af0, aodc int, at time.Time) *ingest.RawFrame {
+	b := make([]byte, 28)
+	setAbsBits(b, 15, 3, 1)
+	setAbsBits(b, 18, 8, uint64(sow>>12))
+	setAbsBits(b, 26, 12, uint64(sow&0xfff))
+	setAbsBits(b, 39, 5, uint64(aodc))
+	setAbsBits(b, 61, 17, uint64(toc))
+	setAbsBits(b, 78, 10, uint64(aodc+10))
+	setAbsBits(b, 162, 11, 3)
+	setAbsBits(b, 173, 24, uint64(af0))
+	setAbsBits(b, 197, 22, 200)
+	setAbsBits(b, 219, 5, 2)
+	return &ingest.RawFrame{Recv: at, RecvLocal: at, Source: "test", GnssID: gnss.BeiDou, SvID: 6, SigID: 0, Words: bdsD1Words(b)}
+}
+
+func TestBeiDouD1ClockRefreshKeepsOrbitalAgeAndAdjacency(t *testing.T) {
+	for _, sow := range []int{130, 604794} {
+		t.Run(fmt.Sprint(sow), func(t *testing.T) {
+			s := New(1)
+			t0 := time.Unix(1700000000, 0)
+			key := Key{G: gnss.BeiDou, Sv: 6, Sig: 0}
+			first := sow - 30
+			s.Apply(d1ClockFrame(first, 100, 1000, 1, t0))
+			s.Apply(bdsD1Frame(6, 2, first+6, 800, t0))
+			s.Apply(bdsD1Frame(6, 3, first+12, 800, t0))
+			st := s.shardFor(key).m[key]
+			oldClock, oldOrbit := st.clk, st.eph
+			ephAt, ephRecvAt := st.ephAt, st.ephRecvAt
+			later := t0.Add(time.Minute)
+			s.Apply(d1ClockFrame(sow, 101, 2000, 3, later))
+			s.Apply(bdsD1Frame(6, 2, (sow+7)%604800, 800, later)) // one second outside adjacency
+			s.Apply(bdsD1Frame(6, 3, (sow+12)%604800, 800, later))
+			if st.clk != oldClock || st.eph != oldOrbit || st.ephAt != ephAt || st.ephRecvAt != ephRecvAt {
+				t.Fatal("nonadjacent triplet refreshed a product")
+			}
+			s.Apply(bdsD1Frame(6, 2, (sow+6)%604800, 800, later))
+			sv := s.FeedSVs(later)[key.Name()]
+			if sv.Af0 == nil || *sv.Af0 != math.Ldexp(2000, -33) || st.clk.Toc != 808 || st.clk.TGD != 13e-10 {
+				t.Fatalf("clock fields did not refresh coherently: %+v", st.clk)
+			}
+			if sv.AODC == nil || *sv.AODC != 3 || sv.AODE == nil || *sv.AODE != 2 {
+				t.Fatal("clock metadata disagrees with refreshed sf1")
+			}
+			if st.eph != oldOrbit || st.ephAt != ephAt || st.ephRecvAt != ephRecvAt || st.orbitDiscoValid || st.timeDiscoValid {
+				t.Fatal("clock-only refresh changed orbital product/age/discontinuity")
+			}
+		})
 	}
 }
