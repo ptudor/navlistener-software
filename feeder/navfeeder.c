@@ -75,6 +75,8 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/time.h>
+#include <sys/stat.h>
+#include <dirent.h>
 #include <netdb.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
@@ -172,6 +174,9 @@ struct frame {
 	unsigned char *data;
 };
 struct spool {
+	char session[65]; /* immutable: recovered spools are replay-only */
+	struct spool *next;
+	uint64_t retained_bytes; /* reservation against the shared disk budget */
 	struct frame *ring;
 	size_t cap, head, count;
 	uint64_t seq;     /* last assigned sequence */
@@ -194,19 +199,15 @@ struct spool {
 };
 
 static struct spool g_spool;
+static struct spool *g_replays;
 // g_disconnected is written by the reader thread and read by the consumer/drain
 // threads. `volatile` is not a C11 synchronization primitive (concurrent unsynchronized
 // access is UB); atomic_int gives well-defined cross-thread visibility. Plain =/== on an
 // atomic_int are seq-cst atomic operations, so the existing call sites need no change.
 static atomic_int g_disconnected;
 
-/* g_session is the GNF1 boot/session identity, sent in every HELLO:
- * the collector's replay-dedup key is (observer, session, seq), so the session must
- * change whenever the sequence space restarts from zero and persist while it
- * continues. session_init mints a fresh one; spool_recover overrides it with the
- * disk spool header's stored session when it resumes a prior run's sequence space
- * (session and seq travel together — see SPOOL_MAGIC). Written once during
- * single-threaded startup, read-only afterwards. */
+/* g_session belongs only to this process's newly captured records. Recovered files
+ * retain their own session and are never extended with new observations. */
 static char g_session[65];
 
 static void die(const char *m) { fprintf(stderr, "navfeeder: %s\n", m); exit(2); }
@@ -303,41 +304,28 @@ static uint64_t rd_be64(const unsigned char *b) {
 
 /* ── spool ───────────────────────────────────────────────────────────────── */
 
-/* Disk spool file format : a fixed 73-byte header, then the record
- * stream ([8B BE seq][4B BE len][len bytes] per record, unchanged):
- *   [8B magic "NAVSPO01"][1B session length][64B session, zero-padded]
- * The header binds the spool to the session whose sequence space its records
- * extend: recovery adopts the stored session so replayed and newly-captured
- * frames share one (observer, session, seq) space at the collector. A file
- * without the magic is from an incompatible (pre-session) build and is
- * discarded — no legacy spool format is grandfathered (design decision
- * 2026-07-31); the cost is one upgrade reboot's spool, logged loudly. */
+/* NAVSPO01 remains byte-compatible: [magic:8][session length:1][session:64],
+ * then [seq:8 BE][len:4 BE][record]. regression fix migrates valid prior-run files to
+ * <path>.replay.<session> and replays them on separate GNF1 connections. New captures
+ * always use a fresh session at <path>; no recovered sequence space is extended.
+ * Pre-session headerless files remain unsupported by the documented policy. */
 #define SPOOL_MAGIC "NAVSPO01"
 #define SPOOL_MAGIC_LEN 8
 #define SPOOL_SESSION_CAP 64
 #define SPOOL_HDR_LEN (SPOOL_MAGIC_LEN + 1 + SPOOL_SESSION_CAP)
+#define MAX_REPLAY_FILES 256
 
-/* session_init mints a fresh GNF1 session identity : 16 random bytes
- * as 32 hex chars. Called once at startup BEFORE spool_init, so a recoverable
- * spool can override it with the session its records belong to. /dev/urandom
- * failure falls back to a time^pid LCG mix — weaker uniqueness (collision odds
- * still negligible against the fleet's boot rate) and loudly logged, chosen over
- * die() because "the receiver must never go down". */
+/* Do not substitute a time/PID identity when entropy is unavailable: RTC-less
+ * restarts can repeat both. Retry before capturing anything in an uncertain space. */
 static void session_init(void) {
 	unsigned char b[16];
-	int ok = 0;
-	FILE *f = fopen("/dev/urandom", "rb");
-	if (f) {
-		ok = fread(b, 1, sizeof b, f) == sizeof b;
-		fclose(f);
-	}
-	if (!ok) {
-		log_msg("warning: /dev/urandom unavailable; deriving session from time+pid");
-		uint64_t v = (uint64_t)time(NULL) ^ ((uint64_t)getpid() << 32) ^ 0x9e3779b97f4a7c15ULL;
-		for (size_t i = 0; i < sizeof b; i++) {
-			v = v * 6364136223846793005ULL + 1442695040888963407ULL;
-			b[i] = (unsigned char)(v >> 56);
-		}
+	for (;;) {
+		FILE *f = fopen("/dev/urandom", "rb");
+		int ok = f && fread(b, 1, sizeof b, f) == sizeof b;
+		if (f) fclose(f);
+		if (ok) break;
+		log_msg("session entropy unavailable; waiting before new captures");
+		sleep(1);
 	}
 	for (size_t i = 0; i < sizeof b; i++)
 		snprintf(g_session + 2 * i, 3, "%02x", b[i]);
@@ -357,98 +345,193 @@ static int session_charset_ok(const char *s, size_t n) {
 	return 1;
 }
 
-/* spool_recover replays a spool file left by a previous run (a feeder restart mid-outage,
- * e.g. a router reboot): it validates the session header, scans the records, truncates any
- * torn tail from an unclean exit, and — only if at least one complete record survived —
- * adopts the stored session  and resumes the sequence so new frames continue past
- * the recovered ones. A record-less spool keeps the fresh session (regression fix, below). */
-static void spool_recover(struct spool *s) {
+/* Recovery returns 1 for a validated replay-only prefix, 0 for absent/empty/
+ * explicitly unsupported legacy files, and -1 for uncertainty. Only clean EOF can
+ * authorize torn-tail repair. Read errors and corruption preserve every original
+ * byte and disable this file's recovery, with an operator-visible diagnostic. */
+static int spool_recover(struct spool *s) {
 	FILE *r = fopen(s->path, "rb");
-	if (!r) return; /* no prior spool — first overflow opens it lazily */
-	unsigned char fhdr[SPOOL_HDR_LEN];
-	if (fread(fhdr, 1, SPOOL_HDR_LEN, r) != SPOOL_HDR_LEN ||
-	    memcmp(fhdr, SPOOL_MAGIC, SPOOL_MAGIC_LEN) != 0 ||
-	    !session_charset_ok((const char *)fhdr + SPOOL_MAGIC_LEN + 1, fhdr[SPOOL_MAGIC_LEN])) {
-		fclose(r);
-		log_msg("disk spool lacks a valid session header (pre-regression fix build or corrupt); discarding it");
-		if (unlink(s->path) != 0 && errno != ENOENT) {
-			s->disk_append_disabled = 1;
-			log_msg("incompatible disk spool could not be removed (%s); disk overflow disabled",
-				strerror(errno));
-		}
-		return; /* keep the freshly-minted session; seq starts at 0 in a clean new space */
+	if (!r) {
+		if (errno == ENOENT) return 0;
+		log_msg("disk spool recovery open failed (%s): %s; preserving evidence", s->path, strerror(errno));
+		return -1;
 	}
-	uint64_t max_seq = 0, good_bytes = SPOOL_HDR_LEN, count = 0;
+	unsigned char fhdr[SPOOL_HDR_LEN];
+	size_t got = fread(fhdr, 1, sizeof fhdr, r);
+	if (ferror(r)) goto uncertain;
+	if (got < 8 || memcmp(fhdr, SPOOL_MAGIC, 8) != 0) {
+		/* Recognize only a plausible pre-session record header as unsupported
+		 * legacy. Unknown magic/truncated NAVSPO headers may be corrupt evidence. */
+		if (got < 12 || !rd_be64(fhdr) || rd_be32(fhdr+8) == 0 || rd_be32(fhdr+8) > GNF_RECORD)
+			goto corrupt;
+		/* Validate the entire recognizable legacy stream before discarding it;
+		 * an I/O error later in that file is still unread evidence. */
+		if (fseeko(r, 0, SEEK_SET) != 0) goto uncertain;
+		uint64_t previous = 0;
+		for (;;) {
+			unsigned char hdr[12], data[GNF_RECORD];
+			got = fread(hdr, 1, sizeof hdr, r);
+			if (ferror(r)) goto uncertain;
+			if (!got) break;
+			if (got != sizeof hdr || rd_be64(hdr) <= previous || !rd_be32(hdr+8) || rd_be32(hdr+8) > GNF_RECORD) goto corrupt;
+			previous = rd_be64(hdr);
+			got = fread(data, 1, rd_be32(hdr+8), r);
+			if (ferror(r)) goto uncertain;
+			if (got != rd_be32(hdr+8)) goto corrupt;
+		}
+		fclose(r);
+		log_msg("disk spool lacks a valid session header (pre-session build); discarding unsupported legacy file");
+		return (unlink(s->path) == 0 || errno == ENOENT) ? 0 : -1;
+	}
+	if (got != sizeof fhdr || !session_charset_ok((char *)fhdr+9, fhdr[8])) goto corrupt;
+	uint64_t last = 0, good = SPOOL_HDR_LEN, count = 0;
+	int torn = 0;
 	for (;;) {
-		unsigned char hdr[12];
-		if (fread(hdr, 1, 12, r) != 12) break;
+		unsigned char hdr[12], data[GNF_RECORD];
+		got = fread(hdr, 1, sizeof hdr, r);
+		if (ferror(r)) goto uncertain;
+		if (got != sizeof hdr) { torn = got != 0; break; }
 		uint64_t seq = rd_be64(hdr);
-		uint32_t len = rd_be32(hdr + 8);
-		if (len > GNF_RECORD) break;
-		if (len) { unsigned char tmp[GNF_RECORD]; if (fread(tmp, 1, len, r) != len) break; }
-		max_seq = seq;
-		good_bytes += 12 + len;
+		uint32_t len = rd_be32(hdr+8);
+		if (seq <= last || len < RECORD_HDR || len > GNF_RECORD) goto corrupt;
+		got = fread(data, 1, len, r);
+		if (ferror(r)) goto uncertain;
+		if (got != len) { torn = 1; break; }
+		last = seq;
+		good += sizeof hdr + len;
 		count++;
 	}
 	fclose(r);
-	if (count == 0) {
-		/* a header-valid spool with NO complete record (a kill or power cut
-		 * between the header flush and the first record flush, or a torn first append
-		 * rolled back to the bare header) must NOT adopt the stored session — with
-		 * s->seq still 0 the feeder would reconnect as the PREVIOUS session with a
-		 * sequence space restarting at 1, colliding with that session's existing
-		 * ledger rows: exactly the regression fix replay-classification loss. There is
-		 * nothing to replay, so keep the freshly-minted session and its clean space. */
-		log_msg("disk spool has a session header but no complete record; discarding it (fresh session kept)");
-		if (unlink(s->path) != 0 && errno != ENOENT) {
-			s->disk_append_disabled = 1;
-			log_msg("empty/torn disk spool could not be removed (%s); disk overflow disabled",
-				strerror(errno));
-		}
-		return;
+	if (!count) {
+		log_msg("disk spool has no complete record; discarding empty/torn file (fresh session kept)");
+		return (unlink(s->path) == 0 || errno == ENOENT) ? 0 : -1;
 	}
-	/* Adopt the stored session ONLY now that recovered records exist: they already
-	 * belong to it, and the frames captured after this restart continue the same
-	 * (observer, session, seq) space. Adoption must follow the record scan — see the
-	 * regression fix comment above for why an empty spool keeps the fresh session instead. */
-	memcpy(g_session, fhdr + SPOOL_MAGIC_LEN + 1, fhdr[SPOOL_MAGIC_LEN]);
-	g_session[fhdr[SPOOL_MAGIC_LEN]] = 0;
-	/* if the tail truncate fails (EROFS/EACCES/EIO), do NOT unlink the whole spool and
-	 * restart seq at 0 — that re-enters the seq-reuse regime  where the
-	 * collector's (source_id, feeder_seq) ledger discards fresh frames as replays. Instead
-	 * resume seq/disk_max_seq/disk_bytes from the recovered good prefix and leave disk_w NULL
-	 * (no appends to an unrepairable file), logging loudly. The recovered frames still replay
-	 * on connect; only new overflow-to-disk is disabled until the fs is writable again. */
-	if (truncate(s->path, (off_t)good_bytes) != 0) {
-		s->seq = s->disk_max_seq = max_seq;
-		s->disk_bytes = good_bytes;
-		s->disk_w = NULL;
-		s->disk_append_disabled = 1;
-		log_msg("disk spool truncate failed (%s); resuming seq %llu read-only, disk overflow disabled",
-			strerror(errno), (unsigned long long)max_seq);
-		return;
+	if (torn && truncate(s->path, (off_t)good) != 0) {
+		log_msg("disk spool tail repair failed (%s): %s; preserving evidence", s->path, strerror(errno));
+		return -1;
 	}
-	s->seq = s->disk_max_seq = max_seq;
-	s->disk_bytes = good_bytes;
-	s->disk_w = fopen(s->path, "ab");
-	log_msg("recovered disk spool: %llu frame(s) up to seq %llu (will replay on connect)",
-		(unsigned long long)count, (unsigned long long)max_seq);
+	memcpy(s->session, fhdr+9, fhdr[8]);
+	s->session[fhdr[8]] = 0;
+	s->seq = s->disk_max_seq = last;
+	s->disk_bytes = s->retained_bytes = good;
+	s->disk_append_disabled = 1;
+	log_msg("recovered disk spool: %llu frame(s), session %s, replay only", (unsigned long long)count, s->session);
+	return 1;
+corrupt:
+	log_msg("disk spool corrupt (%s); recovery disabled, preserving evidence", s->path);
+	fclose(r);
+	return -1;
+uncertain:
+	log_msg("disk spool recovery read failed (%s): %s; preserving evidence", s->path, strerror(errno));
+	fclose(r);
+	return -1;
 }
 
 static void spool_init(struct spool *s, size_t cap, const char *path, uint64_t disk_max_bytes) {
+	memset(s, 0, sizeof *s);
 	s->ring = calloc(cap, sizeof *s->ring);
 	if (!s->ring) die("out of memory for spool");
 	s->cap = cap;
-	s->head = s->count = 0;
-	s->seq = s->acked = s->dropped = 0;
 	s->path = path;
-	s->disk_w = NULL;
-	s->disk_append_disabled = 0;
-	s->disk_max_seq = s->disk_bytes = s->disk_dropped = 0;
-	s->disk_gen = 0;
 	s->disk_max_bytes = disk_max_bytes;
+	memcpy(s->session, g_session, sizeof s->session);
 	pthread_mutex_init(&s->mu, NULL);
-	if (path) spool_recover(s); /* resume a spool left by a prior run */
+}
+
+/* Link + directory fsync before unlink keeps the old name recoverable until its
+ * replay name is durable. A crash between the two names only causes dedup-safe
+ * replay. Never overwrite an existing archive or append to a file we cannot move. */
+static int archive_spool(struct spool *s, const char *dir) {
+	char archived[PATH_MAX];
+	if (snprintf(archived, sizeof archived, "%s.replay.%s", s->path, s->session) >= (int)sizeof archived) return -1;
+	if (link(s->path, archived) != 0) {
+		struct stat a, b;
+		if (errno != EEXIST || stat(s->path, &a) || stat(archived, &b) || a.st_dev != b.st_dev || a.st_ino != b.st_ino) return -1;
+	}
+	int fd = open(dir, O_RDONLY);
+	if (fd < 0) return -1;
+	int rc = fsync(fd);
+	if (!rc) rc = unlink(s->path);
+	if (!rc) rc = fsync(fd);
+	close(fd);
+	if (rc) return -1;
+	free((void *)s->path);
+	s->path = strdup(archived);
+	if (!s->path) die("out of memory for replay path");
+	return 0;
+}
+
+static void spool_free(struct spool *s) {
+	pthread_mutex_destroy(&s->mu);
+	free(s->ring);
+	free((void *)s->path);
+	free(s);
+}
+
+/* Single-threaded startup. Bound retained replay metadata and reserve all archive
+ * bytes against the same configured disk cap. On any uncertain file/directory,
+ * preserve it and continue fresh RAM capture with disk overflow disabled. */
+static void spool_recover_all(struct spool *current) {
+	if (!current->path) return;
+	char dir[PATH_MAX], prefix[PATH_MAX];
+	if (strlen(current->path) >= sizeof dir) goto failed;
+	strcpy(dir, current->path);
+	char *slash = strrchr(dir, '/');
+	const char *base = slash ? slash+1 : current->path;
+	if (snprintf(prefix, sizeof prefix, "%s.replay.", base) >= (int)sizeof prefix) goto failed;
+	if (slash) { if (slash == dir) slash[1] = 0; else *slash = 0; }
+	else strcpy(dir, ".");
+	DIR *d = opendir(dir);
+	if (!d) goto failed;
+	unsigned files = 0;
+	uint64_t retained = 0;
+	int failed = 0;
+	struct dirent *e;
+	for (;;) {
+		errno = 0;
+		e = readdir(d);
+		if (!e) { if (errno) failed = 1; break; }
+		if (strncmp(e->d_name, prefix, strlen(prefix))) continue;
+		if (++files > MAX_REPLAY_FILES) { failed = 1; break; }
+		char path[PATH_MAX];
+		if (snprintf(path, sizeof path, "%s/%s", dir, e->d_name) >= (int)sizeof path) { failed = 1; break; }
+		struct spool *old = calloc(1, sizeof *old);
+		if (!old) { failed = 1; break; }
+		spool_init(old, 1, strdup(path), 0);
+		if (!old->path) die("out of memory for replay path");
+		int rc = spool_recover(old);
+		if (rc == 1) { old->next = g_replays; g_replays = old; retained += old->retained_bytes; }
+		else { if (rc < 0) failed = 1; spool_free(old); }
+	}
+	closedir(d);
+	struct spool *old = calloc(1, sizeof *old);
+	if (!old) goto failed;
+	spool_init(old, 1, strdup(current->path), 0);
+	if (!old->path) die("out of memory for replay path");
+	int rc = spool_recover(old);
+	if (rc == 1 && files < MAX_REPLAY_FILES && archive_spool(old, dir) == 0) {
+		/* The archive may already be listed after a crash between link/unlink.
+		 * Duplicate sessions replay the same immutable file; keep only one. */
+		int duplicate = 0;
+		for (struct spool *p = g_replays; p; p = p->next)
+			if (!strcmp(p->session, old->session)) duplicate = 1;
+		if (duplicate) spool_free(old);
+		else { old->next = g_replays; g_replays = old; retained += old->retained_bytes; }
+	} else { if (rc != 0) failed = 1; spool_free(old); }
+	current->disk_max_bytes = retained < current->disk_max_bytes ? current->disk_max_bytes - retained : 0;
+	/* A random collision must never extend a recovered identity. */
+	for (;;) {
+		int collision = 0;
+		for (struct spool *p = g_replays; p; p = p->next)
+			if (!strcmp(p->session, current->session)) collision = 1;
+		if (!collision) break;
+		session_init();
+		memcpy(current->session, g_session, sizeof current->session);
+	}
+	if (!failed) return;
+failed:
+	current->disk_append_disabled = 1;
+	log_msg("spool recovery incomplete; original files preserved, new captures use fresh RAM only; repair filesystem and restart");
 }
 
 /* disk_put appends one frame to the disk spool (caller holds the mutex). Each record is
@@ -515,10 +598,10 @@ static void disk_put(struct spool *s, uint64_t seq, const unsigned char *data, u
 		unsigned char fhdr[SPOOL_HDR_LEN];
 		memset(fhdr, 0, sizeof fhdr);
 		memcpy(fhdr, SPOOL_MAGIC, SPOOL_MAGIC_LEN);
-		size_t slen = strlen(g_session);
+		size_t slen = strlen(s->session);
 		if (slen > SPOOL_SESSION_CAP) slen = SPOOL_SESSION_CAP; /* unreachable; defensive */
 		fhdr[SPOOL_MAGIC_LEN] = (unsigned char)slen;
-		memcpy(fhdr + SPOOL_MAGIC_LEN + 1, g_session, slen);
+		memcpy(fhdr + SPOOL_MAGIC_LEN + 1, s->session, slen);
 		if (fwrite(fhdr, 1, sizeof fhdr, s->disk_w) != sizeof fhdr || fflush(s->disk_w) != 0) {
 			s->disk_dropped++;
 			disk_rollback(s);
@@ -553,6 +636,7 @@ static void disk_put(struct spool *s, uint64_t seq, const unsigned char *data, u
  * eviction) — mirroring the ESP32 sibling's drop-and-count behavior. */
 static uint64_t spool_append(struct spool *s, const unsigned char *data, uint32_t len) {
 	pthread_mutex_lock(&s->mu);
+	if (s != &g_spool || s->seq == UINT64_MAX) { s->dropped++; pthread_mutex_unlock(&s->mu); return 0; }
 	unsigned char *copy = malloc(len);
 	if (!copy) {
 		s->dropped++;
@@ -836,8 +920,10 @@ static int read_frame(struct tls_io *io, uint8_t *type, unsigned char *buf, uint
  * consumer side on its own write failure), and returns promptly instead of stalling teardown
  * while the spool fills. A timeout alone is not a disconnect signal; only a real read error
  * or clean EOF ends the loop. */
+struct reader_args { struct tls_io *io; struct spool *spool; };
 static void *reader_thread(void *arg) {
-	struct tls_io *io = arg;
+	struct reader_args *args = arg;
+	struct tls_io *io = args->io;
 	unsigned char buf[256];
 	uint8_t type; uint32_t len;
 	for (;;) {
@@ -847,7 +933,7 @@ static void *reader_thread(void *arg) {
 			continue;
 		}
 		if (rc != 0) break;
-		if (type == F_ACK && len >= 8) spool_ack(&g_spool, rd_be64(buf));
+		if (type == F_ACK && len >= 8) spool_ack(args->spool, rd_be64(buf));
 	}
 	g_disconnected = 1;
 	return NULL;
@@ -1351,7 +1437,7 @@ static void json_escape(char *dst, size_t dstcap, const char *src) {
 	dst[di] = 0;
 }
 
-static int handshake(struct tls_io *io, const struct opts *o, int *zstd_ok) {
+static int handshake(struct tls_io *io, const struct opts *o, const char *session, int *zstd_ok) {
 	*zstd_ok = 0;
 	if (ssl_write_all(io, MAGIC, 4) != 0) return -1;
 	char tok_esc[512], station_esc[512], feed_esc[128];
@@ -1365,7 +1451,7 @@ static int handshake(struct tls_io *io, const struct opts *o, int *zstd_ok) {
 	 * mint and at spool-header adoption), so it needs no JSON escaping. */
 	int n = snprintf(hello, sizeof hello,
 		"{\"token\":\"%s\",\"station\":\"%s\",\"feed\":\"%s\",\"sw\":\"navfeeder/1\",\"session\":\"%s\"%s}",
-		tok_esc, station_esc, feed_esc, g_session, o->zstd ? ",\"zstd\":true" : "");
+		tok_esc, station_esc, feed_esc, session, o->zstd ? ",\"zstd\":true" : "");
 	if (n < 0 || (size_t)n >= sizeof hello) return -1;
 	if (send_frame(io, F_HELLO, hello, (uint32_t)n) != 0) return -1;
 
@@ -1525,7 +1611,7 @@ static int disk_drain(struct spool *s, struct conn *c, uint64_t *sent_upto, stru
  * around-the-call window in main would count every slow-FAILING connect as useful and
  * reset backoff on each attempt against a down collector — the exact no-growth pathology
  * regression fix/regression fix exist to prevent. */
-static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
+static int serve_collector(SSL_CTX *ctx, const struct opts *o, struct spool *s) {
 	int tls_fd;
 	SSL *ssl = tls_connect(ctx, o, &tls_fd);
 	if (!ssl) { log_msg("collector TLS connect failed"); return -1; }
@@ -1535,7 +1621,7 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 	}
 
 	int zstd_ok = 0;
-	int hs = handshake(&io, o, &zstd_ok);
+	int hs = handshake(&io, o, s->session, &zstd_ok);
 	if (hs != 0) {
 		pthread_mutex_destroy(&io.mu);
 		SSL_free(ssl); close(tls_fd); return hs == -2 ? -2 : -1;
@@ -1563,7 +1649,8 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 
 	g_disconnected = 0;
 	pthread_t rt;
-	if (pthread_create(&rt, NULL, reader_thread, &io) != 0) {
+	struct reader_args reader = { &io, s };
+	if (pthread_create(&rt, NULL, reader_thread, &reader) != 0) {
 		/* a failed thread create left `rt` indeterminate, and the unconditional
 		 * pthread_join(rt, NULL) at the end of this function is UB on it; treat this
 		 * exactly like a failed connect (log + tear down + let the outer loop retry). */
@@ -1579,9 +1666,9 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 	time_t session_start = monotonic_s(); /* regression fix/usefulness measured post-handshake */
 
 	/* Replay-on-reconnect: resume from the last acked sequence. */
-	uint64_t sent_upto = spool_acked(&g_spool);
+	uint64_t sent_upto = spool_acked(s);
 	uint64_t replay_base = 0;
-	spool_stats(&g_spool, &replay_base, NULL, NULL, NULL);
+	spool_stats(s, &replay_base, NULL, NULL, NULL);
 	if (replay_base > sent_upto)
 		log_msg("connected: station=%s feed=%s zstd=%d; replaying %llu unacked frame(s)",
 			o->station, o->feed, zstd_ok, (unsigned long long)(replay_base - sent_upto));
@@ -1607,10 +1694,10 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 	 * the (possibly recovered) collector. Bounded churn: at most one replay per
 	 * ACK_STALL_S window during an outage, nothing when acks flow. Monotonic
 	 * clock per regression fix. */
-	uint64_t stall_acked = spool_acked(&g_spool);
+	uint64_t stall_acked = spool_acked(s);
 	time_t stall_since = monotonic_s();
 	while (!g_disconnected) {
-		uint64_t acked_now = spool_acked(&g_spool);
+		uint64_t acked_now = spool_acked(s);
 		if (acked_now != stall_acked) {
 			stall_acked = acked_now;
 			stall_since = monotonic_s();
@@ -1628,12 +1715,13 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 			g_disconnected = 1;
 			break;
 		}
-		disk_maybe_delete(&g_spool);
-		int d = disk_drain(&g_spool, &c, &sent_upto, &dcur); /* oldest unacked first (disk) */
+		disk_maybe_delete(s);
+		if (s != &g_spool && s->disk_max_seq == 0) { g_disconnected = 1; break; }
+		int d = disk_drain(s, &c, &sent_upto, &dcur); /* oldest unacked first (disk) */
 		if (d < 0) break;                              /* disconnected during disk replay */
 		if (d > 0) { last_tx = monotonic_s(); continue; } /* re-check disk before the ring */
 		uint64_t disk_max_seq_now = 0;
-		size_t n = spool_collect(&g_spool, sent_upto, batch, DRAIN_BATCH, &disk_max_seq_now);
+		size_t n = spool_collect(s, sent_upto, batch, DRAIN_BATCH, &disk_max_seq_now);
 		if (disk_max_seq_now > sent_upto) {
 			/* a frame > sent_upto may have been evicted to disk between
 			 * disk_drain's snapshot (above) and this collect. Discard whatever was
@@ -1670,6 +1758,8 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 		last_tx = monotonic_s();
 	}
 
+	/* Wake a healthy reader immediately when a replay file completes. */
+	shutdown(tls_fd, SHUT_RDWR);
 	pthread_join(rt, NULL);
 	pthread_mutex_lock(&io.mu);
 	SSL_shutdown(ssl);
@@ -1682,9 +1772,10 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o) {
 			(unsigned long long)c.raw, (unsigned long long)c.comp, 100.0 * (double)c.comp / (double)c.raw);
 	free(c.obuf);
 	uint64_t dropped = 0, disk_dropped = 0; size_t spooled = 0;
-	spool_stats(&g_spool, NULL, &dropped, &spooled, &disk_dropped);
+	spool_stats(s, NULL, &dropped, &spooled, &disk_dropped);
 	log_msg("disconnected (spooled=%zu dropped=%llu disk_dropped=%llu)",
 		spooled, (unsigned long long)dropped, (unsigned long long)disk_dropped);
+	if (s != &g_spool && s->disk_max_seq == 0) return 1;
 	return (monotonic_s() - session_start >= USEFUL_CONN_S) ? 0 : -1;
 }
 
@@ -1877,11 +1968,10 @@ int main(int argc, char **argv) {
 	SSL_library_init();
 	SSL_load_error_strings();
 	SSL_CTX *ctx = make_ctx(&o);
-	/* regression fix ordering: mint a fresh session first; spool_init → spool_recover then
-	 * overrides it with the disk header's stored session when it resumes a prior
-	 * run's sequence space, so session and seq always travel together. */
+	/* New captures and recovered records use separate session spaces. */
 	session_init();
 	spool_init(&g_spool, o.spool_cap, o.spool_file, o.disk_max_bytes);
+	spool_recover_all(&g_spool);
 	log_msg("session %s", g_session);
 
 	/* start the shutdown-flush signal thread once the spool exists. SIGTERM/SIGINT
@@ -1912,7 +2002,18 @@ int main(int argc, char **argv) {
 
 	int backoff = 1;
 	for (;;) {
-		int rc = serve_collector(ctx, &o);
+		struct spool *sending = g_replays ? g_replays : &g_spool;
+		int rc = serve_collector(ctx, &o, sending);
+		if (rc == 1) {
+			g_replays = sending->next;
+			pthread_mutex_lock(&g_spool.mu);
+			uint64_t room = o.disk_max_bytes - g_spool.disk_max_bytes;
+			g_spool.disk_max_bytes += sending->retained_bytes < room ? sending->retained_bytes : room;
+			pthread_mutex_unlock(&g_spool.mu);
+			spool_free(sending);
+			backoff = 1;
+			continue;
+		}
 		/* regression fix, tightened by serve_collector itself reports usefulness (rc==0,
 		 * authenticated + ran USEFUL_CONN_S, measured post-handshake on the monotonic
 		 * clock) — reset the backoff so a routine collector restart weeks later

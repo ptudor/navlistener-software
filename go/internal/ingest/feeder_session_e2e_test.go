@@ -53,20 +53,8 @@ func waitForSession(t *testing.T, ferr *syncBuf) string {
 	return ""
 }
 
-// TestNavfeederSessionContinuityAcrossRestart drives the regression fix edge
-// contract end to end with the real C feeder:
-//
-//  1. Run the feeder against a DOWN collector so everything it captures lands in
-//     the ring/disk spool, and record the session it minted.
-//  2. SIGTERM it (the regression fix shutdown flush spills the unacked ring to disk).
-//  3. Restart it against a LIVE collector: spool_recover must ADOPT the stored
-//     session — the replayed and post-restart frames continue one
-//     (observer, session, seq) space — which the collector observes on every
-//     admitted frame.
-//
-// Without the spool-header adoption, the restart would mint a fresh session for
-// records that belong to the old sequence space (or, pre-regression fix, reuse
-// (observer, seq) and have the historian discard fresh frames as replays).
+// TestNavfeederSessionContinuityAcrossRestart verifies that retained records keep
+// their original identity while the restarted producer gets a new session.
 func TestNavfeederSessionContinuityAcrossRestart(t *testing.T) {
 	bin := feederBinary(t)
 	capPath := filepath.Join("testdata", "f9t_capture.ubx")
@@ -179,9 +167,9 @@ func TestNavfeederSessionContinuityAcrossRestart(t *testing.T) {
 		}
 	})
 
-	// The restart must ADOPT run 1's session, not mint a fresh one.
-	if session2 := waitForSession(t, ferr2); session2 != session1 {
-		t.Fatalf("restart minted session %s; want the spool header's %s adopted", session2, session1)
+	// New captures must use a fresh session; replay retains run 1's identity.
+	if session2 := waitForSession(t, ferr2); session2 == session1 {
+		t.Fatalf("restart reused session %s; retained session %s must be replay-only", session2, session1)
 	}
 
 	// The recovered frames replay into the collector carrying that same session.
