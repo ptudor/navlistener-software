@@ -193,3 +193,15 @@ func (r *Registry) Audiences() []identity.Audience {
 	sort.Slice(out, func(i, j int) bool { return out[i].Key() < out[j].Key() })
 	return out
 }
+
+// Stores snapshots materialized state for lifecycle ticks without copying the
+// unrelated source configuration. The registry lock is released before any work.
+func (r *Registry) Stores() []*state.Store {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	stores := make([]*state.Store, 0, len(r.views))
+	for _, view := range r.views {
+		stores = append(stores, view.Store)
+	}
+	return stores
+}

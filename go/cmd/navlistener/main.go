@@ -303,7 +303,10 @@ func run() int {
 	wg.Add(1)
 	// Run the public projection first and the operator state last so legacy
 	// process-wide gauges retain their all-source/operator meaning.
-	go func() { defer wg.Done(); stateLoop(ctx, cfg.State, publicEventsLive, publicLive, live) }()
+	go func() {
+		defer wg.Done()
+		stateLoop(ctx, cfg.State, audienceRegistry, publicEventsLive, publicLive, live)
+	}()
 
 	// Any required listener that terminates after readiness fails health and drives
 	// the same ordered shutdown path as a signal.
@@ -1443,31 +1446,6 @@ func expireTickFor(ttl time.Duration) time.Duration {
 		tick = time.Second
 	}
 	return tick
-}
-
-// stateLoop re-propagates live SVs on the configured cadence and expires stale ones.
-func stateLoop(ctx context.Context, cfg config.State, stores ...*state.Store) {
-	prop := time.NewTicker(cfg.PropagateEvery)
-	defer prop.Stop()
-	expire := time.NewTicker(expireTickFor(cfg.SVTTL))
-	defer expire.Stop()
-	for {
-		select {
-		case <-prop.C:
-			now := time.Now()
-			for _, store := range stores {
-				store.Propagate(now)
-			}
-		case <-expire.C:
-			now := time.Now()
-			for _, store := range stores {
-				store.Expire(now, cfg.SVTTL)
-				store.ExpireStations(now) // sbas/rf/almanac RAM eviction
-			}
-		case <-ctx.Done():
-			return
-		}
-	}
 }
 
 // newDebugStateHandler builds the /debug/state handler: the regression fix loopback-peer
