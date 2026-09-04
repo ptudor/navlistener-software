@@ -76,13 +76,17 @@ func (s *Store) applyObservation(f *ingest.RawFrame) {
 	o := f.Obs
 	if o == nil || !finite(o.RcvTow) || o.RcvTow < 0 || o.RcvTow >= weekSeconds ||
 		!finite(o.PrM) || o.PrM <= 0 || o.PrM > 1e9 || !finite(o.DoHz) || math.Abs(o.DoHz) > 1e6 {
-		metrics.RawObsInvalidTotal.WithLabelValues(f.Source, "state_validation").Inc()
+		if !s.projection {
+			metrics.RawObsInvalidTotal.WithLabelValues(f.Source, "state_validation").Inc()
+		}
 		return
 	}
 	cpValid, arcBreak := o.CpValid, o.ArcBreak || o.CycleSlip
 	cpCyc := o.CpCyc
 	if cpValid && (!finite(cpCyc) || math.Abs(cpCyc) > 1e10) {
-		metrics.RawObsInvalidTotal.WithLabelValues(f.Source, "carrier").Inc()
+		if !s.projection {
+			metrics.RawObsInvalidTotal.WithLabelValues(f.Source, "carrier").Inc()
+		}
 		cpValid, arcBreak, cpCyc = false, true, 0
 	}
 	priSig := primarySig(f.GnssID)
@@ -212,7 +216,9 @@ func (s *Store) tryPairIono(f *ingest.RawFrame, tr *ionoTrack, secT *secTrack, s
 		secT.hasDelay = true
 		secT.lastEpochS = tr.pri.epochS
 		secT.delayAt = f.LocalRecv() // ionoDelayTTL ages against the collector clock
-		metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "iono_pair").Inc()
+		if !s.projection {
+			metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "iono_pair").Inc()
+		}
 	}
 	// Consume this secondary's sample so the next Add pairs a fresh one; the
 	// primary is left alone since another secondary may still need to pair

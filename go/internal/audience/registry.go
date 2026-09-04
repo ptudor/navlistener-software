@@ -135,7 +135,7 @@ func (r *Registry) ensureDynamic(a identity.Audience) (View, bool) {
 	if r.dynamic >= maxDynamicViews {
 		return View{}, false
 	}
-	view = View{Audience: a, Store: state.New(r.shards), Sources: sourcesForAudience(r.sources, a)}
+	view = View{Audience: a, Store: state.NewProjection(r.shards), Sources: sourcesForAudience(r.sources, a)}
 	r.views[key] = view
 	r.dynamic++
 	return view, true

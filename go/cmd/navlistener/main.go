@@ -142,8 +142,8 @@ func run() int {
 	// Pipeline: ingest → decode → live state (+ optional persist historian).
 	state.SetLeapSeconds(cfg.State.LeapSeconds) // interim config override for ΔtLS
 	live := state.New(cfg.State.Shards)
-	publicLive := state.New(cfg.State.Shards)
-	publicEventsLive := state.New(cfg.State.Shards)
+	publicLive := state.NewProjection(cfg.State.Shards)
+	publicEventsLive := state.NewProjection(cfg.State.Shards)
 	audienceRegistry := audience.NewRegistry(cfg.State.Shards, cfg.Ingest)
 	audienceRegistry.Register(identity.Audience{Kind: identity.AudiencePublic}, publicLive, audience.PublicSources(cfg.Ingest))
 	audienceRegistry.Register(identity.Audience{Kind: identity.AudienceOperator, ID: cfg.Collector.InstanceID}, live, cfg.Ingest)
