@@ -177,6 +177,7 @@ final class AppController {
             token = nil
         }
 
+        if token != nil { try ReadRequestHeaders.requireSecureTransport(url) }
         let envelope = try await feedClient.fetchAudiences(baseURL: url, token: token)
         guard let discovery = envelope.data?.validated() else { throw FeedError.invalidResponse }
         if (token == nil) != (discovery.principalID == nil) { throw FeedError.invalidResponse }

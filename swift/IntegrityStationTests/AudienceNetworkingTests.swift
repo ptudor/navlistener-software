@@ -180,6 +180,55 @@ struct AudienceNetworkingTests {
         #expect(erasedCursor == nil)
     }
 
+    @Test
+    func authenticatedHTTPIsRejectedBeforeNetworking() async throws {
+        URLProtocolStub.handler = { request in
+            #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+            return (Self.response(for: request, status: 200), Data(#"{"ok":true,"data":{"schema":"2.0","revision":"public-v1","audiences":["public"]}}"#.utf8))
+        }
+        defer { URLProtocolStub.handler = nil }
+        let url = try #require(URL(string: "http://collector.local"))
+        let network = Self.stubbedSession()
+        let client = FeedClient(session: network)
+        do {
+            _ = try await client.fetchAudiences(baseURL: url, token: "token")
+            Issue.record("HTTP discovery accepted a token")
+        } catch { #expect(error as? FeedError == .invalidBaseURL) }
+        let privateSession = try #require(ReadSession(baseURL: url, principalID: "reader", audience: ReadAudience("organization:customer-a")!, authorizationRevision: "v1", token: "token"))
+        do {
+            _ = try await client.fetchObservers(session: privateSession)
+            Issue.record("HTTP polling accepted a token")
+        } catch { #expect(error as? FeedError == .invalidBaseURL) }
+        do {
+            for try await _ in try EventStream(session: network).updates(session: privateSession, lastEventID: nil) {}
+            Issue.record("HTTP SSE accepted a token")
+        } catch { #expect(error as? FeedError == .invalidBaseURL) }
+        _ = try await client.fetchAudiences(baseURL: url, token: nil)
+    }
+
+    @MainActor @Test
+    func storedHTTPCredentialCannotBeTransmitted() async throws {
+        let credentials = MemoryConnectionStore()
+        await credentials.saveToken("stored-token", forServer: "http://collector.local")
+        let controller = AppController(secureStore: credentials, feedClient: FeedClient(session: Self.stubbedSession()))
+        do {
+            try await controller.connect(to: "http://collector.local")
+            Issue.record("Stored credential allowed HTTP")
+        } catch { #expect(error as? FeedError == .invalidBaseURL) }
+    }
+
+    @Test
+    func authenticatedRedirectsStayOnOriginalHTTPSOrigin() throws {
+        var request = URLRequest(url: URL(string: "https://collector.local/start")!)
+        try ReadRequestHeaders.apply(token: "token", to: &request)
+        let guardDelegate = CredentialRedirectGuard(request: request)
+        #expect(guardDelegate.allows(URL(string: "https://collector.local/next")))
+        #expect(guardDelegate.allows(URL(string: "https://collector.local:443/next")))
+        for target in ["http://collector.local/next", "https://other.local/next", "https://collector.local:444/next", "https://user@collector.local/next"] {
+            #expect(!guardDelegate.allows(URL(string: target)))
+        }
+    }
+
     private static func stubbedSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [URLProtocolStub.self]

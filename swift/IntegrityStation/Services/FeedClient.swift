@@ -102,7 +102,7 @@ struct FeedClient: Sendable {
             try ReadRequestHeaders.apply(token: token, to: &request)
         }
 
-        let (data, response) = try await self.session.data(for: request)
+        let (data, response) = try await self.session.data(for: request, delegate: CredentialRedirectGuard(request: request))
         guard let http = response as? HTTPURLResponse else { throw FeedError.invalidResponse }
         guard (200...299).contains(http.statusCode) else {
             throw Self.responseError(status: http.statusCode, data: data)
@@ -145,6 +145,7 @@ struct FeedClient: Sendable {
 
 enum ReadRequestHeaders {
     static func apply(session: ReadSession, to request: inout URLRequest) throws {
+        if session.audience.isPrivate { try requireSecureTransport(request.url) }
         request.setValue(session.audience.rawValue, forHTTPHeaderField: "X-GNSS-Audience")
         if let token = session.token {
             try apply(token: token, to: &request)
@@ -154,7 +155,43 @@ enum ReadRequestHeaders {
 
     static func apply(token: String, to request: inout URLRequest) throws {
         guard ReadSession.isValidToken(token) else { throw FeedError.invalidCredential }
+        try requireSecureTransport(request.url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    }
+
+    static func requireSecureTransport(_ url: URL?) throws {
+        guard url?.scheme?.lowercased() == "https", url?.host != nil else {
+            throw FeedError.invalidBaseURL
+        }
+    }
+}
+
+// Task-level delegation also protects injected sessions and every redirect hop.
+// A credential's authority is confined to its original HTTPS origin.
+final class CredentialRedirectGuard: NSObject, URLSessionTaskDelegate, Sendable {
+    private let originalURL: URL?
+    private let authenticated: Bool
+
+    init(request: URLRequest) {
+        originalURL = request.url
+        authenticated = request.value(forHTTPHeaderField: "Authorization") != nil
+    }
+
+    func allows(_ url: URL?) -> Bool {
+        guard authenticated else { return true }
+        guard let url, let originalURL else { return false }
+        return url.scheme?.lowercased() == "https"
+            && originalURL.scheme?.lowercased() == "https"
+            && url.host?.lowercased() == originalURL.host?.lowercased()
+            && (url.port ?? 443) == (originalURL.port ?? 443)
+            && url.user == nil && url.password == nil
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+        completionHandler(allows(request.url) ? request : nil)
     }
 }
 
