@@ -2,6 +2,7 @@
 // Mirrors navfeeder.c serve_collector(), single-task (select-gated ACK reads).
 
 #include "pusher.h"
+#include "ack_progress.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -152,7 +153,9 @@ static bool readable(esp_tls_t *tls, int fd, int timeout_ms)
 static bool drain_acks(esp_tls_t *tls, int fd)
 {
     uint8_t buf[64];
-    while (readable(tls, fd, 0)) {
+    // Bound each drain so a stream of unchanged ACKs/PONGs cannot starve the
+    // durability watchdog in the outer loop.
+    for (unsigned n = 0; n < DRAIN_BATCH && readable(tls, fd, 0); n++) {
         uint8_t type;
         size_t len;
         if (read_frame(tls, &type, buf, sizeof buf, &len) != 0) return false;
@@ -304,9 +307,18 @@ static int serve(void)
     spool_frame_t batch[DRAIN_BATCH];
     uint8_t frame[GNF1_DATA_MAX];
     int64_t last_tx_us = esp_timer_get_time();
+    ack_progress_t progress = { .acked = sent_upto, .since_us = last_tx_us };
 
     for (;;) {
         if (!drain_acks(tls, fd)) break;
+        // healthy writes/PONGs are not historian progress. The C6's
+        // default RAM ring holds about 100 s of traffic, so recover stalled
+        // durability after 30 s rather than the larger C feeder's ten minutes.
+        // Reconnect preserves s_cfg.session and replays from spool_acked().
+        if (ack_progress_stalled(&progress, spool_acked(), sent_upto, esp_timer_get_time())) {
+            ESP_LOGW(TAG, "durable ACK stalled with records outstanding; reconnecting for replay");
+            break;
+        }
 
         size_t n = spool_collect(sent_upto, batch, DRAIN_BATCH);
         if (n == 0) {

@@ -179,3 +179,5 @@ token → software mTLS cert → **ATECC608 cert** (the P-hw high-assurance clas
 - **Wire parity** — `gnf1`/`ubx` must stay byte-identical to `../go/internal/wire/wire.go` and
   `../feeder/navfeeder.c`. TLS 1.2 pinned; nav words big-endian on the wire.
 - **Clean-room** — author from the u-blox ICD and our own Apache-2.0 code, using the cited interface specifications.
+
+The pusher reconnects when sent records remain outstanding without durable ACK advancement for 30 seconds. Successful writes and PONGs do not reset this monotonic timer; advancing ACKs and an empty outstanding set do. Reconnect preserves the boot session and replays from the last durable watermark, allowing recovery after the collector discarded a record during a historian outage. This does not extend the RAM-only durability envelope or prevent overflow at arbitrary input rates.
