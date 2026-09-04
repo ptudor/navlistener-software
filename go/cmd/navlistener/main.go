@@ -646,6 +646,9 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLi
 				Session:               f.Session, // dedup-key third component 
 			})
 		}
+		if !f.Admission.Current() {
+			return
+		}
 		live.Apply(f)
 		if scoped != nil {
 			scoped.ApplyPrivate(f)

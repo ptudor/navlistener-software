@@ -73,10 +73,12 @@ type RawFrame struct {
 	// as private local-unassigned by audience code.
 	Observer identity.ObserverContext
 
+	Admission *Admission // current-policy fence; never changes forensic provenance
+
 	// ScopeRevocation is an ordered control-plane barrier, not a GNSS frame.
-	// The push handler emits it only after the changed session has stopped
-	// forwarding DATA, so decode can invalidate every audience built from the
-	// previous immutable context after all of that session's queued receipts.
+	// All old sessions are fenced before it is enqueued, and all new-policy
+	// sessions wait for its admission. Late old DATA preserves raw evidence but
+	// fails the Admission generation check before audience projection.
 	ScopeRevocation *ScopeRevocation
 }
 

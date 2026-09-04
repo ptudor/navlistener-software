@@ -172,7 +172,7 @@ type PushServer struct {
 	collectorInstanceID string
 
 	authorizationMu sync.Mutex
-	lastAuthorized  map[string]identity.ObserverContext
+	policies        map[string]*observerPolicy
 }
 
 // SetDurableTracker installs the regression fix durability watermark source. Must be
@@ -253,8 +253,8 @@ func newPushServer(addr string, tc *tls.Config, out chan<- *RawFrame, auth Authe
 	}
 	return &PushServer{addr: addr, tlsConfig: tc, auth: auth, out: out, ackInterval: ack,
 		reauthorizeEvery: 30 * time.Second, collectorInstanceID: identity.LocalCollectorInstance,
-		lastAuthorized: make(map[string]identity.ObserverContext),
-		log:            log, conns: make(chan struct{}, maxConns)}
+		policies: make(map[string]*observerPolicy),
+		log:      log, conns: make(chan struct{}, maxConns)}
 }
 
 // Run listens until ctx is cancelled, handling each feeder connection concurrently.
@@ -429,20 +429,15 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 	// Compare with the most recent context seen for this observer. This catches a
 	// policy transfer that occurred while the feeder was disconnected, before a
 	// single newly-authorized DATA record can enter live state.
-	if previous, changed := p.observeAuthorization(observerContext); changed {
-		if !p.enqueueScopeRevocation(sessionCtx, previous) {
-			return
-		}
+	admission := p.admit(ctx, observerContext, authorized.policyGeneration, func() { sessionCancel(); _ = conn.Close() })
+	if admission == nil {
+		return
 	}
-	changed := make(chan authorizationChange, 1)
-	go p.watchAuthorization(sessionCtx, conn, authorized.token, observer, feed, observerContext, changed)
+	defer admission.release()
+	sessionCtx = context.WithValue(sessionCtx, admissionContextKey{}, admission)
+	go p.watchAuthorization(sessionCtx, ctx, conn, authorized.token, observer, feed, observerContext, admission)
 	p.stream(sessionCtx, frames, w, observerContext, feed, session)
 	sessionCancel()
-	select {
-	case <-changed:
-		_ = p.enqueueScopeRevocation(ctx, observerContext)
-	default:
-	}
 }
 
 // maxConsecutiveUnforwarded bounds how many frames in a row a connection may
@@ -474,11 +469,12 @@ const maxConsecutiveUnforwarded = 256
 const helloMaxLen = 4096
 
 type authorizedHello struct {
-	observer identity.ObserverContext
-	feed     string
-	session  string
-	token    string
-	useZstd  bool
+	policyGeneration uint64
+	observer         identity.ObserverContext
+	feed             string
+	session          string
+	token            string
+	useZstd          bool
 }
 
 // handshake reads and authenticates the HELLO, replying WELCOME. The bearer
@@ -494,6 +490,7 @@ func (p *PushServer) handshake(ctx context.Context, conn net.Conn, w *connWriter
 		p.log.Warn("push bad HELLO json", "remote", remote, "error", err)
 		return authorizedHello{}, false
 	}
+	policyGeneration := p.policyGeneration(h.Station)
 	observerContext, authed, authErr := p.authorize(ctx, conn, h.Token, h.Station, h.Feed)
 	if !authed {
 		metrics.PushAuthFailuresTotal.Inc()
@@ -529,7 +526,7 @@ func (p *PushServer) handshake(ctx context.Context, conn net.Conn, w *connWriter
 	})); err != nil {
 		return authorizedHello{}, false
 	}
-	return authorizedHello{observer: observerContext, feed: h.Feed, session: h.Session, token: h.Token, useZstd: h.Zstd}, true
+	return authorizedHello{observer: observerContext, feed: h.Feed, session: h.Session, token: h.Token, useZstd: h.Zstd, policyGeneration: policyGeneration}, true
 }
 
 // authorize binds a server-side grant to the proof actually presented on this
@@ -597,16 +594,6 @@ func (p *PushServer) authorize(ctx context.Context, conn net.Conn, token, statio
 	return resolved, err == nil, err
 }
 
-type authorizationChange struct{}
-
-func (p *PushServer) observeAuthorization(current identity.ObserverContext) (identity.ObserverContext, bool) {
-	p.authorizationMu.Lock()
-	previous, exists := p.lastAuthorized[current.ObserverID]
-	p.lastAuthorized[current.ObserverID] = current
-	p.authorizationMu.Unlock()
-	return previous, exists && !previous.AuthorizationEqual(current)
-}
-
 func (p *PushServer) enqueueScopeRevocation(ctx context.Context, previous identity.ObserverContext) bool {
 	marker := &RawFrame{Source: previous.ObserverID, ScopeRevocation: &ScopeRevocation{
 		Previous: previous, ChangedAt: time.Now(),
@@ -619,7 +606,7 @@ func (p *PushServer) enqueueScopeRevocation(ctx context.Context, previous identi
 	}
 }
 
-func (p *PushServer) watchAuthorization(ctx context.Context, conn net.Conn, token, station, feed string, initial identity.ObserverContext, changed chan<- authorizationChange) {
+func (p *PushServer) watchAuthorization(ctx, ingestCtx context.Context, conn net.Conn, token, station, feed string, initial identity.ObserverContext, admission *Admission) {
 	if p.reauthorizeEvery <= 0 {
 		return
 	}
@@ -636,10 +623,10 @@ func (p *PushServer) watchAuthorization(ctx context.Context, conn net.Conn, toke
 			if !ok || !initial.AuthorizationEqual(current) {
 				p.log.Warn("push feeder authorization changed; closing active session",
 					"observer", initial.ObserverID, "authorized", ok, "error", err)
-				select {
-				case changed <- authorizationChange{}:
-				default:
+				if !ok {
+					current = identity.ObserverContext{}
 				}
+				p.changeAdmission(ingestCtx, admission, current)
 				_ = conn.Close()
 				return
 			}
@@ -739,6 +726,11 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 	// delivery; see maxConsecutiveUnforwarded for why it exists and its bound.
 	unforwarded := 0
 	for {
+		if ctx.Err() != nil {
+			close(quit)
+			<-ackDone
+			return
+		}
 		// The idle-timeout deadline is refreshed by idleConn on every underlying read, so a
 		// stalled feeder (or a stalled zstd stream) still trips it here.
 		ft, payload, err := wire.ReadFrame(frames)
@@ -790,7 +782,8 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				}
 				mu.Unlock()
 			} else {
-				f.Observer = observerContext       // trusted handshake result; never record metadata
+				f.Observer = observerContext // trusted handshake result; never record metadata
+				f.Admission, _ = ctx.Value(admissionContextKey{}).(*Admission)
 				f.Seq, f.HasSeq = seq, true        // historian dedup key : this connection may be a replay
 				f.Session = session                // boot-identity half of the dedup key 
 				if f.RF == nil && f.Words != nil { // byte frames use CapturedOnlyTotal, not gnssid=0
