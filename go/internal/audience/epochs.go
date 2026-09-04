@@ -40,6 +40,18 @@ func (p *PolicyEpochs) Current(audience string) (generation uint64, visibleAt ti
 	return epoch.generation, epoch.visibleAt
 }
 
+// IfCurrent synchronizes an in-memory admission with Advance. The callback
+// must not perform network/database I/O or acquire another policy epoch lock.
+func (p *PolicyEpochs) IfCurrent(audience string, generation uint64, admit func()) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.epochs[audience].generation != generation {
+		return false
+	}
+	admit()
+	return true
+}
+
 // Advance makes every pre-transition derived event invisible and invalidates
 // pending publication generations. It returns canonical keys actually changed.
 func (p *PolicyEpochs) Advance(audiences []identity.Audience, at time.Time) []string {

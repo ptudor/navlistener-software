@@ -18,15 +18,18 @@ import (
 // API (docs/OUTPUT.md §3). The daemon fills it from a confirmed detector transition
 // (with the id the historian assigned, or a local counter when persistence is off).
 type EventMsg struct {
-	ID       int64          `json:"id"`
-	Time     string         `json:"time"`
-	SV       string         `json:"sv"`
-	Type     string         `json:"type"`
-	OldValue string         `json:"old_value,omitempty"`
-	NewValue string         `json:"new_value,omitempty"`
-	Severity int            `json:"severity"`
-	Message  string         `json:"message,omitempty"`
-	Params   map[string]any `json:"params,omitempty"`
+	PolicyGeneration uint64 `json:"-"`
+	GenerationSet    bool   `json:"-"`
+	brokerGeneration uint64
+	ID               int64          `json:"id"`
+	Time             string         `json:"time"`
+	SV               string         `json:"sv"`
+	Type             string         `json:"type"`
+	OldValue         string         `json:"old_value,omitempty"`
+	NewValue         string         `json:"new_value,omitempty"`
+	Severity         int            `json:"severity"`
+	Message          string         `json:"message,omitempty"`
+	Params           map[string]any `json:"params,omitempty"`
 }
 
 // sseDefaults for the reconnect replay window and heartbeat cadence (docs/OUTPUT.md
@@ -65,17 +68,23 @@ type Broker struct {
 	// cancels in-flight request contexts, so the SSE handler must have a daemon-scoped
 	// signal to return on, or every restart with a live consumer (intsat holds a permanent
 	// EventSource) burns the full ShutdownTimeout and logs "ungraceful".
-	done      chan struct{}
-	closeOnce sync.Once
+	done             chan struct{}
+	closeOnce        sync.Once
+	generation       atomic.Uint64
+	policyAdmission  func(uint64, func()) bool
+	policyGeneration func() uint64
+	beforePublish    func() // deterministic admission-race seam
 }
 
 // sseClient carries both the bounded live-event queue and an idempotent overflow
 // signal. Closing kick terminates the stream so EventSource reconnects with its last
 // delivered id instead of remaining connected across an invisible gap.
 type sseClient struct {
-	events   chan EventMsg
-	kick     chan struct{}
-	kickOnce sync.Once
+	generation       uint64
+	policyGeneration uint64
+	events           chan EventMsg
+	kick             chan struct{}
+	kickOnce         sync.Once
 }
 
 func (c *sseClient) drop() { c.kickOnce.Do(func() { close(c.kick) }) }
@@ -102,6 +111,7 @@ func (b *Broker) Close() {
 // can be replayed or delivered after the transition.
 func (b *Broker) Reset() {
 	b.mu.Lock()
+	b.generation.Add(1)
 	b.recent = nil
 	for client := range b.clients {
 		client.drop()
@@ -114,8 +124,24 @@ func (b *Broker) Reset() {
 // EventSource to reconnect and replay the gap. Replay can recover only events still in
 // the 256-event ring; older history requires the query API. The publisher never blocks.
 func (b *Broker) Publish(e EventMsg) {
+	if b.beforePublish != nil {
+		b.beforePublish()
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.policyAdmission != nil {
+		if !e.GenerationSet {
+			e.PolicyGeneration = b.policyGeneration()
+			e.GenerationSet = true
+		}
+		b.policyAdmission(e.PolicyGeneration, func() { b.publishLocked(e) })
+		return
+	}
+	b.publishLocked(e)
+}
+
+func (b *Broker) publishLocked(e EventMsg) {
+	e.brokerGeneration = b.generation.Load()
 	b.recent = append(b.recent, e)
 	if len(b.recent) > sseRecentCap {
 		b.recent = b.recent[len(b.recent)-sseRecentCap:]
@@ -162,7 +188,10 @@ func (b *Broker) subscribe() (client *sseClient, ok bool) {
 		metrics.SSESubscribeRejectedTotal.Inc() // cap pressure/attack signal
 		return nil, false
 	}
-	client = &sseClient{events: make(chan EventMsg, sseClientBuffer), kick: make(chan struct{})}
+	client = &sseClient{events: make(chan EventMsg, sseClientBuffer), kick: make(chan struct{}), generation: b.generation.Load()}
+	if b.policyGeneration != nil {
+		client.policyGeneration = b.policyGeneration()
+	}
 	b.clients[client] = struct{}{}
 	// gauge set from the authoritative map size under the lock (never
 	// inc/dec'd separately, so it cannot drift from reality).
@@ -219,6 +248,9 @@ func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
 
 	rc := http.NewResponseController(w)
 	writeAndFlush := func(f func() error) bool {
+		if !b.clientCurrent(client) {
+			return false
+		}
 		_ = rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
 		if err := f(); err != nil {
 			return false
@@ -237,6 +269,9 @@ func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
 	lastID, hasLast := parseLastEventID(r)
 	var lastReplayedID int64
 	for _, e := range b.replayFrom(lastID, hasLast) {
+		if !b.eventCurrent(client, e) {
+			return
+		}
 		if !writeAndFlush(func() error { return b.writeSSE(w, "gnss", e) }) {
 			return
 		}
@@ -253,6 +288,9 @@ func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case e := <-client.events:
+			if !b.eventCurrent(client, e) {
+				return
+			}
 			if e.ID <= lastReplayedID {
 				continue // already delivered via the replay above
 			}
@@ -271,6 +309,25 @@ func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+func (b *Broker) clientCurrent(c *sseClient) bool {
+	if c.generation != b.generation.Load() {
+		return false
+	}
+	if b.policyGeneration != nil && c.policyGeneration != b.policyGeneration() {
+		return false
+	}
+	select {
+	case <-c.kick:
+		return false
+	default:
+		return true
+	}
+}
+
+func (b *Broker) eventCurrent(c *sseClient, e EventMsg) bool {
+	return b.clientCurrent(c) && e.brokerGeneration == c.generation && (!e.GenerationSet || e.PolicyGeneration == c.policyGeneration)
 }
 
 // parseLastEventID reads the reconnect cursor from the Last-Event-ID header or the

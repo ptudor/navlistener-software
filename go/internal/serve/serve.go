@@ -86,8 +86,13 @@ type Server struct {
 	reauthorizeEvery time.Duration
 	policyEpochs     *audience.PolicyEpochs
 
-	mu    sync.RWMutex
-	cache map[string][]byte
+	mu                   sync.RWMutex
+	cache                map[string][]byte
+	cacheEpoch           map[string]uint64
+	cacheState           map[string]uint64
+	beforeCacheAdmission func() // deterministic render/admission race seam
+	deliveryMu           sync.Mutex
+	deliveries           map[*responseDelivery]struct{}
 }
 
 // New builds the v2 API server bound to addr. sources supplies the configured
@@ -123,10 +128,13 @@ func NewForAudience(addr string, st *state.Store, events EventStore, sources []c
 		slow:         slow,
 		broker:       newBroker(),
 		cache:        map[string][]byte{},
+		cacheEpoch:   map[string]uint64{},
+		cacheState:   map[string]uint64{},
 		brokers:      map[string]*Broker{},
 		policyEpochs: audience.NewPolicyEpochs(time.Now()),
 	}
 	s.broker.log = log // SSE marshal failures log through the server's real logger
+	s.bindBroker(s.broker, selected)
 	s.brokers[selected.Key()] = s.broker
 	mux := http.NewServeMux()
 	mux.HandleFunc("/gnss/api/v2/svs", s.serveFeed("svs"))
@@ -141,6 +149,7 @@ func NewForAudience(addr string, st *state.Store, events EventStore, sources []c
 	s.http = &http.Server{
 		Addr:              addr,
 		Handler:           mux,
+		ConnContext:       connectionContext,
 		ReadHeaderTimeout: 5 * time.Second,
 		// bounds an idle keep-alive connection between requests. Does not affect
 		// an active SSE stream (net/http only counts a connection idle while no handler
@@ -229,6 +238,10 @@ func (s *Server) PublishEvent(e EventMsg) {
 }
 
 func (s *Server) PublishEventForAudience(a identity.Audience, e EventMsg) {
+	if !e.GenerationSet {
+		e.PolicyGeneration, _ = s.policyEpochs.Current(a.Key())
+		e.GenerationSet = true
+	}
 	s.brokerFor(a).Publish(e)
 }
 
@@ -237,6 +250,7 @@ func (s *Server) PublishEventForAudience(a identity.Audience, e EventMsg) {
 // brokers still need the same boundary.
 func (s *Server) InvalidateAudiences(audiences []identity.Audience) {
 	for _, selected := range audiences {
+		s.invalidateDeliveries(selected)
 		if selected == s.audience {
 			s.mu.Lock()
 			clear(s.cache)
@@ -259,9 +273,17 @@ func (s *Server) brokerFor(a identity.Audience) *Broker {
 		return broker
 	}
 	broker := newBroker()
+	s.bindBroker(broker, a)
 	broker.log = s.log
 	s.brokers[key] = broker
 	return broker
+}
+
+func (s *Server) bindBroker(b *Broker, a identity.Audience) {
+	b.policyAdmission = func(generation uint64, admit func()) bool {
+		return s.policyEpochs.IfCurrent(a.Key(), generation, admit)
+	}
+	b.policyGeneration = func() uint64 { generation, _ := s.policyEpochs.Current(a.Key()); return generation }
 }
 
 func (s *Server) closeBrokers() {
@@ -287,8 +309,9 @@ func (s *Server) SnapshotFeeds() map[string][]byte {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make(map[string][]byte, len(s.cache))
+	epoch, _ := s.policyEpochs.Current(s.audience.Key())
 	for f, b := range s.cache {
-		if len(b) == 0 {
+		if len(b) == 0 || s.cacheEpoch[f] != epoch || s.cacheState[f] != s.store.Generation() {
 			continue
 		}
 		cp := make([]byte, len(b))
@@ -355,14 +378,25 @@ func (s *Server) refreshAll() {
 // and leaves the previous (stale) bytes in place rather than serving a broken body.
 func (s *Server) refresh(feed string) {
 	now := s.now()
+	stateGeneration := s.store.Generation()
+	epoch, _ := s.policyEpochs.Current(s.audience.Key())
 	body, err := s.buildFeed(feed, s.audience, s.store, s.sources, now)
 	if err != nil {
 		metrics.ServeFeedMarshalErrorsTotal.WithLabelValues(feed).Inc()
 		s.log.Error("serve feed marshal failed", "feed", feed, "audience", s.audience.Key(), "error", err)
 		return
 	}
+	if s.beforeCacheAdmission != nil {
+		s.beforeCacheAdmission()
+	}
 	s.mu.Lock()
-	s.cache[feed] = body
+	s.policyEpochs.IfCurrent(s.audience.Key(), epoch, func() {
+		if s.store.Generation() == stateGeneration {
+			s.cache[feed] = body
+			s.cacheEpoch[feed] = epoch
+			s.cacheState[feed] = stateGeneration
+		}
+	})
 	s.mu.Unlock()
 	metrics.ServeFeedRefreshTimestamp.WithLabelValues(feed).SetToCurrentTime()
 }
@@ -426,6 +460,8 @@ func (s *Server) serveFeed(feed string) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		delivery := s.beginDelivery(r, view.audience)
+		defer delivery.finish()
 		// Only the fixed/default view uses the shared warmed cache. Authenticated
 		// private responses are rendered per request so cache entries never cross
 		// principals or audiences.
@@ -439,17 +475,23 @@ func (s *Server) serveFeed(feed string) http.HandlerFunc {
 			w.Header().Set("Content-Type", "application/json")
 			s.setAudienceCacheHeaders(w, view.audience)
 			if r.Method != http.MethodHead {
-				_, _ = w.Write(body)
+				delivery.write(w, body)
 			}
 			return
 		}
 		s.mu.RLock()
 		body := s.cache[feed]
+		if s.cacheEpoch[feed] != delivery.generation || s.cacheState[feed] != view.store.Generation() {
+			body = nil
+		}
 		s.mu.RUnlock()
 		if body == nil {
 			s.refresh(feed)
 			s.mu.RLock()
 			body = s.cache[feed]
+			if s.cacheEpoch[feed] != delivery.generation || s.cacheState[feed] != view.store.Generation() {
+				body = nil
+			}
 			s.mu.RUnlock()
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -459,7 +501,7 @@ func (s *Server) serveFeed(feed string) http.HandlerFunc {
 			return
 		}
 		if r.Method != http.MethodHead {
-			_, _ = w.Write(body)
+			delivery.write(w, body)
 		}
 	}
 }
@@ -571,6 +613,8 @@ func (s *Server) serveEventStream(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	delivery := s.beginDelivery(r, view.audience)
+	defer delivery.finish()
 	if view.audience.Kind != identity.AudiencePublic {
 		w.Header().Set("Vary", "Authorization, X-GNSS-Audience")
 	}

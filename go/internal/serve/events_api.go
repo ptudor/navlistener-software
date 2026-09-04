@@ -59,6 +59,8 @@ func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "events history unavailable (historian disabled)")
 		return
 	}
+	delivery := s.beginDelivery(r, view.audience)
+	defer delivery.finish()
 	q := r.URL.Query()
 	now := s.now()
 	// an unparsable since/until/severity/limit/offset must not silently
@@ -157,7 +159,7 @@ func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 	if events == nil {
 		events = []store.StoredEvent{}
 	}
-	s.writeEnvelope(w, now, view.audience, map[string]any{
+	s.writeEnvelope(w, now, view.audience, delivery, map[string]any{
 		"schema": schemaVersion,
 		"total":  total,
 		"events": events,
@@ -179,6 +181,8 @@ func (s *Server) serveEventsSummary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "events history unavailable (historian disabled)")
 		return
 	}
+	delivery := s.beginDelivery(r, view.audience)
+	defer delivery.finish()
 	hoursRaw, err := atoiParam(r.URL.Query().Get("hours"), summaryDefaultHours)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "hours: "+err.Error())
@@ -209,7 +213,7 @@ func (s *Server) serveEventsSummary(w http.ResponseWriter, r *http.Request) {
 	if sum.TotalEvents == 0 {
 		idleMessage = fmt.Sprintf("No events in the last %d hours", hours)
 	}
-	s.writeEnvelope(w, now, view.audience, map[string]any{
+	s.writeEnvelope(w, now, view.audience, delivery, map[string]any{
 		"schema":           schemaVersion,
 		"period_hours":     hours,
 		"total_events":     sum.TotalEvents,
@@ -223,7 +227,7 @@ func (s *Server) serveEventsSummary(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeEnvelope marshals data inside the standard v2 response envelope (docs/OUTPUT.md §0).
-func (s *Server) writeEnvelope(w http.ResponseWriter, now time.Time, selected identity.Audience, data map[string]any) {
+func (s *Server) writeEnvelope(w http.ResponseWriter, now time.Time, selected identity.Audience, delivery *responseDelivery, data map[string]any) {
 	body, err := json.Marshal(envelope{OK: true, Time: now.UTC().Format(time.RFC3339), Data: data})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "encode failed")
@@ -231,7 +235,7 @@ func (s *Server) writeEnvelope(w http.ResponseWriter, now time.Time, selected id
 	}
 	w.Header().Set("Content-Type", "application/json")
 	s.setAudienceCacheHeaders(w, selected)
-	_, _ = w.Write(body)
+	delivery.write(w, body)
 }
 
 // atoiParam parses an integer query param. An absent (empty) value returns def, nil --

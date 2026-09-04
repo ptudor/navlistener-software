@@ -1019,6 +1019,16 @@ type eventWriter interface {
 }
 type eventPublisher interface{ PublishEvent(serve.EventMsg) }
 
+type generationPublisher struct {
+	publisher  eventPublisher
+	generation uint64
+}
+
+func (p generationPublisher) PublishEvent(e serve.EventMsg) {
+	e.PolicyGeneration, e.GenerationSet = p.generation, true
+	p.publisher.PublishEvent(e)
+}
+
 // asEventWriter / asEventPublisher convert the concrete historian/serve pointers to
 // their interface types at the run() boundary, returning a true interface nil when the
 // pointer is nil. Without this explicit conversion, a nil *store.Store boxed
@@ -1214,8 +1224,12 @@ func (p *eventPipeline) writeSafely(ctx context.Context, pe pendingEvent, retry 
 			ok = false
 		}
 	}()
+	publisher := p.publisher
+	if publisher != nil {
+		publisher = generationPublisher{publisher: publisher, generation: pe.policyGeneration}
+	}
 	guard := func() bool { return p.generationCurrent(pe.policyGeneration) }
-	return writeAndPublishRetry(ctx, pe.row, pe.ev, p.historian, p.publisher, p.log, retry, queued, guard)
+	return writeAndPublishRetry(ctx, pe.row, pe.ev, p.historian, publisher, p.log, retry, queued, guard)
 }
 
 // flushFinal uses a fresh shared deadline because the detector's parent context is already

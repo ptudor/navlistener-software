@@ -205,3 +205,13 @@ go test ./internal/serve/
 - `../store/README.md` — the event tables and the `pg_notify` contract.
 - `../../../docs/OUTPUT.md` — the authoritative served contract: §0 envelope, §1 feeds,
   §2.1 events query, §3 event contract, §5 cadence and caching, §6 consumer migration.
+
+Policy transitions tag warmed feed bodies and queued/replayed SSE events with their
+admission generation. Cache and broker admission synchronize against the policy epoch;
+queries that span a transition fail closed. Active feed/history/stream responses are
+registered with their underlying transport. A reset closes affected in-flight transports
+and interrupts blocked writes; ingest never waits for a remote consumer to read. A transport
+shared by multiple HTTP requests may need reconnecting, but unrelated audience state and
+history epochs are unchanged. Small HTTP bodies are flushed before unregistering the
+response. Bytes already accepted by the transport before the close cannot be retracted;
+clients can receive a partial response or stream and must retry under current policy.
