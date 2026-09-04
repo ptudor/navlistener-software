@@ -415,13 +415,7 @@ func run() int {
 	// dereference a nil receiver. Convert to true interface nils here, exactly once, the
 	// same pattern used for serve.EventStore above.
 	ew := asEventWriter(historian)
-	ep := asEventPublisher(apiSrv)
-	var operatorPublisher, publicPublisher eventPublisher
-	if apiSrv != nil && apiSrv.Audience().Kind == identity.AudiencePublic {
-		publicPublisher = ep
-	} else {
-		operatorPublisher = ep
-	}
+	operatorPublisher, publicPublisher := fixedEventPublishers(apiSrv, cfg.Collector.InstanceID)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -942,6 +936,16 @@ type scopedEventPublisher struct {
 
 func (p scopedEventPublisher) PublishEvent(event serve.EventMsg) {
 	p.server.PublishEventForAudience(p.audience, event)
+}
+
+// Every selectable fixed audience has its own publisher, regardless of which
+// audience is configured as the default route.
+func fixedEventPublishers(api *serve.Server, collector string) (operator, public eventPublisher) {
+	if api == nil {
+		return nil, nil
+	}
+	return scopedEventPublisher{server: api, audience: identity.Audience{Kind: identity.AudienceOperator, ID: collector}},
+		scopedEventPublisher{server: api, audience: identity.Audience{Kind: identity.AudiencePublic}}
 }
 
 // scopedDetectLoop gives each organization/collection an independent detector
