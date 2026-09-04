@@ -1,12 +1,33 @@
 import Foundation
 
+// A session revokes this synchronously before scheduling cache erasure. The
+// lock spans the local file write, so even a previously queued actor operation
+// cannot recreate private state after its session has been retired.
+final class CacheAccess: @unchecked Sendable {
+    private let lock = NSLock()
+    private var valid = true
+    func invalidate() { lock.withLock { valid = false } }
+    func perform(_ operation: () throws -> Void) rethrows {
+        try lock.withLock { if valid { try operation() } }
+    }
+}
+
 actor SnapshotCache {
     private let directory: URL
     private let fileManager: FileManager
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    private let beforeCursorSave: (@Sendable () async -> Void)?
+    private let beforeObserverSave: (@Sendable () async -> Void)?
+    private let beforeCursorLoad: (@Sendable () async -> Void)?
 
-    init(directory: URL? = nil, fileManager: FileManager = .default) {
+    init(directory: URL? = nil, fileManager: FileManager = .default,
+         beforeCursorSave: (@Sendable () async -> Void)? = nil,
+         beforeObserverSave: (@Sendable () async -> Void)? = nil,
+         beforeCursorLoad: (@Sendable () async -> Void)? = nil) {
+        self.beforeCursorSave = beforeCursorSave
+        self.beforeObserverSave = beforeObserverSave
+        self.beforeCursorLoad = beforeCursorLoad
         self.fileManager = fileManager
         self.directory = directory ?? Self.defaultDirectory(fileManager: fileManager)
         self.encoder = JSONEncoder()
@@ -19,21 +40,30 @@ actor SnapshotCache {
         try loadDocument(for: key)?.observers
     }
 
-    func saveObservers(_ snapshot: ObserversSnapshot, for key: AudienceCacheKey) throws {
+    func saveObservers(_ snapshot: ObserversSnapshot, for key: AudienceCacheKey, access: CacheAccess? = nil) async throws {
         guard snapshot.scope == key else { throw CocoaError(.fileWriteInvalidFileName) }
-        var document = try loadDocument(for: key) ?? AudienceCacheDocument(scope: key)
-        document.observers = snapshot
-        try save(document)
+        await beforeObserverSave?()
+        let write = {
+            var document = try self.loadDocument(for: key) ?? AudienceCacheDocument(scope: key)
+            document.observers = snapshot
+            try self.save(document)
+        }
+        if let access { try access.perform(write) } else { try write() }
     }
 
-    func loadCursor(for key: AudienceCacheKey) throws -> String? {
-        try loadDocument(for: key)?.lastEventID
+    func loadCursor(for key: AudienceCacheKey) async throws -> String? {
+        await beforeCursorLoad?()
+        return try loadDocument(for: key)?.lastEventID
     }
 
-    func saveCursor(_ cursor: String?, for key: AudienceCacheKey) throws {
-        var document = try loadDocument(for: key) ?? AudienceCacheDocument(scope: key)
-        document.lastEventID = cursor
-        try save(document)
+    func saveCursor(_ cursor: String?, for key: AudienceCacheKey, access: CacheAccess? = nil) async throws {
+        await beforeCursorSave?()
+        let write = {
+            var document = try self.loadDocument(for: key) ?? AudienceCacheDocument(scope: key)
+            document.lastEventID = cursor
+            try self.save(document)
+        }
+        if let access { try access.perform(write) } else { try write() }
     }
 
     func clear(_ key: AudienceCacheKey) throws {

@@ -26,6 +26,12 @@ final class StationStore {
     private var fetchedAt: ContinuousClock.Instant?
     private var activeEvents: [String: GNSSAPIEvent] = [:]
     private var lastEventID: String?
+    private var generation: UInt64 = 0
+    private var cacheAccess: CacheAccess?
+
+    private func isCurrent(_ session: ReadSession, generation: UInt64) -> Bool {
+        self.generation == generation && activeSession == session && !Task.isCancelled
+    }
 
     init(
         feedClient: FeedClient = FeedClient(),
@@ -72,16 +78,19 @@ final class StationStore {
         resetPresentation()
         activeSession = session
         selectedStationIDs = stationIDs
+        let generation = self.generation
+        let access = CacheAccess()
+        cacheAccess = access
 
         pollTask = Task { [weak self] in
             guard let self else { return }
-            await restoreCache(session: session)
-            guard activeSession == session, !Task.isCancelled else { return }
+            await restoreCache(session: session, generation: generation)
+            guard isCurrent(session, generation: generation), !Task.isCancelled else { return }
             streamTask = Task { [weak self] in
-                await self?.runEventStream(session: session)
+                await self?.runEventStream(session: session, generation: generation, access: access)
             }
             while !Task.isCancelled {
-                await refresh(session: session)
+                await refresh(session: session, generation: generation, access: access)
                 do {
                     // docs/OUTPUT.md §5 gives observers a 30-second cache cadence.
                     try await Task.sleep(for: .seconds(30))
@@ -91,6 +100,10 @@ final class StationStore {
     }
 
     func stop() {
+        generation += 1
+        cacheAccess?.invalidate()
+        cacheAccess = nil
+        isRefreshing = false
         pollTask?.cancel()
         streamTask?.cancel()
         pollTask = nil
@@ -109,27 +122,32 @@ final class StationStore {
     }
 
     func clearPrivateCaches(forServer server: String, principal: String? = nil) async {
+        if let session = activeSession, session.audience.isPrivate,
+           session.baseURL.absoluteString == server,
+           principal == nil || session.principalID == principal { stop() }
         try? await cache.clearPrivate(forServer: server, principal: principal)
     }
 
     func refresh() async {
-        guard let activeSession else { return }
-        await refresh(session: activeSession)
+        guard let activeSession, let access = cacheAccess else { return }
+        await refresh(session: activeSession, generation: generation, access: access)
     }
 
-    private func refresh(session: ReadSession) async {
-        guard activeSession == session, !isRefreshing else { return }
+    private func refresh(session: ReadSession, generation: UInt64, access: CacheAccess) async {
+        guard isCurrent(session, generation: generation), !isRefreshing else { return }
         isRefreshing = true
-        defer { isRefreshing = false }
+        defer { if self.generation == generation { isRefreshing = false } }
 
         do {
             try await validateAuthorization(session: session)
+            guard isCurrent(session, generation: generation) else { return }
             let envelope = try await feedClient.fetchObservers(session: session)
+            guard isCurrent(session, generation: generation) else { return }
             guard let payload = envelope.data else { throw FeedError.missingData }
             guard payload.schema == "2.0",
                   payload.audience == session.audience.rawValue
             else { throw FeedError.invalidResponse }
-            guard activeSession == session else { return }
+            guard isCurrent(session, generation: generation) else { return }
             let snapshot = ObserversSnapshot(
                 receivedAt: Date(),
                 scope: session.cacheKey,
@@ -137,44 +155,50 @@ final class StationStore {
                 payload: payload
             )
             apply(snapshot, cached: false)
-            try? await cache.saveObservers(snapshot, for: session.cacheKey)
+            try? await cache.saveObservers(snapshot, for: session.cacheKey, access: access)
+            guard isCurrent(session, generation: generation) else { return }
             errorMessage = nil
             authorizationLost = false
         } catch is CancellationError {
             return
         } catch {
-            if await handleAuthorizationLoss(error, session: session) { return }
+            if await handleAuthorizationLoss(error, session: session, generation: generation) { return }
+            guard isCurrent(session, generation: generation) else { return }
             errorMessage = error.localizedDescription
         }
 
         do {
             let envelope = try await feedClient.fetchEvents(session: session)
+            guard isCurrent(session, generation: generation) else { return }
             guard let payload = envelope.data else { throw FeedError.missingData }
             guard payload.schema == "2.0",
                   payload.audience == session.audience.rawValue
             else { throw FeedError.invalidResponse }
-            guard activeSession == session else { return }
+            guard isCurrent(session, generation: generation) else { return }
             mergeEvents(payload.events ?? [])
             eventStreamMessage = nil
         } catch is CancellationError {
             return
         } catch {
-            if await handleAuthorizationLoss(error, session: session) { return }
+            if await handleAuthorizationLoss(error, session: session, generation: generation) { return }
+            guard isCurrent(session, generation: generation) else { return }
             // Event history can be unavailable while the live observers feed is
             // healthy; keep that failure separate from the main error banner.
             eventStreamMessage = error.localizedDescription
         }
     }
 
-    private func restoreCache(session: ReadSession) async {
+    private func restoreCache(session: ReadSession, generation: UInt64) async {
         guard observers.isEmpty else { return }
         do {
-            lastEventID = try await cache.loadCursor(for: session.cacheKey)
+            let cursor = try await cache.loadCursor(for: session.cacheKey)
+            guard isCurrent(session, generation: generation) else { return }
+            lastEventID = cursor
             if let snapshot = try await cache.loadObservers(for: session.cacheKey),
                snapshot.scope == session.cacheKey,
                snapshot.payload.schema == "2.0",
                snapshot.payload.audience == session.audience.rawValue,
-               activeSession == session {
+               isCurrent(session, generation: generation) {
                 apply(snapshot, cached: true)
             }
         } catch {
@@ -203,20 +227,22 @@ final class StationStore {
         })
     }
 
-    private func runEventStream(session: ReadSession) async {
+    private func runEventStream(session: ReadSession, generation: UInt64, access: CacheAccess) async {
         var retrySeconds = 1
-        while !Task.isCancelled, activeSession == session {
+        while !Task.isCancelled, isCurrent(session, generation: generation) {
             do {
                 let updates = try eventStream.updates(session: session, lastEventID: lastEventID)
                 for try await update in updates {
                     try Task.checkCancellation()
-                    guard activeSession == session else { return }
+                    guard isCurrent(session, generation: generation) else { return }
                     switch update {
                     case .event(let event, let cursor):
-                        await record(cursor: cursor, session: session)
+                        await record(cursor: cursor, session: session, generation: generation, access: access)
+                        guard isCurrent(session, generation: generation) else { return }
                         applyLiveEvent(event)
                     case .resolved(let event, let cursor):
-                        await record(cursor: cursor, session: session)
+                        await record(cursor: cursor, session: session, generation: generation, access: access)
+                        guard isCurrent(session, generation: generation) else { return }
                         resolve(event)
                     case .status:
                         isEventStreamConnected = true
@@ -227,7 +253,8 @@ final class StationStore {
             } catch is CancellationError {
                 return
             } catch {
-                if await handleAuthorizationLoss(error, session: session) { return }
+                if await handleAuthorizationLoss(error, session: session, generation: generation) { return }
+                guard isCurrent(session, generation: generation) else { return }
                 isEventStreamConnected = false
                 eventStreamMessage = error.localizedDescription
             }
@@ -255,14 +282,14 @@ final class StationStore {
         }
     }
 
-    private func record(cursor: String?, session: ReadSession) async {
-        guard let cursor, activeSession == session else { return }
+    private func record(cursor: String?, session: ReadSession, generation: UInt64, access: CacheAccess) async {
+        guard let cursor, isCurrent(session, generation: generation) else { return }
         lastEventID = cursor
-        try? await cache.saveCursor(cursor, for: session.cacheKey)
+        try? await cache.saveCursor(cursor, for: session.cacheKey, access: access)
     }
 
-    private func handleAuthorizationLoss(_ error: Error, session: ReadSession) async -> Bool {
-        guard activeSession == session,
+    private func handleAuthorizationLoss(_ error: Error, session: ReadSession, generation: UInt64) async -> Bool {
+        guard isCurrent(session, generation: generation),
               let feedError = error as? FeedError,
               feedError.isAuthorizationLoss
         else { return false }
@@ -285,6 +312,7 @@ final class StationStore {
     }
 
     private func resetPresentation() {
+        isRefreshing = false
         observers = []
         events = []
         activeEvents = [:]

@@ -4,8 +4,10 @@ import Testing
 
 actor ConnectionBarrier {
     private var entered = false
+    private var used = false
     private var waiter: CheckedContinuation<Void, Never>?
     func hold() async { entered = true; await withCheckedContinuation { waiter = $0 } }
+    func holdOnce() async { guard !used else { return }; used = true; await hold() }
     func waitUntilEntered() async { while !entered { await Task.yield() } }
     func release() { waiter?.resume(); waiter = nil }
 }
