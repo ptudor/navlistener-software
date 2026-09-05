@@ -566,7 +566,7 @@ ul {
 .observer-beacon {
   position: absolute;
   z-index: 7;
-  bottom: 20%;
+  bottom: calc(22% - 7px);
   left: 50%;
   display: flex;
   align-items: center;
@@ -575,7 +575,7 @@ ul {
   font-family: var(--font-mono);
   font-size: 0.56rem;
   letter-spacing: 0.1em;
-  transform: translateX(-50%);
+  transform: translateX(-5px);
 }
 
 .observer-beacon b {
@@ -855,6 +855,7 @@ ul {
 
 .board-stage img {
   width: 100%;
+  height: auto;
   filter: drop-shadow(0 28px 26px rgba(0, 0, 0, 0.55));
   transform: perspective(900px) rotateX(6deg) rotateZ(-2deg);
   transition: transform 0.7s var(--ease);
