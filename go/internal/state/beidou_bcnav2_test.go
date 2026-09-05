@@ -2,6 +2,7 @@ package state
 
 import (
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -592,5 +593,69 @@ func TestApplyBeiDouBCNAV2MT34CarriesMT30TGD(t *testing.T) {
 	apply(m11(100602), third)
 	if !st.timeDiscoValid || st.timeDiscoNs >= 2.5 {
 		t.Errorf("continuous MT34 changeover time disco = %g ns valid=%v, want <2.5 ns", st.timeDiscoNs, st.timeDiscoValid)
+	}
+}
+
+func TestBCNAV2ClockAndGroupDelayKeepOrbitalProvenance(t *testing.T) {
+	for _, mt := range []int{30, 34} {
+		t.Run(fmt.Sprint(mt), func(t *testing.T) {
+			s := New(1)
+			t0 := time.Unix(1700000000, 0)
+			const prn = 20
+			key := Key{G: gnss.BeiDou, Sv: prn, Sig: 8}
+			apply := func(words []uint32, received, local time.Time) {
+				s.Apply(&ingest.RawFrame{GnssID: gnss.BeiDou, SvID: prn, SigID: 8, Recv: received, RecvLocal: local, Words: words})
+			}
+			clockWords := func(kind, iod, af0, tgd int) []uint32 {
+				return bcnav2Frame(prn, kind, 100005, func(b []byte) {
+					if kind == 30 {
+						setAbsBits(b, 111, 10, uint64(iod))
+						setAbsBits(b, 53, 25, uint64(af0))
+						setAbsBits(b, 121, 12, uint64(tgd))
+					} else {
+						setAbsBits(b, 133, 10, uint64(iod))
+						setAbsBits(b, 75, 25, uint64(af0))
+					}
+				})
+			}
+			// Buffer the clock before orbit completion: its provenance must not
+			// be replaced by the frame that later completes the orbital pair.
+			originalClockAt := t0.Add(-time.Second)
+			apply(clockWords(30, 3, 1000, 7), originalClockAt, originalClockAt)
+			apply(bcnav2Frame(prn, 10, 100002, func(b []byte) { setAbsBits(b, 53, 8, 7); setAbsBits(b, 61, 11, 10); setAbsBits(b, 72, 2, 3) }), t0, t0)
+			apply(bcnav2Frame(prn, 11, 100002, nil), t0, t0)
+			st := s.shardFor(key).m[key]
+			orbit, ephAt, ephRecvAt := st.eph, st.ephAt, st.ephRecvAt
+			if st.clockReceipt.local != originalClockAt || st.groupDelayReceipt.feeder != originalClockAt {
+				t.Fatal("buffered product provenance attributed to orbit completion")
+			}
+			s.Propagate(t0)
+			if s.FeedSVs(t0)[key.Name()].XM == nil {
+				t.Fatal("baseline orbit did not propagate")
+			}
+			late := t0.Add(70 * time.Hour)
+			replayed := t0.Add(10 * time.Second)
+			apply(clockWords(mt, 4, 2000, 7), replayed, late)
+			if st.clk.Af0 != math.Ldexp(2000, -34) || st.clockReceipt != (productReceipt{local: late, feeder: replayed}) {
+				t.Fatal("clock did not retain its separate replay provenance")
+			}
+			if st.eph != orbit || st.ephAt != ephAt || st.ephRecvAt != ephRecvAt || st.discoAt != (time.Time{}) {
+				t.Fatal("clock-only update refreshed orbit or discontinuity")
+			}
+			// Same IODC, different MT30 TGD: change only correction provenance.
+			clockReceipt := st.clockReceipt
+			apply(clockWords(30, 4, 2000, 9), replayed.Add(time.Second), late.Add(time.Second))
+			if st.clk.TGD != math.Ldexp(9, -34) || st.clockReceipt != clockReceipt || st.groupDelayReceipt.local != late.Add(time.Second) {
+				t.Fatal("TGD refresh did not preserve independent provenance")
+			}
+			if st.ephAt != ephAt || st.ephRecvAt != ephRecvAt {
+				t.Fatal("TGD refresh restarted orbital age")
+			}
+			expired := t0.Add(propagateMaxEphAge + time.Hour)
+			s.Propagate(expired)
+			if s.FeedSVs(expired)[key.Name()].XM != nil {
+				t.Fatal("late/replayed clock reopened expired orbital serving cap")
+			}
+		})
 	}
 }

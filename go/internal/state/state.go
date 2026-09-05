@@ -212,6 +212,9 @@ func (k Key) Name() string {
 	return fmt.Sprintf("%c%02d@%d", k.G.Letter(), k.Sv, k.Sig)
 }
 
+// productReceipt keeps collector arrival and original feeder reception separate.
+type productReceipt struct{ local, feeder time.Time }
+
 type svState struct {
 	key      Key
 	lastSeen time.Time
@@ -362,6 +365,9 @@ type svState struct {
 	// gate below — the two message families change independently.
 	bcIODC    int
 	haveBcIOD bool
+	// B-CNAV2 buffered and applied clock/correction provenance.
+	bcClkReceipt, bcTGDReceipt      productReceipt
+	clockReceipt, groupDelayReceipt productReceipt
 	// bcTGD is the tracked B2a data component's group delay TGD_B2ap + ISC_B2ad
 	// (regression fix, BDS-SIS-B2a-1.0 §7.6.2 eq. 7-5), a quasi-static data-set
 	// property sourced only from MT30. Track its provenance separately so MT34
@@ -1524,6 +1530,7 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		st.bc11 = m
 	case 30:
 		st.bcClk = m
+		st.bcClkReceipt = productReceipt{local: recv, feeder: f.Recv}
 		// the carried data-set property is the TRACKED signal's (B2a
 		// data component, sigId 8) full group delay, eq. 7-5's TGD_B2ap +
 		// ISC_B2ad (BDS-SIS-B2a-1.0 §7.6.2, Table 7-6) — TGD_B2ap alone is
@@ -1536,11 +1543,13 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		// VALUE changing, not on IODC — so an ISC-only revision is still a
 		// legitimate tgdRefresh, and nothing here may be cached against IODC.
 		st.bcTGD, st.haveBcTGD = m.TGDB2ap+m.ISCB2ad, true
+		st.bcTGDReceipt = productReceipt{local: recv, feeder: f.Recv}
 		// MT30 is the BDGIM carrier; fold the coefficient set
 		// freshest-wins so it is served/persisted rather than dropped.
 		st.bdgim, st.haveBDGIM = m.BDGIM, true
 	case 34:
 		st.bcClk = m
+		st.bcClkReceipt = productReceipt{local: recv, feeder: f.Recv}
 		// fold the BDT-UTC set at MT34 arrival (freshest-wins, before
 		// the pair-completion gate below — the set is valid whether or not a
 		// 10/11 ephemeris ever assembles). Copied so the stored set does not
@@ -1616,10 +1625,19 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 			st.timeDiscoValid = false
 		}
 	}
-	st.eph, st.clk, st.iod, st.haveEph = eph, clk, st.bc10.IODE, true
-	st.ephAt = recv       // regression fix (collector-local, regression fix)
-	st.ephRecvAt = f.Recv // forensic stamp for the replay-aware serving cap
+	if ephChanged {
+		st.eph, st.iod, st.haveEph = eph, st.bc10.IODE, true
+		st.ephAt = recv       // regression fix (collector-local, regression fix)
+		st.ephRecvAt = f.Recv // replay-aware orbital serving cap
+	}
+	st.clk = clk
 	if clkOK {
+		if clkChanged {
+			st.clockReceipt = st.bcClkReceipt
+		}
+		if tgdRefresh {
+			st.groupDelayReceipt = st.bcTGDReceipt
+		}
 		st.bcIODC, st.haveBcIOD = st.bcClk.IODC, true
 		st.clkHasBcTGD = nextClkHasTGD
 		st.haveClk = true // regression fix family: af0/af1/af2 serve only once a type-30/34 has decoded
