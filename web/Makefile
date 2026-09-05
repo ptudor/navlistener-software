@@ -30,12 +30,13 @@ dev:
 preview:
 	npm run preview
 
-digest:
+digest: build
+	find dist -type f -name '*.sha256' -delete
 	find dist -type f ! -name '*.sha256' -exec sh -c 'shasum -a 256 "$$1" > "$$1.sha256"' _ {} \;
 
-# Run on the web server. Build and digest complete before rsync starts;
+# Run on the web server. build -> digest -> deploy also orders parallel make;
 # --delay-updates keeps the published tree internally consistent while files land.
-deploy: build digest
+deploy: digest
 	rsync -a --delete --delay-updates dist/ $(DEPLOY_DIR)/
 
 .PHONY: default build test install dev preview digest deploy
