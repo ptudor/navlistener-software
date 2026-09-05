@@ -152,7 +152,9 @@ func parseRAWX(p []byte, source string, recv time.Time, emit func(*RawFrame)) (i
 		cpCyc := math.Float64frombits(binary.LittleEndian.Uint64(m[8:]))
 		doHz := math.Float32frombits(binary.LittleEndian.Uint32(m[16:]))
 		trkStat := m[30]
-		// trkStat bit 0 = pseudorange valid, bit 1 = carrier phase valid.
+		// UBX-13003221 RXM-RAWX: trkStat bits 0/1 validate code/phase;
+		// bit 2 resolves half cycles, bit 3 says a correction was applied.
+		// A stable correction is not a new slip. recStat bit 1 is clock reset.
 		if trkStat&0x01 == 0 {
 			continue
 		}
@@ -188,16 +190,18 @@ func parseRAWX(p []byte, source string, recv time.Time, emit func(*RawFrame)) (i
 			SigID:  int(m[22]),
 			FreqID: int(m[23]),
 			Obs: &RawObs{
-				RcvTow:     rcvTow,
-				Week:       week,
-				PrM:        prM,
-				CpCyc:      cpCyc,
-				DoHz:       float64(doHz),
-				LockTimeMs: int(binary.LittleEndian.Uint16(m[24:])),
-				Cn0:        int(m[26]),
-				CpValid:    cpValid,
-				CycleSlip:  trkStat&0x08 != 0,
-				ArcBreak:   arcBreak,
+				RcvTow:              rcvTow,
+				Week:                week,
+				PrM:                 prM,
+				CpCyc:               cpCyc,
+				DoHz:                float64(doHz),
+				LockTimeMs:          int(binary.LittleEndian.Uint16(m[24:])),
+				Cn0:                 int(m[26]),
+				CpValid:             cpValid,
+				HalfCycleValid:      trkStat&0x04 != 0,
+				HalfCycleSubtracted: trkStat&0x08 != 0,
+				ClockReset:          p[12]&0x02 != 0,
+				ArcBreak:            arcBreak,
 			},
 		})
 		emitted++

@@ -196,13 +196,13 @@ func TestApplyRejectsOutOfEnvelopeSvID(t *testing.T) {
 	// phantom J77@0 svs entry (the QZSS L1 carrier IS mapped, so only the
 	// envelope gate stops it).
 	s.Apply(&ingest.RawFrame{GnssID: gnss.QZSS, SvID: 77, SigID: 0, Recv: now, Source: "obs1",
-		Obs: &ingest.RawObs{RcvTow: 100000, PrM: 3.8e7, CpCyc: 3.8e7 / 0.19, LockTimeMs: 1000, CpValid: true}})
+		Obs: &ingest.RawObs{RcvTow: 100000, PrM: 3.8e7, CpCyc: 3.8e7 / 0.19, LockTimeMs: 1000, HalfCycleValid: true, CpValid: true}})
 	if svs := s.FeedSVs(now); len(svs) != 0 {
 		t.Errorf("out-of-envelope QZSS observable created svs entries: %+v", svs)
 	}
 	// An in-envelope QZSS observable still lands.
 	s.Apply(&ingest.RawFrame{GnssID: gnss.QZSS, SvID: 3, SigID: 0, Recv: now, Source: "obs1",
-		Obs: &ingest.RawObs{RcvTow: 100000, PrM: 3.8e7, CpCyc: 3.8e7 / 0.19, LockTimeMs: 1000, CpValid: true}})
+		Obs: &ingest.RawObs{RcvTow: 100000, PrM: 3.8e7, CpCyc: 3.8e7 / 0.19, LockTimeMs: 1000, HalfCycleValid: true, CpValid: true}})
 	if svs := s.FeedSVs(now); len(svs) != 1 {
 		t.Errorf("in-envelope QZSS observable missing from svs: %+v", svs)
 	}
@@ -216,7 +216,7 @@ func TestSBASObservableCreatesNoSVSEntry(t *testing.T) {
 	s := New(4)
 	now := time.Unix(1_700_000_000, 0)
 	s.Apply(&ingest.RawFrame{GnssID: gnss.SBAS, SvID: 131, SigID: 0, Recv: now, Source: "obs1",
-		Obs: &ingest.RawObs{RcvTow: 100000, PrM: 3.8e7, CpCyc: 3.8e7 / 0.19, LockTimeMs: 1000, CpValid: true}})
+		Obs: &ingest.RawObs{RcvTow: 100000, PrM: 3.8e7, CpCyc: 3.8e7 / 0.19, LockTimeMs: 1000, HalfCycleValid: true, CpValid: true}})
 	if svs := s.FeedSVs(now); len(svs) != 0 {
 		t.Errorf("SBAS observable created svs entries: %+v", svs)
 	}

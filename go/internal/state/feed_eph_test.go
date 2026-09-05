@@ -25,7 +25,7 @@ func TestFeedSVEphemerisLessFieldsOmitted(t *testing.T) {
 	now := time.Now()
 	s.Apply(&ingest.RawFrame{
 		Recv: now, Source: "bench", GnssID: gnss.GPS, SvID: 9, SigID: 0,
-		Obs: &ingest.RawObs{RcvTow: 100000, PrM: 2.2e7, CpCyc: 2.2e7 / 0.19, LockTimeMs: 1000, CpValid: true},
+		Obs: &ingest.RawObs{RcvTow: 100000, PrM: 2.2e7, CpCyc: 2.2e7 / 0.19, LockTimeMs: 1000, HalfCycleValid: true, CpValid: true},
 	})
 
 	svs := s.FeedSVs(now)

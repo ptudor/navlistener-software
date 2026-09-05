@@ -101,7 +101,7 @@ func TestConfZeroForObservationOnlyEntry(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	st.Apply(&ingest.RawFrame{
 		Recv: now, Source: "stnA", GnssID: gnss.GPS, SvID: 4, SigID: 0,
-		Obs: &ingest.RawObs{RcvTow: 100000, Week: 2300, PrM: 2.2e7, CpCyc: 2.2e7 / 0.19, LockTimeMs: 1000, CpValid: true},
+		Obs: &ingest.RawObs{RcvTow: 100000, Week: 2300, PrM: 2.2e7, CpCyc: 2.2e7 / 0.19, LockTimeMs: 1000, HalfCycleValid: true, CpValid: true},
 	})
 	svs := st.FeedSVs(now.Add(time.Second))
 	e, ok := svs["G04@0"]

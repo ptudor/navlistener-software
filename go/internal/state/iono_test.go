@@ -57,11 +57,11 @@ func TestMeasuredIonoPipeline(t *testing.T) {
 				SvID:   7,
 				SigID:  o.sig,
 				Obs: &ingest.RawObs{
-					RcvTow:     tow,
-					PrM:        o.pr,
-					CpCyc:      o.cpM / lam,
-					LockTimeMs: lock,
-					CpValid:    true,
+					RcvTow:         tow,
+					PrM:            o.pr,
+					CpCyc:          o.cpM / lam,
+					LockTimeMs:     lock,
+					HalfCycleValid: true, CpValid: true,
 				},
 			})
 		}
@@ -118,7 +118,7 @@ func TestMeasuredIonoTriFrequencyDoesNotThrash(t *testing.T) {
 		phi1 := rho - i1
 		s.Apply(&ingest.RawFrame{
 			Recv: now, Source: "bench", GnssID: gnss.GPS, SvID: 9, SigID: 0,
-			Obs: &ingest.RawObs{RcvTow: tow, PrM: rho + i1, CpCyc: phi1 / lambda1, LockTimeMs: lock, CpValid: true},
+			Obs: &ingest.RawObs{RcvTow: tow, PrM: rho + i1, CpCyc: phi1 / lambda1, LockTimeMs: lock, HalfCycleValid: true, CpValid: true},
 		})
 		sig, gamma, lambda := 3, gammaA, lambdaA
 		if epoch%2 != 0 {
@@ -127,7 +127,7 @@ func TestMeasuredIonoTriFrequencyDoesNotThrash(t *testing.T) {
 		phi2 := rho - gamma*i1
 		s.Apply(&ingest.RawFrame{
 			Recv: now, Source: "bench", GnssID: gnss.GPS, SvID: 9, SigID: sig,
-			Obs: &ingest.RawObs{RcvTow: tow, PrM: rho + gamma*i1, CpCyc: phi2 / lambda, LockTimeMs: lock, CpValid: true},
+			Obs: &ingest.RawObs{RcvTow: tow, PrM: rho + gamma*i1, CpCyc: phi2 / lambda, LockTimeMs: lock, HalfCycleValid: true, CpValid: true},
 		})
 	}
 
@@ -156,7 +156,7 @@ func TestMeasuredIonoArcResetOnSlip(t *testing.T) {
 	apply := func(sig, lock int, tow, pr, cpCyc float64) {
 		s.Apply(&ingest.RawFrame{
 			Recv: time.Now(), Source: "bench", GnssID: gnss.GPS, SvID: 3, SigID: sig,
-			Obs: &ingest.RawObs{RcvTow: tow, PrM: pr, CpCyc: cpCyc, LockTimeMs: lock, CpValid: true},
+			Obs: &ingest.RawObs{RcvTow: tow, PrM: pr, CpCyc: cpCyc, LockTimeMs: lock, HalfCycleValid: true, CpValid: true},
 		})
 	}
 	for epoch := 0; epoch < 5; epoch++ {
@@ -190,7 +190,7 @@ func TestMeasuredIonoCarrierInvalidBreaksArc(t *testing.T) {
 		s.Apply(&ingest.RawFrame{Recv: base.Add(time.Duration(epoch) * time.Second), Source: "bench",
 			GnssID: gnss.GPS, SvID: 4, SigID: sig, Obs: &ingest.RawObs{
 				Week: 2200, RcvTow: 200000 + float64(epoch), PrM: 2.2e7 + float64(sig),
-				CpCyc: 1.1e8, DoHz: -100, LockTimeMs: 1000 + epoch*1000, CpValid: valid,
+				CpCyc: 1.1e8, DoHz: -100, LockTimeMs: 1000 + epoch*1000, HalfCycleValid: true, CpValid: valid,
 			}})
 	}
 	for epoch := 0; epoch < iono.MinArc+2; epoch++ {
@@ -254,7 +254,7 @@ func TestMeasuredIonoSameFrequencyPairRejected(t *testing.T) {
 	apply := func(sig, lock int, tow, pr, cpCyc float64) {
 		s.Apply(&ingest.RawFrame{
 			Recv: time.Now(), Source: "bench", GnssID: gnss.Galileo, SvID: 11, SigID: sig,
-			Obs: &ingest.RawObs{RcvTow: tow, PrM: pr, CpCyc: cpCyc, LockTimeMs: lock, CpValid: true},
+			Obs: &ingest.RawObs{RcvTow: tow, PrM: pr, CpCyc: cpCyc, LockTimeMs: lock, HalfCycleValid: true, CpValid: true},
 		})
 	}
 	for epoch := 0; epoch < iono.MinArc+5; epoch++ {
@@ -287,7 +287,7 @@ func TestApplyObservationSetsLastSeen(t *testing.T) {
 	now := time.Now()
 	s.Apply(&ingest.RawFrame{
 		Recv: now, Source: "bench", GnssID: gnss.GPS, SvID: 5, SigID: 0,
-		Obs: &ingest.RawObs{RcvTow: 100000, PrM: 2.2e7, CpCyc: 2.2e7 / 0.19, LockTimeMs: 1000, CpValid: true},
+		Obs: &ingest.RawObs{RcvTow: 100000, PrM: 2.2e7, CpCyc: 2.2e7 / 0.19, LockTimeMs: 1000, HalfCycleValid: true, CpValid: true},
 	})
 
 	// Expire runs a minute later with a generous TTL: the entry must survive (a

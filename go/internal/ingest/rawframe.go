@@ -137,16 +137,19 @@ type SatCN0 struct {
 // Dual-frequency pairs of these feed the geometry-free measured ionosphere
 // (docs/MATH.md §7.4); Doppler feeds the delta-Hz integrity signal.
 type RawObs struct {
-	RcvTow     float64 // receiver time of week, seconds (receiver clock)
-	Week       int     // week number of RcvTow
-	PrM        float64 // pseudorange, metres
-	CpCyc      float64 // carrier phase, cycles
-	DoHz       float64 // Doppler, Hz (positive approaching)
-	LockTimeMs int     // carrier lock time, ms — a reset signals a cycle slip
-	Cn0        int     // dB-Hz
-	CpValid    bool    // carrier-phase measurement valid (trkStat bit 1)
-	CycleSlip  bool    // receiver reported a half-cycle/discontinuity condition
-	ArcBreak   bool    // parser rejected carrier data; estimator must reset continuity
+	RcvTow              float64 // receiver time of week, seconds (receiver clock)
+	Week                int     // week number of RcvTow
+	PrM                 float64 // pseudorange, metres
+	CpCyc               float64 // carrier phase, cycles
+	DoHz                float64 // Doppler, Hz (positive approaching)
+	LockTimeMs          int     // carrier lock time, ms — a reset signals a cycle slip
+	Cn0                 int     // dB-Hz
+	CpValid             bool    // carrier-phase measurement valid (trkStat bit 1)
+	HalfCycleValid      bool    // half-cycle ambiguity resolved; zero means unknown/unusable
+	HalfCycleSubtracted bool    // receiver applied the half-cycle correction, not a slip
+	ClockReset          bool    // receiver clock reset in this measurement epoch
+	CycleSlip           bool    // receiver explicitly reported a phase discontinuity
+	ArcBreak            bool    // parser rejected carrier data; estimator must reset continuity
 }
 
 // RawBytes returns the frame's untouched bytes for the forensic record: the words

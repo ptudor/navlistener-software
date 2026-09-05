@@ -21,16 +21,17 @@ import (
 
 // obsSample is the last observation of one signal used for pairing.
 type obsSample struct {
-	rcvTow   float64
-	prM      float64
-	cpM      float64 // carrier phase converted to metres (cycles × λ)
-	lockMs   int
-	haveCp   bool
-	haveSamp bool
-	haveSeen bool
-	epochS   float64
-	recvAt   time.Time
-	breakArc bool
+	rcvTow              float64
+	prM                 float64
+	cpM                 float64 // carrier phase converted to metres (cycles × λ)
+	lockMs              int
+	haveCp              bool
+	haveSamp            bool
+	haveSeen            bool
+	epochS              float64
+	recvAt              time.Time
+	breakArc            bool
+	halfCycleSubtracted bool
 }
 
 // secTrack carries one secondary signal's leveling arc against the SV's
@@ -81,7 +82,9 @@ func (s *Store) applyObservation(f *ingest.RawFrame) {
 		}
 		return
 	}
-	cpValid, arcBreak := o.CpValid, o.ArcBreak || o.CycleSlip
+	// Unknown half-cycle status and clock-reset epochs retain code/Doppler,
+	// but cannot establish a continuous carrier reference.
+	cpValid, arcBreak := o.CpValid && o.HalfCycleValid && !o.ClockReset, o.ArcBreak || o.CycleSlip || o.ClockReset
 	cpCyc := o.CpCyc
 	if cpValid && (!finite(cpCyc) || math.Abs(cpCyc) > 1e10) {
 		if !s.projection {
@@ -151,23 +154,24 @@ func (s *Store) applyObservation(f *ingest.RawFrame) {
 
 	lambda := physconst.SpeedOfLight / f2
 	sample := obsSample{
-		rcvTow:   o.RcvTow,
-		prM:      o.PrM,
-		cpM:      cpCyc * lambda,
-		lockMs:   o.LockTimeMs,
-		haveCp:   cpValid,
-		haveSamp: true,
-		haveSeen: true,
-		epochS:   float64(o.Week*weekSeconds) + o.RcvTow,
-		recvAt:   f.LocalRecv(), // regression fix
-		breakArc: arcBreak,
+		rcvTow:              o.RcvTow,
+		prM:                 o.PrM,
+		cpM:                 cpCyc * lambda,
+		lockMs:              o.LockTimeMs,
+		haveCp:              cpValid,
+		haveSamp:            true,
+		haveSeen:            true,
+		epochS:              float64(o.Week*weekSeconds) + o.RcvTow,
+		recvAt:              f.LocalRecv(), // regression fix
+		breakArc:            arcBreak,
+		halfCycleSubtracted: o.HalfCycleSubtracted,
 	}
 
 	if f.SigID == key.Sig {
 		// A primary lock-time regression invalidates the phase reference every
 		// secondary pairing depends on (docs/MATH.md §7.4), so every secondary's
 		// arc resets, not just one.
-		if sample.breakArc || !sample.haveCp || arcGap(tr.pri, sample) || sample.lockMs < tr.pri.lockMs {
+		if phaseDiscontinuity(tr.pri, sample) {
 			for _, secT := range tr.secs {
 				secT.arc.Reset()
 				secT.hasDelay = false
@@ -188,7 +192,7 @@ func (s *Store) applyObservation(f *ingest.RawFrame) {
 		}
 		// A regression on this secondary only restarts its own arc -- the
 		// primary and any other secondary's arc are unaffected.
-		if sample.breakArc || !sample.haveCp || arcGap(secT.sec, sample) || sample.lockMs < secT.sec.lockMs {
+		if phaseDiscontinuity(secT.sec, sample) {
 			secT.arc.Reset()
 			secT.hasDelay = false
 		}
@@ -224,6 +228,15 @@ func (s *Store) tryPairIono(f *ingest.RawFrame, tr *ionoTrack, secT *secTrack, s
 	// primary is left alone since another secondary may still need to pair
 	// against it within the same epoch.
 	secT.sec.haveSamp = false
+}
+
+// The first usable sample starts an arc. A correction/status transition or
+// lost lock restarts it once; stable corrected phase (including a saturated
+// lock counter) accumulates normally.
+func phaseDiscontinuity(prev, next obsSample) bool {
+	return !prev.haveSeen || !prev.haveCp || !next.haveCp || next.breakArc ||
+		prev.halfCycleSubtracted != next.halfCycleSubtracted ||
+		next.lockMs < prev.lockMs || arcGap(prev, next)
 }
 
 func arcGap(prev, next obsSample) bool {
