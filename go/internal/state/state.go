@@ -316,7 +316,9 @@ type svState struct {
 	// gloAlmFirstAt is the reception time of the buffered even string : the odd
 	// string must arrive within one frame window, or the pair is a cross-frame chimera
 	// (each frame's strings 6/7 describe a DIFFERENT subject satellite) and must be dropped.
-	gloAlmFirstAt time.Time
+	gloAlmFirstAt               time.Time
+	gloAlmSource, gloAlmSession string
+	gloAlmSig                   int
 	// gloFrameBaseSlot is the subject slot of the current frame's first almanac pair
 	// (strings 6/7), used to detect frame 5. Frame 5 carries almanac only for slots
 	// 21–24 (strings 6–13); its strings 14/15 are B1/B2/KP UT1/leap data, NOT almanac, so a
@@ -1759,6 +1761,7 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 	case str.Number >= 6 && str.Number <= 14 && str.Number%2 == 0: // first of an almanac pair
 		st.gloAlmFirst = append(st.gloAlmFirst[:0], f.Words...)
 		st.gloAlmFirstNum = str.Number
+		st.gloAlmSource, st.gloAlmSession, st.gloAlmSig = f.Source, f.Session, f.SigID
 		st.gloAlmFirstAt = f.Recv // feeder stamp: broadcast adjacency (regression fix, above)
 		if str.Number == 6 {
 			st.gloFrameBaseSlot = 0 // new frame's first almanac; base slot set on pairing
@@ -1769,8 +1772,13 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		// it, a stale even string (from a fade a frame or more ago) pairs with a later
 		// frame's odd string — but strings 6/7 of different frames describe DIFFERENT
 		// subject satellites, so the merge is a chimera almanac stored under the wrong slot.
+		// Require ordered broadcast receipts from the same receiver session
+		// and signal. Replay queue time cannot establish adjacency; negative
+		// feeder-time deltas are not reordered or paired.
+		delta := f.Recv.Sub(st.gloAlmFirstAt)
 		if st.gloAlmFirst != nil && str.Number == st.gloAlmFirstNum+1 &&
-			f.Recv.Sub(st.gloAlmFirstAt) <= glonassFrameWindow {
+			f.Source == st.gloAlmSource && f.Session == st.gloAlmSession && f.SigID == st.gloAlmSig &&
+			delta >= 0 && delta <= glonassFrameWindow {
 			// in frame 5 (base slot ≥ 21), strings 14/15 carry B1/B2/KP UT1/leap
 			// data, not almanac — decoding them as an almanac pair stores garbage (a stable
 			// misread of B1's bits) under a wrong slot, flip-flopping that slot every

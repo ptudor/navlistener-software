@@ -2,6 +2,7 @@ package state
 
 import (
 	"encoding/binary"
+	"fmt"
 	"testing"
 	"time"
 
@@ -187,5 +188,43 @@ func TestApplyGloAlmanacRejectsBeforeNAKnown(t *testing.T) {
 	}
 	if entry.entry.Alm.NA != 615 {
 		t.Errorf("stored NA = %d, want 615", entry.entry.Alm.NA)
+	}
+}
+
+func TestGloAlmanacOrderedSourceCoherence(t *testing.T) {
+	for _, replay := range []bool{false, true} {
+		for _, tc := range []struct {
+			name            string
+			delta           time.Duration
+			source, session string
+			sig             int
+			want            bool
+		}{
+			{"boundary", 8 * time.Second, "a", "boot", 0, true},
+			{"outside", 8*time.Second + time.Nanosecond, "a", "boot", 0, false},
+			{"backwards", -time.Millisecond, "a", "boot", 0, false},
+			{"old foreign frame", -time.Hour, "b", "boot", 0, false},
+			{"foreign source", 2 * time.Second, "b", "boot", 0, false},
+			{"foreign boot", 2 * time.Second, "a", "new", 0, false},
+			{"other signal", 2 * time.Second, "a", "boot", 2, false},
+			{"day rollover", 2 * time.Second, "a", "boot", 0, true},
+		} {
+			t.Run(fmt.Sprintf("%s/replay=%v", tc.name, replay), func(t *testing.T) {
+				s := New(1)
+				s.setGloNA(615)
+				at := time.Date(2026, 9, 4, 23, 59, 59, 0, time.UTC)
+				even := &ingest.RawFrame{GnssID: gnss.GLONASS, SvID: 12, Source: "a", Session: "boot", Recv: at, Words: gloWords(6, func(b []byte) { setAbsBits(b, 8, 5, 7) })}
+				odd := &ingest.RawFrame{GnssID: gnss.GLONASS, SvID: 12, Source: tc.source, Session: tc.session, SigID: tc.sig, Recv: at.Add(tc.delta), Words: gloWords(7, nil)}
+				if replay {
+					even.RecvLocal = at.Add(72 * time.Hour)
+					odd.RecvLocal = even.RecvLocal.Add(time.Millisecond)
+				}
+				s.Apply(even)
+				s.Apply(odd)
+				if _, got := s.gloAlmanac[7]; got != tc.want {
+					t.Fatalf("stored=%v want %v", got, tc.want)
+				}
+			})
+		}
 	}
 }
