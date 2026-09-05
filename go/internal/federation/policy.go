@@ -54,6 +54,13 @@ type Observation struct {
 
 // ExportGrant is one explicit directed licensing edge. At least one source
 // selector and one purpose are required; absence is not a wildcard.
+//
+// ApprovedBy and Revision are audit provenance the evaluator requires to be
+// present but cannot verify: a revoked approver or a superseded revision is
+// expressed by the control plane disabling, expiring, or removing the grant
+// row, and a transport must evaluate only grants from its current
+// control-plane snapshot. The evaluator never reads a stale grant
+// "from history".
 type ExportGrant struct {
 	SourceCollectorInstanceID string
 	DestinationPeerID         string
@@ -90,20 +97,38 @@ type Decision struct {
 	HardwareAuthenticated      bool
 }
 
-// EvaluateExport applies the receipt-policy ∩ current-policy ∩ destination-grant
+// EvaluateExport applies the receipt-context ∩ current-context ∩ destination-grant
 // rule. Current policy can narrow old data; it can never widen a private receipt.
-func EvaluateExport(now time.Time, observation Observation, current identity.PublicationPolicy, grant ExportGrant, request ExportRequest) Decision {
+//
+// `current` is the observer's CURRENT administrative context as this collector
+// knows it — for a local observer the authorization provider's latest result,
+// for a relayed observation the origin's most recently journaled context. It
+// supplies both the current publication policy and the current organization /
+// collection membership. GROUPS-AND-FEDERATION.md §5.2 
+// states the intersection rule once for read audiences and federation exports
+// alike, and §4.4 says a transfer ends the old enrollment and collection
+// memberships — so a grant selector must match the receipt-time context AND
+// the current context. After a transfer the old organization's grant no longer
+// selects the historical rows (narrowing), and the new organization's grant
+// never selects rows received under the previous owner (no widening); either
+// needs the audited republication path. Selectors are organizations,
+// collections and observers, never enrollment ids, so a same-owner
+// re-enrollment does not change matching. A zero, invalid, or differently
+// identified current context denies: authority that cannot be established is
+// no authority (fail closed).
+func EvaluateExport(now time.Time, observation Observation, current identity.ObserverContext, grant ExportGrant, request ExportRequest) Decision {
 	deny := func(reason string) Decision { return Decision{Reason: reason} }
 
 	receipt, err := observation.Context.Normalize()
 	if err != nil {
 		return deny("invalid receipt context: " + err.Error())
 	}
-	currentContext := receipt
-	currentContext.Publication = current
-	currentContext, err = currentContext.Normalize()
+	currentContext, err := current.Normalize()
 	if err != nil {
-		return deny("invalid current policy: " + err.Error())
+		return deny("invalid current context: " + err.Error())
+	}
+	if currentContext.ObserverID != receipt.ObserverID {
+		return deny("current context identifies a different observer than the receipt")
 	}
 	if request.DestinationPeerID == "" || request.DestinationPeerID != grant.DestinationPeerID {
 		return deny("destination has no matching export grant")
@@ -140,7 +165,10 @@ func EvaluateExport(now time.Time, observation Observation, current identity.Pub
 		}
 	}
 	if !matchesSource(grant, receipt) {
-		return deny("grant does not select this organization, collection, or observer")
+		return deny("grant does not select the receipt-time organization, collection, or observer")
+	}
+	if !matchesSource(grant, currentContext) {
+		return deny("grant does not select the observer's current organization, collection, or observer")
 	}
 	if !containsDataClass(grant.DataClasses, request.DataClass) {
 		return deny("requested data class is not granted")

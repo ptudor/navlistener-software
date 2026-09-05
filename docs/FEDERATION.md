@@ -362,11 +362,13 @@ Federation is **post-P8** (after intsat collect/detect is absorbed and the singl
 contract is proven end to end). Proposed **P10 — federation**, staged so each step is useful
 alone:
 
-1. **Outbound authorization gate (implemented):** immutable receipt policy intersected with
-   current policy and an explicit, directed `[federation.export_grant]`; source selectors,
-   signals, data classes, attribution, retention, purpose, validity, approval, and path-loop
-   checks all fail closed before any transport exists. Inbound trust never implies export
-   permission.
+1. **Outbound authorization gate (implemented):** immutable receipt context intersected with
+   the observer's current context (publication policy *and* organization / collection
+   membership — a transfer or removed membership narrows, nothing widens; regression fix,
+   GROUPS-AND-FEDERATION.md §7.2) and an explicit, directed `[federation.export_grant]`;
+   source selectors, signals, data classes, attribution, retention, purpose, validity,
+   approval, and path-loop checks all fail closed before any transport exists. Inbound
+   trust never implies export permission.
 2. **Instance identity + peer session:** `InstanceCertificate`, the `role:"peer"` GNF1 session,
    mTLS peering with pinned instance certs. Two of our own collectors peer; no trust tiers yet
    (both implicitly `trusted`, intra-org CA).

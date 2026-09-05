@@ -528,6 +528,25 @@ destination-specific export grant allow the requested data class. The intersecti
 There is no wildcard export default. A peer's request, subscription, or `feeds` HELLO field
 can only narrow an existing server-side grant.
 
+**Selectors intersect receipt-time and current context.** The grant's
+organization / collection / device selectors are evaluated against the observation's
+immutable receipt context *and* the observer's current administrative context (the
+authorization provider's latest result for a local observer; the origin's most recently
+journaled context for a relayed one), exactly as §5.2's intersection rule already governs
+read audiences. Consequences: after a §4.4 transfer the former organization's grant no
+longer selects the observer's historical rows (current policy narrows), and the new
+organization's grant never selects rows received under the previous owner (widening needs
+the audited republication path). Removing a collection membership narrows a collection
+grant the same way; a membership joined later never reaches earlier receipts. Selectors
+never name enrollment ids, so a same-owner re-enrollment does not change matching. A
+device selector follows the permanent hardware identity across a transfer, but both the
+receipt-time and the current owner's publication policies still intersect. A current
+context that is absent, invalid, or identifies a different observer denies — including a
+relayed observation whose origin context has not been journaled. `approved_by` / `revision`
+are audit provenance the evaluator requires but cannot verify: a revoked approver or a
+superseded revision is expressed by disabling, expiring, or removing the grant row, and a
+transport evaluates only grants from its current control-plane snapshot.
+
 Revoking an export grant stops new transmission immediately, closes/re-authorizes the peer
 session, and journals the policy transition. It cannot recall bytes already delivered, so raw
 export requires deliberate contractual approval.
