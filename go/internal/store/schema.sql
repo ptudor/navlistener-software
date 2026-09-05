@@ -78,6 +78,16 @@ ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS policy_revision       TEXT   NOT
 -- header bytes (sync, CRC, revision/block ID and length), with no live decoding.
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS sbf_header BYTEA;
 
+-- Receipt-order migration: existing rows deliberately retain NULL ordering/provenance. A
+-- separate ALTER DEFAULT avoids backfilling invented arrival IDs (and works
+-- with legacy compressed chunks). New rows get a stable first-storage admission
+-- order, including inserts from older writers during a rolling upgrade.
+CREATE SEQUENCE IF NOT EXISTS nav_frames_receipt_order_seq AS BIGINT NO CYCLE;
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS receipt_order BIGINT;
+ALTER TABLE nav_frames ALTER COLUMN receipt_order SET DEFAULT nextval('nav_frames_receipt_order_seq');
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS source_session TEXT;
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS source_seq BIGINT;
+
 -- Query paths: per-SV history, and the recent-by-reception forensic scan.
 CREATE INDEX IF NOT EXISTS idx_nav_frames_sv   ON nav_frames (gnssid, svid, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_nav_frames_recv ON nav_frames (received_at DESC);

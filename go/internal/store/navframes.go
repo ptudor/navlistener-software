@@ -47,6 +47,13 @@ var ErrNavFrameLimit = fmt.Errorf("nav frame query hit its row limit; narrow the
 // ingest.RawFrame. Words are not stored as such — Raw holds the frame bytes, which
 // for a word-oriented source is the big-endian nav words back to back.
 type StoredNavFrame struct {
+	// ReceiptOrder is the database's first-storage admission sequence. Nil marks
+	// pre-migration history whose original order cannot be reconstructed.
+	ReceiptOrder *int64
+	Session      string
+	SourceSeq    uint64
+	HasSourceSeq bool
+
 	ReceivedAt            time.Time
 	SourceID              string
 	OrganizationID        string
@@ -86,7 +93,10 @@ func (s *Store) Close() {
 	s.closeOnce.Do(s.pool.Close)
 }
 
-// QueryNavFrames streams matching frames in reception order, calling fn for each.
+// QueryNavFrames streams matching frames in stable first-storage admission order.
+// Receipt timestamps only select the half-open window; rollback does not reorder
+// new rows. Legacy rows precede new rows using the documented deterministic
+// timestamp/content fallback, which cannot reconstruct their original arrival.
 //
 // Streaming rather than returning a slice is deliberate: a multi-hour GLONASS window
 // is hundreds of thousands of frames, and a replay consumes them strictly in order —
@@ -103,7 +113,7 @@ const navFrameSelect = `SELECT received_at, source_id, organization_id, enrollme
 	               collector_instance_id, collection_ids, provenance, credential_tier,
 	               credential_fingerprint, attestation_tier, aggregate_use, station_metadata, event_visibility,
 	               raw_export, federation_peers, publish_signals, policy_revision,
-	               gnssid, svid, sigid, freqid, msg_type, raw, sbf_header
+	               gnssid, svid, sigid, freqid, msg_type, raw, sbf_header, receipt_order, COALESCE(source_session, ''), source_seq
 	          FROM nav_frames`
 
 func queryNavFrames(ctx context.Context, pool *pgxpool.Pool, q NavFrameQuery, fn func(StoredNavFrame) error) error {
@@ -118,17 +128,23 @@ func queryNavFrames(ctx context.Context, pool *pgxpool.Pool, q NavFrameQuery, fn
 		limit = defaultNavFrameLimit
 	}
 
-	// Ordered by received_at to reproduce the receiver's arrival order, which is what
-	// live state saw; ts (the ingest-time hypertable dimension) can reorder across a
-	// feeder reconnect replay. The trailing keys make the order total, so a rerun of
-	// the same window replays identically rather than permuting frames that share a
-	// timestamp.
+	// New rows use the persistent first-storage sequence, stable across chunks,
+	// reconnect dedup, compression, process restart and receiver-clock rollback.
+	// Legacy records have no recoverable original order: put them first, ordered
+	// by reception/ingest time then the complete immutable forensic tuple under C
+	// collation. Exact duplicate legacy tuples are interchangeable for replay; no
+	// arbitrary message-type sort is described as original arrival order. Exclude
+	// mutable decoded projections/version from the legacy tie breaker.
 	sql := navFrameSelect + `
 	         WHERE received_at >= $1
 	           AND ($2::timestamptz IS NULL OR received_at < $2)
 	           AND ($3::smallint   IS NULL OR gnssid = $3)
 	           AND ($4::text       IS NULL OR source_id = $4)
-	         ORDER BY received_at, source_id, gnssid, svid, sigid
+	         ORDER BY receipt_order NULLS FIRST,
+              CASE WHEN receipt_order IS NULL THEN received_at END,
+              CASE WHEN receipt_order IS NULL THEN ts END,
+              CASE WHEN receipt_order IS NULL THEN
+                  (to_jsonb(nav_frames) - 'decoded' - 'decoder_ver')::text END COLLATE "C"
 	         LIMIT $5`
 
 	var until, gnssID, source any
@@ -155,6 +171,7 @@ func queryNavFrames(ctx context.Context, pool *pgxpool.Pool, q NavFrameQuery, fn
 			return ErrNavFrameLimit // the +1 row proves more matched
 		}
 		var (
+			sourceSeq                 *int64
 			f                         StoredNavFrame
 			gid, sv, sig, freq, mtype int16
 		)
@@ -163,9 +180,12 @@ func queryNavFrames(ctx context.Context, pool *pgxpool.Pool, q NavFrameQuery, fn
 			&f.CollectorInstanceID, &f.CollectionIDs, &f.Provenance, &f.CredentialTier,
 			&f.CredentialFingerprint, &f.AttestationTier, &f.AggregateUse, &f.StationMetadata, &f.EventVisibility,
 			&f.RawExport, &f.FederationPeers, &f.PublishSignals, &f.PolicyRevision,
-			&gid, &sv, &sig, &freq, &mtype, &f.Raw, &f.SBFHeader,
+			&gid, &sv, &sig, &freq, &mtype, &f.Raw, &f.SBFHeader, &f.ReceiptOrder, &f.Session, &sourceSeq,
 		); err != nil {
 			return fmt.Errorf("query nav frames: scan: %w", err)
+		}
+		if sourceSeq != nil {
+			f.SourceSeq, f.HasSourceSeq = uint64(*sourceSeq), true
 		}
 		f.GnssID, f.SvID, f.SigID = int(gid), int(sv), int(sig)
 		f.FreqID, f.MsgType = int(freq), int(mtype)

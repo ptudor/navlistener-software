@@ -577,3 +577,27 @@ Legacy rows remain readable with NULL header and unknown revision; reconstructin
 an original header/CRC for them is unsupported. Apply the additive writer schema
 before using the new reader (the read-only constructor never migrates). No raw
 rows are rewritten/dropped, and SBF remains capture-only without live decoding.
+
+Raw replay ordering is now explicit. `received_at` still selects the half-open
+`[Since, Until)` window, but new rows replay by `receipt_order`, a persistent
+PostgreSQL sequence allocated at first successful storage admission. One
+collector writer preserves its batch/queue order even when receiver timestamps
+tie or move backwards. Across concurrent writers this is database allocation
+order, not a claim of synchronized physical reception. Failed transactions may
+leave sequence gaps. Reconnect duplicates retain the original row/order through
+the existing atomic dedup claim plus COPY transaction; restarting the process
+does not restart the sequence. Feeder `source_session` and nullable `source_seq`
+are also retained; the latter preserves the uint64 wire bits in a signed BIGINT
+just like the dedup ledger, and the Go reader restores uint64 plus a known flag.
+
+The additive migration leaves existing `receipt_order`, session and sequence
+NULL, then sets the sequence default for future inserts. It does not fabricate
+old arrival IDs or rewrite compressed history. Legacy rows precede new rows in
+a mixed query and sort by reception time, ingest time, then the complete
+immutable forensic tuple under C collation (excluding mutable decoded projection
+and decoder version). Exact duplicate legacy tuples are interchangeable; their
+original relative arrival order cannot be recovered. This deterministic fallback
+is not an assertion of original arrival. Streaming callbacks, source/constellation
+filters, half-open windows and loud row-limit errors are unchanged. The read-only
+replay tool never applies this migration; writer database roles need USAGE on
+`nav_frames_receipt_order_seq` in addition to their existing table permissions.

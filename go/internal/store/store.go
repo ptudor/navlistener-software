@@ -76,7 +76,7 @@ var copyColumns = []string{
 	"credential_fingerprint", "attestation_tier", "aggregate_use", "station_metadata", "event_visibility",
 	"raw_export", "federation_peers", "publish_signals", "policy_revision",
 	"gnssid", "svid", "sigid", "freqid", "msg_type",
-	"raw", "decoded", "decoder_ver", "sbf_header",
+	"raw", "decoded", "decoder_ver", "sbf_header", "source_session", "source_seq",
 }
 
 // NavFrame is one raw broadcast nav frame to persist, with its optional decoded
@@ -1049,6 +1049,11 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 
 // navFrameToRow maps a NavFrame to a CopyFrom row in copyColumns order.
 func navFrameToRow(f *NavFrame) []any {
+	var sourceSeq any
+	if f.HasSourceSeq {
+		sourceSeq = int64(f.SourceSeq)
+	} // preserve all uint64 bits, as in the dedup ledger
+
 	var decoded any
 	if len(f.Decoded) > 0 {
 		decoded = string(f.Decoded)
@@ -1083,7 +1088,7 @@ func navFrameToRow(f *NavFrame) []any {
 		valueOr(f.RawExport, "deny"), peers, signals,
 		valueOr(f.PolicyRevision, "legacy-private-v1"),
 		int16(f.GnssID), int16(f.SvID), int16(f.SigID), int16(f.FreqID), int16(f.MsgType),
-		f.Raw, decoded, nilIfEmpty(f.DecoderVer), f.SBFHeader,
+		f.Raw, decoded, nilIfEmpty(f.DecoderVer), f.SBFHeader, nilIfEmpty(f.Session), sourceSeq,
 	}
 }
 

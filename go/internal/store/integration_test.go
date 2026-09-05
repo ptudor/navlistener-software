@@ -607,7 +607,8 @@ func TestIntegrationQueryNavFramesAcrossChunks(t *testing.T) {
 			Raw: []byte{byte(i), 0, 0, 0}, DecoderVer: "test",
 		}))
 	}
-	// Insert deliberately out of order so a pass cannot come from physical row order.
+	// Insert in reverse reception-time order: regression fix now preserves this
+	// first-storage admission order, even when the receiver clock goes backwards.
 	for i := len(rows) - 1; i >= 0; i-- {
 		if _, err := s.copyRows(ctx, rows[i:i+1]); err != nil {
 			t.Fatalf("seed row %d: %v", i, err)
@@ -631,15 +632,16 @@ func TestIntegrationQueryNavFramesAcrossChunks(t *testing.T) {
 		t.Fatalf("got %d frames, want %d (Until is exclusive, so the last frame is out)", len(got), n-1)
 	}
 	for i, f := range got {
-		if want := base.Add(time.Duration(i) * step); !f.ReceivedAt.Equal(want) {
-			t.Errorf("frame %d received_at = %s, want %s (rows must come back in reception order across chunks)",
+		index := n - 2 - i // last timestamp excluded; remaining admission order is descending
+		if want := base.Add(time.Duration(index) * step); !f.ReceivedAt.Equal(want) {
+			t.Errorf("frame %d received_at = %s, want %s (rows must retain first-storage order across chunks)",
 				i, f.ReceivedAt, want)
 		}
-		if f.FreqID != i {
-			t.Errorf("frame %d freqid = %d, want %d — the GLONASS channel did not survive the round trip", i, f.FreqID, i)
+		if f.FreqID != index {
+			t.Errorf("frame %d freqid = %d, want %d — the GLONASS channel did not survive the round trip", i, f.FreqID, index)
 		}
-		if f.SvID != 1+i {
-			t.Errorf("frame %d svid = %d, want %d", i, f.SvID, 1+i)
+		if f.SvID != 1+index {
+			t.Errorf("frame %d svid = %d, want %d", i, f.SvID, 1+index)
 		}
 	}
 }

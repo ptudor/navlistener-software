@@ -283,13 +283,16 @@ func runStore(dsn, sinceStr, untilStr, source string, shards int, jsonOut string
 		GnssID: &glo, SourceID: source, Since: since, Until: until,
 	}, func(r store.StoredNavFrame) error {
 		fr := &ingest.RawFrame{
-			Recv:   r.ReceivedAt,
-			Source: r.SourceID,
-			GnssID: gnss.GNSSID(r.GnssID),
-			SvID:   r.SvID,
-			SigID:  r.SigID,
-			FreqID: r.FreqID,
-			Words:  wordsFromRaw(r.Raw),
+			Recv:    r.ReceivedAt,
+			Session: r.Session,
+			Seq:     r.SourceSeq,
+			HasSeq:  r.HasSourceSeq,
+			Source:  r.SourceID,
+			GnssID:  gnss.GNSSID(r.GnssID),
+			SvID:    r.SvID,
+			SigID:   r.SigID,
+			FreqID:  r.FreqID,
+			Words:   wordsFromRaw(r.Raw),
 		}
 		smp.apply(fr, r.ReceivedAt)
 		return nil
