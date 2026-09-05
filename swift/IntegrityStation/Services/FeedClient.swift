@@ -64,6 +64,10 @@ struct FeedClient: Sendable {
         )
     }
 
+    func fetchConditions(session: ReadSession) async throws -> APIEnvelope<ConditionsPayload> {
+        try await fetch(baseURL: session.baseURL, path: "gnss/api/events/conditions", session: session)
+    }
+
     func fetchEvents(session: ReadSession, since: Date? = nil) async throws -> APIEnvelope<EventsPayload> {
         let endpoint = try CollectorEndpoint.url(baseURL: session.baseURL, path: "gnss/api/events")
         var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)

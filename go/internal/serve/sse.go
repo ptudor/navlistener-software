@@ -161,21 +161,34 @@ func (b *Broker) publishLocked(e EventMsg) {
 // replayFrom returns the buffered events after lastID (all of them if lastID is 0
 // and replayAll is false, the most recent sseReplayNoLast are returned instead).
 func (b *Broker) replayFrom(lastID int64, hasLast bool) []EventMsg {
+	events, _ := b.replaySnapshot(lastID, hasLast)
+	return events
+}
+
+// The cursor must be present in this audience's surviving ring. Empty rings
+// after restart/reset and cursors outside the ring require authoritative state
+// reconciliation; returning an ordinary recent tail would hide the gap.
+func (b *Broker) replaySnapshot(lastID int64, hasLast bool) ([]EventMsg, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if !hasLast {
+		start := 0
 		if len(b.recent) > sseReplayNoLast {
-			return append([]EventMsg(nil), b.recent[len(b.recent)-sseReplayNoLast:]...)
+			start = len(b.recent) - sseReplayNoLast
 		}
-		return append([]EventMsg(nil), b.recent...)
+		return append([]EventMsg(nil), b.recent[start:]...), true
 	}
+	found := false
 	var out []EventMsg
 	for _, e := range b.recent {
+		if e.ID == lastID {
+			found = true
+		}
 		if e.ID > lastID {
 			out = append(out, e)
 		}
 	}
-	return out
+	return out, !found
 }
 
 // subscribe adds a new client, unless sseMaxClients concurrent streams are already
@@ -268,7 +281,11 @@ func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
 	// process, so a `<=` compare is exact either way.
 	lastID, hasLast := parseLastEventID(r)
 	var lastReplayedID int64
-	for _, e := range b.replayFrom(lastID, hasLast) {
+	replay, gap := b.replaySnapshot(lastID, hasLast)
+	if gap && !writeAndFlush(func() error { return writeStatus(w, "replay_gap") }) {
+		return
+	}
+	for _, e := range replay {
 		if !b.eventCurrent(client, e) {
 			return
 		}

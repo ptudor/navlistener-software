@@ -1,5 +1,15 @@
 import Foundation
 
+struct ConditionsPayload: Codable, Sendable {
+    let schema: String
+    let audience: String
+    let complete: Bool
+    let epoch: String
+    let cursor: Int64
+    let events: [GNSSAPIEvent]
+}
+
+
 struct EventsPayload: Codable, Sendable {
     let schema: String?
     let audience: String?

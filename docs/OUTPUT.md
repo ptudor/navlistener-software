@@ -495,3 +495,28 @@ succeeds; reverting is a config change.
 
 No client parses SV-name letters anywhere (verified — they key on numeric `gnssid` and treat
 names as opaque strings), so the `J`/`I` names flow through with zero client work.
+
+### Current station conditions and stream reconciliation 
+
+`GET /gnss/api/events/conditions` uses the same audience authorization as event
+history. Its v2 envelope contains `schema`, `audience`, `complete: true`, `epoch`
+(the current policy visibility boundary), an audience-local `cursor`, and `events`:
+one latest committed transition per station/type/gnss/signal condition, including
+resolution tombstones. The cursor and transitions come from one database snapshot.
+Event history has no retention policy, so a condition need not have changed in the
+last 24 hours to appear. The existing current-policy/startup boundary still applies;
+this endpoint does not make earlier-process or withdrawn evidence visible again.
+
+The query has a five-second deadline and a 10,000-condition limit. Historian absence,
+query failure, or excess conditions returns 503, never an incomplete success. Clients
+must show unknown/reconnecting condition health until a complete snapshot succeeds.
+A snapshot replaces transitions through its cursor; later live transitions survive
+using audience-local IDs, and resolutions retain ordering tombstones. Changing
+policy epochs clears the previous state and requires a fresh reconciliation.
+
+SSE sends `status: replay_gap` before replay when the supplied cursor is absent from
+the surviving ring, including after collector restart/reset or without a cursor.
+Clients must reconcile rather than infer current conditions from the recent tail.
+Integrity Station reconciles on launch, polling, reconnect, and replay-gap status;
+a recent history page supplies the history display only, never proof of complete
+current state. A known-offline station can still display offline during reconciliation.

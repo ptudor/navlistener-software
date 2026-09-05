@@ -144,6 +144,7 @@ func NewForAudience(addr string, st *state.Store, events EventStore, sources []c
 	mux.HandleFunc("/gnss/api/v2/sbas", s.serveFeed("sbas"))
 	mux.HandleFunc("/gnss/api/v2/audiences", s.serveAudiences)
 	mux.HandleFunc("/gnss/api/events/summary", s.serveEventsSummary)
+	mux.HandleFunc("/gnss/api/events/conditions", s.serveCurrentConditions)
 	mux.HandleFunc("/gnss/api/events", s.serveEventsQuery)
 	mux.HandleFunc("/gnss/events", s.serveEventStream)
 	s.http = &http.Server{

@@ -7,6 +7,10 @@ private actor StoreNetworkState {
     var sentEvent = false
     var failPublicObservers = false
     var publicCursors: [String] = []
+    var conditionValue: String?
+    var conditionRequests = 0
+    func setCondition(_ value: String) { conditionValue = value }
+
     func revoke() { revoked = true }
     func failPublic() { failPublicObservers = true }
     func response(_ request: URLRequest) throws -> Data {
@@ -18,13 +22,18 @@ private actor StoreNetworkState {
                 : #"{"ok":true,"data":{"schema":"2.0","revision":"public-v1","audiences":["public"]}}"#).utf8)
         }
         let audience = request.value(forHTTPHeaderField: "X-GNSS-Audience") ?? "public"
+        if request.url!.path.hasSuffix("/conditions") {
+            conditionRequests += 1
+            let entries = conditionValue.map { "[{\"id\":\($0 == "ok" ? 300 : 1),\"time\":\"2026-08-01T00:00:00Z\",\"sv\":\"public-station\",\"type\":\"jamming_detected\",\"new_value\":\"\($0)\",\"severity\":1}]" } ?? "[]"
+            return Data("{\"ok\":true,\"data\":{\"schema\":\"2.0\",\"audience\":\"\(audience)\",\"complete\":true,\"epoch\":\"a\",\"cursor\":300,\"events\":\(entries)}}".utf8)
+        }
         if request.url!.path.hasSuffix("/gnss/events") {
             if !privateRequest, let cursor = request.value(forHTTPHeaderField: "Last-Event-ID") { publicCursors.append(cursor) }
             if privateRequest && !sentEvent {
                 sentEvent = true
                 return Data("id: 987\nevent: gnss\ndata: {\"id\":987,\"sv\":\"private-station\",\"type\":\"station_offline\",\"new_value\":\"offline\",\"severity\":2}\n\n".utf8)
             }
-            return Data("event: status\ndata: {\"status\":\"connected\"}\n\n".utf8)
+            return Data("event: status\ndata: {\"status\":\"replay_gap\"}\n\nevent: status\ndata: {\"status\":\"connected\"}\n\n".utf8)
         }
         return Data("{\"ok\":true,\"data\":{\"schema\":\"2.0\",\"audience\":\"\(audience)\",\"observers\":[{\"id\":\"\(privateRequest ? "private-station" : "public-station")\",\"last_seen_s\":1}],\"events\":[]}}".utf8)
     }
@@ -61,6 +70,31 @@ struct StoreRaceTests {
         return StationStore(feedClient: FeedClient(session: networkSession), eventStream: EventStream(session: networkSession), cache: cache)
     }
     private func settle() async throws { try await Task.sleep(for: .milliseconds(60)) }
+
+    @Test func restartingAndReplayGapReconcileOldConditions() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "ConditionRestart.\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory); StoreConnectionProtocol.handler = nil }
+        let cache = SnapshotCache(directory: directory)
+        let network = StoreNetworkState()
+        await network.setCondition("jammed")
+        let session = try session(privateAudience: false)
+        try await cache.saveCursor("2", for: session.cacheKey)
+        for _ in 0..<2 {
+            let store = store(cache: cache, network: network)
+            store.start(session: session, stationIDs: ["public-station"])
+            for _ in 0..<100 where store.activeEvents(for: "public-station").isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+            #expect(store.activeEvents(for: "public-station").first?.id == 1)
+            await store.disconnect(clearCachedScope: false)
+        }
+        await network.setCondition("ok")
+        let store = store(cache: cache, network: network)
+        store.start(session: session, stationIDs: ["public-station"])
+        await store.refresh()
+        try await settle()
+        #expect(store.activeEvents(for: "public-station").isEmpty)
+        #expect(await network.conditionRequests >= 3)
+        await store.disconnect(clearCachedScope: true)
+    }
 
     @Test(arguments: ["public", "disconnect", "restart", "revoked"])
     func retiredCursorSaveCannotApplyAnOldEvent(transition: String) async throws {

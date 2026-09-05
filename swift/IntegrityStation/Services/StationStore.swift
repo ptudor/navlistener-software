@@ -24,7 +24,7 @@ final class StationStore {
     private var streamTask: Task<Void, Never>?
     private var ageAtFetch: [String: TimeInterval] = [:]
     private var fetchedAt: ContinuousClock.Instant?
-    private var activeEvents: [String: GNSSAPIEvent] = [:]
+    private var conditions = ConditionState()
     private var lastEventID: String?
     private var generation: UInt64 = 0
     private var cacheAccess: CacheAccess?
@@ -49,7 +49,7 @@ final class StationStore {
     }
 
     func activeEvents(for stationID: String) -> [GNSSAPIEvent] {
-        activeEvents.values.filter { $0.stationID == stationID }
+        conditions.active.filter { $0.stationID == stationID }
     }
 
     var rollupHealth: HealthState {
@@ -57,10 +57,12 @@ final class StationStore {
     }
 
     func health(for stationID: String) -> HealthState {
-        let severities = activeEvents.values.compactMap { event -> EventSeverity? in
+        let severities = conditions.active.compactMap { event -> EventSeverity? in
             guard event.stationID == stationID else { return nil }
             return event.severity
         }
+        if !conditions.isKnown,
+           (currentLastSeenAge(for: stationID) ?? 0) <= HealthState.observerOfflineThreshold { return .unknown }
         return HealthState.station(
             lastSeenSeconds: currentLastSeenAge(for: stationID),
             activeEventSeverities: severities
@@ -168,6 +170,8 @@ final class StationStore {
         }
 
         do {
+            try await reconcileConditions(session: session, generation: generation)
+            guard isCurrent(session, generation: generation) else { return }
             let envelope = try await feedClient.fetchEvents(session: session)
             guard isCurrent(session, generation: generation) else { return }
             guard let payload = envelope.data else { throw FeedError.missingData }
@@ -253,7 +257,12 @@ final class StationStore {
                         await record(cursor: cursor, session: session, generation: generation, access: access)
                         guard isCurrent(session, generation: generation) else { return }
                         resolve(event)
-                    case .status:
+                    case .status(let status):
+                        if status == "replay_gap" || status == "reset" { conditions.invalidate() }
+                        if !conditions.isKnown {
+                            try await reconcileConditions(session: session, generation: generation)
+                            guard isCurrent(session, generation: generation) else { return }
+                        }
                         isEventStreamConnected = true
                         eventStreamMessage = nil
                     }
@@ -265,6 +274,7 @@ final class StationStore {
                 if await handleAuthorizationLoss(error, session: session, generation: generation) { return }
                 guard isCurrent(session, generation: generation) else { return }
                 isEventStreamConnected = false
+                conditions.invalidate()
                 eventStreamMessage = error.localizedDescription
             }
 
@@ -293,6 +303,7 @@ final class StationStore {
 
     private func record(cursor: String?, session: ReadSession, generation: UInt64, access: CacheAccess) async {
         guard let cursor, isCurrent(session, generation: generation) else { return }
+        if let next = Int64(cursor), let previous = lastEventID.flatMap(Int64.init), next <= previous { return }
         lastEventID = cursor
         try? await cache.saveCursor(cursor, for: session.cacheKey, access: access)
     }
@@ -324,7 +335,7 @@ final class StationStore {
         isRefreshing = false
         observers = []
         events = []
-        activeEvents = [:]
+        conditions = ConditionState()
         ageAtFetch = [:]
         fetchedAt = nil
         lastEventID = nil
@@ -360,19 +371,22 @@ final class StationStore {
     }
 
     private func updateActiveCondition(with event: GNSSAPIEvent) {
-        guard let key = event.conditionKey,
-              let isActive = event.isActiveStationCondition
-        else { return }
-        if isActive { activeEvents[key] = event }
-        else { activeEvents.removeValue(forKey: key) }
+        conditions.apply(event)
     }
 
     private func resolve(_ event: GNSSAPIEvent) {
-        if let key = event.conditionKey {
-            activeEvents.removeValue(forKey: key)
-        } else if let id = event.id {
-            activeEvents = activeEvents.filter { $0.value.id != id }
+        conditions.apply(event, resolved: true)
+    }
+
+    private func reconcileConditions(session: ReadSession, generation: UInt64) async throws {
+        for _ in 0..<2 {
+            let envelope = try await feedClient.fetchConditions(session: session)
+            guard isCurrent(session, generation: generation) else { throw CancellationError() }
+            guard let snapshot = envelope.data, snapshot.schema == "2.0",
+                  snapshot.audience == session.audience.rawValue else { throw FeedError.invalidResponse }
+            if try conditions.install(snapshot) { return }
         }
+        throw FeedError.invalidResponse
     }
 
     private static func isNewer(_ lhs: GNSSAPIEvent, _ rhs: GNSSAPIEvent) -> Bool {
