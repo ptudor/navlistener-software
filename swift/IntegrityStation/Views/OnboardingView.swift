@@ -87,7 +87,10 @@ struct OnboardingView: View {
                                     }
                                     Spacer()
                                     Button(String(localized: "action.add")) {
-                                        controller.addStation(id: observer.id)
+                                        do {
+                                            try controller.addStation(id: observer.id)
+                                            validationMessage = nil
+                                        } catch { validationMessage = error.localizedDescription }
                                     }
                                     .disabled(controller.settings.stationIDs.contains(observer.id))
                                 }
@@ -180,13 +183,15 @@ struct OnboardingView: View {
     }
 
     private func addManualStation() {
-        let id = manualStationID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let id = manualStationID
         guard AppController.isValidStationID(id) else {
             validationMessage = String(localized: "onboarding.station.invalid")
             return
         }
-        controller.addStation(id: id)
-        manualStationID = ""
-        validationMessage = nil
+        do {
+            try controller.addStation(id: id)
+            manualStationID = ""
+            validationMessage = nil
+        } catch { validationMessage = error.localizedDescription }
     }
 }

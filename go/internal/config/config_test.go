@@ -711,3 +711,21 @@ func TestPushDuplicateTokenHash(t *testing.T) {
 		t.Fatalf("case-varied duplicate token error = %v, want both station names", err)
 	}
 }
+
+func TestOpaqueSelectionMatchesTokenAndCertificateAdmission(t *testing.T) {
+	cert, key := testKeypair(t)
+	for _, id := range []string{"roof_1", "roof:1", "station/path", "stația", " roof ", " ", strings.Repeat("x", 253), strings.Repeat("é", 300)} {
+		c := pushConfig(Push{Addr: "0.0.0.0:5580", TLSCert: cert, TLSKey: key, Observers: []PushObserver{{Station: id, EnrollmentID: "explicit:enrollment", TokenSHA256: goodHash, Feeds: []string{"ubx"}}}})
+		if err := c.finalizePush(); err != nil {
+			t.Fatalf("token id %q: %v", id, err)
+		}
+		if c.Push.Observers[0].ObserverContext.ObserverID != id {
+			t.Fatal("opaque ID changed")
+		}
+		c.Push.ClientCA = cert
+		err := c.finalizePush()
+		if (err == nil) != ValidObserverID(id) {
+			t.Fatalf("certificate policy changed for %q: %v", id, err)
+		}
+	}
+}

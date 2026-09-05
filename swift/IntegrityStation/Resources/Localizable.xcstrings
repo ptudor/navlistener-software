@@ -476,7 +476,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Station ids may contain only letters, numbers, dots, and hyphens."
+            "value": "Enter a nonempty observer ID exactly as shown by the collector."
           }
         }
       }

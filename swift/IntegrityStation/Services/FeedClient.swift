@@ -2,6 +2,7 @@ import Foundation
 
 enum FeedError: Error, Equatable, LocalizedError, Sendable {
     case invalidBaseURL
+    case invalidStationID
     case invalidCredential
     case invalidResponse
     case http(Int)
@@ -16,6 +17,7 @@ enum FeedError: Error, Equatable, LocalizedError, Sendable {
     var errorDescription: String? {
         switch self {
         case .invalidBaseURL: String(localized: "error.invalid_base_url")
+        case .invalidStationID: String(localized: "onboarding.station.invalid")
         case .invalidCredential: String(localized: "error.invalid_credential")
         case .invalidResponse: String(localized: "error.invalid_response")
         case .http(let code): String(format: String(localized: "error.http"), code)

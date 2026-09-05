@@ -174,9 +174,9 @@ final class AppController {
         }
     }
 
-    func addStation(id: String) {
-        let id = id.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard Self.isValidStationID(id), !settings.stationIDs.contains(id) else { return }
+    func addStation(id: String) throws {
+        guard Self.isValidStationID(id) else { throw FeedError.invalidStationID }
+        guard !settings.stationIDs.contains(id) else { return }
         settings.stationIDs.append(id)
         store.selectedStationIDs = settings.stationIDs
     }
@@ -193,11 +193,10 @@ final class AppController {
         else { settings.labelsByStationID[stationID] = trimmed }
     }
 
-    static func isValidStationID(_ value: String) -> Bool {
-        !value.isEmpty && value.count <= 256 && value.allSatisfy {
-            $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "-")
-        }
-    }
+    // Selection consumes opaque API identities, not certificate enrollment
+    // names. A configured local/token observer with an explicit enrollment can
+    // contain punctuation, Unicode or whitespace; preserve its exact value.
+    static func isValidStationID(_ value: String) -> Bool { !value.isEmpty }
 
     static func validServerURL(_ value: String) -> URL? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)

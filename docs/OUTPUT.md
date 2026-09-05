@@ -532,3 +532,18 @@ but cannot establish completeness itself. Auth denials remain denials even when
 their error body exceeds its limit. These limits cover application-retained input;
 platform networking buffers and decoded-object overhead are additional
 transport/runtime costs, not measurements of total process RSS.
+
+Station selection treats each API `observers[].id` as an opaque, nonempty JSON
+string. Integrity Station preserves case, separators, Unicode, and whitespace,
+with no certificate-name length/alphabet restriction on an already served ID.
+Selection does not enroll a receiver. An empty ID produces a visible validation
+error; selecting an existing ID is idempotent.
+
+For new registrations, mTLS observer names retain the collector's 253-byte ASCII
+letters/digits/dot/hyphen contract. Config-derived enrollment IDs use `config:`
+plus the observer ID and the administrative 253-byte alphabet limit, leaving
+246 bytes for a default-enrollment observer; choose that bound/alphabet for new
+portable config registrations. Token/local registrations with an explicit valid
+enrollment can admit other nonempty observer IDs under existing server policy.
+The client does not rename them or apply certificate rules retrospectively;
+request/response resource limits still apply.

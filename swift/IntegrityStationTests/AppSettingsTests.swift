@@ -73,6 +73,31 @@ func controllerValidatesCollectorAndOpaqueStationIdentifiers() {
 
     #expect(AppController.isValidStationID("rx-observer16.example.invalid"))
     #expect(AppController.isValidStationID("00-04-a3-ff-fe-12-34-56"))
-    #expect(!AppController.isValidStationID("station/path"))
+    #expect(AppController.isValidStationID("station/path"))
     #expect(!AppController.isValidStationID(""))
+}
+
+@MainActor @Test func opaqueStationSelectionPreservesSettingsAndCache() async throws {
+    let suite = "OpaqueSelection.\(UUID())"
+    let defaults = try #require(UserDefaults(suiteName:suite))
+    defer {defaults.removePersistentDomain(forName:suite)}
+    let directory = FileManager.default.temporaryDirectory.appending(path:suite)
+    defer {try? FileManager.default.removeItem(at:directory)}
+    let key = AudienceCacheKey(server:"https://collector.invalid",principal:"reader",audience:ReadAudience("organization:org")!,authorizationRevision:"a")
+    let settings = AppSettings(defaults:defaults);settings.activateScope(key)
+    let store = StationStore();let controller = AppController(store:store,settings:settings)
+    let ids = ["roof_1","roof:1","Roof_1","station/path","stația", " roof ", " ",String(repeating:"x",count:246),String(repeating:"x",count:253),String(repeating:"é",count:300)]
+    let json = try JSONSerialization.data(withJSONObject:["schema":"2.0","audience":"organization:org","observers":ids.map {["id":$0]}])
+    let payload = try JSONDecoder().decode(ObserversPayload.self,from:json)
+    let snapshot = ObserversSnapshot(receivedAt:Date(),scope:key,serverTime:nil,payload:payload)
+    try store.apply(snapshot,cached:false)
+    for observer in store.observers {try controller.addStation(id:observer.id)}
+    try controller.addStation(id:"roof_1") // duplicates preserve selection order
+    #expect(throws:FeedError.invalidStationID) {try controller.addStation(id:"")}
+    #expect(settings.stationIDs == ids)
+    let reloaded = AppSettings(defaults:defaults);reloaded.activateScope(key)
+    #expect(reloaded.stationIDs == ids)
+    let cache = SnapshotCache(directory:directory)
+    try await cache.saveObservers(snapshot,for:key)
+    #expect(try await cache.loadObservers(for:key)?.payload.observers?.map(\.id) == ids)
 }

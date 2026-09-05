@@ -46,7 +46,7 @@
   "onboarding.description": "See whether your GNSS station is online, what it hears, and whether its RF environment is clean.",
   "onboarding.server.title": "Collector",
   "onboarding.station.add_manual": "Add Station ID",
-  "onboarding.station.invalid": "Station ids may contain only letters, numbers, dots, and hyphens.",
+  "onboarding.station.invalid": "Enter a nonempty observer ID exactly as shown by the collector.",
   "onboarding.station.manual": "Station ID",
   "onboarding.station.no_discovery": "No stations have been reported in the selected audience yet. You can still add an id manually.",
   "onboarding.station.placeholder": "station-1",
