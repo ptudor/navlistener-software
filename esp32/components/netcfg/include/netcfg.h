@@ -17,19 +17,20 @@
 extern "C" {
 #endif
 
-// netcfg_load fills out from NVS, falling back to the compiled Kconfig defaults for any key
-// absent from NVS. Returns netcfg_validate(out) — i.e. true only for a config complete enough
-// to run in station mode — and writes the failing reason into err when it returns false
-// (err may be NULL). it used to return a bare "SSID and host are non-empty" check,
-// so a device provisioned through Kconfig, a partial NVS write, or external NVS tooling could
-// skip the portal and then loop forever failing WiFi/TLS/auth, recoverable only over serial.
+// netcfg_load reads the complete versioned NVS record, including its reset marker.
+// Before the first versioned save only, legacy keys override compiled defaults.
+// Unreadable/malformed records fail closed instead of exposing legacy/default
+// credentials. Returns the shared netcfg_validate rule, with a reason in err.
 bool netcfg_load(netcfg_t *out, char *err, size_t errcap);
 
-// netcfg_save persists cfg to NVS (namespace "navfeeder"). Returns ESP_OK on commit.
+// netcfg_save validates and replaces one versioned blob in namespace "navfeeder".
+// An error may leave the complete old OR new record durable, never mixed fields.
+// A successful save retires the reset marker in the same atomic replacement.
 esp_err_t netcfg_save(const netcfg_t *cfg);
 
-// netcfg_reset_provisioning clears only the "navfeeder" configuration namespace and
-// leaves a reset marker that suppresses compiled development defaults on the next boot.
+// netcfg_reset_provisioning replaces configuration with a persistent reset unit
+// that suppresses legacy keys and compiled development defaults on the next boot.
+// It is a logical reset, not secure flash erasure.
 // Hardware identity and enrollment material must live outside this namespace.
 esp_err_t netcfg_reset_provisioning(void);
 

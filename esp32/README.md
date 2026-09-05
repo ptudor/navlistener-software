@@ -209,3 +209,38 @@ prints a development-build warning. Such builds are excluded from claims of
 reproducibility from this repository's committed dependency resolution, even if
 the local checkout happens to have the same HEAD. A matching dependency pin alone
 is not a claim of byte-identical firmware across toolchains/configurations.
+
+### Atomic provisioning storage
+
+Network settings now occupy one `navfeeder/config_v1` blob: `NFC1`, little-endian
+version/length, 64-bit generation, reset/insecure flags, port, fixed-size
+NUL-terminated fields, and CRC32. A complete valid blob takes precedence over
+legacy individual keys. Devices using legacy keys retain their effective
+configuration until the first complete save atomically migrates them; loading
+alone never writes storage. Previously mixed legacy credentials cannot be
+reconstructed automatically and should be explicitly reprovisioned.
+
+The storage transaction relies on ESP-IDF 5.5 NVS's alternate blob chunk
+versions and final blob-index publication, not on `nvs_commit` rolling back
+failed setters. A failed save can leave the complete old or complete new
+configuration durable. Full flash, write errors and interruptions cannot pair
+a new host with an old token. Storage operations are serialized. A malformed or
+unreadable blob forces provisioning with empty credentials; it never uncovers
+stale keys/defaults. A complete explicit save or physical reset can replace a
+malformed blob, while transient read errors refuse writes.
+
+Physical reset publishes an empty record with its reset flag in that same
+transaction, suppressing compiled development credentials until a complete save
+replaces it. This is logical retirement, not secure flash erasure: legacy keys
+and flash history may remain. Factory identity and hardware-manifest namespaces
+are untouched. Downgrading to firmware that only understands individual keys
+requires explicit configuration erasure/reprovisioning; old firmware cannot
+interpret this format or its reset flag.
+
+Host fault tests cover every modeled chunk/index/commit boundary, both error
+returns and reboot interruption, including migration and reset. They exercise the
+actual configuration storage code against NVS's documented atomic-blob contract;
+they do not simulate physical flash electronics. ESP-IDF implementation evidence:
+`components/nvs_flash/src/nvs_storage.cpp` (`writeItem`, `writeMultiPageBlob`,
+`populateBlobIndices`) and its NVS power-loss recovery tests. Run
+`make -C components/netcfg/test` and the complete firmware build after changes.

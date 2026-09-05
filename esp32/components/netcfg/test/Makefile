@@ -1,9 +1,8 @@
 # Host unit tests for the netcfg component.
 #
-# Only the pure part is host-testable: netcfg_check.c (the station-mode config rule) has no
-# ESP-IDF dependency, while netcfg.c proper needs NVS/WiFi/httpd. That split is the point of
-# regression fix — the rule lives in one testable place instead of being duplicated inline in the
-# boot path and the portal.
+# The shared validation rule runs directly. The actual storage implementation
+# also runs against an NVS atomic-blob backend with write/commit/power-cut faults.
+# Portal WiFi/httpd and physical flash behavior still require on-target testing.
 #
 #   make -C esp32/components/netcfg/test        # build + run
 #
@@ -13,13 +12,17 @@ CC      ?= cc
 CFLAGS  ?= -O1 -Wall -Wextra -std=c11
 BUILD   := build
 
-TESTS   := netcfg_validate_test
+TESTS   := netcfg_validate_test netcfg_storage_test
 
 .PHONY: all run clean
 all: run
 
 run: $(addprefix $(BUILD)/,$(TESTS))
 	@set -e; for t in $(addprefix $(BUILD)/,$(TESTS)); do echo "==> $$t"; ./$$t; done
+
+$(BUILD)/netcfg_storage_test: netcfg_storage_test.c ../src/netcfg_storage.c ../src/netcfg_check.c ../include/netcfg.h $(wildcard mocks/*.h mocks/sys/*.h)
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) -Imocks -I../include -o $@ netcfg_storage_test.c ../src/netcfg_storage.c ../src/netcfg_check.c
 
 $(BUILD)/%: %.c ../src/netcfg_check.c ../include/netcfg_check.h
 	@mkdir -p $(BUILD)

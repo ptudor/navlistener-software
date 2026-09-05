@@ -11,7 +11,6 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "nvs.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_event.h"
@@ -24,8 +23,6 @@
 #include "sdkconfig.h"
 
 static const char *TAG = "netcfg";
-#define NVS_NS "navfeeder"
-#define NVS_RESET_KEY "reset"
 
 // A Kconfig bool left at 'n' emits no #define.
 #ifndef CONFIG_NVF_INSECURE
@@ -34,110 +31,6 @@ static const char *TAG = "netcfg";
 #ifndef CONFIG_NVF_ALLOW_INSECURE_PORTAL
 #define CONFIG_NVF_ALLOW_INSECURE_PORTAL 0
 #endif
-
-// --- NVS load / save ---------------------------------------------------------------------
-
-static void get_str(nvs_handle_t h, const char *key, char *dst, size_t cap, const char *dflt)
-{
-    size_t len = cap;
-    if (nvs_get_str(h, key, dst, &len) != ESP_OK) {
-        // every caller passes dflt == dst (the Kconfig default already sitting in
-        // dst), so snprintf(dst, cap, "%s", dflt) would alias source and destination —
-        // undefined behavior even though it happens to work today. Skip the no-op copy
-        // when they're the same buffer; still honor a genuinely different dflt.
-        if (dflt && dflt != dst) snprintf(dst, cap, "%s", dflt);
-    }
-}
-
-bool netcfg_load(netcfg_t *out, char *err, size_t errcap)
-{
-    memset(out, 0, sizeof *out);
-    // Compiled Kconfig defaults first; NVS overrides any key present.
-    snprintf(out->wifi_ssid, sizeof out->wifi_ssid, "%s", CONFIG_NVF_WIFI_SSID);
-    snprintf(out->wifi_pass, sizeof out->wifi_pass, "%s", CONFIG_NVF_WIFI_PASS);
-    snprintf(out->host, sizeof out->host, "%s", CONFIG_NVF_COLLECTOR_HOST);
-    out->port = CONFIG_NVF_COLLECTOR_PORT;
-    snprintf(out->token, sizeof out->token, "%s", CONFIG_NVF_TOKEN);
-    snprintf(out->station, sizeof out->station, "%s", CONFIG_NVF_STATION);
-    out->insecure = CONFIG_NVF_INSECURE;
-
-    nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
-        uint8_t reset = 0;
-        if (nvs_get_u8(h, NVS_RESET_KEY, &reset) == ESP_OK && reset == 1) {
-            // A physical reset must force the portal even in a development build carrying
-            // complete Kconfig defaults. Without this marker, erasing the namespace would
-            // merely uncover those defaults and appear to do nothing.
-            memset(out, 0, sizeof *out);
-            nvs_close(h);
-            return netcfg_validate(out, err, errcap);
-        }
-        get_str(h, "ssid", out->wifi_ssid, sizeof out->wifi_ssid, out->wifi_ssid);
-        get_str(h, "pass", out->wifi_pass, sizeof out->wifi_pass, out->wifi_pass);
-        get_str(h, "host", out->host, sizeof out->host, out->host);
-        int32_t port = out->port;
-        nvs_get_i32(h, "port", &port);
-        out->port = port;
-        get_str(h, "token", out->token, sizeof out->token, out->token);
-        get_str(h, "station", out->station, sizeof out->station, out->station);
-        uint8_t ins = out->insecure;
-        nvs_get_u8(h, "insecure", &ins);
-        out->insecure = ins;
-        nvs_close(h);
-    }
-    // one validation rule, shared with the portal's save path (netcfg_validate),
-    // so "provisioned enough to start station mode" and "accepted by the form" cannot
-    // disagree. The old two-field check let a config populated by Kconfig, a partial NVS
-    // write, or external NVS tooling skip the portal and then fail forever at
-    // WiFi/TLS/auth — with no runtime portal fallback, that is a serial-cable recovery,
-    // made worse on this board by the regression fix GPIO9 strapping hazard.
-    return netcfg_validate(out, err, errcap);
-}
-
-esp_err_t netcfg_save(const netcfg_t *cfg)
-{
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
-    if (err != ESP_OK) return err;
-    // each nvs_set_* return was previously discarded, so a failure (NVS full or
-    // fragmented) could still be followed by a successful nvs_commit() of the other keys,
-    // and the portal reported "Saved" for a partially-written config. Accumulate the first
-    // failure and return it (still attempting every set, so whatever did fit is persisted).
-    esp_err_t first_err = ESP_OK;
-    esp_err_t rc;
-#define NVS_TRY(x) do { rc = (x); if (rc != ESP_OK && first_err == ESP_OK) first_err = rc; } while (0)
-    NVS_TRY(nvs_set_str(h, "ssid", cfg->wifi_ssid));
-    NVS_TRY(nvs_set_str(h, "pass", cfg->wifi_pass));
-    NVS_TRY(nvs_set_str(h, "host", cfg->host));
-    NVS_TRY(nvs_set_i32(h, "port", cfg->port));
-    NVS_TRY(nvs_set_str(h, "token", cfg->token));
-    NVS_TRY(nvs_set_str(h, "station", cfg->station));
-    NVS_TRY(nvs_set_u8(h, "insecure", cfg->insecure ? 1 : 0));
-    // Retire the physical-reset marker only after every replacement field was accepted.
-    // If any set failed, leaving the previously committed marker at 1 guarantees the next
-    // boot returns to provisioning instead of exposing compiled development defaults.
-    if (first_err == ESP_OK) NVS_TRY(nvs_set_u8(h, NVS_RESET_KEY, 0));
-#undef NVS_TRY
-    esp_err_t commit_err = nvs_commit(h);
-    nvs_close(h);
-    return first_err != ESP_OK ? first_err : commit_err;
-}
-
-esp_err_t netcfg_reset_provisioning(void)
-{
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
-    if (err != ESP_OK) return err;
-
-    // This namespace contains only operator-editable network/collector configuration. The
-    // marker is intentionally written after erase_all so netcfg_load cannot fall back to
-    // compiled bench credentials and silently skip the provisioning portal.
-    err = nvs_erase_all(h);
-    if (err == ESP_OK) err = nvs_set_u8(h, NVS_RESET_KEY, 1);
-    if (err == ESP_OK) err = nvs_commit(h);
-    nvs_close(h);
-    return err;
-}
 
 // --- provisioning portal -----------------------------------------------------------------
 
