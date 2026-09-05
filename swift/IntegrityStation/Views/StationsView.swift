@@ -3,6 +3,8 @@ import SwiftUI
 struct StationsView: View {
     @Environment(AppController.self) private var controller
 
+    @State private var selectionSession: ReadSession?
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -16,6 +18,13 @@ struct StationsView: View {
             .navigationTitle(Text("stations.title"))
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
+                    Button { selectionSession = controller.store.activeSession } label: {
+                        Label(String(localized: "stations.add.title"), systemImage: "plus")
+                    }
+                    .accessibilityIdentifier("station.add")
+                    .disabled(controller.store.activeSession == nil)
+                }
+                ToolbarItem(placement: .primaryAction) {
                     Button {
                         Task { await controller.refresh() }
                     } label: {
@@ -23,6 +32,24 @@ struct StationsView: View {
                     }
                     .disabled(controller.store.isRefreshing || controller.serverURL == nil)
                 }
+            }
+            .sheet(isPresented: Binding(get: { selectionSession != nil }, set: { if !$0 { selectionSession = nil } })) {
+                if let session = selectionSession {
+                    NavigationStack {
+                        OnboardingView(selectionSession: session)
+                            .navigationTitle(Text("stations.add.title"))
+                            .toolbar {
+                                ToolbarItem(placement: .confirmationAction) {
+                                    Button(String(localized: "action.done")) { selectionSession = nil }
+                                        .accessibilityIdentifier("station.addDone")
+                                }
+                            }
+                    }
+                    .frame(minWidth: 340, minHeight: 500)
+                }
+            }
+            .onChange(of: controller.store.activeSession) { _, current in
+                if selectionSession != current { selectionSession = nil }
             }
             .navigationDestination(for: String.self) { stationID in
                 StationDetailView(stationID: stationID)

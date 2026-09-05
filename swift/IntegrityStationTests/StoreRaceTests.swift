@@ -76,6 +76,39 @@ struct StoreRaceTests {
     }
     private func settle() async throws { try await Task.sleep(for: .milliseconds(60)) }
 
+    @Test func stationAddRetainsLabelsAndRejectsRetiredAudience() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "AddScope.\(UUID())")
+        let suite = "AddScope.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { try? FileManager.default.removeItem(at: directory); StoreConnectionProtocol.handler = nil; defaults.removePersistentDomain(forName: suite) }
+        let network = StoreNetworkState()
+        let store = store(cache: SnapshotCache(directory: directory), network: network)
+        let settings = AppSettings(defaults: defaults)
+        let controller = AppController(store: store, settings: settings)
+        let old = try session(privateAudience: true)
+        settings.activateScope(old.cacheKey);store.start(session: old, stationIDs: [])
+        try controller.addStation(id: "roof_1", for: old)
+        controller.setLabel("My roof", for: "roof_1")
+        try controller.addStation(id: "roof:1", for: old)
+        try controller.addStation(id: "manual:third", for: old)
+        try controller.addStation(id: "roof_1", for: old)
+        #expect(settings.stationIDs == ["roof_1", "roof:1", "manual:third"])
+        #expect(settings.label(for: "roof_1") == "My roof")
+        controller.removeStation(id: "roof:1")
+        try controller.addStation(id: "roof:1", for: old)
+        #expect(settings.stationIDs == ["roof_1", "manual:third", "roof:1"])
+        let next = try session(privateAudience: false)
+        settings.activateScope(next.cacheKey);store.start(session: next, stationIDs: [])
+        #expect(throws: FeedError.audienceLost) { try controller.addStation(id: "old-sheet", for: old) }
+        #expect(settings.stationIDs.isEmpty)
+        // Empty discovery still permits an exact manual ID in the current scope.
+        try controller.addStation(id: "manual:new", for: next)
+        #expect(settings.stationIDs == ["manual:new"])
+        settings.activateScope(old.cacheKey)
+        #expect(settings.label(for: "roof_1") == "My roof")
+        await store.disconnect(clearCachedScope: true)
+    }
+
     @Test func duplicateNetworkSnapshotPreservesValidDisplayAndCache() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: "DuplicateNetwork.\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory); StoreConnectionProtocol.handler = nil }

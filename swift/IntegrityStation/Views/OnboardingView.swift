@@ -2,6 +2,8 @@ import SwiftUI
 
 struct OnboardingView: View {
     @Environment(AppController.self) private var controller
+    let selectionSession: ReadSession?
+    init(selectionSession: ReadSession? = nil) { self.selectionSession = selectionSession }
     @State private var serverDraft = ""
     @State private var tokenDraft = ""
     @State private var manualStationID = ""
@@ -10,6 +12,7 @@ struct OnboardingView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+                if selectionSession == nil {
                 VStack(alignment: .leading, spacing: 6) {
                     Image(systemName: "scope")
                         .font(.system(size: 34, weight: .medium))
@@ -27,6 +30,7 @@ struct OnboardingView: View {
                         prompt: Text("server.placeholder")
                     )
                     .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("collector.url")
                     #if os(iOS)
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
@@ -59,6 +63,7 @@ struct OnboardingView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("collector.connect")
                     .disabled(
                         serverDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                             || controller.isConnecting
@@ -70,8 +75,9 @@ struct OnboardingView: View {
                     }
                 }
 
+                }
                 if controller.serverURL != nil {
-                    audienceCard
+                    if selectionSession == nil { audienceCard }
 
                     InstrumentCard("onboarding.station.title", systemImage: "antenna.radiowaves.left.and.right") {
                         if controller.store.observers.isEmpty {
@@ -88,10 +94,11 @@ struct OnboardingView: View {
                                     Spacer()
                                     Button(String(localized: "action.add")) {
                                         do {
-                                            try controller.addStation(id: observer.id)
+                                            try controller.addStation(id: observer.id, for: selectionSession)
                                             validationMessage = nil
                                         } catch { validationMessage = error.localizedDescription }
                                     }
+                                    .accessibilityIdentifier("station.discovered.\(observer.id)")
                                     .disabled(controller.settings.stationIDs.contains(observer.id))
                                 }
                             }
@@ -105,6 +112,7 @@ struct OnboardingView: View {
                         )
                         .textFieldStyle(.roundedBorder)
                         .font(.body.monospaced())
+                        .accessibilityIdentifier("station.manual")
                         #if os(iOS)
                         .textInputAutocapitalization(.never)
                         #endif
@@ -112,6 +120,7 @@ struct OnboardingView: View {
                             addManualStation()
                         }
                         .buttonStyle(.bordered)
+                        .accessibilityIdentifier("station.addManual")
                     }
                 }
 
@@ -189,7 +198,7 @@ struct OnboardingView: View {
             return
         }
         do {
-            try controller.addStation(id: id)
+            try controller.addStation(id: id, for: selectionSession)
             manualStationID = ""
             validationMessage = nil
         } catch { validationMessage = error.localizedDescription }

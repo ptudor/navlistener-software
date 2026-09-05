@@ -1250,6 +1250,26 @@
           }
         }
       }
+    },
+    "stations.add.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add stations"
+          }
+        }
+      }
+    },
+    "action.done": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Done"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

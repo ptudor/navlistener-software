@@ -107,6 +107,32 @@ targets:
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Integrity Station.app/Integrity Station"
         BUNDLE_LOADER: "$(TEST_HOST)"
 
+  IntegrityStationUIMacTests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: IntegrityStationUITests
+    dependencies:
+      - target: IntegrityStationMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.intsat.station.ui-mac-tests
+        GENERATE_INFOPLIST_FILE: true
+        TEST_TARGET_NAME: IntegrityStationMac
+
+  IntegrityStationUIIOSTests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: IntegrityStationUITests
+    dependencies:
+      - target: IntegrityStation
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.intsat.station.ui-ios-tests
+        GENERATE_INFOPLIST_FILE: true
+        TEST_TARGET_NAME: IntegrityStation
+
 schemes:
   IntegrityStation:
     build:
@@ -126,3 +152,21 @@ schemes:
       gatherCoverageData: true
       targets:
         - IntegrityStationTests
+
+  IntegrityStationUIMac:
+    build:
+      targets:
+        IntegrityStationMac: all
+        IntegrityStationUIMacTests: [test]
+    test:
+      targets:
+        - IntegrityStationUIMacTests
+
+  IntegrityStationUIIOS:
+    build:
+      targets:
+        IntegrityStation: all
+        IntegrityStationUIIOSTests: [test]
+    test:
+      targets:
+        - IntegrityStationUIIOSTests

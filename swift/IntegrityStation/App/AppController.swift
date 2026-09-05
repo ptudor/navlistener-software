@@ -174,7 +174,8 @@ final class AppController {
         }
     }
 
-    func addStation(id: String) throws {
+    func addStation(id: String, for session: ReadSession? = nil) throws {
+        if let session, store.activeSession != session { throw FeedError.audienceLost }
         guard Self.isValidStationID(id) else { throw FeedError.invalidStationID }
         guard !settings.stationIDs.contains(id) else { return }
         settings.stationIDs.append(id)

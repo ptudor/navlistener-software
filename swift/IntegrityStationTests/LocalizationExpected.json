@@ -123,5 +123,7 @@
   "stations.signals.not_reported": "Per-signal reception is not reported yet.",
   "stations.title": "Stations",
   "unit.db_hz": "dB-Hz",
-  "unit.meter": "m"
+  "unit.meter": "m",
+  "stations.add.title": "Add stations",
+  "action.done": "Done"
 }
