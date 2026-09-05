@@ -194,7 +194,8 @@ final class StationStore {
             let cursor = try await cache.loadCursor(for: session.cacheKey)
             guard isCurrent(session, generation: generation) else { return }
             lastEventID = cursor
-            if let snapshot = try await cache.loadObservers(for: session.cacheKey),
+            if let access = cacheAccess,
+               let snapshot = try await cache.restoreObservers(for: session.cacheKey, access: access),
                snapshot.scope == session.cacheKey,
                snapshot.payload.schema == "2.0",
                snapshot.payload.audience == session.audience.rawValue,
@@ -206,24 +207,32 @@ final class StationStore {
         }
     }
 
-    private func apply(_ snapshot: ObserversSnapshot, cached: Bool) {
+    func apply(_ snapshot: ObserversSnapshot, cached: Bool, now: Date = Date()) {
         observers = snapshot.payload.observers ?? []
         lastUpdated = snapshot.receivedAt
         isShowingCachedSnapshot = cached
         fetchedAt = .now
 
-        let servedAt = WireDate.parse(snapshot.serverTime) ?? snapshot.receivedAt
+        let received = snapshot.receivedAt.timeIntervalSince1970
+        let elapsed = now.timeIntervalSince(snapshot.receivedAt)
+        // Pre-GNSS dates, nonfinite dates, and backwards cache clocks cannot
+        // establish freshness. Keep the station visible with unknown age.
+        let cacheTimeValid = received.isFinite && received >= 315964800 &&
+            now.timeIntervalSince1970.isFinite && elapsed.isFinite && elapsed >= 0 &&
+            (snapshot.lastRestoredAt.map { $0.timeIntervalSince1970.isFinite && now >= $0 } ?? true)
+        let residence = cached ? elapsed : 0
+        let servedAt = WireDate.parse(snapshot.serverTime) ?? (cached ? nil : snapshot.receivedAt)
         ageAtFetch = Dictionary(uniqueKeysWithValues: observers.compactMap { observer in
-            if let age = observer.lastSeenS {
-                return (observer.id, max(0, age))
-            }
-            if let epoch = observer.lastSeen {
-                return (observer.id, max(0, servedAt.timeIntervalSince1970 - epoch))
-            }
-            if let epoch = observer.rf?.lastSeen {
-                return (observer.id, max(0, servedAt.timeIntervalSince1970 - epoch))
-            }
-            return nil
+            guard !cached || cacheTimeValid else { return nil }
+            let age: TimeInterval
+            if let relative = observer.lastSeenS {
+                age = relative
+            } else if let epoch = observer.lastSeen ?? observer.rf?.lastSeen,
+                      epoch.isFinite, epoch >= 315964800, let servedAt {
+                age = servedAt.timeIntervalSince1970 - epoch
+            } else { return nil }
+            guard age.isFinite, age >= 0, (age + residence).isFinite else { return nil }
+            return (observer.id, age + residence)
         })
     }
 

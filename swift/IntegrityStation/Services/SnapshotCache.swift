@@ -40,6 +40,18 @@ actor SnapshotCache {
         try loadDocument(for: key)?.observers
     }
 
+    func restoreObservers(for key: AudienceCacheKey, at now: Date = Date(), access: CacheAccess) throws -> ObserversSnapshot? {
+        guard var document = try loadDocument(for: key),
+              let snapshot = document.observers else { return nil }
+        if now.timeIntervalSince1970.isFinite,
+           now >= snapshot.receivedAt,
+           now >= (snapshot.lastRestoredAt ?? snapshot.receivedAt) {
+            document.observers?.lastRestoredAt = now
+            try access.perform { try save(document) }
+        }
+        return snapshot
+    }
+
     func saveObservers(_ snapshot: ObserversSnapshot, for key: AudienceCacheKey, access: CacheAccess? = nil) async throws {
         guard snapshot.scope == key else { throw CocoaError(.fileWriteInvalidFileName) }
         await beforeObserverSave?()

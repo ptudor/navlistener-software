@@ -163,4 +163,7 @@ struct ObserversSnapshot: Codable, Sendable {
     let scope: AudienceCacheKey
     let serverTime: String?
     let payload: ObserversPayload
+    // Optional for existing cache files. Detect a wall clock moving backwards
+    // across launches, where ContinuousClock cannot span the process lifetime.
+    var lastRestoredAt: Date? = nil
 }
