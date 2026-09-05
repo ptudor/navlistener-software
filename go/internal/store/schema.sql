@@ -73,6 +73,11 @@ ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS federation_peers      TEXT[] NOT
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS publish_signals       TEXT[] NOT NULL DEFAULT '{}';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS policy_revision       TEXT   NOT NULL DEFAULT 'legacy-private-v1';
 
+-- additive SBF framing metadata. NULL preserves the legacy unknown
+-- revision; raw remains the unchanged body. New SBF captures retain all eight
+-- header bytes (sync, CRC, revision/block ID and length), with no live decoding.
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS sbf_header BYTEA;
+
 -- Query paths: per-SV history, and the recent-by-reception forensic scan.
 CREATE INDEX IF NOT EXISTS idx_nav_frames_sv   ON nav_frames (gnssid, svid, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_nav_frames_recv ON nav_frames (received_at DESC);

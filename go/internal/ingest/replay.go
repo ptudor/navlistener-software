@@ -31,3 +31,13 @@ func ReplayUBX(r io.Reader, source string, now func() time.Time, emit func(*RawF
 	}
 	return err
 }
+
+// ReplaySBF exposes the capture-only scanner for forensic reconstruction tools.
+// It retains the same original header and body as a live dial connection.
+func ReplaySBF(r io.Reader, source string, now func() time.Time, emit func(*RawFrame), onErr func(string)) error {
+	err := scanSBF(r, source, now, emit, onErr)
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return nil
+	}
+	return err
+}

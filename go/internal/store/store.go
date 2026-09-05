@@ -76,7 +76,7 @@ var copyColumns = []string{
 	"credential_fingerprint", "attestation_tier", "aggregate_use", "station_metadata", "event_visibility",
 	"raw_export", "federation_peers", "publish_signals", "policy_revision",
 	"gnssid", "svid", "sigid", "freqid", "msg_type",
-	"raw", "decoded", "decoder_ver",
+	"raw", "decoded", "decoder_ver", "sbf_header",
 }
 
 // NavFrame is one raw broadcast nav frame to persist, with its optional decoded
@@ -117,6 +117,7 @@ type NavFrame struct {
 	// the ingest layer leaves it 0.
 	FreqID     int
 	MsgType    int
+	SBFHeader  []byte // original eight-byte SBF header; nil for legacy/other inputs
 	Raw        []byte
 	Decoded    []byte // JSON, or nil
 	DecoderVer string
@@ -1082,7 +1083,7 @@ func navFrameToRow(f *NavFrame) []any {
 		valueOr(f.RawExport, "deny"), peers, signals,
 		valueOr(f.PolicyRevision, "legacy-private-v1"),
 		int16(f.GnssID), int16(f.SvID), int16(f.SigID), int16(f.FreqID), int16(f.MsgType),
-		f.Raw, decoded, nilIfEmpty(f.DecoderVer),
+		f.Raw, decoded, nilIfEmpty(f.DecoderVer), f.SBFHeader,
 	}
 }
 

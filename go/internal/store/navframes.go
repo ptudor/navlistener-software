@@ -69,6 +69,7 @@ type StoredNavFrame struct {
 	SigID                 int
 	FreqID                int // GLONASS FDMA channel (k = FreqID - 7); 0 for other constellations
 	MsgType               int
+	SBFHeader             []byte // nil means legacy/unknown SBF revision and header
 	Raw                   []byte
 }
 
@@ -102,7 +103,7 @@ const navFrameSelect = `SELECT received_at, source_id, organization_id, enrollme
 	               collector_instance_id, collection_ids, provenance, credential_tier,
 	               credential_fingerprint, attestation_tier, aggregate_use, station_metadata, event_visibility,
 	               raw_export, federation_peers, publish_signals, policy_revision,
-	               gnssid, svid, sigid, freqid, msg_type, raw
+	               gnssid, svid, sigid, freqid, msg_type, raw, sbf_header
 	          FROM nav_frames`
 
 func queryNavFrames(ctx context.Context, pool *pgxpool.Pool, q NavFrameQuery, fn func(StoredNavFrame) error) error {
@@ -162,7 +163,7 @@ func queryNavFrames(ctx context.Context, pool *pgxpool.Pool, q NavFrameQuery, fn
 			&f.CollectorInstanceID, &f.CollectionIDs, &f.Provenance, &f.CredentialTier,
 			&f.CredentialFingerprint, &f.AttestationTier, &f.AggregateUse, &f.StationMetadata, &f.EventVisibility,
 			&f.RawExport, &f.FederationPeers, &f.PublishSignals, &f.PolicyRevision,
-			&gid, &sv, &sig, &freq, &mtype, &f.Raw,
+			&gid, &sv, &sig, &freq, &mtype, &f.Raw, &f.SBFHeader,
 		); err != nil {
 			return fmt.Errorf("query nav frames: scan: %w", err)
 		}

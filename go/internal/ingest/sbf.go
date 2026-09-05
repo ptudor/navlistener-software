@@ -3,6 +3,7 @@ package ingest
 import (
 	"bufio"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"time"
 )
@@ -13,7 +14,7 @@ import (
 // CRC-16-CCITT covers ID+Length+body. SBF delivers already-de-interleaved ICD nav
 // bits, so the collector emits the raw block body tagged with its block number.
 // SBF sources are deliberately capture-only today: the block number and body are
-// retained for the historian/future replay, but no block-specific live-state
+// retained with the original header for historian/future replay, but no block-specific live-state
 // decoder is dispatched.
 const (
 	sbfSync1 = '$'
@@ -69,14 +70,16 @@ func scanSBF(r io.Reader, source string, now func() time.Time, emit func(*RawFra
 		}
 		// Copy out before Discard invalidates br's buffer view (peeked aliases it).
 		body = append([]byte(nil), body...)
+		header := append([]byte{sbfSync1, sbfSync2}, peeked[:6]...)
 		if _, err := br.Discard(total); err != nil {
 			return err
 		}
 		emit(&RawFrame{
-			Recv:    now(),
-			Source:  source,
-			MsgType: int(id & 0x1FFF), // block number (drop the 3-bit revision)
-			Bytes:   body,
+			Recv:      now(),
+			Source:    source,
+			MsgType:   int(id & 0x1FFF), // block number; revision remains in SBFHeader
+			SBFHeader: header,
+			Bytes:     body,
 		})
 	}
 }
@@ -104,4 +107,46 @@ func crc16ccitt(groups ...[]byte) uint16 {
 		}
 	}
 	return crc
+}
+
+// SBFRevision reports the recorded revision. Legacy body-only captures remain
+// explicitly unknown; zero is a real revision and must not stand in for missing.
+func (f *RawFrame) SBFRevision() (uint8, bool) {
+	if len(f.SBFHeader) != 8 {
+		return 0, false
+	}
+	return uint8(binary.LittleEndian.Uint16(f.SBFHeader[4:6]) >> 13), true
+}
+
+// RestoreSBF reconstructs a captured block without dispatching a live decoder.
+// Header nil is the legacy body-only representation: readable, revision unknown,
+// and no original wire header/CRC can be promised. New headers are validated
+// against both the stored block number and body before reconstruction.
+func RestoreSBF(block int, body, header []byte) (*RawFrame, error) {
+	f := &RawFrame{MsgType: block, Bytes: append([]byte(nil), body...), SBFHeader: append([]byte(nil), header...)}
+	if len(header) == 0 {
+		return f, nil
+	}
+	if len(header) != 8 || header[0] != sbfSync1 || header[1] != sbfSync2 {
+		return nil, fmt.Errorf("invalid SBF capture header")
+	}
+	id := binary.LittleEndian.Uint16(header[4:6])
+	size := int(binary.LittleEndian.Uint16(header[6:8]))
+	if int(id&0x1fff) != block || size != len(body)+8 || size%4 != 0 ||
+		binary.LittleEndian.Uint16(header[2:4]) != crc16ccitt(header[4:8], body) {
+		return nil, fmt.Errorf("SBF capture metadata/CRC mismatch")
+	}
+	return f, nil
+}
+
+// SBFWire returns the exact original block when its header was retained. Legacy
+// captures return an error instead of inventing revision zero or an original CRC.
+func (f *RawFrame) SBFWire() ([]byte, error) {
+	if len(f.SBFHeader) == 0 {
+		return nil, fmt.Errorf("legacy SBF capture: revision/header unknown")
+	}
+	if _, err := RestoreSBF(f.MsgType, f.Bytes, f.SBFHeader); err != nil {
+		return nil, err
+	}
+	return append(append([]byte(nil), f.SBFHeader...), f.Bytes...), nil
 }
