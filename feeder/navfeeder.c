@@ -195,6 +195,9 @@ struct spool {
 	 * since bytes below the cursor may have been truncated away and re-appended with
 	 * different records. Mutated under mu. */
 	uint64_t disk_gen;
+	/* replay spools only: monotonic second the file was first found fully acked
+	 * yet not removable (see replay_retire_stuck); 0 = not stuck */
+	time_t retire_stuck_since;
 	pthread_mutex_t mu;
 };
 
@@ -525,6 +528,9 @@ static void spool_recover_all(struct spool *current) {
 		for (struct spool *p = g_replays; p; p = p->next)
 			if (!strcmp(p->session, current->session)) collision = 1;
 		if (!collision) break;
+		/* Loud, because a degenerate entropy source (a minimal container, broken
+		 * early-boot RNG) would otherwise spin here silently forever. */
+		log_msg("fresh session collided with a recovered replay session; minting another");
 		session_init();
 		memcpy(current->session, g_session, sizeof current->session);
 	}
@@ -1482,6 +1488,33 @@ static int handshake(struct tls_io *io, const struct opts *o, const char *sessio
 	return 0;
 }
 
+/* REPLAY_RETIRE_STUCK_S bounds how long a fully acknowledged replay spool that
+ * cannot be unlinked (read-only or root-squashed spool dir, immutable flag, an
+ * NFS permission glitch) may block the live session. Its records are all
+ * durably acknowledged, so dropping it from the replay list is dedup-safe: the
+ * next process start recovers the file again, replays it (the collector dedups
+ * on (observer, session, seq)), lands here again after the same bound, and says
+ * so — bounded churn, logged, instead of a feeder that only ever sends PINGs
+ * (astra-6 verification of regression fix). */
+#define REPLAY_RETIRE_STUCK_S 30
+
+/* replay_retire_stuck forces a stuck replay spool's retirement (disk_max_seq = 0,
+ * which ends its connection and pops it from g_replays) once it has been fully
+ * acked but unremovable for REPLAY_RETIRE_STUCK_S. Call after disk_maybe_delete. */
+static void replay_retire_stuck(struct spool *s) {
+	pthread_mutex_lock(&s->mu);
+	int stuck = s->disk_max_seq != 0 && s->acked >= s->disk_max_seq; /* delete just failed */
+	if (!stuck) { s->retire_stuck_since = 0; pthread_mutex_unlock(&s->mu); return; }
+	time_t now = monotonic_s();
+	if (s->retire_stuck_since == 0) s->retire_stuck_since = now ? now : 1; /* 0 means "never" */
+	if (now - s->retire_stuck_since < REPLAY_RETIRE_STUCK_S) { pthread_mutex_unlock(&s->mu); return; }
+	s->disk_max_seq = 0;
+	pthread_mutex_unlock(&s->mu);
+	log_msg("replay spool %s fully acknowledged but not removable for %ds; retiring it anyway "
+		"(records durably acked, re-delivery after a restart is dedup-safe) -- fix the spool directory permissions",
+		s->path, REPLAY_RETIRE_STUCK_S);
+}
+
 /* disk_maybe_delete removes the spool file once everything in it has been acked. */
 static void disk_maybe_delete(struct spool *s) {
 	pthread_mutex_lock(&s->mu);
@@ -1502,9 +1535,17 @@ static void disk_maybe_delete(struct spool *s) {
 		}
 	}
 	pthread_mutex_unlock(&s->mu);
-	if (delete_err)
-		log_msg("acked disk spool could not be removed (%s); disk overflow disabled",
-			strerror(delete_err));
+	if (delete_err) {
+		/* regression fix-style throttle on the monotonic clock: the drain loop re-tries
+		 * every ~50 ms, and a permanent EACCES must not flood the log. */
+		static time_t last_warn;
+		time_t nowt = monotonic_s();
+		if (last_warn == 0 || nowt - last_warn >= 60) {
+			last_warn = nowt ? nowt : 1;
+			log_msg("acked disk spool could not be removed (%s); disk overflow disabled",
+				strerror(delete_err));
+		}
+	}
 	if (cleared_bytes >= 64 * 1024)
 		log_msg("disk spool delivered and cleared (%llu KiB)", (unsigned long long)(cleared_bytes / 1024));
 }
@@ -1717,6 +1758,7 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o, struct spool *s) 
 			break;
 		}
 		disk_maybe_delete(s);
+		if (s != &g_spool) replay_retire_stuck(s);
 		if (s != &g_spool && s->disk_max_seq == 0) { g_disconnected = 1; break; }
 		int d = disk_drain(s, &c, &sent_upto, &dcur); /* oldest unacked first (disk) */
 		if (d < 0) break;                              /* disconnected during disk replay */
@@ -1894,14 +1936,22 @@ static void *signal_thread(void *arg) {
 	log_msg("shutdown signal %d; flushing unacked ring to disk spool", sig);
 	if (g_spool.path) {
 		pthread_mutex_lock(&g_spool.mu);
-		size_t idx = g_spool.head;
+		uint64_t dropped_before = g_spool.disk_dropped;
+		size_t idx = g_spool.head, flushed = g_spool.count;
 		for (size_t i = 0; i < g_spool.count; i++) {
 			struct frame *fr = &g_spool.ring[idx];
 			disk_put(&g_spool, fr->seq, fr->data, fr->len);
 			idx = (idx + 1) % g_spool.cap;
 		}
 		if (g_spool.disk_w) { fflush(g_spool.disk_w); fsync(fileno(g_spool.disk_w)); }
+		uint64_t lost = g_spool.disk_dropped - dropped_before;
 		pthread_mutex_unlock(&g_spool.mu);
+		/* Never let "flushing" be the last word when the flush was a no-op: after an
+		 * incomplete recovery (disk appends disabled) or with the live budget consumed
+		 * by retained replay files, every ring frame is dropped here — say so. */
+		if (lost)
+			log_msg("shutdown flush LOST %llu of %zu unacked ring frame(s): disk overflow disabled or budget exhausted",
+				(unsigned long long)lost, flushed);
 	}
 	_exit(0);
 	return NULL;

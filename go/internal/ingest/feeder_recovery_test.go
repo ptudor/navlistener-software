@@ -152,6 +152,22 @@ func TestIntegrationNavfeederCrashIdentity(t *testing.T) {
 				t.Fatalf("no ACK before crash: %s", ferr.String())
 			}
 		}
+		// Both of this run's fresh frames must be durable before the crash;
+		// the ACK log only proves the first, and the writer's 10 ms batch timer
+		// can still be holding the second (astra-6 verification flake).
+		for rowDeadline := time.Now().Add(5 * time.Second); ; {
+			var durable int
+			if err := db.QueryRow(ctx, `SELECT count(*) FROM nav_frames WHERE source_id=$1`, station).Scan(&durable); err != nil {
+				t.Fatal(err)
+			}
+			if durable >= (run+1)*2 {
+				break
+			}
+			if time.Now().After(rowDeadline) {
+				t.Fatalf("restart %d: only %d rows durable before crash, want %d", run, durable, (run+1)*2)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 		if err := cmd.Process.Kill(); err != nil {
 			t.Fatal(err)
 		}

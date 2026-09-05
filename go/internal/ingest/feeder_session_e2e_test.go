@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"sync"
 	"syscall"
 	"testing"
@@ -38,6 +39,23 @@ func (s *syncBuf) String() string {
 }
 
 var sessionLogRe = regexp.MustCompile(`navfeeder: session ([0-9a-f]{32})`)
+var recoveredLogRe = regexp.MustCompile(`recovered disk spool: (\d+) frame`)
+
+// waitForRecoveredCount polls the feeder's stderr for the "recovered disk
+// spool: N frame(s)" line a restarted process logs for its replay file.
+func waitForRecoveredCount(t *testing.T, ferr *syncBuf) int {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if m := recoveredLogRe.FindStringSubmatch(ferr.String()); m != nil {
+			n, _ := strconv.Atoi(m[1])
+			return n
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("feeder never logged a recovered spool; stderr:\n%s", ferr.String())
+	return 0
+}
 
 // waitForSession polls the feeder's stderr for the startup "session <hex32>" line.
 func waitForSession(t *testing.T, ferr *syncBuf) string {
@@ -168,21 +186,38 @@ func TestNavfeederSessionContinuityAcrossRestart(t *testing.T) {
 	})
 
 	// New captures must use a fresh session; replay retains run 1's identity.
-	if session2 := waitForSession(t, ferr2); session2 == session1 {
+	session2 := waitForSession(t, ferr2)
+	if session2 == session1 {
 		t.Fatalf("restart reused session %s; retained session %s must be replay-only", session2, session1)
 	}
 
-	// The recovered frames replay into the collector carrying that same session.
+	// The recovered frames replay into the collector carrying that same
+	// session, on their own connection, before run 2's live capture follows
+	// under the fresh one. Run 1 was stopped as soon as its ring had spilled,
+	// so how much it captured is whatever run 2 recovered — read that count
+	// from the recovery log rather than assuming the whole capture was spooled.
+	recovered := waitForRecoveredCount(t, ferr2)
+	if recovered < 8 || recovered > len(expected) {
+		t.Fatalf("recovered %d frames, want between the 8-frame ring and the %d-frame capture", recovered, len(expected))
+	}
 	deadline := time.After(20 * time.Second)
-	for n := 0; n < len(expected); n++ {
+	for n := 0; n < recovered; n++ {
 		select {
 		case f := <-out:
 			if f.Session != session1 {
-				t.Fatalf("frame %d carried session %q, want %q", n, f.Session, session1)
+				t.Fatalf("replayed frame %d carried session %q, want %q", n, f.Session, session1)
 			}
 		case <-deadline:
-			t.Fatalf("only %d/%d frames reached the collector after restart", n, len(expected))
+			t.Fatalf("only %d/%d recovered frames reached the collector after restart", n, recovered)
 		}
+	}
+	select {
+	case f := <-out:
+		if f.Session != session2 {
+			t.Fatalf("first live frame after replay carried session %q, want %q", f.Session, session2)
+		}
+	case <-deadline:
+		t.Fatal("live capture never followed the replayed session")
 	}
 }
 
