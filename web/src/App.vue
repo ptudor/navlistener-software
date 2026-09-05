@@ -1,7 +1,9 @@
 <script setup>
-import { ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 const menuOpen = ref(false)
+const menuButton = ref(null)
+const header = ref(null)
 
 const constellations = [
   { name: 'GPS', code: 'G', tone: 'gps' },
@@ -68,9 +70,53 @@ const contributionPaths = [
   },
 ]
 
+const questions = [
+  {
+    question: 'What do I need to host an observer?',
+    answer: 'Start with an observer, a suitable antenna with a clear view of the sky, power, and an internet connection. Tell us about your location and we can work through the setup together.',
+  },
+  {
+    question: 'Can I take part without hardware?',
+    answer: 'Absolutely. Software, documentation, design, testing, and research all help the project grow. Tell us what interests you and we’ll find a useful place to begin.',
+  },
+  {
+    question: 'Can my team use NavListen?',
+    answer: 'We welcome conversations about research deployments, site monitoring, and integration into your own tools. Share your goals, location, and timeline so we can discuss the hardware, data access, and support that fit your project.',
+  },
+  {
+    question: 'Can I use a receiver I already have?',
+    answer: 'The stack works with u-blox and Septentrio receiver data. The messages available depend on the model and firmware: u-blox navigation messages are decoded centrally, while Septentrio data is currently captured for the archive. Send us your receiver model and we’ll help check what it can contribute.',
+  },
+]
+
 function closeMenu() {
   menuOpen.value = false
 }
+
+function handleKeydown(event) {
+  if (event.key === 'Escape' && menuOpen.value) {
+    closeMenu()
+    menuButton.value?.focus()
+  }
+}
+
+function handlePointerdown(event) {
+  if (menuOpen.value && !header.value?.contains(event.target)) closeMenu()
+}
+
+function handleFocusout(event) {
+  if (!header.value?.contains(event.relatedTarget)) closeMenu()
+}
+
+onMounted(() => {
+  document.addEventListener('keydown', handleKeydown)
+  document.addEventListener('pointerdown', handlePointerdown)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', handleKeydown)
+  document.removeEventListener('pointerdown', handlePointerdown)
+})
 
 function emailHref(subject) {
   return `mailto:ptudor@ptudor.net?subject=${encodeURIComponent(subject)}`
@@ -80,7 +126,7 @@ function emailHref(subject) {
 <template>
   <a class="skip-link" href="#main-content">Skip to main content</a>
 
-  <header class="site-header">
+  <header ref="header" class="site-header" @focusout="handleFocusout">
     <div class="nav-shell">
       <a class="brand" href="#top" aria-label="NavListen home" @click="closeMenu">
         <img src="/assets/mark.svg" width="38" height="38" alt="" />
@@ -88,11 +134,12 @@ function emailHref(subject) {
       </a>
 
       <button
+        ref="menuButton"
         class="menu-button"
         type="button"
         :aria-expanded="menuOpen"
         aria-controls="site-navigation"
-        aria-label="Toggle navigation"
+        :aria-label="menuOpen ? 'Close navigation' : 'Open navigation'"
         @click="menuOpen = !menuOpen"
       >
         <span></span><span></span>
@@ -122,9 +169,9 @@ function emailHref(subject) {
             <a class="button button-primary" href="#join">
               Find your way in <span aria-hidden="true">↓</span>
             </a>
-            <a class="button button-secondary" href="#system">See how it works <span>↓</span></a>
+            <a class="button button-secondary" href="#system">See how it works <span aria-hidden="true">↓</span></a>
           </div>
-          <p class="hero-note">Open hardware. Open software. An open invitation.</p>
+          <p class="hero-note">Open hardware. Open software. Everyone’s welcome.</p>
         </div>
 
         <div class="sky-instrument" role="img" aria-label="Illustration of navigation satellites sending messages to an observer on Earth">
@@ -147,7 +194,6 @@ function emailHref(subject) {
           </div>
         </div>
       </div>
-
     </section>
 
     <section class="constellation-strip" aria-label="Navigation systems in the project’s architecture">
@@ -350,11 +396,26 @@ function emailHref(subject) {
         </div>
       </div>
 
+      <div class="container getting-started">
+        <div>
+          <p class="section-kicker">Getting started</p>
+          <h3>A few useful details.</h3>
+          <p>Every setup starts with a conversation. Here are a few answers to help you find your next step.</p>
+        </div>
+        <div class="question-list">
+          <details v-for="item in questions" :key="item.question">
+            <summary>{{ item.question }}<span aria-hidden="true">+</span></summary>
+            <p>{{ item.answer }}</p>
+          </details>
+        </div>
+      </div>
+
       <div class="container final-cta">
         <div>
           <span class="pulse-dot"></span>
           <p>THE SKY IS ALREADY TALKING</p>
           <h2>Let’s hear it together.</h2>
+          <a class="contact-address" href="mailto:ptudor@ptudor.net">ptudor@ptudor.net</a>
         </div>
         <a class="button button-light" :href="emailHref('Hello NavListen')">Say hello <span aria-hidden="true">↗</span></a>
       </div>

@@ -1,13 +1,26 @@
 # NavListen website
 
-The Vue 3 static recruiting site for `https://navlisten.com/`.
+The Vue 3 static project site for `https://navlisten.com/`, welcoming volunteers,
+station hosts, researchers, and prospective customers.
+
+## Editorial direction
+
+Keep the voice welcoming, practical, and collaborative. Explain what people can do with
+NavListen and how to take part. Write for both volunteers and customers; give each a clear
+way to start a conversation. The observer exists: describe the hardware in present tense.
+
+Use plain language before technical detail. Illustrations should explain the system and
+be labeled as illustrations. Avoid invented telemetry, precision claims, live status, or
+deployment locations. Keep the constellation names and product colors meaningful. Lead
+with curiosity and useful applications; avoid adversarial language, reader accusations,
+and comparisons that put other projects down.
 
 ## Stack
 
 - Vue 3 with `<script setup>` and Vite 8.
 - Server-rendered at build time: the shipped `dist/index.html` contains the full semantic page,
-  while Vue hydrates it for the mobile navigation. JavaScript is an enhancement, not a reading
-  requirement.
+  while Vue hydrates it for the mobile navigation. Getting-started answers use native
+  disclosure elements, and the full navigation remains available without JavaScript.
 - Self-hosted Public Sans, Space Grotesk, Charis Italic, and IBM Plex Mono from the `ptudornet`
   family stack, plus local SVG/PNG artwork. There are no analytics, embeds, or third-party
   runtime requests; the page runs under a strict same-origin CSP.
@@ -59,5 +72,6 @@ There is one real page and no client-side router, so no fallback rewrite is need
 CSP. Point the domain's A/AAAA records at the web host, issue its TLS certificate, and copy or
 rsync `dist/` into the document root.
 
-The join links currently use `ptudor@ptudor.net`, a known working project-owner address. Change
-`emailHref()` in `src/App.vue` when a `@navlisten.com` mailbox is ready.
+The contact links use `ptudor@ptudor.net`, a known working project-owner address, with subjects
+for hosting, contributions, hardware, and customer projects. When a `@navlisten.com` mailbox
+is ready, update `emailHref()` and the visible address in `src/App.vue` together.
