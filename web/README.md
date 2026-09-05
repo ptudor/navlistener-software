@@ -43,6 +43,10 @@ The build runs the copy guards, creates the client bundle, server-renders `App.v
 generated page, removes its temporary SSR bundle, and checks the result for semantic content,
 metadata, CSP compatibility, and required brand assets.
 
+The development server uses a per-start nonce for Vite’s injected styles, so CSS updates work
+under the page’s CSP. The production build uses external stylesheets and retains the strict
+policy in `index.html`.
+
 ## Deploy
 
 `make deploy` follows the sibling-site convention: it runs the tests and production build,
