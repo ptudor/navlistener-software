@@ -21,8 +21,8 @@ func TestPolicyAdmissionFencesAllSessionsAndLateHandoffs(t *testing.T) {
 		old.CollectionIDs = []string{"old-fleet"}
 		old.Publication.Revision = "v1"
 		var canceled atomic.Int32
-		a := p.admit(context.Background(), old, 0, func() { canceled.Add(1) })
-		b := p.admit(context.Background(), old, 0, func() { canceled.Add(1) })
+		a, _ := p.admit(context.Background(), old, 0, func() { canceled.Add(1) })
+		b, _ := p.admit(context.Background(), old, 0, func() { canceled.Add(1) })
 		if a == nil || b == nil {
 			t.Fatal("legitimate simultaneous sessions rejected")
 		}
@@ -37,7 +37,7 @@ func TestPolicyAdmissionFencesAllSessionsAndLateHandoffs(t *testing.T) {
 		if revoked {
 			p.changeAdmission(context.Background(), a, identity.ObserverContext{})
 		} else {
-			if p.admit(context.Background(), next, generation, func() {}) == nil {
+			if a, _ := p.admit(context.Background(), next, generation, func() {}); a == nil {
 				t.Fatal("new policy not admitted")
 			}
 		}
@@ -64,11 +64,11 @@ func TestPolicyAdmissionFencesAllSessionsAndLateHandoffs(t *testing.T) {
 			t.Fatal("late cleanup generated a new reset")
 		default:
 		}
-		if p.admit(context.Background(), old, generation, func() {}) != nil {
+		if a, _ := p.admit(context.Background(), old, generation, func() {}); a != nil {
 			t.Fatal("stale lookup undid transition")
 		}
 		other := identity.NewPrivateContext("unrelated", identity.CredentialToken)
-		if p.admit(context.Background(), other, 0, func() {}) == nil {
+		if a, _ := p.admit(context.Background(), other, 0, func() {}); a == nil {
 			t.Fatal("unrelated admission blocked")
 		}
 	}
@@ -78,11 +78,11 @@ func TestNewPolicyCannotOvertakeBlockedReset(t *testing.T) {
 	out := make(chan *RawFrame)
 	p := newPushServer("", &tls.Config{}, out, nil, time.Second, 8, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	old := identity.NewPrivateContext("observer", identity.CredentialToken)
-	a := p.admit(context.Background(), old, 0, func() {})
+	a, _ := p.admit(context.Background(), old, 0, func() {})
 	next := old
 	next.Publication.Revision = "v2"
 	done := make(chan *Admission, 1)
-	go func() { done <- p.admit(context.Background(), next, 1, func() {}) }()
+	go func() { a, _ := p.admit(context.Background(), next, 1, func() {}); done <- a }()
 	deadline := time.Now().Add(time.Second)
 	for a.Current() {
 		if time.Now().After(deadline) {
@@ -96,7 +96,7 @@ func TestNewPolicyCannotOvertakeBlockedReset(t *testing.T) {
 	default:
 	}
 	unrelated := identity.NewPrivateContext("unrelated", identity.CredentialToken)
-	if p.admit(context.Background(), unrelated, 0, func() {}) == nil {
+	if a, _ := p.admit(context.Background(), unrelated, 0, func() {}); a == nil {
 		t.Fatal("blocked reset stalled unrelated traffic")
 	}
 	<-out

@@ -26,11 +26,11 @@ func TestDisconnectedContributorReconciliation(t *testing.T) {
 			old := identity.NewPrivateContext("observer", identity.CredentialToken)
 			old.OrganizationID = "old-org"
 			old.Publication.AggregateUse = identity.AggregatePublicAnonymous
-			a := p.admit(context.Background(), old, 0, func() {}, policyCredential{"digest", "ubx"})
+			a, _ := p.admit(context.Background(), old, 0, func() {}, policyCredential{"digest", "ubx"})
 			a.release()
 			other := identity.NewPrivateContext("unrelated", identity.CredentialToken)
 			other.OrganizationID = "unrelated-org"
-			b := p.admit(context.Background(), other, 0, func() {}, policyCredential{"other-digest", "ubx"})
+			b, _ := p.admit(context.Background(), other, 0, func() {}, policyCredential{"other-digest", "ubx"})
 			b.release()
 			next := old
 			if change == "private" {
@@ -69,14 +69,29 @@ func TestReconciliationRetainsAllCredentialContributorsAndBoundsAdmission(t *tes
 	p := newPushServer("", &tls.Config{}, make(chan *RawFrame, 8), nil, time.Second, 8, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	old := identity.NewPrivateContext("observer", identity.CredentialToken)
 	for i := 0; i < maxPolicyCredentials; i++ {
-		a := p.admit(context.Background(), old, p.policyGeneration("observer"), func() {}, policyCredential{fmt.Sprint(i), "ubx"})
+		a, _ := p.admit(context.Background(), old, p.policyGeneration("observer"), func() {}, policyCredential{fmt.Sprint(i), "ubx"})
 		if a == nil {
 			t.Fatal("credential unexpectedly refused")
 		}
 		a.release()
+		time.Sleep(time.Millisecond) // distinct admission times: eviction is least-recent
 	}
-	if p.admit(context.Background(), old, 1, func() {}, policyCredential{"overflow", "ubx"}) != nil {
-		t.Fatal("unbounded credential retention")
+	// A further credential (a rotated token) evicts the least recently admitted
+	// digest rather than refusing the session: any one retained credential
+	// detects a withdrawal, and refusing locked a rotating observer out.
+	a, _ := p.admit(context.Background(), old, 1, func() {}, policyCredential{"overflow", "ubx"})
+	if a == nil {
+		t.Fatal("credential rotation refused at the retention bound")
+	}
+	a.release()
+	policy := p.policies["observer"]
+	policy.mu.Lock()
+	retained := len(policy.credentials)
+	_, evictedStillThere := policy.credentials[policyCredential{"0", "ubx"}]
+	_, newestKept := policy.credentials[policyCredential{"overflow", "ubx"}]
+	policy.mu.Unlock()
+	if retained != maxPolicyCredentials || evictedStillThere || !newestKept {
+		t.Fatalf("credential retention: %d retained, oldest evicted=%v, newest kept=%v", retained, !evictedStillThere, newestKept)
 	}
 	seen := make(chan string, maxPolicyCredentials)
 	p.reconcileOnce(context.Background(), reconcileFunc(func(_ context.Context, d, _, _ string) (identity.ObserverContext, bool) { seen <- d; return old, true }))
@@ -85,13 +100,13 @@ func TestReconciliationRetainsAllCredentialContributorsAndBoundsAdmission(t *tes
 	}
 	for i := 1; i < maxTrackedObserverPolicies; i++ {
 		c := identity.NewPrivateContext(fmt.Sprint(i), identity.CredentialToken)
-		a := p.admit(context.Background(), c, 0, func() {})
+		a, _ := p.admit(context.Background(), c, 0, func() {})
 		if a == nil {
 			t.Fatal("observer unexpectedly refused")
 		}
 		a.release()
 	}
-	if p.admit(context.Background(), identity.NewPrivateContext("overflow", identity.CredentialToken), 0, func() {}) != nil {
+	if a, _ := p.admit(context.Background(), identity.NewPrivateContext("overflow", identity.CredentialToken), 0, func() {}); a != nil {
 		t.Fatal("unbounded policy retention")
 	}
 }

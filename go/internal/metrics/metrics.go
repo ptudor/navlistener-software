@@ -289,3 +289,41 @@ func Init() {
 		Help: "Seconds since process start.",
 	}, func() float64 { return time.Since(startTime).Seconds() })
 }
+
+// Admission-boundary counters added by the astra-6 verification pass. None
+// carries an audience, organization or collection label: /metrics is public,
+// and regression fix forbids leaking private scope ids through label cardinality.
+// `source` is the observer id, which existing decode counters already expose.
+var (
+	// DurableReceiptsRejectedTotal counts DATA records the durable tracker
+	// refused before decoder handoff (the stream then closes for replay). A
+	// nonzero rate is the regression fix budget doing its job — or a crash-looping
+	// feeder / historian outage consuming it; the reason says which.
+	DurableReceiptsRejectedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_durable_receipts_rejected_total",
+		Help: "Sequenced push records refused by the durable ACK tracker, by budget reason (sessions, observer_sessions, outstanding, session_outstanding).",
+	}, []string{"reason"})
+	// DurableHolesAbandonedTotal counts unresolved received sequences dropped
+	// from tracking because their session was silent for durableHoleAbandonAfter
+	// — far past every feeder's ACK-stall/reconnect window, so no replay is
+	// coming. They were never acknowledged; this is bounded forgetting, loudly.
+	DurableHolesAbandonedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_durable_holes_abandoned_total",
+		Help: "Unresolved received sequences abandoned after their push session stayed silent past the abandonment window, by observer.",
+	}, []string{"source"})
+	// PushAdmissionRefusedTotal counts sessions refused AFTER a successful
+	// WELCOME by the policy admission step, by reason, so a
+	// feeder that sees handshake-then-close is explicable from the collector.
+	PushAdmissionRefusedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_push_admission_refused_total",
+		Help: "Push sessions refused by policy admission after WELCOME, by reason (observer_ceiling, canceled, stale_lookup, reset_blocked).",
+	}, []string{"reason"})
+	// SSEPublishRejectedTotal counts committed events refused at SSE broker
+	// admission because the audience's policy generation advanced between the
+	// pre-write guard and admission. Rare and expected around a
+	// policy reset; a sustained rate means a detector is racing invalidation.
+	SSEPublishRejectedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "navlistener_sse_publish_rejected_total",
+		Help: "Events refused at SSE broker admission because the audience policy generation had advanced.",
+	})
+)

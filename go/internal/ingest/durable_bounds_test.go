@@ -11,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/navlistener/internal/identity"
+	"github.com/ptudor/navlistener/internal/metrics"
 	"github.com/ptudor/navlistener/internal/wire"
 )
 
@@ -40,10 +42,11 @@ func TestDurableOutageAndChurnBounds(t *testing.T) {
 			}
 		}
 	}
-	// A week of silence cannot discard the only record of an unresolved hole.
+	// Silence inside the abandonment window cannot discard the only record of
+	// an unresolved hole (a live feeder replays well within it).
 	tr.mu.Lock()
 	for _, s := range tr.m {
-		s.touched = time.Now().Add(-30 * 24 * time.Hour)
+		s.touched = time.Now().Add(-durableHoleAbandonAfter / 2)
 	}
 	tr.pruneLocked(time.Now())
 	tr.mu.Unlock()
@@ -179,5 +182,63 @@ func TestPushTrackingBudgetStopsBeforeHandoff(t *testing.T) {
 	}
 	if tr.Watermark("obs", "session") != 9 {
 		t.Fatal("old unresolved receipt was forgotten")
+	}
+}
+
+// TestDurableAbandonsSilentHolesLoudlyAndBoundsPerObserver pins the two
+// reclamation rules the astra-6 verification added to one observer's
+// session churn cannot fill the table for everyone, and a session whose holes
+// stay unresolved while it is silent past durableHoleAbandonAfter is abandoned
+// — counted, never acknowledged — so unrecoverable holes cannot consume the
+// budget until a collector restart.
+func TestDurableAbandonsSilentHolesLoudlyAndBoundsPerObserver(t *testing.T) {
+	tr := NewDurableTracker()
+	tr.maxPerSource = 4
+	abandoned := metrics.DurableHolesAbandonedTotal.WithLabelValues("loop")
+	before := testutil.ToFloat64(abandoned)
+	for i := 0; i < 4; i++ {
+		if !tr.Received("loop", fmt.Sprint(i), 1, true) {
+			t.Fatalf("session %d refused under the per-observer cap", i)
+		}
+	}
+	if tr.Received("loop", "4", 1, true) {
+		t.Fatal("per-observer session cap not enforced")
+	}
+	if !tr.Received("other", "s", 1, true) {
+		t.Fatal("unrelated observer denied by a crash-looping neighbour")
+	}
+	if got := tr.Watermark("loop", "0"); got != 0 {
+		t.Fatalf("hole did not hold the watermark: %d", got)
+	}
+	// An active session is never abandoned however old its holes are: only
+	// silence (time since the last receipt or resolution) counts.
+	tr.mu.Lock()
+	tr.pruneLocked(time.Now())
+	tr.mu.Unlock()
+	if tr.outstanding != 5 {
+		t.Fatalf("recently touched sessions abandoned: outstanding %d", tr.outstanding)
+	}
+	// Silence past the window: holes abandoned loudly, budget released.
+	tr.mu.Lock()
+	for k, s := range tr.m {
+		if k.source == "loop" {
+			s.touched = time.Now().Add(-durableHoleAbandonAfter - time.Minute)
+		}
+	}
+	tr.nextPrune = time.Time{}
+	tr.mu.Unlock()
+	if !tr.Received("loop", "4", 1, true) {
+		t.Fatal("abandoned sessions did not release the observer's budget")
+	}
+	if got := testutil.ToFloat64(abandoned) - before; got != 4 {
+		t.Fatalf("abandoned holes counted %v, want 4", got)
+	}
+	if tr.outstanding != 2 || tr.perSource["loop"] != 1 || tr.perSource["other"] != 1 {
+		t.Fatalf("accounting after abandonment: outstanding=%d perSource=%v", tr.outstanding, tr.perSource)
+	}
+	// A feeder that reappears with an abandoned session is re-tracked from
+	// what it replays; nothing was acknowledged in the meantime.
+	if !tr.Received("loop", "0", 1, true) || tr.Watermark("loop", "0") != 0 {
+		t.Fatal("abandoned hole acknowledged or replay refused")
 	}
 }

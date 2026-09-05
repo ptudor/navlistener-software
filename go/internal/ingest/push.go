@@ -429,12 +429,20 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 		frames = zr
 	}
 
-	// Compare with the most recent context seen for this observer. This catches a
-	// policy transfer that occurred while the feeder was disconnected, before a
-	// single newly-authorized DATA record can enter live state.
+	// Admit this session under the observer's policy generation : a
+	// context that differs from the observer's current policy — a transfer or
+	// revocation that happened while the feeder was disconnected — transitions
+	// the policy, cancels every older session and enqueues the ordered reset
+	// marker before a single newly-authorized DATA record can enter live state.
+	// The credential digest is retained (never the token) so a later
+	// withdrawal can be reconciled without a reconnect.
 	digest := sha256.Sum256([]byte(authorized.token))
-	admission := p.admit(ctx, observerContext, authorized.policyGeneration, func() { sessionCancel(); _ = conn.Close() }, policyCredential{digest: hex.EncodeToString(digest[:]), feed: feed})
+	admission, refused := p.admit(ctx, observerContext, authorized.policyGeneration, func() { sessionCancel(); _ = conn.Close() }, policyCredential{digest: hex.EncodeToString(digest[:]), feed: feed})
 	if admission == nil {
+		// WELCOME{ok:true} has already been written, so the feeder sees a
+		// successful handshake followed by a close: say why on this side.
+		metrics.PushAdmissionRefusedTotal.WithLabelValues(refused).Inc()
+		p.log.Warn("push session refused by policy admission after WELCOME", "observer", observer, "feed", feed, "reason", refused)
 		return
 	}
 	defer admission.release()
