@@ -601,3 +601,15 @@ is not an assertion of original arrival. Streaming callbacks, source/constellati
 filters, half-open windows and loud row-limit errors are unchanged. The read-only
 replay tool never applies this migration; writer database roles need USAGE on
 `nav_frames_receipt_order_seq` in addition to their existing table permissions.
+
+Event summaries count every matching row in `total_events`, `by_type`, and its
+severity bucket. `by_constellation` is a subset: only known satellite-scoped
+event types with a completely valid canonical subject qualify. Signal events
+use `G01@0`-style names (including three-digit SBAS PRNs); Galileo cross-signal
+events use bare `E14`, and SBAS events use `S120` (signal-qualified historical
+forms are also accepted). Station event families stay excluded even when an
+opaque station ID is exactly `G01`, `S120` or `G01@0`. Unknown event types and
+malformed subjects remain in totals/type/severity without guessed constellation
+attribution. Thus constellation totals can legitimately sum to less than the
+overall total. Audience filters and inclusive event-summary time bounds remain
+unchanged; this differs from the raw replay API's half-open window.

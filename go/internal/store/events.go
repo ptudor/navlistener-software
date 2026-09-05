@@ -232,6 +232,23 @@ var constellationByLetter = map[byte]string{
 	'J': "qzss", 'I': "navic", 'S': "sbas",
 }
 
+// Keep this vocabulary aligned with detect's subject contracts. Unknown new
+// event types remain included in total/type/severity, but require an explicit
+// scope decision before contributing to a constellation.
+var summarySignalEventTypes = []string{
+	"health_change", "qzss_health", "navic_health", "eph_aged", "orbit_disco",
+	"clock_jump", "sisa_change", "ura_alert", "wn_mismatch", "bds_integrity_flag",
+	"leap_mismatch", "osnma_change", "observation_lost", "position_unknown",
+}
+
+// Canonical %02d satellite names in the uint8 wire domain, with the existing
+// state-layer SBAS (120..158), QZSS (1..10) and NavIC (1..14) envelopes. Signals
+// are canonical decimal uint8 values. Anchors at call sites reject suffix junk,
+// empty numbers, extra separators and noncanonical leading zeros.
+const summarySVNumber = "(0[1-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])"
+const summarySignal = "(0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])"
+const summarySVName = "([GREC]" + summarySVNumber + "|J(0[1-9]|10)|I(0[1-9]|1[0-4])|S(1[2-4][0-9]|15[0-8]))"
+
 // SummarizeEvents aggregates the events in [since, until] by type, constellation, and
 // severity, with the most recent critical timestamp. The counting is done in SQL (a small
 // grouped result) so the window can be large without streaming every row.
@@ -245,20 +262,24 @@ func (s *Store) SummarizeEventsForAudience(ctx context.Context, audience string,
 		audience = defaultEventAudience
 	}
 	sum := EventSummary{ByType: map[string]int{}, ByConstellation: map[string]int{}}
-	// only SV-scoped events (sv shaped like G05@0 / E14@1) contribute to the
-	// by-constellation breakdown. Station-scoped events (jamming/spoofing/capability) store
-	// the station id in sv, so a bare LEFT(sv,1) would misattribute a station named
-	// "Gateway1"/"Roof2"/"East…" to gps/glonass/…; the SV-name-shape regex excludes them
-	// (their letter comes back '' and is skipped below) while they still count in the total,
-	// by-type, and severity tallies.
+	// Subject shape alone cannot distinguish a station named G01 or S120 from
+	// a satellite. Admit only the detector's known satellite event families,
+	// then parse the entire canonical subject, including PRN and signal bounds.
 	rows, err := s.pool.Query(ctx,
 		`SELECT event_type,
-		        CASE WHEN sv ~ '^[GRECJIS][0-9]{2}@' THEN LEFT(sv,1) ELSE '' END,
-		        severity, count(*)
-		   FROM gnss_events
-		  WHERE audience = $1 AND time >= $2 AND time <= $3
-		  GROUP BY event_type, 2, severity`,
-		audience, since, until)
+          CASE WHEN
+            (event_type = ANY($4::text[]) AND sv ~ $5) OR
+            (event_type = 'xsig_divergence' AND sv ~ $6) OR
+            (event_type IN ('sbas_lost','sbas_health') AND sv ~ $7)
+          THEN LEFT(sv,1) ELSE '' END,
+          severity, count(*)
+     FROM gnss_events
+    WHERE audience = $1 AND time >= $2 AND time <= $3
+    GROUP BY event_type, 2, severity`,
+		audience, since, until, summarySignalEventTypes,
+		"^"+summarySVName+"@"+summarySignal+"$",
+		"^E"+summarySVNumber+"$", // detector's physical Galileo SV, without @signal
+		"^S(1[2-4][0-9]|15[0-8])(@"+summarySignal+")?$")
 	if err != nil {
 		return sum, fmt.Errorf("summarize events: %w", err)
 	}
