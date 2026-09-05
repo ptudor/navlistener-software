@@ -205,7 +205,12 @@ managed_components/esp_hardware_discovery/test/host clean`) before building.
 The existing `ESP_HARDWARE_DISCOVERY_PATH=/path/to/esp_hardware_discovery`
 development override remains supported. Metadata explicitly marks the actual
 local override, records its content hash/path and available Git revision, and
-prints a development-build warning. Such builds are excluded from claims of
+prints a development-build warning. An override build makes the component
+manager rewrite the tracked `dependencies.lock` (a `type: local` entry with a
+machine-specific path and no commit or content hash); the provenance step says
+so — restore the reviewed resolution with `git checkout -- esp32/dependencies.lock`
+before committing. `tools/build_provenance.py` also refuses a firmware image
+older than the CMake configuration it would be attributed to (rebuild first). Such builds are excluded from claims of
 reproducibility from this repository's committed dependency resolution, even if
 the local checkout happens to have the same HEAD. A matching dependency pin alone
 is not a claim of byte-identical firmware across toolchains/configurations.

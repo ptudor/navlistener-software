@@ -10,3 +10,6 @@ sdkconfig.old
 managed_components/
 *.pyc
 .DS_Store
+
+# host-test binary the hardware_manifest suite builds beside its sources
+components/hardware_manifest/test/hardware_manifest_policy_test

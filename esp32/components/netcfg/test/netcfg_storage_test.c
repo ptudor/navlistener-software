@@ -13,7 +13,8 @@ static size_t durable_size;
 static netcfg_t legacy_cfg;
 static bool has_legacy, legacy_reset;
 static int failure_step, step, writes;
-static bool power_cut, open_failure, read_failure;
+static bool power_cut, open_failure, read_failure, erase_failure;
+static unsigned erased_mask; // bit per legacy key erased since fresh()
 static jmp_buf reboot;
 static const char factory_identity[] = "separate factory namespace";
 
@@ -78,6 +79,15 @@ esp_err_t nvs_get_i32(nvs_handle_t h, const char *key, int32_t *v)
     if (!has_legacy) return ESP_ERR_NVS_NOT_FOUND;
     *v = legacy_cfg.port; return ESP_OK;
 }
+static const char *const legacy_keys[] = {"ssid", "pass", "host", "token", "station", "port", "insecure", "reset"};
+esp_err_t nvs_erase_key(nvs_handle_t h, const char *key)
+{
+    assert(h == 1);
+    if (erase_failure) return ESP_FAIL;
+    for (unsigned i = 0; i < 8; i++) if (!strcmp(key, legacy_keys[i])) { erased_mask |= 1u << i; return ESP_OK; }
+    assert(!"unexpected key erased");
+    return ESP_FAIL;
+}
 esp_err_t nvs_get_u8(nvs_handle_t h, const char *key, uint8_t *v)
 {
     assert(h == 1);
@@ -94,8 +104,8 @@ static bool same(const netcfg_t *a, const netcfg_t *b)
 }
 static void fresh(void)
 {
-    durable_size = 0; has_legacy = legacy_reset = power_cut = open_failure = read_failure = false;
-    failure_step = step = writes = 0;
+    durable_size = 0; has_legacy = legacy_reset = power_cut = open_failure = read_failure = erase_failure = false;
+    failure_step = step = writes = 0; erased_mask = 0;
 }
 int main(void)
 {
@@ -153,5 +163,22 @@ int main(void)
     netcfg_t bad = next; memset(bad.host,'x',sizeof bad.host);
     assert(netcfg_save(&bad) == ESP_ERR_INVALID_ARG && writes == before);
     assert(netcfg_load(&out,NULL,0) && same(&out,&next));
-    puts("netcfg atomic record: write/commit errors, power-cut boundaries, migration, reset and corruption PASS");
+    // A physical reset retires the legacy per-field keys too (best effort): no
+    // bearer token stays readable in flash after "erase settings".
+    fresh(); has_legacy = true; legacy_cfg = old;
+    assert(netcfg_reset_provisioning() == ESP_OK && erased_mask == 0xffu);
+    assert(!netcfg_load(&out, NULL, 0) && !out.token[0]);
+    // ...and an erase failure never changes the reset's outcome or its record.
+    fresh(); has_legacy = true; legacy_cfg = old; erase_failure = true;
+    assert(netcfg_reset_provisioning() == ESP_OK && erased_mask == 0);
+    assert(!netcfg_load(&out, NULL, 0) && !out.token[0] && !out.host[0]);
+    // A malformed record (good CRC, unterminated field) fails closed and never
+    // uncovers legacy keys — the astra-6 verification's N6/N7 gaps.
+    fresh(); has_legacy = true; legacy_cfg = old; legacy_reset = false;
+    assert(netcfg_save(&next) == ESP_OK);
+    memset(durable + 118, 'x', 64); // host field, no terminator
+    { uint32_t crc = UINT32_MAX; for (size_t i = 0; i < 344; i++) { crc ^= durable[i]; for (int j = 0; j < 8; j++) crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1u))); } crc = ~crc;
+      for (int i = 0; i < 4; i++) durable[344 + i] = (unsigned char)(crc >> (8 * i)); }
+    assert(!netcfg_load(&out, NULL, 0) && !out.host[0] && !out.token[0]);
+    puts("netcfg atomic record: write/commit errors, power-cut boundaries, migration, reset, legacy retirement and corruption PASS");
 }

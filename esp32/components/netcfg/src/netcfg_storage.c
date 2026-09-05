@@ -55,7 +55,10 @@ static void encode(uint8_t data[RECORD_SIZE], const netcfg_t *cfg, uint64_t gene
     data[17] = cfg->insecure;
     put_le(data + 18, cfg->port, 2);
     size_t offset = 20;
-#define FIELD(name) do { memcpy(data + offset, cfg->name, strlen(cfg->name)); offset += sizeof cfg->name; } while (0)
+    // strnlen, not strlen: both callers check terminated(cfg) first, but the
+    // encoder must be safe on its own terms — an unterminated field can never
+    // read past its own storage into the next one.
+#define FIELD(name) do { memcpy(data + offset, cfg->name, strnlen(cfg->name, sizeof cfg->name)); offset += sizeof cfg->name; } while (0)
     FIELD(wifi_ssid); FIELD(wifi_pass); FIELD(host); FIELD(token); FIELD(station);
 #undef FIELD
     put_le(data + RECORD_SIZE - 4, record_crc(data, RECORD_SIZE - 4), 4);
@@ -176,11 +179,27 @@ esp_err_t netcfg_save(const netcfg_t *cfg)
     _lock_release(&storage_lock);
     return rc;
 }
+// Legacy per-field keys predate the atomic record. Once a reset record is
+// durable they are unreachable (the blob takes precedence and its reset flag
+// suppresses migration), but a physical "erase settings" gesture should not
+// leave a bearer token readable in flash either. Best effort, after the reset
+// is already published: the blob is authoritative, so a failure part-way can
+// never produce a mixed configuration, and never changes the reset's result.
+static void erase_legacy_keys(void)
+{
+    static const char *const keys[] = {"ssid", "pass", "host", "token", "station", "port", "insecure", "reset"};
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++) (void)nvs_erase_key(h, keys[i]);
+    (void)nvs_commit(h);
+    nvs_close(h);
+}
 esp_err_t netcfg_reset_provisioning(void)
 {
     const netcfg_t empty = {0};
     _lock_acquire(&storage_lock);
     esp_err_t rc = replace(&empty, true);
+    if (rc == ESP_OK) erase_legacy_keys();
     _lock_release(&storage_lock);
     return rc;
 }

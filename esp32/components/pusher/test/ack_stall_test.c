@@ -11,7 +11,7 @@ static int64_t clock_us, start_us, restore_us, next_slow_us;
 static uint64_t produced, durable, lost, slow_limit;
 static bool persisted[10000], finish_allowed, finished;
 static int phase, connections, hellos, pings;
-static enum { STALL, IDLE, SLOW } mode;
+static enum { STALL, IDLE, SLOW, FLOOD } mode;
 static uint8_t inbound[65536];
 static size_t head, tail;
 static esp_tls_t transport;
@@ -38,12 +38,19 @@ ssize_t esp_tls_conn_write(esp_tls_t *tls,const void *buf,size_t n){
     return (ssize_t)n; // the connection and every write remain healthy
 }
 ssize_t esp_tls_conn_read(esp_tls_t *tls,void *buf,size_t n){
-    (void)tls;if(head==tail)return -1;
+    (void)tls;
+    // FLOOD: a saturating peer always has another unchanged ACK and PONG queued,
+    // and each refill costs 1 ms of wall time. Only a bounded drain lets the
+    // durability watchdog in the outer loop run at all.
+    if(head==tail&&mode==FLOOD&&phase>=3){ack();queue(GNF1_F_PONG,NULL,0);clock_us+=1000;
+        assert(clock_us-start_us<200000000);} // an unbounded drain never reaches select(): fail here, not hang
+    if(head==tail)return -1;
     if(n>tail-head)n=tail-head;memcpy(buf,inbound+head,n);head+=n;
     if(head==tail)head=tail=0;return (ssize_t)n;
 }
 int esp_tls_get_bytes_avail(esp_tls_t *tls){
     (void)tls;
+    if(mode==FLOOD&&phase>=3)return 1;
     if(finish_allowed&&mode==STALL&&durable==produced&&spool_acked()==produced)finished=true;
     return (int)(tail-head)+(finished?1:0);
 }
@@ -56,6 +63,7 @@ int test_select(int n,fd_set *r,fd_set *w,fd_set *e,struct timeval *timeout){
     if(mode==SLOW&&clock_us>=next_slow_us){durable++;persisted[durable]=true;ack();next_slow_us+=5000000;
         if(durable==slow_limit)finished=true;}
     assert(clock_us-start_us<200000000); // missing watchdog must fail, not hang
+    if(mode==FLOOD&&phase>=3)return 1;
     return tail>head||finished;
 }
 esp_tls_t *esp_tls_init(void){phase=0;head=tail=0;finished=false;return &transport;}
@@ -86,7 +94,13 @@ int main(void){
     for(int i=0;i<20;i++)produce();slow_limit=produced;
     before=connections;assert(serve()==0);
     assert(connections==before+1&&durable==produced&&clock_us-start_us>=100000000);
+    // A saturating peer (endless unchanged ACKs/PONGs, one record outstanding
+    // and never persisted) cannot starve the watchdog: the bounded drain yields
+    // to it every DRAIN_BATCH frames and the stall still fires on time.
+    mode=FLOOD;start_us=clock_us;produce();before=connections;
+    assert(serve()==0);
+    assert(connections==before+1&&clock_us-start_us>=ACK_STALL_US&&clock_us-start_us<ACK_STALL_US+2000000);
     assert(hellos==connections);
-    puts("ACK-stall replay, healthy heartbeats, repeated outages, idle and slow ACK progress PASS");
+    puts("ACK-stall replay, healthy heartbeats, repeated outages, idle, slow and flooding ACK progress PASS");
     return 0;
 }

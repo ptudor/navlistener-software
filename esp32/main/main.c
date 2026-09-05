@@ -133,7 +133,13 @@ static void config_reset_task(void *arg)
 
 static void config_reset_start(void)
 {
-    if (xTaskCreate(config_reset_task, "cfg_reset", 3072, NULL, 5, NULL) != pdPASS)
+    // 4 KiB, not 3: since regression fix netcfg_reset_provisioning() encodes and
+    // CRCs the 348-byte record on the stack (replace + read_record frames
+    // ~1.4 KiB measured with -fstack-usage) on top of the ESP-IDF NVS write
+    // path — and this is the recovery gesture an operator reaches for when
+    // the unit is already misbehaving, so it must not be the task that
+    // overflows.
+    if (xTaskCreate(config_reset_task, "cfg_reset", 4096, NULL, 5, NULL) != pdPASS)
         ESP_LOGE(TAG, "failed to create configuration-reset task");
 }
 #else
