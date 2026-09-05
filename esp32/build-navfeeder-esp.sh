@@ -97,6 +97,7 @@ if [ -n "$drift" ]; then
 fi
 
 idf.py build
+python tools/build_provenance.py
 
 if [ "$1" = "flash" ]; then
     PORT="${PORT:-$(ls /dev/cu.usbmodem* 2>/dev/null | head -1)}"

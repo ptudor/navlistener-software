@@ -181,3 +181,31 @@ token → software mTLS cert → **ATECC608 cert** (the P-hw high-assurance clas
 - **Clean-room** — author from the u-blox ICD and our own Apache-2.0 code, using the cited interface specifications.
 
 The pusher reconnects when sent records remain outstanding without durable ACK advancement for 30 seconds. Successful writes and PONGs do not reset this monotonic timer; advancing ACKs and an empty outstanding set do. Reconnect preserves the boot session and replays from the last durable watermark, allowing recovery after the collector discarded a record during a historian outage. This does not extend the RAM-only durability envelope or prevent overflow at arbitrary input rates.
+
+### Hardware-discovery dependency and release evidence
+
+Normal builds pin `esp_hardware_discovery` to commit
+`5d7e533734c35a6256c1f70a4875ff4cd495b392`, with the IDF 5.5.4/ESP32-C6
+resolution committed in `dependencies.lock`. Updating the pin is a deliberate
+source change: review upstream layout changes and run the component's
+`test/host` read/write, page-boundary, interrupted-write, timestamp/footer,
+factory-ID protection and example checks, plus this project's manifest-policy
+host tests. Existing EEPROM layouts and separate NVS/factory identity storage
+must remain compatible; a format migration needs its own explicit plan.
+
+`build-navfeeder-esp.sh` writes `build/firmware-provenance.json` after a successful
+build. Archive it and `dependencies.lock` with released binaries. It records the
+actual CMake-selected component, immutable revision/content hash, IDF revision,
+project revision/dirty state, target, lock hash and firmware hash; modified
+managed component contents fail the provenance check. With direct `idf.py build`,
+run `python tools/build_provenance.py` in the IDF environment before archiving.
+Clean component host-test artifacts after testing (`make -C
+managed_components/esp_hardware_discovery/test/host clean`) before building.
+
+The existing `ESP_HARDWARE_DISCOVERY_PATH=/path/to/esp_hardware_discovery`
+development override remains supported. Metadata explicitly marks the actual
+local override, records its content hash/path and available Git revision, and
+prints a development-build warning. Such builds are excluded from claims of
+reproducibility from this repository's committed dependency resolution, even if
+the local checkout happens to have the same HEAD. A matching dependency pin alone
+is not a claim of byte-identical firmware across toolchains/configurations.

@@ -1,0 +1,28 @@
+dependencies:
+  esp_hardware_discovery:
+    component_hash: 16f8e1a08e27a3cf2ec56a71a626b19452197a614a3f184ae66577ab818d32af
+    dependencies:
+    - name: idf
+      version: '>=5.2.0'
+    source:
+      git: https://github.com/ptudor/esp32-hardware-discovery.git
+      path: .
+      type: git
+    targets:
+    - esp32
+    - esp32s2
+    - esp32s3
+    - esp32c2
+    - esp32c3
+    - esp32c6
+    - esp32h2
+    version: 5d7e533734c35a6256c1f70a4875ff4cd495b392
+  idf:
+    source:
+      type: idf
+    version: 5.5.4
+direct_dependencies:
+- esp_hardware_discovery
+manifest_hash: 018e5eb98066a21d1b035ed88b4f403c4ac905ffc511e2d2513da09c8bd90df8
+target: esp32c6
+version: 2.0.0
