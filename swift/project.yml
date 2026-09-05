@@ -92,11 +92,30 @@ targets:
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Integrity Station.app/Contents/MacOS/Integrity Station"
         BUNDLE_LOADER: "$(TEST_HOST)"
 
+  IntegrityStationLocalizationIOSTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: IntegrityStationTests/LocalizationTests.swift
+      - path: IntegrityStationTests/LocalizationExpected.json
+    dependencies:
+      - target: IntegrityStation
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.intsat.station.localization-tests
+        GENERATE_INFOPLIST_FILE: true
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Integrity Station.app/Integrity Station"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
 schemes:
   IntegrityStation:
     build:
       targets:
         IntegrityStation: all
+        IntegrityStationLocalizationIOSTests: [test]
+    test:
+      targets:
+        - IntegrityStationLocalizationIOSTests
 
   IntegrityStationMac:
     build:
