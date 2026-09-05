@@ -4,6 +4,15 @@ struct ObserversPayload: Codable, Sendable {
     let schema: String?
     let audience: String?
     let observers: [Observer]?
+
+    func validate() throws {
+        var ids = Set<String>()
+        for observer in observers ?? [] {
+            guard !observer.id.isEmpty, ids.insert(observer.id).inserted else {
+                throw FeedError.invalidResponse
+            }
+        }
+    }
 }
 
 /// One observers-feed row (docs/OUTPUT.md §1.3). Receiver metadata, exact

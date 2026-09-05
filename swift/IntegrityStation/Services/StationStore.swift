@@ -156,7 +156,7 @@ final class StationStore {
                 serverTime: envelope.time,
                 payload: payload
             )
-            apply(snapshot, cached: false)
+            try apply(snapshot, cached: false)
             try? await cache.saveObservers(snapshot, for: session.cacheKey, access: access)
             guard isCurrent(session, generation: generation) else { return }
             errorMessage = nil
@@ -204,14 +204,15 @@ final class StationStore {
                snapshot.payload.schema == "2.0",
                snapshot.payload.audience == session.audience.rawValue,
                isCurrent(session, generation: generation) {
-                apply(snapshot, cached: true)
+                try apply(snapshot, cached: true)
             }
         } catch {
             // A corrupt cache is not data. The first live fetch will replace it.
         }
     }
 
-    func apply(_ snapshot: ObserversSnapshot, cached: Bool, now: Date = Date()) {
+    func apply(_ snapshot: ObserversSnapshot, cached: Bool, now: Date = Date()) throws {
+        try snapshot.payload.validate()
         observers = snapshot.payload.observers ?? []
         lastUpdated = snapshot.receivedAt
         isShowingCachedSnapshot = cached

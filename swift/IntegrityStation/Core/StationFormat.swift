@@ -5,7 +5,7 @@ enum StationFormat {
 
     static func uptime(seconds value: TimeInterval?) -> String {
         guard let value, value.isFinite, value >= 0 else { return unknown }
-        let seconds = Int(value.rounded(.down))
+        guard let seconds = Int(exactly: value.rounded(.down)) else { return unknown }
         let days = seconds / 86_400
         let hours = seconds % 86_400 / 3_600
         let minutes = seconds % 3_600 / 60
@@ -22,7 +22,8 @@ enum StationFormat {
         if value < 60 { return "\(Int(value))s ago" }
         if value < 3_600 { return "\(Int(value / 60))m ago" }
         if value < 86_400 { return "\(Int(value / 3_600))h ago" }
-        return "\(Int(value / 86_400))d ago"
+        guard let days = Int(exactly: (value / 86_400).rounded(.down)) else { return unknown }
+        return "\(days)d ago"
     }
 
     static func clockDrift(nanoseconds value: Double?) -> String {

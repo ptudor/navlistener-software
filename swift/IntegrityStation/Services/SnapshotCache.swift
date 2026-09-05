@@ -54,6 +54,7 @@ actor SnapshotCache {
 
     func saveObservers(_ snapshot: ObserversSnapshot, for key: AudienceCacheKey, access: CacheAccess? = nil) async throws {
         guard snapshot.scope == key else { throw CocoaError(.fileWriteInvalidFileName) }
+        try snapshot.payload.validate()
         await beforeObserverSave?()
         let write = {
             var document = try self.loadDocument(for: key) ?? AudienceCacheDocument(scope: key)
@@ -118,6 +119,7 @@ actor SnapshotCache {
         guard fileManager.fileExists(atPath: url.path) else { return nil }
         let document = try decoder.decode(AudienceCacheDocument.self, from: Data(contentsOf: url))
         guard document.scope == key else { throw CocoaError(.fileReadCorruptFile) }
+        try document.observers?.payload.validate()
         return document
     }
 

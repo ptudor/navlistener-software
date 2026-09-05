@@ -9,6 +9,8 @@ private actor StoreNetworkState {
     var publicCursors: [String] = []
     var conditionValue: String?
     var conditionRequests = 0
+    var observerRows: String?
+    func setObserverRows(_ rows: String?) { observerRows = rows }
     func setCondition(_ value: String) { conditionValue = value }
 
     func revoke() { revoked = true }
@@ -22,6 +24,9 @@ private actor StoreNetworkState {
                 : #"{"ok":true,"data":{"schema":"2.0","revision":"public-v1","audiences":["public"]}}"#).utf8)
         }
         let audience = request.value(forHTTPHeaderField: "X-GNSS-Audience") ?? "public"
+        if request.url!.path.hasSuffix("/observers"), let observerRows {
+            return Data("{\"ok\":true,\"data\":{\"schema\":\"2.0\",\"audience\":\"\(audience)\",\"observers\":\(observerRows)}}".utf8)
+        }
         if request.url!.path.hasSuffix("/conditions") {
             conditionRequests += 1
             let entries = conditionValue.map { "[{\"id\":\($0 == "ok" ? 300 : 1),\"time\":\"2026-08-01T00:00:00Z\",\"sv\":\"public-station\",\"type\":\"jamming_detected\",\"new_value\":\"\($0)\",\"severity\":1}]" } ?? "[]"
@@ -70,6 +75,29 @@ struct StoreRaceTests {
         return StationStore(feedClient: FeedClient(session: networkSession), eventStream: EventStream(session: networkSession), cache: cache)
     }
     private func settle() async throws { try await Task.sleep(for: .milliseconds(60)) }
+
+    @Test func duplicateNetworkSnapshotPreservesValidDisplayAndCache() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "DuplicateNetwork.\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory); StoreConnectionProtocol.handler = nil }
+        let cache = SnapshotCache(directory: directory)
+        let network = StoreNetworkState()
+        let session = try session(privateAudience: false)
+        let store = store(cache: cache, network: network)
+        store.start(session: session, stationIDs: ["public-station"])
+        for _ in 0..<100 where store.observers.isEmpty || store.isRefreshing { try await Task.sleep(for: .milliseconds(10)) }
+        for rows in [#"[{"id":"duplicate","last_seen_s":1},{"id":"duplicate","last_seen_s":2}]"#, #"[{"id":"duplicate"},{"id":"duplicate"}]"#] {
+            await network.setObserverRows(rows)
+            await store.refresh()
+            #expect(store.errorMessage != nil)
+            #expect(store.observers.map(\.id) == ["public-station"])
+            #expect(store.currentLastSeenAge(for: "duplicate") == nil)
+            #expect(try await cache.loadObservers(for: session.cacheKey)?.payload.observers?.map(\.id) == ["public-station"])
+        }
+        await network.setObserverRows(nil)
+        await store.refresh()
+        #expect(store.errorMessage == nil)
+        await store.disconnect(clearCachedScope: true)
+    }
 
     @Test func restartingAndReplayGapReconcileOldConditions() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: "ConditionRestart.\(UUID())")
