@@ -68,9 +68,13 @@ const (
 	discoTrustAge = 4 * time.Hour // ephemerides older than this aren't trusted for disco
 
 	// glonassFrameWindow bounds how far apart strings 1/2/3's reception times may be
-	// and still be treated as one coherent frame. Real broadcast spacing is
-	// ~2s per string (~4s end to end); this is generous margin over normal jitter
-	// while comfortably rejecting a stale string left over from ~30 minutes prior.
+	// and still be treated as one coherent frame, and  how
+	// far an odd almanac string may trail its even mate. GLO-ICD-5.1 §4.3.1: each
+	// string lasts 2 s, a frame is 15 strings / 30 s, and one satellite's almanac
+	// occupies two adjacent strings — so real spacing is ~2 s per string (~4 s for
+	// strings 1–3) and the next same-numbered string is 30 s away. 8 s is generous
+	// margin over normal jitter while comfortably rejecting a stale string left
+	// over from a previous frame.
 	glonassFrameWindow = 8 * time.Second
 
 	// propagateMaxEphAge (regression fix, the documented regression fix remainder; margin
@@ -309,16 +313,19 @@ type svState struct {
 	discoPendClk                           bool
 	discoPendTb                            float64
 	discoOldTau, discoOldGamma, discoOldTb float64
-	// Buffered first string of an almanac pair (6/8/10/12/14), awaiting its second
-	// (7/9/11/13/15) from the same transmitting satellite.
-	gloAlmFirst    []uint32
-	gloAlmFirstNum int
-	// gloAlmFirstAt is the reception time of the buffered even string : the odd
-	// string must arrive within one frame window, or the pair is a cross-frame chimera
-	// (each frame's strings 6/7 describe a DIFFERENT subject satellite) and must be dropped.
-	gloAlmFirstAt               time.Time
-	gloAlmSource, gloAlmSession string
-	gloAlmSig                   int
+	// gloAlmPending buffers the first string of an almanac pair (6/8/10/12/14),
+	// awaiting its second (7/9/11/13/15) from the same transmitting satellite —
+	// keyed per RELAY (receiver source, session, signal), not one slot per SV.
+	// regression fix pairs an odd string only with an even string from the same relay
+	// (a foreign relay's feeder stamps cannot establish broadcast adjacency), and
+	// this SV state is shared by every station hearing the SV and by L1OF+L2OF of
+	// one dual-band receiver (regression fix keys GLONASS at Sig:0). With a single slot the
+	// natural interleaving A6,B6,A7,B7 let B6 overwrite A6, A7 mismatch and clear
+	// the slot, and B7 find nothing — the almanac never paired on any multi-station
+	// deployment (the astra-6 verification pass reproduced exactly that). Each
+	// relay now pairs its own halves; a relay's odd string never disturbs another
+	// relay's buffered even string. Bounded by gloAlmPendingMax/gloAlmPendingStale.
+	gloAlmPending map[gloAlmRelay]gloAlmPendingPair
 	// gloFrameBaseSlot is the subject slot of the current frame's first almanac pair
 	// (strings 6/7), used to detect frame 5. Frame 5 carries almanac only for slots
 	// 21–24 (strings 6–13); its strings 14/15 are B1/B2/KP UT1/leap data, NOT almanac, so a
@@ -1695,7 +1702,7 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 	//   gloEphAt, discoAt, almanac-slot recency): elapsed time against this
 	//   host's own clock, immune to feeder skew and spool-replay rewinds.
 	//   f.Recv (feeder stamp) — the regression fix/regression fix frame-coherence windows
-	//   (gloS1At..gloS4At, gloAlmFirstAt): those guard BROADCAST adjacency of
+	//   (gloS1At..gloS4At, gloAlmPending.at): those guard BROADCAST adjacency of
 	//   tag-less strings, and only the feeder's stamp preserves the on-air
 	//   spacing. A spool replay (or a feeder draining a backlog burst) delivers
 	//   strings milliseconds apart on the collector clock, so a local-clock
@@ -1759,10 +1766,10 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		}
 		return
 	case str.Number >= 6 && str.Number <= 14 && str.Number%2 == 0: // first of an almanac pair
-		st.gloAlmFirst = append(st.gloAlmFirst[:0], f.Words...)
-		st.gloAlmFirstNum = str.Number
-		st.gloAlmSource, st.gloAlmSession, st.gloAlmSig = f.Source, f.Session, f.SigID
-		st.gloAlmFirstAt = f.Recv // feeder stamp: broadcast adjacency (regression fix, above)
+		// Buffered per relay (see svState.gloAlmPending); f.Recv is the feeder
+		// stamp for broadcast adjacency (regression fix, above), recv the collector
+		// clock for aging out a relay whose mate never arrives.
+		st.bufferGloAlmFirst(gloAlmRelay{f.Source, f.Session, f.SigID}, str.Number, f.Words, f.Recv, recv)
 		if str.Number == 6 {
 			st.gloFrameBaseSlot = 0 // new frame's first almanac; base slot set on pairing
 		}
@@ -1773,26 +1780,33 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		// frame's odd string — but strings 6/7 of different frames describe DIFFERENT
 		// subject satellites, so the merge is a chimera almanac stored under the wrong slot.
 		// Require ordered broadcast receipts from the same receiver session
-		// and signal. Replay queue time cannot establish adjacency; negative
-		// feeder-time deltas are not reordered or paired.
-		delta := f.Recv.Sub(st.gloAlmFirstAt)
-		if st.gloAlmFirst != nil && str.Number == st.gloAlmFirstNum+1 &&
-			f.Source == st.gloAlmSource && f.Session == st.gloAlmSession && f.SigID == st.gloAlmSig &&
-			delta >= 0 && delta <= glonassFrameWindow {
+		// and signal : only this relay's own buffered even string is
+		// a candidate, so another station's (or the other band's) pending pair
+		// is left untouched. Replay queue time cannot establish adjacency;
+		// negative feeder-time deltas are not reordered or paired. The entry is
+		// consumed either way — a mismatched odd string from the SAME relay
+		// means its even mate is stale (a lost string), exactly as before.
+		relay := gloAlmRelay{f.Source, f.Session, f.SigID}
+		first, pending := st.gloAlmPending[relay]
+		if !pending {
+			return
+		}
+		delete(st.gloAlmPending, relay)
+		delta := f.Recv.Sub(first.at)
+		if str.Number == first.number+1 && delta >= 0 && delta <= glonassFrameWindow {
 			// in frame 5 (base slot ≥ 21), strings 14/15 carry B1/B2/KP UT1/leap
 			// data, not almanac — decoding them as an almanac pair stores garbage (a stable
 			// misread of B1's bits) under a wrong slot, flip-flopping that slot every
 			// superframe. Skip the pair there; frames 1–4 (base 1..16) pair normally, and an
 			// unknown base (string 6 lost) conservatively still pairs (the slot-range guard
 			// in applyGloAlmanac remains the backstop).
-			if !(st.gloAlmFirstNum == 14 && st.gloFrameBaseSlot >= 21) {
-				slot := s.applyGloAlmanac(st.gloAlmFirst, f.Words, recv)
-				if st.gloAlmFirstNum == 6 && slot > 0 {
+			if !(first.number == 14 && st.gloFrameBaseSlot >= 21) {
+				slot := s.applyGloAlmanac(first.words, f.Words, recv)
+				if first.number == 6 && slot > 0 {
 					st.gloFrameBaseSlot = slot
 				}
 			}
 		}
-		st.gloAlmFirst = nil
 		return
 	default:
 		return
@@ -1992,6 +2006,66 @@ func (s *Store) setGloNA(na int) {
 	s.gloAlmMu.Lock()
 	s.gloNA = na
 	s.gloAlmMu.Unlock()
+}
+
+// gloAlmRelay identifies one receiver stream whose feeder stamps are mutually
+// comparable: the regression fix broadcast-adjacency windows only hold within one
+// (source, session, signal) — a different station, a rebooted feeder, or the
+// other band of one receiver is a separate relay for pairing purposes.
+type gloAlmRelay struct {
+	source, session string
+	sig             int
+}
+
+// gloAlmPendingPair is a buffered even almanac string awaiting its odd mate.
+type gloAlmPendingPair struct {
+	words  []uint32
+	number int
+	// at is the feeder stamp (broadcast adjacency, regression fix/regression fix); local is the
+	// collector clock, used only to age out relays that never sent the mate.
+	at, local time.Time
+}
+
+// gloAlmPendingMax caps buffered even strings per SV so a feeder that mints a
+// new session every reconnect (or an adversarial one) cannot grow the map
+// without bound: a real deployment has a handful of stations × ≤2 bands hearing
+// one SV, so 16 relays is generous; beyond it the oldest (collector clock)
+// entry is evicted, which only costs that relay one almanac pair. Engineering
+// bound, not a spec value.
+const gloAlmPendingMax = 16
+
+// gloAlmPendingStale ages out a buffered even string whose odd mate never came
+// on the COLLECTOR clock: on air the mate follows 2 s later (GLO-ICD-5.1 §4.3.1)
+// and even a spool-replay burst delivers both within milliseconds, so a minute
+// of local silence means the mate was lost. Deliberately far wider than the
+// feeder-time glonassFrameWindow so a network stall between the two strings
+// (feeder stamps still adjacent) does not lose the pair. Engineering bound.
+const gloAlmPendingStale = time.Minute
+
+// bufferGloAlmFirst stores relay's even almanac string, evicting stale relays
+// and, at capacity, the oldest one. Caller holds the SV's shard lock.
+func (st *svState) bufferGloAlmFirst(relay gloAlmRelay, number int, words []uint32, at, local time.Time) {
+	if st.gloAlmPending == nil {
+		st.gloAlmPending = make(map[gloAlmRelay]gloAlmPendingPair, 2)
+	}
+	for k, p := range st.gloAlmPending {
+		if k != relay && local.Sub(p.local) > gloAlmPendingStale {
+			delete(st.gloAlmPending, k)
+		}
+	}
+	if _, present := st.gloAlmPending[relay]; !present && len(st.gloAlmPending) >= gloAlmPendingMax {
+		var oldest gloAlmRelay
+		var oldestAt time.Time
+		first := true
+		for k, p := range st.gloAlmPending {
+			if first || p.local.Before(oldestAt) {
+				oldest, oldestAt, first = k, p.local, false
+			}
+		}
+		delete(st.gloAlmPending, oldest)
+	}
+	prev := st.gloAlmPending[relay]
+	st.gloAlmPending[relay] = gloAlmPendingPair{words: append(prev.words[:0], words...), number: number, at: at, local: local}
 }
 
 // gloAlmSlot is one GLONASS almanac subject slot's decoded entry plus the wall-clock

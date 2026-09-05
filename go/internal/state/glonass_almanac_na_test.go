@@ -228,3 +228,104 @@ func TestGloAlmanacOrderedSourceCoherence(t *testing.T) {
 		}
 	}
 }
+
+// TestGloAlmanacInterleavedRelaysPairIndependently is the astra-6 verification
+// regression for source-coherence gate: N stations (and L1OF+L2OF of
+// one dual-band receiver, regression fix) relay the same broadcast into ONE shared SV
+// state, and their strings interleave on the wire. Each relay must pair its
+// own even/odd halves without disturbing another relay's buffered even string.
+func TestGloAlmanacInterleavedRelaysPairIndependently(t *testing.T) {
+	type relay struct {
+		src, session string
+		sig          int
+	}
+	a := relay{"a", "boot", 0}
+	b := relay{"b", "boot", 0}
+	l2 := relay{"a", "boot", 2}
+	for _, tc := range []struct {
+		name  string
+		order []struct {
+			num int
+			r   relay
+			d   time.Duration
+		}
+		want bool
+	}{
+		{"two stations A6 B6 A7 B7", []struct {
+			num int
+			r   relay
+			d   time.Duration
+		}{{6, a, 0}, {6, b, 5 * time.Millisecond}, {7, a, 2 * time.Second}, {7, b, 2*time.Second + 5*time.Millisecond}}, true},
+		{"one station L1OF+L2OF interleaved", []struct {
+			num int
+			r   relay
+			d   time.Duration
+		}{{6, a, 0}, {6, l2, time.Millisecond}, {7, a, 2 * time.Second}, {7, l2, 2*time.Second + time.Millisecond}}, true},
+		{"relay A odd lost, relay B still pairs", []struct {
+			num int
+			r   relay
+			d   time.Duration
+		}{{6, a, 0}, {6, b, time.Millisecond}, {7, b, 2 * time.Second}}, true},
+		{"relay B odd lost, relay A still pairs", []struct {
+			num int
+			r   relay
+			d   time.Duration
+		}{{6, a, 0}, {6, b, time.Millisecond}, {7, a, 2 * time.Second}}, true},
+		{"only a foreign odd string never pairs", []struct {
+			num int
+			r   relay
+			d   time.Duration
+		}{{6, a, 0}, {7, b, 2 * time.Second}}, false},
+		{"same relay stale even is consumed by its own late odd", []struct {
+			num int
+			r   relay
+			d   time.Duration
+		}{{6, a, 0}, {7, a, 9 * time.Second}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(1)
+			s.setGloNA(615)
+			at := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+			for _, step := range tc.order {
+				var fill func([]byte)
+				if step.num == 6 {
+					fill = func(b []byte) { setAbsBits(b, 8, 5, 7) }
+				}
+				s.Apply(&ingest.RawFrame{GnssID: gnss.GLONASS, SvID: 12, Source: step.r.src, Session: step.r.session, SigID: step.r.sig, Recv: at.Add(step.d), Words: gloWords(step.num, fill)})
+			}
+			if _, got := s.gloAlmanac[7]; got != tc.want {
+				t.Fatalf("slot 7 stored=%v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestGloAlmanacPendingIsBounded: a feeder minting a fresh session per reconnect
+// (or an adversary) cannot grow the per-relay even-string buffer without bound,
+// and a relay whose mate never arrives is aged out on the collector clock.
+func TestGloAlmanacPendingIsBounded(t *testing.T) {
+	s := New(1)
+	s.setGloNA(615)
+	at := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	even := func(session string, local time.Time) *ingest.RawFrame {
+		return &ingest.RawFrame{GnssID: gnss.GLONASS, SvID: 12, Source: "a", Session: session, Recv: at, RecvLocal: local, Words: gloWords(6, func(b []byte) { setAbsBits(b, 8, 5, 7) })}
+	}
+	for i := 0; i < 5*gloAlmPendingMax; i++ {
+		s.Apply(even(fmt.Sprint("boot-", i), at.Add(time.Duration(i)*time.Millisecond)))
+	}
+	st := s.shardFor(Key{G: gnss.GLONASS, Sv: 12}).m[Key{G: gnss.GLONASS, Sv: 12}]
+	if n := len(st.gloAlmPending); n != gloAlmPendingMax {
+		t.Fatalf("pending relays = %d, want cap %d", n, gloAlmPendingMax)
+	}
+	// The newest relay survived eviction and can still pair.
+	last := fmt.Sprint("boot-", 5*gloAlmPendingMax-1)
+	s.Apply(&ingest.RawFrame{GnssID: gnss.GLONASS, SvID: 12, Source: "a", Session: last, Recv: at.Add(2 * time.Second), RecvLocal: at.Add(time.Second), Words: gloWords(7, nil)})
+	if _, ok := s.gloAlmanac[7]; !ok {
+		t.Fatal("newest relay could not pair after eviction of older relays")
+	}
+	// Idle relays age out on the collector clock once a fresh even string arrives.
+	s.Apply(even("fresh", at.Add(gloAlmPendingStale+time.Minute)))
+	if n := len(st.gloAlmPending); n != 1 {
+		t.Fatalf("stale relays not pruned: %d pending, want 1", n)
+	}
+}
