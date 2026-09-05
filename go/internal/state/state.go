@@ -712,6 +712,31 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 		s.applyGalileoINAV(f)
 	case f.GnssID == gnss.Galileo && (f.SigID == 3 || f.SigID == 4): // E5a F/NAV (regression fix; validated 2026-07-12 vs I/NAV — see applyGalileoFNAV)
 		s.applyGalileoFNAV(f)
+	case f.GnssID == gnss.Galileo && (f.SigID == 5 || f.SigID == 6):
+		// E5b-I/E5b-Q I/NAV (u-blox (2,5)/(2,6), CONSTELLATIONS.md §2.1) — CARRIED RAW,
+		// TRACKED DEFERRAL, not dispatched. The page LAYOUT is the E1-B one
+		// (GAL-OS-SIS-ICD-2.2 Table 38/40: the E5b-I and E1-B components carry the same
+		// 240-bit nominal pages and the same word set), so the 0x20 GalInav wire label
+		// is the correct re-decodable page label for raw history. What is NOT the same
+		// is everything a served E##@5 entry would have to say, and feeding these pages
+		// through applyGalileoINAV would misstate all of it:
+		//   - health/validity: an E5b entry must serve E5bSHS/E5bDVS, not the E1BSHS the
+		//     E1 path serves (Word 5, Table 46) — and DVS is itself an open served-health
+		//     contract;
+		//   - group delay: an E5b single-frequency user subtracts (f_E1/f_E5b)²·BGD(E1,E5b)
+		//     (§5.1.5 Eq. 19), not the raw BGD the E1 entry carries (Eq. 18);
+		//   - OSNMA: the 40-bit OSNMA field exists "on E1-B only" (§4.3.2.3); the E5b-I odd
+		//     page carries "Reserved 1" there, so the E1 fold would fabricate `osnma`.
+		// Dispatching to a separate @5 key with those semantics is a real decoder deliverable
+		// that also needs a live E5b capture to validate (the fleet's validated F9 is
+		// E5a-configured; an F9 tracks E5a or E5b, not both). Until then the honest state is
+		// "carried raw": no SV state, no capability (capability only after structural
+		// decode), counted under its own label so real E5b traffic is visible in /metrics
+		// instead of vanishing into the label-free "unsupported" bucket (the navic_deferred
+		// idiom, regression fix).
+		if !s.projection {
+			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "gal_e5b_deferred").Inc()
+		}
 	case f.GnssID == gnss.BeiDou && f.SigID == 0: // B1I D1 NAV
 		s.applyBeiDouD1(f)
 	case f.GnssID == gnss.BeiDou && f.SigID == 8: // B2a data component, B-CNAV2

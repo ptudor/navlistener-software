@@ -316,6 +316,12 @@ every SV event) and disambiguate the emitting signal with **`params.sigid`**; no
 parsing needed. Station/SBAS/cross-signal events use their own subject spaces (station id,
 `S<prn>`, physical name).
 
+**Galileo E5b (u-blox sigId 5/6) has no served rows**. E5b I/NAV pages are carried
+raw under the `GalInav` page-layout label and counted under the `gal_e5b_deferred` decode
+label; no `E##@5`/`E##@6` SV entries, station capabilities, or events exist until the E5b
+dispatch ships (it needs E5bSHS/E5bDVS health from I/NAV Word 5 and the E5b single-frequency
+group-delay scaling of OS-SIS-ICD §5.1.5 Eq. 19, and a live E5b capture to validate against).
+
 ---
 
 ## 4. Persistence contract

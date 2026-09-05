@@ -193,6 +193,11 @@ func (f *RawFrame) NavType() int {
 	case gnss.Galileo:
 		switch f.SigID {
 		case 0, 1, 5, 6:
+			// GalInav is the I/NAV page-LAYOUT label: E1-B and E5b-I carry the
+			// same 240-bit nominal pages (OS-SIS-ICD Table 38/40), so E5b raw
+			// history is re-decodable under it. Dispatch is on (gnssId, sigId);
+			// E5b (5/6) is a tracked deferral there (state.go, regression fix), not a
+			// served signal.
 			return 0x20 // GalInav
 		case 3, 4:
 			return 0x21 // GalFnav

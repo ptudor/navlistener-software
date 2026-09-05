@@ -51,7 +51,7 @@ Decoder status: **★ core** (v1, must ship) · **▲ extended** (modern civil s
 | Constellation | gnssId | Letter | Nav messages we decode | Signals / freqs | Source ICD (doc # / edition) | Status |
 |---|---|---|---|---|---|---|
 | **GPS** | 0 | G | L1 C/A **LNAV** (subframes 1–5); L2C/L5 **CNAV** (msg 10/11/30–37); L1C **CNAV-2** | L1 1575.42, L2 1227.60, L5 1176.45 MHz | IS-GPS-200 (Rev N, 2022); IS-GPS-705 (L5, Rev J); IS-GPS-800 (L1C, Rev J) | ★ LNAV; ▲ CNAV/CNAV-2 |
-| **Galileo** | 2 | E | E1-B **I/NAV** (word types 0–10, 16 reduced-CED, 17–20 FEC2, 63 dummy); E5a **F/NAV**; E5b **I/NAV**; E6-B **C/NAV** | E1 1575.42, E5a 1176.45, E5b 1207.14, E6 1278.75 MHz | Galileo OS SIS ICD Issue 2.1 (Nov 2023); Galileo HAS SIS ICD 1.0 (E6) | ★ I/NAV, F/NAV; ▲ E6 C/NAV |
+| **Galileo** | 2 | E | E1-B **I/NAV** (word types 0–10, 16 reduced-CED, 17–20 FEC2, 63 dummy); E5a **F/NAV**; E5b I/NAV (carried raw only); E6-B **C/NAV** | E1 1575.42, E5a 1176.45, E5b 1207.14, E6 1278.75 MHz | Galileo OS SIS ICD Issue 2.1 (Nov 2023); Galileo HAS SIS ICD 1.0 (E6) | ★ E1-B I/NAV, E5a F/NAV; ◇ E5b I/NAV (dispatch deferred, `gal_e5b_deferred`, regression fix); ▲ E6 C/NAV |
 | **BeiDou** | 3 | C | **D1** NAV (MEO/IGSO, subframes 1–5); **D2** NAV (GEO); **B-CNAV1** (B1C); **B-CNAV2** (B2a); **B-CNAV3** (B2b) | B1I 1561.098, B1C 1575.42, B2a 1176.45, B2b 1207.14, B3I 1268.52 MHz | BDS-SIS-ICD-B1I 3.0 (2019); -B1C 1.0 (2017); -B2a 1.0 (2017); -B2b 1.0 (2020) | D1 (B1I) + B-CNAV2 (B2a) shipped; **D2/B-CNAV1/B-CNAV3 planned** |
 | **GLONASS** | 6 | R | L1OF/L2OF **strings 1–15** (eph strings 1–4, time string 5, almanac 6–15) | L1 ~1602+k·0.5625, L2 ~1246+k·0.4375 MHz (FDMA, k=−7..+6); L3OC 1202.025 (CDMA, future) | GLONASS ICD Ed. 5.1 (2008, FDMA); GLONASS ICD CDMA Gen. Desc. Ed. 1.0 (L3OC) | ★ L1OF/L2OF; ◇ L3OC |
 | **QZSS** 🇯🇵 | 5 | J | L1 C/A **LNAV** (GPS-compatible); L2C/L5 **CNAV**; L1C **CNAV-2**; **L1S** (SLAS + DC Report); **L6** (L6D/L6E CLAS/MADOCA) | L1 1575.42, L2 1227.60, L5 1176.45, L1S 1575.42, L6 1278.75 MHz | IS-QZSS-PNT-005 (2023); IS-QZSS-L1S-005; IS-QZSS-L6-005 | LNAV/CNAV validation shipped; **CNAV-2/L1S/L6 planned** |
@@ -113,7 +113,7 @@ table):
 | 0 GPS | 6,7 | L5 I/Q | `GpsCnav` |
 | 2 Gal | 0,1 | E1 C/B | `GalInav` |
 | 2 Gal | 3,4 | E5a I/Q | `GalFnav` |
-| 2 Gal | 5,6 | E5b I/Q | `GalInav` |
+| 2 Gal | 5,6 | E5b I/Q | `GalInav` page-layout label only — **not dispatched**: carried raw, counted `gal_e5b_deferred`; no `E##@5`/`@6` state or capability is served |
 | 3 BDS | 0 | B1I D1 | `BdsD1` |
 | 3 BDS | 1,3 | B1I/B2I D2 | planned/unsupported (`BdsD2` reserved) |
 | 3 BDS | 2 | B2I D1 | planned/unsupported (needs capture-verified ID mapping) |
@@ -377,7 +377,7 @@ metadata: the collector dispatches decode on `(gnssId, sigId)`, so `0` still dec
 | 0x10 | `GpsLnav` | GPS L1 C/A LNAV | 300-bit subframe (10×30b) | UBX (0,0) / SBF 4017 |
 | 0x11 | `GpsCnav` | GPS L2C/L5 CNAV | 300-bit message | UBX (0,3/4/6/7) / SBF 4018,4019 |
 | 0x12 | `GpsCnav2` | GPS L1C CNAV-2 | subframe 2 (600b / 1200 symbols) + TOI + sf3 | SBF 4221 |
-| 0x20 | `GalInav` | Galileo E1-B / E5b I/NAV | 240-bit page (2×120b half-pages) | UBX (2,0/1/5/6) / SBF 4023 |
+| 0x20 | `GalInav` | Galileo E1-B / E5b I/NAV (same page layout; E5b pages are carried raw, central dispatch deferred — regression fix) | 240-bit page (2×120b half-pages) | UBX (2,0/1/5/6) / SBF 4023 |
 | 0x21 | `GalFnav` | Galileo E5a F/NAV | 244-bit page | UBX (2,3/4) / SBF 4022 |
 | 0x22 | `GalCnav` | Galileo E6-B C/NAV | 486-bit page | SBF 4024 |
 | 0x30 | `BdsD1` | BeiDou B1I D1 (MEO/IGSO) | 300-bit subframe | UBX (3,0) / SBF 4047 |

@@ -33,7 +33,7 @@ uint8_t gnf1_frame_type(unsigned gnss_id, unsigned sig_id)
         if (sig_id == 0) return 0x50;
         if (sig_id == 4 || sig_id == 5 || sig_id == 8 || sig_id == 9) return 0x51;
         return 0;                                                    // L1S/L1C-CNAV2/L6 planned
-    case 2:                                                          // Galileo: E1-B/E5b I/NAV, E5a F/NAV
+    case 2:      // Galileo: 0x20 = I/NAV page layout (E1-B; E5b-I same layout, collector dispatch deferred regression fix), E5a F/NAV
         if (sig_id == 0 || sig_id == 1 || sig_id == 5 || sig_id == 6) return 0x20;
         if (sig_id == 3 || sig_id == 4) return 0x21;
         return 0;

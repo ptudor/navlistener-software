@@ -962,7 +962,8 @@ static uint8_t frame_type(unsigned gnssId, unsigned sigId) {
 		if (sigId == 0) return 0x50;
 		if (sigId == 4 || sigId == 5 || sigId == 8 || sigId == 9) return 0x51;
 		return 0;
-	case 2:
+	case 2: /* Galileo: 0x20 labels the I/NAV page LAYOUT, which E1-B and E5b-I share;
+	         * the collector dispatches on (gnssId,sigId) and defers E5b  */
 		if (sigId == 0 || sigId == 1 || sigId == 5 || sigId == 6) return 0x20;
 		if (sigId == 3 || sigId == 4) return 0x21;
 		return 0;
