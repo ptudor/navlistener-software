@@ -15,11 +15,11 @@ struct EventStream: Sendable {
 
     /// Opens docs/OUTPUT.md §3's SSE stream. The caller persists and supplies
     /// the audience-scoped Last-Event-ID cursor on reconnect.
-    func updates(session readSession: ReadSession, lastEventID: String?) throws -> AsyncThrowingStream<EventStreamUpdate, Error> {
+    func updates(session readSession: ReadSession, lastEventID: String?, onFailure: @escaping @Sendable () async -> Void = {}) throws -> AsyncThrowingStream<EventStreamUpdate, Error> {
         let url = try CollectorEndpoint.url(baseURL: readSession.baseURL, path: "gnss/events")
         let session = session
 
-        return AsyncThrowingStream { continuation in
+        return AsyncThrowingStream(bufferingPolicy: .bufferingOldest(NetworkLimits.pendingEvents)) { continuation in
             let task = Task {
                 do {
                     var request = URLRequest(url: url)
@@ -36,9 +36,15 @@ struct EventStream: Sendable {
                     }
 
                     let (bytes, response) = try await session.bytes(for: request, delegate: CredentialRedirectGuard(request: request))
+                    defer { bytes.task.cancel() }
                     guard let http = response as? HTTPURLResponse else { throw FeedError.invalidResponse }
                     guard (200...299).contains(http.statusCode) else {
-                        throw FeedClient.responseError(status: http.statusCode)
+                        let data: Data
+                        do { data = try await NetworkLimits.body(bytes, maximum: NetworkLimits.errorBytes) }
+                        catch FeedError.inputLimit where http.statusCode == 401 || http.statusCode == 403 {
+                            throw FeedClient.responseError(status: http.statusCode)
+                        }
+                        throw FeedClient.responseError(status: http.statusCode, data: data)
                     }
 
                     var accumulator = SSEAccumulator()
@@ -47,37 +53,51 @@ struct EventStream: Sendable {
                     for try await byte in bytes {
                         try Task.checkCancellation()
                         guard byte == 0x0A else {
+                            guard line.count < NetworkLimits.lineBytes else { throw FeedError.inputLimit }
                             line.append(byte)
                             continue
                         }
                         let text = String(decoding: line, as: UTF8.self)
                         line.removeAll(keepingCapacity: true)
-                        guard let frame = accumulator.consume(text) else { continue }
+                        guard let frame = try accumulator.consume(text) else { continue }
 
                         switch frame.event {
                         case "gnss":
                             if let event = Self.decodeEvent(frame.data, decoder: decoder) {
-                                continuation.yield(.event(event, cursor: frame.id))
+                                try Self.deliver(.event(event, cursor: frame.id), to: continuation)
                             }
                         case "resolved":
                             if let event = Self.decodeEvent(frame.data, decoder: decoder) {
-                                continuation.yield(.resolved(event, cursor: frame.id))
+                                try Self.deliver(.resolved(event, cursor: frame.id), to: continuation)
                             }
                         case "status":
                             let status = (try? decoder.decode(StreamStatus.self, from: Data(frame.data.utf8)))?.status
-                            continuation.yield(.status(status ?? frame.data))
+                            try Self.deliver(.status(status ?? frame.data), to: continuation)
                         default:
                             continue
                         }
                     }
+                    await onFailure()
                     continuation.finish(throwing: FeedError.streamEnded)
                 } catch is CancellationError {
                     continuation.finish()
                 } catch {
+                    await onFailure()
                     continuation.finish(throwing: error)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    // Overflow terminates transport and surfaces an error after the bounded
+    // queue drains. The store marks conditions unknown and reconciles on retry.
+    static func deliver(_ update: EventStreamUpdate, to continuation: AsyncThrowingStream<EventStreamUpdate, Error>.Continuation) throws {
+        switch continuation.yield(update) {
+        case .enqueued: return
+        case .dropped: throw FeedError.inputLimit
+        case .terminated: throw CancellationError()
+        @unknown default: throw FeedError.inputLimit
         }
     }
 

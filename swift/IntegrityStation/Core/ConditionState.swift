@@ -15,17 +15,21 @@ struct ConditionState {
 
     mutating func invalidate() { isKnown = false }
 
-    mutating func apply(_ event: GNSSAPIEvent, resolved: Bool = false) {
+    mutating func apply(_ event: GNSSAPIEvent, resolved: Bool = false) throws {
         guard let key = event.conditionKey, let id = event.id, id > floor,
               id > (latest[key]?.id ?? 0),
               resolved || event.isActiveStationCondition != nil else { return }
+        guard latest[key] != nil || latest.count < NetworkLimits.conditions else {
+            isKnown = false
+            throw FeedError.inputLimit
+        }
         latest[key] = Transition(id: id, event: event.isActiveStationCondition == true && !resolved ? event : nil)
     }
 
     // Returns false after an epoch change: discard every prior-policy record,
     // then take a second snapshot while admitting only fresh live transitions.
     mutating func install(_ snapshot: ConditionsPayload) throws -> Bool {
-        guard snapshot.complete, snapshot.cursor >= 0, snapshot.events.count <= 10_000 else {
+        guard snapshot.complete, snapshot.cursor >= 0, snapshot.events.count <= NetworkLimits.conditions else {
             throw FeedError.invalidResponse
         }
         var replacement: [String: Transition] = [:]
@@ -43,6 +47,10 @@ struct ConditionState {
             for (key, transition) in latest where transition.id > snapshot.cursor {
                 replacement[key] = transition
             }
+        }
+        guard replacement.count <= NetworkLimits.conditions else {
+            isKnown = false
+            throw FeedError.inputLimit
         }
         latest = replacement
         floor = snapshot.cursor

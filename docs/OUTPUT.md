@@ -520,3 +520,15 @@ Clients must reconcile rather than infer current conditions from the recent tail
 Integrity Station reconciles on launch, polling, reconnect, and replay-gap status;
 a recent history page supplies the history display only, never proof of complete
 current state. A known-offline station can still display offline during reconciliation.
+
+Integrity Station bounds HTTP JSON responses at 32 MiB and error bodies at 64 KiB,
+counting received bytes incrementally even when Content-Length is absent. It
+bounds SSE lines at 64 KiB, whole frames at 256 KiB, pending delivery at 64 events,
+and condition/tombstone state at 10,000 entries. Exceeding a bound cancels the
+request with an explicit error. A stalled cursor write cannot hide an overflow:
+the producer immediately marks conditions unknown, then reconnect/reconciliation
+recovers the authoritative state. The pending queue may drain its bounded prefix,
+but cannot establish completeness itself. Auth denials remain denials even when
+their error body exceeds its limit. These limits cover application-retained input;
+platform networking buffers and decoded-object overhead are additional
+transport/runtime costs, not measurements of total process RSS.

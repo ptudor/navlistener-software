@@ -10,6 +10,7 @@ enum FeedError: Error, Equatable, LocalizedError, Sendable {
     case audienceLost
     case server(code: Int?, message: String)
     case missingData
+    case inputLimit
     case streamEnded
 
     var errorDescription: String? {
@@ -23,6 +24,7 @@ enum FeedError: Error, Equatable, LocalizedError, Sendable {
         case .audienceLost: String(localized: "error.audience_lost")
         case .server(_, let message): message
         case .missingData: String(localized: "error.missing_data")
+        case .inputLimit: String(localized: "error.input_limit")
         case .streamEnded: String(localized: "error.stream_ended")
         }
     }
@@ -106,11 +108,20 @@ struct FeedClient: Sendable {
             try ReadRequestHeaders.apply(token: token, to: &request)
         }
 
-        let (data, response) = try await self.session.data(for: request, delegate: CredentialRedirectGuard(request: request))
+        let (bytes, response) = try await self.session.bytes(for: request, delegate: CredentialRedirectGuard(request: request))
+        defer { bytes.task.cancel() }
         guard let http = response as? HTTPURLResponse else { throw FeedError.invalidResponse }
-        guard (200...299).contains(http.statusCode) else {
-            throw Self.responseError(status: http.statusCode, data: data)
+        let success = (200...299).contains(http.statusCode)
+        let maximum = success ? NetworkLimits.responseBytes : NetworkLimits.errorBytes
+        let data: Data
+        do {
+            guard response.expectedContentLength <= maximum else { throw FeedError.inputLimit }
+            data = try await NetworkLimits.body(bytes, maximum: maximum)
+        } catch FeedError.inputLimit where http.statusCode == 401 || http.statusCode == 403 {
+            // An oversized denial body cannot postpone credential withdrawal.
+            throw Self.responseError(status: http.statusCode)
         }
+        guard success else { throw Self.responseError(status: http.statusCode, data: data) }
 
         let envelope: APIEnvelope<Payload>
         do {

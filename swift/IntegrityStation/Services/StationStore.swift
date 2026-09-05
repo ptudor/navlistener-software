@@ -179,7 +179,7 @@ final class StationStore {
                   payload.audience == session.audience.rawValue
             else { throw FeedError.invalidResponse }
             guard isCurrent(session, generation: generation) else { return }
-            mergeEvents(payload.events ?? [])
+            try mergeEvents(payload.events ?? [])
             eventStreamMessage = nil
         } catch is CancellationError {
             return
@@ -240,11 +240,21 @@ final class StationStore {
         })
     }
 
+    private func streamFailed(session: ReadSession, generation: UInt64) {
+        guard isCurrent(session, generation: generation) else { return }
+        // The producer can overflow while this consumer awaits cursor storage.
+        // Mark health unknown immediately, before its bounded queue drains.
+        conditions.invalidate()
+        isEventStreamConnected = false
+    }
+
     private func runEventStream(session: ReadSession, generation: UInt64, access: CacheAccess) async {
         var retrySeconds = 1
         while !Task.isCancelled, isCurrent(session, generation: generation) {
             do {
-                let updates = try eventStream.updates(session: session, lastEventID: lastEventID)
+                let updates = try eventStream.updates(session: session, lastEventID: lastEventID) { [weak self] in
+                    await self?.streamFailed(session: session, generation: generation)
+                }
                 for try await update in updates {
                     try Task.checkCancellation()
                     guard isCurrent(session, generation: generation) else { return }
@@ -252,11 +262,11 @@ final class StationStore {
                     case .event(let event, let cursor):
                         await record(cursor: cursor, session: session, generation: generation, access: access)
                         guard isCurrent(session, generation: generation) else { return }
-                        applyLiveEvent(event)
+                        try applyLiveEvent(event)
                     case .resolved(let event, let cursor):
                         await record(cursor: cursor, session: session, generation: generation, access: access)
                         guard isCurrent(session, generation: generation) else { return }
-                        resolve(event)
+                        try resolve(event)
                     case .status(let status):
                         if status == "replay_gap" || status == "reset" { conditions.invalidate() }
                         if !conditions.isKnown {
@@ -347,11 +357,11 @@ final class StationStore {
         authorizationLost = false
     }
 
-    private func mergeEvents(_ incoming: [GNSSAPIEvent]) {
+    private func mergeEvents(_ incoming: [GNSSAPIEvent]) throws {
         // Query results are newest-first. Replaying oldest-first reconstructs
         // the latest server-classified condition state without client thresholds.
         for event in incoming.reversed() {
-            updateActiveCondition(with: event)
+            try updateActiveCondition(with: event)
         }
 
         var byID = Dictionary(uniqueKeysWithValues: events.compactMap { event in
@@ -363,19 +373,19 @@ final class StationStore {
         events = byID.values.sorted(by: Self.isNewer).prefix(200).map { $0 }
     }
 
-    private func applyLiveEvent(_ event: GNSSAPIEvent) {
-        updateActiveCondition(with: event)
+    private func applyLiveEvent(_ event: GNSSAPIEvent) throws {
+        try updateActiveCondition(with: event)
         if let id = event.id, events.contains(where: { $0.id == id }) { return }
         events.insert(event, at: 0)
         if events.count > 200 { events.removeLast(events.count - 200) }
     }
 
-    private func updateActiveCondition(with event: GNSSAPIEvent) {
-        conditions.apply(event)
+    private func updateActiveCondition(with event: GNSSAPIEvent) throws {
+        try conditions.apply(event)
     }
 
-    private func resolve(_ event: GNSSAPIEvent) {
-        conditions.apply(event, resolved: true)
+    private func resolve(_ event: GNSSAPIEvent) throws {
+        try conditions.apply(event, resolved: true)
     }
 
     private func reconcileConditions(session: ReadSession, generation: UInt64) async throws {

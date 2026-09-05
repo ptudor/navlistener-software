@@ -4,11 +4,11 @@ import Testing
 @Test
 func sseAccumulatorParsesNamedMultilineEventAndCursor() throws {
     var parser = SSEAccumulator()
-    #expect(parser.consume("id: 42") == nil)
-    #expect(parser.consume("event: gnss") == nil)
-    #expect(parser.consume("data: {\"message\":") == nil)
-    #expect(parser.consume("data: \"clock jump\"}") == nil)
-    let dispatched = parser.consume("")
+    #expect(try parser.consume("id: 42") == nil)
+    #expect(try parser.consume("event: gnss") == nil)
+    #expect(try parser.consume("data: {\"message\":") == nil)
+    #expect(try parser.consume("data: \"clock jump\"}") == nil)
+    let dispatched = try parser.consume("")
     let frame = try #require(dispatched)
 
     #expect(frame.id == "42")
@@ -20,10 +20,10 @@ func sseAccumulatorParsesNamedMultilineEventAndCursor() throws {
 @Test
 func sseAccumulatorHandlesResolvedEventsAndIgnoresComments() throws {
     var parser = SSEAccumulator()
-    #expect(parser.consume(": heartbeat") == nil)
-    #expect(parser.consume("event: resolved") == nil)
-    #expect(parser.consume("data: {\"id\":42}") == nil)
-    let dispatched = parser.consume("\r")
+    #expect(try parser.consume(": heartbeat") == nil)
+    #expect(try parser.consume("event: resolved") == nil)
+    #expect(try parser.consume("data: {\"id\":42}") == nil)
+    let dispatched = try parser.consume("\r")
     let frame = try #require(dispatched)
     #expect(frame == SSEEventFrame(id: nil, event: "resolved", data: "{\"id\":42}"))
 }
@@ -31,9 +31,9 @@ func sseAccumulatorHandlesResolvedEventsAndIgnoresComments() throws {
 @Test
 func sseAccumulatorUsesMessageDefaultAndRejectsNulCursor() throws {
     var parser = SSEAccumulator()
-    _ = parser.consume("id: bad\0cursor")
-    _ = parser.consume("data")
-    let dispatched = parser.consume("")
+    _ = try parser.consume("id: bad\0cursor")
+    _ = try parser.consume("data")
+    let dispatched = try parser.consume("")
     let frame = try #require(dispatched)
     #expect(frame.id == nil)
     #expect(frame.event == "message")

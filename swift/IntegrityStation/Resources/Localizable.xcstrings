@@ -1,87 +1,286 @@
 {
-  "sourceLanguage" : "en",
-  "strings" : {
-    "error.audience_lost" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "This audience is no longer granted. Sign in again or choose an available audience." } } }
+  "sourceLanguage": "en",
+  "strings": {
+    "error.audience_lost": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This audience is no longer granted. Sign in again or choose an available audience."
+          }
+        }
+      }
     },
-    "error.forbidden" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "The collector no longer grants this audience." } } }
+    "error.forbidden": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The collector no longer grants this audience."
+          }
+        }
+      }
     },
-    "error.http" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Collector returned HTTP %d." } } }
+    "error.http": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collector returned HTTP %d."
+          }
+        }
+      }
     },
-    "error.invalid_base_url" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Enter a valid HTTP or HTTPS collector URL." } } }
+    "error.invalid_base_url": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter a valid HTTP or HTTPS collector URL."
+          }
+        }
+      }
     },
-    "error.invalid_credential" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Enter a valid read-side token without spaces. Do not use a feeder credential." } } }
+    "error.invalid_credential": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter a valid read-side token without spaces. Do not use a feeder credential."
+          }
+        }
+      }
     },
-    "error.invalid_response" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Collector returned an invalid response." } } }
+    "error.invalid_response": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collector returned an invalid response."
+          }
+        }
+      }
     },
-    "error.missing_data" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Collector response did not contain data." } } }
+    "error.missing_data": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collector response did not contain data."
+          }
+        }
+      }
     },
-    "error.server" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Collector reported an error." } } }
+    "error.server": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collector reported an error."
+          }
+        }
+      }
     },
-    "error.secure_storage" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Integrity Station could not access the protected connection in Keychain." } } }
+    "error.secure_storage": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Integrity Station could not access the protected connection in Keychain."
+          }
+        }
+      }
     },
-    "error.secure_storage_value" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "The protected connection value is invalid." } } }
+    "error.secure_storage_value": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The protected connection value is invalid."
+          }
+        }
+      }
     },
-    "error.stream_ended" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Live event stream ended. Reconnecting." } } }
+    "error.stream_ended": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Live event stream ended. Reconnecting."
+          }
+        }
+      }
     },
-    "error.unauthorized" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "The read credential is missing, expired, or revoked." } } }
+    "error.unauthorized": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The read credential is missing, expired, or revoked."
+          }
+        }
+      }
     },
-    "events.empty.description" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Live integrity events will appear here." } } }
+    "events.empty.description": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Live integrity events will appear here."
+          }
+        }
+      }
     },
-    "events.empty.title" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "No station events" } } }
+    "events.empty.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No station events"
+          }
+        }
+      }
     },
-    "events.title" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Events" } } }
+    "events.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Events"
+          }
+        }
+      }
     },
-    "menu_bar.configure" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Choose a collector and add a station in the app." } } }
+    "menu_bar.configure": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose a collector and add a station in the app."
+          }
+        }
+      }
     },
-    "menu_bar.title" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Integrity Station" } } }
+    "menu_bar.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Integrity Station"
+          }
+        }
+      }
     },
-    "menu_bar.unknown" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Station status unknown" } } }
+    "menu_bar.unknown": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Station status unknown"
+          }
+        }
+      }
     },
-    "settings.about.name" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Name" } } }
+    "settings.about.name": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Name"
+          }
+        }
+      }
     },
-    "settings.about.section" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "About" } } }
+    "settings.about.section": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "About"
+          }
+        }
+      }
     },
-    "settings.about.version" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Version" } } }
+    "settings.about.version": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Version"
+          }
+        }
+      }
     },
-    "settings.server.section" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Server" } } }
+    "settings.server.section": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Server"
+          }
+        }
+      }
     },
-    "settings.server.url" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Collector URL" } } }
+    "settings.server.url": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collector URL"
+          }
+        }
+      }
     },
-    "settings.title" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Settings" } } }
+    "settings.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Settings"
+          }
+        }
+      }
     },
-    "stations.empty.description" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Add a station to see its signal and RF health." } } }
+    "stations.empty.description": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add a station to see its signal and RF health."
+          }
+        }
+      }
     },
-    "stations.empty.title" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "No stations yet" } } }
+    "stations.empty.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No stations yet"
+          }
+        }
+      }
     },
-    "stations.title" : {
-      "localizations" : { "en" : { "stringUnit" : { "state" : "translated", "value" : "Stations" } } }
+    "stations.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stations"
+          }
+        }
+      }
+    },
+    "error.input_limit": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The collector exceeded a data limit. Reconnecting to recover current conditions."
+          }
+        }
+      }
     }
   },
-  "version" : "1.0"
+  "version": "1.0"
 }

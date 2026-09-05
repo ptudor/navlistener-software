@@ -12,15 +12,15 @@ private func conditionEvent(_ id: Int64, _ value: String, station: String = "roo
         let old = try conditionEvent(1, "jammed")
         let active = try conditionEvent(2, "jammed")
         let resolved = try conditionEvent(3, "ok")
-        if !liveFirst { state.apply(old) }
-        state.apply(active); state.apply(resolved)
-        if liveFirst { state.apply(old) }
-        state.apply(active); state.apply(resolved) // duplicate SSE and stale poll
+        if !liveFirst { try state.apply(old) }
+        try state.apply(active); try state.apply(resolved)
+        if liveFirst { try state.apply(old) }
+        try state.apply(active); try state.apply(resolved) // duplicate SSE and stale poll
         #expect(state.active.isEmpty)
         let snapshot = ConditionsPayload(schema: "2.0", audience: "public", complete: true, epoch: "a", cursor: 1, events: [old])
         #expect(try state.install(snapshot))
         #expect(state.active.isEmpty) // resolution arrived during snapshot request
-        state.apply(try conditionEvent(4, "jammed"))
+        try state.apply(try conditionEvent(4, "jammed"))
         #expect(state.active.first?.id == 4)
         #expect(try state.install(snapshot))
         #expect(state.active.first?.id == 4)
@@ -39,7 +39,7 @@ private func conditionEvent(_ id: Int64, _ value: String, station: String = "roo
     let resolved = try conditionEvent(300, "ok")
     #expect(try state.install(ConditionsPayload(schema: "2.0", audience: "public", complete: true, epoch: "a", cursor: 300, events: [resolved]+tail)))
     #expect(state.active.isEmpty)
-    state.apply(old)
+    try state.apply(old)
     #expect(state.active.isEmpty)
     // A policy change discards pre-withdrawal transitions even if its currently
     // visible history is empty. It needs a second current-epoch snapshot.

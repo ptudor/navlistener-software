@@ -14,8 +14,13 @@ struct SSEAccumulator: Sendable {
     private var eventName: String?
     private var dataLines: [String] = []
     private var isFirstLine = true
+    private(set) var retainedBytes = 0
 
-    mutating func consume(_ incomingLine: String) -> SSEEventFrame? {
+    mutating func consume(_ incomingLine: String) throws -> SSEEventFrame? {
+        let size = incomingLine.utf8.count
+        guard size <= NetworkLimits.lineBytes,
+              size + 1 <= NetworkLimits.frameBytes - retainedBytes else { throw FeedError.inputLimit }
+        retainedBytes += size + 1
         var line = incomingLine
         if line.last == "\r" { line.removeLast() }
         if isFirstLine {
@@ -54,6 +59,7 @@ struct SSEAccumulator: Sendable {
 
     private mutating func dispatch() -> SSEEventFrame? {
         defer {
+            retainedBytes = 0
             currentID = nil
             eventName = nil
             dataLines.removeAll(keepingCapacity: true)
