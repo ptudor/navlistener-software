@@ -25,7 +25,10 @@ func OpenReader(ctx context.Context, dsn string) (*Reader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reader connection: %w", err)
 	}
-	rows, err := pool.Query(cctx, navFrameSelect+" LIMIT 0")
+	// The probe is the replay query's own SELECT list plus its ORDER BY keys,
+	// so a schema missing any column the query touches fails here, with the
+	// actionable message, rather than mid-replay.
+	rows, err := pool.Query(cctx, navFrameSelect+" ORDER BY receipt_order NULLS FIRST, received_at, ts LIMIT 0")
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("historian replay schema unavailable: require SELECT on nav_frames and its replay columns; ask the collector administrator to apply compatible writer migrations: %w", err)

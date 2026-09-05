@@ -72,9 +72,16 @@ func (f *blockedPolicyHistory) SummarizeEventsForAudience(context.Context, strin
 	<-f.release
 	return store.EventSummary{TotalEvents: 42}, nil
 }
+func (f *blockedPolicyHistory) CurrentConditions(context.Context, string, time.Time) (store.ConditionSnapshot, error) {
+	close(f.ready)
+	<-f.release
+	return store.ConditionSnapshot{Cursor: 42, Events: []store.StoredEvent{{ID: 1, Message: "withdrawn"}}}, nil
+}
 
+// Every history-shaped route that spans a policy reset must fail closed —
+// including the regression fix condition snapshot, which shares the delivery fence.
 func TestHistoryAndSummarySpanningResetFailClosed(t *testing.T) {
-	for _, path := range []string{"/gnss/api/events", "/gnss/api/events/summary"} {
+	for _, path := range []string{"/gnss/api/events", "/gnss/api/events/summary", "/gnss/api/events/conditions"} {
 		t.Run(path, func(t *testing.T) {
 			history := &blockedPolicyHistory{make(chan struct{}), make(chan struct{})}
 			s := newTestServer(nil, history)

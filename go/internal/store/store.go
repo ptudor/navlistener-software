@@ -232,6 +232,15 @@ func New(ctx context.Context, cfg config.Store, log *slog.Logger) (*Store, error
 		return nil, err
 	}
 	if err := applySchema(cctx, pool); err != nil {
+		// A pre-existing intsat-shaped gnss_events can make schema.sql's OWN
+		// DDL fail first (gnss_events_public selects `raw`, which has no
+		// ADD COLUMN IF NOT EXISTS migration) with a 42703 that names the
+		// column but not the table. Run the column check so the operator
+		// diagnostic names the table and the missing columns.
+		if verr := verifyRequiredColumns(cctx, pool); verr != nil {
+			pool.Close()
+			return nil, fmt.Errorf("%w (schema application also failed: %v)", verr, err)
+		}
 		pool.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}

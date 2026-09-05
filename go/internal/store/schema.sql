@@ -85,6 +85,12 @@ ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS sbf_header BYTEA;
 CREATE SEQUENCE IF NOT EXISTS nav_frames_receipt_order_seq AS BIGINT NO CYCLE;
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS receipt_order BIGINT;
 ALTER TABLE nav_frames ALTER COLUMN receipt_order SET DEFAULT nextval('nav_frames_receipt_order_seq');
+-- Part of this additive migration (the order test strips the whole block to build
+-- the preceding schema). Replay orders by receipt_order; without an index in the same
+-- NULLS FIRST order the planner sorts the whole window externally (~0.6 kB of
+-- temp file per row at the default 2.5 M-row limit). Verified to create over
+-- already compressed chunks and to re-apply idempotently.
+CREATE INDEX IF NOT EXISTS idx_nav_frames_receipt_order ON nav_frames (receipt_order NULLS FIRST);
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS source_session TEXT;
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS source_seq BIGINT;
 

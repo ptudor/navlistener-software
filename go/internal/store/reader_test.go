@@ -20,10 +20,13 @@ func TestIntegrationReaderPreservesPoliciesAndEvidence(t *testing.T) {
 	}
 	defer w.Close()
 	// This role has no authority to migrate, prune, or install policies.
+	// Roles are cluster-wide: two suites on one cluster can both pass the
+	// existence check, so tolerate the losing CREATE ROLE.
 	_, err = w.pool.Exec(ctx, `DO $$ BEGIN
-	IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='navlistener_review_reader') THEN
+	BEGIN
 	CREATE ROLE navlistener_review_reader LOGIN;
-	END IF; END $$;
+	EXCEPTION WHEN duplicate_object THEN NULL;
+	END; END $$;
 	GRANT USAGE ON SCHEMA public TO navlistener_review_reader;
 	GRANT SELECT ON nav_frames TO navlistener_review_reader;
 	INSERT INTO nav_frames (ts, received_at, source_id, gnssid, svid, sigid, freqid, msg_type, raw, decoder_ver)
@@ -35,7 +38,9 @@ func TestIntegrationReaderPreservesPoliciesAndEvidence(t *testing.T) {
 		t.Helper()
 		var policies, columns []byte
 		var count int64
-		if err := w.pool.QueryRow(ctx, `SELECT coalesce(jsonb_agg(to_jsonb(j) ORDER BY job_id), '[]') FROM timescaledb_information.jobs j WHERE hypertable_name='nav_frames'`).Scan(&policies); err != nil {
+		// next_start is scheduler-owned and moves on its own once the job is
+		// picked up; everything else in the row is policy configuration.
+		if err := w.pool.QueryRow(ctx, `SELECT coalesce(jsonb_agg((to_jsonb(j) - 'next_start') ORDER BY job_id), '[]') FROM timescaledb_information.jobs j WHERE hypertable_name='nav_frames'`).Scan(&policies); err != nil {
 			t.Fatal(err)
 		}
 		if err := w.pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(c) ORDER BY ordinal_position) FROM information_schema.columns c WHERE table_name='nav_frames'`).Scan(&columns); err != nil {

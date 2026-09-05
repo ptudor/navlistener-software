@@ -255,6 +255,8 @@ func (s *Server) InvalidateAudiences(audiences []identity.Audience) {
 		if selected == s.audience {
 			s.mu.Lock()
 			clear(s.cache)
+			clear(s.cacheEpoch)
+			clear(s.cacheState)
 			s.mu.Unlock()
 		}
 		s.brokerMu.Lock()
@@ -282,7 +284,13 @@ func (s *Server) brokerFor(a identity.Audience) *Broker {
 
 func (s *Server) bindBroker(b *Broker, a identity.Audience) {
 	b.policyAdmission = func(generation uint64, admit func()) bool {
-		return s.policyEpochs.IfCurrent(a.Key(), generation, admit)
+		admitted := s.policyEpochs.IfCurrent(a.Key(), generation, admit)
+		if !admitted {
+			// The historian-side guard logs the wide window; this is the narrow
+			// guard-passed-then-generation-advanced one, otherwise invisible.
+			metrics.SSEPublishRejectedTotal.Inc()
+		}
+		return admitted
 	}
 	b.policyGeneration = func() uint64 { generation, _ := s.policyEpochs.Current(a.Key()); return generation }
 }
