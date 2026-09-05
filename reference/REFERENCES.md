@@ -136,7 +136,7 @@ Match the doc to the receiver generation; pull from the vendor.
 
 | cite-key | title | vendor |
 |---|---|---|
-| **UBX-PROTOCOL** | u-blox UBX protocol / interface description (UBX-RXM-SFRBX, -RAWX, MON-RF, etc.) | u-blox |
+| **UBX-PROTOCOL** | u-blox UBX protocol / interface description (UBX-RXM-SFRBX, -RAWX, MON-RF, etc.) — the RAWX `trkStat`/`recStat` bit semantics the collector relies on  were checked against u-blox 8 / M8 Receiver Description UBX-13003221 R28 §32.18.4 (not vendored; fetched from the documented URL) | u-blox |
 | **SBF-REF** | Septentrio Binary Format (SBF) reference guide | Septentrio |
 | **NOVATEL-OEM7** | NovAtel OEM7 commands & logs reference | NovAtel |
 | **TRIMBLE-*** | Trimble receiver protocol docs | Trimble |
