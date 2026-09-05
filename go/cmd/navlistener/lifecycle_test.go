@@ -130,3 +130,33 @@ func TestLifecycleDeduplicatesRegisteredFixedStores(t *testing.T) {
 		t.Fatal("fixed stores duplicated or operator order lost")
 	}
 }
+
+// TestLifecycleOrdersDynamicViewsBeforeFixedAndOperatorLast pins the
+// "operator last" contract the process-wide gauges depend on, with a real
+// dynamic view present (astra-6 verification: nothing enforced the order).
+func TestLifecycleOrdersDynamicViewsBeforeFixedAndOperatorLast(t *testing.T) {
+	registry := audience.NewRegistry(1, nil)
+	public, operator := state.New(1), state.New(1)
+	registry.Register(identity.Audience{Kind: identity.AudiencePublic}, public, nil)
+	registry.Register(identity.Audience{Kind: identity.AudienceOperator, ID: "collector"}, operator, nil)
+	c := identity.NewPrivateContext("observer", identity.CredentialToken)
+	c.OrganizationID = "org"
+	registry.ApplyPrivate(lifecycleCNAV(10, time.Unix(1700000000, 0), c))
+	org, _, ok := registry.Resolve(identity.Audience{Kind: identity.AudienceOrganization, ID: "org"})
+	if !ok {
+		t.Fatal("organization view missing")
+	}
+	got := lifecycleStores(registry, []*state.Store{public, operator})
+	if len(got) != 3 || got[0] != org || got[1] != public || got[2] != operator {
+		t.Fatalf("lifecycle order = %v, want [org public operator]", got)
+	}
+}
+
+// TestAudienceStoreWiringKeepsOneMetricsOwner asserts the stores run() builds:
+// only the physical operator input store reports receiver metrics.
+func TestAudienceStoreWiringKeepsOneMetricsOwner(t *testing.T) {
+	live, publicLive, publicEventsLive := newAudienceStores(1)
+	if live.IsProjection() || !publicLive.IsProjection() || !publicEventsLive.IsProjection() {
+		t.Fatalf("metrics ownership: live=%v public=%v publicEvents=%v", live.IsProjection(), publicLive.IsProjection(), publicEventsLive.IsProjection())
+	}
+}

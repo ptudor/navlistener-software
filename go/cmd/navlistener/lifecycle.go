@@ -70,3 +70,13 @@ func stateLoopTicks(ctx context.Context, cfg config.State, registry *audience.Re
 		}
 	}
 }
+
+// newAudienceStores builds the three fixed stores. Only `live` — the physical
+// operator input store — is a metrics owner; the public feed and public
+// events stores are projections of the same input, so decode /
+// CRC / unsupported counters are incremented once per received frame rather
+// than once per materialized audience. Kept as a helper so a test can assert
+// the wiring run() actually uses, not a re-creation of it.
+func newAudienceStores(shards int) (live, publicLive, publicEventsLive *state.Store) {
+	return state.New(shards), state.NewProjection(shards), state.NewProjection(shards)
+}

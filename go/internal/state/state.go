@@ -977,6 +977,10 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 	// §30.3.3.3.1.1.1), retained across clock-only MT31–37 messages. The
 	// PRN gate above keeps this correction cache in its own SV/signal family.
 	if clkOK && st.gc30 != nil {
+		// The cached MT30's TGD is reused across CEI cutovers and even from an
+		// MT30 whose toc the assembler rejected: TGD is an SV-level quasi-static
+		// hardware correction (IS-GPS-200N §30.3.3.3.1.1), not part of the
+		// per-data-set clock, so the freshest broadcast value is the right one.
 		clk.TGD = st.gc30.TGD
 	}
 	ephChanged := !st.haveEph || int(eph.Toe) != st.iod
@@ -2092,6 +2096,10 @@ func (st *svState) bufferGloAlmFirst(relay gloAlmRelay, number int, words []uint
 	prev := st.gloAlmPending[relay]
 	st.gloAlmPending[relay] = gloAlmPendingPair{words: append(prev.words[:0], words...), number: number, at: at, local: local}
 }
+
+// IsProjection reports whether this store is an audience projection (no
+// receiver-level metrics or process gauges; regression fix). Immutable.
+func (s *Store) IsProjection() bool { return s.projection }
 
 // gloAlmSlot is one GLONASS almanac subject slot's decoded entry plus the wall-clock
 // time it was last (re)broadcast. the entry itself carries no wall-clock recency

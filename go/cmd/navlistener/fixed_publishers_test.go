@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -71,9 +72,17 @@ func TestIntegrationFixedAudiencePublishers(t *testing.T) {
 			if opPublisher == nil || pubPublisher == nil {
 				t.Fatal("selectable audience has no publisher")
 			}
-			type subscription struct{ body <-chan string }
-			subscribe := func(a identity.Audience) subscription {
-				ctx, cancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
+			// Read each stream until its expected marker arrives (or a deadline
+			// passes), then keep reading briefly so a misrouted event that would
+			// follow right behind is caught — rather than a fixed read window
+			// that a loaded database can outlast (astra-6 verification flake).
+			type subscription struct {
+				mu     sync.Mutex
+				body   strings.Builder
+				cancel context.CancelFunc
+			}
+			subscribe := func(a identity.Audience) *subscription {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				req, _ := http.NewRequestWithContext(ctx, "GET", "http://"+ln.Addr().String()+"/gnss/events", nil)
 				req.Header.Set("X-GNSS-Audience", a.Key())
 				req.Header.Set("Authorization", "Bearer reader")
@@ -87,9 +96,33 @@ func TestIntegrationFixedAudiencePublishers(t *testing.T) {
 					res.Body.Close()
 					t.Fatalf("SSE status %d", res.StatusCode)
 				}
-				body := make(chan string, 1)
-				go func() { defer cancel(); defer res.Body.Close(); b, _ := io.ReadAll(res.Body); body <- string(b) }()
-				return subscription{body}
+				sub := &subscription{cancel: cancel}
+				go func() {
+					defer res.Body.Close()
+					buf := make([]byte, 4096)
+					for {
+						n, err := res.Body.Read(buf)
+						if n > 0 {
+							sub.mu.Lock()
+							sub.body.Write(buf[:n])
+							sub.mu.Unlock()
+						}
+						if err != nil {
+							return
+						}
+					}
+				}()
+				return sub
+			}
+			bodyOf := func(s *subscription) string { s.mu.Lock(); defer s.mu.Unlock(); return s.body.String() }
+			settle := func(s *subscription, want string) string {
+				deadline := time.Now().Add(5 * time.Second)
+				for !strings.Contains(bodyOf(s), want) && time.Now().Before(deadline) {
+					time.Sleep(10 * time.Millisecond)
+				}
+				time.Sleep(300 * time.Millisecond)
+				s.cancel()
+				return bodyOf(s)
 			}
 			opStream, pubStream := subscribe(operator), subscribe(public)
 			marker := fmt.Sprintf("publisher-%d", time.Now().UnixNano())
@@ -111,7 +144,7 @@ func TestIntegrationFixedAudiencePublishers(t *testing.T) {
 			}
 			publish(operator, opPublisher, "-private-only")
 			publish(public, pubPublisher, "-public-only")
-			opBody, pubBody := <-opStream.body, <-pubStream.body
+			opBody, pubBody := settle(opStream, marker+"-private-only"), settle(pubStream, marker+"-public-only")
 			if !strings.Contains(opBody, marker+"-private-only") || strings.Contains(opBody, marker+"-public-only") {
 				t.Fatalf("operator stream misrouted: %s", opBody)
 			}
