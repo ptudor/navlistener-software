@@ -47,7 +47,13 @@ actor SnapshotCache {
            now >= snapshot.receivedAt,
            now >= (snapshot.lastRestoredAt ?? snapshot.receivedAt) {
             document.observers?.lastRestoredAt = now
-            try access.perform { try save(document) }
+            // Best effort: the stamp only hardens a LATER launch against a
+            // rolled-back wall clock. A container that cannot be written (full,
+            // read-only) must still restore the cached stations with their
+            // honest residence age rather than show nothing (astra-6
+            // verification of regression fix); apply() still rejects a clock that
+            // has moved below the snapshot's own receive time.
+            try? access.perform { try save(document) }
         }
         return snapshot
     }

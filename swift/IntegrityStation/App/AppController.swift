@@ -347,7 +347,17 @@ final class AppController {
         authorizationRevision = session.authorizationRevision
         selectedAudience = selected
         settings.serverURLString = url.absoluteString
-        if useStoredCredential || readToken != nil { settings.setPreferredAudience(selected, forServer: url.absoluteString) }
+        // Remember the audience the user chose, but never let an anonymous
+        // public fallback overwrite a saved private preference: a launch that
+        // finds no stored token (keychain unavailable, token removed elsewhere)
+        // selects public, and silently persisting that would keep the user on
+        // public even after the credential returns (astra-6 verification of
+        // regression fix; the logout fallback already avoided this).
+        let anonymousFallback = selected == .publicAudience && token == nil
+            && settings.preferredAudience(forServer: url.absoluteString) != nil
+        if (useStoredCredential || readToken != nil) && !anonymousFallback {
+            settings.setPreferredAudience(selected, forServer: url.absoluteString)
+        }
         settings.activateScope(session.cacheKey)
         store.start(session: session, stationIDs: settings.stationIDs)
         connectionError = nil
