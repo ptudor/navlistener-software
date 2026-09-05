@@ -547,3 +547,22 @@ portable config registrations. Token/local registrations with an explicit valid
 enrollment can admit other nonempty observer IDs under existing server policy.
 The client does not rename them or apply certificate rules retrospectively;
 request/response resource limits still apply.
+
+Integrity Station notification delivery  covers accepted live station
+transitions after condition reconciliation while the application is active.
+Initial snapshots, history pages and reconnect replay establish a baseline without
+alerts. Raises, recoveries and severity changes use server-classified conditions;
+raw RF measurements do not generate alarms. Offline and RF preferences select
+those event categories; the critical preference additionally selects severity-2
+raises and recoveries, including critical offline/RF events. Overlapping categories
+produce one notice. Only selected stations in the active read session are eligible.
+
+System authorization is required and requested only through the explicit Allow
+notifications control. Logout, audience changes and loss of foreground activity
+invalidate pending work and remove the retired generation's pending/delivered
+notices; the foreground presentation delegate also rejects retired identifiers.
+Permission and delivery failures are visible in Settings. At most 64 notice jobs
+may be pending; overflow is reported rather than growing an unbounded queue.
+There is no background monitoring guarantee: suspended/terminated applications
+cannot observe new transitions or notify, and reopening reconciles before resuming
+live alerts. Notification tests use a mock center and send no real alerts.

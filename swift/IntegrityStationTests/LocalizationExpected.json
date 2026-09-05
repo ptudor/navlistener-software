@@ -67,7 +67,7 @@
   "settings.audience.section": "Organization / Collection",
   "settings.audience.selection": "Audience",
   "settings.notifications.critical": "Critical integrity events",
-  "settings.notifications.note": "Notifications fire on health transitions, never on every refresh.",
+  "settings.notifications.note": "Alerts cover confirmed live transitions while this app is active. Initial snapshots and replay do not alert. There is no background monitoring when the app is suspended or closed. Critical alerts also cover critical offline and RF events.",
   "settings.notifications.offline": "Station offline and recovery",
   "settings.notifications.rf": "RF and antenna changes",
   "settings.notifications.section": "Notifications",
@@ -125,5 +125,10 @@
   "unit.db_hz": "dB-Hz",
   "unit.meter": "m",
   "stations.add.title": "Add stations",
-  "action.done": "Done"
+  "action.done": "Done",
+  "notification.raised": "Station alert: %@",
+  "notification.recovered": "Station recovered: %@",
+  "settings.notifications.enable": "Allow notifications",
+  "settings.notifications.denied": "Notifications are disabled in system settings.",
+  "notification.queue_full": "The notification queue is full. Some alerts could not be delivered."
 }

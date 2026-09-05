@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AppRootView: View {
     @Environment(AppController.self) private var controller
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         TabView {
@@ -24,7 +25,8 @@ struct AppRootView: View {
         }
         .tint(.accentColor)
         .preferredColorScheme(controller.settings.appearance.colorScheme)
-        .task { await controller.start() }
+        .task { await controller.start(); await controller.notifications.refreshPermission() }
+        .onChange(of: scenePhase, initial: true) { _, phase in controller.store.setForeground(phase == .active) }
     }
 }
 

@@ -6,6 +6,7 @@ import Observation
 final class AppController {
     let store: StationStore
     let settings: AppSettings
+    let notifications: StationNotifications
 
     private(set) var availableAudiences: [ReadAudience] = []
     private(set) var selectedAudience: ReadAudience = .publicAudience
@@ -65,6 +66,9 @@ final class AppController {
     ) {
         self.store = store
         self.settings = settings
+        self.notifications = StationNotifications(settings: settings)
+        store.notifications = notifications
+        if let session = store.activeSession { notifications.activate(session) }
         self.secureStore = secureStore
         self.feedClient = feedClient
     }

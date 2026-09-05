@@ -15,15 +15,16 @@ struct ConditionState {
 
     mutating func invalidate() { isKnown = false }
 
-    mutating func apply(_ event: GNSSAPIEvent, resolved: Bool = false) throws {
+    @discardableResult mutating func apply(_ event: GNSSAPIEvent, resolved: Bool = false) throws -> Bool {
         guard let key = event.conditionKey, let id = event.id, id > floor,
               id > (latest[key]?.id ?? 0),
-              resolved || event.isActiveStationCondition != nil else { return }
+              resolved || event.isActiveStationCondition != nil else { return false }
         guard latest[key] != nil || latest.count < NetworkLimits.conditions else {
             isKnown = false
             throw FeedError.inputLimit
         }
         latest[key] = Transition(id: id, event: event.isActiveStationCondition == true && !resolved ? event : nil)
+        return true
     }
 
     // Returns false after an epoch change: discard every prior-policy record,

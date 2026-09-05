@@ -175,10 +175,19 @@ struct SettingsView: View {
             Toggle(String(localized: "settings.notifications.offline"), isOn: $settings.notifyOffline)
             Toggle(String(localized: "settings.notifications.rf"), isOn: $settings.notifyRF)
             Toggle(String(localized: "settings.notifications.critical"), isOn: $settings.notifyCritical)
+            if controller.notifications.permission == .notDetermined {
+                Button(String(localized: "settings.notifications.enable")) {
+                    Task { await controller.notifications.requestPermission() }
+                }
+            } else if controller.notifications.permission == .denied {
+                Text("settings.notifications.denied").foregroundStyle(.secondary)
+            }
+            if let error = controller.notifications.deliveryError { Text(error).foregroundStyle(.secondary) }
             Text("settings.notifications.note")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+        .task { await controller.notifications.refreshPermission() }
     }
 
     @ViewBuilder

@@ -686,7 +686,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Notifications fire on health transitions, never on every refresh."
+            "value": "Alerts cover confirmed live transitions while this app is active. Initial snapshots and replay do not alert. There is no background monitoring when the app is suspended or closed. Critical alerts also cover critical offline and RF events."
           }
         }
       }
@@ -1267,6 +1267,56 @@
           "stringUnit": {
             "state": "translated",
             "value": "Done"
+          }
+        }
+      }
+    },
+    "notification.raised": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Station alert: %@"
+          }
+        }
+      }
+    },
+    "notification.recovered": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Station recovered: %@"
+          }
+        }
+      }
+    },
+    "settings.notifications.enable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allow notifications"
+          }
+        }
+      }
+    },
+    "settings.notifications.denied": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notifications are disabled in system settings."
+          }
+        }
+      }
+    },
+    "notification.queue_full": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The notification queue is full. Some alerts could not be delivered."
           }
         }
       }

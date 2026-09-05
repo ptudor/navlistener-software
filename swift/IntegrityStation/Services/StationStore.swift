@@ -15,6 +15,8 @@ final class StationStore {
     private(set) var authorizationLost = false
     private(set) var activeSession: ReadSession?
 
+    @ObservationIgnored var notifications: StationNotifications?
+
     var selectedStationIDs: [String] = []
 
     private let feedClient: FeedClient
@@ -79,6 +81,7 @@ final class StationStore {
         stop()
         resetPresentation()
         activeSession = session
+        notifications?.activate(session)
         selectedStationIDs = stationIDs
         let generation = self.generation
         let access = CacheAccess()
@@ -102,6 +105,7 @@ final class StationStore {
     }
 
     func stop() {
+        notifications?.retire()
         generation += 1
         cacheAccess?.invalidate()
         cacheAccess = nil
@@ -375,7 +379,7 @@ final class StationStore {
     }
 
     private func applyLiveEvent(_ event: GNSSAPIEvent) throws {
-        try updateActiveCondition(with: event)
+        try applyLiveTransition(event)
         if let id = event.id, events.contains(where: { $0.id == id }) { return }
         events.insert(event, at: 0)
         if events.count > 200 { events.removeLast(events.count - 200) }
@@ -386,7 +390,22 @@ final class StationStore {
     }
 
     private func resolve(_ event: GNSSAPIEvent) throws {
-        try conditions.apply(event, resolved: true)
+        try applyLiveTransition(event, resolved: true)
+    }
+
+    private func applyLiveTransition(_ event: GNSSAPIEvent, resolved: Bool = false) throws {
+        let known = conditions.isKnown
+        let previous = conditions.active.first { $0.conditionKey == event.conditionKey }
+        if try conditions.apply(event, resolved: resolved), known, let session = activeSession {
+            notifications?.transition(event, previous: previous,
+                active: !resolved && event.isActiveStationCondition == true, session: session)
+        }
+    }
+
+    func setForeground(_ active: Bool) {
+        notifications?.setForeground(active)
+        conditions.invalidate()
+        if active { Task { await refresh() } }
     }
 
     private func reconcileConditions(session: ReadSession, generation: UInt64) async throws {
