@@ -150,7 +150,7 @@ function emailHref(subject) {
         <a href="#system" @click="closeMenu">How it works</a>
         <a href="#hardware" @click="closeMenu">Hardware</a>
         <a href="#join" @click="closeMenu">Join us</a>
-        <a class="nav-cta" href="#work" @click="closeMenu">Work with us <span aria-hidden="true">↗</span></a>
+        <a class="nav-cta" href="#work" @click="closeMenu">Get results with us <span aria-hidden="true">↗</span></a>
       </nav>
     </div>
   </header>
@@ -385,12 +385,12 @@ function emailHref(subject) {
       <div id="work" class="container project-inquiry">
         <div>
           <p class="section-kicker">For teams &amp; organizations</p>
-          <h3>Tell us about your project.</h3>
-          <p>Exploring navigation monitoring for your site, a research deployment, or an integration?
-            Tell us what you’re working on. Let’s talk about the hardware, data, and support you need.</p>
+          <h3>Tell us what you want to achieve.</h3>
+          <p>Understand observations at your site, answer a research question, or put navigation data
+            to use in your own tools. Let’s talk about the results you need and how NavListen can help.</p>
         </div>
         <div class="project-inquiry-action">
-          <a class="button button-secondary" :href="emailHref('Using NavListen in our organization')">Discuss a project <span aria-hidden="true">↗</span></a>
+          <a class="button button-secondary" :href="emailHref('Using NavListen in our organization')">Discuss your goals <span aria-hidden="true">↗</span></a>
           <p>A conversation is a good place to start.</p>
         </div>
       </div>
@@ -431,7 +431,7 @@ function emailHref(subject) {
         <a href="#why">Why listen</a>
         <a href="#system">How it works</a>
         <a href="#hardware">Hardware</a>
-        <a href="#work">Work with us</a>
+        <a href="#work">Get results with us</a>
         <a :href="emailHref('Hello NavListen')">Contact</a>
       </nav>
       <div class="footer-meta">
