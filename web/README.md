@@ -8,6 +8,8 @@ station hosts, researchers, and prospective customers.
 Keep the voice welcoming, practical, and collaborative. Explain what people can do with
 NavListen and how to take part. Write for both volunteers and customers; give each a clear
 way to start a conversation. The observer exists: describe the hardware in present tense.
+Use short, active sentences and concrete headings. Name what people can observe, study,
+or build.
 
 Use plain language before technical detail. Illustrations should explain the system and
 be labeled as illustrations. Avoid invented telemetry, precision claims, live status, or

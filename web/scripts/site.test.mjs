@@ -10,12 +10,12 @@ test('the project page has a complete story and contact paths', async () => {
   const app = await readFile(path.join(webRoot, 'src', 'App.vue'), 'utf8')
 
   for (const phrase of [
-    'Navigation is a broadcast.',
+    'Satellites broadcast.',
     'From antenna to evidence.',
     'Meet the observer.',
-    'Ask what the sky said',
+    'Revisit every recorded message.',
     'Come help us listen.',
-    'Bring us your use case.',
+    'Tell us about your project.',
     'Apache License 2.0',
   ]) {
     assert.ok(app.includes(phrase), `missing core copy: ${phrase}`)

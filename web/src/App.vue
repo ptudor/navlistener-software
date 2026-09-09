@@ -19,28 +19,28 @@ const layers = [
   {
     number: '01',
     eyebrow: 'Receive',
-    title: 'Start with the sky',
+    title: 'Receive satellite messages',
     copy: 'A satellite receiver captures navigation messages. Our purpose-built ESP32 observer brings the receiver and feeder together in one board.',
     tags: ['u-blox + Septentrio', 'Open hardware'],
   },
   {
     number: '02',
     eyebrow: 'Record',
-    title: 'Keep the original',
-    copy: 'Feeder software sends the messages to a collector. Each observation stays connected to the station that received it, building a record we can return to.',
+    title: 'Archive each message',
+    copy: 'Feeder software sends the messages to a collector. The archive keeps each original message with the identity of the station that received it.',
     tags: ['Raw message archive', 'Station identity'],
   },
   {
     number: '03',
     eyebrow: 'Understand',
-    title: 'Read the message',
+    title: 'Decode orbits and clocks',
     copy: 'Decoders turn supported broadcasts into satellite orbits, clock corrections, and health information. The calculations follow published signal specifications.',
     tags: ['Orbit and clock models', 'Documented calculations'],
   },
   {
     number: '04',
     eyebrow: 'Explore',
-    title: 'See the bigger picture',
+    title: 'Compare observations',
     copy: 'Compare observations across stations and over time. Use the API and Integrity Station app to explore the data, investigate changes, and build your own tools.',
     tags: ['Data API', 'Integrity Station app'],
   },
@@ -160,14 +160,14 @@ function emailHref(subject) {
       <div class="hero-grid container">
         <div class="hero-copy">
           <p class="eyebrow"><span class="pulse-dot"></span> An open navigation observatory</p>
-          <h1>Navigation is a broadcast.<br /><em>We’re listening.</em></h1>
+          <h1>Satellites broadcast.<br /><em>We listen.</em></h1>
           <p class="hero-lede">
-            A shared view of satellite navigation, built from the ground up. NavListen records
-            the messages satellites send so we can understand their orbits, clocks, and signals together.
+            NavListen records satellite navigation messages so we can study orbits, clocks,
+            and signals. Host an observer, explore the data, or help build the tools.
           </p>
           <div class="hero-actions">
             <a class="button button-primary" href="#join">
-              Find your way in <span aria-hidden="true">↓</span>
+              Get involved <span aria-hidden="true">↓</span>
             </a>
             <a class="button button-secondary" href="#system">See how it works <span aria-hidden="true">↓</span></a>
           </div>
@@ -211,25 +211,24 @@ function emailHref(subject) {
       <div class="container manifesto-grid">
         <div>
           <p class="section-kicker">Why listen</p>
-          <h2>There’s more to navigation than a location.</h2>
+          <h2>Track satellite orbits and clocks.</h2>
         </div>
         <div class="manifesto-copy">
           <p>
-            The same satellites that help us find our way also keep clocks in step. Their
-            broadcasts carry a rich story: where each satellite is going, how its clock is
-            behaving, and which signals are available.
+            Navigation satellites broadcast the orbit and clock data receivers use to calculate
+            position and time. They also send information about satellite health and available signals.
           </p>
           <p>
-            NavListen makes that story easier to study. By collecting original messages and
-            comparing observations from different places, we’re building a shared resource for
-            research, useful tools, and a better understanding of the systems we use every day.
+            NavListen archives these messages and compares observations from different stations.
+            Researchers and builders can return to the original data to investigate changes
+            and develop their own tools.
           </p>
         </div>
       </div>
       <div class="container use-cases">
-        <article><p class="section-kicker">For research</p><h3>Follow a question.</h3><p>Explore how satellite orbits and clocks change, with original messages to revisit.</p></article>
-        <article><p class="section-kicker">For operations</p><h3>Understand your sky.</h3><p>Bring local receiver observations into a wider picture of navigation conditions.</p></article>
-        <article><p class="section-kicker">For builders</p><h3>Make the next useful thing.</h3><p>Work with open hardware and software to create tools, experiments, and new ways to learn.</p></article>
+        <article><p class="section-kicker">For research</p><h3>Study orbits and clocks.</h3><p>Explore how satellite orbits and clocks change, with original messages to revisit.</p></article>
+        <article><p class="section-kicker">For operations</p><h3>Compare receiver observations.</h3><p>Study observations from your receiver alongside data from other stations.</p></article>
+        <article><p class="section-kicker">For builders</p><h3>Build with open tools.</h3><p>Use the hardware, software, and API to create tools and experiments.</p></article>
       </div>
     </section>
 
@@ -240,7 +239,7 @@ function emailHref(subject) {
           <h2>From antenna to evidence.</h2>
         </div>
         <p>
-          Receive a message, preserve it, understand it, and put it in context.
+          Receive, archive, decode, and compare satellite messages.
         </p>
       </div>
 
@@ -274,16 +273,16 @@ function emailHref(subject) {
         </div>
 
         <div class="hardware-copy">
-          <p class="section-kicker">A small board. A shared purpose.</p>
+          <p class="section-kicker">Receiver, feeder, and sensors</p>
           <h2>Meet the observer.</h2>
           <p class="hardware-lede">
             Our four-layer observer brings a satellite receiver, Wi-Fi, and environmental sensors
-            together on one board. It records what the satellites send and the conditions around
-            it, giving your patch of sky a place in the shared picture.
+            together on one board. It records satellite messages alongside temperature,
+            pressure, and humidity at your station.
           </p>
           <dl class="hardware-specs">
             <div><dt>Receiver</dt><dd>u-blox receiver options<br /><span>Part of a stack that also captures Septentrio data</span></dd></div>
-            <div><dt>Edge</dt><dd>ESP32<br /><span>Wi-Fi, USB-C, resilient feeder</span></dd></div>
+            <div><dt>Feeder</dt><dd>ESP32<br /><span>Wi-Fi, USB-C, resilient feeder</span></dd></div>
             <div><dt>Identity</dt><dd>Hardware-backed station identity<br /><span>A secure element keeps the station’s key on the board</span></dd></div>
             <div><dt>Sensors</dt><dd>Pressure · temperature · humidity<br /><span>Local conditions alongside each observation</span></dd></div>
           </dl>
@@ -321,12 +320,12 @@ function emailHref(subject) {
         </div>
 
         <div class="software-copy">
-          <p class="section-kicker">Software that remembers</p>
-          <h2>Ask what the sky said.</h2>
+          <p class="section-kicker">A reusable message archive</p>
+          <h2>Revisit every recorded message.</h2>
           <p>
-            A useful observation has a future. NavListen keeps original navigation messages
-            alongside their decoded information, so a new question or an improved decoder can
-            bring fresh insight to a familiar piece of sky.
+            NavListen keeps original navigation messages alongside their decoded information.
+            As decoders improve or new questions arise, you can run the calculations again
+            using the same recorded data.
           </p>
           <ul class="check-list">
             <li><span>01</span><div><strong>Follow the calculations</strong><p>Explore decoders and orbit models written from published satellite specifications.</p></div></li>
@@ -340,12 +339,12 @@ function emailHref(subject) {
     <section class="coverage section-pad">
       <div class="container coverage-inner">
         <div class="coverage-copy">
-          <p class="section-kicker">Every place adds a perspective</p>
-          <h2>Your patch of sky is part of the picture.</h2>
+          <p class="section-kicker">Expand the network</p>
+          <h2>Help us observe more satellites.</h2>
           <p>
-            Stations in different places hear different parts of the sky. Together, their
+            Stations in different locations receive signals from different satellites. Their
             observations help us compare local conditions and study regional navigation systems.
-            A home, a campus, or a workplace could be the next place we listen.
+            Host an observer at home, on campus, or at work to contribute data from your location.
           </p>
           <a class="text-link" href="#join">Explore hosting a station <span aria-hidden="true">→</span></a>
         </div>
@@ -366,7 +365,7 @@ function emailHref(subject) {
 
     <section id="join" class="join section-pad">
       <div class="container join-heading">
-        <p class="section-kicker">There is room at the workbench</p>
+        <p class="section-kicker">Host, build, or contribute</p>
         <h2>Come help us listen.</h2>
         <p>
           This project gets better with more disciplines, more stations, and more points of view.
@@ -386,7 +385,7 @@ function emailHref(subject) {
       <div id="work" class="container project-inquiry">
         <div>
           <p class="section-kicker">For teams &amp; organizations</p>
-          <h3>Bring us your use case.</h3>
+          <h3>Tell us about your project.</h3>
           <p>Exploring navigation monitoring for your site, a research deployment, or an integration?
             Tell us what you’re working on. Let’s talk about the hardware, data, and support you need.</p>
         </div>
@@ -399,8 +398,8 @@ function emailHref(subject) {
       <div class="container getting-started">
         <div>
           <p class="section-kicker">Getting started</p>
-          <h3>A few useful details.</h3>
-          <p>Every setup starts with a conversation. Here are a few answers to help you find your next step.</p>
+          <h3>Plan your contribution.</h3>
+          <p>Find out what you need to host an observer, use your receiver, or contribute without hardware.</p>
         </div>
         <div class="question-list">
           <details v-for="item in questions" :key="item.question">
@@ -413,8 +412,8 @@ function emailHref(subject) {
       <div class="container final-cta">
         <div>
           <span class="pulse-dot"></span>
-          <p>THE SKY IS ALREADY TALKING</p>
-          <h2>Let’s hear it together.</h2>
+          <p>JOIN NAVLISTEN</p>
+          <h2>Let’s get started.</h2>
           <a class="contact-address" href="mailto:ptudor@ptudor.net">ptudor@ptudor.net</a>
         </div>
         <a class="button button-light" :href="emailHref('Hello NavListen')">Say hello <span aria-hidden="true">↗</span></a>
@@ -426,7 +425,7 @@ function emailHref(subject) {
     <div class="container footer-grid">
       <div>
         <a class="brand footer-brand" href="#top"><img src="/assets/mark.svg" width="34" height="34" alt="" /><span>navlisten</span></a>
-        <p>Open tools for understanding the signals above us.</p>
+        <p>Open tools for studying satellite navigation.</p>
       </div>
       <nav aria-label="Footer navigation">
         <a href="#why">Why listen</a>

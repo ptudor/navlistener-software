@@ -9,7 +9,7 @@ const html = await readFile(path.join(dist, 'index.html'), 'utf8')
 
 assert.match(html, /<html lang="en" class="no-js">/, 'document language and no-JS mode')
 assert.match(html, /<main id="main-content"/, 'semantic main is pre-rendered')
-assert.match(html, /Navigation is a broadcast\./, 'hero copy is pre-rendered')
+assert.match(html, /<h1>Satellites broadcast\.<br\s*\/?><em>We listen\.<\/em><\/h1>/, 'hero copy is pre-rendered')
 assert.match(html, /Come help us listen\./, 'join section is pre-rendered')
 assert.match(html, /mailto:ptudor@ptudor\.net/, 'contact path is present')
 assert.match(html, /rel="canonical" href="https:\/\/navlisten\.com\/"/, 'canonical URL')
