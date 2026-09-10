@@ -55,6 +55,18 @@ const pruneEvery = 1 * time.Hour
 
 const defaultSeqSeenRetention = 7 * 24 * time.Hour // mirrors the "7 days" RawRetention default
 
+// Startup budgets. These were one shared 10 s context covering
+// ping, extension check, schema migration, column verification AND policy
+// replacement, so a slow earlier step could leave the policy work with almost no
+// budget. Schema migration is the variable-cost step (an existing deployment may
+// add columns or indexes); policy replacement is a short, fixed amount of work
+// but is the one step whose interruption matters, so it gets its own reservation
+// that earlier steps cannot spend.
+const (
+	schemaSetupBudget = 30 * time.Second
+	policySetupBudget = 15 * time.Second
+)
+
 var defaultFlushRetry = flushRetry{attempts: 3, backoff: 250 * time.Millisecond, attemptTO: 10 * time.Second}
 
 type flushRetry struct {
@@ -220,7 +232,12 @@ func New(ctx context.Context, cfg config.Store, log *slog.Logger) (*Store, error
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}
-	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// connect/schema work and policy work get separate budgets.
+	// They used to share one 10 s context, so a slow ping, extension check, or
+	// schema migration ate into the window the policy replacement needed — and a
+	// policy replacement interrupted midway is the one step here that can leave
+	// the database in a worse state than it started in.
+	cctx, cancel := context.WithTimeout(ctx, schemaSetupBudget)
 	defer cancel()
 	if err := pool.Ping(cctx); err != nil {
 		pool.Close()
@@ -247,7 +264,9 @@ func New(ctx context.Context, cfg config.Store, log *slog.Logger) (*Store, error
 		pool.Close()
 		return nil, err
 	}
-	if err := applyPolicies(cctx, pool, log, cfg); err != nil {
+	pctx, pcancel := context.WithTimeout(ctx, policySetupBudget)
+	defer pcancel()
+	if err := applyPolicies(pctx, pool, log, cfg); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("policies: %w", err)
 	}
@@ -399,6 +418,14 @@ func verifyRequiredColumns(ctx context.Context, pool *pgxpool.Pool) error {
 // but this guard against the later SQL-DDL interpolation stays regardless of
 // caller.
 func applyPolicies(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, cfg config.Store) error {
+	return applyPoliciesWithHook(ctx, pool, log, cfg, nil)
+}
+
+// applyPoliciesWithHook is applyPolicies with a per-statement observation seam.
+// The regression fix atomicity test uses it to interrupt the sequence at each
+// remove/add boundary in turn; production always passes nil.
+func applyPoliciesWithHook(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, cfg config.Store,
+	afterExec func(sql string)) error {
 	compAfter, rawRet := cfg.CompressAfter, cfg.RawRetention
 	if compAfter == "" {
 		compAfter = "1 day"
@@ -418,13 +445,28 @@ func applyPolicies(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, cf
 		return fmt.Errorf("raw_retention: %w", err)
 	}
 
-	conn, err := pool.Acquire(ctx)
+	// every replacement runs in ONE transaction. Each policy is
+	// changed by remove-then-add, so as twelve autocommit statements any error,
+	// timeout, or interruption between a remove and its add left that hypertable
+	// with NO compression or NO retention. Startup returned an error, but the
+	// database was already mutated — and if the previous binary kept serving, the
+	// deploy rolled back, or the restart was delayed, raw frames grew unbounded or
+	// stayed uncompressed with nothing reporting it.
+	//
+	// TimescaleDB's add_*/remove_*_policy are ordinary transactional functions
+	// (verified against 2.25 on the deploy target: a ROLLBACK restores the exact
+	// previous policy), so commit-or-nothing is achievable directly rather than by
+	// compensating restoration.
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	defer conn.Release()
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed
 	exec := func(sql string) error {
-		_, err := conn.Conn().PgConn().Exec(ctx, sql).ReadAll()
+		_, err := tx.Exec(ctx, sql)
+		if afterExec != nil {
+			afterExec(sql)
+		}
 		return err
 	}
 
@@ -465,6 +507,11 @@ func applyPolicies(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, cf
 	}
 	if err := exec(`SELECT add_compression_policy('gnss_events', INTERVAL '30 days', if_not_exists => true)`); err != nil {
 		return fmt.Errorf("events compression policy: %w", err)
+	}
+	// Nothing above is visible to any other session until this commits, so the
+	// installed set is either entirely the old one or entirely the new one.
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit policies: %w", err)
 	}
 	log.Info("historian policies applied", "compress_after", compAfter, "raw_retention", rawRet)
 	return nil
