@@ -199,6 +199,11 @@ struct spool {
 	 * yet not removable (see replay_retire_stuck); 0 = not stuck */
 	time_t retire_stuck_since;
 	pthread_mutex_t mu;
+	/* set only after pthread_mutex_init succeeded. spool_free must
+	 * never pthread_mutex_destroy an object that was never initialized, and no
+	 * lock/unlock may run against one either — that is undefined behavior across
+	 * the producer, consumer, ACK and shutdown threads. */
+	int mu_ready;
 };
 
 static struct spool g_spool;
@@ -430,15 +435,30 @@ uncertain:
 	return -1;
 }
 
-static void spool_init(struct spool *s, size_t cap, const char *path, uint64_t disk_max_bytes) {
+/* spool_init returns 0 on success, -1 on failure, and publishes nothing usable
+ * unless BOTH the ring allocation and the mutex creation succeeded
+ *. It previously returned void and ignored pthread_mutex_init's
+ * result, so resource exhaustion produced a spool whose every later lock, unlock
+ * and destroy ran against an uninitialized mutex — undefined behavior shared by
+ * the producer, consumer, ACK and shutdown threads, i.e. a recoverable startup
+ * failure turned into possible crashes or spool/ring corruption. On failure the
+ * partial allocation is released and `path` is left for the caller to free, so no
+ * spool file is touched. */
+static int spool_init(struct spool *s, size_t cap, const char *path, uint64_t disk_max_bytes) {
 	memset(s, 0, sizeof *s);
 	s->ring = calloc(cap, sizeof *s->ring);
-	if (!s->ring) die("out of memory for spool");
+	if (!s->ring) return -1;
+	if (pthread_mutex_init(&s->mu, NULL) != 0) {
+		free(s->ring);
+		s->ring = NULL;
+		return -1;
+	}
+	s->mu_ready = 1;
 	s->cap = cap;
 	s->path = path;
 	s->disk_max_bytes = disk_max_bytes;
 	memcpy(s->session, g_session, sizeof s->session);
-	pthread_mutex_init(&s->mu, NULL);
+	return 0;
 }
 
 /* Link + directory fsync before unlink keeps the old name recoverable until its
@@ -465,7 +485,7 @@ static int archive_spool(struct spool *s, const char *dir) {
 }
 
 static void spool_free(struct spool *s) {
-	pthread_mutex_destroy(&s->mu);
+	if (s->mu_ready) pthread_mutex_destroy(&s->mu); /* regression fix */
 	free(s->ring);
 	free((void *)s->path);
 	free(s);
@@ -500,8 +520,16 @@ static void spool_recover_all(struct spool *current) {
 		if (snprintf(path, sizeof path, "%s/%s", dir, e->d_name) >= (int)sizeof path) { failed = 1; break; }
 		struct spool *old = calloc(1, sizeof *old);
 		if (!old) { failed = 1; break; }
-		spool_init(old, 1, strdup(path), 0);
-		if (!old->path) die("out of memory for replay path");
+		char *dup = strdup(path);
+		/* fail closed rather than publish a spool with no usable
+		 * mutex. The archive file itself is untouched, so a later start retries it;
+		 * `failed` disables disk append for this run. */
+		if (!dup || spool_init(old, 1, dup, 0) != 0) {
+			free(dup);
+			free(old);
+			failed = 1;
+			break;
+		}
 		int rc = spool_recover(old);
 		if (rc == 1) { old->next = g_replays; g_replays = old; retained += old->retained_bytes; }
 		else { if (rc < 0) failed = 1; spool_free(old); }
@@ -509,8 +537,12 @@ static void spool_recover_all(struct spool *current) {
 	closedir(d);
 	struct spool *old = calloc(1, sizeof *old);
 	if (!old) goto failed;
-	spool_init(old, 1, strdup(current->path), 0);
-	if (!old->path) die("out of memory for replay path");
+	char *curdup = strdup(current->path);
+	if (!curdup || spool_init(old, 1, curdup, 0) != 0) { /* regression fix */
+		free(curdup);
+		free(old);
+		goto failed;
+	}
 	int rc = spool_recover(old);
 	if (rc == 1 && files < MAX_REPLAY_FILES && archive_spool(old, dir) == 0) {
 		/* The archive may already be listed after a crash between link/unlink.
@@ -2021,7 +2053,17 @@ int main(int argc, char **argv) {
 	SSL_CTX *ctx = make_ctx(&o);
 	/* New captures and recovered records use separate session spaces. */
 	session_init();
-	spool_init(&g_spool, o.spool_cap, o.spool_file, o.disk_max_bytes);
+	/* no frame has been captured yet, so a failure here costs
+	 * nothing — but continuing with an uninitialized mutex would corrupt every
+	 * later spool operation. Retry with bounded backoff (boot-time resource
+	 * exhaustion is typically transient, and "never exit" is this file's rule)
+	 * before any thread that could touch the spool is started. */
+	int spool_backoff = 1;
+	while (spool_init(&g_spool, o.spool_cap, o.spool_file, o.disk_max_bytes) != 0) {
+		log_msg("failed to initialize the spool (out of memory or locks); retrying in %ds", spool_backoff);
+		sleep(spool_backoff);
+		if ((spool_backoff *= 2) > 30) spool_backoff = 30;
+	}
 	spool_recover_all(&g_spool);
 	log_msg("session %s", g_session);
 
