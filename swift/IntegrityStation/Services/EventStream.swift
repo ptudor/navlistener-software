@@ -62,18 +62,33 @@ struct EventStream: Sendable {
                         guard let frame = try accumulator.consume(text) else { continue }
 
                         switch frame.event {
+                        // a recognized state-bearing event that will
+                        // not decode fails the stream. Silently skipping it (the
+                        // previous `if let`) left transport healthy while the client
+                        // accepted a later cursor, stepping permanently past a durable
+                        // transition it never applied and continuing to present
+                        // conditions as known. Throwing here reaches the outer catch,
+                        // which runs onFailure and terminates the transport — the same
+                        // path bounded-queue and transport failures already take, so
+                        // the store invalidates and reconciles before any later cursor
+                        // is accepted.
                         case "gnss":
-                            if let event = Self.decodeEvent(frame.data, decoder: decoder) {
-                                try Self.deliver(.event(event, cursor: frame.id), to: continuation)
+                            guard let event = Self.decodeEvent(frame.data, decoder: decoder) else {
+                                throw FeedError.malformedEvent(id: frame.id)
                             }
+                            try Self.deliver(.event(event, cursor: frame.id), to: continuation)
                         case "resolved":
-                            if let event = Self.decodeEvent(frame.data, decoder: decoder) {
-                                try Self.deliver(.resolved(event, cursor: frame.id), to: continuation)
+                            guard let event = Self.decodeEvent(frame.data, decoder: decoder) else {
+                                throw FeedError.malformedEvent(id: frame.id)
                             }
+                            try Self.deliver(.resolved(event, cursor: frame.id), to: continuation)
                         case "status":
                             let status = (try? decoder.decode(StreamStatus.self, from: Data(frame.data.utf8)))?.status
                             try Self.deliver(.status(status ?? frame.data), to: continuation)
                         default:
+                            // Unknown event names stay ignorable for forward
+                            // compatibility; only recognized state-bearing ones
+                            // are integrity-critical.
                             continue
                         }
                     }

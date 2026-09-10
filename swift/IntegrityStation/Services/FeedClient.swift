@@ -13,6 +13,11 @@ enum FeedError: Error, Equatable, LocalizedError, Sendable {
     case missingData
     case inputLimit
     case streamEnded
+    // a recognized state-bearing event ("gnss"/"resolved") that
+    // cannot be decoded is a stream-integrity failure, not a frame to skip.
+    // Skipping it let the client accept a later cursor and step permanently past
+    // a durable transition while still presenting conditions as known.
+    case malformedEvent(id: String?)
 
     var errorDescription: String? {
         switch self {
@@ -28,6 +33,7 @@ enum FeedError: Error, Equatable, LocalizedError, Sendable {
         case .missingData: String(localized: "error.missing_data")
         case .inputLimit: String(localized: "error.input_limit")
         case .streamEnded: String(localized: "error.stream_ended")
+        case .malformedEvent: String(localized: "error.malformed_event")
         }
     }
 

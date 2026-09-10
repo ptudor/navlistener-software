@@ -1473,26 +1473,84 @@ func writeEventRetry(ctx context.Context, historian eventWriter, row store.Event
 // and the persisted historian row (no params at all, no log, no metric). Returns
 // params unchanged (same map) when nothing needs sanitizing, to avoid an allocation
 // on the common path.
+// sanitizeEventParams makes an event's params object JSON-safe at EVERY depth
+// before it is written to history or published.
+//
+// It used to inspect only top-level float64 values, but Params is a generic
+// nested map[string]any: a non-finite number one level down, or a value of a
+// type encoding/json cannot marshal, still failed the whole document. That
+// mattered because the SSE broker treated a marshal failure as successful
+// delivery — the event kept its place in the durable and broker sequences but
+// emitted no bytes, so a later event advanced the client's cursor across it with
+// no replay-gap and no disconnect. Fixing the broker is the barrier; this is the
+// gate that stops such a value from entering history in the first place.
+//
+// Invalid values are rendered as text rather than dropped: an event is a
+// confirmed integrity transition, so publishing it with one readable "NaN" is
+// strictly better than losing the transition. The whole map is returned
+// unchanged when nothing needed normalizing, so the common path allocates nothing.
 func sanitizeEventParams(params map[string]any) map[string]any {
-	var dirty bool
-	for _, v := range params {
-		if f, ok := v.(float64); ok && (math.IsNaN(f) || math.IsInf(f, 0)) {
-			dirty = true
-			break
-		}
+	if len(params) == 0 {
+		return params
 	}
+	cleaned, dirty := sanitizeParamsMap(params)
 	if !dirty {
 		return params
 	}
-	out := make(map[string]any, len(params))
-	for k, v := range params {
-		if f, ok := v.(float64); ok && (math.IsNaN(f) || math.IsInf(f, 0)) {
-			out[k] = fmt.Sprint(f) // "NaN", "+Inf", "-Inf"
-			continue
-		}
-		out[k] = v
+	return cleaned
+}
+
+func sanitizeParamsMap(in map[string]any) (map[string]any, bool) {
+	var dirty bool
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		cv, changed := sanitizeParamValue(v)
+		dirty = dirty || changed
+		out[k] = cv
 	}
-	return out
+	return out, dirty
+}
+
+func sanitizeParamValue(v any) (any, bool) {
+	switch t := v.(type) {
+	case nil, bool, string, json.Number,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64:
+		return v, false
+	case float64:
+		if math.IsNaN(t) || math.IsInf(t, 0) {
+			return fmt.Sprint(t), true // "NaN", "+Inf", "-Inf"
+		}
+		return v, false
+	case float32:
+		f := float64(t)
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return fmt.Sprint(f), true
+		}
+		return v, false
+	case map[string]any:
+		return sanitizeParamsMap(t)
+	case []any:
+		var dirty bool
+		out := make([]any, len(t))
+		for i, elem := range t {
+			cv, changed := sanitizeParamValue(elem)
+			dirty = dirty || changed
+			out[i] = cv
+		}
+		if !dirty {
+			return v, false
+		}
+		return out, true
+	default:
+		// An unrecognized dynamic type from a future detector. Ask the encoder
+		// directly rather than guessing: a channel, func, complex number or a
+		// struct with an unmarshalable field would otherwise poison the sequence.
+		if _, err := json.Marshal(v); err != nil {
+			return fmt.Sprint(v), true
+		}
+		return v, false
+	}
 }
 
 // expireTickFor derives the SV-expiry sweep cadence from the configured TTL

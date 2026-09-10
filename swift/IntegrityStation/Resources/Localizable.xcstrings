@@ -11,6 +11,16 @@
         }
       }
     },
+    "action.done": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Done"
+          }
+        }
+      }
+    },
     "action.refresh": {
       "localizations": {
         "en": {
@@ -251,6 +261,16 @@
         }
       }
     },
+    "error.malformed_event": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Live event stream sent an unreadable event. Reconnecting and reconciling."
+          }
+        }
+      }
+    },
     "error.missing_data": {
       "localizations": {
         "en": {
@@ -427,6 +447,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "Station status unknown"
+          }
+        }
+      }
+    },
+    "notification.queue_full": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The notification queue is full. Some alerts could not be delivered."
+          }
+        }
+      }
+    },
+    "notification.raised": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Station alert: %@"
+          }
+        }
+      }
+    },
+    "notification.recovered": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Station recovered: %@"
           }
         }
       }
@@ -677,6 +727,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "Critical integrity events"
+          }
+        }
+      }
+    },
+    "settings.notifications.denied": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notifications are disabled in system settings."
+          }
+        }
+      }
+    },
+    "settings.notifications.enable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allow notifications"
           }
         }
       }
@@ -1181,6 +1251,16 @@
         }
       }
     },
+    "stations.add.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add stations"
+          }
+        }
+      }
+    },
     "stations.cached": {
       "localizations": {
         "en": {
@@ -1247,76 +1327,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "m"
-          }
-        }
-      }
-    },
-    "stations.add.title": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Add stations"
-          }
-        }
-      }
-    },
-    "action.done": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Done"
-          }
-        }
-      }
-    },
-    "notification.raised": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Station alert: %@"
-          }
-        }
-      }
-    },
-    "notification.recovered": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Station recovered: %@"
-          }
-        }
-      }
-    },
-    "settings.notifications.enable": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Allow notifications"
-          }
-        }
-      }
-    },
-    "settings.notifications.denied": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Notifications are disabled in system settings."
-          }
-        }
-      }
-    },
-    "notification.queue_full": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "The notification queue is full. Some alerts could not be delivered."
           }
         }
       }

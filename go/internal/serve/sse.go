@@ -365,16 +365,27 @@ func parseLastEventID(r *http.Request) (int64, bool) {
 	return id, true
 }
 
-// writeSSE marshals and frames one event. a marshal failure (e.g. a
-// non-finite float slipping past emitEvent's sanitization) is logged with the
-// event's type/SV before being dropped -- silently swallowing it here meant the
-// event vanished from both the live stream and the id sequence a client's
-// Last-Event-ID replay depends on, with no signal anywhere that it happened.
+// writeSSE marshals and frames one event.
+//
+// a marshal failure is a STREAM-INTEGRITY failure and is returned
+// as an error, which terminates this connection. Dropping the event instead
+// (original choice) left it holding its place in the durable and broker
+// sequences while emitting no bytes, so the next event advanced the client's
+// Last-Event-ID across a transition it never received — no replay gap, no
+// disconnect, and a client that believes its condition state is complete when it
+// is not. Closing the connection turns that silent hole into a reconnect, which
+// replays from the last id the client actually applied.
+//
+// This is the final barrier only. sanitizeEventParams validates the whole nested
+// params object before an event is written or published, so reaching here means
+// something bypassed that gate; the log names the event so it can be traced.
+// Nothing is written before the marshal succeeds, so no partial frame can escape.
 func (b *Broker) writeSSE(w http.ResponseWriter, event string, e EventMsg) error {
 	body, err := json.Marshal(e)
 	if err != nil {
-		b.log.Error("sse event marshal failed", "type", e.Type, "sv", e.SV, "id", e.ID, "error", err)
-		return nil // malformed event: drop it, not a write failure
+		b.log.Error("sse event marshal failed; closing the stream so the client reconciles",
+			"type", e.Type, "sv", e.SV, "id", e.ID, "error", err)
+		return fmt.Errorf("sse marshal event %d: %w", e.ID, err)
 	}
 	_, err = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", e.ID, event, body)
 	return err

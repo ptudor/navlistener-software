@@ -114,23 +114,32 @@ func TestBrokerPolicyResetClearsReplayAndKicksClients(t *testing.T) {
 	}
 }
 
-// TestWriteSSELogsMarshalFailure guards a non-finite float in an event's
-// params makes json.Marshal fail; writeSSE must log the failure (with the event's
-// type/sv) rather than silently dropping the event with no signal anywhere. The
-// event is still dropped from the stream (a malformed event, not a write failure),
-// but now with a log record proving it happened.
-func TestWriteSSELogsMarshalFailure(t *testing.T) {
+// TestWriteSSEFailsStreamOnMarshalFailure guards regression fix as revised by
+// regression fix. A non-finite float in an event's params makes json.Marshal
+// fail. Logging it and reporting success (the original regression fix behavior) left the
+// event holding its place in the durable and broker sequences while emitting no
+// bytes, so the next event advanced the client's Last-Event-ID across a
+// transition it never received — no replay gap, no disconnect, and a client that
+// believes its condition state is complete. The failure is now returned, which
+// terminates the connection and forces the client to reconnect and reconcile
+// from the last id it actually applied. No bytes may be written either way.
+func TestWriteSSEFailsStreamOnMarshalFailure(t *testing.T) {
 	var logBuf bytes.Buffer
 	b := newBroker()
 	b.log = slog.New(slog.NewTextHandler(&logBuf, nil))
 
 	rr := newSyncRecorder()
 	e := EventMsg{ID: 9, SV: "G05@0", Type: "orbit_disco", Params: map[string]any{"orbit_disco_m": math.NaN()}}
-	if err := b.writeSSE(rr, "gnss", e); err != nil {
-		t.Fatalf("writeSSE returned an error, want nil (malformed event dropped, not a write failure): %v", err)
+	err := b.writeSSE(rr, "gnss", e)
+	if err == nil {
+		t.Fatal("writeSSE reported success for an unmarshalable event; the client would advance " +
+			"its cursor across a transition it never received")
+	}
+	if !strings.Contains(err.Error(), "9") {
+		t.Errorf("error does not name the failing event id: %v", err)
 	}
 	if rr.String() != "" {
-		t.Errorf("a marshal-failed event must not write any bytes to the stream: %q", rr.String())
+		t.Errorf("a marshal-failed event must not write a partial frame: %q", rr.String())
 	}
 	logged := logBuf.String()
 	if !strings.Contains(logged, "sse event marshal failed") {

@@ -264,14 +264,25 @@ final class StationStore {
                     try Task.checkCancellation()
                     guard isCurrent(session, generation: generation) else { return }
                     switch update {
+                    // apply the transition FIRST, then advance and
+                    // persist the cursor. Advancing first turned a safe duplicate
+                    // replay into a skipped transition: a crash after the cache
+                    // write, or a throw from apply/resolve (ConditionState.apply
+                    // can throw FeedError.inputLimit), left the in-memory cursor
+                    // already advanced with nothing rolling it back, so the next
+                    // connection asked only for later ids. Applying first makes the
+                    // crash window at-least-once instead — application is idempotent
+                    // by event id, so a duplicate replay is harmless — and a failed
+                    // apply now reaches the outer catch with the id unacknowledged,
+                    // which invalidates conditions and reconciles.
                     case .event(let event, let cursor):
-                        await record(cursor: cursor, session: session, generation: generation, access: access)
-                        guard isCurrent(session, generation: generation) else { return }
                         try applyLiveEvent(event)
-                    case .resolved(let event, let cursor):
-                        await record(cursor: cursor, session: session, generation: generation, access: access)
                         guard isCurrent(session, generation: generation) else { return }
+                        await record(cursor: cursor, session: session, generation: generation, access: access)
+                    case .resolved(let event, let cursor):
                         try resolve(event)
+                        guard isCurrent(session, generation: generation) else { return }
+                        await record(cursor: cursor, session: session, generation: generation, access: access)
                     case .status(let status):
                         if status == "replay_gap" || status == "reset" { conditions.invalidate() }
                         if !conditions.isKnown {
@@ -316,6 +327,11 @@ final class StationStore {
         }
     }
 
+    // record advances the durable SSE cursor. It runs only AFTER the event that
+    // cursor names has been applied, so the id is never
+    // acknowledged for a transition this client did not take. A failed cache
+    // write is deliberately tolerated: the consequence is that the id replays on
+    // the next start, which application is idempotent against.
     private func record(cursor: String?, session: ReadSession, generation: UInt64, access: CacheAccess) async {
         guard let cursor, isCurrent(session, generation: generation) else { return }
         if let next = Int64(cursor), let previous = lastEventID.flatMap(Int64.init), next <= previous { return }
