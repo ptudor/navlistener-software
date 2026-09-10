@@ -1,7 +1,6 @@
 package ingest
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -79,14 +78,16 @@ func TestNavfeederSurvivesZstdAllocationFailure(t *testing.T) {
 			}()
 
 			const injectedFailures = 3
-			var ferr bytes.Buffer
+			// A plain bytes.Buffer would race: exec writes it from its own goroutine
+			// while these assertions read it.
+			ferr := &syncBuffer{}
 			cmd := exec.CommandContext(ctx, bin, "feeder",
 				"--server", pushLn.Addr().String(),
 				"--source", srcLn.Addr().String(),
 				"--station", "zstd-alloc", "--token", "s3cret", "--feed", "ubx",
 				"--insecure", "--zstd", "--spool", "100000")
 			cmd.Env = append(os.Environ(), fmt.Sprintf("%s=%d", tc.env, injectedFailures))
-			cmd.Stderr = &ferr
+			cmd.Stderr = ferr
 			if err := cmd.Start(); err != nil {
 				t.Fatal(err)
 			}
@@ -94,7 +95,7 @@ func TestNavfeederSurvivesZstdAllocationFailure(t *testing.T) {
 			go func() { exited <- cmd.Wait() }()
 			t.Cleanup(func() {
 				_ = cmd.Process.Kill()
-				if t.Failed() && ferr.Len() > 0 {
+				if t.Failed() && ferr.String() != "" {
 					t.Logf("navfeeder stderr:\n%s", ferr.String())
 				}
 			})
@@ -189,7 +190,9 @@ func TestNavfeederWithoutZstdAllocatesNoCompressor(t *testing.T) {
 		}
 	}()
 
-	var ferr bytes.Buffer
+	// A plain bytes.Buffer would race: exec writes it from its own goroutine
+	// while these assertions read it.
+	ferr := &syncBuffer{}
 	cmd := exec.CommandContext(ctx, bin, "feeder",
 		"--server", pushLn.Addr().String(),
 		"--source", srcLn.Addr().String(),
@@ -198,13 +201,13 @@ func TestNavfeederWithoutZstdAllocatesNoCompressor(t *testing.T) {
 	// Every zstd allocation would fail if one were ever attempted.
 	cmd.Env = append(os.Environ(),
 		"NAVFEEDER_TEST_FAIL_ZSTD_CTX=1000", "NAVFEEDER_TEST_FAIL_ZSTD_BUF=1000")
-	cmd.Stderr = &ferr
+	cmd.Stderr = ferr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
-		if t.Failed() && ferr.Len() > 0 {
+		if t.Failed() && ferr.String() != "" {
 			t.Logf("navfeeder stderr:\n%s", ferr.String())
 		}
 	})

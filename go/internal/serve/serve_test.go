@@ -418,8 +418,12 @@ func TestObservers(t *testing.T) {
 	if env.Data.Observers[0].ID != "observer16" {
 		t.Errorf("observer id %q", env.Data.Observers[0].ID)
 	}
-	if env.Data.Observers[1].ID != "badname" { // NUL stripped by sanitize
-		t.Errorf("unsanitized observer id %q", env.Data.Observers[1].ID)
+	// an id is an identity, not display text. It is served
+	// verbatim (JSON escapes the NUL losslessly) so it still equals the identity
+	// used by state, events and station selection. Stripping the NUL is what let
+	// this station collide with a genuine "badname".
+	if env.Data.Observers[1].ID != "bad\x00name" {
+		t.Errorf("observer id %q was altered; identities must round-trip", env.Data.Observers[1].ID)
 	}
 }
 

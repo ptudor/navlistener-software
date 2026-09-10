@@ -564,7 +564,14 @@ func (s *Server) observers(now time.Time, st *state.Store, sources []config.Sour
 	for _, src := range sources {
 		seen[src.Name] = true
 		o := observer{
-			ID: sanitize(src.Name),
+			// the id is an identity, not display text, and is
+			// emitted verbatim. config.finalize validated it as a canonical
+			// observer id, so there is nothing to clean — and cleaning it is what
+			// let two distinct stations collapse to one served id and broke the
+			// round-trip to the identity used by events and station selection.
+			// Vendor/Remark below are operator-supplied metadata and still are
+			// sanitized.
+			ID: src.Name,
 			// Remark is the operator-supplied station note; the internal
 			// dial address (LAN topology + the exact port of an unauthenticated
 			// raw receiver TCP stream) must never reach this public feed.
@@ -604,7 +611,10 @@ func (s *Server) observers(now time.Time, st *state.Store, sources []config.Sour
 	}
 	sort.Strings(extra)
 	for _, id := range extra {
-		o := observer{ID: sanitize(id)}
+		// Identity again, verbatim: these ids come from the live read models, whose
+		// only writers are authenticated push contexts (Normalize-validated) and
+		// configured dial sources.
+		o := observer{ID: id}
 		if r, ok := rf[id]; ok {
 			o.RF = &r
 		}

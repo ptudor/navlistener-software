@@ -624,6 +624,16 @@ func (c *Config) finalize() error {
 		if s.Name == "" {
 			return fmt.Errorf("ingest[%d]: name is required", i)
 		}
+		// a dial source's name IS its observer identity — it keys
+		// live state, RF telemetry, capability reports, events and the served
+		// observers feed, and is now served verbatim rather than through a lossy
+		// display sanitizer. Names stay opaque (the deliberate API contract), so
+		// the only thing refused here is one that cannot round-trip at all.
+		if !identity.ValidOpaqueObserverID(s.Name) {
+			return fmt.Errorf("ingest[%d]: name %q is not valid UTF-8; a source name is the "+
+				"station identity carried through feeds, events and station selection, "+
+				"so it must survive byte-for-byte", i, s.Name)
+		}
 		if seen[s.Name] {
 			return fmt.Errorf("ingest[%d]: duplicate source name %q", i, s.Name)
 		}
@@ -1059,23 +1069,14 @@ func capabilitySignals(capabilities []Capability) []identity.Signal {
 // matchPeerIdentity) compares the certificate's single DNS SAN byte-for-byte
 // against this name, so it must be nonempty, at most 253 bytes (the DNS name
 // bound), and only ASCII letters, digits, '.', '-' — no case-fold or Unicode
-// aliases. Enforced at config load whenever push.client_ca is set, so an
-// unbindable station name fails -check-config instead of locking the observer
-// out at connect time.
-func ValidObserverID(s string) bool {
-	if len(s) == 0 || len(s) > 253 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-			(c >= '0' && c <= '9') || c == '.' || c == '-' {
-			continue
-		}
-		return false
-	}
-	return true
-}
+// aliases.
+//
+// this is now one delegation to identity.ValidObserverID, the
+// single contract shared with the control-plane boundary (ObserverContext
+// .Normalize). Two copies of the rule, applied at different boundaries with
+// different strictness, is what let a database-authorized id reach the feed as
+// something a display sanitizer had to clean.
+func ValidObserverID(s string) bool { return identity.ValidObserverID(s) }
 
 // isLoopbackHost reports whether addr's host part is provably loopback
 // ("localhost", 127.0.0.0/8, ::1) — regression fix. An empty host (":9100") binds

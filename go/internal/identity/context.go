@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"unicode/utf8"
 )
 
 const (
@@ -132,6 +133,53 @@ var certificateFingerprintRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // ValidScopeID reports whether an administrative id is safe as an opaque key.
 func ValidScopeID(s string) bool { return scopeIDRe.MatchString(s) }
 
+// ValidObserverID is the CERTIFICATE-BINDABLE observer-id contract: the push
+// handshake compares an mTLS certificate's single DNS SAN byte-for-byte against
+// the station name, so a name that must bind to a certificate is limited to
+// 1-253 bytes of ASCII letters, digits, '.' and '-' — no case-fold, no Unicode
+// aliases.
+//
+// It is deliberately NOT the general contract. Bearer-token observer ids are
+// opaque by design and preserved exactly (see ValidOpaqueObserverID and
+// TestOpaqueSelectionMatchesTokenAndCertificateAdmission), so this applies only
+// where certificate binding does.
+func ValidObserverID(s string) bool {
+	if len(s) == 0 || len(s) > 253 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '.' || c == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// ValidOpaqueObserverID is the contract every authority boundary applies to an
+// observer id, whatever credential minted it.
+//
+// The rule is deliberately minimal, because opaque identity is a chosen property
+// here: an id may contain ':', '/', spaces or non-ASCII text and must survive
+// byte-for-byte through state, feeds, events and station selection. What it may
+// NOT be is un-round-trippable. Invalid UTF-8 cannot pass through a JSON encoder
+// unchanged — Go substitutes U+FFFD — so such an id would be served as something
+// that no longer equals the identity it names, and two different malformed ids
+// can even serve as the same string.
+//
+// That is the defect this closes. The serve layer used to run every observer id
+// through the lossy display sanitizer, which drops control characters and
+// U+FFFD; distinct identities could collapse to one served id, and the Swift
+// client's correct duplicate-id rejection then made a single malformed authority
+// row poison the whole observers snapshot. Ids are now served verbatim, so the
+// only thing that must be refused is an id that cannot be represented at all —
+// refused at the boundary, fail-closed, rather than quietly cleaned downstream.
+func ValidOpaqueObserverID(s string) bool {
+	return s != "" && utf8.ValidString(s)
+}
+
 // NewPrivateContext returns the fail-closed context for a local source.
 func NewPrivateContext(observerID string, tier CredentialTier) ObserverContext {
 	return ObserverContext{
@@ -163,8 +211,18 @@ func (c ObserverContext) Normalize() (ObserverContext, error) {
 	c.DeclaredCapabilities = append([]Signal(nil), c.DeclaredCapabilities...)
 	c.Publication.FederationPeers = append([]string(nil), c.Publication.FederationPeers...)
 	c.Publication.Signals = append([]Signal(nil), c.Publication.Signals...)
+	// the control-plane authority boundary. This checked only for
+	// emptiness, so a token-authorized row could carry an observer id containing
+	// control characters or invalid UTF-8; the serve layer then had to sanitize it
+	// for display, and two distinct ids could collapse to one served id. Applying
+	// the canonical contract here means an authorized id is always usable verbatim
+	// and a malformed row fails closed on its own, without poisoning any other
+	// station's snapshot.
 	if c.ObserverID == "" {
 		return c, fmt.Errorf("observer id is required")
+	}
+	if !ValidOpaqueObserverID(c.ObserverID) {
+		return c, fmt.Errorf("observer id is not valid UTF-8 and cannot round-trip to the served identity")
 	}
 	if c.OrganizationID == "" {
 		c.OrganizationID = UnassignedOrganization

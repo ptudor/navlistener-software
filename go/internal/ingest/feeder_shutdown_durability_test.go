@@ -1,7 +1,6 @@
 package ingest
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -135,7 +134,9 @@ func runShutdownFlush(t *testing.T, env string) (stderr string, code int, before
 
 	sum := sha256.Sum256([]byte("s3cret"))
 	_ = hex.EncodeToString(sum[:])
-	var ferr bytes.Buffer
+	// A plain bytes.Buffer would race: exec writes it from its own goroutine
+	// while these assertions read it.
+	ferr := &syncBuffer{}
 	cmd := exec.CommandContext(ctx, bin, "feeder",
 		"--server", deadCollector.Addr().String(),
 		"--source", srcLn.Addr().String(),
@@ -145,7 +146,7 @@ func runShutdownFlush(t *testing.T, env string) (stderr string, code int, before
 	if env != "" {
 		cmd.Env = append(cmd.Env, env)
 	}
-	cmd.Stderr = &ferr
+	cmd.Stderr = ferr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
