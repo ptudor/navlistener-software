@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/ptudor/gnss"
 )
 
 // NavFrameQuery selects persisted raw nav frames for replay.
@@ -31,6 +32,11 @@ type NavFrameQuery struct {
 	// is returned when the cap is actually hit rather than truncating quietly.
 	Limit int
 }
+
+// maxNavFrameLimit is the largest limit the query accepts. It is
+// far above any plausible replay window and far below the point where limit+1
+// could overflow, so the probe row that detects "more matched" is always safe.
+const maxNavFrameLimit = 100_000_000
 
 // defaultNavFrameLimit bounds an unbounded query. Roughly a day of one receiver's
 // full-constellation output at observed rates (~26 SFRBX/s) — high enough that a
@@ -123,9 +129,29 @@ func queryNavFrames(ctx context.Context, pool *pgxpool.Pool, q NavFrameQuery, fn
 	if !q.Until.IsZero() && !q.Until.After(q.Since) {
 		return fmt.Errorf("query nav frames: Until (%s) must be after Since (%s)", q.Until, q.Since)
 	}
+	// this is a reusable exported query type, so the caller's
+	// numeric fields are validated before they reach SQL rather than relying on
+	// today's replay callers happening to pass small values. An out-of-range GNSS
+	// id used to be cast straight to int16 — 65,536 wrapping to 0 silently
+	// answered a *different* constellation's question — and a MaxInt limit
+	// overflowed at limit+1, producing a database error instead of the API's
+	// documented limit behavior.
+	if q.GnssID != nil {
+		id := *q.GnssID
+		if id < 0 || id > int(gnss.NavIC) || !gnss.GNSSID(id).Valid() {
+			return fmt.Errorf("query nav frames: gnss id %d is outside the constellation domain "+
+				"(0..%d minus IMES; docs/CONSTELLATIONS.md §0)", id, int(gnss.NavIC))
+		}
+	}
 	limit := q.Limit
 	if limit <= 0 {
 		limit = defaultNavFrameLimit
+	}
+	// The +1 probe row below must not overflow, and a limit far past any plausible
+	// replay is a caller bug worth naming rather than a query that cannot run.
+	if limit > maxNavFrameLimit {
+		return fmt.Errorf("query nav frames: limit %d exceeds the maximum supported limit %d",
+			limit, maxNavFrameLimit)
 	}
 
 	// New rows use the persistent first-storage sequence, stable across chunks,

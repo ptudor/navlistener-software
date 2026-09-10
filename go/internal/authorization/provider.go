@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,6 +49,15 @@ const (
 	// every cache by construction. Waiting for a slot is charged to the caller's
 	// existing defaultLookupTimeout budget rather than added on top of it.
 	defaultLookupConcurrency = 16
+	// the invalidation listener's reconnect pacing. backoff used to
+	// only ever grow, so once any early outage reached the cap, every later
+	// transient disconnect for the life of the process waited the full interval —
+	// widening the window in which a revocation depends solely on cache TTL.
+	listenBackoffInitial = 250 * time.Millisecond
+	listenBackoffMax     = 5 * time.Second
+	// listenHealthyAfter is how long a LISTEN must hold before the connection
+	// counts as proven even if the control plane never sent a notification.
+	listenHealthyAfter = 30 * time.Second
 )
 
 type observerLookup func(context.Context, string, string, string) (identity.ObserverContext, bool, error)
@@ -653,39 +663,76 @@ func (p *Provider) RunInvalidation(ctx context.Context) {
 		<-ctx.Done()
 		return
 	}
-	backoff := 250 * time.Millisecond
+	backoff := listenBackoffInitial
 	listenSQL := "LISTEN " + pgx.Identifier{changeNotifyChannel}.Sanitize()
 	for ctx.Err() == nil {
 		conn, err := p.pool.Acquire(ctx)
+		healthy := false
 		if err == nil {
 			p.InvalidateAll()
 			_, err = conn.Exec(ctx, listenSQL)
+			listenedAt := p.now()
 			for err == nil && ctx.Err() == nil {
 				_, err = conn.Conn().WaitForNotification(ctx)
 				if err == nil {
+					// A delivered notification is proof the listener worked.
+					healthy = true
 					p.InvalidateAll()
 				}
+			}
+			// a LISTEN that then held for listenHealthyAfter is
+			// equally good proof — a quiet control plane delivers no notifications
+			// for hours, and treating that as "never healthy" is what let one early
+			// outage pin the backoff at its cap for the life of the process.
+			if !healthy && err != nil && p.now().Sub(listenedAt) >= listenHealthyAfter {
+				healthy = true
 			}
 			conn.Release()
 		}
 		if ctx.Err() != nil {
 			return
 		}
-		p.log.Warn("authorization invalidation listener reconnecting", "error", err, "backoff", backoff)
-		timer := time.NewTimer(backoff)
+		if healthy {
+			// Reset only after a demonstrated healthy connection, never merely
+			// because Acquire returned: an accept-then-close database would
+			// otherwise be retried forever at the initial interval.
+			backoff = listenBackoffInitial
+		}
+		wait := p.jitter(backoff)
+		p.log.Warn("authorization invalidation listener reconnecting", "error", err, "backoff", wait)
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return
 		case <-timer.C:
 		}
-		if backoff < 5*time.Second {
+		if backoff < listenBackoffMax {
 			backoff *= 2
-			if backoff > 5*time.Second {
-				backoff = 5 * time.Second
+			if backoff > listenBackoffMax {
+				backoff = listenBackoffMax
 			}
 		}
 	}
+}
+
+// jitter spreads a fleet's reconnect attempts across up to ±25% of the interval,
+// so every collector that lost the same control-plane database does not retry in
+// lockstep. It never returns a non-positive duration.
+func (p *Provider) jitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return time.Millisecond
+	}
+	spread := int64(d) / 2 // the full ±25% band
+	if spread <= 0 {
+		return d
+	}
+	offset := rand.Int64N(spread) - spread/2
+	out := d + time.Duration(offset)
+	if out <= 0 {
+		return time.Millisecond
+	}
+	return out
 }
 
 func (p *Provider) pruneExpiredLocked(now time.Time) {
