@@ -2,9 +2,14 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // EventRow is one confirmed integrity event to persist (docs/OUTPUT.md §3/§4). Raw
@@ -33,17 +38,21 @@ type EventRow struct {
 const defaultEventAudience = "operator:local"
 
 // WriteEvent inserts one integrity event and returns its audience-local sequence.
-// Events are low-rate and individually meaningful, so they are written with a plain INSERT
-// (not the batched CopyFrom path the high-rate nav frames use). The insert fires
-// the notify trigger inside the same transaction.
+// Events are low-rate and individually meaningful, so they are written one at a
+// time (not the batched CopyFrom path the high-rate nav frames use). The insert
+// fires the notify trigger inside the same transaction.
 //
 // regression fix — the write is idempotent on (time, dedupe_key): PostgreSQL can
 // commit the INSERT while this client observes a timeout or connection error,
 // and the caller's bounded retry (cmd writeEventRetry) then re-runs it. The
-// existing CTE finds the already committed row before incrementing the audience
-// cursor, and the conflict-safe INSERT returns its audience_seq instead of
-// inserting or notifying twice. This is load-bearing for an ambiguous
-// commit may not create a visible gap in the public cursor.
+// retry finds the already committed row and returns its audience_seq instead of
+// inserting or notifying twice.
+//
+// regression fix / regression fix — the audience cursor must have no holes, because SSE
+// replay reads a hole as a lost event. Neither an ambiguous commit nor two
+// concurrent writers of the same event may consume a sequence without producing
+// the event that owns it, so dedupe resolution and sequence allocation are
+// serialized against each other and committed as one unit (see the body).
 func (s *Store) WriteEvent(ctx context.Context, e EventRow) (int64, error) {
 	if e.DedupeKey == "" {
 		return 0, fmt.Errorf("write event: missing dedupe key (every event needs a retry-stable identity)")
@@ -60,35 +69,102 @@ func (s *Store) WriteEvent(ctx context.Context, e EventRow) (int64, error) {
 	if redaction == "" {
 		redaction = "private"
 	}
+	// dedupe resolution and sequence allocation must be one
+	// serialized unit. The previous single-statement CTE decided "does this
+	// (time, dedupe_key) already exist?" from a statement snapshot and then
+	// incremented the audience cursor whenever that snapshot was empty. Two
+	// concurrent writes of the SAME event could both miss, both consume a
+	// sequence, and then race at the unique index: the loser returned the
+	// winner's audience_seq but had already committed its own increment. That
+	// burned sequence is a hole no event will ever fill, and SSE replay reads a
+	// hole as a lost event — a false replay_gap on a client that missed nothing.
+	//
+	// Events are low-rate and individually meaningful (see the type comment), so
+	// paying a few extra round trips for an explicit transaction is the right
+	// trade. The transaction is also what makes every failure path safe: the
+	// cursor increment and the event insert commit or roll back together, so no
+	// error, conflict, or ambiguous commit can consume a sequence without
+	// producing the event that owns it.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("write event: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed
+
+	// Serialize every writer of this exact dedupe identity. The lock is
+	// transaction-scoped, so it is released by commit or rollback — including on
+	// a dropped connection — and can never be leaked by a crashing caller.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, eventDedupeLockKey(e.Time, e.DedupeKey)); err != nil {
+		return 0, fmt.Errorf("write event: dedupe lock: %w", err)
+	}
+
+	// Re-read under the lock, in a statement snapshot taken after any competing
+	// writer committed and released it. This is the retry path: it returns the
+	// original sequence and consumes nothing.
+	var existing int64
+	err = tx.QueryRow(ctx,
+		`SELECT audience_seq FROM gnss_events WHERE time = $1 AND dedupe_key = $2`,
+		e.Time, e.DedupeKey).Scan(&existing)
+	switch {
+	case err == nil:
+		if err := tx.Commit(ctx); err != nil {
+			return 0, fmt.Errorf("write event: commit dedupe read: %w", err)
+		}
+		return existing, nil
+	case !errors.Is(err, pgx.ErrNoRows):
+		return 0, fmt.Errorf("write event: dedupe read: %w", err)
+	}
+
+	// Genuinely new: allocate this audience's next sequence and insert the event
+	// with it. The notify trigger still fires inside this transaction, so the row
+	// and its notification remain atomic.
 	var audienceSeq int64
-	err := s.pool.QueryRow(ctx,
-		`WITH existing AS MATERIALIZED (
-		     SELECT audience_seq FROM gnss_events WHERE time = $1 AND dedupe_key = $11
-		 ), next_seq AS (
+	err = tx.QueryRow(ctx,
+		`WITH next_seq AS (
 		     INSERT INTO gnss_event_audience_cursors (audience, last_seq)
-		     SELECT $2, 1 WHERE NOT EXISTS (SELECT 1 FROM existing)
+		     VALUES ($2, 1)
 		     ON CONFLICT (audience) DO UPDATE
 		       SET last_seq = gnss_event_audience_cursors.last_seq + 1
 		     RETURNING last_seq
-		 ), chosen AS (
-		     SELECT audience_seq FROM existing
-		     UNION ALL SELECT last_seq FROM next_seq
-		     LIMIT 1
 		 )
 		 INSERT INTO gnss_events
 		        (time, audience, audience_seq, redaction_class, sv, event_type,
 		         old_value, new_value, severity, message, raw, dedupe_key)
-		 SELECT $1, $2, chosen.audience_seq, $3, $4, $5, $6, $7, $8, $9, $10, $11
-		   FROM chosen
-		 ON CONFLICT (time, dedupe_key) DO UPDATE SET dedupe_key = EXCLUDED.dedupe_key
+		 SELECT $1, $2, next_seq.last_seq, $3, $4, $5, $6, $7, $8, $9, $10, $11
+		   FROM next_seq
 		 RETURNING audience_seq`,
 		e.Time, audience, redaction, e.SV, e.Type, nilIfEmpty(e.OldValue), nilIfEmpty(e.NewValue),
 		int16(e.Severity), nilIfEmpty(e.Message), raw, e.DedupeKey,
 	).Scan(&audienceSeq)
 	if err != nil {
+		// Unreachable as a dedupe conflict while the advisory lock is held and the
+		// session is READ COMMITTED, but harmless if it ever happens: the deferred
+		// rollback undoes the cursor increment with the failed insert, so the
+		// caller's bounded retry finds the committed row and its original
+		// sequence, and no hole is left behind either way.
 		return 0, fmt.Errorf("write event: %w", err)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("write event: commit: %w", err)
+	}
 	return audienceSeq, nil
+}
+
+// eventDedupeLockKey folds an event's full idempotency identity — the (time,
+// dedupe_key) pair that idx_gnss_events_dedupe is unique on — into the bigint
+// pg_advisory_xact_lock takes. A hash is unavoidable at that width, and a
+// collision is safe by construction: it only makes two unrelated events
+// serialize with each other, and correctness comes from the row re-read *after*
+// the lock, never from the key's uniqueness. The namespace prefix keeps this
+// subsystem's keys away from any other advisory-lock user in the database.
+func eventDedupeLockKey(t time.Time, dedupeKey string) int64 {
+	h := sha256.New()
+	h.Write([]byte("navlistener/gnss_events/dedupe\x00"))
+	var ns [8]byte
+	binary.BigEndian.PutUint64(ns[:], uint64(t.UnixNano()))
+	h.Write(ns[:])
+	h.Write([]byte(dedupeKey))
+	return int64(binary.BigEndian.Uint64(h.Sum(nil)[:8]))
 }
 
 // clampSeverity bounds a caller-supplied MinSeverity into the valid 0..2 (info/warning/
