@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ptudor/navlistener/internal/identity"
+	"github.com/ptudor/navlistener/internal/metrics"
 )
 
 // An observer's policy lock orders transitions and their reset markers. It is
@@ -73,6 +74,10 @@ func (p *PushServer) admit(ctx context.Context, current identity.ObserverContext
 		}
 		policy = &observerPolicy{sessions: make(map[*Admission]context.CancelFunc)}
 		p.policies[current.ObserverID] = policy
+		// policies are retained for the process lifetime, so this
+		// gauge only rises. It exists so an operator can see the ceiling coming
+		// instead of discovering it when a valid new observer is refused.
+		metrics.PushObserverPoliciesTracked.Set(float64(len(p.policies)))
 	}
 	p.authorizationMu.Unlock()
 	policy.mu.Lock()

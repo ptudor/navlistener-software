@@ -1,12 +1,15 @@
 package audience
 
 import (
+	"log/slog"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/ingest"
+	"github.com/ptudor/navlistener/internal/metrics"
 	"github.com/ptudor/navlistener/internal/state"
 )
 
@@ -69,6 +72,11 @@ type Registry struct {
 	sources []config.Source
 	views   map[string]View
 	dynamic int
+
+	// ceiling refusals are logged, but rate-limited — the refusal
+	// is per frame, so an unlimited log would itself become the outage.
+	log             *slog.Logger
+	lastCeilingWarn time.Time
 }
 
 func NewRegistry(shards int, sources []config.Source) *Registry {
@@ -113,9 +121,17 @@ func (r *Registry) ApplyPrivate(f *ingest.RawFrame) {
 	}
 	for _, a := range audiences {
 		view, ok := r.ensureDynamic(a)
-		if ok {
-			view.Store.Apply(f)
+		if !ok {
+			// the ceiling refusal used to be discarded here, so a
+			// collector that reached it silently stopped projecting valid private
+			// state — indistinguishable from a tenant with no observations. Count
+			// it (no scope id in the label; regression fix) and log once per refusal
+			// batch so the condition is diagnosable without a restart.
+			metrics.AudienceViewsRefusedTotal.Inc()
+			r.warnCeiling()
+			continue
 		}
+		view.Store.Apply(f)
 	}
 }
 
@@ -138,7 +154,37 @@ func (r *Registry) ensureDynamic(a identity.Audience) (View, bool) {
 	view = View{Audience: a, Store: state.NewProjection(r.shards), Sources: sourcesForAudience(r.sources, a)}
 	r.views[key] = view
 	r.dynamic++
+	metrics.AudienceViewsMaterialized.Set(float64(r.dynamic))
 	return view, true
+}
+
+// warnCeiling logs the refusal at most once a minute. The refusal is per frame,
+// so an unrate-limited log would itself become the outage.
+func (r *Registry) warnCeiling() {
+	now := time.Now()
+	r.mu.Lock()
+	due := now.Sub(r.lastCeilingWarn) >= time.Minute
+	if due {
+		r.lastCeilingWarn = now
+	}
+	r.mu.Unlock()
+	if !due {
+		return
+	}
+	log := r.log
+	if log == nil {
+		log = slog.Default()
+	}
+	log.Error("dynamic audience-view ceiling reached; authorized private observations are being dropped "+
+		"until the process restarts", "ceiling", maxDynamicViews)
+}
+
+// SetLogger installs the daemon logger so the ceiling warning reaches the same
+// output as everything else. Optional; slog.Default() is used otherwise.
+func (r *Registry) SetLogger(log *slog.Logger) {
+	r.mu.Lock()
+	r.log = log
+	r.mu.Unlock()
 }
 
 func sourcesForAudience(sources []config.Source, a identity.Audience) []config.Source {

@@ -326,4 +326,30 @@ var (
 		Name: "navlistener_sse_publish_rejected_total",
 		Help: "Events refused at SSE broker admission because the audience policy generation had advanced.",
 	})
+	// AudienceViewsRefusedTotal counts authorized private observations dropped
+	// because the dynamic-view ceiling was reached (regression fix sibling
+	// regression fix). Previously ApplyPrivate ignored the refusal, so a
+	// collector past the ceiling silently stopped projecting valid tenant state
+	// with nothing in metrics or logs to say so. No audience/organization label:
+	// regression fix forbids leaking private scope ids through label cardinality.
+	AudienceViewsRefusedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "navlistener_audience_views_refused_total",
+		Help: "Authorized private observations dropped because the dynamic audience-view ceiling was reached.",
+	})
+	// AudienceViewsMaterialized reports how many dynamic organization/collection
+	// views exist, so the ceiling's headroom is visible before it is hit.
+	AudienceViewsMaterialized = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "navlistener_audience_views_materialized",
+		Help: "Dynamic organization/collection state views currently materialized.",
+	})
+	// PushObserverPoliciesTracked reports how many observer policies the push
+	// server retains for reconciliation. Policies are retained
+	// for the process lifetime, so this only ever rises; watching it approach
+	// its ceiling is the warning that the next new observer identity will be
+	// refused with PushAdmissionRefusedTotal{reason="observer_ceiling"} until a
+	// restart. No observer label: this is a capacity number, not a per-station one.
+	PushObserverPoliciesTracked = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "navlistener_push_observer_policies_tracked",
+		Help: "Observer policies retained by the push server for offline reconciliation.",
+	})
 )

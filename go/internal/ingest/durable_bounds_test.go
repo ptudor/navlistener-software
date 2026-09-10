@@ -242,3 +242,48 @@ func TestDurableAbandonsSilentHolesLoudlyAndBoundsPerObserver(t *testing.T) {
 		t.Fatal("abandoned hole acknowledged or replay refused")
 	}
 }
+
+// regression fix (observability half): observer policies are retained for the
+// process lifetime and the 1,025th identity is refused until restart. The
+// capacity gauge exists so that ceiling is visible in advance rather than
+// discovered when a valid new observer is turned away.
+func TestPushObserverPolicyCapacityIsVisible(t *testing.T) {
+	p := &PushServer{policies: make(map[string]*observerPolicy),
+		collectorInstanceID: identity.LocalCollectorInstance,
+		log:                 slog.New(slog.NewTextHandler(io.Discard, nil))}
+	// The gauge is an absolute Set of this server's policy count; production runs
+	// exactly one push server, so absolute values are the right assertion here.
+	ctx := context.Background()
+	admit := func(id string) (*Admission, string) {
+		c := identity.NewPrivateContext(id, identity.CredentialToken)
+		c, err := c.Normalize()
+		if err != nil {
+			t.Fatalf("normalize %q: %v", id, err)
+		}
+		return p.admit(ctx, c, 0, func() {}, policyCredential{digest: "d-" + id, feed: "ubx"})
+	}
+	for i := range 5 {
+		if a, reason := admit(fmt.Sprintf("obs-%d", i)); a == nil {
+			t.Fatalf("admission %d refused: %s", i, reason)
+		}
+	}
+	if got := testutil.ToFloat64(metrics.PushObserverPoliciesTracked); got != 5 {
+		t.Fatalf("tracked-policies gauge = %v, want 5", got)
+	}
+	// Re-admitting an existing identity must not inflate the capacity reading.
+	if a, reason := admit("obs-0"); a == nil {
+		t.Fatalf("re-admission refused: %s", reason)
+	}
+	if got := testutil.ToFloat64(metrics.PushObserverPoliciesTracked); got != 5 {
+		t.Errorf("gauge = %v after a repeat identity; it must count distinct policies", got)
+	}
+	// And the documented ceiling still fails closed, with its existing reason.
+	p.authorizationMu.Lock()
+	for i := range maxTrackedObserverPolicies {
+		p.policies[fmt.Sprintf("filler-%d", i)] = &observerPolicy{sessions: map[*Admission]context.CancelFunc{}}
+	}
+	p.authorizationMu.Unlock()
+	if a, reason := admit("one-too-many"); a != nil || reason != "observer_ceiling" {
+		t.Errorf("admission past the ceiling = %v/%q, want a refusal with observer_ceiling", a, reason)
+	}
+}

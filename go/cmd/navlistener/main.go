@@ -144,6 +144,7 @@ func run() int {
 	state.SetLeapSeconds(cfg.State.LeapSeconds) // interim config override for ΔtLS
 	live, publicLive, publicEventsLive := newAudienceStores(cfg.State.Shards)
 	audienceRegistry := audience.NewRegistry(cfg.State.Shards, cfg.Ingest)
+	audienceRegistry.SetLogger(log)
 	audienceRegistry.Register(identity.Audience{Kind: identity.AudiencePublic}, publicLive, audience.PublicSources(cfg.Ingest))
 	audienceRegistry.Register(identity.Audience{Kind: identity.AudienceOperator, ID: cfg.Collector.InstanceID}, live, cfg.Ingest)
 	policyEpochs := audience.NewPolicyEpochs(time.Now())
