@@ -172,6 +172,40 @@ func (m *Manager) runSource(ctx context.Context, src config.Source, sc scanner) 
 	}
 }
 
+// silenceClock measures frame silence as elapsed time on ONE monotonic base.
+//
+// the recorded value must never round-trip through an absolute
+// wall-clock instant. time.Time.UnixNano and time.Unix both strip Go's monotonic
+// reading, so the earlier "store now.UnixNano(), subtract time.Unix(0, that)"
+// form silently measured a wall-clock difference: a backward host clock step
+// made silence look negative — suppressing the reconnect of a receiver emitting
+// bytes but no decodable frames — and a forward step made it exceed the window,
+// closing a healthy connection. Subtracting two readings that both carry a
+// monotonic component is immune to either. What is stored here is therefore an
+// ELAPSED DURATION since base, not a point in time.
+//
+// mark runs on the scanner goroutine and since on the watchdog goroutine, so the
+// elapsed value is held in an atomic. The now seam is the Manager's injected
+// clock, kept so tests can drive it.
+type silenceClock struct {
+	base time.Time
+	now  func() time.Time
+	last atomic.Int64 // nanoseconds since base at the most recently marked frame
+}
+
+func newSilenceClock(base time.Time, now func() time.Time) *silenceClock {
+	return &silenceClock{base: base, now: now}
+}
+
+// mark records a frame arriving at now.
+func (s *silenceClock) mark(now time.Time) { s.last.Store(int64(now.Sub(s.base))) }
+
+// since reports the time elapsed since the last marked frame, or since base if
+// no frame has been marked.
+func (s *silenceClock) since() time.Duration {
+	return s.now().Sub(s.base) - time.Duration(s.last.Load())
+}
+
 // runScanner invokes the source's scanner with a recover() so a parser bug (e.g. an
 // out-of-bounds slice on malformed input from an external/untrusted source such as an
 // NTRIP caster) reconnects this one source instead of crashing the whole daemon. chunked
@@ -205,11 +239,9 @@ func (m *Manager) runScanner(ctx context.Context, sc scanner, conn net.Conn, src
 		}
 		useful = frameCount > 0 || m.now().Sub(start) >= usefulConnectionDuration
 	}()
-	// lastFrameNs is stamped by the emit wrapper (scanner goroutine) and read by the
-	// watchdog goroutine; it starts at connect time so a source that never frames is
-	// measured from the connection's start, not from zero.
-	var lastFrameNs atomic.Int64
-	lastFrameNs.Store(start.UnixNano())
+	// Silence is measured from connect time, so a source that never frames is
+	// measured from the connection's start rather than from zero.
+	silence := newSilenceClock(start, m.now)
 	var watchdogTripped atomic.Bool
 	if window := src.MaxFrameSilence; window > 0 {
 		watchStop := make(chan struct{})
@@ -228,7 +260,7 @@ func (m *Manager) runScanner(ctx context.Context, sc scanner, conn net.Conn, src
 				case <-watchStop:
 					return
 				case <-t.C:
-					if m.now().Sub(time.Unix(0, lastFrameNs.Load())) > window {
+					if silence.since() > window {
 						watchdogTripped.Store(true)
 						_ = conn.Close() // unblocks the scanner's read; runSource re-dials
 						return
@@ -255,7 +287,10 @@ func (m *Manager) runScanner(ctx context.Context, sc scanner, conn net.Conn, src
 		// m.now(), not f.Recv: the watchdog must not depend on every scanner
 		// stamping Recv (a zero Recv would read as year-1 silence and trip it).
 		now := m.now()
-		lastFrameNs.Store(now.UnixNano())
+		silence.mark(now)
+		// The Prometheus gauge stays a wall-clock Unix timestamp — its documented
+		// alert shape is `time() - this` — and is deliberately separate from the
+		// monotonic elapsed value the watchdog compares.
 		lastFrameGauge.Set(float64(now.Unix()))
 		baseEmit(f)
 	}, func(kind string) {

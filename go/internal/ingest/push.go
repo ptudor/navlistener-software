@@ -967,13 +967,21 @@ func telemetryToFrame(rec wire.RawRecord, source string, recv, local time.Time) 
 	return &RawFrame{Recv: recv, RecvLocal: local, Source: source, RF: rf}
 }
 
-// receiveTimestampPlausible applies the asymmetric live-clock/replay contract.
+// receiveTimestampPlausible applies the asymmetric live-clock/replay contract:
+// at most recvTimestampSlack in the future, at most recvReplayHorizon in the
+// past.
+//
+// both bounds are compared against the signed difference
+// directly, never by negating it. time.Time.Sub saturates at math.MaxInt64 /
+// math.MinInt64 for differences outside a Duration's ~292-year range, and
+// negating math.MinInt64 wraps straight back to math.MinInt64 — which is less
+// than any positive horizon. The previous `-d <= recvReplayHorizon` form
+// therefore *accepted* every stamp old enough to saturate, letting centuries-old
+// received_at values into the historian, where they distort chunking, retention,
+// replay windows, and every age-based query.
 func receiveTimestampPlausible(stamped, now time.Time) bool {
 	d := stamped.Sub(now)
-	if d > 0 {
-		return d <= recvTimestampSlack
-	}
-	return -d <= recvReplayHorizon
+	return d <= recvTimestampSlack && d >= -recvReplayHorizon
 }
 
 // wordRecordWellFormed enforces the word-feed wire invariant before conversion
