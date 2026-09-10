@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync/atomic"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/metrics"
 )
 
@@ -348,5 +350,69 @@ func TestEnqueueDropsNilRaw(t *testing.T) {
 	case <-s.in:
 	default:
 		t.Error("non-nil empty Raw was dropped, want it enqueued")
+	}
+}
+
+// the store's replay-ledger horizon and -check-config validation
+// must come from one parser, so a configured interval cannot mean two different
+// things. parseSimpleInterval used to be an independent implementation with its
+// own unchecked int conversion.
+func TestParseSimpleIntervalIsTheConfigParser(t *testing.T) {
+	for _, in := range []string{"7 days", "1 day", "12 hours", "30 minute", "2 weeks", "1 minute"} {
+		got, gotErr := parseSimpleInterval(in)
+		want, wantErr := config.ParseInterval(in)
+		if got != want || (gotErr == nil) != (wantErr == nil) {
+			t.Errorf("parseSimpleInterval(%q) = %v/%v, config.ParseInterval = %v/%v",
+				in, got, gotErr, want, wantErr)
+		}
+	}
+	// An overflowing but regex-valid interval must be rejected here too, not
+	// silently wrapped into a small or negative prune horizon.
+	overflow := fmt.Sprintf("%d weeks", int64(config.MaxInterval/(7*24*time.Hour))+1)
+	if got, err := parseSimpleInterval(overflow); err == nil {
+		t.Errorf("parseSimpleInterval(%q) = %v, want an overflow error", overflow, got)
+	}
+}
+
+// TestIntegrationStoreDerivesConfiguredRetention proves the other half against a
+// live database: Store.New must derive exactly the duration config.ParseInterval
+// accepts, and must fail rather than silently keeping its 7-day default when the
+// configured interval cannot be represented.
+func TestIntegrationStoreDerivesConfiguredRetention(t *testing.T) {
+	dsn := testDSN(t)
+	ctx := context.Background()
+	base := config.Store{DSN: dsn, BatchSize: 100, BatchEvery: 50 * time.Millisecond}
+
+	for _, tc := range []struct {
+		retention string
+		want      time.Duration
+	}{
+		{"", defaultSeqSeenRetention},
+		{"7 days", 7 * 24 * time.Hour},
+		{"36 hours", 36 * time.Hour},
+		{"3 weeks", 3 * 7 * 24 * time.Hour},
+	} {
+		cfg := base
+		cfg.RawRetention = tc.retention
+		cfg.CompressAfter = "1 minute"
+		s, err := New(ctx, cfg, integrationLog())
+		if err != nil {
+			t.Fatalf("store.New(raw_retention=%q): %v", tc.retention, err)
+		}
+		if s.seqSeenRetention != tc.want {
+			t.Errorf("raw_retention=%q derived %v, want %v", tc.retention, s.seqSeenRetention, tc.want)
+		}
+		s.pool.Close()
+	}
+
+	// An overflowing interval must fail startup, not fall back to the default.
+	cfg := base
+	cfg.RawRetention = fmt.Sprintf("%d weeks", int64(config.MaxInterval/(7*24*time.Hour))+1)
+	cfg.CompressAfter = "1 minute"
+	s, err := New(ctx, cfg, integrationLog())
+	if err == nil {
+		s.pool.Close()
+		t.Fatal("an unrepresentable raw_retention was accepted; the database policy and the " +
+			"replay-ledger horizon would silently disagree")
 	}
 }

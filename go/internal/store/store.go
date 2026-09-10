@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -260,8 +259,18 @@ func New(ctx context.Context, cfg config.Store, log *slog.Logger) (*Store, error
 	if be <= 0 {
 		be = time.Second
 	}
+	// derive the replay-ledger horizon from the same parser that
+	// validated the policy interval, and fail rather than silently falling back to
+	// the default — a silent fallback is exactly how the database's retention and
+	// the in-memory dedupe retention came to disagree. An empty value is the
+	// documented "use the default" case (it matches applyPolicies' own "7 days").
 	seqSeenRetention := defaultSeqSeenRetention
-	if d, err := parseSimpleInterval(cfg.RawRetention); err == nil {
+	if cfg.RawRetention != "" {
+		d, err := parseSimpleInterval(cfg.RawRetention)
+		if err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("raw_retention: %w", err)
+		}
 		seqSeenRetention = d
 	}
 	s := &Store{
@@ -285,30 +294,12 @@ func New(ctx context.Context, cfg config.Store, log *slog.Logger) (*Store, error
 // the cheapest honest "is the database reachable right now" question available.
 func (s *Store) pingPool(ctx context.Context) error { return s.pool.Ping(ctx) }
 
-// parseSimpleInterval parses the same "N minute(s)/hour(s)/day(s)/week(s)" shape
-// applyPolicies validates (intervalRe) into a time.Duration.
-func parseSimpleInterval(s string) (time.Duration, error) {
-	var n int
-	var unit string
-	if _, err := fmt.Sscanf(s, "%d %s", &n, &unit); err != nil {
-		return 0, err
-	}
-	unit = strings.TrimSuffix(unit, "s")
-	var per time.Duration
-	switch unit {
-	case "minute":
-		per = time.Minute
-	case "hour":
-		per = time.Hour
-	case "day":
-		per = 24 * time.Hour
-	case "week":
-		per = 7 * 24 * time.Hour
-	default:
-		return 0, fmt.Errorf("unknown interval unit %q", unit)
-	}
-	return time.Duration(n) * per, nil
-}
+// parseSimpleInterval is config.ParseInterval. this used to be a
+// second, independent implementation of the same grammar with its own unchecked
+// int conversion, so the replay-ledger horizon and `-check-config` could disagree
+// about what a configured interval means. There is now exactly one parser, and
+// this alias exists only so the store's call sites and tests read locally.
+func parseSimpleInterval(s string) (time.Duration, error) { return config.ParseInterval(s) }
 
 // requireTimescaleDB fails fast with an actionable message when the extension is
 // absent. The nav_frames historian is a hypertable with columnar compression and a
@@ -415,8 +406,16 @@ func applyPolicies(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, cf
 	if rawRet == "" {
 		rawRet = "7 days"
 	}
-	if !config.IntervalRe.MatchString(compAfter) || !config.IntervalRe.MatchString(rawRet) {
-		return fmt.Errorf("intervals must be simple like \"7 days\" (compress_after=%q raw_retention=%q)", compAfter, rawRet)
+	// config.ParseInterval re-applies config.IntervalRe, so this keeps its
+	// defense-in-depth role as the injection guard for the DDL interpolation
+	// below  while additionally rejecting a syntactically valid but
+	// unrepresentable magnitude before it reaches the database  —
+	// the case that let the policy and the Go-side horizon diverge.
+	if _, err := config.ParseInterval(compAfter); err != nil {
+		return fmt.Errorf("compress_after: %w", err)
+	}
+	if _, err := config.ParseInterval(rawRet); err != nil {
+		return fmt.Errorf("raw_retention: %w", err)
 	}
 
 	conn, err := pool.Acquire(ctx)

@@ -12,6 +12,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"regexp"
@@ -522,18 +523,30 @@ func (c *Config) finalize() error {
 	if c.Store.BatchSize <= 0 || c.Store.BatchSize > maxBatchSize {
 		return fmt.Errorf("store.batch_size %d: must be in 1..%d", c.Store.BatchSize, maxBatchSize)
 	}
-	if c.Store.RawRetention != "" && !IntervalRe.MatchString(c.Store.RawRetention) {
-		return fmt.Errorf(`store.raw_retention %q: want a simple interval like "7 days"`, c.Store.RawRetention)
-	}
-	if c.Store.CompressAfter != "" && !IntervalRe.MatchString(c.Store.CompressAfter) {
-		return fmt.Errorf(`store.compress_after %q: want a simple interval like "1 day"`, c.Store.CompressAfter)
-	}
-	if c.Store.RawRetention != "" && c.Store.CompressAfter != "" {
-		retention, _ := configIntervalDuration(c.Store.RawRetention) // regex-validated above
-		compress, _ := configIntervalDuration(c.Store.CompressAfter)
-		if compress >= retention {
-			return fmt.Errorf("store.compress_after (%q) must be shorter than store.raw_retention (%q), or chunks are dropped before compression runs", c.Store.CompressAfter, c.Store.RawRetention)
+	// every parse error is propagated. These were previously
+	// discarded on the premise that the regex had already validated the string,
+	// but the regex says nothing about magnitude — an overflowing count is
+	// syntactically valid and used to reach both the ordering check (as a wrapped
+	// duration) and the database (as its original text).
+	var retention, compress time.Duration
+	if c.Store.RawRetention != "" {
+		d, err := ParseInterval(c.Store.RawRetention)
+		if err != nil {
+			return fmt.Errorf("store.raw_retention: %w", err)
 		}
+		retention = d
+	}
+	if c.Store.CompressAfter != "" {
+		d, err := ParseInterval(c.Store.CompressAfter)
+		if err != nil {
+			return fmt.Errorf("store.compress_after: %w", err)
+		}
+		compress = d
+	}
+	// Both operands are now bounded by MaxInterval, so this comparison cannot be
+	// reading wrapped values.
+	if retention > 0 && compress > 0 && compress >= retention {
+		return fmt.Errorf("store.compress_after (%q) must be shorter than store.raw_retention (%q), or chunks are dropped before compression runs", c.Store.CompressAfter, c.Store.RawRetention)
 	}
 	// parse the DSN at load so a malformed store.dsn fails -check-config, not at the
 	// first pool connect.
@@ -793,24 +806,52 @@ func (c *Config) finalizeFederation() error {
 	return nil
 }
 
-func configIntervalDuration(s string) (time.Duration, error) {
-	fields := strings.Fields(s)
-	if len(fields) != 2 {
-		return 0, fmt.Errorf("invalid interval %q", s)
+// MaxInterval is the largest simple interval this configuration accepts: exactly
+// time.Duration's range, about 292.47 years. PostgreSQL's interval type reaches
+// far beyond that, but every Go-side consumer of a configured interval — the
+// compress-before-retention ordering check, the store's replay-ledger prune
+// horizon — is a time.Duration. A value the Go side cannot represent is one the
+// daemon cannot honor, and rejecting it is what keeps the database policy and
+// the in-memory horizon guaranteed to mean the same thing.
+const MaxInterval = time.Duration(math.MaxInt64)
+
+var intervalUnits = map[string]time.Duration{
+	"minute": time.Minute,
+	"hour":   time.Hour,
+	"day":    24 * time.Hour,
+	"week":   7 * 24 * time.Hour,
+}
+
+// ParseInterval converts one IntervalRe-shaped simple interval into a Duration.
+// It is the single parser behind both `-check-config` validation and the store's
+// replay-ledger retention horizon, so the two cannot disagree about what a
+// configured string means. It re-applies IntervalRe itself, which also keeps it
+// usable as the injection guard for the interval's later interpolation into
+// policy DDL.
+//
+// the count is parsed at an explicit width and the multiplication
+// is range-checked before it happens. IntervalRe allows an unbounded decimal
+// count, so the previous `Atoi` plus unchecked `time.Duration(n) * per` could
+// wrap a huge but syntactically valid interval to a small, negative, or zero
+// duration — after which the ordering check compared wrapped values while the
+// database still received the original, very large text.
+func ParseInterval(s string) (time.Duration, error) {
+	if !IntervalRe.MatchString(s) {
+		return 0, fmt.Errorf(`invalid interval %q: want a simple interval like "7 days"`, s)
 	}
-	n, err := strconv.Atoi(fields[0])
-	if err != nil {
-		return 0, err
-	}
-	unit := strings.TrimSuffix(fields[1], "s")
-	per := map[string]time.Duration{
-		"minute": time.Minute,
-		"hour":   time.Hour,
-		"day":    24 * time.Hour,
-		"week":   7 * 24 * time.Hour,
-	}[unit]
+	// IntervalRe guarantees exactly "<digits> <unit>", so the split cannot fail.
+	count, unit, _ := strings.Cut(s, " ")
+	per := intervalUnits[strings.TrimSuffix(unit, "s")]
 	if per == 0 {
 		return 0, fmt.Errorf("unknown interval unit %q", unit)
+	}
+	n, err := strconv.ParseInt(count, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("interval %q: count out of range", s)
+	}
+	if n <= 0 || n > int64(MaxInterval/per) {
+		return 0, fmt.Errorf("interval %q exceeds the maximum supported interval (%d %ss)",
+			s, int64(MaxInterval/per), strings.TrimSuffix(unit, "s"))
 	}
 	return time.Duration(n) * per, nil
 }
