@@ -472,8 +472,9 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 const maxConsecutiveUnforwarded = 256
 
 // helloMaxLen caps the pre-auth HELLO frame length far below wire.MaxFrameLen
-// : a real HELLO is ~150 bytes and navfeeder.c never sends one over 1024
-// bytes, but ReadFrame's normal 1 MiB cap would let any unauthenticated
+// : a real HELLO is ~150 bytes and navfeeder.c bounds its own to exactly
+// this value (its HELLO_CAP, regression fix — it previously stopped at 1024 while
+// silently truncating any token past 512 bytes), but ReadFrame's normal 1 MiB cap would let any unauthenticated
 // connection pin up to 1 MiB before a single byte is verified -- a
 // per-connection amplifier for the regression fix pre-auth flood. This is a
 // reception-side policy, not a wire change: DATA-phase reads (in stream, after

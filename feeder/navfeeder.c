@@ -93,6 +93,15 @@
 #define F_PONG 0x06
 #define MAX_FRAME (1u << 20)
 #define RECORD_HDR 13         /* recv_ns(8) + gnssId + svId + sigId + freqId + frame_type */
+/* HELLO_CAP mirrors the collector's reception-side pre-auth cap
+ * (internal/ingest/push.go helloMaxLen). TOKEN_CAP is the documented maximum raw
+ * bearer token; both replace the old 512-byte escape buffer and 1024-byte HELLO
+ * buffer that silently shortened credentials the collector explicitly accepts
+ *. Neither enlarges the wire maximum: 4096 is what the collector
+ * already accepts. */
+#define HELLO_CAP 4096
+#define TOKEN_CAP 1024
+
 #define MAX_RAW 1024          /* numWords is a u8 → ≤ 1020 raw bytes; round up */
 #define GNF_RECORD (RECORD_HDR + MAX_RAW)
 #define DRAIN_BATCH 512
@@ -1550,8 +1559,14 @@ static SSL *tls_connect(SSL_CTX *ctx, const struct opts *o, int *out_fd) {
  * rather than a clear error at the source. Truncates cleanly (never overruns) if the
  * escaped form would not fit dstcap; dst is always NUL-terminated when dstcap > 0.
  * Well-formed inputs (no '"', '\', or control chars) are copied byte-identical. */
-static void json_escape(char *dst, size_t dstcap, const char *src) {
-	if (dstcap == 0) return;
+/* json_escape returns 0 on success and -1 when the escaped form would not fit.
+ * it used to truncate silently, and handshake ignored that — so a
+ * long bearer token was quietly shortened and presented as a DIFFERENT
+ * credential, producing an endless "unauthorized" reconnect loop with nothing
+ * saying why. Identity material is never truncated; the caller reports the
+ * failure instead. */
+static int json_escape(char *dst, size_t dstcap, const char *src) {
+	if (dstcap == 0) return -1;
 	size_t di = 0;
 	for (const unsigned char *s = (const unsigned char *)src; *s; s++) {
 		unsigned char c = *s;
@@ -1570,29 +1585,62 @@ static void json_escape(char *dst, size_t dstcap, const char *src) {
 			}
 		}
 		size_t elen = esc ? strlen(esc) : 1;
-		if (di + elen + 1 > dstcap) break; /* would overflow: truncate cleanly */
+		if (di + elen + 1 > dstcap) { dst[0] = 0; return -1; }
 		if (esc) { memcpy(dst + di, esc, elen); } else { dst[di] = (char)c; }
 		di += elen;
 	}
 	dst[di] = 0;
+	return 0;
+}
+
+/* build_hello renders the HELLO exactly as it goes on the wire, returning its
+ * length or -1 if any part would not fit. this is one function so
+ * a startup precheck and the live handshake cannot disagree about whether a
+ * configured credential is presentable. The buffers are sized against the
+ * collector's own documented reception cap (HELLO_CAP) rather than the old
+ * 512-byte token buffer, which silently shortened credentials the collector
+ * explicitly accepts and tests (a 900-byte token). Nothing here logs the token. */
+static int build_hello(char *out, size_t cap, const struct opts *o, const char *session,
+		       const char **why) {
+	char tok_esc[TOKEN_CAP * 2 + 1], station_esc[512], feed_esc[128];
+	if (json_escape(tok_esc, sizeof tok_esc, o->token ? o->token : "") != 0) {
+		*why = "--token/--token-file does not fit the HELLO once JSON-escaped";
+		return -1;
+	}
+	if (json_escape(station_esc, sizeof station_esc, o->station) != 0) {
+		*why = "--station does not fit the HELLO once JSON-escaped";
+		return -1;
+	}
+	if (json_escape(feed_esc, sizeof feed_esc, o->feed) != 0) {
+		*why = "--feed does not fit the HELLO once JSON-escaped";
+		return -1;
+	}
+	/* session : the boot identity half of the collector's replay-dedup
+	 * key — REQUIRED since the 2026-07-31 contract revision (the collector rejects a
+	 * HELLO without it). g_session is charset-validated ([A-Za-z0-9._-], both at
+	 * mint and at spool-header adoption), so it needs no JSON escaping. */
+	int n = snprintf(out, cap,
+		"{\"token\":\"%s\",\"station\":\"%s\",\"feed\":\"%s\",\"sw\":\"navfeeder/1\",\"session\":\"%s\"%s}",
+		tok_esc, station_esc, feed_esc, session, o->zstd ? ",\"zstd\":true" : "");
+	if (n < 0 || (size_t)n >= cap) {
+		*why = "the assembled HELLO exceeds the collector's accepted size";
+		return -1;
+	}
+	return n;
 }
 
 static int handshake(struct tls_io *io, const struct opts *o, const char *session, int *zstd_ok) {
 	*zstd_ok = 0;
 	if (ssl_write_all(io, MAGIC, 4) != 0) return -1;
-	char tok_esc[512], station_esc[512], feed_esc[128];
-	json_escape(tok_esc, sizeof tok_esc, o->token ? o->token : "");
-	json_escape(station_esc, sizeof station_esc, o->station);
-	json_escape(feed_esc, sizeof feed_esc, o->feed);
-	char hello[1024];
-	/* session : the boot identity half of the collector's replay-dedup
-	 * key — REQUIRED since the 2026-07-31 contract revision (the collector rejects a
-	 * HELLO without it). g_session is charset-validated ([A-Za-z0-9._-], both at
-	 * mint and at spool-header adoption), so it needs no JSON escaping. */
-	int n = snprintf(hello, sizeof hello,
-		"{\"token\":\"%s\",\"station\":\"%s\",\"feed\":\"%s\",\"sw\":\"navfeeder/1\",\"session\":\"%s\"%s}",
-		tok_esc, station_esc, feed_esc, session, o->zstd ? ",\"zstd\":true" : "");
-	if (n < 0 || (size_t)n >= sizeof hello) return -1;
+	char hello[HELLO_CAP];
+	const char *why = NULL;
+	int n = build_hello(hello, sizeof hello, o, session, &why);
+	if (n < 0) {
+		/* Unreachable: main prechecks the same construction at startup. Loud
+		 * rather than a silently wrong credential in a reconnect loop. */
+		log_msg("cannot build HELLO: %s", why);
+		return -2;
+	}
 	if (send_frame(io, F_HELLO, hello, (uint32_t)n) != 0) return -1;
 
 	unsigned char buf[1024]; uint8_t type; uint32_t len;
@@ -2016,16 +2064,37 @@ static SSL_CTX *make_ctx(const struct opts *o) {
 
 /* read_token_file loads the bearer token from a file so it never appears in argv (visible in
  * ps / /proc/<pid>/cmdline). The rc/systemd unit points here. */
+/* the credential is the file's first line, with trailing spaces
+ * and the terminal line ending removed — the long-established trimming rule,
+ * preserved deliberately so existing token files keep producing the same bytes.
+ * What changed is that everything the old single fgets() could not see is now an
+ * ERROR rather than silently ignored: a token longer than the buffer used to be
+ * cut to 512 bytes and presented as a different credential, and extra file
+ * content was dropped without a word. The token is never logged. */
 static const char *read_token_file(const char *path) {
 	FILE *f = fopen(path, "r");
 	if (!f) die("cannot open --token-file");
-	static char tok[512];
-	if (!fgets(tok, sizeof tok, f)) die("empty --token-file");
+	static char tok[TOKEN_CAP + 2];
+	size_t n = fread(tok, 1, sizeof tok - 1, f);
+	if (ferror(f)) { fclose(f); die("--token-file read failed"); }
+	tok[n] = 0;
+	int truncated = fgetc(f) != EOF; /* content beyond what the buffer could hold */
 	fclose(f);
-	size_t n = strlen(tok);
-	while (n && (tok[n-1] == '\n' || tok[n-1] == '\r' || tok[n-1] == ' ' || tok[n-1] == '\t'))
-		tok[--n] = 0;
-	if (n == 0) die("empty --token-file");
+
+	char *nl = strpbrk(tok, "\r\n");
+	if (nl) {
+		/* Only whitespace may follow the credential line; anything else is far
+		 * more likely a mistake than a deliberate multi-line credential. */
+		for (const char *rest = nl; *rest; rest++)
+			if (*rest != '\r' && *rest != '\n' && *rest != ' ' && *rest != '\t')
+				die("--token-file has content after the first line");
+		*nl = 0;
+		truncated = 0;
+	}
+	size_t len = strlen(tok);
+	while (len && (tok[len-1] == ' ' || tok[len-1] == '\t')) tok[--len] = 0;
+	if (len == 0) die("empty --token-file");
+	if (truncated || len > TOKEN_CAP) die("--token-file token is longer than the supported maximum");
 	return tok;
 }
 
@@ -2226,6 +2295,24 @@ int main(int argc, char **argv) {
 	}
 	o.server_host = server_host;
 	o.server_port = server_port;
+
+	/* prove the configured credential can actually be presented
+	 * BEFORE opening a socket. Without this, an over-long token produced an
+	 * endless connect/"unauthorized"/reconnect loop with no local diagnostic. The
+	 * session id is not minted yet, so a maximum-length placeholder of the same
+	 * charset stands in — it is the longest a real one can be. */
+	{
+		char probe[HELLO_CAP];
+		char placeholder[sizeof g_session];
+		memset(placeholder, 'a', sizeof placeholder - 1);
+		placeholder[sizeof placeholder - 1] = 0;
+		const char *why = NULL;
+		if (build_hello(probe, sizeof probe, &o, placeholder, &why) < 0) {
+			char msg[256];
+			snprintf(msg, sizeof msg, "%s", why);
+			die(msg);
+		}
+	}
 
 	SSL_library_init();
 	SSL_load_error_strings();
