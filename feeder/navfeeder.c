@@ -461,6 +461,25 @@ static int spool_init(struct spool *s, size_t cap, const char *path, uint64_t di
 	return 0;
 }
 
+/* sync_parent_dir durably commits the directory entry of `path`.
+ * fsync on a file makes its CONTENT durable, not its NAME: a spool file created
+ * by this flush can still vanish on an unclean shutdown unless the containing
+ * directory is synced too, and recovery finds the spool only by name. Returns 0
+ * on success. */
+static int sync_parent_dir(const char *path) {
+	char buf[PATH_MAX];
+	if (snprintf(buf, sizeof buf, "%s", path) >= (int)sizeof buf) return -1;
+	char *slash = strrchr(buf, '/');
+	if (!slash) { buf[0] = '.'; buf[1] = 0; }
+	else if (slash == buf) buf[1] = 0; /* the file lives in "/" */
+	else *slash = 0;
+	int fd = open(buf, O_RDONLY);
+	if (fd < 0) return -1;
+	int rc = fsync(fd);
+	close(fd);
+	return rc;
+}
+
 /* Link + directory fsync before unlink keeps the old name recoverable until its
  * replay name is durable. A crash between the two names only causes dedup-safe
  * replay. Never overwrite an existing archive or append to a file we cannot move. */
@@ -1994,25 +2013,69 @@ static void *signal_thread(void *arg) {
 	int sig = 0;
 	sigwait(&set, &sig);
 	log_msg("shutdown signal %d; flushing unacked ring to disk spool", sig);
+	/* exit status must mean what the service manager will read it
+	 * to mean. Every durability outcome is aggregated under the spool lock —
+	 * per-record drops, the *other* drop counter disk_put uses when the spool file
+	 * cannot even be opened, a deferred stream error, and the final fflush/fsync,
+	 * none of which were previously examined. Reporting success while any of those
+	 * failed tells the service manager the promised recovery spool was safely
+	 * committed when some or all of the newly spilled frames are not durable. */
+	int durable = 1;
+	uint64_t lost = 0;
+	size_t intended = 0;
+	const char *why = "";
 	if (g_spool.path) {
 		pthread_mutex_lock(&g_spool.mu);
-		uint64_t dropped_before = g_spool.disk_dropped;
-		size_t idx = g_spool.head, flushed = g_spool.count;
+		uint64_t disk_dropped_before = g_spool.disk_dropped;
+		uint64_t open_failed_before = g_spool.dropped;
+		size_t idx = g_spool.head;
+		intended = g_spool.count;
 		for (size_t i = 0; i < g_spool.count; i++) {
 			struct frame *fr = &g_spool.ring[idx];
 			disk_put(&g_spool, fr->seq, fr->data, fr->len);
 			idx = (idx + 1) % g_spool.cap;
 		}
-		if (g_spool.disk_w) { fflush(g_spool.disk_w); fsync(fileno(g_spool.disk_w)); }
-		uint64_t lost = g_spool.disk_dropped - dropped_before;
+		/* disk_put counts an fopen failure under `dropped`, not `disk_dropped`, so
+		 * the old diagnostic could not see a spool that never opened at all. */
+		lost = (g_spool.disk_dropped - disk_dropped_before) +
+		       (g_spool.dropped - open_failed_before);
+		if (lost) { durable = 0; why = "records dropped (disk overflow disabled, budget exhausted, or the spool file could not be opened)"; }
+		if (g_spool.disk_w) {
+			/* A short write can surface only as a deferred stream error; check it
+			 * before trusting the flush, and stop at the first failure so the
+			 * reported cause is the real one. */
+			if (ferror(g_spool.disk_w)) {
+				durable = 0; why = "the spool stream reported a deferred write error";
+			} else if (fflush(g_spool.disk_w) != 0) {
+				durable = 0; why = "the final spool flush failed";
+			} else if (fsync(fileno(g_spool.disk_w)) != 0) {
+				durable = 0; why = "the final spool fsync failed";
+			} else if (sync_parent_dir(g_spool.path) != 0) {
+				/* Recovery finds the spool by name, and this flush may have created
+				 * that name: fsync on the file alone does not make its directory
+				 * entry durable. */
+				durable = 0; why = "the spool directory could not be synced";
+			}
+		} else if (intended) {
+			/* Records were meant to be spilled but no writer is open — the file was
+			 * never opened, or a failed append rolled it back. Nothing is durable. */
+			durable = 0;
+			if (!*why) why = "no spool writer was open after the flush";
+		}
 		pthread_mutex_unlock(&g_spool.mu);
-		/* Never let "flushing" be the last word when the flush was a no-op: after an
-		 * incomplete recovery (disk appends disabled) or with the live budget consumed
-		 * by retained replay files, every ring frame is dropped here — say so. */
-		if (lost)
-			log_msg("shutdown flush LOST %llu of %zu unacked ring frame(s): disk overflow disabled or budget exhausted",
-				(unsigned long long)lost, flushed);
 	}
+	/* Never let "flushing" be the last word when the flush was a no-op: after an
+	 * incomplete recovery (disk appends disabled) or with the live budget consumed
+	 * by retained replay files, every ring frame is dropped here — say so. Frame
+	 * contents and credentials are never logged, only counts and a cause. */
+	if (!durable) {
+		log_msg("shutdown flush INCOMPLETE: %llu of %zu unacked ring frame(s) not durably spooled: %s; "
+			"existing spool files left unchanged",
+			(unsigned long long)lost, intended, why);
+		_exit(1);
+	}
+	if (intended)
+		log_msg("shutdown flush complete: %zu unacked ring frame(s) durably spooled", intended);
 	_exit(0);
 	return NULL;
 }

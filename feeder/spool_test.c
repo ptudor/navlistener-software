@@ -22,6 +22,13 @@ static int test_unlink(const char *);
  * fail-closed path is exercised for the primary and every recovered spool. */
 static int fail_mutex_init;
 static int test_pthread_mutex_init(pthread_mutex_t *, const pthread_mutexattr_t *);
+/* durability faults for the shutdown ring flush. Each is scoped to
+ * the live spool WRITER (never the recovery reader), so a test can prove that a
+ * failed write, a deferred stream error, a failed flush or a failed fsync all
+ * produce a nonzero exit and an explicit incomplete-flush diagnostic. */
+static int test_fflush(FILE *);
+static int test_fsync(int);
+static size_t test_fwrite(const void *, size_t, size_t, FILE *);
 /* fail the zstd compressor's two allocations independently and
  * transiently. NAVFEEDER_TEST_FAIL_ZSTD_CTX / _BUF give the number of leading
  * connection attempts whose ZSTD_createCCtx / output-buffer allocation must fail,
@@ -34,6 +41,9 @@ static size_t test_ZSTD_CStreamOutSize(void);
 #define ferror test_ferror
 #define unlink test_unlink
 #define pthread_mutex_init test_pthread_mutex_init
+#define fflush test_fflush
+#define fsync test_fsync
+#define fwrite test_fwrite
 #define ZSTD_createCCtx test_ZSTD_createCCtx
 #define ZSTD_CStreamOutSize test_ZSTD_CStreamOutSize
 #define main navfeeder_main
@@ -44,6 +54,30 @@ static size_t test_ZSTD_CStreamOutSize(void);
 #undef ferror
 #undef unlink
 #undef pthread_mutex_init
+#undef fflush
+#undef fsync
+#undef fwrite
+/* g_spool is defined by navfeeder.c above, so these can scope faults to the
+ * live spool writer and leave every other stream untouched. */
+static int spool_writer(FILE *f) { return f && f == g_spool.disk_w; }
+static int test_fflush(FILE *f) {
+    if (spool_writer(f) && getenv("NAVFEEDER_TEST_FAIL_FFLUSH")) { errno = ENOSPC; return EOF; }
+    return fflush(f);
+}
+static int test_fsync(int fd) {
+    if (g_spool.disk_w && fd == fileno(g_spool.disk_w) && getenv("NAVFEEDER_TEST_FAIL_FSYNC")) {
+        errno = EIO; return -1;
+    }
+    return fsync(fd);
+}
+static size_t test_fwrite(const void *p, size_t size, size_t n, FILE *f) {
+    /* A short write is how a full disk actually presents to stdio. */
+    if (spool_writer(f) && getenv("NAVFEEDER_TEST_SHORT_WRITE")) {
+        if (n > 1) return fwrite(p, size, n / 2, f);
+        return 0;
+    }
+    return fwrite(p, size, n, f);
+}
 #undef ZSTD_createCCtx
 #undef ZSTD_CStreamOutSize
 static int envfaults(const char *name) {
@@ -82,7 +116,10 @@ static size_t test_fread(void *p, size_t size, size_t n, FILE *f) {
     }
     return fread(p, size, n, f);
 }
-static int test_ferror(FILE *f) { return (f == fault_file && read_error) || ferror(f); }
+static int test_ferror(FILE *f) {
+    if (spool_writer(f) && getenv("NAVFEEDER_TEST_DEFER_FERROR")) return 1;
+    return (f == fault_file && read_error) || ferror(f);
+}
 static int test_unlink(const char *path) {
     const char *keep = getenv("NAVFEEDER_TEST_KEEP_ACKED");
     if (keep && g_spool.disk_max_seq && !strcmp(keep, path)) { errno = EACCES; return -1; }
