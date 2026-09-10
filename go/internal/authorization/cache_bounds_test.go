@@ -23,18 +23,30 @@ func TestCacheBoundsAndIndependentExpiry(t *testing.T) {
 	}
 	p.now = func() time.Time { return time.Unix(0, now.Load()) }
 	p.cacheLimit = 16
+	p.negativeLimit = 16
 	for _, granted := range []bool{false, true} {
 		allow.Store(granted)
+		// denials are now remembered for negativeTTL, so step the
+		// fake clock past it before reusing the same tokens with the opposite
+		// verdict. Without this the granted pass would legitimately be answered
+		// from the negative cache recorded microseconds earlier.
+		now.Add(int64(time.Second))
 		for i := 0; i < 1000; i++ {
 			token := fmt.Sprint(i)
 			p.Authenticate(context.Background(), token, "observer-a", "ubx")
 			p.AuthorizeRead(context.Background(), token)
 			if len(p.observers) > 16 || len(p.readers) > 16 {
-				t.Fatal("unbounded caches")
+				t.Fatal("unbounded positive caches")
+			}
+			if len(p.deniedObservers) > 16 || len(p.deniedReaders) > 16 {
+				t.Fatal("unbounded negative caches")
 			}
 		}
 		if !granted && (len(p.observers) != 0 || len(p.readers) != 0) {
-			t.Fatal("denied tokens retained")
+			t.Fatal("denied tokens retained as positive authority")
+		}
+		if !granted && (len(p.deniedObservers) == 0 || len(p.deniedReaders) == 0) {
+			t.Fatal("negative caches not exercised")
 		}
 	}
 	if len(p.observers) != 16 || len(p.readers) != 16 {
@@ -47,7 +59,8 @@ func TestCacheBoundsAndIndependentExpiry(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for {
 		p.mu.Lock()
-		empty := len(p.observers) == 0 && len(p.readers) == 0
+		empty := len(p.observers) == 0 && len(p.readers) == 0 &&
+			len(p.deniedObservers) == 0 && len(p.deniedReaders) == 0
 		p.mu.Unlock()
 		if empty {
 			break

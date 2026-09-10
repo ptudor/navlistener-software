@@ -6,6 +6,7 @@ package authorization
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -25,10 +26,28 @@ const (
 	readAuthorizationView     = "navlistener_read_authorization_v1"
 	changeNotifyChannel       = "navlistener_authorization_changed"
 	defaultCacheTTL           = 30 * time.Second
-	// Per-method positive-entry budget; denied results are deliberately uncached.
-	// Admission is bounded even if requests cycle through never-reused tokens.
+	// Per-method positive-entry budget. Denied results never enter these maps;
+	// they live in their own separately bounded negative caches below, so a flood
+	// of never-reused invalid credentials cannot evict useful positive authority.
 	defaultCacheLimit    = 1024
 	defaultLookupTimeout = 5 * time.Second
+	// an authoritative denial is remembered briefly so one invalid
+	// credential cannot force a control-plane query — and a connection-pool slot —
+	// on every request. The TTL is deliberately far shorter than the positive one:
+	// a negative entry only ever denies, so its staleness window is the delay
+	// before a newly *granted* credential starts working, never a window in which
+	// withdrawn authority is retained.
+	defaultNegativeCacheTTL = 5 * time.Second
+	// Negative-cache budget. Keys are fixed-size digests (see observerFoldedKey),
+	// so the worst-case footprint is bounded no matter how long a hostile HELLO's
+	// station/feed strings are.
+	defaultNegativeCacheLimit = 4096
+	// Ceiling on control-plane lookups in flight at once, across both APIs. The
+	// negative cache and single-flight bound repeated and concurrent use of the
+	// *same* credential; this bounds a stream of never-repeated ones, which misses
+	// every cache by construction. Waiting for a slot is charged to the caller's
+	// existing defaultLookupTimeout budget rather than added on top of it.
+	defaultLookupConcurrency = 16
 )
 
 type observerLookup func(context.Context, string, string, string) (identity.ObserverContext, bool, error)
@@ -52,6 +71,43 @@ type readCacheEntry struct {
 	expires   time.Time
 }
 
+// lookupFlight is one in-flight control-plane query, shared by every caller that
+// missed the caches for the same key while it was running. Its
+// generation is captured at creation under p.mu, so the existing revocation
+// barrier still applies: the shared result is trusted only when no
+// revocation/policy change committed between the query starting and finishing.
+type lookupFlight struct {
+	done       chan struct{}
+	generation uint64
+
+	// Written by the leader before done is closed, read by followers after.
+	observer identity.ObserverContext
+	read     identity.ReadPrincipal
+	allowed  bool
+	trusted  bool
+	err      error
+}
+
+// observerFoldedKey folds a token digest and the presented station/feed into one
+// fixed-size key for the negative and single-flight maps. Station and feed are
+// attacker-controlled up to the HELLO cap, so storing them verbatim would let a
+// hostile feeder inflate negative-cache memory; folding also keeps those maps
+// uniform with the read side. Lengths are prefixed so no pair of distinct
+// (station, feed) inputs can produce the same pre-image.
+func observerFoldedKey(key observerCacheKey) string {
+	h := sha256.New()
+	// tokenSHA256 is a fixed 64-character hex digest, so it needs no prefix.
+	h.Write([]byte(key.tokenSHA256))
+	var n [8]byte
+	binary.BigEndian.PutUint64(n[:], uint64(len(key.station)))
+	h.Write(n[:])
+	h.Write([]byte(key.station))
+	binary.BigEndian.PutUint64(n[:], uint64(len(key.feed)))
+	h.Write(n[:])
+	h.Write([]byte(key.feed))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // Provider is a bounded ingest-authorization cache over a stable control-plane SQL
 // views. A NOTIFY clears it immediately; TTL remains the fail-safe bound when a
 // notification connection is interrupted.
@@ -64,12 +120,26 @@ type Provider struct {
 	lookupObserver observerLookup
 	lookupRead     readLookup
 
-	mu            sync.Mutex
-	observers     map[observerCacheKey]observerCacheEntry
-	readers       map[string]readCacheEntry
-	generation    uint64
-	cacheLimit    int
-	lookupTimeout time.Duration
+	// lookupSlots bounds control-plane queries in flight. It is fixed at
+	// construction and never reassigned, so it needs no lock.
+	lookupSlots chan struct{}
+
+	mu        sync.Mutex
+	observers map[observerCacheKey]observerCacheEntry
+	readers   map[string]readCacheEntry
+	// Authoritative denials, keyed by digest (readers) and folded digest
+	// (observers), valued by expiry. Cleared by InvalidateAll with the positive
+	// caches so a newly issued grant is never shadowed by a stale denial.
+	deniedObservers map[string]time.Time
+	deniedReaders   map[string]time.Time
+	// In-flight lookups, so N concurrent misses on one key issue one query.
+	flightObservers map[string]*lookupFlight
+	flightReaders   map[string]*lookupFlight
+	generation      uint64
+	cacheLimit      int
+	negativeLimit   int
+	negativeTTL     time.Duration
+	lookupTimeout   time.Duration
 }
 
 // NewDatabase connects to the read-only control-plane database and verifies it
@@ -128,12 +198,23 @@ func newProvider(ttl time.Duration, log *slog.Logger, lookup observerLookup) *Pr
 	if log == nil {
 		log = slog.Default()
 	}
+	// A negative entry must never outlive the positive TTL: the operator's
+	// configured TTL is the contract for how quickly a control-plane change takes
+	// effect, and that has to bound denials as well as grants.
+	negativeTTL := min(ttl, defaultNegativeCacheTTL)
 	return &Provider{
 		ttl: ttl, now: time.Now, log: log, lookupObserver: lookup,
-		observers:     make(map[observerCacheKey]observerCacheEntry),
-		readers:       make(map[string]readCacheEntry),
-		cacheLimit:    defaultCacheLimit,
-		lookupTimeout: defaultLookupTimeout,
+		lookupSlots:     make(chan struct{}, defaultLookupConcurrency),
+		observers:       make(map[observerCacheKey]observerCacheEntry),
+		readers:         make(map[string]readCacheEntry),
+		deniedObservers: make(map[string]time.Time),
+		deniedReaders:   make(map[string]time.Time),
+		flightObservers: make(map[string]*lookupFlight),
+		flightReaders:   make(map[string]*lookupFlight),
+		cacheLimit:      defaultCacheLimit,
+		negativeLimit:   defaultNegativeCacheLimit,
+		negativeTTL:     negativeTTL,
+		lookupTimeout:   defaultLookupTimeout,
 	}
 }
 
@@ -146,53 +227,71 @@ func (p *Provider) AuthorizeRead(ctx context.Context, token string) (identity.Re
 	sum := sha256.Sum256([]byte(token))
 	digest := hex.EncodeToString(sum[:])
 	now := p.now()
+
 	p.mu.Lock()
-	entry, ok := p.readers[digest]
-	if ok && now.Before(entry.expires) {
-		p.mu.Unlock()
-		return cloneReadPrincipal(entry.principal), entry.allowed
-	}
-	if ok {
+	if entry, ok := p.readers[digest]; ok {
+		if now.Before(entry.expires) {
+			p.mu.Unlock()
+			return cloneReadPrincipal(entry.principal), entry.allowed
+		}
 		delete(p.readers, digest)
 	}
-	lookupGeneration := p.generation
+	if until, ok := p.deniedReaders[digest]; ok {
+		if now.Before(until) {
+			p.mu.Unlock()
+			return identity.ReadPrincipal{}, false
+		}
+		delete(p.deniedReaders, digest)
+	}
+	if inflight, ok := p.flightReaders[digest]; ok {
+		p.mu.Unlock()
+		select {
+		case <-inflight.done:
+		case <-ctx.Done():
+			// This caller gave up; the leader still finishes and caches for the rest.
+			return identity.ReadPrincipal{}, false
+		}
+		if inflight.err != nil || !inflight.trusted {
+			return identity.ReadPrincipal{}, false
+		}
+		return cloneReadPrincipal(inflight.read), inflight.allowed
+	}
+	flight := &lookupFlight{done: make(chan struct{}), generation: p.generation}
+	p.flightReaders[digest] = flight
 	p.mu.Unlock()
 
-	lookupCtx, cancel := context.WithTimeout(ctx, p.lookupTimeout)
-	defer cancel()
-	principal, allowed, err := p.lookupRead(lookupCtx, digest)
-	if err == nil {
-		err = lookupCtx.Err()
-	}
+	principal, allowed, err := p.runReadLookup(ctx, digest)
 	if err != nil {
 		p.log.Warn("control-plane read authorization lookup failed", "error", err)
-		return identity.ReadPrincipal{}, false
-	}
-	if allowed {
+	} else if allowed {
 		principal, err = identity.NormalizeReadPrincipal(principal)
 		if err != nil {
 			p.log.Error("control-plane read authorization row rejected", "error", err)
-			return identity.ReadPrincipal{}, false
 		}
 	}
-	entry = readCacheEntry{principal: cloneReadPrincipal(principal), allowed: allowed, expires: now.Add(p.ttl)}
+	if err != nil {
+		// A transport error or a malformed row is not an authoritative denial:
+		// publish nothing and cache nothing, so the next attempt retries.
+		principal, allowed = identity.ReadPrincipal{}, false
+	}
+
 	p.mu.Lock()
-	if p.generation != lookupGeneration {
-		p.mu.Unlock()
+	delete(p.flightReaders, digest)
+	trusted := p.generation == flight.generation
+	if err == nil && trusted {
+		if allowed {
+			p.storeReadLocked(digest, principal, now.Add(p.ttl))
+		} else {
+			p.storeDeniedLocked(p.deniedReaders, digest, now.Add(p.negativeTTL))
+		}
+	}
+	flight.read, flight.allowed, flight.trusted, flight.err = cloneReadPrincipal(principal), allowed, trusted, err
+	p.mu.Unlock()
+	close(flight.done)
+
+	if err != nil || !trusted {
 		return identity.ReadPrincipal{}, false
 	}
-	if allowed {
-		p.pruneExpiredLocked(p.now())
-		if len(p.readers) >= p.cacheLimit {
-			// Any eviction is safe: it only forces a fresh, fail-closed lookup.
-			for key := range p.readers {
-				delete(p.readers, key)
-				break
-			}
-		}
-		p.readers[digest] = entry
-	}
-	p.mu.Unlock()
 	return cloneReadPrincipal(principal), allowed
 }
 
@@ -202,60 +301,175 @@ func (p *Provider) AuthorizeRead(ctx context.Context, token string) (identity.Re
 func (p *Provider) Authenticate(ctx context.Context, token, station, feed string) (identity.ObserverContext, bool) {
 	sum := sha256.Sum256([]byte(token))
 	key := observerCacheKey{tokenSHA256: hex.EncodeToString(sum[:]), station: station, feed: feed}
+	folded := observerFoldedKey(key)
 	now := p.now()
+
 	p.mu.Lock()
-	entry, ok := p.observers[key]
-	if ok && now.Before(entry.expires) {
-		p.mu.Unlock()
-		return cloneObserverContext(entry.context), entry.allowed
-	}
-	if ok {
+	if entry, ok := p.observers[key]; ok {
+		if now.Before(entry.expires) {
+			p.mu.Unlock()
+			return cloneObserverContext(entry.context), entry.allowed
+		}
 		delete(p.observers, key)
 	}
-	lookupGeneration := p.generation
+	if until, ok := p.deniedObservers[folded]; ok {
+		if now.Before(until) {
+			p.mu.Unlock()
+			return identity.ObserverContext{}, false
+		}
+		delete(p.deniedObservers, folded)
+	}
+	if inflight, ok := p.flightObservers[folded]; ok {
+		p.mu.Unlock()
+		select {
+		case <-inflight.done:
+		case <-ctx.Done():
+			// This handshake gave up; the leader still finishes for the rest.
+			return identity.ObserverContext{}, false
+		}
+		if inflight.err != nil || !inflight.trusted {
+			return identity.ObserverContext{}, false
+		}
+		return cloneObserverContext(inflight.observer), inflight.allowed
+	}
+	flight := &lookupFlight{done: make(chan struct{}), generation: p.generation}
+	p.flightObservers[folded] = flight
 	p.mu.Unlock()
 
+	resolved, allowed, err := p.runObserverLookup(ctx, key.tokenSHA256, station, feed)
+	if err != nil {
+		p.log.Warn("control-plane observer authorization lookup failed", "station", station, "feed", feed, "error", err)
+	} else if allowed {
+		resolved, err = resolved.Normalize()
+		if err == nil && resolved.ObserverID != station {
+			err = errors.New("resolved observer does not match presented station")
+		}
+		if err != nil {
+			p.log.Error("control-plane observer authorization row rejected", "station", station, "feed", feed, "error", err)
+		}
+	}
+	if err != nil {
+		// A transport error or a malformed/mismatched row is not an authoritative
+		// denial: publish nothing and cache nothing, so the next attempt retries.
+		resolved, allowed = identity.ObserverContext{}, false
+	}
+
+	p.mu.Lock()
+	delete(p.flightObservers, folded)
+	// A committed revocation/policy change may have raced this SELECT. Its result
+	// could be from the pre-change snapshot, so deny this attempt instead of
+	// putting stale authority back after NOTIFY cleared the cache.
+	trusted := p.generation == flight.generation
+	if err == nil && trusted {
+		if allowed {
+			p.storeObserverLocked(key, resolved, now.Add(p.ttl))
+		} else {
+			p.storeDeniedLocked(p.deniedObservers, folded, now.Add(p.negativeTTL))
+		}
+	}
+	flight.observer, flight.allowed, flight.trusted, flight.err = cloneObserverContext(resolved), allowed, trusted, err
+	p.mu.Unlock()
+	close(flight.done)
+
+	if err != nil || !trusted {
+		return identity.ObserverContext{}, false
+	}
+	return cloneObserverContext(resolved), allowed
+}
+
+// runReadLookup and runObserverLookup bound one control-plane query to the
+// caller's deadline or defaultLookupTimeout, whichever is earlier,
+// and hold one of the fixed lookupSlots for its duration so a stream of
+// never-repeated credentials cannot open unbounded concurrent queries.
+func (p *Provider) runReadLookup(ctx context.Context, digest string) (identity.ReadPrincipal, bool, error) {
 	lookupCtx, cancel := context.WithTimeout(ctx, p.lookupTimeout)
 	defer cancel()
-	resolved, allowed, err := p.lookupObserver(lookupCtx, key.tokenSHA256, station, feed)
+	release, err := p.acquireLookupSlot(lookupCtx)
+	if err != nil {
+		return identity.ReadPrincipal{}, false, err
+	}
+	defer release()
+	principal, allowed, err := p.lookupRead(lookupCtx, digest)
 	if err == nil {
 		err = lookupCtx.Err()
 	}
+	return principal, allowed, err
+}
+
+func (p *Provider) runObserverLookup(ctx context.Context, digest, station, feed string) (identity.ObserverContext, bool, error) {
+	lookupCtx, cancel := context.WithTimeout(ctx, p.lookupTimeout)
+	defer cancel()
+	release, err := p.acquireLookupSlot(lookupCtx)
 	if err != nil {
-		p.log.Warn("control-plane observer authorization lookup failed", "station", station, "feed", feed, "error", err)
-		return identity.ObserverContext{}, false
+		return identity.ObserverContext{}, false, err
 	}
-	if allowed {
-		resolved, err = resolved.Normalize()
-		if err != nil || resolved.ObserverID != station {
-			if err == nil {
-				err = errors.New("resolved observer does not match presented station")
-			}
-			p.log.Error("control-plane observer authorization row rejected", "station", station, "feed", feed, "error", err)
-			return identity.ObserverContext{}, false
+	defer release()
+	resolved, allowed, err := p.lookupObserver(lookupCtx, digest, station, feed)
+	if err == nil {
+		err = lookupCtx.Err()
+	}
+	return resolved, allowed, err
+}
+
+// acquireLookupSlot waits for a query slot within the caller's already-bounded
+// lookup context. Exhaustion is reported as an error, never as a denial, so it
+// is fail-closed for this attempt but never cached as authority.
+func (p *Provider) acquireLookupSlot(ctx context.Context) (func(), error) {
+	if p.lookupSlots == nil {
+		return func() {}, nil
+	}
+	select {
+	case p.lookupSlots <- struct{}{}:
+		return func() { <-p.lookupSlots }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("authorization lookup concurrency limit: %w", ctx.Err())
+	}
+}
+
+func (p *Provider) storeReadLocked(digest string, principal identity.ReadPrincipal, expires time.Time) {
+	p.pruneExpiredLocked(p.now())
+	if len(p.readers) >= p.cacheLimit {
+		// Any eviction is safe: it only forces a fresh, fail-closed lookup.
+		for key := range p.readers {
+			delete(p.readers, key)
+			break
 		}
 	}
-	entry = observerCacheEntry{context: cloneObserverContext(resolved), allowed: allowed, expires: now.Add(p.ttl)}
-	p.mu.Lock()
-	if p.generation != lookupGeneration {
-		// A committed revocation/policy change raced this SELECT. Its result may
-		// be from the pre-change snapshot; deny this attempt instead of putting
-		// stale authority back after NOTIFY cleared the cache.
-		p.mu.Unlock()
-		return identity.ObserverContext{}, false
+	p.readers[digest] = readCacheEntry{principal: cloneReadPrincipal(principal), allowed: true, expires: expires}
+}
+
+func (p *Provider) storeObserverLocked(key observerCacheKey, resolved identity.ObserverContext, expires time.Time) {
+	p.pruneExpiredLocked(p.now())
+	if len(p.observers) >= p.cacheLimit {
+		for existing := range p.observers {
+			delete(p.observers, existing)
+			break
+		}
 	}
-	if allowed {
-		p.pruneExpiredLocked(p.now())
-		if len(p.observers) >= p.cacheLimit {
-			for key := range p.observers {
-				delete(p.observers, key)
-				break
+	p.observers[key] = observerCacheEntry{context: cloneObserverContext(resolved), allowed: true, expires: expires}
+}
+
+// storeDeniedLocked records an authoritative "no such grant" for negativeTTL.
+// Unlike the positive path it prunes only when the budget is actually reached:
+// this is the attacker-reachable branch, and an O(n) sweep on every denied
+// request would be its own amplifier. The periodic sweeper handles the rest.
+func (p *Provider) storeDeniedLocked(cache map[string]time.Time, key string, expires time.Time) {
+	if len(cache) >= p.negativeLimit {
+		now := p.now()
+		for existing, until := range cache {
+			if !now.Before(until) {
+				delete(cache, existing)
 			}
 		}
-		p.observers[key] = entry
 	}
-	p.mu.Unlock()
-	return cloneObserverContext(resolved), allowed
+	if len(cache) >= p.negativeLimit {
+		// Evicting a denial only costs one extra lookup for that credential.
+		for existing := range cache {
+			delete(cache, existing)
+			break
+		}
+	}
+	cache[key] = expires
 }
 
 func (p *Provider) lookupObserverDatabase(ctx context.Context, tokenSHA256, station, feed string) (identity.ObserverContext, bool, error) {
@@ -416,6 +630,11 @@ func (p *Provider) InvalidateAll() {
 	p.mu.Lock()
 	clear(p.observers)
 	clear(p.readers)
+	// Denials are cleared too: a grant issued moments ago must not stay shadowed
+	// by a negative entry recorded before it existed. In-flight lookups need no
+	// handling here — the generation bump already makes their results untrusted.
+	clear(p.deniedObservers)
+	clear(p.deniedReaders)
 	p.generation++
 	p.mu.Unlock()
 }
@@ -478,6 +697,16 @@ func (p *Provider) pruneExpiredLocked(now time.Time) {
 	for key, entry := range p.observers {
 		if !now.Before(entry.expires) {
 			delete(p.observers, key)
+		}
+	}
+	for key, until := range p.deniedReaders {
+		if !now.Before(until) {
+			delete(p.deniedReaders, key)
+		}
+	}
+	for key, until := range p.deniedObservers {
+		if !now.Before(until) {
+			delete(p.deniedObservers, key)
 		}
 	}
 }
