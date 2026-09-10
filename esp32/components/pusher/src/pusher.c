@@ -76,6 +76,43 @@ static void pusher_cfg_free(void)
 
 // --- TLS frame I/O -----------------------------------------------------------------------
 
+// TLS_WANT_WAIT_MS bounds one readiness wait. It is short enough that the
+// no-progress deadline below still trips at OP_DEADLINE_S, and long enough that a
+// flow-controlled or half-open connection costs a few hundred wakeups over that
+// window instead of millions of spins.
+#define TLS_WANT_WAIT_MS 10
+
+// tls_wait_ready blocks until the connection's socket is ready in the direction
+// esp-tls asked for, or until TLS_WANT_WAIT_MS elapses.
+//
+// both I/O loops used to `continue` immediately on
+// WANT_READ/WANT_WRITE, spinning at full speed for as long as OP_DEADLINE_S. On
+// the single-core C6 the priority-6 pusher then owned the core between
+// higher-priority interrupts, starving provisioning, display and housekeeping
+// work and burning power on a connection making no progress. The producer's
+// higher priority protected the producer, not the rest of the firmware.
+//
+// The direction comes from the WANT code, not from which loop we are in: TLS
+// renegotiation makes a write need readability and a read need writability.
+// A select() error is not fatal here — the caller re-issues the operation and its
+// own deadline decides when the link is dead — but it must still yield, so the
+// tick delay is the fallback whenever readiness cannot be waited on.
+static void tls_wait_ready(esp_tls_t *tls, int want_write)
+{
+    int fd = -1;
+    if (esp_tls_get_conn_sockfd(tls, &fd) == ESP_OK && fd >= 0 && fd < FD_SETSIZE) {
+        fd_set ready;
+        FD_ZERO(&ready);
+        FD_SET(fd, &ready);
+        struct timeval tv = { .tv_sec = 0, .tv_usec = TLS_WANT_WAIT_MS * 1000 };
+        if (select(fd + 1, want_write ? NULL : &ready, want_write ? &ready : NULL, NULL, &tv) >= 0) {
+            return;
+        }
+    }
+    TickType_t ticks = pdMS_TO_TICKS(TLS_WANT_WAIT_MS);
+    vTaskDelay(ticks ? ticks : 1); // never 0: a 0-tick delay does not yield
+}
+
 static int tls_write_all(esp_tls_t *tls, const uint8_t *buf, size_t n)
 {
     size_t off = 0;
@@ -86,6 +123,7 @@ static int tls_write_all(esp_tls_t *tls, const uint8_t *buf, size_t n)
             if (esp_timer_get_time() - deadline_start_us > (int64_t)OP_DEADLINE_S * 1000000) {
                 return -1; // no progress for OP_DEADLINE_S -- declare the link dead
             }
+            tls_wait_ready(tls, w == ESP_TLS_ERR_SSL_WANT_WRITE); // always yield
             continue;
         }
         if (w <= 0) return -1;
@@ -105,6 +143,7 @@ static int tls_read_full(esp_tls_t *tls, uint8_t *buf, size_t n)
             if (esp_timer_get_time() - deadline_start_us > (int64_t)OP_DEADLINE_S * 1000000) {
                 return -1; // no progress for OP_DEADLINE_S -- declare the link dead
             }
+            tls_wait_ready(tls, r == ESP_TLS_ERR_SSL_WANT_WRITE); // always yield
             continue;
         }
         if (r <= 0) return -1;

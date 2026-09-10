@@ -16,6 +16,7 @@
 #define ESP_LOGW(tag,...) ((void)(tag))
 #define ESP_LOGE(tag,...) ((void)(tag))
 typedef int esp_err_t;
+typedef int TickType_t;
 typedef int SemaphoreHandle_t;
 typedef struct {int dummy;} esp_tls_t;
 typedef struct {bool keep_alive_enable;int keep_alive_idle,keep_alive_interval,keep_alive_count;} tls_keep_alive_cfg_t;

@@ -1,6 +1,7 @@
 // netcfg — NVS config + SoftAP provisioning portal. See include/netcfg.h.
 
 #include "netcfg.h"
+#include "netcfg_form.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -62,59 +63,6 @@ static const char PORTAL_HTML[] =
     "<label>Bearer token<input name=token maxlength=128 required></label>"
     PORTAL_INSECURE_FIELD
     "<button type=submit>Save &amp; reboot</button></form>";
-
-// url_decode decodes application/x-www-form-urlencoded text in place-safe form into dst.
-// It returns false instead of silently truncating when the decoded value does not fit.
-static bool url_decode(char *dst, size_t cap, const char *src, size_t srclen)
-{
-    size_t o = 0;
-    for (size_t i = 0; i < srclen; i++) {
-        if (o + 1 >= cap) {
-            dst[o] = '\0';
-            return false;
-        }
-        char c = src[i];
-        if (c == '+') {
-            dst[o++] = ' ';
-        } else if (c == '%' && i + 2 < srclen) {
-            char hex[3] = { src[i + 1], src[i + 2], 0 };
-            dst[o++] = (char)strtol(hex, NULL, 16);
-            i += 2;
-        } else {
-            dst[o++] = c;
-        }
-    }
-    dst[o] = '\0';
-    return true;
-}
-
-// form_field extracts one urlencoded field ("name=value&...") into dst (decoded), returning
-// whether the key was present in the body at all. It no longer clears dst up front:
-// on "not found" it leaves dst untouched, so a caller seeding dst from the current config
-// (as save_post does) keeps that value for a field a partial POST omitted entirely, rather
-// than silently wiping it to empty — the "unspecified fields keep their value" the comment
-// there already claimed. Callers using a fresh, otherwise-uninitialized local buffer (not a
-// pre-seeded config field) must zero it themselves before calling, since "not found" is now
-// a true no-op.
-typedef enum { FORM_TRUNCATED = -1, FORM_ABSENT = 0, FORM_OK = 1 } form_result_t;
-
-static form_result_t form_field(const char *body, const char *name, char *dst, size_t cap)
-{
-    char key[24];
-    int kn = snprintf(key, sizeof key, "%s=", name);
-    const char *p = body;
-    while ((p = strstr(p, key)) != NULL) {
-        // Must be at the start or right after '&' to avoid matching a suffix.
-        if (p == body || p[-1] == '&') {
-            const char *v = p + kn;
-            const char *end = strchr(v, '&');
-            size_t vlen = end ? (size_t)(end - v) : strlen(v);
-            return url_decode(dst, cap, v, vlen) ? FORM_OK : FORM_TRUNCATED;
-        }
-        p += kn;
-    }
-    return FORM_ABSENT;
-}
 
 static void restart_task(void *arg)
 {
@@ -191,16 +139,26 @@ static esp_err_t save_post(httpd_req_t *req)
     // body leaves this NVS-loaded value untouched). The return value is deliberately
     // ignored here — an INVALID current config is the normal case on the portal path.
     netcfg_load(&cfg, NULL, 0);
-    if (form_field(body, "ssid", cfg.wifi_ssid, sizeof cfg.wifi_ssid) == FORM_TRUNCATED ||
-        form_field(body, "pass", cfg.wifi_pass, sizeof cfg.wifi_pass) == FORM_TRUNCATED ||
-        form_field(body, "host", cfg.host, sizeof cfg.host) == FORM_TRUNCATED) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "form field too long");
-        return ESP_FAIL;
+    // every negative result — too long, or malformed
+    // percent-encoding / a control byte — refuses the whole POST before anything
+    // reaches NVS, with a reason that never echoes submitted bytes back.
+    const struct { const char *name; char *dst; size_t cap; } text_fields[] = {
+        { "ssid", cfg.wifi_ssid, sizeof cfg.wifi_ssid },
+        { "pass", cfg.wifi_pass, sizeof cfg.wifi_pass },
+        { "host", cfg.host, sizeof cfg.host },
+    };
+    for (size_t i = 0; i < sizeof text_fields / sizeof *text_fields; i++) {
+        form_result_t r = netcfg_form_field(body, text_fields[i].name,
+                                            text_fields[i].dst, text_fields[i].cap);
+        if (r < 0) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, netcfg_form_error(r));
+            return ESP_FAIL;
+        }
     }
     char port[8] = {0}; // fresh buffer, not a pre-seeded cfg field: must self-init 
-    form_result_t port_result = form_field(body, "port", port, sizeof port);
-    if (port_result == FORM_TRUNCATED) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "form field too long");
+    form_result_t port_result = netcfg_form_field(body, "port", port, sizeof port);
+    if (port_result < 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, netcfg_form_error(port_result));
         return ESP_FAIL;
     }
     if (port_result == FORM_OK && port[0]) {
@@ -210,15 +168,23 @@ static esp_err_t save_post(httpd_req_t *req)
         // (regression fix — this used to be a second, separate bound check right here).
         cfg.port = atoi(port);
     }
-    if (form_field(body, "station", cfg.station, sizeof cfg.station) == FORM_TRUNCATED ||
-        form_field(body, "token", cfg.token, sizeof cfg.token) == FORM_TRUNCATED) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "form field too long");
-        return ESP_FAIL;
+    const struct { const char *name; char *dst; size_t cap; } id_fields[] = {
+        { "station", cfg.station, sizeof cfg.station },
+        { "token", cfg.token, sizeof cfg.token },
+    };
+    for (size_t i = 0; i < sizeof id_fields / sizeof *id_fields; i++) {
+        form_result_t r = netcfg_form_field(body, id_fields[i].name,
+                                            id_fields[i].dst, id_fields[i].cap);
+        if (r < 0) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, netcfg_form_error(r));
+            return ESP_FAIL;
+        }
     }
 #if CONFIG_NVF_ALLOW_INSECURE_PORTAL
     char ins[8] = {0}; // fresh buffer: must self-init 
-    if (form_field(body, "insecure", ins, sizeof ins) == FORM_TRUNCATED) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "form field too long");
+    form_result_t ins_result = netcfg_form_field(body, "insecure", ins, sizeof ins);
+    if (ins_result < 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, netcfg_form_error(ins_result));
         return ESP_FAIL;
     }
     cfg.insecure = ins[0] != '\0'; // checkbox present => on
@@ -241,12 +207,26 @@ static esp_err_t save_post(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "save failed");
         return err;
     }
+    // schedule the reboot BEFORE promising it. The return value used
+    // to be discarded, so under heap/task exhaustion the config was committed and
+    // the operator was told the unit was rebooting while it sat in provisioning
+    // mode indefinitely, waiting for a power cycle nobody knew to perform. The
+    // save is atomic and already succeeded, so it is never rolled back; only the
+    // message changes. restart_task's own delay is what lets the response flush.
+    BaseType_t started = xTaskCreate(restart_task, "restart", 2048, NULL, 5, NULL);
     httpd_resp_set_type(req, "text/html");
+    if (started != pdPASS) {
+        ESP_LOGE(TAG, "configuration saved but the restart task could not be created; "
+                      "power-cycle the device to apply it");
+        httpd_resp_sendstr(req, "<meta name=viewport content='width=device-width'>"
+                                "<h3>Saved, but the reboot could not be scheduled.</h3>"
+                                "<p>Power-cycle the device to apply the new configuration.</p>");
+        return ESP_OK;
+    }
     httpd_resp_sendstr(req, "<meta name=viewport content='width=device-width'>"
                             "<h3>Saved. Rebooting into station mode...</h3>");
     ESP_LOGI(TAG, "provisioned: ssid='%s' host='%s:%d' station='%s' — rebooting",
              cfg.wifi_ssid, cfg.host, cfg.port, cfg.station);
-    xTaskCreate(restart_task, "restart", 2048, NULL, 5, NULL);
     return ESP_OK;
 }
 
