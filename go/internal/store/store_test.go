@@ -394,7 +394,7 @@ func TestIntegrationStoreDerivesConfiguredRetention(t *testing.T) {
 	} {
 		cfg := base
 		cfg.RawRetention = tc.retention
-		cfg.CompressAfter = "1 minute"
+		cfg.CompressAfter = "1 hour"
 		s, err := New(ctx, cfg, integrationLog())
 		if err != nil {
 			t.Fatalf("store.New(raw_retention=%q): %v", tc.retention, err)
@@ -408,7 +408,7 @@ func TestIntegrationStoreDerivesConfiguredRetention(t *testing.T) {
 	// An overflowing interval must fail startup, not fall back to the default.
 	cfg := base
 	cfg.RawRetention = fmt.Sprintf("%d weeks", int64(config.MaxInterval/(7*24*time.Hour))+1)
-	cfg.CompressAfter = "1 minute"
+	cfg.CompressAfter = "1 hour"
 	s, err := New(ctx, cfg, integrationLog())
 	if err == nil {
 		s.pool.Close()

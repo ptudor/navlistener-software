@@ -65,6 +65,10 @@ const defaultSeqSeenRetention = 7 * 24 * time.Hour // mirrors the "7 days" RawRe
 const (
 	schemaSetupBudget = 30 * time.Second
 	policySetupBudget = 15 * time.Second
+	// Bounded retry for a policy transaction that deadlocked against the
+	// extension's own background job scheduler. Both fit inside policySetupBudget.
+	policyRetryAttempts = 3
+	policyRetryBackoff  = 250 * time.Millisecond
 )
 
 var defaultFlushRetry = flushRetry{attempts: 3, backoff: 250 * time.Millisecond, attemptTO: 10 * time.Second}
@@ -418,7 +422,33 @@ func verifyRequiredColumns(ctx context.Context, pool *pgxpool.Pool) error {
 // but this guard against the later SQL-DDL interpolation stays regardless of
 // caller.
 func applyPolicies(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, cfg config.Store) error {
-	return applyPoliciesWithHook(ctx, pool, log, cfg, nil)
+	// regression fix follow-through: replacing all six policies in ONE transaction
+	// holds locks on the extension's job catalog for the whole sequence, which can
+	// deadlock against the background scheduler if it is executing one of those
+	// very policies at startup. A deadlock is transient by definition — PostgreSQL
+	// resolves it by aborting one side — and retrying is only safe *because* the
+	// work is transactional: the aborted attempt changed nothing, so the retry
+	// starts from the same state rather than from a half-replaced set.
+	var err error
+	for attempt := range policyRetryAttempts {
+		err = applyPoliciesWithHook(ctx, pool, log, cfg, nil)
+		if err == nil || !isTransientConflict(err) || ctx.Err() != nil {
+			return err
+		}
+		log.Warn("historian policy replacement conflicted with a concurrent job; retrying",
+			"attempt", attempt+1, "of", policyRetryAttempts, "error", err)
+		if !sleepCtx(ctx, policyRetryBackoff) {
+			return err
+		}
+	}
+	return err
+}
+
+// isTransientConflict reports whether err is a deadlock or serialization failure
+// (class 40), the two outcomes a retry of an all-or-nothing transaction fixes.
+func isTransientConflict(err error) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && len(pg.Code) >= 2 && pg.Code[:2] == "40"
 }
 
 // applyPoliciesWithHook is applyPolicies with a per-statement observation seam.
