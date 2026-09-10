@@ -1694,31 +1694,59 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o, struct spool *s) 
 		SSL_free(ssl); close(tls_fd); return -1;
 	}
 
-	int zstd_ok = 0;
-	int hs = handshake(&io, o, s->session, &zstd_ok);
-	if (hs != 0) {
-		pthread_mutex_destroy(&io.mu);
-		SSL_free(ssl); close(tls_fd); return hs == -2 ? -2 : -1;
-	}
-
 	struct conn c = { &io, NULL, NULL, 0, 0, 0 };
-	if (zstd_ok) {
-		/* regression fix (partial, see technical validation): kept as die() here, not downgraded
-		 * to a silent plaintext fallback. By this point handshake() has already
-		 * exchanged "zstd":true with the collector, which commits it to wrapping
-		 * its reader in a zstd decompressor for the rest of THIS connection
-		 * (internal/ingest/push.go's useZstd path is stream-, not frame-, scoped).
-		 * Switching c.cctx to NULL here would silently write plaintext into that
-		 * decompressor and desync the wire — worse than a clean process exit. The
-		 * safe equivalent (probe the allocation before advertising zstd in the
-		 * HELLO, or fail this connection attempt and let the outer loop
-		 * reconnect) is a real fix but is not what this exact line can do without
-		 * restructuring handshake(), so it's deliberately left out of this pass. */
+	/* regression fix (completing regression fix): the compressor is allocated BEFORE
+	 * handshake() can advertise "zstd":true, which is the restructuring the old
+	 * comment here said was the real fix and deferred.
+	 *
+	 * Why the ordering is the whole point: once the HELLO says "zstd":true and the
+	 * collector answers in kind, it wraps its reader in a zstd decompressor for
+	 * the rest of THIS connection (push.go's useZstd path is stream-, not
+	 * frame-scoped). Allocating afterwards left only two bad options — write
+	 * plaintext into that decompressor and desync the wire, or die(). die() calls
+	 * exit(2), which bypasses the signal thread's orderly RAM-ring spill, so the
+	 * newest unacknowledged frames were lost during exactly the memory-pressure
+	 * condition that makes the ring valuable (the disk tier holds the oldest
+	 * overflow, not the current ring).
+	 *
+	 * Allocating first removes the dilemma: nothing has been negotiated yet, so a
+	 * failure is just a failed connection attempt. The outer loop's existing
+	 * bounded backoff  paces the retry, so persistent memory pressure
+	 * cannot spin, and the spool keeps every unacknowledged frame meanwhile. The
+	 * user's --zstd request is never silently downgraded to plaintext. */
+	if (o->zstd) {
 		c.cctx = ZSTD_createCCtx();
 		c.obuf_cap = ZSTD_CStreamOutSize();
 		c.obuf = malloc(c.obuf_cap);
-		if (!c.cctx || !c.obuf) die("out of memory for zstd stream");
+		if (!c.cctx || !c.obuf) {
+			if (c.cctx) ZSTD_freeCCtx(c.cctx);
+			free(c.obuf);
+			log_msg("out of memory for the zstd compressor; dropping this connection attempt "
+				"(spool retained, will retry with backoff)");
+			pthread_mutex_destroy(&io.mu);
+			SSL_free(ssl); close(tls_fd); return -1;
+		}
 		ZSTD_CCtx_setParameter(c.cctx, ZSTD_c_compressionLevel, 3);
+	}
+
+	int zstd_ok = 0;
+	int hs = handshake(&io, o, s->session, &zstd_ok);
+	if (hs != 0) {
+		if (c.cctx) ZSTD_freeCCtx(c.cctx);
+		free(c.obuf);
+		pthread_mutex_destroy(&io.mu);
+		SSL_free(ssl); close(tls_fd); return hs == -2 ? -2 : -1;
+	}
+	/* regression fix gates zstd_ok on our own advertised intent, so it can only be false
+	 * here if the collector declined. Release the unused compressor rather than
+	 * carrying it for the life of a plaintext connection; send_data keys off
+	 * c.cctx == NULL, so this is the same plaintext path as a non-zstd feeder. */
+	if (!zstd_ok && c.cctx) {
+		ZSTD_freeCCtx(c.cctx);
+		c.cctx = NULL;
+		free(c.obuf);
+		c.obuf = NULL;
+		c.obuf_cap = 0;
 	}
 
 	g_disconnected = 0;

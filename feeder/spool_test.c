@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <assert.h>
 #include <pthread.h>
+#include <zstd.h>
 static FILE *fault_file;
 static int fail_open, fail_read, reads, read_error;
 static const char *fault_path;
@@ -21,11 +22,20 @@ static int test_unlink(const char *);
  * fail-closed path is exercised for the primary and every recovered spool. */
 static int fail_mutex_init;
 static int test_pthread_mutex_init(pthread_mutex_t *, const pthread_mutexattr_t *);
+/* fail the zstd compressor's two allocations independently and
+ * transiently. NAVFEEDER_TEST_FAIL_ZSTD_CTX / _BUF give the number of leading
+ * connection attempts whose ZSTD_createCCtx / output-buffer allocation must fail,
+ * so a test can prove the process survives the failures AND that a later
+ * successful allocation replays the retained spool in order. */
+static ZSTD_CCtx *test_ZSTD_createCCtx(void);
+static size_t test_ZSTD_CStreamOutSize(void);
 #define fopen test_fopen
 #define fread test_fread
 #define ferror test_ferror
 #define unlink test_unlink
 #define pthread_mutex_init test_pthread_mutex_init
+#define ZSTD_createCCtx test_ZSTD_createCCtx
+#define ZSTD_CStreamOutSize test_ZSTD_CStreamOutSize
 #define main navfeeder_main
 #include "navfeeder.c"
 #undef main
@@ -34,6 +44,26 @@ static int test_pthread_mutex_init(pthread_mutex_t *, const pthread_mutexattr_t 
 #undef ferror
 #undef unlink
 #undef pthread_mutex_init
+#undef ZSTD_createCCtx
+#undef ZSTD_CStreamOutSize
+static int envfaults(const char *name) {
+    const char *v = getenv(name);
+    return v ? atoi(v) : 0;
+}
+static ZSTD_CCtx *test_ZSTD_createCCtx(void) {
+    static int left = -1;
+    if (left < 0) left = envfaults("NAVFEEDER_TEST_FAIL_ZSTD_CTX");
+    if (left > 0) { left--; return NULL; }
+    return ZSTD_createCCtx();
+}
+static size_t test_ZSTD_CStreamOutSize(void) {
+    static int left = -1;
+    if (left < 0) left = envfaults("NAVFEEDER_TEST_FAIL_ZSTD_BUF");
+    /* SIZE_MAX makes the caller's malloc fail deterministically, exercising the
+     * output-buffer half independently of the context half. */
+    if (left > 0) { left--; return (size_t)-1; }
+    return ZSTD_CStreamOutSize();
+}
 static int test_pthread_mutex_init(pthread_mutex_t *m, const pthread_mutexattr_t *a) {
     if (fail_mutex_init) { int e = fail_mutex_init; return e; }
     return pthread_mutex_init(m, a);
