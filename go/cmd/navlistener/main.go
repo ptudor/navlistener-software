@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -465,42 +466,140 @@ func run() int {
 	// closure — draining every already-enqueued frame with no race. Only close frames
 	// once producers are confirmed done: closing while one might still send would
 	// panic.
+	// shutdown runs an explicit phase plan instead of letting one
+	// deadline be consumed in order. Previously a single shutCtx covered producers,
+	// then the whole pipeline, then the API — and only after all of that was the
+	// historian even told to drain, on the same already-spent context. A slow
+	// producer, a stalled decode, or an SSE client that never disconnects could
+	// therefore leave the store no time at all, losing dial-mode frames
+	// permanently, while the process still logged "graceful shutdown complete" and
+	// returned success.
 	cancel()
-	shutCtx, shutCancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-	defer shutCancel()
+	plan := planShutdown(cfg.ShutdownTimeout)
+	var incomplete []string
 
+	// Stop serving immediately and concurrently with the pipeline drain. New
+	// API/SSE work must end early, and its teardown must never spend the
+	// historian's reservation: Shutdown waits for in-flight requests, and an SSE
+	// stream is in-flight until its client disconnects, so this phase is bounded
+	// by a force-close.
+	apiDone := make(chan struct{})
+	go func() {
+		defer close(apiDone)
+		if apiSrv == nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), plan.api)
+		defer cancel()
+		if err := apiSrv.Shutdown(ctx); err != nil {
+			log.Warn("v2 serve did not stop within its shutdown phase; force-closing", "error", err)
+			_ = apiSrv.Close()
+		}
+	}()
+
+	// Pipeline phase, in dependency order: producers finish (every producer's Run
+	// waits out its own in-flight handlers, so ingestWG is a reliable "nothing can
+	// send to frames again" signal), then the queue closes, then decode drains it.
+	pipelineCtx, pipelineCancel := context.WithTimeout(context.Background(), plan.pipeline)
+	defer pipelineCancel()
 	ingestDone := make(chan struct{})
 	go func() { ingestWG.Wait(); close(ingestDone) }()
 	select {
 	case <-ingestDone:
 		close(frames)
-	case <-shutCtx.Done():
-		log.Warn("shutdown timeout waiting for ingest producers; exiting without closing the frame queue")
+	case <-pipelineCtx.Done():
+		// Closing while a producer might still send would panic, so the queue
+		// stays open and decode below will not see closure either.
+		incomplete = append(incomplete, "ingest producers")
+		log.Warn("shutdown phase expired waiting for ingest producers; the frame queue stays open")
 	}
 
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
+	decodeDone := make(chan struct{})
+	go func() { wg.Wait(); close(decodeDone) }()
 	select {
-	case <-done:
+	case <-decodeDone:
 		log.Info("pipeline drained")
-	case <-shutCtx.Done():
-		log.Warn("shutdown timeout exceeded; exiting")
+	case <-pipelineCtx.Done():
+		incomplete = append(incomplete, "decode pipeline")
+		log.Warn("shutdown phase expired draining the decode pipeline")
 	}
-	if apiSrv != nil {
-		if err := apiSrv.Shutdown(shutCtx); err != nil {
-			log.Warn("v2 serve shutdown", "error", err)
-		}
-	}
+
+	// The historian's reservation. It starts the moment decoding is done (or its
+	// phase expired) and is a fresh budget, so nothing earlier and nothing later
+	// can spend it — that reservation is the whole point of the plan.
 	storeCancel() // historian drains its queue, flushes, closes the pool
+	storeCtx, storeShutCancel := context.WithTimeout(context.Background(), plan.store)
+	defer storeShutCancel()
 	select {
 	case <-storeDone:
-	case <-shutCtx.Done():
+	case <-storeCtx.Done():
+		incomplete = append(incomplete, "historian drain")
+		log.Warn("shutdown phase expired draining the historian; accepted frames may not be persisted")
 	}
-	if err := obs.Shutdown(shutCtx); err != nil {
+
+	// The serve teardown has had the pipeline and store phases to complete.
+	select {
+	case <-apiDone:
+	case <-time.After(plan.api):
+		incomplete = append(incomplete, "v2 serve shutdown")
+		if apiSrv != nil {
+			_ = apiSrv.Close()
+		}
+	}
+
+	metricsCtx, metricsCancel := context.WithTimeout(context.Background(), plan.metrics)
+	defer metricsCancel()
+	if err := obs.Shutdown(metricsCtx); err != nil {
+		incomplete = append(incomplete, "metrics server shutdown")
 		log.Warn("metrics server shutdown", "error", err)
+	}
+
+	if len(incomplete) > 0 {
+		// An incomplete shutdown is not a graceful one, and a service manager that
+		// only reads the exit status must be able to tell the difference — even for
+		// an otherwise normal signal.
+		log.Error("shutdown incomplete", "phases", strings.Join(incomplete, ", "))
+		if exitCode == 0 {
+			exitCode = 1
+		}
+		return exitCode
 	}
 	log.Info("graceful shutdown complete")
 	return exitCode
+}
+
+// shutdownPlan splits the configured shutdown bound into phases that cannot
+// spend each other's time. The historian's share is the one that
+// must be guaranteed: producers and decode feed it, and the API and metrics
+// listeners are cleanup that must never delay it.
+type shutdownPlan struct {
+	pipeline time.Duration // producers -> close frame queue -> finish decoding
+	api      time.Duration // stop serving; force-closed when this expires
+	store    time.Duration // reserved persistence budget
+	metrics  time.Duration
+}
+
+// The split is proportional so a deliberately small configured bound still gives
+// every phase a real share rather than whatever the phase before it left over.
+// The API phase overlaps the pipeline phase, so the serial worst case is
+// pipeline + store + metrics, within the configured bound.
+func planShutdown(total time.Duration) shutdownPlan {
+	if total <= 0 {
+		total = 15 * time.Second
+	}
+	share := func(pct int64) time.Duration {
+		d := time.Duration(int64(total) * pct / 100)
+		if d <= 0 {
+			d = time.Millisecond // never a zero-length phase
+		}
+		return d
+	}
+	return shutdownPlan{
+		pipeline: share(50),
+		api:      share(15),
+		store:    share(40),
+		metrics:  share(10),
+	}
 }
 
 // persistMsgType returns the msg_type to persist for f : a dial connector

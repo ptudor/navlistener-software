@@ -232,6 +232,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.http.Shutdown(ctx)
 }
 
+// Close force-closes the listener and every active connection. Shutdown is the
+// graceful path, but it waits for in-flight requests, and an SSE stream is
+// in-flight until its client disconnects — so on this listener Shutdown alone is
+// unbounded in practice. Close is what bounds it, and shutdown's phase plan uses
+// it when the serve phase expires so API teardown can never spend the
+// historian's persistence reservation.
+func (s *Server) Close() error {
+	return s.http.Close()
+}
+
 // PublishEvent fans a confirmed integrity event out to the SSE clients and records
 // it in the reconnect-replay ring (docs/OUTPUT.md §3).
 func (s *Server) PublishEvent(e EventMsg) {
