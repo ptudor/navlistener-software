@@ -644,6 +644,16 @@ func (c *Config) finalize() error {
 		if s.Addr == "" {
 			return fmt.Errorf("ingest %q: addr is required (host:port to dial)", s.Name)
 		}
+		// an ntrip source's addr is interpolated into the caster's
+		// HTTP Host header, so a malformed or control-character-bearing authority
+		// must fail -check-config rather than reach the wire. The dial itself needs
+		// host:port for every type, so the syntax check is not ntrip-specific.
+		if err := validateAddr("ingest "+s.Name+" addr", s.Addr); err != nil {
+			return err
+		}
+		if strings.ContainsFunc(s.Addr, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+			return fmt.Errorf("ingest %q: addr contains control characters", s.Name)
+		}
 		if (s.Type == "sbf" || s.Type == "rtcm" || s.Type == "ntrip") && !s.CaptureOnly {
 			return fmt.Errorf("ingest %q: type %s is capture-only; set capture_only = true explicitly", s.Name, s.Type)
 		}

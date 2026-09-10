@@ -38,10 +38,45 @@ const (
 // non-200/ICY response (mountpoint refused, auth rejected, or a SOURCETABLE reply -- regression fix),
 // which the caller treats as a reconnect. Deadlines use wall-clock time directly — they gate
 // real I/O, not frame stamping.
+// ntripHostHeader builds the HTTP/1.1 Host authority for the caster.
+//
+// the port used to be stripped unconditionally. NTRIP's normal
+// port is 2101, not HTTP's 80, so a caster doing authority-based virtual routing
+// received `Host: caster.example` for a `caster.example:2101` request and could
+// reject it or route it to the wrong mountpoint set. A bracketed IPv6 authority
+// also lost its brackets, which is not a legal Host value at all. Only HTTP's own
+// default port is elided — this handshake is plain HTTP over the raw dialed
+// conn, so 80 is the right default to test against, rather than "remove every
+// port".
+//
+// The result is interpolated straight into the request line's header block, so a
+// control character here would inject headers toward the caster. Config
+// validation catches a malformed [[ingest]].addr up front; this is the
+// interpolation-site guard that makes that impossible regardless of caller.
+func ntripHostHeader(addr string) (string, error) {
+	if strings.ContainsFunc(addr, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return "", fmt.Errorf("ntrip addr %q contains control characters", addr)
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		// No port component: the configured value is already an authority.
+		return addr, nil
+	}
+	if port != "80" {
+		// addr already carries brackets for an IPv6 literal, which is exactly the
+		// wire form a Host header wants.
+		return addr, nil
+	}
+	if strings.Contains(host, ":") { // IPv6 literal, brackets stripped by the split
+		return "[" + host + "]", nil
+	}
+	return host, nil
+}
+
 func ntripConnect(conn net.Conn, src config.Source) (chunked bool, err error) {
-	host := src.Addr
-	if h, _, err := net.SplitHostPort(src.Addr); err == nil {
-		host = h
+	host, err := ntripHostHeader(src.Addr)
+	if err != nil {
+		return false, err
 	}
 
 	var req strings.Builder

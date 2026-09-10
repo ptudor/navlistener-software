@@ -78,6 +78,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <netdb.h>
+#include <arpa/inet.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/x509v3.h>
@@ -799,6 +800,80 @@ static void spool_stats(struct spool *s, uint64_t *seq, uint64_t *dropped, size_
  * which is a total budget there. */
 #define CONNECT_TIMEOUT_S 10
 
+/* parse_authority is the ONE endpoint parser for both --server and a TCP
+ * --source. Both used to split at the LAST colon with no
+ * bracket awareness, so a standard `[2001:db8::1]:5580` left the brackets in the
+ * name handed to getaddrinfo (which then never resolves), and an unbracketed
+ * `2001:db8::1:5580` silently parsed the last hextet as the port. --source
+ * additionally copied into a fixed 256-byte buffer with an unchecked snprintf,
+ * so a longer authority was truncated and a DIFFERENT endpoint was dialled.
+ *
+ * Accepts `host:port` for DNS names and IPv4, and `[v6]:port` for IPv6 literals.
+ * Brackets are stripped here, so callers get the bare name resolution and
+ * certificate verification want. Returns 0 on success, -1 with *why set.
+ */
+static int parse_authority(const char *in, char *host, size_t hostcap,
+			   char *port, size_t portcap, const char **why) {
+	*why = NULL;
+	if (!in || !*in) { *why = "empty"; return -1; }
+	for (const unsigned char *p = (const unsigned char *)in; *p; p++)
+		if (*p < 0x20 || *p == 0x7f) { *why = "contains control characters"; return -1; }
+
+	const char *hstart, *hend, *colon;
+	if (in[0] == '[') {
+		const char *close = strchr(in, ']');
+		if (!close) { *why = "unterminated '[' in an IPv6 authority"; return -1; }
+		hstart = in + 1;
+		hend = close;
+		colon = close + 1;
+		if (*colon != ':') { *why = "expected ':port' after ']'"; return -1; }
+	} else {
+		colon = strrchr(in, ':');
+		if (!colon) { *why = "expected host:port"; return -1; }
+		/* More than one colon and no brackets is an unbracketed IPv6 literal:
+		 * ambiguous, and splitting at the last colon silently eats a hextet. */
+		if (strchr(in, ':') != colon) {
+			*why = "ambiguous unbracketed IPv6 address; write it as [address]:port";
+			return -1;
+		}
+		hstart = in;
+		hend = colon;
+	}
+	size_t hlen = (size_t)(hend - hstart);
+	if (hlen == 0) { *why = "empty host"; return -1; }
+	if (hlen >= hostcap) { *why = "host is too long"; return -1; }
+
+	const char *pstart = colon + 1;
+	size_t plen = strlen(pstart);
+	if (plen == 0) { *why = "empty port"; return -1; }
+	if (plen >= portcap) { *why = "port is too long"; return -1; }
+	long value = 0;
+	for (const char *p = pstart; *p; p++) {
+		if (*p < '0' || *p > '9') { *why = "port must be decimal"; return -1; }
+		value = value * 10 + (*p - '0');
+		if (value > 65535) { *why = "port out of range (1-65535)"; return -1; }
+	}
+	if (value < 1) { *why = "port out of range (1-65535)"; return -1; }
+
+	memcpy(host, hstart, hlen);
+	host[hlen] = 0;
+	memcpy(port, pstart, plen);
+	port[plen] = 0;
+	return 0;
+}
+
+/* numeric_host reports whether host is an IP literal rather than a DNS name.
+ * RFC 6066 §3 forbids a literal address in the TLS server_name extension, so SNI
+ * is omitted for these. Certificate verification is unaffected:
+ * SSL_set1_host() recognizes an IP literal and matches it against the
+ * certificate's iPAddress SANs -- confirmed empirically against OpenSSL 3.6.4,
+ * where a matching IP SAN verifies and a non-matching one fails with
+ * X509_V_ERR_IP_ADDRESS_MISMATCH (64). */
+static int numeric_host(const char *host) {
+	unsigned char buf[16];
+	return inet_pton(AF_INET, host, buf) == 1 || inet_pton(AF_INET6, host, buf) == 1;
+}
+
 static int tcp_dial(const char *host, const char *port, int rcv_timeout_s) {
 	struct addrinfo hints, *res, *rp;
 	memset(&hints, 0, sizeof hints);
@@ -1381,12 +1456,15 @@ static int open_serial(const char *path, int baud) {
  * host:port TCP bridge (ser2net / a receiver's raw TCP port). */
 static int open_source(const struct opts *o) {
 	if (o->source[0] == '/') return open_serial(o->source, o->baud);
-	char hp[256];
-	snprintf(hp, sizeof hp, "%s", o->source);
-	char *colon = strrchr(hp, ':');
-	if (!colon) { log_msg("--source %s: expected /dev/... or host:port", o->source); return -1; }
-	*colon = 0;
-	return tcp_dial(hp, colon + 1, 5);
+	/* one strict parser, and no fixed-buffer copy that could
+	 * silently truncate a long authority into a different endpoint. */
+	char host[NI_MAXHOST], port[16];
+	const char *why = NULL;
+	if (parse_authority(o->source, host, sizeof host, port, sizeof port, &why) != 0) {
+		log_msg("--source %s: %s (expected /dev/... , host:port, or [v6]:port)", o->source, why);
+		return -1;
+	}
+	return tcp_dial(host, port, 5);
 }
 
 static void *producer_thread(void *arg) {
@@ -1447,10 +1525,14 @@ static SSL *tls_connect(SSL_CTX *ctx, const struct opts *o, int *out_fd) {
 		 * attacker holding any publicly-trusted cert for any domain passes. */
 		SSL_set_hostflags(ssl, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
 		if (SSL_set1_host(ssl, o->server_host) != 1) {
-			log_msg("failed to set expected TLS hostname");
+			log_msg("failed to set expected TLS peer name");
 			SSL_free(ssl); close(fd); return NULL;
 		}
-		SSL_set_tlsext_host_name(ssl, o->server_host);
+		/* RFC 6066 §3 forbids a literal address in server_name, and
+		 * some servers reject an SNI that carries one. Verification is unaffected —
+		 * SSL_set1_host() recognizes an IP literal and matches it against the
+		 * certificate's iPAddress SANs (see numeric_host). */
+		if (!numeric_host(o->server_host)) SSL_set_tlsext_host_name(ssl, o->server_host);
 	}
 	if (SSL_connect(ssl) != 1) { SSL_free(ssl); close(fd); return NULL; }
 	if (!o->insecure && SSL_get_verify_result(ssl) != X509_V_OK) {
@@ -1967,13 +2049,6 @@ bad:
 	exit(2);
 }
 
-static const char *split_hostport(char *s) {
-	char *c = strrchr(s, ':');
-	if (!c) die("--server: expected host:port");
-	*c = 0;
-	return c + 1;
-}
-
 static void usage(void) {
 	fprintf(stderr,
 		"navfeeder — navlistener edge feeder (UBX raw nav frames over GNF1/TLS)\n"
@@ -2137,7 +2212,20 @@ int main(int argc, char **argv) {
 	 * `unauthorized` in a permanent 30 s loop. */
 	if (!o.token) die("a bearer token (--token/--token-file) is required; --cert/--key adds mTLS on top");
 	if ((o.cert != NULL) != (o.key != NULL)) die("--cert and --key must be given together");
-	o.server_port = split_hostport(server); o.server_host = server;
+	/* same strict parser as --source. Brackets are stripped, so
+	 * getaddrinfo and the certificate check both see the bare address. */
+	static char server_host[NI_MAXHOST], server_port[16];
+	const char *server_why = NULL;
+	if (parse_authority(server, server_host, sizeof server_host,
+			    server_port, sizeof server_port, &server_why) != 0)
+	{
+		char msg[512];
+		snprintf(msg, sizeof msg, "--server %s: %s (expected host:port or [v6]:port)",
+			 server, server_why);
+		die(msg);
+	}
+	o.server_host = server_host;
+	o.server_port = server_port;
 
 	SSL_library_init();
 	SSL_load_error_strings();

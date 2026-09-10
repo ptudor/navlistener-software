@@ -193,11 +193,67 @@ static void spool_free_stack(struct spool *s) {
     free(s->ring);
 }
 
+/* one strict authority parser for --server and a TCP --source.
+ * Both used to split at the LAST colon with no bracket awareness, so a standard
+ * [v6]:port left brackets in the name given to getaddrinfo and an unbracketed
+ * IPv6 literal silently lost its last hextet to the "port"; --source also copied
+ * through a fixed 256-byte buffer with an unchecked snprintf, so an overlong
+ * authority was truncated into a DIFFERENT endpoint. */
+static void authority_matrix(void) {
+    char host[NI_MAXHOST], port[16];
+    const char *why;
+    struct { const char *in, *host, *port; } good[] = {
+        {"collector.example:5580", "collector.example", "5580"},
+        {"192.0.2.10:5580",        "192.0.2.10",        "5580"},
+        {"[2001:db8::1]:5580",     "2001:db8::1",       "5580"},  /* brackets stripped */
+        {"[::1]:1",                "::1",               "1"},
+        {"h:65535",                "h",                 "65535"},
+    };
+    for (size_t i = 0; i < sizeof good / sizeof *good; i++) {
+        assert(parse_authority(good[i].in, host, sizeof host, port, sizeof port, &why) == 0);
+        assert(!strcmp(host, good[i].host));
+        assert(!strcmp(port, good[i].port));
+    }
+    const char *bad[] = {
+        "",                     /* empty */
+        "collector.example",    /* no port */
+        ":5580",                /* empty host */
+        "collector.example:",   /* empty port */
+        "collector.example:0",  /* port 0 */
+        "collector.example:65536",
+        "collector.example:-1",
+        "collector.example:80x",
+        "2001:db8::1:5580",     /* ambiguous unbracketed IPv6 */
+        "[2001:db8::1:5580",    /* unterminated bracket */
+        "[2001:db8::1]5580",    /* missing ':' after ']' */
+        "collector.example\r\nX: 1:5580", /* control characters */
+        "collector\t.example:5580",
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof *bad; i++) {
+        assert(parse_authority(bad[i], host, sizeof host, port, sizeof port, &why) == -1);
+        assert(why != NULL);
+    }
+    /* Truncation must be refused, never silently dialled as another endpoint. */
+    char overlong[NI_MAXHOST + 32];
+    memset(overlong, 'a', sizeof overlong - 1);
+    overlong[sizeof overlong - 1] = 0;
+    memcpy(overlong + sizeof overlong - 6, ":5580", 6);
+    assert(parse_authority(overlong, host, sizeof host, port, sizeof port, &why) == -1);
+
+    /* An IP literal must be recognized so SNI is omitted for it (RFC 6066 §3). */
+    assert(numeric_host("192.0.2.10"));
+    assert(numeric_host("::1"));
+    assert(numeric_host("2001:db8::1"));
+    assert(!numeric_host("collector.example"));
+    assert(!numeric_host("192.0.2.10.example"));
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "feeder")) return navfeeder_main(argc-1, argv+1);
     assert(argc == 2);
     char path[PATH_MAX]; snprintf(path, sizeof path, "%s/spool", argv[1]);
     strcpy(g_session, "fresh"); fault_path = path;
+    authority_matrix();
     fixture(path, 0);
     fail_open = 1; check_preserved(path, -1); fail_open = 0;
     int points[] = {1, 3, 4, 5};
@@ -225,6 +281,6 @@ int main(int argc, char **argv) {
     assert(spool_append(&g_spool,data,sizeof data) == 1);
     assert(!strcmp(g_spool.session,"fresh"));
     assert(!spool_append(g_replays,data,sizeof data));
-    puts("spool recovery faults, corruption, torn tail, mutex-init faults, retry and session isolation PASS");
+    puts("spool recovery faults, corruption, torn tail, mutex-init faults, authority parsing, retry and session isolation PASS");
     return 0;
 }
