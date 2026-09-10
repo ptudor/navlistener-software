@@ -32,7 +32,15 @@ type FrameType uint8
 const (
 	Hello   FrameType = 0x01 // feeder→collector: JSON HelloMsg
 	Welcome FrameType = 0x02 // collector→feeder: JSON WelcomeMsg
-	Data    FrameType = 0x03 // feeder→collector: [8B seq][raw record]
+	// Data carries [8B seq][raw record]. Assigned sequences start at 1 — both
+	// reference feeders emit ++seq — and 0 is therefore NOT a member of the
+	// sequence space. A collector MUST treat a DATA frame with sequence 0 as a
+	// protocol error and close the connection : it can never be
+	// acked (the durable watermark has no value below it to report), so accepting
+	// one applies and stores a record whose spool copy the feeder can never
+	// retire, replayed on every reconnect forever. A second implementer must not
+	// emit sequence 0 to mean "unsequenced".
+	Data FrameType = 0x03 // feeder→collector: [8B seq][raw record], seq ≥ 1
 	// Ack (regression fix, revised by regression fix 2026-07-31): [8B seq] the DURABLE
 	// watermark for this session — the highest sequence N such that every
 	// sequenced frame ≤ N the collector RECEIVED has been durably resolved:

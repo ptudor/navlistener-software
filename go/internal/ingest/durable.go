@@ -114,8 +114,11 @@ func NewDurableTracker() *DurableTracker {
 // tracked holes even at capacity and thereby release budget after commit.
 func (t *DurableTracker) Received(source, session string, seq uint64, persistable bool) bool {
 	// GNF1 sequences start at 1 (the C feeder's ++seq); 0 is never a valid
-	// assigned sequence. Ignoring it here keeps a buggy/hostile seq-0 DATA
-	// frame from wedging the watermark at oldest-1 underflow.
+	// assigned sequence. Since the regression fix the push boundary rejects a seq-0
+	// DATA frame as a protocol error and closes the connection, so this branch is
+	// defense-in-depth for any other caller: ignoring the sequence keeps it from
+	// wedging the watermark at oldest-1 underflow. It does not mark anything
+	// resolved — nothing was ever tracked — and no ACK can advance over it.
 	if seq == 0 {
 		return true
 	}

@@ -738,6 +738,28 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 	// unforwarded counts consecutive frames that produced no p.out
 	// delivery; see maxConsecutiveUnforwarded for why it exists and its bound.
 	unforwarded := 0
+	// dropPermanentlyMalformed handles a record a retransmit can never repair.
+	// It is counted, registered as never-persistable so it advances the durable
+	// watermark instead of holding it — otherwise one bad record would wedge
+	// every valid later spool record behind it forever — and dropped without
+	// reaching live state or the historian. Returns false when the durability
+	// budget is full and the connection must close so the feeder replays.
+	dropPermanentlyMalformed := func(seq uint64, reason string) bool {
+		metrics.PushErrorsTotal.WithLabelValues(observer, reason).Inc()
+		unforwarded++
+		if p.durable != nil {
+			if !p.durable.Received(observer, session, seq, false) {
+				p.log.Warn("durability tracking budget full; closing for replay", "observer", observer)
+				return false
+			}
+		}
+		mu.Lock()
+		if seq > highest {
+			highest = seq
+		}
+		mu.Unlock()
+		return true
+	}
 	for {
 		if ctx.Err() != nil {
 			return
@@ -759,6 +781,21 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 			if err != nil {
 				metrics.PushErrorsTotal.WithLabelValues(observer, "short_record").Inc()
 				unforwarded++
+			} else if seq == 0 {
+				// sequence 0 is outside the assigned sequence space.
+				// Both reference feeders emit ++seq, so the first record of a session
+				// is 1 (feeder/navfeeder.c disk_put, esp32 spool.c spool_put). A zero
+				// can never advance the durable watermark — DurableTracker.Received
+				// ignores it rather than underflow Watermark's pending[0]-1 — so
+				// before this gate the collector applied and persisted the record on
+				// every reconnect while its spool copy could never be retired.
+				// This is a protocol error, not a malformed body: a peer emitting it
+				// is not speaking GNF1, so the connection is closed rather than acked
+				// past. Nothing is registered, forwarded, or acked for it.
+				metrics.PushErrorsTotal.WithLabelValues(observer, "seq_zero").Inc()
+				p.log.Warn("push feeder sent DATA sequence zero; closing connection",
+					"observer", observer, "session", session)
+				return
 			} else if !IsTelemetryType(int(rec.FrameType)) && !rec.GnssID.Valid() {
 				// the GNF1 record's gnssId byte is outside every nav
 				// CRC — gate it on the documented 0..7-minus-IMES domain at the
@@ -767,35 +804,29 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				// FramesTotal{gnssid=<raw>} series or persist a nav_frames row
 				// outside the schema's domain. A corrupt id is not fixable by
 				// retransmit, so the sequence is acked like bad_telemetry.
-				metrics.PushErrorsTotal.WithLabelValues(observer, "gnssid_range").Inc()
-				unforwarded++
-				if p.durable != nil { // unfixable by retransmit — never holds the watermark
-					if !p.durable.Received(observer, session, seq, false) {
-						p.log.Warn("durability tracking budget full; closing for replay", "observer", observer)
-						return
-					}
+				if !dropPermanentlyMalformed(seq, "gnssid_range") {
+					return
 				}
-				mu.Lock()
-				if seq > highest {
-					highest = seq
+			} else if !wordRecordWellFormed(rec, feed) {
+				// a word-oriented record whose body is empty or not a
+				// multiple of four bytes is malformed on the wire. bytesToWords used
+				// to silently discard the 1–3 byte remainder, so what the historian
+				// stored as immutable raw evidence was not what the authenticated
+				// feeder sent — and the sequence was still acked, making the lost
+				// suffix unrecoverable from the edge spool. Alignment is a wire
+				// invariant no retransmit can repair, so it takes the acked
+				// permanent-malformation policy (never the seq-0 close: a single bad
+				// record must not wedge the valid spool records behind it), under its
+				// own label, distinct from a malformed telemetry body.
+				if !dropPermanentlyMalformed(seq, "word_alignment") {
+					return
 				}
-				mu.Unlock()
 			} else if f := recordToFrame(rec, feed, observer); f == nil {
-				metrics.PushErrorsTotal.WithLabelValues(observer, "bad_telemetry").Inc()
-				unforwarded++
 				// The body is malformed; a retransmit cannot fix it, so this sequence is
 				// acked (matches the pre-existing behaviour for this branch, regression fix).
-				if p.durable != nil { // same rationale, watermark-transparent
-					if !p.durable.Received(observer, session, seq, false) {
-						p.log.Warn("durability tracking budget full; closing for replay", "observer", observer)
-						return
-					}
+				if !dropPermanentlyMalformed(seq, "bad_telemetry") {
+					return
 				}
-				mu.Lock()
-				if seq > highest {
-					highest = seq
-				}
-				mu.Unlock()
 			} else {
 				f.Observer = observerContext // trusted handshake result; never record metadata
 				f.Admission, _ = ctx.Value(admissionContextKey{}).(*Admission)
@@ -945,9 +976,27 @@ func receiveTimestampPlausible(stamped, now time.Time) bool {
 	return -d <= recvReplayHorizon
 }
 
+// wordRecordWellFormed enforces the word-feed wire invariant before conversion
+//. A word-oriented record — every non-telemetry record on a feed
+// other than rtcm — carries whole big-endian 32-bit broadcast words
+// (docs/CONSTELLATIONS.md §6.1), so its body must be non-empty and a multiple of
+// four bytes. Anything else is malformed on the wire, not merely undecodable:
+// silently truncating it would store raw evidence that differs from the bytes
+// the authenticated feeder actually sent. Telemetry bodies have their own
+// exact-length codecs and rtcm carries byte-oriented messages, so both are
+// exempt. Per-signal word-count expectations deliberately stay in the frame
+// decoders — this gate asserts only what the wire format itself guarantees.
+func wordRecordWellFormed(rec wire.RawRecord, feed string) bool {
+	if IsTelemetryType(int(rec.FrameType)) || feed == "rtcm" {
+		return true
+	}
+	return len(rec.Raw) > 0 && len(rec.Raw)%4 == 0
+}
+
 // bytesToWords reassembles big-endian 32-bit nav words (the inverse of
-// RawFrame.RawBytes). A trailing partial word is dropped — nav frames are word
-// aligned.
+// RawFrame.RawBytes). Callers must have accepted the body through
+// wordRecordWellFormed first: a trailing partial word is dropped here, which is
+// only safe because no such body can reach this point.
 func bytesToWords(b []byte) []uint32 {
 	n := len(b) / 4
 	if n == 0 {
