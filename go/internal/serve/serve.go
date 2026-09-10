@@ -3,7 +3,7 @@
 // feeds, each wrapped in the standard response envelope, from an in-RAM snapshot
 // refreshed on a slow cadence (satellites move slowly; §5). It binds loopback and
 // is physically separate from the ingest write path and the metrics listener — a
-// TLS front (a reverse proxy) terminates and fronts it as intsat.space.
+// TLS-terminating reverse proxy fronts it as intsat.space.
 package serve
 
 import (

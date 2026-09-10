@@ -21,7 +21,7 @@ level  = "info"   # debug | info | warn | error
 format = "json"   # json | text
 
 [metrics]
-# Prometheus /metrics + /healthz + /debug/state, loopback only. a reverse proxy
+# Prometheus /metrics + /healthz + /debug/state, loopback only. A reverse proxy
 # terminates TLS in front; this listener never faces the network directly.
 addr = "127.0.0.1:9100"
 

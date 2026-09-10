@@ -18,7 +18,7 @@ server-sent-events stream for confirmed integrity events.
 | `*_test.go` | Feed shapes, envelope, parameter validation, SSE lifecycle and bounds, sanitization. |
 | `README.md` | This file. |
 
-**It binds loopback** and is fronted by a TLS reverse proxy (a reverse proxy) as `intsat.space`. It
+**It binds loopback** and is fronted by a TLS reverse proxy as `intsat.space`. It
 is physically separate from the ingest write path and from the metrics listener. Enabled only
 when `[serve].addr` is set.
 
