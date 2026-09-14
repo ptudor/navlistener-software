@@ -35,7 +35,7 @@ structurally **cannot** catch is a systematic error that's consistent with itsel
 Every one of those produces a wrong position by hundreds of metres to kilometres while sailing
 through every internal check. Independent reference data can reveal errors that self-consistency checks miss. That's what this folder is.
 
-This closes the regression fix assurance gap and implements `docs/MATH.md §12`'s "oracle 2."
+These fixtures implement the independent orbit comparison described in `docs/MATH.md §12`.
 
 ---
 

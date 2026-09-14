@@ -159,7 +159,7 @@ token → software mTLS cert → **ATECC608 cert** (the P-hw high-assurance clas
   centrally, and replay over stored raw frames.
 - **The receiver must never go down** — backoff-reconnect forever, spool across outages, never
   `exit()`. Surviving *reboots* is the one part of this rule this hardware class does **not**
-  satisfy, by design : the flash tier is designed
+  satisfy: the flash tier is designed
   (`docs/PLAN.md §P-spool`) and deliberately unbuilt for the C6 — see "Durability envelope"
   above. Never describe navfeeder-esp as reboot-durable, and never remove the per-boot session
   mint that bounds the loss.

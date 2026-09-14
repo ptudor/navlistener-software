@@ -15,7 +15,7 @@ GO          := go
 
 # MODROOTS: the workspace's two modules — the daemon (.) and the reusable gnss math library
 # (../gnss). test/race/vet/fmt-check must cover BOTH; `./...` from here only sees the
-# daemon, so a gnss regression (the "crown jewel") would otherwise pass `make check` green.
+# daemon, so the quality gate must also run the numerical library's tests.
 MODROOTS := . ../gnss
 
 all: check build
