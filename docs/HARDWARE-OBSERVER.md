@@ -846,6 +846,12 @@ on this board. The NEO-M9N already contains the LNA, SAW filter, LTE band-13
 notch, RF input DC block and 50 Ω match. Do not add another series DC-block
 capacitor, matching network, SAW or LNA on the first spin.
 
+> **The 2.7 V figure above is a binding constraint, not a preference.** It is what
+> the `VCC_RF`-plus-22 Ω network below can actually deliver, and it excludes every
+> L1/L5 antenna surveyed (all of which floor at 3.0 V). See **§7.3.1** for the
+> derivation and a proposed change. §7.3 itself is unchanged and still describes
+> the board as built.
+
 Build the u-blox bias tee from pin 9 `VCC_RF`: use a 22 Ω, at least 0.5 W series
 resistor—Yageo `RC2010JK-0722RL`, LCSC/EasyEDA `C137041`, is a 0.75 W 2010
 choice with an available EasyEDA model—to net `ANT_BIAS`; place 100 nF, 16 V,
@@ -866,6 +872,114 @@ place it behind the 27 nH inductor and bypass capacitor, outside the straight
 **not** measure open or short current and therefore does not create valid
 `MON-HW antStatus` telemetry. Report antenna status as unknown on this revision;
 a later active current-limiter/supervisor can close that feature explicitly.
+
+### 7.3.1 Antenna supply headroom — proposed change, not built
+
+**Status: proposal, awaiting review. Nothing in §7.3 has been changed.** The
+network §7.3 specifies is correct for the antenna class it was written around
+and wrong for the one the F10N needs. This section states why, proposes the
+fix, and lists what a reviewer should check.
+
+**The finding.** §7.3 asks for a "2.7–3.3 V active antenna" and then biases it
+from pin 9 `VCC_RF` through a 22 Ω short-circuit limiter. That 2.7 V is not a
+preference — it is a hard constraint the rest of the network imposes, and every
+L1/L5 antenna surveyed floors at **3.0 V**, so none of them can be fed by this
+board as drawn.
+
+`VCC_RF` is specified as **VCC − 0.1 V typical** on both parts, with **no
+minimum given** (NEO-M8 data sheet `UBX-15031086` Table 10; NEO-F10N data sheet
+`UBX-23002117`). Off this board's 3.3 V `3V3_GNSS` rail that is ≈ 3.2 V at the
+pin. The 22 Ω then drops the antenna's own supply current:
+
+| Antenna | Floor | Draw | Drop over 22 Ω | At the antenna | |
+|---|---|---|---|---|---|
+| `ANN-MS-0-005-0` (L1 only) | 2.7 V | 8.5 mA | 0.19 V | **3.01 V** | ✅ 0.31 V margin |
+| `ANN-MB1-00` (L1/L5) | 3.0 V | 15 mA | 0.33 V | 2.87 V | ❌ 0.13 V under |
+| `ANN-MB5-00` (L1/L5) | 3.0 V | 17 mA | 0.37 V | 2.83 V | ❌ 0.17 V under |
+
+Two things make this worse than the table alone suggests. First, `VCC_RF`'s
+`VCC − 0.1 V` is a **typical**, not a minimum, so the 3.2 V starting point is
+not guaranteed over process and temperature — there is no specified floor to
+compute a worst case from. Second, the F10N's own `VCC` is 2.7 / 3.0 / 3.6 V
+(min/typ/max): at u-blox's *typical* 3.0 V rail, `VCC_RF` is ≈ 2.9 V, already
+under a 3.0 V antenna floor **before any series resistor at all**. This board
+runs the NEO from 3.3 V (`ADM7150ARDZ-3.3`, §3 rail table) so it starts better
+than that, but the margin was never large enough to spend on a limiter.
+
+**The proposal: bias the antenna from the protected `+5V` rail, not from
+`VCC_RF`, through a 47 Ω limiter.** The 27 nH / 100 nF / ESD-diode arrangement
+and all of §7.3's layout rules are unchanged; what moves is which rail feeds
+`ANT_BIAS`, and the series resistor value.
+
+```
+ANN-MS    5.0 V − (47 Ω × 8.5 mA) = 4.60 V     floor 2.7 V, ceiling 5.5 V   ✅
+ANN-MB1   5.0 V − (47 Ω × 15 mA)  = 4.30 V     floor 3.0 V, ceiling 5.0 V   ✅
+ANN-MB5   5.0 V − (47 Ω × 17 mA)  = 4.20 V     floor 3.0 V, ceiling 5.0 V   ✅
+hard coax short: 5.0 / 47 = 106 mA, 5.0² / 47 = 0.53 W
+```
+
+One network then feeds **every** candidate antenna, L1-only and dual-band, with
+real margin — which is §1.1's "the footprint is the decision, the module is a
+populate-time choice" applied one connector further out. The antenna stops
+being a board decision too.
+
+Three second-order reasons this is the right shape, not just the arithmetic
+that clears:
+
+- **The 0.53 W short dissipation still fits the 2010 part §7.3 already chose
+  for its wattage headroom** (`RC2010JK-0722RL` is 0.75 W). The value changes to
+  47 Ω — a 2010 part in the same Yageo family, LCSC code **[verify]** before
+  ordering. 47 Ω is picked so a continuous short stays near the ~150 mA the
+  original 19 Ω-at-3.3 V requirement targeted (106 mA here), rather than the
+  227 mA and 1.13 W that carrying 22 Ω over to a 5 V rail would produce.
+- **The u-blox current figures are specified *at 5 V*.** Biasing at 5 V uses the
+  datasheet's own characterisation condition instead of extrapolating an LNA's
+  draw to a bias voltage it was not measured at.
+- **The `+5V` budget already carries it.** §3's power budget allots "up to
+  50 mA antenna bias" on VBUS; this moves that load from `VCC_RF` to the rail
+  the budget already assumed.
+
+**What it costs, stated plainly.** `LNA_EN` can no longer gate the antenna
+supply without adding a switch transistor (NEO-F10N integration manual
+`UBXDOC-963802114-12193` appendix C.5). §7.3 does not use `LNA_EN` — §7.1 lists
+it among the deliberately unconnected pins — so this costs nothing today, but
+it forecloses backup-mode antenna power-down until that transistor is added.
+`MON-HW antStatus` stays invalid either way; this change neither fixes nor
+worsens the open/short supervision §7.3 already defers.
+
+**The sharp edge a reviewer should weigh.** The antenna is now powered whenever
+`+5V` is up, independent of the receiver's state. More concretely: 5 V appears
+on the coax centre conductor at all times, so plugging in an antenna whose
+absolute-maximum supply is below 5 V damages it silently, with no fault
+indication anywhere in the system. The ANN-MB series is rated to 10 V absolute
+max, and `ANN-MS` runs to 5.5 V, so every antenna named in this document is
+safe — but the board acquires a rule ("nothing under 5.5 V abs-max on this
+connector") that its silkscreen does not state and that nothing enforces.
+
+**Alternatives considered and rejected.**
+
+- **22 Ω → 0 Ω, keep `VCC_RF`.** A BOM change with no layout change, delivering
+  ≈ 3.2 V — 0.2 V over a 3.0 V floor. Rejected twice over: `VCC_RF` has only a
+  typical, so that margin is not guaranteed, and it discards short-circuit
+  limiting entirely on a cable that lives outdoors. A hard coax short would
+  then be bounded only by the module's internal limiting, against a 50 mA
+  operating rating.
+- **A lower series value (4.7–10 Ω).** Same objection with less of the benefit;
+  10 Ω leaves ~50 mV of computed margin against an unspecified minimum.
+- **Choose an antenna with a lower floor instead.** The Tallysman `TW3972`
+  accepts **2.5–16 V** and does work off the existing network (≈ 2.67 V at
+  24 mA, 0.17 V of margin), so it is a genuine escape hatch if this change is
+  deferred. It is a triple-band L1/L2/L5 + L-band precision antenna at several
+  times the price of a u-blox puck, and its 37 dB typ LNA gain exceeds the
+  F10N's 25 dB normal-gain ceiling, so `CFG-HW-RF_LNA_MODE` must be set to
+  low-gain (good to 35 dB). Viable, not preferable.
+
+**What is not yet verified.** The 47 Ω 2010 LCSC/EasyEDA code **[verify]**. The
+`+5V` rail's own headroom under simultaneous peak load with the antenna added
+**[verify]** — the budget allots the current but the aggregate was computed
+against VBUS, not against this rail with the S3 bursting. Whether any intended
+antenna has an absolute-maximum supply below 5.5 V **[verify]** before the
+connector rule above is relied on.
 
 ### 7.4 RF coexistence
 
@@ -1282,3 +1396,11 @@ is a feature this board wants and a reason the WS2812B alignment pays for itself
    are flagged as such). What remains is the §4.2 step this document already required:
    write the profile to a scrap ATECC608C, exercise every slot class, then freeze it.
    Nothing locks before that pass.
+
+9. **Antenna supply rail — `VCC_RF` or `+5V`** (§7.3.1). The board as drawn can only feed a
+   2.7 V-floor L1-only antenna; every L1/L5 part floors at 3.0 V and comes up short through the
+   22 Ω limiter. Proposed: move `ANT_BIAS` to the protected `+5V` rail with a 47 Ω limiter, which
+   feeds every candidate antenna with margin and keeps the short-circuit dissipation inside the
+   2010 part already chosen. Blocks nothing on an M8/M9 populate — that combination works today
+   with an `ANN-MS-0-005-0` — but it blocks the F10N repopulation §1.1 promises on the same
+   footprint. **Unreviewed; authored 2026-09-13.**
