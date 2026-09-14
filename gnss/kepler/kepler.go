@@ -84,7 +84,7 @@ const eccMax = 0.25
 
 // keplerIterTol is the Newton-Raphson convergence tolerance (radians) for the
 // eccentric-anomaly loop in Solve; kept as its own constant so the post-loop
-// convergence check  uses the exact same bound the loop breaks on.
+// convergence check uses the exact same bound the loop breaks on.
 const keplerIterTol = 1e-12
 
 // Solve propagates ephemeris e to time-of-week tow (seconds) and returns the full

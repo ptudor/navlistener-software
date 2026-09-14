@@ -415,7 +415,7 @@ func TestApplyGalileoINAVTGDRefresh(t *testing.T) {
 	const bgdScale = 1.0 / float64(uint64(1)<<32)
 
 	// BGD(E1,E5b) at bit 57 (Table 46) is the I/NAV clock's group-delay pair
-	//  — BGD(E1,E5a) at bit 47 belongs to the F/NAV clock and must not
+	// — BGD(E1,E5a) at bit 47 belongs to the F/NAV clock and must not
 	// move this TGD.
 	word5 := func(bgdE1E5bRaw uint64) []uint32 {
 		return inavWordN(5, 0, func(c []byte) { inavSetBits(c, 57, bgdE1E5bRaw&0x3FF, 10) })

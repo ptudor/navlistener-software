@@ -104,7 +104,7 @@ type Decision struct {
 // knows it — for a local observer the authorization provider's latest result,
 // for a relayed observation the origin's most recently journaled context. It
 // supplies both the current publication policy and the current organization /
-// collection membership. GROUPS-AND-FEDERATION.md §5.2 
+// collection membership. GROUPS-AND-FEDERATION.md §5.2
 // states the intersection rule once for read audiences and federation exports
 // alike, and §4.4 says a transfer ends the old enrollment and collection
 // memberships — so a grant selector must match the receipt-time context AND

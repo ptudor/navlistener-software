@@ -12,14 +12,14 @@ import (
 // strings 1/2/3 in that order (regression fix defense-in-depth).
 var errGLONASSStringOrder = errors.New("frame: GLONASS strings not in 1/2/3 order")
 
-// errBadStringNum  is returned for a length-valid GLONASS block with string
+// errBadStringNum is returned for a length-valid GLONASS block with string
 // number 0 (out of the 1..15 range) — a mis-tagged or corrupt frame.
 var errBadStringNum = errors.New("frame: GLONASS string number out of range (1..15)")
 
-// ErrGLONASSHamming  is returned when a string fails the ICD §4.7 Hamming check.
+// ErrGLONASSHamming is returned when a string fails the ICD §4.7 Hamming check.
 var ErrGLONASSHamming = errors.New("frame: GLONASS string Hamming check failed")
 
-// errBadTb  is returned for a string 2 whose tb index is outside the ICD's
+// errBadTb is returned for a string 2 whose tb index is outside the ICD's
 // effective range. tb is a 7-bit index of a 15-min interval within the current day
 // (GLO-ICD-5.1 §4.4), so the codespace (0..127 ≈ 31.75 h) exceeds a day;
 // Table 4.5 bounds the effective range to 15…1425 minutes — index 1..95. An
@@ -30,7 +30,7 @@ var ErrGLONASSHamming = errors.New("frame: GLONASS string Hamming check failed")
 // 8-bit detect-only code, not a strong CRC, so this range gate is real defense.
 var errBadTb = errors.New("frame: GLONASS tb index out of range (1..95)")
 
-// errBadFreqCh  is returned when a frequency channel is outside the FDMA
+// errBadFreqCh is returned when a frequency channel is outside the FDMA
 // plan k ∈ [−7, +6] (GLO-ICD-5.1 §3.3.1.1 Table 3.1 and its note: all SVs launched
 // after 2005 use K = −7…+6; the almanac word HnA encodes negatives as 25..31 per
 // Table 4.10, so HnA 7..24 encodes no valid channel at all). An out-of-domain

@@ -58,7 +58,7 @@ func TestExpireStationsEvictsFilteredResidue(t *testing.T) {
 	}
 }
 
-// Detect's silence operating point, duplicated here deliberately  — the
+// Detect's silence operating point, duplicated here deliberately — the
 // same keep-in-sync idiom feed.go uses for liveReceiverWindow, and for the same
 // reason: detect imports state, so state cannot import detect's constants back.
 // If detect.SBASSilentThreshold / detect.ObserverOfflineThreshold /

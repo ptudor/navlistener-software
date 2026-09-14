@@ -41,7 +41,7 @@ const (
 	SilentThreshold          = 3600.0
 	ObserverOfflineThreshold = 300.0
 
-	// SilenceMinReceivers  is the fleet-footprint floor below which the
+	// SilenceMinReceivers is the fleet-footprint floor below which the
 	// per-SV silence classifier does not run at all. observation_lost's premise is
 	// "the constellation is always in view" (docs/INTEGRITY.md §2) — true of the
 	// constellation as seen by a globally distributed fleet, NOT of any single
@@ -91,7 +91,7 @@ const (
 	// this from its timeout table (the regression fix flag).
 	SBASSilentThreshold = 300.0
 
-	// SBASHealthCurrentWindow  bounds how stale an SBAS entry may be
+	// SBASHealthCurrentWindow bounds how stale an SBAS entry may be
 	// before its health_code stops being classified. The served health is the
 	// regression fix MT0-recency latch, whose horizon is state.sbasType0Hold (60 s,
 	// the DO-229-family exclusion interval — mirrored here, keep in sync): once
@@ -129,7 +129,7 @@ const (
 	// v1 few gates are wired, so this keeps spoofing alerts corroborated, not trigger-happy.
 	SpoofGateQuorum = 2
 
-	// WiredSpoofGates  is the number of INDEPENDENT physics gates
+	// WiredSpoofGates is the number of INDEPENDENT physics gates
 	// spoofGates can currently count — the maximum value it can return. v1
 	// wires exactly one: C/N₀-vs-elevation (the per-constellation and
 	// aggregate fits are two views of the SAME gate, so they never sum).
@@ -144,12 +144,12 @@ const (
 	// DEFENSE-PNT §3 mark the remaining gates' status explicitly. The named
 	// next gate is coherent delta-Hz (RAWX Doppler vs predicted range-rate) —
 	// blocked on station positions, which land with the observer-geometry
-	// pass; the Galileo cross-signal comparison  is the other
+	// pass; the Galileo cross-signal comparison is the other
 	// candidate. BUMP THIS CONSTANT with every gate added to spoofGates —
 	// TestWiredSpoofGatesMatchesImplementation enforces the pairing.
 	WiredSpoofGates = 1
 
-	// XSigDivergenceMeters  is the position-disagreement bound for the
+	// XSigDivergenceMeters is the position-disagreement bound for the
 	// Galileo cross-signal agreement check (I/NAV E##@0 vs F/NAV E##@3). This is
 	// a GUARD BAND, not a physical tolerance: for one IODnav the I/NAV and
 	// F/NAV data sets carry the same CED (GAL-OS-SIS-ICD-2.2 §5.1.9.2 scopes

@@ -28,7 +28,7 @@ static const char *TAG = "pusher";
 #define BACKOFF_MAX_S 30
 // regression fix (ESP32 half): a post-handshake session must run this long to count as
 // "useful" and reset the reconnect backoff ladder. Mirrors navfeeder.c's USEFUL_CONN_S
-//  and the collector's usefulConnectionDuration : without the reset,
+// and the collector's usefulConnectionDuration : without the reset,
 // backoff climbs monotonically to BACKOFF_MAX_S over the process lifetime, so a routine
 // collector redeploy weeks into uptime waits the full 30 s on every future reconnect.
 #define USEFUL_CONN_S 3
@@ -330,7 +330,7 @@ static int serve(void)
     if (fdrc != ESP_OK || fd < 0) {
         // without a valid fd, readable() cannot actually wait (select needs the
         // fd), so the idle loop would degenerate into a 100% busy-spin on a task that is
-        // deliberately NOT task-WDT-subscribed  — a single-core C6 burning hot
+        // deliberately NOT task-WDT-subscribed — a single-core C6 burning hot
         // indefinitely with no watchdog backstop and no self-heal. A connection we cannot
         // poll is a failed connection: tear it down and let the backoff loop reconnect.
         ESP_LOGW(TAG, "esp_tls_get_conn_sockfd failed (err=%d fd=%d); dropping connection",

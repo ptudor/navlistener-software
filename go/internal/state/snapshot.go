@@ -55,7 +55,7 @@ func (s *Store) Snapshot(now time.Time) Snapshot {
 				IOD:        st.iod,
 				LastSeenS:  int(now.Sub(st.lastSeen).Seconds()),
 			}
-			// mirror the feed's posFresh gate  — a position frozen by a
+			// mirror the feed's posFresh gate — a position frozen by a
 			// repeatedly-failing propagate tick (havePos stays true, posAt stops advancing)
 			// must not linger in the debug view forever misleading an operator.
 			if st.havePos && finiteECEF(st.pos) && !st.posAt.IsZero() && now.Sub(st.posAt) <= posStaleBound {

@@ -95,7 +95,7 @@ func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	// run the inversion guard whenever the caller supplied since — not
 	// only when BOTH bounds were supplied. until is already clamped to now
-	//  above, so a future since with an omitted until previously skipped
+	// above, so a future since with an omitted until previously skipped
 	// this guard, ran the query with since > until, and returned zero rows with
 	// ok:true — the confidently-wrong empty output regression fix/regression fix exist to prevent.
 	// A defaulted since (empty sinceRaw) cannot invert by construction.

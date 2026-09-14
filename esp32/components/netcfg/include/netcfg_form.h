@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-// FORM_MALFORMED  is distinct from FORM_TRUNCATED so save_post can
+// FORM_MALFORMED is distinct from FORM_TRUNCATED so save_post can
 // refuse a body that is *wrong* as clearly as one that is too long, and in both
 // cases write nothing to NVS.
 typedef enum {

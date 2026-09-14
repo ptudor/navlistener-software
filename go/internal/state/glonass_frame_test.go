@@ -57,7 +57,7 @@ func glonassStringFrame(svID, number int, coord, vel, accel int64, health, tb in
 // on every string arrival, so a fresh string arriving at a tb changeover paired
 // with the other two strings still cached from up to ~30 minutes earlier —
 // mixing X from the new epoch with Y/Z from the old. The reception-time window
-//  must reject that and only accept a fully coherent (temporally close)
+// must reject that and only accept a fully coherent (temporally close)
 // triple.
 func TestGLONASSChangeoverDoesNotMixEpochs(t *testing.T) {
 	st := New(4)

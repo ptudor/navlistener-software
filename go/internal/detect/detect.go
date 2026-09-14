@@ -594,7 +594,7 @@ func (d *Detector) detectXSig(svs map[string]state.FeedSV, emit emitFunc) {
 
 // detectSBAS runs the silence and augmentation-health classifiers for one SBAS
 // PRN. The entry comes from state.SBASDetect — the UNFILTERED store view
-//  — so a dark PRN stays observable here after the served feed drops it.
+// — so a dark PRN stays observable here after the served feed drops it.
 func (d *Detector) detectSBAS(prn string, s state.SBASEntry, emit emitFunc) {
 	subject := "S" + prn
 

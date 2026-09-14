@@ -30,7 +30,7 @@
  * frame spills to a disk spool (--spool-file) rather
  * than being dropped; the spool is recovered and replayed on restart, so an outage longer
  * than RAM, or an ORDERLY router reboot, still loses nothing. Disk-spooled frames are
- * fflush()'d but deliberately not fsync()'d  — a bounded flash-wear trade for the
+ * fflush()'d but deliberately not fsync()'d — a bounded flash-wear trade for the
  * fleet's mips/SBC hardware, not an oversight — so an UNCLEAN power loss can still drop the
  * page-cache tail that hadn't reached disk yet; spool_recover's torn-tail scan handles that
  * cleanly (no corruption, just a shorter replay), it just isn't zero-loss for a power cut the
@@ -41,7 +41,7 @@
  * Wire (must match ../go/internal/wire/wire.go):
  *   stream = "GNF1" then frames [1B type][4B BE len][payload]
  *   HELLO(0x01) {token,station,feed,sw,session,zstd?} -> WELCOME(0x02){ok,zstd?}
- *     session (regression fix, REQUIRED): the boot identity half of the collector's
+ * session (regression fix, REQUIRED): the boot identity half of the collector's
  *     replay-dedup key (observer, session, seq) — fresh per sequence-space restart,
  *     persisted in the disk spool header across restarts that recover the spool.
  *   DATA(0x03)  [8B BE seq][record];  ACK(0x04) [8B BE seq]    (DATA zstd-streamed if negotiated)
@@ -106,16 +106,16 @@
 #define GNF_RECORD (RECORD_HDR + MAX_RAW)
 #define DRAIN_BATCH 512
 #define KEEPALIVE_S 30        /* PING when idle this long, to stay under the collector's idle timeout */
-#define ACK_STALL_S 600       /* cycle the connection when frames are outstanding and the
+#define ACK_STALL_S 600 /* cycle the connection when frames are outstanding and the
                                * durable-ack watermark has not moved this long — reconnect replay is the
                                * only path that redelivers batches the collector shed during a DB outage.
                                * 10 min: far above the collector's ~35 s flush-retry budget and ack
                                * cadence (no churn on a healthy or briefly-blipping historian), small
                                * enough that recovery-to-redelivery latency stays minutes-scale. */
-#define USEFUL_CONN_S 3       /* a source connection must survive this long, or emit >=1 frame,
+#define USEFUL_CONN_S 3 /* a source connection must survive this long, or emit >=1 frame,
                                 * before it resets producer_thread's backoff (else an accept-then-close
                                 * peer retries at ~1 Hz forever) */
-#define UBX_STATS_S 300       /* cadence of the producer's recognized/delivered stats line.
+#define UBX_STATS_S 300 /* cadence of the producer's recognized/delivered stats line.
                                 * 5 min is quiet enough for syslog on a router that runs for months,
                                 * and fast enough that "link alive, nothing spooling" is noticed
                                 * within one operator glance rather than at the next disconnect. */
@@ -147,7 +147,7 @@ struct opts {
 	const char *source;    /* /dev/ttyACM0 (serial) or host:port (TCP bridge) */
 	int baud;              /* serial baud when --source is a device path */
 	const char *token, *station, *feed, *ca;
-	const char *cert, *key; /* mTLS client cert + key (PEM); one DNS SAN = the station  */
+	const char *cert, *key; /* mTLS client cert + key (PEM); one DNS SAN = the station */
 	const char *spool_file; /* NULL = in-memory only (drop-oldest on overflow) */
 	int insecure;
 	int zstd; /* request zstd stream compression (the collector must confirm) */
@@ -755,7 +755,7 @@ static void spool_ack(struct spool *s, uint64_t n) {
  * frame is then gone from the ring for THIS call to find — the batch silently skips it, the
  * caller advances sent_upto past it anyway, and it is never sent. Reporting disk_max_seq here
  * lets the caller detect that gap and re-run disk_drain (which will see the now-current
- * disk_max_seq) before trusting the ring batch. On a transient allocation failure  it
+ * disk_max_seq) before trusting the ring batch. On a transient allocation failure it
  * stops and returns the partial batch collected so far rather than dying — the frame that
  * failed to copy, and everything after it in this round, is simply not yet collected; it
  * stays in the ring and is retried the next round. */
@@ -960,7 +960,7 @@ static int ssl_wait_readable(struct tls_io *io) {
 }
 
 /* ssl_read_full reads exactly n bytes. Returns 0 on success, -1 on a real error or clean
- * EOF, or -2  if the socket's SO_RCVTIMEO elapsed with *no bytes of this read
+ * EOF, or -2 if the socket's SO_RCVTIMEO elapsed with *no bytes of this read
  * consumed* — a "nothing to read yet, keep waiting" signal distinct from a dead connection.
  * A timeout after partial consumption returns -1 instead: -2 would make the caller restart
  * its frame parse from a torn header/payload, desyncing the ACK stream (a misparsed F_ACK
@@ -1036,7 +1036,7 @@ static int send_ping(struct conn *c) {
 	return conn_write(c, frame, 5);
 }
 
-/* read_frame reads one wire frame. Returns 0 on success, -1 on a real error, or -2 
+/* read_frame reads one wire frame. Returns 0 on success, -1 on a real error, or -2
  * on a receive timeout with the frame boundary intact — i.e. only from the header read with
  * zero bytes consumed, so reader_thread's loop can tell "idle" from "dead" apart. Once the
  * header has been consumed, a payload-read timeout is mid-frame: it is converted to -1 so
@@ -1104,17 +1104,17 @@ static uint8_t frame_type(unsigned gnssId, unsigned sigId) {
 		if (sigId == 4 || sigId == 5 || sigId == 8 || sigId == 9) return 0x51;
 		return 0;
 	case 2: /* Galileo: 0x20 labels the I/NAV page LAYOUT, which E1-B and E5b-I share;
-	         * the collector dispatches on (gnssId,sigId) and defers E5b  */
+	         * the collector dispatches on (gnssId,sigId) and defers E5b */
 		if (sigId == 0 || sigId == 1 || sigId == 5 || sigId == 6) return 0x20;
 		if (sigId == 3 || sigId == 4) return 0x21;
 		return 0;
 	case 3:                                                  /* BeiDou: shipped B1I D1 + B2a B-CNAV2 only */
 		if (sigId == 0) return 0x30;
 		if (sigId == 8) return 0x33;
-		return 0; /* D2/B2I/B-CNAV1/B2a-companion planned: no verified decoder  */
+		return 0; /* D2/B2I/B-CNAV1/B2a-companion planned: no verified decoder */
 	case 6: return (sigId == 0 || sigId == 2) ? 0x40 : 0;    /* GLONASS L1/L2 OF */
 	case 7: return 0;                                        /* NavIC planned: capture without false type */
-	case 1: return (sigId == 0) ? 0x70 : 0;                  /* SBAS L1 C/A only. this arm
+	case 1: return (sigId == 0) ? 0x70 : 0; /* SBAS L1 C/A only. this arm
 	                                                          * returned 0x70 for EVERY sigId, so an
 	                                                          * L5-capable receiver's DFMC frames (a
 	                                                          * different 250-bit layout, 0x71, doc-
@@ -1132,7 +1132,7 @@ static uint8_t frame_type(unsigned gnssId, unsigned sigId) {
  * We re-serialize each word big-endian (the collector reads them back with BE, matching its
  * RawBytes()/bytesToWords round-trip), and stamp the host reception time.
  * Returns 1 if a record was appended to the spool, 0 if the inner payload was rejected or the
- * append failed  — run_ubx counts those separately from recognized messages. */
+ * append failed — run_ubx counts those separately from recognized messages. */
 static int emit_sfrbx(const unsigned char *p, unsigned len) {
 	if (len < 8) return 0;
 	unsigned gnssId = p[0], svId = p[1], sigId = p[2], freqId = p[3], numWords = p[4];
@@ -1366,7 +1366,7 @@ static int run_ubx(int fd) {
 	unsigned char head[4], payload[UBX_MAX_PAYLOAD], ck[2];
 	time_t start = monotonic_s(); /* interval, not wall-clock */
 	time_t last_stats = start;
-	unsigned long frames = 0;    /* recognized class/id messages — the regression fix backoff signal */
+	unsigned long frames = 0; /* recognized class/id messages — the regression fix backoff signal */
 	unsigned long delivered = 0; /* of those, records actually appended to the spool */
 	for (;;) {
 		if (sync_ubx(&rb) != 0) { log_msg("source closed"); break; }
@@ -1860,7 +1860,7 @@ static int serve_collector(SSL_CTX *ctx, const struct opts *o, struct spool *s) 
 	 *
 	 * Allocating first removes the dilemma: nothing has been negotiated yet, so a
 	 * failure is just a failed connection attempt. The outer loop's existing
-	 * bounded backoff  paces the retry, so persistent memory pressure
+	 * bounded backoff paces the retry, so persistent memory pressure
 	 * cannot spin, and the spool keeps every unacknowledged frame meanwhile. The
 	 * user's --zstd request is never silently downgraded to plaintext. */
 	if (o->zstd) {
@@ -2134,7 +2134,7 @@ static void usage(void) {
 		"  --ca F                CA bundle to verify the collector (default: system store)\n"
 		"  --spool N             in-memory ring capacity in frames (default 65536)\n"
 		"  --spool-file F        disk spool path (lossless past the RAM ring; survives an\n"
-		"                        orderly reboot only on PERSISTENT storage — not tmpfs, regression fix)\n"
+		" orderly reboot only on PERSISTENT storage — not tmpfs, regression fix)\n"
 		"  --spool-disk-mb N     disk spool cap in MiB (default 256)\n"
 		"  --zstd                request zstd DATA-stream compression (collector must confirm)\n"
 		"  --insecure            skip TLS verification (dev only)\n");

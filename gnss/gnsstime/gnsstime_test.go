@@ -222,7 +222,7 @@ func TestSystemSecondsWeekTOWIdentity(t *testing.T) {
 	}
 }
 
-// TestWeekTOWKnownValues  pins the reductions at a known instant: at
+// TestWeekTOWKnownValues pins the reductions at a known instant: at
 // GPS week 2200 / TOW 0 exactly, BDT (= GPST − 14 s, epoch 1356 weeks after
 // GPS) reads week 843 (2200 − 1356 − 1: the BDT week has not rolled yet) at
 // TOW 604786 — the 14 s skew window where deriving the BDT week from

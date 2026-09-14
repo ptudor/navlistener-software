@@ -200,7 +200,7 @@ func TestDegradedClearedByIdleHealthProbe(t *testing.T) {
 		s.retry = flushRetry{attempts: 2, backoff: time.Millisecond, attemptTO: time.Second}
 		s.batchEvery = 2 * time.Millisecond
 		degrade(s)
-		s.lastWriteAttempt = time.Now().Add(-idleQuietWindow) // quiet: probe may run 
+		s.lastWriteAttempt = time.Now().Add(-idleQuietWindow) // quiet: probe may run
 		var pings atomic.Int64
 		s.ping = func(ctx context.Context) error { pings.Add(1); return errors.New("db still down") }
 		runIdle(t, s, 2*time.Second, func() bool { return pings.Load() > 0 })

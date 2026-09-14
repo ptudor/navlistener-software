@@ -94,7 +94,7 @@ func (a *configAuth) Authenticate(_ context.Context, token, station, feed string
 	if !ok {
 		return identity.ObserverContext{}, false
 	}
-	// The token is the identity; station is a misconfiguration guard  — a
+	// The token is the identity; station is a misconfiguration guard — a
 	// feeder pointed at the wrong station id (valid token, wrong presented name)
 	// is rejected rather than silently accepted under the token's canonical
 	// identity. handshake()'s caller already logs the rejected station/feed.
@@ -832,7 +832,7 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				f.Observer = observerContext // trusted handshake result; never record metadata
 				f.Admission, _ = ctx.Value(admissionContextKey{}).(*Admission)
 				f.Seq, f.HasSeq = seq, true        // historian dedup key : this connection may be a replay
-				f.Session = session                // boot-identity half of the dedup key 
+				f.Session = session                // boot-identity half of the dedup key
 				if f.RF == nil && f.Words != nil { // byte frames use CapturedOnlyTotal, not gnssid=0
 					metrics.FramesTotal.WithLabelValues(observer, fmt.Sprint(int(f.GnssID))).Inc()
 				}
@@ -986,7 +986,7 @@ func receiveTimestampPlausible(stamped, now time.Time) bool {
 }
 
 // wordRecordWellFormed enforces the word-feed wire invariant before conversion
-//. A word-oriented record — every non-telemetry record on a feed
+// . A word-oriented record — every non-telemetry record on a feed
 // other than rtcm — carries whole big-endian 32-bit broadcast words
 // (docs/CONSTELLATIONS.md §6.1), so its body must be non-empty and a multiple of
 // four bytes. Anything else is malformed on the wire, not merely undecodable:

@@ -151,7 +151,7 @@ ack_interval = "1s"
 # publish_signals = ["0:0", "2:0", "2:3"]
 # policy_revision = "community-open-v1"
 # remark = "roof antenna, San Diego"  # the PUBLIC station label: the ONLY operator field
-#                             # that reaches the observers feed (regression fix — addr never does).
+# # that reaches the observers feed (regression fix — addr never does).
 #                             # Empty/omitted = no public label.
 # capabilities = ["0:0", "2:0", "2:3", "3:0", "6:0"]  # declared tudorgps fingerprint: the
 #                             # "gnss:sig" signals this silicon can produce (GPS L1, Galileo

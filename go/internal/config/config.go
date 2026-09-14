@@ -1105,7 +1105,7 @@ func isLoopbackHost(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// validateAddr checks host:port syntax  so a typo'd or malformed listener addr is
+// validateAddr checks host:port syntax so a typo'd or malformed listener addr is
 // a config-load error, not a silent listener-bind failure discovered only at startup.
 func validateAddr(field, addr string) error {
 	_, port, err := net.SplitHostPort(addr)
@@ -1126,7 +1126,7 @@ func validateAddr(field, addr string) error {
 }
 
 // validatePEMFile reads a PEM file and confirms it parses to at least one certificate
-//, so a wrong client_ca / ntrip ca_file path fails config load rather than at
+// , so a wrong client_ca / ntrip ca_file path fails config load rather than at
 // dial/accept time (which for ntrip presents as an endlessly-retried flaky receiver).
 func validatePEMFile(field, path string) error {
 	b, err := os.ReadFile(path)

@@ -33,14 +33,14 @@ uint8_t gnf1_frame_type(unsigned gnss_id, unsigned sig_id)
         if (sig_id == 0) return 0x50;
         if (sig_id == 4 || sig_id == 5 || sig_id == 8 || sig_id == 9) return 0x51;
         return 0;                                                    // L1S/L1C-CNAV2/L6 planned
-    case 2:      // Galileo: 0x20 = I/NAV page layout (E1-B; E5b-I same layout, collector dispatch deferred regression fix), E5a F/NAV
+    case 2: // Galileo: 0x20 = I/NAV page layout (E1-B; E5b-I same layout, collector dispatch deferred regression fix), E5a F/NAV
         if (sig_id == 0 || sig_id == 1 || sig_id == 5 || sig_id == 6) return 0x20;
         if (sig_id == 3 || sig_id == 4) return 0x21;
         return 0;
     case 3:                                                          // BeiDou: shipped B1I D1 + B2a B-CNAV2 only
         if (sig_id == 0) return 0x30;
         if (sig_id == 8) return 0x33;
-        return 0; // D2/B2I/B-CNAV1/B2a-companion planned: no verified decoder 
+        return 0; // D2/B2I/B-CNAV1/B2a-companion planned: no verified decoder
     case 6: return (sig_id == 0 || sig_id == 2) ? 0x40 : 0;          // GLONASS L1OF/L2OF
     case 7: return 0;                                                // NavIC planned; no collector decoder
     case 1: return (sig_id == 0) ? 0x70 : 0;                         // SBAS L1 C/A; L5 DFMC (0x71) reserved

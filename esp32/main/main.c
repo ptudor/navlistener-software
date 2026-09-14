@@ -19,9 +19,9 @@
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_log.h"
-#include "esp_random.h"   // esp_fill_random (regression fix session identity)
-#include "esp_system.h"   // esp_restart 
-#include "esp_task_wdt.h" // task watchdog subscription 
+#include "esp_random.h" // esp_fill_random (regression fix session identity)
+#include "esp_system.h" // esp_restart
+#include "esp_task_wdt.h" // task watchdog subscription
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"

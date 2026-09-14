@@ -108,7 +108,7 @@ Chunks are 1 hour.
 ephemeris from stored bytes. `decoded` means the common queries don't have to. `decoder_ver`
 records which version produced a projection, so a re-decode pass knows what to redo. This is the
 same discipline as the radiolistener sibling, and it's why the daemon needs no cross-restart
-state file  — the historian *is* the durable record.
+state file — the historian *is* the durable record.
 
 **Why the administrative columns live on every receipt:** organizations, group membership, and
 publication consent change over time. Rejoining historical raw data to today's control-plane row

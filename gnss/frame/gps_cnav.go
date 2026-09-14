@@ -31,7 +31,7 @@ import (
 // ErrBadPreamble is returned when a CNAV message's leading byte isn't 0x8B.
 var ErrBadPreamble = errors.New("frame: CNAV preamble mismatch")
 
-// errPRNMismatch  is returned when the messages handed to
+// errPRNMismatch is returned when the messages handed to
 // AssembleGPSCNAV carry different header PRNs, or a PRN that isn't svid's. toe
 // equality is deliberately NOT an SV discriminator — the control segment
 // routinely uploads batches of SVs sharing one toe, so SV A's MT10 pairs with
@@ -69,7 +69,7 @@ type GPSCNAV struct {
 	// signal-dependent), not this message. No internal consumer reads it today; documented
 	// so a library user doesn't mis-time frames by 6/12 s.
 	TOW float64
-	// Alert  is the common-header alert flag, ICD bit 38 — the single
+	// Alert is the common-header alert flag, ICD bit 38 — the single
 	// bit between TOW (ends at bit 37) and the MT10 WN (starts at bit 39).
 	// IS-GPS-200N §6.4.6.3: raised means the CM/CL-code URA components "do not
 	// apply … the URA may be worse than indicated" — use at own risk, one of the

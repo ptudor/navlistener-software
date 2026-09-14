@@ -36,7 +36,7 @@ CONFIG_ESP_TASK_WDT_INIT=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 CONFIG_ESP_TASK_WDT_PANIC=y
 
-# --- UART ISR in IRAM  -------------------------------------------------
+# --- UART ISR in IRAM -------------------------------------------------
 # Keep the UART ISR in IRAM so a cache-disabled window (flash erase/write during an
 # NVS/PHY commit) can't stall it past the 128-byte HW FIFO (~2.8 ms at 460800) and
 # silently drop receiver bytes. Cheap insurance for the byte-lossless-forwarding bar.

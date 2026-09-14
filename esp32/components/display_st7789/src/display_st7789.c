@@ -101,7 +101,7 @@ static void fill_rect(int x, int y, int w, int h, uint16_t color);
 static void display_flush(void);
 
 // trans_done_cb runs in ISR context (the SPI DMA completion interrupt) and simply signals
-// s_trans_sem  -- see the comment on s_trans_sem above.
+// s_trans_sem -- see the comment on s_trans_sem above.
 static bool trans_done_cb(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *edata,
                            void *user_ctx)
 {

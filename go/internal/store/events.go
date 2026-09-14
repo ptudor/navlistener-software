@@ -17,7 +17,7 @@ import (
 // row id and an audience-local cursor; only public rows notify the scoped v2
 // external channel. The native SSE broker publishes directly after commit.
 //
-// DedupeKey  is the internal idempotency identity: an opaque value
+// DedupeKey is the internal idempotency identity: an opaque value
 // generated exactly once per confirmed transition, before the first write
 // attempt, and carried unchanged across retries. It is never served — the
 // public StoredEvent/EventMsg/SSE shapes do not expose it.
@@ -214,7 +214,7 @@ type StoredEvent struct {
 // EventSummary aggregates the events in a window (docs/OUTPUT.md §2.1). The
 // severity buckets are historical event counts over the window — every row at
 // that severity, including superseded conditions and recovery transitions
-//. They are deliberately NOT named "active": the schema has no
+// . They are deliberately NOT named "active": the schema has no
 // resolved marker and no latest-state-per-detector query, so a truthful
 // current-incident count does not exist here yet.
 type EventSummary struct {

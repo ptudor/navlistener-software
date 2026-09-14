@@ -64,33 +64,13 @@ func glonassCaptureFrames(t *testing.T, path string, at time.Time) []*ingest.Raw
 	return out
 }
 
-// TestGLONASSFrame5RealSuperframe validates the regression fix frame-5 heuristic against
-// a real full-superframe fleet capture (independent validation) — the finding's
-// own verification step, previously done only with synthetic frames. The fixture
-// is 250 s of raw UBX cat'd off capture-station's receiver on 2026-07-12 (GLONASS
-// L1OF, 9 SVs, ~1.7 superframes — the earlier f9p_capture.ubx ended ~20 s before
-// frame 5's almanac section ever aired).
-//
-// Ground truth is reconstructed from the broadcast content itself, independently
-// of the heuristic under test: within one frame, the almanac pair on strings
-// (m, m+1) carries subject slot b+(m−6)/2, so every decoded pair on strings 6–13
-// implies the frame's base slot b — b ∈ {1,6,11,16} are frames 1–4 (whose strings
-// 14/15 are a legitimate almanac pair), b = 21 is frame 5 (whose strings 14/15
-// carry B1/B2/KP UT1 data instead, ICD Ed. 5.1 §4.5). The capture is then replayed
-// through the real Store.Apply path and three things are asserted:
-//
-//  1. every legitimate frames-1–4 string-14/15 almanac (after NA was known) IS
-//     stored — i.e. A3's stale-base blind spot (a lost string 6 wrongly skipping
-//     a real almanac) did not fire on real data;
-//  2. at every replay step every stored slot holds a value actually broadcast as
-//     almanac (the regression fix signature was a slot flip-flopping between genuine and
-//     garbage every superframe);
-//  3. no frame-5 string-14/15 pair landed in the almanac store (the regression fix bug).
-//     This capture proves the hazard is live, not theoretical: its frame-5
-//     14/15 pairs decode to an IN-RANGE garbage slot — B1's bits misread as
-//     "slot 1" — so without the heuristic they would overwrite the genuine
-//     slot-1 almanac (broadcast ~10 s later by frame 1) once per superframe,
-//     exactly the flip-flop regression fix predicted.
+// TestGLONASSFrame5RealSuperframe validates the frame-5 heuristic against a
+// 250-second GLONASS L1OF capture covering nine SVs and about 1.7 superframes.
+// Within each frame, almanac pairs on strings 6–13 imply the base slot; this
+// independently distinguishes frames 1–4 from frame 5 (ICD 5.1 section 4.5).
+// Frame-5 strings 14/15 carry UT1 data, so they must never replace a satellite's
+// almanac. The test checks the reconstructed entries and stability across the
+// capture, including garbage that decodes to an otherwise valid slot number.
 func TestGLONASSFrame5RealSuperframe(t *testing.T) {
 	at := time.Unix(1_700_000_000, 0)
 	frames := glonassCaptureFrames(t, "../ingest/testdata/glo_superframe_capture.ubx", at)
@@ -284,7 +264,7 @@ func TestGLONASSFrame5RealSuperframe(t *testing.T) {
 	for svid, fs := range svFrames {
 		naAt, ok := svNaIdx[svid]
 		if !ok {
-			continue // SV never delivered a string 5; its pairs are refused by design 
+			continue // SV never delivered a string 5; its pairs are refused by design
 		}
 		solo := New(1)
 		for _, f := range fs {

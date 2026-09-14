@@ -49,7 +49,7 @@ The sequence is deliberate. Anything that can fail on a misconfiguration is boun
 **synchronously, before the daemon logs "ready"**:
 
 1. **Load config** and set up `slog`. Any non-fatal `Warnings` from validation are logged
-   immediately  — a world-readable secrets file or a non-loopback bind of an
+   immediately — a world-readable secrets file or a non-loopback bind of an
    unauthenticated surface is never silent, even though neither is fatal.
 2. **Build live state** (`state.New(cfg.State.Shards)`) and install declared capabilities from
    both `[[ingest]]` sources and `[[push.observer]]` entries.

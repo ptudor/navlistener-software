@@ -17,7 +17,7 @@ orbit math stay central in the collector (`../docs/DESIGN.md §1`).
   RF-integrity telemetry). Default line rate 460800 (u-blox USB-CDC ignores it).
 - **Deploy note — GPIO9 is a C6 boot-strapping pin** : a reset that lands while the
   receiver is mid-byte can latch the chip into the ROM serial downloader, which needs a manual
-  power cycle to clear. Accepted as-is on these dev-class units by design —
+  power cycle to clear. These development boards retain this wiring —
   no `DIS_DOWNLOAD_MODE` eFuse is burned; the fleet-production fix is the planned ESP32-S3
   re-spin moving RX to a non-strapping GPIO. Practical mitigation today: keep units on stable
   power (a brownout is the usual trigger) and prefer a lower line rate where the frame budget
@@ -32,40 +32,38 @@ orbit math stay central in the collector (`../docs/DESIGN.md §1`).
 
 ## Build & flash
 
-Toolchain is the house ESP-IDF v5.5 at `~/esp/esp-idf`, with its tools and Python venv
-under `~/.espressif` (stay inside `~/Git`). The pinned venv is **3.12** (MacPorts
-`/opt/local/bin/python3.12`, `idf5.5_py3.12_env`), which is what `export.sh` resolves when it
-exists. It is a preference, not a hard requirement: `install.sh` builds its venv from the
-system interpreter, and IDF **5.5.4 builds this project against a `py3.14` env** — verified
-2026-07-24 on this machine, correcting the older note that 5.5 could not use 3.14.
+Install **ESP-IDF 5.5.x** using Espressif's installation instructions, then set
+`IDF_PATH` to that checkout. Run its installer once for the ESP32-C6 target.
+The wrapper uses ESP-IDF's own toolchain and Python environment selection;
+set `IDF_TOOLS_PATH` if you installed the tools outside its default location.
 
-**One-time bootstrap on a machine that has never built this** (`~/.espressif` absent):
+From this directory:
 
 ```sh
-IDF_TOOLS_PATH=$HOME/.espressif $HOME/esp/esp-idf/install.sh esp32c6
+export IDF_PATH=/path/to/esp-idf
+"$IDF_PATH/install.sh" esp32c6             # once, after installing ESP-IDF
+./build-navfeeder-esp.sh                  # build the C6 firmware
+PORT=/dev/ttyACM0 ./build-navfeeder-esp.sh flash
 ```
 
-Then build:
+Use your board's actual serial device, such as `/dev/ttyACM0` on Linux or
+`/dev/cu.usbmodem...` on macOS. Flashing is requested explicitly by `flash`.
+The wrapper preserves an existing C6 `sdkconfig`, warns about differences
+from `sdkconfig.defaults`, and records firmware provenance after building.
+
+The wrapper selects ESP32-C6. For the custom ESP32-S3 board, use ESP-IDF
+directly in a separate checkout or build configuration:
 
 ```sh
-./build-navfeeder-esp.sh                        # set-target esp32c6 (guarded) + build
-./build-navfeeder-esp.sh flash                  # + flash & monitor; PORT= picks the device
-```
-
-The script exports `IDF_TOOLS_PATH`, prefers the 3.12 env, sources `export.sh`, and preflights
-the venv — a missing environment now prints the exact bootstrap command above and stops,
-instead of failing several steps later inside `export.sh` with a path for a Python version you
-never asked for. The equivalent by hand:
-
-```sh
-export IDF_TOOLS_PATH=$HOME/.espressif
-export PATH=$HOME/.espressif/python_env/idf5.5_py3.12_env/bin:$PATH
-. $HOME/esp/esp-idf/export.sh
-
-idf.py set-target esp32c6
+. "$IDF_PATH/export.sh"
+idf.py set-target esp32s3
+idf.py menuconfig                       # select NVF_BOARD_GNSS_COLOR_NEO
 idf.py build
-idf.py -p /dev/cu.usbmodem* flash monitor      # C6 shows up as a USB-Serial-JTAG device
+python tools/build_provenance.py
 ```
+
+`set-target` regenerates `sdkconfig`; preserve any local configuration before
+changing targets. The build tool's provenance check still applies.
 
 ## What each phase does
 
@@ -113,14 +111,10 @@ that is not its fault.
 
 ## Durability envelope (read before deploying one as a primary observer)
 
-**The spool is RAM-only, and that is now a decision rather than a gap** (regression fix, closing
-regression fix). `partitions.csv` reserves 1.5 MiB for a flash tier and `docs/PLAN.md §P-spool`
-records its design, but no component mounts or writes that partition — and on **2026-07-31**
-the owner accepted the ESP32-C6 class as **RAM-only / non-durable across reboots** and
-deliberately did **not** commission the flash tier for this hardware
-(`technical validation`). Do not re-open it as a bug; it is a
-scoped limitation with a named successor (see "What would change it" below). What that means
-in the field:
+**The spool is RAM-only and non-durable across reboots.** `partitions.csv`
+reserves 1.5 MiB for a flash tier, and `docs/PLAN.md` records its design, but
+no component mounts or writes that partition. This applies to the current
+firmware on both supported boards. Plan for these limits:
 
 - **Outage depth = the RAM ring.** `CONFIG_NVF_SPOOL_FRAMES` (default **1024**) records; on
   overflow the *oldest* unacked record is dropped and counted. Order-of-magnitude: a
@@ -136,21 +130,14 @@ in the field:
   the deployed router/SBC fleet keeps its outage durability. This limitation is specific to
   navfeeder-esp.
 
-**Why accepting it is sound — and what the acceptance depends on.** The loss is bounded at
-*exactly* the unacked ring only because of **regression fix** (the per-boot session identity in
-HELLO, landed 2026-07-31). Before the regression fix a reboot was strictly worse than "lose the ring": the
-feeder came back with its sequence space restarting at 0, those numbers collided with the
-durable ledger's rows from the previous run, and the collector silently discarded the *fresh,
-successfully captured* post-reboot frames as replays. A reboot therefore poisoned the future,
-not just the past. With a new session minted every boot, post-reboot frames land in a
-brand-new `(observer, session, seq)` space and are ingested normally. **This makes the regression fix
-acceptance conditional: if the per-boot mint is ever removed, or the session is persisted
-across boots (NVS, RTC memory, anywhere), the acceptance is void** — see `main.c`'s
-`session_init()`.
+**Boot sessions bound the loss.** The feeder must mint a fresh GNF1 session
+on each boot. The collector deduplicates on `(observer, session, seq)`, so a
+new session prevents the restarted sequence counter from colliding with
+previously received frames. Persisting a session across boots would break
+that guarantee. See `main.c`'s `session_init()`.
 
-**What would change it.** The planned **ESP32-S3 + ATECC608** board (see `../docs/HARDWARE-OBSERVER.md`) is where durability gets revisited: a spool tier is in scope for that class, along with
-the hardware identity and the non-strapping receiver RX pin (below). Nothing is planned for
-the C6 units.
+A flash-backed spool is a planned feature; the current ESP32-S3 build also
+uses the RAM ring. Hardware support alone does not provide reboot durability.
 
 Deployment rule: **a navfeeder-esp unit is loss-tolerant-only by explicit design.** Good as an
 additional observer in a fleet where another station covers the same sky; not the sole witness

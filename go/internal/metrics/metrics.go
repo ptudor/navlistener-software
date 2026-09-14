@@ -151,7 +151,7 @@ var (
 		Help: "Confirmed integrity events emitted, by type and severity.",
 	}, []string{"type", "severity"})
 
-	// SpoofGatesWired / SpoofGateQuorumGauge  publish the spoofing
+	// SpoofGatesWired / SpoofGateQuorumGauge publish the spoofing
 	// detector's coverage honestly: spoofing_suspected needs quorum-many
 	// independent physics gates agreeing, and while wired < quorum the event is
 	// arithmetically unreachable — a deliberate conservative posture that would

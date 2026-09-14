@@ -177,7 +177,7 @@ func WeekAt(sys System, unix, gpsMinusUTC float64) (int, bool) {
 }
 
 // TOWAt returns sys's own time-of-week (seconds, in [0, WeekSeconds)) at the
-// given Unix instant  — the wall-clock counterpart of a broadcast
+// given Unix instant — the wall-clock counterpart of a broadcast
 // toe/tow, used as the propagation target. Positive-modulo so instants before
 // a week boundary still land in the previous week's tail. ok=false for GLONASS
 // (time-of-day system — package glonass / the caller's gloTOD own that axis)

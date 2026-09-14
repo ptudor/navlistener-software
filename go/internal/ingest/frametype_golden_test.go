@@ -15,7 +15,7 @@ import (
 )
 
 // frameTypeGolden is the checked-in (gnssId, sigId) → frame_type matrix: the SINGLE
-// authority for a mapping that three implementations must agree on  — Go's
+// authority for a mapping that three implementations must agree on — Go's
 // RawFrame.NavType (here), the C feeder's frame_type() (feeder/navfeeder.c), and the
 // ESP32's gnf1_frame_type() (esp32/components/gnf1/src/gnf1.c). Before this fixture
 // existed the three had drifted pairwise: the C feeder labelled every SBAS sigId 0x70
@@ -56,7 +56,7 @@ type goldenRow struct {
 }
 
 // TestNavTypeMatchesGolden pins Go's NavType — the canonical mapping, and the only one of
-// the three with the full citation trail  — against the checked-in
+// the three with the full citation trail — against the checked-in
 // matrix. It fails if NavType changed without the fixture being regenerated, which is the
 // event that must force the C feeder and ESP32 mappers to be revisited.
 func TestNavTypeMatchesGolden(t *testing.T) {

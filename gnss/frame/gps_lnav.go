@@ -44,7 +44,7 @@ var errIODMismatch = errors.New("frame: ephemeris IOD mismatch")
 // ErrShortFrame precedent.
 var ErrWrongMsgType = errors.New("frame: wrong navigation message type for argument")
 
-// errBadSubframe  is returned when a length-valid LNAV frame carries an
+// errBadSubframe is returned when a length-valid LNAV frame carries an
 // out-of-range subframe id (not 1..5) — a mis-tagged or corrupt frame.
 var errBadSubframe = errors.New("frame: LNAV subframe id out of range (1..5)")
 
@@ -52,7 +52,7 @@ var errBadSubframe = errors.New("frame: LNAV subframe id out of range (1..5)")
 // telemetry-message preamble (IS-GPS-200N §20.3.3.1; QZSS defers to it).
 var ErrBadTLMPreamble = errors.New("frame: LNAV TLM preamble mismatch")
 
-// errBadTOWCount  is returned when the HOW's truncated TOW count
+// errBadTOWCount is returned when the HOW's truncated TOW count
 // exceeds its ICD maximum: "The HOW-message TOW count reaches a maximum value
 // of 100,799 prior to rolling over" (IS-GPS-200N §20.3.3.2). A larger count
 // would scale to a TOW past the week (> 604,800 s) — a corrupt HOW, rejected
@@ -71,13 +71,13 @@ type GPSSubframe struct {
 	// range-validated at decode (count ≤ 100,799, IS-GPS-200N §20.3.3.2).
 	TOW float64
 
-	// Alert  is HOW bit 18 (IS-GPS-200N §20.3.3.2): raised means "the
+	// Alert is HOW bit 18 (IS-GPS-200N §20.3.3.2): raised means "the
 	// signal URA may be worse than indicated in subframe 1 and … [the SPS user]
 	// shall use that SV at his own risk" — one of the ICD's three §6.4.6.3
 	// C/A-signal marginal conditions, and a first-class integrity-monitor input.
 	// Present in EVERY subframe's HOW (1–5), not just the ephemeris set.
 	Alert bool
-	// AntiSpoof  is HOW bit 19: "A '1' … indicates that the A-S mode is
+	// AntiSpoof is HOW bit 19: "A '1' … indicates that the A-S mode is
 	// ON in that SV" (IS-GPS-200N §20.3.3.2). Status, not a fault flag.
 	AntiSpoof bool
 
@@ -95,7 +95,7 @@ type GPSSubframe struct {
 	eph  kepler.Ephemeris // partial: sf2 or sf3 elements
 	Toe  float64
 
-	// FitIntervalFlag  is subframe-2 word 10 bit 17 (IS-GPS-200N
+	// FitIntervalFlag is subframe-2 word 10 bit 17 (IS-GPS-200N
 	// §20.3.3.4.3.1): 0 = the nominal 4 h curve-fit interval, 1 = greater than
 	// 4 h (6–26 h by the IODC ranges of Table 20-XII — extended operations). A
 	// staleness/validity window that hard-assumes 4 h has no broadcast basis
@@ -103,7 +103,7 @@ type GPSSubframe struct {
 	// QZSS-PNT-006 §4.1.2.4(3) — the Subframe 2 (Ephemeris 1) item list; regression fix)
 	// at the same bit position.
 	FitIntervalFlag bool
-	// AODO  is subframe-2 word 10 bits 18–22 × 900 s (IS-GPS-200N
+	// AODO is subframe-2 word 10 bits 18–22 × 900 s (IS-GPS-200N
 	// §20.3.3.4.1/§20.3.3.4.4): the age-of-data offset for the subframe-4 NMCT.
 	// 27900 (raw 31) means "NMCT unavailable" (§20.3.3.4.4 "NMCT Validity Time";
 	// regression fix); QZSS fixes it at that sentinel (QZSS-PNT-006 §4.1.2.4(4)). Seconds.

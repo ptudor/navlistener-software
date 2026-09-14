@@ -16,11 +16,11 @@ orbit/clock equations — those live in `docs/MATH.md`. Health/URA/integrity int
 `docs/INTEGRITY.md`; the emitted feed shape is `docs/OUTPUT.md`; the pipeline and wire
 transport are `docs/DESIGN.md`.
 
-**The edge does not decode.** `navfeeder` (C/ESP32) forwards *raw broadcast nav frames* —
-UBX-RXM-SFRBX words, Septentrio SBF raw-nav blocks, RTCM3 — inside `GNF1` DATA frames. All
-de-interleaving, parity/CRC checking, ephemeris assembly, and orbit propagation happen
-centrally in `navlistener`, exactly as galmon centralizes in `navparse`. This keeps the edge
-dumb, tiny, and robust, and keeps the security-sensitive parser in one auditable place.
+**The edge does not decode.** The C and ESP32 feeders forward UBX raw
+navigation records over GNF1. SBF and RTCM ingest paths are capture-only
+pending central decoders; the current feeder implementations do not provide
+the full planned receiver-format matrix. Navigation decoding, ephemeris
+assembly, and orbit propagation run centrally in `navlistener`.
 
 ---
 

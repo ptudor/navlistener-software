@@ -104,12 +104,12 @@ below):
 | `full_name` | string | human label, e.g. `"GPS-5"`, `"Galileo-14 (E1B)"` |
 | `name` | string | SV name `"G05"` (RINEX letter + PRN) |
 | `gnssid` | int | constellation id (`docs/CONSTELLATIONS.md §0`) |
-| `svid` | int | PRN within constellation — except **QZSS**, which serves the u-blox svId 1–10 (`J03` = svid 3 = PRN 195; PRN = svid + 192). Intentional: see `docs/CONSTELLATIONS.md §3.1` ("svId, not PRN") and the `"J03@0"` example below  |
+| `svid` | int | PRN within constellation — except **QZSS**, which serves the u-blox svId 1–10 (`J03` = svid 3 = PRN 195; PRN = svid + 192). Intentional: see `docs/CONSTELLATIONS.md §3.1` ("svId, not PRN") and the `"J03@0"` example below |
 | `sigid` | int | signal id (0 = the constellation's primary civil signal) |
 | `health_code` | int | §2.2 enum: 0 unknown · 1 OK · 2 not-ok · 3 do-not-use |
 | `health_issue_level` | int | 0 none · 1 warning · 2 error |
 | `health_subcode` | int | raw broadcast health bits (0 when none). **GLONASS**: a packed pair — low 3 bits = the raw Bn word (only its MSB, value 4, is the malfunction flag), bit 3 (value 8) = the GLONASS-M ℓn fast malfunction flag (regression fix; GLO-ICD-5.1 §4.4, Table 5.1) — so a Bn-vs-ℓn disagreement window is visible |
-| `eph_age_m` | float | ephemeris age, minutes = `ephAge(tow,t0e)/60` (MATH.md §1.1). **Sign convention :** legitimately **negative** while now precedes the reference epoch — for GLONASS that is the steady state for roughly the first half of every tb interval, because the immediate data are referred to the *middle* of the interval (GLO-ICD-5.1 §4.4); Kepler-family ages can likewise be briefly negative before toe. Consumers must not assert `eph_age_m ≥ 0`. Past the constellation's serving cap the value switches to the monotone wall-clock age since apply  |
+| `eph_age_m` | float | ephemeris age, minutes = `ephAge(tow,t0e)/60` (MATH.md §1.1). **Sign convention :** legitimately **negative** while now precedes the reference epoch — for GLONASS that is the steady state for roughly the first half of every tb interval, because the immediate data are referred to the *middle* of the interval (GLO-ICD-5.1 §4.4); Kepler-family ages can likewise be briefly negative before toe. Consumers must not assert `eph_age_m ≥ 0`. Past the constellation's serving cap the value switches to the monotone wall-clock age since apply |
 | `sisa_valid` | bool | false when the broadcast accuracy is a "none/no accuracy" sentinel |
 | `sisa_m` | float | URA/SISA in metres (MATH.md §6); meaningful only when `sisa_valid` |
 | `acc_index` | int | raw broadcast accuracy index (URA / URA_ED / SISA per constellation, MATH.md §6); present whenever an accuracy field has been decoded — including the "no accuracy prediction, use at own risk" sentinels (GPS/QZSS URA 15, IS-GPS-200N §20.3.3.3.1.3; CNAV URA_ED 15/−16; Galileo SISA 255) that `sisa_valid=false` alone can't distinguish from "not yet decoded". **Signedness follows the signal's ICD accuracy field** : LNAV URA on `@0` rows is unsigned 0..15; CNAV URA_ED is signed −16..15 on every CNAV-family row — GPS `@3`/`@6`-family **and QZSS `@4`/`@5`/`@8`/`@9`** (QZSS CNAV rides QZSS's own sigIds; regression fix) — a consumer re-deriving metres must treat CNAV values as signed (prefer `sisa_m`, the decoded value). **BeiDou `C##@8` rows are a packed composite** : B-CNAV2's four SIS accuracy indices as `SISAIoe<<11 \| SISAIocb<<6 \| SISAIoc1<<3 \| SISAIoc2` (16 bits — SISAIoe's 5 bits end at bit 15, max 65535; the earlier "17 bits" was an arithmetic slip, regression fix), served with `sisa_valid` permanently `false` because the index→metres definitions are deferred by the B2a ICD itself (§7.16: "will be published in a future update") — do **not** push a `@8` `acc_index` through a URA/SISA table |
@@ -128,7 +128,7 @@ below):
 | `wn` | int | week number (full, disambiguated) — **GPS-continuous** (GPS week number, no 1024-week rollover) for GPS, Galileo, QZSS, and NavIC; **BeiDou is the exception**, reported as its own native BDT week (GPS week − 1356, BDT epoch 2006-01-01) — regression fix. A consumer diffing `wn` against the broadcast WN sees a 1024-week offset for Galileo/NavIC but not for BeiDou; this is intentional, not a bug, and is not expected to change without a version bump. |
 | `best_tle` | string | name of best-matching CelesTrak object (MATH.md §11), absent if none |
 | `best_tle_dist_m` | float | metres to the SGP4 position of that object |
-| `klob_alpha`, `klob_beta` | float[4] | raw broadcast ionosphere coefficient sets  — today BeiDou B1I D1 subframe-1 α/β (BDS-SIS-ICD-B1I §5.2.4.7, a materially different model from GPS's Klobuchar — do not feed to a GPS evaluator); served for query/replay and evaluator; absent until decoded |
+| `klob_alpha`, `klob_beta` | float[4] | raw broadcast ionosphere coefficient sets — today BeiDou B1I D1 subframe-1 α/β (BDS-SIS-ICD-B1I §5.2.4.7, a materially different model from GPS's Klobuchar — do not feed to a GPS evaluator); served for query/replay and evaluator; absent until decoded |
 | `bdgim` | float[9] | BeiDou B-CNAV2 MT30's BDGIM α1..α9 (B2a Table 7-10, TECu), raw — evaluation is follow-up |
 | `dif`, `sif`, `aif` | bool | BeiDou B-CNAV2 entries : the B2a signal's broadcast real-time integrity flags (BDS-SIS-ICD-B2a Table 7-23 — data/signal/accuracy integrity), refreshed ~every 3 s; absent until the flag block decodes |
 | `sismai` | int | the raw 4-bit signal-in-space monitoring accuracy index accompanying them (§7.17 semantics deferred by the ICD — raw only) |
@@ -136,7 +136,7 @@ below):
 | `dt_ls`, `dt_lsf`, `wn_lsf`, `dn` | int | raw broadcast leap schedule accompanying `utc_offset_ns` (current/post-event leap counts, event week, event day) so consumers can handle a pending leap themselves; absent with it |
 | `leap_mismatch` | bool | the broadcast current leap count disagrees with this collector's configured GPS−UTC count (regression fix — the regression fix cross-check); absent until a UTC set has decoded |
 | `utc_drift_ns_day` | float | its drift term, ns/day |
-| `gps_offset_ns` | float | broadcast system→GPS offset (ns; GGTO for Galileo, τ_GPS for GLONASS…), evaluated at the feed instant. Sign: t_system − t_GPS (positive = the system's time scale is ahead of GPS — Galileo Eq. 24 Δt_systems, GAL-OS-SIS-ICD-2.2 §5.1.8). Absent until decoded, and absent again on Galileo's all-ones broadcast withdrawal (§5.1.8) — never a stale offset  |
+| `gps_offset_ns` | float | broadcast system→GPS offset (ns; GGTO for Galileo, τ_GPS for GLONASS…), evaluated at the feed instant. Sign: t_system − t_GPS (positive = the system's time scale is ahead of GPS — Galileo Eq. 24 Δt_systems, GAL-OS-SIS-ICD-2.2 §5.1.8). Absent until decoded, and absent again on Galileo's all-ones broadcast withdrawal (§5.1.8) — never a stale offset |
 | `a0g`,`a1g`,`t0g`,`wn0g` | float/int | raw inter-system offset polynomial terms (Galileo: a0g s, a1g s/s, t0g s, wn0g raw 6-bit truncated week — consumers re-evaluating at their own epoch disambiguate wn0g mod-64, exact under §5.1.8's ±31-week bound) |
 | `af0`,`af1`,`af2` | float | raw SV clock polynomial (MATH.md §4) |
 | `aodc`,`aode` | int | BeiDou age-of-data (BeiDou only) |
@@ -283,7 +283,7 @@ Event object (SSE `data:` payload and API rows; the JSON key is `type` — the D
 
 | Field | Type | Meaning |
 |---|---|---|
-| `id` | int64 | monotonic within the selected audience; not the internal BIGSERIAL row id  |
+| `id` | int64 | monotonic within the selected audience; not the internal BIGSERIAL row id |
 | `time` | RFC3339 | confirmation time (post-debounce) |
 | `sv` | string | `name@sigid` |
 | `type` | string | event type (INTEGRITY.md §5 — the authoritative vocabulary) |
@@ -344,7 +344,7 @@ CREATE TABLE gnss_events (
     severity   SMALLINT    NOT NULL DEFAULT 0,
     message    TEXT,
     raw        JSONB,
-    dedupe_key TEXT                     -- internal retry-idempotency key, never served
+    dedupe_key TEXT -- internal retry-idempotency key, never served
 );
 CREATE TABLE gnss_event_audience_cursors (
     audience TEXT PRIMARY KEY,
@@ -502,7 +502,7 @@ succeeds; reverting is a config change.
 No client parses SV-name letters anywhere (verified — they key on numeric `gnssid` and treat
 names as opaque strings), so the `J`/`I` names flow through with zero client work.
 
-### Current station conditions and stream reconciliation 
+### Current station conditions and stream reconciliation
 
 `GET /gnss/api/events/conditions` uses the same audience authorization as event
 history. Its v2 envelope contains `schema`, `audience`, `complete: true`, `epoch`
@@ -554,7 +554,7 @@ enrollment can admit other nonempty observer IDs under existing server policy.
 The client does not rename them or apply certificate rules retrospectively;
 request/response resource limits still apply.
 
-Integrity Station notification delivery  covers accepted live station
+Integrity Station notification delivery covers accepted live station
 transitions after condition reconciliation while the application is active.
 Initial snapshots, history pages and reconnect replay establish a baseline without
 alerts. Raises, recoveries and severity changes use server-classified conditions;

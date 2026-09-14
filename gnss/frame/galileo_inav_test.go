@@ -84,13 +84,13 @@ func TestDecodeGalileoINAVCRC(t *testing.T) {
 }
 
 // buildGalileoWord5 builds a Word Type 5 page with distinct BGD, E5b_HS, and
-// E1B_HS values so a bit-offset regression  is caught by a Health/TGD
+// E1B_HS values so a bit-offset regression is caught by a Health/TGD
 // mismatch, not accidentally matched by symmetric test data.
 func buildGalileoWord5(bgdARaw, bgdBRaw int64, e5bHS, e1bHS uint64) []uint32 {
 	content := make([]byte, 16)
 	setContentBits(content, 0, 5, 6)                       // word type = 5
 	setContentBits(content, 47, uint64(bgdARaw)&0x3FF, 10) // BGD(E1,E5a), bits 47-56
-	setContentBits(content, 57, uint64(bgdBRaw)&0x3FF, 10) // BGD(E1,E5b), bits 57-66 
+	setContentBits(content, 57, uint64(bgdBRaw)&0x3FF, 10) // BGD(E1,E5b), bits 57-66
 	setContentBits(content, 67, e5bHS, 2)                  // E5b_HS, bits 67-68
 	setContentBits(content, 69, e1bHS, 2)                  // E1B_HS, bits 69-70
 	return buildGalileoINAVWords(content)

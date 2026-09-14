@@ -552,7 +552,7 @@ func TestPushHappyPath(t *testing.T) {
 	}
 
 	// The ack ticker acknowledges the highest sequence received this connection
-	//  -- here, just seq 1, since only one frame was sent.
+	// -- here, just seq 1, since only one frame was sent.
 	if seq := readAck(t, conn); seq != 1 {
 		t.Errorf("ack seq = %d, want 1", seq)
 	}

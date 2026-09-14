@@ -102,7 +102,7 @@ One frame in, one fold. The dispatch routes on `(gnssId, sigId)`:
 
 Two guards run before any decode:
 
-- **`gnssId` range**  — an id outside 0..7-minus-IMES is rejected and counted as
+- **`gnssId` range** — an id outside 0..7-minus-IMES is rejected and counted as
   `DecodeErrorsTotal{gnssid="out_of_range", kind="gnssid_range"}`. The raw byte is deliberately
   **not** printed, since an attacker-supplied id would otherwise mint an unbounded Prometheus
   label set.
@@ -142,7 +142,7 @@ disco on the *next* frame.
 
 Health is not one bit, and this package refuses to pretend it is.
 
-- **`HaveHealth`**  — health is meaningful only when true. "Healthy" and "not yet decoded"
+- **`HaveHealth`** — health is meaningful only when true. "Healthy" and "not yet decoded"
   are different states and the feed distinguishes them.
 - **GPS/QZSS CNAV** carries a 3-bit L1/L2/L5 field (MT10 bits 52–54). `cnavCarrierHealth` maps it
   to the entry's own carrier — and **deliberately drops the L1 bit**, because this
@@ -164,7 +164,7 @@ L1+L5, and they report the *same* MON-VER string. So a node's **demonstrated** s
 the integrity layer needs, and this package learns it empirically: every successfully decoded nav
 frame is evidence that station tracks that `(gnssId, sigId)`.
 
-Crucially, **capability is recorded only after a structural decode succeeds**  — never off
+Crucially, **capability is recorded only after a structural decode succeeds** — never off
 a frame that merely arrived with a tag. Otherwise a mis-tagged or crafted frame could arm the
 capability detectors with a signal the station cannot produce.
 

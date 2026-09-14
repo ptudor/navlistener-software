@@ -224,7 +224,7 @@ func TestDecodeGLONASSStringLn(t *testing.T) {
 		return func(buf []byte) {
 			setBits(buf, off, 1, 1)
 			if number == 2 {
-				setBits(buf, 9, 7, 40) // string 2 needs a valid tb 
+				setBits(buf, 9, 7, 40) // string 2 needs a valid tb
 			}
 		}
 	}

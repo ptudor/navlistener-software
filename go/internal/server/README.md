@@ -40,7 +40,7 @@ func (s *Server) Fail(err error)
 
 ## Details
 
-### `Listen` before `Start` — and `Listen` synchronously 
+### `Listen` before `Start` — and `Listen` synchronously
 
 Binding and serving are separate calls on purpose. `main` calls `Listen()` **synchronously at
 startup, before the daemon logs "ready"**, then runs `Start(ln)` in a goroutine.

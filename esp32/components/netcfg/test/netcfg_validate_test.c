@@ -5,7 +5,7 @@
 // split, boot checked two fields and the portal checked a different, larger set, so a config
 // populated by Kconfig, a partial NVS write, or external NVS tooling could pass the boot gate
 // and then fail forever at WiFi/TLS/auth with no runtime portal fallback — a serial-cable
-// recovery on a board whose GPIO9 strapping  makes that unusually awkward.
+// recovery on a board whose GPIO9 strapping makes that unusually awkward.
 //
 // netcfg_check.c is pure C (no ESP-IDF), so this runs on the host:
 //

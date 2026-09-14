@@ -255,7 +255,7 @@ defines any "not available" sentinel bit-string for TGD or the ISCs.** The remem
 `1000000000000` (−4096) sentinel does not exist in the in-force editions. The raw two's-complement
 decode is correct as-is and performs no sentinel screening.
 
-The **Alert** flag  is ICD bit 38 — the single bit between TOW (ending at 37) and MT10's
+The **Alert** flag is ICD bit 38 — the single bit between TOW (ending at 37) and MT10's
 WN (starting at 39) — and rides every CNAV message type.
 
 **`AssembleGPSCNAV(id, svid, m10, m11, mClk)`** enforces three things:
@@ -286,7 +286,7 @@ join, the content must be made contiguous before reading.
   Type bits must be 0 (Nominal). Page Type 1 marks an **alert page**, whose data fields are not a
   nav word at all. Without this, an alert page decodes as a nav word with an arbitrary type 0–63
   — and word type 5 writes health straight into live state, so a single alert page could flip an
-  SV's served health. `ErrGalileoAlertPage` is **exported**  so the daemon can count it
+  SV's served health. `ErrGalileoAlertPage` is **exported** so the daemon can count it
   under its own metric label: an alert page is a deliberate, CRC'd transmission mode whose
   content the ICD reserves, and "the constellation is transmitting its attention-worthy page
   type" must be distinguishable from bit-rot.
@@ -309,7 +309,7 @@ Word 5 carries subtleties worth naming:
 - **The clock's TGD is BGD(E1,E5b), not BGD(E1,E5a)**. I/NAV is the (E1,E5b) clock
   (Table 71). Both BGDs are decoded so each clock can pick its own pair.
 
-**Word 10's GGTO**  carries A0G/A1G/t0G/WN0G for Δt = t_Galileo − t_GPS. §5.1.8's
+**Word 10's GGTO** carries A0G/A1G/t0G/WN0G for Δt = t_Galileo − t_GPS. §5.1.8's
 withdrawal sentinel — all four parameters all-ones — is checked on the **raw** patterns before
 scaling, because all-ones is a legal −1 for A0G or A1G *alone*; only the four-field conjunction
 is the sentinel. Only the GGTO half of word 10 is decoded: the leading almanac fields (and their
@@ -393,7 +393,7 @@ valid rule, so sf1/sf2/sf3 must each be exactly 6 s apart within one 30 s D1 fra
 stale sf2 (say, from before an hourly changeover after a subframe-2 loss) pairs with a fresh
 sf1/sf3 — and since toe is *split across sf2 and sf3*, that splices a toe belonging to neither,
 fabricating a garbage ephemeris that then sails through the toe-based IOD gate downstream and
-fires a false **critical** orbit-disco event. The delta wraps mod 604800  so the one
+fires a false **critical** orbit-disco event. The delta wraps mod 604800 so the one
 legitimate frame per week straddling the BDT rollover (604794 → 0 → 6) still assembles.
 
 ### BeiDou B2a B-CNAV2 (`beidou_bcnav2.go`)
@@ -410,9 +410,9 @@ Ephemeris splits across **MT10/MT11**; **MT30** carries clock + group delays + t
 ionosphere coefficients; **MT34** carries clock + the BDT-UTC parameter set; **MT40** carries the
 midi almanac (not consumed) plus accuracy indices.
 
-- **MT34's BDT-UTC block**  decodes into a `clock.UTCParams` including the A2 drift-rate
+- **MT34's BDT-UTC block** decodes into a `clock.UTCParams` including the A2 drift-rate
   term. ΔtLS/ΔtLSF are the BDT-**UTC** leap counts; BDT itself is leap-free.
-- **SISAI indices**  are decoded **raw and deliberately never converted to metres**,
+- **SISAI indices** are decoded **raw and deliberately never converted to metres**,
   because ICD v1.0 defines only the bit layout — "the specific definitions … will be published in
   a future update of this ICD," verbatim. There is no index→metres table to transcribe, so
   inventing one would be a fabricated constant.
@@ -474,7 +474,7 @@ safe; the exported struct doc promises those are the axis component, so honor it
 and third bits of this word." So the natural `Health != 0` test flags a healthy SV on a benign low
 bit. **Call `Unhealthy()`**, which checks Bn's MSB and the ℓn fast flag together.
 
-**ℓn**  is the GLONASS-M low-latency self-flag, present on strings 3, 5, 7, 9, 11, 13, 15
+**ℓn** is the GLONASS-M low-latency self-flag, present on strings 3, 5, 7, 9, 11, 13, 15
 — 7 of the 15 strings refresh it. It exists precisely to cut the onboard malfunction-to-flag delay
 from ≤1 min (Bn) to ≤10 s. On a legacy-GLONASS message the position is reserved; callers should
 still treat a set bit as a malfunction, because the conservative failure is a spurious not-ok
@@ -507,7 +507,7 @@ decoder already parses and each awaits a concrete consumer.
 250-bit messages delivered as 8 words: an 8-bit preamble (one of 0x53/0x9A/0xC6, cycling), a 6-bit
 message type, a 212-bit body, and a 24-bit CRC.
 
-**The CRC is checked**  over the 250 bits — not byte-aligned, hence `CRC24QBits`. That fix
+**The CRC is checked** over the 250 bits — not byte-aligned, hence `CRC24QBits`. That fix
 mattered more than it sounds: a single corrupted bit flipping the 6-bit type field to 0 fabricated
 a "do not use for safety applications" alarm — the exact event this feed exists to report.
 `TestDecodeSBASL1FabricatedDoNotUseNowRejected` is that regression.
@@ -561,7 +561,7 @@ each rule's failure mode is described in its section above.
 | GLONASS | string numbers 1/2/3 asserted; same-frame window enforced by the caller | `errGLONASSStringOrder` |
 
 Every adjacency delta wraps mod 604800 through `sowDelta`, so the once-a-week rollover straddle
-still assembles  while an out-of-domain SOW fails rather than being normalized.
+still assembles while an out-of-domain SOW fails rather than being normalized.
 
 ---
 

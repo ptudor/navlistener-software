@@ -20,7 +20,7 @@ const (
 	sbfSync1 = '$'
 	sbfSync2 = '@'
 	// sbfScanBuf is the bufio buffer scanSBF peeks whole blocks out of. The real
-	// overrun invariant  is: the largest Peek extent is the largest
+	// overrun invariant is: the largest Peek extent is the largest
 	// multiple-of-4 uint16 Length (65532) minus the 2 already-consumed sync bytes
 	// = 65530 <= sbfScanBuf, so Peek(total) always fits. The guard in scanSBF is
 	// therefore unreachable while Length is a uint16 — it exists to pin the

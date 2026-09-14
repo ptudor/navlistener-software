@@ -49,6 +49,6 @@ func frameForPersistence(f *ingest.RawFrame) *store.NavFrame {
 		DecoderVer:            version.Version,
 		SourceSeq:             f.Seq,
 		HasSourceSeq:          f.HasSeq,
-		Session:               f.Session, // dedup-key third component 
+		Session:               f.Session, // dedup-key third component
 	}
 }

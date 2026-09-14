@@ -10,10 +10,10 @@ import (
 )
 
 // errBeiDouSOWGap is returned when D1 subframes 1/2/3 are not broadcast-adjacent
-//  — the only coherence guard available, since D1 has no IODE/IODC-style tag.
+// — the only coherence guard available, since D1 has no IODE/IODC-style tag.
 var errBeiDouSOWGap = errors.New("frame: BeiDou D1 subframes not broadcast-adjacent (SOW gap)")
 
-// errBadFraID  is returned for a length-valid D1 frame with an out-of-range
+// errBadFraID is returned for a length-valid D1 frame with an out-of-range
 // FraID (not 1..5) — a mis-tagged or corrupt frame.
 var errBadFraID = errors.New("frame: BeiDou D1 FraID out of range (1..5)")
 
@@ -227,7 +227,7 @@ func AssembleBeiDou(svid int, sf1, sf2, sf3 *BeiDouSubframe) (kepler.Ephemeris, 
 	// fresh sf1/sf3: toe is split across sf2/sf3, so this splices a toe
 	// belonging to neither, fabricating a garbage ephemeris that would
 	// otherwise pass the toe-based IOD gate in state.go and fire a false
-	// critical orbit-disco event. The delta wraps mod 604800  so the one
+	// critical orbit-disco event. The delta wraps mod 604800 so the one
 	// legitimate frame per week that straddles the BDT rollover (604794 → 0 → 6)
 	// still assembles; the exact +6 rule is unchanged everywhere else, and an
 	// out-of-domain SOW fails the check rather than being normalized (sowDelta).

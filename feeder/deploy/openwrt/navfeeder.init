@@ -42,7 +42,7 @@ start_service() {
 	procd_set_param user navfeeder
 	procd_set_param group navfeeder
 	procd_set_param respawn 5 30 0   # the feeder reconnects itself; respawn only on a real crash
-	procd_set_param term_timeout 90  # allow the shutdown ring-flush to complete before SIGKILL
+	procd_set_param term_timeout 90 # allow the shutdown ring-flush to complete before SIGKILL
 	procd_set_param stderr 1         # logd captures the feeder's structured lines
 	procd_close_instance
 }

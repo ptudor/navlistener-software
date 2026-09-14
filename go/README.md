@@ -159,9 +159,9 @@ sysrc navlistener_enable=YES
 service navlistener start
 ```
 
-`service start` runs `-check-config` first and refuses to start on failure  —
+`service start` runs `-check-config` first and refuses to start on failure —
 `daemon(8)` forks and returns 0 immediately, so without that gate a bad config would report
-success into a 5 s supervisor crash-loop. The check runs **as the daemon user**  so its
+success into a 5 s supervisor crash-loop. The check runs **as the daemon user** so its
 file-access rights match the daemon's; chown the config and every file it references, and keep
 `tls_key` at 0600 (a world-readable key is rejected outright, regression fix).
 

@@ -87,7 +87,7 @@ func TestSignedAndConcatSignedAtN63(t *testing.T) {
 	}
 }
 
-// FuzzSignedAgainstReference extends the bitreader fuzz coverage  to check
+// FuzzSignedAgainstReference extends the bitreader fuzz coverage to check
 // correctness, not just no-panic: for every width 0..64, Signed's result must
 // equal the arbitrary-precision reference. This is the fuzz FuzzBitReader was
 // missing — it only asserted Signed didn't crash, which would not have caught

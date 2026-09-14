@@ -72,7 +72,7 @@ type FeedSV struct {
 	A1G         *float64 `json:"a1g,omitempty"`
 	T0G         *int     `json:"t0g,omitempty"`
 	WN0G        *int     `json:"wn0g,omitempty"`
-	// KlobAlpha/KlobBeta and Bdgim  are the SV's raw broadcast
+	// KlobAlpha/KlobBeta and Bdgim are the SV's raw broadcast
 	// ionosphere coefficient sets, served so they are queryable and (via the
 	// gnss_snapshots feed dumps) replayable — a broadcast iono-coefficient
 	// anomaly is a known spoofing tell, and evaluator will need
@@ -671,7 +671,7 @@ func (s *Store) LiveReceivers(now time.Time) int { return s.countLiveReceivers(n
 // it). The capability map is never evicted (durability is its design), so a
 // long-dead station keeps its climbing age and the machine can hold "offline"
 // indefinitely rather than freezing mid-state when the rf entry is evicted
-//.
+// .
 func (s *Store) StationLastSeen(now time.Time) map[string]int {
 	last := map[string]time.Time{}
 	s.capMu.Lock()
@@ -921,7 +921,7 @@ func (s *Store) buildSBAS(now time.Time, includeStale bool) map[string]SBASEntry
 		}
 		code := 1 // OK
 		if st.haveType0 && now.Sub(st.lastType0) < sbasType0Hold {
-			code = 3 // do-not-use, latched on MT0 recency 
+			code = 3 // do-not-use, latched on MT0 recency
 		}
 		ent := SBASEntry{
 			Provider:   st.provider,
@@ -1165,7 +1165,7 @@ func sisaFor(kind uint8, idx int) (float64, bool) {
 	case accSISA:
 		return accuracy.GalileoSISA(idx)
 	case accURAED:
-		return accuracy.URAEDMeters(idx) // CNAV signed URA_ED 
+		return accuracy.URAEDMeters(idx) // CNAV signed URA_ED
 	default:
 		// accSISAIRaw lands here BY DESIGN : the B2a ICD v1.0 defers
 		// the SISAI index→metres tables to "a future update", so there is

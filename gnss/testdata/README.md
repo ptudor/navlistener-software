@@ -1,10 +1,9 @@
 # `gnss/testdata` — external truth fixtures
 
-**Headline:** two small files that are the only numbers in this library produced entirely outside
-it. Five real broadcast ephemerides — GPS, Galileo, BeiDou, QZSS, GLONASS — and the precise orbit
-that says where those satellites actually were. Everything else in `gnss` can be self-consistently
-wrong; these fixtures provide an independent check of the selected records and epochs,
-not a proof of correctness across all inputs or constellations.
+These fixtures compare five broadcast ephemerides—GPS, Galileo, BeiDou,
+QZSS, and GLONASS—with independent precise-orbit positions. They check the
+selected records and epochs within the tolerances below. They do not prove
+correctness for other inputs, signal families, or constellations.
 
 ---
 
@@ -34,8 +33,7 @@ structurally **cannot** catch is a systematic error that's consistent with itsel
 - A GLONASS Coriolis sign flip — the state still integrates and un-integrates to itself.
 
 Every one of those produces a wrong position by hundreds of metres to kilometres while sailing
-through every internal check. The only way to catch them is to compare against numbers this
-codebase had no hand in producing. That's what this folder is.
+through every internal check. Independent reference data can reveal errors that self-consistency checks miss. That's what this folder is.
 
 This closes the regression fix assurance gap and implements `docs/MATH.md §12`'s "oracle 2."
 
@@ -60,10 +58,10 @@ no re-derivation, no reformatting of the numbers:
 The provenance is recorded in the file's own RINEX `COMMENT` header lines, so it travels with the
 data rather than living only here.
 
-**NavIC is absent, and that's not an oversight** — no public precise-orbit product carries it. Its
-Kepler propagation is the same code path with GPS-compatible constants (see `gnss/physconst`), so
-it inherits this validation indirectly; there is simply no independent truth to check it against.
-That matches the deferred state of the NavIC decoder itself.
+**NavIC has no independent fixture in this test set.** It shares the Kepler
+propagation code path with GPS-compatible constants (see `gnss/physconst`),
+but that does not independently validate its decoder or signal-specific behavior.
+The NavIC decoder remains deferred.
 
 **SBAS is absent for a different reason** — the library decodes SBAS L1 message headers but has no
 SBAS orbit propagator at all (`physconst.For` returns `ok=false` for it), so there is nothing here

@@ -24,8 +24,8 @@ import (
 type GalileoFNAV struct {
 	PageType int
 	IODnav   int
-	SISA     int // page 1 only, SISA(E1,E5a) 
-	E5aHS    int // page 1 only, E5a Signal Health Status 
+	SISA     int // page 1 only, SISA(E1,E5a)
+	E5aHS    int // page 1 only, E5a Signal Health Status
 	// E5aDVS is the E5a Data Validity Status (page 1 only, regression fix):
 	// 0 = navigation data valid, 1 = "Working without guarantee"
 	// (GAL-OS-SIS-ICD-2.2 Table 79/81). The ICD gives E5a TWO per-signal

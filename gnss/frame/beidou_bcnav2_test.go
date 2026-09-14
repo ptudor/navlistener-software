@@ -74,7 +74,7 @@ func TestBCNAV2MT34DecodesBDTUTC(t *testing.T) {
 	setBits(buf, 0, 6, 30)     // PRN
 	setBits(buf, 6, 6, 34)     // MesType 34
 	setBits(buf, 12, 18, 1)    // SOW raw (×3 s)
-	setBits(buf, 42, 11, 1234) // SISAItop 
+	setBits(buf, 42, 11, 1234) // SISAItop
 	setBits(buf, 53, 5, 21)    // SISAIocb
 	setBits(buf, 58, 3, 5)     // SISAIoc1
 	setBits(buf, 61, 3, 2)     // SISAIoc2

@@ -162,12 +162,12 @@ type Store struct {
 	batchEvery       time.Duration
 	retry            flushRetry
 	log              *slog.Logger
-	seqSeenRetention time.Duration // prune window for nav_frames_seq_seen 
+	seqSeenRetention time.Duration // prune window for nav_frames_seq_seen
 	copy             copyRowsFunc  // defaults to s.copyRows (pool-backed); tests substitute a fake
 	atomicPersist    bool          // production: claim replay keys and copy rows in one transaction
 	shutdownBudget   time.Duration // defaults to shutdownFlushBudget; tests shrink it to run fast
 	// persistOnce is the one-transaction claim+copy (s.persistAtomicOnce in
-	// production); a seam so the retry/abort/retention policy around it 
+	// production); a seam so the retry/abort/retention policy around it
 	// is unit-testable without a database, mirroring the copy seam above.
 	persistOnce func(ctx context.Context, batch []*NavFrame) (int64, error)
 
@@ -176,7 +176,7 @@ type Store struct {
 	// as does the regression fix idle-recovery probe below. It feeds Degraded() so
 	// /healthz can report a historian that has been dropping the forensic record
 	// for minutes, instead of staying green. Incremented at most ONCE per
-	// top-level flush  — a poison bisection can produce several
+	// top-level flush — a poison bisection can produce several
 	// give-ups within one cycle, and counting each would reach Degraded()'s ≥2
 	// threshold after one cycle instead of the intended two consecutive ones.
 	flushFailStreak atomic.Int64
@@ -375,7 +375,7 @@ var requiredColumns = map[string][]string{
 }
 
 // verifyRequiredColumns fails fast with an actionable message if a required table
-// is missing a column this build reads or writes  — most likely because the
+// is missing a column this build reads or writes — most likely because the
 // DSN points at a database where gnss_events/gnss_snapshots pre-date this schema
 // (e.g. an older intsat deployment) and CREATE TABLE IF NOT EXISTS left them as-is.
 func verifyRequiredColumns(ctx context.Context, pool *pgxpool.Pool) error {
@@ -465,8 +465,8 @@ func applyPoliciesWithHook(ctx context.Context, pool *pgxpool.Pool, log *slog.Lo
 	}
 	// config.ParseInterval re-applies config.IntervalRe, so this keeps its
 	// defense-in-depth role as the injection guard for the DDL interpolation
-	// below  while additionally rejecting a syntactically valid but
-	// unrepresentable magnitude before it reaches the database  —
+	// below while additionally rejecting a syntactically valid but
+	// unrepresentable magnitude before it reaches the database —
 	// the case that let the policy and the Go-side horizon diverge.
 	if _, err := config.ParseInterval(compAfter); err != nil {
 		return fmt.Errorf("compress_after: %w", err)
@@ -589,7 +589,7 @@ func (s *Store) clearStreakIfIdleHealthy(ctx context.Context, now time.Time) {
 		return
 	}
 	if !s.lastWriteAttempt.IsZero() && now.Sub(s.lastWriteAttempt) < idleQuietWindow {
-		return // writes were attempted recently: their verdict stands 
+		return // writes were attempted recently: their verdict stands
 	}
 	if !s.lastIdleProbe.IsZero() && now.Sub(s.lastIdleProbe) < idleHealthEvery {
 		return
@@ -743,7 +743,7 @@ func (s *Store) copyRows(ctx context.Context, rows [][]any) (int64, error) {
 
 // seqKey identifies one feeder-assigned sequence for the regression fix replay-dedup
 // ledger. session partitions one observer's sequence spaces across feeder
-// boots  — two frames with equal (source, seq) but different
+// boots — two frames with equal (source, seq) but different
 // sessions are DIFFERENT frames, never replays of each other.
 type seqKey struct {
 	source  string
@@ -860,7 +860,7 @@ func (s *Store) persistAtomicRetry(ctx context.Context, batch []*NavFrame) (writ
 		n, err := s.persistOnce(cctx, batch)
 		cancel()
 		if err == nil {
-			s.flushFailStreak.Store(0) // any successful persist ends a failure streak 
+			s.flushFailStreak.Store(0) // any successful persist ends a failure streak
 			// the transaction committed — every sequenced frame in the
 			// batch is durably resolved (persisted, or omitted because its
 			// ledger claim proves an earlier commit) and may now be acked.
@@ -971,7 +971,7 @@ func dedupBatch(batch []*NavFrame, fresh map[seqKey]bool) []*NavFrame {
 // context derived from parent and capped by deadline. Normal-path callers pass
 // storeCtx as parent so shutdown interrupts an in-flight flush;
 // shutdown-drain callers pass context.Background() (their parent is already
-// cancelled) with the *same* deadline on every call  so the total drain
+// cancelled) with the *same* deadline on every call so the total drain
 // time is bounded by one budget, not a fresh one per chunk. Push-path frames are
 // first deduplicated against nav_frames_seq_seen; a dedup-ledger failure
 // fails open (persists the batch un-deduped) — losing the forensic record is

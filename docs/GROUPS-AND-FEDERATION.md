@@ -624,7 +624,7 @@ Tests and review must keep these statements true:
 2. A certificate or HELLO cannot self-assign organization, enrollment, audience, or policy.
 3. Unknown policy is private and non-exportable.
 4. Adding a private observer cannot change any byte of the public feeds, events, SSE, station
-   search, confidence, or counters — including event-id sequences and cursors  —
+   search, confidence, or counters — including event-id sequences and cursors —
    unless anonymous public aggregation is explicitly granted.
 5. A client never receives unauthorized data; audience filtering and redaction happen
    server-side, never by the client discarding fields from an over-complete response.

@@ -1119,7 +1119,7 @@ func asEventPublisher(s *serve.Server) eventPublisher {
 // integrity events are the low-rate, individually-meaningful namesake artifact, so a
 // transient DB error gets a few bounded attempts under a per-call timeout rather than the
 // single un-timeout'd shot that could silently drop a confirmed transition forever
-//. A var so tests can shrink the timing.
+// . A var so tests can shrink the timing.
 type eventRetry struct {
 	attempts  int
 	backoff   time.Duration
@@ -1467,7 +1467,7 @@ func writeEventRetry(ctx context.Context, historian eventWriter, row store.Event
 
 // sanitizeEventParams replaces any non-finite float64 (NaN/±Inf) in params with its
 // string representation ("NaN", "+Inf", "-Inf") so json.Marshal can never fail on it
-//. encoding/json fails the whole document on a non-finite float; without
+// . encoding/json fails the whole document on a non-finite float; without
 // this, one such value in an event's params silently drops the event from both the
 // SSE stream (whose id is still consumed, so Last-Event-ID replay can't recover it)
 // and the persisted historian row (no params at all, no log, no metric). Returns
@@ -1648,7 +1648,7 @@ func printConfigSummary(cfg *config.Config) {
 		fmt.Printf("    - %-16s %-4s %-22s %s\n", s.Name, s.Type, s.Addr, status)
 	}
 	// regression fix/-check-config surfaces the same non-fatal findings the
-	// daemon logs at startup, so the rc.d preflight  shows them too.
+	// daemon logs at startup, so the rc.d preflight shows them too.
 	for _, w := range cfg.Warnings {
 		fmt.Printf("  WARNING: %s\n", w)
 	}

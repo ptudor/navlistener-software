@@ -11,7 +11,7 @@ The colors are the canonical dark-theme GNSS colors from
 `apps/intsat/docs/COLOR_STANDARDS.md`: GPS teal `#2dd4bf`, Galileo blue
 `#58a6ff`, BeiDou violet `#bc8cff`, and GLONASS orange `#f0883e`. The support
 grey is `#8b949e`; the brighter instrument grey is `#c9d1d9`. The field is the
-house deep-navy star gradient, `#0c1322` to `#04060c`.
+deep-navy star gradient, `#0c1322` to `#04060c`.
 
 ## Source and rendering
 
@@ -29,5 +29,5 @@ sh scripts/render-app-icon.sh
 ```
 
 The script writes the iOS 1024 px icon and the full macOS 16–1024 px ladder
-directly into `Assets.xcassets/AppIcon.appiconset`. The vector is original house
+directly into `Assets.xcassets/AppIcon.appiconset`. The vector is original
 art and remains the source of truth for later hand tuning.

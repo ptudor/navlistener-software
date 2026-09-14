@@ -167,7 +167,7 @@ wrapped tk independently. When tow − toe sits within 0.5 s of ±half-week, **o
 shifted instants crosses the wrap threshold** — so the "velocity" you'd get is the position delta
 across a full ~604,800 s jump, not 1 s. That's only reachable with a ~3.5-day-stale ephemeris
 (`HalfWeek` = 302,400 s), but the library's contract is to refuse a degenerate result rather than
-emit one, so it returns `errHalfWeekStraddle`  whenever tk lands within 1.0 s of the wrap
+emit one, so it returns `errHalfWeekStraddle` whenever tk lands within 1.0 s of the wrap
 — twice the ±0.5 s difference offset, for margin. `TestVelocityRejectsHalfWeekStraddle` pins it.
 
 ### `PredictedDoppler`

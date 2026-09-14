@@ -171,7 +171,7 @@ so live decode doesn't. A sustained rise means the database can't keep up.
 | `navlistener_events_total` | counter | |
 | `navlistener_event_write_errors_total` | counter | |
 
-`sse_subscribe_rejected_total` rising means the `sseMaxClients` cap  is being hit — either
+`sse_subscribe_rejected_total` rising means the `sseMaxClients` cap is being hit — either
 a buggy reconnect loop or someone probing. `serve_feed_marshal_errors_total` rising with a frozen
 `serve_feed_refresh_timestamp_seconds` means a feed is serving a stale body.
 

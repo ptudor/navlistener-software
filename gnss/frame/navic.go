@@ -9,7 +9,7 @@ import "errors"
 // oversight. Two things set it apart from the constellations already decoded:
 //
 //  1. It is a from-scratch signal format. Unlike QZSS (whose L1 C/A LNAV and L2C/L5 CNAV reuse
-//     the GPS decoders verbatim) or Galileo F/NAV (already decoded — the regression fix pass just wired
+// the GPS decoders verbatim) or Galileo F/NAV (already decoded — the regression fix pass just wired
 //     its dispatch), the IRNSS SPS L5/S NAV frame has its own subframe layout and word set:
 //     real, multi-day ICD-citation engineering from the IRNSS SPS ICD.
 //  2. We cannot test it. NavIC's satellites are below the horizon from our stations, so no

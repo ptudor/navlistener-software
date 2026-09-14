@@ -56,7 +56,7 @@ func setBits(buf []byte, start, n int, val uint64) {
 	}
 }
 
-// setCNAVPreambleAndCRC stamps the 0x8B preamble and a valid CRC-24Q  onto
+// setCNAVPreambleAndCRC stamps the 0x8B preamble and a valid CRC-24Q onto
 // a synthetic 320-bit CNAV buffer (bits 0-299 used, 20 pad bits): preamble
 // occupies the whole of byte 0 (bits 0-7, before any field this file sets), and
 // the CRC is computed over the 276-bit payload and written into its own trailing
@@ -89,7 +89,7 @@ func cnavMsg10Words(wn, health, uraED int, toeRaw uint64) []uint32 {
 // toe (bit 38); other fields zeroed. Used to pair with an MT10 for AssembleGPSCNAV.
 func cnavMsg11Words(toeRaw uint64) []uint32 {
 	buf := make([]byte, 40)
-	setBits(buf, 8, 6, 5)   // PRN = 5 
+	setBits(buf, 8, 6, 5)   // PRN = 5
 	setBits(buf, 14, 6, 11) // MsgType = 11
 	setBits(buf, 38, 11, toeRaw)
 	setCNAVPreambleAndCRC(buf)
@@ -219,7 +219,7 @@ func TestAssembleGPSCNAVRejectsCrossSVPair(t *testing.T) {
 // masked to their two's-complement bit width before packing.
 func cnavMsg30Words(toc uint64, af0, af1, af2, tgd, iscL1CA, iscL2C, iscL5I5, iscL5Q5 int64) []uint32 {
 	buf := make([]byte, 40)
-	setBits(buf, 8, 6, 5)   // PRN = 5 
+	setBits(buf, 8, 6, 5)   // PRN = 5
 	setBits(buf, 14, 6, 30) // MsgType = 30
 	setBits(buf, 60, 11, toc)
 	setBits(buf, 71, 26, uint64(af0)&((1<<26)-1))

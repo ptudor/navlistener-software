@@ -17,7 +17,7 @@ import (
 // panicking decoder (same SV re-broadcasting the offending bit pattern) must
 // increment navlistener_decode_panics_total on EVERY recurrence — the alertable
 // signal decode_errors_total never carries — while the ERROR log line is
-// rate-limited per (gnssid, svid, sigid)  so months of recurrence
+// rate-limited per (gnssid, svid, sigid) so months of recurrence
 // cannot flood the logfile at ingest rate.
 func TestDecodePanicCountedEveryTimeLoggedOnce(t *testing.T) {
 	var buf bytes.Buffer

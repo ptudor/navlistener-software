@@ -298,7 +298,7 @@ reshaped to our own contract, `docs/OUTPUT.md`).
 - **We do not gold-plate.** Every civil signal we can decode, decoded well; no speculative
   support for signals no receiver in the fleet can hear.
 
-### C spool recovery and migration 
+### C spool recovery and migration
 
 The NAVSPO01 bytes are unchanged. At startup, a valid prior-run `--spool-file F` is moved to `F.replay.<session>` with a hard link and directory fsync before the old name is removed. Existing replay files are discovered on every restart. They are immutable and sent on separate GNF1 connections under their original session; after durable ACK and removal, the consumer advances to the next file and finally the current capture session. New captures always start a fresh random session, including while old files wait for the collector. Missing entropy delays startup instead of deriving a repeatable identity from an RTC-less clock. Older builds must not be used to drain this new multi-file layout.
 

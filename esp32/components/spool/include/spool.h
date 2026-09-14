@@ -9,7 +9,7 @@
 // ../go/internal/wire/wire.go). The ack prunes the ring (navfeeder.c's spool, ported to
 // FreeRTOS).
 //
-// ⚠ DURABILITY ENVELOPE  — THIS SPOOL IS RAM-ONLY, BY DECISION. There is no flash
+// ⚠ DURABILITY ENVELOPE — THIS SPOOL IS RAM-ONLY, BY DECISION. There is no flash
 // tier and none is planned for this board. The partition table reserves 1.5 MiB for one
 // (`spool`, partitions.csv) and docs/PLAN.md §P-spool records the design, but nothing mounts
 // or writes it. This firmware is non-durable across reboots; a flash-backed

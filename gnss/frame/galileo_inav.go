@@ -13,7 +13,7 @@ import (
 // ErrGalileoAlertPage is returned when a page's Even/Odd or Page Type flag bits
 // (OS-SIS-ICD §4.3.1) don't match a nominal even+odd pair -- an alert page or a
 // misaligned pair, whose data fields are not a nav word. Exported
-//  so the daemon can count it under its own metric label: an alert
+// so the daemon can count it under its own metric label: an alert
 // page (Page Type 1) is a deliberate, CRC'd transmission mode whose content
 // the ICD reserves (GAL-OS-SIS-ICD-2.2 §4.3.2 Table 39), not input corruption
 // — "the constellation is transmitting its attention-worthy page type" must
@@ -107,7 +107,7 @@ type GalileoINAV struct {
 	// E5bSHS is the E5b Signal Health Status (word 5, regression fix). Every E1-B word
 	// 5 carries per-signal health for BOTH E5b and E1-B/C (GAL-OS-SIS-ICD-2.2
 	// Table 46: E5bSHS@67 2 bits, E1BSHS@69 2 bits; semantics Table 83/84), so
-	// E5b health visibility needs no E5b-I dispatch  — it is broadcast in
+	// E5b health visibility needs no E5b-I dispatch — it is broadcast in
 	// a word this decoder already parses. Deliberately a SEPARATE field, never
 	// folded into Health: the @0 entry's served health must stay E1-B's own
 	// (the regression fix lesson — bit 67 is E5b's, bit 69 is E1-B's). Where E5bSHS

@@ -200,7 +200,7 @@ func run(capture string, duration time.Duration, startAt string, shards int, jso
 		// missing -start warning below: results are unreliable, not just coarse.
 		fmt.Fprintln(os.Stderr, "gloreplay: WARNING -duration not given; the synthetic clock compresses the")
 		fmt.Fprintln(os.Stderr, "  capture to 1 ms/frame, so strings from DIFFERENT broadcast frames fit the")
-		fmt.Fprintln(os.Stderr, "  8 s frame-coherence window  and can assemble chimera sets at")
+		fmt.Fprintln(os.Stderr, " 8 s frame-coherence window and can assemble chimera sets at")
 		fmt.Fprintln(os.Stderr, "  changeovers. Pass the capture's true wall-clock span for a real measurement.")
 	}
 

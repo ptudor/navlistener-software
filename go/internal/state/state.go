@@ -68,7 +68,7 @@ const (
 	discoTrustAge = 4 * time.Hour // ephemerides older than this aren't trusted for disco
 
 	// glonassFrameWindow bounds how far apart strings 1/2/3's reception times may be
-	// and still be treated as one coherent frame, and  how
+	// and still be treated as one coherent frame, and how
 	// far an odd almanac string may trail its even mate. GLO-ICD-5.1 §4.3.1: each
 	// string lasts 2 s, a frame is 15 strings / 30 s, and one satellite's almanac
 	// occupies two adjacent strings — so real spacing is ~2 s per string (~4 s for
@@ -161,7 +161,7 @@ const (
 	gloServeMaxTk = 90 * time.Minute
 	gloServeMinTk = -45 * time.Minute
 
-	// posStaleBound  is how old a stored propagation epoch (svState.posAt)
+	// posStaleBound is how old a stored propagation epoch (svState.posAt)
 	// may be before the feed omits the position/tow/wn entirely rather than serve a
 	// solution frozen at a repeatedly-failing propagate tick. Generous over any
 	// sane [state].propagate_interval (default 1s) while still catching "this SV's
@@ -170,7 +170,7 @@ const (
 	// position would otherwise be served forever with an ever-fresher-looking tow).
 	posStaleBound = 120 * time.Second
 
-	// osnmaLiveWindow  is how recently a Galileo SV's 40-bit OSNMA
+	// osnmaLiveWindow is how recently a Galileo SV's 40-bit OSNMA
 	// field must have been nonzero for the served osnma flag to read true. The
 	// OSNMA stream is framed per 30 s I/NAV subframe (15 pages × 40 bits =
 	// one 120-bit HKROOT + one 480-bit MACK message, GAL-OSNMA-SIS-ICD §2), and
@@ -280,7 +280,7 @@ type svState struct {
 	// gloEphAt is the wall-clock apply time of the current GLONASS ephemeris,
 	// the analog of ephAt: the GLONASS disco staleness gate uses it.
 	gloEphAt time.Time
-	// gloTbAt  is the FORENSIC reception instant (f.Recv, regression fix) the
+	// gloTbAt is the FORENSIC reception instant (f.Recv, regression fix) the
 	// broadcast tb VALUE last changed. Unlike gloEphAt it is NOT re-stamped by
 	// same-tb reassemblies, so it measures broadcast-CONTENT staleness where
 	// gloEphAt measures reception staleness. A healthy SV updates tb every
@@ -294,13 +294,13 @@ type svState struct {
 	// step-down. The previous wall-switch + 720-clamp pair was day-PERIODIC: at
 	// +24 h a frozen tb's day-wrapped tk re-entered the legitimate window,
 	// re-serving day-old positions as fresh for ~2¼ h every day while eph_aged
-	// false-recovered. The forensic stamp  closes the drain seam: a
+	// false-recovered. The forensic stamp closes the drain seam: a
 	// replayed ≥24 h frozen-tb episode re-creating an expired SV entry used to
 	// get a collector-time gloTbAt ≈ drain start, and — with gloEphRecvAt
 	// marching to ≈now as the drain reached recent frames — served day-old
 	// positions for up to 60 min until the latch armed.
 	gloTbAt time.Time
-	// gloEphRecvAt  is the forensic reception stamp (f.Recv) of the
+	// gloEphRecvAt is the forensic reception stamp (f.Recv) of the
 	// current GLONASS set — the replay-aware twin of ephRecvAt: a spool drain
 	// applies days-old sets with gloTbAt/gloEphAt ≈ now, and a replayed tb
 	// whose time-of-day happens to land inside the tk window (~9 % of a day's
@@ -357,7 +357,7 @@ type svState struct {
 	// to ±half-week, so an outgoing ephemeris ~1 week stale reads as fresh and produces the
 	// exact phantom critical disco the regression fix gate exists to prevent. Wall-clock cannot wrap.
 	ephAt time.Time
-	// ephRecvAt  is the FORENSIC reception stamp (f.Recv) of the same
+	// ephRecvAt is the FORENSIC reception stamp (f.Recv) of the same
 	// applied ephemeris — the feeder's wall clock, not this collector's. ephAt
 	// alone is replay-blind: a push spool drain applies days-old sets with
 	// ephAt ≈ now, so the regression fix serving cap and the feed's eph_aged fallback
@@ -388,7 +388,7 @@ type svState struct {
 	// haveHealth is health_code 0 ("unknown") is the correct answer until
 	// this SV's own health bits have actually been decoded (e.g. a Galileo SV
 	// with only word types 1-4 assembled -- health arrives on word 5) or an
-	// iono-only SV  nothing is known about at all. Without this flag,
+	// iono-only SV nothing is known about at all. Without this flag,
 	// st.health's zero value is indistinguishable from a genuinely decoded
 	// "healthy" and healthFor silently (and wrongly) reports OK.
 	haveHealth bool
@@ -426,7 +426,7 @@ type svState struct {
 	// remainder, like the NavIC deferral).
 	ggto *ggtoParams
 
-	// bdsKlobAlpha/bdsKlobBeta  are the B1I D1 subframe-1 broadcast
+	// bdsKlobAlpha/bdsKlobBeta are the B1I D1 subframe-1 broadcast
 	// ionosphere coefficients (BDS-SIS-B1I-3.0 §5.2.4.7, Table 5-5 —
 	// NOTE: a materially different model from GPS's Klobuchar: geographic not
 	// geomagnetic latitude, its own ionospheric height and night behavior, so
@@ -441,7 +441,7 @@ type svState struct {
 	bdgim                     [9]float64
 	haveBDGIM                 bool
 
-	// bdsDIF/bdsSIF/bdsAIF/bdsSISMAI  are the B2a signal's broadcast
+	// bdsDIF/bdsSIF/bdsAIF/bdsSISMAI are the B2a signal's broadcast
 	// per-signal integrity flags (BDS-SIS-B2a-1.0 Table 7-23: DIF=1 "the
 	// error of message parameters broadcasted in this signal exceeds the
 	// predictive accuracy", SIF=1 "this signal is abnormal", AIF=1 "SISMAI
@@ -551,7 +551,7 @@ const (
 	accURA   uint8 = 1 // GPS/QZSS/NavIC/BeiDou-B1I URA step table (NavIC: same nominal formula + N=15 sentinel, NAVIC-SPS-L5S §6.2.1.4 Table 23 — regression fix)
 	accSISA  uint8 = 2 // Galileo SISA linear bands
 	accURAED uint8 = 3 // GPS/QZSS CNAV signed URA_ED (IS-GPS-200N §30.3.3.1.1.4), regression fix
-	// accSISAIRaw  is BeiDou B-CNAV2's SISAI, served as a RAW packed
+	// accSISAIRaw is BeiDou B-CNAV2's SISAI, served as a RAW packed
 	// index: SISAIoe(5)<<11 | SISAIocb(5)<<6 | SISAIoc1(3)<<3 | SISAIoc2(3).
 	// The B2a ICD v1.0 defines only the bit layout — the index→metres tables
 	// are "published in a future update" (§7.16) — so sisaFor NEVER converts
@@ -722,7 +722,7 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 		// through applyGalileoINAV would misstate all of it:
 		//   - health/validity: an E5b entry must serve E5bSHS/E5bDVS, not the E1BSHS the
 		//     E1 path serves (Word 5, Table 46) — and DVS is itself an open served-health
-		//     contract;
+		// contract;
 		//   - group delay: an E5b single-frequency user subtracts (f_E1/f_E5b)²·BGD(E1,E5b)
 		//     (§5.1.5 Eq. 19), not the raw BGD the E1 entry carries (Eq. 18);
 		//   - OSNMA: the 40-bit OSNMA field exists "on E1-B only" (§4.3.2.3); the E5b-I odd
@@ -820,11 +820,13 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 //     PRN−192 on every assigned row (194→2, 195→3, 196→4, 197→5, 199→7, 200→8,
 //     201→9), independently proving the offset this envelope relies on;
 //     Table 4.2.2-5 (a CNAV2 message parameter table) states the same span as
-//     PRN "Effective Range 193-202". Table 3.2.1-1 also records the
-//     alternate L1C/B PRNs 203–206 — outside this svId envelope, and relevant
-//     only if raw L1C/B PRNs ever become consumable.
-//   - NavIC: svId 1–14 per the IRNSS SPS ICD's code-phase assignment
-//     (NAVIC-SPS-L5S §4.1 Table 7: PRN IDs 1–14).
+//
+// PRN "Effective Range 193-202". Table 3.2.1-1 also records the
+//
+//	  alternate L1C/B PRNs 203–206 — outside this svId envelope, and relevant
+//	  only if raw L1C/B PRNs ever become consumable.
+//	- NavIC: svId 1–14 per the IRNSS SPS ICD's code-phase assignment
+//	  (NAVIC-SPS-L5S §4.1 Table 7: PRN IDs 1–14).
 //
 // Other constellations pass unchecked here — their envelopes are the sibling
 // passes' scope (REVIEW-FABLE5_AUGMENTATION regression fix covers augmentation only).
@@ -882,13 +884,13 @@ func cnavCarrierHealth(id gnss.GNSSID, sig, h3 int) int {
 	return l5
 }
 
-// applyGPSCNAV  decodes a GPS/QZSS L2C/L5 CNAV message and folds it
+// applyGPSCNAV decodes a GPS/QZSS L2C/L5 CNAV message and folds it
 // into a SEPARATE per-signal SV state keyed on the frame's own sigId — the same
 // secondary-signal pattern as Galileo E5a F/NAV (Sig:3) and BeiDou B-CNAV2
 // (Sig:8) — so L2C/L5 surface as their own name@sigid feed entries carrying the
 // ONLY per-signal health GPS broadcasts (MT10's L1/L2/L5 bits, §30.3.3.1.1.2),
 // the signed URA_ED, the header alert flag, the 13-bit WN cross-check
-//, and an independently-assembled CNAV ephemeris/clock. This replaces
+// , and an independently-assembled CNAV ephemeris/clock. This replaces
 // the decode-and-drop stub whose "consumed in the integrity pass (P6)" comment
 // had been overtaken by P6 landing without it: the LNAV-vs-CNAV cross-signal
 // comparison consumes these entries exactly the way the E1-B-vs-E5a pair
@@ -902,7 +904,7 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 	if !s.projection {
 		metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "cnav").Inc()
 	}
-	recv := f.LocalRecv() // collector-local clock for staleness/expiry math 
+	recv := f.LocalRecv() // collector-local clock for staleness/expiry math
 	// capability evidence only after a structurally valid decode.
 	if f.Source != "" {
 		s.recordCapability(f.Source, f.GnssID, f.SigID, recv)
@@ -1080,7 +1082,7 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 	if !s.projection {
 		metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "lnav").Inc()
 	}
-	recv := f.LocalRecv() // collector-local clock for all staleness/expiry/disco-age math 
+	recv := f.LocalRecv() // collector-local clock for all staleness/expiry/disco-age math
 	if f.Source != "" {
 		s.recordCapability(f.Source, f.GnssID, f.SigID, recv)
 	}
@@ -1155,7 +1157,7 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 			s.computeDisco(st, eph, clk, recv)
 		}
 		st.eph, st.iod, st.haveEph = eph, newIOD, true
-		st.ephAt = recv       // collector-local apply time for the disco staleness gate 
+		st.ephAt = recv       // collector-local apply time for the disco staleness gate
 		st.ephRecvAt = f.Recv // forensic stamp for the replay-aware serving cap
 	}
 	// The clock comes wholly from subframe 1 (af0/af1/af2/Toc/TGD), so it is
@@ -1211,9 +1213,9 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 	// §2.2) and refresh the already-assembled clock's TGD without treating this as
 	// a new ephemeris (no IODnav change, so no disco recompute). st.galW[5]
 	// retains the full decoded word, so the flags word 5 carries beyond served
-	// health — E1BDVS/E5bDVS  and E5bSHS  — are available here
-	// decoded-but-unserved until the health-enum contract decision  and
-	// the multi-signal keying policy  pick their served shape.
+	// health — E1BDVS/E5bDVS and E5bSHS — are available here
+	// decoded-but-unserved until the health-enum contract decision and
+	// the multi-signal keying policy pick their served shape.
 	if w.Type == 5 {
 		st.health, st.haveHealth = w.Health, true
 		st.galW[5] = w
@@ -1231,7 +1233,7 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 		}
 		return
 	}
-	// Word type 10 carries the GST-GPS conversion parameters  —
+	// Word type 10 carries the GST-GPS conversion parameters —
 	// outside the IODnav-matched set, folded freshest-wins like word 5's
 	// health. (Its almanac fields describe the SVID3 almanac subject, not this
 	// transmitter, and are ignored at the decoder.)
@@ -1349,7 +1351,7 @@ func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 	st.fnav[w.PageType] = w
 	// Page 1 carries SISA + the E5a Signal Health Status outside the IODnav-matched eph set;
 	// fold them in as they arrive (mirrors the I/NAV word-5 health/SISA pattern). st.fnav[1]
-	// retains the full decoded page, so E5aDVS  — the E5a signal's second integrity
+	// retains the full decoded page, so E5aDVS — the E5a signal's second integrity
 	// flag, Table 79/81 — is available here decoded-but-unserved until the regression fix health-enum
 	// decision lands; served health rests on E5aHS alone until then, by explicit contract
 	// choice, not omission.
@@ -1730,7 +1732,7 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 	//   recv (collector-local) — staleness/expiry/disco-age math (lastSeen,
 	//   gloEphAt, discoAt, almanac-slot recency): elapsed time against this
 	//   host's own clock, immune to feeder skew and spool-replay rewinds.
-	//   f.Recv (feeder stamp) — the regression fix/regression fix frame-coherence windows
+	// f.Recv (feeder stamp) — the regression fix/regression fix frame-coherence windows
 	//   (gloS1At..gloS4At, gloAlmPending.at): those guard BROADCAST adjacency of
 	//   tag-less strings, and only the feeder's stamp preserves the on-air
 	//   spacing. A spool replay (or a feeder draining a backlog burst) delivers
@@ -1783,7 +1785,7 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		st.gloS1, st.gloS1At = str, f.Recv // feeder stamp: broadcast adjacency (regression fix, above)
 	case str.Number == 2:
 		st.gloS2, st.gloS2At = str, f.Recv
-		st.gloBn = str.Health // raw 3-bit Bn; only the MSB is the malfunction flag 
+		st.gloBn = str.Health // raw 3-bit Bn; only the MSB is the malfunction flag
 		st.health, st.haveHealth = st.gloBn|st.gloLn<<gloLnShift, true
 	case str.Number == 3:
 		st.gloS3, st.gloS3At = str, f.Recv
@@ -1922,7 +1924,7 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 	st.gloEphRecvAt = f.Recv // forensic stamp for the replay-aware serving gate
 }
 
-// gloDiscoMaxTk  bounds the broadcast-time distance |tb_new − tb_old|
+// gloDiscoMaxTk bounds the broadcast-time distance |tb_new − tb_old|
 // over which a GLONASS disco is computed at all: 60 min is the maximum routine
 // tb update interval (GLO-ICD-5.1 Table 4.3 — P1 announces 30/45/60 min), so a
 // larger gap means changeovers were MISSED (a reception gap), and the outgoing
@@ -1934,7 +1936,7 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 const gloDiscoMaxTk = 60 * time.Minute
 
 // computeGloDisco records the orbit/time discontinuity across a GLONASS tb changeover
-//, mirroring computeDisco for the Kepler family. the position
+// , mirroring computeDisco for the Kepler family. the position
 // difference is taken at the changeover MIDPOINT (tb_old + tk/2 = tb_new − tk/2),
 // not at the incoming tb — the GLONASS immediate set is characterized by the ICD
 // only ~±15 min around its own tb (§4.4), so differencing at the new tb propagated
@@ -1993,7 +1995,7 @@ func (s *Store) computeGloDisco(st *svState, newEph glonass.Ephemeris, now time.
 	// The day-wrapped broadcast-time distance from the outgoing tb to the incoming tb.
 	tkOld := gnsstime.EphAgeDay(newEph.Tb, st.gloEph.Tb)
 	if math.Abs(tkOld) > gloDiscoMaxTk.Seconds() {
-		publish() // non-adjacent sets (missed changeovers): disco undefined, absent 
+		publish() // non-adjacent sets (missed changeovers): disco undefined, absent
 		return
 	}
 	// difference at the midpoint — outgoing forward tk/2, incoming backward tk/2.
@@ -2434,7 +2436,7 @@ const wnRolloverGraceS = 4 * 3600
 // SysGPS); Galileo's 12-bit GST week counts from the 1999-08-22 GST epoch
 // (SysGalileo — GST week = GPS week − 1024, regression fix), so comparing it on the
 // GPS axis would flag every healthy SV. The rollover grace below keys on
-// gpsTOW, which GST shares to the second  — revisit if a BDT caller
+// gpsTOW, which GST shares to the second — revisit if a BDT caller
 // ever appears (BDT TOW is shifted 14 s). Called with the shard lock held;
 // the result feeds wn_mismatch → the detector's debounced wn_mismatch event.
 //

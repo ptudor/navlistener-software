@@ -77,7 +77,7 @@ static esp_err_t root_get(httpd_req_t *req)
     return httpd_resp_send(req, PORTAL_HTML, HTTPD_RESP_USE_STRLEN);
 }
 
-// body_cap  must exceed the worst-case URL-encoded form: token[129] + wifi_pass[65] +
+// body_cap must exceed the worst-case URL-encoded form: token[129] + wifi_pass[65] +
 // host[64] + wifi_ssid[33] + station[33] fields, each up to 3x under %XX-encoding, plus
 // field names/delimiters — comfortably under 2048. A silently truncated body would parse
 // trailing fields wrong/empty rather than fail loudly, on a headless provisioning flow
@@ -155,7 +155,7 @@ static esp_err_t save_post(httpd_req_t *req)
             return ESP_FAIL;
         }
     }
-    char port[8] = {0}; // fresh buffer, not a pre-seeded cfg field: must self-init 
+    char port[8] = {0}; // fresh buffer, not a pre-seeded cfg field: must self-init
     form_result_t port_result = netcfg_form_field(body, "port", port, sizeof port);
     if (port_result < 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, netcfg_form_error(port_result));
@@ -181,7 +181,7 @@ static esp_err_t save_post(httpd_req_t *req)
         }
     }
 #if CONFIG_NVF_ALLOW_INSECURE_PORTAL
-    char ins[8] = {0}; // fresh buffer: must self-init 
+    char ins[8] = {0}; // fresh buffer: must self-init
     form_result_t ins_result = netcfg_form_field(body, "insecure", ins, sizeof ins);
     if (ins_result < 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, netcfg_form_error(ins_result));

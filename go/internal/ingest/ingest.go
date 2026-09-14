@@ -209,7 +209,7 @@ func (s *silenceClock) since() time.Duration {
 // runScanner invokes the source's scanner with a recover() so a parser bug (e.g. an
 // out-of-bounds slice on malformed input from an external/untrusted source such as an
 // NTRIP caster) reconnects this one source instead of crashing the whole daemon. chunked
-//  wraps the idle-timeout-guarded conn in a de-chunking reader before handing it to
+// wraps the idle-timeout-guarded conn in a de-chunking reader before handing it to
 // the scanner, for an NTRIP v2 caster that answered with Transfer-Encoding: chunked -- the
 // idleConn stays the innermost layer so each physical socket read still gets a deadline,
 // with the chunk-framing decode layered on top of that, not the raw conn directly.

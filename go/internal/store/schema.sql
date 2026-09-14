@@ -113,7 +113,7 @@ CREATE INDEX IF NOT EXISTS idx_nav_frames_org_recv ON nav_frames (organization_i
 -- transaction that CopyFrom's the newly seen rows. A copy/commit failure therefore
 -- rolls the claim back and leaves the edge replay retryable.
 --
--- session_id  is the feeder's boot/session identity from the GNF1
+-- session_id is the feeder's boot/session identity from the GNF1
 -- HELLO: replay identity is (canonical observer, session, seq), NOT
 -- (observer, seq). Without it, a feeder that restarted without a recoverable
 -- spool (or any ESP32 reboot — RAM-only ring) reset its sequence to zero and
@@ -198,7 +198,7 @@ CREATE TABLE IF NOT EXISTS gnss_events (
     severity   SMALLINT    NOT NULL DEFAULT 0,
     message    TEXT,
     raw        JSONB,
-    dedupe_key TEXT                 -- regression fix idempotency key (see below); NULL on legacy rows
+    dedupe_key TEXT -- regression fix idempotency key (see below); NULL on legacy rows
 );
 SELECT create_hypertable('gnss_events', 'time', if_not_exists => TRUE);
 -- WriteEvent's INSERT can commit while the client observes a

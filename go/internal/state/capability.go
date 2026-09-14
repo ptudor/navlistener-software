@@ -250,7 +250,7 @@ func (s *Store) FeedStationCapabilities(now time.Time) map[string][]StationCapab
 }
 
 // stationCapabilitiesLocked is FeedStationCapabilities' body, factored out so
-// FeedCapabilityReports  can build the observed and declared views under
+// FeedCapabilityReports can build the observed and declared views under
 // one capMu critical section instead of two separate lock/unlock rounds — a
 // station added by recordCapability between the two could otherwise appear in
 // one view but not the other. The caller must hold capMu.

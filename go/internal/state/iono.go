@@ -37,7 +37,7 @@ type obsSample struct {
 // secTrack carries one secondary signal's leveling arc against the SV's
 // primary. lastRcvTow is the receiver time of the last successful pairing,
 // used to pick which secondary to serve when a receiver reports several
-//.
+// .
 type secTrack struct {
 	sec        obsSample
 	arc        iono.Arc
