@@ -11,9 +11,6 @@ coverage.*
 .DS_Store
 *.dSYM/
 
-# EasyEDA automatic timestamped snapshots; commit the live .eprj2 project instead
-/pcb/projects/*_backup/
-
 # C feeder build artifact
 /feeder/navfeeder
 
@@ -74,5 +71,5 @@ reference/icd/*.pdf
 # carries only a conditional non-profit grant and is held local-only by decision.
 # See reference/REFERENCES.md for per-document terms.
 
-# Python bytecode from the pcb build scripts
+# Python bytecode
 __pycache__/

@@ -1,4 +1,4 @@
-# NavListen
+# NavListen software
 
 NavListen collects broadcast navigation messages from GNSS receivers and uses them
 to study satellite orbits, clocks, signal health, and the radio environment around
@@ -10,7 +10,9 @@ An optional TimescaleDB historian stores raw frames, snapshots, and events for
 later analysis and replay.
 
 The repository includes a reusable Go GNSS library, the collector, C and ESP32
-feeders, an Apple station-monitoring app, and observer hardware designs.
+feeders, and an Apple station-monitoring app. Observer board projects and
+fabrication exports live in the separate `navlistener-hardware` repository,
+hosted on ptudor.net.
 
 ## Current capabilities
 
@@ -28,10 +30,9 @@ format; the design documents also describe planned work.
 | Receiver inputs | UBX navigation and receiver telemetry; SBF and RTCM capture with raw persistence, pending central decoders; NTRIP transport |
 | Monitoring | Orbit and clock discontinuities, station liveness, signal capabilities, and receiver RF telemetry |
 | Serving | Native `/gnss/api/v2/*` JSON feeds and `/gnss/events` server-sent events, with public and authorized private audiences |
-| Hardware | NEO observer design with fabrication exports; ZED variant in development |
 
 See the [GNSS library](gnss/README.md), [signal coverage](docs/CONSTELLATIONS.md),
-and [hardware index](pcb/README.md) for details. Federation transport and
+and [observer hardware contract](docs/HARDWARE-OBSERVER.md) for details. Federation transport and
 cryptographic OSNMA verification remain planned work.
 
 ## Build and run locally
@@ -104,7 +105,6 @@ tolerances are documented in [the fixture guide](gnss/testdata/README.md).
 | [feeder/](feeder/deploy/README.md) | C feeder for serial or TCP receivers |
 | [esp32/](esp32/README.md) | ESP32 feeder firmware and host tests |
 | [swift/](swift/) | Integrity Station companion app for iOS and macOS |
-| [pcb/](pcb/README.md) | Editable observer board projects and fabrication exports |
 | [web/](web/README.md) | Project website |
 | [docs/](docs/DESIGN.md) | Architecture, math, integrity monitoring, and API contracts |
 | [reference/](reference/REFERENCES.md) | Interface Control Document catalog and source records |
