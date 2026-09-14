@@ -42,7 +42,7 @@ L1-only-versus-L1/L5 question stops being a board decision.
 | Part | Bands | Status |
 |---|---|---|
 | **NEO-M9N-00B** (`C5119087`) | L1 only **[verify]** | **First populate.** Best availability of the modern parts by a wide margin; already `GPS_NEO_M9N` in the manifest enum. |
-| NEO-F10N-00B (`C21709333`) | L1 + L5 **[verify]** | The upgrade. Same footprint, roughly 2× the cost, thin stock. Needs an enum entry (§5.3). |
+| NEO-F10N-00B (`C21709333`) | L1 + L5, no GLONASS | The upgrade. Same footprint, roughly 2× the cost, thin stock. Needs an enum entry (§5.3). Bands from `UBX-23002117`: GPS L1C/A+L5, Galileo E1+E5a, BDS B1C+B2a, QZSS L1C/A/L1S/L1Sb/L5, NavIC L5, SBAS L1C/A. |
 | NEO-F10T-00B | L1 + L5 **[verify]** | Timing variant; ~8× the cost for features this board does not use. |
 | NEO-M10 | L1 only **[verify]** | Needs an enum entry. No existing design uses one. |
 
@@ -53,12 +53,22 @@ The band split decides what the board can contribute:
   calibration work consumes**, so an M9N board contributes to the active task from day one.
 - **L1/L5** additionally reaches GPS L5 CNAV, Galileo E5a F/NAV, QZSS L5 and BeiDou B2a; enables
   RXM-RAWX dual-frequency work, which is the standing blocker on measured-ionosphere and
-  receiver-DCB calibration; and is a precondition for NavIC.
+  receiver-DCB calibration; and is a precondition for NavIC. Note the F10N has no GLONASS
+  (`UBX-23002117`), so its band set is not a superset of the L1-only parts' — the §5.3 node
+  descriptor must not claim L1OF on one.
 
 **Verify before assuming the ionosphere work is a firmware toggle:** whether the M9N supports
 `RXM-RAWX` at all. Raw measurements are often restricted to timing and high-precision parts, and
 if the M9N lacks it, dual-frequency work waits for an F10N rather than a config change. It does
 not affect nav-message collection either way.
+
+**GPS L5 health.** L5 is still pre-operational and broadcast unhealthy. u-blox's default
+excludes it from the *navigation solution* (`UBXDOC-963802114-12193` §1.1, §2.1.4) — a
+position-fix default, which this product never exercises: we forward raw `UBX-RXM-SFRBX`
+and decode centrally, so health bits get recorded, not obeyed. Provisioning sets
+`CFG-SIGNAL-*` and `CFG-MSGOUT-UBX_RXM_SFRBX_*` per node; configuration item `0x10321001`
+overrides L5 health with the corresponding L1 C/A status if wanted (ready-made RAM/BBR/flash
+strings in Tables 4 and 5).
 
 **NavIC caveat:** L5 silicon is necessary but not sufficient — NavIC is below the horizon from
 California. An L1/L5 board only becomes the NavIC unlock if it is deployed within the
