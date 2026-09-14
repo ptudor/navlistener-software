@@ -1,0 +1,26 @@
+# navfeeder-esp defaults for the custom GNSS color observer (ESP32-S3).
+#
+# Apply AFTER sdkconfig.defaults, which targets the Waveshare ESP32-C6-LCD-1.47:
+#   SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.s3" idf.py set-target esp32s3
+# Later files win, so the keys below override the C6 target, flash size and
+# partition table.
+#
+# Board: ESP32-S3-WROOM-1U-N16R8. Receiver UART on GPIO4/GPIO5, shared I2C on
+# GPIO6/GPIO7, 24AA025E64 manifest EEPROM at 0x50, BOOT/DOWNLOAD on GPIO0, and
+# the TLC5916 status panel in place of the Waveshare LCD/WS2812.
+
+CONFIG_IDF_TARGET="esp32s3"
+
+# The module carries 16 MB of flash, so this build uses its own partition table
+# rather than the 4 MB one the C6 needs. See partitions-s3.csv for what the extra
+# flash buys: reserved OTA slots and a 9.875 MiB spool reservation in place of
+# 1.5 MiB. The spool partition is still unmounted on both boards.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-s3.csv"
+
+# GPIO4/GPIO5 receiver UART, GPIO6/GPIO7 manifest bus, and the Waveshare
+# LCD/WS2812 drivers held dormant because their fixed pins are this board's I2C.
+CONFIG_NVF_BOARD_GNSS_COLOR_NEO=y
+
+# NVF_MANIFEST_FACTORY_INIT is deliberately absent: programming a blank manifest
+# EEPROM is a manufacturing step, enabled explicitly for that one build.

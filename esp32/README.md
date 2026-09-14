@@ -25,7 +25,8 @@ orbit math stay central in the collector (`../docs/DESIGN.md §1`).
   technical explanation in `main/main.c` at `RX_PIN_RX`.
 - **Custom GNSS color observer:** ESP32-S3, receiver UART on GPIO4/GPIO5, shared I2C on
   GPIO6/GPIO7, and an addressable 24AA025E64 manifest at `0x50`. Select
-  `NVF_BOARD_GNSS_COLOR_NEO` in menuconfig. Its startup reads the factory EUI-64 and manifest;
+  `NVF_BOARD_GNSS_COLOR_NEO`, which `sdkconfig.defaults.s3` sets. Its startup reads the
+  factory EUI-64 and manifest;
   `NVF_MANIFEST_FACTORY_INIT` is a manufacturing-only, default-off permission to initialize a
   blank, never-seen EEPROM from the compiled revision-A component list. It never writes after an
   I2C error, to a known-but-blank EEPROM, or across an EUI replacement.
@@ -51,19 +52,38 @@ Use your board's actual serial device, such as `/dev/ttyACM0` on Linux or
 The wrapper preserves an existing C6 `sdkconfig`, warns about differences
 from `sdkconfig.defaults`, and records firmware provenance after building.
 
-The wrapper selects ESP32-C6. For the custom ESP32-S3 board, use ESP-IDF
-directly in a separate checkout or build configuration:
+The wrapper selects ESP32-C6. The custom ESP32-S3 observer builds from the same
+sources with ESP-IDF directly, layering `sdkconfig.defaults.s3` (target, 16 MB
+flash, `partitions-s3.csv`, `NVF_BOARD_GNSS_COLOR_NEO`) over the shared
+`sdkconfig.defaults`:
 
 ```sh
+export IDF_PATH=/path/to/esp-idf
+"$IDF_PATH/install.sh" esp32s3             # once, alongside the esp32c6 install
 . "$IDF_PATH/export.sh"
+export SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.s3"
 idf.py set-target esp32s3
-idf.py menuconfig                       # select NVF_BOARD_GNSS_COLOR_NEO
 idf.py build
 python tools/build_provenance.py
+idf.py -p /dev/cu.usbmodemXXXX flash monitor
 ```
 
-`set-target` regenerates `sdkconfig`; preserve any local configuration before
-changing targets. The build tool's provenance check still applies.
+`SDKCONFIG_DEFAULTS` must be set for `set-target`, which is what writes those
+values into `sdkconfig`; exporting it for the whole session keeps a later
+`idf.py menuconfig` or rebuild consistent. The two targets share one `sdkconfig`
+and one `build/` directory, so switching between them means re-running
+`set-target` — `build-navfeeder-esp.sh` does that for the C6 automatically, and
+the command above does it for the S3. `set-target` regenerates `sdkconfig`;
+preserve any local configuration before changing targets. The build tool's
+provenance check still applies. Building for the S3 rewrites the `target:` field
+in the tracked `dependencies.lock` (the pinned commit and content hash are
+unchanged); restore it with `git checkout -- dependencies.lock` before
+committing.
+
+The S3 board's console is the module's native USB-Serial/JTAG, so the USB-C
+connector both flashes and monitors it and no separate UART adapter is needed.
+Its ROM serial downloader is in mask ROM and cannot be missing from a blank
+board; `esptool.py` enters and leaves it over USB without touching BOOT or RESET.
 
 ## What each phase does
 
@@ -95,10 +115,13 @@ firmware cannot run on the S3—connect over USB and erase the NVS partition, th
 esptool.py --chip esp32c6 --port /dev/cu.usbmodemXXXX erase-region 0x9000 0x6000
 ```
 
-Those offset/size values are the `nvs` row in `partitions.csv`; the LittleFS spool partition is
-left intact. On the next boot `netcfg_load` finds no provisioned config and raises a newly
-passworded SoftAP portal. Use the actual serial device path for the board. This is a
-configuration erase, not a firmware reflash.
+Pass `--chip esp32s3` for the custom observer. Those offset/size values are the
+`nvs` row in `partitions.csv`, and the S3's `partitions-s3.csv` places `nvs` at
+the same offset and size, so the region is identical on both boards; the LittleFS
+spool partition is left intact. On the next boot `netcfg_load` finds no
+provisioned config and raises a newly passworded SoftAP portal. Use the actual
+serial device path for the board. This is a configuration erase, not a firmware
+reflash.
 
 **Incomplete configuration also raises the portal**. "Provisioned" means WiFi SSID,
 collector host, port in 1–65535, station id, and bearer token are all present — one rule
@@ -112,10 +135,12 @@ that is not its fault.
 
 ## Durability envelope (read before deploying one as a primary observer)
 
-**The spool is RAM-only and non-durable across reboots.** `partitions.csv`
-reserves 1.5 MiB for a flash tier, and `docs/PLAN.md` records its design, but
-no component mounts or writes that partition. This applies to the current
-firmware on both supported boards. Plan for these limits:
+**The spool is RAM-only and non-durable across reboots.** The partition tables
+reserve space for a flash tier — 1.5 MiB in `partitions.csv` (C6, 4 MB flash) and
+9.875 MiB in `partitions-s3.csv` (S3, 16 MB flash) — and `docs/PLAN.md` records
+its design, but no component mounts or writes that partition. This applies to the
+current firmware on both supported boards; the larger S3 reservation is flash set
+aside, not durability delivered. Plan for these limits:
 
 - **Outage depth = the RAM ring.** `CONFIG_NVF_SPOOL_FRAMES` (default **1024**) records; on
   overflow the *oldest* unacked record is dropped and counted. Order-of-magnitude: a

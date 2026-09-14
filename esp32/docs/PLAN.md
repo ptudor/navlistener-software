@@ -15,7 +15,8 @@ the original phase names and marks remaining extensions and validation work.
 
 - `README.md` (product index and operator runbook), this plan.
 - ESP-IDF project skeleton: top-level `CMakeLists.txt`, `sdkconfig.defaults` (target
-  `esp32c6`), `partitions.csv` (factory + nvs + littlefs spool), `build-navfeeder-esp.sh`.
+  `esp32c6`), `partitions.csv` (factory + nvs + littlefs spool), `sdkconfig.defaults.s3` +
+  `partitions-s3.csv` (the ESP32-S3 observer's 16 MB layout), `build-navfeeder-esp.sh`.
 - `main/` app skeleton that boots, brings up NVS + the display banner, and logs a heartbeat.
 - **Milestone:** `idf.py set-target esp32c6 && idf.py build` succeeds; a blank board shows
   the boot banner.
@@ -82,18 +83,21 @@ matched to `feeder/navfeeder.c`. No I/O — pure encode/parse over buffers.
 ## P-spool — the flash spill tier *(designed, DEFERRED by decision 2026-07-24)*
 
 **Status: deferred; current firmware uses RAM only on both supported boards.** The reserved
-1.5 MiB `spool` partition is unmounted; every unacked record dies on reboot. That envelope is
+`spool` partition — 1.5 MiB on the C6's 4 MB flash, 9.875 MiB on the S3's 16 MB — is
+unmounted; every unacked record dies on reboot. That envelope is
 stated to operators in `../README.md` §"Durability envelope", in `components/spool/include/spool.h`,
-and in `partitions.csv`. Until this phase runs, **navfeeder-esp is loss-tolerant-only by
+and in `partitions.csv` / `partitions-s3.csv`. Until this phase runs, **navfeeder-esp is loss-tolerant-only by
 explicit design** and must not be deployed as the sole witness of anything forensically
 required. The router/SBC fleet is unaffected — `feeder/navfeeder.c --spool-file` has its disk
 tier.
 
 The design is recorded here so the deferral is a decision with a plan, not an open question:
 
-- **Spill on RAM overflow, not write-through.** Flash wear on a 1.5 MiB partition is the
-  binding constraint, so the tier must absorb only what the ring evicts. Write-through would
+- **Spill on RAM overflow, not write-through.** Flash wear is the binding constraint on the
+  C6's 1.5 MiB partition, so the tier must absorb only what the ring evicts. Write-through would
   multiply erase cycles by the full record rate for no benefit while the uplink is healthy.
+  The S3's 9.875 MiB reservation spreads the same erase load over roughly 6.6x the sectors,
+  which relaxes that budget but does not change the policy: the tier is still a spill tier.
 - **Bounded append-only segments**, each record carrying its length, the existing monotonic
   seq, and a CRC. Sequence continuity across RAM and flash is what makes replay-on-reconnect
   correct. Follow the current session and durable-ACK contract in `../../docs/DESIGN.md`:

@@ -1,0 +1,35 @@
+# navfeeder-esp partition table for the custom GNSS color observer (ESP32-S3).
+#
+# The board carries an ESP32-S3-WROOM-1U-N16R8: 16 MB flash, four times the
+# Waveshare C6's. `partitions.csv` describes the 4 MB layout and remains the table
+# the C6 build uses; this file is selected only by `sdkconfig.defaults.s3`.
+#
+# Two differences from the 4 MB table, both bought with flash that would
+# otherwise sit idle:
+#
+#  1. OTA slots are reserved now. OTA itself is not implemented (docs/PLAN.md),
+#     so the bootloader runs `factory` and `otadata` stays blank. Reserving the
+#     slots costs nothing today; adding them after units are deployed would mean
+#     a repartition, which erases the spool and needs physical access to each
+#     board. `factory` is kept alongside ota_0/ota_1 as the recovery image.
+#
+#  2. The `spool` reservation grows from 1.5 MiB to 9.875 MiB. docs/PLAN.md
+#     §P-spool names flash wear on a 1.5 MiB partition as the binding constraint
+#     on the deferred spill tier; spreading the same erase load over ~6.6x the
+#     sectors is a direct relaxation of it. This is still a RESERVATION: no
+#     component mounts or writes this partition on either board, so the RAM-only
+#     durability envelope in README.md applies unchanged to the S3. Sizing the
+#     partition does not create reboot durability.
+#
+# Offsets left blank are computed by the partition tool. App partitions must
+# start on a 64 KiB boundary, which is why `factory` begins at 0x20000 rather
+# than immediately after the 8 KiB `otadata`.
+#
+# Name,      Type, SubType,  Offset,   Size
+nvs,         data, nvs,      0x9000,   0x6000
+phy_init,    data, phy,      0xf000,   0x1000
+otadata,     data, ota,      0x10000,  0x2000
+factory,     app,  factory,  0x20000,  0x200000
+ota_0,       app,  ota_0,    ,         0x200000
+ota_1,       app,  ota_1,    ,         0x200000
+spool,       data, littlefs, ,         0x9e0000
