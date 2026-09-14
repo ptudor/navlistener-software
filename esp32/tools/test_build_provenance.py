@@ -48,6 +48,8 @@ class ProvenanceTests(unittest.TestCase):
             shutil.copytree(component, override)
             description['build_component_info']['esp_hardware_discovery']['dir'] = str(override)
             (root / 'build/project_description.json').write_text(json.dumps(description))
+            # A successful override build produces its firmware after reconfiguration.
+            (root / 'build/app.bin').write_bytes(b'override firmware')
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 local = record(root)
