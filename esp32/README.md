@@ -18,8 +18,8 @@ orbit math stay central in the collector (`../docs/DESIGN.md §1`).
 - **Deploy note — GPIO9 is a C6 boot-strapping pin** : a reset that lands while the
   receiver is mid-byte can latch the chip into the ROM serial downloader, which needs a manual
   power cycle to clear. These development boards retain this wiring —
-  no `DIS_DOWNLOAD_MODE` eFuse is burned; the fleet-production fix is the planned ESP32-S3
-  re-spin moving RX to a non-strapping GPIO. Practical mitigation today: keep units on stable
+  no `DIS_DOWNLOAD_MODE` eFuse is burned. The supported custom ESP32-S3 board uses
+  GPIO4/GPIO5 for the receiver UART. For the C6 board, keep units on stable
   power (a brownout is the usual trigger) and prefer a lower line rate where the frame budget
   allows, since idle-high UART is safe and the hazard scales with line occupancy. Full
   technical explanation in `main/main.c` at `RX_PIN_RX`.
@@ -67,7 +67,8 @@ changing targets. The build tool's provenance check still applies.
 
 ## What each phase does
 
-See `docs/PLAN.md`. P0–P5 are built: the firmware boots, brings up the LCD dashboard + WS2812
+See the [implementation status and roadmap](docs/PLAN.md). The P0–P5 core is built:
+the firmware boots, brings up the LCD dashboard + WS2812
 status LED, runs the clean-room UBX framer, spools frames, and pushes them to the collector
 over GNF1/TLS. Config is NVS-first (`netcfg`), falling back to the compiled Kconfig defaults.
 
@@ -75,8 +76,8 @@ over GNF1/TLS. Config is NVS-first (`netcfg`), falling back to the compiled Kcon
 `navfeeder-XXYYZZ` and shows its one-time password on the LCD. Join it, open
 `http://192.168.4.1/`, enter WiFi + collector + station + token, Save — it writes NVS and
 reboots into station mode. (For dev you can still pre-seed everything via `idf.py menuconfig`
-→ "navfeeder-esp".) Remaining: P-hw (ATECC608 identity + `SIGNED_DATA`) and the u8g2 font
-upgrade.
+→ "navfeeder-esp".) Remaining work includes P-hw (ATECC608 identity + `SIGNED_DATA`),
+flash-backed spooling, the u8g2 font upgrade, and additional ESP32 record-parity tests.
 
 **Configuration-reset recovery:** on the custom ESP32-S3 observer, boot the application
 normally, then hold **BOOT/DOWNLOAD for eight seconds**. Once the status panel shows the
@@ -146,12 +147,11 @@ non-zero value means records were lost, not merely delayed.
 
 ## Enrollment (the shared AAA control plane)
 
-A navfeeder-esp observer is just a `Device` in the control plane navlistener shares with
-radiolistener (one CA, one `devices` table — `../docs/DESIGN.md §3`), granted the `ubx` feed.
-Enrollment mints a **bearer token shown once**; it goes into NVS on the board (P5
-provisioning), never into source. The credential ladder is the same as the C feeder: bearer
-token → software mTLS cert → **ATECC608 cert** (the P-hw high-assurance class). Revocation is
-`enabled=false` in the DB.
+Authorize the observer for the `ubx` feed using the collector's configured
+credentials or database authorization provider ([DESIGN.md §3](../docs/DESIGN.md#3-node-identity--the-hardware-observer)).
+Current ESP32 firmware authenticates with a **bearer token** stored in NVS through
+the provisioning portal. The collector also supports mTLS credentials, but the
+ESP32 ATECC-backed credential and enrollment path remains P-hw work.
 
 ## Design rules (do not break)
 

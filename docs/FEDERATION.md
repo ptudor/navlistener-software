@@ -20,11 +20,12 @@ between `docs/DESIGN.md §3` (node identity, the *feeder→collector* edge),
 
 ## 0. What federation is here (and what it is not)
 
-Today (`DESIGN.md §3`) `navlistener` is a **star**: one central daemon on `collector-host`, one Django CA,
-one `Device` table, one control plane. Feeders authenticate *inward* up the three-rung ladder
-(bearer token → software mTLS → ATECC608-anchored mTLS, CN = EUI-64 `receiver_id`); revocation
-is a `Device.enabled=false`. Feeders neither know about nor trust each other. There is no
-collector↔collector concept anywhere.
+Today (`DESIGN.md §3`) each `navlistener` deployment is a **star**: receivers feed
+one collector, using configured credentials or a database authorization provider.
+The collector supports bearer and mTLS credentials; mTLS identity requires exactly
+one DNS SAN matching the observer id. Feeders neither know about nor trust each
+other. Collector instance identity and outbound export-policy evaluation are
+implemented, while collector-to-collector transport remains planned.
 
 Federation adds exactly one new edge — **between collectors** — and nothing else. The
 feeder→collector AAA plane is untouched. This mirrors the organizing principle we borrow

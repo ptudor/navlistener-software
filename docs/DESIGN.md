@@ -1,14 +1,18 @@
-# navlistener — the GNSS collector, design report
+# navlistener — the GNSS collector architecture
 
-**Status: design (2026-07-07).** No code yet; this is the agreed spec-level shape for
-`navlistener`, the "Space" sibling of `radiolistener`. It is written to be read by a
-developer who knows Go and networking but not GNSS internals — GNSS terms are defined on
-first use, with the heavy math deferred to `docs/MATH.md`. Read this first, then `MATH.md`.
+**Status: implemented and ready to configure and deploy.** This document describes
+the current `navlistener` collector and feeder architecture, with planned extensions
+marked separately. Start with the [build and run guide](../README.md#build-and-run-locally)
+and [deployment notes](../go/deploy/README.md). The [coverage matrix](CONSTELLATIONS.md#1-coverage-matrix)
+records which signals are decoded, captured only, or deferred.
+
+It is written for developers who know Go and networking but not GNSS internals.
+GNSS terms are defined on first use; the equations are in [MATH.md](MATH.md).
 
 > One line: **dumb receivers ship raw broadcast navigation frames over an authenticated,
-> spooled, acked TLS link to one central Go daemon that decodes every constellation, propagates
-> orbits and clocks, cross-checks broadcast-vs-observed for integrity, stores raw + decoded in
-> TimescaleDB, and serves the satellite feed behind the Integrity Constellation Map.**
+> spooled, acked TLS link to a central Go daemon that decodes supported navigation signals,
+> propagates orbits and clocks, monitors integrity, optionally stores raw frames and decoded
+> data in TimescaleDB, and serves versioned JSON feeds and an event stream.**
 
 ---
 
@@ -53,8 +57,8 @@ values, not a receiver's smoothed solution. This is galmon's central insight and
   raw nav frames over      gnss module      per-SV ephemeris store;   TimescaleDB    the native v2 API:
   GNF1 (authenticated      frame decoders   Kepler/RK4 ECEF; orbit-   (raw frames +  svs/global/observers/
   push) + dev-LAN pull     → typed nav      disco + clock-disco vs    decoded +      almanac/sbas feeds,
-  from our own receivers   messages         last eph; delta-Hz;       events)        events + SSE
-                                            health/URA; spoof gates
+  from our own receivers   messages         last eph; health/URA;     events)        events + SSE
+                                            capability + RF checks
 ```
 
 (Radiolistener's NORMALIZE and FUSE stages are GNSS-specific here — DECODE and
@@ -94,15 +98,17 @@ fails CRC is dropped from decode but its raw bytes are still persisted (forensic
 - **Per-SV state** (`internal/state`): a sharded `map[SVKey]*SVState` keyed by `name@sigid`,
   holding the current + previous ephemeris (the **ephemeris store**), clock model, health,
   URA/SISA, per-receiver reception (`perrecv`), and derived integrity signals.
-- **Propagation:** on demand and on a tick, propagate each SV to "now" (and to receiver
-  epochs) via the Kepler or GLONASS-RK4 propagator → ECEF position → az/el per observer.
+- **Propagation:** propagate supported ephemerides to the current epoch via the Kepler or
+  GLONASS-RK4 propagator → ECEF position. RF monitoring uses receiver-reported elevations;
+  per-observer geometry in the satellite feed remains planned.
 - **Integrity computation** (`docs/INTEGRITY.md`): when a *new* ephemeris (new IOD) arrives,
   propagate **both** the old and new sets to the same epoch and record `orbit-disco =
-  |Δposition|`; record `time-disco =` the clock-offset jump; compute per-receiver **delta-Hz**
-  (observed Doppler − ephemeris-predicted Doppler); fold in RTCM SSR precise-vs-broadcast
-  deltas; track health/URA/OSNMA transitions. Cross-receiver corroboration (an SV only one of
-  many receivers reports is suspect) and physics/plausibility gates apply here — **"verify
-  physics, not signatures,"** the design rule, applied to orbits.
+  |Δposition|`; record `time-disco =` the clock-offset jump; track health, accuracy, OSNMA
+  data presence, receiver capabilities, and RF telemetry. Fresh decoded receptions supply
+  a per-source confidence count; Galileo cross-signal comparisons check broadcast agreement.
+  Per-receiver **delta-Hz**, RTCM SSR comparisons, cross-receiver element comparisons, and
+  cryptographic OSNMA verification remain planned. See [INTEGRITY.md](INTEGRITY.md) and
+  [DEFENSE-PNT.md](DEFENSE-PNT.md) for the implemented detectors and remaining gates.
 
 ### Stage 4 — Persist: raw + decoded, TimescaleDB, ingest-time organized
 
@@ -110,14 +116,16 @@ Same discipline as radiolistener (see `docs/OUTPUT.md §4` for the schema): a `n
 hypertable holds the **raw frame bytes + the decoded jsonb** side by side, organized on the
 near-monotonic ingest clock, tagged with `decoder`/`decoder_ver` so a decoder fix can re-run
 history. `gnss_snapshots` stores periodic feed dumps; `gnss_events` stores confirmed integrity
-transitions (Phase 2). Written via `pgx CopyFrom`, compressed + retained per policy.
+transitions. Raw frames are batched with `pgx CopyFrom`; compression and retention follow
+configured policy. Persistence is enabled when `[store].dsn` is set.
 
 ### Stage 5 — Serve: the native API
 
-Live feeds from RAM; history/SSE from the DB via `LISTEN/NOTIFY`. Ingest (write) and serving
-(read) are physically separate listeners with separate DB pools and authz — ingest is locked
-to authenticated observers, serving is public behind a TLS front. The feeds and their exact
-shapes are `docs/OUTPUT.md`.
+Live feeds and SSE are served from in-memory audience views and event brokers; historical
+queries use the optional database. Persisted events also notify external PostgreSQL listeners.
+Ingest and serving use separate listeners and authorization. Public and authorized private
+audiences have separate state, events, and caches. Enable the read API with `[serve].addr`
+and configure its TLS front and access policy as described in [OUTPUT.md](OUTPUT.md).
 
 ---
 
@@ -175,55 +183,45 @@ as separate programs.
 
 ## 3. Node identity & the hardware observer
 
-`navlistener` reuses radiolistener's **AAA control plane verbatim** (`radiolistener/docs/
-IDENTITY-AND-AAA.md`): one shared PostgreSQL on `collector-host`, Django owns identity/policy/CA/audit,
-the collector reads `Device`/`Credential` for a single indexed auth lookup and writes
-accounting back. Feed grants are **as-built** the `feed_types` array field on `Device`
-(radiolistener's AAA doc sketches a `FeedGrant` model, but the shipped Django implements
-`Device.feed_types` — we follow the code). A GNSS observer is just a `Device` whose
-`feed_types` include `ubx`/`sbf`/`rtcm`. Nothing about AAA is GNSS-specific, so we do not
-re-invent it — we add GNSS feed types and reuse the CA, enrollment, revocation
-(`enabled=false`), and trust scoring.
+`navlistener` supports configured observer credentials for standalone deployments
+and a database authorization provider for a shared control plane. The database
+provider reads versioned SQL views for active credentials, ownership, memberships,
+feed grants, capabilities, and publication policy; it does not join application
+tables directly. Cache invalidation and active-session rechecks enforce policy
+changes. See the [authorization guide](../go/internal/authorization/README.md) for
+the required views and [GROUPS-AND-FEDERATION.md](GROUPS-AND-FEDERATION.md) for
+implemented collector behavior and outstanding external schema migrations.
 
-Three credential tiers → trust (radiolistener's ladder, unchanged):
+The collector's credential tiers are:
+
 1. **Bearer token** (bootstrap) — SHA-256 stored, shown once.
 2. **Software mTLS cert** — a single DNS SAN = `receiver_id` (see the note below; the *SAN*, not
    the CN, is what the collector matches).
-3. **ATECC608-anchored mTLS cert** — the **high-assurance receiver class**. The board is the
-   ESP32 + secure-element + RTC + EUI-64 design in `radiolistener/docs/HARDWARE-OBSERVER.md`,
-   with this product's part choices and their `shepherdprotocol` alignment in
-   `docs/HARDWARE-OBSERVER.md` (**ATECC608C**, MCP79412 — note radiolistener's doc still names
-   the 608B and a DS3231, which predates the shared `esp32-hardware-discovery` conventions),
-   ported here as `firmware/navfeeder-esp`. The ATECC generates a non-extractable P-256 key,
-   signs a CSR carrying the EUI-64-derived `receiver_id` as **exactly one DNS SAN** that the
-   Django CA signs; the private key
-   never leaves silicon. The MCP79412 stamps a **trusted time-of-transmission** — and for GNSS
-   there's a bonus: the receiver *is* a clock source, so the board can discipline the RTC from
-   GPS PPS, closing the loop — but see `docs/HARDWARE-OBSERVER.md §6.3`: disciplining the RTC
-   from the signal it exists to cross-check is a coupling to bound, not to close blindly.
-   The optional `SIGNED_DATA` frame (0x07) raises the provenance
-   tier to hardware-signed batches.
+3. **Hardware-backed mTLS cert** — the collector requires verified manufacturer
+   attestation and credential binding before assigning this tier. Attestation v1/v2
+   formatting, signing, verification, and the [`mfgattest` CLI](../go/cmd/mfgattest/README.md)
+   are implemented. The ESP32 ATECC key/enrollment path and `SIGNED_DATA` transport
+   remain planned; current ESP32 firmware uses bearer authentication. The hardware
+   identity contract is in [HARDWARE-OBSERVER.md](HARDWARE-OBSERVER.md), and firmware
+   implementation status is in [esp32/docs/PLAN.md](../esp32/docs/PLAN.md).
 
 **The exact certificate shape is enforced, not conventional** (`matchPeerIdentity`,
-`go/internal/ingest/push.go:472`): the chain's leaf must carry **exactly one DNS SAN**, byte-equal
+`go/internal/ingest/push.go`): the chain's leaf must carry **exactly one DNS SAN**, byte-equal
 to the canonical observer id, and that id must satisfy `config.ValidObserverID` — `[A-Za-z0-9.-]`
 only. The comparison is byte-exact rather than DNS-case-insensitive, so the rendering is fixed by
 convention and not negotiable per device: **lowercase, hyphen-separated byte pairs, bare label**
 (`00-04-a3-ff-fe-12-34-56`). Rationale and the rejected alternatives are in
 `docs/HARDWARE-OBSERVER.md §4.2`. A CSR that sets only a CN is rejected at handshake.
 
-> Hardware auth proves *who* sent a frame and *when* — it cannot make a spoofed *signal*
-> honest. A hardware observer fed a spoofing transmitter still emits perfectly-signed garbage.
-> That is exactly why integrity is **"verify physics, not signatures"**: signatures prove
-> provenance, the orbit/clock cross-checks prove plausibility. Both are required.
+> Authentication binds a connection to an observer. It does not establish that
+> the received signal or the observer's timestamp is correct. Orbit, clock, and RF
+> checks provide separate evidence about plausibility.
 
-**tudorgps integration (P9):** each observer's *hardware capability fingerprint* — what
-signals its silicon can actually decode, from `tudorgps`'s clean-room capability probe
-(the F9T-00B L1+L2 vs F9T-10B L1+L5 discriminator) — is recorded on its `Device`. The integrity
-layer then knows what a node *should* be able to report: a node whose silicon can't hear L5
-suddenly reporting L5 frames is loudly suspect (a proxied/forged feed), and a node that *can*
-hear E6/L5 but never does flags a receiver-config or antenna problem. The fingerprint DB and
-the observer registry are the same `Device` rows.
+**Capability monitoring is implemented.** Configured sources and authorized push
+observers carry declared signal capabilities. The collector compares them with
+decoded receptions to flag impossible or missing signals. Receiver capability
+probes can supply these declarations; control-plane integration must expose them
+through the authorization contract.
 
 ---
 
@@ -244,20 +242,20 @@ galmon.eu <--> optional RNIE/protobuf adapter <--> GNF1 socket <--> navlistener
 - Numerical validation can compare captured outputs from independent
   implementations without incorporating their code into the core.
 
-**galmon as a test oracle (differential testing).** Distinct from the runtime bridge: in *CI/dev*
-we may run the real galmon (`third_party/galmon`) over the *same* captured raw frames and diff
-its computed ECEF/clock/disco values against ours. Agreement cross-validates both; a mismatch is
-a bug worth root-causing. This reads galmon's *outputs* to check ours — it copies no code and
-ships nothing GPL in the product. See `docs/MATH.md §validation`.
+**Independent numerical comparison.** A separately obtained galmon executable can
+serve as a differential-test oracle over the same captured frames. It and the
+runtime bridge are not bundled in this checkout. Current validation uses the tests
+and fixtures described in [MATH.md §12](MATH.md#12-validation-strategy-how-we-know-the-math-is-right).
 
 ---
 
 ## 5. Configuration & deployment
 
 TOML at `/usr/local/etc/navlistener/navlistener.toml` (never `.env`), `-config` flag, FreeBSD
-**rc.d** on `collector-host`; DB on `zroot`. Sections mirror radiolistener: `[logging] [metrics] [serve]
-[state] [store] [[ingest]] [push]`. Each `[[ingest]]` is a connector (`type = ubx|sbf|rtcm`,
-`addr`, `listen`). `[push]` is the authenticated fleet endpoint (token + optional mTLS
+**rc.d** deployment is provided in `go/deploy/freebsd`. Configuration covers logging,
+metrics, state, persistence, serving, identity, authorization, and ingest. Each `[[ingest]]`
+is a connector (`type = ubx|sbf|rtcm|ntrip`, `addr`). `[push]` is the authenticated fleet
+endpoint (token + optional mTLS
 `client_ca`), separate listener from `[serve]`. Prometheus `/metrics` + `/healthz` on
 loopback; counters for SVs tracked, frames/s/constellation, decode failures, receiver up/down,
 integrity events, DB lag, per-observer drops — so it slots into the same Zabbix/Prometheus

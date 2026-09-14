@@ -1,7 +1,8 @@
 # navlistener — identity, organizations, groups, audiences, and federation
 
-**Status: normative target architecture (2026-08-10).** This document closes the ownership,
-privacy, and federation-policy gap between the hardware identity design
+**Status: collector authorization and audience isolation implemented; external
+control-plane migrations and peer transport remain integration work.** This document defines
+the ownership, privacy, and federation-policy contracts connecting the hardware identity design
 (`HARDWARE-OBSERVER.md`), the shared Django AAA plane (`radiolistener`), the collector data
 plane, the native output contract (`OUTPUT.md`), and the operator clients. It distinguishes
 what is implemented today from the target contract so a partially migrated deployment fails
@@ -95,8 +96,8 @@ and server-side enrollment record establish the current jurisdiction.
 The shared Django schema/migrations and .NET/web clients live outside this repository and must
 consume these versioned authorization/discovery contracts rather than inventing local group
 meaning. The repo-local Swift Integrity Station is the reference operator-client
-implementation. `kotlin/` currently contains the Android specification but no source scaffold;
-neither that absence nor the external clients' locations makes their migrations implicit.
+implementation. No Android client is included in this checkout; external clients
+must implement the same contracts explicitly.
 
 No deployment may claim tenant privacy or safe federation until the applicable items above
 are migrated.

@@ -2,7 +2,8 @@
 
 **Headline:** a self-contained, I/O-free, Apache-2.0 Go module that turns raw broadcast
 navigation frames and a timestamp into satellite positions, clock corrections, and geometry —
-for GPS, GLONASS, Galileo, BeiDou, QZSS, SBAS, and (deferred) NavIC. Every line of math in it is
+for supported GPS, GLONASS, Galileo, BeiDou, and QZSS signals. It also decodes SBAS L1
+headers and the MT0 health indication; NavIC decoding remains deferred. Every line of math in it is
 authored from the public Interface Control Documents. It provides the numerical core of `navlistener` and
 it is deliberately its own module, so anything can link it.
 

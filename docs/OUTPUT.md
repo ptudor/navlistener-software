@@ -1,8 +1,9 @@
 # navlistener — Output Contract
 
-**Status: design (2026-07-07).** This document specifies **every byte `navlistener` emits**.
-It is the output standard, designed here. The existing clients (intsat, mapintsat) are
-**consumers, not designers** — they align to this contract on our schedule (§6.1). See
+**Status: implemented v2 API, event stream, and historian contract.** The collector
+serves these feeds through `go/internal/serve`; Integrity Station consumes them.
+Reserved fields and planned endpoints are identified below and may be absent from
+current responses. Consumer migration requirements are recorded in §6.1. See
 `docs/DESIGN.md` for the pipeline, `docs/MATH.md` for how the emitted numbers are computed,
 `docs/CONSTELLATIONS.md` for signal/SV coverage, and `docs/INTEGRITY.md` for event detection.
 
@@ -120,14 +121,14 @@ below):
 | `orbit_disco_age_s` | float | seconds since that changeover |
 | `time_disco_ns` | float | clock discontinuity at changeover, nanoseconds; absent like `orbit_disco_m` |
 | `osnma` | bool | Galileo OSNMA protocol data seen live within the last 60 s — **E1-B `@0` entries only** (OSNMA rides the I/NAV E1-B odd-page field, OS-SIS-ICD Table 38; absent for non-Galileo *and* for Galileo F/NAV `@3`/`@4` rows, regression fix). **Presence only — v1 does not verify: `true` ≠ authenticated** (no TESLA/DSM cryptographic verification is performed; INTEGRITY.md §7; regression fix). `false` means *no live OSNMA inside the window* — either the SV broadcasts all-zeros / sits outside the distributing subset, **or the SV simply has not been received recently** (set below the horizon, lost lock; regression fix) — so `false` is not evidence the SV transmits without OSNMA. Consumers must not render either value as a cryptographic-security claim |
-| `alma_dist_m` | float | broadcast-ephemeris vs almanac/TLE position distance (cross-check) |
+| `alma_dist_m` | float | reserved for the planned broadcast-ephemeris vs almanac/TLE comparison; not currently emitted |
 | `last_seen_s` | int | seconds since any receiver last reported this SV |
 | `freq_ch` | int | GLONASS-only : the FDMA frequency channel k ∈ [−7,+6] the tracked signal was received on (receiver `freqId − 7`, boundary-validated). Cross-checkable against the almanac entry's `freq_ch` (HnA-derived) for the same slot — a mismatch means mis-identification or spoofing. Absent for other constellations |
 | `x_m`,`y_m`,`z_m` | float | ECEF metres at `tow` — **all constellations, GLONASS included** |
 | `tow` | int | time-of-week (s) of the solution |
 | `wn` | int | week number (full, disambiguated) — **GPS-continuous** (GPS week number, no 1024-week rollover) for GPS, Galileo, QZSS, and NavIC; **BeiDou is the exception**, reported as its own native BDT week (GPS week − 1356, BDT epoch 2006-01-01) — regression fix. A consumer diffing `wn` against the broadcast WN sees a 1024-week offset for Galileo/NavIC but not for BeiDou; this is intentional, not a bug, and is not expected to change without a version bump. |
-| `best_tle` | string | name of best-matching CelesTrak object (MATH.md §11), absent if none |
-| `best_tle_dist_m` | float | metres to the SGP4 position of that object |
+| `best_tle` | string | reserved for the planned TLE comparison (MATH.md §11); not currently emitted |
+| `best_tle_dist_m` | float | reserved for metres to the matched SGP4 position; not currently emitted |
 | `klob_alpha`, `klob_beta` | float[4] | raw broadcast ionosphere coefficient sets — today BeiDou B1I D1 subframe-1 α/β (BDS-SIS-ICD-B1I §5.2.4.7, a materially different model from GPS's Klobuchar — do not feed to a GPS evaluator); served for query/replay and evaluator; absent until decoded |
 | `bdgim` | float[9] | BeiDou B-CNAV2 MT30's BDGIM α1..α9 (B2a Table 7-10, TECu), raw — evaluation is follow-up |
 | `dif`, `sif`, `aif` | bool | BeiDou B-CNAV2 entries : the B2a signal's broadcast real-time integrity flags (BDS-SIS-ICD-B2a Table 7-23 — data/signal/accuracy integrity), refreshed ~every 3 s; absent until the flag block decodes |
@@ -145,6 +146,11 @@ below):
 
 `perrecv[<observer_id>]`:
 
+**Current output:** `iono_delay_m`, `iono_pair_sigid`, and `iono_cal` (currently
+`0`, uncalibrated) when a usable measurement exists. The other fields below are
+reserved for observer geometry, reception details, and model-comparison work;
+they are not currently emitted in `perrecv`.
+
 | Field | Type | Meaning |
 |---|---|---|
 | `azi_deg`, `elev_deg` | float | look angles from that observer (MATH.md §5.2) |
@@ -161,7 +167,7 @@ below):
 | `iono_pair_sigid` | int | sigid of the second signal in the measuring pair |
 | `iono_cal` | int | receiver-DCB calibration method: 0 uncalibrated · 1 daily model fit · 2 external DCB product |
 
-Representative entry:
+Illustrative current response (example values, abbreviated):
 
 ```json
 { "ok": true, "time": "2026-07-07T12:00:00Z", "data": { "schema": "2.0", "svs": {
@@ -170,17 +176,12 @@ Representative entry:
     "health_code": 1, "health_issue_level": 0, "health_subcode": 0,
     "eph_age_m": 12.4, "sisa_valid": true, "sisa_m": 2.4, "iod": 61,
     "orbit_disco_m": 0.42, "orbit_disco_age_s": 733.0, "time_disco_ns": 0.9,
-    "alma_dist_m": 118.3, "last_seen_s": 2,
+    "last_seen_s": 2, "conf": 1,
     "x_m": -15637892.3, "y_m": 20984773.1, "z_m": 6512240.7, "tow": 453612, "wn": 2427,
-    "best_tle": "GPS BIIR-2 (PRN 05)", "best_tle_dist_m": 940.2,
-    "utc_offset_ns": -3.8, "utc_drift_ns_day": -0.8,
     "af0": 0.000123, "af1": 1.1e-11, "af2": 0.0,
     "perrecv": {
-      "0x00a1c3": { "azi_deg": 143.2, "elev_deg": 61.0, "cn0_db_hz": 47, "qi": 7,
-                    "prres_m": 0.4, "used": true, "last_seen_s": 2,
-                    "delta_hz": -1.2, "delta_hz_corr": 0.3 } }
-  },
-  "J03@0": { "full_name": "QZSS-3", "name": "J03", "gnssid": 5, "svid": 3, "...": "..." }
+      "observer-1": { "iono_delay_m": 4.2, "iono_pair_sigid": 3, "iono_cal": 0 } }
+  }
 } } }
 ```
 
@@ -205,7 +206,10 @@ sanitized before serialization (INTEGRITY.md §9).
 ### 1.4 `almanac` — coarse orbits for every known SV
 
 Object keyed by SV name (`"C01"`, `"R07"`, `"J02"`, `"I03"`). This is the long-life,
-all-SV view (acquisition-grade); `svs` remains the precision view. Fields:
+all-SV view (acquisition-grade); `svs` remains the precision view.
+
+Current entries come from live broadcast ephemerides plus decoded GLONASS almanac
+slots. Almanac-only coverage for other constellations and TLE fallback remain planned.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -442,10 +446,11 @@ Read and write paths are **physically separate** (the `radiolistener` rule):
 
 - **Ingest (write):** the GNF1 push endpoint (authenticated feeders → sharded state), a
   different listener/authz/DB pool. See `docs/DESIGN.md §1`.
-- **Serve (read):** live feeds from **RAM**; history + SSE from the DB via
-  `LISTEN gnss_event`. Binds **loopback**; a reverse proxy terminates TLS and fronts it as
-  `intsat.space` (host consolidation — same box, same front). All third-party keys
-  (CelesTrak TLE fetch, etc.) stay server-side.
+- **Serve (read):** live feeds and SSE use **in-memory audience views and event
+  brokers**. Historical queries use the optional historian; PostgreSQL notifications
+  separately support external event consumers. Bind to loopback behind a TLS reverse
+  proxy, with access controls for private audiences. Live feeds and SSE also work
+  without a database.
 
 Refresh cadence (satellites move slowly; over-polling wastes cache):
 
@@ -455,7 +460,8 @@ Refresh cadence (satellites move slowly; over-polling wastes cache):
 | `almanac` | 60–120 s |
 | `/gnss/events` SSE | push-on-change (server-driven) |
 
-An Apache `mod_cache` layer in front is compatible and encouraged.
+A reverse-proxy cache must honor audience policy: only public feeds are cacheable.
+Private responses use `Cache-Control: private, no-store`; SSE must stream without buffering.
 
 ---
 

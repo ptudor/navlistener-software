@@ -81,6 +81,11 @@ the daemon can run collector-only or without a database.
 
 ## Building and testing
 
+Run these commands from `go/` with Go 1.25 or newer and Make installed. Keep
+`../gnss` and `../go.work` alongside this module. For a first run, follow the
+[repository quick start](../README.md#build-and-run-locally), which creates and
+validates a local configuration before starting the collector.
+
 ```sh
 make            # check + build
 make build      # local binary ./navlistener
@@ -90,7 +95,7 @@ make install    # local install to /usr/local/bin (developer box)
 ```
 
 **`make check`** is the quality gate, and it runs across **both workspace modules** — this one
-and `../gnss` (`./...` from here only sees the daemon, so a regression in the crown-jewel
+and `../gnss` (`./...` from here only sees the daemon, so a regression in the
 math library would otherwise pass green):
 
 | Target | What it does |

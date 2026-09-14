@@ -9,10 +9,13 @@ radio node cannot, and the provisioning constraints the collector actually enfor
 Read `docs/DESIGN.md §node identity` first for the credential tiers, and `docs/DEFENSE-PNT.md`
 for the detector family the sensor gates below extend.
 
-> **Status: design, not as-built.** No board has been fabricated. Figures marked
-> **[verify]** are engineering estimates that must be pinned to a datasheet before they
-> reach firmware or a detector threshold: a constant without a citation
-> is a TODO, not a value.
+> **Status: hardware integration contract and revision proposals.** Board projects
+> and fabrication exports are maintained in the separate `navlistener-hardware`
+> repository on ptudor.net. This software checkout includes support for the custom
+> ESP32-S3 observer and the Waveshare ESP32-C6 board; see the
+> [firmware guide](../esp32/README.md). Use the hardware repository for the current
+> board revision and qualification status. Figures marked **[verify]** remain
+> estimates requiring datasheet confirmation before use in firmware or thresholds.
 
 ---
 
@@ -1357,7 +1360,7 @@ from the sibling, and where it deliberately does not:
 | GPS UART + PPS | UART1, PPS on its own GPIO, clear of GPIO9 | same | **adopted** — this is the fix (§7.1) |
 | Board selection | compile-time profiles in `board/board_config.h` with feature flags | adopt for variants A/B/C | **adopt** — §1 variants are exactly this shape |
 | Dev board | Waveshare ESP32-C6-LCD-1.47 | same | already aligned (`esp32/README.md`) |
-| MCU | C6 and ESP32 (Xtensa) | S3 planned | **open** — see §9.6 |
+| MCU | C6 and ESP32 (Xtensa) | ESP32-C6 development board and custom ESP32-S3 observer | **software support implemented** — see `esp32/README.md` |
 | Identity root | rover pubkey + ATECC serial | EUI-64 name + ATECC proof | **deliberate divergence** |
 
 **On the identity divergence.** Shepherd's rovers join a Thread fleet against an operator pubkey;

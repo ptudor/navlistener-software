@@ -1,6 +1,6 @@
 # Constellations, Signals & Nav-Frame Decoding
 
-**Status: design (2026-07-07).** The per-constellation coverage specification for
+**Status: current decoder coverage and planned extensions.** The per-constellation reference for
 `navlistener`, the GNSS collector daemon serving the Integrity Constellation Map.
 It records signal formats and implementation plans, including QZSS and NavIC.
 The coverage matrix distinguishes implemented, capture-only, and planned paths.
@@ -45,18 +45,22 @@ natively (no remap on ingest) and which our feeds emit (`docs/OUTPUT.md §0`):
 
 ## 1. Coverage matrix
 
-Decoder status: **★ core** (v1, must ship) · **▲ extended** (modern civil signals, v2) ·
-**◇ carried-raw** (stored + re-decodable, not yet interpreted).
+**Implemented** means a current central decoder handles the signal. **Capture-only**
+means raw data can be retained when received, without a live navigation decoder.
+**Planned** identifies formats outside current decoder support. The message and
+frequency columns include both current coverage and extensions; the status column
+is the implementation boundary. SBF and RTCM remain capture-only even when the
+equivalent UBX navigation signal is decoded.
 
-| Constellation | gnssId | Letter | Nav messages we decode | Signals / freqs | Source ICD (doc # / edition) | Status |
+| Constellation | gnssId | Letter | Navigation formats | Signals / freqs | Source ICD (doc # / edition) | Status |
 |---|---|---|---|---|---|---|
-| **GPS** | 0 | G | L1 C/A **LNAV** (subframes 1–5); L2C/L5 **CNAV** (msg 10/11/30–37); L1C **CNAV-2** | L1 1575.42, L2 1227.60, L5 1176.45 MHz | IS-GPS-200 (Rev N, 2022); IS-GPS-705 (L5, Rev J); IS-GPS-800 (L1C, Rev J) | ★ LNAV; ▲ CNAV/CNAV-2 |
-| **Galileo** | 2 | E | E1-B **I/NAV** (word types 0–10, 16 reduced-CED, 17–20 FEC2, 63 dummy); E5a **F/NAV**; E5b I/NAV (carried raw only); E6-B **C/NAV** | E1 1575.42, E5a 1176.45, E5b 1207.14, E6 1278.75 MHz | Galileo OS SIS ICD Issue 2.1 (Nov 2023); Galileo HAS SIS ICD 1.0 (E6) | ★ E1-B I/NAV, E5a F/NAV; ◇ E5b I/NAV (dispatch deferred, `gal_e5b_deferred`, regression fix); ▲ E6 C/NAV |
+| **GPS** | 0 | G | L1 C/A **LNAV** (subframes 1–5); L2C/L5 **CNAV** (msg 10/11/30–37); L1C **CNAV-2** | L1 1575.42, L2 1227.60, L5 1176.45 MHz | IS-GPS-200 (Rev N, 2022); IS-GPS-705 (L5, Rev J); IS-GPS-800 (L1C, Rev J) | **LNAV and CNAV implemented**; CNAV-2 planned |
+| **Galileo** | 2 | E | E1-B **I/NAV** (word types 0–10, 16 reduced-CED, 17–20 FEC2, 63 dummy); E5a **F/NAV**; E5b I/NAV (carried raw only); E6-B **C/NAV** | E1 1575.42, E5a 1176.45, E5b 1207.14, E6 1278.75 MHz | Galileo OS SIS ICD Issue 2.1 (Nov 2023); Galileo HAS SIS ICD 1.0 (E6) | **E1-B I/NAV and E5a F/NAV implemented**; E5b capture-only (`gal_e5b_deferred`); E6 C/NAV planned |
 | **BeiDou** | 3 | C | **D1** NAV (MEO/IGSO, subframes 1–5); **D2** NAV (GEO); **B-CNAV1** (B1C); **B-CNAV2** (B2a); **B-CNAV3** (B2b) | B1I 1561.098, B1C 1575.42, B2a 1176.45, B2b 1207.14, B3I 1268.52 MHz | BDS-SIS-ICD-B1I 3.0 (2019); -B1C 1.0 (2017); -B2a 1.0 (2017); -B2b 1.0 (2020) | D1 (B1I) + B-CNAV2 (B2a) shipped; **D2/B-CNAV1/B-CNAV3 planned** |
-| **GLONASS** | 6 | R | L1OF/L2OF **strings 1–15** (eph strings 1–4, time string 5, almanac 6–15) | L1 ~1602+k·0.5625, L2 ~1246+k·0.4375 MHz (FDMA, k=−7..+6); L3OC 1202.025 (CDMA, future) | GLONASS ICD Ed. 5.1 (2008, FDMA); GLONASS ICD CDMA Gen. Desc. Ed. 1.0 (L3OC) | ★ L1OF/L2OF; ◇ L3OC |
+| **GLONASS** | 6 | R | L1OF/L2OF **strings 1–15** (eph strings 1–4, time string 5, almanac 6–15) | L1 ~1602+k·0.5625, L2 ~1246+k·0.4375 MHz (FDMA, k=−7..+6); L3OC 1202.025 (CDMA, future) | GLONASS ICD Ed. 5.1 (2008, FDMA); GLONASS ICD CDMA Gen. Desc. Ed. 1.0 (L3OC) | **L1OF/L2OF implemented**, including almanacs; L3OC planned |
 | **QZSS** 🇯🇵 | 5 | J | L1 C/A **LNAV** (GPS-compatible); L2C/L5 **CNAV**; L1C **CNAV-2**; **L1S** (SLAS + DC Report); **L6** (L6D/L6E CLAS/MADOCA) | L1 1575.42, L2 1227.60, L5 1176.45, L1S 1575.42, L6 1278.75 MHz | IS-QZSS-PNT-005 (2023); IS-QZSS-L1S-005; IS-QZSS-L6-005 | LNAV/CNAV validation shipped; **CNAV-2/L1S/L6 planned** |
 | **NavIC/IRNSS** 🇮🇳 | 7 | I | L5/S **SPS NAV** (master frame, subframes 1–4); **L1 SPS** NAV (NVS-01 onward) | L5 1176.45, S 2492.028, **L1 1575.42** (NVS-01+) MHz | IRNSS SPS ICD Version 1.1 (Aug 2017); NavIC L1 SPS ICD 1.0 (2023) | **planned / captured raw only; no live decoder** |
-| **SBAS** | 1 | S | L1 C/A **MT 0–63** (integrity, fast/long corrections, iono grid, almanac) | L1 1575.42, L5 1176.45 (DFMC, future) MHz | RTCA DO-229 (MOPS, D/E); ICAO Annex 10 SARPs; SBAS L5 DFMC ICD (L5) | ★ L1 MT; ◇ L5 DFMC |
+| **SBAS** | 1 | S | L1 C/A **MT 0–63** (integrity, fast/long corrections, iono grid, almanac) | L1 1575.42, L5 1176.45 (DFMC, future) MHz | RTCA DO-229 (MOPS, D/E); ICAO Annex 10 SARPs; SBAS L5 DFMC ICD (L5) | **L1 headers, CRC, and MT0 health implemented**; correction payloads and L5 DFMC planned |
 
 SBAS providers we name and geo-fence for coverage (the `sbas` feed, `docs/OUTPUT.md §1.5`): **WAAS**
 (US, PRN 131/133/135/138), **EGNOS** (EU, 120/121/123/126/136 — PRN 120 = Inmarsat-3F2 AOR-E,
@@ -73,8 +77,10 @@ way around. QZSS also broadcasts an SBAS-like service on L1S; see §3.
 
 ## 2. Nav-frame ingestion path
 
-Three raw-frame sources are supported. Each is forwarded verbatim by `navfeeder` and decoded
-in `gnss/frame/<constellation>.go` (the top-level `gnss` module). The parser's contract: **untrusted input**
+The collector accepts UBX, SBF, and RTCM streams. Supported UBX navigation signals are
+decoded in `gnss/frame`; SBF and RTCM are framed, checked, and retained raw by the
+historian pending central decoders. See §2.1–§2.3 for connector and feeder support.
+The parser's contract: **untrusted input**
 — every length, index, and bit-read is bounds-checked. A frame that fails parity/CRC is
 counted (`navlistener_nav_crc_fail_total{gnssid,sigid,source}` — the `source` label is
 per-link noise visibility) and dropped, never assembled.
@@ -372,19 +378,23 @@ metadata: the collector dispatches decode on `(gnssId, sigId)`, so `0` still dec
 
 ### 6.1 Raw-nav frame types
 
+This registry reserves identifiers for planned formats as well as implemented
+decoders. SBF block numbers describe receiver formats, not live central decoding;
+use §1 and §2.1 for current coverage.
+
 | # | Name | Constellation / signal | Raw payload | Source |
 |---|---|---|---|---|
 | 0x10 | `GpsLnav` | GPS L1 C/A LNAV | 300-bit subframe (10×30b) | UBX (0,0) / SBF 4017 |
 | 0x11 | `GpsCnav` | GPS L2C/L5 CNAV | 300-bit message | UBX (0,3/4/6/7) / SBF 4018,4019 |
-| 0x12 | `GpsCnav2` | GPS L1C CNAV-2 | subframe 2 (600b / 1200 symbols) + TOI + sf3 | SBF 4221 |
+| 0x12 | `GpsCnav2` (reserved/planned) | GPS L1C CNAV-2 | subframe 2 (600b / 1200 symbols) + TOI + sf3 | SBF 4221 |
 | 0x20 | `GalInav` | Galileo E1-B / E5b I/NAV (same page layout; E5b pages are carried raw, central dispatch deferred — regression fix) | 240-bit page (2×120b half-pages) | UBX (2,0/1/5/6) / SBF 4023 |
 | 0x21 | `GalFnav` | Galileo E5a F/NAV | 244-bit page | UBX (2,3/4) / SBF 4022 |
-| 0x22 | `GalCnav` | Galileo E6-B C/NAV | 486-bit page | SBF 4024 |
+| 0x22 | `GalCnav` (reserved/planned) | Galileo E6-B C/NAV | 486-bit page | SBF 4024 |
 | 0x30 | `BdsD1` | BeiDou B1I D1 (MEO/IGSO) | 300-bit subframe | UBX (3,0) / SBF 4047 |
 | 0x31 | `BdsD2` (reserved/planned) | BeiDou B1I D2 (GEO) | 300-bit subframe | raw capture only |
 | 0x32 | `BdsCnav1` (reserved/planned) | BeiDou B1C B-CNAV1 | frame (1800 symbols → payload) | raw capture only |
 | 0x33 | `BdsCnav2` | BeiDou B2a B-CNAV2 | 600-symbol frame (288-bit message) | UBX (3,8) / SBF 4219 |
-| 0x34 | `BdsCnav3` | BeiDou B2b B-CNAV3 | 1000-symbol frame (486-bit message) | SBF 4242 |
+| 0x34 | `BdsCnav3` (reserved/planned) | BeiDou B2b B-CNAV3 | 1000-symbol frame (486-bit message) | SBF 4242 |
 | 0x40 | `GloNav` | GLONASS L1OF/L2OF | 85-bit string (+ `k`, slot) | UBX (6,0/2) / SBF 4026 |
 | **0x50** | **`QzsLnav`** | **QZSS L1 C/A LNAV** | 300-bit subframe | UBX (5,0) / SBF 4066 |
 | **0x51** | **`QzsCnav`** | **QZSS L2C/L5 CNAV** | 300-bit message | UBX (5,4/5/8/9) / SBF 4067,4068 |
@@ -394,7 +404,7 @@ metadata: the collector dispatches decode on `(gnssId, sigId)`, so `0` still dec
 | **0x60** | **`NavicNav` (reserved/planned)** | **NavIC L5/S SPS NAV** | 292-bit subframe (post-FEC) | raw capture only; not emitted as supported |
 | **0x61** | **`NavicL1Nav` (reserved/planned)** | **NavIC L1 SPS NAV** | frame (post-FEC) | raw capture only; not emitted as supported |
 | 0x70 | `SbasL1` | SBAS L1 C/A | 250-bit block | UBX (1,0) / SBF 4020 |
-| 0x71 | `SbasL5` | SBAS L5 DFMC ◇ | 250-bit block | SBF 4021 |
+| 0x71 | `SbasL5` (reserved/planned) | SBAS L5 DFMC | 250-bit block | SBF 4021 |
 
 ### 6.2 Telemetry types (receiver-side, not decoded centrally)
 

@@ -1,7 +1,13 @@
 # navlistener — PNT defense: jamming & spoofing detection
 
-**Status: design (2026-07-08).** How `navlistener` turns the RF-environment telemetry its
-receivers already produce into a **jamming and spoofing defense layer** for the fleet. This is
+**Status: RF monitoring and jamming detection implemented; spoofing fusion incomplete.**
+MON-RF/MON-HW and reception telemetry feed the current station detectors. Only one
+independent spoofing gate is wired, below the required quorum of two, so the current
+collector cannot confirm `spoofing_suspected` (§3). Additional inputs and hardware
+tiers remain planned.
+
+This document describes how `navlistener` uses receiver telemetry for RF monitoring
+and the planned **jamming and spoofing defense layer** for the fleet. This is
 the RF-front-end half of the integrity mission: `docs/INTEGRITY.md` monitors the *broadcast
 navigation message* (orbit/clock discontinuities, health, cross-receiver broadcast agreement);
 this document monitors the *signal environment* (interference, counterfeit signals) that
@@ -35,9 +41,10 @@ broadcast.
 
 ## 1. What the receivers already tell us (the ingest surface)
 
-Every threat metric below is derived from telemetry the fleet's u-blox F9P/F9T (and Septentrio)
-receivers already produce — no new hardware is required to start. These ride the existing GNF1
-telemetry types (`docs/CONSTELLATIONS.md §6.2`); the feeder forwards them verbatim.
+The table maps receiver telemetry to current and proposed detector inputs. Current
+GNF1 telemetry carries the supported UBX records described in
+`docs/CONSTELLATIONS.md §6.2`. SEC-SIG/SEC-SIGLOG transport and Septentrio central
+decoding remain planned; listing a receiver message here does not imply a wired detector.
 
 | Source message | Carries | GNF1 type | Threat signal it feeds |
 |---|---|---|---|
@@ -92,20 +99,18 @@ as `agc_departure` + `cw_suppression` + a C/N₀ collapse across *all* SVs that 
 simultaneously. A single metric moving alone is more likely a receiver/antenna fault than an
 attack — surface it as a station-health signal, not a jamming alarm.
 
-**The most important product use of jamming context** is not the alarm itself: it is
-**down-weighting**. A station reporting active jamming has its votes in the broadcast-integrity
-corroboration (`docs/INTEGRITY.md §6`) and the spoofing gates below reduced — its RF environment
-is untrustworthy, so it should not veto or confirm on its own.
+**Planned use of jamming context:** reduce the contribution of a jammed station to
+future broadcast-agreement and spoofing fusion. The current `conf` value counts
+fresh decoded sources; it does not apply RF-derived voting weights.
 
 ---
 
 ## 3. Spoofing detection (physics gates over baseband + nav)
 
-Spoofing broadcasts counterfeit PRN codes to capture the receiver's tracking loops. We detect it
-the way the design rule demands — physical and mathematical impossibilities — combining the
-receiver's own SEC-SIG verdict with gates we compute independently. Most of these already exist
-as plausibility gates in `docs/INTEGRITY.md §8`; this section is the RF-specific set and how they
-fuse.
+Spoofing broadcasts counterfeit PRN codes to capture the receiver's tracking loops.
+The target detector combines independent physics checks with receiver evidence.
+The gates below include planned inputs; the implementation note after the fusion
+rule identifies what is wired today, consistent with `docs/INTEGRITY.md §8`.
 
 - **C/N₀-vs-elevation inconsistency.** Genuine C/N₀ varies with elevation and atmosphere: low SVs
   are weaker, high SVs stronger, with SV-to-SV spread. A constellation where *every* SV reports an
@@ -131,7 +136,7 @@ fuse.
   consistent dual-frequency ionospheric delay. The measured slant iono (`docs/MATH.md §7.4`) that
   diverges from the broadcast model *incoherently with the real space-weather picture the rest of
   the fleet sees* is a spoofing tell — one more independent physics gate the network gets for free.
-- **Receiver SEC-SIG verdict.** The receiver's own spoofing/jamming flags are ingested and
+- **Receiver SEC-SIG verdict (planned input).** The receiver's own spoofing/jamming flags would be ingested and
   **weighted, not trusted**: a SEC-SIG spoofing flag *raises the prior*, and when it agrees with
   one or more independent physics gates above the event is confirmed; alone it is recorded but not
   alarmed (§5 — a black-box flag can miss a cold-boot spoof and can false-positive on multipath).
@@ -168,11 +173,11 @@ added to the vocabulary in `docs/INTEGRITY.md §5`:
 | `station_rf_degraded` | a single RF metric departs baseline (fault-or-early-warning, not an attack claim) | 1 |
 | `antenna_fault` | MON-RF antenna status open/short, or C/N₀ collapse with no jamming signature | 1 |
 
-**Thresholds are observational in v1 — like the measured-iono feature, we publish the metrics and
-accumulate per-station quiet-time baselines before freezing alert thresholds.** A jamming/spoofing
-false positive that cries wolf is worse than a slightly delayed true positive; the thresholds land
-in `docs/INTEGRITY.md §2` (the single source of threshold truth) once real distributions exist, per
-the authority rule there. Severity encoding is the shared `0 info · 1 warning · 2 critical`.
+**Current thresholds are implemented in `go/internal/detect/thresholds.go`.** The
+RF state learns a quiet-time AGC baseline, and the detector classifies gross
+departures using conservative operating points. These remain subject to calibration
+with station data; changes must keep the implementation and `docs/INTEGRITY.md`
+aligned. Severity encoding is the shared `0 info · 1 warning · 2 critical`.
 
 Constellation/station scope: these are **station-scoped** events (the threat is at a receiver's
 antenna), unlike the SV-scoped broadcast events. The event's `params` carry the station id, the RF

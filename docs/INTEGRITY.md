@@ -1,6 +1,11 @@
 # navlistener — integrity monitoring
 
-**Status: design (2026-07-07).** How `navlistener` turns decoded navigation messages into
+**Status: implemented monitoring, with additional plausibility gates planned.**
+The collector computes integrity metrics and emits debounced events through
+`go/internal/state` and `go/internal/detect`. Cross-receiver element comparison,
+cryptographic OSNMA verification, and the remaining gates are identified in §§6–8.
+
+This document explains how `navlistener` turns decoded navigation messages into
 integrity signals and alerts. The *math* that produces the raw metrics is in `docs/MATH.md §9`;
 this doc is the *detection* layer — thresholds, debouncing, severity, corroboration, and the
 event contract — plus the spoofing/plausibility gates that are the reason the map is called
@@ -20,15 +25,15 @@ event contract — plus the spoofing/plausibility gates that are the reason the 
 Two responsibilities are kept separate within `navlistener`:
 
 ```
-  DECODE ──▶ COMPUTE (internal/state)          ──▶ DETECT (internal/state/detect)   ──▶ EMIT
+  DECODE ──▶ COMPUTE (internal/state)          ──▶ DETECT (internal/detect)         ──▶ EMIT
              derive raw metrics per SV:             debounced state machine:             SSE events,
-             orbit-disco, time-disco, delta-Hz,     threshold + hysteresis + 60 s        gnss_events,
+             orbit-disco, time-disco, accuracy,     threshold + hysteresis + 60 s        gnss_events,
              health/URA/SISA/OSNMA, corroboration   confirmation → typed events          svs feed fields
 ```
 
 - **Compute** runs on every new ephemeris / reception; it is pure and stateless-per-input given
   the ephemeris store. Its outputs are the numbers published in the svs feed (`orbit_disco_m`,
-  `time_disco_ns`, `sisa_m`, `health_issue_level`, `eph_age_m`, `perrecv.delta_hz`, …).
+  `time_disco_ns`, `sisa_m`, `health_issue_level`, `eph_age_m`, …).
 - **Detect** is a **debounced state machine**: a provisional state change must persist for the
   debounce window before it becomes a confirmed `Event`. This kills the flapping that a single
   noisy frame would otherwise generate.
@@ -121,24 +126,26 @@ computed consistently for both models. A legitimate ephemeris update has sub-nan
 sub-metre discontinuities; a real orbit/clock event, an upload error, or a spoofer swapping the
 broadcast shows up as metres / nanoseconds. This discontinuity measure is also used in galmon's Galileo integrity reporting.
 
-**delta-Hz** (per receiver): observed Doppler − ephemeris-predicted Doppler (docs/MATH.md §2.2),
+**delta-Hz (planned)** (per receiver): observed Doppler − ephemeris-predicted Doppler (docs/MATH.md §2.2),
 optionally clock-corrected (`delta_hz_corr`). A *coherent* delta-Hz across independent receivers
 points at the broadcast (orbit/clock) or a wide-area spoofer; an *incoherent* one points at a
-single receiver's oscillator. Published per-receiver in the svs feed's `perrecv`.
+single receiver's oscillator. The `perrecv` fields are reserved until observer geometry is wired.
 
-**RTCM precise-vs-broadcast.** From SSR corrections (RTCM 1057–1068), the magnitude of the
+**RTCM precise-vs-broadcast (planned).** From SSR corrections (RTCM 1057–1068), the magnitude of the
 radial/along/cross orbit correction is "how wrong the broadcast orbit is vs. the precise network
-orbit" — an independent truth source. Surfaced as `rtcm_eph_delta_cm` (+ components). A broadcast
+orbit" — an independent reference. The proposed output is `rtcm_eph_delta_cm` (+ components). A broadcast
 that diverges from the SSR correction while claiming good SISA is a strong integrity flag.
 
-**Measured-vs-model ionosphere `iono_resid_m`** (per receiver × SV): the carrier-leveled
+**Measured-vs-model ionosphere `iono_resid_m` (planned)** (per receiver × SV): the carrier-leveled
 geometry-free dual-frequency measurement minus the broadcast-model prediction (MATH.md §7.4).
 The discriminator is coherence, same as delta-Hz: a residual that moves **coherently across
 receivers and satellites** is an ionospheric storm or a broadcast-model failure — a space-
 weather sensor the network gets for free; a **single receiver** diverging is local
 multipath/interference and down-weights that receiver's votes rather than raising an SV alarm.
-v1 is observational — publish the residuals, accumulate baselines; alert thresholds and an
-event type are added to §2/§5 only once quiet-time distributions are known (constants land in
+The current collector publishes uncalibrated `iono_delay_m` measurements; model evaluation,
+residuals, and voting weights remain planned. The intended next step is to accumulate
+residual baselines; alert thresholds and an event type are added to §2/§5 only once
+quiet-time distributions are known (constants land in
 this document first, per §authority).
 
 ---
@@ -236,12 +243,12 @@ uniquely strong because *every* receiver in view should hear the *same* broadcas
 (`S##`), and cross-signal (`xsig_divergence`) event families deliberately carry no `conf`
 (their subjects are not satellite×signal keys; regression fix) — counted from per-source
 decoded-nav-frame recency inside the 60 s
-fresh-receiver window (§2), so consumers can tell "five stations agree" from "one station said
-so". The **broadcast-agreement divergence detector** (same SV/IOD decoded to different bits by
-different receivers → hard alarm) additionally needs per-source element hashes and is tracked
-P7 work — it only becomes meaningful once the fleet converts to `navfeeder` push with per-observer
-identity. Until then every event's `conf` makes the corroboration level explicit rather than
-implied.
+fresh-receiver window (§2), so consumers can distinguish multiple recent witnesses
+from one source. This counts reception, not agreement on decoded elements.
+The **broadcast-agreement divergence detector** (same SV/IOD decoded to different bits by
+different receivers → hard alarm) additionally needs per-source element hashes and
+remains planned. Authenticated per-observer push identity is already implemented;
+the missing piece is retaining and comparing those element hashes.
 
 ---
 
@@ -330,7 +337,7 @@ synchronized access to shared state:
 | orbit disco | `orbit_disco_m`, `orbit_disco_age_s` | `orbit_disco` |
 | clock jump | `time_disco_ns` | `clock_jump` |
 | accuracy | `sisa_valid`, `sisa_m`, `acc_index` | `sisa_change` |
-| per-receiver Doppler | `perrecv.delta_hz(_corr)` | (feeds coherent-delta detection) |
+| per-receiver Doppler (planned) | reserved `perrecv.delta_hz(_corr)` | coherent-delta detection planned |
 | OSNMA | `osnma` | `osnma_change` |
 | silence | `last_seen_s` | `observation_lost` (SV), `station_offline` (observer), `sbas_lost` (SBAS PRN; regression fix) |
 | corroboration | `conf`, `perrecv` | — |

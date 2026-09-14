@@ -127,8 +127,9 @@ capabilities = ["0:0", "2:0", "2:3", "3:0", "6:0"]
   `federation_peers`, `publish_signals`, and `policy_revision`. They are resolved by
   this collector, stamped on every frame, and persisted with the raw receipt. Omitting them is
   deliberately safe: `local-unassigned`, `private`, and no station metadata. A receiver cannot
-  send or override them. Production will source the same context from shared AAA rows; config is
-  the bootstrap provider for local and standalone installations.
+  send or override them. Database-authorized push sources resolve the same context
+  through the versioned authorization views; configured sources provide it locally
+  for standalone and bootstrap installations.
 - **`max_frame_silence`** (default 5m, regression fix) tears down and re-dials a source that keeps
   delivering *bytes* but no decodable *frames*. The idle timeout covers byte silence (a half-open
   peer); this covers the chatter-but-no-frames variant — an F9 reset to factory NMEA output, a

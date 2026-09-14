@@ -16,8 +16,10 @@ hosted on ptudor.net.
 
 ## Current capabilities
 
-The project is under active development. Support depends on the signal and input
-format; the design documents also describe planned work.
+The collector, GNSS library, C and ESP32 feeders, and Apple companion app are
+implemented and available to build and use. The collector is ready to configure
+and deploy with the supported inputs below. Development continues; support depends
+on the signal and input format, and planned extensions are marked in the docs.
 
 | Area | Current support |
 |---|---|
@@ -32,8 +34,11 @@ format; the design documents also describe planned work.
 | Serving | Native `/gnss/api/v2/*` JSON feeds and `/gnss/events` server-sent events, with public and authorized private audiences |
 
 See the [GNSS library](gnss/README.md), [signal coverage](docs/CONSTELLATIONS.md),
-and [observer hardware contract](docs/HARDWARE-OBSERVER.md) for details. Federation transport and
-cryptographic OSNMA verification remain planned work.
+and [observer hardware contract](docs/HARDWARE-OBSERVER.md) for details. Federation
+transport and cryptographic OSNMA verification remain planned work. The current
+[RF monitor](docs/DEFENSE-PNT.md) reports jamming and receiver anomalies; confirmed
+spoofing alerts await additional independent detection inputs. ESP32 feeders use
+a [RAM-only spool](esp32/README.md#durability-envelope-read-before-deploying-one-as-a-primary-observer).
 
 ## Build and run locally
 

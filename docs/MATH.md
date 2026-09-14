@@ -1,10 +1,13 @@
 # navlistener — the GNSS math, laid out for the developer
 
-**Status: design (2026-07-07).** This is the complete reference for every calculation
-the `gnss` module performs. It is written so a developer with no GNSS background can implement
-each function from this page plus the cited ICD section — **the ICD is the authority; this page
-is the map through it.** Every equation carries its source. galmon is used only as a
-*differential-test oracle* (§12), never as a source of code.
+**Status: implementation reference with planned extensions.** The reusable
+[`gnss` module](../gnss/README.md) implements the propagation, clock, geometry,
+accuracy, and ionosphere calculations identified below. NeQuick-G and BDGIM delay
+evaluation and the TLE/SGP4 cross-check remain planned.
+
+This reference explains the calculations for developers without a GNSS background.
+**The ICD is the authority; this page is the map through it.** Equations cite their
+sources; independent implementation comparisons are a validation method (§12).
 
 Conventions: angles in **radians** unless noted; positions in **metres**, ECEF (Earth-Centered
 Earth-Fixed) unless noted; time in **seconds** unless noted. Semi-circles (the unit many ICDs
@@ -416,16 +419,21 @@ NeQuick-G/BDGIM; the GPS/QZSS function is not a compatible substitute.
 
 ### 7.2 NeQuick-G (Galileo)
 
+**Current implementation:** coefficient storage and `EffectiveIonisation` only.
+The slant-delay profile integration, grids, and reference-vector suite below are planned.
+
 Galileo broadcasts three **effective ionisation** coefficients `a₀, a₁, a₂` (not Klobuchar).
 The delay is computed by the full **NeQuick-G** profile integration along the ray, driven by the
 effective ionisation level `Az = a₀ + a₁·MODIP + a₂·MODIP²` (MODIP from the modip grid) and
 month/solar inputs. This is a substantial model — implement per the **"European GNSS (Galileo)
 Open Service NeQuick-G" (JRC, EU 2016)** specification and its reference code description; ship
 the modip grid and the ITU-R coefficient tables as data assets. Cross-check against the JRC test
-vectors. (For a first cut we may expose the broadcast `a₀..a₂` and defer the full profile integral
-behind a feature flag, but the target is the real model.)
+vectors when the evaluator is implemented.
 
 ### 7.3 BDGIM (BeiDou B-CNAV)
+
+**Current implementation:** B-CNAV2 coefficient decoding and storage. The delay
+evaluator and its reference-vector tests remain planned.
 
 BeiDou's modern signals carry the **BeiDou Global Ionospheric delay correction Model** — 9
 broadcast coefficients `α1..α9` over a spherical-harmonic basis with predicted coefficients from
@@ -438,8 +446,9 @@ The models above *predict*; a dual-frequency receiver lets us **measure**. Every
 tracks two frequencies of one SV hands us the actual first-order ionospheric delay on that
 line of sight — the geometry (orbit, clocks, troposphere) is common to both signals and
 cancels. This turns §7 from "transcribe and model" into a **measured integrity cross-check**:
-we score the broadcast model against the real ionosphere, per receiver, per satellite,
-continuously.
+the planned model comparison will score the broadcast model against the measured
+ionosphere per receiver and satellite. Current feeds publish uncalibrated slant
+measurements; model delay and residual fields remain reserved.
 
 **Code (pseudorange) combination.** For pseudoranges `P₁, P₂` on frequencies `f₁, f₂` from
 the same SV, with `γ = (f₁/f₂)²` and `I₁` the slant delay at `f₁` (metres):
@@ -460,31 +469,27 @@ b_arc = mean(P_GF − Φ_GF)  over the arc          // ambiguity + noise average
 Î₁    = (Φ_GF + b_arc)/(γ − 1) − bias terms       // smooth slant delay at f₁
 ```
 
-**Biases.** The satellite differential code bias is corrected from the **broadcast group
-delays for the tracked pair** (§4: `TGD`/`ISC` for GPS/QZSS/NavIC, `BGD` for Galileo,
-`TGD1/TGD2` for BeiDou — the same values a single-frequency user applies). The **receiver
-DCB `b_rx`** is a per-receiver, per-pair constant we cannot separate from a constant TEC
-offset without an external reference; v1 estimates it as the constant that best fits the
-receiver's slant measurements to the model over a full local day at high elevation (robust
-median fit) and **flags the method** (`iono_cal`) — the *dynamics* (temporal changes,
-cross-receiver gradients, storm signatures) are bias-free regardless, and those are the
-integrity signal. Optionally, published DCB products (CODE/IGS) can pin `b_rx` exactly.
+**Bias calibration (planned).** Current measurements are uncalibrated (`iono_cal = 0`).
+A calibrated comparison needs satellite differential code-bias corrections for the
+tracked pair and a receiver bias estimate. Broadcast group delays (§4) and external
+DCB products are possible inputs; a daily model fit is another proposed calibration
+method. These methods must be validated before the collector reports calibrated delay.
 
 **Vertical mapping (thin shell).** For elevation `E`, shell height `h = 350 km`,
 `sin χ = R_E/(R_E + h)·cos E`; the obliquity `M(E) = 1/cos χ`; `VTEC = slant/M(E)`.
 Conversion: `I₁[m] = 40.308×10¹⁶·TEC/f₁²` — **1 TECU = 0.162 m at GPS L1**.
 
 **Published per `(SV, receiver)`** (`docs/OUTPUT.md §1.1 perrecv`): `iono_delay_m` (leveled
-measured slant at the pair's primary frequency), `iono_model_m` (the §7.1–7.3 broadcast-model
-slant for the same epoch/geometry), `iono_resid_m` (measured − model), `iono_pair_sigid`
-(the second signal of the pair). **Integrity reading** (`docs/INTEGRITY.md §3`): a residual
+measured slant at the pair's primary frequency), `iono_pair_sigid` (the second signal),
+and `iono_cal` (currently 0). `iono_model_m` and `iono_resid_m` remain reserved for
+the planned model comparison. **Intended integrity reading** (`docs/INTEGRITY.md §3`): a residual
 that jumps *coherently* across receivers and SVs is an ionospheric storm or a broadcast-model
 failure (a space-weather sensor we get for free); a *single* receiver diverging is local
 multipath/interference — down-weight that receiver, don't blame the ionosphere.
 
-**Validation oracle:** computed VTEC is cross-checked against the IGS global ionosphere maps
-(IONEX, public) — agreement within a few TECU at mid-latitude quiet time validates the whole
-chain (RAWX decode → leveling → bias → mapping).
+**Planned independent validation:** compare calibrated VTEC with IGS global
+ionosphere maps (IONEX), using documented geometry, time, and error tolerances.
+This complete-chain comparison is not part of the current test suite.
 
 ---
 
@@ -512,9 +517,9 @@ The integrity signals are *derived* here and *thresholded/alerted* in INTEGRITY.
   non-zero/non-NaN. This is the single most important integrity metric.
 - **Clock discontinuity `time-disco`** — the jump in `Δtsv` (§4, evaluated at the changeover, with
   `Δtr` consistent) between old and new clock models, in ns. `ns/3.335` ≈ metres.
-- **delta-Hz** — per receiver, observed Doppler − predicted Doppler (§2.2). A coherent nonzero
+- **delta-Hz (collector integration planned)** — per receiver, observed Doppler − predicted Doppler (§2.2). A coherent nonzero
   delta-Hz across receivers can indicate a clock/orbit error or spoofing.
-- **RTCM precise-vs-broadcast** — magnitude of the SSR radial/along/cross correction (RTCM
+- **RTCM precise-vs-broadcast (planned)** — magnitude of the SSR radial/along/cross correction (RTCM
   1057–1068), i.e. how far the broadcast orbit is from the precise network orbit. Decoded scale:
   radial 0.1 mm, along/cross 0.4 mm (RTCM-3 SSR).
 - **Health / URA / OSNMA / SISA** transitions.
@@ -538,8 +543,9 @@ a coarse sanity check).
 
 ## 11. TLE cross-check (`best-tle`, `best-tle-dist`)
 
-As an independent orbit reference we match each SV against public TLEs (CelesTrak GNSS
-catalogue), propagate with **SGP4**, and report the best match (`best_tle`) and the distance
+**Planned; no `gnss/tle` package or live TLE comparison is included.** The output
+fields are reserved. The proposed comparison matches each SV against public TLEs
+(CelesTrak GNSS catalogue), propagates with **SGP4**, and reports the best match (`best_tle`) and the distance
 `best_tle_dist_m` between our broadcast-ephemeris ECEF and the SGP4 ECEF. SGP4 is a standard,
 independently-implemented algorithm (using a permissively licensed implementation); the TLE match is a coarse gross-error detector, not a precision reference.
 
@@ -554,25 +560,31 @@ independently-implemented algorithm (using a permissively licensed implementatio
 
 ## 12. Validation strategy (how we know the math is right)
 
-Three independent oracles, in CI:
+The current test suite combines analytic, property, regression, and fuzz tests with
+captured-frame tests and five independent broadcast-ephemeris/precise-orbit fixtures.
+See [the GNSS tests](../gnss/README.md#testing) and
+[fixture provenance and tolerances](../gnss/testdata/README.md). These validate
+selected inputs and epochs, not every signal or every proposed calculation.
 
-1. **Published ICD test vectors.** IS-GPS-200, OS-SIS-ICD (Annex), and the NeQuick-G / BDGIM
-   reference examples give worked numeric cases. Golden tests assert our propagator reproduces
-   them to the ICD tolerance. This is the *authoritative* check — it validates against the spec,
-   not against another implementation.
-2. **RINEX broadcast navigation (BRDC) files.** Feed daily IGS BRDC ephemerides through our
-   propagator and compare the SV positions against the IGS **SP3 precise orbits** at the same
-   epochs — the real-world accuracy check (broadcast-vs-precise is a few metres; a bug is
-   kilometres). Also re-derive our own decoders' output from RINEX to confirm frame decode.
+Validation methods and remaining coverage:
+
+1. **Published ICD test vectors.** Add worked reference cases alongside analytic
+   tests as coverage grows. NeQuick-G and BDGIM reference-vector suites belong with
+   their planned evaluators; they are not part of the current checks.
+2. **RINEX broadcast navigation (BRDC) files.** `gnss/truth_test.go` propagates the
+   committed GPS, Galileo, BeiDou, QZSS, and GLONASS broadcast records and compares
+   them with independent **SP3 precise orbits** at the fixture epochs. Broader daily
+   comparisons and additional signal fixtures remain extensions to this bounded set.
    **Reference-point caveat:** broadcast ephemerides describe the satellite's **antenna phase
    centre (APC)**; SP3 orbits describe its **centre of mass (CoM)**. The difference is the
    satellite phase-centre offset — up to ~1–3 m, mostly radial. Either apply the IGS ANTEX
    PCO (CoM→APC) before differencing, or set the pass tolerance to absorb the documented
    radial bias; silently differencing APC against CoM would "fail" a correct propagator at
    exactly the metre scale this check is supposed to certify.
-3. **Independent implementation comparison.** Run galmon and `navlistener` over the **same captured raw
-   frame stream** and diff the numbers — the harness maps galmon's `svs.json` fields onto our
-   native feed fields (ECEF, clock offset, orbit/time discontinuities) and compares numerically.
+3. **Independent implementation comparison (optional development workflow).** Run
+   separately obtained implementations, including galmon, over the same captured
+   frame stream and compare ECEF, clock, and discontinuity values. A runtime bridge
+   and an automated galmon comparison harness are not included in the build checks.
    **Agreement cross-validates both implementations**; a disagreement
    is a bug in one of us worth root-causing. Check units, reference frames, signal conventions, and constants
    before interpreting a numerical difference. The comparison uses numerical
