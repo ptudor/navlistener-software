@@ -9,6 +9,7 @@ coverage.*
 
 # Local editor / OS artifacts
 .DS_Store
+*.dSYM/
 
 # EasyEDA automatic timestamped snapshots; commit the live .eprj2 project instead
 /pcb/projects/*_backup/
@@ -40,7 +41,7 @@ navlistener.toml
 *.key
 *.crt
 
-# Claude local machine settings
+# Local editor settings
 .claude/settings.local.json
 
 # Reference ICDs (reference/icd/, catalogued in reference/REFERENCES.md):
