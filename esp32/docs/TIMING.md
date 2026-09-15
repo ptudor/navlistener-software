@@ -23,6 +23,10 @@ remain part of the measurement.
 - `rtc_minus_gnss_phase_ns` is RTC edge phase minus GNSS edge phase, wrapped to
   [−0.5, +0.5) seconds. Its *change* reveals relative drift. The initial RTC phase
   is arbitrary: RTC calendar initialization does not align its edge to UTC.
+  Adjacent captured cycles are normalized using the last measured GNSS period
+  before wrapping to the nominal ESP-second display range. This avoids an apparent
+  phase step from ESP clock error when polling crosses a pulse boundary. It is a phase estimate;
+  variations in the reference period still contribute uncertainty.
 - Hardware pulse totals count electrical rising edges, independently of the
   software timestamp queue. The captured-edge count allows comparison with
   software delivery. Neither count proves those edges represent valid UTC.

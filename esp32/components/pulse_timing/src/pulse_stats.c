@@ -77,6 +77,15 @@ void pulse_stats_snapshot(const pulse_stats_t *s, uint64_t now, report_timing_t 
     if (s->hz && (out->channel[0].flags & (TIMING_FRESH|TIMING_PERIOD_VALID)) == (TIMING_FRESH|TIMING_PERIOD_VALID) &&
         (out->channel[1].flags & (TIMING_FRESH|TIMING_PERIOD_VALID)) == (TIMING_FRESH|TIMING_PERIOD_VALID)) {
         int64_t phase=(int32_t)(s->channel[1].rise_tick-s->channel[0].rise_tick);
+        // Latest edges can belong to adjacent cycles as the polling phase
+        // moves. Normalize with the measured GNSS period first: substituting
+        // a nominal ESP second here creates a step equal to ESP clock error.
+        int64_t period=s->channel[0].report.period_ticks;
+        phase %= period;
+        if (phase >= period/2) phase-=period;
+        if (phase < -period/2) phase+=period;
+        // Keep the wire's signed, nominal half-second display range even for
+        // an irregular but accepted reference period near its validity bounds.
         phase %= s->hz;
         if (phase >= (int64_t)s->hz/2) phase-=s->hz;
         if (phase < -(int64_t)s->hz/2) phase+=s->hz;

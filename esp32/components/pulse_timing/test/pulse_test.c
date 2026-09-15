@@ -66,4 +66,18 @@ static void negative_phase(void)
     pulse_stats_snapshot(&s,2800000,&out);
     assert((out.flags&1) && out.rtc_minus_gnss_ticks==-20000000);
 }
-int main(void) { daily(); gaps(); negative_phase(); puts("pulse daily counts, wraparound, gaps, stale data and phase tests passed"); }
+static void adjacent_cycles(void)
+{
+    pulse_stats_t s={.hz=80000000}; report_timing_t first={0}, next={0};
+    const uint32_t period=79999600; // -5 ppm relative to the ESP
+    for (unsigned n=1;n<=2;n++) for (unsigned c=0;c<2;c++)
+        pulse_stats_edge(&s,c,true,n*period+c*8000000,n*1000000+c*100000);
+    pulse_stats_snapshot(&s,2200000,&first);
+    // The next GNSS edge arrives before the next RTC edge. The reported RTC
+    // phase must not jump by the 400-tick reference-period error at that point.
+    pulse_stats_edge(&s,0,true,3*period,3000000);
+    pulse_stats_snapshot(&s,3050000,&next);
+    assert((first.flags&1) && (next.flags&1));
+    assert(first.rtc_minus_gnss_ticks==8000000 && next.rtc_minus_gnss_ticks==8000000);
+}
+int main(void) { daily(); gaps(); negative_phase(); adjacent_cycles(); puts("pulse daily counts, wraparound, gaps, stale data and phase tests passed"); }
