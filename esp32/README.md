@@ -271,6 +271,10 @@ Install this baseline **over USB once**, including its rollback-capable bootload
 Reserved slots alone do not give older firmware an updater. The C6 remains
 serial-update only. Keep the factory application as the recovery image.
 
+The planned appliance-style successor adds signed release channels, automatic
+checks, staged installation, fleet rollout and production device security. Its
+implementation contract is [Software updates for the ESP32-S3 observer](docs/SOFTWARE-UPDATES.md).
+
 ### Pair an update credential
 
 Join the board's password-protected provisioning AP. Before saving its WiFi

@@ -68,6 +68,9 @@ matched to `feeder/navfeeder.c`. No I/O — pure encode/parse over buffers.
   local startup without depending on EEPROM, GNSS reception or collector uptime.
 - `tools/ota.py` provides pairing, update initiation and status. The operator
   runbook is in [the firmware guide](../README.md#on-demand-ota-updates-esp32-s3).
+- The signed, staged, fleet-managed successor is specified in
+  [SOFTWARE-UPDATES.md](SOFTWARE-UPDATES.md), including the release transaction,
+  weekly policy, safe reboot, production security and recovery requirements.
 - Host tests inject download, digest, flash and interruption failures around
   actual update code. **Still required:** bench HTTPS update, wrong-image and
   interrupted-download trials, crash-before-confirmation rollback, and real
