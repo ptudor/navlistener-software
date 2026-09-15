@@ -50,8 +50,9 @@ int main(int argc, char **argv)
     assert(observer_report_due(&p,&r)==REPORT_CHANGE); // unavailable is a change
     observer_report_sent(&p,&r); r.uptime_ms+=60000; r.environment.valid|=2;
     assert(observer_report_due(&p,&r)==REPORT_CHANGE); // recovery is a change
-    assert(panel_pwm_off_ticks(33)==686 && panel_pwm_off_ticks(100)==0 && panel_pwm_off_ticks(0)==1024);
-    assert(panel_next_brightness(33)==10 && panel_next_brightness(10)==100 && panel_next_brightness(100)==33);
+    assert(panel_pwm_off_ticks(50)==512 && panel_pwm_off_ticks(20)==819 && panel_pwm_off_ticks(10)==922);
+    assert(panel_pwm_off_ticks(100)==0 && panel_pwm_off_ticks(0)==1024);
+    assert(panel_next_brightness(20)==10 && panel_next_brightness(10)==50 && panel_next_brightness(50)==20);
     panel_button_t button={0};
     assert(!panel_button_short_press(&button,true,200));
     assert(!panel_button_short_press(&button,false,80));

@@ -197,11 +197,12 @@ Sampling is every 30 seconds, with meaningful-change reporting, a five-minute
 check-in, and fresh snapshots on receiver interference-state transitions.
 The collector must support this report before the firmware is deployed.
 
-Both LED rows start at 33% brightness using 4 kHz PWM. A short BOOT press
-(0.1–3 seconds, then release) cycles 33% → 10% → 100% → 33% at runtime,
+Both LED rows default to 20% brightness using 4 kHz PWM. A short BOOT press
+(0.1–3 seconds, then release) cycles 20% → 10% → 50% → 20% at runtime,
 including before network provisioning while the setup portal is active.
-The setting lasts until reboot; the existing eight-second configuration-reset
-hold remains separate. The dedicated PPS and power LEDs have separate hardware
+The board saves each applied brightness change in NVS and restores it before
+enabling PWM on subsequent boots. The eight-second network configuration-reset
+hold preserves this preference. The dedicated PPS and power LEDs have separate hardware
 paths and are not dimmed. PWM pauses during TLC5916 serial/latch writes because
 OE also participates in mode selection; see [TLC5916 section 9.4](https://www.ti.com/lit/ds/symlink/tlc5916.pdf).
 Lower panel power can change nearby temperature readings.

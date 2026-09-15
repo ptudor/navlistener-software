@@ -14,6 +14,7 @@
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "panel_control.h"
+#include "panel_settings.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
@@ -35,9 +36,9 @@ static observer_report_t report;
 static report_policy_t report_policy;
 static uint64_t (*report_now_ns)(void);
 static int64_t next_environment, last_environment = -5000;
-static atomic_uint brightness = 33;
+static atomic_uint brightness = PANEL_DEFAULT_BRIGHTNESS;
 static uint64_t next_timing;
-static unsigned applied_brightness = 33;
+static unsigned applied_brightness = PANEL_DEFAULT_BRIGHTNESS;
 static bool pwm_ready;
 void observer_board_set_brightness(unsigned percent)
 { atomic_store(&brightness, percent > 100 ? 100 : percent); }
@@ -331,6 +332,8 @@ static void board_task(void *arg)
     identify_peripherals();
     history_load();
     uint8_t previous_green = 255, previous_yellow = 255;
+    bool brightness_dirty = false;
+    int64_t next_brightness_write = 0;
     for (;;) {
         gnss_status_t status;
         receiver_status(&status);
@@ -347,6 +350,18 @@ static void board_task(void *arg)
             ESP_LOGI(TAG, "panel green=0x%02x yellow=0x%02x (GPS SBAS GAL BDS QZSS GLO NavIC uplink)", green, yellow);
             previous_green = green; previous_yellow = yellow;
         }
+        if (brightness_changed) brightness_dirty = true;
+        if (brightness_dirty && now >= next_brightness_write) {
+            esp_err_t err = panel_brightness_save(applied_brightness);
+            if (err == ESP_OK) {
+                brightness_dirty = false;
+                ESP_LOGI(TAG, "panel brightness saved=%u%%", applied_brightness);
+            } else {
+                ESP_LOGW(TAG, "could not save panel brightness: %s; retrying in 60 seconds",
+                         esp_err_to_name(err));
+            }
+            next_brightness_write = err == ESP_OK ? 0 : now + 60000;
+        }
         observer_rtc_poll(hardware_manifest_i2c_bus(), &status, now);
         report_poll(&status, now, gnss_status_expected(&status, now, learned));
         timing_poll(&status);
@@ -358,6 +373,12 @@ static void board_task(void *arg)
 }
 esp_err_t observer_board_start(void)
 {
+    // Restore before PWM starts, including in provisioning mode.
+    esp_err_t load_err = panel_brightness_load(&applied_brightness);
+    if (load_err != ESP_OK)
+        ESP_LOGW(TAG, "could not load panel brightness: %s; using %u%%",
+                 esp_err_to_name(load_err), applied_brightness);
+    atomic_store(&brightness, applied_brightness);
     const uint64_t outputs = (1ULL << LED_DATA) | (1ULL << LED_CLOCK) | (1ULL << LED_LATCH) |
                             (1ULL << LED_GREEN_OE) | (1ULL << LED_YELLOW_OE);
     gpio_set_level(LED_GREEN_OE, 1); gpio_set_level(LED_YELLOW_OE, 1);

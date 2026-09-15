@@ -14,6 +14,6 @@ bool panel_button_short_press(panel_button_t *s, bool pressed, uint32_t ms)
     *s = (panel_button_t){0};
     return short_press;
 }
-unsigned panel_next_brightness(unsigned percent) { return percent > 33 ? 33 : percent > 10 ? 10 : 100; }
+unsigned panel_next_brightness(unsigned percent) { return percent > 20 ? 20 : percent > 10 ? 10 : 50; }
 unsigned panel_pwm_off_ticks(unsigned percent)
 { if (percent > 100) percent = 100; return 1024 - (1024 * percent + 50) / 100; }
