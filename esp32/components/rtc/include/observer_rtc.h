@@ -8,4 +8,5 @@
 void observer_rtc_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss, int64_t now_ms);
 // Snapshot only; call from the same board task. Flags describe the last read.
 report_rtc_t observer_rtc_status(void);
+void observer_rtc_square_wave_status(uint8_t *state, uint8_t *control, uint8_t *trim);
 #endif

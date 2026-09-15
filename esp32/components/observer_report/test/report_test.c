@@ -5,7 +5,7 @@
 #include <string.h>
 int main(int argc, char **argv)
 {
-    assert(argc == 2);
+    assert(argc == 3);
     observer_report_t r = {.uptime_ms=1000000, .event_count=3, .event_ms=999000,
         .reason=8, .event_flags=1, .event_states=6,
         .environment={7,7,2550,4212,2500,5000,100000},
@@ -20,6 +20,18 @@ int main(int argc, char **argv)
     fclose(f);
     assert(observer_report_encode(actual,sizeof actual,&r)==count);
     assert(!memcmp(actual,expected,count));
+    report_timing_t timing={.present=true,.clock=1,.rtc_state=1,.rtc_control=0xc0,.flags=3,
+        .tp_flags=3,.tp_ms=999500,.resolution_hz=80000000,.started_ms=1000,.rtc_minus_gnss_ticks=-80};
+    for (unsigned i=0;i<2;i++) timing.channel[i]=(timing_channel_report_t){
+        .flags=63,.period_ticks=80000080+i*80,.width_ticks=40000000,.min_ticks=80000000,.max_ticks=80000160,
+        .captured=999,.physical=999,.span_ticks=UINT64_C(998)*(80000080+i*80),.span_intervals=998,.last_rise_ms=999600};
+    f=fopen(argv[2],"r"); assert(f); size_t timing_count=0;
+    while (fscanf(f,"%2x",&byte)==1) { assert(timing_count<sizeof expected); expected[timing_count++]=byte; }
+    fclose(f);
+    assert(observer_timing_encode(actual,sizeof actual,&timing,1000000)==timing_count);
+    assert(!memcmp(actual,expected,timing_count));
+    memset(actual,0xa5,sizeof actual);
+    assert(!observer_timing_encode(actual,timing_count-1,&timing,1000000) && actual[0]==0xa5);
     memset(actual,0xa5,sizeof actual);
     assert(observer_report_encode(actual,count-1,&r)==0 && actual[0]==0xa5);
     report_policy_t p={0};

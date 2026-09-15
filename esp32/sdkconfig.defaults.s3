@@ -22,6 +22,9 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-s3.csv"
 # LCD/WS2812 drivers held dormant because their fixed pins are this board's I2C.
 CONFIG_NVF_BOARD_GNSS_COLOR_NEO=y
 
+# Hardware edge timestamps must remain serviceable during NVS/OTA flash writes.
+CONFIG_MCPWM_ISR_CACHE_SAFE=y
+
 # N16R8 has 8 MiB octal PSRAM. Normal allocations and task stacks stay in
 # internal RAM; the spool explicitly requests external memory. Missing PSRAM
 # remains bootable using the smaller internal spool budget.

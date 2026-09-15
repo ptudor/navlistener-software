@@ -109,3 +109,20 @@ Host tests cover repeated FIFO wrap, preservation of the independent boot queue,
 full/write/commit failures before and after persistence, restart recovery,
 corruption refusal, long uptime and hourly cadence. Physical flash interruption,
 long-term endurance and management transport still require hardware validation.
+
+## Pulse totals in checkpoints
+
+Timing-capable firmware also records `timing_flags`, `timing_elapsed_s`,
+`gnss_pulses`, `rtc_pulses`, `timing_dropped`, `rtc_minus_gnss_ticks` and `timing_hz`.
+Flags identify a timing sample (1), valid GNSS hardware count (2), valid RTC
+hardware count (4), valid relative phase (8), fresh GNSS edge (16) and fresh RTC
+edge (32). Counts and elapsed capture time
+restart with each ESP boot; compare differences only within the same boot.
+A pulse near a checkpoint boundary can produce a one-count difference. The
+phase is RTC minus GNSS, wrapped to half a second either side of zero, in capture
+ticks. Divide by `timing_hz` for seconds. These are local-clock comparisons.
+
+The fixed 192-byte `NVJ1` record uses previously reserved bytes 154–186 for this
+extension. Existing records decode with zero timing flags, meaning unavailable;
+CRC, FIFO capacities and write frequency stay the same. Pulse samples are not
+written to flash every second. See [the timing contract](TIMING.md).

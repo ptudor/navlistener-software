@@ -18,6 +18,10 @@ typedef struct {
     char firmware[32], partition[16];
     uint8_t elf_sha256[32];
     uint8_t event, time_source, environment, rtc, rng, manifest;
+    uint8_t timing_flags;
+    uint32_t timing_elapsed_s, timing_dropped, timing_hz;
+    uint64_t gnss_pulses, rtc_pulses;
+    int32_t timing_phase_ticks;
 } journal_record_t;
 typedef struct { nvs_handle_t handle; uint64_t latest[2]; bool ready; } journal_store_t;
 // Separate FIFO lanes: lifecycle events cannot be evicted by hourly checkpoints.

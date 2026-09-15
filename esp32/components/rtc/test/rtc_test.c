@@ -215,9 +215,32 @@ static void io_test(void)
     assert(!memcmp(before, f.regs, sizeof before) && f.saved);
     assert(rtc_enable_backup(&io) && f.writes == 1); // retained calendar not rewritten
 }
+static void square_test(void)
+{
+    fake_t f; rtc_io_t io=fake_io(&f); uint8_t control,trim;
+    f.regs[7]=0x80;
+    assert(rtc_square_wave(&io,&control,&trim)==2 && f.writes==0);
+    assert(rtc_encode(1704067200,f.regs)); f.regs[0]|=0x80; f.regs[3]|=0x30;
+    uint8_t before[32]; memcpy(before,f.regs,32);
+    assert(rtc_square_wave(&io,&control,&trim)==1 && control==0xc0 && trim==0xa5);
+    before[7]=0xc0; assert(!memcmp(before,f.regs,32)); // PWRFAIL/calendar/trim retained
+    assert(f.writes==1);
+    assert(rtc_square_wave(&io,&control,&trim)==1 && f.writes==1);
+    const uint8_t conflicts[]={0x90,0xa0,0x84};
+    for (unsigned i=0;i<sizeof conflicts;i++) {
+        f.regs[7]=conflicts[i];
+        assert(rtc_square_wave(&io,&control,&trim)==3 && f.writes==1);
+    }
+    for (unsigned fail=1;fail<=4;fail++) {
+        io=fake_io(&f); f.regs[7]=0x80;
+        assert(rtc_encode(1704067200,f.regs)); f.regs[0]|=0x80; f.regs[3]|=0x20;
+        f.fail_at=fail;
+        assert(rtc_square_wave(&io,&control,&trim)==4);
+    }
+}
 int main(void)
 {
-    calendar_test(); gnss_test(); io_test();
+    calendar_test(); gnss_test(); io_test(); square_test();
     puts("RTC calendar, GNSS qualification and I2C fault tests passed");
     return 0;
 }

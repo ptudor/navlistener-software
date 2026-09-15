@@ -19,12 +19,16 @@ type BoardEventContext struct {
 	Snapshot BoardSample  `json:"snapshot"`
 }
 type StationBoard struct {
-	Latest           BoardSample        `json:"latest"`
+	Latest           *BoardSample       `json:"latest,omitempty"`
 	Stale            bool               `json:"stale"`
 	LastInterference *BoardEventContext `json:"last_interference,omitempty"`
+	Timing           *BoardSample       `json:"timing,omitempty"`
+	TimingStale      bool               `json:"timing_stale"`
 }
 type boardStation struct {
-	latest BoardSample
+	latest *BoardSample
+	last   BoardSample // ordering across independently paced board/timing records
+	timing *BoardSample
 	event  *BoardEventContext
 }
 
@@ -36,11 +40,11 @@ func (s *Store) applyBoard(f *ingest.RawFrame) {
 	defer s.rfMu.Unlock()
 	old := s.boards[f.Source]
 	if old != nil {
-		if f.Session == old.latest.Session &&
-			((f.HasSeq && f.Seq <= old.latest.Sequence) || f.Details.UptimeMS < old.latest.Details.UptimeMS) {
+		if f.Session == old.last.Session &&
+			((f.HasSeq && f.Seq <= old.last.Sequence) || f.Details.UptimeMS < old.last.Details.UptimeMS) {
 			return
 		}
-		if f.LocalRecv().Before(old.latest.ReceivedAt) {
+		if f.LocalRecv().Before(old.last.ReceivedAt) {
 			return
 		}
 	}
@@ -57,17 +61,28 @@ func (s *Store) applyBoard(f *ingest.RawFrame) {
 		old = &boardStation{}
 		s.boards[f.Source] = old
 	}
-	if f.Details.EventCount != 0 && (old.latest.Session != f.Session || old.latest.Details.EventCount != f.Details.EventCount) {
+	if old.last.Session != f.Session {
+		old.latest = nil
+		old.timing = nil
+		old.event = nil
+	}
+	old.last = sample
+	if f.Details.Timing != nil {
+		timing := sample
+		old.timing = &timing
+		if f.Details.Environment == nil && f.Details.RTC == nil && f.Details.ATECC == nil && f.Details.EEPROM == nil && f.Details.Resources == nil && f.Details.Receiver == nil && f.Details.Firmware == "" {
+			return
+		}
+	}
+	if f.Details.EventCount != 0 && (old.latest == nil || old.latest.Details.EventCount != f.Details.EventCount) {
 		event := &BoardEventContext{Snapshot: sample}
-		if old.latest.Session == f.Session && !old.latest.ReceivedAt.IsZero() {
-			previous := old.latest
+		if old.latest != nil && old.latest.Session == f.Session && !old.latest.ReceivedAt.IsZero() {
+			previous := *old.latest
 			event.Before = &previous
 		}
 		old.event = event
-	} else if old.latest.Session != f.Session {
-		old.event = nil
 	}
-	old.latest = sample
+	old.latest = &sample
 }
 
 // FeedStationBoards returns private board context. It does not influence GNSS
@@ -79,11 +94,11 @@ func (s *Store) FeedStationBoards(now time.Time) map[string]StationBoard {
 	defer s.rfMu.Unlock()
 	out := make(map[string]StationBoard, len(s.boards))
 	for id, st := range s.boards {
-		stale := now.Sub(st.latest.ReceivedAt) > 11*time.Minute
-		if st.latest.SampleTime != nil && now.Sub(*st.latest.SampleTime) > 11*time.Minute {
-			stale = true
+		stale := func(sample *BoardSample, after time.Duration) bool {
+			return sample == nil || now.Sub(sample.ReceivedAt) > after || (sample.SampleTime != nil && now.Sub(*sample.SampleTime) > after)
 		}
-		out[id] = StationBoard{Latest: st.latest, Stale: stale, LastInterference: st.event}
+		out[id] = StationBoard{Latest: st.latest, Stale: stale(st.latest, 11*time.Minute), LastInterference: st.event,
+			Timing: st.timing, TimingStale: stale(st.timing, 5*time.Second)}
 	}
 	return out
 }

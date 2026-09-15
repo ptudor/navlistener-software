@@ -10,7 +10,9 @@ void gnss_status_feed(gnss_status_t *s, uint8_t cls, uint8_t id,
                       const uint8_t *p, size_t len, int64_t now)
 {
     if (!p) return;
-    if (cls == 0x0a && id == 0x38 && len >= 4 && p[0] == 0 && p[1] && len == 4u + 24u*p[1]) {
+    if (cls == 0x0d && id == 1 && len == 16 && !(p[14] & 0xc0) && le32(p) < 604800000) {
+        s->tp_valid=true; s->tp_flags=p[14]; s->tp_ref=p[15]; s->tp_ms=now;
+    } else if (cls == 0x0a && id == 0x38 && len >= 4 && p[0] == 0 && p[1] && len == 4u + 24u*p[1]) {
         uint8_t jam = 0;
         for (size_t i = 4; i < len; i += 24) if ((p[i+1] & 3) > jam) jam = p[i+1] & 3;
         if ((s->rf_valid && jam != s->jam) || (!s->rf_valid && jam >= 2)) {

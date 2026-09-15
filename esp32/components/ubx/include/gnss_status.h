@@ -14,6 +14,9 @@ typedef struct {
     uint32_t event_count;
     int64_t rf_ms, status_ms, event_ms;
     uint8_t pvt_utc[20]; // NAV-PVT bytes 4..23; RTC validates UTC independently
+    bool tp_valid;
+    uint8_t tp_flags, tp_ref;
+    int64_t tp_ms; // TIM-TP describes the NEXT pulse, not an associated capture
 } gnss_status_t;
 void gnss_status_feed(gnss_status_t *s, uint8_t cls, uint8_t id,
                       const uint8_t *body, size_t len, int64_t now_ms);

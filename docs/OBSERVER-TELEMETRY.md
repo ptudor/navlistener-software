@@ -67,8 +67,8 @@ The M9's "no spoofing indicated" state is not proof of authentic reception; see
   the separate RTC identity described in [the hardware contract](HARDWARE-OBSERVER.md#4-identity-and-trust).
 - Spool allocation, queue/drop counters and free heap are sampled at report time.
   These counters describe the RAM buffer, not collector delivery or persistence.
-  PPS presence/precision, battery presence, RTC factory EUI and ATECC serial are
-  not measured by this report version; no successful status is fabricated for them.
+  Battery presence, RTC factory EUI and ATECC serial are not measured by this
+  report version. The separate timing component below measures pulse inputs.
 
 Sensor failures clear that sample's validity and values. Other sensors continue.
 Transient read failures recover on later samples; devices that failed initial
@@ -113,6 +113,7 @@ invalid lengths/enums/ranges, and trailing partial TLVs are rejected.
 | 5 resources | 29 | spool-in-PSRAM U8, used bytes U32, capacity bytes U32, queued records U32, dropped records U64, free internal bytes U32, free PSRAM bytes U32 |
 | 6 receiver context | 29 | supported mask U8, expected mask U8, tracked counts[8], validity U8, jamming U8, spoofing U8, MON-RF uptime U64, NAV-STATUS uptime U64 |
 | 7 firmware | 1–32 | Printable ASCII application version (build git description when available) |
+| 8 timing | 196 | Versioned GNSS/RTC pulse snapshot; layout below |
 
 Environment mask bits 0/1/2 identify MCP/HDC/BMP respectively. Valid requires
 ready. Temperature units are 0.01 °C, RH units 0.01%, pressure units Pa. Invalid
@@ -140,6 +141,49 @@ Jamming: 0 unknown, 1 OK, 2 warning, 3 critical. Spoofing: 0 unknown/deactivated
 1 no indication, 2 indication, 3 multiple indications. This is receiver context,
 not a replacement for high-rate ReceptionData/JammingStats.
 
+## Timing component (tag 8, version 1)
+
+S3 firmware sends a timing-only record once per second, with reason `check-in`
+and zero interference header fields. It does not trigger sensor conversions or
+replace the environmental event baseline. Upgrade collectors before firmware:
+older collectors that know only tags 1–7 reject an all-unknown timing-only record.
+
+| Offset within tag | Bytes | Meaning |
+|---:|---:|---|
+| 0 | 1 | Timing version = 1 |
+| 1 | 1 | Capture clock = 1 (ESP APB) |
+| 2 | 1 | RTC square-wave state: unknown=0, enabled 1 Hz=1, oscillator stopped/invalid calendar=2, alarm/coarse-trim conflict=3, I/O error=4 |
+| 3, 4 | 1 each | RTC CONTROL and OSCTRIM register readback |
+| 5 | 1 | Validity: relative phase=1, recent TIM-TP metadata=2 |
+| 6, 7 | 1 each | Next-pulse TIM-TP flags and reference byte; zero when unavailable |
+| 8 | 4 | Actual capture resolution in Hz; zero if unavailable |
+| 12 | 4 | Dropped capture queue entries, saturating counter |
+| 16 | 8 | Capture start uptime in milliseconds |
+| 24 | 4 | Signed RTC minus GNSS phase in ticks, modulo one second in [−0.5, +0.5) seconds; zero when invalid |
+| 28 | 8 | TIM-TP receipt uptime in milliseconds; zero when unavailable |
+| 36, 116 | 80 each | GNSS, then RTC channel record |
+
+Each channel has the following layout:
+
+| Offset | Type | Meaning |
+|---:|---|---|
+| 0 | U32 | Flags: enabled=1, hardware count valid=2, fresh rising edge=4, period valid=8, width valid=16, continuous span valid=32 |
+| 4, 8 | U32 each | Last period and high width, ticks; zero when invalid |
+| 12, 16 | U32 each | Minimum/maximum accepted period since capture start |
+| 20 | U32 | Capture discontinuities |
+| 24 | U64 | Missing-pulse estimate from observed gaps; separate from actual counts |
+| 32, 40 | U64 each | Captured rising-edge records; independent hardware pulse count |
+| 48, 56 | U64 each | Continuous span ticks and number of complete rising-to-rising intervals |
+| 64 | U64 | Last captured rising-edge uptime in milliseconds |
+| 72 | U32 | Hardware counter discontinuities; any ambiguity clears count-valid for this boot |
+| 76 | U32 | Reserved zero |
+
+An edge is fresh for 1.5 seconds. Period/width/span validity clears when stale;
+counts, extrema and previous span totals remain historical evidence. Zero counts
+are valid for an enabled counter that has received no pulses. An unavailable
+capture has zero channel flags. Units, clock assumptions, counter limits and
+receiver metadata caveats are in [TIMING.md](../esp32/docs/TIMING.md).
+
 ## Collector output and retention
 
 `/gnss/api/v2/observers` adds optional `board` in authorized operator,
@@ -147,7 +191,7 @@ organization and collection views. Public projections exclude the entire record,
 including identifiers, and board-only stations never create public observer rows.
 The authenticated GNF1 context selects station and scope; the payload cannot.
 
-`board.latest` contains `received_at`, nullable `sample_time`, `session`,
+`board.latest` is omitted until an environmental/health sample arrives. It contains `received_at`, nullable `sample_time`, `session`,
 `sequence`, and `details`. Names/units inside `details.environment` are
 `mcp9808_c`, `hdc2080_c`, `bmp388_bmp384_c`, `humidity_percent`, `pressure_pa`.
 Component health and identifiers appear under `rtc`, `atecc`, `eeprom`,
@@ -162,6 +206,15 @@ older than 11 minutes. Unstamped replay age cannot be determined from receipt
 time alone. Duplicate/older sequence numbers within the same session do not
 replace live samples.
 
+`board.timing` contains a separate `BoardSample`, with pulse data in
+`details.timing`. Raw ticks/counts accompany derived `period_ns`, `width_ns`,
+`span_phase_ns` and span-average `period_error_ppm`; invalid derived values are
+JSON null. Positive period error means the input period is longer than a nominal
+ESP second. `rtc_minus_gnss_phase_ns` is wrapped phase, not UTC offset.
+`timing_stale` becomes true after five seconds without a receipt, or with an older
+known sample timestamp. Individual channel freshness is separate. Next-pulse
+TIM-TP metadata is not associated with a specific captured edge.
+
 `board.last_interference` retains the snapshot associated with the latest changed
 event counter and, when available, the preceding report from the same boot as
 `before`. That baseline can be up to a check-in interval old, and a report may
@@ -175,3 +228,7 @@ The shared [binary fixture](../testdata/observer_details_v1.hex) is checked by
 the C encoder and Go decoder. Host tests cover conversion faults, reporting
 cadence, receiver transitions, malformed records, TLS delivery, replay,
 durability classification, baseline retention, expiry and private output.
+
+The [timing fixture](../testdata/observer_timing_v1.hex) is shared by the C encoder,
+Go decoder and serial plot tests. Timing shares the same private audience rules
+and bounded live retention; this version has no durable timing historian.

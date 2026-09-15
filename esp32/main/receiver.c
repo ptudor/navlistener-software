@@ -84,7 +84,8 @@ static void rx_task(void *arg)
     const int rates[] = {CONFIG_NVF_RX_BAUD, 38400, 115200, 9600, 230400, 460800};
     size_t rate_index = 0;
     // One key per request: a receiver rejecting SFRBX must still get telemetry.
-    const uint32_t keys[] = {0x10740001, 0x20910232, 0x2091035a, 0x20910016, 0x20910007, 0x2091001b};
+    const uint32_t keys[] = {0x10740001, 0x20910232, 0x2091035a, 0x20910016, 0x20910007, 0x2091001b,
+        0x2091017e}; // TIM-TP UART1: lock/reference metadata, RAM only
     unsigned setting = 0, tries = 0;
     bool configured = false, baud_attempted = false;
     int64_t cfg_deadline = 0;

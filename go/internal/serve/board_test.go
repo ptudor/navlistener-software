@@ -24,6 +24,12 @@ func TestObserversBoardDetailsPrivateOnly(t *testing.T) {
 	if !strings.Contains(string(data), `"mcp9808_c":null`) || !strings.Contains(string(data), `"eui64":"0200000000000001"`) {
 		t.Fatal("unknown measurement/identity lost")
 	}
+	s.store.Apply(&ingest.RawFrame{Source: "timing-only", Recv: now, Details: &ingest.ObserverDetails{Timing: &ingest.BoardTiming{Clock: "esp_apb"}}})
+	private = s.observers(now, s.store, nil, identity.Audience{Kind: identity.AudienceOperator})
+	data, err = json.Marshal(private)
+	if err != nil || !strings.Contains(string(data), `"clock":"esp_apb"`) {
+		t.Fatal("private timing-only observer absent")
+	}
 	public := s.observers(now, s.store, nil, identity.Audience{Kind: identity.AudiencePublic})
 	if len(public) != 0 {
 		t.Fatal("public observer enumeration from private board")

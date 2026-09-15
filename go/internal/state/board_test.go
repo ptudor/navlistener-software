@@ -56,3 +56,34 @@ func TestBoardStampedReplayIsStale(t *testing.T) {
 		t.Fatal("replay age concealed")
 	}
 }
+
+func TestIndependentTimingAndEnvironmentCadence(t *testing.T) {
+	s := New(1)
+	now := time.Now()
+	apply := func(seq uint64, d *ingest.ObserverDetails) {
+		s.Apply(&ingest.RawFrame{Source: "board", Session: "boot-a", HasSeq: true, Seq: seq,
+			Recv: now, RecvLocal: now, Details: d})
+	}
+	apply(1, &ingest.ObserverDetails{UptimeMS: 100, Firmware: "test"})
+	apply(2, &ingest.ObserverDetails{UptimeMS: 200, Timing: &ingest.BoardTiming{}})
+	apply(3, &ingest.ObserverDetails{UptimeMS: 300, EventCount: 1, Reason: 8})
+	apply(4, &ingest.ObserverDetails{UptimeMS: 400, Timing: &ingest.BoardTiming{}})
+	b := s.FeedStationBoards(now)["board"]
+	if b.Latest.Sequence != 3 || b.Timing.Sequence != 4 || b.LastInterference.Before.Sequence != 1 || b.LastInterference.Snapshot.Sequence != 3 {
+		t.Fatalf("timing overwrote environment/event baseline: %+v", b)
+	}
+	apply(3, &ingest.ObserverDetails{UptimeMS: 400, Timing: &ingest.BoardTiming{}})
+	if s.FeedStationBoards(now)["board"].Timing.Sequence != 4 {
+		t.Fatal("replay replaced timing")
+	}
+	b = s.FeedStationBoards(now.Add(6 * time.Second))["board"]
+	if b.Stale || !b.TimingStale || s.LiveReceivers(now) != 0 {
+		t.Fatal("independent freshness/liveness")
+	}
+	s.Apply(&ingest.RawFrame{Source: "board", Session: "boot-b", RecvLocal: now,
+		Details: &ingest.ObserverDetails{UptimeMS: 1, Timing: &ingest.BoardTiming{}}})
+	b = s.FeedStationBoards(now)["board"]
+	if b.Latest != nil || b.LastInterference != nil || b.Timing == nil || !b.Stale {
+		t.Fatal("new timing boot retained old environmental context")
+	}
+}

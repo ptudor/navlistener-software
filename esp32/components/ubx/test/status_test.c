@@ -13,6 +13,15 @@ static void position(gnss_status_t *s, double lat, double lon, int64_t now)
 }
 int main(void)
 {
+    gnss_status_t timing={0}; uint8_t tp[16]={0}; tp[14]=3; tp[15]=0x10;
+    gnss_status_feed(&timing,0x0d,1,tp,sizeof tp,100);
+    assert(timing.tp_valid && timing.tp_flags==3 && timing.tp_ref==0x10 && timing.tp_ms==100);
+    gnss_status_feed(&timing,0x0d,1,tp,sizeof tp-1,200);
+    assert(timing.tp_ms==100);
+    tp[14]=0x80; gnss_status_feed(&timing,0x0d,1,tp,sizeof tp,200);
+    assert(timing.tp_ms==100);
+    tp[14]=3; put32(tp,604800000); gnss_status_feed(&timing,0x0d,1,tp,sizeof tp,200);
+    assert(timing.tp_ms==100);
     // NAV-STATUS spoofing and MON-RF jamming transitions survive between board polls.
     gnss_status_t security = {0}; uint8_t rf[28] = {0}, ns[16] = {0};
     rf[1]=1; rf[5]=1; ns[7]=8;

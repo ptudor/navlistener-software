@@ -2412,7 +2412,7 @@ func (s *Store) ExpireStations(now time.Time) {
 		}
 	}
 	for id, st := range s.boards {
-		if now.Sub(st.latest.ReceivedAt) > stationEvictAfter {
+		if now.Sub(st.last.ReceivedAt) > stationEvictAfter {
 			delete(s.boards, id)
 		}
 	}

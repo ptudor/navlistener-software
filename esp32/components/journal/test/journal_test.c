@@ -34,7 +34,9 @@ static journal_record_t record(uint8_t event)
     journal_record_t r={.event=event,.boot=1,.utc=1800000000,.time_source=JOURNAL_TIME_GNSS,
         .uptime_ms=UINT64_C(100000000000),.dropped=UINT64_C(9007199254740993),
         .flags=JOURNAL_SAMPLED|JOURNAL_RECEIVER,.reset_reason=7,.queued=123,.internal_free=456,
-        .environment=7,.rng=2,.manifest=6};
+        .environment=7,.rng=2,.manifest=6,
+        .timing_flags=15,.timing_elapsed_s=86400,.gnss_pulses=86400,.rtc_pulses=86401,
+        .timing_dropped=3,.timing_phase_ticks=-80,.timing_hz=80000000};
     strcpy(r.firmware,"revision-one"); strcpy(r.partition,"ota_0"); memset(r.elf_sha256,0xa5,32);
     return r;
 }
@@ -51,6 +53,8 @@ static void fifo(void)
     }
     assert(journal_store_read(&s,0,1,&got)==ESP_OK && got.event==JOURNAL_BOOT);
     assert(got.dropped==UINT64_C(9007199254740993) && got.elf_sha256[31]==0xa5);
+    assert(got.timing_flags==15 && got.timing_elapsed_s==86400 && got.gnss_pulses==86400 && got.rtc_pulses==86401);
+    assert(got.timing_dropped==3 && got.timing_phase_ticks==-80 && got.timing_hz==80000000);
     uint64_t last=s.latest[1];
     assert(journal_store_read(&s,1,last-JOURNAL_HEALTH_CAP,&got)==ESP_ERR_NVS_NOT_FOUND);
     for (uint64_t seq=last-JOURNAL_HEALTH_CAP+1;seq<=last;seq++)
@@ -108,4 +112,22 @@ static void cadence(void)
     assert(journal_checkpoint_due(&p,years)); journal_checkpoint_saved(&p,years);
     assert(!journal_checkpoint_due(&p,years+1));
 }
-int main(void) { fifo(); faults(); cadence(); puts("journal FIFO, recovery, full-store and cadence tests passed"); }
+static void previous_format(void)
+{
+    reset(); journal_store_t s; assert(journal_store_open(&s)==ESP_OK);
+    journal_record_t r=record(JOURNAL_BOOT), got;
+    assert(journal_store_append(&s,&r)==ESP_OK);
+    // Original NVJ1 rows had zero reserved bytes here. Recreate a valid old
+    // record and reopen it; absent timing must not mean zero clock error.
+    uint8_t *b=slots[0][0].bytes;
+    memset(b+154,0,34); uint32_t crc=UINT32_MAX;
+    for (unsigned i=0;i<188;i++) {
+        crc^=b[i];
+        for (unsigned bit=0;bit<8;bit++) crc=(crc>>1)^(0xedb88320u & (0u-(crc&1)));
+    }
+    crc=~crc; for (unsigned i=0;i<4;i++) b[188+i]=crc>>(8*i);
+    journal_store_close(&s); assert(journal_store_open(&s)==ESP_OK);
+    assert(journal_store_read(&s,0,1,&got)==ESP_OK && got.boot==1 && got.timing_flags==0 && got.timing_hz==0);
+    journal_store_close(&s);
+}
+int main(void) { fifo(); faults(); cadence(); previous_format(); puts("journal FIFO, recovery, full-store, compatibility and cadence tests passed"); }

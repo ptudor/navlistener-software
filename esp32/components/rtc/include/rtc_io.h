@@ -13,4 +13,7 @@ typedef struct {
 bool rtc_enable_backup(const rtc_io_t *io);
 // Timekeeping and CONTROL only (0x00..0x07); never SRAM/EEPROM/EUI/alarm data.
 bool rtc_set_verified(const rtc_io_t *io, int64_t epoch);
+// 1=1 Hz enabled, 2=oscillator stopped, 3=alarm/coarse-trim conflict, 4=I/O failure.
+// Only CONTROL's SQWEN/SQWFS change; calendar, trim, alarms and identity stay intact.
+unsigned rtc_square_wave(const rtc_io_t *io, uint8_t *control, uint8_t *trim);
 #endif

@@ -27,6 +27,7 @@
 #include "pusher.h"
 #include "nvs.h"
 #include "journal.h"
+#include "pulse_timing.h"
 
 static const char *TAG = "observer_board";
 static observer_report_t report;
@@ -34,6 +35,7 @@ static report_policy_t report_policy;
 static uint64_t (*report_now_ns)(void);
 static int64_t next_environment, last_environment = -5000;
 static atomic_uint brightness = 33;
+static uint64_t next_timing;
 static unsigned applied_brightness = 33;
 static bool pwm_ready;
 void observer_board_set_brightness(unsigned percent)
@@ -290,9 +292,35 @@ static void report_poll(const gnss_status_t *status, int64_t now, uint8_t expect
             (unsigned long)report.event_count, (unsigned)n);
     }
 }
+static void timing_poll(const gnss_status_t *status)
+{
+    uint64_t now=esp_timer_get_time()/1000;
+    pulse_timing_poll(now*1000,&report.timing);
+    observer_rtc_square_wave_status(&report.timing.rtc_state,&report.timing.rtc_control,&report.timing.rtc_trim);
+    if (status->tp_valid && now >= (uint64_t)status->tp_ms && now-status->tp_ms <= 3000) {
+        report.timing.flags |= 2; report.timing.tp_flags=status->tp_flags;
+        report.timing.tp_ref=status->tp_ref; report.timing.tp_ms=status->tp_ms;
+    }
+    if (now < next_timing) return;
+    next_timing=now+1000;
+    uint8_t body[OBSERVER_REPORT_MAX], record[OBSERVER_REPORT_MAX+GNF1_RECORD_HDR];
+    size_t length=observer_timing_encode(body,sizeof body,&report.timing,esp_timer_get_time()/1000);
+    if (!length) return;
+    size_t n=gnf1_encode_telem(record,report_now_ns ? report_now_ns() : 0,GNF1_T_OBSERVER,body,length);
+    if (n) (void)spool_append(record,n);
+    // Same versioned bytes as collector telemetry. A serial capture can produce
+    // plots and count audits before networking/enrollment is commissioned.
+    static const char digits[]="0123456789abcdef";
+    char hex[2*OBSERVER_REPORT_MAX+1];
+    for (size_t i=0;i<length;i++) { hex[2*i]=digits[body[i]>>4]; hex[2*i+1]=digits[body[i]&15]; }
+    hex[2*length]=0;
+    ESP_LOGI("pulse_timing","sample=%s",hex);
+}
 static void board_task(void *arg)
 {
     (void)arg;
+    esp_err_t timing_error=pulse_timing_start();
+    if (timing_error != ESP_OK) ESP_LOGW(TAG,"pulse capture unavailable: %s; GNSS continues",esp_err_to_name(timing_error));
     identify_peripherals();
     history_load();
     uint8_t previous_green = 255, previous_yellow = 255;
@@ -314,6 +342,7 @@ static void board_task(void *arg)
         }
         observer_rtc_poll(hardware_manifest_i2c_bus(), &status, now);
         report_poll(&status, now, gnss_status_expected(&status, now, learned));
+        timing_poll(&status);
         observer_report_t journal_report=report;
         journal_report.rtc=observer_rtc_status();
         journal_poll(&status,&journal_report,esp_timer_get_time()/1000);

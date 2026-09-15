@@ -139,20 +139,24 @@ matched to `feeder/navfeeder.c`. No I/O — pure encode/parse over buffers.
 - This is separate from persistent observation spooling. Hardware power-cut,
   long-term endurance and remote readout qualification remain service tests.
 
-## P-PPS — pulse measurements *(planned)*
+## P-PPS — pulse measurements *(implemented; extended load tests pending)*
 
-- The buffered receiver TIMEPULSE reaches GPIO10; its independent LED currently
-  demonstrates electrical activity. Firmware does not yet capture pulse timing.
-- Use the S3 MCPWM capture timer to latch both edges in hardware. Report pulse
-  count, interval, width, missing/irregular pulses and statistics against the
-  local timer. Record actual capture resolution, clock source, discontinuities
-  and overflow; distinguish counter resolution from measured accuracy.
-  [ESP-IDF capture timer/channel API](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-reference/peripherals/mcpwm.html#mcpwm-capture-timer-and-channels)
-- Timing stability relative to the ESP clock is not absolute UTC accuracy.
-  Correlate receiver time-valid/timepulse metadata and evaluate a separate
-  reference before making accuracy or oscillator stability claims. Add bounded
-  timing summaries to observer telemetry and journal checkpoints after capture
-  is validated under UART, WiFi and flash-write load.
+- S3 MCPWM hardware capture records both edges of GNSS PPS on GPIO10 and RTC
+  MFP on GPIO15. Independent hardware counters preserve pulse totals separately
+  from the bounded timestamp queue. Both captures use the same APB clock.
+- A valid running MCP79412 supplies a trim-adjusted 1 Hz reference. Calendar
+  initialization still waits for qualified GNSS UTC; alarm/coarse-trim conflicts
+  leave the control register unchanged. No automatic oscillator discipline.
+- One-second timing-only ObserverDetails reports carry interval, width, counts,
+  missing-pulse estimates, continuous-span drift and wrapped RTC/GNSS phase,
+  with explicit freshness and loss flags. Hourly journal records preserve counts.
+- The serial-log [plot tool and measurement contract](TIMING.md) explain relative
+  errors, counter resolution, reset boundaries and the M9 SPG 4.04 limitation:
+  TIM-TP quantization error is unavailable, so no correction sawtooth is reported.
+- Host tests simulate 86,400 pulses per input, counter rollovers, missing pulses,
+  stale signals and discontinuities. Full-day physical capture, concurrent TLS/
+  OTA load, temperature characterization and independent time-reference accuracy
+  remain validation work.
 
 ## P3 — pusher: the TLS push consumer *(implemented)*
 

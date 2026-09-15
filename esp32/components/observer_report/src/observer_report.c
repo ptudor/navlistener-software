@@ -2,6 +2,26 @@
 #include "gnf1.h"
 #include <stdlib.h>
 #include <string.h>
+size_t observer_timing_encode(uint8_t *out, size_t cap, const report_timing_t *r, uint64_t uptime)
+{
+    size_t length=24+3+TIMING_WIRE_SIZE;
+    if (!out || !r->present || cap < length) return 0;
+    memset(out,0,length); out[0]=1; out[1]=REPORT_CHECKIN; gnf1_be64(out+2,uptime);
+    out[24]=8; gnf1_be16(out+25,TIMING_WIRE_SIZE); uint8_t *b=out+27;
+    b[0]=1; b[1]=r->clock; b[2]=r->rtc_state; b[3]=r->rtc_control; b[4]=r->rtc_trim;
+    b[5]=r->flags; b[6]=r->tp_flags; b[7]=r->tp_ref;
+    gnf1_be32(b+8,r->resolution_hz); gnf1_be32(b+12,r->queue_dropped);
+    gnf1_be64(b+16,r->started_ms); gnf1_be32(b+24,r->rtc_minus_gnss_ticks); gnf1_be64(b+28,r->tp_ms);
+    for (unsigned i=0;i<2;i++) {
+        uint8_t *p=b+36+80*i; const timing_channel_report_t *c=&r->channel[i];
+        gnf1_be32(p,c->flags); gnf1_be32(p+4,c->period_ticks); gnf1_be32(p+8,c->width_ticks);
+        gnf1_be32(p+12,c->min_ticks); gnf1_be32(p+16,c->max_ticks); gnf1_be32(p+20,c->discontinuities);
+        gnf1_be64(p+24,c->missing_estimate); gnf1_be64(p+32,c->captured); gnf1_be64(p+40,c->physical);
+        gnf1_be64(p+48,c->span_ticks); gnf1_be64(p+56,c->span_intervals); gnf1_be64(p+64,c->last_rise_ms);
+        gnf1_be32(p+72,c->counter_discontinuities);
+    }
+    return length;
+}
 uint8_t observer_report_due(const report_policy_t *p, const observer_report_t *r)
 {
     if (!p->sent) return REPORT_BOOT;

@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "timing_report.h"
 // GNF1 ObserverDetails v1; byte layout is specified in docs/OBSERVER-TELEMETRY.md.
 #define OBSERVER_REPORT_MAX 256
 enum { REPORT_BOOT=1, REPORT_CHANGE=2, REPORT_CHECKIN=4, REPORT_INTERFERENCE=8 };
@@ -41,10 +42,12 @@ typedef struct {
     report_resources_t resources;
     report_receiver_t receiver;
     char firmware[33];
+    report_timing_t timing; // separately paced; omitted by the environmental encoder
 } observer_report_t;
 typedef struct { bool sent; uint64_t sent_ms; observer_report_t last; } report_policy_t;
 // Compare with the last successfully queued report, so slow drift accumulates.
 uint8_t observer_report_due(const report_policy_t *p, const observer_report_t *r);
 void observer_report_sent(report_policy_t *p, const observer_report_t *r);
 size_t observer_report_encode(uint8_t *out, size_t cap, const observer_report_t *r);
+size_t observer_timing_encode(uint8_t *out, size_t cap, const report_timing_t *r, uint64_t uptime_ms);
 #endif

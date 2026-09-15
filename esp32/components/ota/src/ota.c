@@ -187,6 +187,12 @@ static esp_err_t journal_post(httpd_req_t *req)
         cJSON_AddNumberToObject(row,"environment",r->environment); cJSON_AddNumberToObject(row,"rtc",r->rtc);
         cJSON_AddNumberToObject(row,"rng",r->rng); cJSON_AddNumberToObject(row,"manifest",r->manifest);
         cJSON_AddNumberToObject(row,"error",r->error);
+        cJSON_AddNumberToObject(row,"timing_flags",r->timing_flags);
+        cJSON_AddNumberToObject(row,"timing_elapsed_s",r->timing_elapsed_s);
+        json_u64(row,"gnss_pulses",r->gnss_pulses); json_u64(row,"rtc_pulses",r->rtc_pulses);
+        cJSON_AddNumberToObject(row,"timing_dropped",r->timing_dropped);
+        cJSON_AddNumberToObject(row,"timing_hz",r->timing_hz);
+        cJSON_AddNumberToObject(row,"rtc_minus_gnss_ticks",r->timing_phase_ticks);
     }
     char *response=cJSON_PrintUnformatted(json); cJSON_Delete(json);
     if (!response) return ESP_ERR_NO_MEM;

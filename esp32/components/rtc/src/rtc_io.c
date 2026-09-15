@@ -1,4 +1,18 @@
 #include "rtc_io.h"
+unsigned rtc_square_wave(const rtc_io_t *io, uint8_t *control, uint8_t *trim)
+{
+    uint8_t calendar[7], settings[2]; int64_t epoch;
+    if (!io->read(io->ctx,0,calendar,sizeof calendar) || !io->read(io->ctx,7,settings,2)) return 4;
+    *control=settings[0]; *trim=settings[1];
+    if (!rtc_running(calendar,&epoch)) return 2;
+    // Do not take over an active alarm or change coarse calibration behavior.
+    if (*control & 0x34) return 3;
+    uint8_t desired=(*control & ~3u) | 0x40;
+    if (desired != *control && !io->write(io->ctx,7,&desired,1)) return 4;
+    if (!io->read(io->ctx,7,settings,2)) return 4;
+    *control=settings[0]; *trim=settings[1];
+    return *control == desired ? 1 : 4;
+}
 static bool preserve_power_failure(const rtc_io_t *io, const uint8_t calendar[7])
 {
     if (!(calendar[3] & 0x10)) return true;

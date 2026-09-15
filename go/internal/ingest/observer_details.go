@@ -25,6 +25,7 @@ type ObserverDetails struct {
 	Resources     *BoardResources   `json:"resources,omitempty"`
 	Receiver      *BoardReceiver    `json:"receiver,omitempty"`
 	Firmware      string            `json:"firmware,omitempty"`
+	Timing        *BoardTiming      `json:"timing,omitempty"`
 }
 type BoardEnvironment struct {
 	ReadyMask       uint8    `json:"ready_mask"`
@@ -195,6 +196,12 @@ func decodeObserverDetails(b []byte) (*ObserverDetails, error) {
 				}
 			}
 			d.Firmware = string(v)
+		case 8:
+			var err error
+			d.Timing, err = decodeBoardTiming(v, d.UptimeMS)
+			if err != nil {
+				return nil, err
+			}
 		default:
 			continue // bounded unknown extensions are skipped, not interpreted
 		}

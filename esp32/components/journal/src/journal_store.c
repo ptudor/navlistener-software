@@ -29,6 +29,9 @@ static void encode(uint8_t b[JOURNAL_RECORD_SIZE], const journal_record_t *r)
     memcpy(b+116,r->elf_sha256,32);
     b[148]=r->event; b[149]=r->time_source; b[150]=r->environment;
     b[151]=r->rtc; b[152]=r->rng; b[153]=r->manifest;
+    b[154]=r->timing_flags; put(b+155,r->timing_elapsed_s,4);
+    put(b+159,r->gnss_pulses,8); put(b+167,r->rtc_pulses,8);
+    put(b+175,r->timing_dropped,4); put(b+179,(uint32_t)r->timing_phase_ticks,4); put(b+183,r->timing_hz,4);
     put(b+188,crc(b,188),4);
 }
 static bool decode(journal_record_t *r, const uint8_t b[JOURNAL_RECORD_SIZE])
@@ -42,6 +45,9 @@ static bool decode(journal_record_t *r, const uint8_t b[JOURNAL_RECORD_SIZE])
         .internal_free=get(b+60,4), .error=get(b+64,4), .event=b[148],
         .time_source=b[149], .environment=b[150], .rtc=b[151], .rng=b[152], .manifest=b[153]};
     memcpy(r->firmware,b+68,32); memcpy(r->partition,b+100,16); memcpy(r->elf_sha256,b+116,32);
+    r->timing_flags=b[154]; r->timing_elapsed_s=get(b+155,4);
+    r->gnss_pulses=get(b+159,8); r->rtc_pulses=get(b+167,8); r->timing_dropped=get(b+175,4);
+    r->timing_phase_ticks=(int32_t)get(b+179,4); r->timing_hz=get(b+183,4);
     return true;
 }
 static esp_err_t read_key(journal_store_t *s, const char *key, journal_record_t *r)

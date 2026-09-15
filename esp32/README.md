@@ -345,6 +345,14 @@ uptime. Qualified GNSS or running-RTC time anchors preserve clock provenance.
 See [installation, retention and laptop readout](docs/JOURNAL.md). Installing the
 new partition table over USB once enables the journal on earlier S3 layouts.
 
+## GNSS PPS and RTC timing (ESP32-S3)
+
+Hardware capture measures the GNSS PPS input and the RTC's 1 Hz square wave,
+including independent pulse totals, interval, width and relative phase/drift.
+Timing reports run once per second; environmental sampling keeps its slower
+cadence. Hourly journal checkpoints retain pulse totals within each boot.
+See [TIMING.md](docs/TIMING.md) for interpretation and serial-log CSV/chart export.
+
 ## Durability envelope (read before deploying one as a primary observer)
 
 **The spool is RAM-only and non-durable across reboots.** The partition tables

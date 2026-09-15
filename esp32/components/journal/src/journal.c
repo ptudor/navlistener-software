@@ -32,6 +32,11 @@ static void log_record(const char *label, const journal_record_t *r)
         label,r->event,(unsigned long long)r->sequence,(unsigned long long)r->boot,
         (unsigned long long)(r->uptime_ms/1000),(unsigned long long)r->utc,r->time_source,
         r->firmware,(unsigned long)r->reset_reason,(unsigned long)r->flags,(unsigned long long)r->dropped);
+    if (r->timing_flags & 1)
+        ESP_LOGI(TAG,"%s timing: elapsed=%lus GNSS=%llu RTC=%llu queue-drop=%lu phase=%ld ticks Hz=%lu flags=0x%02x",
+            label,(unsigned long)r->timing_elapsed_s,(unsigned long long)r->gnss_pulses,
+            (unsigned long long)r->rtc_pulses,(unsigned long)r->timing_dropped,
+            (long)r->timing_phase_ticks,(unsigned long)r->timing_hz,r->timing_flags);
 }
 static bool append(journal_record_t *r)
 {
@@ -76,7 +81,7 @@ void journal_event(uint8_t event, int32_t error)
     // Lifecycle calls can occur before the first board sample or after a task
     // fault. Do not attach stale health or extrapolate an old wall clock.
     uint64_t age=now >= r.uptime_ms ? now-r.uptime_ms : UINT64_MAX;
-    if (age > 30000) { r.flags=0; r.environment=0; r.rtc=0; }
+    if (age > 30000) { r.flags=0; r.environment=0; r.rtc=0; r.timing_flags=0; }
     if (age > (r.time_source == JOURNAL_TIME_GNSS ? 2000u : 30000u)) {
         r.time_source=JOURNAL_TIME_UNKNOWN; r.utc=0;
     } else if (r.time_source) r.utc+=age/1000;
@@ -115,6 +120,17 @@ void journal_poll(const gnss_status_t *g, const observer_report_t *report, uint6
     current.environment=now >= report->uptime_ms && now-report->uptime_ms <= 60000 ? report->environment.valid : 0;
     current.rtc=report->rtc.flags; current.rng=report->crypto.rng; current.manifest=report->manifest.action;
     current.error=0;
+    const report_timing_t *t=&report->timing;
+    current.timing_flags=t->present ? 1 : 0;
+    if (t->channel[0].flags & TIMING_COUNT_VALID) current.timing_flags |= 2;
+    if (t->channel[1].flags & TIMING_COUNT_VALID) current.timing_flags |= 4;
+    if (t->flags & 1) current.timing_flags |= 8;
+    if (t->channel[0].flags & TIMING_FRESH) current.timing_flags |= 16;
+    if (t->channel[1].flags & TIMING_FRESH) current.timing_flags |= 32;
+    current.timing_elapsed_s=now >= t->started_ms ? (now-t->started_ms)/1000 : 0;
+    current.gnss_pulses=t->channel[0].physical; current.rtc_pulses=t->channel[1].physical;
+    current.timing_dropped=t->queue_dropped; current.timing_phase_ticks=t->rtc_minus_gnss_ticks;
+    current.timing_hz=t->resolution_hz;
     if (current.time_source > best_time) {
         current.event=JOURNAL_TIME;
         if (append(&current)) best_time=current.time_source;

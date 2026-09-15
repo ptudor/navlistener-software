@@ -2,6 +2,9 @@
 #include "rtc_io.h"
 #include "sdkconfig.h"
 static report_rtc_t telemetry;
+static uint8_t square_state, square_control, square_trim;
+void observer_rtc_square_wave_status(uint8_t *state, uint8_t *control, uint8_t *trim)
+{ *state=square_state; *control=square_control; *trim=square_trim; }
 report_rtc_t observer_rtc_status(void) { return telemetry; }
 #if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
 #include <string.h>
@@ -54,6 +57,11 @@ void observer_rtc_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss, i
     }
     rtc_io_t io = {.ctx = dev, .read = read_registers, .write = write_registers,
         .delay = delay_ms, .save_power_failure = save_power_failure};
+    unsigned previous_square=square_state;
+    square_state=rtc_square_wave(&io,&square_control,&square_trim);
+    if (square_state != previous_square)
+        ESP_LOGI(TAG,"MFP GPIO15 square wave state=%u control=0x%02x trim=0x%02x (1=1Hz,2=stopped,3=conflict,4=I/O)",
+            square_state,square_control,square_trim);
     uint8_t regs[7]; int64_t epoch;
     telemetry = (report_rtc_t){.sampled_ms = now};
     if (!read_registers(dev, 0, regs, sizeof regs)) {
