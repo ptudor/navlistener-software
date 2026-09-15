@@ -161,6 +161,15 @@ static int remember(nvf_tuf_trust_t *trust,const metadata *m,unsigned role,uint6
     if(version<trust->versions[role] || (version==trust->versions[role] && memcmp(hash,trust->digests[role],32)))return UP_META_ROLLBACK;
     trust->versions[role]=version;memcpy(trust->digests[role],hash,32);return UP_OK;
 }
+// Accept each verified role durably before requesting its descendants. A later
+// missing file, bad signature, or reset must not let a mirror replay an older
+// timestamp/snapshot on the next refresh. Unchanged checkpoints avoid NVS writes.
+static int checkpoint(nvf_tuf_trust_t *trust,nvf_tuf_trust_t *candidate,uint64_t now,const nvf_tuf_io_t *io) {
+    candidate->trusted_time=now;
+    if(!memcmp(trust,candidate,sizeof *trust))return UP_OK;
+    if(!io->save(io->context,candidate))return UP_STORAGE;
+    *trust=*candidate;return UP_OK;
+}
 int nvf_tuf_initialize(nvf_tuf_trust_t *trust,const char *bytes,size_t length,bool test,const nvf_tuf_io_t *io) {
     if(!bytes || !length || length>NVF_TUF_ROOT_CAP)return UP_TRUST_UNCONFIGURED;
     metadata root={0};char *copy=nvf_update_alloc(length+1);if(!copy)return UP_STORAGE;memcpy(copy,bytes,length);copy[length]=0;
@@ -352,6 +361,7 @@ int nvf_tuf_refresh(nvf_tuf_trust_t *trust,unsigned channel_index,const nvf_upda
     err=root_signature(&timestamp,&root,UP_TIMESTAMP,io);if(err)goto done;
     err=remember(candidate,&timestamp,UP_TIMESTAMP,version,io);if(err)goto done;
     if(entries(&timestamp,get(&timestamp,timestamp.body,"meta"))!=1){err=UP_META_INVALID;goto done;}
+    err=checkpoint(trust,candidate,now,io);if(err)goto done;
     uint64_t expected;
     err=fetch_role(&snapshot,&timestamp,"snapshot",8192,&expected,io);if(err)goto done;
     err=header(&snapshot,UP_SNAPSHOT,now,true,&version);if(err)goto done;
@@ -370,6 +380,7 @@ int nvf_tuf_refresh(nvf_tuf_trust_t *trust,unsigned channel_index,const nvf_upda
         if(ref<candidate->snapshot_versions[i] || ref<candidate->versions[UP_TARGETS+i]){err=UP_META_ROLLBACK;goto done;}
         candidate->snapshot_versions[i]=ref;
     }
+    err=checkpoint(trust,candidate,now,io);if(err)goto done;
     metadata *roles[]={&targets,&releases,&channel};unsigned indices[]={UP_TARGETS,UP_RELEASES,UP_STABLE+channel_index};
     for(unsigned i=0;i<3;i++) {
         unsigned role=indices[i];metadata *m=roles[i];
@@ -379,6 +390,7 @@ int nvf_tuf_refresh(nvf_tuf_trust_t *trust,unsigned channel_index,const nvf_upda
         err=i?delegated_signature(m,&targets,role,io,role==UP_RELEASES?out->release_key:NULL):root_signature(m,&root,role,io);
         if(err)goto done;
         err=remember(candidate,m,role,version,io);if(err)goto done;
+        err=checkpoint(trust,candidate,now,io);if(err)goto done;
     }
     char channel_path[48];snprintf(channel_path,sizeof channel_path,"channels/%s.json",role_names[UP_STABLE+channel_index]);
     err=target(&choice,&channel,channel_path,4096,io);if(err)goto done;
@@ -405,6 +417,11 @@ int nvf_tuf_refresh(nvf_tuf_trust_t *trust,unsigned channel_index,const nvf_upda
         uint64_t seq;if(!uj_uint(&choice.doc.nodes[i],&seq)||!seq){err=UP_META_INVALID;goto done;}
         if(seq==out->sequence)out->withdrawn=true;
     }
+    err=checkpoint(trust,candidate,now,io);if(err)goto done;
+    // Withdrawal is authoritative even if the release manifest is unavailable.
+    // Report eligibility, so an attended offline install cannot treat that
+    // missing manifest as permission to boot an already withdrawn staged image.
+    if(out->withdrawn){err=UP_INELIGIBLE;goto done;}
     if(out->sequence) {
         if(!copy_string(out->manifest,sizeof out->manifest,str(&choice,choice.body,"release_manifest"))||strncmp(out->manifest,"releases/",9)){err=UP_META_INVALID;goto done;}
         err=target(&manifest,&releases,out->manifest,8192,io);if(err)goto done;
@@ -419,8 +436,6 @@ int nvf_tuf_refresh(nvf_tuf_trust_t *trust,unsigned channel_index,const nvf_upda
             if(out->withdrawn)err=UP_INELIGIBLE;
         }
     }
-    if(!io->save(io->context,candidate)){err=UP_STORAGE;goto done;}
-    *trust=*candidate;
 done:
     close_meta(&root);close_meta(&timestamp);close_meta(&snapshot);close_meta(&targets);close_meta(&releases);close_meta(&channel);close_meta(&choice);close_meta(&manifest);free(candidate);return err;
 }

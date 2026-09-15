@@ -9,6 +9,7 @@
 
 static const char *directory;
 static unsigned saves;
+static nvf_tuf_trust_t persisted;
 static int fetch(void *ctx,const char *path,size_t cap,char **data,size_t *length) {
     (void)ctx;char full[1024];snprintf(full,sizeof full,"%s/%s",directory,path);
     FILE *f=fopen(full,"rb");if(!f)return UP_NOT_FOUND;
@@ -28,7 +29,7 @@ static bool verify(const char *pem,const uint8_t *sig,size_t size,const void *by
     EVP_MD_CTX *ctx=EVP_MD_CTX_new();bool ok=public_key(pem) && key && ctx && EVP_DigestVerifyInit(ctx,NULL,EVP_sha256(),NULL,key)==1 && EVP_DigestVerify(ctx,sig,size,bytes,length)==1;
     EVP_MD_CTX_free(ctx);EVP_PKEY_free(key);return ok;
 }
-static bool save(void *ctx,const nvf_tuf_trust_t *trust){(void)ctx;assert(trust->root_length>0 && trust->root_length<=8192);saves++;return true;}
+static bool save(void *ctx,const nvf_tuf_trust_t *trust){(void)ctx;assert(trust->root_length>0 && trust->root_length<=8192);persisted=*trust;saves++;return true;}
 int main(int argc,char **argv) {
     if(argc==4 && !strcmp(argv[1],"--json")) {
         uj_doc doc;bool valid=uj_parse(&doc,argv[2],strlen(argv[2]));
@@ -40,11 +41,12 @@ int main(int argc,char **argv) {
     nvf_tuf_trust_t trust;nvf_tuf_io_t io={.fetch=fetch,.sha256=sha,.public_key=public_key,.verify=verify,.save=save};
     int err=nvf_tuf_initialize(&trust,bytes,length,true,&io);free(bytes);
     if(err){printf("initialize=%d\n",err);return err==atoi(argv[2])?0:1;}
+    persisted=trust;
     nvf_update_device_t device={.now=1800000000,.hardware_known=true,.hardware_revision=1,.layout=1,.test_build=true,.eui={1,2,3,4,5,6,7,8}};
     nvf_update_release_t result;
     err=nvf_tuf_refresh(&trust,2,&device,&result,&io);
     printf("refresh=%d sequence=%llu saves=%u\n",err,(unsigned long long)result.sequence,saves);
     if(err!=atoi(argv[2]))return 1;
-    if(argc>3){directory=argv[3];err=nvf_tuf_refresh(&trust,2,&device,&result,&io);printf("second=%d\n",err);return err==atoi(argv[4])?0:1;}
+    if(argc>3){trust=persisted;directory=argv[3];err=nvf_tuf_refresh(&trust,2,&device,&result,&io);printf("second=%d\n",err);return err==atoi(argv[4])?0:1;}
     return 0;
 }

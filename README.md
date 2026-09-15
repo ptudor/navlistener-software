@@ -10,7 +10,9 @@ An optional TimescaleDB historian stores raw frames, snapshots, and events for
 later analysis and replay.
 
 The repository includes a reusable Go GNSS library, the collector, C and ESP32
-feeders, and an Apple station-monitoring app. Observer board projects and
+feeders, and an Apple station-monitoring app. ESP32 firmware supports the custom
+ESP32-S3 observer with 16 MiB flash and 8 MiB PSRAM; the earlier ESP32-C6
+development board is unsupported. Observer board projects and
 fabrication exports live in the separate `navlistener-hardware` repository,
 hosted on ptudor.net.
 

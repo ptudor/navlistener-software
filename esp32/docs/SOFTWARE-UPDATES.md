@@ -6,6 +6,26 @@ for current commands, key storage, hostname pairs and the layout 3 USB baseline.
 
 **Scope:** custom ESP32-S3 observer hardware and its collector/operator surfaces
 
+### Implementation boundary
+
+This document defines the complete update contract. The development baseline
+implements signed discovery, staging, local and collector controls, status,
+and release tooling; it does not establish production acceptance of every
+requirement below. In particular:
+
+- New and converted devices currently start in Manual. The provisioning mode
+  selector and factory-default automatic enablement remain delivery work.
+- Installation gates spool producers and drains already enqueued records. This
+  is not yet a receiver-level pause: UART input can continue while the producer
+  is blocked. Lossless receiver quiescence and physical power-cut/rollback
+  acceptance remain prerequisites for claiming lossless automatic installation.
+- Maintenance windows, update LED sweeps, and the complete advisory/release-note
+  presentation described below remain follow-up work.
+
+The supported board has 16 MiB flash and 8 MiB PSRAM. The earlier ESP32-C6
+development board is unsupported; increasing its flash alone does not supply
+the supported board's provisioning, peripheral and recovery configuration.
+
 The observer should update like an appliance. An operator can leave it on
 automatic updates, ask it to download without rebooting, or control every step.
 Publishing one release is a resumable command. A failed download keeps the
@@ -249,7 +269,9 @@ booting it. A network outage does not invalidate an already verified release,
 but automatic installation waits until freshness can be re-established. An
 explicit local install may use the previously trusted release-manifest target
 file when the last accepted channel state has not declared the release
-withdrawn.
+withdrawn. That fallback also requires the staged image's channel generation
+to equal the last accepted generation; an incomplete refresh of a newer channel
+requires another successful check before installation, including after reboot.
 
 ### Find a safe reboot point
 
@@ -430,6 +452,10 @@ Each immutable release-manifest target file contains:
 
 The device persists the highest trusted version for every TUF role, the channel
 generation, installed release sequence, and last trusted time. A check requires
+each verified metadata role to be committed before fetching its descendants;
+a later missing file or failed verification must not erase a rollback floor,
+including across reboot. A signed withdrawal takes effect even when the
+withdrawn release's manifest cannot be downloaded. A check also requires
 trusted time; the current firmware already needs it for HTTPS certificate
 validation. A verified, staged image may survive metadata expiry, but automatic
 installation refreshes the current channel metadata first. An attended local

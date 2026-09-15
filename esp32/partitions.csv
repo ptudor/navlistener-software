@@ -1,6 +1,6 @@
-# navfeeder-esp partition table (4 MB flash) — Waveshare ESP32-C6-LCD-1.47.
+# Legacy unsupported partition table (4 MB flash) — Waveshare ESP32-C6-LCD-1.47.
 # The custom ESP32-S3 observer has 16 MB and uses partitions-s3.csv instead,
-# selected by sdkconfig.defaults.s3.
+# selected by the supported build. Retained only to interpret older devices.
 # Single factory app (OTA is future work) + NVS config + space RESERVED for a
 # future flash spool tier. The spool component is RAM-only and does not mount or
 # write this partition, so overflow or ANY reboot loses unacked records — the

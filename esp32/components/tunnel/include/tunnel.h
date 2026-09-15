@@ -8,7 +8,7 @@
 // certificate against its configured name. Nothing but the collector's tunnel address is
 // routed through the tunnel; SNTP, OTA downloads and DNS keep using the ordinary uplink.
 //
-// Builds without NVF_WIREGUARD (every ESP32-C6 build) keep the same API: tunnel_start
+// Builds without NVF_WIREGUARD keep the same API: tunnel_start
 // reports ESP_ERR_NOT_SUPPORTED, tunnel_up() is always false and
 // tunnel_collector_address() is NULL, so app_main and the pusher need no #ifdefs.
 

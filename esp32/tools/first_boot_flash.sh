@@ -5,7 +5,7 @@ tool_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 esp_dir=$(CDPATH= cd -- "$tool_dir/.." && pwd)
 cd "$esp_dir"
 
-build_dir=${S3_BUILD_DIR:-build/s3}
+build_dir=${S3_BUILD_DIR:-build/s3-layout3}
 
 cat <<EOF
 === ATTENDED ESP32-S3 FIRST-BOOT FLASH ===

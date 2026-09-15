@@ -234,7 +234,7 @@ static bool install(uint64_t sequence,bool discard,bool automatic) {
     if(!record.status.staged.sequence || (sequence && sequence!=record.status.staged.sequence)){failure(UP_INELIGIBLE,false);return false;}
     nvf_update_release_t saved=record.status.staged;
     bool fresh=check();
-    if(!fresh && (automatic || record.status.error/1000!=1))return false;
+    if(!fresh && (automatic || !nvf_update_offline_install_allowed(&record.status,&record.trust)))return false;
     if(fresh && (!record.status.staged.sequence || record.status.available.sequence!=saved.sequence)){failure(UP_INELIGIBLE,false);return false;}
     if(is_cancelled())return false;
     const esp_partition_t *slot=esp_ota_get_next_update_partition(NULL);

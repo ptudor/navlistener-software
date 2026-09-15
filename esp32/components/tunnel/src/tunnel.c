@@ -62,13 +62,14 @@ static const char *TAG = "tunnel";
 static char s_private[NETCFG_TUNNEL_KEY_B64 + 1];
 static char s_public[NETCFG_TUNNEL_KEY_B64 + 1];
 static char s_psk[NETCFG_TUNNEL_KEY_B64 + 1];
-static char s_address[16], s_netmask[16], s_collector[16];
+static char s_address[16], s_collector[16];
 static char s_endpoint[sizeof ((netcfg_tunnel_t *)0)->endpoint_host];
 static int s_prefix;
 static wireguard_config_t s_wg = ESP_WIREGUARD_CONFIG_DEFAULT();
 static wireguard_ctx_t s_ctx = ESP_WIREGUARD_CONTEXT_DEFAULT();
 static atomic_bool s_up, s_wifi;
 static bool s_started, s_initialized;
+static esp_event_handler_instance_t s_ip_handler, s_wifi_handler;
 
 bool tunnel_up(void) { return atomic_load_explicit(&s_up, memory_order_relaxed); }
 
@@ -235,7 +236,6 @@ esp_err_t tunnel_start(const netcfg_tunnel_t *cfg)
     bool psk = memcmp(cfg->preshared_key, no_psk, sizeof no_psk) != 0;
     if (psk) netcfg_tunnel_key_encode(cfg->preshared_key, s_psk);
     netcfg_tunnel_ip4_format(cfg->address, s_address);
-    netcfg_tunnel_prefix_mask(cfg->prefix, s_netmask);
     netcfg_tunnel_ip4_format(cfg->collector, s_collector);
     snprintf(s_endpoint, sizeof s_endpoint, "%s", cfg->endpoint_host);
     s_prefix = cfg->prefix;
@@ -244,18 +244,25 @@ esp_err_t tunnel_start(const netcfg_tunnel_t *cfg)
     s_wg.public_key = s_public;
     s_wg.preshared_key = psk ? s_psk : NULL;
     s_wg.address = s_address;
-    s_wg.netmask = s_netmask;
+    // lwIP checks connected subnets before point-to-point gateways. Using the
+    // pasted prefix here would capture every host in that subnet, including a
+    // Wi-Fi DNS server or the outer WireGuard endpoint. Only the collector's
+    // gateway route belongs to this interface; retain the profile prefix for logs.
+    s_wg.netmask = "255.255.255.255";
     s_wg.endpoint = s_endpoint;
     s_wg.port = (uint16_t)cfg->endpoint_port;
     s_wg.persistent_keepalive = (uint16_t)cfg->keepalive;
     s_wg.listen_port = 0; // ephemeral: the observer only ever initiates
 
     ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                                            net_event, NULL, NULL),
+                                                            net_event, NULL, &s_ip_handler),
                         TAG, "register IP event");
-    ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED,
-                                                            net_event, NULL, NULL),
-                        TAG, "register WiFi event");
+    esp_err_t err = esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED,
+                                                        net_event, NULL, &s_wifi_handler);
+    if (err != ESP_OK) {
+        esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, s_ip_handler);
+        return err;
+    }
     // Wi-Fi may already be up, in which case the event that said so predates the handler.
     esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     esp_netif_ip_info_t info;
@@ -265,6 +272,9 @@ esp_err_t tunnel_start(const netcfg_tunnel_t *cfg)
     s_started = true; // tunnel_collector_address() is valid from here
     if (xTaskCreate(tunnel_task, "tunnel", 4096, NULL, 5, NULL) != pdPASS) {
         s_started = false;
+        esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, s_ip_handler);
+        esp_event_handler_instance_unregister(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, s_wifi_handler);
+        atomic_store_explicit(&s_wifi, false, memory_order_relaxed);
         return ESP_ERR_NO_MEM;
     }
     ESP_LOGI(TAG, "WireGuard tunnel configured: peer %s:%d, keepalive %d s%s", s_endpoint,

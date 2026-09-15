@@ -1,9 +1,7 @@
 # navfeeder-esp defaults for the custom GNSS color observer (ESP32-S3).
 #
-# Apply AFTER sdkconfig.defaults, which targets the Waveshare ESP32-C6-LCD-1.47:
-#   SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.s3" idf.py set-target esp32s3
-# Later files win, so the keys below override the C6 target, flash size and
-# partition table.
+# CMake and the build wrapper load this AFTER sdkconfig.defaults. Production
+# and update-test profiles add their security settings after both files.
 #
 # Board: ESP32-S3-WROOM-1U-N16R8. Receiver UART on GPIO4/GPIO5, shared I2C on
 # GPIO6/GPIO7, 24AA025E64 manifest EEPROM at 0x50, BOOT/DOWNLOAD on GPIO0, and
@@ -12,7 +10,7 @@
 CONFIG_IDF_TARGET="esp32s3"
 
 # The module carries 16 MB of flash, so this build uses its own partition table
-# rather than the 4 MB one the C6 needs. See partitions-s3.csv for what the extra
+# rather than the retired 4 MB development layout. See partitions-s3.csv for what the extra
 # flash buys: 4 MiB application slots, a 3.25 MiB spool reservation, a 512 KiB
 # diagnostic journal and 128 KiB of update state. The spool partition is still
 # unmounted on both boards.

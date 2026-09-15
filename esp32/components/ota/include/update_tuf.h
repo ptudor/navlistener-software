@@ -40,7 +40,7 @@ typedef struct {
     bool (*sha256)(const void *,size_t,uint8_t[32]);
     bool (*public_key)(const char *public_pem); // Require a valid NIST P-256 public key.
     bool (*verify)(const char *public_pem,const uint8_t *sig,size_t siglen,const void *message,size_t length);
-    // Atomically persist accepted root progress / completed refresh before use.
+    // Atomically persist each accepted role before fetching its descendants.
     bool (*save)(void *,const nvf_tuf_trust_t *trust);
 } nvf_tuf_io_t;
 int nvf_tuf_initialize(nvf_tuf_trust_t *,const char *root,size_t length,bool test_build,const nvf_tuf_io_t *);

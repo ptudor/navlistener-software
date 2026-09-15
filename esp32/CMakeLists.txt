@@ -1,7 +1,18 @@
 # navfeeder-esp — the navlistener ESP32 edge feeder (top-level ESP-IDF project).
-# Native ESP-IDF v5.4+ (no Arduino-as-component). Build with build-navfeeder-esp.sh,
-# or: . ~/esp/esp-idf/export.sh && idf.py set-target esp32c6 && idf.py build
+# Native ESP-IDF v5.5.4 (no Arduino-as-component). Build with build-navfeeder-esp.sh.
 cmake_minimum_required(VERSION 3.16)
+
+if(DEFINED IDF_TARGET AND NOT IDF_TARGET STREQUAL "esp32s3")
+    message(FATAL_ERROR "ESP32-C6 support is retired. Use the ESP32-S3 observer with 16 MiB flash and 8 MiB PSRAM.")
+endif()
+
+if(NOT DEFINED SDKCONFIG_DEFAULTS)
+    if(DEFINED ENV{SDKCONFIG_DEFAULTS} AND NOT "$ENV{SDKCONFIG_DEFAULTS}" STREQUAL "")
+        set(SDKCONFIG_DEFAULTS "$ENV{SDKCONFIG_DEFAULTS}")
+    else()
+        set(SDKCONFIG_DEFAULTS "sdkconfig.defaults;sdkconfig.defaults.s3")
+    endif()
+endif()
 
 set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/components")
 
@@ -50,3 +61,12 @@ endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(navfeeder-esp)
+if(NOT IDF_TARGET STREQUAL "esp32s3")
+    message(FATAL_ERROR "Supported hardware is the ESP32-S3 observer with 16 MiB flash and 8 MiB PSRAM. Use build-navfeeder-esp.sh with a fresh build directory; ESP32-C6 support is retired.")
+endif()
+if(NOT CONFIG_NVF_BOARD_GNSS_COLOR_NEO OR NOT CONFIG_ESPTOOLPY_FLASHSIZE_16MB OR
+   NOT CONFIG_SPIRAM OR NOT CONFIG_SPIRAM_MODE_OCT OR
+   NOT CONFIG_PARTITION_TABLE_CUSTOM_FILENAME STREQUAL "partitions-s3.csv" OR
+   NOT CONFIG_PARTITION_TABLE_OFFSET EQUAL 65536)
+    message(FATAL_ERROR "The supported S3 observer requires its 16 MiB flash / octal PSRAM board profile and partition layout 3. Existing sdkconfig files retain old values; use a fresh build directory with build-navfeeder-esp.sh.")
+endif()

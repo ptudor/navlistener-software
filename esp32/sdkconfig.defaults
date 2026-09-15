@@ -1,18 +1,20 @@
 # navfeeder-esp default sdkconfig. Committed; the generated `sdkconfig` is gitignored.
-# Target: Waveshare ESP32-C6-LCD-1.47 (ESP32-C6, 4 MB flash, 512 KB HP SRAM).
+# Shared settings for the supported ESP32-S3 observer. CMake also loads
+# sdkconfig.defaults.s3 for the 16 MiB flash / 8 MiB PSRAM board profile.
 
-CONFIG_IDF_TARGET="esp32c6"
+CONFIG_IDF_TARGET="esp32s3"
 
 # --- Flash + partitions ------------------------------------------------------
-CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-s3.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x10000
 
 # --- Clock / FreeRTOS (default) ----------------------------------------
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
 CONFIG_FREERTOS_HZ=1000
 
-# --- Console (C6 uses the built-in USB-Serial-JTAG) --------------------------
+# --- Console (built-in USB-Serial-JTAG) ------------------------------------
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
 # --- TLS: mbedTLS floor pinned to 1.2 (GNF1) ------------

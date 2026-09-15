@@ -49,5 +49,13 @@ int main(void) {
     assert(nvf_update_weekly(now,eui,1,300,&io)==weekly+300);
     assert(nvf_update_weekly(weekly,eui,1,0,&io)==weekly+604800);
     assert(nvf_update_retry(now,0,0)==now+3600 && nvf_update_retry(now,1,0)==now+21600 && nvf_update_retry(now,20,0)==now+86400);
+    nvf_tuf_trust_t trust={0};s.error=UP_NETWORK;s.staged.generation=7;trust.generations[s.channel]=7;
+    assert(nvf_update_offline_install_allowed(&s,&trust));
+    // A newer channel may withdraw the staged release and choose a different
+    // release whose manifest cannot be downloaded. Restoring these persisted
+    // records after a power cut must still prohibit the old offline install.
+    trust.generations[s.channel]=8;assert(!nvf_update_offline_install_allowed(&s,&trust));
+    trust.generations[s.channel]=7;s.error=UP_META_SIGNATURE;assert(!nvf_update_offline_install_allowed(&s,&trust));
+    s.error=UP_NETWORK;s.staged.generation=0;assert(!nvf_update_offline_install_allowed(&s,&trust));
     puts("Update protocol golden bytes, replay protection, scheduling and strict API parsing passed");
 }

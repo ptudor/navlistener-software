@@ -59,6 +59,11 @@ static const char *TAG = "pusher";
 static pusher_cfg_t s_cfg;   // owned copy (strings duplicated)
 static atomic_bool s_connected;
 static atomic_bool s_via_tunnel;
+// A WireGuard session can be healthy while the collector's private TCP/TLS
+// listener is unavailable. Give the public endpoint a useful interval before
+// trying that path again. Accessed only by the pusher task.
+static int64_t s_tunnel_retry_us;
+#define TUNNEL_RETRY_US (60LL * 1000000)
 static atomic_bool s_durable;
 
 bool pusher_connected(void) { return atomic_load_explicit(&s_connected, memory_order_relaxed); }
@@ -69,7 +74,8 @@ bool pusher_via_tunnel(void) { return atomic_load_explicit(&s_via_tunnel, memory
 // connection attempt and once per idle turn of a direct session.
 static bool tunnel_preferred(void)
 {
-    return s_cfg.tunnel_host && s_cfg.tunnel_up && s_cfg.tunnel_up();
+    return s_cfg.tunnel_host && s_cfg.tunnel_up && s_cfg.tunnel_up() &&
+           esp_timer_get_time() >= s_tunnel_retry_us;
 }
 bool pusher_durable_connected(void) { return pusher_connected() && atomic_load(&s_durable); }
 
@@ -446,6 +452,8 @@ static void pusher_task(void *arg)
         bool via_tunnel = tunnel_preferred();
         int rc = via_tunnel ? serve(s_cfg.tunnel_host, s_cfg.host, true)
                             : serve(host, NULL, false);
+        if (via_tunnel && rc == -1)
+            s_tunnel_retry_us = esp_timer_get_time() + TUNNEL_RETRY_US;
         // A new TLS connection verifies the selected hostname. Keep the same
         // session, credentials and durable ACK watermark when changing aliases.
         // Explicit authorization rejection retains the normal hard backoff. A tunnel

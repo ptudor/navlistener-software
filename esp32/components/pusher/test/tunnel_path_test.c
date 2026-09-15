@@ -19,8 +19,8 @@ static esp_tls_t transport;
 static struct { const char *host; const char *verify; bool ok; } script[] = {
     { "collector.invalid", NULL, false },              // 1: tunnel down, public endpoint refused
     { "10.77.0.1", "collector.invalid", false },       // 2: tunnel up, tunnel address refused
-    { "collector.invalid", NULL, true },               // 3: tunnel down, direct session established
-    { "10.77.0.1", "collector.invalid", true },        // 4: tunnel came up mid-session: moved over
+    { "collector.invalid", NULL, true },               // 3: tunnel still up, private listener refused
+    { "10.77.0.1", "collector.invalid", true },        // 4: cooldown elapsed: retry private listener
 };
 static uint8_t inbound[1024];
 static size_t head, tail;
@@ -59,10 +59,9 @@ int esp_tls_conn_new_sync(const char *host, int len, int port, const esp_tls_cfg
     phase = 0;
     head = tail = 0;
     bool ok = script[attempts++].ok;
-    // The peer comes up before attempt 2 and drops again before attempt 3, so each attempt
-    // exercises one branch of the choice; attempt 4's flip happens mid-session below.
+    // The peer stays up after the private listener refuses attempt 2. A handshake
+    // alone must not prevent fallback to the working public listener.
     if (attempts == 1) tunnel_state = true;
-    if (attempts == 2) tunnel_state = false;
     return ok ? 1 : 0;
 }
 
@@ -95,8 +94,8 @@ ssize_t esp_tls_conn_read(esp_tls_t *t, void *p, size_t n)
 }
 
 // The idle loop parks in readable(); each turn advances the clock by the wait. The tunnel
-// comes up 5 s into the direct session (attempt 3), and once attempt 4 is serving inside
-// it the test is done.
+// remains up during the direct session (attempt 3). Retry only after the cooldown,
+// with no outstanding records; once attempt 4 is serving inside it the test is done.
 int test_select(int n, fd_set *r, fd_set *w, fd_set *e, struct timeval *tv)
 {
     (void)n; (void)r; (void)w; (void)e;
@@ -105,10 +104,11 @@ int test_select(int n, fd_set *r, fd_set *w, fd_set *e, struct timeval *tv)
     if (attempts == 3 && pusher_connected()) {
         assert(!pusher_via_tunnel());
         if (!direct_started) direct_started = clock_us;
-        if (clock_us - direct_started > 5 * 1000000) tunnel_state = true;
+        if (clock_us < s_tunnel_retry_us) assert(!tunnel_preferred());
     }
     if (attempts == 4 && pusher_connected()) {
         assert(pusher_via_tunnel());
+        assert(clock_us - direct_started >= TUNNEL_RETRY_US - 4000000);
         longjmp(stop, 1);
     }
     return 0;

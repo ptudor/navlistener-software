@@ -16,7 +16,7 @@ built-in private key or default signing-key pathname.
 - S3 **layout 3** doubles the factory and both OTA slots to **4 MiB each**.
   It retains a 3.25 MiB unused spool reservation, 128 KiB update-state NVS and
   the 512 KiB journal. The partition table moves to `0x10000` to accommodate
-  the secure bootloader. `partitions.csv` remains the C6's 4 MB-flash layout;
+  the secure bootloader. `partitions.csv` is retained for the unsupported C6's old 4 MB-flash layout;
   `partitions-s3.csv` describes the installed 16 MB S3 module.
 - Moving an existing development board to this layout is a USB erase/reflash
   followed by fresh provisioning and a new setup label. Save the connection

@@ -1,6 +1,6 @@
 # navfeeder-esp — host tests and explicit hardware workflows.
 #
-# The ordinary C6 firmware build remains behind ./build-navfeeder-esp.sh. The
+# The ordinary S3 firmware build remains behind ./build-navfeeder-esp.sh. The
 # first-boot-flash target is the attended S3 manufacturing exception: it builds,
 # flashes, monitors, and captures the persistent setup label credential.
 # Host-test targets need no board, flash, or ESP-IDF installation.
@@ -15,7 +15,7 @@
 
 # Every components/<name>/test/ directory with a Makefile.
 TEST_DIRS := $(dir $(wildcard components/*/test/Makefile))
-S3_BUILD_DIR ?= build/s3
+S3_BUILD_DIR ?= build/s3-layout3
 FIRST_BOOT_DIR ?=
 
 .PHONY: host-test first-boot-flash clean help
@@ -37,7 +37,7 @@ help:
 	@echo '  PORT=/dev/... make first-boot-flash'
 	@echo '                          build/flash/monitor the S3 and capture the'
 	@echo '                          setup label credential in a'
-	@echo '                          new private directory under build/s3'
+	@echo '                          new private directory under build/s3-layout3'
 	@echo ''
 	@echo 'Firmware build (needs ESP-IDF):  ./build-navfeeder-esp.sh'
 	@echo 'First-boot S3 flash also needs IDF_PATH and never erases NVS.'

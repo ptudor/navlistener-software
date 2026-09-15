@@ -1,8 +1,8 @@
 # navfeeder-esp partition table for the custom GNSS color observer (ESP32-S3).
 #
 # The board carries an ESP32-S3-WROOM-1U-N16R8: 16 MB flash, four times the
-# Waveshare C6's. `partitions.csv` describes the 4 MB layout and remains the table
-# the C6 build uses; this file is selected only by `sdkconfig.defaults.s3`.
+# retired Waveshare C6's. `partitions.csv` describes that unsupported 4 MB layout;
+# this file is the default for the supported ESP32-S3 observer.
 #
 # Four differences from the 4 MB table, using flash that would
 # otherwise sit idle:

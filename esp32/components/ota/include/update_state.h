@@ -23,6 +23,9 @@ bool nvf_update_decode_command(const uint8_t *,size_t,nvf_update_command_t *);
 // 1 new, 0 exact duplicate, -1 invalid/stale/expired. Callers persist the accepted
 // command before effects, and report telemetry for duplicates without replay.
 int nvf_update_accept_command(nvf_update_status_t *,const nvf_update_command_t *,uint64_t now);
+// Attended network-failure fallback only. A newer accepted channel invalidates
+// the old staging decision even if fetching its manifest failed or power stopped.
+bool nvf_update_offline_install_allowed(const nvf_update_status_t *,const nvf_tuf_trust_t *);
 uint64_t nvf_update_weekly(uint64_t now,const uint8_t eui[8],unsigned channel,uint32_t jitter,const nvf_tuf_io_t *);
 uint64_t nvf_update_retry(uint64_t now,unsigned attempt,uint32_t random);
 void nvf_update_encode_status(const nvf_update_status_t *,uint8_t out[140]);

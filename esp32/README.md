@@ -2,9 +2,10 @@
 
 The **ESP32 edge feeder** for [`navlistener`](../): a self-contained GNSS observer that reads
 raw broadcast nav frames off a local u-blox receiver and pushes them, undecoded, to the
-collector over an authenticated, spooled TLS link (GNF1) — with a live status screen on the
-board's 1.47" LCD. It's the small-box sibling of the C `../feeder/navfeeder.c`; all decode and
-orbit math stay central in the collector (`../docs/DESIGN.md §1`).
+collector over an authenticated, spooled TLS link (GNF1), with a constellation LED panel
+and BLE/browser provisioning on the custom ESP32-S3 observer. It shares the C
+feeder's role (`../feeder/navfeeder.c`); decoding and orbit math stay central in
+the collector (`../docs/DESIGN.md §1`).
 
 > This firmware sends GNF1 records to a navlistener collector. Configure its
 > server address and credentials as described below.
@@ -16,18 +17,12 @@ provisioning. Ordinary app-only OTA updates cannot change their partition table.
 
 ## Hardware
 
-- **Waveshare ESP32-C6-LCD-1.47** (ESP32-C6, 4 MB flash, 1.47" ST7789 172×320 IPS, WS2812 LED).
-- **u-blox receiver** on UART1: receiver **TX → GPIO9 (RX)**, receiver **RX → GPIO10 (TX)**,
-  common ground. UBX output enabled (UBX-RXM-SFRBX; optionally MON-RF/MON-HW/NAV-SAT for the
-  RF-integrity telemetry). Default line rate 460800 (u-blox USB-CDC ignores it).
-- **Deploy note — GPIO9 is a C6 boot-strapping pin** : a reset that lands while the
-  receiver is mid-byte can latch the chip into the ROM serial downloader, which needs a manual
-  power cycle to clear. These development boards retain this wiring —
-  no `DIS_DOWNLOAD_MODE` eFuse is burned. The supported custom ESP32-S3 board uses
-  GPIO4/GPIO5 for the receiver UART. For the C6 board, keep units on stable
-  power (a brownout is the usual trigger) and prefer a lower line rate where the frame budget
-  allows, since idle-high UART is safe and the hazard scales with line occupancy. Full
-  wiring is retained in `main/receiver.c`.
+The supported target is the custom **ESP32-S3-WROOM-1U-N16R8** observer with
+**16 MiB flash and 8 MiB PSRAM**. Firmware development, release builds, OTA
+capacity and hardware acceptance target this board. The earlier 4 MB ESP32-C6
+LCD development board is unsupported; adding flash alone does not make it a
+supported substitute. Its drivers and partition table remain as legacy source.
+
 - **Custom GNSS color observer:** ESP32-S3, receiver UART on GPIO4/GPIO5, shared I2C on
   GPIO6/GPIO7, and an addressable 24AA025E64 manifest at `0x50`. Select
   `NVF_BOARD_GNSS_COLOR_NEO`, which `sdkconfig.defaults.s3` sets. Its startup reads the
@@ -43,7 +38,7 @@ provisioning. Ordinary app-only OTA updates cannot change their partition table.
 ## Build & flash
 
 Install **ESP-IDF 5.5.x** using Espressif's installation instructions, then set
-`IDF_PATH` to that checkout. Run its installer once for the ESP32-C6 target.
+`IDF_PATH` to that checkout. Run its installer once for the ESP32-S3 target.
 The wrapper uses ESP-IDF's own toolchain and Python environment selection;
 set `IDF_TOOLS_PATH` if you installed the tools outside its default location.
 
@@ -51,24 +46,25 @@ From this directory:
 
 ```sh
 export IDF_PATH=/path/to/esp-idf
-"$IDF_PATH/install.sh" esp32c6             # once, after installing ESP-IDF
-./build-navfeeder-esp.sh                  # build the C6 firmware
+"$IDF_PATH/install.sh" esp32s3             # once, after installing ESP-IDF
+./build-navfeeder-esp.sh                  # build the S3 firmware
 PORT=/dev/ttyACM0 ./build-navfeeder-esp.sh flash
 ```
 
 Use your board's actual serial device, such as `/dev/ttyACM0` on Linux or
 `/dev/cu.usbmodem...` on macOS. Flashing is requested explicitly by `flash`.
-The wrapper preserves an existing C6 `sdkconfig`, warns about differences
-from `sdkconfig.defaults`, and records firmware provenance after building.
+The wrapper builds in `build/s3-layout3`, preserving that directory's generated
+configuration, reporting default-setting differences, and recording firmware
+provenance. Set `S3_BUILD_DIR` to select
+another build directory. It does not erase flash; migration from an older layout
+uses the separate erase/reflash procedure below. The development flash command
+refuses builds that enable chip locking.
 
-The wrapper selects ESP32-C6. The custom ESP32-S3 observer builds from the same
-sources with ESP-IDF directly, layering `sdkconfig.defaults.s3` (target, 16 MB
-flash, `partitions-s3.csv`, `NVF_BOARD_GNSS_COLOR_NEO`) over the shared
-`sdkconfig.defaults`:
+For direct ESP-IDF use, load the shared settings and S3 board profile:
 
 ```sh
 export IDF_PATH=/path/to/esp-idf
-"$IDF_PATH/install.sh" esp32s3             # once, alongside the esp32c6 install
+"$IDF_PATH/install.sh" esp32s3             # once
 . "$IDF_PATH/export.sh"
 idf.py -B build/s3-layout3 -D SDKCONFIG=build/s3-layout3/sdkconfig \
   -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.s3' \
@@ -77,16 +73,14 @@ python tools/build_provenance.py --build-dir build/s3-layout3
 idf.py -B build/s3-layout3 -p /dev/cu.usbmodemXXXX flash monitor
 ```
 
-This creates a separate S3 configuration and build directory, preserving an
-existing C6 `sdkconfig`. Existing generated configurations retain their previous
-values: regenerating a separate build from the defaults applies PSRAM and OTA
-settings. Check that the generated S3 config enables `SPIRAM_MODE_OCT`,
+This creates a separate S3 configuration and build directory. Existing generated
+configurations retain their previous values: generating a separate build from
+the defaults applies PSRAM and OTA settings. Check that the generated S3 config enables `SPIRAM_MODE_OCT`,
 `NVF_SPOOL_PSRAM`, `NVF_OTA`, `BT_NIMBLE_ENABLED`, Security 2, and
 `BOOTLOADER_APP_ROLLBACK_ENABLE`, with `PARTITION_TABLE_OFFSET=0x10000`.
-Target-specific builds can rewrite `dependencies.lock`; the committed resolution
-is for the S3, including its optional tunnel components. Archive each resolved
-lock with its firmware provenance and restore the committed resolution after
-building another target. Rebuild and record each target sequentially.
+The committed `dependencies.lock` resolves the S3, including its optional tunnel
+components. Archive the resolved lock with firmware provenance. Firmware builds
+share the managed-component directory and must run sequentially.
 
 For an unlocked development S3 moving from an older partition layout, save its
 connection settings, build into the fresh `build/s3-layout3` directory above,
@@ -112,7 +106,7 @@ PORT=/dev/cu.usbmodemXXXX make first-boot-flash
 ```
 
 It builds and flashes the S3, opens the serial monitor, and creates a unique
-mode-0700 capture directory under `build/s3`, with mode-0600 files inside.
+mode-0700 capture directory under `build/s3-layout3`, with mode-0600 files inside.
 Watch for `NEW SETUP LABEL`, then exit the monitor with **Ctrl-]**. The target
 extracts that one line and runs
 `tools/provisioning_label.py` to display the device name, password, and canonical
@@ -149,8 +143,7 @@ and emitted `SFRBX` every ten seconds, including before WiFi provisioning.
 Zero bytes calls for checking GNSS power and the UART path; bytes without valid
 messages can indicate baud/framing trouble. NMEA or MON-VER proves communication,
 not raw-navigation support or satellite reception. A rising SFRBX counter is
-the evidence that the receiver is supplying raw frames. The C6 default retains
-its fixed baud and externally configured receiver.
+the evidence that the receiver is supplying raw frames.
 
 The 2026-09-14 S3 bench check confirmed NEO-M9N / SPG 4.04 / protocol 32.01,
 initial communication at 38400 baud and operation at 460800 after RAM
@@ -255,9 +248,8 @@ and [BMP384 register reference](https://www.bosch-sensortec.com/media/boschsenso
 ## What each phase does
 
 See the [implementation status and roadmap](docs/PLAN.md). The P0–P5 core is built:
-the firmware boots, brings up the LCD dashboard + WS2812
-status LED, runs the clean-room UBX framer, spools frames, and pushes them to the collector
-over GNF1/TLS. Config is NVS-first (`netcfg`), falling back to the compiled Kconfig defaults.
+the firmware boots, brings up the constellation LED panel, runs the clean-room
+UBX framer, spools frames, and pushes them to the collector over GNF1/TLS. Config is NVS-first (`netcfg`), falling back to the compiled Kconfig defaults.
 
 **Provisioning a fresh board (no serial console):** the custom S3 advertises
 `navfeeder-XXYYZZ` over BLE and accepts ESP-IDF Security 2 provisioning from the
@@ -265,9 +257,7 @@ Station app. Scan the physical device QR, select WiFi, and submit the collector,
 station, and enrollment token. The password-protected AP `navfeeder-XXYYZZ` is
 available at the same time as a browser fallback: join it with the password on
 the label and open `http://192.168.4.1/`. Either path writes one validated NVS
-record and reboots into station mode. The C6 development build retains the
-browser path and shows the same persistent credential on its LCD. The complete
-firmware/Swift/label contract is [documented here](docs/PROVISIONING.md). (For
+record and reboots into station mode. The firmware/Swift/label contract is [documented here](docs/PROVISIONING.md). (For
 development, configuration can still be pre-seeded through `idf.py menuconfig`
 → "navfeeder-esp".)
 
@@ -280,16 +270,8 @@ and merely reaching the hold threshold does not erase anything until a
 debounced release.
 
 Do not hold BOOT while resetting for this gesture: that enters the ROM downloader instead.
-The runtime gesture is intentionally disabled on the current Waveshare ESP32-C6-LCD-1.47
-build because its GPIO9 BOOT button shares the receiver UART RX node; pressing it while the
-receiver drives TX would create electrical contention. For that dev board—or if application
-firmware cannot run on the S3—connect over USB and erase the NVS partition, then reset:
-
-```sh
-esptool.py --chip esp32c6 --port /dev/cu.usbmodemXXXX erase-region 0x9000 0x6000
-```
-
-For the custom observer running S3 layout 3, use its `nvs` row instead:
+If application firmware cannot run on an unlocked S3, connect over USB and erase
+the NVS partition, then reset. For S3 layout 3:
 
 ```sh
 esptool.py --chip esp32s3 --port /dev/cu.usbmodemXXXX erase-region 0x11000 0x6000
@@ -307,7 +289,7 @@ firmware reflash.
 collector host, port in 1–65535, station id, and bearer token are all present — one rule
 (`netcfg_validate`), applied both at boot and by the portal before it writes NVS. A board
 configured only partly (Kconfig defaults, a partial NVS write, external NVS tooling) therefore
-comes up in BLE/browser setup with the missing field named on the LCD where
+comes up in BLE/browser setup with the missing field named in diagnostics where
 available, instead of looping forever on WiFi/TLS/auth failures that only a
 serial cable could diagnose. Note the deliberate limit: a
 *complete but wrong* config (bad password, unreachable host, revoked token) keeps retrying in
@@ -318,12 +300,12 @@ that is not its fault.
 
 `NVF_OTA` enables a laptop-initiated HTTPS download into the inactive OTA slot.
 Install this baseline **over USB once**, including its rollback-capable bootloader.
-Reserved slots alone do not give older firmware an updater. The C6 remains
-serial-update only. Keep the factory application as the recovery image.
+Reserved slots alone do not give older firmware an updater. Keep the factory
+application as the recovery image.
 
-The planned appliance-style successor adds signed release channels, automatic
-checks, staged installation, fleet rollout and production device security. Its
-implementation contract is [Software updates for the ESP32-S3 observer](docs/SOFTWARE-UPDATES.md).
+The signed-update development baseline adds release channels, automatic checks,
+staging, fleet controls and production security profiles. Its remaining acceptance
+requirements and implementation contract are in [Software updates for the ESP32-S3 observer](docs/SOFTWARE-UPDATES.md).
 
 ### Pair an update credential
 
@@ -355,7 +337,7 @@ chunked downloads are rejected. Keep the matching binary locally:
 ```sh
 python3 tools/ota.py --device observer.example.invalid update \
   --key-file /path/to/private/observer-ota.key \
-  --image build/s3/navfeeder-esp.bin \
+  --image build/s3-layout3/navfeeder-esp.bin \
   --url https://firmware.example.invalid/navfeeder-esp.bin
 python3 tools/ota.py --device observer.example.invalid status
 ```
@@ -404,12 +386,11 @@ new partition table over USB once enables the journal on earlier S3 layouts.
 `NVF_WIREGUARD` (default on for the S3 observer) accepts an optional WireGuard
 profile at provisioning and carries the GNF1/TLS push session inside that tunnel
 to the collector whenever the peer session is up, falling back to the public
-collector endpoint otherwise. The tunnel is an uplink upgrade, never a single
-point of failure: a unit with no profile, or whose tunnel is down, streams to
-the public endpoint exactly as before. GNF1/TLS is unchanged inside the tunnel,
-so the collector still authenticates the bearer token and the observer still
-verifies the collector's certificate against its configured hostname. The
-ESP32-C6 build has no tunnel support and always uses the public endpoint.
+collector endpoint otherwise. A unit with no profile, or whose tunnel is down, uses
+the public endpoint. A private collector connection failure also selects the
+public endpoint for at least 60 seconds before retrying the tunnel. GNF1/TLS
+is unchanged inside the tunnel, so the collector still authenticates the bearer token and the observer still
+verifies the collector's certificate against its configured hostname.
 
 Provision a profile through the Station app's `nav-tunnel` endpoint or by pasting
 a wg-quick `.conf` into the browser portal; the profile format, the byte layout
@@ -418,7 +399,9 @@ Notable properties:
 
 - **IPv4 only, one collector.** `AllowedIPs` names exactly the collector's tunnel
   address as a `/32`; that single host is the only destination routed through the
-  tunnel. SNTP, OTA downloads and DNS keep the ordinary uplink.
+  tunnel. The interface itself uses a `/32` mask even when the profile gives
+  its address a broader prefix, so other hosts in that subnet keep the ordinary
+  uplink. SNTP, OTA downloads and DNS keep the ordinary uplink.
 - **Time first.** A WireGuard handshake carries a timestamp the peer rejects if
   it is not newer than the last from that key, so the first handshake waits for a
   plausible wall clock (SNTP today; hardware RTC time remains P-hw work). A reboot
@@ -436,8 +419,7 @@ Notable properties:
 
 The port is the BSD-3-Clause `esphome/wireguard` component (the lwIP WireGuard
 implementation via `trombik/esp_wireguard`), pinned in the `tunnel` component's
-`idf_component.yml` and gated to the `esp32s3` target so the C6 image and its
-`dependencies.lock` never pull it.
+`idf_component.yml` for the supported `esp32s3` target.
 
 ## GNSS PPS and RTC timing (ESP32-S3)
 
@@ -450,14 +432,11 @@ See [TIMING.md](docs/TIMING.md) for interpretation and serial-log CSV/chart expo
 
 ## Durability envelope (read before deploying one as a primary observer)
 
-**The spool is RAM-only and non-durable across reboots.** The partition tables
-reserve space for a flash tier — 1.5 MiB in `partitions.csv` (C6, 4 MB flash) and
-3.25 MiB in `partitions-s3.csv` (S3, 16 MB flash) — and `docs/PLAN.md` records
-its design, but no component mounts or writes that partition. This applies to the
-current firmware on both supported boards; the larger S3 reservation is flash set
-aside, not durability delivered. Plan for these limits:
+**The spool is RAM-only and non-durable across reboots.** The S3 partition table
+reserves 3.25 MiB for a future flash tier, and `docs/PLAN.md` records its design,
+but no component mounts or writes that partition. Plan for these limits:
 
-- **Outage depth has both byte and record limits.** The default C6/internal fallback
+- **Outage depth has both byte and record limits.** The internal-RAM fallback
   holds up to 1024 records in a 64 KiB payload arena, plus metadata. With PSRAM
   available, the S3 uses a 4 MiB payload arena and up to 65536 records, plus 1 MiB
   of metadata. Both arenas are explicitly allocated in PSRAM; failure falls back
@@ -503,7 +482,7 @@ WireGuard tunnel can wrap the uplink for a station on request; see
 - **The receiver must never go down** — backoff-reconnect forever, spool across outages, never
   `exit()`. Surviving *reboots* is the one part of this rule this hardware class does **not**
   satisfy: the flash tier is designed
-  (`docs/PLAN.md §P-spool`) and deliberately unbuilt for the C6 — see "Durability envelope"
+  (`docs/PLAN.md §P-spool`) and remains unimplemented — see "Durability envelope"
   above. Never describe navfeeder-esp as reboot-durable, and never remove the per-boot session
   mint that bounds the loss.
 - **Wire parity** — `gnf1`/`ubx` must stay byte-identical to `../go/internal/wire/wire.go` and
@@ -515,7 +494,7 @@ The pusher reconnects when sent records remain outstanding without durable ACK a
 ### Hardware-discovery dependency and release evidence
 
 Normal builds pin `esp_hardware_discovery` to commit
-`5d7e533734c35a6256c1f70a4875ff4cd495b392`, with the IDF 5.5.4/ESP32-C6
+`5d7e533734c35a6256c1f70a4875ff4cd495b392`, with the IDF 5.5.4/ESP32-S3
 resolution committed in `dependencies.lock`. Updating the pin is a deliberate
 source change: review upstream layout changes and run the component's
 `test/host` read/write, page-boundary, interrupted-write, timestamp/footer,
@@ -529,7 +508,7 @@ actual CMake-selected component, immutable revision/content hash, IDF revision,
 project revision/dirty state, target, lock hash and firmware hash; modified
 managed component contents fail the provenance check. With direct `idf.py build`,
 run `python tools/build_provenance.py` in the IDF environment before archiving
-(or pass `--build-dir build/s3` for an isolated S3 build).
+(or pass `--build-dir build/s3-layout3` for an isolated S3 build).
 Clean component host-test artifacts after testing (`make -C
 managed_components/esp_hardware_discovery/test/host clean`) before building.
 

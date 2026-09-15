@@ -164,6 +164,38 @@ class RepositoryTests(unittest.TestCase):
         self.repo.online()
         self.client(0, second=(old, 2004))
 
+    def test_failed_refresh_retains_timestamp_after_restart(self):
+        self.repo.publish_local()
+        old = self.directory.parent / "old"
+        shutil.copytree(self.directory, old)
+        self.repo.online()
+        path = f"metadata/{self.repo.versions['snapshot']}.snapshot.json"
+        self.repo.files.pop(path)
+        self.client(1002, second=(old, 2004))
+
+    def test_failed_refresh_retains_snapshot_after_restart(self):
+        self.repo.publish_local()
+        old = self.directory.parent / "old"
+        shutil.copytree(self.directory, old)
+        self.repo.set_channel("lab", 31, "releases/31.json", percentage=100)
+        self.repo.online()
+        # Let an authorized newer timestamp point at the old snapshot. Its
+        # signature is valid; the persisted snapshot version must reject it.
+        timestamp = Metadata.from_bytes((old / "metadata/timestamp.json").read_bytes())
+        timestamp.signed.version = self.repo.versions['timestamp'] + 1
+        (old / "metadata/timestamp.json").write_bytes(self.signers.sign("timestamp", timestamp))
+        path = f"metadata/{self.repo.versions['lab']}.lab.json"
+        self.repo.files.pop(path)
+        self.client(1002, second=(old, 2004))
+
+    def test_withdrawal_does_not_depend_on_manifest_download(self):
+        self.repo.set_channel("lab", 31, "releases/31.json", withdrawn=[31])
+        self.repo.online()
+        for path in list(self.repo.files):
+            if path.startswith("targets/releases/"):
+                self.repo.files.pop(path)
+        self.client(3002)
+
     def test_immutable_content_cannot_be_replaced(self):
         self.repo.publish_local()
         self.repo.files["metadata/1.root.json"] += b" "
