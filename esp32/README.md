@@ -88,6 +88,25 @@ connector both flashes and monitors it and no separate UART adapter is needed.
 Its ROM serial downloader is in mask ROM and cannot be missing from a blank
 board; `esptool.py` enters and leaves it over USB without touching BOOT or RESET.
 
+For an attended first flash of a factory-blank S3, use the dedicated target:
+
+```sh
+export IDF_PATH=/path/to/esp-idf
+PORT=/dev/cu.usbmodemXXXX make first-boot-flash
+```
+
+It builds and flashes the S3, opens the serial monitor, and creates a unique
+mode-0700 capture directory under `build/s3`, with mode-0600 files inside.
+Watch for `NEW SETUP LABEL`, then exit the monitor with **Ctrl-]**. The target
+extracts that one line and runs
+`tools/provisioning_label.py` to display the device name, password, and canonical
+QR payload. When `qrencode` is installed it also creates a private QR SVG. Print
+and attach the QR plus text password before deployment. Each invocation uses a
+new directory and cannot overwrite an earlier device's credential capture. The
+target never erases NVS; an existing setup credential is deliberately not
+printed again. Set `FIRST_BOOT_DIR=/new/private/path` to choose a new capture
+directory explicitly.
+
 ## Finding the onboard GNSS receiver
 
 On the custom PCB, receiver U1 pin 20 (TXD) reaches ESP GPIO5 through R27;

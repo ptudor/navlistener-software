@@ -61,8 +61,35 @@ The QR content follows Espressif's provisioning schema:
 {"ver":"v1","name":"navfeeder-A1B2C3","username":"navfeeder-A1B2C3","pop":"FakePass2345","transport":"ble"}
 ```
 
-The real `pop` is secret. Do not put a real payload in source control, build
-logs, issue trackers, or release artifacts.
+The real `pop` is secret. Do not put a real payload in source control, shared
+CI/build logs, issue trackers, or release artifacts. The attended workflow below
+keeps its local capture in private files ignored by Git.
+
+## Factory cable workflow
+
+From the `esp32` directory, keep the S3 connected through its native USB console
+and run:
+
+```sh
+export IDF_PATH=/path/to/esp-idf
+PORT=/dev/cu.usbmodemXXXX make first-boot-flash
+```
+
+The target builds, flashes, and monitors the S3. Each run creates a unique
+mode-0700 capture directory under `build/s3`, with mode-0600 files inside, so a
+later board cannot overwrite an earlier credential. On a blank NVS partition,
+keep monitoring until `NEW SETUP LABEL` appears, then leave the monitor with
+**Ctrl-]**. The target extracts the line and validates it with
+`tools/provisioning_label.py`. If `qrencode` is installed, it also creates a
+private QR SVG. Print the QR and text device name/password before deployment.
+Set `FIRST_BOOT_DIR=/new/private/path` to select a new capture directory; an
+existing path is rejected.
+
+`first-boot-flash` never erases NVS. If no label line appears, the credential
+may already exist or the operating configuration may already be complete. Use
+the attached label or display. A deliberate whole-NVS erase creates a new
+secret and also destroys update keys and other NVS state, so it requires a new
+physical label.
 
 ## Station app sequence
 
