@@ -18,13 +18,18 @@ def write(root, header, data):
     path = header["path"]
     if not isinstance(path, str) or len(path) > 280 or not re.fullmatch(r"(?:metadata|targets)/[A-Za-z0-9._/-]+", path) or ".." in path or "//" in path:
         raise ValueError("invalid origin object path")
-    if header.get("length") != len(data) or header.get("sha256") != hashlib.sha256(data).hexdigest() or not 0 < len(data) <= 0x200000:
+    if header.get("length") != len(data) or header.get("sha256") != hashlib.sha256(data).hexdigest() or not 0 < len(data) <= 0x400000:
         raise ValueError("origin object length or digest differs")
     root = root.resolve(strict=True)
     target = root / path
+    for part in [target, *target.parents]:
+        if part == root:
+            break
+        if part.is_symlink():
+            raise ValueError("origin object path contains a symlink")
+    if target.name in ("", ".") or path.endswith("/"):
+        raise ValueError("origin object path must name a file")
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.is_symlink() or not target.parent.resolve().is_relative_to(root):
-        raise ValueError("origin object path escapes its root")
     with (root / ".publication.lock").open("a+b") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         old = target.read_bytes() if target.is_file() else None
@@ -67,7 +72,7 @@ def main():
     header = sys.stdin.buffer.readline(4097)
     if len(header) > 4096 or not header.endswith(b"\n"):
         raise ValueError("invalid adapter header")
-    data = sys.stdin.buffer.read(0x200001)
+    data = sys.stdin.buffer.read(0x400001)
     print(json.dumps(write(args.root, json.loads(header), data)))
 
 if __name__ == "__main__":

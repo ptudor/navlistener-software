@@ -228,7 +228,7 @@ matched to `feeder/navfeeder.c`. No I/O — pure encode/parse over buffers.
 ## P-spool — the flash spill tier *(designed, DEFERRED by decision 2026-07-24)*
 
 **Status: deferred; current firmware uses RAM only on both supported boards.** The reserved
-`spool` partition — 1.5 MiB on the C6's 4 MB flash, 9.375 MiB on the S3's 16 MB — is
+`spool` partition — 1.5 MiB on the C6's 4 MB flash, 3.25 MiB on the S3's 16 MB — is
 unmounted; every unacked record dies on reboot. That envelope is
 stated to operators in `../README.md` §"Durability envelope", in `components/spool/include/spool.h`,
 and in `partitions.csv` / `partitions-s3.csv`. Until this phase runs, **navfeeder-esp is loss-tolerant-only by
@@ -241,7 +241,7 @@ The design is recorded here so the deferral is a decision with a plan, not an op
 - **Spill on RAM overflow, not write-through.** Flash wear is the binding constraint on the
   C6's 1.5 MiB partition, so the tier must absorb only what the ring evicts. Write-through would
   multiply erase cycles by the full record rate for no benefit while the uplink is healthy.
-  The S3's 9.375 MiB reservation spreads the same erase load over 6.25x the sectors,
+  The S3's 3.25 MiB reservation spreads the same erase load over about 2.17x the sectors,
   which relaxes that budget but does not change the policy: the tier is still a spill tier.
 - **Bounded append-only segments**, each record carrying its length, the existing monotonic
   seq, and a CRC. Sequence continuity across RAM and flash is what makes replay-on-reconnect

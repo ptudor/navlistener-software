@@ -21,6 +21,7 @@
 #include "esp_log.h"
 #include "esp_random.h" // esp_fill_random (regression fix session identity)
 #include "esp_system.h" // esp_restart
+#include "esp_secure_boot.h"
 #include "esp_task_wdt.h" // task watchdog subscription
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -410,11 +411,11 @@ void app_main(void)
                                                : "BLE unavailable",
                      setup.name);
 #if !defined(CONFIG_SECURE_BOOT) || !CONFIG_SECURE_BOOT
-            if (setup.credential_created) {
+            if (!esp_secure_boot_enabled() && setup.credential_created) {
                 ESP_LOGW(TAG, "NEW SETUP LABEL — print and attach before deployment: %s",
                          setup.qr_payload);
 #if CONFIG_NVF_SETUP_CONSOLE_PASSWORD
-            } else {
+            } else if (!esp_secure_boot_enabled()) {
                 ESP_LOGW(TAG, "DEVELOPMENT SETUP LABEL — persistent setup password: %s",
                          setup.qr_payload);
 #endif

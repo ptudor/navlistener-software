@@ -35,8 +35,22 @@ def main():
     provenance["elf_sha256"] = hashlib.sha256((build / "navfeeder-esp.elf").read_bytes()).hexdigest()
     provenance["unsigned_image_sha256"] = hashlib.sha256((build / "navfeeder-esp.bin").read_bytes()).hexdigest()
     (build / "release-provenance.json").write_text(json.dumps(provenance, sort_keys=True, indent=2) + "\n")
+    project=json.loads((build/"project_description.json").read_bytes())
+    notices={}
+    directories=[source,idf,*map(Path,project["build_component_paths"])]
+    for directory in directories:
+        paths=directory.iterdir() if directory in (source,idf) else directory.rglob("*")
+        for path in paths:
+            if not path.is_file() or not path.name.upper().startswith(("LICENSE","COPYING","NOTICE")):continue
+            resolved=path.resolve()
+            if resolved.is_relative_to(source):name=resolved.relative_to(source).as_posix()
+            elif resolved.is_relative_to(idf):name="esp-idf/"+resolved.relative_to(idf).as_posix()
+            else:raise ValueError("license source is outside the pinned build inputs")
+            data=path.read_bytes()
+            notices[name]={"path":name,"sha256":hashlib.sha256(data).hexdigest(),"text":data.decode("utf-8")}
+    (build/"release-licenses.json").write_text(json.dumps([notices[k] for k in sorted(notices)],sort_keys=True)+"\n")
     print(json.dumps({"image": str(build / "navfeeder-esp.bin"), "elf": str(build / "navfeeder-esp.elf"),
-        "provenance": str(build / "release-provenance.json")}))
+        "provenance": str(build / "release-provenance.json"),"licenses":str(build/"release-licenses.json")}))
 
 if __name__ == "__main__":
     try:

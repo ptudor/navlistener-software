@@ -1,0 +1,3 @@
+# Explicit bench-only profile. Supply an external TEST-ONLY public TUF root.
+# Never combine with sdkconfig.defaults.production or flash onto a locked chip.
+CONFIG_NVF_UPDATE_TEST_KEYS=y

@@ -4,6 +4,7 @@
 #if CONFIG_NVF_OTA
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 #include "esp_app_desc.h"
 #include "esp_crt_bundle.h"
@@ -18,6 +19,11 @@
 // Download only an app image, with fixed Content-Length and no redirects.
 // Boot selection is attempted only after verification. ESP-IDF checks the complete
 // image again at esp_ota_end; the operator's authenticated SHA-256 binds its bytes.
+static esp_err_t header(esp_http_client_event_t *event) {
+    if(event->event_id==HTTP_EVENT_ON_HEADER && !strcasecmp(event->header_key,"Content-Encoding") &&
+       strcasecmp(event->header_value,"identity"))*(bool*)event->user_data=true;
+    return ESP_OK;
+}
 static esp_err_t download_once(const nvf_ota_request_t *request, const char *url, bool *retry,
                               bool stage_only,nvf_ota_progress_fn progress,void *context)
 {
@@ -31,7 +37,9 @@ static esp_err_t download_once(const nvf_ota_request_t *request, const char *url
     // station mode; its availability never controls first-boot confirmation.
     for (int i = 0; time(NULL) < 1704067200 && i < 30; i++) vTaskDelay(pdMS_TO_TICKS(1000));
     if (time(NULL) < 1704067200) return ESP_ERR_TIMEOUT;
+    bool encoded=false;
     esp_http_client_config_t config = {
+        .event_handler=header,.user_data=&encoded,
         .url = url, .crt_bundle_attach = esp_crt_bundle_attach,
         .transport_type = HTTP_TRANSPORT_OVER_SSL, .disable_auto_redirect = true,
         .timeout_ms = 10000, .buffer_size = 4096,
@@ -39,6 +47,7 @@ static esp_err_t download_once(const nvf_ota_request_t *request, const char *url
     int64_t deadline = esp_timer_get_time() + 180000000;
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) return ESP_ERR_NO_MEM;
+    esp_http_client_set_header(client,"Accept-Encoding","identity");
     uint8_t *buffer = malloc(4096);
     esp_ota_handle_t handle = 0;
     mbedtls_sha256_context sha; mbedtls_sha256_init(&sha);
@@ -46,7 +55,7 @@ static esp_err_t download_once(const nvf_ota_request_t *request, const char *url
     if (err != ESP_OK) { *retry = buffer != NULL; goto done; }
     int64_t length = esp_http_client_fetch_headers(client);
     if (esp_http_client_get_status_code(client) != 200 || length < NVF_OTA_PREFIX_SIZE ||
-        length > (int64_t)slot->size || esp_http_client_is_chunked_response(client)) {
+        length > (int64_t)slot->size || encoded || esp_http_client_is_chunked_response(client)) {
         *retry = true; err = ESP_ERR_INVALID_SIZE; goto done;
     }
     size_t prefix = 0;

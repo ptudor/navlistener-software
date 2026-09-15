@@ -365,6 +365,7 @@ esp_err_t nvf_ota_start(void)
 }
 esp_err_t nvf_ota_confirm_boot(void)
 {
+    if(!nvf_update_boot_ready())return ESP_ERR_INVALID_STATE;
     const esp_partition_t *running = esp_ota_get_running_partition();
     if (!running) return ESP_ERR_INVALID_STATE;
     esp_ota_img_states_t status;

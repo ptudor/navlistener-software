@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -26,6 +27,14 @@ def git(*args, cwd=SOURCE):
 
 def command_available(command):
     return isinstance(command, list) and command and all(isinstance(x, str) and x for x in command) and shutil.which(command[0]) is not None
+
+def image_identity(image):
+    if len(image)<304 or image[32:36]!=b"\x32\x54\xcd\xab" or image[80:112].split(b"\0",1)[0]!=b"navfeeder-esp":
+        raise ValueError("release image has the wrong application descriptor")
+    version=image[48:80].split(b"\0",1)[0].decode("ascii")
+    match=re.fullmatch(r"[^+]+\+([1-9][0-9]*)\.([0-9a-f]{7})(-dirty)?",version)
+    if not match: raise ValueError("release image lacks its compiled build/revision identity")
+    return int(match[1]),match[2],bool(match[3])
 
 def configuration(path):
     if not path:
@@ -146,6 +155,8 @@ def release_build(directory, tx, config, signers):
             if digest(Path(output["path"]).read_bytes()) != output["sha256"]:
                 raise ValueError("recorded build changed")
         unsigned = Path(tx["build"]["image"]["path"]).read_bytes()
+        if image_identity(unsigned)!=(tx["sequence"],tx["revision"][:7],False):
+            raise ValueError("compiled image identity differs from the reserved release commit")
         if (directory / "signed-image.bin").is_file():
             image = (directory / "signed-image.bin").read_bytes()
             public, active = firmware_keys(signers.config, True)
@@ -159,6 +170,8 @@ def release_build(directory, tx, config, signers):
         save_transaction(directory, tx, signers)
 
 def finish(directory, tx, config, signers, bootstrap):
+    if tx["phase"] == "preparing":
+        prepare_metadata(directory,tx,config,signers,bootstrap)
     if tx["phase"] in ("reserved", "built"):
         release_build(directory, tx, config, signers)
     candidate = directory / "candidate"
@@ -173,10 +186,10 @@ def finish(directory, tx, config, signers, bootstrap):
             notes = (directory / "notes.md").read_bytes()
             if digest(notes) != tx["notes_sha256"]:
                 raise ValueError("release notes changed after number reservation")
-            licenses = license_inventory(directory / "source-1")
+            licenses = json.loads(Path(tx["build"]["licenses"]["path"]).read_bytes())
             repository.add_release(sequence=tx["sequence"], version=tx["version"], revision=tx["revision"], image=(directory / "signed-image.bin").read_bytes(),
                 boot_key_id=tx["firmware_key_id"], provenance=Path(tx["build"]["provenance"]["path"]).read_bytes(), licenses=encoded(licenses),
-                notes=notes, layout=2, hardware_min=config.get("hardware_min", 1), hardware_max=config.get("hardware_max", 1))
+                notes=notes, layout=3, hardware_min=config.get("hardware_min", 1), hardware_max=config.get("hardware_max", 1))
             import base64
             immutable(bundle_path, encoded({path: base64.b64encode(data).decode() for path, data in repository.files.items()}))
         import base64
@@ -226,9 +239,37 @@ def freeze_candidate(directory, tx, signers):
     data = encoded(inventory(directory / "candidate")); immutable(directory / "inventory.json", data)
     tx["inventory_sha256"] = digest(data); tx["phase"] = "prepared"; save_transaction(directory, tx, signers)
 
+def prepare_metadata(directory,tx,config,signers,bootstrap):
+    import base64
+    candidate=directory/"candidate"
+    base=Path(config["state_dir"])/"repository"
+    # Repeating an interrupted copy is safe: immutable objects must match.
+    for path in sorted(base.rglob("*")):
+        if path.is_file() and path.relative_to(base).as_posix()!="metadata/timestamp.json":
+            immutable(candidate/path.relative_to(base),path.read_bytes())
+    bundle_path=directory/"candidate-bundle.json"
+    if not bundle_path.exists():
+        atomic(candidate/"metadata/timestamp.json",(base/"metadata/timestamp.json").read_bytes())
+        repository=Repository(candidate,signers);repository.load(bootstrap)
+        if tx["action"]=="refresh-online":
+            for channel in CHANNELS:repository.metadata_for(channel,copy.deepcopy(repository.metadata[channel].signed))
+        else:
+            path=f"releases/{tx['release']}.json"
+            if path not in repository.metadata["releases"].signed.targets:raise ValueError("release is not authorized by the offline release role")
+            old=repository.channel_value(tx["channel"])
+            if tx["action"]=="withdraw":
+                repository.set_channel(tx["channel"],old["release_sequence"],old["release_manifest"],percentage=old["percentage"],withdrawn=sorted(set(old["withdrawn"]+[tx["release"]])))
+            else:
+                if tx["release"] in old["withdrawn"]:raise ValueError("withdrawn release cannot be promoted; publish a new release")
+                repository.set_channel(tx["channel"],tx["release"],path,percentage=tx["percent"])
+        repository.online()
+        immutable(bundle_path,encoded({path:base64.b64encode(data).decode() for path,data in repository.files.items()}))
+    repository=Repository(candidate,signers)
+    repository.files={path:base64.b64decode(value,validate=True) for path,value in json.loads(bundle_path.read_bytes()).items()}
+    repository.publish_local();validate_repository(repository,bootstrap);freeze_candidate(directory,tx,signers)
+
 def license_inventory(source):
-    paths = sorted(p for p in source.rglob("*") if p.is_file() and (p.name.startswith("LICENSE") or p.name.startswith("COPYING"))
-        and not any(part in (".git", "build", "managed_components") for part in p.relative_to(source).parts))
+    paths = [source/line for line in git("ls-files",cwd=source).splitlines() if Path(line).name.startswith(("LICENSE","COPYING"))]
     return [{"path": str(p.relative_to(source)), "sha256": digest(p.read_bytes()), "text": p.read_text()} for p in paths]
 
 def main():
@@ -248,6 +289,7 @@ def main():
         if name == "promote": p.add_argument("--percent", type=int, required=True)
     sub.add_parser("refresh-online")
     args = parser.parse_args()
+    if args.command=="promote" and not 0<=args.percent<=100:raise ValueError("rollout percentage must be between 0 and 100")
     if args.command.startswith("init-"):
         state = args.state.expanduser().resolve()
         if state.is_relative_to(SOURCE): raise ValueError("release state must live outside the checkout")
@@ -263,9 +305,12 @@ def main():
         signers = Signers(args.keys.expanduser(), production=False)
         state = args.state.expanduser().resolve(); root = (state / "trust-root.json").read_bytes()
         repository = Repository(state / "repository", signers); repository.load(root)
-        image, key = sign_image(args.image.read_bytes(), signers.config, False)
+        unsigned=args.image.read_bytes()
+        if image_identity(unsigned)[0]!=args.release:
+            raise ValueError("test release number must match the image's compiled BUILD_NUMBER")
+        image, key = sign_image(unsigned, signers.config, False)
         repository.add_release(sequence=args.release, version="0.0.0-test", revision=git("rev-parse", "HEAD"), image=image, boot_key_id=key,
-            provenance=encoded({"test_only": True}), licenses=encoded(license_inventory(SOURCE)), notes=b"TEST ONLY; never publish to production.\n", layout=2)
+            provenance=encoded({"test_only": True}), licenses=encoded(license_inventory(SOURCE)), notes=b"TEST ONLY; never publish to production.\n", layout=3)
         repository.publish_local(); validate_repository(repository, root)
         print(f"Signed TEST-ONLY release {args.release} locally. No source push, remote publication or chip lock was performed.")
         return
@@ -277,12 +322,19 @@ def main():
             if not args.release or any(c not in "0123456789metadata-" for c in args.release): raise ValueError("invalid transaction name")
             directory = state / "transactions" / args.release; tx = load_transaction(directory, signers)
             if tx["phase"] == "reserving":
-                if int((SOURCE / "BUILD_NUMBER").read_text()) != tx["sequence"] or git("log", "-1", "--format=%s") != f"Reserve firmware release {tx['sequence']}":
+                if git("rev-parse","HEAD")==tx["parent"]:
+                    changed=git("diff","--name-only","HEAD").splitlines()
+                    if changed not in ([],["BUILD_NUMBER"]):raise ValueError("reservation source changed; finish other work before resuming")
+                    if int((SOURCE/"BUILD_NUMBER").read_text()) not in (tx["sequence"]-1,tx["sequence"]):raise ValueError("reserved build number changed")
+                    atomic(SOURCE/"BUILD_NUMBER",f"{tx['sequence']}\n".encode())
+                    subprocess.run(["git","add","--","BUILD_NUMBER"],cwd=SOURCE,check=True)
+                    subprocess.run(["git","commit","-m",f"Reserve firmware release {tx['sequence']}","--","BUILD_NUMBER"],cwd=SOURCE,check=True)
+                if int((SOURCE / "BUILD_NUMBER").read_text()) != tx["sequence"] or git("rev-parse","HEAD^")!=tx["parent"] or git("log", "-1", "--format=%s") != f"Reserve firmware release {tx['sequence']}":
                     raise ValueError("reservation did not finish; inspect the signed transaction and source commit before continuing")
                 tx["revision"] = git("rev-parse", "HEAD"); tx["phase"] = "reserved"; save_transaction(directory, tx, signers)
             finish(directory, tx, config, signers, bootstrap); return
         if args.command == "check":
-            verify_public(bootstrap, [f"releases/{args.release}.json"]); print("Both public origins passed a fresh TUF verification."); return
+            verify_public(bootstrap, [f"releases/{args.release}.json"], signers.config); print("Both public origins passed TUF, image signature, provenance, license and release-note verification."); return
         for path in (state / "transactions").glob("*/transaction.json"):
             if load_transaction(path.parent, signers)["phase"] != "complete":
                 raise ValueError(f"unfinished transaction {path.parent.name}; use release-resume")
@@ -307,23 +359,15 @@ def main():
             tx["revision"] = git("rev-parse", "HEAD"); tx["phase"] = "reserved"; save_transaction(directory, tx, signers)
         else:
             base = Repository(state / "repository", signers); base.load(bootstrap)
+            if args.command in ("promote","withdraw"):
+                if f"releases/{args.release}.json" not in base.metadata["releases"].signed.targets:raise ValueError("release is not authorized by the offline release role")
+                old=base.channel_value(args.channel)
+                if args.command=="promote" and args.release in old["withdrawn"]:raise ValueError("withdrawn release cannot be promoted; publish a new release")
+                if args.command=="withdraw" and len(set(old["withdrawn"]+[args.release]))>32:raise ValueError("withdrawal list exceeds the device profile")
             directory = state / "transactions" / f"metadata-{base.versions['timestamp'] + 1}"; directory.mkdir(parents=True, exist_ok=False)
-            shutil.copytree(state / "repository", directory / "candidate")
-            repository = Repository(directory / "candidate", signers); repository.load(bootstrap)
-            if args.command == "refresh-online":
-                for channel in CHANNELS: repository.metadata_for(channel, copy.deepcopy(repository.metadata[channel].signed))
-            else:
-                path = f"releases/{args.release}.json"
-                if path not in repository.metadata["releases"].signed.targets: raise ValueError("release is not authorized by the offline release role")
-                old = repository.channel_value(args.channel)
-                if args.command == "withdraw":
-                    withdrawn = sorted(set(old["withdrawn"] + [args.release]))
-                    repository.set_channel(args.channel, old["release_sequence"], old["release_manifest"], percentage=old["percentage"], withdrawn=withdrawn)
-                else:
-                    if args.release in old["withdrawn"]: raise ValueError("withdrawn release cannot be promoted; publish a new release")
-                    repository.set_channel(args.channel, args.release, path, percentage=args.percent)
-            repository.online(); repository.publish_local(); validate_repository(repository, bootstrap)
-            tx = {"phase": "prepared", "previous_timestamp": previous}; freeze_candidate(directory, tx, signers)
+            tx = {"phase": "preparing", "previous_timestamp": previous,"action":args.command,
+                "release":getattr(args,"release",None),"channel":getattr(args,"channel",None),"percent":getattr(args,"percent",None)}
+            save_transaction(directory,tx,signers)
         finish(directory, tx, config, signers, bootstrap)
 
 if __name__ == "__main__":

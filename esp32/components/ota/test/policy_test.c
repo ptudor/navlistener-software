@@ -18,7 +18,7 @@ int main(void)
     assert(!nvf_ota_unhex("abc", 3, hash));
     image[0] = 0xe9; image[1] = 1; image[12] = 9;
     memcpy(image+32, "\x32\x54\xcd\xab", 4); strcpy((char*)image+80, "navfeeder-esp");
-    memcpy(image+288, "NVFOTA1", 8); image[296] = image[297] = image[298] = 1;
+    memcpy(image+288, "NVFOTA1", 8); image[296]=2;image[297]=image[298]=1;image[300]=3;
     assert(nvf_ota_image_compatible(image, sizeof image, 9, 1, "navfeeder-esp"));
     assert(!nvf_ota_image_compatible(image, 303, 9, 1, "navfeeder-esp"));
     assert(!nvf_ota_image_compatible(image, sizeof image, 13, 1, "navfeeder-esp"));

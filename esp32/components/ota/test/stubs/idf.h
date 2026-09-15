@@ -24,7 +24,10 @@ typedef struct { int type, subtype; size_t size; } esp_partition_t;
 typedef unsigned esp_ota_handle_t;
 typedef struct { char project_name[32]; } esp_app_desc_t;
 typedef void *esp_http_client_handle_t;
+#define HTTP_EVENT_ON_HEADER 1
+typedef struct {int event_id;const char *header_key,*header_value;void *user_data;} esp_http_client_event_t;
 typedef struct {
+    esp_err_t (*event_handler)(esp_http_client_event_t *);void *user_data;
     const char *url; int (*crt_bundle_attach)(void *);
     int transport_type; bool disable_auto_redirect; int timeout_ms, buffer_size;
 } esp_http_client_config_t;
@@ -40,6 +43,7 @@ esp_err_t esp_ota_set_boot_partition(const esp_partition_t *);
 const esp_app_desc_t *esp_app_get_description(void);
 int esp_crt_bundle_attach(void *);
 esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *);
+esp_err_t esp_http_client_set_header(esp_http_client_handle_t,const char *,const char *);
 esp_err_t esp_http_client_open(esp_http_client_handle_t,int);
 int64_t esp_http_client_fetch_headers(esp_http_client_handle_t);
 int esp_http_client_get_status_code(esp_http_client_handle_t);

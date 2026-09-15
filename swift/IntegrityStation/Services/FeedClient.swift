@@ -114,6 +114,50 @@ struct FeedClient: Sendable {
         try await fetch(baseURL: baseURL, path: "gnss/api/v2/audiences", token: token)
     }
 
+    func updateAccess(session: ReadSession, observer: String, action: String? = nil,
+                      choice: UpdateAccess.Choice? = nil, requestID: String = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()) async throws -> UpdateAccess {
+        guard session.audience.isPrivate, session.token != nil else { throw FeedError.forbidden(nil) }
+        let endpoint = try CollectorEndpoint.url(baseURL: session.baseURL, path: "gnss/api/v2/updates")
+        var request = URLRequest(url: endpoint)
+        request.timeoutInterval = 15
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        try ReadRequestHeaders.apply(session: session, to: &request)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let action {
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            let selects = action == "download" || action == "install"
+            request.httpBody = try JSONEncoder().encode([
+                "observer_id": observer, "request_id": requestID, "action": action,
+                "generation": selects ? choice?.generation ?? "0" : "0",
+                "release": selects ? choice?.release ?? "0" : "0"
+            ])
+        } else {
+            var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
+            components?.queryItems = [URLQueryItem(name: "observer_id", value: observer)]
+            request.url = components?.url
+        }
+        func once(_ request: URLRequest) async throws -> UpdateAccess {
+            let (bytes, response) = try await self.session.bytes(for: request, delegate: CredentialRedirectGuard(request: request))
+            defer { bytes.task.cancel() }
+            guard let http = response as? HTTPURLResponse else { throw FeedError.invalidResponse }
+            guard (200...299).contains(http.statusCode) else { throw Self.responseError(status: http.statusCode) }
+            guard response.expectedContentLength <= NetworkLimits.responseBytes else { throw FeedError.inputLimit }
+            let data = try await NetworkLimits.body(bytes, maximum: NetworkLimits.responseBytes)
+            return try JSONDecoder().decode(UpdateAccess.self, from: data)
+        }
+        do { return try await once(request) }
+        catch {
+            guard CollectorEndpoint.canRetry(error), let url = request.url,
+                  let backup = CollectorEndpoint.secondaryURL(url) else { throw error }
+            try Task.checkCancellation()
+            // The same durable request ID and exact body make a lost POST
+            // response safe to retry through the collector's other hostname.
+            request.url = backup
+            return try await once(request)
+        }
+    }
+
     func fetchObservers(session: ReadSession) async throws -> APIEnvelope<ObserversPayload> {
         try await fetch(
             baseURL: session.baseURL,

@@ -53,7 +53,7 @@ typedef struct {
     uint32_t crc;
 } update_record;
 _Static_assert(sizeof(update_record)*4<128*1024,"NVS transaction and metadata exceed update partition budget");
-typedef struct {unsigned action,mode,channel,epoch;uint64_t release;bool discard,collector;nvf_update_command_t command;} job;
+typedef struct {unsigned action,mode,channel,epoch;uint64_t release;bool discard,collector,strict_install;nvf_update_command_t command;} job;
 static update_record record;
 static nvf_update_status_t view;
 static nvf_update_hooks_t hooks;
@@ -61,6 +61,7 @@ static SemaphoreHandle_t view_lock;
 static QueueHandle_t jobs;
 static atomic_bool confirmed,busy;
 static atomic_uint cancel_epoch;
+static uint64_t admitted_command; // Protected by view_lock, including queued IDs.
 static unsigned operation_epoch;
 static QueueHandle_t discard_results,discard_replies;
 static bool is_cancelled(void){return atomic_load(&cancel_epoch)!=operation_epoch;}
@@ -78,6 +79,13 @@ static bool persist(void) {
 }
 static bool save_trust(void *context,const nvf_tuf_trust_t *trust){(void)context;record.trust=*trust;return persist();}
 static bool sha256(const void *data,size_t length,uint8_t hash[32]) {return mbedtls_sha256(data,length,hash,0)==0;}
+static bool public_key(const char *pem) {
+    mbedtls_pk_context key;mbedtls_pk_init(&key);
+    bool ok=mbedtls_pk_parse_public_key(&key,(const uint8_t*)pem,strlen(pem)+1)==0 &&
+        mbedtls_pk_can_do(&key,MBEDTLS_PK_ECDSA) && mbedtls_pk_get_bitlen(&key)==256 &&
+        mbedtls_pk_ec(key)->MBEDTLS_PRIVATE(grp).id==MBEDTLS_ECP_DP_SECP256R1;
+    mbedtls_pk_free(&key);return ok;
+}
 static bool verify(const char *pem,const uint8_t *sig,size_t n,const void *data,size_t length) {
     uint8_t hash[32];mbedtls_pk_context key;mbedtls_pk_init(&key);
     bool ok=sha256(data,length,hash) && mbedtls_pk_parse_public_key(&key,(const uint8_t*)pem,strlen(pem)+1)==0 &&
@@ -120,7 +128,7 @@ static int fetch(void *context,const char *path,size_t limit,char **bytes,size_t
     if(err && !secondary)err=fetch_one(1,path,limit,bytes,length);
     return err;
 }
-static const nvf_tuf_io_t io={.fetch=fetch,.sha256=sha256,.verify=verify,.save=save_trust};
+static const nvf_tuf_io_t io={.fetch=fetch,.sha256=sha256,.public_key=public_key,.verify=verify,.save=save_trust};
 static void failure(unsigned error,bool retry) {
     record.status.error=error;record.status.error_time=clock_now();
     if(record.status.staged.sequence)record.status.state=UP_STAGED;
@@ -144,11 +152,13 @@ static bool check(void) {
     if(err){
         if(err/1000==3){
             record.status.available=release;memset(&record.status.staged,0,sizeof record.status.staged);
-            record.staged_address=0;record.status.last_check=device.now;
+            record.staged_address=0;record.status.received=0;record.status.last_check=device.now;
         }
         failure(err,true);return false;
     }
+    if(record.status.available.sequence!=release.sequence)record.status.received=0;
     record.status.available=release;record.status.last_check=device.now;record.status.retry=0;
+    if(release.sequence && release.sequence==record.status.failed){failure(UP_TRIAL_FAILED,false);return false;}
     record.status.error=UP_OK;record.status.next_check=nvf_update_weekly(device.now,device.eui,record.status.channel,esp_random(),&io);
     if(record.status.staged.sequence && (record.status.staged.sequence!=release.sequence ||
        memcmp(record.status.staged.hash,release.hash,32))) {
@@ -200,9 +210,11 @@ static bool verify_boot_signature(const esp_partition_t *slot,const nvf_update_r
     free(block);return valid;
 }
 static bool stage(uint64_t sequence) {
+    unsigned attempt=record.status.retry;
     if(!check())return false;
-    if(record.status.staged.sequence && record.status.staged.sequence==sequence)return true;
+    if(record.status.staged.sequence && (!sequence || record.status.staged.sequence==sequence))return true;
     nvf_update_release_t *release=&record.status.available;
+    if(!sequence && (!release->sequence || release->sequence<=record.status.running))return true;
     if(!release->sequence || release->sequence<=record.status.running || (sequence && sequence!=release->sequence)){failure(UP_INELIGIBLE,false);return false;}
     nvf_ota_request_t request;char hex[65];nvf_ota_hex(release->hash,32,hex);
     const char *name=strrchr(release->artifact,'/');if(!name){failure(UP_META_INVALID,false);return false;}
@@ -212,7 +224,7 @@ static bool stage(uint64_t sequence) {
     if(!persist())return false;
     esp_err_t err=nvf_ota_stage(&request,progress,NULL);
     if(is_cancelled()){record.status.state=UP_IDLE;record.status.received=0;persist();return false;}
-    if(err!=ESP_OK){failure(err==ESP_ERR_TIMEOUT?UP_NETWORK:UP_ARTIFACT,true);return false;}
+    if(err!=ESP_OK){record.status.retry=attempt;failure(err==ESP_ERR_TIMEOUT?UP_NETWORK:UP_ARTIFACT,true);return false;}
     const esp_partition_t *slot=esp_ota_get_next_update_partition(NULL);
     if(!slot || !verify_boot_signature(slot,release)){failure(UP_ARTIFACT,false);return false;}
     record.status.staged=*release;record.staged_address=slot->address;record.status.state=UP_STAGED;
@@ -275,10 +287,10 @@ static void do_job(job *j) {
     } else switch(j->action) {
     case UP_CHECK:check();break;
     case UP_STAGE:stage(j->release);break;
-    case UP_APPLY:install(j->release,j->discard,false);break;
+    case UP_APPLY:install(j->release,j->discard,j->collector||j->strict_install);break;
     case UP_CANCEL:
         if(!j->release || j->release==record.status.staged.sequence || j->release==record.status.available.sequence) {
-            memset(&record.status.staged,0,sizeof record.status.staged);record.staged_address=0;record.status.received=0;record.status.received=0;record.status.state=UP_IDLE;persist();
+            memset(&record.status.staged,0,sizeof record.status.staged);record.staged_address=0;record.status.received=0;record.status.state=UP_IDLE;persist();
         }
         break;
     default:break;
@@ -290,7 +302,7 @@ finished:
 static void worker(void *unused) {
     (void)unused;
     if(record.command_pending) {
-        job j={.action=record.status.command.action,.release=record.status.command.release,.epoch=atomic_load(&cancel_epoch)};
+        job j={.strict_install=true,.action=record.status.command.action,.release=record.status.command.release,.epoch=atomic_load(&cancel_epoch)};
         // Revalidate the accepted generation after reboot, without accepting its
         // ID a second time. Expired requests have no delayed side effects.
         if(record.status.command.expires>clock_now() && !record.status.command.hint &&
@@ -308,11 +320,14 @@ static void worker(void *unused) {
         if(!record.status.next_check){record.status.next_check=clock_now()+300+esp_random()%1501;persist();}
         if(clock_now()>=record.status.next_check && nvf_update_claim()) {
             operation_epoch=atomic_load(&cancel_epoch);
-            if(check() && record.status.available.sequence>record.status.running && record.status.mode>=UP_DOWNLOAD)stage(record.status.available.sequence);
+            stage(0);
             nvf_update_release();
         }
         if(record.status.mode==UP_INSTALL && record.status.staged.sequence && clock_now()>=next_install && nvf_update_claim()) {
-            operation_epoch=atomic_load(&cancel_epoch);next_install=clock_now()+300;install(record.status.staged.sequence,false,true);nvf_update_release();
+            operation_epoch=atomic_load(&cancel_epoch);next_install=clock_now()+300;
+            install(record.status.staged.sequence,false,true);
+            if(record.status.retry && record.status.next_check>next_install)next_install=record.status.next_check;
+            nvf_update_release();
         }
     }
 }
@@ -321,8 +336,8 @@ esp_err_t nvf_update_start(const nvf_update_hooks_t *config) {
     view_lock=xSemaphoreCreateMutex();if(!view_lock)return ESP_ERR_NO_MEM;
     record.magic=0x3150554e;record.version=1;record.status.mode=UP_MANUAL;record.status.running=NVF_BUILD_NUMBER;
     const esp_partition_t *partition=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_DATA_NVS,"update_meta");
-    bool layout=partition && partition->address==0x620000 && partition->size==0x20000;
-    hooks.device.layout=layout?2:1;record.status.layout=hooks.device.layout;
+    bool layout=CONFIG_PARTITION_TABLE_OFFSET==0x10000 && partition && partition->address==0xc20000 && partition->size==0x20000;
+    hooks.device.layout=layout?3:1;record.status.layout=hooks.device.layout;
     uint8_t security=layout?16:0;
     if(esp_secure_boot_enabled())security|=1;
     if(esp_get_flash_encryption_mode()==ESP_FLASH_ENC_MODE_RELEASE)security|=2;
@@ -344,12 +359,12 @@ esp_err_t nvf_update_start(const nvf_update_hooks_t *config) {
     err=nvs_get_blob(storage,"state_v1",saved,&size);
     if(err==ESP_OK && size==sizeof record && saved->magic==record.magic && saved->version==1 &&
        saved->crc==esp_rom_crc32_le(0,(uint8_t*)saved,offsetof(update_record,crc)) && saved->status.mode>=UP_MANUAL && saved->status.mode<=UP_INSTALL && saved->status.channel<3 && saved->status.state<=UP_FAILED && saved->trust.root_length<=NVF_TUF_ROOT_CAP &&
-       saved->status.available.length<=0x200000 && saved->status.staged.length<=0x200000)record=*saved;
+       saved->status.available.length<=0x400000 && saved->status.staged.length<=0x400000)record=*saved;
     else if(err!=ESP_ERR_NVS_NOT_FOUND){free(saved);storage_ready=false;record.status.error=UP_STORAGE;publish();return ESP_ERR_INVALID_STATE;}
     free(saved);record.status.security=security;record.status.layout=hooks.device.layout;record.status.running=NVF_BUILD_NUMBER;
     // Test roots require an explicit unfused test build; production requires
     // the complete security profile. Ordinary development stays service-only.
-    if(!CONFIG_NVF_UPDATE_TEST_KEYS && security!=31){record.status.error=UP_TRUST_UNCONFIGURED;record.status.mode=UP_MANUAL;publish();return ESP_ERR_NOT_SUPPORTED;}
+    if((!CONFIG_NVF_UPDATE_TEST_KEYS && security!=31) || (CONFIG_NVF_UPDATE_TEST_KEYS && (security&3))){record.status.error=UP_TRUST_UNCONFIGURED;record.status.mode=UP_MANUAL;publish();return ESP_ERR_NOT_SUPPORTED;}
     if(!record.trust.root_length) {
         int result=nvf_tuf_initialize(&record.trust,nvf_update_root,nvf_update_root_length,CONFIG_NVF_UPDATE_TEST_KEYS,&io);
         if(result){record.status.error=result;publish();return ESP_ERR_INVALID_STATE;}
@@ -358,13 +373,25 @@ esp_err_t nvf_update_start(const nvf_update_hooks_t *config) {
     if(record.status.state==UP_REBOOT_PENDING || record.status.state==UP_TRIAL_BOOT) {
         record.command_pending=false;
         if(running && running->address==record.staged_address && record.status.staged.sequence==NVF_BUILD_NUMBER)record.status.state=UP_TRIAL_BOOT;
-        else {record.status.failed=record.status.staged.sequence;record.status.staged.sequence=0;record.staged_address=0;record.status.state=UP_ROLLED_BACK;record.status.error=UP_TRIAL_FAILED;}
+        else {
+            const esp_partition_t *staged=esp_ota_get_next_update_partition(NULL);esp_ota_img_states_t state;
+            bool rejected=staged && esp_ota_get_state_partition(staged,&state)==ESP_OK &&
+                (state==ESP_OTA_IMG_INVALID || state==ESP_OTA_IMG_ABORTED);
+            if(rejected){record.status.failed=record.status.staged.sequence;record.status.staged.sequence=0;record.staged_address=0;record.status.state=UP_ROLLED_BACK;record.status.error=UP_TRIAL_FAILED;}
+            else record.status.state=UP_STAGED; // power stopped before boot selection
+        }
     } else if(record.status.state==UP_DOWNLOADING || record.status.state==UP_CHECKING || record.status.state==UP_QUIESCING)record.status.state=UP_IDLE;
     if(!persist())return ESP_FAIL;
+    admitted_command=record.status.last_command;
     discard_results=xQueueCreate(1,sizeof(uint32_t));discard_replies=xQueueCreate(1,sizeof(bool));
     jobs=xQueueCreate(4,sizeof(job));if(!jobs || !discard_results || !discard_replies)return ESP_ERR_NO_MEM;
     if(xTaskCreate(worker,"update",16384,NULL,2,NULL)!=pdPASS){vQueueDelete(jobs);jobs=NULL;return ESP_ERR_NO_MEM;}
     return ESP_OK;
+}
+bool nvf_update_boot_ready(void) {
+    // A trusted update must not confirm when its transactional state is unreadable.
+    if(CONFIG_NVF_UPDATE_TEST_KEYS || esp_secure_boot_enabled())return storage_ready && jobs && record.status.error!=UP_STORAGE;
+    return true;
 }
 void nvf_update_confirmed(void){atomic_store(&confirmed,true);}
 void nvf_update_status(nvf_update_status_t *out) {
@@ -390,19 +417,24 @@ void nvf_update_control(const uint8_t *bytes,size_t length) {
     if(!jobs)return;
     job j={.collector=true,.epoch=atomic_load(&cancel_epoch)};
     if(!nvf_update_decode_command(bytes,length,&j.command))return;
-    nvf_update_status_t current;nvf_update_status(&current);
+    xSemaphoreTake(view_lock,portMAX_DELAY);
+    nvf_update_status_t current=view;
     bool matching=!j.command.release || j.command.release==current.staged.sequence || j.command.release==current.available.sequence;
-    if(nvf_update_accept_command(&current,&j.command,clock_now())<0)return;
-    if(xQueueSend(jobs,&j,0)==pdTRUE && j.command.action==UP_CANCEL && matching)atomic_fetch_add(&cancel_epoch,1);
+    if(j.command.id>admitted_command && nvf_update_accept_command(&current,&j.command,clock_now())>0 && xQueueSend(jobs,&j,0)==pdTRUE) {
+        admitted_command=j.command.id;
+        if(j.command.action==UP_CANCEL && matching)atomic_fetch_add(&cancel_epoch,1);
+    }
+    xSemaphoreGive(view_lock);
 }
 bool nvf_update_wire(uint8_t out[140]){if(!view_lock)return false;nvf_update_status_t s;nvf_update_status(&s);nvf_update_encode_status(&s,out);return true;}
-bool nvf_update_busy(void){return atomic_load(&busy);}
+bool nvf_update_busy(void){return atomic_load(&busy) || (jobs && uxQueueMessagesWaiting(jobs)>0);}
 bool nvf_update_claim(void){bool expected=false;return atomic_compare_exchange_strong(&busy,&expected,true);}
 void nvf_update_release(void){atomic_store(&busy,false);}
 bool nvf_update_discard_result(uint32_t *count,unsigned timeout){return discard_results && xQueueReceive(discard_results,count,pdMS_TO_TICKS(timeout))==pdTRUE;}
 void nvf_update_discard_response(bool sent){if(discard_replies)xQueueOverwrite(discard_replies,&sent);}
 #else
 esp_err_t nvf_update_start(const nvf_update_hooks_t *h){(void)h;return ESP_ERR_NOT_SUPPORTED;}
+bool nvf_update_boot_ready(void){return true;}
 void nvf_update_confirmed(void){}
 void nvf_update_status(nvf_update_status_t *s){*s=(nvf_update_status_t){.mode=UP_MANUAL};}
 bool nvf_update_request(unsigned a,uint64_t r,bool d){(void)a;(void)r;(void)d;return false;}

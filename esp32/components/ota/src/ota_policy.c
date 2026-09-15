@@ -46,8 +46,10 @@ bool nvf_ota_image_compatible(const uint8_t *p, size_t len, uint16_t chip,
     if (memcmp(p + 32, "\x32\x54\xcd\xab", 4) || strlen(project) >= 32 ||
         memcmp(p + 80, project, strlen(project) + 1)) return false;
     const uint8_t *m = p + 288;
-    return memcmp(m, "NVFOTA1", 8) == 0 && m[8] == 1 && m[9] == board &&
-           m[10] == 1 && m[11] == 0; // rollback supported, manufacturing writes disabled
+    return memcmp(m, "NVFOTA1", 8) == 0 && m[8] == 2 && m[9] == board &&
+           m[10] == 1 && m[11] == 0 && m[12] == 3 && !m[13] && !m[14] && !m[15];
+    // Schema 2 requires layout 3. Older firmware rejects it before flash writes;
+    // the changed bootloader/table/app offsets require an attended USB baseline.
 }
 
 bool nvf_ota_consume_nonce(char active[65], int64_t deadline, const char *claimed,

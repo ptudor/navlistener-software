@@ -3,6 +3,7 @@ import SwiftUI
 struct BoardTelemetryView: View {
     @Environment(AppController.self) private var controller
     let board: StationBoard
+    var observerID: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -45,6 +46,7 @@ struct BoardTelemetryView: View {
                 MetricRow(label: "update.downloaded", value: staged)
             }
             if update.state == "downloading", let progress = update.progress { ProgressView(value: progress) }
+            if let observerID { UpdateControlsView(observerID: observerID) }
             if let failed = update.failedRelease, failed != "0" {
                 MetricRow(label: "update.failed_release", value: failed)
             }

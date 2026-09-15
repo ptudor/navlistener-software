@@ -101,18 +101,44 @@ static int root_signature(const metadata *m,const metadata *root,unsigned role,c
     const uj_node *roles=get(root,root->body,"roles");
     return signatures(m,root,get(root,root->body,"keys"),get(root,roles,role_names[role]),io,NULL);
 }
-static bool root_profile(const metadata *root,bool test) {
+static bool key_set(const metadata *m,const uj_node *keys,const nvf_tuf_io_t *io) {
+    if(!keys || keys->kind!=UJ_OBJECT || entries(m,keys)>16 || !io->public_key)return false;
+    for(unsigned i=keys->first;i;i=m->doc.nodes[m->doc.nodes[i].next].next) {
+        const uj_node *key=&m->doc.nodes[m->doc.nodes[i].next],*value=get(m,key,"keyval");
+        const char *const fields[]={"keytype","scheme","keyval"},*const values[]={"public"};
+        const char *pem=str(m,value,"public");uint8_t expected[32],actual[32];
+        if(!sha_text(m->doc.nodes[i].text,expected)||!uj_fields(&m->doc,key,fields,3)||
+           !uj_fields(&m->doc,value,values,1)||!eq(str(m,key,"keytype"),"ecdsa")||
+           !eq(str(m,key,"scheme"),"ecdsa-sha2-nistp256")||!pem||!io->public_key(pem))return false;
+        size_t length;char *canonical=uj_canonical(&m->doc,key,&length);
+        bool valid=canonical && io->sha256(canonical,length,actual) && !memcmp(expected,actual,32);
+        free(canonical);if(!valid)return false;
+    }
+    return true;
+}
+static bool distinct_ids(const metadata *m,const uj_node *keys,const uj_node *ids,const char **used,unsigned *count) {
+    if(!ids || ids->kind!=UJ_ARRAY)return false;
+    for(unsigned i=ids->first;i;i=m->doc.nodes[i].next) {
+        const char *id=uj_string(&m->doc.nodes[i]);
+        if(!id || !get(m,keys,id) || *count>=16)return false;
+        for(unsigned j=0;j<*count;j++)if(eq(id,used[j]))return false;
+        used[(*count)++]=id;
+    }
+    return true;
+}
+static bool root_profile(const metadata *root,bool test,const nvf_tuf_io_t *io) {
     bool consistent=false;if(!test_marker(root,test)||!boolean(root,root->body,"consistent_snapshot",&consistent)||!consistent)return false;
     const uj_node *roles=get(root,root->body,"roles"),*keys=get(root,root->body,"keys");
     const char *const role_fields[]={"keyids","threshold"};
-    if(entries(root,roles)!=4 || entries(root,keys)>16)return false;
+    const char *used[16];unsigned count=0;
+    if(entries(root,roles)!=4 || entries(root,keys)!=8 || !key_set(root,keys,io))return false;
     for(unsigned i=0;i<4;i++) {
         const uj_node *r=get(root,roles,role_names[i]);uint64_t threshold;
         unsigned want=i==UP_ROOT||i==UP_TARGETS?2:1;
         if(!uj_fields(&root->doc,r,role_fields,2)||!number(root,r,"threshold",&threshold)||threshold!=want||
            entries(root,get(root,r,"keyids"))!=(want==2?3:1))return false;
         const uj_node *ids=get(root,r,"keyids");
-        if(ids->kind!=UJ_ARRAY)return false;
+        if(!distinct_ids(root,keys,ids,used,&count))return false;
         for(unsigned k=ids->first;k;k=root->doc.nodes[k].next) {
             const char *id=uj_string(&root->doc.nodes[k]);uint8_t digest[32];
             if(!sha_text(id,digest)||!get(root,keys,id))return false;
@@ -140,7 +166,7 @@ int nvf_tuf_initialize(nvf_tuf_trust_t *trust,const char *bytes,size_t length,bo
     metadata root={0};char *copy=nvf_update_alloc(length+1);if(!copy)return UP_STORAGE;memcpy(copy,bytes,length);copy[length]=0;
     int err=parse(&root,copy,length);uint64_t version=0;
     if(!err)err=header(&root,UP_ROOT,0,false,&version);
-    if(!err && !root_profile(&root,test))err=UP_META_INVALID;
+    if(!err && !root_profile(&root,test,io))err=UP_META_INVALID;
     if(!err)err=root_signature(&root,&root,UP_ROOT,io);
     if(!err){memset(trust,0,sizeof *trust);trust->root_length=length;memcpy(trust->root,bytes,length);err=remember(trust,&root,UP_ROOT,version,io);}
     close_meta(&root);return err;
@@ -176,11 +202,15 @@ static int fetch_role(metadata *m,const metadata *parent,const char *name,size_t
     if(err)return err;
     return parse(m,bytes,size);
 }
-static bool delegation_profile(const metadata *targets) {
+static bool delegation_profile(const metadata *targets,const metadata *root,const nvf_tuf_io_t *io) {
     const uj_node *delegations=get(targets,targets->body,"delegations"),*roles=get(targets,delegations,"roles");
+    const uj_node *keys=get(targets,delegations,"keys"),*root_keys=get(root,root->body,"keys");
     const char *const delegated_fields[]={"keys","roles"},*const fields[]={"name","keyids","threshold","paths","terminating"};
     if(!uj_fields(&targets->doc,delegations,delegated_fields,2)||!roles||roles->kind!=UJ_ARRAY||entries(targets,roles)!=4)return false;
-    bool seen[4]={false};
+    if(entries(targets,keys)!=6 || !key_set(targets,keys,io))return false;
+    for(unsigned i=keys->first;i;i=targets->doc.nodes[targets->doc.nodes[i].next].next)
+        if(get(root,root_keys,targets->doc.nodes[i].text))return false;
+    bool seen[4]={false};const char *used[16];unsigned count=0;
     for(unsigned i=roles->first;i;i=targets->doc.nodes[i].next) {
         const uj_node *role=&targets->doc.nodes[i];const char *name=str(targets,role,"name");unsigned which;
         for(which=0;which<4;which++)if(eq(name,role_names[UP_RELEASES+which]))break;
@@ -189,6 +219,7 @@ static bool delegation_profile(const metadata *targets) {
            !number(targets,role,"threshold",&threshold)||threshold!=(which?1:2)||
            entries(targets,get(targets,role,"keyids"))!=(which?1:3)||!paths||paths->kind!=UJ_ARRAY||entries(targets,paths)!=(which?1:3))return false;
         seen[which]=true;
+        if(!distinct_ids(targets,keys,get(targets,role,"keyids"),used,&count))return false;
         const char *expected[]={"releases/*","artifacts/*","notes/*"};unsigned k=0;
         for(unsigned p=paths->first;p;p=targets->doc.nodes[p].next,k++) {
             char channel[48];snprintf(channel,sizeof channel,"channels/%s.json",name);
@@ -203,10 +234,10 @@ static int delegated_signature(const metadata *m,const metadata *targets,unsigne
             return signatures(m,targets,get(targets,d,"keys"),r,io,key);
     }return UP_META_INVALID;
 }
-static bool target_role_profile(const metadata *m,unsigned role) {
+static bool target_role_profile(const metadata *m,unsigned role,const metadata *root,const nvf_tuf_io_t *io) {
     const uj_node *targets=get(m,m->body,"targets");if(entries(m,targets)>32)return false;
     if(role!=UP_TARGETS && get(m,m->body,"delegations"))return false;
-    if(role==UP_TARGETS)return entries(m,targets)==0 && delegation_profile(m);
+    if(role==UP_TARGETS)return entries(m,targets)==0 && delegation_profile(m,root,io);
     for(unsigned i=targets->first;i;i=m->doc.nodes[m->doc.nodes[i].next].next) {
         const char *path=m->doc.nodes[i].text;uint64_t length;uint8_t hash[32];char expected[48];
         snprintf(expected,sizeof expected,"channels/%s.json",role_names[role]);
@@ -258,7 +289,7 @@ static int release_info(const metadata *channel,const metadata *manifest,const m
        !copy_string(out->artifact,sizeof out->artifact,str(manifest,manifest->body,"artifact"))||
        !copy_string(out->notes,sizeof out->notes,str(manifest,manifest->body,"notes"))||
        !nvf_update_target_path(out->artifact)||strncmp(out->artifact,"artifacts/",10)||
-       !number(manifest,manifest->body,"length",&out->length)||!out->length||out->length>0x200000||
+       !number(manifest,manifest->body,"length",&out->length)||!out->length||out->length>0x400000||
        !related_target(releases,manifest,"provenance","provenance_sha256")||
        !related_target(releases,manifest,"licenses","licenses_sha256")||
        !related_target(releases,manifest,"notes","notes_sha256"))return UP_META_INVALID;
@@ -283,7 +314,7 @@ int nvf_tuf_refresh(nvf_tuf_trust_t *trust,unsigned channel_index,const nvf_upda
     char *bytes=nvf_update_alloc(trust->root_length+1);if(!bytes){free(candidate);return UP_STORAGE;}
     memcpy(bytes,trust->root,trust->root_length+1);int err=parse(&root,bytes,trust->root_length);uint64_t version=0;
     if(err)goto done;
-    if(!root_profile(&root,device->test_build)){err=UP_META_INVALID;goto done;}
+    if(!root_profile(&root,device->test_build,io)){err=UP_META_INVALID;goto done;}
     // Sequential roots are durable independently, so interruption can continue.
     for(unsigned rotation=0;rotation<32;rotation++) {
         char path[80];uint64_t next=candidate->versions[UP_ROOT]+1;
@@ -295,7 +326,7 @@ int nvf_tuf_refresh(nvf_tuf_trust_t *trust,unsigned channel_index,const nvf_upda
         metadata newer={0};err=parse(&newer,bytes,size);
         if(size>NVF_TUF_ROOT_CAP)err=UP_META_INVALID;
         if(!err)err=header(&newer,UP_ROOT,now,false,&version);
-        if(!err && (version!=next || !root_profile(&newer,device->test_build)))err=UP_META_INVALID;
+        if(!err && (version!=next || !root_profile(&newer,device->test_build,io)))err=UP_META_INVALID;
         if(!err)err=root_signature(&newer,&root,UP_ROOT,io);
         if(!err)err=root_signature(&newer,&newer,UP_ROOT,io);
         if(!err)err=remember(candidate,&newer,UP_ROOT,version,io);
@@ -344,7 +375,7 @@ int nvf_tuf_refresh(nvf_tuf_trust_t *trust,unsigned channel_index,const nvf_upda
         unsigned role=indices[i];metadata *m=roles[i];
         err=fetch_role(m,&snapshot,role_names[role],12288,&expected,io);if(err)goto done;
         err=header(m,role,now,true,&version);if(err)goto done;
-        if(version!=expected || !target_role_profile(m,role)){err=UP_META_INVALID;goto done;}
+        if(version!=expected || !target_role_profile(m,role,&root,io)){err=UP_META_INVALID;goto done;}
         err=i?delegated_signature(m,&targets,role,io,role==UP_RELEASES?out->release_key:NULL):root_signature(m,&root,role,io);
         if(err)goto done;
         err=remember(candidate,m,role,version,io);if(err)goto done;

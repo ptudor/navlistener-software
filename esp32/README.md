@@ -9,6 +9,11 @@ orbit math stay central in the collector (`../docs/DESIGN.md §1`).
 > This firmware sends GNF1 records to a navlistener collector. Configure its
 > server address and credentials as described below.
 
+For signed updates, persistent test-key setup and the S3 layout with 4 MiB
+application slots, see [Update operations](docs/UPDATE-OPERATIONS.md).
+Existing development boards move to layout 3 through USB flashing and fresh
+provisioning. Ordinary app-only OTA updates cannot change their partition table.
+
 ## Hardware
 
 - **Waveshare ESP32-C6-LCD-1.47** (ESP32-C6, 4 MB flash, 1.47" ST7789 172×320 IPS, WS2812 LED).
@@ -65,11 +70,11 @@ flash, `partitions-s3.csv`, `NVF_BOARD_GNSS_COLOR_NEO`) over the shared
 export IDF_PATH=/path/to/esp-idf
 "$IDF_PATH/install.sh" esp32s3             # once, alongside the esp32c6 install
 . "$IDF_PATH/export.sh"
-idf.py -B build/s3 -D SDKCONFIG=build/s3/sdkconfig \
+idf.py -B build/s3-layout3 -D SDKCONFIG=build/s3-layout3/sdkconfig \
   -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.s3' \
   -D IDF_TARGET=esp32s3 build
-python tools/build_provenance.py --build-dir build/s3
-idf.py -B build/s3 -p /dev/cu.usbmodemXXXX flash monitor
+python tools/build_provenance.py --build-dir build/s3-layout3
+idf.py -B build/s3-layout3 -p /dev/cu.usbmodemXXXX flash monitor
 ```
 
 This creates a separate S3 configuration and build directory, preserving an
@@ -77,11 +82,22 @@ existing C6 `sdkconfig`. Existing generated configurations retain their previous
 values: regenerating a separate build from the defaults applies PSRAM and OTA
 settings. Check that the generated S3 config enables `SPIRAM_MODE_OCT`,
 `NVF_SPOOL_PSRAM`, `NVF_OTA`, `BT_NIMBLE_ENABLED`, Security 2, and
-`BOOTLOADER_APP_ROLLBACK_ENABLE`.
-Building for the S3 rewrites only the target field in `dependencies.lock`; the
-component revision and content hash remain pinned. Archive the resolved lock
-with its firmware provenance, then restore the committed C6 resolution before
-committing. Rebuild and record each target sequentially.
+`BOOTLOADER_APP_ROLLBACK_ENABLE`, with `PARTITION_TABLE_OFFSET=0x10000`.
+Target-specific builds can rewrite `dependencies.lock`; the committed resolution
+is for the S3, including its optional tunnel components. Archive each resolved
+lock with its firmware provenance and restore the committed resolution after
+building another target. Rebuild and record each target sequentially.
+
+For an unlocked development S3 moving from an older partition layout, save its
+connection settings, build into the fresh `build/s3-layout3` directory above,
+then replace the flash/monitor command with:
+
+```sh
+idf.py -B build/s3-layout3 -p /dev/cu.usbmodemXXXX erase-flash flash monitor
+```
+
+This erases the previous firmware, credentials and journal. Provision it again
+and replace its setup label. Later app updates use OTA normally.
 
 The S3 board's console is the module's native USB-Serial/JTAG, so the USB-C
 connector both flashes and monitors it and no separate UART adapter is needed.
@@ -273,10 +289,14 @@ firmware cannot run on the S3—connect over USB and erase the NVS partition, th
 esptool.py --chip esp32c6 --port /dev/cu.usbmodemXXXX erase-region 0x9000 0x6000
 ```
 
-Pass `--chip esp32s3` for the custom observer. Those offset/size values are the
-`nvs` row in `partitions.csv`, and the S3's `partitions-s3.csv` places `nvs` at
-the same offset and size, so the region is identical on both boards; the LittleFS
-spool partition is left intact. This whole-NVS erase also destroys the setup
+For the custom observer running S3 layout 3, use its `nvs` row instead:
+
+```sh
+esptool.py --chip esp32s3 --port /dev/cu.usbmodemXXXX erase-region 0x11000 0x6000
+```
+
+Use the partition table actually installed on the board: older S3 layouts used
+`0x9000`. This whole-NVS erase also destroys the setup
 credential, update key, and hardware identity history. On the next boot firmware
 creates a different setup password and emits its QR payload on the serial
 console; the old physical label must be replaced before deployment. Use the
@@ -432,7 +452,7 @@ See [TIMING.md](docs/TIMING.md) for interpretation and serial-log CSV/chart expo
 
 **The spool is RAM-only and non-durable across reboots.** The partition tables
 reserve space for a flash tier — 1.5 MiB in `partitions.csv` (C6, 4 MB flash) and
-9.375 MiB in `partitions-s3.csv` (S3, 16 MB flash) — and `docs/PLAN.md` records
+3.25 MiB in `partitions-s3.csv` (S3, 16 MB flash) — and `docs/PLAN.md` records
 its design, but no component mounts or writes that partition. This applies to the
 current firmware on both supported boards; the larger S3 reservation is flash set
 aside, not durability delivered. Plan for these limits:

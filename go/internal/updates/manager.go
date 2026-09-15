@@ -46,6 +46,12 @@ type Transition struct {
 	At     time.Time         `json:"at"`
 	Status wire.UpdateStatus `json:"status"`
 }
+type RequestAudit struct {
+	ID      string             `json:"request_id"`
+	Actor   string             `json:"actor"`
+	Created time.Time          `json:"created"`
+	Command wire.UpdateCommand `json:"command"`
+}
 type Record struct {
 	Device      Device             `json:"device"`
 	Command     wire.UpdateCommand `json:"command"`
@@ -57,11 +63,13 @@ type Record struct {
 	Session     string             `json:"session"`
 	Sequence    uint64             `json:"sequence,string"`
 	Transitions []Transition       `json:"transitions"`
+	Requests    []RequestAudit     `json:"requests"`
 }
 type Manager struct {
 	mu      sync.Mutex
 	config  Config
 	records map[string]Record
+	active  map[string]string
 	lock    *os.File
 	fault   error
 	now     func() time.Time
@@ -113,7 +121,7 @@ func Open(c Config) (*Manager, error) {
 		lock.Close()
 		return nil, err
 	}
-	m := &Manager{config: c, records: map[string]Record{}, lock: lock, now: time.Now}
+	m := &Manager{config: c, records: map[string]Record{}, active: map[string]string{}, lock: lock, now: time.Now}
 	if info, err := os.Stat(c.StateFile); err == nil {
 		if info.Size() > 16<<20 || info.Mode().Perm()&0077 != 0 {
 			m.Close()
@@ -133,7 +141,7 @@ func Open(c Config) (*Manager, error) {
 			return nil, errors.New("update state device limit exceeded")
 		}
 		for key, r := range m.records {
-			if key != r.Device.key() || len(r.Transitions) > 32 || (r.Command.ID != 0 && !r.Command.Valid()) {
+			if key != r.Device.key() || len(r.Transitions) > 32 || len(r.Requests) > 32 || (r.Command.ID != 0 && !r.Command.Valid()) {
 				m.Close()
 				return nil, errors.New("invalid persisted update record")
 			}
@@ -228,6 +236,20 @@ func (m *Manager) enabled(d Device) bool {
 	}
 	return false
 }
+
+// BeginSession pins reports to the most recently admitted authenticated session.
+// An older connection cannot overwrite the new boot's status after reconnect.
+func (m *Manager) BeginSession(context identity.ObserverContext, session string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d := device(context)
+	if m.enabled(d) && (len(m.active) < 1024 || m.active[d.key()] != "") {
+		m.active[d.key()] = session
+	}
+}
 func (m *Manager) Pending(context identity.ObserverContext) []byte {
 	if m == nil {
 		return nil
@@ -254,7 +276,7 @@ func (m *Manager) Report(context identity.ObserverContext, session string, seque
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	d := device(context)
-	if !m.enabled(d) {
+	if !m.enabled(d) || m.active[d.key()] != session || session == "" {
 		return nil
 	}
 	r := m.records[d.key()]
@@ -272,18 +294,36 @@ func (m *Manager) Report(context identity.ObserverContext, session string, seque
 		previous.Security != status.Security || previous.Error != status.Error || previous.LastCommand != status.LastCommand
 	if !changed {
 		m.records[d.key()] = r
+		observe(d.Observer, previous, status, m.now())
 		return nil
 	}
 	r.Transitions = append(append([]Transition(nil), r.Transitions...), Transition{m.now(), status})
 	if len(r.Transitions) > 32 {
 		r.Transitions = r.Transitions[len(r.Transitions)-32:]
 	}
-	return m.commit(d.key(), r)
+	if err := m.commit(d.key(), r); err != nil {
+		return err
+	}
+	observe(d.Observer, previous, status, m.now())
+	return nil
 }
 func (m *Manager) request(actor string, d Device, id string, command wire.UpdateCommand) (Record, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	r := m.records[d.key()]
+	for _, previous := range r.Requests {
+		if previous.ID != id {
+			continue
+		}
+		if previous.Actor != actor || previous.Command.Action != command.Action || previous.Command.Hint != command.Hint || previous.Command.Generation != command.Generation || previous.Command.Release != command.Release {
+			return Record{}, errors.New("request_id already has different arguments")
+		}
+		r.Command = previous.Command
+		r.RequestID = previous.ID
+		r.Actor = previous.Actor
+		r.Created = previous.Created
+		return r, nil
+	}
 	if r.RequestID == id && r.Command.ID != 0 {
 		if r.Actor != actor || r.Command.Action != command.Action || r.Command.Hint != command.Hint || r.Command.Generation != command.Generation || r.Command.Release != command.Release {
 			return Record{}, errors.New("request_id already has different arguments")
@@ -310,6 +350,10 @@ func (m *Manager) request(actor string, d Device, id string, command wire.Update
 	r.RequestID = id
 	r.Actor = actor
 	r.Created = m.now()
+	r.Requests = append(append([]RequestAudit(nil), r.Requests...), RequestAudit{id, actor, r.Created, command})
+	if len(r.Requests) > 32 {
+		r.Requests = r.Requests[len(r.Requests)-32:]
+	}
 	if err := m.commit(d.key(), r); err != nil {
 		return Record{}, err
 	}

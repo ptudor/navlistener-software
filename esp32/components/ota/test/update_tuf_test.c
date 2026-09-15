@@ -5,6 +5,7 @@
 #include <string.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/core_names.h>
 
 static const char *directory;
 static unsigned saves;
@@ -15,9 +16,16 @@ static int fetch(void *ctx,const char *path,size_t cap,char **data,size_t *lengt
     if(*length>cap){free(*data);*data=NULL;return UP_META_INVALID;}return UP_OK;
 }
 static bool sha(const void *data,size_t n,uint8_t hash[32]) {return EVP_Digest(data,n,hash,NULL,EVP_sha256(),NULL)==1;}
+static bool public_key(const char *pem) {
+    BIO *bio=BIO_new_mem_buf(pem,-1);EVP_PKEY *key=PEM_read_bio_PUBKEY(bio,NULL,NULL,NULL);BIO_free(bio);
+    char group[80];size_t length=0;
+    bool ok=key && EVP_PKEY_is_a(key,"EC") && EVP_PKEY_get_utf8_string_param(key,OSSL_PKEY_PARAM_GROUP_NAME,group,sizeof group,&length)==1 &&
+        (!strcmp(group,"prime256v1") || !strcmp(group,"P-256"));
+    EVP_PKEY_free(key);return ok;
+}
 static bool verify(const char *pem,const uint8_t *sig,size_t size,const void *bytes,size_t length) {
     BIO *bio=BIO_new_mem_buf(pem,-1);EVP_PKEY *key=PEM_read_bio_PUBKEY(bio,NULL,NULL,NULL);BIO_free(bio);
-    EVP_MD_CTX *ctx=EVP_MD_CTX_new();bool ok=key && ctx && EVP_DigestVerifyInit(ctx,NULL,EVP_sha256(),NULL,key)==1 && EVP_DigestVerify(ctx,sig,size,bytes,length)==1;
+    EVP_MD_CTX *ctx=EVP_MD_CTX_new();bool ok=public_key(pem) && key && ctx && EVP_DigestVerifyInit(ctx,NULL,EVP_sha256(),NULL,key)==1 && EVP_DigestVerify(ctx,sig,size,bytes,length)==1;
     EVP_MD_CTX_free(ctx);EVP_PKEY_free(key);return ok;
 }
 static bool save(void *ctx,const nvf_tuf_trust_t *trust){(void)ctx;assert(trust->root_length>0 && trust->root_length<=8192);saves++;return true;}
@@ -29,7 +37,7 @@ int main(int argc,char **argv) {
     }
     assert(argc>=3);directory=argv[1];char *bytes=NULL;size_t length=0;
     assert(fetch(NULL,"metadata/1.root.json",8192,&bytes,&length)==UP_OK);
-    nvf_tuf_trust_t trust;nvf_tuf_io_t io={.fetch=fetch,.sha256=sha,.verify=verify,.save=save};
+    nvf_tuf_trust_t trust;nvf_tuf_io_t io={.fetch=fetch,.sha256=sha,.public_key=public_key,.verify=verify,.save=save};
     int err=nvf_tuf_initialize(&trust,bytes,length,true,&io);free(bytes);
     if(err){printf("initialize=%d\n",err);return err==atoi(argv[2])?0:1;}
     nvf_update_device_t device={.now=1800000000,.hardware_known=true,.hardware_revision=1,.layout=1,.test_build=true,.eui={1,2,3,4,5,6,7,8}};

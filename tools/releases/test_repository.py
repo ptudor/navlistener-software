@@ -96,6 +96,37 @@ class RepositoryTests(unittest.TestCase):
         self.repo.files[path] = encoded(value)
         self.client(2002)
 
+    def test_key_id_must_bind_public_material(self):
+        value = json.loads(self.repo.files["metadata/1.root.json"])
+        ids = value["signed"]["roles"]
+        old = ids["timestamp"]["keyids"][0]
+        value["signed"]["keys"][old] = copy.deepcopy(value["signed"]["keys"][ids["snapshot"]["keyids"][0]])
+        self.repo.files["metadata/1.root.json"] = self.signers.sign("root", Metadata.from_dict(value))
+        self.client(2001)
+
+    def test_roles_cannot_share_authority(self):
+        value = json.loads(self.repo.files["metadata/1.root.json"])
+        value["signed"]["roles"]["timestamp"]["keyids"] = value["signed"]["roles"]["snapshot"]["keyids"]
+        self.repo.files["metadata/1.root.json"] = self.signers.sign("root", Metadata.from_dict(value))
+        self.client(2001)
+
+    def test_renewing_root_does_not_reset_rollback_floors(self):
+        self.repo.publish_local()
+        old = self.directory.parent / "old"
+        shutil.copytree(self.directory, old)
+        self.repo.online()
+        self.repo.publish_local()
+        root = Metadata.from_bytes(self.repo.files["metadata/1.root.json"])
+        root.signed.version = 2
+        (old / "metadata/2.root.json").write_bytes(self.signers.sign("root", root))
+        self.client(0, second=(old, 2004))
+
+    def test_repository_paths_cannot_escape_before_writing(self):
+        self.repo.files["targets/../../escape.bin"] = b"escaped"
+        with self.assertRaisesRegex(ValueError, "path"):
+            self.repo.publish_local()
+        self.assertFalse((self.directory.parent / "escape.bin").exists())
+
     def test_signed_expired_timestamp(self):
         md = self.repo.metadata["timestamp"]
         md.signed.expires = NOW - timedelta(seconds=1)
@@ -138,6 +169,17 @@ class RepositoryTests(unittest.TestCase):
         self.repo.files["metadata/1.root.json"] += b" "
         with self.assertRaisesRegex(ValueError, "immutable"):
             self.repo.publish_local()
+
+    def test_release_numbers_are_immutable_and_index_preserves_selected_channels(self):
+        self.repo.set_channel("stable",31,"releases/31.json")
+        for sequence in range(32,42):
+            self.repo.add_release(sequence=sequence,version="0.1.0",revision="a"*40,image=b"fixture",boot_key_id="ab"*32,provenance=b"{}",licenses=b"[]",notes=b"Notes")
+        targets=self.repo.metadata["releases"].signed.targets
+        self.assertLessEqual(len(targets),32)
+        self.assertIn("releases/31.json",targets)
+        self.assertIn("releases/41.json",targets)
+        with self.assertRaisesRegex(ValueError,"already exists"):
+            self.repo.add_release(sequence=41,version="0.1.0",revision="a"*40,image=b"other",boot_key_id="ab"*32,provenance=b"{}",licenses=b"[]",notes=b"Notes")
 
 
 if __name__ == "__main__":

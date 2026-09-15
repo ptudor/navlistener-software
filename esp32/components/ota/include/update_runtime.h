@@ -11,6 +11,7 @@ typedef struct {
     void (*resume)(void);
 } nvf_update_hooks_t;
 esp_err_t nvf_update_start(const nvf_update_hooks_t *);
+bool nvf_update_boot_ready(void);
 void nvf_update_confirmed(void);
 void nvf_update_status(nvf_update_status_t *);
 bool nvf_update_request(unsigned action,uint64_t release,bool discard);

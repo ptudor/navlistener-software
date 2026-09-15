@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
@@ -34,6 +35,20 @@ def encoded(value):
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def object_path(root, path):
+    """Constrain repository paths before creating any directory or opening a file."""
+    if not isinstance(path, str) or len(path) > 280 or not re.fullmatch(r"(?:metadata|targets)/[A-Za-z0-9._/-]+", path) or ".." in path or "//" in path or path.endswith("/"):
+        raise ValueError("invalid repository object path")
+    root = root.resolve()
+    target = root / path
+    for part in [target, *target.parents]:
+        if part == root:
+            break
+        if part.is_symlink():
+            raise ValueError("repository object path contains a symlink")
+    return target
 
 
 def atomic(path: Path, data: bytes, *, private=False):
@@ -239,7 +254,7 @@ class Repository:
         target = self.metadata[role].signed.targets[path]
         name = Path(path)
         published = "targets/" + name.with_name(target.hashes["sha256"] + "." + name.name).as_posix()
-        return self.files.get(published) or (self.directory / published).read_bytes()
+        return self.files.get(published) or object_path(self.directory, published).read_bytes()
 
     def channel_value(self, channel):
         return json.loads(self.target_bytes(channel, f"channels/{channel}.json"))
@@ -256,9 +271,20 @@ class Repository:
 
     def add_release(self, *, sequence, version, revision, image, boot_key_id, provenance, licenses, notes,
                     hardware_min=1, hardware_max=1, layout=1, minimum_updater=1):
-        if sequence <= 0 or sequence >= 2**64 or len(image) > 0x200000:
+        if sequence <= 0 or sequence >= 2**64 or len(image) > 0x400000:
             raise ValueError("release sequence or image size is outside the device profile")
         targets = Targets(targets=dict(self.metadata["releases"].signed.targets))
+        if f"releases/{sequence}.json" in targets.targets:
+            raise ValueError("release number already exists; reserve a new build number")
+        selected={self.channel_value(channel)["release_sequence"] for channel in CHANNELS}
+        candidates=sorted(int(Path(path).stem) for path in targets.targets if path.startswith("releases/"))
+        for old in candidates:
+            if len(targets.targets)+5<=32:break
+            if old in selected:continue
+            path=f"releases/{old}.json";manifest=json.loads(self.target_bytes("releases",path))
+            for name in [path,*[manifest[key] for key in ("artifact","provenance","licenses","notes")]]:
+                targets.targets.pop(name,None)
+        if len(targets.targets)+5>32:raise ValueError("selected releases exhaust the bounded target index")
         base = f"artifacts/{sequence}"
         paths = {"artifact": base + ".navfeeder-esp.bin", "provenance": base + ".provenance.json",
                  "licenses": base + ".licenses.json", "notes": f"notes/{sequence}.md"}
@@ -297,8 +323,12 @@ class Repository:
         if root.signed.unrecognized_fields.get("x_navlisten_test", False) != self.signers.test_only:
             raise ValueError("stored repository has the wrong key purpose")
         root.verify_delegate("root", root)
+        if roots[-1] < root.signed.version:
+            raise ValueError("stored root precedes the trusted bootstrap")
         for version in range(root.signed.version + 1, self.metadata["root"].signed.version + 1):
             newer = Metadata.from_file(str(self.directory / f"metadata/{version}.root.json"))
+            if newer.signed.version != version or newer.signed.unrecognized_fields.get("x_navlisten_test", False) != self.signers.test_only:
+                raise ValueError("root rotation version or purpose differs")
             root.verify_delegate("root", newer)
             newer.verify_delegate("root", newer)
             root = newer
@@ -307,9 +337,13 @@ class Repository:
         self.metadata["root"] = root
         root.verify_delegate("timestamp", timestamp)
         root.verify_delegate("snapshot", snapshot)
+        if snapshot.signed.version != timestamp.signed.snapshot_meta.version:
+            raise ValueError("snapshot version differs from timestamp")
         timestamp.signed.snapshot_meta.verify_length_and_hashes((self.directory / f"metadata/{snapshot.signed.version}.snapshot.json").read_bytes())
         for role in ("targets", "releases", *CHANNELS):
             md = self.metadata[role]
+            if md.signed.version != snapshot.signed.meta[role + ".json"].version:
+                raise ValueError("delegated metadata version differs from snapshot")
             snapshot.signed.meta[role + ".json"].verify_length_and_hashes((self.directory / f"metadata/{md.signed.version}.{role}.json").read_bytes())
             parent = root if role == "targets" else self.metadata["targets"]
             parent.verify_delegate(role, md)
@@ -318,8 +352,9 @@ class Repository:
         self.versions = {role: md.signed.version for role, md in self.metadata.items()}
 
     def publish_local(self):
+        paths = {path: object_path(self.directory, path) for path in self.files}
         for path, data in self.files.items():
             if path != "metadata/timestamp.json":
-                immutable(self.directory / path, data)
+                immutable(paths[path], data)
         # The only replaceable object is committed last, on the same filesystem.
         atomic(self.directory / "metadata/timestamp.json", self.files["metadata/timestamp.json"])

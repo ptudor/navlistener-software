@@ -137,8 +137,13 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else if record.Command.Expires <= uint64(m.now().Unix()) {
 		state = "expired"
 	}
+	var choice *Choice
+	if record.Status != nil {
+		choice, _ = m.choice(record.Status.Channel)
+	}
 	_ = json.NewEncoder(w).Encode(struct {
-		RequestStatus string `json:"request_status"`
-		Record        Record `json:"record"`
-	}{state, record})
+		RequestStatus string  `json:"request_status"`
+		Record        Record  `json:"record"`
+		Choice        *Choice `json:"choice,omitempty"`
+	}{state, record, choice})
 }

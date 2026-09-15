@@ -62,9 +62,9 @@ def update_body(image, url):
     if not parsed.hostname:
         raise ValueError("firmware URL has no hostname")
     data = Path(image).read_bytes()
-    if not 304 <= len(data) <= 0x200000 or data[0] != 0xe9 or data[12:14] != b"\x09\x00":
-        raise ValueError("expected an ESP32-S3 app binary fitting the 2 MiB OTA slot")
-    if data[288:300] != b"NVFOTA1\0\x01\x01\x01\x00":
+    if not 304 <= len(data) <= 0x400000 or data[0] != 0xe9 or data[12:14] != b"\x09\x00":
+        raise ValueError("expected an ESP32-S3 app binary fitting the 4 MiB OTA slot")
+    if data[288:304] != b"NVFOTA1\0\x02\x01\x01\x00\x03\x00\x00\x00":
         raise ValueError("image lacks the board/rollback marker or enables manufacturing writes")
     return (hashlib.sha256(data).hexdigest() + "\n" + url).encode("ascii")
 
@@ -139,12 +139,12 @@ def api_mutation(device, key, command, value):
 def wait_for(device, predicate, *, timeout=600):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        time.sleep(1) # Allow the accepted queue entry to become the active job.
         status = api_status(device)
         if predicate(status):
             return status
         if status.get("error") not in (None, "OK") and not status.get("busy"):
             raise ValueError(f"{status.get('state')}: {status.get('error')}. {status.get('next_action', '')}")
-        time.sleep(1)
     raise ValueError("update is still pending; inspect status before issuing another request")
 
 

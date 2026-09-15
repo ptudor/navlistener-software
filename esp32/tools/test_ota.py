@@ -10,6 +10,15 @@ import ota
 
 
 class OtaClientTest(unittest.TestCase):
+    def test_update_api_mac_binds_method_path_exact_body_and_nonce(self):
+        key=bytes(range(32));nonce="ab"*32;body=b'{"release_sequence":"9007199254740993","discard_backlog":false}'
+        signed=ota.api_authorization(key,nonce,"POST","/ota/v1/install",body)
+        expected=hmac.new(key,b"navfeeder-ota-api-v1\n"+nonce.encode()+b"\nPOST\n/ota/v1/install\n"+body,hashlib.sha256).hexdigest()
+        self.assertEqual(signed,expected)
+        for method,path,changed in (("PUT","/ota/v1/install",body),("POST","/ota/v1/download",body),("POST","/ota/v1/install",body+b" ")):
+            self.assertNotEqual(signed,ota.api_authorization(key,nonce,method,path,changed))
+        self.assertNotEqual(signed,ota.api_authorization(key,"cd"*32,"POST","/ota/v1/install",body))
+        with self.assertRaises(ValueError):ota.api_authorization(key,nonce,"POST","/ota/v1/install?extra=1",body)
     def test_authorization_binds_url_digest_and_challenge(self):
         key = bytes(range(32))
         nonce = "ab" * 32
@@ -28,7 +37,7 @@ class OtaClientTest(unittest.TestCase):
             image = bytearray(304)
             image[0] = 0xe9
             image[12] = 9
-            image[288:300] = b"NVFOTA1\0\x01\x01\x01\x00"
+            image[288:304] = b"NVFOTA1\0\x02\x01\x01\x00\x03\x00\x00\x00"
             path.write_bytes(image)
             body = ota.update_body(path, "https://example.invalid/app.bin")
             self.assertEqual(body[:64].decode(), hashlib.sha256(image).hexdigest())

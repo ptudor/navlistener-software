@@ -12,7 +12,9 @@ cat <<EOF
 Watch the console for: NEW SETUP LABEL or DEVELOPMENT SETUP LABEL
 The JSON on that line contains the persistent BLE/SoftAP setup password.
 Keep it private, print the QR plus text password, and attach the label before deployment.
-This target does not erase NVS. Development builds reprint an existing credential whenever setup starts.
+Development builds reprint an existing credential whenever setup starts.
+This S3 baseline uses partition layout 3. Moving from an older layout requires
+reprovisioning and a new setup label; back up configuration before USB migration.
 Exit the ESP-IDF monitor with Ctrl-].
 EOF
 

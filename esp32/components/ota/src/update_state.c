@@ -19,6 +19,7 @@ int nvf_update_accept_command(nvf_update_status_t *s,const nvf_update_command_t 
     s->command=*c;s->last_command=c->id;return 1;
 }
 uint64_t nvf_update_weekly(uint64_t now,const uint8_t eui[8],unsigned channel,uint32_t jitter,const nvf_tuf_io_t *io) {
+    if(now<345600 || channel>2)return 0;
     uint8_t seed[10],hash[32];memcpy(seed,eui,8);seed[8]=channel;seed[9]=1;
     if(!io->sha256(seed,sizeof seed,hash))return 0;
     uint64_t slot=be64(hash)%604800;

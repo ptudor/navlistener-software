@@ -78,9 +78,9 @@ does not require enrollment, an EEPROM, a satellite fix or collector connectivit
 
 Install the updated S3 partition table over USB once. It carves the journal out
 of the previously unused end of the spool reservation: `journal` starts at
-`0xf80000`; `spool` remains unmounted and is now 9.375 MiB. Existing application,
-OTA and configuration offsets are unchanged. App-only OTA on an older table
-continues normal collection with a journal-unavailable message. Subsequent
+`0xf80000`; `spool` remains unmounted and is now 3.25 MiB. Layout 3 doubles the
+application slots to 4 MiB and moves the partition table and configuration.
+Migrate earlier layouts over USB and reprovision; app-only OTA cannot move them. Subsequent
 ordinary flashes, OTA and configuration resets preserve journal data; whole-chip
 erase does not. The C6 has no journal partition and its journal hooks are no-ops.
 

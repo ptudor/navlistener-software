@@ -143,6 +143,7 @@ func normalizeHex(s string) string {
 // to the same decode stage the dial connectors feed — one code path from either
 // ingest mode.
 type UpdateCoordinator interface {
+	BeginSession(identity.ObserverContext, string)
 	Pending(identity.ObserverContext) []byte
 	Report(identity.ObserverContext, string, uint64, wire.UpdateStatus) error
 }
@@ -455,6 +456,9 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 		return
 	}
 	defer admission.release()
+	if p.updates != nil {
+		p.updates.BeginSession(observerContext, session)
+	}
 	sessionCtx = context.WithValue(sessionCtx, admissionContextKey{}, admission)
 	go p.watchAuthorization(sessionCtx, ctx, conn, authorized.token, observer, feed, observerContext, admission)
 	p.stream(sessionCtx, frames, w, observerContext, feed, session)

@@ -30,7 +30,7 @@ struct StationDetailView: View {
                             identityCard
                         }
                         if let board = observer?.board {
-                            BoardTelemetryView(board: board)
+                            BoardTelemetryView(board: board, observerID: stationID)
                         }
                         signalsCard
                         timelineCard

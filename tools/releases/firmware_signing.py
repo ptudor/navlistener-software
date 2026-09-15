@@ -61,9 +61,9 @@ def keys(config, production):
 
 def sign_image(image, config, production):
     public, active = keys(config, production)
-    if not 304 <= len(image) <= 0x200000 - 4096 or image[0] != 0xe9 or image[12:14] != b"\x09\x00":
+    if not 304 <= len(image) <= 0x400000 - 4096 or image[0] != 0xe9 or image[12:14] != b"\x09\x00":
         raise ValueError("input is not an ESP32-S3 application fitting the OTA slot")
-    if image[288:300] != b"NVFOTA1\0\x01\x01\x01\x00":
+    if image[288:304] != b"NVFOTA1\0\x02\x01\x01\x00\x03\x00\x00\x00":
         raise ValueError("input lacks the approved board/rollback marker or enables manufacturing writes")
     padded = image + b"\xff" * (-len(image) % 4096)
     digest = hashlib.sha256(padded).digest()
@@ -90,7 +90,7 @@ def sign_image(image, config, production):
     return result, key_id(public[active])
 
 def verify_image(image, key):
-    if len(image) % 4096 or not 8192 <= len(image) <= 0x200000:
+    if len(image) % 4096 or not 8192 <= len(image) <= 0x400000:
         raise ValueError("invalid signed image length")
     block = image[-4096:-4096 + 1216]
     digest = hashlib.sha256(image[:-4096]).digest()

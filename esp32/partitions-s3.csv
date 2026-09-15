@@ -4,37 +4,44 @@
 # Waveshare C6's. `partitions.csv` describes the 4 MB layout and remains the table
 # the C6 build uses; this file is selected only by `sdkconfig.defaults.s3`.
 #
-# Three differences from the 4 MB table, using flash that would
+# Four differences from the 4 MB table, using flash that would
 # otherwise sit idle:
 #
-#  1. On-demand HTTPS OTA uses the inactive ota_0/ota_1 slot. The factory app
+#  1. All three application slots are 4 MiB. On-demand HTTPS OTA uses the
+#     inactive ota_0/ota_1 slot. The factory app
 #     remains the recovery image. Install the OTA-capable app and rollback
 #     bootloader together over USB for the initial baseline (README.md).
 #
-#  2. The `spool` reservation grows from 1.5 MiB to 9.375 MiB. docs/PLAN.md
+#  2. The `spool` reservation is 3.25 MiB. docs/PLAN.md
 #     §P-spool names flash wear on a 1.5 MiB partition as the binding constraint
-#     on the deferred spill tier; spreading the same erase load over 6.25x the
+#     on the deferred spill tier; spreading the same erase load over about 2.17x the
 #     sectors is a direct relaxation of it. This is still a RESERVATION: no
 #     component mounts or writes this partition on either board, so the RAM-only
 #     durability envelope in README.md applies unchanged to the S3. Sizing the
 #     partition does not create reboot durability.
 #
-#  3. The final 512 KiB is a separate NVS FIFO diagnostic journal. Application,
-#     OTA and configuration offsets are unchanged. Install this table over USB
+#  3. The final 512 KiB is a separate NVS FIFO diagnostic journal.
+#     Its offset is preserved. Install this table over USB
 #     once; app-only OTA cannot add a partition to an older device layout.
+#
+#  4. Layout 3 reserves 64 KiB before the partition table at 0x10000 for the
+#     Secure Boot v2 bootloader. Configuration, PHY and OTA-selection data move;
+#     old layouts require attended USB commissioning and reprovisioning.
+#     Update trust/state gets 128 KiB and encrypted NVS keys get 4 KiB.
+#     The spool reservation starts at 0xc40000.
 #
 # Offsets left blank are computed by the partition tool. App partitions must
 # start on a 64 KiB boundary, which is why `factory` begins at 0x20000 rather
 # than immediately after the 8 KiB `otadata`.
 #
 # Name,      Type, SubType,  Offset,   Size
-nvs,         data, nvs,      0x9000,   0x6000
-phy_init,    data, phy,      0xf000,   0x1000
-otadata,     data, ota,      0x10000,  0x2000
-nvs_keys,    data, nvs_keys, 0x12000,  0x1000, encrypted
-factory,     app,  factory,  0x20000,  0x200000
-ota_0,       app,  ota_0,    ,         0x200000
-ota_1,       app,  ota_1,    ,         0x200000
-update_meta, data, nvs,      0x620000, 0x20000
-spool,       data, littlefs, 0x640000, 0x940000
+nvs,         data, nvs,      0x11000,  0x6000
+phy_init,    data, phy,      0x17000,  0x1000
+otadata,     data, ota,      0x18000,  0x2000
+nvs_keys,    data, nvs_keys, 0x1a000,  0x1000, encrypted
+factory,     app,  factory,  0x20000,  0x400000
+ota_0,       app,  ota_0,    0x420000, 0x400000
+ota_1,       app,  ota_1,    0x820000, 0x400000
+update_meta, data, nvs,      0xc20000, 0x20000
+spool,       data, littlefs, 0xc40000, 0x340000
 journal,     data, nvs,      0xf80000, 0x80000

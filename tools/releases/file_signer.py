@@ -33,8 +33,8 @@ def main():
     if b"ENCRYPTED PRIVATE KEY" in pem:
         password = (os.environ[args.passphrase_env] if args.passphrase_env else getpass.getpass("Unlock offline signing key: ")).encode()
     key = serialization.load_pem_private_key(pem, password=password)
-    data = sys.stdin.buffer.read(0x200001 if args.firmware else 24577)
-    if len(data) > (0x200000 if args.firmware else 24576):
+    data = sys.stdin.buffer.read(0x400001 if args.firmware else 24577)
+    if len(data) > (0x400000 if args.firmware else 24576):
         raise ValueError("signing input exceeds the bounded profile")
     if args.firmware:
         if not isinstance(key, rsa.RSAPrivateKey) or key.key_size != 3072:

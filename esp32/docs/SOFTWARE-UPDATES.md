@@ -1,6 +1,8 @@
 # Software updates for the ESP32-S3 observer
 
-**Status:** implementation contract
+**Status:** implemented development baseline; production commissioning and
+hardware acceptance remain gated. See [UPDATE-OPERATIONS.md](UPDATE-OPERATIONS.md)
+for current commands, key storage, hostname pairs and the layout 3 USB baseline.
 
 **Scope:** custom ESP32-S3 observer hardware and its collector/operator surfaces
 
@@ -10,9 +12,9 @@ Publishing one release is a resumable command. A failed download keeps the
 current application running, a failed trial boot rolls back, and an incomplete
 publication never becomes discoverable, trusted, or eligible through TUF.
 
-This design builds on the existing authenticated local OTA service, dual OTA
+This contract builds on the authenticated local OTA service, dual OTA
 slots, factory image, HTTPS downloader, image checks, and ESP-IDF boot rollback.
-It adds the product-level system around those pieces: signed release metadata,
+The implementation adds signed release metadata,
 scheduled checks, staged installation, safe rebooting, rollout control,
 operator interfaces, and production device security.
 
@@ -48,7 +50,7 @@ operator interfaces, and production device security.
 | One device at a time | Stable weekly checks, collector hints, cohorts, promotion, and withdrawal |
 | Development security configuration | Separate unfused development and fused production profiles |
 
-The existing 2 MiB OTA slots and immutable factory slot remain suitable. The
+Layout 3 uses 4 MiB OTA slots and a 4 MiB immutable factory slot. The
 first production baseline still requires an attended full-device flash because
 an app update cannot safely replace its own bootloader, partition table, or
 eFuse trust state.
@@ -237,7 +239,7 @@ writes and pauses network reads whenever spool pressure crosses a tested
 high-water mark; it records the stall and resumes only after pressure falls.
 Download policy must never turn receiver loss into an update side effect.
 
-A resumed download starts again from byte zero. At roughly 2 MiB this is simpler
+A resumed download starts again from byte zero. With a 4 MiB limit this is simpler
 and safer than persisting partial-block state, and it avoids trusting range
 responses or a torn hash checkpoint.
 
@@ -351,7 +353,7 @@ deliberately narrows TUF 1.0.36 to:
 - at most 32 sequential root rotations per check, with trusted progress
   persisted so a later check can continue;
 - target paths at most 192 bytes, any metadata string at most 512 bytes, and an
-  application artifact no larger than the 2 MiB inactive OTA slot;
+  application artifact no larger than the 4 MiB inactive OTA slot;
 - integer-only release fields, duplicate-key rejection, valid UTF-8, and no
   dynamic mirror or arbitrary delegated-role discovery;
 - a fixed update start time and a persisted last-trusted time that never moves
@@ -506,12 +508,15 @@ machine. The generated configuration is pinned and reviewed against the chosen
 ESP-IDF release because some derived option names vary by target and SDK
 version.
 
-The proposed production table adds a 4 KiB `data,nvs_keys` partition with the
-`encrypted` flag at `0x12000`, the start of the existing gap after `otadata`;
-the application offsets need not move. It then carves a 128 KiB `data,nvs`
-partition named `update_meta` at `0x620000` from the reserved, currently unused
-flash-spool region. The spool moves to `0x640000` and shrinks from `0x960000` to
-`0x940000`; the journal remains at `0xf80000`.
+Layout 3 puts the partition table at `0x10000`, leaving room for the secure
+bootloader. Configuration NVS, PHY data, OTA selection and encrypted NVS keys
+move to `0x11000`, `0x17000`, `0x18000` and `0x1a000` respectively. Factory,
+OTA 0 and OTA 1 each occupy 4 MiB, at `0x20000`, `0x420000` and `0x820000`.
+The 128 KiB `update_meta` NVS partition starts at `0xc20000`; the unused spool
+reservation occupies `0xc40000` through `0xf80000` (3.25 MiB). The journal
+remains at `0xf80000`. Earlier layouts require attended USB migration and
+reprovisioning. Image-marker schema 2 prevents older OTA handlers accepting
+these images under the old partition assumptions.
 
 Global NVS encryption initializes only the default NVS partition. The updater
 must obtain the generated NVS security configuration and call

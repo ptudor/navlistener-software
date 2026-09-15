@@ -17,12 +17,31 @@ dependencies:
     - esp32c6
     - esp32h2
     version: 5d7e533734c35a6256c1f70a4875ff4cd495b392
+  esphome/libsodium:
+    component_hash: 860ef0c4c58b57e5c83f9396cbfb9b664cea8c457fc1baf447518079a3da4207
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.10021.11
+  esphome/wireguard:
+    component_hash: dc76a4b613ca3ceb0eddeb5b011d5a8bcdde021c07f58259b0133417e5002a9c
+    dependencies:
+    - name: esphome/libsodium
+      registry_url: https://components.espressif.com
+      require: private
+      version: ^1.10021.1
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 0.4.6
   idf:
     source:
       type: idf
     version: 5.5.4
 direct_dependencies:
 - esp_hardware_discovery
+- esphome/wireguard
 manifest_hash: 72ab0d8748b4265cc0f2a61365a41359346ec869fd90c1b62bb08a4f17fc53ca
-target: esp32c6
+target: esp32s3
 version: 2.0.0

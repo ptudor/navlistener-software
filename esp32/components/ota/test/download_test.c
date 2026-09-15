@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 static uint8_t image[700], flash[700];
-static esp_partition_t running = {0, 0, 0x200000}, slot = {0, 16, 0x200000};
+static esp_partition_t running = {0, 0, 0x400000}, slot = {0, 16, 0x400000};
 static const esp_app_desc_t app = {.project_name = "navfeeder-esp"};
 static size_t offset, written;
 static int selected, begun, ended, aborted, complete, chunked, http_status;
@@ -16,6 +16,7 @@ static int short_read, fail_write, fail_end, steps, cut_at;
 static int64_t reported_length, fake_time;
 static bool slow;
 static int attempts, primary_failure;
+static bool encoded_response;
 static jmp_buf reboot;
 static void boundary(void) { if (++steps == cut_at) longjmp(reboot, 1); }
 const esp_partition_t *esp_ota_get_running_partition(void) { return &running; }
@@ -40,11 +41,14 @@ esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *c)
 {
     assert(c->disable_auto_redirect && c->transport_type == HTTP_TRANSPORT_OVER_SSL && c->crt_bundle_attach);
     attempts++; offset=0;
+    if(encoded_response){esp_http_client_event_t e={HTTP_EVENT_ON_HEADER,"Content-Encoding","gzip",c->user_data};c->event_handler(&e);}
     if (primary_failure) assert(!strcmp(c->url, attempts == 1
         ? "https://firmware.intsat.net:443/firmware/v1/app.bin?build=1"
         : "https://firmware.intsat.space:443/firmware/v1/app.bin?build=1"));
     return (void*)1;
 }
+esp_err_t esp_http_client_set_header(esp_http_client_handle_t h,const char *name,const char *value)
+{ (void)h;assert(!strcmp(name,"Accept-Encoding") && !strcmp(value,"identity"));return ESP_OK; }
 esp_err_t esp_http_client_open(esp_http_client_handle_t h,int n)
 { (void)h;(void)n; boundary(); return primary_failure == 1 && attempts == 1 ? ESP_FAIL : ESP_OK; }
 int64_t esp_http_client_fetch_headers(esp_http_client_handle_t h) { (void)h; return reported_length; }
@@ -75,12 +79,12 @@ uint64_t spool_acked(void) { return 42; }
 static nvf_ota_request_t request;
 static void reset(void)
 {
-    offset=written=0; fake_time=1000; slow=false; selected=begun=ended=aborted=0; complete=1; chunked=0; http_status=200;
+    offset=written=0; fake_time=1000; slow=false; encoded_response=false; selected=begun=ended=aborted=0; complete=1; chunked=0; http_status=200;
     short_read=fail_write=fail_end=steps=cut_at=attempts=primary_failure=0; reported_length=sizeof image; slot.subtype=16;
     memset(image,0,sizeof image); memset(flash,0xee,sizeof flash);
     image[0]=0xe9; image[1]=1; image[12]=9;
     memcpy(image+32,"\x32\x54\xcd\xab",4); strcpy((char*)image+80,"navfeeder-esp");
-    memcpy(image+288,"NVFOTA1",8); image[296]=image[297]=image[298]=1;
+    memcpy(image+288,"NVFOTA1",8); image[296]=2;image[297]=image[298]=1;image[300]=3;
     strcpy(request.url,"https://example.invalid/app.bin");
     mbedtls_sha256_context sha; mbedtls_sha256_init(&sha);
     mbedtls_sha256_update(&sha,image,sizeof image); mbedtls_sha256_finish(&sha,request.hash);
@@ -92,10 +96,12 @@ int main(void)
     reset(); request.hash[0]^=1; assert(nvf_ota_download(&request) != ESP_OK && !selected && aborted && !ended);
     reset(); image[12]=13; assert(nvf_ota_download(&request) != ESP_OK && !begun && !selected);
     reset(); image[299]=1; assert(nvf_ota_download(&request) != ESP_OK && !begun);
-    reset(); reported_length=0x200001; assert(nvf_ota_download(&request) != ESP_OK && !begun);
+    reset(); reported_length=0x400001; assert(nvf_ota_download(&request) != ESP_OK && !begun);
     reset(); reported_length=200; assert(nvf_ota_download(&request) != ESP_OK && !begun);
     reset(); http_status=302; assert(nvf_ota_download(&request) != ESP_OK && !begun);
     reset(); chunked=1; assert(nvf_ota_download(&request) != ESP_OK && !begun);
+    reset(); encoded_response=true; assert(nvf_ota_download(&request) != ESP_OK && !begun);
+    reset(); assert(nvf_ota_stage(&request,NULL,NULL)==ESP_OK && ended && !selected);
     reset(); slow=true; assert(nvf_ota_download(&request) == ESP_ERR_TIMEOUT && aborted && !selected);
     reset(); short_read=1; assert(nvf_ota_download(&request) != ESP_OK && aborted && !selected);
     reset(); fail_write=1; assert(nvf_ota_download(&request) != ESP_OK && aborted && !selected);

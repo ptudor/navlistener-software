@@ -75,7 +75,7 @@ func DecodeUpdateStatus(p []byte) (*UpdateStatus, error) {
 		return nil, errors.New("invalid update status framing")
 	}
 	u16, u32, u64 := binary.BigEndian.Uint16, binary.BigEndian.Uint32, binary.BigEndian.Uint64
-	if u16(p[72:]) > 7 || (u16(p[72:]) == 0) != (u16(p[74:]) == 0) || u32(p[44:]) > 0x200000 || u32(p[40:]) > u32(p[44:]) {
+	if u16(p[72:]) > 7 || (u16(p[72:]) == 0) != (u16(p[74:]) == 0) || u32(p[44:]) > 0x400000 || u32(p[40:]) > u32(p[44:]) {
 		return nil, errors.New("invalid update status fields")
 	}
 	s := &UpdateStatus{Mode: []string{"manual", "download", "install"}[p[1]-1], Channel: []string{"stable", "canary", "lab"}[p[2]-1],
