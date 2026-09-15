@@ -157,9 +157,37 @@ Startup probes the shared I2C bus and reads sensor identification registers.
 The 2026-09-14 bench check found MCP9808 at `0x18`, HDC2080 at `0x40`, readable
 MCP79412 RTC registers at `0x6f`, and pressure chip ID `0x50` at `0x76`.
 That pressure ID is shared by BMP388/BMP384 and cannot identify the exact
-variant. RTC status reported a stopped oscillator and disabled battery backup;
-the clock was not adopted as system time. These checks do not yet deliver
-calibrated environmental telemetry or initialize the RTC.
+variant. The initial RTC status reported a stopped oscillator and disabled
+battery backup. These checks do not yet deliver calibrated environmental
+telemetry.
+
+The RTC now waits for a qualified GNSS lock before its first initialization,
+such as during a factory antenna test. There is no compile-time fallback.
+Initialization requires at least three advancing NAV-PVT reports spanning two
+seconds, a valid position and fully resolved UTC date/time, reported time
+uncertainty at most 100 ms, and a report no more than two seconds old. Leap-second
+samples and inconsistent time progression are deferred. A valid running RTC
+keeps its existing calendar; subsequent GNSS reports do not continually reset it.
+
+Initialization stops the oscillator before writing the calendar, enables
+battery backup switching, and verifies the calendar, oscillator status and
+advancing seconds. Failures leave time unconfirmed and require another qualified
+GNSS sequence; stopping an unverified clock is attempted if the bus still works.
+Writing the RTC weekday register clears its power-fail evidence in hardware.
+When that flag is set, the raw calendar and power-down/up timestamps are first
+saved as the latest event in NVS (`nvf_rtc/last_pfail`); a save failure defers
+the RTC write. Backup switching is also enabled for a retained running clock,
+but that does not prove a battery is
+fitted: a battery is needed to retain time after main power is removed.
+See the [MCP79412 datasheet, sections 5.3 and 5.7](https://ww1.microchip.com/downloads/aemDocuments/documents/MPD/ProductDocuments/DataSheets/MCP79410-MCP79411-MCP79412-Battery-Backed-I2C-RTCC-DS20002266.pdf)
+and [NAV-PVT in the M9 interface description](https://content.u-blox.com/sites/default/files/u-blox-M9-SPG-4.04_InterfaceDescription_UBX-21022436.pdf).
+
+This establishes a seconds-resolution RTC baseline. It does not adopt RTC time
+as system time, change observation timestamps, authenticate GNSS time, or provide
+PPS alignment. The 2026-09-14 S3 flash check confirmed that a stopped RTC waits
+for GNSS lock while the NEO-M9N communicates but reports no tracked satellites.
+Actual GNSS initialization and battery retention still need a bench check with
+reception and a fitted battery.
 
 The ATECC check uses a wake response, CRC-verified Info revision, configuration
 lock-byte reads and three Random requests. It rejects fixed/short-period output

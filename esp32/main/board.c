@@ -12,6 +12,7 @@
 #include "hardware_manifest.h"
 #include "hardware_checks.h"
 #include "receiver.h"
+#include "observer_rtc.h"
 #include "pusher.h"
 #include "nvs.h"
 
@@ -208,6 +209,7 @@ static void board_task(void *arg)
             ESP_LOGI(TAG, "panel green=0x%02x yellow=0x%02x (GPS SBAS GAL BDS QZSS GLO NavIC uplink)", green, yellow);
             previous_green = green; previous_yellow = yellow;
         }
+        observer_rtc_poll(hardware_manifest_i2c_bus(), &status, now);
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 }

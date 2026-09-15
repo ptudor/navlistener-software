@@ -102,11 +102,20 @@ matched to `feeder/navfeeder.c`. No I/O — pure encode/parse over buffers.
   zero tracked satellites and no fix reported by the receiver. MCP9808 and
   HDC2080 IDs, RTC registers and BMP388/BMP384-family pressure ID respond.
   ATECC608C Info revision is `00006005`, both zones are unlocked and its RNG
-  fails repeated-output screening. RTC oscillator is stopped and battery
-  backup is disabled. No crypto provisioning or RTC initialization is performed.
+  fails repeated-output screening. The initial RTC oscillator was stopped with
+  battery backup disabled. No crypto provisioning is performed.
+- RTC initialization now waits for qualified GNSS UTC: at least three fresh,
+  consistent NAV-PVT reports spanning two seconds, with a valid position and
+  resolved date/time. There is no build-time fallback. A valid running RTC is
+  retained; backup switching is enabled without claiming a battery is present.
+  Host tests cover calendar validation, GNSS qualification, failed I2C transfers,
+  oscillator failures and readback. RTC time is not adopted as system time or
+  used for observation timestamps. The S3 flash check confirmed the waiting
+  state with a stopped RTC, responding NEO-M9N and no satellite fix.
 - **Remaining:** antenna-backed changes
-  of tracking/region state, calibrated environmental telemetry, RTC/time
-  validation, and a separately reviewed secure-element provisioning policy.
+  of tracking/region state, calibrated environmental telemetry, RTC initialization
+  from live GNSS and battery retention, PPS/time validation, and a separately
+  reviewed secure-element provisioning policy.
 
 ## P3 — pusher: the TLS push consumer *(implemented)*
 

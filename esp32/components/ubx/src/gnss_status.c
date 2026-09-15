@@ -36,6 +36,7 @@ void gnss_status_feed(gnss_status_t *s, uint8_t cls, uint8_t id,
         }
         s->satellites_ms = now; s->satellites_valid = true;
     } else if (cls == 1 && id == 7 && len == 92) {
+        memcpy(s->pvt_utc, p + 4, sizeof s->pvt_utc);
         int32_t lon = (int32_t)le32(p+24), lat = (int32_t)le32(p+28);
         s->fix_valid = (p[21] & 1) && p[20] >= 2 && p[20] <= 4 && !(p[78] & 1) &&
                        lat >= -900000000 && lat <= 900000000 &&
