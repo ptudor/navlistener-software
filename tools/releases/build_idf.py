@@ -10,10 +10,33 @@ import sys
 def run(command, cwd):
     subprocess.run(command, cwd=cwd, check=True, stdout=sys.stderr)
 
+def license_inventory(source, idf, project):
+    notices = {}
+    # IDF includes an empty path for its synthetic component. Path("") would
+    # scan the publisher's working directory instead of an isolated build input.
+    directories = [source, idf, *(Path(p) for p in project["build_component_paths"] if p)]
+    for directory in directories:
+        if not directory.is_absolute():
+            raise ValueError("license source must be an absolute build input")
+        paths = directory.iterdir() if directory in (source, idf) else directory.rglob("*")
+        for path in paths:
+            if not path.is_file() or not path.name.upper().startswith(("LICENSE", "COPYING", "NOTICE")):
+                continue
+            resolved = path.resolve()
+            if resolved.is_relative_to(source):
+                name = resolved.relative_to(source).as_posix()
+            elif resolved.is_relative_to(idf):
+                name = "esp-idf/" + resolved.relative_to(idf).as_posix()
+            else:
+                raise ValueError("license source is outside the pinned build inputs")
+            data = path.read_bytes()
+            notices[name] = {"path": name, "sha256": hashlib.sha256(data).hexdigest(), "text": data.decode("utf-8")}
+    return [notices[k] for k in sorted(notices)]
+
 def main():
     request = json.load(sys.stdin)
-    source, build = Path(request["source"]), Path(request["build"])
-    idf = Path(os.environ["IDF_PATH"])
+    source, build = Path(request["source"]).resolve(strict=True), Path(request["build"]).resolve()
+    idf = Path(os.environ["IDF_PATH"]).resolve(strict=True)
     python = Path(os.environ["IDF_PYTHON_ENV_PATH"]) / "bin/python"
     pin = json.loads((source / "tools/releases/toolchain.json").read_bytes())
     revision = subprocess.check_output(["git", "-C", str(idf), "rev-parse", "HEAD"], text=True).strip()
@@ -36,19 +59,7 @@ def main():
     provenance["unsigned_image_sha256"] = hashlib.sha256((build / "navfeeder-esp.bin").read_bytes()).hexdigest()
     (build / "release-provenance.json").write_text(json.dumps(provenance, sort_keys=True, indent=2) + "\n")
     project=json.loads((build/"project_description.json").read_bytes())
-    notices={}
-    directories=[source,idf,*map(Path,project["build_component_paths"])]
-    for directory in directories:
-        paths=directory.iterdir() if directory in (source,idf) else directory.rglob("*")
-        for path in paths:
-            if not path.is_file() or not path.name.upper().startswith(("LICENSE","COPYING","NOTICE")):continue
-            resolved=path.resolve()
-            if resolved.is_relative_to(source):name=resolved.relative_to(source).as_posix()
-            elif resolved.is_relative_to(idf):name="esp-idf/"+resolved.relative_to(idf).as_posix()
-            else:raise ValueError("license source is outside the pinned build inputs")
-            data=path.read_bytes()
-            notices[name]={"path":name,"sha256":hashlib.sha256(data).hexdigest(),"text":data.decode("utf-8")}
-    (build/"release-licenses.json").write_text(json.dumps([notices[k] for k in sorted(notices)],sort_keys=True)+"\n")
+    (build/"release-licenses.json").write_text(json.dumps(license_inventory(source, idf, project),sort_keys=True)+"\n")
     print(json.dumps({"image": str(build / "navfeeder-esp.bin"), "elf": str(build / "navfeeder-esp.elf"),
         "provenance": str(build / "release-provenance.json"),"licenses":str(build/"release-licenses.json")}))
 

@@ -8,12 +8,42 @@ import unittest
 from unittest.mock import patch
 import urllib.error
 
+import build_idf
 import origin
 import publisher
 import release
 import repository as repository_module
 from firmware_signing import keys, sign_image, verify_image
 from repository import Repository, Signers, digest, encoded, init_test_keys
+
+class BuildAdapterTests(unittest.TestCase):
+    def test_license_inventory_ignores_synthetic_component_and_keeps_public_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            source, idf = base / "source", base / "idf"
+            component = source / "esp32/components/example"
+            component.mkdir(parents=True)
+            idf.mkdir()
+            (source / "LICENSE").write_text("Project license\n")
+            (idf / "LICENSE").write_text("SDK license\n")
+            (component / "NOTICE").write_text("Component notice\n")
+            notices = build_idf.license_inventory(source, idf, {
+                "build_component_paths": [str(component), ""]})
+            self.assertEqual([n["path"] for n in notices], [
+                "LICENSE", "esp-idf/LICENSE", "esp32/components/example/NOTICE"])
+            self.assertNotIn(str(base), json.dumps(notices))
+
+    def test_license_inventory_refuses_external_notice_symlink(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            source, idf = base / "source", base / "idf"
+            source.mkdir()
+            idf.mkdir()
+            outside = base / "outside"
+            outside.write_text("Unpinned notice\n")
+            (source / "NOTICE").symlink_to(outside)
+            with self.assertRaisesRegex(ValueError, "outside the pinned"):
+                build_idf.license_inventory(source, idf, {"build_component_paths": []})
 
 class AdapterTests(unittest.TestCase):
     @classmethod
