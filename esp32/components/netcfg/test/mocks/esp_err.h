@@ -8,4 +8,6 @@ typedef int esp_err_t;
 #define ESP_ERR_NVS_NOT_FOUND 3
 #define ESP_ERR_NVS_INVALID_LENGTH 4
 #define ESP_ERR_NVS_NOT_ENOUGH_SPACE 5
+#define ESP_ERR_INVALID_SIZE 6
+#define ESP_ERR_NO_MEM 7
 #endif

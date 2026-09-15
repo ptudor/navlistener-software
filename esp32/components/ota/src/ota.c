@@ -22,6 +22,8 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "lwip/inet.h"
+#include "lwip/sockets.h"
 #include "mbedtls/md.h"
 #include "mbedtls/sha256.h"
 #include "nvs.h"
@@ -66,10 +68,23 @@ static bool receive_body(httpd_req_t *req, char *out, size_t cap)
     out[received] = 0;
     return true;
 }
+static bool request_on_setup_ap(httpd_req_t *req)
+{
+    struct sockaddr_storage local = {0};
+    socklen_t length = sizeof local;
+    int socket = httpd_req_to_sockfd(req);
+    if (socket < 0 || getsockname(socket, (struct sockaddr *)&local, &length) < 0 ||
+        local.ss_family != AF_INET)
+        return false;
+    const struct sockaddr_in *address = (const struct sockaddr_in *)&local;
+    return address->sin_addr.s_addr == inet_addr("192.168.4.1");
+}
 static esp_err_t pairing_post(httpd_req_t *req)
 {
     wifi_mode_t mode;
-    if (esp_wifi_get_mode(&mode) != ESP_OK || mode != WIFI_MODE_AP)
+    if (esp_wifi_get_mode(&mode) != ESP_OK ||
+        (mode != WIFI_MODE_AP && mode != WIFI_MODE_APSTA) ||
+        !request_on_setup_ap(req))
         return error_response(req, "403 Forbidden", "pairing requires the provisioning AP");
     char origin[80];
     if (httpd_req_get_hdr_value_len(req, "Origin") &&

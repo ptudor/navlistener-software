@@ -1,9 +1,9 @@
-// netcfg — persisted device config (NVS) + first-boot SoftAP provisioning portal.
+// netcfg — persisted device config (NVS) + first-boot provisioning.
 //
 // Config precedence: NVS (field-provisioned) over the compiled Kconfig defaults (dev bench).
-// A factory-fresh board with no WiFi SSID raises its own AP and serves a small HTTP form to
-// capture WiFi + collector + token, writes them to NVS, and reboots into station mode — so a
-// unit is provisioned with no serial console (the provisioning pattern from lightshow/shepherd).
+// A factory-fresh S3 offers encrypted BLE provisioning and a protected browser fallback.
+// Both capture WiFi + collector + token, write one NVS transaction, and reboot into station
+// mode. The C6 development board retains the browser path.
 // Secrets live only in NVS, never in a committed sdkconfig (docs: config is NVS, never .env).
 
 #ifndef NETCFG_H
@@ -34,12 +34,24 @@ esp_err_t netcfg_save(const netcfg_t *cfg);
 // Hardware identity and enrollment material must live outside this namespace.
 esp_err_t netcfg_reset_provisioning(void);
 
-// netcfg_start_portal brings up a SoftAP + an HTTP config form for an unprovisioned board.
-// It generates a strong one-time AP password (never a placeholder) and copies the AP SSID +
-// password into ap_ssid/ap_pass so the caller can show them on the LCD. On a successful form
-// submit it saves to NVS and reboots into station mode. Non-blocking (the HTTP server runs on
-// its own task); returns ESP_OK once the AP + server are up.
-esp_err_t netcfg_start_portal(char ap_ssid[33], char ap_pass[16]);
+#define NETCFG_PROVISIONING_NAME_CAP 24
+#define NETCFG_PROVISIONING_PASSWORD_CAP 16
+#define NETCFG_PROVISIONING_QR_CAP 192
+
+typedef struct {
+    char name[NETCFG_PROVISIONING_NAME_CAP];
+    char password[NETCFG_PROVISIONING_PASSWORD_CAP];
+    char qr_payload[NETCFG_PROVISIONING_QR_CAP];
+    bool credential_created; // true only on the boot that minted the label secret
+    bool ble_active;         // false on C6 or if BLE initialization failed
+} netcfg_provisioning_info_t;
+
+// Loads or creates the persistent per-device setup credential, starts BLE with
+// Security 2 on the S3, and starts the password-protected SoftAP browser portal
+// as an immediate fallback. A successful path saves one complete netcfg record
+// and schedules a reboot. The setup credential lives in an independent NVS
+// namespace and survives netcfg_reset_provisioning(). Non-blocking.
+esp_err_t netcfg_start_provisioning(netcfg_provisioning_info_t *info);
 
 #ifdef __cplusplus
 }

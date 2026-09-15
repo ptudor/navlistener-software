@@ -22,6 +22,17 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-s3.csv"
 # LCD/WS2812 drivers held dormant because their fixed pins are this board's I2C.
 CONFIG_NVF_BOARD_GNSS_COLOR_NEO=y
 
+# First-boot provisioning uses ESP-IDF's BLE manager with NimBLE and
+# protocomm Security 2 (SRP6a authentication/key exchange + AES-GCM). Security
+# 0 and 1 are omitted from the S3 image so a client cannot negotiate a weaker
+# provisioning protocol. The protected SoftAP browser portal runs alongside it.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_ESP_PROTOCOMM_SUPPORT_SECURITY_VERSION_0=n
+CONFIG_ESP_PROTOCOMM_SUPPORT_SECURITY_VERSION_1=n
+CONFIG_ESP_PROTOCOMM_SUPPORT_SECURITY_VERSION_2=y
+CONFIG_WIFI_PROV_BLE_SEC_CONN=y
+
 # Hardware edge timestamps must remain serviceable during NVS/OTA flash writes.
 CONFIG_MCPWM_ISR_CACHE_SAFE=y
 

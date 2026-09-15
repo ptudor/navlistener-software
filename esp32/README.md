@@ -76,7 +76,8 @@ This creates a separate S3 configuration and build directory, preserving an
 existing C6 `sdkconfig`. Existing generated configurations retain their previous
 values: regenerating a separate build from the defaults applies PSRAM and OTA
 settings. Check that the generated S3 config enables `SPIRAM_MODE_OCT`,
-`NVF_SPOOL_PSRAM`, `NVF_OTA` and `BOOTLOADER_APP_ROLLBACK_ENABLE`.
+`NVF_SPOOL_PSRAM`, `NVF_OTA`, `BT_NIMBLE_ENABLED`, Security 2, and
+`BOOTLOADER_APP_ROLLBACK_ENABLE`.
 Building for the S3 rewrites only the target field in `dependencies.lock`; the
 component revision and content hash remain pinned. Archive the resolved lock
 with its firmware provenance, then restore the committed C6 resolution before
@@ -223,18 +224,25 @@ the firmware boots, brings up the LCD dashboard + WS2812
 status LED, runs the clean-room UBX framer, spools frames, and pushes them to the collector
 over GNF1/TLS. Config is NVS-first (`netcfg`), falling back to the compiled Kconfig defaults.
 
-**Provisioning a fresh board (no serial console):** an unprovisioned board raises a WiFi AP
-`navfeeder-XXYYZZ` and shows its one-time password on the LCD. Join it, open
-`http://192.168.4.1/`, enter WiFi + collector + station + token, Save — it writes NVS and
-reboots into station mode. (For dev you can still pre-seed everything via `idf.py menuconfig`
-→ "navfeeder-esp".) Remaining work includes P-hw (ATECC608 identity + `SIGNED_DATA`),
-flash-backed spooling, the u8g2 font upgrade, and additional ESP32 record-parity tests.
+**Provisioning a fresh board (no serial console):** the custom S3 advertises
+`navfeeder-XXYYZZ` over BLE and accepts ESP-IDF Security 2 provisioning from the
+Station app. Scan the physical device QR, select WiFi, and submit the collector,
+station, and enrollment token. The password-protected AP `navfeeder-XXYYZZ` is
+available at the same time as a browser fallback: join it with the password on
+the label and open `http://192.168.4.1/`. Either path writes one validated NVS
+record and reboots into station mode. The C6 development build retains the
+browser path and shows the same persistent credential on its LCD. The complete
+firmware/Swift/label contract is [documented here](docs/PROVISIONING.md). (For
+development, configuration can still be pre-seeded through `idf.py menuconfig`
+→ "navfeeder-esp".)
 
 **Configuration-reset recovery:** on the custom ESP32-S3 observer, boot the application
 normally, then hold **BOOT/DOWNLOAD for eight seconds**. Once the status panel shows the
-armed pattern, release the button. Firmware erases only the `navfeeder` configuration
-namespace, reboots, and raises a newly passworded SoftAP portal. A short press does nothing,
-and merely reaching the hold threshold does not erase anything until a debounced release.
+armed pattern, release the button. Firmware erases only the `navfeeder`
+configuration namespace, reboots, and returns to BLE plus browser setup with
+the **same** label password. Short presses continue to cycle panel brightness,
+and merely reaching the hold threshold does not erase anything until a
+debounced release.
 
 Do not hold BOOT while resetting for this gesture: that enters the ROM downloader instead.
 The runtime gesture is intentionally disabled on the current Waveshare ESP32-C6-LCD-1.47
@@ -249,17 +257,20 @@ esptool.py --chip esp32c6 --port /dev/cu.usbmodemXXXX erase-region 0x9000 0x6000
 Pass `--chip esp32s3` for the custom observer. Those offset/size values are the
 `nvs` row in `partitions.csv`, and the S3's `partitions-s3.csv` places `nvs` at
 the same offset and size, so the region is identical on both boards; the LittleFS
-spool partition is left intact. On the next boot `netcfg_load` finds no
-provisioned config and raises a newly passworded SoftAP portal. Use the actual
-serial device path for the board. This is a configuration erase, not a firmware
-reflash.
+spool partition is left intact. This whole-NVS erase also destroys the setup
+credential, update key, and hardware identity history. On the next boot firmware
+creates a different setup password and emits its QR payload once on the serial
+console; the old physical label must be replaced before deployment. Use the
+actual serial device path for the board. This is a configuration erase, not a
+firmware reflash.
 
-**Incomplete configuration also raises the portal**. "Provisioned" means WiFi SSID,
+**Incomplete configuration also starts setup**. "Provisioned" means WiFi SSID,
 collector host, port in 1–65535, station id, and bearer token are all present — one rule
 (`netcfg_validate`), applied both at boot and by the portal before it writes NVS. A board
 configured only partly (Kconfig defaults, a partial NVS write, external NVS tooling) therefore
-comes up in the portal with the missing field named on the LCD, instead of looping forever on
-WiFi/TLS/auth failures that only a serial cable could diagnose. Note the deliberate limit: a
+comes up in BLE/browser setup with the missing field named on the LCD where
+available, instead of looping forever on WiFi/TLS/auth failures that only a
+serial cable could diagnose. Note the deliberate limit: a
 *complete but wrong* config (bad password, unreachable host, revoked token) keeps retrying in
 station mode — a unit riding out a collector outage must not drop its uplink over a condition
 that is not its fault.
@@ -479,6 +490,14 @@ and flash history may remain. Factory identity and hardware-manifest namespaces
 are untouched. Downgrading to firmware that only understands individual keys
 requires explicit configuration erasure/reprovisioning; old firmware cannot
 interpret this format or its reset flag.
+
+The independent `nvf_setup/credential_v1` record contains the random setup
+password used by BLE Security 2 and the fallback AP. It is created once, checked
+against the device name and CRC on every setup boot, and deliberately survives
+the logical reset above. Corruption fails closed so firmware cannot silently
+replace the secret behind an already printed label. A full NVS partition erase
+does replace it and therefore requires a new label. See
+[the provisioning contract](docs/PROVISIONING.md#device-name-and-setup-credential).
 
 Host fault tests cover every modeled chunk/index/commit boundary, both error
 returns and reboot interruption, including migration and reset. They exercise the

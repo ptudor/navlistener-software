@@ -6,8 +6,8 @@
 // mirrors state to the LCD dashboard + the WS2812 status LED.
 //
 // Config is NVS-first, with Kconfig values only as a development fallback. A board without a
-// provisioned WiFi SSID or collector host raises the password-protected SoftAP portal and shows
-// its one-time credentials on the display (or the physically trusted serial console fallback).
+// provisioned WiFi SSID or collector host starts encrypted BLE provisioning and a protected
+// SoftAP browser fallback. Their persistent setup credential comes from the device label.
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -112,7 +112,7 @@ static void config_reset_task(void *arg)
                 ESP_LOGE(TAG, "configuration reset failed: %s", esp_err_to_name(err));
             } else {
                 // Give the display/RMT transfer and the final log line time to complete. The
-                // reset marker suppresses compiled defaults, so the next boot raises SoftAP.
+                // reset marker suppresses compiled defaults, so the next boot enters setup.
                 vTaskDelay(pdMS_TO_TICKS(250));
                 esp_restart();
             }
@@ -378,24 +378,29 @@ void app_main(void)
     // task before the unprovisioned path returns to the portal.
     config_reset_start();
     if (!provisioned) {
-        // First boot / factory reset / incomplete config: raise the SoftAP provisioning
-        // portal and show its credentials on the LCD, so the board is configured from a
-        // phone (no serial console).
-        char ap_ssid[33] = {0}, ap_pass[16] = {0};
-        if (netcfg_start_portal(ap_ssid, ap_pass) == ESP_OK) {
+        // The S3 advertises encrypted BLE provisioning while keeping the browser
+        // portal available immediately on its AP. The C6 uses the same persistent
+        // credential for its browser-only development flow.
+        netcfg_provisioning_info_t setup;
+        if (netcfg_start_provisioning(&setup) == ESP_OK) {
             status_led_state(LED_BOOT);
             // The reason goes on the panel too: "wifi ssid is empty" (a factory-fresh board)
             // and "bearer token is empty" (a half-provisioned one) are the same screen
             // otherwise, and the second is the one an operator would never guess.
-            display_show_portal(ap_ssid, ap_pass, cfg_err);
-            ESP_LOGW(TAG, "unprovisioned (%s): join AP '%s' and open http://192.168.4.1/ to configure",
-                     cfg_err, ap_ssid);
-            // the AP password normally appears ONLY on the LCD (never logged).
-            // could ever join the AP. Physical serial-console access is equivalent trust to
-            // reading the panel, so when the display is not ready, print the one-time password
-            // to the serial console as the sole field-recovery path.
-            if (!display_is_ready())
-                ESP_LOGW(TAG, "display unavailable — AP password (serial console only): %s", ap_pass);
+            display_show_portal(setup.name, setup.password, cfg_err);
+            ESP_LOGW(TAG, "unprovisioned (%s): %s; browser fallback AP '%s' at http://192.168.4.1/",
+                     cfg_err, setup.ble_active ? "scan the device label in the Station app"
+                                               : "BLE unavailable",
+                     setup.name);
+            if (setup.credential_created) {
+                // Manufacturing captures this single first-creation line and
+                // prints it on the physical recovery label. Routine setup boots
+                // never log the persistent password again.
+                ESP_LOGW(TAG, "NEW SETUP LABEL — print and attach before deployment: %s",
+                         setup.qr_payload);
+            } else if (!display_is_ready()) {
+                ESP_LOGW(TAG, "setup password is available from the physical label or paired app");
+            }
             confirm_startup();
         } else {
             ESP_LOGE(TAG, "provisioning portal failed to start");

@@ -4,7 +4,7 @@ The ESP32 edge feeder for `navlistener`. It mirrors the C `feeder/navfeeder.c` o
 same GNF1 wire, adds a live status display, and stages toward a hardware-anchored identity.
 
 **Status: P0–P5 core functionality, S3 PSRAM buffering and on-demand OTA implemented.** The firmware includes framing,
-RAM spooling, TLS push, display, telemetry, and SoftAP provisioning. Current builds
+RAM spooling, TLS push, display, telemetry, and BLE/browser provisioning. Current builds
 support the Waveshare ESP32-C6 and custom ESP32-S3 observer. Use the
 [firmware guide](../README.md) to build, provision, and run it. This ledger retains
 the original phase names and marks remaining extensions and validation work.
@@ -187,8 +187,14 @@ matched to `feeder/navfeeder.c`. No I/O — pure encode/parse over buffers.
 - MON-RF/MON-HW/NAV-SAT telemetry wired from `ubx` into the DATA stream (feeds the
   collector's PNT-defense layer); optional zstd request in the handshake (only if a small
   ESP32 zstd fits the SRAM budget — otherwise leave off and document).
-- `netcfg` SoftAP provisioning UI (provisioning pattern): first-boot AP + a minimal form to set
-  wifi + collector + token, persisted to NVS. Generated AP password, never a placeholder.
+- `netcfg` provisioning: the S3 runs ESP-IDF BLE Unified Provisioning with
+  Security 2 and a simultaneous protected SoftAP browser fallback. Both collect
+  WiFi + collector + token and persist one validated NVS transaction. The random
+  per-device setup password survives configuration reset and is recoverable from
+  the physical QR/text label; the C6 retains the browser path.
+- The custom `nav-config` endpoint has a bounded, versioned binary contract for
+  the Swift Station app. Host tests cover setup-secret persistence/corruption and
+  malformed or truncated endpoint messages.
 - **Milestone:** a factory-fresh board is field-provisioned with no serial console.
 
 ## P-spool — the flash spill tier *(designed, DEFERRED by decision 2026-07-24)*

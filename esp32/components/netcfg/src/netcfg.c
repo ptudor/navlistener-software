@@ -1,13 +1,17 @@
-// netcfg — NVS config + SoftAP provisioning portal. See include/netcfg.h.
+// netcfg — NVS config + BLE/SoftAP provisioning. See include/netcfg.h.
 
 #include "netcfg.h"
 #include "netcfg_form.h"
+#include "netcfg_setup.h"
+#include "sdkconfig.h"
+#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+#include "netcfg_ble.h"
+#endif
 
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include "esp_random.h"
 #include "bootloader_random.h" // seed esp_random() before Wi-Fi is running
 
 #include "freertos/FreeRTOS.h"
@@ -19,10 +23,11 @@
 #include "esp_random.h"
 #include "esp_system.h"
 #include "esp_http_server.h"
+#include "lwip/inet.h"
+#include "lwip/sockets.h"
 #include "ota.h"
 #include "esp_check.h"
 #include "esp_log.h"
-#include "sdkconfig.h"
 
 static const char *TAG = "netcfg";
 
@@ -72,8 +77,25 @@ static void restart_task(void *arg)
     esp_restart();
 }
 
+static bool request_on_setup_ap(httpd_req_t *req)
+{
+    struct sockaddr_storage local = {0};
+    socklen_t length = sizeof local;
+    int socket = httpd_req_to_sockfd(req);
+    if (socket < 0 || getsockname(socket, (struct sockaddr *)&local, &length) < 0 ||
+        local.ss_family != AF_INET)
+        return false;
+    const struct sockaddr_in *address = (const struct sockaddr_in *)&local;
+    return address->sin_addr.s_addr == inet_addr("192.168.4.1");
+}
+
 static esp_err_t root_get(httpd_req_t *req)
 {
+    if (!request_on_setup_ap(req)) {
+        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN,
+                            "setup requires the provisioning AP");
+        return ESP_FAIL;
+    }
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, PORTAL_HTML, HTTPD_RESP_USE_STRLEN);
 }
@@ -108,6 +130,11 @@ static bool origin_ok(httpd_req_t *req)
 
 static esp_err_t save_post(httpd_req_t *req)
 {
+    if (!request_on_setup_ap(req)) {
+        httpd_resp_send_err(req, HTTPD_403_FORBIDDEN,
+                            "setup requires the provisioning AP");
+        return ESP_FAIL;
+    }
     if (!origin_ok(req)) {
         httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "cross-origin request rejected");
         return ESP_FAIL;
@@ -231,53 +258,63 @@ static esp_err_t save_post(httpd_req_t *req)
     return ESP_OK;
 }
 
-// gen_password builds a strong AP password from an unambiguous alphabet (no 0/O/1/l/I),
-// never a placeholder — the design rule (generate real secrets at creation). // rejection-sample so no symbol is favored by the modulo bias (esp_random() % 55 alone
-// slightly over-weights the low symbols). The caller must ensure a seeded RNG first.
-static void gen_password(char *dst, size_t n)
+esp_err_t netcfg_start_provisioning(netcfg_provisioning_info_t *info)
 {
-    static const char alpha[] =
-        "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    const uint32_t m = sizeof(alpha) - 1;
-    const uint32_t max_valid = (UINT32_MAX / m) * m; // discard the top partial bucket
-    for (size_t i = 0; i + 1 < n; i++) {
-        uint32_t r;
-        do { r = esp_random(); } while (r >= max_valid);
-        dst[i] = alpha[r % m];
-    }
-    dst[n - 1] = '\0';
-}
-
-esp_err_t netcfg_start_portal(char ap_ssid[33], char ap_pass[16])
-{
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_ap();
-    wifi_init_config_t ic = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&ic));
+    if (!info) return ESP_ERR_INVALID_ARG;
+    memset(info, 0, sizeof *info);
 
     uint8_t mac[6] = {0};
-    esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
-    snprintf(ap_ssid, 33, "navfeeder-%02X%02X%02X", mac[3], mac[4], mac[5]);
-    // esp_random() is only truly random while an RF subsystem is running; here Wi-Fi
-    // is init'd but not started, so seed the RNG from the bootloader entropy source for the
-    // duration of password generation (disabled again before esp_wifi_start, which the RF
-    // driver requires).
+    ESP_RETURN_ON_ERROR(esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP), TAG, "read setup MAC");
+    netcfg_setup_credentials_t setup;
+    bool created = false;
+    // The RF drivers are not running yet. Enable their boot-time entropy source
+    // while a missing credential may be generated, and always disable it before
+    // Wi-Fi or BLE starts.
     bootloader_random_enable();
-    gen_password(ap_pass, 13); // 12 chars + NUL (WPA2 needs >= 8)
+    esp_err_t err = netcfg_setup_load_or_create(&setup, mac, esp_random, &created);
     bootloader_random_disable();
+    ESP_RETURN_ON_ERROR(err, TAG, "load persistent setup credential");
+    ESP_RETURN_ON_ERROR(netcfg_setup_qr_payload(&setup, info->qr_payload,
+                                                sizeof info->qr_payload),
+                        TAG, "format setup QR payload");
+    snprintf(info->name, sizeof info->name, "%s", setup.name);
+    snprintf(info->password, sizeof info->password, "%s", setup.password);
+    info->credential_created = created;
+
+    ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "initialize network stack");
+    ESP_RETURN_ON_ERROR(esp_event_loop_create_default(), TAG, "create event loop");
+#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+    if (!esp_netif_create_default_wifi_sta()) return ESP_ERR_NO_MEM;
+#endif
+    if (!esp_netif_create_default_wifi_ap()) return ESP_ERR_NO_MEM;
+    wifi_init_config_t ic = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_RETURN_ON_ERROR(esp_wifi_init(&ic), TAG, "initialize Wi-Fi");
+
+#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+    err = netcfg_ble_start(&setup);
+    if (err == ESP_OK) {
+        info->ble_active = true;
+    } else {
+        // The browser path remains usable even if the optional BLE stack cannot
+        // allocate resources or start. netcfg_ble_start leaves Wi-Fi stopped.
+        ESP_LOGE(TAG, "BLE provisioning unavailable (%s); continuing with browser fallback",
+                 esp_err_to_name(err));
+    }
+#endif
 
     wifi_config_t ap = {0};
-    snprintf((char *)ap.ap.ssid, sizeof ap.ap.ssid, "%s", ap_ssid);
-    ap.ap.ssid_len = strlen(ap_ssid);
-    snprintf((char *)ap.ap.password, sizeof ap.ap.password, "%s", ap_pass);
+    snprintf((char *)ap.ap.ssid, sizeof ap.ap.ssid, "%s", setup.name);
+    ap.ap.ssid_len = strlen(setup.name);
+    snprintf((char *)ap.ap.password, sizeof ap.ap.password, "%s", setup.password);
     ap.ap.max_connection = 2;
     ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
     ap.ap.channel = 1;
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(info->ble_active ? WIFI_MODE_APSTA : WIFI_MODE_AP),
+                        TAG, "enable setup AP");
+    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &ap), TAG, "configure setup AP");
+    if (!info->ble_active)
+        ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "start setup AP");
 
     httpd_handle_t server = NULL;
     httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
@@ -287,15 +324,16 @@ esp_err_t netcfg_start_portal(char ap_ssid[33], char ap_pass[16])
     // underneath the handler are added. Double it rather than heap-allocating
     // the body (the portal runs pre-provisioning, when RAM is otherwise idle).
     hcfg.stack_size = 8192;
-    ESP_RETURN_ON_ERROR(httpd_start(&server, &hcfg), TAG, "httpd");
+    ESP_RETURN_ON_ERROR(httpd_start(&server, &hcfg), TAG, "start setup HTTP server");
     httpd_uri_t root = { .uri = "/", .method = HTTP_GET, .handler = root_get };
     httpd_uri_t save = { .uri = "/save", .method = HTTP_POST, .handler = save_post };
-    httpd_register_uri_handler(server, &root);
-    httpd_register_uri_handler(server, &save);
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &root), TAG, "register setup root");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &save), TAG, "register setup save");
     ESP_RETURN_ON_ERROR(nvf_ota_register_pairing(server), TAG, "register OTA pairing");
 
-    // The AP password is a secret shown on the local LCD, never logged (only its length).
-    ESP_LOGI(TAG, "provisioning portal up: SSID='%s' (pass %d chars) -> http://192.168.4.1/",
-             ap_ssid, (int)strlen(ap_pass));
+    // The password is returned for a local display and logged only by app_main on
+    // the one boot that creates it, so routine serial logs do not disclose it.
+    ESP_LOGI(TAG, "browser provisioning ready: SSID='%s' (pass %d chars) -> http://192.168.4.1/",
+             setup.name, (int)strlen(setup.password));
     return ESP_OK;
 }
