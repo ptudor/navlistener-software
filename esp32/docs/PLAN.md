@@ -3,7 +3,7 @@
 The ESP32 edge feeder for `navlistener`. It mirrors the C `feeder/navfeeder.c` over the
 same GNF1 wire, adds a live status display, and stages toward a hardware-anchored identity.
 
-**Status: P0–P5 core functionality implemented.** The firmware includes framing,
+**Status: P0–P5 core functionality, S3 PSRAM buffering and on-demand OTA implemented.** The firmware includes framing,
 RAM spooling, TLS push, display, telemetry, and SoftAP provisioning. Current builds
 support the Waveshare ESP32-C6 and custom ESP32-S3 observer. Use the
 [firmware guide](../README.md) to build, provision, and run it. This ledger retains
@@ -43,12 +43,70 @@ matched to `feeder/navfeeder.c`. No I/O — pure encode/parse over buffers.
 
 ## P2 — spool: bounded RAM ring + seq/ack/replay *(implemented)*
 
-- `spool`: fixed-capacity ring (sized for C6 SRAM budget with WiFi+TLS up — start
-  conservative, e.g. 1024–2048 frames, documented), monotonic seq on append, drop-oldest
-  on overflow with a counter, `collect(after)`, `ack(n)`, `acked()`. FreeRTOS-safe
-  (mutex or a stream/ring under a critical section).
-- **Remaining validation:** dedicated append/collect/ack/overflow parity tests
-  against the C spool. The ring implementation is in `components/spool/src/spool.c`.
+- Fixed payload and metadata arenas; appends allocate no heap memory. The C6
+  and internal fallback default to 1024 records / 64 KiB payload. S3 defaults
+  to 65536 records / 4 MiB payload in explicitly allocated PSRAM (5 MiB total).
+- Drop the oldest unacked records on either byte or record overflow; retain
+  monotonic sequences, clamp future ACKs and replay the remaining suffix.
+- Host tests compare randomized append/ACK/replay operations with a reference
+  queue across frame limits, byte limits and wrapped payloads. Existing pusher
+  ACK-stall tests run against this implementation.
+- **Bench checked (2026-09-14):** 8 MiB PSRAM detected, boot memory test passed,
+  and the 65536-record / 4 MiB payload spool allocated on the S3.
+- **Remaining validation:** on-target allocation-failure fallback, capture under
+  simultaneous TLS and flash activity, and measured outage capacity. Both RAM
+  tiers lose their entire backlog on reboot; the flash partition remains unused.
+
+## P-OTA — on-demand HTTPS updates *(implemented; hardware validation pending)*
+
+- S3 only: separate update-key pairing through the protected provisioning AP,
+  HMAC-authenticated laptop requests, fresh one-use challenges, HTTPS download
+  into the inactive slot and operator-approved SHA-256 verification.
+- Reject wrong chip/project/board, oversized/truncated images, manufacturing
+  images and applications without the boot-confirmation marker. Preserve
+  factory recovery and data partitions. Enable bootloader rollback and confirm
+  local startup without depending on EEPROM, GNSS reception or collector uptime.
+- `tools/ota.py` provides pairing, update initiation and status. The operator
+  runbook is in [the firmware guide](../README.md#on-demand-ota-updates-esp32-s3).
+- Host tests inject download, digest, flash and interruption failures around
+  actual update code. **Still required:** bench HTTPS update, wrong-image and
+  interrupted-download trials, crash-before-confirmation rollback, and real
+  power-loss tests. The OTA-capable baseline needs an initial serial flash.
+
+## P-receiver — board bring-up *(UART verified; satellite reception pending)*
+
+- Missing never-adopted EEPROMs use compiled wiring and the provisioned station
+  ID without fabricating an EUI. Known identity history and bus-error guards stay.
+- The S3 probes standard baud rates and MON-VER; a confirmed NEO-M9N gets
+  RAM-only baud/message configuration with ACK/NAK diagnostics. All UART bytes,
+  valid UBX/NMEA and SFRBX are counted even before provisioning.
+- Host tests cover fragmented UBX checksums, receiver model matching, NMEA
+  validation and RAM-only command encoding.
+- **Bench checked (2026-09-14):** boot without EEPROM, valid NMEA at 38400 baud,
+  and MON-VER identifying NEO-M9N / SPG 4.04 / protocol 32.01. Communication
+  then worked at 460800 baud; UBX, SFRBX, MON-RF, NAV-SAT and NAV-PVT configuration keys
+  all returned ACK. Actual SFRBX output and satellite reception remain pending
+  an installed RF connector and antenna; an ACK alone does not prove reception.
+
+## P-panel — constellation indicators and peripheral diagnostics *(implemented)*
+
+- Drive the custom TLC5916 green/yellow rows in the PCB column order. Fresh,
+  code-locked signals are green; expected but missing signals are yellow.
+  Unsupported systems are off. The panel also runs before provisioning.
+- A valid NAV-PVT position enables coarse regional expectation hints. NVS
+  remembers regional reception at the same site across boots, overriding the
+  map if a previously tracked constellation disappears. No fix means coverage
+  is unknown and supported systems remain expected. Host tests cover stale
+  data, malformed messages, coverage examples, learned overrides and movement.
+- **Bench checked:** panel output mask `green=00/yellow=bf` visually confirmed;
+  zero tracked satellites and no fix reported by the receiver. MCP9808 and
+  HDC2080 IDs, RTC registers and BMP388/BMP384-family pressure ID respond.
+  ATECC608C Info revision is `00006005`, both zones are unlocked and its RNG
+  fails repeated-output screening. RTC oscillator is stopped and battery
+  backup is disabled. No crypto provisioning or RTC initialization is performed.
+- **Remaining:** antenna-backed changes
+  of tracking/region state, calibrated environmental telemetry, RTC/time
+  validation, and a separately reviewed secure-element provisioning policy.
 
 ## P3 — pusher: the TLS push consumer *(implemented)*
 
@@ -147,7 +205,8 @@ The design is recorded here so the deferral is a decision with a plan, not an op
 
 WiFi + mbedTLS + the panel framebuffer already claim a large share of the C6's 512 KB HP
 SRAM. The spool ring must be sized against what's left, not against the C feeder's 65536
-default. The implemented default is 1024 frames. Measure `esp_get_free_heap_size()`
+default. The internal default is 1024 frames with a 64 KiB payload arena; the S3
+uses the PSRAM budget described in P2 when available. Measure `esp_get_free_heap_size()`
 under load before increasing it, and document the measured budget in `spool`'s header.
 
 **Caveat while P-spool is deferred:** there is no flash tier, so the ring *is* the whole

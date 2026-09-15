@@ -13,7 +13,7 @@ CONFIG_IDF_TARGET="esp32s3"
 
 # The module carries 16 MB of flash, so this build uses its own partition table
 # rather than the 4 MB one the C6 needs. See partitions-s3.csv for what the extra
-# flash buys: reserved OTA slots and a 9.875 MiB spool reservation in place of
+# flash buys: two OTA slots and a 9.875 MiB spool reservation in place of
 # 1.5 MiB. The spool partition is still unmounted on both boards.
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-s3.csv"
@@ -21,6 +21,16 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-s3.csv"
 # GPIO4/GPIO5 receiver UART, GPIO6/GPIO7 manifest bus, and the Waveshare
 # LCD/WS2812 drivers held dormant because their fixed pins are this board's I2C.
 CONFIG_NVF_BOARD_GNSS_COLOR_NEO=y
+
+# N16R8 has 8 MiB octal PSRAM. Normal allocations and task stacks stay in
+# internal RAM; the spool explicitly requests external memory. Missing PSRAM
+# remains bootable using the smaller internal spool budget.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_40M=y
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+CONFIG_NVF_SPOOL_PSRAM=y
 
 # NVF_MANIFEST_FACTORY_INIT is deliberately absent: programming a blank manifest
 # EEPROM is a manufacturing step, enabled explicitly for that one build.

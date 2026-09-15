@@ -1,7 +1,7 @@
 CC ?= cc
 CFLAGS ?= -O1 -g -Wall -Wextra -std=c11
 BUILD := build
-COMMON := ../src/ack_progress.c ../../spool/src/spool.c ../../gnf1/src/gnf1.c
+COMMON := ../src/ack_progress.c ../../spool/src/spool.c ../../spool/src/spool_ring.c ../../gnf1/src/gnf1.c
 INCLUDES := -Istubs -I../include -I../../spool/include -I../../gnf1/include
 TESTS := ack_stall_test tls_want_yield_test
 .PHONY: all clean

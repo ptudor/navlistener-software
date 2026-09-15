@@ -7,11 +7,9 @@
 # Two differences from the 4 MB table, both bought with flash that would
 # otherwise sit idle:
 #
-#  1. OTA slots are reserved now. OTA itself is not implemented (docs/PLAN.md),
-#     so the bootloader runs `factory` and `otadata` stays blank. Reserving the
-#     slots costs nothing today; adding them after units are deployed would mean
-#     a repartition, which erases the spool and needs physical access to each
-#     board. `factory` is kept alongside ota_0/ota_1 as the recovery image.
+#  1. On-demand HTTPS OTA uses the inactive ota_0/ota_1 slot. The factory app
+#     remains the recovery image. Install the OTA-capable app and rollback
+#     bootloader together over USB for the initial baseline (README.md).
 #
 #  2. The `spool` reservation grows from 1.5 MiB to 9.875 MiB. docs/PLAN.md
 #     §P-spool names flash wear on a 1.5 MiB partition as the binding constraint

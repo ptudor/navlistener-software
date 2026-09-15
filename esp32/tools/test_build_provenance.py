@@ -95,6 +95,17 @@ class ProvenanceTests(unittest.TestCase):
         (root / 'build/app.bin').write_bytes(b'firmware')
         return root
 
+    def test_separate_build_directory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.fixture(Path(temp))
+            alternate = root / 'build-s3'
+            (root / 'build').rename(alternate)
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = record(root, 'build-s3')
+            self.assertTrue((alternate / 'firmware-provenance.json').exists())
+            self.assertFalse((root / 'build').exists())
+            self.assertTrue(result['hardware_discovery']['matches_manifest_pin'])
+
     def test_moving_branch_pin_is_rejected(self):
         # The original finding: a `main` (or tag) pin resolves different code per build.
         for pin in ('main', 'v1.2.0', '5d7e533'):

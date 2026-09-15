@@ -183,6 +183,18 @@ esp_err_t hardware_manifest_boot(bool allow_factory_init,
     uint8_t known_eui[EEPROM_UNIQUE_ID_SIZE] = {0};
     ESP_RETURN_ON_ERROR(known_eui_load(&known_present, known_eui), TAG,
                         "load known manifest identity");
+    esp_err_t probe = i2c_master_probe(s_i2c_bus, OBSERVER_MANIFEST_I2C_ADDRESS, 50);
+    if (probe == ESP_ERR_NOT_FOUND) {
+        result->action = hardware_manifest_decide(HARDWARE_MANIFEST_OBS_ABSENT,
+            known_present ? HARDWARE_MANIFEST_KNOWN_SAME : HARDWARE_MANIFEST_KNOWN_NONE);
+    }
+    if (result->action == HARDWARE_MANIFEST_ACTION_ABSENT) {
+        ESP_LOGW(TAG, "manifest EEPROM absent; continuing with compiled wiring and provisioned station ID");
+        return ESP_OK;
+    }
+    // A missing previously-adopted EEPROM or a bus fault is still an error.
+    // Never manufacture identity or initialize storage following a failed probe.
+    ESP_RETURN_ON_ERROR(probe, TAG, "probe manifest EEPROM");
     ESP_RETURN_ON_ERROR(inspect(result, known_present, known_eui), TAG,
                         "inspect manifest EEPROM");
     log_eui("manifest EUI-64", result->eui64);
@@ -227,6 +239,7 @@ i2c_master_bus_handle_t hardware_manifest_i2c_bus(void)
 const char *hardware_manifest_action_name(hardware_manifest_action_t action)
 {
     switch (action) {
+    case HARDWARE_MANIFEST_ACTION_ABSENT: return "EEPROM absent; compiled wiring only";
     case HARDWARE_MANIFEST_ACTION_IO_ERROR: return "I/O error";
     case HARDWARE_MANIFEST_ACTION_INITIALIZE: return "first-boot initialization required";
     case HARDWARE_MANIFEST_ACTION_RECOVER: return "known EEPROM is blank; recovery required";

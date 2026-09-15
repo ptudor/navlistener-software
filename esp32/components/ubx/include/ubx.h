@@ -40,7 +40,12 @@ typedef void (*ubx_emit_fn)(const uint8_t *record, size_t record_len, void *ctx)
 // deterministic for differential comparison.
 typedef uint64_t (*ubx_now_fn)(void);
 
+// Optional task-local observer for checksum-valid UBX messages (including MON-VER/ACK).
+typedef void (*ubx_observe_fn)(uint8_t cls, uint8_t id, const uint8_t *body, size_t len, void *ctx);
+
 typedef struct {
+    ubx_observe_fn observe;
+    void *observe_ctx;
     ubx_emit_fn emit;
     ubx_now_fn now;
     void *ctx;
@@ -61,6 +66,8 @@ typedef struct {
     // everywhere: display-only monotonic counters with no cross-field consistency
     // requirement. ubx_parser_init's memset(0) predates any concurrent access, and
     // _Atomic uint32_t is representation-compatible on this ABI, so zero-init is sound.
+    _Atomic uint32_t bytes;        // UART bytes, even when no supported records arrive
+    _Atomic uint32_t frames_valid; // all checksum-valid UBX messages
     _Atomic uint32_t frames_nav;   // SFRBX records emitted
     _Atomic uint32_t frames_telem; // MON-RF/MON-HW/NAV-SAT records emitted
     _Atomic uint32_t bad_checksum; // messages dropped on checksum

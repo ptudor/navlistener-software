@@ -28,6 +28,8 @@
 #include "nvs_flash.h"
 
 #include "ubx.h"
+#include "receiver.h"
+#include "ota.h"
 #include "spool.h"
 #include "pusher.h"
 #include "display_st7789.h"
@@ -35,31 +37,9 @@
 #include "netcfg.h"
 #include "config_recovery.h"
 #include "hardware_manifest.h"
+#include "board.h"
 
 static const char *TAG = "navfeeder";
-
-// Receiver wiring (Waveshare ESP32-C6-LCD-1.47 -> u-blox on UART1).
-// regression fix (hardware caveat — ACCEPTED, design constraint): GPIO9 is a C6 boot
-// STRAPPING pin — GPIO9=0 at chip reset selects the ROM serial-download boot. UART idle is
-// high (safe when quiet), but at 460800 with a continuous SFRBX stream the line is low a
-// large fraction of the time, so a power-on/brownout/external reset landing mid-byte can
-// latch the chip into the ROM downloader (a field hang the watchdog can't recover — recovery
-// needs a manual reset, which can re-strap while the receiver keeps talking). This cannot be
-// fixed in firmware: the pin is sampled by ROM before any of our code runs.
-//
-// Current C6 boards use this wiring and require stable power. A lower UART
-// line rate can reduce line occupancy where the frame budget permits.
-// DIS_DOWNLOAD_MODE is not burned: development boards retain serial recovery.
-// The custom ESP32-S3 board uses a non-strapping receiver RX pin.
-#define RX_UART     UART_NUM_1
-#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
-#define RX_PIN_RX   5
-#define RX_PIN_TX   4
-#else
-#define RX_PIN_RX   9
-#define RX_PIN_TX   10
-#endif
-#define RX_BUF_SIZE 4096
 
 static atomic_bool s_wifi_up;
 static atomic_bool s_config_reset_armed;
@@ -177,9 +157,10 @@ static void session_init(void)
         snprintf(s_session + 2 * i, 3, "%02x", b[i]);
 }
 
-// app_now_ns returns the reception timestamp stamped into each GNF1 record. Until SNTP/RTC
-// lands (P-hw), there is no trustworthy wall clock, so we return 0 and the collector stamps
-// its own receive time (push.go recordToFrame) — the safe default.
+// Use a plausible wall clock for reception timestamps. S3 station-mode OTA
+// initializes SNTP; hardware RTC/PPS time validation remains P-hw work. Before
+// time sync, return 0 so the collector uses its own reception time. SNTP alone
+// is not authenticated GNSS time.
 static uint64_t app_now_ns(void)
 {
     struct timespec ts;
@@ -193,23 +174,6 @@ static void on_record(const uint8_t *record, size_t record_len, void *ctx)
 {
     (void)ctx;
     spool_append(record, (uint32_t)record_len);
-}
-
-static void rx_task(void *arg)
-{
-    ubx_parser_t *parser = arg;
-    uint8_t buf[512];
-    // subscribe the receiver reader to the task WDT (CONFIG_ESP_TASK_WDT_INIT) and
-    // reset it each ≤200 ms loop — so a wedged rx_task actually reboots the unit, which the
-    // sdkconfig comment promises but nothing implemented (only the idle tasks were watched).
-    // pusher_task is deliberately NOT subscribed: its inter-connect backoff vTaskDelay can
-    // exceed the 10 s WDT and would false-trigger; its wedges are bounded by regression fix timeouts.
-    esp_task_wdt_add(NULL);
-    for (;;) {
-        esp_task_wdt_reset();
-        int n = uart_read_bytes(RX_UART, buf, sizeof buf, pdMS_TO_TICKS(200));
-        if (n > 0) ubx_parser_feed(parser, buf, (size_t)n);
-    }
 }
 
 // ui_task refreshes the LCD dashboard + the status LED and logs a heartbeat every 2 s.
@@ -231,6 +195,9 @@ static void ui_task(void *arg)
         uint64_t dropped = 0;
         size_t depth = 0;
         spool_stats(NULL, &dropped, &depth);
+        size_t used = 0, capacity = 0;
+        bool psram = false;
+        spool_memory_stats(&used, &capacity, &psram);
         // relaxed atomic loads — rx_task increments these concurrently.
         uint32_t nav = atomic_load_explicit(&p->frames_nav, memory_order_relaxed);
         uint32_t telem = atomic_load_explicit(&p->frames_telem, memory_order_relaxed);
@@ -258,29 +225,14 @@ static void ui_task(void *arg)
                        : LED_STREAMING;
         if (ls != last_led) { status_led_state(ls); last_led = ls; }
 
-        ESP_LOGI(TAG, "nav=%u (+%u) telem=%u bad_ck=%u spool=%u drop=%llu link=%s",
+        ESP_LOGI(TAG, "nav=%u (+%u) telem=%u bad_ck=%u spool=%u (%u/%u bytes %s) drop=%llu link=%s",
                  (unsigned)nav, (unsigned)(nav - last_nav), (unsigned)telem,
-                 (unsigned)bad_ck, (unsigned)depth, (unsigned long long)dropped,
+                 (unsigned)bad_ck, (unsigned)depth, (unsigned)used, (unsigned)capacity,
+                 psram ? "PSRAM" : "internal", (unsigned long long)dropped,
                  link ? "up" : "down");
         last_nav = nav;
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
-}
-
-static void rx_uart_init(void)
-{
-    const uart_config_t cfg = {
-        .baud_rate = CONFIG_NVF_RX_BAUD,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .source_clk = UART_SCLK_DEFAULT,
-    };
-    ESP_ERROR_CHECK(uart_driver_install(RX_UART, RX_BUF_SIZE, 0, 0, NULL, 0));
-    ESP_ERROR_CHECK(uart_param_config(RX_UART, &cfg));
-    ESP_ERROR_CHECK(uart_set_pin(RX_UART, RX_PIN_TX, RX_PIN_RX,
-                                 UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 }
 
 // --- WiFi STA (NVS-first config; Kconfig values are the development fallback) ------------
@@ -328,6 +280,18 @@ static void wifi_start(void)
     ESP_ERROR_CHECK(esp_wifi_start());
 }
 
+static void confirm_startup(void)
+{
+    // Confirm local operation even before provisioning and without a GPS fix,
+    // EEPROM or reachable collector. A wedged UART reader is a firmware fault.
+    for (int i = 0; i < 30 && !receiver_alive(); i++) vTaskDelay(pdMS_TO_TICKS(100));
+    if (!receiver_alive()) {
+        ESP_LOGE(TAG, "receiver task did not become ready; rebooting");
+        esp_restart();
+    }
+    ESP_ERROR_CHECK(nvf_ota_confirm_boot());
+}
+
 void app_main(void)
 {
     esp_err_t err = nvs_flash_init();
@@ -370,9 +334,8 @@ void app_main(void)
 
     // Display + LED first, so the board shows life (and any problem) even if unprovisioned.
 #if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
-    // This board has two TLC5916s and no LCD/WS2812. Their driver will consume
-    // the discovered manifest later; keeping the Waveshare drivers dormant is
-    // essential because their fixed GPIO6/GPIO7 pins are this board's I2C bus.
+    // This board has two TLC5916s and no LCD/WS2812. The Waveshare drivers'
+    // GPIO6/GPIO7 pins conflict with this board's shared I2C bus.
     ESP_LOGI(TAG, "custom observer: Waveshare LCD/WS2812 drivers disabled");
 #else
     if (display_init() != ESP_OK) ESP_LOGW(TAG, "display init failed — continuing headless");
@@ -384,22 +347,12 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(250));
         esp_restart();
     }
-    rx_uart_init();
     ubx_parser_init(&s_parser, on_record, app_now_ns, NULL);
-    // rx_task is the receiver reader — if it can't start, the unit reads no bytes and
-    // runs silently half-dead. Boot OOM is typically transient, so reboot to retry rather
-    // than continue degraded ("the receiver must never go down").
-    // rx_task (the UART producer) runs at priority 7 — ABOVE pusher_task (6) — so on
-    // this single-core C6 a TLS-handshake CPU burst in the pusher can never starve the reader
-    // and overflow the 4 KB UART ring (~89 ms of headroom at 460800), silently dropping nav
-    // frames exactly at reconnect. This restores the design rule "the consumer never blocks
-    // the producer". rx blocks on uart_read_bytes, so the high priority only preempts to drain
-    // the FIFO, then yields. (A bench measurement of the worst-case handshake holdoff is still
-    // worth running to confirm no residual risk.)
-    if (xTaskCreate(rx_task, "rx", 4096, &s_parser, 7, NULL) != pdPASS) {
-        ESP_LOGE(TAG, "failed to create rx task (OOM); rebooting");
-        esp_restart();
-    }
+    // Priority 7 drains UART ahead of TLS work. Startup failure must not leave
+    // a network-connected observer silently collecting no bytes.
+    ESP_ERROR_CHECK(receiver_start(&s_parser));
+    if (observer_board_start() != ESP_OK)
+        ESP_LOGW(TAG, "observer panel/diagnostics task unavailable");
 
     // Config precedence: NVS (field-provisioned) over Kconfig defaults.
     // netcfg_load now applies the full station-mode rule (ssid/host/port/station/
@@ -427,6 +380,7 @@ void app_main(void)
             // to the serial console as the sole field-recovery path.
             if (!display_is_ready())
                 ESP_LOGW(TAG, "display unavailable — AP password (serial console only): %s", ap_pass);
+            confirm_startup();
         } else {
             ESP_LOGE(TAG, "provisioning portal failed to start");
         }
@@ -441,6 +395,9 @@ void app_main(void)
         ESP_LOGW(TAG, "failed to create ui task; continuing without the dashboard");
     config_reset_start();
     wifi_start();
+    err = nvf_ota_start();
+    if (err != ESP_OK && err != ESP_ERR_NOT_SUPPORTED)
+        ESP_LOGW(TAG, "OTA control unavailable (%s); pair through the provisioning AP", esp_err_to_name(err));
 
     // mint the boot session before the pusher can send its first HELLO (see
     // s_session). Logged because it is the field-side handle for "which boot's sequence space
@@ -472,4 +429,5 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(delay_ms));
         if ((delay_ms *= 2) > 8000) delay_ms = 8000;
     }
+    confirm_startup();
 }

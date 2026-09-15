@@ -35,6 +35,7 @@ uint32_t esp_random(void);
 int xTaskCreate(void (*)(void*),const char*,int,void*,int,void*);
 static inline SemaphoreHandle_t xSemaphoreCreateMutex(void){return 1;}
 static inline void xSemaphoreTake(SemaphoreHandle_t m,int t){(void)m;(void)t;}
+static inline void vSemaphoreDelete(SemaphoreHandle_t m){(void)m;}
 static inline void xSemaphoreGive(SemaphoreHandle_t m){(void)m;}
 int test_select(int,fd_set*,fd_set*,fd_set*,struct timeval*);
 #endif

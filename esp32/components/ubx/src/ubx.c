@@ -155,6 +155,8 @@ static void emit_navsat(ubx_parser_t *p, const uint8_t *payload, uint16_t len)
 // dispatch routes a checksum-valid message to its emitter.
 static void dispatch(ubx_parser_t *p)
 {
+    atomic_fetch_add_explicit(&p->frames_valid, 1, memory_order_relaxed);
+    if (p->observe) p->observe(p->cls, p->id, p->payload, p->len, p->observe_ctx);
     if (p->cls == UBX_CLASS_RXM && p->id == UBX_ID_SFRBX)      emit_sfrbx(p, p->payload, p->len);
     else if (p->cls == UBX_CLASS_MON && p->id == UBX_ID_MONRF) emit_monrf(p, p->payload, p->len);
     else if (p->cls == UBX_CLASS_MON && p->id == UBX_ID_MONHW) emit_monhw(p, p->payload, p->len);
@@ -166,6 +168,7 @@ static inline void ck(ubx_parser_t *p, uint8_t b) { p->ck_a += b; p->ck_b += p->
 
 void ubx_parser_feed(ubx_parser_t *p, const uint8_t *data, size_t len)
 {
+    atomic_fetch_add_explicit(&p->bytes, (uint32_t)len, memory_order_relaxed);
     for (size_t i = 0; i < len; i++) {
         uint8_t b = data[i];
         switch (p->state) {

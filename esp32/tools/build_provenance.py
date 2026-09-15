@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Record the component actually selected by CMake; run in the IDF Python env."""
+import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -16,13 +17,14 @@ def git(path, *args):
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def record(root):
+def record(root, build_dir='build'):
     root = root.resolve()
-    destination = root / 'build/firmware-provenance.json'
+    build = (root / build_dir).resolve()
+    destination = build / 'firmware-provenance.json'
     destination.unlink(missing_ok=True)
-    description_path = root / 'build/project_description.json'
+    description_path = build / 'project_description.json'
     project = json.loads(description_path.read_text())
-    app = root / 'build' / project['app_bin']
+    app = build / project['app_bin']
     # The record names one firmware image and one CMake configuration; a binary
     # older than the configuration that selected the component is some earlier
     # build's output (standalone use after `idf.py reconfigure`, say), and
@@ -82,4 +84,7 @@ def record(root):
 
 
 if __name__ == '__main__':
-    record(Path(__file__).resolve().parents[1])
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--build-dir', default='build')
+    args = parser.parse_args()
+    record(Path(__file__).resolve().parents[1], args.build_dir)

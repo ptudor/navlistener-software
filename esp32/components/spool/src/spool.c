@@ -1,127 +1,92 @@
-// spool — bounded sequence-numbered record ring. See include/spool.h.
-// Ported from ../../../feeder/navfeeder.c's spool (pthread mutex -> FreeRTOS mutex).
-
 #include "spool.h"
-
-#include <inttypes.h>
+#include "spool_ring.h"
 #include <stdlib.h>
-#include <string.h>
-
+#include "sdkconfig.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-#include "esp_log.h"
-
-static const char *TAG = "spool";
-
-typedef struct {
-    uint64_t seq;
-    uint32_t len;
-    uint8_t *data;
-} slot_t;
-
-static struct {
-    slot_t *ring;
-    size_t cap, head, count;
-    uint64_t seq;     // last assigned sequence
-    uint64_t acked;   // last sequence acked by the collector
-    uint64_t dropped; // records lost to overflow
-    SemaphoreHandle_t mu;
-} g;
-
-static inline void lock(void)   { xSemaphoreTake(g.mu, portMAX_DELAY); }
-static inline void unlock(void) { xSemaphoreGive(g.mu); }
-
-bool spool_init(size_t cap)
+static spool_ring_t g;
+static SemaphoreHandle_t mu;
+static bool external;
+static bool allocate(size_t frames, size_t bytes, uint32_t caps)
 {
-    if (cap < 1) cap = 1;
-    g.ring = calloc(cap, sizeof *g.ring);
-    if (!g.ring) return false;
-    g.cap = cap;
-    g.head = g.count = 0;
-    g.seq = g.acked = g.dropped = 0;
-    g.mu = xSemaphoreCreateMutex();
-    if (!g.mu) { free(g.ring); g.ring = NULL; return false; }
+    if (!frames || frames > SIZE_MAX / sizeof(spool_slot_t) || !bytes || bytes > UINT32_MAX)
+        return false;
+    spool_slot_t *slots = heap_caps_malloc(frames * sizeof(*slots), caps);
+    uint8_t *arena = heap_caps_malloc(bytes, caps);
+    if (!slots || !arena) { free(slots); free(arena); return false; }
+    spool_ring_init(&g, slots, frames, arena, bytes);
     return true;
 }
-
+bool spool_init(size_t cap)
+{
+    if (mu) return false;
+    mu = xSemaphoreCreateMutex();
+    if (!mu) return false;
+#if CONFIG_NVF_SPOOL_PSRAM
+    external = allocate(CONFIG_NVF_SPOOL_PSRAM_FRAMES, CONFIG_NVF_SPOOL_PSRAM_BYTES,
+                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!external) ESP_LOGW("spool", "PSRAM spool unavailable; using internal RAM budget");
+#endif
+    if (!external && !allocate(cap, CONFIG_NVF_SPOOL_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)) {
+        vSemaphoreDelete(mu);
+        mu = 0;
+        return false;
+    }
+    ESP_LOGI("spool", "%s: %u frames, %u payload bytes; volatile across reboot",
+             external ? "PSRAM" : "internal RAM", (unsigned)g.capacity, (unsigned)g.byte_capacity);
+    return true;
+}
 uint64_t spool_append(const uint8_t *data, uint32_t len)
 {
-    uint8_t *copy = malloc(len);
-    if (!copy) { // out of memory: drop this record rather than crash the producer
-        lock(); g.dropped++; unlock();
-        ESP_LOGW(TAG, "append OOM (%" PRIu32 " B), dropped", len);
-        return 0;
-    }
-    memcpy(copy, data, len);
-
-    lock();
-    if (g.count == g.cap) { // overflow: evict the oldest
-        free(g.ring[g.head].data);
-        g.head = (g.head + 1) % g.cap;
-        g.count--;
-        g.dropped++;
-    }
-    uint64_t seq = ++g.seq;
-    size_t idx = (g.head + g.count) % g.cap;
-    g.ring[idx].seq = seq;
-    g.ring[idx].len = len;
-    g.ring[idx].data = copy;
-    g.count++;
-    unlock();
+    xSemaphoreTake(mu, portMAX_DELAY);
+    uint64_t seq = spool_ring_append(&g, data, len);
+    xSemaphoreGive(mu);
     return seq;
 }
-
-void spool_ack(uint64_t n)
+void spool_ack(uint64_t seq)
 {
-    lock();
-    // clamp the ack to the highest sequence we've actually assigned. A (TLS-
-    // authenticated but buggy, or future second-implementation) collector acking a seq above
-    // what was sent would otherwise leave spool_acked() > every future spool_append seq, so
-    // serve() seeds sent_upto past all frames and nothing is ever sent again while the ring
-    // silently churns drop-oldest. Every other inbound field is validated; this one must be too.
-    if (n > g.seq) n = g.seq;
-    while (g.count > 0 && g.ring[g.head].seq <= n) {
-        free(g.ring[g.head].data);
-        g.ring[g.head].data = NULL;
-        g.head = (g.head + 1) % g.cap;
-        g.count--;
-    }
-    if (n > g.acked) g.acked = n;
-    unlock();
+    xSemaphoreTake(mu, portMAX_DELAY);
+    spool_ring_ack(&g, seq);
+    xSemaphoreGive(mu);
 }
-
 size_t spool_collect(uint64_t after, spool_frame_t *out, size_t max)
 {
-    lock();
+    xSemaphoreTake(mu, portMAX_DELAY);
     size_t n = 0;
-    for (size_t i = 0; i < g.count && n < max; i++) {
-        slot_t *f = &g.ring[(g.head + i) % g.cap];
-        if (f->seq <= after) continue;
-        uint8_t *copy = malloc(f->len);
-        if (!copy) break; // caller sends what we have; the rest replays next round
-        memcpy(copy, f->data, f->len);
-        out[n].seq = f->seq;
-        out[n].len = f->len;
-        out[n].data = copy;
-        n++;
+    const spool_slot_t *slot;
+    while (out && n < max && (slot = spool_ring_after(&g, after, n))) {
+        // Transport copies use internal RAM. The persistent backlog stays in
+        // its fixed arena; appends never allocate or fragment the heap.
+        uint8_t *copy = heap_caps_malloc(slot->len, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (!copy) break;
+        spool_ring_copy(&g, slot, copy);
+        out[n++] = (spool_frame_t){.seq = slot->seq, .len = slot->len, .data = copy};
     }
-    unlock();
+    xSemaphoreGive(mu);
     return n;
 }
-
 uint64_t spool_acked(void)
 {
-    lock();
-    uint64_t a = g.acked;
-    unlock();
-    return a;
+    xSemaphoreTake(mu, portMAX_DELAY);
+    uint64_t seq = g.acked;
+    xSemaphoreGive(mu);
+    return seq;
 }
-
 void spool_stats(uint64_t *last_seq, uint64_t *dropped, size_t *count)
 {
-    lock();
+    xSemaphoreTake(mu, portMAX_DELAY);
     if (last_seq) *last_seq = g.seq;
-    if (dropped)  *dropped = g.dropped;
-    if (count)    *count = g.count;
-    unlock();
+    if (dropped) *dropped = g.dropped;
+    if (count) *count = g.count;
+    xSemaphoreGive(mu);
+}
+void spool_memory_stats(size_t *used, size_t *capacity, bool *psram)
+{
+    xSemaphoreTake(mu, portMAX_DELAY);
+    if (used) *used = g.used;
+    if (capacity) *capacity = g.byte_capacity;
+    if (psram) *psram = external;
+    xSemaphoreGive(mu);
 }

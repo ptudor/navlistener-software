@@ -9,6 +9,7 @@ extern "C" {
 // transition can be tested on the host.
 typedef enum {
     HARDWARE_MANIFEST_OBS_IO_ERROR = 0,
+    HARDWARE_MANIFEST_OBS_ABSENT,
     HARDWARE_MANIFEST_OBS_BLANK,
     HARDWARE_MANIFEST_OBS_PROGRAMMED_INVALID,
     HARDWARE_MANIFEST_OBS_PROGRAMMED_VALID,
@@ -27,6 +28,7 @@ typedef enum {
     HARDWARE_MANIFEST_ACTION_CONFIRM_REPLACEMENT,
     HARDWARE_MANIFEST_ACTION_REJECT_INVALID,
     HARDWARE_MANIFEST_ACTION_USE,
+    HARDWARE_MANIFEST_ACTION_ABSENT,
 } hardware_manifest_action_t;
 
 hardware_manifest_action_t hardware_manifest_decide(

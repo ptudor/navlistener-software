@@ -19,6 +19,7 @@
 #include "esp_random.h"
 #include "esp_system.h"
 #include "esp_http_server.h"
+#include "ota.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "sdkconfig.h"
@@ -291,6 +292,7 @@ esp_err_t netcfg_start_portal(char ap_ssid[33], char ap_pass[16])
     httpd_uri_t save = { .uri = "/save", .method = HTTP_POST, .handler = save_post };
     httpd_register_uri_handler(server, &root);
     httpd_register_uri_handler(server, &save);
+    ESP_RETURN_ON_ERROR(nvf_ota_register_pairing(server), TAG, "register OTA pairing");
 
     // The AP password is a secret shown on the local LCD, never logged (only its length).
     ESP_LOGI(TAG, "provisioning portal up: SSID='%s' (pass %d chars) -> http://192.168.4.1/",

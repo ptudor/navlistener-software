@@ -5,6 +5,10 @@ hardware_manifest_action_t hardware_manifest_decide(
     hardware_manifest_known_eui_t known_eui)
 {
     switch (observation) {
+    case HARDWARE_MANIFEST_OBS_ABSENT:
+        return known_eui == HARDWARE_MANIFEST_KNOWN_NONE
+                   ? HARDWARE_MANIFEST_ACTION_ABSENT : HARDWARE_MANIFEST_ACTION_IO_ERROR;
+
     case HARDWARE_MANIFEST_OBS_IO_ERROR:
         return HARDWARE_MANIFEST_ACTION_IO_ERROR;
 
