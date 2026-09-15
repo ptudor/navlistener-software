@@ -89,6 +89,7 @@ static void config_reset_task(void *arg)
     config_recovery_t gesture;
     config_recovery_init(&gesture);
     panel_button_t brightness_button = {0};
+    ESP_LOGI(TAG, "BOOT controls ready on GPIO%d", (int)pin);
     for (;;) {
         bool pressed = gpio_get_level(pin) == 0;
 #if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
@@ -371,6 +372,9 @@ void app_main(void)
     // looping forever on WiFi/TLS/auth with no way back except a serial cable.
     char cfg_err[NETCFG_ERR_CAP] = {0};
     bool provisioned = netcfg_load(&g_cfg, cfg_err, sizeof cfg_err);
+    // The BOOT button also controls panel brightness in setup mode. Start its
+    // task before the unprovisioned path returns to the portal.
+    config_reset_start();
     if (!provisioned) {
         // First boot / factory reset / incomplete config: raise the SoftAP provisioning
         // portal and show its credentials on the LCD, so the board is configured from a
@@ -403,7 +407,6 @@ void app_main(void)
     // the UI is non-essential — log a create failure but keep forwarding.
     if (xTaskCreate(ui_task, "ui", 4096, &s_parser, 4, NULL) != pdPASS)
         ESP_LOGW(TAG, "failed to create ui task; continuing without the dashboard");
-    config_reset_start();
     wifi_start();
     err = nvf_ota_start();
     if (err != ESP_OK && err != ESP_ERR_NOT_SUPPORTED)

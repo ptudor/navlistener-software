@@ -166,7 +166,8 @@ check-in, and fresh snapshots on receiver interference-state transitions.
 The collector must support this report before the firmware is deployed.
 
 Both LED rows start at 33% brightness using 4 kHz PWM. A short BOOT press
-(0.1–1.5 seconds, then release) cycles 33% → 10% → 100% → 33% at runtime.
+(0.1–3 seconds, then release) cycles 33% → 10% → 100% → 33% at runtime,
+including before network provisioning while the setup portal is active.
 The setting lasts until reboot; the existing eight-second configuration-reset
 hold remains separate. The dedicated PPS and power LEDs have separate hardware
 paths and are not dimmed. PWM pauses during TLC5916 serial/latch writes because

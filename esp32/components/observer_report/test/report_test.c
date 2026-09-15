@@ -49,5 +49,18 @@ int main(int argc, char **argv)
     assert(!panel_button_short_press(&button,false,100)); // eight-second reset hold never dims
     assert(!panel_button_short_press(&button,true,20));
     assert(!panel_button_short_press(&button,false,100)); // short contact noise
+    const unsigned presses[] = {500, 1500, 2000, 3000, 3020, 7900, 8000};
+    for (unsigned i = 0; i < sizeof presses / sizeof presses[0]; i++) {
+        button = (panel_button_t){0};
+        unsigned remaining = presses[i];
+        while (remaining) {
+            unsigned step = remaining < 20 ? remaining : 20;
+            assert(!panel_button_short_press(&button, true, step));
+            remaining -= step;
+        }
+        assert(!panel_button_short_press(&button, false, 80));
+        assert(panel_button_short_press(&button, false, 20) == (presses[i] <= 3000));
+        assert(!panel_button_short_press(&button, false, 100));
+    }
     puts("observer report golden/cadence tests passed");
 }

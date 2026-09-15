@@ -4,13 +4,13 @@ bool panel_button_short_press(panel_button_t *s, bool pressed, uint32_t ms)
     if (pressed) {
         s->released_ms = 0;
         if (!s->consumed) {
-            if (ms > 1500 || s->held_ms > 1500-ms) s->consumed = true;
+            if (ms > PANEL_BUTTON_MAX_MS || s->held_ms > PANEL_BUTTON_MAX_MS-ms) s->consumed = true;
             else s->held_ms += ms;
         }
         return false;
     }
     if (ms < 100 && s->released_ms < 100-ms) { s->released_ms += ms; return false; }
-    bool short_press = !s->consumed && s->held_ms >= 100 && s->held_ms <= 1500;
+    bool short_press = !s->consumed && s->held_ms >= 100 && s->held_ms <= PANEL_BUTTON_MAX_MS;
     *s = (panel_button_t){0};
     return short_press;
 }
