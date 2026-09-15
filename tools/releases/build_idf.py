@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 
@@ -44,10 +45,15 @@ def main():
         raise ValueError("activate the pinned, clean ESP-IDF checkout before releasing")
     if os.environ.get("ESP_HARDWARE_DISCOVERY_PATH"):
         raise ValueError("production builds refuse local component overrides")
+    # CMake and the compiler can spell a symlinked build directory differently.
+    # Cover its canonical spelling as well as IDF's own debug-prefix mappings.
+    debug_flags = shlex.quote(f"-fdebug-prefix-map={build}=/IDF_BUILD")
+    path_flags = [argument for language in ("C", "CXX", "ASM")
+                  for argument in ("-D", f"CMAKE_{language}_FLAGS={debug_flags}")]
     run([str(python), str(idf / "tools/idf.py"), "-B", str(build), "-D", f"SDKCONFIG={build}/sdkconfig",
         "-D", "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.s3;sdkconfig.defaults.production",
         "-D", "IDF_TARGET=esp32s3", "-D", f"NVF_TUF_ROOT_FILE={request['root']}",
-        "-D", f"NVF_RELEASE_REVISION={request['revision']}", "build"], source / "esp32")
+        "-D", f"NVF_RELEASE_REVISION={request['revision']}", *path_flags, "build"], source / "esp32")
     run([str(python), "tools/production_profile.py", str(build / "sdkconfig")], source / "esp32")
     run([str(python), "tools/build_provenance.py", "--build-dir", str(build)], source / "esp32")
     provenance = json.loads((build / "firmware-provenance.json").read_bytes())
