@@ -307,6 +307,8 @@ static void confirm_startup(void)
         esp_restart();
     }
     ESP_ERROR_CHECK(nvf_ota_confirm_boot());
+    ESP_LOGI(TAG, "startup stack minimum free=%u bytes",
+             (unsigned)uxTaskGetStackHighWaterMark(NULL));
 }
 
 void app_main(void)

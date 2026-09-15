@@ -78,6 +78,9 @@ configurations retain their previous values: generating a separate build from
 the defaults applies PSRAM and OTA settings. Check that the generated S3 config enables `SPIRAM_MODE_OCT`,
 `NVF_SPOOL_PSRAM`, `NVF_OTA`, `BT_NIMBLE_ENABLED`, Security 2, and
 `BOOTLOADER_APP_ROLLBACK_ENABLE`, with `PARTITION_TABLE_OFFSET=0x10000`.
+BLE controller and Security 2 startup require `ESP_MAIN_TASK_STACK_SIZE=12288`;
+the 3584-byte IDF default overflows during provisioning. Startup logs the minimum
+free stack space before the main task returns and releases its stack.
 The committed `dependencies.lock` resolves the S3, including its optional tunnel
 components. Archive the resolved lock with firmware provenance. Firmware builds
 share the managed-component directory and must run sequentially.

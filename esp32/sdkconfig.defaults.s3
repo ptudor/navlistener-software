@@ -33,6 +33,11 @@ CONFIG_ESP_PROTOCOMM_SUPPORT_SECURITY_VERSION_1=n
 CONFIG_ESP_PROTOCOMM_SUPPORT_SECURITY_VERSION_2=y
 CONFIG_WIFI_PROV_BLE_SEC_CONN=y
 
+# app_main starts Security 2 and the BLE controller on the same call stack.
+# The IDF 3584-byte default overflows during controller initialization. This
+# startup-only stack is released when app_main returns; task stacks remain internal.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
+
 # Hardware edge timestamps must remain serviceable during NVS/OTA flash writes.
 CONFIG_MCPWM_ISR_CACHE_SAFE=y
 
