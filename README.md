@@ -128,3 +128,18 @@ method.
 The project code is licensed under [Apache License 2.0](LICENSE). Bundled reference
 documents and other third-party assets retain their own terms; see the
 [reference catalog](reference/REFERENCES.md) and accompanying notices.
+
+## Release and build identity
+
+[VERSION](VERSION) is the human-facing release (`0.1.0` initially).
+[BUILD_NUMBER](BUILD_NUMBER) is a positive, manually advanced build number (`1`
+initially). Increment it when publishing a new numbered build; ordinary local
+compilation does not change it. Both the Go Makefile and ESP-IDF build consume these
+files. Keep them with the source when building from an exported archive.
+
+The daemon reports release, build number, source revision and build time separately.
+Firmware uses the compact `release+build.revision` form in its app descriptor and
+journal; OTA identity also retains the ELF hash. Rebuilding a numbered release from
+modified source adds `-dirty` to its revision. The revision/hash remains the exact
+code reference even when a build number is reused during development. This naming
+does not change image verification, rollback or anti-rollback policy.

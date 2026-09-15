@@ -837,11 +837,11 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 					metrics.FramesTotal.WithLabelValues(observer, fmt.Sprint(int(f.GnssID))).Inc()
 				}
 				// register receipt BEFORE the decode handoff, so the
-				// store's resolution can never race its own arrival. Telemetry
-				// (RF/observables) never reaches the historian (decodeLoop skips
-				// it), so it advances the watermark without ever holding it.
+				// store's resolution can never race its own arrival. Board samples
+				// now wait for persistence alongside navigation. RF/observables
+				// remain live-only and advance without a database write.
 				if p.durable != nil {
-					if !p.durable.Received(observer, session, seq, f.RF == nil && f.Obs == nil && f.Details == nil) {
+					if !p.durable.Received(observer, session, seq, f.RF == nil && f.Obs == nil) {
 						p.log.Warn("durability tracking budget full; closing for replay", "observer", observer)
 						return
 					}
@@ -959,7 +959,7 @@ func telemetryToFrame(rec wire.RawRecord, source string, recv, local time.Time) 
 			return nil
 		}
 		stamped := rec.RecvUnixNs > 0 && receiveTimestampPlausible(time.Unix(0, rec.RecvUnixNs), local)
-		return &RawFrame{Recv: recv, RecvLocal: local, Source: source, Details: details, BoardSampleStamped: stamped}
+		return &RawFrame{Recv: recv, RecvLocal: local, Source: source, Details: details, Bytes: append([]byte(nil), rec.Raw...), BoardSampleStamped: stamped}
 	case TelemJammingStats:
 		bands, err := decodeJammingStats(rec.Raw)
 		if err != nil {

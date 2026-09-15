@@ -5,6 +5,24 @@ cmake_minimum_required(VERSION 3.16)
 
 set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/components")
 
+# Human release/build numbers are advanced deliberately, not on each compile.
+# Keep the exact revision in the 31-character app descriptor for journal/OTA.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/../VERSION" NVF_RELEASE LIMIT_COUNT 1)
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/../BUILD_NUMBER" NVF_BUILD LIMIT_COUNT 1)
+execute_process(COMMAND git describe --always --dirty --exclude=*
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    OUTPUT_VARIABLE NVF_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(NOT NVF_REVISION)
+    set(NVF_REVISION "unknown")
+endif()
+set(PROJECT_VER "${NVF_RELEASE}+${NVF_BUILD}.${NVF_REVISION}")
+string(LENGTH "${PROJECT_VER}" NVF_VERSION_LENGTH)
+if(NVF_VERSION_LENGTH GREATER 31)
+    message(FATAL_ERROR "Release/build identity exceeds the 31-byte app version limit")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/../VERSION" "${CMAKE_CURRENT_SOURCE_DIR}/../BUILD_NUMBER")
+
 # Optional development override for the public discovery component. Normal
 # clones resolve main/idf_component.yml from Git; local cross-repo work can use
 # the uncommitted sibling checkout without baking a machine-specific path into

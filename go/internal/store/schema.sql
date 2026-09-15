@@ -300,3 +300,46 @@ ALTER TABLE gnss_snapshots SET (
     timescaledb.compress_segmentby = 'audience,endpoint',
     timescaledb.compress_orderby   = 'time DESC'
 );
+
+-- Private board/environment/clock evidence. Receipt-time authority is recorded
+-- even if it permits public GNSS contribution; no public view exposes this table.
+CREATE TABLE IF NOT EXISTS observer_samples (
+    ts TIMESTAMPTZ NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL,
+    source_id TEXT NOT NULL,
+    organization_id       TEXT   NOT NULL DEFAULT 'local-unassigned',
+    enrollment_id         TEXT   NOT NULL DEFAULT 'legacy-unassigned',
+    collector_instance_id TEXT   NOT NULL DEFAULT 'local',
+    collection_ids        TEXT[] NOT NULL DEFAULT '{}',
+	feed_grants           TEXT[] NOT NULL DEFAULT '{}',
+	declared_capabilities TEXT[] NOT NULL DEFAULT '{}',
+    provenance            TEXT   NOT NULL DEFAULT 'local',
+    credential_tier       TEXT   NOT NULL DEFAULT 'local_dial',
+    credential_fingerprint TEXT  NOT NULL DEFAULT '',
+    attestation_tier      TEXT   NOT NULL DEFAULT 'none',
+    aggregate_use         TEXT   NOT NULL DEFAULT 'private',
+    station_metadata      TEXT   NOT NULL DEFAULT 'none',
+    event_visibility      TEXT   NOT NULL DEFAULT 'private',
+    raw_export            TEXT   NOT NULL DEFAULT 'deny',
+    federation_peers      TEXT[] NOT NULL DEFAULT '{}',
+    publish_signals       TEXT[] NOT NULL DEFAULT '{}',
+    policy_revision       TEXT   NOT NULL DEFAULT 'legacy-private-v1',
+    sample_time TIMESTAMPTZ, -- NULL if the feeder had no accepted UTC stamp
+    kind TEXT NOT NULL CHECK (kind IN ('environment', 'timing')),
+    raw BYTEA NOT NULL,      -- original ObserverDetails wire body
+    data JSONB NOT NULL,     -- decoded units, validity, uptime and clock metadata
+    decoder_ver TEXT,
+    source_session TEXT,
+    source_seq BIGINT
+);
+SELECT create_hypertable('observer_samples', 'ts',
+    chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_observer_samples_source_time
+    ON observer_samples (source_id, kind, received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_observer_samples_org_time
+    ON observer_samples (organization_id, received_at DESC);
+ALTER TABLE observer_samples SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'organization_id,source_id,kind',
+    timescaledb.compress_orderby = 'ts DESC'
+);

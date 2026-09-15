@@ -264,3 +264,13 @@ go test ./internal/store/
 - `../ingest/README.md` — `DurableTracker`, the other end of `SetDurableNotify`.
 - `../serve/README.md` — the event read and SSE paths.
 - `../../../docs/OUTPUT.md §4` — the persistence contract.
+
+## Board measurements
+
+Environmental and pulse-timing ObserverDetails records share the bounded batch
+writer, transaction retry and GNF1 replay-dedup ledger with navigation, and are
+inserted into the separate private `observer_samples` hypertable. Raw bytes,
+decoded JSON, nullable sample UTC, source boot/sequence and receipt authority are
+preserved. Compression and retention use the configured raw-evidence intervals.
+See [the board telemetry contract](../../../docs/OBSERVER-TELEMETRY.md#persistent-environmental-and-clock-history)
+for fields, acknowledgments, query examples and operator-only access.

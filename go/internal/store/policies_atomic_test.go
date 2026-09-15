@@ -21,7 +21,7 @@ func policySet(t *testing.T, ctx context.Context, pool *pgxpool.Pool) []string {
 	rows, err := pool.Query(ctx,
 		`SELECT hypertable_name, proc_name, config::text
 		   FROM timescaledb_information.jobs
-		  WHERE hypertable_name IN ('nav_frames', 'gnss_snapshots', 'gnss_events')`)
+		  WHERE hypertable_name IN ('nav_frames', 'gnss_snapshots', 'gnss_events', 'observer_samples')`)
 	if err != nil {
 		t.Fatalf("read policy jobs: %v", err)
 	}
@@ -79,6 +79,10 @@ func TestIntegrationPolicyReplacementIsAtomic(t *testing.T) {
 		"add_retention_policy('gnss_snapshots'",
 		"remove_compression_policy('gnss_events'",
 		"add_compression_policy('gnss_events'",
+		"remove_compression_policy('observer_samples'",
+		"add_compression_policy('observer_samples'",
+		"remove_retention_policy('observer_samples'",
+		"add_retention_policy('observer_samples'",
 	}
 	// A different interval, so a partial application would be visibly different
 	// from the baseline rather than coincidentally identical.

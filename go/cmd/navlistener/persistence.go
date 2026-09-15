@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/ptudor/navlistener/internal/identity"
@@ -18,7 +19,7 @@ func frameForPersistence(f *ingest.RawFrame) *store.NavFrame {
 		// fields that a future reader might accidentally interpret as public.
 		observer = identity.NewPrivateContext(f.Source, identity.CredentialLocalDial)
 	}
-	return &store.NavFrame{
+	saved := &store.NavFrame{
 		Ts:                    time.Now(),
 		ReceivedAt:            f.Recv,
 		SourceID:              f.Source,
@@ -46,9 +47,27 @@ func frameForPersistence(f *ingest.RawFrame) *store.NavFrame {
 		MsgType:               persistMsgType(f),
 		Raw:                   f.RawBytes(),
 		SBFHeader:             append([]byte(nil), f.SBFHeader...),
-		DecoderVer:            version.Version,
+		DecoderVer:            version.Identity(),
 		SourceSeq:             f.Seq,
 		HasSourceSeq:          f.HasSeq,
 		Session:               f.Session, // dedup-key third component
 	}
+	if f.Details != nil {
+		kind := "environment"
+		if f.Details.Timing != nil {
+			kind = "timing"
+		}
+		data, err := json.Marshal(f.Details)
+		if err != nil {
+			panic(err)
+		} // validated decoder numbers are finite
+		saved.Board = &store.BoardSample{Kind: kind, Data: data}
+		saved.ReceivedAt = f.LocalRecv()
+		if f.BoardSampleStamped {
+			stamp := f.Recv
+			saved.Board.SampleTime = &stamp
+		}
+	}
+	return saved
+
 }

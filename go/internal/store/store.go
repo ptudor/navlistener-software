@@ -1,10 +1,10 @@
-// Package store is the PERSIST stage: a TimescaleDB raw-nav-frame historian fed by
+// Package store is the PERSIST stage: a TimescaleDB navigation/board historian fed by
 // a single batched writer goroutine using pgx CopyFrom (bulk load — never row-by-row
 // INSERT). It is off the live hot path: frames are handed over via a bounded queue
 // with an explicit drop-on-overflow policy, so a slow database degrades the
 // historian, never live decoding. Integrity events and periodic feed snapshots
-// are lower-rate direct writes through the same store; only raw-frame ingestion
-// uses the bounded batch queue. Same discipline as the radiolistener sibling.
+// are lower-rate direct writes through the same store; navigation and board
+// samples use the bounded batch queue. Same discipline as the radiolistener sibling.
 package store
 
 import (
@@ -98,6 +98,8 @@ var copyColumns = []string{
 // projection. Raw is the untouched frame bytes (re-decodable); Decoded is a JSONB
 // projection or nil.
 type NavFrame struct {
+	Board *BoardSample // non-nil routes to private observer_samples, never nav_frames
+
 	Ts         time.Time
 	ReceivedAt time.Time
 	SourceID   string
@@ -371,6 +373,7 @@ var requiredColumns = map[string][]string{
 	// (silent forensic-record loss while /healthz stays OK). nav_frames_seq_seen is the
 	// push-path dedup ledger; a drift there fails the atomic claim tx and drops the batch.
 	"nav_frames":          copyColumns,
+	"observer_samples":    boardColumns,
 	"nav_frames_seq_seen": {"source_id", "session_id", "feeder_seq", "seen_at"},
 }
 
@@ -538,6 +541,19 @@ func applyPoliciesWithHook(ctx context.Context, pool *pgxpool.Pool, log *slog.Lo
 	if err := exec(`SELECT add_compression_policy('gnss_events', INTERVAL '30 days', if_not_exists => true)`); err != nil {
 		return fmt.Errorf("events compression policy: %w", err)
 	}
+	// Board samples share the raw evidence retention/dedup horizon. Their own
+	// table and source/kind compression keep timing separate from navigation.
+	for _, sql := range []string{
+		`SELECT remove_compression_policy('observer_samples', if_exists => true)`,
+		fmt.Sprintf(`SELECT add_compression_policy('observer_samples', INTERVAL '%s', if_not_exists => true)`, compAfter),
+		`SELECT remove_retention_policy('observer_samples', if_exists => true)`,
+		fmt.Sprintf(`SELECT add_retention_policy('observer_samples', INTERVAL '%s', if_not_exists => true)`, rawRet),
+	} {
+		if err := exec(sql); err != nil {
+			return fmt.Errorf("board sample policy: %w", err)
+		}
+	}
+
 	// Nothing above is visible to any other session until this commits, so the
 	// installed set is either entirely the old one or entirely the new one.
 	if err := tx.Commit(ctx); err != nil {
@@ -809,6 +825,8 @@ func (s *Store) persistAtomicOnce(ctx context.Context, batch []*NavFrame) (writt
 	}
 
 	copyRows := make([][]any, 0, len(batch))
+	boardRows := make([][]any, 0, len(batch))
+	boardCounts := map[string]int{}
 	emitted := make(map[seqKey]bool, len(fresh))
 	for _, f := range batch {
 		if f.HasSourceSeq {
@@ -818,7 +836,12 @@ func (s *Store) persistAtomicOnce(ctx context.Context, batch []*NavFrame) (writt
 			}
 			emitted[k] = true
 		}
-		copyRows = append(copyRows, navFrameToRow(f))
+		if f.Board != nil {
+			boardRows = append(boardRows, boardFrameToRow(f))
+			boardCounts[f.Board.Kind]++
+		} else {
+			copyRows = append(copyRows, navFrameToRow(f))
+		}
 	}
 	if len(copyRows) > 0 {
 		written, err = tx.CopyFrom(ctx, pgx.Identifier{"nav_frames"}, copyColumns, pgx.CopyFromRows(copyRows))
@@ -826,9 +849,21 @@ func (s *Store) persistAtomicOnce(ctx context.Context, batch []*NavFrame) (writt
 			return 0, err
 		}
 	}
+	if len(boardRows) > 0 {
+		n, err := tx.CopyFrom(ctx, pgx.Identifier{"observer_samples"}, boardColumns, pgx.CopyFromRows(boardRows))
+		if err != nil {
+			return 0, err
+		}
+		written += n
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
+	for kind, n := range boardCounts {
+		metrics.StoreBoardRowsTotal.WithLabelValues(kind).Add(float64(n))
+	}
+
 	return written, nil
 }
 

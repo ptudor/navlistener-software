@@ -38,7 +38,7 @@ func TestObserverDetailsPushTLS(t *testing.T) {
 	}
 }
 
-func TestObserverDetailsDoesNotBlockNavDurability(t *testing.T) {
+func TestObserverDetailsWaitsForHistorianDurability(t *testing.T) {
 	tr := NewDurableTracker()
 	cli, out, _ := streamOnPipe(t, "ubx", tr)
 	rec := wire.RawRecord{FrameType: TelemObserverDetails, Raw: observerGolden(t)}
@@ -50,8 +50,12 @@ func TestObserverDetailsDoesNotBlockNavDurability(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("no board sample")
 	}
+	if tr.Watermark("obs1", "boot-a") != 0 {
+		t.Fatal("board sample acknowledged before persistence")
+	}
+	tr.Resolved("obs1", "boot-a", 1)
 	if tr.Watermark("obs1", "boot-a") != 1 {
-		t.Fatal("board telemetry held nav durability watermark")
+		t.Fatal("committed board sample did not advance watermark")
 	}
 }
 

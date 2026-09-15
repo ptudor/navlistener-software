@@ -120,7 +120,9 @@ period error, wrapped RTC/GNSS phase and pulse count minus elapsed ESP seconds.
 The CSV also includes widths, span-average ppm, loss/validity flags and counters.
 Boots detected by decreasing uptime are plotted separately. Start a new capture
 file after switching boards; serial samples contain no unique board identity.
-No durable timing historian is implemented. The [FIFO journal](JOURNAL.md) saves
+With `[store].dsn` enabled, the collector persists every timing/environment sample
+in its private `observer_samples` table, using the configured raw-evidence retention
+and compression policies. The [FIFO journal](JOURNAL.md) saves
 pulse totals in hourly checkpoints, preserving boot/version context without
 writing each second to flash.
 

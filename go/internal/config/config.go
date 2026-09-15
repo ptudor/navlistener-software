@@ -158,7 +158,8 @@ type Store struct {
 	BatchEverys string        `toml:"batch_interval"` // flush cadence, e.g. "1s"
 	BatchEvery  time.Duration `toml:"-"`
 
-	// Retention (PostgreSQL INTERVAL literals). Raw frames are the short-window
+	// Retention (PostgreSQL INTERVAL literals). Navigation and board samples share
+	// this evidence horizon and replay-dedup ledger. Raw frames are the short-window
 	// forensic record. Confirmed events and feed snapshots live in separate
 	// tables/policies; this setting does not retain a long-term decoded
 	// ephemeris aggregate.

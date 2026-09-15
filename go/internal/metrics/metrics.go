@@ -34,7 +34,7 @@ var (
 	BuildInfo = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "navlistener_build_info",
 		Help: "Build identity; value is always 1.",
-	}, []string{"version", "build_time"})
+	}, []string{"version", "build_number", "revision", "build_time"})
 
 	// FramesTotal counts raw nav frames ingested, by source and constellation.
 	FramesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -248,16 +248,21 @@ var (
 		Help: "SSE subscriptions rejected at the concurrent-stream cap.",
 	})
 
-	// StoreRowsTotal counts raw nav frames persisted to the historian.
+	// StoreRowsTotal counts navigation frames and board samples persisted.
 	StoreRowsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "navlistener_store_rows_total",
-		Help: "Raw nav frames written to TimescaleDB.",
+		Help: "Navigation frames and board samples written to TimescaleDB.",
 	})
+
+	StoreBoardRowsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_store_board_rows_total",
+		Help: "Board samples committed to TimescaleDB, by timing/environment kind.",
+	}, []string{"kind"})
 
 	// StoreDroppedTotal counts frames dropped because the writer queue was full.
 	StoreDroppedTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "navlistener_store_dropped_total",
-		Help: "Nav frames dropped under DB backpressure (queue full).",
+		Help: "Historian records dropped under DB backpressure (queue full).",
 	})
 
 	// StoreErrorsTotal counts failed batch-flush attempts (each retry increments).
@@ -270,7 +275,7 @@ var (
 	// exhausted or a poison row was quarantined.
 	StoreQuarantinedTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "navlistener_store_quarantined_total",
-		Help: "Nav frames dropped after flush retries exhausted or a poison row was quarantined.",
+		Help: "Historian records dropped after flush retries exhausted or a poison row was quarantined.",
 	})
 
 	// StoreEmptyRawTotal counts frames dropped at Enqueue for having an empty Raw
@@ -283,7 +288,7 @@ var (
 
 // Init records build identity and registers the uptime gauge. Call once at startup.
 func Init() {
-	BuildInfo.WithLabelValues(version.Version, version.BuildTime).Set(1)
+	BuildInfo.WithLabelValues(version.Version, version.BuildNumber, version.Revision, version.BuildTime).Set(1)
 	promauto.NewGaugeFunc(prometheus.GaugeOpts{
 		Name: "navlistener_uptime_seconds",
 		Help: "Seconds since process start.",

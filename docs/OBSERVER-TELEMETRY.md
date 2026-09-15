@@ -220,9 +220,10 @@ event counter and, when available, the preceding report from the same boot as
 `before`. That baseline can be up to a check-in interval old, and a report may
 describe coalesced transitions. A new boot clears the preceding boot's context.
 Retention is bounded live RAM state, evicted after one idle hour and cleared on
-authorization-scope reset. It is **not a durable environmental historian**.
-GNF1 spool/ACK/replay semantics remain unchanged; environmental reports do not
-hold the navigation historian's durability watermark.
+authorization-scope reset. This live cache is separate from the persistent
+`observer_samples` historian described below. With the historian enabled, board
+samples now hold the GNF1 durability watermark until their transaction commits;
+without a database, acknowledgment still means receipt only.
 
 The shared [binary fixture](../testdata/observer_details_v1.hex) is checked by
 the C encoder and Go decoder. Host tests cover conversion faults, reporting
@@ -231,4 +232,55 @@ durability classification, baseline retention, expiry and private output.
 
 The [timing fixture](../testdata/observer_timing_v1.hex) is shared by the C encoder,
 Go decoder and serial plot tests. Timing shares the same private audience rules
-and bounded live retention; this version has no durable timing historian.
+and bounded live retention; durable storage uses the separate table below.
+
+## Persistent environmental and clock history
+
+When `[store].dsn` is configured, every valid ObserverDetails sample enters the
+existing bounded batch writer. `observer_samples` is a separate private TimescaleDB
+hypertable; board samples never enter `nav_frames` or public feed projections.
+It stores the original wire body, decoded JSON (including all three temperatures,
+humidity, pressure, clock counts/ticks and validity), collector receipt time,
+nullable feeder sample time, boot session/sequence and immutable receipt-time
+ownership/publication context. Source uptime remains inside the JSON.
+
+The `(source, session, sequence)` replay key is claimed in the **same transaction**
+as navigation and board inserts. A failed transaction rolls back its claims;
+reconnect replay can retry it. A committed sample is stored once within the ledger
+retention window, including after a daemon restart. Queue overflow and exhausted
+transient retries withhold acknowledgment. A deterministically invalid database
+row follows the existing explicit quarantine policy. GNSS live processing remains
+independent of database latency, and the board's finite PSRAM capacity still limits
+outage survival. Records already acknowledged by older live-only collectors cannot
+be recovered retroactively.
+
+Board samples inherit `[store].raw_retention` (default `7 days`) and
+`compress_after` (default `1 day`). The separate table compresses by organization,
+source and sample kind. Time partitions use collector ingest time, so an unknown
+or replayed feeder clock cannot immediately age a newly received sample out.
+Retention deletes old chunks automatically; it is not a keep-forever archive.
+[Timescale retention policies](https://github.com/timescale/Tiger-Data-Docs/blob/main/src/content/docs/reference/timescaledb/data-retention/add_retention_policy.mdx)
+
+`navlistener_store_board_rows_total{kind="environment"|"timing"}` counts committed
+samples. Existing writer queue/error/drop metrics and historian health apply.
+`navlistener_store_rows_total` now counts navigation and board records together.
+The live observer API stays separate; historical board samples are currently
+queried through authorized database access, not a public HTTP endpoint.
+
+For example, on an administrator's private database connection:
+
+```sql
+SELECT received_at, sample_time, source_session, source_seq, data
+FROM observer_samples
+WHERE source_id = 'observer-example'
+  AND received_at >= now() - interval '1 hour'
+ORDER BY received_at, source_seq
+LIMIT 10000;
+```
+
+Use `kind = 'timing'` for clock history or `kind = 'environment'` for environmental
+and health snapshots. Plot using sample uptime within a boot and preserve validity
+flags; an unknown UTC sample time remains NULL. Grant access only to authorized
+operators; GNSS publication permission does not authorize sharing sensor identities
+or board clock history. Existing deployments add the table and policies at daemon
+startup; no existing navigation rows are rewritten.

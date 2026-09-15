@@ -1,10 +1,12 @@
 # navlistener — the GNSS collector daemon.
 # Primary deploy target is FreeBSD/amd64 (collector-host); linux/arm64 is the SBC field box.
 BINARY      := navlistener
-VERSION     := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+VERSION     := $(shell cat ../VERSION)
+BUILD_NUMBER := $(shell cat ../BUILD_NUMBER)
+REVISION    := $(shell git describe --always --dirty --exclude='*' 2>/dev/null || echo unknown)
 BUILD_TIME  := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 PKG         := github.com/ptudor/navlistener/internal/version
-LDFLAGS     := -ldflags "-s -w -X $(PKG).Version=$(VERSION) -X $(PKG).BuildTime=$(BUILD_TIME)"
+LDFLAGS     := -ldflags "-s -w -X $(PKG).Version=$(VERSION) -X $(PKG).BuildNumber=$(BUILD_NUMBER) -X $(PKG).Revision=$(REVISION) -X $(PKG).BuildTime=$(BUILD_TIME)"
 BUILD_DIR   := build
 CMD         := ./cmd/navlistener
 

@@ -83,7 +83,7 @@ func run() int {
 
 	log := setupLogger(cfg.Logging)
 	slog.SetDefault(log)
-	log.Info("starting", "version", version.Version, "build", version.BuildTime)
+	log.Info("starting", "version", version.Version, "build_number", version.BuildNumber, "revision", version.Revision, "build", version.BuildTime)
 	// regression fix/non-fatal config findings (world-readable secrets file,
 	// non-loopback bind of an unauthenticated surface) — loud at startup, once.
 	for _, w := range cfg.Warnings {
@@ -700,7 +700,7 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLi
 		// stamp is the whole data plane's liveness signal for /healthz.
 		lastFrame.Store(time.Now().UnixNano())
 		defer recoverDecodePanic(f, log, lim)
-		if historian != nil && f.Obs == nil && f.RF == nil && f.Details == nil { // telemetry (observables, RF) is not a nav-frame record
+		if historian != nil && f.Obs == nil && f.RF == nil { // raw navigation and board samples use separate historian tables
 			historian.Enqueue(frameForPersistence(f))
 		}
 		if !f.Admission.Current() {

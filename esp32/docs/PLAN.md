@@ -120,10 +120,10 @@ matched to `feeder/navfeeder.c`. No I/O — pure encode/parse over buffers.
   observer feed. A shared C/Go fixture pins units and wire layout; cadence and
   event snapshots are specified in [the report contract](../../docs/OBSERVER-TELEMETRY.md).
 - Both panel rows use 33% initial PWM brightness, adjustable by short BOOT press.
-- **Remaining:** battery retention with main power removed, electrical PPS/time
-  validation, environmental site calibration, live collector deployment and a
-  separately reviewed secure-element provisioning policy. Sensor history is
-  bounded live state; durable environmental storage is not implemented.
+- **Remaining:** battery retention with main power removed, extended PPS/time
+  validation, environmental site calibration, end-to-end deployed collection and a
+  separately reviewed secure-element provisioning policy. The collector stores
+  environmental/timing samples in its private TimescaleDB historian when enabled.
 
 ## P-journal — persistent diagnostic history *(implemented)*
 
