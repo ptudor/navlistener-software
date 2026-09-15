@@ -1,5 +1,6 @@
 """Provenance checks against disposable CMake/component fixtures (IDF Python)."""
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -20,6 +21,8 @@ class ProvenanceTests(unittest.TestCase):
             root = Path(temp)
             (root / 'build').mkdir()
             (root / 'main').mkdir()
+            shutil.copytree(source / 'components/environment/vendor/bmp3',
+                            root / 'components/environment/vendor/bmp3')
             shutil.copy(source / 'main/idf_component.yml', root / 'main/idf_component.yml')
             shutil.copy(source / 'dependencies.lock', root / 'dependencies.lock')
             component = root / 'managed_components/esp_hardware_discovery'
@@ -75,6 +78,8 @@ class ProvenanceTests(unittest.TestCase):
         source = Path(__file__).resolve().parents[1]
         (root / 'build').mkdir()
         (root / 'main').mkdir()
+        shutil.copytree(source / 'components/environment/vendor/bmp3',
+                        root / 'components/environment/vendor/bmp3')
         shutil.copy(source / 'main/idf_component.yml', root / 'main/idf_component.yml')
         shutil.copy(source / 'dependencies.lock', root / 'dependencies.lock')
         component = root / 'managed_components/esp_hardware_discovery'
@@ -105,6 +110,26 @@ class ProvenanceTests(unittest.TestCase):
             self.assertTrue((alternate / 'firmware-provenance.json').exists())
             self.assertFalse((root / 'build').exists())
             self.assertTrue(result['hardware_discovery']['matches_manifest_pin'])
+
+    def test_vendor_hashes_and_binary_distribution_notice(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.fixture(Path(temp))
+            vendor = root / 'components/environment/vendor/bmp3'
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = record(root)
+            bmp = result['bmp3_sensor_api']
+            self.assertEqual(bmp['commit'], 'db4cf8e4140c593b8c3d85f8c6c07335c7ffa9dc')
+            for name in ('bmp3.c', 'bmp3.h', 'bmp3_defs.h', 'LICENSE'):
+                self.assertEqual(bmp['files_sha256'][name],
+                                 hashlib.sha256((vendor / name).read_bytes()).hexdigest())
+            notice = root / 'build' / bmp['binary_distribution_notice']
+            self.assertEqual(notice.read_bytes(), (vendor / 'LICENSE').read_bytes())
+            # An incomplete vendor tree must remove any previous successful
+            # provenance record rather than leave a stale publishable claim.
+            (vendor / 'bmp3.c').unlink()
+            with self.assertRaises(FileNotFoundError):
+                record(root)
+            self.assertFalse((root / 'build/firmware-provenance.json').exists())
 
     def test_moving_branch_pin_is_rejected(self):
         # The original finding: a `main` (or tag) pin resolves different code per build.
