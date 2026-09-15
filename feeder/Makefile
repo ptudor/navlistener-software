@@ -25,12 +25,21 @@ ifeq ($(UNAME),Darwin)
   LDFLAGS += -L$(SSL_PREFIX)/lib
 endif
 
-.PHONY: all clean openwrt
+.PHONY: all check clean openwrt
 
 all: $(BINARY)
 
-$(BINARY): navfeeder.c
+$(BINARY): navfeeder.c ubx_config.h
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ navfeeder.c $(LDLIBS)
+
+check: $(BINARY)
+	@set -eu; test_bin=$$(mktemp "$${TMPDIR:-/tmp}/navfeeder-ubx-test.XXXXXX"); \
+	trap 'rm -f "$$test_bin"' EXIT; \
+	$(CC) $(CFLAGS) $(LDFLAGS) -o "$$test_bin" ubx_config_test.c $(LDLIBS); \
+	"$$test_bin"; \
+	if ./$(BINARY) --configure-ubx auto 2>/dev/null; then exit 1; fi; \
+	if ./$(BINARY) --server collector.invalid:5580 --source receiver.invalid:2000 \
+	    --station test --token test --configure-ubx uart1 2>/dev/null; then exit 1; fi
 
 clean:
 	rm -f $(BINARY)

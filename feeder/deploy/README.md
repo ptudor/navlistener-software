@@ -18,6 +18,33 @@ make openwrt STAGING_DIR=<openwrt>/staging_dir TARGET=mipsel_24kc_musl GCC_VER=1
 The binary links OpenSSL (TLS 1.2, pinned — see the regression fix note in the source) + libzstd +
 pthread, all of which OpenWrt already ships.
 
+## Volatile receiver setup
+
+For a directly attached receiver supporting UBX-CFG-VALSET, add
+`--configure-ubx uart1` to the feeder command. Select `uart2` or `usb` when
+that is the **receiver's** connected interface. A USB-to-UART bridge still
+uses `uart1` or `uart2`; the host device name does not identify this port.
+Use the receiver's existing line rate with `--baud`.
+
+On each serial open, the feeder enables UBX output plus RXM-SFRBX, NAV-SAT
+and MON-RF at rate 1 on that interface. It writes only the **RAM layer**:
+receiver baud, existing NMEA output, GNSS signals and timing/PPS settings
+are untouched. Nothing is saved to backup RAM or flash. A receiver restart
+reloads its stored configuration; the feeder requests these messages again
+after roughly 30 seconds without recognized UBX, including when a UART
+bridge remains connected and continues delivering NMEA.
+
+ACK, rejection and timeout results appear in the log. Capture continues if
+the receiver rejects or does not acknowledge setup; verify that frames
+actually arrive. This option requires UBX configuration input to be enabled
+already. Unsupported receivers need separate configuration. Without the
+option, sources remain passive; configuration over TCP is not supported.
+
+The layer and key definitions follow the
+[u-blox F9 TIM 2.20 interface description](https://content.u-blox.com/sites/default/files/u-blox-F9-TIM-2.20_InterfaceDescription_UBX-21048598.pdf).
+Run `make check` in `feeder/` to exercise setup, recovery during NMEA input,
+interleaved telemetry delivery and a blocked serial write.
+
 ## Enrollment (the shared AAA control plane)
 
 A GNSS observer is just a `Device` in the control plane navlistener shares with radiolistener

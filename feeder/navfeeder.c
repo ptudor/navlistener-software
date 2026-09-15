@@ -146,6 +146,7 @@ struct opts {
 	const char *server_host, *server_port;
 	const char *source;    /* /dev/ttyACM0 (serial) or host:port (TCP bridge) */
 	int baud;              /* serial baud when --source is a device path */
+	int configure_ubx;     /* 0 = passive; 1/2/3 = receiver UART1/UART2/USB */
 	const char *token, *station, *feed, *ca;
 	const char *cert, *key; /* mTLS client cert + key (PEM); one DNS SAN = the station */
 	const char *spool_file; /* NULL = in-memory only (drop-oldest on overflow) */
@@ -1247,8 +1248,15 @@ static int emit_navsat(const unsigned char *p, unsigned len) {
 	return emit_telem(F_T_RECEPTION, body, 3u + n * 5u);
 }
 
+/* Receiver setup is opt-in and writes only the volatile configuration layer. */
+#include "ubx_config.h"
+
 /* rdbuf is a small buffered reader over the source fd (serial or TCP). */
-struct rdbuf { int fd; size_t pos, len; int quiet; unsigned char buf[4096]; };
+struct rdbuf {
+	int fd; size_t pos, len; int quiet;
+	struct ubx_config config;
+	unsigned char buf[4096];
+};
 
 /* RB_QUIET_MAX bounds how many consecutive quiet periods (RB_POLL_TIMEOUT_S each — the
  * poll() window below, matched by the TCP SO_RCVTIMEO) may elapse before rb_getc gives up
@@ -1258,6 +1266,9 @@ struct rdbuf { int fd; size_t pos, len; int quiet; unsigned char buf[4096]; };
 
 static int rb_getc(struct rdbuf *b) {
 	while (b->pos >= b->len) {
+		/* Tick while scanning NMEA too: a receiver can reset without its UART
+		 * bridge disconnecting, leaving sync_ubx waiting indefinitely. */
+		if (ubx_config_tick(&b->config, b->fd, monotonic_s()) != 0) return -1;
 		/* regression fix (the residual own comment named): gate EVERY source read behind
 		 * poll(), so silence is bounded for BOTH source types. Ttys have no SO_RCVTIMEO,
 		 * so the serial path's VMIN=1 blocking read was uncovered by the regression fix EAGAIN
@@ -1361,8 +1372,8 @@ static void log_ubx_stats(const char *what, unsigned long recognized, unsigned l
  * never repairs. What WAS missing is the operator's ability to see "link alive, nothing
  * spooling": `delivered` counts the records that actually reached the spool, separately, and
  * both counts are logged (periodically and at source close). Do not merge the two counters. */
-static int run_ubx(int fd) {
-	struct rdbuf rb; rb.fd = fd; rb.pos = rb.len = 0; rb.quiet = 0;
+static int run_ubx(int fd, int configure_ubx) {
+	struct rdbuf rb = { .fd = fd, .config = { .port = configure_ubx } };
 	unsigned char head[4], payload[UBX_MAX_PAYLOAD], ck[2];
 	time_t start = monotonic_s(); /* interval, not wall-clock */
 	time_t last_stats = start;
@@ -1380,6 +1391,7 @@ static int run_ubx(int fd) {
 		a += head[2]; bb += a; a += head[3]; bb += a;
 		for (unsigned i = 0; i < len; i++) { a += payload[i]; bb += a; }
 		if (a != ck[0] || bb != ck[1]) continue;              /* bad checksum → drop, resync */
+		ubx_config_ack(&rb.config, head[0], head[1], payload, len);
 		if (head[0] == UBX_CLASS_RXM && head[1] == UBX_ID_SFRBX)
 			{ delivered += emit_sfrbx(payload, len); frames++; }
 		else if (head[0] == UBX_CLASS_MON && head[1] == UBX_ID_MONRF)
@@ -1390,6 +1402,7 @@ static int run_ubx(int fd) {
 			{ delivered += emit_navsat(payload, len); frames++; }
 		else
 			continue; /* unrecognized class/id: not counted, no stats tick needed */
+		ubx_config_observed(&rb.config, monotonic_s());
 		if (monotonic_s() - last_stats >= UBX_STATS_S) {
 			log_ubx_stats("ubx", frames, delivered);
 			last_stats = monotonic_s();
@@ -1433,8 +1446,8 @@ static speed_t baud_to_speed(int baud) {
 
 /* open_serial opens a receiver device in raw mode at the configured baud. u-blox USB CDC-ACM
  * ignores the line rate, but a real UART bridge needs it (the fleet runs 460800). */
-static int open_serial(const char *path, int baud) {
-	int fd = open(path, O_RDONLY | O_NOCTTY | O_NONBLOCK);
+static int open_serial(const char *path, int baud, int configure_ubx) {
+	int fd = open(path, (configure_ubx ? O_RDWR : O_RDONLY) | O_NOCTTY | O_NONBLOCK);
 	if (fd < 0) return -1;
 	struct termios t;
 	if (tcgetattr(fd, &t) != 0) { close(fd); return -1; }
@@ -1464,7 +1477,7 @@ static int open_serial(const char *path, int baud) {
 /* open_source opens the receiver: a device path (leading '/') is a serial port; otherwise a
  * host:port TCP bridge (ser2net / a receiver's raw TCP port). */
 static int open_source(const struct opts *o) {
-	if (o->source[0] == '/') return open_serial(o->source, o->baud);
+	if (o->source[0] == '/') return open_serial(o->source, o->baud, o->configure_ubx);
 	/* one strict parser, and no fixed-buffer copy that could
 	 * silently truncate a long authority into a different endpoint. */
 	char host[NI_MAXHOST], port[16];
@@ -1487,7 +1500,7 @@ static void *producer_thread(void *arg) {
 			continue;
 		}
 		log_msg("source open (ubx): %s", o->source);
-		int useful = run_ubx(fd);
+		int useful = run_ubx(fd, o->configure_ubx);
 		close(fd);
 		if (useful) {
 			backoff = 1;
@@ -2126,6 +2139,8 @@ static void usage(void) {
 		"  --server host:port    the collector's authenticated push endpoint\n"
 		"  --source SRC          /dev/ttyACM0 (serial) or host:port (TCP bridge to the receiver)\n"
 		"  --baud N              serial baud when --source is a device path (default 460800)\n"
+		"  --configure-ubx PORT  enable SFRBX/NAV-SAT/MON-RF in RAM on uart1, uart2, or usb\n"
+		"                        (serial only; preserves receiver baud/NMEA; default passive)\n"
 		"  --station ID          this observer's station id (also the mTLS cert's DNS SAN)\n"
 		"  --feed ubx            feed type (only 'ubx' is implemented today; default ubx)\n"
 		"  --token TOK           bearer token (prefer --token-file so it stays out of argv)\n"
@@ -2252,6 +2267,10 @@ int main(int argc, char **argv) {
 		else if (!strcmp(a, "--source") && i+1 < argc) o.source = argv[++i];
 		else if (!strcmp(a, "--baud") && i+1 < argc)
 			o.baud = (int)parse_positive_decimal("baud", argv[++i], INT_MAX);
+		else if (!strcmp(a, "--configure-ubx") && i+1 < argc) {
+			o.configure_ubx = ubx_config_port(argv[++i]);
+			if (!o.configure_ubx) die("--configure-ubx requires uart1, uart2, or usb");
+		}
 		else if (!strcmp(a, "--token") && i+1 < argc) o.token = argv[++i];
 		else if (!strcmp(a, "--token-file") && i+1 < argc) o.token = read_token_file(argv[++i]);
 		else if (!strcmp(a, "--station") && i+1 < argc) o.station = argv[++i];
@@ -2272,6 +2291,8 @@ int main(int argc, char **argv) {
 	}
 	server = (char *)need(server, "server");
 	need(o.source, "source");
+	if (o.configure_ubx && o.source[0] != '/')
+		die("--configure-ubx requires a local serial device source");
 	need(o.station, "station");
 	if (strcmp(o.feed, "ubx") != 0)
 		die("only --feed ubx is implemented today (sbf/rtcm source modes are deferred)");
