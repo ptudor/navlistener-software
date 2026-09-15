@@ -13,8 +13,8 @@ CONFIG_IDF_TARGET="esp32s3"
 
 # The module carries 16 MB of flash, so this build uses its own partition table
 # rather than the 4 MB one the C6 needs. See partitions-s3.csv for what the extra
-# flash buys: two OTA slots and a 9.875 MiB spool reservation in place of
-# 1.5 MiB. The spool partition is still unmounted on both boards.
+# flash buys: two OTA slots, a 9.375 MiB spool reservation and a 512 KiB
+# diagnostic journal. The spool partition is still unmounted on both boards.
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-s3.csv"
 

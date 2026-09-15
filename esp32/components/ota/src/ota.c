@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <errno.h>
 #include "cJSON.h"
 #include "esp_app_desc.h"
 #include "esp_crt_bundle.h"
@@ -25,6 +26,7 @@
 #include "mbedtls/sha256.h"
 #include "nvs.h"
 #include "spool.h"
+#include "journal.h"
 
 #if !CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE || !CONFIG_MBEDTLS_HAVE_TIME_DATE
 #error "OTA requires bootloader rollback and TLS certificate date validation"
@@ -120,7 +122,7 @@ static esp_err_t challenge_get(httpd_req_t *req)
     free(body);
     return err;
 }
-static bool authenticated(httpd_req_t *req, const char *body)
+static bool authenticated(httpd_req_t *req, const char *body, const char *prefix)
 {
     char provided_nonce[65], signature[65]; uint8_t provided[32], computed[32];
     if (!nonce[0] || esp_timer_get_time() >= nonce_deadline ||
@@ -128,9 +130,9 @@ static bool authenticated(httpd_req_t *req, const char *body)
         httpd_req_get_hdr_value_str(req, "X-OTA-Authorization", signature, sizeof signature) != ESP_OK ||
         strlen(provided_nonce) != 64 || strcmp(provided_nonce, nonce) || strlen(signature) != 64 ||
         !nvf_ota_unhex(signature, 64, provided)) return false;
-    const char prefix[] = "navfeeder-ota-v1\n";
-    char message[sizeof(prefix) + 65 + NVF_OTA_BODY_CAP];
-    size_t n = sizeof(prefix) - 1;
+    char message[32 + 65 + NVF_OTA_BODY_CAP];
+    size_t n = strlen(prefix);
+    if (n > 32) return false;
     memcpy(message, prefix, n); memcpy(message + n, nonce, 64); n += 64;
     message[n++] = '\n'; memcpy(message + n, body, req->content_len); n += req->content_len;
     if (mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), update_key,
@@ -140,6 +142,58 @@ static bool authenticated(httpd_req_t *req, const char *body)
     return nvf_ota_consume_nonce(nonce, nonce_deadline, provided_nonce, esp_timer_get_time(), diff == 0);
 }
 
+static void json_u64(cJSON *json, const char *name, uint64_t value)
+{
+    char text[24]; snprintf(text,sizeof text,"%llu",(unsigned long long)value);
+    cJSON_AddStringToObject(json,name,text); // exact even above JavaScript's 53-bit integer limit
+}
+static esp_err_t journal_post(httpd_req_t *req)
+{
+    char body[48];
+    if (!receive_body(req,body,sizeof body)) return error_response(req,"400 Bad Request","invalid cursor");
+    if (!authenticated(req,body,"navfeeder-journal-v1\n"))
+        return error_response(req,"403 Forbidden","invalid or expired authorization");
+    unsigned lane;
+    const char *number;
+    if (!strncmp(body,"life\n",5)) { lane=0; number=body+5; }
+    else if (!strncmp(body,"health\n",7)) { lane=1; number=body+7; }
+    else return error_response(req,"400 Bad Request","expected life or health and a cursor");
+    if (!*number || strspn(number,"0123456789") != strlen(number))
+        return error_response(req,"400 Bad Request","invalid cursor");
+    errno=0; uint64_t before=strtoull(number,NULL,10);
+    if (errno) return error_response(req,"400 Bad Request","cursor overflow");
+    journal_record_t rows[8]; unsigned count; uint64_t next;
+    if (journal_page(lane,before,rows,&count,&next) != ESP_OK)
+        return error_response(req,"503 Service Unavailable","journal unavailable; GNSS service is independent");
+    cJSON *json=cJSON_CreateObject(), *records=cJSON_CreateArray();
+    if (!json || !records) { cJSON_Delete(json); cJSON_Delete(records); return ESP_ERR_NO_MEM; }
+    cJSON_AddItemToObject(json,"records",records); json_u64(json,"next",next);
+    cJSON_AddNumberToObject(json,"capacity",lane ? JOURNAL_HEALTH_CAP : JOURNAL_LIFE_CAP);
+    for (unsigned i=0; i<count; i++) {
+        const journal_record_t *r=&rows[i]; cJSON *row=cJSON_CreateObject();
+        if (!row) { cJSON_Delete(json); return ESP_ERR_NO_MEM; }
+        cJSON_AddItemToArray(records,row);
+        json_u64(row,"sequence",r->sequence); json_u64(row,"boot",r->boot);
+        json_u64(row,"uptime_ms",r->uptime_ms); json_u64(row,"utc",r->utc);
+        json_u64(row,"dropped",r->dropped);
+        cJSON_AddStringToObject(row,"firmware",r->firmware);
+        cJSON_AddStringToObject(row,"partition",r->partition);
+        char hash[65]; nvf_ota_hex(r->elf_sha256,32,hash);
+        cJSON_AddStringToObject(row,"elf_sha256",hash);
+        cJSON_AddNumberToObject(row,"event",r->event); cJSON_AddNumberToObject(row,"time_source",r->time_source);
+        cJSON_AddNumberToObject(row,"reset_reason",r->reset_reason);
+        cJSON_AddNumberToObject(row,"flags",r->flags); cJSON_AddNumberToObject(row,"queued",r->queued);
+        cJSON_AddNumberToObject(row,"internal_free",r->internal_free);
+        cJSON_AddNumberToObject(row,"environment",r->environment); cJSON_AddNumberToObject(row,"rtc",r->rtc);
+        cJSON_AddNumberToObject(row,"rng",r->rng); cJSON_AddNumberToObject(row,"manifest",r->manifest);
+        cJSON_AddNumberToObject(row,"error",r->error);
+    }
+    char *response=cJSON_PrintUnformatted(json); cJSON_Delete(json);
+    if (!response) return ESP_ERR_NO_MEM;
+    httpd_resp_set_type(req,"application/json"); httpd_resp_set_hdr(req,"Cache-Control","no-store");
+    esp_err_t err=httpd_resp_sendstr(req,response); free(response); return err;
+}
+
 static void update_task(void *arg)
 {
     nvf_ota_request_t *request = arg;
@@ -147,6 +201,7 @@ static void update_task(void *arg)
     free(request);
     atomic_store(&last_error, err);
     if (err == ESP_OK) {
+        journal_event(JOURNAL_OTA_READY,0);
         atomic_store(&state, REBOOTING);
         size_t depth = 0; spool_stats(NULL, NULL, &depth);
         ESP_LOGW(TAG, "verified update selected; rebooting (%u records remain in volatile spool)", (unsigned)depth);
@@ -154,6 +209,7 @@ static void update_task(void *arg)
         esp_restart();
     }
     ESP_LOGE(TAG, "update failed: %s; current firmware continues", esp_err_to_name(err));
+    journal_event(JOURNAL_OTA_FAILED,err);
     atomic_store(&state, FAILED);
     vTaskDelete(NULL);
 }
@@ -161,7 +217,7 @@ static esp_err_t update_post(httpd_req_t *req)
 {
     char body[NVF_OTA_BODY_CAP];
     if (!receive_body(req, body, sizeof body)) return error_response(req, "400 Bad Request", "invalid request body");
-    if (!authenticated(req, body)) return error_response(req, "403 Forbidden", "invalid or expired authorization");
+    if (!authenticated(req, body, "navfeeder-ota-v1\n")) return error_response(req, "403 Forbidden", "invalid or expired authorization");
     // Authentication consumed the nonce before validation or task creation.
     int current = atomic_load(&state);
     if (!atomic_load(&confirmed) || current == DOWNLOADING || current == REBOOTING)
@@ -199,8 +255,10 @@ esp_err_t nvf_ota_start(void)
     if (err != ESP_OK) return err;
     httpd_uri_t get = {.uri = "/ota", .method = HTTP_GET, .handler = challenge_get};
     httpd_uri_t post = {.uri = "/ota", .method = HTTP_POST, .handler = update_post};
+    httpd_uri_t journal = {.uri = "/journal", .method = HTTP_POST, .handler = journal_post};
     err = httpd_register_uri_handler(server, &get);
     if (err == ESP_OK) err = httpd_register_uri_handler(server, &post);
+    if (err == ESP_OK) err = httpd_register_uri_handler(server, &journal);
     if (err != ESP_OK) httpd_stop(server);
     else ESP_LOGI(TAG, "authenticated OTA control available on port 80");
     return err;
@@ -218,6 +276,7 @@ esp_err_t nvf_ota_confirm_boot(void)
     if (err == ESP_OK) {
         atomic_store(&confirmed, true);
         ESP_LOGI(TAG, "local startup checks passed; firmware confirmed");
+        journal_event(JOURNAL_CONFIRMED,0);
     }
     return err;
 }

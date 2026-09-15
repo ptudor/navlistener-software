@@ -26,6 +26,7 @@
 #include "environment.h"
 #include "pusher.h"
 #include "nvs.h"
+#include "journal.h"
 
 static const char *TAG = "observer_board";
 static observer_report_t report;
@@ -313,6 +314,9 @@ static void board_task(void *arg)
         }
         observer_rtc_poll(hardware_manifest_i2c_bus(), &status, now);
         report_poll(&status, now, gnss_status_expected(&status, now, learned));
+        observer_report_t journal_report=report;
+        journal_report.rtc=observer_rtc_status();
+        journal_poll(&status,&journal_report,esp_timer_get_time()/1000);
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 }

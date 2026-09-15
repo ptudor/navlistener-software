@@ -289,7 +289,8 @@ updates. Complete the normal provisioning form to start station mode.
 For an already provisioned board, the physical configuration-reset gesture
 reopens the AP; network settings must then be entered again. Configuration reset
 preserves an existing update key. Pairing through that AP can replace a lost key.
-An entire NVS-partition erase also erases the update key and hardware history.
+Erasing the configuration NVS partition also erases the update key and hardware
+identity history. The separate diagnostic journal survives that operation.
 
 ### Request an update
 
@@ -334,11 +335,21 @@ digests, flash failures and simulated interruption boundaries. Radio/TLS behavio
 real power cuts, PSRAM behavior under flash writes and bootloader rollback still
 need hardware validation; the host facades do not model those physical effects.
 
+## Boot and health journal (ESP32-S3)
+
+The S3 keeps two persistent FIFO histories in a dedicated 512 KiB NVS partition:
+256 lifecycle events and 1,024 hourly health checkpoints. New records replace
+the oldest automatically; logging errors disable logging while GNSS collection
+continues. Boot records include firmware version/ELF hash, reset reason and
+uptime. Qualified GNSS or running-RTC time anchors preserve clock provenance.
+See [installation, retention and laptop readout](docs/JOURNAL.md). Installing the
+new partition table over USB once enables the journal on earlier S3 layouts.
+
 ## Durability envelope (read before deploying one as a primary observer)
 
 **The spool is RAM-only and non-durable across reboots.** The partition tables
 reserve space for a flash tier — 1.5 MiB in `partitions.csv` (C6, 4 MB flash) and
-9.875 MiB in `partitions-s3.csv` (S3, 16 MB flash) — and `docs/PLAN.md` records
+9.375 MiB in `partitions-s3.csv` (S3, 16 MB flash) — and `docs/PLAN.md` records
 its design, but no component mounts or writes that partition. This applies to the
 current firmware on both supported boards; the larger S3 reservation is flash set
 aside, not durability delivered. Plan for these limits:

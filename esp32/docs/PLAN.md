@@ -125,6 +125,35 @@ matched to `feeder/navfeeder.c`. No I/O — pure encode/parse over buffers.
   separately reviewed secure-element provisioning policy. Sensor history is
   bounded live state; durable environmental storage is not implemented.
 
+## P-journal — persistent diagnostic history *(implemented)*
+
+- A dedicated 512 KiB S3 NVS partition holds independent FIFO queues for 256
+  lifecycle events and 1,024 hourly checkpoints. Automatic oldest-first eviction;
+  a storage error disables journaling without stopping GNSS collection.
+- Records bind version/ELF hash, reset reason and uptime to explicit RTC/GNSS
+  time anchors, plus measured receiver/link/spool/environment health. Boot
+  records start before default configuration NVS initialization.
+- Serial startup summaries and authenticated laptop pagination are documented
+  in [JOURNAL.md](JOURNAL.md). Earlier partition tables need a USB update once.
+  Host tests exercise rollover and failed writes, including ambiguous commits.
+- This is separate from persistent observation spooling. Hardware power-cut,
+  long-term endurance and remote readout qualification remain service tests.
+
+## P-PPS — pulse measurements *(planned)*
+
+- The buffered receiver TIMEPULSE reaches GPIO10; its independent LED currently
+  demonstrates electrical activity. Firmware does not yet capture pulse timing.
+- Use the S3 MCPWM capture timer to latch both edges in hardware. Report pulse
+  count, interval, width, missing/irregular pulses and statistics against the
+  local timer. Record actual capture resolution, clock source, discontinuities
+  and overflow; distinguish counter resolution from measured accuracy.
+  [ESP-IDF capture timer/channel API](https://docs.espressif.com/projects/esp-idf/en/v5.5/esp32s3/api-reference/peripherals/mcpwm.html#mcpwm-capture-timer-and-channels)
+- Timing stability relative to the ESP clock is not absolute UTC accuracy.
+  Correlate receiver time-valid/timepulse metadata and evaluate a separate
+  reference before making accuracy or oscillator stability claims. Add bounded
+  timing summaries to observer telemetry and journal checkpoints after capture
+  is validated under UART, WiFi and flash-write load.
+
 ## P3 — pusher: the TLS push consumer *(implemented)*
 
 - `pusher`: `esp-tls` client (TLS 1.2 pinned, CA-pinned or bundle), GNF1 `HELLO` with
@@ -158,7 +187,7 @@ matched to `feeder/navfeeder.c`. No I/O — pure encode/parse over buffers.
 ## P-spool — the flash spill tier *(designed, DEFERRED by decision 2026-07-24)*
 
 **Status: deferred; current firmware uses RAM only on both supported boards.** The reserved
-`spool` partition — 1.5 MiB on the C6's 4 MB flash, 9.875 MiB on the S3's 16 MB — is
+`spool` partition — 1.5 MiB on the C6's 4 MB flash, 9.375 MiB on the S3's 16 MB — is
 unmounted; every unacked record dies on reboot. That envelope is
 stated to operators in `../README.md` §"Durability envelope", in `components/spool/include/spool.h`,
 and in `partitions.csv` / `partitions-s3.csv`. Until this phase runs, **navfeeder-esp is loss-tolerant-only by
@@ -171,7 +200,7 @@ The design is recorded here so the deferral is a decision with a plan, not an op
 - **Spill on RAM overflow, not write-through.** Flash wear is the binding constraint on the
   C6's 1.5 MiB partition, so the tier must absorb only what the ring evicts. Write-through would
   multiply erase cycles by the full record rate for no benefit while the uplink is healthy.
-  The S3's 9.875 MiB reservation spreads the same erase load over roughly 6.6x the sectors,
+  The S3's 9.375 MiB reservation spreads the same erase load over 6.25x the sectors,
   which relaxes that budget but does not change the policy: the tier is still a spill tier.
 - **Bounded append-only segments**, each record carrying its length, the existing monotonic
   seq, and a CRC. Sequence continuity across RAM and flash is what makes replay-on-reconnect

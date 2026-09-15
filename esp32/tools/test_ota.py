@@ -4,6 +4,8 @@ import hmac
 import tempfile
 from pathlib import Path
 import unittest
+from unittest.mock import patch
+import json
 import ota
 
 
@@ -54,6 +56,30 @@ class OtaClientTest(unittest.TestCase):
         for device in ("user@host", "host/path", "host?key=secret"):
             with self.assertRaises(ValueError):
                 ota.device_url(device)
+
+    def test_journal_authentication_and_pagination(self):
+        key, nonce = bytes(range(32)), "ab" * 32
+        bodies = []
+        def exchange(device, path, data=None, headers=None):
+            if path == "/ota":
+                return json.dumps({"nonce": nonce}).encode()
+            self.assertEqual(path, "/journal")
+            bodies.append(data)
+            signature = headers["X-OTA-Authorization"]
+            self.assertEqual(signature, ota.authorization(key, nonce, data, b"navfeeder-journal-v1\n"))
+            self.assertNotEqual(signature, ota.authorization(key, nonce, data))
+            page = {"records": [{"sequence": "9"}], "next": "9"} if len(bodies) == 1 else {
+                "records": [{"sequence": "8"}], "next": "0"}
+            return json.dumps(page).encode()
+        with patch.object(ota, "exchange", side_effect=exchange):
+            self.assertEqual(ota.read_journal("device", key, "life", 10), [{"sequence": "9"}, {"sequence": "8"}])
+        self.assertEqual(bodies, [b"life\n0", b"life\n9"])
+
+    def test_journal_stuck_cursor_fails_without_looping(self):
+        replies = [{"nonce": "ab" * 32}, {"records": [], "next": "9"}] * 2
+        with patch.object(ota, "exchange", side_effect=[json.dumps(r).encode() for r in replies]):
+            with self.assertRaisesRegex(ValueError, "cursor did not advance"):
+                ota.read_journal("device", bytes(32), "health", 1024)
 
 
 if __name__ == "__main__":

@@ -4,20 +4,24 @@
 # Waveshare C6's. `partitions.csv` describes the 4 MB layout and remains the table
 # the C6 build uses; this file is selected only by `sdkconfig.defaults.s3`.
 #
-# Two differences from the 4 MB table, both bought with flash that would
+# Three differences from the 4 MB table, using flash that would
 # otherwise sit idle:
 #
 #  1. On-demand HTTPS OTA uses the inactive ota_0/ota_1 slot. The factory app
 #     remains the recovery image. Install the OTA-capable app and rollback
 #     bootloader together over USB for the initial baseline (README.md).
 #
-#  2. The `spool` reservation grows from 1.5 MiB to 9.875 MiB. docs/PLAN.md
+#  2. The `spool` reservation grows from 1.5 MiB to 9.375 MiB. docs/PLAN.md
 #     §P-spool names flash wear on a 1.5 MiB partition as the binding constraint
-#     on the deferred spill tier; spreading the same erase load over ~6.6x the
+#     on the deferred spill tier; spreading the same erase load over 6.25x the
 #     sectors is a direct relaxation of it. This is still a RESERVATION: no
 #     component mounts or writes this partition on either board, so the RAM-only
 #     durability envelope in README.md applies unchanged to the S3. Sizing the
 #     partition does not create reboot durability.
+#
+#  3. The final 512 KiB is a separate NVS FIFO diagnostic journal. Application,
+#     OTA and configuration offsets are unchanged. Install this table over USB
+#     once; app-only OTA cannot add a partition to an older device layout.
 #
 # Offsets left blank are computed by the partition tool. App partitions must
 # start on a 64 KiB boundary, which is why `factory` begins at 0x20000 rather
@@ -30,4 +34,5 @@ otadata,     data, ota,      0x10000,  0x2000
 factory,     app,  factory,  0x20000,  0x200000
 ota_0,       app,  ota_0,    ,         0x200000
 ota_1,       app,  ota_1,    ,         0x200000
-spool,       data, littlefs, ,         0x9e0000
+spool,       data, littlefs, ,         0x960000
+journal,     data, nvs,      0xf80000, 0x80000

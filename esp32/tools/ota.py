@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Pair through the setup AP, then authorize one HTTPS firmware download."""
 import argparse
+import datetime
 import hashlib
 import hmac
 import json
@@ -67,11 +68,46 @@ def update_body(image, url):
     return (hashlib.sha256(data).hexdigest() + "\n" + url).encode("ascii")
 
 
-def authorization(key, nonce, body):
+def authorization(key, nonce, body, domain=b"navfeeder-ota-v1\n"):
     if not isinstance(nonce, str) or not re.fullmatch(r"[0-9a-f]{64}", nonce):
         raise ValueError("invalid device challenge")
-    message = b"navfeeder-ota-v1\n" + nonce.encode("ascii") + b"\n" + body
+    message = domain + nonce.encode("ascii") + b"\n" + body
     return hmac.new(key, message, hashlib.sha256).hexdigest()
+
+
+def read_journal(device, key, lane, limit):
+    rows, before = [], 0
+    while len(rows) < limit:
+        status = json.loads(exchange(device, "/ota"))
+        body = f"{lane}\n{before}".encode("ascii")
+        signature = authorization(key, status.get("nonce"), body, b"navfeeder-journal-v1\n")
+        page = json.loads(exchange(device, "/journal", body, {
+            "Content-Type": "text/plain", "X-OTA-Nonce": status["nonce"],
+            "X-OTA-Authorization": signature,
+        }))
+        if not isinstance(page.get("records"), list) or len(page["records"]) > 8:
+            raise ValueError("invalid journal page")
+        rows.extend(page["records"])
+        next_cursor = int(page["next"])
+        if not next_cursor:
+            break
+        if next_cursor < 0 or (before and next_cursor >= before):
+            raise ValueError("journal cursor did not advance")
+        before = next_cursor
+    return rows[:limit]
+
+
+def print_journal(rows):
+    events = {1: "boot", 2: "time-anchor", 3: "confirmed", 4: "OTA-ready",
+              5: "OTA-failed", 6: "checkpoint"}
+    sources = {0: "unknown", 1: "RTC", 2: "GNSS"}
+    print("UTC                  SOURCE  BOOT   UPTIME(s) EVENT        FIRMWARE                         RESET FLAGS DROP")
+    for row in rows:
+        utc = int(row["utc"])
+        date = datetime.datetime.fromtimestamp(utc, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S") if utc else "unknown"
+        print(f"{date:20} {sources.get(row['time_source'], '?'):7} {row['boot']:6} "
+              f"{int(row['uptime_ms']) // 1000:9} {events.get(row['event'], '?'):12} "
+              f"{row['firmware']:32} {row['reset_reason']:5} {row['flags']:02x} {row['dropped']}")
 
 
 def main():
@@ -81,6 +117,11 @@ def main():
     pair = commands.add_parser("pair", help="join the password-protected setup AP first")
     pair.add_argument("--key-file", required=True, help="private file; created if absent")
     commands.add_parser("status")
+    journal = commands.add_parser("journal", help="read the bounded persistent diagnostic FIFO")
+    journal.add_argument("--key-file", required=True)
+    journal.add_argument("--lane", choices=("life", "health"), default="life")
+    journal.add_argument("--limit", type=int, default=256)
+    journal.add_argument("--json", action="store_true", help="include every stored field")
     update = commands.add_parser("update")
     update.add_argument("--key-file", required=True)
     update.add_argument("--image", required=True, help="local app binary whose SHA-256 the device must verify")
@@ -92,6 +133,14 @@ def main():
                        {"Content-Type": "text/plain"}).decode().strip())
     elif args.command == "status":
         print(json.dumps(json.loads(exchange(args.device, "/ota")), indent=2))
+    elif args.command == "journal":
+        if not 1 <= args.limit <= 1024:
+            raise ValueError("limit must be between 1 and 1024")
+        rows = read_journal(args.device, read_key(args.key_file), args.lane, args.limit)
+        if args.json:
+            print(json.dumps(rows, indent=2))
+        else:
+            print_journal(rows)
     else:
         body = update_body(args.image, args.url)
         key = read_key(args.key_file)
