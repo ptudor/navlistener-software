@@ -71,9 +71,11 @@ func New(addr string, log *slog.Logger, debugState http.HandlerFunc) *Server {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
 		body := map[string]any{
-			"status":  status,
-			"version": version.Version,
-			"build":   version.BuildTime,
+			"status":       status,
+			"version":      version.Version,
+			"build":        version.BuildTime,
+			"build_number": version.BuildNumber,
+			"revision":     version.Revision,
 		}
 		if failure != "" {
 			body["failure"] = failure

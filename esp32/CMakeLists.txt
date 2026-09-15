@@ -9,10 +9,11 @@ set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/components")
 # Keep the exact revision in the 31-character app descriptor for journal/OTA.
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/../VERSION" NVF_RELEASE LIMIT_COUNT 1)
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/../BUILD_NUMBER" NVF_BUILD LIMIT_COUNT 1)
-execute_process(COMMAND git describe --always --dirty --exclude=*
-    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    OUTPUT_VARIABLE NVF_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-if(NOT NVF_REVISION)
+include($ENV{IDF_PATH}/tools/cmake/third_party/GetGitRevisionDescription.cmake)
+# IDF's helper registers HEAD/ref dependencies, so committing also refreshes an
+# existing build directory instead of retaining the prior configured revision.
+git_describe(NVF_REVISION "${CMAKE_CURRENT_SOURCE_DIR}" --always --dirty --exclude=*)
+if(NOT NVF_REVISION OR NVF_REVISION MATCHES "NOTFOUND")
     set(NVF_REVISION "unknown")
 endif()
 set(PROJECT_VER "${NVF_RELEASE}+${NVF_BUILD}.${NVF_REVISION}")
