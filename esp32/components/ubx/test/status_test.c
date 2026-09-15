@@ -13,6 +13,23 @@ static void position(gnss_status_t *s, double lat, double lon, int64_t now)
 }
 int main(void)
 {
+    // NAV-STATUS spoofing and MON-RF jamming transitions survive between board polls.
+    gnss_status_t security = {0}; uint8_t rf[28] = {0}, ns[16] = {0};
+    rf[1]=1; rf[5]=1; ns[7]=8;
+    gnss_status_feed(&security,0x0a,0x38,rf,sizeof rf,100);
+    gnss_status_feed(&security,1,3,ns,sizeof ns,100);
+    assert(security.rf_valid && security.status_valid && security.event_count==0);
+    rf[5]=2; gnss_status_feed(&security,0x0a,0x38,rf,sizeof rf,200);
+    assert(security.event_count==1 && security.event_flags==1 && security.jam==2);
+    gnss_status_feed(&security,0x0a,0x38,rf,sizeof rf,250);
+    assert(security.event_count==1); // sustained alarm is not an event storm
+    ns[7]=16; gnss_status_feed(&security,1,3,ns,sizeof ns,300);
+    assert(security.event_count==2 && security.event_flags==2 && security.spoof==2);
+    ns[7]=8; gnss_status_feed(&security,1,3,ns,sizeof ns,350);
+    assert(security.event_count==3 && security.event_ms==350);
+    ns[7]=24; gnss_status_feed(&security,1,3,ns,sizeof ns-1,400);
+    assert(security.event_count==3 && security.spoof==1); // malformed input ignored
+
     gnss_status_t s = {.supported = 0x6f}; uint8_t green, yellow;
     gnss_status_leds(&s, 100, 0, false, &green, &yellow);
     assert(green == 0 && yellow == 0xbf); // no fix: six expected, NavIC unsupported

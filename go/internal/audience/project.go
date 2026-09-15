@@ -28,7 +28,7 @@ func IsAnonymousPublicSource(id string) bool { return id == AnonymousPublicSourc
 // observer id and per-SV observations. RF security telemetry stays operator-only
 // at every currently defined station-metadata tier.
 func ProjectPublic(f *ingest.RawFrame) (*ingest.RawFrame, bool) {
-	if f == nil {
+	if f == nil || f.Details != nil {
 		return nil, false
 	}
 	c := f.Observer

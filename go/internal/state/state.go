@@ -607,8 +607,9 @@ type Store struct {
 
 	// Per-station RF-environment state for the PNT-defense layer (docs/DEFENSE-PNT.md):
 	// station-scoped (keyed by ingest source / observer id), not per-SV.
-	rfMu sync.Mutex
-	rf   map[string]*rfStation
+	rfMu   sync.Mutex
+	rf     map[string]*rfStation
+	boards map[string]*boardStation // also guarded by rfMu
 
 	// Per-station capability fingerprint (docs/CONSTELLATIONS.md §7, INTEGRITY §6): the set
 	// of (gnssId, sigId) each observer has actually produced nav frames on, so the integrity
@@ -629,6 +630,7 @@ func New(n int) *Store {
 		sbas:       make(map[int]*sbasState),
 		gloAlmanac: make(map[int]gloAlmSlot),
 		rf:         make(map[string]*rfStation),
+		boards:     make(map[string]*boardStation),
 		caps:       make(map[string]*capStation),
 	}
 	for i := range s.shards {
@@ -655,6 +657,13 @@ func (s *Store) shardFor(k Key) *shard {
 // frames to the optional historian before calling Apply. It never panics on
 // malformed input — decode errors are returned as metrics, not crashes.
 func (s *Store) Apply(f *ingest.RawFrame) {
+	if f == nil {
+		return
+	}
+	if f.Details != nil {
+		s.applyBoard(f)
+		return
+	}
 	if f != nil && len(f.Observer.DeclaredCapabilities) > 0 {
 		declared := make([]CapSignal, 0, len(f.Observer.DeclaredCapabilities))
 		for _, capability := range f.Observer.DeclaredCapabilities {
@@ -2400,6 +2409,11 @@ func (s *Store) ExpireStations(now time.Time) {
 	for id, st := range s.rf {
 		if now.Sub(st.lastSeen) > stationEvictAfter {
 			delete(s.rf, id)
+		}
+	}
+	for id, st := range s.boards {
+		if now.Sub(st.latest.ReceivedAt) > stationEvictAfter {
+			delete(s.boards, id)
 		}
 	}
 	s.rfMu.Unlock()

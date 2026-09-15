@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import shutil
 
 import yaml
 from idf_component_tools.hash_tools.calculate import hash_dir
@@ -58,6 +59,8 @@ def record(root, build_dir='build'):
             print('NOTE: dependencies.lock was rewritten for this override build and no longer '
                   'records the pinned Git resolution; restore it with '
                   '`git checkout -- esp32/dependencies.lock` before committing.')
+    bmp3 = root / 'components/environment/vendor/bmp3'
+    shutil.copyfile(bmp3 / 'LICENSE', build / 'LICENSE-BMP3-SensorAPI.txt')
     dirty = git(root, 'status', '--porcelain', '--untracked-files=normal')
     result = {
         'schema': 1,
@@ -75,6 +78,13 @@ def record(root, build_dir='build'):
             'component_hash': digest,
             'local_override': not managed,
             'matches_manifest_pin': managed,
+        },
+        'bmp3_sensor_api': {
+            'source': 'https://github.com/boschsensortec/BMP3_SensorAPI',
+            'commit': 'db4cf8e4140c593b8c3d85f8c6c07335c7ffa9dc',
+            'files_sha256': {name: hashlib.sha256((bmp3 / name).read_bytes()).hexdigest()
+                             for name in ('bmp3.c', 'bmp3.h', 'bmp3_defs.h', 'LICENSE')},
+            'binary_distribution_notice': 'LICENSE-BMP3-SensorAPI.txt',
         },
         'firmware_sha256': hashlib.sha256(app.read_bytes()).hexdigest(),
     }

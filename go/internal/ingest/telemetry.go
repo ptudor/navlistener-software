@@ -14,9 +14,8 @@ import (
 // fields are unused for telemetry (the sample is station-scoped, keyed by the observer),
 // and the body is carried verbatim in the record's raw region.
 //
-// Only the two types the RF detector consumes are transported today; the remaining §6.2
-// types (RFData, ObserverPosition, …) are follow-ons and get their own body codecs when
-// their features land.
+// RF detector inputs and the independently paced ObserverDetails board snapshot
+// are transported today. Remaining §6.2 types get codecs as their features land.
 const (
 	TelemReceptionData = 0x01 // UBX-NAV-SAT: per-SV C/N₀ + elevation → RawRF.Sats (spoof gate)
 	TelemJammingStats  = 0x05 // UBX-MON-RF / MON-HW: AGC/jamming/antenna → RawRF.Bands (jam gate)

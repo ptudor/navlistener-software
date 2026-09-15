@@ -841,7 +841,7 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				// (RF/observables) never reaches the historian (decodeLoop skips
 				// it), so it advances the watermark without ever holding it.
 				if p.durable != nil {
-					if !p.durable.Received(observer, session, seq, f.RF == nil && f.Obs == nil) {
+					if !p.durable.Received(observer, session, seq, f.RF == nil && f.Obs == nil && f.Details == nil) {
 						p.log.Warn("durability tracking budget full; closing for replay", "observer", observer)
 						return
 					}
@@ -950,6 +950,16 @@ func recordToFrame(rec wire.RawRecord, feed, source string) *RawFrame {
 func telemetryToFrame(rec wire.RawRecord, source string, recv, local time.Time) *RawFrame {
 	rf := &RawRF{}
 	switch int(rec.FrameType) {
+	case TelemObserverDetails:
+		if rec.GnssID != 0 || rec.SvID != 0 || rec.SigID != 0 || rec.FreqID != 0 {
+			return nil
+		}
+		details, err := decodeObserverDetails(rec.Raw)
+		if err != nil {
+			return nil
+		}
+		stamped := rec.RecvUnixNs > 0 && receiveTimestampPlausible(time.Unix(0, rec.RecvUnixNs), local)
+		return &RawFrame{Recv: recv, RecvLocal: local, Source: source, Details: details, BoardSampleStamped: stamped}
 	case TelemJammingStats:
 		bands, err := decodeJammingStats(rec.Raw)
 		if err != nil {

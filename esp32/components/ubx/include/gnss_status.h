@@ -9,6 +9,10 @@ typedef struct {
     bool satellites_valid, fix_valid;
     int32_t latitude, longitude; // degrees * 1e7, from a valid NAV-PVT fix
     int64_t satellites_ms, fix_ms;
+    bool rf_valid, status_valid;
+    uint8_t jam, spoof, event_flags, event_states;
+    uint32_t event_count;
+    int64_t rf_ms, status_ms, event_ms;
     uint8_t pvt_utc[20]; // NAV-PVT bytes 4..23; RTC validates UTC independently
 } gnss_status_t;
 void gnss_status_feed(gnss_status_t *s, uint8_t cls, uint8_t id,

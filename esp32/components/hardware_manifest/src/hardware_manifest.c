@@ -121,12 +121,15 @@ static esp_err_t inspect(hardware_manifest_result_t *result,
                          bool known_present,
                          const uint8_t known_eui[EEPROM_UNIQUE_ID_SIZE])
 {
+    result->eui64_valid = false;
     if (!eeprom_read_unique_id(OBSERVER_MANIFEST_I2C_ADDRESS, result->eui64) ||
         !eui_is_factory_value(result->eui64)) {
         ESP_LOGE(TAG, "manifest EEPROM EUI-64 is unreadable or invalid");
         result->action = HARDWARE_MANIFEST_ACTION_IO_ERROR;
         return ESP_ERR_INVALID_RESPONSE;
     }
+
+    result->eui64_valid = true;
 
     hardware_manifest_known_eui_t known = HARDWARE_MANIFEST_KNOWN_NONE;
     if (known_present) {

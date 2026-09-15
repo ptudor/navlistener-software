@@ -203,6 +203,18 @@ a map keyed `name@sigid` of per-SV reception mirroring the `perrecv` shape (§1.
 `age_s`. String fields that originate on the receiver (`owner`, `remark`, `vendor`, …) are
 sanitized before serialization (INTEGRITY.md §9).
 
+Implemented board telemetry adds optional `board` to authorized operator,
+organization and collection observer rows. `board.latest.details.environment`
+contains separate `mcp9808_c`, `hdc2080_c`, `bmp388_bmp384_c`,
+`humidity_percent` and local absolute `pressure_pa`; failed measurements are
+`null`. `rtc`, `atecc`, `eeprom`, `resources`, `receiver` and `firmware` carry
+component health, identity and context. `board.latest` separates collector
+receipt time from nullable sample UTC and includes boot session/sequence.
+`board.stale` and `board.last_interference` expose freshness and the previous
+report as interference context. Public views exclude board telemetry.
+See [ObserverDetails](OBSERVER-TELEMETRY.md) for field definitions, cadence,
+replay caveats and bounded live retention; there is no durable sensor historian.
+
 ### 1.4 `almanac` — coarse orbits for every known SV
 
 Object keyed by SV name (`"C01"`, `"R07"`, `"J02"`, `"I03"`). This is the long-life,

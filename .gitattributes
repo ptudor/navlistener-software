@@ -1,0 +1,2 @@
+# Preserve the pinned Bosch sources byte-for-byte, including upstream CRLF.
+esp32/components/environment/vendor/bmp3/*.[ch] -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol

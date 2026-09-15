@@ -158,8 +158,22 @@ The 2026-09-14 bench check found MCP9808 at `0x18`, HDC2080 at `0x40`, readable
 MCP79412 RTC registers at `0x6f`, and pressure chip ID `0x50` at `0x76`.
 That pressure ID is shared by BMP388/BMP384 and cannot identify the exact
 variant. The initial RTC status reported a stopped oscillator and disabled
-battery backup. These checks do not yet deliver calibrated environmental
-telemetry.
+battery backup. Live factory-compensated sensor readings now supply
+[ObserverDetails telemetry](../docs/OBSERVER-TELEMETRY.md): all three
+individual temperatures, humidity, local absolute pressure and board diagnostics.
+Sampling is every 30 seconds, with meaningful-change reporting, a five-minute
+check-in, and fresh snapshots on receiver interference-state transitions.
+The collector must support this report before the firmware is deployed.
+
+Both LED rows start at 33% brightness using 4 kHz PWM. A short BOOT press
+(0.1–1.5 seconds, then release) cycles 33% → 10% → 100% → 33% at runtime.
+The setting lasts until reboot; the existing eight-second configuration-reset
+hold remains separate. The dedicated PPS and power LEDs have separate hardware
+paths and are not dimmed. PWM pauses during TLC5916 serial/latch writes because
+OE also participates in mode selection; see [TLC5916 section 9.4](https://www.ti.com/lit/ds/symlink/tlc5916.pdf).
+Lower panel power can change nearby temperature readings.
+Include `build/LICENSE-BMP3-SensorAPI.txt` (emitted by the provenance tool)
+with firmware binary distributions.
 
 The RTC now waits for a qualified GNSS lock before its first initialization,
 such as during a factory antenna test. There is no compile-time fallback.

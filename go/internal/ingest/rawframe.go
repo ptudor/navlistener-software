@@ -34,9 +34,11 @@ type RawFrame struct {
 	Bytes   []byte      // raw frame bytes (for byte-oriented sources)
 	// SBFHeader retains the original eight wire-header bytes, including revision
 	// and CRC. Nil means legacy/unknown framing; Bytes remains the block body.
-	SBFHeader []byte
-	Obs       *RawObs // raw observables (RXM-RAWX telemetry), nil for nav frames
-	RF        *RawRF  // RF-environment telemetry (MON-RF/MON-HW/NAV-SAT), nil for nav frames
+	SBFHeader          []byte
+	Obs                *RawObs          // raw observables (RXM-RAWX telemetry), nil for nav frames
+	Details            *ObserverDetails // board/environment telemetry; never a nav frame
+	BoardSampleStamped bool             // original envelope carried an accepted wall-clock stamp
+	RF                 *RawRF           // RF-environment telemetry (MON-RF/MON-HW/NAV-SAT), nil for nav frames
 
 	// Seq is the feeder's GNF1 global sequence, set only for push-path frames
 	// (HasSeq true). On feeder reconnect, DATA frames past the last ack are

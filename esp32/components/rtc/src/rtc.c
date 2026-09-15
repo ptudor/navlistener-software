@@ -1,6 +1,8 @@
 #include "observer_rtc.h"
 #include "rtc_io.h"
 #include "sdkconfig.h"
+static report_rtc_t telemetry;
+report_rtc_t observer_rtc_status(void) { return telemetry; }
 #if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
 #include <string.h>
 #include "esp_log.h"
@@ -53,14 +55,23 @@ void observer_rtc_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss, i
     rtc_io_t io = {.ctx = dev, .read = read_registers, .write = write_registers,
         .delay = delay_ms, .save_power_failure = save_power_failure};
     uint8_t regs[7]; int64_t epoch;
+    telemetry = (report_rtc_t){.sampled_ms = now};
     if (!read_registers(dev, 0, regs, sizeof regs)) {
         ESP_LOGW(TAG, "timekeeping read failed; clock left unchanged");
         candidate = (rtc_candidate_t){0}; next_poll = now + 30000; return;
     }
+    telemetry.flags = 1 | ((regs[3] & 0x20) ? 2 : 0) | ((regs[3] & 8) ? 4 : 0) | ((regs[3] & 0x10) ? 8 : 0);
     if (!retry_initialization && rtc_running(regs, &epoch)) {
+        telemetry.flags |= 16; telemetry.epoch = epoch;
         if (!rtc_enable_backup(&io)) { ESP_LOGW(TAG, "battery backup enable failed"); return; }
         if (report_state != RUNNING) ESP_LOGI(TAG, "running calendar retained (UTC epoch=%lld); backup enabled, battery presence unverified",
                                (long long)epoch);
+        // Re-read after the backup write; the write can clear PWRFAIL.
+        telemetry = (report_rtc_t){.sampled_ms = now};
+        if (read_registers(dev, 0, regs, sizeof regs)) {
+            telemetry.flags = 1 | ((regs[3] & 0x20) ? 2 : 0) | ((regs[3] & 8) ? 4 : 0) | ((regs[3] & 0x10) ? 8 : 0);
+            if (rtc_running(regs, &epoch)) { telemetry.flags |= 16; telemetry.epoch = epoch; }
+        }
         report_state = RUNNING; candidate = (rtc_candidate_t){0}; next_poll = now + 10000;
         return;
     }
@@ -71,6 +82,8 @@ void observer_rtc_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss, i
     if (!rtc_gnss_candidate(&candidate, gnss, now, &epoch)) return;
     if (rtc_set_verified(&io, epoch)) {
         retry_initialization = false; report_state = RUNNING;
+        // The verified write advanced through a second boundary; obtain the actual calendar next poll.
+        telemetry = (report_rtc_t){.sampled_ms = now};
         ESP_LOGI(TAG, "initialized from GNSS UTC (epoch=%lld); oscillator advancing, backup enabled; battery presence unverified",
                  (long long)epoch);
     } else {

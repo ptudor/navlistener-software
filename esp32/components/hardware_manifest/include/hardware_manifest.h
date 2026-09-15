@@ -18,6 +18,7 @@ extern "C" {
 typedef struct {
     hardware_manifest_action_t action;
     uint8_t eui64[EEPROM_UNIQUE_ID_SIZE];
+    bool eui64_valid;
     eeprom_capabilities_t capabilities;
     bool capabilities_valid;
 } hardware_manifest_result_t;

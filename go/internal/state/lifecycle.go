@@ -28,6 +28,7 @@ func (s *Store) Reset() {
 	s.gloAlmanac = make(map[int]gloAlmSlot)
 	s.gloNA = 0
 	s.rf = make(map[string]*rfStation)
+	s.boards = make(map[string]*boardStation)
 	s.caps = make(map[string]*capStation)
 	// Declarations are authorization evidence too. They are relearned from
 	// post-change trusted receipts; retaining them could expose a withdrawn

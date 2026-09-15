@@ -115,3 +115,15 @@ func TestPublicSourcesExposeOnlyAttributedPresentation(t *testing.T) {
 		t.Fatalf("remark redaction wrong: %+v", got)
 	}
 }
+
+func TestBoardDetailsNeverProjectPublic(t *testing.T) {
+	for _, mode := range []identity.AggregateUse{identity.AggregatePublicAttributed, identity.AggregatePublicAnonymous} {
+		f := &ingest.RawFrame{Source: "board", Observer: contextFor(mode, identity.MetadataFull), Details: &ingest.ObserverDetails{}}
+		if _, ok := ProjectPublic(f); ok {
+			t.Fatal("board leaked publicly")
+		}
+		if _, ok := ProjectPublicEvents(f); ok {
+			t.Fatal("board influenced public events")
+		}
+	}
+}

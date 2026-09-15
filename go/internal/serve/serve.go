@@ -545,6 +545,7 @@ type observer struct {
 	Vendor       string                    `json:"vendor"`
 	Remark       string                    `json:"remark"`
 	Disabled     bool                      `json:"disabled"`
+	Board        *state.StationBoard       `json:"board,omitempty"`
 	RF           *state.StationRF          `json:"rf,omitempty"`
 	Capabilities []state.StationCapability `json:"capabilities,omitempty"`
 	// Declared/Unexpected/Missing surface the tudorgps capability mismatch directly in the
@@ -558,6 +559,10 @@ type observer struct {
 
 func (s *Server) observers(now time.Time, st *state.Store, sources []config.Source, selected identity.Audience) []observer {
 	rf := st.FeedStationRF(now)
+	var boards map[string]state.StationBoard
+	if selected.Kind != identity.AudiencePublic {
+		boards = st.FeedStationBoards(now)
+	}
 	reps := st.FeedCapabilityReports(now)
 	seen := make(map[string]bool, len(sources))
 	out := make([]observer, 0, len(sources))
@@ -578,6 +583,9 @@ func (s *Server) observers(now time.Time, st *state.Store, sources []config.Sour
 			Vendor:   sanitize(src.Type),
 			Remark:   sanitize(src.Remark),
 			Disabled: src.Disabled,
+		}
+		if b, ok := boards[src.Name]; ok {
+			o.Board = &b
 		}
 		if r, ok := rf[src.Name]; ok {
 			o.RF = &r
@@ -609,12 +617,21 @@ func (s *Server) observers(now time.Time, st *state.Store, sources []config.Sour
 			extra = append(extra, id)
 		}
 	}
+	for id := range boards {
+		if !seen[id] {
+			seen[id] = true
+			extra = append(extra, id)
+		}
+	}
 	sort.Strings(extra)
 	for _, id := range extra {
 		// Identity again, verbatim: these ids come from the live read models, whose
 		// only writers are authenticated push contexts (Normalize-validated) and
 		// configured dial sources.
 		o := observer{ID: id}
+		if b, ok := boards[id]; ok {
+			o.Board = &b
+		}
 		if r, ok := rf[id]; ok {
 			o.RF = &r
 		}

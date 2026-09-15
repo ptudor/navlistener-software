@@ -73,7 +73,7 @@ matched to `feeder/navfeeder.c`. No I/O — pure encode/parse over buffers.
   interrupted-download trials, crash-before-confirmation rollback, and real
   power-loss tests. The OTA-capable baseline needs an initial serial flash.
 
-## P-receiver — board bring-up *(UART verified; satellite reception pending)*
+## P-receiver — board bring-up *(UART and satellite reception verified)*
 
 - Missing never-adopted EEPROMs use compiled wiring and the provisioned station
   ID without fabricating an EUI. Known identity history and bus-error guards stay.
@@ -85,8 +85,10 @@ matched to `feeder/navfeeder.c`. No I/O — pure encode/parse over buffers.
 - **Bench checked (2026-09-14):** boot without EEPROM, valid NMEA at 38400 baud,
   and MON-VER identifying NEO-M9N / SPG 4.04 / protocol 32.01. Communication
   then worked at 460800 baud; UBX, SFRBX, MON-RF, NAV-SAT and NAV-PVT configuration keys
-  all returned ACK. Actual SFRBX output and satellite reception remain pending
-  an installed RF connector and antenna; an ACK alone does not prove reception.
+  all returned ACK. With the same antenna moved between two boards, both
+  produced valid fixes and SFRBX. The second board later tracked GPS, SBAS,
+  Galileo, BeiDou and GLONASS; the dedicated PPS LED was observed operating.
+  NAV-STATUS output is now requested for receiver-reported spoofing transitions.
 
 ## P-panel — constellation indicators and peripheral diagnostics *(implemented)*
 
@@ -99,7 +101,7 @@ matched to `feeder/navfeeder.c`. No I/O — pure encode/parse over buffers.
   is unknown and supported systems remain expected. Host tests cover stale
   data, malformed messages, coverage examples, learned overrides and movement.
 - **Bench checked:** panel output mask `green=00/yellow=bf` visually confirmed;
-  zero tracked satellites and no fix reported by the receiver. MCP9808 and
+  subsequent antenna tests produced green tracking columns and valid fixes. MCP9808 and
   HDC2080 IDs, RTC registers and BMP388/BMP384-family pressure ID respond.
   ATECC608C Info revision is `00006005`, both zones are unlocked and its RNG
   fails repeated-output screening. The initial RTC oscillator was stopped with
@@ -110,12 +112,18 @@ matched to `feeder/navfeeder.c`. No I/O — pure encode/parse over buffers.
   retained; backup switching is enabled without claiming a battery is present.
   Host tests cover calendar validation, GNSS qualification, failed I2C transfers,
   oscillator failures and readback. RTC time is not adopted as system time or
-  used for observation timestamps. The S3 flash check confirmed the waiting
-  state with a stopped RTC, responding NEO-M9N and no satellite fix.
-- **Remaining:** antenna-backed changes
-  of tracking/region state, calibrated environmental telemetry, RTC initialization
-  from live GNSS and battery retention, PPS/time validation, and a separately
-  reviewed secure-element provisioning policy.
+  used for observation timestamps. The second board subsequently retained a
+  running calendar with backup enabled across an ESP-only reset after GNSS lock.
+- Environmental measurements now use verified IDs, fresh conversions and factory
+  pressure trim. ObserverDetails carries all three temperatures, humidity,
+  pressure, RTC/ATECC/EEPROM health and spool resources to the private collector
+  observer feed. A shared C/Go fixture pins units and wire layout; cadence and
+  event snapshots are specified in [the report contract](../../docs/OBSERVER-TELEMETRY.md).
+- Both panel rows use 33% initial PWM brightness, adjustable by short BOOT press.
+- **Remaining:** battery retention with main power removed, electrical PPS/time
+  validation, environmental site calibration, live collector deployment and a
+  separately reviewed secure-element provisioning policy. Sensor history is
+  bounded live state; durable environmental storage is not implemented.
 
 ## P3 — pusher: the TLS push consumer *(implemented)*
 

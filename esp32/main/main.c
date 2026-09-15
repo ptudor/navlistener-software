@@ -37,6 +37,7 @@
 #include "netcfg.h"
 #include "config_recovery.h"
 #include "hardware_manifest.h"
+#include "panel_control.h"
 #include "board.h"
 
 static const char *TAG = "navfeeder";
@@ -87,8 +88,15 @@ static void config_reset_task(void *arg)
 
     config_recovery_t gesture;
     config_recovery_init(&gesture);
+    panel_button_t brightness_button = {0};
     for (;;) {
         bool pressed = gpio_get_level(pin) == 0;
+#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+        if (panel_button_short_press(&brightness_button, pressed, CONFIG_RESET_POLL_MS))
+            observer_board_cycle_brightness();
+#else
+        (void)brightness_button;
+#endif
         config_recovery_event_t event =
             config_recovery_update(&gesture, pressed, CONFIG_RESET_POLL_MS);
         if (event == CONFIG_RECOVERY_EVENT_ARMED) {
@@ -318,6 +326,7 @@ void app_main(void)
     err = hardware_manifest_boot(CONFIG_NVF_MANIFEST_FACTORY_INIT, &manifest);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "hardware manifest inspection failed: %s", esp_err_to_name(err));
+        manifest.action = HARDWARE_MANIFEST_ACTION_IO_ERROR;
     } else if (manifest.action == HARDWARE_MANIFEST_ACTION_USE) {
         const eeprom_ic_descriptor_t *gps =
             eeprom_find_category(&manifest.capabilities, CAT_GPS);
@@ -330,6 +339,7 @@ void app_main(void)
         ESP_LOGW(TAG, "hardware manifest unavailable: %s",
                  hardware_manifest_action_name(manifest.action));
     }
+    observer_board_manifest(&manifest, app_now_ns);
 #endif
 
     // Display + LED first, so the board shows life (and any problem) even if unprovisioned.

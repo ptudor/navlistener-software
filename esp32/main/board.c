@@ -2,7 +2,17 @@
 #include "sdkconfig.h"
 #if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
 #include <string.h>
+#include <stdio.h>
+#include <stdatomic.h>
+#include <math.h>
+#include "esp_app_desc.h"
+#include "esp_heap_caps.h"
+#include "observer_report.h"
+#include "gnf1.h"
+#include "spool.h"
 #include "driver/gpio.h"
+#include "driver/ledc.h"
+#include "panel_control.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
@@ -13,10 +23,35 @@
 #include "hardware_checks.h"
 #include "receiver.h"
 #include "observer_rtc.h"
+#include "environment.h"
 #include "pusher.h"
 #include "nvs.h"
 
 static const char *TAG = "observer_board";
+static observer_report_t report;
+static report_policy_t report_policy;
+static uint64_t (*report_now_ns)(void);
+static int64_t next_environment, last_environment = -5000;
+static atomic_uint brightness = 33;
+static unsigned applied_brightness = 33;
+static bool pwm_ready;
+void observer_board_set_brightness(unsigned percent)
+{ atomic_store(&brightness, percent > 100 ? 100 : percent); }
+void observer_board_cycle_brightness(void)
+{ observer_board_set_brightness(panel_next_brightness(atomic_load(&brightness))); }
+void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_t (*now_ns)(void))
+{
+    report_now_ns = now_ns;
+    report.manifest.action = manifest->action;
+    report.manifest.eui_valid = manifest->eui64_valid;
+    if (manifest->eui64_valid) memcpy(report.manifest.eui, manifest->eui64, 8);
+    report.manifest.capabilities_valid = manifest->capabilities_valid;
+    if (manifest->capabilities_valid) {
+        report.manifest.revision = manifest->capabilities.revision;
+        report.manifest.component_count = manifest->capabilities.component_count;
+    }
+    snprintf(report.firmware, sizeof report.firmware, "%s", esp_app_get_description()->version);
+}
 enum { LED_DATA = 14, LED_CLOCK = 11, LED_LATCH = 12, LED_GREEN_OE = 47, LED_YELLOW_OE = 48 };
 typedef struct {
     uint32_t magic;
@@ -106,18 +141,22 @@ static void crypto_rng_check(i2c_master_dev_handle_t dev)
     for (int i = 0; i < 3; i++) {
         // Random mode 1 requests no seed update. Discard all diagnostic samples.
         if (!crypto_command(dev, 0x1b, 1, 0, response, sizeof response)) {
+            report.crypto.rng = 3;
             ESP_LOGW(TAG, "ATECC RNG unavailable; output is not trusted"); return;
         }
         if (!hardware_rng_sample_ok(response + 1, i ? previous : NULL)) {
+            report.crypto.rng = 2;
             ESP_LOGE(TAG, "ATECC RNG FAIL: fixed/repeating output; output is not trusted"); return;
         }
         memcpy(previous, response + 1, sizeof previous);
     }
     memset(response, 0, sizeof response); memset(previous, 0, sizeof previous);
+    report.crypto.rng = 1;
     ESP_LOGI(TAG, "ATECC RNG: 3 samples passed repetition screening; diagnostic only, not an entropy certification");
 }
 static void identify_crypto(void)
 {
+    report.crypto.checked_ms = esp_timer_get_time() / 1000;
     // A sleeping ATECC does not ACK an ordinary scan. A 100 kHz zero-address
     // wake token holds SDA low long enough; NACK on this token is expected.
     // Info, lock-byte Read, Random(no seed update), Sleep; no key/config writes or locks.
@@ -132,14 +171,18 @@ static void identify_crypto(void)
     esp_err_t err = i2c_master_receive(dev, response, 4, 100);
     if (err == ESP_OK && hardware_crypto_response(response, 4) && response[1] == 0x11) {
         if (crypto_command(dev, 0x30, 0, 0, response, sizeof response)) {
+            report.crypto.revision_valid = 1;
+            memcpy(report.crypto.revision, response+1, 4);
             ESP_LOGI(TAG, "ATECC Info revision=%02x%02x%02x%02x%s (CRC verified)",
                 response[1], response[2], response[3], response[4],
                 !memcmp(response + 1, "\x00\x00\x60\x05", 4) ? "; ATECC608C" : "");
             if (response[1] == 0 && response[2] == 0 && response[3] == 0x60) {
-                if (crypto_command(dev, 2, 0, 21, response, sizeof response))
+                if (crypto_command(dev, 2, 0, 21, response, sizeof response)) {
+                    report.crypto.config_lock = response[4] == 0x55 ? 1 : response[4] == 0 ? 2 : 3;
+                    report.crypto.data_lock = response[3] == 0x55 ? 1 : response[3] == 0 ? 2 : 3;
                     ESP_LOGI(TAG, "ATECC config=%s data=%s (lock bytes %02x/%02x); provisioning not certified",
                         hardware_crypto_lock_state(response[4]), hardware_crypto_lock_state(response[3]), response[4], response[3]);
-                else ESP_LOGW(TAG, "ATECC lock state unknown");
+                } else ESP_LOGW(TAG, "ATECC lock state unknown");
                 crypto_rng_check(dev);
             }
         } else ESP_LOGW(TAG, "ATECC woke, but Info revision was not verified (%s)", esp_err_to_name(err));
@@ -187,10 +230,64 @@ static void clock_bit(int bit)
 }
 static void panel_write(uint8_t green, uint8_t yellow)
 {
+    // OE also participates in TLC5916 mode switching. Hold both OE pins high
+    // for the entire serial/latch transaction; PWM runs only while CLK is idle.
+    if (pwm_ready) for (unsigned c = 0; c < 2; c++)
+        ledc_stop(LEDC_LOW_SPEED_MODE, c, 1);
     // U12 (green) is nearest SDI; U13 (yellow) receives the first byte.
     uint16_t bits = ((uint16_t)yellow << 8) | green;
     for (int i = 15; i >= 0; i--) clock_bit((bits >> i) & 1);
     gpio_set_level(LED_LATCH, 1); esp_rom_delay_us(2); gpio_set_level(LED_LATCH, 0);
+    if (pwm_ready && applied_brightness) for (unsigned c = 0; c < 2; c++) {
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, c, panel_pwm_off_ticks(applied_brightness));
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, c);
+    }
+}
+static void report_poll(const gnss_status_t *status, int64_t now, uint8_t expected)
+{
+    bool event_pending = status->event_count != report_policy.last.event_count;
+    bool force = event_pending && now - last_environment >= 5000;
+    if (now < next_environment && !force) return;
+    env_sample_t sample;
+    report_environment_t *e = &report.environment;
+    *e = (report_environment_t){0};
+    environment_sample(hardware_manifest_i2c_bus(), &sample, &e->ready);
+    last_environment = esp_timer_get_time() / 1000;
+    next_environment = last_environment + 30000;
+    if (sample.mcp_valid) { e->valid |= 1; e->mcp_centi_c = lround(sample.mcp_c * 100); }
+    if (sample.hdc_valid) { e->valid |= 2; e->hdc_centi_c = lround(sample.hdc_c * 100); e->rh_centi_percent = lround(sample.rh_percent * 100); }
+    if (sample.bmp_valid) { e->valid |= 4; e->bmp_centi_c = lround(sample.bmp_c * 100); e->pressure_pa = lround(sample.pressure_pa); }
+    report.uptime_ms = last_environment;
+    report.event_count = status->event_count; report.event_ms = status->event_ms;
+    report.event_flags = status->event_flags; report.event_states = status->event_states;
+    report.rtc = observer_rtc_status();
+    report.reason = observer_report_due(&report_policy, &report);
+    if (!report.reason) return;
+    report_receiver_t *r = &report.receiver;
+    *r = (report_receiver_t){.supported=status->supported, .expected=expected,
+        .jam=status->jam, .spoof=status->spoof, .rf_ms=status->rf_ms, .status_ms=status->status_ms};
+    bool sats_fresh = status->satellites_valid && now >= status->satellites_ms && now - status->satellites_ms <= 15000;
+    if (sats_fresh) { r->valid |= 1; memcpy(r->tracked, status->tracked, 8); }
+    if (gnss_status_position_fresh(status, now)) r->valid |= 2;
+    if (status->rf_valid && now >= status->rf_ms && now - status->rf_ms <= 15000) r->valid |= 4;
+    if (status->status_valid && now >= status->status_ms && now - status->status_ms <= 15000) r->valid |= 8;
+    size_t used, capacity, count; bool psram;
+    spool_memory_stats(&used, &capacity, &psram);
+    spool_stats(NULL, &report.resources.dropped, &count);
+    report.resources.psram=psram; report.resources.used=used;
+    report.resources.capacity=capacity; report.resources.queued=count;
+    report.resources.internal_free=heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    report.resources.psram_free=heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    uint8_t body[OBSERVER_REPORT_MAX], record[OBSERVER_REPORT_MAX + GNF1_RECORD_HDR];
+    size_t length = observer_report_encode(body, sizeof body, &report);
+    if (!length) return;
+    size_t n = gnf1_encode_telem(record, report_now_ns ? report_now_ns() : 0, GNF1_T_OBSERVER, body, length);
+    if (n && spool_append(record, n)) {
+        observer_report_sent(&report_policy, &report);
+        ESP_LOGI(TAG, "ObserverDetails queued: reason=0x%02x environment=0x%02x RTC=0x%02x EEPROM=%u RNG=%u events=%lu bytes=%u",
+            report.reason, e->valid, report.rtc.flags, report.manifest.action, report.crypto.rng,
+            (unsigned long)report.event_count, (unsigned)n);
+    }
 }
 static void board_task(void *arg)
 {
@@ -203,13 +300,19 @@ static void board_task(void *arg)
         receiver_status(&status);
         uint8_t green, yellow;
         int64_t now = esp_timer_get_time() / 1000;
-        gnss_status_leds(&status, now, reception_history(&status, now), pusher_connected(), &green, &yellow);
-        if (green != previous_green || yellow != previous_yellow) {
+        uint8_t learned = reception_history(&status, now);
+        gnss_status_leds(&status, now, learned, pusher_connected(), &green, &yellow);
+        unsigned requested = atomic_load(&brightness);
+        bool brightness_changed = requested != applied_brightness;
+        applied_brightness = requested;
+        if (green != previous_green || yellow != previous_yellow || brightness_changed) {
             panel_write(green, yellow);
+            if (brightness_changed) ESP_LOGI(TAG, "panel brightness=%u%%", applied_brightness);
             ESP_LOGI(TAG, "panel green=0x%02x yellow=0x%02x (GPS SBAS GAL BDS QZSS GLO NavIC uplink)", green, yellow);
             previous_green = green; previous_yellow = yellow;
         }
         observer_rtc_poll(hardware_manifest_i2c_bus(), &status, now);
+        report_poll(&status, now, gnss_status_expected(&status, now, learned));
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
@@ -228,9 +331,25 @@ esp_err_t observer_board_start(void)
         gpio_set_level(LED_GREEN_OE, oe[i]); gpio_set_level(LED_YELLOW_OE, oe[i]); clock_bit(0);
     }
     panel_write(0, 0xbf); // NEO-M9N's six constellations and disconnected uplink
-    gpio_set_level(LED_GREEN_OE, 0); gpio_set_level(LED_YELLOW_OE, 0);
-    return xTaskCreate(board_task, "board", 4096, NULL, 3, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
+    ledc_timer_config_t timer = {.speed_mode=LEDC_LOW_SPEED_MODE, .duty_resolution=LEDC_TIMER_10_BIT,
+        .timer_num=LEDC_TIMER_0, .freq_hz=4000, .clk_cfg=LEDC_AUTO_CLK};
+    err = ledc_timer_config(&timer);
+    if (err != ESP_OK) return err;
+    const int pins[] = {LED_GREEN_OE, LED_YELLOW_OE};
+    for (unsigned c=0; c<2; c++) {
+        ledc_channel_config_t channel = {.gpio_num=pins[c], .speed_mode=LEDC_LOW_SPEED_MODE,
+            .channel=c, .timer_sel=LEDC_TIMER_0, .duty=panel_pwm_off_ticks(applied_brightness)};
+        err = ledc_channel_config(&channel);
+        if (err != ESP_OK) return err;
+    }
+    pwm_ready = true;
+    ESP_LOGI(TAG, "panel brightness=%u%% (4 kHz PWM)", applied_brightness);
+    return xTaskCreate(board_task, "board", 6144, NULL, 3, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
 #else
+void observer_board_set_brightness(unsigned percent) { (void)percent; }
+void observer_board_cycle_brightness(void) {}
+void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_t (*now_ns)(void))
+{ (void)manifest; (void)now_ns; }
 esp_err_t observer_board_start(void) { return ESP_OK; }
 #endif

@@ -10,7 +10,22 @@ void gnss_status_feed(gnss_status_t *s, uint8_t cls, uint8_t id,
                       const uint8_t *p, size_t len, int64_t now)
 {
     if (!p) return;
-    if (cls == 0x0a && id == 4 && len >= 40 && (len - 40) % 30 == 0) {
+    if (cls == 0x0a && id == 0x38 && len >= 4 && p[0] == 0 && p[1] && len == 4u + 24u*p[1]) {
+        uint8_t jam = 0;
+        for (size_t i = 4; i < len; i += 24) if ((p[i+1] & 3) > jam) jam = p[i+1] & 3;
+        if ((s->rf_valid && jam != s->jam) || (!s->rf_valid && jam >= 2)) {
+            s->event_count++; s->event_ms = now; s->event_flags = 1;
+            s->event_states = jam | (s->spoof << 2);
+        }
+        s->rf_valid = true; s->rf_ms = now; s->jam = jam;
+    } else if (cls == 1 && id == 3 && len == 16) {
+        uint8_t spoof = (p[7] >> 3) & 3;
+        if ((s->status_valid && spoof != s->spoof) || (!s->status_valid && spoof >= 2)) {
+            s->event_count++; s->event_ms = now; s->event_flags = 2;
+            s->event_states = s->jam | (spoof << 2);
+        }
+        s->status_valid = true; s->status_ms = now; s->spoof = spoof;
+    } else if (cls == 0x0a && id == 4 && len >= 40 && (len - 40) % 30 == 0) {
         const char *names[] = {"GPS", "SBAS", "GAL", "BDS", "", "QZSS", "GLO", "NAVIC"};
         uint8_t supported = 0;
         for (size_t i = 40; i + 30 <= len; i += 30) {

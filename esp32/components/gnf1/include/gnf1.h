@@ -37,6 +37,7 @@ extern "C" {
 // Telemetry record types (frame_type < 0x10, CONSTELLATIONS.md §6.2). Body layouts must
 // match ../../../go/internal/ingest/telemetry.go.
 #define GNF1_T_RECEPTION 0x01 // NAV-SAT per-SV C/N0 + elevation
+#define GNF1_T_OBSERVER  0x04 // board/environment snapshot, independently paced
 #define GNF1_T_JAMMING   0x05 // MON-RF / MON-HW AGC/jamming/antenna
 #define GNF1_TELEM_VERSION 1
 
