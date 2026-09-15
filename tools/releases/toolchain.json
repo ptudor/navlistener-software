@@ -1,0 +1,5 @@
+{
+  "esp_idf_tag": "v5.5.4",
+  "esp_idf_revision": "735507283d5b2f9fb363a1901172dbd9e847945d",
+  "target": "esp32s3"
+}

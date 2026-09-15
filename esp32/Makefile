@@ -2,7 +2,7 @@
 #
 # The ordinary C6 firmware build remains behind ./build-navfeeder-esp.sh. The
 # first-boot-flash target is the attended S3 manufacturing exception: it builds,
-# flashes, monitors, and captures the setup label credential that appears once.
+# flashes, monitors, and captures the persistent setup label credential.
 # Host-test targets need no board, flash, or ESP-IDF installation.
 #
 #   make -C esp32 host-test        # every component's host tests
@@ -36,7 +36,7 @@ help:
 	@echo '  make clean             remove host-test build output'
 	@echo '  PORT=/dev/... make first-boot-flash'
 	@echo '                          build/flash/monitor the S3 and capture the'
-	@echo '                          one-time NEW SETUP LABEL credential in a'
+	@echo '                          setup label credential in a'
 	@echo '                          new private directory under build/s3'
 	@echo ''
 	@echo 'Firmware build (needs ESP-IDF):  ./build-navfeeder-esp.sh'

@@ -1,0 +1,13 @@
+## Registry dependencies of the tunnel component. Gated to the ESP32-S3: only that board
+## enables NVF_WIREGUARD, and the C6 build compiles the stub half of src/tunnel.c, so the
+## C6 image (and its committed dependencies.lock) never pulls WireGuard or libsodium.
+##
+## A pin is a deliberate source change: rebuild both targets, rerun the host tests and
+## regenerate dependencies.lock together (esp32/README.md).
+dependencies:
+  esphome/wireguard:
+    # BSD-3-Clause lwIP WireGuard port (smartalock/wireguard-lwip via trombik/esp_wireguard),
+    # maintained for ESPHome. Declares esphome/libsodium for X25519.
+    version: "==0.4.6"
+    rules:
+      - if: "target == esp32s3"

@@ -30,8 +30,10 @@
 #include "ubx.h"
 #include "receiver.h"
 #include "ota.h"
+#include "update_runtime.h"
 #include "spool.h"
 #include "pusher.h"
+#include "tunnel.h"
 #include "display_st7789.h"
 #include "status_led.h"
 #include "netcfg.h"
@@ -44,6 +46,7 @@
 static const char *TAG = "navfeeder";
 
 static atomic_bool s_wifi_up;
+static bool update_online(void) { return atomic_load(&s_wifi_up); }
 static atomic_bool s_config_reset_armed;
 static char s_collector[80];      // "host:port" once provisioned, else empty
 static netcfg_t g_cfg;            // live config (NVS over Kconfig defaults)
@@ -213,6 +216,8 @@ static void ui_task(void *arg)
         uint32_t telem = atomic_load_explicit(&p->frames_telem, memory_order_relaxed);
         uint32_t bad_ck = atomic_load_explicit(&p->bad_checksum, memory_order_relaxed);
         bool link = pusher_connected();
+        bool via_tunnel = pusher_via_tunnel();
+        bool tunnel = tunnel_up();
         bool wifi = atomic_load_explicit(&s_wifi_up, memory_order_relaxed);
 
         nvf_status_t st = {
@@ -235,11 +240,12 @@ static void ui_task(void *arg)
                        : LED_STREAMING;
         if (ls != last_led) { status_led_state(ls); last_led = ls; }
 
-        ESP_LOGI(TAG, "nav=%u (+%u) telem=%u bad_ck=%u spool=%u (%u/%u bytes %s) drop=%llu link=%s",
+        ESP_LOGI(TAG, "nav=%u (+%u) telem=%u bad_ck=%u spool=%u (%u/%u bytes %s) drop=%llu link=%s tunnel=%s",
                  (unsigned)nav, (unsigned)(nav - last_nav), (unsigned)telem,
                  (unsigned)bad_ck, (unsigned)depth, (unsigned)used, (unsigned)capacity,
                  psram ? "PSRAM" : "internal", (unsigned long long)dropped,
-                 link ? "up" : "down");
+                 link ? (via_tunnel ? "up/tunnel" : "up/direct") : "down",
+                 tunnel ? "up" : "down");
         last_nav = nav;
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
@@ -325,7 +331,7 @@ void app_main(void)
     ESP_LOGI(TAG, "navfeeder-esp starting (GNF1 edge feeder for navlistener)");
 
 #if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
-    hardware_manifest_result_t manifest;
+    hardware_manifest_result_t manifest={0};
     err = hardware_manifest_boot(CONFIG_NVF_MANIFEST_FACTORY_INIT, &manifest);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "hardware manifest inspection failed: %s", esp_err_to_name(err));
@@ -367,6 +373,17 @@ void app_main(void)
     if (observer_board_start() != ESP_OK)
         ESP_LOGW(TAG, "observer panel/diagnostics task unavailable");
 
+    nvf_update_hooks_t update_hooks={.online=update_online,.durable_link=pusher_durable_connected,
+        .pause=spool_pause_producers,.resume=spool_resume_producers};
+#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+    update_hooks.device.hardware_known=manifest.action==HARDWARE_MANIFEST_ACTION_USE && manifest.capabilities_valid && manifest.eui64_valid;
+    update_hooks.device.hardware_revision=manifest.capabilities.revision;
+    memcpy(update_hooks.device.eui,manifest.eui64,8);
+#endif
+    err=nvf_update_start(&update_hooks);
+    if(err!=ESP_OK && err!=ESP_ERR_NOT_SUPPORTED)
+        ESP_LOGW(TAG,"signed update service unavailable: %s",esp_err_to_name(err));
+
     // Config precedence: NVS (field-provisioned) over Kconfig defaults.
     // netcfg_load now applies the full station-mode rule (ssid/host/port/station/
     // token), not just "ssid and host are set", and names the field that failed. A unit
@@ -392,13 +409,18 @@ void app_main(void)
                      cfg_err, setup.ble_active ? "scan the device label in the Station app"
                                                : "BLE unavailable",
                      setup.name);
+#if !defined(CONFIG_SECURE_BOOT) || !CONFIG_SECURE_BOOT
             if (setup.credential_created) {
-                // Manufacturing captures this single first-creation line and
-                // prints it on the physical recovery label. Routine setup boots
-                // never log the persistent password again.
                 ESP_LOGW(TAG, "NEW SETUP LABEL — print and attach before deployment: %s",
                          setup.qr_payload);
-            } else if (!display_is_ready()) {
+#if CONFIG_NVF_SETUP_CONSOLE_PASSWORD
+            } else {
+                ESP_LOGW(TAG, "DEVELOPMENT SETUP LABEL — persistent setup password: %s",
+                         setup.qr_payload);
+#endif
+            }
+#endif
+            if (!display_is_ready()) {
                 ESP_LOGW(TAG, "setup password is available from the physical label or paired app");
             }
             confirm_startup();
@@ -419,6 +441,16 @@ void app_main(void)
     if (err != ESP_OK && err != ESP_ERR_NOT_SUPPORTED)
         ESP_LOGW(TAG, "OTA control unavailable (%s); pair through the provisioning AP", esp_err_to_name(err));
 
+    // The optional WireGuard uplink. It waits for Wi-Fi and time sync on its own; if it
+    // cannot start (or this build has no tunnel support) the pusher simply keeps using the
+    // public collector endpoint, which remains valid for every provisioned unit.
+    if (g_cfg.tunnel.enabled) {
+        err = tunnel_start(&g_cfg.tunnel);
+        if (err != ESP_OK)
+            ESP_LOGW(TAG, "WireGuard tunnel not started (%s); using the public collector endpoint",
+                     esp_err_to_name(err));
+    }
+
     // mint the boot session before the pusher can send its first HELLO (see
     // s_session). Logged because it is the field-side handle for "which boot's sequence space
     // is this?" when reading the collector's ingest log — it is an opaque per-boot label, not
@@ -435,6 +467,9 @@ void app_main(void)
         .session = s_session,
         .ca_pem = NULL, // P-hw: pin the collector CA; today rely on the Mozilla bundle or insecure
         .insecure = g_cfg.insecure,
+        .tunnel_host = tunnel_collector_address(), // NULL without a started tunnel
+        .tunnel_up = tunnel_up,
+        .update_control = nvf_update_control,
     };
     // retry pusher_start with backoff rather than spooling-until-overflow-and-never-
     // pushing on a transient boot OOM. pusher_cfg_free (fa67e92) leaves s_cfg zeroed, so

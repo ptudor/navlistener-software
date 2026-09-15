@@ -13,10 +13,17 @@
 #include "freertos/task.h"
 #include "netcfg.h"
 #include "netcfg_prov_payload.h"
+#include "netcfg_tunnel.h"
+#include "sdkconfig.h"
 #include "wifi_provisioning/manager.h"
 #include "wifi_provisioning/scheme_ble.h"
 
+#ifndef CONFIG_NVF_WIREGUARD
+#define CONFIG_NVF_WIREGUARD 0
+#endif
+
 #define NAV_CONFIG_ENDPOINT "nav-config"
+#define NAV_TUNNEL_ENDPOINT "nav-tunnel"
 #define SECURITY2_SALT_LEN 16
 
 static const char *TAG = "netcfg_ble";
@@ -24,9 +31,11 @@ static const char *TAG = "netcfg_ble";
 typedef struct {
     SemaphoreHandle_t lock;
     netcfg_t app_config;
+    netcfg_tunnel_t tunnel;   // nav-tunnel, optional; merged into the record at save time
     char wifi_ssid[33];
     char wifi_password[65];
     bool app_received;
+    bool tunnel_received;
     bool wifi_received;
     bool wifi_connected;
     bool saved;
@@ -60,6 +69,9 @@ static netcfg_prov_status_t finish_if_ready(void)
     netcfg_t complete = context.app_config;
     memcpy(complete.wifi_ssid, context.wifi_ssid, sizeof complete.wifi_ssid);
     memcpy(complete.wifi_pass, context.wifi_password, sizeof complete.wifi_pass);
+    // nav-config decodes to a record with the tunnel off; a profile that arrived through
+    // nav-tunnel before this save is carried in whichever order the two endpoints came.
+    if (context.tunnel_received) complete.tunnel = context.tunnel;
     if (!netcfg_validate(&complete, NULL, 0)) {
         ESP_LOGE(TAG, "complete BLE provisioning record failed validation");
         return NETCFG_PROV_INVALID_REQUEST;
@@ -112,6 +124,51 @@ static esp_err_t nav_config_handler(uint32_t session_id,
     *outlen = NETCFG_PROV_RESPONSE_SIZE;
     return ESP_OK;
 }
+
+#if CONFIG_NVF_WIREGUARD
+// nav-tunnel carries the optional WireGuard profile, private key included, inside the same
+// Security 2 session as the enrollment token. It must arrive before the Wi-Fi credentials
+// complete the save: once the record is durable the profile can no longer be applied and
+// the app is told so (NETCFG_PROV_ALREADY_SAVED) rather than left to assume it was.
+static esp_err_t nav_tunnel_handler(uint32_t session_id,
+                                    const uint8_t *inbuf, ssize_t inlen,
+                                    uint8_t **outbuf, ssize_t *outlen,
+                                    void *priv_data)
+{
+    (void)session_id;
+    (void)priv_data;
+    if (!outbuf || !outlen) return ESP_ERR_INVALID_ARG;
+
+    uint8_t *response = malloc(NETCFG_PROV_RESPONSE_SIZE);
+    if (!response) return ESP_ERR_NO_MEM;
+
+    netcfg_tunnel_t requested;
+    char reason[NETCFG_ERR_CAP] = {0};
+    netcfg_prov_status_t status = NETCFG_PROV_INVALID_REQUEST;
+    if (inlen >= 0 && netcfg_tunnel_decode(inbuf, (size_t)inlen, &requested,
+                                           reason, sizeof reason)) {
+        xSemaphoreTake(context.lock, portMAX_DELAY);
+        if (context.saved) {
+            status = NETCFG_PROV_ALREADY_SAVED;
+        } else {
+            context.tunnel = requested;
+            context.tunnel_received = true;
+            status = finish_if_ready();
+        }
+        xSemaphoreGive(context.lock);
+        if (status == NETCFG_PROV_ALREADY_SAVED)
+            ESP_LOGW(TAG, "nav-tunnel arrived after the configuration was saved; not applied");
+    } else {
+        ESP_LOGW(TAG, "rejected nav-tunnel request: %s", reason[0] ? reason : "invalid length");
+    }
+    memset(&requested, 0, sizeof requested);
+
+    netcfg_prov_encode_response(response, status);
+    *outbuf = response;
+    *outlen = NETCFG_PROV_RESPONSE_SIZE;
+    return ESP_OK;
+}
+#endif
 
 static void provisioning_event(void *user_data, wifi_prov_cb_event_t event,
                                void *event_data)
@@ -211,21 +268,37 @@ esp_err_t netcfg_ble_start(const netcfg_setup_credentials_t *credentials)
         return err;
     }
 
+    // The app checks these capabilities before sending anything: a build without tunnel
+    // support advertises no nav-tunnel-v1, so a profile is refused app-side, never dropped.
+#if CONFIG_NVF_WIREGUARD
+    const char *capabilities[] = { "nav-config-v1", "nav-tunnel-v1" };
+#else
     const char *capabilities[] = { "nav-config-v1" };
-    if ((err = wifi_prov_mgr_set_app_info("navfeeder", "1", capabilities, 1)) != ESP_OK ||
+#endif
+    const uint8_t capability_count = sizeof capabilities / sizeof capabilities[0];
+    if ((err = wifi_prov_mgr_set_app_info("navfeeder", "1", capabilities, capability_count)) != ESP_OK ||
         (err = wifi_prov_mgr_endpoint_create(NAV_CONFIG_ENDPOINT)) != ESP_OK ||
+#if CONFIG_NVF_WIREGUARD
+        (err = wifi_prov_mgr_endpoint_create(NAV_TUNNEL_ENDPOINT)) != ESP_OK ||
+#endif
         (err = wifi_prov_mgr_disable_auto_stop(1000)) != ESP_OK ||
         (err = wifi_prov_mgr_start_provisioning(WIFI_PROV_SECURITY_2,
                                                 &context.security,
                                                 credentials->name, NULL)) != ESP_OK ||
         (err = wifi_prov_mgr_endpoint_register(NAV_CONFIG_ENDPOINT,
-                                               nav_config_handler, NULL)) != ESP_OK) {
+                                               nav_config_handler, NULL)) != ESP_OK ||
+#if CONFIG_NVF_WIREGUARD
+        (err = wifi_prov_mgr_endpoint_register(NAV_TUNNEL_ENDPOINT,
+                                               nav_tunnel_handler, NULL)) != ESP_OK ||
+#endif
+        false) {
         ESP_LOGE(TAG, "BLE provisioning manager start failed: %s", esp_err_to_name(err));
         cleanup_failed_start(true);
         return err;
     }
 
-    ESP_LOGI(TAG, "BLE provisioning ready: name='%s', Security 2, endpoint='%s'",
-             credentials->name, NAV_CONFIG_ENDPOINT);
+    ESP_LOGI(TAG, "BLE provisioning ready: name='%s', Security 2, endpoints='%s'%s",
+             credentials->name, NAV_CONFIG_ENDPOINT,
+             CONFIG_NVF_WIREGUARD ? ", '" NAV_TUNNEL_ENDPOINT "'" : "");
     return ESP_OK;
 }

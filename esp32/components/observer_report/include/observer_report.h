@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include "timing_report.h"
 // GNF1 ObserverDetails v1; byte layout is specified in docs/OBSERVER-TELEMETRY.md.
-#define OBSERVER_REPORT_MAX 256
+#define OBSERVER_REPORT_MAX 384
 enum { REPORT_BOOT=1, REPORT_CHANGE=2, REPORT_CHECKIN=4, REPORT_INTERFERENCE=8 };
 typedef struct {
     uint8_t valid, ready; // bits 0 MCP9808, 1 HDC2080, 2 BMP388/BMP384

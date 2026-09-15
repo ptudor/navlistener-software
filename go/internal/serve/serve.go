@@ -66,6 +66,7 @@ var fastFeeds = []string{"svs", "global", "observers", "sbas"}
 // under an RWMutex on refresh, so a request never blocks on state-lock contention or
 // JSON encoding — it copies a ready []byte.
 type Server struct {
+	updates  http.Handler
 	http     *http.Server
 	store    *state.Store
 	events   EventStore
@@ -143,6 +144,13 @@ func NewForAudience(addr string, st *state.Store, events EventStore, sources []c
 	mux.HandleFunc("/gnss/api/v2/almanac", s.serveFeed("almanac"))
 	mux.HandleFunc("/gnss/api/v2/sbas", s.serveFeed("sbas"))
 	mux.HandleFunc("/gnss/api/v2/audiences", s.serveAudiences)
+	mux.HandleFunc("/gnss/api/v2/updates", func(w http.ResponseWriter, r *http.Request) {
+		if s.updates == nil {
+			http.Error(w, "update controls are not configured", http.StatusServiceUnavailable)
+			return
+		}
+		s.updates.ServeHTTP(w, r)
+	})
 	mux.HandleFunc("/gnss/api/events/summary", s.serveEventsSummary)
 	mux.HandleFunc("/gnss/api/events/conditions", s.serveCurrentConditions)
 	mux.HandleFunc("/gnss/api/events", s.serveEventsQuery)
@@ -875,3 +883,6 @@ func methodNotAllowedGetHead(w http.ResponseWriter, r *http.Request) bool {
 	}
 	return false
 }
+
+// SetUpdates installs separately authorized update controls before serving.
+func (s *Server) SetUpdates(handler http.Handler) { s.updates = handler }

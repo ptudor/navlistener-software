@@ -76,6 +76,34 @@ matched to `feeder/navfeeder.c`. No I/O — pure encode/parse over buffers.
   interrupted-download trials, crash-before-confirmation rollback, and real
   power-loss tests. The OTA-capable baseline needs an initial serial flash.
 
+## P-tunnel — optional WireGuard uplink *(implemented; hardware validation pending)*
+
+- S3 only (`NVF_WIREGUARD`): carry the GNF1/TLS push session inside a WireGuard
+  tunnel to the collector whenever the peer session is up, falling back to the
+  public collector endpoint otherwise, so the tunnel is an uplink upgrade and
+  never a single point of failure. GNF1/TLS is unchanged inside it; the collector
+  still authenticates the bearer token and the observer still verifies the
+  collector certificate against its configured name. The C6 build has no tunnel.
+- The profile is provisioned like the rest of the config: a pasted wg-quick
+  `.conf` in the browser portal, or the Station app's `nav-tunnel` (NVT1)
+  endpoint. One `[Interface]`/`[Peer]`, IPv4 only, `AllowedIPs` naming the
+  collector's single `/32`. Parsing, validation and the NVT1 layout are pure and
+  host-tested (`netcfg_tunnel`), and stored in the format-2 `netcfg` record that
+  still reads the pre-tunnel format 1.
+- The port is the BSD-3-Clause `esphome/wireguard` lwIP component, pinned in the
+  `tunnel` component and gated to the `esp32s3` target so the C6 lock stays clean.
+  The tunnel netif is never the default route: only the collector's tunnel
+  address is routed through it; SNTP, OTA and DNS keep the ordinary uplink.
+- The first handshake waits for a plausible wall clock (WireGuard's TAI64N
+  timestamp is rejected by the peer otherwise); SNTP provides it today, hardware
+  RTC time is P-hw. Keys are Curve25519, a software secret in NVS, separate from
+  the planned ATECC P-256 identity.
+- Host tests cover the profile parser/validator, the NVT1 frame, and the pusher's
+  tunnel preference, certificate-name pinning, fallback and mid-session move-over.
+  **Still required:** bench bring-up against a live collector WireGuard peer,
+  reconnect and roaming behavior, and measured throughput and handshake latency
+  under receiver load.
+
 ## P-receiver — board bring-up *(UART and satellite reception verified)*
 
 - Missing never-adopted EEPROMs use compiled wiring and the provisioned station

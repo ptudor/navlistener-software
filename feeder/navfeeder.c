@@ -83,6 +83,7 @@
 #include <openssl/err.h>
 #include <openssl/x509v3.h>
 #include <zstd.h>
+#include "../common/endpoint_fallback.h"
 
 #define MAGIC "GNF1"
 #define F_HELLO 0x01
@@ -2381,9 +2382,12 @@ int main(int argc, char **argv) {
 	}
 
 	int backoff = 1;
+	char secondary_host[64];
+	nav_endpoint_secondary(o.server_host, secondary_host, sizeof secondary_host);
+	struct opts connection = o; /* producer's configuration remains immutable */
 	for (;;) {
 		struct spool *sending = g_replays ? g_replays : &g_spool;
-		int rc = serve_collector(ctx, &o, sending);
+		int rc = serve_collector(ctx, &connection, sending);
 		if (rc == 1) {
 			g_replays = sending->next;
 			pthread_mutex_lock(&g_spool.mu);
@@ -2402,6 +2406,9 @@ int main(int argc, char **argv) {
 		 * the Go collector's regression fix dial-side reset. Auth reject (-2) still backs off
 		 * hard; failed/slow connects (-1) never reset. */
 		if (rc == 0) backoff = 1;
+		if (rc != -2)
+			connection.server_host = rc != 0 && connection.server_host == o.server_host && secondary_host[0]
+				? secondary_host : o.server_host;
 		/* the same named ceiling sleep_with_jitter clamps to, so raising one
 		 * without the other cannot silently shorten the ladder's top rungs. */
 		int wait = rc == -2 ? RECONNECT_BACKOFF_MAX_S : backoff;

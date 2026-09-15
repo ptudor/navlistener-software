@@ -41,6 +41,7 @@ import (
 	"github.com/ptudor/navlistener/internal/server"
 	"github.com/ptudor/navlistener/internal/state"
 	"github.com/ptudor/navlistener/internal/store"
+	"github.com/ptudor/navlistener/internal/updates"
 	"github.com/ptudor/navlistener/internal/version"
 )
 
@@ -332,6 +333,17 @@ func run() int {
 	// The native v2 read API (docs/OUTPUT.md) is optional (enabled by [serve].addr).
 	// It serves the live feeds from RAM on a loopback listener behind a TLS front,
 	// separate from the ingest write path and the metrics listener.
+	updateManager, err := updates.Open(cfg.Updates)
+	if err != nil {
+		log.Error("update control state unavailable", "error", err)
+		os.Exit(1)
+	}
+	if updateManager != nil {
+		defer updateManager.Close()
+		if pushSrv != nil {
+			pushSrv.SetUpdates(updateManager)
+		}
+	}
 	var apiSrv *serve.Server
 	if cfg.Serve.Addr != "" {
 		// The events query API reads the historian; a true nil interface (not a typed nil
@@ -349,6 +361,9 @@ func run() int {
 		apiSrv = serve.NewForAudience(cfg.Serve.Addr, serveState, eventStore, serveSources,
 			cfg.Serve.RefreshFast, cfg.Serve.RefreshSlow, log, cfg.Serve.AudienceContext)
 		apiSrv.SetPolicyEpochs(policyEpochs)
+		if updateManager != nil {
+			apiSrv.SetUpdates(updateManager)
+		}
 		scopeController.AttachServer(apiSrv)
 		if readAuthorizer != nil {
 			apiSrv.EnableAudienceSelection(readAuthorizer, audienceRegistry, cfg.Authorization.RecheckEvery)

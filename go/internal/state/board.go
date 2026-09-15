@@ -23,11 +23,14 @@ type StationBoard struct {
 	Stale            bool               `json:"stale"`
 	LastInterference *BoardEventContext `json:"last_interference,omitempty"`
 	Timing           *BoardSample       `json:"timing,omitempty"`
+	Update           *BoardSample       `json:"update,omitempty"`
+	UpdateStale      bool               `json:"update_stale"`
 	TimingStale      bool               `json:"timing_stale"`
 }
 type boardStation struct {
 	latest *BoardSample
 	last   BoardSample // ordering across independently paced board/timing records
+	update *BoardSample
 	timing *BoardSample
 	event  *BoardEventContext
 }
@@ -64,9 +67,14 @@ func (s *Store) applyBoard(f *ingest.RawFrame) {
 	if old.last.Session != f.Session {
 		old.latest = nil
 		old.timing = nil
+		old.update = nil
 		old.event = nil
 	}
 	old.last = sample
+	if f.Details.Update != nil {
+		update := sample
+		old.update = &update
+	}
 	if f.Details.Timing != nil {
 		timing := sample
 		old.timing = &timing
@@ -98,7 +106,7 @@ func (s *Store) FeedStationBoards(now time.Time) map[string]StationBoard {
 			return sample == nil || now.Sub(sample.ReceivedAt) > after || (sample.SampleTime != nil && now.Sub(*sample.SampleTime) > after)
 		}
 		out[id] = StationBoard{Latest: st.latest, Stale: stale(st.latest, 11*time.Minute), LastInterference: st.event,
-			Timing: st.timing, TimingStale: stale(st.timing, 5*time.Second)}
+			Update: st.update, UpdateStale: stale(st.update, 5*time.Second), Timing: st.timing, TimingStale: stale(st.timing, 5*time.Second)}
 	}
 	return out
 }

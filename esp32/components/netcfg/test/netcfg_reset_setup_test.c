@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 
-static uint8_t config_record[512];
+static uint8_t config_record[1024]; // format-2 records are 522 bytes
 static size_t config_size;
 static uint8_t setup_record[96];
 static size_t setup_size;

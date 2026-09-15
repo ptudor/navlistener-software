@@ -269,5 +269,11 @@
   "setup.wifi.networks": "Nearby networks",
   "setup.wifi.password": "Wi-Fi password",
   "setup.wifi.ssid": "Wi-Fi network name",
-  "setup.wifi.title": "Observer Wi-Fi"
+  "setup.wifi.title": "Observer Wi-Fi",
+  "setup.error.tunnel": "Check the WireGuard profile: one [Interface] and one [Peer], an IPv4 Address, an Endpoint host:port, and AllowedIPs naming the collector’s single /32.",
+  "setup.error.tunnel_late": "The observer saved its configuration before the tunnel profile arrived. Reconnect and set up again, sending the profile first.",
+  "setup.error.tunnel_unsupported": "This observer’s firmware has no WireGuard support. Update it, or leave the profile empty to connect over the public endpoint.",
+  "setup.tunnel.note": "Paste the WireGuard .conf your collector operator gave you. AllowedIPs is the collector’s address inside the tunnel. Leave empty to connect over the public endpoint.",
+  "setup.tunnel.profile": "WireGuard profile",
+  "setup.tunnel.title": "Secure tunnel (optional)"
 }

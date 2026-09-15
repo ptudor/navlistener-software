@@ -11,6 +11,14 @@ Both are available at the same time and commit the same validated `netcfg`
 record. BLE is the normal Station app path. SoftAP is the browser fallback.
 The ESP32-C6 development build retains SoftAP without BLE.
 
+Both paths also accept an **optional WireGuard profile** on the S3, which carries
+the GNF1/TLS session inside a tunnel to the collector whenever the peer is up and
+falls back to the public collector endpoint otherwise. It is described under
+[`nav-tunnel` endpoint](#nav-tunnel-endpoint) and
+[Browser fallback](#browser-fallback). The C6 build has no tunnel support and
+always uses the public endpoint.
+
+
 ## Device name and setup credential
 
 The advertised BLE name and SoftAP SSID are both:
@@ -39,16 +47,24 @@ all of the following:
 The ordinary eight-second BOOT configuration reset clears the operating
 configuration but preserves `nvf_setup`, so the label and stored app credential
 continue to work. Erasing the complete NVS partition destroys both. The next
-boot then creates a different password, emits a new label payload once, and
+boot then creates a different password, emits a new label payload, and
 requires a replacement physical label.
 
-Firmware prints the secret only on the boot that creates it:
+Development builds print the persistent setup credential on every setup boot,
+including an ordinary reboot while unprovisioned and the eight-second
+configuration reset. `NVF_SETUP_CONSOLE_PASSWORD` defaults on. A repeated label
+is prefixed `DEVELOPMENT SETUP LABEL`; first creation uses:
 
 ```text
 NEW SETUP LABEL — print and attach before deployment: { ... }
 ```
 
-Manufacturing must capture that line, print and verify the QR label, and attach
+Disable `NVF_SETUP_CONSOLE_PASSWORD` for production manufacturing to print only
+newly created labels. Secure Boot builds suppress both label log lines. This
+switch does not enable chip security or change eFuses. It never prints the
+password of the Wi-Fi network the observer joins.
+
+Manufacturing must capture the first-creation line, print and verify the QR label, and attach
 it inside the enclosure or another physically controlled recovery location
 before the observer leaves the bench. The label should also print the device
 name and password as text so browser recovery does not depend on a QR-capable
@@ -86,8 +102,10 @@ Set `FIRST_BOOT_DIR=/new/private/path` to select a new capture directory; an
 existing path is rejected.
 
 `first-boot-flash` never erases NVS. If no label line appears, the credential
-may already exist or the operating configuration may already be complete. Use
-the attached label or display. A deliberate whole-NVS erase creates a new
+may be hidden by the production profile or the operating configuration may
+already be complete. In development, use the configuration-reset gesture to
+reopen setup and reprint the same credential. A normal reset while already in
+setup also reprints it. The attached label and display remain available. A deliberate whole-NVS erase creates a new
 secret and also destroys update keys and other NVS state, so it requires a new
 physical label.
 
@@ -99,17 +117,24 @@ Security 2. The app should:
 1. scan the physical QR;
 2. create the ESPProvision device using `name`, `username`, and `pop`;
 3. establish the encrypted session and read `proto-ver`;
-4. require the `navfeeder` app capability `nav-config-v1`;
+4. require the `navfeeder` app capability `nav-config-v1` (and check for the
+   optional `nav-tunnel-v1` capability before offering a WireGuard profile);
 5. send the collector settings to the custom `nav-config` endpoint;
-6. use the standard provisioning API to scan for and submit the Wi-Fi SSID and
+6. if the operator supplied a WireGuard profile and the device advertised
+   `nav-tunnel-v1`, send it to the `nav-tunnel` endpoint;
+7. use the standard provisioning API to scan for and submit the Wi-Fi SSID and
    password; and
-7. wait for Wi-Fi verification and the observer reboot.
+8. wait for Wi-Fi verification and the observer reboot.
 
-Firmware disables provisioning auto-stop, so steps 5 and 6 may arrive in either
-order. Sending `nav-config` first gives the clearest error handling. Firmware
-saves only after it has a valid custom request and ESP-IDF has successfully
-connected with the submitted Wi-Fi credentials. Failed Wi-Fi authentication
-leaves the encrypted session available for another attempt.
+Firmware disables provisioning auto-stop, so the `nav-config`, `nav-tunnel` and
+Wi-Fi steps may arrive in any order. Sending `nav-config` (then `nav-tunnel`)
+before Wi-Fi gives the clearest error handling, because the record is saved only
+once Wi-Fi has verified: a profile that arrives after that save is rejected with
+status 5 rather than silently dropped. Firmware saves only after it has a valid
+custom request and ESP-IDF has successfully connected with the submitted Wi-Fi
+credentials. Failed Wi-Fi authentication leaves the encrypted session available
+for another attempt.
+
 
 Store a remembered setup password in the iOS Keychain with a
 device-only accessibility class. The physical label remains the recovery
@@ -160,13 +185,98 @@ after Wi-Fi success is therefore expected. On reconnect, the app should confirm
 that the observer appears as an enrolled station rather than assuming success
 from the BLE disconnect alone.
 
+## `nav-tunnel` endpoint
+
+Endpoint name: `nav-tunnel`. Present only on a build with `NVF_WIREGUARD`, which
+advertises the `nav-tunnel-v1` capability. An app must check that capability
+before sending; a build without it has no such endpoint.
+
+The optional WireGuard profile carries the GNF1/TLS session inside a tunnel to
+the collector whenever the peer session is up, and falls back to the public
+collector endpoint otherwise, so the tunnel is an uplink upgrade and never a
+single point of failure. The tunnel is IPv4-only. Only the collector's tunnel
+address is routed through it; SNTP, OTA downloads and DNS keep the ordinary
+uplink. The first handshake waits for a plausible wall clock, because a
+WireGuard handshake carries a timestamp the peer rejects if it is not newer than
+the last it accepted from that key.
+
+Maximum request size: 178 bytes, below the Security 2 BLE transport limit.
+Integer fields are unsigned and big-endian. The keys are the raw 32-byte values,
+not base64. An all-zero preshared key means none. The endpoint host is printable
+ASCII (`0x20`–`0x7e`, restricted to a DNS name or IPv4 literal) with no NUL.
+
+| Offset | Size | Value |
+| --- | ---: | --- |
+| 0 | 4 | ASCII `NVT1` |
+| 4 | 1 | Flags; must be zero |
+| 5 | 32 | Interface private key |
+| 37 | 32 | Peer public key |
+| 69 | 32 | Peer preshared key (all zero = none) |
+| 101 | 4 | This observer's tunnel address (IPv4) |
+| 105 | 1 | Address prefix length, 1–32 |
+| 106 | 4 | Collector's tunnel address (IPv4), the sole AllowedIPs /32 |
+| 110 | 2 | Endpoint UDP port, 1–65535 |
+| 112 | 2 | Persistent keepalive seconds, 0 = off |
+| 114 | 1 | Endpoint host length, 1–63 |
+| 115 | variable | Endpoint host bytes |
+
+The frame must end exactly after the host. Unknown flags, a zero key, an
+address equal to the collector, an out-of-range prefix or port, a non-printable
+host, and any length mismatch are rejected. The five-byte response is ASCII
+`NVR1` followed by the same status byte as `nav-config`, plus one value specific
+to this endpoint:
+
+| Status | Meaning |
+| ---: | --- |
+| 0 | Profile accepted; waiting for verified Wi-Fi |
+| 2 | Invalid request |
+| 3 | NVS save failed; retry is allowed |
+| 5 | Configuration already saved; the profile was not applied |
+
+Status 5 means Wi-Fi verification completed the save before the profile
+arrived. The app must send the profile before Wi-Fi; on status 5 it should
+reset the device and provision again, tunnel first.
+
+### Generating a profile
+
+The collector operator runs a WireGuard peer and issues one profile per
+observer. Generate the observer's keypair, add the observer as a peer on the
+server with its tunnel address as a `/32`, and hand the operator a wg-quick(8)
+`.conf` whose `[Peer]` `AllowedIPs` is the collector's tunnel address as a
+single `/32`:
+
+```ini
+[Interface]
+PrivateKey = <observer private key>
+Address = 10.77.0.12/24
+
+[Peer]
+PublicKey = <collector public key>
+Endpoint = wg.collector.invalid:51820
+AllowedIPs = 10.77.0.1/32
+PersistentKeepalive = 25
+```
+
+The Station app and the browser portal parse exactly this format: one
+`[Interface]` and one `[Peer]`, an IPv4 `Address`, an `Endpoint` of `host:port`
+(IPv4 or DNS), and `AllowedIPs` naming the collector's single `/32`. wg-quick
+host-side keys (`ListenPort`, `DNS`, `MTU`, `Table`, `PreUp`, and the like) are
+accepted and ignored; any other key, a second section, or an IPv6 literal is
+refused. Treat the profile as a secret: it contains the observer's private key.
+
 ## Browser fallback
+
 
 Join `navfeeder-XXYYZZ` with the password printed on the label, then open
 `http://192.168.4.1/`. Submit Wi-Fi, collector host/port, station ID, and
-enrollment token. The portal applies the same validation and atomic save used
-by BLE, then reboots. Update-key pairing remains available only through this
-protected setup AP.
+enrollment token. On an `NVF_WIREGUARD` build the form also has an optional
+**WireGuard profile** box: paste the wg-quick `.conf` above to enable the
+tunnel, leave it empty to connect over the public endpoint, or clear a stored
+profile by submitting the box empty. The portal parses and validates the
+profile with the same rules as the `nav-tunnel` endpoint, applies the same
+atomic save used by BLE, then reboots. Update-key pairing remains available only
+through this protected setup AP.
+
 
 The setup secret is visible on the physical label by design. Production flash
 encryption, Secure Boot, and NVS encryption still protect collector, Wi-Fi,

@@ -55,7 +55,7 @@ def render_qr(payload: str, output: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="validate the one-time serial label line and optionally create its QR SVG"
+        description="validate the serial setup-label line and optionally create its QR SVG"
     )
     parser.add_argument("payload_file", type=Path, help="file containing the captured serial line")
     parser.add_argument("--qr-svg", type=Path, help="write an ESPProvision-compatible QR SVG")

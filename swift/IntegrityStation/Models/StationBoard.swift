@@ -8,10 +8,13 @@ struct StationBoard: Codable, Sendable {
     let stale: Bool?
     let timing: BoardSample?
     let timingStale: Bool?
+    var update: BoardSample? = nil
+    var updateStale: Bool? = nil
     let lastInterference: BoardInterference?
 
     enum CodingKeys: String, CodingKey {
-        case latest, stale, timing
+        case latest, stale, timing, update
+        case updateStale = "update_stale"
         case timingStale = "timing_stale"
         case lastInterference = "last_interference"
     }
@@ -71,9 +74,10 @@ struct BoardDetails: Codable, Sendable {
     let receiver: BoardReceiver?
     let firmware: String?
     let timing: BoardTiming?
+    var update: BoardUpdate? = nil
 
     enum CodingKeys: String, CodingKey {
-        case version, reason, environment, rtc, atecc, eeprom, resources, receiver, firmware, timing
+        case version, reason, environment, rtc, atecc, eeprom, resources, receiver, firmware, timing, update
         case uptimeMS = "uptime_ms"
         case eventCount = "event_count"
         case eventUptimeMS = "event_uptime_ms"
@@ -269,4 +273,50 @@ struct BoardTimingChannel: Codable, Sendable {
     var validPeriodNS: Double? { hasFlags(13) ? periodNS : nil }
     var validWidthNS: Double? { hasFlags(21) ? widthNS : nil }
     var validPeriodErrorPPM: Double? { hasFlags(45) ? periodErrorPPM : nil }
+}
+
+struct BoardUpdate: Codable, Sendable {
+    let mode: String?
+    let channel: String?
+    let state: String?
+    let securityFlags: UInt8?
+    let partitionLayoutID: UInt16?
+    let runningRelease: String?
+    let availableRelease: String?
+    let stagedRelease: String?
+    let failedRelease: String?
+    let bytesReceived: UInt32?
+    let artifactLength: UInt32?
+    let lastCheck: String?
+    let nextCheck: String?
+    let lastCommand: String?
+    let error: String?
+    enum CodingKeys: String, CodingKey {
+        case mode, channel, state, error
+        case securityFlags = "security_flags"
+        case partitionLayoutID = "partition_layout_id"
+        case runningRelease = "running_release"
+        case availableRelease = "available_release"
+        case stagedRelease = "staged_release"
+        case failedRelease = "failed_release"
+        case bytesReceived = "bytes_received"
+        case artifactLength = "artifact_length"
+        case lastCheck = "last_check"
+        case nextCheck = "next_check"
+        case lastCommand = "last_command"
+    }
+    var progress: Double? {
+        guard let received = bytesReceived, let total = artifactLength, total > 0, received <= total else { return nil }
+        return Double(received) / Double(total)
+    }
+    var stateDescription: String {
+        switch state {
+        case "staged": String(localized: "update.downloaded")
+        case "reboot-pending", "quiescing": String(localized: "update.rebooting")
+        case "confirmed": String(localized: "update.confirmed")
+        case "rolled-back": String(localized: "update.rolled_back")
+        case "waiting-safe": String(localized: "update.waiting_safe")
+        default: state?.replacingOccurrences(of: "-", with: " ").capitalized ?? StationFormat.unknown
+        }
+    }
 }

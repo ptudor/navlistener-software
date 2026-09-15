@@ -15,6 +15,7 @@ static int selected, begun, ended, aborted, complete, chunked, http_status;
 static int short_read, fail_write, fail_end, steps, cut_at;
 static int64_t reported_length, fake_time;
 static bool slow;
+static int attempts, primary_failure;
 static jmp_buf reboot;
 static void boundary(void) { if (++steps == cut_at) longjmp(reboot, 1); }
 const esp_partition_t *esp_ota_get_running_partition(void) { return &running; }
@@ -22,7 +23,7 @@ const esp_partition_t *esp_ota_get_next_update_partition(const esp_partition_t *
 const esp_partition_t *esp_ota_get_boot_partition(void) { return &running; }
 const esp_app_desc_t *esp_app_get_description(void) { return &app; }
 esp_err_t esp_ota_begin(const esp_partition_t *p,size_t n,esp_ota_handle_t *h)
-{ assert(p == &slot && n == OTA_WITH_SEQUENTIAL_WRITES); boundary(); begun++; *h = 1; return ESP_OK; }
+{ assert(p == &slot && n == OTA_WITH_SEQUENTIAL_WRITES); boundary(); written=0; begun++; *h = 1; return ESP_OK; }
 esp_err_t esp_ota_write(esp_ota_handle_t h,const void *data,size_t n)
 {
     assert(h == 1 && begun && written+n <= sizeof flash); boundary();
@@ -36,14 +37,24 @@ esp_err_t esp_ota_set_boot_partition(const esp_partition_t *p)
 { assert(p == &slot && ended && complete && !memcmp(flash,image,sizeof image)); boundary(); selected=1; boundary(); return ESP_OK; }
 int esp_crt_bundle_attach(void *p) { (void)p; return 0; }
 esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *c)
-{ assert(c->disable_auto_redirect && c->transport_type == HTTP_TRANSPORT_OVER_SSL && c->crt_bundle_attach); return (void*)1; }
-esp_err_t esp_http_client_open(esp_http_client_handle_t h,int n) { (void)h;(void)n; boundary(); return ESP_OK; }
+{
+    assert(c->disable_auto_redirect && c->transport_type == HTTP_TRANSPORT_OVER_SSL && c->crt_bundle_attach);
+    attempts++; offset=0;
+    if (primary_failure) assert(!strcmp(c->url, attempts == 1
+        ? "https://firmware.intsat.net:443/firmware/v1/app.bin?build=1"
+        : "https://firmware.intsat.space:443/firmware/v1/app.bin?build=1"));
+    return (void*)1;
+}
+esp_err_t esp_http_client_open(esp_http_client_handle_t h,int n)
+{ (void)h;(void)n; boundary(); return primary_failure == 1 && attempts == 1 ? ESP_FAIL : ESP_OK; }
 int64_t esp_http_client_fetch_headers(esp_http_client_handle_t h) { (void)h; return reported_length; }
-int esp_http_client_get_status_code(esp_http_client_handle_t h) { (void)h; return http_status; }
+int esp_http_client_get_status_code(esp_http_client_handle_t h)
+{ (void)h; return primary_failure == 2 && attempts == 1 ? 503 : http_status; }
 bool esp_http_client_is_chunked_response(esp_http_client_handle_t h) { (void)h; return chunked; }
 int esp_http_client_read(esp_http_client_handle_t h,char *out,int n)
 {
     (void)h; boundary(); if (slow) fake_time += 11000000; if (short_read && offset >= 350) return 0;
+    if (primary_failure == 3 && attempts == 1 && offset >= 350) return 0;
     if (n > 37) n = 37; // exercise fragmented headers and final short chunks
     if ((size_t)n > sizeof image-offset) n = sizeof image-offset;
     memcpy(out,image+offset,n); offset += n; return n;
@@ -65,7 +76,7 @@ static nvf_ota_request_t request;
 static void reset(void)
 {
     offset=written=0; fake_time=1000; slow=false; selected=begun=ended=aborted=0; complete=1; chunked=0; http_status=200;
-    short_read=fail_write=fail_end=steps=cut_at=0; reported_length=sizeof image; slot.subtype=16;
+    short_read=fail_write=fail_end=steps=cut_at=attempts=primary_failure=0; reported_length=sizeof image; slot.subtype=16;
     memset(image,0,sizeof image); memset(flash,0xee,sizeof flash);
     image[0]=0xe9; image[1]=1; image[12]=9;
     memcpy(image+32,"\x32\x54\xcd\xab",4); strcpy((char*)image+80,"navfeeder-esp");
@@ -91,6 +102,16 @@ int main(void)
     reset(); fail_end=1; assert(nvf_ota_download(&request) != ESP_OK && ended && !aborted && !selected);
     reset(); complete=0; assert(nvf_ota_download(&request) != ESP_OK && aborted && !selected);
     reset(); slot.subtype=0; assert(nvf_ota_download(&request) != ESP_OK && !begun);
+    for (int failure=1; failure<=3; failure++) {
+        reset(); primary_failure=failure;
+        strcpy(request.url,"https://firmware.intsat.net:443/firmware/v1/app.bin?build=1");
+        assert(nvf_ota_download(&request) == ESP_OK && selected && attempts == 2);
+        assert(aborted == (failure == 3));
+    }
+    reset(); strcpy(request.url,"https://firmware.intsat.net/app.bin"); fail_write=1;
+    assert(nvf_ota_download(&request) != ESP_OK && attempts == 1 && !selected);
+    reset(); strcpy(request.url,"https://firmware.intsat.net/app.bin"); request.hash[0]^=1;
+    assert(nvf_ota_download(&request) != ESP_OK && attempts == 2 && !selected && aborted == 2);
     for (int i=1;i<=boundaries;i++) {
         reset(); cut_at=i;
         if (setjmp(reboot) == 0) (void)nvf_ota_download(&request);

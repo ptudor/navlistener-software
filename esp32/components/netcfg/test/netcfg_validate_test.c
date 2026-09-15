@@ -137,6 +137,32 @@ int main(void)
     c.station[sizeof c.station - 1] = '\0';
     expect_valid("maximum-length fields", c);
 
+    // The WireGuard profile is optional: disabled, its contents are never inspected;
+    // enabled, it must be whole, and the reason names the tunnel so the operator does not
+    // go looking at the collector fields.
+    netcfg_t off = valid_cfg();
+    off.tunnel.enabled = false;
+    memset(off.tunnel.endpoint_host, 'h', sizeof off.tunnel.endpoint_host); // garbage, ignored
+    expect_valid("disabled tunnel with stale bytes", off);
+    netcfg_t on = valid_cfg();
+    on.tunnel.enabled = true;
+    memset(on.tunnel.private_key, 1, sizeof on.tunnel.private_key);
+    memset(on.tunnel.peer_public_key, 2, sizeof on.tunnel.peer_public_key);
+    snprintf(on.tunnel.endpoint_host, sizeof on.tunnel.endpoint_host, "%s", "wg.collector.invalid");
+    on.tunnel.endpoint_port = 51820;
+    on.tunnel.address[0] = 10; on.tunnel.address[3] = 12; on.tunnel.prefix = 24;
+    on.tunnel.collector[0] = 10; on.tunnel.collector[3] = 1;
+    expect_valid("enabled tunnel", on);
+    c = on;
+    memset(c.tunnel.private_key, 0, sizeof c.tunnel.private_key);
+    expect_invalid("tunnel without key", c, "tunnel");
+    c = on;
+    c.tunnel.endpoint_port = 0;
+    expect_invalid("tunnel port 0", c, "tunnel");
+    c = on;
+    memcpy(c.tunnel.collector, c.tunnel.address, 4);
+    expect_invalid("tunnel collector is self", c, "tunnel");
+
     // A NULL config must be rejected, not dereferenced.
     char err[NETCFG_ERR_CAP] = "unset";
     CHECK(!netcfg_validate(NULL, err, sizeof err), "NULL config: accepted, want rejected");

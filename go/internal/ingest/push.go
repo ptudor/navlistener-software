@@ -142,7 +142,14 @@ func normalizeHex(s string) string {
 // path). It terminates TLS, authenticates each feeder, and forwards decoded frames
 // to the same decode stage the dial connectors feed — one code path from either
 // ingest mode.
+type UpdateCoordinator interface {
+	Pending(identity.ObserverContext) []byte
+	Report(identity.ObserverContext, string, uint64, wire.UpdateStatus) error
+}
+
 type PushServer struct {
+	updates UpdateCoordinator
+
 	addr        string
 	tlsConfig   *tls.Config
 	auth        Authenticator
@@ -178,6 +185,8 @@ type PushServer struct {
 // SetDurableTracker installs the regression fix durability watermark source. Must be
 // called before Run/Serve (connections read the field without a lock).
 func (p *PushServer) SetDurableTracker(t *DurableTracker) { p.durable = t }
+
+func (p *PushServer) SetUpdates(updates UpdateCoordinator) { p.updates = updates }
 
 // SetReauthorizationInterval changes the active-session authorization cadence.
 // Config validation requires a positive bounded value.
@@ -535,7 +544,7 @@ func (p *PushServer) handshake(ctx context.Context, conn net.Conn, w *connWriter
 		return authorizedHello{}, false
 	}
 	if err := w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{
-		OK: true, AckIntervalMS: int(p.ackInterval / time.Millisecond), Zstd: h.Zstd,
+		DurableACK: p.durable != nil, OK: true, AckIntervalMS: int(p.ackInterval / time.Millisecond), Zstd: h.Zstd,
 	})); err != nil {
 		return authorizedHello{}, false
 	}
@@ -692,12 +701,25 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 	quit := make(chan struct{})
 	defer func() { close(quit); <-ackDone }()
 	go func() {
+		var nextControl time.Time
 		defer close(ackDone)
 		for {
 			select {
 			case <-quit:
 				return
 			case <-ackTicker.C:
+				if p.updates != nil && time.Now().After(nextControl) && ctx.Err() == nil {
+					nextControl = time.Now().Add(15 * time.Second)
+					admission, _ := ctx.Value(admissionContextKey{}).(*Admission)
+					if admission.Current() {
+						if command := p.updates.Pending(observerContext); len(command) > 0 {
+							if err := w.write(wire.UpdateControl, command); err != nil {
+								_ = w.c.Close()
+								return
+							}
+						}
+					}
+				}
 				var last uint64
 				if p.durable != nil {
 					// ack the durability watermark — the feeder may
@@ -848,6 +870,11 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				}
 				select {
 				case p.out <- f:
+					if p.updates != nil && f.Admission.Current() && f.Details != nil && f.Details.Update != nil {
+						if err := p.updates.Report(observerContext, session, seq, *f.Details.Update); err != nil {
+							p.log.Error("update status storage unavailable", "observer", observer, "error", err)
+						}
+					}
 					unforwarded = 0 // a delivered record proves a live, well-formed stream
 					mu.Lock()
 					if seq > highest {

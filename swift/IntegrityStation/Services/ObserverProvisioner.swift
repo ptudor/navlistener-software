@@ -6,9 +6,13 @@ protocol ObserverProvisioningTransport: AnyObject {
     func connect(label: ObserverSetupLabel) async throws
     func networks() async throws -> [String]
     func configure(_ data: Data) async throws -> ObserverSetupReply
+    func configureTunnel(_ data: Data) async throws -> ObserverSetupReply
     func provisionWiFi(ssid: String, password: String) async throws
     func disconnect()
+    // True only once connected to a device that advertised the nav-tunnel-v1 capability.
+    var supportsTunnel: Bool { get }
 }
+
 
 /// Separate Keychain service and device-only accessibility; no Wi-Fi password
 /// or collector enrollment token is retained by the app.
@@ -28,6 +32,7 @@ final class ObserverProvisioner {
     private(set) var networks: [String] = []
     private(set) var message: String?
     private(set) var stationID: String?
+    private(set) var supportsTunnel = false
     private let transport: any ObserverProvisioningTransport
     private var generation = 0
 
@@ -47,6 +52,7 @@ final class ObserverProvisioner {
             let scanned = (try? await transport.networks()) ?? []
             try requireCurrent(operation)
             networks = scanned
+            supportsTunnel = transport.supportsTunnel
             stage = .ready
         } catch {
             guard generation == operation, !Task.isCancelled else { return }
@@ -56,13 +62,16 @@ final class ObserverProvisioner {
         }
     }
 
-    func provision(_ config: ObserverSetupConfig, ssid: String, password: String) async {
+    func provision(_ config: ObserverSetupConfig, ssid: String, password: String,
+                   tunnel: ObserverTunnelConfig? = nil) async {
         guard stage == .ready else { return }
         let operation = generation
         stage = .configuring
         message = nil
         do {
             let data = try config.encoded()
+            let tunnelData = try tunnel?.encoded() // validate before sending anything
+            if tunnel != nil && !supportsTunnel { throw ObserverSetupError.tunnelUnsupported }
             guard !ssid.isEmpty, ssid.utf8.count <= 32, !ssid.contains("\0"),
                   password.utf8.count <= 63, !password.contains("\0")
             else { throw ObserverSetupError.invalidConfig }
@@ -71,9 +80,22 @@ final class ObserverProvisioner {
             switch reply {
             case .invalid: throw ObserverSetupError.invalidConfig
             case .saveFailed: throw ObserverSetupError.saveFailed
+            case .alreadySaved: throw ObserverSetupError.saveFailed
             case .powerCycle: message = ObserverSetupError.powerCycle.localizedDescription
             case .saved: break
             case .waitingForWiFi:
+                // The tunnel profile must arrive before Wi-Fi completes the save, so send it
+                // between the collector settings and the Wi-Fi credentials.
+                if let tunnelData {
+                    let tunnelReply = try await transport.configureTunnel(tunnelData)
+                    try requireCurrent(operation)
+                    switch tunnelReply {
+                    case .invalid: throw ObserverSetupError.invalidTunnel
+                    case .saveFailed: throw ObserverSetupError.saveFailed
+                    case .alreadySaved: throw ObserverSetupError.tunnelTooLate
+                    case .waitingForWiFi, .saved, .powerCycle: break
+                    }
+                }
                 do { try await transport.provisionWiFi(ssid: ssid, password: password) }
                 catch ObserverSetupError.connection {
                     // Reboot can beat the final BLE response. Only a new boot
@@ -99,6 +121,7 @@ final class ObserverProvisioner {
         transport.disconnect()
         networks = []
         stationID = nil
+        supportsTunnel = false
         stage = .idle
         message = nil
     }

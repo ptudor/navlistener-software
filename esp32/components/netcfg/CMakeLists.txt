@@ -4,6 +4,7 @@ set(netcfg_sources
     "src/netcfg_setup.c"
     "src/netcfg_check.c"
     "src/netcfg_form.c"
+    "src/netcfg_tunnel.c"
 )
 set(netcfg_private_requires
     nvs_flash esp_wifi esp_netif esp_event esp_http_server

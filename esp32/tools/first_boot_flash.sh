@@ -9,10 +9,10 @@ build_dir=${S3_BUILD_DIR:-build/s3}
 
 cat <<EOF
 === ATTENDED ESP32-S3 FIRST-BOOT FLASH ===
-Watch the console for: NEW SETUP LABEL
+Watch the console for: NEW SETUP LABEL or DEVELOPMENT SETUP LABEL
 The JSON on that line contains the persistent BLE/SoftAP setup password.
 Keep it private, print the QR plus text password, and attach the label before deployment.
-This target does not erase NVS. A board that already has a setup credential will not print it again.
+This target does not erase NVS. Development builds reprint an existing credential whenever setup starts.
 Exit the ESP-IDF monitor with Ctrl-].
 EOF
 
@@ -74,6 +74,7 @@ idf.py -B "$build_dir" \
     -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.s3' \
     -D IDF_TARGET=esp32s3 build
 python tools/build_provenance.py --build-dir "$build_dir"
+python tools/production_profile.py --refuse-locking-build "$build_dir/sdkconfig"
 restore_lock
 trap - EXIT
 
@@ -82,10 +83,10 @@ idf.py -B "$build_dir" -p "$PORT" flash monitor 2>&1 | tee -a "$console_log"
 monitor_status=${PIPESTATUS[0]}
 set -e
 
-if LC_ALL=C grep -m 1 'NEW SETUP LABEL' "$console_log" > "$label_line"; then
+if LC_ALL=C grep -m 1 -E '(NEW|DEVELOPMENT) SETUP LABEL' "$console_log" > "$label_line"; then
     chmod 600 "$label_line"
     echo
-    echo "Captured the one-time setup credential:"
+    echo "Captured the persistent setup credential:"
     if command -v qrencode >/dev/null 2>&1; then
         python3 tools/provisioning_label.py "$label_line" --qr-svg "$qr_svg"
     else
@@ -97,9 +98,10 @@ if LC_ALL=C grep -m 1 'NEW SETUP LABEL' "$console_log" > "$label_line"; then
 else
     rm -f "$label_line"
     echo >&2
-    echo "No NEW SETUP LABEL line was captured." >&2
-    echo "The credential may already exist, or the device may already be provisioned." >&2
-    echo "Use the physical label/display. Deliberately erasing all NVS creates a new secret" >&2
+    echo "No setup label line was captured." >&2
+    echo "The device may be provisioned, or production logging may suppress the label." >&2
+    echo "In development, reset configuration to reprint the same setup credential." >&2
+    echo "The physical label/display also works. Erasing all NVS creates a new secret" >&2
     echo "and invalidates the old label and other NVS state." >&2
     echo "Diagnostic console log retained in: $console_log" >&2
 fi

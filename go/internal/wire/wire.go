@@ -57,10 +57,11 @@ const (
 	// arrived is skipped past — a second implementer must not wait for
 	// contiguity over unreceived sequences), and reconnect replay (the feeder
 	// resends everything after the last ack) makes any duplicate harmless.
-	Ack        FrameType = 0x04 // collector→feeder: [8B seq] durable watermark (live-only mode: highest received)
-	Ping       FrameType = 0x05 // keepalive
-	Pong       FrameType = 0x06 // keepalive
-	SignedData FrameType = 0x07 // hardware tier (vNext): Data batch + ATECC ECDSA
+	Ack           FrameType = 0x04 // collector→feeder: [8B seq] durable watermark (live-only mode: highest received)
+	Ping          FrameType = 0x05 // keepalive
+	Pong          FrameType = 0x06 // keepalive
+	UpdateControl FrameType = 0x09 // collector to device: versioned 36-byte command
+	SignedData    FrameType = 0x07 // hardware tier (vNext): Data batch + ATECC ECDSA
 )
 
 var (
@@ -130,6 +131,7 @@ type WelcomeMsg struct {
 	Error         string `json:"error,omitempty"`
 	AckIntervalMS int    `json:"ack_interval_ms,omitempty"`
 	Zstd          bool   `json:"zstd,omitempty"`
+	DurableACK    bool   `json:"durable_ack,omitempty"`
 }
 
 // RawRecord is the envelope inside a DATA frame: just enough for the collector to

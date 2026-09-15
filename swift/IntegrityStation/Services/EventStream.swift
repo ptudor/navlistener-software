@@ -35,7 +35,7 @@ struct EventStream: Sendable {
                         request.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID")
                     }
 
-                    let (bytes, response) = try await session.bytes(for: request, delegate: CredentialRedirectGuard(request: request))
+                    let (bytes, response) = try await CollectorEndpoint.stream(session: session, request: request)
                     defer { bytes.task.cancel() }
                     guard let http = response as? HTTPURLResponse else { throw FeedError.invalidResponse }
                     guard (200...299).contains(http.statusCode) else {

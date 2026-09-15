@@ -43,6 +43,11 @@ form_result_t netcfg_url_decode(char *dst, size_t cap, const char *src, size_t s
 // callers using a fresh buffer must zero it themselves.
 form_result_t netcfg_form_field(const char *body, const char *name, char *dst, size_t cap);
 
+// netcfg_form_field_text is netcfg_form_field for a multi-line <textarea>: tab, CR and
+// LF are accepted in the decoded value (a pasted WireGuard profile is line-oriented);
+// every other C0 control, DEL and NUL remain refused for the same reason as above.
+form_result_t netcfg_form_field_text(const char *body, const char *name, char *dst, size_t cap);
+
 // netcfg_form_error maps a negative result to a fixed operator-facing reason. It
 // never echoes submitted bytes back, so a credential cannot leak through an
 // error page.

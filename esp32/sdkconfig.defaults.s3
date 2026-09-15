@@ -48,3 +48,8 @@ CONFIG_NVF_SPOOL_PSRAM=y
 
 # NVF_MANIFEST_FACTORY_INIT is deliberately absent: programming a blank manifest
 # EEPROM is a manufacturing step, enabled explicitly for that one build.
+
+# WireGuard (NVF_WIREGUARD): handshake crypto (X25519, BLAKE2s) runs on the lwIP tcpip
+# task when a peer packet arrives, on top of the ordinary UDP receive path. Give it
+# headroom over the 3 KiB default.
+CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=6144

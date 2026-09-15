@@ -1,0 +1,110 @@
+[
+  {
+    "symbol": "UP_OK",
+    "domain": 0,
+    "reason": 0,
+    "name": "OK"
+  },
+  {
+    "symbol": "UP_NETWORK",
+    "domain": 1,
+    "reason": 1,
+    "name": "NETWORK_UNAVAILABLE"
+  },
+  {
+    "symbol": "UP_NOT_FOUND",
+    "domain": 1,
+    "reason": 2,
+    "name": "NETWORK_NOT_FOUND"
+  },
+  {
+    "symbol": "UP_TIME",
+    "domain": 1,
+    "reason": 3,
+    "name": "NETWORK_TIME_UNAVAILABLE"
+  },
+  {
+    "symbol": "UP_META_INVALID",
+    "domain": 2,
+    "reason": 1,
+    "name": "META_MALFORMED"
+  },
+  {
+    "symbol": "UP_META_SIGNATURE",
+    "domain": 2,
+    "reason": 2,
+    "name": "META_BAD_SIGNATURE"
+  },
+  {
+    "symbol": "UP_META_EXPIRED",
+    "domain": 2,
+    "reason": 3,
+    "name": "META_EXPIRED"
+  },
+  {
+    "symbol": "UP_META_ROLLBACK",
+    "domain": 2,
+    "reason": 4,
+    "name": "META_REPLAY"
+  },
+  {
+    "symbol": "UP_TRUST_UNCONFIGURED",
+    "domain": 2,
+    "reason": 5,
+    "name": "META_TRUST_UNCONFIGURED"
+  },
+  {
+    "symbol": "UP_ROOT_LIMIT",
+    "domain": 2,
+    "reason": 6,
+    "name": "META_ROOT_ROTATION_PENDING"
+  },
+  {
+    "symbol": "UP_HARDWARE",
+    "domain": 3,
+    "reason": 1,
+    "name": "ELIGIBILITY_HARDWARE_UNKNOWN"
+  },
+  {
+    "symbol": "UP_INELIGIBLE",
+    "domain": 3,
+    "reason": 2,
+    "name": "ELIGIBILITY_INCOMPATIBLE"
+  },
+  {
+    "symbol": "UP_ROLLOUT",
+    "domain": 3,
+    "reason": 3,
+    "name": "ELIGIBILITY_ROLLOUT_EXCLUDED"
+  },
+  {
+    "symbol": "UP_ARTIFACT",
+    "domain": 4,
+    "reason": 1,
+    "name": "ARTIFACT_BAD_SIGNATURE"
+  },
+  {
+    "symbol": "UP_STORAGE",
+    "domain": 5,
+    "reason": 1,
+    "name": "STORAGE_UNAVAILABLE"
+  },
+  {
+    "symbol": "UP_DURABILITY",
+    "domain": 6,
+    "reason": 1,
+    "name": "SAFETY_DURABILITY_UNAVAILABLE"
+  },
+  {
+    "symbol": "UP_ACK_TIMEOUT",
+    "domain": 6,
+    "reason": 2,
+    "name": "SAFETY_ACK_TIMEOUT"
+  },
+  {
+    "symbol": "UP_TRIAL_FAILED",
+    "domain": 7,
+    "reason": 1,
+    "name": "TRIAL_ROLLED_BACK"
+  }
+]

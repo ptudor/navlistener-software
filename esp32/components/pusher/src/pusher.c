@@ -3,6 +3,8 @@
 
 #include "pusher.h"
 #include "ack_progress.h"
+#include "update_json.h"
+#include "../../../../common/endpoint_fallback.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -46,7 +48,7 @@ static const char *TAG = "pusher";
 // future write.
 #define TCP_KEEPIDLE_S  10
 #define TCP_KEEPINTVL_S 5
-#define TCP_KEEPCNT     3
+#define NVF_TCP_KEEP_COUNT     3
 
 // The Kconfig bool is undefined (not 0) when off; give the preprocessor a value
 // so #if works under -Wundef, mirroring netcfg.c.
@@ -56,8 +58,20 @@ static const char *TAG = "pusher";
 
 static pusher_cfg_t s_cfg;   // owned copy (strings duplicated)
 static atomic_bool s_connected;
+static atomic_bool s_via_tunnel;
+static atomic_bool s_durable;
 
 bool pusher_connected(void) { return atomic_load_explicit(&s_connected, memory_order_relaxed); }
+bool pusher_via_tunnel(void) { return atomic_load_explicit(&s_via_tunnel, memory_order_relaxed); }
+
+// tunnel_preferred reports whether the next connection should run inside the WireGuard
+// tunnel: one is configured and its peer session is valid right now. Cheap; consulted per
+// connection attempt and once per idle turn of a direct session.
+static bool tunnel_preferred(void)
+{
+    return s_cfg.tunnel_host && s_cfg.tunnel_up && s_cfg.tunnel_up();
+}
+bool pusher_durable_connected(void) { return pusher_connected() && atomic_load(&s_durable); }
 
 // pusher_cfg_free releases the owned config copies and zeroes s_cfg. The struct
 // fields are const char * (the caller's view is borrowed/immutable), so the owned
@@ -71,6 +85,7 @@ static void pusher_cfg_free(void)
     free((char *)s_cfg.feed);
     free((char *)s_cfg.session);
     free((char *)s_cfg.ca_pem);
+    free((char *)s_cfg.tunnel_host);
     memset(&s_cfg, 0, sizeof s_cfg);
 }
 
@@ -201,6 +216,8 @@ static bool drain_acks(esp_tls_t *tls, int fd)
         if (type == GNF1_F_ACK) {
             uint64_t seq;
             if (gnf1_decode_ack(buf, len, &seq)) spool_ack(seq);
+        } else if (type == 0x09 && s_cfg.update_control) {
+            s_cfg.update_control(buf,len);
         }
         // PONG and anything else: ignore.
     }
@@ -216,15 +233,19 @@ static const tls_keep_alive_cfg_t s_keep_alive_cfg = {
     .keep_alive_enable = true,
     .keep_alive_idle = TCP_KEEPIDLE_S,
     .keep_alive_interval = TCP_KEEPINTVL_S,
-    .keep_alive_count = TCP_KEEPCNT,
+    .keep_alive_count = NVF_TCP_KEEP_COUNT,
 };
 
-static esp_tls_t *connect_collector(void)
+// connect_collector opens TLS to host. verify, when non-NULL, is the name the certificate
+// must carry (and the SNI sent) instead of host: through the tunnel the TCP peer is an
+// address inside it, while the collector's certificate still names its public hostname.
+static esp_tls_t *connect_collector(const char *host, const char *verify)
 {
     esp_tls_cfg_t tls_cfg = {
 .tls_version = ESP_TLS_VER_TLS_1_2, // pin (regression fix / collector floor)
         .timeout_ms = 10000,
 .keep_alive_cfg = (tls_keep_alive_cfg_t *)&s_keep_alive_cfg, // regression fix
+        .common_name = verify,
     };
     if (s_cfg.ca_pem) {
         tls_cfg.cacert_buf = (const unsigned char *)s_cfg.ca_pem;
@@ -254,7 +275,7 @@ static esp_tls_t *connect_collector(void)
 
     esp_tls_t *tls = esp_tls_init();
     if (!tls) return NULL;
-    int r = esp_tls_conn_new_sync(s_cfg.host, (int)strlen(s_cfg.host), s_cfg.port, &tls_cfg, tls);
+    int r = esp_tls_conn_new_sync(host, (int)strlen(host), s_cfg.port, &tls_cfg, tls);
     if (r != 1) {
         esp_tls_conn_destroy(tls);
         return NULL;
@@ -288,7 +309,14 @@ static int handshake(esp_tls_t *tls)
     if (read_frame(tls, &type, buf, sizeof buf - 1, &len) != 0) return -1;
     if (type != GNF1_F_WELCOME) return -1;
     buf[len] = 0;
-    if (!gnf1_welcome_ok((const char *)buf, len)) {
+    uj_doc welcome;
+    if (!uj_parse(&welcome,(const char *)buf,len)) return -1;
+    const uj_node *accepted=uj_get(&welcome,uj_root(&welcome),"ok");
+    const uj_node *durable=uj_get(&welcome,uj_root(&welcome),"durable_ack");
+    bool ok=accepted && accepted->kind==UJ_BOOL && accepted->number==1;
+    atomic_store(&s_durable,ok && durable && durable->kind==UJ_BOOL && durable->number==1);
+    uj_free(&welcome);
+    if (!ok) {
         ESP_LOGW(TAG, "collector rejected handshake: %.*s", (int)len, (const char *)buf);
         return -2;
     }
@@ -311,11 +339,12 @@ static int send_ping(esp_tls_t *tls)
 // connect (connect_collector's timeout_ms is 10 s, over USEFUL_CONN_S) must never count as
 // useful, or an unreachable collector would reset backoff on every attempt and the ladder
 // would never grow.
-static int serve(void)
+static int serve(const char *host, const char *verify, bool via_tunnel)
 {
-    esp_tls_t *tls = connect_collector();
+    esp_tls_t *tls = connect_collector(host, verify);
     if (!tls) {
-        ESP_LOGW(TAG, "TLS connect to %s:%d failed", s_cfg.host, s_cfg.port);
+        ESP_LOGW(TAG, "TLS connect to %s:%d%s failed", host, s_cfg.port,
+                 via_tunnel ? " (tunnel)" : "");
         return -1;
     }
     int hs = handshake(tls);
@@ -338,9 +367,10 @@ static int serve(void)
         esp_tls_conn_destroy(tls);
         return -1;
     }
+    atomic_store_explicit(&s_via_tunnel, via_tunnel, memory_order_relaxed);
     atomic_store_explicit(&s_connected, true, memory_order_relaxed);
-    ESP_LOGI(TAG, "connected: station=%s feed=%s -> %s:%d", s_cfg.station, s_cfg.feed,
-             s_cfg.host, s_cfg.port);
+    ESP_LOGI(TAG, "connected: station=%s feed=%s -> %s:%d%s", s_cfg.station, s_cfg.feed,
+             host, s_cfg.port, via_tunnel ? " via tunnel" : "");
 
     uint64_t sent_upto = spool_acked(); // replay-on-reconnect: resume from the last ack
     spool_frame_t batch[DRAIN_BATCH];
@@ -361,6 +391,15 @@ static int serve(void)
 
         size_t n = spool_collect(sent_upto, batch, DRAIN_BATCH);
         if (n == 0) {
+            // Prefer the tunnel: a direct session that began while the peer was down moves
+            // over once the tunnel is up and nothing sent still awaits its ACK. The
+            // reconnect replays from spool_acked() as always, so nothing is lost, and the
+            // session counts as useful only if it ran long enough (return contract above).
+            if (!via_tunnel && tunnel_preferred() && sent_upto == spool_acked() &&
+                esp_timer_get_time() - session_start_us >= (int64_t)USEFUL_CONN_S * 1000000) {
+                ESP_LOGI(TAG, "tunnel is up; moving the session onto it");
+                break;
+            }
             if (esp_timer_get_time() - last_tx_us >= (int64_t)KEEPALIVE_S * 1000000) {
                 if (send_ping(tls) != 0) break;
                 last_tx_us = esp_timer_get_time();
@@ -382,6 +421,8 @@ static int serve(void)
     }
 
     atomic_store_explicit(&s_connected, false, memory_order_relaxed);
+    atomic_store_explicit(&s_via_tunnel, false, memory_order_relaxed);
+    atomic_store(&s_durable,false);
     esp_tls_conn_destroy(tls);
     uint64_t dropped = 0;
     size_t count = 0;
@@ -395,8 +436,22 @@ static void pusher_task(void *arg)
 {
     (void)arg;
     int backoff = 1;
+    char secondary[64];
+    nav_endpoint_secondary(s_cfg.host, secondary, sizeof secondary);
+    const char *host = s_cfg.host;
     for (;;) {
-        int rc = serve();
+        // The WireGuard path is taken whenever its peer session is valid; TLS then verifies
+        // the configured collector name against the certificate exactly as it does
+        // directly. A down tunnel costs nothing: the public endpoint carries on.
+        bool via_tunnel = tunnel_preferred();
+        int rc = via_tunnel ? serve(s_cfg.tunnel_host, s_cfg.host, true)
+                            : serve(host, NULL, false);
+        // A new TLS connection verifies the selected hostname. Keep the same
+        // session, credentials and durable ACK watermark when changing aliases.
+        // Explicit authorization rejection retains the normal hard backoff. A tunnel
+        // outcome says nothing about the public aliases, so it leaves that choice alone.
+        if (rc != -2 && !via_tunnel)
+            host = rc != 0 && host == s_cfg.host && secondary[0] ? secondary : s_cfg.host;
         // a useful session (authenticated + streamed >= USEFUL_CONN_S, see
         // serve()'s return contract) resets the ladder so a routine collector redeploy
         // weeks into uptime reconnects in ~1 s instead of the 30 s cap. Mirrors
@@ -444,7 +499,9 @@ bool pusher_start(const pusher_cfg_t *cfg)
     s_cfg.feed = dup_or_null(cfg->feed ? cfg->feed : "ubx");
     s_cfg.session = dup_or_null(cfg->session);
     s_cfg.ca_pem = dup_or_null(cfg->ca_pem);
+    s_cfg.tunnel_host = dup_or_null(cfg->tunnel_host);
     if (!pusher_str_ok(cfg->host, s_cfg.host) ||
+        !pusher_str_ok(cfg->tunnel_host, s_cfg.tunnel_host) ||
         !pusher_str_ok(cfg->token, s_cfg.token) ||
         !pusher_str_ok(cfg->station, s_cfg.station) ||
         !s_cfg.feed || // feed's input is never NULL (falls back to "ubx"), so its dup must succeed

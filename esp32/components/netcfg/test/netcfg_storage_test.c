@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 
-static unsigned char durable[512];
+static unsigned char durable[1024];
 static size_t durable_size;
 static netcfg_t legacy_cfg;
 static bool has_legacy, legacy_reset;
@@ -96,11 +96,48 @@ esp_err_t nvs_get_u8(nvs_handle_t h, const char *key, uint8_t *v)
     if (!has_legacy) return ESP_ERR_NVS_NOT_FOUND;
     *v = legacy_cfg.insecure; return ESP_OK;
 }
+static bool same_tunnel(const netcfg_tunnel_t *a, const netcfg_tunnel_t *b)
+{
+    return a->enabled == b->enabled && !memcmp(a->private_key, b->private_key, 32) &&
+        !memcmp(a->peer_public_key, b->peer_public_key, 32) &&
+        !memcmp(a->preshared_key, b->preshared_key, 32) &&
+        !strcmp(a->endpoint_host, b->endpoint_host) && a->endpoint_port == b->endpoint_port &&
+        !memcmp(a->address, b->address, 4) && a->prefix == b->prefix &&
+        !memcmp(a->collector, b->collector, 4) && a->keepalive == b->keepalive;
+}
 static bool same(const netcfg_t *a, const netcfg_t *b)
 {
     return !strcmp(a->wifi_ssid,b->wifi_ssid) && !strcmp(a->wifi_pass,b->wifi_pass) &&
         !strcmp(a->host,b->host) && !strcmp(a->token,b->token) && !strcmp(a->station,b->station) &&
-        a->port == b->port && a->insecure == b->insecure;
+        a->port == b->port && a->insecure == b->insecure && same_tunnel(&a->tunnel, &b->tunnel);
+}
+static uint32_t crc32_le(const unsigned char *p, size_t n)
+{
+    uint32_t crc = UINT32_MAX;
+    for (size_t i = 0; i < n; i++) { crc ^= p[i]; for (int j = 0; j < 8; j++) crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1u))); }
+    return ~crc;
+}
+static void seal(size_t size)
+{
+    uint32_t crc = crc32_le(durable, size - 4);
+    for (int i = 0; i < 4; i++) durable[size - 4 + i] = (unsigned char)(crc >> (8 * i));
+    durable_size = size;
+}
+// A format-1 record exactly as firmware before the WireGuard profile wrote it.
+static void store_v1(const netcfg_t *c)
+{
+    memset(durable, 0, sizeof durable);
+    memcpy(durable, "NFC1", 4);
+    durable[4] = 1; durable[6] = 348 & 0xff; durable[7] = 348 >> 8; durable[8] = 7; // generation 7
+    durable[17] = c->insecure; durable[18] = (unsigned char)c->port; durable[19] = (unsigned char)(c->port >> 8);
+    size_t off = 20;
+    memcpy(durable + off, c->wifi_ssid, strlen(c->wifi_ssid)); off += 33;
+    memcpy(durable + off, c->wifi_pass, strlen(c->wifi_pass)); off += 65;
+    memcpy(durable + off, c->host, strlen(c->host)); off += 64;
+    memcpy(durable + off, c->token, strlen(c->token)); off += 129;
+    memcpy(durable + off, c->station, strlen(c->station)); off += 33;
+    assert(off == 344);
+    seal(348);
 }
 static void fresh(void)
 {
@@ -177,8 +214,58 @@ int main(void)
     fresh(); has_legacy = true; legacy_cfg = old; legacy_reset = false;
     assert(netcfg_save(&next) == ESP_OK);
     memset(durable + 118, 'x', 64); // host field, no terminator
-    { uint32_t crc = UINT32_MAX; for (size_t i = 0; i < 344; i++) { crc ^= durable[i]; for (int j = 0; j < 8; j++) crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1u))); } crc = ~crc;
-      for (int i = 0; i < 4; i++) durable[344 + i] = (unsigned char)(crc >> (8 * i)); }
+    seal(522);
     assert(!netcfg_load(&out, NULL, 0) && !out.host[0] && !out.token[0]);
-    puts("netcfg atomic record: write/commit errors, power-cut boundaries, migration, reset, legacy retirement and corruption PASS");
+
+    // --- format 2: the optional WireGuard profile ---
+    // Every write is format 2 (522 bytes); a profile round-trips whole, a disabled one
+    // is stored as zeros, and the reset marker retires the profile with everything else.
+    netcfg_t tunneled = next;
+    tunneled.tunnel.enabled = true;
+    for (int i = 0; i < 32; i++) { tunneled.tunnel.private_key[i] = (uint8_t)(i + 1); tunneled.tunnel.peer_public_key[i] = (uint8_t)(200 - i); tunneled.tunnel.preshared_key[i] = (uint8_t)(i * 3); }
+    strcpy(tunneled.tunnel.endpoint_host, "wg.collector.invalid");
+    tunneled.tunnel.endpoint_port = 51820;
+    memcpy(tunneled.tunnel.address, (uint8_t[]){10, 77, 0, 12}, 4); tunneled.tunnel.prefix = 24;
+    memcpy(tunneled.tunnel.collector, (uint8_t[]){10, 77, 0, 1}, 4); tunneled.tunnel.keepalive = 25;
+    fresh(); assert(netcfg_save(&tunneled) == ESP_OK && durable_size == 522 && durable[4] == 2 && durable[344] == 1);
+    assert(netcfg_load(&out, NULL, 0) && same(&out, &tunneled));
+    assert(netcfg_save(&next) == ESP_OK && durable_size == 522);
+    for (size_t i = 344; i < 518; i++) assert(durable[i] == 0); // no key material left behind
+    assert(netcfg_load(&out, NULL, 0) && same(&out, &next) && !out.tunnel.enabled);
+    assert(netcfg_save(&tunneled) == ESP_OK && netcfg_reset_provisioning() == ESP_OK);
+    for (size_t i = 344; i < 518; i++) assert(durable[i] == 0);
+    assert(!netcfg_load(&out, NULL, 0) && !out.tunnel.enabled && !out.host[0]);
+    // An enabled but incomplete profile is refused before any write, like any other field.
+    netcfg_t half = tunneled; memset(half.tunnel.collector, 0, 4);
+    fresh(); assert(netcfg_save(&half) == ESP_ERR_INVALID_ARG && writes == 0);
+    half = tunneled; memset(half.tunnel.endpoint_host, 'h', sizeof half.tunnel.endpoint_host);
+    assert(netcfg_save(&half) == ESP_ERR_INVALID_ARG && writes == 0);
+    // Power cuts while replacing a profile leave either the whole old or the whole new record.
+    for (int fail = 1; fail <= 24; fail++) {
+        fresh(); assert(netcfg_save(&next) == ESP_OK);
+        step = 0; failure_step = fail; power_cut = true;
+        if (!setjmp(reboot)) (void)netcfg_save(&tunneled);
+        failure_step = 0; power_cut = false;
+        assert(netcfg_load(&out, NULL, 0) && (same(&out, &next) || same(&out, &tunneled)));
+    }
+    // A format-1 record written by earlier firmware loads with the tunnel disabled and every
+    // other field intact, and the next save upgrades it in place under the same key.
+    fresh(); store_v1(&old);
+    assert(netcfg_load(&out, NULL, 0) && same(&out, &old) && !out.tunnel.enabled);
+    assert(netcfg_save(&tunneled) == ESP_OK && durable_size == 522 && durable[8] == 8); // generation continues
+    assert(netcfg_load(&out, NULL, 0) && same(&out, &tunneled));
+    // Corrupt format-2 tails fail closed: a flag byte other than 0/1, a short blob claiming
+    // format 2, and a format-1 length carrying a format-2 version.
+    fresh(); assert(netcfg_save(&tunneled) == ESP_OK);
+    durable[344] = 2; seal(522);
+    assert(!netcfg_load(&out, NULL, 0) && !out.host[0]);
+    fresh(); store_v1(&old); durable[4] = 2; seal(348);
+    assert(!netcfg_load(&out, NULL, 0) && !out.host[0]);
+    fresh(); assert(netcfg_save(&tunneled) == ESP_OK); durable[4] = 1; seal(522);
+    assert(!netcfg_load(&out, NULL, 0) && !out.host[0]);
+    // A format-2 record whose profile fails validation (zero peer key, good CRC) is refused,
+    // never loaded as a half-configured tunnel.
+    fresh(); assert(netcfg_save(&tunneled) == ESP_OK); memset(durable + 344 + 33, 0, 32); seal(522);
+    assert(!netcfg_load(&out, NULL, 0) && !out.host[0] && !out.tunnel.enabled);
+    puts("netcfg atomic record: write/commit errors, power-cut boundaries, migration, reset, legacy retirement, corruption and the format-2 tunnel profile PASS");
 }

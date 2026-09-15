@@ -2,6 +2,7 @@
 // (test/netcfg_validate_test.c).
 
 #include "netcfg_check.h"
+#include "netcfg_tunnel.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -57,6 +58,9 @@ bool netcfg_validate(const netcfg_t *cfg, char *err, size_t errcap)
         set_err(err, errcap, "bearer token is empty");
         return false;
     }
+    // The tunnel is optional: a disabled profile carries no requirement, an enabled one
+    // must be whole, or the observer would boot into a permanently half-configured uplink.
+    if (cfg->tunnel.enabled && !netcfg_tunnel_validate(&cfg->tunnel, err, errcap)) return false;
     set_err(err, errcap, "");
     return true;
 }

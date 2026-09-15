@@ -1,5 +1,6 @@
 #include "netcfg_form.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -11,7 +12,7 @@ static int hex_digit(unsigned char c)
     return -1;
 }
 
-form_result_t netcfg_url_decode(char *dst, size_t cap, const char *src, size_t srclen)
+static form_result_t url_decode(char *dst, size_t cap, const char *src, size_t srclen, bool multiline)
 {
     if (cap == 0) return FORM_TRUNCATED;
     size_t o = 0;
@@ -45,8 +46,10 @@ form_result_t netcfg_url_decode(char *dst, size_t cap, const char *src, size_t s
         }
         // No configuration field may contain a C0 control or DEL, and a decoded
         // NUL would end the C string early — later validation would then see only
-        // a prefix of what was submitted.
-        if (out < 0x20 || out == 0x7f) {
+        // a prefix of what was submitted. A textarea legitimately carries line
+        // structure, so only tab, CR and LF pass there.
+        bool line_break = multiline && (out == '\t' || out == '\r' || out == '\n');
+        if ((out < 0x20 && !line_break) || out == 0x7f) {
             dst[o] = '\0';
             return FORM_MALFORMED;
         }
@@ -56,7 +59,12 @@ form_result_t netcfg_url_decode(char *dst, size_t cap, const char *src, size_t s
     return FORM_OK;
 }
 
-form_result_t netcfg_form_field(const char *body, const char *name, char *dst, size_t cap)
+form_result_t netcfg_url_decode(char *dst, size_t cap, const char *src, size_t srclen)
+{
+    return url_decode(dst, cap, src, srclen, false);
+}
+
+static form_result_t field(const char *body, const char *name, char *dst, size_t cap, bool multiline)
 {
     char key[24];
     int kn = snprintf(key, sizeof key, "%s=", name);
@@ -68,11 +76,21 @@ form_result_t netcfg_form_field(const char *body, const char *name, char *dst, s
             const char *v = p + kn;
             const char *end = strchr(v, '&');
             size_t vlen = end ? (size_t)(end - v) : strlen(v);
-            return netcfg_url_decode(dst, cap, v, vlen);
+            return url_decode(dst, cap, v, vlen, multiline);
         }
         p += kn;
     }
     return FORM_ABSENT;
+}
+
+form_result_t netcfg_form_field(const char *body, const char *name, char *dst, size_t cap)
+{
+    return field(body, name, dst, cap, false);
+}
+
+form_result_t netcfg_form_field_text(const char *body, const char *name, char *dst, size_t cap)
+{
+    return field(body, name, dst, cap, true);
 }
 
 const char *netcfg_form_error(form_result_t result)

@@ -2720,6 +2720,66 @@
           }
         }
       }
+    },
+    "setup.error.tunnel": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the WireGuard profile: one [Interface] and one [Peer], an IPv4 Address, an Endpoint host:port, and AllowedIPs naming the collector’s single /32."
+          }
+        }
+      }
+    },
+    "setup.error.tunnel_late": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The observer saved its configuration before the tunnel profile arrived. Reconnect and set up again, sending the profile first."
+          }
+        }
+      }
+    },
+    "setup.error.tunnel_unsupported": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This observer’s firmware has no WireGuard support. Update it, or leave the profile empty to connect over the public endpoint."
+          }
+        }
+      }
+    },
+    "setup.tunnel.note": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Paste the WireGuard .conf your collector operator gave you. AllowedIPs is the collector’s address inside the tunnel. Leave empty to connect over the public endpoint."
+          }
+        }
+      }
+    },
+    "setup.tunnel.profile": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "WireGuard profile"
+          }
+        }
+      }
+    },
+    "setup.tunnel.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Secure tunnel (optional)"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

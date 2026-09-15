@@ -12,6 +12,8 @@
 #define PUSHER_H
 
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,6 +33,15 @@ typedef struct {
     const char *session;
     const char *ca_pem;   // PEM CA to verify the collector; NULL => Mozilla bundle
     bool insecure;        // skip TLS verification (dev only)
+    // tunnel_host is the collector's address inside the WireGuard tunnel, or NULL when no
+    // tunnel is configured, and tunnel_up reports whether the peer session is valid (NULL
+    // means never). While it is, connections go to tunnel_host and TLS still verifies
+    // `host`; otherwise the public `host` is used, so the tunnel is an upgrade to the
+    // uplink and never a single point of failure. A direct session moves onto the tunnel
+    // once it comes up (see serve()).
+    const char *tunnel_host;
+    bool (*tunnel_up)(void);
+    void (*update_control)(const uint8_t *,size_t); // authenticated GNF1 control frames
 } pusher_cfg_t;
 
 // pusher_start copies cfg and spawns the push task. The spool must already be initialised,
@@ -41,6 +52,11 @@ bool pusher_start(const pusher_cfg_t *cfg);
 
 // pusher_connected reports whether the push link is currently up (for the status display/LED).
 bool pusher_connected(void);
+
+// pusher_via_tunnel reports whether the current push link runs inside the WireGuard tunnel.
+// False whenever pusher_connected() is false.
+bool pusher_via_tunnel(void);
+bool pusher_durable_connected(void);
 
 #ifdef __cplusplus
 }

@@ -25,6 +25,7 @@ type ObserverDetails struct {
 	Resources     *BoardResources   `json:"resources,omitempty"`
 	Receiver      *BoardReceiver    `json:"receiver,omitempty"`
 	Firmware      string            `json:"firmware,omitempty"`
+	Update        *BoardUpdate      `json:"update,omitempty"`
 	Timing        *BoardTiming      `json:"timing,omitempty"`
 }
 type BoardEnvironment struct {
@@ -196,6 +197,12 @@ func decodeObserverDetails(b []byte) (*ObserverDetails, error) {
 				}
 			}
 			d.Firmware = string(v)
+		case 9:
+			update, err := DecodeBoardUpdate(v)
+			if err != nil {
+				return nil, err
+			}
+			d.Update = update
 		case 8:
 			var err error
 			d.Timing, err = decodeBoardTiming(v, d.UptimeMS)

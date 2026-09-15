@@ -16,6 +16,19 @@ git_describe(NVF_REVISION "${CMAKE_CURRENT_SOURCE_DIR}" --always --dirty --exclu
 if(NOT NVF_REVISION OR NVF_REVISION MATCHES "NOTFOUND")
     set(NVF_REVISION "unknown")
 endif()
+# The release adapter builds isolated clean commits. ESP-IDF may regenerate its
+# target-specific lock; that derived file must not change the release identity.
+if(DEFINED NVF_RELEASE_REVISION)
+    string(LENGTH "${NVF_RELEASE_REVISION}" release_revision_length)
+    execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE actual_revision OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
+    if(NOT release_revision_length EQUAL 40 OR NOT NVF_RELEASE_REVISION MATCHES "^[0-9a-f]+$" OR NOT actual_revision STREQUAL NVF_RELEASE_REVISION)
+        message(FATAL_ERROR "Release revision must equal this isolated checkout's exact commit")
+    endif()
+    execute_process(COMMAND git diff --quiet HEAD -- . ":(exclude)esp32/dependencies.lock"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.." COMMAND_ERROR_IS_FATAL ANY)
+    string(SUBSTRING "${NVF_RELEASE_REVISION}" 0 7 NVF_REVISION)
+endif()
 set(PROJECT_VER "${NVF_RELEASE}+${NVF_BUILD}.${NVF_REVISION}")
 string(LENGTH "${PROJECT_VER}" NVF_VERSION_LENGTH)
 if(NVF_VERSION_LENGTH GREATER 31)

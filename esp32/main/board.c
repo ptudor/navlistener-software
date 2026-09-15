@@ -1,3 +1,4 @@
+#include "update_runtime.h"
 #include "board.h"
 #include "sdkconfig.h"
 #if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
@@ -292,6 +293,11 @@ static void report_poll(const gnss_status_t *status, int64_t now, uint8_t expect
             (unsigned long)report.event_count, (unsigned)n);
     }
 }
+static size_t append_update(uint8_t *body,size_t length,size_t capacity) {
+    if(!length || length+143>capacity)return length;
+    if(!nvf_update_wire(body+length+3))return length;
+    body[length]=9;body[length+1]=0;body[length+2]=140;return length+143;
+}
 static void timing_poll(const gnss_status_t *status)
 {
     uint64_t now=esp_timer_get_time()/1000;
@@ -306,6 +312,7 @@ static void timing_poll(const gnss_status_t *status)
     uint8_t body[OBSERVER_REPORT_MAX], record[OBSERVER_REPORT_MAX+GNF1_RECORD_HDR];
     size_t length=observer_timing_encode(body,sizeof body,&report.timing,esp_timer_get_time()/1000);
     if (!length) return;
+    length=append_update(body,length,sizeof body);
     size_t n=gnf1_encode_telem(record,report_now_ns ? report_now_ns() : 0,GNF1_T_OBSERVER,body,length);
     if (n) (void)spool_append(record,n);
     // Same versioned bytes as collector telemetry. A serial capture can produce

@@ -97,6 +97,20 @@ int main(void)
     expect(strstr(netcfg_form_error(FORM_MALFORMED), "malformed") != NULL, "malformed reason");
     expect(strstr(netcfg_form_error(FORM_TRUNCATED), "too long") != NULL, "truncated reason");
 
+    /* The textarea variant keeps a pasted profile's line structure (browsers send CRLF as
+     * %0D%0A, tabs as %09) and still refuses every other control byte and NUL. The
+     * single-line decoder is unchanged: a newline in a hostname stays malformed. */
+    char profile[32];
+    expect(netcfg_form_field_text("wg=%5BPeer%5D%0D%0AKey+%3D+v%09x", "wg", profile, sizeof profile) == FORM_OK &&
+           strcmp(profile, "[Peer]\r\nKey = v\tx") == 0, "textarea keeps CR, LF and TAB");
+    expect(netcfg_form_field_text("wg=a%00b", "wg", field, sizeof field) == FORM_MALFORMED, "textarea refuses NUL");
+    expect(netcfg_form_field_text("wg=a%01b", "wg", field, sizeof field) == FORM_MALFORMED, "textarea refuses C0");
+    expect(netcfg_form_field_text("wg=a%7Fb", "wg", field, sizeof field) == FORM_MALFORMED, "textarea refuses DEL");
+    expect(netcfg_form_field_text("host=x", "wg", field, sizeof field) == FORM_ABSENT, "textarea absent");
+    expect(netcfg_form_field("host=a%0Ab", "host", field, sizeof field) == FORM_MALFORMED, "single-line still refuses LF");
+    expect(netcfg_form_field("host=a%0Db", "host", field, sizeof field) == FORM_MALFORMED, "single-line still refuses CR");
+    expect(netcfg_form_field("host=a%09b", "host", field, sizeof field) == FORM_MALFORMED, "single-line still refuses TAB");
+
     printf("netcfg form decoder: %d failure(s)\n", failures);
     return failures != 0;
 }

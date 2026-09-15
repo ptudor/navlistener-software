@@ -103,8 +103,8 @@ extracts that one line and runs
 QR payload. When `qrencode` is installed it also creates a private QR SVG. Print
 and attach the QR plus text password before deployment. Each invocation uses a
 new directory and cannot overwrite an earlier device's credential capture. The
-target never erases NVS; an existing setup credential is deliberately not
-printed again. Set `FIRST_BOOT_DIR=/new/private/path` to choose a new capture
+target never erases NVS; development builds reprint an existing setup
+credential whenever setup starts. Set `FIRST_BOOT_DIR=/new/private/path` to choose a new capture
 directory explicitly.
 
 ## Finding the onboard GNSS receiver
@@ -278,7 +278,7 @@ Pass `--chip esp32s3` for the custom observer. Those offset/size values are the
 the same offset and size, so the region is identical on both boards; the LittleFS
 spool partition is left intact. This whole-NVS erase also destroys the setup
 credential, update key, and hardware identity history. On the next boot firmware
-creates a different setup password and emits its QR payload once on the serial
+creates a different setup password and emits its QR payload on the serial
 console; the old physical label must be replaced before deployment. Use the
 actual serial device path for the board. This is a configuration erase, not a
 firmware reflash.
@@ -379,7 +379,48 @@ uptime. Qualified GNSS or running-RTC time anchors preserve clock provenance.
 See [installation, retention and laptop readout](docs/JOURNAL.md). Installing the
 new partition table over USB once enables the journal on earlier S3 layouts.
 
+## WireGuard tunnel to the collector (ESP32-S3)
+
+`NVF_WIREGUARD` (default on for the S3 observer) accepts an optional WireGuard
+profile at provisioning and carries the GNF1/TLS push session inside that tunnel
+to the collector whenever the peer session is up, falling back to the public
+collector endpoint otherwise. The tunnel is an uplink upgrade, never a single
+point of failure: a unit with no profile, or whose tunnel is down, streams to
+the public endpoint exactly as before. GNF1/TLS is unchanged inside the tunnel,
+so the collector still authenticates the bearer token and the observer still
+verifies the collector's certificate against its configured hostname. The
+ESP32-C6 build has no tunnel support and always uses the public endpoint.
+
+Provision a profile through the Station app's `nav-tunnel` endpoint or by pasting
+a wg-quick `.conf` into the browser portal; the profile format, the byte layout
+and how to generate one are in [PROVISIONING.md](docs/PROVISIONING.md#nav-tunnel-endpoint).
+Notable properties:
+
+- **IPv4 only, one collector.** `AllowedIPs` names exactly the collector's tunnel
+  address as a `/32`; that single host is the only destination routed through the
+  tunnel. SNTP, OTA downloads and DNS keep the ordinary uplink.
+- **Time first.** A WireGuard handshake carries a timestamp the peer rejects if
+  it is not newer than the last from that key, so the first handshake waits for a
+  plausible wall clock (SNTP today; hardware RTC time remains P-hw work). A reboot
+  therefore reconnects only once the clock is set, the same bar the collector's
+  TLS certificate check already imposes.
+- **Reconnect and preference.** The tunnel task waits for Wi-Fi, brings the peer
+  up with backoff, and re-resolves the endpoint if no handshake completes for 90 s.
+  The pusher moves a live public session onto the tunnel once the peer is up and
+  nothing sent is still awaiting its ACK, replaying from the durable watermark as
+  on any reconnect. The dashboard heartbeat logs `link=up/tunnel` or `up/direct`
+  and a separate `tunnel=up/down`.
+- **Keys.** WireGuard uses Curve25519, so the tunnel key is a software secret in
+  NVS, separate from the planned ATECC-backed P-256 identity. Treat the profile
+  as a secret: it contains the observer's private key.
+
+The port is the BSD-3-Clause `esphome/wireguard` component (the lwIP WireGuard
+implementation via `trombik/esp_wireguard`), pinned in the `tunnel` component's
+`idf_component.yml` and gated to the `esp32s3` target so the C6 image and its
+`dependencies.lock` never pull it.
+
 ## GNSS PPS and RTC timing (ESP32-S3)
+
 
 Hardware capture measures the GNSS PPS input and the RTC's 1 Hz square wave,
 including independent pulse totals, interval, width and relative phase/drift.
@@ -431,7 +472,9 @@ Authorize the observer for the `ubx` feed using the collector's configured
 credentials or database authorization provider ([DESIGN.md §3](../docs/DESIGN.md#3-node-identity--the-hardware-observer)).
 Current ESP32 firmware authenticates with a **bearer token** stored in NVS through
 the provisioning portal. The collector also supports mTLS credentials, but the
-ESP32 ATECC-backed credential and enrollment path remains P-hw work.
+ESP32 ATECC-backed credential and enrollment path remains P-hw work. An optional
+WireGuard tunnel can wrap the uplink for a station on request; see
+[the tunnel section](#wireguard-tunnel-to-the-collector-esp32-s3).
 
 ## Design rules (do not break)
 

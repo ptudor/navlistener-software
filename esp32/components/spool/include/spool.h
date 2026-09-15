@@ -13,11 +13,17 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
 #include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// Hold complete records at the enqueue boundary during safe installation.
+// The caller that pauses must resume on every non-reboot path. ACKs keep flowing.
+bool spool_pause_producers(uint64_t *final);
+void spool_resume_producers(void);
 
 // spool_frame is one collected record: the caller owns `data` and must free() it.
 typedef struct {

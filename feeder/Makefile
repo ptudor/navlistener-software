@@ -29,7 +29,7 @@ endif
 
 all: $(BINARY)
 
-$(BINARY): navfeeder.c ubx_config.h
+$(BINARY): navfeeder.c ubx_config.h ../common/endpoint_fallback.h
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ navfeeder.c $(LDLIBS)
 
 check: $(BINARY)

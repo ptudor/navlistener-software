@@ -80,25 +80,25 @@ int main(void){
     s_cfg=(pusher_cfg_t){.host="collector",.port=443,.token="token",.station="station",.feed="ubx",.session="same-boot"};
     for(int outage=0;outage<3;outage++){
         mode=STALL;finish_allowed=false;start_us=clock_us;restore_us=clock_us+15000000;lost=produced+1;produce();
-        int before=connections;assert(serve()==0);
+        int before=connections;assert(serve(s_cfg.host, NULL, false)==0);
         assert(connections==before+1&&!finished&&durable==lost-1);
         assert(clock_us-start_us>=ACK_STALL_US&&clock_us-start_us<ACK_STALL_US+1000000);
         uint64_t dropped;size_t count;spool_stats(NULL,&dropped,&count);assert(!dropped&&count<1024);
-        finish_allowed=true;assert(serve()<=0); // same boot, replay from the durable watermark
+        finish_allowed=true;assert(serve(s_cfg.host, NULL, false)<=0); // same boot, replay from the durable watermark
         assert(spool_acked()==produced&&durable==produced&&persisted[lost]);
         spool_stats(NULL,&dropped,&count);assert(!dropped&&!count);
     }
-    mode=IDLE;start_us=clock_us;int before=connections;assert(serve()==0);
+    mode=IDLE;start_us=clock_us;int before=connections;assert(serve(s_cfg.host, NULL, false)==0);
     assert(connections==before+1&&clock_us-start_us>=120000000&&pings>0);
     mode=SLOW;start_us=clock_us;next_slow_us=clock_us+5000000;
     for(int i=0;i<20;i++)produce();slow_limit=produced;
-    before=connections;assert(serve()==0);
+    before=connections;assert(serve(s_cfg.host, NULL, false)==0);
     assert(connections==before+1&&durable==produced&&clock_us-start_us>=100000000);
     // A saturating peer (endless unchanged ACKs/PONGs, one record outstanding
     // and never persisted) cannot starve the watchdog: the bounded drain yields
     // to it every DRAIN_BATCH frames and the stall still fires on time.
     mode=FLOOD;start_us=clock_us;produce();before=connections;
-    assert(serve()==0);
+    assert(serve(s_cfg.host, NULL, false)==0);
     assert(connections==before+1&&clock_us-start_us>=ACK_STALL_US&&clock_us-start_us<ACK_STALL_US+2000000);
     assert(hellos==connections);
     puts("ACK-stall replay, healthy heartbeats, repeated outages, idle, slow and flooding ACK progress PASS");

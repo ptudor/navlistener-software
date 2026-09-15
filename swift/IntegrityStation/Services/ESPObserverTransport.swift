@@ -44,6 +44,7 @@ final class ESPObserverTransport: ObserverProvisioningTransport, @preconcurrency
     private var generation = 0
     private var onDisconnect: (@Sendable () -> Void)?
     private var hasStartedSearch = false
+    private(set) var supportsTunnel = false
 
     func connect(label: ObserverSetupLabel) async throws {
         disconnect()
@@ -70,7 +71,12 @@ final class ESPObserverTransport: ObserverProvisioningTransport, @preconcurrency
                                 guard let self, self.generation == operation else { return }
                                 switch status {
                                 case .connected:
-                                    complete(self.supports(device) ? .success(()) : .failure(.incompatibleDevice))
+                                    if self.supports(device) {
+                                        self.supportsTunnel = ObserverSetupContract.supportsTunnel(device.versionInfo as? [String: Any])
+                                        complete(.success(()))
+                                    } else {
+                                        complete(.failure(.incompatibleDevice))
+                                    }
                                 case .failedToConnect: complete(.failure(.connection))
                                 case .disconnected:
                                     self.onDisconnect?()
@@ -101,12 +107,21 @@ final class ESPObserverTransport: ObserverProvisioningTransport, @preconcurrency
     }
 
     func configure(_ data: Data) async throws -> ObserverSetupReply {
+        try await send(path: "nav-config", data: data)
+    }
+
+    func configureTunnel(_ data: Data) async throws -> ObserverSetupReply {
+        guard supportsTunnel else { throw ObserverSetupError.tunnelUnsupported }
+        return try await send(path: "nav-tunnel", data: data)
+    }
+
+    private func send(path: String, data: Data) async throws -> ObserverSetupReply {
         let device = try connectedDevice()
         let operation = generation
         defer { if generation == operation { onDisconnect = nil } }
         return try await ProvisioningRequest<ObserverSetupReply>().run { complete in
             onDisconnect = { complete(.failure(.connection)) }
-            device.sendData(path: "nav-config", data: data) { response, error in
+            device.sendData(path: path, data: data) { response, error in
                 guard error == nil, let response else { complete(.failure(.connection)); return }
                 do { complete(.success(try ObserverSetupReply.parse(response))) }
                 catch { complete(.failure(.invalidResponse)) }
@@ -150,6 +165,7 @@ final class ESPObserverTransport: ObserverProvisioningTransport, @preconcurrency
         device?.disconnect()
         device = nil
         label = nil
+        supportsTunnel = false
         callback?()
     }
 

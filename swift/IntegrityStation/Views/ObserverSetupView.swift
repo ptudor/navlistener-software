@@ -16,6 +16,7 @@ struct ObserverSetupView: View {
     @State private var port = "5580"
     @State private var stationID = ""
     @State private var enrollmentToken = ""
+    @State private var tunnelProfile = ""
     @State private var message: String?
     @State private var scanning = false
     @State private var checking = false
@@ -38,6 +39,7 @@ struct ObserverSetupView: View {
                 if provisioner.stage == .ready || provisioner.stage == .configuring {
                     networkSection
                     collectorSection
+                    if provisioner.supportsTunnel { tunnelSection }
                     Section {
                         Button("setup.provision") {
                             operationTask = Task { await provision() }
@@ -109,6 +111,7 @@ struct ObserverSetupView: View {
             password = ""
             wifiPassword = ""
             enrollmentToken = ""
+            tunnelProfile = ""
         }
     }
 
@@ -173,6 +176,18 @@ struct ObserverSetupView: View {
         .disabled(provisioner.busy || checking)
     }
 
+    private var tunnelSection: some View {
+        Section("setup.tunnel.title") {
+            TextField("setup.tunnel.profile", text: $tunnelProfile, axis: .vertical)
+                .lineLimit(6...12)
+                .font(.system(.footnote, design: .monospaced))
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+            Text("setup.tunnel.note").font(.caption).foregroundStyle(.secondary)
+        }
+        .disabled(provisioner.busy || checking)
+    }
+
     private func connect() async {
         message = nil
         let label = ObserverSetupLabel(ver: "v1", name: name, username: name, pop: password, transport: "ble")
@@ -190,6 +205,14 @@ struct ObserverSetupView: View {
         guard let port = UInt16(port) else { message = ObserverSetupError.invalidConfig.localizedDescription; return }
         let config = ObserverSetupConfig(host: host, port: port, stationID: stationID, enrollmentToken: enrollmentToken)
         do { _ = try config.encoded() } catch { message = error.localizedDescription; return }
+        // Parse the optional WireGuard profile up front so a typo is caught before any BLE
+        // traffic. An empty box means no tunnel; the field only appears when the device
+        // advertised support.
+        var tunnel: ObserverTunnelConfig?
+        if provisioner.supportsTunnel, !tunnelProfile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            do { tunnel = try ObserverTunnelConfig.parse(tunnelProfile) }
+            catch { message = ObserverSetupError.invalidTunnel.localizedDescription; return }
+        }
         checking = true
         confirmation = nil
         confirmationSession = nil
@@ -208,10 +231,11 @@ struct ObserverSetupView: View {
         }
         checking = false
         guard !Task.isCancelled else { return }
-        await provisioner.provision(config, ssid: ssid, password: wifiPassword)
+        await provisioner.provision(config, ssid: ssid, password: wifiPassword, tunnel: tunnel)
         if provisioner.stage == .awaitingCollector {
             enrollmentToken = ""
             wifiPassword = ""
+            tunnelProfile = ""
             if confirmation != nil { await checkCollector() }
         }
     }

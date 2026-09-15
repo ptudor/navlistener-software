@@ -11,6 +11,17 @@ menu "navfeeder-esp"
         string "WiFi password"
         default ""
 
+    config NVF_SETUP_CONSOLE_PASSWORD
+        bool "Show the setup password on every development setup boot"
+        depends on !SECURE_BOOT
+        default y
+        help
+            Reprint the persistent BLE/SoftAP setup label on the USB/serial
+            console whenever setup starts, including after a configuration
+            reset. This does not print the joined WiFi network's password.
+            Disable for production: unfused manufacturing then prints only
+            newly created labels. Secure Boot builds never print setup secrets.
+
     config NVF_COLLECTOR_HOST
         string "Collector host"
         default ""
@@ -110,6 +121,30 @@ menu "navfeeder-esp"
             AP, then initiate HTTPS image downloads from tools/ota.py. Requires
             the S3 OTA partition layout and an initial serial flash of the
             rollback-capable bootloader and application. No eFuses are changed.
+
+    config NVF_WIREGUARD
+        bool "WireGuard tunnel to the collector (ESP32-S3)"
+        depends on NVF_BOARD_GNSS_COLOR_NEO
+        default y
+        help
+            Accept an optional WireGuard profile at provisioning (a pasted wg-quick
+            .conf in the browser portal, or the Station app's nav-tunnel endpoint)
+            and carry the GNF1/TLS session inside that tunnel whenever its peer is
+            up, falling back to the public collector endpoint otherwise. Only the
+            collector's tunnel address is routed through it; SNTP, OTA and DNS keep
+            the ordinary uplink. IPv4 only; the first handshake waits for time sync.
+            The ESP32-C6 build has no tunnel support and always uses the public
+            endpoint.
+
+    config NVF_UPDATE_TEST_KEYS
+        bool "Allow explicitly supplied test-only update trust (unfused development)"
+        depends on NVF_OTA && !SECURE_BOOT
+        default n
+        help
+            Enables the signed update workflow on an unfused development board.
+            Supply a test-only public TUF root with -D NVF_TUF_ROOT_FILE=... .
+            Production roots and test roots cannot be interchanged. Production
+            release tooling rejects this setting. No key is supplied by default.
 
     config NVF_RX_AUTOPROBE
         bool "Probe receiver baud and query MON-VER"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pair through the setup AP, then authorize one HTTPS firmware download."""
+"""Pair through the setup AP and manage authenticated firmware updates."""
 import argparse
 import datetime
 import hashlib
@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,12 +27,12 @@ def device_url(device):
     return "http://" + device
 
 
-def exchange(device, path, data=None, headers=None):
-    request = urllib.request.Request(device_url(device) + path, data=data, headers=headers or {})
+def exchange(device, path, data=None, headers=None, *, method=None, timeout=10):
+    request = urllib.request.Request(device_url(device) + path, data=data, headers=headers or {}, method=method)
     # Pairing credentials must go directly to the protected AP, never a proxy
     # selected by a workstation environment variable or an HTTP redirect.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-    with opener.open(request, timeout=10) as response:
+    with opener.open(request, timeout=timeout) as response:
         body = response.read(8193)
         if len(body) > 8192:
             raise ValueError("oversized device response")
@@ -110,50 +111,129 @@ def print_journal(rows):
               f"{row['firmware']:32} {row['reset_reason']:5} {row['flags']:02x} {row['dropped']}")
 
 
+def api_authorization(key, nonce, method, path, body):
+    if method not in ("POST", "PUT") or path not in (
+        "/ota/v1/check", "/ota/v1/download", "/ota/v1/install", "/ota/v1/cancel", "/ota/v1/policy"
+    ):
+        raise ValueError("unsupported update request")
+    binding = method.encode("ascii") + b"\n" + path.encode("ascii") + b"\n" + body
+    return authorization(key, nonce, binding, b"navfeeder-ota-api-v1\n")
+
+
+def api_status(device):
+    return json.loads(exchange(device, "/ota/v1/status"))
+
+
+def api_mutation(device, key, command, value):
+    path = "/ota/v1/" + command
+    method = "PUT" if command == "policy" else "POST"
+    body = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    status = api_status(device)
+    signature = api_authorization(key, status.get("nonce"), method, path, body)
+    return json.loads(exchange(device, path, body, {
+        "Content-Type": "application/json", "X-OTA-Nonce": status["nonce"],
+        "X-OTA-Authorization": signature,
+    }, method=method, timeout=75 if value.get("discard_backlog") else 10))
+
+
+def wait_for(device, predicate, *, timeout=600):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = api_status(device)
+        if predicate(status):
+            return status
+        if status.get("error") not in (None, "OK") and not status.get("busy"):
+            raise ValueError(f"{status.get('state')}: {status.get('error')}. {status.get('next_action', '')}")
+        time.sleep(1)
+    raise ValueError("update is still pending; inspect status before issuing another request")
+
+
+def sequence(value):
+    if not re.fullmatch(r"0|[1-9][0-9]*", value) or int(value) >= 2**64:
+        raise ValueError("release sequence must be an unsigned 64-bit decimal number")
+    return value
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", required=True, help="device IP/hostname, optionally :port")
     commands = parser.add_subparsers(dest="command", required=True)
     pair = commands.add_parser("pair", help="join the password-protected setup AP first")
-    pair.add_argument("--key-file", required=True, help="private file; created if absent")
+    pair.add_argument("--key-file", required=True, help="private pairing file; created if absent")
     commands.add_parser("status")
-    journal = commands.add_parser("journal", help="read the bounded persistent diagnostic FIFO")
+    journal = commands.add_parser("journal", help="read the persistent diagnostic FIFO")
     journal.add_argument("--key-file", required=True)
     journal.add_argument("--lane", choices=("life", "health"), default="life")
     journal.add_argument("--limit", type=int, default=256)
-    journal.add_argument("--json", action="store_true", help="include every stored field")
-    update = commands.add_parser("update")
-    update.add_argument("--key-file", required=True)
-    update.add_argument("--image", required=True, help="local app binary whose SHA-256 the device must verify")
-    update.add_argument("--url", required=True, help="direct HTTPS URL serving the same app binary")
+    journal.add_argument("--json", action="store_true")
+    for name in ("check", "download", "install", "update", "cancel", "set-policy"):
+        command = commands.add_parser(name)
+        command.add_argument("--key-file", required=True)
+        if name in ("download", "install", "cancel"):
+            command.add_argument("--release", type=sequence, help="defaults to the available/staged release; cancel defaults to current")
+        if name == "install":
+            command.add_argument("--discard-backlog", action="store_true", help="attended emergency: allow loss of queued observations")
+        if name == "set-policy":
+            command.add_argument("--mode", required=True, choices=("manual", "download", "install"))
+            command.add_argument("--channel", required=True, choices=("stable", "canary", "lab"))
+    recovery = commands.add_parser("service-recovery", help="attended direct-image recovery; use normal update for signed repository releases")
+    recovery.add_argument("--key-file", required=True)
+    recovery.add_argument("--image", required=True)
+    recovery.add_argument("--url", required=True)
+    recovery.add_argument("--acknowledge-reboot-and-backlog-loss", action="store_true", required=True)
     args = parser.parse_args()
     if args.command == "pair":
         key = read_key(args.key_file, create=True)
-        print(exchange(args.device, "/ota/pair", key.hex().encode("ascii"),
-                       {"Content-Type": "text/plain"}).decode().strip())
+        print(exchange(args.device, "/ota/pair", key.hex().encode("ascii"), {"Content-Type": "text/plain"}).decode().strip())
     elif args.command == "status":
-        print(json.dumps(json.loads(exchange(args.device, "/ota")), indent=2))
+        status = api_status(args.device)
+        status.pop("nonce", None)
+        print(json.dumps(status, indent=2))
     elif args.command == "journal":
         if not 1 <= args.limit <= 1024:
             raise ValueError("limit must be between 1 and 1024")
         rows = read_journal(args.device, read_key(args.key_file), args.lane, args.limit)
-        if args.json:
-            print(json.dumps(rows, indent=2))
-        else:
-            print_journal(rows)
-    else:
+        print(json.dumps(rows, indent=2)) if args.json else print_journal(rows)
+    elif args.command == "service-recovery":
         body = update_body(args.image, args.url)
         key = read_key(args.key_file)
         status = json.loads(exchange(args.device, "/ota"))
         if not status.get("confirmed"):
             raise ValueError("running firmware has not passed its startup checks")
         signature = authorization(key, status.get("nonce"), body)
-        result = exchange(args.device, "/ota", body, {
-            "Content-Type": "text/plain", "X-OTA-Nonce": status["nonce"],
-            "X-OTA-Authorization": signature,
-        })
-        print(result.decode().strip())
-        print("Use status after reboot to inspect the running version and partition.")
+        print(exchange(args.device, "/ota", body, {"Content-Type": "text/plain", "X-OTA-Nonce": status["nonce"],
+            "X-OTA-Authorization": signature}).decode().strip())
+    else:
+        key = read_key(args.key_file)
+        if args.command == "set-policy":
+            result = api_mutation(args.device, key, "policy", {"mode": args.mode, "channel": args.channel})
+        elif args.command == "check":
+            result = api_mutation(args.device, key, "check", {})
+        elif args.command == "update":
+            started = int(time.time())
+            api_mutation(args.device, key, "check", {})
+            # The worker persists a successful check before availability is used.
+            status = wait_for(args.device, lambda s: int(s.get("last_check", 0)) >= started and
+                not s.get("busy") and s.get("state") in ("idle", "available", "staged"))
+            release = sequence(status.get("available_release", "0"))
+            if int(release) <= int(status.get("running_release", "0")):
+                print("The selected channel has no newer eligible release.")
+                return
+            api_mutation(args.device, key, "download", {"release_sequence": release})
+            wait_for(args.device, lambda s: s.get("staged_release") == release and not s.get("busy"))
+            result = api_mutation(args.device, key, "install", {"release_sequence": release, "discard_backlog": False})
+        else:
+            status = api_status(args.device)
+            default = "0" if args.command == "cancel" else status.get("staged_release" if args.command == "install" else "available_release", "0")
+            release = sequence(args.release or default)
+            if args.command != "cancel" and release == "0":
+                raise ValueError("no matching release; run check and inspect status first")
+            value = {"release_sequence": release}
+            if args.command == "install":
+                value["discard_backlog"] = args.discard_backlog
+            result = api_mutation(args.device, key, args.command, value)
+        print(json.dumps(result, indent=2))
+        print("Request accepted. Device status reports the actual result.")
 
 
 if __name__ == "__main__":

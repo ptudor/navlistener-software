@@ -10,10 +10,31 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#define NETCFG_TUNNEL_KEY_LEN 32
+
+// netcfg_tunnel_t is the optional WireGuard profile (ESP32-S3, NVF_WIREGUARD). Keys are
+// stored decoded so the record has one fixed layout and validation happens exactly once,
+// at provisioning. An all-zero preshared key means none. Addresses are IPv4 in network
+// byte order; the tunnel is IPv4-only. `collector` is the single AllowedIPs /32 — the
+// collector's address inside the tunnel and the only destination it carries.
+typedef struct {
+    bool    enabled;
+    uint8_t private_key[NETCFG_TUNNEL_KEY_LEN];
+    uint8_t peer_public_key[NETCFG_TUNNEL_KEY_LEN];
+    uint8_t preshared_key[NETCFG_TUNNEL_KEY_LEN];
+    char    endpoint_host[64];   // DNS name or IPv4 literal of the WireGuard peer
+    int     endpoint_port;
+    uint8_t address[4];          // this observer's tunnel address
+    int     prefix;              // 1..32
+    uint8_t collector[4];        // the collector's tunnel address
+    int     keepalive;           // persistent keepalive seconds, 0 = off
+} netcfg_tunnel_t;
 
 typedef struct {
     char wifi_ssid[33];
@@ -23,6 +44,7 @@ typedef struct {
     char token[129];     // bearer token
     char station[33];    // observer/station id
     bool insecure;       // skip TLS verification (dev only)
+    netcfg_tunnel_t tunnel; // optional WireGuard profile; ignored unless enabled
 } netcfg_t;
 
 // NETCFG_ERR_CAP bounds the reason buffer netcfg_validate fills. Messages are kept short
@@ -33,7 +55,8 @@ typedef struct {
 
 // netcfg_validate reports whether cfg is complete enough to run in station mode: non-empty
 // SSID, collector host, bearer token, and station id, and a port in [1, 65535]. The WiFi
-// password is NOT required (open networks are legal).
+// password is NOT required (open networks are legal). An enabled tunnel profile must also
+// pass netcfg_tunnel_validate; a disabled one is never inspected.
 //
 // On failure it writes a short human-readable reason into err (NUL-terminated, truncated to
 // errcap) when err is non-NULL and errcap > 0. This is THE definition of "provisioned" —

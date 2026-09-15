@@ -24,6 +24,7 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/ptudor/navlistener/internal/federation"
 	"github.com/ptudor/navlistener/internal/identity"
+	"github.com/ptudor/navlistener/internal/updates"
 )
 
 // IntervalRe is the simple-interval allowlist for store.Store's raw_retention and
@@ -82,16 +83,17 @@ var knownDialTypes = map[string]bool{
 
 // Config is the whole-daemon configuration.
 type Config struct {
-	Collector     Collector     `toml:"collector"`
-	Logging       Logging       `toml:"logging"`
-	Metrics       Metrics       `toml:"metrics"`
-	State         State         `toml:"state"`
-	Store         Store         `toml:"store"`
-	Serve         Serve         `toml:"serve"`
-	Push          Push          `toml:"push"`
-	Authorization Authorization `toml:"authorization"`
-	Federation    Federation    `toml:"federation"`
-	Ingest        []Source      `toml:"ingest"`
+	Updates       updates.Config `toml:"updates"`
+	Collector     Collector      `toml:"collector"`
+	Logging       Logging        `toml:"logging"`
+	Metrics       Metrics        `toml:"metrics"`
+	State         State          `toml:"state"`
+	Store         Store          `toml:"store"`
+	Serve         Serve          `toml:"serve"`
+	Push          Push           `toml:"push"`
+	Authorization Authorization  `toml:"authorization"`
+	Federation    Federation     `toml:"federation"`
+	Ingest        []Source       `toml:"ingest"`
 
 	// ShutdownTimeout bounds graceful shutdown; kept out of the wire format.
 	ShutdownTimeout time.Duration `toml:"-"`
@@ -462,6 +464,12 @@ func defaults() *Config {
 // strict and fatal: an unknown connector type or a duplicate source name is a
 // configuration error, not a warning.
 func (c *Config) finalize() error {
+	if err := c.Updates.Validate(); err != nil {
+		return fmt.Errorf("updates: %w", err)
+	}
+	if c.Updates.StateFile != "" && (c.Push.Addr == "" || c.Serve.Addr == "") {
+		return fmt.Errorf("updates require both push and serve endpoints")
+	}
 	if !identity.ValidScopeID(c.Collector.InstanceID) {
 		return fmt.Errorf("collector.instance_id %q is invalid", c.Collector.InstanceID)
 	}

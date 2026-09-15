@@ -23,6 +23,6 @@ dependencies:
     version: 5.5.4
 direct_dependencies:
 - esp_hardware_discovery
-manifest_hash: 018e5eb98066a21d1b035ed88b4f403c4ac905ffc511e2d2513da09c8bd90df8
+manifest_hash: 72ab0d8748b4265cc0f2a61365a41359346ec869fd90c1b62bb08a4f17fc53ca
 target: esp32c6
 version: 2.0.0

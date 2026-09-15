@@ -15,8 +15,17 @@
 #define CONFIG_NVF_INSECURE 0
 #endif
 #define NVS_NS "navfeeder"
+// One key, two accepted layouts. The key name predates the format-2 extension and is
+// kept so a record is still replaced in place (one blob, one transaction); the format
+// version field at offset 4 tells them apart. Format 1 (348 bytes) is read for records
+// written before the WireGuard profile existed and loads with the tunnel disabled;
+// every write uses format 2 (522 bytes). Firmware that predates format 2 fails closed on
+// it ("stored config unreadable") and reopens setup, which is the documented downgrade
+// behaviour for any unknown future format.
 #define RECORD_KEY "config_v1"
-#define RECORD_SIZE 348
+#define RECORD_V1_SIZE 348
+#define RECORD_SIZE 522
+#define TUNNEL_OFFSET 344 // after the format-1 fields; 174 bytes, then the CRC
 static _lock_t storage_lock;
 
 static uint64_t get_le(const uint8_t *p, size_t n)
@@ -42,13 +51,46 @@ static bool terminated(const netcfg_t *c)
 {
     return c && memchr(c->wifi_ssid, 0, sizeof c->wifi_ssid) &&
         memchr(c->wifi_pass, 0, sizeof c->wifi_pass) && memchr(c->host, 0, sizeof c->host) &&
-        memchr(c->token, 0, sizeof c->token) && memchr(c->station, 0, sizeof c->station);
+        memchr(c->token, 0, sizeof c->token) && memchr(c->station, 0, sizeof c->station) &&
+        memchr(c->tunnel.endpoint_host, 0, sizeof c->tunnel.endpoint_host);
+}
+// The format-2 tail: flags, three 32-byte keys, the endpoint, the two tunnel addresses.
+// A disabled profile is written as zeros so no key material outlives the provisioning
+// that removed it.
+static void encode_tunnel(uint8_t *p, const netcfg_tunnel_t *t)
+{
+    if (!t->enabled) return;
+    p[0] = 1;
+    memcpy(p + 1, t->private_key, 32);
+    memcpy(p + 33, t->peer_public_key, 32);
+    memcpy(p + 65, t->preshared_key, 32);
+    memcpy(p + 97, t->endpoint_host, strnlen(t->endpoint_host, sizeof t->endpoint_host));
+    put_le(p + 161, (uint64_t)t->endpoint_port, 2);
+    memcpy(p + 163, t->address, 4);
+    p[167] = (uint8_t)t->prefix;
+    memcpy(p + 168, t->collector, 4);
+    put_le(p + 172, (uint64_t)t->keepalive, 2);
+}
+static bool decode_tunnel(const uint8_t *p, netcfg_tunnel_t *t)
+{
+    if (p[0] > 1) return false;
+    t->enabled = p[0];
+    memcpy(t->private_key, p + 1, 32);
+    memcpy(t->peer_public_key, p + 33, 32);
+    memcpy(t->preshared_key, p + 65, 32);
+    memcpy(t->endpoint_host, p + 97, sizeof t->endpoint_host);
+    t->endpoint_port = (int)get_le(p + 161, 2);
+    memcpy(t->address, p + 163, 4);
+    t->prefix = p[167];
+    memcpy(t->collector, p + 168, 4);
+    t->keepalive = (int)get_le(p + 172, 2);
+    return true;
 }
 static void encode(uint8_t data[RECORD_SIZE], const netcfg_t *cfg, uint64_t generation, bool reset)
 {
     memset(data, 0, RECORD_SIZE);
     memcpy(data, "NFC1", 4);
-    put_le(data + 4, 1, 2); // format version
+    put_le(data + 4, 2, 2); // format version
     put_le(data + 6, RECORD_SIZE, 2);
     put_le(data + 8, generation, 8);
     data[16] = reset;
@@ -61,19 +103,25 @@ static void encode(uint8_t data[RECORD_SIZE], const netcfg_t *cfg, uint64_t gene
 #define FIELD(name) do { memcpy(data + offset, cfg->name, strnlen(cfg->name, sizeof cfg->name)); offset += sizeof cfg->name; } while (0)
     FIELD(wifi_ssid); FIELD(wifi_pass); FIELD(host); FIELD(token); FIELD(station);
 #undef FIELD
+    encode_tunnel(data + TUNNEL_OFFSET, &cfg->tunnel);
     put_le(data + RECORD_SIZE - 4, record_crc(data, RECORD_SIZE - 4), 4);
 }
 static esp_err_t read_record(nvs_handle_t h, netcfg_t *out, uint64_t *generation, bool *reset)
 {
-    uint8_t data[RECORD_SIZE];
+    uint8_t data[RECORD_SIZE] = {0};
     size_t size = sizeof data;
     esp_err_t rc = nvs_get_blob(h, RECORD_KEY, data, &size);
     if (rc == ESP_ERR_NVS_INVALID_LENGTH) return ESP_ERR_INVALID_STATE;
     if (rc != ESP_OK) return rc;
-    if (size != RECORD_SIZE || memcmp(data, "NFC1", 4) || get_le(data + 4, 2) != 1 ||
-        get_le(data + 6, 2) != RECORD_SIZE || get_le(data + 8, 8) == 0 ||
+    // The declared size is a property of the format version, and the blob must match
+    // both, so a truncated or foreign-format record can never pass a CRC over the wrong
+    // span.
+    uint64_t version = size >= 8 ? get_le(data + 4, 2) : 0;
+    size_t expect = version == 1 ? RECORD_V1_SIZE : version == 2 ? RECORD_SIZE : 0;
+    if (!expect || size != expect || memcmp(data, "NFC1", 4) ||
+        get_le(data + 6, 2) != expect || get_le(data + 8, 8) == 0 ||
         data[16] > 1 || data[17] > 1 ||
-        get_le(data + RECORD_SIZE - 4, 4) != record_crc(data, RECORD_SIZE - 4)) return ESP_ERR_INVALID_STATE;
+        get_le(data + expect - 4, 4) != record_crc(data, expect - 4)) return ESP_ERR_INVALID_STATE;
     memset(out, 0, sizeof *out);
     out->port = (int)get_le(data + 18, 2);
     out->insecure = data[17];
@@ -81,6 +129,7 @@ static esp_err_t read_record(nvs_handle_t h, netcfg_t *out, uint64_t *generation
 #define FIELD(name) do { memcpy(out->name, data + offset, sizeof out->name); offset += sizeof out->name; } while (0)
     FIELD(wifi_ssid); FIELD(wifi_pass); FIELD(host); FIELD(token); FIELD(station);
 #undef FIELD
+    if (version == 2 && !decode_tunnel(data + TUNNEL_OFFSET, &out->tunnel)) return ESP_ERR_INVALID_STATE;
     *generation = get_le(data + 8, 8);
     *reset = data[16];
     if (!terminated(out) || (!*reset && !netcfg_validate(out, NULL, 0))) return ESP_ERR_INVALID_STATE;

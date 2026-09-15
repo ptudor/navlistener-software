@@ -8,6 +8,7 @@
 #include "freertos/semphr.h"
 static spool_ring_t g;
 static SemaphoreHandle_t mu;
+static SemaphoreHandle_t producer_gate;
 static bool external;
 static bool allocate(size_t frames, size_t bytes, uint32_t caps)
 {
@@ -24,6 +25,8 @@ bool spool_init(size_t cap)
     if (mu) return false;
     mu = xSemaphoreCreateMutex();
     if (!mu) return false;
+    producer_gate = xSemaphoreCreateMutex();
+    if (!producer_gate) { vSemaphoreDelete(mu); mu = 0; return false; }
 #if CONFIG_NVF_SPOOL_PSRAM
     external = allocate(CONFIG_NVF_SPOOL_PSRAM_FRAMES, CONFIG_NVF_SPOOL_PSRAM_BYTES,
                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -31,6 +34,8 @@ bool spool_init(size_t cap)
 #endif
     if (!external && !allocate(cap, CONFIG_NVF_SPOOL_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)) {
         vSemaphoreDelete(mu);
+        vSemaphoreDelete(producer_gate);
+        producer_gate = 0;
         mu = 0;
         return false;
     }
@@ -40,11 +45,20 @@ bool spool_init(size_t cap)
 }
 uint64_t spool_append(const uint8_t *data, uint32_t len)
 {
+    xSemaphoreTake(producer_gate, portMAX_DELAY);
     xSemaphoreTake(mu, portMAX_DELAY);
     uint64_t seq = spool_ring_append(&g, data, len);
     xSemaphoreGive(mu);
+    xSemaphoreGive(producer_gate);
     return seq;
 }
+bool spool_pause_producers(uint64_t *final)
+{
+    if (!producer_gate || !final || xSemaphoreTake(producer_gate, pdMS_TO_TICKS(500)) != pdTRUE) return false;
+    spool_stats(final, NULL, NULL);
+    return true;
+}
+void spool_resume_producers(void) { xSemaphoreGive(producer_gate); }
 void spool_ack(uint64_t seq)
 {
     xSemaphoreTake(mu, portMAX_DELAY);

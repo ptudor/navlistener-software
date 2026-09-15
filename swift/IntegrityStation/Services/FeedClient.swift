@@ -46,6 +46,54 @@ enum FeedError: Error, Equatable, LocalizedError, Sendable {
 }
 
 enum CollectorEndpoint {
+    // Only aliases of the same collector may receive an existing read token.
+    static func secondaryURL(_ url: URL) -> URL? {
+        guard url.scheme?.lowercased() == "https", url.user == nil, url.password == nil,
+              let host = url.host?.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        else { return nil }
+        let pairs = [
+            ["in.intsat.net", "in.intsat.space"],
+            ["klax1-navlistener.intsat.net", "klax1-navlistener.intsat.space"]
+        ]
+        for pair in pairs {
+            guard let index = pair.firstIndex(of: host) else { continue }
+            var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            components?.host = pair[1 - index]
+            return components?.url
+        }
+        return nil
+    }
+
+    static func canRetry(_ error: Error) -> Bool {
+        if let error = error as? URLError {
+            return error.code != .cancelled && error.code != .userAuthenticationRequired
+                && error.code != .userCancelledAuthentication && error.code != .badURL
+        }
+        if case FeedError.http(let status) = error {
+            return status == 408 || status == 421 || status == 429 || (500...599).contains(status)
+        }
+        return false
+    }
+
+    static func stream(session: URLSession, request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
+        func open(_ request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
+            let result = try await session.bytes(for: request, delegate: CredentialRedirectGuard(request: request))
+            if let http = result.1 as? HTTPURLResponse, canRetry(FeedError.http(http.statusCode)) {
+                result.0.task.cancel()
+                throw FeedError.http(http.statusCode)
+            }
+            return result
+        }
+        do { return try await open(request) }
+        catch {
+            guard canRetry(error), let url = request.url, let secondary = secondaryURL(url) else { throw error }
+            try Task.checkCancellation()
+            var backup = request
+            backup.url = secondary
+            return try await open(backup)
+        }
+    }
+
     static func url(baseURL: URL, path: String) throws -> URL {
         guard let scheme = baseURL.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
@@ -105,6 +153,19 @@ struct FeedClient: Sendable {
         url: URL,
         token: String? = nil,
         session: ReadSession? = nil
+    ) async throws -> APIEnvelope<Payload> {
+        do { return try await fetchOnce(url: url, token: token, session: session) }
+        catch {
+            guard CollectorEndpoint.canRetry(error), let secondary = CollectorEndpoint.secondaryURL(url) else { throw error }
+            try Task.checkCancellation()
+            return try await fetchOnce(url: secondary, token: token, session: session)
+        }
+    }
+
+    private func fetchOnce<Payload: Codable & Sendable>(
+        url: URL,
+        token: String?,
+        session: ReadSession?
     ) async throws -> APIEnvelope<Payload> {
         var request = URLRequest(url: url)
         request.timeoutInterval = 10

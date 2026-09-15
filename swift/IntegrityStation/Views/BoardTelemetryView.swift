@@ -21,12 +21,37 @@ struct BoardTelemetryView: View {
                     diagnosticsCard(sample)
                 }
             }
+            if let sample = board.update, let update = sample.details?.update {
+                updateCard(update, sample: sample)
+            }
             if let sample = board.timing, let timing = sample.details?.timing {
                 timingCard(timing, sample: sample)
             }
             if let event = board.lastInterference, let snapshot = event.snapshot {
                 interferenceCard(event, snapshot: snapshot)
             }
+        }
+    }
+
+    private func updateCard(_ update: BoardUpdate, sample: BoardSample) -> some View {
+        InstrumentCard("update.title", systemImage: "arrow.down.circle") {
+            freshness(sample, stale: board.updateStale, timing: true)
+            MetricRow(label: "update.state", value: update.stateDescription)
+            MetricRow(label: "update.mode", value: update.mode?.capitalized ?? StationFormat.unknown)
+            MetricRow(label: "update.channel", value: update.channel?.capitalized ?? StationFormat.unknown)
+            MetricRow(label: "update.running", value: update.runningRelease ?? StationFormat.unknown)
+            MetricRow(label: "update.available", value: update.availableRelease ?? StationFormat.unknown)
+            if let staged = update.stagedRelease, staged != "0" {
+                MetricRow(label: "update.downloaded", value: staged)
+            }
+            if update.state == "downloading", let progress = update.progress { ProgressView(value: progress) }
+            if let failed = update.failedRelease, failed != "0" {
+                MetricRow(label: "update.failed_release", value: failed)
+            }
+            if let error = update.error, error != "OK" {
+                Text(error).font(.caption.monospaced()).foregroundStyle(StationPalette.warning)
+            }
+            if update.securityFlags != 31 { note("update.development") }
         }
     }
 

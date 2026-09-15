@@ -1,0 +1,333 @@
+#!/usr/bin/env python3
+"""Build, sign and publish a release through explicit external adapters."""
+from __future__ import annotations
+import argparse
+import copy
+from datetime import datetime, timezone
+import fcntl
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import urllib.error
+
+from tuf.api.metadata import Metadata, Targets
+from tuf.api.serialization.json import JSONSerializer
+from repository import Repository, Signers, THRESHOLDS, CHANNELS, atomic, immutable, encoded, digest, init_test_keys
+from firmware_signing import sign_image, verify_image, key_id, keys as firmware_keys
+from publisher import ORIGINS, fetch, publish, verify_public
+
+SOURCE = Path(__file__).resolve().parents[2]
+
+def git(*args, cwd=SOURCE):
+    return subprocess.check_output(["git", *args], cwd=cwd, text=True).strip()
+
+def command_available(command):
+    return isinstance(command, list) and command and all(isinstance(x, str) and x for x in command) and shutil.which(command[0]) is not None
+
+def configuration(path):
+    if not path:
+        raise ValueError("No production release configuration. Start with make release-test-setup; see esp32/docs/UPDATE-OPERATIONS.md before production.")
+    path = Path(path).expanduser().resolve(strict=True)
+    if path.is_relative_to(SOURCE):
+        raise ValueError("release configuration and private key locations must stay outside the checkout")
+    config = json.loads(path.read_bytes())
+    if config.get("production_approved") is not True:
+        raise ValueError("production is not approved; complete and retain the commissioning and soak checklist first")
+    for name in ("state_dir", "signers", "root"):
+        value = Path(config[name]).expanduser()
+        if not value.is_absolute() or value.resolve().is_relative_to(SOURCE):
+            raise ValueError(f"{name} must be an explicit external absolute path")
+        config[name] = str(value.resolve())
+    signers = Signers(Path(config["signers"]), production=True)
+    firmware_keys(signers.config, True)
+    for name in ("build_command", "publish_command"):
+        if not command_available(config.get(name)):
+            raise ValueError(f"{name} adapter is unavailable")
+    if set(config.get("remotes", [])) != {"origin", "github"} or config.get("branch") != "main":
+        raise ValueError("production releases require main and both origin/github software remotes")
+    bootstrap = Path(config["root"]).read_bytes()
+    root = Metadata.from_bytes(bootstrap)
+    if root.signed.unrecognized_fields.get("x_navlisten_test") is not False:
+        raise ValueError("production refuses a test or unmarked bootstrap root")
+    root.verify_delegate("root", root)
+    return config, signers, bootstrap
+
+def clean(config):
+    if git("branch", "--show-current") != config["branch"] or git("status", "--porcelain", "--untracked-files=no"):
+        raise ValueError("release requires the clean main branch; finish or isolate other work first")
+    for remote in config["remotes"]:
+        git("remote", "get-url", "--push", remote)
+    pin = json.loads((SOURCE / "tools/releases/toolchain.json").read_bytes())
+    idf = Path(os.environ.get("IDF_PATH", "/nonexistent"))
+    if not idf.is_dir() or git("rev-parse", "HEAD", cwd=idf) != pin["esp_idf_revision"]:
+        raise ValueError("activate the pinned ESP-IDF v5.5.4 environment before releasing")
+
+def save_transaction(directory, transaction, signers):
+    role = "releases" if directory.name.isdecimal() else "timestamp"
+    envelope = Metadata(Targets(unrecognized_fields={"transaction": transaction}))
+    # Use the appropriate signature adapters, retaining a signed compact record
+    # of the immutable inventory digest rather than copying artifact bytes.
+    atomic(directory / "transaction.json", signers.sign(role, envelope), private=True)
+
+def load_transaction(directory, signers):
+    role = "releases" if directory.name.isdecimal() else "timestamp"
+    envelope = Metadata.from_file(str(directory / "transaction.json"))
+    valid = set()
+    for key in signers.keys[role]:
+        signature = envelope.signatures.get(key.keyid)
+        if signature:
+            key.verify_signature(signature, envelope.signed_bytes); valid.add(key.keyid)
+    if len(valid) < THRESHOLDS[role]:
+        raise ValueError("transaction signature threshold failed")
+    return envelope.signed.unrecognized_fields["transaction"]
+
+def inventory(directory):
+    return {str(p.relative_to(directory)): digest(p.read_bytes()) for p in sorted(directory.rglob("*")) if p.is_file()}
+
+def verify_inventory(directory, expected):
+    for name, sha in expected.items():
+        path = Path(name)
+        if path.is_absolute() or ".." in path.parts or digest((directory / name).read_bytes()) != sha:
+            raise ValueError("transaction output differs; never replace an existing release artifact")
+
+def public_timestamp():
+    values = []
+    for origin in ORIGINS:
+        try:
+            values.append(digest(fetch(origin, "metadata/timestamp.json")))
+        except urllib.error.HTTPError as error:
+            if error.code != 404:
+                raise
+            values.append(None)
+    if values[0] != values[1]:
+        raise ValueError("the primary and secondary firmware origins disagree")
+    return values[0]
+
+def validate_repository(repository, bootstrap):
+    checked = Repository(repository.directory, repository.signers, now=repository.now)
+    checked.load(bootstrap)
+    for role in ("releases", *CHANNELS):
+        for path, target in checked.metadata[role].signed.targets.items():
+            target.verify_length_and_hashes(checked.target_bytes(role, path))
+    return checked
+
+def release_build(directory, tx, config, signers):
+    if tx["phase"] == "reserved":
+        outputs = []
+        for index in (1, 2):
+            clone = directory / f"source-{index}"
+            receipt = directory / f"build-{index}.json"
+            if not receipt.exists():
+                if not clone.exists():
+                    subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", str(SOURCE), str(clone)], check=True)
+                    subprocess.run(["git", "checkout", "--quiet", "--detach", tx["revision"]], cwd=clone, check=True)
+                if git("rev-parse", "HEAD", cwd=clone) != tx["revision"]:
+                    raise ValueError("isolated build checkout changed")
+                if index == 1:
+                    subprocess.run(["make", "-C", "go", "check"], cwd=clone, check=True)
+                request = {"source": str(clone), "build": str(directory / f"build-{index}"), "revision": tx["revision"], "root": config["root"]}
+                result = subprocess.run(config["build_command"], cwd=clone, input=encoded(request), stdout=subprocess.PIPE, check=True)
+                paths = json.loads(result.stdout)
+                values = {name: {"path": path, "sha256": digest(Path(path).read_bytes())} for name, path in paths.items()}
+                atomic(receipt, encoded(values), private=True)
+            values = json.loads(receipt.read_bytes())
+            for value in values.values():
+                if digest(Path(value["path"]).read_bytes()) != value["sha256"]:
+                    raise ValueError("a completed build output changed")
+            outputs.append(values)
+        if any(outputs[0][name]["sha256"] != outputs[1][name]["sha256"] for name in ("elf", "image")):
+            raise ValueError("independent production ELFs and secure-padded images must match byte-for-byte")
+        tx["build"] = outputs[0]; tx["phase"] = "built"; save_transaction(directory, tx, signers)
+    if tx["phase"] == "built":
+        for output in tx["build"].values():
+            if digest(Path(output["path"]).read_bytes()) != output["sha256"]:
+                raise ValueError("recorded build changed")
+        unsigned = Path(tx["build"]["image"]["path"]).read_bytes()
+        if (directory / "signed-image.bin").is_file():
+            image = (directory / "signed-image.bin").read_bytes()
+            public, active = firmware_keys(signers.config, True)
+            verify_image(image, public[active]); key = key_id(public[active])
+            if image[:-4096] != unsigned + b"\xff" * (-len(unsigned) % 4096):
+                raise ValueError("interrupted signing output belongs to a different build")
+        else:
+            image, key = sign_image(unsigned, signers.config, True)
+            immutable(directory / "signed-image.bin", image)
+        tx["image_sha256"] = digest(image); tx["firmware_key_id"] = key; tx["phase"] = "signed"
+        save_transaction(directory, tx, signers)
+
+def finish(directory, tx, config, signers, bootstrap):
+    if tx["phase"] in ("reserved", "built"):
+        release_build(directory, tx, config, signers)
+    candidate = directory / "candidate"
+    if tx["phase"] == "signed":
+        if digest((directory / "signed-image.bin").read_bytes()) != tx["image_sha256"]:
+            raise ValueError("signed image changed")
+        if not candidate.exists():
+            shutil.copytree(Path(config["state_dir"]) / "repository", candidate)
+        bundle_path = directory / "candidate-bundle.json"
+        if not bundle_path.exists():
+            repository = Repository(candidate, signers); repository.load(bootstrap)
+            notes = (directory / "notes.md").read_bytes()
+            if digest(notes) != tx["notes_sha256"]:
+                raise ValueError("release notes changed after number reservation")
+            licenses = license_inventory(directory / "source-1")
+            repository.add_release(sequence=tx["sequence"], version=tx["version"], revision=tx["revision"], image=(directory / "signed-image.bin").read_bytes(),
+                boot_key_id=tx["firmware_key_id"], provenance=Path(tx["build"]["provenance"]["path"]).read_bytes(), licenses=encoded(licenses),
+                notes=notes, layout=2, hardware_min=config.get("hardware_min", 1), hardware_max=config.get("hardware_max", 1))
+            import base64
+            immutable(bundle_path, encoded({path: base64.b64encode(data).decode() for path, data in repository.files.items()}))
+        import base64
+        bundle = {path: base64.b64decode(value, validate=True) for path, value in json.loads(bundle_path.read_bytes()).items()}
+        repository = Repository(candidate, signers); repository.files = bundle; repository.publish_local()
+        checked = validate_repository(repository, bootstrap)
+        manifest = json.loads(checked.target_bytes("releases", f"releases/{tx['sequence']}.json"))
+        if manifest["sha256"] != tx["image_sha256"] or manifest["source_revision"] != tx["revision"] or manifest["build_number"] != tx["sequence"]:
+            raise ValueError("interrupted candidate differs from its signed release transaction")
+        freeze_candidate(directory, tx, signers)
+    if tx["phase"] in ("prepared", "source-pushed", "published"):
+        index_bytes = (directory / "inventory.json").read_bytes()
+        if digest(index_bytes) != tx["inventory_sha256"]:
+            raise ValueError("transaction inventory signature differs")
+        index = json.loads(index_bytes); verify_inventory(candidate, index)
+        if tx["phase"] == "prepared" and "revision" in tx:
+            tag = f"firmware-{tx['sequence']}"
+            try:
+                revision = git("rev-parse", f"{tag}^{{commit}}")
+            except subprocess.CalledProcessError:
+                subprocess.run(["git", "tag", "-a", tag, tx["revision"], "-m", f"Firmware release {tx['sequence']}; initial channel Lab"], cwd=SOURCE, check=True)
+                revision = tx["revision"]
+            if revision != tx["revision"]:
+                raise ValueError("release tag already names a different source commit")
+            for remote in config["remotes"]:
+                subprocess.run(["git", "push", remote, f"{tx['revision']}:refs/heads/{config['branch']}", f"refs/tags/{tag}"], cwd=SOURCE, check=True)
+            tx["phase"] = "source-pushed"; save_transaction(directory, tx, signers)
+        files = {name: (candidate / name).read_bytes() for name in index}
+        repository = Repository(candidate, signers); repository.load(bootstrap)
+        targets = list(repository.metadata["releases"].signed.targets)
+        def committed():
+            tx["phase"] = "published"; save_transaction(directory, tx, signers)
+        publish(config["publish_command"], files, tx["previous_timestamp"], bootstrap, targets, committed)
+        # Bring the local cache to the verified public commit without changing
+        # or deleting historical immutable objects.
+        for name, data in files.items():
+            dest = Path(config["state_dir"]) / "repository" / name
+            atomic(dest, data) if name == "metadata/timestamp.json" else immutable(dest, data)
+        tx["phase"] = "complete"; save_transaction(directory, tx, signers)
+    print(f"Transaction {directory.name}: {tx['phase']}")
+    if "sequence" in tx:
+        print(f"Release {tx['sequence']} is selected for 100% of Lab. Inspect device status before promotion.")
+        print(f"make release-promote RELEASE={tx['sequence']} CHANNEL=canary PERCENT=1")
+        print(f"make release-withdraw RELEASE={tx['sequence']} CHANNEL=lab")
+
+def freeze_candidate(directory, tx, signers):
+    data = encoded(inventory(directory / "candidate")); immutable(directory / "inventory.json", data)
+    tx["inventory_sha256"] = digest(data); tx["phase"] = "prepared"; save_transaction(directory, tx, signers)
+
+def license_inventory(source):
+    paths = sorted(p for p in source.rglob("*") if p.is_file() and (p.name.startswith("LICENSE") or p.name.startswith("COPYING"))
+        and not any(part in (".git", "build", "managed_components") for part in p.relative_to(source).parts))
+    return [{"path": str(p.relative_to(source)), "sha256": digest(p.read_bytes()), "text": p.read_text()} for p in paths]
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", default=os.environ.get("NAVLISTEN_RELEASE_CONFIG"))
+    sub = parser.add_subparsers(dest="command", required=True)
+    for name in ("init-test", "init-production"):
+        p = sub.add_parser(name); p.add_argument("--keys", required=True, type=Path); p.add_argument("--state", required=True, type=Path)
+    p = sub.add_parser("test-release"); p.add_argument("--keys", required=True, type=Path); p.add_argument("--state", required=True, type=Path)
+    p.add_argument("--image", required=True, type=Path); p.add_argument("--release", type=int, required=True)
+    p = sub.add_parser("release"); p.add_argument("--notes", required=True, type=Path)
+    sub.add_parser("dry-run")
+    p = sub.add_parser("resume"); p.add_argument("--release", required=True)
+    for name in ("promote", "withdraw", "check"):
+        p = sub.add_parser(name); p.add_argument("--release", required=True, type=int)
+        if name != "check": p.add_argument("--channel", choices=CHANNELS, required=True)
+        if name == "promote": p.add_argument("--percent", type=int, required=True)
+    sub.add_parser("refresh-online")
+    args = parser.parse_args()
+    if args.command.startswith("init-"):
+        state = args.state.expanduser().resolve()
+        if state.is_relative_to(SOURCE): raise ValueError("release state must live outside the checkout")
+        state.mkdir(parents=True, mode=0o700, exist_ok=False)
+        path = init_test_keys(args.keys) if args.command == "init-test" else args.keys
+        signers = Signers(path, production=args.command == "init-production")
+        repository = Repository(state / "repository", signers); repository.bootstrap(); repository.publish_local()
+        atomic(state / "trust-root.json", repository.files["metadata/1.root.json"])
+        print(f"Created {'TEST-ONLY' if signers.test_only else 'production'} repository and public trust root in {state}")
+        print(f"Private signer configuration: {path}. Back up the entire key directory securely; never copy it into Git or onto the origin.")
+        return
+    if args.command == "test-release":
+        signers = Signers(args.keys.expanduser(), production=False)
+        state = args.state.expanduser().resolve(); root = (state / "trust-root.json").read_bytes()
+        repository = Repository(state / "repository", signers); repository.load(root)
+        image, key = sign_image(args.image.read_bytes(), signers.config, False)
+        repository.add_release(sequence=args.release, version="0.0.0-test", revision=git("rev-parse", "HEAD"), image=image, boot_key_id=key,
+            provenance=encoded({"test_only": True}), licenses=encoded(license_inventory(SOURCE)), notes=b"TEST ONLY; never publish to production.\n", layout=2)
+        repository.publish_local(); validate_repository(repository, root)
+        print(f"Signed TEST-ONLY release {args.release} locally. No source push, remote publication or chip lock was performed.")
+        return
+    config, signers, bootstrap = configuration(args.config)
+    state = Path(config["state_dir"]); state.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with (state / "release.lock").open("a+b") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if args.command == "resume":
+            if not args.release or any(c not in "0123456789metadata-" for c in args.release): raise ValueError("invalid transaction name")
+            directory = state / "transactions" / args.release; tx = load_transaction(directory, signers)
+            if tx["phase"] == "reserving":
+                if int((SOURCE / "BUILD_NUMBER").read_text()) != tx["sequence"] or git("log", "-1", "--format=%s") != f"Reserve firmware release {tx['sequence']}":
+                    raise ValueError("reservation did not finish; inspect the signed transaction and source commit before continuing")
+                tx["revision"] = git("rev-parse", "HEAD"); tx["phase"] = "reserved"; save_transaction(directory, tx, signers)
+            finish(directory, tx, config, signers, bootstrap); return
+        if args.command == "check":
+            verify_public(bootstrap, [f"releases/{args.release}.json"]); print("Both public origins passed a fresh TUF verification."); return
+        for path in (state / "transactions").glob("*/transaction.json"):
+            if load_transaction(path.parent, signers)["phase"] != "complete":
+                raise ValueError(f"unfinished transaction {path.parent.name}; use release-resume")
+        clean(config)
+        if args.command == "dry-run":
+            print("Production preflight passed. No number reserved, signer called, build run, source pushed or file published."); return
+        previous = public_timestamp()
+        cached = state / "repository/metadata/timestamp.json"
+        if previous is not None and digest(cached.read_bytes()) != previous:
+            raise ValueError("local repository cache differs from public timestamp; reconcile it before reserving a version")
+        if args.command == "release":
+            sequence = int((SOURCE / "BUILD_NUMBER").read_text()) + 1
+            if not 0 < sequence < 2**64: raise ValueError("release number exhausted")
+            directory = state / "transactions" / str(sequence); directory.mkdir(parents=True, exist_ok=False)
+            notes = args.notes.read_bytes(); immutable(directory / "notes.md", notes)
+            tx = {"phase": "reserving", "sequence": sequence, "version": (SOURCE / "VERSION").read_text().strip(),
+                "parent": git("rev-parse", "HEAD"), "notes_sha256": digest(notes), "previous_timestamp": previous}
+            save_transaction(directory, tx, signers)
+            atomic(SOURCE / "BUILD_NUMBER", f"{sequence}\n".encode())
+            subprocess.run(["git", "add", "--", "BUILD_NUMBER"], cwd=SOURCE, check=True)
+            subprocess.run(["git", "commit", "-m", f"Reserve firmware release {sequence}", "--", "BUILD_NUMBER"], cwd=SOURCE, check=True)
+            tx["revision"] = git("rev-parse", "HEAD"); tx["phase"] = "reserved"; save_transaction(directory, tx, signers)
+        else:
+            base = Repository(state / "repository", signers); base.load(bootstrap)
+            directory = state / "transactions" / f"metadata-{base.versions['timestamp'] + 1}"; directory.mkdir(parents=True, exist_ok=False)
+            shutil.copytree(state / "repository", directory / "candidate")
+            repository = Repository(directory / "candidate", signers); repository.load(bootstrap)
+            if args.command == "refresh-online":
+                for channel in CHANNELS: repository.metadata_for(channel, copy.deepcopy(repository.metadata[channel].signed))
+            else:
+                path = f"releases/{args.release}.json"
+                if path not in repository.metadata["releases"].signed.targets: raise ValueError("release is not authorized by the offline release role")
+                old = repository.channel_value(args.channel)
+                if args.command == "withdraw":
+                    withdrawn = sorted(set(old["withdrawn"] + [args.release]))
+                    repository.set_channel(args.channel, old["release_sequence"], old["release_manifest"], percentage=old["percentage"], withdrawn=withdrawn)
+                else:
+                    if args.release in old["withdrawn"]: raise ValueError("withdrawn release cannot be promoted; publish a new release")
+                    repository.set_channel(args.channel, args.release, path, percentage=args.percent)
+            repository.online(); repository.publish_local(); validate_repository(repository, bootstrap)
+            tx = {"phase": "prepared", "previous_timestamp": previous}; freeze_candidate(directory, tx, signers)
+        finish(directory, tx, config, signers, bootstrap)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+        raise SystemExit(str(error)) from None

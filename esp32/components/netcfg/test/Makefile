@@ -12,8 +12,14 @@ CC      ?= cc
 CFLAGS  ?= -O1 -Wall -Wextra -std=c11
 BUILD   := build
 
+# netcfg_check calls into netcfg_tunnel for an enabled profile, so every binary that
+# links the validation rule links the tunnel parser too.
+CHECK   := ../src/netcfg_check.c ../src/netcfg_tunnel.c
+CHECK_H := ../include/netcfg_check.h ../include/netcfg_tunnel.h
+
 TESTS   := netcfg_validate_test netcfg_storage_test netcfg_setup_test \
-	netcfg_reset_setup_test netcfg_form_test netcfg_prov_payload_test
+	netcfg_reset_setup_test netcfg_form_test netcfg_prov_payload_test \
+	netcfg_tunnel_test
 
 .PHONY: all run clean
 all: run
@@ -21,9 +27,9 @@ all: run
 run: $(addprefix $(BUILD)/,$(TESTS))
 	@set -e; for t in $(addprefix $(BUILD)/,$(TESTS)); do echo "==> $$t"; ./$$t; done
 
-$(BUILD)/netcfg_storage_test: netcfg_storage_test.c ../src/netcfg_storage.c ../src/netcfg_check.c ../include/netcfg.h $(wildcard mocks/*.h mocks/sys/*.h)
+$(BUILD)/netcfg_storage_test: netcfg_storage_test.c ../src/netcfg_storage.c $(CHECK) ../include/netcfg.h $(CHECK_H) $(wildcard mocks/*.h mocks/sys/*.h)
 	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -Imocks -I../include -o $@ netcfg_storage_test.c ../src/netcfg_storage.c ../src/netcfg_check.c
+	$(CC) $(CFLAGS) -Imocks -I../include -o $@ netcfg_storage_test.c ../src/netcfg_storage.c $(CHECK)
 
 $(BUILD)/netcfg_form_test: netcfg_form_test.c ../src/netcfg_form.c ../include/netcfg_form.h
 	@mkdir -p $(BUILD)
@@ -33,17 +39,17 @@ $(BUILD)/netcfg_setup_test: netcfg_setup_test.c ../src/netcfg_setup.c ../src/net
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -Imocks -I../src -o $@ netcfg_setup_test.c ../src/netcfg_setup.c
 
-$(BUILD)/netcfg_reset_setup_test: netcfg_reset_setup_test.c ../src/netcfg_storage.c ../src/netcfg_setup.c ../src/netcfg_check.c ../include/netcfg.h ../src/netcfg_setup.h $(wildcard mocks/*.h mocks/sys/*.h)
+$(BUILD)/netcfg_reset_setup_test: netcfg_reset_setup_test.c ../src/netcfg_storage.c ../src/netcfg_setup.c $(CHECK) ../include/netcfg.h ../src/netcfg_setup.h $(CHECK_H) $(wildcard mocks/*.h mocks/sys/*.h)
 	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -Imocks -I../include -I../src -o $@ netcfg_reset_setup_test.c ../src/netcfg_storage.c ../src/netcfg_setup.c ../src/netcfg_check.c
+	$(CC) $(CFLAGS) -Imocks -I../include -I../src -o $@ netcfg_reset_setup_test.c ../src/netcfg_storage.c ../src/netcfg_setup.c $(CHECK)
 
-$(BUILD)/netcfg_prov_payload_test: netcfg_prov_payload_test.c ../src/netcfg_prov_payload.c ../src/netcfg_prov_payload.h ../src/netcfg_check.c
+$(BUILD)/netcfg_prov_payload_test: netcfg_prov_payload_test.c ../src/netcfg_prov_payload.c ../src/netcfg_prov_payload.h $(CHECK) $(CHECK_H)
 	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -I../src -I../include -o $@ netcfg_prov_payload_test.c ../src/netcfg_prov_payload.c ../src/netcfg_check.c
+	$(CC) $(CFLAGS) -I../src -I../include -o $@ netcfg_prov_payload_test.c ../src/netcfg_prov_payload.c $(CHECK)
 
-$(BUILD)/%: %.c ../src/netcfg_check.c ../include/netcfg_check.h
+$(BUILD)/%: %.c $(CHECK) $(CHECK_H)
 	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -I../include -o $@ $< ../src/netcfg_check.c
+	$(CC) $(CFLAGS) -I../include -o $@ $< $(CHECK)
 
 clean:
 	rm -rf $(BUILD)

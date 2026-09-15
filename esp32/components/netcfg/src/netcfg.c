@@ -3,6 +3,7 @@
 #include "netcfg.h"
 #include "netcfg_form.h"
 #include "netcfg_setup.h"
+#include "netcfg_tunnel.h"
 #include "sdkconfig.h"
 #if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
 #include "netcfg_ble.h"
@@ -38,6 +39,9 @@ static const char *TAG = "netcfg";
 #ifndef CONFIG_NVF_ALLOW_INSECURE_PORTAL
 #define CONFIG_NVF_ALLOW_INSECURE_PORTAL 0
 #endif
+#ifndef CONFIG_NVF_WIREGUARD
+#define CONFIG_NVF_WIREGUARD 0
+#endif
 
 // --- provisioning portal -----------------------------------------------------------------
 
@@ -53,11 +57,27 @@ static const char *TAG = "netcfg";
 #define PORTAL_INSECURE_FIELD ""
 #endif
 
+// The optional WireGuard profile (ESP32-S3): the operator pastes the wg-quick .conf their
+// collector operator generated, and the device parses and validates it (netcfg_tunnel).
+// An empty box leaves the tunnel off and clears a stored one; a POST without the field
+// keeps whatever is stored. The C6 build has no tunnel, so it has no field either.
+#if CONFIG_NVF_WIREGUARD
+#define PORTAL_TUNNEL_FIELD \
+    "<label>WireGuard profile (optional: paste the .conf; AllowedIPs is the collector's /32)" \
+    "<textarea name=wg rows=10 maxlength=1000 spellcheck=false autocomplete=off " \
+    "placeholder='[Interface]&#10;PrivateKey = ...&#10;Address = 10.77.0.12/24&#10;&#10;" \
+    "[Peer]&#10;PublicKey = ...&#10;Endpoint = wg.collector.invalid:51820&#10;" \
+    "AllowedIPs = 10.77.0.1/32&#10;PersistentKeepalive = 25'></textarea></label>"
+#else
+#define PORTAL_TUNNEL_FIELD ""
+#endif
+
 static const char PORTAL_HTML[] =
     "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
     "<title>navfeeder-esp setup</title>"
     "<style>body{font-family:sans-serif;max-width:32em;margin:2em auto;padding:0 1em}"
-    "label{display:block;margin:.8em 0 .2em}input{width:100%;padding:.5em;box-sizing:border-box}"
+    "label{display:block;margin:.8em 0 .2em}input,textarea{width:100%;padding:.5em;box-sizing:border-box}"
+    "textarea{font-family:monospace}"
     "button{margin-top:1.2em;padding:.7em 1.4em}</style>"
     "<h2>navfeeder-esp setup</h2>"
     "<form method=POST action=/save>"
@@ -67,6 +87,7 @@ static const char PORTAL_HTML[] =
     "<label>Collector port<input name=port type=number value=5580></label>"
     "<label>Station id<input name=station maxlength=32 required></label>"
     "<label>Bearer token<input name=token maxlength=128 required></label>"
+    PORTAL_TUNNEL_FIELD
     PORTAL_INSECURE_FIELD
     "<button type=submit>Save &amp; reboot</button></form>";
 
@@ -102,10 +123,11 @@ static esp_err_t root_get(httpd_req_t *req)
 
 // body_cap must exceed the worst-case URL-encoded form: token[129] + wifi_pass[65] +
 // host[64] + wifi_ssid[33] + station[33] fields, each up to 3x under %XX-encoding, plus
-// field names/delimiters — comfortably under 2048. A silently truncated body would parse
-// trailing fields wrong/empty rather than fail loudly, on a headless provisioning flow
-// where nobody is watching the response.
-#define SAVE_POST_BODY_CAP 2048
+// field names/delimiters — under 1024 — and, on the S3, the pasted WireGuard profile
+// (up to NETCFG_TUNNEL_CONF_CAP, likewise up to 3x encoded). A silently truncated body
+// would parse trailing fields wrong/empty rather than fail loudly, on a headless
+// provisioning flow where nobody is watching the response.
+#define SAVE_POST_BODY_CAP 4096
 
 // origin_ok validates the request came from our own portal page, not a cross-origin page
 // open in the operator's browser while it's joined to the provisioning AP : a plain
@@ -208,6 +230,29 @@ static esp_err_t save_post(httpd_req_t *req)
             return ESP_FAIL;
         }
     }
+#if CONFIG_NVF_WIREGUARD
+    // The pasted profile is the one multi-line field. Absent keeps the stored profile (a
+    // partial POST), present-but-blank turns the tunnel off and drops its keys, and
+    // anything else must parse and validate whole, or the POST fails with the parser's
+    // fixed reason — never the submitted bytes, which include a private key.
+    char profile[NETCFG_TUNNEL_CONF_CAP];
+    form_result_t wg_result = netcfg_form_field_text(body, "wg", profile, sizeof profile);
+    if (wg_result < 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, netcfg_form_error(wg_result));
+        return ESP_FAIL;
+    }
+    if (wg_result == FORM_OK) {
+        if (strspn(profile, " \t\r\n") == strlen(profile)) {
+            memset(&cfg.tunnel, 0, sizeof cfg.tunnel);
+        } else {
+            char why[NETCFG_ERR_CAP];
+            if (!netcfg_tunnel_parse_conf(profile, &cfg.tunnel, why, sizeof why)) {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, why);
+                return ESP_FAIL;
+            }
+        }
+    }
+#endif
 #if CONFIG_NVF_ALLOW_INSECURE_PORTAL
     char ins[8] = {0}; // fresh buffer: must self-init
     form_result_t ins_result = netcfg_form_field(body, "insecure", ins, sizeof ins);
@@ -253,8 +298,9 @@ static esp_err_t save_post(httpd_req_t *req)
     }
     httpd_resp_sendstr(req, "<meta name=viewport content='width=device-width'>"
                             "<h3>Saved. Rebooting into station mode...</h3>");
-    ESP_LOGI(TAG, "provisioned: ssid='%s' host='%s:%d' station='%s' — rebooting",
-             cfg.wifi_ssid, cfg.host, cfg.port, cfg.station);
+    ESP_LOGI(TAG, "provisioned: ssid='%s' host='%s:%d' station='%s'%s — rebooting",
+             cfg.wifi_ssid, cfg.host, cfg.port, cfg.station,
+             cfg.tunnel.enabled ? " tunnel=on" : "");
     return ESP_OK;
 }
 
@@ -318,12 +364,12 @@ esp_err_t netcfg_start_provisioning(netcfg_provisioning_info_t *info)
 
     httpd_handle_t server = NULL;
     httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
-    // regression fix follow-up: save_post keeps ~2.4 KB of locals on this task's stack
-    // (body[SAVE_POST_BODY_CAP] + a netcfg_t + scratch), and the httpd default
-    // stack is 4096 — too tight once httpd's own frames and the NVS/log calls
-    // underneath the handler are added. Double it rather than heap-allocating
+    // save_post keeps its locals on this task's stack: body[SAVE_POST_BODY_CAP] (4 KiB),
+    // the pasted profile (1 KiB), a netcfg_t (~0.7 KiB) and scratch, and the httpd default
+    // stack is 4096 — far too tight once httpd's own frames and the NVS/log calls
+    // underneath the handler are added. Size it generously rather than heap-allocating
     // the body (the portal runs pre-provisioning, when RAM is otherwise idle).
-    hcfg.stack_size = 8192;
+    hcfg.stack_size = 12288;
     ESP_RETURN_ON_ERROR(httpd_start(&server, &hcfg), TAG, "start setup HTTP server");
     httpd_uri_t root = { .uri = "/", .method = HTTP_GET, .handler = root_get };
     httpd_uri_t save = { .uri = "/save", .method = HTTP_POST, .handler = save_post };
@@ -331,8 +377,8 @@ esp_err_t netcfg_start_provisioning(netcfg_provisioning_info_t *info)
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &save), TAG, "register setup save");
     ESP_RETURN_ON_ERROR(nvf_ota_register_pairing(server), TAG, "register OTA pairing");
 
-    // The password is returned for a local display and logged only by app_main on
-    // the one boot that creates it, so routine serial logs do not disclose it.
+    // The password is returned for the local display and app_main's configured
+    // setup-label logging policy. Development setup boots can reprint it.
     ESP_LOGI(TAG, "browser provisioning ready: SSID='%s' (pass %d chars) -> http://192.168.4.1/",
              setup.name, (int)strlen(setup.password));
     return ESP_OK;
