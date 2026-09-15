@@ -28,12 +28,16 @@ private final class LocalizationBundleMarker: NSObject {}
     let payload = try JSONDecoder().decode(ObserversPayload.self,from:Data(#"{"schema":"2.0","audience":"public","observers":[{"id":"roof","remark":"User's unchanged label","last_seen_s":2,"svs":{"G07@0":{"name":"G07","gnssid":0,"azi_deg":45,"elev_deg":35,"cn0_db_hz":42}}}]}"#.utf8))
     let key = AudienceCacheKey(server:"https://collector.invalid",principal:"anonymous",audience:.publicAudience,authorizationRevision:"public")
     try store.apply(ObserversSnapshot(receivedAt:Date(),scope:key,serverTime:nil,payload:payload),cached:false)
-    let views: [AnyView] = [
+    var views: [AnyView] = [
         AnyView(OnboardingView()), AnyView(SettingsView()),
         AnyView(StationDetailView(stationID:"roof")),
         AnyView(SkyPlotView(signals:payload.observers?.first?.svs ?? [:])),
         AnyView(VStack {forEachHealth})
     ]
+    #if os(iOS)
+    views.append(AnyView(ObserverSetupView()))
+    ESPObserverTransport().disconnect()
+    #endif
     for view in views {
         let renderer = ImageRenderer(content:view.environment(controller).frame(width:800,height:1000))
         #expect(renderer.cgImage != nil)

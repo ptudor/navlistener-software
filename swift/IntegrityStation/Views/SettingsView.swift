@@ -5,6 +5,7 @@ struct SettingsView: View {
     @State private var serverDraft = ""
     @State private var tokenDraft = ""
     @State private var serverError: String?
+    @State private var showingSetup = false
 
     var body: some View {
         #if os(macOS)
@@ -34,6 +35,7 @@ struct SettingsView: View {
             .navigationTitle(Text("settings.title"))
         }
         .task { loadDraft() }
+        .sheet(isPresented: $showingSetup) { ObserverSetupView() }
         #endif
     }
 
@@ -69,6 +71,10 @@ struct SettingsView: View {
     @ViewBuilder
     private var stationSection: some View {
         Section(String(localized: "settings.stations.section")) {
+            #if os(iOS)
+            Button("setup.open") { showingSetup = true }
+                .accessibilityIdentifier("setup.open")
+            #endif
             if controller.settings.stationIDs.isEmpty {
                 Text("settings.stations.empty")
                     .foregroundStyle(.secondary)

@@ -1330,6 +1330,1396 @@
           }
         }
       }
+    },
+    "board.atecc.config_lock": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configuration lock"
+          }
+        }
+      }
+    },
+    "board.atecc.data_lock": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Data lock"
+          }
+        }
+      }
+    },
+    "board.atecc.note": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Boot diagnostics only. A screening pass does not certify entropy or establish device enrollment."
+          }
+        }
+      }
+    },
+    "board.atecc.revision": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ATECC revision"
+          }
+        }
+      }
+    },
+    "board.atecc.rng": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Random output screening"
+          }
+        }
+      }
+    },
+    "board.atecc.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Security chip boot checks"
+          }
+        }
+      }
+    },
+    "board.diagnostics.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Board diagnostics"
+          }
+        }
+      }
+    },
+    "board.eeprom.action": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inspection result"
+          }
+        }
+      }
+    },
+    "board.eeprom.capabilities": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Capabilities validated"
+          }
+        }
+      }
+    },
+    "board.eeprom.components": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Components"
+          }
+        }
+      }
+    },
+    "board.eeprom.eui": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "EEPROM EUI-64"
+          }
+        }
+      }
+    },
+    "board.eeprom.note": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This identifies the manifest EEPROM. The authenticated station ID remains the collector identity."
+          }
+        }
+      }
+    },
+    "board.eeprom.revision": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Board revision"
+          }
+        }
+      }
+    },
+    "board.eeprom.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manifest EEPROM"
+          }
+        }
+      }
+    },
+    "board.environment.bmp": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "BMP388/BMP384 temperature"
+          }
+        }
+      }
+    },
+    "board.environment.hdc": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HDC2080 temperature"
+          }
+        }
+      }
+    },
+    "board.environment.humidity": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Relative humidity"
+          }
+        }
+      }
+    },
+    "board.environment.mcp": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MCP9808 temperature"
+          }
+        }
+      }
+    },
+    "board.environment.note": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Temperatures come from separate sensors. Pressure has no sea-level correction. A dash means no valid measurement."
+          }
+        }
+      }
+    },
+    "board.environment.pressure": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local absolute pressure"
+          }
+        }
+      }
+    },
+    "board.environment.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Board environment"
+          }
+        }
+      }
+    },
+    "board.firmware": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Feeder firmware"
+          }
+        }
+      }
+    },
+    "board.freshness.current": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recent sample"
+          }
+        }
+      }
+    },
+    "board.freshness.receipt_only": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recent receipt · sample UTC and replay age unknown"
+          }
+        }
+      }
+    },
+    "board.freshness.stale": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stored or stale sample"
+          }
+        }
+      }
+    },
+    "board.freshness.unknown": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sample freshness unknown"
+          }
+        }
+      }
+    },
+    "board.interference.before": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preceding report"
+          }
+        }
+      }
+    },
+    "board.interference.note": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Receiver indications include alarm and recovery transitions. Reports may combine several transitions, and the preceding sample may be minutes older. This context does not change the collector’s integrity verdict."
+          }
+        }
+      }
+    },
+    "board.interference.snapshot": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Transition report"
+          }
+        }
+      }
+    },
+    "board.interference.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Latest receiver interference context"
+          }
+        }
+      }
+    },
+    "board.interference.transitions": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Transitions since boot"
+          }
+        }
+      }
+    },
+    "board.interference.uptime": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last transition uptime"
+          }
+        }
+      }
+    },
+    "board.no": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No"
+          }
+        }
+      }
+    },
+    "board.resources.capacity": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Buffer capacity"
+          }
+        }
+      }
+    },
+    "board.resources.dropped": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dropped records"
+          }
+        }
+      }
+    },
+    "board.resources.internal_free": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Free internal memory"
+          }
+        }
+      }
+    },
+    "board.resources.note": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This RAM buffer is lost on reboot. Dropped records were lost; queue depth does not establish collector persistence."
+          }
+        }
+      }
+    },
+    "board.resources.psram": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Buffer in PSRAM"
+          }
+        }
+      }
+    },
+    "board.resources.psram_free": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Free PSRAM"
+          }
+        }
+      }
+    },
+    "board.resources.queued": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Queued records"
+          }
+        }
+      }
+    },
+    "board.resources.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Buffer and memory"
+          }
+        }
+      }
+    },
+    "board.resources.used": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Buffer used"
+          }
+        }
+      }
+    },
+    "board.rtc.backup": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Battery backup enabled"
+          }
+        }
+      }
+    },
+    "board.rtc.calendar": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Valid running calendar"
+          }
+        }
+      }
+    },
+    "board.rtc.note": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flags describe the last RTC read. Backup enabled does not confirm a battery is installed or working."
+          }
+        }
+      }
+    },
+    "board.rtc.power_fail": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Power-fail flag"
+          }
+        }
+      }
+    },
+    "board.rtc.readable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Readable"
+          }
+        }
+      }
+    },
+    "board.rtc.running": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Oscillator running"
+          }
+        }
+      }
+    },
+    "board.rtc.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Real-time clock"
+          }
+        }
+      }
+    },
+    "board.sample.received": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collector receipt"
+          }
+        }
+      }
+    },
+    "board.sample.sequence": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sequence"
+          }
+        }
+      }
+    },
+    "board.sample.session": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Boot session"
+          }
+        }
+      }
+    },
+    "board.sample.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sample identity"
+          }
+        }
+      }
+    },
+    "board.sample.utc": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sample time"
+          }
+        }
+      }
+    },
+    "board.status.absent": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Absent"
+          }
+        }
+      }
+    },
+    "board.status.enabled_1hz": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enabled at 1 Hz"
+          }
+        }
+      }
+    },
+    "board.status.initialization_required": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Initialization required"
+          }
+        }
+      }
+    },
+    "board.status.invalid": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Invalid lock byte"
+          }
+        }
+      }
+    },
+    "board.status.invalid_manifest": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Invalid manifest"
+          }
+        }
+      }
+    },
+    "board.status.io_error": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Read/write error"
+          }
+        }
+      }
+    },
+    "board.status.locked": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Locked"
+          }
+        }
+      }
+    },
+    "board.status.oscillator_stopped": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Oscillator stopped or calendar invalid"
+          }
+        }
+      }
+    },
+    "board.status.recovery_required": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recovery required"
+          }
+        }
+      }
+    },
+    "board.status.repeating_untrusted": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repeating output · untrusted"
+          }
+        }
+      }
+    },
+    "board.status.replacement_required": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Replacement confirmation required"
+          }
+        }
+      }
+    },
+    "board.status.screening_pass": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Repetition screening passed"
+          }
+        }
+      }
+    },
+    "board.status.trim_conflict": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alarm or coarse-trim conflict"
+          }
+        }
+      }
+    },
+    "board.status.unknown": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unknown"
+          }
+        }
+      }
+    },
+    "board.status.unlocked": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unlocked"
+          }
+        }
+      }
+    },
+    "board.status.untested": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not tested"
+          }
+        }
+      }
+    },
+    "board.status.use_manifest": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Validated manifest"
+          }
+        }
+      }
+    },
+    "board.timing.capture": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Capture diagnostics"
+          }
+        }
+      }
+    },
+    "board.timing.captured": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Captured rising edges"
+          }
+        }
+      }
+    },
+    "board.timing.counter_discontinuities": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Counter discontinuities"
+          }
+        }
+      }
+    },
+    "board.timing.discontinuities": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Capture discontinuities"
+          }
+        }
+      }
+    },
+    "board.timing.dropped": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Capture queue drops"
+          }
+        }
+      }
+    },
+    "board.timing.edge": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rising edge at sample"
+          }
+        }
+      }
+    },
+    "board.timing.edge_fresh": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recent"
+          }
+        }
+      }
+    },
+    "board.timing.edge_missing": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stale or unavailable"
+          }
+        }
+      }
+    },
+    "board.timing.elapsed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Capture elapsed time"
+          }
+        }
+      }
+    },
+    "board.timing.error": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Span-average period error"
+          }
+        }
+      }
+    },
+    "board.timing.gnss": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GNSS pulse"
+          }
+        }
+      }
+    },
+    "board.timing.hardware_count": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Valid hardware pulse count"
+          }
+        }
+      }
+    },
+    "board.timing.missing": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Estimated missing pulses"
+          }
+        }
+      }
+    },
+    "board.timing.note": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Periods are measured against the ESP APB clock. Positive error means a longer period. Wrapped phase is modulo one second and does not measure UTC accuracy. Values describe this sample; counters retain history."
+          }
+        }
+      }
+    },
+    "board.timing.period": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Period"
+          }
+        }
+      }
+    },
+    "board.timing.phase": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTC minus GNSS wrapped phase"
+          }
+        }
+      }
+    },
+    "board.timing.resolution": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Capture clock resolution"
+          }
+        }
+      }
+    },
+    "board.timing.rtc": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTC pulse"
+          }
+        }
+      }
+    },
+    "board.timing.square_wave": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTC square wave"
+          }
+        }
+      }
+    },
+    "board.timing.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GNSS and RTC pulse timing"
+          }
+        }
+      }
+    },
+    "board.timing.width": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "High pulse width"
+          }
+        }
+      }
+    },
+    "board.uptime": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Board uptime at sample"
+          }
+        }
+      }
+    },
+    "board.yes": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yes"
+          }
+        }
+      }
+    },
+    "setup.collector.host": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collector host"
+          }
+        }
+      }
+    },
+    "setup.collector.note": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use the collector’s feeder hostname and TLS port, which may differ from the app’s read API address. Enter the station ID and ingest token assigned by your operator."
+          }
+        }
+      }
+    },
+    "setup.collector.port": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GNF1 TLS port"
+          }
+        }
+      }
+    },
+    "setup.collector.station": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enrolled station ID"
+          }
+        }
+      }
+    },
+    "setup.collector.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collector enrollment"
+          }
+        }
+      }
+    },
+    "setup.collector.token": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Observer enrollment token"
+          }
+        }
+      }
+    },
+    "setup.confirm.check": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check collector"
+          }
+        }
+      }
+    },
+    "setup.confirm.pending": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting for a new boot to appear at the collector. Allow the observer to restart, then check again."
+          }
+        }
+      }
+    },
+    "setup.confirm.private_required": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatic confirmation needs an authorized private collector connection established before setup. Check the enrolled station in your collector if that connection is unavailable."
+          }
+        }
+      }
+    },
+    "setup.confirm.success": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New observer boot confirmed at the collector."
+          }
+        }
+      }
+    },
+    "setup.confirm.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collector confirmation"
+          }
+        }
+      }
+    },
+    "setup.connect": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connect with Bluetooth"
+          }
+        }
+      }
+    },
+    "setup.disconnected_pending": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth disconnected after Wi-Fi configuration. Collector confirmation is still required."
+          }
+        }
+      }
+    },
+    "setup.error.camera": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The camera scanner is unavailable. Allow camera access in Settings or enter the device name and password from the label."
+          }
+        }
+      }
+    },
+    "setup.error.config": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the collector host (1–63 ASCII bytes), TLS port (1–65535), station ID (1–32 ASCII bytes), enrollment token (1–128 ASCII bytes), and Wi-Fi settings."
+          }
+        }
+      }
+    },
+    "setup.error.connection": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not connect to the observer. Check Bluetooth, device power, and the setup label, then reconnect."
+          }
+        }
+      }
+    },
+    "setup.error.incompatible": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The device does not offer Security 2 and the required NavListen setup capability."
+          }
+        }
+      }
+    },
+    "setup.error.label": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This is not a valid ESP32-S3 setup label. Check the device name and 12-character password on the physical label."
+          }
+        }
+      }
+    },
+    "setup.error.power_cycle": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configuration was saved, but the observer could not schedule its restart. Power-cycle it, then check the collector."
+          }
+        }
+      }
+    },
+    "setup.error.response": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The observer returned an invalid setup response. Reconnect and try again."
+          }
+        }
+      }
+    },
+    "setup.error.save": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The observer could not save its configuration. You can retry."
+          }
+        }
+      }
+    },
+    "setup.error.timeout": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The observer did not respond in time. Reconnect to retry, or check the collector if it has restarted."
+          }
+        }
+      }
+    },
+    "setup.error.wifi": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The observer could not verify Wi-Fi. Check the network name and password and try again."
+          }
+        }
+      }
+    },
+    "setup.introduction": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Power the observer and keep its setup label nearby. Bluetooth setup is available while the observer is unprovisioned."
+          }
+        }
+      }
+    },
+    "setup.label.forget": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Forget saved setup password"
+          }
+        }
+      }
+    },
+    "setup.label.load": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use remembered password"
+          }
+        }
+      }
+    },
+    "setup.label.name": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Device name"
+          }
+        }
+      }
+    },
+    "setup.label.not_saved": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No setup password is saved for this device name."
+          }
+        }
+      }
+    },
+    "setup.label.password": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Setup password"
+          }
+        }
+      }
+    },
+    "setup.label.remember": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remember setup password on this device"
+          }
+        }
+      }
+    },
+    "setup.label.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Physical setup label"
+          }
+        }
+      }
+    },
+    "setup.open": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set up an ESP32-S3 observer"
+          }
+        }
+      }
+    },
+    "setup.provision": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save collector and Wi-Fi settings"
+          }
+        }
+      }
+    },
+    "setup.reconnect": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reconnect to observer"
+          }
+        }
+      }
+    },
+    "setup.recovery.instructions": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If Bluetooth setup is unavailable, join the observer’s navfeeder-XXYYZZ Wi-Fi network using the password on its label, then open the setup portal. Holding BOOT for eight seconds clears operating settings and preserves the setup password."
+          }
+        }
+      }
+    },
+    "setup.recovery.portal": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open setup portal"
+          }
+        }
+      }
+    },
+    "setup.recovery.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Browser recovery"
+          }
+        }
+      }
+    },
+    "setup.scan": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan setup label"
+          }
+        }
+      }
+    },
+    "setup.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set up an observer"
+          }
+        }
+      }
+    },
+    "setup.tokens_note": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The physical setup password, observer enrollment token, and collector read token have separate purposes."
+          }
+        }
+      }
+    },
+    "setup.wifi.manual": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter a network manually"
+          }
+        }
+      }
+    },
+    "setup.wifi.networks": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nearby networks"
+          }
+        }
+      }
+    },
+    "setup.wifi.password": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wi-Fi password"
+          }
+        }
+      }
+    },
+    "setup.wifi.ssid": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wi-Fi network name"
+          }
+        }
+      }
+    },
+    "setup.wifi.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Observer Wi-Fi"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

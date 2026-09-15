@@ -2,6 +2,7 @@ import SwiftUI
 
 struct StationDetailView: View {
     @Environment(AppController.self) private var controller
+    @Environment(\.scenePhase) private var scenePhase
     let stationID: String
 
     private var observer: Observer? {
@@ -28,6 +29,9 @@ struct StationDetailView: View {
                             rfCard
                             identityCard
                         }
+                        if let board = observer?.board {
+                            BoardTelemetryView(board: board)
+                        }
                         signalsCard
                         timelineCard
                     }
@@ -39,6 +43,11 @@ struct StationDetailView: View {
             }
         }
         .navigationTitle(controller.settings.label(for: stationID) ?? observer?.remark ?? String(localized: "station.detail.title"))
+        .task(id: BoardMonitorID(stationID: stationID, session: controller.store.activeSession,
+                                active: scenePhase == .active)) {
+            guard scenePhase == .active else { return }
+            await controller.store.monitorBoard(for: stationID)
+        }
     }
 
     private var header: some View {
@@ -205,6 +214,12 @@ struct StationDetailView: View {
         default: StationFormat.unknown
         }
     }
+}
+
+private struct BoardMonitorID: Hashable {
+    let stationID: String
+    let session: ReadSession?
+    let active: Bool
 }
 
 private struct SignalRow: Identifiable {

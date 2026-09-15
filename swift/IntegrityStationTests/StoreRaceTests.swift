@@ -50,7 +50,7 @@ private final class StoreConnectionProtocol: URLProtocol, @unchecked Sendable {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
-        loadingTask = Task {
+        loadingTask = Task { @Sendable [self] in
             do {
                 guard let handler = Self.handler else { throw URLError(.badServerResponse) }
                 let data = try await handler(request)

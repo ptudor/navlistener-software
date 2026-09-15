@@ -25,7 +25,7 @@ enum SecureConnectionError: Error, LocalizedError, Sendable {
 }
 
 /// Stores the last collector URL and server-scoped read tokens in the platform
-/// Keychain. Observer ingest credentials are never accepted by this client.
+/// Keychain. This store is separate from physical observer setup credentials.
 actor KeychainConnectionStore: SecureConnectionStoring {
     private let service: String
 

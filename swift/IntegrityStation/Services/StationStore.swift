@@ -26,6 +26,7 @@ final class StationStore {
     private var streamTask: Task<Void, Never>?
     private var ageAtFetch: [String: TimeInterval] = [:]
     private var fetchedAt: ContinuousClock.Instant?
+    private var boardServerTime: Date?
     private var conditions = ConditionState()
     private var lastEventID: String?
     private var generation: UInt64 = 0
@@ -75,6 +76,59 @@ final class StationStore {
         guard let base = ageAtFetch[stationID] else { return nil }
         guard let fetchedAt else { return base }
         return base + fetchedAt.duration(to: .now).timeInterval
+    }
+
+    func boardFreshness(_ sample: BoardSample?, stale: Bool?, timing: Bool = false) -> BoardFreshness {
+        guard let sample else { return .unknown }
+        return sample.freshness(serverTime: boardServerTime,
+                                elapsed: fetchedAt?.duration(to: .now).timeInterval ?? 0,
+                                stale: stale, cached: isShowingCachedSnapshot,
+                                threshold: timing ? 5 : 660)
+    }
+
+    /// The view owns this task, so leaving the detail screen or backgrounding
+    /// cancels the fast poll. Ordinary refresh still reconciles grants, events
+    /// and the disk cache. All observer requests share the refresh gate.
+    func monitorBoard(for stationID: String) async {
+        guard let session = activeSession, session.audience.isPrivate else { return }
+        let generation = self.generation
+        while isCurrent(session, generation: generation) {
+            // Only boards with a timing stream need this cadence.
+            if observers.first(where: { $0.id == stationID })?.board?.timing != nil {
+                await refreshBoard(session: session, generation: generation)
+            }
+            do { try await Task.sleep(for: .seconds(1)) } catch { return }
+        }
+    }
+
+    private func refreshBoard(session: ReadSession, generation: UInt64) async {
+        guard isCurrent(session, generation: generation), !isRefreshing else { return }
+        isRefreshing = true
+        defer { if self.generation == generation { isRefreshing = false } }
+        do {
+            try await fetchObservers(session: session, generation: generation)
+            guard isCurrent(session, generation: generation) else { return }
+            errorMessage = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            if await handleAuthorizationLoss(error, session: session, generation: generation) { return }
+            guard isCurrent(session, generation: generation) else { return }
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @discardableResult
+    private func fetchObservers(session: ReadSession, generation: UInt64) async throws -> ObserversSnapshot {
+        let envelope = try await feedClient.fetchObservers(session: session)
+        guard isCurrent(session, generation: generation) else { throw CancellationError() }
+        guard let payload = envelope.data else { throw FeedError.missingData }
+        guard payload.schema == "2.0", payload.audience == session.audience.rawValue
+        else { throw FeedError.invalidResponse }
+        let snapshot = ObserversSnapshot(receivedAt: Date(), scope: session.cacheKey,
+                                         serverTime: envelope.time, payload: payload)
+        try apply(snapshot, cached: false)
+        return snapshot
     }
 
     func start(session: ReadSession, stationIDs: [String]) {
@@ -147,20 +201,7 @@ final class StationStore {
         do {
             try await validateAuthorization(session: session)
             guard isCurrent(session, generation: generation) else { return }
-            let envelope = try await feedClient.fetchObservers(session: session)
-            guard isCurrent(session, generation: generation) else { return }
-            guard let payload = envelope.data else { throw FeedError.missingData }
-            guard payload.schema == "2.0",
-                  payload.audience == session.audience.rawValue
-            else { throw FeedError.invalidResponse }
-            guard isCurrent(session, generation: generation) else { return }
-            let snapshot = ObserversSnapshot(
-                receivedAt: Date(),
-                scope: session.cacheKey,
-                serverTime: envelope.time,
-                payload: payload
-            )
-            try apply(snapshot, cached: false)
+            let snapshot = try await fetchObservers(session: session, generation: generation)
             try? await cache.saveObservers(snapshot, for: session.cacheKey, access: access)
             guard isCurrent(session, generation: generation) else { return }
             errorMessage = nil
@@ -221,6 +262,13 @@ final class StationStore {
         lastUpdated = snapshot.receivedAt
         isShowingCachedSnapshot = cached
         fetchedAt = .now
+        // The collector envelope truncates UTC to whole seconds, while board
+        // timestamps retain fractions. Use the end of that second so a newly
+        // received pulse is not mistaken for a future timestamp; freshness can
+        // expire up to one second early. Never compare with the phone's clock.
+        boardServerTime = WireDate.parse(snapshot.serverTime).map {
+            $0.addingTimeInterval(snapshot.serverTime?.contains(".") == true ? 0 : 1)
+        }
 
         let received = snapshot.receivedAt.timeIntervalSince1970
         let elapsed = now.timeIntervalSince(snapshot.receivedAt)
@@ -369,6 +417,7 @@ final class StationStore {
         conditions = ConditionState()
         ageAtFetch = [:]
         fetchedAt = nil
+        boardServerTime = nil
         lastEventID = nil
         lastUpdated = nil
         isShowingCachedSnapshot = false

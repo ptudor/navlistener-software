@@ -211,9 +211,12 @@ contains separate `mcp9808_c`, `hdc2080_c`, `bmp388_bmp384_c`,
 component health, identity and context. `board.latest` separates collector
 receipt time from nullable sample UTC and includes boot session/sequence.
 `board.stale` and `board.last_interference` expose freshness and the previous
-report as interference context. Public views exclude board telemetry.
-See [ObserverDetails](OBSERVER-TELEMETRY.md) for field definitions, cadence,
-replay caveats and bounded live retention; there is no durable sensor historian.
+report as interference context. `board.timing` carries independently paced GNSS
+and RTC pulse measurements, with its own `timing_stale` flag. Public views exclude
+board telemetry. See [ObserverDetails](OBSERVER-TELEMETRY.md) for field definitions,
+cadence, replay caveats and bounded live retention. With the historian enabled,
+samples also persist privately in `observer_samples`; historical queries currently
+require authorized database access rather than an HTTP history endpoint.
 
 ### 1.4 `almanac` — coarse orbits for every known SV
 

@@ -11,6 +11,11 @@ options:
   createIntermediateGroups: true
   developmentLanguage: en
 
+packages:
+  ESPProvision:
+    url: https://github.com/espressif/esp-idf-provisioning-ios.git
+    exactVersion: 3.1.0
+
 settings:
   base:
     SWIFT_VERSION: "6"
@@ -37,6 +42,8 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         NSLocalNetworkUsageDescription: Integrity Station reads status from your GNSS collector on the local network.
+        NSBluetoothAlwaysUsageDescription: Integrity Station uses Bluetooth to securely set up your nearby GNSS observer.
+        NSCameraUsageDescription: Integrity Station scans the setup label on your GNSS observer.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
     settings:
@@ -47,6 +54,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
     dependencies:
+      - package: ESPProvision
       - sdk: CryptoKit.framework
       - sdk: Security.framework
 
@@ -98,6 +106,7 @@ targets:
     sources:
       - path: IntegrityStationTests/LocalizationTests.swift
       - path: IntegrityStationTests/LocalizationExpected.json
+      - path: IntegrityStationTests/BoardTelemetryTests.swift
     dependencies:
       - target: IntegrityStation
     settings:

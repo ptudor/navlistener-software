@@ -41,6 +41,39 @@ private final class SelectionCollector: @unchecked Sendable {
 }
 
 @MainActor final class StationSelectionUITests: XCTestCase {
+    #if os(iOS)
+    func testObserverSetupCanOpenValidateAndClose() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["INTEGRITY_STATION_UI_TEST_SUITE"] = "net.intsat.station.ui-test.\(UUID())"
+        app.launch()
+        defer { app.terminate() }
+        let setup = app.buttons["setup.open"].firstMatch
+        XCTAssertTrue(setup.waitForExistence(timeout: 10))
+        if !setup.isHittable { app.swipeUp() }
+        setup.tap()
+        XCTAssertTrue(app.textFields["setup.device_name"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.secureTextFields["setup.password"].exists)
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Observer setup"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        // Empty input fails locally, without starting Bluetooth or writing keys.
+        let connect = app.buttons["setup.connect"]
+        if !connect.isHittable { app.swipeUp() }
+        connect.tap()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@",
+            "This is not a valid ESP32-S3 setup label.")).firstMatch.waitForExistence(timeout: 5))
+        app.navigationBars.buttons["Done"].tap()
+        XCTAssertTrue(setup.waitForExistence(timeout: 5))
+        app.tabBars.buttons["Settings"].tap()
+        let settingsSetup = app.buttons["setup.open"].firstMatch
+        XCTAssertTrue(settingsSetup.waitForExistence(timeout: 5))
+        settingsSetup.tap()
+        XCTAssertTrue(app.textFields["setup.device_name"].waitForExistence(timeout: 5))
+        app.navigationBars.buttons["Done"].tap()
+    }
+    #endif
+
     func testAddTwoDiscoveredAndOneManualStation() throws {
         let ready = expectation(description: "collector ready")
         let fixture = try SelectionCollector(ready: ready)

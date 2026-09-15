@@ -11,6 +11,9 @@ struct ObserversPayload: Codable, Sendable {
             guard !observer.id.isEmpty, ids.insert(observer.id).inserted else {
                 throw FeedError.invalidResponse
             }
+            guard audience != "public" || observer.board == nil else {
+                throw FeedError.invalidResponse
+            }
         }
     }
 }
@@ -43,9 +46,10 @@ struct Observer: Codable, Identifiable, Sendable {
     let declaredCapabilities: [CapabilitySignal]?
     let unexpectedCapabilities: [CapabilitySignal]?
     let missingCapabilities: [CapabilitySignal]?
+    var board: StationBoard? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, owner, remark, vendor, mods, disabled, svs, rf, capabilities
+        case id, owner, remark, vendor, mods, disabled, svs, rf, capabilities, board
         case latitudeDeg = "latitude_deg"
         case longitudeDeg = "longitude_deg"
         case heightM = "height_m"

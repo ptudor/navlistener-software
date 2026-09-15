@@ -8,6 +8,7 @@ struct OnboardingView: View {
     @State private var tokenDraft = ""
     @State private var manualStationID = ""
     @State private var validationMessage: String?
+    @State private var showingSetup = false
 
     var body: some View {
         ScrollView {
@@ -76,6 +77,12 @@ struct OnboardingView: View {
                 }
 
                 }
+                #if os(iOS)
+                InstrumentCard("setup.title", systemImage: "sensor.tag.radiowaves.forward") {
+                    Button("setup.open") { showingSetup = true }
+                        .accessibilityIdentifier("setup.open")
+                }
+                #endif
                 if controller.serverURL != nil {
                     if selectionSession == nil { audienceCard }
 
@@ -139,6 +146,9 @@ struct OnboardingView: View {
         .task {
             if serverDraft.isEmpty { serverDraft = controller.settings.serverURLString }
         }
+        #if os(iOS)
+        .sheet(isPresented: $showingSetup) { ObserverSetupView() }
+        #endif
     }
 
     @ViewBuilder
