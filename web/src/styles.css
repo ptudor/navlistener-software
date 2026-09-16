@@ -1362,6 +1362,9 @@ footer nav a:hover { color: var(--accent); }
 
 .footer-meta {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
   padding-top: 1.7rem;
   grid-column: 1 / -1;
   justify-content: space-between;
@@ -1371,6 +1374,8 @@ footer nav a:hover { color: var(--accent); }
   font-size: 0.57rem;
   letter-spacing: 0.04em;
 }
+
+.footer-legal { flex-wrap: wrap; gap: 0.75rem 1.25rem; }
 
 @keyframes pulse {
   0% { opacity: 0.7; transform: scale(0.7); }

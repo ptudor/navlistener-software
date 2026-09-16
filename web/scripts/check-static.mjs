@@ -20,7 +20,8 @@ assert.doesNotMatch(html, /<div id="app"><\/div>/, 'app is not an empty JavaScri
 assert.doesNotMatch(html, /\sstyle=/i, 'inline style would violate the CSP')
 assert.match(html, /style-src 'self';/, 'production keeps the strict stylesheet policy')
 assert.doesNotMatch(html, /nonce-|unsafe-inline/, 'development style authorization stays out of production')
-assert.doesNotMatch(html, /(?:src|href)="https?:\/\/(?!navlisten\.com)/, 'no third-party runtime assets')
+// Outbound navigation is allowed; embedded resources must remain local.
+assert.doesNotMatch(html.replace(/<a\b[^>]*>/g, ''), /(?:src|href)="https?:\/\/(?!navlisten\.com)/, 'no third-party runtime assets')
 
 await Promise.all([
   'assets/mark.svg',

@@ -465,7 +465,10 @@ function emailHref(subject) {
         <a :href="emailHref('Hello NavListen')">Contact</a>
       </nav>
       <div class="footer-meta">
-        <span>Apache License 2.0</span>
+        <nav class="footer-legal" aria-label="Legal">
+          <a href="https://intsat.space/intsat/terms/">Terms &amp; Conditions</a>
+          <a href="https://intsat.space/intsat/privacy/">Privacy Policy</a>
+        </nav>
         <span>© 2026 NavListen</span>
       </div>
     </div>

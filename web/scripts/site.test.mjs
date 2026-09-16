@@ -16,7 +16,8 @@ test('the project page has a complete story and contact paths', async () => {
     'Revisit every recorded message.',
     'Come help us listen.',
     'Tell us what you want to achieve.',
-    'Apache License 2.0',
+    'Terms &amp; Conditions',
+    'Privacy Policy',
   ]) {
     assert.ok(app.includes(phrase), `missing core copy: ${phrase}`)
   }
