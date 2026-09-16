@@ -20,7 +20,7 @@ const layers = [
     number: '01',
     eyebrow: 'Receive',
     title: 'Receive satellite messages',
-    copy: 'A satellite receiver captures navigation messages. Our purpose-built ESP32 observer brings the receiver and feeder together in one board.',
+    copy: 'Bring a patch of sky into focus. Our purpose-built ESP32-S3 observer combines a satellite receiver, Wi-Fi, and station sensors on one board.',
     tags: ['u-blox + Septentrio', 'Open hardware'],
   },
   {
@@ -73,7 +73,7 @@ const contributionPaths = [
 const questions = [
   {
     question: 'What do I need to host an observer?',
-    answer: 'Start with an observer, a suitable antenna with a clear view of the sky, power, and an internet connection. Tell us about your location and we can work through the setup together.',
+    answer: 'Give your observer a suitable antenna with a clear view of the sky, USB-C power, and Wi-Fi. Scan its setup label with Integrity Station on your iPhone or iPad to connect over Bluetooth and add your network and station details. Browser setup is available too. We’ll help you choose the right antenna and find a good spot.',
   },
   {
     question: 'Can I take part without hardware?',
@@ -273,21 +273,51 @@ function emailHref(subject) {
         </div>
 
         <div class="hardware-copy">
-          <p class="section-kicker">Receiver, feeder, and sensors</p>
+          <p class="section-kicker">A small board. A whole sky.</p>
           <h2>Meet the observer.</h2>
           <p class="hardware-lede">
-            Our four-layer observer brings a satellite receiver, Wi-Fi, and environmental sensors
-            together on one board. It records satellite messages alongside temperature,
-            pressure, and humidity at your station.
+            Put your corner of the sky to work. The observer sends satellite messages and local
+            conditions to NavListen over Wi-Fi. Its constellation lights bring reception to your
+            desk, with brightness you can adjust at a touch.
           </p>
           <dl class="hardware-specs">
-            <div><dt>Receiver</dt><dd>u-blox receiver options<br /><span>Part of a stack that also captures Septentrio data</span></dd></div>
-            <div><dt>Feeder</dt><dd>ESP32<br /><span>Wi-Fi, USB-C, resilient feeder</span></dd></div>
+            <div><dt>Receiver</dt><dd>u-blox receiver options<br /><span>Navigation messages straight from the satellites</span></dd></div>
+            <div><dt>Feeder</dt><dd>ESP32-S3<br /><span>Wi-Fi connected. USB-C powered.</span></dd></div>
             <div><dt>Identity</dt><dd>Hardware-backed station identity<br /><span>A secure element keeps the station’s key on the board</span></dd></div>
-            <div><dt>Sensors</dt><dd>Pressure · temperature · humidity<br /><span>Local conditions alongside each observation</span></dd></div>
+            <div><dt>Sensors</dt><dd>Pressure · temperature · humidity<br /><span>See what’s happening around your receiver</span></dd></div>
           </dl>
           <a class="text-link" :href="emailHref('I’m interested in NavListen observer hardware')">Ask about the observer <span aria-hidden="true">↗</span></a>
         </div>
+      </div>
+    </section>
+
+    <section class="station section-pad" aria-labelledby="station-heading">
+      <div class="container section-heading split-heading">
+        <div>
+          <p class="section-kicker">Integrity Station companion app</p>
+          <h2 id="station-heading">Your station. Wherever you are.</h2>
+        </div>
+        <p>From the first connection to your next discovery, keep your observer close.</p>
+      </div>
+      <div class="container use-cases">
+        <article>
+          <p class="section-kicker">Make the connection</p>
+          <h3>Start with a scan.</h3>
+          <p>Scan your observer’s setup label with your iPhone or iPad. Bluetooth setup brings
+            your Wi-Fi and station details across. Your patch of sky joins the picture.</p>
+        </article>
+        <article>
+          <p class="section-kicker">Stay in touch</p>
+          <h3>Know how it’s doing.</h3>
+          <p>Check reception, local conditions, and station health from your iPhone, iPad, or Mac.
+            Private diagnostics help you spot interruptions and understand what changed.</p>
+        </article>
+        <article>
+          <p class="section-kicker">Keep discovering</p>
+          <h3>Let your observer grow.</h3>
+          <p>Bring improvements to your observer with signed firmware updates over Wi-Fi.
+            Choose when to update and check its firmware version in the app.</p>
+        </article>
       </div>
     </section>
 

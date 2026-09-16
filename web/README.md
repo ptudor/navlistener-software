@@ -29,6 +29,9 @@ and comparisons that put other projects down.
 - Product colors and constellation identities come from the Integrity Station client. The board
   illustration follows the observer's 127 × 50.8 mm Rev A layout and real component set while
   keeping receiver and ESP32 variant labels generic.
+- Midnight and graphite surfaces with violet accents connect the site to the data service.
+  The turquoise brand mark and distinct constellation colors retain their own identities;
+  pale neutral sections give the longer page a change of pace.
 
 ## Develop
 
