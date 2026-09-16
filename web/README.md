@@ -30,8 +30,14 @@ and comparisons that put other projects down.
   illustration follows the observer's 127 × 50.8 mm Rev A layout and real component set while
   keeping receiver and ESP32 variant labels generic.
 - Midnight and graphite surfaces with violet accents connect the site to the data service.
-  The turquoise brand mark and distinct constellation colors retain their own identities;
-  pale neutral sections give the longer page a change of pace.
+  The four-color compass mark is shared with Integrity Satellite. Constellation colors
+  retain their own identities; pale neutral sections give the longer page a change of pace.
+
+The vector brand sources are `public/assets/mark.svg` and `public/assets/og-image.svg`.
+Use `rsvg-convert` to render the mark at 64, 180, and 512 pixels for `favicon.png`,
+`apple-touch-icon.png`, and `app-icon-512.png`, and the social card at 1200 × 630
+for `og-image.png`. Update their URL version in the page and web manifest when
+replacing artwork so cached icons refresh.
 
 ## Develop
 

@@ -1,7 +1,45 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="NavListen">
-  <rect width="64" height="64" rx="18" fill="#0b1a16"/>
-  <circle cx="32" cy="34" r="4" fill="#67f5c7"/>
-  <path d="M18 34a14 14 0 0 1 28 0M11 34a21 21 0 0 1 42 0" fill="none" stroke="#67f5c7" stroke-width="3" stroke-linecap="round"/>
-  <path d="M32 38v15M24.5 53h15" fill="none" stroke="#f1f3e9" stroke-width="3" stroke-linecap="round"/>
-  <circle cx="32" cy="34" r="18" fill="none" stroke="#67f5c7" stroke-opacity=".14"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Dark background -->
+  <circle cx="256" cy="256" r="256" fill="#0d1117"/>
+
+  <!--
+    Four-color constellation ring (warm/cool alternating).
+
+    Dash lengths are path units on a 2*pi*165 = 1036.7256 circumference, so a
+    quadrant is 259.1814. Each arc paints 247.66 of that and starts half a gap
+    (5.76 units = 2.00 deg) past its cardinal, which leaves a 4.00 deg gap
+    *centered* on each crosshair tick rather than trailing it. Keep the offsets
+    on the exact 259.1814 step; the older round 259 drifted 0.06 deg a quadrant.
+    Do not restate these in degrees via pathLength: librsvg ignores it, so the
+    dash then repeats three times per circle and shatters the ring.
+  -->
+  <g transform="rotate(-90 256 256)">
+    <!-- GPS teal — 12 o'clock to 3 -->
+    <circle cx="256" cy="256" r="165" fill="none" stroke="#2dd4bf" stroke-width="75"
+      stroke-dasharray="247.66 789.06" stroke-dashoffset="-5.76"/>
+    <!-- GLONASS orange — 3 to 6 -->
+    <circle cx="256" cy="256" r="165" fill="none" stroke="#f0883e" stroke-width="75"
+      stroke-dasharray="247.66 789.06" stroke-dashoffset="-264.94"/>
+    <!-- Galileo blue — 6 to 9 -->
+    <circle cx="256" cy="256" r="165" fill="none" stroke="#58a6ff" stroke-width="75"
+      stroke-dasharray="247.66 789.06" stroke-dashoffset="-524.12"/>
+    <!-- BeiDou purple — 9 to 12 -->
+    <circle cx="256" cy="256" r="165" fill="none" stroke="#bc8cff" stroke-width="75"
+      stroke-dasharray="247.66 789.06" stroke-dashoffset="-783.30"/>
+  </g>
+
+  <!-- Outer crosshair ticks (in the gaps between segments) -->
+  <line x1="256" y1="22" x2="256" y2="50" stroke="rgba(230,237,243,0.7)" stroke-width="6" stroke-linecap="round"/>
+  <line x1="462" y1="256" x2="490" y2="256" stroke="rgba(230,237,243,0.7)" stroke-width="6" stroke-linecap="round"/>
+  <line x1="256" y1="462" x2="256" y2="490" stroke="rgba(230,237,243,0.7)" stroke-width="6" stroke-linecap="round"/>
+  <line x1="22" y1="256" x2="50" y2="256" stroke="rgba(230,237,243,0.7)" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- Inner crosshair lines (ring inward toward center) -->
+  <line x1="256" y1="131" x2="256" y2="220" stroke="rgba(230,237,243,0.4)" stroke-width="4" stroke-linecap="round"/>
+  <line x1="292" y1="256" x2="381" y2="256" stroke="rgba(230,237,243,0.4)" stroke-width="4" stroke-linecap="round"/>
+  <line x1="256" y1="292" x2="256" y2="381" stroke="rgba(230,237,243,0.4)" stroke-width="4" stroke-linecap="round"/>
+  <line x1="131" y1="256" x2="220" y2="256" stroke="rgba(230,237,243,0.4)" stroke-width="4" stroke-linecap="round"/>
+
+  <!-- Center targeting dot -->
+  <circle cx="256" cy="256" r="26" fill="#e6edf3"/>
 </svg>

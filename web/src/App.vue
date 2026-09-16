@@ -129,7 +129,7 @@ function emailHref(subject) {
   <header ref="header" class="site-header" @focusout="handleFocusout">
     <div class="nav-shell">
       <a class="brand" href="#top" aria-label="NavListen home" @click="closeMenu">
-        <img src="/assets/mark.svg" width="38" height="38" alt="" />
+        <img src="/assets/mark.svg?v=compass-1" width="38" height="38" alt="" />
         <span>navlisten</span>
       </a>
 
@@ -189,8 +189,8 @@ function emailHref(subject) {
           <div class="sat-label sat-c"><b></b><span>BeiDou</span></div>
           <div class="sat-label sat-j"><b></b><span>QZSS</span></div>
           <div class="instrument-readout">
-            <span>Messages from space.</span>
-            <strong>Understanding on Earth.</strong>
+            <span>Satellite navigation.</span>
+            <strong>Beyond the blue dot.</strong>
           </div>
         </div>
       </div>
@@ -454,7 +454,7 @@ function emailHref(subject) {
   <footer>
     <div class="container footer-grid">
       <div>
-        <a class="brand footer-brand" href="#top"><img src="/assets/mark.svg" width="34" height="34" alt="" /><span>navlisten</span></a>
+        <a class="brand footer-brand" href="#top"><img src="/assets/mark.svg?v=compass-1" width="34" height="34" alt="" /><span>navlisten</span></a>
         <p>Open tools for studying satellite navigation.</p>
       </div>
       <nav aria-label="Footer navigation">
