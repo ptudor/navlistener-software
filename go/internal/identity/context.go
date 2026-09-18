@@ -41,6 +41,25 @@ const (
 	AttestationVerifiedV2        AttestationTier = "verified_v2_complete"
 )
 
+// HardwareTrust is what the collector itself verified about the hardware on a
+// session: a manufacturer-signed commissioning record for this observer and,
+// for trusted boards, a proof from the commissioned microcontroller bound to
+// the session. It is never taken from a device's own report or from config.
+type HardwareTrust string
+
+const (
+	// HardwareTrustNone covers software feeders, unknown or cloned boards,
+	// revoked boards, and any evidence that failed verification.
+	HardwareTrustNone HardwareTrust = "none"
+	// HardwareTrustOpen is original hardware commissioned as never locked.
+	HardwareTrustOpen HardwareTrust = "open"
+	// HardwareTrustTest is a bench or development unit.
+	HardwareTrustTest HardwareTrust = "test"
+	// HardwareTrustTrusted is a locked board whose commissioned
+	// microcontroller proved possession of its key on this session.
+	HardwareTrustTrusted HardwareTrust = "trusted"
+)
+
 // AggregateUse controls whether an observation is eligible for public live
 // state. Private is the zero/fallback behavior.
 type AggregateUse string
@@ -122,7 +141,16 @@ type ObserverContext struct {
 	// sessions and is resolved by the collector, never accepted from DATA.
 	CredentialFingerprint string
 	AttestationTier       AttestationTier
-	Publication           PublicationPolicy
+	// HardwareTrust and CommissioningFingerprint are what the collector verified
+	// from the evidence presented on this one session (docs/COMMISSIONING.md).
+	// They are established once, at the handshake, and stamped on every receipt
+	// of that session. No authorization source supplies them: a config row, a
+	// control-plane row and a periodic recheck all resolve them as none/empty.
+	// CommissioningFingerprint is the lowercase SHA-256 of the verified record,
+	// empty whenever HardwareTrust is none.
+	HardwareTrust            HardwareTrust
+	CommissioningFingerprint string
+	Publication              PublicationPolicy
 }
 
 // scopeIDRe is deliberately narrower than arbitrary display text: these ids are
@@ -190,6 +218,7 @@ func NewPrivateContext(observerID string, tier CredentialTier) ObserverContext {
 		FeedGrants:          []string{"local"},
 		CredentialTier:      tier,
 		AttestationTier:     AttestationNone,
+		HardwareTrust:       HardwareTrustNone,
 		Publication: PublicationPolicy{
 			AggregateUse:    AggregatePrivate,
 			StationMetadata: MetadataNone,
@@ -311,6 +340,23 @@ func (c ObserverContext) Normalize() (ObserverContext, error) {
 	default:
 		return c, fmt.Errorf("attestation tier %q is invalid", c.AttestationTier)
 	}
+	if c.HardwareTrust == "" {
+		c.HardwareTrust = HardwareTrustNone
+	}
+	switch c.HardwareTrust {
+	case HardwareTrustNone, HardwareTrustOpen, HardwareTrustTest, HardwareTrustTrusted:
+	default:
+		return c, fmt.Errorf("hardware trust %q is invalid", c.HardwareTrust)
+	}
+	// A fingerprint names the record that established the trust, so the two
+	// are present together: trust without a record, or a record that proved
+	// nothing, is a construction error rather than a weaker form of evidence.
+	if (c.HardwareTrust == HardwareTrustNone) != (c.CommissioningFingerprint == "") {
+		return c, fmt.Errorf("commissioning fingerprint must be present exactly when hardware trust is established")
+	}
+	if c.CommissioningFingerprint != "" && !certificateFingerprintRe.MatchString(c.CommissioningFingerprint) {
+		return c, fmt.Errorf("commissioning fingerprint must be 64 lowercase hexadecimal characters")
+	}
 	if c.Publication.AggregateUse == "" {
 		c.Publication.AggregateUse = AggregatePrivate
 	}
@@ -401,6 +447,15 @@ func (c ObserverContext) PublicAttributed() bool {
 	return c.Publication.AggregateUse == AggregatePublicAttributed
 }
 
+// WithSessionEvidence returns a copy stamped with what the collector verified
+// from this session's hardware evidence. fingerprint is the lowercase SHA-256 of
+// the verified commissioning record and must be empty exactly when trust is
+// none; the result is normalized so a malformed pair can never reach a receipt.
+func (c ObserverContext) WithSessionEvidence(trust HardwareTrust, fingerprint string) (ObserverContext, error) {
+	c.HardwareTrust, c.CommissioningFingerprint = trust, fingerprint
+	return c.Normalize()
+}
+
 // WithCredentialTier returns a copy stamped with the session's actual proof tier.
 func (c ObserverContext) WithCredentialTier(tier CredentialTier) ObserverContext {
 	c.CredentialTier = tier
@@ -411,6 +466,16 @@ func (c ObserverContext) WithCredentialTier(tier CredentialTier) ObserverContext
 // field. Active sessions close when this becomes false so changed ownership,
 // membership, credentials, attestation, or publication takes effect within the
 // documented cache/recheck bound.
+//
+// HardwareTrust and CommissioningFingerprint are deliberately not compared.
+// They are session evidence, not authorization: no authorization source ever
+// resolves them, so including them would make every periodic recheck of a
+// commissioned device look like a policy change, and would let one observer's
+// sessions with different evidence (a second feed, or a reconnect after a
+// registry update) cancel each other and reset the observer's audiences.
+// Neither value selects an audience or a publication rule, so a difference
+// needs no scope barrier; each receipt simply carries what its own session
+// proved. WithSessionEvidence is the only way they enter a context.
 func (c ObserverContext) AuthorizationEqual(other ObserverContext) bool {
 	return c.ObserverID == other.ObserverID && c.OrganizationID == other.OrganizationID &&
 		c.EnrollmentID == other.EnrollmentID && c.CollectorInstanceID == other.CollectorInstanceID &&

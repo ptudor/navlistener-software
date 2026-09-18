@@ -442,6 +442,39 @@ Two properties are enforced at the bench, not hoped for:
   legal after the data zone locks, `ATECC508A` §9.7) — that is what makes the "clean chip with
   an authenticity signature" sale work.
 
+### 4.1c Commissioning — the microcontroller is a fourth identity
+
+The attestation above covers the secure element, the RTC and the EEPROM. It does not mention
+the ESP32-S3, and whether a unit is locked is entirely a microcontroller property: Secure Boot
+and flash encryption are ESP32-S3 eFuses. Replace a locked module with a blank one and every
+attested identifier is unchanged, while the ATECC — whose slot 0 must stay usable without
+authorization so a buyer can re-enroll it — signs for whichever microcontroller drives the bus.
+
+So the microcontroller gets an identity of its own, and the manufacturer signs a second
+statement once the board is locked:
+
+- **The key.** The ESP32-S3 Digital Signature peripheral holds a 3072-bit RSA key that
+  software can never read: the private parameters are stored encrypted under an HMAC key in a
+  read-protected eFuse block. Commissioning firmware generates it on the device after Secure
+  Boot is in force, so the private key has never existed anywhere else. It costs one eFuse key
+  block — count it in the production eFuse list beside the three Secure Boot digests and the
+  flash-encryption key.
+- **The commissioning record.** A fixed 147-byte statement binding ATECC serial, RTC EUI-64,
+  board EUI-64 and board revision to the microcontroller's key, its lock state, a profile
+  (trusted, open or test) and a generation number, signed by the same manufacturer key under
+  its own domain string. It is made *after* slot 14 is locked, so it lives in the
+  manufacturer's records and in the device's flash rather than in the ATECC.
+- **The session proof.** On every connection the microcontroller signs a value derived from
+  that TLS session, and the collector verifies it against the key the record names.
+
+A replaced module is a recorded service event: the replacement generates its own key and the
+board is commissioned again at the next generation. Only the manufacturer can do that, because
+only the manufacturer key can sign the new statement. Open boards get a record and no key;
+commissioning one changes no eFuse.
+
+Formats, verification order and the registry that withdraws boards are normative in
+`docs/COMMISSIONING.md`.
+
 ### 4.2 Provisioning constraints — get these right before writing five parts
 
 Each is enforced by code today, and each is baked into a certificate that an ATECC will sign
@@ -491,6 +524,12 @@ serial. Assign them distinct roles and record all three at enrollment:
 | MCP79412 EUI-64 | **observer identity** — the `receiver_id` in the cert SAN and the `devices` row |
 | 24AA025E64 EUI-64 | **board serial** — identifies the PCB, not the network node |
 | ATECC serial | binds the key material to the enrollment record |
+
+The ESP32-S3 is a fourth identity of a different kind (§4.1c): it has no factory-programmed
+serial worth trusting — its MAC is a label — so it is named by the SHA-256 of the key
+generated inside it at commissioning. The manufacturer's unit record lists all four, together
+with the serial of every other fitted part that has one, so that "which parts are on this
+unit" has one answer.
 
 Consequence to accept deliberately: a dead RTC changes the observer's identity and forces
 re-enrollment. That is defensible — it is an auditable event — but it must be a decision rather
@@ -1049,6 +1088,37 @@ that defeats rail power-cycling and can back-power the slaves. The connector get
 no additional pull-ups, and external modules with their own pull-ups must be
 counted in the bus's combined pull-up resistance.
 
+**Bench identity read — required on every board revision from the ZED/X20 onward.**
+The manufacturer's unit record must not depend on what target firmware says its
+identifiers are. At the bench, the factory CA unit reads the ATECC serial, both
+EUI-64s and the slot-14 record directly over this connector while the ESP32 is held
+in reset, and the result is compared with the firmware's own report; a disagreement
+stops commissioning. That needs `ESP_EN` to be reachable by the same fixture that
+plugs into the Qwiic connector, without a hand on the RESET button:
+
+- Provide a round, unmasked **`ESP_EN` bench pad** of at least 1.0 mm diameter with a
+  **GND pad** beside it on a 100 mil pitch, on the same face as the Qwiic connector
+  and within 15 mm of it, both labelled on silkscreen. They may be the §7.7 recovery
+  pads if those meet the size, pitch and position; otherwise add them. No component
+  is fitted and no MCU pin is used.
+- `SENS_EN` is default-on through its 100 kΩ pull-up, so the identity parts are
+  powered from USB with the ESP32 in reset; the fixture supplies nothing.
+- The 0 Ω link stays fitted for this procedure; removing and refitting it on
+  every unit is not a production step. That is safe only because the factory CA
+  treats an assembled board as **sink-only**: power the observer from USB first,
+  and if the factory CA does not then see the rail on the connector it refuses
+  the session instead of sourcing into `3V3_SENS` through the link. The rule
+  above about removing the link still applies to any other powered host.
+- The factory CA's 2.2 kΩ target-side pull-ups sit in parallel with this board's
+  during the read, giving 1.1 kΩ per line — above the 967 Ω minimum for 3 mA sink
+  at 3.3 V, and the only additional load permitted on the bus.
+- Holding `ESP_EN` low through the pad must be open-drain from the fixture; it shares
+  the node with the RESET button and the 1 µF capacitor.
+
+Earlier NEO revisions have a RESET button and no bench pad. They are read the same
+way with the button held, which is acceptable for the first articles and not for a
+production run.
+
 The three environmental sensors connect as follows; the ESP32 module-pad numbers
 are included because they are not the same as GPIO numbers:
 
@@ -1429,3 +1499,13 @@ is a feature this board wants and a reason the WS2812B alignment pays for itself
    qualification remain open. Existing M8/M9 assemblies whose L1 antenna meets
    the loaded supply budget do not require replacement for this issue; §7.3
    gives an antenna candidate for the current circuit.
+
+10. **Microcontroller key — designed, not validated on silicon** (§4.1c). Before any
+    production eFuse burn, exercise the whole path on a scrap ESP32-S3 module: on-device key
+    generation and its duration, the key-block burn with read and write protection, a test
+    signature through the Digital Signature peripheral verified off the device, a session
+    proof accepted by a collector, restoration of the stored ciphertext after a flash erase,
+    and a count of the eFuse key blocks that remain. The burn is irreversible, so this pass
+    has the same standing as the ATECC scrap-part pass in item 8.
+11. **Bench pad for `ESP_EN`** (§7.5). Required from the ZED/X20 revision onward; the NEO
+    first articles are read with the RESET button held.

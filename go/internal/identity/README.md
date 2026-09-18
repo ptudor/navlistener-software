@@ -26,9 +26,22 @@ The context also retains the server-resolved feed grants and declared receiver c
 were in force at receipt. These are canonicalized sets and persisted beside the policy snapshot;
 they never come from ordinary DATA metadata.
 
-The context separates evidence (`CredentialTier`, `AttestationTier`) from authorization
-(`PublicationPolicy`). A genuine board is not automatically public, and a public contribution is
-not automatically allowed to disclose its station identity.
+The context separates evidence (`CredentialTier`, `AttestationTier`, `HardwareTrust`) from
+authorization (`PublicationPolicy`). A genuine board is not automatically public, and a public
+contribution is not automatically allowed to disclose its station identity.
+
+`HardwareTrust` and `CommissioningFingerprint` are **session evidence**: what the collector
+itself verified from the hardware evidence presented on one GNF1 session
+(`../../../docs/COMMISSIONING.md`). They differ from every other field in two ways.
+
+- No authorization source resolves them. A config row, a control-plane row and a periodic
+  recheck all yield `none` and an empty fingerprint; `WithSessionEvidence` is the only way a
+  value enters a context, and `Normalize` requires the pair to be consistent — a fingerprint
+  exactly when trust is established.
+- `AuthorizationEqual` deliberately ignores them. They select no audience and no publication
+  rule, so two sessions of one observer that proved different things share one policy, and a
+  recheck that resolves no evidence is not a change. Each receipt carries what its own session
+  proved.
 
 `ReadPrincipal` is the corresponding client-side authorization result: a stable principal id,
 grant revision, and explicit canonical operator/organization/collection audience keys. Parsing

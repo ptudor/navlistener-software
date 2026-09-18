@@ -125,3 +125,47 @@ func TestReceiptEvidenceIsRequiredCanonicalAndAuthorizationRelevant(t *testing.T
 		t.Fatal("context without retained feed authority was accepted")
 	}
 }
+
+func TestSessionEvidenceIsValidatedAndNeverAuthorization(t *testing.T) {
+	base, err := NewPrivateContext("00-04-a3-12-34-56-78-90", CredentialToken).Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.HardwareTrust != HardwareTrustNone || base.CommissioningFingerprint != "" {
+		t.Fatalf("resolved context carries evidence: %+v", base)
+	}
+	fingerprint := "aa" + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd"
+	trusted, err := base.WithSessionEvidence(HardwareTrustTrusted, fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trusted.HardwareTrust != HardwareTrustTrusted || trusted.CommissioningFingerprint != fingerprint {
+		t.Fatalf("session evidence = %+v", trusted)
+	}
+	if base.HardwareTrust != HardwareTrustNone {
+		t.Fatal("stamping a session changed the resolved context it was copied from")
+	}
+	// A periodic recheck resolves no evidence; it must still equal the admitted
+	// session, and two sessions with different evidence share one policy.
+	if !trusted.AuthorizationEqual(base) || !base.AuthorizationEqual(trusted) {
+		t.Fatal("session evidence changed authorization equality")
+	}
+
+	for name, c := range map[string]struct {
+		trust       HardwareTrust
+		fingerprint string
+	}{
+		"unknown trust":              {"verified", fingerprint},
+		"trust without a record":     {HardwareTrustOpen, ""},
+		"record that proved nothing": {HardwareTrustNone, fingerprint},
+		"uppercase fingerprint":      {HardwareTrustTest, "AA" + fingerprint[2:]},
+		"short fingerprint":          {HardwareTrustTest, fingerprint[:32]},
+		"empty trust with a record":  {"", fingerprint},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := base.WithSessionEvidence(c.trust, c.fingerprint); err == nil {
+				t.Fatal("malformed session evidence accepted")
+			}
+		})
+	}
+}
