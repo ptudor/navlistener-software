@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/ptudor/navlistener/internal/commissioning"
 	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/metrics"
@@ -179,6 +180,13 @@ type PushServer struct {
 	// verifies, preventing one database/view mistake from crossing CA realms.
 	collectorInstanceID string
 
+	// evidence verifies the hardware evidence a commissioned device presents
+	// after authenticating (docs/COMMISSIONING.md §6). nil means this collector
+	// pins no manufacturer keys: evidence is still read, to keep the handshake
+	// in step, and answered "unconfigured". Set via SetEvidenceVerifier before
+	// Run/Serve (connections read the field without a lock).
+	evidence *commissioning.Verifier
+
 	authorizationMu sync.Mutex
 	policies        map[string]*observerPolicy
 }
@@ -188,6 +196,10 @@ type PushServer struct {
 func (p *PushServer) SetDurableTracker(t *DurableTracker) { p.durable = t }
 
 func (p *PushServer) SetUpdates(updates UpdateCoordinator) { p.updates = updates }
+
+// SetEvidenceVerifier installs the hardware-evidence verifier. Must be called
+// before Run/Serve.
+func (p *PushServer) SetEvidenceVerifier(v *commissioning.Verifier) { p.evidence = v }
 
 // SetReauthorizationInterval changes the active-session authorization cadence.
 // Config validation requires a positive bounded value.
@@ -419,7 +431,8 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 	metrics.PushConnectsTotal.WithLabelValues(observer).Inc()
 	metrics.PushObserversUp.WithLabelValues(observer).Inc()
 	defer metrics.PushObserversUp.WithLabelValues(observer).Dec()
-	p.log.Info("push feeder authenticated", "observer", observer, "feed", feed, "remote", remote, "session", session, "zstd", useZstd)
+	p.log.Info("push feeder authenticated", "observer", observer, "feed", feed, "remote", remote, "session", session, "zstd", useZstd,
+		"hardware_trust", observerContext.HardwareTrust)
 
 	// Everything after the handshake is read through idleConn (deadline discipline); when the
 	// feeder negotiated zstd, the DATA stream is decompressed first. ACKs/PONGs back to the
@@ -456,11 +469,12 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 		return
 	}
 	defer admission.release()
+	metrics.PushHardwareTrustSessionsTotal.WithLabelValues(string(observerContext.HardwareTrust)).Inc()
 	if p.updates != nil {
 		p.updates.BeginSession(observerContext, session)
 	}
 	sessionCtx = context.WithValue(sessionCtx, admissionContextKey{}, admission)
-	go p.watchAuthorization(sessionCtx, ctx, conn, authorized.token, observer, feed, observerContext, admission)
+	go p.watchAuthorization(sessionCtx, ctx, conn, authorized.token, observer, feed, observerContext, authorized.evidence, admission)
 	p.stream(sessionCtx, frames, w, observerContext, feed, session)
 	sessionCancel()
 }
@@ -497,10 +511,15 @@ const helloMaxLen = 4096
 type authorizedHello struct {
 	policyGeneration uint64
 	observer         identity.ObserverContext
-	feed             string
-	session          string
-	token            string
-	useZstd          bool
+	// evidence is what the session's hardware evidence established. It is the
+	// zero Result (trust none) for a session that presented none or whose
+	// evidence was rejected, and is retained so the periodic recheck can notice
+	// a registry that later withdraws the board.
+	evidence commissioning.Result
+	feed     string
+	session  string
+	token    string
+	useZstd  bool
 }
 
 // handshake reads and authenticates the HELLO, replying WELCOME. The bearer
@@ -547,12 +566,101 @@ func (p *PushServer) handshake(ctx context.Context, conn net.Conn, w *connWriter
 		p.log.Warn("push HELLO missing or invalid session", "remote", remote, "observer", obs)
 		return authorizedHello{}, false
 	}
-	if err := w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{
+	welcome := wire.WelcomeMsg{
 		DurableACK: p.durable != nil, OK: true, AckIntervalMS: int(p.ackInterval / time.Millisecond), Zstd: h.Zstd,
-	})); err != nil {
+	}
+	// Hardware evidence is read only now: the HELLO has authenticated and named
+	// a usable feed and session, so an unauthenticated or malformed peer never
+	// makes this collector parse a record or verify a signature. What it proves
+	// is stamped on the context before admission, so every receipt of the
+	// session carries it.
+	var evidence commissioning.Result
+	if h.Evidence {
+		payload, ok := p.readEvidence(conn, w, remote, obs)
+		if !ok {
+			return authorizedHello{}, false
+		}
+		var reason string
+		evidence, reason = p.evaluateEvidence(conn, obs, payload)
+		observerContext, evidence, reason = stampEvidence(observerContext, evidence, reason)
+		welcome.HardwareTrust, welcome.EvidenceError = string(observerContext.HardwareTrust), reason
+		if reason != "" {
+			metrics.PushEvidenceRejectedTotal.WithLabelValues(reason).Inc()
+		}
+	}
+	if err := w.write(wire.Welcome, mustWelcome(welcome)); err != nil {
 		return authorizedHello{}, false
 	}
-	return authorizedHello{observer: observerContext, feed: h.Feed, session: h.Session, token: h.Token, useZstd: h.Zstd, policyGeneration: policyGeneration}, true
+	return authorizedHello{observer: observerContext, evidence: evidence, feed: h.Feed, session: h.Session, token: h.Token, useZstd: h.Zstd, policyGeneration: policyGeneration}, true
+}
+
+// readEvidence reads the one EVIDENCE frame a HELLO announced, under the
+// handshake read deadline and the evidence length cap. Anything else in its
+// place is a protocol error: the stream cannot be resynchronised, so the
+// session is refused rather than guessed at.
+func (p *PushServer) readEvidence(conn net.Conn, w *connWriter, remote, observer string) ([]byte, bool) {
+	ft, payload, err := wire.ReadFrameMax(conn, commissioning.EvidenceMaxLen)
+	if err != nil || ft != wire.Evidence {
+		metrics.PushErrorsTotal.WithLabelValues(observer, "evidence_frame").Inc()
+		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "expected evidence"}))
+		p.log.Warn("push HELLO announced evidence but no EVIDENCE frame followed",
+			"remote", remote, "observer", observer, "frame", ft, "error", err)
+		return nil, false
+	}
+	return payload, true
+}
+
+// evaluateEvidence decides what an authenticated session's evidence proves and,
+// when it proves nothing, the stable reason. It never refuses the session:
+// evidence labels data, and the operational credential decides admission.
+func (p *PushServer) evaluateEvidence(conn net.Conn, observer string, payload []byte) (commissioning.Result, string) {
+	none := commissioning.Result{Trust: identity.HardwareTrustNone}
+	if p.evidence == nil {
+		return none, commissioning.ReasonUnconfigured
+	}
+	evidence, err := commissioning.ParseEvidence(payload)
+	if err != nil {
+		p.log.Warn("push hardware evidence rejected", "observer", observer, "reason", commissioning.ReasonMalformed, "error", err)
+		return none, commissioning.ReasonMalformed
+	}
+	// The exported keying material exists only inside this TLS session, which
+	// is what stops a proof from being replayed or relayed. A session that
+	// cannot export any (TLS 1.2 without the extended master secret) leaves it
+	// empty, and a proof then fails to verify rather than being waived.
+	var exported []byte
+	if tlsConn, ok := conn.(*tls.Conn); ok {
+		state := tlsConn.ConnectionState()
+		if material, err := state.ExportKeyingMaterial(commissioning.ExporterLabel, nil, commissioning.ExporterLength); err == nil {
+			exported = material
+		} else {
+			p.log.Warn("push TLS session exports no keying material; a session proof cannot verify", "observer", observer, "error", err)
+		}
+	}
+	result, err := p.evidence.Evaluate(observer, evidence, exported)
+	if err != nil {
+		reason := commissioning.ReasonMalformed
+		var rejection *commissioning.Rejection
+		if errors.As(err, &rejection) {
+			reason = rejection.Reason
+		}
+		p.log.Warn("push hardware evidence rejected", "observer", observer, "reason", reason, "error", err)
+		return none, reason
+	}
+	return result, ""
+}
+
+// stampEvidence records a verified result on the session context. A result the
+// context refuses (which a verified record cannot produce) degrades to none
+// rather than reaching a receipt half-formed.
+func stampEvidence(observer identity.ObserverContext, result commissioning.Result, reason string) (identity.ObserverContext, commissioning.Result, string) {
+	if result.Trust == identity.HardwareTrustNone || result.Trust == "" {
+		return observer, commissioning.Result{Trust: identity.HardwareTrustNone}, reason
+	}
+	stamped, err := observer.WithSessionEvidence(result.Trust, hex.EncodeToString(result.Fingerprint[:]))
+	if err != nil {
+		return observer, commissioning.Result{Trust: identity.HardwareTrustNone}, commissioning.ReasonMalformed
+	}
+	return stamped, result, ""
 }
 
 // authorize binds a server-side grant to the proof actually presented on this
@@ -632,7 +740,19 @@ func (p *PushServer) enqueueScopeRevocation(ctx context.Context, previous identi
 	}
 }
 
-func (p *PushServer) watchAuthorization(ctx, ingestCtx context.Context, conn net.Conn, token, station, feed string, initial identity.ObserverContext, admission *Admission) {
+// watchAuthorization rechecks an active session on the reauthorization cadence.
+//
+// The authorization recheck resolves a context with no hardware evidence, by
+// construction: evidence is proved once, at the handshake, and no authorization
+// source supplies it. AuthorizationEqual ignores it for that reason, so a
+// commissioned device's recheck is not a spurious change, and nothing here can
+// raise a session's trust — the context stamped on its receipts is never
+// replaced. The registry is the one thing that can change underneath a live
+// session, and only downward: a board withdrawn or superseded while connected
+// has its session closed, and the reconnect is evaluated against the registry
+// now in force. That is not a policy transition — ownership, audiences and
+// publication are untouched — so no audience reset accompanies it.
+func (p *PushServer) watchAuthorization(ctx, ingestCtx context.Context, conn net.Conn, token, station, feed string, initial identity.ObserverContext, evidence commissioning.Result, admission *Admission) {
 	if p.reauthorizeEvery <= 0 {
 		return
 	}
@@ -655,6 +775,20 @@ func (p *PushServer) watchAuthorization(ctx, ingestCtx context.Context, conn net
 				p.changeAdmission(ingestCtx, admission, current)
 				_ = conn.Close()
 				return
+			}
+			if p.evidence != nil {
+				if err := p.evidence.Recheck(evidence); err != nil {
+					reason := commissioning.ReasonMalformed
+					var rejection *commissioning.Rejection
+					if errors.As(err, &rejection) {
+						reason = rejection.Reason
+					}
+					metrics.PushEvidenceRejectedTotal.WithLabelValues(reason).Inc()
+					p.log.Warn("registry withdrew this session's hardware trust; closing so the reconnect is re-evaluated",
+						"observer", initial.ObserverID, "reason", reason, "error", err)
+					_ = conn.Close()
+					return
+				}
 			}
 		}
 	}

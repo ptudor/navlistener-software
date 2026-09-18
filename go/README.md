@@ -16,6 +16,7 @@ behind the Integrity Constellation Map. Feeders forward raw frames; decoding and
 | `internal/wire/` | GNF1 — the feeder↔collector framing. |
 | `internal/ingest/` | Dial connectors (UBX/SBF/RTCM/NTRIP) and the authenticated GNF1 push server. |
 | `internal/state/` | Live per-SV state: ephemeris store, propagation, the integrity *compute*. |
+| `internal/commissioning/` | Manufacturer commissioning records, session proofs and the signed registry: what the push server verifies about hardware. |
 | `internal/detect/` | The integrity *detect* stage: debounced classifiers → typed events. |
 | `internal/store/` | The TimescaleDB historian: batched raw frames, events, feed snapshots. |
 | `internal/serve/` | The native `/gnss/api/v2/*` read API and the events SSE stream. |
@@ -132,8 +133,14 @@ TOML, never `.env`. Default search order when `-config` isn't given:
 ```
 
 Sections: `[logging]`, `[metrics]`, `[state]`, `[store]`, `[serve]`, `[push]` (with
-`[[push.observer]]`), and `[[ingest]]`. See `internal/config/README.md` for the full surface and
-`navlistener.toml.example` for a commented reference.
+`[[push.observer]]`), `[hardware_trust]`, and `[[ingest]]`. See `internal/config/README.md` for
+the full surface and `navlistener.toml.example` for a commented reference.
+
+`[hardware_trust]` pins the manufacturer public keys the push endpoint verifies device evidence
+against, and optionally a signed registry that can withdraw boards
+([`../docs/COMMISSIONING.md`](../docs/COMMISSIONING.md)). What a session proves is stamped on
+every receipt as `hardware_trust` — `none`, `open`, `test` or `trusted` — and never comes from a
+device's own report or from configuration. Without the section every session is `none`.
 
 `[serve].audience` defaults to `public`, which is populated from an isolated pre-aggregation
 projection: private receivers cannot affect its confidence, counters, selected ephemeris, or
@@ -145,7 +152,8 @@ responses are marked `private, no-store`.
 ```
 
 `-check-config` has **full startup parity** : it loads the `[push]` TLS keypair and client
-CA, parses the store DSN, and validates NTRIP CA files. On a bare host without certs it fails by
+CA, parses the store DSN, validates NTRIP CA files, loads the `[hardware_trust]` keys and
+verifies the configured registry. On a bare host without certs it fails by
 design. Non-fatal `WARNING:` lines (a world-readable secrets file, a non-loopback bind of an
 unauthenticated surface) are surfaced without blocking startup.
 
@@ -202,4 +210,5 @@ observability.
 | Which signals decode and how frames arrive | `../docs/CONSTELLATIONS.md` |
 | What the detectors compute and their thresholds | `../docs/INTEGRITY.md`, `../docs/DEFENSE-PNT.md` |
 | The served contract and the DB schema | `../docs/OUTPUT.md`, `internal/store/schema.sql` |
+| How hardware is verified, and what `trusted` means | `../docs/COMMISSIONING.md` |
 | A specific package | that package's own `README.md` |

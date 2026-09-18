@@ -139,6 +139,37 @@ retaining a misleading hardware label. Every active connection is re-authorized 
 configured cadence and is closed if credential, enrollment, ownership, memberships,
 attestation, or publication context changes.
 
+### Hardware evidence
+
+A HELLO may announce one `EVIDENCE` frame (`docs/COMMISSIONING.md` §6). The handshake reads it
+only after the HELLO has authenticated and named a usable feed and session, under the same
+handshake deadline and a 2048-byte cap, so an unauthenticated peer can never make the collector
+parse a record or verify a signature. A flag with no `EVIDENCE` frame behind it is a protocol
+error that refuses the session, because the stream cannot be resynchronised.
+
+`internal/commissioning.Verifier` evaluates the evidence against the authenticated observer id
+and the TLS session's exported keying material, and the result is stamped on the context
+**before** admission as `HardwareTrust` and `CommissioningFingerprint`, so every receipt of the
+session carries it. Evidence never refuses a session: a rejection leaves the session
+`hardware_trust = none`, answers the reason in WELCOME, logs it and counts
+`navlistener_push_evidence_rejected_total{reason}`. A collector with no verifier
+(`SetEvidenceVerifier(nil)`) still reads the frame and answers `unconfigured`.
+
+Session evidence is deliberately outside the authorization machinery described above.
+`ObserverContext.AuthorizationEqual` ignores it, so:
+
+- the periodic recheck, which resolves a context with no evidence by construction, is not a
+  change, and nothing in it can raise a session's trust — the context stamped on receipts is
+  never replaced;
+- sessions of one observer that proved different things share one policy generation, and no
+  `ScopeRevocation` barrier is emitted for the difference. Hardware trust selects no audience
+  and no publication rule, so there is nothing to reset.
+
+The registry is the one input that can change underneath a live session, and only downward. The
+recheck therefore also calls `Verifier.Recheck`: a board withdrawn or superseded while connected
+has its session closed, and the feeder's reconnect is evaluated against the registry in force.
+That close is not a policy transition either.
+
 `Listen()` is called **synchronously at startup**, before any producer or historian goroutine, so
 a bad certificate or an already-bound address kills the process rather than leaving a
 half-started daemon.
@@ -212,6 +243,10 @@ Three layers:
   proven: `TestRealBeiDouD1AgreesWithBCNAV2` (B1I vs B2a) and `TestRealGalileoFNAVAgreesWithINAV`
   (E5a vs E1-B) would each catch a wrong-but-plausible field offset that no synthetic test can.
   See `testdata/README.md`.
+- **Evidence over real TLS** (`evidence_test.go`) — the session proof is bound to keying material
+  only a real handshake produces, so these tests dial the push server: trusted over TLS 1.3 and
+  1.2, open, every rejection reason, a proof relayed from another session, evidence behind a
+  failed authentication, recheck and second-session behaviour, and a live registry withdrawal.
 - **End-to-end with the real C feeder** (`TestNavfeeder*`) — builds `../../../feeder/` and runs it
   against this collector, covering the handshake (including the regression fix compact-JSON
   requirement), sequencing, ack-driven spool pruning, session resume, and SIGPIPE behavior.

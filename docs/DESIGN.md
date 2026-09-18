@@ -141,11 +141,13 @@ shape means one mental model and a near-verbatim port of `radiolistener/feeder/f
 
 | Frame | Dir | Payload |
 |---|---|---|
-| `HELLO` (0x01) | feeder→collector | JSON `{token, station, feed, sw, session, zstd?}` — `feed ∈ {ubx, rtcm}` (SBF is rejected because GNF1 `frame_type` cannot carry SBF block numbers; NMEA is unimplemented). **`session` is REQUIRED** (regression fix, contract revision 2026-07-31): an opaque boot identity (1..64 chars of `[A-Za-z0-9._-]`; reference implementations use 32 hex chars) minted fresh whenever the feeder's DATA sequence space restarts from zero and reused while it continues — the C feeder persists it in each disk-spool header and replays prior-run files on separate connections under their original sessions; every process uses a fresh session for new captures; the ESP32's RAM-only ring mints one per boot. The collector's replay-dedup identity is (canonical authenticated observer, session, seq); the session is never trusted as observer identity. A HELLO without a valid session is rejected before WELCOME |
-| `WELCOME` (0x02) | collector→feeder | JSON `{ok, error?, ack_interval_ms?, zstd?}`. **Normative: the compact Go `encoding/json` spelling** — servers MUST emit `"ok":true` / `"zstd":true` with no space after the colon (see the note below) |
+| `HELLO` (0x01) | feeder→collector | JSON `{token, station, feed, sw, session, zstd?, evidence?}` — `feed ∈ {ubx, rtcm}` (SBF is rejected because GNF1 `frame_type` cannot carry SBF block numbers; NMEA is unimplemented). **`session` is REQUIRED** (regression fix, contract revision 2026-07-31): an opaque boot identity (1..64 chars of `[A-Za-z0-9._-]`; reference implementations use 32 hex chars) minted fresh whenever the feeder's DATA sequence space restarts from zero and reused while it continues — the C feeder persists it in each disk-spool header and replays prior-run files on separate connections under their original sessions; every process uses a fresh session for new captures; the ESP32's RAM-only ring mints one per boot. The collector's replay-dedup identity is (canonical authenticated observer, session, seq); the session is never trusted as observer identity. A HELLO without a valid session is rejected before WELCOME |
+| `WELCOME` (0x02) | collector→feeder | JSON `{ok, error?, ack_interval_ms?, zstd?, durable_ack?, hardware_trust?, evidence_error?}`. **Normative: the compact Go `encoding/json` spelling** — servers MUST emit `"ok":true` / `"zstd":true` with no space after the colon (see the note below) |
 | `DATA` (0x03) | feeder→collector | `[8B seq][framed raw record]` — see the record shape below |
 | `ACK` (0x04) | collector→feeder | `[8B seq]` the **durable watermark** for this session (regression fix, revised by regression fix 2026-07-31): the highest seq through which every *received* sequenced frame has been durably resolved — committed by the historian (or deduped against an already-committed ledger claim), quarantined as unfixable, or classified never-persistable (telemetry, malformed). The feeder prunes its spool up to the ack, so the ack stalls — rather than data being lost — while the collector's database is down; the feeder's ack-stall watchdog (10 min) then cycles the connection so reconnect replay redelivers anything the collector shed during the outage. A collector running **without** a historian acks on receipt (the explicit live-only mode; the spool contract is then best-effort by configuration). gap rule is unchanged: never-received sequences are skipped past, not waited for; reconnect replay makes any resulting duplicate harmless |
 | `PING`/`PONG` (0x05/0x06) | both | keepalive |
+| `UPDATE_CONTROL` (0x09) | collector→feeder | a versioned 36-byte update command ([software updates](../esp32/docs/SOFTWARE-UPDATES.md)) |
+| `EVIDENCE` (0x0A) | feeder→collector | a commissioned device's hardware evidence — its manufacturer-signed commissioning record and, for a locked board, its microcontroller key and a proof bound to this TLS session. Sent once, straight after a `HELLO` with `"evidence":true` and before `WELCOME`; never valid later. Layout and evaluation are normative in [COMMISSIONING.md §6](COMMISSIONING.md) |
 | `SIGNED_DATA` (0x07) | feeder→collector | *(hardware tier, vNext)* a `DATA` batch + trailing ATECC ECDSA signature over `EUI-64 ‖ rtc_unix_ns ‖ sha256(payload) ‖ counter` |
 
 **`WELCOME`'s compact spelling is part of the wire contract, not an implementation detail**
@@ -216,6 +218,27 @@ convention and not negotiable per device: **lowercase, hyphen-separated byte pai
 > Authentication binds a connection to an observer. It does not establish that
 > the received signal or the observer's timestamp is correct. Orbit, clock, and RF
 > checks provide separate evidence about plausibility.
+
+**Hardware evidence is a separate, optional step of the same handshake.** The credential above
+says *which observer* is connected; it says nothing about what is running on the board, and a
+device's own `trust_profile` report is only a label. A commissioned device therefore also
+presents evidence, which the collector verifies itself against pinned manufacturer keys and
+stamps on every receipt of the session as `hardware_trust` — `none`, `open`, `test` or
+`trusted` ([COMMISSIONING.md](COMMISSIONING.md)). Three properties shape the implementation:
+
+- **Evidence is read only after the HELLO authenticates**, under the handshake deadline and a
+  2048-byte cap, so an unauthenticated connection can never make the collector parse a record
+  or verify a signature. A `HELLO` that announces evidence and sends something else is a
+  protocol error and the session is refused, because the stream cannot be resynchronised.
+- **Evidence labels data and never gates admission.** Evidence that proves nothing leaves the
+  session at `none`; `WELCOME` carries the result and the rejection reason for the device's
+  journal. Refusing the session would discard observations an unattended station cannot send
+  again.
+- **It is not part of the authorization context.** No authorization source resolves it, the
+  periodic session recheck ignores it, and a difference between two sessions of one observer
+  is not a policy change and resets no audience. The signed registry can withdraw a board
+  while it is connected; that session is closed at the next recheck so the reconnect is
+  evaluated against the registry then in force.
 
 **Capability monitoring is implemented.** Configured sources and authorized push
 observers carry declared signal capabilities. The collector compares them with

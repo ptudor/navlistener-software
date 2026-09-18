@@ -1,18 +1,25 @@
 package state
 
 import (
+	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/ingest"
 	"time"
 )
 
 // BoardSample separates receipt time from a feeder wall clock. A nil SampleTime
 // means no accepted wall-clock stamp; uptime still orders samples within a boot.
+//
+// HardwareTrust is what the collector verified from the hardware evidence of the
+// session that delivered the sample (docs/COMMISSIONING.md). It sits beside
+// Details, never inside it: Details — including update.trust_profile — is the
+// device's own account, and this is the only field here that is not.
 type BoardSample struct {
-	ReceivedAt time.Time              `json:"received_at"`
-	SampleTime *time.Time             `json:"sample_time"`
-	Session    string                 `json:"session"`
-	Sequence   uint64                 `json:"sequence"`
-	Details    ingest.ObserverDetails `json:"details"`
+	ReceivedAt    time.Time              `json:"received_at"`
+	SampleTime    *time.Time             `json:"sample_time"`
+	Session       string                 `json:"session"`
+	Sequence      uint64                 `json:"sequence"`
+	HardwareTrust identity.HardwareTrust `json:"hardware_trust"`
+	Details       ingest.ObserverDetails `json:"details"`
 }
 type BoardEventContext struct {
 	Before   *BoardSample `json:"before,omitempty"`
@@ -55,7 +62,11 @@ func (s *Store) applyBoard(f *ingest.RawFrame) {
 	if old == nil && len(s.boards) >= 10000 {
 		return
 	}
-	sample := BoardSample{ReceivedAt: f.LocalRecv(), Session: f.Session, Sequence: f.Seq, Details: *f.Details}
+	sample := BoardSample{ReceivedAt: f.LocalRecv(), Session: f.Session, Sequence: f.Seq, Details: *f.Details,
+		HardwareTrust: f.Observer.HardwareTrust}
+	if sample.HardwareTrust == "" { // dial and programmatic frames carry no session evidence
+		sample.HardwareTrust = identity.HardwareTrustNone
+	}
 	if f.BoardSampleStamped {
 		stamp := f.Recv
 		sample.SampleTime = &stamp

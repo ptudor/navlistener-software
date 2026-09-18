@@ -49,6 +49,10 @@ type Config struct {
 type Transition struct {
 	At     time.Time         `json:"at"`
 	Status wire.UpdateStatus `json:"status"`
+	// HardwareTrust is what the collector verified for the session that made
+	// this report. It sits beside the status rather than inside it because the
+	// status is the device's own account and this is not.
+	HardwareTrust string `json:"hardware_trust,omitempty"`
 }
 type RequestAudit struct {
 	ID      string             `json:"request_id"`
@@ -57,17 +61,22 @@ type RequestAudit struct {
 	Command wire.UpdateCommand `json:"command"`
 }
 type Record struct {
-	Device      Device             `json:"device"`
-	Command     wire.UpdateCommand `json:"command"`
-	RequestID   string             `json:"request_id"`
-	Actor       string             `json:"actor"`
-	Created     time.Time          `json:"created"`
-	Status      *wire.UpdateStatus `json:"status,omitempty"`
-	Received    time.Time          `json:"received"`
-	Session     string             `json:"session"`
-	Sequence    uint64             `json:"sequence,string"`
-	Transitions []Transition       `json:"transitions"`
-	Requests    []RequestAudit     `json:"requests"`
+	Device    Device             `json:"device"`
+	Command   wire.UpdateCommand `json:"command"`
+	RequestID string             `json:"request_id"`
+	Actor     string             `json:"actor"`
+	Created   time.Time          `json:"created"`
+	Status    *wire.UpdateStatus `json:"status,omitempty"`
+	// HardwareTrust is the collector-verified hardware trust of the session that
+	// made the latest report (none, open, test, trusted). Status.Profile beside
+	// it is the device's own label; only this value is evidence. Empty until a
+	// report has been received.
+	HardwareTrust string         `json:"hardware_trust,omitempty"`
+	Received      time.Time      `json:"received"`
+	Session       string         `json:"session"`
+	Sequence      uint64         `json:"sequence,string"`
+	Transitions   []Transition   `json:"transitions"`
+	Requests      []RequestAudit `json:"requests"`
 }
 type Manager struct {
 	mu      sync.Mutex
@@ -77,6 +86,20 @@ type Manager struct {
 	lock    *os.File
 	fault   error
 	now     func() time.Time
+	// verifiesHardware is set when the push endpoint pins manufacturer keys, so
+	// an unverified session is a finding rather than the only possible result.
+	verifiesHardware bool
+}
+
+// SetHardwareVerification tells the manager whether the push endpoint verifies
+// hardware evidence. Call before the push endpoint serves.
+func (m *Manager) SetHardwareVerification(enabled bool) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.verifiesHardware = enabled
+	m.mu.Unlock()
 }
 
 func (c Config) Validate() error {
@@ -296,27 +319,37 @@ func (m *Manager) Report(context identity.ObserverContext, session string, seque
 		return nil
 	}
 	previous := r.Status
+	trust := string(context.HardwareTrust)
+	if trust == "" {
+		trust = string(identity.HardwareTrustNone)
+	}
+	evidence := verified{trust: trust, oldTrust: r.HardwareTrust, verifies: m.verifiesHardware}
 	r.Device = d
 	r.Session = session
 	r.Sequence = sequence
 	r.Received = m.now()
 	r.Status = &status
+	r.HardwareTrust = trust
+	// A reconnect whose evidence verifies differently is a transition even when
+	// the device's own report is unchanged: it is the one change a device
+	// cannot describe about itself.
 	changed := previous == nil || previous.Mode != status.Mode || previous.Channel != status.Channel || previous.State != status.State ||
 		previous.Running != status.Running || previous.Available != status.Available || previous.Staged != status.Staged || previous.Failed != status.Failed ||
-		previous.Security != status.Security || previous.Profile != status.Profile || previous.Error != status.Error || previous.LastCommand != status.LastCommand
+		previous.Security != status.Security || previous.Profile != status.Profile || previous.Error != status.Error || previous.LastCommand != status.LastCommand ||
+		evidence.oldTrust != trust
 	if !changed {
 		m.records[d.key()] = r
-		observe(d.Observer, previous, status, m.now())
+		observe(d.Observer, previous, status, evidence, m.now())
 		return nil
 	}
-	r.Transitions = append(append([]Transition(nil), r.Transitions...), Transition{m.now(), status})
+	r.Transitions = append(append([]Transition(nil), r.Transitions...), Transition{At: m.now(), Status: status, HardwareTrust: trust})
 	if len(r.Transitions) > 32 {
 		r.Transitions = r.Transitions[len(r.Transitions)-32:]
 	}
 	if err := m.commit(d.key(), r); err != nil {
 		return err
 	}
-	observe(d.Observer, previous, status, m.now())
+	observe(d.Observer, previous, status, evidence, m.now())
 	return nil
 }
 func (m *Manager) request(actor string, d Device, id string, command wire.UpdateCommand) (Record, error) {

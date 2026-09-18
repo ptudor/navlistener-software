@@ -83,6 +83,29 @@ snapshot_interval        = "5m"  # persist each feed to the historian for replay
 # client_ca = "/usr/local/etc/navlistener/fleet-ca.crt"  # set to require mTLS (cert tiers)
 ack_interval = "1s"
 
+# Hardware evidence verification for the push endpoint (docs/COMMISSIONING.md).
+# A commissioned device presents a manufacturer-signed record and, for a locked
+# board, a proof from its microcontroller bound to the TLS session; the collector
+# stamps the result on every receipt as hardware_trust (none, open, test, trusted).
+# Evidence labels data and never refuses a session. Without manufacturer_keys,
+# evidence is read and answered "unconfigured". The files hold public keys only.
+# [hardware_trust]
+# manufacturer_keys = ["/usr/local/etc/navlistener/manufacturer-1.pem"]
+#
+# Optional signed registry. It can only withdraw trust: without it every valid
+# record is honoured and no board can be revoked. registry_keys are the separate
+# operations keys that sign it. A configured registry that is missing or does not
+# verify stops startup; a later reload that fails keeps the one in force.
+# registry      = "/var/db/navlistener/registry.json"
+# registry_keys = ["/usr/local/etc/navlistener/registry-1.pem"]
+# registry_reload = "30s"          # how often the file is checked for a change
+# Records the newest registry sequence adopted, so a restart cannot be handed an
+# older registry that still carries a valid signature. The collector writes it
+# (0600); the directory must exist and be writable by the daemon. Omitting it is
+# a startup WARNING: the registry is then monotonic only within one process.
+# registry_state = "/var/db/navlistener/registry.state"
+# require_registry_entry = false   # true withholds trust from boards the registry does not list
+
 # Outbound federation authorization is configured and validated before any peer
 # transport exists. A source's receipt/current policy must ALSO permit this exact
 # destination and data class; neither side is sufficient alone.

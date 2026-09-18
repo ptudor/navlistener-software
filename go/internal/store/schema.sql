@@ -26,6 +26,11 @@ CREATE TABLE IF NOT EXISTS nav_frames (
     credential_tier       TEXT   NOT NULL DEFAULT 'local_dial',
     credential_fingerprint TEXT  NOT NULL DEFAULT '',
     attestation_tier      TEXT   NOT NULL DEFAULT 'none',
+    -- What the collector verified from the session's hardware evidence
+    -- (docs/COMMISSIONING.md): none, open, test or trusted, with the SHA-256 of
+    -- the verified commissioning record. Receipt evidence like the rest.
+    hardware_trust        TEXT   NOT NULL DEFAULT 'none',
+    commissioning_fingerprint TEXT NOT NULL DEFAULT '',
     aggregate_use         TEXT   NOT NULL DEFAULT 'private',
     station_metadata      TEXT   NOT NULL DEFAULT 'none',
     event_visibility      TEXT   NOT NULL DEFAULT 'private',
@@ -65,6 +70,8 @@ ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS provenance            TEXT   NOT
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS credential_tier       TEXT   NOT NULL DEFAULT 'local_dial';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS credential_fingerprint TEXT  NOT NULL DEFAULT '';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS attestation_tier      TEXT   NOT NULL DEFAULT 'none';
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS hardware_trust        TEXT   NOT NULL DEFAULT 'none';
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS commissioning_fingerprint TEXT NOT NULL DEFAULT '';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS aggregate_use         TEXT   NOT NULL DEFAULT 'private';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS station_metadata      TEXT   NOT NULL DEFAULT 'none';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS event_visibility      TEXT   NOT NULL DEFAULT 'private';
@@ -317,6 +324,11 @@ CREATE TABLE IF NOT EXISTS observer_samples (
     credential_tier       TEXT   NOT NULL DEFAULT 'local_dial',
     credential_fingerprint TEXT  NOT NULL DEFAULT '',
     attestation_tier      TEXT   NOT NULL DEFAULT 'none',
+    -- What the collector verified from the session's hardware evidence
+    -- (docs/COMMISSIONING.md): none, open, test or trusted, with the SHA-256 of
+    -- the verified commissioning record. Receipt evidence like the rest.
+    hardware_trust        TEXT   NOT NULL DEFAULT 'none',
+    commissioning_fingerprint TEXT NOT NULL DEFAULT '',
     aggregate_use         TEXT   NOT NULL DEFAULT 'private',
     station_metadata      TEXT   NOT NULL DEFAULT 'none',
     event_visibility      TEXT   NOT NULL DEFAULT 'private',
@@ -334,6 +346,11 @@ CREATE TABLE IF NOT EXISTS observer_samples (
 );
 SELECT create_hypertable('observer_samples', 'ts',
     chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
+-- Additive migration for deployments created before hardware evidence. Every
+-- earlier sample becomes explicitly unverified; a constant default is the form
+-- that also applies over chunks that are already compressed.
+ALTER TABLE observer_samples ADD COLUMN IF NOT EXISTS hardware_trust        TEXT   NOT NULL DEFAULT 'none';
+ALTER TABLE observer_samples ADD COLUMN IF NOT EXISTS commissioning_fingerprint TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_observer_samples_source_time
     ON observer_samples (source_id, kind, received_at DESC);
 CREATE INDEX IF NOT EXISTS idx_observer_samples_org_time

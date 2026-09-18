@@ -42,6 +42,8 @@ note below.
 | 0x05 | `Ping` | either | keepalive |
 | 0x06 | `Pong` | either | keepalive |
 | 0x07 | `SignedData` | feeder → collector | hardware tier (vNext): a Data batch + ATECC ECDSA |
+| 0x09 | `UpdateControl` | collector → feeder | versioned 36-byte update command |
+| 0x0A | `Evidence` | feeder → collector | commissioning record, microcontroller key and session proof; handshake only |
 
 ### Bounds
 
@@ -105,6 +107,24 @@ requirement is on the **wire**, and it's stated in `docs/DESIGN.md §2 (The GNF1
 second implementation. `TestNavfeeder*` — the real C feeder run against this collector — is the
 regression guard.
 
+### Hardware evidence in the handshake
+
+A feeder that holds a commissioning record sets `"evidence": true` in its HELLO and sends one
+`Evidence` frame straight after it, without waiting for WELCOME. The payload layout, the
+evaluation order and the rejection reasons are normative in
+[`docs/COMMISSIONING.md` §6](../../../docs/COMMISSIONING.md); `internal/commissioning` parses and
+verifies it. This package only names the frame and carries the three JSON fields:
+
+- `HelloMsg.Evidence` — omitted when false, so a feeder without a record emits the same HELLO
+  bytes as before.
+- `WelcomeMsg.HardwareTrust` and `WelcomeMsg.EvidenceError` — present only in answer to a HELLO
+  that announced evidence. They are informational for the device's journal and never change
+  admission. The compact `"ok":true` rule above applies unchanged.
+
+The collector reads the frame only after the HELLO has authenticated, under the handshake
+deadline and a 2048-byte cap, so an unauthenticated peer can never make it parse a record or
+verify a signature. `Evidence` is not valid in the DATA phase.
+
 ### `ValidSession`
 
 ```go
@@ -134,8 +154,8 @@ regression fix) starts clean. `DurableTracker` keys on `(observer, session)` for
 ## Tests
 
 `wire_test.go` covers frame round-trips, the magic check, `MaxFrameLen` rejection before
-allocation, `ErrShortRecord` on a truncated DATA envelope, ack encode/decode, and the
-`ValidSession` charset.
+allocation, `ErrShortRecord` on a truncated DATA envelope, ack encode/decode, the
+`ValidSession` charset, and the evidence fields' spelling.
 
 The **cross-implementation** tests live in `../ingest`: `TestNavfeeder*` builds the real C feeder
 and runs it against this collector (`make check-e2e`). That's the only test that can catch a

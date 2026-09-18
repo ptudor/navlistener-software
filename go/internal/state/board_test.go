@@ -1,7 +1,10 @@
 package state
 
 import (
+	"encoding/json"
+	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/ingest"
+	"github.com/ptudor/navlistener/internal/wire"
 	"testing"
 	"time"
 )
@@ -85,5 +88,47 @@ func TestIndependentTimingAndEnvironmentCadence(t *testing.T) {
 	b = s.FeedStationBoards(now)["board"]
 	if b.Latest != nil || b.LastInterference != nil || b.Timing == nil || !b.Stale {
 		t.Fatal("new timing boot retained old environmental context")
+	}
+}
+
+// TestBoardSampleCarriesVerifiedHardwareTrust: the board output serves what the
+// collector verified for the delivering session beside the device's own update
+// report, and says "none" rather than nothing for a source with no evidence.
+func TestBoardSampleCarriesVerifiedHardwareTrust(t *testing.T) {
+	s := New(1)
+	now := time.Now()
+	update := &wire.UpdateStatus{Profile: "trusted", Security: 31}
+	verified := identity.NewPrivateContext("board", identity.CredentialToken)
+	verified.HardwareTrust = identity.HardwareTrustTrusted
+	s.Apply(&ingest.RawFrame{Source: "board", Observer: verified, Session: "boot-a", Seq: 1, HasSeq: true,
+		Recv: now, RecvLocal: now, Details: &ingest.ObserverDetails{UptimeMS: 100, Update: update}})
+	s.Apply(&ingest.RawFrame{Source: "dialled", Session: "boot-a", Seq: 1, HasSeq: true,
+		Recv: now, RecvLocal: now, Details: &ingest.ObserverDetails{UptimeMS: 100, Update: update}})
+	boards := s.FeedStationBoards(now)
+	if got := boards["board"].Update; got == nil || got.HardwareTrust != identity.HardwareTrustTrusted || got.Details.Update.Profile != "trusted" {
+		t.Fatalf("verified board update = %+v", got)
+	}
+	// The same self-report from a source that proved nothing stays a label.
+	if got := boards["dialled"].Update; got == nil || got.HardwareTrust != identity.HardwareTrustNone {
+		t.Fatalf("unverified board update = %+v", got)
+	}
+	encoded, err := json.Marshal(boards["board"].Update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sample struct {
+		HardwareTrust string `json:"hardware_trust"`
+		Details       struct {
+			Update map[string]any `json:"update"`
+		} `json:"details"`
+	}
+	if err := json.Unmarshal(encoded, &sample); err != nil {
+		t.Fatal(err)
+	}
+	if sample.HardwareTrust != "trusted" || sample.Details.Update["trust_profile"] != "trusted" {
+		t.Fatalf("served sample = %s", encoded)
+	}
+	if _, inside := sample.Details.Update["hardware_trust"]; inside {
+		t.Fatal("verified trust was served inside the device-reported update")
 	}
 }

@@ -84,11 +84,17 @@ type flushRetry struct {
 // needs no database.
 type copyRowsFunc func(ctx context.Context, rows [][]any) (int64, error)
 
+// provenanceColumns is how many leading copyColumns are the immutable receipt
+// provenance that observer_samples shares with nav_frames (through
+// policy_revision). Board rows reuse exactly that prefix.
+const provenanceColumns = 22
+
 var copyColumns = []string{
 	"ts", "received_at", "source_id", "organization_id", "enrollment_id",
 	"collector_instance_id", "collection_ids", "feed_grants", "declared_capabilities",
 	"provenance", "credential_tier",
-	"credential_fingerprint", "attestation_tier", "aggregate_use", "station_metadata", "event_visibility",
+	"credential_fingerprint", "attestation_tier", "hardware_trust", "commissioning_fingerprint",
+	"aggregate_use", "station_metadata", "event_visibility",
 	"raw_export", "federation_peers", "publish_signals", "policy_revision",
 	"gnssid", "svid", "sigid", "freqid", "msg_type",
 	"raw", "decoded", "decoder_ver", "sbf_header", "source_session", "source_seq",
@@ -117,16 +123,21 @@ type NavFrame struct {
 	CredentialTier        string
 	CredentialFingerprint string
 	AttestationTier       string
-	AggregateUse          string
-	StationMetadata       string
-	EventVisibility       string
-	RawExport             string
-	FederationPeers       []string
-	PublishSignals        []string
-	PolicyRevision        string
-	GnssID                int
-	SvID                  int
-	SigID                 int
+	// HardwareTrust and CommissioningFingerprint are what the collector verified
+	// from the session's hardware evidence; "none" and empty for every source
+	// that presented none.
+	HardwareTrust            string
+	CommissioningFingerprint string
+	AggregateUse             string
+	StationMetadata          string
+	EventVisibility          string
+	RawExport                string
+	FederationPeers          []string
+	PublishSignals           []string
+	PolicyRevision           string
+	GnssID                   int
+	SvID                     int
+	SigID                    int
 	// FreqID is the GLONASS FDMA channel carrier as the receiver reported it
 	// (k = FreqID - 7). Always written: it is receiver metadata that never appears
 	// in Raw (RawBytes serialises only the nav words), so a GLONASS frame cannot be
@@ -1204,6 +1215,7 @@ func navFrameToRow(f *NavFrame) []any {
 		valueOr(f.CollectorInstanceID, "local"), collections, feedGrants, declaredCapabilities,
 		valueOr(f.Provenance, "local"),
 		valueOr(f.CredentialTier, "local_dial"), f.CredentialFingerprint, valueOr(f.AttestationTier, "none"),
+		valueOr(f.HardwareTrust, "none"), f.CommissioningFingerprint,
 		valueOr(f.AggregateUse, "private"), valueOr(f.StationMetadata, "none"), valueOr(f.EventVisibility, "private"),
 		valueOr(f.RawExport, "deny"), peers, signals,
 		valueOr(f.PolicyRevision, "legacy-private-v1"),

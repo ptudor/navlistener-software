@@ -178,3 +178,51 @@ func TestAckRoundTrip(t *testing.T) {
 		t.Errorf("ack round-trip = %d, %v", got, err)
 	}
 }
+
+// TestEvidenceHandshakeFields pins the evidence extension's wire spelling: a
+// feeder without a commissioning record emits a HELLO byte-identical to the
+// earlier contract, and the WELCOME answer keeps the compact acceptance
+// sequence feeders match on.
+func TestEvidenceHandshakeFields(t *testing.T) {
+	if Evidence != 0x0A {
+		t.Fatalf("Evidence frame type = 0x%02x, want 0x0A", byte(Evidence))
+	}
+	var plain, flagged bytes.Buffer
+	if err := WriteHello(&plain, HelloMsg{Token: "t", Station: "s", Feed: "ubx", Session: "boot-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(plain.Bytes(), []byte("evidence")) {
+		t.Errorf("HELLO without evidence mentions it: %s", plain.Bytes())
+	}
+	if err := WriteHello(&flagged, HelloMsg{Token: "t", Station: "s", Feed: "ubx", Session: "boot-1", Evidence: true}); err != nil {
+		t.Fatal(err)
+	}
+	_, payload, err := ReadFrame(&flagged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(payload, []byte(`"evidence":true`)) {
+		t.Errorf("HELLO JSON missing the evidence flag: %s", payload)
+	}
+	h, err := ParseHello(payload)
+	if err != nil || !h.Evidence {
+		t.Fatalf("ParseHello = %+v, %v", h, err)
+	}
+
+	b, err := MarshalWelcome(WelcomeMsg{OK: true, HardwareTrust: "none", EvidenceError: "proof"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"ok":true`, `"hardware_trust":"none"`, `"evidence_error":"proof"`} {
+		if !bytes.Contains(b, []byte(want)) {
+			t.Errorf("WELCOME payload %s lacks %s", b, want)
+		}
+	}
+	legacy, err := MarshalWelcome(WelcomeMsg{OK: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(legacy, []byte("hardware_trust")) || bytes.Contains(legacy, []byte("evidence_error")) {
+		t.Errorf("WELCOME to a feeder that sent no evidence mentions it: %s", legacy)
+	}
+}

@@ -358,3 +358,49 @@ var (
 		Help: "Observer policies retained by the push server for offline reconciliation.",
 	})
 )
+
+// Hardware-evidence collectors (docs/COMMISSIONING.md). Trust values and
+// rejection reasons are small fixed sets, and none carries an observer label: a
+// per-station view belongs to the update and board outputs, which are
+// authorized, while /metrics is not.
+var (
+	// PushHardwareTrustSessionsTotal counts admitted push sessions by what the
+	// collector verified about their hardware. Sessions that presented no
+	// evidence count as none.
+	PushHardwareTrustSessionsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_push_hardware_trust_sessions_total",
+		Help: "Admitted push sessions by verified hardware trust (none, open, test, trusted).",
+	}, []string{"trust"})
+	// PushEvidenceRejectedTotal counts evidence that established nothing. A
+	// rejection never refuses the session; it is the alert that a commissioned
+	// station is reporting as untrusted, and why.
+	PushEvidenceRejectedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_push_evidence_rejected_total",
+		Help: "Hardware evidence that established no trust, by reason (unconfigured, malformed, signature, product, identity, unlisted, revoked, superseded, proof_missing, proof).",
+	}, []string{"reason"})
+	// HardwareRegistrySequence, -IssuedTimestampSeconds and -Boards describe the
+	// registry in force. A collector whose sequence or issue time stops advancing
+	// while the manufacturer keeps publishing is holding a stale copy, and a
+	// stale registry cannot withdraw a board.
+	HardwareRegistrySequence = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "navlistener_hardware_registry_sequence",
+		Help: "Sequence number of the hardware registry in force; 0 when none is loaded.",
+	})
+	HardwareRegistryIssuedTimestampSeconds = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "navlistener_hardware_registry_issued_timestamp_seconds",
+		Help: "Unix time at which the hardware registry in force was issued; 0 when none is loaded.",
+	})
+	HardwareRegistryBoards = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "navlistener_hardware_registry_boards",
+		Help: "Boards listed by the hardware registry in force.",
+	})
+	// HardwareRegistryReloadFailuresTotal counts registry files that did not
+	// verify or were older than the one in force — the earlier registry stays in
+	// force, so this is the only signal that a published update was not adopted
+	// — and registries adopted whose sequence could not be recorded for the next
+	// restart. The log line says which.
+	HardwareRegistryReloadFailuresTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "navlistener_hardware_registry_reload_failures_total",
+		Help: "Hardware registry loads refused (the registry already in force was kept), or adopted without their sequence being recorded.",
+	})
+)

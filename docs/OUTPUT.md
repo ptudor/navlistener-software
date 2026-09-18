@@ -213,7 +213,24 @@ receipt time from nullable sample UTC and includes boot session/sequence.
 `board.stale` and `board.last_interference` expose freshness and the previous
 report as interference context. `board.timing` carries independently paced GNSS
 and RTC pulse measurements, with its own `timing_stale` flag. Public views exclude
-board telemetry. See [ObserverDetails](OBSERVER-TELEMETRY.md) for field definitions,
+board telemetry.
+
+Every board sample (`latest`, `timing`, `update` and the `last_interference`
+snapshots) carries `hardware_trust` beside `details`: `none`, `open`, `test` or
+`trusted`, as the collector verified it from the hardware evidence of the session
+that delivered the sample ([commissioning](COMMISSIONING.md)). It is deliberately
+not inside `details`. Everything in `details`, including
+`details.update.trust_profile`, is the device's own account and is a label for
+sorting a fleet; `hardware_trust` is the collector's result and is the only one
+of the two that is evidence. A client shows a device as trusted hardware only
+when `hardware_trust` is `trusted`, whatever `trust_profile` says. The same value
+appears as `record.hardware_trust`, and on each entry of `record.transitions`,
+in the authorized `/gnss/api/v2/updates` response, again beside the
+device-reported `status` rather than within it. A reconnect whose evidence
+verifies differently is recorded as a transition even when the device's report
+is unchanged. `navlistener_update_security_drift` is also raised, on a collector
+that verifies evidence, for a device reporting the trusted track whose session
+did not verify as `trusted`. See [ObserverDetails](OBSERVER-TELEMETRY.md) for field definitions,
 cadence, replay caveats and bounded live retention. With the historian enabled,
 samples also persist privately in `observer_samples`; historical queries currently
 require authorized database access rather than an HTTP history endpoint.
@@ -416,6 +433,8 @@ CREATE TABLE nav_frames (
     credential_tier TEXT NOT NULL,
     credential_fingerprint TEXT NOT NULL,
     attestation_tier TEXT NOT NULL,
+    hardware_trust TEXT NOT NULL,            -- verified session evidence: none | open | test | trusted
+    commissioning_fingerprint TEXT NOT NULL, -- SHA-256 of the verified record; '' when none
     aggregate_use TEXT NOT NULL,
     station_metadata TEXT NOT NULL,
     event_visibility TEXT NOT NULL,

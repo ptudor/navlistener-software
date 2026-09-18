@@ -192,11 +192,20 @@ including identifiers, and board-only stations never create public observer rows
 The authenticated GNF1 context selects station and scope; the payload cannot.
 
 `board.latest` is omitted until an environmental/health sample arrives. It contains `received_at`, nullable `sample_time`, `session`,
-`sequence`, and `details`. Names/units inside `details.environment` are
+`sequence`, `hardware_trust`, and `details`. Names/units inside `details.environment` are
 `mcp9808_c`, `hdc2080_c`, `bmp388_bmp384_c`, `humidity_percent`, `pressure_pa`.
 Component health and identifiers appear under `rtc`, `atecc`, `eeprom`,
 `resources`, `receiver`, and `firmware`. Hardware status is separate from
 administrative identity and never changes receiver capability/liveness counts.
+
+`hardware_trust` is `none`, `open`, `test` or `trusted`: what the collector
+verified from the hardware evidence of the session that delivered the sample
+([commissioning](COMMISSIONING.md)). It is the one field of a sample the device
+did not write. Everything under `details`, including `details.update.trust_profile`,
+is the device's own account; a device that reports the trusted track in a sample
+whose `hardware_trust` is not `trusted` has not proved it. The value is `none`
+for software feeders, for a collector that pins no manufacturer keys, and for
+evidence that failed verification.
 
 `sample_time` is null when the feeder had no accepted wall-clock timestamp.
 `received_at` is collector receipt time, including after spool replay. Uptime
@@ -284,3 +293,8 @@ flags; an unknown UTC sample time remains NULL. Grant access only to authorized
 operators; GNSS publication permission does not authorize sharing sensor identities
 or board clock history. Existing deployments add the table and policies at daemon
 startup; no existing navigation rows are rewritten.
+
+Each row also stores the delivering session's `hardware_trust` and the
+`commissioning_fingerprint` of the record that established it, beside the other
+receipt-time authority columns. Rows stored before those columns existed read
+`none` and an empty fingerprint.

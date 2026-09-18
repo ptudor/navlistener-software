@@ -91,6 +91,7 @@ collection_ids  TEXT[]     -- receipt-time collection memberships
 feed_grants, declared_capabilities  TEXT[]  -- receipt-time admission/capability evidence
 provenance      TEXT       -- local or an inbound federation peer
 credential_tier, credential_fingerprint, attestation_tier  TEXT
+hardware_trust, commissioning_fingerprint  TEXT  -- verified session evidence; 'none' / ''
 aggregate_use, station_metadata, event_visibility, raw_export, policy_revision  TEXT
 federation_peers, publish_signals  TEXT[]
 gnssid, svid, sigid, msg_type  SMALLINT

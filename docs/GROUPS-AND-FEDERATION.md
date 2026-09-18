@@ -355,6 +355,25 @@ The current config authenticator remains a bootstrap/dev provider. Its observati
 the synthetic organization `local-unassigned` and the private/no-export policy unless every
 field is explicitly configured. Configuration cannot claim manufacturer attestation.
 
+**Hardware trust is session evidence, not part of this resolution.** A commissioned device
+presents a manufacturer-signed record and, for a locked board, a session-bound proof from its
+microcontroller during the GNF1 handshake; the collector verifies both itself against pinned
+manufacturer keys ([COMMISSIONING.md](COMMISSIONING.md)) and adds two fields to the session's
+context:
+
+```text
+  hardware_trust               none | open | test | trusted
+  commissioning_fingerprint    SHA-256 of the verified record; empty when none
+```
+
+Neither comes from the control plane, from configuration or from a device's report, and neither
+is compared when an active session is re-authorized: a recheck resolves no evidence by
+construction, and a difference between two sessions of one observer is not a policy change, so
+it closes no session and resets no audience. Hardware trust selects no audience and no
+publication rule. It is independent of `credential_tier` and `attestation_tier` — a collector
+with no control plane can still establish it — and it needs no enrollment-time state, because
+the device carries its own proof and the record names the observer it is for.
+
 ### 5.2 Every observation is stamped before decode
 
 `RawFrame` and the durable row carry the server-resolved context:
@@ -362,7 +381,8 @@ field is explicitly configured. Configuration cannot claim manufacturer attestat
 ```text
 source_id, organization_id, enrollment_id, collector_instance_id,
 feed_grants, declared_capabilities, provenance, credential_tier,
-credential_fingerprint, attestation_tier, policy_revision
+credential_fingerprint, attestation_tier, hardware_trust,
+commissioning_fingerprint, policy_revision
 ```
 
 Federated observations additionally carry immutable origin observer/peer/certificate
@@ -414,8 +434,9 @@ hidden observer unless the contributing policy explicitly permits anonymous aggr
 The target schema adds immutable scope columns to raw frames, events, and snapshots, and
 separate membership/grant tables in the control plane. At minimum:
 
-- `nav_frames`: organization, enrollment, collector instance, feed grants, declared
-  capabilities, provenance, credential tier, attestation tier, policy revision.
+- `nav_frames` and `observer_samples`: organization, enrollment, collector instance, feed
+  grants, declared capabilities, provenance, credential tier, attestation tier, verified
+  hardware trust with its commissioning-record fingerprint, policy revision.
 - `gnss_events`: audience id/type and redaction class.
 - `gnss_snapshots`: audience id/type in both uniqueness/query indexes.
 - quarantine: origin peer and received trust tier, physically/logically excluded from

@@ -12,6 +12,7 @@ validated. TOML at `/usr/local/etc/navlistener/navlistener.toml`, passed with `-
 |---|---|
 | `config.go` | The whole package: every config struct, `Load`, validation, defaults, and the two identity validators. |
 | `config_test.go` | Load/validate cases, defaults, and the rejection paths. |
+| `hardware_trust_test.go` | `[hardware_trust]`: key loading, registry verification, and every incomplete combination. |
 | `README.md` | This file. |
 
 See `../../navlistener.toml.example` for a commented reference config.
@@ -51,6 +52,7 @@ fleet ingest. The daemon runs happily as a collector-only process.
 | `[serve]` | `addr` set | native v2 API, public default, authenticated audience selection, refresh cadences |
 | `[[serve.principal]]` | no DB auth | standalone/bootstrap read token and explicit private audience grants |
 | `[push]` | `addr` set | the authenticated GNF1 fleet listener; TLS mandatory |
+| `[hardware_trust]` | `manufacturer_keys` set | pinned manufacturer keys for device evidence, optional signed registry and its keys |
 | `[[federation.export_grant]]` | no transport | explicit directed export authorization, validated before peer transport exists |
 | `[[push.observer]]` | — | credential/feed grant plus server-owned organization and publication context |
 | `[[ingest]]` | per entry | dial connector plus the same server-owned organization/publication context |
@@ -170,6 +172,42 @@ addresses.
   wildcard transmission. `publish_signals` narrows both public state and export by
   `"gnss:sig"`; empty means all supported signals.
 
+### `[hardware_trust]` — what the push endpoint verifies about hardware
+
+Normative in [`docs/COMMISSIONING.md` §10](../../../docs/COMMISSIONING.md). The section holds
+public keys only, so it never makes the config file secret-bearing.
+
+| Field | Meaning |
+|---|---|
+| `manufacturer_keys` | PEM public keys, or certificates carrying them, that may sign commissioning records. Enables the section. |
+| `registry` | The signed registry file. It can only withdraw trust. |
+| `registry_keys` | The operations keys that may sign the registry; a separate set, required with `registry`. |
+| `registry_reload` | How often the registry file is checked for a change. Default `30s`. |
+| `registry_state` | Absolute path of the file that records the newest registry sequence adopted, so a restart cannot accept an older registry. Written by the daemon, mode 0600. |
+| `require_registry_entry` | Withhold trust from a board the registry does not list. Default `false`, for registry copies that lag behind newly commissioned boards. |
+
+Validation is strict in both directions. Every key file must load as a P-256 key, and a
+configured registry must verify against `registry_keys` at load, so `-check-config` fails on a
+registry the daemon could not start with. A dependent setting without its prerequisite —
+`registry` without `registry_keys`, or `registry_keys`, `registry_reload` or
+`require_registry_entry` without `registry`, or any of them without `manufacturer_keys` — is
+an error rather than a silent no-op: an operator who set `require_registry_entry` with no
+registry would otherwise believe unlisted boards were refused when nothing was. The section
+also requires `[push].addr`, since evidence arrives only on a GNF1 session.
+
+A registry only ever moves forward. Within a process that is enforced in memory; across a
+restart it needs `registry_state`. `-check-config` reads that file without writing it and
+applies the recorded sequence as a floor, so it refuses exactly the registry the daemon would
+refuse at startup. A state file that is group- or world-writable, oversized or unparsable is an
+error, because whoever can rewrite it can lower the floor. A `registry` with no
+`registry_state` is a `WARNING`, not an error: it is a legitimate mode for a collector whose
+registry file is itself protected, but never a silent one.
+
+`HardwareTrust.NewVerifier` pins the keys; the daemon then starts the registry watch. Nothing
+here can grant trust: a static `[[push.observer]]` row has no field for it, and
+`hardware_trust` on a receipt is always the result of a verified record and, for `trusted`, a
+session proof.
+
 ### `[[federation.export_grant]]` — directed egress authorization
 
 These rows do not start a peer connection. They are parsed into the transport-independent
@@ -226,7 +264,8 @@ A world-readable `tls_key`, by contrast, is rejected outright.
 
 `config_test.go` covers loading from explicit and default paths, defaults applied to each
 duration field, the identity validators (including the case-fold and Unicode rejections), the
-interval allowlist, and the warning-vs-error split.
+interval allowlist, and the warning-vs-error split. `hardware_trust_test.go` covers the
+`[hardware_trust]` section with real key files and signed registries.
 
 ```sh
 go test ./internal/config/
@@ -239,3 +278,4 @@ go test ./internal/config/
 - `../../navlistener.toml.example` — the commented reference config.
 - `../../deploy/freebsd/navlistener` — how rc.d invokes `-check-config` before starting.
 - `../../../docs/DESIGN.md §5` — the optional-stage design.
+- `../../../docs/COMMISSIONING.md` — commissioning records, the session proof and the registry.

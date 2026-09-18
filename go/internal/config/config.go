@@ -15,6 +15,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	toml "github.com/pelletier/go-toml/v2"
+	"github.com/ptudor/navlistener/internal/commissioning"
 	"github.com/ptudor/navlistener/internal/federation"
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/updates"
@@ -92,6 +94,7 @@ type Config struct {
 	Serve         Serve          `toml:"serve"`
 	Push          Push           `toml:"push"`
 	Authorization Authorization  `toml:"authorization"`
+	HardwareTrust HardwareTrust  `toml:"hardware_trust"`
 	Federation    Federation     `toml:"federation"`
 	Ingest        []Source       `toml:"ingest"`
 
@@ -180,6 +183,62 @@ type Authorization struct {
 	CacheTTL      time.Duration `toml:"-"`
 	RecheckEverys string        `toml:"session_recheck_interval"`
 	RecheckEvery  time.Duration `toml:"-"`
+}
+
+// HardwareTrust pins the keys the push endpoint verifies device evidence against
+// (docs/COMMISSIONING.md §10). It is enabled by manufacturer_keys; without it a
+// device's evidence is read and answered "unconfigured", and every session is
+// hardware_trust none. The files hold public keys only.
+type HardwareTrust struct {
+	// ManufacturerKeys are PEM public keys, or certificates carrying them, that
+	// may sign commissioning records. More than one is normal over a fleet's
+	// life; removing one withdraws every record it signed.
+	ManufacturerKeys []string `toml:"manufacturer_keys"`
+	// Registry is the signed registry file. It can only withdraw trust. Without
+	// it every valid record is honoured and nothing can be revoked.
+	Registry string `toml:"registry"`
+	// RegistryKeys are the operations keys that may sign the registry. They are
+	// a separate set from ManufacturerKeys and are required with Registry.
+	RegistryKeys    []string      `toml:"registry_keys"`
+	RegistryReloads string        `toml:"registry_reload"` // change-poll cadence, default "30s"
+	RegistryReload  time.Duration `toml:"-"`
+	// RegistryState records the newest registry sequence adopted, so a restart
+	// cannot accept an older registry that still carries a valid signature. The
+	// collector writes it; its directory must exist and be writable by the daemon.
+	RegistryState string `toml:"registry_state"`
+	// RequireRegistryEntry withholds trust from a board the registry does not
+	// list. Leave it false where the registry copy may lag behind newly
+	// commissioned boards.
+	RequireRegistryEntry bool `toml:"require_registry_entry"`
+}
+
+// Enabled reports whether this collector verifies hardware evidence at all.
+func (h HardwareTrust) Enabled() bool { return len(h.ManufacturerKeys) > 0 }
+
+// NewVerifier pins the configured keys. The registry itself is loaded by the
+// caller — once by finalize, to fail -check-config on a registry that does not
+// verify, and by the daemon through Verifier.WatchRegistry. Nothing here
+// writes: the daemon alone opts into recording with Verifier.UseRegistryState.
+func (h HardwareTrust) NewVerifier() (*commissioning.Verifier, error) {
+	manufacturer, err := commissioning.LoadKeySet(h.ManufacturerKeys)
+	if err != nil {
+		return nil, fmt.Errorf("hardware_trust.manufacturer_keys: %w", err)
+	}
+	verifier, err := commissioning.NewVerifier(manufacturer)
+	if err != nil {
+		return nil, fmt.Errorf("hardware_trust: %w", err)
+	}
+	if h.Registry == "" {
+		return verifier, nil
+	}
+	registryKeys, err := commissioning.LoadKeySet(h.RegistryKeys)
+	if err != nil {
+		return nil, fmt.Errorf("hardware_trust.registry_keys: %w", err)
+	}
+	if err := verifier.UseRegistry(registryKeys, h.RequireRegistryEntry); err != nil {
+		return nil, fmt.Errorf("hardware_trust: %w", err)
+	}
+	return verifier, nil
 }
 
 // Push is the authenticated GNF1 fleet push endpoint (docs/DESIGN.md §1/§2): the
@@ -618,6 +677,9 @@ func (c *Config) finalize() error {
 	if err := c.finalizePush(); err != nil {
 		return err
 	}
+	if err := c.finalizeHardwareTrust(); err != nil {
+		return err
+	}
 	if err := c.finalizeFederation(); err != nil {
 		return err
 	}
@@ -747,6 +809,67 @@ func (c *Config) finalize() error {
 		if err != nil {
 			return fmt.Errorf("ingest %q identity evidence: %w", s.Name, err)
 		}
+	}
+	return nil
+}
+
+// finalizeHardwareTrust validates the evidence trust roots while the process can
+// still refuse to start. Every dependent setting without its prerequisite is an
+// error rather than a no-op: an operator who set require_registry_entry with no
+// registry would otherwise believe unlisted boards are refused when nothing is.
+func (c *Config) finalizeHardwareTrust() error {
+	h := &c.HardwareTrust
+	if !h.Enabled() {
+		if h.Registry != "" || len(h.RegistryKeys) > 0 || h.RegistryReloads != "" || h.RegistryState != "" || h.RequireRegistryEntry {
+			return fmt.Errorf("hardware_trust: registry settings require manufacturer_keys")
+		}
+		return nil
+	}
+	if c.Push.Addr == "" {
+		return fmt.Errorf("hardware_trust requires the push endpoint: evidence arrives only on a GNF1 session")
+	}
+	switch {
+	case h.Registry != "" && len(h.RegistryKeys) == 0:
+		return fmt.Errorf("hardware_trust.registry requires registry_keys")
+	case h.Registry == "" && len(h.RegistryKeys) > 0:
+		return fmt.Errorf("hardware_trust.registry_keys has no effect without registry")
+	case h.Registry == "" && h.RequireRegistryEntry:
+		return fmt.Errorf("hardware_trust.require_registry_entry has no effect without registry")
+	case h.Registry == "" && h.RegistryReloads != "":
+		return fmt.Errorf("hardware_trust.registry_reload has no effect without registry")
+	case h.Registry == "" && h.RegistryState != "":
+		return fmt.Errorf("hardware_trust.registry_state has no effect without registry")
+	case h.RegistryState != "" && !filepath.IsAbs(h.RegistryState):
+		return fmt.Errorf("hardware_trust.registry_state %q must be an absolute path", h.RegistryState)
+	}
+	if err := parseDurPositive("hardware_trust.registry_reload", h.RegistryReloads, &h.RegistryReload, 30*time.Second); err != nil {
+		return err
+	}
+	verifier, err := h.NewVerifier()
+	if err != nil {
+		return err
+	}
+	if h.Registry == "" {
+		return nil
+	}
+	// Apply the recorded floor read-only, so this check refuses exactly the
+	// registry the daemon would refuse and never creates or touches the file.
+	if h.RegistryState == "" {
+		c.Warnings = append(c.Warnings,
+			"hardware_trust.registry is set without registry_state: a restart forgets the newest registry sequence adopted, so an older registry that still carries a valid signature would be accepted and could restore a withdrawn board")
+	} else {
+		floor, err := commissioning.ReadRegistryState(h.RegistryState)
+		if err != nil {
+			return fmt.Errorf("hardware_trust.registry_state: %w", err)
+		}
+		verifier.SetRegistryFloor(floor)
+	}
+	data, err := os.ReadFile(h.Registry)
+	if err != nil {
+		return fmt.Errorf("hardware_trust.registry: %w", err)
+	}
+	if _, err := verifier.LoadRegistry(data); err != nil {
+		return fmt.Errorf("hardware_trust.registry %q: %w", h.Registry, err)
 	}
 	return nil
 }

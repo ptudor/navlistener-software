@@ -62,6 +62,11 @@ const (
 	Pong          FrameType = 0x06 // keepalive
 	UpdateControl FrameType = 0x09 // collector to device: versioned 36-byte command
 	SignedData    FrameType = 0x07 // hardware tier (vNext): Data batch + ATECC ECDSA
+	// Evidence carries a commissioned device's hardware evidence
+	// (docs/COMMISSIONING.md §6). It is sent once, immediately after a HELLO
+	// whose Evidence flag is set and before WELCOME; it is never valid in the
+	// DATA phase. The collector reads it only from an authenticated peer.
+	Evidence FrameType = 0x0A // feeder→collector: commissioning record, key and session proof
 )
 
 var (
@@ -99,6 +104,10 @@ type HelloMsg struct {
 	// post-reboot frames were silently discarded as replays — the product's
 	// worst failure class (silent loss of forensic raw frames).
 	Session string `json:"session"`
+	// Evidence announces that exactly one EVIDENCE frame follows this HELLO
+	// without waiting for WELCOME (docs/COMMISSIONING.md §6). A feeder with no
+	// commissioning record omits it and the handshake is unchanged.
+	Evidence bool `json:"evidence,omitempty"`
 }
 
 // SessionMaxLen bounds HelloMsg.Session. 64 comfortably covers the reference
@@ -132,6 +141,12 @@ type WelcomeMsg struct {
 	AckIntervalMS int    `json:"ack_interval_ms,omitempty"`
 	Zstd          bool   `json:"zstd,omitempty"`
 	DurableACK    bool   `json:"durable_ack,omitempty"`
+	// HardwareTrust and EvidenceError answer a HELLO that announced evidence:
+	// what the collector verified for this session and, when it verified
+	// nothing, the stable rejection reason. Both are informational for the
+	// device's journal; neither changes admission.
+	HardwareTrust string `json:"hardware_trust,omitempty"`
+	EvidenceError string `json:"evidence_error,omitempty"`
 }
 
 // RawRecord is the envelope inside a DATA frame: just enough for the collector to

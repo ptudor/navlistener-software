@@ -11,12 +11,13 @@ type BoardSample struct {
 	Data       []byte
 }
 
-// The first 20 columns are the same immutable receipt provenance as nav_frames.
-var boardColumns = append(append([]string(nil), copyColumns[:20]...),
+// The leading provenanceColumns are the same immutable receipt provenance as
+// nav_frames; source_session and source_seq are the last two of both layouts.
+var boardColumns = append(append([]string(nil), copyColumns[:provenanceColumns]...),
 	"sample_time", "kind", "raw", "data", "decoder_ver", "source_session", "source_seq")
 
 func boardFrameToRow(f *NavFrame) []any {
 	row := navFrameToRow(f)
-	return append(row[:20:20], f.Board.SampleTime, f.Board.Kind, f.Raw,
-		string(f.Board.Data), nilIfEmpty(f.DecoderVer), row[29], row[30])
+	return append(row[:provenanceColumns:provenanceColumns], f.Board.SampleTime, f.Board.Kind, f.Raw,
+		string(f.Board.Data), nilIfEmpty(f.DecoderVer), row[len(row)-2], row[len(row)-1])
 }

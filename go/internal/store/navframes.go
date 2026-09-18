@@ -70,20 +70,25 @@ type StoredNavFrame struct {
 	CredentialTier        string
 	CredentialFingerprint string
 	AttestationTier       string
-	AggregateUse          string
-	StationMetadata       string
-	EventVisibility       string
-	RawExport             string
-	FederationPeers       []string
-	PublishSignals        []string
-	PolicyRevision        string
-	GnssID                int
-	SvID                  int
-	SigID                 int
-	FreqID                int // GLONASS FDMA channel (k = FreqID - 7); 0 for other constellations
-	MsgType               int
-	SBFHeader             []byte // nil means legacy/unknown SBF revision and header
-	Raw                   []byte
+	// HardwareTrust and CommissioningFingerprint are the collector's verified
+	// hardware evidence at receipt; "none" and empty for rows stored before the
+	// columns existed and for every source that presented no evidence.
+	HardwareTrust            string
+	CommissioningFingerprint string
+	AggregateUse             string
+	StationMetadata          string
+	EventVisibility          string
+	RawExport                string
+	FederationPeers          []string
+	PublishSignals           []string
+	PolicyRevision           string
+	GnssID                   int
+	SvID                     int
+	SigID                    int
+	FreqID                   int // GLONASS FDMA channel (k = FreqID - 7); 0 for other constellations
+	MsgType                  int
+	SBFHeader                []byte // nil means legacy/unknown SBF revision and header
+	Raw                      []byte
 }
 
 // Close releases the connection pool.
@@ -117,7 +122,8 @@ func (s *Store) QueryNavFrames(ctx context.Context, q NavFrameQuery, fn func(Sto
 
 const navFrameSelect = `SELECT received_at, source_id, organization_id, enrollment_id,
 	               collector_instance_id, collection_ids, provenance, credential_tier,
-	               credential_fingerprint, attestation_tier, aggregate_use, station_metadata, event_visibility,
+	               credential_fingerprint, attestation_tier, hardware_trust, commissioning_fingerprint,
+	               aggregate_use, station_metadata, event_visibility,
 	               raw_export, federation_peers, publish_signals, policy_revision,
 	               gnssid, svid, sigid, freqid, msg_type, raw, sbf_header, receipt_order, COALESCE(source_session, ''), source_seq
 	          FROM nav_frames`
@@ -204,7 +210,8 @@ func queryNavFrames(ctx context.Context, pool *pgxpool.Pool, q NavFrameQuery, fn
 		if err := rows.Scan(
 			&f.ReceivedAt, &f.SourceID, &f.OrganizationID, &f.EnrollmentID,
 			&f.CollectorInstanceID, &f.CollectionIDs, &f.Provenance, &f.CredentialTier,
-			&f.CredentialFingerprint, &f.AttestationTier, &f.AggregateUse, &f.StationMetadata, &f.EventVisibility,
+			&f.CredentialFingerprint, &f.AttestationTier, &f.HardwareTrust, &f.CommissioningFingerprint,
+			&f.AggregateUse, &f.StationMetadata, &f.EventVisibility,
 			&f.RawExport, &f.FederationPeers, &f.PublishSignals, &f.PolicyRevision,
 			&gid, &sv, &sig, &freq, &mtype, &f.Raw, &f.SBFHeader, &f.ReceiptOrder, &f.Session, &sourceSeq,
 		); err != nil {
