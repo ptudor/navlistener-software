@@ -43,6 +43,8 @@
 #include "panel_control.h"
 #include "board.h"
 #include "journal.h"
+#include "mcu_identity.h"
+#include "commission.h"
 
 static const char *TAG = "navfeeder";
 
@@ -386,6 +388,11 @@ void app_main(void)
     err=nvf_update_start(&update_hooks);
     if(err!=ESP_OK && err!=ESP_ERR_NOT_SUPPORTED)
         ESP_LOGW(TAG,"signed update service unavailable: %s",esp_err_to_name(err));
+    // The microcontroller key and the commissioning record live beside the update state,
+    // which the call above has just initialised. Without them the feeder simply presents no
+    // evidence; the bench console still reports why.
+    (void)nvf_mcu_identity_start();
+    commission_console_start();
 
     // Config precedence: NVS (field-provisioned) over Kconfig defaults.
     // netcfg_load now applies the full station-mode rule (ssid/host/port/station/
@@ -436,6 +443,19 @@ void app_main(void)
     // fill s_collector BEFORE ui_task starts reading it — otherwise the write races
     // the reader (formally UB; in practice a partial/empty collector string on one frame).
     snprintf(s_collector, sizeof s_collector, "%s:%d", g_cfg.host, g_cfg.port);
+    // The collector accepts evidence only for the observer it names: the record's RTC
+    // EUI-64 rendered as lowercase hyphen-separated byte pairs. Say so here, where the
+    // cause is visible, rather than leaving an `identity` rejection to be puzzled over.
+    uint8_t commissioning[NVF_COMMISSION_RECORD_SIZE];
+    nvf_commission_statement_t commissioned;
+    if (nvf_mcu_identity_record(commissioning) &&
+        nvf_commission_record_parse(commissioning, sizeof commissioning, &commissioned)) {
+        char observer[24];
+        nvf_commission_observer_id(commissioned.rtc_eui64, observer);
+        if (strcmp(observer, g_cfg.station))
+            ESP_LOGW(TAG, "station '%s' is not this board's commissioned observer id '%s'; a collector will reject its evidence",
+                     g_cfg.station, observer);
+    }
     // the UI is non-essential — log a create failure but keep forwarding.
     if (xTaskCreate(ui_task, "ui", 4096, &s_parser, 4, NULL) != pdPASS)
         ESP_LOGW(TAG, "failed to create ui task; continuing without the dashboard");
@@ -473,6 +493,8 @@ void app_main(void)
         .tunnel_host = tunnel_collector_address(), // NULL without a started tunnel
         .tunnel_up = tunnel_up,
         .update_control = nvf_update_control,
+        .evidence = nvf_mcu_identity_evidence,
+        .hardware_trust = nvf_mcu_identity_verdict,
     };
     // retry pusher_start with backoff rather than spooling-until-overflow-and-never-
     // pushing on a transient boot OOM. pusher_cfg_free (fa67e92) leaves s_cfg zeroed, so

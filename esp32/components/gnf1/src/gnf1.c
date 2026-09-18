@@ -145,7 +145,7 @@ bool gnf1_session_valid(const char *s)
 }
 
 int gnf1_build_hello(char *out, size_t cap, const char *token, const char *station,
-                     const char *feed, const char *session, bool zstd)
+                     const char *feed, const char *session, bool zstd, bool evidence)
 {
     // session : the boot-identity half of the collector's replay-dedup key
     // (observer, session, seq) — REQUIRED since the 2026-07-31 GNF1 contract revision. A
@@ -165,9 +165,10 @@ int gnf1_build_hello(char *out, size_t cap, const char *token, const char *stati
     // control characters.
     int n = snprintf(out, cap,
                      "{\"token\":\"%s\",\"station\":\"%s\",\"feed\":\"%s\",\"sw\":\"navfeeder-esp/1\","
-                     "\"session\":\"%s\"%s}",
+                     "\"session\":\"%s\"%s%s}",
                      token_esc, station_esc, feed_esc, session,
-                     zstd ? ",\"zstd\":true" : "");
+                     zstd ? ",\"zstd\":true" : "",
+                     evidence ? ",\"evidence\":true" : "");
     if (n < 0 || (size_t)n >= cap) return -1;
     return n;
 }

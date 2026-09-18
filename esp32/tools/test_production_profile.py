@@ -36,6 +36,23 @@ class ProfileTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "CONFIG_SECURE_BOOT_SIGNING_KEY"):
                 verify(sdkconfig(temporary, {**OPEN_REQUIRED, "CONFIG_SECURE_BOOT_SIGNING_KEY": '"key.pem"'}), "open")
 
+    def test_trusted_release_can_prove_its_microcontroller(self):
+        # A locked unit cannot be reflashed over USB, so the release build itself must be able
+        # to make and protect the microcontroller key and to bind a proof to a TLS session.
+        with tempfile.TemporaryDirectory() as temporary:
+            for setting in ("CONFIG_MBEDTLS_SSL_KEYING_MATERIAL_EXPORT", "CONFIG_SECURE_BOOT_V2_ALLOW_EFUSE_RD_DIS",
+                            "CONFIG_NVF_COMMISSION_CONSOLE"):
+                self.assertIn(setting, REQUIRED)
+                with self.assertRaisesRegex(ValueError, setting):
+                    verify(sdkconfig(temporary, {key: value for key, value in REQUIRED.items() if key != setting}))
+            # The unlocked-board key option is a bench aid and never ships on either track.
+            with self.assertRaisesRegex(ValueError, "CONFIG_NVF_MCU_KEY_UNLOCKED_TEST"):
+                verify(sdkconfig(temporary, {**REQUIRED, "CONFIG_NVF_MCU_KEY_UNLOCKED_TEST": "y"}))
+            with self.assertRaisesRegex(ValueError, "CONFIG_NVF_MCU_KEY_UNLOCKED_TEST"):
+                verify(sdkconfig(temporary, {**OPEN_REQUIRED, "CONFIG_NVF_MCU_KEY_UNLOCKED_TEST": "y"}), "open")
+            # An open release changes no eFuse, so it must not ask the bootloader for anything.
+            self.assertNotIn("CONFIG_SECURE_BOOT_V2_ALLOW_EFUSE_RD_DIS", OPEN_REQUIRED)
+
     def test_trusted_release_refuses_open_and_test_trust(self):
         with tempfile.TemporaryDirectory() as temporary:
             for setting in ("CONFIG_NVF_UPDATE_PROFILE_OPEN", "CONFIG_NVF_UPDATE_TEST_KEYS"):

@@ -178,6 +178,11 @@ production build to leave the field open
 it. A chip that holds a key but has not been sealed is not locked: security
 bit 4 stays clear, and no trusted statement can be made for it.
 
+A failed self-test after the burn spends that eFuse block and seals nothing, so
+a second free block can still be tried. A production module has one spare. A
+failure here is more likely a firmware or procedure defect than bad silicon;
+find the cause before spending the last block.
+
 The ciphertext is useless without the eFuse key, so the factory keeps a copy of
 it with the unit's record. A unit whose flash was wiped can have its ciphertext
 and record restored; it cannot be given a different identity.

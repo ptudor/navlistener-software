@@ -479,6 +479,18 @@ ESP32 ATECC-backed credential and enrollment path remains P-hw work. An optional
 WireGuard tunnel can wrap the uplink for a station on request; see
 [the tunnel section](#wireguard-tunnel-to-the-collector-esp32-s3).
 
+## Commissioning and hardware evidence (ESP32-S3)
+
+Authorization says whose data a session carries. Separately, a commissioned board
+presents a manufacturer-signed record on every connection and, when it was locked,
+a proof from a key only its own microcontroller can use, bound to that TLS
+session. The collector verifies both and labels the session `trusted`, `open`,
+`test` or `none`; the verdict is shown by `tools/ota.py status` and journaled when
+it changes. [Commissioning an ESP32-S3 observer](docs/COMMISSIONING.md) covers the
+bench commands on the USB console, what is irreversible, and the hardware
+validation still owed before a production burn; the formats are normative in
+[commissioning and hardware trust](../docs/COMMISSIONING.md).
+
 ## Design rules (do not break)
 
 - **Decode centrally** — never decode an ephemeris here. Frame and forward; fix decoder bugs once,

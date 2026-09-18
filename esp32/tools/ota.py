@@ -98,17 +98,38 @@ def read_journal(device, key, lane, limit):
     return rows[:limit]
 
 
+HARDWARE_TRUST = {0: "none", 1: "open", 2: "test", 3: "trusted", 0x10: "unreported", 0x20: "withheld"}
+EVIDENCE_REASONS = {1: "unconfigured", 2: "malformed", 3: "signature", 4: "identity", 5: "unlisted",
+                    6: "revoked", 7: "superseded", 8: "proof_missing", 9: "proof", 10: "product",
+                    0x0f: "other", 0x20: "no-keying-material", 0x21: "key-not-ready", 0x22: "sign-failed"}
+COMMISSION_OPERATIONS = {1: "keygen", 2: "install", 3: "restore", 4: "seal"}
+
+
+def journal_detail(event, code):
+    """Decode the `error` field of the hardware-trust and commissioning events."""
+    code = int(code) & 0xffffffff
+    if event == 7:
+        verdict = HARDWARE_TRUST.get(code & 0xff, "?")
+        reason = (code >> 8) & 0xff
+        return f"{verdict}/{EVIDENCE_REASONS.get(reason, '?')}" if reason else verdict
+    if event == 8:
+        result = "failed" if (code >> 8) & 0xff else "ok"
+        return f"{COMMISSION_OPERATIONS.get(code & 0xff, '?')} {result}"
+    return ""
+
+
 def print_journal(rows):
     events = {1: "boot", 2: "time-anchor", 3: "confirmed", 4: "OTA-ready",
-              5: "OTA-failed", 6: "checkpoint"}
+              5: "OTA-failed", 6: "checkpoint", 7: "hw-trust", 8: "commission"}
     sources = {0: "unknown", 1: "RTC", 2: "GNSS"}
-    print("UTC                  SOURCE  BOOT   UPTIME(s) EVENT        FIRMWARE                         RESET FLAGS DROP")
+    print("UTC                  SOURCE  BOOT   UPTIME(s) EVENT        FIRMWARE                         RESET FLAGS DROP DETAIL")
     for row in rows:
         utc = int(row["utc"])
         date = datetime.datetime.fromtimestamp(utc, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S") if utc else "unknown"
         print(f"{date:20} {sources.get(row['time_source'], '?'):7} {row['boot']:6} "
               f"{int(row['uptime_ms']) // 1000:9} {events.get(row['event'], '?'):12} "
-              f"{row['firmware']:32} {row['reset_reason']:5} {row['flags']:02x} {row['dropped']}")
+              f"{row['firmware']:32} {row['reset_reason']:5} {row['flags']:02x} {row['dropped']} "
+              f"{journal_detail(row['event'], row.get('error', 0))}".rstrip())
 
 
 def api_authorization(key, nonce, method, path, body):

@@ -25,6 +25,9 @@ CONFIG_MBEDTLS_SSL_PROTO_TLS1_2=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_HARDWARE_AES=y
 CONFIG_MBEDTLS_HARDWARE_SHA=y
+# Commissioning evidence: the session proof signs keying material exported from the TLS
+# session (RFC 5705), so a proof cannot be replayed on or relayed to another connection.
+CONFIG_MBEDTLS_SSL_KEYING_MATERIAL_EXPORT=y
 
 # --- NVS (config store) ------------------------------------------------------
 CONFIG_NVS_ENCRYPTION=n

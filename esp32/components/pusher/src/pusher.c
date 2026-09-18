@@ -19,6 +19,7 @@
 #include "esp_tls.h"
 #include "esp_crt_bundle.h"
 #include "esp_timer.h"
+#include "mbedtls/ssl.h"
 
 #include "gnf1.h"
 #include "spool.h"
@@ -289,25 +290,63 @@ static esp_tls_t *connect_collector(const char *host, const char *verify)
     return tls;
 }
 
-// handshake sends MAGIC + HELLO and checks the WELCOME. Returns 0 on accept, -1 on error,
-// -2 on an explicit rejection (back off hard, like navfeeder).
+// session_keying_material exports the value a session proof signs. It exists only inside
+// this TLS session and is never sent; the collector derives the same bytes on its side. A
+// TLS 1.2 session exports it only with the extended master secret, which mbedTLS offers and
+// the collector requires.
+static bool session_keying_material(esp_tls_t *tls, uint8_t out[GNF1_EVIDENCE_EXPORTED_SIZE])
+{
+#if defined(MBEDTLS_SSL_KEYING_MATERIAL_EXPORT)
+    mbedtls_ssl_context *ssl = esp_tls_get_ssl_context(tls);
+    return ssl && mbedtls_ssl_export_keying_material(ssl, out, GNF1_EVIDENCE_EXPORTED_SIZE,
+               GNF1_EVIDENCE_EXPORTER_LABEL, sizeof GNF1_EVIDENCE_EXPORTER_LABEL - 1, NULL, 0, 0) == 0;
+#else
+    (void)tls; (void)out;
+    return false; // built without CONFIG_MBEDTLS_SSL_KEYING_MATERIAL_EXPORT
+#endif
+}
+
+// handshake sends MAGIC + HELLO (+ EVIDENCE) and checks the WELCOME. Returns 0 on accept,
+// -1 on error, -2 on an explicit rejection (back off hard, like navfeeder).
 static int handshake(esp_tls_t *tls)
 {
     if (tls_write_all(tls, (const uint8_t *)GNF1_MAGIC, 4) != 0) return -1;
+
+    // The evidence is built first because the HELLO has to announce it: the collector reads
+    // an EVIDENCE frame exactly when the flag says one follows. Heap, not this task's stack.
+    uint8_t *evidence = NULL;
+    size_t evidence_len = 0;
+    if (s_cfg.evidence && (evidence = malloc(GNF1_EVIDENCE_MAX)) != NULL) {
+        uint8_t exported[GNF1_EVIDENCE_EXPORTED_SIZE];
+        bool have = session_keying_material(tls, exported);
+        evidence_len = s_cfg.evidence(have ? exported : NULL, evidence, GNF1_EVIDENCE_MAX);
+        memset(exported, 0, sizeof exported);
+        if (evidence_len > GNF1_EVIDENCE_MAX) evidence_len = 0;
+    }
 
     char hello[512];
     // s_cfg.session is validated once in pusher_start, so the only way this build can fail is
     // truncation from an over-long token/station (regression fix adds ~45 bytes to the HELLO).
     int hn = gnf1_build_hello(hello, sizeof hello, s_cfg.token, s_cfg.station, s_cfg.feed,
-                              s_cfg.session, false);
+                              s_cfg.session, false, evidence_len > 0);
     if (hn < 0) {
         ESP_LOGE(TAG, "could not build HELLO (token/station too long?); dropping connection");
+        free(evidence);
         return -1;
     }
     uint8_t hdr[GNF1_FRAME_HDR];
     gnf1_frame_header(hdr, GNF1_F_HELLO, (uint32_t)hn);
-    if (tls_write_all(tls, hdr, sizeof hdr) != 0) return -1;
-    if (tls_write_all(tls, (const uint8_t *)hello, (size_t)hn) != 0) return -1;
+    int sent = tls_write_all(tls, hdr, sizeof hdr);
+    if (sent == 0) sent = tls_write_all(tls, (const uint8_t *)hello, (size_t)hn);
+    if (sent == 0 && evidence_len) {
+        // Sent straight after the HELLO, without waiting: the collector authenticates the
+        // HELLO and only then reads this frame, so an unauthenticated peer costs it nothing.
+        gnf1_frame_header(hdr, GNF1_F_EVIDENCE, (uint32_t)evidence_len);
+        sent = tls_write_all(tls, hdr, sizeof hdr);
+        if (sent == 0) sent = tls_write_all(tls, evidence, evidence_len);
+    }
+    free(evidence);
+    if (sent != 0) return -1;
 
     uint8_t buf[512];
     uint8_t type;
@@ -321,6 +360,11 @@ static int handshake(esp_tls_t *tls)
     const uj_node *durable=uj_get(&welcome,uj_root(&welcome),"durable_ack");
     bool ok=accepted && accepted->kind==UJ_BOOL && accepted->number==1;
     atomic_store(&s_durable,ok && durable && durable->kind==UJ_BOOL && durable->number==1);
+    // The collector's verdict on the evidence is informational: it labels the data this
+    // session sends and never decides whether the session continues.
+    if (ok && evidence_len && s_cfg.hardware_trust)
+        s_cfg.hardware_trust(uj_string(uj_get(&welcome,uj_root(&welcome),"hardware_trust")),
+                             uj_string(uj_get(&welcome,uj_root(&welcome),"evidence_error")));
     uj_free(&welcome);
     if (!ok) {
         ESP_LOGW(TAG, "collector rejected handshake: %.*s", (int)len, (const char *)buf);

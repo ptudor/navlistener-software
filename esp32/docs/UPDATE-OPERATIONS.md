@@ -319,6 +319,17 @@ boot can permanently enable Secure Boot and flash encryption and restrict USB
 recovery. Normal update commands do not do this. The production profile is
 provided for build verification; chip locking is a separate attended operation.
 
+The production profile sets `CONFIG_SECURE_BOOT_V2_ALLOW_EFUSE_RD_DIS=y`. By
+default the bootloader write-protects the eFuse read-protection field when it
+enables Secure Boot; the microcontroller key is generated afterwards and its key
+block must then be read-protected, so the field has to stay writable until
+[`commission keygen`](COMMISSIONING.md#keygen) seals it as its last step. A locked
+production module uses five of the six eFuse key blocks: three Secure Boot
+digests, one XTS-AES-128 flash-encryption key, and one
+`HMAC_DOWN_DIGITAL_SIGNATURE` key for the microcontroller. One remains. Confirm
+that list against the ESP-IDF security guide for the pinned IDF version, on a
+scrap module, before the first production burn.
+
 Before locking a chip, retain encrypted backups of the production signing
 keys and their passphrases, verify the three intended public-key digests and
 recovery slots, and test a signed factory recovery image. Losing every trusted
@@ -359,6 +370,15 @@ the fleet, not as proof: firmware on unlocked hardware can report anything, so
 a device counts as trusted because it was commissioned and locked, never
 because it says so.
 
+That is now something the collector verifies. A commissioned board presents a
+manufacturer-signed record on every connection and, when it was locked, a proof
+from its own microcontroller key bound to the TLS session
+([commissioning and hardware trust](../../docs/COMMISSIONING.md);
+[the firmware's side](COMMISSIONING.md)). The collector's conclusion is
+`hardware_trust`, which `ota.py status` shows beside `trust_profile` together
+with `evidence_error` and whether a record is installed. `trust_profile` remains
+the build's own claim; `hardware_trust` is what a collector established.
+
 The app shows controls only when its current private-session credential has
 that grant. Requested/accepted is a command receipt; downloaded, rebooting,
 confirmed and rolled-back come from device telemetry. The collector retains
@@ -374,9 +394,15 @@ producer pause and a final durable acknowledgment. A live-only collector makes
 the device wait; the updater does not silently discard observations.
 
 Metrics include update checks, errors, rollbacks, release adoption, the
-reported track (`navlistener_update_trust_profile_info`), security profile
-drift, last report time, staging time and time waiting for safe reboot. Drift
-is raised when security flags contradict the reported track: a trusted build
-that is not fully locked, or an open or test build on a locked chip. An
-unlocked open device is expected and does not raise it. Use report freshness
-alongside staging/waiting timestamps when alerting.
+reported track (`navlistener_update_trust_profile_info`), the verified hardware
+trust of the session (`navlistener_update_hardware_trust_info{observer,trust}`),
+security profile drift, last report time, staging time and time waiting for
+safe reboot. Drift is raised when security flags contradict the reported track:
+a trusted build that is not fully locked, or an open or test build on a locked
+chip. On a collector that verifies commissioning evidence it is also raised when
+a device reports `trusted` while the session's verified `hardware_trust` is not
+`trusted`; a collector that pins no manufacturer keys cannot tell and does not
+raise it for that reason. An unlocked open device is expected and does not raise
+it. The update record carries `hardware_trust` beside the device-reported
+status, so the claim and what was established can be read together. Use report
+freshness alongside staging/waiting timestamps when alerting.

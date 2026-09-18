@@ -20,6 +20,7 @@
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "hardware_manifest.h"
 #include "hardware_checks.h"
@@ -40,6 +41,9 @@ static atomic_uint brightness = PANEL_DEFAULT_BRIGHTNESS;
 static uint64_t next_timing;
 static unsigned applied_brightness = PANEL_DEFAULT_BRIGHTNESS;
 static bool pwm_ready;
+// One wake/command/sleep session with the ATECC at a time: the boot diagnostic and the
+// bench identity read must not interleave their commands.
+static SemaphoreHandle_t crypto_lock;
 void observer_board_set_brightness(unsigned percent)
 { atomic_store(&brightness, percent > 100 ? 100 : percent); }
 void observer_board_cycle_brightness(void)
@@ -159,22 +163,41 @@ static void crypto_rng_check(i2c_master_dev_handle_t dev)
     report.crypto.rng = 1;
     ESP_LOGI(TAG, "ATECC RNG: 3 samples passed repetition screening; diagnostic only, not an entropy certification");
 }
-static void identify_crypto(void)
+// crypto_open wakes the ATECC and opens a device handle. A sleeping ATECC does not ACK an
+// ordinary scan. A 100 kHz zero-address wake token holds SDA low long enough; NACK on this
+// token is expected. False means no handle could be opened; otherwise *woke says whether the
+// wake response was confirmed, *err is that read's result, and the caller ends the session
+// with crypto_close().
+static bool crypto_open(i2c_master_dev_handle_t *dev, bool *woke, esp_err_t *err)
 {
-    report.crypto.checked_ms = esp_timer_get_time() / 1000;
-    // A sleeping ATECC does not ACK an ordinary scan. A 100 kHz zero-address
-    // wake token holds SDA low long enough; NACK on this token is expected.
-    // Info, lock-byte Read, Random(no seed update), Sleep; no key/config writes or locks.
-    i2c_master_dev_handle_t wake, dev;
-    if (device_add(0, &wake) != ESP_OK) return;
-    uint8_t zero = 0;
+    i2c_master_dev_handle_t wake;
+    if (device_add(0, &wake) != ESP_OK) return false;
+    uint8_t zero = 0, response[4] = {0};
     (void)i2c_master_transmit(wake, &zero, 1, 100);
     i2c_master_bus_rm_device(wake);
     vTaskDelay(pdMS_TO_TICKS(10));
-    if (device_add(0x60, &dev) != ESP_OK) return;
+    if (device_add(0x60, dev) != ESP_OK) return false;
+    *err = i2c_master_receive(*dev, response, 4, 100);
+    *woke = *err == ESP_OK && hardware_crypto_response(response, 4) && response[1] == 0x11;
+    return true;
+}
+static void crypto_close(i2c_master_dev_handle_t dev)
+{
+    uint8_t sleep = 1;
+    (void)i2c_master_transmit(dev, &sleep, 1, 100);
+    i2c_master_bus_rm_device(dev);
+}
+static void identify_crypto(void)
+{
+    report.crypto.checked_ms = esp_timer_get_time() / 1000;
+    // Info, lock-byte Read, Random(no seed update), Sleep; no key/config writes or locks.
+    i2c_master_dev_handle_t dev;
+    bool woke;
+    esp_err_t err;
+    xSemaphoreTake(crypto_lock, portMAX_DELAY);
+    if (!crypto_open(&dev, &woke, &err)) { xSemaphoreGive(crypto_lock); return; }
     uint8_t response[7] = {0};
-    esp_err_t err = i2c_master_receive(dev, response, 4, 100);
-    if (err == ESP_OK && hardware_crypto_response(response, 4) && response[1] == 0x11) {
+    if (woke) {
         if (crypto_command(dev, 0x30, 0, 0, response, sizeof response)) {
             report.crypto.revision_valid = 1;
             memcpy(report.crypto.revision, response+1, 4);
@@ -192,9 +215,56 @@ static void identify_crypto(void)
             }
         } else ESP_LOGW(TAG, "ATECC woke, but Info revision was not verified (%s)", esp_err_to_name(err));
     } else ESP_LOGW(TAG, "ATECC at 0x60: wake response unconfirmed (%s)", esp_err_to_name(err));
-    uint8_t sleep = 1;
-    (void)i2c_master_transmit(dev, &sleep, 1, 100);
-    i2c_master_bus_rm_device(dev);
+    crypto_close(dev);
+    xSemaphoreGive(crypto_lock);
+}
+static bool identifier_blank(const uint8_t *b, size_t n)
+{
+    bool zero = true, ones = true;
+    for (size_t i = 0; i < n; i++) { zero = zero && b[i] == 0; ones = ones && b[i] == 0xff; }
+    return zero || ones;
+}
+void observer_board_identity(observer_board_identity_t *out)
+{
+    *out = (observer_board_identity_t){0};
+    // Written once by observer_board_manifest() before any task runs.
+    out->board_valid = report.manifest.eui_valid && !identifier_blank(report.manifest.eui, 8);
+    memcpy(out->board_eui64, report.manifest.eui, 8);
+    out->revision_valid = report.manifest.capabilities_valid;
+    out->revision = report.manifest.revision;
+    if (!hardware_manifest_i2c_bus() || !crypto_lock) return;
+    // MCP79412: the factory EUI-64 is in the protected EEPROM block, device 0x57, 0xF0..0xF7.
+    out->rtc_valid = read_reg(0x57, 0xf0, out->rtc_eui64, 8) == ESP_OK && !identifier_blank(out->rtc_eui64, 8);
+    i2c_master_dev_handle_t dev;
+    bool woke;
+    esp_err_t err;
+    xSemaphoreTake(crypto_lock, portMAX_DELAY);
+    if (crypto_open(&dev, &woke, &err)) {
+        uint8_t block[35], word[7];
+        // Read is opcode 2; mode bit 7 selects a 32-byte block and bits 0-1 the zone.
+        // Configuration block 0 is readable in every lock state: SN[0:3] is bytes 0-3 and
+        // SN[4:8] is bytes 8-12.
+        if (woke && crypto_command(dev, 2, 0x80, 0, block, sizeof block)) {
+            memcpy(out->atecc_serial, block + 1, 4); memcpy(out->atecc_serial + 4, block + 1 + 8, 5);
+            out->atecc_valid = !identifier_blank(out->atecc_serial, 9);
+        }
+        // Slot 14 (72 bytes) is two 32-byte blocks and two 4-byte words of the data zone:
+        // address = slot << 3 | word offset, block in bits 8-11. The part refuses this read
+        // until its data zone is locked, which leaves the record reported as unreadable.
+        bool ok = woke && out->atecc_valid;
+        for (unsigned b = 0; ok && b < 2; b++) {
+            ok = crypto_command(dev, 2, 0x82, 14 << 3 | b << 8, block, sizeof block);
+            if (ok) memcpy(out->attestation + 32 * b, block + 1, 32);
+        }
+        for (unsigned w = 0; ok && w < 2; w++) {
+            ok = crypto_command(dev, 2, 0x02, 14 << 3 | 2 << 8 | w, word, sizeof word);
+            if (ok) memcpy(out->attestation + 64 + 4 * w, word + 1, 4);
+        }
+        out->attestation_valid = ok && !identifier_blank(out->attestation, sizeof out->attestation);
+        if (!out->attestation_valid) memset(out->attestation, 0, sizeof out->attestation);
+        crypto_close(dev);
+    }
+    xSemaphoreGive(crypto_lock);
 }
 static void identify_peripherals(void)
 {
@@ -379,6 +449,7 @@ esp_err_t observer_board_start(void)
         ESP_LOGW(TAG, "could not load panel brightness: %s; using %u%%",
                  esp_err_to_name(load_err), applied_brightness);
     atomic_store(&brightness, applied_brightness);
+    if (!crypto_lock && !(crypto_lock = xSemaphoreCreateMutex())) return ESP_ERR_NO_MEM;
     const uint64_t outputs = (1ULL << LED_DATA) | (1ULL << LED_CLOCK) | (1ULL << LED_LATCH) |
                             (1ULL << LED_GREEN_OE) | (1ULL << LED_YELLOW_OE);
     gpio_set_level(LED_GREEN_OE, 1); gpio_set_level(LED_YELLOW_OE, 1);
@@ -413,4 +484,5 @@ void observer_board_cycle_brightness(void) {}
 void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_t (*now_ns)(void))
 { (void)manifest; (void)now_ns; }
 esp_err_t observer_board_start(void) { return ESP_OK; }
+void observer_board_identity(observer_board_identity_t *out) { *out = (observer_board_identity_t){0}; }
 #endif

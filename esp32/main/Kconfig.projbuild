@@ -172,6 +172,28 @@ menu "navfeeder-esp"
                 trusted and open tracks rejects this setting.
     endchoice
 
+    config NVF_COMMISSION_CONSOLE
+        bool "Bench commissioning commands on the USB console"
+        depends on NVF_BOARD_GNSS_COLOR_NEO
+        default y
+        help
+            Accept `commission ...` lines on the USB Serial/JTAG console: report this
+            board's identifiers, generate the microcontroller key, and install or restore
+            the commissioning record (docs/COMMISSIONING.md). The commands exist only on
+            the USB console; no network service reaches them. A locked unit cannot be
+            reflashed over USB, so the release firmware itself carries them.
+
+    config NVF_MCU_KEY_UNLOCKED_TEST
+        bool "Allow microcontroller key generation on an unlocked test board"
+        depends on NVF_UPDATE_TEST_KEYS
+        default n
+        help
+            A microcontroller key is normally generated only once Secure Boot and
+            release-mode flash encryption are active. This lets a test-profile bench board
+            exercise the key, the session proof and a test commissioning record without
+            locking. It still burns one eFuse key block PERMANENTLY on that module, and the
+            key proves nothing about what firmware runs there.
+
     config NVF_RX_AUTOPROBE
         bool "Probe receiver baud and query MON-VER"
         default y if NVF_BOARD_GNSS_COLOR_NEO

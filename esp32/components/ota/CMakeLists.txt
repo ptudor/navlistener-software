@@ -4,7 +4,7 @@ idf_component_register(
     INCLUDE_DIRS "include"
     REQUIRES esp_http_server
     PRIV_REQUIRES app_update esp_http_client mbedtls nvs_flash esp_wifi
-                  esp_timer esp_netif lwip esp_app_format bootloader_support json spool journal
+                  esp_timer esp_netif lwip esp_app_format bootloader_support json spool journal mcu_identity
 )
 set(NVF_TUF_ROOT_FILE "" CACHE FILEPATH "External public TUF trust root")
 set(root_source "${CMAKE_CURRENT_BINARY_DIR}/update_root.c")

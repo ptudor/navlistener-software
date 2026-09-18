@@ -8,7 +8,11 @@
 #define JOURNAL_HEALTH_CAP 1024u
 #define JOURNAL_RECORD_SIZE 192u
 enum { JOURNAL_BOOT=1, JOURNAL_TIME=2, JOURNAL_CONFIRMED=3,
-       JOURNAL_OTA_READY=4, JOURNAL_OTA_FAILED=5, JOURNAL_CHECKPOINT=6 };
+       JOURNAL_OTA_READY=4, JOURNAL_OTA_FAILED=5, JOURNAL_CHECKPOINT=6,
+       // Lifecycle lane. HW_TRUST is written when the collector's hardware-trust verdict
+       // changes, never per connection; COMMISSION records a bench operation. Their
+       // `error` encodings are in docs/JOURNAL.md.
+       JOURNAL_HW_TRUST=7, JOURNAL_COMMISSION=8 };
 enum { JOURNAL_TIME_UNKNOWN, JOURNAL_TIME_RTC, JOURNAL_TIME_GNSS };
 enum { JOURNAL_RECEIVER=1, JOURNAL_FIX=2, JOURNAL_LINK=4, JOURNAL_WIFI=8,
        JOURNAL_PSRAM=16, JOURNAL_SAMPLED=32 };

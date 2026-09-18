@@ -33,6 +33,7 @@ extern "C" {
 #define GNF1_F_PING        0x05 // keepalive
 #define GNF1_F_PONG        0x06 // keepalive
 #define GNF1_F_SIGNED_DATA 0x07 // P-hw: ATECC ECDSA batch (reserved)
+#define GNF1_F_EVIDENCE    0x0A // feeder->collector: commissioning evidence, once, right after HELLO
 
 // Telemetry record types (frame_type < 0x10, CONSTELLATIONS.md §6.2). Body layouts must
 // match ../../../go/internal/ingest/telemetry.go.
@@ -47,6 +48,11 @@ extern "C" {
 #define GNF1_RECORD_MAX   (GNF1_RECORD_HDR + GNF1_MAX_RAW)
 #define GNF1_FRAME_HDR    5          // [1B type][4B BE len]
 #define GNF1_DATA_MAX     (GNF1_FRAME_HDR + 8 + GNF1_RECORD_MAX)
+#define GNF1_EVIDENCE_MAX 2048       // the collector reads no larger EVIDENCE payload (docs/COMMISSIONING.md §6)
+// The session proof inside EVIDENCE signs keying material both ends export from the TLS
+// session (RFC 5705; RFC 8446 §7.5) under this label, with no context. It is never sent.
+#define GNF1_EVIDENCE_EXPORTER_LABEL "EXPERIMENTAL-navlistener-mcu-proof-v1"
+#define GNF1_EVIDENCE_EXPORTED_SIZE  32
 
 // gnf1_frame_type maps (gnssId, sigId) to the GNF1 nav message type byte (CONSTELLATIONS.md
 // §6). It is a forensic label — the collector dispatches decode on (gnssId, sigId), so an
@@ -100,8 +106,13 @@ bool gnf1_session_valid(const char *s);
 // restarts at boot and app_main mints a new session every boot — that is exactly what keeps
 // post-reboot frames from colliding with the previous boot's ledger rows. Must satisfy
 // gnf1_session_valid; it is emitted unescaped.
+//
+// evidence announces that one GNF1_F_EVIDENCE frame follows this HELLO immediately, before
+// the collector's WELCOME (docs/COMMISSIONING.md §6). The collector authenticates the HELLO
+// first and then reads exactly one more frame, so the flag and the frame go together: set
+// it only when the frame will be sent, and never send the frame without it.
 int gnf1_build_hello(char *out, size_t cap, const char *token, const char *station,
-                     const char *feed, const char *session, bool zstd);
+                     const char *feed, const char *session, bool zstd, bool evidence);
 
 // gnf1_welcome_ok reports whether a WELCOME JSON payload accepted the handshake.
 // welcome must be NUL-terminated in addition to supplying len. The tiny parser

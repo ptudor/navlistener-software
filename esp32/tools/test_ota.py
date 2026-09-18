@@ -84,6 +84,16 @@ class OtaClientTest(unittest.TestCase):
             self.assertEqual(ota.read_journal("device", key, "life", 10), [{"sequence": "9"}, {"sequence": "8"}])
         self.assertEqual(bodies, [b"life\n0", b"life\n9"])
 
+    def test_journal_decodes_hardware_trust_and_commissioning_events(self):
+        self.assertEqual(ota.journal_detail(7, 3), "trusted")
+        self.assertEqual(ota.journal_detail(7, 0 | 9 << 8), "none/proof")
+        self.assertEqual(ota.journal_detail(7, 0 | 10 << 8), "none/product")
+        self.assertEqual(ota.journal_detail(7, 0x20 | 0x21 << 8), "withheld/key-not-ready")
+        self.assertEqual(ota.journal_detail(7, 0x10), "unreported")
+        self.assertEqual(ota.journal_detail(8, 1 | 3 << 16), "keygen ok")
+        self.assertEqual(ota.journal_detail(8, 2 | 1 << 8), "install failed")
+        self.assertEqual(ota.journal_detail(5, 1234), "")
+
     def test_journal_stuck_cursor_fails_without_looping(self):
         replies = [{"nonce": "ab" * 32}, {"records": [], "next": "9"}] * 2
         with patch.object(ota, "exchange", side_effect=[json.dumps(r).encode() for r in replies]):

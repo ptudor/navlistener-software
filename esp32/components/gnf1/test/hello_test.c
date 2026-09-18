@@ -40,13 +40,13 @@ static void test_hello_exact(void)
     // the two feeders' HELLOs are diffable in one packet capture. `sw` differs by design —
     // it is what tells the collector which implementation is talking.
     char out[512];
-    int n = gnf1_build_hello(out, sizeof out, "tok3n", "navfeeder-AABBCC", "ubx", SESSION, false);
+    int n = gnf1_build_hello(out, sizeof out, "tok3n", "navfeeder-AABBCC", "ubx", SESSION, false, false);
     const char *want = "{\"token\":\"tok3n\",\"station\":\"navfeeder-AABBCC\",\"feed\":\"ubx\","
                        "\"sw\":\"navfeeder-esp/1\",\"session\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\"}";
     CHECK(n == (int)strlen(want), "hello length = %d, want %d", n, (int)strlen(want));
     CHECK(n > 0 && strcmp(out, want) == 0, "hello = %s\n            want %s", out, want);
 
-    n = gnf1_build_hello(out, sizeof out, "tok3n", "navfeeder-AABBCC", "ubx", SESSION, true);
+    n = gnf1_build_hello(out, sizeof out, "tok3n", "navfeeder-AABBCC", "ubx", SESSION, true, false);
     const char *want_z = "{\"token\":\"tok3n\",\"station\":\"navfeeder-AABBCC\",\"feed\":\"ubx\","
                          "\"sw\":\"navfeeder-esp/1\",\"session\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\","
                          "\"zstd\":true}";
@@ -54,14 +54,39 @@ static void test_hello_exact(void)
           want_z);
 }
 
+static void test_hello_evidence(void)
+{
+    // `"evidence":true` tells the collector to read one GNF1_F_EVIDENCE frame after it has
+    // authenticated this HELLO (docs/COMMISSIONING.md §6). It is the last field, after the
+    // optional zstd flag, and is absent rather than false when no evidence follows: a
+    // feeder that presents nothing sends the same bytes it always did.
+    char out[512];
+    int n = gnf1_build_hello(out, sizeof out, "tok3n", "navfeeder-AABBCC", "ubx", SESSION, false, true);
+    const char *want = "{\"token\":\"tok3n\",\"station\":\"navfeeder-AABBCC\",\"feed\":\"ubx\","
+                       "\"sw\":\"navfeeder-esp/1\",\"session\":\"0f1e2d3c4b5a69788796a5b4c3d2e1f0\","
+                       "\"evidence\":true}";
+    CHECK(n == (int)strlen(want) && strcmp(out, want) == 0, "hello(evidence) = %s\n                      want %s", out, want);
+    n = gnf1_build_hello(out, sizeof out, "tok3n", "navfeeder-AABBCC", "ubx", SESSION, true, true);
+    CHECK(n > 0 && strstr(out, "\"zstd\":true,\"evidence\":true}") != NULL, "hello(zstd, evidence) = %s", out);
+    CHECK(GNF1_F_EVIDENCE == 0x0A, "EVIDENCE frame type = 0x%02x, want 0x0A", GNF1_F_EVIDENCE);
+    CHECK(GNF1_EVIDENCE_MAX == 2048, "EVIDENCE cap = %d, want 2048", GNF1_EVIDENCE_MAX);
+    // A maximum-length token and station must still fit the collector's 4096-byte HELLO
+    // cap with the flag added; the builder's own escaped-field bounds keep it far below.
+    char token[512], station[254], big[2048];
+    memset(token, 't', sizeof token - 1); token[sizeof token - 1] = 0;
+    memset(station, 's', sizeof station - 1); station[sizeof station - 1] = 0;
+    n = gnf1_build_hello(big, sizeof big, token, station, "ubx", SESSION, true, true);
+    CHECK(n > 0 && n < 4096, "largest hello length = %d, want within the 4096-byte cap", n);
+}
+
 static void test_session_required(void)
 {
     // no legacy sessionless tier exists on the wire, so building one is a bug we
     // refuse locally instead of shipping a frame the collector will certainly reject.
     char out[512];
-    CHECK(gnf1_build_hello(out, sizeof out, "t", "s", "ubx", NULL, false) < 0,
+    CHECK(gnf1_build_hello(out, sizeof out, "t", "s", "ubx", NULL, false, false) < 0,
           "NULL session accepted, want rejected");
-    CHECK(gnf1_build_hello(out, sizeof out, "t", "s", "ubx", "", false) < 0,
+    CHECK(gnf1_build_hello(out, sizeof out, "t", "s", "ubx", "", false, false) < 0,
           "empty session accepted, want rejected");
 }
 
@@ -95,7 +120,7 @@ static void test_session_charset(void)
     // And a bad session must not leak into the payload even if a caller ignores the return.
     char out[512];
     memset(out, 'X', sizeof out);
-    CHECK(gnf1_build_hello(out, sizeof out, "t", "s", "ubx", "bad\"quote", false) < 0,
+    CHECK(gnf1_build_hello(out, sizeof out, "t", "s", "ubx", "bad\"quote", false, false) < 0,
           "session with a quote accepted into the HELLO");
 }
 
@@ -106,7 +131,7 @@ static void test_truncation(void)
     // the closing brace, so it is the first thing a too-small buffer loses.
     char small[32];
     int n = gnf1_build_hello(small, sizeof small, "tok3n", "navfeeder-AABBCC", "ubx", SESSION,
-                             false);
+                             false, false);
     CHECK(n < 0, "truncated hello returned %d, want -1", n);
 }
 
@@ -114,7 +139,7 @@ static void test_json_escape_still_applies(void)
 {
     // the operator-supplied fields are still escaped (only the session skips it).
     char out[512];
-    int n = gnf1_build_hello(out, sizeof out, "a\"b", "s\\t", "ubx", SESSION, false);
+    int n = gnf1_build_hello(out, sizeof out, "a\"b", "s\\t", "ubx", SESSION, false, false);
     CHECK(n > 0 && strstr(out, "\"token\":\"a\\\"b\"") != NULL, "token not escaped: %s", out);
     CHECK(n > 0 && strstr(out, "\"station\":\"s\\\\t\"") != NULL, "station not escaped: %s", out);
 }
@@ -122,6 +147,7 @@ static void test_json_escape_still_applies(void)
 int main(void)
 {
     test_hello_exact();
+    test_hello_evidence();
     test_session_required();
     test_session_charset();
     test_truncation();

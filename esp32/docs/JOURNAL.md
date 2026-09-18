@@ -11,7 +11,7 @@ Two independent FIFO queues replace their **oldest** entries automatically:
 
 | Queue | Capacity | Writes |
 |---|---:|---|
-| Lifecycle | 256 events | Boot, local startup confirmation, first usable time and first GNSS-qualified time, OTA selection/failure |
+| Lifecycle | 256 events | Boot, local startup confirmation, first usable time and first GNSS-qualified time, OTA selection/failure, a change of the collector's hardware-trust verdict, bench commissioning operations |
 | Health | 1,024 checkpoints | After one minute of uptime, then hourly |
 
 Hourly checkpoints retain about 42 days of continuous operation. Lifecycle
@@ -73,6 +73,29 @@ environmental validity bits, RTC flags and the boot-time ATECC RNG/EEPROM status
 codes from [ObserverDetails](../../docs/OBSERVER-TELEMETRY.md). ATECC results are
 startup diagnostics, not continuous entropy monitoring. Local startup confirmation
 does not require enrollment, an EEPROM, a satellite fix or collector connectivity.
+
+## Hardware trust and commissioning events
+
+Two lifecycle events carry their detail in the record's `error` field;
+`tools/ota.py journal` decodes it in the `DETAIL` column.
+
+**Event 7, hardware trust.** Written when the collector's verdict on this
+board's [evidence](COMMISSIONING.md#presenting-evidence) differs from the last
+one journaled on this boot, never once per connection, so reconnects cannot
+evict boot history. The low byte is the verdict and the next byte the reason:
+
+| Verdict | Meaning | | Reason | Meaning |
+|---:|---|---|---:|---|
+| 0–3 | `none`, `open`, `test`, `trusted` | | 1–10 | the collector's `evidence_error`: `unconfigured`, `malformed`, `signature`, `identity`, `unlisted`, `revoked`, `superseded`, `proof_missing`, `proof`, `product` |
+| `0x10` | the collector reported no verdict | | `0x0f` | a reason this firmware does not know |
+| `0x20` | a trusted record was withheld | | `0x20`–`0x22` | why: no TLS keying material, key not ready, the peripheral did not sign |
+
+**Event 8, commissioning.** One per bench operation that changes state; a
+`keygen` that reaches its final step writes a `seal` event after its own. The low
+byte is the operation (1 `keygen`, 2 `install`, 3 `restore`, 4 `seal`), the next
+byte is nonzero on failure, and the third byte holds the spent eFuse key block
+plus one for `keygen` (zero when nothing was burned) or the record's profile for
+`install`.
 
 ## Installation and readout
 

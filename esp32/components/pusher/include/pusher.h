@@ -42,6 +42,15 @@ typedef struct {
     const char *tunnel_host;
     bool (*tunnel_up)(void);
     void (*update_control)(const uint8_t *,size_t); // authenticated GNF1 control frames
+    // evidence, when set, builds the GNF1 EVIDENCE payload for one TLS session
+    // (docs/COMMISSIONING.md §6). exported is that session's GNF1_EVIDENCE_EXPORTED_SIZE
+    // bytes of keying material, or NULL when it could not be derived; out holds
+    // GNF1_EVIDENCE_MAX bytes. It returns the payload length, or 0 to present nothing, and
+    // only a nonzero return puts `"evidence":true` in the HELLO. hardware_trust receives the
+    // collector's answer from WELCOME whenever evidence was sent: the verdict and, when the
+    // evidence was rejected, the reason. Either string is NULL when the collector sent none.
+    size_t (*evidence)(const uint8_t *exported, uint8_t *out, size_t cap);
+    void (*hardware_trust)(const char *trust, const char *error);
 } pusher_cfg_t;
 
 // pusher_start copies cfg and spawns the push task. The spool must already be initialised,

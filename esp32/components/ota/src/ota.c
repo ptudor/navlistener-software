@@ -31,6 +31,7 @@
 #include "nvs.h"
 #include "spool.h"
 #include "journal.h"
+#include "mcu_identity.h"
 
 #if !CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE || !CONFIG_MBEDTLS_HAVE_TIME_DATE
 #error "OTA requires bootloader rollback and TLS certificate date validation"
@@ -284,6 +285,13 @@ static esp_err_t status_v1(httpd_req_t *req) {
     cJSON_AddNumberToObject(json,"error_domain",s.error/1000);cJSON_AddNumberToObject(json,"error_reason",s.error%1000);
     cJSON_AddNumberToObject(json,"security_flags",s.security);cJSON_AddNumberToObject(json,"partition_layout_id",s.layout);
     cJSON_AddStringToObject(json,"trust_profile",nvf_update_profile_name(nvf_update_profile()));
+    // trust_profile is this build's own claim. hardware_trust is what the collector last
+    // concluded from the evidence this board presented (docs/COMMISSIONING.md); both are
+    // empty until a collector has answered on this boot.
+    nvf_mcu_identity_status_t identity;nvf_mcu_identity_status(&identity);
+    cJSON_AddStringToObject(json,"hardware_trust",identity.hardware_trust);
+    cJSON_AddStringToObject(json,"evidence_error",identity.evidence_error);
+    cJSON_AddBoolToObject(json,"commissioning_record",identity.record);
     json_u64(json,"running_release",s.running);json_u64(json,"available_release",s.available.sequence);
     json_u64(json,"staged_release",s.staged.sequence);json_u64(json,"failed_release",s.failed);
     json_u64(json,"channel_generation",s.available.generation);json_u64(json,"last_command",s.last_command);
