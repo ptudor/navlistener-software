@@ -18,6 +18,9 @@ bool nvf_update_request(unsigned action,uint64_t release,bool discard);
 bool nvf_update_policy(unsigned mode,unsigned channel);
 void nvf_update_control(const uint8_t *bytes,size_t length);
 bool nvf_update_wire(uint8_t out[140]);
+// The build's fixed trust profile (UP_PROFILE_*). It is a claim in telemetry,
+// never evidence: only locked hardware can prove which firmware is running.
+unsigned nvf_update_profile(void);
 bool nvf_update_busy(void);
 // One exclusion gate for the repository worker and attended service recovery.
 bool nvf_update_claim(void);

@@ -35,11 +35,26 @@ type catalogMetadata struct {
 	} `json:"signed"`
 }
 
-func (m *Manager) object(path string, limit int64, ref *reference) ([]byte, error) {
+// repository selects the published tree for the track a device reports. A
+// device or persisted record that predates the report is on the trusted track;
+// a test build, or a track this collector does not serve, has no catalog.
+func (m *Manager) repository(profile string) (string, error) {
+	root := ""
+	switch profile {
+	case "trusted", "unreported", "":
+		root = m.config.Repository
+	case "open":
+		root = m.config.OpenRepository
+	}
+	if root == "" {
+		return "", errors.New("no catalog for this release track")
+	}
+	return filepath.Clean(root), nil
+}
+func (m *Manager) object(root, path string, limit int64, ref *reference) ([]byte, error) {
 	if !filepath.IsLocal(path) || strings.Contains(path, "..") {
 		return nil, errors.New("invalid catalog path")
 	}
-	root := filepath.Clean(m.config.Repository)
 	full := filepath.Join(root, path)
 	for p := full; p != root; p = filepath.Dir(p) {
 		info, err := os.Lstat(p)
@@ -70,13 +85,13 @@ func (m *Manager) object(path string, limit int64, ref *reference) ([]byte, erro
 	}
 	return data, nil
 }
-func (m *Manager) metadata(name string, limit int64, ref *reference) (catalogMetadata, error) {
+func (m *Manager) metadata(root, name string, limit int64, ref *reference) (catalogMetadata, error) {
 	var md catalogMetadata
 	path := "metadata/" + name + ".json"
 	if ref != nil {
 		path = fmt.Sprintf("metadata/%d.%s.json", ref.Version, name)
 	}
-	data, err := m.object(path, limit, ref)
+	data, err := m.object(root, path, limit, ref)
 	if err != nil {
 		return md, err
 	}
@@ -88,21 +103,25 @@ func (m *Manager) metadata(name string, limit int64, ref *reference) (catalogMet
 	}
 	return md, nil
 }
-func (m *Manager) choice(channel string) (*Choice, error) {
+func (m *Manager) choice(profile, channel string) (*Choice, error) {
 	if channel != "stable" && channel != "canary" && channel != "lab" {
 		return nil, errors.New("unknown channel")
 	}
-	timestamp, err := m.metadata("timestamp", 4096, nil)
+	root, err := m.repository(profile)
+	if err != nil {
+		return nil, err
+	}
+	timestamp, err := m.metadata(root, "timestamp", 4096, nil)
 	if err != nil {
 		return nil, err
 	}
 	ref := timestamp.Signed.Meta["snapshot.json"]
-	snapshot, err := m.metadata("snapshot", 8192, &ref)
+	snapshot, err := m.metadata(root, "snapshot", 8192, &ref)
 	if err != nil {
 		return nil, err
 	}
 	ref = snapshot.Signed.Meta[channel+".json"]
-	md, err := m.metadata(channel, 12288, &ref)
+	md, err := m.metadata(root, channel, 12288, &ref)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +129,7 @@ func (m *Manager) choice(channel string) (*Choice, error) {
 	if len(ref.Hashes["sha256"]) != 64 {
 		return nil, errors.New("missing channel target")
 	}
-	data, err := m.object("targets/channels/"+ref.Hashes["sha256"]+"."+channel+".json", 4096, &ref)
+	data, err := m.object(root, "targets/channels/"+ref.Hashes["sha256"]+"."+channel+".json", 4096, &ref)
 	if err != nil {
 		return nil, err
 	}

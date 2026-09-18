@@ -3,6 +3,8 @@
 
 Run on the static origin through the operator's configured transport. This
 program has no signing keys. Stdin is one JSON header line followed by bytes.
+Each release track has its own root directory and its own invocation; an
+upload for another track, or a root marked for one, is refused before writing.
 """
 import argparse
 import fcntl
@@ -14,12 +16,18 @@ import re
 import sys
 import tempfile
 
-def write(root, header, data):
+TRACKS = ("trusted", "open")
+
+def write(root, track, header, data):
     path = header["path"]
+    if track not in TRACKS or header.get("track") != track:
+        raise ValueError("upload belongs to a different release track than this origin directory")
     if not isinstance(path, str) or len(path) > 280 or not re.fullmatch(r"(?:metadata|targets)/[A-Za-z0-9._/-]+", path) or ".." in path or "//" in path:
         raise ValueError("invalid origin object path")
     if header.get("length") != len(data) or header.get("sha256") != hashlib.sha256(data).hexdigest() or not 0 < len(data) <= 0x400000:
         raise ValueError("origin object length or digest differs")
+    if re.fullmatch(r"metadata/[0-9]+\.root\.json", path) and json.loads(data)["signed"].get("x_navlisten_profile") != track:
+        raise ValueError("root metadata is marked for a different trust profile")
     root = root.resolve(strict=True)
     target = root / path
     for part in [target, *target.parents]:
@@ -68,12 +76,13 @@ def write(root, header, data):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, type=Path)
+    parser.add_argument("--track", required=True, choices=TRACKS)
     args = parser.parse_args()
     header = sys.stdin.buffer.readline(4097)
     if len(header) > 4096 or not header.endswith(b"\n"):
         raise ValueError("invalid adapter header")
     data = sys.stdin.buffer.read(0x400001)
-    print(json.dumps(write(args.root, json.loads(header), data)))
+    print(json.dumps(write(args.root, args.track, json.loads(header), data)))
 
 if __name__ == "__main__":
     try:

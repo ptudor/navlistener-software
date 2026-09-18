@@ -16,11 +16,17 @@ import urllib.error
 
 from tuf.api.metadata import Metadata, Targets
 from tuf.api.serialization.json import JSONSerializer
-from repository import Repository, Signers, THRESHOLDS, CHANNELS, atomic, immutable, encoded, digest, init_test_keys
+from repository import Repository, Signers, THRESHOLDS, CHANNELS, RELEASE_PROFILES, atomic, immutable, encoded, digest, init_test_keys
 from firmware_signing import sign_image, verify_image, key_id, keys as firmware_keys
 from publisher import ORIGINS, fetch, publish, verify_public
 
 SOURCE = Path(__file__).resolve().parents[2]
+# Release numbers are shared, so a number names one source commit and one track.
+TAGS = {"trusted": "firmware-{}", "open": "firmware-open-{}"}
+APPROVALS = {
+    "trusted": "the trusted track is not approved; complete and retain the commissioning and soak checklist first",
+    "open": "the open track is not approved; back up its signing keys and confirm both open origins serve before releasing",
+}
 
 def git(*args, cwd=SOURCE):
     return subprocess.check_output(["git", *args], cwd=cwd, text=True).strip()
@@ -38,31 +44,52 @@ def image_identity(image):
 
 def configuration(path):
     if not path:
-        raise ValueError("No production release configuration. Start with make release-test-setup; see esp32/docs/UPDATE-OPERATIONS.md before production.")
+        raise ValueError("No release configuration. Start with make release-test-setup; see esp32/docs/UPDATE-OPERATIONS.md before releasing to a track.")
     path = Path(path).expanduser().resolve(strict=True)
     if path.is_relative_to(SOURCE):
         raise ValueError("release configuration and private key locations must stay outside the checkout")
     config = json.loads(path.read_bytes())
-    if config.get("production_approved") is not True:
-        raise ValueError("production is not approved; complete and retain the commissioning and soak checklist first")
+    track = config.get("track")
+    if track not in RELEASE_PROFILES:
+        raise ValueError("release configuration must name its track: trusted or open")
+    # One configuration serves one track. Approval for the other is meaningless
+    # here and usually means a copied file that still points at the wrong keys.
+    if any(config.get(f"{other}_approved") is not None for other in RELEASE_PROFILES if other != track):
+        raise ValueError(f"a {track} release configuration cannot carry another track's approval")
+    if config.get(f"{track}_approved") is not True:
+        raise ValueError(APPROVALS[track])
     for name in ("state_dir", "signers", "root"):
         value = Path(config[name]).expanduser()
         if not value.is_absolute() or value.resolve().is_relative_to(SOURCE):
             raise ValueError(f"{name} must be an explicit external absolute path")
         config[name] = str(value.resolve())
-    signers = Signers(Path(config["signers"]), production=True)
+    signers = Signers(Path(config["signers"]), profile=track)
     firmware_keys(signers.config, True)
+    config["origins"] = ORIGINS[track]
     for name in ("build_command", "publish_command"):
         if not command_available(config.get(name)):
             raise ValueError(f"{name} adapter is unavailable")
     if set(config.get("remotes", [])) != {"origin", "github"} or config.get("branch") != "main":
-        raise ValueError("production releases require main and both origin/github software remotes")
+        raise ValueError("releases require main and both origin/github software remotes")
     bootstrap = Path(config["root"]).read_bytes()
     root = Metadata.from_bytes(bootstrap)
-    if root.signed.unrecognized_fields.get("x_navlisten_test") is not False:
-        raise ValueError("production refuses a test or unmarked bootstrap root")
+    if root.signed.unrecognized_fields.get("x_navlisten_profile") != track:
+        raise ValueError(f"the {track} track refuses a bootstrap root marked for another profile or unmarked")
     root.verify_delegate("root", root)
     return config, signers, bootstrap
+
+def signer_entry(path, *, firmware):
+    """The public half of one signers.json entry. No private material is read."""
+    from cryptography.hazmat.primitives import serialization
+    key = serialization.load_pem_public_key(Path(path).expanduser().read_bytes())
+    if firmware:
+        return key_id(key)
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from securesystemslib.signer import SSlibKey
+    if not isinstance(key, ec.EllipticCurvePublicKey) or not isinstance(key.curve, ec.SECP256R1):
+        raise ValueError("metadata keys must use ECDSA P-256")
+    public = SSlibKey.from_crypto(key)
+    return {"keyid": public.keyid, **public.to_dict()}
 
 def clean(config):
     if git("branch", "--show-current") != config["branch"] or git("status", "--porcelain", "--untracked-files=no"):
@@ -102,9 +129,9 @@ def verify_inventory(directory, expected):
         if path.is_absolute() or ".." in path.parts or digest((directory / name).read_bytes()) != sha:
             raise ValueError("transaction output differs; never replace an existing release artifact")
 
-def public_timestamp():
+def public_timestamp(origins):
     values = []
-    for origin in ORIGINS:
+    for origin in origins:
         try:
             values.append(digest(fetch(origin, "metadata/timestamp.json")))
         except urllib.error.HTTPError as error:
@@ -137,7 +164,7 @@ def release_build(directory, tx, config, signers):
                     raise ValueError("isolated build checkout changed")
                 if index == 1:
                     subprocess.run(["make", "-C", "go", "check"], cwd=clone, check=True)
-                request = {"source": str(clone), "build": str(directory / f"build-{index}"), "revision": tx["revision"], "root": config["root"]}
+                request = {"source": str(clone), "build": str(directory / f"build-{index}"), "revision": tx["revision"], "root": config["root"], "profile": config["track"]}
                 result = subprocess.run(config["build_command"], cwd=clone, input=encoded(request), stdout=subprocess.PIPE, check=True)
                 paths = json.loads(result.stdout)
                 values = {name: {"path": path, "sha256": digest(Path(path).read_bytes())} for name, path in paths.items()}
@@ -148,7 +175,7 @@ def release_build(directory, tx, config, signers):
                     raise ValueError("a completed build output changed")
             outputs.append(values)
         if any(outputs[0][name]["sha256"] != outputs[1][name]["sha256"] for name in ("elf", "image")):
-            raise ValueError("independent production ELFs and secure-padded images must match byte-for-byte")
+            raise ValueError("independent release ELFs and padded images must match byte-for-byte")
         tx["build"] = outputs[0]; tx["phase"] = "built"; save_transaction(directory, tx, signers)
     if tx["phase"] == "built":
         for output in tx["build"].values():
@@ -206,11 +233,11 @@ def finish(directory, tx, config, signers, bootstrap):
             raise ValueError("transaction inventory signature differs")
         index = json.loads(index_bytes); verify_inventory(candidate, index)
         if tx["phase"] == "prepared" and "revision" in tx:
-            tag = f"firmware-{tx['sequence']}"
+            tag = TAGS[config["track"]].format(tx["sequence"])
             try:
                 revision = git("rev-parse", f"{tag}^{{commit}}")
             except subprocess.CalledProcessError:
-                subprocess.run(["git", "tag", "-a", tag, tx["revision"], "-m", f"Firmware release {tx['sequence']}; initial channel Lab"], cwd=SOURCE, check=True)
+                subprocess.run(["git", "tag", "-a", tag, tx["revision"], "-m", f"Firmware release {tx['sequence']} on the {config['track']} track; initial channel Lab"], cwd=SOURCE, check=True)
                 revision = tx["revision"]
             if revision != tx["revision"]:
                 raise ValueError("release tag already names a different source commit")
@@ -222,7 +249,7 @@ def finish(directory, tx, config, signers, bootstrap):
         targets = list(repository.metadata["releases"].signed.targets)
         def committed():
             tx["phase"] = "published"; save_transaction(directory, tx, signers)
-        publish(config["publish_command"], files, tx["previous_timestamp"], bootstrap, targets, committed)
+        publish(config["publish_command"], config["track"], files, tx["previous_timestamp"], bootstrap, targets, committed)
         # Bring the local cache to the verified public commit without changing
         # or deleting historical immutable objects.
         for name, data in files.items():
@@ -231,7 +258,7 @@ def finish(directory, tx, config, signers, bootstrap):
         tx["phase"] = "complete"; save_transaction(directory, tx, signers)
     print(f"Transaction {directory.name}: {tx['phase']}")
     if "sequence" in tx:
-        print(f"Release {tx['sequence']} is selected for 100% of Lab. Inspect device status before promotion.")
+        print(f"Release {tx['sequence']} is selected for 100% of Lab on the {config['track']} track. Inspect device status before promotion.")
         print(f"make release-promote RELEASE={tx['sequence']} CHANNEL=canary PERCENT=1")
         print(f"make release-withdraw RELEASE={tx['sequence']} CHANNEL=lab")
 
@@ -276,7 +303,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default=os.environ.get("NAVLISTEN_RELEASE_CONFIG"))
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("init-test", "init-production"):
+    for name in ("init-test", "init-trusted", "init-open"):
         p = sub.add_parser(name); p.add_argument("--keys", required=True, type=Path); p.add_argument("--state", required=True, type=Path)
     p = sub.add_parser("test-release"); p.add_argument("--keys", required=True, type=Path); p.add_argument("--state", required=True, type=Path)
     p.add_argument("--image", required=True, type=Path); p.add_argument("--release", type=int, required=True)
@@ -288,21 +315,29 @@ def main():
         if name != "check": p.add_argument("--channel", choices=CHANNELS, required=True)
         if name == "promote": p.add_argument("--percent", type=int, required=True)
     sub.add_parser("refresh-online")
+    p = sub.add_parser("signer-entry", help="print the public half of a signers.json entry for one public key")
+    p.add_argument("--public-key", required=True, type=Path); p.add_argument("--firmware", action="store_true")
     args = parser.parse_args()
     if args.command=="promote" and not 0<=args.percent<=100:raise ValueError("rollout percentage must be between 0 and 100")
+    if args.command == "signer-entry":
+        print(json.dumps(signer_entry(args.public_key, firmware=args.firmware), indent=2)); return
     if args.command.startswith("init-"):
         state = args.state.expanduser().resolve()
         if state.is_relative_to(SOURCE): raise ValueError("release state must live outside the checkout")
+        if state.exists(): raise ValueError("release state already exists; initialization never overwrites it")
+        # Reject an unusable signer configuration before leaving any state behind.
+        if args.command != "init-test":
+            firmware_keys(Signers(args.keys, profile=args.command.removeprefix("init-")).config, True)
         state.mkdir(parents=True, mode=0o700, exist_ok=False)
         path = init_test_keys(args.keys) if args.command == "init-test" else args.keys
-        signers = Signers(path, production=args.command == "init-production")
+        signers = Signers(path, profile=args.command.removeprefix("init-"))
         repository = Repository(state / "repository", signers); repository.bootstrap(); repository.publish_local()
         atomic(state / "trust-root.json", repository.files["metadata/1.root.json"])
-        print(f"Created {'TEST-ONLY' if signers.test_only else 'production'} repository and public trust root in {state}")
+        print(f"Created {'TEST-ONLY' if signers.test_only else signers.profile} repository and public trust root in {state}")
         print(f"Private signer configuration: {path}. Back up the entire key directory securely; never copy it into Git or onto the origin.")
         return
     if args.command == "test-release":
-        signers = Signers(args.keys.expanduser(), production=False)
+        signers = Signers(args.keys.expanduser(), profile="test")
         state = args.state.expanduser().resolve(); root = (state / "trust-root.json").read_bytes()
         repository = Repository(state / "repository", signers); repository.load(root)
         unsigned=args.image.read_bytes()
@@ -310,7 +345,7 @@ def main():
             raise ValueError("test release number must match the image's compiled BUILD_NUMBER")
         image, key = sign_image(unsigned, signers.config, False)
         repository.add_release(sequence=args.release, version="0.0.0-test", revision=git("rev-parse", "HEAD"), image=image, boot_key_id=key,
-            provenance=encoded({"test_only": True}), licenses=encoded(license_inventory(SOURCE)), notes=b"TEST ONLY; never publish to production.\n", layout=3)
+            provenance=encoded({"profile": "test"}), licenses=encoded(license_inventory(SOURCE)), notes=b"TEST ONLY; never publish to a release track.\n", layout=3)
         repository.publish_local(); validate_repository(repository, root)
         print(f"Signed TEST-ONLY release {args.release} locally. No source push, remote publication or chip lock was performed.")
         return
@@ -334,14 +369,14 @@ def main():
                 tx["revision"] = git("rev-parse", "HEAD"); tx["phase"] = "reserved"; save_transaction(directory, tx, signers)
             finish(directory, tx, config, signers, bootstrap); return
         if args.command == "check":
-            verify_public(bootstrap, [f"releases/{args.release}.json"], signers.config); print("Both public origins passed TUF, image signature, provenance, license and release-note verification."); return
+            verify_public(config["origins"], bootstrap, [f"releases/{args.release}.json"], signers.config); print("Both public origins passed TUF, image signature, provenance, license and release-note verification."); return
         for path in (state / "transactions").glob("*/transaction.json"):
             if load_transaction(path.parent, signers)["phase"] != "complete":
                 raise ValueError(f"unfinished transaction {path.parent.name}; use release-resume")
         clean(config)
         if args.command == "dry-run":
-            print("Production preflight passed. No number reserved, signer called, build run, source pushed or file published."); return
-        previous = public_timestamp()
+            print(f"The {config['track']} track preflight passed. No number reserved, signer called, build run, source pushed or file published."); return
+        previous = public_timestamp(config["origins"])
         cached = state / "repository/metadata/timestamp.json"
         if previous is not None and digest(cached.read_bytes()) != previous:
             raise ValueError("local repository cache differs from public timestamp; reconcile it before reserving a version")

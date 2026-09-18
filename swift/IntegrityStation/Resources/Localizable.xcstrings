@@ -2871,6 +2871,56 @@
         }
       }
     },
+    "update.track": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Release track"
+          }
+        }
+      }
+    },
+    "update.track.trusted": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trusted"
+          }
+        }
+      }
+    },
+    "update.track.open": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open"
+          }
+        }
+      }
+    },
+    "update.track.test": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Test"
+          }
+        }
+      }
+    },
+    "update.open": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open device: unlocked hardware following the open release track."
+          }
+        }
+      }
+    },
     "update.rebooting": {
       "localizations": {
         "en": {

@@ -54,6 +54,9 @@ operator interfaces, and production device security.
   buffered record has a durable collector acknowledgment.
 - Every accepted release has two independent proofs: TUF target metadata
   authorizes it, and ESP32 Secure Boot v2 authenticates the application image.
+- Releases travel on one of two separately rooted tracks. The **trusted** track
+  serves locked hardware; the **open** track serves boards that are never
+  locked. See [Release tracks](#release-tracks).
 - Operators see the current, available, downloaded, and trial versions, with
   progress, release notes, last check, and a stable error code.
 - The factory application remains an offline recovery path.
@@ -68,7 +71,7 @@ operator interfaces, and production device security.
 | Reboot follows a short best-effort drain | Receiver pauses and every final sequence receives a durable ACK |
 | Status is local and transient | Local, collector, app, telemetry, and journal share one persisted state |
 | One device at a time | Stable weekly checks, collector hints, cohorts, promotion, and withdrawal |
-| Development security configuration | Separate unfused development and fused production profiles |
+| Development security configuration | Separate trusted (fused), open (unfused) and bench test profiles |
 
 Layout 3 uses 4 MiB OTA slots and a 4 MiB immutable factory slot. The
 first production baseline still requires an attended full-device flash because
@@ -322,6 +325,48 @@ readable or copy-on-write. A reset, crash, watchdog, or failed health check
 before confirmation lets the bootloader return to the previous OTA slot. The
 next status report records both the failed and restored versions.
 
+## Release tracks
+
+A build follows exactly one trust profile, fixed at compile time together with
+its origin path and its embedded root:
+
+| Profile | Hardware | Keys | Origin path |
+| --- | --- | --- | --- |
+| `trusted` | Secure Boot, Release flash encryption and encrypted update state all active | Offline/HSM release keys | `/firmware/trusted/v1/` |
+| `open` | Never locked; refuses to run on a chip with Secure Boot or flash encryption | A second, independent set of offline release keys | `/firmware/open/v1/` |
+| `test` | Unfused bench board | Throwaway `TEST-ONLY` keys | `/firmware/test/v1/`, which no shipped tool publishes |
+
+Each track is a complete TUF repository with its own root, its own signer
+configuration and its own static directory. The root carries the mandatory
+`x_navlisten_profile` marker and every release manifest repeats it in
+`profile`; a device accepts only its compiled profile, and an unmarked root
+belongs to none. The build embeds a root only when its marker matches, the
+publisher refuses a signer configuration or bootstrap root marked for another
+track, and the origin adapter refuses another track's upload or root before
+writing. Because a trusted device trusts only its embedded root, no open-track
+key can authorize firmware for locked hardware, and the reverse also holds.
+
+The tracks share the release transaction, the channel model and the
+`BUILD_NUMBER` sequence, so one number names one source commit on one track.
+Lab, Canary and Stable exist on both; the open track's Lab channel is where
+unlocked development boards take pre-release builds.
+
+On the open track the signed metadata is the root of trust. It protects the
+network path against a compromised origin, an intercepted connection, rollback,
+freeze and mix-and-match attacks, and it honors withdrawal. The updater still
+verifies the image's RSA-PSS signature block against the key named by the
+signed manifest, but no eFuse anchors that key, the bootloader verifies
+nothing, and flash contents, stored credentials and update state are readable
+and writable by anyone holding the board. That is the intended property of
+open hardware: its owner can already reflash it over USB. An open build changes
+no security eFuse and its release profile check rejects any setting that could.
+
+A device reports its profile in the update status. That report is a label for
+sorting a fleet, not evidence: firmware on unlocked hardware can report
+anything. Only locked hardware can establish which firmware is running, so a
+collector treats a device as trusted on the strength of its commissioning
+record, never on the strength of this field.
+
 ## TUF publication format
 
 The metadata layer follows the pinned [TUF 1.0.36
@@ -332,22 +377,23 @@ rotation and rollback, freeze, mix-and-match, and partial-publication attacks.
 Secure Boot remains an independent, chip-enforced signature check on the
 selected application.
 
-The update origin exposes a conventional static TUF repository:
+The update origin exposes one conventional static TUF repository per track.
+The open track has the same shape below `/firmware/open/v1/`:
 
 ```text
-/firmware/v1/metadata/1.root.json
-/firmware/v1/metadata/2.root.json
-/firmware/v1/metadata/timestamp.json
-/firmware/v1/metadata/42.snapshot.json
-/firmware/v1/metadata/17.targets.json
-/firmware/v1/metadata/9.releases.json
-/firmware/v1/metadata/23.stable.json
-/firmware/v1/targets/channels/<sha256>.stable.json
-/firmware/v1/targets/releases/<sha256>.31.json
-/firmware/v1/targets/artifacts/<sha256>.navfeeder-esp.bin
-/firmware/v1/targets/artifacts/<sha256>.provenance.json
-/firmware/v1/targets/artifacts/<sha256>.licenses.json
-/firmware/v1/targets/notes/<sha256>.31.md
+/firmware/trusted/v1/metadata/1.root.json
+/firmware/trusted/v1/metadata/2.root.json
+/firmware/trusted/v1/metadata/timestamp.json
+/firmware/trusted/v1/metadata/42.snapshot.json
+/firmware/trusted/v1/metadata/17.targets.json
+/firmware/trusted/v1/metadata/9.releases.json
+/firmware/trusted/v1/metadata/23.stable.json
+/firmware/trusted/v1/targets/channels/<sha256>.stable.json
+/firmware/trusted/v1/targets/releases/<sha256>.31.json
+/firmware/trusted/v1/targets/artifacts/<sha256>.navfeeder-esp.bin
+/firmware/trusted/v1/targets/artifacts/<sha256>.provenance.json
+/firmware/trusted/v1/targets/artifacts/<sha256>.licenses.json
+/firmware/trusted/v1/targets/notes/<sha256>.31.md
 ```
 
 The names illustrate TUF consistent snapshots; the publisher derives their
@@ -443,6 +489,7 @@ Each channel target file contains:
 Each immutable release-manifest target file contains:
 
 - release sequence, `VERSION`, `BUILD_NUMBER`, source revision, and publish time;
+- the trust profile of the track that authorized it;
 - target chip, board family, hardware revision range, partition-layout ID, and
   minimum updater version;
 - application target path, byte length, final signed-image SHA-256, and Secure
@@ -680,9 +727,10 @@ signer receipts, never private material or device credentials.
 
 ## Static origin requirements
 
-The existing site can host `/firmware/v1/` as an isolated static tree outside
-the ordinary website deployment directory. Its HTTP server and TLS reverse
-proxy must provide:
+The existing site can host `/firmware/trusted/v1/` and `/firmware/open/v1/` as
+isolated static trees, one directory per track, outside the ordinary website
+deployment directory. For both, its HTTP server and TLS reverse proxy must
+provide:
 
 - direct HTTPS URLs with no redirect on any device-facing path;
 - `application/json` for metadata, `application/octet-stream` for images, and
@@ -758,7 +806,7 @@ big-endian:
 | 2 | 1 | Channel: `1` stable, `2` canary, `3` lab |
 | 3 | 1 | State: `0` idle, `1` checking, `2` available, `3` downloading, `4` staged, `5` waiting-safe, `6` quiescing, `7` reboot-pending, `8` trial-boot, `9` confirmed, `10` rolled-back, `11` failed |
 | 4 | 1 | Security flags |
-| 5 | 1 | Reserved, zero |
+| 5 | 1 | Reported trust profile: 1 trusted, 2 open, 3 test; 0 predates the field |
 | 6 | 2 | Partition-layout ID |
 | 8 | 8 | Running release sequence |
 | 16 | 8 | Available release sequence |
@@ -784,7 +832,9 @@ its normal unknown-tag behavior.
 Collector storage retains transitions rather than every repeated status sample.
 It exposes current state to the operator API and metrics for check failures,
 download failures, staged age, install delay, trial rollback, version adoption,
-and security-profile drift.
+the reported track, and security-profile drift. Drift means security flags that
+contradict the reported track: a trusted build that is not fully locked, or an
+open or test build on a locked chip. An unlocked open device is not drifting.
 
 The local service evolves without removing current pairing, and every mutation
 remains authenticated. JSON uses UTF-8, rejects duplicate or unknown members,
@@ -905,7 +955,10 @@ is not a production security or recovery test.
 6. **Default automatic mode:** Canary soak, explicit Stable promotion gates,
    recovery rehearsal, and then factory-default enablement.
 
-The first externally deployed automatic-update build must already use the
-production security baseline. Development can implement and test the earlier
-phases on unfused boards, but an unsigned field baseline cannot securely turn
-itself into the final trust model.
+The first externally deployed automatic-update build on the trusted track must
+already use the production security baseline. Development can implement and
+test the earlier phases on unfused boards, but an unsigned field baseline
+cannot securely turn itself into the final trust model. The open track makes no
+such claim and does not wait for that baseline: it deploys to unlocked boards
+under the narrower guarantees in [Release tracks](#release-tracks), and an open
+board never becomes a trusted one by updating.

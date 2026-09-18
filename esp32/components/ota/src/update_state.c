@@ -35,8 +35,8 @@ uint64_t nvf_update_retry(uint64_t now,unsigned attempt,uint32_t random) {
     uint64_t delay=attempt==0?3600:attempt==1?21600:86400;
     return now+delay+random%(delay/4+1);
 }
-void nvf_update_encode_status(const nvf_update_status_t *s,uint8_t p[140]) {
-    memset(p,0,140);p[0]=1;p[1]=s->mode;p[2]=s->channel+1;p[3]=s->state;p[4]=s->security;
+void nvf_update_encode_status(const nvf_update_status_t *s,unsigned profile,uint8_t p[140]) {
+    memset(p,0,140);p[0]=1;p[1]=s->mode;p[2]=s->channel+1;p[3]=s->state;p[4]=s->security;p[5]=(uint8_t)profile;
     put(p+6,s->layout,2);put(p+8,s->running,8);put(p+16,s->available.sequence,8);put(p+24,s->staged.sequence,8);put(p+32,s->failed,8);
     put(p+40,s->received,4);put(p+44,s->staged.sequence?s->staged.length:s->available.length,4);
     put(p+48,s->last_check,8);put(p+56,s->next_check,8);put(p+64,s->last_command,8);

@@ -48,11 +48,17 @@ func DecodeUpdateCommand(p []byte) (UpdateCommand, error) {
 	return c, nil
 }
 
+// TrustProfiles names the update track a build was compiled to follow. Like the
+// rest of the status it is the device's own report: a label for sorting the
+// fleet, never evidence of which firmware is running. Zero predates the field.
+var TrustProfiles = []string{"unreported", "trusted", "open", "test"}
+
 type UpdateStatus struct {
 	Mode        string `json:"mode"`
 	Channel     string `json:"channel"`
 	State       string `json:"state"`
 	Security    uint8  `json:"security_flags"`
+	Profile     string `json:"trust_profile"`
 	Layout      uint16 `json:"partition_layout_id"`
 	Running     uint64 `json:"running_release,string"`
 	Available   uint64 `json:"available_release,string"`
@@ -71,7 +77,7 @@ type UpdateStatus struct {
 }
 
 func DecodeUpdateStatus(p []byte) (*UpdateStatus, error) {
-	if len(p) != 140 || p[0] != 1 || p[1] < 1 || p[1] > 3 || p[2] < 1 || p[2] > 3 || p[3] > 11 || p[4]&^31 != 0 || p[5] != 0 {
+	if len(p) != 140 || p[0] != 1 || p[1] < 1 || p[1] > 3 || p[2] < 1 || p[2] > 3 || p[3] > 11 || p[4]&^31 != 0 || int(p[5]) >= len(TrustProfiles) {
 		return nil, errors.New("invalid update status framing")
 	}
 	u16, u32, u64 := binary.BigEndian.Uint16, binary.BigEndian.Uint32, binary.BigEndian.Uint64
@@ -80,7 +86,7 @@ func DecodeUpdateStatus(p []byte) (*UpdateStatus, error) {
 	}
 	s := &UpdateStatus{Mode: []string{"manual", "download", "install"}[p[1]-1], Channel: []string{"stable", "canary", "lab"}[p[2]-1],
 		State:    []string{"idle", "checking", "available", "downloading", "staged", "waiting-safe", "quiescing", "reboot-pending", "trial-boot", "confirmed", "rolled-back", "failed"}[p[3]],
-		Security: p[4], Layout: u16(p[6:]), Running: u64(p[8:]), Available: u64(p[16:]), Staged: u64(p[24:]), Failed: u64(p[32:]),
+		Security: p[4], Profile: TrustProfiles[p[5]], Layout: u16(p[6:]), Running: u64(p[8:]), Available: u64(p[16:]), Staged: u64(p[24:]), Failed: u64(p[32:]),
 		Received: u32(p[40:]), Total: u32(p[44:]), LastCheck: u64(p[48:]), NextCheck: u64(p[56:]), LastCommand: u64(p[64:]),
 		ErrorDomain: u16(p[72:]), ErrorReason: u16(p[74:]), BootKey: hex.EncodeToString(p[76:108]), ReleaseKey: hex.EncodeToString(p[108:140])}
 	s.Error = UpdateErrorName(s.ErrorDomain, s.ErrorReason)

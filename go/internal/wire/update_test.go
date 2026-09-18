@@ -38,12 +38,24 @@ func TestUpdateGoldenProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Running != c.ID || s.Staged != c.Release || s.LastCommand != c.ID || s.Error != "SAFETY_ACK_TIMEOUT" || s.Channel != "canary" || s.State != "waiting-safe" || s.Received != 8192 || s.Total != 12288 {
+	if s.Running != c.ID || s.Staged != c.Release || s.LastCommand != c.ID || s.Error != "SAFETY_ACK_TIMEOUT" || s.Channel != "canary" || s.State != "waiting-safe" || s.Received != 8192 || s.Total != 12288 || s.Profile != "trusted" {
 		t.Fatal(s)
 	}
 	data, _ := json.Marshal(s)
-	if !strings.Contains(string(data), `"staged_release":"18446744073709551614"`) {
+	if !strings.Contains(string(data), `"staged_release":"18446744073709551614"`) || !strings.Contains(string(data), `"trust_profile":"trusted"`) {
 		t.Fatal(string(data))
+	}
+	for value, name := range TrustProfiles {
+		b := append([]byte(nil), statusBytes...)
+		b[5] = byte(value)
+		if s, err = DecodeUpdateStatus(b); err != nil || s.Profile != name {
+			t.Fatalf("profile %d decoded as %v, %v", value, s, err)
+		}
+	}
+	b := append([]byte(nil), statusBytes...)
+	b[5] = byte(len(TrustProfiles))
+	if _, err = DecodeUpdateStatus(b); err == nil {
+		t.Fatal("accepted an unknown trust profile")
 	}
 	for n := 0; n < 140; n++ {
 		if _, err := DecodeUpdateStatus(statusBytes[:n]); err == nil {

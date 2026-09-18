@@ -18,14 +18,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--test-only", action="store_true")
+    parser.add_argument("--profile", required=True, choices=("trusted", "open", "test"))
     args = parser.parse_args()
     data = args.root.read_bytes()
     if not 0 < len(data) <= 8192:
         raise ValueError("public root must fit the 8 KiB device limit")
     root = json.loads(data, object_pairs_hook=pairs)
-    if root["signed"]["_type"] != "root" or root["signed"].get("x_navlisten_test", False) != args.test_only:
-        raise ValueError("root does not match the production/test build profile")
+    if root["signed"]["_type"] != "root" or root["signed"].get("x_navlisten_profile") != args.profile:
+        raise ValueError(f"root does not carry the {args.profile} build profile marker")
     if b"PRIVATE KEY" in data or any("private" in key.get("keyval", {}) for key in root["signed"]["keys"].values()):
         raise ValueError("private material must never be embedded")
     # Byte literals avoid interpreting JSON escapes as C escapes.

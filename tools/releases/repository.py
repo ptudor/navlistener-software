@@ -2,6 +2,10 @@
 
 Private signing material is supplied by adapters. Only init_test_keys creates
 keys, in an explicit private directory with an unambiguous test-only marker.
+
+Every signer configuration, root and release manifest names one trust profile.
+Trusted and open are release tracks with separate roots and real keys; test is
+the throwaway bench profile. None can authorize firmware for another.
 """
 from __future__ import annotations
 
@@ -23,6 +27,8 @@ from tuf.api.metadata import (
 from tuf.api.serialization.json import CanonicalJSONSerializer, JSONSerializer
 
 CHANNELS = ("stable", "canary", "lab")
+PROFILES = ("trusted", "open", "test")
+RELEASE_PROFILES = ("trusted", "open")
 COUNTS = {"root": 3, "targets": 3, "releases": 3, **{c: 1 for c in CHANNELS}, "snapshot": 1, "timestamp": 1}
 THRESHOLDS = {r: 2 if n == 3 else 1 for r, n in COUNTS.items()}
 LIMITS = {"root": 8192, "timestamp": 4096, "snapshot": 8192, **{r: 12288 for r in ("targets", "releases", *CHANNELS)}}
@@ -107,7 +113,7 @@ def init_test_keys(directory: Path):
     if directory.is_relative_to(checkout):
         raise ValueError("private test keys must be stored outside the source checkout")
     directory.mkdir(mode=0o700, parents=True, exist_ok=False)
-    config = {"test_only": True, "roles": {}}
+    config = {"profile": "test", "roles": {}}
     for role, count in COUNTS.items():
         config["roles"][role] = []
         for index in range(count):
@@ -124,14 +130,17 @@ def init_test_keys(directory: Path):
 
 
 class Signers:
-    def __init__(self, path: Path, *, production: bool):
+    def __init__(self, path: Path, *, profile: str):
+        if profile not in PROFILES:
+            raise ValueError("unknown trust profile")
         self.path = path.expanduser().resolve()
         self.config = json.loads(self.path.read_bytes())
-        self.test_only = self.config.get("test_only") is True
-        if production and self.config.get("test_only") is not False:
-            raise ValueError("production releases refuse test-only signers")
-        if not production and not self.test_only:
-            raise ValueError("test releases require a separate test-only signer configuration")
+        self.profile = profile
+        self.test_only = profile == "test"
+        # Each track keeps its own signer configuration, so a root is never
+        # bootstrapped or extended with another track's keys by mistake.
+        if self.config.get("profile") != profile:
+            raise ValueError(f"{profile} releases require a separate signer configuration whose profile is {profile}")
         self.keys = {}
         for role, count in COUNTS.items():
             specs = self.config["roles"][role]
@@ -143,8 +152,8 @@ class Signers:
                 key = SSlibKey.from_dict(public.pop("keyid"), public)
                 if key.keytype != "ecdsa" or key.scheme != "ecdsa-sha2-nistp256":
                     raise ValueError("metadata keys must use ECDSA P-256")
-                if production and ("test_key" in spec or (spec.get("command") is not None and (not isinstance(spec["command"], list) or not spec["command"]))):
-                    raise ValueError("production signing requires an explicit adapter; test key paths are forbidden")
+                if not self.test_only and ("test_key" in spec or (spec.get("command") is not None and (not isinstance(spec["command"], list) or not spec["command"]))):
+                    raise ValueError("release signing requires an explicit adapter; test key paths are forbidden")
                 from cryptography.hazmat.primitives.asymmetric import ec
                 public_key = serialization.load_pem_public_key(key.keyval["public"].encode())
                 if not isinstance(public_key, ec.EllipticCurvePublicKey) or not isinstance(public_key.curve, ec.SECP256R1) or SSlibKey.from_crypto(public_key).keyid != key.keyid:
@@ -206,7 +215,7 @@ class Repository:
 
     def bootstrap(self):
         root = Root(roles={r: Role([], THRESHOLDS[r]) for r in ("root", "targets", "snapshot", "timestamp")},
-                    unrecognized_fields={"x_navlisten_test": self.signers.test_only})
+                    unrecognized_fields={"x_navlisten_profile": self.signers.profile})
         for role in root.roles:
             for key in self.signers.keys[role]:
                 root.add_key(key, role)
@@ -297,7 +306,7 @@ class Repository:
                  "hardware_revision_max": hardware_max, "partition_layout_id": layout,
                  "minimum_updater_version": minimum_updater, "length": len(image), "sha256": digest(image),
                  "secure_boot_key_id": boot_key_id, "security_version": 0, "collector_capability": "",
-                 "test_only": self.signers.test_only, **paths,
+                 "profile": self.signers.profile, **paths,
                  **{key + "_sha256": digest(blobs[key]) for key in ("provenance", "licenses", "notes")}}
         path = f"releases/{sequence}.json"
         self.add_target(targets, path, encoded(value))
@@ -320,15 +329,15 @@ class Repository:
         if bootstrap is None:
             raise ValueError("loading a repository requires an explicitly trusted public bootstrap root")
         root = Metadata.from_bytes(bootstrap)
-        if root.signed.unrecognized_fields.get("x_navlisten_test", False) != self.signers.test_only:
-            raise ValueError("stored repository has the wrong key purpose")
+        if root.signed.unrecognized_fields.get("x_navlisten_profile") != self.signers.profile:
+            raise ValueError("stored repository has the wrong trust profile")
         root.verify_delegate("root", root)
         if roots[-1] < root.signed.version:
             raise ValueError("stored root precedes the trusted bootstrap")
         for version in range(root.signed.version + 1, self.metadata["root"].signed.version + 1):
             newer = Metadata.from_file(str(self.directory / f"metadata/{version}.root.json"))
-            if newer.signed.version != version or newer.signed.unrecognized_fields.get("x_navlisten_test", False) != self.signers.test_only:
-                raise ValueError("root rotation version or purpose differs")
+            if newer.signed.version != version or newer.signed.unrecognized_fields.get("x_navlisten_profile") != self.signers.profile:
+                raise ValueError("root rotation version or trust profile differs")
             root.verify_delegate("root", newer)
             newer.verify_delegate("root", newer)
             root = newer

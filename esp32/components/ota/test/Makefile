@@ -6,6 +6,7 @@ all: build/policy_test build/download_test build/update_state_test
 	./build/download_test
 	./build/update_state_test
 	python3 ../../../tools/test_ota.py
+	python3 ../../../tools/test_production_profile.py
 build/policy_test: policy_test.c ../src/ota_policy.c ../include/ota_policy.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -I../include policy_test.c ../src/ota_policy.c -o $@

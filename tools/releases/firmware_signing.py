@@ -38,29 +38,31 @@ def init_test_firmware_keys(directory, config):
         atomic(public, public_bytes(key.public_key()))
         config["firmware"].append({"public": str(public), "key_id": key_id(key.public_key()), "test_key": str(private)})
 
-def keys(config, production):
+def keys(config, release):
+    """release selects the real-key rules shared by the trusted and open tracks."""
     entries = config["firmware"]
-    if len(entries) != 3 or config.get("test_only") is not (not production):
-        raise ValueError("three independent firmware public keys and an explicit key purpose are required")
+    profile = config.get("profile")
+    if len(entries) != 3 or profile not in ("trusted", "open", "test") or (profile == "test") == release:
+        raise ValueError("three independent firmware public keys and a matching trust profile are required")
     result = []
     for entry in entries:
         key = serialization.load_pem_public_key(Path(entry["public"]).read_bytes())
         if key_id(key) != entry["key_id"]:
             raise ValueError("firmware public key identity differs from configuration")
-        if production and ("test_key" in entry or "TEST-ONLY" in entry["public"]):
-            raise ValueError("production refuses test firmware keys")
+        if release and ("test_key" in entry or "TEST-ONLY" in entry["public"]):
+            raise ValueError("release tracks refuse test firmware keys")
         result.append(key)
     if len({key_id(key) for key in result}) != 3:
         raise ValueError("firmware recovery keys must be independent")
     active = config["firmware_active"]
     if type(active) is not int or not 0 <= active < 3:
         raise ValueError("invalid active firmware signing key")
-    if production and not entries[active].get("command"):
-        raise ValueError("active production firmware key needs a signing adapter")
+    if release and not entries[active].get("command"):
+        raise ValueError("active release firmware key needs a signing adapter")
     return result, active
 
-def sign_image(image, config, production):
-    public, active = keys(config, production)
+def sign_image(image, config, release):
+    public, active = keys(config, release)
     if not 304 <= len(image) <= 0x400000 - 4096 or image[0] != 0xe9 or image[12:14] != b"\x09\x00":
         raise ValueError("input is not an ESP32-S3 application fitting the OTA slot")
     if image[288:304] != b"NVFOTA1\0\x02\x01\x01\x00\x03\x00\x00\x00":
@@ -68,7 +70,7 @@ def sign_image(image, config, production):
     padded = image + b"\xff" * (-len(image) % 4096)
     digest = hashlib.sha256(padded).digest()
     spec = config["firmware"][active]
-    if production:
+    if release:
         # Adapter reads the secure-padded image on stdin and returns exactly a
         # 384-byte RSA-PSS signature (SHA-256, MGF1-SHA256, 32-byte salt).
         signature = subprocess.run(spec["command"], input=padded, stdout=subprocess.PIPE,

@@ -1,7 +1,7 @@
 # navfeeder-esp defaults for the custom GNSS color observer (ESP32-S3).
 #
-# CMake and the build wrapper load this AFTER sdkconfig.defaults. Production
-# and update-test profiles add their security settings after both files.
+# CMake and the build wrapper load this AFTER sdkconfig.defaults. Production,
+# open and update-test profiles add their settings after both files.
 #
 # Board: ESP32-S3-WROOM-1U-N16R8. Receiver UART on GPIO4/GPIO5, shared I2C on
 # GPIO6/GPIO7, 24AA025E64 manifest EEPROM at 0x50, BOOT/DOWNLOAD on GPIO0, and

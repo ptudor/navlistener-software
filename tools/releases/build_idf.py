@@ -34,8 +34,15 @@ def license_inventory(source, idf, project):
             notices[name] = {"path": name, "sha256": hashlib.sha256(data).hexdigest(), "text": data.decode("utf-8")}
     return [notices[k] for k in sorted(notices)]
 
+# The track selects its sdkconfig profile; nothing else differs between builds.
+# The trusted track ships the locked production security baseline.
+DEFAULTS = {"trusted": "sdkconfig.defaults.production", "open": "sdkconfig.defaults.open"}
+
 def main():
     request = json.load(sys.stdin)
+    profile = request["profile"]
+    if profile not in DEFAULTS:
+        raise ValueError("release builds require the trusted or open profile")
     source, build = Path(request["source"]).resolve(strict=True), Path(request["build"]).resolve()
     idf = Path(os.environ["IDF_PATH"]).resolve(strict=True)
     python = Path(os.environ["IDF_PYTHON_ENV_PATH"]) / "bin/python"
@@ -44,23 +51,24 @@ def main():
     if revision != pin["esp_idf_revision"] or subprocess.check_output(["git", "-C", str(idf), "status", "--porcelain", "--untracked-files=no"]):
         raise ValueError("activate the pinned, clean ESP-IDF checkout before releasing")
     if os.environ.get("ESP_HARDWARE_DISCOVERY_PATH"):
-        raise ValueError("production builds refuse local component overrides")
+        raise ValueError("release builds refuse local component overrides")
     # CMake and the compiler can spell a symlinked build directory differently.
     # Cover its canonical spelling as well as IDF's own debug-prefix mappings.
     debug_flags = shlex.quote(f"-fdebug-prefix-map={build}=/IDF_BUILD")
     path_flags = [argument for language in ("C", "CXX", "ASM")
                   for argument in ("-D", f"CMAKE_{language}_FLAGS={debug_flags}")]
     run([str(python), str(idf / "tools/idf.py"), "-B", str(build), "-D", f"SDKCONFIG={build}/sdkconfig",
-        "-D", "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.s3;sdkconfig.defaults.production",
+        "-D", f"SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.s3;{DEFAULTS[profile]}",
         "-D", "IDF_TARGET=esp32s3", "-D", f"NVF_TUF_ROOT_FILE={request['root']}",
         "-D", f"NVF_RELEASE_REVISION={request['revision']}", *path_flags, "build"], source / "esp32")
-    run([str(python), "tools/production_profile.py", str(build / "sdkconfig")], source / "esp32")
+    run([str(python), "tools/production_profile.py", "--profile", profile, str(build / "sdkconfig")], source / "esp32")
     run([str(python), "tools/build_provenance.py", "--build-dir", str(build)], source / "esp32")
     provenance = json.loads((build / "firmware-provenance.json").read_bytes())
     if not provenance["dependencies_lock_matches_pin"] or provenance["hardware_discovery"]["local_override"]:
-        raise ValueError("production dependency provenance is not pinned")
+        raise ValueError("release dependency provenance is not pinned")
     provenance.pop("project_dirty", None)  # IDF regenerates its target-specific resolution.
     provenance["source_revision"] = request["revision"]
+    provenance["trust_profile"] = profile
     provenance["elf_sha256"] = hashlib.sha256((build / "navfeeder-esp.elf").read_bytes()).hexdigest()
     provenance["unsigned_image_sha256"] = hashlib.sha256((build / "navfeeder-esp.bin").read_bytes()).hexdigest()
     (build / "release-provenance.json").write_text(json.dumps(provenance, sort_keys=True, indent=2) + "\n")

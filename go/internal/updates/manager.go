@@ -37,10 +37,14 @@ type Principal struct {
 	TokenSHA256 string   `toml:"token_sha256"`
 	Devices     []Device `toml:"device"`
 }
+
+// Each release track is a separate published tree. repository_path is the
+// trusted track's; a collector may serve either track or both.
 type Config struct {
-	StateFile  string      `toml:"state_file"`
-	Repository string      `toml:"repository_path"`
-	Principals []Principal `toml:"principal"`
+	StateFile      string      `toml:"state_file"`
+	Repository     string      `toml:"repository_path"`
+	OpenRepository string      `toml:"open_repository_path"`
+	Principals     []Principal `toml:"principal"`
 }
 type Transition struct {
 	At     time.Time         `json:"at"`
@@ -77,13 +81,21 @@ type Manager struct {
 
 func (c Config) Validate() error {
 	if c.StateFile == "" {
-		if len(c.Principals) > 0 || c.Repository != "" {
+		if len(c.Principals) > 0 || c.Repository != "" || c.OpenRepository != "" {
 			return errors.New("update controls require an explicit durable state_file")
 		}
 		return nil
 	}
-	if !filepath.IsAbs(c.StateFile) || !filepath.IsAbs(c.Repository) || len(c.Principals) == 0 || len(c.Principals) > 128 {
+	if !filepath.IsAbs(c.StateFile) || (c.Repository == "" && c.OpenRepository == "") || len(c.Principals) == 0 || len(c.Principals) > 128 {
 		return errors.New("update controls require absolute state/repository paths and bounded explicit principals")
+	}
+	for _, repository := range []string{c.Repository, c.OpenRepository} {
+		if repository != "" && !filepath.IsAbs(repository) {
+			return errors.New("update controls require absolute state/repository paths and bounded explicit principals")
+		}
+	}
+	if c.Repository != "" && filepath.Clean(c.Repository) == filepath.Clean(c.OpenRepository) {
+		return errors.New("the trusted and open tracks are separate repositories")
 	}
 	ids, tokens := map[string]bool{}, map[string]bool{}
 	for _, p := range c.Principals {
@@ -291,7 +303,7 @@ func (m *Manager) Report(context identity.ObserverContext, session string, seque
 	r.Status = &status
 	changed := previous == nil || previous.Mode != status.Mode || previous.Channel != status.Channel || previous.State != status.State ||
 		previous.Running != status.Running || previous.Available != status.Available || previous.Staged != status.Staged || previous.Failed != status.Failed ||
-		previous.Security != status.Security || previous.Error != status.Error || previous.LastCommand != status.LastCommand
+		previous.Security != status.Security || previous.Profile != status.Profile || previous.Error != status.Error || previous.LastCommand != status.LastCommand
 	if !changed {
 		m.records[d.key()] = r
 		observe(d.Observer, previous, status, m.now())

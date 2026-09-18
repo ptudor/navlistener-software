@@ -12,7 +12,12 @@ from tuf.ngclient.fetcher import FetcherInterface
 from tuf.api.exceptions import DownloadHTTPError
 from repository import digest, encoded
 
-ORIGINS = ("https://firmware.intsat.net/firmware/v1/", "https://firmware.intsat.space/firmware/v1/")
+# Each release track is a separate repository below its own path. The firmware
+# compiles in the same pair for its profile; see update_runtime.c.
+ORIGINS = {
+    "trusted": ("https://firmware.intsat.net/firmware/trusted/v1/", "https://firmware.intsat.space/firmware/trusted/v1/"),
+    "open": ("https://firmware.intsat.net/firmware/open/v1/", "https://firmware.intsat.space/firmware/open/v1/"),
+}
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
@@ -37,8 +42,8 @@ def fetch(origin, path, expected=None):
             raise ValueError(f"public bytes differ for {path}")
         return data
 
-def upload(command, path, data, previous_timestamp=None):
-    header = {"path": path, "length": len(data), "sha256": digest(data), "previous_timestamp": previous_timestamp}
+def upload(command, track, path, data, previous_timestamp=None):
+    header = {"track": track, "path": path, "length": len(data), "sha256": digest(data), "previous_timestamp": previous_timestamp}
     result = subprocess.run(command, input=encoded(header) + b"\n" + data, stdout=subprocess.PIPE, check=True, timeout=120)
     receipt = json.loads(result.stdout)
     if receipt.get("sha256") != header["sha256"]:
@@ -57,8 +62,8 @@ class OriginFetcher(FetcherInterface):
             error.close()
             raise DownloadHTTPError("origin request failed", error.code) from error
 
-def verify_public(bootstrap, paths, firmware=None):
-    for origin in ORIGINS:
+def verify_public(origins, bootstrap, paths, firmware=None):
+    for origin in origins:
         with tempfile.TemporaryDirectory(prefix="navlisten-public-check-") as temporary:
             updater = Updater(temporary, origin + "metadata/", target_base_url=origin + "targets/", bootstrap=bootstrap,
                 fetcher=OriginFetcher(origin), config=UpdaterConfig(max_root_rotations=32, max_delegations=4,
@@ -82,22 +87,23 @@ def verify_public(bootstrap, paths, firmware=None):
                             raise ValueError("public companion target differs from its manifest")
                     if firmware:
                         from firmware_signing import keys, key_id, verify_image
-                        public, _ = keys(firmware, production=not firmware["test_only"])
+                        public, _ = keys(firmware, release=firmware["profile"] != "test")
                         key = next((key for key in public if key_id(key) == manifest["secure_boot_key_id"]), None)
                         if key is None:
                             raise ValueError("public image uses an unconfigured firmware signing key")
                         verify_image(image, key)
 
-def publish(command, files, previous_timestamp, bootstrap, targets, checkpoint=lambda: None):
+def publish(command, track, files, previous_timestamp, bootstrap, targets, checkpoint=lambda: None):
+    origins = ORIGINS[track]
     for path, data in sorted(files.items()):
         if path == "metadata/timestamp.json":
             continue
-        upload(command, path, data)
-        for origin in ORIGINS:
+        upload(command, track, path, data)
+        for origin in origins:
             fetch(origin, path, data)
     # Repeatable after a lost receipt: the adapter accepts byte-identical data.
-    upload(command, "metadata/timestamp.json", files["metadata/timestamp.json"], previous_timestamp)
+    upload(command, track, "metadata/timestamp.json", files["metadata/timestamp.json"], previous_timestamp)
     checkpoint()
-    for origin in ORIGINS:
+    for origin in origins:
         fetch(origin, "metadata/timestamp.json", files["metadata/timestamp.json"])
-    verify_public(bootstrap, targets)
+    verify_public(origins, bootstrap, targets)

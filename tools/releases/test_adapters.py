@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -9,6 +10,7 @@ from unittest.mock import patch
 import urllib.error
 
 import build_idf
+from fixtures import PASSPHRASE_ENV, init_release_keys
 import origin
 import publisher
 import release
@@ -50,10 +52,15 @@ class AdapterTests(unittest.TestCase):
     def setUpClass(cls):
         cls.workspace = tempfile.TemporaryDirectory(prefix="navlisten-adapters-")
         cls.base = Path(cls.workspace.name)
-        cls.signers = Signers(init_test_keys(cls.base / "TEST-ONLY-keys"), production=False)
+        cls.signers = Signers(init_test_keys(cls.base / "TEST-ONLY-keys"), profile="test")
+        cls.open_keys, passphrase = init_release_keys(cls.base / "open-keys", "open")
+        cls.environment = patch.dict(os.environ, {PASSPHRASE_ENV: passphrase})
+        cls.environment.start()
+        cls.open = Signers(cls.open_keys, profile="open")
 
     @classmethod
     def tearDownClass(cls):
+        cls.environment.stop()
         cls.workspace.cleanup()
 
     def image(self, length=700):
@@ -80,48 +87,63 @@ class AdapterTests(unittest.TestCase):
         adapter = str(Path(__file__).with_name("file_signer.py"))
         result = subprocess.run([sys.executable, adapter, "--key", private], input=b"payload", capture_output=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn(b"encrypted external production key", result.stderr)
+        self.assertIn(b"encrypted external release key", result.stderr)
         result = subprocess.run([sys.executable, adapter, "--key", private, "--test-only"], input=b"payload", capture_output=True, check=True)
         from securesystemslib.signer import Signature
         signature = Signature.from_dict(json.loads(result.stdout))
         self.signers.keys["timestamp"][0].verify_signature(signature, b"payload")
 
-    def header(self, path, data, previous=None):
-        return {"path": path, "length": len(data), "sha256": digest(data), "previous_timestamp": previous}
+    def header(self, path, data, previous=None, track="open"):
+        return {"track": track, "path": path, "length": len(data), "sha256": digest(data), "previous_timestamp": previous}
 
     def test_origin_immutable_retries_timestamp_compare_and_swap(self):
         root = Path(tempfile.mkdtemp(dir=self.base))
         data = b"image"
         header = self.header("targets/image.bin", data)
-        self.assertFalse(origin.write(root, header, data)["already_present"])
-        self.assertTrue(origin.write(root, header, data)["already_present"])
+        self.assertFalse(origin.write(root, "open", header, data)["already_present"])
+        self.assertTrue(origin.write(root, "open", header, data)["already_present"])
         with self.assertRaisesRegex(ValueError, "immutable"):
-            origin.write(root, self.header("targets/image.bin", b"replacement"), b"replacement")
+            origin.write(root, "open", self.header("targets/image.bin", b"replacement"), b"replacement")
         old = encoded({"signed": {"version": 1}}); new = encoded({"signed": {"version": 2}})
-        origin.write(root, self.header("metadata/timestamp.json", old), old)
+        origin.write(root, "open", self.header("metadata/timestamp.json", old), old)
         with self.assertRaisesRegex(ValueError, "changed"):
-            origin.write(root, self.header("metadata/timestamp.json", new), new)
-        origin.write(root, self.header("metadata/timestamp.json", new, digest(old)), new)
-        self.assertTrue(origin.write(root, self.header("metadata/timestamp.json", new, digest(old)), new)["already_present"])
+            origin.write(root, "open", self.header("metadata/timestamp.json", new), new)
+        origin.write(root, "open", self.header("metadata/timestamp.json", new, digest(old)), new)
+        self.assertTrue(origin.write(root, "open", self.header("metadata/timestamp.json", new, digest(old)), new)["already_present"])
         with self.assertRaisesRegex(ValueError, "increase"):
-            origin.write(root, self.header("metadata/timestamp.json", old, digest(new)), old)
+            origin.write(root, "open", self.header("metadata/timestamp.json", old, digest(new)), old)
+
+    def test_origin_refuses_another_tracks_upload_and_root_before_writing(self):
+        root = Path(tempfile.mkdtemp(dir=self.base))
+        data = b"image"
+        for track, header in (("trusted", self.header("targets/image.bin", data)),
+                              ("open", {k: v for k, v in self.header("targets/image.bin", data).items() if k != "track"}),
+                              ("test", self.header("targets/image.bin", data, track="test"))):
+            with self.assertRaisesRegex(ValueError, "different release track"):
+                origin.write(root, track, header, data)
+        repository = Repository(root / "candidate", self.open); repository.bootstrap()
+        bootstrap = repository.files["metadata/1.root.json"]
+        with self.assertRaisesRegex(ValueError, "different trust profile"):
+            origin.write(root, "trusted", self.header("metadata/1.root.json", bootstrap, track="trusted"), bootstrap)
+        self.assertEqual([p for p in root.iterdir() if p.name != "candidate"], [])
+        self.assertFalse(origin.write(root, "open", self.header("metadata/1.root.json", bootstrap), bootstrap)["already_present"])
 
     def test_origin_rejects_traversal_and_symlinks_before_creating_directories(self):
         root = Path(tempfile.mkdtemp(dir=self.base)); outside = Path(tempfile.mkdtemp(dir=self.base))
         (root / "targets").symlink_to(outside, target_is_directory=True)
         for path in ("targets/new-directory/escape.bin", "targets/../../escape.bin", "/metadata/root.json"):
-            with self.assertRaises(ValueError): origin.write(root, self.header(path, b"x"), b"x")
+            with self.assertRaises(ValueError): origin.write(root, "open", self.header(path, b"x"), b"x")
         self.assertFalse((outside / "new-directory").exists())
 
     def test_publication_waits_for_both_origins_and_resumes_lost_timestamp_receipt(self):
         root = Path(tempfile.mkdtemp(dir=self.base))
-        repository = Repository(root / "candidate", self.signers); repository.bootstrap()
-        image, key = sign_image(self.image(), self.signers.config, False)
+        repository = Repository(root / "candidate", self.open); repository.bootstrap()
+        image, key = sign_image(self.image(), self.open.config, True)
         repository.add_release(sequence=31, version="0.1.0", revision="a" * 40, image=image, boot_key_id=key,
-            provenance=b"{}", licenses=b"[]", notes=b"Test release\n")
-        remote = root / "origin"; remote.mkdir(); fetches=[]
-        def upload(command, path, data, previous=None):
-            origin.write(remote, self.header(path, data, previous), data)
+            provenance=b"{}", licenses=b"[]", notes=b"Open release\n")
+        remote = root / "origin"; remote.mkdir(); fetches=[]; origins=publisher.ORIGINS["open"]
+        def upload(command, track, path, data, previous=None):
+            origin.write(remote, "open", self.header(path, data, previous, track), data)
         def fetch(base, path, expected=None):
             fetches.append((base, path))
             if not (remote / path).exists(): raise urllib.error.HTTPError(base + path, 404, "absent", {}, None)
@@ -132,20 +154,30 @@ class AdapterTests(unittest.TestCase):
         with patch.object(publisher,"upload",side_effect=upload), patch.object(publisher,"fetch",side_effect=fetch):
             def lost_receipt(): raise RuntimeError("lost commit receipt")
             with self.assertRaisesRegex(RuntimeError,"lost commit"):
-                publisher.publish([],repository.files,None,bootstrap,["releases/31.json"],lost_receipt)
+                publisher.publish([],"open",repository.files,None,bootstrap,["releases/31.json"],lost_receipt)
             self.assertTrue((remote / "metadata/timestamp.json").is_file())
-            publisher.publish([],repository.files,None,bootstrap,["releases/31.json"])
-            publisher.verify_public(bootstrap,["releases/31.json"],self.signers.config)
-        for base in publisher.ORIGINS:
+            publisher.publish([],"open",repository.files,None,bootstrap,["releases/31.json"])
+            publisher.verify_public(origins,bootstrap,["releases/31.json"],self.open.config)
+        for base in origins:
+            self.assertIn("/firmware/open/v1/", base)
             self.assertTrue(any(host==base and path.startswith("targets/artifacts/") for host,path in fetches))
+        self.assertFalse(set(origins) & set(publisher.ORIGINS["trusted"]))
         remote2=root / "failed-origin";remote2.mkdir();remote=remote2
         def unavailable(base,path,expected=None):
-            if base==publisher.ORIGINS[1]: raise OSError("backup origin unavailable")
+            if base==origins[1]: raise OSError("backup origin unavailable")
             return fetch(base,path,expected)
         with patch.object(publisher,"upload",side_effect=upload),patch.object(publisher,"fetch",side_effect=unavailable):
             with self.assertRaisesRegex(OSError,"backup origin"):
-                publisher.publish([],repository.files,None,bootstrap,["releases/31.json"])
+                publisher.publish([],"open",repository.files,None,bootstrap,["releases/31.json"])
         self.assertFalse((remote / "metadata/timestamp.json").exists())
+        # A publisher aimed at the wrong track's directory stops at its first object.
+        remote3=root / "trusted-origin";remote3.mkdir()
+        def misdirected(command, track, path, data, previous=None):
+            origin.write(remote3, "trusted", self.header(path, data, previous, track), data)
+        with patch.object(publisher,"upload",side_effect=misdirected),patch.object(publisher,"fetch",side_effect=fetch):
+            with self.assertRaisesRegex(ValueError,"different release track"):
+                publisher.publish([],"open",repository.files,None,bootstrap,["releases/31.json"])
+        self.assertEqual(list(remote3.iterdir()), [])
 
     def test_metadata_preparation_resumes_its_frozen_signatures(self):
         state=Path(tempfile.mkdtemp(dir=self.base))
@@ -173,5 +205,57 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(release.load_transaction(directory,self.signers)["phase"],"prepared")
         checked=Repository(directory/"candidate",self.signers);checked.load(bootstrap)
         self.assertEqual(checked.channel_value("canary")["percentage"],25)
+
+    def release_config(self, **changes):
+        directory = Path(tempfile.mkdtemp(dir=self.base))
+        state = directory / "state"
+        if not (self.base / "open-state").exists():
+            repository = Repository(self.base / "open-state/repository", self.open); repository.bootstrap(); repository.publish_local()
+            (self.base / "open-state/trust-root.json").write_bytes(repository.files["metadata/1.root.json"])
+        value = {"track": "open", "open_approved": True, "state_dir": str(state), "signers": str(self.open_keys),
+            "root": str(self.base / "open-state/trust-root.json"), "branch": "main", "remotes": ["origin", "github"],
+            "build_command": [sys.executable], "publish_command": [sys.executable]}
+        value.update(changes)
+        path = directory / "release.json"
+        path.write_bytes(encoded({k: v for k, v in value.items() if v is not None}))
+        return path
+
+    def test_release_configuration_names_one_approved_track_with_matching_keys_and_root(self):
+        config, signers, bootstrap = release.configuration(self.release_config())
+        self.assertEqual(config["origins"], publisher.ORIGINS["open"])
+        self.assertEqual(signers.profile, "open")
+        for changes, message in (({"track": None}, "must name its track"), ({"track": "production"}, "must name its track"),
+                ({"track": "test"}, "must name its track"), ({"open_approved": False}, "open track is not approved"),
+                ({"open_approved": None}, "open track is not approved"), ({"trusted_approved": True}, "another track's approval"),
+                ({"track": "trusted", "open_approved": None, "trusted_approved": True}, "separate signer configuration"),
+                ({"signers": str(self.signers.path)}, "separate signer configuration")):
+            with self.assertRaisesRegex(ValueError, message):
+                release.configuration(self.release_config(**changes))
+        test_state = self.base / "test-state"
+        if not test_state.exists():
+            repository = Repository(test_state / "repository", self.signers); repository.bootstrap()
+            test_state.mkdir(exist_ok=True); (test_state / "trust-root.json").write_bytes(repository.files["metadata/1.root.json"])
+        with self.assertRaisesRegex(ValueError, "marked for another profile"):
+            release.configuration(self.release_config(root=str(test_state / "trust-root.json")))
+
+    def test_signer_entry_matches_the_generated_configuration_without_private_material(self):
+        config = self.open.config
+        spec = config["roles"]["timestamp"][0]
+        public = Path(spec["command"][-1]).with_suffix(".pub")
+        self.assertEqual(release.signer_entry(public, firmware=False), spec["public"])
+        firmware = config["firmware"][0]
+        self.assertEqual(release.signer_entry(firmware["public"], firmware=True), firmware["key_id"])
+        with self.assertRaisesRegex(ValueError, "P-256"):
+            release.signer_entry(firmware["public"], firmware=False)
+        with self.assertRaises(ValueError):
+            release.signer_entry(public, firmware=True)
+
+    def test_build_adapter_selects_the_track_profile_and_refuses_others(self):
+        self.assertEqual(build_idf.DEFAULTS, {"trusted": "sdkconfig.defaults.production", "open": "sdkconfig.defaults.open"})
+        for name in build_idf.DEFAULTS.values():
+            self.assertTrue((Path(release.SOURCE) / "esp32" / name).is_file())
+        with patch.object(sys, "stdin", __import__("io").StringIO(json.dumps({"profile": "test"}))):
+            with self.assertRaisesRegex(ValueError, "trusted or open"):
+                build_idf.main()
 
 if __name__ == "__main__": unittest.main()

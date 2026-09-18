@@ -1,12 +1,15 @@
 import copy
 from datetime import datetime, timezone, timedelta
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
+from fixtures import PASSPHRASE_ENV, init_release_keys
 from repository import Repository, Signers, init_test_keys, encoded
 from tuf.api.metadata import Metadata
 from tuf.ngclient import Updater
@@ -36,7 +39,7 @@ class RepositoryTests(unittest.TestCase):
         cls.workspace = tempfile.TemporaryDirectory(prefix="navlisten-tuf-")
         cls.base = Path(cls.workspace.name)
         cls.keys = init_test_keys(cls.base / "TEST-ONLY-keys")
-        cls.signers = Signers(cls.keys, production=False)
+        cls.signers = Signers(cls.keys, profile="test")
 
     @classmethod
     def tearDownClass(cls):
@@ -49,11 +52,13 @@ class RepositoryTests(unittest.TestCase):
         self.repo.add_release(sequence=31, version="0.1.0", revision="a" * 40,
             image=b"firmware fixture" * 50, boot_key_id="ab" * 32, provenance=b"{}", licenses=b"[]", notes=b"Test release\n")
 
-    def client(self, expected=0, second=None):
+    def client(self, expected=0, second=None, profile=None):
         self.repo.publish_local()
         command = [str(CLIENT), str(self.directory), str(expected)]
         if second:
             command += [str(second[0]), str(second[1])]
+        if profile:
+            command.append(f"--profile={profile}")
         result = subprocess.run(command, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result.stdout
@@ -71,9 +76,37 @@ class RepositoryTests(unittest.TestCase):
         updater.download_target(target, str(client / "manifest.json"))
         self.assertEqual(json.loads((client / "manifest.json").read_bytes())["release_sequence"], 31)
 
-    def test_production_refuses_test_signers(self):
-        with self.assertRaisesRegex(ValueError, "test-only"):
-            Signers(self.keys, production=True)
+    def test_release_tracks_refuse_test_signers(self):
+        for track in ("trusted", "open"):
+            with self.assertRaisesRegex(ValueError, "separate signer configuration"):
+                Signers(self.keys, profile=track)
+        with self.assertRaisesRegex(ValueError, "unknown trust profile"):
+            Signers(self.keys, profile="production")
+
+    def test_device_accepts_only_its_own_profile(self):
+        # The fixture root and manifest are marked test; a trusted or open
+        # build must reject the root itself, before any network metadata.
+        self.assertIn("sequence=31", self.client(profile="test"))
+        for profile in ("trusted", "open"):
+            self.assertIn("initialize=2001", self.client(2001, profile=profile))
+
+    def test_manifest_profile_must_match_even_under_a_valid_root(self):
+        path = "releases/31.json"
+        manifest = json.loads(self.repo.target_bytes("releases", path))
+        self.assertEqual(manifest["profile"], "test")
+        manifest["profile"] = "open"
+        targets = self.repo.metadata["releases"].signed
+        self.repo.add_target(targets, path, encoded(manifest))
+        self.repo.metadata_for("releases", targets)
+        self.repo.online()
+        self.client(2001)
+
+    def test_unmarked_root_belongs_to_no_profile(self):
+        value = json.loads(self.repo.files["metadata/1.root.json"])
+        del value["signed"]["x_navlisten_profile"]
+        self.repo.files["metadata/1.root.json"] = self.signers.sign("root", Metadata.from_dict(value))
+        for profile in ("trusted", "open", "test"):
+            self.assertIn("initialize=2001", self.client(2001, profile=profile))
 
     def test_json_exact_integers_and_unicode(self):
         for value in ["18446744073709551615", '{"z":9007199254740993,"a":"café\\nPEM"}', '{"a":"\\uD83D\\uDE80"}']:
@@ -212,6 +245,55 @@ class RepositoryTests(unittest.TestCase):
         self.assertIn("releases/41.json",targets)
         with self.assertRaisesRegex(ValueError,"already exists"):
             self.repo.add_release(sequence=41,version="0.1.0",revision="a"*40,image=b"other",boot_key_id="ab"*32,provenance=b"{}",licenses=b"[]",notes=b"Notes")
+
+
+class OpenTrackTests(unittest.TestCase):
+    """The open track signs with real encrypted keys through the file adapter."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.workspace = tempfile.TemporaryDirectory(prefix="navlisten-open-")
+        cls.base = Path(cls.workspace.name)
+        cls.keys, passphrase = init_release_keys(cls.base / "open-keys", "open")
+        cls.environment = patch.dict(os.environ, {PASSPHRASE_ENV: passphrase})
+        cls.environment.start()
+        cls.signers = Signers(cls.keys, profile="open")
+        cls.directory = cls.base / "repo"
+        cls.repo = Repository(cls.directory, cls.signers, now=NOW)
+        cls.repo.bootstrap()
+        cls.repo.add_release(sequence=31, version="0.1.0", revision="a" * 40,
+            image=b"firmware fixture" * 50, boot_key_id="ab" * 32, provenance=b"{}", licenses=b"[]", notes=b"Open release\n")
+        cls.repo.publish_local()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.environment.stop()
+        cls.workspace.cleanup()
+
+    def client(self, expected, profile):
+        result = subprocess.run([str(CLIENT), str(self.directory), str(expected), f"--profile={profile}"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result.stdout
+
+    def test_open_repository_is_marked_and_followed_only_by_open_builds(self):
+        root = json.loads((self.directory / "metadata/1.root.json").read_bytes())
+        self.assertEqual(root["signed"]["x_navlisten_profile"], "open")
+        self.assertEqual(json.loads(self.repo.target_bytes("releases", "releases/31.json"))["profile"], "open")
+        self.assertIn("sequence=31", self.client(0, "open"))
+        for profile in ("trusted", "test"):
+            self.assertIn("initialize=2001", self.client(2001, profile))
+
+    def test_open_signers_cannot_extend_another_track(self):
+        for profile in ("trusted", "test"):
+            with self.assertRaisesRegex(ValueError, "separate signer configuration"):
+                Signers(self.keys, profile=profile)
+
+    def test_stored_open_repository_refuses_a_root_marked_for_another_track(self):
+        value = json.loads((self.directory / "metadata/1.root.json").read_bytes())
+        value["signed"]["x_navlisten_profile"] = "trusted"
+        forged = self.signers.sign("root", Metadata.from_dict(value))
+        with self.assertRaisesRegex(ValueError, "wrong trust profile"):
+            Repository(self.directory, self.signers, now=NOW).load(forged)
 
 
 if __name__ == "__main__":

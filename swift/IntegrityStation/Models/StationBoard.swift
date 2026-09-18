@@ -280,6 +280,7 @@ struct BoardUpdate: Codable, Sendable {
     let channel: String?
     let state: String?
     let securityFlags: UInt8?
+    let trustProfile: String?
     let partitionLayoutID: UInt16?
     let runningRelease: String?
     let availableRelease: String?
@@ -294,6 +295,7 @@ struct BoardUpdate: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case mode, channel, state, error
         case securityFlags = "security_flags"
+        case trustProfile = "trust_profile"
         case partitionLayoutID = "partition_layout_id"
         case runningRelease = "running_release"
         case availableRelease = "available_release"
@@ -309,6 +311,20 @@ struct BoardUpdate: Codable, Sendable {
         guard let received = bytesReceived, let total = artifactLength, total > 0, received <= total else { return nil }
         return Double(received) / Double(total)
     }
+    /// The release track this build reports following. It is the device's own
+    /// label for sorting a fleet, not evidence of which firmware is running.
+    var trackDescription: String? {
+        switch trustProfile {
+        case "trusted": String(localized: "update.track.trusted")
+        case "open": String(localized: "update.track.open")
+        case "test": String(localized: "update.track.test")
+        default: nil
+        }
+    }
+    /// Open and test builds belong on unlocked hardware. Only a trusted or
+    /// unreported build without the complete locked profile is a development device.
+    var isOpenTrack: Bool { trustProfile == "open" }
+    var isDevelopmentDevice: Bool { !isOpenTrack && securityFlags != 31 }
     var stateDescription: String {
         switch state {
         case "staged": String(localized: "update.downloaded")

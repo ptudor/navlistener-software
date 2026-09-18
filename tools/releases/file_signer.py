@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""A file signing adapter. Production PEM files must be encrypted and private.
+"""A file signing adapter. Release PEM files must be encrypted and private.
 
 Use a vault/HSM adapter for shared production roles. This implementation is
 useful for an offline operator-owned encrypted key file and adapter testing.
+The trusted and open tracks follow the same rules with separate keys.
 """
 import argparse
 import getpass
@@ -28,7 +29,7 @@ def main():
         raise ValueError("signing key must have mode 0600")
     pem = path.read_bytes()
     if not args.test_only and (b"ENCRYPTED PRIVATE KEY" not in pem or "TEST-ONLY" in path.name or path.is_relative_to(Path(__file__).resolve().parents[2])):
-        raise ValueError("production file adapter requires an encrypted external production key")
+        raise ValueError("file adapter requires an encrypted external release key")
     password = None
     if b"ENCRYPTED PRIVATE KEY" in pem:
         password = (os.environ[args.passphrase_env] if args.passphrase_env else getpass.getpass("Unlock offline signing key: ")).encode()

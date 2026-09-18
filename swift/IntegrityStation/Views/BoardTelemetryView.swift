@@ -40,6 +40,7 @@ struct BoardTelemetryView: View {
             MetricRow(label: "update.state", value: update.stateDescription)
             MetricRow(label: "update.mode", value: update.mode?.capitalized ?? StationFormat.unknown)
             MetricRow(label: "update.channel", value: update.channel?.capitalized ?? StationFormat.unknown)
+            if let track = update.trackDescription { MetricRow(label: "update.track", value: track) }
             MetricRow(label: "update.running", value: update.runningRelease ?? StationFormat.unknown)
             MetricRow(label: "update.available", value: update.availableRelease ?? StationFormat.unknown)
             if let staged = update.stagedRelease, staged != "0" {
@@ -53,7 +54,8 @@ struct BoardTelemetryView: View {
             if let error = update.error, error != "OK" {
                 Text(error).font(.caption.monospaced()).foregroundStyle(StationPalette.warning)
             }
-            if update.securityFlags != 31 { note("update.development") }
+            if update.isOpenTrack { note("update.open") }
+            if update.isDevelopmentDevice { note("update.development") }
         }
     }
 

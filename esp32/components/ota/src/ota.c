@@ -283,6 +283,7 @@ static esp_err_t status_v1(httpd_req_t *req) {
     cJSON_AddStringToObject(json,"error",nvf_update_error_name(s.error));
     cJSON_AddNumberToObject(json,"error_domain",s.error/1000);cJSON_AddNumberToObject(json,"error_reason",s.error%1000);
     cJSON_AddNumberToObject(json,"security_flags",s.security);cJSON_AddNumberToObject(json,"partition_layout_id",s.layout);
+    cJSON_AddStringToObject(json,"trust_profile",nvf_update_profile_name(nvf_update_profile()));
     json_u64(json,"running_release",s.running);json_u64(json,"available_release",s.available.sequence);
     json_u64(json,"staged_release",s.staged.sequence);json_u64(json,"failed_release",s.failed);
     json_u64(json,"channel_generation",s.available.generation);json_u64(json,"last_command",s.last_command);

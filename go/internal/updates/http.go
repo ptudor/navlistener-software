@@ -139,7 +139,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var choice *Choice
 	if record.Status != nil {
-		choice, _ = m.choice(record.Status.Channel)
+		choice, _ = m.choice(record.Status.Profile, record.Status.Channel)
 	}
 	_ = json.NewEncoder(w).Encode(struct {
 		RequestStatus string  `json:"request_status"`

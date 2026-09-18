@@ -29,11 +29,13 @@ static int parse(metadata *m,char *bytes,size_t length) {
     return m->body && m->body->kind==UJ_OBJECT?UP_OK:UP_META_INVALID;
 }
 static bool sha_text(const char *text,uint8_t bytes[32]) { return text && strlen(text)==64 && nvf_ota_unhex(text,64,bytes); }
-static bool test_marker(const metadata *m,bool expected) {
-    bool actual=false;
-    const uj_node *node=get(m,m->body,"x_navlisten_test");
-    if(node && !boolean(m,m->body,"x_navlisten_test",&actual))return false;
-    return actual==expected;
+const char *nvf_update_profile_name(unsigned profile) {
+    static const char *const names[]={"trusted","open","test"};
+    return profile>=UP_PROFILE_TRUSTED && profile<=UP_PROFILE_TEST?names[profile-UP_PROFILE_TRUSTED]:NULL;
+}
+// The marker is mandatory: an unmarked root or manifest belongs to no profile.
+static bool profile_marker(const metadata *m,const char *field,unsigned expected) {
+    return eq(str(m,m->body,field),nvf_update_profile_name(expected));
 }
 static bool expiration(const char *text,uint64_t *result) {
     if(!text || strlen(text)!=20)return false;
@@ -56,7 +58,7 @@ static int header(const metadata *m,unsigned role,uint64_t now,bool check_expiry
        !number(m,m->body,"version",version) || !*version ||
        !expiration(str(m,m->body,"expires"),&expires))return UP_META_INVALID;
     if(check_expiry && expires<=now)return UP_META_EXPIRED;
-    const char *const root[]={"_type","spec_version","version","expires","keys","roles","consistent_snapshot","x_navlisten_test"};
+    const char *const root[]={"_type","spec_version","version","expires","keys","roles","consistent_snapshot","x_navlisten_profile"};
     const char *const meta[]={"_type","spec_version","version","expires","meta"};
     const char *const targets[]={"_type","spec_version","version","expires","targets","delegations"};
     const char *const *fields=role==UP_ROOT?root:role<UP_TARGETS?meta:targets;
@@ -126,8 +128,8 @@ static bool distinct_ids(const metadata *m,const uj_node *keys,const uj_node *id
     }
     return true;
 }
-static bool root_profile(const metadata *root,bool test,const nvf_tuf_io_t *io) {
-    bool consistent=false;if(!test_marker(root,test)||!boolean(root,root->body,"consistent_snapshot",&consistent)||!consistent)return false;
+static bool root_profile(const metadata *root,unsigned profile,const nvf_tuf_io_t *io) {
+    bool consistent=false;if(!profile_marker(root,"x_navlisten_profile",profile)||!boolean(root,root->body,"consistent_snapshot",&consistent)||!consistent)return false;
     const uj_node *roles=get(root,root->body,"roles"),*keys=get(root,root->body,"keys");
     const char *const role_fields[]={"keyids","threshold"};
     const char *used[16];unsigned count=0;
@@ -170,12 +172,12 @@ static int checkpoint(nvf_tuf_trust_t *trust,nvf_tuf_trust_t *candidate,uint64_t
     if(!io->save(io->context,candidate))return UP_STORAGE;
     *trust=*candidate;return UP_OK;
 }
-int nvf_tuf_initialize(nvf_tuf_trust_t *trust,const char *bytes,size_t length,bool test,const nvf_tuf_io_t *io) {
+int nvf_tuf_initialize(nvf_tuf_trust_t *trust,const char *bytes,size_t length,unsigned profile,const nvf_tuf_io_t *io) {
     if(!bytes || !length || length>NVF_TUF_ROOT_CAP)return UP_TRUST_UNCONFIGURED;
     metadata root={0};char *copy=nvf_update_alloc(length+1);if(!copy)return UP_STORAGE;memcpy(copy,bytes,length);copy[length]=0;
     int err=parse(&root,copy,length);uint64_t version=0;
     if(!err)err=header(&root,UP_ROOT,0,false,&version);
-    if(!err && !root_profile(&root,test,io))err=UP_META_INVALID;
+    if(!err && !root_profile(&root,profile,io))err=UP_META_INVALID;
     if(!err)err=root_signature(&root,&root,UP_ROOT,io);
     if(!err){memset(trust,0,sizeof *trust);trust->root_length=length;memcpy(trust->root,bytes,length);err=remember(trust,&root,UP_ROOT,version,io);}
     close_meta(&root);return err;
@@ -277,8 +279,8 @@ static int release_info(const metadata *channel,const metadata *manifest,const m
                         const nvf_update_device_t *device,nvf_update_release_t *out) {
     const char *const fields[]={"schema","release_sequence","version","build_number","source_revision","published","chip","board_family",
         "hardware_revision_min","hardware_revision_max","partition_layout_id","minimum_updater_version","artifact","length","sha256",
-        "secure_boot_key_id","security_version","provenance","provenance_sha256","licenses","licenses_sha256","notes","notes_sha256","collector_capability","test_only"};
-    uint64_t schema,sequence,build,lo,hi,layout,updater,length,security;bool test;
+        "secure_boot_key_id","security_version","provenance","provenance_sha256","licenses","licenses_sha256","notes","notes_sha256","collector_capability","profile"};
+    uint64_t schema,sequence,build,lo,hi,layout,updater,length,security;
     const char *revision=str(manifest,manifest->body,"source_revision");
     if(!uj_fields(&manifest->doc,manifest->body,fields,sizeof fields/sizeof fields[0])||
        !number(manifest,manifest->body,"schema",&schema)||schema!=1||
@@ -290,7 +292,7 @@ static int release_info(const metadata *channel,const metadata *manifest,const m
        !number(manifest,manifest->body,"partition_layout_id",&layout)||layout>UINT16_MAX||
        !number(manifest,manifest->body,"minimum_updater_version",&updater)||!updater||
        !number(manifest,manifest->body,"security_version",&security)||security!=0||
-       !boolean(manifest,manifest->body,"test_only",&test)||test!=device->test_build||
+       !profile_marker(manifest,"profile",device->profile)||
        !expiration(str(manifest,manifest->body,"published"),&out->published)||out->published>device->now||
        !copy_string(out->version,sizeof out->version,str(manifest,manifest->body,"version"))||
        !sha_text(str(manifest,manifest->body,"sha256"),out->hash)||
@@ -305,7 +307,7 @@ static int release_info(const metadata *channel,const metadata *manifest,const m
     uint8_t hash[32];
     if(!target_info(releases,get(releases,get(releases,releases->body,"targets"),out->artifact),&length,hash)||
        length!=out->length||memcmp(hash,out->hash,32)||sequence!=out->sequence)return UP_META_INVALID;
-    out->layout=layout;out->test_only=test;
+    out->layout=layout;out->profile=device->profile;
     if(!device->hardware_known)return UP_HARDWARE;
     const char *capability=str(manifest,manifest->body,"collector_capability");
     if(!eq(str(manifest,manifest->body,"chip"),"esp32s3")||!eq(str(manifest,manifest->body,"board_family"),"gnss-color-neo")||
@@ -323,7 +325,7 @@ int nvf_tuf_refresh(nvf_tuf_trust_t *trust,unsigned channel_index,const nvf_upda
     char *bytes=nvf_update_alloc(trust->root_length+1);if(!bytes){free(candidate);return UP_STORAGE;}
     memcpy(bytes,trust->root,trust->root_length+1);int err=parse(&root,bytes,trust->root_length);uint64_t version=0;
     if(err)goto done;
-    if(!root_profile(&root,device->test_build,io)){err=UP_META_INVALID;goto done;}
+    if(!root_profile(&root,device->profile,io)){err=UP_META_INVALID;goto done;}
     // Sequential roots are durable independently, so interruption can continue.
     for(unsigned rotation=0;rotation<32;rotation++) {
         char path[80];uint64_t next=candidate->versions[UP_ROOT]+1;
@@ -335,7 +337,7 @@ int nvf_tuf_refresh(nvf_tuf_trust_t *trust,unsigned channel_index,const nvf_upda
         metadata newer={0};err=parse(&newer,bytes,size);
         if(size>NVF_TUF_ROOT_CAP)err=UP_META_INVALID;
         if(!err)err=header(&newer,UP_ROOT,now,false,&version);
-        if(!err && (version!=next || !root_profile(&newer,device->test_build,io)))err=UP_META_INVALID;
+        if(!err && (version!=next || !root_profile(&newer,device->profile,io)))err=UP_META_INVALID;
         if(!err)err=root_signature(&newer,&root,UP_ROOT,io);
         if(!err)err=root_signature(&newer,&newer,UP_ROOT,io);
         if(!err)err=remember(candidate,&newer,UP_ROOT,version,io);

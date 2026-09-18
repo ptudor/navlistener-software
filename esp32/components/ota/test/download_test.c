@@ -43,8 +43,8 @@ esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *c)
     attempts++; offset=0;
     if(encoded_response){esp_http_client_event_t e={HTTP_EVENT_ON_HEADER,"Content-Encoding","gzip",c->user_data};c->event_handler(&e);}
     if (primary_failure) assert(!strcmp(c->url, attempts == 1
-        ? "https://firmware.intsat.net:443/firmware/v1/app.bin?build=1"
-        : "https://firmware.intsat.space:443/firmware/v1/app.bin?build=1"));
+        ? "https://firmware.intsat.net:443/firmware/trusted/v1/app.bin?build=1"
+        : "https://firmware.intsat.space:443/firmware/trusted/v1/app.bin?build=1"));
     return (void*)1;
 }
 esp_err_t esp_http_client_set_header(esp_http_client_handle_t h,const char *name,const char *value)
@@ -110,7 +110,7 @@ int main(void)
     reset(); slot.subtype=0; assert(nvf_ota_download(&request) != ESP_OK && !begun);
     for (int failure=1; failure<=3; failure++) {
         reset(); primary_failure=failure;
-        strcpy(request.url,"https://firmware.intsat.net:443/firmware/v1/app.bin?build=1");
+        strcpy(request.url,"https://firmware.intsat.net:443/firmware/trusted/v1/app.bin?build=1");
         assert(nvf_ota_download(&request) == ESP_OK && selected && attempts == 2);
         assert(aborted == (failure == 3));
     }

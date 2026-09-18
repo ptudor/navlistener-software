@@ -124,3 +124,23 @@ enum BoardFixture {
     #expect(store.boardFreshness(board.timing, stale: false, timing: true) == .current)
     #expect(store.boardFreshness(board.latest, stale: false) == .receiptOnly)
 }
+
+@Test func reportedReleaseTrackSeparatesOpenDevicesFromUnlockedDevelopment() throws {
+    func update(_ fields: String) throws -> BoardUpdate {
+        try JSONDecoder().decode(BoardUpdate.self, from: Data("{\(fields)}".utf8))
+    }
+    let trusted = try update(#""security_flags":31,"trust_profile":"trusted""#)
+    #expect(trusted.trackDescription == "Trusted" && !trusted.isOpenTrack && !trusted.isDevelopmentDevice)
+    // An unlocked board on the open track is where it belongs, not a warning.
+    let open = try update(#""security_flags":16,"trust_profile":"open""#)
+    #expect(open.trackDescription == "Open" && open.isOpenTrack && !open.isDevelopmentDevice)
+    let unlocked = try update(#""security_flags":16,"trust_profile":"trusted""#)
+    #expect(!unlocked.isOpenTrack && unlocked.isDevelopmentDevice)
+    let bench = try update(#""security_flags":16,"trust_profile":"test""#)
+    #expect(bench.trackDescription == "Test" && bench.isDevelopmentDevice)
+    // Firmware and collectors that predate the report keep the original behavior.
+    for legacy in [#""security_flags":16"#, #""security_flags":16,"trust_profile":"unreported""#] {
+        let value = try update(legacy)
+        #expect(value.trackDescription == nil && !value.isOpenTrack && value.isDevelopmentDevice)
+    }
+}

@@ -25,7 +25,7 @@ func setup(t *testing.T) (*Manager, Config) {
 	t.Helper()
 	hash := sha256.Sum256([]byte(token))
 	base := t.TempDir()
-	c := Config{StateFile: filepath.Join(base, "state.json"), Repository: filepath.Join(base, "repository"), Principals: []Principal{{ID: "operator-1", TokenSHA256: hex.EncodeToString(hash[:]), Devices: []Device{enrolled}}}}
+	c := Config{StateFile: filepath.Join(base, "state.json"), Repository: filepath.Join(base, "repository"), OpenRepository: filepath.Join(base, "open-repository"), Principals: []Principal{{ID: "operator-1", TokenSHA256: hex.EncodeToString(hash[:]), Devices: []Device{enrolled}}}}
 	m, err := Open(c)
 	if err != nil {
 		t.Fatal(err)

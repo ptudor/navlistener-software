@@ -28,5 +28,5 @@ int nvf_update_accept_command(nvf_update_status_t *,const nvf_update_command_t *
 bool nvf_update_offline_install_allowed(const nvf_update_status_t *,const nvf_tuf_trust_t *);
 uint64_t nvf_update_weekly(uint64_t now,const uint8_t eui[8],unsigned channel,uint32_t jitter,const nvf_tuf_io_t *);
 uint64_t nvf_update_retry(uint64_t now,unsigned attempt,uint32_t random);
-void nvf_update_encode_status(const nvf_update_status_t *,uint8_t out[140]);
+void nvf_update_encode_status(const nvf_update_status_t *,unsigned profile,uint8_t out[140]);
 const char *nvf_update_error_name(unsigned error);

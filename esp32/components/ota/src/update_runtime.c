@@ -37,13 +37,30 @@
 #ifndef CONFIG_NVF_UPDATE_TEST_KEYS
 #define CONFIG_NVF_UPDATE_TEST_KEYS 0
 #endif
+#ifndef CONFIG_NVF_UPDATE_PROFILE_OPEN
+#define CONFIG_NVF_UPDATE_PROFILE_OPEN 0
+#endif
 #ifndef NVF_BUILD_NUMBER
 #define NVF_BUILD_NUMBER 1
 #endif
 extern const char nvf_update_root[];
 extern const size_t nvf_update_root_length;
 static const char *TAG="update";
-static const char *const origins[]={"https://firmware.intsat.net/firmware/v1/","https://firmware.intsat.space/firmware/v1/"};
+// The profile and its origin path are fixed together at build time. Each track
+// is a separate repository with its own root, and neither path is a runtime
+// setting, so a build only ever asks for metadata its root can authorize. No
+// shipped tool publishes below the test path; a bench build polls no track.
+#if CONFIG_NVF_UPDATE_TEST_KEYS
+#define NVF_UPDATE_PROFILE UP_PROFILE_TEST
+#define NVF_UPDATE_TRACK "test"
+#elif CONFIG_NVF_UPDATE_PROFILE_OPEN
+#define NVF_UPDATE_PROFILE UP_PROFILE_OPEN
+#define NVF_UPDATE_TRACK "open"
+#else
+#define NVF_UPDATE_PROFILE UP_PROFILE_TRUSTED
+#define NVF_UPDATE_TRACK "trusted"
+#endif
+static const char *const origins[]={"https://firmware.intsat.net/firmware/" NVF_UPDATE_TRACK "/v1/","https://firmware.intsat.space/firmware/" NVF_UPDATE_TRACK "/v1/"};
 typedef struct {
     uint32_t magic,version;
     nvf_update_status_t status;
@@ -332,7 +349,7 @@ static void worker(void *unused) {
     }
 }
 esp_err_t nvf_update_start(const nvf_update_hooks_t *config) {
-    hooks=*config;hooks.device.test_build=CONFIG_NVF_UPDATE_TEST_KEYS;
+    hooks=*config;hooks.device.profile=NVF_UPDATE_PROFILE;
     view_lock=xSemaphoreCreateMutex();if(!view_lock)return ESP_ERR_NO_MEM;
     record.magic=0x3150554e;record.version=1;record.status.mode=UP_MANUAL;record.status.running=NVF_BUILD_NUMBER;
     const esp_partition_t *partition=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_DATA_NVS,"update_meta");
@@ -362,11 +379,13 @@ esp_err_t nvf_update_start(const nvf_update_hooks_t *config) {
        saved->status.available.length<=0x400000 && saved->status.staged.length<=0x400000)record=*saved;
     else if(err!=ESP_ERR_NVS_NOT_FOUND){free(saved);storage_ready=false;record.status.error=UP_STORAGE;publish();return ESP_ERR_INVALID_STATE;}
     free(saved);record.status.security=security;record.status.layout=hooks.device.layout;record.status.running=NVF_BUILD_NUMBER;
-    // Test roots require an explicit unfused test build; production requires
-    // the complete security profile. Ordinary development stays service-only.
-    if((!CONFIG_NVF_UPDATE_TEST_KEYS && security!=31) || (CONFIG_NVF_UPDATE_TEST_KEYS && (security&3))){record.status.error=UP_TRUST_UNCONFIGURED;record.status.mode=UP_MANUAL;publish();return ESP_ERR_NOT_SUPPORTED;}
+    // The trusted track requires the complete security profile. Open and test
+    // builds run only on an unfused chip, so neither can follow its track from
+    // locked hardware. A trusted build on an unfused board stays service-only.
+    bool unlocked_profile=NVF_UPDATE_PROFILE!=UP_PROFILE_TRUSTED;
+    if((!unlocked_profile && security!=31) || (unlocked_profile && (security&3))){record.status.error=UP_TRUST_UNCONFIGURED;record.status.mode=UP_MANUAL;publish();return ESP_ERR_NOT_SUPPORTED;}
     if(!record.trust.root_length) {
-        int result=nvf_tuf_initialize(&record.trust,nvf_update_root,nvf_update_root_length,CONFIG_NVF_UPDATE_TEST_KEYS,&io);
+        int result=nvf_tuf_initialize(&record.trust,nvf_update_root,nvf_update_root_length,NVF_UPDATE_PROFILE,&io);
         if(result){record.status.error=result;publish();return ESP_ERR_INVALID_STATE;}
     }
     const esp_partition_t *running=esp_ota_get_running_partition();
@@ -390,7 +409,7 @@ esp_err_t nvf_update_start(const nvf_update_hooks_t *config) {
 }
 bool nvf_update_boot_ready(void) {
     // A trusted update must not confirm when its transactional state is unreadable.
-    if(CONFIG_NVF_UPDATE_TEST_KEYS || esp_secure_boot_enabled())return storage_ready && jobs && record.status.error!=UP_STORAGE;
+    if(NVF_UPDATE_PROFILE!=UP_PROFILE_TRUSTED || esp_secure_boot_enabled())return storage_ready && jobs && record.status.error!=UP_STORAGE;
     return true;
 }
 void nvf_update_confirmed(void){atomic_store(&confirmed,true);}
@@ -426,7 +445,8 @@ void nvf_update_control(const uint8_t *bytes,size_t length) {
     }
     xSemaphoreGive(view_lock);
 }
-bool nvf_update_wire(uint8_t out[140]){if(!view_lock)return false;nvf_update_status_t s;nvf_update_status(&s);nvf_update_encode_status(&s,out);return true;}
+bool nvf_update_wire(uint8_t out[140]){if(!view_lock)return false;nvf_update_status_t s;nvf_update_status(&s);nvf_update_encode_status(&s,NVF_UPDATE_PROFILE,out);return true;}
+unsigned nvf_update_profile(void){return NVF_UPDATE_PROFILE;}
 bool nvf_update_busy(void){return atomic_load(&busy) || (jobs && uxQueueMessagesWaiting(jobs)>0);}
 bool nvf_update_claim(void){bool expected=false;return atomic_compare_exchange_strong(&busy,&expected,true);}
 void nvf_update_release(void){atomic_store(&busy,false);}
@@ -441,6 +461,7 @@ bool nvf_update_request(unsigned a,uint64_t r,bool d){(void)a;(void)r;(void)d;re
 bool nvf_update_policy(unsigned m,unsigned c){(void)m;(void)c;return false;}
 void nvf_update_control(const uint8_t *b,size_t n){(void)b;(void)n;}
 bool nvf_update_wire(uint8_t out[140]){(void)out;return false;}
+unsigned nvf_update_profile(void){return UP_PROFILE_TRUSTED;}
 bool nvf_update_busy(void){return false;}
 bool nvf_update_claim(void){return false;}
 void nvf_update_release(void){}

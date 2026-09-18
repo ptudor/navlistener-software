@@ -1,0 +1,9 @@
+# Release profile for the open update track: boards that are never locked.
+# This build changes no security eFuse and refuses to run its updater on a chip
+# that has Secure Boot or flash encryption enabled. Supply the open track's
+# public TUF root with -D NVF_TUF_ROOT_FILE=... . Signing happens outside the
+# build. Never combine with sdkconfig.defaults.production or update-test.
+CONFIG_NVF_UPDATE_PROFILE_OPEN=y
+CONFIG_NVF_MANIFEST_FACTORY_INIT=n
+CONFIG_NVF_INSECURE=n
+CONFIG_APP_REPRODUCIBLE_BUILD=y

@@ -136,15 +136,41 @@ menu "navfeeder-esp"
             The ESP32-C6 build has no tunnel support and always uses the public
             endpoint.
 
-    config NVF_UPDATE_TEST_KEYS
-        bool "Allow explicitly supplied test-only update trust (unfused development)"
-        depends on NVF_OTA && !SECURE_BOOT
-        default n
+    choice NVF_UPDATE_PROFILE
+        prompt "Signed update trust profile"
+        depends on NVF_OTA
+        default NVF_UPDATE_PROFILE_TRUSTED
         help
-            Enables the signed update workflow on an unfused development board.
-            Supply a test-only public TUF root with -D NVF_TUF_ROOT_FILE=... .
-            Production roots and test roots cannot be interchanged. Production
-            release tooling rejects this setting. No key is supplied by default.
+            Each build follows exactly one update track. The public TUF root
+            supplied with -D NVF_TUF_ROOT_FILE=... must carry the same profile
+            marker, and every release manifest repeats it, so trusted, open
+            and test roots cannot be interchanged. No key is supplied by default.
+
+        config NVF_UPDATE_PROFILE_TRUSTED
+            bool "Trusted (locked hardware, production security baseline)"
+            help
+                The repository updater runs only with Secure Boot, release flash
+                encryption and encrypted update state active. On an unfused
+                development board this build stays service-only.
+
+        config NVF_UPDATE_PROFILE_OPEN
+            bool "Open (unlocked hardware, open release track)"
+            depends on !SECURE_BOOT
+            help
+                Follows the separately rooted open release track on a board that
+                is never locked. Signed metadata still protects the network
+                path; it cannot protect against someone holding the board, who
+                can already reflash it over USB. Refuses to run on a chip with
+                Secure Boot or flash encryption enabled.
+
+        config NVF_UPDATE_TEST_KEYS
+            bool "Test (explicitly supplied throwaway trust, bench only)"
+            depends on !SECURE_BOOT
+            help
+                Enables the signed update workflow on an unfused bench board
+                against a test-only public TUF root. Release tooling for the
+                trusted and open tracks rejects this setting.
+    endchoice
 
     config NVF_RX_AUTOPROBE
         bool "Probe receiver baud and query MON-VER"

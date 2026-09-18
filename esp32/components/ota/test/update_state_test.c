@@ -31,7 +31,7 @@ int main(void) {
     assert(nvf_update_accept_command(&s,&command,1800000000)==-1);
     s.mode=UP_INSTALL;s.available.sequence=s.staged.sequence=UINT64_MAX-1;s.staged.length=12288;
     memset(s.staged.boot_key,0xab,32);memset(s.staged.release_key,0xcd,32);
-    nvf_update_encode_status(&s,actual);assert(!memcmp(expected,actual,140));
+    nvf_update_encode_status(&s,UP_PROFILE_TRUSTED,actual);assert(!memcmp(expected,actual,140));
     for(size_t n=0;n<36;n++)assert(!nvf_update_decode_command(control,n,&command));
     control[2]=1;assert(!nvf_update_decode_command(control,36,&command));control[2]=0;
     control[3]=1;assert(!nvf_update_decode_command(control,36,&command));

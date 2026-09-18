@@ -39,10 +39,16 @@ int main(int argc,char **argv) {
     assert(argc>=3);directory=argv[1];char *bytes=NULL;size_t length=0;
     assert(fetch(NULL,"metadata/1.root.json",8192,&bytes,&length)==UP_OK);
     nvf_tuf_trust_t trust;nvf_tuf_io_t io={.fetch=fetch,.sha256=sha,.public_key=public_key,.verify=verify,.save=save};
-    int err=nvf_tuf_initialize(&trust,bytes,length,true,&io);free(bytes);
+    unsigned profile=UP_PROFILE_TEST;
+    if(argc>1 && !strncmp(argv[argc-1],"--profile=",10)) {
+        const char *name=argv[--argc]+10;
+        for(profile=UP_PROFILE_TRUSTED;profile<=UP_PROFILE_TEST && strcmp(name,nvf_update_profile_name(profile));profile++);
+        assert(profile<=UP_PROFILE_TEST);
+    }
+    int err=nvf_tuf_initialize(&trust,bytes,length,profile,&io);free(bytes);
     if(err){printf("initialize=%d\n",err);return err==atoi(argv[2])?0:1;}
     persisted=trust;
-    nvf_update_device_t device={.now=1800000000,.hardware_known=true,.hardware_revision=1,.layout=1,.test_build=true,.eui={1,2,3,4,5,6,7,8}};
+    nvf_update_device_t device={.now=1800000000,.hardware_known=true,.hardware_revision=1,.layout=1,.profile=profile,.eui={1,2,3,4,5,6,7,8}};
     nvf_update_release_t result;
     err=nvf_tuf_refresh(&trust,2,&device,&result,&io);
     printf("refresh=%d sequence=%llu saves=%u\n",err,(unsigned long long)result.sequence,saves);
