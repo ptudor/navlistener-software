@@ -1,6 +1,7 @@
 #include "update_runtime.h"
 #include "board.h"
 #include "sdkconfig.h"
+#include "board_reservations.h"
 #if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
 #include <string.h>
 #include <stdio.h>
@@ -62,6 +63,12 @@ void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_
     snprintf(report.firmware, sizeof report.firmware, "%s", esp_app_get_description()->version);
 }
 enum { LED_DATA = 14, LED_CLOCK = 11, LED_LATCH = 12, LED_GREEN_OE = 47, LED_YELLOW_OE = 48 };
+// The panel pins are part of the allocation record, not a private choice here.
+_Static_assert((NVF_PIN(LED_DATA) | NVF_PIN(LED_CLOCK) | NVF_PIN(LED_LATCH) |
+                NVF_PIN(LED_GREEN_OE) | NVF_PIN(LED_YELLOW_OE)) ==
+               ((NVF_PIN(LED_DATA) | NVF_PIN(LED_CLOCK) | NVF_PIN(LED_LATCH) |
+                 NVF_PIN(LED_GREEN_OE) | NVF_PIN(LED_YELLOW_OE)) & NVF_PINS_NEO),
+    "a panel pin is missing from the board_reservations.h allocation record");
 typedef struct {
     uint32_t magic;
     int32_t latitude, longitude;

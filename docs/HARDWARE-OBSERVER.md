@@ -1412,6 +1412,79 @@ restricted-tier.**
 
 ---
 
+### 7.10 MAX-variant signal reservations
+
+The MAX-format mobile variant adds an inertial, magnetic and barometric sensor
+group and a second real-time clock. No such board has been fabricated, and none
+of these parts is fitted on the NEO or ZED assemblies. This section exists so
+the addresses and pins are **reserved now** and cannot be quietly spent on
+something else before the board is drawn.
+
+**Reserved I²C addresses.** Do not allocate these to any other device on the
+shared bus, and do not treat their absence on a present-day board as a fault.
+
+| Address | Part | Basis |
+|---|---|---|
+| `0x30` | MMC34160PJ magnetometer | **[verify]** against the data sheet before layout |
+| `0x68` | MAX31328 TCXO clock | Fixed. The data sheet states the slave address is `1101000`; the part has no address pins |
+| `0x69` | ICM-45686 six-axis IMU | Strapped to its alternate address, because `0x68` is not negotiable |
+| `0x77` | MS5607-02BA03-50 pressure | `CSB` tied low. The data sheet gives the complement of `CSB` as the address LSB; confirm with a bus scan |
+
+`0x68` is the one real collision. The clock cannot move, so the IMU does. Verify
+the IMU's address-strap pin name, its polarity and the resulting address from
+its own data sheet rather than from family convention.
+
+**No new identity.** The MAX31328 register map runs `0x00`–`0x12`: time and
+calendar, two alarms, control, status, aging offset and temperature. There is no
+serial number, no EUI block and no user SRAM. §4.3 is therefore unchanged — the
+MCP79412 EUI-64 remains the observer identity, the 24AA025E64 remains the board
+serial, and the ATECC serial still binds the key material. The second clock adds
+a measurement, never an identifier, and it cannot stand in for the MCP79412 if
+that part dies.
+
+**Reserved interrupt and clock-output pins.** GPIO33 and GPIO34 are unallocated
+on both existing boards. GPIO16 and GPIO17 are free on a MAX board because the
+M10 receiver has a single UART, unlike the ZED variant's UART2.
+
+| Net | GPIO | Source | Electrical |
+|---|---|---|---|
+| `RTC2_INT_N` | 33 | MAX31328 `INT/SQW` | Open-drain; fit 10 kΩ to `3V3_SENS`. Alarm interrupt or programmable square wave, one or the other |
+| `RTC2_32KHZ` | 34 | MAX31328 32 kHz output | Enabled by the `EN32kHz` bit in the status register; gated off by default |
+| `IMU_INT1` | 16 | ICM-45686 interrupt 1 | Drive type and polarity **[verify]**; assume nothing about a pull-up until the data sheet is read |
+| `IMU_INT2` | 17 | ICM-45686 interrupt 2 | Reserved. May stay unfitted; the pin is held so a later revision does not have to move something else |
+
+Two parts need no interrupt pin and must be polled. The MS5607 has eight pins —
+`VDD`, `PS`, `GND`, `CSB`, an internal connection, `SDO`, `SDI/SDA` and `SCLK` —
+and no interrupt among them. The MMC34160PJ is read on demand. Neither absence
+is an oversight; do not reserve a pin for either.
+
+**Optional: drive the ESP32-S3 slow clock from the TCXO.** The MAX31328's 32 kHz
+output could feed the S3's external 32.768 kHz input instead of a GPIO, which
+would give the microcontroller's own timekeeping the clock's ±3.5 ppm over
+−40 to +85 °C rather than the internal oscillator's drift. That input is not a
+free pin: confirm which S3 pin carries `XTAL_32K_P` on the N16R8 module against
+its data sheet, and note that if it is GPIO15 the `RTC_MFP_N` alarm of §7.5 has
+to move. Do not adopt this without both checks; `RTC2_32KHZ` on GPIO34 is the
+reservation that holds if the option is declined.
+
+**Two clocks is the point, not redundancy.** §6.3 makes the RTC-versus-GNSS
+offset a measured quantity and a time-gate input, and notes that on a
+plain-crystal board the clock's own thermal drift *is* that detector's noise
+floor. A temperature-compensated second clock lowers that floor and, more
+usefully, makes the comparison three-cornered: MCP79412, MAX31328 and GNSS. With
+one clock, a divergence says only that something moved. With two independent
+clocks of different grades, the odd one out is identifiable — a drifting crystal
+looks different from a walked GNSS solution, and both look different from a
+clock that reset. Record the pair offset as its own quantity.
+
+Neither clock is adopted as a time source by this reservation. GNSS remains
+authoritative under §6.3, the conservative and bounded discipline rule is
+unchanged, and both parts' oscillator-stop flags are read at boot. No firmware
+driver for the MAX31328 exists yet; this section reserves the bus address and
+the pins, and nothing more.
+
+---
+
 ## 8. Alignment with `shepherdprotocol`
 
 Both products build ESP32 boards around the same `esp32-hardware-discovery` manifest, so parts
