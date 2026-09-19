@@ -1448,8 +1448,8 @@ M10 receiver has a single UART, unlike the ZED variant's UART2.
 
 | Net | GPIO | Source | Electrical |
 |---|---|---|---|
-| `RTC2_INT_N` | 33 | MAX31328 `INT/SQW` | Open-drain; fit 10 kΩ to `3V3_SENS`. Alarm interrupt or programmable square wave, one or the other |
-| `RTC2_32KHZ` | 34 | MAX31328 32 kHz output | Enabled by the `EN32kHz` bit in the status register; gated off by default |
+| `RTC2_INT_N` | 33 | MAX31328 pin 3 `INT/SQW` | Open-drain; fit 10 kΩ to `3V3_SENS`. Alarm interrupt or programmable square wave, never both. `INTCN` resets to 1, so it powers up as an interrupt with both alarms disabled |
+| `RTC2_32KHZ` | 34 | MAX31328 pin 1 `32kHz` | Open-drain; fit a pull-up. `EN32kHz` (status bit 3) **resets to 1**, so the output is already running at power-up |
 | `IMU_INT1` | 16 | ICM-45686 interrupt 1 | Drive type and polarity **[verify]**; assume nothing about a pull-up until the data sheet is read |
 | `IMU_INT2` | 17 | ICM-45686 interrupt 2 | Reserved. May stay unfitted; the pin is held so a later revision does not have to move something else |
 
@@ -1459,13 +1459,34 @@ and no interrupt among them. The MMC34160PJ is read on demand. Neither absence
 is an oversight; do not reserve a pin for either.
 
 **Optional: drive the ESP32-S3 slow clock from the TCXO.** The MAX31328's 32 kHz
-output could feed the S3's external 32.768 kHz input instead of a GPIO, which
-would give the microcontroller's own timekeeping the clock's ±3.5 ppm over
-−40 to +85 °C rather than the internal oscillator's drift. That input is not a
-free pin: confirm which S3 pin carries `XTAL_32K_P` on the N16R8 module against
-its data sheet, and note that if it is GPIO15 the `RTC_MFP_N` alarm of §7.5 has
-to move. Do not adopt this without both checks; `RTC2_32KHZ` on GPIO34 is the
-reservation that holds if the option is declined.
+output can feed the S3's external 32.768 kHz input instead of an ordinary GPIO,
+giving the microcontroller's own slow clock the part's ±3.5 ppm over −40 to
++85 °C instead of the internal RC oscillator's drift. The pins and the software
+path are both fixed, so this is a decision, not an investigation:
+
+- **The pin is GPIO15.** ESP-IDF defines `XTAL32K_P_GPIO_NUM` as 15 and
+  `XTAL32K_N_GPIO_NUM` as 16 for the S3. In external-oscillator mode
+  `rtc_clk_32k_enable_external()` enables the input on GPIO15 alone and holds
+  `RTC_CNTL_X32P_HOLD`; GPIO16 is untouched. A 32 kHz *crystal* would instead
+  use both pads, which is one reason to prefer the oscillator path here —
+  GPIO16 is already reserved above as `IMU_INT1`.
+- **`RTC_MFP_N` has to move.** GPIO15 carries the MCP79412 alarm under §7.5.
+  GPIO40 is free on a MAX board, since the ZED variant's `RTK_STAT` has no
+  counterpart on an M10 receiver; GPIO2, GPIO18 and GPIO42 are the other
+  candidates, subject to whether the board keeps the trimmer and buttons.
+- **The build option is `CONFIG_RTC_CLK_SRC_EXT_OSC`**, "External 32 kHz
+  oscillator at 32K_XP pin", replacing the default `CONFIG_RTC_CLK_SRC_INT_RC`.
+- **Failure is graceful and observable.** Startup calibrates the slow clock over
+  `CONFIG_RTC_CLK_CAL_CYCLES` (3000 by default for this source), retries once,
+  then logs `32 kHz XTAL not found, switching to internal 150 kHz oscillator`
+  and falls back to the internal RC. A missing or stopped clock therefore
+  degrades rather than hangs, and the log line is the bench check.
+- **The 32 kHz pin is open-drain** and needs a pull-up; it is not a push-pull
+  clock driver. Check the edge rate the pull-up gives against the S3 input
+  requirement before relying on it, and keep the trace short.
+
+If the option is declined, `RTC2_32KHZ` on GPIO34 is the reservation that holds
+and `RTC_MFP_N` stays on GPIO15.
 
 **Two clocks is the point, not redundancy.** §6.3 makes the RTC-versus-GNSS
 offset a measured quantity and a time-gate input, and notes that on a
@@ -1476,6 +1497,24 @@ one clock, a divergence says only that something moved. With two independent
 clocks of different grades, the odd one out is identifiable — a drifting crystal
 looks different from a walked GNSS solution, and both look different from a
 clock that reset. Record the pair offset as its own quantity.
+
+**Battery-current condition, which the endurance numbers depend on.** The
+MAX31328's 660 nA timekeeping battery current is specified with `EOSC` = 0,
+`BBSQW` = 0 **and `EN32kHz` = 0**. The 32 kHz output "operates on either power
+supply", and it resets to enabled, so a unit that loses `VCC` with that bit
+still set keeps driving the output from the backup cell. The data sheet gives no
+battery-current figure for that state — its 110 µA standby figure is a `VCC`
+measurement — so firmware must clear `EN32kHz` and `BBSQW` on a controlled
+shutdown, and any backup-endurance estimate that assumes 660 nA must say it
+depends on that. Measure the backup current in the state the board actually
+powers down in.
+
+**Other MAX31328 pin requirements.** Pins 5 and 6 are `N.C.` and the data sheet
+requires them connected to ground. Pin 4 `RST` is an open-drain input/output
+with an internal 50 kΩ pull-up to `VCC`; **fit no external pull-up on it**. Pin 2
+`VCC` takes 0.1–1.0 µF. Pin 8 `VBAT` needs a low-leakage 0.1–1.0 µF only if it
+is the primary supply, which it is not here. `INT/SQW` and `32kHz` may be pulled
+up to as much as 5.5 V regardless of `VCC`; on this board both go to `3V3_SENS`.
 
 Neither clock is adopted as a time source by this reservation. GNSS remains
 authoritative under §6.3, the conservative and bounded discipline rule is

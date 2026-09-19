@@ -25,7 +25,7 @@
     NVF_PIN(12) | /* LED_LATCH, section 2.1           */ \
     NVF_PIN(13) | /* LED_SDO readback, section 2.1    */ \
     NVF_PIN(14) | /* LED_SDI, section 2.1             */ \
-    NVF_PIN(15) | /* RTC_MFP_N, section 7.5           */ \
+    NVF_PIN(15) | /* RTC_MFP_N, 7.5; also XTAL32K_P   */ \
     NVF_PIN(19) | /* USB_DM, section 7.6              */ \
     NVF_PIN(20) | /* USB_DP, section 7.6              */ \
     NVF_PIN(21) | /* SENS_EN, section 7.3.1           */ \
@@ -49,10 +49,16 @@
 // Section 7.10. GPIO33 and GPIO34 are unallocated on both existing boards.
 // GPIO16 and GPIO17 are free here because the M10 receiver has one UART; they
 // carry the ZED variant's UART2, so this reservation is specific to a MAX board.
-#define NVF_PIN_RTC2_INT_N  33 /* MAX31328 INT/SQW, open-drain, 10k to 3V3_SENS */
-#define NVF_PIN_RTC2_32KHZ  34 /* MAX31328 32 kHz output, off unless EN32kHz set */
-#define NVF_PIN_IMU_INT1    16 /* ICM-45686 interrupt 1                          */
-#define NVF_PIN_IMU_INT2    17 /* ICM-45686 interrupt 2, may stay unfitted       */
+//
+// GPIO16 is also the S3's XTAL32K_N pad (XTAL32K_P is GPIO15, XTAL32K_N is
+// GPIO16 in soc/io_mux_reg.h). That costs nothing while the optional TCXO slow
+// clock of section 7.10 uses CONFIG_RTC_CLK_SRC_EXT_OSC, which drives GPIO15
+// alone and leaves GPIO16 alone. Choosing a 32 kHz crystal instead would claim
+// both pads and would have to take IMU_INT1 somewhere else.
+#define NVF_PIN_RTC2_INT_N  33 /* MAX31328 pin 3 INT/SQW, open-drain, 10k to 3V3_SENS */
+#define NVF_PIN_RTC2_32KHZ  34 /* MAX31328 pin 1 32kHz, open-drain; EN32kHz resets to 1 */
+#define NVF_PIN_IMU_INT1    16 /* ICM-45686 interrupt 1                               */
+#define NVF_PIN_IMU_INT2    17 /* ICM-45686 interrupt 2, may stay unfitted            */
 #define NVF_PINS_MAX_RESERVED ( \
     NVF_PIN(NVF_PIN_RTC2_INT_N) | NVF_PIN(NVF_PIN_RTC2_32KHZ) | \
     NVF_PIN(NVF_PIN_IMU_INT1)   | NVF_PIN(NVF_PIN_IMU_INT2))
