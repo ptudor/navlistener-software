@@ -85,7 +85,7 @@ new domain string; v1 is never extended in place.
 | 6 | 2 | board_rev | as in the slot-14 attestation |
 | 8 | 2 | security | bit field below |
 | 10 | 2 | identity_flags | bit 0: RTC EUI-64 bound; bit 1: RTC present; all other bits reserved |
-| 12 | 2 | rtc_model_id | 0 = none; 1 = MCP79412 |
+| 12 | 2 | rtc_model_id | 0 = none; 1 = MCP79412; 2 = DS3231 (no factory instance EUI) |
 | 14 | 4 | generation | 1 at first commissioning; +1 each time the board is commissioned again |
 | 18 | 8 | commissioned_at | Unix seconds, UTC |
 | 26 | 8 | board_eui64 | permanent board and observer identity |
@@ -373,7 +373,7 @@ names a key the new module does not have, and its sessions prove nothing.
 | microcontroller key | session proofs | inside each ESP32-S3; never leaves it |
 | operational key | the mTLS handshake | inside each ATECC608C; never leaves it |
 
-Verifiers pin **sets** of manufacturer keys and of operations keys. A signer
+Verifiers pin **authority-scoped sets** of manufacturer keys and of registry keys. A signer
 that is replaced adds a key to the set, and records signed by the earlier key
 remain valid for as long as that key stays pinned. Removing a key withdraws
 every record it signed.
@@ -384,9 +384,17 @@ manufacturer key is never pinned by a production collector.
 ## 10. Collector configuration
 
 ```toml
-[hardware_trust]
+[[operational_authority]]
+id = "example-operations"
+enabled = true
+roots = ["/usr/local/etc/navlistener/root-a.crt", "/usr/local/etc/navlistener/root-b.crt"]
+issuers = ["/usr/local/etc/navlistener/issuing-a.crt", "/usr/local/etc/navlistener/issuing-b.crt"]
+manufacturer_authorities = ["example-manufacturing"]
+
+[[manufacturer_authority]]
+enabled = true
 manufacturer_authority_id = "example-manufacturing"
-manufacturer_keys = ["/usr/local/etc/navlistener/manufacturer-1.pem"]
+manufacturer_keys = ["/usr/local/etc/navlistener/root-a-slot5.pem", "/usr/local/etc/navlistener/root-b-slot5.pem"]
 
 # Optional. Without a registry every valid record is honoured and nothing can
 # be withdrawn.
@@ -399,9 +407,30 @@ registry_state = "/var/db/navlistener/registry.state"
 # Withhold trust from a board the registry does not list. Leave false where
 # the registry copy may lag behind newly commissioned boards.
 require_registry_entry = false
+
+[[manufacturer_authority.product_policy]]
+product = 1
+revision = 258
+rtc_models = [0, 1] # only assemblies reviewed for this product/revision
+require_rtc_eui = false
 ```
 
-Key files hold a PEM public key or a certificate. A configured registry that is
+Manufacturer and registry key files hold P-256 `PUBLIC KEY` PEM, never CA
+certificates. Root slot-0 CA keys, Issuing keys, manufacturer slot-5 keys and
+registry keys are separate roles; ambiguous ownership or role reuse is rejected.
+Operational roots and issuers are certificates. Cross-signed certificates for the
+same issuing SPKI name one operational authority. `[push].require_client_certificate`
+requires mTLS with the registered issuers. The SQL enrollment supplies both expected
+authority IDs; neither the leaf name nor the record selects a manufacturer.
+
+For customer-issued credentials on A/B hardware, register a separate operational
+authority and explicitly list the A/B manufacturer in its allowed pairings. A C/D
+manufacturer, if present, has its own slot-5 pins, product policies, registry keys,
+registry file and persistent floor. Never combine A/B/C/D manufacturer keys in one
+set. Core and commissioning may use different keys of the same pair; enrollment
+retains both exact signer SPKIs and the core-record fingerprint.
+
+A configured registry that is
 missing, does not verify, or is older than the recorded sequence stops the
 collector at startup. A registry configured without `registry_state` starts
 with a warning, because its sequence is then remembered only until the next
@@ -409,7 +438,14 @@ restart.
 
 A registry that is withheld rather than rolled back cannot be detected from
 the file. The collector exports the loaded registry's sequence and issue time
-as metrics so that staleness can be alerted on.
+as metrics labeled by `manufacturer_authority_id` so that each stream's staleness
+can be alerted on. Enrollment, issuance and service procedures are documented in
+[CONTROL-PLANE.md](CONTROL-PLANE.md).
+
+Model 2 describes the [DS3231 register-defined RTC](https://www.analog.com/media/en/technical-documentation/data-sheets/DS3231.pdf),
+which has no factory EUI. Its valid flags are model-present only; a code-defined
+model ID is not an individual chip identity. Registering a format descriptor does
+not implement a board driver or approve that model for every product.
 
 ## 11. Limits
 

@@ -33,6 +33,17 @@ def line(value):
 
 
 class ReportTests(unittest.TestCase):
+    def test_duplicate_fields_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "duplicate report field"):
+            commission_report.reports(line(report()).replace('"v":1', '"v":2,"v":1'))
+
+    def test_absent_and_model_only_rtc(self):
+        for flags, model in ((0, 0), (2, 1), (2, 2)):
+            value = report(identity_flags=flags, rtc_model_id=model,
+                           rtc_expected=bool(flags), rtc_present=bool(flags), rtc_eui64=None)
+            self.assertTrue(commission_report.validate(value)["identity_complete"])
+        with self.assertRaisesRegex(ValueError, "no factory EUI"):
+            commission_report.validate(report(rtc_model_id=2))
     def test_finds_reports_among_log_noise_and_keeps_order(self):
         log = "\r\n".join([
             "\x1b[0;32mI (512) navfeeder: navfeeder-esp starting\x1b[0m",

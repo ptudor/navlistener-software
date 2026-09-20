@@ -135,6 +135,7 @@ func TestSessionEvidenceIsValidatedAndNeverAuthorization(t *testing.T) {
 		t.Fatalf("resolved context carries evidence: %+v", base)
 	}
 	fingerprint := "aa" + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd"
+	base.ManufacturerAuthorityID = "test-manufacturer"
 	trusted, err := base.WithSessionEvidence(HardwareTrustTrusted, "test-manufacturer", fingerprint)
 	if err != nil {
 		t.Fatal(err)
@@ -156,15 +157,15 @@ func TestSessionEvidenceIsValidatedAndNeverAuthorization(t *testing.T) {
 		authority   string
 		fingerprint string
 	}{
-		"unknown trust":                 {"verified", "test-manufacturer", fingerprint},
-		"trust without an authority":    {HardwareTrustOpen, "", fingerprint},
-		"trust without a record":        {HardwareTrustOpen, "test-manufacturer", ""},
-		"record that proved nothing":    {HardwareTrustNone, "", fingerprint},
-		"authority that proved nothing": {HardwareTrustNone, "test-manufacturer", ""},
-		"invalid authority":             {HardwareTrustTest, "not valid!", fingerprint},
-		"uppercase fingerprint":         {HardwareTrustTest, "test-manufacturer", "AA" + fingerprint[2:]},
-		"short fingerprint":             {HardwareTrustTest, "test-manufacturer", fingerprint[:32]},
-		"empty trust with a record":     {"", "test-manufacturer", fingerprint},
+		"unknown trust":                {"verified", "test-manufacturer", fingerprint},
+		"trust without an authority":   {HardwareTrustOpen, "", fingerprint},
+		"trust without a record":       {HardwareTrustOpen, "test-manufacturer", ""},
+		"record that proved nothing":   {HardwareTrustNone, "", fingerprint},
+		"different enrolled authority": {HardwareTrustNone, "other-manufacturer", ""},
+		"invalid authority":            {HardwareTrustTest, "not valid!", fingerprint},
+		"uppercase fingerprint":        {HardwareTrustTest, "test-manufacturer", "AA" + fingerprint[2:]},
+		"short fingerprint":            {HardwareTrustTest, "test-manufacturer", fingerprint[:32]},
+		"empty trust with a record":    {"", "test-manufacturer", fingerprint},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := base.WithSessionEvidence(c.trust, c.authority, c.fingerprint); err == nil {

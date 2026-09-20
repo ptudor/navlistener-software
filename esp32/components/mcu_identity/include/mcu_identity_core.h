@@ -47,7 +47,7 @@ enum {
     NVF_IDENTITY_RTC_PRESENT   = 1u << 1,
     NVF_IDENTITY_KNOWN         = 0x0003,
 };
-enum { NVF_RTC_NONE = 0, NVF_RTC_MCP79412 = 1 };
+enum { NVF_RTC_NONE = 0, NVF_RTC_MCP79412 = 1, NVF_RTC_DS3231 = 2 };
 enum {
     NVF_SEC_SECURE_BOOT       = 1u << 0, // Secure Boot v2 enabled
     NVF_SEC_FLASH_ENC_RELEASE = 1u << 1, // flash encryption in release mode

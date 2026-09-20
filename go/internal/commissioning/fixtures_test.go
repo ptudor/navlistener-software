@@ -106,7 +106,26 @@ func generateFixtures(t *testing.T) fixtureFile {
 		Cases:                   map[string]fixtureCase{},
 	}
 	var records []Record
-	for name, s := range map[string]Statement{"trusted": trusted, "open": open, "test": bench} {
+	cases := map[string]Statement{"trusted": trusted, "open": open, "test": bench}
+	for i, name := range []string{"trusted", "open", "test"} {
+		s := cases[name]
+		s.IdentityFlags = 0
+		s.RTCModel = RTCModelNone
+		s.RTCEUI64 = [8]byte{}
+		s.BoardEUI64[7] = byte(0xa0 + i)
+		s.ATECCSerial[8] = byte(0xa0 + i)
+		cases[name+"-no-rtc"] = s
+	}
+	for i, model := range []RTCModel{RTCModelMCP79412, RTCModelDS3231} {
+		s := open
+		s.IdentityFlags = IdentityRTCPresent
+		s.RTCModel = model
+		s.RTCEUI64 = [8]byte{}
+		s.BoardEUI64[7] = byte(0xb0 + i)
+		s.ATECCSerial[8] = byte(0xb0 + i)
+		cases[[]string{"mcp79412-model", "ds3231-model"}[i]] = s
+	}
+	for name, s := range cases {
 		body, err := s.MarshalBinary()
 		if err != nil {
 			t.Fatal(err)
@@ -122,7 +141,7 @@ func generateFixtures(t *testing.T) fixtureFile {
 			Digest: hex.EncodeToString(d[:]), Record: hex.EncodeToString(record[:]), Fingerprint: hex.EncodeToString(fp[:]),
 		}
 		e := Evidence{Record: record}
-		if name == "trusted" {
+		if s.Profile == ProfileTrusted {
 			exported := exportedFor("fixture session")
 			pd, _ := ProofDigest(exported, record)
 			e.MCUKey, e.Proof = der, prove(t, mcu, exported, record)
@@ -145,7 +164,9 @@ func generateFixtures(t *testing.T) fixtureFile {
 		row := registryFor(t, 1, StatusActive, r).Boards[0]
 		if s.Profile == ProfileTest {
 			row.Status, row.Reason = StatusRevoked, "bench unit retired"
-			out.RegistryRevokedBoard = row.BoardEUI64
+			if s.BoardEUI64 == bench.BoardEUI64 {
+				out.RegistryRevokedBoard = row.BoardEUI64
+			}
 		}
 		reg.Boards = append(reg.Boards, row)
 	}
@@ -164,6 +185,10 @@ func writeFixtures(t *testing.T, f fixtureFile) {
 		t.Fatal(err)
 	}
 	files := map[string][]byte{"commissioning-v1.json": append(data, '\n')}
+	for name, c := range f.Cases {
+		files["commissioning-"+name+"-statement-v1.hex"] = []byte(c.Statement + "\n")
+		files["commissioning-"+name+"-digest-v1.hex"] = []byte(c.Digest + "\n")
+	}
 	// Single-value hex files for the firmware's host tests, which carry no JSON
 	// parser: the trusted case, field by field.
 	c := f.Cases["trusted"]
@@ -206,12 +231,12 @@ func TestFixtures(t *testing.T) {
 	if f.ExporterLabel != ExporterLabel {
 		t.Fatalf("fixture exporter label %q, package %q", f.ExporterLabel, ExporterLabel)
 	}
-	v, err := NewVerifier(f.ManufacturerAuthorityID, keySetFromPEM(t, f.ManufacturerPublicKey))
+	v, err := newTestVerifier(f.ManufacturerAuthorityID, keySetFromPEM(t, f.ManufacturerPublicKey))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(f.Cases) != 3 {
-		t.Fatalf("fixture has %d cases, want trusted, open and test", len(f.Cases))
+	if len(f.Cases) != 8 {
+		t.Fatalf("fixture has %d cases, want eight profile/RTC combinations", len(f.Cases))
 	}
 	for name, c := range f.Cases {
 		t.Run(name, func(t *testing.T) {
@@ -253,7 +278,7 @@ func TestFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ix.Sequence != f.RegistrySequence || ix.Len() != 3 {
+	if ix.Sequence != f.RegistrySequence || ix.Len() != len(f.Cases) {
 		t.Fatalf("registry = sequence %d with %d boards", ix.Sequence, ix.Len())
 	}
 	var revoked [8]byte

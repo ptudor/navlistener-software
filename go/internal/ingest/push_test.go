@@ -27,9 +27,11 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/navlistener/internal/authority"
 	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/metrics"
+	"github.com/ptudor/navlistener/internal/testauthority"
 	"github.com/ptudor/navlistener/internal/wire"
 )
 
@@ -152,37 +154,20 @@ func TestMatchPeerIdentity(t *testing.T) {
 // : issue() returns a client leaf carrying exactly the given DNS SANs,
 // signed by the CA the test server trusts in ClientCAs.
 type mtlsPKI struct {
-	pool   *x509.CertPool
-	caCert *x509.Certificate
-	caKey  *ecdsa.PrivateKey
+	authorities *authority.Set
+	pool        *x509.CertPool
+	caCert      *x509.Certificate
+	caKey       *ecdsa.PrivateKey
 }
 
 func newMtlsPKI(t *testing.T) *mtlsPKI {
 	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	pair := testauthority.New(t, "local", testManufacturerAuthority)
+	registered, err := authority.New([]authority.Operational{pair.Config}, map[string]bool{testManufacturerAuthority: true}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	tmpl := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "fleet-test-ca"},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(time.Hour),
-		IsCA:                  true,
-		KeyUsage:              x509.KeyUsageCertSign,
-		BasicConstraintsValid: true,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cert, err := x509.ParseCertificate(der)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pool := x509.NewCertPool()
-	pool.AddCert(cert)
-	return &mtlsPKI{pool: pool, caCert: cert, caKey: key}
+	return &mtlsPKI{pool: registered.ClientPool(), caCert: pair.Issuers[0], caKey: pair.IssuingKey, authorities: registered}
 }
 
 func (p *mtlsPKI) issue(t *testing.T, cn string, sans ...string) tls.Certificate {
@@ -210,17 +195,18 @@ func (p *mtlsPKI) issue(t *testing.T, cn string, sans ...string) tls.Certificate
 // startMTLSPushServer is startPushServer with client-certificate verification
 // against the given fleet CA pool, exercising the same ClientAuth mode
 // newPushServer configures when push.client_ca is set.
-func startMTLSPushServer(t *testing.T, ctx context.Context, auth Authenticator, pool *x509.CertPool) (string, chan *RawFrame) {
+func startMTLSPushServer(t *testing.T, ctx context.Context, auth Authenticator, pki *mtlsPKI) (string, chan *RawFrame) {
 	t.Helper()
 	out := make(chan *RawFrame, 8)
 	tc := &tls.Config{
 		Certificates: []tls.Certificate{selfSigned(t)},
 		MinVersion:   tls.VersionTLS12,
 		ClientAuth:   tls.RequireAndVerifyClientCert,
-		ClientCAs:    pool,
+		ClientCAs:    pki.pool,
 	}
 	srv := newPushServer("127.0.0.1:0", tc, out, auth, 25*time.Millisecond, 0,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv.SetAuthorities(pki.authorities)
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", tc)
 	if err != nil {
 		t.Fatal(err)
@@ -253,7 +239,7 @@ func TestPushMTLSBindsCertificateToObserver(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	pki := newMtlsPKI(t)
-	addr, out := startMTLSPushServer(t, ctx, tokenAuth("observer16", "s3cret", "ubx"), pki.pool)
+	addr, out := startMTLSPushServer(t, ctx, tokenAuth("observer16", "s3cret", "ubx"), pki)
 
 	t.Run("matching SAN admitted", func(t *testing.T) {
 		conn := dialPushWithCert(t, addr, pki.issue(t, "observer16", "observer16"))
@@ -322,10 +308,13 @@ func TestPushMTLSBindsExactActiveCredentialFingerprint(t *testing.T) {
 	resolved.FeedGrants = []string{"ubx"}
 	resolved.CredentialFingerprint = hex.EncodeToString(fingerprint[:])
 	resolved.AttestationTier = identity.AttestationVerifiedV1Core
+	resolved.ManufacturerAuthorityID = testManufacturerAuthority
+	resolved.CoreSignerSPKI, resolved.CoreAttestationFingerprint = resolved.CredentialFingerprint, resolved.CredentialFingerprint
+	resolved.HardwareProduct = 1
 	auth := authenticatorFunc(func(context.Context, string, string, string) (identity.ObserverContext, bool) {
 		return resolved, true
 	})
-	addr, out := startMTLSPushServer(t, ctx, auth, pki.pool)
+	addr, out := startMTLSPushServer(t, ctx, auth, pki)
 
 	conn := dialPushWithCert(t, addr, clientCert)
 	defer conn.Close()

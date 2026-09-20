@@ -124,11 +124,20 @@ type PublicationPolicy struct {
 // ObserverContext is resolved by the collector from trusted config/AAA state.
 // No ordinary GNF1 DATA field can populate or override it.
 type ObserverContext struct {
-	ObserverID          string
-	OrganizationID      string
-	EnrollmentID        string
-	CollectorInstanceID string
-	CollectionIDs       []string
+	ObserverID             string
+	OrganizationID         string
+	EnrollmentID           string
+	OperationalAuthorityID string
+	// ManufacturerAuthorityID is selected at enrollment, including sessions
+	// whose evidence fails. Software stations leave it empty.
+	ManufacturerAuthorityID    string
+	IssuerSPKI                 string
+	CoreSignerSPKI             string
+	CoreAttestationFingerprint string
+	HardwareProduct            uint16
+	HardwareRevision           uint16
+	CollectorInstanceID        string
+	CollectionIDs              []string
 	// FeedGrants and DeclaredCapabilities are server-owned admission evidence.
 	// They are stamped at authentication and retained with the receipt; DATA
 	// records cannot add a feed or claim hardware the control plane did not grant.
@@ -148,7 +157,8 @@ type ObserverContext struct {
 	// CommissioningFingerprint is the lowercase SHA-256 of the verified record,
 	// empty whenever HardwareTrust is none.
 	HardwareTrust            HardwareTrust
-	ManufacturerAuthorityID  string
+	CommissioningSignerSPKI  string
+	RegistrySignerSPKI       string
 	CommissioningFingerprint string
 	Publication              PublicationPolicy
 }
@@ -211,14 +221,15 @@ func ValidOpaqueObserverID(s string) bool {
 // NewPrivateContext returns the fail-closed context for a local source.
 func NewPrivateContext(observerID string, tier CredentialTier) ObserverContext {
 	return ObserverContext{
-		ObserverID:          observerID,
-		OrganizationID:      UnassignedOrganization,
-		EnrollmentID:        "config:" + observerID,
-		CollectorInstanceID: LocalCollectorInstance,
-		FeedGrants:          []string{"local"},
-		CredentialTier:      tier,
-		AttestationTier:     AttestationNone,
-		HardwareTrust:       HardwareTrustNone,
+		ObserverID:             observerID,
+		OrganizationID:         UnassignedOrganization,
+		EnrollmentID:           "config:" + observerID,
+		OperationalAuthorityID: "local",
+		CollectorInstanceID:    LocalCollectorInstance,
+		FeedGrants:             []string{"local"},
+		CredentialTier:         tier,
+		AttestationTier:        AttestationNone,
+		HardwareTrust:          HardwareTrustNone,
 		Publication: PublicationPolicy{
 			AggregateUse:    AggregatePrivate,
 			StationMetadata: MetadataNone,
@@ -263,9 +274,10 @@ func (c ObserverContext) Normalize() (ObserverContext, error) {
 		c.CollectorInstanceID = LocalCollectorInstance
 	}
 	for field, value := range map[string]string{
-		"organization":       c.OrganizationID,
-		"enrollment":         c.EnrollmentID,
-		"collector_instance": c.CollectorInstanceID,
+		"operational_authority": c.OperationalAuthorityID,
+		"organization":          c.OrganizationID,
+		"enrollment":            c.EnrollmentID,
+		"collector_instance":    c.CollectorInstanceID,
 	} {
 		if !ValidScopeID(value) {
 			return c, fmt.Errorf("%s id %q is invalid", field, value)
@@ -354,11 +366,26 @@ func (c ObserverContext) Normalize() (ObserverContext, error) {
 	if (c.HardwareTrust == HardwareTrustNone) != (c.CommissioningFingerprint == "") {
 		return c, fmt.Errorf("commissioning fingerprint must be present exactly when hardware trust is established")
 	}
-	if (c.HardwareTrust == HardwareTrustNone) != (c.ManufacturerAuthorityID == "") {
-		return c, fmt.Errorf("manufacturer authority id must be present exactly when hardware trust is established")
+	if c.HardwareTrust != HardwareTrustNone && c.ManufacturerAuthorityID == "" {
+		return c, fmt.Errorf("hardware trust requires an enrolled manufacturer authority")
 	}
 	if c.ManufacturerAuthorityID != "" && !ValidScopeID(c.ManufacturerAuthorityID) {
 		return c, fmt.Errorf("manufacturer authority id %q is invalid", c.ManufacturerAuthorityID)
+	}
+	for field, value := range map[string]string{
+		"issuer SPKI": c.IssuerSPKI, "core signer SPKI": c.CoreSignerSPKI,
+		"core record fingerprint":   c.CoreAttestationFingerprint,
+		"commissioning signer SPKI": c.CommissioningSignerSPKI, "registry signer SPKI": c.RegistrySignerSPKI,
+	} {
+		if value != "" && !certificateFingerprintRe.MatchString(value) {
+			return c, fmt.Errorf("%s must be 64 lowercase hexadecimal characters", field)
+		}
+	}
+	if c.ManufacturerAuthorityID == "" && (c.CoreSignerSPKI != "" || c.CoreAttestationFingerprint != "" || c.HardwareProduct != 0 || c.HardwareRevision != 0 || c.AttestationTier != AttestationNone) {
+		return c, fmt.Errorf("software enrollment cannot claim manufacturer evidence")
+	}
+	if c.AttestationTier == AttestationVerifiedV1Core && (c.ManufacturerAuthorityID == "" || c.CoreSignerSPKI == "" || c.CoreAttestationFingerprint == "" || c.HardwareProduct == 0) {
+		return c, fmt.Errorf("verified core requires enrolled manufacturer, signer, fingerprint and product")
 	}
 	if c.CommissioningFingerprint != "" && !certificateFingerprintRe.MatchString(c.CommissioningFingerprint) {
 		return c, fmt.Errorf("commissioning fingerprint must be 64 lowercase hexadecimal characters")
@@ -458,7 +485,10 @@ func (c ObserverContext) PublicAttributed() bool {
 // the verified commissioning record and must be empty exactly when trust is
 // none; the result is normalized so a malformed pair can never reach a receipt.
 func (c ObserverContext) WithSessionEvidence(trust HardwareTrust, manufacturerAuthorityID, fingerprint string) (ObserverContext, error) {
-	c.HardwareTrust, c.ManufacturerAuthorityID, c.CommissioningFingerprint = trust, manufacturerAuthorityID, fingerprint
+	if manufacturerAuthorityID != c.ManufacturerAuthorityID {
+		return c, fmt.Errorf("evidence manufacturer differs from enrollment")
+	}
+	c.HardwareTrust, c.CommissioningFingerprint = trust, fingerprint
 	return c.Normalize()
 }
 
@@ -473,7 +503,7 @@ func (c ObserverContext) WithCredentialTier(tier CredentialTier) ObserverContext
 // membership, credentials, attestation, or publication takes effect within the
 // documented cache/recheck bound.
 //
-// HardwareTrust, ManufacturerAuthorityID and CommissioningFingerprint are deliberately not compared.
+// HardwareTrust, session signer pins and CommissioningFingerprint are not compared.
 // They are session evidence, not authorization: no authorization source ever
 // resolves them, so including them would make every periodic recheck of a
 // commissioned device look like a policy change, and would let one observer's
@@ -487,6 +517,10 @@ func (c ObserverContext) AuthorizationEqual(other ObserverContext) bool {
 		c.EnrollmentID == other.EnrollmentID && c.CollectorInstanceID == other.CollectorInstanceID &&
 		c.CredentialTier == other.CredentialTier && c.CredentialFingerprint == other.CredentialFingerprint &&
 		c.AttestationTier == other.AttestationTier &&
+		c.OperationalAuthorityID == other.OperationalAuthorityID && c.ManufacturerAuthorityID == other.ManufacturerAuthorityID &&
+		c.IssuerSPKI == other.IssuerSPKI && c.CoreSignerSPKI == other.CoreSignerSPKI &&
+		c.CoreAttestationFingerprint == other.CoreAttestationFingerprint &&
+		c.HardwareProduct == other.HardwareProduct && c.HardwareRevision == other.HardwareRevision &&
 		c.Publication.AggregateUse == other.Publication.AggregateUse &&
 		c.Publication.StationMetadata == other.Publication.StationMetadata &&
 		c.Publication.EventVisibility == other.Publication.EventVisibility &&

@@ -80,7 +80,7 @@ snapshot_interval        = "5m"  # persist each feed to the historian for replay
 # addr      = "0.0.0.0:5580"
 # tls_cert  = "/usr/local/etc/navlistener/push.crt"
 # tls_key   = "/usr/local/etc/navlistener/push.key"
-# client_ca = "/usr/local/etc/navlistener/fleet-ca.crt"  # set to require mTLS (cert tiers)
+# require_client_certificate = true # use exact registered Issuing intermediates
 ack_interval = "1s"
 
 # Hardware evidence verification for the push endpoint (docs/COMMISSIONING.md).
@@ -89,7 +89,15 @@ ack_interval = "1s"
 # stamps the result on every receipt as hardware_trust (none, open, test, trusted).
 # Evidence labels data and never refuses a session. Without manufacturer_keys,
 # evidence is read and answered "unconfigured". The files hold public keys only.
-# [hardware_trust]
+# [[operational_authority]]
+# id = "example-operations"
+# enabled = true
+# roots = ["/usr/local/etc/navlistener/root-a.crt", "/usr/local/etc/navlistener/root-b.crt"]
+# issuers = ["/usr/local/etc/navlistener/issuing-a.crt", "/usr/local/etc/navlistener/issuing-b.crt"]
+# manufacturer_authorities = ["example-manufacturing"]
+#
+# [[manufacturer_authority]]
+# enabled = true
 # manufacturer_authority_id = "example-manufacturing"
 # manufacturer_keys = ["/usr/local/etc/navlistener/manufacturer-1.pem"]
 #
@@ -106,6 +114,17 @@ ack_interval = "1s"
 # a startup WARNING: the registry is then monotonic only within one process.
 # registry_state = "/var/db/navlistener/registry.state"
 # require_registry_entry = false   # true withholds trust from boards the registry does not list
+#
+# [[manufacturer_authority.product_policy]]
+# product = 1
+# revision = 258
+# rtc_models = [0, 1] # explicit approved assemblies, not inferred from a signature
+# require_rtc_eui = false
+# Customer issuers and manufacturers are separate authority tables, never extra
+# keys in this manufacturer's bundle. Each has its own product policy and registry
+# floor. Explicitly pair customer operational authority with this manufacturer to
+# admit customer-issued credentials on existing hardware without relabeling it.
+# Hardware enrollments use navcontrol and [authorization], not bootstrap rows.
 
 # Outbound federation authorization is configured and validated before any peer
 # transport exists. A source's receipt/current policy must ALSO permit this exact

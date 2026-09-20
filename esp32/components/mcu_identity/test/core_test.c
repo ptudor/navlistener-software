@@ -143,6 +143,14 @@ static void test_validation(void)
     assert(!nvf_commission_validate(&s));
     s.identity_flags = NVF_IDENTITY_RTC_PRESENT; s.rtc_model_id = NVF_RTC_MCP79412;
     assert(!nvf_commission_validate(&s));
+    s.rtc_model_id = NVF_RTC_DS3231;
+    assert(!nvf_commission_validate(&s));
+    s.identity_flags |= NVF_IDENTITY_RTC_EUI_BOUND;
+    memcpy(s.rtc_eui64, good.rtc_eui64, 8);
+    assert(nvf_commission_validate(&s)); /* DS3231 has no factory EUI. */
+    s.identity_flags = NVF_IDENTITY_RTC_PRESENT;
+    memset(s.rtc_eui64, 0, 8);
+    assert(!nvf_commission_validate(&s));
     s.rtc_eui64[7] = 1; assert(nvf_commission_validate(&s));
 #undef REJECT
 
@@ -264,6 +272,21 @@ static void test_pss(void)
 
 int main(void)
 {
+    const char *variants[] = {"trusted-no-rtc", "open-no-rtc", "test-no-rtc", "mcp79412-model", "ds3231-model"};
+    for (unsigned i = 0; i < sizeof variants / sizeof variants[0]; i++) {
+        char name[64];
+        uint8_t bytes[NVF_COMMISSION_STATEMENT_SIZE], expected[32], actual[32];
+        snprintf(name, sizeof name, "%s-statement", variants[i]);
+        assert(fixture(name, bytes, sizeof bytes) == sizeof bytes);
+        nvf_commission_statement_t parsed;
+        assert(nvf_commission_parse(bytes, sizeof bytes, &parsed));
+        assert(parsed.identity_flags == (i < 3 ? 0 : NVF_IDENTITY_RTC_PRESENT));
+        assert(parsed.rtc_model_id == (i < 3 ? 0 : i - 2));
+        snprintf(name, sizeof name, "%s-digest", variants[i]);
+        assert(fixture(name, expected, sizeof expected) == sizeof expected);
+        assert(nvf_commission_digest(bytes, ref_sha256, actual));
+        assert(!memcmp(expected, actual, 32));
+    }
     assert(fixture("statement", statement, sizeof statement) == sizeof statement);
     assert(fixture("record", record, sizeof record) == sizeof record);
     assert(fixture("digest", digest, 32) == 32 && fixture("exported", exported, 32) == 32);

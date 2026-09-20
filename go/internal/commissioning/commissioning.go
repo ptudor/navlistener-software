@@ -107,6 +107,7 @@ type RTCModel uint16
 const (
 	RTCModelNone     RTCModel = 0
 	RTCModelMCP79412 RTCModel = 1
+	RTCModelDS3231   RTCModel = 2 // descriptor only; no factory instance EUI
 )
 
 // MCUFamily names the microcontroller family the statement describes.
@@ -192,10 +193,13 @@ func (s Statement) Validate() error {
 		if s.RTCModel != RTCModelNone {
 			return errors.New("RTC model must be zero when no RTC is declared")
 		}
-	} else if s.RTCModel != RTCModelMCP79412 {
+	} else if s.RTCModel != RTCModelMCP79412 && s.RTCModel != RTCModelDS3231 {
 		return fmt.Errorf("RTC model %d is unknown", uint16(s.RTCModel))
 	}
 	if rtcBound {
+		if s.RTCModel != RTCModelMCP79412 {
+			return errors.New("RTC model has no factory EUI-64")
+		}
 		if blank(s.RTCEUI64[:]) {
 			return errors.New("RTC EUI-64 is blank or erased")
 		}

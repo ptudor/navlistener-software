@@ -194,7 +194,7 @@ func run() int {
 		}
 		pushSrv.SetReauthorizationInterval(cfg.Authorization.RecheckEvery)
 		pushSrv.SetCollectorInstance(cfg.Collector.InstanceID)
-		evidenceVerifier, err := startHardwareTrust(ctx, cfg.HardwareTrust, log)
+		evidenceVerifier, err := startManufacturers(ctx, cfg.ManufacturerAuthorities, log)
 		if err != nil {
 			log.Error("hardware trust init failed", "error", err)
 			return 1
@@ -346,7 +346,7 @@ func run() int {
 	}
 	if updateManager != nil {
 		defer updateManager.Close()
-		updateManager.SetHardwareVerification(cfg.HardwareTrust.Enabled())
+		updateManager.SetHardwareVerification(cfg.ManufacturerAuthorities.Enabled())
 		if pushSrv != nil {
 			pushSrv.SetUpdates(updateManager)
 		}
@@ -1658,16 +1658,8 @@ func printConfigSummary(cfg *config.Config) {
 	}
 	fmt.Printf("  authorization:  %s\n", authSource)
 	hardwareTrust := "(disabled: evidence is answered unconfigured)"
-	if h := cfg.HardwareTrust; h.Enabled() {
-		hardwareTrust = fmt.Sprintf("%d manufacturer key(s), no registry", len(h.ManufacturerKeys))
-		if h.Registry != "" {
-			state := h.RegistryState
-			if state == "" {
-				state = "not recorded"
-			}
-			hardwareTrust = fmt.Sprintf("%d manufacturer key(s), registry %s (%d key(s), reload %s, sequence state %s, require entry %t)",
-				len(h.ManufacturerKeys), h.Registry, len(h.RegistryKeys), h.RegistryReload, state, h.RequireRegistryEntry)
-		}
+	if cfg.ManufacturerAuthorities.Enabled() {
+		hardwareTrust = fmt.Sprintf("%d scoped manufacturer authorities", len(cfg.ManufacturerAuthorities))
 	}
 	fmt.Printf("  hardware trust: %s\n", hardwareTrust)
 	fmt.Printf("  log:            %s / %s\n", cfg.Logging.Level, cfg.Logging.Format)

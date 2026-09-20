@@ -467,7 +467,7 @@ func TestRegistrySignAndVerify(t *testing.T) {
 		if err := json.Unmarshal([]byte(`{"board_eui64":"00"}`), &row); err == nil {
 			t.Fatal("registry row omitted rtc_eui64")
 		}
-		if err := json.Unmarshal([]byte(`{"rtc_eui64":null}`), &row); err != nil {
+		if err := json.Unmarshal([]byte(`{"rtc_model_id":0,"rtc_eui64":null}`), &row); err != nil {
 			t.Fatalf("explicit null RTC rejected: %v", err)
 		}
 	})
@@ -496,7 +496,7 @@ func TestEvaluate(t *testing.T) {
 
 	newVerifier := func(t *testing.T, requireEntry bool, reg *Registry) *Verifier {
 		t.Helper()
-		v, err := NewVerifier(testManufacturerAuthority, mfgKeys)
+		v, err := newTestVerifier(testManufacturerAuthority, mfgKeys)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -613,7 +613,7 @@ func TestRegistryNeverMovesBackwards(t *testing.T) {
 	mfg, mfgKeys := testSigner(t)
 	ops, opsKeys := testSigner(t)
 	record, _ := Sign(trustedStatement(t), mfg)
-	v, _ := NewVerifier(testManufacturerAuthority, mfgKeys)
+	v, _ := newTestVerifier(testManufacturerAuthority, mfgKeys)
 	if _, err := v.LoadRegistry(nil); err == nil {
 		t.Fatal("registry loaded with no pinned registry keys")
 	}
@@ -638,7 +638,7 @@ func TestWatchRegistryReloadsAndKeepsLastGood(t *testing.T) {
 	ops, opsKeys := testSigner(t)
 	record, _ := Sign(trustedStatement(t), mfg)
 	path := filepath.Join(t.TempDir(), "registry.json")
-	v, _ := NewVerifier(testManufacturerAuthority, mfgKeys)
+	v, _ := newTestVerifier(testManufacturerAuthority, mfgKeys)
 	if err := v.UseRegistry(opsKeys, false); err != nil {
 		t.Fatal(err)
 	}
@@ -716,7 +716,7 @@ func TestRecheckFollowsTheRegistry(t *testing.T) {
 	record, _ := Sign(s, mfg)
 	exported := exportedFor("session")
 	evidence := Evidence{Record: record, MCUKey: mcuKeyDER(t, mcuKey()), Proof: prove(t, mcuKey(), exported, record)}
-	v, _ := NewVerifier(testManufacturerAuthority, mfgKeys)
+	v, _ := newTestVerifier(testManufacturerAuthority, mfgKeys)
 	if err := v.UseRegistry(opsKeys, false); err != nil {
 		t.Fatal(err)
 	}

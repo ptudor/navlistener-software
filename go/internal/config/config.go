@@ -23,6 +23,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	toml "github.com/pelletier/go-toml/v2"
+	"github.com/ptudor/navlistener/internal/authority"
 	"github.com/ptudor/navlistener/internal/commissioning"
 	"github.com/ptudor/navlistener/internal/federation"
 	"github.com/ptudor/navlistener/internal/identity"
@@ -85,18 +86,20 @@ var knownDialTypes = map[string]bool{
 
 // Config is the whole-daemon configuration.
 type Config struct {
-	Updates       updates.Config `toml:"updates"`
-	Collector     Collector      `toml:"collector"`
-	Logging       Logging        `toml:"logging"`
-	Metrics       Metrics        `toml:"metrics"`
-	State         State          `toml:"state"`
-	Store         Store          `toml:"store"`
-	Serve         Serve          `toml:"serve"`
-	Push          Push           `toml:"push"`
-	Authorization Authorization  `toml:"authorization"`
-	HardwareTrust HardwareTrust  `toml:"hardware_trust"`
-	Federation    Federation     `toml:"federation"`
-	Ingest        []Source       `toml:"ingest"`
+	Updates                 updates.Config          `toml:"updates"`
+	Collector               Collector               `toml:"collector"`
+	Logging                 Logging                 `toml:"logging"`
+	Metrics                 Metrics                 `toml:"metrics"`
+	State                   State                   `toml:"state"`
+	Store                   Store                   `toml:"store"`
+	Serve                   Serve                   `toml:"serve"`
+	Push                    Push                    `toml:"push"`
+	Authorization           Authorization           `toml:"authorization"`
+	ManufacturerAuthorities ManufacturerAuthorities `toml:"manufacturer_authority"`
+	OperationalAuthorities  []authority.Operational `toml:"operational_authority"`
+	Authorities             *authority.Set          `toml:"-"`
+	Federation              Federation              `toml:"federation"`
+	Ingest                  []Source                `toml:"ingest"`
 
 	// ShutdownTimeout bounds graceful shutdown; kept out of the wire format.
 	ShutdownTimeout time.Duration `toml:"-"`
@@ -190,6 +193,8 @@ type Authorization struct {
 // device's evidence is read and answered "unconfigured", and every session is
 // hardware_trust none. The files hold public keys only.
 type HardwareTrust struct {
+	Active   bool                          `toml:"enabled"`
+	Products []commissioning.ProductPolicy `toml:"product_policy"`
 	// ManufacturerAuthorityID selects the administrative authority whose key set
 	// is pinned below. It also scopes the registry and rollback floor.
 	ManufacturerAuthorityID string `toml:"manufacturer_authority_id"`
@@ -216,7 +221,18 @@ type HardwareTrust struct {
 }
 
 // Enabled reports whether this collector verifies hardware evidence at all.
-func (h HardwareTrust) Enabled() bool { return len(h.ManufacturerKeys) > 0 }
+func (h HardwareTrust) Enabled() bool { return h.Active && len(h.ManufacturerKeys) > 0 }
+
+type ManufacturerAuthorities []HardwareTrust
+
+func (a ManufacturerAuthorities) Enabled() bool {
+	for _, h := range a {
+		if h.Enabled() {
+			return true
+		}
+	}
+	return false
+}
 
 // NewVerifier pins the configured keys. The registry itself is loaded by the
 // caller — once by finalize, to fail -check-config on a registry that does not
@@ -225,18 +241,21 @@ func (h HardwareTrust) Enabled() bool { return len(h.ManufacturerKeys) > 0 }
 func (h HardwareTrust) NewVerifier() (*commissioning.Verifier, error) {
 	manufacturer, err := commissioning.LoadKeySet(h.ManufacturerKeys)
 	if err != nil {
-		return nil, fmt.Errorf("hardware_trust.manufacturer_keys: %w", err)
+		return nil, fmt.Errorf("manufacturer_authority.manufacturer_keys: %w", err)
 	}
 	verifier, err := commissioning.NewVerifier(h.ManufacturerAuthorityID, manufacturer)
 	if err != nil {
 		return nil, fmt.Errorf("hardware_trust: %w", err)
+	}
+	if err := verifier.SetProducts(h.Products); err != nil {
+		return nil, err
 	}
 	if h.Registry == "" {
 		return verifier, nil
 	}
 	registryKeys, err := commissioning.LoadKeySet(h.RegistryKeys)
 	if err != nil {
-		return nil, fmt.Errorf("hardware_trust.registry_keys: %w", err)
+		return nil, fmt.Errorf("manufacturer_authority.registry_keys: %w", err)
 	}
 	if err := verifier.UseRegistry(registryKeys, h.RequireRegistryEntry); err != nil {
 		return nil, fmt.Errorf("hardware_trust: %w", err)
@@ -250,9 +269,11 @@ func (h HardwareTrust) NewVerifier() (*commissioning.Verifier, error) {
 // authenticate with a bearer token whose SHA-256 is stored here (the token itself is
 // shown once at enrollment and never committed).
 type Push struct {
-	Addr    string `toml:"addr"`     // e.g. 0.0.0.0:5580; empty = push disabled
-	TLSCert string `toml:"tls_cert"` // server certificate (PEM)
-	TLSKey  string `toml:"tls_key"`  // server private key (PEM)
+	Authorities              *authority.Set `toml:"-"`
+	RequireClientCertificate bool           `toml:"require_client_certificate"`
+	Addr                     string         `toml:"addr"`     // e.g. 0.0.0.0:5580; empty = push disabled
+	TLSCert                  string         `toml:"tls_cert"` // server certificate (PEM)
+	TLSKey                   string         `toml:"tls_key"`  // server private key (PEM)
 	// ClientCA, when set, enables mTLS: connecting feeders must present a client
 	// certificate signed by this CA (the software/ATECC cert tiers). The bearer
 	// token stays the bootstrap tier and is always checked.
@@ -304,9 +325,10 @@ type FederationExportGrant struct {
 // is the hex-encoded SHA-256 of the bearer token; Feeds is the allow-list of feed
 // types this observer may push (the as-built Device.feed_types grant, DESIGN §3).
 type PushObserver struct {
-	Station     string   `toml:"station"`
-	TokenSHA256 string   `toml:"token_sha256"`
-	Feeds       []string `toml:"feeds"`
+	Station                string   `toml:"station"`
+	OperationalAuthorityID string   `toml:"operational_authority_id"`
+	TokenSHA256            string   `toml:"token_sha256"`
+	Feeds                  []string `toml:"feeds"`
 
 	// Config-backed bootstrap form of the server-resolved administrative and
 	// publication context (docs/GROUPS-AND-FEDERATION.md §5.1). Omitted values
@@ -510,15 +532,16 @@ func (c *Config) holdsSecrets() bool {
 
 func defaults() *Config {
 	return &Config{
-		Collector:       Collector{InstanceID: identity.LocalCollectorInstance},
-		Logging:         Logging{Level: "info", Format: "json"},
-		Metrics:         Metrics{Addr: "127.0.0.1:9100"},
-		State:           State{Shards: 16, SVTTLs: "2h", PropagateEverys: "1s"},
-		Store:           Store{BatchSize: 1000, BatchEverys: "1s", RawRetention: "7 days", CompressAfter: "1 day"},
-		Authorization:   Authorization{CacheTTLs: "30s", RecheckEverys: "10s"},
-		Serve:           Serve{Audience: "public"},
-		Push:            Push{MaxConns: 512},
-		ShutdownTimeout: 15 * time.Second,
+		OperationalAuthorities: []authority.Operational{{ID: "local", Enabled: true}},
+		Collector:              Collector{InstanceID: identity.LocalCollectorInstance},
+		Logging:                Logging{Level: "info", Format: "json"},
+		Metrics:                Metrics{Addr: "127.0.0.1:9100"},
+		State:                  State{Shards: 16, SVTTLs: "2h", PropagateEverys: "1s"},
+		Store:                  Store{BatchSize: 1000, BatchEverys: "1s", RawRetention: "7 days", CompressAfter: "1 day"},
+		Authorization:          Authorization{CacheTTLs: "30s", RecheckEverys: "10s"},
+		Serve:                  Serve{Audience: "public"},
+		Push:                   Push{MaxConns: 512},
+		ShutdownTimeout:        15 * time.Second,
 	}
 }
 
@@ -821,34 +844,90 @@ func (c *Config) finalize() error {
 // error rather than a no-op: an operator who set require_registry_entry with no
 // registry would otherwise believe unlisted boards are refused when nothing is.
 func (c *Config) finalizeHardwareTrust() error {
-	h := &c.HardwareTrust
-	if !h.Enabled() {
-		if h.ManufacturerAuthorityID != "" || h.Registry != "" || len(h.RegistryKeys) > 0 || h.RegistryReloads != "" || h.RegistryState != "" || h.RequireRegistryEntry {
-			return fmt.Errorf("hardware_trust: registry settings require manufacturer_keys")
+	manufacturers := map[string]bool{}
+	for i := range c.ManufacturerAuthorities {
+		h := &c.ManufacturerAuthorities[i]
+		if _, exists := manufacturers[h.ManufacturerAuthorityID]; exists {
+			return fmt.Errorf("duplicate manufacturer authority %q", h.ManufacturerAuthorityID)
 		}
-		return nil
+		manufacturers[h.ManufacturerAuthorityID] = h.Active
+		if err := c.finalizeManufacturer(h); err != nil {
+			return err
+		}
+	}
+	var err error
+	c.Authorities, err = authority.New(c.OperationalAuthorities, manufacturers, time.Now())
+	if err != nil {
+		return err
+	}
+	c.Push.Authorities = c.Authorities
+	if c.Push.RequireClientCertificate && len(c.Authorities.ClientPool().Subjects()) == 0 {
+		return fmt.Errorf("push.require_client_certificate requires an enabled Issuing intermediate")
+	}
+	seen := map[string]string{}
+	paths := map[string]bool{}
+	for _, h := range c.ManufacturerAuthorities {
+		for role, files := range map[string][]string{"manufacturer": h.ManufacturerKeys, "registry": h.RegistryKeys} {
+			if len(files) == 0 {
+				continue
+			}
+			keys, err := commissioning.LoadKeySet(files)
+			if err != nil {
+				return err
+			}
+			for _, key := range keys.PublicKeys() {
+				pin := commissioning.KeyFingerprint(key)
+				owner := h.ManufacturerAuthorityID + ":" + role
+				if prior, exists := seen[pin]; exists {
+					return fmt.Errorf("public key registered for both %s and %s", prior, owner)
+				}
+				if c.Authorities.CAKey(pin) {
+					return fmt.Errorf("%s uses an operational CA key", owner)
+				}
+				seen[pin] = owner
+			}
+		}
+		if h.RegistryState != "" {
+			path := filepath.Clean(h.RegistryState)
+			if paths[path] {
+				return fmt.Errorf("registry state path shared across manufacturer authorities")
+			}
+			paths[path] = true
+		}
+	}
+	for _, o := range c.Push.Observers {
+		if err := c.Authorities.Allows(o.ObserverContext.OperationalAuthorityID, ""); err != nil {
+			return fmt.Errorf("push observer %s: %w", o.Station, err)
+		}
+	}
+	return nil
+}
+
+func (c *Config) finalizeManufacturer(h *HardwareTrust) error {
+	if len(h.ManufacturerKeys) == 0 {
+		return fmt.Errorf("manufacturer authority settings require manufacturer_keys")
 	}
 	if !identity.ValidScopeID(h.ManufacturerAuthorityID) {
-		return fmt.Errorf("hardware_trust.manufacturer_authority_id is required and must be a valid scope id")
+		return fmt.Errorf("manufacturer_authority.manufacturer_authority_id is required and must be a valid scope id")
 	}
 	if c.Push.Addr == "" {
-		return fmt.Errorf("hardware_trust requires the push endpoint: evidence arrives only on a GNF1 session")
+		return fmt.Errorf("manufacturer_authority requires the push endpoint: evidence arrives only on a GNF1 session")
 	}
 	switch {
 	case h.Registry != "" && len(h.RegistryKeys) == 0:
-		return fmt.Errorf("hardware_trust.registry requires registry_keys")
+		return fmt.Errorf("manufacturer_authority.registry requires registry_keys")
 	case h.Registry == "" && len(h.RegistryKeys) > 0:
-		return fmt.Errorf("hardware_trust.registry_keys has no effect without registry")
+		return fmt.Errorf("manufacturer_authority.registry_keys has no effect without registry")
 	case h.Registry == "" && h.RequireRegistryEntry:
-		return fmt.Errorf("hardware_trust.require_registry_entry has no effect without registry")
+		return fmt.Errorf("manufacturer_authority.require_registry_entry has no effect without registry")
 	case h.Registry == "" && h.RegistryReloads != "":
-		return fmt.Errorf("hardware_trust.registry_reload has no effect without registry")
+		return fmt.Errorf("manufacturer_authority.registry_reload has no effect without registry")
 	case h.Registry == "" && h.RegistryState != "":
-		return fmt.Errorf("hardware_trust.registry_state has no effect without registry")
+		return fmt.Errorf("manufacturer_authority.registry_state has no effect without registry")
 	case h.RegistryState != "" && !filepath.IsAbs(h.RegistryState):
-		return fmt.Errorf("hardware_trust.registry_state %q must be an absolute path", h.RegistryState)
+		return fmt.Errorf("manufacturer_authority.registry_state %q must be an absolute path", h.RegistryState)
 	}
-	if err := parseDurPositive("hardware_trust.registry_reload", h.RegistryReloads, &h.RegistryReload, 30*time.Second); err != nil {
+	if err := parseDurPositive("manufacturer_authority.registry_reload", h.RegistryReloads, &h.RegistryReload, 30*time.Second); err != nil {
 		return err
 	}
 	verifier, err := h.NewVerifier()
@@ -862,20 +941,20 @@ func (c *Config) finalizeHardwareTrust() error {
 	// registry the daemon would refuse and never creates or touches the file.
 	if h.RegistryState == "" {
 		c.Warnings = append(c.Warnings,
-			"hardware_trust.registry is set without registry_state: a restart forgets the newest registry sequence adopted, so an older registry that still carries a valid signature would be accepted and could restore a withdrawn board")
+			"manufacturer_authority.registry is set without registry_state: a restart forgets the newest registry sequence adopted, so an older registry that still carries a valid signature would be accepted and could restore a withdrawn board")
 	} else {
 		floor, err := commissioning.ReadRegistryState(h.RegistryState, h.ManufacturerAuthorityID)
 		if err != nil {
-			return fmt.Errorf("hardware_trust.registry_state: %w", err)
+			return fmt.Errorf("manufacturer_authority.registry_state: %w", err)
 		}
 		verifier.SetRegistryFloor(floor)
 	}
 	data, err := os.ReadFile(h.Registry)
 	if err != nil {
-		return fmt.Errorf("hardware_trust.registry: %w", err)
+		return fmt.Errorf("manufacturer_authority.registry: %w", err)
 	}
 	if _, err := verifier.LoadRegistry(data); err != nil {
-		return fmt.Errorf("hardware_trust.registry %q: %w", h.Registry, err)
+		return fmt.Errorf("manufacturer_authority.registry %q: %w", h.Registry, err)
 	}
 	return nil
 }
@@ -1195,6 +1274,9 @@ func (c *Config) finalizePush() error {
 			return fmt.Errorf("push.observer %q identity: %w", o.Station, err)
 		}
 		o.ObserverContext.FeedGrants = append([]string(nil), o.Feeds...)
+		if o.OperationalAuthorityID != "" {
+			o.ObserverContext.OperationalAuthorityID = o.OperationalAuthorityID
+		}
 		o.ObserverContext.DeclaredCapabilities = capabilitySignals(o.CapDecl)
 		o.ObserverContext, err = o.ObserverContext.Normalize()
 		if err != nil {

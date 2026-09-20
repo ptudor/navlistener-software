@@ -385,7 +385,7 @@ What this product uses:
 | Slot | Slot name | Use here |
 |---|---|---|
 | 0 | `SLOT_ROVER_IDENTITY` (alias `SLOT_DEVICE_IDENTITY`) | the observer's operational P-256 key — signs the CSR and the mTLS handshake. GenKey-regenerable, never slot-locked, so a sold board re-enrolls against the buyer's CA. |
-| 13 | `SLOT_TRUST_ANCHOR` | optional pinned copy of the Django CA public key. The mTLS chain is verified in the TLS stack with the CA cert in flash — this slot only matters if the observer ever verifies signed commands/updates outside TLS. |
+| 13 | `SLOT_TRUST_ANCHOR` | optional pinned operational CA public key. The mTLS chain is verified in the TLS stack with the CA cert in flash — this slot only matters if the observer ever verifies signed commands/updates outside TLS. |
 | 14 | `SLOT_MFG_ATTESTATION` | the manufacturer authenticity signature — §4.1b. |
 | 15 | `SLOT_DEVICE_CONFIG` | genealogy/provenance record (mutable), shared shape with shepherd. |
 
@@ -480,19 +480,17 @@ Formats, verification order and the registry that withdraws boards are normative
 
 ### 4.2 Provisioning constraints — get these right before writing five parts
 
-Each is enforced by code today, and each is baked into a certificate that an ATECC will sign
-exactly once:
+These constraints are enforced at controlled enrollment and collector admission:
 
-1. **DNS SAN, not CN.** `push.go:479-485` requires **exactly one DNS SAN** equal to the
-   canonical observer id. `DESIGN.md §node identity` still says `CN = receiver_id`; that wording
-   is stale relative to the implementation. A CSR carrying only a CN is rejected at handshake.
+1. **DNS SAN, not CN.** The collector requires **exactly one DNS SAN** equal to the
+   canonical observer id. A CSR carrying only a CN is rejected.
 2. **Character set.** `config.ValidObserverID` (`go/internal/config/config.go:683`) permits only
    `[A-Za-z0-9.-]`, max 253. The conventional `00:04:A3:FF:FE:12:34:56` EUI-64 rendering is
    therefore invalid — as an observer id *and* as a DNS name.
 
    **Decided: lowercase, hyphen-separated byte pairs, as a bare label** —
-   `00-04-a3-ff-fe-12-34-56`. Applies to radiolistener too; the two products share one CA and
-   one `devices` table.
+   `00-04-a3-ff-fe-12-34-56`. NavListen owns its enrollment schema and authority
+   mappings; it does not require a shared radio/GNSS device table or CA.
 
    - *Not bare hex* (`0004a3fffe123456`): a hex string is not guaranteed to contain a letter,
      and an all-numeric single DNS label is a known trouble class (parsers that attempt it as
@@ -514,7 +512,7 @@ exactly once:
 
 **Buy the provisionable ATECC608C.** Trust&Go / TrustFLEX parts ship pre-provisioned and locked
 to Microchip's certificate chain; this design has the device generate its own key and the
-**Django CA** sign its CSR. The config-zone lock is permanent, so validate the slot
+registered **Issuing intermediate** sign its CSR. The config-zone lock is permanent, so validate the slot
 configuration on a scrap part before locking production units.
 
 ### 4.3 Three unique IDs on one board
@@ -539,9 +537,13 @@ commissioning generation, but does not change the observer identity or force
 operational re-enrollment. That is an auditable event, and it must be a decision rather
 than a surprise, because the failure is otherwise silent.
 
-**Boot-time binding check.** Compare the certificate's SAN against the EUI-64 read live from the
-RTC; on mismatch, refuse to feed and report. One I²C read catches a swapped RTC, a cloned
-certificate on different hardware, and a mis-provisioned board.
+**Live binding check.** The canonical observer name comes from the board EEPROM,
+not the RTC. Commissioning checks the live board/ATECC/MCU identity and any bound
+RTC instance separately. Missing or mismatched bound RTC identity withholds
+commissioning evidence with a specific fault; an invalid calendar is measurement
+invalidity, not an invented identity mismatch. A board without a bound RTC has no
+RTC-based enrollment requirement. See [CONTROL-PLANE.md](CONTROL-PLANE.md) for
+controlled enrollment, key rotation and approved component replacement.
 
 ---
 
@@ -1549,12 +1551,14 @@ from the sibling, and where it deliberately does not:
 | MCU | C6 and ESP32 (Xtensa) | ESP32-C6 development board and custom ESP32-S3 observer | **software support implemented** — see `esp32/README.md` |
 | Identity root | rover pubkey + ATECC serial | EUI-64 name + ATECC proof | **deliberate divergence** |
 
-**On the identity divergence.** Shepherd's rovers join a Thread fleet against an operator pubkey;
-navlistener observers present mTLS to a collector behind the Django CA that radiolistener already
-runs. navlistener and radiolistener share one CA and one `devices` table, so this product follows
-*that* convention (EUI-64 as the certificate name), and the ATECC serial is recorded at enrollment
-rather than being the name itself. The two models are compatible — ours is a superset — but they
-are not interchangeable, and a future shared provisioning tool must not assume one.
+**On the identity divergence.** Shepherd's rovers join a Thread fleet against an
+operator public key. NavListen uses the board EEPROM EUI-64 as the observer name
+and records the ATECC serial as part of its permanent core attestation. Its Go
+control plane owns enrollment and registers exact Issuing intermediates and
+independent manufacturer authorities. These identity models are not
+interchangeable; a shared provisioning tool must select the intended protocol
+and key role explicitly. Current ESP32 push firmware uses bearer credentials;
+ATECC-backed mTLS remains a separately integrated firmware path.
 
 **On the status-LED divergence.** Shepherd drives WS2812B strips, including `led_pps_sync.c`.
 This board needs four states per position and nothing more (§2.1), so an addressable RGB pixel is

@@ -1,19 +1,26 @@
 # Proposal: board identity and basic GNSS observers
 
-Status: **the pre-launch v1 wire-format migration is implemented in this
-repository; the broader control-plane and basic-board rollout remains under
-implementation review**.
+Status: **accepted v1 contract implemented across software formats, authority
+policy and Go enrollment; physical basic-board qualification remains a release
+gate**.
 
 Prepared: 2026-09-19. Implementation baseline examined: `f847a1f`.
-Wire-format implementation updated: 2026-09-19.
+Software implementation updated: 2026-09-19.
 
 Implementation update: core attestation v1, the 153-byte commissioning
 statement/225-byte record, registry authority scoping, board-derived observer
 identity, exact live firmware matching, shared fixtures, and the maintained
 factory signer format have replaced the development prototypes. There is no
-prototype compatibility parser. Remaining work described here includes the
-external shared control-plane authority model, an independently ported no-RTC
-board target, and physical burn/bench acceptance.
+prototype compatibility parser. The dedicated [Go control plane](../CONTROL-PLANE.md)
+now owns authority registration, explicit pairings, enrollment/service snapshots,
+global identity uniqueness, certificate activation and revocation. Collector
+admission matches exact Issuing SPKIs; manufacturer/registry keys, floors and
+product policies are scoped by enrolled manufacturer. Synthetic A/B/C/D cases
+include customer operational credentials on A/B hardware. Optional RTC formats
+include absent, MCP79412 and model-only DS3231 cases across the host implementations.
+An independently reviewed no-RTC board port and physical bench acceptance remain
+required before claiming a qualified hardware path. No hardware qualification is
+implied by software tests or build-only checks.
 
 This proposal makes the manifest EEPROM's factory EUI-64 the canonical identity
 of a hardware observer, binds it to the ATECC in the permanent manufacturer
@@ -33,9 +40,10 @@ Encoders emit v1 and decoders require v1; a future incompatible change
 increments the affected standard. There is no migration layer or alternate
 interpretation of prototype records.
 
-The existing [commissioning contract](../COMMISSIONING.md) is authoritative for
-the implemented formats. Normative words below describe the wider target where
-they go beyond that contract.
+This accepted proposal defines the implementation contract; the
+[commissioning reference](../COMMISSIONING.md) and [control-plane guide](../CONTROL-PLANE.md)
+document its implemented formats and workflows. The physical acceptance sections
+remain release requirements where they go beyond host validation.
 
 Reading guide:
 
@@ -855,8 +863,9 @@ separate manufacturer authority.
 - Preserve receipt-time snapshots. Old rows must not change identity or trust
   merely because the current device record changes.
 - Inventory affected SQL views, API serializers, UI enums, fixture data and
-  enrollment tools. The external control-plane schema is a separate dependency;
-  changing Go structs alone does not complete that work.
+  enrollment tools. The control-plane schema must implement these constraints;
+  changing collector structs alone does not complete that work. The accepted
+  implementation uses the dedicated Go API and its repository-owned schema.
 - Reuse existing authorization-view contracts where their shape remains valid;
   version a view if its schema actually changes. An additional accepted tier
   string still requires a coordinated validation update.
@@ -1164,7 +1173,7 @@ interpretation.
 
 ### D. Control plane, storage and clients
 
-- Update the external device/enrollment schema, authority-registration model,
+- Update the device/enrollment schema, authority-registration model,
   allowed-pairing policy and certificate issuance rules.
 - Replace the flat manufacturer-key configuration with scoped manufacturer
   authorities. Configure NavListen A/B slot-5 pins as one authority and add a

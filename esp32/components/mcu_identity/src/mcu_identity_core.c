@@ -37,8 +37,9 @@ const char *nvf_commission_validate(const nvf_commission_statement_t *s)
     if (rtc_bound && !rtc_present) return "RTC EUI-64 binding requires an RTC declaration";
     if (!rtc_present) {
         if (s->rtc_model_id != NVF_RTC_NONE) return "RTC model must be zero when no RTC is declared";
-    } else if (s->rtc_model_id != NVF_RTC_MCP79412) return "RTC model is unknown";
+    } else if (s->rtc_model_id != NVF_RTC_MCP79412 && s->rtc_model_id != NVF_RTC_DS3231) return "RTC model is unknown";
     if (rtc_bound) {
+        if (s->rtc_model_id != NVF_RTC_MCP79412) return "RTC model has no factory EUI-64";
         if (blank(s->rtc_eui64, sizeof s->rtc_eui64)) return "RTC EUI-64 is blank or erased";
     } else if (!all_zero(s->rtc_eui64, sizeof s->rtc_eui64))
         return "RTC EUI-64 must be zero when it is not bound";

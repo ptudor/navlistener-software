@@ -69,7 +69,7 @@ func TestRegistryFloorSurvivesARestart(t *testing.T) {
 
 	process := func(t *testing.T) *Verifier {
 		t.Helper()
-		v, err := NewVerifier(testManufacturerAuthority, mfgKeys)
+		v, err := newTestVerifier(testManufacturerAuthority, mfgKeys)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -106,7 +106,7 @@ func TestRegistryFloorSurvivesARestart(t *testing.T) {
 		t.Fatal("refused registry is in force")
 	}
 	// A configuration check predicts the same refusal without writing anything.
-	check, _ := NewVerifier(testManufacturerAuthority, mfgKeys)
+	check, _ := newTestVerifier(testManufacturerAuthority, mfgKeys)
 	if err := check.UseRegistry(opsKeys, false); err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestRegistryStateThatCannotBeWritten(t *testing.T) {
 	if err := os.WriteFile(registry, first, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	v, _ := NewVerifier(testManufacturerAuthority, mfgKeys)
+	v, _ := newTestVerifier(testManufacturerAuthority, mfgKeys)
 	if err := v.UseRegistry(opsKeys, false); err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestRegistryReloadIsAdoptedEvenWhenItCannotBeRecorded(t *testing.T) {
 	if err := os.WriteFile(registry, first, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	v, _ := NewVerifier(testManufacturerAuthority, mfgKeys)
+	v, _ := newTestVerifier(testManufacturerAuthority, mfgKeys)
 	if err := v.UseRegistry(opsKeys, false); err != nil {
 		t.Fatal(err)
 	}

@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/ptudor/navlistener/internal/identity"
+	"github.com/ptudor/navlistener/internal/strictjson"
 )
 
 // RegistryFormat names the signed registry envelope.
@@ -60,17 +60,15 @@ type RegistryBoard struct {
 func (b *RegistryBoard) UnmarshalJSON(data []byte) error {
 	type plain RegistryBoard
 	var decoded plain
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&decoded); err != nil {
+	if err := strictjson.Decode(data, &decoded); err != nil {
 		return err
-	}
-	if err := dec.Decode(&struct{}{}); err != io.EOF {
-		return errors.New("registry board has trailing content")
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
+	}
+	if value, ok := fields["rtc_model_id"]; !ok || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		return errors.New("rtc_model_id is required and cannot be null")
 	}
 	if _, ok := fields["rtc_eui64"]; !ok {
 		return errors.New("rtc_eui64 is required (use null when the record binds no RTC EUI-64)")
@@ -124,6 +122,7 @@ func SignRegistry(reg Registry, signer Signer) ([]byte, error) {
 // RegistryIndex is a verified registry keyed for lookup.
 type RegistryIndex struct {
 	ManufacturerAuthorityID string
+	SignerSPKI              string
 	Sequence                uint64
 	IssuedAt                time.Time
 	LedgerHead              string
@@ -154,13 +153,8 @@ func VerifyRegistry(data []byte, keys *KeySet, expectedAuthorityID string) (*Reg
 		return nil, fmt.Errorf("registry is %d bytes, limit %d", len(data), registryMaxBytes)
 	}
 	var env registryEnvelope
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&env); err != nil {
+	if err := strictjson.Decode(data, &env); err != nil {
 		return nil, fmt.Errorf("decode registry envelope: %w", err)
-	}
-	if err := dec.Decode(&struct{}{}); err != io.EOF {
-		return nil, errors.New("decode registry envelope: trailing content")
 	}
 	if env.Format != RegistryFormat {
 		return nil, fmt.Errorf("registry format %q is unsupported", env.Format)
@@ -171,6 +165,7 @@ func VerifyRegistry(data []byte, keys *KeySet, expectedAuthorityID string) (*Reg
 	}
 	d := digest(registryDomain, payload)
 	verified := false
+	var signerSPKI string
 	for _, s := range env.Signatures {
 		rawID, err := hex.DecodeString(s.KeyID)
 		if err != nil || len(rawID) != KeyIDSize {
@@ -189,23 +184,26 @@ func VerifyRegistry(data []byte, keys *KeySet, expectedAuthorityID string) (*Reg
 			return nil, fmt.Errorf("registry signature from %s: %w", s.KeyID, err)
 		}
 		verified = true
+		if pin := keys.SignerFingerprint(id); signerSPKI == "" || pin < signerSPKI {
+			signerSPKI = pin
+		}
 	}
 	if !verified {
 		return nil, errors.New("registry carries no signature from a pinned registry key")
 	}
 	var reg Registry
-	dec = json.NewDecoder(bytes.NewReader(payload))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&reg); err != nil {
+	if err := strictjson.Decode(payload, &reg); err != nil {
 		return nil, fmt.Errorf("decode registry payload: %w", err)
-	}
-	if err := dec.Decode(&struct{}{}); err != io.EOF {
-		return nil, errors.New("decode registry payload: trailing content")
 	}
 	if reg.ManufacturerAuthorityID != expectedAuthorityID {
 		return nil, fmt.Errorf("registry manufacturer authority %q does not match configured authority %q", reg.ManufacturerAuthorityID, expectedAuthorityID)
 	}
-	return indexRegistry(reg)
+	index, err := indexRegistry(reg)
+	if err != nil {
+		return nil, err
+	}
+	index.SignerSPKI = signerSPKI
+	return index, nil
 }
 
 func indexRegistry(reg Registry) (*RegistryIndex, error) {

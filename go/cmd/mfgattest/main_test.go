@@ -93,7 +93,16 @@ func TestCommissionVerify(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if out["ok"] != true || out["profile"] != name || out["observer_id"] != c.ObserverID || out["record_fingerprint"] != c.Fingerprint {
+		raw, _ := hex.DecodeString(c.Record)
+		record, err := commissioning.ParseRecord(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		statement, err := record.Statement()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out["ok"] != true || out["profile"] != statement.Profile.String() || out["observer_id"] != c.ObserverID || out["record_fingerprint"] != c.Fingerprint {
 			t.Errorf("%s: output = %v", name, out)
 		}
 	}

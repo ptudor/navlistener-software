@@ -294,7 +294,11 @@ operators; GNSS publication permission does not authorize sharing sensor identit
 or board clock history. Existing deployments add the table and policies at daemon
 startup; no existing navigation rows are rewritten.
 
-Each row also stores the delivering session's `hardware_trust` and the
+Each row also stores the enrolled `operational_authority_id` and nullable
+`manufacturer_authority_id`, plus immutable `authority_evidence` signer/issuer
+pins. Software stations have no manufacturer. These private historian fields do
+not bypass metadata privacy in public projections. Each row stores the delivering
+session's `hardware_trust` and the
 `commissioning_fingerprint` of the record that established it, beside the other
 receipt-time authority columns. Rows stored before those columns existed read
 `none` and an empty fingerprint.

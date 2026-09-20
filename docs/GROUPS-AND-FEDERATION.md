@@ -1,11 +1,11 @@
 # navlistener — identity, organizations, groups, audiences, and federation
 
-**Status: collector authorization and audience isolation implemented; external
-control-plane migrations and peer transport remain integration work.** This document defines
+**Status: collector authorization, audience isolation and Go enrollment implemented;
+peer transport remains integration work.** This document defines
 the ownership, privacy, and federation-policy contracts connecting the hardware identity design
-(`HARDWARE-OBSERVER.md`), the shared Django AAA plane (`radiolistener`), the collector data
+(`HARDWARE-OBSERVER.md`), the Go enrollment API (`CONTROL-PLANE.md`), the collector data
 plane, the native output contract (`OUTPUT.md`), and the operator clients. It distinguishes
-what is implemented today from the target contract so a partially migrated deployment fails
+what is implemented today from the target contract so an incomplete deployment fails
 closed rather than silently publishing private observations.
 
 > One line: **hardware proves which physical observer spoke; the enrolling authority assigns
@@ -45,9 +45,10 @@ and server-side enrollment record establish the current jurisdiction.
   replaceable RTC identity, and ATECC serial.
 - The feeder/collector mTLS handshake binds exactly one DNS SAN byte-for-byte to the canonical
   observer id; HELLO cannot rename an authenticated observer.
-- The shared radiolistener Django control plane has `Organization`, role-carrying
-  `Membership`, and `Device.organization`, plus credential history, feed grants, enablement,
-  EUI-64, ATECC serial, label, and site.
+- `navcontrol` owns board/core identity, separate operational/manufacturer authority
+  registrations and pairings, credential history, service events, feed/capability
+  grants and operator-approved ownership/collection/publication snapshots. It does
+  not depend on a shared Django device table.
 - navlistener authentication returns a complete server-owned `ObserverContext`; both config
   bootstrap and the versioned DB view provider fail closed. The DB provider has a bounded
   digest-only cache, PostgreSQL `NOTIFY` invalidation, active-session rechecks, exact leaf
@@ -85,23 +86,22 @@ and server-side enrollment record establish the current jurisdiction.
 
 ### 1.2 Baseline gaps identified by this contract
 
-- The collector now has named collection audiences and accepts collection memberships only
-  from its trusted authorization contract, but the external shared Django control plane still
-  needs the authoritative collection/membership/publication/export schema and migrations.
+- The collector has named collection audiences and accepts memberships only from
+  its trusted authorization contract. The initial Go API lets a trusted operator
+  assign these snapshots; a multi-user membership administration UI and delegated
+  owner workflows remain separate work.
   Integrity Station's “My Stations” remains a scoped presentation preference, never authority.
-- The external shared `Device` schema/enrollment path still needs the board
-  EUI-64, manufacturer-authority and product/revision fields carried by core v1.
-- The current CA implementation is one CA pair per deployment. That supports an Airport F
-  standalone installation, but not several unrelated CA realms inside one process.
+- Multiple operational/manufacturer authorities are supported with exact Issuing
+  SPKI mapping and authority-scoped manufacturer/registry keys and product policy.
+  No CA root success or device-supplied authority name grants access on its own.
 
-The shared Django schema/migrations and .NET/web clients live outside this repository and must
-consume these versioned authorization/discovery contracts rather than inventing local group
+External clients must consume these versioned authorization/discovery contracts rather than inventing local group
 meaning. The repo-local Swift Integrity Station is the reference operator-client
 implementation. No Android client is included in this checkout; external clients
 must implement the same contracts explicitly.
 
-No deployment may claim tenant privacy or safe federation until the applicable items above
-are migrated.
+No deployment may claim completed peer federation until its transport and policy
+integration are verified.
 
 ---
 
@@ -350,7 +350,7 @@ ObserverContext
 ```
 
 The collector caches this indexed DB lookup for a bounded interval and invalidates on control
-plane `NOTIFY`; it never calls Django on the ingest hot path. An active connection is closed or
+plane `NOTIFY`; it never calls an application API on the ingest hot path. An active connection is closed or
 re-authorized when device, credential, enrollment, or policy is revoked.
 
 The current config authenticator remains a bootstrap/dev provider. Its observations receive
@@ -373,8 +373,9 @@ is compared when an active session is re-authorized: a recheck resolves no evide
 construction, and a difference between two sessions of one observer is not a policy change, so
 it closes no session and resets no audience. Hardware trust selects no audience and no
 publication rule. It is independent of `credential_tier` and `attestation_tier` — a collector
-with no control plane can still establish it — and it needs no enrollment-time state, because
-the device carries its own proof and the record names the observer it is for.
+with enrolled core provenance can establish it only from session evidence. The
+enrollment selects the expected manufacturer and exact core/product/revision;
+the device cannot select another authority by presenting another valid record.
 
 ### 5.2 Every observation is stamped before decode
 
@@ -384,6 +385,7 @@ the device carries its own proof and the record names the observer it is for.
 source_id, organization_id, enrollment_id, collector_instance_id,
 feed_grants, declared_capabilities, provenance, credential_tier,
 credential_fingerprint, attestation_tier, hardware_trust,
+operational_authority_id, manufacturer_authority_id, authority_evidence,
 commissioning_fingerprint, policy_revision
 ```
 
@@ -445,7 +447,7 @@ separate membership/grant tables in the control plane. At minimum:
   authoritative audiences unless a corroboration read explicitly requests it.
 
 Direct client database access is not an authorization mechanism. The read service owns scope
-checks; PostgreSQL RLS is defense in depth for Django/reporting roles.
+checks; PostgreSQL RLS is defense in depth for control-plane/reporting roles.
 
 ---
 
@@ -456,7 +458,7 @@ checks; PostgreSQL RLS is defense in depth for Django/reporting roles.
 The native field shapes remain v2. Audience is request context, not a new satellite schema:
 
 - Anonymous requests receive only the `public` audience.
-- Authenticated users receive organizations/collections granted by their Django membership.
+- Authenticated users receive organizations/collections granted by their server-managed membership.
 - Machine clients use audience-scoped API tokens or mTLS, never observer ingest credentials.
 - An explicit audience is selected by a path or header validated against the principal. The
   server never accepts a free-form organization id and never returns all audiences for the

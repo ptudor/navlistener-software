@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	observerAuthorizationView = "navlistener_observer_authorization_v2"
+	observerAuthorizationView = "navlistener_observer_authorization_v3"
 	readAuthorizationView     = "navlistener_read_authorization_v1"
 	changeNotifyChannel       = "navlistener_authorization_changed"
 	defaultCacheTTL           = 30 * time.Second
@@ -178,7 +178,9 @@ func NewDatabase(ctx context.Context, dsn string, ttl time.Duration, log *slog.L
 func (p *Provider) VerifyContracts(ctx context.Context, observer, read bool) error {
 	if observer {
 		const query = `SELECT token_sha256, observer_id, organization_id, enrollment_id,
-	   collector_instance_id, collection_ids, feed_grants, declared_capabilities, credential_tier,
+	   collector_instance_id, operational_authority_id, manufacturer_authority_id,
+	   issuer_spki, core_signer_spki, core_attestation_fingerprint, hardware_product, hardware_revision,
+	   collection_ids, feed_grants, declared_capabilities, credential_tier,
        credential_fingerprint, attestation_tier, aggregate_use, station_metadata,
        event_visibility, raw_export, federation_peers, publish_signals,
        policy_revision, enabled
@@ -484,6 +486,8 @@ func (p *Provider) storeDeniedLocked(cache map[string]time.Time, key string, exp
 
 func (p *Provider) lookupObserverDatabase(ctx context.Context, tokenSHA256, station, feed string) (identity.ObserverContext, bool, error) {
 	const query = `SELECT observer_id, organization_id, enrollment_id, collector_instance_id,
+	   operational_authority_id, COALESCE(manufacturer_authority_id, ''),
+	   issuer_spki, core_signer_spki, core_attestation_fingerprint, hardware_product, hardware_revision,
 	   collection_ids, feed_grants, declared_capabilities,
 	   credential_tier, credential_fingerprint, attestation_tier,
        aggregate_use, station_metadata, event_visibility, raw_export,
@@ -508,6 +512,8 @@ func (p *Provider) lookupObserverDatabase(ctx context.Context, tokenSHA256, stat
 		}
 		if err := rows.Scan(
 			&resolved.ObserverID, &resolved.OrganizationID, &resolved.EnrollmentID, &resolved.CollectorInstanceID,
+			&resolved.OperationalAuthorityID, &resolved.ManufacturerAuthorityID,
+			&resolved.IssuerSPKI, &resolved.CoreSignerSPKI, &resolved.CoreAttestationFingerprint, &resolved.HardwareProduct, &resolved.HardwareRevision,
 			&resolved.CollectionIDs, &resolved.FeedGrants, &declaredCapabilities,
 			&resolved.CredentialTier, &resolved.CredentialFingerprint, &resolved.AttestationTier,
 			&resolved.Publication.AggregateUse, &resolved.Publication.StationMetadata,

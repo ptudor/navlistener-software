@@ -186,13 +186,13 @@ as separate programs.
 ## 3. Node identity & the hardware observer
 
 `navlistener` supports configured observer credentials for standalone deployments
-and a database authorization provider for a shared control plane. The database
+and the dedicated Go [`navcontrol`](CONTROL-PLANE.md) enrollment API. The database
 provider reads versioned SQL views for active credentials, ownership, memberships,
 feed grants, capabilities, and publication policy; it does not join application
 tables directly. Cache invalidation and active-session rechecks enforce policy
 changes. See the [authorization guide](../go/internal/authorization/README.md) for
 the required views and [GROUPS-AND-FEDERATION.md](GROUPS-AND-FEDERATION.md) for
-implemented collector behavior and outstanding external schema migrations.
+implemented collector behavior and the remaining federation work.
 
 The collector's credential tiers are:
 
@@ -200,12 +200,20 @@ The collector's credential tiers are:
 2. **Software mTLS cert** — a single DNS SAN = `receiver_id` (see the note below; the *SAN*, not
    the CN, is what the collector matches).
 3. **Hardware-backed mTLS cert** — the collector requires verified manufacturer
-   attestation and credential binding before assigning this tier. Attestation v1/v2
+   attestation and credential binding before assigning this tier. Core attestation v1
    formatting, signing, verification, and the [`mfgattest` CLI](../go/cmd/mfgattest/README.md)
    are implemented. The ESP32 ATECC key/enrollment path and `SIGNED_DATA` transport
    remain planned; current ESP32 firmware uses bearer authentication. The hardware
    identity contract is in [HARDWARE-OBSERVER.md](HARDWARE-OBSERVER.md), and firmware
    implementation status is in [esp32/docs/PLAN.md](../esp32/docs/PLAN.md).
+
+Each enrollment selects separate operational and manufacturer authorities. The
+verified immediate Issuing-intermediate SPKI must map to the operational
+authority; a shared root or issuer name is insufficient. Manufacturer keys,
+registry keys/floors and product policies are selected from the enrolled
+manufacturer before examining evidence. Explicit policy can pair a customer's
+operational authority with NavListen-manufactured hardware without changing its
+provenance. No flat cross-customer trust list exists.
 
 **The exact certificate shape is enforced, not conventional** (`matchPeerIdentity`,
 `go/internal/ingest/push.go`): the chain's leaf must carry **exactly one DNS SAN**, byte-equal

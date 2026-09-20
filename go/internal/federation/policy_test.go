@@ -16,6 +16,10 @@ func fixture() (time.Time, Observation, identity.ObserverContext, ExportGrant, E
 	c.CollectorInstanceID = "collector-a"
 	c.CollectionIDs = []string{"fleet-a"}
 	c.AttestationTier = identity.AttestationVerifiedV1Core
+	c.ManufacturerAuthorityID = "test-manufacturer"
+	c.CoreSignerSPKI = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	c.CoreAttestationFingerprint = c.CoreSignerSPKI
+	c.HardwareProduct = 1
 	c.Publication.AggregateUse = identity.AggregatePrivate
 	c.Publication.RawExport = identity.RawExportNamedPeers
 	c.Publication.FederationPeers = []string{"peer-b"}

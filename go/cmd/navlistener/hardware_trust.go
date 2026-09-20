@@ -9,6 +9,24 @@ import (
 	"github.com/ptudor/navlistener/internal/metrics"
 )
 
+func startManufacturers(ctx context.Context, configs config.ManufacturerAuthorities, log *slog.Logger) (commissioning.Authorities, error) {
+	verifiers := commissioning.Authorities{}
+	for _, cfg := range configs {
+		if !cfg.Enabled() {
+			continue
+		}
+		v, err := startHardwareTrust(ctx, cfg, log)
+		if err != nil {
+			return nil, err
+		}
+		verifiers[cfg.ManufacturerAuthorityID] = v
+	}
+	if len(verifiers) == 0 {
+		return nil, nil
+	}
+	return verifiers, nil
+}
+
 // startHardwareTrust builds the push endpoint's evidence verifier
 // (docs/COMMISSIONING.md). It returns nil when no manufacturer keys are pinned:
 // the push endpoint then reads evidence and answers "unconfigured". A configured
@@ -20,6 +38,7 @@ func startHardwareTrust(ctx context.Context, cfg config.HardwareTrust, log *slog
 	if !cfg.Enabled() {
 		return nil, nil
 	}
+	log = log.With("manufacturer_authority_id", cfg.ManufacturerAuthorityID)
 	verifier, err := cfg.NewVerifier()
 	if err != nil {
 		return nil, err
@@ -34,7 +53,10 @@ func startHardwareTrust(ctx context.Context, cfg config.HardwareTrust, log *slog
 			return nil, err
 		}
 	}
-	if err := verifier.WatchRegistry(ctx, cfg.Registry, cfg.RegistryReload, log, observeRegistry); err != nil {
+	observe := func(reg *commissioning.RegistryIndex, err error) {
+		observeRegistry(cfg.ManufacturerAuthorityID, reg, err)
+	}
+	if err := verifier.WatchRegistry(ctx, cfg.Registry, cfg.RegistryReload, log, observe); err != nil {
 		return nil, err
 	}
 	registry := verifier.Registry()
@@ -49,14 +71,14 @@ func startHardwareTrust(ctx context.Context, cfg config.HardwareTrust, log *slog
 // refused load leaves the earlier registry in force, so the gauges keep
 // describing it and only the failure counter moves. The counter also moves for
 // a registry that was adopted but whose sequence could not be recorded.
-func observeRegistry(inForce *commissioning.RegistryIndex, err error) {
+func observeRegistry(authorityID string, inForce *commissioning.RegistryIndex, err error) {
 	if err != nil {
-		metrics.HardwareRegistryReloadFailuresTotal.Inc()
+		metrics.HardwareRegistryReloadFailuresTotal.WithLabelValues(authorityID).Inc()
 	}
 	if inForce == nil {
 		return
 	}
-	metrics.HardwareRegistrySequence.Set(float64(inForce.Sequence))
-	metrics.HardwareRegistryIssuedTimestampSeconds.Set(float64(inForce.IssuedAt.Unix()))
-	metrics.HardwareRegistryBoards.Set(float64(inForce.Len()))
+	metrics.HardwareRegistrySequence.WithLabelValues(authorityID).Set(float64(inForce.Sequence))
+	metrics.HardwareRegistryIssuedTimestampSeconds.WithLabelValues(authorityID).Set(float64(inForce.IssuedAt.Unix()))
+	metrics.HardwareRegistryBoards.WithLabelValues(authorityID).Set(float64(inForce.Len()))
 }

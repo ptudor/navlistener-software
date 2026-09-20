@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/ptudor/navlistener/internal/authority"
 	"github.com/ptudor/navlistener/internal/commissioning"
 	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/identity"
@@ -185,7 +186,8 @@ type PushServer struct {
 	// pins no manufacturer keys: evidence is still read, to keep the handshake
 	// in step, and answered "unconfigured". Set via SetEvidenceVerifier before
 	// Run/Serve (connections read the field without a lock).
-	evidence *commissioning.Verifier
+	evidence    commissioning.Authorities
+	authorities *authority.Set
 
 	authorizationMu sync.Mutex
 	policies        map[string]*observerPolicy
@@ -199,7 +201,8 @@ func (p *PushServer) SetUpdates(updates UpdateCoordinator) { p.updates = updates
 
 // SetEvidenceVerifier installs the hardware-evidence verifier. Must be called
 // before Run/Serve.
-func (p *PushServer) SetEvidenceVerifier(v *commissioning.Verifier) { p.evidence = v }
+func (p *PushServer) SetEvidenceVerifier(v commissioning.Authorities) { p.evidence = v }
+func (p *PushServer) SetAuthorities(v *authority.Set)                 { p.authorities = v }
 
 // SetReauthorizationInterval changes the active-session authorization cadence.
 // Config validation requires a positive bounded value.
@@ -249,7 +252,17 @@ func NewPushServer(cfg config.Push, out chan<- *RawFrame, auth Authenticator, lo
 		tc.ClientCAs = pool
 		tc.ClientAuth = tls.RequireAndVerifyClientCert
 	}
-	return newPushServer(cfg.Addr, tc, out, auth, cfg.AckInterval, cfg.MaxConns, log), nil
+	if cfg.RequireClientCertificate {
+		if cfg.Authorities == nil {
+			return nil, errors.New("mTLS requires registered operational authorities")
+		}
+		tc.ClientCAs, tc.ClientAuth = cfg.Authorities.ClientPool(), tls.RequireAndVerifyClientCert
+	}
+	p := newPushServer(cfg.Addr, tc, out, auth, cfg.AckInterval, cfg.MaxConns, log)
+	if cfg.Authorities != nil {
+		p.authorities = cfg.Authorities
+	}
+	return p, nil
 }
 
 func observePushServerCertificate(path string, leaf *x509.Certificate, now time.Time, log *slog.Logger) {
@@ -273,7 +286,8 @@ func newPushServer(addr string, tc *tls.Config, out chan<- *RawFrame, auth Authe
 	if maxConns <= 0 {
 		maxConns = 512
 	}
-	return &PushServer{addr: addr, tlsConfig: tc, auth: auth, out: out, ackInterval: ack,
+	local, _ := authority.New([]authority.Operational{{ID: "local", Enabled: true}}, nil, time.Now())
+	return &PushServer{addr: addr, tlsConfig: tc, auth: auth, out: out, ackInterval: ack, authorities: local,
 		reauthorizeEvery: 30 * time.Second, collectorInstanceID: identity.LocalCollectorInstance,
 		policies: make(map[string]*observerPolicy),
 		log:      log, conns: make(chan struct{}, maxConns)}
@@ -581,7 +595,7 @@ func (p *PushServer) handshake(ctx context.Context, conn net.Conn, w *connWriter
 			return authorizedHello{}, false
 		}
 		var reason string
-		evidence, reason = p.evaluateEvidence(conn, obs, payload)
+		evidence, reason = p.evaluateEvidence(conn, observerContext, payload)
 		observerContext, evidence, reason = stampEvidence(observerContext, evidence, reason)
 		welcome.HardwareTrust, welcome.EvidenceError = string(observerContext.HardwareTrust), reason
 		if reason != "" {
@@ -613,7 +627,8 @@ func (p *PushServer) readEvidence(conn net.Conn, w *connWriter, remote, observer
 // evaluateEvidence decides what an authenticated session's evidence proves and,
 // when it proves nothing, the stable reason. It never refuses the session:
 // evidence labels data, and the operational credential decides admission.
-func (p *PushServer) evaluateEvidence(conn net.Conn, observer string, payload []byte) (commissioning.Result, string) {
+func (p *PushServer) evaluateEvidence(conn net.Conn, enrolled identity.ObserverContext, payload []byte) (commissioning.Result, string) {
+	observer := enrolled.ObserverID
 	none := commissioning.Result{Trust: identity.HardwareTrustNone}
 	if p.evidence == nil {
 		return none, commissioning.ReasonUnconfigured
@@ -636,7 +651,7 @@ func (p *PushServer) evaluateEvidence(conn net.Conn, observer string, payload []
 			p.log.Warn("push TLS session exports no keying material; a session proof cannot verify", "observer", observer, "error", err)
 		}
 	}
-	result, err := p.evidence.Evaluate(observer, evidence, exported)
+	result, err := p.evidence.Evaluate(enrolled, evidence, exported)
 	if err != nil {
 		reason := commissioning.ReasonMalformed
 		var rejection *commissioning.Rejection
@@ -660,6 +675,7 @@ func stampEvidence(observer identity.ObserverContext, result commissioning.Resul
 	if err != nil {
 		return observer, commissioning.Result{Trust: identity.HardwareTrustNone}, commissioning.ReasonMalformed
 	}
+	stamped.CommissioningSignerSPKI, stamped.RegistrySignerSPKI = result.CommissioningSignerSPKI, result.RegistrySignerSPKI
 	return stamped, result, ""
 }
 
@@ -670,6 +686,9 @@ func (p *PushServer) authorize(ctx context.Context, conn net.Conn, token, statio
 	resolved, ok := p.auth.Authenticate(ctx, token, station, feed)
 	if !ok {
 		return identity.ObserverContext{}, false, nil
+	}
+	if err := p.authorities.Allows(resolved.OperationalAuthorityID, resolved.ManufacturerAuthorityID); err != nil {
+		return identity.ObserverContext{}, false, err
 	}
 	if resolved.CollectorInstanceID != p.collectorInstanceID {
 		return identity.ObserverContext{}, false, errors.New("observer enrollment belongs to a different collector instance")
@@ -700,6 +719,14 @@ func (p *PushServer) authorize(ctx context.Context, conn net.Conn, token, statio
 		return identity.ObserverContext{}, false, errors.New("verified TLS connection missing")
 	}
 	state := tlsConn.ConnectionState()
+	issuer, err := p.authorities.MatchIssuer(state.VerifiedChains, resolved.OperationalAuthorityID)
+	if err != nil {
+		return identity.ObserverContext{}, false, err
+	}
+	if resolved.IssuerSPKI != "" && resolved.IssuerSPKI != issuer {
+		return identity.ObserverContext{}, false, errors.New("issuer differs from enrolled credential")
+	}
+	resolved.IssuerSPKI = issuer
 	if err := matchPeerIdentity(state.PeerCertificates, resolved.ObserverID); err != nil {
 		return identity.ObserverContext{}, false, err
 	}
@@ -724,7 +751,7 @@ func (p *PushServer) authorize(ctx context.Context, conn net.Conn, token, statio
 		// mTLS, but can never promote itself to hardware mTLS.
 		resolved.CredentialTier = identity.CredentialSoftwareMTLS
 	}
-	resolved, err := resolved.Normalize()
+	resolved, err = resolved.Normalize()
 	return resolved, err == nil, err
 }
 

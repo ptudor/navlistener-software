@@ -12,10 +12,71 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ptudor/navlistener/internal/authority"
 	"github.com/ptudor/navlistener/internal/commissioning"
+	"github.com/ptudor/navlistener/internal/testauthority"
 )
 
 const testManufacturerAuthority = "test-manufacturer"
+
+func TestAuthorityKeyRolesAndNamespaces(t *testing.T) {
+	ab, cd := testauthority.New(t, "navlisten", "ab"), testauthority.New(t, "customer", "ab", "cd")
+	makeConfig := func() *Config {
+		c := hardwareTrustConfig(t, HardwareTrust{ManufacturerAuthorityID: "ab", ManufacturerKeys: ab.ManufacturerPaths})
+		c.OperationalAuthorities = []authority.Operational{ab.Config, cd.Config}
+		c.Push.Observers[0].OperationalAuthorityID = "navlisten"
+		c.ManufacturerAuthorities = append(c.ManufacturerAuthorities, HardwareTrust{Active: true, ManufacturerAuthorityID: "cd", ManufacturerKeys: cd.ManufacturerPaths, Products: []commissioning.ProductPolicy{{Product: 1, Revision: 99, RTCModels: []uint16{0, 2}}}})
+		return c
+	}
+	if err := makeConfig().finalize(); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*Config){
+		"manufacturer key in two authorities": func(c *Config) { c.ManufacturerAuthorities[1].ManufacturerKeys = ab.ManufacturerPaths },
+		"root slot zero offered as manufacturer": func(c *Config) {
+			der, _ := x509.MarshalPKIXPublicKey(&ab.RootKeys[0].PublicKey)
+			c.ManufacturerAuthorities[0].ManufacturerKeys = []string{testauthority.Write(t, t.TempDir(), "ca.pem", "PUBLIC KEY", der)}
+		},
+		"manufacturer and registry roles overlap": func(c *Config) {
+			h := &c.ManufacturerAuthorities[0]
+			h.RegistryKeys = ab.ManufacturerPaths
+			_, signer := trustKey(t, t.TempDir(), "registry.pem")
+			h.Registry = signedRegistry(t, t.TempDir(), signer)
+		},
+		"issuing key in two operational authorities": func(c *Config) {
+			c.OperationalAuthorities[1].Roots = ab.Config.Roots
+			c.OperationalAuthorities[1].Issuers = ab.Config.Issuers
+		},
+		"registry key in two manufacturer authorities": func(c *Config) {
+			signer, err := commissioning.NewKeySigner(ab.RegistryKey, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range c.ManufacturerAuthorities {
+				h := &c.ManufacturerAuthorities[i]
+				h.RegistryKeys = []string{ab.RegistryPath}
+				h.Registry = filepath.Join(t.TempDir(), "registry.json")
+				data, err := commissioning.SignRegistry(commissioning.Registry{ManufacturerAuthorityID: h.ManufacturerAuthorityID, Sequence: 1, IssuedAt: time.Now().UTC(), LedgerHead: strings.Repeat("ab", 32)}, signer)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(h.Registry, data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+		},
+		"unknown product policy":                 func(c *Config) { c.ManufacturerAuthorities[1].Products = nil },
+		"unknown enrolled operational authority": func(c *Config) { c.Push.Observers[0].OperationalAuthorityID = "device-claim" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := makeConfig()
+			mutate(c)
+			if err := c.finalize(); err == nil {
+				t.Fatal("ambiguous or unsupported authority configuration accepted")
+			}
+		})
+	}
+}
 
 // trustKey writes a P-256 public key PEM and returns its path with a signer
 // for the matching private key.
@@ -66,7 +127,9 @@ func hardwareTrustConfig(t *testing.T, h HardwareTrust) *Config {
 	cert, key := testKeypair(t)
 	c := pushConfig(Push{Addr: "0.0.0.0:5580", TLSCert: cert, TLSKey: key,
 		Observers: []PushObserver{{Station: "observer16", TokenSHA256: goodHash, Feeds: []string{"ubx"}}}})
-	c.HardwareTrust = h
+	h.Active = true
+	h.Products = []commissioning.ProductPolicy{{Product: 1, Revision: 258, RTCModels: []uint16{0, 1, 2}}}
+	c.ManufacturerAuthorities = ManufacturerAuthorities{h}
 	return c
 }
 
@@ -75,7 +138,7 @@ func TestHardwareTrustDisabledByDefault(t *testing.T) {
 	if err := c.finalize(); err != nil {
 		t.Fatal(err)
 	}
-	if c.HardwareTrust.Enabled() {
+	if c.ManufacturerAuthorities.Enabled() {
 		t.Fatal("hardware trust enabled with no manufacturer keys")
 	}
 }
@@ -89,7 +152,7 @@ func TestHardwareTrustValid(t *testing.T) {
 	if err := keysOnly.finalize(); err != nil {
 		t.Fatalf("manufacturer keys alone rejected: %v", err)
 	}
-	if !keysOnly.HardwareTrust.Enabled() {
+	if !keysOnly.ManufacturerAuthorities.Enabled() {
 		t.Fatal("manufacturer keys did not enable hardware trust")
 	}
 
@@ -101,10 +164,10 @@ func TestHardwareTrustValid(t *testing.T) {
 	if err := full.finalize(); err != nil {
 		t.Fatalf("complete hardware trust config rejected: %v", err)
 	}
-	if full.HardwareTrust.RegistryReload != 30*time.Second {
-		t.Errorf("registry_reload default = %v, want 30s", full.HardwareTrust.RegistryReload)
+	if full.ManufacturerAuthorities[0].RegistryReload != 30*time.Second {
+		t.Errorf("registry_reload default = %v, want 30s", full.ManufacturerAuthorities[0].RegistryReload)
 	}
-	verifier, err := full.HardwareTrust.NewVerifier()
+	verifier, err := full.ManufacturerAuthorities[0].NewVerifier()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +210,7 @@ func TestHardwareTrustRejectsIncompleteOrUnverifiableSettings(t *testing.T) {
 		"relative state path": {HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer},
 			Registry: registry, RegistryKeys: []string{operations}, RegistryState: "registry.state"}, "absolute path"},
 		"missing registry file": {HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer},
-			Registry: filepath.Join(dir, "absent.json"), RegistryKeys: []string{operations}}, "hardware_trust.registry"},
+			Registry: filepath.Join(dir, "absent.json"), RegistryKeys: []string{operations}}, "manufacturer_authority.registry"},
 		"registry signed by an unpinned key": {HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer},
 			Registry: foreignRegistry, RegistryKeys: []string{operations}}, "pinned registry key"},
 		"non-positive reload": {HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer},
@@ -163,7 +226,7 @@ func TestHardwareTrustRejectsIncompleteOrUnverifiableSettings(t *testing.T) {
 	}
 	t.Run("evidence needs the push endpoint", func(t *testing.T) {
 		c := defaults()
-		c.HardwareTrust = HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}}
+		c.ManufacturerAuthorities = ManufacturerAuthorities{{Active: true, ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}}}
 		if err := c.finalize(); err == nil || !strings.Contains(err.Error(), "push endpoint") {
 			t.Fatalf("err = %v, want a push endpoint requirement", err)
 		}
@@ -183,7 +246,9 @@ addr = "127.0.0.1:5580"
 tls_cert = "` + cert + `"
 tls_key = "` + key + `"
 
-[hardware_trust]
+[[manufacturer_authority]]
+enabled = true
+product_policy = [{product = 1, revision = 258, rtc_models = [0, 1, 2]}]
 manufacturer_authority_id = "` + testManufacturerAuthority + `"
 manufacturer_keys = ["` + manufacturer + `"]
 registry = "` + registry + `"
@@ -198,7 +263,7 @@ require_registry_entry = true
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := c.HardwareTrust
+	h := c.ManufacturerAuthorities[0]
 	if !h.Enabled() || h.ManufacturerAuthorityID != testManufacturerAuthority || h.Registry != registry || h.RegistryReload != 45*time.Second || !h.RequireRegistryEntry || len(h.RegistryKeys) != 1 {
 		t.Fatalf("decoded hardware_trust = %+v", h)
 	}

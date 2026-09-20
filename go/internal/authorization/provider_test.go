@@ -21,6 +21,9 @@ func testContext() identity.ObserverContext {
 	c.DeclaredCapabilities = []identity.Signal{{GnssID: 0, SigID: 0}}
 	c.CredentialFingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	c.AttestationTier = identity.AttestationVerifiedV1Core
+	c.ManufacturerAuthorityID = "test-manufacturer"
+	c.CoreSignerSPKI, c.CoreAttestationFingerprint = c.CredentialFingerprint, c.CredentialFingerprint
+	c.HardwareProduct = 1
 	c.Publication.Revision = "policy-v1"
 	return c
 }

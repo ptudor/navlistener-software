@@ -139,7 +139,7 @@ Why passthrough over hop-by-hop re-signing:
 
 **The cost of passthrough — and the answer to the §11-preview question:** the verifying side
 must be able to resolve the *original observer's* certificate, which was issued by the
-observer's *home* Django CA, not the local one. Therefore:
+observer's *home* registered Issuing intermediate, not the local one. Therefore:
 
 - A relayed record carries `origin_receiver_id` (the EUI-64-derived CN) and the **observer
   leaf-cert fingerprint** in its envelope. The signed payload is unchanged; this is envelope
@@ -206,7 +206,7 @@ but **scope the journal strictly to control-plane events**, never to observation
 **Peer authentication** uses mTLS with **instance certificates**, registered out-of-band and
 pinned. Add each peer deliberately,
 by exchanging instance certs, not discovered. Intra-org tiers may instead share the org's
-Django CA (§1.1). There is **no** automatic peer discovery, DHT, or gossip-of-strangers — the
+registered operational authority (§1.1). There is **no** automatic peer discovery, DHT, or gossip-of-strangers — the
 peer set is small and human-vetted by construction (§1.2), which is the entire point of the
 ~7–8 cap.
 

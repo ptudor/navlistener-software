@@ -434,6 +434,9 @@ CREATE TABLE nav_frames (
     credential_fingerprint TEXT NOT NULL,
     attestation_tier TEXT NOT NULL,
     hardware_trust TEXT NOT NULL,            -- verified session evidence: none | open | test | trusted
+    operational_authority_id TEXT NOT NULL,  -- exact enrolled operational authority
+    manufacturer_authority_id TEXT,          -- enrolled manufacturer; NULL for software
+    authority_evidence JSONB NOT NULL,       -- receipt-time issuer/core/commissioning/registry pins and core fingerprint
     commissioning_fingerprint TEXT NOT NULL, -- SHA-256 of the verified record; '' when none
     aggregate_use TEXT NOT NULL,
     station_metadata TEXT NOT NULL,

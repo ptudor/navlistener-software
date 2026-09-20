@@ -70,20 +70,20 @@ func TestStartHardwareTrust(t *testing.T) {
 	if v, err := startHardwareTrust(ctx, config.HardwareTrust{}, log); v != nil || err != nil {
 		t.Fatalf("disabled hardware trust = %v, %v; want no verifier", v, err)
 	}
-	v, err := startHardwareTrust(ctx, config.HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}}, log)
+	v, err := startHardwareTrust(ctx, config.HardwareTrust{Active: true, Products: []commissioning.ProductPolicy{{Product: 1, Revision: 258, RTCModels: []uint16{0, 1, 2}}}, ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}}, log)
 	if err != nil || v == nil || v.Registry() != nil {
 		t.Fatalf("keys only = %v, %v", v, err)
 	}
 
-	cfg := config.HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}, Registry: registry,
+	cfg := config.HardwareTrust{Active: true, Products: []commissioning.ProductPolicy{{Product: 1, Revision: 258, RTCModels: []uint16{0, 1, 2}}}, ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}, Registry: registry,
 		RegistryKeys: []string{operations}, RegistryReload: 5 * time.Millisecond}
 	// A configured registry that is absent stops startup: a collector must not
 	// serve while unable to honour a withdrawal it was told to enforce.
-	failures := testutil.ToFloat64(metrics.HardwareRegistryReloadFailuresTotal)
+	failures := testutil.ToFloat64(metrics.HardwareRegistryReloadFailuresTotal.WithLabelValues(testManufacturerAuthority))
 	if _, err := startHardwareTrust(ctx, cfg, log); err == nil {
 		t.Fatal("started without the configured registry")
 	}
-	if got := testutil.ToFloat64(metrics.HardwareRegistryReloadFailuresTotal); got != failures+1 {
+	if got := testutil.ToFloat64(metrics.HardwareRegistryReloadFailuresTotal.WithLabelValues(testManufacturerAuthority)); got != failures+1 {
 		t.Errorf("reload failures = %v, want %v", got, failures+1)
 	}
 
@@ -92,16 +92,16 @@ func TestStartHardwareTrust(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v.Registry() == nil || testutil.ToFloat64(metrics.HardwareRegistrySequence) != 7 ||
-		testutil.ToFloat64(metrics.HardwareRegistryIssuedTimestampSeconds) != 1789650007 ||
-		testutil.ToFloat64(metrics.HardwareRegistryBoards) != 0 {
-		t.Fatalf("registry gauges = sequence %v issued %v boards %v", testutil.ToFloat64(metrics.HardwareRegistrySequence),
-			testutil.ToFloat64(metrics.HardwareRegistryIssuedTimestampSeconds), testutil.ToFloat64(metrics.HardwareRegistryBoards))
+	if v.Registry() == nil || testutil.ToFloat64(metrics.HardwareRegistrySequence.WithLabelValues(testManufacturerAuthority)) != 7 ||
+		testutil.ToFloat64(metrics.HardwareRegistryIssuedTimestampSeconds.WithLabelValues(testManufacturerAuthority)) != 1789650007 ||
+		testutil.ToFloat64(metrics.HardwareRegistryBoards.WithLabelValues(testManufacturerAuthority)) != 0 {
+		t.Fatalf("registry gauges = sequence %v issued %v boards %v", testutil.ToFloat64(metrics.HardwareRegistrySequence.WithLabelValues(testManufacturerAuthority)),
+			testutil.ToFloat64(metrics.HardwareRegistryIssuedTimestampSeconds.WithLabelValues(testManufacturerAuthority)), testutil.ToFloat64(metrics.HardwareRegistryBoards.WithLabelValues(testManufacturerAuthority)))
 	}
 	// A published update is adopted without a restart.
 	writeRegistry(t, registry, 8, signer)
 	deadline := time.Now().Add(5 * time.Second)
-	for testutil.ToFloat64(metrics.HardwareRegistrySequence) != 8 {
+	for testutil.ToFloat64(metrics.HardwareRegistrySequence.WithLabelValues(testManufacturerAuthority)) != 8 {
 		if time.Now().After(deadline) {
 			t.Fatal("registry update was not adopted")
 		}
@@ -117,7 +117,7 @@ func TestStartHardwareTrustRecordsTheRegistrySequence(t *testing.T) {
 	manufacturer, _ := pinnedKey(t, dir, "manufacturer.pem")
 	operations, signer := pinnedKey(t, dir, "registry.pem")
 	registry, state := filepath.Join(dir, "registry.json"), filepath.Join(dir, "registry.state")
-	cfg := config.HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}, Registry: registry,
+	cfg := config.HardwareTrust{Active: true, Products: []commissioning.ProductPolicy{{Product: 1, Revision: 258, RTCModels: []uint16{0, 1, 2}}}, ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}, Registry: registry,
 		RegistryKeys: []string{operations}, RegistryReload: time.Hour, RegistryState: state}
 
 	writeRegistry(t, registry, 9, signer)

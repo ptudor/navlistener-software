@@ -382,25 +382,25 @@ var (
 	// registry in force. A collector whose sequence or issue time stops advancing
 	// while the manufacturer keeps publishing is holding a stale copy, and a
 	// stale registry cannot withdraw a board.
-	HardwareRegistrySequence = promauto.NewGauge(prometheus.GaugeOpts{
+	HardwareRegistrySequence = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "navlistener_hardware_registry_sequence",
 		Help: "Sequence number of the hardware registry in force; 0 when none is loaded.",
-	})
-	HardwareRegistryIssuedTimestampSeconds = promauto.NewGauge(prometheus.GaugeOpts{
+	}, []string{"manufacturer_authority_id"})
+	HardwareRegistryIssuedTimestampSeconds = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "navlistener_hardware_registry_issued_timestamp_seconds",
 		Help: "Unix time at which the hardware registry in force was issued; 0 when none is loaded.",
-	})
-	HardwareRegistryBoards = promauto.NewGauge(prometheus.GaugeOpts{
+	}, []string{"manufacturer_authority_id"})
+	HardwareRegistryBoards = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "navlistener_hardware_registry_boards",
 		Help: "Boards listed by the hardware registry in force.",
-	})
+	}, []string{"manufacturer_authority_id"})
 	// HardwareRegistryReloadFailuresTotal counts registry files that did not
 	// verify or were older than the one in force — the earlier registry stays in
 	// force, so this is the only signal that a published update was not adopted
 	// — and registries adopted whose sequence could not be recorded for the next
 	// restart. The log line says which.
-	HardwareRegistryReloadFailuresTotal = promauto.NewCounter(prometheus.CounterOpts{
+	HardwareRegistryReloadFailuresTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "navlistener_hardware_registry_reload_failures_total",
 		Help: "Hardware registry loads refused (the registry already in force was kept), or adopted without their sequence being recorded.",
-	})
+	}, []string{"manufacturer_authority_id"})
 )

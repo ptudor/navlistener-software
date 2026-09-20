@@ -87,13 +87,21 @@ type copyRowsFunc func(ctx context.Context, rows [][]any) (int64, error)
 // provenanceColumns is how many leading copyColumns are the immutable receipt
 // provenance that observer_samples shares with nav_frames (through
 // policy_revision). Board rows reuse exactly that prefix.
-const provenanceColumns = 23
+const provenanceColumns = 25
+
+func nullableAuthority(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
 
 var copyColumns = []string{
 	"ts", "received_at", "source_id", "organization_id", "enrollment_id",
 	"collector_instance_id", "collection_ids", "feed_grants", "declared_capabilities",
 	"provenance", "credential_tier",
 	"credential_fingerprint", "attestation_tier", "hardware_trust", "manufacturer_authority_id", "commissioning_fingerprint",
+	"operational_authority_id", "authority_evidence",
 	"aggregate_use", "station_metadata", "event_visibility",
 	"raw_export", "federation_peers", "publish_signals", "policy_revision",
 	"gnssid", "svid", "sigid", "freqid", "msg_type",
@@ -128,6 +136,8 @@ type NavFrame struct {
 	// that presented none.
 	HardwareTrust            string
 	ManufacturerAuthorityID  string
+	OperationalAuthorityID   string
+	AuthorityEvidence        string // immutable JSON issuer/core/commissioning/registry SPKI snapshot
 	CommissioningFingerprint string
 	AggregateUse             string
 	StationMetadata          string
@@ -1216,7 +1226,8 @@ func navFrameToRow(f *NavFrame) []any {
 		valueOr(f.CollectorInstanceID, "local"), collections, feedGrants, declaredCapabilities,
 		valueOr(f.Provenance, "local"),
 		valueOr(f.CredentialTier, "local_dial"), f.CredentialFingerprint, valueOr(f.AttestationTier, "none"),
-		valueOr(f.HardwareTrust, "none"), f.ManufacturerAuthorityID, f.CommissioningFingerprint,
+		valueOr(f.HardwareTrust, "none"), nullableAuthority(f.ManufacturerAuthorityID), f.CommissioningFingerprint,
+		f.OperationalAuthorityID, valueOr(f.AuthorityEvidence, "{}"),
 		valueOr(f.AggregateUse, "private"), valueOr(f.StationMetadata, "none"), valueOr(f.EventVisibility, "private"),
 		valueOr(f.RawExport, "deny"), peers, signals,
 		valueOr(f.PolicyRevision, "legacy-private-v1"),

@@ -30,6 +30,13 @@ The context separates evidence (`CredentialTier`, `AttestationTier`, `HardwareTr
 authorization (`PublicationPolicy`). A genuine board is not automatically public, and a public
 contribution is not automatically allowed to disclose its station identity.
 
+`OperationalAuthorityID` and `ManufacturerAuthorityID` are independent enrollment
+facts, as are the exact issuing/core signer SPKIs, core-record fingerprint and
+manufacturer-scoped product/revision. Changing operational authority does not
+relabel the manufacturer. Software observers have no manufacturer (SQL NULL).
+The collector compares these fields during authorization rechecks. Commissioning
+and registry signer SPKIs belong to session evidence and are stored at receipt.
+
 `HardwareTrust` and `CommissioningFingerprint` are **session evidence**: what the collector
 itself verified from the hardware evidence presented on one GNF1 session
 (`../../../docs/COMMISSIONING.md`). They differ from every other field in two ways.

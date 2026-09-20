@@ -75,6 +75,8 @@ type StoredNavFrame struct {
 	// columns existed and for every source that presented no evidence.
 	HardwareTrust            string
 	ManufacturerAuthorityID  string
+	OperationalAuthorityID   string
+	AuthorityEvidence        string
 	CommissioningFingerprint string
 	AggregateUse             string
 	StationMetadata          string
@@ -123,7 +125,8 @@ func (s *Store) QueryNavFrames(ctx context.Context, q NavFrameQuery, fn func(Sto
 
 const navFrameSelect = `SELECT received_at, source_id, organization_id, enrollment_id,
 	               collector_instance_id, collection_ids, provenance, credential_tier,
-	               credential_fingerprint, attestation_tier, hardware_trust, manufacturer_authority_id, commissioning_fingerprint,
+	               credential_fingerprint, attestation_tier, hardware_trust, COALESCE(manufacturer_authority_id,''), commissioning_fingerprint,
+	               operational_authority_id, authority_evidence,
 	               aggregate_use, station_metadata, event_visibility,
 	               raw_export, federation_peers, publish_signals, policy_revision,
 	               gnssid, svid, sigid, freqid, msg_type, raw, sbf_header, receipt_order, COALESCE(source_session, ''), source_seq
@@ -212,6 +215,7 @@ func queryNavFrames(ctx context.Context, pool *pgxpool.Pool, q NavFrameQuery, fn
 			&f.ReceivedAt, &f.SourceID, &f.OrganizationID, &f.EnrollmentID,
 			&f.CollectorInstanceID, &f.CollectionIDs, &f.Provenance, &f.CredentialTier,
 			&f.CredentialFingerprint, &f.AttestationTier, &f.HardwareTrust, &f.ManufacturerAuthorityID, &f.CommissioningFingerprint,
+			&f.OperationalAuthorityID, &f.AuthorityEvidence,
 			&f.AggregateUse, &f.StationMetadata, &f.EventVisibility,
 			&f.RawExport, &f.FederationPeers, &f.PublishSignals, &f.PolicyRevision,
 			&gid, &sv, &sig, &freq, &mtype, &f.Raw, &f.SBFHeader, &f.ReceiptOrder, &f.Session, &sourceSeq,

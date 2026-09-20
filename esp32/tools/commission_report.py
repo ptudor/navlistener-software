@@ -34,6 +34,15 @@ REPORT_FIELDS = {
 }
 
 
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate report field: {key}")
+        result[key] = value
+    return result
+
+
 def reports(text):
     """Every report in the log, oldest first."""
     found = []
@@ -42,7 +51,7 @@ def reports(text):
         if at < 0:
             continue
         try:
-            found.append(validate(json.loads(line[at + len(MARKER):])))
+            found.append(validate(json.loads(line[at + len(MARKER):], object_pairs_hook=unique_object)))
         except (ValueError, TypeError) as error:
             raise ValueError(f"malformed commissioning report: {error}") from None
     return found
@@ -67,6 +76,10 @@ def validate(report):
         if value is not None and (not isinstance(value, str) or not re.fullmatch(f"[0-9a-f]{{{2 * size}}}", value)):
             raise ValueError(f"{name} is neither null nor {size} bytes of lowercase hex")
     decoded = {}
+    for name in ("atecc_serial", "board_eui64", "mcu_mac", "rtc_eui64"):
+        value = report[name]
+        if value is not None and (set(value) == {"0"} or set(value) == {"f"}):
+            raise ValueError(f"{name} is blank or erased; failed reads must be null")
     for name in BASE64_FIELDS:
         value = report.get(name)
         if not isinstance(value, str):
@@ -91,8 +104,10 @@ def validate(report):
     bound = bool(flags & 1)
     if report["rtc_expected"] != declared:
         raise ValueError("RTC declaration disagrees with the product expectation")
-    if (not declared and report["rtc_model_id"] != 0) or (declared and report["rtc_model_id"] != 1):
+    if (not declared and report["rtc_model_id"] != 0) or (declared and report["rtc_model_id"] not in (1, 2)):
         raise ValueError("RTC model disagrees with the RTC declaration")
+    if bound and report["rtc_model_id"] != 1:
+        raise ValueError("RTC model has no factory EUI-64")
     if not bound and report["rtc_eui64"] is not None:
         raise ValueError("unbound RTC EUI-64 must be null")
     if report["rtc_eui64"] is not None and not report["rtc_present"]:

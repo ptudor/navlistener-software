@@ -12,7 +12,7 @@ validated. TOML at `/usr/local/etc/navlistener/navlistener.toml`, passed with `-
 |---|---|
 | `config.go` | The whole package: every config struct, `Load`, validation, defaults, and the two identity validators. |
 | `config_test.go` | Load/validate cases, defaults, and the rejection paths. |
-| `hardware_trust_test.go` | `[hardware_trust]`: key loading, registry verification, and every incomplete combination. |
+| `hardware_trust_test.go` | `[[manufacturer_authority]]`: key loading, registry verification, and every incomplete combination. |
 | `README.md` | This file. |
 
 See `../../navlistener.toml.example` for a commented reference config.
@@ -52,7 +52,7 @@ fleet ingest. The daemon runs happily as a collector-only process.
 | `[serve]` | `addr` set | native v2 API, public default, authenticated audience selection, refresh cadences |
 | `[[serve.principal]]` | no DB auth | standalone/bootstrap read token and explicit private audience grants |
 | `[push]` | `addr` set | the authenticated GNF1 fleet listener; TLS mandatory |
-| `[hardware_trust]` | `manufacturer_keys` set | explicit manufacturer authority, pinned device-evidence keys, optional signed registry and its keys |
+| `[[manufacturer_authority]]` | `manufacturer_keys` set | explicit manufacturer authority, pinned device-evidence keys, optional signed registry and its keys |
 | `[[federation.export_grant]]` | no transport | explicit directed export authorization, validated before peer transport exists |
 | `[[push.observer]]` | — | credential/feed grant plus server-owned organization and publication context |
 | `[[ingest]]` | per entry | dial connector plus the same server-owned organization/publication context |
@@ -64,7 +64,7 @@ fleet ingest. The daemon runs happily as a collector-only process.
 ### `[authorization]` — production control-plane resolution
 
 Setting `dsn` replaces static credential rows; it never supplements or falls back to them.
-The collector reads the stable `navlistener_observer_authorization_v2` and
+The collector reads the stable `navlistener_observer_authorization_v3` and
 `navlistener_read_authorization_v1` views documented in
 `internal/authorization`, caches positive and negative decisions by token digest, and listens
 for `NOTIFY navlistener_authorization_changed`. `cache_ttl` (default 30s, maximum 5m) is the
@@ -172,7 +172,7 @@ addresses.
   wildcard transmission. `publish_signals` narrows both public state and export by
   `"gnss:sig"`; empty means all supported signals.
 
-### `[hardware_trust]` — what the push endpoint verifies about hardware
+### `[[manufacturer_authority]]` — what the push endpoint verifies about hardware
 
 Normative in [`docs/COMMISSIONING.md` §10](../../../docs/COMMISSIONING.md). The section holds
 public keys only, so it never makes the config file secret-bearing.
@@ -180,7 +180,9 @@ public keys only, so it never makes the config file secret-bearing.
 | Field | Meaning |
 |---|---|
 | `manufacturer_authority_id` | Required stable scope selecting the manufacturer authority whose keys, registry, product namespace and rollback floor are used. |
-| `manufacturer_keys` | PEM public keys, or certificates carrying them, that may sign commissioning records. Enables the section. |
+| `enabled` | Explicit enabled state; disabled registrations remain reserved but cannot admit hardware. |
+| `manufacturer_keys` | P-256 PUBLIC KEY PEM slot-5 keys that may sign core and commissioning records. CA certificates are rejected. |
+| `product_policy` | Required tables of exact `product`, `revision`, allowed `rtc_models` and optional `require_rtc_eui`. Scoped to this manufacturer. |
 | `registry` | The signed registry file. It can only withdraw trust. |
 | `registry_keys` | The operations keys that may sign the registry; a separate set, required with `registry`. |
 | `registry_reload` | How often the registry file is checked for a change. Default `30s`. |
@@ -211,6 +213,22 @@ registry file is itself protected, but never a silent one.
 here can grant trust: a static `[[push.observer]]` row has no field for it, and
 `hardware_trust` on a receipt is always the result of a verified record and, for `trusted`, a
 session proof.
+
+### `[[operational_authority]]` — exact operational issuers
+
+`id`, `enabled`, `roots`, `issuers` and `manufacturer_authorities` register an
+operational namespace and its explicit manufacturer pairings. Roots and Issuing
+certificates validate together; the exact verified Issuing SPKI, not a root or
+display name, must match the authenticated enrollment. Cross-signed certificates
+for the same key remain one registration. Keys cannot belong to two authorities
+or cross operational/manufacturer/registry roles. Empty roots/issuers define a
+token-only authority; the default bootstrap registration is `local`.
+
+`[push].require_client_certificate = true` requires registered Issuing certificates
+and enables mTLS. An optional combined `client_ca` handshake pool cannot bypass
+the post-handshake SPKI/authority check. Customer operational credentials on A/B
+hardware require an explicit pairing; do not combine customer manufacturer keys
+with the A/B keys. Hardware enrollment uses [navcontrol](../../../docs/CONTROL-PLANE.md).
 
 ### `[[federation.export_grant]]` — directed egress authorization
 
@@ -269,7 +287,7 @@ A world-readable `tls_key`, by contrast, is rejected outright.
 `config_test.go` covers loading from explicit and default paths, defaults applied to each
 duration field, the identity validators (including the case-fold and Unicode rejections), the
 interval allowlist, and the warning-vs-error split. `hardware_trust_test.go` covers the
-`[hardware_trust]` section with real key files and signed registries.
+`[[manufacturer_authority]]` section with real key files and signed registries.
 
 ```sh
 go test ./internal/config/

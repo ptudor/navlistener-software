@@ -26,7 +26,11 @@ func TestUnverifiedHardwareDefaultsAreExplicit(t *testing.T) {
 			if r[i] != "none" {
 				t.Errorf("hardware_trust default = %v, want none", r[i])
 			}
-		case "manufacturer_authority_id", "commissioning_fingerprint":
+		case "manufacturer_authority_id":
+			if r[i] != nil {
+				t.Errorf("software manufacturer = %v, want NULL", r[i])
+			}
+		case "commissioning_fingerprint":
 			if r[i] != "" {
 				t.Errorf("%s default = %v, want empty", col, r[i])
 			}
@@ -71,50 +75,20 @@ func TestBoardRowSharesReceiptProvenance(t *testing.T) {
 	}
 }
 
-// TestSchemaDeclaresHardwareEvidenceEverywhere: both receipt tables create the
-// columns and both carry the additive migration, so a database created by any
-// earlier schema and a fresh one end up identical.
+// Both receipt tables use the first v1 schema; prototype authority layouts are
+// intentionally not migrated.
 func TestSchemaDeclaresHardwareEvidenceEverywhere(t *testing.T) {
-	for _, table := range []string{"nav_frames", "observer_samples"} {
-		for _, column := range []string{"hardware_trust", "manufacturer_authority_id", "commissioning_fingerprint"} {
-			if !strings.Contains(schemaSQL, "ALTER TABLE "+table+" ADD COLUMN IF NOT EXISTS "+column+" ") {
-				t.Errorf("schema has no additive migration for %s.%s", table, column)
-			}
+	for _, declaration := range []string{"manufacturer_authority_id TEXT,", "operational_authority_id TEXT NOT NULL", "authority_evidence JSONB NOT NULL"} {
+		if strings.Count(strings.ToLower(schemaSQL), strings.ToLower(declaration)) != 2 {
+			t.Errorf("missing receipt declaration %s", declaration)
 		}
 	}
-	if n := strings.Count(schemaSQL, "    hardware_trust        TEXT   NOT NULL DEFAULT 'none',"); n != 2 {
-		t.Errorf("hardware_trust is declared in %d CREATE TABLE blocks, want 2", n)
-	}
-	if !strings.Contains(navFrameSelect, "hardware_trust, manufacturer_authority_id, commissioning_fingerprint") {
-		t.Error("replay SELECT does not read the hardware evidence columns")
+	if !strings.Contains(navFrameSelect, "COALESCE(manufacturer_authority_id,'')") {
+		t.Fatal("replay does not handle nullable manufacturer")
 	}
 }
 
-// precedingHardwareSchema is schema.sql as it stood before hardware evidence:
-// every line naming either column is a whole declaration or a whole ALTER, so
-// dropping those lines reconstructs the earlier schema exactly.
-func precedingHardwareSchema(t *testing.T) string {
-	t.Helper()
-	var kept []string
-	dropped := 0
-	for _, line := range strings.Split(schemaSQL, "\n") {
-		if strings.Contains(line, " hardware_trust ") || strings.Contains(line, "manufacturer_authority_id") || strings.Contains(line, "commissioning_fingerprint") {
-			dropped++
-			continue
-		}
-		kept = append(kept, line)
-	}
-	if dropped != 12 {
-		t.Fatalf("dropped %d schema lines, want the 6 declarations and 6 migrations", dropped)
-	}
-	return strings.Join(kept, "\n")
-}
-
-// TestIntegrationHardwareEvidenceMigration applies the preceding schema,
-// stores and compresses rows under it, then opens the store — which applies
-// the current schema — and confirms the earlier rows read back as explicitly
-// unverified while new rows keep what their session proved, in both tables.
-func TestIntegrationHardwareEvidenceMigration(t *testing.T) {
+func TestIntegrationHardwareEvidenceReceipts(t *testing.T) {
 	baseDSN := testDSN(t)
 	ctx := context.Background()
 	admin, err := pgxpool.New(ctx, baseDSN)
@@ -122,89 +96,57 @@ func TestIntegrationHardwareEvidenceMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer admin.Close()
-	schema := fmt.Sprintf("hardware_evidence_%d", time.Now().UnixNano())
-	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
+	name := fmt.Sprintf("hardware_evidence_%d", time.Now().UnixNano())
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{name}.Sanitize()); err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
-		if _, e := admin.Exec(ctx, "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE"); e != nil {
-			t.Error(e)
+		if _, err := admin.Exec(ctx, "DROP SCHEMA "+pgx.Identifier{name}.Sanitize()+" CASCADE"); err != nil {
+			t.Error(err)
 		}
 	}()
-	dsn := orderTestDSN(baseDSN, "search_path", schema+",public")
-	legacyPool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = legacyPool.Exec(ctx, precedingHardwareSchema(t)); err != nil {
-		legacyPool.Close()
-		t.Fatal(err)
-	}
-	at := time.Now().UTC().Add(-72 * time.Hour).Truncate(time.Hour)
-	if _, err = legacyPool.Exec(ctx, `INSERT INTO nav_frames(ts,received_at,source_id,gnssid,svid,sigid,freqid,msg_type,raw)
-   VALUES($1,$1,'legacy',0,12,0,0,1,'\x01020304')`, at); err == nil {
-		_, err = legacyPool.Exec(ctx, `INSERT INTO observer_samples(ts,received_at,source_id,kind,raw,data)
-   VALUES($1,$1,'legacy','environment','\x0104','{}')`, at)
-	}
-	if err != nil {
-		legacyPool.Close()
-		t.Fatal(err)
-	}
-	for _, table := range []string{"nav_frames", "observer_samples"} {
-		rows, e := legacyPool.Query(ctx, `SELECT compress_chunk(c,true)::text FROM show_chunks($1::regclass) c`, table)
-		if e != nil {
-			legacyPool.Close()
-			t.Fatal(e)
-		}
-		for rows.Next() {
-		}
-		e = rows.Err()
-		rows.Close()
-		if e != nil {
-			legacyPool.Close()
-			t.Fatal(e)
-		}
-	}
-	legacyPool.Close()
-
-	s, err := New(ctx, config.Store{DSN: dsn, RawRetention: "7 days", CompressAfter: "1 day"}, integrationLog())
+	s, err := New(ctx, config.Store{DSN: orderTestDSN(baseDSN, "search_path", name+",public"), RawRetention: "7 days", CompressAfter: "1 day"}, integrationLog())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	verified := func(seq uint64, board *BoardSample) *NavFrame {
-		return &NavFrame{Ts: now, ReceivedAt: now, SourceID: "commissioned", Session: "boot-a", SourceSeq: seq, HasSourceSeq: true,
-			HardwareTrust: "trusted", ManufacturerAuthorityID: testManufacturerAuthority,
-			CommissioningFingerprint: testCommissioningFingerprint,
-			GnssID:                   0, SvID: 12, MsgType: 1, Raw: []byte{1, 2, 3, 4}, Board: board}
-	}
-	batch := []*NavFrame{verified(1, nil), verified(2, &BoardSample{Kind: "environment", Data: []byte(`{}`)})}
-	if n, e := s.persistAtomicOnce(ctx, batch); e != nil || n != 2 {
-		t.Fatalf("persist %d %v", n, e)
-	}
-	for _, table := range []string{"nav_frames", "observer_samples"} {
-		for source, want := range map[string][3]string{"legacy": {"none", "", ""}, "commissioned": {"trusted", testManufacturerAuthority, testCommissioningFingerprint}} {
-			var trust, authority, fingerprint string
-			query := "SELECT hardware_trust, manufacturer_authority_id, commissioning_fingerprint FROM " + pgx.Identifier{table}.Sanitize() + " WHERE source_id=$1"
-			if err := s.pool.QueryRow(ctx, query, source).Scan(&trust, &authority, &fingerprint); err != nil {
-				t.Fatalf("%s %s: %v", table, source, err)
+	for _, source := range []string{"software", "hardware"} {
+		for i := 0; i < 2; i++ {
+			f := &NavFrame{Ts: now, ReceivedAt: now, SourceID: source, Session: "boot", SourceSeq: uint64(i + 1), HasSourceSeq: true, OperationalAuthorityID: "customer", GnssID: 0, SvID: 12, MsgType: 1, Raw: []byte{1, 2, 3, 4}}
+			if source == "hardware" {
+				f.HardwareTrust = "trusted"
+				f.ManufacturerAuthorityID = "ab"
+				f.CommissioningFingerprint = testCommissioningFingerprint
+				f.AuthorityEvidence = `{"core_signer_spki":"recorded"}`
 			}
-			if trust != want[0] || authority != want[1] || fingerprint != want[2] {
-				t.Errorf("%s %s = %q/%q/%q, want %q/%q/%q", table, source, trust, authority, fingerprint, want[0], want[1], want[2])
+			if i == 1 {
+				f.Board = &BoardSample{Kind: "environment", Data: []byte(`{}`)}
+			}
+			if n, err := s.persistAtomicOnce(ctx, []*NavFrame{f}); err != nil || n != 1 {
+				t.Fatalf("persist %d %v", n, err)
 			}
 		}
 	}
-	var replayed []StoredNavFrame
-	if err := s.QueryNavFrames(ctx, NavFrameQuery{Since: at.Add(-time.Hour)}, func(f StoredNavFrame) error {
-		replayed = append(replayed, f)
-		return nil
-	}); err != nil {
+	for _, table := range []string{"nav_frames", "observer_samples"} {
+		var absent bool
+		if err := s.pool.QueryRow(ctx, "SELECT manufacturer_authority_id IS NULL FROM "+pgx.Identifier{table}.Sanitize()+" WHERE source_id='software'").Scan(&absent); err != nil || !absent {
+			t.Fatalf("software provenance: %v", err)
+		}
+	}
+	var frames []StoredNavFrame
+	if err := s.QueryNavFrames(ctx, NavFrameQuery{Since: now.Add(-time.Second)}, func(f StoredNavFrame) error { frames = append(frames, f); return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if len(replayed) != 2 || replayed[0].HardwareTrust != "none" || replayed[1].HardwareTrust != "trusted" ||
-		replayed[1].ManufacturerAuthorityID != testManufacturerAuthority ||
-		replayed[1].CommissioningFingerprint != testCommissioningFingerprint {
-		t.Fatalf("replay lost hardware evidence: %+v", replayed)
+	if len(frames) != 2 {
+		t.Fatalf("frames %d", len(frames))
+	}
+	for _, f := range frames {
+		if f.OperationalAuthorityID != "customer" {
+			t.Fatal("lost operational authority")
+		}
+		if f.SourceID == "hardware" && (f.ManufacturerAuthorityID != "ab" || f.CommissioningFingerprint != testCommissioningFingerprint || !strings.Contains(f.AuthorityEvidence, "recorded")) {
+			t.Fatal("lost immutable receipt evidence")
+		}
 	}
 }

@@ -133,14 +133,18 @@ TOML, never `.env`. Default search order when `-config` isn't given:
 ```
 
 Sections: `[logging]`, `[metrics]`, `[state]`, `[store]`, `[serve]`, `[push]` (with
-`[[push.observer]]`), `[hardware_trust]`, and `[[ingest]]`. See `internal/config/README.md` for
+`[[push.observer]]`), `[[operational_authority]]`, `[[manufacturer_authority]]`, and `[[ingest]]`. See `internal/config/README.md` for
 the full surface and `navlistener.toml.example` for a commented reference.
 
-`[hardware_trust]` pins the manufacturer public keys the push endpoint verifies device evidence
+`[[manufacturer_authority]]` pins the manufacturer public keys the push endpoint verifies device evidence
 against, and optionally a signed registry that can withdraw boards
 ([`../docs/COMMISSIONING.md`](../docs/COMMISSIONING.md)). What a session proves is stamped on
 every receipt as `hardware_trust` — `none`, `open`, `test` or `trusted` — and never comes from a
 device's own report or from configuration. Without the section every session is `none`.
+Each manufacturer has separate product policies and registry/floor state; exact
+Issuing-intermediate SPKIs select operational authorities independently.
+[`navcontrol`](../docs/CONTROL-PLANE.md) owns the fresh Go/PostgreSQL enrollment
+schema and controlled activation/revocation API; Django is not required.
 
 `[serve].audience` defaults to `public`, which is populated from an isolated pre-aggregation
 projection: private receivers cannot affect its confidence, counters, selected ephemeris, or
@@ -152,7 +156,7 @@ responses are marked `private, no-store`.
 ```
 
 `-check-config` has **full startup parity** : it loads the `[push]` TLS keypair and client
-CA, parses the store DSN, validates NTRIP CA files, loads the `[hardware_trust]` keys and
+CA, parses the store DSN, validates NTRIP CA files, loads the `[[manufacturer_authority]]` keys and
 verifies the configured registry. On a bare host without certs it fails by
 design. Non-fatal `WARNING:` lines (a world-readable secrets file, a non-loopback bind of an
 unauthenticated surface) are surfaced without blocking startup.

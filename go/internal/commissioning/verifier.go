@@ -1,6 +1,7 @@
 package commissioning
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/x509"
@@ -51,6 +52,8 @@ func reject(reason string, err error) (Result, error) {
 // Result is what verified evidence established for one session.
 type Result struct {
 	ManufacturerAuthorityID string
+	CommissioningSignerSPKI string
+	RegistrySignerSPKI      string
 	Trust                   identity.HardwareTrust
 	Statement               Statement
 	Fingerprint             [32]byte
@@ -61,6 +64,7 @@ type Result struct {
 type Verifier struct {
 	manufacturerAuthorityID string
 	manufacturer            *KeySet
+	products                []ProductPolicy
 	registryKeys            *KeySet
 	requireEntry            bool
 	registry                atomic.Pointer[RegistryIndex]
@@ -266,14 +270,19 @@ func (v *Verifier) Evaluate(observerID string, e Evidence, exported []byte) (Res
 	}
 	// The manufacturer key signs for other product lines too. Only a board built
 	// as an observer proves anything to an observer collector.
-	if s.Product != ProductObserver {
+	allowed := false
+	for _, policy := range v.products {
+		allowed = allowed || policy.Allows(s)
+	}
+	if !allowed {
 		return reject(ReasonProduct, fmt.Errorf("record is for product %d, not an observer", s.Product))
 	}
 	if s.ObserverID() != observerID {
 		return reject(ReasonIdentity, fmt.Errorf("record is for observer %s, session is %s", s.ObserverID(), observerID))
 	}
 	fp := e.Record.Fingerprint()
-	if rejection := v.checkRegistry(s, fp); rejection != nil {
+	registry := v.registry.Load()
+	if rejection := v.checkRegistryIndex(s, fp, registry); rejection != nil {
 		return Result{Trust: identity.HardwareTrustNone}, rejection
 	}
 	if len(e.MCUKey) != 0 {
@@ -284,6 +293,10 @@ func (v *Verifier) Evaluate(observerID string, e Evidence, exported []byte) (Res
 		return reject(ReasonProofMissing, errors.New("trusted record presented without a session proof"))
 	}
 	result := Result{ManufacturerAuthorityID: v.manufacturerAuthorityID, Statement: s, Fingerprint: fp}
+	result.CommissioningSignerSPKI = v.manufacturer.SignerFingerprint(e.Record.KeyID())
+	if registry != nil {
+		result.RegistrySignerSPKI = registry.SignerSPKI
+	}
 	switch s.Profile {
 	case ProfileTrusted:
 		result.Trust = identity.HardwareTrustTrusted
@@ -298,7 +311,10 @@ func (v *Verifier) Evaluate(observerID string, e Evidence, exported []byte) (Res
 // checkRegistry applies the registry's three subtractive checks to a record
 // that has already verified.
 func (v *Verifier) checkRegistry(s Statement, fp [32]byte) *Rejection {
-	ix := v.registry.Load()
+	return v.checkRegistryIndex(s, fp, v.registry.Load())
+}
+
+func (v *Verifier) checkRegistryIndex(s Statement, fp [32]byte, ix *RegistryIndex) *Rejection {
 	if ix == nil {
 		return nil
 	}
@@ -320,6 +336,9 @@ func (v *Verifier) checkRegistry(s Statement, fp [32]byte) *Rejection {
 func (v *Verifier) Recheck(r Result) error {
 	if r.Trust == identity.HardwareTrustNone {
 		return nil
+	}
+	if r.ManufacturerAuthorityID != v.manufacturerAuthorityID {
+		return errors.New("result belongs to another manufacturer authority")
 	}
 	if rejection := v.checkRegistry(r.Statement, r.Fingerprint); rejection != nil {
 		return rejection
@@ -346,14 +365,15 @@ func readPublicKey(path string) (*ecdsa.PublicKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	block, _ := pem.Decode(b)
-	if block == nil {
+	block, rest := pem.Decode(b)
+	if block == nil || len(bytes.TrimSpace(rest)) != 0 {
 		return nil, errors.New("no PEM block")
 	}
 	var parsed any
-	if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
-		parsed = cert.PublicKey
-	} else if parsed, err = x509.ParsePKIXPublicKey(block.Bytes); err != nil {
+	if block.Type != "PUBLIC KEY" {
+		return nil, errors.New("manufacturer and registry pins require a public key, not a CA certificate")
+	}
+	if parsed, err = x509.ParsePKIXPublicKey(block.Bytes); err != nil {
 		return nil, fmt.Errorf("parse public key: %w", err)
 	}
 	key, ok := parsed.(*ecdsa.PublicKey)

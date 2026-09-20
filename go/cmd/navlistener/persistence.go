@@ -19,20 +19,29 @@ func frameForPersistence(f *ingest.RawFrame) *store.NavFrame {
 		// fields that a future reader might accidentally interpret as public.
 		observer = identity.NewPrivateContext(f.Source, identity.CredentialLocalDial)
 	}
+	authorityEvidence, _ := json.Marshal(map[string]any{
+		"issuer_spki": observer.IssuerSPKI, "core_signer_spki": observer.CoreSignerSPKI,
+		"core_attestation_fingerprint": observer.CoreAttestationFingerprint,
+		"commissioning_signer_spki":    observer.CommissioningSignerSPKI,
+		"registry_signer_spki":         observer.RegistrySignerSPKI,
+		"product":                      observer.HardwareProduct, "revision": observer.HardwareRevision,
+	})
 	saved := &store.NavFrame{
-		Ts:                    time.Now(),
-		ReceivedAt:            f.Recv,
-		SourceID:              f.Source,
-		OrganizationID:        observer.OrganizationID,
-		EnrollmentID:          observer.EnrollmentID,
-		CollectorInstanceID:   observer.CollectorInstanceID,
-		CollectionIDs:         append([]string(nil), observer.CollectionIDs...),
-		FeedGrants:            append([]string(nil), observer.FeedGrants...),
-		DeclaredCapabilities:  policySignalStrings(observer.DeclaredCapabilities),
-		Provenance:            "local",
-		CredentialTier:        string(observer.CredentialTier),
-		CredentialFingerprint: observer.CredentialFingerprint,
-		AttestationTier:       string(observer.AttestationTier),
+		OperationalAuthorityID: observer.OperationalAuthorityID,
+		AuthorityEvidence:      string(authorityEvidence),
+		Ts:                     time.Now(),
+		ReceivedAt:             f.Recv,
+		SourceID:               f.Source,
+		OrganizationID:         observer.OrganizationID,
+		EnrollmentID:           observer.EnrollmentID,
+		CollectorInstanceID:    observer.CollectorInstanceID,
+		CollectionIDs:          append([]string(nil), observer.CollectionIDs...),
+		FeedGrants:             append([]string(nil), observer.FeedGrants...),
+		DeclaredCapabilities:   policySignalStrings(observer.DeclaredCapabilities),
+		Provenance:             "local",
+		CredentialTier:         string(observer.CredentialTier),
+		CredentialFingerprint:  observer.CredentialFingerprint,
+		AttestationTier:        string(observer.AttestationTier),
 		// Verified from this session's hardware evidence at the handshake.
 		HardwareTrust:            string(observer.HardwareTrust),
 		ManufacturerAuthorityID:  observer.ManufacturerAuthorityID,

@@ -21,6 +21,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/navlistener/internal/authority"
 	"github.com/ptudor/navlistener/internal/commissioning"
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/metrics"
@@ -120,6 +121,9 @@ func (b *evidenceBench) verifier(t *testing.T) *commissioning.Verifier {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := v.SetProducts([]commissioning.ProductPolicy{{Product: 1, Revision: 258, RTCModels: []uint16{0, 1, 2}}}); err != nil {
+		t.Fatal(err)
+	}
 	return v
 }
 
@@ -179,7 +183,13 @@ func startEvidenceServer(t *testing.T, ctx context.Context, verifier *commission
 	tc := &tls.Config{Certificates: []tls.Certificate{selfSigned(t)}, MinVersion: tls.VersionTLS12}
 	srv := newPushServer("127.0.0.1:0", tc, out, tokenAuth(evidenceObserver, evidenceToken, "ubx"), 25*time.Millisecond, 0,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
-	srv.SetEvidenceVerifier(verifier)
+	srv.SetEvidenceVerifier(commissioning.Authorities{testManufacturerAuthority: verifier})
+	registered, err := authority.New([]authority.Operational{{ID: "local", Enabled: true, Manufacturers: []string{testManufacturerAuthority}}}, map[string]bool{testManufacturerAuthority: true}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetAuthorities(registered)
+	srv.auth = enrolledEvidenceAuth{srv.auth}
 	srv.SetReauthorizationInterval(recheck)
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", tc)
 	if err != nil {
@@ -187,6 +197,17 @@ func startEvidenceServer(t *testing.T, ctx context.Context, verifier *commission
 	}
 	go func() { _ = srv.serve(ctx, ln) }()
 	return ln.Addr().String(), out
+}
+
+type enrolledEvidenceAuth struct{ Authenticator }
+
+func (a enrolledEvidenceAuth) Authenticate(ctx context.Context, token, station, feed string) (identity.ObserverContext, bool) {
+	c, ok := a.Authenticator.Authenticate(ctx, token, station, feed)
+	c.ManufacturerAuthorityID = testManufacturerAuthority
+	c.HardwareProduct, c.HardwareRevision = 1, 258
+	fp := sha256.Sum256([]byte("slot 14 record"))
+	c.CoreAttestationFingerprint = hex.EncodeToString(fp[:])
+	return c, ok
 }
 
 // hello sends HELLO and, when payload is non-nil, the EVIDENCE frame straight
@@ -305,6 +326,37 @@ func TestPushEvidenceOpenBoardNeedsNoProof(t *testing.T) {
 	}
 }
 
+func TestPushEvidenceWithoutRTC(t *testing.T) {
+	for _, profile := range []commissioning.Profile{commissioning.ProfileTrusted, commissioning.ProfileOpen, commissioning.ProfileTest} {
+		t.Run(profile.String(), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			bench := newEvidenceBench(t)
+			statement := bench.statement(profile)
+			statement.IdentityFlags = 0
+			statement.RTCModel = commissioning.RTCModelNone
+			statement.RTCEUI64 = [8]byte{}
+			record := bench.record(t, statement)
+			addr, out := startEvidenceServer(t, ctx, bench.verifier(t), time.Hour)
+			conn := dialPush(t, addr)
+			defer conn.Close()
+			evidence := commissioning.Evidence{Record: record}
+			if profile == commissioning.ProfileTrusted {
+				evidence.MCUKey = bench.mcuKeyDER
+				evidence.Proof = prove(t, exported(t, conn), record)
+			}
+			welcome, raw := hello(t, conn, evidenceToken, "no-rtc", marshalEvidence(t, evidence))
+			if !welcome.OK || welcome.HardwareTrust != profile.String() {
+				t.Fatalf("welcome %s", raw)
+			}
+			frame := sendData(t, conn, out, 1)
+			if string(frame.Observer.HardwareTrust) != profile.String() || frame.Details != nil {
+				t.Fatal("no-RTC frame lost trust or fabricated auxiliary data")
+			}
+		})
+	}
+}
+
 func TestPushWithoutEvidenceIsUnchanged(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -321,7 +373,7 @@ func TestPushWithoutEvidenceIsUnchanged(t *testing.T) {
 		t.Fatalf("welcome to a feeder that announced no evidence mentions it: %s", raw)
 	}
 	f := sendData(t, conn, out, 1)
-	if f.Observer.HardwareTrust != identity.HardwareTrustNone || f.Observer.ManufacturerAuthorityID != "" || f.Observer.CommissioningFingerprint != "" {
+	if f.Observer.HardwareTrust != identity.HardwareTrustNone || f.Observer.ManufacturerAuthorityID != testManufacturerAuthority || f.Observer.CommissioningFingerprint != "" {
 		t.Fatalf("receipt context = %q / %q", f.Observer.HardwareTrust, f.Observer.CommissioningFingerprint)
 	}
 }
@@ -433,7 +485,7 @@ func TestPushEvidenceRejectionsLabelTheSessionAndNeverRefuseIt(t *testing.T) {
 				t.Fatalf("welcome = %s, want ok with none/%s", raw, tc.reason)
 			}
 			f := sendData(t, conn, out, 1)
-			if f.Observer.HardwareTrust != identity.HardwareTrustNone || f.Observer.ManufacturerAuthorityID != "" || f.Observer.CommissioningFingerprint != "" {
+			if f.Observer.HardwareTrust != identity.HardwareTrustNone || f.Observer.ManufacturerAuthorityID != testManufacturerAuthority || f.Observer.CommissioningFingerprint != "" {
 				t.Fatalf("receipt context = %q / %q", f.Observer.HardwareTrust, f.Observer.CommissioningFingerprint)
 			}
 			if got := rejected(tc.reason); got != before+1 {

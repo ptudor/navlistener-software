@@ -8,7 +8,7 @@
   reproducible builds, resumable publication, promotion, and withdrawal.
 - Releases travel on separately rooted tracks: trusted for locked hardware and
   open for boards that are never locked. Devices report which they follow.
-- The collector verifies hardware evidence itself. `[hardware_trust]` pins the
+- The collector verifies hardware evidence itself. `[[manufacturer_authority]]` pins the
   manufacturer keys; a commissioned device's record and session-bound proof are
   checked in the GNF1 handshake, and every receipt carries the result as
   `hardware_trust` (`none`, `open`, `test`, `trusted`) with the verified
@@ -20,8 +20,15 @@
   reports the trusted track on a session that did not verify as trusted.
 - `mfgattest commission-verify` and `registry-verify` check commissioning
   records and registry files offline with public keys only.
-- The historian adds `hardware_trust` and `commissioning_fingerprint` to
-  `nav_frames` and `observer_samples`; earlier rows read `none`.
+- The fresh v1 historian schema retains receipt-time hardware trust, both
+  authority IDs, core/commissioning fingerprints and signer/issuer identities.
+  Software observers have a null manufacturer authority.
+- `navcontrol` provides dedicated Go/PostgreSQL enrollment and service APIs with
+  exact Issuing-intermediate authorization, scoped manufacturer/registry policies,
+  controlled certificate activation, immutable history and revocation. Explicit
+  pairings permit customer-issued credentials on NavListen-manufactured hardware
+  without changing manufacturer provenance. No prototype parser or schema
+  migration is included.
 
 Trusted rollout remains gated by commissioning and hardware acceptance in
 [Update operations](esp32/docs/UPDATE-OPERATIONS.md).
