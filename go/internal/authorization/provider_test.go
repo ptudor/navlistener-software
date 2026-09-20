@@ -20,7 +20,7 @@ func testContext() identity.ObserverContext {
 	c.FeedGrants = []string{"ubx", "rtcm"}
 	c.DeclaredCapabilities = []identity.Signal{{GnssID: 0, SigID: 0}}
 	c.CredentialFingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	c.AttestationTier = identity.AttestationVerifiedV2
+	c.AttestationTier = identity.AttestationVerifiedV1Core
 	c.Publication.Revision = "policy-v1"
 	return c
 }

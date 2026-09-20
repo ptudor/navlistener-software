@@ -39,6 +39,7 @@ func TestReportRecordsVerifiedHardwareTrustBesideTheDeviceTrack(t *testing.T) {
 
 	trusted := context()
 	trusted.HardwareTrust = identity.HardwareTrustTrusted
+	trusted.ManufacturerAuthorityID = "test-manufacturer"
 	trusted.CommissioningFingerprint = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 	// Evidence is session-scoped and never part of the enrollment identity: a
 	// verified session reports into the same device record.

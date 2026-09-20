@@ -131,15 +131,15 @@ func TestSessionEvidenceIsValidatedAndNeverAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if base.HardwareTrust != HardwareTrustNone || base.CommissioningFingerprint != "" {
+	if base.HardwareTrust != HardwareTrustNone || base.ManufacturerAuthorityID != "" || base.CommissioningFingerprint != "" {
 		t.Fatalf("resolved context carries evidence: %+v", base)
 	}
 	fingerprint := "aa" + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd"
-	trusted, err := base.WithSessionEvidence(HardwareTrustTrusted, fingerprint)
+	trusted, err := base.WithSessionEvidence(HardwareTrustTrusted, "test-manufacturer", fingerprint)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if trusted.HardwareTrust != HardwareTrustTrusted || trusted.CommissioningFingerprint != fingerprint {
+	if trusted.HardwareTrust != HardwareTrustTrusted || trusted.ManufacturerAuthorityID != "test-manufacturer" || trusted.CommissioningFingerprint != fingerprint {
 		t.Fatalf("session evidence = %+v", trusted)
 	}
 	if base.HardwareTrust != HardwareTrustNone {
@@ -153,17 +153,21 @@ func TestSessionEvidenceIsValidatedAndNeverAuthorization(t *testing.T) {
 
 	for name, c := range map[string]struct {
 		trust       HardwareTrust
+		authority   string
 		fingerprint string
 	}{
-		"unknown trust":              {"verified", fingerprint},
-		"trust without a record":     {HardwareTrustOpen, ""},
-		"record that proved nothing": {HardwareTrustNone, fingerprint},
-		"uppercase fingerprint":      {HardwareTrustTest, "AA" + fingerprint[2:]},
-		"short fingerprint":          {HardwareTrustTest, fingerprint[:32]},
-		"empty trust with a record":  {"", fingerprint},
+		"unknown trust":                 {"verified", "test-manufacturer", fingerprint},
+		"trust without an authority":    {HardwareTrustOpen, "", fingerprint},
+		"trust without a record":        {HardwareTrustOpen, "test-manufacturer", ""},
+		"record that proved nothing":    {HardwareTrustNone, "", fingerprint},
+		"authority that proved nothing": {HardwareTrustNone, "test-manufacturer", ""},
+		"invalid authority":             {HardwareTrustTest, "not valid!", fingerprint},
+		"uppercase fingerprint":         {HardwareTrustTest, "test-manufacturer", "AA" + fingerprint[2:]},
+		"short fingerprint":             {HardwareTrustTest, "test-manufacturer", fingerprint[:32]},
+		"empty trust with a record":     {"", "test-manufacturer", fingerprint},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := base.WithSessionEvidence(c.trust, c.fingerprint); err == nil {
+			if _, err := base.WithSessionEvidence(c.trust, c.authority, c.fingerprint); err == nil {
 				t.Fatal("malformed session evidence accepted")
 			}
 		})

@@ -90,6 +90,7 @@ ack_interval = "1s"
 # Evidence labels data and never refuses a session. Without manufacturer_keys,
 # evidence is read and answered "unconfigured". The files hold public keys only.
 # [hardware_trust]
+# manufacturer_authority_id = "example-manufacturing"
 # manufacturer_keys = ["/usr/local/etc/navlistener/manufacturer-1.pem"]
 #
 # Optional signed registry. It can only withdraw trust: without it every valid

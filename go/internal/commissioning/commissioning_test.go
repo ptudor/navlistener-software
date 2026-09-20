@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -31,6 +32,8 @@ var mcuKey = sync.OnceValue(func() *rsa.PrivateKey {
 	}
 	return k
 })
+
+const testManufacturerAuthority = "test-manufacturer"
 
 func mcuKeyDER(t *testing.T, key *rsa.PrivateKey) []byte {
 	t.Helper()
@@ -62,7 +65,9 @@ func trustedStatement(t *testing.T) Statement {
 	t.Helper()
 	return Statement{
 		Profile: ProfileTrusted, MCUFamily: MCUESP32S3, MCUKeyAlg: MCUKeyRSA3072PSS,
-		Product: ProductObserver, BoardRevision: 0x0102, Security: SecTrusted, Generation: 1, CommissionedAt: 1789646400,
+		Product: ProductObserver, BoardRevision: 0x0102, Security: SecTrusted,
+		IdentityFlags: IdentityRTCPresent | IdentityRTCEUIBound, RTCModel: RTCModelMCP79412,
+		Generation: 1, CommissionedAt: 1789646400,
 		ATECCSerial:    [9]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x11},
 		RTCEUI64:       [8]byte{0x00, 0x04, 0xa3, 0x12, 0x34, 0x56, 0x78, 0x90},
 		BoardEUI64:     [8]byte{0x00, 0x04, 0xa3, 0xaa, 0xbb, 0xcc, 0xdd, 0xee},
@@ -110,8 +115,11 @@ func TestStatementRoundTripAndLayout(t *testing.T) {
 	if got := hex.EncodeToString(b[4:6]); got != "0001" {
 		t.Fatalf("product at offset 4 = %s", got)
 	}
-	if got := hex.EncodeToString(b[31:39]); got != "0004a31234567890" {
-		t.Fatalf("RTC EUI-64 at offset 31 = %s", got)
+	if got := hex.EncodeToString(b[26:34]); got != "0004a3aabbccddee" {
+		t.Fatalf("board EUI-64 at offset 26 = %s", got)
+	}
+	if got := hex.EncodeToString(b[43:51]); got != "0004a31234567890" {
+		t.Fatalf("RTC EUI-64 at offset 43 = %s", got)
 	}
 	back, err := ParseStatement(b)
 	if err != nil {
@@ -120,7 +128,7 @@ func TestStatementRoundTripAndLayout(t *testing.T) {
 	if back != s {
 		t.Fatalf("round trip changed the statement:\n got %+v\nwant %+v", back, s)
 	}
-	if s.ObserverID() != "00-04-a3-12-34-56-78-90" {
+	if s.ObserverID() != "00-04-a3-aa-bb-cc-dd-ee" {
 		t.Fatalf("observer id = %q", s.ObserverID())
 	}
 }
@@ -132,6 +140,10 @@ func TestStatementValidation(t *testing.T) {
 		"no product":                 func(s *Statement) { s.Product = 0 },
 		"unknown key algorithm":      func(s *Statement) { s.MCUKeyAlg = 7 },
 		"reserved security bit":      func(s *Statement) { s.Security |= 1 << 9 },
+		"reserved identity bit":      func(s *Statement) { s.IdentityFlags |= 1 << 9 },
+		"bound RTC not present":      func(s *Statement) { s.IdentityFlags = IdentityRTCEUIBound },
+		"unknown RTC model":          func(s *Statement) { s.RTCModel = 99 },
+		"bound blank RTC":            func(s *Statement) { s.RTCEUI64 = [8]byte{} },
 		"zero generation":            func(s *Statement) { s.Generation = 0 },
 		"zero time":                  func(s *Statement) { s.CommissionedAt = 0 },
 		"erased ATECC serial":        func(s *Statement) { s.ATECCSerial = [9]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff} },
@@ -164,6 +176,32 @@ func TestStatementValidation(t *testing.T) {
 		s.Profile, s.Attestation = ProfileTest, [32]byte{}
 		if err := s.Validate(); err != nil {
 			t.Fatal(err)
+		}
+	})
+	t.Run("RTC declarations", func(t *testing.T) {
+		for name, mutate := range map[string]func(*Statement){
+			"none": func(s *Statement) {
+				s.IdentityFlags, s.RTCModel, s.RTCEUI64 = 0, RTCModelNone, [8]byte{}
+			},
+			"model only": func(s *Statement) {
+				s.IdentityFlags, s.RTCModel, s.RTCEUI64 = IdentityRTCPresent, RTCModelMCP79412, [8]byte{}
+			},
+			"model and EUI": func(s *Statement) {},
+		} {
+			t.Run(name, func(t *testing.T) {
+				s := trustedStatement(t)
+				mutate(&s)
+				if err := s.Validate(); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	})
+	t.Run("unbound RTC bytes are not ignored", func(t *testing.T) {
+		s := trustedStatement(t)
+		s.IdentityFlags = IdentityRTCPresent
+		if err := s.Validate(); err == nil {
+			t.Fatal("unbound RTC identifier validated")
 		}
 	})
 }
@@ -324,14 +362,19 @@ func TestEvidenceRoundTripAndMalformed(t *testing.T) {
 
 func registryFor(t *testing.T, sequence uint64, status string, records ...Record) Registry {
 	t.Helper()
-	reg := Registry{Sequence: sequence, IssuedAt: time.Unix(1789650000, 0).UTC(), LedgerHead: strings.Repeat("ab", 32)}
+	reg := Registry{ManufacturerAuthorityID: testManufacturerAuthority, Sequence: sequence, IssuedAt: time.Unix(1789650000, 0).UTC(), LedgerHead: strings.Repeat("ab", 32)}
 	for _, r := range records {
 		s, err := r.Statement()
 		if err != nil {
 			t.Fatal(err)
 		}
+		var rtcEUI *string
+		if s.IdentityFlags&IdentityRTCEUIBound != 0 {
+			value := hex.EncodeToString(s.RTCEUI64[:])
+			rtcEUI = &value
+		}
 		reg.Boards = append(reg.Boards, RegistryBoard{
-			BoardEUI64: hex.EncodeToString(s.BoardEUI64[:]), RTCEUI64: hex.EncodeToString(s.RTCEUI64[:]),
+			BoardEUI64: hex.EncodeToString(s.BoardEUI64[:]), RTCModelID: uint16(s.RTCModel), RTCEUI64: rtcEUI,
 			ATECCSerial: hex.EncodeToString(s.ATECCSerial[:]), Status: status, Profile: s.Profile.String(),
 			Generation: s.Generation, Record: base64.StdEncoding.EncodeToString(r[:]),
 		})
@@ -347,25 +390,85 @@ func TestRegistrySignAndVerify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ix, err := VerifyRegistry(data, opsKeys)
+	ix, err := VerifyRegistry(data, opsKeys, testManufacturerAuthority)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ix.Sequence != 7 || ix.Len() != 1 {
 		t.Fatalf("index = sequence %d, %d boards", ix.Sequence, ix.Len())
 	}
+	if _, err := VerifyRegistry(data, opsKeys, "other-manufacturer"); err == nil {
+		t.Fatal("registry verified for a different manufacturer authority")
+	}
 	_, strangers := testSigner(t)
-	if _, err := VerifyRegistry(data, strangers); err == nil {
+	if _, err := VerifyRegistry(data, strangers, testManufacturerAuthority); err == nil {
 		t.Fatal("registry verified with no pinned signer")
 	}
 	tampered := []byte(strings.Replace(string(data), `"payload":"ey`, `"payload":"eY`, 1))
-	if _, err := VerifyRegistry(tampered, opsKeys); err == nil {
+	if _, err := VerifyRegistry(tampered, opsKeys, testManufacturerAuthority); err == nil {
 		t.Fatal("tampered registry verified")
+	}
+	if _, err := VerifyRegistry(append(append([]byte(nil), data...), []byte(`{}`)...), opsKeys, testManufacturerAuthority); err == nil {
+		t.Fatal("registry envelope with trailing content verified")
 	}
 
 	t.Run("duplicate board", func(t *testing.T) {
 		if _, err := SignRegistry(registryFor(t, 1, StatusActive, record, record), ops); err == nil {
 			t.Fatal("duplicate board signed")
+		}
+	})
+	t.Run("duplicate ATECC", func(t *testing.T) {
+		other := trustedStatement(t)
+		other.BoardEUI64[7] ^= 1
+		other.RTCEUI64[7] ^= 1
+		otherRecord, err := Sign(other, mfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := SignRegistry(registryFor(t, 1, StatusActive, record, otherRecord), ops); err == nil {
+			t.Fatal("duplicate ATECC serial signed")
+		}
+	})
+	t.Run("duplicate bound RTC", func(t *testing.T) {
+		other := trustedStatement(t)
+		other.BoardEUI64[7] ^= 1
+		other.ATECCSerial[8] ^= 1
+		otherRecord, err := Sign(other, mfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := SignRegistry(registryFor(t, 1, StatusActive, record, otherRecord), ops); err == nil {
+			t.Fatal("duplicate RTC EUI-64 signed")
+		}
+	})
+	t.Run("model-only RTC is explicitly null", func(t *testing.T) {
+		modelOnly := trustedStatement(t)
+		modelOnly.IdentityFlags = IdentityRTCPresent
+		modelOnly.RTCEUI64 = [8]byte{}
+		modelOnlyRecord, err := Sign(modelOnly, mfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reg := registryFor(t, 1, StatusActive, modelOnlyRecord)
+		if reg.Boards[0].RTCEUI64 != nil {
+			t.Fatal("model-only RTC encoded a registry instance identity")
+		}
+		if _, err := SignRegistry(reg, ops); err != nil {
+			t.Fatal(err)
+		}
+		value := "0004a31234567890"
+		reg.Boards[0].RTCEUI64 = &value
+		if _, err := SignRegistry(reg, ops); err == nil {
+			t.Fatal("registry added an RTC binding absent from the record")
+		}
+	})
+	t.Run("nullable RTC member is required", func(t *testing.T) {
+		var row RegistryBoard
+		if err := json.Unmarshal([]byte(`{"board_eui64":"00"}`), &row); err == nil {
+			t.Fatal("registry row omitted rtc_eui64")
+		}
+		if err := json.Unmarshal([]byte(`{"rtc_eui64":null}`), &row); err != nil {
+			t.Fatalf("explicit null RTC rejected: %v", err)
 		}
 	})
 	t.Run("columns must match the record", func(t *testing.T) {
@@ -393,7 +496,7 @@ func TestEvaluate(t *testing.T) {
 
 	newVerifier := func(t *testing.T, requireEntry bool, reg *Registry) *Verifier {
 		t.Helper()
-		v, err := NewVerifier(mfgKeys)
+		v, err := NewVerifier(testManufacturerAuthority, mfgKeys)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -510,7 +613,7 @@ func TestRegistryNeverMovesBackwards(t *testing.T) {
 	mfg, mfgKeys := testSigner(t)
 	ops, opsKeys := testSigner(t)
 	record, _ := Sign(trustedStatement(t), mfg)
-	v, _ := NewVerifier(mfgKeys)
+	v, _ := NewVerifier(testManufacturerAuthority, mfgKeys)
 	if _, err := v.LoadRegistry(nil); err == nil {
 		t.Fatal("registry loaded with no pinned registry keys")
 	}
@@ -535,7 +638,7 @@ func TestWatchRegistryReloadsAndKeepsLastGood(t *testing.T) {
 	ops, opsKeys := testSigner(t)
 	record, _ := Sign(trustedStatement(t), mfg)
 	path := filepath.Join(t.TempDir(), "registry.json")
-	v, _ := NewVerifier(mfgKeys)
+	v, _ := NewVerifier(testManufacturerAuthority, mfgKeys)
 	if err := v.UseRegistry(opsKeys, false); err != nil {
 		t.Fatal(err)
 	}
@@ -613,7 +716,7 @@ func TestRecheckFollowsTheRegistry(t *testing.T) {
 	record, _ := Sign(s, mfg)
 	exported := exportedFor("session")
 	evidence := Evidence{Record: record, MCUKey: mcuKeyDER(t, mcuKey()), Proof: prove(t, mcuKey(), exported, record)}
-	v, _ := NewVerifier(mfgKeys)
+	v, _ := NewVerifier(testManufacturerAuthority, mfgKeys)
 	if err := v.UseRegistry(opsKeys, false); err != nil {
 		t.Fatal(err)
 	}

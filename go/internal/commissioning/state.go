@@ -1,12 +1,16 @@
 package commissioning
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/ptudor/navlistener/internal/identity"
 )
 
 // registryStateMaxBytes bounds the state file before it is parsed.
@@ -17,7 +21,8 @@ const registryStateMaxBytes = 4096
 // backwards within a process; without this, a restart forgets, and an older
 // registry that still carries a valid signature could restore a withdrawn board.
 type registryState struct {
-	RegistrySequence uint64 `json:"registry_sequence"`
+	ManufacturerAuthorityID string `json:"manufacturer_authority_id"`
+	RegistrySequence        uint64 `json:"registry_sequence"`
 }
 
 // ReadRegistryState returns the recorded sequence, or 0 when no registry has
@@ -26,7 +31,10 @@ type registryState struct {
 // The file carries no secret, but its integrity is the point: a file another
 // local account could rewrite would let that account lower the floor, so one
 // that is group- or world-writable is refused.
-func ReadRegistryState(path string) (uint64, error) {
+func ReadRegistryState(path, expectedAuthorityID string) (uint64, error) {
+	if !identity.ValidScopeID(expectedAuthorityID) {
+		return 0, errors.New("registry state: expected manufacturer authority id is required and must be a valid scope id")
+	}
 	info, err := os.Stat(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return 0, nil
@@ -48,8 +56,16 @@ func ReadRegistryState(path string) (uint64, error) {
 		return 0, fmt.Errorf("registry state: %w", err)
 	}
 	var state registryState
-	if err := json.Unmarshal(data, &state); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&state); err != nil {
 		return 0, fmt.Errorf("registry state %s: %w", path, err)
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return 0, fmt.Errorf("registry state %s has trailing content", path)
+	}
+	if state.ManufacturerAuthorityID != expectedAuthorityID {
+		return 0, fmt.Errorf("registry state %s belongs to manufacturer authority %q, not %q", path, state.ManufacturerAuthorityID, expectedAuthorityID)
 	}
 	if state.RegistrySequence == 0 {
 		return 0, fmt.Errorf("registry state %s records no sequence", path)
@@ -60,8 +76,11 @@ func ReadRegistryState(path string) (uint64, error) {
 // writeRegistryState records sequence durably: a private temporary file in the
 // same directory, synced, then renamed over the old one, so a crash leaves
 // either the earlier floor or the new one and never a torn file.
-func writeRegistryState(path string, sequence uint64) error {
-	data, err := json.Marshal(registryState{RegistrySequence: sequence})
+func writeRegistryState(path, manufacturerAuthorityID string, sequence uint64) error {
+	if !identity.ValidScopeID(manufacturerAuthorityID) {
+		return errors.New("registry state: manufacturer authority id is required and must be a valid scope id")
+	}
+	data, err := json.Marshal(registryState{ManufacturerAuthorityID: manufacturerAuthorityID, RegistrySequence: sequence})
 	if err != nil {
 		return fmt.Errorf("registry state: %w", err)
 	}

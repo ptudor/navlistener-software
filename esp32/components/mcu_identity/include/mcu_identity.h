@@ -81,7 +81,8 @@ esp_err_t nvf_mcu_identity_install(const uint8_t *record, size_t len, nvf_live_i
 // pusher_cfg_t.evidence: builds the EVIDENCE payload for one TLS session. exported is that
 // session's keying material, or NULL when it could not be derived. Returns 0 to present
 // nothing: no record, or a trusted record whose proof could not be made.
-size_t nvf_mcu_identity_evidence(const uint8_t *exported, uint8_t *out, size_t cap);
+size_t nvf_mcu_identity_evidence(const uint8_t *exported, uint8_t *out, size_t cap,
+                                 nvf_live_identity_t *live);
 // pusher_cfg_t.hardware_trust: the collector's verdict from WELCOME. Either may be NULL.
 void nvf_mcu_identity_verdict(const char *trust, const char *error);
 

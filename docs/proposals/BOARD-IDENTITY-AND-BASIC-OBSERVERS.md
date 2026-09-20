@@ -1,9 +1,19 @@
 # Proposal: board identity and basic GNSS observers
 
-Status: **draft for implementation review; not an implemented protocol or
-commissioning procedure**.
+Status: **the pre-launch v1 wire-format migration is implemented in this
+repository; the broader control-plane and basic-board rollout remains under
+implementation review**.
 
 Prepared: 2026-09-19. Implementation baseline examined: `f847a1f`.
+Wire-format implementation updated: 2026-09-19.
+
+Implementation update: core attestation v1, the 153-byte commissioning
+statement/225-byte record, registry authority scoping, board-derived observer
+identity, exact live firmware matching, shared fixtures, and the maintained
+factory signer format have replaced the development prototypes. There is no
+prototype compatibility parser. Remaining work described here includes the
+external shared control-plane authority model, an independently ported no-RTC
+board target, and physical burn/bench acceptance.
 
 This proposal makes the manifest EEPROM's factory EUI-64 the canonical identity
 of a hardware observer, binds it to the ATECC in the permanent manufacturer
@@ -23,9 +33,9 @@ Encoders emit v1 and decoders require v1; a future incompatible change
 increments the affected standard. There is no migration layer or alternate
 interpretation of prototype records.
 
-The existing [commissioning contract](../COMMISSIONING.md) and implementation
-remain authoritative until this proposal is accepted and implemented together.
-Normative words below describe the proposed contract, not current behavior.
+The existing [commissioning contract](../COMMISSIONING.md) is authoritative for
+the implemented formats. Normative words below describe the wider target where
+they go beyond that contract.
 
 Reading guide:
 
@@ -106,20 +116,20 @@ simply by signing it.
 
 ## 3. Current implementation and scope
 
-### 3.1 Dependencies found in the current code
+### 3.1 Pre-migration dependencies and implemented result
 
-| Area | Current dependency | Required change |
+| Area | Pre-migration dependency | Implemented result |
 |---|---|---|
-| [`internal/attestation`](../../go/internal/attestation/attestation.go) | Both prototype variants require RTC EUI-64; the second also binds EEPROM EUI-64 | Replace them with the permanent core v1 statement without RTC |
-| [`internal/commissioning`](../../go/internal/commissioning/commissioning.go) | Fixed 149-byte prototype statement; RTC mandatory; `ObserverID()` renders RTC EUI-64 | Replace it with commissioning v1 using board identity and explicit RTC optionality |
-| [`registry.go`](../../go/internal/commissioning/registry.go) | Board-keyed records also require RTC fields and RTC-derived observer uniqueness | Optional RTC representation and board-derived observer validation |
-| [`mcu_identity_core`](../../esp32/components/mcu_identity/include/mcu_identity_core.h) | C format and live matching require every identity, including RTC | Match mandatory core plus only the signed optional identities |
-| [`main.c`](../../esp32/main/main.c) | Station/configuration consistency check derives the ID from RTC | Derive from board EEPROM |
-| [`commission.c`](../../esp32/main/commission.c) | Prototype report uses empty strings for unread identities | Define bench-report v1 with explicit read states and optionality inputs |
-| [`commission_report.py`](../../esp32/tools/commission_report.py) | Report schema and product assumptions are fixed | Update schema validation and tests |
-| [`mfgattest`](../../go/cmd/mfgattest/main.go) | Offline signer accepts a PEM private key and RTC-bound prototype inputs; verifiers understand prototype records | Make verification understand the v1 contracts and reserve real manufacturer signing for the hardware Root workflow |
-| Enrollment contract | Hardware certificate SAN must equal RTC-derived name | Bind SAN to board-derived name |
-| [`identity/context.go`](../../go/internal/identity/context.go) | Prototype attestation-tier values describe RTC-bound records | Replace them with the explicit v1 core-attestation tier and update validators |
+| [`internal/attestation`](../../go/internal/attestation/attestation.go) | Two RTC-bound prototype variants | One exact permanent core-v1 statement without RTC |
+| [`internal/commissioning`](../../go/internal/commissioning/commissioning.go) | 149-byte statement; RTC mandatory; RTC-derived observer | 153-byte statement, 225-byte record, explicit RTC flags/model, board-derived observer |
+| [`registry.go`](../../go/internal/commissioning/registry.go) | Mandatory RTC fields and RTC-derived observer uniqueness | Required nullable RTC field, exact descriptive columns, authority scope, board/ATECC/bound-RTC uniqueness |
+| [`mcu_identity_core`](../../esp32/components/mcu_identity/include/mcu_identity_core.h) | Prototype C layout and all-identities matching | Shared v1 bytes and exact mandatory/declared live-state matching |
+| [`main.c`](../../esp32/main/main.c) | Station consistency derived from RTC | Station identity derives from board EEPROM |
+| [`commission.c`](../../esp32/main/commission.c) | Empty strings for unread identities | Explicit null/read-state report with RTC expectation and presence |
+| [`commission_report.py`](../../esp32/tools/commission_report.py) | Loose prototype report schema | Exact v1 schema and cross-field validation |
+| [`mfgattest`](../../go/cmd/mfgattest/main.go) | Production-looking PEM signer and prototype inputs | V1 verifiers plus explicitly gated development-fixture signing only |
+| Enrollment contract | Certificate SAN equal to RTC-derived name | Certificate SAN equal to board-derived name |
+| [`identity/context.go`](../../go/internal/identity/context.go) | Prototype partial/complete tiers | Explicit `verified_v1_core` tier |
 
 The firmware build is currently restricted to the supported ESP32-S3 observer
 board, including its flash, PSRAM and partition assumptions. Changing the

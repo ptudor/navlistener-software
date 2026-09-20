@@ -100,6 +100,7 @@ func TestBoardSampleCarriesVerifiedHardwareTrust(t *testing.T) {
 	update := &wire.UpdateStatus{Profile: "trusted", Security: 31}
 	verified := identity.NewPrivateContext("board", identity.CredentialToken)
 	verified.HardwareTrust = identity.HardwareTrustTrusted
+	verified.ManufacturerAuthorityID = "test-manufacturer"
 	s.Apply(&ingest.RawFrame{Source: "board", Observer: verified, Session: "boot-a", Seq: 1, HasSeq: true,
 		Recv: now, RecvLocal: now, Details: &ingest.ObserverDetails{UptimeMS: 100, Update: update}})
 	s.Apply(&ingest.RawFrame{Source: "dialled", Session: "boot-a", Seq: 1, HasSeq: true,

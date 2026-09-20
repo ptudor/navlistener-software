@@ -36,9 +36,8 @@ const (
 type AttestationTier string
 
 const (
-	AttestationNone              AttestationTier = "none"
-	AttestationVerifiedV1Partial AttestationTier = "verified_v1_partial"
-	AttestationVerifiedV2        AttestationTier = "verified_v2_complete"
+	AttestationNone           AttestationTier = "none"
+	AttestationVerifiedV1Core AttestationTier = "verified_v1_core"
 )
 
 // HardwareTrust is what the collector itself verified about the hardware on a
@@ -149,6 +148,7 @@ type ObserverContext struct {
 	// CommissioningFingerprint is the lowercase SHA-256 of the verified record,
 	// empty whenever HardwareTrust is none.
 	HardwareTrust            HardwareTrust
+	ManufacturerAuthorityID  string
 	CommissioningFingerprint string
 	Publication              PublicationPolicy
 }
@@ -336,7 +336,7 @@ func (c ObserverContext) Normalize() (ObserverContext, error) {
 		c.AttestationTier = AttestationNone
 	}
 	switch c.AttestationTier {
-	case AttestationNone, AttestationVerifiedV1Partial, AttestationVerifiedV2:
+	case AttestationNone, AttestationVerifiedV1Core:
 	default:
 		return c, fmt.Errorf("attestation tier %q is invalid", c.AttestationTier)
 	}
@@ -353,6 +353,12 @@ func (c ObserverContext) Normalize() (ObserverContext, error) {
 	// nothing, is a construction error rather than a weaker form of evidence.
 	if (c.HardwareTrust == HardwareTrustNone) != (c.CommissioningFingerprint == "") {
 		return c, fmt.Errorf("commissioning fingerprint must be present exactly when hardware trust is established")
+	}
+	if (c.HardwareTrust == HardwareTrustNone) != (c.ManufacturerAuthorityID == "") {
+		return c, fmt.Errorf("manufacturer authority id must be present exactly when hardware trust is established")
+	}
+	if c.ManufacturerAuthorityID != "" && !ValidScopeID(c.ManufacturerAuthorityID) {
+		return c, fmt.Errorf("manufacturer authority id %q is invalid", c.ManufacturerAuthorityID)
 	}
 	if c.CommissioningFingerprint != "" && !certificateFingerprintRe.MatchString(c.CommissioningFingerprint) {
 		return c, fmt.Errorf("commissioning fingerprint must be 64 lowercase hexadecimal characters")
@@ -451,8 +457,8 @@ func (c ObserverContext) PublicAttributed() bool {
 // from this session's hardware evidence. fingerprint is the lowercase SHA-256 of
 // the verified commissioning record and must be empty exactly when trust is
 // none; the result is normalized so a malformed pair can never reach a receipt.
-func (c ObserverContext) WithSessionEvidence(trust HardwareTrust, fingerprint string) (ObserverContext, error) {
-	c.HardwareTrust, c.CommissioningFingerprint = trust, fingerprint
+func (c ObserverContext) WithSessionEvidence(trust HardwareTrust, manufacturerAuthorityID, fingerprint string) (ObserverContext, error) {
+	c.HardwareTrust, c.ManufacturerAuthorityID, c.CommissioningFingerprint = trust, manufacturerAuthorityID, fingerprint
 	return c.Normalize()
 }
 
@@ -467,7 +473,7 @@ func (c ObserverContext) WithCredentialTier(tier CredentialTier) ObserverContext
 // membership, credentials, attestation, or publication takes effect within the
 // documented cache/recheck bound.
 //
-// HardwareTrust and CommissioningFingerprint are deliberately not compared.
+// HardwareTrust, ManufacturerAuthorityID and CommissioningFingerprint are deliberately not compared.
 // They are session evidence, not authorization: no authorization source ever
 // resolves them, so including them would make every periodic recheck of a
 // commissioned device look like a policy change, and would let one observer's

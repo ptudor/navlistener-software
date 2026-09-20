@@ -33,7 +33,7 @@ const (
 	VersionV1 = byte(0x01)
 
 	// StatementSize is the fixed v1 statement length.
-	StatementSize = 149
+	StatementSize = 153
 	// KeyIDSize is the signer hint carried beside the signature.
 	KeyIDSize = 8
 	// SignatureSize is a fixed-width P-256 R||S.
@@ -92,6 +92,23 @@ type Product uint16
 // values belong to the manufacturer's other product lines.
 const ProductObserver Product = 1
 
+// Identity flags describe optional, replaceable component identity carried by
+// the commissioning statement. All unassigned bits are reserved.
+const (
+	IdentityRTCEUIBound uint16 = 1 << 0
+	IdentityRTCPresent  uint16 = 1 << 1
+	identityKnown              = IdentityRTCEUIBound | IdentityRTCPresent
+)
+
+// RTCModel identifies a supported RTC assembly. Zero is reserved for a board
+// that declares no RTC.
+type RTCModel uint16
+
+const (
+	RTCModelNone     RTCModel = 0
+	RTCModelMCP79412 RTCModel = 1
+)
+
 // MCUFamily names the microcontroller family the statement describes.
 type MCUFamily uint8
 
@@ -130,11 +147,13 @@ type Statement struct {
 	Product        Product
 	BoardRevision  uint16
 	Security       uint16
+	IdentityFlags  uint16
+	RTCModel       RTCModel
 	Generation     uint32 // 1 for the first commissioning; rises by one each time the board is commissioned again
 	CommissionedAt uint64 // Unix seconds, UTC
+	BoardEUI64     [8]byte
 	ATECCSerial    [9]byte
 	RTCEUI64       [8]byte
-	BoardEUI64     [8]byte
 	MCUMAC         [6]byte  // factory base MAC: a name for the part, never a proof
 	MCUKeySHA256   [32]byte // SHA-256 of the key's DER SubjectPublicKeyInfo
 	SecureBootKeys [32]byte // SHA-256 over the three Secure Boot key digests in slot order
@@ -161,6 +180,28 @@ func (s Statement) Validate() error {
 	if s.Security&^secKnown != 0 {
 		return fmt.Errorf("security bits 0x%04x include reserved bits", s.Security)
 	}
+	if s.IdentityFlags&^identityKnown != 0 {
+		return fmt.Errorf("identity flags 0x%04x include reserved bits", s.IdentityFlags)
+	}
+	rtcPresent := s.IdentityFlags&IdentityRTCPresent != 0
+	rtcBound := s.IdentityFlags&IdentityRTCEUIBound != 0
+	if rtcBound && !rtcPresent {
+		return errors.New("RTC EUI-64 binding requires an RTC declaration")
+	}
+	if !rtcPresent {
+		if s.RTCModel != RTCModelNone {
+			return errors.New("RTC model must be zero when no RTC is declared")
+		}
+	} else if s.RTCModel != RTCModelMCP79412 {
+		return fmt.Errorf("RTC model %d is unknown", uint16(s.RTCModel))
+	}
+	if rtcBound {
+		if blank(s.RTCEUI64[:]) {
+			return errors.New("RTC EUI-64 is blank or erased")
+		}
+	} else if s.RTCEUI64 != ([8]byte{}) {
+		return errors.New("RTC EUI-64 must be zero when it is not bound")
+	}
 	if s.Generation == 0 {
 		return errors.New("commissioning generation starts at 1")
 	}
@@ -168,8 +209,8 @@ func (s Statement) Validate() error {
 		return errors.New("commissioning time is required")
 	}
 	for name, id := range map[string][]byte{
-		"ATECC serial": s.ATECCSerial[:], "RTC EUI-64": s.RTCEUI64[:],
-		"board EUI-64": s.BoardEUI64[:], "microcontroller MAC": s.MCUMAC[:],
+		"ATECC serial": s.ATECCSerial[:], "board EUI-64": s.BoardEUI64[:],
+		"microcontroller MAC": s.MCUMAC[:],
 	} {
 		if blank(id) {
 			return fmt.Errorf("%s is blank or erased", name)
@@ -214,15 +255,17 @@ func (s Statement) MarshalBinary() ([]byte, error) {
 	binary.BigEndian.PutUint16(b[4:], uint16(s.Product))
 	binary.BigEndian.PutUint16(b[6:], s.BoardRevision)
 	binary.BigEndian.PutUint16(b[8:], s.Security)
-	binary.BigEndian.PutUint32(b[10:], s.Generation)
-	binary.BigEndian.PutUint64(b[14:], s.CommissionedAt)
-	copy(b[22:31], s.ATECCSerial[:])
-	copy(b[31:39], s.RTCEUI64[:])
-	copy(b[39:47], s.BoardEUI64[:])
-	copy(b[47:53], s.MCUMAC[:])
-	copy(b[53:85], s.MCUKeySHA256[:])
-	copy(b[85:117], s.SecureBootKeys[:])
-	copy(b[117:149], s.Attestation[:])
+	binary.BigEndian.PutUint16(b[10:], s.IdentityFlags)
+	binary.BigEndian.PutUint16(b[12:], uint16(s.RTCModel))
+	binary.BigEndian.PutUint32(b[14:], s.Generation)
+	binary.BigEndian.PutUint64(b[18:], s.CommissionedAt)
+	copy(b[26:34], s.BoardEUI64[:])
+	copy(b[34:43], s.ATECCSerial[:])
+	copy(b[43:51], s.RTCEUI64[:])
+	copy(b[51:57], s.MCUMAC[:])
+	copy(b[57:89], s.MCUKeySHA256[:])
+	copy(b[89:121], s.SecureBootKeys[:])
+	copy(b[121:153], s.Attestation[:])
 	return b, nil
 }
 
@@ -241,16 +284,18 @@ func ParseStatement(b []byte) (Statement, error) {
 		Product:        Product(binary.BigEndian.Uint16(b[4:])),
 		BoardRevision:  binary.BigEndian.Uint16(b[6:]),
 		Security:       binary.BigEndian.Uint16(b[8:]),
-		Generation:     binary.BigEndian.Uint32(b[10:]),
-		CommissionedAt: binary.BigEndian.Uint64(b[14:]),
+		IdentityFlags:  binary.BigEndian.Uint16(b[10:]),
+		RTCModel:       RTCModel(binary.BigEndian.Uint16(b[12:])),
+		Generation:     binary.BigEndian.Uint32(b[14:]),
+		CommissionedAt: binary.BigEndian.Uint64(b[18:]),
 	}
-	copy(s.ATECCSerial[:], b[22:31])
-	copy(s.RTCEUI64[:], b[31:39])
-	copy(s.BoardEUI64[:], b[39:47])
-	copy(s.MCUMAC[:], b[47:53])
-	copy(s.MCUKeySHA256[:], b[53:85])
-	copy(s.SecureBootKeys[:], b[85:117])
-	copy(s.Attestation[:], b[117:149])
+	copy(s.BoardEUI64[:], b[26:34])
+	copy(s.ATECCSerial[:], b[34:43])
+	copy(s.RTCEUI64[:], b[43:51])
+	copy(s.MCUMAC[:], b[51:57])
+	copy(s.MCUKeySHA256[:], b[57:89])
+	copy(s.SecureBootKeys[:], b[89:121])
+	copy(s.Attestation[:], b[121:153])
 	if err := s.Validate(); err != nil {
 		return Statement{}, err
 	}
@@ -266,9 +311,9 @@ func (s Statement) Digest() ([32]byte, error) {
 	return digest(statementDomain, b), nil
 }
 
-// ObserverID renders the statement's RTC EUI-64 in the canonical observer-id
+// ObserverID renders the statement's board EUI-64 in the canonical observer-id
 // form: lowercase hyphen-separated byte pairs.
-func (s Statement) ObserverID() string { return ObserverID(s.RTCEUI64) }
+func (s Statement) ObserverID() string { return ObserverID(s.BoardEUI64) }
 
 // ObserverID renders an EUI-64 as the canonical observer id.
 func ObserverID(eui [8]byte) string {

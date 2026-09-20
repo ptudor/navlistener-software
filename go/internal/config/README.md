@@ -52,7 +52,7 @@ fleet ingest. The daemon runs happily as a collector-only process.
 | `[serve]` | `addr` set | native v2 API, public default, authenticated audience selection, refresh cadences |
 | `[[serve.principal]]` | no DB auth | standalone/bootstrap read token and explicit private audience grants |
 | `[push]` | `addr` set | the authenticated GNF1 fleet listener; TLS mandatory |
-| `[hardware_trust]` | `manufacturer_keys` set | pinned manufacturer keys for device evidence, optional signed registry and its keys |
+| `[hardware_trust]` | `manufacturer_keys` set | explicit manufacturer authority, pinned device-evidence keys, optional signed registry and its keys |
 | `[[federation.export_grant]]` | no transport | explicit directed export authorization, validated before peer transport exists |
 | `[[push.observer]]` | — | credential/feed grant plus server-owned organization and publication context |
 | `[[ingest]]` | per entry | dial connector plus the same server-owned organization/publication context |
@@ -179,6 +179,7 @@ public keys only, so it never makes the config file secret-bearing.
 
 | Field | Meaning |
 |---|---|
+| `manufacturer_authority_id` | Required stable scope selecting the manufacturer authority whose keys, registry, product namespace and rollback floor are used. |
 | `manufacturer_keys` | PEM public keys, or certificates carrying them, that may sign commissioning records. Enables the section. |
 | `registry` | The signed registry file. It can only withdraw trust. |
 | `registry_keys` | The operations keys that may sign the registry; a separate set, required with `registry`. |
@@ -190,13 +191,16 @@ Validation is strict in both directions. Every key file must load as a P-256 key
 configured registry must verify against `registry_keys` at load, so `-check-config` fails on a
 registry the daemon could not start with. A dependent setting without its prerequisite —
 `registry` without `registry_keys`, or `registry_keys`, `registry_reload` or
-`require_registry_entry` without `registry`, or any of them without `manufacturer_keys` — is
+`require_registry_entry` without `registry`, any of them without `manufacturer_keys`, or
+`manufacturer_keys` without `manufacturer_authority_id` — is
 an error rather than a silent no-op: an operator who set `require_registry_entry` with no
 registry would otherwise believe unlisted boards were refused when nothing was. The section
 also requires `[push].addr`, since evidence arrives only on a GNF1 session.
 
-A registry only ever moves forward. Within a process that is enforced in memory; across a
-restart it needs `registry_state`. `-check-config` reads that file without writing it and
+A registry only ever moves forward within its manufacturer authority. Within a
+process that is enforced in memory; across a restart it needs `registry_state`.
+The signed registry and state file both carry the configured authority id, so
+neither can be substituted across authorities. `-check-config` reads that file without writing it and
 applies the recorded sequence as a floor, so it refuses exactly the registry the daemon would
 refuse at startup. A state file that is group- or world-writable, oversized or unparsable is an
 error, because whoever can rewrite it can lower the floor. A `registry` with no

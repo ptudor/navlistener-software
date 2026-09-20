@@ -20,7 +20,7 @@ module first.
 | HMAC key for the Digital Signature peripheral | one eFuse key block, purpose `HMAC_DOWN_DIGITAL_SIGNATURE` | read-protected and write-protected in hardware; software never sees it again |
 | RSA-3072 private key | NVS, as ciphertext only the peripheral can use | namespace `hwtrust` in the `update_meta` partition |
 | RSA-3072 public key | same namespace, DER SubjectPublicKeyInfo | its SHA-256 names the microcontroller in the commissioning statement |
-| commissioning record | same namespace, 221 bytes | signed by the manufacturer; installed at the bench |
+| commissioning record | same namespace, 225 bytes | signed by the manufacturer; installed at the bench |
 
 `update_meta` is the updater's NVS partition. It is encrypted on a production
 build, and no configuration-reset or provisioning path erases it: the BOOT
@@ -59,7 +59,9 @@ never opens a serial port.
 ### The report
 
 ```json
-{"v":1,"product":1,"atecc_serial":"…","rtc_eui64":"…","board_eui64":"…","board_rev":1,
+{"v":1,"product":1,"identity_flags":3,"rtc_model_id":1,
+ "rtc_expected":true,"rtc_present":true,"identity_complete":true,
+ "atecc_serial":"…","rtc_eui64":"…","board_eui64":"…","board_rev":1,
  "mcu_family":1,"mcu_mac":"…","security":31,"secure_boot_keys_sha256":"…",
  "attestation_record":"…","mcu_key_alg":1,"mcu_public_key_der":"<base64>",
  "mcu_key_sha256":"…","ds_context":"<base64>","key_state":"ready","key_block":4,
@@ -69,8 +71,12 @@ never opens a serial port.
 - Identifiers are lowercase hex and are read live from the parts: the ATECC
   serial from its configuration zone, the RTC EUI-64 from the MCP79412's
   protected EEPROM block, the board EUI-64 from the manifest EEPROM, and the
-  factory base MAC from eFuse. **An identifier that could not be read is an empty
-  string, and `board_rev` is `null`; nothing is guessed.**
+  factory base MAC from eFuse. **An identifier that could not be read is JSON
+  `null`, as is an unreadable `board_rev`; nothing is guessed.**
+- `identity_flags` and `rtc_model_id` are the statement values for this product.
+  `rtc_expected`, `rtc_present`, and `identity_complete` make the difference
+  between “not part of this product,” “expected but absent,” and “successfully
+  read” explicit.
 - `attestation_record` is the 72-byte slot-14 record. The ATECC refuses that
   read until its data zone is locked, so an unprovisioned part reports it empty.
 - `security` is the statement's security bit field as this chip reports it now.
@@ -170,11 +176,13 @@ the one bit a trusted statement cannot do without.
 
 ### `install`
 
-Accepts a 221-byte record and stores it only if its statement:
+Accepts a 225-byte record and stores it only if its statement:
 
 - is for the observer product;
-- names this board's ATECC serial, RTC EUI-64 and board EUI-64, and this chip's
-  factory MAC, **all of which must have been read successfully**;
+- exactly names this product, board revision, board EUI-64, ATECC serial,
+  declared RTC presence/model/EUI-64, this chip's factory MAC, and the live
+  72-byte slot-14 record digest, **all of which must have been read
+  successfully when the statement binds them**;
 - names the key this chip holds, when it names a key at all; and
 - claims no lock state the chip does not have.
 
@@ -209,14 +217,18 @@ answers with `superseded`. They already have the board.
 When a record is installed, every connection to a collector carries evidence
 ([§6](../../docs/COMMISSIONING.md#6-gnf1-evidence-exchange)):
 
-1. After the TLS handshake the pusher exports 32 bytes of keying material with
+1. The firmware re-reads the permanent and declared replaceable identities,
+   slot-14 record, MCU security state, Secure Boot key digest, and MCU key, then
+   compares all of them with the installed statement. Any mismatch suppresses
+   the entire evidence exchange for that session.
+2. After the TLS handshake the pusher exports 32 bytes of keying material with
    `mbedtls_ssl_export_keying_material` under the label
    `EXPERIMENTAL-navlistener-mcu-proof-v1`
    (`CONFIG_MBEDTLS_SSL_KEYING_MATERIAL_EXPORT`). The pusher pins TLS 1.2, where
    export depends on the extended master secret; mbedTLS offers it.
-2. For a record that names a key, the firmware signs the proof digest through
+3. For a record that names a key, the firmware signs the proof digest through
    the peripheral with RSASSA-PSS (SHA-256, MGF1-SHA-256, 32-byte salt).
-3. The HELLO carries `"evidence":true` and one EVIDENCE frame (`0x0A`) follows
+4. The HELLO carries `"evidence":true` and one EVIDENCE frame (`0x0A`) follows
    it immediately, before anything is read.
 
 An existing build directory keeps its generated `sdkconfig`, so it does not pick up
@@ -241,7 +253,7 @@ the latest values as `hardware_trust`, `evidence_error` and
 `commissioning_record` in `tools/ota.py status`.
 
 A collector accepts evidence only for the observer it names, so the station name
-must be the record's RTC EUI-64 as lowercase hyphen-separated byte pairs
+must be the record's board EUI-64 as lowercase hyphen-separated byte pairs
 (`00-04-a3-12-34-56-78-90`). The firmware warns at startup when the configured
 station differs.
 

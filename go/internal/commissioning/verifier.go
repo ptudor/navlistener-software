@@ -50,18 +50,20 @@ func reject(reason string, err error) (Result, error) {
 
 // Result is what verified evidence established for one session.
 type Result struct {
-	Trust       identity.HardwareTrust
-	Statement   Statement
-	Fingerprint [32]byte
+	ManufacturerAuthorityID string
+	Trust                   identity.HardwareTrust
+	Statement               Statement
+	Fingerprint             [32]byte
 }
 
 // Verifier evaluates device evidence against the pinned manufacturer keys and,
 // when configured, the current signed registry.
 type Verifier struct {
-	manufacturer *KeySet
-	registryKeys *KeySet
-	requireEntry bool
-	registry     atomic.Pointer[RegistryIndex]
+	manufacturerAuthorityID string
+	manufacturer            *KeySet
+	registryKeys            *KeySet
+	requireEntry            bool
+	registry                atomic.Pointer[RegistryIndex]
 	// floor is the newest registry sequence adopted by an earlier process, read
 	// from statePath. Nothing older is ever loaded, even as the first registry.
 	floor     atomic.Uint64
@@ -71,11 +73,14 @@ type Verifier struct {
 
 // NewVerifier pins the manufacturer keys. Without a registry every valid
 // record is honoured and nothing can be withdrawn.
-func NewVerifier(manufacturer *KeySet) (*Verifier, error) {
+func NewVerifier(manufacturerAuthorityID string, manufacturer *KeySet) (*Verifier, error) {
+	if !identity.ValidScopeID(manufacturerAuthorityID) {
+		return nil, errors.New("manufacturer authority id is required and must be a valid scope id")
+	}
 	if manufacturer == nil {
 		return nil, errors.New("manufacturer keys are required")
 	}
-	return &Verifier{manufacturer: manufacturer}, nil
+	return &Verifier{manufacturerAuthorityID: manufacturerAuthorityID, manufacturer: manufacturer}, nil
 }
 
 // UseRegistry pins the registry keys. requireEntry additionally withholds
@@ -108,7 +113,7 @@ func (v *Verifier) UseRegistryState(path string) error {
 	if path == "" {
 		return errors.New("registry state path is required")
 	}
-	floor, err := ReadRegistryState(path)
+	floor, err := ReadRegistryState(path, v.manufacturerAuthorityID)
 	if err != nil {
 		return err
 	}
@@ -124,7 +129,7 @@ func (v *Verifier) LoadRegistry(data []byte) (*RegistryIndex, error) {
 	if v.registryKeys == nil {
 		return nil, errors.New("no registry keys are pinned")
 	}
-	ix, err := VerifyRegistry(data, v.registryKeys)
+	ix, err := VerifyRegistry(data, v.registryKeys, v.manufacturerAuthorityID)
 	if err != nil {
 		return nil, err
 	}
@@ -217,7 +222,7 @@ func (v *Verifier) recordRegistrySequence() error {
 	if v.statePath == "" || ix.Sequence == v.recorded {
 		return nil
 	}
-	if err := writeRegistryState(v.statePath, ix.Sequence); err != nil {
+	if err := writeRegistryState(v.statePath, v.manufacturerAuthorityID, ix.Sequence); err != nil {
 		return err
 	}
 	v.recorded = ix.Sequence
@@ -278,7 +283,7 @@ func (v *Verifier) Evaluate(observerID string, e Evidence, exported []byte) (Res
 	} else if s.Profile == ProfileTrusted {
 		return reject(ReasonProofMissing, errors.New("trusted record presented without a session proof"))
 	}
-	result := Result{Statement: s, Fingerprint: fp}
+	result := Result{ManufacturerAuthorityID: v.manufacturerAuthorityID, Statement: s, Fingerprint: fp}
 	switch s.Profile {
 	case ProfileTrusted:
 		result.Trust = identity.HardwareTrustTrusted

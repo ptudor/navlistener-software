@@ -21,7 +21,7 @@ The analogy is useful as long as the layers stay separate:
 
 | System concept | Analogy | Can it change? |
 |---|---|---|
-| MCP79412 EUI-64 | passport number — the globally unique public name | only on RTC replacement |
+| 24AA025E64 board EUI-64 | passport number — the globally unique public name | only on PCB replacement |
 | manufacturer attestation | the issuing authority's anti-forgery proof over the original hardware | no; manufacturing record |
 | ATECC operational private key | the holder's ability to prove possession | yes; slot 0 is deliberately regenerable |
 | operational mTLS certificate | a driver's licence issued by the admitting collector/organization CA | yes; issue, rotate, revoke |
@@ -41,7 +41,8 @@ and server-side enrollment record establish the current jurisdiction.
 
 ### 1.1 Implemented in navlistener
 
-- The hardware design assigns distinct roles to RTC EUI-64, EEPROM EUI-64, and ATECC serial.
+- The hardware design assigns distinct roles to permanent board EUI-64,
+  replaceable RTC identity, and ATECC serial.
 - The feeder/collector mTLS handshake binds exactly one DNS SAN byte-for-byte to the canonical
   observer id; HELLO cannot rename an authenticated observer.
 - The shared radiolistener Django control plane has `Organization`, role-carrying
@@ -74,8 +75,9 @@ and server-side enrollment record establish the current jurisdiction.
   SSE replay/clients cross the policy epoch, pending stale events are discarded, historical
   event reads cannot cross the process/current-policy epoch, and snapshots cover each
   materialized audience independently.
-- Manufacturer attestation v1/v2 formatting, signing, verification, and the bench CLI are
-  implemented; v2 binds ATECC + RTC + EEPROM identities and board revision.
+- Manufacturer core-attestation v1 formatting, signing, verification, and the
+  bench CLI are implemented; it binds product, revision, board EUI-64 and ATECC
+  serial while commissioning binds replaceable components.
 - The transport-independent federation egress gate intersects receipt policy, current policy,
   and an explicit directed destination grant before any peer transport exists.
 - `FEDERATION.md` defines the remaining collector-peer transport, directional inbound trust,
@@ -87,9 +89,8 @@ and server-side enrollment record establish the current jurisdiction.
   from its trusted authorization contract, but the external shared Django control plane still
   needs the authoritative collection/membership/publication/export schema and migrations.
   Integrity Station's “My Stations” remains a scoped presentation preference, never authority.
-- Manufacturer attestation v2 binds ATECC + RTC + EEPROM identities and board revision, but
-  the external shared `Device` schema/firmware enrollment path still needs its separate board
-  EUI-64 migration. V1 remains explicitly partial evidence.
+- The external shared `Device` schema/enrollment path still needs the board
+  EUI-64, manufacturer-authority and product/revision fields carried by core v1.
 - The current CA implementation is one CA pair per deployment. That supports an Airport F
   standalone installation, but not several unrelated CA realms inside one process.
 
@@ -267,34 +268,34 @@ Missing, malformed, stale, or temporarily unavailable policy resolves to those d
 
 | Part | Stored role |
 |---|---|
-| MCP79412 EUI-64 | canonical observer id and certificate SAN |
-| 24AA025E64 EUI-64 | immutable board/PCB inventory serial |
+| 24AA025E64 EUI-64 | canonical observer id, certificate SAN and immutable board/PCB serial |
+| MCP79412 model and optional EUI-64 | replaceable RTC identity bound by commissioning |
 | ATECC608C serial | immutable secure-element identity tied to the operational key and attestation |
 
-All three are normalized and uniquely indexed in the control plane. Replacement is an audited
-hardware event, never an in-place silent edit. The collector stores immutable enrollment
+The permanent identifiers are normalized and uniquely indexed; a bound RTC
+EUI-64 is also unique when present. Replacement is an audited hardware event,
+never an in-place silent edit. The collector stores immutable enrollment
 snapshots rather than joining historical observations against the device's current values.
 
-### 4.2 Manufacturer attestation v2
+### 4.2 Manufacturer core attestation v1
 
-If “original hardware” covers the complete three-part board identity, the manufacturer
-statement includes the EEPROM EUI-64:
+The locked slot-14 statement binds only the permanent board core:
 
 ```text
 SHA-256(
-  "ATECC-MFG-ATTEST-v2" ||
-  atecc_serial[9] ||
-  rtc_eui64[8] ||
+  "ATECC-MFG-CORE-v1" ||
+  product_u16be ||
+  board_rev_u16be ||
   board_eui64[8] ||
-  board_rev_u16be
+  atecc_serial[9]
 )
 ```
 
-v1 remains verifiable and is recorded as `verified_v1_partial`; it proves the ATECC + RTC +
-board-revision binding but makes no claim about the EEPROM. v2 is `verified_v2_complete`.
-Unknown version, signature failure, duplicate factory identifier, or a mismatch between live
-reads, CSR SAN, and the signed statement fails hardware enrollment. It may fall back to an
-explicitly approved software/bootstrap class, but must never be labelled hardware-attested.
+It is recorded as `verified_v1_core`. RTC and microcontroller identity are
+replaceable and are bound by the signed commissioning record. Unknown versions,
+signature failure, duplicate factory identifiers, or a mismatch between live
+reads, CSR SAN, and the signed statement fail hardware enrollment. Such a unit
+must never be labelled hardware-attested.
 
 The manufacturer key is distinct from every operational CA. A board can be shipped clean,
 later enroll under Airport F's standalone CA, and retain the same originality proof.
@@ -303,17 +304,18 @@ later enroll under Airport F's standalone CA, and retain the same originality pr
 
 Hardware enrollment is one atomic/audited workflow:
 
-1. Read RTC EUI-64, board EUI-64, ATECC serial, manifest, attestation record, and public key.
-2. Verify manufacturer signature and uniqueness of all three identifiers.
+1. Read board EUI-64, ATECC serial, manifest, attestation record, optional RTC
+   identity, and operational public key.
+2. Verify manufacturer signature and uniqueness of the permanent identifiers.
 3. Require the CSR signature to verify under the ATECC public key and its sole DNS SAN to equal
-   the normalized RTC EUI-64.
+   the normalized board EUI-64.
 4. Select owning organization, collector instance, initial collections, and publication policy.
 5. Sign the operational certificate with that instance's configured CA.
 6. Store the device, immutable attestation result, credential, active enrollment, membership,
    policy, and audit rows in one transaction.
 7. Return the public certificate/chain and policy revision; no private key leaves the ATECC.
 
-At every boot the feeder checks certificate SAN against the live RTC EUI-64. On connection the
+At every boot the feeder checks certificate SAN against the live board EUI-64. On connection the
 collector verifies certificate chain, SAN, enabled device, active credential/enrollment, feed
 grant, and current policy. A policy revision is server state, never a feeder assertion.
 
@@ -612,8 +614,8 @@ Implementation is staged; each stage has a safe compatibility mode:
 
 1. **Control-plane schema:** board EUI, attestation result, collector instance, enrollment,
    collection/membership, publication policy, audience/API grants, export grants, audit rows.
-2. **Hardware attestation v2:** shared formatter/verifier, bench tool, firmware read/report,
-   v1 partial migration status, duplicate-id constraints.
+2. **Hardware core attestation v1:** shared formatter/verifier, bench tool,
+   firmware read/report, manufacturer-authority scoping and duplicate-id constraints.
 3. **Collector auth context:** DB-backed authenticator, bounded cache + invalidation, config
    bootstrap mapped to private/unassigned.
 4. **Scoped persistence:** immutable context columns and audience fields; existing rows migrate

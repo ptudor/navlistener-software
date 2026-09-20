@@ -13,6 +13,7 @@ import (
 )
 
 const testCommissioningFingerprint = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+const testManufacturerAuthority = "test-manufacturer"
 
 // TestUnverifiedHardwareDefaultsAreExplicit: a frame from a source that presented
 // no evidence is stored as an explicit "none", never an empty string a reader
@@ -25,9 +26,9 @@ func TestUnverifiedHardwareDefaultsAreExplicit(t *testing.T) {
 			if r[i] != "none" {
 				t.Errorf("hardware_trust default = %v, want none", r[i])
 			}
-		case "commissioning_fingerprint":
+		case "manufacturer_authority_id", "commissioning_fingerprint":
 			if r[i] != "" {
-				t.Errorf("commissioning_fingerprint default = %v, want empty", r[i])
+				t.Errorf("%s default = %v, want empty", col, r[i])
 			}
 		}
 	}
@@ -46,8 +47,8 @@ func TestBoardRowSharesReceiptProvenance(t *testing.T) {
 	sampled := time.Unix(1_700_000_100, 0)
 	f := &NavFrame{
 		Ts: time.Unix(1_700_000_000, 0), ReceivedAt: time.Unix(1_700_000_001, 0), SourceID: "obs1",
-		OrganizationID: "customer-a", AttestationTier: "verified_v2_complete",
-		HardwareTrust: "trusted", CommissioningFingerprint: testCommissioningFingerprint,
+		OrganizationID: "customer-a", AttestationTier: "verified_v1_core",
+		HardwareTrust: "trusted", ManufacturerAuthorityID: testManufacturerAuthority, CommissioningFingerprint: testCommissioningFingerprint,
 		PolicyRevision: "policy-7", Raw: []byte{9, 8}, DecoderVer: "v1",
 		Session: "boot-a", SourceSeq: 77, HasSourceSeq: true,
 		Board: &BoardSample{Kind: "timing", SampleTime: &sampled, Data: []byte(`{"uptime_ms":1}`)},
@@ -57,9 +58,10 @@ func TestBoardRowSharesReceiptProvenance(t *testing.T) {
 		t.Fatalf("board row has %d cols, want %d", len(row), len(boardColumns))
 	}
 	want := map[string]any{
-		"source_id": "obs1", "organization_id": "customer-a", "attestation_tier": "verified_v2_complete",
-		"hardware_trust": "trusted", "commissioning_fingerprint": testCommissioningFingerprint,
-		"policy_revision": "policy-7", "kind": "timing", "data": `{"uptime_ms":1}`, "decoder_ver": "v1",
+		"source_id": "obs1", "organization_id": "customer-a", "attestation_tier": "verified_v1_core",
+		"hardware_trust": "trusted", "manufacturer_authority_id": testManufacturerAuthority,
+		"commissioning_fingerprint": testCommissioningFingerprint,
+		"policy_revision":           "policy-7", "kind": "timing", "data": `{"uptime_ms":1}`, "decoder_ver": "v1",
 		"source_session": "boot-a", "source_seq": int64(77),
 	}
 	for i, col := range boardColumns {
@@ -74,7 +76,7 @@ func TestBoardRowSharesReceiptProvenance(t *testing.T) {
 // earlier schema and a fresh one end up identical.
 func TestSchemaDeclaresHardwareEvidenceEverywhere(t *testing.T) {
 	for _, table := range []string{"nav_frames", "observer_samples"} {
-		for _, column := range []string{"hardware_trust", "commissioning_fingerprint"} {
+		for _, column := range []string{"hardware_trust", "manufacturer_authority_id", "commissioning_fingerprint"} {
 			if !strings.Contains(schemaSQL, "ALTER TABLE "+table+" ADD COLUMN IF NOT EXISTS "+column+" ") {
 				t.Errorf("schema has no additive migration for %s.%s", table, column)
 			}
@@ -83,7 +85,7 @@ func TestSchemaDeclaresHardwareEvidenceEverywhere(t *testing.T) {
 	if n := strings.Count(schemaSQL, "    hardware_trust        TEXT   NOT NULL DEFAULT 'none',"); n != 2 {
 		t.Errorf("hardware_trust is declared in %d CREATE TABLE blocks, want 2", n)
 	}
-	if !strings.Contains(navFrameSelect, "hardware_trust, commissioning_fingerprint") {
+	if !strings.Contains(navFrameSelect, "hardware_trust, manufacturer_authority_id, commissioning_fingerprint") {
 		t.Error("replay SELECT does not read the hardware evidence columns")
 	}
 }
@@ -96,14 +98,14 @@ func precedingHardwareSchema(t *testing.T) string {
 	var kept []string
 	dropped := 0
 	for _, line := range strings.Split(schemaSQL, "\n") {
-		if strings.Contains(line, " hardware_trust ") || strings.Contains(line, "commissioning_fingerprint") {
+		if strings.Contains(line, " hardware_trust ") || strings.Contains(line, "manufacturer_authority_id") || strings.Contains(line, "commissioning_fingerprint") {
 			dropped++
 			continue
 		}
 		kept = append(kept, line)
 	}
-	if dropped != 8 {
-		t.Fatalf("dropped %d schema lines, want the 4 declarations and 4 migrations", dropped)
+	if dropped != 12 {
+		t.Fatalf("dropped %d schema lines, want the 6 declarations and 6 migrations", dropped)
 	}
 	return strings.Join(kept, "\n")
 }
@@ -173,22 +175,23 @@ func TestIntegrationHardwareEvidenceMigration(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	verified := func(seq uint64, board *BoardSample) *NavFrame {
 		return &NavFrame{Ts: now, ReceivedAt: now, SourceID: "commissioned", Session: "boot-a", SourceSeq: seq, HasSourceSeq: true,
-			HardwareTrust: "trusted", CommissioningFingerprint: testCommissioningFingerprint,
-			GnssID: 0, SvID: 12, MsgType: 1, Raw: []byte{1, 2, 3, 4}, Board: board}
+			HardwareTrust: "trusted", ManufacturerAuthorityID: testManufacturerAuthority,
+			CommissioningFingerprint: testCommissioningFingerprint,
+			GnssID:                   0, SvID: 12, MsgType: 1, Raw: []byte{1, 2, 3, 4}, Board: board}
 	}
 	batch := []*NavFrame{verified(1, nil), verified(2, &BoardSample{Kind: "environment", Data: []byte(`{}`)})}
 	if n, e := s.persistAtomicOnce(ctx, batch); e != nil || n != 2 {
 		t.Fatalf("persist %d %v", n, e)
 	}
 	for _, table := range []string{"nav_frames", "observer_samples"} {
-		for source, want := range map[string][2]string{"legacy": {"none", ""}, "commissioned": {"trusted", testCommissioningFingerprint}} {
-			var trust, fingerprint string
-			query := "SELECT hardware_trust, commissioning_fingerprint FROM " + pgx.Identifier{table}.Sanitize() + " WHERE source_id=$1"
-			if err := s.pool.QueryRow(ctx, query, source).Scan(&trust, &fingerprint); err != nil {
+		for source, want := range map[string][3]string{"legacy": {"none", "", ""}, "commissioned": {"trusted", testManufacturerAuthority, testCommissioningFingerprint}} {
+			var trust, authority, fingerprint string
+			query := "SELECT hardware_trust, manufacturer_authority_id, commissioning_fingerprint FROM " + pgx.Identifier{table}.Sanitize() + " WHERE source_id=$1"
+			if err := s.pool.QueryRow(ctx, query, source).Scan(&trust, &authority, &fingerprint); err != nil {
 				t.Fatalf("%s %s: %v", table, source, err)
 			}
-			if trust != want[0] || fingerprint != want[1] {
-				t.Errorf("%s %s = %q/%q, want %q/%q", table, source, trust, fingerprint, want[0], want[1])
+			if trust != want[0] || authority != want[1] || fingerprint != want[2] {
+				t.Errorf("%s %s = %q/%q/%q, want %q/%q/%q", table, source, trust, authority, fingerprint, want[0], want[1], want[2])
 			}
 		}
 	}
@@ -200,6 +203,7 @@ func TestIntegrationHardwareEvidenceMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(replayed) != 2 || replayed[0].HardwareTrust != "none" || replayed[1].HardwareTrust != "trusted" ||
+		replayed[1].ManufacturerAuthorityID != testManufacturerAuthority ||
 		replayed[1].CommissioningFingerprint != testCommissioningFingerprint {
 		t.Fatalf("replay lost hardware evidence: %+v", replayed)
 	}

@@ -54,22 +54,30 @@ static void hex(const uint8_t *in, size_t n, char *out)
     for (size_t i = 0; i < n; i++) snprintf(out + 2 * i, 3, "%02x", in[i]);
     out[2 * n] = 0;
 }
-static void add_hex(cJSON *json, const char *name, const uint8_t *in, size_t n, bool valid)
+static bool add_hex(cJSON *json, const char *name, const uint8_t *in, size_t n, bool valid)
 {
     char text[2 * 72 + 1] = "";
-    if (valid && n <= 72) hex(in, n, text);
-    cJSON_AddStringToObject(json, name, text);
+    if (valid && n <= 72) { hex(in, n, text); return cJSON_AddStringToObject(json, name, text) != NULL; }
+    return cJSON_AddNullToObject(json, name) != NULL;
 }
-static void add_base64(cJSON *json, const char *name, const uint8_t *in, size_t n)
+static bool add_base64(cJSON *json, const char *name, const uint8_t *in, size_t n)
 {
     size_t need = 0;
     char *text = NULL;
-    if (n) (void)mbedtls_base64_encode(NULL, 0, &need, in, n);
-    if (need && (text = malloc(need)) && mbedtls_base64_encode((unsigned char *)text, need, &need, in, n) == 0)
-        cJSON_AddStringToObject(json, name, text);
-    else
-        cJSON_AddStringToObject(json, name, "");
+    if (!n) return cJSON_AddStringToObject(json, name, "") != NULL;
+    if (mbedtls_base64_encode(NULL, 0, &need, in, n) != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL || !need)
+        return false;
+    if (!(text = malloc(need)) || mbedtls_base64_encode((unsigned char *)text, need, &need, in, n) != 0) {
+        free(text);
+        return false;
+    }
+    bool ok = cJSON_AddStringToObject(json, name, text) != NULL;
     free(text);
+    return ok;
+}
+static void added(bool *complete, cJSON *item)
+{
+    if (!item) *complete = false;
 }
 // decode returns a heap buffer holding the base64 text's bytes, or NULL.
 static uint8_t *decode(const char *text, size_t *len)
@@ -83,9 +91,15 @@ static uint8_t *decode(const char *text, size_t *len)
 
 static void live_identity(const observer_board_identity_t *board, nvf_live_identity_t *live)
 {
-    *live = (nvf_live_identity_t){ .atecc_valid = board->atecc_valid, .rtc_valid = board->rtc_valid, .board_valid = board->board_valid };
+    *live = (nvf_live_identity_t){
+        .atecc_valid = board->atecc_valid, .board_valid = board->board_valid,
+        .revision_valid = board->revision_valid, .board_rev = board->revision,
+        .rtc_expected = true, .rtc_present = board->rtc_present, .rtc_valid = board->rtc_valid,
+        .rtc_model_id = NVF_RTC_MCP79412, .attestation_valid = board->attestation_valid,
+    };
     memcpy(live->atecc_serial, board->atecc_serial, 9); memcpy(live->rtc_eui64, board->rtc_eui64, 8);
     memcpy(live->board_eui64, board->board_eui64, 8);
+    memcpy(live->attestation_record, board->attestation, sizeof live->attestation_record);
     live->mac_valid = esp_efuse_mac_get_default(live->mcu_mac) == ESP_OK;
 }
 
@@ -100,37 +114,47 @@ static void report(void)
     uint8_t *scratch = malloc(NVF_MCU_DS_CONTEXT_MAX), digest[32], record[NVF_COMMISSION_RECORD_SIZE];
     cJSON *json = cJSON_CreateObject();
     if (!scratch || !json) { free(scratch); cJSON_Delete(json); puts("NVF-COMMISSION-ERROR report: out of memory"); return; }
-    cJSON_AddNumberToObject(json, "v", 1);
-    cJSON_AddNumberToObject(json, "product", NVF_COMMISSION_PRODUCT_OBSERVER);
-    add_hex(json, "atecc_serial", board.atecc_serial, 9, board.atecc_valid);
-    add_hex(json, "rtc_eui64", board.rtc_eui64, 8, board.rtc_valid);
-    add_hex(json, "board_eui64", board.board_eui64, 8, board.board_valid);
-    if (board.revision_valid) cJSON_AddNumberToObject(json, "board_rev", board.revision);
-    else cJSON_AddNullToObject(json, "board_rev");
-    cJSON_AddNumberToObject(json, "mcu_family", NVF_MCU_ESP32S3);
-    add_hex(json, "mcu_mac", live.mcu_mac, 6, live.mac_valid);
-    cJSON_AddNumberToObject(json, "security", status.security);
-    add_hex(json, "secure_boot_keys_sha256", digest, 32, nvf_mcu_identity_secure_boot_keys(digest));
-    add_hex(json, "attestation_record", board.attestation, sizeof board.attestation, board.attestation_valid);
+    bool complete = true;
+    added(&complete, cJSON_AddNumberToObject(json, "v", 1));
+    added(&complete, cJSON_AddNumberToObject(json, "product", NVF_COMMISSION_PRODUCT_OBSERVER));
+    added(&complete, cJSON_AddNumberToObject(json, "identity_flags", NVF_IDENTITY_RTC_PRESENT | NVF_IDENTITY_RTC_EUI_BOUND));
+    added(&complete, cJSON_AddNumberToObject(json, "rtc_model_id", NVF_RTC_MCP79412));
+    added(&complete, cJSON_AddBoolToObject(json, "rtc_expected", true));
+    added(&complete, cJSON_AddBoolToObject(json, "rtc_present", board.rtc_present));
+    complete &= add_hex(json, "atecc_serial", board.atecc_serial, 9, board.atecc_valid);
+    complete &= add_hex(json, "rtc_eui64", board.rtc_eui64, 8, board.rtc_valid);
+    complete &= add_hex(json, "board_eui64", board.board_eui64, 8, board.board_valid);
+    if (board.revision_valid) added(&complete, cJSON_AddNumberToObject(json, "board_rev", board.revision));
+    else added(&complete, cJSON_AddNullToObject(json, "board_rev"));
+    added(&complete, cJSON_AddNumberToObject(json, "mcu_family", NVF_MCU_ESP32S3));
+    complete &= add_hex(json, "mcu_mac", live.mcu_mac, 6, live.mac_valid);
+    added(&complete, cJSON_AddBoolToObject(json, "identity_complete", board.atecc_valid && board.board_valid &&
+                                           board.revision_valid && board.attestation_valid && board.rtc_present &&
+                                           board.rtc_valid && live.mac_valid));
+    added(&complete, cJSON_AddNumberToObject(json, "security", status.security));
+    complete &= add_hex(json, "secure_boot_keys_sha256", digest, 32, nvf_mcu_identity_secure_boot_keys(digest));
+    complete &= add_hex(json, "attestation_record", board.attestation, sizeof board.attestation, board.attestation_valid);
     size_t n = nvf_mcu_identity_public_key(scratch, NVF_MCU_DS_CONTEXT_MAX);
     bool ready = status.key == NVF_MCU_KEY_READY && n;
-    cJSON_AddNumberToObject(json, "mcu_key_alg", ready ? NVF_MCU_KEY_RSA3072_PSS : NVF_MCU_KEY_NONE);
-    add_base64(json, "mcu_public_key_der", scratch, ready ? n : 0);
-    add_hex(json, "mcu_key_sha256", digest, 32, ready && mbedtls_sha256(scratch, n, digest, 0) == 0);
+    added(&complete, cJSON_AddNumberToObject(json, "mcu_key_alg", ready ? NVF_MCU_KEY_RSA3072_PSS : NVF_MCU_KEY_NONE));
+    complete &= add_base64(json, "mcu_public_key_der", scratch, ready ? n : 0);
+    complete &= add_hex(json, "mcu_key_sha256", digest, 32, ready && mbedtls_sha256(scratch, n, digest, 0) == 0);
     n = nvf_mcu_identity_ds_context(scratch, NVF_MCU_DS_CONTEXT_MAX);
-    add_base64(json, "ds_context", scratch, ready ? n : 0);
+    complete &= add_base64(json, "ds_context", scratch, ready ? n : 0);
     static const char *const key_states[] = { "absent", "orphaned", "ready", "fault" };
-    cJSON_AddStringToObject(json, "key_state", key_states[status.key]);
-    cJSON_AddNumberToObject(json, "key_block", status.key_block);
-    cJSON_AddBoolToObject(json, "rd_dis_sealed", status.rd_dis_sealed);
+    const char *key_state = status.key < sizeof key_states / sizeof key_states[0] ? key_states[status.key] : "fault";
+    added(&complete, cJSON_AddStringToObject(json, "key_state", key_state));
+    added(&complete, cJSON_AddNumberToObject(json, "key_block", status.key_block));
+    added(&complete, cJSON_AddBoolToObject(json, "rd_dis_sealed", status.rd_dis_sealed));
     n = nvf_mcu_identity_record(record);
     char *record_hex = calloc(1, 2 * sizeof record + 1);
     if (record_hex && n) hex(record, n, record_hex);
-    cJSON_AddStringToObject(json, "record", record_hex ? record_hex : "");
+    if (record_hex) added(&complete, cJSON_AddStringToObject(json, "record", record_hex));
+    else complete = false;
     free(record_hex);
-    cJSON_AddStringToObject(json, "firmware", esp_app_get_description()->version);
-    cJSON_AddStringToObject(json, "trust_profile", nvf_update_profile_name(nvf_update_profile()));
-    char *body = cJSON_PrintUnformatted(json);
+    added(&complete, cJSON_AddStringToObject(json, "firmware", esp_app_get_description()->version));
+    added(&complete, cJSON_AddStringToObject(json, "trust_profile", nvf_update_profile_name(nvf_update_profile())));
+    char *body = complete ? cJSON_PrintUnformatted(json) : NULL;
     if (body) printf("NVF-COMMISSION-REPORT %s\n", body);
     else puts("NVF-COMMISSION-ERROR report: out of memory");
     cJSON_free(body); cJSON_Delete(json); free(scratch);

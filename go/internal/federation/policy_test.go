@@ -15,7 +15,7 @@ func fixture() (time.Time, Observation, identity.ObserverContext, ExportGrant, E
 	c.EnrollmentID = "enrollment-a"
 	c.CollectorInstanceID = "collector-a"
 	c.CollectionIDs = []string{"fleet-a"}
-	c.AttestationTier = identity.AttestationVerifiedV2
+	c.AttestationTier = identity.AttestationVerifiedV1Core
 	c.Publication.AggregateUse = identity.AggregatePrivate
 	c.Publication.RawExport = identity.RawExportNamedPeers
 	c.Publication.FederationPeers = []string{"peer-b"}

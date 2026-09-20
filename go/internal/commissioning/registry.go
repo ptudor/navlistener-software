@@ -7,7 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
+
+	"github.com/ptudor/navlistener/internal/identity"
 )
 
 // RegistryFormat names the signed registry envelope.
@@ -32,22 +35,48 @@ var registryDomain = []byte("NAVL-REGISTRY-v1")
 // an operations key, separate from the offline manufacturer key, and its
 // compromise cannot create a trusted board.
 type Registry struct {
-	Sequence   uint64          `json:"sequence"`
-	IssuedAt   time.Time       `json:"issued_at"`
-	LedgerHead string          `json:"ledger_head"`
-	Boards     []RegistryBoard `json:"boards"`
+	ManufacturerAuthorityID string          `json:"manufacturer_authority_id"`
+	Sequence                uint64          `json:"sequence"`
+	IssuedAt                time.Time       `json:"issued_at"`
+	LedgerHead              string          `json:"ledger_head"`
+	Boards                  []RegistryBoard `json:"boards"`
 }
 
 // RegistryBoard is one commissioned board. Identifiers are lowercase hex.
 type RegistryBoard struct {
-	BoardEUI64  string `json:"board_eui64"`
-	RTCEUI64    string `json:"rtc_eui64"`
-	ATECCSerial string `json:"atecc_serial"`
-	Status      string `json:"status"`
-	Reason      string `json:"reason,omitempty"`
-	Profile     string `json:"profile"`
-	Generation  uint32 `json:"generation"`
-	Record      string `json:"record"` // base64 of the current commissioning record
+	BoardEUI64  string  `json:"board_eui64"`
+	RTCModelID  uint16  `json:"rtc_model_id"`
+	RTCEUI64    *string `json:"rtc_eui64"`
+	ATECCSerial string  `json:"atecc_serial"`
+	Status      string  `json:"status"`
+	Reason      string  `json:"reason,omitempty"`
+	Profile     string  `json:"profile"`
+	Generation  uint32  `json:"generation"`
+	Record      string  `json:"record"` // base64 of the current commissioning record
+}
+
+// UnmarshalJSON makes rtc_eui64 a required nullable member. A missing value is
+// not equivalent to an explicit null in this signed schema.
+func (b *RegistryBoard) UnmarshalJSON(data []byte) error {
+	type plain RegistryBoard
+	var decoded plain
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&decoded); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return errors.New("registry board has trailing content")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if _, ok := fields["rtc_eui64"]; !ok {
+		return errors.New("rtc_eui64 is required (use null when the record binds no RTC EUI-64)")
+	}
+	*b = RegistryBoard(decoded)
+	return nil
 }
 
 type registryEnvelope struct {
@@ -63,6 +92,9 @@ type registrySignature struct {
 
 // SignRegistry validates and signs a registry, returning the envelope bytes.
 func SignRegistry(reg Registry, signer Signer) ([]byte, error) {
+	if signer == nil {
+		return nil, errors.New("registry signer is required")
+	}
 	if _, err := indexRegistry(reg); err != nil {
 		return nil, err
 	}
@@ -91,10 +123,11 @@ func SignRegistry(reg Registry, signer Signer) ([]byte, error) {
 
 // RegistryIndex is a verified registry keyed for lookup.
 type RegistryIndex struct {
-	Sequence   uint64
-	IssuedAt   time.Time
-	LedgerHead string
-	boards     map[[8]byte]indexedBoard
+	ManufacturerAuthorityID string
+	Sequence                uint64
+	IssuedAt                time.Time
+	LedgerHead              string
+	boards                  map[[8]byte]indexedBoard
 }
 
 type indexedBoard struct {
@@ -110,7 +143,13 @@ func (ix *RegistryIndex) Len() int { return len(ix.boards) }
 // returns its index. One valid signature from a pinned key is sufficient;
 // signatures from unknown keys are ignored so a key can be introduced before
 // every verifier pins it.
-func VerifyRegistry(data []byte, keys *KeySet) (*RegistryIndex, error) {
+func VerifyRegistry(data []byte, keys *KeySet, expectedAuthorityID string) (*RegistryIndex, error) {
+	if !identity.ValidScopeID(expectedAuthorityID) {
+		return nil, errors.New("expected manufacturer authority id is required and must be a valid scope id")
+	}
+	if keys == nil {
+		return nil, errors.New("registry verification keys are required")
+	}
 	if len(data) > registryMaxBytes {
 		return nil, fmt.Errorf("registry is %d bytes, limit %d", len(data), registryMaxBytes)
 	}
@@ -119,6 +158,9 @@ func VerifyRegistry(data []byte, keys *KeySet) (*RegistryIndex, error) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&env); err != nil {
 		return nil, fmt.Errorf("decode registry envelope: %w", err)
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return nil, errors.New("decode registry envelope: trailing content")
 	}
 	if env.Format != RegistryFormat {
 		return nil, fmt.Errorf("registry format %q is unsupported", env.Format)
@@ -157,10 +199,19 @@ func VerifyRegistry(data []byte, keys *KeySet) (*RegistryIndex, error) {
 	if err := dec.Decode(&reg); err != nil {
 		return nil, fmt.Errorf("decode registry payload: %w", err)
 	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return nil, errors.New("decode registry payload: trailing content")
+	}
+	if reg.ManufacturerAuthorityID != expectedAuthorityID {
+		return nil, fmt.Errorf("registry manufacturer authority %q does not match configured authority %q", reg.ManufacturerAuthorityID, expectedAuthorityID)
+	}
 	return indexRegistry(reg)
 }
 
 func indexRegistry(reg Registry) (*RegistryIndex, error) {
+	if !identity.ValidScopeID(reg.ManufacturerAuthorityID) {
+		return nil, errors.New("registry manufacturer authority id is required and must be a valid scope id")
+	}
 	if reg.Sequence == 0 {
 		return nil, errors.New("registry sequence starts at 1")
 	}
@@ -171,10 +222,12 @@ func indexRegistry(reg Registry) (*RegistryIndex, error) {
 		return nil, errors.New("registry ledger head must be a 32-byte hex digest")
 	}
 	ix := &RegistryIndex{
-		Sequence: reg.Sequence, IssuedAt: reg.IssuedAt, LedgerHead: reg.LedgerHead,
+		ManufacturerAuthorityID: reg.ManufacturerAuthorityID,
+		Sequence:                reg.Sequence, IssuedAt: reg.IssuedAt, LedgerHead: reg.LedgerHead,
 		boards: make(map[[8]byte]indexedBoard, len(reg.Boards)),
 	}
-	observers := make(map[[8]byte]struct{}, len(reg.Boards))
+	ateccs := make(map[[9]byte]struct{}, len(reg.Boards))
+	rtcs := make(map[[8]byte]struct{}, len(reg.Boards))
 	for i, b := range reg.Boards {
 		if b.Status != StatusActive && b.Status != StatusRevoked {
 			return nil, fmt.Errorf("registry board %d: status %q is unknown", i, b.Status)
@@ -193,17 +246,31 @@ func indexRegistry(reg Registry) (*RegistryIndex, error) {
 		}
 		// The descriptive columns exist for people and for other importers; they
 		// must agree with the signed record they summarise.
-		if b.BoardEUI64 != hex.EncodeToString(s.BoardEUI64[:]) || b.RTCEUI64 != hex.EncodeToString(s.RTCEUI64[:]) ||
+		if b.BoardEUI64 != hex.EncodeToString(s.BoardEUI64[:]) || b.RTCModelID != uint16(s.RTCModel) ||
 			b.ATECCSerial != hex.EncodeToString(s.ATECCSerial[:]) || b.Profile != s.Profile.String() || b.Generation != s.Generation {
 			return nil, fmt.Errorf("registry board %d: columns disagree with the commissioning record", i)
+		}
+		rtcBound := s.IdentityFlags&IdentityRTCEUIBound != 0
+		if rtcBound {
+			if b.RTCEUI64 == nil || *b.RTCEUI64 != hex.EncodeToString(s.RTCEUI64[:]) {
+				return nil, fmt.Errorf("registry board %d: RTC EUI-64 disagrees with the commissioning record", i)
+			}
+		} else if b.RTCEUI64 != nil {
+			return nil, fmt.Errorf("registry board %d: RTC EUI-64 must be null when the commissioning record does not bind one", i)
 		}
 		if _, dup := ix.boards[s.BoardEUI64]; dup {
 			return nil, fmt.Errorf("registry board %d: board %s is listed twice", i, b.BoardEUI64)
 		}
-		if _, dup := observers[s.RTCEUI64]; dup {
-			return nil, fmt.Errorf("registry board %d: observer %s is listed twice", i, b.RTCEUI64)
+		if _, dup := ateccs[s.ATECCSerial]; dup {
+			return nil, fmt.Errorf("registry board %d: ATECC serial %s is listed twice", i, b.ATECCSerial)
 		}
-		observers[s.RTCEUI64] = struct{}{}
+		ateccs[s.ATECCSerial] = struct{}{}
+		if rtcBound {
+			if _, dup := rtcs[s.RTCEUI64]; dup {
+				return nil, fmt.Errorf("registry board %d: RTC EUI-64 %s is listed twice", i, *b.RTCEUI64)
+			}
+			rtcs[s.RTCEUI64] = struct{}{}
+		}
 		ix.boards[s.BoardEUI64] = indexedBoard{status: b.Status, reason: b.Reason, fingerprint: record.Fingerprint()}
 	}
 	return ix, nil

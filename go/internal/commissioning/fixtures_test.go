@@ -42,13 +42,14 @@ type fixtureCase struct {
 }
 
 type fixtureFile struct {
-	ExporterLabel         string                 `json:"exporter_label"`
-	ManufacturerPublicKey string                 `json:"manufacturer_public_key_pem"`
-	RegistryPublicKey     string                 `json:"registry_public_key_pem"`
-	Cases                 map[string]fixtureCase `json:"cases"`
-	Registry              string                 `json:"registry"`
-	RegistrySequence      uint64                 `json:"registry_sequence"`
-	RegistryRevokedBoard  string                 `json:"registry_revoked_board_eui64"`
+	ExporterLabel           string                 `json:"exporter_label"`
+	ManufacturerAuthorityID string                 `json:"manufacturer_authority_id"`
+	ManufacturerPublicKey   string                 `json:"manufacturer_public_key_pem"`
+	RegistryPublicKey       string                 `json:"registry_public_key_pem"`
+	Cases                   map[string]fixtureCase `json:"cases"`
+	Registry                string                 `json:"registry"`
+	RegistrySequence        uint64                 `json:"registry_sequence"`
+	RegistryRevokedBoard    string                 `json:"registry_revoked_board_eui64"`
 }
 
 func publicPEM(t *testing.T, key *ecdsa.PublicKey) string {
@@ -98,10 +99,11 @@ func generateFixtures(t *testing.T) fixtureFile {
 	bench.RTCEUI64[7], bench.BoardEUI64[7], bench.ATECCSerial[8], bench.MCUMAC[5] = 0x92, 0xf0, 0x13, 0x05
 
 	out := fixtureFile{
-		ExporterLabel:         ExporterLabel,
-		ManufacturerPublicKey: publicPEM(t, &mfgKey.PublicKey),
-		RegistryPublicKey:     publicPEM(t, &opsKey.PublicKey),
-		Cases:                 map[string]fixtureCase{},
+		ExporterLabel:           ExporterLabel,
+		ManufacturerAuthorityID: testManufacturerAuthority,
+		ManufacturerPublicKey:   publicPEM(t, &mfgKey.PublicKey),
+		RegistryPublicKey:       publicPEM(t, &opsKey.PublicKey),
+		Cases:                   map[string]fixtureCase{},
 	}
 	var records []Record
 	for name, s := range map[string]Statement{"trusted": trusted, "open": open, "test": bench} {
@@ -137,7 +139,7 @@ func generateFixtures(t *testing.T) fixtureFile {
 	}
 	// The registry lists the trusted and open boards as active and the bench
 	// board as revoked, so importers exercise both statuses.
-	reg := Registry{Sequence: 3, IssuedAt: registryFor(t, 1, StatusActive).IssuedAt, LedgerHead: registryFor(t, 1, StatusActive).LedgerHead}
+	reg := Registry{ManufacturerAuthorityID: testManufacturerAuthority, Sequence: 3, IssuedAt: registryFor(t, 1, StatusActive).IssuedAt, LedgerHead: registryFor(t, 1, StatusActive).LedgerHead}
 	for _, r := range records {
 		s, _ := r.Statement()
 		row := registryFor(t, 1, StatusActive, r).Boards[0]
@@ -204,7 +206,7 @@ func TestFixtures(t *testing.T) {
 	if f.ExporterLabel != ExporterLabel {
 		t.Fatalf("fixture exporter label %q, package %q", f.ExporterLabel, ExporterLabel)
 	}
-	v, err := NewVerifier(keySetFromPEM(t, f.ManufacturerPublicKey))
+	v, err := NewVerifier(f.ManufacturerAuthorityID, keySetFromPEM(t, f.ManufacturerPublicKey))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +249,7 @@ func TestFixtures(t *testing.T) {
 			}
 		})
 	}
-	ix, err := VerifyRegistry([]byte(f.Registry), keySetFromPEM(t, f.RegistryPublicKey))
+	ix, err := VerifyRegistry([]byte(f.Registry), keySetFromPEM(t, f.RegistryPublicKey), f.ManufacturerAuthorityID)
 	if err != nil {
 		t.Fatal(err)
 	}

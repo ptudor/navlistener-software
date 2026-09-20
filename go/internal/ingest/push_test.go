@@ -321,7 +321,7 @@ func TestPushMTLSBindsExactActiveCredentialFingerprint(t *testing.T) {
 	resolved := identity.NewPrivateContext("observer16", identity.CredentialHardwareMTLS)
 	resolved.FeedGrants = []string{"ubx"}
 	resolved.CredentialFingerprint = hex.EncodeToString(fingerprint[:])
-	resolved.AttestationTier = identity.AttestationVerifiedV2
+	resolved.AttestationTier = identity.AttestationVerifiedV1Core
 	auth := authenticatorFunc(func(context.Context, string, string, string) (identity.ObserverContext, bool) {
 		return resolved, true
 	})
@@ -358,7 +358,7 @@ func TestPushRejectsHardwareLabelWithoutMTLS(t *testing.T) {
 	resolved := identity.NewPrivateContext("observer16", identity.CredentialHardwareMTLS)
 	resolved.FeedGrants = []string{"ubx"}
 	resolved.CredentialFingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	resolved.AttestationTier = identity.AttestationVerifiedV2
+	resolved.AttestationTier = identity.AttestationVerifiedV1Core
 	auth := authenticatorFunc(func(context.Context, string, string, string) (identity.ObserverContext, bool) {
 		return resolved, true
 	})

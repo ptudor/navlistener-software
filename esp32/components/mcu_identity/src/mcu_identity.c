@@ -589,9 +589,11 @@ esp_err_t nvf_mcu_identity_install(const uint8_t *candidate, size_t len, nvf_liv
     nvf_commission_statement_t s;
     if (!lock || !storage_ready) { *reason = "hardware trust storage is unavailable"; return ESP_ERR_INVALID_STATE; }
     if (!nvf_commission_record_parse(candidate, len, &s)) { *reason = "not a valid commissioning record"; return ESP_ERR_INVALID_ARG; }
+    if (!live) { *reason = "live hardware identity is unavailable"; return ESP_ERR_INVALID_ARG; }
     live->key_valid = nvf_mcu_identity_key_sha256(live->mcu_key_sha256);
-    if ((*reason = nvf_commission_match(&s, live))) return ESP_ERR_INVALID_ARG;
-    if ((s.security & ~nvf_mcu_identity_security()) != 0) { *reason = "record claims a lock state this chip does not have"; return ESP_ERR_INVALID_ARG; }
+    live->security = nvf_mcu_identity_security(); live->security_valid = true;
+    live->secure_boot_keys_valid = nvf_mcu_identity_secure_boot_keys(live->secure_boot_keys);
+    if ((*reason = nvf_commission_match(&s, live, sha256))) return ESP_ERR_INVALID_ARG;
     xSemaphoreTake(lock, portMAX_DELAY);
     esp_err_t err = nvs_set_blob(storage, "record", candidate, len);
     if (err == ESP_OK) err = nvs_commit(storage);
@@ -609,7 +611,8 @@ esp_err_t nvf_mcu_identity_install(const uint8_t *candidate, size_t len, nvf_liv
 static const char *const trusts[] = { "none", "open", "test", "trusted" };
 static const char *const reasons[] = { "", "unconfigured", "malformed", "signature", "identity", "unlisted",
                                        "revoked", "superseded", "proof_missing", "proof", "product" };
-enum { VERDICT_UNREPORTED = 0x10, VERDICT_WITHHELD = 0x20, REASON_OTHER = 0x0f, REASON_NO_EXPORT = 0x20, REASON_NO_KEY = 0x21, REASON_SIGN = 0x22 };
+enum { VERDICT_UNREPORTED = 0x10, VERDICT_WITHHELD = 0x20, REASON_OTHER = 0x0f,
+       REASON_NO_EXPORT = 0x20, REASON_NO_KEY = 0x21, REASON_SIGN = 0x22, REASON_LIVE_IDENTITY = 0x23 };
 
 static void note(uint32_t code)
 {
@@ -618,16 +621,22 @@ static void note(uint32_t code)
     journal_event(JOURNAL_HW_TRUST, (int32_t)code);
 }
 
-size_t nvf_mcu_identity_evidence(const uint8_t *exported, uint8_t *out, size_t cap)
+size_t nvf_mcu_identity_evidence(const uint8_t *exported, uint8_t *out, size_t cap,
+                                 nvf_live_identity_t *live)
 {
-    if (!lock) return 0;
+    if (!lock || !live) return 0;
+    live->key_valid = nvf_mcu_identity_key_sha256(live->mcu_key_sha256);
+    live->security = nvf_mcu_identity_security(); live->security_valid = true;
+    live->secure_boot_keys_valid = nvf_mcu_identity_secure_boot_keys(live->secure_boot_keys);
     size_t n = 0;
     uint32_t withheld = 0;
+    const char *mismatch = NULL;
     nvf_commission_statement_t s;
     xSemaphoreTake(lock, portMAX_DELAY);
     if (record_present && nvf_commission_record_parse(record, sizeof record, &s)) {
         uint8_t digest[32], key_digest[32], *signature = NULL;
-        if (s.mcu_key_alg == NVF_MCU_KEY_NONE) n = nvf_evidence_encode(out, cap, record, NULL, 0, NULL, 0);
+        if ((mismatch = nvf_commission_match(&s, live, sha256))) withheld = REASON_LIVE_IDENTITY;
+        else if (s.mcu_key_alg == NVF_MCU_KEY_NONE) n = nvf_evidence_encode(out, cap, record, NULL, 0, NULL, 0);
         else if (key_state != NVF_MCU_KEY_READY || !sha256(spki, spki_len, key_digest) || memcmp(key_digest, s.mcu_key_sha256, 32)) withheld = REASON_NO_KEY;
         else if (!exported) withheld = REASON_NO_EXPORT;
         else if (!(signature = malloc(NVF_MCU_KEY_BYTES)) || !nvf_mcu_proof_digest(exported, record, sha256, digest) ||
@@ -636,8 +645,11 @@ size_t nvf_mcu_identity_evidence(const uint8_t *exported, uint8_t *out, size_t c
         free(signature);
         // A record that cannot be proved still says what it says for an open or test board.
         // A trusted record without its proof would only be rejected: present nothing instead.
-        if (withheld && s.profile != NVF_PROFILE_TRUSTED) n = nvf_evidence_encode(out, cap, record, NULL, 0, NULL, 0);
-        if (withheld) {
+        if (withheld && !mismatch && s.profile != NVF_PROFILE_TRUSTED) n = nvf_evidence_encode(out, cap, record, NULL, 0, NULL, 0);
+        if (mismatch) {
+            ESP_LOGE(TAG, "commissioning record does not match live hardware: %s; presenting no evidence", mismatch);
+            note(VERDICT_WITHHELD | withheld << 8);
+        } else if (withheld) {
             ESP_LOGW(TAG, "session proof unavailable (%s); %s", withheld == REASON_NO_EXPORT ? "TLS keying material was not exported" :
                      withheld == REASON_NO_KEY ? "the commissioned key is not ready on this chip" : "the peripheral did not sign",
                      n ? "presenting the record alone" : "presenting no evidence");

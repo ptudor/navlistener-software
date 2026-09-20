@@ -35,6 +35,7 @@ func frameForPersistence(f *ingest.RawFrame) *store.NavFrame {
 		AttestationTier:       string(observer.AttestationTier),
 		// Verified from this session's hardware evidence at the handshake.
 		HardwareTrust:            string(observer.HardwareTrust),
+		ManufacturerAuthorityID:  observer.ManufacturerAuthorityID,
 		CommissioningFingerprint: observer.CommissioningFingerprint,
 		AggregateUse:             string(observer.Publication.AggregateUse),
 		StationMetadata:          string(observer.Publication.StationMetadata),

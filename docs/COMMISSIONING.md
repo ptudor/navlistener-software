@@ -16,12 +16,13 @@ A device reports the update track it was built for as `trust_profile`
 label. Firmware on unlocked hardware can report anything.
 
 The slot-14 manufacturer attestation
-([hardware contract §4.1b](HARDWARE-OBSERVER.md)) proves that a board and its
-secure element are original. It binds the ATECC serial, the RTC EUI-64, the
-board EUI-64 and the board revision. It does not mention the microcontroller,
+([hardware contract §4.1b](HARDWARE-OBSERVER.md)) proves that a board core and
+its secure element are original. It binds the manufacturer product, board
+revision, board EUI-64 and ATECC serial. Replaceable parts deliberately do not
+belong in that permanent core. It does not mention the microcontroller,
 and whether a unit is locked is entirely a microcontroller property: Secure
 Boot and flash encryption are ESP32-S3 eFuses. A board whose locked module was
-replaced with a blank one keeps all three attested identifiers, and its secure
+replaced with a blank one keeps the attested board core unchanged, and its secure
 element signs for whichever microcontroller drives the I²C bus.
 
 Two additions close that gap:
@@ -36,13 +37,13 @@ Two additions close that gap:
 
 | Part | Identity | Role |
 |---|---|---|
-| 24AA025E64 EUI-64 | board | the PCB. The permanent identity of a unit; a replaced PCB is a new unit. |
-| MCP79412 EUI-64 | observer | the network name: certificate SAN and observer id. |
+| 24AA025E64 EUI-64 | board and observer | the PCB's permanent identity and the network name: certificate SAN and observer id. A replaced PCB is a new unit. |
+| MCP79412 model and optional EUI-64 | RTC | a replaceable assembly bound by commissioning when present; not the observer identity. |
 | ATECC608C serial | secure element | holds the operational key; carries the slot-14 attestation. |
 | ESP32-S3 key | microcontroller | the part that runs the firmware. Named by the SHA-256 of its public key; its factory MAC is a label only. |
 
-The microcontroller is a replaceable part with its own identity. Replacing it is
-a recorded service event that produces a new commissioning record with the next
+The RTC and microcontroller are replaceable parts. Replacing either is a
+recorded service event that produces a new commissioning record with the next
 **generation** number (§8); the board, observer and secure-element identities do
 not change.
 
@@ -71,7 +72,7 @@ cannot send again. Admission remains the operational credential's job.
 
 ## 4. The commissioning statement (v1)
 
-A fixed 149-byte big-endian layout. A layout change takes a new version and a
+A fixed 153-byte big-endian layout. A layout change takes a new version and a
 new domain string; v1 is never extended in place.
 
 | Offset | Size | Field | Notes |
@@ -83,15 +84,17 @@ new domain string; v1 is never extended in place.
 | 4 | 2 | product | the product line the board was built as; 1 = NavListen GNSS observer, 0 reserved |
 | 6 | 2 | board_rev | as in the slot-14 attestation |
 | 8 | 2 | security | bit field below |
-| 10 | 4 | generation | 1 at first commissioning; +1 each time the board is commissioned again |
-| 14 | 8 | commissioned_at | Unix seconds, UTC |
-| 22 | 9 | atecc_serial | |
-| 31 | 8 | rtc_eui64 | |
-| 39 | 8 | board_eui64 | |
-| 47 | 6 | mcu_mac | factory base MAC; a label, never a proof |
-| 53 | 32 | mcu_key_sha256 | SHA-256 of the key's DER SubjectPublicKeyInfo; zero when `mcu_key_alg` is 0 |
-| 85 | 32 | secure_boot_keys | SHA-256 over the three 32-byte Secure Boot key digests in slot order, an empty or revoked slot as 32 zero bytes; zero when Secure Boot is off |
-| 117 | 32 | attestation | SHA-256 of the board's 72-byte slot-14 record |
+| 10 | 2 | identity_flags | bit 0: RTC EUI-64 bound; bit 1: RTC present; all other bits reserved |
+| 12 | 2 | rtc_model_id | 0 = none; 1 = MCP79412 |
+| 14 | 4 | generation | 1 at first commissioning; +1 each time the board is commissioned again |
+| 18 | 8 | commissioned_at | Unix seconds, UTC |
+| 26 | 8 | board_eui64 | permanent board and observer identity |
+| 34 | 9 | atecc_serial | |
+| 43 | 8 | rtc_eui64 | zero unless identity flag bit 0 is set |
+| 51 | 6 | mcu_mac | factory base MAC; a label, never a proof |
+| 57 | 32 | mcu_key_sha256 | SHA-256 of the key's DER SubjectPublicKeyInfo; zero when `mcu_key_alg` is 0 |
+| 89 | 32 | secure_boot_keys | SHA-256 over the three 32-byte Secure Boot key digests in slot order, an empty or revoked slot as 32 zero bytes; zero when Secure Boot is off |
+| 121 | 32 | attestation | SHA-256 of the board's 72-byte slot-14 record |
 
 Security bits, as observed at the bench when the statement was prepared:
 
@@ -109,6 +112,8 @@ Every signer and every verifier enforces the same consistency rules, so a
 statement that carries a valid signature is also one that makes sense:
 
 - `product ≠ 0`, `generation ≥ 1`, `commissioned_at ≠ 0`, and no identifier is all-zero or all-`0xff`.
+- An RTC EUI binding requires the RTC-present flag. With no RTC, the model and
+  EUI-64 are zero; an RTC presently uses model 1; an unbound EUI-64 is zero.
 - `mcu_key_sha256` is nonzero exactly when `mcu_key_alg ≠ 0`; bit 4 requires a named key.
 - `secure_boot_keys` is nonzero exactly when bit 0 is set.
 - **trusted** requires `mcu_key_alg = 1` and security bits `0x001f` — all five.
@@ -124,22 +129,22 @@ than 1 are assigned by the manufacturer and are opaque here.
 The manufacturer key signs
 
 ```text
-SHA-256( "MFG-COMMISSION-v1" || statement[149] )
+SHA-256( "MFG-COMMISSION-v1" || statement[153] )
 ```
 
 with ECDSA P-256. The ASCII prefix is domain separation: the same key also signs
-slot-14 attestations (`"ATECC-MFG-ATTEST-v2"`), and neither signature can be
+slot-14 core attestations (`"ATECC-MFG-CORE-v1"`), and neither signature can be
 presented as the other.
 
-The **record** is what is stored, carried and published — 221 bytes:
+The **record** is what is stored, carried and published — 225 bytes:
 
 ```text
-statement[149] || signer_key_id[8] || R[32] || S[32]
+statement[153] || signer_key_id[8] || R[32] || S[32]
 ```
 
 `signer_key_id` is the first eight bytes of the SHA-256 of the signer's DER
 SubjectPublicKeyInfo. It is a lookup hint and is not signed. A record's
-**fingerprint** is the SHA-256 of all 221 bytes.
+**fingerprint** is the SHA-256 of all 225 bytes.
 
 ## 5. The microcontroller key and the session proof
 
@@ -230,7 +235,7 @@ EVIDENCE payload, at most 2048 bytes:
 
 ```text
 [1B version = 0x01]
-[2B BE length][record, 221 bytes]
+[2B BE length][record, 225 bytes]
 [2B BE length][microcontroller public key, DER SubjectPublicKeyInfo — or empty]
 [2B BE length][session proof — or empty]
 ```
@@ -256,7 +261,7 @@ Evaluation order, with the rejection reason for each step:
 | 1 | the payload and its statement are well formed | `malformed` |
 | 2 | the record verifies under a pinned manufacturer key | `signature` |
 | 3 | the record is for the observer product | `product` |
-| 4 | the record's RTC EUI-64, rendered as an observer id, equals the authenticated observer | `identity` |
+| 4 | the record's board EUI-64, rendered as an observer id, equals the authenticated observer | `identity` |
 | 5 | with a registry: the board is listed, when the collector requires it | `unlisted` |
 | 6 | with a registry: the board is not revoked | `revoked` |
 | 7 | with a registry: the record is the board's current one | `superseded` |
@@ -303,27 +308,34 @@ Payload:
 
 ```json
 {
+  "manufacturer_authority_id": "example-manufacturing",
   "sequence": 42,
   "issued_at": "2026-09-17T12:00:00Z",
   "ledger_head": "<64 hex>",
   "boards": [{
     "board_eui64": "0004a3aabbccddee",
+    "rtc_model_id": 1,
     "rtc_eui64": "0004a31234567890",
     "atecc_serial": "0123456789abcdef11",
     "status": "active",
     "reason": "",
     "profile": "trusted",
     "generation": 1,
-    "record": "<base64 of the 221-byte record>"
+    "record": "<base64 of the 225-byte record>"
   }]
 }
 ```
 
 - `status` is `active` or `revoked`. The manufacturer's finer-grained lifecycle
   (in stock, shipped, returned, scrapped) stays in its own records.
-- The descriptive columns must agree with the embedded record, and a board or an
-  observer may appear only once. A registry that breaks either rule is rejected
-  whole.
+- `manufacturer_authority_id` must equal the authority selected by authenticated
+  deployment configuration before the registry is adopted. Product values and
+  rollback state are interpreted only within that authority.
+- `rtc_eui64` is required but nullable: it is a string exactly when the record
+  binds the RTC EUI-64, and `null` otherwise.
+- The descriptive columns must agree with the embedded record. A board EUI-64,
+  ATECC serial, or bound RTC EUI-64 may appear only once. A registry that breaks
+  either rule is rejected whole.
 - `sequence` only rises. A verifier refuses a registry older than the one it
   holds, and records the highest sequence it has accepted so that a restart
   cannot be used to load an older copy — a restored backup must not quietly
@@ -373,6 +385,7 @@ manufacturer key is never pinned by a production collector.
 
 ```toml
 [hardware_trust]
+manufacturer_authority_id = "example-manufacturing"
 manufacturer_keys = ["/usr/local/etc/navlistener/manufacturer-1.pem"]
 
 # Optional. Without a registry every valid record is honoured and nothing can

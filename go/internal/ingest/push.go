@@ -656,7 +656,7 @@ func stampEvidence(observer identity.ObserverContext, result commissioning.Resul
 	if result.Trust == identity.HardwareTrustNone || result.Trust == "" {
 		return observer, commissioning.Result{Trust: identity.HardwareTrustNone}, reason
 	}
-	stamped, err := observer.WithSessionEvidence(result.Trust, hex.EncodeToString(result.Fingerprint[:]))
+	stamped, err := observer.WithSessionEvidence(result.Trust, result.ManufacturerAuthorityID, hex.EncodeToString(result.Fingerprint[:]))
 	if err != nil {
 		return observer, commissioning.Result{Trust: identity.HardwareTrustNone}, commissioning.ReasonMalformed
 	}

@@ -19,6 +19,7 @@
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_random.h" // esp_fill_random (regression fix session identity)
 #include "esp_system.h" // esp_restart
 #include "esp_secure_boot.h"
@@ -54,6 +55,26 @@ static atomic_bool s_config_reset_armed;
 static char s_collector[80];      // "host:port" once provisioned, else empty
 static netcfg_t g_cfg;            // live config (NVS over Kconfig defaults)
 static ubx_parser_t s_parser;     // static: its buffers are too large for a task stack
+
+// Re-read every physical identity before each TLS session presents evidence. An installed
+// record is not a permanent cache of trust: a replaced/missing component suppresses evidence.
+static size_t session_evidence(const uint8_t *exported, uint8_t *out, size_t cap)
+{
+    observer_board_identity_t board;
+    observer_board_identity(&board);
+    nvf_live_identity_t live = {
+        .atecc_valid = board.atecc_valid, .board_valid = board.board_valid,
+        .revision_valid = board.revision_valid, .board_rev = board.revision,
+        .rtc_expected = true, .rtc_present = board.rtc_present, .rtc_valid = board.rtc_valid,
+        .rtc_model_id = NVF_RTC_MCP79412, .attestation_valid = board.attestation_valid,
+    };
+    memcpy(live.atecc_serial, board.atecc_serial, sizeof live.atecc_serial);
+    memcpy(live.board_eui64, board.board_eui64, sizeof live.board_eui64);
+    memcpy(live.rtc_eui64, board.rtc_eui64, sizeof live.rtc_eui64);
+    memcpy(live.attestation_record, board.attestation, sizeof live.attestation_record);
+    live.mac_valid = esp_efuse_mac_get_default(live.mcu_mac) == ESP_OK;
+    return nvf_mcu_identity_evidence(exported, out, cap, &live);
+}
 
 #ifndef CONFIG_NVF_CONFIG_RESET_GPIO
 // Older generated sdkconfig files predate the option. Fail closed rather than treating an
@@ -443,7 +464,7 @@ void app_main(void)
     // fill s_collector BEFORE ui_task starts reading it — otherwise the write races
     // the reader (formally UB; in practice a partial/empty collector string on one frame).
     snprintf(s_collector, sizeof s_collector, "%s:%d", g_cfg.host, g_cfg.port);
-    // The collector accepts evidence only for the observer it names: the record's RTC
+    // The collector accepts evidence only for the observer it names: the record's board
     // EUI-64 rendered as lowercase hyphen-separated byte pairs. Say so here, where the
     // cause is visible, rather than leaving an `identity` rejection to be puzzled over.
     uint8_t commissioning[NVF_COMMISSION_RECORD_SIZE];
@@ -451,7 +472,7 @@ void app_main(void)
     if (nvf_mcu_identity_record(commissioning) &&
         nvf_commission_record_parse(commissioning, sizeof commissioning, &commissioned)) {
         char observer[24];
-        nvf_commission_observer_id(commissioned.rtc_eui64, observer);
+        nvf_commission_observer_id(commissioned.board_eui64, observer);
         if (strcmp(observer, g_cfg.station))
             ESP_LOGW(TAG, "station '%s' is not this board's commissioned observer id '%s'; a collector will reject its evidence",
                      g_cfg.station, observer);
@@ -493,7 +514,7 @@ void app_main(void)
         .tunnel_host = tunnel_collector_address(), // NULL without a started tunnel
         .tunnel_up = tunnel_up,
         .update_control = nvf_update_control,
-        .evidence = nvf_mcu_identity_evidence,
+        .evidence = session_evidence,
         .hardware_trust = nvf_mcu_identity_verdict,
     };
     // retry pusher_start with backoff rather than spooling-until-overflow-and-never-

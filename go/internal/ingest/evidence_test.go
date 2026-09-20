@@ -32,7 +32,7 @@ import (
 // a real handshake produces.
 
 const (
-	evidenceObserver = "00-04-a3-12-34-56-78-90"
+	evidenceObserver = "00-04-a3-aa-bb-cc-dd-ee"
 	evidenceToken    = "s3cret"
 )
 
@@ -45,6 +45,8 @@ var evidenceMCUKey = sync.OnceValue(func() *rsa.PrivateKey {
 	}
 	return key
 })
+
+const testManufacturerAuthority = "test-manufacturer"
 
 // evidenceBench stands in for the manufacturer: it signs commissioning records
 // and registries, and hands out the verifier a collector would pin.
@@ -87,11 +89,13 @@ func (b *evidenceBench) statement(profile commissioning.Profile) commissioning.S
 	s := commissioning.Statement{
 		Profile: profile, MCUFamily: commissioning.MCUESP32S3, Product: commissioning.ProductObserver,
 		BoardRevision: 0x0102, Generation: 1, CommissionedAt: 1789646400,
-		ATECCSerial: [9]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x11},
-		RTCEUI64:    [8]byte{0x00, 0x04, 0xa3, 0x12, 0x34, 0x56, 0x78, 0x90},
-		BoardEUI64:  [8]byte{0x00, 0x04, 0xa3, 0xaa, 0xbb, 0xcc, 0xdd, 0xee},
-		MCUMAC:      [6]byte{0x34, 0x85, 0x18, 0x01, 0x02, 0x03},
-		Attestation: sha256.Sum256([]byte("slot 14 record")),
+		IdentityFlags: commissioning.IdentityRTCPresent | commissioning.IdentityRTCEUIBound,
+		RTCModel:      commissioning.RTCModelMCP79412,
+		ATECCSerial:   [9]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x11},
+		RTCEUI64:      [8]byte{0x00, 0x04, 0xa3, 0x12, 0x34, 0x56, 0x78, 0x90},
+		BoardEUI64:    [8]byte{0x00, 0x04, 0xa3, 0xaa, 0xbb, 0xcc, 0xdd, 0xee},
+		MCUMAC:        [6]byte{0x34, 0x85, 0x18, 0x01, 0x02, 0x03},
+		Attestation:   sha256.Sum256([]byte("slot 14 record")),
 	}
 	if profile == commissioning.ProfileTrusted {
 		s.MCUKeyAlg, s.Security = commissioning.MCUKeyRSA3072PSS, commissioning.SecTrusted
@@ -112,7 +116,7 @@ func (b *evidenceBench) record(t *testing.T, s commissioning.Statement) commissi
 
 func (b *evidenceBench) verifier(t *testing.T) *commissioning.Verifier {
 	t.Helper()
-	v, err := commissioning.NewVerifier(b.manufacturerKeys)
+	v, err := commissioning.NewVerifier(testManufacturerAuthority, b.manufacturerKeys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,10 +130,12 @@ func (b *evidenceBench) loadRegistry(t *testing.T, v *commissioning.Verifier, se
 	if err != nil {
 		t.Fatal(err)
 	}
+	rtcEUI := hex.EncodeToString(s.RTCEUI64[:])
 	data, err := commissioning.SignRegistry(commissioning.Registry{
-		Sequence: sequence, IssuedAt: time.Unix(1789650000, 0).UTC(), LedgerHead: strings.Repeat("ab", 32),
+		ManufacturerAuthorityID: testManufacturerAuthority,
+		Sequence:                sequence, IssuedAt: time.Unix(1789650000, 0).UTC(), LedgerHead: strings.Repeat("ab", 32),
 		Boards: []commissioning.RegistryBoard{{
-			BoardEUI64: hex.EncodeToString(s.BoardEUI64[:]), RTCEUI64: hex.EncodeToString(s.RTCEUI64[:]),
+			BoardEUI64: hex.EncodeToString(s.BoardEUI64[:]), RTCModelID: uint16(s.RTCModel), RTCEUI64: &rtcEUI,
 			ATECCSerial: hex.EncodeToString(s.ATECCSerial[:]), Status: status, Reason: "returned",
 			Profile: s.Profile.String(), Generation: s.Generation, Record: base64.StdEncoding.EncodeToString(record[:]),
 		}},
@@ -268,8 +274,11 @@ func TestPushEvidenceTrusted(t *testing.T) {
 				t.Fatalf("welcome lost the compact acceptance sequence: %s", raw)
 			}
 			f := sendData(t, conn, out, 1)
-			if f.Observer.HardwareTrust != identity.HardwareTrustTrusted || f.Observer.CommissioningFingerprint != hex.EncodeToString(fingerprint[:]) {
-				t.Fatalf("receipt context = %q / %q", f.Observer.HardwareTrust, f.Observer.CommissioningFingerprint)
+			if f.Observer.HardwareTrust != identity.HardwareTrustTrusted ||
+				f.Observer.ManufacturerAuthorityID != testManufacturerAuthority ||
+				f.Observer.CommissioningFingerprint != hex.EncodeToString(fingerprint[:]) {
+				t.Fatalf("receipt context = %q / %q / %q", f.Observer.HardwareTrust,
+					f.Observer.ManufacturerAuthorityID, f.Observer.CommissioningFingerprint)
 			}
 			if got := testutil.ToFloat64(metrics.PushHardwareTrustSessionsTotal.WithLabelValues("trusted")); got != sessions+1 {
 				t.Errorf("trusted sessions counted = %v, want %v", got, sessions+1)
@@ -312,7 +321,7 @@ func TestPushWithoutEvidenceIsUnchanged(t *testing.T) {
 		t.Fatalf("welcome to a feeder that announced no evidence mentions it: %s", raw)
 	}
 	f := sendData(t, conn, out, 1)
-	if f.Observer.HardwareTrust != identity.HardwareTrustNone || f.Observer.CommissioningFingerprint != "" {
+	if f.Observer.HardwareTrust != identity.HardwareTrustNone || f.Observer.ManufacturerAuthorityID != "" || f.Observer.CommissioningFingerprint != "" {
 		t.Fatalf("receipt context = %q / %q", f.Observer.HardwareTrust, f.Observer.CommissioningFingerprint)
 	}
 }
@@ -424,7 +433,7 @@ func TestPushEvidenceRejectionsLabelTheSessionAndNeverRefuseIt(t *testing.T) {
 				t.Fatalf("welcome = %s, want ok with none/%s", raw, tc.reason)
 			}
 			f := sendData(t, conn, out, 1)
-			if f.Observer.HardwareTrust != identity.HardwareTrustNone || f.Observer.CommissioningFingerprint != "" {
+			if f.Observer.HardwareTrust != identity.HardwareTrustNone || f.Observer.ManufacturerAuthorityID != "" || f.Observer.CommissioningFingerprint != "" {
 				t.Fatalf("receipt context = %q / %q", f.Observer.HardwareTrust, f.Observer.CommissioningFingerprint)
 			}
 			if got := rejected(tc.reason); got != before+1 {

@@ -190,6 +190,9 @@ type Authorization struct {
 // device's evidence is read and answered "unconfigured", and every session is
 // hardware_trust none. The files hold public keys only.
 type HardwareTrust struct {
+	// ManufacturerAuthorityID selects the administrative authority whose key set
+	// is pinned below. It also scopes the registry and rollback floor.
+	ManufacturerAuthorityID string `toml:"manufacturer_authority_id"`
 	// ManufacturerKeys are PEM public keys, or certificates carrying them, that
 	// may sign commissioning records. More than one is normal over a fleet's
 	// life; removing one withdraws every record it signed.
@@ -224,7 +227,7 @@ func (h HardwareTrust) NewVerifier() (*commissioning.Verifier, error) {
 	if err != nil {
 		return nil, fmt.Errorf("hardware_trust.manufacturer_keys: %w", err)
 	}
-	verifier, err := commissioning.NewVerifier(manufacturer)
+	verifier, err := commissioning.NewVerifier(h.ManufacturerAuthorityID, manufacturer)
 	if err != nil {
 		return nil, fmt.Errorf("hardware_trust: %w", err)
 	}
@@ -820,10 +823,13 @@ func (c *Config) finalize() error {
 func (c *Config) finalizeHardwareTrust() error {
 	h := &c.HardwareTrust
 	if !h.Enabled() {
-		if h.Registry != "" || len(h.RegistryKeys) > 0 || h.RegistryReloads != "" || h.RegistryState != "" || h.RequireRegistryEntry {
+		if h.ManufacturerAuthorityID != "" || h.Registry != "" || len(h.RegistryKeys) > 0 || h.RegistryReloads != "" || h.RegistryState != "" || h.RequireRegistryEntry {
 			return fmt.Errorf("hardware_trust: registry settings require manufacturer_keys")
 		}
 		return nil
+	}
+	if !identity.ValidScopeID(h.ManufacturerAuthorityID) {
+		return fmt.Errorf("hardware_trust.manufacturer_authority_id is required and must be a valid scope id")
 	}
 	if c.Push.Addr == "" {
 		return fmt.Errorf("hardware_trust requires the push endpoint: evidence arrives only on a GNF1 session")
@@ -858,7 +864,7 @@ func (c *Config) finalizeHardwareTrust() error {
 		c.Warnings = append(c.Warnings,
 			"hardware_trust.registry is set without registry_state: a restart forgets the newest registry sequence adopted, so an older registry that still carries a valid signature would be accepted and could restore a withdrawn board")
 	} else {
-		floor, err := commissioning.ReadRegistryState(h.RegistryState)
+		floor, err := commissioning.ReadRegistryState(h.RegistryState, h.ManufacturerAuthorityID)
 		if err != nil {
 			return fmt.Errorf("hardware_trust.registry_state: %w", err)
 		}

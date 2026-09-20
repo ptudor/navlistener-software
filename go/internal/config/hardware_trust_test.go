@@ -15,6 +15,8 @@ import (
 	"github.com/ptudor/navlistener/internal/commissioning"
 )
 
+const testManufacturerAuthority = "test-manufacturer"
+
 // trustKey writes a P-256 public key PEM and returns its path with a signer
 // for the matching private key.
 func trustKey(t *testing.T, dir, name string) (string, commissioning.Signer) {
@@ -46,7 +48,8 @@ func signedRegistry(t *testing.T, dir string, signer commissioning.Signer) strin
 func signedRegistryAt(t *testing.T, dir string, sequence uint64, signer commissioning.Signer) string {
 	t.Helper()
 	data, err := commissioning.SignRegistry(commissioning.Registry{
-		Sequence: sequence, IssuedAt: time.Unix(1789650000, 0).UTC(), LedgerHead: strings.Repeat("ab", 32),
+		ManufacturerAuthorityID: testManufacturerAuthority,
+		Sequence:                sequence, IssuedAt: time.Unix(1789650000, 0).UTC(), LedgerHead: strings.Repeat("ab", 32),
 	}, signer)
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +85,7 @@ func TestHardwareTrustValid(t *testing.T) {
 	manufacturer, _ := trustKey(t, dir, "manufacturer.pem")
 	operations, signer := trustKey(t, dir, "registry.pem")
 
-	keysOnly := hardwareTrustConfig(t, HardwareTrust{ManufacturerKeys: []string{manufacturer}})
+	keysOnly := hardwareTrustConfig(t, HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}})
 	if err := keysOnly.finalize(); err != nil {
 		t.Fatalf("manufacturer keys alone rejected: %v", err)
 	}
@@ -91,7 +94,8 @@ func TestHardwareTrustValid(t *testing.T) {
 	}
 
 	full := hardwareTrustConfig(t, HardwareTrust{
-		ManufacturerKeys: []string{manufacturer}, Registry: signedRegistry(t, dir, signer),
+		ManufacturerAuthorityID: testManufacturerAuthority,
+		ManufacturerKeys:        []string{manufacturer}, Registry: signedRegistry(t, dir, signer),
 		RegistryKeys: []string{operations}, RequireRegistryEntry: true,
 	})
 	if err := full.finalize(); err != nil {
@@ -131,21 +135,22 @@ func TestHardwareTrustRejectsIncompleteOrUnverifiableSettings(t *testing.T) {
 	}{
 		"registry without manufacturer keys": {HardwareTrust{Registry: registry, RegistryKeys: []string{operations}}, "require manufacturer_keys"},
 		"require entry without any keys":     {HardwareTrust{RequireRegistryEntry: true}, "require manufacturer_keys"},
-		"missing manufacturer key file":      {HardwareTrust{ManufacturerKeys: []string{filepath.Join(dir, "absent.pem")}}, "manufacturer_keys"},
-		"manufacturer key is not PEM":        {HardwareTrust{ManufacturerKeys: []string{notPEM}}, "manufacturer_keys"},
-		"registry without registry keys":     {HardwareTrust{ManufacturerKeys: []string{manufacturer}, Registry: registry}, "requires registry_keys"},
-		"registry keys without a registry":   {HardwareTrust{ManufacturerKeys: []string{manufacturer}, RegistryKeys: []string{operations}}, "without registry"},
-		"require entry without a registry":   {HardwareTrust{ManufacturerKeys: []string{manufacturer}, RequireRegistryEntry: true}, "without registry"},
-		"reload without a registry":          {HardwareTrust{ManufacturerKeys: []string{manufacturer}, RegistryReloads: "10s"}, "without registry"},
-		"state without a registry":           {HardwareTrust{ManufacturerKeys: []string{manufacturer}, RegistryState: filepath.Join(dir, "registry.state")}, "without registry"},
+		"missing manufacturer authority":     {HardwareTrust{ManufacturerKeys: []string{manufacturer}}, "manufacturer_authority_id"},
+		"missing manufacturer key file":      {HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{filepath.Join(dir, "absent.pem")}}, "manufacturer_keys"},
+		"manufacturer key is not PEM":        {HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{notPEM}}, "manufacturer_keys"},
+		"registry without registry keys":     {HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}, Registry: registry}, "requires registry_keys"},
+		"registry keys without a registry":   {HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}, RegistryKeys: []string{operations}}, "without registry"},
+		"require entry without a registry":   {HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}, RequireRegistryEntry: true}, "without registry"},
+		"reload without a registry":          {HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}, RegistryReloads: "10s"}, "without registry"},
+		"state without a registry":           {HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}, RegistryState: filepath.Join(dir, "registry.state")}, "without registry"},
 		"state without any keys":             {HardwareTrust{RegistryState: filepath.Join(dir, "registry.state")}, "require manufacturer_keys"},
-		"relative state path": {HardwareTrust{ManufacturerKeys: []string{manufacturer},
+		"relative state path": {HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer},
 			Registry: registry, RegistryKeys: []string{operations}, RegistryState: "registry.state"}, "absolute path"},
-		"missing registry file": {HardwareTrust{ManufacturerKeys: []string{manufacturer},
+		"missing registry file": {HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer},
 			Registry: filepath.Join(dir, "absent.json"), RegistryKeys: []string{operations}}, "hardware_trust.registry"},
-		"registry signed by an unpinned key": {HardwareTrust{ManufacturerKeys: []string{manufacturer},
+		"registry signed by an unpinned key": {HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer},
 			Registry: foreignRegistry, RegistryKeys: []string{operations}}, "pinned registry key"},
-		"non-positive reload": {HardwareTrust{ManufacturerKeys: []string{manufacturer},
+		"non-positive reload": {HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer},
 			Registry: registry, RegistryKeys: []string{operations}, RegistryReloads: "0s"}, "registry_reload"},
 	}
 	for name, tc := range cases {
@@ -158,7 +163,7 @@ func TestHardwareTrustRejectsIncompleteOrUnverifiableSettings(t *testing.T) {
 	}
 	t.Run("evidence needs the push endpoint", func(t *testing.T) {
 		c := defaults()
-		c.HardwareTrust = HardwareTrust{ManufacturerKeys: []string{manufacturer}}
+		c.HardwareTrust = HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}}
 		if err := c.finalize(); err == nil || !strings.Contains(err.Error(), "push endpoint") {
 			t.Fatalf("err = %v, want a push endpoint requirement", err)
 		}
@@ -179,6 +184,7 @@ tls_cert = "` + cert + `"
 tls_key = "` + key + `"
 
 [hardware_trust]
+manufacturer_authority_id = "` + testManufacturerAuthority + `"
 manufacturer_keys = ["` + manufacturer + `"]
 registry = "` + registry + `"
 registry_keys = ["` + operations + `"]
@@ -193,7 +199,7 @@ require_registry_entry = true
 		t.Fatal(err)
 	}
 	h := c.HardwareTrust
-	if !h.Enabled() || h.Registry != registry || h.RegistryReload != 45*time.Second || !h.RequireRegistryEntry || len(h.RegistryKeys) != 1 {
+	if !h.Enabled() || h.ManufacturerAuthorityID != testManufacturerAuthority || h.Registry != registry || h.RegistryReload != 45*time.Second || !h.RequireRegistryEntry || len(h.RegistryKeys) != 1 {
 		t.Fatalf("decoded hardware_trust = %+v", h)
 	}
 }
@@ -207,7 +213,7 @@ func TestHardwareTrustRegistryStateParity(t *testing.T) {
 	operations, signer := trustKey(t, dir, "registry.pem")
 	state := filepath.Join(dir, "registry.state")
 	configFor := func(registry string, withState bool) *Config {
-		h := HardwareTrust{ManufacturerKeys: []string{manufacturer}, Registry: registry, RegistryKeys: []string{operations}}
+		h := HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}, Registry: registry, RegistryKeys: []string{operations}}
 		if withState {
 			h.RegistryState = state
 		}
@@ -239,7 +245,7 @@ func TestHardwareTrustRegistryStateParity(t *testing.T) {
 	}
 
 	// The daemon has since adopted sequence 5; the file on disk is older.
-	if err := os.WriteFile(state, []byte(`{"registry_sequence":5}`+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(state, []byte(`{"manufacturer_authority_id":"`+testManufacturerAuthority+`","registry_sequence":5}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := configFor(registry, true).finalize(); err == nil || !strings.Contains(err.Error(), "already adopted") {

@@ -14,7 +14,7 @@ esp_err_t observer_board_start(void);
 // slot-14 record is unreadable until the ATECC data zone is locked. Bench use: it holds the
 // secure element for several I2C transactions.
 typedef struct {
-    bool atecc_valid, rtc_valid, board_valid, attestation_valid, revision_valid;
+    bool atecc_valid, rtc_present, rtc_valid, board_valid, attestation_valid, revision_valid;
     uint8_t atecc_serial[9], rtc_eui64[8], board_eui64[8], attestation[72];
     uint16_t revision;
 } observer_board_identity_t;

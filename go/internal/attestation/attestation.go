@@ -21,22 +21,18 @@ const (
 	// version, seven reserved zero bytes, and a fixed-width P-256 R||S.
 	SlotRecordSize = 72
 	VersionV1      = byte(0x01)
-	VersionV2      = byte(0x02)
 )
 
-var (
-	domainV1 = []byte("ATECC-MFG-ATTEST-v1")
-	domainV2 = []byte("ATECC-MFG-ATTEST-v2")
-)
+var domainV1 = []byte("ATECC-MFG-CORE-v1")
 
-// HardwareIdentity is the live/factory identity presented to enrollment. V1
-// signs ATECCSerial + RTCEUI64 + BoardRevision. V2 additionally signs
-// BoardEUI64, closing the complete three-part board binding.
+// HardwareIdentity is the permanent board core presented to manufacturing and
+// enrollment. Replaceable components such as the RTC and MCU are deliberately
+// outside this slot-14 record and are bound by commissioning instead.
 type HardwareIdentity struct {
-	ATECCSerial   [9]byte
-	RTCEUI64      [8]byte
-	BoardEUI64    [8]byte
+	Product       uint16
 	BoardRevision uint16
+	BoardEUI64    [8]byte
+	ATECCSerial   [9]byte
 }
 
 // Record is the exact slot representation. Reserved bytes must remain zero so
@@ -58,7 +54,7 @@ func ParseRecord(raw []byte) (Record, error) {
 		return r, fmt.Errorf("manufacturer attestation record is %d bytes, want %d", len(raw), SlotRecordSize)
 	}
 	copy(r[:], raw)
-	if r[0] != VersionV1 && r[0] != VersionV2 {
+	if r[0] != VersionV1 {
 		return Record{}, fmt.Errorf("manufacturer attestation version 0x%02x is unsupported", r[0])
 	}
 	for i, b := range r[1:8] {
@@ -74,22 +70,15 @@ func Digest(version byte, h HardwareIdentity) ([32]byte, error) {
 	if err := validateIdentity(version, h); err != nil {
 		return [32]byte{}, err
 	}
-	prefix := domainV1
-	capacity := len(prefix) + len(h.ATECCSerial) + len(h.RTCEUI64) + 2
-	if version == VersionV2 {
-		prefix = domainV2
-		capacity += len(h.BoardEUI64)
-	}
-	statement := make([]byte, 0, capacity)
-	statement = append(statement, prefix...)
+	statement := make([]byte, 0, len(domainV1)+2+2+len(h.BoardEUI64)+len(h.ATECCSerial))
+	statement = append(statement, domainV1...)
+	var value [2]byte
+	binary.BigEndian.PutUint16(value[:], h.Product)
+	statement = append(statement, value[:]...)
+	binary.BigEndian.PutUint16(value[:], h.BoardRevision)
+	statement = append(statement, value[:]...)
+	statement = append(statement, h.BoardEUI64[:]...)
 	statement = append(statement, h.ATECCSerial[:]...)
-	statement = append(statement, h.RTCEUI64[:]...)
-	if version == VersionV2 {
-		statement = append(statement, h.BoardEUI64[:]...)
-	}
-	var rev [2]byte
-	binary.BigEndian.PutUint16(rev[:], h.BoardRevision)
-	statement = append(statement, rev[:]...)
 	return sha256.Sum256(statement), nil
 }
 
@@ -138,28 +127,24 @@ func Verify(record Record, h HardwareIdentity, manufacturer *ecdsa.PublicKey) (V
 	if !ecdsa.Verify(manufacturer, digest[:], r, s) {
 		return Verification{}, fmt.Errorf("manufacturer attestation signature verification failed")
 	}
-	tier := identity.AttestationVerifiedV1Partial
-	if record[0] == VersionV2 {
-		tier = identity.AttestationVerifiedV2
-	}
 	return Verification{
-		Tier:              tier,
+		Tier:              identity.AttestationVerifiedV1Core,
 		StatementDigest:   digest,
 		RecordFingerprint: sha256.Sum256(record[:]),
 	}, nil
 }
 
 func validateIdentity(version byte, h HardwareIdentity) error {
-	if version != VersionV1 && version != VersionV2 {
+	if version != VersionV1 {
 		return fmt.Errorf("manufacturer attestation version 0x%02x is unsupported", version)
+	}
+	if h.Product == 0 {
+		return fmt.Errorf("product is required")
 	}
 	if invalidFactoryID(h.ATECCSerial[:]) {
 		return fmt.Errorf("ATECC serial is blank or erased")
 	}
-	if invalidFactoryID(h.RTCEUI64[:]) {
-		return fmt.Errorf("RTC EUI-64 is blank or erased")
-	}
-	if version == VersionV2 && invalidFactoryID(h.BoardEUI64[:]) {
+	if invalidFactoryID(h.BoardEUI64[:]) {
 		return fmt.Errorf("board EEPROM EUI-64 is blank or erased")
 	}
 	return nil

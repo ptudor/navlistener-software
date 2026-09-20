@@ -11,14 +11,17 @@ import (
 func TestRegistryStateRoundTripAndHardening(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "registry.state")
-	if got, err := ReadRegistryState(path); err != nil || got != 0 {
+	if got, err := ReadRegistryState(path, testManufacturerAuthority); err != nil || got != 0 {
 		t.Fatalf("absent state = %d, %v; want 0 and no error", got, err)
 	}
-	if err := writeRegistryState(path, 42); err != nil {
+	if err := writeRegistryState(path, testManufacturerAuthority, 42); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := ReadRegistryState(path); err != nil || got != 42 {
+	if got, err := ReadRegistryState(path, testManufacturerAuthority); err != nil || got != 42 {
 		t.Fatalf("state = %d, %v", got, err)
+	}
+	if _, err := ReadRegistryState(path, "other-manufacturer"); err == nil {
+		t.Fatal("registry sequence floor reused across manufacturer authorities")
 	}
 	info, err := os.Stat(path)
 	if err != nil || info.Mode().Perm() != 0o600 {
@@ -45,7 +48,7 @@ func TestRegistryStateRoundTripAndHardening(t *testing.T) {
 			if err := write(p); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := ReadRegistryState(p); err == nil {
+			if _, err := ReadRegistryState(p, testManufacturerAuthority); err == nil {
 				t.Fatal("unusable state file accepted")
 			}
 		})
@@ -66,7 +69,7 @@ func TestRegistryFloorSurvivesARestart(t *testing.T) {
 
 	process := func(t *testing.T) *Verifier {
 		t.Helper()
-		v, err := NewVerifier(mfgKeys)
+		v, err := NewVerifier(testManufacturerAuthority, mfgKeys)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -87,7 +90,7 @@ func TestRegistryFloorSurvivesARestart(t *testing.T) {
 	if err := process(t).WatchRegistry(ctx, registry, time.Hour, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := ReadRegistryState(state); err != nil || got != 5 {
+	if got, err := ReadRegistryState(state, testManufacturerAuthority); err != nil || got != 5 {
 		t.Fatalf("recorded sequence = %d, %v", got, err)
 	}
 
@@ -103,11 +106,11 @@ func TestRegistryFloorSurvivesARestart(t *testing.T) {
 		t.Fatal("refused registry is in force")
 	}
 	// A configuration check predicts the same refusal without writing anything.
-	check, _ := NewVerifier(mfgKeys)
+	check, _ := NewVerifier(testManufacturerAuthority, mfgKeys)
 	if err := check.UseRegistry(opsKeys, false); err != nil {
 		t.Fatal(err)
 	}
-	floor, err := ReadRegistryState(state)
+	floor, err := ReadRegistryState(state, testManufacturerAuthority)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +137,7 @@ func TestRegistryStateThatCannotBeWritten(t *testing.T) {
 	if err := os.WriteFile(registry, first, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	v, _ := NewVerifier(mfgKeys)
+	v, _ := NewVerifier(testManufacturerAuthority, mfgKeys)
 	if err := v.UseRegistry(opsKeys, false); err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +173,7 @@ func TestRegistryReloadIsAdoptedEvenWhenItCannotBeRecorded(t *testing.T) {
 	if err := os.WriteFile(registry, first, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	v, _ := NewVerifier(mfgKeys)
+	v, _ := NewVerifier(testManufacturerAuthority, mfgKeys)
 	if err := v.UseRegistry(opsKeys, false); err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +208,7 @@ func TestRegistryReloadIsAdoptedEvenWhenItCannotBeRecorded(t *testing.T) {
 	if v.Registry().Sequence != 2 {
 		t.Fatalf("registry in force = %d, want the withdrawal to have been adopted", v.Registry().Sequence)
 	}
-	if got, err := ReadRegistryState(state); err != nil || got != 1 {
+	if got, err := ReadRegistryState(state, testManufacturerAuthority); err != nil || got != 1 {
 		t.Fatalf("recorded sequence = %d, %v; want the last one that could be written", got, err)
 	}
 }

@@ -96,9 +96,9 @@ for it.
 |---|---|---|---|
 | MCU | `CAT_MCU` | **ESP32-S3-WROOM-1U-N16R8** (`MCU_ESP32_S3`) | Feeder. S3 and the **1U** (u.FL) variant both matter — §7.1. |
 | Receiver | `CAT_GPS` | **NEO-M9N-00B** (`C5119087`) on the shared 24-pin NEO land pattern | Raw nav frames + PPS. F10N/F10T drop in without a respin — §1.1. |
-| Identity, public | `CAT_RTC` | **MCP79412T-I/SN** + Seiko `SC-32S32.768kHz20PPM7pF` crystal (LCSC/EasyEDA `C97604`; `RTC_MCP79412`) | RTCC + SRAM + EEPROM + **factory EUI-64** — the observer's public name. |
+| Clock identity | `CAT_RTC` | **MCP79412T-I/SN** + Seiko `SC-32S32.768kHz20PPM7pF` crystal (LCSC/EasyEDA `C97604`; `RTC_MCP79412`) | RTCC + SRAM + EEPROM + factory EUI-64 — a replaceable component identity bound by commissioning. |
 | Identity, private | `CAT_CRYPTO` | **ATECC608C-SSHDA-T** (`C28975195`, `CRYPTO_ATECC608C`) | Non-extractable P-256 key; the proof of entitlement to that name. |
-| Hardware manifest | `CAT_MEMORY` | `24AA025E64T-I/SN` (LCSC `C615601`; `MEMORY_24AA025E64`) | The installed-hardware descriptor array and board EUI-64. The addressable `025` variant is required — see below. |
+| Hardware manifest and observer identity | `CAT_MEMORY` | `24AA025E64T-I/SN` (LCSC `C615601`; `MEMORY_24AA025E64`) | The installed-hardware descriptor array and permanent board/observer EUI-64. The addressable `025` variant is required — see below. |
 | Status panel | `CAT_LED` | 16 × 0805 (8 green + 8 yellow) via 2 × **TLC5916** | Constellation/health indication — §2.1. |
 | Pressure | `CAT_PRESSURE` | **BMP388** placed; BMP390 and BMP580 are footprint alternates | **Vertical spoofing gate** — §6.1. |
 | Temperature | `CAT_TEMP` | **MCP9808-E/MS** (`C94847`) | Crystal-drift characterisation and thermal health — §6.2. |
@@ -111,7 +111,7 @@ for it.
 **Use the addressable `24AA025E64`, not the non-addressable `24AA02E64`.** The
 `24AA02E64` treats address bits A0/A1/A2 as don't-cares and therefore acknowledges
 the entire `0x50–0x57` range. That collides with the MCP79412's EEPROM/EUI-64 at
-`0x57`, making the observer identity unreadable. Use the addressable
+`0x57`, making the RTC's component EUI-64 unreadable. Use the addressable
 **`24AA025E64T-I/SN`** instead: strap pins 1/A0, 2/A1 and 3/A2 to GND so only
 `0x50` is acknowledged. Pin 4 is GND/VSS, pin 5 SDA, pin 6 SCL, pin 7 NC and
 pin 8 `3V3_SENS`. The manifest is stored in the `24AA025E64`; the ATECC608C
@@ -344,7 +344,7 @@ maximum.
 
 ### 4.1 Public name, private proof
 
-- **MCP79412 EUI-64 → the public identifier.** Readable over I²C by anyone holding the board.
+- **24AA025E64 EUI-64 → the public identifier.** Readable over I²C by anyone holding the board.
   It is a *name*, never a credential.
 - **ATECC608C → the private authenticator.** Generates a non-extractable P-256 keypair, signs
   the CSR, signs the mTLS handshake, and optionally signs `SIGNED_DATA` (0x07) batches over
@@ -428,10 +428,11 @@ first-class rather than squatting on a repurposed domain slot: **slot 14, `SLOT_
 
 The record and message formats are normative in `atecc608c_slots_unified.h`
 (`ATECC_MFG_ATTEST_*`): the slot holds `[version 0x01][7 reserved][R‖S 64]`, and the signature is
-over `SHA-256("ATECC-MFG-ATTEST-v1" ‖ serial[9] ‖ eui64[8] ‖ board_rev_u16be)` — the ASCII prefix
-is domain separation, and the EUI-64 is this board's MCP79412 identity (§4.1), binding chip to
-board. One shared formatter must be the only writer/parser, so the bench tool and firmware cannot
-disagree.
+over `SHA-256("ATECC-MFG-CORE-v1" ‖ product_u16be ‖ board_rev_u16be ‖
+board_eui64[8] ‖ atecc_serial[9])`. The ASCII prefix is domain separation. This
+permanently locked record binds only the board core; replaceable RTC and MCU
+identity is added by commissioning. One shared formatter must be the only
+writer/parser, so the bench tool and firmware cannot disagree.
 
 Two properties are enforced at the bench, not hoped for:
 
@@ -444,7 +445,8 @@ Two properties are enforced at the bench, not hoped for:
 
 ### 4.1c Commissioning — the microcontroller is a fourth identity
 
-The attestation above covers the secure element, the RTC and the EEPROM. It does not mention
+The attestation above covers the product, board revision, board EEPROM identity
+and secure element. It does not mention
 the ESP32-S3, and whether a unit is locked is entirely a microcontroller property: Secure Boot
 and flash encryption are ESP32-S3 eFuses. Replace a locked module with a blank one and every
 attested identifier is unchanged, while the ATECC — whose slot 0 must stay usable without
@@ -459,8 +461,9 @@ statement once the board is locked:
   Boot is in force, so the private key has never existed anywhere else. It costs one eFuse key
   block — count it in the production eFuse list beside the three Secure Boot digests and the
   flash-encryption key.
-- **The commissioning record.** A fixed 147-byte statement binding ATECC serial, RTC EUI-64,
-  board EUI-64 and board revision to the microcontroller's key, its lock state, a profile
+- **The commissioning record.** A fixed 153-byte statement binding the attested
+  board core and explicit RTC presence/model/optional EUI-64 to the
+  microcontroller's key, its lock state, a profile
   (trusted, open or test) and a generation number, signed by the same manufacturer key under
   its own domain string. It is made *after* slot 14 is locked, so it lives in the
   manufacturer's records and in the device's flash rather than in the ATECC.
@@ -521,8 +524,8 @@ serial. Assign them distinct roles and record all three at enrollment:
 
 | Source | Role |
 |---|---|
-| MCP79412 EUI-64 | **observer identity** — the `receiver_id` in the cert SAN and the `devices` row |
-| 24AA025E64 EUI-64 | **board serial** — identifies the PCB, not the network node |
+| 24AA025E64 EUI-64 | **board and observer identity** — the `receiver_id` in the cert SAN and the `devices` row |
+| MCP79412 EUI-64 | replaceable RTC component identity, bound by commissioning when fitted |
 | ATECC serial | binds the key material to the enrollment record |
 
 The ESP32-S3 is a fourth identity of a different kind (§4.1c): it has no factory-programmed
@@ -531,8 +534,9 @@ generated inside it at commissioning. The manufacturer's unit record lists all f
 with the serial of every other fitted part that has one, so that "which parts are on this
 unit" has one answer.
 
-Consequence to accept deliberately: a dead RTC changes the observer's identity and forces
-re-enrollment. That is defensible — it is an auditable event — but it must be a decision rather
+Consequence to accept deliberately: replacing a bound RTC requires a new
+commissioning generation, but does not change the observer identity or force
+operational re-enrollment. That is an auditable event, and it must be a decision rather
 than a surprise, because the failure is otherwise silent.
 
 **Boot-time binding check.** Compare the certificate's SAN against the EUI-64 read live from the
@@ -1437,10 +1441,10 @@ its own data sheet rather than from family convention.
 **No new identity.** The MAX31328 register map runs `0x00`–`0x12`: time and
 calendar, two alarms, control, status, aging offset and temperature. There is no
 serial number, no EUI block and no user SRAM. §4.3 is therefore unchanged — the
-MCP79412 EUI-64 remains the observer identity, the 24AA025E64 remains the board
-serial, and the ATECC serial still binds the key material. The second clock adds
-a measurement, never an identifier, and it cannot stand in for the MCP79412 if
-that part dies.
+24AA025E64 EUI-64 remains the board and observer identity, the MCP79412 EUI-64
+remains a replaceable component identity, and the ATECC serial still binds the key material. The second clock adds
+a measurement, never an identifier, and it cannot stand in for a bound
+MCP79412 component identity if that part dies.
 
 **Reserved interrupt and clock-output pins.** GPIO33 and GPIO34 are unallocated
 on both existing boards. GPIO16 and GPIO17 are free on a MAX board because the

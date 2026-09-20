@@ -21,6 +21,8 @@ import (
 	"github.com/ptudor/navlistener/internal/metrics"
 )
 
+const testManufacturerAuthority = "test-manufacturer"
+
 func pinnedKey(t *testing.T, dir, name string) (string, commissioning.Signer) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -45,7 +47,8 @@ func pinnedKey(t *testing.T, dir, name string) (string, commissioning.Signer) {
 func writeRegistry(t *testing.T, path string, sequence uint64, signer commissioning.Signer) {
 	t.Helper()
 	data, err := commissioning.SignRegistry(commissioning.Registry{
-		Sequence: sequence, IssuedAt: time.Unix(1789650000+int64(sequence), 0).UTC(), LedgerHead: strings.Repeat("ab", 32),
+		ManufacturerAuthorityID: testManufacturerAuthority,
+		Sequence:                sequence, IssuedAt: time.Unix(1789650000+int64(sequence), 0).UTC(), LedgerHead: strings.Repeat("ab", 32),
 	}, signer)
 	if err != nil {
 		t.Fatal(err)
@@ -67,12 +70,12 @@ func TestStartHardwareTrust(t *testing.T) {
 	if v, err := startHardwareTrust(ctx, config.HardwareTrust{}, log); v != nil || err != nil {
 		t.Fatalf("disabled hardware trust = %v, %v; want no verifier", v, err)
 	}
-	v, err := startHardwareTrust(ctx, config.HardwareTrust{ManufacturerKeys: []string{manufacturer}}, log)
+	v, err := startHardwareTrust(ctx, config.HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}}, log)
 	if err != nil || v == nil || v.Registry() != nil {
 		t.Fatalf("keys only = %v, %v", v, err)
 	}
 
-	cfg := config.HardwareTrust{ManufacturerKeys: []string{manufacturer}, Registry: registry,
+	cfg := config.HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}, Registry: registry,
 		RegistryKeys: []string{operations}, RegistryReload: 5 * time.Millisecond}
 	// A configured registry that is absent stops startup: a collector must not
 	// serve while unable to honour a withdrawal it was told to enforce.
@@ -114,7 +117,7 @@ func TestStartHardwareTrustRecordsTheRegistrySequence(t *testing.T) {
 	manufacturer, _ := pinnedKey(t, dir, "manufacturer.pem")
 	operations, signer := pinnedKey(t, dir, "registry.pem")
 	registry, state := filepath.Join(dir, "registry.json"), filepath.Join(dir, "registry.state")
-	cfg := config.HardwareTrust{ManufacturerKeys: []string{manufacturer}, Registry: registry,
+	cfg := config.HardwareTrust{ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}, Registry: registry,
 		RegistryKeys: []string{operations}, RegistryReload: time.Hour, RegistryState: state}
 
 	writeRegistry(t, registry, 9, signer)
@@ -123,7 +126,7 @@ func TestStartHardwareTrustRecordsTheRegistrySequence(t *testing.T) {
 		t.Fatal(err)
 	}
 	stop()
-	if recorded, err := commissioning.ReadRegistryState(state); err != nil || recorded != 9 {
+	if recorded, err := commissioning.ReadRegistryState(state, testManufacturerAuthority); err != nil || recorded != 9 {
 		t.Fatalf("recorded sequence = %d, %v", recorded, err)
 	}
 
