@@ -2,8 +2,9 @@
 
 The preferred EEPROM for new assemblies is Microchip **24CS128**, with its main
 array strapped to I2C address **0x50**. Its factory-programmed serial supplies the
-board identity. Assemblies using 24AA025E64 remain
-supported hardware choices under the same contract.
+board identity. ST **M24128-UFMN6TP** is a software-supported alternate pending
+physical qualification. Assemblies using 24AA025E64 remain supported under the
+same contract.
 
 A board UID is a **kind and an opaque byte string**. Never truncate, hash, convert
 to a floating-point JSON number, or reinterpret it as a MAC address. Part model,
@@ -14,6 +15,7 @@ change the identity namespace.
 |---|---|---|---|
 | 1 | `microchip_eui64` | 8 bytes | Microchip factory EUI-64, including 24AA025E64 |
 | 3 | `microchip_cs128` | 16 bytes | Complete Microchip CS-series factory serial, in read order |
+| 4 | `st_uid128` | 16 bytes | Complete ST UID, including the four-byte identification header |
 
 The 24CS128, AT24CS01 and AT24CS02 share the 128-bit identity namespace. Their
 hardware read procedures differ. Supporting a namespace does not automatically
@@ -46,6 +48,29 @@ is addressed at 0x58. These are separate address spaces; the serial is not in th
 writable main array. Main-array address 0x51 is also supported; the address does
 not enter the signed UID.
 
+M24128-U uses identification-page offset **0x0000** at **0x58** (or 0x59
+for main address 0x51), with a two-byte word address. Discovery first checks
+Microchip's Manufacturer ID. If that interface is absent, it reads ST's page,
+requires the `20 e0 0e ff` header, and repeats the full UID read for stability.
+The page ignores upper address bits: reading Microchip offset 0x0800 successfully
+is insufficient to identify the model. Unexpected headers, read errors and
+multiple candidates fail discovery. An absent security interface permits the
+legacy EUI read; a bus fault never permits fallback. Adopted identities cannot
+change kind, even if another source is available.
+
+The ST main array uses 16 KiB, 64-byte pages and two-byte addresses. Manifest
+self-reference is memory catalog ID 8 (`M24128-U`), while 24CS128 stays ID 7.
+Only the main array is written; Microchip configuration accesses are never sent
+to ST. Writes use bounded ACK polling and readback. The factory UID remains
+separate from the first 256-byte manifest.
+
+Pin 7 is write control/protection on both parts. ST permits WC floating (writes
+enabled), but a shared assembly should retain a defined low or high connection:
+Microchip requires one. Low enables programming; high inhibits array writes.
+Keep the existing ground link during commissioning, then use the board's
+write-protect configuration. The exact ST MN SO8N has the matching standard
+EEPROM pinout and package dimensions; other ST package suffixes need review.
+
 A 24AA025E64 uses its factory EUI at offset 0xf8, at 0x50 or 0x51. An ACK alone
 does not identify a model. Discovery must avoid storage writes and reject
 ambiguous devices and bus faults. The EEPROM identity is recorded separately
@@ -55,5 +80,17 @@ These are identification devices, not proof of possession. The signed core,
 manufacturer authority and operational key policy supply authentication. The
 A/B root and C/D intermediate architecture is independent of UID chip selection.
 
-References: [24CS128 datasheet, sections 10–11](https://ww1.microchip.com/downloads/aemDocuments/documents/MPD/ProductDocuments/DataSheets/24CS128-128-Kbit-3.4-MHz-I2C-Serial-EEPROM-DS20006913.pdf),
+References: [M24128-U datasheet](https://www.st.com/resource/en/datasheet/m24128-u.pdf),
+[24CS128 datasheet, sections 10–11](https://ww1.microchip.com/downloads/aemDocuments/documents/MPD/ProductDocuments/DataSheets/24CS128-128-Kbit-3.4-MHz-I2C-Serial-EEPROM-DS20006913.pdf),
 [AT24CS01/02 datasheet](https://ww1.microchip.com/downloads/en/DeviceDoc/20006330A.pdf).
+
+## Alternate qualification
+
+Host tests cover both transports, full-width identity, mixed candidates, wrong
+headers, unstable reads, WC inhibition, page boundaries and signed commissioning.
+Before approving a mixed production lot, qualify samples of each exact part:
+read and record the 16-byte UID repeatedly across power cycles; program and read
+back the manifest across page boundaries; check WC low and high; commission,
+export the registry and verify collector/OTA authorization after a power cycle.
+Confirm the UID and observer ID remain unchanged throughout. Physical tests have
+not yet been performed for the ST alternate.

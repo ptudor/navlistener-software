@@ -6,6 +6,7 @@ func TestKindsAndCanonicalWire(t *testing.T) {
 	for _, tc := range []struct{ kind, value, id string }{
 		{"microchip_eui64", "0004a3aabbccddee", "board-0001-0004a3aabbccddee"},
 		{"microchip_cs128", "00112233445566778899aabbccddeeff", "board-0003-00112233445566778899aabbccddeeff"},
+		{"st_uid128", "20e00eff445566778899aabbccddeeff", "board-0004-20e00eff445566778899aabbccddeeff"},
 	} {
 		id, err := Parse(tc.kind, tc.value)
 		if err != nil {
@@ -39,5 +40,13 @@ func TestKindsAndCanonicalWire(t *testing.T) {
 		if _, err := FromBytes(kind, []byte{1, 2, 3, 4, 5, 6, 7, 8}); err == nil {
 			t.Fatalf("accepted unregistered kind %d", kind)
 		}
+	}
+}
+
+func TestVendorNamespace(t *testing.T) {
+	a, _ := Parse("microchip_cs128", "20e00eff445566778899aabbccddeeff")
+	b, _ := Parse("st_uid128", a.Hex())
+	if a == b || a.ObserverID() == b.ObserverID() {
+		t.Fatal("vendor namespaces merged")
 	}
 }

@@ -35,6 +35,16 @@ def line(value):
 
 
 class ReportTests(unittest.TestCase):
+    def test_st_uid_is_preserved_and_source_must_match(self):
+        uid = "20e00eff0123456789abcdef01234567"
+        value = report(board_uid_kind="st_uid128", board_uid=uid,
+                       eeprom_uid_kind="st_uid128", eeprom_uid=uid)
+        self.assertEqual(commission_report.validate(value)["board_uid"], uid)
+        for change in ({"board_uid": uid[:16]}, {"eeprom_uid": uid[:-2] + "68"},
+                       {"eeprom_uid_kind": "microchip_cs128"}):
+            with self.assertRaises(ValueError):
+                commission_report.validate(dict(value, **change))
+
     def test_duplicate_fields_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "duplicate report field"):
             commission_report.reports(line(report()).replace('"v":1', '"v":2,"v":1'))

@@ -13,6 +13,7 @@ const (
 	MaxValueSize          = 32
 	EEPROMEUI64    uint16 = 1
 	MicrochipCS128 uint16 = 3
+	STUID128       uint16 = 4
 )
 
 // ID is comparable, so registry keys include both kind and value.
@@ -25,6 +26,8 @@ func (id ID) KindName() string {
 		return "microchip_eui64"
 	case MicrochipCS128:
 		return "microchip_cs128"
+	case STUID128:
+		return "st_uid128"
 	default:
 		return "unknown"
 	}
@@ -42,7 +45,7 @@ func (id ID) Validate() error {
 	n := 8
 	switch id.Kind() {
 	case EEPROMEUI64:
-	case MicrochipCS128:
+	case MicrochipCS128, STUID128:
 		n = 16
 	default:
 		return fmt.Errorf("unsupported board UID kind %d", id.Kind())
@@ -85,6 +88,8 @@ func Parse(kind, value string) (ID, error) {
 		k = EEPROMEUI64
 	case "microchip_cs128":
 		k = MicrochipCS128
+	case "st_uid128":
+		k = STUID128
 	default:
 		return ID{}, fmt.Errorf("unsupported board UID kind %q", kind)
 	}

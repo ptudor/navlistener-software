@@ -1,4 +1,4 @@
-/* Read-only discovery for approved 24CS128 / 24AA025E64 assemblies.
+/* Read-only discovery for approved 24CS128 / M24128-U / 24AA025E64 assemblies.
  * A bus error is never evidence of absence. No write-based device tests. */
 #ifndef NVF_BOARD_IDENTITY_H
 #define NVF_BOARD_IDENTITY_H
@@ -9,7 +9,7 @@ typedef struct {
     bool board_valid, eeprom_valid;
     uint8_t board_uid[NVF_BOARD_UID_SIZE], board_address;
     uint8_t eeprom_eui64[8], eeprom_address, eeprom_uid[NVF_BOARD_UID_SIZE];
-    bool eeprom_cs128;
+    uint16_t eeprom_kind;
 } nvf_board_identity_t;
 
 static inline bool nvf_identity_present(const uint8_t *p, size_t n) {
@@ -25,47 +25,51 @@ static inline const char *nvf_board_discover(nvf_identity_read_fn read, void *ct
         const uint8_t *known, uint16_t required_kind, nvf_board_identity_t *out) {
     if (!read || !out) return "identity reader is missing";
     memset(out, 0, sizeof(*out));
-    uint8_t cs[2][16] = {{0}}, manufacturer[3], repeated[16];
-    bool found_cs[2] = {false, false};
     for (unsigned i = 0; i < 2; i++) {
-        int status = read(ctx, 0x7c, (uint16_t)((0x50+i)<<1), 1, manufacturer, 3);
-        if (status == NVF_ID_ABSENT || status == NVF_ID_NACK) continue;
-        if (status != NVF_ID_READ_OK) return "Manufacturer ID bus failure";
-        if (memcmp(manufacturer, "\x00\xd0\xb8", 3)) return "unqualified EEPROM Manufacturer ID";
-        if (read(ctx, 0x58+i, 0x0800, 2, cs[i], 16) != NVF_ID_READ_OK ||
-            read(ctx, 0x58+i, 0x0800, 2, repeated, 16) != NVF_ID_READ_OK ||
-            memcmp(cs[i], repeated, 16) || !nvf_identity_present(cs[i], 16)) return "invalid or unstable 24CS128 serial";
-        found_cs[i] = true;
-    }
-    if (found_cs[0] && found_cs[1]) return "multiple EEPROM candidates; assembly selection required";
-    uint8_t e50[8] = {0}, e51[8] = {0}, again[8];
-    bool ep50 = false, ep51 = false;
-    int r50 = found_cs[0] ? NVF_ID_ABSENT : read(ctx, 0x50, 0xf8, 1, e50, 8);
-    if (r50 == NVF_ID_READ_OK) {
-        if (!nvf_identity_present(e50, 8)) return "EEPROM identity at 0x50 is blank or erased";
-        if (read(ctx, 0x50, 0xf8, 1, again, 8) != NVF_ID_READ_OK || memcmp(e50, again, 8)) return "unstable EEPROM identity";
-        ep50 = true;
-    } else if (r50 != NVF_ID_ABSENT) return "EEPROM probe at 0x50 failed";
-    int r51 = found_cs[1] ? NVF_ID_ABSENT : read(ctx, 0x51, 0xf8, 1, e51, 8);
-    if (r51 == NVF_ID_READ_OK) {
-        if (!nvf_identity_present(e51, 8)) return "EEPROM identity at 0x51 is blank or erased";
-        if (read(ctx, 0x51, 0xf8, 1, again, 8) != NVF_ID_READ_OK || memcmp(e51, again, 8)) return "unstable EEPROM identity";
-        ep51 = true;
-    } else if (r51 != NVF_ID_ABSENT) return "EEPROM probe at 0x51 failed";
-    if (ep50 && ep51) return "multiple manifest EEPROM candidates; assembly selection required";
-    if (ep50 || ep51) {
-        out->eeprom_valid = true; out->eeprom_address = ep51 ? 0x51 : 0x50;
-        memcpy(out->eeprom_eui64, ep51 ? e51 : e50, 8);
-    }
-    if (out->eeprom_valid) nvf_uid_pack(NVF_UID_MICROCHIP_EUI64, out->eeprom_eui64, 8, out->eeprom_uid);
-    if (found_cs[0] || found_cs[1]) {
-        if (out->eeprom_valid) return "multiple EEPROM models require assembly selection";
-        unsigned i = found_cs[1] ? 1 : 0;
-        out->eeprom_valid = true; out->eeprom_cs128 = true; out->eeprom_address = 0x50+i;
-        nvf_uid_pack(NVF_UID_MICROCHIP_CS128, cs[i], 16, out->eeprom_uid);
+        uint8_t value[16] = {0}, again[16], manufacturer[3];
+        uint8_t address = 0x50 + i;
+        uint16_t kind = 0, reg = 0;
+        size_t length = 16;
+        int status = read(ctx, 0x7c, (uint16_t)(address << 1), 1, manufacturer, 3);
+        if (status == NVF_ID_READ_OK) {
+            if (memcmp(manufacturer, "\x00\xd0\xb8", 3)) return "unqualified EEPROM Manufacturer ID";
+            kind = NVF_UID_MICROCHIP_CS128;
+            reg = 0x0800;
+            status = read(ctx, address + 8, reg, 2, value, length);
+            if (status != NVF_ID_READ_OK) return "24CS128 serial read failed";
+        } else {
+            if (status != NVF_ID_ABSENT && status != NVF_ID_NACK) return "Manufacturer ID bus failure";
+            // ST ignores upper identification-page address bits. A read ACK at
+            // Microchip's offset would not identify it; require the ST header.
+            status = read(ctx, address + 8, 0, 2, value, length);
+            if (status == NVF_ID_READ_OK) {
+                if (memcmp(value, "\x20\xe0\x0e\xff", 4)) return "unqualified M24128-U identification page";
+                kind = NVF_UID_ST_UID128;
+            } else if (status != NVF_ID_ABSENT) return "identification page bus failure";
+        }
+        if (kind) {
+            if (read(ctx, address + 8, reg, 2, again, length) != NVF_ID_READ_OK ||
+                memcmp(value, again, length) || !nvf_identity_present(value, length))
+                return "invalid or unstable EEPROM identity";
+        } else {
+            length = 8;
+            status = read(ctx, address, 0xf8, 1, value, length);
+            if (status == NVF_ID_ABSENT) continue;
+            if (status != NVF_ID_READ_OK) return "legacy EEPROM probe failed";
+            if (!nvf_identity_present(value, length) ||
+                read(ctx, address, 0xf8, 1, again, length) != NVF_ID_READ_OK ||
+                memcmp(value, again, length)) return "invalid or unstable EEPROM EUI64";
+            kind = NVF_UID_MICROCHIP_EUI64;
+        }
+        if (out->eeprom_valid) return "multiple EEPROM candidates; assembly selection required";
+        out->eeprom_valid = true;
+        out->eeprom_address = address;
+        out->eeprom_kind = kind;
+        if (length == 8) memcpy(out->eeprom_eui64, value, length);
+        if (!nvf_uid_pack(kind, value, length, out->eeprom_uid)) return "invalid EEPROM identity";
     }
     uint16_t selected = known ? nvf_uid_kind(known) : required_kind;
-    if (!selected) selected = out->eeprom_cs128 ? NVF_UID_MICROCHIP_CS128 : NVF_UID_MICROCHIP_EUI64;
+    if (!selected) selected = out->eeprom_kind;
     if (known && (!nvf_uid_valid(known) || (required_kind && required_kind != selected))) return "invalid adopted identity or assembly policy mismatch";
     if (selected == nvf_uid_kind(out->eeprom_uid) && out->eeprom_valid) {
         memcpy(out->board_uid, out->eeprom_uid, NVF_BOARD_UID_SIZE); out->board_address = out->eeprom_address;

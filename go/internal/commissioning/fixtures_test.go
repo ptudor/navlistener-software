@@ -130,6 +130,10 @@ func generateFixtures(t *testing.T) fixtureFile {
 	cs.BoardUID, _ = boardid.Parse("microchip_cs128", "0123456789abcdef0123456789abcdef")
 	cs.ATECCSerial[8], cs.RTCEUI64[7] = 0xc1, 0xc1
 	cases["microchip-cs128"] = cs
+	st := open
+	st.BoardUID, _ = boardid.Parse("st_uid128", "20e00eff0123456789abcdef01234567")
+	st.ATECCSerial[8], st.RTCEUI64[7] = 0xc2, 0xc2
+	cases["st-uid128"] = st
 	for name, s := range cases {
 		body, err := s.MarshalBinary()
 		if err != nil {
@@ -240,8 +244,8 @@ func TestFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(f.Cases) != 9 {
-		t.Fatalf("fixture has %d cases, want nine profile/RTC/UID combinations", len(f.Cases))
+	if len(f.Cases) != 10 {
+		t.Fatalf("fixture has %d cases, want ten profile/RTC/UID combinations", len(f.Cases))
 	}
 	for name, c := range f.Cases {
 		t.Run(name, func(t *testing.T) {
