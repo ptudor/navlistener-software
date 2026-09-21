@@ -8,6 +8,15 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 static const char *TAG = "environment";
+#if CONFIG_NVF_ENV_HDC2022
+static const env_hdc_variant_t hdc_variant = ENV_HDC2022;
+static const char *hdc_name = "HDC2022";
+static const char *hdc_conversion = "Rev A conversion";
+#else
+static const env_hdc_variant_t hdc_variant = ENV_HDC2080;
+static const char *hdc_name = "HDC2080";
+static const char *hdc_conversion = "Rev C conversion, nominal 3.3 V correction";
+#endif
 static const uint8_t addresses[] = {0x18, 0x40, 0x76};
 static i2c_master_dev_handle_t devices[3];
 static env_sensors_t sensors;
@@ -48,9 +57,10 @@ void environment_sample(i2c_master_bus_handle_t bus, env_sample_t *out, uint8_t 
             (void)i2c_master_bus_add_device(bus, &config, &devices[i]);
         }
         env_io_t io = {.read = read_register, .write = write_register, .delay_ms = delay_ms};
-        env_sensors_init(&sensors, &io); initialized = true;
-        ESP_LOGI(TAG, "measurement setup: MCP9808=%s HDC2080=%s BMP388/BMP384=%s",
-            sensors.mcp_ready ? "ready" : "unavailable", sensors.hdc_ready ? "ready" : "unavailable",
+        env_sensors_init(&sensors, &io, hdc_variant); initialized = true;
+        ESP_LOGI(TAG, "configured humidity sensor: %s (%s)", hdc_name, hdc_conversion);
+        ESP_LOGI(TAG, "measurement setup: MCP9808=%s %s=%s BMP388/BMP384=%s",
+            sensors.mcp_ready ? "ready" : "unavailable", hdc_name, sensors.hdc_ready ? "ready" : "unavailable",
             sensors.bmp_ready ? "ready" : "unavailable");
     }
     env_sample_t sample;
@@ -59,8 +69,8 @@ void environment_sample(i2c_master_bus_handle_t bus, env_sample_t *out, uint8_t 
     *ready = (sensors.mcp_ready ? 1 : 0) | (sensors.hdc_ready ? 2 : 0) | (sensors.bmp_ready ? 4 : 0);
     if (sample.mcp_valid) ESP_LOGI(TAG, "MCP9808 temperature=%.2f C", sample.mcp_c);
     else ESP_LOGW(TAG, "MCP9808 measurement unavailable");
-    if (sample.hdc_valid) ESP_LOGI(TAG, "HDC2080 temperature=%.2f C humidity=%.2f %%RH (nominal 3.3 V correction)", sample.hdc_c, sample.rh_percent);
-    else ESP_LOGW(TAG, "HDC2080 measurement unavailable");
+    if (sample.hdc_valid) ESP_LOGI(TAG, "%s temperature=%.2f C humidity=%.2f %%RH (%s)", hdc_name, sample.hdc_c, sample.rh_percent, hdc_conversion);
+    else ESP_LOGW(TAG, "%s measurement unavailable", hdc_name);
     if (sample.bmp_valid) ESP_LOGI(TAG, "BMP388/BMP384 temperature=%.2f C pressure=%.2f hPa (local absolute)", sample.bmp_c, sample.pressure_pa / 100.0);
     else ESP_LOGW(TAG, "BMP388/BMP384 measurement unavailable");
 }

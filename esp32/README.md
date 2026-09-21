@@ -193,6 +193,16 @@ variant. The initial RTC status reported a stopped oscillator and disabled
 battery backup. Live factory-compensated sensor readings now supply
 [ObserverDetails telemetry](../docs/OBSERVER-TELEMETRY.md): all three
 individual temperatures, humidity, local absolute pressure and board diagnostics.
+For an HDC2022 assembly, select **Fitted humidity sensor at 0x40 → HDC2022**
+in `menuconfig` (`CONFIG_NVF_ENV_HDC2022=y`). The default remains HDC2080.
+Both parts have identical ID registers, so firmware cannot auto-detect this
+substitution. The setting selects the corresponding published temperature
+formula and is logged at startup. Use firmware built for the assembled part.
+The revision-A factory manifest specifies HDC2080, so
+`NVF_MANIFEST_FACTORY_INIT` is unavailable in HDC2022 builds; provision an
+accurate assembly manifest separately. The measurement setting does not rewrite
+an existing manifest. See [conversion details](../docs/OBSERVER-TELEMETRY.md#measurements-and-identities).
+
 Sampling is every 30 seconds, with meaningful-change reporting, a five-minute
 check-in, and fresh snapshots on receiver interference-state transitions.
 The collector must support this report before the firmware is deployed.

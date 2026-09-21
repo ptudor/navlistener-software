@@ -95,9 +95,25 @@ menu "navfeeder-esp"
             UART TX/RX, and suppresses the Waveshare C6 LCD/WS2812 drivers whose
             fixed pins conflict with this board.
 
+    choice NVF_ENV_HDC_VARIANT
+        prompt "Fitted humidity sensor at 0x40"
+        depends on NVF_BOARD_GNSS_COLOR_NEO
+        default NVF_ENV_HDC2080
+        help
+            Select the assembled part. HDC2080 and HDC2022 share manufacturer
+            and device IDs, so probing cannot select the temperature formula.
+            This selection is a build setting, not inferred from the EEPROM.
+
+        config NVF_ENV_HDC2080
+            bool "HDC2080 (Rev C, nominal 3.3 V correction)"
+
+        config NVF_ENV_HDC2022
+            bool "HDC2022 (Rev A)"
+    endchoice
+
     config NVF_MANIFEST_FACTORY_INIT
         bool "Initialize a never-seen blank manifest from board defaults"
-        depends on NVF_BOARD_GNSS_COLOR_NEO
+        depends on NVF_BOARD_GNSS_COLOR_NEO && NVF_ENV_HDC2080
         default n
         help
             Manufacturing-only permission. If the complete writable region of
@@ -105,6 +121,8 @@ menu "navfeeder-esp"
             its factory EUI-64 is valid, and that EUI has never been recorded in
             the independent hwmanifest NVS namespace, program the compiled
             GNSS_PCB_MAIN revision-A component list and verify it by readback.
+            That list specifies HDC2080, so this option is unavailable for
+            HDC2022 assemblies; their manifest must be provisioned separately.
 
             Leave this off in ordinary firmware. I2C errors, malformed records,
             a blank previously-known EEPROM, and a different/replacement EUI

@@ -301,7 +301,7 @@ static void identify_peripherals(void)
                 data[0] == 0 && data[1] == 0x54 && data[2] == 4 ? "; MCP9808 verified" : "; unexpected identity");
         } else if (addresses[i] == 0x40 && read_reg(0x40, 0xfc, data, 4) == ESP_OK) {
             ESP_LOGI(TAG, "humidity IDs=%02x%02x/%02x%02x%s", data[1], data[0], data[3], data[2],
-                !memcmp(data, "\x49\x54\xd0\x07", 4) ? "; HDC2080 verified" : "; unexpected identity");
+                !memcmp(data, "\x49\x54\xd0\x07", 4) ? "; HDC2080/HDC2022 family verified (variant requires assembly selection)" : "; unexpected identity");
         } else if (addresses[i] == 0x76 && read_reg(0x76, 0, data, 1) == ESP_OK) {
             ESP_LOGI(TAG, "pressure chip ID=0x%02x%s", data[0], data[0] == 0x50 ?
                 "; BMP388/BMP384 family (ID cannot distinguish them)" : "; unexpected identity");

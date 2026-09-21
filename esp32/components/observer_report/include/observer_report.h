@@ -8,7 +8,7 @@
 #define OBSERVER_REPORT_MAX 384
 enum { REPORT_BOOT=1, REPORT_CHANGE=2, REPORT_CHECKIN=4, REPORT_INTERFERENCE=8 };
 typedef struct {
-    uint8_t valid, ready; // bits 0 MCP9808, 1 HDC2080, 2 BMP388/BMP384
+    uint8_t valid, ready; // bits 0 MCP9808, 1 HDC2080/HDC2022, 2 BMP388/BMP384
     int16_t mcp_centi_c, hdc_centi_c, bmp_centi_c;
     uint16_t rh_centi_percent;
     uint32_t pressure_pa;

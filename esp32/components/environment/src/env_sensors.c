@@ -16,9 +16,9 @@ static void bmp_delay(uint32_t us, void *ctx)
     env_sensors_t *s = ctx;
     s->io.delay_ms(s->io.ctx, (us + 999) / 1000);
 }
-void env_sensors_init(env_sensors_t *s, const env_io_t *io)
+void env_sensors_init(env_sensors_t *s, const env_io_t *io, env_hdc_variant_t hdc_variant)
 {
-    memset(s, 0, sizeof *s); s->io = *io;
+    memset(s, 0, sizeof *s); s->io = *io; s->hdc_variant = hdc_variant;
     uint8_t p[21], value;
     if (read_reg(s, 0x18, 6, p, 2) && be16(p) == 0x0054 &&
         read_reg(s, 0x18, 7, p, 2) && p[0] == 4 && read_reg(s, 0x18, 1, p, 2)) {
@@ -29,7 +29,9 @@ void env_sensors_init(env_sensors_t *s, const env_io_t *io)
             s->mcp_ready = true;
         }
     }
-    if (read_reg(s, 0x40, 0xfc, p, 4) && le16(p) == 0x5449 && le16(p + 2) == 0x07d0 &&
+    // Both variants return these IDs; they verify the family, not the variant.
+    if ((hdc_variant == ENV_HDC2080 || hdc_variant == ENV_HDC2022) &&
+        read_reg(s, 0x40, 0xfc, p, 4) && le16(p) == 0x5449 && le16(p + 2) == 0x07d0 &&
         read_reg(s, 0x40, 0x0e, p, 1)) {
         value = p[0] & 7; // manual conversions, heater off, preserve interrupt configuration
         s->hdc_ready = write_reg(s, 0x40, 0x0e, &value, 1);
@@ -64,8 +66,14 @@ static bool read_hdc(env_sensors_t *s, env_sample_t *sample)
         if (!read_reg(s, 0x40, 4, p, 1)) return false;
         if (!(p[0] & 0x80)) continue;
         if (!read_reg(s, 0x40, 0, p, sizeof p)) return false; // LSB first for both channels
-        // TI SNAS678C equations 2/3; PSRR uses the board's nominal 3.3 V supply.
-        sample->hdc_c = le16(p) * (165.0 / 65536.0) - 40.5 + 0.08 * (3.3 - 1.8);
+        if (s->hdc_variant == ENV_HDC2022) {
+            // TI SNAS774A section 7.6.1, equation 1 (HDC2022).
+            sample->hdc_c = le16(p) * (165.0 / 65536.0) - 40.0;
+        } else {
+            // TI SNAS678C section 8.6.2, equation 2 (HDC2080).
+            // PSRR uses the board's nominal, unmeasured 3.3 V supply.
+            sample->hdc_c = le16(p) * (165.0 / 65536.0) - 40.5 + 0.08 * (3.3 - 1.8);
+        }
         sample->rh_percent = le16(p + 2) * (100.0 / 65536.0);
         return sample->hdc_c >= -40 && sample->hdc_c <= 125 && sample->rh_percent <= 100;
     }

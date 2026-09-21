@@ -50,13 +50,13 @@ static void delay(void *ctx, unsigned ms)
 }
 static void le16(uint8_t *p, unsigned n) { p[0] = n; p[1] = n >> 8; }
 static void le24(uint8_t *p, unsigned n) { le16(p, n); p[2] = n >> 16; }
-static void setup(fake_t *f, env_sensors_t *s)
+static void setup_variant(fake_t *f, env_sensors_t *s, env_hdc_variant_t variant)
 {
     memset(f, 0, sizeof *f);
     f->mcp[6][1] = 0x54; f->mcp[7][0] = 4;
     f->mcp[5][0] = 0xe1; f->mcp[5][1] = 0x98; // +25.5 C with all alert flags set
     le16(f->hdc + 0xfc, 0x5449); le16(f->hdc + 0xfe, 0x07d0);
-    le16(f->hdc, 0x8000); le16(f->hdc + 2, 0x8000); // TI half-scale: 42.12 C, 50 %RH at nominal 3.3 V
+    le16(f->hdc, 0x8000); le16(f->hdc + 2, 0x8000); // half-scale: HDC2080 42.12 C at 3.3 V; HDC2022 42.5 C; both 50 %RH
     f->hdc[0xe] = 0x7b; // auto mode + heater must be cleared, interrupt bits preserved
     f->bmp[0] = 0x50; f->bmp[3] = 0x10; // chip ID, command ready
     // Synthetic device trim: t1=25600*256, t2=2^-16, t3=0.
@@ -67,7 +67,64 @@ static void setup(fake_t *f, env_sensors_t *s)
     le16(f->bmp + 0x3c, 12500);
     le24(f->bmp + 4, 8000000); le24(f->bmp + 7, 8192000);
     env_io_t io = {.ctx=f, .read=read_bus, .write=write_bus, .delay_ms=delay};
-    env_sensors_init(s, &io);
+    env_sensors_init(s, &io, variant);
+}
+static void setup(fake_t *f, env_sensors_t *s)
+{
+    setup_variant(f, s, ENV_HDC2080);
+}
+static void test_hdc_variants(void)
+{
+    // Identical ID registers and raw values must use the selected part's formula.
+    const struct {
+        uint16_t raw;
+        double hdc2080_c, hdc2022_c;
+        bool hdc2080_valid;
+    } cases[] = {
+        {0x0000, -40.38, -40.0, false},
+        {0x4000, 0.87, 1.25, true},
+        {0x8000, 42.12, 42.5, true},
+        {0xc000, 83.37, 83.75, true},
+        {0xfffc, 124.60992919921875, 124.98992919921875, true},
+    };
+    for (env_hdc_variant_t variant = ENV_HDC2080; variant <= ENV_HDC2022; variant++) {
+        fake_t f; env_sensors_t s; env_sample_t sample;
+        setup_variant(&f, &s, variant);
+        assert(s.hdc_ready && s.hdc_variant == variant && f.hdc[0xe] == 3);
+        for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+            le16(f.hdc, cases[i].raw);
+            le16(f.hdc + 2, cases[i].raw);
+            env_sensors_read(&s, &sample);
+            double expected = variant == ENV_HDC2080 ? cases[i].hdc2080_c : cases[i].hdc2022_c;
+            assert(fabs(sample.hdc_c - expected) < 1e-9);
+            assert(sample.hdc_valid == (variant == ENV_HDC2022 || cases[i].hdc2080_valid));
+            assert(fabs(sample.rh_percent - cases[i].raw * (100.0 / 65536.0)) < 1e-9);
+            assert(sample.mcp_valid && sample.bmp_valid);
+        }
+        f.hdc_stuck = true; f.hdc[4] = 0x80;
+        env_sensors_read(&s, &sample);
+        assert(!sample.hdc_valid && sample.hdc_c == 0 && sample.rh_percent == 0);
+        assert(sample.mcp_valid && sample.bmp_valid);
+        f.hdc_stuck = false;
+        env_sensors_read(&s, &sample); assert(sample.hdc_valid);
+        f.fail = true;
+        env_sensors_read(&s, &sample);
+        assert(!sample.hdc_valid && sample.hdc_c == 0 && sample.rh_percent == 0);
+        f.fail = false;
+        env_io_t io = s.io;
+        f.hdc[0xfe] = 0; // wrong device ID is rejected for either configured part
+        env_sensors_init(&s, &io, variant);
+        assert(!s.hdc_ready && s.mcp_ready && s.bmp_ready);
+    }
+    const env_hdc_variant_t unsupported[] = {ENV_HDC_NONE, (env_hdc_variant_t)99};
+    for (unsigned i = 0; i < sizeof unsupported / sizeof unsupported[0]; i++) {
+        fake_t f; env_sensors_t s; env_sample_t sample;
+        setup_variant(&f, &s, unsupported[i]);
+        assert(!s.hdc_ready && f.hdc[0xe] == 0x7b);
+        env_sensors_read(&s, &sample);
+        assert(!sample.hdc_valid && sample.hdc_c == 0 && sample.rh_percent == 0);
+        assert(sample.mcp_valid && sample.bmp_valid);
+    }
 }
 int main(void)
 {
@@ -95,8 +152,9 @@ int main(void)
     setup(&f, &s);
     env_io_t io = s.io;
     f.mcp[6][1] = 0; f.hdc[0xfc] = 0; memset(f.bmp + 0x31, 0, 21);
-    env_sensors_init(&s, &io);
+    env_sensors_init(&s, &io, ENV_HDC2080);
     assert(!s.mcp_ready && !s.hdc_ready && !s.bmp_ready);
-    puts("Environment: units/sign/alerts, Bosch trim compensation, fresh conversions and fault isolation passed");
+    test_hdc_variants();
+    puts("Environment: HDC2080/HDC2022 selection, units/sign/alerts, Bosch trim compensation, fresh conversions and fault isolation passed");
     return 0;
 }

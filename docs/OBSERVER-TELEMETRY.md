@@ -46,6 +46,14 @@ The M9's "no spoofing indicated" state is not proof of authentic reception; see
   Temperature follows the Rev C formula, including nominal 3.3 V supply
   compensation: `raw × 165 / 65536 − 40.5 + 0.08 × (3.3 − 1.8)` °C.
   The supply is assumed, not measured. Humidity is `raw × 100 / 65536` %RH.
+- HDC2022 alternate: the same fresh-conversion sequence and humidity formula,
+  with the Rev A temperature formula `raw × 165 / 65536 − 40` °C.
+  Select `CONFIG_NVF_ENV_HDC2022=y` for that assembly; HDC2080 remains the
+  default. Both parts return manufacturer ID `0x5449` and device ID `0x07d0`,
+  so the build selection must match the fitted part. Firmware does not infer it
+  from probing or the EEPROM manifest. Startup logs the selected conversion.
+  At the same raw value the published formulas differ by 0.38 °C at nominal
+  3.3 V; this is a formula difference, not a measured calibration error.
 - BMP388/BMP384: temperature and pressure compensated using the chip's factory
   trim and the pinned Bosch BMP3 SensorAPI. Fresh forced conversions use pressure
   8× and temperature 2× oversampling. Chip ID `0x50` does not distinguish these
@@ -76,6 +84,7 @@ identification/configuration require a reboot. Invalid trim and conversion
 timeouts are rejected. Source references:
 [MCP9808 datasheet](https://ww1.microchip.com/downloads/en/DeviceDoc/25095A.pdf),
 [HDC2080 Rev C](https://www.ti.com/lit/ds/symlink/hdc2080.pdf),
+[HDC2022 Rev A](https://www.ti.com/lit/ds/symlink/hdc2022.pdf),
 [BMP384 datasheet](https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmp384-ds003.pdf),
 [vendored Bosch source and license](../esp32/components/environment/vendor/bmp3/README.md).
 Include the Bosch license with firmware binary distributions.
@@ -194,6 +203,9 @@ The authenticated GNF1 context selects station and scope; the payload cannot.
 `board.latest` is omitted until an environmental/health sample arrives. It contains `received_at`, nullable `sample_time`, `session`,
 `sequence`, `hardware_trust`, and `details`. Names/units inside `details.environment` are
 `mcp9808_c`, `hdc2080_c`, `bmp388_bmp384_c`, `humidity_percent`, `pressure_pa`.
+The existing `hdc2080_c` field carries the configured HDC2080 or HDC2022
+temperature. Version 1 does not encode the HDC variant; retain the assembly
+and firmware configuration when interpreting these readings.
 Component health and identifiers appear under `rtc`, `atecc`, `eeprom`,
 `resources`, `receiver`, and `firmware`. Hardware status is separate from
 administrative identity and never changes receiver capability/liveness counts.
