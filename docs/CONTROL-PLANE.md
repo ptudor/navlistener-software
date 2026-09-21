@@ -81,9 +81,9 @@ Database initialization and writes require only the control service's role.
 
 ## Controlled enrollment and certificate issuance
 
-1. Read the board EEPROM EUI-64, product/revision and ATECC serial live at the
+1. Read the typed board UID, product/revision and ATECC serial live at the
    controlled bench. Read back the permanent 72-byte attestation and complete
-   225-byte commissioning record. Validate component expectations and the live
+   252-byte commissioning record. Validate component expectations and the live
    identity checks in [the commissioning procedure](COMMISSIONING.md).
 2. For hardware mTLS, use the established secure-element procedure to generate
    the operational key and CSR, and validate that CSR/key against the live ATECC.
@@ -115,9 +115,9 @@ commissioning provenance and must provide MCU session proof for `trusted`.
 Required request fields are `observer_id`, `operational_authority_id`,
 `organization_id`, `collector_instance_id` and `feed_grants` (`ubx` and/or `rtcm`).
 Hardware adds `manufacturer_authority_id`, `hardware_validation`, integer
-`product`/`revision`, lowercase unseparated hex `board_eui64`, `atecc_serial`,
+`product`/`revision`, `board_uid_kind` and lowercase unseparated hex `board_uid`, `atecc_serial`,
 `core_record` and `commissioning_record`. The observer ID is exactly lowercase
-hyphen-separated board EUI bytes. Software omits all hardware fields.
+`board-<four-digit kind code>-<full lowercase UID hex>`. Software omits all hardware fields.
 `csr_pem` and `certificate_pem` must be supplied together for mTLS or both omitted
 for bearer-only enrollment. Certificates contain no organization or manufacturer
 claims that override the server record.

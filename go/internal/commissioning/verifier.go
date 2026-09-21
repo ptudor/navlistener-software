@@ -318,7 +318,7 @@ func (v *Verifier) checkRegistryIndex(s Statement, fp [32]byte, ix *RegistryInde
 	if ix == nil {
 		return nil
 	}
-	board, listed := ix.boards[s.BoardEUI64]
+	board, listed := ix.boards[s.BoardUID]
 	switch {
 	case !listed && v.requireEntry:
 		return &Rejection{Reason: ReasonUnlisted, Err: errors.New("board is not in the registry")}

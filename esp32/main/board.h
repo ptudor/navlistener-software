@@ -2,6 +2,7 @@
 #define NVF_BOARD_H
 #include "esp_err.h"
 #include "hardware_manifest.h"
+#include "../../common/board_uid.h"
 void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_t (*now_ns)(void));
 // Thread-safe request, applied and saved by the board task. First-boot default
 // 20%; subsequent boots restore the saved setting before enabling PWM.
@@ -15,7 +16,9 @@ esp_err_t observer_board_start(void);
 // secure element for several I2C transactions.
 typedef struct {
     bool atecc_valid, rtc_present, rtc_valid, board_valid, attestation_valid, revision_valid;
-    uint8_t atecc_serial[9], rtc_eui64[8], board_eui64[8], attestation[72];
+    uint8_t atecc_serial[9], rtc_eui64[8], board_uid[NVF_BOARD_UID_SIZE], attestation[72];
+    bool eeprom_valid;
+    uint8_t board_uid_address, eeprom_address, eeprom_eui64[8], eeprom_uid[NVF_BOARD_UID_SIZE];
     uint16_t revision;
 } observer_board_identity_t;
 void observer_board_identity(observer_board_identity_t *out);

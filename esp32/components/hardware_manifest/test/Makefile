@@ -6,9 +6,10 @@ SRC := test_policy.c ../src/hardware_manifest_policy.c
 INC := -I../include
 
 .PHONY: all clean
-all: $(TEST) build/checks_test
+all: $(TEST) build/checks_test build/identity_test
 	./$(TEST)
 	./build/checks_test
+	./build/identity_test
 
 build/checks_test: checks_test.c ../src/hardware_checks.c ../include/hardware_checks.h
 	@mkdir -p build
@@ -20,3 +21,7 @@ $(TEST): $(SRC)
 clean:
 	rm -f $(TEST)
 	rm -rf build
+
+build/identity_test: identity_test.c ../../../../common/board_uid.h ../../../../common/board_identity.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) identity_test.c -o $@

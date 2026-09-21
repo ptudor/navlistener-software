@@ -20,17 +20,18 @@ from pathlib import Path
 MARKER = "NVF-COMMISSION-REPORT "
 # Terminal colour sequences and the carriage returns a serial capture leaves behind.
 NOISE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\r")
-HEX_FIELDS = {"atecc_serial": 9, "rtc_eui64": 8, "board_eui64": 8, "mcu_mac": 6,
+HEX_FIELDS = {"atecc_serial": 9, "rtc_eui64": 8, "mcu_mac": 6,
               "secure_boot_keys_sha256": 32, "attestation_record": 72, "mcu_key_sha256": 32}
 BASE64_FIELDS = ("mcu_public_key_der", "ds_context")
 KEY_STATES = ("absent", "orphaned", "ready", "fault")
 PROFILES = ("trusted", "open", "test", "unreported")
 REPORT_FIELDS = {
     "v", "product", "identity_flags", "rtc_model_id", "rtc_expected", "rtc_present",
-    "atecc_serial", "rtc_eui64", "board_eui64", "board_rev", "mcu_family", "mcu_mac",
+    "atecc_serial", "rtc_eui64", "board_uid_kind", "board_uid", "board_rev", "mcu_family", "mcu_mac",
     "identity_complete", "security", "secure_boot_keys_sha256", "attestation_record",
     "mcu_key_alg", "mcu_public_key_der", "mcu_key_sha256", "ds_context", "key_state",
     "key_block", "rd_dis_sealed", "record", "firmware", "trust_profile",
+    "board_uid_address", "eeprom_uid_kind", "eeprom_uid", "eeprom_address",
 }
 
 
@@ -75,8 +76,30 @@ def validate(report):
         # from an expected part that could not be read.
         if value is not None and (not isinstance(value, str) or not re.fullmatch(f"[0-9a-f]{{{2 * size}}}", value)):
             raise ValueError(f"{name} is neither null nor {size} bytes of lowercase hex")
+    kind, value = report["board_uid_kind"], report["board_uid"]
+    sizes = {"microchip_eui64": 8, "microchip_cs128": 16}
+    if value is None:
+        if kind is not None:
+            raise ValueError("board UID kind without a value")
+    elif not isinstance(kind, str) or kind not in sizes or not isinstance(value, str) or not re.fullmatch(f"[0-9a-f]{{{2*sizes[kind]}}}", value):
+        raise ValueError("unknown board UID kind or invalid value length")
+    for uid_field, address_field in (("board_uid", "board_uid_address"), ("eeprom_uid", "eeprom_address")):
+        address = report[address_field]
+        if report[uid_field] is None:
+            if address is not None:
+                raise ValueError("address without a hardware identity")
+        elif isinstance(address, bool) or not isinstance(address, int) or address not in (0x50, 0x51):
+            raise ValueError("unsupported identity I2C address")
+    ep_kind, ep_value = report["eeprom_uid_kind"], report["eeprom_uid"]
+    if ep_value is None:
+        if ep_kind is not None:
+            raise ValueError("EEPROM kind without an identity")
+    elif ep_kind not in ("microchip_eui64", "microchip_cs128") or not isinstance(ep_value, str) or not re.fullmatch(f"[0-9a-f]{{{2*sizes[ep_kind]}}}", ep_value) or set(ep_value) in ({"0"}, {"f"}):
+        raise ValueError("invalid EEPROM identity")
+    if kind in ("microchip_eui64", "microchip_cs128") and (kind, value) != (ep_kind, ep_value):
+        raise ValueError("board UID differs from the selected EEPROM identity")
     decoded = {}
-    for name in ("atecc_serial", "board_eui64", "mcu_mac", "rtc_eui64"):
+    for name in ("atecc_serial", "board_uid", "mcu_mac", "rtc_eui64"):
         value = report[name]
         if value is not None and (set(value) == {"0"} or set(value) == {"f"}):
             raise ValueError(f"{name} is blank or erased; failed reads must be null")
@@ -113,7 +136,7 @@ def validate(report):
     if report["rtc_eui64"] is not None and not report["rtc_present"]:
         raise ValueError("RTC EUI-64 was reported although the RTC model check failed")
     complete = all(report[name] is not None for name in
-                   ("atecc_serial", "board_eui64", "mcu_mac", "attestation_record")) and \
+                   ("atecc_serial", "board_uid", "mcu_mac", "attestation_record")) and \
         report["board_rev"] is not None and (not declared or report["rtc_present"]) and \
         (not bound or report["rtc_eui64"] is not None)
     if report["identity_complete"] != complete:
@@ -125,8 +148,8 @@ def validate(report):
     if bool(report["security"] & 1) != (report["secure_boot_keys_sha256"] is not None):
         raise ValueError("Secure Boot state and key digest disagree")
     if not isinstance(report["record"], str) or (report["record"] != "" and
-            not re.fullmatch(r"[0-9a-f]{450}", report["record"])):
-        raise ValueError("record is neither empty nor a 225-byte lowercase-hex value")
+            not re.fullmatch(r"[0-9a-f]{504}", report["record"])):
+        raise ValueError("record is neither empty nor a 252-byte lowercase-hex value")
     if not isinstance(report["firmware"], str) or not report["firmware"]:
         raise ValueError("firmware is missing")
     has_key = report["mcu_key_alg"] != 0

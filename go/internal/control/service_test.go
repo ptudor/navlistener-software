@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/ptudor/navlistener/internal/boardid"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -52,24 +53,27 @@ func recommission(t *testing.T, r Request, key *ecdsa.PrivateKey, change func(*c
 func otherBoard(t *testing.T, r Request, key *ecdsa.PrivateKey, board, serial byte) Request {
 	t.Helper()
 	h := attestation.HardwareIdentity{Product: r.Product, BoardRevision: r.Revision}
-	if err := decodeHex(r.BoardEUI64, h.BoardEUI64[:]); err != nil {
+	uid, err := boardid.Parse(r.BoardUIDKind, r.BoardUID)
+	if err != nil {
 		t.Fatal(err)
 	}
+	h.BoardUID = uid
 	if err := decodeHex(r.ATECCSerial, h.ATECCSerial[:]); err != nil {
 		t.Fatal(err)
 	}
-	h.BoardEUI64[7] = board
+	h.BoardUID = uid
+	h.BoardUID[10] = board
 	h.ATECCSerial[8] = serial
 	core, err := attestation.Sign(1, h, key, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.ObserverID = commissioning.ObserverID(h.BoardEUI64)
-	r.BoardEUI64 = hex.EncodeToString(h.BoardEUI64[:])
+	r.ObserverID = commissioning.ObserverID(h.BoardUID)
+	r.BoardUID = h.BoardUID.Hex()
 	r.ATECCSerial = hex.EncodeToString(h.ATECCSerial[:])
 	r.CoreRecord = hex.EncodeToString(core[:])
 	return recommission(t, r, key, func(s *commissioning.Statement) {
-		s.BoardEUI64 = h.BoardEUI64
+		s.BoardUID = h.BoardUID
 		s.ATECCSerial = h.ATECCSerial
 		s.Attestation = sha256.Sum256(core[:])
 	})
@@ -191,9 +195,11 @@ func TestServiceIdentityAndImmutableEvidence(t *testing.T) {
 	// ATECC replacement requires a new valid core, a higher generation and an
 	// explicit service approval. Ordinary ownership/key changes cannot do this.
 	h := attestation.HardwareIdentity{Product: r.Product, BoardRevision: r.Revision}
-	if err := decodeHex(r.BoardEUI64, h.BoardEUI64[:]); err != nil {
+	uid, err := boardid.Parse(r.BoardUIDKind, r.BoardUID)
+	if err != nil {
 		t.Fatal(err)
 	}
+	h.BoardUID = uid
 	if err := decodeHex(r.ATECCSerial, h.ATECCSerial[:]); err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +245,7 @@ func TestScopedRegistryStreamsAndDatabaseFloors(t *testing.T) {
 		reg := commissioning.Registry{ManufacturerAuthorityID: p.id, Sequence: seq, IssuedAt: time.Now().UTC(), LedgerHead: strings.Repeat("ab", 32)}
 		if i == 0 {
 			raw, _ := hex.DecodeString(r.CommissioningRecord)
-			reg.Boards = []commissioning.RegistryBoard{{BoardEUI64: r.BoardEUI64, ATECCSerial: r.ATECCSerial, RTCModelID: 0, RTCEUI64: nil, Profile: "open", Generation: 1, Status: "active", Record: base64.StdEncoding.EncodeToString(raw)}}
+			reg.Boards = []commissioning.RegistryBoard{{BoardUIDKind: r.BoardUIDKind, BoardUID: r.BoardUID, ATECCSerial: r.ATECCSerial, RTCModelID: 0, RTCEUI64: nil, Profile: "open", Generation: 1, Status: "active", Record: base64.StdEncoding.EncodeToString(raw)}}
 		}
 		signer, _ := commissioning.NewKeySigner(p.key, nil)
 		data, err := commissioning.SignRegistry(reg, signer)

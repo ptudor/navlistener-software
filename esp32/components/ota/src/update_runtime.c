@@ -176,7 +176,7 @@ static bool check(void) {
     if(record.status.available.sequence!=release.sequence)record.status.received=0;
     record.status.available=release;record.status.last_check=device.now;record.status.retry=0;
     if(release.sequence && release.sequence==record.status.failed){failure(UP_TRIAL_FAILED,false);return false;}
-    record.status.error=UP_OK;record.status.next_check=nvf_update_weekly(device.now,device.eui,record.status.channel,esp_random(),&io);
+    record.status.error=UP_OK;record.status.next_check=nvf_update_weekly(device.now,device.board_uid,record.status.channel,esp_random(),&io);
     if(record.status.staged.sequence && (record.status.staged.sequence!=release.sequence ||
        memcmp(record.status.staged.hash,release.hash,32))) {
         memset(&record.status.staged,0,sizeof record.status.staged);record.staged_address=0;record.status.received=0;

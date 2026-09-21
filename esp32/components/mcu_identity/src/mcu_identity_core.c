@@ -46,7 +46,7 @@ const char *nvf_commission_validate(const nvf_commission_statement_t *s)
     if (s->generation == 0) return "generation starts at 1";
     if (s->commissioned_at == 0) return "commissioning time is required";
     if (blank(s->atecc_serial, sizeof s->atecc_serial)) return "ATECC serial is blank or erased";
-    if (blank(s->board_eui64, sizeof s->board_eui64)) return "board EUI-64 is blank or erased";
+    if (!nvf_uid_valid(s->board_uid)) return "board UID is invalid";
     if (blank(s->mcu_mac, sizeof s->mcu_mac)) return "microcontroller MAC is blank or erased";
     bool has_key = s->mcu_key_alg != NVF_MCU_KEY_NONE;
     if (has_key == all_zero(s->mcu_key_sha256, 32))
@@ -74,10 +74,10 @@ bool nvf_commission_encode(const nvf_commission_statement_t *s, uint8_t out[NVF_
     put_be(out + 4, s->product, 2); put_be(out + 6, s->board_rev, 2); put_be(out + 8, s->security, 2);
     put_be(out + 10, s->identity_flags, 2); put_be(out + 12, s->rtc_model_id, 2);
     put_be(out + 14, s->generation, 4); put_be(out + 18, s->commissioned_at, 8);
-    memcpy(out + 26, s->board_eui64, 8); memcpy(out + 34, s->atecc_serial, 9);
-    memcpy(out + 43, s->rtc_eui64, 8); memcpy(out + 51, s->mcu_mac, 6);
-    memcpy(out + 57, s->mcu_key_sha256, 32); memcpy(out + 89, s->secure_boot_keys, 32);
-    memcpy(out + 121, s->attestation, 32);
+    memcpy(out + 26, s->board_uid, NVF_BOARD_UID_SIZE); memcpy(out + 61, s->atecc_serial, 9);
+    memcpy(out + 70, s->rtc_eui64, 8); memcpy(out + 78, s->mcu_mac, 6);
+    memcpy(out + 84, s->mcu_key_sha256, 32); memcpy(out + 116, s->secure_boot_keys, 32);
+    memcpy(out + 148, s->attestation, 32);
     return true;
 }
 
@@ -89,10 +89,10 @@ bool nvf_commission_parse(const uint8_t *in, size_t len, nvf_commission_statemen
         .security = (uint16_t)get_be(in + 8, 2), .identity_flags = (uint16_t)get_be(in + 10, 2),
         .rtc_model_id = (uint16_t)get_be(in + 12, 2), .generation = (uint32_t)get_be(in + 14, 4),
         .commissioned_at = get_be(in + 18, 8) };
-    memcpy(s.board_eui64, in + 26, 8); memcpy(s.atecc_serial, in + 34, 9);
-    memcpy(s.rtc_eui64, in + 43, 8); memcpy(s.mcu_mac, in + 51, 6);
-    memcpy(s.mcu_key_sha256, in + 57, 32); memcpy(s.secure_boot_keys, in + 89, 32);
-    memcpy(s.attestation, in + 121, 32);
+    memcpy(s.board_uid, in + 26, NVF_BOARD_UID_SIZE); memcpy(s.atecc_serial, in + 61, 9);
+    memcpy(s.rtc_eui64, in + 70, 8); memcpy(s.mcu_mac, in + 78, 6);
+    memcpy(s.mcu_key_sha256, in + 84, 32); memcpy(s.secure_boot_keys, in + 116, 32);
+    memcpy(s.attestation, in + 148, 32);
     if (nvf_commission_validate(&s)) return false;
     *out = s;
     return true;
@@ -196,10 +196,9 @@ const char *nvf_mcu_keygen_refusal(const nvf_mcu_keygen_state_t *s)
     return NULL;
 }
 
-void nvf_commission_observer_id(const uint8_t eui[8], char out[24])
+void nvf_commission_observer_id(const uint8_t uid[NVF_BOARD_UID_SIZE], char out[NVF_BOARD_OBSERVER_SIZE])
 {
-    snprintf(out, 24, "%02x-%02x-%02x-%02x-%02x-%02x-%02x-%02x",
-             eui[0], eui[1], eui[2], eui[3], eui[4], eui[5], eui[6], eui[7]);
+    nvf_uid_observer(uid, out);
 }
 
 const char *nvf_commission_match(const nvf_commission_statement_t *s, const nvf_live_identity_t *live,
@@ -208,11 +207,11 @@ const char *nvf_commission_match(const nvf_commission_statement_t *s, const nvf_
     if (!s || !live || !sha) return "identity verifier is missing";
     if (s->product != NVF_COMMISSION_PRODUCT_OBSERVER) return "record is for another product, not an observer";
     if (!live->atecc_valid) return "this board's ATECC serial could not be read";
-    if (!live->board_valid) return "this board's EEPROM EUI-64 could not be read";
+    if (!live->board_valid) return "this board's typed UID could not be read";
     if (!live->revision_valid) return "this board's revision could not be read";
     if (!live->mac_valid) return "this microcontroller's factory MAC could not be read";
     if (memcmp(s->atecc_serial, live->atecc_serial, 9)) return "record names a different ATECC serial";
-    if (memcmp(s->board_eui64, live->board_eui64, 8)) return "record names a different board EUI-64";
+    if (memcmp(s->board_uid, live->board_uid, NVF_BOARD_UID_SIZE)) return "record names a different board UID";
     if (s->board_rev != live->board_rev) return "record names a different board revision";
     if (memcmp(s->mcu_mac, live->mcu_mac, 6)) return "record names a different microcontroller MAC";
     bool rtc_present = (s->identity_flags & NVF_IDENTITY_RTC_PRESENT) != 0;

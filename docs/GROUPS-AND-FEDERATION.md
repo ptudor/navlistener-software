@@ -21,7 +21,7 @@ The analogy is useful as long as the layers stay separate:
 
 | System concept | Analogy | Can it change? |
 |---|---|---|
-| 24AA025E64 board EUI-64 | passport number — the globally unique public name | only on PCB replacement |
+| 24AA025E64 typed board UID | passport number — the globally unique public name | only on PCB replacement |
 | manufacturer attestation | the issuing authority's anti-forgery proof over the original hardware | no; manufacturing record |
 | ATECC operational private key | the holder's ability to prove possession | yes; slot 0 is deliberately regenerable |
 | operational mTLS certificate | a driver's licence issued by the admitting collector/organization CA | yes; issue, rotate, revoke |
@@ -41,7 +41,7 @@ and server-side enrollment record establish the current jurisdiction.
 
 ### 1.1 Implemented in navlistener
 
-- The hardware design assigns distinct roles to permanent board EUI-64,
+- The hardware design assigns distinct roles to permanent typed board UID,
   replaceable RTC identity, and ATECC serial.
 - The feeder/collector mTLS handshake binds exactly one DNS SAN byte-for-byte to the canonical
   observer id; HELLO cannot rename an authenticated observer.
@@ -77,7 +77,7 @@ and server-side enrollment record establish the current jurisdiction.
   event reads cannot cross the process/current-policy epoch, and snapshots cover each
   materialized audience independently.
 - Manufacturer core-attestation v1 formatting, signing, verification, and the
-  bench CLI are implemented; it binds product, revision, board EUI-64 and ATECC
+  bench CLI are implemented; it binds product, revision, typed board UID and ATECC
   serial while commissioning binds replaceable components.
 - The transport-independent federation egress gate intersects receipt policy, current policy,
   and an explicit directed destination grant before any peer transport exists.
@@ -153,7 +153,8 @@ Enrollment
   credential
   organization_at_enrollment
   rtc_eui64
-  board_eui64
+  board_uid_kind
+  board_uid
   atecc_serial
   manufacturer_attestation_status
   manufacturer_attestation_fingerprint
@@ -286,7 +287,7 @@ SHA-256(
   "ATECC-MFG-CORE-v1" ||
   product_u16be ||
   board_rev_u16be ||
-  board_eui64[8] ||
+  board_uid[35] ||
   atecc_serial[9]
 )
 ```
@@ -304,18 +305,18 @@ later enroll under Airport F's standalone CA, and retain the same originality pr
 
 Hardware enrollment is one atomic/audited workflow:
 
-1. Read board EUI-64, ATECC serial, manifest, attestation record, optional RTC
+1. Read typed board UID, ATECC serial, manifest, attestation record, optional RTC
    identity, and operational public key.
 2. Verify manufacturer signature and uniqueness of the permanent identifiers.
 3. Require the CSR signature to verify under the ATECC public key and its sole DNS SAN to equal
-   the normalized board EUI-64.
+   the normalized typed board UID.
 4. Select owning organization, collector instance, initial collections, and publication policy.
 5. Sign the operational certificate with that instance's configured CA.
 6. Store the device, immutable attestation result, credential, active enrollment, membership,
    policy, and audit rows in one transaction.
 7. Return the public certificate/chain and policy revision; no private key leaves the ATECC.
 
-At every boot the feeder checks certificate SAN against the live board EUI-64. On connection the
+At every boot the feeder checks certificate SAN against the live typed board UID. On connection the
 collector verifies certificate chain, SAN, enabled device, active credential/enrollment, feed
 grant, and current policy. A policy revision is server state, never a feeder assertion.
 
@@ -614,7 +615,7 @@ identity.
 
 Implementation is staged; each stage has a safe compatibility mode:
 
-1. **Control-plane schema:** board EUI, attestation result, collector instance, enrollment,
+1. **Control-plane schema:** typed board UID, attestation result, collector instance, enrollment,
    collection/membership, publication policy, audience/API grants, export grants, audit rows.
 2. **Hardware core attestation v1:** shared formatter/verifier, bench tool,
    firmware read/report, manufacturer-authority scoping and duplicate-id constraints.

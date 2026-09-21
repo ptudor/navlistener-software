@@ -20,7 +20,7 @@ module first.
 | HMAC key for the Digital Signature peripheral | one eFuse key block, purpose `HMAC_DOWN_DIGITAL_SIGNATURE` | read-protected and write-protected in hardware; software never sees it again |
 | RSA-3072 private key | NVS, as ciphertext only the peripheral can use | namespace `hwtrust` in the `update_meta` partition |
 | RSA-3072 public key | same namespace, DER SubjectPublicKeyInfo | its SHA-256 names the microcontroller in the commissioning statement |
-| commissioning record | same namespace, 225 bytes | signed by the manufacturer; installed at the bench |
+| commissioning record | same namespace, 252 bytes | signed by the manufacturer; installed at the bench |
 
 `update_meta` is the updater's NVS partition. It is encrypted on a production
 build, and no configuration-reset or provisioning path erases it: the BOOT
@@ -61,7 +61,7 @@ never opens a serial port.
 ```json
 {"v":1,"product":1,"identity_flags":3,"rtc_model_id":1,
  "rtc_expected":true,"rtc_present":true,"identity_complete":true,
- "atecc_serial":"…","rtc_eui64":"…","board_eui64":"…","board_rev":1,
+ "atecc_serial":"…","rtc_eui64":"…","board_uid":"…","board_rev":1,
  "mcu_family":1,"mcu_mac":"…","security":31,"secure_boot_keys_sha256":"…",
  "attestation_record":"…","mcu_key_alg":1,"mcu_public_key_der":"<base64>",
  "mcu_key_sha256":"…","ds_context":"<base64>","key_state":"ready","key_block":4,
@@ -70,7 +70,7 @@ never opens a serial port.
 
 - Identifiers are lowercase hex and are read live from the parts: the ATECC
   serial from its configuration zone, the RTC EUI-64 from the MCP79412's
-  protected EEPROM block, the board EUI-64 from the manifest EEPROM, and the
+  protected EEPROM block, the typed board UID from the manifest EEPROM, and the
   factory base MAC from eFuse. **An identifier that could not be read is JSON
   `null`, as is an unreadable `board_rev`; nothing is guessed.**
 - `identity_flags` and `rtc_model_id` are the statement values for this product.
@@ -176,10 +176,10 @@ the one bit a trusted statement cannot do without.
 
 ### `install`
 
-Accepts a 225-byte record and stores it only if its statement:
+Accepts a 252-byte record and stores it only if its statement:
 
 - is for the observer product;
-- exactly names this product, board revision, board EUI-64, ATECC serial,
+- exactly names this product, board revision, typed board UID, ATECC serial,
   declared RTC presence/model/EUI-64, this chip's factory MAC, and the live
   72-byte slot-14 record digest, **all of which must have been read
   successfully when the statement binds them**;
@@ -253,8 +253,8 @@ the latest values as `hardware_trust`, `evidence_error` and
 `commissioning_record` in `tools/ota.py status`.
 
 A collector accepts evidence only for the observer it names, so the station name
-must be the record's board EUI-64 as lowercase hyphen-separated byte pairs
-(`00-04-a3-12-34-56-78-90`). The firmware warns at startup when the configured
+must be the canonical typed UID label, such as
+`board-0003-00112233445566778899aabbccddeeff`. The firmware warns at startup when the configured
 station differs.
 
 ## Bench sequence
@@ -313,7 +313,7 @@ discarded:
    refused before any burn; and, if a module can be spared for it, that a forced
    self-test failure records a fault, leaves the field unsealed, and lets a
    second `keygen` use the remaining free block.
-7. **Identifier reads.** Compare `atecc_serial`, `rtc_eui64` and `board_eui64`
+7. **Identifier reads.** Compare `atecc_serial`, `rtc_eui64` and `board_uid`
    with values read by an independent I²C master, and `attestation_record` with
    the slot-14 contents of a part whose data zone is locked.
 8. **USB console.** Confirm commands are accepted on a locked chip, that lines of

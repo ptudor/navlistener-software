@@ -12,6 +12,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
+	"github.com/ptudor/navlistener/internal/boardid"
 	"io"
 	"log/slog"
 	"strings"
@@ -33,7 +34,7 @@ import (
 // a real handshake produces.
 
 const (
-	evidenceObserver = "00-04-a3-aa-bb-cc-dd-ee"
+	evidenceObserver = "board-0001-0004a3aabbccddee"
 	evidenceToken    = "s3cret"
 )
 
@@ -94,7 +95,7 @@ func (b *evidenceBench) statement(profile commissioning.Profile) commissioning.S
 		RTCModel:      commissioning.RTCModelMCP79412,
 		ATECCSerial:   [9]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x11},
 		RTCEUI64:      [8]byte{0x00, 0x04, 0xa3, 0x12, 0x34, 0x56, 0x78, 0x90},
-		BoardEUI64:    [8]byte{0x00, 0x04, 0xa3, 0xaa, 0xbb, 0xcc, 0xdd, 0xee},
+		BoardUID:      boardid.EEPROM([8]byte{0x00, 0x04, 0xa3, 0xaa, 0xbb, 0xcc, 0xdd, 0xee}),
 		MCUMAC:        [6]byte{0x34, 0x85, 0x18, 0x01, 0x02, 0x03},
 		Attestation:   sha256.Sum256([]byte("slot 14 record")),
 	}
@@ -139,7 +140,7 @@ func (b *evidenceBench) loadRegistry(t *testing.T, v *commissioning.Verifier, se
 		ManufacturerAuthorityID: testManufacturerAuthority,
 		Sequence:                sequence, IssuedAt: time.Unix(1789650000, 0).UTC(), LedgerHead: strings.Repeat("ab", 32),
 		Boards: []commissioning.RegistryBoard{{
-			BoardEUI64: hex.EncodeToString(s.BoardEUI64[:]), RTCModelID: uint16(s.RTCModel), RTCEUI64: &rtcEUI,
+			BoardUIDKind: s.BoardUID.KindName(), BoardUID: s.BoardUID.Hex(), RTCModelID: uint16(s.RTCModel), RTCEUI64: &rtcEUI,
 			ATECCSerial: hex.EncodeToString(s.ATECCSerial[:]), Status: status, Reason: "returned",
 			Profile: s.Profile.String(), Generation: s.Generation, Record: base64.StdEncoding.EncodeToString(record[:]),
 		}},
@@ -421,7 +422,7 @@ func TestPushEvidenceRejectionsLabelTheSessionAndNeverRefuseIt(t *testing.T) {
 	trusted := bench.record(t, bench.statement(commissioning.ProfileTrusted))
 
 	elsewhere := bench.statement(commissioning.ProfileTrusted)
-	elsewhere.RTCEUI64[7], elsewhere.BoardEUI64[7] = 0x91, 0xef
+	elsewhere.RTCEUI64[7], elsewhere.BoardUID[10] = 0x91, 0xef
 	otherObserver := bench.record(t, elsewhere)
 
 	stranger := newEvidenceBench(t)

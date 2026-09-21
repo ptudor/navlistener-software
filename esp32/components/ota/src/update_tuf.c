@@ -430,8 +430,8 @@ int nvf_tuf_refresh(nvf_tuf_trust_t *trust,unsigned channel_index,const nvf_upda
         err=release_info(&choice,&manifest,&releases,device,out);
         if(err && err!=UP_INELIGIBLE && err!=UP_HARDWARE)goto done;
         if(!err) {
-            uint8_t cohort[48],digest[32];memcpy(cohort,salt,32);memcpy(cohort+32,device->eui,8);
-            for(unsigned i=0;i<8;i++)cohort[40+i]=(uint8_t)(out->sequence>>(56-8*i));
+            uint8_t cohort[32+NVF_BOARD_UID_SIZE+8],digest[32];memcpy(cohort,salt,32);memcpy(cohort+32,device->board_uid,NVF_BOARD_UID_SIZE);
+            for(unsigned i=0;i<8;i++)cohort[32+NVF_BOARD_UID_SIZE+i]=(uint8_t)(out->sequence>>(56-8*i));
             if(!io->sha256(cohort,sizeof cohort,digest)){err=UP_STORAGE;goto done;}
             unsigned bucket=((unsigned)digest[0]<<8|digest[1])%100;
             if(bucket>=percent)err=UP_ROLLOUT;

@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/ptudor/navlistener/internal/attestation"
 	"github.com/ptudor/navlistener/internal/authority"
+	"github.com/ptudor/navlistener/internal/boardid"
 	"github.com/ptudor/navlistener/internal/commissioning"
 	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/identity"
@@ -54,7 +55,8 @@ type Request struct {
 	HardwareValidation      string                     `json:"hardware_validation"`
 	Product                 uint16                     `json:"product"`
 	Revision                uint16                     `json:"revision"`
-	BoardEUI64              string                     `json:"board_eui64"`
+	BoardUIDKind            string                     `json:"board_uid_kind"`
+	BoardUID                string                     `json:"board_uid"`
 	ATECCSerial             string                     `json:"atecc_serial"`
 	CoreRecord              string                     `json:"core_record"`
 	CommissioningRecord     string                     `json:"commissioning_record"`
@@ -112,7 +114,7 @@ func (s *Service) Validate(r Request) (Validated, error) {
 		}
 	}
 	if r.ManufacturerAuthorityID == "" {
-		if r.CoreRecord != "" || r.CommissioningRecord != "" || r.BoardEUI64 != "" || r.ATECCSerial != "" || r.Product != 0 || r.Revision != 0 || r.HardwareValidation != "" {
+		if r.CoreRecord != "" || r.CommissioningRecord != "" || r.BoardUID != "" || r.BoardUIDKind != "" || r.ATECCSerial != "" || r.Product != 0 || r.Revision != 0 || r.HardwareValidation != "" {
 			return out, errors.New("software enrollment cannot claim hardware evidence")
 		}
 	} else {
@@ -129,14 +131,16 @@ func (s *Service) Validate(r Request) (Validated, error) {
 			return out, errors.New("controlled bench validation reference is required")
 		}
 		coreID := attestation.HardwareIdentity{Product: r.Product, BoardRevision: r.Revision}
-		if err := decodeHex(r.BoardEUI64, coreID.BoardEUI64[:]); err != nil {
+		uid, err := boardid.Parse(r.BoardUIDKind, r.BoardUID)
+		if err != nil {
 			return out, err
 		}
+		coreID.BoardUID = uid
 		if err := decodeHex(r.ATECCSerial, coreID.ATECCSerial[:]); err != nil {
 			return out, err
 		}
-		if commissioning.ObserverID(coreID.BoardEUI64) != r.ObserverID {
-			return out, errors.New("hardware observer id must equal board EEPROM EUI-64")
+		if commissioning.ObserverID(coreID.BoardUID) != r.ObserverID {
+			return out, errors.New("hardware observer id must equal the typed board UID")
 		}
 		var core attestation.Record
 		if err := decodeHex(r.CoreRecord, core[:]); err != nil {
@@ -158,7 +162,7 @@ func (s *Service) Validate(r Request) (Validated, error) {
 		if err != nil {
 			return out, err
 		}
-		if statement.Product != commissioning.Product(r.Product) || statement.BoardRevision != r.Revision || statement.BoardEUI64 != coreID.BoardEUI64 || statement.ATECCSerial != coreID.ATECCSerial || statement.Attestation != verified.RecordFingerprint {
+		if statement.Product != commissioning.Product(r.Product) || statement.BoardRevision != r.Revision || statement.BoardUID != coreID.BoardUID || statement.ATECCSerial != coreID.ATECCSerial || statement.Attestation != verified.RecordFingerprint {
 			return out, errors.New("commissioning does not bind the exact verified core")
 		}
 		allowed := false
@@ -336,10 +340,10 @@ func (s *Service) Enroll(ctx context.Context, operator string, r Request) (strin
 	if v.Statement.IdentityFlags&commissioning.IdentityRTCEUIBound != 0 {
 		rtc = hex.EncodeToString(v.Statement.RTCEUI64[:])
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO navl_devices(observer_id,manufacturer_authority_id,board_eui64,atecc_serial,rtc_eui64,rtc_model_id,hardware_product,hardware_revision,core_record,core_attestation_fingerprint,core_signer_spki,commissioning_record,commissioning_generation,commissioning_signer_spki,current_enrollment_id)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+	_, err = tx.Exec(ctx, `INSERT INTO navl_devices(observer_id,manufacturer_authority_id,board_uid,atecc_serial,rtc_eui64,rtc_model_id,hardware_product,hardware_revision,core_record,core_attestation_fingerprint,core_signer_spki,commissioning_record,commissioning_generation,commissioning_signer_spki,current_enrollment_id,board_uid_kind)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
  ON CONFLICT(observer_id) DO UPDATE SET manufacturer_authority_id=EXCLUDED.manufacturer_authority_id,atecc_serial=EXCLUDED.atecc_serial,hardware_product=EXCLUDED.hardware_product,hardware_revision=EXCLUDED.hardware_revision,core_record=EXCLUDED.core_record,core_attestation_fingerprint=EXCLUDED.core_attestation_fingerprint,core_signer_spki=EXCLUDED.core_signer_spki,rtc_eui64=EXCLUDED.rtc_eui64,rtc_model_id=EXCLUDED.rtc_model_id,commissioning_record=EXCLUDED.commissioning_record,commissioning_generation=EXCLUDED.commissioning_generation,commissioning_signer_spki=EXCLUDED.commissioning_signer_spki,current_enrollment_id=EXCLUDED.current_enrollment_id`,
-		r.ObserverID, nullable(r.ManufacturerAuthorityID), nullable(r.BoardEUI64), nullable(r.ATECCSerial), rtc, v.Statement.RTCModel, r.Product, r.Revision, v.Core, v.Context.CoreAttestationFingerprint, v.Context.CoreSignerSPKI, v.Commission, v.Statement.Generation, v.Context.CommissioningSignerSPKI, id)
+		r.ObserverID, nullable(r.ManufacturerAuthorityID), nullable(r.BoardUID), nullable(r.ATECCSerial), rtc, v.Statement.RTCModel, r.Product, r.Revision, v.Core, v.Context.CoreAttestationFingerprint, v.Context.CoreSignerSPKI, v.Commission, v.Statement.Generation, v.Context.CommissioningSignerSPKI, id, nullable(r.BoardUIDKind))
 	if err != nil {
 		return "", "", err
 	}

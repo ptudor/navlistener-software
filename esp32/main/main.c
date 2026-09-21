@@ -69,7 +69,7 @@ static size_t session_evidence(const uint8_t *exported, uint8_t *out, size_t cap
         .rtc_model_id = NVF_RTC_MCP79412, .attestation_valid = board.attestation_valid,
     };
     memcpy(live.atecc_serial, board.atecc_serial, sizeof live.atecc_serial);
-    memcpy(live.board_eui64, board.board_eui64, sizeof live.board_eui64);
+    memcpy(live.board_uid, board.board_uid, sizeof live.board_uid);
     memcpy(live.rtc_eui64, board.rtc_eui64, sizeof live.rtc_eui64);
     memcpy(live.attestation_record, board.attestation, sizeof live.attestation_record);
     live.mac_valid = esp_efuse_mac_get_default(live.mcu_mac) == ESP_OK;
@@ -402,9 +402,9 @@ void app_main(void)
     nvf_update_hooks_t update_hooks={.online=update_online,.durable_link=pusher_durable_connected,
         .pause=spool_pause_producers,.resume=spool_resume_producers};
 #if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
-    update_hooks.device.hardware_known=manifest.action==HARDWARE_MANIFEST_ACTION_USE && manifest.capabilities_valid && manifest.eui64_valid;
+    update_hooks.device.hardware_known=manifest.action==HARDWARE_MANIFEST_ACTION_USE && manifest.capabilities_valid && manifest.identity.board_valid;
     update_hooks.device.hardware_revision=manifest.capabilities.revision;
-    memcpy(update_hooks.device.eui,manifest.eui64,8);
+    memcpy(update_hooks.device.board_uid,manifest.identity.board_uid,NVF_BOARD_UID_SIZE);
 #endif
     err=nvf_update_start(&update_hooks);
     if(err!=ESP_OK && err!=ESP_ERR_NOT_SUPPORTED)
@@ -471,8 +471,8 @@ void app_main(void)
     nvf_commission_statement_t commissioned;
     if (nvf_mcu_identity_record(commissioning) &&
         nvf_commission_record_parse(commissioning, sizeof commissioning, &commissioned)) {
-        char observer[24];
-        nvf_commission_observer_id(commissioned.board_eui64, observer);
+        char observer[NVF_BOARD_OBSERVER_SIZE];
+        nvf_commission_observer_id(commissioned.board_uid, observer);
         if (strcmp(observer, g_cfg.station))
             ESP_LOGW(TAG, "station '%s' is not this board's commissioned observer id '%s'; a collector will reject its evidence",
                      g_cfg.station, observer);

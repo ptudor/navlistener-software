@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"flag"
+	"github.com/ptudor/navlistener/internal/boardid"
 	"os"
 	"path/filepath"
 	"testing"
@@ -49,7 +50,7 @@ type fixtureFile struct {
 	Cases                   map[string]fixtureCase `json:"cases"`
 	Registry                string                 `json:"registry"`
 	RegistrySequence        uint64                 `json:"registry_sequence"`
-	RegistryRevokedBoard    string                 `json:"registry_revoked_board_eui64"`
+	RegistryRevokedBoard    string                 `json:"registry_revoked_board_uid"`
 }
 
 func publicPEM(t *testing.T, key *ecdsa.PublicKey) string {
@@ -93,10 +94,10 @@ func generateFixtures(t *testing.T) fixtureFile {
 	trusted := trustedStatement(t)
 	trusted.MCUKeySHA256 = sha256.Sum256(der)
 	open := openStatement(t)
-	open.RTCEUI64[7], open.BoardEUI64[7], open.ATECCSerial[8], open.MCUMAC[5] = 0x91, 0xef, 0x12, 0x04
+	open.RTCEUI64[7], open.BoardUID[10], open.ATECCSerial[8], open.MCUMAC[5] = 0x91, 0xef, 0x12, 0x04
 	bench := openStatement(t)
 	bench.Profile, bench.Attestation = ProfileTest, [32]byte{}
-	bench.RTCEUI64[7], bench.BoardEUI64[7], bench.ATECCSerial[8], bench.MCUMAC[5] = 0x92, 0xf0, 0x13, 0x05
+	bench.RTCEUI64[7], bench.BoardUID[10], bench.ATECCSerial[8], bench.MCUMAC[5] = 0x92, 0xf0, 0x13, 0x05
 
 	out := fixtureFile{
 		ExporterLabel:           ExporterLabel,
@@ -112,7 +113,7 @@ func generateFixtures(t *testing.T) fixtureFile {
 		s.IdentityFlags = 0
 		s.RTCModel = RTCModelNone
 		s.RTCEUI64 = [8]byte{}
-		s.BoardEUI64[7] = byte(0xa0 + i)
+		s.BoardUID[10] = byte(0xa0 + i)
 		s.ATECCSerial[8] = byte(0xa0 + i)
 		cases[name+"-no-rtc"] = s
 	}
@@ -121,10 +122,14 @@ func generateFixtures(t *testing.T) fixtureFile {
 		s.IdentityFlags = IdentityRTCPresent
 		s.RTCModel = model
 		s.RTCEUI64 = [8]byte{}
-		s.BoardEUI64[7] = byte(0xb0 + i)
+		s.BoardUID[10] = byte(0xb0 + i)
 		s.ATECCSerial[8] = byte(0xb0 + i)
 		cases[[]string{"mcp79412-model", "ds3231-model"}[i]] = s
 	}
+	cs := open
+	cs.BoardUID, _ = boardid.Parse("microchip_cs128", "0123456789abcdef0123456789abcdef")
+	cs.ATECCSerial[8], cs.RTCEUI64[7] = 0xc1, 0xc1
+	cases["microchip-cs128"] = cs
 	for name, s := range cases {
 		body, err := s.MarshalBinary()
 		if err != nil {
@@ -164,8 +169,8 @@ func generateFixtures(t *testing.T) fixtureFile {
 		row := registryFor(t, 1, StatusActive, r).Boards[0]
 		if s.Profile == ProfileTest {
 			row.Status, row.Reason = StatusRevoked, "bench unit retired"
-			if s.BoardEUI64 == bench.BoardEUI64 {
-				out.RegistryRevokedBoard = row.BoardEUI64
+			if s.BoardUID == bench.BoardUID {
+				out.RegistryRevokedBoard = row.BoardUID
 			}
 		}
 		reg.Boards = append(reg.Boards, row)
@@ -235,8 +240,8 @@ func TestFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(f.Cases) != 8 {
-		t.Fatalf("fixture has %d cases, want eight profile/RTC combinations", len(f.Cases))
+	if len(f.Cases) != 9 {
+		t.Fatalf("fixture has %d cases, want nine profile/RTC/UID combinations", len(f.Cases))
 	}
 	for name, c := range f.Cases {
 		t.Run(name, func(t *testing.T) {
@@ -281,8 +286,10 @@ func TestFixtures(t *testing.T) {
 	if ix.Sequence != f.RegistrySequence || ix.Len() != len(f.Cases) {
 		t.Fatalf("registry = sequence %d with %d boards", ix.Sequence, ix.Len())
 	}
-	var revoked [8]byte
-	copy(revoked[:], mustHex(t, f.RegistryRevokedBoard))
+	revoked, err := boardid.Parse("microchip_eui64", f.RegistryRevokedBoard)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if ix.boards[revoked].status != StatusRevoked {
 		t.Fatal("fixture registry does not revoke the bench board")
 	}

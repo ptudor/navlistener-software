@@ -17,7 +17,9 @@ def report(**changes):
     value = {
         "v": 1, "product": 1, "atecc_serial": "0123456789abcdef11", "rtc_eui64": "0004a31234567890",
         "identity_flags": 3, "rtc_model_id": 1, "rtc_expected": True, "rtc_present": True,
-        "board_eui64": "0004a3aabbccddee", "board_rev": 1, "mcu_family": 1, "mcu_mac": "348518010203",
+        "board_uid_kind": "microchip_eui64", "board_uid": "0004a3aabbccddee",
+        "board_uid_address": 0x50, "eeprom_address": 0x50,
+        "eeprom_uid_kind": "microchip_eui64", "eeprom_uid": "0004a3aabbccddee", "board_rev": 1, "mcu_family": 1, "mcu_mac": "348518010203",
         "security": 31, "secure_boot_keys_sha256": "ab" * 32, "attestation_record": "01" + "00" * 71,
         "mcu_key_alg": 1, "mcu_public_key_der": base64.b64encode(b"key").decode(),
         "mcu_key_sha256": hashlib.sha256(b"key").hexdigest(),
@@ -84,7 +86,7 @@ class ReportTests(unittest.TestCase):
                report(ds_context=""), report(trust_profile="production"), report(security="31"), report(rd_dis_sealed=1),
                report(identity_flags=1), report(rtc_model_id=0), report(rtc_expected=False),
                report(rtc_present=False), report(identity_complete=False), report(record="00"),
-               {key: value for key, value in report().items() if key != "board_eui64"},
+               {key: value for key, value in report().items() if key != "board_uid"},
                dict(report(), surprise=True)]
         for value in bad:
             with self.assertRaises(ValueError):

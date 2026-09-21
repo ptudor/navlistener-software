@@ -1,0 +1,43 @@
+package boardid
+
+import "testing"
+
+func TestKindsAndCanonicalWire(t *testing.T) {
+	for _, tc := range []struct{ kind, value, id string }{
+		{"microchip_eui64", "0004a3aabbccddee", "board-0001-0004a3aabbccddee"},
+		{"microchip_cs128", "00112233445566778899aabbccddeeff", "board-0003-00112233445566778899aabbccddeeff"},
+	} {
+		id, err := Parse(tc.kind, tc.value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if id.Hex() != tc.value || id.ObserverID() != tc.id {
+			t.Fatalf("UID lost bytes: %v", id)
+		}
+		changed := id
+		changed[34] = 1
+		if changed.Validate() == nil {
+			t.Fatal("accepted padding")
+		}
+		changed = id
+		changed[2]--
+		if changed.Validate() == nil {
+			t.Fatal("accepted short identity")
+		}
+		changed = id
+		changed[1] = 99
+		if changed.Validate() == nil {
+			t.Fatal("accepted unknown kind")
+		}
+	}
+	for _, value := range []string{"0011223344556677", "00000000000000000000000000000000", "ffffffffffffffffffffffffffffffff", "00112233445566778899AABBCCDDEEFF"} {
+		if _, err := Parse("microchip_cs128", value); err == nil {
+			t.Fatalf("accepted %s", value)
+		}
+	}
+	for _, kind := range []uint16{0, 2, 99} {
+		if _, err := FromBytes(kind, []byte{1, 2, 3, 4, 5, 6, 7, 8}); err == nil {
+			t.Fatalf("accepted unregistered kind %d", kind)
+		}
+	}
+}

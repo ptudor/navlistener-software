@@ -8,15 +8,16 @@
 #include "esp_err.h"
 #include "esp_hardware_discovery.h"
 #include "hardware_manifest_policy.h"
+#include "../../../../common/board_identity.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define OBSERVER_MANIFEST_I2C_ADDRESS EEPROM_I2C_ADDR_0
 
 typedef struct {
     hardware_manifest_action_t action;
+    nvf_board_identity_t identity;
     uint8_t eui64[EEPROM_UNIQUE_ID_SIZE];
     bool eui64_valid;
     eeprom_capabilities_t capabilities;
@@ -33,6 +34,8 @@ esp_err_t hardware_manifest_boot(bool allow_factory_init,
 // The shared bus is owned by this component so later RTC/sensor/ATECC drivers
 // can add devices without creating a second controller on GPIO6/GPIO7.
 i2c_master_bus_handle_t hardware_manifest_i2c_bus(void);
+
+esp_err_t hardware_manifest_read_identity(nvf_board_identity_t *out);
 
 const char *hardware_manifest_action_name(hardware_manifest_action_t action);
 

@@ -98,7 +98,7 @@ static void live_identity(const observer_board_identity_t *board, nvf_live_ident
         .rtc_model_id = NVF_RTC_MCP79412, .attestation_valid = board->attestation_valid,
     };
     memcpy(live->atecc_serial, board->atecc_serial, 9); memcpy(live->rtc_eui64, board->rtc_eui64, 8);
-    memcpy(live->board_eui64, board->board_eui64, 8);
+    memcpy(live->board_uid, board->board_uid, NVF_BOARD_UID_SIZE);
     memcpy(live->attestation_record, board->attestation, sizeof live->attestation_record);
     live->mac_valid = esp_efuse_mac_get_default(live->mcu_mac) == ESP_OK;
 }
@@ -123,7 +123,12 @@ static void report(void)
     added(&complete, cJSON_AddBoolToObject(json, "rtc_present", board.rtc_present));
     complete &= add_hex(json, "atecc_serial", board.atecc_serial, 9, board.atecc_valid);
     complete &= add_hex(json, "rtc_eui64", board.rtc_eui64, 8, board.rtc_valid);
-    complete &= add_hex(json, "board_eui64", board.board_eui64, 8, board.board_valid);
+    added(&complete, board.board_valid ? cJSON_AddStringToObject(json, "board_uid_kind", nvf_uid_kind_name(nvf_uid_kind(board.board_uid))) : cJSON_AddNullToObject(json, "board_uid_kind"));
+    complete &= add_hex(json, "board_uid", board.board_uid + 3, board.board_valid ? board.board_uid[2] : 0, board.board_valid);
+    added(&complete, board.board_valid ? cJSON_AddNumberToObject(json, "board_uid_address", board.board_uid_address) : cJSON_AddNullToObject(json, "board_uid_address"));
+    added(&complete, board.eeprom_valid ? cJSON_AddStringToObject(json, "eeprom_uid_kind", nvf_uid_kind_name(nvf_uid_kind(board.eeprom_uid))) : cJSON_AddNullToObject(json, "eeprom_uid_kind"));
+    complete &= add_hex(json, "eeprom_uid", board.eeprom_uid + 3, board.eeprom_valid ? board.eeprom_uid[2] : 0, board.eeprom_valid);
+    added(&complete, board.eeprom_valid ? cJSON_AddNumberToObject(json, "eeprom_address", board.eeprom_address) : cJSON_AddNullToObject(json, "eeprom_address"));
     if (board.revision_valid) added(&complete, cJSON_AddNumberToObject(json, "board_rev", board.revision));
     else added(&complete, cJSON_AddNullToObject(json, "board_rev"));
     added(&complete, cJSON_AddNumberToObject(json, "mcu_family", NVF_MCU_ESP32S3));

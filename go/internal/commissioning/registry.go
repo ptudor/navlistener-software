@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ptudor/navlistener/internal/boardid"
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/strictjson"
 )
@@ -44,15 +45,16 @@ type Registry struct {
 
 // RegistryBoard is one commissioned board. Identifiers are lowercase hex.
 type RegistryBoard struct {
-	BoardEUI64  string  `json:"board_eui64"`
-	RTCModelID  uint16  `json:"rtc_model_id"`
-	RTCEUI64    *string `json:"rtc_eui64"`
-	ATECCSerial string  `json:"atecc_serial"`
-	Status      string  `json:"status"`
-	Reason      string  `json:"reason,omitempty"`
-	Profile     string  `json:"profile"`
-	Generation  uint32  `json:"generation"`
-	Record      string  `json:"record"` // base64 of the current commissioning record
+	BoardUIDKind string  `json:"board_uid_kind"`
+	BoardUID     string  `json:"board_uid"`
+	RTCModelID   uint16  `json:"rtc_model_id"`
+	RTCEUI64     *string `json:"rtc_eui64"`
+	ATECCSerial  string  `json:"atecc_serial"`
+	Status       string  `json:"status"`
+	Reason       string  `json:"reason,omitempty"`
+	Profile      string  `json:"profile"`
+	Generation   uint32  `json:"generation"`
+	Record       string  `json:"record"` // base64 of the current commissioning record
 }
 
 // UnmarshalJSON makes rtc_eui64 a required nullable member. A missing value is
@@ -126,7 +128,7 @@ type RegistryIndex struct {
 	Sequence                uint64
 	IssuedAt                time.Time
 	LedgerHead              string
-	boards                  map[[8]byte]indexedBoard
+	boards                  map[boardid.ID]indexedBoard
 }
 
 type indexedBoard struct {
@@ -222,7 +224,7 @@ func indexRegistry(reg Registry) (*RegistryIndex, error) {
 	ix := &RegistryIndex{
 		ManufacturerAuthorityID: reg.ManufacturerAuthorityID,
 		Sequence:                reg.Sequence, IssuedAt: reg.IssuedAt, LedgerHead: reg.LedgerHead,
-		boards: make(map[[8]byte]indexedBoard, len(reg.Boards)),
+		boards: make(map[boardid.ID]indexedBoard, len(reg.Boards)),
 	}
 	ateccs := make(map[[9]byte]struct{}, len(reg.Boards))
 	rtcs := make(map[[8]byte]struct{}, len(reg.Boards))
@@ -244,7 +246,7 @@ func indexRegistry(reg Registry) (*RegistryIndex, error) {
 		}
 		// The descriptive columns exist for people and for other importers; they
 		// must agree with the signed record they summarise.
-		if b.BoardEUI64 != hex.EncodeToString(s.BoardEUI64[:]) || b.RTCModelID != uint16(s.RTCModel) ||
+		if b.BoardUIDKind != s.BoardUID.KindName() || b.BoardUID != s.BoardUID.Hex() || b.RTCModelID != uint16(s.RTCModel) ||
 			b.ATECCSerial != hex.EncodeToString(s.ATECCSerial[:]) || b.Profile != s.Profile.String() || b.Generation != s.Generation {
 			return nil, fmt.Errorf("registry board %d: columns disagree with the commissioning record", i)
 		}
@@ -256,8 +258,8 @@ func indexRegistry(reg Registry) (*RegistryIndex, error) {
 		} else if b.RTCEUI64 != nil {
 			return nil, fmt.Errorf("registry board %d: RTC EUI-64 must be null when the commissioning record does not bind one", i)
 		}
-		if _, dup := ix.boards[s.BoardEUI64]; dup {
-			return nil, fmt.Errorf("registry board %d: board %s is listed twice", i, b.BoardEUI64)
+		if _, dup := ix.boards[s.BoardUID]; dup {
+			return nil, fmt.Errorf("registry board %d: board %s is listed twice", i, b.BoardUID)
 		}
 		if _, dup := ateccs[s.ATECCSerial]; dup {
 			return nil, fmt.Errorf("registry board %d: ATECC serial %s is listed twice", i, b.ATECCSerial)
@@ -269,7 +271,7 @@ func indexRegistry(reg Registry) (*RegistryIndex, error) {
 			}
 			rtcs[s.RTCEUI64] = struct{}{}
 		}
-		ix.boards[s.BoardEUI64] = indexedBoard{status: b.Status, reason: b.Reason, fingerprint: record.Fingerprint()}
+		ix.boards[s.BoardUID] = indexedBoard{status: b.Status, reason: b.Reason, fingerprint: record.Fingerprint()}
 	}
 	return ix, nil
 }

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ptudor/navlistener/internal/attestation"
+	"github.com/ptudor/navlistener/internal/boardid"
 	"github.com/ptudor/navlistener/internal/commissioning"
 	identitypkg "github.com/ptudor/navlistener/internal/identity"
 )
@@ -115,7 +116,8 @@ func runCommissionVerify(args []string) error {
 		"rtc_model_id":              uint16(s.RTCModel),
 		"atecc_serial":              hex.EncodeToString(s.ATECCSerial[:]),
 		"rtc_eui64":                 rtcEUI,
-		"board_eui64":               hex.EncodeToString(s.BoardEUI64[:]),
+		"board_uid_kind":            s.BoardUID.KindName(),
+		"board_uid":                 s.BoardUID.Hex(),
 		"mcu_family":                uint8(s.MCUFamily),
 		"mcu_mac":                   hex.EncodeToString(s.MCUMAC[:]),
 		"mcu_key_alg":               uint8(s.MCUKeyAlg),
@@ -171,13 +173,15 @@ func runRegistryVerify(args []string) error {
 type identityFlags struct {
 	atecc   string
 	board   string
+	kind    string
 	product uint
 	rev     uint
 }
 
 func (i *identityFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&i.atecc, "atecc-serial", "", "9-byte ATECC factory serial as hex")
-	fs.StringVar(&i.board, "board-eui", "", "8-byte board EEPROM EUI-64 as hex")
+	fs.StringVar(&i.board, "board-uid", "", "board UID as lowercase hex")
+	fs.StringVar(&i.kind, "board-uid-kind", "", "microchip_eui64 or microchip_cs128")
 	fs.UintVar(&i.product, "product", 0, "manufacturer product uint16 (decimal or use 0x prefix)")
 	fs.UintVar(&i.rev, "board-rev", 0, "board revision uint16 (decimal or use 0x prefix)")
 }
@@ -194,12 +198,12 @@ func (i identityFlags) value() (attestation.HardwareIdentity, error) {
 	if err != nil {
 		return h, fmt.Errorf("atecc-serial: %w", err)
 	}
-	board, err := fixedHex(i.board, len(h.BoardEUI64))
+	board, err := boardid.Parse(i.kind, i.board)
 	if err != nil {
-		return h, fmt.Errorf("board-eui: %w", err)
+		return h, fmt.Errorf("board-uid: %w", err)
 	}
 	copy(h.ATECCSerial[:], atecc)
-	copy(h.BoardEUI64[:], board)
+	h.BoardUID = board
 	h.Product = uint16(i.product)
 	h.BoardRevision = uint16(i.rev)
 	return h, nil

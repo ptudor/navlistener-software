@@ -1,13 +1,14 @@
 // mcu_identity_core — the portable half of the commissioning evidence.
 //
-// docs/COMMISSIONING.md is normative for every layout here: the 153-byte statement, the
-// 225-byte record, the session proof digest and the GNF1 EVIDENCE payload. The Go
+// docs/COMMISSIONING.md is normative for every layout here: the 180-byte statement, the
+// 252-byte record, the session proof digest and the GNF1 EVIDENCE payload. The Go
 // reference is go/internal/commissioning; both are pinned to common/fixtures/commissioning-*.
 //
 // Pure buffer code: no ESP-IDF, no allocation, no I/O. SHA-256 is injected so the same source
 // runs against mbedTLS on the device and a reference implementation in the host tests.
 
 #pragma once
+#include "../../../../common/board_uid.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -17,7 +18,7 @@ extern "C" {
 #endif
 
 #define NVF_COMMISSION_VERSION        0x01
-#define NVF_COMMISSION_STATEMENT_SIZE 153
+#define NVF_COMMISSION_STATEMENT_SIZE 180
 #define NVF_COMMISSION_KEY_ID_SIZE    8
 #define NVF_COMMISSION_SIGNATURE_SIZE 64
 #define NVF_COMMISSION_RECORD_SIZE    (NVF_COMMISSION_STATEMENT_SIZE + NVF_COMMISSION_KEY_ID_SIZE + NVF_COMMISSION_SIGNATURE_SIZE)
@@ -63,7 +64,7 @@ typedef struct {
     uint16_t identity_flags, rtc_model_id;
     uint32_t generation;      // 1 at first commissioning; +1 each time the board is commissioned again
     uint64_t commissioned_at; // Unix seconds, UTC
-    uint8_t board_eui64[8], atecc_serial[9], rtc_eui64[8];
+    uint8_t board_uid[NVF_BOARD_UID_SIZE], atecc_serial[9], rtc_eui64[8];
     uint8_t mcu_mac[6];       // factory base MAC: a label, never a proof
     uint8_t mcu_key_sha256[32], secure_boot_keys[32], attestation[32];
 } nvf_commission_statement_t;
@@ -129,8 +130,8 @@ typedef struct {
 } nvf_mcu_keygen_state_t;
 const char *nvf_mcu_keygen_refusal(const nvf_mcu_keygen_state_t *state);
 
-// The canonical observer id for a board EUI-64: lowercase hyphen-separated byte pairs.
-void nvf_commission_observer_id(const uint8_t eui[8], char out[24]);
+// Canonical observer id: board-<four lowercase kind digits>-<complete value hex>.
+void nvf_commission_observer_id(const uint8_t uid[NVF_BOARD_UID_SIZE], char out[NVF_BOARD_OBSERVER_SIZE]);
 
 // What the firmware read from the board it is running on. An identifier that could not be
 // read is marked invalid, never guessed.
@@ -139,7 +140,7 @@ typedef struct {
     bool rtc_expected, rtc_present, rtc_valid;
     bool key_valid, security_valid, secure_boot_keys_valid;
     uint16_t board_rev, rtc_model_id, security;
-    uint8_t board_eui64[8], atecc_serial[9], rtc_eui64[8], mcu_mac[6];
+    uint8_t board_uid[NVF_BOARD_UID_SIZE], atecc_serial[9], rtc_eui64[8], mcu_mac[6];
     uint8_t attestation_record[72], mcu_key_sha256[32], secure_boot_keys[32];
 } nvf_live_identity_t;
 

@@ -59,12 +59,12 @@ static void test_statement_round_trip(void)
            s.identity_flags == (NVF_IDENTITY_RTC_PRESENT | NVF_IDENTITY_RTC_EUI_BOUND) &&
            s.rtc_model_id == NVF_RTC_MCP79412 && s.generation == 1 && s.commissioned_at == 1789646400u);
     static const uint8_t rtc[8] = { 0x00, 0x04, 0xa3, 0x12, 0x34, 0x56, 0x78, 0x90 };
-    assert(!memcmp(s.rtc_eui64, rtc, 8) && !memcmp(statement + 43, rtc, 8));
+    assert(!memcmp(s.rtc_eui64, rtc, 8) && !memcmp(statement + 70, rtc, 8));
     uint8_t again[NVF_COMMISSION_STATEMENT_SIZE];
     assert(nvf_commission_encode(&s, again) && !memcmp(again, statement, sizeof statement));
-    char observer[24];
-    nvf_commission_observer_id(s.board_eui64, observer);
-    assert(!strcmp(observer, "00-04-a3-aa-bb-cc-dd-ee"));
+    char observer[NVF_BOARD_OBSERVER_SIZE];
+    nvf_commission_observer_id(s.board_uid, observer);
+    assert(!strcmp(observer, "board-0001-0004a3aabbccddee"));
 
     uint8_t got[32];
     assert(nvf_commission_digest(statement, ref_sha256, got) && !memcmp(got, digest, 32));
@@ -121,7 +121,7 @@ static void test_validation(void)
     REJECT(s.commissioned_at = 0);
     REJECT(memset(s.atecc_serial, 0xff, 9));
     REJECT(memset(s.rtc_eui64, 0, 8));
-    REJECT(memset(s.board_eui64, 0, 8));
+    REJECT(memset(s.board_uid, 0, 8));
     REJECT(memset(s.mcu_mac, 0, 6));
     REJECT(s.mcu_key_alg = NVF_MCU_KEY_NONE; memset(s.mcu_key_sha256, 0, 32)); // trusted without a key
     REJECT(s.security &= ~(unsigned)NVF_SEC_FLASH_ENC_RELEASE);                  // trusted but not locked
@@ -178,7 +178,7 @@ static void test_match(void)
         .board_rev = s.board_rev, .rtc_model_id = NVF_RTC_MCP79412, .security = s.security,
     };
     memcpy(live.atecc_serial, s.atecc_serial, 9); memcpy(live.rtc_eui64, s.rtc_eui64, 8);
-    memcpy(live.board_eui64, s.board_eui64, 8); memcpy(live.mcu_mac, s.mcu_mac, 6);
+    memcpy(live.board_uid, s.board_uid, NVF_BOARD_UID_SIZE); memcpy(live.mcu_mac, s.mcu_mac, 6);
     memcpy(live.mcu_key_sha256, s.mcu_key_sha256, 32);
     memcpy(live.secure_boot_keys, s.secure_boot_keys, 32);
     memset(live.attestation_record, 0x5a, sizeof live.attestation_record);
@@ -186,7 +186,7 @@ static void test_match(void)
     assert(!nvf_commission_match(&s, &live, ref_sha256));
     nvf_live_identity_t x;
 #define MISMATCH(change) do { x = live; change; assert(nvf_commission_match(&s, &x, ref_sha256)); } while (0)
-    MISMATCH(x.atecc_serial[0] ^= 1); MISMATCH(x.rtc_eui64[7] ^= 1); MISMATCH(x.board_eui64[3] ^= 1);
+    MISMATCH(x.atecc_serial[0] ^= 1); MISMATCH(x.rtc_eui64[7] ^= 1); MISMATCH(x.board_uid[3] ^= 1);
     MISMATCH(x.mcu_mac[5] ^= 1);      MISMATCH(x.mcu_key_sha256[31] ^= 1);
     MISMATCH(x.atecc_valid = false);  MISMATCH(x.rtc_present = false); MISMATCH(x.rtc_valid = false);
     MISMATCH(x.board_valid = false);  MISMATCH(x.revision_valid = false); MISMATCH(x.board_rev++);

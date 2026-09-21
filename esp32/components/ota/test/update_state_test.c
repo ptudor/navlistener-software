@@ -11,7 +11,7 @@ static void fixture(const char *name,uint8_t *out,size_t size) {
     assert(nvf_ota_unhex(hex,size*2,out));
 }
 static bool hash(const void *data,size_t size,uint8_t out[32]) {
-    assert(size==10);memset(out,0,32);memcpy(out,data,8);out[7]^=((const uint8_t*)data)[8];return true;
+    assert(size==NVF_BOARD_UID_SIZE+2);memset(out,0,32);for(size_t i=0;i<size;i++)out[i%8]^=((const uint8_t*)data)[i];return true;
 }
 static bool parse(const char *method,const char *path,const char *body) {
     nvf_update_api_request_t request;return nvf_update_api_parse(method,path,body,strlen(body),&request);
@@ -44,8 +44,9 @@ int main(void) {
     assert(!parse("GET","/ota/v1/check","{}"));assert(!parse("POST","/ota/v1/check?x=1","{}"));
     assert(!parse("POST","/ota/v1/install","{\"release_sequence\":\"1\"}"));
     assert(!parse("POST","/ota/v1/check","{\"discard_backlog\":true}"));
-    uint64_t now=1800000000;uint8_t eui[8]={1,2,3,4,5,6,7,8};nvf_tuf_io_t io={.sha256=hash};
+    uint64_t now=1800000000;uint8_t eui[NVF_BOARD_UID_SIZE]={0,3,16,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};nvf_tuf_io_t io={.sha256=hash};
     uint64_t weekly=nvf_update_weekly(now,eui,1,0,&io);assert(weekly>now && weekly<=now+604800);
+    eui[18]^=1;assert(nvf_update_weekly(now,eui,1,0,&io)!=weekly);eui[18]^=1;
     assert(nvf_update_weekly(now,eui,1,300,&io)==weekly+300);
     assert(nvf_update_weekly(weekly,eui,1,0,&io)==weekly+604800);
     assert(nvf_update_retry(now,0,0)==now+3600 && nvf_update_retry(now,1,0)==now+21600 && nvf_update_retry(now,20,0)==now+86400);

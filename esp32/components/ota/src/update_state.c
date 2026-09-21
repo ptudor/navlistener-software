@@ -22,9 +22,9 @@ bool nvf_update_offline_install_allowed(const nvf_update_status_t *s,const nvf_t
     return s->error/1000==1 && s->channel<3 && s->staged.sequence &&
         s->staged.generation && s->staged.generation==trust->generations[s->channel];
 }
-uint64_t nvf_update_weekly(uint64_t now,const uint8_t eui[8],unsigned channel,uint32_t jitter,const nvf_tuf_io_t *io) {
+uint64_t nvf_update_weekly(uint64_t now,const uint8_t board_uid[NVF_BOARD_UID_SIZE],unsigned channel,uint32_t jitter,const nvf_tuf_io_t *io) {
     if(now<345600 || channel>2)return 0;
-    uint8_t seed[10],hash[32];memcpy(seed,eui,8);seed[8]=channel;seed[9]=1;
+    uint8_t seed[NVF_BOARD_UID_SIZE+2],hash[32];memcpy(seed,board_uid,NVF_BOARD_UID_SIZE);seed[NVF_BOARD_UID_SIZE]=channel;seed[NVF_BOARD_UID_SIZE+1]=1;
     if(!io->sha256(seed,sizeof seed,hash))return 0;
     uint64_t slot=be64(hash)%604800;
     uint64_t start=(now-345600)/604800*604800+345600;

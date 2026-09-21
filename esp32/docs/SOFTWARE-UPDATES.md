@@ -152,16 +152,16 @@ Stable plus Install automatically. Provisioning presents the choice plainly
 and records an explicit selection. A converted device with no policy setting
 starts in Manual until an operator chooses a mode.
 
-Automatic modes require a valid hardware manifest with a stable EUI and board
+Automatic modes require a valid hardware manifest with a stable typed board UID and board
 revision. A missing or corrupt manifest reports `ELIGIBILITY_HARDWARE_UNKNOWN`
 and keeps the device on its running app. The authenticated local service path
 remains available for diagnosis and signed recovery images.
 
 ### Weekly checks
 
-Each device derives one stable second of the UTC week from a hash of its public
-EUI, channel, and the schedule version. It adds a small random delay at runtime.
-This spreads requests evenly without sending an explicit EUI or cohort parameter
+Each device derives one stable second of the UTC week from a hash of its complete
+35-byte typed board UID, channel, and schedule version. It adds a small random delay at runtime.
+This spreads requests evenly without sending an explicit UID or cohort parameter
 to the update origin. The origin still sees ordinary network metadata and can
 observe artifact requests. If the slot was missed while offline, the device
 checks 5–30 minutes after connectivity returns.
@@ -179,8 +179,8 @@ discovery without a polling storm or a new inbound service.
 ### Channels and rollout cohorts
 
 An authenticated channel target contains a rollout salt and percentage. Each
-device computes its cohort locally from the salt, its public EUI, and the
-release sequence. Devices fetch the same metadata URLs without explicitly
+device computes its cohort locally from the 32-byte salt, its complete 35-byte
+typed board UID, and the eight-byte big-endian release sequence. Devices fetch the same metadata URLs without explicitly
 disclosing the cohort decision; this is traffic minimization, not an anonymity
 claim.
 

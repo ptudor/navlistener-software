@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"github.com/ptudor/navlistener/internal/boardid"
 	"os"
 	"strings"
 	"testing"
@@ -47,12 +48,12 @@ func newBench(t *testing.T) bench {
 
 func (b bench) request(t *testing.T, coreKey, commissionKey *ecdsa.PrivateKey) Request {
 	t.Helper()
-	h := attestation.HardwareIdentity{Product: 1, BoardRevision: 258, BoardEUI64: [8]byte{0, 4, 0xa3, 0xaa, 0xbb, 0xcc, 0xdd, 0xee}, ATECCSerial: [9]byte{1, 2, 3, 4, 5, 6, 7, 8, 9}}
+	h := attestation.HardwareIdentity{Product: 1, BoardRevision: 258, BoardUID: boardid.EEPROM([8]byte{0, 4, 0xa3, 0xaa, 0xbb, 0xcc, 0xdd, 0xee}), ATECCSerial: [9]byte{1, 2, 3, 4, 5, 6, 7, 8, 9}}
 	core, err := attestation.Sign(1, h, coreKey, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	statement := commissioning.Statement{Profile: commissioning.ProfileOpen, MCUFamily: commissioning.MCUESP32S3, Product: 1, BoardRevision: 258, Generation: 1, CommissionedAt: 1789646400, BoardEUI64: h.BoardEUI64, ATECCSerial: h.ATECCSerial, MCUMAC: [6]byte{1, 2, 3, 4, 5, 6}, Attestation: sha256.Sum256(core[:])}
+	statement := commissioning.Statement{Profile: commissioning.ProfileOpen, MCUFamily: commissioning.MCUESP32S3, Product: 1, BoardRevision: 258, Generation: 1, CommissionedAt: 1789646400, BoardUID: h.BoardUID, ATECCSerial: h.ATECCSerial, MCUMAC: [6]byte{1, 2, 3, 4, 5, 6}, Attestation: sha256.Sum256(core[:])}
 	signer, err := commissioning.NewKeySigner(commissionKey, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +62,7 @@ func (b bench) request(t *testing.T, coreKey, commissionKey *ecdsa.PrivateKey) R
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Request{ObserverID: statement.ObserverID(), OperationalAuthorityID: "navlisten", ManufacturerAuthorityID: "ab", OrganizationID: "owner", CollectorInstanceID: "collector", HardwareValidation: "bench-live-read-1", Product: 1, Revision: 258, BoardEUI64: hex.EncodeToString(h.BoardEUI64[:]), ATECCSerial: hex.EncodeToString(h.ATECCSerial[:]), CoreRecord: hex.EncodeToString(core[:]), CommissioningRecord: hex.EncodeToString(record[:]), FeedGrants: []string{"ubx"}}
+	return Request{ObserverID: statement.ObserverID(), OperationalAuthorityID: "navlisten", ManufacturerAuthorityID: "ab", OrganizationID: "owner", CollectorInstanceID: "collector", HardwareValidation: "bench-live-read-1", Product: 1, Revision: 258, BoardUIDKind: h.BoardUID.KindName(), BoardUID: h.BoardUID.Hex(), ATECCSerial: hex.EncodeToString(h.ATECCSerial[:]), CoreRecord: hex.EncodeToString(core[:]), CommissioningRecord: hex.EncodeToString(record[:]), FeedGrants: []string{"ubx"}}
 }
 
 func leaf(t *testing.T, r Request, p *testauthority.Pair) Request {

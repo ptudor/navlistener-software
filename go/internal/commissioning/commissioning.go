@@ -22,18 +22,17 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/ptudor/navlistener/internal/boardid"
 	"io"
 	"math/big"
-	"strings"
 )
 
 const (
-	// VersionV1 is the only statement version. A layout change takes a new
-	// version and a new domain string, never an in-place extension.
+	// VersionV1 is the current pre-release typed-identity contract.
 	VersionV1 = byte(0x01)
 
 	// StatementSize is the fixed v1 statement length.
-	StatementSize = 153
+	StatementSize = 180
 	// KeyIDSize is the signer hint carried beside the signature.
 	KeyIDSize = 8
 	// SignatureSize is a fixed-width P-256 R||S.
@@ -152,7 +151,7 @@ type Statement struct {
 	RTCModel       RTCModel
 	Generation     uint32 // 1 for the first commissioning; rises by one each time the board is commissioned again
 	CommissionedAt uint64 // Unix seconds, UTC
-	BoardEUI64     [8]byte
+	BoardUID       boardid.ID
 	ATECCSerial    [9]byte
 	RTCEUI64       [8]byte
 	MCUMAC         [6]byte  // factory base MAC: a name for the part, never a proof
@@ -213,12 +212,15 @@ func (s Statement) Validate() error {
 		return errors.New("commissioning time is required")
 	}
 	for name, id := range map[string][]byte{
-		"ATECC serial": s.ATECCSerial[:], "board EUI-64": s.BoardEUI64[:],
+		"ATECC serial":        s.ATECCSerial[:],
 		"microcontroller MAC": s.MCUMAC[:],
 	} {
 		if blank(id) {
 			return fmt.Errorf("%s is blank or erased", name)
 		}
+	}
+	if err := s.BoardUID.Validate(); err != nil {
+		return err
 	}
 	hasKey := s.MCUKeyAlg != MCUKeyNone
 	if hasKey == (s.MCUKeySHA256 == [32]byte{}) {
@@ -263,13 +265,13 @@ func (s Statement) MarshalBinary() ([]byte, error) {
 	binary.BigEndian.PutUint16(b[12:], uint16(s.RTCModel))
 	binary.BigEndian.PutUint32(b[14:], s.Generation)
 	binary.BigEndian.PutUint64(b[18:], s.CommissionedAt)
-	copy(b[26:34], s.BoardEUI64[:])
-	copy(b[34:43], s.ATECCSerial[:])
-	copy(b[43:51], s.RTCEUI64[:])
-	copy(b[51:57], s.MCUMAC[:])
-	copy(b[57:89], s.MCUKeySHA256[:])
-	copy(b[89:121], s.SecureBootKeys[:])
-	copy(b[121:153], s.Attestation[:])
+	copy(b[26:61], s.BoardUID[:])
+	copy(b[61:70], s.ATECCSerial[:])
+	copy(b[70:78], s.RTCEUI64[:])
+	copy(b[78:84], s.MCUMAC[:])
+	copy(b[84:116], s.MCUKeySHA256[:])
+	copy(b[116:148], s.SecureBootKeys[:])
+	copy(b[148:180], s.Attestation[:])
 	return b, nil
 }
 
@@ -293,13 +295,13 @@ func ParseStatement(b []byte) (Statement, error) {
 		Generation:     binary.BigEndian.Uint32(b[14:]),
 		CommissionedAt: binary.BigEndian.Uint64(b[18:]),
 	}
-	copy(s.BoardEUI64[:], b[26:34])
-	copy(s.ATECCSerial[:], b[34:43])
-	copy(s.RTCEUI64[:], b[43:51])
-	copy(s.MCUMAC[:], b[51:57])
-	copy(s.MCUKeySHA256[:], b[57:89])
-	copy(s.SecureBootKeys[:], b[89:121])
-	copy(s.Attestation[:], b[121:153])
+	copy(s.BoardUID[:], b[26:61])
+	copy(s.ATECCSerial[:], b[61:70])
+	copy(s.RTCEUI64[:], b[70:78])
+	copy(s.MCUMAC[:], b[78:84])
+	copy(s.MCUKeySHA256[:], b[84:116])
+	copy(s.SecureBootKeys[:], b[116:148])
+	copy(s.Attestation[:], b[148:180])
 	if err := s.Validate(); err != nil {
 		return Statement{}, err
 	}
@@ -315,18 +317,9 @@ func (s Statement) Digest() ([32]byte, error) {
 	return digest(statementDomain, b), nil
 }
 
-// ObserverID renders the statement's board EUI-64 in the canonical observer-id
-// form: lowercase hyphen-separated byte pairs.
-func (s Statement) ObserverID() string { return ObserverID(s.BoardEUI64) }
-
-// ObserverID renders an EUI-64 as the canonical observer id.
-func ObserverID(eui [8]byte) string {
-	parts := make([]string, len(eui))
-	for i, b := range eui {
-		parts[i] = hex.EncodeToString([]byte{b})
-	}
-	return strings.Join(parts, "-")
-}
+// ObserverID includes the immutable source kind and the complete UID value.
+func (s Statement) ObserverID() string { return s.BoardUID.ObserverID() }
+func ObserverID(id boardid.ID) string  { return id.ObserverID() }
 
 // Record is the signed form that is stored, carried by the device and
 // published in the registry.

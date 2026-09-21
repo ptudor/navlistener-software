@@ -21,7 +21,11 @@ CREATE TABLE IF NOT EXISTS navl_registry_floors (
 CREATE TABLE IF NOT EXISTS navl_devices (
     observer_id text PRIMARY KEY,
     manufacturer_authority_id text,
-    board_eui64 text UNIQUE CHECK(board_eui64 ~ '^[0-9a-f]{16}$'),
+    board_uid text CHECK(board_uid ~ '^[0-9a-f]+$'),
+    board_uid_kind text CHECK(board_uid_kind IN ('microchip_eui64','microchip_cs128')),
+    UNIQUE(board_uid_kind,board_uid),
+    CHECK ((board_uid IS NULL) = (board_uid_kind IS NULL)),
+    CHECK ((board_uid_kind='microchip_eui64' AND length(board_uid)=16) OR (board_uid_kind='microchip_cs128' AND length(board_uid)=32) OR board_uid_kind IS NULL),
     atecc_serial text UNIQUE CHECK(atecc_serial ~ '^[0-9a-f]{18}$'),
     rtc_eui64 text UNIQUE CHECK(rtc_eui64 ~ '^[0-9a-f]{16}$'),
     rtc_model_id integer NOT NULL DEFAULT 0 CHECK(rtc_model_id BETWEEN 0 AND 65535),
@@ -32,12 +36,12 @@ CREATE TABLE IF NOT EXISTS navl_devices (
     commissioning_record bytea, commissioning_generation bigint NOT NULL DEFAULT 0,
     commissioning_signer_spki text NOT NULL DEFAULT '',
     current_enrollment_id text NOT NULL,
-    CHECK ((manufacturer_authority_id IS NULL) = (board_eui64 IS NULL)),
-    CHECK ((board_eui64 IS NULL) = (atecc_serial IS NULL)),
-    CHECK ((board_eui64 IS NULL AND core_record IS NULL AND commissioning_record IS NULL AND rtc_eui64 IS NULL AND rtc_model_id=0)
-        OR (board_eui64 IS NOT NULL AND observer_id=regexp_replace(board_eui64,'(..)(?=.)','\1-','g')
+    CHECK ((manufacturer_authority_id IS NULL) = (board_uid IS NULL)),
+    CHECK ((board_uid IS NULL) = (atecc_serial IS NULL)),
+    CHECK ((board_uid IS NULL AND core_record IS NULL AND commissioning_record IS NULL AND rtc_eui64 IS NULL AND rtc_model_id=0)
+        OR (board_uid IS NOT NULL AND observer_id='board-' || CASE board_uid_kind WHEN 'microchip_eui64' THEN '0001' WHEN 'microchip_cs128' THEN '0003' END || '-' || board_uid
         AND core_record IS NOT NULL AND octet_length(core_record)=72
-        AND commissioning_record IS NOT NULL AND octet_length(commissioning_record)=225))
+        AND commissioning_record IS NOT NULL AND octet_length(commissioning_record)=252))
 );
 CREATE TABLE IF NOT EXISTS navl_enrollments (
     id text PRIMARY KEY,

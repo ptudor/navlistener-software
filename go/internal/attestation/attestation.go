@@ -13,6 +13,7 @@ import (
 	"io"
 	"math/big"
 
+	"github.com/ptudor/navlistener/internal/boardid"
 	"github.com/ptudor/navlistener/internal/identity"
 )
 
@@ -31,7 +32,7 @@ var domainV1 = []byte("ATECC-MFG-CORE-v1")
 type HardwareIdentity struct {
 	Product       uint16
 	BoardRevision uint16
-	BoardEUI64    [8]byte
+	BoardUID      boardid.ID
 	ATECCSerial   [9]byte
 }
 
@@ -70,14 +71,14 @@ func Digest(version byte, h HardwareIdentity) ([32]byte, error) {
 	if err := validateIdentity(version, h); err != nil {
 		return [32]byte{}, err
 	}
-	statement := make([]byte, 0, len(domainV1)+2+2+len(h.BoardEUI64)+len(h.ATECCSerial))
+	statement := make([]byte, 0, len(domainV1)+2+2+len(h.BoardUID)+len(h.ATECCSerial))
 	statement = append(statement, domainV1...)
 	var value [2]byte
 	binary.BigEndian.PutUint16(value[:], h.Product)
 	statement = append(statement, value[:]...)
 	binary.BigEndian.PutUint16(value[:], h.BoardRevision)
 	statement = append(statement, value[:]...)
-	statement = append(statement, h.BoardEUI64[:]...)
+	statement = append(statement, h.BoardUID[:]...)
 	statement = append(statement, h.ATECCSerial[:]...)
 	return sha256.Sum256(statement), nil
 }
@@ -144,8 +145,8 @@ func validateIdentity(version byte, h HardwareIdentity) error {
 	if invalidFactoryID(h.ATECCSerial[:]) {
 		return fmt.Errorf("ATECC serial is blank or erased")
 	}
-	if invalidFactoryID(h.BoardEUI64[:]) {
-		return fmt.Errorf("board EEPROM EUI-64 is blank or erased")
+	if err := h.BoardUID.Validate(); err != nil {
+		return err
 	}
 	return nil
 }

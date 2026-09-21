@@ -234,9 +234,16 @@ static bool identifier_blank(const uint8_t *b, size_t n)
 void observer_board_identity(observer_board_identity_t *out)
 {
     *out = (observer_board_identity_t){0};
-    // Written once by observer_board_manifest() before any task runs.
-    out->board_valid = report.manifest.eui_valid && !identifier_blank(report.manifest.eui, 8);
-    memcpy(out->board_eui64, report.manifest.eui, 8);
+    nvf_board_identity_t identity;
+    if (hardware_manifest_read_identity(&identity) == ESP_OK) {
+        out->board_valid = identity.board_valid;
+        memcpy(out->board_uid, identity.board_uid, sizeof out->board_uid);
+        out->board_uid_address = identity.board_address;
+        out->eeprom_valid = identity.eeprom_valid;
+        memcpy(out->eeprom_uid, identity.eeprom_uid, sizeof out->eeprom_uid);
+        memcpy(out->eeprom_eui64, identity.eeprom_eui64, sizeof out->eeprom_eui64);
+        out->eeprom_address = identity.eeprom_address;
+    }
     out->revision_valid = report.manifest.capabilities_valid;
     out->revision = report.manifest.revision;
     if (!hardware_manifest_i2c_bus() || !crypto_lock) return;

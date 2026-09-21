@@ -16,7 +16,7 @@ func TestExactIssuingKeysAndPairings(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, p := range []*testauthority.Pair{ab, cd} {
-		leaf, _, _ := p.Leaf(t, "00-04-a3-aa-bb-cc-dd-ee")
+		leaf, _, _ := p.Leaf(t, "board-0001-0004a3aabbccddee")
 		for _, issuer := range p.Issuers {
 			chains := [][]*x509.Certificate{{leaf, issuer}}
 			pin, err := set.MatchIssuer(chains, p.Config.ID)
@@ -52,7 +52,7 @@ func TestExactIssuingKeysAndPairings(t *testing.T) {
 	other := testauthority.Cert(t, ab.Issuers[0], ab.Roots[0], &otherKey.PublicKey, ab.RootKeys[0])
 	otherProject := *ab
 	otherProject.IssuingKey, otherProject.Issuers[0] = otherKey, other
-	leaf, _, _ := otherProject.Leaf(t, "00-04-a3-aa-bb-cc-dd-ee")
+	leaf, _, _ := otherProject.Leaf(t, "board-0001-0004a3aabbccddee")
 	roots, intermediates := x509.NewCertPool(), x509.NewCertPool()
 	roots.AddCert(ab.Roots[0])
 	intermediates.AddCert(other)

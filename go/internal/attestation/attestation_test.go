@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"github.com/ptudor/navlistener/internal/boardid"
 	"testing"
 
 	"github.com/ptudor/navlistener/internal/identity"
@@ -15,7 +16,7 @@ func testIdentity() HardwareIdentity {
 	return HardwareIdentity{
 		Product:       1,
 		BoardRevision: 0x0102,
-		BoardEUI64:    [8]byte{0x00, 0x04, 0xa3, 0xaa, 0xbb, 0xcc, 0xdd, 0xee},
+		BoardUID:      boardid.EEPROM([8]byte{0x00, 0x04, 0xa3, 0xaa, 0xbb, 0xcc, 0xdd, 0xee}),
 		ATECCSerial:   [9]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x11},
 	}
 }
@@ -46,7 +47,7 @@ func TestV1BindsEveryCoreIdentifier(t *testing.T) {
 	mutations := map[string]func(*HardwareIdentity){
 		"product":      func(x *HardwareIdentity) { x.Product++ },
 		"board rev":    func(x *HardwareIdentity) { x.BoardRevision++ },
-		"board EUI":    func(x *HardwareIdentity) { x.BoardEUI64[3] ^= 1 },
+		"board EUI":    func(x *HardwareIdentity) { x.BoardUID[3] ^= 1 },
 		"ATECC serial": func(x *HardwareIdentity) { x.ATECCSerial[3] ^= 1 },
 	}
 	for name, mutate := range mutations {
@@ -82,7 +83,7 @@ func TestRecordAndIdentityValidationFailClosed(t *testing.T) {
 	}
 	for name, mutate := range map[string]func(*HardwareIdentity){
 		"zero product":    func(x *HardwareIdentity) { x.Product = 0 },
-		"blank board EUI": func(x *HardwareIdentity) { x.BoardEUI64 = [8]byte{} },
+		"blank board EUI": func(x *HardwareIdentity) { x.BoardUID = boardid.ID{} },
 		"erased ATECC serial": func(x *HardwareIdentity) {
 			x.ATECCSerial = [9]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 		},
@@ -110,10 +111,10 @@ func TestDigestMatchesNormativeConcatenation(t *testing.T) {
 	prehash := append([]byte("ATECC-MFG-CORE-v1"), 0, 0, 0, 0)
 	binary.BigEndian.PutUint16(prehash[17:19], h.Product)
 	binary.BigEndian.PutUint16(prehash[19:21], h.BoardRevision)
-	prehash = append(prehash, h.BoardEUI64[:]...)
+	prehash = append(prehash, h.BoardUID[:]...)
 	prehash = append(prehash, h.ATECCSerial[:]...)
-	if len(prehash) != 38 {
-		t.Fatalf("prehash length = %d, want 38", len(prehash))
+	if len(prehash) != 65 {
+		t.Fatalf("prehash length = %d, want 65", len(prehash))
 	}
 	if want := sha256.Sum256(prehash); got != want {
 		t.Fatalf("digest = %x, want %x", got, want)

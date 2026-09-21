@@ -1,5 +1,6 @@
 #pragma once
 #include "update_json.h"
+#include "../../../../common/board_uid.h"
 
 #define NVF_TUF_ROOT_CAP 8192
 #define NVF_UPDATE_PATH_CAP 193
@@ -32,7 +33,7 @@ typedef struct {
 } nvf_update_release_t;
 typedef struct {
     uint64_t now, running_sequence;
-    uint8_t eui[8];
+    uint8_t board_uid[NVF_BOARD_UID_SIZE];
     uint16_t hardware_revision, layout;
     bool hardware_known;
     uint8_t profile;

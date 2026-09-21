@@ -7,8 +7,8 @@ gate**.
 Prepared: 2026-09-19. Implementation baseline examined: `f847a1f`.
 Software implementation updated: 2026-09-19.
 
-Implementation update: core attestation v1, the 153-byte commissioning
-statement/225-byte record, registry authority scoping, board-derived observer
+Implementation update: core attestation v1, the 180-byte commissioning
+statement/252-byte record, registry authority scoping, board-derived observer
 identity, exact live firmware matching, shared fixtures, and the maintained
 factory signer format have replaced the development prototypes. There is no
 prototype compatibility parser. The dedicated [Go control plane](../CONTROL-PLANE.md)
@@ -22,7 +22,7 @@ An independently reviewed no-RTC board port and physical bench acceptance remain
 required before claiming a qualified hardware path. No hardware qualification is
 implied by software tests or build-only checks.
 
-This proposal makes the manifest EEPROM's factory EUI-64 the canonical identity
+This proposal makes a typed factory UID the canonical identity
 of a hardware observer, binds it to the ATECC in the permanent manufacturer
 attestation, and moves the RTC model and optional instance identity into signed
 commissioning metadata. It allows a GNSS-only board to participate without an
@@ -64,8 +64,8 @@ Reading guide:
 
 ## 1. Decisions proposed
 
-1. The factory EUI-64 in the board EEPROM is the permanent hardware observer
-   identity. Use its lowercase, hyphen-separated rendering for the observer ID
+1. The typed factory UID is the permanent hardware observer
+   identity. Use `board-<four-digit kind code>-<full lowercase UID hex>` for the observer ID
    and, when using mTLS, the certificate's sole DNS SAN.
 2. The ATECC serial identifies the secure element bound to that board. Its
    operational key proves possession when hardware-backed authentication is
@@ -129,7 +129,7 @@ simply by signing it.
 | Area | Pre-migration dependency | Implemented result |
 |---|---|---|
 | [`internal/attestation`](../../go/internal/attestation/attestation.go) | Two RTC-bound prototype variants | One exact permanent core-v1 statement without RTC |
-| [`internal/commissioning`](../../go/internal/commissioning/commissioning.go) | 149-byte statement; RTC mandatory; RTC-derived observer | 153-byte statement, 225-byte record, explicit RTC flags/model, board-derived observer |
+| [`internal/commissioning`](../../go/internal/commissioning/commissioning.go) | 149-byte statement; RTC mandatory; RTC-derived observer | 180-byte statement, 252-byte record, explicit RTC flags/model, board-derived observer |
 | [`registry.go`](../../go/internal/commissioning/registry.go) | Mandatory RTC fields and RTC-derived observer uniqueness | Required nullable RTC field, exact descriptive columns, authority scope, board/ATECC/bound-RTC uniqueness |
 | [`mcu_identity_core`](../../esp32/components/mcu_identity/include/mcu_identity_core.h) | Prototype C layout and all-identities matching | Shared v1 bytes and exact mandatory/declared live-state matching |
 | [`main.c`](../../esp32/main/main.c) | Station consistency derived from RTC | Station identity derives from board EEPROM |
@@ -173,8 +173,9 @@ limits separately.
 For a hardware-enrolled observer:
 
 ```text
-board_eui64 = factory EUI-64 read from the board EEPROM
-observer_id = lowercase hex byte pairs of board_eui64, joined by '-'
+board_uid_kind = microchip_cs128 | microchip_eui64
+board_uid = complete factory identifier in read order
+observer_id = board-<four-digit kind code>-<full lowercase UID hex>
 ```
 
 For example, the synthetic board identifier `0004a3aabbccddee` renders as
@@ -407,14 +408,15 @@ SHA-256(
   ASCII("ATECC-MFG-CORE-v1") ||
   product_u16be ||
   board_revision_u16be ||
-  board_eui64[8] ||
+  board_uid[35] ||
   atecc_serial[9]
 )
 ```
 
-The domain is 17 bytes and the binary identity suffix is exactly 21 bytes, so
-the complete prehash input is 38 bytes. There are no implicit string
-terminators, separators, padding bytes or native-structure encodings. EUI and
+The domain is 17 bytes and the binary identity suffix is exactly 48 bytes, so
+the complete prehash input is 65 bytes. There are no implicit string
+terminators, separators or native-structure encodings. The UID field uses canonical
+zero padding as specified in [BOARD-IDENTITY.md](../BOARD-IDENTITY.md). UID and
 serial fields are their raw bytes in the established display order, not ASCII
 hex. The domain string selects this exact field order and interpretation.
 
@@ -432,7 +434,7 @@ Keep an exact manufacturing record of these inputs and the resulting slot bytes.
 - Require a recognized/allowed nonzero product at the relevant admission point.
 - Treat board revision as an unsigned 16-bit product-scoped value. Revision zero
   is not globally invalid unless the product definition reserves it.
-- Reject an all-zero or all-`0xff` board EUI-64 or ATECC serial.
+- Reject an all-zero or all-`0xff` typed board UID or ATECC serial.
 - Validate the existing P-256 public-key and signature scalar constraints.
 - Select the expected `manufacturer_authority_id` from authenticated enrollment
   policy or the enrolled device snapshot. Verify the signature only against that
@@ -519,7 +521,7 @@ record that explicitly binds an RTC.
 
 ### 7.1 Concrete binary layout
 
-Use a fixed **153-byte** statement. All multibyte integers are big-endian. Encode
+Use a fixed **180-byte** statement. All multibyte integers are big-endian. Encode
 and decode fields explicitly; do not cast a native C struct onto wire bytes.
 
 | Offset | Bytes | Field | Proposed interpretation |
@@ -535,44 +537,44 @@ and decode fields explicitly; do not cast a native C struct onto wire bytes.
 | 12 | 2 | rtc_model_id | Registered nonzero model when RTC present; zero when absent |
 | 14 | 4 | generation | Starts at 1; increases for each replacement commissioning record |
 | 18 | 8 | commissioned_at | Nonzero Unix seconds |
-| 26 | 8 | board_eui64 | Mandatory; canonical observer identity |
-| 34 | 9 | atecc_serial | Mandatory core binding |
-| 43 | 8 | rtc_eui64 | Valid EUI-64 when bit 0 set; all zero otherwise |
-| 51 | 6 | mcu_mac | Existing MCU label; mandatory for supported MCU profile |
-| 57 | 32 | mcu_key_sha256 | SHA-256 of public-key DER SubjectPublicKeyInfo, or zero |
-| 89 | 32 | secure_boot_keys | Existing digest of the three Secure Boot key-digest slots, or zero |
-| 121 | 32 | attestation | SHA-256 of the exact 72-byte core slot record, or zero only where test permits |
+| 26 | 35 | board_uid | Mandatory; canonical observer identity |
+| 61 | 9 | atecc_serial | Mandatory core binding |
+| 70 | 8 | rtc_eui64 | Valid EUI-64 when bit 0 set; all zero otherwise |
+| 78 | 6 | mcu_mac | Existing MCU label; mandatory for supported MCU profile |
+| 84 | 32 | mcu_key_sha256 | SHA-256 of public-key DER SubjectPublicKeyInfo, or zero |
+| 116 | 32 | secure_boot_keys | Existing digest of the three Secure Boot key-digest slots, or zero |
+| 148 | 32 | attestation | SHA-256 of the exact 72-byte core slot record, or zero only where test permits |
 
 The signed digest is:
 
 ```text
-SHA-256(ASCII("MFG-COMMISSION-v1") || statement[153])
+SHA-256(ASCII("MFG-COMMISSION-v1") || statement[180])
 ```
 
-The domain is 17 bytes, making the complete prehash input 170 bytes.
+The domain is 17 bytes, making the complete prehash input 197 bytes.
 
-The complete record is **225 bytes**:
+The complete record is **252 bytes**:
 
 ```text
-statement[153] || signer_key_id[8] || R[32] || S[32]
+statement[180] || signer_key_id[8] || R[32] || S[32]
 ```
 
 Keep the signer-key-ID construction described in section 6.3 and the dedicated
-manufacturer-key role. The record fingerprint is SHA-256 of all 225 bytes.
+manufacturer-key role. The record fingerprint is SHA-256 of all 252 bytes.
 
 ### 7.2 Presence and consistency rules
 
 The parser, signer, firmware matcher and collector verifier must agree:
 
 1. Unknown version, wrong size, unknown flags and unknown security bits fail.
-2. Board EUI-64 and ATECC serial must be nonblank/non-erased regardless of RTC
+2. Typed board UID and ATECC serial must be nonblank/non-erased regardless of RTC
    flags. MCU MAC validation remains as in the supported MCU contract.
 3. With RTC EUI-bound bit clear, all eight RTC bytes must be zero. Nonzero bytes
    are not an ignored comment; they are an invalid encoding.
 4. With RTC EUI-bound bit set, the RTC bytes must be a valid nonblank/non-erased
    identifier, the RTC-present bit must be set, and the model definition must
    support that identifier kind.
-5. RTC presence never changes `ObserverID()`, which always renders board EUI-64.
+5. RTC presence never changes `ObserverID()`, which always renders typed board UID.
 6. Preserve the key-digest/key-algorithm and Secure-Boot-digest/security-bit
    consistency rules.
 7. Preserve `trusted` requirements: MCU key algorithm 1 and security `0x001f`.
@@ -649,18 +651,13 @@ Evidence suppression must not disable otherwise permitted GNSS forwarding.
 Whether a particular board can start and authenticate without its RTC also
 depends on the time-bootstrap checks in section 11.
 
-### 7.4 Extended identifiers versus a general extension format
+### 7.4 Extensible board identity kinds
 
-This revision provides an RTC model descriptor and one explicitly typed optional
-instance identity: RTC EUI-64. It does not introduce an open-ended TLV parser
-into the signed record. Adding a supported RTC model is a model-table/driver
-update, not a new binary format, provided it uses the existing descriptor and
-optional EUI semantics.
-
-Unknown identity flags are rejected. A later extension requires an explicitly
-defined format revision. This costs another version if additional identity
-types become necessary, but keeps the initial firmware parser bounded and makes
-the signed meaning easy to test across Go and C.
+[BOARD-IDENTITY.md](../BOARD-IDENTITY.md) registers fixed kind codes, lengths and
+validation. The 35-byte typed field carries up to 32 bytes; registered 64-bit
+and 128-bit sources preserve all their bytes. New sources require explicit
+registration and reader support. Unknown kinds, incorrect lengths and nonzero
+padding are rejected. The RTC model and optional RTC EUI remain separate fields.
 
 ## 8. Session proof and evidence transport
 
@@ -670,7 +667,7 @@ Use this proof digest construction:
 SHA-256(
   ASCII("NAVL-MCU-PROOF-v1") ||
   tls_exported_keying_material[32] ||
-  SHA-256(commissioning_record[225])
+  SHA-256(commissioning_record[252])
 )
 ```
 
@@ -688,11 +685,11 @@ Use evidence-envelope version 1:
 [proof_length U16BE][proof]
 ```
 
-Its length-delimited record is 225 bytes. The envelope maximum is 2048 bytes;
+Its length-delimited record is 252 bytes. The envelope maximum is 2048 bytes;
 the individual key/proof bounds are 1024/512 bytes. Even
-at those bounds, the new encoded maximum is `7 + 225 + 1024 + 512 = 1768` bytes.
+at those bounds, the new encoded maximum is `7 + 252 + 1024 + 512 = 1795` bytes.
 
-The commissioning parser requires both version 1 and the exact 225-byte record
+The commissioning parser requires both version 1 and the exact 252-byte record
 length. The proof domain, TLS exporter and GNF1 frame type use their v1
 definitions because their length-delimited construction and meaning already fit
 this record. No parser tries another commissioning layout after v1 validation
@@ -718,7 +715,7 @@ self-claimed ID to select a key from a global set. Scope the persisted sequence
 floor to the configured manufacturer authority and do not reset it during
 registry-key rotation.
 
-Keep each board record keyed by `board_eui64`. Add a required `rtc_model_id`
+Keep each board record keyed by (`board_uid_kind`, `board_uid`). Add a required `rtc_model_id`
 integer member, zero for no RTC and a registered nonzero value for a declared
 RTC. Change the RTC EUI field to a required JSON member whose value is either
 lowercase 16-character hex or `null`. Empty string and missing member are
@@ -802,7 +799,7 @@ The proposed hardware enrollment transaction is:
    under the selected manufacturer authority.
 3. Verify the v1 core attestation only with that manufacturer authority's key
    set, then enforce global identity uniqueness and ownership constraints.
-4. Derive the observer ID from the board EUI-64.
+4. Derive the observer ID from the typed board UID.
 5. For hardware mTLS, validate the operational public key and CSR proof under
    the approved ATECC enrollment procedure, then issue through an exact
    Issuing-intermediate key registered to the selected operational authority.
@@ -1150,9 +1147,9 @@ interpretation.
 - Preserve open-build restrictions against key generation/eFuse writes.
 - Update the maintained factory-CA firmware and host batch tooling with the same
   v1 contract. In both the direct-attestation and mixed-batch paths, use the
-  `attestation-v1` kind, the `ATECC-MFG-CORE-v1` domain and the 21-byte
+  `attestation-v1` kind, the `ATECC-MFG-CORE-v1` domain and the 48-byte
   `product || revision || board || ATECC` message, and emit `0x01` as the slot
-  record version. Change commissioning statements from 149 to 153 bytes, and
+  record version. Change commissioning statements from 149 to 180 bytes, and
   update every field offset, validator, review display, fixed buffer and fixture.
   Keep the factory console and signing-batch containers at v1; their prototype
   contents were never enrolled.
@@ -1377,7 +1374,7 @@ or identify missing implementation dependencies.
 | How are already-locked development attestations handled? | Inspect actual lock state; use replacement parts if needed, without claiming locked records are writable |
 | Does ordinary NMEA support belong in this change? | No; separate ingest feature with explicit measurement limits |
 
-Review should also confirm the proposed 153/225-byte layout, evidence size bound,
+Review should also confirm the proposed 180/252-byte layout, evidence size bound,
 uniqueness scope, manufacturing verification of regenerable operational keys,
 and the dependencies needed to boot securely without RTC time.
 

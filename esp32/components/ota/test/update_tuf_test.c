@@ -48,7 +48,7 @@ int main(int argc,char **argv) {
     int err=nvf_tuf_initialize(&trust,bytes,length,profile,&io);free(bytes);
     if(err){printf("initialize=%d\n",err);return err==atoi(argv[2])?0:1;}
     persisted=trust;
-    nvf_update_device_t device={.now=1800000000,.hardware_known=true,.hardware_revision=1,.layout=1,.profile=profile,.eui={1,2,3,4,5,6,7,8}};
+    nvf_update_device_t device={.now=1800000000,.hardware_known=true,.hardware_revision=1,.layout=1,.profile=profile,.board_uid={0,3,16,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}};
     nvf_update_release_t result;
     err=nvf_tuf_refresh(&trust,2,&device,&result,&io);
     printf("refresh=%d sequence=%llu saves=%u\n",err,(unsigned long long)result.sequence,saves);

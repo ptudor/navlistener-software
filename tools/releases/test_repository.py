@@ -1,4 +1,5 @@
 import copy
+import hashlib
 from datetime import datetime, timezone, timedelta
 import json
 import os
@@ -180,6 +181,18 @@ class RepositoryTests(unittest.TestCase):
         self.repo.set_channel("lab", 31, "releases/31.json", percentage=0)
         self.repo.online()
         self.client(3003)
+
+    def test_rollout_uses_complete_typed_128_bit_identity(self):
+        salt = bytes(range(32))
+        uid = bytes.fromhex("000310000102030405060708090a0b0c0d0e0f") + bytes(16)
+        digest = hashlib.sha256(salt + uid + (31).to_bytes(8, "big")).digest()
+        bucket = int.from_bytes(digest[:2], "big") % 100
+        self.repo.set_channel("lab", 31, "releases/31.json", percentage=bucket, salt=salt.hex())
+        self.repo.online()
+        self.client(3003)
+        self.repo.set_channel("lab", 31, "releases/31.json", percentage=bucket + 1, salt=salt.hex())
+        self.repo.online()
+        self.client()
 
     def test_withdrawal(self):
         self.repo.set_channel("lab", 31, "releases/31.json", withdrawn=[31])

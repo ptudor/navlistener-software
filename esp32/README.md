@@ -24,7 +24,7 @@ LCD development board is unsupported; adding flash alone does not make it a
 supported substitute. Its drivers and partition table remain as legacy source.
 
 - **Custom GNSS color observer:** ESP32-S3, receiver UART on GPIO4/GPIO5, shared I2C on
-  GPIO6/GPIO7, and an addressable 24AA025E64 manifest at `0x50`. Select
+  GPIO6/GPIO7, and a 24CS128 manifest at `0x50` (24AA EUI-64 assemblies are also supported). Select
   `NVF_BOARD_GNSS_COLOR_NEO`, which `sdkconfig.defaults.s3` sets. Its startup reads the
   factory EUI-64 and manifest;
   `NVF_MANIFEST_FACTORY_INIT` is a manufacturing-only, default-off permission to initialize a
@@ -510,7 +510,7 @@ The pusher reconnects when sent records remain outstanding without durable ACK a
 ### Hardware-discovery dependency and release evidence
 
 Normal builds pin `esp_hardware_discovery` to commit
-`5d7e533734c35a6256c1f70a4875ff4cd495b392`, with the IDF 5.5.4/ESP32-S3
+`64a3c384030bfa4a5493c70d80da9421203e38ba`, with the IDF 5.5.4/ESP32-S3
 resolution committed in `dependencies.lock`. Updating the pin is a deliberate
 source change: review upstream layout changes and run the component's
 `test/host` read/write, page-boundary, interrupted-write, timestamp/footer,

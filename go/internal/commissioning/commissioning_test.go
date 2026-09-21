@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/ptudor/navlistener/internal/boardid"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,7 +71,7 @@ func trustedStatement(t *testing.T) Statement {
 		Generation: 1, CommissionedAt: 1789646400,
 		ATECCSerial:    [9]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x11},
 		RTCEUI64:       [8]byte{0x00, 0x04, 0xa3, 0x12, 0x34, 0x56, 0x78, 0x90},
-		BoardEUI64:     [8]byte{0x00, 0x04, 0xa3, 0xaa, 0xbb, 0xcc, 0xdd, 0xee},
+		BoardUID:       boardid.EEPROM([8]byte{0x00, 0x04, 0xa3, 0xaa, 0xbb, 0xcc, 0xdd, 0xee}),
 		MCUMAC:         [6]byte{0x34, 0x85, 0x18, 0x01, 0x02, 0x03},
 		MCUKeySHA256:   sha256.Sum256(mcuKeyDER(t, mcuKey())),
 		SecureBootKeys: sha256.Sum256([]byte("secure boot key digests")),
@@ -115,11 +116,11 @@ func TestStatementRoundTripAndLayout(t *testing.T) {
 	if got := hex.EncodeToString(b[4:6]); got != "0001" {
 		t.Fatalf("product at offset 4 = %s", got)
 	}
-	if got := hex.EncodeToString(b[26:34]); got != "0004a3aabbccddee" {
-		t.Fatalf("board EUI-64 at offset 26 = %s", got)
+	if got := hex.EncodeToString(b[29:37]); got != "0004a3aabbccddee" {
+		t.Fatalf("board UID value at offset 29 = %s", got)
 	}
-	if got := hex.EncodeToString(b[43:51]); got != "0004a31234567890" {
-		t.Fatalf("RTC EUI-64 at offset 43 = %s", got)
+	if got := hex.EncodeToString(b[70:78]); got != "0004a31234567890" {
+		t.Fatalf("RTC EUI-64 at offset 70 = %s", got)
 	}
 	back, err := ParseStatement(b)
 	if err != nil {
@@ -128,7 +129,7 @@ func TestStatementRoundTripAndLayout(t *testing.T) {
 	if back != s {
 		t.Fatalf("round trip changed the statement:\n got %+v\nwant %+v", back, s)
 	}
-	if s.ObserverID() != "00-04-a3-aa-bb-cc-dd-ee" {
+	if s.ObserverID() != "board-0001-0004a3aabbccddee" {
 		t.Fatalf("observer id = %q", s.ObserverID())
 	}
 }
@@ -147,7 +148,7 @@ func TestStatementValidation(t *testing.T) {
 		"zero generation":            func(s *Statement) { s.Generation = 0 },
 		"zero time":                  func(s *Statement) { s.CommissionedAt = 0 },
 		"erased ATECC serial":        func(s *Statement) { s.ATECCSerial = [9]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff} },
-		"blank board EUI":            func(s *Statement) { s.BoardEUI64 = [8]byte{} },
+		"blank board EUI":            func(s *Statement) { s.BoardUID = boardid.ID{} },
 		"blank MAC":                  func(s *Statement) { s.MCUMAC = [6]byte{} },
 		"trusted without a key":      func(s *Statement) { s.MCUKeyAlg, s.MCUKeySHA256 = MCUKeyNone, [32]byte{} },
 		"trusted but not locked":     func(s *Statement) { s.Security &^= SecFlashEncryptionRelease },
@@ -374,7 +375,7 @@ func registryFor(t *testing.T, sequence uint64, status string, records ...Record
 			rtcEUI = &value
 		}
 		reg.Boards = append(reg.Boards, RegistryBoard{
-			BoardEUI64: hex.EncodeToString(s.BoardEUI64[:]), RTCModelID: uint16(s.RTCModel), RTCEUI64: rtcEUI,
+			BoardUIDKind: s.BoardUID.KindName(), BoardUID: s.BoardUID.Hex(), RTCModelID: uint16(s.RTCModel), RTCEUI64: rtcEUI,
 			ATECCSerial: hex.EncodeToString(s.ATECCSerial[:]), Status: status, Profile: s.Profile.String(),
 			Generation: s.Generation, Record: base64.StdEncoding.EncodeToString(r[:]),
 		})
@@ -419,7 +420,7 @@ func TestRegistrySignAndVerify(t *testing.T) {
 	})
 	t.Run("duplicate ATECC", func(t *testing.T) {
 		other := trustedStatement(t)
-		other.BoardEUI64[7] ^= 1
+		other.BoardUID[10] ^= 1
 		other.RTCEUI64[7] ^= 1
 		otherRecord, err := Sign(other, mfg)
 		if err != nil {
@@ -431,7 +432,7 @@ func TestRegistrySignAndVerify(t *testing.T) {
 	})
 	t.Run("duplicate bound RTC", func(t *testing.T) {
 		other := trustedStatement(t)
-		other.BoardEUI64[7] ^= 1
+		other.BoardUID[10] ^= 1
 		other.ATECCSerial[8] ^= 1
 		otherRecord, err := Sign(other, mfg)
 		if err != nil {
@@ -464,7 +465,7 @@ func TestRegistrySignAndVerify(t *testing.T) {
 	})
 	t.Run("nullable RTC member is required", func(t *testing.T) {
 		var row RegistryBoard
-		if err := json.Unmarshal([]byte(`{"board_eui64":"00"}`), &row); err == nil {
+		if err := json.Unmarshal([]byte(`{"board_uid":"00"}`), &row); err == nil {
 			t.Fatal("registry row omitted rtc_eui64")
 		}
 		if err := json.Unmarshal([]byte(`{"rtc_model_id":0,"rtc_eui64":null}`), &row); err != nil {
@@ -572,7 +573,7 @@ func TestEvaluate(t *testing.T) {
 	})
 	t.Run("unlisted", func(t *testing.T) {
 		other := s
-		other.BoardEUI64[7], other.RTCEUI64[7] = 0x01, 0x01
+		other.BoardUID[10], other.RTCEUI64[7] = 0x01, 0x01
 		otherRecord, _ := Sign(other, mfg)
 		reg := registryFor(t, 1, StatusActive, otherRecord)
 		result, err := newVerifier(t, true, &reg).Evaluate(observer, evidence, exported)

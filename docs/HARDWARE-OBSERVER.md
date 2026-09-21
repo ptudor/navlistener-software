@@ -1,5 +1,10 @@
 # The hardware observer board
 
+The current board identity contract is [BOARD-IDENTITY.md](BOARD-IDENTITY.md):
+**24CS128 at 0x50** is preferred for new assemblies; 24AA EUI-64 assemblies use
+their own typed identity. Assembly-specific BOMs
+below describe their stated board revisions, not a requirement to fit a 24AA.
+
 The GNSS port of `radiolistener/docs/HARDWARE-OBSERVER.md`. That document specifies the
 **generic** ESP32 + secure-element + RTC observer and the credential ladder; this one covers
 what is specific to a *navigation* observer: which receiver, what the manifest must record for
@@ -344,7 +349,7 @@ maximum.
 
 ### 4.1 Public name, private proof
 
-- **24AA025E64 EUI-64 → the public identifier.** Readable over I²C by anyone holding the board.
+- **Typed factory UID → the public identifier.** Readable over I²C by anyone holding the board.
   It is a *name*, never a credential.
 - **ATECC608C → the private authenticator.** Generates a non-extractable P-256 keypair, signs
   the CSR, signs the mTLS handshake, and optionally signs `SIGNED_DATA` (0x07) batches over
@@ -429,7 +434,7 @@ first-class rather than squatting on a repurposed domain slot: **slot 14, `SLOT_
 The record and message formats are normative in `atecc608c_slots_unified.h`
 (`ATECC_MFG_ATTEST_*`): the slot holds `[version 0x01][7 reserved][R‖S 64]`, and the signature is
 over `SHA-256("ATECC-MFG-CORE-v1" ‖ product_u16be ‖ board_rev_u16be ‖
-board_eui64[8] ‖ atecc_serial[9])`. The ASCII prefix is domain separation. This
+board_uid[35] ‖ atecc_serial[9])`. The ASCII prefix is domain separation. This
 permanently locked record binds only the board core; replaceable RTC and MCU
 identity is added by commissioning. One shared formatter must be the only
 writer/parser, so the bench tool and firmware cannot disagree.
@@ -461,7 +466,7 @@ statement once the board is locked:
   Boot is in force, so the private key has never existed anywhere else. It costs one eFuse key
   block — count it in the production eFuse list beside the three Secure Boot digests and the
   flash-encryption key.
-- **The commissioning record.** A fixed 153-byte statement binding the attested
+- **The commissioning record.** A fixed 180-byte statement binding the attested
   board core and explicit RTC presence/model/optional EUI-64 to the
   microcontroller's key, its lock state, a profile
   (trusted, open or test) and a generation number, signed by the same manufacturer key under
@@ -488,26 +493,11 @@ These constraints are enforced at controlled enrollment and collector admission:
    `[A-Za-z0-9.-]`, max 253. The conventional `00:04:A3:FF:FE:12:34:56` EUI-64 rendering is
    therefore invalid — as an observer id *and* as a DNS name.
 
-   **Decided: lowercase, hyphen-separated byte pairs, as a bare label** —
-   `00-04-a3-ff-fe-12-34-56`. NavListen owns its enrollment schema and authority
-   mappings; it does not require a shared radio/GNSS device table or CA.
+   The canonical label is `board-<four lowercase hex kind digits>-<full UID hex>`.
+   It preserves the kind and all factory bytes. Certificate and configured station
+   must match exactly, including lowercase. For example, a 128-bit serial is
+   `board-0003-00112233445566778899aabbccddeeff`.
 
-   - *Not bare hex* (`0004a3fffe123456`): a hex string is not guaranteed to contain a letter,
-     and an all-numeric single DNS label is a known trouble class (parsers that attempt it as
-     an IPv4 literal). Hyphens make that impossible by construction rather than improbable.
-   - *Lowercase is load-bearing, not cosmetic.* `matchPeerIdentity` compares byte-exactly
-     (`names[0] != observer`), not with DNS case-insensitivity, so a cert provisioned in
-     uppercase against a lowercase config fails the handshake — reporting "DNS SAN does not
-     exactly match canonical observer", which does not point at capitalisation.
-   - Byte-pair grouping matches how the value is printed on a chip marking or case label, so
-     transcription is direct; and it is far easier to compare by eye than 16 undifferentiated
-     hex characters in a handshake error.
-   - No RFC 5891 IDNA conflict: that reserves `--` in the third-and-fourth position, and this
-     pattern has `-` at 3 and a hex digit at 4.
-   - **Bare label, not a FQDN.** The feeder dials out and is never dialled, so the id needs no
-     resolvability. Fleet/org namespacing (`….obs.intsat.space`) would have to be chosen now —
-     it is baked into every certificate and retrofitting it means re-enrolling every board —
-     but the EUI-64 is already globally unique, so it buys nothing here.
 3. **Exactly one SAN** — zero or two are both rejected.
 
 **Buy the provisionable ATECC608C.** Trust&Go / TrustFLEX parts ship pre-provisioned and locked
@@ -522,7 +512,7 @@ serial. Assign them distinct roles and record all three at enrollment:
 
 | Source | Role |
 |---|---|
-| 24AA025E64 EUI-64 | **board and observer identity** — the `receiver_id` in the cert SAN and the `devices` row |
+| Typed factory UID (24CS128 preferred) | **board and observer identity** — the `receiver_id` in the cert SAN and the `devices` row |
 | MCP79412 EUI-64 | replaceable RTC component identity, bound by commissioning when fitted |
 | ATECC serial | binds the key material to the enrollment record |
 
@@ -1443,7 +1433,7 @@ its own data sheet rather than from family convention.
 **No new identity.** The MAX31328 register map runs `0x00`–`0x12`: time and
 calendar, two alarms, control, status, aging offset and temperature. There is no
 serial number, no EUI block and no user SRAM. §4.3 is therefore unchanged — the
-24AA025E64 EUI-64 remains the board and observer identity, the MCP79412 EUI-64
+The selected typed UID remains the board and observer identity, the MCP79412 EUI-64
 remains a replaceable component identity, and the ATECC serial still binds the key material. The second clock adds
 a measurement, never an identifier, and it cannot stand in for a bound
 MCP79412 component identity if that part dies.
@@ -1549,10 +1539,10 @@ from the sibling, and where it deliberately does not:
 | Board selection | compile-time profiles in `board/board_config.h` with feature flags | adopt for variants A/B/C | **adopt** — §1 variants are exactly this shape |
 | Dev board | Waveshare ESP32-C6-LCD-1.47 | same | already aligned (`esp32/README.md`) |
 | MCU | C6 and ESP32 (Xtensa) | ESP32-C6 development board and custom ESP32-S3 observer | **software support implemented** — see `esp32/README.md` |
-| Identity root | rover pubkey + ATECC serial | EUI-64 name + ATECC proof | **deliberate divergence** |
+| Identity root | rover pubkey + ATECC serial | Typed UID name + ATECC proof | **deliberate divergence** |
 
 **On the identity divergence.** Shepherd's rovers join a Thread fleet against an
-operator public key. NavListen uses the board EEPROM EUI-64 as the observer name
+operator public key. NavListen uses the typed board UID as the observer name
 and records the ATECC serial as part of its permanent core attestation. Its Go
 control plane owns enrollment and registers exact Issuing intermediates and
 independent manufacturer authorities. These identity models are not
@@ -1582,7 +1572,7 @@ is a feature this board wants and a reason the WS2812B alignment pays for itself
    malformed images, but the current format has no CRC for bit corruption in otherwise plausible
    header or descriptor bytes. Reserve and specify a versioned CRC before production programming;
    the mutable runtime-status byte needs to be excluded or updated transactionally.
-3. ~~EUI-64 text rendering~~ — **decided** (§4.2): lowercase hyphen-separated byte pairs, bare
+3. ~~EUI-64 text rendering~~ — **decided** (§4.2): kind code and complete lowercase UID value, bare
    label. Remaining work is mechanical: a shared formatter/parser so the C feeder, the
    provisioning flow and the collector cannot disagree on it.
 4. **Re-enrollment policy on RTC replacement** (§4.3) — accepted as an auditable event, but the

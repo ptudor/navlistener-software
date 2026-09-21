@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"github.com/ptudor/navlistener/internal/boardid"
 	"io"
 	"os"
 	"path/filepath"
@@ -119,7 +120,7 @@ func TestCommissionVerify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tampered[40] ^= 1 // one bit of an identifier: still a well-formed statement
+	tampered[65] ^= 1 // one bit of an identifier: still a well-formed statement
 	if _, err := capture(t, "commission-verify", "-manufacturer-authority", f.ManufacturerAuthorityID, "-key", manufacturer, "-record", hex.EncodeToString(tampered)); err == nil || !strings.Contains(err.Error(), "signature") {
 		t.Errorf("tampered record: err = %v, want a signature failure", err)
 	}
@@ -200,7 +201,7 @@ func TestVerifyCoreAttestationSelectsExactlyOnePinnedSigner(t *testing.T) {
 		t.Fatal(err)
 	}
 	hardware := attestation.HardwareIdentity{Product: 1, BoardRevision: 0x1234}
-	copy(hardware.BoardEUI64[:], []byte{0x00, 0x04, 0xa3, 0xaa, 0xbb, 0xcc, 0xdd, 0xee})
+	hardware.BoardUID = boardid.EEPROM([8]byte{0x00, 0x04, 0xa3, 0xaa, 0xbb, 0xcc, 0xdd, 0xee})
 	copy(hardware.ATECCSerial[:], []byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x11})
 	record, err := attestation.Sign(attestation.VersionV1, hardware, signer, nil)
 	if err != nil {
@@ -209,7 +210,7 @@ func TestVerifyCoreAttestationSelectsExactlyOnePinnedSigner(t *testing.T) {
 	right := writePublicKey(t, dir, "right.pem", &signer.PublicKey)
 	wrong := writePublicKey(t, dir, "wrong.pem", &other.PublicKey)
 	base := []string{"verify", "-manufacturer-authority", "test-manufacturer", "-record", hex.EncodeToString(record[:]),
-		"-product", "1", "-board-rev", "0x1234", "-board-eui", hex.EncodeToString(hardware.BoardEUI64[:]),
+		"-product", "1", "-board-rev", "0x1234", "-board-uid-kind", "microchip_eui64", "-board-uid", hardware.BoardUID.Hex(),
 		"-atecc-serial", hex.EncodeToString(hardware.ATECCSerial[:])}
 	out, err := capture(t, append(base, "-key", wrong, "-key", right)...)
 	if err != nil {
