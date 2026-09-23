@@ -210,7 +210,7 @@ func TestVerifyCoreAttestationSelectsExactlyOnePinnedSigner(t *testing.T) {
 	right := writePublicKey(t, dir, "right.pem", &signer.PublicKey)
 	wrong := writePublicKey(t, dir, "wrong.pem", &other.PublicKey)
 	base := []string{"verify", "-manufacturer-authority", "test-manufacturer", "-record", hex.EncodeToString(record[:]),
-		"-product", "1", "-board-rev", "0x1234", "-board-uid-kind", "microchip_eui64", "-board-uid", hardware.BoardUID.Hex(),
+		"-product", "1", "-board-rev", "0x1234", "-board-uid-kind", "eui64", "-board-uid", hardware.BoardUID.Hex(),
 		"-atecc-serial", hex.EncodeToString(hardware.ATECCSerial[:])}
 	out, err := capture(t, append(base, "-key", wrong, "-key", right)...)
 	if err != nil {

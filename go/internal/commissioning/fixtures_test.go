@@ -127,9 +127,9 @@ func generateFixtures(t *testing.T) fixtureFile {
 		cases[[]string{"mcp79412-model", "ds3231-model"}[i]] = s
 	}
 	cs := open
-	cs.BoardUID, _ = boardid.Parse("microchip_cs128", "0123456789abcdef0123456789abcdef")
+	cs.BoardUID, _ = boardid.Parse("serial128", "0123456789abcdef0123456789abcdef")
 	cs.ATECCSerial[8], cs.RTCEUI64[7] = 0xc1, 0xc1
-	cases["microchip-cs128"] = cs
+	cases["serial128"] = cs
 	st := open
 	st.BoardUID, _ = boardid.Parse("st_uid128", "20e00eff0123456789abcdef01234567")
 	st.ATECCSerial[8], st.RTCEUI64[7] = 0xc2, 0xc2
@@ -290,7 +290,7 @@ func TestFixtures(t *testing.T) {
 	if ix.Sequence != f.RegistrySequence || ix.Len() != len(f.Cases) {
 		t.Fatalf("registry = sequence %d with %d boards", ix.Sequence, ix.Len())
 	}
-	revoked, err := boardid.Parse("microchip_eui64", f.RegistryRevokedBoard)
+	revoked, err := boardid.Parse("eui64", f.RegistryRevokedBoard)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -115,7 +115,25 @@ static esp_err_t known_eeprom_uid_store(const uint8_t eui[NVF_BOARD_UID_SIZE])
     return err;
 }
 
-static void make_gnss_color_neo_defaults(eeprom_capabilities_t *caps, uint8_t address, uint16_t kind)
+/* The discovered kind and density select the esp_hardware_discovery profile and
+ * the manifest's self-reference; the 128-bit serial parts differ only in size. */
+static bool manifest_profile(const nvf_board_identity_t *identity, eeprom_profile_t *profile, uint16_t *memory)
+{
+    switch (identity->eeprom_kind) {
+    case NVF_UID_EUI64: *profile = EEPROM_PROFILE_24AAXXE64; *memory = MEMORY_24AA025E64; return true;
+    case NVF_UID_ST_UID128: *profile = EEPROM_PROFILE_M24128_U; *memory = MEMORY_M24128_U; return true;
+    case NVF_UID_SERIAL128:
+        switch (identity->eeprom_kbit) {
+        case 128: *profile = EEPROM_PROFILE_24CS128; *memory = MEMORY_24CS128; return true;
+        case 256: *profile = EEPROM_PROFILE_24CS256; *memory = MEMORY_24CS256; return true;
+        case 512: *profile = EEPROM_PROFILE_24CS512; *memory = MEMORY_24CS512; return true;
+        default: return false;
+        }
+    default: return false;
+    }
+}
+
+static void make_gnss_color_neo_defaults(eeprom_capabilities_t *caps, uint8_t address, uint16_t memory)
 {
     memset(caps, 0, sizeof(*caps));
     caps->magic = CAP_MAGIC_PREFERRED;
@@ -150,8 +168,7 @@ static void make_gnss_color_neo_defaults(eeprom_capabilities_t *caps, uint8_t ad
                    "compiled manifest exceeds EEPROM component capacity");
     caps->component_count = sizeof(components) / sizeof(components[0]);
     memcpy(caps->components, components, sizeof(components));
-    if (kind == NVF_UID_MICROCHIP_CS128) caps->components[0].id = MEMORY_24CS128;
-    if (kind == NVF_UID_ST_UID128) caps->components[0].id = MEMORY_M24128_U;
+    caps->components[0].id = memory;
 }
 
 static bool capabilities_match_board(const eeprom_capabilities_t *caps)
@@ -171,12 +188,12 @@ static esp_err_t inspect(hardware_manifest_result_t *result,
     eeprom_factory_id_t factory_id;
     uint8_t uid[NVF_BOARD_UID_SIZE];
     if (!eeprom_read_factory_id(address, &factory_id)) return ESP_ERR_INVALID_RESPONSE;
-    uint16_t kind = factory_id.kind == EEPROM_FACTORY_ID_EUI64 ? NVF_UID_MICROCHIP_EUI64 :
-                    factory_id.kind == EEPROM_FACTORY_ID_SERIAL128 ? NVF_UID_MICROCHIP_CS128 :
+    uint16_t kind = factory_id.kind == EEPROM_FACTORY_ID_EUI64 ? NVF_UID_EUI64 :
+                    factory_id.kind == EEPROM_FACTORY_ID_SERIAL128 ? NVF_UID_SERIAL128 :
                     factory_id.kind == EEPROM_FACTORY_ID_ST_UID128 ? NVF_UID_ST_UID128 : 0;
     if (!nvf_uid_pack(kind, factory_id.bytes, factory_id.length, uid) ||
         memcmp(uid, result->identity.eeprom_uid, sizeof uid)) return ESP_ERR_INVALID_RESPONSE;
-    if (kind == NVF_UID_MICROCHIP_EUI64) {
+    if (kind == NVF_UID_EUI64) {
         memcpy(result->eui64, factory_id.bytes, 8);
         result->eui64_valid = true;
     }
@@ -243,9 +260,11 @@ esp_err_t hardware_manifest_boot(bool allow_factory_init,
             known_present ? HARDWARE_MANIFEST_KNOWN_SAME : HARDWARE_MANIFEST_KNOWN_NONE);
         return known_present ? ESP_ERR_NOT_FOUND : ESP_OK;
     }
-    ESP_RETURN_ON_ERROR(eeprom_set_profile(address, result->identity.eeprom_kind == NVF_UID_ST_UID128 ? EEPROM_PROFILE_M24128_U :
-        result->identity.eeprom_kind == NVF_UID_MICROCHIP_CS128 ?
-                        EEPROM_PROFILE_24CS128 : EEPROM_PROFILE_24AAXXE64), TAG, "select verified EEPROM profile");
+    eeprom_profile_t profile;
+    uint16_t memory;
+    ESP_RETURN_ON_FALSE(manifest_profile(&result->identity, &profile, &memory), ESP_ERR_NOT_SUPPORTED, TAG,
+                        "EEPROM density %u Kbit is not supported by this firmware", (unsigned)result->identity.eeprom_kbit);
+    ESP_RETURN_ON_ERROR(eeprom_set_profile(address, profile), TAG, "select verified EEPROM profile");
     ESP_RETURN_ON_ERROR(inspect(result, known_present, known_eui), TAG,
                         "inspect manifest EEPROM");
     if (result->eui64_valid) log_eui("manifest UID", result->eui64);
@@ -253,7 +272,7 @@ esp_err_t hardware_manifest_boot(bool allow_factory_init,
     if (result->action == HARDWARE_MANIFEST_ACTION_INITIALIZE &&
         allow_factory_init) {
         eeprom_capabilities_t defaults;
-        make_gnss_color_neo_defaults(&defaults, address, result->identity.eeprom_kind);
+        make_gnss_color_neo_defaults(&defaults, address, memory);
         ESP_LOGW(TAG, "factory-init enabled: programming blank GNSS main-board manifest");
         if (!eeprom_write_capabilities(address, &defaults, false)) {
             result->action = HARDWARE_MANIFEST_ACTION_IO_ERROR;

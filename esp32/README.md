@@ -520,7 +520,7 @@ The pusher reconnects when sent records remain outstanding without durable ACK a
 ### Hardware-discovery dependency and release evidence
 
 Normal builds pin `esp_hardware_discovery` to commit
-`72ec2c811fcdbff1217ecc12855767b6884fc095`, with the IDF 5.5.4/ESP32-S3
+`d17045a51bc9629442f087c785e3ab07e67fe192` (24CS256/24CS512 support), with the IDF 5.5.4/ESP32-S3
 resolution committed in `dependencies.lock`. Updating the pin is a deliberate
 source change: review upstream layout changes and run the component's
 `test/host` read/write, page-boundary, interrupted-write, timestamp/footer,

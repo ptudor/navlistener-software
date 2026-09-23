@@ -3,4 +3,4 @@ dependencies:
     git: https://github.com/ptudor/esp32-hardware-discovery.git
     # Deliberate updates require the EEPROM layout/factory-ID compatibility checks
     # in README.md and a regenerated, reviewed dependencies.lock.
-    version: 72ec2c811fcdbff1217ecc12855767b6884fc095
+    version: d17045a51bc9629442f087c785e3ab07e67fe192

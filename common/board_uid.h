@@ -10,16 +10,18 @@
 #define NVF_BOARD_UID_SIZE 35
 #define NVF_BOARD_UID_MAX 32
 #define NVF_BOARD_OBSERVER_SIZE 76
-enum { NVF_UID_MICROCHIP_EUI64 = 1, NVF_UID_MICROCHIP_CS128 = 3, NVF_UID_ST_UID128 = 4 };
+/* Kinds follow esp_hardware_discovery's eeprom_factory_id_kind_t names
+ * (EUI64, SERIAL128, ST_UID128); these wire codes are fixed by the UID bytes. */
+enum { NVF_UID_EUI64 = 1, NVF_UID_SERIAL128 = 3, NVF_UID_ST_UID128 = 4 };
 
 static inline uint16_t nvf_uid_kind(const uint8_t uid[NVF_BOARD_UID_SIZE]) { return (uint16_t)((uint16_t)uid[0] << 8 | uid[1]); }
 static inline const char *nvf_uid_kind_name(uint16_t kind) {
-    switch (kind) { case NVF_UID_MICROCHIP_EUI64: return "microchip_eui64"; case NVF_UID_MICROCHIP_CS128: return "microchip_cs128"; case NVF_UID_ST_UID128: return "st_uid128"; default: return NULL; }
+    switch (kind) { case NVF_UID_EUI64: return "eui64"; case NVF_UID_SERIAL128: return "serial128"; case NVF_UID_ST_UID128: return "st_uid128"; default: return NULL; }
 }
 static inline bool nvf_uid_valid(const uint8_t uid[NVF_BOARD_UID_SIZE]) {
     if (!uid) return false;
     uint16_t kind = nvf_uid_kind(uid);
-    size_t n = kind == NVF_UID_MICROCHIP_EUI64 ? 8 : 16;
+    size_t n = kind == NVF_UID_EUI64 ? 8 : 16;
     if (!nvf_uid_kind_name(kind) || uid[2] != n) return false;
     bool zero = true, erased = true;
     for (size_t i = 0; i < n; i++) { zero &= uid[3+i] == 0; erased &= uid[3+i] == 0xff; }

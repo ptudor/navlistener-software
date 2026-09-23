@@ -9,11 +9,12 @@ import (
 )
 
 const (
-	Size                  = 35 // uint16 kind, uint8 length, 32 bytes zero-padded on the right
-	MaxValueSize          = 32
-	EEPROMEUI64    uint16 = 1
-	MicrochipCS128 uint16 = 3
-	STUID128       uint16 = 4
+	Size         = 35 // uint16 kind, uint8 length, 32 bytes zero-padded on the right
+	MaxValueSize = 32
+	// Kind names follow esp_hardware_discovery's factory-ID kinds.
+	EUI64     uint16 = 1 // 24AA EUI-64
+	Serial128 uint16 = 3 // Microchip 24CS128/24CS256/24CS512 factory serial
+	STUID128  uint16 = 4 // ST M24128-U unique ID
 )
 
 // ID is comparable, so registry keys include both kind and value.
@@ -22,10 +23,10 @@ type ID [Size]byte
 func (id ID) Kind() uint16 { return binary.BigEndian.Uint16(id[:2]) }
 func (id ID) KindName() string {
 	switch id.Kind() {
-	case EEPROMEUI64:
-		return "microchip_eui64"
-	case MicrochipCS128:
-		return "microchip_cs128"
+	case EUI64:
+		return "eui64"
+	case Serial128:
+		return "serial128"
 	case STUID128:
 		return "st_uid128"
 	default:
@@ -44,8 +45,8 @@ func (id ID) ObserverID() string { return fmt.Sprintf("board-%04x-%s", id.Kind()
 func (id ID) Validate() error {
 	n := 8
 	switch id.Kind() {
-	case EEPROMEUI64:
-	case MicrochipCS128, STUID128:
+	case EUI64:
+	case Serial128, STUID128:
 		n = 16
 	default:
 		return fmt.Errorf("unsupported board UID kind %d", id.Kind())
@@ -84,10 +85,10 @@ func FromBytes(kind uint16, value []byte) (ID, error) {
 func Parse(kind, value string) (ID, error) {
 	var k uint16
 	switch kind {
-	case "microchip_eui64":
-		k = EEPROMEUI64
-	case "microchip_cs128":
-		k = MicrochipCS128
+	case "eui64":
+		k = EUI64
+	case "serial128":
+		k = Serial128
 	case "st_uid128":
 		k = STUID128
 	default:
@@ -102,4 +103,4 @@ func Parse(kind, value string) (ID, error) {
 
 // EEPROM constructs a typed EUI for callers that already read the fixed ROM field.
 // Consumers must still Validate before trusting or signing an identity.
-func EEPROM(value [8]byte) ID { id, _ := FromBytes(EEPROMEUI64, value[:]); return id }
+func EEPROM(value [8]byte) ID { id, _ := FromBytes(EUI64, value[:]); return id }

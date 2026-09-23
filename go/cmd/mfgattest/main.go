@@ -181,7 +181,7 @@ type identityFlags struct {
 func (i *identityFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&i.atecc, "atecc-serial", "", "9-byte ATECC factory serial as hex")
 	fs.StringVar(&i.board, "board-uid", "", "board UID as lowercase hex")
-	fs.StringVar(&i.kind, "board-uid-kind", "", "microchip_eui64, microchip_cs128 or st_uid128")
+	fs.StringVar(&i.kind, "board-uid-kind", "", "eui64, serial128 or st_uid128")
 	fs.UintVar(&i.product, "product", 0, "manufacturer product uint16 (decimal or use 0x prefix)")
 	fs.UintVar(&i.rev, "board-rev", 0, "board revision uint16 (decimal or use 0x prefix)")
 }

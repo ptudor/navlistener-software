@@ -10,7 +10,7 @@ selected manufacturer authority is explicit in its output.
 mfgattest verify -manufacturer-authority example-manufacturing \
   -key manufacturer-public.pem -record RECORD_HEX -product 1 \
   -atecc-serial 0123456789abcdef11 \
-  -board-uid-kind microchip_eui64 -board-uid 0004a3aabbccddee -board-rev 1
+  -board-uid-kind eui64 -board-uid 0004a3aabbccddee -board-rev 1
 ```
 
 `fixture-sign` exists only for deterministic development fixtures. It requires

@@ -314,7 +314,7 @@ Payload:
   "issued_at": "2026-09-17T12:00:00Z",
   "ledger_head": "<64 hex>",
   "boards": [{
-    "board_uid_kind": "microchip_eui64",
+    "board_uid_kind": "eui64",
     "board_uid": "0004a3aabbccddee",
     "rtc_model_id": 1,
     "rtc_eui64": "0004a31234567890",

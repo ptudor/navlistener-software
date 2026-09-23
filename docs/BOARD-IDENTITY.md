@@ -13,11 +13,16 @@ change the identity namespace.
 
 | Code | JSON kind | Value length | Interpretation |
 |---|---|---|---|
-| 1 | `microchip_eui64` | 8 bytes | Microchip factory EUI-64, including 24AA025E64 |
-| 3 | `microchip_cs128` | 16 bytes | Complete Microchip CS-series factory serial, in read order |
+| 1 | `eui64` | 8 bytes | Microchip factory EUI-64, including 24AA025E64 |
+| 3 | `serial128` | 16 bytes | Complete Microchip 24CS factory serial (24CS128/24CS256/24CS512), in read order |
 | 4 | `st_uid128` | 16 bytes | Complete ST UID, including the four-byte identification header |
 
-The 24CS128, AT24CS01 and AT24CS02 share the 128-bit identity namespace. Their
+The JSON kind names follow `esp_hardware_discovery`'s factory-ID kinds
+(`EEPROM_FACTORY_ID_EUI64`, `_SERIAL128`, `_ST_UID128`). Earlier names
+(`microchip_eui64`, `microchip_cs128`) are not accepted. The control database
+rewrites rows stored under them when its schema is next applied.
+
+The 24CS128, 24CS256, 24CS512, AT24CS01 and AT24CS02 share the 128-bit identity namespace. Their
 hardware read procedures differ. Supporting a namespace does not automatically
 qualify every member's driver or its writable memory layout.
 
@@ -42,8 +47,12 @@ identity before authorization.
 
 ## Physical reads
 
-24CS128 discovery uses its I2C Manufacturer ID (0x00d0b8), then reads all 16 serial
-bytes from Security Register offset 0x0800. At main-array address 0x50, that register
+24CS discovery reads the I2C Manufacturer ID and accepts exactly 0x00d0b8
+(24CS128), 0x00d0c0 (24CS256) or 0x00d0c8 (24CS512), revision 1. It then reads
+all 16 serial bytes from Security Register offset 0x0800. Discovery also reports
+the array density (`eeprom_kbit`: 2, 128, 256 or 512). The observer firmware
+selects the matching `esp_hardware_discovery` profile and manifest self-reference
+(`MEMORY_24CS128`, `MEMORY_24CS256` or `MEMORY_24CS512`) from it. At main-array address 0x50, that register
 is addressed at 0x58. These are separate address spaces; the serial is not in the
 writable main array. Main-array address 0x51 is also supported; the address does
 not enter the signed UID.

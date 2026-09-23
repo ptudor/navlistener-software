@@ -173,7 +173,7 @@ limits separately.
 For a hardware-enrolled observer:
 
 ```text
-board_uid_kind = microchip_cs128 | microchip_eui64
+board_uid_kind = serial128 | eui64
 board_uid = complete factory identifier in read order
 observer_id = board-<four-digit kind code>-<full lowercase UID hex>
 ```
