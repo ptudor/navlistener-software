@@ -596,7 +596,7 @@ The shared public library now includes these stable entries:
 | `eeprom_pressure_id_t` | `PRESSURE_BMP390` | The BMP390 footprint alternate. |
 | `eeprom_battery_id_t` | `BATTERY_CR123A` | This board's primary 3 V cylindrical backup cell. |
 | `eeprom_sensor_id_t` | `SENSOR_HDC2080` | The combined temperature/humidity part (§6.4); `TEMP_MCP9808` already exists for the dedicated sensor. |
-| `eeprom_power_id_t` | `POWER_ADM7150`, `POWER_RT9193` | The GPIO-gated rails (§3.1); descriptor address byte = the EN GPIO, following `CAT_BUTTON`'s addr-is-GPIO convention. |
+| `eeprom_power_id_t` | `POWER_ADM7150`, `POWER_RT9193`, `POWER_TPS7A20` | The GPIO-gated rails (§3.1); descriptor address byte = the EN GPIO, following `CAT_BUTTON`'s addr-is-GPIO convention. `POWER_TPS7A20` (9) covers the MAX board's two TPS7A2033PDBVR gated rails. |
 
 `MEMORY_24AA025E64 = 6` is now part of the shared baseline rather than a
 navlistener-specific extension. This board's manufacturing manifest must use:
