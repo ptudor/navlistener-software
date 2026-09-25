@@ -5,7 +5,7 @@
 #include "netcfg_setup.h"
 #include "netcfg_tunnel.h"
 #include "sdkconfig.h"
-#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+#if CONFIG_NVF_BOARD_GNSS_COLOR
 #include "netcfg_ble.h"
 #endif
 
@@ -329,14 +329,14 @@ esp_err_t netcfg_start_provisioning(netcfg_provisioning_info_t *info)
 
     ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "initialize network stack");
     ESP_RETURN_ON_ERROR(esp_event_loop_create_default(), TAG, "create event loop");
-#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+#if CONFIG_NVF_BOARD_GNSS_COLOR
     if (!esp_netif_create_default_wifi_sta()) return ESP_ERR_NO_MEM;
 #endif
     if (!esp_netif_create_default_wifi_ap()) return ESP_ERR_NO_MEM;
     wifi_init_config_t ic = WIFI_INIT_CONFIG_DEFAULT();
     ESP_RETURN_ON_ERROR(esp_wifi_init(&ic), TAG, "initialize Wi-Fi");
 
-#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+#if CONFIG_NVF_BOARD_GNSS_COLOR
     err = netcfg_ble_start(&setup);
     if (err == ESP_OK) {
         info->ble_active = true;

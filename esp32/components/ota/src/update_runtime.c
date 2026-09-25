@@ -1,5 +1,6 @@
 #include "update_memory.h"
 #include "sdkconfig.h"
+#include "nvf_board.h"
 #include "update_runtime.h"
 #if CONFIG_NVF_OTA
 #include "ota_download.h"
@@ -349,7 +350,7 @@ static void worker(void *unused) {
     }
 }
 esp_err_t nvf_update_start(const nvf_update_hooks_t *config) {
-    hooks=*config;hooks.device.profile=NVF_UPDATE_PROFILE;
+    hooks=*config;hooks.device.profile=NVF_UPDATE_PROFILE;hooks.device.board_family=NVF_BOARD_FAMILY;
     view_lock=xSemaphoreCreateMutex();if(!view_lock)return ESP_ERR_NO_MEM;
     record.magic=0x3150554e;record.version=1;record.status.mode=UP_MANUAL;record.status.running=NVF_BUILD_NUMBER;
     const esp_partition_t *partition=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_DATA_NVS,"update_meta");

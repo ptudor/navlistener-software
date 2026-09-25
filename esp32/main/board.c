@@ -2,7 +2,7 @@
 #include "board.h"
 #include "sdkconfig.h"
 #include "board_reservations.h"
-#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+#if CONFIG_NVF_BOARD_GNSS_COLOR
 #include <string.h>
 #include <stdio.h>
 #include <stdatomic.h>
@@ -34,6 +34,11 @@
 #include "nvs.h"
 #include "journal.h"
 #include "pulse_timing.h"
+#if NVF_PIN_BRIGHT_ADC >= 0
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
+#include "esp_adc/adc_oneshot.h"
+#endif
 
 static const char *TAG = "observer_board";
 static observer_report_t report;
@@ -42,8 +47,11 @@ static uint64_t (*report_now_ns)(void);
 static int64_t next_environment, last_environment = -5000;
 static rtc_candidate_t utc_candidate; // trusted UTC for the humidity heater's run interval
 static atomic_uint brightness = PANEL_DEFAULT_BRIGHTNESS;
+// The brightness trimmer's position when the level was last chosen, saved with it; 0 on
+// boards without a trimmer and whenever the position is unknown (panel_brightness_t).
+static atomic_uint trimmer_reference;
 static uint64_t next_timing;
-static unsigned applied_brightness = PANEL_DEFAULT_BRIGHTNESS;
+static unsigned applied_brightness = PANEL_DEFAULT_BRIGHTNESS, saved_reference;
 static bool pwm_ready;
 // One wake/command/sleep session with the ATECC at a time: the boot diagnostic and the
 // bench identity read must not interleave their commands.
@@ -71,7 +79,7 @@ enum { LED_DATA = 14, LED_CLOCK = 11, LED_LATCH = 12, LED_GREEN_OE = 47, LED_YEL
 _Static_assert((NVF_PIN(LED_DATA) | NVF_PIN(LED_CLOCK) | NVF_PIN(LED_LATCH) |
                 NVF_PIN(LED_GREEN_OE) | NVF_PIN(LED_YELLOW_OE)) ==
                ((NVF_PIN(LED_DATA) | NVF_PIN(LED_CLOCK) | NVF_PIN(LED_LATCH) |
-                 NVF_PIN(LED_GREEN_OE) | NVF_PIN(LED_YELLOW_OE)) & NVF_PINS_NEO),
+                 NVF_PIN(LED_GREEN_OE) | NVF_PIN(LED_YELLOW_OE)) & NVF_PINS_BOARD),
     "a panel pin is missing from the board_reservations.h allocation record");
 typedef struct {
     uint32_t magic;
@@ -250,6 +258,12 @@ void observer_board_identity(observer_board_identity_t *out)
     out->revision_valid = report.manifest.capabilities_valid;
     out->revision = report.manifest.revision;
     if (!hardware_manifest_i2c_bus() || !crypto_lock) return;
+#if CONFIG_NVF_BOARD_GNSS_COLOR_ZED_X20
+    // MAX31328: its timekeeping registers answering is its presence; it has no serial.
+    out->rtc_model_id = NVF_RTC_MAX31328;
+    uint8_t rtc_registers[7];
+    out->rtc_present = read_reg(NVF_I2C_RTC_TCXO, 0, rtc_registers, sizeof rtc_registers) == ESP_OK;
+#else
     // MCP79412: verify the clock function at 0x6f as well as the factory EUI-64 in the
     // protected EEPROM block at 0x57. The EEPROM alone is not proof the expected RTC is fitted.
     out->rtc_model_id = NVF_RTC_MCP79412;
@@ -257,6 +271,7 @@ void observer_board_identity(observer_board_identity_t *out)
     out->rtc_present = read_reg(0x6f, 0, rtc_registers, sizeof rtc_registers) == ESP_OK;
     out->rtc_valid = out->rtc_present && read_reg(0x57, 0xf0, out->rtc_eui64, 8) == ESP_OK &&
                      !identifier_blank(out->rtc_eui64, 8);
+#endif
     i2c_master_dev_handle_t dev;
     bool woke;
     esp_err_t err;
@@ -292,26 +307,40 @@ static void identify_peripherals(void)
 {
     i2c_master_bus_handle_t bus = hardware_manifest_i2c_bus();
     if (!bus) { ESP_LOGW(TAG, "shared I2C bus unavailable"); return; }
-    const uint8_t addresses[] = {0x18, 0x40, 0x6f, 0x76};
-    const char *names[] = {"temperature", "humidity", "RTC", "pressure"};
-    for (size_t i = 0; i < sizeof addresses; i++) {
-        esp_err_t err = i2c_master_probe(bus, addresses[i], 100);
-        ESP_LOGI(TAG, "%s at 0x%02x: %s", names[i], addresses[i], esp_err_to_name(err));
+    // This board's fitted parts (board_reservations.h); another board's are not probed.
+    static const struct { uint8_t address; const char *name; } parts[] = {
+        {NVF_I2C_TEMPERATURE, "temperature"}, {NVF_I2C_HUMIDITY, "humidity"},
+#if CONFIG_NVF_BOARD_GNSS_COLOR_ZED_X20
+        {NVF_I2C_RTC_TCXO, "RTC"}, {NVF_I2C_PRESSURE, "pressure"},
+#elif CONFIG_NVF_BOARD_GNSS_COLOR_MAX
+        {NVF_I2C_RTC, "RTC"}, {NVF_I2C_PRESSURE_ALT, "pressure"}, {NVF_I2C_IMU, "IMU"},
+        {NVF_I2C_MAGNETOMETER, "magnetometer"},
+#else
+        {NVF_I2C_RTC, "RTC"}, {NVF_I2C_PRESSURE, "pressure"},
+#endif
+    };
+    for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) {
+        const uint8_t address = parts[i].address;
+        esp_err_t err = i2c_master_probe(bus, address, 100);
+        ESP_LOGI(TAG, "%s at 0x%02x: %s", parts[i].name, address, esp_err_to_name(err));
         if (err != ESP_OK) continue;
         uint8_t data[7] = {0};
-        if (addresses[i] == 0x18 && read_reg(0x18, 6, data, 2) == ESP_OK &&
+        if (address == 0x18 && read_reg(0x18, 6, data, 2) == ESP_OK &&
             read_reg(0x18, 7, data + 2, 2) == ESP_OK) {
             ESP_LOGI(TAG, "temperature IDs=%02x%02x/%02x%02x%s", data[0], data[1], data[2], data[3],
                 data[0] == 0 && data[1] == 0x54 && data[2] == 4 ? "; MCP9808 verified" : "; unexpected identity");
-        } else if (addresses[i] == 0x40 && read_reg(0x40, 0xfc, data, 4) == ESP_OK) {
+        } else if (address == 0x40 && read_reg(0x40, 0xfc, data, 4) == ESP_OK) {
             ESP_LOGI(TAG, "humidity IDs=%02x%02x/%02x%02x%s", data[1], data[0], data[3], data[2],
                 !memcmp(data, "\x49\x54\xd0\x07", 4) ? "; HDC2080/HDC2022 family verified (variant requires assembly selection)" : "; unexpected identity");
-        } else if (addresses[i] == 0x76 && read_reg(0x76, 0, data, 1) == ESP_OK) {
+        } else if (address == 0x76 && read_reg(0x76, 0, data, 1) == ESP_OK) {
             ESP_LOGI(TAG, "pressure chip ID=0x%02x%s", data[0], data[0] == 0x50 ?
                 "; BMP388/BMP384 family (ID cannot distinguish them)" : "; unexpected identity");
-        } else if (addresses[i] == 0x6f && read_reg(0x6f, 0, data, 7) == ESP_OK) {
+        } else if (address == 0x6f && read_reg(0x6f, 0, data, 7) == ESP_OK) {
             ESP_LOGI(TAG, "RTC registers readable: oscillator=%s battery-enable=%s power-fail=%s; clock not adopted",
                 data[3] & 0x20 ? "running" : "stopped", data[3] & 8 ? "yes" : "no", data[3] & 0x10 ? "yes" : "no");
+        } else if (address == NVF_I2C_RTC_TCXO && read_reg(NVF_I2C_RTC_TCXO, 0x0e, data, 2) == ESP_OK) {
+            ESP_LOGI(TAG, "MAX31328 control=0x%02x status=0x%02x: oscillator-stop flag %s; clock not adopted",
+                data[0], data[1], data[1] & 0x80 ? "set" : "clear");
         }
     }
     identify_crypto();
@@ -320,6 +349,11 @@ static void clock_bit(int bit)
 {
     gpio_set_level(LED_CLOCK, 0);
     gpio_set_level(LED_DATA, bit);
+#if NVF_PIN_LED_PANEL_SDI >= 0
+    // The optional front panel's own chain shows the same frame and shares clock,
+    // latch and output enables, so both SDI lines carry each bit.
+    gpio_set_level(NVF_PIN_LED_PANEL_SDI, bit);
+#endif
     esp_rom_delay_us(2);
     gpio_set_level(LED_CLOCK, 1);
     esp_rom_delay_us(2);
@@ -466,11 +500,13 @@ static void board_task(void *arg)
             ESP_LOGI(TAG, "panel green=0x%02x yellow=0x%02x (GPS SBAS GAL BDS QZSS GLO NavIC uplink)", green, yellow);
             previous_green = green; previous_yellow = yellow;
         }
-        if (brightness_changed) brightness_dirty = true;
+        unsigned reference = atomic_load(&trimmer_reference);
+        if (brightness_changed || reference != saved_reference) brightness_dirty = true;
         if (brightness_dirty && now >= next_brightness_write) {
-            esp_err_t err = panel_brightness_save(applied_brightness);
+            esp_err_t err = panel_brightness_save(applied_brightness, reference);
             if (err == ESP_OK) {
                 brightness_dirty = false;
+                saved_reference = reference;
                 ESP_LOGI(TAG, "panel brightness saved=%u%%", applied_brightness);
             } else {
                 ESP_LOGW(TAG, "could not save panel brightness: %s; retrying in 60 seconds",
@@ -493,17 +529,103 @@ static void board_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
+#if NVF_PIN_BRIGHT_BUTTON >= 0
+#define PANEL_INPUT_POLL_MS 20u
+#define PANEL_TRIMMER_SAMPLE_MS 200u
+#if NVF_PIN_BRIGHT_ADC >= 0
+static adc_oneshot_unit_handle_t trimmer_unit;
+static adc_cali_handle_t trimmer_cali;
+static adc_channel_t trimmer_channel;
+static bool trimmer_init(void)
+{
+    adc_unit_t unit;
+    if (adc_oneshot_io_to_channel(NVF_PIN_BRIGHT_ADC, &unit, &trimmer_channel) != ESP_OK) return false;
+    adc_oneshot_unit_init_cfg_t unit_config = {.unit_id = unit};
+    adc_oneshot_chan_cfg_t channel = {.atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_DEFAULT};
+    adc_cali_curve_fitting_config_t cali = {.unit_id = unit, .chan = trimmer_channel,
+        .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_DEFAULT};
+    if (adc_oneshot_new_unit(&unit_config, &trimmer_unit) != ESP_OK) return false;
+    if (adc_oneshot_config_channel(trimmer_unit, trimmer_channel, &channel) != ESP_OK ||
+        adc_cali_create_scheme_curve_fitting(&cali, &trimmer_cali) != ESP_OK) {
+        adc_oneshot_del_unit(trimmer_unit); trimmer_unit = NULL; return false;
+    }
+    return true;
+}
+// The average of eight calibrated conversions as a brightness percent; 0 when the wiper
+// is open or a conversion fails.
+static unsigned trimmer_read(void)
+{
+    if (!trimmer_unit) return 0;
+    int sum = 0;
+    for (unsigned i = 0; i < 8; i++) {
+        int mv;
+        if (adc_oneshot_get_calibrated_result(trimmer_unit, trimmer_cali, trimmer_channel, &mv) != ESP_OK) return 0;
+        sum += mv;
+    }
+    return panel_trimmer_percent(sum / 8, CONFIG_NVF_PANEL_TRIMMER_OPEN_MV);
+}
+#else
+static bool trimmer_init(void) { return false; }
+static unsigned trimmer_read(void) { return 0; }
+#endif
+// Owns the brightness choice on boards with preset buttons and a trimmer: the control
+// that changed last wins (panel_brightness_t), and the board task applies and saves it.
+static void panel_input_task(void *arg)
+{
+    (void)arg;
+    const gpio_config_t button = {.pin_bit_mask = NVF_PIN(NVF_PIN_BRIGHT_BUTTON), .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE, .pull_down_en = GPIO_PULLDOWN_DISABLE}; // R47 pulls up
+    if (gpio_config(&button) != ESP_OK) { ESP_LOGE(TAG, "brightness button GPIO%d unavailable", NVF_PIN_BRIGHT_BUTTON); vTaskDelete(NULL); }
+    bool trimmer = trimmer_init();
+    if (!trimmer) ESP_LOGW(TAG, "brightness trimmer unavailable; presets only");
+    panel_brightness_t lamp = {.percent = atomic_load(&brightness), .reference = atomic_load(&trimmer_reference)};
+    panel_button_t press = {0};
+    bool settled = false;
+    unsigned position = 0, elapsed = 0;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(PANEL_INPUT_POLL_MS));
+        elapsed += PANEL_INPUT_POLL_MS;
+        bool sampled = trimmer && elapsed % PANEL_TRIMMER_SAMPLE_MS == 0;
+        if (sampled) position = trimmer_read();
+        bool changed = false;
+        if (!settled) {
+            // Ignore both controls until the wiper filter settles.
+            if (elapsed < PANEL_TRIMMER_SETTLE_MS) continue;
+            settled = true;
+            unsigned saved = lamp.percent;
+            if (trimmer) position = trimmer_read();
+            panel_brightness_boot(&lamp, lamp.percent, lamp.reference, position);
+            if (lamp.percent != saved) ESP_LOGI(TAG, "brightness trimmer moved while off: %u%%", lamp.percent);
+            changed = true;
+        } else if (sampled) {
+            changed = panel_brightness_trimmer(&lamp, position);
+        }
+        if (panel_button_short_press(&press, gpio_get_level(NVF_PIN_BRIGHT_BUTTON) == 0, PANEL_INPUT_POLL_MS)) {
+            panel_brightness_preset(&lamp, position);
+            changed = true;
+        }
+        if (changed) {
+            atomic_store(&trimmer_reference, lamp.reference);
+            observer_board_set_brightness(lamp.percent);
+        }
+    }
+}
+#endif
 esp_err_t observer_board_start(void)
 {
     // Restore before PWM starts, including in provisioning mode.
-    esp_err_t load_err = panel_brightness_load(&applied_brightness);
+    esp_err_t load_err = panel_brightness_load(&applied_brightness, &saved_reference);
     if (load_err != ESP_OK)
         ESP_LOGW(TAG, "could not load panel brightness: %s; using %u%%",
                  esp_err_to_name(load_err), applied_brightness);
     atomic_store(&brightness, applied_brightness);
+    atomic_store(&trimmer_reference, saved_reference);
     if (!crypto_lock && !(crypto_lock = xSemaphoreCreateMutex())) return ESP_ERR_NO_MEM;
-    const uint64_t outputs = (1ULL << LED_DATA) | (1ULL << LED_CLOCK) | (1ULL << LED_LATCH) |
-                            (1ULL << LED_GREEN_OE) | (1ULL << LED_YELLOW_OE);
+    uint64_t outputs = (1ULL << LED_DATA) | (1ULL << LED_CLOCK) | (1ULL << LED_LATCH) |
+                       (1ULL << LED_GREEN_OE) | (1ULL << LED_YELLOW_OE);
+#if NVF_PIN_LED_PANEL_SDI >= 0
+    outputs |= NVF_PIN(NVF_PIN_LED_PANEL_SDI);
+#endif
     gpio_set_level(LED_GREEN_OE, 1); gpio_set_level(LED_YELLOW_OE, 1);
     gpio_config_t config = {.pin_bit_mask = outputs, .mode = GPIO_MODE_OUTPUT};
     esp_err_t err = gpio_config(&config);
@@ -514,7 +636,7 @@ esp_err_t observer_board_start(void)
     for (size_t i = 0; i < sizeof oe / sizeof oe[0]; i++) {
         gpio_set_level(LED_GREEN_OE, oe[i]); gpio_set_level(LED_YELLOW_OE, oe[i]); clock_bit(0);
     }
-    panel_write(0, 0xbf); // NEO-M9N's six constellations and disconnected uplink
+    panel_write(0, 0xbf); // six constellations and a disconnected uplink until the receiver reports
     ledc_timer_config_t timer = {.speed_mode=LEDC_LOW_SPEED_MODE, .duty_resolution=LEDC_TIMER_10_BIT,
         .timer_num=LEDC_TIMER_0, .freq_hz=4000, .clk_cfg=LEDC_AUTO_CLK};
     err = ledc_timer_config(&timer);
@@ -528,6 +650,9 @@ esp_err_t observer_board_start(void)
     }
     pwm_ready = true;
     ESP_LOGI(TAG, "panel brightness=%u%% (4 kHz PWM)", applied_brightness);
+#if NVF_PIN_BRIGHT_BUTTON >= 0
+    if (xTaskCreate(panel_input_task, "panel_input", 3072, NULL, 4, NULL) != pdPASS) return ESP_ERR_NO_MEM;
+#endif
     return xTaskCreate(board_task, "board", 6144, NULL, 3, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
 #else

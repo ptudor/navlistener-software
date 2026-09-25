@@ -6,7 +6,7 @@ static uint8_t square_state, square_control, square_trim;
 void observer_rtc_square_wave_status(uint8_t *state, uint8_t *control, uint8_t *trim)
 { *state=square_state; *control=square_control; *trim=square_trim; }
 report_rtc_t observer_rtc_status(void) { return telemetry; }
-#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO || CONFIG_NVF_BOARD_GNSS_COLOR_MAX
 #include <string.h>
 #include "esp_log.h"
 #include "nvs.h"

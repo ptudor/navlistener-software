@@ -26,6 +26,10 @@ from tuf.api.metadata import (
 )
 from tuf.api.serialization.json import CanonicalJSONSerializer, JSONSerializer
 
+# Byte 9 of an image's NVFOTA1 metadata names the board it was built for
+# (esp32/components/ota/include/nvf_board.h); a release names the same family.
+BOARD_FAMILIES = {1: "gnss-color-neo", 2: "gnss-color-zed-x20", 3: "gnss-color-max"}
+
 CHANNELS = ("stable", "canary", "lab")
 PROFILES = ("trusted", "open", "test")
 RELEASE_PROFILES = ("trusted", "open")
@@ -278,10 +282,12 @@ class Repository:
         data = self.metadata_for("snapshot", Snapshot(meta=meta))
         self.metadata_for("timestamp", Timestamp(snapshot_meta=MetaFile.from_data(self.versions["snapshot"], data, ["sha256"])))
 
-    def add_release(self, *, sequence, version, revision, image, boot_key_id, provenance, licenses, notes,
+    def add_release(self, *, sequence, version, revision, image, board_family, boot_key_id, provenance, licenses, notes,
                     hardware_min=1, hardware_max=1, layout=1, minimum_updater=1):
         if sequence <= 0 or sequence >= 2**64 or len(image) > 0x400000:
             raise ValueError("release sequence or image size is outside the device profile")
+        if board_family not in BOARD_FAMILIES.values():
+            raise ValueError(f"unknown board family {board_family!r}")
         targets = Targets(targets=dict(self.metadata["releases"].signed.targets))
         if f"releases/{sequence}.json" in targets.targets:
             raise ValueError("release number already exists; reserve a new build number")
@@ -302,7 +308,7 @@ class Repository:
             self.add_target(targets, paths[key], blobs[key])
         value = {"schema": 1, "release_sequence": sequence, "version": version, "build_number": sequence,
                  "source_revision": revision, "published": self.now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                 "chip": "esp32s3", "board_family": "gnss-color-neo", "hardware_revision_min": hardware_min,
+                 "chip": "esp32s3", "board_family": board_family, "hardware_revision_min": hardware_min,
                  "hardware_revision_max": hardware_max, "partition_layout_id": layout,
                  "minimum_updater_version": minimum_updater, "length": len(image), "sha256": digest(image),
                  "secure_boot_key_id": boot_key_id, "security_version": 0, "collector_capability": "",

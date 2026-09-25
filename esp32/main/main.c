@@ -337,7 +337,7 @@ void app_main(void)
     journal_start();
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+#if CONFIG_NVF_BOARD_GNSS_COLOR
         // The default NVS partition also holds the last adopted manifest
         // EEPROM EUI-64. Erasing it automatically would turn a previously
         // known blank/replaced EEPROM into an apparent first boot. Preserve
@@ -354,7 +354,7 @@ void app_main(void)
 
     ESP_LOGI(TAG, "navfeeder-esp starting (GNF1 edge feeder for navlistener)");
 
-#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+#if CONFIG_NVF_BOARD_GNSS_COLOR
     hardware_manifest_result_t manifest={0};
     err = hardware_manifest_boot(CONFIG_NVF_MANIFEST_FACTORY_INIT, &manifest);
     if (err != ESP_OK) {
@@ -376,7 +376,7 @@ void app_main(void)
 #endif
 
     // Display + LED first, so the board shows life (and any problem) even if unprovisioned.
-#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+#if CONFIG_NVF_BOARD_GNSS_COLOR
     // This board has two TLC5916s and no LCD/WS2812. The Waveshare drivers'
     // GPIO6/GPIO7 pins conflict with this board's shared I2C bus.
     ESP_LOGI(TAG, "custom observer: Waveshare LCD/WS2812 drivers disabled");
@@ -399,7 +399,7 @@ void app_main(void)
 
     nvf_update_hooks_t update_hooks={.online=update_online,.durable_link=pusher_durable_connected,
         .pause=spool_pause_producers,.resume=spool_resume_producers};
-#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+#if CONFIG_NVF_BOARD_GNSS_COLOR
     update_hooks.device.hardware_known=manifest.action==HARDWARE_MANIFEST_ACTION_USE && manifest.capabilities_valid && manifest.identity.board_valid;
     update_hooks.device.hardware_revision=manifest.capabilities.revision;
     memcpy(update_hooks.device.board_uid,manifest.identity.board_uid,NVF_BOARD_UID_SIZE);

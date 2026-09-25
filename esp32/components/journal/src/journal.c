@@ -1,7 +1,7 @@
 #include "journal.h"
 #include "journal_policy.h"
 #include "sdkconfig.h"
-#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+#if CONFIG_NVF_BOARD_GNSS_COLOR
 #include <stdio.h>
 #include <string.h>
 #include "esp_app_desc.h"

@@ -9,7 +9,7 @@ import zlib
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa, utils
 
-from repository import atomic
+from repository import BOARD_FAMILIES, atomic
 
 def public_bytes(key):
     return key.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
@@ -61,12 +61,20 @@ def keys(config, release):
         raise ValueError("active release firmware key needs a signing adapter")
     return result, active
 
+def board_family(image):
+    """The board an application image was built for, from its NVFOTA1 metadata."""
+    marker = image[288:304]
+    if (len(marker) != 16 or marker[:9] != b"NVFOTA1\0\x02" or marker[9] not in BOARD_FAMILIES
+            or marker[10:] != b"\x01\x00\x03\x00\x00\x00"):
+        raise ValueError("input lacks the approved board/rollback marker or enables manufacturing writes")
+    return BOARD_FAMILIES[marker[9]]
+
+
 def sign_image(image, config, release):
     public, active = keys(config, release)
     if not 304 <= len(image) <= 0x400000 - 4096 or image[0] != 0xe9 or image[12:14] != b"\x09\x00":
         raise ValueError("input is not an ESP32-S3 application fitting the OTA slot")
-    if image[288:304] != b"NVFOTA1\0\x02\x01\x01\x00\x03\x00\x00\x00":
-        raise ValueError("input lacks the approved board/rollback marker or enables manufacturing writes")
+    board_family(image)
     padded = image + b"\xff" * (-len(image) % 4096)
     digest = hashlib.sha256(padded).digest()
     spec = config["firmware"][active]

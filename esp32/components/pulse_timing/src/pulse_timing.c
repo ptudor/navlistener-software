@@ -1,7 +1,7 @@
 #include "pulse_timing.h"
 #include "pulse_stats.h"
 #include "sdkconfig.h"
-#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+#if CONFIG_NVF_BOARD_GNSS_COLOR
 #include "driver/mcpwm_cap.h"
 #include "driver/pulse_cnt.h"
 #include "driver/gpio.h"

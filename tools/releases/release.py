@@ -17,7 +17,7 @@ import urllib.error
 from tuf.api.metadata import Metadata, Targets
 from tuf.api.serialization.json import JSONSerializer
 from repository import Repository, Signers, THRESHOLDS, CHANNELS, RELEASE_PROFILES, atomic, immutable, encoded, digest, init_test_keys
-from firmware_signing import sign_image, verify_image, key_id, keys as firmware_keys
+from firmware_signing import board_family, sign_image, verify_image, key_id, keys as firmware_keys
 from publisher import ORIGINS, fetch, publish, verify_public
 
 SOURCE = Path(__file__).resolve().parents[2]
@@ -214,8 +214,9 @@ def finish(directory, tx, config, signers, bootstrap):
             if digest(notes) != tx["notes_sha256"]:
                 raise ValueError("release notes changed after number reservation")
             licenses = json.loads(Path(tx["build"]["licenses"]["path"]).read_bytes())
-            repository.add_release(sequence=tx["sequence"], version=tx["version"], revision=tx["revision"], image=(directory / "signed-image.bin").read_bytes(),
-                boot_key_id=tx["firmware_key_id"], provenance=Path(tx["build"]["provenance"]["path"]).read_bytes(), licenses=encoded(licenses),
+            signed = (directory / "signed-image.bin").read_bytes()
+            repository.add_release(sequence=tx["sequence"], version=tx["version"], revision=tx["revision"], image=signed,
+                board_family=board_family(signed), boot_key_id=tx["firmware_key_id"], provenance=Path(tx["build"]["provenance"]["path"]).read_bytes(), licenses=encoded(licenses),
                 notes=notes, layout=3, hardware_min=config.get("hardware_min", 1), hardware_max=config.get("hardware_max", 1))
             import base64
             immutable(bundle_path, encoded({path: base64.b64encode(data).decode() for path, data in repository.files.items()}))
@@ -344,7 +345,8 @@ def main():
         if image_identity(unsigned)[0]!=args.release:
             raise ValueError("test release number must match the image's compiled BUILD_NUMBER")
         image, key = sign_image(unsigned, signers.config, False)
-        repository.add_release(sequence=args.release, version="0.0.0-test", revision=git("rev-parse", "HEAD"), image=image, boot_key_id=key,
+        repository.add_release(sequence=args.release, version="0.0.0-test", revision=git("rev-parse", "HEAD"), image=image,
+            board_family=board_family(image), boot_key_id=key,
             provenance=encoded({"profile": "test"}), licenses=encoded(license_inventory(SOURCE)), notes=b"TEST ONLY; never publish to a release track.\n", layout=3)
         repository.publish_local(); validate_repository(repository, root)
         print(f"Signed TEST-ONLY release {args.release} locally. No source push, remote publication or chip lock was performed.")

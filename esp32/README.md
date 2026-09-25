@@ -24,15 +24,16 @@ LCD development board is unsupported; adding flash alone does not make it a
 supported substitute. Its drivers and partition table remain as legacy source.
 
 - **Custom GNSS color observer:** ESP32-S3, receiver UART on GPIO4/GPIO5, shared I2C on
-  GPIO6/GPIO7, and a 24CS128 manifest at `0x50`. Select
-  `NVF_BOARD_GNSS_COLOR_NEO`, which `sdkconfig.defaults.s3` sets. Its startup reads the
-  128-bit factory serial and manifest;
+  GPIO6/GPIO7, and a 24CS128 manifest at `0x50`. `NVF_BOARD_ASSEMBLY` selects the board:
+  the NEO (`sdkconfig.defaults.s3`'s default), the ZED/X20 or the MAX. The choice sets the
+  board's pins and drivers ([`main/board_reservations.h`](main/board_reservations.h)) and
+  the board ID in the OTA image metadata, so an image installs only on its own board.
+  Startup reads the 128-bit factory serial and manifest;
   `NVF_MANIFEST_FACTORY_INIT` is a manufacturing-only, default-off permission to initialize a
   blank, never-seen EEPROM from a compiled revision-A component list; `NVF_MANIFEST_BOARD`
-  chooses the NEO, MAX or ZED-X20P assembly's list (the lists are in
+  offers only this board's list (the lists are in
   [the observer contract](../docs/HARDWARE-OBSERVER.md#52-how-navlistener-consumes-it)). It never
   writes after an I2C error, to a known-but-blank EEPROM, or across an identity replacement.
-  The choice sets only the programmed manifest, not this build's drivers or pins.
   An absent, never-adopted EEPROM is supported during bring-up: compiled GPIO wiring
   and the provisioned station ID remain usable. Firmware does not synthesize an EUI
   or claim hardware attestation. A previously adopted EEPROM disappearing still
@@ -50,13 +51,15 @@ From this directory:
 ```sh
 export IDF_PATH=/path/to/esp-idf
 "$IDF_PATH/install.sh" esp32s3             # once, after installing ESP-IDF
-./build-navfeeder-esp.sh                  # build the S3 firmware
+./build-navfeeder-esp.sh                  # build the NEO firmware
+NVF_BOARD=zed-x20 ./build-navfeeder-esp.sh # or NVF_BOARD=max
 PORT=/dev/ttyACM0 ./build-navfeeder-esp.sh flash
 ```
 
 Use your board's actual serial device, such as `/dev/ttyACM0` on Linux or
 `/dev/cu.usbmodem...` on macOS. Flashing is requested explicitly by `flash`.
-The wrapper builds in `build/s3-layout3`, preserving that directory's generated
+The wrapper builds the NEO in `build/s3-layout3` and the others in
+`build/s3-zed-x20-layout3` and `build/s3-max-layout3`, preserving each directory's generated
 configuration, reporting default-setting differences, and recording firmware
 provenance. Set `S3_BUILD_DIR` to select
 another build directory. It does not erase flash; migration from an older layout
@@ -217,11 +220,19 @@ enabled, and HDC values are withheld while it heats and cools. The thresholds ar
 `menuconfig` options; see the
 [recovery policy](../docs/OBSERVER-TELEMETRY.md#humidity-sensor-heater-condensation-recovery).
 
-Both LED rows default to 20% brightness using 4 kHz PWM. A short BOOT press
+Both LED rows default to 20% brightness using 4 kHz PWM. On the NEO a short BOOT press
 (0.1–3 seconds, then release) cycles 20% → 10% → 50% → 20% at runtime,
-including before network provisioning while the setup portal is active.
-The board saves each applied brightness change in NVS and restores it before
-enabling PWM on subsequent boots. The eight-second network configuration-reset
+including before network provisioning while the setup portal is active. The ZED/X20
+and MAX step the same presets with their GPIO18 buttons (either front-panel button on
+the ZED/X20), and their GPIO2 trimmer sets an installation brightness from 1% at the
+bottom of its travel to 100% at 2.5 V and above. Whichever control changed last wins:
+a preset holds until the trimmer moves more than 3%, and turning the trimmer while
+the unit is off takes effect at the next boot. Both controls are ignored for the first
+second, while the wiper filter settles, and a reading at or above
+`NVF_PANEL_TRIMMER_OPEN_MV` (3.0 V) is an open wiper that leaves the saved setting in
+place. The board saves each applied brightness change, with the trimmer's position,
+in NVS and restores it before enabling PWM on subsequent boots. The ZED/X20's optional
+front panel shows the same frame on its own chain. The eight-second network configuration-reset
 hold preserves this preference. The dedicated PPS and power LEDs have separate hardware
 paths and are not dimmed. PWM pauses during TLC5916 serial/latch writes because
 OE also participates in mode selection; see [TLC5916 section 9.4](https://www.ti.com/lit/ds/symlink/tlc5916.pdf).
@@ -289,8 +300,8 @@ development, configuration can still be pre-seeded through `idf.py menuconfig`
 normally, then hold **BOOT/DOWNLOAD for eight seconds**. Once the status panel shows the
 armed pattern, release the button. Firmware erases only the `navfeeder`
 configuration namespace, reboots, and returns to BLE plus browser setup with
-the **same** label password. Short presses continue to cycle panel brightness,
-and merely reaching the hold threshold does not erase anything until a
+the **same** label password. On the NEO, short presses continue to cycle panel
+brightness. Merely reaching the hold threshold does not erase anything until a
 debounced release.
 
 Do not hold BOOT while resetting for this gesture: that enters the ROM downloader instead.

@@ -15,7 +15,7 @@ import origin
 import publisher
 import release
 import repository as repository_module
-from firmware_signing import keys, sign_image, verify_image
+from firmware_signing import board_family, keys, sign_image, verify_image
 from repository import Repository, Signers, digest, encoded, init_test_keys
 
 class BuildAdapterTests(unittest.TestCase):
@@ -80,6 +80,13 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(ValueError): sign_image(self.image(0x400001), self.signers.config, False)
         old = bytearray(self.image()); old[296] = 1
         with self.assertRaises(ValueError): sign_image(bytes(old), self.signers.config, False)
+        # Byte 297 names the board; a release follows it, and an unknown board is refused.
+        for board, family in ((1, "gnss-color-neo"), (2, "gnss-color-zed-x20"), (3, "gnss-color-max")):
+            marked = bytearray(self.image()); marked[297] = board
+            self.assertEqual(board_family(bytes(marked)), family)
+        for board in (0, 4):
+            marked = bytearray(self.image()); marked[297] = board
+            with self.assertRaises(ValueError): sign_image(bytes(marked), self.signers.config, False)
         with self.assertRaises(ValueError): keys(self.signers.config, True)
 
     def test_file_adapter_refuses_accidental_production_test_key(self):
@@ -139,7 +146,7 @@ class AdapterTests(unittest.TestCase):
         root = Path(tempfile.mkdtemp(dir=self.base))
         repository = Repository(root / "candidate", self.open); repository.bootstrap()
         image, key = sign_image(self.image(), self.open.config, True)
-        repository.add_release(sequence=31, version="0.1.0", revision="a" * 40, image=image, boot_key_id=key,
+        repository.add_release(sequence=31, version="0.1.0", revision="a" * 40, image=image, board_family=board_family(image), boot_key_id=key,
             provenance=b"{}", licenses=b"[]", notes=b"Open release\n")
         remote = root / "origin"; remote.mkdir(); fetches=[]; origins=publisher.ORIGINS["open"]
         def upload(command, track, path, data, previous=None):
@@ -183,7 +190,7 @@ class AdapterTests(unittest.TestCase):
         state=Path(tempfile.mkdtemp(dir=self.base))
         repo=Repository(state/"repository",self.signers);repo.bootstrap()
         image,key=sign_image(self.image(),self.signers.config,False)
-        repo.add_release(sequence=31,version="0.1.0",revision="a"*40,image=image,boot_key_id=key,provenance=b"{}",licenses=b"[]",notes=b"Notes\n")
+        repo.add_release(sequence=31,version="0.1.0",revision="a"*40,image=image,board_family=board_family(image),boot_key_id=key,provenance=b"{}",licenses=b"[]",notes=b"Notes\n")
         repo.publish_local();bootstrap=repo.files["metadata/1.root.json"]
         directory=state/"transactions/metadata-3";directory.mkdir(parents=True)
         tx={"phase":"preparing","previous_timestamp":digest(repo.files["metadata/timestamp.json"]),"action":"promote","channel":"canary","release":31,"percent":25}

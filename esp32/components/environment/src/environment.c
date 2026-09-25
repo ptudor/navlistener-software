@@ -1,7 +1,7 @@
 #include "environment.h"
 #include "sdkconfig.h"
 #include <string.h>
-#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+#if CONFIG_NVF_BOARD_GNSS_COLOR
 #include <string.h>
 #include <stdio.h>
 #include "env_sensors.h"

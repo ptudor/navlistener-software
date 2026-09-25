@@ -50,7 +50,7 @@ class RepositoryTests(unittest.TestCase):
         self.directory = Path(tempfile.mkdtemp(dir=self.base)) / "repo"
         self.repo = Repository(self.directory, self.signers, now=NOW)
         self.repo.bootstrap()
-        self.repo.add_release(sequence=31, version="0.1.0", revision="a" * 40,
+        self.repo.add_release(board_family="gnss-color-neo", sequence=31, version="0.1.0", revision="a" * 40,
             image=b"firmware fixture" * 50, boot_key_id="ab" * 32, provenance=b"{}", licenses=b"[]", notes=b"Test release\n")
 
     def client(self, expected=0, second=None, profile=None):
@@ -76,6 +76,12 @@ class RepositoryTests(unittest.TestCase):
         self.assertIsNotNone(target)
         updater.download_target(target, str(client / "manifest.json"))
         self.assertEqual(json.loads((client / "manifest.json").read_bytes())["release_sequence"], 31)
+
+    def test_a_release_names_a_known_board_family(self):
+        for family in ("", "gnss-color", "gnss-color-neo2"):
+            with self.assertRaises(ValueError):
+                self.repo.add_release(board_family=family, sequence=40, version="0.1.0", revision="a" * 40,
+                    image=b"fixture", boot_key_id="ab" * 32, provenance=b"{}", licenses=b"[]", notes=b"Notes")
 
     def test_release_tracks_refuse_test_signers(self):
         for track in ("trusted", "open"):
@@ -173,7 +179,7 @@ class RepositoryTests(unittest.TestCase):
         self.client(4001)
 
     def test_wrong_board_layout(self):
-        self.repo.add_release(sequence=32, version="0.1.1", revision="b" * 40, image=b"image", boot_key_id="ab" * 32,
+        self.repo.add_release(board_family="gnss-color-neo", sequence=32, version="0.1.1", revision="b" * 40, image=b"image", boot_key_id="ab" * 32,
             provenance=b"{}", licenses=b"[]", notes=b"notes", layout=99)
         self.client(3002)
 
@@ -251,13 +257,13 @@ class RepositoryTests(unittest.TestCase):
     def test_release_numbers_are_immutable_and_index_preserves_selected_channels(self):
         self.repo.set_channel("stable",31,"releases/31.json")
         for sequence in range(32,42):
-            self.repo.add_release(sequence=sequence,version="0.1.0",revision="a"*40,image=b"fixture",boot_key_id="ab"*32,provenance=b"{}",licenses=b"[]",notes=b"Notes")
+            self.repo.add_release(board_family="gnss-color-neo", sequence=sequence,version="0.1.0",revision="a"*40,image=b"fixture",boot_key_id="ab"*32,provenance=b"{}",licenses=b"[]",notes=b"Notes")
         targets=self.repo.metadata["releases"].signed.targets
         self.assertLessEqual(len(targets),32)
         self.assertIn("releases/31.json",targets)
         self.assertIn("releases/41.json",targets)
         with self.assertRaisesRegex(ValueError,"already exists"):
-            self.repo.add_release(sequence=41,version="0.1.0",revision="a"*40,image=b"other",boot_key_id="ab"*32,provenance=b"{}",licenses=b"[]",notes=b"Notes")
+            self.repo.add_release(board_family="gnss-color-neo", sequence=41,version="0.1.0",revision="a"*40,image=b"other",boot_key_id="ab"*32,provenance=b"{}",licenses=b"[]",notes=b"Notes")
 
 
 class OpenTrackTests(unittest.TestCase):
@@ -274,7 +280,7 @@ class OpenTrackTests(unittest.TestCase):
         cls.directory = cls.base / "repo"
         cls.repo = Repository(cls.directory, cls.signers, now=NOW)
         cls.repo.bootstrap()
-        cls.repo.add_release(sequence=31, version="0.1.0", revision="a" * 40,
+        cls.repo.add_release(board_family="gnss-color-neo", sequence=31, version="0.1.0", revision="a" * 40,
             image=b"firmware fixture" * 50, boot_key_id="ab" * 32, provenance=b"{}", licenses=b"[]", notes=b"Open release\n")
         cls.repo.publish_local()
 

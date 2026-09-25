@@ -64,7 +64,9 @@ def update_body(image, url):
     data = Path(image).read_bytes()
     if not 304 <= len(data) <= 0x400000 or data[0] != 0xe9 or data[12:14] != b"\x09\x00":
         raise ValueError("expected an ESP32-S3 app binary fitting the 4 MiB OTA slot")
-    if data[288:304] != b"NVFOTA1\0\x02\x01\x01\x00\x03\x00\x00\x00":
+    # Byte 297 names the board (1 NEO, 2 ZED/X20, 3 MAX). The device refuses another board's image.
+    marker = data[288:304]
+    if marker[:9] != b"NVFOTA1\0\x02" or marker[9] not in (1, 2, 3) or marker[10:] != b"\x01\x00\x03\x00\x00\x00":
         raise ValueError("image lacks the board/rollback marker or enables manufacturing writes")
     return (hashlib.sha256(data).hexdigest() + "\n" + url).encode("ascii")
 

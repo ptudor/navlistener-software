@@ -1,0 +1,4 @@
+# navfeeder-esp board selection for the ZED/X20 square observer: ZED-X20P receiver,
+# MAX31328 RTC, W5500 Ethernet and the optional front panel. Loaded after
+# sdkconfig.defaults and sdkconfig.defaults.s3; see build-navfeeder-esp.sh.
+CONFIG_NVF_BOARD_GNSS_COLOR_ZED_X20=y

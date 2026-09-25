@@ -1,6 +1,7 @@
 #include "ota_download.h"
 #include "../../../../common/endpoint_fallback.h"
 #include "sdkconfig.h"
+#include "nvf_board.h"
 #if CONFIG_NVF_OTA
 #include <stdlib.h>
 #include <string.h>
@@ -65,7 +66,7 @@ static esp_err_t download_once(const nvf_ota_request_t *request, const char *url
         if (n <= 0) { *retry = true; err = ESP_ERR_INVALID_RESPONSE; goto done; }
         prefix += n;
     }
-    if (!nvf_ota_image_compatible(buffer, prefix, CONFIG_IDF_FIRMWARE_CHIP_ID, 1,
+    if (!nvf_ota_image_compatible(buffer, prefix, CONFIG_IDF_FIRMWARE_CHIP_ID, NVF_BOARD_ID,
                                  esp_app_get_description()->project_name)) {
         *retry = true; err = ESP_ERR_INVALID_VERSION; goto done;
     }

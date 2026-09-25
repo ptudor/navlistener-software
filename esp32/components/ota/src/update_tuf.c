@@ -310,7 +310,8 @@ static int release_info(const metadata *channel,const metadata *manifest,const m
     out->layout=layout;out->profile=device->profile;
     if(!device->hardware_known)return UP_HARDWARE;
     const char *capability=str(manifest,manifest->body,"collector_capability");
-    if(!eq(str(manifest,manifest->body,"chip"),"esp32s3")||!eq(str(manifest,manifest->body,"board_family"),"gnss-color-neo")||
+    if(!device->board_family||!*device->board_family||
+       !eq(str(manifest,manifest->body,"chip"),"esp32s3")||!eq(str(manifest,manifest->body,"board_family"),device->board_family)||
        layout!=device->layout||lo>device->hardware_revision||hi<device->hardware_revision||updater>NVF_UPDATE_VERSION||
        (capability && *capability && !eq(capability,"durable_ack")))return UP_INELIGIBLE;
     (void)channel;return UP_OK;

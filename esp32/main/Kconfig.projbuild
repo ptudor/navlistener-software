@@ -85,19 +85,47 @@ menu "navfeeder-esp"
             button is GPIO9, which this firmware also uses as the receiver's UART RX. A
             runtime press would electrically contend with the receiver's push-pull TX.
 
-    config NVF_BOARD_GNSS_COLOR_NEO
+    config NVF_BOARD_GNSS_COLOR
         bool "Custom GNSS color observer (ESP32-S3)"
         depends on IDF_TARGET_ESP32S3
-        default n
+        default y
         help
-            Select the project ESP32-S3/NEO observer PCB. This enables the
-            GPIO6/GPIO7 hardware-manifest bus, uses GPIO4/GPIO5 for receiver
-            UART TX/RX, and suppresses the Waveshare C6 LCD/WS2812 drivers whose
-            fixed pins conflict with this board.
+            Select a project ESP32-S3 observer PCB, then the board below. Every
+            board uses the GPIO6/GPIO7 hardware-manifest bus and GPIO4/GPIO5 for
+            receiver UART TX/RX, and suppresses the Waveshare C6 LCD/WS2812
+            drivers whose fixed pins conflict with it.
+
+    choice NVF_BOARD_ASSEMBLY
+        prompt "Observer board"
+        depends on NVF_BOARD_GNSS_COLOR
+        default NVF_BOARD_GNSS_COLOR_NEO
+        help
+            The board this image drives. Its pins, drivers and the board ID in
+            the OTA image metadata follow this choice, so an image installs
+            only on its own board. main/board_reservations.h is the pin record.
+
+        config NVF_BOARD_GNSS_COLOR_NEO
+            bool "NEO (NEO-M9N; BOOT steps the panel brightness)"
+        config NVF_BOARD_GNSS_COLOR_ZED_X20
+            bool "ZED/X20 (ZED-X20P, MAX31328 RTC, W5500 Ethernet, optional front panel)"
+        config NVF_BOARD_GNSS_COLOR_MAX
+            bool "MAX (MAX-M10S mobile, motion sensors, thermocouple input)"
+    endchoice
+
+    config NVF_PANEL_TRIMMER_OPEN_MV
+        int "Brightness trimmer open-wiper threshold, mV"
+        depends on NVF_BOARD_GNSS_COLOR_ZED_X20 || NVF_BOARD_GNSS_COLOR_MAX
+        range 2900 3200
+        default 3000
+        help
+            The wiper's valid range ends at about 2.86 V worst case (R50 and VR1
+            tolerance); R48 pulls an open wiper to 3V3. A calibrated reading at or
+            above this is an open or faulty trimmer, and brightness stays at the
+            saved or default setting. Confirm the margin on the assembled board.
 
     choice NVF_ENV_HDC_VARIANT
         prompt "Fitted humidity sensor at 0x40"
-        depends on NVF_BOARD_GNSS_COLOR_NEO
+        depends on NVF_BOARD_GNSS_COLOR
         default NVF_ENV_HDC2080
         help
             Select the assembled part. HDC2080 and HDC2022 share manufacturer
@@ -112,7 +140,7 @@ menu "navfeeder-esp"
     endchoice
 
     menu "HDC humidity-sensor heater (condensation recovery)"
-        depends on NVF_BOARD_GNSS_COLOR_NEO
+        depends on NVF_BOARD_GNSS_COLOR
 
         comment "Engineering defaults, not yet derived from fleet data"
 
@@ -225,7 +253,7 @@ menu "navfeeder-esp"
 
     config NVF_MANIFEST_FACTORY_INIT
         bool "Initialize a never-seen blank manifest from board defaults"
-        depends on NVF_BOARD_GNSS_COLOR_NEO && NVF_ENV_HDC2080
+        depends on NVF_BOARD_GNSS_COLOR && NVF_ENV_HDC2080
         default n
         help
             Manufacturing-only permission. If the manifest EEPROM reads as
@@ -244,25 +272,28 @@ menu "navfeeder-esp"
     choice NVF_MANIFEST_BOARD
         prompt "Board assembly for the factory-initialized manifest"
         depends on NVF_MANIFEST_FACTORY_INIT
+        default NVF_MANIFEST_BOARD_ZED_X20_A if NVF_BOARD_GNSS_COLOR_ZED_X20
+        default NVF_MANIFEST_BOARD_MAX_A if NVF_BOARD_GNSS_COLOR_MAX
         default NVF_MANIFEST_BOARD_NEO_A
         help
-            The compiled component list factory initialization writes. Choose
-            the assembly being provisioned: the list records its receiver, RTC,
-            sensors, gated regulators and connectors. This selects only the
-            programmed manifest; it does not change the drivers or pin use of
-            this build.
+            The compiled component list factory initialization writes: the
+            receiver, RTC, sensors, gated regulators and connectors of one
+            revision of this build's board.
 
         config NVF_MANIFEST_BOARD_NEO_A
             bool "NEO-M9N first spin, revision A"
+            depends on NVF_BOARD_GNSS_COLOR_NEO
         config NVF_MANIFEST_BOARD_MAX_A
             bool "MAX-M10S mobile, revision A"
+            depends on NVF_BOARD_GNSS_COLOR_MAX
         config NVF_MANIFEST_BOARD_ZED_X20_A
             bool "ZED-X20P square, revision A"
+            depends on NVF_BOARD_GNSS_COLOR_ZED_X20
     endchoice
 
     config NVF_OTA
         bool "On-demand authenticated HTTPS OTA"
-        depends on NVF_BOARD_GNSS_COLOR_NEO
+        depends on NVF_BOARD_GNSS_COLOR
         default y
         select BOOTLOADER_APP_ROLLBACK_ENABLE
         select MBEDTLS_HAVE_TIME_DATE
@@ -274,7 +305,7 @@ menu "navfeeder-esp"
 
     config NVF_WIREGUARD
         bool "WireGuard tunnel to the collector (ESP32-S3)"
-        depends on NVF_BOARD_GNSS_COLOR_NEO
+        depends on NVF_BOARD_GNSS_COLOR
         default y
         help
             Accept an optional WireGuard profile at provisioning (a pasted wg-quick
@@ -324,7 +355,7 @@ menu "navfeeder-esp"
 
     config NVF_COMMISSION_CONSOLE
         bool "Bench commissioning commands on the USB console"
-        depends on NVF_BOARD_GNSS_COLOR_NEO
+        depends on NVF_BOARD_GNSS_COLOR
         default y
         help
             Accept `commission ...` lines on the USB Serial/JTAG console: report this
@@ -346,7 +377,7 @@ menu "navfeeder-esp"
 
     config NVF_RX_AUTOPROBE
         bool "Probe receiver baud and query MON-VER"
-        default y if NVF_BOARD_GNSS_COLOR_NEO
+        default y if NVF_BOARD_GNSS_COLOR
         default n
         help
             Probe the configured rate, 38400, 115200, 9600, 230400 and 460800.
@@ -386,7 +417,7 @@ menu "navfeeder-esp"
     config NVF_SPOOL_PSRAM
         bool "Prefer a bounded PSRAM spool"
         depends on SPIRAM
-        default y if NVF_BOARD_GNSS_COLOR_NEO
+        default y if NVF_BOARD_GNSS_COLOR
         help
             Allocate metadata and payload storage explicitly in PSRAM. If either
             allocation fails, use the internal RAM frame/byte budgets instead.

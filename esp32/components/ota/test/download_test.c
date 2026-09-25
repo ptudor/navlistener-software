@@ -96,6 +96,11 @@ int main(void)
     reset(); request.hash[0]^=1; assert(nvf_ota_download(&request) != ESP_OK && !selected && aborted && !ended);
     reset(); image[12]=13; assert(nvf_ota_download(&request) != ESP_OK && !begun && !selected);
     reset(); image[299]=1; assert(nvf_ota_download(&request) != ESP_OK && !begun);
+    // A NEO build never installs another board's image (byte 297 is the board ID).
+    for (uint8_t board = 0; board < 4; board++) {
+        if (board == 1) continue;
+        reset(); image[297]=board; assert(nvf_ota_download(&request) != ESP_OK && !begun);
+    }
     reset(); reported_length=0x400001; assert(nvf_ota_download(&request) != ESP_OK && !begun);
     reset(); reported_length=200; assert(nvf_ota_download(&request) != ESP_OK && !begun);
     reset(); http_status=302; assert(nvf_ota_download(&request) != ESP_OK && !begun);

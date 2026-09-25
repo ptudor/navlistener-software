@@ -5,7 +5,14 @@ tool_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 esp_dir=$(CDPATH= cd -- "$tool_dir/.." && pwd)
 cd "$esp_dir"
 
-build_dir=${S3_BUILD_DIR:-build/s3-layout3}
+# NVF_BOARD selects the board, as in build-navfeeder-esp.sh (default neo).
+board=${NVF_BOARD:-neo}
+case "$board" in
+    neo) board_defaults=; default_dir=build/s3-layout3 ;;
+    zed-x20|max) board_defaults=";sdkconfig.defaults.$board"; default_dir="build/s3-$board-layout3" ;;
+    *) echo "NVF_BOARD must be neo, zed-x20 or max" >&2; exit 2 ;;
+esac
+build_dir=${S3_BUILD_DIR:-$default_dir}
 
 cat <<EOF
 === ATTENDED ESP32-S3 FIRST-BOOT FLASH ===
@@ -73,7 +80,7 @@ trap restore_lock EXIT
 
 idf.py -B "$build_dir" \
     -D "SDKCONFIG=$build_dir/sdkconfig" \
-    -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.s3' \
+    -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.s3$board_defaults" \
     -D IDF_TARGET=esp32s3 build
 python tools/build_provenance.py --build-dir "$build_dir"
 python tools/production_profile.py --refuse-locking-build "$build_dir/sdkconfig"

@@ -4,6 +4,9 @@
 #include <stddef.h>
 #define CONFIG_NVF_OTA 1
 #define CONFIG_IDF_FIRMWARE_CHIP_ID 9
+// The NEO board, as the S3 build selects by default (nvf_board.h).
+#define CONFIG_NVF_BOARD_GNSS_COLOR 1
+#define CONFIG_NVF_BOARD_GNSS_COLOR_NEO 1
 #define ESP_OK 0
 #define ESP_FAIL -1
 #define ESP_ERR_NO_MEM 1

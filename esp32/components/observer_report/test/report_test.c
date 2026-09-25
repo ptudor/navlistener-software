@@ -66,6 +66,30 @@ int main(int argc, char **argv)
     assert(panel_pwm_off_ticks(50)==512 && panel_pwm_off_ticks(20)==819 && panel_pwm_off_ticks(10)==922);
     assert(panel_pwm_off_ticks(100)==0 && panel_pwm_off_ticks(0)==1024);
     assert(panel_next_brightness(20)==10 && panel_next_brightness(10)==50 && panel_next_brightness(50)==20);
+    // Trimmer: 0 V is the dimmest setting, full travel is 100%, an open wiper is invalid.
+    assert(panel_trimmer_percent(0,3000)==1 && panel_trimmer_percent(1250,3000)==51);
+    assert(panel_trimmer_percent(2500,3000)==100 && panel_trimmer_percent(2860,3000)==100);
+    assert(!panel_trimmer_percent(3000,3000) && !panel_trimmer_percent(3300,3000) && !panel_trimmer_percent(-1,3000));
+    panel_brightness_t lamp;
+    panel_brightness_boot(&lamp,20,0,70);          // first boot with a trimmer: it sets the level
+    assert(lamp.percent==70 && lamp.reference==70);
+    panel_brightness_boot(&lamp,50,70,72);         // unmoved within the deadband: saved preset stands
+    assert(lamp.percent==50 && lamp.reference==72);
+    panel_brightness_boot(&lamp,50,70,30);         // moved while off: the trimmer wins
+    assert(lamp.percent==30 && lamp.reference==30);
+    panel_brightness_boot(&lamp,50,70,0);          // open wiper: saved setting and reference stand
+    assert(lamp.percent==50 && lamp.reference==70);
+    assert(!panel_brightness_trimmer(&lamp,0) && lamp.percent==50);
+    assert(!panel_brightness_trimmer(&lamp,73) && lamp.percent==50);  // jitter inside the deadband
+    assert(panel_brightness_trimmer(&lamp,74) && lamp.percent==74 && lamp.reference==74);
+    panel_brightness_preset(&lamp,74);             // a press (74 -> 20) wins until the trimmer moves again
+    assert(lamp.percent==20 && lamp.reference==74);
+    assert(!panel_brightness_trimmer(&lamp,76) && lamp.percent==20);
+    assert(panel_brightness_trimmer(&lamp,40) && lamp.percent==40);
+    panel_brightness_preset(&lamp,0);              // a press with the trimmer unreadable keeps its reference
+    assert(lamp.percent==20 && lamp.reference==40);
+    lamp=(panel_brightness_t){.percent=20};        // the trimmer becomes readable after an open wiper
+    assert(panel_brightness_trimmer(&lamp,60) && lamp.percent==60 && lamp.reference==60);
     panel_button_t button={0};
     assert(!panel_button_short_press(&button,true,200));
     assert(!panel_button_short_press(&button,false,80));
