@@ -6,31 +6,20 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"errors"
-	"fmt"
 
 	"github.com/ptudor/navlistener/internal/attestation"
 	"github.com/ptudor/navlistener/internal/identity"
 )
 
 // ProductPolicy is scoped to one manufacturer and one product/revision pair.
-// RTCModels includes zero only when absence is an approved assembly option.
+// The recorded RTC is history, not identity, so no policy depends on it.
 type ProductPolicy struct {
-	Product       uint16   `toml:"product"`
-	Revision      uint16   `toml:"revision"`
-	RTCModels     []uint16 `toml:"rtc_models"`
-	RequireRTCEUI bool     `toml:"require_rtc_eui"`
+	Product  uint16 `toml:"product"`
+	Revision uint16 `toml:"revision"`
 }
 
 func (p ProductPolicy) Allows(s Statement) bool {
-	if p.Product != uint16(s.Product) || p.Revision != s.BoardRevision {
-		return false
-	}
-	for _, model := range p.RTCModels {
-		if model == uint16(s.RTCModel) {
-			return !p.RequireRTCEUI || s.IdentityFlags&1 != 0
-		}
-	}
-	return false
+	return p.Product == uint16(s.Product) && p.Revision == s.BoardRevision
 }
 
 // Authorities selects exactly one verifier from authenticated enrollment data.
@@ -107,17 +96,10 @@ func (v *Verifier) SetProducts(products []ProductPolicy) error {
 	}
 	for _, p := range products {
 		id := [2]uint16{p.Product, p.Revision}
-		if p.Product == 0 || seen[id] || len(p.RTCModels) == 0 {
+		if p.Product == 0 || seen[id] {
 			return errors.New("invalid or duplicate product/revision policy")
 		}
 		seen[id] = true
-		models := map[uint16]bool{}
-		for _, model := range p.RTCModels {
-			if model > 2 || models[model] || (p.RequireRTCEUI && model != 1) {
-				return fmt.Errorf("invalid RTC policy for product %d revision %d", p.Product, p.Revision)
-			}
-			models[model] = true
-		}
 	}
 	v.products = append([]ProductPolicy(nil), products...)
 	return nil

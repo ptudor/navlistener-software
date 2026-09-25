@@ -26,7 +26,7 @@ BASE64_FIELDS = ("mcu_public_key_der", "ds_context")
 KEY_STATES = ("absent", "orphaned", "ready", "fault")
 PROFILES = ("trusted", "open", "test", "unreported")
 REPORT_FIELDS = {
-    "v", "product", "identity_flags", "rtc_model_id", "rtc_expected", "rtc_present",
+    "v", "product", "identity_flags", "rtc_model_id", "rtc_present",
     "atecc_serial", "rtc_eui64", "board_uid_kind", "board_uid", "board_rev", "mcu_family", "mcu_mac",
     "identity_complete", "security", "secure_boot_keys_sha256", "attestation_record",
     "mcu_key_alg", "mcu_public_key_der", "mcu_key_sha256", "ds_context", "key_state",
@@ -72,8 +72,7 @@ def validate(report):
     for name, size in HEX_FIELDS.items():
         value = report.get(name)
         # A value the firmware could not read is explicit JSON null, never an empty or
-        # guessed identifier. RTC configuration/presence below distinguishes not fitted
-        # from an expected part that could not be read.
+        # guessed identifier. An RTC EUI-64 is also null when the fitted RTC has none.
         if value is not None and (not isinstance(value, str) or not re.fullmatch(f"[0-9a-f]{{{2 * size}}}", value)):
             raise ValueError(f"{name} is neither null nor {size} bytes of lowercase hex")
     kind, value = report["board_uid_kind"], report["board_uid"]
@@ -117,28 +116,27 @@ def validate(report):
         raise ValueError("board_rev is neither an integer nor null")
     if report.get("key_state") not in KEY_STATES or report.get("trust_profile") not in PROFILES:
         raise ValueError("unknown key state or trust profile")
-    for name in ("rtc_expected", "rtc_present", "identity_complete", "rd_dis_sealed"):
+    for name in ("rtc_present", "identity_complete", "rd_dis_sealed"):
         if not isinstance(report.get(name), bool):
             raise ValueError(f"{name} is not a boolean")
+    # The RTC is recorded as found and is not part of the board's identity: its model
+    # once it answers, and a factory EUI-64 only from an MCP79412 that returned one.
     flags = report["identity_flags"]
     if flags & ~0x0003 or bool(flags & 1) and not flags & 2:
         raise ValueError("identity_flags has an unknown or impossible RTC declaration")
-    declared = bool(flags & 2)
-    bound = bool(flags & 1)
-    if report["rtc_expected"] != declared:
-        raise ValueError("RTC declaration disagrees with the product expectation")
-    if (not declared and report["rtc_model_id"] != 0) or (declared and report["rtc_model_id"] not in (1, 2)):
+    present = bool(flags & 2)
+    recorded = bool(flags & 1)
+    if report["rtc_present"] != present:
+        raise ValueError("RTC presence disagrees with identity_flags")
+    if (not present and report["rtc_model_id"] != 0) or (present and report["rtc_model_id"] not in (1, 2, 3)):
         raise ValueError("RTC model disagrees with the RTC declaration")
-    if bound and report["rtc_model_id"] != 1:
+    if recorded and report["rtc_model_id"] != 1:
         raise ValueError("RTC model has no factory EUI-64")
-    if not bound and report["rtc_eui64"] is not None:
-        raise ValueError("unbound RTC EUI-64 must be null")
-    if report["rtc_eui64"] is not None and not report["rtc_present"]:
-        raise ValueError("RTC EUI-64 was reported although the RTC model check failed")
+    if recorded != (report["rtc_eui64"] is not None):
+        raise ValueError("RTC EUI-64 disagrees with identity_flags")
     complete = all(report[name] is not None for name in
                    ("atecc_serial", "board_uid", "mcu_mac", "attestation_record")) and \
-        report["board_rev"] is not None and (not declared or report["rtc_present"]) and \
-        (not bound or report["rtc_eui64"] is not None)
+        report["board_rev"] is not None
     if report["identity_complete"] != complete:
         raise ValueError("identity_complete disagrees with the explicit read states")
     if report["mcu_family"] != 1 or report["mcu_key_alg"] not in (0, 1):

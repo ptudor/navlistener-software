@@ -91,22 +91,26 @@ type Product uint16
 // values belong to the manufacturer's other product lines.
 const ProductObserver Product = 1
 
-// Identity flags describe optional, replaceable component identity carried by
-// the commissioning statement. All unassigned bits are reserved.
+// Identity flags describe the RTC fitted at commissioning, recorded for the
+// unit's history. Trust rests on the board UID (the public identity) and the
+// ATECC (the private one): no verifier compares the recorded RTC with the live
+// board or with a product policy, so replacing an RTC leaves the record valid.
+// All unassigned bits are reserved.
 const (
-	IdentityRTCEUIBound uint16 = 1 << 0
-	IdentityRTCPresent  uint16 = 1 << 1
-	identityKnown              = IdentityRTCEUIBound | IdentityRTCPresent
+	IdentityRTCEUIRecorded uint16 = 1 << 0
+	IdentityRTCPresent     uint16 = 1 << 1
+	identityKnown                 = IdentityRTCEUIRecorded | IdentityRTCPresent
 )
 
-// RTCModel identifies a supported RTC assembly. Zero is reserved for a board
-// that declares no RTC.
+// RTCModel names the recorded RTC part. Zero records no RTC. Only the
+// MCP79412 carries a factory EUI-64.
 type RTCModel uint16
 
 const (
 	RTCModelNone     RTCModel = 0
 	RTCModelMCP79412 RTCModel = 1
-	RTCModelDS3231   RTCModel = 2 // descriptor only; no factory instance EUI
+	RTCModelDS3231   RTCModel = 2
+	RTCModelMAX31328 RTCModel = 3
 )
 
 // MCUFamily names the microcontroller family the statement describes.
@@ -184,18 +188,18 @@ func (s Statement) Validate() error {
 		return fmt.Errorf("identity flags 0x%04x include reserved bits", s.IdentityFlags)
 	}
 	rtcPresent := s.IdentityFlags&IdentityRTCPresent != 0
-	rtcBound := s.IdentityFlags&IdentityRTCEUIBound != 0
-	if rtcBound && !rtcPresent {
-		return errors.New("RTC EUI-64 binding requires an RTC declaration")
+	rtcRecorded := s.IdentityFlags&IdentityRTCEUIRecorded != 0
+	if rtcRecorded && !rtcPresent {
+		return errors.New("a recorded RTC EUI-64 requires an RTC declaration")
 	}
 	if !rtcPresent {
 		if s.RTCModel != RTCModelNone {
 			return errors.New("RTC model must be zero when no RTC is declared")
 		}
-	} else if s.RTCModel != RTCModelMCP79412 && s.RTCModel != RTCModelDS3231 {
+	} else if s.RTCModel != RTCModelMCP79412 && s.RTCModel != RTCModelDS3231 && s.RTCModel != RTCModelMAX31328 {
 		return fmt.Errorf("RTC model %d is unknown", uint16(s.RTCModel))
 	}
-	if rtcBound {
+	if rtcRecorded {
 		if s.RTCModel != RTCModelMCP79412 {
 			return errors.New("RTC model has no factory EUI-64")
 		}
@@ -203,7 +207,7 @@ func (s Statement) Validate() error {
 			return errors.New("RTC EUI-64 is blank or erased")
 		}
 	} else if s.RTCEUI64 != ([8]byte{}) {
-		return errors.New("RTC EUI-64 must be zero when it is not bound")
+		return errors.New("RTC EUI-64 must be zero when it is not recorded")
 	}
 	if s.Generation == 0 {
 		return errors.New("commissioning generation starts at 1")

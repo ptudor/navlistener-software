@@ -6,6 +6,6 @@ func newTestVerifier(id string, keys *KeySet) (*Verifier, error) {
 	if err != nil {
 		return nil, err
 	}
-	err = v.SetProducts([]ProductPolicy{{Product: 1, Revision: 258, RTCModels: []uint16{0, 1, 2}}})
+	err = v.SetProducts([]ProductPolicy{{Product: 1, Revision: 258}})
 	return v, err
 }

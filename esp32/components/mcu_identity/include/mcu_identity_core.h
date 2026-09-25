@@ -43,12 +43,16 @@ enum { NVF_MCU_ESP32S3 = 1 };
 // One manufacturer key signs for every product line; this firmware is the GNSS observer's.
 enum { NVF_COMMISSION_PRODUCT_OBSERVER = 1 };
 enum { NVF_MCU_KEY_NONE = 0, NVF_MCU_KEY_RSA3072_PSS = 1 };
+// The RTC fields describe the part fitted at commissioning, for the unit record. Trust rests
+// on the board UID (the public identity) and the ATECC (the private one); no verifier compares
+// the RTC with the live board, so a later RTC replacement leaves the record valid.
 enum {
-    NVF_IDENTITY_RTC_EUI_BOUND = 1u << 0,
-    NVF_IDENTITY_RTC_PRESENT   = 1u << 1,
-    NVF_IDENTITY_KNOWN         = 0x0003,
+    NVF_IDENTITY_RTC_EUI_RECORDED = 1u << 0,
+    NVF_IDENTITY_RTC_PRESENT      = 1u << 1,
+    NVF_IDENTITY_KNOWN            = 0x0003,
 };
-enum { NVF_RTC_NONE = 0, NVF_RTC_MCP79412 = 1, NVF_RTC_DS3231 = 2 };
+// Only the MCP79412 carries a factory EUI-64.
+enum { NVF_RTC_NONE = 0, NVF_RTC_MCP79412 = 1, NVF_RTC_DS3231 = 2, NVF_RTC_MAX31328 = 3 };
 enum {
     NVF_SEC_SECURE_BOOT       = 1u << 0, // Secure Boot v2 enabled
     NVF_SEC_FLASH_ENC_RELEASE = 1u << 1, // flash encryption in release mode
@@ -137,17 +141,16 @@ void nvf_commission_observer_id(const uint8_t uid[NVF_BOARD_UID_SIZE], char out[
 // read is marked invalid, never guessed.
 typedef struct {
     bool atecc_valid, board_valid, revision_valid, mac_valid, attestation_valid;
-    bool rtc_expected, rtc_present, rtc_valid;
     bool key_valid, security_valid, secure_boot_keys_valid;
-    uint16_t board_rev, rtc_model_id, security;
-    uint8_t board_uid[NVF_BOARD_UID_SIZE], atecc_serial[9], rtc_eui64[8], mcu_mac[6];
+    uint16_t board_rev, security;
+    uint8_t board_uid[NVF_BOARD_UID_SIZE], atecc_serial[9], mcu_mac[6];
     uint8_t attestation_record[72], mcu_key_sha256[32], secure_boot_keys[32];
 } nvf_live_identity_t;
 
 // nvf_commission_match decides whether a record belongs to this board: it must be an
-// observer's, every identifier the statement names must have been read and must be equal,
-// and a statement that names a microcontroller key must name the key this chip holds.
-// Returns NULL on a match.
+// observer's, every identifier the statement binds must have been read and must be equal,
+// and a statement that names a microcontroller key must name the key this chip holds. The
+// descriptive RTC fields are not compared. Returns NULL on a match.
 const char *nvf_commission_match(const nvf_commission_statement_t *s, const nvf_live_identity_t *live,
                                  nvf_sha256_fn sha);
 

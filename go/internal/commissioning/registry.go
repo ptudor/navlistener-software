@@ -227,7 +227,6 @@ func indexRegistry(reg Registry) (*RegistryIndex, error) {
 		boards: make(map[boardid.ID]indexedBoard, len(reg.Boards)),
 	}
 	ateccs := make(map[[9]byte]struct{}, len(reg.Boards))
-	rtcs := make(map[[8]byte]struct{}, len(reg.Boards))
 	for i, b := range reg.Boards {
 		if b.Status != StatusActive && b.Status != StatusRevoked {
 			return nil, fmt.Errorf("registry board %d: status %q is unknown", i, b.Status)
@@ -250,13 +249,14 @@ func indexRegistry(reg Registry) (*RegistryIndex, error) {
 			b.ATECCSerial != hex.EncodeToString(s.ATECCSerial[:]) || b.Profile != s.Profile.String() || b.Generation != s.Generation {
 			return nil, fmt.Errorf("registry board %d: columns disagree with the commissioning record", i)
 		}
-		rtcBound := s.IdentityFlags&IdentityRTCEUIBound != 0
-		if rtcBound {
+		// The RTC columns record history and may repeat: an RTC moved to another
+		// board is recorded again there, and neither board's identity changes.
+		if s.IdentityFlags&IdentityRTCEUIRecorded != 0 {
 			if b.RTCEUI64 == nil || *b.RTCEUI64 != hex.EncodeToString(s.RTCEUI64[:]) {
 				return nil, fmt.Errorf("registry board %d: RTC EUI-64 disagrees with the commissioning record", i)
 			}
 		} else if b.RTCEUI64 != nil {
-			return nil, fmt.Errorf("registry board %d: RTC EUI-64 must be null when the commissioning record does not bind one", i)
+			return nil, fmt.Errorf("registry board %d: RTC EUI-64 must be null when the commissioning record does not record one", i)
 		}
 		if _, dup := ix.boards[s.BoardUID]; dup {
 			return nil, fmt.Errorf("registry board %d: board %s is listed twice", i, b.BoardUID)
@@ -265,12 +265,6 @@ func indexRegistry(reg Registry) (*RegistryIndex, error) {
 			return nil, fmt.Errorf("registry board %d: ATECC serial %s is listed twice", i, b.ATECCSerial)
 		}
 		ateccs[s.ATECCSerial] = struct{}{}
-		if rtcBound {
-			if _, dup := rtcs[s.RTCEUI64]; dup {
-				return nil, fmt.Errorf("registry board %d: RTC EUI-64 %s is listed twice", i, *b.RTCEUI64)
-			}
-			rtcs[s.RTCEUI64] = struct{}{}
-		}
 		ix.boards[s.BoardUID] = indexedBoard{status: b.Status, reason: b.Reason, fingerprint: record.Fingerprint()}
 	}
 	return ix, nil

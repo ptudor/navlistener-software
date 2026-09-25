@@ -65,12 +65,10 @@ static size_t session_evidence(const uint8_t *exported, uint8_t *out, size_t cap
     nvf_live_identity_t live = {
         .atecc_valid = board.atecc_valid, .board_valid = board.board_valid,
         .revision_valid = board.revision_valid, .board_rev = board.revision,
-        .rtc_expected = true, .rtc_present = board.rtc_present, .rtc_valid = board.rtc_valid,
-        .rtc_model_id = NVF_RTC_MCP79412, .attestation_valid = board.attestation_valid,
+        .attestation_valid = board.attestation_valid,
     };
     memcpy(live.atecc_serial, board.atecc_serial, sizeof live.atecc_serial);
     memcpy(live.board_uid, board.board_uid, sizeof live.board_uid);
-    memcpy(live.rtc_eui64, board.rtc_eui64, sizeof live.rtc_eui64);
     memcpy(live.attestation_record, board.attestation, sizeof live.attestation_record);
     live.mac_valid = esp_efuse_mac_get_default(live.mcu_mac) == ESP_OK;
     return nvf_mcu_identity_evidence(exported, out, cap, &live);

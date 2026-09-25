@@ -143,8 +143,10 @@ The old enrollment ID remains required after revocation. Concurrent or stale
 requests fail rather than silently replacing a more recent enrollment.
 
 An operational key/authority/owner change preserves the permanent core and
-manufacturer. An RTC or MCU binding change requires a different valid
-commissioning record with strictly greater generation. ATECC replacement requires
+manufacturer. An MCU change requires a different valid commissioning record
+with strictly greater generation. The record's RTC fields are history: an RTC
+replacement needs no new record, and a new generation may record the part now
+fitted. ATECC replacement requires
 `service_action: "replace_atecc"`, a stable `service_approval` ledger reference,
 a changed ATECC serial, a newly signed core and a higher-generation commissioning
 record. A replacement authority is permitted only with that new valid chain and
@@ -169,9 +171,9 @@ Enrollment history retains the exact core and commissioning bytes, full signer
 and issuer pins, certificate, registry sequence/signer and policy snapshot.
 Collector raw and board-sample rows independently retain receipt-time operational
 and manufacturer authorities, commissioning fingerprint and signer evidence.
-Service changes do not relabel history. Board and ATECC IDs are globally unique;
-non-null RTC instance IDs are unique, but absent instances and repeated models
-are allowed. Metadata privacy still applies to all identifiers.
+Service changes do not relabel history. Board and ATECC IDs are globally unique.
+Recorded RTC models and EUI-64s are history and may repeat; an RTC moved to
+another board is recorded on both. Metadata privacy still applies to all identifiers.
 
 ## Verification and release boundary
 
@@ -186,5 +188,5 @@ policies, registry streams/floors and service snapshots.
 Portable no-RTC and model-only fixtures and open/trusted firmware builds are not
 a physical basic-board qualification. Before first enrollment, a reviewed board
 port must pass cold boot/time bootstrap, reconnect, interrupted commissioning,
-live component mismatch and actual MCU session-proof checks. A new model code
+live board UID/ATECC/MCU mismatch and actual MCU session-proof checks. A new model code
 alone does not add a driver. No bench result is implied by host tests.

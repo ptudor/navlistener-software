@@ -40,7 +40,7 @@ func newBench(t *testing.T) bench {
 	manufacturers := config.ManufacturerAuthorities{}
 	for i, p := range []*testauthority.Pair{ab, cd} {
 		id := []string{"ab", "cd"}[i]
-		manufacturers = append(manufacturers, config.HardwareTrust{Active: true, ManufacturerAuthorityID: id, ManufacturerKeys: p.ManufacturerPaths, Products: []commissioning.ProductPolicy{{Product: 1, Revision: 258, RTCModels: []uint16{0, 1, 2}}}})
+		manufacturers = append(manufacturers, config.HardwareTrust{Active: true, ManufacturerAuthorityID: id, ManufacturerKeys: p.ManufacturerPaths, Products: []commissioning.ProductPolicy{{Product: 1, Revision: 258}}})
 	}
 	cfg := &config.Config{Authorities: set, OperationalAuthorities: ops, ManufacturerAuthorities: manufacturers}
 	return bench{ab: ab, cd: cd, service: &Service{Authorities: set, Manufacturers: manufacturers}, config: cfg}

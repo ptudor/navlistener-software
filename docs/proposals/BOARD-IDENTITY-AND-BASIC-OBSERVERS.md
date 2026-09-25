@@ -22,6 +22,12 @@ An independently reviewed no-RTC board port and physical bench acceptance remain
 required before claiming a qualified hardware path. No hardware qualification is
 implied by software tests or build-only checks.
 
+Later change, 2026-09-25: the RTC fields became unit history rather than a
+binding. No verifier compares the recorded RTC with the live board or checks
+it against a product policy, and a recorded RTC EUI-64 need not be unique.
+[COMMISSIONING.md](../COMMISSIONING.md) is normative; the RTC binding described
+below is superseded.
+
 This proposal makes a typed factory UID the canonical identity
 of a hardware observer, binds it to the ATECC in the permanent manufacturer
 attestation, and moves the RTC model and optional instance identity into signed

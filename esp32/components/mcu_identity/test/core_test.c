@@ -56,7 +56,7 @@ static void test_statement_round_trip(void)
     assert(s.profile == NVF_PROFILE_TRUSTED && s.mcu_family == NVF_MCU_ESP32S3 && s.mcu_key_alg == NVF_MCU_KEY_RSA3072_PSS);
     assert(s.product == NVF_COMMISSION_PRODUCT_OBSERVER && statement[4] == 0 && statement[5] == 1);
     assert(s.board_rev == 0x0102 && s.security == NVF_SEC_TRUSTED &&
-           s.identity_flags == (NVF_IDENTITY_RTC_PRESENT | NVF_IDENTITY_RTC_EUI_BOUND) &&
+           s.identity_flags == (NVF_IDENTITY_RTC_PRESENT | NVF_IDENTITY_RTC_EUI_RECORDED) &&
            s.rtc_model_id == NVF_RTC_MCP79412 && s.generation == 1 && s.commissioned_at == 1789646400u);
     static const uint8_t rtc[8] = { 0x00, 0x04, 0xa3, 0x12, 0x34, 0x56, 0x78, 0x90 };
     assert(!memcmp(s.rtc_eui64, rtc, 8) && !memcmp(statement + 70, rtc, 8));
@@ -115,7 +115,7 @@ static void test_validation(void)
     REJECT(s.product = 0);
     REJECT(s.security |= 1u << 9);
     REJECT(s.identity_flags |= 1u << 9);
-    REJECT(s.identity_flags = NVF_IDENTITY_RTC_EUI_BOUND);
+    REJECT(s.identity_flags = NVF_IDENTITY_RTC_EUI_RECORDED);
     REJECT(s.rtc_model_id = 99);
     REJECT(s.generation = 0);
     REJECT(s.commissioned_at = 0);
@@ -138,16 +138,23 @@ static void test_validation(void)
     s = open; s.security = NVF_SEC_MCU_KEY_PROTECTED; assert(nvf_commission_validate(&s));
     // Only a test board may be unattested and keyless.
     s = open; s.profile = NVF_PROFILE_TEST; memset(s.attestation, 0, 32); assert(!nvf_commission_validate(&s));
-    // RTC absence, model-only presence, and model+EUI binding are the only legal shapes.
+    // The recorded RTC is absent, a model alone, or an MCP79412 with its factory EUI-64.
     s = good; s.identity_flags = 0; s.rtc_model_id = NVF_RTC_NONE; memset(s.rtc_eui64, 0, 8);
     assert(!nvf_commission_validate(&s));
     s.identity_flags = NVF_IDENTITY_RTC_PRESENT; s.rtc_model_id = NVF_RTC_MCP79412;
     assert(!nvf_commission_validate(&s));
     s.rtc_model_id = NVF_RTC_DS3231;
     assert(!nvf_commission_validate(&s));
-    s.identity_flags |= NVF_IDENTITY_RTC_EUI_BOUND;
+    s.rtc_model_id = NVF_RTC_MAX31328;
+    assert(!nvf_commission_validate(&s));
+    s.identity_flags |= NVF_IDENTITY_RTC_EUI_RECORDED;
     memcpy(s.rtc_eui64, good.rtc_eui64, 8);
-    assert(nvf_commission_validate(&s)); /* DS3231 has no factory EUI. */
+    assert(nvf_commission_validate(&s)); /* MAX31328 has no factory EUI. */
+    s.rtc_model_id = NVF_RTC_DS3231;
+    assert(nvf_commission_validate(&s)); /* nor does DS3231. */
+    s.rtc_model_id = NVF_RTC_MAX31328 + 1; s.identity_flags = NVF_IDENTITY_RTC_PRESENT; memset(s.rtc_eui64, 0, 8);
+    assert(nvf_commission_validate(&s));
+    s.rtc_model_id = NVF_RTC_DS3231;
     s.identity_flags = NVF_IDENTITY_RTC_PRESENT;
     memset(s.rtc_eui64, 0, 8);
     assert(!nvf_commission_validate(&s));
@@ -173,11 +180,11 @@ static void test_match(void)
     assert(nvf_commission_parse(statement, sizeof statement, &s));
     nvf_live_identity_t live = {
         .atecc_valid = true, .board_valid = true, .revision_valid = true, .mac_valid = true,
-        .attestation_valid = true, .rtc_expected = true, .rtc_present = true, .rtc_valid = true,
+        .attestation_valid = true,
         .key_valid = true, .security_valid = true, .secure_boot_keys_valid = true,
-        .board_rev = s.board_rev, .rtc_model_id = NVF_RTC_MCP79412, .security = s.security,
+        .board_rev = s.board_rev, .security = s.security,
     };
-    memcpy(live.atecc_serial, s.atecc_serial, 9); memcpy(live.rtc_eui64, s.rtc_eui64, 8);
+    memcpy(live.atecc_serial, s.atecc_serial, 9);
     memcpy(live.board_uid, s.board_uid, NVF_BOARD_UID_SIZE); memcpy(live.mcu_mac, s.mcu_mac, 6);
     memcpy(live.mcu_key_sha256, s.mcu_key_sha256, 32);
     memcpy(live.secure_boot_keys, s.secure_boot_keys, 32);
@@ -186,14 +193,22 @@ static void test_match(void)
     assert(!nvf_commission_match(&s, &live, ref_sha256));
     nvf_live_identity_t x;
 #define MISMATCH(change) do { x = live; change; assert(nvf_commission_match(&s, &x, ref_sha256)); } while (0)
-    MISMATCH(x.atecc_serial[0] ^= 1); MISMATCH(x.rtc_eui64[7] ^= 1); MISMATCH(x.board_uid[3] ^= 1);
+    MISMATCH(x.atecc_serial[0] ^= 1); MISMATCH(x.board_uid[3] ^= 1);
     MISMATCH(x.mcu_mac[5] ^= 1);      MISMATCH(x.mcu_key_sha256[31] ^= 1);
-    MISMATCH(x.atecc_valid = false);  MISMATCH(x.rtc_present = false); MISMATCH(x.rtc_valid = false);
+    MISMATCH(x.atecc_valid = false);
     MISMATCH(x.board_valid = false);  MISMATCH(x.revision_valid = false); MISMATCH(x.board_rev++);
-    MISMATCH(x.mac_valid = false);    MISMATCH(x.key_valid = false); MISMATCH(x.rtc_model_id = 2);
+    MISMATCH(x.mac_valid = false);    MISMATCH(x.key_valid = false);
     MISMATCH(x.security ^= NVF_SEC_JTAG_DISABLED); MISMATCH(x.secure_boot_keys[0] ^= 1);
     MISMATCH(x.attestation_record[0] ^= 1); MISMATCH(x.attestation_valid = false);
 #undef MISMATCH
+    // The recorded RTC describes the part fitted at commissioning. A replaced, removed or
+    // different RTC leaves the board's identity, and so the record, unchanged.
+    nvf_commission_statement_t described = s;
+    described.identity_flags = NVF_IDENTITY_RTC_PRESENT; described.rtc_model_id = NVF_RTC_MAX31328;
+    memset(described.rtc_eui64, 0, 8);
+    assert(!nvf_commission_validate(&described) && !nvf_commission_match(&described, &live, ref_sha256));
+    described.identity_flags = 0; described.rtc_model_id = NVF_RTC_NONE;
+    assert(!nvf_commission_validate(&described) && !nvf_commission_match(&described, &live, ref_sha256));
     // The manufacturer key signs for other product lines; their records are not this board's.
     s.product = 2; assert(!nvf_commission_validate(&s) && nvf_commission_match(&s, &live, ref_sha256)); s.product = NVF_COMMISSION_PRODUCT_OBSERVER;
     // A record that names no key does not care whether the chip holds one.
@@ -201,15 +216,6 @@ static void test_match(void)
     memset(s.mcu_key_sha256, 0, 32); memset(s.secure_boot_keys, 0, 32);
     x = live; x.key_valid = false; x.security = 0; x.secure_boot_keys_valid = false;
     assert(!nvf_commission_validate(&s) && !nvf_commission_match(&s, &x, ref_sha256));
-
-    // Model-only commissioning checks that the configured RTC is present, but not an instance EUI.
-    s = (nvf_commission_statement_t){0};
-    assert(nvf_commission_parse(statement, sizeof statement, &s));
-    assert(ref_sha256(live.attestation_record, sizeof live.attestation_record, s.attestation));
-    s.identity_flags = NVF_IDENTITY_RTC_PRESENT; memset(s.rtc_eui64, 0, 8);
-    x = live; x.rtc_valid = false;
-    assert(!nvf_commission_validate(&s) && !nvf_commission_match(&s, &x, ref_sha256));
-    x.rtc_present = false; assert(nvf_commission_match(&s, &x, ref_sha256));
 }
 
 static void test_security_bits_and_keygen_rules(void)
@@ -272,7 +278,8 @@ static void test_pss(void)
 
 int main(void)
 {
-    const char *variants[] = {"trusted-no-rtc", "open-no-rtc", "test-no-rtc", "mcp79412-model", "ds3231-model"};
+    const char *variants[] = {"trusted-no-rtc", "open-no-rtc", "test-no-rtc", "mcp79412-model", "ds3231-model",
+                              "max31328-model"};
     for (unsigned i = 0; i < sizeof variants / sizeof variants[0]; i++) {
         char name[64];
         uint8_t bytes[NVF_COMMISSION_STATEMENT_SIZE], expected[32], actual[32];

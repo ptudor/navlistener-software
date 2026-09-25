@@ -70,12 +70,12 @@ func TestStartHardwareTrust(t *testing.T) {
 	if v, err := startHardwareTrust(ctx, config.HardwareTrust{}, log); v != nil || err != nil {
 		t.Fatalf("disabled hardware trust = %v, %v; want no verifier", v, err)
 	}
-	v, err := startHardwareTrust(ctx, config.HardwareTrust{Active: true, Products: []commissioning.ProductPolicy{{Product: 1, Revision: 258, RTCModels: []uint16{0, 1, 2}}}, ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}}, log)
+	v, err := startHardwareTrust(ctx, config.HardwareTrust{Active: true, Products: []commissioning.ProductPolicy{{Product: 1, Revision: 258}}, ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}}, log)
 	if err != nil || v == nil || v.Registry() != nil {
 		t.Fatalf("keys only = %v, %v", v, err)
 	}
 
-	cfg := config.HardwareTrust{Active: true, Products: []commissioning.ProductPolicy{{Product: 1, Revision: 258, RTCModels: []uint16{0, 1, 2}}}, ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}, Registry: registry,
+	cfg := config.HardwareTrust{Active: true, Products: []commissioning.ProductPolicy{{Product: 1, Revision: 258}}, ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}, Registry: registry,
 		RegistryKeys: []string{operations}, RegistryReload: 5 * time.Millisecond}
 	// A configured registry that is absent stops startup: a collector must not
 	// serve while unable to honour a withdrawal it was told to enforce.
@@ -117,7 +117,7 @@ func TestStartHardwareTrustRecordsTheRegistrySequence(t *testing.T) {
 	manufacturer, _ := pinnedKey(t, dir, "manufacturer.pem")
 	operations, signer := pinnedKey(t, dir, "registry.pem")
 	registry, state := filepath.Join(dir, "registry.json"), filepath.Join(dir, "registry.state")
-	cfg := config.HardwareTrust{Active: true, Products: []commissioning.ProductPolicy{{Product: 1, Revision: 258, RTCModels: []uint16{0, 1, 2}}}, ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}, Registry: registry,
+	cfg := config.HardwareTrust{Active: true, Products: []commissioning.ProductPolicy{{Product: 1, Revision: 258}}, ManufacturerAuthorityID: testManufacturerAuthority, ManufacturerKeys: []string{manufacturer}, Registry: registry,
 		RegistryKeys: []string{operations}, RegistryReload: time.Hour, RegistryState: state}
 
 	writeRegistry(t, registry, 9, signer)

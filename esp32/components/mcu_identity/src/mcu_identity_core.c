@@ -33,16 +33,17 @@ const char *nvf_commission_validate(const nvf_commission_statement_t *s)
     if (s->security & ~(unsigned)NVF_SEC_TRUSTED) return "security bits include reserved bits";
     if (s->identity_flags & ~(unsigned)NVF_IDENTITY_KNOWN) return "identity flags include reserved bits";
     bool rtc_present = (s->identity_flags & NVF_IDENTITY_RTC_PRESENT) != 0;
-    bool rtc_bound = (s->identity_flags & NVF_IDENTITY_RTC_EUI_BOUND) != 0;
-    if (rtc_bound && !rtc_present) return "RTC EUI-64 binding requires an RTC declaration";
+    bool rtc_recorded = (s->identity_flags & NVF_IDENTITY_RTC_EUI_RECORDED) != 0;
+    if (rtc_recorded && !rtc_present) return "a recorded RTC EUI-64 requires an RTC declaration";
     if (!rtc_present) {
         if (s->rtc_model_id != NVF_RTC_NONE) return "RTC model must be zero when no RTC is declared";
-    } else if (s->rtc_model_id != NVF_RTC_MCP79412 && s->rtc_model_id != NVF_RTC_DS3231) return "RTC model is unknown";
-    if (rtc_bound) {
+    } else if (s->rtc_model_id != NVF_RTC_MCP79412 && s->rtc_model_id != NVF_RTC_DS3231 &&
+               s->rtc_model_id != NVF_RTC_MAX31328) return "RTC model is unknown";
+    if (rtc_recorded) {
         if (s->rtc_model_id != NVF_RTC_MCP79412) return "RTC model has no factory EUI-64";
         if (blank(s->rtc_eui64, sizeof s->rtc_eui64)) return "RTC EUI-64 is blank or erased";
     } else if (!all_zero(s->rtc_eui64, sizeof s->rtc_eui64))
-        return "RTC EUI-64 must be zero when it is not bound";
+        return "RTC EUI-64 must be zero when it is not recorded";
     if (s->generation == 0) return "generation starts at 1";
     if (s->commissioned_at == 0) return "commissioning time is required";
     if (blank(s->atecc_serial, sizeof s->atecc_serial)) return "ATECC serial is blank or erased";
@@ -214,17 +215,6 @@ const char *nvf_commission_match(const nvf_commission_statement_t *s, const nvf_
     if (memcmp(s->board_uid, live->board_uid, NVF_BOARD_UID_SIZE)) return "record names a different board UID";
     if (s->board_rev != live->board_rev) return "record names a different board revision";
     if (memcmp(s->mcu_mac, live->mcu_mac, 6)) return "record names a different microcontroller MAC";
-    bool rtc_present = (s->identity_flags & NVF_IDENTITY_RTC_PRESENT) != 0;
-    bool rtc_bound = (s->identity_flags & NVF_IDENTITY_RTC_EUI_BOUND) != 0;
-    if (rtc_present) {
-        if (!live->rtc_expected) return "record names an RTC that this product configuration does not support";
-        if (s->rtc_model_id != live->rtc_model_id) return "record names a different RTC model";
-        if (!live->rtc_present) return "this board's expected RTC could not be verified";
-        if (rtc_bound) {
-            if (!live->rtc_valid) return "this board's RTC EUI-64 could not be read";
-            if (memcmp(s->rtc_eui64, live->rtc_eui64, 8)) return "record names a different RTC EUI-64";
-        }
-    } else if (live->rtc_expected) return "record omits the RTC required by this product configuration";
     if (!live->security_valid) return "this microcontroller's security state could not be read";
     if (s->security != live->security) return "record names a different microcontroller security state";
     if (s->security & NVF_SEC_SECURE_BOOT) {

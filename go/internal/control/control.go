@@ -170,7 +170,7 @@ func (s *Service) Validate(r Request) (Validated, error) {
 			allowed = allowed || p.Allows(statement)
 		}
 		if !allowed {
-			return out, errors.New("assembly is outside manufacturer's product/revision/RTC policy")
+			return out, errors.New("assembly is outside manufacturer's product/revision policy")
 		}
 		if h.Registry != "" {
 			v, err := h.NewVerifier()
@@ -337,7 +337,7 @@ func (s *Service) Enroll(ctx context.Context, operator string, r Request) (strin
 		}
 	}
 	var rtc any
-	if v.Statement.IdentityFlags&commissioning.IdentityRTCEUIBound != 0 {
+	if v.Statement.IdentityFlags&commissioning.IdentityRTCEUIRecorded != 0 {
 		rtc = hex.EncodeToString(v.Statement.RTCEUI64[:])
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO navl_devices(observer_id,manufacturer_authority_id,board_uid,atecc_serial,rtc_eui64,rtc_model_id,hardware_product,hardware_revision,core_record,core_attestation_fingerprint,core_signer_spki,commissioning_record,commissioning_generation,commissioning_signer_spki,current_enrollment_id,board_uid_kind)

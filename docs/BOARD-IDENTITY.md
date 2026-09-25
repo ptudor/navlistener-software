@@ -38,8 +38,10 @@ For example, `board-0003-00112233445566778899aabbccddeeff` retains all 128 bits.
 Identical value bytes under different kinds are different identities.
 
 The permanent core signs product, revision, the complete typed UID and ATECC
-serial. Commissioning also binds the typed UID. Neither an MCU replacement nor
-an optional RTC replacement changes the board UID. An identity-chip replacement
+serial. The typed UID is the public identity and the ATECC the private one;
+commissioning binds both. Neither an MCU nor an RTC replacement changes the
+board UID. The commissioning record describes the fitted RTC for the unit
+history only. An identity-chip replacement
 requires a new board identity; record the relationship in the service history.
 Once an identity is adopted, a missing or changed source fails validation rather
 than silently selecting a different chip. Existing signatures must match live

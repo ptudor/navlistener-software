@@ -25,7 +25,7 @@ func TestAuthorityKeyRolesAndNamespaces(t *testing.T) {
 		c := hardwareTrustConfig(t, HardwareTrust{ManufacturerAuthorityID: "ab", ManufacturerKeys: ab.ManufacturerPaths})
 		c.OperationalAuthorities = []authority.Operational{ab.Config, cd.Config}
 		c.Push.Observers[0].OperationalAuthorityID = "navlisten"
-		c.ManufacturerAuthorities = append(c.ManufacturerAuthorities, HardwareTrust{Active: true, ManufacturerAuthorityID: "cd", ManufacturerKeys: cd.ManufacturerPaths, Products: []commissioning.ProductPolicy{{Product: 1, Revision: 99, RTCModels: []uint16{0, 2}}}})
+		c.ManufacturerAuthorities = append(c.ManufacturerAuthorities, HardwareTrust{Active: true, ManufacturerAuthorityID: "cd", ManufacturerKeys: cd.ManufacturerPaths, Products: []commissioning.ProductPolicy{{Product: 1, Revision: 99}}})
 		return c
 	}
 	if err := makeConfig().finalize(); err != nil {
@@ -128,7 +128,7 @@ func hardwareTrustConfig(t *testing.T, h HardwareTrust) *Config {
 	c := pushConfig(Push{Addr: "0.0.0.0:5580", TLSCert: cert, TLSKey: key,
 		Observers: []PushObserver{{Station: "observer16", TokenSHA256: goodHash, Feeds: []string{"ubx"}}}})
 	h.Active = true
-	h.Products = []commissioning.ProductPolicy{{Product: 1, Revision: 258, RTCModels: []uint16{0, 1, 2}}}
+	h.Products = []commissioning.ProductPolicy{{Product: 1, Revision: 258}}
 	c.ManufacturerAuthorities = ManufacturerAuthorities{h}
 	return c
 }
@@ -248,7 +248,7 @@ tls_key = "` + key + `"
 
 [[manufacturer_authority]]
 enabled = true
-product_policy = [{product = 1, revision = 258, rtc_models = [0, 1, 2]}]
+product_policy = [{product = 1, revision = 258}]
 manufacturer_authority_id = "` + testManufacturerAuthority + `"
 manufacturer_keys = ["` + manufacturer + `"]
 registry = "` + registry + `"

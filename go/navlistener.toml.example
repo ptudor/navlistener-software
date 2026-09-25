@@ -118,8 +118,6 @@ ack_interval = "1s"
 # [[manufacturer_authority.product_policy]]
 # product = 1
 # revision = 258
-# rtc_models = [0, 1] # explicit approved assemblies, not inferred from a signature
-# require_rtc_eui = false
 # Customer issuers and manufacturers are separate authority tables, never extra
 # keys in this manufacturer's bundle. Each has its own product policy and registry
 # floor. Explicitly pair customer operational authority with this manufacturer to

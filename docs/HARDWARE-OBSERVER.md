@@ -435,8 +435,8 @@ The record and message formats are normative in `atecc608c_slots_unified.h`
 (`ATECC_MFG_ATTEST_*`): the slot holds `[version 0x01][7 reserved][R‖S 64]`, and the signature is
 over `SHA-256("ATECC-MFG-CORE-v1" ‖ product_u16be ‖ board_rev_u16be ‖
 board_uid[35] ‖ atecc_serial[9])`. The ASCII prefix is domain separation. This
-permanently locked record binds only the board core; replaceable RTC and MCU
-identity is added by commissioning. One shared formatter must be the only
+permanently locked record binds only the board core; the replaceable MCU is
+added by commissioning. One shared formatter must be the only
 writer/parser, so the bench tool and firmware cannot disagree.
 
 Two properties are enforced at the bench, not hoped for:
@@ -467,11 +467,12 @@ statement once the board is locked:
   block — count it in the production eFuse list beside the three Secure Boot digests and the
   flash-encryption key.
 - **The commissioning record.** A fixed 180-byte statement binding the attested
-  board core and explicit RTC presence/model/optional EUI-64 to the
-  microcontroller's key, its lock state, a profile
+  board core to the microcontroller's key, its lock state, a profile
   (trusted, open or test) and a generation number, signed by the same manufacturer key under
-  its own domain string. It is made *after* slot 14 is locked, so it lives in the
-  manufacturer's records and in the device's flash rather than in the ATECC.
+  its own domain string. It also records the fitted RTC's model and, for an MCP79412,
+  its EUI-64, as unit history that no verifier checks. It is made *after* slot 14 is
+  locked, so it lives in the manufacturer's records and in the device's flash rather
+  than in the ATECC.
 - **The session proof.** On every connection the microcontroller signs a value derived from
   that TLS session, and the collector verifies it against the key the record names.
 
@@ -505,16 +506,16 @@ to Microchip's certificate chain; this design has the device generate its own ke
 registered **Issuing intermediate** sign its CSR. The config-zone lock is permanent, so validate the slot
 configuration on a scrap part before locking production units.
 
-### 4.3 Three unique IDs on one board
+### 4.3 Unique IDs on one board
 
-The MCP79412 and the 24AA025E64 each carry a factory EUI-64, and the ATECC carries a 9-byte
-serial. Assign them distinct roles and record all three at enrollment:
+The board EEPROM carries a typed factory UID and the ATECC a 9-byte serial; an MCP79412,
+where fitted, also carries a factory EUI-64. Assign them distinct roles:
 
 | Source | Role |
 |---|---|
-| Typed factory UID (24CS128 preferred) | **board and observer identity** — the `receiver_id` in the cert SAN and the `devices` row |
-| MCP79412 EUI-64 | replaceable RTC component identity, bound by commissioning when fitted |
-| ATECC serial | binds the key material to the enrollment record |
+| Typed factory UID (24CS128 preferred) | **public identity: board and observer** — the `receiver_id` in the cert SAN and the `devices` row |
+| ATECC serial | **private identity** — binds the key material to the enrollment record |
+| MCP79412 EUI-64 | recorded with the RTC model as unit history; not an identity |
 
 The ESP32-S3 is a fourth identity of a different kind (§4.1c): it has no factory-programmed
 serial worth trusting — its MAC is a label — so it is named by the SHA-256 of the key
@@ -522,18 +523,14 @@ generated inside it at commissioning. The manufacturer's unit record lists all f
 with the serial of every other fitted part that has one, so that "which parts are on this
 unit" has one answer.
 
-Consequence to accept deliberately: replacing a bound RTC requires a new
-commissioning generation, but does not change the observer identity or force
-operational re-enrollment. That is an auditable event, and it must be a decision rather
-than a surprise, because the failure is otherwise silent.
+Replacing an RTC changes neither the observer identity nor the commissioning record's
+validity; the service history records the new part.
 
-**Live binding check.** The canonical observer name comes from the board EEPROM,
-not the RTC. Commissioning checks the live board/ATECC/MCU identity and any bound
-RTC instance separately. Missing or mismatched bound RTC identity withholds
-commissioning evidence with a specific fault; an invalid calendar is measurement
-invalidity, not an invented identity mismatch. A board without a bound RTC has no
-RTC-based enrollment requirement. See [CONTROL-PLANE.md](CONTROL-PLANE.md) for
-controlled enrollment, key rotation and approved component replacement.
+**Live binding check.** The canonical observer name comes from the board EEPROM.
+Commissioning checks the live board UID, ATECC and MCU identity; the recorded RTC is not
+compared. An invalid RTC calendar is measurement invalidity, not an identity mismatch.
+See [CONTROL-PLANE.md](CONTROL-PLANE.md) for controlled enrollment, key rotation and
+approved component replacement.
 
 ---
 
@@ -1630,8 +1627,8 @@ is a feature this board wants and a reason the WS2812B alignment pays for itself
 3. ~~EUI-64 text rendering~~ — **decided** (§4.2): kind code and complete lowercase UID value, bare
    label. Remaining work is mechanical: a shared formatter/parser so the C feeder, the
    provisioning flow and the collector cannot disagree on it.
-4. **Re-enrollment policy on RTC replacement** (§4.3) — accepted as an auditable event, but the
-   operational runbook does not exist.
+4. ~~Re-enrollment policy on RTC replacement~~ — **dissolved** (§4.3): the RTC is recorded
+   history, not identity, so replacing it needs no re-enrollment.
 5. **`SIGNED_DATA` (0x07) granularity** — inherited open question from radiolistener's doc;
    per-batch is specified, per-observation is not ruled out.
 6. ~~L1-only or L1/L5~~ — **dissolved** (§1.1). Both share the 24-pin NEO land pattern, so it is

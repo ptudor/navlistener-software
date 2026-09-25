@@ -94,10 +94,9 @@ static void live_identity(const observer_board_identity_t *board, nvf_live_ident
     *live = (nvf_live_identity_t){
         .atecc_valid = board->atecc_valid, .board_valid = board->board_valid,
         .revision_valid = board->revision_valid, .board_rev = board->revision,
-        .rtc_expected = true, .rtc_present = board->rtc_present, .rtc_valid = board->rtc_valid,
-        .rtc_model_id = NVF_RTC_MCP79412, .attestation_valid = board->attestation_valid,
+        .attestation_valid = board->attestation_valid,
     };
-    memcpy(live->atecc_serial, board->atecc_serial, 9); memcpy(live->rtc_eui64, board->rtc_eui64, 8);
+    memcpy(live->atecc_serial, board->atecc_serial, 9);
     memcpy(live->board_uid, board->board_uid, NVF_BOARD_UID_SIZE);
     memcpy(live->attestation_record, board->attestation, sizeof live->attestation_record);
     live->mac_valid = esp_efuse_mac_get_default(live->mcu_mac) == ESP_OK;
@@ -117,9 +116,11 @@ static void report(void)
     bool complete = true;
     added(&complete, cJSON_AddNumberToObject(json, "v", 1));
     added(&complete, cJSON_AddNumberToObject(json, "product", NVF_COMMISSION_PRODUCT_OBSERVER));
-    added(&complete, cJSON_AddNumberToObject(json, "identity_flags", NVF_IDENTITY_RTC_PRESENT | NVF_IDENTITY_RTC_EUI_BOUND));
-    added(&complete, cJSON_AddNumberToObject(json, "rtc_model_id", NVF_RTC_MCP79412));
-    added(&complete, cJSON_AddBoolToObject(json, "rtc_expected", true));
+    // The RTC is recorded as found: its model once it answers, and its factory EUI-64 only
+    // when the part has one and it was read. Neither is part of the board's identity.
+    added(&complete, cJSON_AddNumberToObject(json, "identity_flags",
+        (board.rtc_present ? NVF_IDENTITY_RTC_PRESENT : 0) | (board.rtc_valid ? NVF_IDENTITY_RTC_EUI_RECORDED : 0)));
+    added(&complete, cJSON_AddNumberToObject(json, "rtc_model_id", board.rtc_present ? board.rtc_model_id : NVF_RTC_NONE));
     added(&complete, cJSON_AddBoolToObject(json, "rtc_present", board.rtc_present));
     complete &= add_hex(json, "atecc_serial", board.atecc_serial, 9, board.atecc_valid);
     complete &= add_hex(json, "rtc_eui64", board.rtc_eui64, 8, board.rtc_valid);
@@ -134,8 +135,7 @@ static void report(void)
     added(&complete, cJSON_AddNumberToObject(json, "mcu_family", NVF_MCU_ESP32S3));
     complete &= add_hex(json, "mcu_mac", live.mcu_mac, 6, live.mac_valid);
     added(&complete, cJSON_AddBoolToObject(json, "identity_complete", board.atecc_valid && board.board_valid &&
-                                           board.revision_valid && board.attestation_valid && board.rtc_present &&
-                                           board.rtc_valid && live.mac_valid));
+                                           board.revision_valid && board.attestation_valid && live.mac_valid));
     added(&complete, cJSON_AddNumberToObject(json, "security", status.security));
     complete &= add_hex(json, "secure_boot_keys_sha256", digest, 32, nvf_mcu_identity_secure_boot_keys(digest));
     complete &= add_hex(json, "attestation_record", board.attestation, sizeof board.attestation, board.attestation_valid);

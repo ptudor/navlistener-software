@@ -33,19 +33,22 @@ Two additions close that gap:
 2. a **session proof**, signed by a key that only that microcontroller can use,
    over a value that exists only inside the current TLS session.
 
-## 2. Four identities on one board
+## 2. Identities on one board
 
 | Part | Identity | Role |
 |---|---|---|
-| Typed factory UID (24CS128 preferred) | board and observer | the PCB's permanent identity and the network name: certificate SAN and observer id. A replaced PCB is a new unit. |
-| MCP79412 model and optional EUI-64 | RTC | a replaceable assembly bound by commissioning when present; not the observer identity. |
-| ATECC608C serial | secure element | holds the operational key; carries the slot-14 attestation. |
+| Typed factory UID (24CS128 preferred) | public: board and observer | the PCB's permanent identity and the network name: certificate SAN and observer id. A replaced PCB is a new unit. |
+| ATECC608C | private: secure element | holds the operational key; its serial and the slot-14 attestation bind it to the board. |
 | ESP32-S3 key | microcontroller | the part that runs the firmware. Named by the SHA-256 of its public key; its factory MAC is a label only. |
 
-The RTC and microcontroller are replaceable parts. Replacing either is a
-recorded service event that produces a new commissioning record with the next
-**generation** number (§8); the board, observer and secure-element identities do
-not change.
+The microcontroller is a replaceable part. Replacing it is a recorded service
+event that produces a new commissioning record with the next **generation**
+number (§8); the board, observer and secure-element identities do not change.
+
+The statement also records the RTC fitted at commissioning: its model, and its
+factory EUI-64 when the part has one (only the MCP79412 does). That is history
+for the unit record, not identity. No verifier compares it with the live board
+or with a product policy, so a replaced or missing RTC leaves the record valid.
 
 ## 3. What a collector concludes
 
@@ -85,13 +88,13 @@ layout change requires a new version and domain string.
 | 4 | 2 | product | the product line the board was built as; 1 = NavListen GNSS observer, 0 reserved |
 | 6 | 2 | board_rev | as in the slot-14 attestation |
 | 8 | 2 | security | bit field below |
-| 10 | 2 | identity_flags | bit 0: RTC EUI-64 bound; bit 1: RTC present; all other bits reserved |
-| 12 | 2 | rtc_model_id | 0 = none; 1 = MCP79412; 2 = DS3231 (no factory instance EUI) |
+| 10 | 2 | identity_flags | bit 0: RTC EUI-64 recorded; bit 1: RTC recorded; all other bits reserved |
+| 12 | 2 | rtc_model_id | recorded RTC: 0 = none; 1 = MCP79412; 2 = DS3231; 3 = MAX31328 |
 | 14 | 4 | generation | 1 at first commissioning; +1 each time the board is commissioned again |
 | 18 | 8 | commissioned_at | Unix seconds, UTC |
 | 26 | 35 | board_uid | kind (2), length (1), value with zero padding (32); permanent board identity |
 | 61 | 9 | atecc_serial | |
-| 70 | 8 | rtc_eui64 | zero unless identity flag bit 0 is set |
+| 70 | 8 | rtc_eui64 | recorded MCP79412 EUI-64; zero unless identity flag bit 0 is set |
 | 78 | 6 | mcu_mac | factory base MAC; a label, never a proof |
 | 84 | 32 | mcu_key_sha256 | SHA-256 of the key's DER SubjectPublicKeyInfo; zero when `mcu_key_alg` is 0 |
 | 116 | 32 | secure_boot_keys | SHA-256 over the three 32-byte Secure Boot key digests in slot order, an empty or revoked slot as 32 zero bytes; zero when Secure Boot is off |
@@ -113,8 +116,9 @@ Every signer and every verifier enforces the same consistency rules, so a
 statement that carries a valid signature is also one that makes sense:
 
 - `product ≠ 0`, `generation ≥ 1`, `commissioned_at ≠ 0`, and no identifier is all-zero or all-`0xff`.
-- An RTC EUI binding requires the RTC-present flag. With no RTC, the model and
-  EUI-64 are zero; an RTC uses an explicitly supported model; an unbound EUI-64 is zero.
+- A recorded RTC EUI-64 requires the RTC flag and model 1, the only listed part
+  with a factory EUI-64. With no RTC, the model and EUI-64 are zero; a recorded RTC
+  uses a listed model; an unrecorded EUI-64 is zero.
 - `mcu_key_sha256` is nonzero exactly when `mcu_key_alg ≠ 0`; bit 4 requires a named key.
 - `secure_boot_keys` is nonzero exactly when bit 0 is set.
 - **trusted** requires `mcu_key_alg = 1` and security bits `0x001f` — all five.
@@ -334,10 +338,11 @@ Payload:
   deployment configuration before the registry is adopted. Product values and
   rollback state are interpreted only within that authority.
 - `rtc_eui64` is required but nullable: it is a string exactly when the record
-  binds the RTC EUI-64, and `null` otherwise.
-- The descriptive columns must agree with the embedded record. A typed board UID,
-  ATECC serial, or bound RTC EUI-64 may appear only once. A registry that breaks
-  either rule is rejected whole.
+  records an RTC EUI-64, and `null` otherwise.
+- The descriptive columns must agree with the embedded record. A typed board UID
+  or ATECC serial may appear only once. An RTC EUI-64 may repeat: a part moved to
+  another board is recorded there too. A registry that breaks either rule is
+  rejected whole.
 - `sequence` only rises. A verifier refuses a registry older than the one it
   holds, and records the highest sequence it has accepted so that a restart
   cannot be used to load an older copy — a restored backup must not quietly
@@ -413,8 +418,6 @@ require_registry_entry = false
 [[manufacturer_authority.product_policy]]
 product = 1
 revision = 258
-rtc_models = [0, 1] # only assemblies reviewed for this product/revision
-require_rtc_eui = false
 ```
 
 Manufacturer and registry key files hold P-256 `PUBLIC KEY` PEM, never CA
@@ -444,10 +447,11 @@ as metrics labeled by `manufacturer_authority_id` so that each stream's stalenes
 can be alerted on. Enrollment, issuance and service procedures are documented in
 [CONTROL-PLANE.md](CONTROL-PLANE.md).
 
-Model 2 describes the [DS3231 register-defined RTC](https://www.analog.com/media/en/technical-documentation/data-sheets/DS3231.pdf),
-which has no factory EUI. Its valid flags are model-present only; a code-defined
-model ID is not an individual chip identity. Registering a format descriptor does
-not implement a board driver or approve that model for every product.
+RTC model 2 is the [DS3231](https://www.analog.com/media/en/technical-documentation/data-sheets/DS3231.pdf)
+and model 3 the [MAX31328](https://www.analog.com/media/en/technical-documentation/data-sheets/max31328.pdf).
+Neither has a factory EUI, so a record names only the model. A model code
+names a part, not an individual chip. Listing a model does not implement a
+board driver.
 
 ## 11. Limits
 

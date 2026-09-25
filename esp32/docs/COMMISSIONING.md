@@ -60,7 +60,7 @@ never opens a serial port.
 
 ```json
 {"v":1,"product":1,"identity_flags":3,"rtc_model_id":1,
- "rtc_expected":true,"rtc_present":true,"identity_complete":true,
+ "rtc_present":true,"identity_complete":true,
  "atecc_serial":"…","rtc_eui64":"…","board_uid":"…","board_rev":1,
  "mcu_family":1,"mcu_mac":"…","security":31,"secure_boot_keys_sha256":"…",
  "attestation_record":"…","mcu_key_alg":1,"mcu_public_key_der":"<base64>",
@@ -69,14 +69,16 @@ never opens a serial port.
 ```
 
 - Identifiers are lowercase hex and are read live from the parts: the ATECC
-  serial from its configuration zone, the RTC EUI-64 from the MCP79412's
-  protected EEPROM block, the typed board UID from the manifest EEPROM, and the
-  factory base MAC from eFuse. **An identifier that could not be read is JSON
+  serial from its configuration zone, the typed board UID from the manifest
+  EEPROM, the factory base MAC from eFuse, and an MCP79412's EUI-64 from its
+  protected EEPROM block. **An identifier that could not be read is JSON
   `null`, as is an unreadable `board_rev`; nothing is guessed.**
-- `identity_flags` and `rtc_model_id` are the statement values for this product.
-  `rtc_expected`, `rtc_present`, and `identity_complete` make the difference
-  between “not part of this product,” “expected but absent,” and “successfully
-  read” explicit.
+- The RTC is recorded as found, for the unit record. `rtc_present` says the
+  board's RTC answered; `rtc_model_id` is then its model, otherwise 0.
+  `rtc_eui64` is `null` unless an MCP79412 returned its EUI-64, and
+  `identity_flags` matches. The RTC is not part of the board's identity, so
+  `identity_complete` covers the board UID, ATECC serial, revision, slot-14
+  record and MAC only.
 - `attestation_record` is the 72-byte slot-14 record. The ATECC refuses that
   read until its data zone is locked, so an unprovisioned part reports it empty.
 - `security` is the statement's security bit field as this chip reports it now.
@@ -180,9 +182,8 @@ Accepts a 252-byte record and stores it only if its statement:
 
 - is for the observer product;
 - exactly names this product, board revision, typed board UID, ATECC serial,
-  declared RTC presence/model/EUI-64, this chip's factory MAC, and the live
-  72-byte slot-14 record digest, **all of which must have been read
-  successfully when the statement binds them**;
+  this chip's factory MAC, and the live 72-byte slot-14 record digest, **all of
+  which must have been read successfully**; the recorded RTC is not compared;
 - names the key this chip holds, when it names a key at all; and
 - claims no lock state the chip does not have.
 
@@ -313,8 +314,8 @@ discarded:
    refused before any burn; and, if a module can be spared for it, that a forced
    self-test failure records a fault, leaves the field unsealed, and lets a
    second `keygen` use the remaining free block.
-7. **Identifier reads.** Compare `atecc_serial`, `rtc_eui64` and `board_uid`
-   with values read by an independent I²C master, and `attestation_record` with
+7. **Identifier reads.** Compare `atecc_serial`, `board_uid` and, on an
+   MCP79412 board, `rtc_eui64` with values read by an independent I²C master, and `attestation_record` with
    the slot-14 contents of a part whose data zone is locked.
 8. **USB console.** Confirm commands are accepted on a locked chip, that lines of
    the `restore` length arrive intact, and that logging does not stall with no

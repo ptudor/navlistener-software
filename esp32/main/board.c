@@ -25,6 +25,7 @@
 #include "freertos/task.h"
 #include "hardware_manifest.h"
 #include "hardware_checks.h"
+#include "mcu_identity_core.h"
 #include "receiver.h"
 #include "observer_rtc.h"
 #include "rtc_policy.h"
@@ -251,6 +252,7 @@ void observer_board_identity(observer_board_identity_t *out)
     if (!hardware_manifest_i2c_bus() || !crypto_lock) return;
     // MCP79412: verify the clock function at 0x6f as well as the factory EUI-64 in the
     // protected EEPROM block at 0x57. The EEPROM alone is not proof the expected RTC is fitted.
+    out->rtc_model_id = NVF_RTC_MCP79412;
     uint8_t rtc_registers[7];
     out->rtc_present = read_reg(0x6f, 0, rtc_registers, sizeof rtc_registers) == ESP_OK;
     out->rtc_valid = out->rtc_present && read_reg(0x57, 0xf0, out->rtc_eui64, 8) == ESP_OK &&

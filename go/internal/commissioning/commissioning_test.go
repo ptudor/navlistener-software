@@ -67,7 +67,7 @@ func trustedStatement(t *testing.T) Statement {
 	return Statement{
 		Profile: ProfileTrusted, MCUFamily: MCUESP32S3, MCUKeyAlg: MCUKeyRSA3072PSS,
 		Product: ProductObserver, BoardRevision: 0x0102, Security: SecTrusted,
-		IdentityFlags: IdentityRTCPresent | IdentityRTCEUIBound, RTCModel: RTCModelMCP79412,
+		IdentityFlags: IdentityRTCPresent | IdentityRTCEUIRecorded, RTCModel: RTCModelMCP79412,
 		Generation: 1, CommissionedAt: 1789646400,
 		ATECCSerial:    [9]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x11},
 		RTCEUI64:       [8]byte{0x00, 0x04, 0xa3, 0x12, 0x34, 0x56, 0x78, 0x90},
@@ -142,9 +142,10 @@ func TestStatementValidation(t *testing.T) {
 		"unknown key algorithm":      func(s *Statement) { s.MCUKeyAlg = 7 },
 		"reserved security bit":      func(s *Statement) { s.Security |= 1 << 9 },
 		"reserved identity bit":      func(s *Statement) { s.IdentityFlags |= 1 << 9 },
-		"bound RTC not present":      func(s *Statement) { s.IdentityFlags = IdentityRTCEUIBound },
+		"recorded RTC not present":   func(s *Statement) { s.IdentityFlags = IdentityRTCEUIRecorded },
 		"unknown RTC model":          func(s *Statement) { s.RTCModel = 99 },
-		"bound blank RTC":            func(s *Statement) { s.RTCEUI64 = [8]byte{} },
+		"recorded blank RTC":         func(s *Statement) { s.RTCEUI64 = [8]byte{} },
+		"MAX31328 with an EUI":       func(s *Statement) { s.RTCModel = RTCModelMAX31328 },
 		"zero generation":            func(s *Statement) { s.Generation = 0 },
 		"zero time":                  func(s *Statement) { s.CommissionedAt = 0 },
 		"erased ATECC serial":        func(s *Statement) { s.ATECCSerial = [9]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff} },
@@ -187,6 +188,9 @@ func TestStatementValidation(t *testing.T) {
 			"model only": func(s *Statement) {
 				s.IdentityFlags, s.RTCModel, s.RTCEUI64 = IdentityRTCPresent, RTCModelMCP79412, [8]byte{}
 			},
+			"MAX31328": func(s *Statement) {
+				s.IdentityFlags, s.RTCModel, s.RTCEUI64 = IdentityRTCPresent, RTCModelMAX31328, [8]byte{}
+			},
 			"model and EUI": func(s *Statement) {},
 		} {
 			t.Run(name, func(t *testing.T) {
@@ -198,11 +202,11 @@ func TestStatementValidation(t *testing.T) {
 			})
 		}
 	})
-	t.Run("unbound RTC bytes are not ignored", func(t *testing.T) {
+	t.Run("unrecorded RTC bytes are not ignored", func(t *testing.T) {
 		s := trustedStatement(t)
 		s.IdentityFlags = IdentityRTCPresent
 		if err := s.Validate(); err == nil {
-			t.Fatal("unbound RTC identifier validated")
+			t.Fatal("unrecorded RTC identifier validated")
 		}
 	})
 }
@@ -370,7 +374,7 @@ func registryFor(t *testing.T, sequence uint64, status string, records ...Record
 			t.Fatal(err)
 		}
 		var rtcEUI *string
-		if s.IdentityFlags&IdentityRTCEUIBound != 0 {
+		if s.IdentityFlags&IdentityRTCEUIRecorded != 0 {
 			value := hex.EncodeToString(s.RTCEUI64[:])
 			rtcEUI = &value
 		}
@@ -430,7 +434,9 @@ func TestRegistrySignAndVerify(t *testing.T) {
 			t.Fatal("duplicate ATECC serial signed")
 		}
 	})
-	t.Run("duplicate bound RTC", func(t *testing.T) {
+	t.Run("an RTC recorded on two boards", func(t *testing.T) {
+		// The recorded RTC is history, not identity: a part moved to another
+		// board is recorded there too.
 		other := trustedStatement(t)
 		other.BoardUID[10] ^= 1
 		other.ATECCSerial[8] ^= 1
@@ -438,8 +444,8 @@ func TestRegistrySignAndVerify(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := SignRegistry(registryFor(t, 1, StatusActive, record, otherRecord), ops); err == nil {
-			t.Fatal("duplicate RTC EUI-64 signed")
+		if _, err := SignRegistry(registryFor(t, 1, StatusActive, record, otherRecord), ops); err != nil {
+			t.Fatalf("registry refused an RTC EUI-64 recorded on two boards: %v", err)
 		}
 	})
 	t.Run("model-only RTC is explicitly null", func(t *testing.T) {
@@ -460,7 +466,7 @@ func TestRegistrySignAndVerify(t *testing.T) {
 		value := "0004a31234567890"
 		reg.Boards[0].RTCEUI64 = &value
 		if _, err := SignRegistry(reg, ops); err == nil {
-			t.Fatal("registry added an RTC binding absent from the record")
+			t.Fatal("registry added an RTC EUI-64 absent from the record")
 		}
 	})
 	t.Run("nullable RTC member is required", func(t *testing.T) {

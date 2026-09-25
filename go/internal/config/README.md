@@ -182,7 +182,7 @@ public keys only, so it never makes the config file secret-bearing.
 | `manufacturer_authority_id` | Required stable scope selecting the manufacturer authority whose keys, registry, product namespace and rollback floor are used. |
 | `enabled` | Explicit enabled state; disabled registrations remain reserved but cannot admit hardware. |
 | `manufacturer_keys` | P-256 PUBLIC KEY PEM slot-5 keys that may sign core and commissioning records. CA certificates are rejected. |
-| `product_policy` | Required tables of exact `product`, `revision`, allowed `rtc_models` and optional `require_rtc_eui`. Scoped to this manufacturer. |
+| `product_policy` | Required tables of exact `product` and `revision`. Scoped to this manufacturer. The RTC a commissioning record describes is history and is not a policy input. |
 | `registry` | The signed registry file. It can only withdraw trust. |
 | `registry_keys` | The operations keys that may sign the registry; a separate set, required with `registry`. |
 | `registry_reload` | How often the registry file is checked for a change. Default `30s`. |

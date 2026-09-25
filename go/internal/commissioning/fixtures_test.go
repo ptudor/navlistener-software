@@ -117,14 +117,14 @@ func generateFixtures(t *testing.T) fixtureFile {
 		s.ATECCSerial[8] = byte(0xa0 + i)
 		cases[name+"-no-rtc"] = s
 	}
-	for i, model := range []RTCModel{RTCModelMCP79412, RTCModelDS3231} {
+	for i, model := range []RTCModel{RTCModelMCP79412, RTCModelDS3231, RTCModelMAX31328} {
 		s := open
 		s.IdentityFlags = IdentityRTCPresent
 		s.RTCModel = model
 		s.RTCEUI64 = [8]byte{}
 		s.BoardUID[10] = byte(0xb0 + i)
 		s.ATECCSerial[8] = byte(0xb0 + i)
-		cases[[]string{"mcp79412-model", "ds3231-model"}[i]] = s
+		cases[[]string{"mcp79412-model", "ds3231-model", "max31328-model"}[i]] = s
 	}
 	cs := open
 	cs.BoardUID, _ = boardid.Parse("serial128", "0123456789abcdef0123456789abcdef")
@@ -244,8 +244,8 @@ func TestFixtures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(f.Cases) != 10 {
-		t.Fatalf("fixture has %d cases, want ten profile/RTC/UID combinations", len(f.Cases))
+	if len(f.Cases) != 11 {
+		t.Fatalf("fixture has %d cases, want eleven profile/RTC/UID combinations", len(f.Cases))
 	}
 	for name, c := range f.Cases {
 		t.Run(name, func(t *testing.T) {

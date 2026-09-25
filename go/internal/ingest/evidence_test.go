@@ -91,7 +91,7 @@ func (b *evidenceBench) statement(profile commissioning.Profile) commissioning.S
 	s := commissioning.Statement{
 		Profile: profile, MCUFamily: commissioning.MCUESP32S3, Product: commissioning.ProductObserver,
 		BoardRevision: 0x0102, Generation: 1, CommissionedAt: 1789646400,
-		IdentityFlags: commissioning.IdentityRTCPresent | commissioning.IdentityRTCEUIBound,
+		IdentityFlags: commissioning.IdentityRTCPresent | commissioning.IdentityRTCEUIRecorded,
 		RTCModel:      commissioning.RTCModelMCP79412,
 		ATECCSerial:   [9]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x11},
 		RTCEUI64:      [8]byte{0x00, 0x04, 0xa3, 0x12, 0x34, 0x56, 0x78, 0x90},
@@ -122,7 +122,7 @@ func (b *evidenceBench) verifier(t *testing.T) *commissioning.Verifier {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := v.SetProducts([]commissioning.ProductPolicy{{Product: 1, Revision: 258, RTCModels: []uint16{0, 1, 2}}}); err != nil {
+	if err := v.SetProducts([]commissioning.ProductPolicy{{Product: 1, Revision: 258}}); err != nil {
 		t.Fatal(err)
 	}
 	return v

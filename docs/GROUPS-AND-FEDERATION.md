@@ -41,8 +41,9 @@ and server-side enrollment record establish the current jurisdiction.
 
 ### 1.1 Implemented in navlistener
 
-- The hardware design assigns distinct roles to permanent typed board UID,
-  replaceable RTC identity, and ATECC serial.
+- The hardware design assigns distinct roles to the permanent typed board UID
+  (public identity) and the ATECC (private identity); the commissioning record
+  also describes the fitted RTC for the unit history.
 - The feeder/collector mTLS handshake binds exactly one DNS SAN byte-for-byte to the canonical
   observer id; HELLO cannot rename an authenticated observer.
 - `navcontrol` owns board/core identity, separate operational/manufacturer authority
@@ -269,12 +270,12 @@ Missing, malformed, stale, or temporarily unavailable policy resolves to those d
 
 | Part | Stored role |
 |---|---|
-| 24AA025E64 EUI-64 | canonical observer id, certificate SAN and immutable board/PCB serial |
-| MCP79412 model and optional EUI-64 | replaceable RTC identity bound by commissioning |
+| Typed board UID (24CS128 preferred) | canonical observer id, certificate SAN and immutable board/PCB serial |
 | ATECC608C serial | immutable secure-element identity tied to the operational key and attestation |
+| Recorded RTC model and optional EUI-64 | history of the RTC fitted at commissioning; not an identity |
 
-The permanent identifiers are normalized and uniquely indexed; a bound RTC
-EUI-64 is also unique when present. Replacement is an audited hardware event,
+The permanent identifiers are normalized and uniquely indexed. A recorded RTC
+EUI-64 may repeat, because an RTC moved to another board is recorded there too. Replacement is an audited hardware event,
 never an in-place silent edit. The collector stores immutable enrollment
 snapshots rather than joining historical observations against the device's current values.
 
@@ -292,8 +293,9 @@ SHA-256(
 )
 ```
 
-It is recorded as `verified_v1_core`. RTC and microcontroller identity are
-replaceable and are bound by the signed commissioning record. Unknown versions,
+It is recorded as `verified_v1_core`. The replaceable microcontroller is
+bound by the signed commissioning record, which also records the fitted RTC as
+history. Unknown versions,
 signature failure, duplicate factory identifiers, or a mismatch between live
 reads, CSR SAN, and the signed statement fail hardware enrollment. Such a unit
 must never be labelled hardware-attested.

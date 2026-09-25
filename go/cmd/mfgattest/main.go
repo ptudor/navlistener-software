@@ -99,7 +99,7 @@ func runCommissionVerify(args []string) error {
 	}
 	signer, fingerprint := record.KeyID(), record.Fingerprint()
 	var rtcEUI any
-	if s.IdentityFlags&commissioning.IdentityRTCEUIBound != 0 {
+	if s.IdentityFlags&commissioning.IdentityRTCEUIRecorded != 0 {
 		rtcEUI = hex.EncodeToString(s.RTCEUI64[:])
 	}
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{

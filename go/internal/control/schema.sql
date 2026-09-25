@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS navl_devices (
     UNIQUE(board_uid_kind,board_uid),
     CHECK ((board_uid IS NULL) = (board_uid_kind IS NULL)),
     atecc_serial text UNIQUE CHECK(atecc_serial ~ '^[0-9a-f]{18}$'),
-    rtc_eui64 text UNIQUE CHECK(rtc_eui64 ~ '^[0-9a-f]{16}$'),
+    -- The RTC the commissioning record describes: history, not identity.
+    rtc_eui64 text CHECK(rtc_eui64 ~ '^[0-9a-f]{16}$'),
     rtc_model_id integer NOT NULL DEFAULT 0 CHECK(rtc_model_id BETWEEN 0 AND 65535),
     hardware_product integer NOT NULL DEFAULT 0 CHECK(hardware_product BETWEEN 0 AND 65535),
     hardware_revision integer NOT NULL DEFAULT 0 CHECK(hardware_revision BETWEEN 0 AND 65535),
@@ -87,6 +88,9 @@ BEGIN
                      AND commissioning_record IS NOT NULL AND octet_length(commissioning_record)=252));
     END IF;
 END $upgrade$;
+-- The recorded RTC is not part of a board's identity. An RTC moved to another
+-- board is recorded there too, so its EUI-64 need not be unique.
+ALTER TABLE navl_devices DROP CONSTRAINT IF EXISTS navl_devices_rtc_eui64_key;
 
 CREATE TABLE IF NOT EXISTS navl_enrollments (
     id text PRIMARY KEY,

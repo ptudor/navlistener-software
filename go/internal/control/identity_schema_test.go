@@ -118,6 +118,12 @@ func assertIdentityConstraints(t *testing.T, db *pgxpool.Pool) {
 	if want := []string{"navl_devices_uid_v3_evidence", "navl_devices_uid_v3_kind", "navl_devices_uid_v3_length"}; strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("identity constraints %v, want %v", names, want)
 	}
+	var rtcUnique bool
+	if err := db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='navl_devices'::regclass
+        AND contype='u' AND conkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid='navl_devices'::regclass
+        AND attname='rtc_eui64')])`).Scan(&rtcUnique); err != nil || rtcUnique {
+		t.Fatalf("recorded RTC EUI-64 is still unique: %v", err)
+	}
 	uid := "fedcba9876543210fedcba9876543210"
 	for i, tc := range []struct{ observer, value, kind string }{
 		{"board-0003-" + uid, uid, "microchip_cs128"},

@@ -102,6 +102,8 @@ func TestEnrollmentIdentityUniqueness(t *testing.T) {
 	if _, _, err := b.service.Enroll(ctx, "operator", duplicateATECC); err == nil {
 		t.Fatal("duplicate ATECC accepted")
 	}
+	// The recorded RTC is history, not identity: an RTC moved to another board is
+	// recorded on both.
 	for i := byte(4); i <= 5; i++ {
 		r := otherBoard(t, base, b.ab.ManufacturerKeys[0], i, i)
 		r = recommission(t, r, b.ab.ManufacturerKeys[1], func(s *commissioning.Statement) {
@@ -109,9 +111,8 @@ func TestEnrollmentIdentityUniqueness(t *testing.T) {
 			s.RTCModel = commissioning.RTCModelMCP79412
 			s.RTCEUI64 = [8]byte{0, 4, 0xa3, 4, 5, 6, 7, 8}
 		})
-		_, _, err := b.service.Enroll(ctx, "operator", r)
-		if (err == nil) != (i == 4) {
-			t.Fatalf("bound RTC uniqueness %d: %v", i, err)
+		if _, _, err := b.service.Enroll(ctx, "operator", r); err != nil {
+			t.Fatalf("recorded RTC %d: %v", i, err)
 		}
 	}
 }
@@ -145,7 +146,7 @@ func TestServiceIdentityAndImmutableEvidence(t *testing.T) {
 	firstCore, _ := hex.DecodeString(r.CoreRecord)
 	firstCommission, _ := hex.DecodeString(r.CommissioningRecord)
 	r.ReplaceEnrollmentID = id
-	// Add a bound RTC, replace it, then switch to a model with no instance ID.
+	// Record an MCP79412, replace it, then switch to a model with no instance ID.
 	for _, model := range []commissioning.RTCModel{commissioning.RTCModelMCP79412, commissioning.RTCModelMCP79412, commissioning.RTCModelDS3231} {
 		r = recommission(t, r, b.ab.ManufacturerKeys[1], func(s *commissioning.Statement) {
 			s.Generation++
@@ -153,7 +154,7 @@ func TestServiceIdentityAndImmutableEvidence(t *testing.T) {
 			s.RTCModel = model
 			s.RTCEUI64 = [8]byte{}
 			if model == commissioning.RTCModelMCP79412 {
-				s.IdentityFlags |= commissioning.IdentityRTCEUIBound
+				s.IdentityFlags |= commissioning.IdentityRTCEUIRecorded
 				s.RTCEUI64 = [8]byte{0, 4, 0xa3, 1, 2, 3, 4, byte(s.Generation)}
 			}
 		})

@@ -16,7 +16,7 @@ TOOLS = Path(__file__).resolve().parent
 def report(**changes):
     value = {
         "v": 1, "product": 1, "atecc_serial": "0123456789abcdef11", "rtc_eui64": "0004a31234567890",
-        "identity_flags": 3, "rtc_model_id": 1, "rtc_expected": True, "rtc_present": True,
+        "identity_flags": 3, "rtc_model_id": 1, "rtc_present": True,
         "board_uid_kind": "eui64", "board_uid": "0004a3aabbccddee",
         "board_uid_address": 0x50, "eeprom_address": 0x50,
         "eeprom_uid_kind": "eui64", "eeprom_uid": "0004a3aabbccddee", "board_rev": 1, "mcu_family": 1, "mcu_mac": "348518010203",
@@ -57,13 +57,18 @@ class ReportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate report field"):
             commission_report.reports(line(report()).replace('"v":1', '"v":2,"v":1'))
 
-    def test_absent_and_model_only_rtc(self):
-        for flags, model in ((0, 0), (2, 1), (2, 2)):
+    def test_rtc_is_recorded_as_found(self):
+        # No RTC, an MCP79412 whose EUI-64 was not read, a DS3231 and a MAX31328 are all
+        # complete reports: the RTC is not part of the board's identity.
+        for flags, model in ((0, 0), (2, 1), (2, 2), (2, 3)):
             value = report(identity_flags=flags, rtc_model_id=model,
-                           rtc_expected=bool(flags), rtc_present=bool(flags), rtc_eui64=None)
+                           rtc_present=bool(flags), rtc_eui64=None)
             self.assertTrue(commission_report.validate(value)["identity_complete"])
-        with self.assertRaisesRegex(ValueError, "no factory EUI"):
-            commission_report.validate(report(rtc_model_id=2))
+        for model in (2, 3):
+            with self.assertRaisesRegex(ValueError, "no factory EUI"):
+                commission_report.validate(report(rtc_model_id=model))
+        with self.assertRaisesRegex(ValueError, "RTC model"):
+            commission_report.validate(report(identity_flags=2, rtc_model_id=4, rtc_eui64=None))
     def test_finds_reports_among_log_noise_and_keeps_order(self):
         log = "\r\n".join([
             "\x1b[0;32mI (512) navfeeder: navfeeder-esp starting\x1b[0m",
@@ -81,11 +86,12 @@ class ReportTests(unittest.TestCase):
         self.assertIsNone(found[0]["atecc_serial"])
         self.assertIsNone(found[0]["board_rev"])
 
-    def test_expected_but_absent_rtc_is_explicit(self):
-        found = commission_report.reports(line(report(rtc_present=False, rtc_eui64=None,
-                                                       identity_complete=False)))[0]
-        self.assertTrue(found["rtc_expected"])
+    def test_missing_rtc_is_explicit(self):
+        found = commission_report.reports(line(report(identity_flags=0, rtc_model_id=0, rtc_present=False,
+                                                       rtc_eui64=None)))[0]
         self.assertFalse(found["rtc_present"])
+        self.assertIsNone(found["rtc_eui64"])
+        self.assertTrue(found["identity_complete"])
 
     def test_key_security_bit_requires_a_sealed_chip(self):
         # Lost power between the self-test and the seal: the key is ready, the bit is not set,
@@ -102,8 +108,9 @@ class ReportTests(unittest.TestCase):
         bad = [report(v=2), report(product=2), report(rtc_eui64="0004A31234567890"), report(rtc_eui64="0004a3"),
                report(mcu_public_key_der="not base64!"), report(key_state="ready", mcu_key_alg=0),
                report(ds_context=""), report(trust_profile="production"), report(security="31"), report(rd_dis_sealed=1),
-               report(identity_flags=1), report(rtc_model_id=0), report(rtc_expected=False),
-               report(rtc_present=False), report(identity_complete=False), report(record="00"),
+               report(identity_flags=1), report(rtc_model_id=0), report(rtc_expected=True),
+               report(rtc_present=False), report(rtc_eui64=None), report(identity_flags=2),
+               report(identity_complete=False), report(record="00"),
                {key: value for key, value in report().items() if key != "board_uid"},
                dict(report(), surprise=True)]
         for value in bad:
