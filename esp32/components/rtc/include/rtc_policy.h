@@ -14,4 +14,11 @@ bool rtc_running(const uint8_t regs[7], int64_t *epoch);
 // seconds and <=100 ms reported uncertainty. Not authenticated or PPS-qualified.
 bool rtc_gnss_candidate(rtc_candidate_t *candidate, const gnss_status_t *gnss,
                         int64_t now_ms, int64_t *epoch);
+// Wall-clock UTC this firmware trusts: GNSS UTC once the candidate has three advancing samples,
+// the newest no more than 2 s old; otherwise a validated running RTC calendar (readable, oscillator
+// running, validated calendar) read no more than 30 s ago. Never SNTP. Feed on every poll: the
+// candidate tracks NAV-PVT progression. Returns the source; *utc is 0 when unknown.
+enum { RTC_UTC_UNKNOWN, RTC_UTC_RTC, RTC_UTC_GNSS };
+unsigned rtc_trusted_utc(rtc_candidate_t *candidate, const gnss_status_t *gnss, uint8_t rtc_flags,
+                         int64_t rtc_epoch, int64_t rtc_sampled_ms, int64_t now_ms, int64_t *utc);
 #endif

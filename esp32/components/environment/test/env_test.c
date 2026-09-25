@@ -5,13 +5,14 @@
 #include <string.h>
 typedef struct {
     uint8_t mcp[16][2], hdc[256], bmp[256];
-    bool fail, hdc_stuck, bmp_stuck, hdc_pending, bmp_pending;
+    bool fail, hdc_stuck, bmp_stuck, hdc_pending, bmp_pending, heater_stuck;
+    uint8_t absent; // this address NACKs
     unsigned delay_ms;
 } fake_t;
 static bool read_bus(void *ctx, uint8_t address, uint8_t reg, uint8_t *p, size_t n)
 {
     fake_t *f = ctx;
-    if (f->fail) return false;
+    if (f->fail || address == f->absent) return false;
     if (address == 0x18) { assert(reg < 16 && n <= 2); memcpy(p, f->mcp[reg], n); }
     else if (address == 0x40) {
         assert(reg + n <= 256); memcpy(p, f->hdc + reg, n);
@@ -28,7 +29,8 @@ static bool write_bus(void *ctx, uint8_t address, uint8_t reg, const uint8_t *p,
     if (f->fail) return false;
     if (address == 0x18) { assert(reg == 1 && n == 2); memcpy(f->mcp[reg], p, n); }
     else if (address == 0x40) {
-        assert(n == 1 && (reg == 0xe || reg == 0xf)); f->hdc[reg] = *p;
+        assert(n == 1 && (reg == 0xe || reg == 0xf) && !(reg == 0xe && (*p & 0x80))); // never SOFT_RES
+        f->hdc[reg] = reg == 0xe && f->heater_stuck ? (*p & ~8) | (f->hdc[reg] & 8) : *p;
         if (reg == 0xf && (*p & 1)) f->hdc_pending = true;
     } else {
         assert(address == 0x76 && n == 1); // no interleaved multi-register writes
@@ -126,6 +128,52 @@ static void test_hdc_variants(void)
         assert(sample.mcp_valid && sample.bmp_valid);
     }
 }
+static void test_heater_register(void)
+{
+    fake_t f; env_sensors_t s; env_sample_t sample; bool on = true;
+    setup(&f, &s);
+    assert(env_hdc_heater_get(&s, &on) && !on && !s.io_error); // init leaves the heater off
+    f.hdc[0xe] = 0x87; // interrupt bits set; SOFT_RES reads back set
+    assert(env_hdc_heater_set(&s, true) && f.hdc[0xe] == 0x0f && env_hdc_heater_get(&s, &on) && on);
+    f.hdc[0xe] |= 0x50; // measurement-mode bits are preserved too
+    assert(env_hdc_heater_set(&s, false) && f.hdc[0xe] == 0x57 && env_hdc_heater_get(&s, &on) && !on);
+    // Conversions still work with the heater on.
+    f.hdc[0xe] = 0x0b; env_sensors_read(&s, &sample);
+    assert(sample.hdc_valid && !sample.bus_error && f.hdc[0xe] == 0x0b);
+    // A register that ignores the write is reported, not assumed.
+    f.hdc[0xe] = 3; f.heater_stuck = true;
+    assert(!env_hdc_heater_set(&s, true) && !s.io_error && f.hdc[0xe] == 3);
+    f.hdc[0xe] = 0x0b;
+    assert(!env_hdc_heater_set(&s, false) && !s.io_error);
+    f.heater_stuck = false; f.fail = true;
+    assert(!env_hdc_heater_set(&s, false) && s.io_error);
+    assert(!env_hdc_heater_get(&s, &on) && s.io_error);
+    env_sensors_read(&s, &sample); assert(sample.bus_error && !sample.hdc_valid);
+    f.fail = false;
+    env_sensors_read(&s, &sample); assert(!sample.bus_error && !s.io_error);
+    // Sensors outside the mask are not converted and stay invalid.
+    f.hdc[0xf] = 0; env_sensors_read_some(&s, &sample, 5);
+    assert(sample.mcp_valid && !sample.hdc_valid && sample.bmp_valid && !f.hdc_pending && f.hdc[0xf] == 0);
+    f.bmp[0x1b] = 0; env_sensors_read_some(&s, &sample, 3);
+    assert(sample.mcp_valid && sample.hdc_valid && !sample.bmp_valid && f.bmp[0x1b] == 0);
+    // An absent device's failed probe at initialization does not mark later good samples.
+    setup(&f, &s); env_io_t io = s.io; f.absent = 0x76;
+    env_sensors_init(&s, &io, ENV_HDC2080); assert(s.io_error && s.mcp_ready && s.hdc_ready && !s.bmp_ready);
+    env_sensors_read(&s, &sample); assert(sample.mcp_valid && sample.hdc_valid && !sample.bus_error);
+    // A reboot during a heater run: HEAT_EN is still set and the HDC does not answer at init. It is
+    // not configured blind; a later retry identifies it and clears the heater, keeping INT bits.
+    setup(&f, &s); io = s.io; f.hdc[0xe] = 0x0b; f.absent = 0x40;
+    env_sensors_init(&s, &io, ENV_HDC2080); assert(!s.hdc_ready && f.hdc[0xe] == 0x0b);
+    assert(!env_sensors_retry_hdc(&s) && !s.hdc_ready && s.io_error && f.hdc[0xe] == 0x0b);
+    f.absent = 0;
+    assert(env_sensors_retry_hdc(&s) && s.hdc_ready && !s.io_error && f.hdc[0xe] == 3);
+    assert(env_sensors_retry_hdc(&s) && f.hdc[0xe] == 3); // ready: no further writes
+    env_sensors_read(&s, &sample); assert(sample.hdc_valid);
+    // A part at 0x40 that is not an HDC is never written.
+    setup(&f, &s); io = s.io; f.hdc[0xe] = 0x0b; f.hdc[0xfc] = 0;
+    env_sensors_init(&s, &io, ENV_HDC2080);
+    assert(!env_sensors_retry_hdc(&s) && !s.hdc_ready && f.hdc[0xe] == 0x0b);
+}
 int main(void)
 {
     fake_t f; env_sensors_t s; env_sample_t sample;
@@ -155,6 +203,8 @@ int main(void)
     env_sensors_init(&s, &io, ENV_HDC2080);
     assert(!s.mcp_ready && !s.hdc_ready && !s.bmp_ready);
     test_hdc_variants();
-    puts("Environment: HDC2080/HDC2022 selection, units/sign/alerts, Bosch trim compensation, fresh conversions and fault isolation passed");
+    test_heater_register();
+    puts("Environment: HDC2080/HDC2022 selection, units/sign/alerts, Bosch trim compensation, fresh conversions, "
+         "heater register control, HDC retry and fault isolation passed");
     return 0;
 }

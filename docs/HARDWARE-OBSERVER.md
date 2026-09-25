@@ -750,6 +750,39 @@ Accuracy requirements are correspondingly modest — dew point needs a few perce
 precision hygrometer. `HDC2080` covers temperature and humidity in one part and one address;
 precision Honeywell HIH parts would be wasted here.
 
+**Condensation recovery with the on-chip heater.** The HDC's on-chip heater can drive condensation
+off its humidity element. TI SNAS678C §8.3.3 limits its use: heat only when a condensing situation
+is detected, keep measuring humidity while heating, stop once it reads at or near 0 %RH, and keep
+measuring temperature through a cool-down of minutes before normal service. The firmware therefore
+leaves the heater off, except for a defined, rare recovery run. It clears the heater whenever it
+identifies the sensor; if a reboot during a run finds the sensor unresponsive, it retries the
+identification at every sample. It never writes a part it has not identified.
+
+- **Trigger** — all of: every valid HDC sample ≥ 98.0 %RH for ≥ 4 h continuously (invalid samples
+  do not count; a valid reading below 98.0 %RH or a gap over 30 min restarts the count); HDC
+  temperature −20 … +60 °C; and ≥ 14 days since the previous automatic run, judged only with
+  trusted UTC (GNSS-qualified, or the running RTC that is initialized only from it). The run's
+  start time is saved in NVS before the heater is enabled. Without trusted UTC there is no run.
+- **Run** — `HEAT_EN` set by read-modify-write and confirmed by read-back; a manual HDC and MCP9808
+  conversion every 10 s. Stop at the first of: ≤ 5.0 %RH (`dry`), 300 s (`timeout`), HDC ≥ 80.0 °C
+  (`overtemp`), any I²C error (`bus_error`), or no valid conversion or a `HEAT_EN` that reads back
+  clear (`sensor_lost`). Heater-off is confirmed by read-back and retried, with an error, until it is.
+- **Cool-down** — HDC temperature and humidity are withheld from the environmental report until at
+  least 10 min have passed and the HDC temperature has moved < 0.2 °C over the last 5 min, or 60 min
+  at most. MCP9808 and BMP388 values keep reporting, marked as taken during a run or cool-down.
+  The MCP9808 matters here: its rise is independent evidence that the heater really ran.
+
+Parameter sources: the heater draws **90 mA at 3.3 V**, by far the largest load on `3V3_SENS`
+(§3.1 budgets the other sensors at under 25 mA), so the linear regulator dissipates about 0.15 W
+more from the 5 V input while it runs. The **+60 °C start limit** keeps that SOT-23-5 regulator
+(U30: `TPS7A2033PDBVR`, or `RT9193-33GB` on existing builds) within its junction limit. With the heater on, the HDC must stay below 85 °C
+(THEATER −40 to 85 °C), hence the 80 °C stop; the humidity element's operating range is −20 to
+70 °C. The 4 h / 14 day values aim at roughly two runs a year on a site that condenses. They are
+engineering choices, **not yet derived from fleet data**: telemetry reports hours at ≥ 95 %RH and
+≥ 98 %RH since boot so the thresholds can be tuned later. Every value is a `menuconfig` option; the
+wire format and exact rules are in [OBSERVER-TELEMETRY.md](OBSERVER-TELEMETRY.md#humidity-sensor-heater-condensation-recovery).
+The policy is wired into the NEO observer build only; the MAX and ZED-X20P boards are not wired to it yet.
+
 **Do not consolidate the barometer into it.** A combined P/T/H part (BME280) would collapse three
 slots into one, but its pressure noise is worse than a dedicated barometer's — and pressure noise
 is precisely the specification §6.1's gate lives on. Keep the good barometer separate.

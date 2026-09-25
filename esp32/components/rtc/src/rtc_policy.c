@@ -72,3 +72,16 @@ bool rtc_gnss_candidate(rtc_candidate_t *c, const gnss_status_t *s, int64_t now,
     *epoch = (utc_ns + (now - s->fix_ms) * 1000000) / 1000000000LL;
     return c->samples >= 3 && s->fix_ms - c->first_sample_ms >= 2000;
 }
+unsigned rtc_trusted_utc(rtc_candidate_t *c, const gnss_status_t *g, uint8_t rtc_flags,
+                         int64_t rtc_epoch, int64_t rtc_sampled_ms, int64_t now, int64_t *utc)
+{
+    int64_t epoch;
+    (void)rtc_gnss_candidate(c, g, now, &epoch);
+    if (c->samples >= 3 && now >= c->last_sample_ms && now - c->last_sample_ms <= 2000) {
+        *utc = (c->last_utc_ns + (now - c->last_sample_ms) * 1000000) / 1000000000; return RTC_UTC_GNSS;
+    }
+    if ((rtc_flags & 19) == 19 && now >= rtc_sampled_ms && now - rtc_sampled_ms <= 30000) {
+        *utc = rtc_epoch + (now - rtc_sampled_ms) / 1000; return RTC_UTC_RTC;
+    }
+    *utc = 0; return RTC_UTC_UNKNOWN;
+}

@@ -37,6 +37,7 @@ uint8_t observer_report_due(const report_policy_t *p, const observer_report_t *r
                             abs(a->rh_centi_percent - b->rh_centi_percent) >= 200)) ||
         ((b->valid & 4) && (abs(a->bmp_centi_c - b->bmp_centi_c) >= 50 ||
                             llabs((long long)a->pressure_pa - b->pressure_pa) >= 100)) ||
+        p->last.heater.state != r->heater.state || p->last.heater.runs != r->heater.runs ||
         p->last.rtc.flags != r->rtc.flags;
     return changed ? REPORT_CHANGE : 0;
 }
@@ -46,8 +47,8 @@ size_t observer_report_encode(uint8_t *out, size_t cap, const observer_report_t 
 {
     size_t fwlen = 0;
     while (fwlen < 32 && r->firmware[fwlen]) fwlen++;
-    // Header 24; six fixed TLVs (14,17,16,13,29,29); firmware TLV.
-    size_t length = 24 + 18 + 14 + 17 + 16 + 13 + 29 + 29 + 3 + fwlen;
+    // Header 24; six fixed TLVs (14,17,16,13,29,29); firmware TLV; optional heater TLV (58).
+    size_t length = 24 + 18 + 14 + 17 + 16 + 13 + 29 + 29 + 3 + fwlen + (r->heater.present ? 3 + 58 : 0);
     if (!out || cap < length) return 0;
     memset(out, 0, length);
     out[0] = 1; out[1] = r->reason; gnf1_be64(out+2, r->uptime_ms);
@@ -75,6 +76,14 @@ size_t observer_report_encode(uint8_t *out, size_t cap, const observer_report_t 
       b[10]=s->valid; b[11]=s->jam; b[12]=s->spoof;
       gnf1_be64(b+13,s->rf_ms); gnf1_be64(b+21,s->status_ms); }
     { TLV(7, fwlen); memcpy(b,r->firmware,fwlen); }
+    if (r->heater.present) { TLV(10, 58); const report_heater_t *h=&r->heater;
+      b[0]=1; b[1]=h->state; b[2]=h->flags; b[3]=h->runs;
+      gnf1_be32(b+4,h->rh95_s); gnf1_be32(b+8,h->rh98_s); gnf1_be32(b+12,h->streak_s);
+      gnf1_be64(b+16,h->last_utc); gnf1_be64(b+24,h->start_ms);
+      gnf1_be32(b+32,h->on_ms); gnf1_be32(b+36,h->recovery_ms); b[40]=h->stop; b[41]=h->valid;
+      gnf1_be16(b+42,h->rh_before); gnf1_be16(b+44,h->rh_stop);
+      gnf1_be16(b+46,h->hdc_before); gnf1_be16(b+48,h->hdc_peak); gnf1_be16(b+50,h->hdc_end);
+      gnf1_be16(b+52,h->mcp_before); gnf1_be16(b+54,h->mcp_peak); gnf1_be16(b+56,h->mcp_end); }
 #undef TLV
     return offset;
 }

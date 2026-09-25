@@ -18,6 +18,7 @@ measurement has changed from the last queued report by at least:
 | Relative humidity | 2 percentage points |
 | Local absolute pressure | 100 Pa (1 hPa) |
 | Sensor validity/readiness or RTC status | Any change |
+| Humidity-heater state or run count | Any change |
 
 Ordinary change reports have a one-minute minimum interval. Comparing against
 the last report accumulates slow drift instead of ignoring many small steps.
@@ -42,7 +43,8 @@ The M9's "no spoofing indicated" state is not proof of authentic reception; see
 ## Measurements and identities
 
 - MCP9808: signed ambient temperature, with alert bits excluded.
-- HDC2080: fresh 14-bit temperature and humidity conversion; heater disabled.
+- HDC2080: fresh 14-bit temperature and humidity conversion. Its on-chip heater
+  stays off except during the rare [condensation recovery](#humidity-sensor-heater-condensation-recovery).
   Temperature follows the Rev C formula, including nominal 3.3 V supply
   compensation: `raw × 165 / 65536 − 40.5 + 0.08 × (3.3 − 1.8)` °C.
   The supply is assumed, not measured. Humidity is `raw × 100 / 65536` %RH.
@@ -89,6 +91,96 @@ timeouts are rejected. Source references:
 [vendored Bosch source and license](../esp32/components/environment/vendor/bmp3/README.md).
 Include the Bosch license with firmware binary distributions.
 
+## Humidity-sensor heater (condensation recovery)
+
+The HDC2080/HDC2022 has an on-chip heater, `HEAT_EN` (CONFIG register `0x0E`,
+bit 3). [TI SNAS678C](https://www.ti.com/lit/ds/symlink/hdc2080.pdf) section
+8.3.3 says to use it only when a condensing condition is detected, to keep
+measuring humidity while it is on, to turn it off once humidity reads at or near
+0 %RH, and to keep measuring temperature through a cool-down of minutes before
+returning to normal service. The NEO observer firmware implements that as a
+defined, deliberately rare policy. Initialization still clears `HEAT_EN` on every
+boot, and the heater is never enabled outside a run.
+
+The defaults are engineering choices aimed at roughly two runs a year on a site
+that condenses. They are **not yet derived from fleet data**; the humidity-dwell
+counters below exist so the thresholds can be tuned from telemetry. Each value is
+a `menuconfig` option under **HDC humidity-sensor heater (condensation recovery)**.
+
+| Stage | Rule (default) | Kconfig |
+|---|---|---|
+| Trigger | Every valid HDC sample ≥ 98.0 %RH, continuously for ≥ 4 h | `NVF_ENV_HEATER_TRIGGER_RH_TENTHS`, `NVF_ENV_HEATER_TRIGGER_MINUTES` |
+| Trigger | More than 30 min without a valid sample restarts the count | `NVF_ENV_HEATER_GAP_MINUTES` |
+| Trigger | HDC temperature −20 … +60 °C | `NVF_ENV_HEATER_MIN_TENTHS_C`, `NVF_ENV_HEATER_MAX_TENTHS_C` |
+| Trigger | ≥ 14 days of trusted UTC since the previous automatic run | `NVF_ENV_HEATER_INTERVAL_DAYS` |
+| Run | Manual HDC and MCP9808 conversions every 10 s | `NVF_ENV_HEATER_STEP_SECONDS` |
+| Stop `dry` | Humidity ≤ 5.0 %RH | `NVF_ENV_HEATER_DRY_RH_TENTHS` |
+| Stop `timeout` | 300 s on-time | `NVF_ENV_HEATER_MAX_ON_SECONDS` |
+| Stop `overtemp` | HDC temperature ≥ 80.0 °C | `NVF_ENV_HEATER_OVERTEMP_TENTHS_C` |
+| Stop `bus_error` | Any I2C error in a heater step | — |
+| Stop `sensor_lost` | No valid HDC conversion, or `HEAT_EN` read back clear (the part reset) | — |
+| Cool-down | ≥ 10 min, and HDC temperature changed < 0.2 °C over the last 5 min | `NVF_ENV_HEATER_SETTLE_MINUTES`, `NVF_ENV_HEATER_STABLE_MINUTES`, `NVF_ENV_HEATER_STABLE_TENTHS_C` |
+| Cool-down | Normal service resumes after 60 min regardless | `NVF_ENV_HEATER_RECOVERY_MAX_MINUTES` |
+
+Sources for the limits: the heater draws 90 mA at 3.3 V, and with it on the part
+must stay below 85 °C (THEATER −40 to 85 °C), hence the 80 °C stop. The humidity
+element operates from −20 to 70 °C. The +60 °C start limit keeps the `3V3_SENS`
+regulator within its junction limit while it carries the heater
+([hardware contract §6.4](HARDWARE-OBSERVER.md#64-humidity--a-diagnostic-not-a-gnss-input)).
+Build-time assertions reject inconsistent settings, such as a start limit at or
+above the over-temperature stop.
+
+**Counting.** The board task samples every 30 seconds (sooner for interference
+snapshots), so four hours is about 480 samples. Invalid samples do not count
+toward the four hours and do not break it; any valid sample below the trigger,
+or a gap longer than 30 minutes between valid samples, restarts it.
+
+**Trusted time.** The 14-day interval uses only wall-clock time the firmware
+already trusts, the same sources the journal labels: GNSS UTC after three
+advancing NAV-PVT solutions (newest at most two seconds old), otherwise a
+validated running RTC calendar read in the last 30 seconds; this firmware sets
+that RTC only from qualified GNSS UTC. SNTP time is never used. Without
+trusted UTC no automatic run starts. The run's start time is saved in NVS
+(`nvf_env/heater_utc`) *before* `HEAT_EN` is set; if the save fails, the heater
+is not started and the four-hour count restarts. An unreadable record disables
+automatic runs for that boot rather than risk a repeat inside the interval. A
+start whose `HEAT_EN` does not read back set still counts as a run.
+
+**Heater control.** `HEAT_EN` is changed by read-modify-write that preserves the
+interrupt and measurement-mode bits and never writes the self-clearing soft-reset
+bit, then confirmed by read-back. While heating, a separate board-task poll takes
+a conversion step every 10 seconds, independent of the 30-second environmental
+cadence: fresh HDC and MCP9808 conversions, then a `HEAT_EN` read-back. Turning
+the heater off is attempted three times; if the read-back still does not confirm
+it, an error is logged and the attempt repeats at every step. Until confirmed,
+the state is `stopping` and the heater is treated as possibly on.
+
+**Marking during a run and cool-down.** Whenever the heater state is not
+`normal`, the environment component (tag 1) reports the HDC temperature and
+humidity as invalid (JSON `null`); they are heater and cool-down readings, not
+ambient values. The ready bit stays set. MCP9808 and BMP388/BMP384 readings
+continue, and tag 10's state marks every such snapshot as taken while the heater
+was on or the sensor was recovering. The MCP9808 is kept for a reason: its rise
+during a run independently confirms that the heater actually ran, and its
+before/peak/end values are in the run record. The sample that ends the cool-down
+is the first normal HDC sample published again. Serial logs mark the same samples.
+
+**Run record.** Each run logs its start (UTC and uptime), on-time, stop reason,
+humidity before and at stop, and HDC and MCP9808 temperatures before, at peak and
+at the end of the cool-down, when the heater turns off and again when normal
+service resumes. Tag 10 carries the latest run of the current boot.
+
+**Tuning data.** Tag 10 and each HDC log line carry the time spent at ≥ 95 %RH
+and at ≥ 98 %RH since boot, in normal service only. An interval between two
+consecutive valid samples counts when both are at or above the bucket and they
+are at most 30 minutes apart. These buckets are fixed, not tied to the trigger
+setting, so fleet data stays comparable across builds.
+
+The policy is plain C with injected time and samples
+([`env_heater.c`](../esp32/components/environment/src/env_heater.c)), covered by
+the host test in `esp32/components/environment/test`. It is wired only into the
+NEO observer build; the MAX and ZED-X20P boards do not run it yet.
+
 ## Wire contract, version 1
 
 The normal 13-byte GNF1 record envelope supplies the reception timestamp and
@@ -123,6 +215,7 @@ invalid lengths/enums/ranges, and trailing partial TLVs are rejected.
 | 6 receiver context | 29 | supported mask U8, expected mask U8, tracked counts[8], validity U8, jamming U8, spoofing U8, MON-RF uptime U64, NAV-STATUS uptime U64 |
 | 7 firmware | 1–32 | Printable ASCII application version (build git description when available) |
 | 8 timing | 196 | Versioned GNSS/RTC pulse snapshot; layout below |
+| 10 humidity heater | 58 | Versioned condensation-recovery state, dwell counters and latest run; layout below |
 
 Environment mask bits 0/1/2 identify MCP/HDC/BMP respectively. Valid requires
 ready. Temperature units are 0.01 °C, RH units 0.01%, pressure units Pa. Invalid
@@ -141,6 +234,36 @@ Manifest action enums: 0 I/O error, 1 initialization required, 2 recovery requir
 3 replacement confirmation required, 4 invalid manifest, 5 use manifest, 6 absent.
 EUI validity excludes all-zero/all-FF reads. Capability metadata is zero without
 validation; EUI validity and capability validation are independent.
+
+Tag 10 accompanies the environment component whenever the HDC is ready; it is
+absent without an HDC. Collectors that predate it skip it as a bounded unknown
+extension; tag 1 still withholds heater-affected HDC values from them.
+
+| Offset within tag | Bytes | Meaning |
+|---:|---:|---|
+| 0 | 1 | Heater version = 1 |
+| 1 | 1 | State: normal=0, heating=1, stopping (off not yet confirmed)=2, recovering=3 |
+| 2 | 1 | Flags: trusted UTC available=1, last-run record readable=2 |
+| 3 | 1 | Runs since ESP boot, saturating at 255 |
+| 4, 8 | 4 each | Seconds at ≥ 95 %RH and at ≥ 98 %RH since boot, normal service only |
+| 12 | 4 | Current condensing streak in seconds; zero unless normal |
+| 16 | 8 | Unix seconds of the last automatic run, including earlier boots; zero if none |
+| 24 | 8 | Latest run's start uptime in milliseconds |
+| 32 | 4 | On-time in milliseconds; still counting while heating or stopping |
+| 36 | 4 | Cool-down in milliseconds; still counting while recovering |
+| 40 | 1 | Stop reason: none yet=0, dry=1, timeout=2, overtemp=3, bus_error=4, sensor_lost=5 |
+| 41 | 1 | Validity: humidity before=1, at stop=2, HDC before=4, peak=8, end=16, MCP9808 before=32, peak=64, end=128 |
+| 42, 44 | 2 each | Humidity before and at stop, 0.01 % |
+| 46, 48, 50 | 2 each | Signed HDC temperature before, peak and at the end of cool-down, 0.01 °C |
+| 52, 54, 56 | 2 each | Signed MCP9808 temperature before, peak and at the end of cool-down, 0.01 °C |
+
+With zero runs this boot, offsets 24–57 are zero and the state is normal. A run
+always has humidity and HDC temperature before it and a nonzero last-run time;
+the last-run time requires a readable record. Only heating has no stop reason.
+End-of-cool-down values and a nonzero cool-down time appear only once the state
+is normal again. Invalid measurements are zero. Start, on-time and cool-down
+cannot extend past the snapshot uptime, and ≥ 98 %RH time cannot exceed
+≥ 95 %RH time.
 
 Receiver masks/count indices use u-blox GNSS IDs. Validity bits: current satellite
 counts=1, current position fix=2, current MON-RF=4, current NAV-STATUS=8. Current
@@ -207,7 +330,14 @@ The existing `hdc2080_c` field carries the configured HDC2080 or HDC2022
 temperature. Version 1 does not encode the HDC variant; retain the assembly
 and firmware configuration when interpreting these readings.
 Component health and identifiers appear under `rtc`, `atecc`, `eeprom`,
-`resources`, `receiver`, and `firmware`. Hardware status is separate from
+`resources`, `receiver`, and `firmware`. `humidity_heater` carries tag 10:
+`state`, `trusted_utc`, `last_run_readable`, `runs_since_boot`,
+`humidity_at_least_95_s`, `humidity_at_least_98_s`, `condensing_streak_s`,
+nullable `last_run_unix_seconds`, and `latest_run` (omitted without a run this
+boot) with `start_uptime_ms`, `on_ms`, `recovery_ms`, nullable `stop_reason`,
+and nullable `humidity_before_percent`, `humidity_at_stop_percent`,
+`hdc2080_before_c`, `hdc2080_peak_c`, `hdc2080_end_c`, `mcp9808_before_c`,
+`mcp9808_peak_c` and `mcp9808_end_c`. Hardware status is separate from
 administrative identity and never changes receiver capability/liveness counts.
 
 `hardware_trust` is `none`, `open`, `test` or `trusted`: what the collector
@@ -246,10 +376,11 @@ authorization-scope reset. This live cache is separate from the persistent
 samples now hold the GNF1 durability watermark until their transaction commits;
 without a database, acknowledgment still means receipt only.
 
-The shared [binary fixture](../testdata/observer_details_v1.hex) is checked by
-the C encoder and Go decoder. Host tests cover conversion faults, reporting
-cadence, receiver transitions, malformed records, TLS delivery, replay,
-durability classification, baseline retention, expiry and private output.
+The shared [binary fixture](../testdata/observer_details_v1.hex), which includes
+a completed heater run in tag 10, is checked by the C encoder and Go decoder.
+Host tests cover conversion faults, reporting cadence, receiver transitions,
+malformed records, TLS delivery, replay, durability classification, baseline
+retention, expiry and private output.
 
 The [timing fixture](../testdata/observer_timing_v1.hex) is shared by the C encoder,
 Go decoder and serial plot tests. Timing shares the same private audience rules

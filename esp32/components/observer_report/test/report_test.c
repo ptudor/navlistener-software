@@ -13,13 +13,20 @@ int main(int argc, char **argv)
         .manifest={1,1,{2,0,0,0,0,0,0,1},0,0,0},
         .resources={1,1024,4194304,3,2,65536,3145728},
         .receiver={0x6f,0x4f,{6,2,1,1,0,0,1,0},15,2,1,999500,999600},
-        .firmware="test-v1"};
+        .firmware="test-v1",
+        .heater={.present=true, .state=0, .flags=3, .runs=1, .stop=1, .valid=0xff,
+            .rh95_s=20000, .rh98_s=14460, .last_utc=1789400000, .start_ms=250000, .on_ms=95000,
+            .recovery_ms=630000, .rh_before=9912, .rh_stop=430, .hdc_before=-150, .hdc_peak=7310,
+            .hdc_end=1310, .mcp_before=-210, .mcp_peak=2475, .mcp_end=1150}};
     uint8_t actual[OBSERVER_REPORT_MAX], expected[OBSERVER_REPORT_MAX]; size_t count=0;
     FILE *f=fopen(argv[1],"r"); assert(f); unsigned byte;
     while (fscanf(f,"%2x",&byte)==1) { assert(count<sizeof expected); expected[count++]=byte; }
     fclose(f);
     assert(observer_report_encode(actual,sizeof actual,&r)==count);
     assert(!memcmp(actual,expected,count));
+    // Without an HDC policy the heater component is omitted, not sent as zeros.
+    observer_report_t absent=r; absent.heater.present=false;
+    assert(observer_report_encode(actual,sizeof actual,&absent)==count-61 && !memcmp(actual,expected,count-61));
     report_timing_t timing={.present=true,.clock=1,.rtc_state=1,.rtc_control=0xc0,.flags=3,
         .tp_flags=3,.tp_ms=999500,.resolution_hz=80000000,.started_ms=1000,.rtc_minus_gnss_ticks=-80};
     for (unsigned i=0;i<2;i++) timing.channel[i]=(timing_channel_report_t){
@@ -50,6 +57,12 @@ int main(int argc, char **argv)
     assert(observer_report_due(&p,&r)==REPORT_CHANGE); // unavailable is a change
     observer_report_sent(&p,&r); r.uptime_ms+=60000; r.environment.valid|=2;
     assert(observer_report_due(&p,&r)==REPORT_CHANGE); // recovery is a change
+    observer_report_sent(&p,&r); r.uptime_ms+=60000; r.heater.rh95_s+=60;
+    assert(!observer_report_due(&p,&r)); // dwell counters ride along with other reports
+    r.heater.state=1; r.heater.runs=2;
+    assert(observer_report_due(&p,&r)==REPORT_CHANGE); // heater start
+    observer_report_sent(&p,&r); r.uptime_ms+=60000; r.heater.state=3;
+    assert(observer_report_due(&p,&r)==REPORT_CHANGE); // heater off, recovering
     assert(panel_pwm_off_ticks(50)==512 && panel_pwm_off_ticks(20)==819 && panel_pwm_off_ticks(10)==922);
     assert(panel_pwm_off_ticks(100)==0 && panel_pwm_off_ticks(0)==1024);
     assert(panel_next_brightness(20)==10 && panel_next_brightness(10)==50 && panel_next_brightness(50)==20);

@@ -13,6 +13,15 @@ typedef struct {
     uint16_t rh_centi_percent;
     uint32_t pressure_pa;
 } report_environment_t;
+// HDC humidity-heater condensation recovery; tag 10 in docs/OBSERVER-TELEMETRY.md.
+typedef struct {
+    bool present; // the HDC is ready and the policy runs
+    uint8_t state, flags, runs, stop, valid; // state 0 normal, 1 heating, 2 stopping, 3 recovering
+    uint32_t rh95_s, rh98_s, streak_s, on_ms, recovery_ms;
+    uint64_t last_utc, start_ms;
+    uint16_t rh_before, rh_stop;
+    int16_t hdc_before, hdc_peak, hdc_end, mcp_before, mcp_peak, mcp_end;
+} report_heater_t;
 typedef struct { uint8_t flags; uint64_t epoch, sampled_ms; } report_rtc_t;
 typedef struct {
     uint64_t checked_ms;
@@ -36,6 +45,7 @@ typedef struct {
     uint32_t event_count;
     uint8_t reason, event_flags, event_states;
     report_environment_t environment;
+    report_heater_t heater;
     report_rtc_t rtc;
     report_crypto_t crypto;
     report_manifest_t manifest;

@@ -27,6 +27,7 @@
 #include "hardware_checks.h"
 #include "receiver.h"
 #include "observer_rtc.h"
+#include "rtc_policy.h"
 #include "environment.h"
 #include "pusher.h"
 #include "nvs.h"
@@ -38,6 +39,7 @@ static observer_report_t report;
 static report_policy_t report_policy;
 static uint64_t (*report_now_ns)(void);
 static int64_t next_environment, last_environment = -5000;
+static rtc_candidate_t utc_candidate; // trusted UTC for the humidity heater's run interval
 static atomic_uint brightness = PANEL_DEFAULT_BRIGHTNESS;
 static uint64_t next_timing;
 static unsigned applied_brightness = PANEL_DEFAULT_BRIGHTNESS;
@@ -336,20 +338,44 @@ static void panel_write(uint8_t green, uint8_t yellow)
         ledc_update_duty(LEDC_LOW_SPEED_MODE, c);
     }
 }
-static void report_poll(const gnss_status_t *status, int64_t now, uint8_t expected)
+static void heater_report(const env_heater_status_t *s, report_heater_t *h)
+{
+    const env_heater_run_t *r = &s->run;
+    *h = (report_heater_t){.present = s->active};
+    if (!s->active) return;
+    h->state = s->state; h->flags = (s->utc_valid ? 1 : 0) | (s->last_known ? 2 : 0);
+    h->runs = s->runs > 255 ? 255 : s->runs; h->last_utc = s->last_utc;
+    h->rh95_s = s->rh95_ms / 1000; h->rh98_s = s->rh98_ms / 1000; h->streak_s = s->streak_ms / 1000;
+    if (!s->runs) return;
+    h->start_ms = r->start_ms; h->stop = r->stop; h->valid = r->valid;
+    h->on_ms = r->on_ms > UINT32_MAX ? UINT32_MAX : r->on_ms;
+    h->recovery_ms = r->recovery_ms > UINT32_MAX ? UINT32_MAX : r->recovery_ms;
+    // Invalid measurements stay zero on the wire.
+    if (r->valid & ENV_RUN_RH_BEFORE) h->rh_before = lround(r->rh_before * 100);
+    if (r->valid & ENV_RUN_RH_STOP) h->rh_stop = lround(r->rh_stop * 100);
+    if (r->valid & ENV_RUN_HDC_BEFORE) h->hdc_before = lround(r->hdc_before * 100);
+    if (r->valid & ENV_RUN_HDC_PEAK) h->hdc_peak = lround(r->hdc_peak * 100);
+    if (r->valid & ENV_RUN_HDC_END) h->hdc_end = lround(r->hdc_end * 100);
+    if (r->valid & ENV_RUN_MCP_BEFORE) h->mcp_before = lround(r->mcp_before * 100);
+    if (r->valid & ENV_RUN_MCP_PEAK) h->mcp_peak = lround(r->mcp_peak * 100);
+    if (r->valid & ENV_RUN_MCP_END) h->mcp_end = lround(r->mcp_end * 100);
+}
+static void report_poll(const gnss_status_t *status, int64_t now, uint8_t expected, bool utc_valid, int64_t utc)
 {
     bool event_pending = status->event_count != report_policy.last.event_count;
     bool force = event_pending && now - last_environment >= 5000;
     if (now < next_environment && !force) return;
     env_sample_t sample;
+    env_heater_status_t heater;
     report_environment_t *e = &report.environment;
     *e = (report_environment_t){0};
-    environment_sample(hardware_manifest_i2c_bus(), &sample, &e->ready);
+    environment_sample(hardware_manifest_i2c_bus(), now, utc_valid, utc, &sample, &e->ready, &heater);
     last_environment = esp_timer_get_time() / 1000;
     next_environment = last_environment + 30000;
     if (sample.mcp_valid) { e->valid |= 1; e->mcp_centi_c = lround(sample.mcp_c * 100); }
     if (sample.hdc_valid) { e->valid |= 2; e->hdc_centi_c = lround(sample.hdc_c * 100); e->rh_centi_percent = lround(sample.rh_percent * 100); }
     if (sample.bmp_valid) { e->valid |= 4; e->bmp_centi_c = lround(sample.bmp_c * 100); e->pressure_pa = lround(sample.pressure_pa); }
+    heater_report(&heater, &report.heater);
     report.uptime_ms = last_environment;
     report.event_count = status->event_count; report.event_ms = status->event_ms;
     report.event_flags = status->event_flags; report.event_states = status->event_states;
@@ -451,7 +477,13 @@ static void board_task(void *arg)
             next_brightness_write = err == ESP_OK ? 0 : now + 60000;
         }
         observer_rtc_poll(hardware_manifest_i2c_bus(), &status, now);
-        report_poll(&status, now, gnss_status_expected(&status, now, learned));
+        report_rtc_t rtc = observer_rtc_status();
+        int64_t utc;
+        bool utc_valid = rtc_trusted_utc(&utc_candidate, &status, rtc.flags, (int64_t)rtc.epoch,
+                                         (int64_t)rtc.sampled_ms, now, &utc) != RTC_UTC_UNKNOWN;
+        report_poll(&status, now, gnss_status_expected(&status, now, learned), utc_valid, utc);
+        // Every pass: while the humidity heater is on it converts at its own step interval.
+        environment_poll(esp_timer_get_time() / 1000);
         timing_poll(&status);
         observer_report_t journal_report=report;
         journal_report.rtc=observer_rtc_status();

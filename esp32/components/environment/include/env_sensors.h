@@ -20,15 +20,26 @@ typedef struct {
     env_io_t io;
     env_hdc_variant_t hdc_variant;
     bool mcp_ready, hdc_ready, bmp_ready;
+    bool io_error; // any failed I2C transfer; each read or heater operation clears it first
     struct bmp3_dev bmp;
     struct bmp3_settings settings;
 } env_sensors_t;
 typedef struct {
     bool mcp_valid, hdc_valid, bmp_valid;
+    bool bus_error; // an I2C transfer failed during this sample
     double mcp_c, hdc_c, rh_percent, bmp_c, pressure_pa;
 } env_sample_t;
 // Unknown/disabled variants leave HDC unavailable; other sensors still initialize.
 void env_sensors_init(env_sensors_t *s, const env_io_t *io, env_hdc_variant_t hdc_variant);
+// Repeats the HDC identification and heater-off configuration if it failed at init. A reboot
+// during a heater run leaves HEAT_EN set until the part is configured again. True once ready.
+bool env_sensors_retry_hdc(env_sensors_t *s);
 // Always clears validity first: a failed conversion cannot expose an old value.
 void env_sensors_read(env_sensors_t *s, env_sample_t *sample);
+// The same for the ready sensors in mask (bit 0 MCP9808, 1 HDC, 2 BMP); the others stay invalid.
+void env_sensors_read_some(env_sensors_t *s, env_sample_t *sample, uint8_t mask);
+// HDC CONFIG HEAT_EN (0x0E bit 3), read-modify-write keeping the interrupt and measurement
+// bits. True only when the register reads back exactly as written. Requires hdc_ready.
+bool env_hdc_heater_set(env_sensors_t *s, bool on);
+bool env_hdc_heater_get(env_sensors_t *s, bool *on);
 #endif

@@ -102,7 +102,7 @@ func TestObserverDetailsValidationAndExtensions(t *testing.T) {
 	good := observerGolden(t)
 	for n := 0; n < len(good); n++ {
 		// A prefix ending exactly at a TLV boundary is a valid smaller snapshot.
-		if n == 41 || n == 61 || n == 80 || n == 96 || n == 128 || n == 160 {
+		if n == 41 || n == 61 || n == 80 || n == 96 || n == 128 || n == 160 || n == 170 {
 			continue
 		}
 		if _, err := decodeObserverDetails(good[:n]); err == nil {

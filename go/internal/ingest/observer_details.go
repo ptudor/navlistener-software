@@ -11,22 +11,23 @@ const TelemObserverDetails = 0x04
 // Missing components were not reported. Nil measurements mean unavailable, not zero.
 // No field can select an observer, organization, or publication scope.
 type ObserverDetails struct {
-	Version       uint8             `json:"version"`
-	Reason        uint8             `json:"reason"`
-	UptimeMS      uint64            `json:"uptime_ms"`
-	EventCount    uint32            `json:"event_count"`
-	EventUptimeMS uint64            `json:"event_uptime_ms"`
-	EventFlags    uint8             `json:"event_flags"`
-	EventStates   uint8             `json:"event_states"`
-	Environment   *BoardEnvironment `json:"environment,omitempty"`
-	RTC           *BoardRTC         `json:"rtc,omitempty"`
-	ATECC         *BoardATECC       `json:"atecc,omitempty"`
-	EEPROM        *BoardEEPROM      `json:"eeprom,omitempty"`
-	Resources     *BoardResources   `json:"resources,omitempty"`
-	Receiver      *BoardReceiver    `json:"receiver,omitempty"`
-	Firmware      string            `json:"firmware,omitempty"`
-	Update        *BoardUpdate      `json:"update,omitempty"`
-	Timing        *BoardTiming      `json:"timing,omitempty"`
+	Version       uint8                `json:"version"`
+	Reason        uint8                `json:"reason"`
+	UptimeMS      uint64               `json:"uptime_ms"`
+	EventCount    uint32               `json:"event_count"`
+	EventUptimeMS uint64               `json:"event_uptime_ms"`
+	EventFlags    uint8                `json:"event_flags"`
+	EventStates   uint8                `json:"event_states"`
+	Environment   *BoardEnvironment    `json:"environment,omitempty"`
+	Heater        *BoardHumidityHeater `json:"humidity_heater,omitempty"`
+	RTC           *BoardRTC            `json:"rtc,omitempty"`
+	ATECC         *BoardATECC          `json:"atecc,omitempty"`
+	EEPROM        *BoardEEPROM         `json:"eeprom,omitempty"`
+	Resources     *BoardResources      `json:"resources,omitempty"`
+	Receiver      *BoardReceiver       `json:"receiver,omitempty"`
+	Firmware      string               `json:"firmware,omitempty"`
+	Update        *BoardUpdate         `json:"update,omitempty"`
+	Timing        *BoardTiming         `json:"timing,omitempty"`
 }
 type BoardEnvironment struct {
 	ReadyMask       uint8    `json:"ready_mask"`
@@ -206,6 +207,12 @@ func decodeObserverDetails(b []byte) (*ObserverDetails, error) {
 		case 8:
 			var err error
 			d.Timing, err = decodeBoardTiming(v, d.UptimeMS)
+			if err != nil {
+				return nil, err
+			}
+		case 10:
+			var err error
+			d.Heater, err = decodeHumidityHeater(v, d.UptimeMS)
 			if err != nil {
 				return nil, err
 			}

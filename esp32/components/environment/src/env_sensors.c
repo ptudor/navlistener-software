@@ -4,9 +4,15 @@
 static uint16_t le16(const uint8_t *p) { return p[0] | ((uint16_t)p[1] << 8); }
 static uint16_t be16(const uint8_t *p) { return ((uint16_t)p[0] << 8) | p[1]; }
 static bool read_reg(env_sensors_t *s, uint8_t address, uint8_t reg, uint8_t *p, size_t n)
-{ return s->io.read(s->io.ctx, address, reg, p, n); }
+{
+    if (s->io.read(s->io.ctx, address, reg, p, n)) return true;
+    s->io_error = true; return false;
+}
 static bool write_reg(env_sensors_t *s, uint8_t address, uint8_t reg, const uint8_t *p, size_t n)
-{ return s->io.write(s->io.ctx, address, reg, p, n); }
+{
+    if (s->io.write(s->io.ctx, address, reg, p, n)) return true;
+    s->io_error = true; return false;
+}
 static int8_t bmp_read(uint8_t reg, uint8_t *p, uint32_t n, void *ctx)
 { return read_reg(ctx, 0x76, reg, p, n) ? 0 : -1; }
 static int8_t bmp_write(uint8_t reg, const uint8_t *p, uint32_t n, void *ctx)
@@ -16,10 +22,26 @@ static void bmp_delay(uint32_t us, void *ctx)
     env_sensors_t *s = ctx;
     s->io.delay_ms(s->io.ctx, (us + 999) / 1000);
 }
+// Both variants return these IDs; they verify the family, not the variant.
+static void init_hdc(env_sensors_t *s)
+{
+    uint8_t p[4], value;
+    if ((s->hdc_variant == ENV_HDC2080 || s->hdc_variant == ENV_HDC2022) &&
+        read_reg(s, 0x40, 0xfc, p, 4) && le16(p) == 0x5449 && le16(p + 2) == 0x07d0 &&
+        read_reg(s, 0x40, 0x0e, p, 1)) {
+        value = p[0] & 7; // manual conversions, heater off, preserve interrupt configuration
+        s->hdc_ready = write_reg(s, 0x40, 0x0e, &value, 1);
+    }
+}
+bool env_sensors_retry_hdc(env_sensors_t *s)
+{
+    if (!s->hdc_ready) { s->io_error = false; init_hdc(s); }
+    return s->hdc_ready;
+}
 void env_sensors_init(env_sensors_t *s, const env_io_t *io, env_hdc_variant_t hdc_variant)
 {
     memset(s, 0, sizeof *s); s->io = *io; s->hdc_variant = hdc_variant;
-    uint8_t p[21], value;
+    uint8_t p[21];
     if (read_reg(s, 0x18, 6, p, 2) && be16(p) == 0x0054 &&
         read_reg(s, 0x18, 7, p, 2) && p[0] == 4 && read_reg(s, 0x18, 1, p, 2)) {
         bool asleep = p[0] & 1; // CONFIG shutdown bit 8
@@ -29,13 +51,7 @@ void env_sensors_init(env_sensors_t *s, const env_io_t *io, env_hdc_variant_t hd
             s->mcp_ready = true;
         }
     }
-    // Both variants return these IDs; they verify the family, not the variant.
-    if ((hdc_variant == ENV_HDC2080 || hdc_variant == ENV_HDC2022) &&
-        read_reg(s, 0x40, 0xfc, p, 4) && le16(p) == 0x5449 && le16(p + 2) == 0x07d0 &&
-        read_reg(s, 0x40, 0x0e, p, 1)) {
-        value = p[0] & 7; // manual conversions, heater off, preserve interrupt configuration
-        s->hdc_ready = write_reg(s, 0x40, 0x0e, &value, 1);
-    }
+    init_hdc(s);
     if (!read_reg(s, 0x76, 0, p, 1) || p[0] != 0x50 ||
         !read_reg(s, 0x76, 0x31, p, sizeof p)) return;
     bool all_zero = true, all_ff = true;
@@ -99,15 +115,33 @@ static bool read_bmp(env_sensors_t *s, env_sample_t *sample)
     }
     return false;
 }
-void env_sensors_read(env_sensors_t *s, env_sample_t *sample)
+void env_sensors_read_some(env_sensors_t *s, env_sample_t *sample, uint8_t mask)
 {
-    *sample = (env_sample_t){0};
+    *sample = (env_sample_t){0}; s->io_error = false;
     uint8_t p[2];
-    if (s->mcp_ready && read_reg(s, 0x18, 5, p, 2)) {
+    if ((mask & 1) && s->mcp_ready && read_reg(s, 0x18, 5, p, 2)) {
         uint16_t raw = be16(p);
         sample->mcp_c = (raw & 0xfff) / 16.0 - ((raw & 0x1000) ? 256.0 : 0.0);
         sample->mcp_valid = sample->mcp_c >= -40 && sample->mcp_c <= 125;
     }
-    if (s->hdc_ready) sample->hdc_valid = read_hdc(s, sample);
-    if (s->bmp_ready) sample->bmp_valid = read_bmp(s, sample);
+    if ((mask & 2) && s->hdc_ready) sample->hdc_valid = read_hdc(s, sample);
+    if ((mask & 4) && s->bmp_ready) sample->bmp_valid = read_bmp(s, sample);
+    sample->bus_error = s->io_error;
+}
+void env_sensors_read(env_sensors_t *s, env_sample_t *sample) { env_sensors_read_some(s, sample, 7); }
+bool env_hdc_heater_set(env_sensors_t *s, bool on)
+{
+    uint8_t value, check;
+    s->io_error = false;
+    if (!read_reg(s, 0x40, 0x0e, &value, 1)) return false;
+    // Bit 7 is SOFT_RES (self-clearing): never write it back.
+    value = on ? (value & 0x7f) | 8 : value & 0x77;
+    return write_reg(s, 0x40, 0x0e, &value, 1) && read_reg(s, 0x40, 0x0e, &check, 1) && check == value;
+}
+bool env_hdc_heater_get(env_sensors_t *s, bool *on)
+{
+    uint8_t value;
+    s->io_error = false;
+    if (!read_reg(s, 0x40, 0x0e, &value, 1)) return false;
+    *on = value & 8; return true;
 }

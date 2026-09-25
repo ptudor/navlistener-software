@@ -111,6 +111,118 @@ menu "navfeeder-esp"
             bool "HDC2022 (Rev A)"
     endchoice
 
+    menu "HDC humidity-sensor heater (condensation recovery)"
+        depends on NVF_BOARD_GNSS_COLOR_NEO
+
+        comment "Engineering defaults, not yet derived from fleet data"
+
+        config NVF_ENV_HEATER_TRIGGER_RH_TENTHS
+            int "Condensing humidity, 0.1 %RH"
+            range 800 1000
+            default 980
+            help
+                TI SNAS678C section 8.3.3 reserves the HDC heater for a detected
+                condensing condition. A run needs every valid HDC sample at or above
+                this humidity for the whole trigger duration below.
+
+        config NVF_ENV_HEATER_TRIGGER_MINUTES
+            int "Continuous condensing duration, minutes"
+            range 30 1440
+            default 240
+            help
+                Invalid samples do not count toward this duration. Any valid sample
+                below the condensing humidity restarts it.
+
+        config NVF_ENV_HEATER_GAP_MINUTES
+            int "Longest gap without a valid HDC sample, minutes"
+            range 1 120
+            default 30
+            help
+                A longer gap between valid samples restarts the condensing count.
+
+        config NVF_ENV_HEATER_MIN_TENTHS_C
+            int "Lowest HDC temperature for a run, 0.1 C"
+            range -200 700
+            default -200
+            help
+                The HDC humidity element is specified from -20 to 70 C.
+
+        config NVF_ENV_HEATER_MAX_TENTHS_C
+            int "Highest HDC temperature for a run, 0.1 C"
+            range -200 700
+            default 600
+            help
+                Above this, the 90 mA heater load could take the 3V3_SENS
+                regulator past its junction limit. The humidity element itself
+                is specified to 70 C.
+
+        config NVF_ENV_HEATER_INTERVAL_DAYS
+            int "Minimum interval between automatic runs, days"
+            range 1 365
+            default 14
+            help
+                Measured with trusted UTC only (GNSS-qualified, or the validated
+                running RTC). The start time of each run is saved in NVS before the
+                heater is enabled. Without trusted UTC, no automatic run starts.
+
+        config NVF_ENV_HEATER_STEP_SECONDS
+            int "Conversion interval while heating, seconds"
+            range 1 60
+            default 10
+            help
+                A manual HDC and MCP9808 conversion, and a HEAT_EN read-back, at
+                this interval while the heater is on. A failed heater-off is also
+                retried at this interval.
+
+        config NVF_ENV_HEATER_DRY_RH_TENTHS
+            int "Dry stop humidity, 0.1 %RH"
+            range 0 300
+            default 50
+            help
+                TI SNAS678C section 8.3.3: turn the heater off once humidity reads
+                at or near 0 %RH.
+
+        config NVF_ENV_HEATER_MAX_ON_SECONDS
+            int "Maximum heater on-time, seconds"
+            range 30 600
+            default 300
+
+        config NVF_ENV_HEATER_OVERTEMP_TENTHS_C
+            int "Over-temperature stop, 0.1 C"
+            range 300 840
+            default 800
+            help
+                With the heater on, the HDC must stay below 85 C (THEATER, TI
+                SNAS678C). The heater stops when a conversion reads this or more.
+
+        config NVF_ENV_HEATER_SETTLE_MINUTES
+            int "Minimum cool-down before HDC readings count, minutes"
+            range 1 60
+            default 10
+
+        config NVF_ENV_HEATER_STABLE_MINUTES
+            int "Cool-down stability window, minutes"
+            range 1 30
+            default 5
+            help
+                After the minimum cool-down, HDC readings count again once the HDC
+                temperature has changed less than the stability limit over this
+                window.
+
+        config NVF_ENV_HEATER_STABLE_TENTHS_C
+            int "Cool-down stability limit, 0.1 C"
+            range 1 20
+            default 2
+
+        config NVF_ENV_HEATER_RECOVERY_MAX_MINUTES
+            int "Longest cool-down, minutes"
+            range 10 240
+            default 60
+            help
+                Normal HDC service resumes after this long even if the stability
+                test has not passed.
+    endmenu
+
     config NVF_MANIFEST_FACTORY_INIT
         bool "Initialize a never-seen blank manifest from board defaults"
         depends on NVF_BOARD_GNSS_COLOR_NEO && NVF_ENV_HDC2080

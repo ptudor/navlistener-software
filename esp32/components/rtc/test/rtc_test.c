@@ -110,6 +110,27 @@ static void gnss_test(void)
     }
 }
 
+static void trusted_utc_test(void)
+{
+    rtc_candidate_t c = {0}; gnss_status_t s = {0}; uint8_t p[92]; int64_t utc = 1;
+    // A validated running RTC read within 30 s is used only without qualified GNSS.
+    assert(rtc_trusted_utc(&c, &s, 19, 1704067000, 5000, 5000, &utc) == RTC_UTC_RTC && utc == 1704067000);
+    assert(rtc_trusted_utc(&c, &s, 31, 1704067000, 5000, 35000, &utc) == RTC_UTC_RTC && utc == 1704067030);
+    assert(rtc_trusted_utc(&c, &s, 31, 1704067000, 5000, 35001, &utc) == RTC_UTC_UNKNOWN && utc == 0);
+    assert(rtc_trusted_utc(&c, &s, 31, 1704067000, 5000, 4999, &utc) == RTC_UTC_UNKNOWN); // read in the future
+    const uint8_t untrusted[] = {3, 17, 18, 15, 0}; // unreadable, stopped or unvalidated calendar
+    for (unsigned i = 0; i < sizeof untrusted; i++)
+        assert(rtc_trusted_utc(&c, &s, untrusted[i], 1704067000, 5000, 5000, &utc) == RTC_UTC_UNKNOWN);
+    // Three advancing NAV-PVT reports make GNSS the preferred source, extrapolated for age.
+    for (unsigned i = 0; i < 3; i++) {
+        pvt(p, i); gnss_status_feed(&s, 1, 7, p, sizeof p, 1000 + 1000 * i);
+        assert(rtc_trusted_utc(&c, &s, 19, 1600000000, s.fix_ms, s.fix_ms, &utc) == (i == 2 ? RTC_UTC_GNSS : RTC_UTC_RTC));
+    }
+    assert(utc == 1704067202);
+    assert(rtc_trusted_utc(&c, &s, 0, 0, 0, 5000, &utc) == RTC_UTC_GNSS && utc == 1704067204);
+    assert(rtc_trusted_utc(&c, &s, 0, 0, 0, 5001, &utc) == RTC_UTC_UNKNOWN && utc == 0); // stale fix
+}
+
 typedef struct {
     uint8_t regs[32], saved_calendar[7], saved_stamps[8];
     unsigned operations, fail_at, writes, elapsed_ms;
@@ -240,7 +261,7 @@ static void square_test(void)
 }
 int main(void)
 {
-    calendar_test(); gnss_test(); io_test(); square_test();
-    puts("RTC calendar, GNSS qualification and I2C fault tests passed");
+    calendar_test(); gnss_test(); trusted_utc_test(); io_test(); square_test();
+    puts("RTC calendar, GNSS qualification, trusted UTC and I2C fault tests passed");
     return 0;
 }

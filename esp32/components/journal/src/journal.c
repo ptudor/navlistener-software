@@ -25,6 +25,8 @@ static journal_record_t current;
 static journal_policy_t policy;
 static rtc_candidate_t candidate;
 static uint8_t best_time;
+_Static_assert((int)RTC_UTC_UNKNOWN == (int)JOURNAL_TIME_UNKNOWN && (int)RTC_UTC_RTC == (int)JOURNAL_TIME_RTC &&
+               (int)RTC_UTC_GNSS == (int)JOURNAL_TIME_GNSS, "journal time sources follow rtc_trusted_utc");
 
 static void log_record(const char *label, const journal_record_t *r)
 {
@@ -93,18 +95,11 @@ void journal_poll(const gnss_status_t *g, const observer_report_t *report, uint6
 {
     if (!mutex || xSemaphoreTake(mutex,0) != pdTRUE) return;
     if (!store.ready) { xSemaphoreGive(mutex); return; }
-    current.uptime_ms=now; current.utc=0; current.time_source=JOURNAL_TIME_UNKNOWN;
-    int64_t epoch;
-    (void)rtc_gnss_candidate(&candidate,g,(int64_t)now,&epoch);
-    if (candidate.samples >= 3 && now >= (uint64_t)candidate.last_sample_ms &&
-        now-(uint64_t)candidate.last_sample_ms <= 2000) {
-        current.utc=(candidate.last_utc_ns+(now-candidate.last_sample_ms)*1000000)/1000000000;
-        current.time_source=JOURNAL_TIME_GNSS;
-    } else if ((report->rtc.flags & 19) == 19 && now >= report->rtc.sampled_ms &&
-               now-report->rtc.sampled_ms <= 30000) {
-        current.utc=report->rtc.epoch+(now-report->rtc.sampled_ms)/1000;
-        current.time_source=JOURNAL_TIME_RTC;
-    }
+    int64_t utc;
+    current.uptime_ms=now;
+    current.time_source=rtc_trusted_utc(&candidate,g,report->rtc.flags,(int64_t)report->rtc.epoch,
+                                        (int64_t)report->rtc.sampled_ms,(int64_t)now,&utc);
+    current.utc=(uint64_t)utc;
     current.flags=JOURNAL_SAMPLED;
     if (g->satellites_valid && now >= (uint64_t)g->satellites_ms && now-g->satellites_ms <= 15000)
         current.flags |= JOURNAL_RECEIVER;

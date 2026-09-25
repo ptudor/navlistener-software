@@ -89,7 +89,7 @@ func (s *Store) applyBoard(f *ingest.RawFrame) {
 	if f.Details.Timing != nil {
 		timing := sample
 		old.timing = &timing
-		if f.Details.Environment == nil && f.Details.RTC == nil && f.Details.ATECC == nil && f.Details.EEPROM == nil && f.Details.Resources == nil && f.Details.Receiver == nil && f.Details.Firmware == "" {
+		if f.Details.Environment == nil && f.Details.Heater == nil && f.Details.RTC == nil && f.Details.ATECC == nil && f.Details.EEPROM == nil && f.Details.Resources == nil && f.Details.Receiver == nil && f.Details.Firmware == "" {
 			return
 		}
 	}

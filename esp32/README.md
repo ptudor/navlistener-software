@@ -210,6 +210,13 @@ Sampling is every 30 seconds, with meaningful-change reporting, a five-minute
 check-in, and fresh snapshots on receiver interference-state transitions.
 The collector must support this report before the firmware is deployed.
 
+The HDC heater stays off except for a rare condensation-recovery run: after four
+continuous hours at 98 %RH or more, at most once per 14 days of trusted UTC. The
+run's start time is saved in the `nvf_env` NVS namespace before the heater is
+enabled, and HDC values are withheld while it heats and cools. The thresholds are
+`menuconfig` options; see the
+[recovery policy](../docs/OBSERVER-TELEMETRY.md#humidity-sensor-heater-condensation-recovery).
+
 Both LED rows default to 20% brightness using 4 kHz PWM. A short BOOT press
 (0.1–3 seconds, then release) cycles 20% → 10% → 50% → 20% at runtime,
 including before network provisioning while the setup portal is active.
