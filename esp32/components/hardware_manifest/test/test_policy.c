@@ -47,6 +47,27 @@ int main(void)
           HARDWARE_MANIFEST_OBS_PROGRAMMED_VALID,
           HARDWARE_MANIFEST_KNOWN_DIFFERENT);
 
+#define READ(expected, probe, transfer, reprobe) do {                        \
+        hardware_manifest_read_t got = hardware_manifest_classify_read(      \
+            HARDWARE_MANIFEST_I2C_##probe, HARDWARE_MANIFEST_I2C_##transfer, \
+            HARDWARE_MANIFEST_I2C_##reprobe);                                \
+        if (got != HARDWARE_MANIFEST_READ_##expected) {                      \
+            fprintf(stderr, "%s:%d: expected %s, got %d\n",                  \
+                    __FILE__, __LINE__, #expected, got);                     \
+            failures++;                                                      \
+        }                                                                    \
+    } while (0)
+
+    READ(ABSENT, NOT_FOUND, FAULT, FAULT);
+    READ(IO_ERROR, FAULT, FAULT, FAULT);
+    READ(OK, OK, OK, FAULT);
+    // A refused byte: the device still acknowledges its address.
+    READ(REFUSED, OK, TRANSFER_FAILED, OK);
+    // A bus timeout, or a device gone mid-read, is never absence.
+    READ(IO_ERROR, OK, TRANSFER_FAILED, FAULT);
+    READ(IO_ERROR, OK, TRANSFER_FAILED, NOT_FOUND);
+    READ(IO_ERROR, OK, FAULT, OK);
+
     printf("hardware_manifest policy: %d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

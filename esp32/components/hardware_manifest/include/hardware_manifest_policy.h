@@ -35,6 +35,31 @@ hardware_manifest_action_t hardware_manifest_decide(
     hardware_manifest_observation_t observation,
     hardware_manifest_known_eui_t known_eui);
 
+// One board-identity read as the ESP-IDF 5.5 I2C master driver reports it: an
+// address probe, the write-then-read transfer, and, only after a failed
+// transfer, a second probe of the same address. The driver returns the same
+// error for a byte the device refused (NACK) and for a bus timeout, so a
+// device that still acknowledges its address has refused the transfer, and
+// one that does not has met a bus failure.
+typedef enum {
+    HARDWARE_MANIFEST_I2C_OK = 0,
+    HARDWARE_MANIFEST_I2C_NOT_FOUND,       // the address was not acknowledged
+    HARDWARE_MANIFEST_I2C_TRANSFER_FAILED, // a NACK after the address, or a bus timeout
+    HARDWARE_MANIFEST_I2C_FAULT,           // any other driver error
+} hardware_manifest_i2c_t;
+
+typedef enum {
+    HARDWARE_MANIFEST_READ_OK = 0,
+    HARDWARE_MANIFEST_READ_ABSENT,
+    HARDWARE_MANIFEST_READ_REFUSED,
+    HARDWARE_MANIFEST_READ_IO_ERROR,
+} hardware_manifest_read_t;
+
+hardware_manifest_read_t hardware_manifest_classify_read(
+    hardware_manifest_i2c_t probe,
+    hardware_manifest_i2c_t transfer,
+    hardware_manifest_i2c_t reprobe);
+
 #ifdef __cplusplus
 }
 #endif

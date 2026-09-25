@@ -17,20 +17,39 @@ static i2c_master_bus_handle_t s_i2c_bus;
 static bool s_uid_known;
 static uint8_t s_uid[NVF_BOARD_UID_SIZE];
 
+static hardware_manifest_i2c_t probe_result(esp_err_t err)
+{
+    return err == ESP_OK ? HARDWARE_MANIFEST_I2C_OK :
+           err == ESP_ERR_NOT_FOUND ? HARDWARE_MANIFEST_I2C_NOT_FOUND : HARDWARE_MANIFEST_I2C_FAULT;
+}
+
 static int identity_read(void *ctx, uint8_t address, uint16_t reg, uint8_t address_bytes, uint8_t *out, size_t n)
 {
     (void)ctx;
-    esp_err_t err = i2c_master_probe(s_i2c_bus, address, 100);
-    if (err == ESP_ERR_NOT_FOUND) return NVF_ID_ABSENT;
-    if (err != ESP_OK) return NVF_ID_IO_ERROR;
-    i2c_master_dev_handle_t dev;
-    i2c_device_config_t cfg = {.dev_addr_length=I2C_ADDR_BIT_LEN_7,
-        .device_address=address, .scl_speed_hz=100000};
-    if (i2c_master_bus_add_device(s_i2c_bus, &cfg, &dev) != ESP_OK) return NVF_ID_IO_ERROR;
-    uint8_t pointer[2] = {(uint8_t)(reg >> 8), (uint8_t)reg};
-    err = i2c_master_transmit_receive(dev, pointer + (address_bytes == 1), address_bytes, out, n, 100);
-    if (i2c_master_bus_rm_device(dev) != ESP_OK) return NVF_ID_IO_ERROR;
-    return err == ESP_OK ? NVF_ID_READ_OK : err == ESP_ERR_INVALID_RESPONSE ? NVF_ID_NACK : NVF_ID_IO_ERROR;
+    hardware_manifest_i2c_t probe = probe_result(i2c_master_probe(s_i2c_bus, address, 100));
+    hardware_manifest_i2c_t transfer = HARDWARE_MANIFEST_I2C_FAULT, reprobe = HARDWARE_MANIFEST_I2C_FAULT;
+    if (probe == HARDWARE_MANIFEST_I2C_OK) {
+        i2c_master_dev_handle_t dev;
+        i2c_device_config_t cfg = {.dev_addr_length=I2C_ADDR_BIT_LEN_7,
+            .device_address=address, .scl_speed_hz=100000};
+        if (i2c_master_bus_add_device(s_i2c_bus, &cfg, &dev) != ESP_OK) return NVF_ID_IO_ERROR;
+        uint8_t pointer[2] = {(uint8_t)(reg >> 8), (uint8_t)reg};
+        esp_err_t err = i2c_master_transmit_receive(dev, pointer + (address_bytes == 1), address_bytes, out, n, 100);
+        if (i2c_master_bus_rm_device(dev) != ESP_OK) return NVF_ID_IO_ERROR;
+        // ESP-IDF 5.5 returns ESP_ERR_INVALID_STATE for a NACK and a bus timeout alike;
+        // a second probe tells them apart (hardware_manifest_classify_read).
+        transfer = err == ESP_OK ? HARDWARE_MANIFEST_I2C_OK :
+                   err == ESP_ERR_INVALID_STATE ? HARDWARE_MANIFEST_I2C_TRANSFER_FAILED : HARDWARE_MANIFEST_I2C_FAULT;
+        if (transfer == HARDWARE_MANIFEST_I2C_TRANSFER_FAILED)
+            reprobe = probe_result(i2c_master_probe(s_i2c_bus, address, 100));
+    }
+    switch (hardware_manifest_classify_read(probe, transfer, reprobe)) {
+    case HARDWARE_MANIFEST_READ_OK: return NVF_ID_READ_OK;
+    case HARDWARE_MANIFEST_READ_ABSENT: return NVF_ID_ABSENT;
+    case HARDWARE_MANIFEST_READ_REFUSED: return NVF_ID_NACK;
+    case HARDWARE_MANIFEST_READ_IO_ERROR: break;
+    }
+    return NVF_ID_IO_ERROR;
 }
 
 esp_err_t hardware_manifest_read_identity(nvf_board_identity_t *out)

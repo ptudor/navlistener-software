@@ -30,3 +30,22 @@ hardware_manifest_action_t hardware_manifest_decide(
 
     return HARDWARE_MANIFEST_ACTION_IO_ERROR;
 }
+
+hardware_manifest_read_t hardware_manifest_classify_read(
+    hardware_manifest_i2c_t probe,
+    hardware_manifest_i2c_t transfer,
+    hardware_manifest_i2c_t reprobe)
+{
+    if (probe == HARDWARE_MANIFEST_I2C_NOT_FOUND)
+        return HARDWARE_MANIFEST_READ_ABSENT;
+    if (probe != HARDWARE_MANIFEST_I2C_OK)
+        return HARDWARE_MANIFEST_READ_IO_ERROR;
+    if (transfer == HARDWARE_MANIFEST_I2C_OK)
+        return HARDWARE_MANIFEST_READ_OK;
+    // A Microchip 24CS acknowledges the F8h Manufacturer ID code whatever its
+    // strap address, then refuses another device's address byte. That is how
+    // the empty strap address reads beside a single fitted 24CS.
+    if (transfer == HARDWARE_MANIFEST_I2C_TRANSFER_FAILED && reprobe == HARDWARE_MANIFEST_I2C_OK)
+        return HARDWARE_MANIFEST_READ_REFUSED;
+    return HARDWARE_MANIFEST_READ_IO_ERROR;
+}

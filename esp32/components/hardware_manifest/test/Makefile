@@ -22,6 +22,7 @@ clean:
 	rm -f $(TEST)
 	rm -rf build
 
-build/identity_test: identity_test.c ../../../../common/board_uid.h ../../../../common/board_identity.h
+build/identity_test: identity_test.c ../../../../common/board_uid.h ../../../../common/board_identity.h \
+		../src/hardware_manifest_policy.c ../include/hardware_manifest_policy.h
 	@mkdir -p build
-	$(CC) $(CFLAGS) identity_test.c -o $@
+	$(CC) $(CFLAGS) $(INC) identity_test.c ../src/hardware_manifest_policy.c -o $@
