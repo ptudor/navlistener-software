@@ -12,8 +12,16 @@
 #ifndef CONFIG_NVF_RX_AUTOPROBE
 #define CONFIG_NVF_RX_AUTOPROBE 0
 #endif
-#ifndef CONFIG_NVF_RX_CONFIGURE_M9
-#define CONFIG_NVF_RX_CONFIGURE_M9 0
+#ifndef CONFIG_NVF_RX_CONFIGURE
+#define CONFIG_NVF_RX_CONFIGURE 0
+#endif
+// The receiver each board carries, as MON-VER names it. Only that model is configured.
+#if CONFIG_NVF_BOARD_GNSS_COLOR_ZED_X20
+#define RX_MODULE "ZED-X20P"
+#elif CONFIG_NVF_BOARD_GNSS_COLOR_MAX
+#define RX_MODULE "MAX-M10S"
+#else
+#define RX_MODULE "NEO-M9N"
 #endif
 #define RX_UART UART_NUM_1
 #if CONFIG_NVF_BOARD_GNSS_COLOR
@@ -26,7 +34,7 @@
 #endif
 static const char *TAG = "receiver";
 static atomic_uint s_ticks;
-static bool version_seen, m9n;
+static bool version_seen, expected_model;
 static int cfg_ack;
 static gnss_status_t health = {.supported = 0x6f}, snapshot = {.supported = 0x6f};
 static portMUX_TYPE health_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -43,9 +51,10 @@ static void observe(uint8_t cls, uint8_t id, const uint8_t *body, size_t len, vo
         for (size_t i = 0; i < 30; i++) sw[i] = body[i] >= 32 && body[i] <= 126 ? body[i] : ' ';
         for (size_t i = 0; i < 10; i++) hw[i] = body[30+i] >= 32 && body[30+i] <= 126 ? body[30+i] : ' ';
         sw[30] = hw[10] = 0;
-        m9n = ubx_version_is_m9n(body, len);
+        expected_model = ubx_version_is_module(body, len, RX_MODULE);
         version_seen = true;
-        ESP_LOGI(TAG, "MON-VER: software=%s hardware=%s; NEO-M9N=%s", sw, hw, m9n ? "yes" : "unconfirmed");
+        ESP_LOGI(TAG, "MON-VER: software=%s hardware=%s; " RX_MODULE "=%s", sw, hw,
+                 expected_model ? "yes" : "unconfirmed");
         for (size_t offset = 40; offset + 30 <= len; offset += 30) {
             char extension[31];
             size_t i = 0;
@@ -83,7 +92,8 @@ static void rx_task(void *arg)
     int64_t last_valid = 0, next_probe = 0, next_log = 0;
     const int rates[] = {CONFIG_NVF_RX_BAUD, 38400, 115200, 9600, 230400, 460800};
     size_t rate_index = 0;
-    // One key per request: a receiver rejecting SFRBX must still get telemetry.
+    // One key per request: a receiver rejecting SFRBX must still get telemetry. The IDs are
+    // the same on all three receivers (ubx_probe.h).
     const uint32_t keys[] = {0x10740001, 0x20910232, 0x2091035a, 0x20910016, 0x20910007, 0x2091001b,
         0x2091017e}; // TIM-TP UART1: lock/reference metadata, RAM only
     unsigned setting = 0, tries = 0;
@@ -107,7 +117,7 @@ static void rx_task(void *arg)
         }
         prev_valid = valid; prev_nmea = nmea_count;
         if (CONFIG_NVF_RX_AUTOPROBE && locked && now - last_valid > 15000) {
-            locked = version_seen = m9n = false;
+            locked = version_seen = expected_model = false;
             configured = baud_attempted = false; setting = tries = 0;
             ESP_LOGW(TAG, "no valid receiver traffic for 15 s; probing again");
         }
@@ -121,7 +131,7 @@ static void rx_task(void *arg)
         } else if (CONFIG_NVF_RX_AUTOPROBE && locked && !version_seen && now >= next_probe) {
             poll_version(); next_probe = now + 3000;
         }
-        if (CONFIG_NVF_RX_CONFIGURE_M9 && locked && m9n && !configured) {
+        if (CONFIG_NVF_RX_CONFIGURE && locked && expected_model && !configured) {
             if (baud != CONFIG_NVF_RX_BAUD && !baud_attempted) {
                 // Change only the receiver's RAM setting. Re-probe if the new
                 // baud fails; an ACK may be emitted at either side of the change.
@@ -132,7 +142,7 @@ static void rx_task(void *arg)
                 uart_set_baudrate(RX_UART, baud);
                 uart_flush_input(RX_UART);
                 parser->state = 0; nmea = (nmea_probe_t){0};
-                version_seen = m9n = false;
+                version_seen = expected_model = false;
                 last_valid = now;
                 poll_version(); next_probe = now + 3000;
             } else if (setting < sizeof(keys) / sizeof(keys[0])) {

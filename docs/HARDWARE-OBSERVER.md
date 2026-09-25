@@ -592,11 +592,14 @@ the pin-compatible M24128-U alternate.
 | `CAT_BUTTON` | `BUTTON_BOOT` GPIO0 | `BUTTON_BOOT` GPIO0, `BUTTON_USER_2` GPIO18 (brightness) | `BUTTON_BOOT` GPIO0, `BUTTON_USER_2` GPIO18 (brightness) |
 
 All three also list the ESP32-S3, ATECC608C `0x60`, MCP9808 `0x18`, HDC2080 `0x40`, the two
-TLC5916 drivers by output-enable GPIO47/GPIO48, USB-OTG and the Qwiic port. Each board has its
-own firmware build (`NVF_BOARD_ASSEMBLY`), which offers only that board's list and drives that
-board's pins, including the ZED/X20's mirrored front-panel chain and the GPIO18 preset buttons
-and GPIO2 brightness trimmer of the ZED/X20 and MAX, and the ZED/X20's MAX31328 RTC and W5500
-Ethernet uplink. The MAX's MAX31856, ICM-45686, MMC34160PJ and MS5607 still need drivers.
+TLC5916 drivers by output-enable GPIO47/GPIO48, USB-OTG and the Qwiic port.
+
+Each board has its own firmware build (`NVF_BOARD_ASSEMBLY`), which offers only that board's
+list and drives that board's pins: the ZED/X20's mirrored front-panel chain, the GPIO18
+preset buttons and GPIO2 brightness trimmer of the ZED/X20 and MAX, the ZED/X20's MAX31328
+RTC and W5500 Ethernet uplink, and RAM-only configuration of each board's own receiver
+(NEO-M9N, ZED-X20P or MAX-M10S). The MAX's MAX31856, ICM-45686, MMC34160PJ and MS5607 still
+need drivers.
 
 The ordinary eight-second configuration-reset gesture erases only `navfeeder`; it does not
 erase `hwmanifest`. The custom-board build also refuses the generic fallback that automatically

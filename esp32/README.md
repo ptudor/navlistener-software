@@ -140,12 +140,18 @@ is present. [u-blox integration manual, section 3.1.3](https://content.u-blox.co
 The S3 default enables `NVF_RX_AUTOPROBE`: try the configured baud, 38400,
 115200, 9600, 230400 and 460800, with MON-VER queries. Checksum-valid UBX or
 NMEA locks the baud; 15 seconds without valid traffic restarts probing.
-`NVF_RX_CONFIGURE_M9` configures only a receiver whose MON-VER extension
-identifies NEO-M9N: switch to `NVF_RX_BAUD`, then request UBX output, SFRBX,
-MON-RF, NAV-SAT and NAV-PVT through RAM-only CFG-VALSET. Firmware logs ACK/NAK and
-bounded timeouts for each message setting. Receiver flash and battery-backed
-configuration are not written. Unknown models are observed without automatic
-configuration. See [the M9 protocol reference](https://content.u-blox.com/sites/default/files/u-blox-M9-SPG-4.04_InterfaceDescription_UBX-21022436.pdf).
+`NVF_RX_CONFIGURE` configures only the receiver the board carries, once a MON-VER
+extension names it: `MOD=NEO-M9N` on the NEO, `MOD=ZED-X20P` on the ZED/X20 and
+`MOD=MAX-M10S` on the MAX. It switches to `NVF_RX_BAUD`, then requests UBX output,
+SFRBX, MON-RF, NAV-SAT, NAV-PVT, NAV-STATUS and TIM-TP through RAM-only
+CFG-VALSET. Firmware logs ACK/NAK and bounded timeouts for each message setting.
+Receiver flash and battery-backed configuration are not written. Any other model is
+observed without automatic configuration. The keys have the same IDs in the
+[M9 SPG 4.04](https://content.u-blox.com/sites/default/files/u-blox-M9-SPG-4.04_InterfaceDescription_UBX-21022436.pdf),
+M10 SPG 5.10 (UBX-21035062) and
+[X20 HPG 2.11](https://content.u-blox.com/sites/default/files/documents/u-blox-X20-HPG-2.11_InterfaceDescription_UBXDOC-304424225-21617.pdf)
+interface descriptions. The ZED-X20P starts at 38400 baud and the MAX-M10S at 9600;
+both support 460800.
 
 The USB console reports `bytes`, checksum-valid `UBX`, checksum-valid `NMEA`,
 and emitted `SFRBX` every ten seconds, including before WiFi provisioning.
@@ -158,6 +164,8 @@ The 2026-09-14 S3 bench check confirmed NEO-M9N / SPG 4.04 / protocol 32.01,
 initial communication at 38400 baud and operation at 460800 after RAM
 configuration. All five message/protocol settings returned ACK. Satellite
 reception and actual SFRBX output still await the RF connector and antenna.
+The ZED-X20P and MAX-M10S paths have not yet run on hardware; a rising SFRBX
+counter on each is their acceptance test.
 
 ### Custom-board status LEDs
 

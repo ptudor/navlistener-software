@@ -392,14 +392,16 @@ menu "navfeeder-esp"
             A checksum-valid UBX or NMEA message establishes communication.
             This does not identify a receiver model from the board manifest.
 
-    config NVF_RX_CONFIGURE_M9
-        bool "Configure a detected NEO-M9N in receiver RAM"
-        depends on NVF_RX_AUTOPROBE
-        default y if NVF_BOARD_GNSS_COLOR_NEO
+    config NVF_RX_CONFIGURE
+        bool "Configure the board's receiver in receiver RAM"
+        depends on NVF_RX_AUTOPROBE && NVF_BOARD_GNSS_COLOR
+        default y
         help
-            After MON-VER identifies NEO-M9N, select the configured baud and
-            request SFRBX, MON-RF, NAV-SAT and NAV-PVT via CFG-VALSET. Check ACK/NAK for
-            each setting. Do not write receiver flash or battery-backed config.
+            After MON-VER names the board's receiver (NEO-M9N, ZED-X20P or
+            MAX-M10S), select the configured baud and request UBX output,
+            SFRBX, MON-RF, NAV-SAT, NAV-PVT, NAV-STATUS and TIM-TP via
+            CFG-VALSET. Check ACK/NAK for each setting. Do not write receiver
+            flash or battery-backed config.
 
     config NVF_RX_BAUD
         int "Receiver UART baud"

@@ -23,12 +23,14 @@ size_t ubx_set_ram(uint8_t out[20], uint32_t key, uint32_t value, unsigned width
     for (unsigned i = 0; i < width; i++) out[14 + i] = value >> (8 * i);
     return finish(out, 8 + width);
 }
-bool ubx_version_is_m9n(const uint8_t *body, size_t len)
+bool ubx_version_is_module(const uint8_t *body, size_t len, const char *module)
 {
-    if (!body || len < 40 || (len - 40) % 30) return false;
-    static const char model[] = "MOD=NEO-M9N";
+    if (!body || !module || len < 40 || (len - 40) % 30) return false;
+    // "MOD=" plus the name and its terminator must fit one 30-byte extension.
+    size_t name = strlen(module);
+    if (!name || name > 25) return false;
     for (size_t i = 40; i + 30 <= len; i += 30)
-        if (memcmp(body + i, model, sizeof model) == 0) return true;
+        if (memcmp(body + i, "MOD=", 4) == 0 && memcmp(body + i + 4, module, name + 1) == 0) return true;
     return false;
 }
 static int hex(uint8_t c)
