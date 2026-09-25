@@ -7,26 +7,13 @@
 #include "idf.h"
 #include "../src/tunnel.c"
 
-static unsigned registered, fail_registration;
-static bool fail_task, tcpip;
+static bool fail_task, tcpip, online;
+static unsigned tasks;
 static wireguard_config_t configured;
 static struct netif interface;
-static esp_netif_t station;
 static unsigned disconnects;
 
-esp_err_t esp_event_handler_instance_register(esp_event_base_t base, int32_t id,
-    void (*fn)(void *, esp_event_base_t, int32_t, void *), void *arg, esp_event_handler_instance_t *out)
-{
-    (void)base; (void)id; (void)fn; (void)arg;
-    if (registered + 1 == fail_registration) return ESP_FAIL;
-    registered++; *out = &station; return ESP_OK;
-}
-esp_err_t esp_event_handler_instance_unregister(esp_event_base_t base, int32_t id, esp_event_handler_instance_t h)
-{ (void)base; (void)id; assert(h && registered); registered--; return ESP_OK; }
-esp_netif_t *esp_netif_get_handle_from_ifkey(const char *key)
-{ assert(!strcmp(key, "WIFI_STA_DEF")); return &station; }
-esp_err_t esp_netif_get_ip_info(esp_netif_t *n, esp_netif_ip_info_t *info)
-{ (void)n; info->ip.addr=1; return ESP_OK; }
+static bool uplink(void) { return online; }
 esp_err_t esp_netif_sntp_init(const esp_sntp_config_t *c) { (void)c; return ESP_OK; }
 esp_err_t esp_netif_tcpip_exec(esp_err_t (*fn)(void *), void *arg)
 { assert(!tcpip); tcpip=true; int err=fn(arg); tcpip=false; return err; }
@@ -50,29 +37,28 @@ void netif_set_gw(struct netif *n, const ip4_addr_t *gw) { assert(tcpip); n->gat
 TickType_t xTaskGetTickCount(void) { return 0; }
 void vTaskDelay(TickType_t t) { (void)t; }
 int xTaskCreate(void (*f)(void *), const char *n, int stack, void *a, int priority, void *h)
-{ (void)f; (void)n; (void)stack; (void)a; (void)priority; (void)h; return fail_task ? 0 : pdPASS; }
+{ (void)f; (void)n; (void)stack; (void)a; (void)priority; (void)h; if (fail_task) return 0; tasks++; return pdPASS; }
 
 int main(void)
 {
     netcfg_tunnel_t cfg={.enabled=true,.private_key={1},.peer_public_key={2},
         .endpoint_host="wg.collector.invalid",.endpoint_port=51820,
         .address={10,77,0,12},.prefix=24,.collector={10,77,0,1},.keepalive=25};
-    assert(tunnel_start(NULL)==ESP_ERR_INVALID_ARG);
-    fail_registration=2;
-    assert(tunnel_start(&cfg)==ESP_FAIL && registered==0);
-    fail_registration=0; fail_task=true;
-    assert(tunnel_start(&cfg)==ESP_ERR_NO_MEM && registered==0);
-    assert(!tunnel_collector_address() && !wifi_up());
+    assert(tunnel_start(NULL,uplink)==ESP_ERR_INVALID_ARG);
+    assert(tunnel_start(&cfg,NULL)==ESP_ERR_INVALID_ARG && tasks==0);
+    fail_task=true;
+    assert(tunnel_start(&cfg,uplink)==ESP_ERR_NO_MEM && !tunnel_collector_address());
     fail_task=false;
-    assert(tunnel_start(&cfg)==ESP_OK && registered==2);
-    assert(wifi_up() && !tunnel_up());
+    assert(tunnel_start(&cfg,uplink)==ESP_OK && tasks==1 && !tunnel_up());
     assert(!strcmp(tunnel_collector_address(),"10.77.0.1"));
-    assert(tunnel_start(&cfg)==ESP_ERR_INVALID_STATE);
+    // The task follows whichever link the caller reports, Wi-Fi or Ethernet.
+    assert(!s_uplink_up()); online=true; assert(s_uplink_up());
+    assert(tunnel_start(&cfg,uplink)==ESP_ERR_INVALID_STATE && tasks==1);
     assert(esp_netif_tcpip_exec(in_tcpip_disconnect,NULL)==ESP_OK && disconnects==0);
     assert(esp_netif_tcpip_exec(in_tcpip_init,NULL)==ESP_OK);
     // The profile's /24 must never become a connected subnet route. With /32,
     // lwIP's subnet check matches only self and its point-to-point gateway
-    // check matches only the collector; 10.77.0.53 stays on the Wi-Fi route.
+    // check matches only the collector; 10.77.0.53 stays on the uplink's route.
     assert(!strcmp(configured.netmask,"255.255.255.255"));
     assert(!strcmp(configured.address,"10.77.0.12"));
     assert(configured.listen_port==0 && configured.persistent_keepalive==25);
@@ -80,8 +66,6 @@ int main(void)
     assert(esp_netif_tcpip_exec(in_tcpip_route,NULL)==ESP_OK);
     assert(interface.gateway.addr==0x0a4d0001);
     assert(esp_netif_tcpip_exec(in_tcpip_disconnect,NULL)==ESP_OK && disconnects==1);
-    net_event(NULL,WIFI_EVENT,WIFI_EVENT_STA_DISCONNECTED,NULL); assert(!wifi_up());
-    net_event(NULL,IP_EVENT,IP_EVENT_STA_GOT_IP,NULL); assert(wifi_up());
     puts("Tunnel host route, TCP/IP thread calls and startup cleanup passed");
     return 0;
 }

@@ -112,6 +112,14 @@ menu "navfeeder-esp"
             bool "MAX (MAX-M10S mobile, motion sensors, thermocouple input)"
     endchoice
 
+    config NVF_ETHERNET_W5500
+        bool
+        default y if NVF_BOARD_GNSS_COLOR_ZED_X20
+        select ETH_SPI_ETHERNET_W5500
+        help
+            The board's own W5500 Ethernet port: a wired uplink preferred over
+            Wi-Fi, which makes the Wi-Fi network optional in provisioning.
+
     config NVF_PANEL_TRIMMER_OPEN_MV
         int "Brightness trimmer open-wiper threshold, mV"
         depends on NVF_BOARD_GNSS_COLOR_ZED_X20 || NVF_BOARD_GNSS_COLOR_MAX

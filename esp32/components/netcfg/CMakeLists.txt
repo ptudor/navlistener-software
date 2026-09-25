@@ -20,3 +20,8 @@ idf_component_register(
     INCLUDE_DIRS "include"
     PRIV_REQUIRES ${netcfg_private_requires}
 )
+
+# A board with its own Ethernet port provisions without a Wi-Fi network.
+if(CONFIG_NVF_ETHERNET_W5500)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE NETCFG_WIRED_UPLINK=1)
+endif()

@@ -38,11 +38,8 @@ static const char *TAG = "tunnel";
 #include <string.h>
 #include <time.h>
 
-#include "esp_check.h"
-#include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
-#include "esp_wifi.h"
 #include "esp_wireguard.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -67,26 +64,13 @@ static char s_endpoint[sizeof ((netcfg_tunnel_t *)0)->endpoint_host];
 static int s_prefix;
 static wireguard_config_t s_wg = ESP_WIREGUARD_CONFIG_DEFAULT();
 static wireguard_ctx_t s_ctx = ESP_WIREGUARD_CONTEXT_DEFAULT();
-static atomic_bool s_up, s_wifi;
+static atomic_bool s_up;
 static bool s_started, s_initialized;
-static esp_event_handler_instance_t s_ip_handler, s_wifi_handler;
+static bool (*s_uplink_up)(void);
 
 bool tunnel_up(void) { return atomic_load_explicit(&s_up, memory_order_relaxed); }
 
 const char *tunnel_collector_address(void) { return s_started ? s_collector : NULL; }
-
-static void net_event(void *arg, esp_event_base_t base, int32_t id, void *data)
-{
-    (void)arg;
-    (void)data;
-    if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
-        atomic_store_explicit(&s_wifi, true, memory_order_relaxed);
-    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        atomic_store_explicit(&s_wifi, false, memory_order_relaxed);
-    }
-}
-
-static bool wifi_up(void) { return atomic_load_explicit(&s_wifi, memory_order_relaxed); }
 
 static bool wall_clock_plausible(void) { return time(NULL) > (time_t)WALL_CLOCK_FLOOR; }
 
@@ -142,7 +126,7 @@ static void tunnel_task(void *arg)
     bool sntp_requested = false;
     unsigned waited_s = 0;
     for (;;) {
-        if (!wifi_up()) {
+        if (!s_uplink_up()) {
             vTaskDelay(pdMS_TO_TICKS(POLL_MS));
             continue;
         }
@@ -195,8 +179,8 @@ static void tunnel_task(void *arg)
         bool was_up = false;
         for (;;) {
             vTaskDelay(pdMS_TO_TICKS(POLL_MS));
-            if (!wifi_up()) {
-                ESP_LOGW(TAG, "wifi down; tearing the tunnel down until it returns");
+            if (!s_uplink_up()) {
+                ESP_LOGW(TAG, "uplink down; tearing the tunnel down until it returns");
                 break;
             }
             bool up = false;
@@ -224,10 +208,11 @@ static void tunnel_task(void *arg)
     }
 }
 
-esp_err_t tunnel_start(const netcfg_tunnel_t *cfg)
+esp_err_t tunnel_start(const netcfg_tunnel_t *cfg, bool (*uplink_up)(void))
 {
     if (s_started) return ESP_ERR_INVALID_STATE;
-    if (!cfg || !cfg->enabled || !netcfg_tunnel_validate(cfg, NULL, 0)) return ESP_ERR_INVALID_ARG;
+    if (!cfg || !cfg->enabled || !uplink_up || !netcfg_tunnel_validate(cfg, NULL, 0))
+        return ESP_ERR_INVALID_ARG;
 
     // The port takes base64 keys and dotted addresses; format them once, for the boot.
     netcfg_tunnel_key_encode(cfg->private_key, s_private);
@@ -245,8 +230,8 @@ esp_err_t tunnel_start(const netcfg_tunnel_t *cfg)
     s_wg.preshared_key = psk ? s_psk : NULL;
     s_wg.address = s_address;
     // lwIP checks connected subnets before point-to-point gateways. Using the
-    // pasted prefix here would capture every host in that subnet, including a
-    // Wi-Fi DNS server or the outer WireGuard endpoint. Only the collector's
+    // pasted prefix here would capture every host in that subnet, including
+    // the uplink's DNS server or the outer WireGuard endpoint. Only the collector's
     // gateway route belongs to this interface; retain the profile prefix for logs.
     s_wg.netmask = "255.255.255.255";
     s_wg.endpoint = s_endpoint;
@@ -254,27 +239,10 @@ esp_err_t tunnel_start(const netcfg_tunnel_t *cfg)
     s_wg.persistent_keepalive = (uint16_t)cfg->keepalive;
     s_wg.listen_port = 0; // ephemeral: the observer only ever initiates
 
-    ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                                            net_event, NULL, &s_ip_handler),
-                        TAG, "register IP event");
-    esp_err_t err = esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED,
-                                                        net_event, NULL, &s_wifi_handler);
-    if (err != ESP_OK) {
-        esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, s_ip_handler);
-        return err;
-    }
-    // Wi-Fi may already be up, in which case the event that said so predates the handler.
-    esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    esp_netif_ip_info_t info;
-    if (sta && esp_netif_get_ip_info(sta, &info) == ESP_OK && info.ip.addr != 0)
-        atomic_store_explicit(&s_wifi, true, memory_order_relaxed);
-
+    s_uplink_up = uplink_up;
     s_started = true; // tunnel_collector_address() is valid from here
     if (xTaskCreate(tunnel_task, "tunnel", 4096, NULL, 5, NULL) != pdPASS) {
         s_started = false;
-        esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, s_ip_handler);
-        esp_event_handler_instance_unregister(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, s_wifi_handler);
-        atomic_store_explicit(&s_wifi, false, memory_order_relaxed);
         return ESP_ERR_NO_MEM;
     }
     ESP_LOGI(TAG, "WireGuard tunnel configured: peer %s:%d, keepalive %d s%s", s_endpoint,
@@ -284,9 +252,10 @@ esp_err_t tunnel_start(const netcfg_tunnel_t *cfg)
 
 #else // !CONFIG_NVF_WIREGUARD
 
-esp_err_t tunnel_start(const netcfg_tunnel_t *cfg)
+esp_err_t tunnel_start(const netcfg_tunnel_t *cfg, bool (*uplink_up)(void))
 {
     (void)cfg;
+    (void)uplink_up;
     ESP_LOGW(TAG, "WireGuard tunnel not supported on this build; using the public collector endpoint");
     return ESP_ERR_NOT_SUPPORTED;
 }

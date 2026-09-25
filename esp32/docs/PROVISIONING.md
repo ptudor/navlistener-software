@@ -277,6 +277,11 @@ profile with the same rules as the `nav-tunnel` endpoint, applies the same
 atomic save used by BLE, then reboots. Update-key pairing remains available only
 through this protected setup AP.
 
+On the ZED/X20, whose Ethernet port is its uplink, the Wi-Fi SSID field is
+optional: leave it empty for a wired-only observer. The Station app sequence
+above always verifies a Wi-Fi network before it saves, so a wired-only
+observer is set up through this form.
+
 
 The setup secret is visible on the physical label by design. Production flash
 encryption, Secure Boot, and NVS encryption still protect collector, Wi-Fi,

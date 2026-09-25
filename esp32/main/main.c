@@ -1,13 +1,16 @@
 // navfeeder-esp — app entry point.
 //
-// Ties the pipeline together: WiFi STA -> UART producer (u-blox bytes) -> ubx framer ->
+// Ties the pipeline together: uplink -> UART producer (u-blox bytes) -> ubx framer ->
 // GNF1 record -> spool -> TLS pusher -> the navlistener collector. All decode + orbit math is
 // central in the collector (docs/DESIGN.md §1); this box just frames and forwards. A UI task
 // mirrors state to the LCD dashboard + the WS2812 status LED.
 //
+// The uplink is the Wi-Fi station and, on a board with an Ethernet port, the wired link,
+// which carries the default route whenever it has an address.
+//
 // Config is NVS-first, with Kconfig values only as a development fallback. A board without a
-// provisioned WiFi SSID or collector host starts encrypted BLE provisioning and a protected
-// SoftAP browser fallback. Their persistent setup credential comes from the device label.
+// complete configuration starts encrypted BLE provisioning and a protected SoftAP browser
+// fallback. Their persistent setup credential comes from the device label.
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -46,11 +49,22 @@
 #include "journal.h"
 #include "mcu_identity.h"
 #include "commission.h"
+#if CONFIG_NVF_ETHERNET_W5500
+#include "esp_eth.h"
+#include "ethernet.h"
+#endif
 
 static const char *TAG = "navfeeder";
 
-static atomic_bool s_wifi_up;
-static bool update_online(void) { return atomic_load(&s_wifi_up); }
+// Each link with an address sets its bit; the observer is online while any is set.
+enum { UPLINK_WIFI = 1u, UPLINK_ETHERNET = 2u };
+static atomic_uint s_uplinks;
+static void uplink_set(unsigned link, bool up)
+{
+    if (up) atomic_fetch_or_explicit(&s_uplinks, link, memory_order_relaxed);
+    else atomic_fetch_and_explicit(&s_uplinks, ~link, memory_order_relaxed);
+}
+static bool uplink_online(void) { return atomic_load_explicit(&s_uplinks, memory_order_relaxed) != 0; }
 static atomic_bool s_config_reset_armed;
 static char s_collector[80];      // "host:port" once provisioned, else empty
 static netcfg_t g_cfg;            // live config (NVS over Kconfig defaults)
@@ -182,7 +196,7 @@ static char s_session[33];        // 32 hex chars + NUL (wire.SessionMaxLen is 6
 
 static void session_init(void)
 {
-    // Called AFTER wifi_start(): esp_random()/esp_fill_random only guarantee true random
+    // Called AFTER network_start(): esp_random()/esp_fill_random only guarantee true random
     // numbers while the RF subsystem is enabled (ESP-IDF "Random Number Generation"), and the
     // one property this value must have is that it differs from the previous boot's — a
     // deterministic pre-RF seed would silently reinstate the exact collision regression fix fixes.
@@ -240,12 +254,12 @@ static void ui_task(void *arg)
         bool link = pusher_connected();
         bool via_tunnel = pusher_via_tunnel();
         bool tunnel = tunnel_up();
-        bool wifi = atomic_load_explicit(&s_wifi_up, memory_order_relaxed);
+        bool online = uplink_online();
 
         nvf_status_t st = {
             .station = g_cfg.station,
             .collector = s_collector[0] ? s_collector : NULL,
-            .wifi_up = wifi,
+            .wifi_up = online,
             .link_up = link,
             .nav = nav,
             .nav_rate = nav - last_nav,
@@ -256,7 +270,7 @@ static void ui_task(void *arg)
         };
         display_render_status(&st);
 
-        led_state_t ls = !wifi ? LED_NO_WIFI
+        led_state_t ls = !online ? LED_NO_WIFI
                        : !link ? LED_NO_LINK
                        : depth > 0 ? LED_SPOOL_FILLING
                        : LED_STREAMING;
@@ -273,28 +287,74 @@ static void ui_task(void *arg)
     }
 }
 
-// --- WiFi STA (NVS-first config; Kconfig values are the development fallback) ------------
+// --- Uplink (NVS-first config; Kconfig values are the development fallback) --------------
+
+// The station joins only a configured network. Without one (a wired-only board) it still
+// runs: the RF subsystem is the RNG's entropy source, which TLS and the per-boot session
+// need, and an idle station that never scans or associates does not transmit.
+static bool s_wifi_joins;
 
 static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        if (s_wifi_joins) esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        atomic_store_explicit(&s_wifi_up, false, memory_order_relaxed);
-        ESP_LOGW(TAG, "wifi disconnected; reconnecting");
-        esp_wifi_connect();
+        uplink_set(UPLINK_WIFI, false);
+        if (s_wifi_joins) {
+            ESP_LOGW(TAG, "wifi disconnected; reconnecting");
+            esp_wifi_connect();
+        }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *ev = data;
-        atomic_store_explicit(&s_wifi_up, true, memory_order_relaxed);
+        uplink_set(UPLINK_WIFI, true);
         ESP_LOGI(TAG, "wifi up: " IPSTR, IP2STR(&ev->ip_info.ip));
     }
 }
 
-static void wifi_start(void)
+#if CONFIG_NVF_ETHERNET_W5500
+static void ethernet_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    (void)arg;
+    if (base == ETH_EVENT && id == ETHERNET_EVENT_CONNECTED) {
+        ESP_LOGI(TAG, "ethernet link up");
+    } else if (base == ETH_EVENT && id == ETHERNET_EVENT_DISCONNECTED) {
+        uplink_set(UPLINK_ETHERNET, false);
+        ESP_LOGW(TAG, "ethernet link down");
+    } else if (base == IP_EVENT && id == IP_EVENT_ETH_GOT_IP) {
+        ip_event_got_ip_t *ev = data;
+        uplink_set(UPLINK_ETHERNET, true);
+        ESP_LOGI(TAG, "ethernet up: " IPSTR, IP2STR(&ev->ip_info.ip));
+    } else if (base == IP_EVENT && id == IP_EVENT_ETH_LOST_IP) {
+        uplink_set(UPLINK_ETHERNET, false);
+        ESP_LOGW(TAG, "ethernet lost its address");
+    }
+}
+
+static void ethernet_uplink_start(void)
+{
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(ETH_EVENT, ESP_EVENT_ANY_ID,
+                                                        ethernet_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_ETH_GOT_IP,
+                                                        ethernet_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_ETH_LOST_IP,
+                                                        ethernet_event_handler, NULL, NULL));
+    // A dead port leaves the unit on Wi-Fi, when one is configured.
+    esp_err_t err = ethernet_start();
+    if (err != ESP_OK)
+        ESP_LOGE(TAG, "ethernet unavailable (%s)%s", esp_err_to_name(err),
+                 s_wifi_joins ? "; continuing on wifi" : "; no uplink until it is repaired");
+}
+#endif
+
+static void network_start(void)
 {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    s_wifi_joins = netcfg_has_wifi(&g_cfg);
+#if CONFIG_NVF_ETHERNET_W5500
+    ethernet_uplink_start();
+#endif
     esp_netif_create_default_wifi_sta();
     wifi_init_config_t ic = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&ic));
@@ -309,10 +369,12 @@ static void wifi_start(void)
     // and making that network permanently unjoinable. memcpy a strnlen-bounded length
     // instead; wc is zero-initialized above, so a shorter value is still correctly
     // zero-padded (equivalent to NUL-terminated) past its own length.
-    size_t ssid_len = strnlen(g_cfg.wifi_ssid, sizeof wc.sta.ssid);
-    memcpy(wc.sta.ssid, g_cfg.wifi_ssid, ssid_len);
-    size_t pass_len = strnlen(g_cfg.wifi_pass, sizeof wc.sta.password);
-    memcpy(wc.sta.password, g_cfg.wifi_pass, pass_len);
+    if (s_wifi_joins) {
+        size_t ssid_len = strnlen(g_cfg.wifi_ssid, sizeof wc.sta.ssid);
+        memcpy(wc.sta.ssid, g_cfg.wifi_ssid, ssid_len);
+        size_t pass_len = strnlen(g_cfg.wifi_pass, sizeof wc.sta.password);
+        memcpy(wc.sta.password, g_cfg.wifi_pass, pass_len);
+    }
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
     ESP_ERROR_CHECK(esp_wifi_start());
@@ -338,8 +400,8 @@ void app_main(void)
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
 #if CONFIG_NVF_BOARD_GNSS_COLOR
-        // The default NVS partition also holds the last adopted manifest
-        // EEPROM EUI-64. Erasing it automatically would turn a previously
+        // The default NVS partition also holds the last adopted board
+        // UID. Erasing it automatically would turn a previously
         // known blank/replaced EEPROM into an apparent first boot. Preserve
         // that safety boundary and require an explicit service operation.
         ESP_LOGE(TAG, "NVS requires whole-partition erase; refusing automatic "
@@ -397,7 +459,7 @@ void app_main(void)
     if (observer_board_start() != ESP_OK)
         ESP_LOGW(TAG, "observer panel/diagnostics task unavailable");
 
-    nvf_update_hooks_t update_hooks={.online=update_online,.durable_link=pusher_durable_connected,
+    nvf_update_hooks_t update_hooks={.online=uplink_online,.durable_link=pusher_durable_connected,
         .pause=spool_pause_producers,.resume=spool_resume_producers};
 #if CONFIG_NVF_BOARD_GNSS_COLOR
     update_hooks.device.hardware_known=manifest.action==HARDWARE_MANIFEST_ACTION_USE && manifest.capabilities_valid && manifest.identity.board_valid;
@@ -462,8 +524,8 @@ void app_main(void)
     // fill s_collector BEFORE ui_task starts reading it — otherwise the write races
     // the reader (formally UB; in practice a partial/empty collector string on one frame).
     snprintf(s_collector, sizeof s_collector, "%s:%d", g_cfg.host, g_cfg.port);
-    // The collector accepts evidence only for the observer it names: the record's board
-    // EUI-64 rendered as lowercase hyphen-separated byte pairs. Say so here, where the
+    // The collector accepts evidence only for the observer it names: the record's typed
+    // board UID as board-<kind>-<serial> in lowercase hex. Say so here, where the
     // cause is visible, rather than leaving an `identity` rejection to be puzzled over.
     uint8_t commissioning[NVF_COMMISSION_RECORD_SIZE];
     nvf_commission_statement_t commissioned;
@@ -478,16 +540,16 @@ void app_main(void)
     // the UI is non-essential — log a create failure but keep forwarding.
     if (xTaskCreate(ui_task, "ui", 4096, &s_parser, 4, NULL) != pdPASS)
         ESP_LOGW(TAG, "failed to create ui task; continuing without the dashboard");
-    wifi_start();
+    network_start();
     err = nvf_ota_start();
     if (err != ESP_OK && err != ESP_ERR_NOT_SUPPORTED)
         ESP_LOGW(TAG, "OTA control unavailable (%s); pair through the provisioning AP", esp_err_to_name(err));
 
-    // The optional WireGuard uplink. It waits for Wi-Fi and time sync on its own; if it
+    // The optional WireGuard uplink. It waits for the uplink and time sync on its own; if it
     // cannot start (or this build has no tunnel support) the pusher simply keeps using the
     // public collector endpoint, which remains valid for every provisioned unit.
     if (g_cfg.tunnel.enabled) {
-        err = tunnel_start(&g_cfg.tunnel);
+        err = tunnel_start(&g_cfg.tunnel, uplink_online);
         if (err != ESP_OK)
             ESP_LOGW(TAG, "WireGuard tunnel not started (%s); using the public collector endpoint",
                      esp_err_to_name(err));

@@ -14,19 +14,10 @@
 #define ESP_LOGI(tag, ...) ((void)(tag))
 #define ESP_LOGW(tag, ...) ((void)(tag))
 #define ESP_LOGE(tag, ...) ((void)(tag))
-#define ESP_RETURN_ON_ERROR(call, tag, ...) do { int e = (call); if (e) return e; } while (0)
 typedef int esp_err_t;
 typedef uint32_t TickType_t;
-typedef const char *esp_event_base_t;
-typedef void *esp_event_handler_instance_t;
-static const char IP_EVENT[] = "IP";
-static const char WIFI_EVENT[] = "WIFI";
-#define IP_EVENT_STA_GOT_IP 1
-#define WIFI_EVENT_STA_DISCONNECTED 2
 typedef struct { uint32_t addr; } ip4_addr_t;
 struct netif { ip4_addr_t gateway; };
-typedef struct { int unused; } esp_netif_t;
-typedef struct { ip4_addr_t ip; } esp_netif_ip_info_t;
 typedef struct { const char *server; } esp_sntp_config_t;
 #define ESP_NETIF_SNTP_DEFAULT_CONFIG(host) {host}
 typedef struct {
@@ -36,11 +27,6 @@ typedef struct {
 typedef struct { struct netif *netif; } wireguard_ctx_t;
 #define ESP_WIREGUARD_CONFIG_DEFAULT() {0}
 #define ESP_WIREGUARD_CONTEXT_DEFAULT() {0}
-esp_err_t esp_event_handler_instance_register(esp_event_base_t, int32_t,
-    void (*)(void *, esp_event_base_t, int32_t, void *), void *, esp_event_handler_instance_t *);
-esp_err_t esp_event_handler_instance_unregister(esp_event_base_t, int32_t, esp_event_handler_instance_t);
-esp_netif_t *esp_netif_get_handle_from_ifkey(const char *);
-esp_err_t esp_netif_get_ip_info(esp_netif_t *, esp_netif_ip_info_t *);
 esp_err_t esp_netif_sntp_init(const esp_sntp_config_t *);
 esp_err_t esp_netif_tcpip_exec(esp_err_t (*)(void *), void *);
 esp_err_t esp_wireguard_init(wireguard_config_t *, wireguard_ctx_t *);

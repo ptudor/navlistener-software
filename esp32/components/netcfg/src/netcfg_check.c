@@ -7,6 +7,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifndef NETCFG_WIRED_UPLINK
+#define NETCFG_WIRED_UPLINK 0
+#endif
+
 // set_err copies a reason, truncating cleanly. A NULL/zero-cap buffer is legal — callers that
 // only want the boolean pass NULL.
 static void set_err(char *err, size_t errcap, const char *msg)
@@ -27,7 +31,14 @@ static bool nonempty(const char *s)
     return false;
 }
 
+bool netcfg_has_wifi(const netcfg_t *cfg) { return cfg && nonempty(cfg->wifi_ssid); }
+
 bool netcfg_validate(const netcfg_t *cfg, char *err, size_t errcap)
+{
+    return netcfg_validate_uplink(cfg, NETCFG_WIRED_UPLINK, err, errcap);
+}
+
+bool netcfg_validate_uplink(const netcfg_t *cfg, bool wired, char *err, size_t errcap)
 {
     if (!cfg) {
         set_err(err, errcap, "no config");
@@ -35,7 +46,7 @@ bool netcfg_validate(const netcfg_t *cfg, char *err, size_t errcap)
     }
     // Order matters only for which reason the operator sees first; it follows the
     // provisioning form's field order so the message points at the field to fix.
-    if (!nonempty(cfg->wifi_ssid)) {
+    if (!wired && !nonempty(cfg->wifi_ssid)) {
         set_err(err, errcap, "wifi ssid is empty");
         return false;
     }

@@ -329,8 +329,9 @@ console; the old physical label must be replaced before deployment. Use the
 actual serial device path for the board. This is a configuration erase, not a
 firmware reflash.
 
-**Incomplete configuration also starts setup**. "Provisioned" means WiFi SSID,
-collector host, port in 1–65535, station id, and bearer token are all present — one rule
+**Incomplete configuration also starts setup**. "Provisioned" means WiFi SSID (not required on
+the ZED/X20, which has an Ethernet port), collector host, port in 1–65535, station id, and
+bearer token are all present — one rule
 (`netcfg_validate`), applied both at boot and by the portal before it writes NVS. A board
 configured only partly (Kconfig defaults, a partial NVS write, external NVS tooling) therefore
 comes up in BLE/browser setup with the missing field named in diagnostics where
@@ -339,6 +340,17 @@ serial cable could diagnose. Note the deliberate limit: a
 *complete but wrong* config (bad password, unreachable host, revoked token) keeps retrying in
 station mode — a unit riding out a collector outage must not drop its uplink over a condition
 that is not its fault.
+
+**Ethernet uplink (ZED/X20).** The ZED/X20 build drives the on-board W5500 on its own SPI
+bus (CS GPIO13, SCLK GPIO8, MOSI GPIO39, MISO GPIO41) at 10 MHz, polling it every 10 ms,
+and takes an address by DHCP with the MAC address the eFuse reserves for Ethernet. With both
+links up, Ethernet carries the default route; connections already open stay on the link they
+started on, and the WireGuard tunnel moves to the new default route. The observer is online
+while either link has an address. Leave the browser portal's SSID empty for a wired-only unit;
+BLE setup always configures Wi-Fi. The Wi-Fi station starts even without a network, because
+the radio is the random-number generator's entropy source for TLS. With no network it does
+not scan or associate. A W5500 that does not answer is logged, and the unit carries on over
+Wi-Fi if one is configured.
 
 ## On-demand OTA updates (ESP32-S3)
 

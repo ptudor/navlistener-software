@@ -72,6 +72,14 @@ static const char *TAG = "netcfg";
 #define PORTAL_TUNNEL_FIELD ""
 #endif
 
+// A board with its own Ethernet port runs without a Wi-Fi network (netcfg_validate).
+#if NETCFG_WIRED_UPLINK
+#define PORTAL_SSID_FIELD "<label>WiFi SSID (optional: leave empty to use Ethernet only)" \
+    "<input name=ssid maxlength=32></label>"
+#else
+#define PORTAL_SSID_FIELD "<label>WiFi SSID<input name=ssid maxlength=32 required></label>"
+#endif
+
 static const char PORTAL_HTML[] =
     "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
     "<title>navfeeder-esp setup</title>"
@@ -81,7 +89,7 @@ static const char PORTAL_HTML[] =
     "button{margin-top:1.2em;padding:.7em 1.4em}</style>"
     "<h2>navfeeder-esp setup</h2>"
     "<form method=POST action=/save>"
-    "<label>WiFi SSID<input name=ssid maxlength=32 required></label>"
+    PORTAL_SSID_FIELD
     "<label>WiFi password<input name=pass type=password maxlength=64></label>"
     "<label>Collector host<input name=host maxlength=63 required placeholder='collector.host.invalid'></label>"
     "<label>Collector port<input name=port type=number value=5580></label>"

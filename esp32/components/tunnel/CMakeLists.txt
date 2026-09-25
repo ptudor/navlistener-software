@@ -6,7 +6,7 @@
 # stub half of src/tunnel.c and must not depend on it, so the dependency is added to
 # PRIV_REQUIRES only when the config is on. idf_component.yml gates the registry download
 # to the supported S3 target to match.
-set(tunnel_priv_requires esp_netif esp_event esp_wifi lwip freertos)
+set(tunnel_priv_requires esp_netif lwip freertos)
 if(CONFIG_NVF_WIREGUARD)
     list(APPEND tunnel_priv_requires esphome__wireguard)
 endif()

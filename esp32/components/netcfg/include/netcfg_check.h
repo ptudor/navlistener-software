@@ -53,10 +53,11 @@ typedef struct {
 // otherwise has no way to tell "wrong password" from "no token was ever provisioned".
 #define NETCFG_ERR_CAP 48
 
-// netcfg_validate reports whether cfg is complete enough to run in station mode: non-empty
-// SSID, collector host, bearer token, and station id, and a port in [1, 65535]. The WiFi
-// password is NOT required (open networks are legal). An enabled tunnel profile must also
-// pass netcfg_tunnel_validate; a disabled one is never inspected.
+// netcfg_validate reports whether cfg is complete enough to run: non-empty SSID, collector
+// host, bearer token, and station id, and a port in [1, 65535]. The WiFi password is NOT
+// required (open networks are legal). A board with its own Ethernet port (the component is
+// built with NETCFG_WIRED_UPLINK=1) does not require the SSID either. An enabled tunnel
+// profile must also pass netcfg_tunnel_validate; a disabled one is never inspected.
 //
 // On failure it writes a short human-readable reason into err (NUL-terminated, truncated to
 // errcap) when err is non-NULL and errcap > 0. This is THE definition of "provisioned" —
@@ -65,6 +66,14 @@ typedef struct {
 // can still hold the wrong password or an unreachable host, which is a runtime failure and
 // deliberately not a reason to drop out of station mode.
 bool netcfg_validate(const netcfg_t *cfg, char *err, size_t errcap);
+
+// netcfg_validate_uplink is netcfg_validate for an explicit uplink: wired says the board has
+// an Ethernet port, so the Wi-Fi network is optional.
+bool netcfg_validate_uplink(const netcfg_t *cfg, bool wired, char *err, size_t errcap);
+
+// netcfg_has_wifi reports whether cfg names a Wi-Fi network to join. An SSID of only spaces
+// or tabs is no network, the same rule validation applies.
+bool netcfg_has_wifi(const netcfg_t *cfg);
 
 #ifdef __cplusplus
 }

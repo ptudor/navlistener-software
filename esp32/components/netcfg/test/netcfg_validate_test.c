@@ -163,8 +163,33 @@ int main(void)
     memcpy(c.tunnel.collector, c.tunnel.address, 4);
     expect_invalid("tunnel collector is self", c, "tunnel");
 
-    // A NULL config must be rejected, not dereferenced.
+    // A board with its own Ethernet port runs without a Wi-Fi network, and every other field
+    // keeps its rule. A wireless-only board still needs one.
     char err[NETCFG_ERR_CAP] = "unset";
+    netcfg_t wired = valid_cfg();
+    memset(wired.wifi_ssid, 0, sizeof wired.wifi_ssid);
+    CHECK(netcfg_validate_uplink(&wired, true, err, sizeof err) && err[0] == '\0',
+          "wired without ssid: rejected with \"%s\", want accepted", err);
+    CHECK(!netcfg_validate_uplink(&wired, false, err, sizeof err) && strstr(err, "ssid"),
+          "wireless without ssid: reason \"%s\", want an ssid rejection", err);
+    CHECK(netcfg_validate_uplink(&open_net, true, err, sizeof err),
+          "wired with ssid: rejected with \"%s\", want accepted", err);
+    wired.token[0] = '\0';
+    CHECK(!netcfg_validate_uplink(&wired, true, err, sizeof err) && strstr(err, "token"),
+          "wired without token: reason \"%s\", want a token rejection", err);
+    CHECK(!netcfg_validate_uplink(NULL, true, err, sizeof err), "wired NULL config: accepted");
+    // The host build is wireless-only, so the default rule is the wireless one.
+    CHECK(!netcfg_validate(&wired, NULL, 0), "default rule accepted a config without ssid");
+
+    // Only a named network is joined; spaces are no name.
+    c = valid_cfg();
+    CHECK(netcfg_has_wifi(&c), "configured ssid: no network reported");
+    snprintf(c.wifi_ssid, sizeof c.wifi_ssid, "%s", " \t ");
+    CHECK(!netcfg_has_wifi(&c), "whitespace ssid: reported as a network");
+    c.wifi_ssid[0] = '\0';
+    CHECK(!netcfg_has_wifi(&c) && !netcfg_has_wifi(NULL), "empty ssid: reported as a network");
+
+    // A NULL config must be rejected, not dereferenced.
     CHECK(!netcfg_validate(NULL, err, sizeof err), "NULL config: accepted, want rejected");
 
     // The reason buffer is optional: callers that only want the boolean pass NULL/0.
