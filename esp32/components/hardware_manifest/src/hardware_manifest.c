@@ -5,6 +5,7 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "nvs.h"
+#include "sdkconfig.h"
 
 #define OBSERVER_I2C_SDA_GPIO 6
 #define OBSERVER_I2C_SCL_GPIO 7
@@ -152,18 +153,77 @@ static bool manifest_profile(const nvf_board_identity_t *identity, eeprom_profil
     }
 }
 
-static void make_gnss_color_neo_defaults(eeprom_capabilities_t *caps, uint8_t address, uint16_t memory)
+#if CONFIG_NVF_MANIFEST_BOARD_ZED_X20_A
+#define MANIFEST_BOARD_NAME "ZED-X20P square revision A"
+#elif CONFIG_NVF_MANIFEST_BOARD_MAX_A
+#define MANIFEST_BOARD_NAME "MAX-M10S mobile revision A"
+#else
+#define MANIFEST_BOARD_NAME "NEO first-spin revision A"
+#endif
+
+// The component list that factory initialization writes for the board chosen by
+// CONFIG_NVF_MANIFEST_BOARD_*. Keep each list as the manufacturing truth for that
+// assembly. All three are GNSS_PCB_MAIN revision A; the CAT_GPS entry names the
+// variant. GPIO-valued descriptors identify the two same-part LED drivers by their
+// output-enable pins and the gated LDOs by their EN pins. components[0] is the
+// EEPROM's self-reference; its ID is replaced with the discovered part's.
+static void make_board_defaults(eeprom_capabilities_t *caps, uint8_t address, uint16_t memory)
 {
     memset(caps, 0, sizeof(*caps));
     caps->magic = CAP_MAGIC_PREFERRED;
     caps->project_id = PROJECT_GNSS;
     caps->pcb_id = GNSS_PCB_MAIN;
-    caps->revision = 1; // first-spin board, revision A
+    caps->revision = 1; // revision A
     caps->i2c_address = address;
 
-    // Keep this list as the manufacturing truth for the assembled first-spin
-    // board. GPIO-valued descriptors identify the two same-part LED drivers
-    // by their separate output-enable pins and the two switchable LDOs by EN.
+#if CONFIG_NVF_MANIFEST_BOARD_ZED_X20_A
+    eeprom_ic_descriptor_t components[] = {
+        IC_EEPROM_SELF_24CS128(address),                    // U28
+        IC_INSTALLED(CAT_MCU, MCU_ESP32_S3),
+        IC_INSTALLED(CAT_GPS, GPS_ZED_X20P),
+        IC_I2C(CAT_RTC, RTC_MAX31328, 0x68),
+        IC_I2C(CAT_CRYPTO, CRYPTO_ATECC608C, 0x60),
+        IC_I2C(CAT_TEMP, TEMP_MCP9808, 0x18),
+        IC_I2C(CAT_PRESSURE, PRESSURE_BMP388, 0x76),
+        IC_I2C(CAT_SENSOR, SENSOR_HDC2080, 0x40),
+        IC_INSTALLED(CAT_COMM, COMM_W5500),                 // SPI Ethernet, U34
+        IC_GPIO(CAT_POWER, POWER_ADM7150, 38),              // 3V3_GNSS, U27
+        IC_GPIO(CAT_POWER, POWER_TPS7A20, 21),              // 3V3_SENS, U30
+        IC_GPIO(CAT_LED, LED_TLC5916, 47),
+        IC_GPIO(CAT_LED, LED_TLC5916, 48),
+        IC_INSTALLED(CAT_BATTERY, BATTERY_CR2032),          // RTC backup only, BT1
+        IC_INSTALLED(CAT_BATTERY, BATTERY_CR123A),          // GNSS backup carrier on JBAT1
+        IC_INSTALLED(CAT_CONNECTOR, CONNECTOR_USB_OTG),
+        IC_INSTALLED(CAT_CONNECTOR, CONNECTOR_QWIIC),
+        IC_INSTALLED(CAT_CONNECTOR, CONNECTOR_ETHERNET_RJ45),
+        IC_GPIO(CAT_BUTTON, BUTTON_BOOT, 0),
+        IC_GPIO(CAT_BUTTON, BUTTON_USER_2, 18),             // brightness preset, SW3
+    };
+#elif CONFIG_NVF_MANIFEST_BOARD_MAX_A
+    eeprom_ic_descriptor_t components[] = {
+        IC_EEPROM_SELF_24CS128(address),                    // U28
+        IC_INSTALLED(CAT_MCU, MCU_ESP32_S3),
+        IC_INSTALLED(CAT_GPS, GPS_MAX_M10S),
+        IC_I2C(CAT_RTC, RTC_MCP79412, 0x6f),
+        IC_I2C(CAT_CRYPTO, CRYPTO_ATECC608C, 0x60),
+        IC_I2C(CAT_TEMP, TEMP_MCP9808, 0x18),
+        IC_I2C(CAT_PRESSURE, PRESSURE_MS5607, 0x77),
+        IC_I2C(CAT_SENSOR, SENSOR_HDC2080, 0x40),
+        IC_I2C(CAT_IMU, IMU_ICM45686, 0x69),
+        IC_I2C(CAT_SENSOR, SENSOR_MAG_MMC34160PJ, 0x30),
+        IC_INSTALLED(CAT_SENSOR, SENSOR_THERMOCOUPLE_MAX31856), // SPI, U39
+        IC_GPIO(CAT_POWER, POWER_TPS7A20, 38),              // 3V3_GNSS, U27
+        IC_GPIO(CAT_POWER, POWER_TPS7A20, 21),              // 3V3_SENS, U30
+        IC_GPIO(CAT_LED, LED_TLC5916, 47),
+        IC_GPIO(CAT_LED, LED_TLC5916, 48),
+        IC_INSTALLED(CAT_BATTERY, BATTERY_CR2032),          // RTC backup only, BT1
+        IC_NOT_POP(CAT_BATTERY, BATTERY_CR123A),            // JBAT1 takes an optional external cell
+        IC_INSTALLED(CAT_CONNECTOR, CONNECTOR_USB_OTG),
+        IC_INSTALLED(CAT_CONNECTOR, CONNECTOR_QWIIC),
+        IC_GPIO(CAT_BUTTON, BUTTON_BOOT, 0),
+        IC_GPIO(CAT_BUTTON, BUTTON_USER_2, 18),             // brightness preset, SW3
+    };
+#else
     eeprom_ic_descriptor_t components[] = {
         IC_EEPROM_SELF_24AA025E64(address),
         IC_INSTALLED(CAT_MCU, MCU_ESP32_S3),
@@ -182,6 +242,7 @@ static void make_gnss_color_neo_defaults(eeprom_capabilities_t *caps, uint8_t ad
         IC_INSTALLED(CAT_CONNECTOR, CONNECTOR_QWIIC),
         IC_GPIO(CAT_BUTTON, BUTTON_BOOT, 0),
     };
+#endif
 
     _Static_assert(sizeof(components) / sizeof(components[0]) <= CAP_MAX_COMPONENTS,
                    "compiled manifest exceeds EEPROM component capacity");
@@ -291,8 +352,8 @@ esp_err_t hardware_manifest_boot(bool allow_factory_init,
     if (result->action == HARDWARE_MANIFEST_ACTION_INITIALIZE &&
         allow_factory_init) {
         eeprom_capabilities_t defaults;
-        make_gnss_color_neo_defaults(&defaults, address, memory);
-        ESP_LOGW(TAG, "factory-init enabled: programming blank GNSS main-board manifest");
+        make_board_defaults(&defaults, address, memory);
+        ESP_LOGW(TAG, "factory-init enabled: programming blank " MANIFEST_BOARD_NAME " manifest");
         if (!eeprom_write_capabilities(address, &defaults, false)) {
             result->action = HARDWARE_MANIFEST_ACTION_IO_ERROR;
             return ESP_FAIL;

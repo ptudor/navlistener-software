@@ -28,8 +28,11 @@ supported substitute. Its drivers and partition table remain as legacy source.
   `NVF_BOARD_GNSS_COLOR_NEO`, which `sdkconfig.defaults.s3` sets. Its startup reads the
   factory EUI-64 and manifest;
   `NVF_MANIFEST_FACTORY_INIT` is a manufacturing-only, default-off permission to initialize a
-  blank, never-seen EEPROM from the compiled revision-A component list. It never writes after an
-  I2C error, to a known-but-blank EEPROM, or across an EUI replacement.
+  blank, never-seen EEPROM from a compiled revision-A component list; `NVF_MANIFEST_BOARD`
+  chooses the NEO, MAX or ZED-X20P assembly's list (the lists are in
+  [the observer contract](../docs/HARDWARE-OBSERVER.md#52-how-navlistener-consumes-it)). It never
+  writes after an I2C error, to a known-but-blank EEPROM, or across an identity replacement.
+  The choice sets only the programmed manifest, not this build's drivers or pins.
   An absent, never-adopted EEPROM is supported during bring-up: compiled GPIO wiring
   and the provisioned station ID remain usable. Firmware does not synthesize an EUI
   or claim hardware attestation. A previously adopted EEPROM disappearing still
@@ -520,8 +523,8 @@ The pusher reconnects when sent records remain outstanding without durable ACK a
 ### Hardware-discovery dependency and release evidence
 
 Normal builds pin `esp_hardware_discovery` to commit
-`10b7e0e1c85ec3e313bbcdac88ea621874eb81c5` (24CS256/24CS512 support and the `POWER_TPS7A20`
-catalog ID), with the IDF 5.5.4/ESP32-S3
+`1d8d65cbba59df84b1c1ca42a94ecaa00d32d384` (24CS256/24CS512 support and the `POWER_TPS7A20`,
+`COMM_W5500` and `SENSOR_THERMOCOUPLE_MAX31856` catalog IDs), with the IDF 5.5.4/ESP32-S3
 resolution committed in `dependencies.lock`. Updating the pin is a deliberate
 source change: review upstream layout changes and run the component's
 `test/host` read/write, page-boundary, interrupted-write, timestamp/footer,

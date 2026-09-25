@@ -578,7 +578,28 @@ first reads the immutable factory EUI-64 and compares it with the EUI remembered
 
 `CONFIG_NVF_MANIFEST_FACTORY_INIT` is off by default. When deliberately enabled by the
 programmer, it writes only the blank/never-seen row, uses `force=false`, reads the complete
-image back, validates the 24AA025E64 self-reference at `0x50`, and only then records the EUI.
+image back, validates the EEPROM's self-reference, and only then records its identity.
+`CONFIG_NVF_MANIFEST_BOARD` chooses which compiled list it writes. Each is
+`GNSS_PCB_MAIN` revision A, and its `CAT_GPS` entry names the variant. Entry 0 is the
+EEPROM's self-reference, carrying the discovered part (24AA025E64, 24CS128 or M24128-U).
+
+| Entry | NEO first spin | MAX mobile | ZED-X20P square |
+|---|---|---|---|
+| `CAT_GPS` | `GPS_NEO_M9N` | `GPS_MAX_M10S` | `GPS_ZED_X20P` |
+| `CAT_RTC` | `RTC_MCP79412` `0x6F` | `RTC_MCP79412` `0x6F` | `RTC_MAX31328` `0x68` |
+| `CAT_PRESSURE` | `PRESSURE_BMP388` `0x76` | `PRESSURE_MS5607` `0x77` | `PRESSURE_BMP388` `0x76` |
+| `CAT_POWER`, GPIO38 (`3V3_GNSS`) | `POWER_ADM7150` | `POWER_TPS7A20` | `POWER_ADM7150` |
+| `CAT_POWER`, GPIO21 (`3V3_SENS`) | `POWER_RT9193` | `POWER_TPS7A20` | `POWER_TPS7A20` |
+| Additional sensors | — | `IMU_ICM45686` `0x69`, `SENSOR_MAG_MMC34160PJ` `0x30`, `SENSOR_THERMOCOUPLE_MAX31856` (SPI) | — |
+| Ethernet | — | — | `COMM_W5500` (SPI), `CONNECTOR_ETHERNET_RJ45` |
+| `CAT_BATTERY` | `BATTERY_CR123A` | `BATTERY_CR2032`; `BATTERY_CR123A` not populated (optional external cell) | `BATTERY_CR2032`, `BATTERY_CR123A` (carrier) |
+| `CAT_BUTTON` | `BUTTON_BOOT` GPIO0 | `BUTTON_BOOT` GPIO0, `BUTTON_USER_2` GPIO18 (brightness) | `BUTTON_BOOT` GPIO0, `BUTTON_USER_2` GPIO18 (brightness) |
+
+All three also list the ESP32-S3, ATECC608C `0x60`, MCP9808 `0x18`, HDC2080 `0x40`, the two
+TLC5916 drivers by output-enable GPIO47/GPIO48, USB-OTG and the Qwiic port. The choice sets only
+the programmed manifest. Firmware drivers and pin use still follow the custom-observer build:
+the MAX31328, W5500, MAX31856, ICM-45686, MMC34160PJ, MS5607 and the GPIO18 button need their
+own driver support.
 The ordinary eight-second configuration-reset gesture erases only `navfeeder`; it does not
 erase `hwmanifest`. The custom-board build also refuses the generic fallback that automatically
 erases the complete default NVS partition when its format is incompatible or full, because that
@@ -595,8 +616,9 @@ The shared public library now includes these stable entries:
 | `eeprom_gps_id_t` | `GPS_NEO_M10`, `GPS_NEO_F10N`, `GPS_NEO_F10T`, `GPS_ZED_F9T` | Variant A candidates and the F9T fleet part. |
 | `eeprom_pressure_id_t` | `PRESSURE_BMP390` | The BMP390 footprint alternate. |
 | `eeprom_battery_id_t` | `BATTERY_CR123A` | This board's primary 3 V cylindrical backup cell. |
-| `eeprom_sensor_id_t` | `SENSOR_HDC2080` | The combined temperature/humidity part (§6.4); `TEMP_MCP9808` already exists for the dedicated sensor. |
-| `eeprom_power_id_t` | `POWER_ADM7150`, `POWER_RT9193`, `POWER_TPS7A20` | The GPIO-gated rails (§3.1); descriptor address byte = the EN GPIO, following `CAT_BUTTON`'s addr-is-GPIO convention. `POWER_TPS7A20` (9) covers the MAX board's two TPS7A2033PDBVR gated rails. |
+| `eeprom_sensor_id_t` | `SENSOR_HDC2080`, `SENSOR_THERMOCOUPLE_MAX31856` | The combined temperature/humidity part (§6.4); `TEMP_MCP9808` already exists for the dedicated sensor. `SENSOR_THERMOCOUPLE_MAX31856` (16) is the MAX board's SPI thermocouple converter, which is not a MAX31855. |
+| `eeprom_power_id_t` | `POWER_ADM7150`, `POWER_RT9193`, `POWER_TPS7A20` | The GPIO-gated rails (§3.1); descriptor address byte = the EN GPIO, following `CAT_BUTTON`'s addr-is-GPIO convention. `POWER_TPS7A20` (9) covers the TPS7A2033PDBVR gated rails: both on MAX, `3V3_SENS` on ZED-X20P. |
+| `eeprom_comm_id_t` | `COMM_W5500` | The ZED-X20P board's SPI Ethernet controller (6). |
 
 `MEMORY_24AA025E64 = 6` is now part of the shared baseline rather than a
 navlistener-specific extension. This board's manufacturing manifest must use:

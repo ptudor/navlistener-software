@@ -116,17 +116,37 @@ menu "navfeeder-esp"
         depends on NVF_BOARD_GNSS_COLOR_NEO && NVF_ENV_HDC2080
         default n
         help
-            Manufacturing-only permission. If the complete writable region of
-            the 24AA025E64 at 0x50 is uniformly blank,
-            its factory EUI-64 is valid, and that EUI has never been recorded in
-            the independent hwmanifest NVS namespace, program the compiled
-            GNSS_PCB_MAIN revision-A component list and verify it by readback.
-            That list specifies HDC2080, so this option is unavailable for
-            HDC2022 assemblies; their manifest must be provisioned separately.
+            Manufacturing-only permission. If the manifest EEPROM reads as
+            blank, its factory identity (24AA EUI-64, or the 24CS or M24128-U
+            128-bit serial) is valid, and that identity has never been recorded
+            in the independent hwmanifest NVS namespace, program the compiled
+            GNSS_PCB_MAIN revision-A component list chosen below and verify it
+            by readback. Every list specifies HDC2080, so this option is
+            unavailable for HDC2022 assemblies; their manifest must be
+            provisioned separately.
 
             Leave this off in ordinary firmware. I2C errors, malformed records,
-            a blank previously-known EEPROM, and a different/replacement EUI
-            are always refused regardless of this option.
+            a blank previously-known EEPROM, and a different/replacement
+            identity are always refused regardless of this option.
+
+    choice NVF_MANIFEST_BOARD
+        prompt "Board assembly for the factory-initialized manifest"
+        depends on NVF_MANIFEST_FACTORY_INIT
+        default NVF_MANIFEST_BOARD_NEO_A
+        help
+            The compiled component list factory initialization writes. Choose
+            the assembly being provisioned: the list records its receiver, RTC,
+            sensors, gated regulators and connectors. This selects only the
+            programmed manifest; it does not change the drivers or pin use of
+            this build.
+
+        config NVF_MANIFEST_BOARD_NEO_A
+            bool "NEO-M9N first spin, revision A"
+        config NVF_MANIFEST_BOARD_MAX_A
+            bool "MAX-M10S mobile, revision A"
+        config NVF_MANIFEST_BOARD_ZED_X20_A
+            bool "ZED-X20P square, revision A"
+    endchoice
 
     config NVF_OTA
         bool "On-demand authenticated HTTPS OTA"
