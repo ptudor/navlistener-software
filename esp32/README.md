@@ -261,6 +261,15 @@ fitted: a battery is needed to retain time after main power is removed.
 See the [MCP79412 datasheet, sections 5.3 and 5.7](https://ww1.microchip.com/downloads/aemDocuments/documents/MPD/ProductDocuments/DataSheets/MCP79410-MCP79411-MCP79412-Battery-Backed-I2C-RTCC-DS20002266.pdf)
 and [NAV-PVT in the M9 interface description](https://content.u-blox.com/sites/default/files/u-blox-M9-SPG-4.04_InterfaceDescription_UBX-21022436.pdf).
 
+The ZED/X20's MAX31328 needs no backup enable: it switches to its cell by itself
+and records any oscillator stop, including a failed switch when its supply falls too
+fast, in its status register (OSF). Firmware treats a set flag as an invalid
+calendar and waits for qualified GNSS UTC. It then writes the whole calendar in one
+transfer, clears the flag, and verifies both the calendar and advancing seconds. If
+the flag would not clear, it stops retrying and trusts only GNSS time. The part is not
+accessed during its 300 ms power-up recovery (tREC). See the
+[MAX31328 datasheet](https://www.analog.com/media/en/technical-documentation/data-sheets/max31328.pdf).
+
 This establishes a seconds-resolution RTC baseline. It does not adopt RTC time
 as system time, change observation timestamps, authenticate GNSS time, or provide
 PPS alignment. The 2026-09-14 S3 flash check confirmed that a stopped RTC waits

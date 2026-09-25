@@ -225,7 +225,10 @@ RH 0…100%, pressure 30000…125000 Pa.
 
 RTC flag bits: readable=1, oscillator-running=2, backup-enabled=4,
 power-fail=8, validated running calendar=16. Unix seconds must be zero without
-the last flag; validated calendars cover 2000–2099. Read/check/event uptimes
+the last flag; validated calendars cover 2000–2099. On the ZED/X20's MAX31328,
+backup switching is automatic, so backup-enabled is always set with readable;
+oscillator-running means the oscillator is enabled and its stop flag (OSF) is clear;
+power-fail is never set, because a lost calendar shows as OSF instead. Read/check/event uptimes
 cannot exceed snapshot uptime. Last-read fields do not imply a fresh battery test.
 
 ATECC lock enums: 0 unknown, 1 unlocked, 2 locked, 3 invalid lock byte.
@@ -287,7 +290,7 @@ older collectors that know only tags 1–7 reject an all-unknown timing-only rec
 | 0 | 1 | Timing version = 1 |
 | 1 | 1 | Capture clock = 1 (ESP APB) |
 | 2 | 1 | RTC square-wave state: unknown=0, enabled 1 Hz=1, oscillator stopped/invalid calendar=2, alarm/coarse-trim conflict=3, I/O error=4 |
-| 3, 4 | 1 each | RTC CONTROL and OSCTRIM register readback |
+| 3, 4 | 1 each | RTC register readback: MCP79412 CONTROL and OSCTRIM, or MAX31328 control (`0x0e`) and aging offset (`0x10`) |
 | 5 | 1 | Validity: relative phase=1, recent TIM-TP metadata=2 |
 | 6, 7 | 1 each | Next-pulse TIM-TP flags and reference byte; zero when unavailable |
 | 8 | 4 | Actual capture resolution in Hz; zero if unavailable |

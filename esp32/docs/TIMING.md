@@ -1,7 +1,8 @@
 # GNSS PPS and RTC pulse measurements
 
-The S3 measures two independent electrical inputs: buffered NEO TIMEPULSE on
-**GPIO10** and MCP79412 **MFP on GPIO15**. Both edges are captured by one MCPWM
+The S3 measures two independent electrical inputs: the receiver's buffered
+TIMEPULSE on **GPIO10** and the RTC's 1 Hz output on **GPIO15** (MCP79412 MFP on the
+NEO and MAX, MAX31328 INT/SQW on the ZED/X20). Both edges are captured by one MCPWM
 hardware timer, with separate PCNT hardware counters counting rising edges.
 This gives pulse interval, high width, pulse totals and relative phase/drift
 without steering any oscillator.
@@ -53,6 +54,15 @@ Only a validated running MCP79412 calendar is eligible. Firmware sets CONTROL
 OSCTRIM. It refuses changes when either alarm or coarse trim is enabled, because
 MFP is shared with those functions. CONTROL/OSCTRIM and the configuration result
 are reported separately from observed input activity.
+
+On the ZED/X20, only a MAX31328 calendar with its oscillator-stop flag clear is
+eligible. Firmware clears INTCN and RS (1 Hz on INT/SQW), BBSQW and CONV, turns off
+the unused 32 kHz output, and verifies readback. It never takes over alarm
+interrupts and never clears the stop flag outside a verified GNSS set. The timing
+record's control and trim bytes carry its control register and aging offset. The
+1 Hz output follows the temperature-compensated oscillator and is off on the backup
+cell ([ADI 19-100978](https://www.analog.com/media/en/technical-documentation/data-sheets/max31328.pdf),
+control and status registers).
 
 The 1 Hz output includes the RTC's digital trim. It is absent in battery-backup
 operation. The board supplies MFP's external pull-up; both ESP input pins remain
