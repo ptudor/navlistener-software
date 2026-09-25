@@ -229,8 +229,8 @@ menu "navfeeder-esp"
         default n
         help
             Manufacturing-only permission. If the manifest EEPROM reads as
-            blank, its factory identity (24AA EUI-64, or the 24CS or M24128-U
-            128-bit serial) is valid, and that identity has never been recorded
+            blank, its 128-bit factory serial (24CS or M24128-U) is valid, and
+            that identity has never been recorded
             in the independent hwmanifest NVS namespace, program the compiled
             GNSS_PCB_MAIN revision-A component list chosen below and verify it
             by readback. Every list specifies HDC2080, so this option is

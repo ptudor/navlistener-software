@@ -21,7 +21,7 @@ The analogy is useful as long as the layers stay separate:
 
 | System concept | Analogy | Can it change? |
 |---|---|---|
-| 24AA025E64 typed board UID | passport number — the globally unique public name | only on PCB replacement |
+| 128-bit board serial (typed board UID) | passport number — the globally unique public name | only on PCB replacement |
 | manufacturer attestation | the issuing authority's anti-forgery proof over the original hardware | no; manufacturing record |
 | ATECC operational private key | the holder's ability to prove possession | yes; slot 0 is deliberately regenerable |
 | operational mTLS certificate | a driver's licence issued by the admitting collector/organization CA | yes; issue, rotate, revoke |
@@ -32,7 +32,7 @@ The analogy is useful as long as the layers stay separate:
 
 The hardware identity MUST NOT contain an organization, customer, collection, hostname, or
 public/private state. Those facts change during a board's life. The operational certificate's
-single DNS SAN remains only the canonical EUI-64-derived observer id; the certificate issuer
+single DNS SAN remains only the canonical board-serial-derived observer id; the certificate issuer
 and server-side enrollment record establish the current jurisdiction.
 
 ---

@@ -1,10 +1,10 @@
 # Board identity
 
-The preferred EEPROM for new assemblies is Microchip **24CS128**, with its main
-array strapped to I2C address **0x50**. Its factory-programmed serial supplies the
-board identity. ST **M24128-UFMN6TP** is a software-supported alternate pending
-physical qualification. Assemblies using 24AA025E64 remain supported under the
-same contract.
+Every board fits Microchip **24CS128**, with its main array strapped to I2C
+address **0x50**. Its 128-bit factory-programmed serial is the board identity.
+ST **M24128-UFMN6TP** is a software-supported alternate pending physical
+qualification. A board identity is always a 128-bit factory serial; there is
+no 64-bit board identity.
 
 A board UID is a **kind and an opaque byte string**. Never truncate, hash, convert
 to a floating-point JSON number, or reinterpret it as a MAC address. Part model,
@@ -13,14 +13,14 @@ change the identity namespace.
 
 | Code | JSON kind | Value length | Interpretation |
 |---|---|---|---|
-| 1 | `eui64` | 8 bytes | Microchip factory EUI-64, including 24AA025E64 |
 | 3 | `serial128` | 16 bytes | Complete Microchip 24CS factory serial (24CS128/24CS256/24CS512), in read order |
 | 4 | `st_uid128` | 16 bytes | Complete ST UID, including the four-byte identification header |
 
 The JSON kind names follow `esp_hardware_discovery`'s factory-ID kinds
-(`EEPROM_FACTORY_ID_EUI64`, `_SERIAL128`, `_ST_UID128`). Earlier names
-(`microchip_eui64`, `microchip_cs128`) are not accepted. The control database
-rewrites rows stored under them when its schema is next applied.
+(`EEPROM_FACTORY_ID_SERIAL128`, `_ST_UID128`). Code 1 and the names `eui64`,
+`microchip_eui64` and `microchip_cs128` are not accepted. When its schema is next
+applied, the control database renames `microchip_cs128` rows and refuses to
+upgrade while it holds a 64-bit identity, naming those devices.
 
 The 24CS128, 24CS256, 24CS512, AT24CS01 and AT24CS02 share the 128-bit identity namespace. Their
 hardware read procedures differ. Supporting a namespace does not automatically
@@ -65,9 +65,9 @@ Microchip's Manufacturer ID. If that interface is absent, it reads ST's page,
 requires the `20 e0 0e ff` header, and repeats the full UID read for stability.
 The page ignores upper address bits: reading Microchip offset 0x0800 successfully
 is insufficient to identify the model. Unexpected headers, read errors and
-multiple candidates fail discovery. An absent security interface permits the
-legacy EUI read; a bus fault never permits fallback. Adopted identities cannot
-change kind, even if another source is available.
+multiple candidates fail discovery. An EEPROM with neither interface is an
+error; a bus fault never permits fallback. Adopted identities cannot change
+kind, even if another source is available.
 
 The ST main array uses 16 KiB, 64-byte pages and two-byte addresses. Manifest
 self-reference is memory catalog ID 8 (`M24128-U`), while 24CS128 stays ID 7.
@@ -82,10 +82,11 @@ Keep the existing ground link during commissioning, then use the board's
 write-protect configuration. The exact ST MN SO8N has the matching standard
 EEPROM pinout and package dimensions; other ST package suffixes need review.
 
-A 24AA025E64 uses its factory EUI at offset 0xf8, at 0x50 or 0x51. An ACK alone
-does not identify a model. Discovery must avoid storage writes and reject
-ambiguous devices and bus faults. The EEPROM identity is recorded separately
-from its role as board UID; both values match for the supported assemblies.
+An ACK alone does not identify a model. Discovery avoids storage writes and
+rejects ambiguous devices and bus faults. An EEPROM that answers at the main
+array address without a supported 128-bit serial interface is an error, never a
+board without identity hardware. The EEPROM identity is recorded separately from
+its role as board UID; both values match on every board.
 
 These are identification devices, not proof of possession. The signed core,
 manufacturer authority and operational key policy supply authentication. The

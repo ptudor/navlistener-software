@@ -16,7 +16,7 @@ enum BoardFixture {
             "rtc":{"flags":31,"unix_seconds":1789387200,"sampled_uptime_ms":119000},
             "atecc":{"checked_uptime_ms":123,"revision":"00006002","config_lock":"locked",
               "data_lock":"unlocked","rng_screening":"repeating_output"},
-            "eeprom":{"action":"use_manifest","eui64":"0011223344556677",
+            "eeprom":{"action":"use_manifest","board_uid_kind":"serial128","board_uid":"00112233445566778899aabbccddeeff",
               "capabilities_valid":true,"revision":2,"component_count":6},
             "resources":{"spool_psram":true,"spool_used_bytes":1024,"spool_capacity_bytes":4194304,
               "spool_records":100,"spool_dropped_records":18446744073709551615,

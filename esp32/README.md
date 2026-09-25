@@ -24,9 +24,9 @@ LCD development board is unsupported; adding flash alone does not make it a
 supported substitute. Its drivers and partition table remain as legacy source.
 
 - **Custom GNSS color observer:** ESP32-S3, receiver UART on GPIO4/GPIO5, shared I2C on
-  GPIO6/GPIO7, and a 24CS128 manifest at `0x50` (24AA EUI-64 assemblies are also supported). Select
+  GPIO6/GPIO7, and a 24CS128 manifest at `0x50`. Select
   `NVF_BOARD_GNSS_COLOR_NEO`, which `sdkconfig.defaults.s3` sets. Its startup reads the
-  factory EUI-64 and manifest;
+  128-bit factory serial and manifest;
   `NVF_MANIFEST_FACTORY_INIT` is a manufacturing-only, default-off permission to initialize a
   blank, never-seen EEPROM from a compiled revision-A component list; `NVF_MANIFEST_BOARD`
   chooses the NEO, MAX or ZED-X20P assembly's list (the lists are in

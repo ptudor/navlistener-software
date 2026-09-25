@@ -27,9 +27,10 @@ static int read_id(void *ctx, uint8_t address, uint16_t reg, uint8_t width, uint
     unsigned model=b->model[address-0x50];
     if(!model)return NVF_ID_ABSENT;
     assert(model!=3 && model!=4); /* A 16-bit EEPROM must never see an 8-bit pointer. */
-    assert(width==1 && n==8 && reg==0xf8);
-    if(model!=1)return NVF_ID_NACK;
-    memcpy(out,"\x00\x04\xa3\x01\x02\x03\x04\x05",8);
+    /* Any other model is an EEPROM without a supported 128-bit serial: discovery only
+     * checks that something answers at the main array address. */
+    assert(width==1 && n==1 && reg==0);
+    out[0]=0xff;
     return NVF_ID_READ_OK;
 }
 
@@ -71,14 +72,17 @@ int main(void) {
     assert(!strcmp(id,"board-0003-000102030405060708090a0b0c0d0e0f"));
     b.model[0]=0;b.model[1]=3;
     assert(!nvf_board_discover(read_id,&b,adopted,0,&out) && out.board_address==0x51);
+    /* An EEPROM without a supported 128-bit serial is an error, never a board without
+     * identity hardware, whether or not an identity was adopted. */
     b.model[0]=1;b.model[1]=0; assert(nvf_board_discover(read_id,&b,adopted,0,&out));
-    assert(!nvf_board_discover(read_id,&b,NULL,0,&out) && nvf_uid_kind(out.board_uid)==NVF_UID_EUI64 && out.eeprom_kbit==2);
-    assert(!strcmp(nvf_uid_kind_name(NVF_UID_EUI64), "eui64"));
-    memcpy(adopted,out.board_uid,sizeof adopted);
-    b.model[0]=0;b.model[1]=1;
-    assert(!nvf_board_discover(read_id,&b,adopted,0,&out) && nvf_uid_kind(out.board_uid)==1);
-    b.model[1]=0;
-    assert(nvf_board_discover(read_id,&b,adopted,0,&out));
+    assert(nvf_board_discover(read_id,&b,NULL,0,&out) && !out.board_valid);
+    b.model[0]=0;b.model[1]=1; assert(nvf_board_discover(read_id,&b,NULL,0,&out));
+    b.model[1]=0; assert(nvf_board_discover(read_id,&b,adopted,0,&out));
+    /* Wire code 1 is retired: no length makes it a board identity. */
+    uint8_t retired[NVF_BOARD_UID_SIZE] = {0, 1, 8, 0x00, 0x04, 0xa3, 1, 2, 3, 4, 5};
+    assert(!nvf_uid_valid(retired) && !nvf_uid_kind_name(1));
+    retired[2] = 16; memset(retired + 3, 0x5a, 16); assert(!nvf_uid_valid(retired));
+    assert(!nvf_uid_pack(1, retired + 3, 16, retired));
     b.model[0]=99;b.model[1]=1;assert(nvf_board_discover(read_id,&b,NULL,0,&out));
     b.model[0]=3;b.model[1]=0;b.bad_id=true;assert(nvf_board_discover(read_id,&b,NULL,0,&out));b.bad_id=false;
     b.unstable=true;assert(nvf_board_discover(read_id,&b,NULL,0,&out));b.unstable=false;
@@ -123,12 +127,12 @@ int main(void) {
         b=(bus){0}; b.model[at]=4;
         assert(!nvf_board_discover(read_wire,&b,NULL,0,&out) && out.eeprom_kind==NVF_UID_ST_UID128);
         b=(bus){0}; b.model[at]=1;
-        assert(!nvf_board_discover(read_wire,&b,NULL,0,&out) && out.eeprom_kind==NVF_UID_EUI64);
+        assert(nvf_board_discover(read_wire,&b,NULL,0,&out) && !out.board_valid);
     }
     b=(bus){0}; assert(!nvf_board_discover(read_wire,&b,NULL,0,&out) && !out.board_valid);
     b=(bus){.model={3,3}}; assert(nvf_board_discover(read_wire,&b,NULL,0,&out));
     /* A bus timeout mid-transfer, or a probe fault, is an error and never absence. */
     b=(bus){.model={3,0},.timeout=true}; assert(nvf_board_discover(read_wire,&b,NULL,0,&out));
     b=(bus){.model={3,0},.fault=true}; assert(nvf_board_discover(read_wire,&b,NULL,0,&out));
-    puts("typed UID and read-only discovery: 24CS128/256/512 serial128, ST UID128, EUI64, faults and adoption PASS");
+    puts("typed UID and read-only discovery: 24CS128/256/512 serial128, ST UID128, unsupported EEPROMs, faults and adoption PASS");
 }

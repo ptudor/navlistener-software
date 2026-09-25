@@ -290,7 +290,7 @@ func TestFixtures(t *testing.T) {
 	if ix.Sequence != f.RegistrySequence || ix.Len() != len(f.Cases) {
 		t.Fatalf("registry = sequence %d with %d boards", ix.Sequence, ix.Len())
 	}
-	revoked, err := boardid.Parse("eui64", f.RegistryRevokedBoard)
+	revoked, err := boardid.Parse("serial128", f.RegistryRevokedBoard)
 	if err != nil {
 		t.Fatal(err)
 	}

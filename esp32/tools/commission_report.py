@@ -76,7 +76,7 @@ def validate(report):
         if value is not None and (not isinstance(value, str) or not re.fullmatch(f"[0-9a-f]{{{2 * size}}}", value)):
             raise ValueError(f"{name} is neither null nor {size} bytes of lowercase hex")
     kind, value = report["board_uid_kind"], report["board_uid"]
-    sizes = {"eui64": 8, "serial128": 16, "st_uid128": 16}
+    sizes = {"serial128": 16, "st_uid128": 16}
     if value is None:
         if kind is not None:
             raise ValueError("board UID kind without a value")
@@ -93,9 +93,9 @@ def validate(report):
     if ep_value is None:
         if ep_kind is not None:
             raise ValueError("EEPROM kind without an identity")
-    elif ep_kind not in ("eui64", "serial128", "st_uid128") or not isinstance(ep_value, str) or not re.fullmatch(f"[0-9a-f]{{{2*sizes[ep_kind]}}}", ep_value) or set(ep_value) in ({"0"}, {"f"}):
+    elif ep_kind not in sizes or not isinstance(ep_value, str) or not re.fullmatch(f"[0-9a-f]{{{2*sizes[ep_kind]}}}", ep_value) or set(ep_value) in ({"0"}, {"f"}):
         raise ValueError("invalid EEPROM identity")
-    if kind in ("eui64", "serial128", "st_uid128") and (kind, value) != (ep_kind, ep_value):
+    if kind in sizes and (kind, value) != (ep_kind, ep_value):
         raise ValueError("board UID differs from the selected EEPROM identity")
     decoded = {}
     for name in ("atecc_serial", "board_uid", "mcu_mac", "rtc_eui64"):

@@ -17,9 +17,7 @@ extern "C" {
 
 typedef struct {
     hardware_manifest_action_t action;
-    nvf_board_identity_t identity;
-    uint8_t eui64[EEPROM_UNIQUE_ID_SIZE];
-    bool eui64_valid;
+    nvf_board_identity_t identity; // eeprom_valid: the manifest EEPROM's 128-bit serial was read
     eeprom_capabilities_t capabilities;
     bool capabilities_valid;
 } hardware_manifest_result_t;

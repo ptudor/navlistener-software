@@ -7,7 +7,7 @@ import (
 )
 
 // The shared fixture's final component: a completed dry run, back in normal service.
-const heaterOffset = 173
+const heaterOffset = 200
 
 func TestObserverDetailsHumidityHeaterGolden(t *testing.T) {
 	d, err := decodeObserverDetails(observerGolden(t))

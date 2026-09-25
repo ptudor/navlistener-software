@@ -89,11 +89,6 @@ static esp_err_t board_uid_store(const uint8_t *uid)
     return err;
 }
 
-static void log_eui(const char *prefix, const uint8_t eui[EEPROM_UNIQUE_ID_SIZE])
-{
-    ESP_LOGI(TAG, "%s %02X%02X%02X%02X%02X%02X%02X%02X", prefix,
-             eui[0], eui[1], eui[2], eui[3], eui[4], eui[5], eui[6], eui[7]);
-}
 
 static esp_err_t known_eeprom_uid_load(bool *present,
                                 uint8_t eui[NVF_BOARD_UID_SIZE])
@@ -140,7 +135,6 @@ static esp_err_t known_eeprom_uid_store(const uint8_t eui[NVF_BOARD_UID_SIZE])
 static bool manifest_profile(const nvf_board_identity_t *identity, eeprom_profile_t *profile, uint16_t *memory)
 {
     switch (identity->eeprom_kind) {
-    case NVF_UID_EUI64: *profile = EEPROM_PROFILE_24AAXXE64; *memory = MEMORY_24AA025E64; return true;
     case NVF_UID_ST_UID128: *profile = EEPROM_PROFILE_M24128_U; *memory = MEMORY_M24128_U; return true;
     case NVF_UID_SERIAL128:
         switch (identity->eeprom_kbit) {
@@ -225,7 +219,7 @@ static void make_board_defaults(eeprom_capabilities_t *caps, uint8_t address, ui
     };
 #else
     eeprom_ic_descriptor_t components[] = {
-        IC_EEPROM_SELF_24AA025E64(address),
+        IC_EEPROM_SELF_24CS128(address),                    // U28
         IC_INSTALLED(CAT_MCU, MCU_ESP32_S3),
         IC_INSTALLED(CAT_GPS, GPS_NEO_M9N),
         IC_I2C(CAT_RTC, RTC_MCP79412, 0x6f),
@@ -264,19 +258,14 @@ static esp_err_t inspect(hardware_manifest_result_t *result,
                          const uint8_t known_eui[NVF_BOARD_UID_SIZE])
 {
     uint8_t address = result->identity.eeprom_address;
-    result->eui64_valid = false;
     eeprom_factory_id_t factory_id;
     uint8_t uid[NVF_BOARD_UID_SIZE];
+    // The library's own read of the factory serial must agree with discovery's.
     if (!eeprom_read_factory_id(address, &factory_id)) return ESP_ERR_INVALID_RESPONSE;
-    uint16_t kind = factory_id.kind == EEPROM_FACTORY_ID_EUI64 ? NVF_UID_EUI64 :
-                    factory_id.kind == EEPROM_FACTORY_ID_SERIAL128 ? NVF_UID_SERIAL128 :
+    uint16_t kind = factory_id.kind == EEPROM_FACTORY_ID_SERIAL128 ? NVF_UID_SERIAL128 :
                     factory_id.kind == EEPROM_FACTORY_ID_ST_UID128 ? NVF_UID_ST_UID128 : 0;
     if (!nvf_uid_pack(kind, factory_id.bytes, factory_id.length, uid) ||
         memcmp(uid, result->identity.eeprom_uid, sizeof uid)) return ESP_ERR_INVALID_RESPONSE;
-    if (kind == NVF_UID_EUI64) {
-        memcpy(result->eui64, factory_id.bytes, 8);
-        result->eui64_valid = true;
-    }
 
     hardware_manifest_known_eui_t known = HARDWARE_MANIFEST_KNOWN_NONE;
     if (known_present) {
@@ -347,7 +336,9 @@ esp_err_t hardware_manifest_boot(bool allow_factory_init,
     ESP_RETURN_ON_ERROR(eeprom_set_profile(address, profile), TAG, "select verified EEPROM profile");
     ESP_RETURN_ON_ERROR(inspect(result, known_present, known_eui), TAG,
                         "inspect manifest EEPROM");
-    if (result->eui64_valid) log_eui("manifest UID", result->eui64);
+    char observer[NVF_BOARD_OBSERVER_SIZE];
+    if (nvf_uid_observer(result->identity.eeprom_uid, observer))
+        ESP_LOGI(TAG, "manifest EEPROM factory serial: %s", observer);
 
     if (result->action == HARDWARE_MANIFEST_ACTION_INITIALIZE &&
         allow_factory_init) {

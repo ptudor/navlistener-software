@@ -1431,12 +1431,12 @@
         }
       }
     },
-    "board.eeprom.eui": {
+    "board.eeprom.serial": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "EEPROM EUI-64"
+            "value": "Factory serial (128-bit)"
           }
         }
       }
@@ -1446,7 +1446,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This identifies the manifest EEPROM. The authenticated station ID remains the collector identity."
+            "value": "The manifest EEPROM's 128-bit factory serial is the board identity; the station ID is named after it."
           }
         }
       }

@@ -48,7 +48,7 @@ func newBench(t *testing.T) bench {
 
 func (b bench) request(t *testing.T, coreKey, commissionKey *ecdsa.PrivateKey) Request {
 	t.Helper()
-	h := attestation.HardwareIdentity{Product: 1, BoardRevision: 258, BoardUID: boardid.EEPROM([8]byte{0, 4, 0xa3, 0xaa, 0xbb, 0xcc, 0xdd, 0xee}), ATECCSerial: [9]byte{1, 2, 3, 4, 5, 6, 7, 8, 9}}
+	h := attestation.HardwareIdentity{Product: 1, BoardRevision: 258, BoardUID: boardid.MustParse("serial128", "00112233445566778899aabbccddeeff"), ATECCSerial: [9]byte{1, 2, 3, 4, 5, 6, 7, 8, 9}}
 	core, err := attestation.Sign(1, h, coreKey, nil)
 	if err != nil {
 		t.Fatal(err)

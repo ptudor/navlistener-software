@@ -47,8 +47,9 @@ size_t observer_report_encode(uint8_t *out, size_t cap, const observer_report_t 
 {
     size_t fwlen = 0;
     while (fwlen < 32 && r->firmware[fwlen]) fwlen++;
-    // Header 24; six fixed TLVs (14,17,16,13,29,29); firmware TLV; optional heater TLV (58).
-    size_t length = 24 + 18 + 14 + 17 + 16 + 13 + 29 + 29 + 3 + fwlen + (r->heater.present ? 3 + 58 : 0);
+    // Header 24; six fixed TLVs (14,17,16,40,29,29); firmware TLV; optional heater TLV (58).
+    size_t length = 24 + 18 + 14 + 17 + 16 + 5 + NVF_BOARD_UID_SIZE + 29 + 29 + 3 + fwlen +
+                    (r->heater.present ? 3 + 58 : 0);
     if (!out || cap < length) return 0;
     memset(out, 0, length);
     out[0] = 1; out[1] = r->reason; gnf1_be64(out+2, r->uptime_ms);
@@ -64,9 +65,10 @@ size_t observer_report_encode(uint8_t *out, size_t cap, const observer_report_t 
     { TLV(3, 16); const report_crypto_t *c=&r->crypto;
       gnf1_be64(b,c->checked_ms); b[8]=c->revision_valid; memcpy(b+9,c->revision,4);
       b[13]=c->config_lock; b[14]=c->data_lock; b[15]=c->rng; }
-    { TLV(4, 13); const report_manifest_t *m=&r->manifest;
-      b[0]=m->action; b[1]=m->eui_valid; memcpy(b+2,m->eui,8);
-      b[10]=m->capabilities_valid; b[11]=m->revision; b[12]=m->component_count; }
+    { TLV(4, 5+NVF_BOARD_UID_SIZE); const report_manifest_t *m=&r->manifest;
+      b[0]=m->action; b[1]=m->uid_valid; memcpy(b+2,m->board_uid,NVF_BOARD_UID_SIZE);
+      b[2+NVF_BOARD_UID_SIZE]=m->capabilities_valid; b[3+NVF_BOARD_UID_SIZE]=m->revision;
+      b[4+NVF_BOARD_UID_SIZE]=m->component_count; }
     { TLV(5, 29); const report_resources_t *s=&r->resources;
       b[0]=s->psram; gnf1_be32(b+1,s->used); gnf1_be32(b+5,s->capacity);
       gnf1_be32(b+9,s->queued); gnf1_be64(b+13,s->dropped);

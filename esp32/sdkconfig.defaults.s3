@@ -4,7 +4,7 @@
 # open and update-test profiles add their settings after both files.
 #
 # Board: ESP32-S3-WROOM-1U-N16R8. Receiver UART on GPIO4/GPIO5, shared I2C on
-# GPIO6/GPIO7, 24AA025E64 manifest EEPROM at 0x50, BOOT/DOWNLOAD on GPIO0, and
+# GPIO6/GPIO7, 24CS128 manifest EEPROM at 0x50, BOOT/DOWNLOAD on GPIO0, and
 # the TLC5916 status panel in place of the Waveshare LCD/WS2812.
 
 CONFIG_IDF_TARGET="esp32s3"

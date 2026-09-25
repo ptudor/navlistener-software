@@ -69,12 +69,12 @@ The M9's "no spoofing indicated" state is not proof of authentic reception; see
 - ATECC revision, lock state and RNG screening are boot diagnostics, with their
   check uptime. A screening pass is not entropy certification. Repeating output
   remains explicitly untrusted. No provisioning, key writes or locking occurs.
-- Manifest EEPROM `0x50`: boot inspection action, independently validated factory
-  EUI-64, and capability validation. Absent, unreadable, blank, invalid and replaced
-  devices remain distinct. After fitting a chip, reboot to inspect it. Identity
-  reporting does not initialize a blank chip or authorize replacement. Its EUI
-  identifies that EEPROM; it never replaces the authenticated station identity or
-  the separate RTC identity described in [the hardware contract](HARDWARE-OBSERVER.md#4-identity-and-trust).
+- Manifest EEPROM `0x50`: boot inspection action, its independently validated 128-bit
+  factory serial, and capability validation. Absent, unreadable, blank, invalid and
+  replaced devices remain distinct. After fitting a chip, reboot to inspect it. Identity
+  reporting does not initialize a blank chip or authorize replacement. The serial is the
+  board identity the station is named after ([the hardware contract](HARDWARE-OBSERVER.md#4-identity-and-trust));
+  it never replaces the authenticated station identity.
 - Spool allocation, queue/drop counters and free heap are sampled at report time.
   These counters describe the RAM buffer, not collector delivery or persistence.
   Battery presence, RTC factory EUI and ATECC serial are not measured by this
@@ -210,7 +210,7 @@ invalid lengths/enums/ranges, and trailing partial TLVs are rejected.
 | 1 environment | 14 | validity U8, ready U8, MCP temperature I16, HDC temperature I16, BMP temperature I16, RH U16, pressure U32 |
 | 2 RTC | 17 | flags U8, Unix seconds U64, read uptime U64 |
 | 3 ATECC | 16 | boot check uptime U64, revision-valid U8, revision bytes[4], config lock U8, data lock U8, RNG result U8 |
-| 4 manifest EEPROM | 13 | action U8, EUI-valid U8, EUI bytes[8], capabilities-valid U8, board revision U8, component count U8 |
+| 4 manifest EEPROM | 40 | action U8, UID-valid U8, board UID bytes[35] (the typed wire field of [BOARD-IDENTITY.md](BOARD-IDENTITY.md)), capabilities-valid U8, board revision U8, component count U8 |
 | 5 resources | 29 | spool-in-PSRAM U8, used bytes U32, capacity bytes U32, queued records U32, dropped records U64, free internal bytes U32, free PSRAM bytes U32 |
 | 6 receiver context | 29 | supported mask U8, expected mask U8, tracked counts[8], validity U8, jamming U8, spoofing U8, MON-RF uptime U64, NAV-STATUS uptime U64 |
 | 7 firmware | 1–32 | Printable ASCII application version (build git description when available) |
@@ -232,8 +232,10 @@ ATECC lock enums: 0 unknown, 1 unlocked, 2 locked, 3 invalid lock byte.
 RNG enums: 0 untested, 1 repetition-screening pass, 2 repeating output, 3 I/O error.
 Manifest action enums: 0 I/O error, 1 initialization required, 2 recovery required,
 3 replacement confirmation required, 4 invalid manifest, 5 use manifest, 6 absent.
-EUI validity excludes all-zero/all-FF reads. Capability metadata is zero without
-validation; EUI validity and capability validation are independent.
+A valid UID is a 128-bit kind (`serial128` or `st_uid128`) that is neither all-zero nor
+all-FF; an invalid UID is all zero bytes. JSON gives `board_uid_kind` and `board_uid`.
+Capability metadata is zero without validation, and capability validation requires a
+valid UID.
 
 Tag 10 accompanies the environment component whenever the HDC is ready; it is
 absent without an HDC. Collectors that predate it skip it as a bounded unknown

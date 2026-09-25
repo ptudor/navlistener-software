@@ -1,9 +1,8 @@
 # The hardware observer board
 
 The current board identity contract is [BOARD-IDENTITY.md](BOARD-IDENTITY.md):
-**24CS128 at 0x50** is preferred for new assemblies; 24AA EUI-64 assemblies use
-their own typed identity. Assembly-specific BOMs
-below describe their stated board revisions, not a requirement to fit a 24AA.
+every board fits a **24CS128 at 0x50**, and its 128-bit factory serial is the
+board identity.
 
 The GNSS port of `radiolistener/docs/HARDWARE-OBSERVER.md`. That document specifies the
 **generic** ESP32 + secure-element + RTC observer and the credential ladder; this one covers
@@ -101,9 +100,9 @@ for it.
 |---|---|---|---|
 | MCU | `CAT_MCU` | **ESP32-S3-WROOM-1U-N16R8** (`MCU_ESP32_S3`) | Feeder. S3 and the **1U** (u.FL) variant both matter — §7.1. |
 | Receiver | `CAT_GPS` | **NEO-M9N-00B** (`C5119087`) on the shared 24-pin NEO land pattern | Raw nav frames + PPS. F10N/F10T drop in without a respin — §1.1. |
-| Clock identity | `CAT_RTC` | **MCP79412T-I/SN** + Seiko `SC-32S32.768kHz20PPM7pF` crystal (LCSC/EasyEDA `C97604`; `RTC_MCP79412`) | RTCC + SRAM + EEPROM + factory EUI-64 — a replaceable component identity bound by commissioning. |
+| Identity, public | `CAT_MEMORY` | **24CS128T-I/SN** at U28 (`MEMORY_24CS128`) | The 128-bit factory serial in its security register is the board and observer identity; the main array holds the installed-hardware descriptor array. See below. |
 | Identity, private | `CAT_CRYPTO` | **ATECC608C-SSHDA-T** (`C28975195`, `CRYPTO_ATECC608C`) | Non-extractable P-256 key; the proof of entitlement to that name. |
-| Hardware manifest and observer identity | `CAT_MEMORY` | `24AA025E64T-I/SN` (LCSC `C615601`; `MEMORY_24AA025E64`) | The installed-hardware descriptor array and permanent board/observer EUI-64. The addressable `025` variant is required — see below. |
+| Clock | `CAT_RTC` | **MCP79412T-I/SN** + Seiko `SC-32S32.768kHz20PPM7pF` crystal (LCSC/EasyEDA `C97604`; `RTC_MCP79412`) | Retained calendar time. Not an identity; commissioning logs its model (§4.3). |
 | Status panel | `CAT_LED` | 16 × 0805 (8 green + 8 yellow) via 2 × **TLC5916** | Constellation/health indication — §2.1. |
 | Pressure | `CAT_PRESSURE` | **BMP388** placed; BMP390 and BMP580 are footprint alternates | **Vertical spoofing gate** — §6.1. |
 | Temperature | `CAT_TEMP` | **MCP9808-E/MS** (`C94847`) | Crystal-drift characterisation and thermal health — §6.2. |
@@ -113,16 +112,12 @@ for it.
 | Wi-Fi antenna | `CAT_ANTENNA` | u.FL → RP-SMA pigtail off the 1U module | Physically separable from the GNSS path — §7.1. |
 | USB | `CAT_CONNECTOR` | USB-C, 16-pin USB 2.0, THT shield legs | §7.6. |
 
-**Use the addressable `24AA025E64`, not the non-addressable `24AA02E64`.** The
-`24AA02E64` treats address bits A0/A1/A2 as don't-cares and therefore acknowledges
-the entire `0x50–0x57` range. That collides with the MCP79412's EEPROM/EUI-64 at
-`0x57`, making the RTC's component EUI-64 unreadable. Use the addressable
-**`24AA025E64T-I/SN`** instead: strap pins 1/A0, 2/A1 and 3/A2 to GND so only
-`0x50` is acknowledged. Pin 4 is GND/VSS, pin 5 SDA, pin 6 SCL, pin 7 NC and
-pin 8 `3V3_SENS`. The manifest is stored in the `24AA025E64`; the ATECC608C
-holds the non-extractable private key. LCSC `C615601` is the SOIC-8 device,
-although it was out of stock on 2026-08-09 and may need JLC global sourcing or
-distributor purchase.
+**Board EEPROM.** Every board fits **24CS128T-I/SN** at U28. Its main array is at
+**0x50** and its security/configuration interface at **0x58**; A0/A1/A2 and WP
+(pin 7) are all grounded. The full 128-bit factory serial, read from security
+word address `0x0800`, is the board ID; the ATECC608C holds the non-extractable
+private key. The hardware repository's EEPROM notes give the two-byte memory
+addresses, 64-byte pages and provisioning steps.
 
 ### 2.1 The status panel
 
@@ -207,7 +202,7 @@ cascaded LDOs:
 |---|---|---|---|
 | `3V3_SYS` | **`LDL1117S33R`** (ST, SOT-223-4, 1.2 A, LCSC `C435835`). Do not substitute the similarly pinned AMS1117 without rechecking its output-capacitor ESR requirements. | ESP32-S3 module, USB logic, TLC5916 `VDD` | Espressif recommends a supply capable of at least 0.5 A; digital rail, so current and thermals matter, noise does not. Worst case from 5 V: (5.0 − 3.3) V × 0.5 A ≈ 0.85 W — acceptable for burst duty only with a real `3V3_SYS` copper heat spreader around the SOT-223 tab, and a first-prototype thermal test remains mandatory. |
 | `3V3_GNSS` | **ADM7150ARDZ-3.3** (SOIC-8-EP, 800 mA, 1.0 µVrms 100 Hz–100 kHz, PSRR > 90 dB 1 kHz–100 kHz at 400 mA, VIN 4.5–16 V — so it must feed from protected `+5V`, not from 3V3) | NEO `VCC`; the NEO generates its own filtered `VCC_RF` active-antenna bias output (§7.3) | The receiver's RF chain is the one place supply noise is directly signal noise. 800 mA is deliberate headroom: variant B's ZED-F9P (~130 mA **[verify]**) reuses this rail unchanged. |
-| `3V3_SENS` | **`RT9193-33GB`** (genuine Richtek, SOT-23-5, 300 mA, LCSC `C15651`), with its required 22 nF BP capacitor populated for low-noise mode | ATECC608C, 24AA025E64, MCP79412 `VCC`, MCP9808, HDC2080, BMP388 | The vertical gate lives on the barometer's noise floor (§6.1); supply noise on the BMP388 is spent directly out of that budget. Load is trivial — the ATECC's ECC operations dominate at ~16 mA **[verify]**; everything else is microamps to low milliamps. |
+| `3V3_SENS` | **`RT9193-33GB`** (genuine Richtek, SOT-23-5, 300 mA, LCSC `C15651`), with its required 22 nF BP capacitor populated for low-noise mode | ATECC608C, 24CS128, MCP79412 `VCC`, MCP9808, HDC2080, BMP388 | The vertical gate lives on the barometer's noise floor (§6.1); supply noise on the BMP388 is spent directly out of that budget. Load is trivial — the ATECC's ECC operations dominate at ~16 mA **[verify]**; everything else is microamps to low milliamps. |
 
 Rules that make the split work:
 
@@ -349,16 +344,15 @@ maximum.
 
 ### 4.1 Public name, private proof
 
-- **Typed factory UID → the public identifier.** Readable over I²C by anyone holding the board.
+- **Board EEPROM 128-bit factory serial → the public identifier.** Readable over I²C by anyone holding the board.
   It is a *name*, never a credential.
 - **ATECC608C → the private authenticator.** Generates a non-extractable P-256 keypair, signs
   the CSR, signs the mTLS handshake, and optionally signs `SIGNED_DATA` (0x07) batches over
-  `EUI-64 ‖ rtc_unix_ns ‖ sha256(payload) ‖ counter`.
+  `board_uid ‖ rtc_unix_ns ‖ sha256(payload) ‖ counter`.
 
-This resolves the open question in radiolistener's doc ("dedicated EEPROM vs derive the EUI-64
-from the ATECC serial"), which presumed one part had to supply *the* ID. Identifier and
-authenticator are separate jobs and want separate parts. `DESIGN.md` already records both at
-enrollment — "the signed cert + the device's EUI-64 + ATECC serial".
+This resolves the open question in radiolistener's doc (a dedicated EEPROM, or an ID derived
+from the ATECC serial), which presumed one part had to supply *the* ID. Identifier and
+authenticator are separate jobs and want separate parts, and enrollment records both.
 
 The collector already enforces the separation: `matchPeerIdentity`
 (`go/internal/ingest/push.go:472`) resolves the observer from the verified certificate, so a
@@ -469,8 +463,8 @@ statement once the board is locked:
 - **The commissioning record.** A fixed 180-byte statement binding the attested
   board core to the microcontroller's key, its lock state, a profile
   (trusted, open or test) and a generation number, signed by the same manufacturer key under
-  its own domain string. It also records the fitted RTC's model and, for an MCP79412,
-  its EUI-64, as unit history that no verifier checks. It is made *after* slot 14 is
+  its own domain string. It also logs the fitted RTC's model, and its factory serial when
+  the part has one, as unit history that no verifier checks. It is made *after* slot 14 is
   locked, so it lives in the manufacturer's records and in the device's flash rather
   than in the ATECC.
 - **The session proof.** On every connection the microcontroller signs a value derived from
@@ -491,13 +485,13 @@ These constraints are enforced at controlled enrollment and collector admission:
 1. **DNS SAN, not CN.** The collector requires **exactly one DNS SAN** equal to the
    canonical observer id. A CSR carrying only a CN is rejected.
 2. **Character set.** `config.ValidObserverID` (`go/internal/config/config.go:683`) permits only
-   `[A-Za-z0-9.-]`, max 253. The conventional `00:04:A3:FF:FE:12:34:56` EUI-64 rendering is
-   therefore invalid — as an observer id *and* as a DNS name.
+   `[A-Za-z0-9.-]`, max 253. A colon-separated rendering such as `00:11:22:…` is therefore
+   invalid — as an observer id *and* as a DNS name.
 
    The canonical label is `board-<four lowercase hex kind digits>-<full UID hex>`.
    It preserves the kind and all factory bytes. Certificate and configured station
-   must match exactly, including lowercase. For example, a 128-bit serial is
-   `board-0003-00112233445566778899aabbccddeeff`.
+   must match exactly, including lowercase. The 24CS128 serial is kind `0003`, for
+   example `board-0003-00112233445566778899aabbccddeeff`.
 
 3. **Exactly one SAN** — zero or two are both rejected.
 
@@ -506,29 +500,33 @@ to Microchip's certificate chain; this design has the device generate its own ke
 registered **Issuing intermediate** sign its CSR. The config-zone lock is permanent, so validate the slot
 configuration on a scrap part before locking production units.
 
-### 4.3 Unique IDs on one board
+### 4.3 Identities on one board
 
-The board EEPROM carries a typed factory UID and the ATECC a 9-byte serial; an MCP79412,
-where fitted, also carries a factory EUI-64. Assign them distinct roles:
+Every board's identity is the **24CS128's full 128-bit factory serial** and its ATECC:
 
 | Source | Role |
 |---|---|
-| Typed factory UID (24CS128 preferred) | **public identity: board and observer** — the `receiver_id` in the cert SAN and the `devices` row |
-| ATECC serial | **private identity** — binds the key material to the enrollment record |
-| MCP79412 EUI-64 | recorded with the RTC model as unit history; not an identity |
+| Board EEPROM 128-bit factory serial | **public identity: board and observer** — the observer id in the cert SAN and the `devices` row |
+| ATECC serial | **private identity** — holds the operational key and binds it to the enrollment record |
 
-The ESP32-S3 is a fourth identity of a different kind (§4.1c): it has no factory-programmed
+Preserve all 16 bytes of the serial in firmware, provisioning and every record; see
+[BOARD-IDENTITY.md](BOARD-IDENTITY.md).
+
+The ESP32-S3 is an identity of a different kind (§4.1c): it has no factory-programmed
 serial worth trusting — its MAC is a label — so it is named by the SHA-256 of the key
-generated inside it at commissioning. The manufacturer's unit record lists all four, together
+generated inside it at commissioning. The manufacturer's unit record lists these, together
 with the serial of every other fitted part that has one, so that "which parts are on this
 unit" has one answer.
 
-Replacing an RTC changes neither the observer identity nor the commissioning record's
-validity; the service history records the new part.
+The commissioning record also logs the fitted RTC's model, and its factory serial when the
+part has one, as unit history. It is not an identity: nothing verifies it against the live
+board, so replacing or losing an RTC changes neither the observer identity nor the record's
+validity. The ZED/X20's MAX31328 has no factory serial and is logged by model alone.
 
-**Live binding check.** The canonical observer name comes from the board EEPROM.
-Commissioning checks the live board UID, ATECC and MCU identity; the recorded RTC is not
-compared. An invalid RTC calendar is measurement invalidity, not an identity mismatch.
+**Live binding check.** The observer name comes from the board EEPROM. For each collector
+session, firmware compares the commissioning record with the live board UID, ATECC and
+microcontroller. On a mismatch it presents no commissioning evidence and logs why; the
+collector then labels the session's hardware trust `none`.
 See [CONTROL-PLANE.md](CONTROL-PLANE.md) for controlled enrollment, key rotation and
 approved component replacement.
 
@@ -562,23 +560,24 @@ capability detectors compare observed frames against — the detector machinery 
 this supplies its declared side with something hardware-rooted instead of configured by hand.
 
 Blank EEPROM handling is deliberately narrower than “magic byte absent means write.” Startup
-first reads the immutable factory EUI-64 and compares it with the EUI remembered in the separate
-`hwmanifest` NVS namespace:
+first reads the immutable 128-bit factory serial and compares it with the board identity
+remembered in the separate `hwmanifest` NVS namespace:
 
-| EEPROM observation | Known EUI state | Action |
+| EEPROM observation | Known identity state | Action |
 |---|---|---|
-| valid programmed manifest | none or same | use it; remember the EUI when first adopted |
+| valid programmed manifest | none or same | use it; remember the identity when first adopted |
 | blank | never seen | offer/use the compiled defaults only in an explicit factory-init build |
-| blank | same EUI was already adopted | recovery required; never silently overwrite |
-| blank or programmed | different EUI | replacement confirmation required |
-| malformed manifest, unreadable EUI or I2C error | any | reject; never write |
+| blank | same identity was already adopted | recovery required; never silently overwrite |
+| blank or programmed | different identity | replacement confirmation required |
+| malformed manifest, unreadable serial, unsupported EEPROM or I2C error | any | reject; never write |
 
 `CONFIG_NVF_MANIFEST_FACTORY_INIT` is off by default. When deliberately enabled by the
 programmer, it writes only the blank/never-seen row, uses `force=false`, reads the complete
 image back, validates the EEPROM's self-reference, and only then records its identity.
 `CONFIG_NVF_MANIFEST_BOARD` chooses which compiled list it writes. Each is
 `GNSS_PCB_MAIN` revision A, and its `CAT_GPS` entry names the variant. Entry 0 is the
-EEPROM's self-reference, carrying the discovered part (24AA025E64, 24CS128 or M24128-U).
+EEPROM's self-reference, carrying the discovered part: the 24CS128 fitted on every board, or
+the pin-compatible M24128-U alternate.
 
 | Entry | NEO first spin | MAX mobile | ZED-X20P square |
 |---|---|---|---|
@@ -600,9 +599,9 @@ own driver support.
 The ordinary eight-second configuration-reset gesture erases only `navfeeder`; it does not
 erase `hwmanifest`. The custom-board build also refuses the generic fallback that automatically
 erases the complete default NVS partition when its format is incompatible or full, because that
-would discard the locally known EUI and weaken the replacement check. A deliberate whole-flash
-erase can still remove local history; once control-plane reporting lands, the collector's last
-adopted EUI is the durable authority for that recovery case.
+would discard the locally known identity and weaken the replacement check. A deliberate
+whole-flash erase can still remove local history; once control-plane reporting lands, the
+collector's last adopted identity is the durable authority for that recovery case.
 
 ### 5.3 Baseline extensions supplied for this product
 
@@ -617,12 +616,12 @@ The shared public library now includes these stable entries:
 | `eeprom_power_id_t` | `POWER_ADM7150`, `POWER_RT9193`, `POWER_TPS7A20` | The GPIO-gated rails (§3.1); descriptor address byte = the EN GPIO, following `CAT_BUTTON`'s addr-is-GPIO convention. `POWER_TPS7A20` (9) covers the TPS7A2033PDBVR gated rails: both on MAX, `3V3_SENS` on ZED-X20P. |
 | `eeprom_comm_id_t` | `COMM_W5500` | The ZED-X20P board's SPI Ethernet controller (6). |
 
-`MEMORY_24AA025E64 = 6` is now part of the shared baseline rather than a
-navlistener-specific extension. This board's manufacturing manifest must use:
+`MEMORY_24CS128 = 7` is part of the shared baseline. Every board's manufacturing manifest
+names the fitted EEPROM as its first entry:
 
 ```c
 caps.components[0] =
-    IC_EEPROM_SELF_24AA025E64(EEPROM_I2C_ADDR_0);  // U28, A0/A1/A2 low => 0x50
+    IC_EEPROM_SELF_24CS128(EEPROM_I2C_ADDR_0);  // U28, A0/A1/A2 low => 0x50
 ```
 
 **The band discriminator is the one that matters for integrity.** `GPS_ZED_F9P = 1` names a part
@@ -1138,8 +1137,8 @@ counted in the bus's combined pull-up resistance.
 
 **Bench identity read — required on every board revision from the ZED/X20 onward.**
 The manufacturer's unit record must not depend on what target firmware says its
-identifiers are. At the bench, the factory CA unit reads the ATECC serial, both
-EUI-64s and the slot-14 record directly over this connector while the ESP32 is held
+identifiers are. At the bench, the factory CA unit reads the ATECC serial, the board
+EEPROM's 128-bit serial and the slot-14 record directly over this connector while the ESP32 is held
 in reset, and the result is compared with the firmware's own report; a disagreement
 stops commissioning. That needs `ESP_EN` to be reachable by the same fixture that
 plugs into the Qwiic connector, without a hand on the RESET button:
@@ -1217,14 +1216,14 @@ calculated first-spin load for a short layout including the RTC's typical 3 pF
 pin capacitance; retain accessible 0603 pads so one value can be trimmed after
 measuring the assembled board.
 
-The complete fixed address map is **MCP9808 `0x18`**, **HDC2080 `0x40`**,
-**manifest 24AA025E64 `0x50`** (A0/A1/A2 to GND), **MCP79412
-EEPROM/EUI `0x57`**, **ATECC608C `0x60`**, **MCP79412 RTCC `0x6F`**, and
+The NEO's complete fixed address map is **MCP9808 `0x18`**, **HDC2080 `0x40`**,
+**24CS128 `0x50`** main array and **`0x58`** security interface (A0/A1/A2 to GND),
+**MCP79412 EEPROM `0x57`**, **ATECC608C `0x60`**, **MCP79412 RTCC `0x6F`**, and
 **BMP388 `0x76`** (SDO to GND).
 
-Two constraints to resolve on paper *before* anything is locked: the manifest EEPROM and the
-MCP79412 each expose a protected EUI block, and the **ATECC's address is set in
-its config zone**, fixed permanently at lock time. Confirm every address against its datasheet
+Two constraints to resolve on paper *before* anything is locked: the 24CS128's security
+interface at `0x58` must stay free on the shared bus and the external port, and the **ATECC's
+address is set in its config zone**, fixed permanently at lock time. Confirm every address against its datasheet
 rather than assumed defaults — noting that the RTC's conventional `0x68` collides with the IMU
 address shepherd uses, which is a non-issue here (no IMU on this board) but must not be
 copy-pasted forward onto a variant that adds one.
@@ -1240,9 +1239,8 @@ does not expose pad JTAG. Both are input-only in this design, avoiding reset-tim
 output contention.
 
 The manifest EEPROM's page-write hazard is **already handled** in the shared component —
-`esp_hardware_discovery.c` conservatively chunks writes to 8-byte boundaries and ACK-polls
-after each; that is safe on the 24AA025E64's 16-byte physical pages — so a
-descriptor array larger than one page (this board's ~10 slots is ~40 bytes) writes correctly.
+`esp_hardware_discovery.c` splits writes at the 24CS128's 64-byte page boundaries and
+ACK-polls after each — so a descriptor array larger than one page writes correctly.
 Nothing to do here; recorded so it isn't re-derived.
 
 ### 7.6 USB-C
@@ -1485,10 +1483,9 @@ its own data sheet rather than from family convention.
 **No new identity.** The MAX31328 register map runs `0x00`–`0x12`: time and
 calendar, two alarms, control, status, aging offset and temperature. There is no
 serial number, no EUI block and no user SRAM. §4.3 is therefore unchanged — the
-The selected typed UID remains the board and observer identity, the MCP79412 EUI-64
-remains a replaceable component identity, and the ATECC serial still binds the key material. The second clock adds
-a measurement, never an identifier, and it cannot stand in for a bound
-MCP79412 component identity if that part dies.
+The 128-bit board serial remains the board and observer identity and the ATECC serial
+still binds the key material; neither RTC is an identity. The second clock adds a
+measurement, never an identifier.
 
 **Reserved interrupt and clock-output pins.** GPIO33 and GPIO34 are unallocated
 on both existing boards. GPIO16 and GPIO17 are free on a MAX board because the
@@ -1583,7 +1580,7 @@ from the sibling, and where it deliberately does not:
 | Secure element | ATECC608**C** @ `0x60` | ATECC608**C** | **corrected** — an earlier draft said 608B |
 | ATECC slot map | `atecc608c_slots_unified.h` **v2** | same header, same numbers | **aligned** — jointly revised 2026-08-08 to the silicon's size classes (§4.1a); one config, one provisioning tool |
 | RTC | MCP79412 | MCP79412 | aligned |
-| Manifest EEPROM | 24AA025E64 @ `0x50` | 24AA02E64 @ `0x50–0x57` | **deliberate electrical fix** — the Shepherd part collides with MCP79412 EEPROM/EUI `0x57` (§7.5) |
+| Board EEPROM | 24AA02E64 @ `0x50–0x57` | 24CS128 @ `0x50`, security interface `0x58` | **deliberate divergence** — its 128-bit factory serial is the board identity (§4.3); the shepherd part's address range would also collide with MCP79412 EEPROM `0x57` (§7.5) |
 | Pressure | BMP390 | BMP388 placed, 390/580 alternates | inventory-led — §2, §6.1 |
 | Status LEDs | WS2812B (+ `led_pps_sync.c`) | discrete green/yellow on 2 × TLC5916 | **deliberate divergence** — §2.1 |
 | I²C | one shared bus, 400 kHz | same | aligned |
@@ -1624,9 +1621,8 @@ is a feature this board wants and a reason the WS2812B alignment pays for itself
    malformed images, but the current format has no CRC for bit corruption in otherwise plausible
    header or descriptor bytes. Reserve and specify a versioned CRC before production programming;
    the mutable runtime-status byte needs to be excluded or updated transactionally.
-3. ~~EUI-64 text rendering~~ — **decided** (§4.2): kind code and complete lowercase UID value, bare
-   label. Remaining work is mechanical: a shared formatter/parser so the C feeder, the
-   provisioning flow and the collector cannot disagree on it.
+3. ~~Observer-id text rendering~~ — **decided** (§4.2): `board-<kind>-<full UID hex>`,
+   lowercase, as a bare label. The firmware, collector and factory share one tested format.
 4. ~~Re-enrollment policy on RTC replacement~~ — **dissolved** (§4.3): the RTC is recorded
    history, not identity, so replacing it needs no re-enrollment.
 5. **`SIGNED_DATA` (0x07) granularity** — inherited open question from radiolistener's doc;

@@ -16,7 +16,7 @@ func testIdentity() HardwareIdentity {
 	return HardwareIdentity{
 		Product:       1,
 		BoardRevision: 0x0102,
-		BoardUID:      boardid.EEPROM([8]byte{0x00, 0x04, 0xa3, 0xaa, 0xbb, 0xcc, 0xdd, 0xee}),
+		BoardUID:      boardid.MustParse("serial128", "00112233445566778899aabbccddeeff"),
 		ATECCSerial:   [9]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x11},
 	}
 }

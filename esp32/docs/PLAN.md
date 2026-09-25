@@ -280,10 +280,9 @@ The design is recorded here so the deferral is a decision with a plan, not an op
   are also implemented; these do not supply the firmware's operational key path.
 - Remaining: integrate the ATECC608C non-extractable P-256 key, CSR/enrollment,
   hardware-backed TLS, and `SIGNED_DATA(0x07)` transport.
-- Use the **RTC's factory EUI-64** for observer identity, rendered as lowercase
-  hyphen-separated byte pairs. The EEPROM EUI-64 and ATECC serial identify separate
-  parts; neither substitutes for the RTC identity. See
-  [the hardware identity contract](../../docs/HARDWARE-OBSERVER.md#4-identity-and-trust).
+- The board EEPROM's **128-bit factory serial** is the observer identity, rendered as
+  `board-<kind>-<serial hex>`; the ATECC is the private identity. The RTC is not an
+  identity. See [the hardware identity contract](../../docs/HARDWARE-OBSERVER.md#4-identity-and-trust).
 - RTC timestamp and PPS integration must follow that contract's timing checks;
   an RTC or hardware credential alone does not authenticate GNSS time.
 

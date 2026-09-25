@@ -66,13 +66,47 @@ BEGIN
 END $upgrade$;
 `
 
+// v3Upgrade is the released block that named the kinds after esp_hardware_discovery.
+const v3Upgrade = `DO $upgrade$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='navl_devices'::regclass
+                   AND conname='navl_devices_uid_v3_kind') THEN
+        ALTER TABLE navl_devices
+            DROP CONSTRAINT IF EXISTS navl_devices_board_uid_kind_check,
+            DROP CONSTRAINT IF EXISTS navl_devices_check1,
+            DROP CONSTRAINT IF EXISTS navl_devices_check4,
+            DROP CONSTRAINT IF EXISTS navl_devices_uid_v2_kind,
+            DROP CONSTRAINT IF EXISTS navl_devices_uid_v2_length,
+            DROP CONSTRAINT IF EXISTS navl_devices_uid_v2_evidence;
+        UPDATE navl_devices SET board_uid_kind = CASE board_uid_kind
+            WHEN 'microchip_eui64' THEN 'eui64' WHEN 'microchip_cs128' THEN 'serial128' END
+            WHERE board_uid_kind IN ('microchip_eui64','microchip_cs128');
+        ALTER TABLE navl_devices
+            ADD CONSTRAINT navl_devices_uid_v3_kind CHECK
+                (board_uid_kind IN ('eui64','serial128','st_uid128')),
+            ADD CONSTRAINT navl_devices_uid_v3_length CHECK
+                ((board_uid_kind='eui64' AND length(board_uid)=16)
+                 OR (board_uid_kind IN ('serial128','st_uid128') AND length(board_uid)=32)
+                 OR board_uid_kind IS NULL),
+            ADD CONSTRAINT navl_devices_uid_v3_evidence CHECK
+                ((board_uid IS NULL AND core_record IS NULL AND commissioning_record IS NULL
+                  AND rtc_eui64 IS NULL AND rtc_model_id=0)
+                 OR (board_uid IS NOT NULL AND observer_id='board-' || CASE board_uid_kind
+                     WHEN 'eui64' THEN '0001' WHEN 'serial128' THEN '0003'
+                     WHEN 'st_uid128' THEN '0004' END || '-' || board_uid
+                     AND core_record IS NOT NULL AND octet_length(core_record)=72
+                     AND commissioning_record IS NOT NULL AND octet_length(commissioning_record)=252));
+    END IF;
+END $upgrade$;
+`
+
 const insertDevice = `INSERT INTO navl_devices(observer_id,manufacturer_authority_id,board_uid,
         board_uid_kind,atecc_serial,core_record,commissioning_record,current_enrollment_id)
         VALUES($1,'ab',$2,$3,$4,$5,$6,'test')`
 
 // historicalSchema is today's schema up to its upgrade block, with navl_devices
-// replaced by the released table and, for v2, the released upgrade applied.
-func historicalSchema(t *testing.T, v2 bool) string {
+// replaced by the released table and the released upgrades through version applied.
+func historicalSchema(t *testing.T, version int) string {
 	t.Helper()
 	prefix := strings.Split(schema, "-- Upgrade typed identity")[0]
 	start := strings.Index(prefix, "CREATE TABLE IF NOT EXISTS navl_devices (")
@@ -84,8 +118,11 @@ func historicalSchema(t *testing.T, v2 bool) string {
 		t.Fatal("navl_devices table end not found in schema")
 	}
 	old := prefix[:start] + v1Devices + prefix[start+end+len("\n);\n"):]
-	if v2 {
+	if version >= 2 {
 		old += v2Upgrade
+	}
+	if version >= 3 {
+		old += v3Upgrade
 	}
 	return old
 }
@@ -96,7 +133,7 @@ func insertIdentity(ctx context.Context, db *pgxpool.Pool, observer, uid, kind s
 	return err
 }
 
-// assertIdentityConstraints checks the v3 constraint set and what it admits.
+// assertIdentityConstraints checks the v4 constraint set and what it admits.
 func assertIdentityConstraints(t *testing.T, db *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
@@ -115,7 +152,7 @@ func assertIdentityConstraints(t *testing.T, db *pgxpool.Pool) {
 	}
 	rows.Close()
 	sort.Strings(names)
-	if want := []string{"navl_devices_uid_v3_evidence", "navl_devices_uid_v3_kind", "navl_devices_uid_v3_length"}; strings.Join(names, ",") != strings.Join(want, ",") {
+	if want := []string{"navl_devices_uid_v4_evidence", "navl_devices_uid_v4_kind", "navl_devices_uid_v4_length"}; strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("identity constraints %v, want %v", names, want)
 	}
 	var rtcUnique bool
@@ -128,9 +165,10 @@ func assertIdentityConstraints(t *testing.T, db *pgxpool.Pool) {
 	for i, tc := range []struct{ observer, value, kind string }{
 		{"board-0003-" + uid, uid, "microchip_cs128"},
 		{"board-0001-" + uid[:16], uid[:16], "microchip_eui64"},
+		{"board-0001-" + uid[:16], uid[:16], "eui64"},
+		{"board-0001-" + uid, uid, "eui64"},
 		{"board-0004-" + uid, uid, "serial128"},
 		{"board-0003-" + uid[:16], uid[:16], "serial128"},
-		{"board-0001-" + uid, uid, "eui64"},
 		{"board-0005-" + uid, uid, "future_uid"},
 	} {
 		if err := insertIdentity(ctx, db, tc.observer, tc.value, tc.kind, 0x40+i); err == nil {
@@ -139,7 +177,6 @@ func assertIdentityConstraints(t *testing.T, db *pgxpool.Pool) {
 	}
 	for i, tc := range []struct{ observer, value, kind string }{
 		{"board-0003-" + uid, uid, "serial128"},
-		{"board-0001-" + uid[:16], uid[:16], "eui64"},
 		{"board-0004-" + "20e00eff" + uid[8:], "20e00eff" + uid[8:], "st_uid128"},
 	} {
 		if err := insertIdentity(ctx, db, tc.observer, tc.value, tc.kind, 0x50+i); err != nil {
@@ -149,30 +186,21 @@ func assertIdentityConstraints(t *testing.T, db *pgxpool.Pool) {
 }
 
 func TestIdentitySchemaUpgrade(t *testing.T) {
-	eui, serial, st := "0004a3aabbccddee", "0123456789abcdef0123456789abcdef", "20e00eff0123456789abcdef01234567"
-	codes := map[string]string{"microchip_eui64": "0001", "microchip_cs128": "0003", "st_uid128": "0004"}
+	serial, st := "0123456789abcdef0123456789abcdef", "20e00eff0123456789abcdef01234567"
+	codes := map[string]string{"microchip_cs128": "0003", "serial128": "0003", "st_uid128": "0004"}
 	for _, tc := range []struct {
-		name string
-		v2   bool
-		rows [][2]string // released kind name, value
-		want []string    // kind after the upgrade, same order
+		name    string
+		version int
+		rows    [][2]string // released kind name, value
+		want    []string    // kind after the upgrade, same order
 	}{
-		{"v1", false, [][2]string{{"microchip_eui64", eui}, {"microchip_cs128", serial}}, []string{"eui64", "serial128"}},
-		{"v2", true, [][2]string{{"microchip_eui64", eui}, {"microchip_cs128", serial}, {"st_uid128", st}},
-			[]string{"eui64", "serial128", "st_uid128"}},
+		{"v1", 1, [][2]string{{"microchip_cs128", serial}}, []string{"serial128"}},
+		{"v2", 2, [][2]string{{"microchip_cs128", serial}, {"st_uid128", st}}, []string{"serial128", "st_uid128"}},
+		{"v3", 3, [][2]string{{"serial128", serial}, {"st_uid128", st}}, []string{"serial128", "st_uid128"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			db := testDatabase(t)
+			db := historicalDatabase(t, tc.version)
 			ctx := context.Background()
-			conn, err := db.Acquire(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = conn.Conn().PgConn().Exec(ctx, historicalSchema(t, tc.v2)).ReadAll()
-			conn.Release()
-			if err != nil {
-				t.Fatal(err)
-			}
 			for i, row := range tc.rows {
 				if err := insertIdentity(ctx, db, "board-"+codes[row[0]]+"-"+row[1], row[1], row[0], i); err != nil {
 					t.Fatalf("released schema refused %s: %v", row[0], err)
@@ -197,6 +225,48 @@ func TestIdentitySchemaUpgrade(t *testing.T) {
 			assertIdentityConstraints(t, db)
 		})
 	}
+}
+
+// A board identity is never 64 bits. A database that still holds one refuses the
+// upgrade and names the devices, rather than keeping or silently dropping them.
+func TestIdentitySchemaUpgradeRefuses64BitIdentities(t *testing.T) {
+	eui := "0004a3aabbccddee"
+	for version, kind := range map[int]string{1: "microchip_eui64", 2: "microchip_eui64", 3: "eui64"} {
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+			db := historicalDatabase(t, version)
+			ctx := context.Background()
+			observer := "board-0001-" + eui
+			if err := insertIdentity(ctx, db, observer, eui, kind, 0); err != nil {
+				t.Fatalf("released schema refused %s: %v", kind, err)
+			}
+			b := newBench(t)
+			b.service.DB = db
+			err := b.service.Initialize(ctx, b.config)
+			if err == nil || !strings.Contains(err.Error(), "64-bit board identities") || !strings.Contains(err.Error(), observer) {
+				t.Fatalf("upgrade with a 64-bit identity: %v", err)
+			}
+			var kept string
+			if err := db.QueryRow(ctx, `SELECT board_uid_kind FROM navl_devices WHERE observer_id=$1`, observer).Scan(&kept); err != nil || kept != kind {
+				t.Fatalf("refused upgrade changed the row: %q %v", kept, err)
+			}
+		})
+	}
+}
+
+func historicalDatabase(t *testing.T, version int) *pgxpool.Pool {
+	t.Helper()
+	db := testDatabase(t)
+	ctx := context.Background()
+	conn, err := db.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = conn.Conn().PgConn().Exec(ctx, historicalSchema(t, version)).ReadAll()
+	conn.Release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return db
 }
 
 func TestFreshIdentitySchema(t *testing.T) {

@@ -10,7 +10,7 @@ int main(int argc, char **argv)
         .reason=8, .event_flags=1, .event_states=6,
         .environment={7,7,2550,4212,2500,5000,100000},
         .rtc={23,1789433627,998000}, .crypto={1000,1,{0,0,0x60,5},1,1,2},
-        .manifest={1,1,{2,0,0,0,0,0,0,1},0,0,0},
+        .manifest={.action=1, .uid_valid=1, .board_uid={0,3,16, 0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1}},
         .resources={1,1024,4194304,3,2,65536,3145728},
         .receiver={0x6f,0x4f,{6,2,1,1,0,0,1,0},15,2,1,999500,999600},
         .firmware="test-v1",

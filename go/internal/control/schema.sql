@@ -38,58 +38,60 @@ CREATE TABLE IF NOT EXISTS navl_devices (
     current_enrollment_id text NOT NULL,
     CHECK ((manufacturer_authority_id IS NULL) = (board_uid IS NULL)),
     CHECK ((board_uid IS NULL) = (atecc_serial IS NULL)),
-    CONSTRAINT navl_devices_uid_v3_kind CHECK
-        (board_uid_kind IN ('eui64','serial128','st_uid128')),
-    CONSTRAINT navl_devices_uid_v3_length CHECK
-        ((board_uid_kind='eui64' AND length(board_uid)=16)
-         OR (board_uid_kind IN ('serial128','st_uid128') AND length(board_uid)=32)
-         OR board_uid_kind IS NULL),
-    CONSTRAINT navl_devices_uid_v3_evidence CHECK
+    CONSTRAINT navl_devices_uid_v4_kind CHECK
+        (board_uid_kind IN ('serial128','st_uid128')),
+    CONSTRAINT navl_devices_uid_v4_length CHECK
+        (length(board_uid)=32 OR board_uid_kind IS NULL),
+    CONSTRAINT navl_devices_uid_v4_evidence CHECK
         ((board_uid IS NULL AND core_record IS NULL AND commissioning_record IS NULL
           AND rtc_eui64 IS NULL AND rtc_model_id=0)
          OR (board_uid IS NOT NULL AND observer_id='board-' || CASE board_uid_kind
-             WHEN 'eui64' THEN '0001' WHEN 'serial128' THEN '0003'
-             WHEN 'st_uid128' THEN '0004' END || '-' || board_uid
+             WHEN 'serial128' THEN '0003' WHEN 'st_uid128' THEN '0004' END || '-' || board_uid
              AND core_record IS NOT NULL AND octet_length(core_record)=72
              AND commissioning_record IS NOT NULL AND octet_length(commissioning_record)=252))
 );
--- Upgrade typed identity constraints in existing v1/v2 databases atomically.
--- v1 used PostgreSQL's unnamed check names; v2 named them. v3 names the kinds
--- after esp_hardware_discovery (eui64, serial128, st_uid128) and rewrites stored
--- rows; wire codes and observer IDs are unchanged.
+-- Upgrade typed identity constraints in existing v1-v3 databases atomically.
+-- v1 used PostgreSQL's unnamed check names; v2 and v3 named them. v3 named the kinds
+-- after esp_hardware_discovery. v4 accepts only 128-bit factory serials: a board
+-- identity is never 64 bits, so a database that still holds one stops here rather
+-- than keeping or silently dropping it. Wire codes and observer IDs are unchanged.
 DO $upgrade$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='navl_devices'::regclass
-                   AND conname='navl_devices_uid_v3_kind') THEN
+                   AND conname='navl_devices_uid_v4_kind') THEN
+        IF EXISTS (SELECT 1 FROM navl_devices WHERE board_uid_kind IN ('eui64','microchip_eui64')) THEN
+            RAISE EXCEPTION 'navl_devices holds 64-bit board identities, which are not supported: %',
+                (SELECT string_agg(observer_id, ', ') FROM navl_devices
+                 WHERE board_uid_kind IN ('eui64','microchip_eui64'))
+                USING HINT = 'Every board identity is a 128-bit factory serial. Remove these devices and their enrollments before upgrading.';
+        END IF;
         ALTER TABLE navl_devices
             DROP CONSTRAINT IF EXISTS navl_devices_board_uid_kind_check,
             DROP CONSTRAINT IF EXISTS navl_devices_check1,
             DROP CONSTRAINT IF EXISTS navl_devices_check4,
             DROP CONSTRAINT IF EXISTS navl_devices_uid_v2_kind,
             DROP CONSTRAINT IF EXISTS navl_devices_uid_v2_length,
-            DROP CONSTRAINT IF EXISTS navl_devices_uid_v2_evidence;
-        UPDATE navl_devices SET board_uid_kind = CASE board_uid_kind
-            WHEN 'microchip_eui64' THEN 'eui64' WHEN 'microchip_cs128' THEN 'serial128' END
-            WHERE board_uid_kind IN ('microchip_eui64','microchip_cs128');
+            DROP CONSTRAINT IF EXISTS navl_devices_uid_v2_evidence,
+            DROP CONSTRAINT IF EXISTS navl_devices_uid_v3_kind,
+            DROP CONSTRAINT IF EXISTS navl_devices_uid_v3_length,
+            DROP CONSTRAINT IF EXISTS navl_devices_uid_v3_evidence;
+        UPDATE navl_devices SET board_uid_kind = 'serial128' WHERE board_uid_kind = 'microchip_cs128';
         ALTER TABLE navl_devices
-            ADD CONSTRAINT navl_devices_uid_v3_kind CHECK
-                (board_uid_kind IN ('eui64','serial128','st_uid128')),
-            ADD CONSTRAINT navl_devices_uid_v3_length CHECK
-                ((board_uid_kind='eui64' AND length(board_uid)=16)
-                 OR (board_uid_kind IN ('serial128','st_uid128') AND length(board_uid)=32)
-                 OR board_uid_kind IS NULL),
-            ADD CONSTRAINT navl_devices_uid_v3_evidence CHECK
+            ADD CONSTRAINT navl_devices_uid_v4_kind CHECK
+                (board_uid_kind IN ('serial128','st_uid128')),
+            ADD CONSTRAINT navl_devices_uid_v4_length CHECK
+                (length(board_uid)=32 OR board_uid_kind IS NULL),
+            ADD CONSTRAINT navl_devices_uid_v4_evidence CHECK
                 ((board_uid IS NULL AND core_record IS NULL AND commissioning_record IS NULL
                   AND rtc_eui64 IS NULL AND rtc_model_id=0)
                  OR (board_uid IS NOT NULL AND observer_id='board-' || CASE board_uid_kind
-                     WHEN 'eui64' THEN '0001' WHEN 'serial128' THEN '0003'
-                     WHEN 'st_uid128' THEN '0004' END || '-' || board_uid
+                     WHEN 'serial128' THEN '0003' WHEN 'st_uid128' THEN '0004' END || '-' || board_uid
                      AND core_record IS NOT NULL AND octet_length(core_record)=72
                      AND commissioning_record IS NOT NULL AND octet_length(commissioning_record)=252));
     END IF;
 END $upgrade$;
 -- The recorded RTC is not part of a board's identity. An RTC moved to another
--- board is recorded there too, so its EUI-64 need not be unique.
+-- board is recorded there too, so its factory serial need not be unique.
 ALTER TABLE navl_devices DROP CONSTRAINT IF EXISTS navl_devices_rtc_eui64_key;
 
 CREATE TABLE IF NOT EXISTS navl_enrollments (

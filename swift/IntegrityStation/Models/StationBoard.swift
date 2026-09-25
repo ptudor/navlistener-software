@@ -136,13 +136,17 @@ struct BoardATECC: Codable, Sendable {
 
 struct BoardEEPROM: Codable, Sendable {
     let action: String?
-    let eui64: String?
+    /// The manifest EEPROM's 128-bit factory serial: the board identity.
+    let boardUIDKind: String?
+    let boardUID: String?
     let capabilitiesValid: Bool?
     let revision: UInt8?
     let componentCount: UInt8?
 
     enum CodingKeys: String, CodingKey {
-        case action, eui64, revision
+        case action, revision
+        case boardUIDKind = "board_uid_kind"
+        case boardUID = "board_uid"
         case capabilitiesValid = "capabilities_valid"
         case componentCount = "component_count"
     }

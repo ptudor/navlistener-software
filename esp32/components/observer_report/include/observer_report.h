@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "timing_report.h"
+#include "../../../../common/board_uid.h"
 // GNF1 ObserverDetails v1; byte layout is specified in docs/OBSERVER-TELEMETRY.md.
 #define OBSERVER_REPORT_MAX 384
 enum { REPORT_BOOT=1, REPORT_CHANGE=2, REPORT_CHECKIN=4, REPORT_INTERFERENCE=8 };
@@ -27,8 +28,10 @@ typedef struct {
     uint64_t checked_ms;
     uint8_t revision_valid, revision[4], config_lock, data_lock, rng;
 } report_crypto_t;
+// uid_valid: the manifest EEPROM's 128-bit factory serial was read; board_uid is then its
+// typed wire form (docs/BOARD-IDENTITY.md), otherwise zero.
 typedef struct {
-    uint8_t action, eui_valid, eui[8], capabilities_valid, revision, component_count;
+    uint8_t action, uid_valid, board_uid[NVF_BOARD_UID_SIZE], capabilities_valid, revision, component_count;
 } report_manifest_t;
 typedef struct {
     uint8_t psram;

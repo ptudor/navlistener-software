@@ -3,6 +3,8 @@ package ingest
 import (
 	"encoding/binary"
 	"encoding/hex"
+
+	"github.com/ptudor/navlistener/internal/boardid"
 )
 
 const TelemObserverDetails = 0x04
@@ -51,7 +53,8 @@ type BoardATECC struct {
 }
 type BoardEEPROM struct {
 	Action            string `json:"action"`
-	EUI64             string `json:"eui64,omitempty"`
+	BoardUIDKind      string `json:"board_uid_kind,omitempty"`
+	BoardUID          string `json:"board_uid,omitempty"`
 	CapabilitiesValid bool   `json:"capabilities_valid"`
 	Revision          uint8  `json:"revision"`
 	ComponentCount    uint8  `json:"component_count"`
@@ -159,20 +162,22 @@ func decodeObserverDetails(b []byte) (*ObserverDetails, error) {
 			}
 			d.ATECC = c
 		case 4:
-			if n != 13 || v[0] > 6 || v[1] > 1 || v[10] > 1 {
+			const caps = 2 + boardid.Size // capabilities-valid, then revision and count
+			if n != caps+3 || v[0] > 6 || v[1] > 1 || v[caps] > 1 {
 				return nil, ErrBadTelemetry
 			}
-			m := &BoardEEPROM{Action: []string{"io_error", "initialization_required", "recovery_required", "replacement_confirmation_required", "invalid_manifest", "use_manifest", "absent"}[v[0]], CapabilitiesValid: v[10] != 0, Revision: v[11], ComponentCount: v[12]}
+			m := &BoardEEPROM{Action: []string{"io_error", "initialization_required", "recovery_required", "replacement_confirmation_required", "invalid_manifest", "use_manifest", "absent"}[v[0]], CapabilitiesValid: v[caps] != 0, Revision: v[caps+1], ComponentCount: v[caps+2]}
+			var uid boardid.ID
+			copy(uid[:], v[2:caps])
 			if v[1] != 0 {
-				id := u64(v[2:])
-				if id == 0 || id == ^uint64(0) || v[0] == 6 {
+				if uid.Validate() != nil || v[0] == 6 {
 					return nil, ErrBadTelemetry
 				}
-				m.EUI64 = hex.EncodeToString(v[2:10])
-			} else if u64(v[2:]) != 0 {
+				m.BoardUIDKind, m.BoardUID = uid.KindName(), uid.Hex()
+			} else if uid != (boardid.ID{}) {
 				return nil, ErrBadTelemetry
 			}
-			if (v[10] != 0 && v[0] != 0 && v[0] != 3 && v[0] != 5) || (v[10] != 0 && v[1] == 0) || (v[10] == 0 && (v[11] != 0 || v[12] != 0)) || (v[0] == 5 && v[10] == 0) {
+			if (v[caps] != 0 && v[0] != 0 && v[0] != 3 && v[0] != 5) || (v[caps] != 0 && v[1] == 0) || (v[caps] == 0 && (v[caps+1] != 0 || v[caps+2] != 0)) || (v[0] == 5 && v[caps] == 0) {
 				return nil, ErrBadTelemetry
 			}
 			d.EEPROM = m

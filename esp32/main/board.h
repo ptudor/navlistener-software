@@ -21,7 +21,7 @@ typedef struct {
     uint16_t rtc_model_id; // NVF_RTC_* for the board's fitted RTC
     uint8_t atecc_serial[9], rtc_eui64[8], board_uid[NVF_BOARD_UID_SIZE], attestation[72];
     bool eeprom_valid;
-    uint8_t board_uid_address, eeprom_address, eeprom_eui64[8], eeprom_uid[NVF_BOARD_UID_SIZE];
+    uint8_t board_uid_address, eeprom_address, eeprom_uid[NVF_BOARD_UID_SIZE];
     uint16_t revision;
 } observer_board_identity_t;
 void observer_board_identity(observer_board_identity_t *out);

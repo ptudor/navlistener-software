@@ -80,7 +80,7 @@ func TestObserverDetailsGoldenAndEnvelope(t *testing.T) {
 	if *d.Environment.MCP9808C != 25.5 || *d.Environment.HDC2080C != 42.12 || *d.Environment.BMP3C != 25 || *d.Environment.HumidityPercent != 50 || *d.Environment.PressurePa != 100000 {
 		t.Fatalf("units: %+v", d.Environment)
 	}
-	if d.EEPROM.EUI64 != "0200000000000001" || d.EEPROM.Action != "initialization_required" || d.ATECC.RNG != "repeating_output" || *d.RTC.Epoch != 1789433627 || d.Resources.Capacity != 4194304 || d.Receiver.Spoofing != 1 {
+	if d.EEPROM.BoardUIDKind != "serial128" || d.EEPROM.BoardUID != "02000000000000000000000000000001" || d.EEPROM.Action != "initialization_required" || d.ATECC.RNG != "repeating_output" || *d.RTC.Epoch != 1789433627 || d.Resources.Capacity != 4194304 || d.Receiver.Spoofing != 1 {
 		t.Fatalf("diagnostics: %+v", d)
 	}
 	rec := wire.RawRecord{FrameType: TelemObserverDetails, Raw: b}
@@ -102,7 +102,7 @@ func TestObserverDetailsValidationAndExtensions(t *testing.T) {
 	good := observerGolden(t)
 	for n := 0; n < len(good); n++ {
 		// A prefix ending exactly at a TLV boundary is a valid smaller snapshot.
-		if n == 41 || n == 61 || n == 80 || n == 96 || n == 128 || n == 160 || n == 170 {
+		if n == 41 || n == 61 || n == 80 || n == 123 || n == 155 || n == 187 || n == 197 {
 			continue
 		}
 		if _, err := decodeObserverDetails(good[:n]); err == nil {
@@ -112,7 +112,10 @@ func TestObserverDetailsValidationAndExtensions(t *testing.T) {
 	for _, change := range []struct {
 		offset int
 		value  byte
-	}{{0, 2}, {1, 0}, {22, 4}, {23, 16}, {25, 255}, {27, 8}, {28, 8}, {29, 127}, {35, 255}, {44, 255}, {72, 2}, {93, 1}, {99, 2}, {141, 16}, {162, 40}} {
+	}{{0, 2}, {1, 0}, {22, 4}, {23, 16}, {25, 255}, {27, 8}, {28, 8}, {29, 127}, {35, 255}, {44, 255}, {72, 2},
+		// Tag 4: the retired 64-bit kind, an 8-byte length, and capabilities without an action that allows them.
+		{86, 1}, {87, 8}, {120, 1},
+		{126, 2}, {168, 16}, {189, 40}} {
 		b := append([]byte(nil), good...)
 		b[change.offset] = change.value
 		if _, err := decodeObserverDetails(b); err == nil {

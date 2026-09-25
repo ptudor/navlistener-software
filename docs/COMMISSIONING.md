@@ -318,8 +318,8 @@ Payload:
   "issued_at": "2026-09-17T12:00:00Z",
   "ledger_head": "<64 hex>",
   "boards": [{
-    "board_uid_kind": "eui64",
-    "board_uid": "0004a3aabbccddee",
+    "board_uid_kind": "serial128",
+    "board_uid": "00112233445566778899aabbccddeeff",
     "rtc_model_id": 1,
     "rtc_eui64": "0004a31234567890",
     "atecc_serial": "0123456789abcdef11",

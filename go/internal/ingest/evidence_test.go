@@ -34,7 +34,7 @@ import (
 // a real handshake produces.
 
 const (
-	evidenceObserver = "board-0001-0004a3aabbccddee"
+	evidenceObserver = "board-0003-00112233445566778899aabbccddeeff"
 	evidenceToken    = "s3cret"
 )
 
@@ -95,7 +95,7 @@ func (b *evidenceBench) statement(profile commissioning.Profile) commissioning.S
 		RTCModel:      commissioning.RTCModelMCP79412,
 		ATECCSerial:   [9]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x11},
 		RTCEUI64:      [8]byte{0x00, 0x04, 0xa3, 0x12, 0x34, 0x56, 0x78, 0x90},
-		BoardUID:      boardid.EEPROM([8]byte{0x00, 0x04, 0xa3, 0xaa, 0xbb, 0xcc, 0xdd, 0xee}),
+		BoardUID:      boardid.MustParse("serial128", "00112233445566778899aabbccddeeff"),
 		MCUMAC:        [6]byte{0x34, 0x85, 0x18, 0x01, 0x02, 0x03},
 		Attestation:   sha256.Sum256([]byte("slot 14 record")),
 	}

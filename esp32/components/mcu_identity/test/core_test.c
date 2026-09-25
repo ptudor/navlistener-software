@@ -64,7 +64,7 @@ static void test_statement_round_trip(void)
     assert(nvf_commission_encode(&s, again) && !memcmp(again, statement, sizeof statement));
     char observer[NVF_BOARD_OBSERVER_SIZE];
     nvf_commission_observer_id(s.board_uid, observer);
-    assert(!strcmp(observer, "board-0001-0004a3aabbccddee"));
+    assert(!strcmp(observer, "board-0003-00112233445566778899aabbccddeeff"));
 
     uint8_t got[32];
     assert(nvf_commission_digest(statement, ref_sha256, got) && !memcmp(got, digest, 32));
@@ -122,6 +122,7 @@ static void test_validation(void)
     REJECT(memset(s.atecc_serial, 0xff, 9));
     REJECT(memset(s.rtc_eui64, 0, 8));
     REJECT(memset(s.board_uid, 0, 8));
+    REJECT(s.board_uid[1] = 1); // the retired 64-bit kind is never a board identity
     REJECT(memset(s.mcu_mac, 0, 6));
     REJECT(s.mcu_key_alg = NVF_MCU_KEY_NONE; memset(s.mcu_key_sha256, 0, 32)); // trusted without a key
     REJECT(s.security &= ~(unsigned)NVF_SEC_FLASH_ENC_RELEASE);                  // trusted but not locked

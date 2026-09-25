@@ -12,7 +12,7 @@ import (
 func TestObserversBoardDetailsPrivateOnly(t *testing.T) {
 	s := testServer(nil)
 	now := time.Now()
-	s.store.Apply(&ingest.RawFrame{Source: "sensor-only", Recv: now, Details: &ingest.ObserverDetails{Environment: &ingest.BoardEnvironment{}, EEPROM: &ingest.BoardEEPROM{EUI64: "0200000000000001"}}})
+	s.store.Apply(&ingest.RawFrame{Source: "sensor-only", Recv: now, Details: &ingest.ObserverDetails{Environment: &ingest.BoardEnvironment{}, EEPROM: &ingest.BoardEEPROM{BoardUIDKind: "serial128", BoardUID: "02000000000000000000000000000001"}}})
 	private := s.observers(now, s.store, nil, identity.Audience{Kind: identity.AudienceOperator})
 	if len(private) != 1 || private[0].Board == nil || private[0].ID != "sensor-only" {
 		t.Fatal("sensor-only push station absent")
@@ -21,7 +21,7 @@ func TestObserversBoardDetailsPrivateOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `"mcp9808_c":null`) || !strings.Contains(string(data), `"eui64":"0200000000000001"`) {
+	if !strings.Contains(string(data), `"mcp9808_c":null`) || !strings.Contains(string(data), `"board_uid":"02000000000000000000000000000001"`) {
 		t.Fatal("unknown measurement/identity lost")
 	}
 	s.store.Apply(&ingest.RawFrame{Source: "timing-only", Recv: now, Details: &ingest.ObserverDetails{Timing: &ingest.BoardTiming{Clock: "esp_apb"}}})

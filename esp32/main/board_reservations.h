@@ -76,8 +76,9 @@ _Static_assert((NVF_PINS_NEO & NVF_PINS_UNAVAILABLE) == 0,
 // section 7.10 and is absent from present-day boards, which is not a fault.
 #define NVF_I2C_TEMPERATURE   0x18 /* MCP9808                    */
 #define NVF_I2C_HUMIDITY      0x40 /* HDC2080                    */
-#define NVF_I2C_BOARD_EEPROM  0x50 /* 24AA025E64 manifest        */
-#define NVF_I2C_RTC_EUI       0x57 /* MCP79412 EEPROM/EUI-64     */
+#define NVF_I2C_BOARD_EEPROM  0x50 /* 24CS128 main array; its 128-bit serial is at 0x58 */
+#define NVF_I2C_BOARD_SERIAL  0x58 /* 24CS128 security interface */
+#define NVF_I2C_RTC_EUI       0x57 /* MCP79412 EEPROM            */
 #define NVF_I2C_CRYPTO        0x60 /* ATECC608C                  */
 #define NVF_I2C_RTC           0x6f /* MCP79412 RTCC              */
 #define NVF_I2C_PRESSURE      0x76 /* BMP388                     */

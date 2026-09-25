@@ -1,7 +1,9 @@
-/* Read-only discovery for approved 24CS128/24CS256/24CS512, M24128-U and
- * 24AA025E64 assemblies. A bus error is never evidence of absence. No
- * write-based device tests. eeprom_kbit is the array density (2, 128, 256
- * or 512) so a caller can select the matching EEPROM profile. */
+/* Read-only discovery for approved 24CS128/24CS256/24CS512 and M24128-U
+ * assemblies, whose 128-bit factory serial is the board identity. A bus error
+ * is never evidence of absence, and an EEPROM without a supported serial is an
+ * error, not a board without identity hardware. No write-based device tests.
+ * eeprom_kbit is the array density (128, 256 or 512) so a caller can select the
+ * matching EEPROM profile. */
 #ifndef NVF_BOARD_IDENTITY_H
 #define NVF_BOARD_IDENTITY_H
 #include "board_uid.h"
@@ -10,7 +12,7 @@ typedef int (*nvf_identity_read_fn)(void *, uint8_t address, uint16_t reg, uint8
 typedef struct {
     bool board_valid, eeprom_valid;
     uint8_t board_uid[NVF_BOARD_UID_SIZE], board_address;
-    uint8_t eeprom_eui64[8], eeprom_address, eeprom_uid[NVF_BOARD_UID_SIZE];
+    uint8_t eeprom_address, eeprom_uid[NVF_BOARD_UID_SIZE];
     uint16_t eeprom_kind, eeprom_kbit;
 } nvf_board_identity_t;
 
@@ -33,10 +35,10 @@ static inline const char *nvf_board_discover(nvf_identity_read_fn read, void *ct
     if (!read || !out) return "identity reader is missing";
     memset(out, 0, sizeof(*out));
     for (unsigned i = 0; i < 2; i++) {
-        uint8_t value[16] = {0}, again[16], manufacturer[3];
+        uint8_t value[NVF_BOARD_UID_BYTES] = {0}, again[NVF_BOARD_UID_BYTES], manufacturer[3];
         uint8_t address = 0x50 + i;
         uint16_t kind = 0, reg = 0, kbit = 0;
-        size_t length = 16;
+        const size_t length = NVF_BOARD_UID_BYTES;
         int status = read(ctx, 0x7c, (uint16_t)(address << 1), 1, manufacturer, 3);
         if (status == NVF_ID_READ_OK) {
             for (size_t m = 0; m < sizeof models / sizeof models[0]; m++)
@@ -57,27 +59,22 @@ static inline const char *nvf_board_discover(nvf_identity_read_fn read, void *ct
                 kbit = 128;
             } else if (status != NVF_ID_ABSENT) return "identification page bus failure";
         }
-        if (kind) {
-            if (read(ctx, address + 8, reg, 2, again, length) != NVF_ID_READ_OK ||
-                memcmp(value, again, length) || !nvf_identity_present(value, length))
-                return "invalid or unstable EEPROM identity";
-        } else {
-            length = 8;
-            status = read(ctx, address, 0xf8, 1, value, length);
+        if (!kind) {
+            // Neither serial interface answered. A device at the main array address is
+            // an EEPROM without a supported 128-bit factory serial, never an absence.
+            status = read(ctx, address, 0, 1, value, 1);
             if (status == NVF_ID_ABSENT) continue;
-            if (status != NVF_ID_READ_OK) return "legacy EEPROM probe failed";
-            if (!nvf_identity_present(value, length) ||
-                read(ctx, address, 0xf8, 1, again, length) != NVF_ID_READ_OK ||
-                memcmp(value, again, length)) return "invalid or unstable EEPROM EUI64";
-            kind = NVF_UID_EUI64;
-            kbit = 2;
+            if (status != NVF_ID_READ_OK) return "EEPROM probe failed";
+            return "EEPROM has no supported 128-bit factory serial";
         }
+        if (read(ctx, address + 8, reg, 2, again, length) != NVF_ID_READ_OK ||
+            memcmp(value, again, length) || !nvf_identity_present(value, length))
+            return "invalid or unstable EEPROM identity";
         if (out->eeprom_valid) return "multiple EEPROM candidates; assembly selection required";
         out->eeprom_valid = true;
         out->eeprom_address = address;
         out->eeprom_kind = kind;
         out->eeprom_kbit = kbit;
-        if (length == 8) memcpy(out->eeprom_eui64, value, length);
         if (!nvf_uid_pack(kind, value, length, out->eeprom_uid)) return "invalid EEPROM identity";
     }
     uint16_t selected = known ? nvf_uid_kind(known) : required_kind;

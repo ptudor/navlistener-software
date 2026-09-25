@@ -148,7 +148,7 @@ shape means one mental model and a near-verbatim port of `radiolistener/feeder/f
 | `PING`/`PONG` (0x05/0x06) | both | keepalive |
 | `UPDATE_CONTROL` (0x09) | collector→feeder | a versioned 36-byte update command ([software updates](../esp32/docs/SOFTWARE-UPDATES.md)) |
 | `EVIDENCE` (0x0A) | feeder→collector | a commissioned device's hardware evidence — its manufacturer-signed commissioning record and, for a locked board, its microcontroller key and a proof bound to this TLS session. Sent once, straight after a `HELLO` with `"evidence":true` and before `WELCOME`; never valid later. Layout and evaluation are normative in [COMMISSIONING.md §6](COMMISSIONING.md) |
-| `SIGNED_DATA` (0x07) | feeder→collector | *(hardware tier, vNext)* a `DATA` batch + trailing ATECC ECDSA signature over `EUI-64 ‖ rtc_unix_ns ‖ sha256(payload) ‖ counter` |
+| `SIGNED_DATA` (0x07) | feeder→collector | *(hardware tier, vNext)* a `DATA` batch + trailing ATECC ECDSA signature over `board_uid ‖ rtc_unix_ns ‖ sha256(payload) ‖ counter` |
 
 **`WELCOME`'s compact spelling is part of the wire contract, not an implementation detail**
 . The edge feeders — `feeder/navfeeder.c` on OpenWrt routers, `esp32/components/gnf1`

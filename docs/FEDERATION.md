@@ -128,7 +128,7 @@ does not become the new signer.
 Why passthrough over hop-by-hop re-signing:
 
 - The `SIGNED_DATA` frame (0x07, `DESIGN.md §2`) already signs, **at the physical observer**,
-  `EUI-64 ‖ rtc_unix_ns ‖ sha256(payload) ‖ counter`. That signature is **transitively
+  `board_uid ‖ rtc_unix_ns ‖ sha256(payload) ‖ counter`. That signature is **transitively
   verifiable**: collector A forwards you B's frame and you verify the *original observer's*
   silicon signed it, independent of A, B, and every hop between. This is strictly stronger than
   `organizefor`'s instance-level `signature` on a `FederationJournal` entry — we sign at the
@@ -141,7 +141,7 @@ Why passthrough over hop-by-hop re-signing:
 must be able to resolve the *original observer's* certificate, which was issued by the
 observer's *home* registered Issuing intermediate, not the local one. Therefore:
 
-- A relayed record carries `origin_receiver_id` (the EUI-64-derived CN) and the **observer
+- A relayed record carries `origin_receiver_id` (the board-serial-derived observer id) and the **observer
   leaf-cert fingerprint** in its envelope. The signed payload is unchanged; this is envelope
   metadata for resolution, outside the signature.
 - Each collector maintains an **observer-cert directory** — the union of its own `Device`
@@ -263,7 +263,7 @@ In a mesh the same observer's frame arrives via multiple paths. Both problems re
 primitives already in hand:
 
 - **Dedup.** Signed frames dedup on **`(origin_receiver_id, counter)`** — the observer's
-  monotonic counter (`EUI-64 ‖ … ‖ counter`, §3) is a stable, path-independent identity, so the
+  monotonic counter (`board_uid ‖ … ‖ counter`, §3) is a stable, path-independent identity, so the
   N-th copy to arrive is dropped regardless of route. Unsigned `read_only` frames, lacking a
   counter, dedup on `(origin_peer_id, origin_receiver_id, recv_unix_ns, sha256(raw_bytes))`.
 - **Loop prevention.** Each relayed record carries `path[]` — the ordered list of collector

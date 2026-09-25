@@ -105,7 +105,7 @@ struct BoardTelemetryView: View {
             if let eeprom = sample.details?.eeprom {
                 DisclosureGroup("board.eeprom.title") {
                     MetricRow(label: "board.eeprom.action", value: BoardFormat.status(eeprom.action))
-                    MetricRow(label: "board.eeprom.eui", value: eeprom.eui64 ?? StationFormat.unknown, monospaced: true)
+                    MetricRow(label: "board.eeprom.serial", value: eeprom.boardUID ?? StationFormat.unknown, monospaced: true)
                     MetricRow(label: "board.eeprom.capabilities", value: BoardFormat.flag(eeprom.capabilitiesValid))
                     if eeprom.capabilitiesValid == true {
                         MetricRow(label: "board.eeprom.revision", value: BoardFormat.count(eeprom.revision))

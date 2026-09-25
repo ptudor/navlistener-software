@@ -71,7 +71,7 @@ func trustedStatement(t *testing.T) Statement {
 		Generation: 1, CommissionedAt: 1789646400,
 		ATECCSerial:    [9]byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x11},
 		RTCEUI64:       [8]byte{0x00, 0x04, 0xa3, 0x12, 0x34, 0x56, 0x78, 0x90},
-		BoardUID:       boardid.EEPROM([8]byte{0x00, 0x04, 0xa3, 0xaa, 0xbb, 0xcc, 0xdd, 0xee}),
+		BoardUID:       boardid.MustParse("serial128", "00112233445566778899aabbccddeeff"),
 		MCUMAC:         [6]byte{0x34, 0x85, 0x18, 0x01, 0x02, 0x03},
 		MCUKeySHA256:   sha256.Sum256(mcuKeyDER(t, mcuKey())),
 		SecureBootKeys: sha256.Sum256([]byte("secure boot key digests")),
@@ -116,8 +116,8 @@ func TestStatementRoundTripAndLayout(t *testing.T) {
 	if got := hex.EncodeToString(b[4:6]); got != "0001" {
 		t.Fatalf("product at offset 4 = %s", got)
 	}
-	if got := hex.EncodeToString(b[29:37]); got != "0004a3aabbccddee" {
-		t.Fatalf("board UID value at offset 29 = %s", got)
+	if got := hex.EncodeToString(b[26:45]); got != "00031000112233445566778899aabbccddeeff" {
+		t.Fatalf("typed board UID at offset 26 = %s", got)
 	}
 	if got := hex.EncodeToString(b[70:78]); got != "0004a31234567890" {
 		t.Fatalf("RTC EUI-64 at offset 70 = %s", got)
@@ -129,7 +129,7 @@ func TestStatementRoundTripAndLayout(t *testing.T) {
 	if back != s {
 		t.Fatalf("round trip changed the statement:\n got %+v\nwant %+v", back, s)
 	}
-	if s.ObserverID() != "board-0001-0004a3aabbccddee" {
+	if s.ObserverID() != "board-0003-00112233445566778899aabbccddeeff" {
 		t.Fatalf("observer id = %q", s.ObserverID())
 	}
 }

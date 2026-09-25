@@ -201,7 +201,7 @@ func TestVerifyCoreAttestationSelectsExactlyOnePinnedSigner(t *testing.T) {
 		t.Fatal(err)
 	}
 	hardware := attestation.HardwareIdentity{Product: 1, BoardRevision: 0x1234}
-	hardware.BoardUID = boardid.EEPROM([8]byte{0x00, 0x04, 0xa3, 0xaa, 0xbb, 0xcc, 0xdd, 0xee})
+	hardware.BoardUID = boardid.MustParse("serial128", "00112233445566778899aabbccddeeff")
 	copy(hardware.ATECCSerial[:], []byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x11})
 	record, err := attestation.Sign(attestation.VersionV1, hardware, signer, nil)
 	if err != nil {
@@ -210,7 +210,7 @@ func TestVerifyCoreAttestationSelectsExactlyOnePinnedSigner(t *testing.T) {
 	right := writePublicKey(t, dir, "right.pem", &signer.PublicKey)
 	wrong := writePublicKey(t, dir, "wrong.pem", &other.PublicKey)
 	base := []string{"verify", "-manufacturer-authority", "test-manufacturer", "-record", hex.EncodeToString(record[:]),
-		"-product", "1", "-board-rev", "0x1234", "-board-uid-kind", "eui64", "-board-uid", hardware.BoardUID.Hex(),
+		"-product", "1", "-board-rev", "0x1234", "-board-uid-kind", "serial128", "-board-uid", hardware.BoardUID.Hex(),
 		"-atecc-serial", hex.EncodeToString(hardware.ATECCSerial[:])}
 	out, err := capture(t, append(base, "-key", wrong, "-key", right)...)
 	if err != nil {

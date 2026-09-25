@@ -4,7 +4,6 @@ import "testing"
 
 func TestKindsAndCanonicalWire(t *testing.T) {
 	for _, tc := range []struct{ kind, value, id string }{
-		{"eui64", "0004a3aabbccddee", "board-0001-0004a3aabbccddee"},
 		{"serial128", "00112233445566778899aabbccddeeff", "board-0003-00112233445566778899aabbccddeeff"},
 		{"st_uid128", "20e00eff445566778899aabbccddeeff", "board-0004-20e00eff445566778899aabbccddeeff"},
 	} {
@@ -39,6 +38,19 @@ func TestKindsAndCanonicalWire(t *testing.T) {
 	for _, kind := range []uint16{0, 2, 99} {
 		if _, err := FromBytes(kind, []byte{1, 2, 3, 4, 5, 6, 7, 8}); err == nil {
 			t.Fatalf("accepted unregistered kind %d", kind)
+		}
+	}
+}
+
+// Every board identity is a 128-bit factory serial; wire code 1 is retired.
+func TestRetiredKindIsRejected(t *testing.T) {
+	if _, err := Parse("eui64", "0004a3aabbccddee"); err == nil {
+		t.Fatal("accepted a 64-bit board identity")
+	}
+	for _, value := range [][]byte{{0x00, 0x04, 0xa3, 0xaa, 0xbb, 0xcc, 0xdd, 0xee}, make([]byte, 16)} {
+		value[len(value)-1] |= 1
+		if _, err := FromBytes(1, value); err == nil {
+			t.Fatalf("accepted kind 1 with %d bytes", len(value))
 		}
 	}
 }

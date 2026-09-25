@@ -1,5 +1,6 @@
-// Package boardid defines the signed, typed identity of a physical board.
-// Kind numbers are permanent assignments; an unknown kind is never accepted.
+// Package boardid defines the signed, typed identity of a physical board: its
+// EEPROM's 128-bit factory serial. Kind numbers are permanent assignments; an
+// unknown or retired kind is never accepted.
 package boardid
 
 import (
@@ -11,8 +12,8 @@ import (
 const (
 	Size         = 35 // uint16 kind, uint8 length, 32 bytes zero-padded on the right
 	MaxValueSize = 32
-	// Kind names follow esp_hardware_discovery's factory-ID kinds.
-	EUI64     uint16 = 1 // 24AA EUI-64
+	ValueSize    = 16 // every board identity is a 128-bit factory serial
+	// Kind names follow esp_hardware_discovery's factory-ID kinds. Code 1 is retired.
 	Serial128 uint16 = 3 // Microchip 24CS128/24CS256/24CS512 factory serial
 	STUID128  uint16 = 4 // ST M24128-U unique ID
 )
@@ -23,8 +24,6 @@ type ID [Size]byte
 func (id ID) Kind() uint16 { return binary.BigEndian.Uint16(id[:2]) }
 func (id ID) KindName() string {
 	switch id.Kind() {
-	case EUI64:
-		return "eui64"
 	case Serial128:
 		return "serial128"
 	case STUID128:
@@ -43,11 +42,9 @@ func (id ID) Hex() string        { return hex.EncodeToString(id.Value()) }
 func (id ID) ObserverID() string { return fmt.Sprintf("board-%04x-%s", id.Kind(), id.Hex()) }
 
 func (id ID) Validate() error {
-	n := 8
+	n := ValueSize
 	switch id.Kind() {
-	case EUI64:
 	case Serial128, STUID128:
-		n = 16
 	default:
 		return fmt.Errorf("unsupported board UID kind %d", id.Kind())
 	}
@@ -85,8 +82,6 @@ func FromBytes(kind uint16, value []byte) (ID, error) {
 func Parse(kind, value string) (ID, error) {
 	var k uint16
 	switch kind {
-	case "eui64":
-		k = EUI64
 	case "serial128":
 		k = Serial128
 	case "st_uid128":
@@ -101,6 +96,11 @@ func Parse(kind, value string) (ID, error) {
 	return FromBytes(k, raw)
 }
 
-// EEPROM constructs a typed EUI for callers that already read the fixed ROM field.
-// Consumers must still Validate before trusting or signing an identity.
-func EEPROM(value [8]byte) ID { id, _ := FromBytes(EUI64, value[:]); return id }
+// MustParse is Parse for constants and tests: it panics on an invalid identity.
+func MustParse(kind, value string) ID {
+	id, err := Parse(kind, value)
+	if err != nil {
+		panic(err)
+	}
+	return id
+}

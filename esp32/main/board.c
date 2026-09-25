@@ -56,8 +56,9 @@ void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_
 {
     report_now_ns = now_ns;
     report.manifest.action = manifest->action;
-    report.manifest.eui_valid = manifest->eui64_valid;
-    if (manifest->eui64_valid) memcpy(report.manifest.eui, manifest->eui64, 8);
+    report.manifest.uid_valid = manifest->identity.eeprom_valid;
+    if (manifest->identity.eeprom_valid)
+        memcpy(report.manifest.board_uid, manifest->identity.eeprom_uid, NVF_BOARD_UID_SIZE);
     report.manifest.capabilities_valid = manifest->capabilities_valid;
     if (manifest->capabilities_valid) {
         report.manifest.revision = manifest->capabilities.revision;
@@ -244,7 +245,6 @@ void observer_board_identity(observer_board_identity_t *out)
         out->board_uid_address = identity.board_address;
         out->eeprom_valid = identity.eeprom_valid;
         memcpy(out->eeprom_uid, identity.eeprom_uid, sizeof out->eeprom_uid);
-        memcpy(out->eeprom_eui64, identity.eeprom_eui64, sizeof out->eeprom_eui64);
         out->eeprom_address = identity.eeprom_address;
     }
     out->revision_valid = report.manifest.capabilities_valid;

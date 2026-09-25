@@ -28,6 +28,11 @@ it against a product policy, and a recorded RTC EUI-64 need not be unique.
 [COMMISSIONING.md](../COMMISSIONING.md) is normative; the RTC binding described
 below is superseded.
 
+Later change, 2026-09-25: every board identity is a 128-bit factory serial. The
+64-bit `eui64` kind (code 1) is retired and rejected everywhere; the `eui64`
+options described below are superseded. [BOARD-IDENTITY.md](../BOARD-IDENTITY.md)
+is normative.
+
 This proposal makes a typed factory UID the canonical identity
 of a hardware observer, binds it to the ATECC in the permanent manufacturer
 attestation, and moves the RTC model and optional instance identity into signed

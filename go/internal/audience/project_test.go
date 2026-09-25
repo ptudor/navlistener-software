@@ -11,7 +11,7 @@ import (
 )
 
 func contextFor(mode identity.AggregateUse, metadata identity.StationMetadata) identity.ObserverContext {
-	c := identity.NewPrivateContext("eui64-observer", identity.CredentialToken)
+	c := identity.NewPrivateContext("board-observer", identity.CredentialToken)
 	c.OrganizationID = "institution-c"
 	c.Publication.AggregateUse = mode
 	c.Publication.StationMetadata = metadata
@@ -62,7 +62,7 @@ func TestProjectPublicAttributedKeepsGeometryButNotRF(t *testing.T) {
 	if !ok {
 		t.Fatal("attributed public frame rejected")
 	}
-	if out.Source != "eui64-observer" || out.Obs == nil || out.RF != nil {
+	if out.Source != "board-observer" || out.Obs == nil || out.RF != nil {
 		t.Fatalf("attributed projection wrong: %+v", out)
 	}
 }
@@ -85,7 +85,7 @@ func TestProjectPublicEventsIsIndependentlyGatedAndRedacted(t *testing.T) {
 
 	in.Observer.Publication.EventVisibility = identity.EventsPublic
 	public, ok := ProjectPublicEvents(in)
-	if !ok || public.Source != "eui64-observer" || public.Obs == nil {
+	if !ok || public.Source != "board-observer" || public.Obs == nil {
 		t.Fatalf("public event projection wrong: %+v, %v", public, ok)
 	}
 }
