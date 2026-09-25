@@ -1,7 +1,7 @@
 {
   "version": 1,
   "kind": "2d-layout-illustration",
-  "note": "2D layout illustration. Component bodies and lettering are simplified; copper routing, solder mask, component height and attached cables are not shown. This is not a fabrication proof or an assembly photograph.",
+  "note": "2D layout illustration. Component bodies are simplified; copper routing, solder mask, component height and attached cables are not shown. This is not a fabrication proof or an assembly photograph.",
   "width_pixels": 1600,
   "boards": [
     {
@@ -26,7 +26,35 @@
           "BAT1"
         ],
         "bottom": []
-      }
+      },
+      "fonts": [
+        {
+          "requested": "CoolveticaRg-Regular",
+          "bold": false,
+          "italic": false,
+          "default_mapping": null,
+          "family": "Coolvetica,Coolvetica Rg",
+          "postscriptname": "CoolveticaRg-Regular",
+          "style": "Regular",
+          "sha256": "e61ffd3bda766ffe37dcb82a9365e5390fb4186c5a14634b3367cd344481c6c6",
+          "face_index": 0,
+          "synthetic_bold": false,
+          "synthetic_italic": false
+        },
+        {
+          "requested": "default",
+          "bold": false,
+          "italic": false,
+          "default_mapping": "sans-serif",
+          "family": "Verdana",
+          "postscriptname": "Verdana",
+          "style": "Regular,Normal,oby\u010dejn\u00e9,Standard,\u039a\u03b1\u03bd\u03bf\u03bd\u03b9\u03ba\u03ac,Normaali,Norm\u00e1l,Normale,Standaard,Normalny,\u041e\u0431\u044b\u0447\u043d\u044b\u0439,Norm\u00e1lne,Navadno,Arrunta",
+          "sha256": "0da8c12f3e15d95585434d2cf294b3113a3e3fc84bf9ba9d64f2ef834ef4bd98",
+          "face_index": 0,
+          "synthetic_bold": false,
+          "synthetic_italic": false
+        }
+      ]
     },
     {
       "id": "max",
@@ -53,7 +81,22 @@
           "U38"
         ],
         "bottom": []
-      }
+      },
+      "fonts": [
+        {
+          "requested": "default",
+          "bold": false,
+          "italic": false,
+          "default_mapping": "sans-serif",
+          "family": "Verdana",
+          "postscriptname": "Verdana",
+          "style": "Regular,Normal,oby\u010dejn\u00e9,Standard,\u039a\u03b1\u03bd\u03bf\u03bd\u03b9\u03ba\u03ac,Normaali,Norm\u00e1l,Normale,Standaard,Normalny,\u041e\u0431\u044b\u0447\u043d\u044b\u0439,Norm\u00e1lne,Navadno,Arrunta",
+          "sha256": "0da8c12f3e15d95585434d2cf294b3113a3e3fc84bf9ba9d64f2ef834ef4bd98",
+          "face_index": 0,
+          "synthetic_bold": false,
+          "synthetic_italic": false
+        }
+      ]
     },
     {
       "id": "zed",
@@ -78,15 +121,30 @@
           "J1"
         ],
         "bottom": []
-      }
+      },
+      "fonts": [
+        {
+          "requested": "default",
+          "bold": false,
+          "italic": false,
+          "default_mapping": "sans-serif",
+          "family": "Verdana",
+          "postscriptname": "Verdana",
+          "style": "Regular,Normal,oby\u010dejn\u00e9,Standard,\u039a\u03b1\u03bd\u03bf\u03bd\u03b9\u03ba\u03ac,Normaali,Norm\u00e1l,Normale,Standaard,Normalny,\u041e\u0431\u044b\u0447\u043d\u044b\u0439,Norm\u00e1lne,Navadno,Arrunta",
+          "sha256": "0da8c12f3e15d95585434d2cf294b3113a3e3fc84bf9ba9d64f2ef834ef4bd98",
+          "face_index": 0,
+          "synthetic_bold": false,
+          "synthetic_italic": false
+        }
+      ]
     }
   ],
   "files": {
-    "neo-top.png": "bc48710b14f026a80ec28a1729ed5cdad92c9bac5f661312c22057fce94ad052",
-    "neo-bottom.png": "4b430aec09967bded03d14a963dd17af8bff0df3a9cdd4d46ddfecbcf55da11d",
-    "max-top.png": "ea3ede818c4ba6c785693279fddd8b155ef18937d1ae5e748c16cbb80e53dce6",
+    "neo-top.png": "6bfcb67206ffe75fe1315be5f13c5111e0833747a9c3ca4b382dc39d2bf52e28",
+    "neo-bottom.png": "6c3e182771ddf070b44acc4167fc2e5e330d4e3e398c0aef93d2dcd449a7ea10",
+    "max-top.png": "e0f850b1433e3523d50b30ede2cf34117c4635568365d4fb3d7a15e6a7f6c839",
     "max-bottom.png": "43e889f19168a548e77ba7a9368fe532c0772bbcd34c267b16dca6fc9bf4fb6c",
-    "zed-top.png": "d83a823bfc05ae12eb13abc479d118459a7679fdb8a7979f103b9f3fd81a8f6d",
+    "zed-top.png": "322f44789af1cfd1b92fa205dc28934ea39de76a8b3921697d2f55e4e9e27265",
     "zed-bottom.png": "7ea635d3482d45d4052470c6419d0db92f4a6c38b13eb733efc9b122000c7351"
   }
 }
