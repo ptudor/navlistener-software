@@ -266,18 +266,6 @@ function emailHref(subject) {
 
     <section id="hardware" class="hardware section-pad">
       <div class="container hardware-grid">
-        <div class="board-stage">
-          <div class="board-meta board-meta-top"><span>NAVLISTEN OBSERVER</span><span>REV A</span></div>
-          <img
-            src="/assets/observer-board.svg"
-            width="1000"
-            height="500"
-            alt="Illustrated layout of the NavListen GNSS observer board"
-            loading="lazy"
-          />
-          <div class="board-meta board-meta-bottom"><span>127.0 × 50.8 MM</span><span>4 LAYER</span></div>
-        </div>
-
         <div class="hardware-copy">
           <p class="section-kicker">A small board. A whole sky.</p>
           <h2>Meet the observer.</h2>
@@ -286,14 +274,15 @@ function emailHref(subject) {
             conditions to NavListen over Wi-Fi. Its constellation lights bring reception to your
             desk, with brightness you can adjust at a touch.
           </p>
-          <dl class="hardware-specs">
-            <div><dt>Receiver</dt><dd>u-blox receiver options<br /><span>Navigation messages straight from the satellites</span></dd></div>
-            <div><dt>Feeder</dt><dd>ESP32-S3<br /><span>Wi-Fi connected. USB-C powered.</span></dd></div>
-            <div><dt>Identity</dt><dd>Hardware-backed station identity<br /><span>A secure element keeps the station’s key on the board</span></dd></div>
-            <div><dt>Sensors</dt><dd>Pressure · temperature · humidity<br /><span>See what’s happening around your receiver</span></dd></div>
-          </dl>
           <a class="text-link" :href="emailHref('I’m interested in NavListen observer hardware')">Ask about the observer <span aria-hidden="true">↗</span></a>
         </div>
+
+        <dl class="hardware-specs">
+          <div><dt>Receiver</dt><dd>u-blox receiver options<br /><span>Navigation messages straight from the satellites</span></dd></div>
+          <div><dt>Feeder</dt><dd>ESP32-S3<br /><span>Wi-Fi connected. USB-C powered.</span></dd></div>
+          <div><dt>Identity</dt><dd>Hardware-backed station identity<br /><span>A secure element keeps the station’s key on the board</span></dd></div>
+          <div><dt>Sensors</dt><dd>Pressure · temperature · humidity<br /><span>See what’s happening around your receiver</span></dd></div>
+        </dl>
       </div>
 
       <div class="container board-gallery">

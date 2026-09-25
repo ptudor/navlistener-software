@@ -25,7 +25,6 @@ assert.doesNotMatch(html.replace(/<a\b[^>]*>/g, ''), /(?:src|href)="https?:\/\/(
 
 await Promise.all([
   'assets/mark.svg',
-  'assets/observer-board.svg',
   'assets/og-image.png',
   'assets/favicon.png',
   'assets/apple-touch-icon.png',

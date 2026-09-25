@@ -26,9 +26,7 @@ and comparisons that put other projects down.
 - Self-hosted Public Sans, Space Grotesk, Charis Italic, and IBM Plex Mono from the `ptudornet`
   family stack, plus local SVG/PNG artwork. There are no analytics, embeds, or third-party
   runtime requests; the page runs under a strict same-origin CSP.
-- Product colors and constellation identities come from the Integrity Station client. The board
-  illustration follows the observer's 127 × 50.8 mm Rev A layout and real component set while
-  keeping receiver and ESP32 variant labels generic.
+- Product colors and constellation identities come from the Integrity Station client.
 - Midnight and graphite surfaces with violet accents connect the site to the data service.
   The four-color compass mark is shared with Integrity Satellite. Constellation colors
   retain their own identities; pale neutral sections give the longer page a change of pace.
@@ -97,7 +95,7 @@ is ready, update `emailHref()` and the visible address in `src/App.vue` together
 The Hardware section shows top and bottom views of NEO, MAX, and ZED/X20 from
 `public/assets/boards/`, rendered from the saved layouts. These are 2D layout
 illustrations with simplified component bodies and lettering. Use that description
-in captions and alt text. The observer illustration above them is unchanged.
+in captions and alt text. They are the section's only board artwork.
 
 Regenerate them with `pcb/tools/board_preview.py` in the hardware repository.
 That repository's `pcb/previews/README.md` describes dependencies and configuration.
