@@ -34,6 +34,13 @@
 #include "nvs.h"
 #include "journal.h"
 #include "pulse_timing.h"
+#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
+#include "motion.h"
+#include "thermocouple.h"
+#ifndef CONFIG_NVF_THERMOCOUPLE_50HZ
+#define CONFIG_NVF_THERMOCOUPLE_50HZ 0
+#endif
+#endif
 #if NVF_PIN_BRIGHT_ADC >= 0
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -396,6 +403,69 @@ static void heater_report(const env_heater_status_t *s, report_heater_t *h)
     if (r->valid & ENV_RUN_MCP_PEAK) h->mcp_peak = lround(r->mcp_peak * 100);
     if (r->valid & ENV_RUN_MCP_END) h->mcp_end = lround(r->mcp_end * 100);
 }
+#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
+// The latest IMU sample is reported only while it is this recent.
+#define MOTION_FRESH_MS 2000
+static void max_sensors_start(void)
+{
+    esp_err_t err = thermocouple_start(NVF_PIN_TC_SCK, NVF_PIN_TC_MOSI, NVF_PIN_TC_MISO, NVF_PIN_TC_CS_N,
+                                       NVF_PIN_TC_DRDY_N, CONFIG_NVF_THERMOCOUPLE_50HZ);
+    if (err != ESP_OK) ESP_LOGE(TAG, "thermocouple interface unavailable: %s", esp_err_to_name(err));
+    err = motion_start(hardware_manifest_i2c_bus(), NVF_PIN_IMU_INT1, NVF_PIN_IMU_INT2);
+    if (err != ESP_OK) ESP_LOGE(TAG, "IMU service unavailable: %s", esp_err_to_name(err));
+}
+// Tags 11-13: the barometer, the thermocouple, and the IMU and magnetometer summary.
+static void max_sensors_report(void)
+{
+    env_barometer_t barometer;
+    env_magnetometer_t magnetometer;
+    environment_sample_max(&barometer, &magnetometer);
+    int64_t magnetometer_ms = esp_timer_get_time() / 1000;
+    report_barometer_t *b = &report.barometer;
+    *b = (report_barometer_t){.present = true, .state = barometer.state};
+    if (barometer.valid) {
+        b->valid = 1; b->centi_c = barometer.centi_c; b->pressure_pa = barometer.pressure_pa;
+        b->flags = barometer.pressure_pa < MS5607_FULL_MIN_PA || barometer.pressure_pa > MS5607_FULL_MAX_PA;
+    }
+    env_thermocouple_t thermocouple;
+    thermocouple_sample(&thermocouple);
+    report_thermocouple_t *t = &report.thermocouple;
+    *t = (report_thermocouple_t){.present = true, .state = thermocouple.configured,
+        .config = MAX31856_TYPE_K | (thermocouple.filter_50hz ? 0x10 : 0)};
+    if (thermocouple.configured) {
+        const max31856_sample_t *s = &thermocouple.sample;
+        t->valid = s->valid; t->flags = s->fresh; t->fault = s->fault;
+        t->tc_centi_c = s->tc_centi_c; t->cj_centi_c = s->cj_centi_c;
+    }
+    motion_status_t motion;
+    motion_snapshot(&motion);
+    int64_t now = esp_timer_get_time() / 1000;
+    report_motion_t *m = &report.motion;
+    *m = (report_motion_t){.present = true, .imu_state = motion.ready, .mag_state = magnetometer.ready,
+        .odr_hz = ICM45686_ODR_HZ, .accel_fs_g = ICM45686_ACCEL_FS_G, .gyro_fs_dps = ICM45686_GYRO_FS_DPS,
+        .packets = motion.stats.packets, .overflows = motion.stats.overflows, .resyncs = motion.stats.resyncs};
+    if (motion.ready && motion.stats.latest_valid && (int64_t)motion.latest_ms + MOTION_FRESH_MS >= now) {
+        m->valid |= 1;
+        memcpy(m->accel, motion.stats.accel, sizeof m->accel);
+        memcpy(m->gyro, motion.stats.gyro, sizeof m->gyro);
+        m->imu_centi_c = (int16_t)(motion.stats.temp * 50 + 2500); // FIFO temperature: C = raw / 2 + 25
+        m->imu_ms = motion.latest_ms;
+    }
+    const icm45686_window_t *w = &motion.stats.window[ICM45686_WINDOW_REPORT];
+    if (w->valid) {
+        m->valid |= 2;
+        m->accel_min_mg = (uint16_t)lround(sqrt((double)w->accel_min_sq) * 1000.0 / ICM45686_ACCEL_LSB_PER_G);
+        m->accel_max_mg = (uint16_t)lround(sqrt((double)w->accel_max_sq) * 1000.0 / ICM45686_ACCEL_LSB_PER_G);
+        m->gyro_max_decidps = (uint16_t)lround(sqrt((double)w->gyro_max_sq) * 10.0 / ICM45686_GYRO_LSB_PER_DPS);
+    }
+    if (magnetometer.valid) {
+        m->valid |= 4;
+        memcpy(m->mag, magnetometer.sample.field, sizeof m->mag);
+        memcpy(m->mag_offset, magnetometer.sample.offset, sizeof m->mag_offset);
+        m->mag_ms = (uint64_t)magnetometer_ms;
+    }
+}
+#endif
 static void report_poll(const gnss_status_t *status, int64_t now, uint8_t expected, bool utc_valid, int64_t utc)
 {
     bool event_pending = status->event_count != report_policy.last.event_count;
@@ -406,6 +476,10 @@ static void report_poll(const gnss_status_t *status, int64_t now, uint8_t expect
     report_environment_t *e = &report.environment;
     *e = (report_environment_t){0};
     environment_sample(hardware_manifest_i2c_bus(), now, utc_valid, utc, &sample, &e->ready, &heater);
+#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
+    max_sensors_report();
+#endif
+    // After every sample, so no component's time is later than the report's.
     last_environment = esp_timer_get_time() / 1000;
     next_environment = last_environment + 30000;
     if (sample.mcp_valid) { e->valid |= 1; e->mcp_centi_c = lround(sample.mcp_c * 100); }
@@ -433,12 +507,16 @@ static void report_poll(const gnss_status_t *status, int64_t now, uint8_t expect
     report.resources.capacity=capacity; report.resources.queued=count;
     report.resources.internal_free=heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     report.resources.psram_free=heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    uint8_t body[OBSERVER_REPORT_MAX], record[OBSERVER_REPORT_MAX + GNF1_RECORD_HDR];
+    // Static: the board task is the only caller, and its stack is sized for its work, not these.
+    static uint8_t body[OBSERVER_REPORT_MAX], record[OBSERVER_REPORT_MAX + GNF1_RECORD_HDR];
     size_t length = observer_report_encode(body, sizeof body, &report);
     if (!length) return;
     size_t n = gnf1_encode_telem(record, report_now_ns ? report_now_ns() : 0, GNF1_T_OBSERVER, body, length);
     if (n && spool_append(record, n)) {
         observer_report_sent(&report_policy, &report);
+#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
+        motion_report_sent();
+#endif
         ESP_LOGI(TAG, "ObserverDetails queued: reason=0x%02x environment=0x%02x RTC=0x%02x EEPROM=%u RNG=%u events=%lu bytes=%u",
             report.reason, e->valid, report.rtc.flags, report.manifest.action, report.crypto.rng,
             (unsigned long)report.event_count, (unsigned)n);
@@ -460,7 +538,7 @@ static void timing_poll(const gnss_status_t *status)
     }
     if (now < next_timing) return;
     next_timing=now+1000;
-    uint8_t body[OBSERVER_REPORT_MAX], record[OBSERVER_REPORT_MAX+GNF1_RECORD_HDR];
+    static uint8_t body[OBSERVER_REPORT_MAX], record[OBSERVER_REPORT_MAX+GNF1_RECORD_HDR];
     size_t length=observer_timing_encode(body,sizeof body,&report.timing,esp_timer_get_time()/1000);
     if (!length) return;
     length=append_update(body,length,sizeof body);
@@ -469,7 +547,7 @@ static void timing_poll(const gnss_status_t *status)
     // Same versioned bytes as collector telemetry. A serial capture can produce
     // plots and count audits before networking/enrollment is commissioned.
     static const char digits[]="0123456789abcdef";
-    char hex[2*OBSERVER_REPORT_MAX+1];
+    static char hex[2*OBSERVER_REPORT_MAX+1];
     for (size_t i=0;i<length;i++) { hex[2*i]=digits[body[i]>>4]; hex[2*i+1]=digits[body[i]&15]; }
     hex[2*length]=0;
     ESP_LOGI("pulse_timing","sample=%s",hex);
@@ -480,6 +558,9 @@ static void board_task(void *arg)
     esp_err_t timing_error=pulse_timing_start();
     if (timing_error != ESP_OK) ESP_LOGW(TAG,"pulse capture unavailable: %s; GNSS continues",esp_err_to_name(timing_error));
     identify_peripherals();
+#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
+    max_sensors_start();
+#endif
     history_load();
     uint8_t previous_green = 255, previous_yellow = 255;
     bool brightness_dirty = false;

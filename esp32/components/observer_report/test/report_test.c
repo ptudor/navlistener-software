@@ -5,7 +5,7 @@
 #include <string.h>
 int main(int argc, char **argv)
 {
-    assert(argc == 3);
+    assert(argc == 4);
     observer_report_t r = {.uptime_ms=1000000, .event_count=3, .event_ms=999000,
         .reason=8, .event_flags=1, .event_states=6,
         .environment={7,7,2550,4212,2500,5000,100000},
@@ -24,6 +24,7 @@ int main(int argc, char **argv)
     fclose(f);
     assert(observer_report_encode(actual,sizeof actual,&r)==count);
     assert(!memcmp(actual,expected,count));
+    const observer_report_t golden=r;
     // Without an HDC policy the heater component is omitted, not sent as zeros.
     observer_report_t absent=r; absent.heater.present=false;
     assert(observer_report_encode(actual,sizeof actual,&absent)==count-61 && !memcmp(actual,expected,count-61));
@@ -63,6 +64,37 @@ int main(int argc, char **argv)
     assert(observer_report_due(&p,&r)==REPORT_CHANGE); // heater start
     observer_report_sent(&p,&r); r.uptime_ms+=60000; r.heater.state=3;
     assert(observer_report_due(&p,&r)==REPORT_CHANGE); // heater off, recovering
+
+    // The MAX board's barometer, thermocouple and motion tags follow the heater.
+    observer_report_t m=golden;
+    m.barometer=(report_barometer_t){.present=true,.state=2,.valid=1,.centi_c=2215,.pressure_pa=101325};
+    m.thermocouple=(report_thermocouple_t){.present=true,.state=1,.valid=3,.flags=1,.config=3,
+        .tc_centi_c=23456,.cj_centi_c=2437};
+    m.motion=(report_motion_t){.present=true,.imu_state=1,.mag_state=1,.valid=7,.odr_hz=100,
+        .gyro_fs_dps=1000,.accel_fs_g=8,.accel={10,-20,4096},.gyro={3,-2,1},.imu_centi_c=2750,
+        .packets=3000,.overflows=1,.accel_min_mg=980,.accel_max_mg=1530,.gyro_max_decidps=125,
+        .imu_ms=999900,.mag={512,-205,922},.mag_offset={32808,32751,32771},.mag_ms=999800};
+    f=fopen(argv[3],"r"); assert(f); size_t max_count=0;
+    while (fscanf(f,"%2x",&byte)==1) { assert(max_count<sizeof expected); expected[max_count++]=byte; }
+    fclose(f);
+    assert(observer_report_encode(actual,sizeof actual,&m)==max_count && !memcmp(actual,expected,max_count));
+    // The fullest report, with a 32-character firmware version, fits the buffer.
+    memset(m.firmware,'v',32); m.firmware[32]=0;
+    assert(observer_report_encode(actual,sizeof actual,&m)==max_count+25);
+    memcpy(m.firmware,"test-v1",8);
+    p=(report_policy_t){0}; observer_report_sent(&p,&m);
+    m.uptime_ms+=60000; m.motion.accel_max_mg=4000; m.motion.packets+=6000; m.barometer.pressure_pa+=99;
+    assert(!observer_report_due(&p,&m)); // motion extremes and small drift ride along
+    m.barometer.pressure_pa+=1;
+    assert(observer_report_due(&p,&m)==REPORT_CHANGE); // 1 hPa
+    observer_report_sent(&p,&m); m.uptime_ms+=60000; m.thermocouple.tc_centi_c+=100;
+    assert(observer_report_due(&p,&m)==REPORT_CHANGE); // 1 C at the probe
+    observer_report_sent(&p,&m); m.uptime_ms+=60000; m.thermocouple.fault=1; m.thermocouple.valid=2;
+    assert(observer_report_due(&p,&m)==REPORT_CHANGE); // an open thermocouple
+    observer_report_sent(&p,&m); m.uptime_ms+=60000; m.motion.overflows++;
+    assert(observer_report_due(&p,&m)==REPORT_CHANGE); // lost IMU samples
+    observer_report_sent(&p,&m); m.uptime_ms+=60000; m.motion.valid&=~4;
+    assert(observer_report_due(&p,&m)==REPORT_CHANGE); // the magnetometer stopped answering
     assert(panel_pwm_off_ticks(50)==512 && panel_pwm_off_ticks(20)==819 && panel_pwm_off_ticks(10)==922);
     assert(panel_pwm_off_ticks(100)==0 && panel_pwm_off_ticks(0)==1024);
     assert(panel_next_brightness(20)==10 && panel_next_brightness(10)==50 && panel_next_brightness(50)==20);

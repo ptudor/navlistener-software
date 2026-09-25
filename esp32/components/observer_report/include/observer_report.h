@@ -6,7 +6,7 @@
 #include "timing_report.h"
 #include "../../../../common/board_uid.h"
 // GNF1 ObserverDetails v1; byte layout is specified in docs/OBSERVER-TELEMETRY.md.
-#define OBSERVER_REPORT_MAX 384
+#define OBSERVER_REPORT_MAX 512
 enum { REPORT_BOOT=1, REPORT_CHANGE=2, REPORT_CHECKIN=4, REPORT_INTERFERENCE=8 };
 typedef struct {
     uint8_t valid, ready; // bits 0 MCP9808, 1 HDC2080/HDC2022, 2 BMP388/BMP384
@@ -23,6 +23,42 @@ typedef struct {
     uint16_t rh_before, rh_stop;
     int16_t hdc_before, hdc_peak, hdc_end, mcp_before, mcp_peak, mcp_end;
 } report_heater_t;
+// The MAX board's MS5607 barometer; tag 11. Invalid measurements stay zero.
+typedef struct {
+    bool present;          // this board carries the part
+    uint8_t state;         // 0 absent, 1 calibration PROM rejected, 2 ready
+    uint8_t valid;         // 1: temperature and pressure measured
+    uint8_t flags;         // 1: outside the 300-1100 mbar full-accuracy range
+    int16_t centi_c;
+    uint32_t pressure_pa;
+} report_barometer_t;
+// The MAX board's MAX31856 thermocouple converter; tag 12.
+typedef struct {
+    bool present;
+    uint8_t state;         // 0 not responding, 1 configured
+    uint8_t valid;         // 1 thermocouple, 2 cold junction
+    uint8_t flags;         // 1: a new conversion (DRDY_N was low)
+    uint8_t fault;         // the fault status register
+    uint8_t config;        // bits 3:0 thermocouple type (3 = K), bit 4 the 50 Hz notch
+    int32_t tc_centi_c;
+    int16_t cj_centi_c;
+} report_thermocouple_t;
+// The MAX board's ICM-45686 IMU and MMC34160PJ magnetometer; tag 13. Vectors are raw
+// counts in each sensor's axes; the ranges carried beside them give the scale.
+typedef struct {
+    bool present;
+    uint8_t imu_state, mag_state; // 0 not responding, 1 ready
+    uint8_t valid;                // 1 latest IMU sample, 2 IMU extremes, 4 magnetometer
+    uint16_t odr_hz, gyro_fs_dps;
+    uint8_t accel_fs_g;
+    int16_t accel[3], gyro[3], imu_centi_c;
+    uint32_t packets, overflows, resyncs;
+    uint16_t accel_min_mg, accel_max_mg, gyro_max_decidps;
+    uint64_t imu_ms;
+    int16_t mag[3];               // 1/2048 G per count, bridge offset removed
+    uint16_t mag_offset[3];
+    uint64_t mag_ms;
+} report_motion_t;
 typedef struct { uint8_t flags; uint64_t epoch, sampled_ms; } report_rtc_t;
 typedef struct {
     uint64_t checked_ms;
@@ -49,6 +85,9 @@ typedef struct {
     uint8_t reason, event_flags, event_states;
     report_environment_t environment;
     report_heater_t heater;
+    report_barometer_t barometer;
+    report_thermocouple_t thermocouple;
+    report_motion_t motion;
     report_rtc_t rtc;
     report_crypto_t crypto;
     report_manifest_t manifest;

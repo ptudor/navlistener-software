@@ -22,6 +22,9 @@ type ObserverDetails struct {
 	EventStates   uint8                `json:"event_states"`
 	Environment   *BoardEnvironment    `json:"environment,omitempty"`
 	Heater        *BoardHumidityHeater `json:"humidity_heater,omitempty"`
+	Barometer     *BoardBarometer      `json:"barometer,omitempty"`
+	Thermocouple  *BoardThermocouple   `json:"thermocouple,omitempty"`
+	Motion        *BoardMotion         `json:"motion,omitempty"`
 	RTC           *BoardRTC            `json:"rtc,omitempty"`
 	ATECC         *BoardATECC          `json:"atecc,omitempty"`
 	EEPROM        *BoardEEPROM         `json:"eeprom,omitempty"`
@@ -219,6 +222,21 @@ func decodeObserverDetails(b []byte) (*ObserverDetails, error) {
 			var err error
 			d.Heater, err = decodeHumidityHeater(v, d.UptimeMS)
 			if err != nil {
+				return nil, err
+			}
+		case 11:
+			var err error
+			if d.Barometer, err = decodeBarometer(v); err != nil {
+				return nil, err
+			}
+		case 12:
+			var err error
+			if d.Thermocouple, err = decodeThermocouple(v); err != nil {
+				return nil, err
+			}
+		case 13:
+			var err error
+			if d.Motion, err = decodeMotion(v, d.UptimeMS); err != nil {
 				return nil, err
 			}
 		default:

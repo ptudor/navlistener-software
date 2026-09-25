@@ -39,6 +39,18 @@ uint8_t observer_report_due(const report_policy_t *p, const observer_report_t *r
                             llabs((long long)a->pressure_pa - b->pressure_pa) >= 100)) ||
         p->last.heater.state != r->heater.state || p->last.heater.runs != r->heater.runs ||
         p->last.rtc.flags != r->rtc.flags;
+    const report_barometer_t *ba = &p->last.barometer, *bb = &r->barometer;
+    changed = changed || ba->present != bb->present || ba->state != bb->state || ba->valid != bb->valid ||
+        ba->flags != bb->flags || (bb->valid && (abs(ba->centi_c - bb->centi_c) >= 50 ||
+                                                 llabs((long long)ba->pressure_pa - bb->pressure_pa) >= 100));
+    const report_thermocouple_t *ta = &p->last.thermocouple, *tb = &r->thermocouple;
+    changed = changed || ta->present != tb->present || ta->state != tb->state || ta->valid != tb->valid ||
+        ta->fault != tb->fault || ((tb->valid & 1) && llabs((long long)ta->tc_centi_c - tb->tc_centi_c) >= 100) ||
+        ((tb->valid & 2) && abs(ta->cj_centi_c - tb->cj_centi_c) >= 50);
+    const report_motion_t *ma = &p->last.motion, *mb = &r->motion;
+    changed = changed || ma->present != mb->present || ma->imu_state != mb->imu_state ||
+        ma->mag_state != mb->mag_state || (ma->valid & 5) != (mb->valid & 5) ||
+        ma->overflows != mb->overflows || ma->resyncs != mb->resyncs;
     return changed ? REPORT_CHANGE : 0;
 }
 void observer_report_sent(report_policy_t *p, const observer_report_t *r)
@@ -47,9 +59,11 @@ size_t observer_report_encode(uint8_t *out, size_t cap, const observer_report_t 
 {
     size_t fwlen = 0;
     while (fwlen < 32 && r->firmware[fwlen]) fwlen++;
-    // Header 24; six fixed TLVs (14,17,16,40,29,29); firmware TLV; optional heater TLV (58).
+    // Header 24; six fixed TLVs (14,17,16,40,29,29); firmware TLV; optional heater (58),
+    // barometer (10), thermocouple (12) and motion (69) TLVs.
     size_t length = 24 + 18 + 14 + 17 + 16 + 5 + NVF_BOARD_UID_SIZE + 29 + 29 + 3 + fwlen +
-                    (r->heater.present ? 3 + 58 : 0);
+                    (r->heater.present ? 3 + 58 : 0) + (r->barometer.present ? 3 + 10 : 0) +
+                    (r->thermocouple.present ? 3 + 12 : 0) + (r->motion.present ? 3 + 69 : 0);
     if (!out || cap < length) return 0;
     memset(out, 0, length);
     out[0] = 1; out[1] = r->reason; gnf1_be64(out+2, r->uptime_ms);
@@ -86,6 +100,22 @@ size_t observer_report_encode(uint8_t *out, size_t cap, const observer_report_t 
       gnf1_be16(b+42,h->rh_before); gnf1_be16(b+44,h->rh_stop);
       gnf1_be16(b+46,h->hdc_before); gnf1_be16(b+48,h->hdc_peak); gnf1_be16(b+50,h->hdc_end);
       gnf1_be16(b+52,h->mcp_before); gnf1_be16(b+54,h->mcp_peak); gnf1_be16(b+56,h->mcp_end); }
+    if (r->barometer.present) { TLV(11, 10); const report_barometer_t *m=&r->barometer;
+      b[0]=1; b[1]=m->state; b[2]=m->valid; b[3]=m->flags;
+      gnf1_be16(b+4,m->centi_c); gnf1_be32(b+6,m->pressure_pa); }
+    if (r->thermocouple.present) { TLV(12, 12); const report_thermocouple_t *t=&r->thermocouple;
+      b[0]=1; b[1]=t->state; b[2]=t->valid; b[3]=t->flags; b[4]=t->fault; b[5]=t->config;
+      gnf1_be32(b+6,t->tc_centi_c); gnf1_be16(b+10,t->cj_centi_c); }
+    if (r->motion.present) { TLV(13, 69); const report_motion_t *m=&r->motion;
+      b[0]=1; b[1]=m->imu_state; b[2]=m->mag_state; b[3]=m->valid;
+      gnf1_be16(b+4,m->odr_hz); b[6]=m->accel_fs_g; gnf1_be16(b+7,m->gyro_fs_dps);
+      for (unsigned i=0;i<3;i++) { gnf1_be16(b+9+2*i,m->accel[i]); gnf1_be16(b+15+2*i,m->gyro[i]); }
+      gnf1_be16(b+21,m->imu_centi_c);
+      gnf1_be32(b+23,m->packets); gnf1_be32(b+27,m->overflows); gnf1_be32(b+31,m->resyncs);
+      gnf1_be16(b+35,m->accel_min_mg); gnf1_be16(b+37,m->accel_max_mg); gnf1_be16(b+39,m->gyro_max_decidps);
+      gnf1_be64(b+41,m->imu_ms);
+      for (unsigned i=0;i<3;i++) { gnf1_be16(b+49+2*i,m->mag[i]); gnf1_be16(b+55+2*i,m->mag_offset[i]); }
+      gnf1_be64(b+61,m->mag_ms); }
 #undef TLV
     return offset;
 }

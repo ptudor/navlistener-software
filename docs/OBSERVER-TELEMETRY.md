@@ -19,6 +19,8 @@ measurement has changed from the last queued report by at least:
 | Local absolute pressure | 100 Pa (1 hPa) |
 | Sensor validity/readiness or RTC status | Any change |
 | Humidity-heater state or run count | Any change |
+| MAX thermocouple | 1 °C; any change in its faults |
+| MAX IMU or magnetometer availability, FIFO overflows or realignments | Any change |
 
 Ordinary change reports have a one-minute minimum interval. Comparing against
 the last report accumulates slow drift instead of ignoring many small steps.
@@ -60,6 +62,28 @@ The M9's "no spoofing indicated" state is not proof of authentic reception; see
   trim and the pinned Bosch BMP3 SensorAPI. Fresh forced conversions use pressure
   8× and temperature 2× oversampling. Chip ID `0x50` does not distinguish these
   two variants. Pressure is local absolute pressure, without sea-level correction.
+- MAX board MS5607 (tag 11): the PROM coefficients pass their CRC-4 (TE AN520)
+  before any reading is used. Each sample is one pressure and one temperature
+  conversion at OSR 4096 with the datasheet's first- and second-order
+  compensation. Full accuracy is specified from 300 to 1100 mbar; readings from 10
+  to 300 mbar or 1100 to 1200 mbar are flagged extended-range, and any height
+  derived from pressure is a model result. Pressure is local absolute pressure.
+- MAX board MAX31856 (tag 12): K type, 4-sample averaging, continuous conversion
+  every 100 ms, open-circuit detection for a source below 5 kΩ, and the 60 Hz notch
+  (`CONFIG_NVF_THERMOCOUPLE_50HZ=y` selects 50 Hz). A reading is valid only when
+  DRDY_N showed a new conversion and the fault register is clear; cold-junction
+  faults also withhold the cold junction. The fault register is reported in every
+  sample. The reading is a filtered conversion, not an instantaneous or
+  PPS-synchronous probe temperature.
+- MAX board ICM-45686 and MMC34160PJ (tag 13): the IMU runs its accelerometer
+  (±8 g) and gyroscope (±1000 °/s) at 100 Hz into its FIFO in stream mode,
+  drained on INT1 or every 250 ms. The report carries the latest sample (while it
+  is under two seconds old), counters since boot, and the extremes of the
+  acceleration and rotation-rate magnitudes since the previous queued report. The
+  magnetometer is measured at each environmental sample as a SET/RESET pair, which
+  removes the bridge offset and reports it. Vectors are in each sensor's own axes;
+  mounting (hard- and soft-iron) calibration, attitude and heading are not
+  computed. A raw sample stream is not implemented.
 - The three temperatures remain separate. They measure different dies/locations;
   board heating can produce real differences. They are not averaged into an
   invented ambient temperature. There is no additional enclosure/site calibration.
@@ -216,6 +240,9 @@ invalid lengths/enums/ranges, and trailing partial TLVs are rejected.
 | 7 firmware | 1–32 | Printable ASCII application version (build git description when available) |
 | 8 timing | 196 | Versioned GNSS/RTC pulse snapshot; layout below |
 | 10 humidity heater | 58 | Versioned condensation-recovery state, dwell counters and latest run; layout below |
+| 11 barometer | 10 | MAX board MS5607; layout below |
+| 12 thermocouple | 12 | MAX board MAX31856; layout below |
+| 13 motion | 69 | MAX board ICM-45686 and MMC34160PJ summary; layout below |
 
 Environment mask bits 0/1/2 identify MCP/HDC/BMP respectively. Valid requires
 ready. Temperature units are 0.01 °C, RH units 0.01%, pressure units Pa. Invalid
@@ -269,6 +296,63 @@ End-of-cool-down values and a nonzero cool-down time appear only once the state
 is normal again. Invalid measurements are zero. Start, on-time and cool-down
 cannot extend past the snapshot uptime, and ≥ 98 %RH time cannot exceed
 ≥ 95 %RH time.
+
+## MAX board sensors (tags 11-13, version 1)
+
+MAX firmware sends all three with every environmental report; other boards omit
+them. Invalid measurements are zero. Multi-byte fields are big-endian.
+
+Tag 11, barometer:
+
+| Offset | Type | Meaning |
+|---:|---|---|
+| 0 | U8 | Version = 1 |
+| 1 | U8 | State: absent=0, calibration PROM rejected=1, ready=2 |
+| 2 | U8 | Validity: measurement=1 (requires ready) |
+| 3 | U8 | Flags: outside the 30000-110000 Pa full-accuracy range=1 |
+| 4 | I16 | Temperature, 0.01 °C, −40…85 °C |
+| 6 | U32 | Local absolute pressure, Pa, 1000…120000 |
+
+Tag 12, thermocouple:
+
+| Offset | Type | Meaning |
+|---:|---|---|
+| 0 | U8 | Version = 1 |
+| 1 | U8 | State: not responding=0, configured=1 |
+| 2 | U8 | Validity: thermocouple=1, cold junction=2 |
+| 3 | U8 | Flags: new conversion (DRDY_N low)=1 |
+| 4 | U8 | MAX31856 fault status register: open=1, over/under voltage=2, thermocouple low=4, high=8, cold junction low=16, high=32, thermocouple range=64, cold-junction range=128 |
+| 5 | U8 | Configuration: bits 3:0 thermocouple type (3 = K), bit 4 the 50 Hz notch |
+| 6 | I32 | Linearized, cold-junction-compensated thermocouple temperature, 0.01 °C |
+| 10 | I16 | Cold-junction temperature, 0.01 °C |
+
+Validity needs a new conversion; the thermocouple also needs a clear fault
+register, and the cold junction needs none of its three faults. A converter that
+is not responding reports no validity, flags or faults.
+
+Tag 13, motion:
+
+| Offset | Type | Meaning |
+|---:|---|---|
+| 0 | U8 | Version = 1 |
+| 1, 2 | U8 each | IMU state, magnetometer state: not responding=0, ready=1 |
+| 3 | U8 | Validity: latest IMU sample=1, extremes=2, magnetometer=4 |
+| 4 | U16 | IMU output data rate, Hz |
+| 6 | U8 | Accelerometer range, ±g |
+| 7 | U16 | Gyroscope range, ±°/s |
+| 9, 15 | I16×3 each | Latest accelerometer and gyroscope counts; one count is range/32768 |
+| 21 | I16 | Latest IMU die temperature, 0.01 °C in 0.5 °C steps |
+| 23, 27, 31 | U32 each | FIFO packets decoded, FIFO-full events (samples overwritten), FIFO realignments; since boot |
+| 35, 37 | U16 each | Minimum and maximum acceleration magnitude since the previous queued report, mg |
+| 39 | U16 | Maximum rotation-rate magnitude over the same window, 0.1 °/s |
+| 41 | U64 | Uptime of the latest IMU sample, ms |
+| 49 | I16×3 | Magnetic field with the bridge offset removed, 1/2048 G per count |
+| 55 | U16×3 | Bridge offset, raw counts (null field reads 32768) |
+| 61 | U64 | Uptime of the magnetometer measurement, ms |
+
+Sample uptimes cannot exceed the report uptime. Missing IMU samples can be
+estimated from the rate, the packet counter and uptime; overflow events mark
+when the FIFO filled.
 
 Receiver masks/count indices use u-blox GNSS IDs. Validity bits: current satellite
 counts=1, current position fix=2, current MON-RF=4, current NAV-STATUS=8. Current
@@ -342,7 +426,16 @@ nullable `last_run_unix_seconds`, and `latest_run` (omitted without a run this
 boot) with `start_uptime_ms`, `on_ms`, `recovery_ms`, nullable `stop_reason`,
 and nullable `humidity_before_percent`, `humidity_at_stop_percent`,
 `hdc2080_before_c`, `hdc2080_peak_c`, `hdc2080_end_c`, `mcp9808_before_c`,
-`mcp9808_peak_c` and `mcp9808_end_c`. Hardware status is separate from
+`mcp9808_peak_c` and `mcp9808_end_c`. MAX boards add `barometer` (`state`,
+nullable `temperature_c` and `pressure_pa`, `extended_range`), `thermocouple`
+(`state`, `type`, `mains_notch_hz`, `new_conversion`, `faults` as a list of
+names, nullable `thermocouple_c` and `cold_junction_c`) and `motion`
+(`imu_state`, `magnetometer_state`, `imu_rate_hz`, `accel_range_g`,
+`gyro_range_dps`, `imu_packets`, `imu_fifo_overflows`, `imu_fifo_resyncs`, and
+when valid `latest` with `uptime_ms`, `accel_counts`, `gyro_counts`, `accel_g`,
+`gyro_dps` and `temperature_c`; `window` with `accel_min_g`, `accel_max_g` and
+`gyro_max_dps`; `magnetometer` with `uptime_ms`, `field_counts`,
+`field_microtesla` and `bridge_offset_counts`). Hardware status is separate from
 administrative identity and never changes receiver capability/liveness counts.
 
 `hardware_trust` is `none`, `open`, `test` or `trusted`: what the collector

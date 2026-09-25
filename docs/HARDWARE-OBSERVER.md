@@ -597,9 +597,10 @@ TLC5916 drivers by output-enable GPIO47/GPIO48, USB-OTG and the Qwiic port.
 Each board has its own firmware build (`NVF_BOARD_ASSEMBLY`), which offers only that board's
 list and drives that board's pins: the ZED/X20's mirrored front-panel chain, the GPIO18
 preset buttons and GPIO2 brightness trimmer of the ZED/X20 and MAX, the ZED/X20's MAX31328
-RTC and W5500 Ethernet uplink, and RAM-only configuration of each board's own receiver
-(NEO-M9N, ZED-X20P or MAX-M10S). The MAX's MAX31856, ICM-45686, MMC34160PJ and MS5607 still
-need drivers.
+RTC and W5500 Ethernet uplink, the MAX's MS5607, MAX31856, ICM-45686 and MMC34160PJ
+(telemetry tags 11-13 in [OBSERVER-TELEMETRY.md](OBSERVER-TELEMETRY.md)), and RAM-only
+configuration of each board's own receiver (NEO-M9N, ZED-X20P or MAX-M10S). None of the
+ZED/X20 or MAX paths has yet run on assembled hardware.
 
 The ordinary eight-second configuration-reset gesture erases only `navfeeder`; it does not
 erase `hwmanifest`. The custom-board build also refuses the generic fallback that automatically

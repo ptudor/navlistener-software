@@ -19,8 +19,16 @@ static const env_hdc_variant_t hdc_variant = ENV_HDC2080;
 static const char *hdc_name = "HDC2080";
 static const char *hdc_conversion = "Rev C conversion, nominal 3.3 V correction";
 #endif
+#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
+// The MAX replaces the BMP388 with an MS5607 and adds the magnetometer.
+static const uint8_t addresses[] = {0x18, 0x40, 0x76, MS5607_ADDRESS, MMC34160_ADDRESS};
+enum { BAROMETER_DEVICE = 3, MAGNETOMETER_DEVICE = 4 };
+#else
 static const uint8_t addresses[] = {0x18, 0x40, 0x76};
-static i2c_master_dev_handle_t devices[3];
+#endif
+#define DEVICE_COUNT (sizeof addresses / sizeof addresses[0])
+static i2c_master_dev_handle_t devices[DEVICE_COUNT];
+static i2c_master_bus_handle_t sensor_bus;
 static env_sensors_t sensors;
 static bool initialized;
 // Condensation recovery parameters (Kconfig.projbuild); docs/HARDWARE-OBSERVER.md section 6.4.
@@ -62,7 +70,7 @@ static void attach(i2c_master_bus_handle_t bus, unsigned i)
 }
 static i2c_master_dev_handle_t device(uint8_t address)
 {
-    for (unsigned i = 0; i < 3; i++) if (addresses[i] == address) return devices[i];
+    for (unsigned i = 0; i < DEVICE_COUNT; i++) if (addresses[i] == address) return devices[i];
     return NULL;
 }
 static bool read_register(void *ctx, uint8_t address, uint8_t reg, uint8_t *p, size_t n)
@@ -180,7 +188,8 @@ void environment_sample(i2c_master_bus_handle_t bus, int64_t now, bool utc_valid
     memset(out, 0, sizeof *out); *ready = 0; *status = (env_heater_status_t){0};
     if (!bus) return;
     if (!initialized) {
-        for (unsigned i = 0; i < 3; i++) attach(bus, i);
+        sensor_bus = bus;
+        for (unsigned i = 0; i < DEVICE_COUNT; i++) attach(bus, i);
         env_io_t io = {.read = read_register, .write = write_register, .delay_ms = delay_ms};
         env_sensors_init(&sensors, &io, hdc_variant); initialized = true;
         ESP_LOGI(TAG, "configured humidity sensor: %s (%s)", hdc_name, hdc_conversion);
@@ -224,7 +233,59 @@ void environment_sample(i2c_master_bus_handle_t bus, int64_t now, bool utc_valid
     if (heater.state != ENV_HEATER_NORMAL) { sample.hdc_valid = false; sample.hdc_c = sample.rh_percent = 0; }
     *out = sample;
 }
+#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
+static ms5607_t barometer;
+static bool barometer_tried, magnetometer_ready, magnetometer_tried;
+// Absolute pressure: sea-level correction and any derived height are left to consumers.
+void environment_sample_max(env_barometer_t *b, env_magnetometer_t *m)
+{
+    *b = (env_barometer_t){0}; *m = (env_magnetometer_t){0};
+    if (!initialized) return;
+    env_io_t io = {.read = read_register, .write = write_register, .delay_ms = delay_ms};
+    if (barometer.state != MS5607_READY) {
+        attach(sensor_bus, BAROMETER_DEVICE);
+        ms5607_state_t before = barometer.state;
+        if (ms5607_init(&barometer, &io) != before || !barometer_tried)
+            ESP_LOGI(TAG, "MS5607: %s", barometer.state == MS5607_READY ? "calibration PROM verified" :
+                     barometer.state == MS5607_PROM_REJECTED ? "calibration PROM failed its CRC" : "not answering");
+        barometer_tried = true;
+    }
+    b->state = barometer.state;
+    if (barometer.state == MS5607_READY) {
+        b->valid = ms5607_read(&barometer, &io, &b->centi_c, &b->pressure_pa);
+        if (b->valid) ESP_LOGI(TAG, "MS5607 temperature=%.2f C pressure=%.2f hPa (local absolute%s)",
+                               b->centi_c / 100.0, b->pressure_pa / 100.0,
+                               b->pressure_pa < MS5607_FULL_MIN_PA || b->pressure_pa > MS5607_FULL_MAX_PA ?
+                               ", extended range" : "");
+        else ESP_LOGW(TAG, "MS5607 measurement unavailable");
+    }
+    if (!magnetometer_ready) {
+        attach(sensor_bus, MAGNETOMETER_DEVICE);
+        magnetometer_ready = mmc34160_init(&io);
+        if (magnetometer_ready) ESP_LOGI(TAG, "MMC34160PJ identified; 16-bit SET/RESET measurements");
+        else if (!magnetometer_tried) ESP_LOGW(TAG, "MMC34160PJ not identified; retrying at each sample");
+        magnetometer_tried = true;
+    }
+    m->ready = magnetometer_ready;
+    if (magnetometer_ready) {
+        m->valid = mmc34160_measure(&io, &m->sample);
+        if (m->valid) ESP_LOGI(TAG, "MMC34160PJ field X=%d Y=%d Z=%d counts (2048/G), bridge offset %u/%u/%u",
+                               m->sample.field[0], m->sample.field[1], m->sample.field[2],
+                               m->sample.offset[0], m->sample.offset[1], m->sample.offset[2]);
+        else ESP_LOGW(TAG, "MMC34160PJ measurement unavailable");
+    }
+}
 #else
+void environment_sample_max(env_barometer_t *b, env_magnetometer_t *m)
+{
+    *b = (env_barometer_t){0}; *m = (env_magnetometer_t){0};
+}
+#endif
+#else
+void environment_sample_max(env_barometer_t *b, env_magnetometer_t *m)
+{
+    *b = (env_barometer_t){0}; *m = (env_magnetometer_t){0};
+}
 void environment_sample(i2c_master_bus_handle_t bus, int64_t now_ms, bool utc_valid, int64_t utc,
                         env_sample_t *out, uint8_t *ready, env_heater_status_t *heater)
 {

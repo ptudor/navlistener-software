@@ -221,6 +221,16 @@ Sampling is every 30 seconds, with meaningful-change reporting, a five-minute
 check-in, and fresh snapshots on receiver interference-state transitions.
 The collector must support this report before the firmware is deployed.
 
+The MAX board replaces the BMP388 with an MS5607 at `0x77` and adds an
+MMC34160PJ magnetometer at `0x30`, both sampled with the other sensors, and an
+ICM-45686 IMU at `0x69` whose FIFO a separate task drains on INT1 (GPIO16) at
+100 Hz. Its MAX31856 thermocouple converter has its own SPI bus (CS GPIO13, SCK 40,
+MOSI 41, MISO 42, DRDY_N GPIO1) and converts continuously with the 60 Hz notch;
+select 50 Hz with `CONFIG_NVF_THERMOCOUPLE_50HZ=y`. Each environmental report
+carries the pressure, the thermocouple and its faults, and a motion summary; see
+[the MAX sensor tags](../docs/OBSERVER-TELEMETRY.md#max-board-sensors-tags-11-13-version-1).
+A sensor that does not answer is retried; the others continue.
+
 The HDC heater stays off except for a rare condensation-recovery run: after four
 continuous hours at 98 %RH or more, at most once per 14 days of trusted UTC. The
 run's start time is saved in the `nvf_env` NVS namespace before the heater is
