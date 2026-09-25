@@ -48,6 +48,7 @@ npm test
 npm run build     # semantic static site -> dist/
 npm run preview
 make deploy       # build + SHA-256 digests + rsync to /usr/local/www/navlistener/web/
+make publish-boards  # oxipng + rsync the untracked board preview PNGs to junia
 ```
 
 The build runs the copy guards, creates the client bundle, server-renders `App.vue` into the
@@ -90,3 +91,42 @@ rsync `dist/` into the document root.
 The contact links use `ptudor@ptudor.net`, a known working project-owner address, with subjects
 for hosting, contributions, hardware, and customer projects. When a `@navlisten.com` mailbox
 is ready, update `emailHref()` and the visible address in `src/App.vue` together.
+
+## Board layout previews
+
+The Hardware section shows top and bottom PNGs for NEO, MAX, and ZED/X20 from
+`public/assets/boards/`, rendered from the saved layouts. These are 2D layout
+illustrations with simplified component bodies and lettering. Use that description
+in captions and alt text. The observer illustration above them is unchanged.
+
+Regenerate them with `pcb/tools/board_preview.py` in the hardware repository.
+That repository's `pcb/previews/README.md` describes dependencies and configuration.
+Choose the hardware checkout explicitly; from this website directory, after
+installing the renderer's Python dependencies:
+
+```sh
+python3 /path/to/navlistener-hardware/pcb/tools/board_preview.py \
+  --config /path/to/navlistener-hardware/pcb/previews/boards.json \
+  --output /path/to/preview-output \
+  --website-dir public/assets/boards
+```
+
+The export copies `neo-top.png`, `neo-bottom.png`, `max-top.png`, `max-bottom.png`,
+`zed-top.png`, `zed-bottom.png`, and `manifest.json`. The manifest records dimensions,
+source digests, and asset digests without local paths. PNG backgrounds are transparent
+outside the board outline. Native SVGs and the interactive offline gallery remain
+in the explicit preview output directory. The command does not deploy the site.
+
+The PNGs stay out of Git. Only `manifest.json` is tracked; `.gitignore` excludes the
+images. Publish them from the machine that holds them after each export:
+
+```sh
+make publish-boards                      # oxipng, then rsync to junia's document root
+make publish-boards BOARDS_HOST=another-host
+```
+
+oxipng recompresses the images losslessly, so their digests no longer match the
+manifest's `files` entries, which describe the renderer output. `make deploy` excludes
+`assets/boards/*.png` and their `.sha256` files: it neither uploads local copies nor
+deletes the published images. The static check fails if the page stops showing a board
+listed in the manifest. Update `boards` in `src/App.vue` when the manifest changes.

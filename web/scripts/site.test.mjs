@@ -37,7 +37,7 @@ test('the system story represents both supported receiver families', async () =>
   assert.match(app, /u-blox \+ Septentrio/)
   assert.match(app, /purpose-built ESP32-S3 observer/)
   assert.match(app, /Hardware-backed station identity/)
-  assert.doesNotMatch(app, /\bNEO\b/)
+  assert.doesNotMatch(app, /tags: \[[^\]]*\bNEO\b/, 'the receive layer stays receiver-neutral')
   assert.doesNotMatch(app, /existing station/i)
 })
 

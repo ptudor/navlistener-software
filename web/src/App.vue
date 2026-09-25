@@ -46,6 +46,12 @@ const layers = [
   },
 ]
 
+const boards = [
+  { id: 'neo', title: 'NEO', size: '127.0 × 50.8 mm', height: 640 },
+  { id: 'max', title: 'MAX', size: '99.06 × 99.06 mm', height: 1600 },
+  { id: 'zed', title: 'ZED / X20', size: '99.06 × 99.06 mm', height: 1600 },
+]
+
 const contributionPaths = [
   {
     icon: '⌁',
@@ -288,6 +294,33 @@ function emailHref(subject) {
           </dl>
           <a class="text-link" :href="emailHref('I’m interested in NavListen observer hardware')">Ask about the observer <span aria-hidden="true">↗</span></a>
         </div>
+      </div>
+
+      <div class="container board-gallery">
+        <div class="board-gallery-heading">
+          <p class="section-kicker">Receiver options</p>
+          <h3>Three boards. One observer.</h3>
+          <p>
+            Each board is sized for a different receiver module. These 2D layout illustrations
+            come from the saved board designs, with simplified component bodies and lettering.
+          </p>
+        </div>
+        <figure v-for="board in boards" :key="board.id">
+          <div class="board-sides">
+            <div v-for="side in ['top', 'bottom']" :key="side" class="board-side">
+              <span aria-hidden="true">{{ side }}</span>
+              <img
+                :src="`/assets/boards/${board.id}-${side}.png`"
+                width="1600"
+                :height="board.height"
+                :alt="`${board.title} board, ${side} side, 2D layout illustration`"
+                loading="lazy"
+                decoding="async"
+              />
+            </div>
+          </div>
+          <figcaption><strong>{{ board.title }}</strong><span>{{ board.size }} · 2D layout illustration</span></figcaption>
+        </figure>
       </div>
     </section>
 

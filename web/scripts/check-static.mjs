@@ -40,4 +40,19 @@ await Promise.all([
   'site.webmanifest',
 ].map((file) => access(path.join(dist, file))))
 
-console.log('static export OK — semantic HTML, metadata, CSP, and brand assets present')
+// Board PNGs are published separately from the build, so check the page against the
+// manifest and leave the images themselves out of the required files.
+const boards = JSON.parse(await readFile(path.join(dist, 'assets/boards/manifest.json'), 'utf8'))
+for (const board of boards.boards) {
+  const height = Math.round(boards.width_pixels * board.height_mm / board.width_mm)
+  for (const side of ['top', 'bottom']) {
+    const file = `${board.id}-${side}.png`
+    assert.ok(file in boards.files, `board manifest lists ${file}`)
+    const image = html.match(new RegExp(`<img[^>]*src="/assets/boards/${file}"[^>]*>`))?.[0]
+    assert.ok(image, `page shows ${file}`)
+    assert.match(image, new RegExp(`width="${boards.width_pixels}" height="${height}"`), `${file} dimensions`)
+    assert.match(image, /alt="[^"]+2D layout illustration"/, `${file} is labeled as an illustration`)
+  }
+}
+
+console.log('static export OK — semantic HTML, metadata, CSP, brand assets, and board previews present')

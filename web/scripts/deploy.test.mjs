@@ -44,7 +44,11 @@ const fs = require('node:fs/promises');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 (async () => {
-  assert.deepEqual(process.argv.slice(2), ['-a', '--delete', '--delay-updates', 'dist/', process.env.TEST_DESTINATION + '/']);
+  assert.deepEqual(process.argv.slice(2), [
+    '-a', '--delete', '--delay-updates',
+    '--exclude=/assets/boards/*.png', '--exclude=/assets/boards/*.png.sha256',
+    'dist/', process.env.TEST_DESTINATION + '/',
+  ]);
   for (const file of ['index.html', 'assets/new file.js']) {
     const digest = crypto.createHash('sha256').update(await fs.readFile('dist/' + file)).digest('hex');
     assert.equal((await fs.readFile('dist/' + file + '.sha256', 'utf8')).slice(0, 64), digest);
@@ -70,6 +74,40 @@ const crypto = require('node:crypto');
       await assert.rejects(readFile(join(directory, 'removed.js')), { code: 'ENOENT' })
       await assert.rejects(readFile(join(directory, 'removed.js.sha256')), { code: 'ENOENT' })
     }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('board previews are optimized before they are pushed to the web host', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'navlistener-boards-test-'))
+  try {
+    const bin = join(root, 'bin')
+    const boards = ['max-top.png', 'neo-bottom.png', 'neo-top.png']
+    await mkdir(bin)
+    await mkdir(join(root, 'public', 'assets', 'boards'), { recursive: true })
+    await cp(new URL('../Makefile', import.meta.url), join(root, 'Makefile'))
+    for (const board of boards) await writeFile(join(root, 'public', 'assets', 'boards', board), 'png')
+    await writeFile(join(bin, 'oxipng'), `#!/usr/bin/env node
+const fs = require('node:fs');
+fs.appendFileSync('commands', JSON.stringify(['oxipng', ...process.argv.slice(2)]) + '\\n');
+`, { mode: 0o755 })
+    // Records the transfer; it never opens a connection.
+    await writeFile(join(bin, 'rsync'), `#!/usr/bin/env node
+const fs = require('node:fs');
+fs.appendFileSync('commands', JSON.stringify(['rsync', ...process.argv.slice(2)]) + '\\n');
+`, { mode: 0o755 })
+
+    await execute('make', ['publish-boards'], {
+      cwd: root,
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    })
+    const sources = boards.map(board => `public/assets/boards/${board}`)
+    const commands = (await readFile(join(root, 'commands'), 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+    assert.deepEqual(commands, [
+      ['oxipng', '-o', 'max', '--strip', 'safe', ...sources],
+      ['rsync', '-a', '--delay-updates', ...sources, 'junia:/usr/local/www/navlistener/web/assets/boards/'],
+    ])
   } finally {
     await rm(root, { recursive: true, force: true })
   }

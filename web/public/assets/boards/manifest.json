@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "kind": "2d-layout-illustration",
+  "note": "2D layout illustration. Component bodies and lettering are simplified; copper routing, solder mask, component height and attached cables are not shown. This is not a fabrication proof or an assembly photograph.",
+  "width_pixels": 1600,
+  "boards": [
+    {
+      "id": "neo",
+      "title": "NEO",
+      "width_mm": 127.0,
+      "height_mm": 50.8,
+      "source_sha256": "9478f16ce51eb856cbc1c07ab15bfee7c205c4df728470e0c7d1a6631b6ac584",
+      "history_head": "bc4b4185f0204caba1719278dd7694ca",
+      "pcb": "62becebde89f864b",
+      "component_count": 113,
+      "artwork": {
+        "top": {
+          "sha256": "684c608c60561464aec44250d4af983cd5e1b56db5768b47cfc35e8b92850dba"
+        },
+        "bottom": {
+          "sha256": "a8057988ebddf056e1144adfab02384e42d85eac94c756c5bc29387c24ace8a7"
+        }
+      },
+      "fallback_bodies": {
+        "top": [
+          "BAT1"
+        ],
+        "bottom": []
+      }
+    },
+    {
+      "id": "max",
+      "title": "MAX",
+      "width_mm": 99.06,
+      "height_mm": 99.06,
+      "source_sha256": "f5d868bca310b6769c619fc8b81cd6aa272555e045bf5bb7b2fa5f907709ac01",
+      "history_head": "290eec47cfdb4b3aafe0e456ecd571ca",
+      "pcb": "e54c7dd92ffed210",
+      "component_count": 149,
+      "artwork": {
+        "top": {
+          "sha256": "a02e453643736e75d80f0960782e6f8a4ad95e98f159a78a5e689219dabd8383"
+        },
+        "bottom": {
+          "sha256": "9d398357e9dc31713caedee575af1bfd54d1026924f9deebfff4a43552724616"
+        }
+      },
+      "fallback_bodies": {
+        "top": [
+          "BT1",
+          "JTC1",
+          "U1",
+          "U38"
+        ],
+        "bottom": []
+      }
+    },
+    {
+      "id": "zed",
+      "title": "ZED / X20",
+      "width_mm": 99.06,
+      "height_mm": 99.06,
+      "source_sha256": "ae065eeb08024ddab4432f7c4e85dcde0de3fc7831bd2c316fb286fe973ca9d1",
+      "history_head": "1becc71163fb4a379579514b5b411056",
+      "pcb": "e54c7dd92ffed210",
+      "component_count": 205,
+      "artwork": {
+        "top": {
+          "sha256": "a02e453643736e75d80f0960782e6f8a4ad95e98f159a78a5e689219dabd8383"
+        },
+        "bottom": {
+          "sha256": "6dbf6734d4fcbea68454b96f0690d5b107523afdcffff081dac3a8d8cc735823"
+        }
+      },
+      "fallback_bodies": {
+        "top": [
+          "BT1",
+          "J1"
+        ],
+        "bottom": []
+      }
+    }
+  ],
+  "files": {
+    "neo-top.png": "bc48710b14f026a80ec28a1729ed5cdad92c9bac5f661312c22057fce94ad052",
+    "neo-bottom.png": "4b430aec09967bded03d14a963dd17af8bff0df3a9cdd4d46ddfecbcf55da11d",
+    "max-top.png": "ea3ede818c4ba6c785693279fddd8b155ef18937d1ae5e748c16cbb80e53dce6",
+    "max-bottom.png": "43e889f19168a548e77ba7a9368fe532c0772bbcd34c267b16dca6fc9bf4fb6c",
+    "zed-top.png": "d83a823bfc05ae12eb13abc479d118459a7679fdb8a7979f103b9f3fd81a8f6d",
+    "zed-bottom.png": "7ea635d3482d45d4052470c6419d0db92f4a6c38b13eb733efc9b122000c7351"
+  }
+}
