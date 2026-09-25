@@ -40,14 +40,15 @@ await Promise.all([
   'site.webmanifest',
 ].map((file) => access(path.join(dist, file))))
 
-// Board PNGs are published separately from the build, so check the page against the
-// manifest and leave the images themselves out of the required files.
+// Board images are published separately from the build, so check the page against the
+// manifest and leave the images themselves out of the required files. The page shows
+// a JPEG copy of each exported PNG.
 const boards = JSON.parse(await readFile(path.join(dist, 'assets/boards/manifest.json'), 'utf8'))
 for (const board of boards.boards) {
   const height = Math.round(boards.width_pixels * board.height_mm / board.width_mm)
   for (const side of ['top', 'bottom']) {
-    const file = `${board.id}-${side}.png`
-    assert.ok(file in boards.files, `board manifest lists ${file}`)
+    const file = `${board.id}-${side}.jpg`
+    assert.ok(`${board.id}-${side}.png` in boards.files, `board manifest lists ${board.id}-${side}.png`)
     const image = html.match(new RegExp(`<img[^>]*src="/assets/boards/${file}"[^>]*>`))?.[0]
     assert.ok(image, `page shows ${file}`)
     assert.match(image, new RegExp(`width="${boards.width_pixels}" height="${height}"`), `${file} dimensions`)

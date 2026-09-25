@@ -961,7 +961,6 @@ ul {
 .board-side img {
   width: 100%;
   height: auto;
-  filter: drop-shadow(0 20px 22px rgba(0, 0, 0, 0.45));
 }
 
 .board-gallery figcaption {

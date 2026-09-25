@@ -47,6 +47,7 @@ const crypto = require('node:crypto');
   assert.deepEqual(process.argv.slice(2), [
     '-a', '--delete', '--delay-updates',
     '--exclude=/assets/boards/*.png', '--exclude=/assets/boards/*.png.sha256',
+    '--exclude=/assets/boards/*.jpg', '--exclude=/assets/boards/*.jpg.sha256',
     'dist/', process.env.TEST_DESTINATION + '/',
   ]);
   for (const file of ['index.html', 'assets/new file.js']) {
@@ -79,7 +80,7 @@ const crypto = require('node:crypto');
   }
 })
 
-test('board previews are optimized before they are pushed to the web host', async () => {
+test('board previews are optimized and converted before they are pushed to the web host', async () => {
   const root = await mkdtemp(join(tmpdir(), 'navlistener-boards-test-'))
   try {
     const bin = join(root, 'bin')
@@ -92,6 +93,11 @@ test('board previews are optimized before they are pushed to the web host', asyn
 const fs = require('node:fs');
 fs.appendFileSync('commands', JSON.stringify(['oxipng', ...process.argv.slice(2)]) + '\\n');
 `, { mode: 0o755 })
+    await writeFile(join(bin, 'convert'), `#!/usr/bin/env node
+const fs = require('node:fs');
+fs.appendFileSync('commands', JSON.stringify(['convert', ...process.argv.slice(2)]) + '\\n');
+fs.writeFileSync(process.argv.at(-1), 'jpeg');
+`, { mode: 0o755 })
     // Records the transfer; it never opens a connection.
     await writeFile(join(bin, 'rsync'), `#!/usr/bin/env node
 const fs = require('node:fs');
@@ -103,10 +109,15 @@ fs.appendFileSync('commands', JSON.stringify(['rsync', ...process.argv.slice(2)]
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
     })
     const sources = boards.map(board => `public/assets/boards/${board}`)
+    const copies = sources.map(source => source.replace(/\.png$/, '.jpg'))
     const commands = (await readFile(join(root, 'commands'), 'utf8')).trim().split('\n').map(line => JSON.parse(line))
     assert.deepEqual(commands, [
       ['oxipng', '-o', 'max', '--strip', 'safe', ...sources],
-      ['rsync', '-a', '--delay-updates', ...sources, 'junia:/usr/local/www/navlistener/web/assets/boards/'],
+      ...sources.map((source, index) => [
+        'convert', source, '-background', 'rgb(18,23,32)', '-alpha', 'remove', '-alpha', 'off', '-strip',
+        '-interlace', 'JPEG', '-sampling-factor', '4:2:0', '-quality', '80', copies[index],
+      ]),
+      ['rsync', '-a', '--delay-updates', ...sources, ...copies, 'junia:/usr/local/www/navlistener/web/assets/boards/'],
     ])
   } finally {
     await rm(root, { recursive: true, force: true })

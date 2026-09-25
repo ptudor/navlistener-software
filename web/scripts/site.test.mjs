@@ -56,6 +56,17 @@ test('public copy avoids adversarial contrast and deficit framing', async () => 
   }
 })
 
+test('board preview JPEGs are flattened onto the hardware section background', async () => {
+  const [makefile, styles] = await Promise.all([
+    readFile(path.join(webRoot, 'Makefile'), 'utf8'),
+    readFile(path.join(webRoot, 'src', 'styles.css'), 'utf8'),
+  ])
+  const background = styles.match(/^\.hardware \{[^}]*background: #([0-9a-f]{6});/m)?.[1]
+  assert.ok(background, 'the hardware section has a solid background')
+  const [red, green, blue] = background.match(/../g).map(pair => parseInt(pair, 16))
+  assert.match(makefile, new RegExp(`^BOARDS_MATTE\\s*= rgb\\(${red},${green},${blue}\\)$`, 'm'))
+})
+
 test('the site uses family typography and product colors', async () => {
   const styles = await readFile(path.join(webRoot, 'src', 'styles.css'), 'utf8')
 

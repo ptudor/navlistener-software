@@ -310,7 +310,7 @@ function emailHref(subject) {
             <div v-for="side in ['top', 'bottom']" :key="side" class="board-side">
               <span aria-hidden="true">{{ side }}</span>
               <img
-                :src="`/assets/boards/${board.id}-${side}.png`"
+                :src="`/assets/boards/${board.id}-${side}.jpg`"
                 width="1600"
                 :height="board.height"
                 :alt="`${board.title} board, ${side} side, 2D layout illustration`"

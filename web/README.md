@@ -48,7 +48,7 @@ npm test
 npm run build     # semantic static site -> dist/
 npm run preview
 make deploy       # build + SHA-256 digests + rsync to /usr/local/www/navlistener/web/
-make publish-boards  # oxipng + rsync the untracked board preview PNGs to junia
+make publish-boards  # oxipng + JPEG copies + rsync the untracked board previews to junia
 ```
 
 The build runs the copy guards, creates the client bundle, server-renders `App.vue` into the
@@ -94,7 +94,7 @@ is ready, update `emailHref()` and the visible address in `src/App.vue` together
 
 ## Board layout previews
 
-The Hardware section shows top and bottom PNGs for NEO, MAX, and ZED/X20 from
+The Hardware section shows top and bottom views of NEO, MAX, and ZED/X20 from
 `public/assets/boards/`, rendered from the saved layouts. These are 2D layout
 illustrations with simplified component bodies and lettering. Use that description
 in captions and alt text. The observer illustration above them is unchanged.
@@ -117,16 +117,23 @@ source digests, and asset digests without local paths. PNG backgrounds are trans
 outside the board outline. Native SVGs and the interactive offline gallery remain
 in the explicit preview output directory. The command does not deploy the site.
 
-The PNGs stay out of Git. Only `manifest.json` is tracked; `.gitignore` excludes the
-images. Publish them from the machine that holds them after each export:
+The images stay out of Git. Only `manifest.json` is tracked; `.gitignore` excludes the
+PNGs and their JPEG copies. Publish them from the machine that holds them after each
+export. The target needs `oxipng` and ImageMagick's `convert`:
 
 ```sh
-make publish-boards                      # oxipng, then rsync to junia's document root
+make publish-boards                      # oxipng, JPEG copies, rsync to junia's document root
 make publish-boards BOARDS_HOST=another-host
 ```
 
-oxipng recompresses the images losslessly, so their digests no longer match the
-manifest's `files` entries, which describe the renderer output. `make deploy` excludes
-`assets/boards/*.png` and their `.sha256` files: it neither uploads local copies nor
-deletes the published images. The static check fails if the page stops showing a board
-listed in the manifest. Update `boards` in `src/App.vue` when the manifest changes.
+oxipng recompresses the PNGs losslessly, so their digests no longer match the
+manifest's `files` entries, which describe the renderer output. The page shows the
+smaller JPEG copies, encoded progressively at quality 80. JPEG has no transparency,
+so the corners outside the board outline are filled with `BOARDS_MATTE`, the
+`.hardware` background color; a test keeps the two in step. The PNGs are published
+beside them at full fidelity.
+
+`make deploy` excludes `assets/boards/*.png`, `*.jpg`, and their `.sha256` files: it
+neither uploads local copies nor deletes the published images. The static check fails
+if the page stops showing a board listed in the manifest. Update `boards` in
+`src/App.vue` when the manifest changes.

@@ -3,5 +3,6 @@ dist/
 .static-ssr/
 .DS_Store
 
-# Board previews are optimized with oxipng and published separately (README.md).
+# Board previews are published by make publish-boards (README.md).
 public/assets/boards/*.png
+public/assets/boards/*.jpg
