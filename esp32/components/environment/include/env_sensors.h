@@ -10,7 +10,7 @@ typedef struct {
     bool (*write)(void *ctx, uint8_t address, uint8_t reg, const uint8_t *data, size_t len);
     void (*delay_ms)(void *ctx, unsigned ms);
 } env_io_t;
-// The ID registers are identical; the caller must select the fitted part.
+// The ID registers are identical; the manifest says which part is fitted.
 typedef enum {
     ENV_HDC_NONE = 0,
     ENV_HDC2080,
@@ -42,4 +42,9 @@ void env_sensors_read_some(env_sensors_t *s, env_sample_t *sample, uint8_t mask)
 // bits. True only when the register reads back exactly as written. Requires hdc_ready.
 bool env_hdc_heater_set(env_sensors_t *s, bool on);
 bool env_hdc_heater_get(env_sensors_t *s, bool *on);
+// For a board whose manifest lists no HDC: measures nothing, but if an HDC2080-family
+// part answers at 0x40 with HEAT_EN set (a reboot mid-run leaves it on), clears it.
+// *present reports whether the family ID answered. False only when a present part's
+// heater could not be confirmed off.
+bool env_hdc_heater_off_unlisted(const env_io_t *io, bool *present);
 #endif

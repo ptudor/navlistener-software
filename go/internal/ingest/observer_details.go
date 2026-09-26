@@ -25,14 +25,18 @@ type ObserverDetails struct {
 	Barometer     *BoardBarometer      `json:"barometer,omitempty"`
 	Thermocouple  *BoardThermocouple   `json:"thermocouple,omitempty"`
 	Motion        *BoardMotion         `json:"motion,omitempty"`
-	RTC           *BoardRTC            `json:"rtc,omitempty"`
-	ATECC         *BoardATECC          `json:"atecc,omitempty"`
-	EEPROM        *BoardEEPROM         `json:"eeprom,omitempty"`
-	Resources     *BoardResources      `json:"resources,omitempty"`
-	Receiver      *BoardReceiver       `json:"receiver,omitempty"`
-	Firmware      string               `json:"firmware,omitempty"`
-	Update        *BoardUpdate         `json:"update,omitempty"`
-	Timing        *BoardTiming         `json:"timing,omitempty"`
+	// HumiditySensor is the part the manifest lists at 0x40: "hdc2080" or "hdc2022" (which
+	// chose the temperature formula behind hdc2080_c), "not_listed" (not measured, as on an
+	// unconfigured board) or "conflicting" (both listed; not measured).
+	HumiditySensor string          `json:"humidity_sensor,omitempty"`
+	RTC            *BoardRTC       `json:"rtc,omitempty"`
+	ATECC          *BoardATECC     `json:"atecc,omitempty"`
+	EEPROM         *BoardEEPROM    `json:"eeprom,omitempty"`
+	Resources      *BoardResources `json:"resources,omitempty"`
+	Receiver       *BoardReceiver  `json:"receiver,omitempty"`
+	Firmware       string          `json:"firmware,omitempty"`
+	Update         *BoardUpdate    `json:"update,omitempty"`
+	Timing         *BoardTiming    `json:"timing,omitempty"`
 }
 type BoardEnvironment struct {
 	ReadyMask       uint8    `json:"ready_mask"`
@@ -239,6 +243,11 @@ func decodeObserverDetails(b []byte) (*ObserverDetails, error) {
 			if d.Motion, err = decodeMotion(v, d.UptimeMS); err != nil {
 				return nil, err
 			}
+		case 14:
+			if n != 2 || v[0] != 1 || v[1] > 3 {
+				return nil, ErrBadTelemetry
+			}
+			d.HumiditySensor = []string{"not_listed", "hdc2080", "hdc2022", "conflicting"}[v[1]]
 		default:
 			continue // bounded unknown extensions are skipped, not interpreted
 		}

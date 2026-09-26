@@ -78,6 +78,24 @@ void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_
         report.manifest.component_count = manifest->capabilities.component_count;
     }
     snprintf(report.firmware, sizeof report.firmware, "%s", esp_app_get_description()->version);
+    // The manifest is the only authority for the HDC variant: both parts return the same
+    // ID registers. A board without a usable manifest has not been configured, and one
+    // that lists neither part (or both) gets no humidity measurement.
+    bool usable = manifest->action == HARDWARE_MANIFEST_ACTION_USE && manifest->capabilities_valid;
+    bool hdc2080 = usable && eeprom_has_ic(&manifest->capabilities, CAT_SENSOR, SENSOR_HDC2080);
+    bool hdc2022 = usable && eeprom_has_ic(&manifest->capabilities, CAT_SENSOR, SENSOR_HDC2022);
+    report.humidity = (report_humidity_t){.present = true,
+        .part = hdc2080 && hdc2022 ? HUMIDITY_CONFLICT : hdc2080 ? HUMIDITY_HDC2080 :
+                hdc2022 ? HUMIDITY_HDC2022 : HUMIDITY_NOT_LISTED};
+    environment_set_hdc(report.humidity.part == HUMIDITY_HDC2080 ? ENV_HDC2080 :
+                        report.humidity.part == HUMIDITY_HDC2022 ? ENV_HDC2022 : ENV_HDC_NONE);
+    if (!usable)
+        ESP_LOGW(TAG, "manifest %s: the humidity sensor is not probed; has this board been configured?",
+                 hardware_manifest_action_name(manifest->action));
+    else if (report.humidity.part == HUMIDITY_NOT_LISTED)
+        ESP_LOGW(TAG, "the manifest lists no HDC2080 or HDC2022; humidity is not measured");
+    else if (report.humidity.part == HUMIDITY_CONFLICT)
+        ESP_LOGE(TAG, "the manifest lists both HDC2080 and HDC2022; humidity is not measured until it is corrected");
 }
 enum { LED_DATA = 14, LED_CLOCK = 11, LED_LATCH = 12, LED_GREEN_OE = 47, LED_YELLOW_OE = 48 };
 // The panel pins are part of the allocation record, not a private choice here.
@@ -336,7 +354,7 @@ static void identify_peripherals(void)
                 data[0] == 0 && data[1] == 0x54 && data[2] == 4 ? "; MCP9808 verified" : "; unexpected identity");
         } else if (address == 0x40 && read_reg(0x40, 0xfc, data, 4) == ESP_OK) {
             ESP_LOGI(TAG, "humidity IDs=%02x%02x/%02x%02x%s", data[1], data[0], data[3], data[2],
-                !memcmp(data, "\x49\x54\xd0\x07", 4) ? "; HDC2080/HDC2022 family verified (variant requires assembly selection)" : "; unexpected identity");
+                !memcmp(data, "\x49\x54\xd0\x07", 4) ? "; HDC2080/HDC2022 family verified (the manifest names the variant)" : "; unexpected identity");
         } else if (address == 0x76 && read_reg(0x76, 0, data, 1) == ESP_OK) {
             ESP_LOGI(TAG, "pressure chip ID=0x%02x%s", data[0], data[0] == 0x50 ?
                 "; BMP388/BMP384 family (ID cannot distinguish them)" : "; unexpected identity");

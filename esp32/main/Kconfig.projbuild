@@ -131,22 +131,6 @@ menu "navfeeder-esp"
             above this is an open or faulty trimmer, and brightness stays at the
             saved or default setting. Confirm the margin on the assembled board.
 
-    choice NVF_ENV_HDC_VARIANT
-        prompt "Fitted humidity sensor at 0x40"
-        depends on NVF_BOARD_GNSS_COLOR
-        default NVF_ENV_HDC2080
-        help
-            Select the assembled part. HDC2080 and HDC2022 share manufacturer
-            and device IDs, so probing cannot select the temperature formula.
-            This selection is a build setting, not inferred from the EEPROM.
-
-        config NVF_ENV_HDC2080
-            bool "HDC2080 (Rev C, nominal 3.3 V correction)"
-
-        config NVF_ENV_HDC2022
-            bool "HDC2022 (Rev A)"
-    endchoice
-
     menu "HDC humidity-sensor heater (condensation recovery)"
         depends on NVF_BOARD_GNSS_COLOR
 
@@ -261,17 +245,16 @@ menu "navfeeder-esp"
 
     config NVF_MANIFEST_FACTORY_INIT
         bool "Initialize a never-seen blank manifest from board defaults"
-        depends on NVF_BOARD_GNSS_COLOR && NVF_ENV_HDC2080
+        depends on NVF_BOARD_GNSS_COLOR
         default n
         help
             Manufacturing-only permission. If the manifest EEPROM reads as
             blank, its 128-bit factory serial (24CS or M24128-U) is valid, and
             that identity has never been recorded
             in the independent hwmanifest NVS namespace, program the compiled
-            GNSS_PCB_MAIN revision-A component list chosen below and verify it
-            by readback. Every list specifies HDC2080, so this option is
-            unavailable for HDC2022 assemblies; their manifest must be
-            provisioned separately.
+            GNSS_PCB_MAIN revision-A component list chosen below, with the
+            fitted humidity sensor, and verify it by readback. Field firmware
+            reads every optional and alternate part from that manifest.
 
             Leave this off in ordinary firmware. I2C errors, malformed records,
             a blank previously-known EEPROM, and a different/replacement
@@ -297,6 +280,22 @@ menu "navfeeder-esp"
         config NVF_MANIFEST_BOARD_ZED_X20_A
             bool "ZED-X20P square, revision A"
             depends on NVF_BOARD_GNSS_COLOR_ZED_X20
+    endchoice
+
+    choice NVF_MANIFEST_HDC
+        prompt "Humidity sensor fitted to the boards being initialized"
+        depends on NVF_MANIFEST_FACTORY_INIT
+        default NVF_MANIFEST_HDC2080
+        help
+            The part at 0x40 on this batch, written into each new manifest.
+            HDC2080 and HDC2022 share their ID registers, so only the manifest
+            can tell field firmware which temperature formula applies; firmware
+            measures no humidity on a board whose manifest lists neither.
+
+        config NVF_MANIFEST_HDC2080
+            bool "HDC2080 (Rev C formula)"
+        config NVF_MANIFEST_HDC2022
+            bool "HDC2022 (Rev A formula)"
     endchoice
 
     config NVF_OTA

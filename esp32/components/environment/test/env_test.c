@@ -173,6 +173,20 @@ static void test_heater_register(void)
     setup(&f, &s); io = s.io; f.hdc[0xe] = 0x0b; f.hdc[0xfc] = 0;
     env_sensors_init(&s, &io, ENV_HDC2080);
     assert(!env_sensors_retry_hdc(&s) && !s.hdc_ready && f.hdc[0xe] == 0x0b);
+    // Not listed in the manifest: nothing is measured, but a heater a previous boot left
+    // on is turned off, keeping the other bits.
+    bool present = false;
+    setup(&f, &s); io = s.io; f.hdc[0xe] = 0x8b;
+    assert(env_hdc_heater_off_unlisted(&io, &present) && present && f.hdc[0xe] == 0x03);
+    assert(env_hdc_heater_off_unlisted(&io, &present) && present && f.hdc[0xe] == 0x03); // already off
+    // Nothing answering, or something that is not an HDC: nothing is written.
+    setup(&f, &s); io = s.io; f.absent = 0x40; f.hdc[0xe] = 0x0b;
+    assert(env_hdc_heater_off_unlisted(&io, &present) && !present && f.hdc[0xe] == 0x0b);
+    setup(&f, &s); io = s.io; f.hdc[0xfc] = 0; f.hdc[0xe] = 0x0b;
+    assert(env_hdc_heater_off_unlisted(&io, &present) && !present && f.hdc[0xe] == 0x0b);
+    // A heater that will not clear is reported.
+    setup(&f, &s); io = s.io; f.hdc[0xe] = 0x0b; f.heater_stuck = true;
+    assert(!env_hdc_heater_off_unlisted(&io, &present) && present);
 }
 int main(void)
 {

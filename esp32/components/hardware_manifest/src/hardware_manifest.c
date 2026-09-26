@@ -154,6 +154,13 @@ static bool manifest_profile(const nvf_board_identity_t *identity, eeprom_profil
 #else
 #define MANIFEST_BOARD_NAME "NEO first-spin revision A"
 #endif
+// The part at 0x40 on the batch being initialized. Field firmware reads it back from the
+// manifest to choose the temperature formula; the two parts' ID registers are identical.
+#if CONFIG_NVF_MANIFEST_HDC2022
+#define MANIFEST_HDC SENSOR_HDC2022
+#else
+#define MANIFEST_HDC SENSOR_HDC2080
+#endif
 
 // The component list that factory initialization writes for the board chosen by
 // CONFIG_NVF_MANIFEST_BOARD_*. Keep each list as the manufacturing truth for that
@@ -179,7 +186,7 @@ static void make_board_defaults(eeprom_capabilities_t *caps, uint8_t address, ui
         IC_I2C(CAT_CRYPTO, CRYPTO_ATECC608C, 0x60),
         IC_I2C(CAT_TEMP, TEMP_MCP9808, 0x18),
         IC_I2C(CAT_PRESSURE, PRESSURE_BMP388, 0x76),
-        IC_I2C(CAT_SENSOR, SENSOR_HDC2080, 0x40),
+        IC_I2C(CAT_SENSOR, MANIFEST_HDC, 0x40),                 // the batch's fitted part
         IC_INSTALLED(CAT_COMM, COMM_W5500),                 // SPI Ethernet, U34
         IC_GPIO(CAT_POWER, POWER_ADM7150, 38),              // 3V3_GNSS, U27
         IC_GPIO(CAT_POWER, POWER_TPS7A20, 21),              // 3V3_SENS, U30
@@ -202,7 +209,7 @@ static void make_board_defaults(eeprom_capabilities_t *caps, uint8_t address, ui
         IC_I2C(CAT_CRYPTO, CRYPTO_ATECC608C, 0x60),
         IC_I2C(CAT_TEMP, TEMP_MCP9808, 0x18),
         IC_I2C(CAT_PRESSURE, PRESSURE_MS5607, 0x77),
-        IC_I2C(CAT_SENSOR, SENSOR_HDC2080, 0x40),
+        IC_I2C(CAT_SENSOR, MANIFEST_HDC, 0x40),                 // the batch's fitted part
         IC_I2C(CAT_IMU, IMU_ICM45686, 0x69),
         IC_I2C(CAT_SENSOR, SENSOR_MAG_MMC34160PJ, 0x30),
         IC_INSTALLED(CAT_SENSOR, SENSOR_THERMOCOUPLE_MAX31856), // SPI, U39
@@ -226,7 +233,7 @@ static void make_board_defaults(eeprom_capabilities_t *caps, uint8_t address, ui
         IC_I2C(CAT_CRYPTO, CRYPTO_ATECC608C, 0x60),
         IC_I2C(CAT_TEMP, TEMP_MCP9808, 0x18),
         IC_I2C(CAT_PRESSURE, PRESSURE_BMP388, 0x76),
-        IC_I2C(CAT_SENSOR, SENSOR_HDC2080, 0x40),
+        IC_I2C(CAT_SENSOR, MANIFEST_HDC, 0x40),                 // the batch's fitted part
         IC_GPIO(CAT_POWER, POWER_ADM7150, 38),
         IC_GPIO(CAT_POWER, POWER_RT9193, 21),
         IC_GPIO(CAT_LED, LED_TLC5916, 47),

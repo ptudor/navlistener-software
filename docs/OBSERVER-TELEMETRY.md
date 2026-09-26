@@ -51,13 +51,16 @@ The M9's "no spoofing indicated" state is not proof of authentic reception; see
   compensation: `raw × 165 / 65536 − 40.5 + 0.08 × (3.3 − 1.8)` °C.
   The supply is assumed, not measured. Humidity is `raw × 100 / 65536` %RH.
 - HDC2022 alternate: the same fresh-conversion sequence and humidity formula,
-  with the Rev A temperature formula `raw × 165 / 65536 − 40` °C.
-  Select `CONFIG_NVF_ENV_HDC2022=y` for that assembly; HDC2080 remains the
-  default. Both parts return manufacturer ID `0x5449` and device ID `0x07d0`,
-  so the build selection must match the fitted part. Firmware does not infer it
-  from probing or the EEPROM manifest. Startup logs the selected conversion.
-  At the same raw value the published formulas differ by 0.38 °C at nominal
-  3.3 V; this is a formula difference, not a measured calibration error.
+  with the Rev A temperature formula `raw × 165 / 65536 − 40` °C. Both parts
+  return manufacturer ID `0x5449` and device ID `0x07d0`, so only the manifest
+  can say which is fitted: firmware measures the part the verified manifest lists
+  at 0x40 (`SENSOR_HDC2080` or `SENSOR_HDC2022`) with that part's formula. It fails
+  closed: without a usable manifest (an unconfigured board), or with a manifest
+  that lists neither part or both, nothing at 0x40 is measured. The one exception
+  is safety: if an HDC answers there with its heater left on by an earlier boot,
+  firmware clears the heater bit and measures nothing. Tag 14 reports which part
+  was used. At the same raw value the published formulas differ by 0.38 °C at
+  nominal 3.3 V; this is a formula difference, not a measured calibration error.
 - BMP388/BMP384: temperature and pressure compensated using the chip's factory
   trim and the pinned Bosch BMP3 SensorAPI. Fresh forced conversions use pressure
   8× and temperature 2× oversampling. Chip ID `0x50` does not distinguish these
@@ -261,6 +264,7 @@ invalid lengths/enums/ranges, and trailing partial TLVs are rejected.
 | 11 barometer | 10 | MAX board MS5607; layout below |
 | 12 thermocouple | 12 | MAX board MAX31856; layout below |
 | 13 motion | 95 | MAX board ICM-45686 and MMC34160PJ summary; layout below |
+| 14 humidity sensor | 2 | version U8 = 1, part U8: not listed=0, HDC2080=1, HDC2022=2, both listed=3 |
 
 Environment mask bits 0/1/2 identify MCP/HDC/BMP respectively. Valid requires
 ready. Temperature units are 0.01 °C, RH units 0.01%, pressure units Pa. Invalid
@@ -439,9 +443,9 @@ The authenticated GNF1 context selects station and scope; the payload cannot.
 `board.latest` is omitted until an environmental/health sample arrives. It contains `received_at`, nullable `sample_time`, `session`,
 `sequence`, `hardware_trust`, and `details`. Names/units inside `details.environment` are
 `mcp9808_c`, `hdc2080_c`, `bmp388_bmp384_c`, `humidity_percent`, `pressure_pa`.
-The existing `hdc2080_c` field carries the configured HDC2080 or HDC2022
-temperature. Version 1 does not encode the HDC variant; retain the assembly
-and firmware configuration when interpreting these readings.
+The existing `hdc2080_c` field carries the HDC2080 or HDC2022 temperature; the
+top-level `humidity_sensor` (tag 14) says which part the manifest listed:
+`hdc2080`, `hdc2022`, `not_listed` or `conflicting` (the last two measure nothing).
 Component health and identifiers appear under `rtc`, `atecc`, `eeprom`,
 `resources`, `receiver`, and `firmware`. `humidity_heater` carries tag 10:
 `state`, `trusted_utc`, `last_run_readable`, `runs_since_boot`,

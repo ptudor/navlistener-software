@@ -10,15 +10,19 @@
 #include "freertos/task.h"
 #include "nvs.h"
 static const char *TAG = "environment";
-#if CONFIG_NVF_ENV_HDC2022
-static const env_hdc_variant_t hdc_variant = ENV_HDC2022;
-static const char *hdc_name = "HDC2022";
-static const char *hdc_conversion = "Rev A conversion";
-#else
-static const env_hdc_variant_t hdc_variant = ENV_HDC2080;
-static const char *hdc_name = "HDC2080";
-static const char *hdc_conversion = "Rev C conversion, nominal 3.3 V correction";
-#endif
+// The manifest's HDC entry, set by the board before the first sample. Without one the
+// part is not measured: HDC2080 and HDC2022 share their ID registers, so probing cannot
+// choose the temperature formula.
+static env_hdc_variant_t hdc_variant = ENV_HDC_NONE;
+static const char *hdc_name = "HDC";
+static const char *hdc_conversion = "";
+void environment_set_hdc(env_hdc_variant_t variant)
+{
+    hdc_variant = variant;
+    hdc_name = variant == ENV_HDC2022 ? "HDC2022" : variant == ENV_HDC2080 ? "HDC2080" : "HDC";
+    hdc_conversion = variant == ENV_HDC2022 ? "Rev A conversion" :
+                     variant == ENV_HDC2080 ? "Rev C conversion, nominal 3.3 V correction" : "";
+}
 #if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
 // The MAX replaces the BMP388 with an MS5607 and adds the magnetometer.
 static const uint8_t addresses[] = {0x18, 0x40, 0x76, MS5607_ADDRESS, MMC34160_ADDRESS};
@@ -192,12 +196,23 @@ void environment_sample(i2c_master_bus_handle_t bus, int64_t now, bool utc_valid
         for (unsigned i = 0; i < DEVICE_COUNT; i++) attach(bus, i);
         env_io_t io = {.read = read_register, .write = write_register, .delay_ms = delay_ms};
         env_sensors_init(&sensors, &io, hdc_variant); initialized = true;
-        ESP_LOGI(TAG, "configured humidity sensor: %s (%s)", hdc_name, hdc_conversion);
+        if (hdc_variant == ENV_HDC_NONE) {
+            // Not measured, but a heater left on by an earlier boot is still turned off.
+            bool present = false;
+            bool safe = env_hdc_heater_off_unlisted(&io, &present);
+            if (!present) ESP_LOGI(TAG, "humidity sensor not listed in the manifest and not answering at 0x40");
+            else if (safe) ESP_LOGW(TAG, "an HDC answers at 0x40 but the manifest does not list it: heater confirmed "
+                                         "off, humidity not measured until the manifest names the part");
+            else ESP_LOGE(TAG, "an unlisted HDC at 0x40 did not confirm its heater off");
+        } else {
+            ESP_LOGI(TAG, "humidity sensor from the manifest: %s (%s)", hdc_name, hdc_conversion);
+        }
         ESP_LOGI(TAG, "measurement setup: MCP9808=%s %s=%s BMP388/BMP384=%s",
-            sensors.mcp_ready ? "ready" : "unavailable", hdc_name, sensors.hdc_ready ? "ready" : "unavailable",
+            sensors.mcp_ready ? "ready" : "unavailable", hdc_name,
+            hdc_variant == ENV_HDC_NONE ? "not listed" : sensors.hdc_ready ? "ready" : "unavailable",
             sensors.bmp_ready ? "ready" : "unavailable");
         if (sensors.hdc_ready) heater_load();
-    } else if (!sensors.hdc_ready) {
+    } else if (!sensors.hdc_ready && hdc_variant != ENV_HDC_NONE) {
         // A reboot during a heater run leaves HEAT_EN set until the HDC is configured again, so
         // an HDC that was not identified at boot is retried at every sample.
         attach(bus, 1);
@@ -227,7 +242,7 @@ void environment_sample(i2c_master_bus_handle_t bus, int64_t now, bool utc_valid
                  hdc_name, sample.hdc_c, sample.rh_percent, hdc_conversion, status->rh95_ms / 3600000.0, status->rh98_ms / 3600000.0);
     else if (sample.hdc_valid)
         ESP_LOGI(TAG, "%s withheld%s: temperature=%.2f C humidity=%.2f %%RH", hdc_name, mark, sample.hdc_c, sample.rh_percent);
-    else if (!heating) ESP_LOGW(TAG, "%s measurement unavailable", hdc_name);
+    else if (!heating && hdc_variant != ENV_HDC_NONE) ESP_LOGW(TAG, "%s measurement unavailable", hdc_name);
     if (sample.bmp_valid) ESP_LOGI(TAG, "BMP388/BMP384 temperature=%.2f C pressure=%.2f hPa (local absolute)%s", sample.bmp_c, sample.pressure_pa / 100.0, mark);
     else ESP_LOGW(TAG, "BMP388/BMP384 measurement unavailable");
     if (heater.state != ENV_HEATER_NORMAL) { sample.hdc_valid = false; sample.hdc_c = sample.rh_percent = 0; }
@@ -282,6 +297,7 @@ void environment_sample_max(env_barometer_t *b, env_magnetometer_t *m)
 }
 #endif
 #else
+void environment_set_hdc(env_hdc_variant_t variant) { (void)variant; }
 void environment_sample_max(env_barometer_t *b, env_magnetometer_t *m)
 {
     *b = (env_barometer_t){0}; *m = (env_magnetometer_t){0};

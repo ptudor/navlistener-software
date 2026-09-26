@@ -76,6 +76,7 @@ int main(int argc, char **argv)
         .window_ms=30000,.accel_mean={410,-12,4075},.gyro_mean={2,-1,33},.accel_min_mg=980,
         .accel_max_mg=1530,.gyro_max_decidps=125,.imu_ms=999900,.mag={512,-205,922},
         .mag_offset={32808,32751,32771},.mag_ms=999800};
+    m.humidity=(report_humidity_t){.present=true,.part=HUMIDITY_HDC2022};
     f=fopen(argv[3],"r"); assert(f); size_t max_count=0;
     while (fscanf(f,"%2x",&byte)==1) { assert(max_count<sizeof expected); expected[max_count++]=byte; }
     fclose(f);

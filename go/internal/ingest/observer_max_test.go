@@ -28,20 +28,21 @@ const (
 	barometerBody    = 258 + 3
 	thermocoupleBody = barometerBody + 10 + 3
 	motionBody       = thermocoupleBody + 12 + 3
+	humidityBody     = motionBody + 95 + 3
 )
 
 func near(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 
 func TestObserverDetailsMAXGolden(t *testing.T) {
 	b := observerMAXGolden(t)
-	if len(b) != motionBody+95 {
+	if len(b) != humidityBody+2 {
 		t.Fatalf("fixture length %d", len(b))
 	}
 	d, err := decodeObserverDetails(b)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.Environment == nil || d.Heater == nil || d.Firmware != "test-v1" {
+	if d.Environment == nil || d.Heater == nil || d.Firmware != "test-v1" || d.HumiditySensor != "hdc2022" {
 		t.Fatalf("earlier components: %+v", d)
 	}
 	baro := d.Barometer
@@ -102,6 +103,8 @@ func TestObserverDetailsMAXValidation(t *testing.T) {
 		{motionBody + 61, 0xff, "a minimum above the maximum"},
 		{motionBody + 67, 0xff, "an IMU sample after the report"},
 		{motionBody + 87, 0xff, "a magnetometer sample after the report"},
+		{humidityBody, 2, "humidity-sensor version"},
+		{humidityBody + 1, 4, "an unknown humidity-sensor part"},
 	} {
 		b := append([]byte(nil), good...)
 		b[change.offset] = change.value
@@ -149,7 +152,7 @@ func TestObserverDetailsMAXValidation(t *testing.T) {
 	if d, err := decodeObserverDetails(b); err != nil || d.Motion.Profile != "aerial" || d.Motion.Moving || d.Motion.RateHz != 12.5 {
 		t.Fatalf("still aerial unit: %v %+v", err, d)
 	}
-	for _, cut := range []int{barometerBody + 9, thermocoupleBody + 11, motionBody + 94} {
+	for _, cut := range []int{barometerBody + 9, thermocoupleBody + 11, motionBody + 94, humidityBody + 1} {
 		if _, err := decodeObserverDetails(good[:cut]); err == nil {
 			t.Errorf("accepted truncation at %d", cut)
 		}

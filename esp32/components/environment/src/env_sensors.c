@@ -138,6 +138,16 @@ bool env_hdc_heater_set(env_sensors_t *s, bool on)
     value = on ? (value & 0x7f) | 8 : value & 0x77;
     return write_reg(s, 0x40, 0x0e, &value, 1) && read_reg(s, 0x40, 0x0e, &check, 1) && check == value;
 }
+bool env_hdc_heater_off_unlisted(const env_io_t *io, bool *present)
+{
+    uint8_t p[4], value, check;
+    *present = io->read(io->ctx, 0x40, 0xfc, p, 4) && le16(p) == 0x5449 && le16(p + 2) == 0x07d0;
+    if (!*present) return true;
+    if (!io->read(io->ctx, 0x40, 0x0e, &value, 1)) return false;
+    if (!(value & 8)) return true;
+    value &= 0x77; // HEAT_EN off; never write back the self-clearing SOFT_RES bit
+    return io->write(io->ctx, 0x40, 0x0e, &value, 1) && io->read(io->ctx, 0x40, 0x0e, &check, 1) && check == value;
+}
 bool env_hdc_heater_get(env_sensors_t *s, bool *on)
 {
     uint8_t value;

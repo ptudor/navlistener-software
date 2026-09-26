@@ -63,6 +63,10 @@ typedef struct {
     uint16_t mag_offset[3];
     uint64_t mag_ms;
 } report_motion_t;
+// The humidity sensor the manifest lists at 0x40; tag 14. HDC2080 and HDC2022 share ID
+// registers, so this is what chose the temperature formula, or why none was measured.
+enum { HUMIDITY_NOT_LISTED = 0, HUMIDITY_HDC2080 = 1, HUMIDITY_HDC2022 = 2, HUMIDITY_CONFLICT = 3 };
+typedef struct { bool present; uint8_t part; } report_humidity_t;
 typedef struct { uint8_t flags; uint64_t epoch, sampled_ms; } report_rtc_t;
 typedef struct {
     uint64_t checked_ms;
@@ -92,6 +96,7 @@ typedef struct {
     report_barometer_t barometer;
     report_thermocouple_t thermocouple;
     report_motion_t motion;
+    report_humidity_t humidity;
     report_rtc_t rtc;
     report_crypto_t crypto;
     report_manifest_t manifest;

@@ -60,10 +60,11 @@ size_t observer_report_encode(uint8_t *out, size_t cap, const observer_report_t 
     size_t fwlen = 0;
     while (fwlen < 32 && r->firmware[fwlen]) fwlen++;
     // Header 24; six fixed TLVs (14,17,16,40,29,29); firmware TLV; optional heater (58),
-    // barometer (10), thermocouple (12) and motion (95) TLVs.
+    // barometer (10), thermocouple (12), motion (95) and humidity-sensor (2) TLVs.
     size_t length = 24 + 18 + 14 + 17 + 16 + 5 + NVF_BOARD_UID_SIZE + 29 + 29 + 3 + fwlen +
                     (r->heater.present ? 3 + 58 : 0) + (r->barometer.present ? 3 + 10 : 0) +
-                    (r->thermocouple.present ? 3 + 12 : 0) + (r->motion.present ? 3 + 95 : 0);
+                    (r->thermocouple.present ? 3 + 12 : 0) + (r->motion.present ? 3 + 95 : 0) +
+                    (r->humidity.present ? 3 + 2 : 0);
     if (!out || cap < length) return 0;
     memset(out, 0, length);
     out[0] = 1; out[1] = r->reason; gnf1_be64(out+2, r->uptime_ms);
@@ -118,6 +119,7 @@ size_t observer_report_encode(uint8_t *out, size_t cap, const observer_report_t 
       gnf1_be64(b+67,m->imu_ms);
       for (unsigned i=0;i<3;i++) { gnf1_be16(b+75+2*i,m->mag[i]); gnf1_be16(b+81+2*i,m->mag_offset[i]); }
       gnf1_be64(b+87,m->mag_ms); }
+    if (r->humidity.present) { TLV(14, 2); b[0]=1; b[1]=r->humidity.part; }
 #undef TLV
     return offset;
 }

@@ -7,6 +7,9 @@
 #include "mmc34160.h"
 #include "ms5607.h"
 #include "driver/i2c_master.h"
+// The HDC variant the manifest lists at 0x40, or ENV_HDC_NONE; call before the first
+// sample. ENV_HDC_NONE measures no humidity (see env_hdc_heater_off_unlisted).
+void environment_set_hdc(env_hdc_variant_t variant);
 // Call from the board task, which owns sensor/RTC transactions. utc_valid means utc is time the
 // firmware trusts (GNSS-qualified or a validated running RTC), never SNTP. HDC values are
 // withheld (invalid) while the humidity heater runs or recovers; heater->active is false
