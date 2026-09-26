@@ -590,9 +590,10 @@ other entries say which parts are installed.
 | `CAT_INTSAT`, revision | `INTSAT_NEO`, 1 | `INTSAT_MAX`, 1 | `INTSAT_X20`, 1 |
 | `CAT_GPS` | `GPS_NEO_M9N` | `GPS_MAX_M10S` | `GPS_ZED_X20P` |
 | `CAT_RTC` | `RTC_MCP79412` `0x6F` | `RTC_MCP79412` `0x6F` | `RTC_MAX31328` `0x68` |
-| `CAT_PRESSURE` | `PRESSURE_BMP388` `0x76` | `PRESSURE_MS5607` `0x77` | `PRESSURE_BMP388` `0x76` |
+| `CAT_PRESSURE` | `PRESSURE_BMP388` `0x76` | `PRESSURE_MS5607` `0x77` | `PRESSURE_BMP581` `0x46` |
 | `CAT_POWER`, GPIO38 (`3V3_GNSS`) | `POWER_ADM7150` | `POWER_TPS7A20` | `POWER_ADM7150` |
 | `CAT_POWER`, GPIO21 (`3V3_SENS`) | `POWER_RT9193` | `POWER_TPS7A20` | `POWER_TPS7A20` |
+| `CAT_POWER`, I2C | — | — | `POWER_INA3221` `0x41` (rail monitor) |
 | Additional sensors | — | `IMU_ICM45686` `0x69`, `SENSOR_MAG_MMC34160PJ` `0x30`, `SENSOR_THERMOCOUPLE_MAX31856` (SPI) | — |
 | Ethernet | — | — | `COMM_W5500` (SPI), `CONNECTOR_ETHERNET_RJ45` |
 | `CAT_BATTERY` | `BATTERY_CR123A` | `BATTERY_CR2032`; `BATTERY_CR123A` not populated (optional external cell) | `BATTERY_CR2032`, `BATTERY_CR123A` (carrier) |
@@ -605,7 +606,8 @@ One universal firmware image serves all three boards. It drives a board's pins o
 manifest's `CAT_INTSAT` entry names that board and a revision it knows, and runs each driver
 only for a part listed installed: RAM-only configuration of the listed receiver (NEO-M9N,
 ZED-X20P or MAX-M10S), the MCP79412 or MAX31328 RTC, the MCP9808, HDC2080/HDC2022, BMP388
-and ATECC608C, the ZED/X20's W5500 Ethernet uplink, the GPIO18 preset buttons
+and ATECC608C, the ZED/X20's BMP581, INA3221 rail monitor (telemetry tags 15-16) and W5500
+Ethernet uplink, the GPIO18 preset buttons
 (`BUTTON_USER_2`) with the GPIO2 brightness trimmer, and the MAX's MS5607, MAX31856,
 ICM-45686 and MMC34160PJ (telemetry tags 11-13 in [OBSERVER-TELEMETRY.md](OBSERVER-TELEMETRY.md)).
 The ZED/X20's mirrored front-panel chain follows the board. A manifest that is unusable,
@@ -1244,7 +1246,10 @@ measuring the assembled board.
 The NEO's complete fixed address map is **MCP9808 `0x18`**, **HDC2080 `0x40`**,
 **24CS128 `0x50`** main array and **`0x58`** security interface (A0/A1/A2 to GND),
 **MCP79412 EEPROM `0x57`**, **ATECC608C `0x60`**, **MCP79412 RTCC `0x6F`**, and
-**BMP388 `0x76`** (SDO to GND).
+**BMP388 `0x76`** (SDO to GND). The ZED/X20 has a MAX31328 RTC at **`0x68`** in place of
+the MCP79412's `0x57` and `0x6F`, a **BMP581 at `0x46`** (SDO to GND) in place of the
+BMP388, and an **INA3221 rail monitor at `0x41`** (A0 to VS); its external port
+reserves all three.
 
 Two constraints to resolve on paper *before* anything is locked: the 24CS128's security
 interface at `0x58` must stay free on the shared bus and the external port, and the **ATECC's
@@ -1606,7 +1611,7 @@ from the sibling, and where it deliberately does not:
 | ATECC slot map | `atecc608c_slots_unified.h` **v2** | same header, same numbers | **aligned** — jointly revised 2026-08-08 to the silicon's size classes (§4.1a); one config, one provisioning tool |
 | RTC | MCP79412 | MCP79412 | aligned |
 | Board EEPROM | 24AA02E64 @ `0x50–0x57` | 24CS128 @ `0x50`, security interface `0x58` | **deliberate divergence** — its 128-bit factory serial is the board identity (§4.3); the shepherd part's address range would also collide with MCP79412 EEPROM `0x57` (§7.5) |
-| Pressure | BMP390 | BMP388 placed, 390/580 alternates | inventory-led — §2, §6.1 |
+| Pressure | BMP390 | BMP388 on NEO; BMP581 on ZED/X20; MS5607 on MAX | inventory-led — §2, §6.1 |
 | Status LEDs | WS2812B (+ `led_pps_sync.c`) | discrete green/yellow on 2 × TLC5916 | **deliberate divergence** — §2.1 |
 | I²C | one shared bus, 400 kHz | same | aligned |
 | GPS UART + PPS | UART1, PPS on its own GPIO, clear of GPIO9 | same | **adopted** — this is the fix (§7.1) |

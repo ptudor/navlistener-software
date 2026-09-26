@@ -21,6 +21,9 @@ measurement has changed from the last queued report by at least:
 | Humidity-heater state or run count | Any change |
 | MAX thermocouple | 1 °C; any change in its faults |
 | MAX IMU or magnetometer availability, still/moving state, FIFO overflows or realignments | Any change |
+| ZED/X20 rail voltage | 50 mV |
+| ZED/X20 rail current | 25 mA; any change in the monitor's availability |
+| Listed barometer part | Any change |
 
 Ordinary change reports have a one-minute minimum interval. Comparing against
 the last report accumulates slow drift instead of ignoring many small steps.
@@ -65,6 +68,25 @@ The M9's "no spoofing indicated" state is not proof of authentic reception; see
   trim and the pinned Bosch BMP3 SensorAPI. Fresh forced conversions use pressure
   8× and temperature 2× oversampling. Chip ID `0x50` does not distinguish these
   two variants. Pressure is local absolute pressure, without sea-level correction.
+- ZED/X20 BMP581 (or BMP580) at `0x46`: the part compensates on chip. At each
+  sample it is identified after a soft reset (CHIP_ID `0x50` at register `0x01`, NVM
+  ready without error, reset reported), then makes one forced conversion at pressure
+  16× and temperature 2× oversampling with the IIR filter bypassed, waited for
+  through its data-ready status. Temperature is the 24-bit result / 2¹⁶ °C and
+  pressure / 2⁶ Pa (Bosch BST-BMP581-DS004-13 §4.5). BMP580 and BMP581 share the
+  chip ID too, so the manifest names the part; tag 15 reports it. Its readings fill
+  the environment component's barometer slot. A conversion that fails, as after a
+  `3V3_SENS` power cycle, sends the part through identification again.
+- ZED/X20 INA3221 rail monitor at `0x41` (tag 16): continuous 1.1 ms shunt and bus
+  conversions, 64-sample averages, so each reading is the mean of one 0.42 s cycle,
+  taken once the part reports a completed cycle. Bus voltage is measured at the
+  load side of each shunt, in 8 mV steps; shunt voltage in 40 µV steps, signed. The
+  board's shunts give current: +5V after the input eFuse through 20 mΩ, `3V3_GNSS`
+  after its regulator through 50 mΩ (the receiver and the antenna feed), and
+  `3V3_SYS` through 20 mΩ. TI's worst-case offsets are ±80 µV and ±16 mV, with
+  0.25 % gain error ([SBOS576B](https://www.ti.com/lit/ds/symlink/ina3221.pdf)):
+  about ±4 mA on the 20 mΩ channels and ±1.6 mA on the 50 mΩ one. These are
+  sustained values; transients shorter than the cycle are not captured.
 - MAX board MS5607 (tag 11): the PROM coefficients pass their CRC-4 (TE AN520)
   before any reading is used. Each sample is one pressure and one temperature
   conversion at OSR 4096 with the datasheet's first- and second-order
@@ -265,8 +287,11 @@ invalid lengths/enums/ranges, and trailing partial TLVs are rejected.
 | 12 thermocouple | 12 | MAX board MAX31856; layout below |
 | 13 motion | 95 | MAX board ICM-45686 and MMC34160PJ summary; layout below |
 | 14 humidity sensor | 2 | version U8 = 1, part U8: not listed=0, HDC2080=1, HDC2022=2, both listed=3 |
+| 15 pressure sensor | 2 | version U8 = 1, part U8 in tag 1's barometer slot: not listed=0, BMP388/BMP384=1, BMP580=2, BMP581=3, more than one listed=4 |
+| 16 rails | 27 | ZED/X20 INA3221 rail monitor; layout below |
 
-Environment mask bits 0/1/2 identify MCP/HDC/BMP respectively. Valid requires
+Environment mask bits 0/1/2 identify MCP/HDC/BMP respectively; the BMP is the part
+tag 15 names, which on the ZED/X20 is the BMP581. Valid requires
 ready. Temperature units are 0.01 °C, RH units 0.01%, pressure units Pa. Invalid
 measurements must be encoded as zero and are served as JSON `null`; valid zero
 is preserved. Valid temperature ranges: MCP/HDC −40…125 °C, BMP −40…85 °C;
@@ -392,6 +417,25 @@ Jamming: 0 unknown, 1 OK, 2 warning, 3 critical. Spoofing: 0 unknown/deactivated
 1 no indication, 2 indication, 3 multiple indications. This is receiver context,
 not a replacement for high-rate ReceptionData/JammingStats.
 
+## ZED/X20 rail monitor (tag 16, version 1)
+
+Each environmental report carries tag 16 when the manifest lists the INA3221
+(`POWER_INA3221`) on a board with rail shunts; other boards omit it. Multi-byte
+fields are big-endian.
+
+| Offset | Type | Meaning |
+|---:|---|---|
+| 0 | U8 | Version = 1 |
+| 1 | U8 | State: not responding=0, ready=1 |
+| 2 | U8 | Validity: channel 1=1, channel 2=2, channel 3=4 (requires ready and a shunt) |
+| 3, 11, 19 | I16 each | Channels 1-3 bus voltage, mV, in 8 mV steps |
+| 5, 13, 21 | I32 each | Channels 1-3 shunt voltage, µV, in 40 µV steps, −163840…163800 |
+| 9, 17, 25 | U16 each | Channels 1-3 shunt resistance, mΩ; 0 marks a channel the board does not use |
+
+Current is shunt voltage divided by resistance (µV / mΩ = mA). On the ZED/X20,
+channel 1 is +5V, channel 2 `3V3_GNSS` and channel 3 `3V3_SYS`. A channel that is not
+valid has zero voltages; its resistance is still reported.
+
 ## Timing component (tag 8, version 1)
 
 S3 firmware sends a timing-only record once per second, with reason `check-in`
@@ -448,6 +492,10 @@ The authenticated GNF1 context selects station and scope; the payload cannot.
 The existing `hdc2080_c` field carries the HDC2080 or HDC2022 temperature; the
 top-level `humidity_sensor` (tag 14) says which part the manifest listed:
 `hdc2080`, `hdc2022`, `not_listed` or `conflicting` (the last two measure nothing).
+Likewise `bmp388_bmp384_c` and `pressure_pa` carry the barometer that the top-level
+`pressure_sensor` (tag 15) names: `bmp388_bmp384`, `bmp580`, `bmp581`, `not_listed`
+or `conflicting`. ZED/X20 boards add `rails` (tag 16): `state` and `channels`, each
+with `channel`, `shunt_milliohms`, and nullable `bus_v`, `shunt_uv` and `current_a`.
 Component health and identifiers appear under `rtc`, `atecc`, `eeprom`,
 `resources`, `receiver`, and `firmware`. `humidity_heater` carries tag 10:
 `state`, `trusted_utc`, `last_run_readable`, `runs_since_boot`,

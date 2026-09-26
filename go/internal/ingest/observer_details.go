@@ -28,7 +28,13 @@ type ObserverDetails struct {
 	// HumiditySensor is the part the manifest lists at 0x40: "hdc2080" or "hdc2022" (which
 	// chose the temperature formula behind hdc2080_c), "not_listed" (not measured, as on an
 	// unconfigured board) or "conflicting" (both listed; not measured).
-	HumiditySensor string          `json:"humidity_sensor,omitempty"`
+	HumiditySensor string `json:"humidity_sensor,omitempty"`
+	// PressureSensor is the barometer the manifest lists for the environment's barometer
+	// slot: "bmp388_bmp384", "bmp580" or "bmp581" (each pair shares a chip ID), "not_listed"
+	// or "conflicting" (more than one listed; none measured). On a board that lists a BMP580
+	// or BMP581, bmp388_bmp384_c and pressure_pa are that part's readings.
+	PressureSensor string          `json:"pressure_sensor,omitempty"`
+	Rails          *BoardRails     `json:"rails,omitempty"`
 	RTC            *BoardRTC       `json:"rtc,omitempty"`
 	ATECC          *BoardATECC     `json:"atecc,omitempty"`
 	EEPROM         *BoardEEPROM    `json:"eeprom,omitempty"`
@@ -248,6 +254,16 @@ func decodeObserverDetails(b []byte) (*ObserverDetails, error) {
 				return nil, ErrBadTelemetry
 			}
 			d.HumiditySensor = []string{"not_listed", "hdc2080", "hdc2022", "conflicting"}[v[1]]
+		case 15:
+			if n != 2 || v[0] != 1 || v[1] > 4 {
+				return nil, ErrBadTelemetry
+			}
+			d.PressureSensor = []string{"not_listed", "bmp388_bmp384", "bmp580", "bmp581", "conflicting"}[v[1]]
+		case 16:
+			var err error
+			if d.Rails, err = decodeRails(v); err != nil {
+				return nil, err
+			}
 		default:
 			continue // bounded unknown extensions are skipped, not interpreted
 		}

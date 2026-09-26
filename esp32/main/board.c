@@ -87,7 +87,7 @@ static const struct { observer_board_t board; bool driven; } known[] = {
 static const observer_board_t *board;
 static eeprom_capabilities_t listed;
 static observer_rtc_part_t rtc_part;
-static bool thermocouple_listed, imu_listed, barometer_listed, magnetometer_listed;
+static bool thermocouple_listed, imu_listed, barometer_listed, magnetometer_listed, rails_listed;
 const observer_board_t *observer_board_current(void) { return board; }
 bool observer_board_lists(uint8_t category, uint8_t id)
 {
@@ -183,12 +183,30 @@ void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_
         ESP_LOGW(TAG, "the manifest lists no HDC2080 or HDC2022; humidity is not measured");
     else if (report.humidity.part == HUMIDITY_CONFLICT)
         ESP_LOGE(TAG, "the manifest lists both HDC2080 and HDC2022; humidity is not measured until it is corrected");
+    // The environment component has one barometer slot: a BMP388 (or BMP384) or a BMP580 or
+    // BMP581. Each pair shares a chip ID, so only the manifest names the part.
+    bool bmp388 = observer_board_lists(CAT_PRESSURE, PRESSURE_BMP388);
+    bool bmp580 = observer_board_lists(CAT_PRESSURE, PRESSURE_BMP580);
+    bool bmp581 = observer_board_lists(CAT_PRESSURE, PRESSURE_BMP581);
+    report.pressure = (report_pressure_t){.present = true,
+        .part = bmp388 + bmp580 + bmp581 > 1 ? PRESSURE_PART_CONFLICT : bmp388 ? PRESSURE_PART_BMP388 :
+                bmp580 ? PRESSURE_PART_BMP580 : bmp581 ? PRESSURE_PART_BMP581 : PRESSURE_PART_NOT_LISTED};
+    if (report.pressure.part == PRESSURE_PART_CONFLICT)
+        ESP_LOGE(TAG, "the manifest lists more than one BMP barometer; none is measured until it is corrected");
     barometer_listed = observer_board_lists(CAT_PRESSURE, PRESSURE_MS5607);
     magnetometer_listed = observer_board_lists(CAT_SENSOR, SENSOR_MAG_MMC34160PJ);
+    // The INA3221's channels mean something only with the board's rails and shunts.
+    rails_listed = observer_board_lists(CAT_POWER, POWER_INA3221);
+    if (rails_listed && !(board->rails[0].shunt_mohm || board->rails[1].shunt_mohm || board->rails[2].shunt_mohm)) {
+        ESP_LOGE(TAG, "the manifest lists an INA3221, but the %s has no rail shunts for it; it is not used", board->name);
+        rails_listed = false;
+    }
     const env_parts_t parts = {
         .mcp9808 = observer_board_lists(CAT_TEMP, TEMP_MCP9808),
-        .bmp388 = observer_board_lists(CAT_PRESSURE, PRESSURE_BMP388),
-        .ms5607 = barometer_listed, .mmc34160 = magnetometer_listed,
+        .bmp388 = report.pressure.part == PRESSURE_PART_BMP388,
+        .bmp5 = report.pressure.part == PRESSURE_PART_BMP580 ? ENV_BMP580 :
+                report.pressure.part == PRESSURE_PART_BMP581 ? ENV_BMP581 : ENV_BMP5_NONE,
+        .ms5607 = barometer_listed, .mmc34160 = magnetometer_listed, .ina3221 = rails_listed,
         .hdc = report.humidity.part == HUMIDITY_HDC2080 ? ENV_HDC2080 :
                report.humidity.part == HUMIDITY_HDC2022 ? ENV_HDC2022 : ENV_HDC_NONE,
     };
@@ -445,7 +463,10 @@ static void identify_peripherals(void)
         {CAT_SENSOR, SENSOR_HDC2080, NVF_I2C_HUMIDITY, "humidity"},
         {CAT_SENSOR, SENSOR_HDC2022, NVF_I2C_HUMIDITY, "humidity"},
         {CAT_PRESSURE, PRESSURE_BMP388, NVF_I2C_PRESSURE, "pressure"},
+        {CAT_PRESSURE, PRESSURE_BMP580, NVF_I2C_PRESSURE_BMP5, "pressure"},
+        {CAT_PRESSURE, PRESSURE_BMP581, NVF_I2C_PRESSURE_BMP5, "pressure"},
         {CAT_PRESSURE, PRESSURE_MS5607, NVF_I2C_PRESSURE_ALT, "pressure"},
+        {CAT_POWER, POWER_INA3221, NVF_I2C_RAIL_MONITOR, "rail monitor"},
         {CAT_RTC, RTC_MCP79412, NVF_I2C_RTC, "RTC"},
         {CAT_RTC, RTC_MAX31328, NVF_I2C_RTC_TCXO, "RTC"},
         {CAT_IMU, IMU_ICM45686, NVF_I2C_IMU, "IMU"},
@@ -468,6 +489,13 @@ static void identify_peripherals(void)
         } else if (address == 0x76 && read_reg(0x76, 0, data, 1) == ESP_OK) {
             ESP_LOGI(TAG, "pressure chip ID=0x%02x%s", data[0], data[0] == 0x50 ?
                 "; BMP388/BMP384 family (ID cannot distinguish them)" : "; unexpected identity");
+        } else if (address == NVF_I2C_PRESSURE_BMP5 && read_reg(NVF_I2C_PRESSURE_BMP5, 0x01, data, 2) == ESP_OK) {
+            ESP_LOGI(TAG, "pressure chip ID=0x%02x revision=0x%02x%s", data[0], data[1], data[0] == 0x50 ?
+                "; BMP580/BMP581 family (ID cannot distinguish them)" : "; unexpected identity");
+        } else if (address == NVF_I2C_RAIL_MONITOR && read_reg(NVF_I2C_RAIL_MONITOR, 0xfe, data, 2) == ESP_OK &&
+                   read_reg(NVF_I2C_RAIL_MONITOR, 0xff, data + 2, 2) == ESP_OK) {
+            ESP_LOGI(TAG, "rail monitor IDs=%02x%02x/%02x%02x%s", data[0], data[1], data[2], data[3],
+                !memcmp(data, "\x54\x49\x32\x20", 4) ? "; INA3221 verified" : "; unexpected identity");
         } else if (address == 0x6f && read_reg(0x6f, 0, data, 7) == ESP_OK) {
             ESP_LOGI(TAG, "RTC registers readable: oscillator=%s battery-enable=%s power-fail=%s; clock not adopted",
                 data[3] & 0x20 ? "running" : "stopped", data[3] & 8 ? "yes" : "no", data[3] & 0x10 ? "yes" : "no");
@@ -628,6 +656,25 @@ static void motion_report(const env_magnetometer_t *magnetometer, int64_t magnet
         m->mag_ms = (uint64_t)magnetometer_ms;
     }
 }
+// Tag 16: the INA3221's three rails, with the board's shunts; current = shunt uV / mOhm.
+static void rails_report(void)
+{
+    env_rails_t rails;
+    environment_sample_rails(&rails);
+    report_rails_t *r = &report.rails;
+    *r = (report_rails_t){.present = true, .state = rails.ready};
+    for (unsigned c = 0; c < 3; c++) {
+        const observer_rail_t *rail = &board->rails[c];
+        r->shunt_mohm[c] = rail->shunt_mohm;
+        if (!rails.valid || !rail->shunt_mohm) continue;
+        r->valid |= 1u << c;
+        r->bus_mv[c] = (int16_t)rails.sample.bus_mv[c];
+        r->shunt_uv[c] = rails.sample.shunt_uv[c];
+        ESP_LOGI(TAG, "rail %s: %.3f V, %ld mA (%.2f mV across %u mOhm)", rail->name, rails.sample.bus_mv[c] / 1000.0,
+                 (long)(rails.sample.shunt_uv[c] / rail->shunt_mohm), rails.sample.shunt_uv[c] / 1000.0,
+                 (unsigned)rail->shunt_mohm);
+    }
+}
 // Tags 11-13, each present only when its parts are listed.
 static void max_sensors_report(void)
 {
@@ -651,6 +698,7 @@ static void report_poll(const gnss_status_t *status, int64_t now, uint8_t expect
     *e = (report_environment_t){0};
     environment_sample(hardware_manifest_i2c_bus(), now, utc_valid, utc, &sample, &e->ready, &heater);
     max_sensors_report();
+    if (rails_listed) rails_report();
     // After every sample, so no component's time is later than the report's.
     last_environment = esp_timer_get_time() / 1000;
     next_environment = last_environment + 30000;

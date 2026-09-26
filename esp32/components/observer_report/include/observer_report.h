@@ -9,7 +9,7 @@
 #define OBSERVER_REPORT_MAX 512
 enum { REPORT_BOOT=1, REPORT_CHANGE=2, REPORT_CHECKIN=4, REPORT_INTERFERENCE=8 };
 typedef struct {
-    uint8_t valid, ready; // bits 0 MCP9808, 1 HDC2080/HDC2022, 2 BMP388/BMP384
+    uint8_t valid, ready; // bits 0 MCP9808, 1 HDC2080/HDC2022, 2 the barometer tag 15 names
     int16_t mcp_centi_c, hdc_centi_c, bmp_centi_c;
     uint16_t rh_centi_percent;
     uint32_t pressure_pa;
@@ -67,6 +67,22 @@ typedef struct {
 // registers, so this is what chose the temperature formula, or why none was measured.
 enum { HUMIDITY_NOT_LISTED = 0, HUMIDITY_HDC2080 = 1, HUMIDITY_HDC2022 = 2, HUMIDITY_CONFLICT = 3 };
 typedef struct { bool present; uint8_t part; } report_humidity_t;
+// The barometer the manifest lists for the environment component's slot (tag 1 bit 2); tag
+// 15. BMP388 and BMP384 share a chip ID, as do BMP580 and BMP581, so the manifest names it.
+enum { PRESSURE_PART_NOT_LISTED = 0, PRESSURE_PART_BMP388 = 1, PRESSURE_PART_BMP580 = 2,
+       PRESSURE_PART_BMP581 = 3, PRESSURE_PART_CONFLICT = 4 };
+typedef struct { bool present; uint8_t part; } report_pressure_t;
+// The ZED/X20's INA3221 rail monitor; tag 16. Per channel, the bus voltage (IN- to ground),
+// the voltage across the shunt, and the board's shunt resistance, which is zero for a
+// channel the board does not use. Invalid measurements stay zero.
+typedef struct {
+    bool present;
+    uint8_t state;                // 0 not responding, 1 ready
+    uint8_t valid;                // bit n: channel n + 1 measured
+    int16_t bus_mv[3];
+    int32_t shunt_uv[3];
+    uint16_t shunt_mohm[3];
+} report_rails_t;
 typedef struct { uint8_t flags; uint64_t epoch, sampled_ms; } report_rtc_t;
 typedef struct {
     uint64_t checked_ms;
@@ -97,6 +113,8 @@ typedef struct {
     report_thermocouple_t thermocouple;
     report_motion_t motion;
     report_humidity_t humidity;
+    report_pressure_t pressure;
+    report_rails_t rails;
     report_rtc_t rtc;
     report_crypto_t crypto;
     report_manifest_t manifest;

@@ -242,6 +242,16 @@ and its faults, and a motion summary with the window's mean acceleration; see
 [the MAX sensor tags](../docs/OBSERVER-TELEMETRY.md#max-board-sensors-tags-11-13-version-1).
 A sensor that does not answer is retried; the others continue.
 
+The ZED/X20 replaces the BMP388 with a BMP581 at `0x46`, whose readings fill the same
+pressure and temperature fields; tag 15 names the part the manifest lists (`PRESSURE_BMP581`,
+or `PRESSURE_BMP580` for the pin-compatible alternate, which shares its chip ID). It also adds
+an INA3221 rail monitor at `0x41` (`POWER_INA3221`) that measures +5V after the input eFuse,
+`3V3_GNSS` and `3V3_SYS` through the board's shunts; each report carries the three
+voltages and currents as tag 16, see
+[the rail monitor tag](../docs/OBSERVER-TELEMETRY.md#zedx20-rail-monitor-tag-16-version-1).
+Both parts sit on `3V3_SENS`; after a power cycle of that rail each is identified and
+configured again at the next sample.
+
 The HDC heater stays off except for a rare condensation-recovery run: after four
 continuous hours at 98 %RH or more, at most once per 14 days of trusted UTC. The
 run's start time is saved in the `nvf_env` NVS namespace before the heater is
@@ -316,7 +326,9 @@ zones are written or locked. The fitted ATECC608C returned revision `00006005`,
 unlocked configuration/data (`55/55`), and repeating RNG output that failed
 screening. See [Microchip's revision identification](https://onlinedocs.microchip.com/oxy/GUID-EC688158-B182-4FB8-9DA1-4B9EFB5BDCE1-en-US-1/GUID-48DB0960-DAD9-436F-98A9-DD2788AEAE9C.html),
 [HDC2080 register reference](https://www.ti.com/lit/ds/symlink/hdc2080.pdf),
-and [BMP384 register reference](https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmp384-ds003.pdf).
+[BMP384 register reference](https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmp384-ds003.pdf),
+[BMP581 register reference](https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmp581-ds004.pdf)
+and [INA3221 register reference](https://www.ti.com/lit/ds/symlink/ina3221.pdf).
 
 ## What each phase does
 
@@ -592,9 +604,10 @@ The pusher reconnects when sent records remain outstanding without durable ACK a
 ### Hardware-discovery dependency and release evidence
 
 Normal builds pin `esp_hardware_discovery` to commit
-`18b0a34c3a4f1d251acfb55aa762db7890d9208e` (24CS256/24CS512 support, the `POWER_TPS7A20`,
-`COMM_W5500` and `SENSOR_THERMOCOUPLE_MAX31856` catalog IDs, the `CAT_INTSAT` board
-category, part identification and the Intsat board templates), with the IDF 5.5.4/ESP32-S3
+`847ca0888581a1da90ce65c4c3d67c697e9e7088` (24CS256/24CS512 support, the `POWER_TPS7A20`,
+`COMM_W5500`, `SENSOR_THERMOCOUPLE_MAX31856`, `PRESSURE_BMP580` and `PRESSURE_BMP581`
+catalog IDs, the `CAT_INTSAT` board category, part identification and the Intsat board
+templates, whose X20 list names the BMP581 and INA3221), with the IDF 5.5.4/ESP32-S3
 resolution committed in `dependencies.lock`. Updating the pin is a deliberate
 source change: review upstream layout changes and run the component's
 `test/host` read/write, page-boundary, interrupted-write, timestamp/footer,

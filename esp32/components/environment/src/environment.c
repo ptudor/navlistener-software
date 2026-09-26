@@ -17,17 +17,21 @@ static env_parts_t parts = {.hdc = ENV_HDC_NONE};
 static env_hdc_variant_t hdc_variant = ENV_HDC_NONE;
 static const char *hdc_name = "HDC";
 static const char *hdc_conversion = "";
+// The part in the sample's barometer slot, for the logs.
+static const char *barometer_name = "BMP388/BMP384";
 void environment_configure(const env_parts_t *listed)
 {
     parts = *listed;
+    barometer_name = parts.bmp5 == ENV_BMP581 ? "BMP581" : parts.bmp5 == ENV_BMP580 ? "BMP580" : "BMP388/BMP384";
     hdc_variant = parts.hdc;
     hdc_name = hdc_variant == ENV_HDC2022 ? "HDC2022" : hdc_variant == ENV_HDC2080 ? "HDC2080" : "HDC";
     hdc_conversion = hdc_variant == ENV_HDC2022 ? "Rev A conversion" :
                      hdc_variant == ENV_HDC2080 ? "Rev C conversion, nominal 3.3 V correction" : "";
 }
 // 0x40 is attached even when no HDC is listed, to confirm an unlisted one's heater is off.
-static const uint8_t addresses[] = {0x18, 0x40, 0x76, MS5607_ADDRESS, MMC34160_ADDRESS};
-enum { TEMPERATURE_DEVICE, HUMIDITY_DEVICE, PRESSURE_DEVICE, BAROMETER_DEVICE, MAGNETOMETER_DEVICE };
+static const uint8_t addresses[] = {0x18, 0x40, 0x76, MS5607_ADDRESS, MMC34160_ADDRESS, BMP5_ADDRESS, INA3221_ADDRESS};
+enum { TEMPERATURE_DEVICE, HUMIDITY_DEVICE, PRESSURE_DEVICE, BAROMETER_DEVICE, MAGNETOMETER_DEVICE, BMP5_DEVICE,
+       RAIL_DEVICE };
 #define DEVICE_COUNT (sizeof addresses / sizeof addresses[0])
 static i2c_master_dev_handle_t devices[DEVICE_COUNT];
 static i2c_master_bus_handle_t sensor_bus;
@@ -125,6 +129,27 @@ static const char *reading(char buffer[12], bool valid, double value)
     if (valid) snprintf(buffer, 12, "%.2f", value); else snprintf(buffer, 12, "n/a");
     return buffer;
 }
+// The BMP580/BMP581 fills the sample's barometer slot. A part that is absent or rejected, or a
+// conversion that fails (as after a 3V3_SENS power cycle, which resets its configuration), is
+// identified and configured again at the next sample.
+static bmp5_state_t bmp5_state;
+static bool bmp5_tried;
+static void bmp5_sample(const env_io_t *io, env_sample_t *sample)
+{
+    if (bmp5_state != BMP5_READY) {
+        attach(sensor_bus, BMP5_DEVICE);
+        bmp5_state_t before = bmp5_state;
+        if ((bmp5_state = bmp5_init(io)) != before || !bmp5_tried)
+            ESP_LOGI(TAG, "%s: %s", barometer_name, bmp5_state == BMP5_READY ? "reset and configured" :
+                     bmp5_state == BMP5_REJECTED ? "answers, but not as a BMP5 that completed its reset" : "not answering");
+        bmp5_tried = true;
+    }
+    if (bmp5_state != BMP5_READY) return;
+    int32_t centi_c, pa;
+    sample->bmp_valid = bmp5_read(io, &centi_c, &pa);
+    if (sample->bmp_valid) { sample->bmp_c = centi_c / 100.0; sample->pressure_pa = pa; }
+    else bmp5_state = BMP5_ABSENT;
+}
 static void heater_log(const env_heater_run_t *r)
 {
     char b[8][12];
@@ -209,10 +234,10 @@ void environment_sample(i2c_master_bus_handle_t bus, int64_t now, bool utc_valid
         } else {
             ESP_LOGI(TAG, "humidity sensor from the manifest: %s (%s)", hdc_name, hdc_conversion);
         }
-        ESP_LOGI(TAG, "measurement setup: MCP9808=%s %s=%s BMP388/BMP384=%s",
+        ESP_LOGI(TAG, "measurement setup: MCP9808=%s %s=%s %s=%s",
             !parts.mcp9808 ? "not listed" : sensors.mcp_ready ? "ready" : "unavailable", hdc_name,
-            hdc_variant == ENV_HDC_NONE ? "not listed" : sensors.hdc_ready ? "ready" : "unavailable",
-            !parts.bmp388 ? "not listed" : sensors.bmp_ready ? "ready" : "unavailable");
+            hdc_variant == ENV_HDC_NONE ? "not listed" : sensors.hdc_ready ? "ready" : "unavailable", barometer_name,
+            parts.bmp5 ? "identified at each sample" : !parts.bmp388 ? "not listed" : sensors.bmp_ready ? "ready" : "unavailable");
         if (sensors.hdc_ready) heater_load();
     } else if (!sensors.hdc_ready && hdc_variant != ENV_HDC_NONE) {
         // A reboot during a heater run leaves HEAT_EN set until the HDC is configured again, so
@@ -227,13 +252,18 @@ void environment_sample(i2c_master_bus_handle_t bus, int64_t now, bool utc_valid
     // While HEAT_EN may be set, only the heater steps convert the HDC.
     bool heating = heater.state == ENV_HEATER_HEATING || heater.state == ENV_HEATER_STOPPING;
     env_sensors_read_some(&sensors, &sample, heating ? 5 : 7);
+    if (parts.bmp5) {
+        env_io_t io = {.read = read_register, .write = write_register, .delay_ms = delay_ms};
+        bmp5_sample(&io, &sample);
+    }
     if (sensors.hdc_ready) {
         bool recovering = heater.state == ENV_HEATER_RECOVERING;
         if (env_heater_sample(&heater, now, utc_valid, utc, &sample) == ENV_HEATER_START) heater_start(now);
         if (recovering && heater.state == ENV_HEATER_NORMAL) heater_log(&heater.run);
         env_heater_status(&heater, now, status);
     }
-    *ready = (sensors.mcp_ready ? 1 : 0) | (sensors.hdc_ready ? 2 : 0) | (sensors.bmp_ready ? 4 : 0);
+    bool barometer_ready = parts.bmp5 ? bmp5_state == BMP5_READY : sensors.bmp_ready;
+    *ready = (sensors.mcp_ready ? 1 : 0) | (sensors.hdc_ready ? 2 : 0) | (barometer_ready ? 4 : 0);
     // MCP9808 and BMP readings continue, marked as taken while the heater is on or recovering.
     const char *mark = heater.state == ENV_HEATER_NORMAL ? "" :
         heater.state == ENV_HEATER_RECOVERING ? " (humidity heater recovery)" : " (humidity heater on)";
@@ -245,8 +275,9 @@ void environment_sample(i2c_master_bus_handle_t bus, int64_t now, bool utc_valid
     else if (sample.hdc_valid)
         ESP_LOGI(TAG, "%s withheld%s: temperature=%.2f C humidity=%.2f %%RH", hdc_name, mark, sample.hdc_c, sample.rh_percent);
     else if (!heating && hdc_variant != ENV_HDC_NONE) ESP_LOGW(TAG, "%s measurement unavailable", hdc_name);
-    if (sample.bmp_valid) ESP_LOGI(TAG, "BMP388/BMP384 temperature=%.2f C pressure=%.2f hPa (local absolute)%s", sample.bmp_c, sample.pressure_pa / 100.0, mark);
-    else ESP_LOGW(TAG, "BMP388/BMP384 measurement unavailable");
+    if (sample.bmp_valid) ESP_LOGI(TAG, "%s temperature=%.2f C pressure=%.2f hPa (local absolute)%s", barometer_name,
+                                   sample.bmp_c, sample.pressure_pa / 100.0, mark);
+    else if (parts.bmp388 || parts.bmp5) ESP_LOGW(TAG, "%s measurement unavailable", barometer_name);
     if (heater.state != ENV_HEATER_NORMAL) { sample.hdc_valid = false; sample.hdc_c = sample.rh_percent = 0; }
     *out = sample;
 }
@@ -291,8 +322,30 @@ void environment_sample_max(env_barometer_t *b, env_magnetometer_t *m)
         else ESP_LOGW(TAG, "MMC34160PJ measurement unavailable");
     }
 }
+static bool rails_ready, rails_tried;
+void environment_sample_rails(env_rails_t *r)
+{
+    *r = (env_rails_t){0};
+    if (!initialized || !parts.ina3221) return;
+    env_io_t io = {.read = read_register, .write = write_register, .delay_ms = delay_ms};
+    if (!rails_ready) {
+        attach(sensor_bus, RAIL_DEVICE);
+        rails_ready = ina3221_init(&io);
+        if (rails_ready) ESP_LOGI(TAG, "INA3221 identified; 64-sample averages of 1.1 ms shunt and bus conversions");
+        else if (!rails_tried) ESP_LOGW(TAG, "INA3221 not identified; retrying at each sample");
+        rails_tried = true;
+    }
+    r->ready = rails_ready;
+    if (!rails_ready) return;
+    r->valid = ina3221_read(&io, &r->sample);
+    if (!r->valid) {
+        rails_ready = false;
+        ESP_LOGW(TAG, "INA3221 measurement unavailable; configuring it again at the next sample");
+    }
+}
 #else
 void environment_configure(const env_parts_t *listed) { (void)listed; }
+void environment_sample_rails(env_rails_t *r) { *r = (env_rails_t){0}; }
 void environment_sample_max(env_barometer_t *b, env_magnetometer_t *m)
 {
     *b = (env_barometer_t){0}; *m = (env_magnetometer_t){0};

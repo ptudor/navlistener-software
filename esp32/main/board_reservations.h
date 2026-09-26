@@ -97,6 +97,8 @@ NVF_PINS_CHECK(NVF_PINS_MAX, "the MAX pin map");
 #define NVF_I2C_MAGNETOMETER  0x30 /* MMC34160PJ, MAX              */
 #define NVF_I2C_TEMPERATURE   0x18 /* MCP9808                      */
 #define NVF_I2C_HUMIDITY      0x40 /* HDC2080                      */
+#define NVF_I2C_RAIL_MONITOR  0x41 /* INA3221, ZED/X20, A0 to VS   */
+#define NVF_I2C_PRESSURE_BMP5 0x46 /* BMP581, ZED/X20, SDO to GND  */
 #define NVF_I2C_BOARD_EEPROM  0x50 /* 24CS128 main array; its 128-bit serial is at 0x58 */
 #define NVF_I2C_BOARD_SERIAL  0x58 /* 24CS128 security interface   */
 #define NVF_I2C_RTC_EUI       0x57 /* MCP79412 EEPROM, NEO and MAX */
@@ -104,7 +106,7 @@ NVF_PINS_CHECK(NVF_PINS_MAX, "the MAX pin map");
 #define NVF_I2C_RTC_TCXO      0x68 /* MAX31328, ZED/X20            */
 #define NVF_I2C_IMU           0x69 /* ICM-45686, MAX, strapped     */
 #define NVF_I2C_RTC           0x6f /* MCP79412 RTCC, NEO and MAX   */
-#define NVF_I2C_PRESSURE      0x76 /* BMP388, NEO and ZED/X20      */
+#define NVF_I2C_PRESSURE      0x76 /* BMP388, NEO                  */
 #define NVF_I2C_PRESSURE_ALT  0x77 /* MS5607, MAX, CSB low         */
 
 // Each board's function pins; -1 marks a function the board does not have. board.c holds
@@ -115,6 +117,8 @@ NVF_PINS_CHECK(NVF_PINS_MAX, "the MAX pin map");
 // An image's OTA board ID is the board's CAT_INTSAT ID; 0 is the universal image.
 _Static_assert((int)NVF_BOARD_ID_NEO == (int)INTSAT_NEO && (int)NVF_BOARD_ID_ZED_X20 == (int)INTSAT_X20 &&
                (int)NVF_BOARD_ID_MAX == (int)INTSAT_MAX, "OTA board IDs must equal the CAT_INTSAT IDs");
+// An INA3221 channel: the rail it measures and its shunt; a shunt of 0 marks no channel.
+typedef struct { const char *name; uint16_t shunt_mohm; } observer_rail_t;
 typedef struct {
     board_model_t model;
     const char *name;
@@ -127,6 +131,7 @@ typedef struct {
     int eth_sclk, eth_cs, eth_mosi, eth_miso;
     int tc_sck, tc_mosi, tc_miso, tc_cs_n, tc_drdy_n;
     int imu_int1, imu_int2;
+    observer_rail_t rails[3];   // INA3221 channels 1-3, where the board has the monitor
 } observer_board_t;
 #define NVF_PIN_ON(map, pin) ((pin) < 0 || ((map) & NVF_PIN((pin) < 0 ? 0 : (pin))) != 0)
 #define NVF_NONE (-1)
@@ -141,7 +146,8 @@ typedef struct {
     .led_panel_sdi = 1, .bright_adc = 2, .bright_button = 18, \
     .eth_sclk = NVF_PIN_ETH_SCLK, .eth_cs = NVF_PIN_ETH_CS, .eth_mosi = NVF_PIN_ETH_MOSI, .eth_miso = NVF_PIN_ETH_MISO, \
     .tc_sck = NVF_NONE, .tc_mosi = NVF_NONE, .tc_miso = NVF_NONE, .tc_cs_n = NVF_NONE, .tc_drdy_n = NVF_NONE, \
-    .imu_int1 = NVF_NONE, .imu_int2 = NVF_NONE}
+    .imu_int1 = NVF_NONE, .imu_int2 = NVF_NONE, \
+    .rails = {{"+5V", 20}, {"3V3_GNSS", 50}, {"3V3_SYS", 20}}} /* U37 through R74, R75, R76 */
 #define NVF_BOARD_MAX_ROW {.model = BOARD_MODEL_MAX_A, .name = "MAX revision A", .intsat_id = INTSAT_MAX, \
     .family = "gnss-color-max", .pins = NVF_PINS_MAX, .boot_steps_brightness = false, \
     .led_panel_sdi = NVF_NONE, .bright_adc = 2, .bright_button = 18, \

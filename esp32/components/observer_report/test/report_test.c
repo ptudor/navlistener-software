@@ -5,7 +5,7 @@
 #include <string.h>
 int main(int argc, char **argv)
 {
-    assert(argc == 4);
+    assert(argc == 5);
     observer_report_t r = {.uptime_ms=1000000, .event_count=3, .event_ms=999000,
         .reason=8, .event_flags=1, .event_states=6,
         .environment={7,7,2550,4212,2500,5000,100000},
@@ -84,6 +84,10 @@ int main(int argc, char **argv)
     // The fullest report, with a 32-character firmware version, fits the buffer.
     memset(m.firmware,'v',32); m.firmware[32]=0;
     assert(observer_report_encode(actual,sizeof actual,&m)==max_count+25);
+    // Every board also carries tag 15; the MAX still fits.
+    m.pressure=(report_pressure_t){.present=true,.part=PRESSURE_PART_NOT_LISTED};
+    assert(observer_report_encode(actual,sizeof actual,&m)==max_count+25+5 && max_count+30<=OBSERVER_REPORT_MAX);
+    m.pressure.present=false;
     memcpy(m.firmware,"test-v1",8);
     p=(report_policy_t){0}; observer_report_sent(&p,&m);
     m.uptime_ms+=60000; m.motion.accel_max_mg=4000; m.motion.packets+=6000; m.barometer.pressure_pa+=99;
@@ -102,6 +106,33 @@ int main(int argc, char **argv)
     assert(!observer_report_due(&p,&m)); // the counter rides along
     m.motion.moving=0;
     assert(observer_report_due(&p,&m)==REPORT_CHANGE); // the unit came to rest
+
+    // The ZED/X20's barometer part and rail monitor tags follow the humidity sensor's.
+    observer_report_t x=golden;
+    x.humidity=(report_humidity_t){.present=true,.part=HUMIDITY_HDC2080};
+    x.pressure=(report_pressure_t){.present=true,.part=PRESSURE_PART_BMP581};
+    x.rails=(report_rails_t){.present=true,.state=1,.valid=7,.bus_mv={5008,3296,3304},
+        .shunt_uv={12280,5000,-4000},.shunt_mohm={20,50,20}};
+    f=fopen(argv[4],"r"); assert(f); size_t x20_count=0;
+    while (fscanf(f,"%2x",&byte)==1) { assert(x20_count<sizeof expected); expected[x20_count++]=byte; }
+    fclose(f);
+    assert(observer_report_encode(actual,sizeof actual,&x)==x20_count && !memcmp(actual,expected,x20_count));
+    // Tag 15 then tag 16, byte for byte: channel 3 carries a reverse current.
+    static const uint8_t tail[]={0x0f,0,2, 1,3, 0x10,0,27, 1,1,7,
+        0x13,0x90, 0,0,0x2f,0xf8, 0,20,  0x0c,0xe0, 0,0,0x13,0x88, 0,50,  0x0c,0xe8, 0xff,0xff,0xf0,0x60, 0,20};
+    assert(!memcmp(actual+x20_count-sizeof tail,tail,sizeof tail));
+    p=(report_policy_t){0}; observer_report_sent(&p,&x);
+    x.uptime_ms+=60000; x.rails.bus_mv[0]-=49; x.rails.shunt_uv[0]+=480; // 24 mA more
+    assert(!observer_report_due(&p,&x)); // small drift rides along
+    x.rails.bus_mv[0]-=1;
+    assert(observer_report_due(&p,&x)==REPORT_CHANGE); // 50 mV of sag on +5V
+    observer_report_sent(&p,&x); x.uptime_ms+=60000; x.rails.shunt_uv[1]+=1250;
+    assert(observer_report_due(&p,&x)==REPORT_CHANGE); // 25 mA more on 3V3_GNSS: an antenna change
+    observer_report_sent(&p,&x); x.uptime_ms+=60000; x.rails.valid=0; x.rails.state=0;
+    memset(x.rails.bus_mv,0,sizeof x.rails.bus_mv); memset(x.rails.shunt_uv,0,sizeof x.rails.shunt_uv);
+    assert(observer_report_due(&p,&x)==REPORT_CHANGE); // the monitor stopped answering
+    observer_report_sent(&p,&x); x.uptime_ms+=60000; x.pressure.part=PRESSURE_PART_CONFLICT;
+    assert(observer_report_due(&p,&x)==REPORT_CHANGE);
     assert(panel_pwm_off_ticks(50)==512 && panel_pwm_off_ticks(20)==819 && panel_pwm_off_ticks(10)==922);
     assert(panel_pwm_off_ticks(100)==0 && panel_pwm_off_ticks(0)==1024);
     assert(panel_next_brightness(20)==10 && panel_next_brightness(10)==50 && panel_next_brightness(50)==20);
