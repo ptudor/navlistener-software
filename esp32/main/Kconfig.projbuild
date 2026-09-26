@@ -120,15 +120,6 @@ menu "navfeeder-esp"
             The board's own W5500 Ethernet port: a wired uplink preferred over
             Wi-Fi, which makes the Wi-Fi network optional in provisioning.
 
-    config NVF_THERMOCOUPLE_50HZ
-        bool "Thermocouple: reject 50 Hz mains (60 Hz when off)"
-        depends on NVF_BOARD_GNSS_COLOR_MAX
-        default n
-        help
-            The MAX31856 notch filter rejects one mains frequency and its
-            harmonics. Select the frequency where the observer is deployed;
-            the reported configuration records which was in use.
-
     config NVF_PANEL_TRIMMER_OPEN_MV
         int "Brightness trimmer open-wiper threshold, mV"
         depends on NVF_BOARD_GNSS_COLOR_ZED_X20 || NVF_BOARD_GNSS_COLOR_MAX

@@ -70,10 +70,12 @@ int main(int argc, char **argv)
     m.barometer=(report_barometer_t){.present=true,.state=2,.valid=1,.centi_c=2215,.pressure_pa=101325};
     m.thermocouple=(report_thermocouple_t){.present=true,.state=1,.valid=3,.flags=1,.config=3,
         .tc_centi_c=23456,.cj_centi_c=2437};
-    m.motion=(report_motion_t){.present=true,.imu_state=1,.mag_state=1,.valid=7,.odr_hz=100,
-        .gyro_fs_dps=1000,.accel_fs_g=8,.accel={10,-20,4096},.gyro={3,-2,1},.imu_centi_c=2750,
-        .packets=3000,.overflows=1,.accel_min_mg=980,.accel_max_mg=1530,.gyro_max_decidps=125,
-        .imu_ms=999900,.mag={512,-205,922},.mag_offset={32808,32751,32771},.mag_ms=999800};
+    m.motion=(report_motion_t){.present=true,.imu_state=1,.mag_state=1,.valid=7,.profile=0,.moving=1,
+        .rate_decihz=500,.gyro_fs_dps=1000,.accel_fs_g=8,.accel={10,-20,4096},.gyro={3,-2,1},
+        .imu_centi_c=2750,.packets=3000,.overflows=1,.rate_changes=4,.window_samples=900,
+        .window_ms=30000,.accel_mean={410,-12,4075},.gyro_mean={2,-1,33},.accel_min_mg=980,
+        .accel_max_mg=1530,.gyro_max_decidps=125,.imu_ms=999900,.mag={512,-205,922},
+        .mag_offset={32808,32751,32771},.mag_ms=999800};
     f=fopen(argv[3],"r"); assert(f); size_t max_count=0;
     while (fscanf(f,"%2x",&byte)==1) { assert(max_count<sizeof expected); expected[max_count++]=byte; }
     fclose(f);
@@ -95,6 +97,10 @@ int main(int argc, char **argv)
     assert(observer_report_due(&p,&m)==REPORT_CHANGE); // lost IMU samples
     observer_report_sent(&p,&m); m.uptime_ms+=60000; m.motion.valid&=~4;
     assert(observer_report_due(&p,&m)==REPORT_CHANGE); // the magnetometer stopped answering
+    observer_report_sent(&p,&m); m.uptime_ms+=60000; m.motion.rate_changes++;
+    assert(!observer_report_due(&p,&m)); // the counter rides along
+    m.motion.moving=0;
+    assert(observer_report_due(&p,&m)==REPORT_CHANGE); // the unit came to rest
     assert(panel_pwm_off_ticks(50)==512 && panel_pwm_off_ticks(20)==819 && panel_pwm_off_ticks(10)==922);
     assert(panel_pwm_off_ticks(100)==0 && panel_pwm_off_ticks(0)==1024);
     assert(panel_next_brightness(20)==10 && panel_next_brightness(10)==50 && panel_next_brightness(50)==20);

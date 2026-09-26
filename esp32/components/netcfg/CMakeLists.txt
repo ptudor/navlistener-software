@@ -8,7 +8,7 @@ set(netcfg_sources
 )
 set(netcfg_private_requires
     nvs_flash esp_wifi esp_netif esp_event esp_http_server
-    bootloader_support esp_hw_support ota wifi_provisioning protocomm
+    bootloader_support esp_hw_support ota wifi_provisioning protocomm sensor_settings
 )
 
 if(CONFIG_NVF_BOARD_GNSS_COLOR)

@@ -36,10 +36,8 @@
 #include "pulse_timing.h"
 #if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
 #include "motion.h"
+#include "sensor_settings.h"
 #include "thermocouple.h"
-#ifndef CONFIG_NVF_THERMOCOUPLE_50HZ
-#define CONFIG_NVF_THERMOCOUPLE_50HZ 0
-#endif
 #endif
 #if NVF_PIN_BRIGHT_ADC >= 0
 #include "esp_adc/adc_cali.h"
@@ -404,15 +402,29 @@ static void heater_report(const env_heater_status_t *s, report_heater_t *h)
     if (r->valid & ENV_RUN_MCP_END) h->mcp_end = lround(r->mcp_end * 100);
 }
 #if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
-// The latest IMU sample is reported only while it is this recent.
-#define MOTION_FRESH_MS 2000
+// The latest IMU sample is reported only while it is this recent: still, the FIFO is
+// drained every 1.28 s on INT1, or every 2.56 s without it.
+#define MOTION_FRESH_MS 5000
+static sensor_settings_t sensor_settings;
+static const icm45686_profile_t *motion_profile;
 static void max_sensors_start(void)
 {
-    esp_err_t err = thermocouple_start(NVF_PIN_TC_SCK, NVF_PIN_TC_MOSI, NVF_PIN_TC_MISO, NVF_PIN_TC_CS_N,
-                                       NVF_PIN_TC_DRDY_N, CONFIG_NVF_THERMOCOUPLE_50HZ);
+    esp_err_t err = sensor_settings_load(&sensor_settings);
+    if (err != ESP_OK)
+        ESP_LOGW(TAG, "sensor settings unreadable (%s); using the defaults", esp_err_to_name(err));
+    motion_profile = sensor_settings.motion == SENSOR_MOTION_AERIAL ? &ICM45686_AERIAL : &ICM45686_SURFACE;
+    ESP_LOGI(TAG, "sensor settings: %u Hz mains notch, %s motion profile", sensor_settings.mains_hz,
+             sensor_motion_name(sensor_settings.motion));
+    err = thermocouple_start(NVF_PIN_TC_SCK, NVF_PIN_TC_MOSI, NVF_PIN_TC_MISO, NVF_PIN_TC_CS_N,
+                             NVF_PIN_TC_DRDY_N, sensor_settings.mains_hz == 50);
     if (err != ESP_OK) ESP_LOGE(TAG, "thermocouple interface unavailable: %s", esp_err_to_name(err));
-    err = motion_start(hardware_manifest_i2c_bus(), NVF_PIN_IMU_INT1, NVF_PIN_IMU_INT2);
+    err = motion_start(hardware_manifest_i2c_bus(), NVF_PIN_IMU_INT1, NVF_PIN_IMU_INT2, motion_profile);
     if (err != ESP_OK) ESP_LOGE(TAG, "IMU service unavailable: %s", esp_err_to_name(err));
+}
+// A window sum over its time, rounded half away from zero.
+static int16_t window_mean(int64_t sum, uint32_t span_ms)
+{
+    return (int16_t)(sum >= 0 ? (sum + span_ms / 2) / span_ms : -((-sum + span_ms / 2) / span_ms));
 }
 // Tags 11-13: the barometer, the thermocouple, and the IMU and magnetometer summary.
 static void max_sensors_report(void)
@@ -441,9 +453,13 @@ static void max_sensors_report(void)
     motion_snapshot(&motion);
     int64_t now = esp_timer_get_time() / 1000;
     report_motion_t *m = &report.motion;
+    const icm45686_profile_t *p = motion_profile;
     *m = (report_motion_t){.present = true, .imu_state = motion.ready, .mag_state = magnetometer.ready,
-        .odr_hz = ICM45686_ODR_HZ, .accel_fs_g = ICM45686_ACCEL_FS_G, .gyro_fs_dps = ICM45686_GYRO_FS_DPS,
-        .packets = motion.stats.packets, .overflows = motion.stats.overflows, .resyncs = motion.stats.resyncs};
+        .profile = sensor_settings.motion, .moving = motion.stats.moving,
+        .rate_decihz = motion.stats.moving ? p->moving_decihz : ICM45686_STILL_DECIHZ,
+        .accel_fs_g = p->accel_fs_g, .gyro_fs_dps = p->gyro_fs_dps, .packets = motion.stats.packets,
+        .overflows = motion.stats.overflows, .resyncs = motion.stats.resyncs,
+        .rate_changes = motion.stats.rate_changes};
     if (motion.ready && motion.stats.latest_valid && (int64_t)motion.latest_ms + MOTION_FRESH_MS >= now) {
         m->valid |= 1;
         memcpy(m->accel, motion.stats.accel, sizeof m->accel);
@@ -452,11 +468,18 @@ static void max_sensors_report(void)
         m->imu_ms = motion.latest_ms;
     }
     const icm45686_window_t *w = &motion.stats.window[ICM45686_WINDOW_REPORT];
-    if (w->valid) {
+    if (w->valid && w->span_ms) {
+        // One count is range/32768 of a g or of a degree per second.
+        double g = p->accel_fs_g / 32768.0, dps = p->gyro_fs_dps / 32768.0;
         m->valid |= 2;
-        m->accel_min_mg = (uint16_t)lround(sqrt((double)w->accel_min_sq) * 1000.0 / ICM45686_ACCEL_LSB_PER_G);
-        m->accel_max_mg = (uint16_t)lround(sqrt((double)w->accel_max_sq) * 1000.0 / ICM45686_ACCEL_LSB_PER_G);
-        m->gyro_max_decidps = (uint16_t)lround(sqrt((double)w->gyro_max_sq) * 10.0 / ICM45686_GYRO_LSB_PER_DPS);
+        m->window_samples = w->samples; m->window_ms = w->span_ms;
+        for (unsigned axis = 0; axis < 3; axis++) {
+            m->accel_mean[axis] = window_mean(w->accel_sum[axis], w->span_ms);
+            m->gyro_mean[axis] = window_mean(w->gyro_sum[axis], w->span_ms);
+        }
+        m->accel_min_mg = (uint16_t)lround(sqrt((double)w->accel_min_sq) * g * 1000.0);
+        m->accel_max_mg = (uint16_t)lround(sqrt((double)w->accel_max_sq) * g * 1000.0);
+        m->gyro_max_decidps = (uint16_t)lround(sqrt((double)w->gyro_max_sq) * dps * 10.0);
     }
     if (magnetometer.valid) {
         m->valid |= 4;

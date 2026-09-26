@@ -8,6 +8,9 @@
 #if CONFIG_NVF_BOARD_GNSS_COLOR
 #include "netcfg_ble.h"
 #endif
+#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
+#include "sensor_settings.h"
+#endif
 
 #include <string.h>
 #include <stdio.h>
@@ -80,7 +83,7 @@ static const char *TAG = "netcfg";
 #define PORTAL_SSID_FIELD "<label>WiFi SSID<input name=ssid maxlength=32 required></label>"
 #endif
 
-static const char PORTAL_HTML[] =
+static const char PORTAL_HTML_HEAD[] =
     "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
     "<title>navfeeder-esp setup</title>"
     "<style>body{font-family:sans-serif;max-width:32em;margin:2em auto;padding:0 1em}"
@@ -96,8 +99,28 @@ static const char PORTAL_HTML[] =
     "<label>Station id<input name=station maxlength=32 required></label>"
     "<label>Bearer token<input name=token maxlength=128 required></label>"
     PORTAL_TUNNEL_FIELD
-    PORTAL_INSECURE_FIELD
-    "<button type=submit>Save &amp; reboot</button></form>";
+    PORTAL_INSECURE_FIELD;
+static const char PORTAL_HTML_TAIL[] = "<button type=submit>Save &amp; reboot</button></form>";
+
+#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
+// The MAX board's per-unit sensor settings, with the stored values selected. They are
+// kept apart from the network record, so a network reset leaves them.
+static void portal_sensor_fields(char *out, size_t cap)
+{
+    sensor_settings_t s;
+    if (sensor_settings_load(&s) != ESP_OK) s = SENSOR_SETTINGS_DEFAULT;
+    const char *on = " selected";
+    snprintf(out, cap,
+        "<label>Mains frequency where the thermocouple is used<select name=mains_hz>"
+        "<option value=60%s>60 Hz</option><option value=50%s>50 Hz</option></select></label>"
+        "<label>Motion profile<select name=motion>"
+        "<option value=surface%s>Surface: vehicles and vessels (12.5 Hz still, 50 Hz moving)</option>"
+        "<option value=aerial%s>Aerial: aircraft and drones (12.5 Hz still, 100 Hz moving)</option>"
+        "</select></label>",
+        s.mains_hz == 60 ? on : "", s.mains_hz == 50 ? on : "",
+        s.motion == SENSOR_MOTION_SURFACE ? on : "", s.motion == SENSOR_MOTION_AERIAL ? on : "");
+}
+#endif
 
 static void restart_task(void *arg)
 {
@@ -126,7 +149,15 @@ static esp_err_t root_get(httpd_req_t *req)
         return ESP_FAIL;
     }
     httpd_resp_set_type(req, "text/html");
-    return httpd_resp_send(req, PORTAL_HTML, HTTPD_RESP_USE_STRLEN);
+    esp_err_t err = httpd_resp_send_chunk(req, PORTAL_HTML_HEAD, HTTPD_RESP_USE_STRLEN);
+#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
+    char sensors[640];
+    portal_sensor_fields(sensors, sizeof sensors);
+    if (err == ESP_OK) err = httpd_resp_send_chunk(req, sensors, HTTPD_RESP_USE_STRLEN);
+#endif
+    if (err == ESP_OK) err = httpd_resp_send_chunk(req, PORTAL_HTML_TAIL, HTTPD_RESP_USE_STRLEN);
+    if (err == ESP_OK) err = httpd_resp_send_chunk(req, NULL, 0);
+    return err;
 }
 
 // body_cap must exceed the worst-case URL-encoded form: token[129] + wifi_pass[65] +
@@ -282,6 +313,30 @@ static esp_err_t save_post(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, reason);
         return ESP_FAIL;
     }
+#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
+    // An absent field keeps the stored setting. They are saved before the network record,
+    // so a refused sensor setting leaves the whole form to be submitted again.
+    sensor_settings_t sensors;
+    (void)sensor_settings_load(&sensors); // an unreadable record is replaced with valid values
+    char choice[16] = {0};
+    form_result_t mains = netcfg_form_field(body, "mains_hz", choice, sizeof choice);
+    if (mains < 0 || (mains == FORM_OK && !sensor_settings_parse_mains(choice, &sensors.mains_hz))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid mains frequency");
+        return ESP_FAIL;
+    }
+    memset(choice, 0, sizeof choice);
+    form_result_t motion = netcfg_form_field(body, "motion", choice, sizeof choice);
+    if (motion < 0 || (motion == FORM_OK && !sensor_settings_parse_motion(choice, &sensors.motion))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid motion profile");
+        return ESP_FAIL;
+    }
+    if (sensor_settings_save(&sensors) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "sensor settings not saved");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "sensor settings: %u Hz mains notch, %s motion profile", sensors.mains_hz,
+             sensor_motion_name(sensors.motion));
+#endif
 
     esp_err_t err = netcfg_save(&cfg);
     if (err != ESP_OK) {

@@ -278,7 +278,11 @@ atomic save used by BLE, then reboots. Update-key pairing remains available only
 through this protected setup AP.
 
 On the ZED/X20, whose Ethernet port is its uplink, the Wi-Fi SSID field is
-optional: leave it empty for a wired-only observer. The Station app sequence
+optional: leave it empty for a wired-only observer. On the MAX the form also has
+two per-unit sensor settings, shown with their stored values: the mains frequency
+where the thermocouple is used (60 or 50 Hz) and the motion profile (surface or
+aerial). They are saved to the `nvf_sensor` namespace before the network record,
+survive the configuration-reset gesture, and are not part of the BLE contract. The Station app sequence
 above always verifies a Wi-Fi network before it saves, so a wired-only
 observer is set up through this form.
 

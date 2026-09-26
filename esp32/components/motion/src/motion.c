@@ -11,16 +11,23 @@
 static const char *TAG = "motion";
 #define IMU_I2C_HZ       400000
 #define I2C_TIMEOUT_MS   50
-// Without INT1 the FIFO is still drained 4 times a second: 25 of its 128 packets.
-#define SERVICE_MS       250
 #define RETRY_MS         10000
-#define STALL_MS         2000 // no packet in 20 sample periods: the IMU lost its configuration
+#define STALL_MS         4000 // no packet in 50 still periods: the IMU lost its configuration
 #define FAILURE_LIMIT    3
 
 static i2c_master_dev_handle_t imu;
 static TaskHandle_t task;
 static SemaphoreHandle_t lock;     // guards status and serializes the IMU transfers
 static motion_status_t status;
+static const icm45686_profile_t *profile;
+
+// INT1 fires at the watermark; without it the FIFO is drained after twice that long,
+// when it is a quarter full.
+static unsigned service_ms(void)
+{
+    uint16_t decihz = status.stats.moving ? profile->moving_decihz : ICM45686_STILL_DECIHZ;
+    return 2u * ICM45686_WATERMARK * icm45686_period_ms(decihz);
+}
 
 static bool imu_read(void *ctx, uint8_t reg, uint8_t *data, size_t length)
 {
@@ -58,10 +65,12 @@ static void motion_task(void *arg)
         int64_t now = esp_timer_get_time() / 1000;
         xSemaphoreTake(lock, portMAX_DELAY);
         if (!status.ready && now >= next_attempt) {
-            status.ready = icm45686_configure(&io);
+            status.ready = icm45686_configure(&io, profile);
             if (status.ready) {
-                ESP_LOGI(TAG, "ICM-45686 configured: %d Hz, +/-%d g, +/-%d dps, FIFO stream mode on INT1",
-                         ICM45686_ODR_HZ, ICM45686_ACCEL_FS_G, ICM45686_GYRO_FS_DPS);
+                icm45686_stats_start(&status.stats, profile);
+                ESP_LOGI(TAG, "ICM-45686 configured: +/-%u g, +/-%u dps, %.1f Hz still and %.1f Hz moving, "
+                         "low-pass at a quarter of the rate", profile->accel_fs_g, profile->gyro_fs_dps,
+                         ICM45686_STILL_DECIHZ / 10.0, profile->moving_decihz / 10.0);
                 failures = 0; last_packets = status.stats.packets; last_progress = now;
             } else {
                 if (!announced) ESP_LOGW(TAG, "ICM-45686 not answering; retrying every %d s", RETRY_MS / 1000);
@@ -78,6 +87,13 @@ static void motion_task(void *arg)
             } else {
                 failures = 0;
                 if (status.stats.latest_packet != before) status.latest_ms = now;
+                bool moving;
+                if (icm45686_rate_due(&status.stats, now, &moving)) {
+                    if (icm45686_set_rate(&io, profile, moving, &status.stats))
+                        ESP_LOGI(TAG, "IMU %s: %.1f Hz", moving ? "moving" : "still",
+                                 (moving ? profile->moving_decihz : ICM45686_STILL_DECIHZ) / 10.0);
+                    else if (++failures >= FAILURE_LIMIT) status.ready = false;
+                }
             }
             if (status.stats.packets != last_packets) {
                 last_packets = status.stats.packets; last_progress = now;
@@ -86,16 +102,17 @@ static void motion_task(void *arg)
                 status.ready = false;
             }
         }
-        bool ready = status.ready;
+        unsigned wait_ms = status.ready ? service_ms() : 1000;
         xSemaphoreGive(lock);
-        // INT1 wakes the task at the watermark; the timeout keeps draining without it.
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(ready ? SERVICE_MS : 1000));
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait_ms));
     }
 }
 
-esp_err_t motion_start(i2c_master_bus_handle_t bus, int int1_gpio, int int2_gpio)
+esp_err_t motion_start(i2c_master_bus_handle_t bus, int int1_gpio, int int2_gpio,
+                       const icm45686_profile_t *unit_profile)
 {
-    if (!bus) return ESP_ERR_INVALID_ARG;
+    if (!bus || !unit_profile) return ESP_ERR_INVALID_ARG;
+    profile = unit_profile;
     if (!(lock = xSemaphoreCreateMutex())) return ESP_ERR_NO_MEM;
     const i2c_device_config_t device = {.dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = ICM45686_ADDRESS, .scl_speed_hz = IMU_I2C_HZ};

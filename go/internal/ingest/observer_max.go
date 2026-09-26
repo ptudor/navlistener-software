@@ -26,17 +26,21 @@ type BoardThermocouple struct {
 }
 
 // BoardMotion is the MAX board's ICM-45686 IMU and MMC34160PJ magnetometer summary
-// (tag 13). Vectors are in each sensor's own axes; mounting calibration, attitude and
-// heading are not applied. Counters run since ESP boot.
+// (tag 13). The IMU runs at 12.5 Hz while still and at its profile's moving rate
+// otherwise; RateHz is the rate in force. Vectors are in each sensor's own axes;
+// mounting calibration, attitude and heading are not applied. Counters run since ESP boot.
 type BoardMotion struct {
 	IMUState          string             `json:"imu_state"`
 	MagnetometerState string             `json:"magnetometer_state"`
-	RateHz            uint16             `json:"imu_rate_hz"`
+	Profile           string             `json:"motion_profile"`
+	Moving            bool               `json:"moving"`
+	RateHz            float64            `json:"imu_rate_hz"`
 	AccelRangeG       uint8              `json:"accel_range_g"`
 	GyroRangeDPS      uint16             `json:"gyro_range_dps"`
 	Packets           uint32             `json:"imu_packets"`
 	Overflows         uint32             `json:"imu_fifo_overflows"`
 	Resyncs           uint32             `json:"imu_fifo_resyncs"`
+	RateChanges       uint32             `json:"imu_rate_changes"`
 	Latest            *BoardIMUSample    `json:"latest,omitempty"`
 	Window            *BoardMotionWindow `json:"window,omitempty"`
 	Magnetometer      *BoardMagnetometer `json:"magnetometer,omitempty"`
@@ -52,12 +56,18 @@ type BoardIMUSample struct {
 	TemperatureC float64    `json:"temperature_c"`
 }
 
-// BoardMotionWindow holds the extremes of every valid sample since the previous
-// report the observer queued.
+// BoardMotionWindow covers every valid sample since the previous report the observer
+// queued: the time they span, their time-weighted mean vectors (the mean acceleration is
+// the gravity direction while the unit is not accelerating), and the extremes of the
+// acceleration and rotation-rate magnitudes.
 type BoardMotionWindow struct {
-	AccelMinG  float64 `json:"accel_min_g"`
-	AccelMaxG  float64 `json:"accel_max_g"`
-	GyroMaxDPS float64 `json:"gyro_max_dps"`
+	Samples     uint32     `json:"samples"`
+	SpanMS      uint32     `json:"span_ms"`
+	AccelMeanG  [3]float64 `json:"accel_mean_g"`
+	GyroMeanDPS [3]float64 `json:"gyro_mean_dps"`
+	AccelMinG   float64    `json:"accel_min_g"`
+	AccelMaxG   float64    `json:"accel_max_g"`
+	GyroMaxDPS  float64    `json:"gyro_max_dps"`
 }
 
 // BoardMagnetometer is one SET/RESET measurement: the field with the bridge offset
@@ -149,64 +159,73 @@ func allZero(b []byte) bool {
 }
 
 func decodeMotion(v []byte, uptime uint64) (*BoardMotion, error) {
-	if len(v) != 69 || v[0] != 1 || v[1] > 1 || v[2] > 1 || v[3] > 7 {
+	if len(v) != 95 || v[0] != 1 || v[1] > 1 || v[2] > 1 || v[3] > 7 || v[4] > 1 || v[5] > 1 {
 		return nil, ErrBadTelemetry
 	}
 	u16, u32, u64 := binary.BigEndian.Uint16, binary.BigEndian.Uint32, binary.BigEndian.Uint64
 	states := []string{"not_responding", "ready"}
-	m := &BoardMotion{IMUState: states[v[1]], MagnetometerState: states[v[2]], RateHz: u16(v[4:]),
-		AccelRangeG: v[6], GyroRangeDPS: u16(v[7:]), Packets: u32(v[23:]), Overflows: u32(v[27:]), Resyncs: u32(v[31:])}
+	rate := u16(v[6:])
+	m := &BoardMotion{IMUState: states[v[1]], MagnetometerState: states[v[2]],
+		Profile: []string{"surface", "aerial"}[v[4]], Moving: v[5] != 0, RateHz: float64(rate) / 10,
+		AccelRangeG: v[8], GyroRangeDPS: u16(v[9:]), Packets: u32(v[25:]), Overflows: u32(v[29:]),
+		Resyncs: u32(v[33:]), RateChanges: u32(v[37:])}
 	accelFS := map[uint8]bool{2: true, 4: true, 8: true, 16: true, 32: true}
 	gyroFS := map[uint16]bool{125: true, 250: true, 500: true, 1000: true, 2000: true, 4000: true}
-	if m.RateHz == 0 || !accelFS[m.AccelRangeG] || !gyroFS[m.GyroRangeDPS] {
+	if rate == 0 || rate > 64000 || !accelFS[m.AccelRangeG] || !gyroFS[m.GyroRangeDPS] {
 		return nil, ErrBadTelemetry
 	}
+	accelScale, gyroScale := float64(m.AccelRangeG)/32768, float64(m.GyroRangeDPS)/32768
 	valid := v[3]
 	if valid&1 == 0 {
-		if !allZero(v[9:23]) || !allZero(v[41:49]) {
+		if !allZero(v[11:25]) || !allZero(v[67:75]) {
 			return nil, ErrBadTelemetry
 		}
 	} else {
-		s := &BoardIMUSample{UptimeMS: u64(v[41:])}
-		temp := int16(u16(v[21:]))
+		s := &BoardIMUSample{UptimeMS: u64(v[67:])}
+		temp := int16(u16(v[23:]))
 		// The FIFO's one-byte temperature is C = raw / 2 + 25: steps of 0.5 C.
 		if v[1] != 1 || s.UptimeMS > uptime || temp < -3900 || temp > 8850 || temp%50 != 0 {
 			return nil, ErrBadTelemetry
 		}
 		s.TemperatureC = float64(temp) / 100
 		for i := 0; i < 3; i++ {
-			s.AccelCounts[i], s.GyroCounts[i] = int16(u16(v[9+2*i:])), int16(u16(v[15+2*i:]))
+			s.AccelCounts[i], s.GyroCounts[i] = int16(u16(v[11+2*i:])), int16(u16(v[17+2*i:]))
 			if s.AccelCounts[i] == -32768 || s.GyroCounts[i] == -32768 {
 				return nil, ErrBadTelemetry
 			}
-			s.AccelG[i] = float64(s.AccelCounts[i]) * float64(m.AccelRangeG) / 32768
-			s.GyroDPS[i] = float64(s.GyroCounts[i]) * float64(m.GyroRangeDPS) / 32768
+			s.AccelG[i] = float64(s.AccelCounts[i]) * accelScale
+			s.GyroDPS[i] = float64(s.GyroCounts[i]) * gyroScale
 		}
 		m.Latest = s
 	}
-	accelMin, accelMax, gyroMax := u16(v[35:]), u16(v[37:]), u16(v[39:])
 	if valid&2 == 0 {
-		if accelMin != 0 || accelMax != 0 || gyroMax != 0 {
+		if !allZero(v[41:67]) {
 			return nil, ErrBadTelemetry
 		}
 	} else {
-		if accelMin > accelMax {
+		w := &BoardMotionWindow{Samples: u32(v[41:]), SpanMS: u32(v[45:]),
+			AccelMinG: float64(u16(v[61:])) / 1000, AccelMaxG: float64(u16(v[63:])) / 1000,
+			GyroMaxDPS: float64(u16(v[65:])) / 10}
+		if w.Samples == 0 || w.SpanMS == 0 || w.AccelMinG > w.AccelMaxG {
 			return nil, ErrBadTelemetry
 		}
-		m.Window = &BoardMotionWindow{AccelMinG: float64(accelMin) / 1000, AccelMaxG: float64(accelMax) / 1000,
-			GyroMaxDPS: float64(gyroMax) / 10}
+		for i := 0; i < 3; i++ {
+			w.AccelMeanG[i] = float64(int16(u16(v[49+2*i:]))) * accelScale
+			w.GyroMeanDPS[i] = float64(int16(u16(v[55+2*i:]))) * gyroScale
+		}
+		m.Window = w
 	}
 	if valid&4 == 0 {
-		if !allZero(v[49:69]) {
+		if !allZero(v[75:95]) {
 			return nil, ErrBadTelemetry
 		}
 	} else {
-		g := &BoardMagnetometer{UptimeMS: u64(v[61:])}
+		g := &BoardMagnetometer{UptimeMS: u64(v[87:])}
 		if v[2] != 1 || g.UptimeMS > uptime {
 			return nil, ErrBadTelemetry
 		}
 		for i := 0; i < 3; i++ {
-			g.FieldCounts[i], g.OffsetCounts[i] = int16(u16(v[49+2*i:])), u16(v[55+2*i:])
+			g.FieldCounts[i], g.OffsetCounts[i] = int16(u16(v[75+2*i:])), u16(v[81+2*i:])
 			// 2048 counts per gauss, 100 microtesla per gauss.
 			g.FieldMicrotesla[i] = float64(g.FieldCounts[i]) * 100 / 2048
 		}

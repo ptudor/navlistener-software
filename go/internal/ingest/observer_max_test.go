@@ -34,7 +34,7 @@ func near(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 
 func TestObserverDetailsMAXGolden(t *testing.T) {
 	b := observerMAXGolden(t)
-	if len(b) != motionBody+69 {
+	if len(b) != motionBody+95 {
 		t.Fatalf("fixture length %d", len(b))
 	}
 	d, err := decodeObserverDetails(b)
@@ -54,8 +54,9 @@ func TestObserverDetailsMAXGolden(t *testing.T) {
 		t.Fatalf("thermocouple: %+v", tc)
 	}
 	m := d.Motion
-	if m == nil || m.IMUState != "ready" || m.MagnetometerState != "ready" || m.RateHz != 100 || m.AccelRangeG != 8 ||
-		m.GyroRangeDPS != 1000 || m.Packets != 3000 || m.Overflows != 1 || m.Resyncs != 0 {
+	if m == nil || m.IMUState != "ready" || m.MagnetometerState != "ready" || m.Profile != "surface" || !m.Moving ||
+		m.RateHz != 50 || m.AccelRangeG != 8 || m.GyroRangeDPS != 1000 || m.Packets != 3000 || m.Overflows != 1 ||
+		m.Resyncs != 0 || m.RateChanges != 4 {
 		t.Fatalf("motion: %+v", m)
 	}
 	s := m.Latest
@@ -63,7 +64,9 @@ func TestObserverDetailsMAXGolden(t *testing.T) {
 		!near(s.GyroDPS[0], 3*1000.0/32768) || s.TemperatureC != 27.5 {
 		t.Fatalf("latest IMU sample: %+v", s)
 	}
-	if w := m.Window; w == nil || w.AccelMinG != 0.98 || w.AccelMaxG != 1.53 || w.GyroMaxDPS != 12.5 {
+	if w := m.Window; w == nil || w.Samples != 900 || w.SpanMS != 30000 || !near(w.AccelMeanG[0], 410*8.0/32768) ||
+		!near(w.AccelMeanG[2], 4075*8.0/32768) || !near(w.GyroMeanDPS[2], 33*1000.0/32768) ||
+		w.AccelMinG != 0.98 || w.AccelMaxG != 1.53 || w.GyroMaxDPS != 12.5 {
 		t.Fatalf("window: %+v", m.Window)
 	}
 	g := m.Magnetometer
@@ -92,11 +95,13 @@ func TestObserverDetailsMAXValidation(t *testing.T) {
 		{motionBody, 2, "motion version"},
 		{motionBody + 3, 8, "motion validity"},
 		{motionBody + 2, 0, "a magnetometer reading while it is not responding"},
-		{motionBody + 6, 3, "an accelerometer range the part does not have"},
-		{motionBody + 22, 0xc5, "a temperature off the 0.5 C FIFO steps"},
-		{motionBody + 35, 0xff, "a minimum above the maximum"},
-		{motionBody + 41, 0xff, "an IMU sample after the report"},
-		{motionBody + 61, 0xff, "a magnetometer sample after the report"},
+		{motionBody + 4, 2, "an unknown motion profile"},
+		{motionBody + 5, 2, "an unknown governor state"},
+		{motionBody + 8, 3, "an accelerometer range the part does not have"},
+		{motionBody + 24, 0xc5, "a temperature off the 0.5 C FIFO steps"},
+		{motionBody + 61, 0xff, "a minimum above the maximum"},
+		{motionBody + 67, 0xff, "an IMU sample after the report"},
+		{motionBody + 87, 0xff, "a magnetometer sample after the report"},
 	} {
 		b := append([]byte(nil), good...)
 		b[change.offset] = change.value
@@ -127,7 +132,24 @@ func TestObserverDetailsMAXValidation(t *testing.T) {
 	if _, err := decodeObserverDetails(b); err == nil {
 		t.Error("accepted a withheld IMU sample with values")
 	}
-	for _, cut := range []int{barometerBody + 9, thermocoupleBody + 11, motionBody + 68} {
+	b = append([]byte(nil), good...)
+	b[motionBody+3] = 5 // window withheld while its bytes remain
+	if _, err := decodeObserverDetails(b); err == nil {
+		t.Error("accepted a withheld window with values")
+	}
+	// A window must cover time: samples and span are both nonzero.
+	b = append([]byte(nil), good...)
+	copy(b[motionBody+45:], []byte{0, 0, 0, 0})
+	if _, err := decodeObserverDetails(b); err == nil {
+		t.Error("accepted a window covering no time")
+	}
+	// A unit at rest on the still rate, aerial profile: 12.5 Hz.
+	b = append([]byte(nil), good...)
+	b[motionBody+4], b[motionBody+5], b[motionBody+6], b[motionBody+7] = 1, 0, 0, 125
+	if d, err := decodeObserverDetails(b); err != nil || d.Motion.Profile != "aerial" || d.Motion.Moving || d.Motion.RateHz != 12.5 {
+		t.Fatalf("still aerial unit: %v %+v", err, d)
+	}
+	for _, cut := range []int{barometerBody + 9, thermocoupleBody + 11, motionBody + 94} {
 		if _, err := decodeObserverDetails(good[:cut]); err == nil {
 			t.Errorf("accepted truncation at %d", cut)
 		}

@@ -223,11 +223,15 @@ The collector must support this report before the firmware is deployed.
 
 The MAX board replaces the BMP388 with an MS5607 at `0x77` and adds an
 MMC34160PJ magnetometer at `0x30`, both sampled with the other sensors, and an
-ICM-45686 IMU at `0x69` whose FIFO a separate task drains on INT1 (GPIO16) at
-100 Hz. Its MAX31856 thermocouple converter has its own SPI bus (CS GPIO13, SCK 40,
-MOSI 41, MISO 42, DRDY_N GPIO1) and converts continuously with the 60 Hz notch;
-select 50 Hz with `CONFIG_NVF_THERMOCOUPLE_50HZ=y`. Each environmental report
-carries the pressure, the thermocouple and its faults, and a motion summary; see
+ICM-45686 IMU at `0x69` whose FIFO a separate task drains on INT1 (GPIO16). The
+IMU runs at 12.5 Hz while still and steps up while moving, to 50 Hz or 100 Hz by
+motion profile. Its MAX31856 thermocouple converter has its own SPI bus (CS
+GPIO13, SCK 40, MOSI 41, MISO 42, DRDY_N GPIO1) and converts continuously. The
+mains frequency for its notch (60 or 50 Hz) and the motion profile (surface for
+vehicles and vessels, aerial for aircraft and drones) are per-unit settings on the
+browser setup page, so one MAX image serves every unit; a network configuration
+reset keeps them. Each environmental report carries the pressure, the thermocouple
+and its faults, and a motion summary with the window's mean acceleration; see
 [the MAX sensor tags](../docs/OBSERVER-TELEMETRY.md#max-board-sensors-tags-11-13-version-1).
 A sensor that does not answer is retried; the others continue.
 

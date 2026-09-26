@@ -48,11 +48,15 @@ typedef struct {
 typedef struct {
     bool present;
     uint8_t imu_state, mag_state; // 0 not responding, 1 ready
-    uint8_t valid;                // 1 latest IMU sample, 2 IMU extremes, 4 magnetometer
-    uint16_t odr_hz, gyro_fs_dps;
+    uint8_t valid;                // 1 latest IMU sample, 2 IMU window, 4 magnetometer
+    uint8_t profile;              // 0 surface, 1 aerial
+    uint8_t moving;               // the governor's moving rate is in force
+    uint16_t rate_decihz, gyro_fs_dps;
     uint8_t accel_fs_g;
     int16_t accel[3], gyro[3], imu_centi_c;
-    uint32_t packets, overflows, resyncs;
+    uint32_t packets, overflows, resyncs, rate_changes;
+    uint32_t window_samples, window_ms;   // valid samples since the previous queued report
+    int16_t accel_mean[3], gyro_mean[3]; // their time-weighted means
     uint16_t accel_min_mg, accel_max_mg, gyro_max_decidps;
     uint64_t imu_ms;
     int16_t mag[3];               // 1/2048 G per count, bridge offset removed
