@@ -1162,7 +1162,10 @@ The manufacturer's unit record must not depend on what target firmware says its
 identifiers are. At the bench, the factory CA unit reads the ATECC serial, the board
 EEPROM's 128-bit serial and the slot-14 record directly over this connector while the ESP32 is held
 in reset, and the result is compared with the firmware's own report; a disagreement
-stops commissioning. That needs `ESP_EN` to be reachable by the same fixture that
+stops commissioning. The same reset-held session writes the board's manifest when the
+enrollment request names the board: the CA identifies the EEPROM, writes the
+esp32-hardware-discovery template for that board and revision after SIGN, and reads it
+back (factory-ca CONSOLE.md, *Board manifest*). That needs `ESP_EN` to be reachable by the same fixture that
 plugs into the Qwiic connector, without a hand on the RESET button:
 
 - Provide a round, unmasked **`ESP_EN` bench pad** of at least 1.0 mm diameter with a
