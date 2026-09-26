@@ -28,9 +28,10 @@ from tuf.api.serialization.json import CanonicalJSONSerializer, JSONSerializer
 
 # Byte 9 of an image's NVFOTA1 metadata names the board it was built for
 # (esp32/components/ota/include/nvf_board.h); a release names the same family.
-# NVFOTA1 byte 9. The universal image (4) drives only what each board's manifest lists,
-# so its releases fit every board; the others are single-board test images.
-BOARD_FAMILIES = {1: "gnss-color-neo", 2: "gnss-color-zed-x20", 3: "gnss-color-max", 4: "gnss-color"}
+# NVFOTA1 byte 9: the board's CAT_INTSAT ID. The universal image (0) drives only what each
+# board's manifest lists, so its releases fit every board; the others are single-board
+# test images.
+BOARD_FAMILIES = {0: "gnss-color", 1: "gnss-color-neo", 2: "gnss-color-zed-x20", 3: "gnss-color-max"}
 
 CHANNELS = ("stable", "canary", "lab")
 PROFILES = ("trusted", "open", "test")

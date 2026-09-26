@@ -112,10 +112,13 @@ NVF_PINS_CHECK(NVF_PINS_MAX, "the MAX pin map");
 // the manifest's CAT_INTSAT entry picks the row at boot (observer_board_current()).
 #include "manifest_board.h"
 #include "nvf_board.h"
+// An image's OTA board ID is the board's CAT_INTSAT ID; 0 is the universal image.
+_Static_assert((int)NVF_BOARD_ID_NEO == (int)INTSAT_NEO && (int)NVF_BOARD_ID_ZED_X20 == (int)INTSAT_X20 &&
+               (int)NVF_BOARD_ID_MAX == (int)INTSAT_MAX, "OTA board IDs must equal the CAT_INTSAT IDs");
 typedef struct {
     board_model_t model;
     const char *name;
-    uint8_t ota_board_id;       // NVF_BOARD_ID_*, the image and release board
+    uint8_t intsat_id;          // the manifest's CAT_INTSAT ID, also the OTA board ID
     const char *family;         // the signed-release board family
     uint64_t pins;              // everything the board connects, as above
     bool boot_steps_brightness; // BOOT's short press steps the panel presets
@@ -127,19 +130,19 @@ typedef struct {
 } observer_board_t;
 #define NVF_PIN_ON(map, pin) ((pin) < 0 || ((map) & NVF_PIN((pin) < 0 ? 0 : (pin))) != 0)
 #define NVF_NONE (-1)
-#define NVF_BOARD_NEO_ROW {.model = BOARD_MODEL_NEO_A, .name = "NEO revision A", .ota_board_id = NVF_BOARD_ID_NEO, \
+#define NVF_BOARD_NEO_ROW {.model = BOARD_MODEL_NEO_A, .name = "NEO revision A", .intsat_id = INTSAT_NEO, \
     .family = "gnss-color-neo", .pins = NVF_PINS_NEO, .boot_steps_brightness = true, \
     .led_panel_sdi = NVF_NONE, .bright_adc = NVF_NONE, .bright_button = NVF_NONE, \
     .eth_sclk = NVF_NONE, .eth_cs = NVF_NONE, .eth_mosi = NVF_NONE, .eth_miso = NVF_NONE, \
     .tc_sck = NVF_NONE, .tc_mosi = NVF_NONE, .tc_miso = NVF_NONE, .tc_cs_n = NVF_NONE, .tc_drdy_n = NVF_NONE, \
     .imu_int1 = NVF_NONE, .imu_int2 = NVF_NONE}
-#define NVF_BOARD_X20_ROW {.model = BOARD_MODEL_X20_A, .name = "X20 revision A", .ota_board_id = NVF_BOARD_ID_ZED_X20, \
+#define NVF_BOARD_X20_ROW {.model = BOARD_MODEL_X20_A, .name = "X20 revision A", .intsat_id = INTSAT_X20, \
     .family = "gnss-color-zed-x20", .pins = NVF_PINS_ZED_X20, .boot_steps_brightness = false, \
     .led_panel_sdi = 1, .bright_adc = 2, .bright_button = 18, \
     .eth_sclk = NVF_PIN_ETH_SCLK, .eth_cs = NVF_PIN_ETH_CS, .eth_mosi = NVF_PIN_ETH_MOSI, .eth_miso = NVF_PIN_ETH_MISO, \
     .tc_sck = NVF_NONE, .tc_mosi = NVF_NONE, .tc_miso = NVF_NONE, .tc_cs_n = NVF_NONE, .tc_drdy_n = NVF_NONE, \
     .imu_int1 = NVF_NONE, .imu_int2 = NVF_NONE}
-#define NVF_BOARD_MAX_ROW {.model = BOARD_MODEL_MAX_A, .name = "MAX revision A", .ota_board_id = NVF_BOARD_ID_MAX, \
+#define NVF_BOARD_MAX_ROW {.model = BOARD_MODEL_MAX_A, .name = "MAX revision A", .intsat_id = INTSAT_MAX, \
     .family = "gnss-color-max", .pins = NVF_PINS_MAX, .boot_steps_brightness = false, \
     .led_panel_sdi = NVF_NONE, .bright_adc = 2, .bright_button = 18, \
     .eth_sclk = NVF_NONE, .eth_cs = NVF_NONE, .eth_mosi = NVF_NONE, .eth_miso = NVF_NONE, \

@@ -104,7 +104,7 @@ int main(void)
     reset(); image[12]=13; assert(nvf_ota_download(&request) != ESP_OK && !begun && !selected);
     reset(); image[299]=1; assert(nvf_ota_download(&request) != ESP_OK && !begun);
     // A NEO device never installs another board's image (byte 297 is the board ID), and
-    // installs the universal image.
+    // installs the universal image (board 0).
     for (uint8_t board = 0; board < 6; board++) {
         reset(); image[297]=board; rehash();
         if (board == NVF_BOARD_ID_NEO || board == NVF_BOARD_ID_UNIVERSAL)
@@ -112,7 +112,7 @@ int main(void)
         else assert(nvf_ota_download(&request) != ESP_OK && !begun);
     }
     // A device whose manifest names no board installs only the universal image.
-    nvf_board_set_device(NVF_BOARD_ID_NONE, NULL);
+    nvf_board_set_device(0, NULL);
     reset(); assert(nvf_ota_download(&request) != ESP_OK && !begun);
     reset(); image[297]=NVF_BOARD_ID_UNIVERSAL; rehash(); assert(nvf_ota_download(&request) == ESP_OK && selected);
     nvf_board_set_device(NVF_BOARD_ID_NEO, "gnss-color-neo");

@@ -44,11 +44,11 @@ class OtaClientTest(unittest.TestCase):
             for url in ("http://example.invalid/app.bin", "https://u@example.invalid/app.bin", "https://example.invalid/#x"):
                 with self.assertRaises(ValueError):
                     ota.update_body(path, url)
-            for board in (2, 3, 4):
+            for board in (0, 2, 3):
                 image[297] = board
                 path.write_bytes(image)
                 ota.update_body(path, "https://example.invalid/app.bin")
-            for board in (0, 5):
+            for board in (4, 255):
                 image[297] = board
                 path.write_bytes(image)
                 with self.assertRaises(ValueError):

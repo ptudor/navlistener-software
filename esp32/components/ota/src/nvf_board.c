@@ -1,6 +1,6 @@
 #include "nvf_board.h"
 
-static uint8_t device_id = NVF_BOARD_ID_NONE;
+static uint8_t device_id;
 static const char *device_family;
 
 void nvf_board_set_device(uint8_t id, const char *family) { device_id = id; device_family = family; }

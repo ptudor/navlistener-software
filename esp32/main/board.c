@@ -158,7 +158,7 @@ void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_
     bool driven = false;
     for (size_t i = 0; i < sizeof known / sizeof known[0]; i++)
         if (manifest->board == known[i].board.model) { named = &known[i].board; driven = known[i].driven; }
-    if (named) nvf_board_set_device(named->ota_board_id, named->family);
+    if (named) nvf_board_set_device(named->intsat_id, named->family);
     if (named && driven) { board = named; listed = manifest->capabilities; }
     if (board)
         ESP_LOGI(TAG, "board: %s; its pins and its %u listed components are used", board->name,

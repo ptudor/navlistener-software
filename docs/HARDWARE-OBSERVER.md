@@ -609,10 +609,10 @@ names no board, names one or a revision the firmware does not know, or names mor
 runs nothing board-specific; the receiver still streams, unconfigured. A new board or
 revision therefore needs a firmware row before its first unit is programmed. The single-board
 builds of `NVF_BOARD_ASSEMBLY` are test builds carrying one board's drivers. The OTA image's
-board marker (1 NEO, 2 ZED/X20, 3 MAX, 4 universal) and the signed release's `board_family`
-(`gnss-color` for the universal image) keep a test image to its own board, while the
-universal image installs on any. None of the ZED/X20 or MAX paths has yet run on assembled
-hardware.
+board marker (0 for the universal image, otherwise the `CAT_INTSAT` ID: 1 NEO, 2 ZED/X20,
+3 MAX) and the signed release's `board_family` (`gnss-color` for the universal image) keep a
+test image to its own board, while the universal image installs on any. None of the ZED/X20
+or MAX paths has yet run on assembled hardware.
 
 The ordinary eight-second configuration-reset gesture erases only `navfeeder`; it does not
 erase `hwmanifest`. The custom-board build also refuses the generic fallback that automatically
