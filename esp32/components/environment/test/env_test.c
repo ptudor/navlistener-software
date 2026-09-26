@@ -26,7 +26,7 @@ static bool read_bus(void *ctx, uint8_t address, uint8_t reg, uint8_t *p, size_t
 static bool write_bus(void *ctx, uint8_t address, uint8_t reg, const uint8_t *p, size_t n)
 {
     fake_t *f = ctx;
-    if (f->fail) return false;
+    if (f->fail || address == f->absent) return false;
     if (address == 0x18) { assert(reg == 1 && n == 2); memcpy(f->mcp[reg], p, n); }
     else if (address == 0x40) {
         assert(n == 1 && (reg == 0xe || reg == 0xf) && !(reg == 0xe && (*p & 0x80))); // never SOFT_RES
@@ -156,10 +156,10 @@ static void test_heater_register(void)
     assert(sample.mcp_valid && !sample.hdc_valid && sample.bmp_valid && !f.hdc_pending && f.hdc[0xf] == 0);
     f.bmp[0x1b] = 0; env_sensors_read_some(&s, &sample, 3);
     assert(sample.mcp_valid && sample.hdc_valid && !sample.bmp_valid && f.bmp[0x1b] == 0);
-    // An absent device's failed probe at initialization does not mark later good samples.
+    // An absent listed device is retried; its I/O failure does not invalidate other sensors.
     setup(&f, &s); env_io_t io = s.io; f.absent = 0x76;
     env_sensors_init(&s, &io, ENV_HDC2080, ENV_PART_MCP9808 | ENV_PART_BMP388); assert(s.io_error && s.mcp_ready && s.hdc_ready && !s.bmp_ready);
-    env_sensors_read(&s, &sample); assert(sample.mcp_valid && sample.hdc_valid && !sample.bus_error);
+    env_sensors_read(&s, &sample); assert(sample.mcp_valid && sample.hdc_valid && sample.bus_error);
     // A reboot during a heater run: HEAT_EN is still set and the HDC does not answer at init. It is
     // not configured blind; a later retry identifies it and clears the heater, keeping INT bits.
     setup(&f, &s); io = s.io; f.hdc[0xe] = 0x0b; f.absent = 0x40;
@@ -196,6 +196,45 @@ static void test_heater_register(void)
     // A heater that will not clear is reported.
     setup(&f, &s); io = s.io; f.hdc[0xe] = 0x0b; f.heater_stuck = true;
     assert(!env_hdc_heater_off_unlisted(&io, &present) && present);
+    // Initialization must verify HEAT_EN cleared before permitting humidity readings.
+    env_sensors_init(&s, &io, ENV_HDC2080, ENV_PART_MCP9808 | ENV_PART_BMP388);
+    assert(!s.hdc_ready && s.mcp_ready && s.bmp_ready);
+    assert(!env_sensors_retry_hdc(&s));
+    f.heater_stuck = false;
+    assert(env_sensors_retry_hdc(&s) && f.hdc[0xe] == 3);
+}
+static void test_sensor_recovery(void)
+{
+    fake_t f; env_sensors_t s; env_sample_t sample;
+    setup(&f, &s);
+    env_io_t io = s.io;
+    // All devices miss initial identification. The listed temperature/pressure parts
+    // recover on later samples, while heater-related initialization remains explicit.
+    f.fail = true;
+    env_sensors_init(&s, &io, ENV_HDC2080, ENV_PART_MCP9808 | ENV_PART_BMP388);
+    assert(!s.mcp_ready && !s.bmp_ready && !s.hdc_ready);
+    f.fail = false;
+    env_sensors_read(&s, &sample);
+    assert(sample.mcp_valid && sample.bmp_valid && !sample.hdc_valid);
+    assert(env_sensors_retry_hdc(&s));
+    // An outage after successful initialization invalidates readiness too.
+    f.fail = true;
+    env_sensors_read(&s, &sample);
+    assert(!s.mcp_ready && !s.bmp_ready && !sample.mcp_valid && !sample.bmp_valid);
+    f.fail = false;
+    f.mcp[1][0] = 1; // the recovered MCP is asleep
+    f.bmp[0x1b] = f.bmp[0x1c] = 0; // BMP power cycle lost its configuration
+    f.hdc[0xe] |= 8; // a managed heater run must survive the other sensors' retries
+    env_sensors_read_some(&s, &sample, 5);
+    assert(sample.mcp_valid && sample.bmp_valid && !sample.hdc_valid);
+    assert(!(f.mcp[1][0] & 1) && f.bmp[0x1c] == 0x0b && (f.hdc[0xe] & 8));
+    // A timeout with successful transfers also requires reconfiguration.
+    f.bmp_stuck = true;
+    env_sensors_read(&s, &sample);
+    assert(!s.bmp_ready && !sample.bmp_valid && !sample.bus_error);
+    f.bmp_stuck = false;
+    env_sensors_read(&s, &sample);
+    assert(s.bmp_ready && sample.bmp_valid);
 }
 int main(void)
 {
@@ -227,6 +266,7 @@ int main(void)
     assert(!s.mcp_ready && !s.hdc_ready && !s.bmp_ready);
     test_hdc_variants();
     test_heater_register();
+    test_sensor_recovery();
     puts("Environment: HDC2080/HDC2022 selection, units/sign/alerts, Bosch trim compensation, fresh conversions, "
          "heater register control, HDC retry and fault isolation passed");
     return 0;

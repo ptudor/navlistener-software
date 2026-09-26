@@ -116,6 +116,11 @@ The M9's "no spoofing indicated" state is not proof of authentic reception; see
   rotation rate is above 5 °/s. The UI low-pass filters run at a quarter of the rate,
   so vibration above it, such as an idling engine's, is removed rather than aliased.
   The FIFO is drained on INT1, or after twice the watermark's time without it.
+  Per AN-000364's workarounds in the [TDK reference driver](https://github.com/tdk-invn-oss/motion.mcu.icm45686.driver/tree/0a5bed6975b5cdeecb98f95db420f3058dd88547/icm45686/imu),
+  the count is read twice and the newest packet is retained in stream mode. A flush
+  is waited for. A failed transfer or unverified rate change requires reconfiguration;
+  four seconds without a valid sample also triggers it. The latest sample is invalid
+  after reconfiguration until new data arrives; counters and report windows persist.
   The report carries the latest sample (while it is under five seconds old),
   counters since boot, and a window covering every valid sample since the previous
   queued report: its time-weighted mean acceleration and rotation rate, and the
@@ -148,9 +153,14 @@ The M9's "no spoofing indicated" state is not proof of authentic reception; see
   report version. The separate timing component below measures pulse inputs.
 
 Sensor failures clear that sample's validity and values. Other sensors continue.
-Transient read failures recover on later samples; devices that failed initial
-identification/configuration require a reboot. Invalid trim and conversion
-timeouts are rejected. Source references:
+Listed environmental sensors retry failed identification/configuration on later
+samples. The MCP9808 and barometers recover after failed reads; the magnetometer
+is also reconfigured after a failed measurement. HDC initialization verifies that
+the heater is off before enabling measurements; its retries remain separate from
+the other sensors so their recovery does not interrupt a managed heater run.
+Invalid trim and conversion timeouts are rejected. Sensor settling delays include
+an extra scheduler tick so tick phase cannot shorten a datasheet minimum.
+Source references:
 [MCP9808 datasheet](https://ww1.microchip.com/downloads/en/DeviceDoc/25095A.pdf),
 [HDC2080 Rev C](https://www.ti.com/lit/ds/symlink/hdc2080.pdf),
 [HDC2022 Rev A](https://www.ti.com/lit/ds/symlink/hdc2022.pdf),

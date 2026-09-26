@@ -30,7 +30,8 @@ static void init_hdc(env_sensors_t *s)
         read_reg(s, 0x40, 0xfc, p, 4) && le16(p) == 0x5449 && le16(p + 2) == 0x07d0 &&
         read_reg(s, 0x40, 0x0e, p, 1)) {
         value = p[0] & 7; // manual conversions, heater off, preserve interrupt configuration
-        s->hdc_ready = write_reg(s, 0x40, 0x0e, &value, 1);
+        s->hdc_ready = write_reg(s, 0x40, 0x0e, &value, 1) &&
+                       read_reg(s, 0x40, 0x0e, p, 1) && p[0] == value;
     }
 }
 bool env_sensors_retry_hdc(env_sensors_t *s)
@@ -38,11 +39,10 @@ bool env_sensors_retry_hdc(env_sensors_t *s)
     if (!s->hdc_ready) { s->io_error = false; init_hdc(s); }
     return s->hdc_ready;
 }
-void env_sensors_init(env_sensors_t *s, const env_io_t *io, env_hdc_variant_t hdc_variant, unsigned parts)
+static void init_mcp(env_sensors_t *s)
 {
-    memset(s, 0, sizeof *s); s->io = *io; s->hdc_variant = hdc_variant;
-    uint8_t p[21];
-    if ((parts & ENV_PART_MCP9808) && read_reg(s, 0x18, 6, p, 2) && be16(p) == 0x0054 &&
+    uint8_t p[2];
+    if ((s->parts & ENV_PART_MCP9808) && read_reg(s, 0x18, 6, p, 2) && be16(p) == 0x0054 &&
         read_reg(s, 0x18, 7, p, 2) && p[0] == 4 && read_reg(s, 0x18, 1, p, 2)) {
         bool asleep = p[0] & 1; // CONFIG shutdown bit 8
         p[0] &= ~1;
@@ -51,8 +51,11 @@ void env_sensors_init(env_sensors_t *s, const env_io_t *io, env_hdc_variant_t hd
             s->mcp_ready = true;
         }
     }
-    init_hdc(s);
-    if (!(parts & ENV_PART_BMP388) || !read_reg(s, 0x76, 0, p, 1) || p[0] != 0x50 ||
+}
+static void init_bmp(env_sensors_t *s)
+{
+    uint8_t p[21];
+    if (!(s->parts & ENV_PART_BMP388) || !read_reg(s, 0x76, 0, p, 1) || p[0] != 0x50 ||
         !read_reg(s, 0x76, 0x31, p, sizeof p)) return;
     bool all_zero = true, all_ff = true;
     for (unsigned i = 0; i < sizeof p; i++) { all_zero &= p[i] == 0; all_ff &= p[i] == 255; }
@@ -71,6 +74,13 @@ void env_sensors_init(env_sensors_t *s, const env_io_t *io, env_hdc_variant_t hd
     for (unsigned i = 0; i < sizeof groups / sizeof groups[0]; i++)
         if (bmp3_set_sensor_settings(groups[i], &s->settings, &s->bmp) != BMP3_OK) return;
     s->bmp_ready = true;
+}
+void env_sensors_init(env_sensors_t *s, const env_io_t *io, env_hdc_variant_t hdc_variant, unsigned parts)
+{
+    memset(s, 0, sizeof *s); s->io = *io; s->hdc_variant = hdc_variant; s->parts = parts;
+    init_mcp(s);
+    init_hdc(s);
+    init_bmp(s);
 }
 static bool read_hdc(env_sensors_t *s, env_sample_t *sample)
 {
@@ -118,6 +128,8 @@ static bool read_bmp(env_sensors_t *s, env_sample_t *sample)
 void env_sensors_read_some(env_sensors_t *s, env_sample_t *sample, uint8_t mask)
 {
     *sample = (env_sample_t){0}; s->io_error = false;
+    if ((mask & 1) && !s->mcp_ready) init_mcp(s);
+    if ((mask & 4) && !s->bmp_ready) init_bmp(s);
     uint8_t p[2];
     if ((mask & 1) && s->mcp_ready && read_reg(s, 0x18, 5, p, 2)) {
         uint16_t raw = be16(p);
@@ -126,6 +138,8 @@ void env_sensors_read_some(env_sensors_t *s, env_sample_t *sample, uint8_t mask)
     }
     if ((mask & 2) && s->hdc_ready) sample->hdc_valid = read_hdc(s, sample);
     if ((mask & 4) && s->bmp_ready) sample->bmp_valid = read_bmp(s, sample);
+    if ((mask & 1) && !sample->mcp_valid) s->mcp_ready = false;
+    if ((mask & 4) && !sample->bmp_valid) s->bmp_ready = false;
     sample->bus_error = s->io_error;
 }
 void env_sensors_read(env_sensors_t *s, env_sample_t *sample) { env_sensors_read_some(s, sample, 7); }

@@ -19,6 +19,7 @@ typedef enum {
 typedef struct {
     env_io_t io;
     env_hdc_variant_t hdc_variant;
+    unsigned parts;
     bool mcp_ready, hdc_ready, bmp_ready;
     bool io_error; // any failed I2C transfer; each read or heater operation clears it first
     struct bmp3_dev bmp;
@@ -38,7 +39,9 @@ void env_sensors_init(env_sensors_t *s, const env_io_t *io, env_hdc_variant_t hd
 bool env_sensors_retry_hdc(env_sensors_t *s);
 // Always clears validity first: a failed conversion cannot expose an old value.
 void env_sensors_read(env_sensors_t *s, env_sample_t *sample);
-// The same for the ready sensors in mask (bit 0 MCP9808, 1 HDC, 2 BMP); the others stay invalid.
+// The same for sensors in mask (bit 0 MCP9808, 1 HDC, 2 BMP); the others stay invalid.
+// Listed MCP9808/BMP388 parts retry identification after a failed init/read. HDC retries
+// remain explicit so they cannot turn off the heater during a managed heater run.
 void env_sensors_read_some(env_sensors_t *s, env_sample_t *sample, uint8_t mask);
 // HDC CONFIG HEAT_EN (0x0E bit 3), read-modify-write keeping the interrupt and measurement
 // bits. True only when the register reads back exactly as written. Requires hdc_ready.

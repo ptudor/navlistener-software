@@ -241,6 +241,11 @@ reset keeps them. Each environmental report carries the pressure, the thermocoup
 and its faults, and a motion summary with the window's mean acceleration; see
 [the MAX sensor tags](../docs/OBSERVER-TELEMETRY.md#max-board-sensors-tags-11-13-version-1).
 A sensor that does not answer is retried; the others continue.
+The IMU follows the manufacturer's FIFO errata: it reads the packet count twice,
+retains the newest packet in stream mode, and waits for a flush to complete.
+A failed transfer or unverified rate change causes reconfiguration before more
+samples are accepted; four seconds without a valid sample also causes recovery.
+The host tests simulate these faults, including a transfer that stops mid-packet.
 
 The ZED/X20 replaces the BMP388 with a BMP581 at `0x46`, whose readings fill the same
 pressure and temperature fields; tag 15 names the part the manifest lists (`PRESSURE_BMP581`,

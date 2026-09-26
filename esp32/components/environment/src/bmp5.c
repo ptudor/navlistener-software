@@ -67,13 +67,18 @@ bool bmp5_convert(const uint8_t raw[6], int32_t *centi_c, int32_t *pa)
 
 bool bmp5_read(const env_io_t *io, int32_t *centi_c, int32_t *pa)
 {
-    // Clear a data-ready flag left from before, then start one conversion.
-    uint8_t int_status, forced = ODR_CONFIG | ODR_FORCED;
-    if (!read8(io, REG_INT_STATUS, &int_status) || !io->write(io->ctx, BMP5_ADDRESS, REG_ODR_CONFIG, &forced, 1))
+    // A power cycle or changed configuration requires identification again, even if
+    // old data registers still contain plausible values. Only trigger from standby.
+    uint8_t int_status, osr, odr, forced = ODR_CONFIG | ODR_FORCED;
+    if (!read8(io, REG_OSR_CONFIG, &osr) || osr != OSR_CONFIG ||
+        !read8(io, REG_ODR_CONFIG, &odr) || odr != ODR_CONFIG ||
+        !read8(io, REG_INT_STATUS, &int_status) || (int_status & INT_STATUS_POR) ||
+        !io->write(io->ctx, BMP5_ADDRESS, REG_ODR_CONFIG, &forced, 1))
         return false;
     io->delay_ms(io->ctx, CONVERSION_MS);
     for (unsigned i = 0; ; i++) {
         if (!read8(io, REG_INT_STATUS, &int_status)) return false;
+        if (int_status & INT_STATUS_POR) return false;
         if (int_status & INT_STATUS_DRDY) break;
         if (i == POLLS) return false;
         io->delay_ms(io->ctx, POLL_MS);

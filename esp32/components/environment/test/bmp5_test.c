@@ -106,6 +106,14 @@ static void driver_test(void)
     assert(bmp5_read(&io, &t, &p) && t == 2500 && p == 100000 && c.conversions == 1);
     // The part returns to standby after each forced conversion.
     assert((c.reg[0x37] & 3) == 0);
+    // Lost configuration must be detected before issuing a conversion; plausible
+    // data from an earlier cycle cannot hide the reset.
+    c.reg[0x36] = 0;
+    assert(!bmp5_read(&io, &t, &p) && c.conversions == 1);
+    assert(bmp5_init(&io) == BMP5_READY);
+    c.reg[0x27] = 0x11; // data-ready together with an unexpected reset
+    assert(!bmp5_read(&io, &t, &p) && c.conversions == 1);
+    assert(bmp5_init(&io) == BMP5_READY);
     set24(c.t, 2 * 65536 + 16384); set24(c.p, 87654 * 64);
     assert(bmp5_read(&io, &t, &p) && t == 225 && p == 87654 && c.conversions == 2);
     // No data ready: no reading, however long it is polled.

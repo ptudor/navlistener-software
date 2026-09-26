@@ -90,7 +90,9 @@ void icm45686_stats_start(icm45686_stats_t *stats, const icm45686_profile_t *pro
 // ODR/4, a start-up flush, then the INT1 sources. True only when the configuration,
 // filters included, reads back.
 bool icm45686_configure(const icm45686_io_t *io, const icm45686_profile_t *profile);
-// Reads INT1_STATUS0 and drains the FIFO; false on a transfer failure.
+// Reads INT1_STATUS0 and services the FIFO, retaining its newest packet per the
+// streaming-mode erratum AN-000364; false on a transfer failure. Reconfigure
+// after failure: a partial transfer can leave the FIFO between packet boundaries.
 bool icm45686_service(const icm45686_io_t *io, icm45686_stats_t *stats);
 // Decodes whole packets; returns the bytes consumed, which stops short of an
 // undecodable header (the caller flushes the FIFO to realign).
@@ -98,6 +100,7 @@ size_t icm45686_parse(const uint8_t *fifo, size_t length, icm45686_stats_t *stat
 // After a service: true when the governor wants the other rate, given in *moving.
 bool icm45686_rate_due(icm45686_stats_t *stats, int64_t now_ms, bool *moving);
 // Both output rates in one write, read back; the ranges and filters are unchanged.
+// Reconfigure on failure, as the write may have taken effect despite a failed read-back.
 bool icm45686_set_rate(const icm45686_io_t *io, const icm45686_profile_t *profile, bool moving,
                        icm45686_stats_t *stats);
 // A report was built from a snapshot: the next report covers what followed it.

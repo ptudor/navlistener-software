@@ -89,13 +89,16 @@ static bool write_register(void *ctx, uint8_t address, uint8_t reg, const uint8_
     (void)ctx; i2c_master_dev_handle_t dev = device(address);
     uint8_t data[65];
     if (!dev || n > sizeof data - 1) return false;
-    data[0] = reg; memcpy(data + 1, p, n);
+    data[0] = reg;
+    if (n) memcpy(data + 1, p, n); // command-only transfers have no payload
     return i2c_master_transmit(dev, data, n + 1, 100) == ESP_OK;
 }
 static void delay_ms(void *ctx, unsigned ms)
 {
     (void)ctx;
-    vTaskDelay(pdMS_TO_TICKS(ms + portTICK_PERIOD_MS - 1));
+    // Round up, then allow for the partial tick before the first tick interrupt.
+    // These are minimum sensor settling times, not scheduling intervals.
+    vTaskDelay(pdMS_TO_TICKS(ms + portTICK_PERIOD_MS - 1) + 1);
 }
 // Unix seconds of the last automatic heater run in nvf_env/heater_utc; absent means never.
 static void heater_load(void)
@@ -248,6 +251,8 @@ void environment_sample(i2c_master_bus_handle_t bus, int64_t now, bool utc_valid
             heater_load();
         }
     }
+    if (parts.mcp9808 && !sensors.mcp_ready) attach(bus, TEMPERATURE_DEVICE);
+    if (parts.bmp388 && !sensors.bmp_ready) attach(bus, PRESSURE_DEVICE);
     env_sample_t sample;
     // While HEAT_EN may be set, only the heater steps convert the HDC.
     bool heating = heater.state == ENV_HEATER_HEATING || heater.state == ENV_HEATER_STOPPING;
@@ -304,7 +309,10 @@ void environment_sample_max(env_barometer_t *b, env_magnetometer_t *m)
                                b->centi_c / 100.0, b->pressure_pa / 100.0,
                                b->pressure_pa < MS5607_FULL_MIN_PA || b->pressure_pa > MS5607_FULL_MAX_PA ?
                                ", extended range" : "");
-        else ESP_LOGW(TAG, "MS5607 measurement unavailable");
+        else {
+            barometer.state = MS5607_ABSENT;
+            ESP_LOGW(TAG, "MS5607 measurement unavailable; resetting at the next sample");
+        }
     }
     if (parts.mmc34160 && !magnetometer_ready) {
         attach(sensor_bus, MAGNETOMETER_DEVICE);
@@ -319,7 +327,10 @@ void environment_sample_max(env_barometer_t *b, env_magnetometer_t *m)
         if (m->valid) ESP_LOGI(TAG, "MMC34160PJ field X=%d Y=%d Z=%d counts (2048/G), bridge offset %u/%u/%u",
                                m->sample.field[0], m->sample.field[1], m->sample.field[2],
                                m->sample.offset[0], m->sample.offset[1], m->sample.offset[2]);
-        else ESP_LOGW(TAG, "MMC34160PJ measurement unavailable");
+        else {
+            magnetometer_ready = false;
+            ESP_LOGW(TAG, "MMC34160PJ measurement unavailable; configuring at the next sample");
+        }
     }
 }
 static bool rails_ready, rails_tried;

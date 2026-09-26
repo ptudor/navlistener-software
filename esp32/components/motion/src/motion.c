@@ -12,8 +12,7 @@ static const char *TAG = "motion";
 #define IMU_I2C_HZ       400000
 #define I2C_TIMEOUT_MS   50
 #define RETRY_MS         10000
-#define STALL_MS         4000 // no packet in 50 still periods: the IMU lost its configuration
-#define FAILURE_LIMIT    3
+#define STALL_MS         4000 // no valid sample in 50 still periods: configure the IMU again
 
 static i2c_master_dev_handle_t imu;
 static TaskHandle_t task;
@@ -43,7 +42,11 @@ static bool imu_write(void *ctx, uint8_t reg, const uint8_t *data, size_t length
     memcpy(buffer + 1, data, length);
     return i2c_master_transmit(imu, buffer, length + 1, I2C_TIMEOUT_MS) == ESP_OK;
 }
-static void imu_delay(void *ctx, unsigned ms) { (void)ctx; vTaskDelay(pdMS_TO_TICKS(ms) + 1); }
+static void imu_delay(void *ctx, unsigned ms)
+{
+    (void)ctx;
+    vTaskDelay(pdMS_TO_TICKS(ms + portTICK_PERIOD_MS - 1) + 1);
+}
 static const icm45686_io_t io = {.read = imu_read, .write = imu_write, .delay_ms = imu_delay};
 
 static void IRAM_ATTR int1_isr(void *arg)
@@ -57,7 +60,6 @@ static void IRAM_ATTR int1_isr(void *arg)
 static void motion_task(void *arg)
 {
     (void)arg;
-    unsigned failures = 0;
     bool announced = false;
     uint32_t last_packets = 0;
     int64_t last_progress = 0, next_attempt = 0;
@@ -71,7 +73,7 @@ static void motion_task(void *arg)
                 ESP_LOGI(TAG, "ICM-45686 configured: +/-%u g, +/-%u dps, %.1f Hz still and %.1f Hz moving, "
                          "low-pass at a quarter of the rate", profile->accel_fs_g, profile->gyro_fs_dps,
                          ICM45686_STILL_DECIHZ / 10.0, profile->moving_decihz / 10.0);
-                failures = 0; last_packets = status.stats.packets; last_progress = now;
+                last_packets = status.stats.latest_packet; last_progress = now;
             } else {
                 if (!announced) ESP_LOGW(TAG, "ICM-45686 not answering; retrying every %d s", RETRY_MS / 1000);
                 next_attempt = now + RETRY_MS;
@@ -80,25 +82,29 @@ static void motion_task(void *arg)
         } else if (status.ready) {
             uint32_t before = status.stats.latest_packet;
             if (!icm45686_service(&io, &status.stats)) {
-                if (++failures >= FAILURE_LIMIT) {
-                    ESP_LOGW(TAG, "ICM-45686 transfers failing; configuring again");
-                    status.ready = false;
-                }
+                // A failed FIFO transfer may have consumed only part of a packet. Reset
+                // before accepting any more data; plausible payload bytes are not headers.
+                ESP_LOGW(TAG, "ICM-45686 transfer failed; configuring again");
+                status.ready = false;
             } else {
-                failures = 0;
                 if (status.stats.latest_packet != before) status.latest_ms = now;
                 bool moving;
                 if (icm45686_rate_due(&status.stats, now, &moving)) {
                     if (icm45686_set_rate(&io, profile, moving, &status.stats))
                         ESP_LOGI(TAG, "IMU %s: %.1f Hz", moving ? "moving" : "still",
                                  (moving ? profile->moving_decihz : ICM45686_STILL_DECIHZ) / 10.0);
-                    else if (++failures >= FAILURE_LIMIT) status.ready = false;
+                    else {
+                        // The write may have succeeded, or changed only one sensor. The
+                        // sample period is unknown until a complete configuration succeeds.
+                        ESP_LOGW(TAG, "ICM-45686 rate not verified; configuring again");
+                        status.ready = false;
+                    }
                 }
             }
-            if (status.stats.packets != last_packets) {
-                last_packets = status.stats.packets; last_progress = now;
+            if (status.stats.latest_packet != last_packets) {
+                last_packets = status.stats.latest_packet; last_progress = now;
             } else if (status.ready && now - last_progress >= STALL_MS) {
-                ESP_LOGW(TAG, "ICM-45686 FIFO produced nothing for %d ms; configuring again", STALL_MS);
+                ESP_LOGW(TAG, "ICM-45686 FIFO produced no valid sample for %d ms; configuring again", STALL_MS);
                 status.ready = false;
             }
         }

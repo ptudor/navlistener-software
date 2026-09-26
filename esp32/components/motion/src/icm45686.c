@@ -61,10 +61,25 @@ void icm45686_stats_start(icm45686_stats_t *s, const icm45686_profile_t *p)
     s->motion_seen = false;
     s->period_ms = icm45686_period_ms(ICM45686_STILL_DECIHZ);
     s->pending_period_ms = 0;
+    s->latest_valid = false;
 }
 
 static bool put(const icm45686_io_t *io, uint8_t reg, uint8_t value) { return io->write(io->ctx, reg, &value, 1); }
 static bool get(const icm45686_io_t *io, uint8_t reg, uint8_t *value) { return io->read(io->ctx, reg, value, 1); }
+
+static bool flush_fifo(const icm45686_io_t *io)
+{
+    if (!put(io, REG_FIFO_CONFIG2, FIFO_CONFIG2_RESERVED | FIFO_WM_GE | FIFO_FLUSH)) return false;
+    // Flush is asynchronous. TDK's inv_imu_flush_fifo waits for the bit to clear;
+    // a stuck flush must not leave the task accepting data from an unknown boundary.
+    for (unsigned i = 0; i < 100; i++) {
+        uint8_t value;
+        io->delay_ms(io->ctx, 1);
+        if (!get(io, REG_FIFO_CONFIG2, &value)) return false;
+        if (!(value & FIFO_FLUSH)) return true;
+    }
+    return false;
+}
 
 // An indirect access may start only once the previous one has finished; the delay also
 // covers the 4 us minimum gap between accesses.
@@ -137,7 +152,7 @@ bool icm45686_configure(const icm45686_io_t *io, const icm45686_profile_t *profi
     // Discard what was queued while the gyroscope started and the filters changed, then
     // clear stale status.
     io->delay_ms(io->ctx, GYRO_STARTUP_MS);
-    if (!put(io, REG_FIFO_CONFIG2, FIFO_CONFIG2_RESERVED | FIFO_WM_GE | FIFO_FLUSH) ||
+    if (!flush_fifo(io) ||
         !get(io, REG_INT1_STATUS0, &v) || !put(io, REG_INT1_CONFIG0, INT1_FIFO_THS_AND_FULL))
         return false;
     uint8_t rates[2], fifo, interface, power, int1[3];
@@ -242,10 +257,14 @@ bool icm45686_service(const icm45686_io_t *io, icm45686_stats_t *s)
 {
     s->motion_seen = false;
     uint8_t status, count[2];
-    if (!get(io, REG_INT1_STATUS0, &status) || !io->read(io->ctx, REG_FIFO_COUNT, count, 2)) return false;
+    if (!get(io, REG_INT1_STATUS0, &status) ||
+        !io->read(io->ctx, REG_FIFO_COUNT, count, 2) || !io->read(io->ctx, REG_FIFO_COUNT, count, 2)) return false;
     if (status & INT1_STATUS_FIFO_FULL) s->overflows++;
     unsigned packets = (unsigned)(count[0] | count[1] << 8);
-    if (packets > ICM45686_FIFO_PACKETS) packets = ICM45686_FIFO_PACKETS;
+    // AN-000364, as implemented in TDK's reference driver: use the second count
+    // read, and leave the newest frame in the FIFO when using stream mode.
+    if (packets > ICM45686_FIFO_PACKETS) return false;
+    if (packets) packets--;
     uint8_t buffer[READ_PACKETS * ICM45686_PACKET];
     while (packets) {
         unsigned n = packets < READ_PACKETS ? packets : READ_PACKETS;
@@ -256,7 +275,7 @@ bool icm45686_service(const icm45686_io_t *io, icm45686_stats_t *s)
             // rate change is in force for everything queued after the flush.
             s->resyncs++;
             if (s->pending_period_ms) { s->period_ms = s->pending_period_ms; s->pending_period_ms = 0; }
-            return put(io, REG_FIFO_CONFIG2, FIFO_CONFIG2_RESERVED | FIFO_WM_GE | FIFO_FLUSH);
+            return flush_fifo(io);
         }
         packets -= n;
     }
