@@ -96,33 +96,50 @@ menu "navfeeder-esp"
             drivers whose fixed pins conflict with it.
 
     choice NVF_BOARD_ASSEMBLY
-        prompt "Observer board"
+        prompt "Observer boards this image supports"
         depends on NVF_BOARD_GNSS_COLOR
-        default NVF_BOARD_GNSS_COLOR_NEO
+        default NVF_BOARD_GNSS_COLOR_UNIVERSAL
         help
-            The board this image drives. Its pins, drivers and the board ID in
-            the OTA image metadata follow this choice, so an image installs
-            only on its own board. main/board_reservations.h is the pin record.
+            The released image is universal: at boot it reads the manifest EEPROM,
+            which names the board and revision (CAT_INTSAT) and lists its parts,
+            and drives only that board's pins and the parts listed. A board
+            without a usable manifest runs nothing board-specific. The single-board
+            choices are test builds: they carry one board's drivers, run nothing
+            board-specific on any other board, and install over the air only on
+            their own board. main/board_reservations.h is the pin record.
 
+        config NVF_BOARD_GNSS_COLOR_UNIVERSAL
+            bool "Universal: the manifest selects NEO, X20 or MAX"
         config NVF_BOARD_GNSS_COLOR_NEO
-            bool "NEO (NEO-M9N; BOOT steps the panel brightness)"
+            bool "NEO only (test build)"
         config NVF_BOARD_GNSS_COLOR_ZED_X20
-            bool "ZED/X20 (ZED-X20P, MAX31328 RTC, W5500 Ethernet, optional front panel)"
+            bool "ZED/X20 only (test build)"
         config NVF_BOARD_GNSS_COLOR_MAX
-            bool "MAX (MAX-M10S mobile, motion sensors, thermocouple input)"
+            bool "MAX only (test build)"
     endchoice
+
+    config NVF_BOARD_SUPPORT_NEO
+        bool
+        default y if NVF_BOARD_GNSS_COLOR_UNIVERSAL || NVF_BOARD_GNSS_COLOR_NEO
+    config NVF_BOARD_SUPPORT_X20
+        bool
+        default y if NVF_BOARD_GNSS_COLOR_UNIVERSAL || NVF_BOARD_GNSS_COLOR_ZED_X20
+    config NVF_BOARD_SUPPORT_MAX
+        bool
+        default y if NVF_BOARD_GNSS_COLOR_UNIVERSAL || NVF_BOARD_GNSS_COLOR_MAX
 
     config NVF_ETHERNET_W5500
         bool
-        default y if NVF_BOARD_GNSS_COLOR_ZED_X20
+        default y if NVF_BOARD_SUPPORT_X20
         select ETH_SPI_ETHERNET_W5500
         help
-            The board's own W5500 Ethernet port: a wired uplink preferred over
-            Wi-Fi, which makes the Wi-Fi network optional in provisioning.
+            The W5500 driver for the X20's own Ethernet port: a wired uplink preferred
+            over Wi-Fi, which makes the Wi-Fi network optional in provisioning. It
+            starts only on a board whose manifest lists COMM_W5500.
 
     config NVF_PANEL_TRIMMER_OPEN_MV
         int "Brightness trimmer open-wiper threshold, mV"
-        depends on NVF_BOARD_GNSS_COLOR_ZED_X20 || NVF_BOARD_GNSS_COLOR_MAX
+        depends on NVF_BOARD_SUPPORT_X20 || NVF_BOARD_SUPPORT_MAX
         range 2900 3200
         default 3000
         help
@@ -273,13 +290,13 @@ menu "navfeeder-esp"
 
         config NVF_MANIFEST_BOARD_NEO_A
             bool "NEO-M9N first spin, revision A"
-            depends on NVF_BOARD_GNSS_COLOR_NEO
+            depends on NVF_BOARD_SUPPORT_NEO
         config NVF_MANIFEST_BOARD_MAX_A
             bool "MAX-M10S mobile, revision A"
-            depends on NVF_BOARD_GNSS_COLOR_MAX
+            depends on NVF_BOARD_SUPPORT_MAX
         config NVF_MANIFEST_BOARD_ZED_X20_A
             bool "ZED-X20P square, revision A"
-            depends on NVF_BOARD_GNSS_COLOR_ZED_X20
+            depends on NVF_BOARD_SUPPORT_X20
     endchoice
 
     choice NVF_MANIFEST_HDC
@@ -396,8 +413,8 @@ menu "navfeeder-esp"
         depends on NVF_RX_AUTOPROBE && NVF_BOARD_GNSS_COLOR
         default y
         help
-            After MON-VER names the board's receiver (NEO-M9N, ZED-X20P or
-            MAX-M10S), select the configured baud and request UBX output,
+            After MON-VER names the receiver the manifest lists (NEO-M9N,
+            ZED-X20P or MAX-M10S), select the configured baud and request UBX output,
             SFRBX, MON-RF, NAV-SAT, NAV-PVT, NAV-STATUS and TIM-TP via
             CFG-VALSET. Check ACK/NAK for each setting. Do not write receiver
             flash or battery-backed config.

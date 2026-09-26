@@ -15,14 +15,6 @@
 #ifndef CONFIG_NVF_RX_CONFIGURE
 #define CONFIG_NVF_RX_CONFIGURE 0
 #endif
-// The receiver each board carries, as MON-VER names it. Only that model is configured.
-#if CONFIG_NVF_BOARD_GNSS_COLOR_ZED_X20
-#define RX_MODULE "ZED-X20P"
-#elif CONFIG_NVF_BOARD_GNSS_COLOR_MAX
-#define RX_MODULE "MAX-M10S"
-#else
-#define RX_MODULE "NEO-M9N"
-#endif
 #define RX_UART UART_NUM_1
 #if CONFIG_NVF_BOARD_GNSS_COLOR
 #define RX_PIN_RX 5
@@ -33,6 +25,8 @@
 #define RX_PIN_TX 10
 #endif
 static const char *TAG = "receiver";
+// The receiver the manifest lists, as MON-VER names it; only that model is configured.
+static const char *module;
 static atomic_uint s_ticks;
 static bool version_seen, expected_model;
 static int cfg_ack;
@@ -51,10 +45,11 @@ static void observe(uint8_t cls, uint8_t id, const uint8_t *body, size_t len, vo
         for (size_t i = 0; i < 30; i++) sw[i] = body[i] >= 32 && body[i] <= 126 ? body[i] : ' ';
         for (size_t i = 0; i < 10; i++) hw[i] = body[30+i] >= 32 && body[30+i] <= 126 ? body[30+i] : ' ';
         sw[30] = hw[10] = 0;
-        expected_model = ubx_version_is_module(body, len, RX_MODULE);
+        expected_model = module && ubx_version_is_module(body, len, module);
         version_seen = true;
-        ESP_LOGI(TAG, "MON-VER: software=%s hardware=%s; " RX_MODULE "=%s", sw, hw,
-                 expected_model ? "yes" : "unconfirmed");
+        if (module) ESP_LOGI(TAG, "MON-VER: software=%s hardware=%s; %s=%s", sw, hw, module,
+                             expected_model ? "yes" : "unconfirmed");
+        else ESP_LOGI(TAG, "MON-VER: software=%s hardware=%s; no receiver listed, none configured", sw, hw);
         for (size_t offset = 40; offset + 30 <= len; offset += 30) {
             char extension[31];
             size_t i = 0;
@@ -179,6 +174,8 @@ static void rx_task(void *arg)
         }
     }
 }
+void receiver_set_module(const char *name) { module = name; }
+
 esp_err_t receiver_start(ubx_parser_t *parser)
 {
     uart_config_t cfg = {.baud_rate = CONFIG_NVF_RX_BAUD, .data_bits = UART_DATA_8_BITS,

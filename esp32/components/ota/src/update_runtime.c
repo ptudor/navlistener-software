@@ -350,7 +350,7 @@ static void worker(void *unused) {
     }
 }
 esp_err_t nvf_update_start(const nvf_update_hooks_t *config) {
-    hooks=*config;hooks.device.profile=NVF_UPDATE_PROFILE;hooks.device.board_family=NVF_BOARD_FAMILY;
+    hooks=*config;hooks.device.profile=NVF_UPDATE_PROFILE;hooks.device.board_family=nvf_board_device_family();
     view_lock=xSemaphoreCreateMutex();if(!view_lock)return ESP_ERR_NO_MEM;
     record.magic=0x3150554e;record.version=1;record.status.mode=UP_MANUAL;record.status.running=NVF_BUILD_NUMBER;
     const esp_partition_t *partition=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_DATA_NVS,"update_meta");

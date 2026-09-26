@@ -574,13 +574,16 @@ remembered in the separate `hwmanifest` NVS namespace:
 `CONFIG_NVF_MANIFEST_FACTORY_INIT` is off by default. When deliberately enabled by the
 programmer, it writes only the blank/never-seen row, uses `force=false`, reads the complete
 image back, validates the EEPROM's self-reference, and only then records its identity.
-`CONFIG_NVF_MANIFEST_BOARD` chooses which compiled list it writes. Each is
-`GNSS_PCB_MAIN` revision A, and its `CAT_GPS` entry names the variant. Entry 0 is the
-EEPROM's self-reference, carrying the discovered part: the 24CS128 fitted on every board, or
-the pin-compatible M24128-U alternate.
+`CONFIG_NVF_MANIFEST_BOARD` chooses which compiled list it writes. Each header is
+`GNSS_PCB_MAIN` revision A. Entry 0 is the EEPROM's self-reference, carrying the discovered
+part: the 24CS128 fitted on every board, or the pin-compatible M24128-U alternate. Entry 1
+names the board: a `CAT_INTSAT` descriptor whose address byte is the board revision (1 = A).
+Firmware and clients know a board's pins and part addresses from that ID and revision; the
+other entries say which parts are installed.
 
 | Entry | NEO first spin | MAX mobile | ZED-X20P square |
 |---|---|---|---|
+| `CAT_INTSAT`, revision | `INTSAT_NEO`, 1 | `INTSAT_MAX`, 1 | `INTSAT_X20`, 1 |
 | `CAT_GPS` | `GPS_NEO_M9N` | `GPS_MAX_M10S` | `GPS_ZED_X20P` |
 | `CAT_RTC` | `RTC_MCP79412` `0x6F` | `RTC_MCP79412` `0x6F` | `RTC_MAX31328` `0x68` |
 | `CAT_PRESSURE` | `PRESSURE_BMP388` `0x76` | `PRESSURE_MS5607` `0x77` | `PRESSURE_BMP388` `0x76` |
@@ -594,13 +597,22 @@ the pin-compatible M24128-U alternate.
 All three also list the ESP32-S3, ATECC608C `0x60`, MCP9808 `0x18`, HDC2080 `0x40`, the two
 TLC5916 drivers by output-enable GPIO47/GPIO48, USB-OTG and the Qwiic port.
 
-Each board has its own firmware build (`NVF_BOARD_ASSEMBLY`), which offers only that board's
-list and drives that board's pins: the ZED/X20's mirrored front-panel chain, the GPIO18
-preset buttons and GPIO2 brightness trimmer of the ZED/X20 and MAX, the ZED/X20's MAX31328
-RTC and W5500 Ethernet uplink, the MAX's MS5607, MAX31856, ICM-45686 and MMC34160PJ
-(telemetry tags 11-13 in [OBSERVER-TELEMETRY.md](OBSERVER-TELEMETRY.md)), and RAM-only
-configuration of each board's own receiver (NEO-M9N, ZED-X20P or MAX-M10S). None of the
-ZED/X20 or MAX paths has yet run on assembled hardware.
+One universal firmware image serves all three boards. It drives a board's pins only when the
+manifest's `CAT_INTSAT` entry names that board and a revision it knows, and runs each driver
+only for a part listed installed: RAM-only configuration of the listed receiver (NEO-M9N,
+ZED-X20P or MAX-M10S), the MCP79412 or MAX31328 RTC, the MCP9808, HDC2080/HDC2022, BMP388
+and ATECC608C, the ZED/X20's W5500 Ethernet uplink, the GPIO18 preset buttons
+(`BUTTON_USER_2`) with the GPIO2 brightness trimmer, and the MAX's MS5607, MAX31856,
+ICM-45686 and MMC34160PJ (telemetry tags 11-13 in [OBSERVER-TELEMETRY.md](OBSERVER-TELEMETRY.md)).
+The ZED/X20's mirrored front-panel chain follows the board. A manifest that is unusable,
+names no board, names one or a revision the firmware does not know, or names more than one
+runs nothing board-specific; the receiver still streams, unconfigured. A new board or
+revision therefore needs a firmware row before its first unit is programmed. The single-board
+builds of `NVF_BOARD_ASSEMBLY` are test builds carrying one board's drivers. The OTA image's
+board marker (1 NEO, 2 ZED/X20, 3 MAX, 4 universal) and the signed release's `board_family`
+(`gnss-color` for the universal image) keep a test image to its own board, while the
+universal image installs on any. None of the ZED/X20 or MAX paths has yet run on assembled
+hardware.
 
 The ordinary eight-second configuration-reset gesture erases only `navfeeder`; it does not
 erase `hwmanifest`. The custom-board build also refuses the generic fallback that automatically

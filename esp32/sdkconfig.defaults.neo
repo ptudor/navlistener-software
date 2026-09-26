@@ -1,0 +1,4 @@
+# navfeeder-esp test build for the NEO observer alone: NEO-M9N receiver, MCP79412 RTC,
+# BOOT stepping the panel brightness. It still runs only what the manifest lists.
+# Loaded after sdkconfig.defaults and sdkconfig.defaults.s3; see build-navfeeder-esp.sh.
+CONFIG_NVF_BOARD_GNSS_COLOR_NEO=y

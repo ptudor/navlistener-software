@@ -5,12 +5,12 @@ tool_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 esp_dir=$(CDPATH= cd -- "$tool_dir/.." && pwd)
 cd "$esp_dir"
 
-# NVF_BOARD selects the board, as in build-navfeeder-esp.sh (default neo).
-board=${NVF_BOARD:-neo}
+# NVF_BOARD selects the image, as in build-navfeeder-esp.sh (default universal).
+board=${NVF_BOARD:-universal}
 case "$board" in
-    neo) board_defaults=; default_dir=build/s3-layout3 ;;
-    zed-x20|max) board_defaults=";sdkconfig.defaults.$board"; default_dir="build/s3-$board-layout3" ;;
-    *) echo "NVF_BOARD must be neo, zed-x20 or max" >&2; exit 2 ;;
+    universal) board_defaults=; default_dir=build/s3-layout3 ;;
+    neo|zed-x20|max) board_defaults=";sdkconfig.defaults.$board"; default_dir="build/s3-$board-layout3" ;;
+    *) echo "NVF_BOARD must be universal, neo, zed-x20 or max" >&2; exit 2 ;;
 esac
 build_dir=${S3_BUILD_DIR:-$default_dir}
 

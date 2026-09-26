@@ -129,15 +129,14 @@ static void config_reset_task(void *arg)
     config_recovery_t gesture;
     config_recovery_init(&gesture);
     panel_button_t brightness_button = {0};
+    // A short press steps the panel brightness on a board without its own preset button.
+    const observer_board_t *board = observer_board_current();
+    const bool steps_brightness = board && board->boot_steps_brightness;
     ESP_LOGI(TAG, "BOOT controls ready on GPIO%d", (int)pin);
     for (;;) {
         bool pressed = gpio_get_level(pin) == 0;
-#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO
-        if (panel_button_short_press(&brightness_button, pressed, CONFIG_RESET_POLL_MS))
+        if (steps_brightness && panel_button_short_press(&brightness_button, pressed, CONFIG_RESET_POLL_MS))
             observer_board_cycle_brightness();
-#else
-        (void)brightness_button;
-#endif
         config_recovery_event_t event =
             config_recovery_update(&gesture, pressed, CONFIG_RESET_POLL_MS);
         if (event == CONFIG_RECOVERY_EVENT_ARMED) {
@@ -340,7 +339,7 @@ static void ethernet_uplink_start(void)
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_ETH_LOST_IP,
                                                         ethernet_event_handler, NULL, NULL));
     // A dead port leaves the unit on Wi-Fi, when one is configured.
-    esp_err_t err = ethernet_start();
+    esp_err_t err = ethernet_start(observer_board_current());
     if (err != ESP_OK)
         ESP_LOGE(TAG, "ethernet unavailable (%s)%s", esp_err_to_name(err),
                  s_wifi_joins ? "; continuing on wifi" : "; no uplink until it is repaired");
@@ -353,7 +352,7 @@ static void network_start(void)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     s_wifi_joins = netcfg_has_wifi(&g_cfg);
 #if CONFIG_NVF_ETHERNET_W5500
-    ethernet_uplink_start();
+    if (observer_board_wired_uplink()) ethernet_uplink_start();
 #endif
     esp_netif_create_default_wifi_sta();
     wifi_init_config_t ic = WIFI_INIT_CONFIG_DEFAULT();
@@ -481,9 +480,11 @@ void app_main(void)
     // half-provisioned via Kconfig or external NVS tooling raises the portal instead of
     // looping forever on WiFi/TLS/auth with no way back except a serial cable.
     char cfg_err[NETCFG_ERR_CAP] = {0};
+    netcfg_set_board((netcfg_board_t){.wired_uplink = observer_board_wired_uplink(),
+                                      .sensor_settings = observer_board_sensor_settings()});
     bool provisioned = netcfg_load(&g_cfg, cfg_err, sizeof cfg_err);
-    // The BOOT button also controls panel brightness in setup mode. Start its
-    // task before the unprovisioned path returns to the portal.
+    // Where the BOOT button steps the panel brightness, it does so in setup mode too.
+    // Start its task before the unprovisioned path returns to the portal.
     config_reset_start();
     if (!provisioned) {
         // The S3 advertises encrypted BLE provisioning while keeping the browser

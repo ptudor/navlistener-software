@@ -1,32 +1,43 @@
+#include <string.h>
 #include "observer_rtc.h"
 #include "rtc_io.h"
-#include "sdkconfig.h"
-static report_rtc_t telemetry;
-static uint8_t square_state, square_control, square_trim;
-void observer_rtc_square_wave_status(uint8_t *state, uint8_t *control, uint8_t *trim)
-{ *state=square_state; *control=square_control; *trim=square_trim; }
-report_rtc_t observer_rtc_status(void) { return telemetry; }
-#if CONFIG_NVF_BOARD_GNSS_COLOR_NEO || CONFIG_NVF_BOARD_GNSS_COLOR_MAX
-#include <string.h>
+#include "rtc_max31328.h"
 #include "esp_log.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 static const char *TAG = "rtc";
+static report_rtc_t telemetry;
+static uint8_t square_state, square_control, square_trim;
+void observer_rtc_square_wave_status(uint8_t *state, uint8_t *control, uint8_t *trim)
+{ *state=square_state; *control=square_control; *trim=square_trim; }
+report_rtc_t observer_rtc_status(void) { return telemetry; }
+static observer_rtc_part_t part;
 static i2c_master_dev_handle_t dev;
 static rtc_candidate_t candidate;
 static int64_t next_poll;
-static enum { UNREPORTED, WAITING, RUNNING } report_state;
+static enum { UNREPORTED, WAITING, RUNNING, UNUSABLE } report_state;
 static bool retry_initialization;
+void observer_rtc_select(observer_rtc_part_t selected) { part = selected; }
 static bool read_registers(void *ctx, uint8_t reg, uint8_t *out, size_t length)
 { return i2c_master_transmit_receive(ctx, &reg, 1, out, length, 100) == ESP_OK; }
-static bool write_registers(void *ctx, uint8_t reg, const uint8_t *data, size_t length)
+static void delay_ms(void *ctx, unsigned ms) { (void)ctx; vTaskDelay(pdMS_TO_TICKS(ms)); }
+static bool attach(i2c_master_bus_handle_t bus, uint8_t address, int64_t now)
+{
+    if (dev) return true;
+    if (i2c_master_probe(bus, address, 100) != ESP_OK) { next_poll = now + 60000; return false; }
+    i2c_device_config_t config = {.dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = address, .scl_speed_hz = 100000};
+    return i2c_master_bus_add_device(bus, &config, &dev) == ESP_OK;
+}
+
+// MCP79412 (NEO and MAX) at 0x6f.
+static bool mcp79412_write_registers(void *ctx, uint8_t reg, const uint8_t *data, size_t length)
 {
     if (reg > 7 || length > (size_t)(8 - reg)) return false;
     uint8_t buffer[9]; buffer[0] = reg; memcpy(buffer+1, data, length);
     return i2c_master_transmit(ctx, buffer, length + 1, 100) == ESP_OK;
 }
-static void delay_ms(void *ctx, unsigned ms) { (void)ctx; vTaskDelay(pdMS_TO_TICKS(ms)); }
 static bool save_power_failure(void *ctx, const uint8_t calendar[7], const uint8_t stamps[8])
 {
     (void)ctx;
@@ -45,17 +56,11 @@ static bool save_power_failure(void *ctx, const uint8_t calendar[7], const uint8
     else ESP_LOGI(TAG, "power-fail calendar/timestamps saved in NVS before RTCWKDAY clears them");
     return err == ESP_OK;
 }
-void observer_rtc_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss, int64_t now)
+static void mcp79412_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss, int64_t now)
 {
-    if (!bus || now < next_poll) return;
     next_poll = now + 1000;
-    if (!dev) {
-        if (i2c_master_probe(bus, 0x6f, 100) != ESP_OK) { next_poll = now + 60000; return; }
-        i2c_device_config_t config = {.dev_addr_length = I2C_ADDR_BIT_LEN_7,
-            .device_address = 0x6f, .scl_speed_hz = 100000};
-        if (i2c_master_bus_add_device(bus, &config, &dev) != ESP_OK) return;
-    }
-    rtc_io_t io = {.ctx = dev, .read = read_registers, .write = write_registers,
+    if (!attach(bus, 0x6f, now)) return;
+    rtc_io_t io = {.ctx = dev, .read = read_registers, .write = mcp79412_write_registers,
         .delay = delay_ms, .save_power_failure = save_power_failure};
     unsigned previous_square=square_state;
     square_state=rtc_square_wave(&io,&square_control,&square_trim);
@@ -101,22 +106,11 @@ void observer_rtc_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss, i
     }
     candidate = (rtc_candidate_t){0};
 }
-#elif CONFIG_NVF_BOARD_GNSS_COLOR_ZED_X20
-#include <string.h>
-#include "esp_log.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "rtc_max31328.h"
-static const char *TAG = "rtc";
+
+// MAX31328 (ZED/X20) at 0x68.
 // tREC: after VCC rises the MAX31328 holds RST for up to 300 ms (ADI 19-100978 p4).
 #define MAX31328_RECOVERY_MS 300
-static i2c_master_dev_handle_t dev;
-static rtc_candidate_t candidate;
-static int64_t next_poll;
-static enum { UNREPORTED, WAITING, RUNNING, UNUSABLE } report_state;
-static bool read_registers(void *ctx, uint8_t reg, uint8_t *out, size_t length)
-{ return i2c_master_transmit_receive(ctx, &reg, 1, out, length, 100) == ESP_OK; }
-static bool write_registers(void *ctx, uint8_t reg, const uint8_t *data, size_t length)
+static bool max31328_write_registers(void *ctx, uint8_t reg, const uint8_t *data, size_t length)
 {
     // Calendar, control and status only: alarms and aging stay as they are.
     if (length > 7 || !((reg + length <= 7) || ((reg == MAX31328_CONTROL || reg == MAX31328_STATUS) &&
@@ -124,18 +118,12 @@ static bool write_registers(void *ctx, uint8_t reg, const uint8_t *data, size_t 
     uint8_t buffer[8]; buffer[0] = reg; memcpy(buffer + 1, data, length);
     return i2c_master_transmit(ctx, buffer, length + 1, 100) == ESP_OK;
 }
-static void delay_ms(void *ctx, unsigned ms) { (void)ctx; vTaskDelay(pdMS_TO_TICKS(ms)); }
-void observer_rtc_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss, int64_t now)
+static void max31328_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss, int64_t now)
 {
-    if (!bus || now < MAX31328_RECOVERY_MS || now < next_poll) return;
+    if (now < MAX31328_RECOVERY_MS) return;
     next_poll = now + 1000;
-    if (!dev) {
-        if (i2c_master_probe(bus, MAX31328_ADDRESS, 100) != ESP_OK) { next_poll = now + 60000; return; }
-        i2c_device_config_t config = {.dev_addr_length = I2C_ADDR_BIT_LEN_7,
-            .device_address = MAX31328_ADDRESS, .scl_speed_hz = 100000};
-        if (i2c_master_bus_add_device(bus, &config, &dev) != ESP_OK) return;
-    }
-    rtc_io_t io = {.ctx = dev, .read = read_registers, .write = write_registers, .delay = delay_ms};
+    if (!attach(bus, MAX31328_ADDRESS, now)) return;
+    rtc_io_t io = {.ctx = dev, .read = read_registers, .write = max31328_write_registers, .delay = delay_ms};
     unsigned previous_square = square_state;
     square_state = max31328_square_wave(&io, &square_control, &square_trim);
     if (square_state != previous_square)
@@ -185,7 +173,10 @@ void observer_rtc_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss, i
     }
     candidate = (rtc_candidate_t){0};
 }
-#else
+
 void observer_rtc_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss, int64_t now)
-{ (void)bus; (void)gnss; (void)now; }
-#endif
+{
+    if (!bus || now < next_poll) return;
+    if (part == OBSERVER_RTC_MCP79412) mcp79412_poll(bus, gnss, now);
+    else if (part == OBSERVER_RTC_MAX31328) max31328_poll(bus, gnss, now);
+}

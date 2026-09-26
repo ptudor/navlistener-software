@@ -7,9 +7,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#ifndef NETCFG_WIRED_UPLINK
-#define NETCFG_WIRED_UPLINK 0
-#endif
+static netcfg_board_t board;
+void netcfg_set_board(netcfg_board_t listed) { board = listed; }
+netcfg_board_t netcfg_board(void) { return board; }
 
 // set_err copies a reason, truncating cleanly. A NULL/zero-cap buffer is legal — callers that
 // only want the boolean pass NULL.
@@ -35,7 +35,7 @@ bool netcfg_has_wifi(const netcfg_t *cfg) { return cfg && nonempty(cfg->wifi_ssi
 
 bool netcfg_validate(const netcfg_t *cfg, char *err, size_t errcap)
 {
-    return netcfg_validate_uplink(cfg, NETCFG_WIRED_UPLINK, err, errcap);
+    return netcfg_validate_uplink(cfg, board.wired_uplink, err, errcap);
 }
 
 bool netcfg_validate_uplink(const netcfg_t *cfg, bool wired, char *err, size_t errcap)

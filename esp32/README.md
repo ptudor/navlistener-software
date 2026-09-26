@@ -24,18 +24,23 @@ LCD development board is unsupported; adding flash alone does not make it a
 supported substitute. Its drivers and partition table remain as legacy source.
 
 - **Custom GNSS color observer:** ESP32-S3, receiver UART on GPIO4/GPIO5, shared I2C on
-  GPIO6/GPIO7, and a 24CS128 manifest at `0x50`. `NVF_BOARD_ASSEMBLY` selects the board:
-  the NEO (`sdkconfig.defaults.s3`'s default), the ZED/X20 or the MAX. The choice sets the
-  board's pins and drivers ([`main/board_reservations.h`](main/board_reservations.h)) and
-  the board ID in the OTA image metadata, so an image installs only on its own board.
-  Startup reads the 128-bit factory serial and manifest;
+  GPIO6/GPIO7, and a 24CS128 manifest at `0x50`. One universal image runs on the NEO, the
+  ZED/X20 and the MAX. At boot it reads the manifest: its `CAT_INTSAT` entry names the
+  board and revision, which fix the pins ([`main/board_reservations.h`](main/board_reservations.h)),
+  and each driver runs only for a part the manifest lists installed: the receiver it
+  configures, the RTC, the environmental sensors, the ATECC, the Ethernet port, the panel
+  buttons and the MAX's sensors. A board without a usable manifest naming a board this
+  image knows runs nothing board-specific and logs that it may not have been configured.
+  `NVF_BOARD_ASSEMBLY` also offers single-board test builds (NEO, ZED/X20 or MAX only):
+  they carry one board's drivers, run nothing board-specific on any other board, and
+  install over the air only on their own board. Startup reads the 128-bit factory serial and manifest;
   `NVF_MANIFEST_FACTORY_INIT` is a manufacturing-only, default-off permission to initialize a
   blank, never-seen EEPROM from a compiled revision-A component list; `NVF_MANIFEST_BOARD`
-  offers only this board's list (the lists are in
+  chooses which board's list it writes (the lists are in
   [the observer contract](../docs/HARDWARE-OBSERVER.md#52-how-navlistener-consumes-it)). It never
   writes after an I2C error, to a known-but-blank EEPROM, or across an identity replacement.
-  An absent, never-adopted EEPROM is supported during bring-up: compiled GPIO wiring
-  and the provisioned station ID remain usable. Firmware does not synthesize an EUI
+  An absent, never-adopted EEPROM is supported during bring-up: the receiver streams,
+  unconfigured, and the status panel and the provisioned station ID remain usable. Firmware does not synthesize an EUI
   or claim hardware attestation. A previously adopted EEPROM disappearing still
   reports an identity error; its history is retained.
 
@@ -51,15 +56,15 @@ From this directory:
 ```sh
 export IDF_PATH=/path/to/esp-idf
 "$IDF_PATH/install.sh" esp32s3             # once, after installing ESP-IDF
-./build-navfeeder-esp.sh                  # build the NEO firmware
-NVF_BOARD=zed-x20 ./build-navfeeder-esp.sh # or NVF_BOARD=max
+./build-navfeeder-esp.sh                  # build the universal firmware
+NVF_BOARD=max ./build-navfeeder-esp.sh     # a test build: neo, zed-x20 or max
 PORT=/dev/ttyACM0 ./build-navfeeder-esp.sh flash
 ```
 
 Use your board's actual serial device, such as `/dev/ttyACM0` on Linux or
 `/dev/cu.usbmodem...` on macOS. Flashing is requested explicitly by `flash`.
-The wrapper builds the NEO in `build/s3-layout3` and the others in
-`build/s3-zed-x20-layout3` and `build/s3-max-layout3`, preserving each directory's generated
+The wrapper builds the universal image in `build/s3-layout3` and the test builds in
+`build/s3-neo-layout3`, `build/s3-zed-x20-layout3` and `build/s3-max-layout3`, preserving each directory's generated
 configuration, reporting default-setting differences, and recording firmware
 provenance. Set `S3_BUILD_DIR` to select
 another build directory. It does not erase flash; migration from an older layout
@@ -79,7 +84,8 @@ python tools/build_provenance.py --build-dir build/s3-layout3
 idf.py -B build/s3-layout3 -p /dev/cu.usbmodemXXXX flash monitor
 ```
 
-This creates a separate S3 configuration and build directory. Existing generated
+This creates a separate S3 configuration and build directory for the universal image;
+append `;sdkconfig.defaults.neo` (or `.zed-x20`, `.max`) for a test build. Existing generated
 configurations retain their previous values: generating a separate build from
 the defaults applies PSRAM and OTA settings. Check that the generated S3 config enables `SPIRAM_MODE_OCT`,
 `NVF_SPOOL_PSRAM`, `NVF_OTA`, `BT_NIMBLE_ENABLED`, Security 2, and
@@ -140,9 +146,9 @@ is present. [u-blox integration manual, section 3.1.3](https://content.u-blox.co
 The S3 default enables `NVF_RX_AUTOPROBE`: try the configured baud, 38400,
 115200, 9600, 230400 and 460800, with MON-VER queries. Checksum-valid UBX or
 NMEA locks the baud; 15 seconds without valid traffic restarts probing.
-`NVF_RX_CONFIGURE` configures only the receiver the board carries, once a MON-VER
+`NVF_RX_CONFIGURE` configures only the receiver the manifest lists, once a MON-VER
 extension names it: `MOD=NEO-M9N` on the NEO, `MOD=ZED-X20P` on the ZED/X20 and
-`MOD=MAX-M10S` on the MAX. It switches to `NVF_RX_BAUD`, then requests UBX output,
+`MOD=MAX-M10S` on the MAX. With no receiver listed, none is configured. It switches to `NVF_RX_BAUD`, then requests UBX output,
 SFRBX, MON-RF, NAV-SAT, NAV-PVT, NAV-STATUS and TIM-TP through RAM-only
 CFG-VALSET. Firmware logs ACK/NAK and bounded timeouts for each message setting.
 Receiver flash and battery-backed configuration are not written. Any other model is
@@ -220,7 +226,8 @@ Sampling is every 30 seconds, with meaningful-change reporting, a five-minute
 check-in, and fresh snapshots on receiver interference-state transitions.
 The collector must support this report before the firmware is deployed.
 
-The MAX board replaces the BMP388 with an MS5607 at `0x77` and adds an
+Each of these parts runs only when the manifest lists it, and each report carries only
+the listed parts' tags. The MAX board replaces the BMP388 with an MS5607 at `0x77` and adds an
 MMC34160PJ magnetometer at `0x30`, both sampled with the other sensors, and an
 ICM-45686 IMU at `0x69` whose FIFO a separate task drains on INT1 (GPIO16). The
 IMU runs at 12.5 Hz while still and steps up while moving, to 50 Hz or 100 Hz by
@@ -228,7 +235,7 @@ motion profile. Its MAX31856 thermocouple converter has its own SPI bus (CS
 GPIO13, SCK 40, MOSI 41, MISO 42, DRDY_N GPIO1) and converts continuously. The
 mains frequency for its notch (60 or 50 Hz) and the motion profile (surface for
 vehicles and vessels, aerial for aircraft and drones) are per-unit settings on the
-browser setup page, so one MAX image serves every unit; a network configuration
+browser setup page, so one image serves every unit; a network configuration
 reset keeps them. Each environmental report carries the pressure, the thermocouple
 and its faults, and a motion summary with the window's mean acceleration; see
 [the MAX sensor tags](../docs/OBSERVER-TELEMETRY.md#max-board-sensors-tags-11-13-version-1).
@@ -245,7 +252,7 @@ Both LED rows default to 20% brightness using 4 kHz PWM. On the NEO a short BOOT
 (0.1–3 seconds, then release) cycles 20% → 10% → 50% → 20% at runtime,
 including before network provisioning while the setup portal is active. The ZED/X20
 and MAX step the same presets with their GPIO18 buttons (either front-panel button on
-the ZED/X20), and their GPIO2 trimmer sets an installation brightness from 1% at the
+the ZED/X20) where the manifest lists them (`BUTTON_USER_2`), and their GPIO2 trimmer sets an installation brightness from 1% at the
 bottom of its travel to 100% at 2.5 V and above. Whichever control changed last wins:
 a preset holds until the trimmer moves more than 3%, and turning the trimmer while
 the unit is off takes effect at the next boot. Both controls are ignored for the first
@@ -362,7 +369,7 @@ serial cable could diagnose. Note the deliberate limit: a
 station mode — a unit riding out a collector outage must not drop its uplink over a condition
 that is not its fault.
 
-**Ethernet uplink (ZED/X20).** The ZED/X20 build drives the on-board W5500 on its own SPI
+**Ethernet uplink (ZED/X20).** On a ZED/X20 whose manifest lists it (`COMM_W5500`), firmware drives the on-board W5500 on its own SPI
 bus (CS GPIO13, SCLK GPIO8, MOSI GPIO39, MISO GPIO41) at 10 MHz, polling it every 10 ms,
 and takes an address by DHCP with the MAC address the eFuse reserves for Ethernet. With both
 links up, Ethernet carries the default route; connections already open stay on the link they
@@ -428,7 +435,8 @@ worker waits up to 30 seconds for a plausible clock and refuses an update if
 it remains unset. Initial collector TLS connections may retry while time sync
 completes.
 
-Before writing, firmware checks the ESP32-S3 target, project, board marker,
+Before writing, firmware checks the ESP32-S3 target, project, board marker (the universal
+image, or a test image for the board this device's manifest names),
 rollback support, manufacturing-write flag and available slot size. It checks
 the complete SHA-256 and ESP-IDF image validation before changing boot selection.
 A reset during a trial boot rolls back unless the new application confirms its
@@ -583,8 +591,9 @@ The pusher reconnects when sent records remain outstanding without durable ACK a
 ### Hardware-discovery dependency and release evidence
 
 Normal builds pin `esp_hardware_discovery` to commit
-`1d8d65cbba59df84b1c1ca42a94ecaa00d32d384` (24CS256/24CS512 support and the `POWER_TPS7A20`,
-`COMM_W5500` and `SENSOR_THERMOCOUPLE_MAX31856` catalog IDs), with the IDF 5.5.4/ESP32-S3
+`4e6102723f704a20b34d93618f47f3e176836249` (24CS256/24CS512 support, the `POWER_TPS7A20`,
+`COMM_W5500` and `SENSOR_THERMOCOUPLE_MAX31856` catalog IDs, and the `CAT_INTSAT` board
+category), with the IDF 5.5.4/ESP32-S3
 resolution committed in `dependencies.lock`. Updating the pin is a deliberate
 source change: review upstream layout changes and run the component's
 `test/host` read/write, page-boundary, interrupted-write, timestamp/footer,

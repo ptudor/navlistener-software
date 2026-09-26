@@ -7,9 +7,21 @@
 #ifndef CONFIG_NVF_MANIFEST_FACTORY_INIT
 #define CONFIG_NVF_MANIFEST_FACTORY_INIT 0
 #endif
+// The board this image is built for (CONFIG_NVF_BOARD_ASSEMBLY).
+#if CONFIG_NVF_BOARD_GNSS_COLOR_UNIVERSAL
+#define IMAGE_BOARD NVF_BOARD_ID_UNIVERSAL
+#elif CONFIG_NVF_BOARD_GNSS_COLOR_ZED_X20
+#define IMAGE_BOARD NVF_BOARD_ID_ZED_X20
+#elif CONFIG_NVF_BOARD_GNSS_COLOR_MAX
+#define IMAGE_BOARD NVF_BOARD_ID_MAX
+#elif CONFIG_NVF_BOARD_GNSS_COLOR_NEO
+#define IMAGE_BOARD NVF_BOARD_ID_NEO
+#else
+#define IMAGE_BOARD NVF_BOARD_ID_NONE
+#endif
 // ESP-IDF places this directly after esp_app_desc_t in the first image segment.
 const uint8_t nvf_ota_metadata[16] __attribute__((used, section(".rodata_custom_desc"))) = {
-    'N','V','F','O','T','A','1',0, 2, NVF_BOARD_ID,
+    'N','V','F','O','T','A','1',0, 2, IMAGE_BOARD,
     CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE, CONFIG_NVF_MANIFEST_FACTORY_INIT,
-    NVF_BOARD_ID ? 3 : 0,0,0,0
+    IMAGE_BOARD ? 3 : 0,0,0,0
 };

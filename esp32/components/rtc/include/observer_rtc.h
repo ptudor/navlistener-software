@@ -3,6 +3,10 @@
 #include "driver/i2c_master.h"
 #include "gnss_status.h"
 #include "observer_report.h"
+// The RTC the manifest lists; nothing else is probed. Call from the board task before
+// the first poll: OBSERVER_RTC_NONE (the default) leaves the RTC unread and unreported.
+typedef enum { OBSERVER_RTC_NONE, OBSERVER_RTC_MCP79412, OBSERVER_RTC_MAX31328 } observer_rtc_part_t;
+void observer_rtc_select(observer_rtc_part_t part);
 // Call only from the board task. Preserves a running clock; initializes only
 // from qualified receiver UTC. No system-clock or observation-timestamp changes.
 void observer_rtc_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss, int64_t now_ms);

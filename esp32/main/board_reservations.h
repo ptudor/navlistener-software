@@ -107,25 +107,47 @@ NVF_PINS_CHECK(NVF_PINS_MAX, "the MAX pin map");
 #define NVF_I2C_PRESSURE      0x76 /* BMP388, NEO and ZED/X20      */
 #define NVF_I2C_PRESSURE_ALT  0x77 /* MS5607, MAX, CSB low         */
 
-// The board this build drives. -1 marks a function the board does not have.
-#if CONFIG_NVF_BOARD_GNSS_COLOR_ZED_X20
-#define NVF_PINS_BOARD          NVF_PINS_ZED_X20
-#define NVF_PIN_LED_PANEL_SDI   1   /* optional front panel's chain, mirrored */
-#define NVF_PIN_BRIGHT_ADC      2
-#define NVF_PIN_BRIGHT_BUTTON   18
-#elif CONFIG_NVF_BOARD_GNSS_COLOR_MAX
-#define NVF_PINS_BOARD          NVF_PINS_MAX
-#define NVF_PIN_LED_PANEL_SDI   (-1)
-#define NVF_PIN_BRIGHT_ADC      2
-#define NVF_PIN_BRIGHT_BUTTON   18
-#else
-#define NVF_PINS_BOARD          NVF_PINS_NEO
-#define NVF_PIN_LED_PANEL_SDI   (-1)
-#define NVF_PIN_BRIGHT_ADC      (-1)
-#define NVF_PIN_BRIGHT_BUTTON   (-1) /* BOOT's short press steps the presets */
-#endif
-#define NVF_PIN_ON_BOARD(pin) ((pin) < 0 || (NVF_PINS_BOARD & NVF_PIN((pin) < 0 ? 0 : (pin))) != 0)
-_Static_assert(NVF_PIN_ON_BOARD(NVF_PIN_LED_PANEL_SDI) && NVF_PIN_ON_BOARD(NVF_PIN_BRIGHT_ADC) &&
-               NVF_PIN_ON_BOARD(NVF_PIN_BRIGHT_BUTTON),
-    "a selected board function uses a pin its map does not list");
+// Each board's function pins; -1 marks a function the board does not have. board.c holds
+// every row, the image drives the boards it supports (Kconfig NVF_BOARD_SUPPORT_*), and
+// the manifest's CAT_INTSAT entry picks the row at boot (observer_board_current()).
+#include "manifest_board.h"
+#include "nvf_board.h"
+typedef struct {
+    board_model_t model;
+    const char *name;
+    uint8_t ota_board_id;       // NVF_BOARD_ID_*, the image and release board
+    const char *family;         // the signed-release board family
+    uint64_t pins;              // everything the board connects, as above
+    bool boot_steps_brightness; // BOOT's short press steps the panel presets
+    int led_panel_sdi;          // the optional front panel's chain, mirrored
+    int bright_adc, bright_button;
+    int eth_sclk, eth_cs, eth_mosi, eth_miso;
+    int tc_sck, tc_mosi, tc_miso, tc_cs_n, tc_drdy_n;
+    int imu_int1, imu_int2;
+} observer_board_t;
+#define NVF_PIN_ON(map, pin) ((pin) < 0 || ((map) & NVF_PIN((pin) < 0 ? 0 : (pin))) != 0)
+#define NVF_NONE (-1)
+#define NVF_BOARD_NEO_ROW {.model = BOARD_MODEL_NEO_A, .name = "NEO revision A", .ota_board_id = NVF_BOARD_ID_NEO, \
+    .family = "gnss-color-neo", .pins = NVF_PINS_NEO, .boot_steps_brightness = true, \
+    .led_panel_sdi = NVF_NONE, .bright_adc = NVF_NONE, .bright_button = NVF_NONE, \
+    .eth_sclk = NVF_NONE, .eth_cs = NVF_NONE, .eth_mosi = NVF_NONE, .eth_miso = NVF_NONE, \
+    .tc_sck = NVF_NONE, .tc_mosi = NVF_NONE, .tc_miso = NVF_NONE, .tc_cs_n = NVF_NONE, .tc_drdy_n = NVF_NONE, \
+    .imu_int1 = NVF_NONE, .imu_int2 = NVF_NONE}
+#define NVF_BOARD_X20_ROW {.model = BOARD_MODEL_X20_A, .name = "X20 revision A", .ota_board_id = NVF_BOARD_ID_ZED_X20, \
+    .family = "gnss-color-zed-x20", .pins = NVF_PINS_ZED_X20, .boot_steps_brightness = false, \
+    .led_panel_sdi = 1, .bright_adc = 2, .bright_button = 18, \
+    .eth_sclk = NVF_PIN_ETH_SCLK, .eth_cs = NVF_PIN_ETH_CS, .eth_mosi = NVF_PIN_ETH_MOSI, .eth_miso = NVF_PIN_ETH_MISO, \
+    .tc_sck = NVF_NONE, .tc_mosi = NVF_NONE, .tc_miso = NVF_NONE, .tc_cs_n = NVF_NONE, .tc_drdy_n = NVF_NONE, \
+    .imu_int1 = NVF_NONE, .imu_int2 = NVF_NONE}
+#define NVF_BOARD_MAX_ROW {.model = BOARD_MODEL_MAX_A, .name = "MAX revision A", .ota_board_id = NVF_BOARD_ID_MAX, \
+    .family = "gnss-color-max", .pins = NVF_PINS_MAX, .boot_steps_brightness = false, \
+    .led_panel_sdi = NVF_NONE, .bright_adc = 2, .bright_button = 18, \
+    .eth_sclk = NVF_NONE, .eth_cs = NVF_NONE, .eth_mosi = NVF_NONE, .eth_miso = NVF_NONE, \
+    .tc_sck = NVF_PIN_TC_SCK, .tc_mosi = NVF_PIN_TC_MOSI, .tc_miso = NVF_PIN_TC_MISO, .tc_cs_n = NVF_PIN_TC_CS_N, \
+    .tc_drdy_n = NVF_PIN_TC_DRDY_N, .imu_int1 = NVF_PIN_IMU_INT1, .imu_int2 = NVF_PIN_IMU_INT2}
+// Every function pin is on its board's map.
+_Static_assert(NVF_PIN_ON(NVF_PINS_ZED_X20, 1) && NVF_PIN_ON(NVF_PINS_ZED_X20, 2) &&
+               NVF_PIN_ON(NVF_PINS_ZED_X20, 18), "an X20 function pin is missing from its map");
+_Static_assert(NVF_PIN_ON(NVF_PINS_MAX, 2) && NVF_PIN_ON(NVF_PINS_MAX, 18),
+               "a MAX function pin is missing from its map");
 #endif

@@ -53,13 +53,15 @@ class RepositoryTests(unittest.TestCase):
         self.repo.add_release(board_family="gnss-color-neo", sequence=31, version="0.1.0", revision="a" * 40,
             image=b"firmware fixture" * 50, boot_key_id="ab" * 32, provenance=b"{}", licenses=b"[]", notes=b"Test release\n")
 
-    def client(self, expected=0, second=None, profile=None):
+    def client(self, expected=0, second=None, profile=None, family=None):
         self.repo.publish_local()
         command = [str(CLIENT), str(self.directory), str(expected)]
         if second:
             command += [str(second[0]), str(second[1])]
         if profile:
             command.append(f"--profile={profile}")
+        if family is not None:
+            command.append(f"--family={family}")
         result = subprocess.run(command, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result.stdout
@@ -78,7 +80,7 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(json.loads((client / "manifest.json").read_bytes())["release_sequence"], 31)
 
     def test_a_release_names_a_known_board_family(self):
-        for family in ("", "gnss-color", "gnss-color-neo2"):
+        for family in ("", "gnss-colour", "gnss-color-neo2"):
             with self.assertRaises(ValueError):
                 self.repo.add_release(board_family=family, sequence=40, version="0.1.0", revision="a" * 40,
                     image=b"fixture", boot_key_id="ab" * 32, provenance=b"{}", licenses=b"[]", notes=b"Notes")
@@ -177,6 +179,15 @@ class RepositoryTests(unittest.TestCase):
         path = f"metadata/{self.repo.versions['snapshot']}.snapshot.json"
         self.repo.files[path] += b" "
         self.client(4001)
+
+    def test_universal_release_fits_every_board(self):
+        # "" is a device whose manifest names no board: only a universal release fits it.
+        self.client(3002, family="")
+        self.client(3002, family="gnss-color-max")
+        self.repo.add_release(board_family="gnss-color", sequence=32, version="0.1.1", revision="b" * 40, image=b"image",
+            boot_key_id="ab" * 32, provenance=b"{}", licenses=b"[]", notes=b"notes")
+        for family in ("gnss-color-neo", "gnss-color-zed-x20", "gnss-color-max", ""):
+            self.assertIn("sequence=32", self.client(family=family))
 
     def test_wrong_board_layout(self):
         self.repo.add_release(board_family="gnss-color-neo", sequence=32, version="0.1.1", revision="b" * 40, image=b"image", boot_key_id="ab" * 32,

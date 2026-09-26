@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "src/ota.c" "src/ota_download.c" "src/ota_policy.c" "src/ota_image.c"
+    SRCS "src/ota.c" "src/ota_download.c" "src/ota_policy.c" "src/ota_image.c" "src/nvf_board.c"
          "src/update_json.c" "src/update_tuf.c" "src/update_state.c" "src/update_api.c" "src/update_runtime.c"
     INCLUDE_DIRS "include"
     REQUIRES esp_http_server

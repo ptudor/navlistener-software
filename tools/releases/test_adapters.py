@@ -81,10 +81,10 @@ class AdapterTests(unittest.TestCase):
         old = bytearray(self.image()); old[296] = 1
         with self.assertRaises(ValueError): sign_image(bytes(old), self.signers.config, False)
         # Byte 297 names the board; a release follows it, and an unknown board is refused.
-        for board, family in ((1, "gnss-color-neo"), (2, "gnss-color-zed-x20"), (3, "gnss-color-max")):
+        for board, family in ((1, "gnss-color-neo"), (2, "gnss-color-zed-x20"), (3, "gnss-color-max"), (4, "gnss-color")):
             marked = bytearray(self.image()); marked[297] = board
             self.assertEqual(board_family(bytes(marked)), family)
-        for board in (0, 4):
+        for board in (0, 5):
             marked = bytearray(self.image()); marked[297] = board
             with self.assertRaises(ValueError): sign_image(bytes(marked), self.signers.config, False)
         with self.assertRaises(ValueError): keys(self.signers.config, True)

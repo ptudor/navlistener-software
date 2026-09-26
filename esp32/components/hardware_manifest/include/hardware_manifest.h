@@ -8,6 +8,7 @@
 #include "esp_err.h"
 #include "esp_hardware_discovery.h"
 #include "hardware_manifest_policy.h"
+#include "manifest_board.h"
 #include "../../../../common/board_identity.h"
 
 #ifdef __cplusplus
@@ -20,6 +21,7 @@ typedef struct {
     nvf_board_identity_t identity; // eeprom_valid: the manifest EEPROM's 128-bit serial was read
     eeprom_capabilities_t capabilities;
     bool capabilities_valid;
+    board_model_t board; // the board the manifest names; BOARD_MODEL_NONE unless used
 } hardware_manifest_result_t;
 
 // Bring up the custom observer's shared I2C bus, inspect its manifest EEPROM,

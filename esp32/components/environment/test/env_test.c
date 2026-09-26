@@ -69,7 +69,7 @@ static void setup_variant(fake_t *f, env_sensors_t *s, env_hdc_variant_t variant
     le16(f->bmp + 0x3c, 12500);
     le24(f->bmp + 4, 8000000); le24(f->bmp + 7, 8192000);
     env_io_t io = {.ctx=f, .read=read_bus, .write=write_bus, .delay_ms=delay};
-    env_sensors_init(s, &io, variant);
+    env_sensors_init(s, &io, variant, ENV_PART_MCP9808 | ENV_PART_BMP388);
 }
 static void setup(fake_t *f, env_sensors_t *s)
 {
@@ -115,7 +115,7 @@ static void test_hdc_variants(void)
         f.fail = false;
         env_io_t io = s.io;
         f.hdc[0xfe] = 0; // wrong device ID is rejected for either configured part
-        env_sensors_init(&s, &io, variant);
+        env_sensors_init(&s, &io, variant, ENV_PART_MCP9808 | ENV_PART_BMP388);
         assert(!s.hdc_ready && s.mcp_ready && s.bmp_ready);
     }
     const env_hdc_variant_t unsupported[] = {ENV_HDC_NONE, (env_hdc_variant_t)99};
@@ -158,12 +158,12 @@ static void test_heater_register(void)
     assert(sample.mcp_valid && sample.hdc_valid && !sample.bmp_valid && f.bmp[0x1b] == 0);
     // An absent device's failed probe at initialization does not mark later good samples.
     setup(&f, &s); env_io_t io = s.io; f.absent = 0x76;
-    env_sensors_init(&s, &io, ENV_HDC2080); assert(s.io_error && s.mcp_ready && s.hdc_ready && !s.bmp_ready);
+    env_sensors_init(&s, &io, ENV_HDC2080, ENV_PART_MCP9808 | ENV_PART_BMP388); assert(s.io_error && s.mcp_ready && s.hdc_ready && !s.bmp_ready);
     env_sensors_read(&s, &sample); assert(sample.mcp_valid && sample.hdc_valid && !sample.bus_error);
     // A reboot during a heater run: HEAT_EN is still set and the HDC does not answer at init. It is
     // not configured blind; a later retry identifies it and clears the heater, keeping INT bits.
     setup(&f, &s); io = s.io; f.hdc[0xe] = 0x0b; f.absent = 0x40;
-    env_sensors_init(&s, &io, ENV_HDC2080); assert(!s.hdc_ready && f.hdc[0xe] == 0x0b);
+    env_sensors_init(&s, &io, ENV_HDC2080, ENV_PART_MCP9808 | ENV_PART_BMP388); assert(!s.hdc_ready && f.hdc[0xe] == 0x0b);
     assert(!env_sensors_retry_hdc(&s) && !s.hdc_ready && s.io_error && f.hdc[0xe] == 0x0b);
     f.absent = 0;
     assert(env_sensors_retry_hdc(&s) && s.hdc_ready && !s.io_error && f.hdc[0xe] == 3);
@@ -171,8 +171,17 @@ static void test_heater_register(void)
     env_sensors_read(&s, &sample); assert(sample.hdc_valid);
     // A part at 0x40 that is not an HDC is never written.
     setup(&f, &s); io = s.io; f.hdc[0xe] = 0x0b; f.hdc[0xfc] = 0;
-    env_sensors_init(&s, &io, ENV_HDC2080);
+    env_sensors_init(&s, &io, ENV_HDC2080, ENV_PART_MCP9808 | ENV_PART_BMP388);
     assert(!env_sensors_retry_hdc(&s) && !s.hdc_ready && f.hdc[0xe] == 0x0b);
+    // Parts the manifest does not list are never touched, even when they answer.
+    setup(&f, &s); io = s.io; f.fail = false;
+    memset(f.mcp, 0, sizeof f.mcp); f.mcp[6][1] = 0x54; f.mcp[7][0] = 4; f.mcp[1][0] = 1; // asleep
+    env_sensors_init(&s, &io, ENV_HDC2080, 0);
+    assert(!s.mcp_ready && !s.bmp_ready && s.hdc_ready && f.mcp[1][0] == 1);
+    env_sensors_read(&s, &sample);
+    assert(!sample.mcp_valid && !sample.bmp_valid && sample.hdc_valid);
+    env_sensors_init(&s, &io, ENV_HDC2080, ENV_PART_BMP388);
+    assert(!s.mcp_ready && s.bmp_ready);
     // Not listed in the manifest: nothing is measured, but a heater a previous boot left
     // on is turned off, keeping the other bits.
     bool present = false;
@@ -214,7 +223,7 @@ int main(void)
     setup(&f, &s);
     env_io_t io = s.io;
     f.mcp[6][1] = 0; f.hdc[0xfc] = 0; memset(f.bmp + 0x31, 0, 21);
-    env_sensors_init(&s, &io, ENV_HDC2080);
+    env_sensors_init(&s, &io, ENV_HDC2080, ENV_PART_MCP9808 | ENV_PART_BMP388);
     assert(!s.mcp_ready && !s.hdc_ready && !s.bmp_ready);
     test_hdc_variants();
     test_heater_register();

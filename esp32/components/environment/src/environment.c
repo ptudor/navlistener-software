@@ -10,26 +10,24 @@
 #include "freertos/task.h"
 #include "nvs.h"
 static const char *TAG = "environment";
-// The manifest's HDC entry, set by the board before the first sample. Without one the
-// part is not measured: HDC2080 and HDC2022 share their ID registers, so probing cannot
+// The parts the manifest lists, set by the board before the first sample; nothing else
+// is probed. HDC2080 and HDC2022 share their ID registers, so only the manifest can
 // choose the temperature formula.
+static env_parts_t parts = {.hdc = ENV_HDC_NONE};
 static env_hdc_variant_t hdc_variant = ENV_HDC_NONE;
 static const char *hdc_name = "HDC";
 static const char *hdc_conversion = "";
-void environment_set_hdc(env_hdc_variant_t variant)
+void environment_configure(const env_parts_t *listed)
 {
-    hdc_variant = variant;
-    hdc_name = variant == ENV_HDC2022 ? "HDC2022" : variant == ENV_HDC2080 ? "HDC2080" : "HDC";
-    hdc_conversion = variant == ENV_HDC2022 ? "Rev A conversion" :
-                     variant == ENV_HDC2080 ? "Rev C conversion, nominal 3.3 V correction" : "";
+    parts = *listed;
+    hdc_variant = parts.hdc;
+    hdc_name = hdc_variant == ENV_HDC2022 ? "HDC2022" : hdc_variant == ENV_HDC2080 ? "HDC2080" : "HDC";
+    hdc_conversion = hdc_variant == ENV_HDC2022 ? "Rev A conversion" :
+                     hdc_variant == ENV_HDC2080 ? "Rev C conversion, nominal 3.3 V correction" : "";
 }
-#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
-// The MAX replaces the BMP388 with an MS5607 and adds the magnetometer.
+// 0x40 is attached even when no HDC is listed, to confirm an unlisted one's heater is off.
 static const uint8_t addresses[] = {0x18, 0x40, 0x76, MS5607_ADDRESS, MMC34160_ADDRESS};
-enum { BAROMETER_DEVICE = 3, MAGNETOMETER_DEVICE = 4 };
-#else
-static const uint8_t addresses[] = {0x18, 0x40, 0x76};
-#endif
+enum { TEMPERATURE_DEVICE, HUMIDITY_DEVICE, PRESSURE_DEVICE, BAROMETER_DEVICE, MAGNETOMETER_DEVICE };
 #define DEVICE_COUNT (sizeof addresses / sizeof addresses[0])
 static i2c_master_dev_handle_t devices[DEVICE_COUNT];
 static i2c_master_bus_handle_t sensor_bus;
@@ -193,9 +191,13 @@ void environment_sample(i2c_master_bus_handle_t bus, int64_t now, bool utc_valid
     if (!bus) return;
     if (!initialized) {
         sensor_bus = bus;
-        for (unsigned i = 0; i < DEVICE_COUNT; i++) attach(bus, i);
+        if (parts.mcp9808) attach(bus, TEMPERATURE_DEVICE);
+        attach(bus, HUMIDITY_DEVICE);
+        if (parts.bmp388) attach(bus, PRESSURE_DEVICE);
         env_io_t io = {.read = read_register, .write = write_register, .delay_ms = delay_ms};
-        env_sensors_init(&sensors, &io, hdc_variant); initialized = true;
+        env_sensors_init(&sensors, &io, hdc_variant,
+                         (parts.mcp9808 ? ENV_PART_MCP9808 : 0) | (parts.bmp388 ? ENV_PART_BMP388 : 0));
+        initialized = true;
         if (hdc_variant == ENV_HDC_NONE) {
             // Not measured, but a heater left on by an earlier boot is still turned off.
             bool present = false;
@@ -208,9 +210,9 @@ void environment_sample(i2c_master_bus_handle_t bus, int64_t now, bool utc_valid
             ESP_LOGI(TAG, "humidity sensor from the manifest: %s (%s)", hdc_name, hdc_conversion);
         }
         ESP_LOGI(TAG, "measurement setup: MCP9808=%s %s=%s BMP388/BMP384=%s",
-            sensors.mcp_ready ? "ready" : "unavailable", hdc_name,
+            !parts.mcp9808 ? "not listed" : sensors.mcp_ready ? "ready" : "unavailable", hdc_name,
             hdc_variant == ENV_HDC_NONE ? "not listed" : sensors.hdc_ready ? "ready" : "unavailable",
-            sensors.bmp_ready ? "ready" : "unavailable");
+            !parts.bmp388 ? "not listed" : sensors.bmp_ready ? "ready" : "unavailable");
         if (sensors.hdc_ready) heater_load();
     } else if (!sensors.hdc_ready && hdc_variant != ENV_HDC_NONE) {
         // A reboot during a heater run leaves HEAT_EN set until the HDC is configured again, so
@@ -248,7 +250,6 @@ void environment_sample(i2c_master_bus_handle_t bus, int64_t now, bool utc_valid
     if (heater.state != ENV_HEATER_NORMAL) { sample.hdc_valid = false; sample.hdc_c = sample.rh_percent = 0; }
     *out = sample;
 }
-#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
 static ms5607_t barometer;
 static bool barometer_tried, magnetometer_ready, magnetometer_tried;
 // Absolute pressure: sea-level correction and any derived height are left to consumers.
@@ -257,7 +258,7 @@ void environment_sample_max(env_barometer_t *b, env_magnetometer_t *m)
     *b = (env_barometer_t){0}; *m = (env_magnetometer_t){0};
     if (!initialized) return;
     env_io_t io = {.read = read_register, .write = write_register, .delay_ms = delay_ms};
-    if (barometer.state != MS5607_READY) {
+    if (parts.ms5607 && barometer.state != MS5607_READY) {
         attach(sensor_bus, BAROMETER_DEVICE);
         ms5607_state_t before = barometer.state;
         if (ms5607_init(&barometer, &io) != before || !barometer_tried)
@@ -274,7 +275,7 @@ void environment_sample_max(env_barometer_t *b, env_magnetometer_t *m)
                                ", extended range" : "");
         else ESP_LOGW(TAG, "MS5607 measurement unavailable");
     }
-    if (!magnetometer_ready) {
+    if (parts.mmc34160 && !magnetometer_ready) {
         attach(sensor_bus, MAGNETOMETER_DEVICE);
         magnetometer_ready = mmc34160_init(&io);
         if (magnetometer_ready) ESP_LOGI(TAG, "MMC34160PJ identified; 16-bit SET/RESET measurements");
@@ -291,13 +292,7 @@ void environment_sample_max(env_barometer_t *b, env_magnetometer_t *m)
     }
 }
 #else
-void environment_sample_max(env_barometer_t *b, env_magnetometer_t *m)
-{
-    *b = (env_barometer_t){0}; *m = (env_magnetometer_t){0};
-}
-#endif
-#else
-void environment_set_hdc(env_hdc_variant_t variant) { (void)variant; }
+void environment_configure(const env_parts_t *listed) { (void)listed; }
 void environment_sample_max(env_barometer_t *b, env_magnetometer_t *m)
 {
     *b = (env_barometer_t){0}; *m = (env_magnetometer_t){0};

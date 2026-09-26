@@ -29,8 +29,10 @@ typedef struct {
     bool bus_error; // an I2C transfer failed during this sample
     double mcp_c, hdc_c, rh_percent, bmp_c, pressure_pa;
 } env_sample_t;
-// Unknown/disabled variants leave HDC unavailable; other sensors still initialize.
-void env_sensors_init(env_sensors_t *s, const env_io_t *io, env_hdc_variant_t hdc_variant);
+// The MCP9808 and BMP388 are probed only when parts lists them (the manifest does);
+// an unknown/disabled HDC variant leaves the HDC unavailable. Others still initialize.
+enum { ENV_PART_MCP9808 = 1, ENV_PART_BMP388 = 4 };
+void env_sensors_init(env_sensors_t *s, const env_io_t *io, env_hdc_variant_t hdc_variant, unsigned parts);
 // Repeats the HDC identification and heater-off configuration if it failed at init. A reboot
 // during a heater run leaves HEAT_EN set until the part is configured again. True once ready.
 bool env_sensors_retry_hdc(env_sensors_t *s);

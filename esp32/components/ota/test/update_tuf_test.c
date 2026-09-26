@@ -40,21 +40,27 @@ int main(int argc,char **argv) {
     assert(fetch(NULL,"metadata/1.root.json",8192,&bytes,&length)==UP_OK);
     nvf_tuf_trust_t trust;nvf_tuf_io_t io={.fetch=fetch,.sha256=sha,.public_key=public_key,.verify=verify,.save=save};
     unsigned profile=UP_PROFILE_TEST;
-    if(argc>1 && !strncmp(argv[argc-1],"--profile=",10)) {
-        const char *name=argv[--argc]+10;
-        for(profile=UP_PROFILE_TRUSTED;profile<=UP_PROFILE_TEST && strcmp(name,nvf_update_profile_name(profile));profile++);
-        assert(profile<=UP_PROFILE_TEST);
+    // --family= sets the device's board family; empty is a device whose manifest names none.
+    const char *family="gnss-color-neo";bool family_given=false;
+    while(argc>3 && !strncmp(argv[argc-1],"--",2)) {
+        const char *option=argv[--argc];
+        if(!strncmp(option,"--profile=",10)) {
+            for(profile=UP_PROFILE_TRUSTED;profile<=UP_PROFILE_TEST && strcmp(option+10,nvf_update_profile_name(profile));profile++);
+            assert(profile<=UP_PROFILE_TEST);
+        } else if(!strncmp(option,"--family=",9)) {
+            family=option[9]?option+9:NULL;family_given=true;
+        } else return 2;
     }
     int err=nvf_tuf_initialize(&trust,bytes,length,profile,&io);free(bytes);
     if(err){printf("initialize=%d\n",err);return err==atoi(argv[2])?0:1;}
     persisted=trust;
     nvf_update_device_t device={.now=1800000000,.hardware_known=true,.hardware_revision=1,.layout=1,.profile=profile,
-        .board_family="gnss-color-neo",.board_uid={0,3,16,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}};
+        .board_family=family,.board_uid={0,3,16,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}};
     nvf_update_release_t result;
     nvf_tuf_trust_t initial=trust;
     err=nvf_tuf_refresh(&trust,2,&device,&result,&io);
     printf("refresh=%d sequence=%llu saves=%u\n",err,(unsigned long long)result.sequence,saves);
-    if(err==UP_OK){
+    if(err==UP_OK && !family_given){
         // A release for one board is never eligible on another. These extra refreshes
         // must not disturb the persisted state the second-refresh case reads.
         nvf_tuf_trust_t kept=persisted,other=initial;unsigned kept_saves=saves;

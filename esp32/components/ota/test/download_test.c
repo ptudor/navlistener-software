@@ -2,6 +2,7 @@
 // The transport, digest primitive and flash are deterministic facades; this
 // tests state transitions, not physical flash electronics or TLS cryptography.
 #include "ota_download.h"
+#include "nvf_board.h"
 #include "idf.h"
 #include <assert.h>
 #include <setjmp.h>
@@ -77,6 +78,7 @@ void mbedtls_sha256_free(mbedtls_sha256_context *c) { (void)c; }
 void spool_stats(uint64_t *n,uint64_t *d,size_t *c) { (void)d;(void)c; *n = 42; }
 uint64_t spool_acked(void) { return 42; }
 static nvf_ota_request_t request;
+static void rehash(void);
 static void reset(void)
 {
     offset=written=0; fake_time=1000; slow=false; encoded_response=false; selected=begun=ended=aborted=0; complete=1; chunked=0; http_status=200;
@@ -86,21 +88,34 @@ static void reset(void)
     memcpy(image+32,"\x32\x54\xcd\xab",4); strcpy((char*)image+80,"navfeeder-esp");
     memcpy(image+288,"NVFOTA1",8); image[296]=2;image[297]=image[298]=1;image[300]=3;
     strcpy(request.url,"https://example.invalid/app.bin");
+    rehash();
+}
+static void rehash(void)
+{
     mbedtls_sha256_context sha; mbedtls_sha256_init(&sha);
     mbedtls_sha256_update(&sha,image,sizeof image); mbedtls_sha256_finish(&sha,request.hash);
 }
 int main(void)
 {
+    nvf_board_set_device(NVF_BOARD_ID_NEO, "gnss-color-neo");
     reset(); assert(nvf_ota_download(&request) == ESP_OK && selected && ended && !aborted);
     int boundaries = steps;
     reset(); request.hash[0]^=1; assert(nvf_ota_download(&request) != ESP_OK && !selected && aborted && !ended);
     reset(); image[12]=13; assert(nvf_ota_download(&request) != ESP_OK && !begun && !selected);
     reset(); image[299]=1; assert(nvf_ota_download(&request) != ESP_OK && !begun);
-    // A NEO build never installs another board's image (byte 297 is the board ID).
-    for (uint8_t board = 0; board < 4; board++) {
-        if (board == 1) continue;
-        reset(); image[297]=board; assert(nvf_ota_download(&request) != ESP_OK && !begun);
+    // A NEO device never installs another board's image (byte 297 is the board ID), and
+    // installs the universal image.
+    for (uint8_t board = 0; board < 6; board++) {
+        reset(); image[297]=board; rehash();
+        if (board == NVF_BOARD_ID_NEO || board == NVF_BOARD_ID_UNIVERSAL)
+            assert(nvf_ota_download(&request) == ESP_OK && selected);
+        else assert(nvf_ota_download(&request) != ESP_OK && !begun);
     }
+    // A device whose manifest names no board installs only the universal image.
+    nvf_board_set_device(NVF_BOARD_ID_NONE, NULL);
+    reset(); assert(nvf_ota_download(&request) != ESP_OK && !begun);
+    reset(); image[297]=NVF_BOARD_ID_UNIVERSAL; rehash(); assert(nvf_ota_download(&request) == ESP_OK && selected);
+    nvf_board_set_device(NVF_BOARD_ID_NEO, "gnss-color-neo");
     reset(); reported_length=0x400001; assert(nvf_ota_download(&request) != ESP_OK && !begun);
     reset(); reported_length=200; assert(nvf_ota_download(&request) != ESP_OK && !begun);
     reset(); http_status=302; assert(nvf_ota_download(&request) != ESP_OK && !begun);

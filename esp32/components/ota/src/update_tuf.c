@@ -1,5 +1,6 @@
 #include "update_memory.h"
 #include "update_tuf.h"
+#include "nvf_board.h"
 #include "ota_policy.h"
 #include <stdlib.h>
 #include <string.h>
@@ -310,8 +311,10 @@ static int release_info(const metadata *channel,const metadata *manifest,const m
     out->layout=layout;out->profile=device->profile;
     if(!device->hardware_known)return UP_HARDWARE;
     const char *capability=str(manifest,manifest->body,"collector_capability");
-    if(!device->board_family||!*device->board_family||
-       !eq(str(manifest,manifest->body,"chip"),"esp32s3")||!eq(str(manifest,manifest->body,"board_family"),device->board_family)||
+    // A universal release fits every board; another only the board the device's manifest names.
+    const char *family=str(manifest,manifest->body,"board_family");
+    bool board=eq(family,NVF_BOARD_FAMILY_UNIVERSAL)||(device->board_family&&*device->board_family&&eq(family,device->board_family));
+    if(!board||!eq(str(manifest,manifest->body,"chip"),"esp32s3")||
        layout!=device->layout||lo>device->hardware_revision||hi<device->hardware_revision||updater>NVF_UPDATE_VERSION||
        (capability && *capability && !eq(capability,"durable_ack")))return UP_INELIGIBLE;
     (void)channel;return UP_OK;

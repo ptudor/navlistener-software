@@ -1,8 +1,9 @@
 #!/bin/sh
 set -e
 # Build the supported ESP32-S3 observer (16 MiB flash, 8 MiB PSRAM, layout 3).
-# Usage: [NVF_BOARD=neo|zed-x20|max] ./build-navfeeder-esp.sh [flash]
-# NVF_BOARD selects the board (default neo) and its own build directory.
+# Usage: [NVF_BOARD=universal|neo|zed-x20|max] ./build-navfeeder-esp.sh [flash]
+# NVF_BOARD selects the universal image (the default, in build/s3-layout3) or a
+# single-board test build, each in its own build directory.
 # S3_BUILD_DIR selects a separate generated configuration; existing values survive.
 case "${1:-}" in
     ""|flash) ;;
@@ -12,11 +13,11 @@ if [ "${1:-}" = flash ] && [ -z "${PORT:-}" ]; then
     echo "set PORT to the board's serial device (for example /dev/ttyACM0)" >&2
     exit 2
 fi
-board=${NVF_BOARD:-neo}
+board=${NVF_BOARD:-universal}
 case "$board" in
-    neo) board_defaults=; default_dir=build/s3-layout3 ;;
-    zed-x20|max) board_defaults=";sdkconfig.defaults.$board"; default_dir="build/s3-$board-layout3" ;;
-    *) echo "NVF_BOARD must be neo, zed-x20 or max" >&2; exit 2 ;;
+    universal) board_defaults=; default_dir=build/s3-layout3 ;;
+    neo|zed-x20|max) board_defaults=";sdkconfig.defaults.$board"; default_dir="build/s3-$board-layout3" ;;
+    *) echo "NVF_BOARD must be universal, neo, zed-x20 or max" >&2; exit 2 ;;
 esac
 IDF="${IDF_PATH:?Set IDF_PATH to your ESP-IDF 5.5.x checkout}"
 if [ ! -f "$IDF/export.sh" ]; then
@@ -44,8 +45,8 @@ def settings(name):
 expected = settings("sdkconfig.defaults")
 expected.update(settings("sdkconfig.defaults.s3"))
 if len(sys.argv) > 2 and sys.argv[2]:
-    # The board file picks one member of the board choice; the S3 file's NEO default
-    # then does not apply.
+    # The board file picks one member of the board choice; the S3 file's universal
+    # default then does not apply.
     chosen = settings(sys.argv[2])
     for key in [key for key in expected if key.startswith("CONFIG_NVF_BOARD_GNSS_COLOR_") and key not in chosen]:
         del expected[key]

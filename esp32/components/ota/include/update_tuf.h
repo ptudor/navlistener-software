@@ -37,7 +37,7 @@ typedef struct {
     uint16_t hardware_revision, layout;
     bool hardware_known;
     uint8_t profile;
-    const char *board_family; // this image's board (nvf_board.h); a release must name the same one
+    const char *board_family; // the manifest's board (nvf_board.h), or NULL; a release names it or is universal
 } nvf_update_device_t;
 typedef struct {
     void *context;

@@ -53,10 +53,18 @@ typedef struct {
 // otherwise has no way to tell "wrong password" from "no token was ever provisioned".
 #define NETCFG_ERR_CAP 48
 
+// What this board's manifest lists that provisioning depends on. wired_uplink: an Ethernet
+// port the firmware drives, so the Wi-Fi network is optional. sensor_settings: sensors with
+// per-unit settings (the MAX's thermocouple notch and motion profile), which the setup page
+// then offers. Set once at boot, before netcfg_load; the default is neither.
+typedef struct { bool wired_uplink, sensor_settings; } netcfg_board_t;
+void netcfg_set_board(netcfg_board_t board);
+netcfg_board_t netcfg_board(void);
+
 // netcfg_validate reports whether cfg is complete enough to run: non-empty SSID, collector
 // host, bearer token, and station id, and a port in [1, 65535]. The WiFi password is NOT
-// required (open networks are legal). A board with its own Ethernet port (the component is
-// built with NETCFG_WIRED_UPLINK=1) does not require the SSID either. An enabled tunnel
+// required (open networks are legal). A board with a wired uplink (netcfg_set_board) does
+// not require the SSID either. An enabled tunnel
 // profile must also pass netcfg_tunnel_validate; a disabled one is never inspected.
 //
 // On failure it writes a short human-readable reason into err (NUL-terminated, truncated to

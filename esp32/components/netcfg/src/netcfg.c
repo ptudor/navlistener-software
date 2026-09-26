@@ -8,9 +8,7 @@
 #if CONFIG_NVF_BOARD_GNSS_COLOR
 #include "netcfg_ble.h"
 #endif
-#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
 #include "sensor_settings.h"
-#endif
 
 #include <string.h>
 #include <stdio.h>
@@ -75,15 +73,12 @@ static const char *TAG = "netcfg";
 #define PORTAL_TUNNEL_FIELD ""
 #endif
 
-// A board with its own Ethernet port runs without a Wi-Fi network (netcfg_validate).
-#if NETCFG_WIRED_UPLINK
-#define PORTAL_SSID_FIELD "<label>WiFi SSID (optional: leave empty to use Ethernet only)" \
-    "<input name=ssid maxlength=32></label>"
-#else
-#define PORTAL_SSID_FIELD "<label>WiFi SSID<input name=ssid maxlength=32 required></label>"
-#endif
+// A board with a wired uplink runs without a Wi-Fi network (netcfg_validate).
+static const char PORTAL_SSID_WIRED[] = "<label>WiFi SSID (optional: leave empty to use Ethernet only)"
+    "<input name=ssid maxlength=32></label>";
+static const char PORTAL_SSID_REQUIRED[] = "<label>WiFi SSID<input name=ssid maxlength=32 required></label>";
 
-static const char PORTAL_HTML_HEAD[] =
+static const char PORTAL_HTML_OPEN[] =
     "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
     "<title>navfeeder-esp setup</title>"
     "<style>body{font-family:sans-serif;max-width:32em;margin:2em auto;padding:0 1em}"
@@ -91,8 +86,8 @@ static const char PORTAL_HTML_HEAD[] =
     "textarea{font-family:monospace}"
     "button{margin-top:1.2em;padding:.7em 1.4em}</style>"
     "<h2>navfeeder-esp setup</h2>"
-    "<form method=POST action=/save>"
-    PORTAL_SSID_FIELD
+    "<form method=POST action=/save>";
+static const char PORTAL_HTML_FIELDS[] =
     "<label>WiFi password<input name=pass type=password maxlength=64></label>"
     "<label>Collector host<input name=host maxlength=63 required placeholder='collector.host.invalid'></label>"
     "<label>Collector port<input name=port type=number value=5580></label>"
@@ -102,9 +97,9 @@ static const char PORTAL_HTML_HEAD[] =
     PORTAL_INSECURE_FIELD;
 static const char PORTAL_HTML_TAIL[] = "<button type=submit>Save &amp; reboot</button></form>";
 
-#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
-// The MAX board's per-unit sensor settings, with the stored values selected. They are
-// kept apart from the network record, so a network reset leaves them.
+// Per-unit sensor settings for a board that lists the sensors (netcfg_board), with the
+// stored values selected. They are kept apart from the network record, so a network reset
+// leaves them.
 static void portal_sensor_fields(char *out, size_t cap)
 {
     sensor_settings_t s;
@@ -120,7 +115,33 @@ static void portal_sensor_fields(char *out, size_t cap)
         s.mains_hz == 60 ? on : "", s.mains_hz == 50 ? on : "",
         s.motion == SENSOR_MOTION_SURFACE ? on : "", s.motion == SENSOR_MOTION_AERIAL ? on : "");
 }
-#endif
+
+// The setup form's sensor settings; an absent field keeps the stored setting. Sends the
+// error response itself on a refusal.
+static esp_err_t save_sensor_settings(httpd_req_t *req, const char *body)
+{
+    sensor_settings_t sensors;
+    (void)sensor_settings_load(&sensors); // an unreadable record is replaced with valid values
+    char choice[16] = {0};
+    form_result_t mains = netcfg_form_field(body, "mains_hz", choice, sizeof choice);
+    if (mains < 0 || (mains == FORM_OK && !sensor_settings_parse_mains(choice, &sensors.mains_hz))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid mains frequency");
+        return ESP_FAIL;
+    }
+    memset(choice, 0, sizeof choice);
+    form_result_t motion = netcfg_form_field(body, "motion", choice, sizeof choice);
+    if (motion < 0 || (motion == FORM_OK && !sensor_settings_parse_motion(choice, &sensors.motion))) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid motion profile");
+        return ESP_FAIL;
+    }
+    if (sensor_settings_save(&sensors) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "sensor settings not saved");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "sensor settings: %u Hz mains notch, %s motion profile", sensors.mains_hz,
+             sensor_motion_name(sensors.motion));
+    return ESP_OK;
+}
 
 static void restart_task(void *arg)
 {
@@ -149,12 +170,17 @@ static esp_err_t root_get(httpd_req_t *req)
         return ESP_FAIL;
     }
     httpd_resp_set_type(req, "text/html");
-    esp_err_t err = httpd_resp_send_chunk(req, PORTAL_HTML_HEAD, HTTPD_RESP_USE_STRLEN);
-#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
-    char sensors[640];
-    portal_sensor_fields(sensors, sizeof sensors);
-    if (err == ESP_OK) err = httpd_resp_send_chunk(req, sensors, HTTPD_RESP_USE_STRLEN);
-#endif
+    const netcfg_board_t board = netcfg_board();
+    esp_err_t err = httpd_resp_send_chunk(req, PORTAL_HTML_OPEN, HTTPD_RESP_USE_STRLEN);
+    if (err == ESP_OK)
+        err = httpd_resp_send_chunk(req, board.wired_uplink ? PORTAL_SSID_WIRED : PORTAL_SSID_REQUIRED,
+                                    HTTPD_RESP_USE_STRLEN);
+    if (err == ESP_OK) err = httpd_resp_send_chunk(req, PORTAL_HTML_FIELDS, HTTPD_RESP_USE_STRLEN);
+    if (err == ESP_OK && board.sensor_settings) {
+        char sensors[640];
+        portal_sensor_fields(sensors, sizeof sensors);
+        err = httpd_resp_send_chunk(req, sensors, HTTPD_RESP_USE_STRLEN);
+    }
     if (err == ESP_OK) err = httpd_resp_send_chunk(req, PORTAL_HTML_TAIL, HTTPD_RESP_USE_STRLEN);
     if (err == ESP_OK) err = httpd_resp_send_chunk(req, NULL, 0);
     return err;
@@ -313,30 +339,10 @@ static esp_err_t save_post(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, reason);
         return ESP_FAIL;
     }
-#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
-    // An absent field keeps the stored setting. They are saved before the network record,
-    // so a refused sensor setting leaves the whole form to be submitted again.
-    sensor_settings_t sensors;
-    (void)sensor_settings_load(&sensors); // an unreadable record is replaced with valid values
-    char choice[16] = {0};
-    form_result_t mains = netcfg_form_field(body, "mains_hz", choice, sizeof choice);
-    if (mains < 0 || (mains == FORM_OK && !sensor_settings_parse_mains(choice, &sensors.mains_hz))) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid mains frequency");
-        return ESP_FAIL;
-    }
-    memset(choice, 0, sizeof choice);
-    form_result_t motion = netcfg_form_field(body, "motion", choice, sizeof choice);
-    if (motion < 0 || (motion == FORM_OK && !sensor_settings_parse_motion(choice, &sensors.motion))) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid motion profile");
-        return ESP_FAIL;
-    }
-    if (sensor_settings_save(&sensors) != ESP_OK) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "sensor settings not saved");
-        return ESP_FAIL;
-    }
-    ESP_LOGI(TAG, "sensor settings: %u Hz mains notch, %s motion profile", sensors.mains_hz,
-             sensor_motion_name(sensors.motion));
-#endif
+    // A board that lists no sensors with settings keeps its stored ones whatever the form
+    // carries. They are saved before the network record, so a refused sensor setting leaves
+    // the whole form to be submitted again.
+    if (netcfg_board().sensor_settings && save_sensor_settings(req, body) != ESP_OK) return ESP_FAIL;
 
     esp_err_t err = netcfg_save(&cfg);
     if (err != ESP_OK) {

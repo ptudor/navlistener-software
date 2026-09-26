@@ -164,10 +164,11 @@ static bool manifest_profile(const nvf_board_identity_t *identity, eeprom_profil
 
 // The component list that factory initialization writes for the board chosen by
 // CONFIG_NVF_MANIFEST_BOARD_*. Keep each list as the manufacturing truth for that
-// assembly. All three are GNSS_PCB_MAIN revision A; the CAT_GPS entry names the
-// variant. GPIO-valued descriptors identify the two same-part LED drivers by their
-// output-enable pins and the gated LDOs by their EN pins. components[0] is the
-// EEPROM's self-reference; its ID is replaced with the discovered part's.
+// assembly. components[0] is the EEPROM's self-reference; its ID is replaced with the
+// discovered part's. components[1] names the board and its revision (CAT_INTSAT), which
+// is how firmware knows its pins; every driver runs only for a part listed here. The
+// header stays GNSS_PCB_MAIN revision A. GPIO-valued descriptors identify the two
+// same-part LED drivers by their output-enable pins and the gated LDOs by their EN pins.
 static void make_board_defaults(eeprom_capabilities_t *caps, uint8_t address, uint16_t memory)
 {
     memset(caps, 0, sizeof(*caps));
@@ -180,6 +181,7 @@ static void make_board_defaults(eeprom_capabilities_t *caps, uint8_t address, ui
 #if CONFIG_NVF_MANIFEST_BOARD_ZED_X20_A
     eeprom_ic_descriptor_t components[] = {
         IC_EEPROM_SELF_24CS128(address),                    // U28
+        IC_BOARD(CAT_INTSAT, INTSAT_X20, 1),                 // this board, revision A
         IC_INSTALLED(CAT_MCU, MCU_ESP32_S3),
         IC_INSTALLED(CAT_GPS, GPS_ZED_X20P),
         IC_I2C(CAT_RTC, RTC_MAX31328, 0x68),
@@ -203,6 +205,7 @@ static void make_board_defaults(eeprom_capabilities_t *caps, uint8_t address, ui
 #elif CONFIG_NVF_MANIFEST_BOARD_MAX_A
     eeprom_ic_descriptor_t components[] = {
         IC_EEPROM_SELF_24CS128(address),                    // U28
+        IC_BOARD(CAT_INTSAT, INTSAT_MAX, 1),                 // this board, revision A
         IC_INSTALLED(CAT_MCU, MCU_ESP32_S3),
         IC_INSTALLED(CAT_GPS, GPS_MAX_M10S),
         IC_I2C(CAT_RTC, RTC_MCP79412, 0x6f),
@@ -227,6 +230,7 @@ static void make_board_defaults(eeprom_capabilities_t *caps, uint8_t address, ui
 #else
     eeprom_ic_descriptor_t components[] = {
         IC_EEPROM_SELF_24CS128(address),                    // U28
+        IC_BOARD(CAT_INTSAT, INTSAT_NEO, 1),                 // this board, revision A
         IC_INSTALLED(CAT_MCU, MCU_ESP32_S3),
         IC_INSTALLED(CAT_GPS, GPS_NEO_M9N),
         IC_I2C(CAT_RTC, RTC_MCP79412, 0x6f),
@@ -376,8 +380,13 @@ esp_err_t hardware_manifest_boot(bool allow_factory_init,
     if (result->action == HARDWARE_MANIFEST_ACTION_USE && !s_uid_known && result->identity.board_valid)
         ESP_RETURN_ON_ERROR(board_uid_store(result->identity.board_uid), TAG, "remember board UID");
 
-    ESP_LOGI(TAG, "manifest boot action: %s",
-             hardware_manifest_action_name(result->action));
+    if (result->action == HARDWARE_MANIFEST_ACTION_USE && result->capabilities_valid) {
+        const eeprom_ic_descriptor_t *board = eeprom_find_category(&result->capabilities, CAT_INTSAT);
+        result->board = manifest_board_decide((unsigned)eeprom_count_category(&result->capabilities, CAT_INTSAT),
+                                              board ? board->id : 0, board ? board->i2c_address : 0);
+    }
+    ESP_LOGI(TAG, "manifest boot action: %s; board: %s",
+             hardware_manifest_action_name(result->action), manifest_board_name(result->board));
     return ESP_OK;
 }
 

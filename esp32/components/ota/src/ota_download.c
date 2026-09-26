@@ -66,7 +66,7 @@ static esp_err_t download_once(const nvf_ota_request_t *request, const char *url
         if (n <= 0) { *retry = true; err = ESP_ERR_INVALID_RESPONSE; goto done; }
         prefix += n;
     }
-    if (!nvf_ota_image_compatible(buffer, prefix, CONFIG_IDF_FIRMWARE_CHIP_ID, NVF_BOARD_ID,
+    if (!nvf_ota_image_compatible(buffer, prefix, CONFIG_IDF_FIRMWARE_CHIP_ID, nvf_board_device_id(),
                                  esp_app_get_description()->project_name)) {
         *retry = true; err = ESP_ERR_INVALID_VERSION; goto done;
     }

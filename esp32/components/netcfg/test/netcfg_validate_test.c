@@ -178,8 +178,18 @@ int main(void)
     CHECK(!netcfg_validate_uplink(&wired, true, err, sizeof err) && strstr(err, "token"),
           "wired without token: reason \"%s\", want a token rejection", err);
     CHECK(!netcfg_validate_uplink(NULL, true, err, sizeof err), "wired NULL config: accepted");
-    // The host build is wireless-only, so the default rule is the wireless one.
+    // Until the board says otherwise the rule is the wireless one; a board whose manifest
+    // lists a wired uplink makes the network optional for netcfg_validate too.
     CHECK(!netcfg_validate(&wired, NULL, 0), "default rule accepted a config without ssid");
+    netcfg_t wired_complete = valid_cfg();
+    memset(wired_complete.wifi_ssid, 0, sizeof wired_complete.wifi_ssid);
+    CHECK(!netcfg_board().wired_uplink && !netcfg_validate(&wired_complete, NULL, 0),
+          "default board accepted a config without ssid");
+    netcfg_set_board((netcfg_board_t){.wired_uplink = true});
+    CHECK(netcfg_validate(&wired_complete, err, sizeof err),
+          "wired board without ssid: rejected with \"%s\", want accepted", err);
+    netcfg_set_board((netcfg_board_t){0});
+    CHECK(!netcfg_validate(&wired_complete, NULL, 0), "board reset left the wired rule");
 
     // Only a named network is joined; spaces are no name.
     c = valid_cfg();

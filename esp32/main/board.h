@@ -2,8 +2,20 @@
 #define NVF_BOARD_H
 #include "esp_err.h"
 #include "hardware_manifest.h"
+#include "board_reservations.h"
 #include "../../common/board_uid.h"
+// Adopts the manifest at boot, before observer_board_start and netcfg_load: its CAT_INTSAT
+// entry names the board, and every driver runs only for a part it lists installed.
 void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_t (*now_ns)(void));
+// The board the manifest names, when this image drives it; NULL without a usable manifest,
+// for an unknown, unsupported or conflicting board, and on the C6.
+const observer_board_t *observer_board_current(void);
+// Whether that board's manifest lists the part installed; false whenever the board is NULL.
+bool observer_board_lists(uint8_t category, uint8_t id);
+// The board's Ethernet port is listed and driven by this image: the wired uplink.
+bool observer_board_wired_uplink(void);
+// The manifest lists a part with per-unit settings (the thermocouple converter or the IMU).
+bool observer_board_sensor_settings(void);
 // Thread-safe request, applied and saved by the board task. First-boot default
 // 20%; subsequent boots restore the saved setting before enabling PWM.
 void observer_board_set_brightness(unsigned percent);

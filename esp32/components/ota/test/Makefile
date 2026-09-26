@@ -7,12 +7,12 @@ all: build/policy_test build/download_test build/update_state_test
 	./build/update_state_test
 	python3 ../../../tools/test_ota.py
 	python3 ../../../tools/test_production_profile.py
-build/policy_test: policy_test.c ../src/ota_policy.c ../include/ota_policy.h
+build/policy_test: policy_test.c ../src/ota_policy.c ../include/ota_policy.h ../include/nvf_board.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -I../include policy_test.c ../src/ota_policy.c -o $@
-build/download_test: download_test.c ../src/ota_download.c ../src/ota_policy.c ../../../../common/endpoint_fallback.h $(wildcard stubs/*.h stubs/*/*.h)
+build/download_test: download_test.c ../src/ota_download.c ../src/ota_policy.c ../src/nvf_board.c ../include/nvf_board.h ../../../../common/endpoint_fallback.h $(wildcard stubs/*.h stubs/*/*.h)
 	@mkdir -p build
-	$(CC) $(CFLAGS) -Istubs -I../include download_test.c ../src/ota_download.c ../src/ota_policy.c -o $@
+	$(CC) $(CFLAGS) -Istubs -I../include download_test.c ../src/ota_download.c ../src/ota_policy.c ../src/nvf_board.c -o $@
 tuf-client: build/update_tuf_test
 build/update_state_test: update_state_test.c ../src/update_state.c ../src/update_api.c ../src/update_json.c ../src/ota_policy.c $(wildcard ../include/update_*.h)
 	@mkdir -p build

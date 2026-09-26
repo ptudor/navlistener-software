@@ -34,12 +34,22 @@
 #include "nvs.h"
 #include "journal.h"
 #include "pulse_timing.h"
-#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
 #include "motion.h"
 #include "sensor_settings.h"
 #include "thermocouple.h"
+#include "nvf_board.h"
+#ifndef CONFIG_NVF_BOARD_SUPPORT_NEO
+#define CONFIG_NVF_BOARD_SUPPORT_NEO 0
 #endif
-#if NVF_PIN_BRIGHT_ADC >= 0
+#ifndef CONFIG_NVF_BOARD_SUPPORT_X20
+#define CONFIG_NVF_BOARD_SUPPORT_X20 0
+#endif
+#ifndef CONFIG_NVF_BOARD_SUPPORT_MAX
+#define CONFIG_NVF_BOARD_SUPPORT_MAX 0
+#endif
+// The brightness preset button and trimmer (X20 and MAX); a NEO-only test build omits them.
+#define PANEL_INPUTS (CONFIG_NVF_BOARD_SUPPORT_X20 || CONFIG_NVF_BOARD_SUPPORT_MAX)
+#if PANEL_INPUTS
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_oneshot.h"
@@ -65,6 +75,68 @@ void observer_board_set_brightness(unsigned percent)
 { atomic_store(&brightness, percent > 100 ? 100 : percent); }
 void observer_board_cycle_brightness(void)
 { observer_board_set_brightness(panel_next_brightness(atomic_load(&brightness))); }
+// Every board the firmware knows, and whether this image drives it (NVF_BOARD_SUPPORT_*).
+// A test build still names the others, so the update service knows the device's board.
+static const struct { observer_board_t board; bool driven; } known[] = {
+    {NVF_BOARD_NEO_ROW, CONFIG_NVF_BOARD_SUPPORT_NEO},
+    {NVF_BOARD_X20_ROW, CONFIG_NVF_BOARD_SUPPORT_X20},
+    {NVF_BOARD_MAX_ROW, CONFIG_NVF_BOARD_SUPPORT_MAX},
+};
+// Set once by observer_board_manifest, before the tasks that read them start. The board is
+// NULL, and nothing is listed, unless a usable manifest names a board this image drives.
+static const observer_board_t *board;
+static eeprom_capabilities_t listed;
+static observer_rtc_part_t rtc_part;
+static bool thermocouple_listed, imu_listed, barometer_listed, magnetometer_listed;
+const observer_board_t *observer_board_current(void) { return board; }
+bool observer_board_lists(uint8_t category, uint8_t id)
+{
+    return board && eeprom_has_ic(&listed, category, id);
+}
+bool observer_board_wired_uplink(void)
+{
+#if CONFIG_NVF_ETHERNET_W5500
+    return board && board->eth_sclk >= 0 && observer_board_lists(CAT_COMM, COMM_W5500);
+#else
+    return false;
+#endif
+}
+bool observer_board_sensor_settings(void) { return thermocouple_listed || imu_listed; }
+static observer_rtc_part_t listed_rtc(void)
+{
+    bool mcp = observer_board_lists(CAT_RTC, RTC_MCP79412), max = observer_board_lists(CAT_RTC, RTC_MAX31328);
+    if (mcp && max) {
+        ESP_LOGE(TAG, "the manifest lists both an MCP79412 and a MAX31328; no RTC is used until it is corrected");
+        return OBSERVER_RTC_NONE;
+    }
+    if (board && !mcp && !max) ESP_LOGW(TAG, "the manifest lists no RTC; none is used");
+    return mcp ? OBSERVER_RTC_MCP79412 : max ? OBSERVER_RTC_MAX31328 : OBSERVER_RTC_NONE;
+}
+// The receiver the manifest lists, as MON-VER names it; NULL configures none.
+static const char *listed_receiver(void)
+{
+    static const struct { uint8_t id; const char *module; } receivers[] = {
+        {GPS_NEO_M9N, "NEO-M9N"}, {GPS_ZED_X20P, "ZED-X20P"}, {GPS_MAX_M10S, "MAX-M10S"},
+    };
+    const char *module = NULL;
+    for (size_t i = 0; i < sizeof receivers / sizeof receivers[0]; i++) {
+        if (!observer_board_lists(CAT_GPS, receivers[i].id)) continue;
+        if (module) {
+            ESP_LOGE(TAG, "the manifest lists more than one receiver; none is configured until it is corrected");
+            return NULL;
+        }
+        module = receivers[i].module;
+    }
+    if (board && !module) ESP_LOGW(TAG, "the manifest lists no receiver this firmware configures; it keeps its own settings");
+    return module;
+}
+// A listed part on a board without the pins it needs is not used.
+static bool listed_with_pins(uint8_t category, uint8_t id, bool pins, const char *name)
+{
+    if (!observer_board_lists(category, id)) return false;
+    if (!pins) ESP_LOGE(TAG, "the manifest lists a %s, but the %s has no pins for it; it is not used", name, board->name);
+    return pins;
+}
 void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_t (*now_ns)(void))
 {
     report_now_ns = now_ns;
@@ -78,31 +150,66 @@ void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_
         report.manifest.component_count = manifest->capabilities.component_count;
     }
     snprintf(report.firmware, sizeof report.firmware, "%s", esp_app_get_description()->version);
-    // The manifest is the only authority for the HDC variant: both parts return the same
-    // ID registers. A board without a usable manifest has not been configured, and one
-    // that lists neither part (or both) gets no humidity measurement.
-    bool usable = manifest->action == HARDWARE_MANIFEST_ACTION_USE && manifest->capabilities_valid;
-    bool hdc2080 = usable && eeprom_has_ic(&manifest->capabilities, CAT_SENSOR, SENSOR_HDC2080);
-    bool hdc2022 = usable && eeprom_has_ic(&manifest->capabilities, CAT_SENSOR, SENSOR_HDC2022);
+    // The manifest is the only authority for the board and its parts: its CAT_INTSAT entry
+    // names the board and revision, which fix the pins, and a driver runs only for a part
+    // it lists installed. Without a usable manifest naming a board this image drives,
+    // nothing board-specific runs.
+    const observer_board_t *named = NULL;
+    bool driven = false;
+    for (size_t i = 0; i < sizeof known / sizeof known[0]; i++)
+        if (manifest->board == known[i].board.model) { named = &known[i].board; driven = known[i].driven; }
+    if (named) nvf_board_set_device(named->ota_board_id, named->family);
+    if (named && driven) { board = named; listed = manifest->capabilities; }
+    if (board)
+        ESP_LOGI(TAG, "board: %s; its pins and its %u listed components are used", board->name,
+                 manifest->capabilities.component_count);
+    else if (named)
+        ESP_LOGE(TAG, "the manifest names the %s, which this test image does not drive; nothing board-specific runs",
+                 named->name);
+    else if (manifest->board == BOARD_MODEL_UNSUPPORTED)
+        ESP_LOGE(TAG, "the manifest names a board or revision this firmware does not know; nothing board-specific runs");
+    else if (manifest->board == BOARD_MODEL_CONFLICT)
+        ESP_LOGE(TAG, "the manifest names more than one board; nothing board-specific runs until it is corrected");
+    else
+        ESP_LOGW(TAG, "manifest %s, no board named: nothing board-specific runs; has this board been configured?",
+                 hardware_manifest_action_name(manifest->action));
+    // Both HDC parts return the same ID registers, so only the manifest names the variant.
+    bool hdc2080 = observer_board_lists(CAT_SENSOR, SENSOR_HDC2080);
+    bool hdc2022 = observer_board_lists(CAT_SENSOR, SENSOR_HDC2022);
     report.humidity = (report_humidity_t){.present = true,
         .part = hdc2080 && hdc2022 ? HUMIDITY_CONFLICT : hdc2080 ? HUMIDITY_HDC2080 :
                 hdc2022 ? HUMIDITY_HDC2022 : HUMIDITY_NOT_LISTED};
-    environment_set_hdc(report.humidity.part == HUMIDITY_HDC2080 ? ENV_HDC2080 :
-                        report.humidity.part == HUMIDITY_HDC2022 ? ENV_HDC2022 : ENV_HDC_NONE);
-    if (!usable)
-        ESP_LOGW(TAG, "manifest %s: the humidity sensor is not probed; has this board been configured?",
-                 hardware_manifest_action_name(manifest->action));
-    else if (report.humidity.part == HUMIDITY_NOT_LISTED)
+    if (board && report.humidity.part == HUMIDITY_NOT_LISTED)
         ESP_LOGW(TAG, "the manifest lists no HDC2080 or HDC2022; humidity is not measured");
     else if (report.humidity.part == HUMIDITY_CONFLICT)
         ESP_LOGE(TAG, "the manifest lists both HDC2080 and HDC2022; humidity is not measured until it is corrected");
+    barometer_listed = observer_board_lists(CAT_PRESSURE, PRESSURE_MS5607);
+    magnetometer_listed = observer_board_lists(CAT_SENSOR, SENSOR_MAG_MMC34160PJ);
+    const env_parts_t parts = {
+        .mcp9808 = observer_board_lists(CAT_TEMP, TEMP_MCP9808),
+        .bmp388 = observer_board_lists(CAT_PRESSURE, PRESSURE_BMP388),
+        .ms5607 = barometer_listed, .mmc34160 = magnetometer_listed,
+        .hdc = report.humidity.part == HUMIDITY_HDC2080 ? ENV_HDC2080 :
+               report.humidity.part == HUMIDITY_HDC2022 ? ENV_HDC2022 : ENV_HDC_NONE,
+    };
+    environment_configure(&parts);
+    thermocouple_listed = listed_with_pins(CAT_SENSOR, SENSOR_THERMOCOUPLE_MAX31856,
+                                           board && board->tc_sck >= 0, "MAX31856 thermocouple converter");
+    imu_listed = listed_with_pins(CAT_IMU, IMU_ICM45686, board && board->imu_int1 >= 0 && board->imu_int2 >= 0,
+                                  "ICM-45686 IMU");
+    rtc_part = listed_rtc();
+    observer_rtc_select(rtc_part);
+    receiver_set_module(listed_receiver());
+    if (board && observer_board_lists(CAT_COMM, COMM_W5500) && !observer_board_wired_uplink())
+        ESP_LOGE(TAG, "the manifest lists a W5500, but this image or the %s cannot drive it; Ethernet is not used",
+                 board->name);
 }
 enum { LED_DATA = 14, LED_CLOCK = 11, LED_LATCH = 12, LED_GREEN_OE = 47, LED_YELLOW_OE = 48 };
 // The panel pins are part of the allocation record, not a private choice here.
 _Static_assert((NVF_PIN(LED_DATA) | NVF_PIN(LED_CLOCK) | NVF_PIN(LED_LATCH) |
                 NVF_PIN(LED_GREEN_OE) | NVF_PIN(LED_YELLOW_OE)) ==
                ((NVF_PIN(LED_DATA) | NVF_PIN(LED_CLOCK) | NVF_PIN(LED_LATCH) |
-                 NVF_PIN(LED_GREEN_OE) | NVF_PIN(LED_YELLOW_OE)) & NVF_PINS_BOARD),
+                 NVF_PIN(LED_GREEN_OE) | NVF_PIN(LED_YELLOW_OE)) & NVF_PINS_COMMON),
     "a panel pin is missing from the board_reservations.h allocation record");
 typedef struct {
     uint32_t magic;
@@ -281,20 +388,21 @@ void observer_board_identity(observer_board_identity_t *out)
     out->revision_valid = report.manifest.capabilities_valid;
     out->revision = report.manifest.revision;
     if (!hardware_manifest_i2c_bus() || !crypto_lock) return;
-#if CONFIG_NVF_BOARD_GNSS_COLOR_ZED_X20
-    // MAX31328: its timekeeping registers answering is its presence; it has no serial.
-    out->rtc_model_id = NVF_RTC_MAX31328;
+    // Only the parts the manifest lists are read.
     uint8_t rtc_registers[7];
-    out->rtc_present = read_reg(NVF_I2C_RTC_TCXO, 0, rtc_registers, sizeof rtc_registers) == ESP_OK;
-#else
-    // MCP79412: verify the clock function at 0x6f as well as the factory EUI-64 in the
-    // protected EEPROM block at 0x57. The EEPROM alone is not proof the expected RTC is fitted.
-    out->rtc_model_id = NVF_RTC_MCP79412;
-    uint8_t rtc_registers[7];
-    out->rtc_present = read_reg(0x6f, 0, rtc_registers, sizeof rtc_registers) == ESP_OK;
-    out->rtc_valid = out->rtc_present && read_reg(0x57, 0xf0, out->rtc_eui64, 8) == ESP_OK &&
-                     !identifier_blank(out->rtc_eui64, 8);
-#endif
+    if (rtc_part == OBSERVER_RTC_MAX31328) {
+        // MAX31328: its timekeeping registers answering is its presence; it has no serial.
+        out->rtc_model_id = NVF_RTC_MAX31328;
+        out->rtc_present = read_reg(NVF_I2C_RTC_TCXO, 0, rtc_registers, sizeof rtc_registers) == ESP_OK;
+    } else if (rtc_part == OBSERVER_RTC_MCP79412) {
+        // MCP79412: verify the clock function at 0x6f as well as the factory EUI-64 in the
+        // protected EEPROM block at 0x57. The EEPROM alone is not proof the expected RTC is fitted.
+        out->rtc_model_id = NVF_RTC_MCP79412;
+        out->rtc_present = read_reg(NVF_I2C_RTC, 0, rtc_registers, sizeof rtc_registers) == ESP_OK;
+        out->rtc_valid = out->rtc_present && read_reg(NVF_I2C_RTC_EUI, 0xf0, out->rtc_eui64, 8) == ESP_OK &&
+                         !identifier_blank(out->rtc_eui64, 8);
+    }
+    if (!observer_board_lists(CAT_CRYPTO, CRYPTO_ATECC608C)) return;
     i2c_master_dev_handle_t dev;
     bool woke;
     esp_err_t err;
@@ -330,19 +438,21 @@ static void identify_peripherals(void)
 {
     i2c_master_bus_handle_t bus = hardware_manifest_i2c_bus();
     if (!bus) { ESP_LOGW(TAG, "shared I2C bus unavailable"); return; }
-    // This board's fitted parts (board_reservations.h); another board's are not probed.
-    static const struct { uint8_t address; const char *name; } parts[] = {
-        {NVF_I2C_TEMPERATURE, "temperature"}, {NVF_I2C_HUMIDITY, "humidity"},
-#if CONFIG_NVF_BOARD_GNSS_COLOR_ZED_X20
-        {NVF_I2C_RTC_TCXO, "RTC"}, {NVF_I2C_PRESSURE, "pressure"},
-#elif CONFIG_NVF_BOARD_GNSS_COLOR_MAX
-        {NVF_I2C_RTC, "RTC"}, {NVF_I2C_PRESSURE_ALT, "pressure"}, {NVF_I2C_IMU, "IMU"},
-        {NVF_I2C_MAGNETOMETER, "magnetometer"},
-#else
-        {NVF_I2C_RTC, "RTC"}, {NVF_I2C_PRESSURE, "pressure"},
-#endif
+    // The parts the manifest lists, at the addresses the board's design gives them
+    // (board_reservations.h); nothing else is probed.
+    static const struct { uint8_t category, id, address; const char *name; } parts[] = {
+        {CAT_TEMP, TEMP_MCP9808, NVF_I2C_TEMPERATURE, "temperature"},
+        {CAT_SENSOR, SENSOR_HDC2080, NVF_I2C_HUMIDITY, "humidity"},
+        {CAT_SENSOR, SENSOR_HDC2022, NVF_I2C_HUMIDITY, "humidity"},
+        {CAT_PRESSURE, PRESSURE_BMP388, NVF_I2C_PRESSURE, "pressure"},
+        {CAT_PRESSURE, PRESSURE_MS5607, NVF_I2C_PRESSURE_ALT, "pressure"},
+        {CAT_RTC, RTC_MCP79412, NVF_I2C_RTC, "RTC"},
+        {CAT_RTC, RTC_MAX31328, NVF_I2C_RTC_TCXO, "RTC"},
+        {CAT_IMU, IMU_ICM45686, NVF_I2C_IMU, "IMU"},
+        {CAT_SENSOR, SENSOR_MAG_MMC34160PJ, NVF_I2C_MAGNETOMETER, "magnetometer"},
     };
     for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) {
+        if (!observer_board_lists(parts[i].category, parts[i].id)) continue;
         const uint8_t address = parts[i].address;
         esp_err_t err = i2c_master_probe(bus, address, 100);
         ESP_LOGI(TAG, "%s at 0x%02x: %s", parts[i].name, address, esp_err_to_name(err));
@@ -366,17 +476,15 @@ static void identify_peripherals(void)
                 data[0], data[1], data[1] & 0x80 ? "set" : "clear");
         }
     }
-    identify_crypto();
+    if (observer_board_lists(CAT_CRYPTO, CRYPTO_ATECC608C)) identify_crypto();
 }
 static void clock_bit(int bit)
 {
     gpio_set_level(LED_CLOCK, 0);
     gpio_set_level(LED_DATA, bit);
-#if NVF_PIN_LED_PANEL_SDI >= 0
     // The optional front panel's own chain shows the same frame and shares clock,
     // latch and output enables, so both SDI lines carry each bit.
-    gpio_set_level(NVF_PIN_LED_PANEL_SDI, bit);
-#endif
+    if (board && board->led_panel_sdi >= 0) gpio_set_level(board->led_panel_sdi, bit);
     esp_rom_delay_us(2);
     gpio_set_level(LED_CLOCK, 1);
     esp_rom_delay_us(2);
@@ -419,44 +527,53 @@ static void heater_report(const env_heater_status_t *s, report_heater_t *h)
     if (r->valid & ENV_RUN_MCP_PEAK) h->mcp_peak = lround(r->mcp_peak * 100);
     if (r->valid & ENV_RUN_MCP_END) h->mcp_end = lround(r->mcp_end * 100);
 }
-#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
 // The latest IMU sample is reported only while it is this recent: still, the FIFO is
 // drained every 1.28 s on INT1, or every 2.56 s without it.
 #define MOTION_FRESH_MS 5000
 static sensor_settings_t sensor_settings;
 static const icm45686_profile_t *motion_profile;
+// The MAX's sensors, each started and reported only when the manifest lists it.
+static bool max_sensors_listed(void)
+{
+    return thermocouple_listed || imu_listed || barometer_listed || magnetometer_listed;
+}
 static void max_sensors_start(void)
 {
+    if (!max_sensors_listed()) return;
     esp_err_t err = sensor_settings_load(&sensor_settings);
     if (err != ESP_OK)
         ESP_LOGW(TAG, "sensor settings unreadable (%s); using the defaults", esp_err_to_name(err));
     motion_profile = sensor_settings.motion == SENSOR_MOTION_AERIAL ? &ICM45686_AERIAL : &ICM45686_SURFACE;
     ESP_LOGI(TAG, "sensor settings: %u Hz mains notch, %s motion profile", sensor_settings.mains_hz,
              sensor_motion_name(sensor_settings.motion));
-    err = thermocouple_start(NVF_PIN_TC_SCK, NVF_PIN_TC_MOSI, NVF_PIN_TC_MISO, NVF_PIN_TC_CS_N,
-                             NVF_PIN_TC_DRDY_N, sensor_settings.mains_hz == 50);
-    if (err != ESP_OK) ESP_LOGE(TAG, "thermocouple interface unavailable: %s", esp_err_to_name(err));
-    err = motion_start(hardware_manifest_i2c_bus(), NVF_PIN_IMU_INT1, NVF_PIN_IMU_INT2, motion_profile);
-    if (err != ESP_OK) ESP_LOGE(TAG, "IMU service unavailable: %s", esp_err_to_name(err));
+    if (thermocouple_listed) {
+        err = thermocouple_start(board->tc_sck, board->tc_mosi, board->tc_miso, board->tc_cs_n,
+                                 board->tc_drdy_n, sensor_settings.mains_hz == 50);
+        if (err != ESP_OK) ESP_LOGE(TAG, "thermocouple interface unavailable: %s", esp_err_to_name(err));
+    }
+    if (imu_listed) {
+        err = motion_start(hardware_manifest_i2c_bus(), board->imu_int1, board->imu_int2, motion_profile);
+        if (err != ESP_OK) ESP_LOGE(TAG, "IMU service unavailable: %s", esp_err_to_name(err));
+    }
 }
 // A window sum over its time, rounded half away from zero.
 static int16_t window_mean(int64_t sum, uint32_t span_ms)
 {
     return (int16_t)(sum >= 0 ? (sum + span_ms / 2) / span_ms : -((-sum + span_ms / 2) / span_ms));
 }
-// Tags 11-13: the barometer, the thermocouple, and the IMU and magnetometer summary.
-static void max_sensors_report(void)
+// Tag 11: the MS5607 barometer.
+static void barometer_report(const env_barometer_t *barometer)
 {
-    env_barometer_t barometer;
-    env_magnetometer_t magnetometer;
-    environment_sample_max(&barometer, &magnetometer);
-    int64_t magnetometer_ms = esp_timer_get_time() / 1000;
     report_barometer_t *b = &report.barometer;
-    *b = (report_barometer_t){.present = true, .state = barometer.state};
-    if (barometer.valid) {
-        b->valid = 1; b->centi_c = barometer.centi_c; b->pressure_pa = barometer.pressure_pa;
-        b->flags = barometer.pressure_pa < MS5607_FULL_MIN_PA || barometer.pressure_pa > MS5607_FULL_MAX_PA;
+    *b = (report_barometer_t){.present = true, .state = barometer->state};
+    if (barometer->valid) {
+        b->valid = 1; b->centi_c = barometer->centi_c; b->pressure_pa = barometer->pressure_pa;
+        b->flags = barometer->pressure_pa < MS5607_FULL_MIN_PA || barometer->pressure_pa > MS5607_FULL_MAX_PA;
     }
+}
+// Tag 12: the MAX31856 thermocouple converter.
+static void thermocouple_report(void)
+{
     env_thermocouple_t thermocouple;
     thermocouple_sample(&thermocouple);
     report_thermocouple_t *t = &report.thermocouple;
@@ -467,12 +584,17 @@ static void max_sensors_report(void)
         t->valid = s->valid; t->flags = s->fresh; t->fault = s->fault;
         t->tc_centi_c = s->tc_centi_c; t->cj_centi_c = s->cj_centi_c;
     }
-    motion_status_t motion;
-    motion_snapshot(&motion);
+}
+// Tag 13: the ICM-45686 IMU and MMC34160PJ magnetometer summary. A part the manifest does
+// not list reads as not responding and contributes no values.
+static void motion_report(const env_magnetometer_t *magnetometer, int64_t magnetometer_ms)
+{
+    motion_status_t motion = {0};
+    if (imu_listed) motion_snapshot(&motion);
     int64_t now = esp_timer_get_time() / 1000;
     report_motion_t *m = &report.motion;
     const icm45686_profile_t *p = motion_profile;
-    *m = (report_motion_t){.present = true, .imu_state = motion.ready, .mag_state = magnetometer.ready,
+    *m = (report_motion_t){.present = true, .imu_state = motion.ready, .mag_state = magnetometer->ready,
         .profile = sensor_settings.motion, .moving = motion.stats.moving,
         .rate_decihz = motion.stats.moving ? p->moving_decihz : ICM45686_STILL_DECIHZ,
         .accel_fs_g = p->accel_fs_g, .gyro_fs_dps = p->gyro_fs_dps, .packets = motion.stats.packets,
@@ -499,14 +621,25 @@ static void max_sensors_report(void)
         m->accel_max_mg = (uint16_t)lround(sqrt((double)w->accel_max_sq) * g * 1000.0);
         m->gyro_max_decidps = (uint16_t)lround(sqrt((double)w->gyro_max_sq) * dps * 10.0);
     }
-    if (magnetometer.valid) {
+    if (magnetometer->valid) {
         m->valid |= 4;
-        memcpy(m->mag, magnetometer.sample.field, sizeof m->mag);
-        memcpy(m->mag_offset, magnetometer.sample.offset, sizeof m->mag_offset);
+        memcpy(m->mag, magnetometer->sample.field, sizeof m->mag);
+        memcpy(m->mag_offset, magnetometer->sample.offset, sizeof m->mag_offset);
         m->mag_ms = (uint64_t)magnetometer_ms;
     }
 }
-#endif
+// Tags 11-13, each present only when its parts are listed.
+static void max_sensors_report(void)
+{
+    if (!max_sensors_listed()) return;
+    env_barometer_t barometer;
+    env_magnetometer_t magnetometer;
+    environment_sample_max(&barometer, &magnetometer);
+    int64_t magnetometer_ms = esp_timer_get_time() / 1000;
+    if (barometer_listed) barometer_report(&barometer);
+    if (thermocouple_listed) thermocouple_report();
+    if (imu_listed || magnetometer_listed) motion_report(&magnetometer, magnetometer_ms);
+}
 static void report_poll(const gnss_status_t *status, int64_t now, uint8_t expected, bool utc_valid, int64_t utc)
 {
     bool event_pending = status->event_count != report_policy.last.event_count;
@@ -517,9 +650,7 @@ static void report_poll(const gnss_status_t *status, int64_t now, uint8_t expect
     report_environment_t *e = &report.environment;
     *e = (report_environment_t){0};
     environment_sample(hardware_manifest_i2c_bus(), now, utc_valid, utc, &sample, &e->ready, &heater);
-#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
     max_sensors_report();
-#endif
     // After every sample, so no component's time is later than the report's.
     last_environment = esp_timer_get_time() / 1000;
     next_environment = last_environment + 30000;
@@ -555,9 +686,7 @@ static void report_poll(const gnss_status_t *status, int64_t now, uint8_t expect
     size_t n = gnf1_encode_telem(record, report_now_ns ? report_now_ns() : 0, GNF1_T_OBSERVER, body, length);
     if (n && spool_append(record, n)) {
         observer_report_sent(&report_policy, &report);
-#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
-        motion_report_sent();
-#endif
+        if (imu_listed) motion_report_sent();
         ESP_LOGI(TAG, "ObserverDetails queued: reason=0x%02x environment=0x%02x RTC=0x%02x EEPROM=%u RNG=%u events=%lu bytes=%u",
             report.reason, e->valid, report.rtc.flags, report.manifest.action, report.crypto.rng,
             (unsigned long)report.event_count, (unsigned)n);
@@ -599,9 +728,7 @@ static void board_task(void *arg)
     esp_err_t timing_error=pulse_timing_start();
     if (timing_error != ESP_OK) ESP_LOGW(TAG,"pulse capture unavailable: %s; GNSS continues",esp_err_to_name(timing_error));
     identify_peripherals();
-#if CONFIG_NVF_BOARD_GNSS_COLOR_MAX
     max_sensors_start();
-#endif
     history_load();
     uint8_t previous_green = 255, previous_yellow = 255;
     bool brightness_dirty = false;
@@ -651,17 +778,17 @@ static void board_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
-#if NVF_PIN_BRIGHT_BUTTON >= 0
+#if PANEL_INPUTS
 #define PANEL_INPUT_POLL_MS 20u
 #define PANEL_TRIMMER_SAMPLE_MS 200u
-#if NVF_PIN_BRIGHT_ADC >= 0
 static adc_oneshot_unit_handle_t trimmer_unit;
 static adc_cali_handle_t trimmer_cali;
 static adc_channel_t trimmer_channel;
 static bool trimmer_init(void)
 {
     adc_unit_t unit;
-    if (adc_oneshot_io_to_channel(NVF_PIN_BRIGHT_ADC, &unit, &trimmer_channel) != ESP_OK) return false;
+    if (board->bright_adc < 0 ||
+        adc_oneshot_io_to_channel(board->bright_adc, &unit, &trimmer_channel) != ESP_OK) return false;
     adc_oneshot_unit_init_cfg_t unit_config = {.unit_id = unit};
     adc_oneshot_chan_cfg_t channel = {.atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_DEFAULT};
     adc_cali_curve_fitting_config_t cali = {.unit_id = unit, .chan = trimmer_channel,
@@ -686,18 +813,15 @@ static unsigned trimmer_read(void)
     }
     return panel_trimmer_percent(sum / 8, CONFIG_NVF_PANEL_TRIMMER_OPEN_MV);
 }
-#else
-static bool trimmer_init(void) { return false; }
-static unsigned trimmer_read(void) { return 0; }
-#endif
 // Owns the brightness choice on boards with preset buttons and a trimmer: the control
 // that changed last wins (panel_brightness_t), and the board task applies and saves it.
 static void panel_input_task(void *arg)
 {
     (void)arg;
-    const gpio_config_t button = {.pin_bit_mask = NVF_PIN(NVF_PIN_BRIGHT_BUTTON), .mode = GPIO_MODE_INPUT,
+    const int pin = board->bright_button;
+    const gpio_config_t button = {.pin_bit_mask = NVF_PIN(pin), .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE, .pull_down_en = GPIO_PULLDOWN_DISABLE}; // R47 pulls up
-    if (gpio_config(&button) != ESP_OK) { ESP_LOGE(TAG, "brightness button GPIO%d unavailable", NVF_PIN_BRIGHT_BUTTON); vTaskDelete(NULL); }
+    if (gpio_config(&button) != ESP_OK) { ESP_LOGE(TAG, "brightness button GPIO%d unavailable", pin); vTaskDelete(NULL); }
     bool trimmer = trimmer_init();
     if (!trimmer) ESP_LOGW(TAG, "brightness trimmer unavailable; presets only");
     panel_brightness_t lamp = {.percent = atomic_load(&brightness), .reference = atomic_load(&trimmer_reference)};
@@ -722,7 +846,7 @@ static void panel_input_task(void *arg)
         } else if (sampled) {
             changed = panel_brightness_trimmer(&lamp, position);
         }
-        if (panel_button_short_press(&press, gpio_get_level(NVF_PIN_BRIGHT_BUTTON) == 0, PANEL_INPUT_POLL_MS)) {
+        if (panel_button_short_press(&press, gpio_get_level(pin) == 0, PANEL_INPUT_POLL_MS)) {
             panel_brightness_preset(&lamp, position);
             changed = true;
         }
@@ -745,9 +869,7 @@ esp_err_t observer_board_start(void)
     if (!crypto_lock && !(crypto_lock = xSemaphoreCreateMutex())) return ESP_ERR_NO_MEM;
     uint64_t outputs = (1ULL << LED_DATA) | (1ULL << LED_CLOCK) | (1ULL << LED_LATCH) |
                        (1ULL << LED_GREEN_OE) | (1ULL << LED_YELLOW_OE);
-#if NVF_PIN_LED_PANEL_SDI >= 0
-    outputs |= NVF_PIN(NVF_PIN_LED_PANEL_SDI);
-#endif
+    if (board && board->led_panel_sdi >= 0) outputs |= NVF_PIN(board->led_panel_sdi);
     gpio_set_level(LED_GREEN_OE, 1); gpio_set_level(LED_YELLOW_OE, 1);
     gpio_config_t config = {.pin_bit_mask = outputs, .mode = GPIO_MODE_OUTPUT};
     esp_err_t err = gpio_config(&config);
@@ -772,8 +894,10 @@ esp_err_t observer_board_start(void)
     }
     pwm_ready = true;
     ESP_LOGI(TAG, "panel brightness=%u%% (4 kHz PWM)", applied_brightness);
-#if NVF_PIN_BRIGHT_BUTTON >= 0
-    if (xTaskCreate(panel_input_task, "panel_input", 3072, NULL, 4, NULL) != pdPASS) return ESP_ERR_NO_MEM;
+#if PANEL_INPUTS
+    // The preset button (and the trimmer beside it) only where the manifest lists it.
+    if (board && board->bright_button >= 0 && observer_board_lists(CAT_BUTTON, BUTTON_USER_2) &&
+        xTaskCreate(panel_input_task, "panel_input", 3072, NULL, 4, NULL) != pdPASS) return ESP_ERR_NO_MEM;
 #endif
     return xTaskCreate(board_task, "board", 6144, NULL, 3, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
@@ -782,6 +906,10 @@ void observer_board_set_brightness(unsigned percent) { (void)percent; }
 void observer_board_cycle_brightness(void) {}
 void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_t (*now_ns)(void))
 { (void)manifest; (void)now_ns; }
+const observer_board_t *observer_board_current(void) { return NULL; }
+bool observer_board_lists(uint8_t category, uint8_t id) { (void)category; (void)id; return false; }
+bool observer_board_wired_uplink(void) { return false; }
+bool observer_board_sensor_settings(void) { return false; }
 esp_err_t observer_board_start(void) { return ESP_OK; }
 void observer_board_identity(observer_board_identity_t *out) { *out = (observer_board_identity_t){0}; }
 #endif

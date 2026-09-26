@@ -74,7 +74,7 @@ The M9's "no spoofing indicated" state is not proof of authentic reception; see
 - MAX board per-unit settings: the mains frequency for the thermocouple notch (60 Hz
   by default, or 50 Hz) and the motion profile (surface by default, or aerial) are
   chosen on the setup page and kept in the `nvf_sensor` NVS namespace, which the
-  network configuration reset leaves alone. One MAX image serves every unit; the
+  network configuration reset leaves alone. One image serves every unit; the
   reports carry the values in use. BLE setup through the Station app does not set
   them yet, so a unit set up that way keeps its stored values or the defaults.
 - MAX board MAX31856 (tag 12): K type, 4-sample averaging, continuous conversion
@@ -321,8 +321,10 @@ cannot extend past the snapshot uptime, and ≥ 98 %RH time cannot exceed
 
 ## MAX board sensors (tags 11-13, version 1)
 
-MAX firmware sends all three with every environmental report; other boards omit
-them. Invalid measurements are zero. Multi-byte fields are big-endian.
+Each environmental report carries a tag when the manifest lists its parts: tag 11 the
+MS5607, tag 12 the MAX31856, tag 13 the ICM-45686 or MMC34160PJ (a part that is not
+listed reads as not responding). A MAX lists all of them; other boards omit the tags.
+Invalid measurements are zero. Multi-byte fields are big-endian.
 
 Tag 11, barometer:
 

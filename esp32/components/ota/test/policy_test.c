@@ -23,6 +23,12 @@ int main(void)
     assert(!nvf_ota_image_compatible(image, 303, 9, 1, "navfeeder-esp"));
     assert(!nvf_ota_image_compatible(image, sizeof image, 13, 1, "navfeeder-esp"));
     assert(!nvf_ota_image_compatible(image, sizeof image, 9, 0, "navfeeder-esp"));
+    assert(!nvf_ota_image_compatible(image, sizeof image, 9, 2, "navfeeder-esp"));
+    // The universal image (board 4) fits every device, including one whose manifest names none.
+    image[297] = 4;
+    for (uint8_t board = 0; board <= 4; board++)
+        assert(nvf_ota_image_compatible(image, sizeof image, 9, board, "navfeeder-esp"));
+    image[297] = 1;
     assert(!nvf_ota_image_compatible(image, sizeof image, 9, 1, "another-app"));
     image[299] = 1; assert(!nvf_ota_image_compatible(image, sizeof image, 9, 1, "navfeeder-esp"));
     image[299] = 0; image[298] = 0;

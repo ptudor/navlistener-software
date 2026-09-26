@@ -3,7 +3,6 @@
 // RESET#), and 10 MHz SPI until faster rates are qualified on the routed board.
 #include "ethernet.h"
 
-#include "board_reservations.h"
 #include "driver/spi_master.h"
 #include "esp_check.h"
 #include "esp_eth.h"
@@ -25,15 +24,17 @@
 
 static const char *TAG = "ethernet";
 
-esp_err_t ethernet_start(void)
+esp_err_t ethernet_start(const observer_board_t *board)
 {
+    if (board->eth_sclk < 0 || board->eth_cs < 0 || board->eth_mosi < 0 || board->eth_miso < 0)
+        return ESP_ERR_NOT_SUPPORTED;
     int64_t now = esp_timer_get_time();
     if (now < ETH_READY_US) vTaskDelay(pdMS_TO_TICKS((ETH_READY_US - now) / 1000 + 1));
 
     const spi_bus_config_t bus = {
-        .mosi_io_num = NVF_PIN_ETH_MOSI,
-        .miso_io_num = NVF_PIN_ETH_MISO,
-        .sclk_io_num = NVF_PIN_ETH_SCLK,
+        .mosi_io_num = board->eth_mosi,
+        .miso_io_num = board->eth_miso,
+        .sclk_io_num = board->eth_sclk,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
     };
@@ -50,7 +51,7 @@ esp_err_t ethernet_start(void)
         .mode = 0,
         .clock_speed_hz = ETH_SPI_HZ,
         .queue_size = 20,
-        .spics_io_num = NVF_PIN_ETH_CS,
+        .spics_io_num = board->eth_cs,
     };
     eth_w5500_config_t w5500 = ETH_W5500_DEFAULT_CONFIG(ETH_SPI_HOST, &device);
     w5500.int_gpio_num = -1;
