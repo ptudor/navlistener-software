@@ -35,9 +35,10 @@ supported substitute. Its drivers and partition table remain as legacy source.
   they carry one board's drivers, run nothing board-specific on any other board, and
   install over the air only on their own board. Startup reads the 128-bit factory serial and manifest;
   `NVF_MANIFEST_FACTORY_INIT` is a manufacturing-only, default-off permission to initialize a
-  blank, never-seen EEPROM from a compiled revision-A component list; `NVF_MANIFEST_BOARD`
-  chooses which board's list it writes (the lists are in
-  [the observer contract](../docs/HARDWARE-OBSERVER.md#52-how-navlistener-consumes-it)). It never
+  blank, never-seen EEPROM from a revision-A component list; `NVF_MANIFEST_BOARD`
+  chooses which board's list it writes. The lists are esp32-hardware-discovery's Intsat
+  templates, tabulated in
+  [the observer contract](../docs/HARDWARE-OBSERVER.md#52-how-navlistener-consumes-it). It never
   writes after an I2C error, to a known-but-blank EEPROM, or across an identity replacement.
   An absent, never-adopted EEPROM is supported during bring-up: the receiver streams,
   unconfigured, and the status panel and the provisioned station ID remain usable. Firmware does not synthesize an EUI
@@ -591,9 +592,9 @@ The pusher reconnects when sent records remain outstanding without durable ACK a
 ### Hardware-discovery dependency and release evidence
 
 Normal builds pin `esp_hardware_discovery` to commit
-`4e6102723f704a20b34d93618f47f3e176836249` (24CS256/24CS512 support, the `POWER_TPS7A20`,
-`COMM_W5500` and `SENSOR_THERMOCOUPLE_MAX31856` catalog IDs, and the `CAT_INTSAT` board
-category), with the IDF 5.5.4/ESP32-S3
+`18b0a34c3a4f1d251acfb55aa762db7890d9208e` (24CS256/24CS512 support, the `POWER_TPS7A20`,
+`COMM_W5500` and `SENSOR_THERMOCOUPLE_MAX31856` catalog IDs, the `CAT_INTSAT` board
+category, part identification and the Intsat board templates), with the IDF 5.5.4/ESP32-S3
 resolution committed in `dependencies.lock`. Updating the pin is a deliberate
 source change: review upstream layout changes and run the component's
 `test/host` read/write, page-boundary, interrupted-write, timestamp/footer,

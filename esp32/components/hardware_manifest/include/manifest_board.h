@@ -17,7 +17,7 @@ typedef enum {
     BOARD_MODEL_CONFLICT,     // more than one board named
 } board_model_t;
 
-// From the number of installed CAT_INTSAT entries and the first one's ID and revision.
-board_model_t manifest_board_decide(unsigned boards, uint8_t id, uint8_t revision);
+// From eeprom_find_board(caps, CAT_INTSAT, &id, &revision).
+board_model_t manifest_board_decide(eeprom_board_result_t found, uint8_t id, uint8_t revision);
 const char *manifest_board_name(board_model_t model);
 #endif

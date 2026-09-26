@@ -130,28 +130,17 @@ static esp_err_t known_eeprom_uid_store(const uint8_t eui[NVF_BOARD_UID_SIZE])
     return err;
 }
 
-/* The discovered kind and density select the esp_hardware_discovery profile and
- * the manifest's self-reference; the 128-bit serial parts differ only in size. */
-static bool manifest_profile(const nvf_board_identity_t *identity, eeprom_profile_t *profile, uint16_t *memory)
-{
-    switch (identity->eeprom_kind) {
-    case NVF_UID_ST_UID128: *profile = EEPROM_PROFILE_M24128_U; *memory = MEMORY_M24128_U; return true;
-    case NVF_UID_SERIAL128:
-        switch (identity->eeprom_kbit) {
-        case 128: *profile = EEPROM_PROFILE_24CS128; *memory = MEMORY_24CS128; return true;
-        case 256: *profile = EEPROM_PROFILE_24CS256; *memory = MEMORY_24CS256; return true;
-        case 512: *profile = EEPROM_PROFILE_24CS512; *memory = MEMORY_24CS512; return true;
-        default: return false;
-        }
-    default: return false;
-    }
-}
-
+// The board and batch that the hacker-friendly factory-init build writes onto a blank,
+// never-seen EEPROM. The list itself is the library's Intsat template, the same one the
+// factory CA writes, so both produce identical bytes.
 #if CONFIG_NVF_MANIFEST_BOARD_ZED_X20_A
+#define MANIFEST_BOARD_ID INTSAT_X20
 #define MANIFEST_BOARD_NAME "ZED-X20P square revision A"
 #elif CONFIG_NVF_MANIFEST_BOARD_MAX_A
+#define MANIFEST_BOARD_ID INTSAT_MAX
 #define MANIFEST_BOARD_NAME "MAX-M10S mobile revision A"
 #else
+#define MANIFEST_BOARD_ID INTSAT_NEO
 #define MANIFEST_BOARD_NAME "NEO first-spin revision A"
 #endif
 // The part at 0x40 on the batch being initialized. Field firmware reads it back from the
@@ -161,100 +150,6 @@ static bool manifest_profile(const nvf_board_identity_t *identity, eeprom_profil
 #else
 #define MANIFEST_HDC SENSOR_HDC2080
 #endif
-
-// The component list that factory initialization writes for the board chosen by
-// CONFIG_NVF_MANIFEST_BOARD_*. Keep each list as the manufacturing truth for that
-// assembly. components[0] is the EEPROM's self-reference; its ID is replaced with the
-// discovered part's. components[1] names the board and its revision (CAT_INTSAT), which
-// is how firmware knows its pins; every driver runs only for a part listed here. The
-// header stays GNSS_PCB_MAIN revision A. GPIO-valued descriptors identify the two
-// same-part LED drivers by their output-enable pins and the gated LDOs by their EN pins.
-static void make_board_defaults(eeprom_capabilities_t *caps, uint8_t address, uint16_t memory)
-{
-    memset(caps, 0, sizeof(*caps));
-    caps->magic = CAP_MAGIC_PREFERRED;
-    caps->project_id = PROJECT_GNSS;
-    caps->pcb_id = GNSS_PCB_MAIN;
-    caps->revision = 1; // revision A
-    caps->i2c_address = address;
-
-#if CONFIG_NVF_MANIFEST_BOARD_ZED_X20_A
-    eeprom_ic_descriptor_t components[] = {
-        IC_EEPROM_SELF_24CS128(address),                    // U28
-        IC_BOARD(CAT_INTSAT, INTSAT_X20, 1),                 // this board, revision A
-        IC_INSTALLED(CAT_MCU, MCU_ESP32_S3),
-        IC_INSTALLED(CAT_GPS, GPS_ZED_X20P),
-        IC_I2C(CAT_RTC, RTC_MAX31328, 0x68),
-        IC_I2C(CAT_CRYPTO, CRYPTO_ATECC608C, 0x60),
-        IC_I2C(CAT_TEMP, TEMP_MCP9808, 0x18),
-        IC_I2C(CAT_PRESSURE, PRESSURE_BMP388, 0x76),
-        IC_I2C(CAT_SENSOR, MANIFEST_HDC, 0x40),                 // the batch's fitted part
-        IC_INSTALLED(CAT_COMM, COMM_W5500),                 // SPI Ethernet, U34
-        IC_GPIO(CAT_POWER, POWER_ADM7150, 38),              // 3V3_GNSS, U27
-        IC_GPIO(CAT_POWER, POWER_TPS7A20, 21),              // 3V3_SENS, U30
-        IC_GPIO(CAT_LED, LED_TLC5916, 47),
-        IC_GPIO(CAT_LED, LED_TLC5916, 48),
-        IC_INSTALLED(CAT_BATTERY, BATTERY_CR2032),          // RTC backup only, BT1
-        IC_INSTALLED(CAT_BATTERY, BATTERY_CR123A),          // GNSS backup carrier on JBAT1
-        IC_INSTALLED(CAT_CONNECTOR, CONNECTOR_USB_OTG),
-        IC_INSTALLED(CAT_CONNECTOR, CONNECTOR_QWIIC),
-        IC_INSTALLED(CAT_CONNECTOR, CONNECTOR_ETHERNET_RJ45),
-        IC_GPIO(CAT_BUTTON, BUTTON_BOOT, 0),
-        IC_GPIO(CAT_BUTTON, BUTTON_USER_2, 18),             // brightness preset, SW3
-    };
-#elif CONFIG_NVF_MANIFEST_BOARD_MAX_A
-    eeprom_ic_descriptor_t components[] = {
-        IC_EEPROM_SELF_24CS128(address),                    // U28
-        IC_BOARD(CAT_INTSAT, INTSAT_MAX, 1),                 // this board, revision A
-        IC_INSTALLED(CAT_MCU, MCU_ESP32_S3),
-        IC_INSTALLED(CAT_GPS, GPS_MAX_M10S),
-        IC_I2C(CAT_RTC, RTC_MCP79412, 0x6f),
-        IC_I2C(CAT_CRYPTO, CRYPTO_ATECC608C, 0x60),
-        IC_I2C(CAT_TEMP, TEMP_MCP9808, 0x18),
-        IC_I2C(CAT_PRESSURE, PRESSURE_MS5607, 0x77),
-        IC_I2C(CAT_SENSOR, MANIFEST_HDC, 0x40),                 // the batch's fitted part
-        IC_I2C(CAT_IMU, IMU_ICM45686, 0x69),
-        IC_I2C(CAT_SENSOR, SENSOR_MAG_MMC34160PJ, 0x30),
-        IC_INSTALLED(CAT_SENSOR, SENSOR_THERMOCOUPLE_MAX31856), // SPI, U39
-        IC_GPIO(CAT_POWER, POWER_TPS7A20, 38),              // 3V3_GNSS, U27
-        IC_GPIO(CAT_POWER, POWER_TPS7A20, 21),              // 3V3_SENS, U30
-        IC_GPIO(CAT_LED, LED_TLC5916, 47),
-        IC_GPIO(CAT_LED, LED_TLC5916, 48),
-        IC_INSTALLED(CAT_BATTERY, BATTERY_CR2032),          // RTC backup only, BT1
-        IC_NOT_POP(CAT_BATTERY, BATTERY_CR123A),            // JBAT1 takes an optional external cell
-        IC_INSTALLED(CAT_CONNECTOR, CONNECTOR_USB_OTG),
-        IC_INSTALLED(CAT_CONNECTOR, CONNECTOR_QWIIC),
-        IC_GPIO(CAT_BUTTON, BUTTON_BOOT, 0),
-        IC_GPIO(CAT_BUTTON, BUTTON_USER_2, 18),             // brightness preset, SW3
-    };
-#else
-    eeprom_ic_descriptor_t components[] = {
-        IC_EEPROM_SELF_24CS128(address),                    // U28
-        IC_BOARD(CAT_INTSAT, INTSAT_NEO, 1),                 // this board, revision A
-        IC_INSTALLED(CAT_MCU, MCU_ESP32_S3),
-        IC_INSTALLED(CAT_GPS, GPS_NEO_M9N),
-        IC_I2C(CAT_RTC, RTC_MCP79412, 0x6f),
-        IC_I2C(CAT_CRYPTO, CRYPTO_ATECC608C, 0x60),
-        IC_I2C(CAT_TEMP, TEMP_MCP9808, 0x18),
-        IC_I2C(CAT_PRESSURE, PRESSURE_BMP388, 0x76),
-        IC_I2C(CAT_SENSOR, MANIFEST_HDC, 0x40),                 // the batch's fitted part
-        IC_GPIO(CAT_POWER, POWER_ADM7150, 38),
-        IC_GPIO(CAT_POWER, POWER_RT9193, 21),
-        IC_GPIO(CAT_LED, LED_TLC5916, 47),
-        IC_GPIO(CAT_LED, LED_TLC5916, 48),
-        IC_INSTALLED(CAT_BATTERY, BATTERY_CR123A),
-        IC_INSTALLED(CAT_CONNECTOR, CONNECTOR_USB_OTG),
-        IC_INSTALLED(CAT_CONNECTOR, CONNECTOR_QWIIC),
-        IC_GPIO(CAT_BUTTON, BUTTON_BOOT, 0),
-    };
-#endif
-
-    _Static_assert(sizeof(components) / sizeof(components[0]) <= CAP_MAX_COMPONENTS,
-                   "compiled manifest exceeds EEPROM component capacity");
-    caps->component_count = sizeof(components) / sizeof(components[0]);
-    memcpy(caps->components, components, sizeof(components));
-    caps->components[0].id = memory;
-}
 
 static bool capabilities_match_board(const eeprom_capabilities_t *caps)
 {
@@ -340,10 +235,10 @@ esp_err_t hardware_manifest_boot(bool allow_factory_init,
             known_present ? HARDWARE_MANIFEST_KNOWN_SAME : HARDWARE_MANIFEST_KNOWN_NONE);
         return known_present ? ESP_ERR_NOT_FOUND : ESP_OK;
     }
+    // The library identifies the part from its Manufacturer ID or identification page; the
+    // factory-serial comparison in inspect() confirms it is the part discovery found.
     eeprom_profile_t profile;
-    uint16_t memory;
-    ESP_RETURN_ON_FALSE(manifest_profile(&result->identity, &profile, &memory), ESP_ERR_NOT_SUPPORTED, TAG,
-                        "EEPROM density %u Kbit is not supported by this firmware", (unsigned)result->identity.eeprom_kbit);
+    ESP_RETURN_ON_ERROR(eeprom_identify(address, &profile), TAG, "identify manifest EEPROM");
     ESP_RETURN_ON_ERROR(eeprom_set_profile(address, profile), TAG, "select verified EEPROM profile");
     ESP_RETURN_ON_ERROR(inspect(result, known_present, known_eui), TAG,
                         "inspect manifest EEPROM");
@@ -354,7 +249,10 @@ esp_err_t hardware_manifest_boot(bool allow_factory_init,
     if (result->action == HARDWARE_MANIFEST_ACTION_INITIALIZE &&
         allow_factory_init) {
         eeprom_capabilities_t defaults;
-        make_board_defaults(&defaults, address, memory);
+        const eeprom_intsat_options_t batch = {.humidity_id = MANIFEST_HDC};
+        ESP_RETURN_ON_FALSE(eeprom_intsat_template(MANIFEST_BOARD_ID, 1, &batch, profile, &defaults) &&
+                            defaults.i2c_address == address, ESP_ERR_NOT_SUPPORTED, TAG,
+                            "no " MANIFEST_BOARD_NAME " manifest for this EEPROM");
         ESP_LOGW(TAG, "factory-init enabled: programming blank " MANIFEST_BOARD_NAME " manifest");
         if (!eeprom_write_capabilities(address, &defaults, false)) {
             result->action = HARDWARE_MANIFEST_ACTION_IO_ERROR;
@@ -381,9 +279,9 @@ esp_err_t hardware_manifest_boot(bool allow_factory_init,
         ESP_RETURN_ON_ERROR(board_uid_store(result->identity.board_uid), TAG, "remember board UID");
 
     if (result->action == HARDWARE_MANIFEST_ACTION_USE && result->capabilities_valid) {
-        const eeprom_ic_descriptor_t *board = eeprom_find_category(&result->capabilities, CAT_INTSAT);
-        result->board = manifest_board_decide((unsigned)eeprom_count_category(&result->capabilities, CAT_INTSAT),
-                                              board ? board->id : 0, board ? board->i2c_address : 0);
+        uint8_t id, revision;
+        eeprom_board_result_t found = eeprom_find_board(&result->capabilities, CAT_INTSAT, &id, &revision);
+        result->board = manifest_board_decide(found, id, revision);
     }
     ESP_LOGI(TAG, "manifest boot action: %s; board: %s",
              hardware_manifest_action_name(result->action), manifest_board_name(result->board));

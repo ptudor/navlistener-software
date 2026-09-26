@@ -1,9 +1,9 @@
 #include "manifest_board.h"
 
-board_model_t manifest_board_decide(unsigned boards, uint8_t id, uint8_t revision)
+board_model_t manifest_board_decide(eeprom_board_result_t found, uint8_t id, uint8_t revision)
 {
-    if (boards == 0) return BOARD_MODEL_NONE;
-    if (boards > 1) return BOARD_MODEL_CONFLICT;
+    if (found == EEPROM_BOARD_NONE) return BOARD_MODEL_NONE;
+    if (found != EEPROM_BOARD_FOUND) return BOARD_MODEL_CONFLICT;
     if (revision != 1) return BOARD_MODEL_UNSUPPORTED;
     switch (id) {
     case INTSAT_NEO: return BOARD_MODEL_NEO_A;

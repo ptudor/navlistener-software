@@ -574,8 +574,12 @@ remembered in the separate `hwmanifest` NVS namespace:
 `CONFIG_NVF_MANIFEST_FACTORY_INIT` is off by default. When deliberately enabled by the
 programmer, it writes only the blank/never-seen row, uses `force=false`, reads the complete
 image back, validates the EEPROM's self-reference, and only then records its identity.
-`CONFIG_NVF_MANIFEST_BOARD` chooses which compiled list it writes. Each header is
-`GNSS_PCB_MAIN` revision A. Entry 0 is the EEPROM's self-reference, carrying the discovered
+`CONFIG_NVF_MANIFEST_BOARD` chooses which board's list it writes. The lists live in
+esp32-hardware-discovery (`eeprom_intsat_template()`), so every writer produces identical
+bytes; the library's host tests fix each released list byte for byte, and a board change is
+a new revision there. The library also identifies the fitted part (`eeprom_identify()`,
+from the 24CS Manufacturer ID or the M24128-U identification page). Each header is
+`GNSS_PCB_MAIN` revision A. Entry 0 is the EEPROM's self-reference, carrying the identified
 part: the 24CS128 fitted on every board, or the pin-compatible M24128-U alternate. Entry 1
 names the board: a `CAT_INTSAT` descriptor whose address byte is the board revision (1 = A).
 Firmware and clients know a board's pins and part addresses from that ID and revision; the
