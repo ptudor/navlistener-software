@@ -45,7 +45,7 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 (async () => {
   assert.deepEqual(process.argv.slice(2), [
-    '-a', '--delete', '--delay-updates',
+    '-rlpt', '--delete', '--delay-updates',
     '--exclude=/assets/boards/*.png', '--exclude=/assets/boards/*.png.sha256',
     '--exclude=/assets/boards/*.jpg', '--exclude=/assets/boards/*.jpg.sha256',
     'dist/', process.env.TEST_DESTINATION + '/',
@@ -59,7 +59,7 @@ const crypto = require('node:crypto');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 `, { mode: 0o755 })
 
-    await execute('make', ['-j8', 'deploy', `DEPLOY_DIR=${destination}`], {
+    await execute('make', ['-j8', 'deploy-local', `DEPLOY_DIR=${destination}`], {
       cwd: root,
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, TEST_DESTINATION: destination },
     })
@@ -117,7 +117,7 @@ fs.appendFileSync('commands', JSON.stringify(['rsync', ...process.argv.slice(2)]
         'convert', source, '-background', 'rgb(18,23,32)', '-alpha', 'remove', '-alpha', 'off', '-strip',
         '-interlace', 'JPEG', '-sampling-factor', '4:2:0', '-quality', '80', copies[index],
       ]),
-      ['rsync', '-a', '--delay-updates', ...sources, ...copies, 'junia:/usr/local/www/navlistener/web/assets/boards/'],
+      ['rsync', '-vrlpt', '--delay-updates', ...sources, ...copies, 'junia:/usr/local/www/navlistener/web/assets/boards/'],
     ])
   } finally {
     await rm(root, { recursive: true, force: true })

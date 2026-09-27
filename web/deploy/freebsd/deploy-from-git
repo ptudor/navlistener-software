@@ -1,0 +1,62 @@
+#!/bin/sh
+# Update Junia's daybreak checkout to one reviewed commit and deploy it locally.
+
+set -eu
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin
+export PATH
+
+mode=deploy
+if [ "${1:-}" = --check ]; then
+    mode=check
+    shift
+fi
+revision=${1:-}
+repo=/home/daybreak2026/Git/apps/navlistener-software
+source_repo=/git/apps/navlistener-software
+
+[ "$(id -u)" -eq 0 ] || {
+    echo "deploy-from-git: run this script as root" >&2
+    exit 1
+}
+[ "${#revision}" -eq 40 ] || {
+    echo "deploy-from-git: expected a full 40-character commit ID" >&2
+    exit 1
+}
+case "$revision" in
+    *[!0-9a-f]*)
+        echo "deploy-from-git: invalid commit ID" >&2
+        exit 1
+        ;;
+esac
+
+as_daybreak()
+{
+    sudo -u daybreak2026 env HOME=/home/daybreak2026 "$@"
+}
+
+[ -d "$repo/.git" ] || {
+    echo "deploy-from-git: missing checkout: $repo" >&2
+    exit 1
+}
+[ -z "$(as_daybreak git -C "$repo" status --porcelain --untracked-files=no)" ] || {
+    echo "deploy-from-git: tracked changes in $repo; refusing to overwrite them" >&2
+    exit 1
+}
+
+as_daybreak git -c safe.directory="$source_repo" -C "$repo" fetch --prune origin main
+remote_revision=$(as_daybreak git -C "$repo" rev-parse refs/remotes/origin/main)
+[ "$remote_revision" = "$revision" ] || {
+    echo "deploy-from-git: $revision is not the current origin/main ($remote_revision)" >&2
+    exit 1
+}
+
+current_revision=$(as_daybreak git -C "$repo" rev-parse HEAD)
+printf 'current %s\ntarget  %s\n' "$current_revision" "$revision"
+as_daybreak git -C "$repo" log --oneline "$current_revision..$revision"
+as_daybreak git -C "$repo" diff --stat "$current_revision" "$revision"
+
+[ "$mode" = deploy ] || exit 0
+
+as_daybreak git -C "$repo" merge --ff-only "$revision"
+exec /bin/sh "$repo/web/deploy/freebsd/deploy-host"

@@ -45,7 +45,8 @@ npm run dev       # http://localhost:5177/
 npm test
 npm run build     # semantic static site -> dist/
 npm run preview
-make deploy       # build + SHA-256 digests + rsync to /usr/local/www/navlistener/web/
+make deploy-dry   # review the exact pushed commit Junia would deploy
+make deploy       # build + audit + publish through Junia's local checkout
 make publish-boards  # oxipng + JPEG copies + rsync the untracked board previews to junia
 ```
 
@@ -59,15 +60,22 @@ policy in `index.html`.
 
 ## Deploy
 
-`make deploy` follows the sibling-site convention: it runs the tests and production build,
-writes a `.sha256` file beside every generated file, then uses `rsync --delete --delay-updates`
-to publish `dist/` at `/usr/local/www/navlistener/web/`. Run it on the web server, or override
-`DEPLOY_DIR` for another host:
+`make deploy` requires a clean, pushed `main`. Junia fetches that exact commit into
+`/home/daybreak2026/Git/apps/navlistener-software`, runs `npm ci`, audits the lockfile,
+runs the tests and production build, writes a `.sha256` file beside every generated file,
+and publishes `dist/` locally at `/usr/local/www/navlistener/web/`.
+
+Use the lower-level host target only for installation or recovery:
 
 ```sh
-make deploy
-make deploy DEPLOY_DIR=/another/document/root
+make deploy-local
+make deploy-local DEPLOY_DIR=/another/document/root
 ```
+
+The first conversion and ownership contract are in `deploy/freebsd/QUICKSTART.md`.
+Pass the dedicated connection files through `SSH_CONF` and `SSH_KEY` when they
+are not already set in your shell; their machine-specific paths stay outside
+the public repository.
 
 For Apache httpd, the essential shape is:
 

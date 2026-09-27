@@ -1,0 +1,53 @@
+#!/bin/sh
+# Build and publish the NavListen static site from Junia's local checkout.
+
+set -eu
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin
+export PATH
+
+repo=/home/daybreak2026/Git/apps/navlistener-software
+source_dir="$repo/web"
+base=/usr/local/www/navlistener
+dest="$base/web"
+boards="$dest/assets/boards"
+
+[ "$(id -u)" -eq 0 ] || {
+    echo "deploy-host: run this script as root" >&2
+    exit 1
+}
+[ "$(stat -f %Su:%Sg "$base")" = daybreak2026:navlistener ] || {
+    echo "deploy-host: $base must belong to daybreak2026:navlistener" >&2
+    exit 1
+}
+[ "$(stat -f %Su:%Sg "$dest")" = daybreak2026:navlistener ] || {
+    echo "deploy-host: $dest must belong to daybreak2026:navlistener" >&2
+    exit 1
+}
+[ -d "$boards" ] || {
+    echo "deploy-host: missing independently published board-media directory" >&2
+    exit 1
+}
+
+boards_before=$(find "$boards" -type f \( -name '*.png' -o -name '*.jpg' \) | wc -l | tr -d ' ')
+
+sudo -u daybreak2026 env HOME=/home/daybreak2026 npm --prefix "$source_dir" ci
+sudo -u daybreak2026 env HOME=/home/daybreak2026 npm --prefix "$source_dir" audit
+sudo -u daybreak2026 env HOME=/home/daybreak2026 make -C "$source_dir" deploy-local
+
+chown daybreak2026:navlistener "$base" "$dest" "$boards"
+chmod 0755 "$base" "$dest"
+chmod 2775 "$boards"
+
+boards_after=$(find "$boards" -type f \( -name '*.png' -o -name '*.jpg' \) | wc -l | tr -d ' ')
+[ "$boards_before" = "$boards_after" ] || {
+    echo "deploy-host: board-media file count changed during website deployment" >&2
+    exit 1
+}
+
+service apache24 configtest
+curl --fail --silent --show-error --max-time 15 \
+    -H 'Host: navlisten.com' \
+    http://127.0.0.1/ | grep -q 'NavListen'
+
+echo "NavListen deployment completed; $boards_after board-media files preserved."

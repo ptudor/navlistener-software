@@ -12,6 +12,11 @@
 # away from any future sibling trees under /usr/local/www/navlistener/.
 SITE_DIR   = /usr/local/www/navlistener
 DEPLOY_DIR = $(SITE_DIR)/web
+HOST       ?= junia-daybreak
+SSH_CONF   ?=
+SSH_KEY    ?=
+REMOTE_REPO ?= /home/daybreak2026/Git/apps/navlistener-software
+SSH         = ssh -F $(SSH_CONF) -i $(SSH_KEY) -o IdentitiesOnly=yes -o IdentityAgent=none -- $(HOST)
 
 # Board preview images stay out of Git. Run publish-boards on the machine holding
 # them; it pushes to the web host over rsync, unlike deploy, which runs there.
@@ -28,7 +33,10 @@ build: test
 	npm run build
 
 install:
-	npm install
+	npm ci
+
+audit:
+	npm audit
 
 test:
 	npm test
@@ -47,11 +55,34 @@ digest: build
 # --delay-updates keeps the published tree internally consistent while files land.
 # Board preview images are published by publish-boards. Excluding them skips any
 # local copies in dist/ and keeps --delete off the published files.
-deploy: digest
-	rsync -a --delete --delay-updates \
+deploy-local: digest
+	rsync -rlpt --delete --delay-updates \
 		--exclude='/assets/boards/*.png' --exclude='/assets/boards/*.png.sha256' \
 		--exclude='/assets/boards/*.jpg' --exclude='/assets/boards/*.jpg.sha256' \
 		dist/ $(DEPLOY_DIR)/
+
+deploy-source-check:
+	@test -z "$$(git status --porcelain --untracked-files=no)" || { \
+		echo "Refusing to deploy tracked changes that are not committed" >&2; exit 1; }
+	@revision=$$(git rev-parse HEAD); \
+		remote_head=$$(git ls-remote origin refs/heads/main | awk '{print $$1}'); \
+		test "$$revision" = "$$remote_head" || { \
+		echo "Refusing to deploy: HEAD $$revision is not pushed main $$remote_head" >&2; \
+		exit 1; }
+
+deploy-ssh-check:
+	@test -n "$(SSH_CONF)" -a -f "$(SSH_CONF)" || { \
+		echo "Set SSH_CONF to the dedicated deployment SSH config" >&2; exit 1; }
+	@test -n "$(SSH_KEY)" -a -f "$(SSH_KEY)" || { \
+		echo "Set SSH_KEY to the dedicated deployment private key" >&2; exit 1; }
+
+deploy-dry: deploy-source-check deploy-ssh-check
+	@revision=$$(git rev-parse HEAD); \
+		$(SSH) "sudo -n $(REMOTE_REPO)/web/deploy/freebsd/deploy-from-git --check $$revision"
+
+deploy: deploy-source-check deploy-ssh-check
+	@revision=$$(git rev-parse HEAD); \
+		$(SSH) "sudo -n $(REMOTE_REPO)/web/deploy/freebsd/deploy-from-git $$revision"
 
 # oxipng is lossless and rewrites a file only when it gets smaller. Each JPEG is
 # regenerated from its PNG so a new export never leaves a stale copy behind.
@@ -62,7 +93,7 @@ publish-boards:
 			-interlace JPEG -sampling-factor 4:2:0 -quality $(BOARDS_JPEG_QUALITY) \
 			"$${png%.png}.jpg" || exit 1; \
 	done
-	rsync -a --delay-updates $(BOARDS_DIR)/*.png $(BOARDS_DIR)/*.jpg \
+	rsync -vrlpt --delay-updates $(BOARDS_DIR)/*.png $(BOARDS_DIR)/*.jpg \
 		$(BOARDS_HOST):$(DEPLOY_DIR)/assets/boards/
 
-.PHONY: default build test install dev preview digest deploy publish-boards
+.PHONY: default build test install audit dev preview digest deploy-local deploy-source-check deploy-ssh-check deploy-dry deploy publish-boards
