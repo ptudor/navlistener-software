@@ -7,12 +7,13 @@ durable.
 
 ## FIFO retention and failures
 
-Two independent FIFO queues replace their **oldest** entries automatically:
+Three independent FIFO queues replace their **oldest** entries automatically:
 
 | Queue | Capacity | Writes |
 |---|---:|---|
 | Lifecycle | 256 events | Boot, local startup confirmation, first usable time and first GNSS-qualified time, OTA selection/failure, a change of the collector's hardware-trust verdict, bench commissioning operations |
 | Health | 1,024 checkpoints | After one minute of uptime, then hourly |
+| Reception | 128 transitions | Local reception alarm, recovery or coverage-validity change |
 
 Hourly checkpoints retain about 42 days of continuous operation. Lifecycle
 retention depends on the number of events, not elapsed days; health records
@@ -96,6 +97,19 @@ byte is the operation (1 `keygen`, 2 `install`, 3 `restore`, 4 `seal`), the next
 byte is nonzero on failure, and the third byte holds the spent eFuse key block
 plus one for `keygen` (zero when nothing was burned) or the record's profile for
 `install`.
+
+## Reception evidence
+
+Event 9 uses its own bounded queue, so reception incidents cannot evict boot or
+health history. It retains expectation ID, observation time and uptime, persistent
+boot/event IDs, coverage and alarm masks, expected/observed counts and the matched
+expectation-entry bitmap. Firmware identity comes from the associated boot record.
+The event discriminator assigns bytes 68–143 of this event's 192-byte record to
+the versioned reception sample; other event layouts are unchanged. CRC and atomic
+NVS writes cover the entire record. No partition migration is needed.
+
+Read this lane with `tools/ota.py journal --lane reception --json`. Records remain
+until the bounded queue wraps; a local log is not an unlimited observation archive.
 
 ## Installation and readout
 

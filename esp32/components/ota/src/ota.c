@@ -177,7 +177,8 @@ static esp_err_t journal_post(httpd_req_t *req)
     const char *number;
     if (!strncmp(body,"life\n",5)) { lane=0; number=body+5; }
     else if (!strncmp(body,"health\n",7)) { lane=1; number=body+7; }
-    else return error_response(req,"400 Bad Request","expected life or health and a cursor");
+    else if (!strncmp(body,"reception\n",10)) { lane=2; number=body+10; }
+    else return error_response(req,"400 Bad Request","expected life, health or reception and a cursor");
     if (!*number || strspn(number,"0123456789") != strlen(number))
         return error_response(req,"400 Bad Request","invalid cursor");
     errno=0; uint64_t before=strtoull(number,NULL,10);
@@ -188,7 +189,7 @@ static esp_err_t journal_post(httpd_req_t *req)
     cJSON *json=cJSON_CreateObject(), *records=cJSON_CreateArray();
     if (!json || !records) { cJSON_Delete(json); cJSON_Delete(records); return ESP_ERR_NO_MEM; }
     cJSON_AddItemToObject(json,"records",records); json_u64(json,"next",next);
-    cJSON_AddNumberToObject(json,"capacity",lane ? JOURNAL_HEALTH_CAP : JOURNAL_LIFE_CAP);
+    cJSON_AddNumberToObject(json,"capacity",lane==2 ? JOURNAL_RECEPTION_CAP : lane ? JOURNAL_HEALTH_CAP : JOURNAL_LIFE_CAP);
     for (unsigned i=0; i<count; i++) {
         const journal_record_t *r=&rows[i]; cJSON *row=cJSON_CreateObject();
         if (!row) { cJSON_Delete(json); return ESP_ERR_NO_MEM; }
@@ -213,6 +214,14 @@ static esp_err_t journal_post(httpd_req_t *req)
         cJSON_AddNumberToObject(row,"timing_dropped",r->timing_dropped);
         cJSON_AddNumberToObject(row,"timing_hz",r->timing_hz);
         cJSON_AddNumberToObject(row,"rtc_minus_gnss_ticks",r->timing_phase_ticks);
+        if(r->event==JOURNAL_RECEPTION) {
+            const nr_sample_t *s=&r->reception;
+            json_u64(row,"expectation_id",s->expectation_id);json_u64(row,"sample_unix",s->utc);
+            cJSON_AddNumberToObject(row,"valid_mask",s->valid);cJSON_AddNumberToObject(row,"alarm_mask",s->alarm);
+            cJSON *expected=cJSON_CreateArray(),*observed=cJSON_CreateArray();
+            cJSON_AddItemToObject(row,"expected",expected);cJSON_AddItemToObject(row,"observed",observed);
+            for(unsigned g=0;g<8;g++){cJSON_AddItemToArray(expected,cJSON_CreateNumber(s->expected[g]));cJSON_AddItemToArray(observed,cJSON_CreateNumber(s->observed[g]));}
+        }
     }
     char *response=cJSON_PrintUnformatted(json); cJSON_Delete(json);
     if (!response) return ESP_ERR_NO_MEM;

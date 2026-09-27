@@ -4,13 +4,13 @@
 #include <stdio.h>
 #include <string.h>
 
-static struct { bool present; uint8_t bytes[JOURNAL_RECORD_SIZE]; } slots[2][JOURNAL_HEALTH_CAP];
+static struct { bool present; uint8_t bytes[JOURNAL_RECORD_SIZE]; } slots[3][JOURNAL_HEALTH_CAP];
 static unsigned sets, commits;
 // NVS provides atomic blobs. Model an error either before or after the blob
 // becomes durable, including commit failure after a successful set.
 static enum { GOOD, FAIL_BEFORE_SET, FAIL_AFTER_SET, FAIL_COMMIT } fault;
 static void key_parts(const char *key, unsigned *lane, unsigned *slot)
-{ *lane=key[0]=='h'; assert(sscanf(key+1,"%u",slot)==1); assert(*slot<(*lane ? JOURNAL_HEALTH_CAP : JOURNAL_LIFE_CAP)); }
+{ *lane=key[0]=='r' ? 2 : key[0]=='h'; assert(sscanf(key+1,"%u",slot)==1); assert(*slot<(*lane==2 ? JOURNAL_RECEPTION_CAP : *lane ? JOURNAL_HEALTH_CAP : JOURNAL_LIFE_CAP)); }
 esp_err_t nvs_open_from_partition(const char *part,const char *ns,int mode,nvs_handle_t *h)
 { assert(!strcmp(part,"journal") && !strcmp(ns,"nvf_journal") && mode==NVS_READWRITE); *h=1; return ESP_OK; }
 void nvs_close(nvs_handle_t h) { assert(h==1); }
@@ -75,7 +75,7 @@ static void fifo(void)
     } while (cursor);
     assert(total==JOURNAL_HEALTH_CAP);
     assert(journal_store_page(&s,1,2,page,&count,&cursor)==ESP_OK && !count && !cursor);
-    assert(journal_store_page(&s,2,0,page,&count,&cursor)!=ESP_OK);
+    assert(journal_store_page(&s,3,0,page,&count,&cursor)!=ESP_OK);
     assert(sets==commits); journal_store_close(&s);
 }
 static void faults(void)
@@ -130,4 +130,21 @@ static void previous_format(void)
     assert(journal_store_read(&s,0,1,&got)==ESP_OK && got.boot==1 && got.timing_flags==0 && got.timing_hz==0);
     journal_store_close(&s);
 }
-int main(void) { fifo(); faults(); cadence(); previous_format(); puts("journal FIFO, recovery, full-store, compatibility and cadence tests passed"); }
+static void reception(void)
+{
+    reset();journal_store_t s;assert(journal_store_open(&s)==ESP_OK);
+    journal_record_t r=record(JOURNAL_HW_TRUST);assert(journal_store_append(&s,&r)==ESP_OK);
+    r=record(JOURNAL_COMMISSION);assert(journal_store_append(&s,&r)==ESP_OK);
+    for(unsigned i=0;i<JOURNAL_RECEPTION_CAP+10;i++) {
+        r=record(JOURNAL_RECEPTION);r.reception=(nr_sample_t){.expectation_id=12,.boot=1,.event=i+1,.valid=1,.alarm=1};
+        r.reception.expected[0]=12;r.reception.observed[0]=2;r.reception.matched[0]=3;
+        assert(journal_store_append(&s,&r)==ESP_OK);
+    }
+    journal_store_close(&s);assert(journal_store_open(&s)==ESP_OK);
+    assert(s.latest[0]==2 && s.latest[2]==JOURNAL_RECEPTION_CAP+10);
+    assert(journal_store_read(&s,2,s.latest[2],&r)==ESP_OK);
+    assert(r.reception.alarm==1 && r.reception.expected[0]==12 && r.reception.observed[0]==2 && r.reception.matched[0]==3);
+    assert(journal_store_read(&s,2,1,&r)==ESP_ERR_NVS_NOT_FOUND);
+    journal_store_close(&s);
+}
+int main(void) { fifo(); faults(); cadence(); previous_format(); reception(); puts("journal FIFO, recovery, full-store, compatibility and cadence tests passed"); }

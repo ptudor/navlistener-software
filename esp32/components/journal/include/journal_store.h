@@ -3,16 +3,18 @@
 #include <stdint.h>
 #include "esp_err.h"
 #include "nvs.h"
+#include "../../../../common/reception.h"
 
 #define JOURNAL_LIFE_CAP 256u
 #define JOURNAL_HEALTH_CAP 1024u
+#define JOURNAL_RECEPTION_CAP 128u
 #define JOURNAL_RECORD_SIZE 192u
 enum { JOURNAL_BOOT=1, JOURNAL_TIME=2, JOURNAL_CONFIRMED=3,
        JOURNAL_OTA_READY=4, JOURNAL_OTA_FAILED=5, JOURNAL_CHECKPOINT=6,
        // Lifecycle lane. HW_TRUST is written when the collector's hardware-trust verdict
        // changes, never per connection; COMMISSION records a bench operation. Their
        // `error` encodings are in docs/JOURNAL.md.
-       JOURNAL_HW_TRUST=7, JOURNAL_COMMISSION=8 };
+       JOURNAL_HW_TRUST=7, JOURNAL_COMMISSION=8, JOURNAL_RECEPTION=9 };
 enum { JOURNAL_TIME_UNKNOWN, JOURNAL_TIME_RTC, JOURNAL_TIME_GNSS };
 enum { JOURNAL_RECEIVER=1, JOURNAL_FIX=2, JOURNAL_LINK=4, JOURNAL_WIFI=8,
        JOURNAL_PSRAM=16, JOURNAL_SAMPLED=32 };
@@ -26,8 +28,9 @@ typedef struct {
     uint32_t timing_elapsed_s, timing_dropped, timing_hz;
     uint64_t gnss_pulses, rtc_pulses;
     int32_t timing_phase_ticks;
+    nr_sample_t reception; // event 9: expectation, evidence and local alarm transition
 } journal_record_t;
-typedef struct { nvs_handle_t handle; uint64_t latest[2]; bool ready; } journal_store_t;
+typedef struct { nvs_handle_t handle; uint64_t latest[3]; bool ready; } journal_store_t;
 // Separate FIFO lanes: lifecycle events cannot be evicted by hourly checkpoints.
 // No erase-on-error, heap queue, retry loop, or mandatory dependency on logging.
 esp_err_t journal_store_open(journal_store_t *store);

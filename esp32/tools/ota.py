@@ -188,7 +188,7 @@ def main():
     commands.add_parser("status")
     journal = commands.add_parser("journal", help="read the persistent diagnostic FIFO")
     journal.add_argument("--key-file", required=True)
-    journal.add_argument("--lane", choices=("life", "health"), default="life")
+    journal.add_argument("--lane", choices=("life", "health", "reception"), default="life")
     journal.add_argument("--limit", type=int, default=256)
     journal.add_argument("--json", action="store_true")
     for name in ("check", "download", "install", "update", "cancel", "set-policy"):

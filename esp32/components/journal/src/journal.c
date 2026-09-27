@@ -140,16 +140,40 @@ esp_err_t journal_page(unsigned lane, uint64_t before, journal_record_t out[8],
                         unsigned *count, uint64_t *next)
 {
     *count=0; *next=0;
-    if (lane > 1 || !mutex || xSemaphoreTake(mutex,pdMS_TO_TICKS(100)) != pdTRUE)
+    if (lane > 2 || !mutex || xSemaphoreTake(mutex,pdMS_TO_TICKS(100)) != pdTRUE)
         return ESP_ERR_INVALID_STATE;
     esp_err_t err=journal_store_page(&store,lane,before,out,count,next);
     xSemaphoreGive(mutex); return err;
+}
+bool journal_reception_save(nr_sample_t *sample)
+{
+    if(!mutex || xSemaphoreTake(mutex,pdMS_TO_TICKS(100))!=pdTRUE) return false;
+    journal_record_t r=current;r.event=JOURNAL_RECEPTION;r.uptime_ms=sample->uptime_ms;
+    sample->boot=current.boot;sample->event=store.latest[2]+1;r.reception=*sample;
+    bool ok=append(&r);xSemaphoreGive(mutex);return ok;
+}
+bool journal_reception_latest(nr_sample_t *sample)
+{
+    if(!mutex || xSemaphoreTake(mutex,pdMS_TO_TICKS(100))!=pdTRUE) return false;
+    journal_record_t r;bool ok=journal_store_read(&store,2,store.latest[2],&r)==ESP_OK;
+    if(ok)*sample=r.reception;xSemaphoreGive(mutex);return ok;
+}
+bool journal_reception_next(uint64_t after,nr_sample_t *sample)
+{
+    if(!mutex || xSemaphoreTake(mutex,pdMS_TO_TICKS(100))!=pdTRUE) return false;
+    uint64_t first=store.latest[2]>=JOURNAL_RECEPTION_CAP ? store.latest[2]-JOURNAL_RECEPTION_CAP+1 : 1;
+    uint64_t next=after>=first ? after+1 : first;journal_record_t r;
+    bool ok=after!=UINT64_MAX && next<=store.latest[2] && journal_store_read(&store,2,next,&r)==ESP_OK;
+    if(ok)*sample=r.reception;xSemaphoreGive(mutex);return ok;
 }
 #else
 void journal_start(void) {}
 void journal_poll(const gnss_status_t *g, const observer_report_t *r, uint64_t now)
 { (void)g; (void)r; (void)now; }
 void journal_event(uint8_t event, int32_t error) { (void)event; (void)error; }
+bool journal_reception_save(nr_sample_t *s) { (void)s;return false; }
+bool journal_reception_latest(nr_sample_t *s) { (void)s;return false; }
+bool journal_reception_next(uint64_t a,nr_sample_t *s) { (void)a;(void)s;return false; }
 esp_err_t journal_page(unsigned lane, uint64_t before, journal_record_t out[8], unsigned *count, uint64_t *next)
 { (void)lane; (void)before; (void)out; *count=0; *next=0; return ESP_ERR_NOT_SUPPORTED; }
 #endif
