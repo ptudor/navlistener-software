@@ -300,5 +300,16 @@
   "update.update_now": "Update now",
   "update.cancel": "Cancel download",
   "update.requested": "Request recorded. Waiting for the device.",
-  "update.watch_status": "Request sent. Follow the device state above for download, reboot and confirmation."
+  "update.watch_status": "Request sent. Follow the device state above for download, reboot and confirmation.",
+  "reception.title": "Expected reception",
+  "reception.edge": "Edge",
+  "reception.collector": "Collector",
+  "reception.satellites": "Observed / expected satellites",
+  "reception.signals": "Observed / expected signal groups",
+  "reception.entries": "Observed / expected reception entries",
+  "reception.alarm": "Alarm",
+  "reception.held": "Alarm held",
+  "reception.no_alarm": "No alarm",
+  "reception.disagreement": "Edge and collector verdicts differ.",
+  "reception.note": "A deficit can reflect obstruction, antenna trouble or interference. Unknown coverage holds an existing alarm until fresh measurements establish recovery."
 }

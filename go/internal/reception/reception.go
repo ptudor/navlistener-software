@@ -191,6 +191,7 @@ type Machine struct {
 func (m *Machine) RetainCoverage(valid uint8) { m.pending &= valid }
 
 type Check struct {
+	PerSignal    bool     `json:"per_signal"`
 	Valid        uint8    `json:"valid_mask"`
 	Alarm        uint8    `json:"alarm_mask"`
 	Expected     [8]uint8 `json:"expected"`

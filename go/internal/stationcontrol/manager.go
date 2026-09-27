@@ -113,7 +113,7 @@ func (m *Manager) Check(c identity.ObserverContext, session string, sample recep
 	if s == nil || s.session != session {
 		return nil
 	}
-	check := &reception.Check{Alarm: s.machine.Alarm}
+	check := &reception.Check{Alarm: s.machine.Alarm, PerSignal: s.site.PerSignal}
 	at := time.Unix(sample.Unix, 0)
 	if now.Sub(at) > 15*time.Second || at.Sub(now) > 5*time.Second {
 		s.machine = reception.Machine{Alarm: s.machine.Alarm}

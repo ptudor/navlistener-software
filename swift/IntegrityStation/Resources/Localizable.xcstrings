@@ -3030,6 +3030,116 @@
           }
         }
       }
+    },
+    "reception.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Expected reception"
+          }
+        }
+      }
+    },
+    "reception.edge": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edge"
+          }
+        }
+      }
+    },
+    "reception.collector": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collector"
+          }
+        }
+      }
+    },
+    "reception.satellites": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Observed / expected satellites"
+          }
+        }
+      }
+    },
+    "reception.signals": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Observed / expected signal groups"
+          }
+        }
+      }
+    },
+    "reception.entries": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Observed / expected reception entries"
+          }
+        }
+      }
+    },
+    "reception.alarm": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alarm"
+          }
+        }
+      }
+    },
+    "reception.held": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alarm held"
+          }
+        }
+      }
+    },
+    "reception.no_alarm": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No alarm"
+          }
+        }
+      }
+    },
+    "reception.disagreement": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edge and collector verdicts differ."
+          }
+        }
+      }
+    },
+    "reception.note": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A deficit can reflect obstruction, antenna trouble or interference. Unknown coverage holds an existing alarm until fresh measurements establish recovery."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -60,9 +60,12 @@ final class StationStore {
     }
 
     func health(for stationID: String) -> HealthState {
-        let severities = conditions.active.compactMap { event -> EventSeverity? in
+        var severities = conditions.active.compactMap { event -> EventSeverity? in
             guard event.stationID == stationID else { return nil }
             return event.severity
+        }
+        if observers.first(where: { $0.id == stationID })?.board?.hasReceptionAlarm == true {
+            severities.append(.warning)
         }
         if !conditions.isKnown,
            (currentLastSeenAge(for: stationID) ?? 0) <= HealthState.observerOfflineThreshold { return .unknown }
@@ -78,12 +81,12 @@ final class StationStore {
         return base + fetchedAt.duration(to: .now).timeInterval
     }
 
-    func boardFreshness(_ sample: BoardSample?, stale: Bool?, timing: Bool = false) -> BoardFreshness {
+    func boardFreshness(_ sample: BoardSample?, stale: Bool?, timing: Bool = false, reception: Bool = false) -> BoardFreshness {
         guard let sample else { return .unknown }
         return sample.freshness(serverTime: boardServerTime,
                                 elapsed: fetchedAt?.duration(to: .now).timeInterval ?? 0,
                                 stale: stale, cached: isShowingCachedSnapshot,
-                                threshold: timing ? 5 : 660)
+                                threshold: reception ? 15 : timing ? 5 : 660)
     }
 
     /// The view owns this task, so leaving the detail screen or backgrounding
@@ -93,8 +96,8 @@ final class StationStore {
         guard let session = activeSession, session.audience.isPrivate else { return }
         let generation = self.generation
         while isCurrent(session, generation: generation) {
-            // Only boards with a timing stream need this cadence.
-            if observers.first(where: { $0.id == stationID })?.board?.timing != nil {
+            let board = observers.first(where: { $0.id == stationID })?.board
+            if board?.timing != nil || board?.reception != nil {
                 await refreshBoard(session: session, generation: generation)
             }
             do { try await Task.sleep(for: .seconds(1)) } catch { return }

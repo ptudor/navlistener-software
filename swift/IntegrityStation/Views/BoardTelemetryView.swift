@@ -7,6 +7,9 @@ struct BoardTelemetryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            if let sample = board.reception, let assessment = sample.details?.reception {
+                ReceptionView(board: board, sample: sample, assessment: assessment)
+            }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), alignment: .top)], spacing: 14) {
                 if let sample = board.latest {
                     if let environment = sample.details?.environment {

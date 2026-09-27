@@ -10,13 +10,23 @@ struct StationBoard: Codable, Sendable {
     let timingStale: Bool?
     var update: BoardSample? = nil
     var updateStale: Bool? = nil
+    var reception: BoardSample? = nil
+    var receptionStale: Bool? = nil
+    var receptionEvents: [BoardSample]? = nil
     let lastInterference: BoardInterference?
 
     enum CodingKeys: String, CodingKey {
-        case latest, stale, timing, update
+        case latest, stale, timing, update, reception
+        case receptionStale = "reception_stale"
+        case receptionEvents = "reception_events"
         case updateStale = "update_stale"
         case timingStale = "timing_stale"
         case lastInterference = "last_interference"
+    }
+
+    // Stale coverage holds a reported alarm until fresh evidence clears it.
+    var hasReceptionAlarm: Bool {
+        reception?.details?.reception?.hasAlarm == true || reception?.collectorReception?.hasAlarm == true
     }
 }
 
@@ -26,11 +36,13 @@ struct BoardSample: Codable, Sendable {
     let session: String?
     let sequence: UInt64?
     let details: BoardDetails?
+    var collectorReception: ReceptionAssessment? = nil
 
     enum CodingKeys: String, CodingKey {
         case session, sequence, details
         case receivedAt = "received_at"
         case sampleTime = "sample_time"
+        case collectorReception = "collector_reception"
     }
 
     func freshness(serverTime: Date?, elapsed: TimeInterval, stale: Bool?,
@@ -75,14 +87,54 @@ struct BoardDetails: Codable, Sendable {
     let firmware: String?
     let timing: BoardTiming?
     var update: BoardUpdate? = nil
+    var reception: ReceptionAssessment? = nil
+    var receptionEvent: ReceptionAssessment? = nil
 
     enum CodingKeys: String, CodingKey {
-        case version, reason, environment, rtc, atecc, eeprom, resources, receiver, firmware, timing, update
+        case version, reason, environment, rtc, atecc, eeprom, resources, receiver, firmware, timing, update, reception
+        case receptionEvent = "reception_event"
         case uptimeMS = "uptime_ms"
         case eventCount = "event_count"
         case eventUptimeMS = "event_uptime_ms"
         case eventFlags = "event_flags"
         case eventStates = "event_states"
+    }
+}
+
+struct ReceptionAssessment: Codable, Sendable {
+    let expectationID: String?
+    let sampleUnix: Int64?
+    let validMask: UInt8?
+    let alarmMask: UInt8?
+    let disagreementMask: UInt8?
+    let expected: [UInt8]?
+    let observed: [UInt8]?
+    let perSignal: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case expected, observed
+        case expectationID = "expectation_id"
+        case sampleUnix = "sample_unix"
+        case validMask = "valid_mask"
+        case alarmMask = "alarm_mask"
+        case disagreementMask = "disagreement_mask"
+        case perSignal = "per_signal"
+    }
+
+    var hasAlarm: Bool { (alarmMask ?? 0) & 0xef != 0 }
+
+    func counts(_ gnss: Int) -> String? {
+        guard (0..<8).contains(gnss), let expected, expected.count == 8,
+              let observed, observed.count == 8 else { return nil }
+        return "\(observed[gnss]) / \(expected[gnss])"
+    }
+
+    func stateKey(_ gnss: Int, current: Bool) -> String {
+        guard (0..<8).contains(gnss), gnss != 4 else { return "board.freshness.unknown" }
+        let bit = UInt8(1 << gnss)
+        let valid = current && (validMask ?? 0) & bit != 0
+        if (alarmMask ?? 0) & bit != 0 { return valid ? "reception.alarm" : "reception.held" }
+        return valid ? "reception.no_alarm" : "board.freshness.unknown"
     }
 }
 
