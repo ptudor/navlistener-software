@@ -23,6 +23,7 @@ import (
 	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/metrics"
+	"github.com/ptudor/navlistener/internal/reception"
 	"github.com/ptudor/navlistener/internal/wire"
 )
 
@@ -150,8 +151,18 @@ type UpdateCoordinator interface {
 	Report(identity.ObserverContext, string, uint64, wire.UpdateStatus) error
 }
 
+type ReceptionCoordinator interface {
+	BeginSession(identity.ObserverContext, string)
+	Pending(identity.ObserverContext, string, time.Time) ([]byte, []byte)
+	Check(identity.ObserverContext, string, reception.Sample, time.Time) *reception.Check
+	SnapshotResult(identity.ObserverContext, string, reception.SnapshotResult)
+}
+
+type receptionContextKey struct{}
+
 type PushServer struct {
-	updates UpdateCoordinator
+	reception ReceptionCoordinator
+	updates   UpdateCoordinator
 
 	addr        string
 	tlsConfig   *tls.Config
@@ -198,6 +209,7 @@ type PushServer struct {
 func (p *PushServer) SetDurableTracker(t *DurableTracker) { p.durable = t }
 
 func (p *PushServer) SetUpdates(updates UpdateCoordinator) { p.updates = updates }
+func (p *PushServer) SetReception(r ReceptionCoordinator)  { p.reception = r }
 
 // SetEvidenceVerifier installs the hardware-evidence verifier. Must be called
 // before Run/Serve.
@@ -487,6 +499,10 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 	if p.updates != nil {
 		p.updates.BeginSession(observerContext, session)
 	}
+	if authorized.reception == 1 && feed == "ubx" && p.reception != nil {
+		p.reception.BeginSession(observerContext, session)
+		sessionCtx = context.WithValue(sessionCtx, receptionContextKey{}, true)
+	}
 	sessionCtx = context.WithValue(sessionCtx, admissionContextKey{}, admission)
 	go p.watchAuthorization(sessionCtx, ctx, conn, authorized.token, observer, feed, observerContext, authorized.evidence, admission)
 	p.stream(sessionCtx, frames, w, observerContext, feed, session)
@@ -523,6 +539,7 @@ const maxConsecutiveUnforwarded = 256
 const helloMaxLen = 4096
 
 type authorizedHello struct {
+	reception        uint8
 	policyGeneration uint64
 	observer         identity.ObserverContext
 	// evidence is what the session's hardware evidence established. It is the
@@ -605,7 +622,7 @@ func (p *PushServer) handshake(ctx context.Context, conn net.Conn, w *connWriter
 	if err := w.write(wire.Welcome, mustWelcome(welcome)); err != nil {
 		return authorizedHello{}, false
 	}
-	return authorizedHello{observer: observerContext, evidence: evidence, feed: h.Feed, session: h.Session, token: h.Token, useZstd: h.Zstd, policyGeneration: policyGeneration}, true
+	return authorizedHello{observer: observerContext, evidence: evidence, feed: h.Feed, session: h.Session, token: h.Token, useZstd: h.Zstd, policyGeneration: policyGeneration, reception: h.Reception}, true
 }
 
 // readEvidence reads the one EVIDENCE frame a HELLO announced, under the
@@ -867,12 +884,31 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 	defer func() { close(quit); <-ackDone }()
 	go func() {
 		var nextControl time.Time
+		var nextReception time.Time
 		defer close(ackDone)
 		for {
 			select {
 			case <-quit:
 				return
 			case <-ackTicker.C:
+				if p.reception != nil && ctx.Value(receptionContextKey{}) == true && time.Now().After(nextReception) && ctx.Err() == nil {
+					nextReception = time.Now().Add(5 * time.Second)
+					admission, _ := ctx.Value(admissionContextKey{}).(*Admission)
+					if admission.Current() {
+						expectation, snapshot := p.reception.Pending(observerContext, session, time.Now())
+						for _, c := range []struct {
+							kind wire.FrameType
+							body []byte
+						}{{wire.ReceptionExpectation, expectation}, {wire.SnapshotRequest, snapshot}} {
+							if len(c.body) > 0 {
+								if err := w.write(c.kind, c.body); err != nil {
+									_ = w.c.Close()
+									return
+								}
+							}
+						}
+					}
+				}
 				if p.updates != nil && time.Now().After(nextControl) && ctx.Err() == nil {
 					nextControl = time.Now().Add(15 * time.Second)
 					admission, _ := ctx.Value(admissionContextKey{}).(*Admission)
@@ -1031,6 +1067,14 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 					if !p.durable.Received(observer, session, seq, f.RF == nil && f.Obs == nil) {
 						p.log.Warn("durability tracking budget full; closing for replay", "observer", observer)
 						return
+					}
+				}
+				if p.reception != nil && f.Admission.Current() && f.Details != nil {
+					if f.Details.Reception != nil {
+						f.ReceptionCheck = p.reception.Check(observerContext, session, *f.Details.Reception, time.Now())
+					}
+					if f.Details.Snapshot != nil {
+						p.reception.SnapshotResult(observerContext, session, *f.Details.Snapshot)
 					}
 				}
 				select {

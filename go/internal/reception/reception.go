@@ -186,6 +186,24 @@ type Machine struct {
 	last            int64
 }
 
+// RetainCoverage interrupts pending transitions whose measurement became unknown,
+// including reports that repeat a previous receiver measurement.
+func (m *Machine) RetainCoverage(valid uint8) { m.pending &= valid }
+
+type Check struct {
+	Valid        uint8    `json:"valid_mask"`
+	Alarm        uint8    `json:"alarm_mask"`
+	Expected     [8]uint8 `json:"expected"`
+	Observed     [8]uint8 `json:"observed"`
+	Disagreement uint8    `json:"disagreement_mask"`
+}
+
+type SnapshotResult struct {
+	ID     uint64 `json:"request_id,string"`
+	Status uint8  `json:"status"` // 1 complete, 2 partial, 3 expired, 4 unsupported
+	Scopes uint8  `json:"scopes"` // 1 environment, 2 receiver, 4 RF
+}
+
 func (m *Machine) Step(valid, bad uint8, at time.Time, alarmSeconds, clearSeconds uint16) uint8 {
 	now := at.UnixMilli()
 	if m.last != 0 && (now <= m.last || now-m.last > 15000) {

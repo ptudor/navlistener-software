@@ -66,7 +66,9 @@ const (
 	// (docs/COMMISSIONING.md §6). It is sent once, immediately after a HELLO
 	// whose Evidence flag is set and before WELCOME; it is never valid in the
 	// DATA phase. The collector reads it only from an authenticated peer.
-	Evidence FrameType = 0x0A // feeder→collector: commissioning record, key and session proof
+	Evidence             FrameType = 0x0A // feeder→collector: commissioning record, key and session proof
+	ReceptionExpectation FrameType = 0x0B
+	SnapshotRequest      FrameType = 0x0C
 )
 
 var (
@@ -107,7 +109,8 @@ type HelloMsg struct {
 	// Evidence announces that exactly one EVIDENCE frame follows this HELLO
 	// without waiting for WELCOME (docs/COMMISSIONING.md §6). A feeder with no
 	// commissioning record omits it and the handshake is unchanged.
-	Evidence bool `json:"evidence,omitempty"`
+	Evidence  bool  `json:"evidence,omitempty"`
+	Reception uint8 `json:"reception,omitempty"` // supported expectation/assessment contract; 1 today
 }
 
 // SessionMaxLen bounds HelloMsg.Session. 64 comfortably covers the reference

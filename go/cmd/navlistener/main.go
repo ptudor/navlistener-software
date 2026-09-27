@@ -37,9 +37,11 @@ import (
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/metrics"
+	"github.com/ptudor/navlistener/internal/reception"
 	"github.com/ptudor/navlistener/internal/serve"
 	"github.com/ptudor/navlistener/internal/server"
 	"github.com/ptudor/navlistener/internal/state"
+	"github.com/ptudor/navlistener/internal/stationcontrol"
 	"github.com/ptudor/navlistener/internal/store"
 	"github.com/ptudor/navlistener/internal/updates"
 	"github.com/ptudor/navlistener/internal/version"
@@ -351,6 +353,19 @@ func run() int {
 			pushSrv.SetUpdates(updateManager)
 		}
 	}
+	stationManager := stationcontrol.New(cfg.Reception, func(c identity.ObserverContext, site reception.Site, now time.Time) reception.Expectation {
+		// Public broadcasts or the station's own organization; never the all-source operator view.
+		st := publicLive
+		if c.OrganizationID != identity.UnassignedOrganization {
+			if private, _, ok := audienceRegistry.Resolve(identity.Audience{Kind: identity.AudienceOrganization, ID: c.OrganizationID}); ok {
+				st = private
+			}
+		}
+		return st.ReceptionForecast(site, now)
+	})
+	if pushSrv != nil {
+		pushSrv.SetReception(stationManager)
+	}
 	var apiSrv *serve.Server
 	if cfg.Serve.Addr != "" {
 		// The events query API reads the historian; a true nil interface (not a typed nil
@@ -368,6 +383,7 @@ func run() int {
 		apiSrv = serve.NewForAudience(cfg.Serve.Addr, serveState, eventStore, serveSources,
 			cfg.Serve.RefreshFast, cfg.Serve.RefreshSlow, log, cfg.Serve.AudienceContext)
 		apiSrv.SetPolicyEpochs(policyEpochs)
+		apiSrv.SetReceptionControls(stationManager)
 		if updateManager != nil {
 			apiSrv.SetUpdates(updateManager)
 		}

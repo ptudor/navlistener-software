@@ -464,12 +464,15 @@ func selfSigned(t *testing.T) tls.Certificate {
 
 // startPushServer stands up a PushServer on an ephemeral loopback TLS listener and
 // returns its address plus the frame channel it feeds.
-func startPushServer(t *testing.T, ctx context.Context, auth Authenticator) (string, chan *RawFrame) {
+func startPushServer(t *testing.T, ctx context.Context, auth Authenticator, configure ...func(*PushServer)) (string, chan *RawFrame) {
 	t.Helper()
 	out := make(chan *RawFrame, 8)
 	tc := &tls.Config{Certificates: []tls.Certificate{selfSigned(t)}, MinVersion: tls.VersionTLS12}
 	srv := newPushServer("127.0.0.1:0", tc, out, auth, 25*time.Millisecond, 0,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for _, f := range configure {
+		f(srv)
+	}
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", tc)
 	if err != nil {
 		t.Fatal(err)

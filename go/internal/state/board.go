@@ -1,9 +1,11 @@
 package state
 
 import (
+	"time"
+
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/ingest"
-	"time"
+	"github.com/ptudor/navlistener/internal/reception"
 )
 
 // BoardSample separates receipt time from a feeder wall clock. A nil SampleTime
@@ -14,12 +16,13 @@ import (
 // Details, never inside it: Details — including update.trust_profile — is the
 // device's own account, and this is the only field here that is not.
 type BoardSample struct {
-	ReceivedAt    time.Time              `json:"received_at"`
-	SampleTime    *time.Time             `json:"sample_time"`
-	Session       string                 `json:"session"`
-	Sequence      uint64                 `json:"sequence"`
-	HardwareTrust identity.HardwareTrust `json:"hardware_trust"`
-	Details       ingest.ObserverDetails `json:"details"`
+	ReceivedAt     time.Time              `json:"received_at"`
+	SampleTime     *time.Time             `json:"sample_time"`
+	Session        string                 `json:"session"`
+	Sequence       uint64                 `json:"sequence"`
+	HardwareTrust  identity.HardwareTrust `json:"hardware_trust"`
+	Details        ingest.ObserverDetails `json:"details"`
+	ReceptionCheck *reception.Check       `json:"collector_reception,omitempty"`
 }
 type BoardEventContext struct {
 	Before   *BoardSample `json:"before,omitempty"`
@@ -33,13 +36,20 @@ type StationBoard struct {
 	Update           *BoardSample       `json:"update,omitempty"`
 	UpdateStale      bool               `json:"update_stale"`
 	TimingStale      bool               `json:"timing_stale"`
+	Reception        *BoardSample       `json:"reception,omitempty"`
+	ReceptionStale   bool               `json:"reception_stale"`
+	ReceptionEvents  []BoardSample      `json:"reception_events,omitempty"`
+	Snapshot         *BoardSample       `json:"snapshot,omitempty"`
 }
 type boardStation struct {
-	latest *BoardSample
-	last   BoardSample // ordering across independently paced board/timing records
-	update *BoardSample
-	timing *BoardSample
-	event  *BoardEventContext
+	latest          *BoardSample
+	last            BoardSample // ordering across independently paced board/timing records
+	update          *BoardSample
+	timing          *BoardSample
+	event           *BoardEventContext
+	reception       *BoardSample
+	receptionEvents []BoardSample
+	snapshot        *BoardSample
 }
 
 func (s *Store) applyBoard(f *ingest.RawFrame) {
@@ -63,7 +73,7 @@ func (s *Store) applyBoard(f *ingest.RawFrame) {
 		return
 	}
 	sample := BoardSample{ReceivedAt: f.LocalRecv(), Session: f.Session, Sequence: f.Seq, Details: *f.Details,
-		HardwareTrust: f.Observer.HardwareTrust}
+		HardwareTrust: f.Observer.HardwareTrust, ReceptionCheck: f.ReceptionCheck}
 	if sample.HardwareTrust == "" { // dial and programmatic frames carry no session evidence
 		sample.HardwareTrust = identity.HardwareTrustNone
 	}
@@ -80,8 +90,38 @@ func (s *Store) applyBoard(f *ingest.RawFrame) {
 		old.timing = nil
 		old.update = nil
 		old.event = nil
+		old.reception = nil
+		old.snapshot = nil
 	}
 	old.last = sample
+	if f.Details.Reception != nil {
+		copy := sample
+		old.reception = &copy
+	}
+	if f.Details.Snapshot != nil {
+		copy := sample
+		old.snapshot = &copy
+	}
+	if event := f.Details.ReceptionEvent; event != nil {
+		duplicate := false
+		for _, row := range old.receptionEvents {
+			if previous := row.Details.ReceptionEvent; previous.Boot == event.Boot && previous.Event == event.Event {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			old.receptionEvents = append(old.receptionEvents, sample)
+			if len(old.receptionEvents) > 32 {
+				old.receptionEvents = old.receptionEvents[1:]
+			}
+		}
+	}
+	if f.Details.Reception != nil || f.Details.ReceptionEvent != nil || f.Details.Snapshot != nil {
+		if f.Details.Environment == nil && f.Details.Timing == nil && f.Details.Receiver == nil {
+			return
+		}
+	}
 	if f.Details.Update != nil {
 		update := sample
 		old.update = &update
@@ -117,6 +157,7 @@ func (s *Store) FeedStationBoards(now time.Time) map[string]StationBoard {
 			return sample == nil || now.Sub(sample.ReceivedAt) > after || (sample.SampleTime != nil && now.Sub(*sample.SampleTime) > after)
 		}
 		out[id] = StationBoard{Latest: st.latest, Stale: stale(st.latest, 11*time.Minute), LastInterference: st.event,
+			Reception: st.reception, ReceptionStale: stale(st.reception, 15*time.Second), ReceptionEvents: append([]BoardSample(nil), st.receptionEvents...), Snapshot: st.snapshot,
 			Update: st.update, UpdateStale: stale(st.update, 5*time.Second), Timing: st.timing, TimingStale: stale(st.timing, 5*time.Second)}
 	}
 	return out

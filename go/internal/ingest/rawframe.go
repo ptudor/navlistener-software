@@ -14,6 +14,7 @@ import (
 
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/navlistener/internal/identity"
+	"github.com/ptudor/navlistener/internal/reception"
 )
 
 // RawFrame is one raw broadcast nav frame lifted off a receiver, tagged with just
@@ -37,6 +38,7 @@ type RawFrame struct {
 	SBFHeader          []byte
 	Obs                *RawObs          // raw observables (RXM-RAWX telemetry), nil for nav frames
 	Details            *ObserverDetails // board/environment telemetry; never a nav frame
+	ReceptionCheck     *reception.Check // independent collector verdict; never accepted from wire
 	BoardSampleStamped bool             // original envelope carried an accepted wall-clock stamp
 	RF                 *RawRF           // RF-environment telemetry (MON-RF/MON-HW/NAV-SAT), nil for nav frames
 

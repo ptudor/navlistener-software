@@ -27,6 +27,7 @@ import (
 	"github.com/ptudor/navlistener/internal/commissioning"
 	"github.com/ptudor/navlistener/internal/federation"
 	"github.com/ptudor/navlistener/internal/identity"
+	"github.com/ptudor/navlistener/internal/reception"
 	"github.com/ptudor/navlistener/internal/updates"
 )
 
@@ -86,6 +87,7 @@ var knownDialTypes = map[string]bool{
 
 // Config is the whole-daemon configuration.
 type Config struct {
+	Reception               reception.Config        `toml:"reception"`
 	Updates                 updates.Config          `toml:"updates"`
 	Collector               Collector               `toml:"collector"`
 	Logging                 Logging                 `toml:"logging"`
@@ -549,6 +551,14 @@ func defaults() *Config {
 // strict and fatal: an unknown connector type or a duplicate source name is a
 // configuration error, not a warning.
 func (c *Config) finalize() error {
+	if err := c.Reception.Validate(); err != nil {
+		return err
+	}
+	for _, site := range c.Reception.Stations {
+		if !ValidObserverID(site.Observer) {
+			return fmt.Errorf("reception: invalid observer %q", site.Observer)
+		}
+	}
 	if err := c.Updates.Validate(); err != nil {
 		return fmt.Errorf("updates: %w", err)
 	}

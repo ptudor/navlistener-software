@@ -66,14 +66,15 @@ var fastFeeds = []string{"svs", "global", "observers", "sbas"}
 // under an RWMutex on refresh, so a request never blocks on state-lock contention or
 // JSON encoding — it copies a ready []byte.
 type Server struct {
-	updates  http.Handler
-	http     *http.Server
-	store    *state.Store
-	events   EventStore
-	sources  []config.Source
-	log      *slog.Logger
-	now      func() time.Time
-	audience identity.Audience
+	updates           http.Handler
+	receptionControls http.Handler
+	http              *http.Server
+	store             *state.Store
+	events            EventStore
+	sources           []config.Source
+	log               *slog.Logger
+	now               func() time.Time
+	audience          identity.Audience
 
 	fast time.Duration
 	slow time.Duration
@@ -144,6 +145,13 @@ func NewForAudience(addr string, st *state.Store, events EventStore, sources []c
 	mux.HandleFunc("/gnss/api/v2/almanac", s.serveFeed("almanac"))
 	mux.HandleFunc("/gnss/api/v2/sbas", s.serveFeed("sbas"))
 	mux.HandleFunc("/gnss/api/v2/audiences", s.serveAudiences)
+	mux.HandleFunc("/gnss/api/v2/station-snapshot", func(w http.ResponseWriter, r *http.Request) {
+		if s.receptionControls == nil {
+			http.Error(w, "station controls are not configured", http.StatusServiceUnavailable)
+			return
+		}
+		s.receptionControls.ServeHTTP(w, r)
+	})
 	mux.HandleFunc("/gnss/api/v2/updates", func(w http.ResponseWriter, r *http.Request) {
 		if s.updates == nil {
 			http.Error(w, "update controls are not configured", http.StatusServiceUnavailable)
@@ -885,4 +893,5 @@ func methodNotAllowedGetHead(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // SetUpdates installs separately authorized update controls before serving.
-func (s *Server) SetUpdates(handler http.Handler) { s.updates = handler }
+func (s *Server) SetUpdates(handler http.Handler)           { s.updates = handler }
+func (s *Server) SetReceptionControls(handler http.Handler) { s.receptionControls = handler }
