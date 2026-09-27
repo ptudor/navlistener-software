@@ -31,9 +31,10 @@ boards="$dest/assets/boards"
 
 boards_before=$(find "$boards" -type f \( -name '*.png' -o -name '*.jpg' \) | wc -l | tr -d ' ')
 
-sudo -u daybreak2026 env HOME=/home/daybreak2026 npm --prefix "$source_dir" ci
-sudo -u daybreak2026 env HOME=/home/daybreak2026 npm --prefix "$source_dir" audit
-sudo -u daybreak2026 env HOME=/home/daybreak2026 make -C "$source_dir" deploy-local
+sudo -u daybreak2026 env \
+    HOME=/home/daybreak2026 \
+    NODE_EXTRA_CA_CERTS=/usr/local/etc/ssl/cert.pem \
+    make -C "$source_dir" install audit deploy-local
 
 chown daybreak2026:navlistener "$base" "$dest" "$boards"
 chmod 0755 "$base" "$dest"
