@@ -14,7 +14,7 @@
 # FreeRTOS tasks) is still covered only by the real idf.py build.
 
 # Every components/<name>/test/ directory with a Makefile.
-TEST_DIRS := $(dir $(wildcard components/*/test/Makefile))
+TEST_DIRS := $(dir $(wildcard components/*/test/Makefile)) main/test/
 # Empty: first_boot_flash.sh picks the board's own build directory.
 S3_BUILD_DIR ?=
 NVF_BOARD ?= universal

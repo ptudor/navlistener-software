@@ -28,6 +28,8 @@ static const char *TAG = "receiver";
 // The receiver the manifest lists, as MON-VER names it; only that model is configured.
 static const char *module;
 static atomic_uint s_ticks;
+static atomic_bool snapshot_requested;
+void receiver_request_snapshot(void) {atomic_store(&snapshot_requested,true);}
 static bool version_seen, expected_model;
 static int cfg_ack;
 static gnss_status_t health = {.supported = 0x6f}, snapshot = {.supported = 0x6f};
@@ -90,7 +92,7 @@ static void rx_task(void *arg)
     // One key per request: a receiver rejecting SFRBX must still get telemetry. The IDs are
     // the same on all three receivers (ubx_probe.h).
     const uint32_t keys[] = {0x10740001, 0x20910232, 0x2091035a, 0x20910016, 0x20910007, 0x2091001b,
-        0x2091017e}; // TIM-TP UART1: lock/reference metadata, RAM only
+        0x2091017e, 0x20910346}; // TIM-TP and NAV-SIG UART1, RAM only
     unsigned setting = 0, tries = 0;
     bool configured = false, baud_attempted = false;
     int64_t cfg_deadline = 0;
@@ -104,6 +106,14 @@ static void rx_task(void *arg)
             for (int i = 0; i < n; i++) if (nmea_probe_feed(&nmea, buf[i])) nmea_count++;
         }
         int64_t now = esp_timer_get_time() / 1000;
+        if(atomic_exchange(&snapshot_requested,false)) {
+            const uint8_t polls[][2]={{1,0x35},{1,0x43},{0x0a,0x38},{1,3},{1,7}};
+            for(unsigned i=0;i<sizeof polls/sizeof polls[0];i++) {
+                uint8_t packet[8]={0xb5,0x62,polls[i][0],polls[i][1],0,0,0,0};
+                for(unsigned j=2;j<6;j++){packet[6]+=packet[j];packet[7]+=packet[6];}
+                uart_write_bytes(RX_UART,packet,sizeof packet);
+            }
+        }
         uint32_t valid = atomic_load_explicit(&parser->frames_valid, memory_order_relaxed);
         if (valid != prev_valid || nmea_count != prev_nmea) {
             if (!locked) ESP_LOGI(TAG, "valid receiver traffic at %d baud", baud);

@@ -11,8 +11,36 @@ static void position(gnss_status_t *s, double lat, double lon, int64_t now)
     gnss_status_feed(s, 1, 7, p, sizeof p, now);
     assert(gnss_status_position_fresh(s, now));
 }
+static void reception_evidence(void)
+{
+    gnss_status_t s={.supported=1};
+    nr_expectation_t e={.id=7,.issued=1800000000,.radius_m=1000,.count=2,.min_expected=1,.min_missing=1,.missing_percent=50,
+        .entries={{0,1,3,31},{0,2,6,31}}};
+    nr_sample_t sample={.expectation_id=7,.utc=1800000000};
+    uint8_t sig[8+4*16]={0};sig[5]=4;
+    sig[8]=0;sig[9]=1;sig[10]=3;sig[14]=40;sig[15]=4; // L2 CL, code locked
+    memcpy(sig+24,sig+8,16);sig[26]=4; // L2 CM, same group
+    memcpy(sig+40,sig+8,16);sig[41]=2;sig[42]=6;sig[47]=3; // acquired, no code lock
+    memcpy(sig+56,sig+8,16);sig[57]=2;sig[58]=7;sig[66]=2; // explicitly unhealthy
+    gnss_status_feed(&s,1,0x43,sig,sizeof sig,1000);
+    assert(s.signals_valid && s.signal_count==1 && s.signals[0].signal==3);
+    gnss_status_compare(&s,&e,&sample,1000);
+    assert(nr_counts(&e,&sample)==1 && sample.valid==1 && sample.observed[0]==1 && sample.expected[0]==2);
+    gnss_status_compare(&s,&e,&sample,17000);nr_counts(&e,&sample);
+    assert(sample.valid==0); // a missing stream is unknown, never measured zero
+    uint8_t empty[8]={0};gnss_status_feed(&s,1,0x43,empty,sizeof empty,18000);
+    gnss_status_compare(&s,&e,&sample,18000);
+    assert(nr_counts(&e,&sample)==1 && sample.valid==1 && sample.observed[0]==0); // a fresh empty stream IS a measured deficit
+    gnss_status_t before=s;sig[4]=1;gnss_status_feed(&s,1,0x43,sig,sizeof sig,19000);
+    assert(!memcmp(&before,&s,sizeof s)); // unknown version does not refresh coverage
+    position(&s,1,1,19000);gnss_status_compare(&s,&e,&sample,19000);
+    assert(sample.valid==0); // a moved station cannot reuse the survey forecast
+    s.fix_valid=false;gnss_status_compare(&s,&e,&sample,19000);
+    assert(sample.valid==1); // loss of position does not erase a fixed-site deficit
+}
 int main(void)
 {
+    reception_evidence();
     gnss_status_t timing={0}; uint8_t tp[16]={0}; tp[14]=3; tp[15]=0x10;
     gnss_status_feed(&timing,0x0d,1,tp,sizeof tp,100);
     assert(timing.tp_valid && timing.tp_flags==3 && timing.tp_ref==0x10 && timing.tp_ms==100);
@@ -54,7 +82,7 @@ int main(void)
     position(&s, 85, 0, 1000); assert(!(gnss_status_expected(&s, 1000, 0) & GNSS_REGIONAL_MASK));
     assert(gnss_status_expected(&s, 20000, 0) == s.supported); // stale position -> unknown
     uint8_t sats[44] = {0}; sats[4]=1; sats[5]=3;
-    sats[8]=0; sats[10]=30; sats[16]=4; // GPS code lock
+    sats[8]=0; sats[9]=1; sats[10]=30; sats[16]=4; // GPS code lock
     sats[20]=2; sats[22]=30; sats[28]=1; // Galileo searching, not tracked
     sats[32]=6; sats[34]=30; sats[40]=0x24; // unhealthy GLONASS
     gnss_status_feed(&s, 1, 0x35, sats, sizeof sats, 20000);

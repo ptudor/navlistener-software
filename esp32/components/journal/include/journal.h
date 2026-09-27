@@ -11,7 +11,7 @@ void journal_event(uint8_t event, int32_t error);
 bool journal_reception_save(nr_sample_t *sample);
 bool journal_reception_latest(nr_sample_t *sample);
 bool journal_reception_next(uint64_t after, nr_sample_t *sample);
-// Paged diagnostic read; lane 0 lifecycle, 1 checkpoints. before=0 starts newest.
+// Paged diagnostic read; lane 0 lifecycle, 1 checkpoints, 2 reception. before=0 starts newest.
 // Returns <=8 records newest-first and a next cursor (0 at end).
 esp_err_t journal_page(unsigned lane, uint64_t before, journal_record_t out[8],
                         unsigned *count, uint64_t *next);

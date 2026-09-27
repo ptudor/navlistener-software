@@ -213,7 +213,7 @@ static bool readable(esp_tls_t *tls, int fd, int timeout_ms)
 // drain_acks applies every pending ACK (pruning the spool). Returns false on disconnect.
 static bool drain_acks(esp_tls_t *tls, int fd)
 {
-    uint8_t buf[64];
+    uint8_t buf[552]; // bounded reception expectation: 40 + 128 * 4
     // Bound each drain so a stream of unchanged ACKs/PONGs cannot starve the
     // durability watchdog in the outer loop.
     for (unsigned n = 0; n < DRAIN_BATCH && readable(tls, fd, 0); n++) {
@@ -225,6 +225,8 @@ static bool drain_acks(esp_tls_t *tls, int fd)
             if (gnf1_decode_ack(buf, len, &seq)) spool_ack(seq);
         } else if (type == 0x09 && s_cfg.update_control) {
             s_cfg.update_control(buf,len);
+        } else if((type==0x0b || type==0x0c) && s_cfg.reception_control) {
+            s_cfg.reception_control(type,buf,len);
         }
         // PONG and anything else: ignore.
     }
@@ -329,6 +331,10 @@ static int handshake(esp_tls_t *tls)
     // truncation from an over-long token/station (regression fix adds ~45 bytes to the HELLO).
     int hn = gnf1_build_hello(hello, sizeof hello, s_cfg.token, s_cfg.station, s_cfg.feed,
                               s_cfg.session, false, evidence_len > 0);
+    if(hn>0 && s_cfg.reception_control) {
+        int extra=snprintf(hello+hn-1,sizeof hello-(size_t)hn+1,",\"reception\":1}");
+        hn=extra<0 || (size_t)extra>=sizeof hello-(size_t)hn+1 ? -1 : hn-1+extra;
+    }
     if (hn < 0) {
         ESP_LOGE(TAG, "could not build HELLO (token/station too long?); dropping connection");
         free(evidence);

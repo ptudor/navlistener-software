@@ -47,6 +47,7 @@
 #include "panel_control.h"
 #include "board.h"
 #include "journal.h"
+#include "reception_runtime.h"
 #include "mcu_identity.h"
 #include "commission.h"
 #if CONFIG_NVF_ETHERNET_W5500
@@ -575,6 +576,7 @@ void app_main(void)
         .tunnel_host = tunnel_collector_address(), // NULL without a started tunnel
         .tunnel_up = tunnel_up,
         .update_control = nvf_update_control,
+        .reception_control = reception_control,
         .evidence = session_evidence,
         .hardware_trust = nvf_mcu_identity_verdict,
     };

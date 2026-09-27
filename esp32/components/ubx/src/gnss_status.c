@@ -45,13 +45,29 @@ void gnss_status_feed(gnss_status_t *s, uint8_t cls, uint8_t id,
         if (supported) s->supported = supported;
     } else if (cls == 1 && id == 0x35 && len >= 8 && p[4] == 1 && len == 8u + 12u * p[5]) {
         memset(s->tracked, 0, sizeof s->tracked);
+        s->satellite_count=0;
+        if(p[5]>GNSS_OBS_MAX) {s->satellites_valid=false;return;}
         for (size_t i = 8; i < len; i += 12) {
             unsigned g = p[i], quality = p[i+8] & 7, health = (p[i+8] >> 4) & 3;
             // Acquired signals alone do not prove usable tracking. Require code
             // lock, nonzero C/N0, and no explicit unhealthy indication.
-            if (g < 8 && p[i+2] && quality >= 4 && health != 2) s->tracked[g]++;
+            if (g < 8 && g!=4 && p[i+1] && p[i+2] && quality >= 4 && health != 2) {
+                s->tracked[g]++;
+                s->satellites[s->satellite_count++]=(gnss_observation_t){g,p[i+1],NR_SATELLITE};
+            }
         }
         s->satellites_ms = now; s->satellites_valid = true;
+    } else if(cls==1 && id==0x43 && len>=8 && p[4]==0 && len==8u+16u*p[5]) {
+        s->signal_count=0;
+        if(p[5]>GNSS_OBS_MAX) {s->signals_valid=false;return;}
+        for(size_t i=8;i<len;i+=16) {
+            uint8_t g=p[i],sv=p[i+1],sig=nr_signal(g,p[i+2]);
+            if(g>7 || g==4 || !sv || sig>31 || !p[i+6] || p[i+7]<4 || p[i+7]>7 || (p[i+10]&3)==2) continue;
+            bool duplicate=false;
+            for(unsigned j=0;j<s->signal_count;j++) if(s->signals[j].gnss==g && s->signals[j].sv==sv && s->signals[j].signal==sig) duplicate=true;
+            if(!duplicate) s->signals[s->signal_count++]=(gnss_observation_t){g,sv,sig};
+        }
+        s->signals_ms=now;s->signals_valid=true;
     } else if (cls == 1 && id == 7 && len == 92) {
         memcpy(s->pvt_utc, p + 4, sizeof s->pvt_utc);
         int32_t lon = (int32_t)le32(p+24), lat = (int32_t)le32(p+28);
@@ -60,6 +76,29 @@ void gnss_status_feed(gnss_status_t *s, uint8_t cls, uint8_t id,
                        lon >= -1800000000 && lon <= 1800000000;
         s->fix_ms = now;
         if (s->fix_valid) { s->latitude = lat; s->longitude = lon; }
+    }
+}
+void gnss_status_compare(const gnss_status_t *s,const nr_expectation_t *e,nr_sample_t *r,int64_t now)
+{
+    memset(r->matched,0,sizeof r->matched);r->valid=s->supported;
+    if(gnss_status_position_fresh(s,now)) {
+        double dy=(s->latitude/1e7-e->latitude/1e7)*111320.0;
+        double dx=s->longitude/1e7-e->longitude/1e7;
+        if(dx>180)dx-=360;
+        if(dx < -180)dx+=360;
+        dx*=111320.0*cos(e->latitude/1e7*0.017453292519943295);
+        if(dx*dx+dy*dy>(double)e->radius_m*e->radius_m) {r->valid=0;return;}
+    }
+    for(unsigned i=0;i<e->count;i++) {
+        const nr_entry_t *v=&e->entries[i];bool sat=v->signal==NR_SATELLITE;
+        if(!(sat ? s->satellites_valid && fresh(s->satellites_ms,now) : s->signals_valid && fresh(s->signals_ms,now))) {
+            r->valid&=~(1u<<v->gnss);continue;
+        }
+        const gnss_observation_t *obs=sat ? s->satellites : s->signals;
+        unsigned n=sat ? s->satellite_count : s->signal_count;
+        for(unsigned j=0;j<n;j++) if(obs[j].gnss==v->gnss && obs[j].sv==v->sv && obs[j].signal==v->signal) {
+            r->matched[i/8]|=1u<<(i%8);break;
+        }
     }
 }
 bool gnss_status_same_place(int32_t lat_a, int32_t lon_a, int32_t lat_b, int32_t lon_b)

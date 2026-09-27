@@ -42,6 +42,7 @@ typedef struct {
     const char *tunnel_host;
     bool (*tunnel_up)(void);
     void (*update_control)(const uint8_t *,size_t); // authenticated GNF1 control frames
+    void (*reception_control)(uint8_t,const uint8_t *,size_t);
     // evidence, when set, builds the GNF1 EVIDENCE payload for one TLS session
     // (docs/COMMISSIONING.md §6). exported is that session's GNF1_EVIDENCE_EXPORTED_SIZE
     // bytes of keying material, or NULL when it could not be derived; out holds

@@ -1,5 +1,6 @@
 #include "update_runtime.h"
 #include "board.h"
+#include "reception_runtime.h"
 #include "sdkconfig.h"
 #include "board_reservations.h"
 #if CONFIG_NVF_BOARD_GNSS_COLOR
@@ -67,6 +68,7 @@ static atomic_uint brightness = PANEL_DEFAULT_BRIGHTNESS;
 static atomic_uint trimmer_reference;
 static uint64_t next_timing;
 static unsigned applied_brightness = PANEL_DEFAULT_BRIGHTNESS, saved_reference;
+static atomic_uint panel_frame;
 static bool pwm_ready;
 // One wake/command/sleep session with the ATECC at a time: the boot diagnostic and the
 // bench identity read must not interleave their commands.
@@ -518,7 +520,7 @@ static void clock_bit(int bit)
     esp_rom_delay_us(2);
     gpio_set_level(LED_CLOCK, 0);
 }
-static void panel_write(uint8_t green, uint8_t yellow)
+static void panel_write(uint8_t green, uint8_t yellow,unsigned percent)
 {
     // OE also participates in TLC5916 mode switching. Hold both OE pins high
     // for the entire serial/latch transaction; PWM runs only while CLK is idle.
@@ -528,9 +530,21 @@ static void panel_write(uint8_t green, uint8_t yellow)
     uint16_t bits = ((uint16_t)yellow << 8) | green;
     for (int i = 15; i >= 0; i--) clock_bit((bits >> i) & 1);
     gpio_set_level(LED_LATCH, 1); esp_rom_delay_us(2); gpio_set_level(LED_LATCH, 0);
-    if (pwm_ready && applied_brightness) for (unsigned c = 0; c < 2; c++) {
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, c, panel_pwm_off_ticks(applied_brightness));
+    if (pwm_ready && percent) for (unsigned c = 0; c < 2; c++) {
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, c, panel_pwm_off_ticks(percent));
         ledc_update_duty(LEDC_LOW_SPEED_MODE, c);
+    }
+}
+static void panel_refresh_task(void *arg)
+{
+    (void)arg;unsigned previous=UINT32_MAX;
+    TickType_t wake=xTaskGetTickCount();
+    for(;;) {
+        unsigned value=atomic_load(&panel_frame);uint8_t green=value,yellow=value>>8;
+        nr_alarm_leds(value>>16,(uint64_t)esp_timer_get_time()/1000,&green,&yellow);
+        unsigned frame=(value&0xff000000u)|((unsigned)yellow<<8)|green;
+        if(frame!=previous){panel_write(green,yellow,value>>24);previous=frame;}
+        vTaskDelayUntil(&wake,pdMS_TO_TICKS(25));
     }
 }
 static void heater_report(const env_heater_status_t *s, report_heater_t *h)
@@ -690,7 +704,8 @@ static void max_sensors_report(void)
 static void report_poll(const gnss_status_t *status, int64_t now, uint8_t expected, bool utc_valid, int64_t utc)
 {
     bool event_pending = status->event_count != report_policy.last.event_count;
-    bool force = event_pending && now - last_environment >= 5000;
+    bool requested=reception_snapshot_due((uint64_t)now);
+    bool force = (event_pending || requested) && now - last_environment >= 5000;
     if (now < next_environment && !force) return;
     env_sample_t sample;
     env_heater_status_t heater;
@@ -711,6 +726,7 @@ static void report_poll(const gnss_status_t *status, int64_t now, uint8_t expect
     report.event_flags = status->event_flags; report.event_states = status->event_states;
     report.rtc = observer_rtc_status();
     report.reason = observer_report_due(&report_policy, &report);
+    if(requested)report.reason|=REPORT_CHANGE;
     if (!report.reason) return;
     report_receiver_t *r = &report.receiver;
     *r = (report_receiver_t){.supported=status->supported, .expected=expected,
@@ -730,10 +746,12 @@ static void report_poll(const gnss_status_t *status, int64_t now, uint8_t expect
     // Static: the board task is the only caller, and its stack is sized for its work, not these.
     static uint8_t body[OBSERVER_REPORT_MAX], record[OBSERVER_REPORT_MAX + GNF1_RECORD_HDR];
     size_t length = observer_report_encode(body, sizeof body, &report);
+    if(requested)length=reception_snapshot_append(body,length,sizeof body,status,(uint64_t)last_environment);
     if (!length) return;
     size_t n = gnf1_encode_telem(record, report_now_ns ? report_now_ns() : 0, GNF1_T_OBSERVER, body, length);
     if (n && spool_append(record, n)) {
         observer_report_sent(&report_policy, &report);
+        if(requested)reception_snapshot_queued();
         if (imu_listed) motion_report_sent();
         ESP_LOGI(TAG, "ObserverDetails queued: reason=0x%02x environment=0x%02x RTC=0x%02x EEPROM=%u RNG=%u events=%lu bytes=%u",
             report.reason, e->valid, report.rtc.flags, report.manifest.action, report.crypto.rng,
@@ -788,11 +806,12 @@ static void board_task(void *arg)
         int64_t now = esp_timer_get_time() / 1000;
         uint8_t learned = reception_history(&status, now);
         gnss_status_leds(&status, now, learned, pusher_connected(), &green, &yellow);
+        uint8_t alarm=reception_poll(&status,(uint64_t)now,report_now_ns);
         unsigned requested = atomic_load(&brightness);
         bool brightness_changed = requested != applied_brightness;
         applied_brightness = requested;
+        atomic_store(&panel_frame,(applied_brightness<<24)|((unsigned)alarm<<16)|((unsigned)yellow<<8)|green);
         if (green != previous_green || yellow != previous_yellow || brightness_changed) {
-            panel_write(green, yellow);
             if (brightness_changed) ESP_LOGI(TAG, "panel brightness=%u%%", applied_brightness);
             ESP_LOGI(TAG, "panel green=0x%02x yellow=0x%02x (GPS SBAS GAL BDS QZSS GLO NavIC uplink)", green, yellow);
             previous_green = green; previous_yellow = yellow;
@@ -928,7 +947,7 @@ esp_err_t observer_board_start(void)
     for (size_t i = 0; i < sizeof oe / sizeof oe[0]; i++) {
         gpio_set_level(LED_GREEN_OE, oe[i]); gpio_set_level(LED_YELLOW_OE, oe[i]); clock_bit(0);
     }
-    panel_write(0, 0xbf); // six constellations and a disconnected uplink until the receiver reports
+    panel_write(0, 0xbf,applied_brightness); // six constellations and a disconnected uplink until the receiver reports
     ledc_timer_config_t timer = {.speed_mode=LEDC_LOW_SPEED_MODE, .duty_resolution=LEDC_TIMER_10_BIT,
         .timer_num=LEDC_TIMER_0, .freq_hz=4000, .clk_cfg=LEDC_AUTO_CLK};
     err = ledc_timer_config(&timer);
@@ -941,6 +960,8 @@ esp_err_t observer_board_start(void)
         if (err != ESP_OK) return err;
     }
     pwm_ready = true;
+    atomic_store(&panel_frame,(applied_brightness<<24)|0xbf00u);
+    if(xTaskCreate(panel_refresh_task,"panel_refresh",2048,NULL,4,NULL)!=pdPASS)return ESP_ERR_NO_MEM;
     ESP_LOGI(TAG, "panel brightness=%u%% (4 kHz PWM)", applied_brightness);
 #if PANEL_INPUTS
     // The preset button (and the trimmer beside it) only where the manifest lists it.

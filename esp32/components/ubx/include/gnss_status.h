@@ -3,12 +3,19 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "../../../../common/reception.h"
+#define GNSS_OBS_MAX 200u
+typedef struct { uint8_t gnss, sv, signal; } gnss_observation_t;
 #define GNSS_REGIONAL_MASK ((1u << 1) | (1u << 5) | (1u << 7))
 typedef struct {
     uint8_t supported, tracked[8];
     bool satellites_valid, fix_valid;
     int32_t latitude, longitude; // degrees * 1e7, from a valid NAV-PVT fix
     int64_t satellites_ms, fix_ms;
+    bool signals_valid;
+    int64_t signals_ms;
+    uint16_t satellite_count, signal_count;
+    gnss_observation_t satellites[GNSS_OBS_MAX], signals[GNSS_OBS_MAX];
     bool rf_valid, status_valid;
     uint8_t jam, spoof, event_flags, event_states;
     uint32_t event_count;
@@ -25,4 +32,7 @@ bool gnss_status_same_place(int32_t lat_a, int32_t lon_a, int32_t lat_b, int32_t
 uint8_t gnss_status_expected(const gnss_status_t *s, int64_t now_ms, uint8_t learned);
 void gnss_status_leds(const gnss_status_t *s, int64_t now_ms, uint8_t learned,
                       bool uplink, uint8_t *green, uint8_t *yellow);
+// Build fresh match evidence; an incomplete report invalidates its comparison.
+void gnss_status_compare(const gnss_status_t *s, const nr_expectation_t *e,
+                         nr_sample_t *sample, int64_t now_ms);
 #endif

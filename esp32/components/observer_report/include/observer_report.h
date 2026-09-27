@@ -6,7 +6,7 @@
 #include "timing_report.h"
 #include "../../../../common/board_uid.h"
 // GNF1 ObserverDetails v1; byte layout is specified in docs/OBSERVER-TELEMETRY.md.
-#define OBSERVER_REPORT_MAX 512
+#define OBSERVER_REPORT_MAX 768
 enum { REPORT_BOOT=1, REPORT_CHANGE=2, REPORT_CHECKIN=4, REPORT_INTERFERENCE=8 };
 typedef struct {
     uint8_t valid, ready; // bits 0 MCP9808, 1 HDC2080/HDC2022, 2 the barometer tag 15 names

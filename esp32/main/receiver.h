@@ -8,3 +8,4 @@ void receiver_set_module(const char *name);
 esp_err_t receiver_start(ubx_parser_t *parser);
 bool receiver_alive(void);
 void receiver_status(gnss_status_t *out);
+void receiver_request_snapshot(void);

@@ -17,7 +17,7 @@ static int test_export(mbedtls_ssl_context *, uint8_t *, size_t, const char *, s
 #undef mbedtls_ssl_export_keying_material
 
 static esp_tls_t transport;
-static uint8_t written[4096], inbound[512];
+static uint8_t written[4096], inbound[1024];
 static size_t written_len, head, tail, written_at_first_read;
 static bool export_fails, first_read_seen;
 static int exports;
@@ -31,6 +31,11 @@ static uint8_t exported_copy[GNF1_EVIDENCE_EXPORTED_SIZE];
 static int evidence_calls, verdict_calls;
 static char verdict_trust[32], verdict_error[32];
 static bool verdict_trust_null, verdict_error_null;
+static unsigned reception_calls;
+static uint8_t reception_type;
+static size_t reception_length;
+static void reception_stub(uint8_t type,const uint8_t *b,size_t n)
+{assert(b && n);reception_calls++;reception_type=type;reception_length=n;}
 
 static int test_export(mbedtls_ssl_context *ssl, uint8_t *out, size_t n, const char *label, size_t label_len,
                        const unsigned char *context, size_t context_len, int use_context)
@@ -181,6 +186,20 @@ int main(void)
     assert(run("{\"ok\":true,\"hardware_trust\":\"trusted\"}") == 0 && evidence_calls == 1 && !verdict_calls);
     body = frame(0, &type, &len);
     assert(body && !contains(body, len, "evidence") && !frame(1, &type, &len));
+    // The reception capability coexists with evidence and an older WELCOME.
+    s_cfg.reception_control=reception_stub;oversize=false;payload_len=sizeof PAYLOAD;
+    assert(run("{\"ok\":true}")==0);
+    body=frame(0,&type,&len);
+    assert(body && contains(body,len,"\"evidence\":true,\"reception\":1}"));
+    // The actual TLS reader routes both control types, including a full-size forecast.
+    for(unsigned i=0;i<2;i++) {
+        head=0;tail=GNF1_FRAME_HDR+(i ? 20 : 552);
+        memset(inbound,0,tail);gnf1_frame_header(inbound,i ? 0x0c : 0x0b,tail-GNF1_FRAME_HDR);
+        assert(drain_acks(&transport,3));
+        assert(reception_calls==i+1 && reception_type==(i ? 0x0c : 0x0b) && reception_length==(i ? 20 : 552));
+    }
+    head=0;tail=GNF1_FRAME_HDR;gnf1_frame_header(inbound,0x0b,553);
+    assert(!drain_acks(&transport,3) && reception_calls==2);
     puts("GNF1 evidence is announced, sent after HELLO before any read, and its verdict reported");
     return 0;
 }
