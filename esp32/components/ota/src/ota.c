@@ -217,8 +217,11 @@ static esp_err_t journal_post(httpd_req_t *req)
         if(r->event==JOURNAL_RECEPTION) {
             const nr_sample_t *s=&r->reception;
             json_u64(row,"expectation_id",s->expectation_id);json_u64(row,"sample_unix",s->utc);
+            json_u64(row,"measurement_uptime_ms",s->uptime_ms);
             cJSON_AddNumberToObject(row,"valid_mask",s->valid);cJSON_AddNumberToObject(row,"alarm_mask",s->alarm);
-            cJSON *expected=cJSON_CreateArray(),*observed=cJSON_CreateArray();
+            cJSON *expected=cJSON_CreateArray(),*observed=cJSON_CreateArray(),*matched=cJSON_CreateArray();
+            cJSON_AddItemToObject(row,"matched",matched);
+            for(unsigned i=0;i<16;i++)cJSON_AddItemToArray(matched,cJSON_CreateNumber(s->matched[i]));
             cJSON_AddItemToObject(row,"expected",expected);cJSON_AddItemToObject(row,"observed",observed);
             for(unsigned g=0;g<8;g++){cJSON_AddItemToArray(expected,cJSON_CreateNumber(s->expected[g]));cJSON_AddItemToArray(observed,cJSON_CreateNumber(s->observed[g]));}
         }

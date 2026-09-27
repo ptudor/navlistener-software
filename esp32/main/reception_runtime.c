@@ -63,9 +63,15 @@ uint8_t reception_poll(const gnss_status_t *status,uint64_t now,uint64_t (*now_n
         uint64_t id=nr_get(request+4,8),deadline=nr_get(request+12,8);
         if(id && id==completed_request && nr_get(completed_result+4,8)==id)
             emit(19,completed_result,sizeof completed_result,now,now_ns);
-        if(id && id!=completed_request && id!=request_id && !snapshot_needed && deadline>=utc && deadline-utc<=30) {
+        if(id && id!=completed_request && id!=request_id && !snapshot_needed && deadline>utc && deadline-utc<=30) {
             request_id=id;request_deadline=now+(deadline-utc)*1000;request_scopes=request[1];request_ms=now;
             snapshot_needed=true;receiver_request_snapshot();
+        }
+    }
+    if(snapshot_needed && request_id && now>=request_deadline) {
+        uint8_t result[12]={1,3};nr_put(result+4,request_id,8);
+        if(emit(19,result,sizeof result,now,now_ns)) {
+            memcpy(prepared_result,result,sizeof result);reception_snapshot_queued();
         }
     }
     nr_sample_t sample={.expectation_id=expectation.id,.utc=accepted_utc+(now-accepted_ms)/1000,.uptime_ms=now,
@@ -92,7 +98,8 @@ uint8_t reception_poll(const gnss_status_t *status,uint64_t now,uint64_t (*now_n
     latest=sample;
     bool online=pusher_connected();if(online&&!was_online)upload_event=0;was_online=online;
     if(now>=next_report) {
-        next_report=now+1000;uint8_t wire[NR_SAMPLE_SIZE];nr_encode_sample(wire,&latest);emit(17,wire,sizeof wire,now,now_ns);
+        next_report=now+1000;uint8_t wire[NR_SAMPLE_SIZE];
+        if(expectation.id || latest.event || latest.alarm) {nr_encode_sample(wire,&latest);emit(17,wire,sizeof wire,now,now_ns);}
         nr_sample_t event;
         if(online && journal_reception_next(upload_event,&event)) {
             nr_encode_sample(wire,&event);if(emit(18,wire,sizeof wire,now,now_ns))upload_event=event.event;
@@ -101,7 +108,7 @@ uint8_t reception_poll(const gnss_status_t *status,uint64_t now,uint64_t (*now_n
     return machine.alarm;
 }
 bool reception_snapshot_due(uint64_t now)
-{return snapshot_needed && now>=request_ms+1000;}
+{return snapshot_needed && now>=request_ms+1000 && (!request_id || now<request_deadline);}
 size_t reception_snapshot_append(uint8_t *body,size_t length,size_t cap,const gnss_status_t *status,uint64_t now)
 {
     if(!snapshot_needed || !request_id || !length)return length;

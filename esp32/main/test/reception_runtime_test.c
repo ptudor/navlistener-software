@@ -83,5 +83,11 @@ int main(void)
     // Reconnect uploads retained history without deleting the local evidence.
     connected=true;next_report=0;poll(&s,334,true);
     assert(last_tag==18 && persisted_count>=4 && upload_event==persisted[0].event);
+    // A delayed board pass reports expiration without starting late conversions.
+    reception_snapshot_queued();nr_put(request+4,43,8);nr_put(request+12,fake_utc+2,8);
+    reception_control(NR_F_SNAPSHOT,request,sizeof request);poll(&s,335,true);
+    assert(!reception_snapshot_due(337000));
+    next_report=UINT64_MAX;poll(&s,337,true);
+    assert(last_tag==19 && last_value[1]==3 && completed_request==43 && !snapshot_needed);
     puts("edge reception: offline alarm, persistence, expiry, fresh recovery, snapshot retry and reconnect passed");
 }

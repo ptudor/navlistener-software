@@ -102,4 +102,12 @@ func TestReceptionBoardHistoryAndIndependentCheck(t *testing.T) {
 	if s.LiveReceivers(now) != 0 {
 		t.Fatal("assessment invented live RF")
 	}
+	for event := uint64(10); event <= 50; event++ {
+		apply(event, &ingest.ObserverDetails{UptimeMS: event, ReceptionEvent: &reception.Sample{Boot: 1, Event: event}})
+	}
+	apply(51, &ingest.ObserverDetails{UptimeMS: 51, ReceptionEvent: &reception.Sample{Boot: 1, Event: 1}})
+	b = s.FeedStationBoards(now)["edge"]
+	if len(b.ReceptionEvents) != 32 || b.ReceptionEvents[0].Details.ReceptionEvent.Event != 19 || b.ReceptionEvents[31].Details.ReceptionEvent.Event != 50 {
+		t.Fatal("reconnect replay evicted newer journal evidence")
+	}
 }

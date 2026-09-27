@@ -11,12 +11,17 @@ manifest EEPROM identity, and GNSS/RTC pulse timing. Temperatures remain separat
 pressure is local absolute pressure. Pulse periods use the ESP capture clock and
 wrapped RTC/GNSS phase does not measure UTC accuracy.
 
-The detail screen refreshes an available private timing stream once per second
+The detail screen refreshes an available private timing or reception stream once per second
 while active. Other observer polling retains its 30-second cadence. Sensor and
 timing reports have separate freshness indicators, and cached samples remain
 marked stale. A recent receipt with no sample UTC cannot establish replay age.
 Board diagnostics do not change the collector's GNSS integrity verdict. Public
 feeds do not contain board telemetry.
+
+Expected reception shows observed/expected counts and separate edge and collector
+verdicts for each constellation. An alarm from either contributes a station
+warning. Unknown or stale coverage keeps a reported alarm visible as held, and
+disagreement remains explicit. See [reception rules](../docs/RECEPTION.md).
 
 The latest receiver interference context shows its transition report and the
 preceding report from the same boot. This is bounded live context; the app does

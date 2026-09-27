@@ -2,8 +2,8 @@
 
 The S3 records a bounded history of boots, firmware identity and health in a
 dedicated 512 KiB NVS partition. It works before network provisioning and without
-the optional EEPROM. It does not store GNSS observations or make the PSRAM spool
-durable.
+the optional EEPROM. It also retains reception assessments; it does not store
+continuous raw GNSS frames or make the PSRAM transport spool durable.
 
 ## FIFO retention and failures
 
@@ -38,11 +38,12 @@ record failures before the application reaches its journal startup call.
 
 ## Interpreting the records
 
-Every record includes the firmware version, application ELF SHA-256, running
+Lifecycle and health records include the firmware version, application ELF SHA-256, running
 partition, boot identity, monotonic uptime, reset reason and wall-clock source.
 The ELF hash distinguishes binaries with the same version string; it is **not**
 the download binary hash used to authorize OTA. Boot identity is the boot record's
-lifecycle sequence, not a contiguous lifetime reboot count.
+lifecycle sequence, not a contiguous lifetime reboot count. Reception records
+refer to that boot identity and use their payload for the assessment instead.
 
 Wall time starts unknown. Time-anchor events pair UTC with uptime once a valid
 running RTC is read or GNSS passes the existing three-sample UTC checks. GNSS is
@@ -108,8 +109,16 @@ The event discriminator assigns bytes 68–143 of this event's 192-byte record t
 the versioned reception sample; other event layouts are unchanged. CRC and atomic
 NVS writes cover the entire record. No partition migration is needed.
 
+Reception `sample_unix` is the model-comparison clock: system wall time anchored
+to monotonic elapsed time, potentially initialized by SNTP. It is separate from
+the journal header's qualified `utc` and `time_source`. `measurement_uptime_ms`
+identifies the receiver measurement; the record's outer uptime is when the
+transition was logged.
+
 Read this lane with `tools/ota.py journal --lane reception --json`. Records remain
-until the bounded queue wraps; a local log is not an unlimited observation archive.
+until the bounded queue wraps. Reconnect uploads never delete them. The stored
+counts are readable without the forecast; the match bitmap needs the exact
+expectation ID's entry list. See [edge analysis](../../docs/RECEPTION.md).
 
 ## Installation and readout
 
@@ -134,7 +143,7 @@ python3 tools/ota.py --device observer.example.invalid journal \
 ```
 
 Readout is newest-first. `--json` includes all fields; decimal strings preserve
-64-bit integers. `/journal` accepts authenticated POSTs with `life\n<cursor>` or
+64-bit integers. `/journal` accepts authenticated POSTs with `life\n<cursor>`, `reception\n<cursor>` or
 `health\n<cursor>` bodies, using the `/ota` single-use nonce and a distinct
 `navfeeder-journal-v1\n` HMAC domain. Cursor zero starts at the newest record;
 subsequent cursors are exclusive sequence bounds, eight rows per page. Export

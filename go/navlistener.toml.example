@@ -230,3 +230,21 @@ ack_interval = "1s"
 # server_name = "caster.example" # optional TLS name override; addr host otherwise
 # Legacy plaintext requires allow_insecure_plaintext = true. Plaintext credentials additionally
 # require allow_plaintext_credentials = true and set a persistent degraded-security metric.
+
+# Optional ESP32 edge reception analysis. Use surveyed coordinates and enabled signals.
+# Forecasts use the station's organization/public view and another receiver's fresh
+# navigation witness. See docs/RECEPTION.md for coverage limits and snapshot controls.
+# [reception]
+# operator_token_sha256 = "<SHA-256 hex of a separate operator credential>"
+# [[reception.station]]
+# observer = "roof-observer"
+# position = [35.0, 140.0, 50.0] # replace: latitude degrees, longitude degrees, height m
+# signals = ["0:0", "2:0", "3:0", "6:0"]
+# per_signal = false
+# elevation_mask_degrees = 20
+# radius_m = 1000
+# alarm_seconds = 30
+# clear_seconds = 30
+# min_expected = 4
+# min_missing = 3
+# missing_percent = 50

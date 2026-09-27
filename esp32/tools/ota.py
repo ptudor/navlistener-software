@@ -124,16 +124,20 @@ def journal_detail(event, code):
 
 def print_journal(rows):
     events = {1: "boot", 2: "time-anchor", 3: "confirmed", 4: "OTA-ready",
-              5: "OTA-failed", 6: "checkpoint", 7: "hw-trust", 8: "commission"}
+              5: "OTA-failed", 6: "checkpoint", 7: "hw-trust", 8: "commission", 9: "reception"}
     sources = {0: "unknown", 1: "RTC", 2: "GNSS"}
     print("UTC                  SOURCE  BOOT   UPTIME(s) EVENT        FIRMWARE                         RESET FLAGS DROP DETAIL")
     for row in rows:
         utc = int(row["utc"])
+        detail = journal_detail(row["event"], row.get("error", 0))
+        if row["event"] == 9:
+            detail = (f"alarm=0x{row['alarm_mask']:02x} coverage=0x{row['valid_mask']:02x} "
+                      f"GPS={row['observed'][0]}/{row['expected'][0]} forecast={row['expectation_id']}")
         date = datetime.datetime.fromtimestamp(utc, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S") if utc else "unknown"
         print(f"{date:20} {sources.get(row['time_source'], '?'):7} {row['boot']:6} "
               f"{int(row['uptime_ms']) // 1000:9} {events.get(row['event'], '?'):12} "
               f"{row['firmware']:32} {row['reset_reason']:5} {row['flags']:02x} {row['dropped']} "
-              f"{journal_detail(row['event'], row.get('error', 0))}".rstrip())
+              f"{detail}".rstrip())
 
 
 def api_authorization(key, nonce, method, path, body):

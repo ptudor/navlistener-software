@@ -128,6 +128,9 @@ func decodeObserverDetails(b []byte) (*ObserverDetails, error) {
 			if tag == 17 {
 				d.Reception = &sample
 			} else {
+				if sample.Boot == 0 || sample.Event == 0 {
+					return nil, ErrBadTelemetry
+				}
 				d.ReceptionEvent = &sample
 			}
 		case 19:

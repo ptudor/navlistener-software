@@ -299,6 +299,9 @@ invalid lengths/enums/ranges, and trailing partial TLVs are rejected.
 | 14 humidity sensor | 2 | version U8 = 1, part U8: not listed=0, HDC2080=1, HDC2022=2, both listed=3 |
 | 15 pressure sensor | 2 | version U8 = 1, part U8 in tag 1's barometer slot: not listed=0, BMP388/BMP384=1, BMP580=2, BMP581=3, more than one listed=4 |
 | 16 rails | 27 | ZED/X20 INA3221 rail monitor; layout below |
+| 17 reception | 76 | Current edge assessment against a collector forecast; [layout and rules](RECEPTION.md) |
+| 18 reception event | 76 | A retained local journal transition; never advances the live evaluator |
+| 19 snapshot result | 12 | Version, result status, completed scopes, reserved zero, request ID; [contract](RECEPTION.md#repoll-and-submit) |
 
 Environment mask bits 0/1/2 identify MCP/HDC/BMP respectively; the BMP is the part
 tag 15 names, which on the ZED/X20 is the BMP581. Valid requires
@@ -552,6 +555,15 @@ ESP second. `rtc_minus_gnss_phase_ns` is wrapped phase, not UTC offset.
 `timing_stale` becomes true after five seconds without a receipt, or with an older
 known sample timestamp. Individual channel freshness is separate. Next-pulse
 TIM-TP metadata is not associated with a specific captured edge.
+
+`board.reception` is an independently paced assessment stream, with
+`details.reception` carrying the edge verdict and `collector_reception` carrying
+the collector's recomputed counts, alarm, disagreement mask and `per_signal`
+flag. Its `reception_stale` bound is 15 seconds. `board.reception_events` retains
+up to 32 local transitions, deduplicated by persistent boot/event identity;
+`board.snapshot` retains the latest command result. These reports do not replace
+environmental baselines or manufacture GNSS liveness. All use private board
+audience rules. [Reception semantics and retention](RECEPTION.md).
 
 `board.last_interference` retains the snapshot associated with the latest changed
 event counter and, when available, the preceding report from the same boot as

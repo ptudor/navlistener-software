@@ -1,6 +1,7 @@
 package state
 
 import (
+	"sort"
 	"time"
 
 	"github.com/ptudor/navlistener/internal/identity"
@@ -112,6 +113,9 @@ func (s *Store) applyBoard(f *ingest.RawFrame) {
 		}
 		if !duplicate {
 			old.receptionEvents = append(old.receptionEvents, sample)
+			sort.Slice(old.receptionEvents, func(i, j int) bool {
+				return old.receptionEvents[i].Details.ReceptionEvent.Event < old.receptionEvents[j].Details.ReceptionEvent.Event
+			})
 			if len(old.receptionEvents) > 32 {
 				old.receptionEvents = old.receptionEvents[1:]
 			}

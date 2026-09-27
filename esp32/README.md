@@ -150,7 +150,7 @@ NMEA locks the baud; 15 seconds without valid traffic restarts probing.
 `NVF_RX_CONFIGURE` configures only the receiver the manifest lists, once a MON-VER
 extension names it: `MOD=NEO-M9N` on the NEO, `MOD=ZED-X20P` on the ZED/X20 and
 `MOD=MAX-M10S` on the MAX. With no receiver listed, none is configured. It switches to `NVF_RX_BAUD`, then requests UBX output,
-SFRBX, MON-RF, NAV-SAT, NAV-PVT, NAV-STATUS and TIM-TP through RAM-only
+SFRBX, MON-RF, NAV-SAT, NAV-SIG, NAV-PVT, NAV-STATUS and TIM-TP through RAM-only
 CFG-VALSET. Firmware logs ACK/NAK and bounded timeouts for each message setting.
 Receiver flash and battery-backed configuration are not written. Any other model is
 observed without automatic configuration. The keys have the same IDs in the
@@ -474,10 +474,21 @@ digests, flash failures and simulated interruption boundaries. Radio/TLS behavio
 real power cuts, PSRAM behavior under flash writes and bootloader rollback still
 need hardware validation; the host facades do not model those physical effects.
 
-## Boot and health journal (ESP32-S3)
+## Reception alarms
 
-The S3 keeps two persistent FIFO histories in a dedicated 512 KiB NVS partition:
-256 lifecycle events and 1,024 hourly health checkpoints. New records replace
+The observer accepts a five-minute forecast from its authenticated collector,
+compares expected satellites or signal groups with fresh NAV-SAT/NAV-SIG tracking,
+and raises its own alarm after the configured dwell. An affected constellation
+alternates green and yellow on a 500 ms full cycle; the uplink column retains its
+connectivity indication. Unknown coverage cannot clear an alarm. A restored
+journal alarm remains visible after reboot until fresh evidence confirms recovery.
+The collector can also request a fresh receiver/RF/environment snapshot.
+See [station configuration, wire contract and limitations](../docs/RECEPTION.md).
+
+## Boot, health and reception journal (ESP32-S3)
+
+The S3 keeps three persistent FIFO histories in a dedicated 512 KiB NVS partition:
+256 lifecycle events, 1,024 hourly health checkpoints and 128 reception transitions. New records replace
 the oldest automatically; logging errors disable logging while GNSS collection
 continues. Boot records include firmware version/ELF hash, reset reason and
 uptime. Qualified GNSS or running-RTC time anchors preserve clock provenance.

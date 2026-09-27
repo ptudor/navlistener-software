@@ -9,6 +9,11 @@ decoded, checked, and made available through a versioned JSON API and event stre
 An optional TimescaleDB historian stores raw frames, snapshots, and events for
 later analysis and replay.
 
+Configured ESP32 stations receive expected-reception forecasts and compare them
+with local satellite or signal tracking. They raise and journal their own alarms;
+the collector independently checks their reports. Affected constellation LEDs
+alternate green/yellow every 250 ms. See [edge reception alarms](docs/RECEPTION.md).
+
 The repository includes a reusable Go GNSS library, the collector, C and ESP32
 feeders, and an Apple station-monitoring app. ESP32 firmware supports the custom
 ESP32-S3 observer with 16 MiB flash and 8 MiB PSRAM; the earlier ESP32-C6

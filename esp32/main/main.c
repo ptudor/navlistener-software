@@ -576,7 +576,9 @@ void app_main(void)
         .tunnel_host = tunnel_collector_address(), // NULL without a started tunnel
         .tunnel_up = tunnel_up,
         .update_control = nvf_update_control,
+#if CONFIG_NVF_BOARD_GNSS_COLOR
         .reception_control = reception_control,
+#endif
         .evidence = session_evidence,
         .hardware_trust = nvf_mcu_identity_verdict,
     };
