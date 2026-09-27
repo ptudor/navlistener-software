@@ -48,7 +48,10 @@ CREATE TABLE IF NOT EXISTS navl_devices (
          OR (board_uid IS NOT NULL AND observer_id='board-' || CASE board_uid_kind
              WHEN 'serial128' THEN '0003' WHEN 'st_uid128' THEN '0004' END || '-' || board_uid
              AND core_record IS NOT NULL AND octet_length(core_record)=72
-             AND commissioning_record IS NOT NULL AND octet_length(commissioning_record)=252))
+             AND commissioning_record IS NOT NULL AND octet_length(commissioning_record)=252)),
+    -- Board names belong to boards: a software station may not take one, in any case.
+    CONSTRAINT navl_devices_board_namespace CHECK
+        (board_uid IS NOT NULL OR lower(left(observer_id, 6)) <> 'board-')
 );
 -- Upgrade typed identity constraints in existing v1-v3 databases atomically.
 -- v1 used PostgreSQL's unnamed check names; v2 and v3 named them. v3 named the kinds
@@ -90,6 +93,24 @@ BEGIN
                      AND commissioning_record IS NOT NULL AND octet_length(commissioning_record)=252));
     END IF;
 END $upgrade$;
+-- Reserve the board namespace in a database created before it was reserved. A
+-- software station already holding a board name stops the upgrade and is named:
+-- revoke it and enroll it again under a name of its own.
+DO $namespace$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='navl_devices'::regclass
+                   AND conname='navl_devices_board_namespace') THEN
+        IF EXISTS (SELECT 1 FROM navl_devices
+                   WHERE board_uid IS NULL AND lower(left(observer_id, 6)) = 'board-') THEN
+            RAISE EXCEPTION 'software stations hold names reserved for boards: %',
+                (SELECT string_agg(observer_id, ', ') FROM navl_devices
+                 WHERE board_uid IS NULL AND lower(left(observer_id, 6)) = 'board-')
+                USING HINT = 'Observer ids beginning "board-" are derived from a board''s factory serial. Revoke these stations and enroll them under other names before upgrading.';
+        END IF;
+        ALTER TABLE navl_devices ADD CONSTRAINT navl_devices_board_namespace CHECK
+            (board_uid IS NOT NULL OR lower(left(observer_id, 6)) <> 'board-');
+    END IF;
+END $namespace$;
 -- The recorded RTC is not part of a board's identity. An RTC moved to another
 -- board is recorded there too, so its factory serial need not be unique.
 ALTER TABLE navl_devices DROP CONSTRAINT IF EXISTS navl_devices_rtc_eui64_key;

@@ -45,6 +45,7 @@ final class ESPObserverTransport: ObserverProvisioningTransport, @preconcurrency
     private var onDisconnect: (@Sendable () -> Void)?
     private var hasStartedSearch = false
     private(set) var supportsTunnel = false
+    private(set) var supportsIdentity = false
 
     func connect(label: ObserverSetupLabel) async throws {
         disconnect()
@@ -72,7 +73,9 @@ final class ESPObserverTransport: ObserverProvisioningTransport, @preconcurrency
                                 switch status {
                                 case .connected:
                                     if self.supports(device) {
-                                        self.supportsTunnel = ObserverSetupContract.supportsTunnel(device.versionInfo as? [String: Any])
+                                        let version = device.versionInfo as? [String: Any]
+                                        self.supportsTunnel = ObserverSetupContract.supportsTunnel(version)
+                                        self.supportsIdentity = ObserverSetupContract.supportsIdentity(version)
                                         complete(.success(()))
                                     } else {
                                         complete(.failure(.incompatibleDevice))
@@ -115,15 +118,26 @@ final class ESPObserverTransport: ObserverProvisioningTransport, @preconcurrency
         return try await send(path: "nav-tunnel", data: data)
     }
 
+    func identity() async throws -> String? {
+        guard supportsIdentity else { throw ObserverSetupError.incompatibleDevice }
+        return try await exchange(path: "nav-identity", data: ObserverSetupIdentity.request,
+                                  parse: ObserverSetupIdentity.parse)
+    }
+
     private func send(path: String, data: Data) async throws -> ObserverSetupReply {
+        try await exchange(path: path, data: data, parse: ObserverSetupReply.parse)
+    }
+
+    private func exchange<Value: Sendable>(path: String, data: Data,
+                                           parse: @escaping @Sendable (Data) throws -> Value) async throws -> Value {
         let device = try connectedDevice()
         let operation = generation
         defer { if generation == operation { onDisconnect = nil } }
-        return try await ProvisioningRequest<ObserverSetupReply>().run { complete in
+        return try await ProvisioningRequest<Value>().run { complete in
             onDisconnect = { complete(.failure(.connection)) }
             device.sendData(path: path, data: data) { response, error in
                 guard error == nil, let response else { complete(.failure(.connection)); return }
-                do { complete(.success(try ObserverSetupReply.parse(response))) }
+                do { complete(.success(try parse(response))) }
                 catch { complete(.failure(.invalidResponse)) }
             }
         }
@@ -166,6 +180,7 @@ final class ESPObserverTransport: ObserverProvisioningTransport, @preconcurrency
         device = nil
         label = nil
         supportsTunnel = false
+        supportsIdentity = false
         callback?()
     }
 

@@ -225,9 +225,12 @@ provenance. No flat cross-customer trust list exists.
 `go/internal/ingest/push.go`): the chain's leaf must carry **exactly one DNS SAN**, byte-equal
 to the canonical observer id, and that id must satisfy `config.ValidObserverID` — `[A-Za-z0-9.-]`
 only. The comparison is byte-exact rather than DNS-case-insensitive, so the rendering is fixed by
-convention and not negotiable per device: **lowercase, hyphen-separated byte pairs, bare label**
-(`00-04-a3-ff-fe-12-34-56`). Rationale and the rejected alternatives are in
-`docs/HARDWARE-OBSERVER.md §4.2`. A CSR that sets only a CN is rejected at handshake.
+convention and not negotiable per device: a hardware observer is
+**`board-<four lowercase hex kind digits>-<full lowercase UID hex>`**
+(`board-0003-00112233445566778899aabbccddeeff`), defined in [BOARD-IDENTITY.md](BOARD-IDENTITY.md).
+Names beginning `board-` are reserved for hardware enrollment. Rationale and the rejected
+alternatives are in `docs/HARDWARE-OBSERVER.md §4.2`. A CSR that sets only a CN is rejected at
+handshake.
 
 > Authentication binds a connection to an observer. It does not establish that
 > the received signal or the observer's timestamp is correct. Orbit, clock, and RF

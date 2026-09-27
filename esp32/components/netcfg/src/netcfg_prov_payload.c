@@ -31,8 +31,10 @@ bool netcfg_prov_decode(const uint8_t *data, size_t size, netcfg_t *out,
     const size_t host_len = data[7];
     const size_t station_len = data[8];
     const size_t token_len = data[9];
+    // An empty station is how the app provisions a commissioned board, which names itself;
+    // whether this board may take one is decided below, not by the framing.
     if (!host_len || host_len >= sizeof out->host ||
-        !station_len || station_len >= sizeof out->station ||
+        station_len >= sizeof out->station ||
         !token_len || token_len >= sizeof out->token)
         return fail(error, error_cap, "invalid field length");
     if (size != REQUEST_HEADER_SIZE + host_len + station_len + token_len)
@@ -51,6 +53,10 @@ bool netcfg_prov_decode(const uint8_t *data, size_t size, netcfg_t *out,
     out->port = (int)port;
     out->insecure = false;
 
+    if (!netcfg_station_input_ok(out->station, error, error_cap)) {
+        memset(out, 0, sizeof *out);
+        return false;
+    }
     // Reuse the same completeness rule as the browser and boot paths. A local
     // placeholder isolates validation of the three app fields from Wi-Fi,
     // which arrives through the standard provisioning endpoint.
@@ -68,4 +74,21 @@ void netcfg_prov_encode_response(uint8_t out[NETCFG_PROV_RESPONSE_SIZE],
 {
     memcpy(out, "NVR1", 4);
     out[4] = (uint8_t)status;
+}
+
+bool netcfg_prov_identity_request(const uint8_t *data, size_t size)
+{
+    return data && size == 4 && !memcmp(data, "NVI1", 4);
+}
+
+size_t netcfg_prov_encode_identity(uint8_t out[NETCFG_PROV_IDENTITY_MAX], const char *observer)
+{
+    if (!out || !observer) return 0;
+    size_t n = 0;
+    while (n < NVF_BOARD_OBSERVER_SIZE && observer[n]) n++;
+    if (n >= NVF_BOARD_OBSERVER_SIZE || !printable((const uint8_t *)observer, n)) return 0;
+    memcpy(out, "NVI1", 4);
+    out[4] = (uint8_t)n;
+    memcpy(out + 5, observer, n);
+    return 5 + n;
 }

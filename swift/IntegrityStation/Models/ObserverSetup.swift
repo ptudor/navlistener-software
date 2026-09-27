@@ -56,13 +56,14 @@ struct ObserverSetupConfig: Sendable {
     let enrollmentToken: String
 
     /// Exact NVF1 framing in esp32/docs/PROVISIONING.md. Never normalize tokens
-    /// or opaque station IDs, and never accept URLs in the host field.
+    /// or opaque station IDs, and never accept URLs in the host field. The station is
+    /// empty for a commissioned observer, which names itself (`ObserverSetupIdentity`).
     func encoded() throws -> Data {
         let hostBytes = Array(host.utf8)
         let stationBytes = Array(stationID.utf8)
         let tokenBytes = Array(enrollmentToken.utf8)
         guard port > 0, (1...63).contains(hostBytes.count),
-              (1...32).contains(stationBytes.count), (1...128).contains(tokenBytes.count),
+              (0...32).contains(stationBytes.count), (1...128).contains(tokenBytes.count),
               [hostBytes, stationBytes, tokenBytes].allSatisfy({ $0.allSatisfy { (32...126).contains($0) } }),
               !host.contains("://"), !host.contains("/"), !host.contains("@"),
               !host.contains(" "), !host.contains("?"), !host.contains("#")
@@ -70,6 +71,37 @@ struct ObserverSetupConfig: Sendable {
         return Data([0x4e, 0x56, 0x46, 0x31, 0, UInt8(port >> 8), UInt8(port & 0xff),
                      UInt8(hostBytes.count), UInt8(stationBytes.count), UInt8(tokenBytes.count)]
                     + hostBytes + stationBytes + tokenBytes)
+    }
+}
+
+/// nav-identity v1 (esp32/docs/PROVISIONING.md): a commissioned observer answers with the
+/// observer id its commissioning record names. The collector accepts its evidence only under
+/// that name, so the app sends no station ID and confirms the observer under this one.
+enum ObserverSetupIdentity {
+    static let request = Data("NVI1".utf8)
+
+    /// The commissioned observer id, or nil for an observer that must be given a station ID.
+    /// Anything but a canonical `board-<four hex>-<hex>` name is refused, so a faulty device
+    /// cannot place an arbitrary string in the app's station list.
+    static func parse(_ data: Data) throws -> String? {
+        let bytes = Array(data)
+        guard bytes.count >= 5, bytes.prefix(4).elementsEqual(Array("NVI1".utf8)),
+              Int(bytes[4]) == bytes.count - 5 else { throw ObserverSetupError.invalidResponse }
+        if bytes[4] == 0 { return nil }
+        guard let name = String(bytes: bytes[5...], encoding: .ascii), isBoardObserver(name)
+        else { throw ObserverSetupError.invalidResponse }
+        return name
+    }
+
+    /// `board-` + four lowercase hex kind digits + `-` + a whole number of lowercase hex
+    /// bytes (docs/BOARD-IDENTITY.md). Values are 1 to 32 bytes on the wire.
+    static func isBoardObserver(_ name: String) -> Bool {
+        let bytes = Array(name.utf8)
+        let hex: (UInt8) -> Bool = { (48...57).contains($0) || (97...102).contains($0) }
+        let value = bytes.dropFirst(11)
+        return bytes.count > 11 && bytes.prefix(6).elementsEqual(Array("board-".utf8)) &&
+            bytes[6...9].allSatisfy(hex) && bytes[10] == UInt8(ascii: "-") &&
+            value.count % 2 == 0 && value.count <= 64 && value.allSatisfy(hex)
     }
 }
 
@@ -91,6 +123,15 @@ enum ObserverSetupContract {
         guard let prov = version?["prov"] as? [String: Any], prov["sec_ver"] as? Int == 2,
               let app = version?["navfeeder"] as? [String: Any],
               let capabilities = app["cap"] as? [String], capabilities.contains("nav-config-v1")
+        else { return false }
+        return true
+    }
+
+    /// True when the device can report a commissioned name (nav-identity-v1). A device
+    /// without it always needs the station ID typed in.
+    static func supportsIdentity(_ version: [String: Any]?) -> Bool {
+        guard supports(version), let app = version?["navfeeder"] as? [String: Any],
+              let capabilities = app["cap"] as? [String], capabilities.contains("nav-identity-v1")
         else { return false }
         return true
     }

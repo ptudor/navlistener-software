@@ -253,10 +253,15 @@ the [journal](JOURNAL.md#hardware-trust-and-commissioning-events), and reports
 the latest values as `hardware_trust`, `evidence_error` and
 `commissioning_record` in `tools/ota.py status`.
 
-A collector accepts evidence only for the observer it names, so the station name
-must be the canonical typed UID label, such as
-`board-0003-00112233445566778899aabbccddeeff`. The firmware warns at startup when the configured
-station differs.
+A collector accepts evidence only for the observer it names, so a commissioned
+board names itself: from the boot after `install`, it connects as the observer ID
+its record names, such as `board-0003-00112233445566778899aabbccddeeff`, whatever
+station was provisioned. The name comes from the installed record rather than a
+live EEPROM read, so a failed bus read cannot rename the unit; each session still
+re-checks the live board before presenting evidence. Provisioning a commissioned
+board supplies only the collector and its enrollment token
+([provisioning](PROVISIONING.md#nav-config-endpoint)). A station provisioned before
+commissioning is ignored, with a warning at boot naming the observer ID in use.
 
 ## Bench sequence
 
@@ -278,9 +283,11 @@ passed test:
    trusted statement needs `security` 31; nothing less validates.
 6. `commission install <record>`. The firmware refuses a record that claims a
    lock state the chip does not report, so a trusted record cannot be installed
-   on an unsealed chip either.
-7. Provision the station with the observer id as its station name and confirm
-   the collector answers `trusted`.
+   on an unsealed chip either. Reset the board: it reads its name from the record
+   at boot.
+7. Enroll the observer ID the record names, provision the board with the
+   collector and that enrollment's token (no station ID), and confirm the
+   collector answers `trusted`.
 
 Open board: steps 2, 5 (an open statement), 6 and 7, on an open build. No eFuse
 changes at any point.

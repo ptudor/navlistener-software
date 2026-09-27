@@ -24,6 +24,7 @@
 
 #define NAV_CONFIG_ENDPOINT "nav-config"
 #define NAV_TUNNEL_ENDPOINT "nav-tunnel"
+#define NAV_IDENTITY_ENDPOINT "nav-identity"
 #define SECURITY2_SALT_LEN 16
 
 static const char *TAG = "netcfg_ble";
@@ -122,6 +123,34 @@ static esp_err_t nav_config_handler(uint32_t session_id,
     netcfg_prov_encode_response(response, status);
     *outbuf = response;
     *outlen = NETCFG_PROV_RESPONSE_SIZE;
+    return ESP_OK;
+}
+
+// nav-identity tells the app whether this board names itself, and by what name, so it can
+// leave the station id out of nav-config and confirm the observer at the collector under that
+// name. A request that is not exactly NVI1 gets no answer.
+static esp_err_t nav_identity_handler(uint32_t session_id,
+                                      const uint8_t *inbuf, ssize_t inlen,
+                                      uint8_t **outbuf, ssize_t *outlen,
+                                      void *priv_data)
+{
+    (void)session_id;
+    (void)priv_data;
+    if (!outbuf || !outlen) return ESP_ERR_INVALID_ARG;
+    if (inlen < 0 || !netcfg_prov_identity_request(inbuf, (size_t)inlen)) {
+        ESP_LOGW(TAG, "rejected nav-identity request");
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint8_t *response = malloc(NETCFG_PROV_IDENTITY_MAX);
+    if (!response) return ESP_ERR_NO_MEM;
+    const netcfg_board_t board = netcfg_board();
+    const size_t size = netcfg_prov_encode_identity(response, board.observer);
+    if (!size) {
+        free(response);
+        return ESP_ERR_INVALID_STATE;
+    }
+    *outbuf = response;
+    *outlen = (ssize_t)size;
     return ESP_OK;
 }
 
@@ -270,14 +299,16 @@ esp_err_t netcfg_ble_start(const netcfg_setup_credentials_t *credentials)
 
     // The app checks these capabilities before sending anything: a build without tunnel
     // support advertises no nav-tunnel-v1, so a profile is refused app-side, never dropped.
+    // nav-identity-v1 says the station id may be left to the board's commissioning record.
 #if CONFIG_NVF_WIREGUARD
-    const char *capabilities[] = { "nav-config-v1", "nav-tunnel-v1" };
+    const char *capabilities[] = { "nav-config-v1", "nav-identity-v1", "nav-tunnel-v1" };
 #else
-    const char *capabilities[] = { "nav-config-v1" };
+    const char *capabilities[] = { "nav-config-v1", "nav-identity-v1" };
 #endif
     const uint8_t capability_count = sizeof capabilities / sizeof capabilities[0];
     if ((err = wifi_prov_mgr_set_app_info("navfeeder", "1", capabilities, capability_count)) != ESP_OK ||
         (err = wifi_prov_mgr_endpoint_create(NAV_CONFIG_ENDPOINT)) != ESP_OK ||
+        (err = wifi_prov_mgr_endpoint_create(NAV_IDENTITY_ENDPOINT)) != ESP_OK ||
 #if CONFIG_NVF_WIREGUARD
         (err = wifi_prov_mgr_endpoint_create(NAV_TUNNEL_ENDPOINT)) != ESP_OK ||
 #endif
@@ -287,6 +318,8 @@ esp_err_t netcfg_ble_start(const netcfg_setup_credentials_t *credentials)
                                                 credentials->name, NULL)) != ESP_OK ||
         (err = wifi_prov_mgr_endpoint_register(NAV_CONFIG_ENDPOINT,
                                                nav_config_handler, NULL)) != ESP_OK ||
+        (err = wifi_prov_mgr_endpoint_register(NAV_IDENTITY_ENDPOINT,
+                                               nav_identity_handler, NULL)) != ESP_OK ||
 #if CONFIG_NVF_WIREGUARD
         (err = wifi_prov_mgr_endpoint_register(NAV_TUNNEL_ENDPOINT,
                                                nav_tunnel_handler, NULL)) != ESP_OK ||
@@ -297,8 +330,8 @@ esp_err_t netcfg_ble_start(const netcfg_setup_credentials_t *credentials)
         return err;
     }
 
-    ESP_LOGI(TAG, "BLE provisioning ready: name='%s', Security 2, endpoints='%s'%s",
-             credentials->name, NAV_CONFIG_ENDPOINT,
+    ESP_LOGI(TAG, "BLE provisioning ready: name='%s', Security 2, endpoints='%s', '%s'%s",
+             credentials->name, NAV_CONFIG_ENDPOINT, NAV_IDENTITY_ENDPOINT,
              CONFIG_NVF_WIREGUARD ? ", '" NAV_TUNNEL_ENDPOINT "'" : "");
     return ESP_OK;
 }

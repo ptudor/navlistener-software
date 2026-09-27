@@ -257,7 +257,7 @@ static void ui_task(void *arg)
         bool online = uplink_online();
 
         nvf_status_t st = {
-            .station = g_cfg.station,
+            .station = netcfg_station(&g_cfg),
             .collector = s_collector[0] ? s_collector : NULL,
             .wifi_up = online,
             .link_up = link,
@@ -480,9 +480,21 @@ void app_main(void)
     // token), not just "ssid and host are set", and names the field that failed. A unit
     // half-provisioned via Kconfig or external NVS tooling raises the portal instead of
     // looping forever on WiFi/TLS/auth with no way back except a serial cable.
+    //
+    // A commissioned board names itself: the collector accepts its evidence only under the
+    // observer id its record names (board-<kind>-<serial>), so that is the station it connects
+    // as, never a typed-in one. The name comes from the installed record rather than a live
+    // EEPROM read, so a failed bus read cannot rename the unit; each session's evidence still
+    // re-checks the live board before anything is presented.
     char cfg_err[NETCFG_ERR_CAP] = {0};
-    netcfg_set_board((netcfg_board_t){.wired_uplink = observer_board_wired_uplink(),
-                                      .sensor_settings = observer_board_sensor_settings()});
+    netcfg_board_t board = {.wired_uplink = observer_board_wired_uplink(),
+                            .sensor_settings = observer_board_sensor_settings()};
+    uint8_t commissioning[NVF_COMMISSION_RECORD_SIZE];
+    nvf_commission_statement_t commissioned;
+    if (nvf_mcu_identity_record(commissioning) &&
+        nvf_commission_record_parse(commissioning, sizeof commissioning, &commissioned))
+        nvf_commission_observer_id(commissioned.board_uid, board.observer);
+    netcfg_set_board(board);
     bool provisioned = netcfg_load(&g_cfg, cfg_err, sizeof cfg_err);
     // Where the BOOT button steps the panel brightness, it does so in setup mode too.
     // Start its task before the unprovisioned path returns to the portal.
@@ -526,18 +538,15 @@ void app_main(void)
     // fill s_collector BEFORE ui_task starts reading it — otherwise the write races
     // the reader (formally UB; in practice a partial/empty collector string on one frame).
     snprintf(s_collector, sizeof s_collector, "%s:%d", g_cfg.host, g_cfg.port);
-    // The collector accepts evidence only for the observer it names: the record's typed
-    // board UID as board-<kind>-<serial> in lowercase hex. Say so here, where the
-    // cause is visible, rather than leaving an `identity` rejection to be puzzled over.
-    uint8_t commissioning[NVF_COMMISSION_RECORD_SIZE];
-    nvf_commission_statement_t commissioned;
-    if (nvf_mcu_identity_record(commissioning) &&
-        nvf_commission_record_parse(commissioning, sizeof commissioning, &commissioned)) {
-        char observer[NVF_BOARD_OBSERVER_SIZE];
-        nvf_commission_observer_id(commissioned.board_uid, observer);
-        if (strcmp(observer, g_cfg.station))
-            ESP_LOGW(TAG, "station '%s' is not this board's commissioned observer id '%s'; a collector will reject its evidence",
-                     g_cfg.station, observer);
+    // A station provisioned before the board was commissioned is left in NVS but never used.
+    // Its enrollment token was issued for that name, so say which name is used instead.
+    if (netcfg_commissioned()) {
+        if (g_cfg.station[0])
+            ESP_LOGW(TAG, "ignoring provisioned station '%s': this board is commissioned as '%s'; "
+                          "provision it again with that name's enrollment token",
+                     g_cfg.station, netcfg_station(&g_cfg));
+        else
+            ESP_LOGI(TAG, "station '%s' from the commissioning record", netcfg_station(&g_cfg));
     }
     // the UI is non-essential — log a create failure but keep forwarding.
     if (xTaskCreate(ui_task, "ui", 4096, &s_parser, 4, NULL) != pdPASS)
@@ -568,7 +577,7 @@ void app_main(void)
         .host = g_cfg.host,
         .port = g_cfg.port,
         .token = g_cfg.token,
-        .station = g_cfg.station,
+        .station = netcfg_station(&g_cfg),
         .feed = "ubx",
         .session = s_session,
         .ca_pem = NULL, // P-hw: pin the collector CA; today rely on the Mozilla bundle or insecure

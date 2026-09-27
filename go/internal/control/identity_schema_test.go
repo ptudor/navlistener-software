@@ -127,6 +127,11 @@ func historicalSchema(t *testing.T, version int) string {
 	return old
 }
 
+func insertSoftware(ctx context.Context, db *pgxpool.Pool, observer string) error {
+	_, err := db.Exec(ctx, `INSERT INTO navl_devices(observer_id,current_enrollment_id) VALUES($1,'test')`, observer)
+	return err
+}
+
 func insertIdentity(ctx context.Context, db *pgxpool.Pool, observer, uid, kind string, n int) error {
 	_, err := db.Exec(ctx, insertDevice, observer, uid, kind, fmt.Sprintf("0123456789abcdef%02x", n),
 		make([]byte, 72), make([]byte, 252))
@@ -279,4 +284,51 @@ func TestFreshIdentitySchema(t *testing.T) {
 		}
 	}
 	assertIdentityConstraints(t, db)
+	assertBoardNamespace(t, db)
+}
+
+// assertBoardNamespace checks that the database, independently of Validate, keeps
+// board names for rows that carry a board identity.
+func assertBoardNamespace(t *testing.T, db *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	for _, name := range []string{"board-0003-fedcba9876543210fedcba9876543210", "BOARD-roof", "Board-"} {
+		if err := insertSoftware(ctx, db, name); err == nil {
+			t.Fatalf("a software station took the board name %q", name)
+		}
+	}
+	for _, name := range []string{"software-receiver", "roof-board-1"} {
+		if err := insertSoftware(ctx, db, name); err != nil {
+			t.Fatalf("refused software station %q: %v", name, err)
+		}
+	}
+}
+
+// A database created before the namespace was reserved upgrades when no software
+// station holds a board name, and otherwise refuses and names the stations.
+func TestBoardNamespaceUpgrade(t *testing.T) {
+	ctx := context.Background()
+	db := historicalDatabase(t, 3)
+	if err := insertSoftware(ctx, db, "legacy-receiver"); err != nil {
+		t.Fatal(err)
+	}
+	b := newBench(t)
+	b.service.DB = db
+	if err := b.service.Initialize(ctx, b.config); err != nil {
+		t.Fatal(err)
+	}
+	assertBoardNamespace(t, db)
+
+	squatted := historicalDatabase(t, 3)
+	for _, name := range []string{"board-0003-0123456789abcdef0123456789abcdef", "Board-Roof"} {
+		if err := insertSoftware(ctx, squatted, name); err != nil {
+			t.Fatalf("released schema refused %q: %v", name, err)
+		}
+	}
+	b.service.DB = squatted
+	err := b.service.Initialize(ctx, b.config)
+	if err == nil || !strings.Contains(err.Error(), "names reserved for boards") ||
+		!strings.Contains(err.Error(), "board-0003-0123456789abcdef0123456789abcdef") || !strings.Contains(err.Error(), "Board-Roof") {
+		t.Fatalf("upgrade with software stations holding board names: %v", err)
+	}
 }

@@ -489,9 +489,11 @@ These constraints are enforced at controlled enrollment and collector admission:
    invalid — as an observer id *and* as a DNS name.
 
    The canonical label is `board-<four lowercase hex kind digits>-<full UID hex>`.
-   It preserves the kind and all factory bytes. Certificate and configured station
-   must match exactly, including lowercase. The 24CS128 serial is kind `0003`, for
-   example `board-0003-00112233445566778899aabbccddeeff`.
+   It preserves the kind and all factory bytes. The certificate and the station the
+   observer connects as must match exactly, including lowercase; a commissioned board
+   connects under this name on its own rather than a provisioned one. The 24CS128
+   serial is kind `0003`, for example `board-0003-00112233445566778899aabbccddeeff`.
+   The `board-` prefix is reserved for hardware enrollment.
 
 3. **Exactly one SAN** — zero or two are both rejected.
 

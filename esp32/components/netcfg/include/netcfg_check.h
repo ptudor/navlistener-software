@@ -12,6 +12,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "../../../../common/board_uid.h" // NVF_BOARD_OBSERVER_SIZE
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -42,7 +44,7 @@ typedef struct {
     char host[64];       // collector hostname
     int  port;           // collector [push] port
     char token[129];     // bearer token
-    char station[33];    // observer/station id
+    char station[33];    // observer/station id; unused on a commissioned board (netcfg_station)
     bool insecure;       // skip TLS verification (dev only)
     netcfg_tunnel_t tunnel; // optional WireGuard profile; ignored unless enabled
 } netcfg_t;
@@ -56,15 +58,36 @@ typedef struct {
 // What this board's manifest lists that provisioning depends on. wired_uplink: an Ethernet
 // port the firmware drives, so the Wi-Fi network is optional. sensor_settings: sensors with
 // per-unit settings (the MAX's thermocouple notch and motion profile), which the setup page
-// then offers. Set once at boot, before netcfg_load; the default is neither.
-typedef struct { bool wired_uplink, sensor_settings; } netcfg_board_t;
+// then offers. observer: the observer id the board's installed commissioning record names
+// (board-<kind>-<serial>), or empty. A commissioned board names itself with it, because a
+// collector accepts its evidence only under that name. Set once at boot, before
+// netcfg_load; the default is none of these.
+typedef struct {
+    bool wired_uplink, sensor_settings;
+    char observer[NVF_BOARD_OBSERVER_SIZE];
+} netcfg_board_t;
 void netcfg_set_board(netcfg_board_t board);
 netcfg_board_t netcfg_board(void);
+
+// netcfg_commissioned reports whether the board names itself (netcfg_board_t.observer).
+bool netcfg_commissioned(void);
+
+// netcfg_station is the station id the unit connects as: the commissioned observer id on a
+// commissioned board, otherwise cfg's provisioned station. A station stored on a commissioned
+// board (provisioned before it was commissioned) is not an error, and is not used: the
+// record is the only name a collector will accept evidence under.
+const char *netcfg_station(const netcfg_t *cfg);
+
+// netcfg_station_input_ok checks a station id offered through a provisioning path. A
+// commissioned board accepts none, so an operator's typed name can never displace the
+// record's; an uncommissioned board leaves the requirement to netcfg_validate.
+bool netcfg_station_input_ok(const char *station, char *err, size_t errcap);
 
 // netcfg_validate reports whether cfg is complete enough to run: non-empty SSID, collector
 // host, bearer token, and station id, and a port in [1, 65535]. The WiFi password is NOT
 // required (open networks are legal). A board with a wired uplink (netcfg_set_board) does
-// not require the SSID either. An enabled tunnel
+// not require the SSID either, and a commissioned board does not require the station id,
+// which it takes from its record (netcfg_station). An enabled tunnel
 // profile must also pass netcfg_tunnel_validate; a disabled one is never inspected.
 //
 // On failure it writes a short human-readable reason into err (NUL-terminated, truncated to
@@ -76,7 +99,8 @@ netcfg_board_t netcfg_board(void);
 bool netcfg_validate(const netcfg_t *cfg, char *err, size_t errcap);
 
 // netcfg_validate_uplink is netcfg_validate for an explicit uplink: wired says the board has
-// an Ethernet port, so the Wi-Fi network is optional.
+// an Ethernet port, so the Wi-Fi network is optional. The station rule still follows the
+// board set by netcfg_set_board.
 bool netcfg_validate_uplink(const netcfg_t *cfg, bool wired, char *err, size_t errcap);
 
 // netcfg_has_wifi reports whether cfg names a Wi-Fi network to join. An SSID of only spaces

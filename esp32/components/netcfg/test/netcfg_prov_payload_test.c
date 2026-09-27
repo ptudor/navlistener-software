@@ -66,6 +66,21 @@ int main(void)
     assert(strlen(config.host) == 63 && strlen(config.station) == 32 &&
            strlen(config.token) == 128 && config.port == 65535);
 
+    // An uncommissioned board needs the operator's station id. A commissioned one names
+    // itself: the app sends an empty station, and a typed one is refused rather than stored.
+    size = request(data, sizeof data, 5580, "collector.example", "", "enrollment-token");
+    assert(!netcfg_prov_decode(data, size, &config, reason, sizeof reason));
+    assert(strstr(reason, "station") && !config.token[0]);
+    netcfg_board_t board = {0};
+    snprintf(board.observer, sizeof board.observer, "%s", "board-0003-00112233445566778899aabbccddeeff");
+    netcfg_set_board(board);
+    assert(netcfg_prov_decode(data, size, &config, reason, sizeof reason));
+    assert(!config.station[0] && !strcmp(config.token, "enrollment-token"));
+    size = request(data, sizeof data, 5580, "collector.example", "roof", "enrollment-token");
+    assert(!netcfg_prov_decode(data, size, &config, reason, sizeof reason));
+    assert(strstr(reason, "station") && !config.token[0] && !config.station[0]);
+    netcfg_set_board((netcfg_board_t){0});
+
     uint8_t response[NETCFG_PROV_RESPONSE_SIZE];
     for (int status = NETCFG_PROV_WAITING_FOR_WIFI;
          status <= NETCFG_PROV_SAVED_RESTART_REQUIRED; status++) {
@@ -73,6 +88,26 @@ int main(void)
         assert(!memcmp(response, "NVR1", 4) && response[4] == status);
     }
 
-    puts("netcfg BLE payload: bounds, truncation, text, port, maxima, and responses PASS");
+    // nav-identity: exactly "NVI1" asks; the answer carries the commissioned name, or an
+    // empty one from a board that must be given a station id.
+    assert(netcfg_prov_identity_request((const uint8_t *)"NVI1", 4));
+    assert(!netcfg_prov_identity_request((const uint8_t *)"NVI1", 3) &&
+           !netcfg_prov_identity_request((const uint8_t *)"NVI1x", 5) &&
+           !netcfg_prov_identity_request((const uint8_t *)"NVI2", 4) &&
+           !netcfg_prov_identity_request(NULL, 4));
+    uint8_t identity[NETCFG_PROV_IDENTITY_MAX];
+    const char *observer = "board-0003-00112233445566778899aabbccddeeff";
+    size = netcfg_prov_encode_identity(identity, observer);
+    assert(size == 5 + strlen(observer) && !memcmp(identity, "NVI1", 4) &&
+           identity[4] == strlen(observer) && !memcmp(identity + 5, observer, strlen(observer)));
+    assert(netcfg_prov_encode_identity(identity, "") == 5 && identity[4] == 0);
+    char longest[NVF_BOARD_OBSERVER_SIZE + 1];
+    memset(longest, 'b', sizeof longest - 1); longest[sizeof longest - 1] = 0;
+    assert(!netcfg_prov_encode_identity(identity, longest));
+    longest[NVF_BOARD_OBSERVER_SIZE - 1] = 0;
+    assert(netcfg_prov_encode_identity(identity, longest) == NETCFG_PROV_IDENTITY_MAX);
+    assert(!netcfg_prov_encode_identity(identity, "board\n") && !netcfg_prov_encode_identity(identity, NULL));
+
+    puts("netcfg BLE payload: bounds, truncation, text, port, maxima, commissioned station, identity, and responses PASS");
     return 0;
 }

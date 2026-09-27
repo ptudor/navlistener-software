@@ -8,7 +8,11 @@
 #include <string.h>
 
 static netcfg_board_t board;
-void netcfg_set_board(netcfg_board_t listed) { board = listed; }
+void netcfg_set_board(netcfg_board_t listed)
+{
+    board = listed;
+    board.observer[sizeof board.observer - 1] = '\0';
+}
 netcfg_board_t netcfg_board(void) { return board; }
 
 // set_err copies a reason, truncating cleanly. A NULL/zero-cap buffer is legal — callers that
@@ -32,6 +36,24 @@ static bool nonempty(const char *s)
 }
 
 bool netcfg_has_wifi(const netcfg_t *cfg) { return cfg && nonempty(cfg->wifi_ssid); }
+
+bool netcfg_commissioned(void) { return board.observer[0] != '\0'; }
+
+const char *netcfg_station(const netcfg_t *cfg)
+{
+    if (netcfg_commissioned()) return board.observer;
+    return cfg ? cfg->station : "";
+}
+
+bool netcfg_station_input_ok(const char *station, char *err, size_t errcap)
+{
+    if (netcfg_commissioned() && station && station[0]) {
+        set_err(err, errcap, "leave station id empty");
+        return false;
+    }
+    set_err(err, errcap, "");
+    return true;
+}
 
 bool netcfg_validate(const netcfg_t *cfg, char *err, size_t errcap)
 {
@@ -61,7 +83,10 @@ bool netcfg_validate_uplink(const netcfg_t *cfg, bool wired, char *err, size_t e
         set_err(err, errcap, "port out of range 1-65535");
         return false;
     }
-    if (!nonempty(cfg->station)) {
+    // A commissioned board is named by its record, so only an uncommissioned one needs a
+    // provisioned station id. Whatever a commissioned board has stored is left alone here:
+    // failing it would make netcfg_load discard an otherwise complete record.
+    if (!netcfg_commissioned() && !nonempty(cfg->station)) {
         set_err(err, errcap, "station id is empty");
         return false;
     }

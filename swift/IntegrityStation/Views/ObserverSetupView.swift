@@ -169,7 +169,18 @@ struct ObserverSetupView: View {
         Section("setup.collector.title") {
             TextField("setup.collector.host", text: $host).keyboardType(.URL)
             TextField("setup.collector.port", text: $port).keyboardType(.numberPad)
-            TextField("setup.collector.station", text: $stationID)
+            if let commissioned = provisioner.commissionedStationID {
+                LabeledContent {
+                    Text(verbatim: commissioned)
+                        .font(.footnote.monospaced())
+                        .textSelection(.enabled)
+                } label: {
+                    Text("setup.collector.station")
+                }
+                Text("setup.collector.station_commissioned").font(.caption).foregroundStyle(.secondary)
+            } else {
+                TextField("setup.collector.station", text: $stationID)
+            }
             SecureField("setup.collector.token", text: $enrollmentToken)
             Text("setup.collector.note").font(.caption).foregroundStyle(.secondary)
         }
@@ -203,7 +214,13 @@ struct ObserverSetupView: View {
     private func provision() async {
         message = nil
         guard let port = UInt16(port) else { message = ObserverSetupError.invalidConfig.localizedDescription; return }
-        let config = ObserverSetupConfig(host: host, port: port, stationID: stationID, enrollmentToken: enrollmentToken)
+        // A commissioned observer names itself: it is sent no station ID and is confirmed
+        // at the collector under its own name.
+        let commissioned = provisioner.commissionedStationID
+        let station = commissioned ?? stationID
+        guard !station.isEmpty else { message = ObserverSetupError.invalidConfig.localizedDescription; return }
+        let config = ObserverSetupConfig(host: host, port: port, stationID: commissioned == nil ? stationID : "",
+                                         enrollmentToken: enrollmentToken)
         do { _ = try config.encoded() } catch { message = error.localizedDescription; return }
         // Parse the optional WireGuard profile up front so a typo is caught before any BLE
         // traffic. An empty box means no tunnel; the field only appears when the device
@@ -223,8 +240,8 @@ struct ObserverSetupView: View {
                let payload = envelope.data, payload.schema == "2.0", payload.audience == session.audience.rawValue,
                (try? payload.validate()) != nil, let time = WireDate.parse(envelope.time),
                controller.store.activeSession == session, !Task.isCancelled {
-                let board = payload.observers?.first(where: { $0.id == stationID })?.board
-                confirmation = ObserverSetupConfirmation(stationID: stationID,
+                let board = payload.observers?.first(where: { $0.id == station })?.board
+                confirmation = ObserverSetupConfirmation(stationID: station,
                     previousBoot: (board?.latest ?? board?.timing)?.session, collectorTime: time)
                 confirmationSession = session
             }

@@ -35,7 +35,19 @@ a verifier that does not understand a code rejects it.
 JSON uses `board_uid_kind` and `board_uid` (lowercase hex, without separators).
 The observer identifier is `board-<four lowercase hex code digits>-<value hex>`.
 For example, `board-0003-00112233445566778899aabbccddeeff` retains all 128 bits.
-Identical value bytes under different kinds are different identities.
+Identical value bytes under different kinds are different identities, which is
+why the kind stays in the name: a bare serial would give two kinds one name.
+
+The `board-` prefix is reserved. Only a hardware enrollment, whose name must
+equal its verified typed UID, may use it; the control plane refuses a software
+station whose name begins `board-` in any letter case, so no station can present
+as a board or occupy a board's name before the board is enrolled. Software
+stations keep operator-assigned names outside that namespace.
+
+A commissioned observer names itself. Its firmware connects under the observer
+ID its installed commissioning record names and is provisioned without a station
+ID ([ESP32 provisioning](../esp32/docs/PROVISIONING.md#nav-config-endpoint)), so
+the name the collector checks evidence against is never typed by hand.
 
 The permanent core signs product, revision, the complete typed UID and ATECC
 serial. The typed UID is the public identity and the ATECC the private one;

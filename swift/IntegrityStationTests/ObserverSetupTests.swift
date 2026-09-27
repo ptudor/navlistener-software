@@ -32,6 +32,25 @@ import Testing
     }
     // Printable station IDs/tokens are preserved exactly, including whitespace.
     #expect(try ObserverSetupConfig(host: "collector.invalid", port: 1, stationID: " s ", enrollmentToken: " t ").encoded().suffix(6) == Data(" s  t ".utf8))
+    // A commissioned observer is sent no station ID: its length byte is zero.
+    let unnamed = try ObserverSetupConfig(host: "collector.invalid", port: 5580, stationID: "", enrollmentToken: "ingest-token").encoded()
+    #expect(unnamed[8] == 0 && String(data: unnamed.dropFirst(10), encoding: .utf8) == "collector.invalidingest-token")
+}
+
+@Test func identityResponseCarriesOnlyACanonicalBoardName() throws {
+    let name = "board-0003-00112233445566778899aabbccddeeff"
+    #expect(ObserverSetupIdentity.request == Data("NVI1".utf8))
+    #expect(try ObserverSetupIdentity.parse(Data("NVI1".utf8) + [UInt8(name.utf8.count)] + Data(name.utf8)) == name)
+    #expect(try ObserverSetupIdentity.parse(Data("NVI1".utf8) + [0]) == nil)
+    let framed: (String) -> Data = { Data("NVI1".utf8) + [UInt8($0.utf8.count)] + Data($0.utf8) }
+    for invalid in [Data(), Data("NVI1".utf8), Data("NVI2".utf8) + [0], Data("NVI1".utf8) + [1],
+                    Data("NVI1".utf8) + [0, 0x62], framed("roof"), framed("board-0003-"),
+                    framed("board-0003-0"), framed("BOARD-0003-0011"), framed("board-0003-00AA"),
+                    framed("board-003-0011"), framed("board-00030011"),
+                    framed("board-0003-" + String(repeating: "ab", count: 33))] {
+        #expect(throws: (any Error).self) { try ObserverSetupIdentity.parse(invalid) }
+    }
+    #expect(ObserverSetupIdentity.isBoardObserver("board-0004-20e00eff445566778899aabbccddeeff"))
 }
 
 @Test func provisioningResponsesAndSecurityNegotiationFailClosed() throws {
@@ -47,6 +66,9 @@ import Testing
     #expect(!ObserverSetupContract.supports(["prov": ["sec_ver": 0], "navfeeder": app]))
     #expect(!ObserverSetupContract.supports(["prov": ["sec_ver": 2], "navfeeder": ["cap": ["other"]]]))
     #expect(!ObserverSetupContract.supports(nil))
+    #expect(!ObserverSetupContract.supportsIdentity(["prov": ["sec_ver": 2], "navfeeder": app]))
+    #expect(ObserverSetupContract.supportsIdentity(["prov": ["sec_ver": 2], "navfeeder": ["cap": ["nav-config-v1", "nav-identity-v1"]]]))
+    #expect(!ObserverSetupContract.supportsIdentity(["prov": ["sec_ver": 1], "navfeeder": ["cap": ["nav-config-v1", "nav-identity-v1"]]]))
 }
 
 @MainActor private final class SetupTransportStub: ObserverProvisioningTransport {
@@ -56,7 +78,15 @@ import Testing
     var calls: [String] = []
     var gate: ConnectionBarrier?
     var supportsTunnel = false
+    var supportsIdentity = false
+    var commissioned: String?
+    var identityError: ObserverSetupError?
     func connect(label: ObserverSetupLabel) async throws { calls.append("connect") }
+    func identity() async throws -> String? {
+        calls.append("identity")
+        if let identityError { throw identityError }
+        return commissioned
+    }
     func networks() async throws -> [String] {
         if let gate { await gate.hold() }
         return ["Test Wi-Fi"]
@@ -109,6 +139,50 @@ import Testing
         transport.wifiError = nil
         await setup.provision(config, ssid: "Test Wi-Fi", password: "test-password")
         #expect(setup.stage == .awaitingCollector)
+    }
+
+    @Test func commissionedObserverIsSentNoStationAndConfirmedUnderItsOwnName() async {
+        let name = "board-0003-00112233445566778899aabbccddeeff"
+        let transport = SetupTransportStub()
+        transport.supportsIdentity = true
+        transport.commissioned = name
+        let setup = ObserverProvisioner(transport: transport)
+        await setup.connect(label)
+        #expect(setup.stage == .ready && setup.commissionedStationID == name)
+        // A typed station would displace the record's name; it is refused before any BLE call.
+        await setup.provision(config, ssid: "Test Wi-Fi", password: "test-password")
+        #expect(setup.stage == .ready && !transport.calls.contains("config"))
+        let unnamed = ObserverSetupConfig(host: "collector.invalid", port: 5580, stationID: "", enrollmentToken: "ingest-token")
+        await setup.provision(unnamed, ssid: "Test Wi-Fi", password: "test-password")
+        #expect(setup.stage == .awaitingCollector && setup.stationID == name)
+        #expect(transport.calls.suffix(3) == ["config", "wifi", "disconnect"])
+        setup.cancel()
+        #expect(setup.commissionedStationID == nil)
+    }
+
+    @Test func uncommissionedObserverNeedsAStationAndAFailedIdentityFailsTheConnection() async {
+        let transport = SetupTransportStub()
+        transport.supportsIdentity = true
+        let setup = ObserverProvisioner(transport: transport)
+        await setup.connect(label)
+        #expect(setup.stage == .ready && setup.commissionedStationID == nil && transport.calls.contains("identity"))
+        let unnamed = ObserverSetupConfig(host: "collector.invalid", port: 5580, stationID: "", enrollmentToken: "ingest-token")
+        await setup.provision(unnamed, ssid: "Test Wi-Fi", password: "test-password")
+        #expect(setup.stage == .ready && !transport.calls.contains("config"))
+        await setup.provision(config, ssid: "Test Wi-Fi", password: "test-password")
+        #expect(setup.stage == .awaitingCollector && setup.stationID == "roof")
+
+        // Firmware without nav-identity is never asked; one that cannot answer is not guessed at.
+        let older = SetupTransportStub()
+        let olderSetup = ObserverProvisioner(transport: older)
+        await olderSetup.connect(label)
+        #expect(olderSetup.stage == .ready && !older.calls.contains("identity"))
+        let failing = SetupTransportStub()
+        failing.supportsIdentity = true
+        failing.identityError = .connection
+        let failingSetup = ObserverProvisioner(transport: failing)
+        await failingSetup.connect(label)
+        #expect(failingSetup.stage == .idle && failingSetup.message != nil)
     }
 
     @Test func cancellingSetupRetiresALateScanResult() async {

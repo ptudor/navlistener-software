@@ -119,12 +119,15 @@ Security 2. The app should:
 3. establish the encrypted session and read `proto-ver`;
 4. require the `navfeeder` app capability `nav-config-v1` (and check for the
    optional `nav-tunnel-v1` capability before offering a WireGuard profile);
-5. send the collector settings to the custom `nav-config` endpoint;
-6. if the operator supplied a WireGuard profile and the device advertised
+5. if the device advertises `nav-identity-v1`, ask the `nav-identity` endpoint
+   whether the observer is commissioned, and if it is, show its name instead of
+   asking for a station ID;
+6. send the collector settings to the custom `nav-config` endpoint;
+7. if the operator supplied a WireGuard profile and the device advertised
    `nav-tunnel-v1`, send it to the `nav-tunnel` endpoint;
-7. use the standard provisioning API to scan for and submit the Wi-Fi SSID and
+8. use the standard provisioning API to scan for and submit the Wi-Fi SSID and
    password; and
-8. wait for Wi-Fi verification and the observer reboot.
+9. wait for Wi-Fi verification and the observer reboot.
 
 Firmware disables provisioning auto-stop, so the `nav-config`, `nav-tunnel` and
 Wi-Fi steps may arrive in any order. Sending `nav-config` (then `nav-tunnel`)
@@ -159,15 +162,30 @@ terminating NUL.
 | 4 | 1 | Flags; must be zero |
 | 5 | 2 | Collector TCP port, 1–65535 |
 | 7 | 1 | Collector host length, 1–63 |
-| 8 | 1 | Station ID length, 1–32 |
+| 8 | 1 | Station ID length, 0–32; see below |
 | 9 | 1 | Enrollment token length, 1–128 |
 | 10 | variable | Collector host bytes |
 | next | variable | Station ID bytes |
 | next | variable | Enrollment token bytes |
 
 The frame must end exactly after the token. Unknown flags, control bytes,
-length mismatch, empty fields, and invalid ports are rejected. The endpoint
-cannot set the development-only `insecure` flag.
+length mismatch, an empty host or token, and invalid ports are rejected. The
+endpoint cannot set the development-only `insecure` flag.
+
+The station ID depends on the observer:
+
+- An observer **without** a commissioning record needs one: the name its
+  enrollment token was issued for. An empty station ID is rejected.
+- A **commissioned** observer names itself, and the station ID must be empty.
+  It connects as the observer ID its record names, `board-<kind>-<serial>`
+  ([board identity](../../docs/BOARD-IDENTITY.md)), because a collector accepts
+  its hardware evidence only under that name. A non-empty station ID is
+  rejected, so a typed name can never displace the record's.
+
+A commissioned observer that still holds a station provisioned before it was
+commissioned ignores it and logs a warning at boot. That name's enrollment token
+is for a different observer, so provision the unit again with the token enrolled
+for its own name.
 
 The five-byte response is ASCII `NVR1` followed by one status byte:
 
@@ -184,6 +202,25 @@ operation completes the save and reboots the observer. A disconnect shortly
 after Wi-Fi success is therefore expected. On reconnect, the app should confirm
 that the observer appears as an enrolled station rather than assuming success
 from the BLE disconnect alone.
+
+## `nav-identity` endpoint
+
+Endpoint name: `nav-identity`. Advertised by the `nav-identity-v1` capability.
+Like every custom endpoint it answers only inside the Security 2 session, so the
+observer's name reaches a holder of the device label, not anyone in radio range.
+
+The request is exactly the four ASCII bytes `NVI1`; anything else gets an error
+rather than an answer. The response is `NVI1`, one length byte, and that many
+bytes of printable ASCII:
+
+| Length | Meaning |
+| ---: | --- |
+| 0 | No commissioning record: send a station ID in `nav-config` |
+| 1–75 | The commissioned observer ID: send an empty station ID, and confirm the observer at the collector under this name |
+
+The app accepts only a canonical `board-<four hex>-<hex>` name and treats
+anything else as an invalid response. A board reads its commissioning record at
+boot, so a record installed at the bench names the observer from its next boot.
 
 ## `nav-tunnel` endpoint
 
@@ -269,7 +306,9 @@ refused. Treat the profile as a secret: it contains the observer's private key.
 
 Join `navfeeder-XXYYZZ` with the password printed on the label, then open
 `http://192.168.4.1/`. Submit Wi-Fi, collector host/port, station ID, and
-enrollment token. On an `NVF_WIREGUARD` build the form also has an optional
+enrollment token. A commissioned observer shows its own observer ID in place of
+the station field and refuses a submitted one; saving also drops a station
+stored before the board was commissioned. On an `NVF_WIREGUARD` build the form also has an optional
 **WireGuard profile** box: paste the wg-quick `.conf` above to enable the
 tunnel, leave it empty to connect over the public endpoint, or clear a stored
 profile by submitting the box empty. The portal parses and validates the

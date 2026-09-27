@@ -117,7 +117,11 @@ Required request fields are `observer_id`, `operational_authority_id`,
 Hardware adds `manufacturer_authority_id`, `hardware_validation`, integer
 `product`/`revision`, `board_uid_kind` and lowercase unseparated hex `board_uid`, `atecc_serial`,
 `core_record` and `commissioning_record`. The observer ID is exactly lowercase
-`board-<four-digit kind code>-<full lowercase UID hex>`. Software omits all hardware fields.
+`board-<four-digit kind code>-<full lowercase UID hex>`. Software omits all hardware fields,
+and its observer ID may not begin `board-` in any letter case: that namespace belongs to
+hardware enrollment, and the database enforces it independently of the API. A database
+created before the reservation refuses to upgrade while a software station holds such a
+name, and names it; revoke that station and enroll it again under a name of its own.
 `csr_pem` and `certificate_pem` must be supplied together for mTLS or both omitted
 for bearer-only enrollment. Certificates contain no organization or manufacturer
 claims that override the server record.

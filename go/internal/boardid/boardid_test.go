@@ -70,3 +70,19 @@ func TestVendorNamespace(t *testing.T) {
 		t.Fatal("vendor namespaces merged")
 	}
 }
+
+// Every board name lies in the reserved namespace, and so does every look-alike
+// that differs only in letter case.
+func TestReservedObserverNamespace(t *testing.T) {
+	id := MustParse("serial128", "00112233445566778899aabbccddeeff")
+	for _, name := range []string{id.ObserverID(), "board-", "BOARD-0003-x", "Board-anything"} {
+		if !ReservedObserverID(name) {
+			t.Fatalf("%q is outside the board namespace", name)
+		}
+	}
+	for _, name := range []string{"", "board", "boards-1", "roof-board-1", "software-receiver", "bοard-1"} {
+		if ReservedObserverID(name) {
+			t.Fatalf("%q was reserved", name)
+		}
+	}
+}

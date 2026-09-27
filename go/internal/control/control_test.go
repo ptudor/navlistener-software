@@ -149,6 +149,22 @@ func TestSoftwareEnrollmentAndNoSelfReportedHardware(t *testing.T) {
 	}
 }
 
+// The board namespace belongs to hardware enrollment. A software station cannot
+// take a board's name, or a look-alike of it, whether or not that board exists yet.
+func TestSoftwareEnrollmentCannotTakeABoardName(t *testing.T) {
+	b := newBench(t)
+	hardware := b.request(t, b.ab.ManufacturerKeys[0], b.ab.ManufacturerKeys[0])
+	for _, name := range []string{hardware.ObserverID, strings.ToUpper(hardware.ObserverID[:6]) + hardware.ObserverID[6:], "board-roof"} {
+		r := Request{ObserverID: name, OperationalAuthorityID: "customer", OrganizationID: "owner", CollectorInstanceID: "collector", FeedGrants: []string{"ubx"}}
+		if _, err := b.service.Validate(r); err == nil || !strings.Contains(err.Error(), "reserved for hardware enrollment") {
+			t.Fatalf("software enrollment as %q: %v", name, err)
+		}
+	}
+	if _, err := b.service.Validate(hardware); err != nil {
+		t.Fatalf("hardware enrollment of its own board name: %v", err)
+	}
+}
+
 func testDatabase(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("NAVLISTENER_CONTROL_TEST_DSN")

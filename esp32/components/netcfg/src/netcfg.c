@@ -87,14 +87,23 @@ static const char PORTAL_HTML_OPEN[] =
     "button{margin-top:1.2em;padding:.7em 1.4em}</style>"
     "<h2>navfeeder-esp setup</h2>"
     "<form method=POST action=/save>";
-static const char PORTAL_HTML_FIELDS[] =
+static const char PORTAL_HTML_COLLECTOR[] =
     "<label>WiFi password<input name=pass type=password maxlength=64></label>"
     "<label>Collector host<input name=host maxlength=63 required placeholder='collector.host.invalid'></label>"
-    "<label>Collector port<input name=port type=number value=5580></label>"
-    "<label>Station id<input name=station maxlength=32 required></label>"
+    "<label>Collector port<input name=port type=number value=5580></label>";
+static const char PORTAL_STATION_FIELD[] = "<label>Station id<input name=station maxlength=32 required></label>";
+static const char PORTAL_HTML_CREDENTIAL[] =
     "<label>Bearer token<input name=token maxlength=128 required></label>"
     PORTAL_TUNNEL_FIELD
     PORTAL_INSECURE_FIELD;
+
+// A commissioned board names itself, so the form shows the name instead of asking for one.
+// The id is board-<kind>-<hex> from nvf_uid_observer: nothing in it needs HTML escaping.
+static void portal_station_name(char *out, size_t cap, const char *observer)
+{
+    snprintf(out, cap, "<label>Station id</label><p><code>%s</code><br>"
+                       "Named by this board's commissioning record. Enroll this name.</p>", observer);
+}
 static const char PORTAL_HTML_TAIL[] = "<button type=submit>Save &amp; reboot</button></form>";
 
 // Per-unit sensor settings for a board that lists the sensors (netcfg_board), with the
@@ -175,7 +184,15 @@ static esp_err_t root_get(httpd_req_t *req)
     if (err == ESP_OK)
         err = httpd_resp_send_chunk(req, board.wired_uplink ? PORTAL_SSID_WIRED : PORTAL_SSID_REQUIRED,
                                     HTTPD_RESP_USE_STRLEN);
-    if (err == ESP_OK) err = httpd_resp_send_chunk(req, PORTAL_HTML_FIELDS, HTTPD_RESP_USE_STRLEN);
+    if (err == ESP_OK) err = httpd_resp_send_chunk(req, PORTAL_HTML_COLLECTOR, HTTPD_RESP_USE_STRLEN);
+    if (err == ESP_OK && board.observer[0]) {
+        char station[sizeof board.observer + 128];
+        portal_station_name(station, sizeof station, board.observer);
+        err = httpd_resp_send_chunk(req, station, HTTPD_RESP_USE_STRLEN);
+    } else if (err == ESP_OK) {
+        err = httpd_resp_send_chunk(req, PORTAL_STATION_FIELD, HTTPD_RESP_USE_STRLEN);
+    }
+    if (err == ESP_OK) err = httpd_resp_send_chunk(req, PORTAL_HTML_CREDENTIAL, HTTPD_RESP_USE_STRLEN);
     if (err == ESP_OK && board.sensor_settings) {
         char sensors[640];
         portal_sensor_fields(sensors, sizeof sensors);
@@ -283,17 +300,27 @@ static esp_err_t save_post(httpd_req_t *req)
         // (regression fix — this used to be a second, separate bound check right here).
         cfg.port = atoi(port);
     }
-    const struct { const char *name; char *dst; size_t cap; } id_fields[] = {
-        { "station", cfg.station, sizeof cfg.station },
-        { "token", cfg.token, sizeof cfg.token },
-    };
-    for (size_t i = 0; i < sizeof id_fields / sizeof *id_fields; i++) {
-        form_result_t r = netcfg_form_field(body, id_fields[i].name,
-                                            id_fields[i].dst, id_fields[i].cap);
-        if (r < 0) {
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, netcfg_form_error(r));
+    // The station is decoded into its own buffer: on a commissioned board a submitted one is
+    // checked, never stored, and an absent one must not be confused with the stored value.
+    char station[sizeof cfg.station] = {0};
+    form_result_t station_result = netcfg_form_field(body, "station", station, sizeof station);
+    form_result_t token_result = netcfg_form_field(body, "token", cfg.token, sizeof cfg.token);
+    if (station_result < 0 || token_result < 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            netcfg_form_error(station_result < 0 ? station_result : token_result));
+        return ESP_FAIL;
+    }
+    if (netcfg_commissioned()) {
+        // The form shows no station field here, so one arriving is a stale page or a crafted
+        // request. A name stored before commissioning is dropped with this save.
+        char why[NETCFG_ERR_CAP];
+        if (!netcfg_station_input_ok(station, why, sizeof why)) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, why);
             return ESP_FAIL;
         }
+        memset(cfg.station, 0, sizeof cfg.station);
+    } else if (station_result == FORM_OK) {
+        memcpy(cfg.station, station, sizeof cfg.station);
     }
 #if CONFIG_NVF_WIREGUARD
     // The pasted profile is the one multi-line field. Absent keeps the stored profile (a
@@ -368,7 +395,7 @@ static esp_err_t save_post(httpd_req_t *req)
     httpd_resp_sendstr(req, "<meta name=viewport content='width=device-width'>"
                             "<h3>Saved. Rebooting into station mode...</h3>");
     ESP_LOGI(TAG, "provisioned: ssid='%s' host='%s:%d' station='%s'%s — rebooting",
-             cfg.wifi_ssid, cfg.host, cfg.port, cfg.station,
+             cfg.wifi_ssid, cfg.host, cfg.port, netcfg_station(&cfg),
              cfg.tunnel.enabled ? " tunnel=on" : "");
     return ESP_OK;
 }

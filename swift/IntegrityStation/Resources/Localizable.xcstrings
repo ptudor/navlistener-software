@@ -2311,6 +2311,16 @@
         }
       }
     },
+    "setup.collector.station_commissioned": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This observer is commissioned and names itself from its record. Enroll it under this name; only its ingest token is needed here."
+          }
+        }
+      }
+    },
     "setup.collector.title": {
       "localizations": {
         "en": {

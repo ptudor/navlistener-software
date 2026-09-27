@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"strings"
 )
 
 const (
@@ -17,6 +18,17 @@ const (
 	Serial128 uint16 = 3 // Microchip 24CS128/24CS256/24CS512 factory serial
 	STUID128  uint16 = 4 // ST M24128-U unique ID
 )
+
+// ObserverPrefix begins every board-derived observer id. The namespace it opens
+// belongs to hardware enrollment: a name that starts with it, in any letter case,
+// names a board or nothing, never a software station.
+const ObserverPrefix = "board-"
+
+// ReservedObserverID reports whether id lies in the board namespace. Case is
+// ignored so that a software station cannot take a look-alike of a board's name.
+func ReservedObserverID(id string) bool {
+	return len(id) >= len(ObserverPrefix) && strings.EqualFold(id[:len(ObserverPrefix)], ObserverPrefix)
+}
 
 // ID is comparable, so registry keys include both kind and value.
 type ID [Size]byte
@@ -38,8 +50,10 @@ func (id ID) Value() []byte {
 	}
 	return id[3 : 3+int(id[2])]
 }
-func (id ID) Hex() string        { return hex.EncodeToString(id.Value()) }
-func (id ID) ObserverID() string { return fmt.Sprintf("board-%04x-%s", id.Kind(), id.Hex()) }
+func (id ID) Hex() string { return hex.EncodeToString(id.Value()) }
+func (id ID) ObserverID() string {
+	return fmt.Sprintf("%s%04x-%s", ObserverPrefix, id.Kind(), id.Hex())
+}
 
 func (id ID) Validate() error {
 	n := ValueSize

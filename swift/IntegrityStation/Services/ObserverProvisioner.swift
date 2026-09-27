@@ -7,10 +7,14 @@ protocol ObserverProvisioningTransport: AnyObject {
     func networks() async throws -> [String]
     func configure(_ data: Data) async throws -> ObserverSetupReply
     func configureTunnel(_ data: Data) async throws -> ObserverSetupReply
+    // nav-identity: the commissioned observer id, or nil when the device needs a station ID.
+    func identity() async throws -> String?
     func provisionWiFi(ssid: String, password: String) async throws
     func disconnect()
     // True only once connected to a device that advertised the nav-tunnel-v1 capability.
     var supportsTunnel: Bool { get }
+    // True only once connected to a device that advertised the nav-identity-v1 capability.
+    var supportsIdentity: Bool { get }
 }
 
 
@@ -33,6 +37,9 @@ final class ObserverProvisioner {
     private(set) var message: String?
     private(set) var stationID: String?
     private(set) var supportsTunnel = false
+    /// Set when the connected observer is commissioned: it names itself, and the station ID
+    /// field gives way to this name.
+    private(set) var commissionedStationID: String?
     private let transport: any ObserverProvisioningTransport
     private var generation = 0
 
@@ -51,8 +58,13 @@ final class ObserverProvisioner {
             // A failed scan still allows a hidden network to be entered.
             let scanned = (try? await transport.networks()) ?? []
             try requireCurrent(operation)
+            // Unlike the scan, this answer decides what the form asks for, so a failure
+            // fails the connection rather than guessing.
+            let commissioned = transport.supportsIdentity ? try await transport.identity() : nil
+            try requireCurrent(operation)
             networks = scanned
             supportsTunnel = transport.supportsTunnel
+            commissionedStationID = commissioned
             stage = .ready
         } catch {
             guard generation == operation, !Task.isCancelled else { return }
@@ -69,6 +81,9 @@ final class ObserverProvisioner {
         stage = .configuring
         message = nil
         do {
+            // A commissioned observer refuses a station ID; any other needs one.
+            guard config.stationID.isEmpty == (commissionedStationID != nil)
+            else { throw ObserverSetupError.invalidConfig }
             let data = try config.encoded()
             let tunnelData = try tunnel?.encoded() // validate before sending anything
             if tunnel != nil && !supportsTunnel { throw ObserverSetupError.tunnelUnsupported }
@@ -104,7 +119,7 @@ final class ObserverProvisioner {
                 }
             }
             try requireCurrent(operation)
-            stationID = config.stationID
+            stationID = commissionedStationID ?? config.stationID
             stage = .awaitingCollector
             transport.disconnect()
         } catch {
@@ -122,6 +137,7 @@ final class ObserverProvisioner {
         networks = []
         stationID = nil
         supportsTunnel = false
+        commissionedStationID = nil
         stage = .idle
         message = nil
     }

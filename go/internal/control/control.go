@@ -117,6 +117,12 @@ func (s *Service) Validate(r Request) (Validated, error) {
 		if r.CoreRecord != "" || r.CommissioningRecord != "" || r.BoardUID != "" || r.BoardUIDKind != "" || r.ATECCSerial != "" || r.Product != 0 || r.Revision != 0 || r.HardwareValidation != "" {
 			return out, errors.New("software enrollment cannot claim hardware evidence")
 		}
+		// A board's name is derived from its factory serial and belongs to that
+		// board. A software station holding it would present as the board and block
+		// the board's own enrollment.
+		if boardid.ReservedObserverID(r.ObserverID) {
+			return out, fmt.Errorf("observer ids beginning %q are reserved for hardware enrollment", boardid.ObserverPrefix)
+		}
 	} else {
 		var h *config.HardwareTrust
 		for i := range s.Manufacturers {

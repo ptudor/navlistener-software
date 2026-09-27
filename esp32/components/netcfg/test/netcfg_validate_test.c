@@ -191,6 +191,45 @@ int main(void)
     netcfg_set_board((netcfg_board_t){0});
     CHECK(!netcfg_validate(&wired_complete, NULL, 0), "board reset left the wired rule");
 
+    // A commissioned board names itself from its record. It needs no provisioned station,
+    // ignores one stored before it was commissioned (failing it would make netcfg_load
+    // discard an otherwise complete record), and refuses one offered through provisioning.
+    static const char observer[] = "board-0003-00112233445566778899aabbccddeeff";
+    netcfg_t unnamed = valid_cfg();
+    unnamed.station[0] = '\0';
+    CHECK(!netcfg_commissioned() && !strcmp(netcfg_station(&c), c.station),
+          "uncommissioned board: station is not the provisioned one");
+    CHECK(netcfg_station_input_ok("roof", err, sizeof err) && netcfg_station_input_ok("", NULL, 0),
+          "uncommissioned board refused a station input: \"%s\"", err);
+    netcfg_board_t commissioned = {0};
+    snprintf(commissioned.observer, sizeof commissioned.observer, "%s", observer);
+    netcfg_set_board(commissioned);
+    CHECK(netcfg_commissioned(), "record-named board not reported as commissioned");
+    expect_valid("commissioned board without station", unnamed);
+    expect_valid("commissioned board with a stale stored station", valid_cfg());
+    c = valid_cfg();
+    CHECK(!strcmp(netcfg_station(&c), observer) && !strcmp(netcfg_station(&unnamed), observer) &&
+          !strcmp(netcfg_station(NULL), observer),
+          "commissioned board does not connect as its record's observer id");
+    CHECK(netcfg_station_input_ok("", err, sizeof err) && err[0] == '\0' &&
+          netcfg_station_input_ok(NULL, NULL, 0),
+          "commissioned board refused an empty station input: \"%s\"", err);
+    CHECK(!netcfg_station_input_ok("roof", err, sizeof err) && strstr(err, "station") && strlen(err) < 26,
+          "commissioned board accepted a station input, reason \"%s\"", err);
+    CHECK(!netcfg_station_input_ok(observer, NULL, 0),
+          "commissioned board accepted its own name as input");
+    c.token[0] = '\0';
+    expect_invalid("commissioned board without token", c, "token");
+    // The name is copied and always terminated, whatever the caller left in the buffer.
+    memset(commissioned.observer, 'b', sizeof commissioned.observer);
+    netcfg_set_board(commissioned);
+    CHECK(strlen(netcfg_station(NULL)) == sizeof commissioned.observer - 1,
+          "unterminated observer id was not terminated");
+    netcfg_set_board((netcfg_board_t){0});
+    expect_invalid("board reset restored the station requirement", unnamed, "station");
+    CHECK(!strcmp(netcfg_station(&unnamed), "") && !strcmp(netcfg_station(NULL), ""),
+          "uncommissioned board reported a name it was not given");
+
     // Only a named network is joined; spaces are no name.
     c = valid_cfg();
     CHECK(netcfg_has_wifi(&c), "configured ssid: no network reported");

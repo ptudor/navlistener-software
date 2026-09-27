@@ -29,6 +29,15 @@
   pairings permit customer-issued credentials on NavListen-manufactured hardware
   without changing manufacturer provenance. No prototype parser or schema
   migration is included.
+- A commissioned observer names itself: it connects as the `board-<kind>-<serial>`
+  observer ID its commissioning record names, and BLE or browser setup supplies
+  only the collector and its token. The Station app reads the name over the
+  encrypted `nav-identity` endpoint. Previously the 43-character board name did
+  not fit the 32-character station field, so no commissioned board could be
+  provisioned under the name its evidence requires.
+- Observer IDs beginning `board-` are reserved for hardware enrollment. The
+  control plane and its database refuse a software station with such a name, and
+  an existing database that holds one stops its upgrade and names the station.
 
 Trusted rollout remains gated by commissioning and hardware acceptance in
 [Update operations](esp32/docs/UPDATE-OPERATIONS.md).

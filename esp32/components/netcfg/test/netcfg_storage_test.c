@@ -267,5 +267,17 @@ int main(void)
     // never loaded as a half-configured tunnel.
     fresh(); assert(netcfg_save(&tunneled) == ESP_OK); memset(durable + 344 + 33, 0, 32); seal(522);
     assert(!netcfg_load(&out, NULL, 0) && !out.host[0] && !out.tunnel.enabled);
-    puts("netcfg atomic record: write/commit errors, power-cut boundaries, migration, reset, legacy retirement, corruption and the format-2 tunnel profile PASS");
+    // A commissioned board saves and reloads a record with no station, since it names itself,
+    // and still loads one stored before it was commissioned; netcfg_station ignores that one.
+    netcfg_board_t commissioned = {0};
+    strcpy(commissioned.observer, "board-0003-00112233445566778899aabbccddeeff");
+    netcfg_t unnamed = next; unnamed.station[0] = '\0';
+    fresh(); assert(netcfg_save(&unnamed) == ESP_ERR_INVALID_ARG && writes == 0);
+    netcfg_set_board(commissioned);
+    assert(netcfg_save(&unnamed) == ESP_OK && netcfg_load(&out, NULL, 0) && same(&out, &unnamed));
+    assert(!strcmp(netcfg_station(&out), commissioned.observer));
+    fresh(); assert(netcfg_save(&old) == ESP_OK && netcfg_load(&out, NULL, 0) && same(&out, &old));
+    assert(!strcmp(netcfg_station(&out), commissioned.observer));
+    netcfg_set_board((netcfg_board_t){0});
+    puts("netcfg atomic record: write/commit errors, power-cut boundaries, migration, reset, legacy retirement, corruption, the format-2 tunnel profile and commissioned stations PASS");
 }
