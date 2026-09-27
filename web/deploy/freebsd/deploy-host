@@ -49,6 +49,6 @@ boards_after=$(find "$boards" -type f \( -name '*.png' -o -name '*.jpg' \) | wc 
 service apache24 configtest
 curl --fail --silent --show-error --max-time 15 \
     -H 'Host: navlisten.com' \
-    http://127.0.0.1/ | grep -q 'NavListen'
+    http://127.0.1.80/ | grep -q 'NavListen'
 
 echo "NavListen deployment completed; $boards_after board-media files preserved."
