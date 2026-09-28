@@ -1,12 +1,13 @@
 // WGS-84 visibility and NOAA/Meeus solar coordinates for a 2:1 Plate Carree map.
 // Solar method: https://gml.noaa.gov/grad/solcalc/calcdetails.html
 export const RAD = Math.PI / 180;
+export const COVERAGE = { partial: 0.5, good: 0.8 };
 export const SYSTEMS = [
   { id: 0, name: 'GPS', color: '#2dd4bf' },
   { id: 2, name: 'Galileo', color: '#58a6ff' },
   { id: 3, name: 'BeiDou', color: '#bc8cff' },
   { id: 6, name: 'GLONASS', color: '#f0883e' },
-  { id: 5, name: 'QZSS', color: '#ff9bd3' },
+  { id: 5, name: 'QZSS', color: '#e3b341' },
 ];
 
 export function sunDirection(date) {
@@ -67,8 +68,8 @@ export function modelFromFeed(envelope, selected, now = Date.now()) {
     absentSystems };
 }
 
-// Every visible reference satellite must meet the target. Plenty of observed
-// satellites never compensate for an unobserved one. Unknown orbits cannot
+// Grade the observed share of the known sky, rather than requiring perfection.
+// A separate station target can flag a need for redundancy. Unknown orbits cannot
 // establish which cells they affect, so uncertainty applies to the whole view.
 export function assess(model, latitude, longitude, minElevation, target, details = false) {
   const ground = site(latitude, longitude);
@@ -83,9 +84,13 @@ export function assess(model, latitude, longitude, minElevation, target, details
     else if (s.witnesses < target) thin++;
     if (details) visible.push({ ...s, elevation: el });
   }
+  const observed = expected - missing;
+  const observedFraction = expected ? observed / expected : 0;
+  const targetFraction = expected ? (observed - thin) / expected : 0;
   const uncertain = model.uncertain || expected === 0;
-  const status = missing ? 'gap' : thin ? 'thin' : uncertain ? 'unknown' : 'covered';
-  return { expected, missing, thin, uncertain, status, visible };
+  const status = expected === 0 ? 'unknown' : observedFraction < COVERAGE.partial ? 'gap'
+    : targetFraction < COVERAGE.good ? 'thin' : uncertain ? 'unknown' : 'covered';
+  return { expected, observed, missing, thin, observedFraction, targetFraction, uncertain, status, visible };
 }
 
 export function worldGrid(model, minElevation, target, step = 2) {

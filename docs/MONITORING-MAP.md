@@ -13,19 +13,33 @@ station; select two for redundancy planning. Click a location or enter its
 coordinates to list the visible satellites, elevation angles, and station counts.
 Missing satellites are sorted first, which helps compare prospective station sites.
 
+The interface uses Integrity Satellite's compass mark, Inter and JetBrains Mono,
+lavender accent (`#a78bfa`), dark backgrounds, and constellation colors. Its slogan
+is **Ground Monitoring for Space Integrity**; headings describe the operational
+view directly. Fonts and their licenses are embedded with the map assets.
+
 ## What the colors mean
 
 For each 2° grid cell, the browser computes WGS-84 topocentric elevation and
 examines every selected satellite above the horizon:
 
-- **Red:** at least one has no navigation observation within 60 seconds.
-- **Amber:** all have observations, but at least one is below the station target.
-- **Untinted:** every visible reference satellite meets the target and the
-  reference geometry is available. This is the map's meaning of “target met.”
+- **Red:** fewer than 50% of visible satellites with known positions have
+  navigation observations within 60 seconds.
+- **Amber:** at least 50% are observed, but fewer than 80% meet the station target.
+  The tint gets lighter as more visible satellites meet the target.
+- **Untinted:** at least 80% meet the station target and reference geometry is
+  available. This is useful monitoring, not a claim of perfect reception.
 - **Gray hatching:** the reference is unavailable, delayed, missing a selected
   constellation, or contains satellites without usable coordinates. Known red and
   amber gaps remain visible underneath. Cells with no known visible satellites
   are unknown rather than covered.
+
+The 50% and 80% thresholds grade practical monitoring instead of demanding every
+satellite. The default one-station target therefore clears at 80% observed. With
+at least 50% observed, insufficient two-station redundancy shows amber rather than
+claiming an absence of observations. The location details show the observed share
+and every remaining gap, even above the 80% threshold. This maps observations of
+shared satellites anywhere in the audience, not a reception radius around a station.
 
 Station counts deduplicate sources across navigation signals for each satellite.
 They measure recent structural navigation decoding, not bitwise agreement, full
@@ -36,7 +50,7 @@ monitored, and a healthy satellite can be missing from this collector.
 
 The area figure weights grid cells by their spherical surface area instead of
 counting rectangular map pixels. It is an approximate instantaneous share of
-Earth's surface meeting the selected criterion. It becomes **Unknown** when the
+Earth's surface where at least 80% meet the selected station target. It becomes **Unknown** when the
 reference is incomplete; there is no claim of complete geographic coverage based
 on a partial catalogue. Satellite markers show subpoints, not receiver locations
 or the extent of a satellite's visibility footprint.

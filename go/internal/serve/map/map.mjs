@@ -118,7 +118,7 @@ function update() {
   if (model.reference.status !== 'current') messages.push('Independent orbit reference is unavailable or delayed.');
   if (model.unknown.length) messages.push(`${model.unknown.length} satellite orbit${model.unknown.length === 1 ? ' is' : 's are'} unavailable; hatching marks uncertain coverage.`);
   if (model.absentSystems.length) messages.push(`Reference missing for ${SYSTEMS.filter(s => model.absentSystems.includes(s.id)).map(s => s.name).join(', ')}.`);
-  if (!messages.length) messages.push(`Reference geometry available for ${model.satellites.length} selected satellites. Red shows missing observations; amber shows fewer than ${$('target').value} reporting stations.`);
+  if (!messages.length) messages.push(`Reference geometry available for ${model.satellites.length} selected satellites. Red: below 50% observed. Amber: 50–80%, or below the station target. Clear: at least 80% meet the target.`);
   $('notice').textContent = failure || messages.join(' ');
   draw(); inspect();
 }
@@ -148,8 +148,9 @@ function draw() {
     const overlay = document.createElement('canvas'); overlay.width = grid.columns; overlay.height = grid.rows;
     const oc = overlay.getContext('2d'), pixels = oc.createImageData(grid.columns, grid.rows);
     grid.cells.forEach((c, i) => {
-      const color = c.status === 'gap' ? [237, 56, 76, 75 + 60 * c.missing / c.expected]
-        : c.status === 'thin' ? [245, 181, 68, 90] : c.status === 'unknown' ? [130, 143, 165, 50] : [0, 0, 0, 0];
+      const color = c.status === 'gap' ? [248, 81, 73, 65 + 70 * (1 - c.observedFraction)]
+        : c.status === 'thin' ? [210, 153, 34, 25 + 85 * (1 - c.targetFraction)]
+          : c.status === 'unknown' ? [130, 143, 165, 50] : [0, 0, 0, 0];
       pixels.data.set(color, i * 4);
     });
     oc.putImageData(pixels, 0, 0); ctx.save(); ctx.imageSmoothingEnabled = false; ctx.drawImage(overlay, 0, 0, w, h); ctx.restore();
@@ -181,7 +182,7 @@ function draw() {
 function inspect() {
   if (!model || !location) return;
   const result = assess(model, location.lat, location.lon, +$('elevation').value, +$('target').value, true);
-  $('location-summary').textContent = `${location.lat.toFixed(2)}°, ${location.lon.toFixed(2)}° · ${result.expected} above horizon · ${result.missing} missing · ${result.thin} below station target.${result.uncertain ? ' Reference incomplete; additional satellites may be visible.' : ''}`;
+  $('location-summary').textContent = `${location.lat.toFixed(2)}°, ${location.lon.toFixed(2)}° · ${result.observed} of ${result.expected} known visible satellites observed${result.expected ? ` (${Math.round(result.observedFraction * 100)}%)` : ''} · ${result.missing} missing · ${result.thin} below station target.${result.uncertain ? ' Reference incomplete; additional satellites may be visible.' : ''}`;
   $('satellites').replaceChildren();
   result.visible.sort((a, b) => a.witnesses - b.witnesses || b.elevation - a.elevation).forEach(s => {
     const row = document.createElement('tr');

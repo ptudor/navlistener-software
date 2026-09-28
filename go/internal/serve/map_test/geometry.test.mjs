@@ -14,11 +14,51 @@ test('reference-only satellites reveal gaps before any receiver observes them', 
   assert.equal(assess(model, 0, 0, 10, 1).status, 'gap');
   assert.equal(assess(model, 0, 180, 10, 1).expected, 0);
 });
-test('one missing satellite cannot be hidden by many observed satellites', () => {
+test('partial monitoring is distinct from no observations and complete coverage', () => {
   const second = { ...sv, name: 'G02' };
   const model = modelFromFeed(feed([sv, second], [observer(4)]), new Set([0]), at);
-  assert.equal(assess(model, 0, 0, 10, 2).missing, 1);
-  assert.equal(assess(model, 0, 0, 10, 2).status, 'gap');
+  const result = assess(model, 0, 0, 10, 2);
+  assert.equal(result.expected, 2);
+  assert.equal(result.observed, 1);
+  assert.equal(result.missing, 1);
+  assert.equal(result.status, 'thin');
+  assert.equal(worldGrid(model, 10, 2, 10).coveredPercent, 0);
+});
+test('one station observing most of the local sky meets the practical target', () => {
+  const satellites = Array.from({ length: 30 }, (_, i) => ({ ...sv, name: `G${i + 1}` }));
+  const observations = satellites.slice(0, 28).map(s => ({ ...s, witness_times: [at / 1000] }));
+  const envelope = feed(satellites, observations);
+  let model = modelFromFeed(envelope, new Set([0]), at);
+  let result = assess(model, 0, 0, 10, 1);
+  assert.equal(result.observed, 28);
+  assert.equal(result.missing, 2);
+  assert.equal(result.status, 'covered');
+  assert.ok(worldGrid(model, 10, 1, 10).coveredPercent > 0);
+  // An unknown orbit must retain uncertainty without erasing positive evidence.
+  envelope.data.reference.satellites.push({ name: 'G31', gnssid: 0 });
+  model = modelFromFeed(envelope, new Set([0]), at);
+  result = assess(model, 0, 0, 10, 1);
+  assert.equal(result.status, 'unknown');
+  assert.equal(result.observed, 28);
+  assert.equal(result.uncertain, true);
+  assert.equal(worldGrid(model, 10, 1, 10).coveredPercent, 0);
+  // Loss of all fresh observations returns red; an absent sky stays unknown.
+  model = modelFromFeed(envelope, new Set([0]), at + 61000);
+  assert.equal(assess(model, 0, 0, 10, 1).status, 'gap');
+  assert.equal(assess(model, 0, 180, 10, 1).status, 'unknown');
+});
+test('50% and 80% boundaries grade coverage without hiding individual gaps', () => {
+  const satellites = Array.from({ length: 10 }, (_, i) => ({ ...sv, name: `G${i + 1}` }));
+  for (const [count, status] of [[0, 'gap'], [4, 'gap'], [5, 'thin'], [7, 'thin'], [8, 'covered'], [9, 'covered'], [10, 'covered']]) {
+    const observations = satellites.slice(0, count).map(s => ({ ...s, witness_times: [at / 1000] }));
+    const model = modelFromFeed(feed(satellites, observations), new Set([0]), at);
+    const result = assess(model, 0, 0, 10, 1, true);
+    assert.equal(result.status, status, `${count} of 10 observed`);
+    assert.equal(result.missing, 10 - count);
+    assert.equal(result.observedFraction, count / 10);
+    assert.equal(result.visible.length, 10);
+    if (count >= 5) assert.equal(assess(model, 0, 0, 10, 2).status, 'thin', 'one-station data lacks redundancy, not observations');
+  }
 });
 test('redundancy and receipt expiry are independent of orbit availability', () => {
   const envelope = feed([sv], [observer(1)]);

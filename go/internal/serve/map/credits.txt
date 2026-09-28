@@ -23,3 +23,6 @@ NavListen; they are not part of NASA's source imagery.
 Orbit reference: BKG GNSS Data Center, merged RINEX broadcast navigation.
 https://igs.bkg.bund.de/
 https://igs.bkg.bund.de/root_ftp/IGS/BRDC/
+
+Interface fonts: Inter and JetBrains Mono, bundled locally under the
+SIL Open Font License 1.1. See Inter-OFL.txt and JetBrainsMono-OFL.txt.
