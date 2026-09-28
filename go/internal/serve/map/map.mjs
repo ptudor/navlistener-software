@@ -1,10 +1,12 @@
-import { SYSTEMS, RAD, sunDirection, modelFromFeed, assess, worldGrid } from './geometry.mjs';
+import { SYSTEMS, RAD, sunDirection, modelFromFeed, assess, worldGrid, subpoint, site, elevation } from './geometry.mjs';
 
 const $ = id => document.getElementById(id);
 const canvas = $('map'), ctx = canvas.getContext('2d');
 const selected = new Set(SYSTEMS.map(s => s.id));
 let envelope = null, model = null, grid = null, token = '', audience = '';
 let revision = 0, request = null, timer = null, failure = '', location = null;
+let satellite = '';
+const markerButtons = new Map();
 const earth = new Image();
 earth.src = 'earth.jpg';
 earth.onload = draw;
@@ -40,12 +42,16 @@ async function read(path, signal, h = headers()) {
 
 function clearData() {
   envelope = model = grid = null;
+  satellite = '';
+  $('satellite-picker').replaceChildren(new Option('Choose a satellite', ''));
+  $('satellite-picker').disabled = true;
+  markerButtons.clear(); $('satellite-markers').replaceChildren();
   for (const id of ['heard', 'missing', 'area', 'unknown']) $(id).textContent = '—';
   $('satellites').replaceChildren(); $('unknown-list').textContent = '';
   $('location-summary').textContent = 'Waiting for observations in this audience.';
   $('map-audience').textContent = audience || 'Collector default';
   $('reference-status').textContent = 'Reference status pending.';
-  draw();
+  draw(); showSelection();
 }
 
 async function refresh() {
@@ -99,7 +105,10 @@ $('sign-out').addEventListener('click', () => {
 });
 $('audience').addEventListener('change', () => { audience = $('audience').value; changeAccess(); });
 for (const id of ['elevation', 'target']) $(id).addEventListener('change', update);
-for (const id of ['night', 'gaps', 'markers']) $(id).addEventListener('change', draw);
+for (const id of ['night', 'gaps']) $(id).addEventListener('change', draw);
+$('markers').addEventListener('change', syncMarkers);
+$('satellite-picker').addEventListener('change', () => selectSatellite($('satellite-picker').value));
+$('clear-selection').addEventListener('click', clearSelection);
 
 function update() {
   if (!envelope) { draw(); return; }
@@ -120,7 +129,8 @@ function update() {
   if (model.absentSystems.length) messages.push(`Reference missing for ${SYSTEMS.filter(s => model.absentSystems.includes(s.id)).map(s => s.name).join(', ')}.`);
   if (!messages.length) messages.push(`Reference geometry available for ${model.satellites.length} selected satellites. Red: below 50% observed. Amber: 50–80%, or below the station target. Clear: at least 80% meet the target.`);
   $('notice').textContent = failure || messages.join(' ');
-  draw(); inspect();
+  if (!model.satellites.some(s => s.name === satellite)) satellite = '';
+  syncPicker(); syncMarkers(); draw(); inspect(); showSelection();
 }
 
 function draw() {
@@ -163,19 +173,100 @@ function draw() {
   ctx.strokeStyle = '#e0e9fa1b'; ctx.lineWidth = 1; ctx.beginPath();
   for (let lon = -150; lon < 180; lon += 30) { const x = (lon + 180) / 360 * w; ctx.moveTo(x, 0); ctx.lineTo(x, h); }
   for (let lat = -60; lat <= 60; lat += 30) { const y = (90 - lat) / 180 * h; ctx.moveTo(0, y); ctx.lineTo(w, y); } ctx.stroke();
-  if (model && $('markers').checked) for (const s of model.satellites) {
-    if (!s.position) continue;
-    const p = s.position, x = (Math.atan2(p[1], p[0]) / RAD + 180) / 360 * w;
-    const y = (90 - Math.atan2(p[2], Math.hypot(p[0], p[1])) / RAD) / 180 * h;
-    ctx.fillStyle = SYSTEMS.find(sys => sys.id === s.gnssid)?.color || '#fff';
-    ctx.strokeStyle = '#07101e'; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(x, y, 4.5, 0, 2 * Math.PI);
-    if (s.witnesses) { ctx.fill(); ctx.stroke(); } else { ctx.strokeStyle = '#f4c5cd'; ctx.stroke(); }
-  }
   if (location) {
     const x = (location.lon + 180) / 360 * w, y = (90 - location.lat) / 180 * h;
     ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, 9, 0, 2 * Math.PI); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(x - 16, y); ctx.lineTo(x + 16, y); ctx.moveTo(x, y - 16); ctx.lineTo(x, y + 16); ctx.stroke();
+  }
+}
+
+function systemName(s) { return SYSTEMS.find(sys => sys.id === s.gnssid)?.name || ''; }
+function coordinates(point) { return `${point.lat.toFixed(2)}°, ${point.lon.toFixed(2)}°`; }
+
+function syncPicker() {
+  // Keep the native selector stable while someone is using it.
+  const names = model.satellites.map(s => s.name);
+  const previous = [...$('satellite-picker').options].slice(1).map(o => o.value);
+  if (names.join(',') !== previous.join(',')) {
+    $('satellite-picker').replaceChildren(new Option('Choose a satellite', ''),
+      ...model.satellites.map(s => new Option(`${s.name} · ${systemName(s)}`, s.name)));
+  }
+  $('satellite-picker').disabled = false;
+  $('satellite-picker').value = satellite;
+}
+
+function syncMarkers() {
+  $('satellite-markers').hidden = !$('markers').checked;
+  const placed = new Set();
+  for (const s of model?.satellites || []) {
+    if (!s.position) continue;
+    placed.add(s.name);
+    let button = markerButtons.get(s.name);
+    if (!button) {
+      button = document.createElement('button'); button.type = 'button';
+      button.className = 'satellite-marker'; button.dataset.satellite = s.name;
+      // The native satellite selector provides keyboard access without 100+ tab stops.
+      button.tabIndex = -1;
+      const dot = document.createElement('span'); dot.className = 'marker-dot';
+      const label = document.createElement('span'); label.className = 'marker-label';
+      label.textContent = `${s.name} · ${systemName(s)}`;
+      button.append(dot, label);
+      button.addEventListener('click', () => selectSatellite(s.name));
+      markerButtons.set(s.name, button); $('satellite-markers').append(button);
+    }
+    const point = subpoint(s.position);
+    button.style.left = `${(point.lon + 180) / 360 * 100}%`;
+    button.style.top = `${(90 - point.lat) / 180 * 100}%`;
+    button.style.setProperty('--satellite-color', SYSTEMS.find(sys => sys.id === s.gnssid)?.color || '#e6edf3');
+    button.dataset.observed = String(s.witnesses > 0);
+    button.dataset.edge = point.lon < -90 ? 'left' : point.lon > 90 ? 'right' : '';
+    button.dataset.top = String(point.lat > 65);
+    button.classList.toggle('selected', satellite === s.name);
+    button.setAttribute('aria-label', `${s.name}, ${systemName(s)}, ${s.witnesses} reporting station${s.witnesses === 1 ? '' : 's'}. Show details.`);
+    button.setAttribute('aria-pressed', String(satellite === s.name));
+  }
+  for (const [name, button] of markerButtons) if (!placed.has(name)) {
+    button.remove(); markerButtons.delete(name);
+  }
+}
+
+function selectSatellite(name) {
+  satellite = model?.satellites.some(s => s.name === name) ? name : '';
+  $('satellite-picker').value = satellite;
+  syncMarkers(); showSelection();
+}
+
+function clearSelection() {
+  satellite = ''; location = null;
+  $('satellite-picker').value = '';
+  $('satellites').replaceChildren(); $('unknown-list').textContent = '';
+  $('location-summary').textContent = 'Select a ground location to list its visible satellites.';
+  syncMarkers(); draw(); showSelection();
+}
+
+function showSelection() {
+  const s = model?.satellites.find(s => s.name === satellite);
+  $('location-link').hidden = true;
+  $('clear-selection').hidden = !satellite && !location;
+  if (!model) {
+    $('selection-title').textContent = 'No current data';
+    $('selection-detail').textContent = 'Waiting for collector observations.';
+  } else if (s) {
+    $('selection-title').textContent = `${s.name} · ${systemName(s)}`;
+    const monitoring = model.stale ? 'Snapshot stale; observations unavailable.' : s.witnesses
+      ? `${s.witnesses} reporting station${s.witnesses === 1 ? '' : 's'} in the last 60 seconds.`
+      : 'No navigation observations in the last 60 seconds.';
+    const position = s.position ? `Map subpoint: ${coordinates(subpoint(s.position))}.` : 'Current position unavailable.';
+    const local = location && s.position ? `Elevation at ${coordinates(location)}: ${elevation(s.position, site(location.lat, location.lon)).toFixed(1)}°.` : '';
+    $('selection-detail').textContent = [monitoring, position, local].filter(Boolean).join(' ');
+  } else if (location) {
+    const result = assess(model, location.lat, location.lon, +$('elevation').value, +$('target').value);
+    $('selection-title').textContent = `Ground location · ${coordinates(location)}`;
+    $('selection-detail').textContent = `${result.observed} of ${result.expected} known visible satellites observed${result.expected ? ` (${Math.round(result.observedFraction * 100)}%)` : ''}. ${result.missing} missing; ${result.thin} below station target.${result.uncertain ? ' Reference incomplete.' : ''}`;
+    $('location-link').hidden = false;
+  } else {
+    $('selection-title').textContent = 'No selection';
+    $('selection-detail').textContent = 'Select a satellite dot for its details, or a ground location for its coverage.';
   }
 }
 
@@ -187,7 +278,14 @@ function inspect() {
   result.visible.sort((a, b) => a.witnesses - b.witnesses || b.elevation - a.elevation).forEach(s => {
     const row = document.createElement('tr');
     const status = !s.witnesses ? 'gap' : s.witnesses < +$('target').value ? 'thin' : 'covered';
-    for (const value of [s.name, `${s.elevation.toFixed(0)}°`, s.witnesses, { gap: 'Missing', thin: 'Needs redundancy', covered: 'Target met' }[status]]) {
+    const nameCell = document.createElement('td'), link = document.createElement('button');
+    link.type = 'button'; link.className = 'satellite-link'; link.textContent = s.name;
+    link.addEventListener('click', () => {
+      selectSatellite(s.name);
+      $('map-selection').scrollIntoView({ block: 'nearest' });
+    });
+    nameCell.append(link); row.append(nameCell);
+    for (const value of [`${s.elevation.toFixed(0)}°`, s.witnesses, { gap: 'Missing', thin: 'Needs redundancy', covered: 'Target met' }[status]]) {
       const cell = document.createElement('td'); cell.textContent = value; row.append(cell);
     }
     row.lastChild.className = `status-${status}`; $('satellites').append(row);
@@ -197,11 +295,15 @@ function inspect() {
 
 canvas.addEventListener('click', event => {
   const rect = canvas.getBoundingClientRect();
+  satellite = ''; $('satellite-picker').value = '';
   location = { lat: 90 - (event.clientY - rect.top) / rect.height * 180, lon: (event.clientX - rect.left) / rect.width * 360 - 180 };
-  $('latitude').value = location.lat.toFixed(3); $('longitude').value = location.lon.toFixed(3); draw(); inspect();
+  $('latitude').value = location.lat.toFixed(3); $('longitude').value = location.lon.toFixed(3);
+  syncMarkers(); draw(); inspect(); showSelection();
 });
 $('location').addEventListener('submit', event => {
-  event.preventDefault(); location = { lat: +$('latitude').value, lon: +$('longitude').value }; draw(); inspect();
+  event.preventDefault(); satellite = ''; $('satellite-picker').value = '';
+  location = { lat: +$('latitude').value, lon: +$('longitude').value };
+  syncMarkers(); draw(); inspect(); showSelection();
 });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 setInterval(() => {

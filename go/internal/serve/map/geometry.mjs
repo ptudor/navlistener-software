@@ -41,6 +41,14 @@ export function elevation(position, ground) {
   return Math.asin(Math.max(-1, Math.min(1, d.reduce((sum, v, i) => sum + v * ground.up[i], 0) / Math.hypot(...d)))) / RAD;
 }
 
+// Use the same geocentric subpoint for marker placement and its map coordinates.
+export function subpoint(position) {
+  return {
+    lat: Math.atan2(position[2], Math.hypot(position[0], position[1])) / RAD,
+    lon: Math.atan2(position[1], position[0]) / RAD,
+  };
+}
+
 function validPosition(p) {
   return Array.isArray(p) && p.length === 3 && p.every(Number.isFinite) && Math.hypot(...p) > 2e7 && Math.hypot(...p) < 5e7;
 }

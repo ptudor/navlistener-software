@@ -13,6 +13,18 @@ station; select two for redundancy planning. Click a location or enter its
 coordinates to list the visible satellites, elevation angles, and station counts.
 Missing satellites are sorted first, which helps compare prospective station sites.
 
+Hovering a satellite dot shows its ID and constellation. Clicking or tapping it
+selects the satellite and shows its reporting-station count and map subpoint
+directly below the map. If a ground location is selected, the details also show
+the satellite's elevation there. The satellite selector supports keyboard access,
+overlapping dots, and satellites whose current positions are unavailable.
+Satellite IDs in the ground-location table open the same details.
+
+Clicking empty map space selects a ground location instead: a crosshair marks it,
+the summary gives its observed/missing counts, and “View visible satellites” links
+to the detailed list. Selecting a satellite does not move the ground location.
+Selection details update with observations and clear when access is lost.
+
 The interface uses Integrity Satellite's compass mark, Inter and JetBrains Mono,
 lavender accent (`#a78bfa`), dark backgrounds, and constellation colors. Its slogan
 is **Ground Monitoring for Space Integrity**; headings describe the operational
