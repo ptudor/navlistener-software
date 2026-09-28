@@ -74,6 +74,9 @@ ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS credential_tier       TEXT   NOT
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS credential_fingerprint TEXT  NOT NULL DEFAULT '';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS attestation_tier      TEXT   NOT NULL DEFAULT 'none';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS hardware_trust        TEXT   NOT NULL DEFAULT 'none';
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS manufacturer_authority_id TEXT;
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS operational_authority_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS authority_evidence JSONB NOT NULL DEFAULT '{}';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS commissioning_fingerprint TEXT NOT NULL DEFAULT '';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS aggregate_use         TEXT   NOT NULL DEFAULT 'private';
 ALTER TABLE nav_frames ADD COLUMN IF NOT EXISTS station_metadata      TEXT   NOT NULL DEFAULT 'none';
@@ -356,6 +359,9 @@ SELECT create_hypertable('observer_samples', 'ts',
 -- earlier sample becomes explicitly unverified; a constant default is the form
 -- that also applies over chunks that are already compressed.
 ALTER TABLE observer_samples ADD COLUMN IF NOT EXISTS hardware_trust        TEXT   NOT NULL DEFAULT 'none';
+ALTER TABLE observer_samples ADD COLUMN IF NOT EXISTS manufacturer_authority_id TEXT;
+ALTER TABLE observer_samples ADD COLUMN IF NOT EXISTS operational_authority_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE observer_samples ADD COLUMN IF NOT EXISTS authority_evidence JSONB NOT NULL DEFAULT '{}';
 ALTER TABLE observer_samples ADD COLUMN IF NOT EXISTS commissioning_fingerprint TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_observer_samples_source_time
     ON observer_samples (source_id, kind, received_at DESC);

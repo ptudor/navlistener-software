@@ -75,16 +75,88 @@ func TestBoardRowSharesReceiptProvenance(t *testing.T) {
 	}
 }
 
-// Both receipt tables use the first v1 schema; prototype authority layouts are
-// intentionally not migrated.
+// Both receipt tables use the first v1 schema. Pre-authority deployments gain
+// missing columns; incompatible prototype authority layouts are not converted.
 func TestSchemaDeclaresHardwareEvidenceEverywhere(t *testing.T) {
 	for _, declaration := range []string{"manufacturer_authority_id TEXT,", "operational_authority_id TEXT NOT NULL", "authority_evidence JSONB NOT NULL"} {
-		if strings.Count(strings.ToLower(schemaSQL), strings.ToLower(declaration)) != 2 {
+		if strings.Count(strings.ToLower(schemaSQL), "\n    "+strings.ToLower(declaration)) != 2 {
 			t.Errorf("missing receipt declaration %s", declaration)
 		}
 	}
 	if !strings.Contains(navFrameSelect, "COALESCE(manufacturer_authority_id,'')") {
 		t.Fatal("replay does not handle nullable manufacturer")
+	}
+}
+
+func TestIntegrationPreAuthorityReceiptMigration(t *testing.T) {
+	baseDSN := testDSN(t)
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, baseDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	name := fmt.Sprintf("receipt_upgrade_%d", time.Now().UnixNano())
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{name}.Sanitize()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := admin.Exec(ctx, "DROP SCHEMA "+pgx.Identifier{name}.Sanitize()+" CASCADE"); err != nil {
+			t.Error(err)
+		}
+	}()
+	dsn := orderTestDSN(baseDSN, "search_path", name+",public")
+	old, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close(ctx)
+	// Recreate the production layout before hardware and authority evidence.
+	var lines []string
+	for _, line := range strings.Split(schemaSQL, "\n") {
+		if strings.Contains(line, "hardware_trust") || strings.Contains(line, "manufacturer_authority_id") ||
+			strings.Contains(line, "operational_authority_id") || strings.Contains(line, "authority_evidence") ||
+			strings.Contains(line, "commissioning_fingerprint") {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	if _, err := old.PgConn().Exec(ctx, strings.Join(lines, "\n")).ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(ctx, `INSERT INTO nav_frames
+		(ts,received_at,source_id,gnssid,svid,sigid,freqid,msg_type,raw)
+		VALUES (now()-interval '2 days',now()-interval '2 days','legacy',0,1,0,0,1,'\x01020304');
+		INSERT INTO observer_samples (ts,received_at,source_id,kind,raw,data)
+		VALUES (now()-interval '2 days',now()-interval '2 days','legacy','environment','\x01020304','{}')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"nav_frames", "observer_samples"} {
+		var chunks int
+		if err := old.QueryRow(ctx, "SELECT count(compress_chunk(c)) FROM show_chunks($1::regclass) c", table).Scan(&chunks); err != nil || chunks != 1 {
+			t.Fatalf("compress %s: chunks=%d, %v", table, chunks, err)
+		}
+	}
+	s, err := New(ctx, config.Store{DSN: dsn, RawRetention: "7 days", CompressAfter: "1 day"}, integrationLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, table := range []string{"nav_frames", "observer_samples"} {
+		var preserved bool
+		if err := s.pool.QueryRow(ctx, "SELECT hardware_trust='none' AND manufacturer_authority_id IS NULL AND operational_authority_id='' AND authority_evidence='{}'::jsonb AND commissioning_fingerprint='' AND raw='\\x01020304'::bytea FROM "+pgx.Identifier{table}.Sanitize()+" WHERE source_id='legacy'").Scan(&preserved); err != nil || !preserved {
+			t.Fatalf("legacy receipt changed in %s: %v", table, err)
+		}
+	}
+	now := time.Now().UTC()
+	nav := &NavFrame{Ts: now, ReceivedAt: now, SourceID: "new", Raw: []byte{1, 2, 3, 4}, OperationalAuthorityID: "customer"}
+	board := *nav
+	board.Board = &BoardSample{Kind: "environment", Data: []byte(`{}`)}
+	if n, err := s.persistAtomicOnce(ctx, []*NavFrame{nav, &board}); err != nil || n != 2 {
+		t.Fatalf("write after upgrade: rows=%d, %v", n, err)
+	}
+	if err := applySchema(ctx, s.pool); err != nil {
+		t.Fatalf("repeat migration: %v", err)
 	}
 }
 
