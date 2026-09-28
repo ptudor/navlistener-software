@@ -1,0 +1,25 @@
+Earth base image: Blue Marble: Next Generation, July 2004,
+with topography and bathymetry.
+Credit: NASA Earth Observatory / Reto Stöckli.
+
+Source page:
+https://science.nasa.gov/earth/earth-observatory/blue-marble-next-generation/base-topography-bathymetry/
+Source JPEG (5400 x 2700):
+https://eoimages.gsfc.nasa.gov/images/imagerecords/73000/73751/world.topo.bathy.200407.3x5400x2700.jpg
+Source SHA-256:
+4f4240673a3a1b173d61b92ca4b07bac5fd17059ea5f725ba6da5a9c5386b7ba
+
+Bundled earth.jpg is resized to 2400 x 1200 and encoded as a progressive
+JPEG at quality 86 with metadata stripped. No geographical edits were made.
+Bundled SHA-256:
+ff434fbef310d3fd22dd04baf3640ec1234c1b926b5560a3e3ab1a8591f8eb56
+
+NASA media usage guidelines:
+https://www.nasa.gov/nasa-brand-center/images-and-media/
+This third-party image retains its original terms. NASA does not endorse
+NavListen. Day/night shading and monitoring overlays are calculated by
+NavListen; they are not part of NASA's source imagery.
+
+Orbit reference: BKG GNSS Data Center, merged RINEX broadcast navigation.
+https://igs.bkg.bund.de/
+https://igs.bkg.bund.de/root_ftp/IGS/BRDC/

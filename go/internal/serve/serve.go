@@ -23,6 +23,7 @@ import (
 	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/metrics"
+	"github.com/ptudor/navlistener/internal/orbitref"
 	"github.com/ptudor/navlistener/internal/state"
 	"github.com/ptudor/navlistener/internal/store"
 )
@@ -66,6 +67,7 @@ var fastFeeds = []string{"svs", "global", "observers", "sbas"}
 // under an RWMutex on refresh, so a request never blocks on state-lock contention or
 // JSON encoding — it copies a ready []byte.
 type Server struct {
+	mapReference      *orbitref.Catalogue
 	updates           http.Handler
 	receptionControls http.Handler
 	http              *http.Server
@@ -139,6 +141,8 @@ func NewForAudience(addr string, st *state.Store, events EventStore, sources []c
 	s.bindBroker(s.broker, selected)
 	s.brokers[selected.Key()] = s.broker
 	mux := http.NewServeMux()
+	mux.Handle("/gnss/map/", mapHandler())
+	mux.HandleFunc("/gnss/api/v2/coverage", s.serveFeed("coverage"))
 	mux.HandleFunc("/gnss/api/v2/svs", s.serveFeed("svs"))
 	mux.HandleFunc("/gnss/api/v2/global", s.serveFeed("global"))
 	mux.HandleFunc("/gnss/api/v2/observers", s.serveFeed("observers"))
@@ -474,6 +478,10 @@ func (s *Server) buildFeedOnce(feed string, selected identity.Audience, st *stat
 		data["almanac"] = st.FeedAlmanac(now)
 	case "sbas":
 		data["sbas"] = st.FeedSBAS(now)
+	case "coverage":
+		data["reference"] = s.mapReferenceSnapshot(now)
+		data["observations"] = st.MonitoringSatellites(now)
+		data["fresh_seconds"] = 60
 	default:
 		return nil, fmt.Errorf("unknown feed %q", feed)
 	}
@@ -500,7 +508,7 @@ func (s *Server) serveFeed(feed string) http.HandlerFunc {
 		// Only the fixed/default view uses the shared warmed cache. Authenticated
 		// private responses are rendered per request so cache entries never cross
 		// principals or audiences.
-		if view.principal.ID != "" || view.audience != s.audience {
+		if feed == "coverage" || view.principal.ID != "" || view.audience != s.audience {
 			body, err := s.buildFeed(feed, view.audience, view.store, view.sources, s.now())
 			if err != nil {
 				s.log.Error("serve scoped feed marshal failed", "feed", feed, "audience", view.audience.Key(), "error", err)

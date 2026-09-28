@@ -593,7 +593,9 @@ type Store struct {
 	projection bool // immutable; only the physical/operator store reports receiver metrics
 	shards     []*shard
 
-	generation storeGeneration
+	generation       storeGeneration
+	monitoringMu     sync.Mutex
+	monitoringRoster map[string]int // expired navigation identities, scoped to this view
 
 	sbasMu sync.Mutex
 	sbas   map[int]*sbasState
@@ -626,12 +628,13 @@ func New(n int) *Store {
 		n = 1
 	}
 	s := &Store{
-		shards:     make([]*shard, n),
-		sbas:       make(map[int]*sbasState),
-		gloAlmanac: make(map[int]gloAlmSlot),
-		rf:         make(map[string]*rfStation),
-		boards:     make(map[string]*boardStation),
-		caps:       make(map[string]*capStation),
+		shards:           make([]*shard, n),
+		monitoringRoster: make(map[string]int),
+		sbas:             make(map[int]*sbasState),
+		gloAlmanac:       make(map[int]gloAlmSlot),
+		rf:               make(map[string]*rfStation),
+		boards:           make(map[string]*boardStation),
+		caps:             make(map[string]*capStation),
 	}
 	for i := range s.shards {
 		s.shards[i] = &shard{m: make(map[Key]*svState)}
@@ -2353,6 +2356,11 @@ func (s *Store) Expire(now time.Time, ttl time.Duration) {
 		sh.mu.Lock()
 		for k, st := range sh.m {
 			if now.Sub(st.lastSeen) > ttl {
+				if st.seenBy != nil {
+					s.monitoringMu.Lock()
+					s.monitoringRoster[fmt.Sprintf("%c%02d", k.G.Letter(), k.Sv)] = int(k.G)
+					s.monitoringMu.Unlock()
+				}
 				delete(sh.m, k)
 				if !s.projection {
 					metrics.SVsExpiredTotal.Inc()

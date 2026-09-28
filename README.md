@@ -85,6 +85,11 @@ through `[serve].addr`. See the [collector guide](go/README.md),
 [authorization guide](go/internal/authorization/README.md), and
 [deployment notes](go/deploy/README.md) for installation and access configuration.
 
+The collector also serves a [monitoring map](docs/MONITORING-MAP.md) at
+`/gnss/map/`: NASA Earth imagery, live daylight, and audience-scoped observation
+gaps. An independent orbit reference keeps unobserved satellites visible; expired
+orbits remain explicitly unknown instead of silently improving coverage.
+
 ## Tests
 
 Run the Go tests for both modules:
@@ -101,7 +106,7 @@ Go collector:
 make -C go check
 ```
 
-That check additionally needs a C compiler and OpenSSL and zstd development
+That check additionally needs Node.js 18 or newer, a C compiler and OpenSSL and zstd development
 libraries. The [feeder Makefile](feeder/Makefile) provides build overrides.
 Live database tests are skipped unless their test database settings are supplied;
 see [the integration test setup](go/internal/store/integration_test.go).

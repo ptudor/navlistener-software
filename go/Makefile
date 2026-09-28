@@ -11,6 +11,7 @@ BUILD_DIR   := build
 CMD         := ./cmd/navlistener
 
 GO          := go
+NODE        ?= node
 
 .PHONY: all check check-e2e check-refs check-esp32 build build-linux build-linux-arm64 build-darwin build-darwin-arm64 \
 		build-freebsd build-all install test race fuzz vet fmt fmt-check tidy clean run help
@@ -24,7 +25,7 @@ all: check build
 
 # check runs the fast quality gate: fmt-check + vet + reference provenance + ESP32 host
 # tests + tests, across both modules.
-check: fmt-check vet check-refs check-esp32 check-e2e test
+check: fmt-check vet check-refs check-esp32 check-e2e test test-map
 
 # check-esp32 runs the ESP32 component host tests — the firmware code that is pure C with no
 # ESP-IDF dependency (the GNF1 encoder/frame_type map, the netcfg validation rule). They need
@@ -81,6 +82,10 @@ install: build
 
 test:
 	@set -e; for modroot in $(MODROOTS); do ( cd $$modroot && $(GO) test ./... ); done
+
+.PHONY: test-map
+test-map:
+	$(NODE) --test internal/serve/map_test/*.test.mjs
 
 # race runs the full suite under the data-race detector (the C1–C11 discipline), both modules.
 race:

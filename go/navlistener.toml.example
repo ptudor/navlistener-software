@@ -63,6 +63,12 @@ audience                 = "public" # public (default) | operator; operator requ
 refresh_interval        = "30s"  # svs/global/observers/sbas
 almanac_refresh_interval = "90s" # almanac (longer-life, all-SV view)
 snapshot_interval        = "5m"  # persist each feed to the historian for replay/backfill; "0s" disables (needs [store].dsn)
+# /gnss/map/ shows audience-scoped monitoring gaps over NASA Earth imagery.
+# When serving, fetch public BKG reference orbits every 15 minutes by default.
+# Reference orbits never count as observations or enter the integrity detectors.
+map_reference = true # false disables outgoing reference downloads; map shows unknown geometry
+# Optional durable expected-satellite roster; parent directory must be writable.
+# map_reference_cache = "/var/lib/navlistener/map-orbits.json"
 
 # Standalone/bootstrap read grant. Production uses
 # navlistener_read_authorization_v1 through [authorization].dsn instead; never both.

@@ -37,6 +37,7 @@ import (
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/metrics"
+	"github.com/ptudor/navlistener/internal/orbitref"
 	"github.com/ptudor/navlistener/internal/reception"
 	"github.com/ptudor/navlistener/internal/serve"
 	"github.com/ptudor/navlistener/internal/server"
@@ -383,6 +384,12 @@ func run() int {
 		apiSrv = serve.NewForAudience(cfg.Serve.Addr, serveState, eventStore, serveSources,
 			cfg.Serve.RefreshFast, cfg.Serve.RefreshSlow, log, cfg.Serve.AudienceContext)
 		apiSrv.SetPolicyEpochs(policyEpochs)
+		if cfg.Serve.MapReference == nil || *cfg.Serve.MapReference {
+			catalogue := orbitref.New(cfg.Serve.MapReferenceCache, cfg.State.LeapSeconds)
+			apiSrv.SetMapReference(catalogue)
+			wg.Add(1)
+			go func() { defer wg.Done(); catalogue.Run(ctx, log) }()
+		}
 		apiSrv.SetReceptionControls(stationManager)
 		if updateManager != nil {
 			apiSrv.SetUpdates(updateManager)

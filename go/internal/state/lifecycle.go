@@ -20,6 +20,7 @@ func (s *Store) Reset() {
 	s.gloAlmMu.Lock()
 	s.rfMu.Lock()
 	s.capMu.Lock()
+	s.monitoringMu.Lock()
 
 	for _, shard := range s.shards {
 		shard.m = make(map[Key]*svState)
@@ -34,8 +35,10 @@ func (s *Store) Reset() {
 	// post-change trusted receipts; retaining them could expose a withdrawn
 	// station through capability reports/events even with no new nav frames.
 	s.declared = nil
+	clear(s.monitoringRoster)
 	s.generation.Add(1)
 
+	s.monitoringMu.Unlock()
 	s.capMu.Unlock()
 	s.rfMu.Unlock()
 	s.gloAlmMu.Unlock()

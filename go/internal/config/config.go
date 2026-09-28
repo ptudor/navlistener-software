@@ -126,6 +126,10 @@ type Collector struct {
 // the daemon can run collector-only. The refresh cadences default per §5.
 type Serve struct {
 	Addr string `toml:"addr"` // e.g. 127.0.0.1:8080; empty = serve disabled
+	// MapReference defaults on when serving. The independent public BKG orbit
+	// download supplies map geometry only, never receiver or integrity evidence.
+	MapReference      *bool  `toml:"map_reference"`
+	MapReferenceCache string `toml:"map_reference_cache"`
 	// Audience selects the one materialized view this unauthenticated listener
 	// serves. "public" is the fail-closed default. "operator" exposes the local
 	// all-source view and therefore requires an authenticated private front.
