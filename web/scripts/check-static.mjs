@@ -44,14 +44,15 @@ await Promise.all([
 // a JPEG copy of each exported PNG.
 const boards = JSON.parse(await readFile(path.join(dist, 'assets/boards/manifest.json'), 'utf8'))
 for (const board of boards.boards) {
-  const height = Math.round(boards.width_pixels * board.height_mm / board.width_mm)
+  const height = boards.height_pixels
   for (const side of ['top', 'bottom']) {
-    const file = `${board.id}-${side}.jpg`
-    assert.ok(`${board.id}-${side}.png` in boards.files, `board manifest lists ${board.id}-${side}.png`)
-    const image = html.match(new RegExp(`<img[^>]*src="/assets/boards/${file}"[^>]*>`))?.[0]
+    const file = `${board.id}-${side}-3d.jpg`
+    const digest = boards.files[`${board.id}-${side}-3d.png`]
+    assert.match(digest ?? '', /^[0-9a-f]{64}$/, `board manifest lists ${board.id}-${side}-3d.png`)
+    const image = html.match(new RegExp(`<img[^>]*src="/assets/boards/${file}\\?v=${digest.slice(0, 12)}"[^>]*>`))?.[0]
     assert.ok(image, `page shows ${file}`)
     assert.match(image, new RegExp(`width="${boards.width_pixels}" height="${height}"`), `${file} dimensions`)
-    assert.match(image, /alt="[^"]+2D layout illustration"/, `${file} is labeled as an illustration`)
+    assert.match(image, /alt="[^"]+3D render with green solder mask"/, `${file} is labeled as a render`)
   }
 }
 

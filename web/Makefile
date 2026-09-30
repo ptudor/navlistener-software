@@ -86,14 +86,17 @@ deploy: deploy-source-check deploy-ssh-check
 
 # oxipng is lossless and rewrites a file only when it gets smaller. Each JPEG is
 # regenerated from its PNG so a new export never leaves a stale copy behind.
-publish-boards:
-	oxipng -o max --strip safe $(BOARDS_DIR)/*.png
-	for png in $(BOARDS_DIR)/*.png; do \
+prepare-boards:
+	oxipng -o 4 --strip safe $(BOARDS_DIR)/*-3d.png
+	for png in $(BOARDS_DIR)/*-3d.png; do \
 		convert "$$png" -background '$(BOARDS_MATTE)' -alpha remove -alpha off -strip \
 			-interlace JPEG -sampling-factor 4:2:0 -quality $(BOARDS_JPEG_QUALITY) \
 			"$${png%.png}.jpg" || exit 1; \
 	done
-	rsync -vrlpt --delay-updates $(BOARDS_DIR)/*.png $(BOARDS_DIR)/*.jpg \
+publish-boards: prepare-boards deploy-ssh-check
+	rsync -vrlpt --delay-updates \
+		-e 'ssh -F $(SSH_CONF) -i $(SSH_KEY) -o IdentitiesOnly=yes -o IdentityAgent=none' \
+		$(BOARDS_DIR)/*-3d.png $(BOARDS_DIR)/*-3d.jpg \
 		$(BOARDS_HOST):$(DEPLOY_DIR)/assets/boards/
 
-.PHONY: default build test install audit dev preview digest deploy-local deploy-source-check deploy-ssh-check deploy-dry deploy publish-boards
+.PHONY: default build test install audit dev preview digest deploy-local deploy-source-check deploy-ssh-check deploy-dry deploy prepare-boards publish-boards

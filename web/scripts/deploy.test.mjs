@@ -84,7 +84,7 @@ test('board previews are optimized and converted before they are pushed to the w
   const root = await mkdtemp(join(tmpdir(), 'navlistener-boards-test-'))
   try {
     const bin = join(root, 'bin')
-    const boards = ['max-top.png', 'neo-bottom.png', 'neo-top.png']
+    const boards = ['max-top-3d.png', 'neo-bottom-3d.png', 'neo-top-3d.png']
     await mkdir(bin)
     await mkdir(join(root, 'public', 'assets', 'boards'), { recursive: true })
     await cp(new URL('../Makefile', import.meta.url), join(root, 'Makefile'))
@@ -104,7 +104,11 @@ const fs = require('node:fs');
 fs.appendFileSync('commands', JSON.stringify(['rsync', ...process.argv.slice(2)]) + '\\n');
 `, { mode: 0o755 })
 
-    await execute('make', ['publish-boards'], {
+    const sshConfig = join(root, 'ssh-config')
+    const sshKey = join(root, 'ssh-key')
+    await writeFile(sshConfig, '')
+    await writeFile(sshKey, '')
+    await execute('make', ['publish-boards', `SSH_CONF=${sshConfig}`, `SSH_KEY=${sshKey}`], {
       cwd: root,
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
     })
@@ -112,12 +116,14 @@ fs.appendFileSync('commands', JSON.stringify(['rsync', ...process.argv.slice(2)]
     const copies = sources.map(source => source.replace(/\.png$/, '.jpg'))
     const commands = (await readFile(join(root, 'commands'), 'utf8')).trim().split('\n').map(line => JSON.parse(line))
     assert.deepEqual(commands, [
-      ['oxipng', '-o', 'max', '--strip', 'safe', ...sources],
+      ['oxipng', '-o', '4', '--strip', 'safe', ...sources],
       ...sources.map((source, index) => [
         'convert', source, '-background', 'rgb(18,23,32)', '-alpha', 'remove', '-alpha', 'off', '-strip',
         '-interlace', 'JPEG', '-sampling-factor', '4:2:0', '-quality', '80', copies[index],
       ]),
-      ['rsync', '-vrlpt', '--delay-updates', ...sources, ...copies, 'junia:/usr/local/www/navlistener/web/assets/boards/'],
+      ['rsync', '-vrlpt', '--delay-updates',
+        '-e', `ssh -F ${sshConfig} -i ${sshKey} -o IdentitiesOnly=yes -o IdentityAgent=none`,
+        ...sources, ...copies, 'junia:/usr/local/www/navlistener/web/assets/boards/'],
     ])
   } finally {
     await rm(root, { recursive: true, force: true })

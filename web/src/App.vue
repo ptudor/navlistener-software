@@ -1,5 +1,6 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref } from 'vue'
+import boardManifest from '../public/assets/boards/manifest.json'
 
 const menuOpen = ref(false)
 const menuButton = ref(null)
@@ -46,11 +47,15 @@ const layers = [
   },
 ]
 
-const boards = [
-  { id: 'neo', title: 'NEO', size: '127.0 × 50.8 mm', height: 640 },
-  { id: 'max', title: 'MAX', size: '99.06 × 99.06 mm', height: 1600 },
-  { id: 'zed', title: 'ZED / X20', size: '99.06 × 99.06 mm', height: 1600 },
-]
+const boards = boardManifest.boards.map(board => ({
+  ...board,
+  size: `${board.width_mm} × ${board.height_mm} mm`,
+}))
+
+function boardImage(id, side) {
+  const file = `${id}-${side}-3d.png`
+  return `/assets/boards/${id}-${side}-3d.jpg?v=${boardManifest.files[file].slice(0, 12)}`
+}
 
 const contributionPaths = [
   {
@@ -290,8 +295,8 @@ function emailHref(subject) {
           <p class="section-kicker">Receiver options</p>
           <h3>Three boards. One observer.</h3>
           <p>
-            Each board is sized for a different receiver module. These 2D layout illustrations
-            come from the saved board designs, with simplified component bodies and lettering.
+            Each board is sized for a different receiver module. Explore the components in these
+            3D renders, shown with a classic green PCB finish.
           </p>
         </div>
         <figure v-for="board in boards" :key="board.id">
@@ -299,16 +304,16 @@ function emailHref(subject) {
             <div v-for="side in ['top', 'bottom']" :key="side" class="board-side">
               <span aria-hidden="true">{{ side }}</span>
               <img
-                :src="`/assets/boards/${board.id}-${side}.jpg`"
-                width="1600"
-                :height="board.height"
-                :alt="`${board.title} board, ${side} side, 2D layout illustration`"
+                :src="boardImage(board.id, side)"
+                :width="boardManifest.width_pixels"
+                :height="boardManifest.height_pixels"
+                :alt="`${board.title} board, ${side} side, 3D render with green solder mask`"
                 loading="lazy"
                 decoding="async"
               />
             </div>
           </div>
-          <figcaption><strong>{{ board.title }}</strong><span>{{ board.size }} · 2D layout illustration</span></figcaption>
+          <figcaption><strong>{{ board.title }}</strong><span>{{ board.size }} · 3D render</span></figcaption>
         </figure>
       </div>
     </section>

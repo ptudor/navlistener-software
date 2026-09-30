@@ -47,7 +47,8 @@ npm run build     # semantic static site -> dist/
 npm run preview
 make deploy-dry   # review the exact pushed commit Junia would deploy
 make deploy       # build + audit + publish through Junia's local checkout
-make publish-boards  # oxipng + JPEG copies + rsync the untracked board previews to junia
+make prepare-boards  # optimize rendered PNGs and make JPEG copies
+make publish-boards  # publish the untracked board renders using the dedicated SSH connection
 ```
 
 The build runs the copy guards, creates the client bundle, server-renders `App.vue` into the
@@ -98,48 +99,75 @@ The contact links use `ptudor@ptudor.net`, a known working project-owner address
 for hosting, contributions, hardware, and customer projects. When a `@navlisten.com` mailbox
 is ready, update `emailHref()` and the visible address in `src/App.vue` together.
 
-## Board layout previews
+## Board renders
 
-The Hardware section shows top and bottom views of NEO, MAX, and ZED/X20 from
-`public/assets/boards/`, rendered from the saved layouts. These are 2D layout
-illustrations with simplified component bodies and lettering. Use that description
-in captions and alt text. They are the section's only board artwork.
+The Hardware section shows top and bottom 3D renders of NEO, MAX, and ZED/X20.
+They use the saved board placements and bound STEP component models, with green
+solder mask and no silkscreen artwork. Pads, mounting holes, board thickness,
+component markings, and connector overhangs come from the design sources.
+Copper routing, vias, solder joints, and cables are omitted. These are illustrations,
+not assembly photographs or fabrication proofs.
 
-Regenerate them with `pcb/tools/board_preview.py` in the hardware repository.
-That repository's `pcb/previews/README.md` describes dependencies and configuration.
-Choose the hardware checkout explicitly; from this website directory, after
-installing the renderer's Python dependencies:
+The website receives six images and a manifest. Design geometry stays in the
+hardware checkout and the local scene directory. The normal website build needs
+neither the hardware repository nor any rendering dependencies.
 
-```sh
-python3 /path/to/navlistener-hardware/pcb/tools/board_preview.py \
-  --config /path/to/navlistener-hardware/pcb/previews/boards.json \
-  --output /path/to/preview-output \
-  --website-dir public/assets/boards
-```
+### Generate
 
-The export copies `neo-top.png`, `neo-bottom.png`, `max-top.png`, `max-bottom.png`,
-`zed-top.png`, `zed-bottom.png`, and `manifest.json`. The manifest records dimensions,
-source digests, and asset digests without local paths. PNG backgrounds are transparent
-outside the board outline. Native SVGs and the interactive offline gallery remain
-in the explicit preview output directory. The command does not deploy the site.
-
-The images stay out of Git. Only `manifest.json` is tracked; `.gitignore` excludes the
-PNGs and their JPEG copies. Publish them from the machine that holds them after each
-export. The target needs `oxipng` and ImageMagick's `convert`:
+Use Python with FreeCAD's `FreeCAD` and `Part` modules installed. Create the
+rendering environments separately from the website dependencies:
 
 ```sh
-make publish-boards                      # oxipng, JPEG copies, rsync to junia's document root
-make publish-boards BOARDS_HOST=another-host
+python3 -m venv --system-site-packages .render-python
+.render-python/bin/pip install pycryptodome==3.23.0
+npm install --prefix .render-tools three@0.183.2 playwright@1.63.0
 ```
 
-oxipng recompresses the PNGs losslessly, so their digests no longer match the
-manifest's `files` entries, which describe the renderer output. The page shows the
-smaller JPEG copies, encoded progressively at quality 80. JPEG has no transparency,
-so the corners outside the board outline are filled with `BOARDS_MATTE`, the
-`.hardware` background color; a test keeps the two in step. The PNGs are published
-beside them at full fidelity.
+Choose both source checkouts explicitly. The model library supplies the colour
+palette used by its STEP exporter. The scripts read saved projects without
+launching or changing the editor, verify the component transforms and STEP
+digests against the model receipts, and stop on missing models or unsupported
+geometry. Test points and explicitly unfitted parts remain bare pads.
 
-`make deploy` excludes `assets/boards/*.png`, `*.jpg`, and their `.sha256` files: it
-neither uploads local copies nor deletes the published images. The static check fails
-if the page stops showing a board listed in the manifest. Update `boards` in
-`src/App.vue` when the manifest changes.
+```sh
+.render-python/bin/python scripts/export-board-scenes.py \
+  --hardware /path/to/navlistener-hardware \
+  --materials /path/to/easyeda-tudor/libraries/models3d/tudor_step.py \
+  --output board-scenes
+node scripts/render-boards.mjs \
+  --scenes board-scenes --output public/assets/boards \
+  --tools .render-tools --browser /path/to/chromium
+make prepare-boards
+npm run build
+```
+
+The renderer serves the scenes only on localhost during capture. It writes
+`neo-top-3d.png`, `neo-bottom-3d.png`, `max-top-3d.png`, `max-bottom-3d.png`,
+`zed-top-3d.png`, `zed-bottom-3d.png`, and `manifest.json`. Images are 1600 × 1200.
+Review every view before publishing, including bottom-side orientation and holes.
+
+The manifest records dimensions, component counts, source and model-set digests,
+and image digests without local paths. Only the manifest is tracked. Scene files,
+rendering dependencies, PNGs, and JPEGs are Git-ignored.
+
+### Publish
+
+`make prepare-boards` requires `oxipng` and ImageMagick's `convert`. It optimizes
+the PNGs losslessly and makes progressive JPEGs at quality 80. Their transparent
+corners are filled with `BOARDS_MATTE`, matching the hardware section background.
+The manifest's PNG hashes identify the original renders before optimization and
+provide cache versions for the JPEG URLs.
+
+Publish the new images before deploying the page that references them:
+
+```sh
+make publish-boards SSH_CONF=/path/to/dedicated/config SSH_KEY=/path/to/dedicated/key
+make deploy HOST=registered-host SSH_CONF=/path/to/dedicated/config SSH_KEY=/path/to/dedicated/key
+```
+
+`BOARDS_HOST` defaults to `junia`; use only a host registered in the dedicated
+configuration. Transfers use that configuration and key with the SSH agent disabled.
+The `-3d` asset names let the new images be published while the previous page still
+shows its existing images. `make deploy` preserves independently published board
+PNGs and JPEGs. The static check verifies all six references, image dimensions,
+cache versions, and descriptions against the manifest.

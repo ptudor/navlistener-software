@@ -2,6 +2,9 @@ node_modules/
 dist/
 .static-ssr/
 .DS_Store
+board-scenes/
+.render-tools/
+.render-python/
 
 # Board previews are published by make publish-boards (README.md).
 public/assets/boards/*.png
