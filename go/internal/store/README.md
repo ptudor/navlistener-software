@@ -13,6 +13,7 @@ the live hot path: a slow database degrades the historian, never live decoding.
 |---|---|
 | `store.go` | `Store`, the batched `CopyFrom` writer goroutine, schema bootstrap, retention/compression policies, and the degraded-health probe. |
 | `events.go` | `EventRow`, `StoredEvent`, `EventQuery`, event writes and the windowed read API. |
+| `observer_history.go` | Private sensor samples filtered by receipt-time audience and collector, with bounded pages. |
 | `schema.sql` | The complete DDL — three hypertables, the dedup ledger, indexes, compression settings, and the `pg_notify` trigger. Applied at startup. |
 | `*_test.go` | Batching, dedup, policy application, event query bounds, and the degraded path. |
 | `README.md` | This file. |
@@ -31,6 +32,7 @@ func (s *Store) Enqueue(f *NavFrame)                             // bounded, dro
 func (s *Store) WriteEvent(ctx, e EventRow) (int64, error)        // direct, idempotent
 func (s *Store) WriteSnapshot(ctx, at, audience, endpoint string, data []byte) error
 func (s *Store) QueryEvents(ctx, q EventQuery) ([]StoredEvent, int, error)
+func (s *Store) QueryObserverSamples(ctx, q ObserverSampleQuery) (ObserverSamplePage, error)
 func (s *Store) SummarizeEvents(ctx, since, until) (EventSummary, error)
 func (s *Store) SetDurableNotify(fn func(source, session string, seq uint64))
 func (s *Store) Degraded() string

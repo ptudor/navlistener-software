@@ -384,6 +384,9 @@ func run() int {
 		apiSrv = serve.NewForAudience(cfg.Serve.Addr, serveState, eventStore, serveSources,
 			cfg.Serve.RefreshFast, cfg.Serve.RefreshSlow, log, cfg.Serve.AudienceContext)
 		apiSrv.SetPolicyEpochs(policyEpochs)
+		if historian != nil {
+			apiSrv.SetObserverHistory(historian, cfg.Collector.InstanceID)
+		}
 		if cfg.Serve.MapReference == nil || *cfg.Serve.MapReference {
 			catalogue := orbitref.New(cfg.Serve.MapReferenceCache, cfg.State.LeapSeconds)
 			apiSrv.SetMapReference(catalogue)

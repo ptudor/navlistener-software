@@ -73,6 +73,9 @@ type Server struct {
 	http              *http.Server
 	store             *state.Store
 	events            EventStore
+	observerHistory   ObserverHistoryStore
+	historyCollector  string
+	historySlots      chan struct{}
 	sources           []config.Source
 	log               *slog.Logger
 	now               func() time.Time
@@ -136,6 +139,7 @@ func NewForAudience(addr string, st *state.Store, events EventStore, sources []c
 		cacheState:   map[string]uint64{},
 		brokers:      map[string]*Broker{},
 		policyEpochs: audience.NewPolicyEpochs(time.Now()),
+		historySlots: make(chan struct{}, 8),
 	}
 	s.broker.log = log // SSE marshal failures log through the server's real logger
 	s.bindBroker(s.broker, selected)
@@ -146,6 +150,7 @@ func NewForAudience(addr string, st *state.Store, events EventStore, sources []c
 	mux.HandleFunc("/gnss/api/v2/svs", s.serveFeed("svs"))
 	mux.HandleFunc("/gnss/api/v2/global", s.serveFeed("global"))
 	mux.HandleFunc("/gnss/api/v2/observers", s.serveFeed("observers"))
+	mux.HandleFunc("/gnss/api/v2/observer-samples", s.serveObserverSamples)
 	mux.HandleFunc("/gnss/api/v2/almanac", s.serveFeed("almanac"))
 	mux.HandleFunc("/gnss/api/v2/sbas", s.serveFeed("sbas"))
 	mux.HandleFunc("/gnss/api/v2/audiences", s.serveAudiences)

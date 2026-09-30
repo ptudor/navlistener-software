@@ -13,6 +13,7 @@ server-sent-events stream for confirmed integrity events.
 |---|---|
 | `serve.go` | `Server`, the route table, the cached-envelope refresh loop, and the standard response envelope. |
 | `events_api.go` | `GET /gnss/api/events` and `/events/summary` — windowed reads over the historian, with their bounds. |
+| `observer_history.go` | Private, bounded sensor-history reads with credential rechecks and audience policy boundaries. |
 | `sse.go` | `Broker` — the SSE fan-out, the reconnect replay ring, and the client-resource bounds. |
 | `sanitize.go` | Making receiver-originated strings safe to place in a JSON feed. |
 | `*_test.go` | Feed shapes, envelope, parameter validation, SSE lifecycle and bounds, sanitization. |
@@ -34,6 +35,7 @@ when `[serve].addr` is set.
 | `GET /gnss/api/v2/svs` | Per-satellite×signal live state — the main feed. |
 | `GET /gnss/api/v2/global` | Fleet-wide counts, per-constellation totals, leap seconds. |
 | `GET /gnss/api/v2/observers` | Station list (only `remark` from config — never dial addresses). |
+| `GET /gnss/api/v2/observer-samples` | Authenticated environmental or timing samples for one receiver; see [the history contract](../../../docs/SENSOR-HISTORY.md). |
 | `GET /gnss/api/v2/almanac` | Coarse orbits, including SVs currently out of ephemeris view. |
 | `GET /gnss/api/v2/coverage` | Independent reference geometry and audience-scoped fresh navigation witnesses for the monitoring map. |
 | `GET /gnss/map/` | Embedded Earth map with daylight, monitoring gaps, constellation filters and location details. |
@@ -64,6 +66,7 @@ func NewForAudience(addr string, st *state.Store, events EventStore, sources []c
          fast, slow time.Duration, log *slog.Logger, audience identity.Audience) *Server
 func (s *Server) EnableAudienceSelection(auth ReadAuthorizer, resolver ViewResolver,
          reauthorizeEvery time.Duration)
+func (s *Server) SetObserverHistory(history ObserverHistoryStore, collectorID string)
 func (s *Server) Listen() (net.Listener, error)
 func (s *Server) Start(ln net.Listener) error
 func (s *Server) Run(ctx context.Context)          // the refresh loop

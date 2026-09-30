@@ -83,7 +83,14 @@ func (s *Store) QueryObserverSamples(ctx context.Context, q ObserverSampleQuery)
 	if err := q.Validate(); err != nil {
 		return page, err
 	}
-	args := []any{q.CollectorID, q.Observer, q.Kind, q.Since, q.Until, q.Limit + 1, q.Offset}
+	// PostgreSQL stores microseconds. Round the lower bound up so a policy
+	// transition with nanosecond precision cannot reveal an earlier receipt in
+	// the same microsecond when the driver truncates the bound.
+	since := q.Since.Truncate(time.Microsecond)
+	if since.Before(q.Since) {
+		since = since.Add(time.Microsecond)
+	}
+	args := []any{q.CollectorID, q.Observer, q.Kind, since, q.Until.Truncate(time.Microsecond), q.Limit + 1, q.Offset}
 	scope := ""
 	switch q.Audience.Kind {
 	case identity.AudienceOrganization:

@@ -615,8 +615,11 @@ Retention deletes old chunks automatically; it is not a keep-forever archive.
 `navlistener_store_board_rows_total{kind="environment"|"timing"}` counts committed
 samples. Existing writer queue/error/drop metrics and historian health apply.
 `navlistener_store_rows_total` now counts navigation and board records together.
-The live observer API stays separate; historical board samples are currently
-queried through authorized database access, not a public HTTP endpoint.
+The live observer API stays separate. Authorized clients can query private
+history through [`/gnss/api/v2/observer-samples`](SENSOR-HISTORY.md), with bounded
+pages and an explicit current-policy history boundary. It requires native read
+credentials and never serves public sensor history. Administrator database
+access can inspect retained receipts outside that HTTP boundary.
 
 For example, on an administrator's private database connection:
 

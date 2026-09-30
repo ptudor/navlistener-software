@@ -184,6 +184,43 @@ func TestObserverHistoryPostgres(t *testing.T) {
 			t.Fatal("cancellation ignored")
 		}
 	})
+	t.Run("policy boundary precision", func(t *testing.T) {
+		q := base
+		q.Since = stamp.Add(time.Nanosecond)
+		p, err := s.QueryObserverSamples(ctx, q)
+		if err != nil || len(p.Samples) != 0 {
+			t.Fatalf("pre-policy microsecond leaked: %+v %v", p, err)
+		}
+		q.Since = base.Since
+		q.Until = stamp.Add(-time.Nanosecond)
+		p, err = s.QueryObserverSamples(ctx, q)
+		if err != nil || len(p.Samples) != 0 {
+			t.Fatalf("upper bound rounded forward: %+v %v", p, err)
+		}
+	})
+	t.Run("transfer and collection withdrawal", func(t *testing.T) {
+		q := base
+		q.Observer = "transferred-receiver"
+		transition := stamp.Add(time.Minute)
+		insert("collector-a", "org-a", q.Observer, q.Kind, []string{"shared-group"}, stamp, nil, `{"owner":"a"}`)
+		insert("collector-a", "org-b", q.Observer, q.Kind, []string{}, transition, nil, `{"owner":"b"}`)
+		q.Audience.ID = "org-b"
+		p, err := s.QueryObserverSamples(ctx, q)
+		if err != nil || len(p.Samples) != 1 || !strings.Contains(string(p.Samples[0].Details), `"b"`) {
+			t.Fatalf("new owner acquired old receipts: %+v %v", p, err)
+		}
+		q.Since = transition
+		q.Audience.ID = "org-a"
+		p, err = s.QueryObserverSamples(ctx, q)
+		if err != nil || len(p.Samples) != 0 {
+			t.Fatalf("old owner saw new receipts: %+v %v", p, err)
+		}
+		q.Audience = identity.Audience{Kind: identity.AudienceCollection, ID: "shared-group"}
+		p, err = s.QueryObserverSamples(ctx, q)
+		if err != nil || len(p.Samples) != 0 {
+			t.Fatalf("withdrawn collection retained history across boundary: %+v %v", p, err)
+		}
+	})
 	t.Run("oversized sample", func(t *testing.T) {
 		q := base
 		q.Observer = "oversized"

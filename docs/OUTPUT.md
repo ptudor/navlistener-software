@@ -234,8 +234,13 @@ is unchanged. `navlistener_update_security_drift` is also raised, on a collector
 that verifies evidence, for a device reporting the trusted track whose session
 did not verify as `trusted`. See [ObserverDetails](OBSERVER-TELEMETRY.md) for field definitions,
 cadence, replay caveats and bounded live retention. With the historian enabled,
-samples also persist privately in `observer_samples`; historical queries currently
-require authorized database access rather than an HTTP history endpoint.
+samples also persist privately in `observer_samples`. The authenticated
+`GET /gnss/api/v2/observer-samples` endpoint returns bounded environmental or
+timing history for one receiver and private audience. It requires a native read
+principal and applies receipt-time scope plus the current audience policy epoch;
+history before collector startup or the latest audience reset is unavailable
+through HTTP. See [the sensor-history contract](SENSOR-HISTORY.md) for parameters,
+pagination, sequence encoding, resource limits, and explicit history boundaries.
 
 ### 1.4 `almanac` — coarse orbits for every known SV
 
