@@ -32,6 +32,9 @@ struct StationDetailView: View {
                         if let board = observer?.board {
                             BoardTelemetryView(board: board, observerID: stationID)
                         }
+                        if controller.store.activeSession?.audience.isPrivate == true {
+                            SensorHistoryView(observerID: stationID)
+                        }
                         signalsCard
                         timelineCard
                     }

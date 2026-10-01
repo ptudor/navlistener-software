@@ -78,6 +78,16 @@ final class StationStore {
         return base + fetchedAt.duration(to: .now).timeInterval
     }
 
+    var collectorTime: Date? {
+        guard let boardServerTime, let fetchedAt else { return nil }
+        return boardServerTime.addingTimeInterval(fetchedAt.duration(to: .now).timeInterval)
+    }
+
+    func handleExternalReadFailure(_ error: Error, session: ReadSession) async {
+        guard activeSession == session else { return }
+        _ = await handleAuthorizationLoss(error, session: session, generation: generation)
+    }
+
     func boardFreshness(_ sample: BoardSample?, stale: Bool?, timing: Bool = false, reception: Bool = false) -> BoardFreshness {
         guard let sample else { return .unknown }
         return sample.freshness(serverTime: boardServerTime,

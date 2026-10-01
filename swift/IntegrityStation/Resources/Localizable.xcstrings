@@ -3220,6 +3220,246 @@
           }
         }
       }
+    },
+    "history.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sensor history"
+          }
+        }
+      }
+    },
+    "history.temperature": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Board temperature"
+          }
+        }
+      }
+    },
+    "history.humidity": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Relative humidity"
+          }
+        }
+      }
+    },
+    "history.pressure": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Local absolute pressure"
+          }
+        }
+      }
+    },
+    "history.phase": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "RTC − GNSS phase"
+          }
+        }
+      }
+    },
+    "history.count": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld samples loaded"
+          }
+        }
+      }
+    },
+    "history.policy": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "History available from %@ under the current collector policy."
+          }
+        }
+      }
+    },
+    "history.narrow": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Narrow the window to inspect additional samples."
+          }
+        }
+      }
+    },
+    "history.more": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Load more samples"
+          }
+        }
+      }
+    },
+    "history.waiting": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting for an authorized collector clock."
+          }
+        }
+      }
+    },
+    "history.note": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collector receipt time · UTC. Missing readings, long gaps and boot changes break the line."
+          }
+        }
+      }
+    },
+    "history.phase_note": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pulse phase does not measure UTC accuracy."
+          }
+        }
+      }
+    },
+    "history.measurement": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Measurement"
+          }
+        }
+      }
+    },
+    "history.window": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "History window"
+          }
+        }
+      }
+    },
+    "history.hour": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last hour"
+          }
+        }
+      }
+    },
+    "history.six_hours": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last 6 hours"
+          }
+        }
+      }
+    },
+    "history.day": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last 24 hours"
+          }
+        }
+      }
+    },
+    "history.week": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last 7 days"
+          }
+        }
+      }
+    },
+    "history.empty": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No measurements in this window."
+          }
+        }
+      }
+    },
+    "history.chart": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sensor history chart"
+          }
+        }
+      }
+    },
+    "history.samples": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View samples"
+          }
+        }
+      }
+    },
+    "history.source": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sample UTC: %@"
+          }
+        }
+      }
+    },
+    "history.session": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Boot session: %@"
+          }
+        }
+      }
+    },
+    "history.changed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "History access changed. Refresh to start a new series."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

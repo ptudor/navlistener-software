@@ -39,6 +39,24 @@ reported track, manifest contents and recorded inventory. Missing verification
 means not reported. Unknown future wire values remain visible without claiming
 trusted evidence.
 
+## Historical readings
+
+Both clients use the [private sensor-history API](SENSOR-HISTORY.md) for board
+temperature, humidity, pressure and RTC/GNSS phase. Charts use receipt time and
+break across missing measurements, receiver restarts and sampling gaps. Zero is
+a measurement; missing values are not zero. Source UTC, boot session and collector
+verification remain available alongside the chart.
+
+Native requests recheck the selected private grant before and after each bounded
+page. Results remain in memory and clear when access, selection or app activity
+changes. Both clients disclose the collector's policy boundary and historian
+availability; neither promises uninterrupted history across collector restarts.
+
+The portal owns accounts, group membership and approved inventory. Direct native
+collector credentials remain separate from portal login, and local favorites do
+not establish ownership. A future native portal mode must reuse the portal's
+authorization and revocation checks rather than distribute its service tokens.
+
 ## Shared regression cases
 
 The canonical fixture is

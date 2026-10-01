@@ -3,6 +3,7 @@ import SwiftUI
 /// The Integrity family palette from apps/intsat/docs/COLOR_STANDARDS.md,
 /// corrected to navlistener's u-blox gnssid order (OUTPUT.md §0).
 enum StationPalette {
+    static let accent = Color("AccentColor")
     static let darkBackground = Color(red: 0x0A / 255, green: 0x0A / 255, blue: 0x1A / 255)
     static let darkSurface = Color(red: 0x16 / 255, green: 0x1B / 255, blue: 0x22 / 255)
     static let darkRaised = Color(red: 0x1C / 255, green: 0x23 / 255, blue: 0x33 / 255)

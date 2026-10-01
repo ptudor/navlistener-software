@@ -7,7 +7,7 @@ struct InstrumentBackground: View {
         (colorScheme == .dark ? StationPalette.darkBackground : StationPalette.lightBackground)
             .overlay(alignment: .topTrailing) {
                 RadialGradient(
-                    colors: [Color.accentColor.opacity(0.10), .clear],
+                    colors: [StationPalette.accent.opacity(0.10), .clear],
                     center: .topTrailing,
                     startRadius: 0,
                     endRadius: 520

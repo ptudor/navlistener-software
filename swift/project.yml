@@ -107,6 +107,7 @@ targets:
       - path: IntegrityStationTests/LocalizationTests.swift
       - path: IntegrityStationTests/LocalizationExpected.json
       - path: IntegrityStationTests/BoardTelemetryTests.swift
+      - path: IntegrityStationTests/SensorHistoryTests.swift
     dependencies:
       - target: IntegrityStation
     settings:

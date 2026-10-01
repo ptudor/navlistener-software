@@ -23,7 +23,7 @@ struct AppRootView: View {
                 }
             #endif
         }
-        .tint(.accentColor)
+        .tint(StationPalette.accent)
         .preferredColorScheme(controller.settings.appearance.colorScheme)
         .task { await controller.start(); await controller.notifications.refreshPermission() }
         .onChange(of: scenePhase, initial: true) { _, phase in controller.store.setForeground(phase == .active) }

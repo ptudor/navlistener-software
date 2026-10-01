@@ -180,6 +180,27 @@ struct FeedClient: Sendable {
         return try await fetch(url: url, session: session)
     }
 
+    func fetchSensorHistory(session: ReadSession, request: SensorHistoryRequest) async throws -> SensorHistoryPage {
+        guard session.audience.isPrivate else { throw FeedError.forbidden(nil) }
+        func validateGrant() async throws {
+            let envelope = try await fetchAudiences(baseURL: session.baseURL, token: session.token)
+            guard let discovery = envelope.data?.validated(),
+                  discovery.principalID == session.principalID,
+                  discovery.authorizationRevision == session.authorizationRevision,
+                  discovery.audiences.contains(session.audience) else { throw FeedError.audienceLost }
+        }
+        try await validateGrant()
+        let endpoint = try CollectorEndpoint.url(baseURL: session.baseURL, path: "gnss/api/v2/observer-samples")
+        var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
+        components?.queryItems = request.query
+        guard let url = components?.url else { throw FeedError.invalidBaseURL }
+        let envelope: APIEnvelope<SensorHistoryPage> = try await fetch(url: url, session: session)
+        guard let page = envelope.data else { throw FeedError.missingData }
+        try page.validate(request: request, session: session)
+        try await validateGrant()
+        return page
+    }
+
     private func fetch<Payload: Codable & Sendable>(
         baseURL: URL,
         path: String,

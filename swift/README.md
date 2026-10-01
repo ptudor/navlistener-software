@@ -24,8 +24,24 @@ warning. Unknown or stale coverage keeps a reported alarm visible as held, and
 disagreement remains explicit. See [reception rules](../docs/RECEPTION.md).
 
 The latest receiver interference context shows its transition report and the
-preceding report from the same boot. This is bounded live context; the app does
-not query the collector's database sensor history or the device's local journal.
+preceding report from the same boot. A separate **Sensor history** card reads the
+private historian API for temperature, humidity, absolute pressure and RTC/GNSS
+phase over one hour through seven days. Charts break at missing readings, long
+receipt gaps and reboots; individual samples retain source UTC and verification.
+History is bounded by collector startup/current audience policy, even when older
+rows remain stored. It does not read the device's local journal.
+
+History stays in memory, is limited to 5,000 displayed samples, and is discarded
+when its selection retires or access fails. Each page rechecks the collector's
+grant and validates its receiver, audience, bounds and revision. The sample table
+remains available alongside the native chart. Missing historian support appears
+as an explicit unavailable response.
+
+Live and historical samples show collector `hardware_trust` independently of
+the firmware-reported track. Shared status/freshness rules and palette decisions
+are recorded in the [station presentation contract](../docs/STATION-PRESENTATION.md).
+Integrity Station keeps its name and native typography. Portal accounts and
+direct collector credentials remain separate connections.
 
 ## Bluetooth setup (iPhone and iPad)
 

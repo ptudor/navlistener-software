@@ -4,10 +4,11 @@
 one receiver and one private audience. `HEAD` accepts the same parameters and
 authorization, performs the same checks, and omits the response body.
 
-The endpoint is implemented in the collector. Django and Swift clients can
-consume this contract; a customer login, fleet inventory, and chart UI are
-separate features. Live values remain available through the private
-`/gnss/api/v2/observers` feed.
+The endpoint is implemented in the collector. The Django owner portal and
+Integrity Station both provide charts using this contract. Django authorizes
+human accounts against approved fleet inventory; the native application uses
+its selected private collector audience. These remain separate sign-in modes.
+Live values remain available through the private `/gnss/api/v2/observers` feed.
 
 ## Authorization and availability
 
