@@ -1,0 +1,22 @@
+{
+  "name": "navlisten-collector-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "test": "node --test",
+    "check:locales": "node scripts/check-locales.mjs",
+    "build": "npm run check:locales && npm test && vite build && vite build --ssr src/entry-server.js --outDir .static-ssr && node scripts/export-static.mjs && node scripts/check-static.mjs",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@vue/server-renderer": "^3.5.43",
+    "vue": "^3.5.43",
+    "vue-i18n": "^11.4.12"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.9",
+    "vite": "^8.3.1"
+  }
+}
