@@ -38,7 +38,6 @@ when `[serve].addr` is set.
 | `GET /gnss/api/v2/observer-samples` | Authenticated environmental or timing samples for one receiver; see [the history contract](../../../docs/SENSOR-HISTORY.md). |
 | `GET /gnss/api/v2/almanac` | Coarse orbits, including SVs currently out of ephemeris view. |
 | `GET /gnss/api/v2/coverage` | Independent reference geometry and audience-scoped fresh navigation witnesses for the monitoring map. |
-| `GET /gnss/map/` | Embedded Earth map with daylight, monitoring gaps, constellation filters and location details. |
 | `GET /gnss/api/v2/sbas` | Per-GEO SBAS message-type and health tracking. |
 | `GET /gnss/api/events` | Filtered, paginated window over persisted integrity events. |
 | `GET /gnss/api/events/summary` | Rolling-window counts and breakdowns. |
@@ -48,8 +47,9 @@ when `[serve].addr` is set.
 
 The [monitoring map guide](../../../docs/MONITORING-MAP.md) explains coverage
 semantics, reference downloads, retained unknown satellites and map configuration.
-The map uses separate reference geometry; it does not change the existing almanac
-feed or add reference records to receiver observations.
+The Vue static export consumes this API. The map uses separate reference geometry;
+it does not change the existing almanac feed or add reference records to receiver
+observations.
 
 Every JSON response is wrapped in the standard v2 envelope (`docs/OUTPUT.md §0`):
 

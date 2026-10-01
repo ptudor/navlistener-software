@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import CoverageMap from './components/CoverageMap.vue'
 import { LOCALE_LABELS, SUPPORTED_LOCALES } from './i18n/localeLabels.js'
 import {
   SYSTEMS,
@@ -18,6 +19,7 @@ import { pagePath } from './siteRoutes.js'
 
 const props = defineProps({
   locale: { type: String, default: 'en' },
+  page: { type: String, default: 'overview' },
 })
 
 const { t } = useI18n()
@@ -45,8 +47,10 @@ let ageTimer
 const localeLinks = SUPPORTED_LOCALES.map((locale) => ({
   code: locale,
   label: LOCALE_LABELS[locale],
-  href: pagePath(locale),
+  href: pagePath(locale, props.page),
 }))
+const homeHref = computed(() => pagePath(props.locale))
+const sectionHref = (section) => props.page === 'map' ? `${pagePath(props.locale)}#${section}` : `#${section}`
 const currentLocaleLabel = computed(() => LOCALE_LABELS[props.locale] || LOCALE_LABELS.en)
 const satellites = computed(() => groupSatellites(feeds.svs.data))
 const presentSystems = computed(() => {
@@ -353,8 +357,10 @@ function handleVisibility() {
 onMounted(() => {
   theme.value = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark'
   document.addEventListener('visibilitychange', handleVisibility)
-  ageTimer = setInterval(() => { tick.value += 1 }, 5000)
-  refresh()
+  if (props.page === 'overview') {
+    ageTimer = setInterval(() => { tick.value += 1 }, 5000)
+    refresh()
+  }
 })
 
 onBeforeUnmount(() => {
@@ -365,21 +371,21 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <a class="skip" href="#overview">{{ t('accessibility.skip') }}</a>
+  <a class="skip" :href="props.page === 'map' ? '#monitoring-map' : '#overview'">{{ t(props.page === 'map' ? 'accessibility.skip_map' : 'accessibility.skip') }}</a>
   <header class="masthead">
     <div class="wrap">
-      <a class="brand" href="#overview" :aria-label="t('nav.home')">
+      <a class="brand" :href="homeHref" :aria-label="t('nav.home')">
         <img src="/logo.svg?v=f190b788f8e9" width="43" height="43" alt="">
         <span><strong>NavListen</strong><small>{{ t('brand.station_network') }}</small></span>
       </a>
       <nav :aria-label="t('nav.menu')">
-        <a href="#satellites">{{ t('nav.satellites') }}</a>
-        <a href="#observers">{{ t('nav.receivers') }}</a>
-        <a href="/gnss/map/">{{ t('nav.coverage_map') }}</a>
+        <a :href="sectionHref('satellites')">{{ t('nav.satellites') }}</a>
+        <a :href="sectionHref('observers')">{{ t('nav.receivers') }}</a>
+        <a href="#monitoring-map">{{ t('nav.coverage_map') }}</a>
         <details class="locale-menu">
-          <summary>{{ t('locale.label') }}: <span :lang="locale">{{ currentLocaleLabel }}</span></summary>
+          <summary>{{ t('locale.label') }}: <span :lang="props.locale">{{ currentLocaleLabel }}</span></summary>
           <div class="locale-list">
-            <a v-for="item in localeLinks" :key="item.code" :href="item.href" :lang="item.code" :hreflang="item.code" :aria-current="item.code === locale ? 'page' : undefined">{{ item.label }}</a>
+            <a v-for="item in localeLinks" :key="item.code" :href="item.href" :lang="item.code" :hreflang="item.code" :aria-current="item.code === props.locale ? 'page' : undefined">{{ item.label }}</a>
           </div>
         </details>
         <button class="theme-toggle" type="button" :aria-label="themeAction" :title="themeAction" @click="toggleTheme">
@@ -390,11 +396,17 @@ onBeforeUnmount(() => {
     </div>
   </header>
 
-  <main id="overview" class="wrap" tabindex="-1">
+  <main v-if="props.page === 'map'" id="monitoring-map-page" class="wrap" tabindex="-1">
+    <CoverageMap :locale="props.locale" full />
+  </main>
+
+  <main v-else id="overview" class="wrap" tabindex="-1">
+    <CoverageMap :locale="props.locale" />
+
     <section class="hero" aria-labelledby="page-title">
       <div>
         <p class="eyebrow">{{ t('hero.eyebrow') }}</p>
-        <h1 id="page-title">{{ t('hero.title') }}</h1>
+        <h2 id="page-title" class="hero-title">{{ t('hero.title') }}</h2>
         <p class="intro">{{ t('hero.intro') }}</p>
         <div class="hero-links"><a href="#satellites">{{ t('hero.explore') }} <span aria-hidden="true">↓</span></a><a href="#about">{{ t('hero.about') }}</a></div>
       </div>
@@ -523,7 +535,7 @@ onBeforeUnmount(() => {
 
   <footer>
     <div class="wrap footer-grid">
-      <div class="footer-intro"><a class="brand footer-brand" href="#overview"><img src="/logo.svg?v=f190b788f8e9" width="43" height="43" alt=""><span><strong>NavListen</strong><small>{{ t('brand.station_network') }}</small></span></a><p>{{ t('footer.tagline') }}</p></div>
+      <div class="footer-intro"><a class="brand footer-brand" :href="homeHref"><img src="/logo.svg?v=f190b788f8e9" width="43" height="43" alt=""><span><strong>NavListen</strong><small>{{ t('brand.station_network') }}</small></span></a><p>{{ t('footer.tagline') }}</p></div>
       <div class="footer-meta"><nav aria-label="Legal"><a href="https://intsat.space/intsat/terms/">{{ t('footer.terms') }}</a><a href="https://intsat.space/intsat/privacy/">{{ t('footer.privacy') }}</a></nav><span>{{ t('footer.copyright') }}</span></div>
     </div>
   </footer>

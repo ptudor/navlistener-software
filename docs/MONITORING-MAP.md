@@ -1,10 +1,12 @@
 # Collector monitoring map
 
-Open `/gnss/map/` on the collector's read listener. The page and its NASA Earth
-image are embedded in the daemon; building or hosting the page needs no JavaScript
-dependencies. Enable `[serve].addr` as usual and route `/gnss/map/` and
-`/gnss/api/v2/` through the same authenticated reverse proxy when using a private
-collector. The standalone page has no external browser requests.
+The public Vue dashboard opens with a compact map at `/in/`; `/in/map/` provides
+the complete location, redundancy, reference, and audience controls. Both are
+static exports from `collector-web/` and read the Go collector's
+`/gnss/api/v2/coverage` endpoint on the same origin. The Go service publishes the
+API only. When using a private collector, serve the static export and route
+`/gnss/api/v2/` through the same authenticated reverse proxy. The page makes no
+external browser requests.
 
 The world is a 2:1 equirectangular map with calculated daylight, observation gaps,
 and satellite subpoints. Filters select GPS, Galileo, BeiDou, GLONASS, and QZSS;
@@ -13,12 +15,11 @@ station; select two for redundancy planning. Click a location or enter its
 coordinates to list the visible satellites, elevation angles, and station counts.
 Missing satellites are sorted first, which helps compare prospective station sites.
 
-Hovering a satellite dot shows its ID and constellation. Clicking or tapping it
-selects the satellite and shows its reporting-station count and map subpoint
-directly below the map. If a ground location is selected, the details also show
-the satellite's elevation there. The satellite selector supports keyboard access,
-overlapping dots, and satellites whose current positions are unavailable.
-Satellite IDs in the ground-location table open the same details.
+Clicking or tapping a satellite dot selects it and shows its reporting-station
+count and map subpoint directly below the map. If a ground location is selected,
+the details also show the satellite's elevation there. The satellite selector
+supports keyboard access and overlapping dots. Satellite IDs in the
+ground-location table open the same details.
 
 Clicking empty map space selects a ground location instead: a crosshair marks it,
 the summary gives its observed/missing counts, and “View visible satellites” links
@@ -26,9 +27,8 @@ to the detailed list. Selecting a satellite does not move the ground location.
 Selection details update with observations and clear when access is lost.
 
 The interface uses Integrity Satellite's compass mark, Inter and JetBrains Mono,
-lavender accent (`#a78bfa`), dark backgrounds, and constellation colors. Its slogan
-is **Ground Monitoring for Space Integrity**; headings describe the operational
-view directly. Fonts and their licenses are embedded with the map assets.
+lavender accent (`#a78bfa`), dark backgrounds, and constellation colors. Fonts,
+their licenses, and the Earth image ship with the static export.
 
 ## What the colors mean
 
@@ -41,10 +41,10 @@ examines every selected satellite above the horizon:
   The tint gets lighter as more visible satellites meet the target.
 - **Untinted:** at least 80% meet the station target and reference geometry is
   available. This is useful monitoring, not a claim of perfect reception.
-- **Gray hatching:** the reference is unavailable, delayed, missing a selected
-  constellation, or contains satellites without usable coordinates. Known red and
-  amber gaps remain visible underneath. Cells with no known visible satellites
-  are unknown rather than covered.
+- **Subtle gray tint and reference status:** the reference is unavailable,
+  delayed, missing a selected constellation, or contains satellites without
+  usable coordinates. Known red and amber gaps remain visible. Cells with no
+  known visible satellites are unknown rather than covered.
 
 The 50% and 80% thresholds grade practical monitoring instead of demanding every
 satellite. The default one-station target therefore clears at 80% observed. With
@@ -164,7 +164,8 @@ discarded. Read tokens remain only in tab memory and are cleared when leaving.
 ## Verification and sources
 
 ```sh
-make -C go test-map
+gmake -C collector-web test
+gmake -C collector-web build
 cd go
 go test ./internal/orbitref ./internal/state ./internal/serve
 go test -race ./internal/orbitref ./internal/state ./internal/serve
@@ -175,12 +176,12 @@ independent ESA SP3 fixtures. Tests cover malformed and truncated RINEX, epoch
 expiry, shrinking/failed downloads, cache restoration, witness deduplication,
 audience resets and access control. JavaScript tests cover missing satellites,
 redundancy, stale observations, uncertain references, dateline/pole geometry, and
-equinox/solstice daylight. `test-map` needs Node.js 18 or newer.
+equinox/solstice daylight. The collector web build needs Node.js 22 or newer.
 
 - [BKG GNSS Data Center](https://igs.bkg.bund.de/) and
   [merged navigation archive](https://igs.bkg.bund.de/root_ftp/IGS/BRDC/).
 - [RINEX 3.05](../reference/icd/RINEX-3.05.pdf), navigation layouts in Appendix A.
 - [NASA Blue Marble](https://science.nasa.gov/earth/earth-observatory/blue-marble-next-generation/);
-  image provenance and hashes are in [credits.txt](../go/internal/serve/map/credits.txt).
+  image provenance and hashes are in [credits.txt](../collector-web/public/map/credits.txt).
 - [NOAA solar calculation method](https://gml.noaa.gov/grad/solcalc/calcdetails.html),
   based on Meeus. The map uses the geometric solar horizon with a twilight wash.

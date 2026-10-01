@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sunDirection, site, elevation, modelFromFeed, assess, worldGrid } from '../map/geometry.mjs';
+import { sunDirection, site, elevation, modelFromFeed, assess, worldGrid } from '../src/map/geometry.js';
 
 const at = Date.parse('2026-09-22T12:00:00Z');
 function feed(satellites, observations = []) {

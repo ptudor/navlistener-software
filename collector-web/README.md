@@ -5,6 +5,11 @@ It is a static export: Apache serves the generated HTML, CSS, JavaScript, fonts,
 and language catalogs directly, while the browser reads live public data from
 the collector's existing `/gnss/api/v2/` endpoints.
 
+The overview opens with the live coverage map. A complete analysis view is
+exported at `/in/map/`, with a localized map page beside every locale overview.
+The collector supplies coverage data through its API and does not serve page
+content.
+
 The export writes real directories for the source English page and four English
 regional placeholders. Apache retains ordinary 404 behavior because there is no
 single-page fallback. Replace a placeholder catalog in `src/i18n/locales/` when

@@ -12,7 +12,7 @@ const entries = await readdir(dist, { recursive: true })
 const htmlFiles = entries.filter((entry) => entry.endsWith('index.html')).sort()
 const catalogs = entries.filter((entry) => /^catalogs[/\\].+\.json$/.test(entry)).sort()
 
-assert.equal(htmlFiles.length, SUPPORTED_LOCALES.length, 'one static page per locale')
+assert.equal(htmlFiles.length, SUPPORTED_LOCALES.length * 2, 'overview and map page per locale')
 assert.equal(catalogs.length, SUPPORTED_LOCALES.length, 'one public catalog per locale')
 
 for (const locale of SUPPORTED_LOCALES) {
@@ -28,9 +28,19 @@ for (const locale of SUPPORTED_LOCALES) {
   assert.match(html, /<link rel="canonical" href="https:\/\/in\.intsat\.net\/in\//, `${locale}: canonical`)
   assert.match(html, /<script type="module" crossorigin src="\/in\/assets\//, `${locale}: local Vue bundle`)
   assert.doesNotMatch(html, /\sstyle=/i, `${locale}: no inline style under CSP`)
+
+  const mapRelative = locale === DEFAULT_LOCALE ? 'map/index.html' : `${locale}/map/index.html`
+  assert.ok(htmlFiles.includes(mapRelative), `${locale}: exported map page`)
+  const mapHtml = await readFile(path.join(dist, mapRelative), 'utf8')
+  assert.match(mapHtml, new RegExp(`<html lang="${locale}"`), `${locale}: map document language`)
+  assert.match(mapHtml, /<main[^>]+id="monitoring-map-page"/, `${locale}: map semantic main`)
+  assert.match(mapHtml, /GNSS monitoring map · NavListen/, `${locale}: map title`)
+  assert.match(mapHtml, /<canvas[^>]+width="1800"[^>]+height="900"/, `${locale}: rendered map canvas`)
+  assert.match(mapHtml, new RegExp(`<link rel="canonical" href="https:\\/\\/in\\.intsat\\.net${locale === DEFAULT_LOCALE ? '\\/in\\/map\\/' : `\\/in\\/${locale}\\/map\\/`}`), `${locale}: map canonical`)
+  assert.doesNotMatch(mapHtml, /\sstyle=/i, `${locale}: map has no inline style under CSP`)
 }
 
 for (const relative of catalogs) JSON.parse(await readFile(path.join(dist, relative), 'utf8'))
 const sitemap = await readFile(path.join(dist, 'sitemap.xml'), 'utf8')
-assert.equal(sitemap.match(/<loc>/g)?.length, SUPPORTED_LOCALES.length, 'sitemap URL count')
+assert.equal(sitemap.match(/<loc>/g)?.length, SUPPORTED_LOCALES.length * 2, 'sitemap URL count')
 console.log(`static export OK — ${htmlFiles.length} HTML page(s), ${catalogs.length} catalog(s)`)

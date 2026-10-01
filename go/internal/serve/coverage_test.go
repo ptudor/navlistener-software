@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -12,28 +11,6 @@ import (
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/ingest"
 )
-
-func TestMapAssetsAndPolicy(t *testing.T) {
-	s := testServer(nil)
-	for _, path := range []string{"/gnss/map/", "/gnss/map/map.mjs", "/gnss/map/geometry.mjs", "/gnss/map/map.css", "/gnss/map/earth.jpg", "/gnss/map/credits.txt"} {
-		rr := httptest.NewRecorder()
-		s.http.Handler.ServeHTTP(rr, httptest.NewRequest("GET", path, nil))
-		if rr.Code != 200 || rr.Body.Len() == 0 {
-			t.Fatalf("asset %s: %d", path, rr.Code)
-		}
-		if !strings.Contains(rr.Header().Get("Content-Security-Policy"), "connect-src 'self'") {
-			t.Fatal("missing same-origin CSP")
-		}
-		if strings.HasSuffix(path, ".mjs") && !strings.Contains(rr.Header().Get("Content-Type"), "javascript") {
-			t.Fatal("module MIME type")
-		}
-	}
-	rr := httptest.NewRecorder()
-	s.http.Handler.ServeHTTP(rr, httptest.NewRequest("POST", "/gnss/map/", nil))
-	if rr.Code != 405 {
-		t.Fatal("map accepts writes")
-	}
-}
 
 func TestMonitoringFeedUsesViewAndCurrentTime(t *testing.T) {
 	s := testServer(nil)

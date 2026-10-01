@@ -145,7 +145,6 @@ func NewForAudience(addr string, st *state.Store, events EventStore, sources []c
 	s.bindBroker(s.broker, selected)
 	s.brokers[selected.Key()] = s.broker
 	mux := http.NewServeMux()
-	mux.Handle("/gnss/map/", mapHandler())
 	mux.HandleFunc("/gnss/api/v2/coverage", s.serveFeed("coverage"))
 	mux.HandleFunc("/gnss/api/v2/svs", s.serveFeed("svs"))
 	mux.HandleFunc("/gnss/api/v2/global", s.serveFeed("global"))

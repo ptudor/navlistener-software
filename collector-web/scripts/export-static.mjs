@@ -14,16 +14,25 @@ const catalogs = Object.fromEntries(await Promise.all(SUPPORTED_LOCALES.map(asyn
   JSON.parse(await readFile(path.join(root, 'src/i18n/locales', `${locale}.json`), 'utf8')),
 ])))
 
-function localeHead(locale) {
+const PAGES = ['overview', 'map']
+
+function localeHead(locale, page) {
   const alternates = SUPPORTED_LOCALES.map((alternate) =>
-    `<link rel="alternate" hreflang="${alternate}" href="${pageUrl(alternate)}" />`,
+    `<link rel="alternate" hreflang="${alternate}" href="${pageUrl(alternate, page)}" />`,
   )
   return [
-    `<link rel="canonical" href="${pageUrl(locale)}" />`,
+    `<link rel="canonical" href="${pageUrl(locale, page)}" />`,
     ...alternates,
-    `<link rel="alternate" hreflang="x-default" href="${pageUrl(DEFAULT_LOCALE)}" />`,
+    `<link rel="alternate" hreflang="x-default" href="${pageUrl(DEFAULT_LOCALE, page)}" />`,
     `<link rel="alternate" type="application/json" hreflang="${locale}" title="Language catalog" href="${catalogUrl(locale)}" />`,
   ].join('\n    ')
+}
+
+function pageDirectory(locale, page) {
+  const parts = []
+  if (locale !== DEFAULT_LOCALE) parts.push(locale)
+  if (page === 'map') parts.push('map')
+  return path.join(dist, ...parts)
 }
 
 try {
@@ -36,13 +45,20 @@ try {
   }
 
   for (const locale of SUPPORTED_LOCALES) {
-    const html = shell
-      .replace('<html lang="en"', `<html lang="${locale}"`)
-      .replace('<!--locale-links-->', localeHead(locale))
-      .replace('<!--app-html-->', await render(locale))
-    const directory = locale === DEFAULT_LOCALE ? dist : path.join(dist, locale)
-    await mkdir(directory, { recursive: true })
-    await writeFile(path.join(directory, 'index.html'), html, 'utf8')
+    for (const page of PAGES) {
+      let html = shell
+        .replace('<html lang="en"', `<html lang="${locale}"`)
+        .replace('<!--locale-links-->', localeHead(locale, page))
+        .replace('<!--app-html-->', await render(locale, page))
+      if (page === 'map') {
+        html = html
+          .replace("A live view of NavListen's public satellite observations, broadcast health, and receiver activity.", 'Live worldwide GNSS monitoring coverage from the NavListen station network.')
+          .replace('<title>NavListen data service · Integrity Satellite</title>', '<title>GNSS monitoring map · NavListen</title>')
+      }
+      const directory = pageDirectory(locale, page)
+      await mkdir(directory, { recursive: true })
+      await writeFile(path.join(directory, 'index.html'), html, 'utf8')
+    }
   }
 
   const catalogDirectory = path.join(dist, 'catalogs')
@@ -51,9 +67,9 @@ try {
     await writeFile(path.join(catalogDirectory, `${locale}.json`), `${JSON.stringify(catalogs[locale], null, 2)}\n`, 'utf8')
   }
 
-  const sitemap = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${SUPPORTED_LOCALES.map((locale) => `  <url><loc>${pageUrl(locale)}</loc></url>`).join('\n')}\n</urlset>\n`
+  const sitemap = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${SUPPORTED_LOCALES.flatMap((locale) => PAGES.map((page) => `  <url><loc>${pageUrl(locale, page)}</loc></url>`)).join('\n')}\n</urlset>\n`
   await writeFile(path.join(dist, 'sitemap.xml'), sitemap, 'utf8')
-  console.log(`static site exported — ${SUPPORTED_LOCALES.length} page(s), ${SUPPORTED_LOCALES.length} locale catalog(s)`)
+  console.log(`static site exported — ${SUPPORTED_LOCALES.length * PAGES.length} page(s), ${SUPPORTED_LOCALES.length} locale catalog(s)`)
 } finally {
   await rm(path.join(root, '.static-ssr'), { recursive: true, force: true })
 }
