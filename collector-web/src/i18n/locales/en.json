@@ -6,7 +6,7 @@
     "menu": "Main navigation",
     "satellites": "Satellites",
     "receivers": "Receivers",
-    "coverage_map": "Coverage map"
+    "coverage_map": "Maps"
   },
   "brand": { "station_network": "STATION NETWORK" },
   "hero": {
@@ -20,6 +20,12 @@
     "system": "System",
     "satellites": "Satellites",
     "signals": "Signals",
+    "monitoring": "Reference coverage",
+    "heard": "Heard",
+    "expected": "Expected",
+    "coverage_aria": "{system}: {heard} of {expected} expected reference satellites heard recently",
+    "coverage_note": "Bars show recently heard reference satellites out of the expected reference total. Satellites with unknown orbits remain in that total.",
+    "coverage_waiting": "Waiting for reference coverage…",
     "no_reports": "No satellite reports yet.",
     "bars_compare": "Bars compare the number of reported satellites.",
     "no_snapshot_reports": "No reports in this snapshot: {systems}"

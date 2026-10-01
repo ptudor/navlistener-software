@@ -41,6 +41,7 @@ const busy = ref(false)
 const paused = ref(false)
 const theme = ref('dark')
 const tick = ref(0)
+const coverageActivity = ref([])
 let refreshTimer
 let ageTimer
 
@@ -59,23 +60,12 @@ const presentSystems = computed(() => {
 })
 const flaggedCount = computed(() => satellites.value.filter((satellite) => satellite.health.kind === 'flagged').length)
 const activeSystems = computed(() => {
-  const data = feeds.global.data
-  if (!data) return []
-  return SYSTEMS
-    .filter((system) => isNumber(data[`${system.key}_svs`]) && data[`${system.key}_svs`] > 0)
-    .map((system) => ({
-      ...system,
-      satellites: data[`${system.key}_svs`],
-      signals: data[`${system.key}_sigs`],
-    }))
+  return coverageActivity.value.map((activity) => ({
+    ...SYSTEMS.find((system) => system.id === activity.id),
+    ...activity,
+  }))
 })
-const mixMaximum = computed(() => Math.max(1, ...activeSystems.value.map((system) => system.satellites)))
-const mixNote = computed(() => {
-  const data = feeds.global.data
-  if (!data) return t('hero.bars_compare')
-  const silent = SYSTEMS.filter((system) => data[`${system.key}_svs`] === 0).map((system) => system.name)
-  return silent.length ? t('hero.no_snapshot_reports', { systems: silent.join(' · ') }) : t('hero.bars_compare')
-})
+const mixNote = computed(() => t(activeSystems.value.length ? 'hero.coverage_note' : 'hero.coverage_waiting'))
 const filteredSatellites = computed(() => {
   const search = query.value.trim().toLowerCase()
   return satellites.value.filter((satellite) => (
@@ -272,6 +262,10 @@ function toggleSatellite(key) {
   opened.has(key) ? opened.delete(key) : opened.add(key)
 }
 
+function updateCoverageActivity(activity) {
+  coverageActivity.value = Array.isArray(activity) ? activity : []
+}
+
 function setReceiverOpen(number, event) {
   event.target.open ? receiverOpened.add(number) : receiverOpened.delete(number)
 }
@@ -379,9 +373,9 @@ onBeforeUnmount(() => {
         <span><strong>NavListen</strong><small>{{ t('brand.station_network') }}</small></span>
       </a>
       <nav :aria-label="t('nav.menu')">
+        <a href="#monitoring-map">{{ t('nav.coverage_map') }}</a>
         <a :href="sectionHref('satellites')">{{ t('nav.satellites') }}</a>
         <a :href="sectionHref('observers')">{{ t('nav.receivers') }}</a>
-        <a href="#monitoring-map">{{ t('nav.coverage_map') }}</a>
         <details class="locale-menu">
           <summary>{{ t('locale.label') }}: <span :lang="props.locale">{{ currentLocaleLabel }}</span></summary>
           <div class="locale-list">
@@ -401,7 +395,7 @@ onBeforeUnmount(() => {
   </main>
 
   <main v-else id="overview" class="wrap" tabindex="-1">
-    <CoverageMap :locale="props.locale" />
+    <CoverageMap :locale="props.locale" @activity="updateCoverageActivity" />
 
     <section class="hero" aria-labelledby="page-title">
       <div>
@@ -414,14 +408,13 @@ onBeforeUnmount(() => {
         <h2 id="mix-heading" class="section-label">{{ t('hero.constellation_activity') }}</h2>
         <div class="mix-body">
           <div class="mix-list">
-            <div v-if="activeSystems.length" class="mix-row mix-key"><span>{{ t('hero.system') }}</span><span>{{ t('hero.satellites') }}</span><span>SVs</span><span>{{ t('hero.signals') }}</span></div>
+            <div v-if="activeSystems.length" class="mix-row mix-key"><span>{{ t('hero.system') }}</span><span>{{ t('hero.monitoring') }}</span><span>{{ t('hero.heard') }}</span><span>{{ t('hero.expected') }}</span></div>
             <div v-for="system in activeSystems" :key="system.id" class="mix-row">
               <span class="mix-name"><span class="dot" :class="toneClass(system)" aria-hidden="true"></span>{{ system.name }}</span>
-              <progress class="bar-track" :class="toneClass(system)" :max="mixMaximum" :value="system.satellites" :aria-label="`${system.name}: ${system.satellites}`"></progress>
-              <span class="mono">{{ count(system.satellites) }}</span><span class="mono muted">{{ count(system.signals) }}</span>
+              <progress class="bar-track" :class="toneClass(system)" :max="Math.max(1, system.expected)" :value="system.heard" :aria-label="t('hero.coverage_aria', { system: system.name, heard: system.heard, expected: system.expected })"></progress>
+              <span class="mono">{{ count(system.heard) }}</span><span class="mono muted">{{ count(system.expected) }}</span>
             </div>
-            <p v-if="feeds.global.data && !activeSystems.length" class="muted">{{ t('hero.no_reports') }}</p>
-            <p v-if="!feeds.global.data" class="muted">{{ t('hero.waiting_snapshot') }}</p>
+            <p v-if="!activeSystems.length" class="muted">{{ t('hero.coverage_waiting') }}</p>
           </div>
         </div>
         <p class="mix-note">{{ mixNote }}</p>

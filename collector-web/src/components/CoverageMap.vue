@@ -8,6 +8,7 @@ const props = defineProps({
   full: { type: Boolean, default: false },
   locale: { type: String, default: 'en' },
 })
+const emit = defineEmits(['activity'])
 
 const { t } = useI18n()
 const canvas = ref(null)
@@ -179,6 +180,7 @@ function clearPrivateData() {
   selectedSatelliteName.value = ''
   groundLocation.value = null
   hitTargets = []
+  emit('activity', [])
   draw()
 }
 
@@ -189,8 +191,18 @@ function recalculate() {
   }
   try {
     const next = modelFromFeed(envelope.value, selectedSet.value)
+    const complete = modelFromFeed(envelope.value, new Set(SYSTEMS.map((system) => system.id)))
     model.value = next
     grid.value = worldGrid(next, Number(elevationLimit.value), Number(stationTarget.value))
+    emit('activity', SYSTEMS.map((system) => {
+      const expected = complete.satellites.filter((satellite) => satellite.gnssid === system.id && satellite.reference)
+      return {
+        id: system.id,
+        heard: expected.filter((satellite) => satellite.witnesses > 0).length,
+        expected: expected.length,
+        unknown: expected.filter((satellite) => !satellite.position).length,
+      }
+    }))
     if (!next.satellites.some((satellite) => satellite.name === selectedSatelliteName.value)) selectedSatelliteName.value = ''
     draw()
   } catch {

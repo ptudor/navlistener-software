@@ -35,3 +35,10 @@ test('the coverage map is rendered by Vue without inline styles', async () => {
   assert.doesNotMatch(map, /\s:style=/)
   assert.doesNotMatch(map, /repeating-linear-gradient/)
 })
+
+test('constellation activity uses explicit heard and expected reference totals', async () => {
+  const app = await readFile(path.join(root, 'src/App.vue'), 'utf8')
+  assert.match(app, /:max="Math\.max\(1, system\.expected\)"/)
+  assert.match(app, /:value="system\.heard"/)
+  assert.doesNotMatch(app, /mixMaximum/)
+})
