@@ -38,6 +38,9 @@ targets:
       path: IntegrityStation/Info-iOS.plist
       properties:
         CFBundleDisplayName: Integrity Station
+        CFBundleURLTypes:
+          - CFBundleURLName: net.intsat.station.portal
+            CFBundleURLSchemes: [net.intsat.station]
         LSApplicationCategoryType: public.app-category.utilities
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
@@ -70,6 +73,9 @@ targets:
       path: IntegrityStation/Info-macOS.plist
       properties:
         CFBundleDisplayName: Integrity Station
+        CFBundleURLTypes:
+          - CFBundleURLName: net.intsat.station.portal
+            CFBundleURLSchemes: [net.intsat.station]
         LSApplicationCategoryType: public.app-category.utilities
         ITSAppUsesNonExemptEncryption: false
         NSLocalNetworkUsageDescription: Integrity Station reads status from your GNSS collector on the local network.
@@ -108,6 +114,7 @@ targets:
       - path: IntegrityStationTests/LocalizationExpected.json
       - path: IntegrityStationTests/BoardTelemetryTests.swift
       - path: IntegrityStationTests/SensorHistoryTests.swift
+      - path: IntegrityStationTests/OwnerPortalTests.swift
     dependencies:
       - target: IntegrityStation
     settings:

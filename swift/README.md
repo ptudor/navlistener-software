@@ -40,8 +40,11 @@ as an explicit unavailable response.
 Live and historical samples show collector `hardware_trust` independently of
 the firmware-reported track. Shared status/freshness rules and palette decisions
 are recorded in the [station presentation contract](../docs/STATION-PRESENTATION.md).
-Integrity Station keeps its name and native typography. Portal accounts and
-direct collector credentials remain separate connections.
+Integrity Station keeps its name and native typography. The **My fleets** tab
+signs in to the Django owner portal with the same account
+as the website. It reads approved inventory, specifications, live conditions and
+history through revocable portal sessions. Direct collector mode remains available
+with its separate credentials.
 
 ## Bluetooth setup (iPhone and iPad)
 
@@ -91,3 +94,25 @@ To run the macOS unit tests without distribution signing:
 xcodebuild -project IntegrityStation.xcodeproj -scheme IntegrityStationMac \
   -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO test
 ```
+
+## Owner portal sign-in
+
+Open **My fleets**, enter the portal HTTPS URL including its application path,
+and choose **Sign in through browser**. Approve the connection after normal
+portal login. The same personal and group stations appear with their approved
+labels/specifications; no collector service credential is copied to the app.
+The default public installation address is `https://stations.intsat.net/stations/`;
+customer origins and prefixes are supported without rebuilding the app.
+
+The native session is stored in an installation-scoped Keychain service. Fleets,
+readings and history remain in memory. After a Mac restart, the app validates the
+saved account/session and reloads current server inventory. Opening a receiver
+fetches its conditions and history window again, recovering stored readings from
+while the Mac was away. Missing measurements and receiver reboot gaps remain
+explicit, as do the collector's historical visibility limits.
+
+Sign-out deletes the local credential and requests server revocation. Users can
+also revoke connections from the website's account page. Browser approval uses
+an exact reverse-DNS callback, random state and S256 PKCE; API requests reject
+redirects and never use the browser's session cookies. The portal connection is
+read-only; device controls and enrollment retain their existing authority.

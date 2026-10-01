@@ -6,8 +6,10 @@ authorization, performs the same checks, and omits the response body.
 
 The endpoint is implemented in the collector. The Django owner portal and
 Integrity Station both provide charts using this contract. Django authorizes
-human accounts against approved fleet inventory; the native application uses
-its selected private collector audience. These remain separate sign-in modes.
+human accounts against approved fleet inventory; Integrity Station can use either
+its selected private collector audience or
+the same owner account through the portal's versioned read API. Collector tokens
+remain on the server in portal mode.
 Live values remain available through the private `/gnss/api/v2/observers` feed.
 
 ## Authorization and availability

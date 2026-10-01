@@ -1,6 +1,14 @@
 import Foundation
 
 enum BoardFormat {
+    static func freshness(_ value: BoardFreshness) -> String {
+        switch value {
+        case .current: String(localized: "board.freshness.current")
+        case .receiptOnly: String(localized: "board.freshness.receipt_only")
+        case .stale: String(localized: "board.freshness.stale")
+        case .unknown: String(localized: "board.freshness.unknown")
+        }
+    }
     static func hardwareTrust(_ value: String?) -> String {
         switch value {
         case "trusted": String(localized: "board.trust.trusted")

@@ -16,6 +16,9 @@ struct AppRootView: View {
                     Label(String(localized: "events.title"), systemImage: "waveform.path.ecg")
                 }
 
+            OwnerPortalView()
+                .tabItem { Label(String(localized: "portal.title"), systemImage: "person.2.badge.key") }
+
             #if os(iOS)
             SettingsView()
                 .tabItem {

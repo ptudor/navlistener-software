@@ -54,8 +54,11 @@ availability; neither promises uninterrupted history across collector restarts.
 
 The portal owns accounts, group membership and approved inventory. Direct native
 collector credentials remain separate from portal login, and local favorites do
-not establish ownership. A future native portal mode must reuse the portal's
-authorization and revocation checks rather than distribute its service tokens.
+not establish ownership. The native **My fleets** mode uses the same portal
+account, approved inventory
+and read authorization through its own revocable app session. Collector service
+tokens stay on the server. It reloads current inventory, conditions and authorized
+history after reconnecting instead of synthesizing values for missing readings.
 
 ## Shared regression cases
 

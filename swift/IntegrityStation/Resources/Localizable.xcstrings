@@ -3460,6 +3460,436 @@
           }
         }
       }
+    },
+    "portal.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "My fleets"
+          }
+        }
+      }
+    },
+    "portal.intro": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign in with your owner portal account to see the same personal and group stations, hardware specifications and sensor history."
+          }
+        }
+      }
+    },
+    "portal.address": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Owner portal address"
+          }
+        }
+      }
+    },
+    "portal.sign_in": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign in through browser"
+          }
+        }
+      }
+    },
+    "portal.on_prem": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use your organization’s portal address, including its application path. Customer installations are supported."
+          }
+        }
+      }
+    },
+    "portal.sign_out": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign out of portal"
+          }
+        }
+      }
+    },
+    "portal.account": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Manage account and connected apps"
+          }
+        }
+      }
+    },
+    "portal.no_fleets": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No fleets are assigned to this account yet."
+          }
+        }
+      }
+    },
+    "portal.reconnecting": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reconnecting to your portal…"
+          }
+        }
+      }
+    },
+    "portal.sign_in_again": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your portal session ended. Sign in again."
+          }
+        }
+      }
+    },
+    "portal.access_changed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your fleet access changed. Reconnecting…"
+          }
+        }
+      }
+    },
+    "portal.revoke_unconfirmed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Signed out locally. Server revocation could not be confirmed; revoke the connection from the website’s account page."
+          }
+        }
+      }
+    },
+    "portal.observer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Receiver ID"
+          }
+        }
+      }
+    },
+    "portal.collector": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collector"
+          }
+        }
+      }
+    },
+    "portal.site": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Site"
+          }
+        }
+      }
+    },
+    "portal.model": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Board model"
+          }
+        }
+      }
+    },
+    "portal.board_revision": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Board revision"
+          }
+        }
+      }
+    },
+    "portal.receiver": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GNSS receiver"
+          }
+        }
+      }
+    },
+    "portal.serial": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Serial"
+          }
+        }
+      }
+    },
+    "portal.antenna": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Antenna"
+          }
+        }
+      }
+    },
+    "portal.components": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Components"
+          }
+        }
+      }
+    },
+    "portal.source": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Specifications source"
+          }
+        }
+      }
+    },
+    "portal.online": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Online"
+          }
+        }
+      }
+    },
+    "portal.disabled": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disabled"
+          }
+        }
+      }
+    },
+    "portal.no_contact": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No contact recorded"
+          }
+        }
+      }
+    },
+    "portal.yes": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yes"
+          }
+        }
+      }
+    },
+    "portal.no": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No"
+          }
+        }
+      }
+    },
+    "portal.last_contact": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last contact: %@"
+          }
+        }
+      }
+    },
+    "portal.more_stations": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Load more stations"
+          }
+        }
+      }
+    },
+    "portal.no_stations": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No stations are assigned to this fleet."
+          }
+        }
+      }
+    },
+    "portal.search": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search stations"
+          }
+        }
+      }
+    },
+    "portal.live_unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some live readings are unavailable. Approved inventory remains visible."
+          }
+        }
+      }
+    },
+    "portal.receiver_status": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Receiver status"
+          }
+        }
+      }
+    },
+    "portal.inventory": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hardware and inventory"
+          }
+        }
+      }
+    },
+    "portal.conditions": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Active conditions"
+          }
+        }
+      }
+    },
+    "portal.conditions_unknown": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current conditions unavailable"
+          }
+        }
+      }
+    },
+    "portal.conditions_clear": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No active collector conditions"
+          }
+        }
+      }
+    },
+    "portal.diagnostics": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sensors and board diagnostics"
+          }
+        }
+      }
+    },
+    "portal.reception": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reception reports"
+          }
+        }
+      }
+    },
+    "portal.cancel": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
+          }
+        }
+      }
+    },
+    "portal.invalid_url": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter a valid HTTPS owner portal URL, including its application path."
+          }
+        }
+      }
+    },
+    "portal.invalid_response": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The owner portal returned an invalid response."
+          }
+        }
+      }
+    },
+    "portal.http": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The owner portal returned HTTP %d."
+          }
+        }
+      }
     }
   },
   "version": "1.0"
