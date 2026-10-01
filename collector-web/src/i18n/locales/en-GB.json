@@ -6,7 +6,7 @@
     "menu": "Main navigation",
     "satellites": "Satellites",
     "receivers": "Receivers",
-    "coverage_map": "Maps"
+    "coverage_map": "Map"
   },
   "brand": { "station_network": "STATION NETWORK" },
   "hero": {

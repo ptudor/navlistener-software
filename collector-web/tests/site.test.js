@@ -42,3 +42,10 @@ test('constellation activity uses explicit heard and expected reference totals',
   assert.match(app, /:value="system\.heard"/)
   assert.doesNotMatch(app, /mixMaximum/)
 })
+
+test('main navigation is Map, Satellites, Receivers', async () => {
+  const app = await readFile(path.join(root, 'src/App.vue'), 'utf8')
+  const locale = JSON.parse(await readFile(path.join(root, 'src/i18n/locales/en.json'), 'utf8'))
+  assert.equal(locale.nav.coverage_map, 'Map')
+  assert.match(app, /nav\.coverage_map[\s\S]*nav\.satellites[\s\S]*nav\.receivers/)
+})
