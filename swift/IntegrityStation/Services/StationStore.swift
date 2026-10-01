@@ -60,18 +60,15 @@ final class StationStore {
     }
 
     func health(for stationID: String) -> HealthState {
-        var severities = conditions.active.compactMap { event -> EventSeverity? in
+        let severities = conditions.active.compactMap { event -> EventSeverity? in
             guard event.stationID == stationID else { return nil }
             return event.severity
         }
-        if observers.first(where: { $0.id == stationID })?.board?.hasReceptionAlarm == true {
-            severities.append(.warning)
-        }
-        if !conditions.isKnown,
-           (currentLastSeenAge(for: stationID) ?? 0) <= HealthState.observerOfflineThreshold { return .unknown }
         return HealthState.station(
             lastSeenSeconds: currentLastSeenAge(for: stationID),
-            activeEventSeverities: severities
+            activeEventSeverities: severities,
+            conditionsKnown: conditions.isKnown,
+            receptionAlarm: observers.first(where: { $0.id == stationID })?.board?.hasReceptionAlarm == true
         )
     }
 

@@ -23,12 +23,15 @@ enum HealthState: String, Codable, CaseIterable, Sendable {
 
     static func station(
         lastSeenSeconds: TimeInterval?,
-        activeEventSeverities: some Sequence<EventSeverity>
+        activeEventSeverities: some Sequence<EventSeverity>,
+        conditionsKnown: Bool = true,
+        receptionAlarm: Bool = false
     ) -> HealthState {
-        guard let lastSeenSeconds else { return .unknown }
+        guard let lastSeenSeconds, lastSeenSeconds.isFinite, lastSeenSeconds >= 0 else { return .unknown }
         guard lastSeenSeconds <= observerOfflineThreshold else { return .offline }
 
-        var hasWarning = false
+        guard conditionsKnown else { return .unknown }
+        var hasWarning = receptionAlarm
         for severity in activeEventSeverities {
             if severity == .critical { return .critical }
             if severity == .warning { hasWarning = true }

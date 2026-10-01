@@ -1,6 +1,17 @@
 import Foundation
 
 enum BoardFormat {
+    static func hardwareTrust(_ value: String?) -> String {
+        switch value {
+        case "trusted": String(localized: "board.trust.trusted")
+        case "open": String(localized: "board.trust.open")
+        case "test": String(localized: "board.trust.test")
+        case "none": String(localized: "board.trust.none")
+        case nil: String(localized: "board.trust.absent")
+        default: value ?? StationFormat.unknown
+        }
+    }
+
     static func measurement(_ value: Double?, unit: String, digits: Int = 2) -> String {
         guard let value, value.isFinite else { return StationFormat.unknown }
         return "\(value.formatted(.number.precision(.fractionLength(0...digits)))) \(unit)"

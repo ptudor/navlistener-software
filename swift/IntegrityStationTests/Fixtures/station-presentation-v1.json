@@ -1,0 +1,345 @@
+{
+  "version": 1,
+  "freshness": [
+    {
+      "name": "current timing",
+      "sample": {
+        "received_at": "2026-09-30T12:00:00Z",
+        "sample_time": "2026-09-30T11:59:59Z"
+      },
+      "stale": false,
+      "server_time": "2026-09-30T12:00:00Z",
+      "elapsed": 0,
+      "cached": false,
+      "threshold": 5,
+      "expected": "current"
+    },
+    {
+      "name": "timing boundary",
+      "sample": {
+        "received_at": "2026-09-30T12:00:00Z",
+        "sample_time": "2026-09-30T11:59:59Z"
+      },
+      "stale": false,
+      "server_time": "2026-09-30T12:00:00Z",
+      "elapsed": 4,
+      "cached": false,
+      "threshold": 5,
+      "expected": "current"
+    },
+    {
+      "name": "timing expires",
+      "sample": {
+        "received_at": "2026-09-30T12:00:00Z",
+        "sample_time": "2026-09-30T11:59:59Z"
+      },
+      "stale": false,
+      "server_time": "2026-09-30T12:00:00Z",
+      "elapsed": 4.1,
+      "cached": false,
+      "threshold": 5,
+      "expected": "stale"
+    },
+    {
+      "name": "cached is stale",
+      "sample": {
+        "received_at": "2026-09-30T12:00:00Z",
+        "sample_time": "2026-09-30T11:59:59Z"
+      },
+      "stale": false,
+      "server_time": "2026-09-30T12:00:00Z",
+      "elapsed": 0,
+      "cached": true,
+      "threshold": 5,
+      "expected": "stale"
+    },
+    {
+      "name": "collector stale",
+      "sample": {
+        "received_at": "2026-09-30T12:00:00Z",
+        "sample_time": "2026-09-30T11:59:59Z"
+      },
+      "stale": true,
+      "server_time": "2026-09-30T12:00:00Z",
+      "elapsed": 0,
+      "cached": false,
+      "threshold": 5,
+      "expected": "stale"
+    },
+    {
+      "name": "collector state absent",
+      "sample": {
+        "received_at": "2026-09-30T12:00:00Z",
+        "sample_time": "2026-09-30T11:59:59Z"
+      },
+      "stale": null,
+      "server_time": "2026-09-30T12:00:00Z",
+      "elapsed": 0,
+      "cached": false,
+      "threshold": 5,
+      "expected": "unknown"
+    },
+    {
+      "name": "collector clock absent",
+      "sample": {
+        "received_at": "2026-09-30T12:00:00Z",
+        "sample_time": "2026-09-30T11:59:59Z"
+      },
+      "stale": false,
+      "server_time": null,
+      "elapsed": 0,
+      "cached": false,
+      "threshold": 5,
+      "expected": "unknown"
+    },
+    {
+      "name": "invalid receipt",
+      "sample": {
+        "received_at": "broken"
+      },
+      "stale": false,
+      "server_time": "2026-09-30T12:00:00Z",
+      "elapsed": 0,
+      "cached": false,
+      "threshold": 5,
+      "expected": "unknown"
+    },
+    {
+      "name": "future receipt",
+      "sample": {
+        "received_at": "2026-09-30T12:00:00Z",
+        "sample_time": "2026-09-30T11:59:59Z"
+      },
+      "stale": false,
+      "server_time": "2026-09-30T11:59:58Z",
+      "elapsed": 0,
+      "cached": false,
+      "threshold": 5,
+      "expected": "unknown"
+    },
+    {
+      "name": "negative elapsed",
+      "sample": {
+        "received_at": "2026-09-30T12:00:00Z",
+        "sample_time": "2026-09-30T11:59:59Z"
+      },
+      "stale": false,
+      "server_time": "2026-09-30T12:00:00Z",
+      "elapsed": -1,
+      "cached": false,
+      "threshold": 5,
+      "expected": "unknown"
+    },
+    {
+      "name": "receipt only",
+      "sample": {
+        "received_at": "2026-09-30T12:00:00Z",
+        "sample_time": null
+      },
+      "stale": false,
+      "server_time": "2026-09-30T12:00:00Z",
+      "elapsed": 0,
+      "cached": false,
+      "threshold": 5,
+      "expected": "receipt_only"
+    },
+    {
+      "name": "unknown source format",
+      "sample": {
+        "received_at": "2026-09-30T12:00:00Z",
+        "sample_time": "broken"
+      },
+      "stale": false,
+      "server_time": "2026-09-30T12:00:00Z",
+      "elapsed": 0,
+      "cached": false,
+      "threshold": 5,
+      "expected": "receipt_only"
+    },
+    {
+      "name": "old source with new receipt",
+      "sample": {
+        "received_at": "2026-09-30T12:00:00Z",
+        "sample_time": "2026-09-30T11:59:00Z"
+      },
+      "stale": false,
+      "server_time": "2026-09-30T12:00:00Z",
+      "elapsed": 0,
+      "cached": false,
+      "threshold": 5,
+      "expected": "stale"
+    },
+    {
+      "name": "future source",
+      "sample": {
+        "received_at": "2026-09-30T12:00:00Z",
+        "sample_time": "2026-09-30T12:00:01Z"
+      },
+      "stale": false,
+      "server_time": "2026-09-30T12:00:00Z",
+      "elapsed": 0,
+      "cached": false,
+      "threshold": 5,
+      "expected": "unknown"
+    },
+    {
+      "name": "board boundary",
+      "sample": {
+        "received_at": "2026-09-30T12:00:00Z",
+        "sample_time": "2026-09-30T11:59:59Z"
+      },
+      "stale": false,
+      "server_time": "2026-09-30T12:00:00Z",
+      "elapsed": 659,
+      "cached": false,
+      "threshold": 660,
+      "expected": "current"
+    },
+    {
+      "name": "board expired",
+      "sample": {
+        "received_at": "2026-09-30T12:00:00Z",
+        "sample_time": "2026-09-30T11:59:59Z"
+      },
+      "stale": false,
+      "server_time": "2026-09-30T12:00:00Z",
+      "elapsed": 660,
+      "cached": false,
+      "threshold": 660,
+      "expected": "stale"
+    },
+    {
+      "name": "reception boundary",
+      "sample": {
+        "received_at": "2026-09-30T12:00:00Z",
+        "sample_time": "2026-09-30T11:59:59Z"
+      },
+      "stale": false,
+      "server_time": "2026-09-30T12:00:00Z",
+      "elapsed": 14,
+      "cached": false,
+      "threshold": 15,
+      "expected": "current"
+    },
+    {
+      "name": "reception expired",
+      "sample": {
+        "received_at": "2026-09-30T12:00:00Z",
+        "sample_time": "2026-09-30T11:59:59Z"
+      },
+      "stale": false,
+      "server_time": "2026-09-30T12:00:00Z",
+      "elapsed": 14.1,
+      "cached": false,
+      "threshold": 15,
+      "expected": "stale"
+    }
+  ],
+  "health": [
+    {
+      "name": "unknown liveness",
+      "last_seen": null,
+      "severities": [],
+      "conditions_known": true,
+      "reception_alarm": false,
+      "expected": "unknown"
+    },
+    {
+      "name": "negative age",
+      "last_seen": -1,
+      "severities": [],
+      "conditions_known": true,
+      "reception_alarm": false,
+      "expected": "unknown"
+    },
+    {
+      "name": "online clear",
+      "last_seen": 1,
+      "severities": [],
+      "conditions_known": true,
+      "reception_alarm": false,
+      "expected": "ok"
+    },
+    {
+      "name": "offline boundary",
+      "last_seen": 300,
+      "severities": [],
+      "conditions_known": true,
+      "reception_alarm": false,
+      "expected": "ok"
+    },
+    {
+      "name": "offline",
+      "last_seen": 301,
+      "severities": [
+        2
+      ],
+      "conditions_known": true,
+      "reception_alarm": false,
+      "expected": "offline"
+    },
+    {
+      "name": "offline during reconciliation",
+      "last_seen": 301,
+      "severities": [],
+      "conditions_known": false,
+      "reception_alarm": false,
+      "expected": "offline"
+    },
+    {
+      "name": "conditions unknown",
+      "last_seen": 1,
+      "severities": [],
+      "conditions_known": false,
+      "reception_alarm": false,
+      "expected": "unknown"
+    },
+    {
+      "name": "conditions unknown with held reception",
+      "last_seen": 1,
+      "severities": [],
+      "conditions_known": false,
+      "reception_alarm": true,
+      "expected": "unknown"
+    },
+    {
+      "name": "active warning",
+      "last_seen": 1,
+      "severities": [
+        1
+      ],
+      "conditions_known": true,
+      "reception_alarm": false,
+      "expected": "warning"
+    },
+    {
+      "name": "active critical",
+      "last_seen": 1,
+      "severities": [
+        1,
+        2
+      ],
+      "conditions_known": true,
+      "reception_alarm": false,
+      "expected": "critical"
+    },
+    {
+      "name": "informational condition",
+      "last_seen": 1,
+      "severities": [
+        0
+      ],
+      "conditions_known": true,
+      "reception_alarm": false,
+      "expected": "ok"
+    },
+    {
+      "name": "held reception alarm",
+      "last_seen": 1,
+      "severities": [],
+      "conditions_known": true,
+      "reception_alarm": true,
+      "expected": "warning"
+    }
+  ]
+}

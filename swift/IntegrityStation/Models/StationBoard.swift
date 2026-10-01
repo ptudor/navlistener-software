@@ -37,12 +37,14 @@ struct BoardSample: Codable, Sendable {
     let sequence: UInt64?
     let details: BoardDetails?
     var collectorReception: ReceptionAssessment? = nil
+    var hardwareTrust: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case session, sequence, details
         case receivedAt = "received_at"
         case sampleTime = "sample_time"
         case collectorReception = "collector_reception"
+        case hardwareTrust = "hardware_trust"
     }
 
     func freshness(serverTime: Date?, elapsed: TimeInterval, stale: Bool?,
@@ -61,8 +63,9 @@ struct BoardSample: Codable, Sendable {
     }
 }
 
-enum BoardFreshness: Sendable {
-    case current, receiptOnly, stale, unknown
+enum BoardFreshness: String, Sendable {
+    case current, stale, unknown
+    case receiptOnly = "receipt_only"
 }
 
 struct BoardInterference: Codable, Sendable {

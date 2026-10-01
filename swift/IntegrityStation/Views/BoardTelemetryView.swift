@@ -84,6 +84,8 @@ struct BoardTelemetryView: View {
     private func diagnosticsCard(_ sample: BoardSample) -> some View {
         InstrumentCard("board.diagnostics.title", systemImage: "cpu") {
             freshness(sample, stale: board.stale)
+            MetricRow(label: "board.trust.title", value: BoardFormat.hardwareTrust(sample.hardwareTrust))
+            note("board.trust.note")
             MetricRow(label: "board.firmware", value: sample.details?.firmware ?? StationFormat.unknown, monospaced: true)
             MetricRow(label: "board.uptime", value: StationFormat.uptime(seconds: sample.details?.uptimeMS.map { Double($0) / 1_000 }))
             if let rtc = sample.details?.rtc {
@@ -199,6 +201,7 @@ struct BoardTelemetryView: View {
 
     private func sampleIdentity(_ sample: BoardSample) -> some View {
         VStack(spacing: 8) {
+            MetricRow(label: "board.trust.title", value: BoardFormat.hardwareTrust(sample.hardwareTrust))
             MetricRow(label: "board.sample.received", value: BoardFormat.timestamp(sample.receivedAt))
             MetricRow(label: "board.sample.utc", value: BoardFormat.timestamp(sample.sampleTime))
             MetricRow(label: "board.sample.session", value: sample.session ?? StationFormat.unknown, monospaced: true)

@@ -311,5 +311,12 @@
   "reception.held": "Alarm held",
   "reception.no_alarm": "No alarm",
   "reception.disagreement": "Edge and collector verdicts differ.",
-  "reception.note": "A deficit can reflect obstruction, antenna trouble or interference. Unknown coverage holds an existing alarm until fresh measurements establish recovery."
+  "reception.note": "A deficit can reflect obstruction, antenna trouble or interference. Unknown coverage holds an existing alarm until fresh measurements establish recovery.",
+  "board.trust.absent": "Not reported",
+  "board.trust.none": "Unverified",
+  "board.trust.note": "Collector evidence for this receipt. The firmware-reported release track is separate.",
+  "board.trust.open": "Open",
+  "board.trust.test": "Test",
+  "board.trust.title": "Collector verification",
+  "board.trust.trusted": "Trusted"
 }

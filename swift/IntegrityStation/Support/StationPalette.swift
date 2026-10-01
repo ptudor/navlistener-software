@@ -3,17 +3,17 @@ import SwiftUI
 /// The Integrity family palette from apps/intsat/docs/COLOR_STANDARDS.md,
 /// corrected to navlistener's u-blox gnssid order (OUTPUT.md §0).
 enum StationPalette {
-    static let darkBackground = Color(red: 0x0D / 255, green: 0x11 / 255, blue: 0x17 / 255)
+    static let darkBackground = Color(red: 0x0A / 255, green: 0x0A / 255, blue: 0x1A / 255)
     static let darkSurface = Color(red: 0x16 / 255, green: 0x1B / 255, blue: 0x22 / 255)
     static let darkRaised = Color(red: 0x1C / 255, green: 0x23 / 255, blue: 0x33 / 255)
-    static let lightBackground = Color(red: 0xF6 / 255, green: 0xF8 / 255, blue: 0xFA / 255)
-    static let lightSurface = Color.white
-    static let lightRaised = Color(red: 0xEA / 255, green: 0xEF / 255, blue: 0xF3 / 255)
+    static let lightBackground = Color(red: 0xE8 / 255, green: 0xEA / 255, blue: 0xED / 255)
+    static let lightSurface = lightBackground
+    static let lightRaised = Color(red: 0xDF / 255, green: 0xE2 / 255, blue: 0xE6 / 255)
 
-    static let ok = Color(red: 0x58 / 255, green: 0xA6 / 255, blue: 0xFF / 255)
-    static let warning = Color(red: 0xD2 / 255, green: 0x99 / 255, blue: 0x22 / 255)
-    static let critical = Color(red: 0xF8 / 255, green: 0x51 / 255, blue: 0x49 / 255)
-    static let stale = Color(red: 0x65 / 255, green: 0x6D / 255, blue: 0x76 / 255)
+    static let ok = Color("StatusOK")
+    static let warning = Color("StatusWarning")
+    static let critical = Color("StatusCritical")
+    static let stale = Color("StatusStale")
 
     static func constellation(gnssid: Int, scheme: ColorScheme) -> Color {
         let pair: (dark: UInt32, light: UInt32) = switch gnssid {
