@@ -141,7 +141,7 @@ function emailHref(subject) {
     <div class="nav-shell">
       <a class="brand" href="#top" aria-label="NavListen home" @click="closeMenu">
         <img src="/assets/mark.svg?v=compass-1" width="38" height="38" alt="" />
-        <span><strong>NavListen</strong><small>STATION NETWORK</small></span>
+        <span><strong>NavListen</strong><small>INTEGRITY SATELLITE</small></span>
       </a>
 
       <button
@@ -170,7 +170,7 @@ function emailHref(subject) {
     <section id="top" class="hero">
       <div class="hero-grid container">
         <div class="hero-copy">
-          <p class="eyebrow"><span class="pulse-dot"></span> An open navigation observatory</p>
+          <p class="eyebrow"><span class="pulse-dot"></span> Ground Monitoring for Space Integrity</p>
           <h1>Satellites broadcast.<br /><em>We listen.</em></h1>
           <p class="hero-lede">
             NavListen records satellite navigation messages so we can study orbits, clocks,
