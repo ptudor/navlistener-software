@@ -482,7 +482,7 @@ function emailHref(subject) {
     <div class="container footer-grid">
       <div>
         <a class="brand footer-brand" href="#top"><img src="/assets/mark.svg?v=compass-1" width="34" height="34" alt="" /><span>navlisten</span></a>
-        <p>Open tools for studying satellite navigation.</p>
+        <p>Ground Monitoring for Space Integrity.</p>
       </div>
       <nav aria-label="Footer navigation">
         <a href="#why">Why listen</a>
