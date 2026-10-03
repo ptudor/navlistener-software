@@ -23,7 +23,7 @@ for (const locale of SUPPORTED_LOCALES) {
   assert.match(html, /<main id="overview"/, `${locale}: semantic main`)
   assert.match(html, /NavListen/, `${locale}: brand`)
   assert.match(html, /STATION NETWORK/, `${locale}: stacked lockup`)
-  assert.match(html, /Open tools for studying satellite navigation\./, `${locale}: footer tagline`)
+  assert.match(html, /Ground Monitoring for Space Integrity\./, `${locale}: footer tagline`)
   assert.match(html, /© 2026 Integrity Satellite/, `${locale}: copyright`)
   assert.match(html, /<link rel="canonical" href="https:\/\/in\.intsat\.net\/in\//, `${locale}: canonical`)
   assert.match(html, /<script type="module" crossorigin src="\/in\/assets\//, `${locale}: local Vue bundle`)
