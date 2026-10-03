@@ -481,7 +481,7 @@ function emailHref(subject) {
   <footer>
     <div class="container footer-grid">
       <div>
-        <a class="brand footer-brand" href="#top"><img src="/assets/mark.svg?v=compass-1" width="34" height="34" alt="" /><span>navlisten</span></a>
+        <a class="brand footer-brand" href="#top"><img src="/assets/mark.svg?v=compass-1" width="34" height="34" alt="" /><span><strong>NavListen</strong><small>INTEGRITY SATELLITE</small></span></a>
         <p>Ground Monitoring for Space Integrity.</p>
       </div>
       <nav aria-label="Footer navigation">
@@ -496,7 +496,7 @@ function emailHref(subject) {
           <a href="https://intsat.space/intsat/terms/">Terms &amp; Conditions</a>
           <a href="https://intsat.space/intsat/privacy/">Privacy Policy</a>
         </nav>
-        <span>© 2026 NavListen</span>
+        <span>© 2026 Integrity Satellite</span>
       </div>
     </div>
   </footer>

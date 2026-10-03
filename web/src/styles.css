@@ -246,13 +246,13 @@ ul {
   height: 38px;
 }
 
-.site-header .brand strong {
+.brand strong {
   display: block;
   font-weight: 600;
   line-height: 1.25;
 }
 
-.site-header .brand small {
+.brand small {
   display: block;
   color: var(--muted);
   font-size: 10px;
