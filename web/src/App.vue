@@ -141,7 +141,7 @@ function emailHref(subject) {
     <div class="nav-shell">
       <a class="brand" href="#top" aria-label="NavListen home" @click="closeMenu">
         <img src="/assets/mark.svg?v=compass-1" width="38" height="38" alt="" />
-        <span>navlisten</span>
+        <span><strong>NavListen</strong><small>STATION NETWORK</small></span>
       </a>
 
       <button

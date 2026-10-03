@@ -246,6 +246,21 @@ ul {
   height: 38px;
 }
 
+.site-header .brand strong {
+  display: block;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.site-header .brand small {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+}
+
 .site-header nav {
   display: flex;
   align-items: center;
