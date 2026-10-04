@@ -58,13 +58,12 @@ typedef struct {
 // What this board's manifest lists that provisioning depends on. wired_uplink: an Ethernet
 // port the firmware drives, so the Wi-Fi network is optional. sensor_settings: sensors with
 // per-unit settings (the MAX's thermocouple notch and motion profile), which the setup page
-// then offers. pps_driver: a firmware-enabled SMA PPS output driver (the Hammond ZED), so the
-// setup page offers its off-by-default enable. observer: the observer id the board's installed commissioning record names
+// then offers. observer: the observer id the board's installed commissioning record names
 // (board-<kind>-<serial>), or empty. A commissioned board names itself with it, because a
 // collector accepts its evidence only under that name. Set once at boot, before
 // netcfg_load; the default is none of these.
 typedef struct {
-    bool wired_uplink, sensor_settings, pps_driver;
+    bool wired_uplink, sensor_settings;
     char observer[NVF_BOARD_OBSERVER_SIZE];
 } netcfg_board_t;
 void netcfg_set_board(netcfg_board_t board);

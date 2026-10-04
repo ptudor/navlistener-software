@@ -42,18 +42,15 @@ esp_err_t sensor_settings_load(sensor_settings_t *out)
     if (err == ESP_ERR_NVS_NOT_FOUND) return ESP_OK;
     if (err != ESP_OK) return err;
     sensor_settings_t stored = SENSOR_SETTINGS_DEFAULT;
-    uint8_t motion = (uint8_t)stored.motion, pps = 0;
+    uint8_t motion = (uint8_t)stored.motion;
     err = nvs_get_u8(handle, "mains_hz", &stored.mains_hz);
     if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
     if (err == ESP_OK) err = nvs_get_u8(handle, "motion", &motion);
     if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
-    if (err == ESP_OK) err = nvs_get_u8(handle, "pps_out", &pps);
-    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
     nvs_close(handle);
     if (err != ESP_OK) return err;
     stored.motion = (sensor_motion_t)motion;
-    stored.pps_output = pps == 1;
-    if (pps > 1 || !sensor_settings_valid(&stored)) return ESP_ERR_INVALID_ARG;
+    if (!sensor_settings_valid(&stored)) return ESP_ERR_INVALID_ARG;
     *out = stored;
     return ESP_OK;
 }
@@ -66,7 +63,6 @@ esp_err_t sensor_settings_save(const sensor_settings_t *s)
     if (err != ESP_OK) return err;
     err = nvs_set_u8(handle, "mains_hz", s->mains_hz);
     if (err == ESP_OK) err = nvs_set_u8(handle, "motion", (uint8_t)s->motion);
-    if (err == ESP_OK) err = nvs_set_u8(handle, "pps_out", s->pps_output ? 1 : 0);
     if (err == ESP_OK) err = nvs_commit(handle);
     nvs_close(handle);
     return err;

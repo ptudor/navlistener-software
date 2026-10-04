@@ -6,13 +6,13 @@
 
 static bool namespace_exists, opened;
 static int open_mode;
-static struct { const char *key; bool exists; uint8_t stored; } values[] = {{"mains_hz", false, 0}, {"motion", false, 0}, {"pps_out", false, 0}};
+static struct { const char *key; bool exists; uint8_t stored; } values[] = {{"mains_hz", false, 0}, {"motion", false, 0}};
 static unsigned writes, commits;
 static esp_err_t open_error, read_error, write_error, commit_error;
 
 static unsigned slot(const char *key)
 {
-    for (unsigned i = 0; i < 3; i++) if (!strcmp(key, values[i].key)) return i;
+    for (unsigned i = 0; i < 2; i++) if (!strcmp(key, values[i].key)) return i;
     assert(!"unexpected key"); return 0;
 }
 esp_err_t nvs_open(const char *ns, int mode, nvs_handle_t *handle)
@@ -52,38 +52,26 @@ esp_err_t nvs_commit(nvs_handle_t handle)
     return commit_error;
 }
 
-static bool same(sensor_settings_t a, sensor_settings_t b)
-{
-    return a.mains_hz == b.mains_hz && a.motion == b.motion && a.pps_output == b.pps_output;
-}
+static bool same(sensor_settings_t a, sensor_settings_t b) { return a.mains_hz == b.mains_hz && a.motion == b.motion; }
 
 int main(void)
 {
     sensor_settings_t s = {.mains_hz = 1, .motion = SENSOR_MOTION_AERIAL};
     const sensor_settings_t defaults = SENSOR_SETTINGS_DEFAULT;
-    assert(defaults.mains_hz == 60 && defaults.motion == SENSOR_MOTION_SURFACE && !defaults.pps_output);
+    assert(defaults.mains_hz == 60 && defaults.motion == SENSOR_MOTION_SURFACE);
     // An unconfigured unit uses the defaults without writing flash.
     assert(sensor_settings_load(&s) == ESP_OK && same(s, defaults) && !writes && !namespace_exists);
     namespace_exists = true;
     values[0].exists = true; values[0].stored = 50; // a notch saved alone keeps the default profile
     assert(sensor_settings_load(&s) == ESP_OK && s.mains_hz == 50 && s.motion == SENSOR_MOTION_SURFACE);
 
-    const sensor_settings_t choices[] = {{50, SENSOR_MOTION_AERIAL, false}, {60, SENSOR_MOTION_AERIAL, false}, {60, SENSOR_MOTION_SURFACE, false}};
+    const sensor_settings_t choices[] = {{50, SENSOR_MOTION_AERIAL}, {60, SENSOR_MOTION_AERIAL}, {60, SENSOR_MOTION_SURFACE}};
     for (unsigned i = 0; i < 3; i++) {
         assert(sensor_settings_save(&choices[i]) == ESP_OK);
         s = (sensor_settings_t){0};
         assert(sensor_settings_load(&s) == ESP_OK && same(s, choices[i]));
-        assert(writes == 3 * (i + 1) && commits == i + 1 && !opened);
+        assert(writes == 2 * (i + 1) && commits == i + 1 && !opened);
     }
-    // The PPS output driver is off unless its setting says otherwise; a stored value other
-    // than 0 or 1 is corrupt.
-    const sensor_settings_t pps_on = {60, SENSOR_MOTION_SURFACE, true};
-    assert(sensor_settings_save(&pps_on) == ESP_OK);
-    s = (sensor_settings_t){0};
-    assert(sensor_settings_load(&s) == ESP_OK && same(s, pps_on) && values[2].stored == 1);
-    values[2].stored = 2;
-    assert(sensor_settings_load(&s) == ESP_ERR_INVALID_ARG && same(s, defaults) && !opened);
-    values[2].stored = 0;
     // Corrupt stored values fall back to the defaults and say so.
     values[0].stored = 55;
     assert(sensor_settings_load(&s) == ESP_ERR_INVALID_ARG && same(s, defaults) && !opened);
@@ -103,7 +91,7 @@ int main(void)
     assert(sensor_settings_save(&choices[0]) == ESP_FAIL && !opened);
     commit_error = ESP_OK;
     unsigned before = writes;
-    const sensor_settings_t bad_notch = {45, SENSOR_MOTION_SURFACE, false}, bad_motion = {60, (sensor_motion_t)7, false};
+    const sensor_settings_t bad_notch = {45, SENSOR_MOTION_SURFACE}, bad_motion = {60, (sensor_motion_t)7};
     assert(sensor_settings_save(&bad_notch) == ESP_ERR_INVALID_ARG && sensor_settings_save(&bad_motion) == ESP_ERR_INVALID_ARG);
     assert(sensor_settings_save(NULL) == ESP_ERR_INVALID_ARG && writes == before);
     assert(sensor_settings_load(NULL) == ESP_ERR_INVALID_ARG && !opened);
@@ -115,6 +103,6 @@ int main(void)
     assert(sensor_settings_parse_motion("surface", &motion) && motion == SENSOR_MOTION_SURFACE);
     assert(!sensor_settings_parse_motion("Aerial", &motion) && !sensor_settings_parse_motion("", &motion));
     assert(!strcmp(sensor_motion_name(SENSOR_MOTION_AERIAL), "aerial") && !strcmp(sensor_motion_name(SENSOR_MOTION_SURFACE), "surface"));
-    puts("sensor settings: defaults, persistence, PPS output, corruption fallback and setup-page values passed");
+    puts("sensor settings: defaults, persistence, corruption fallback and setup-page values passed");
     return 0;
 }

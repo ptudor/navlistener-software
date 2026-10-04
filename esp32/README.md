@@ -620,10 +620,10 @@ The pusher reconnects when sent records remain outstanding without durable ACK a
 ### Hardware-discovery dependency and release evidence
 
 Normal builds pin `esp_hardware_discovery` to commit
-`351a5ff5840e3f3253dc9be08701529ce4e5955e` (24CS256/24CS512 support, the `POWER_TPS7A20`,
-`COMM_W5500`, `SENSOR_THERMOCOUPLE_MAX31856`, `PRESSURE_BMP580`, `PRESSURE_BMP581` and
-`MISC_PPS_DRIVER_OPA355` catalog IDs, the `CAT_INTSAT` board category, part identification
-and the Intsat board templates, whose X20 list names the BMP581 and INA3221), with the IDF 5.5.4/ESP32-S3
+`847ca0888581a1da90ce65c4c3d67c697e9e7088` (24CS256/24CS512 support, the `POWER_TPS7A20`,
+`COMM_W5500`, `SENSOR_THERMOCOUPLE_MAX31856`, `PRESSURE_BMP580` and `PRESSURE_BMP581`
+catalog IDs, the `CAT_INTSAT` board category, part identification and the Intsat board
+templates, whose X20 list names the BMP581 and INA3221), with the IDF 5.5.4/ESP32-S3
 resolution committed in `dependencies.lock`. Updating the pin is a deliberate
 source change: review upstream layout changes and run the component's
 `test/host` read/write, page-boundary, interrupted-write, timestamp/footer,

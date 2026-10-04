@@ -104,43 +104,6 @@ bool observer_board_wired_uplink(void)
 #endif
 }
 bool observer_board_sensor_settings(void) { return thermocouple_listed || imu_listed; }
-// The SMA PPS driver the manifest lists (CAT_MISC, MISC_PPS_DRIVER_OPA355; address byte = its
-// Enable GPIO), or NVF_NONE. The pin is driven low here, before any task runs, and high only
-// by observer_board_start when the per-unit pps_out setting is on; the hardware pull-down
-// holds it off before that and without a manifest.
-static int pps_enable_pin = NVF_NONE;
-bool observer_board_pps_driver(void) { return pps_enable_pin >= 0; }
-static void pps_driver_adopt(void)
-{
-    pps_enable_pin = NVF_NONE;
-    if (!board) return;
-    int pin = NVF_NONE;
-    unsigned entries = 0;
-    for (unsigned i = 0; i < listed.component_count && i < CAP_MAX_COMPONENTS; i++) {
-        const eeprom_ic_descriptor_t *ic = &listed.components[i];
-        if (ic->category != CAT_MISC || ic->id != MISC_PPS_DRIVER_OPA355 || ic->status != IC_STATUS_INSTALLED) continue;
-        entries++;
-        pin = ic->i2c_address;
-    }
-    if (!entries) return;
-    if (entries > 1) {
-        ESP_LOGE(TAG, "the manifest lists more than one PPS driver; none is used until it is corrected");
-        return;
-    }
-    if (board->pps_enable < 0 || pin != board->pps_enable) {
-        ESP_LOGE(TAG, "the manifest puts the PPS driver enable on GPIO%d, but the %s has it on GPIO%d; the driver is not used",
-                 pin, board->name, board->pps_enable);
-        return;
-    }
-    gpio_set_level(pin, 0);
-    const gpio_config_t enable = {.pin_bit_mask = NVF_PIN(pin), .mode = GPIO_MODE_OUTPUT};
-    if (gpio_config(&enable) != ESP_OK) {
-        ESP_LOGE(TAG, "PPS driver enable GPIO%d unavailable; the driver stays off", pin);
-        return;
-    }
-    pps_enable_pin = pin;
-    ESP_LOGI(TAG, "SMA PPS driver listed; held off on GPIO%d until the pps_out setting enables it", pin);
-}
 static observer_rtc_part_t listed_rtc(void)
 {
     bool mcp = observer_board_lists(CAT_RTC, RTC_MCP79412), max = observer_board_lists(CAT_RTC, RTC_MAX31328);
@@ -260,7 +223,6 @@ void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_
     if (board && observer_board_lists(CAT_COMM, COMM_W5500) && !observer_board_wired_uplink())
         ESP_LOGE(TAG, "the manifest lists a W5500, but this image or the %s cannot drive it; Ethernet is not used",
                  board->name);
-    pps_driver_adopt();
 }
 enum { LED_DATA = 14, LED_CLOCK = 11, LED_LATCH = 12, LED_GREEN_OE = 47, LED_YELLOW_OE = 48 };
 // The panel pins are part of the allocation record, not a private choice here.
@@ -971,17 +933,6 @@ esp_err_t observer_board_start(void)
                  esp_err_to_name(load_err), applied_brightness);
     atomic_store(&brightness, applied_brightness);
     atomic_store(&trimmer_reference, saved_reference);
-    // The SMA PPS driver follows its per-unit setting from here; the setup page saves and
-    // reboots, so nothing changes it at run time.
-    if (pps_enable_pin >= 0) {
-        sensor_settings_t settings;
-        esp_err_t settings_err = sensor_settings_load(&settings);
-        if (settings_err != ESP_OK)
-            ESP_LOGW(TAG, "sensor settings unreadable (%s); the PPS driver stays off", esp_err_to_name(settings_err));
-        const bool on = settings_err == ESP_OK && settings.pps_output;
-        gpio_set_level(pps_enable_pin, on);
-        ESP_LOGI(TAG, "SMA PPS output driver %s (pps_out setting)", on ? "enabled" : "disabled");
-    }
     if (!crypto_lock && !(crypto_lock = xSemaphoreCreateMutex())) return ESP_ERR_NO_MEM;
     uint64_t outputs = (1ULL << LED_DATA) | (1ULL << LED_CLOCK) | (1ULL << LED_LATCH) |
                        (1ULL << LED_GREEN_OE) | (1ULL << LED_YELLOW_OE);
@@ -1028,7 +979,6 @@ const observer_board_t *observer_board_current(void) { return NULL; }
 bool observer_board_lists(uint8_t category, uint8_t id) { (void)category; (void)id; return false; }
 bool observer_board_wired_uplink(void) { return false; }
 bool observer_board_sensor_settings(void) { return false; }
-bool observer_board_pps_driver(void) { return false; }
 esp_err_t observer_board_start(void) { return ESP_OK; }
 void observer_board_identity(observer_board_identity_t *out) { *out = (observer_board_identity_t){0}; }
 #endif

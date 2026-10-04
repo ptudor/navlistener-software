@@ -16,9 +16,6 @@ bool observer_board_lists(uint8_t category, uint8_t id);
 bool observer_board_wired_uplink(void);
 // The manifest lists a part with per-unit settings (the thermocouple converter or the IMU).
 bool observer_board_sensor_settings(void);
-// The manifest lists the firmware-enabled SMA PPS output driver on the board's enable pin
-// (held low from manifest adoption; driven by the per-unit pps_out setting at start).
-bool observer_board_pps_driver(void);
 // Thread-safe request, applied and saved by the board task. First-boot default
 // 20%; subsequent boots restore the saved setting before enabling PWM.
 void observer_board_set_brightness(unsigned percent);
