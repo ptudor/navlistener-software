@@ -99,6 +99,12 @@ The M9's "no spoofing indicated" state is not proof of authentic reception; see
   network configuration reset leaves alone. One image serves every unit; the
   reports carry the values in use. BLE setup through the Station app does not set
   them yet, so a unit set up that way keeps its stored values or the defaults.
+- Hammond ZED per-unit setting: `pps_out`, in the same namespace, enables the SMA
+  PPS output driver (two OPA355 with their Enable pins on GPIO3) when the manifest
+  lists the driver. It is off by default, the driver is held off from manifest
+  adoption until the setting is applied at start, and the hardware pull-down keeps
+  it off before firmware runs. Enable it only with a 50 Ω terminated timing
+  receiver attached.
 - MAX board MAX31856 (tag 12): K type, 4-sample averaging, continuous conversion
   every 100 ms, open-circuit detection for a source below 5 kΩ, and the unit's
   mains notch. A reading is valid only when

@@ -18,9 +18,10 @@ typedef enum {
 typedef struct {
     uint8_t mains_hz;       // 50 or 60: the thermocouple converter's notch
     sensor_motion_t motion; // the IMU's moving rate and ranges
+    bool pps_output;        // drive the SMA PPS output (a board that lists the driver); off by default
 } sensor_settings_t;
 
-#define SENSOR_SETTINGS_DEFAULT ((sensor_settings_t){.mains_hz = 60, .motion = SENSOR_MOTION_SURFACE})
+#define SENSOR_SETTINGS_DEFAULT ((sensor_settings_t){.mains_hz = 60, .motion = SENSOR_MOTION_SURFACE, .pps_output = false})
 
 bool sensor_settings_valid(const sensor_settings_t *settings);
 // Setup-page values: "50" or "60"; "surface" or "aerial".

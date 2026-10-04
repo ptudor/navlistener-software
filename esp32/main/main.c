@@ -488,7 +488,8 @@ void app_main(void)
     // re-checks the live board before anything is presented.
     char cfg_err[NETCFG_ERR_CAP] = {0};
     netcfg_board_t board = {.wired_uplink = observer_board_wired_uplink(),
-                            .sensor_settings = observer_board_sensor_settings()};
+                            .sensor_settings = observer_board_sensor_settings(),
+                            .pps_driver = observer_board_pps_driver()};
     uint8_t commissioning[NVF_COMMISSION_RECORD_SIZE];
     nvf_commission_statement_t commissioned;
     if (nvf_mcu_identity_record(commissioning) &&

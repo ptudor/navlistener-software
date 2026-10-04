@@ -321,7 +321,10 @@ optional: leave it empty for a wired-only observer. On the MAX the form also has
 two per-unit sensor settings, shown with their stored values: the mains frequency
 where the thermocouple is used (60 or 50 Hz) and the motion profile (surface or
 aerial). They are saved to the `nvf_sensor` namespace before the network record,
-survive the configuration-reset gesture, and are not part of the BLE contract. The Station app sequence
+survive the configuration-reset gesture, and are not part of the BLE contract. On a
+board whose manifest lists the SMA PPS output driver (the Hammond ZED), the form also
+has a checkbox, off by default, that enables that output; it belongs on only with a
+50 Ω terminated timing receiver attached, and is kept with the sensor settings. The Station app sequence
 above always verifies a Wi-Fi network before it saves, so a wired-only
 observer is set up through this form.
 

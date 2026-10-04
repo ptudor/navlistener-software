@@ -125,30 +125,55 @@ static void portal_sensor_fields(char *out, size_t cap)
         s.motion == SENSOR_MOTION_SURFACE ? on : "", s.motion == SENSOR_MOTION_AERIAL ? on : "");
 }
 
-// The setup form's sensor settings; an absent field keeps the stored setting. Sends the
-// error response itself on a refusal.
+// The PPS output enable for a board that lists the driver, with the stored value. Off by
+// default: the driver only belongs on with a 50-ohm terminated timing receiver attached.
+static void portal_pps_field(char *out, size_t cap)
+{
+    sensor_settings_t s;
+    if (sensor_settings_load(&s) != ESP_OK) s = SENSOR_SETTINGS_DEFAULT;
+    snprintf(out, cap,
+        "<label><input type=checkbox name=pps_out style='width:auto'%s> Drive the SMA PPS output "
+        "(50 &Omega; terminated timing receiver only; off by default)</label>",
+        s.pps_output ? " checked" : "");
+}
+
+// The setup form's per-unit settings for the parts the board lists; an absent select keeps
+// the stored setting, and the PPS checkbox is on only when present. Sends the error response
+// itself on a refusal.
 static esp_err_t save_sensor_settings(httpd_req_t *req, const char *body)
 {
+    const netcfg_board_t board = netcfg_board();
     sensor_settings_t sensors;
     (void)sensor_settings_load(&sensors); // an unreadable record is replaced with valid values
     char choice[16] = {0};
-    form_result_t mains = netcfg_form_field(body, "mains_hz", choice, sizeof choice);
-    if (mains < 0 || (mains == FORM_OK && !sensor_settings_parse_mains(choice, &sensors.mains_hz))) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid mains frequency");
-        return ESP_FAIL;
+    if (board.sensor_settings) {
+        form_result_t mains = netcfg_form_field(body, "mains_hz", choice, sizeof choice);
+        if (mains < 0 || (mains == FORM_OK && !sensor_settings_parse_mains(choice, &sensors.mains_hz))) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid mains frequency");
+            return ESP_FAIL;
+        }
+        memset(choice, 0, sizeof choice);
+        form_result_t motion = netcfg_form_field(body, "motion", choice, sizeof choice);
+        if (motion < 0 || (motion == FORM_OK && !sensor_settings_parse_motion(choice, &sensors.motion))) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid motion profile");
+            return ESP_FAIL;
+        }
     }
-    memset(choice, 0, sizeof choice);
-    form_result_t motion = netcfg_form_field(body, "motion", choice, sizeof choice);
-    if (motion < 0 || (motion == FORM_OK && !sensor_settings_parse_motion(choice, &sensors.motion))) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid motion profile");
-        return ESP_FAIL;
+    if (board.pps_driver) {
+        memset(choice, 0, sizeof choice);
+        form_result_t pps = netcfg_form_field(body, "pps_out", choice, sizeof choice);
+        if (pps < 0) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid PPS output setting");
+            return ESP_FAIL;
+        }
+        sensors.pps_output = pps == FORM_OK && choice[0] != '\0'; // checkbox present => on
     }
     if (sensor_settings_save(&sensors) != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "sensor settings not saved");
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "sensor settings: %u Hz mains notch, %s motion profile", sensors.mains_hz,
-             sensor_motion_name(sensors.motion));
+    ESP_LOGI(TAG, "sensor settings: %u Hz mains notch, %s motion profile, PPS output %s", sensors.mains_hz,
+             sensor_motion_name(sensors.motion), sensors.pps_output ? "on" : "off");
     return ESP_OK;
 }
 
@@ -197,6 +222,11 @@ static esp_err_t root_get(httpd_req_t *req)
         char sensors[640];
         portal_sensor_fields(sensors, sizeof sensors);
         err = httpd_resp_send_chunk(req, sensors, HTTPD_RESP_USE_STRLEN);
+    }
+    if (err == ESP_OK && board.pps_driver) {
+        char pps[256];
+        portal_pps_field(pps, sizeof pps);
+        err = httpd_resp_send_chunk(req, pps, HTTPD_RESP_USE_STRLEN);
     }
     if (err == ESP_OK) err = httpd_resp_send_chunk(req, PORTAL_HTML_TAIL, HTTPD_RESP_USE_STRLEN);
     if (err == ESP_OK) err = httpd_resp_send_chunk(req, NULL, 0);
@@ -366,10 +396,11 @@ static esp_err_t save_post(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, reason);
         return ESP_FAIL;
     }
-    // A board that lists no sensors with settings keeps its stored ones whatever the form
-    // carries. They are saved before the network record, so a refused sensor setting leaves
+    // A board that lists no part with per-unit settings keeps its stored ones whatever the
+    // form carries. They are saved before the network record, so a refused setting leaves
     // the whole form to be submitted again.
-    if (netcfg_board().sensor_settings && save_sensor_settings(req, body) != ESP_OK) return ESP_FAIL;
+    const netcfg_board_t listed = netcfg_board();
+    if ((listed.sensor_settings || listed.pps_driver) && save_sensor_settings(req, body) != ESP_OK) return ESP_FAIL;
 
     esp_err_t err = netcfg_save(&cfg);
     if (err != ESP_OK) {
