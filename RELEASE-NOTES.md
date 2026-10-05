@@ -1,5 +1,13 @@
 # Unreleased
 
+- The collector reads its authority tables from an optional `authority_file`.
+  `navcontrol -authorities` loads the same credential-free file, so the control
+  plane no longer needs the collector's DSNs or push TLS key.
+- `navcontrol` changes an active enrollment's collections and publication
+  without a new device credential, and issues and disables read credentials,
+  returning each token once and recording every change by digest.
+- Enrollment `publication` and signal selectors use snake_case JSON names that
+  match the `[[push.observer]]` keys.
 - Collector and firmware clients can retry through matching secondary domains.
 - Development setup boots show the persistent setup Wi-Fi credential again.
 - The S3 updater verifies signed metadata and firmware, stages downloads, and

@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -68,6 +69,38 @@ func (s *Service) Handler(operator, tokenSHA256 string) http.Handler {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]string{"enrollment_id": id, "token": token})
+		case "/v1/enrollments/policy":
+			var request PolicyChange
+			if !decode(&request) {
+				return
+			}
+			if !reportRejection(w, s.ChangePolicy(r.Context(), operator, request), "policy change rejected") {
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case "/v1/read-credentials":
+			var request ReadCredentialRequest
+			if !decode(&request) {
+				return
+			}
+			issued, err := s.CreateReadCredential(r.Context(), operator, request)
+			if !reportRejection(w, err, "read credential rejected") {
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(issued)
+		case "/v1/read-credentials/disable":
+			var request struct {
+				TokenSHA256 string `json:"token_sha256"`
+			}
+			if !decode(&request) {
+				return
+			}
+			if !reportRejection(w, s.DisableReadCredential(r.Context(), operator, request.TokenSHA256), "read credential disable rejected") {
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 		case "/v1/enrollments/revoke":
 			var request struct {
 				EnrollmentID string `json:"enrollment_id"`
@@ -84,4 +117,20 @@ func (s *Service) Handler(operator, tokenSHA256 string) http.Handler {
 			http.NotFound(w, r)
 		}
 	})
+}
+
+// reportRejection answers a failed operation and reports whether it succeeded.
+// A request the operator can correct gets its reason; anything else gets only
+// the fixed summary, so database and internal errors never reach the response.
+func reportRejection(w http.ResponseWriter, err error, summary string) bool {
+	if err == nil {
+		return true
+	}
+	var bad invalidRequest
+	if errors.As(err, &bad) {
+		http.Error(w, summary+": "+bad.Error(), http.StatusUnprocessableEntity)
+		return false
+	}
+	http.Error(w, summary, http.StatusConflict)
+	return false
 }

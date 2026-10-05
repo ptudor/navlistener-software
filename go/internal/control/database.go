@@ -15,7 +15,7 @@ import (
 
 // Initialize installs the fresh schema and publishes the configured authority
 // registrations atomically. Historical key ownership cannot be reassigned.
-func (s *Service) Initialize(ctx context.Context, cfg *config.Config) error {
+func (s *Service) Initialize(ctx context.Context, cfg *config.Authorities) error {
 	conn, err := s.DB.Acquire(ctx)
 	if err != nil {
 		return err

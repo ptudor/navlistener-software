@@ -21,7 +21,10 @@ configuration/control-plane data, not firmware branches.
 
 ## Authority registration
 
-Use the same reviewed authority configuration for `navcontrol` and the collector.
+`navcontrol` and the collector read one reviewed authority file. The collector names
+it with `authority_file`; `navcontrol` loads it with `-authorities`. The file holds
+only the authority tables, so the control plane never reads the collector's
+credentials or push TLS key and can run under its own account.
 [COMMISSIONING.md §10](COMMISSIONING.md#10-collector-configuration) shows the TOML.
 Each `[[operational_authority]]` registers an ID, enabled state, self-signed root
 certificates, exact Issuing certificates and permitted manufacturer IDs. Issuing
@@ -57,17 +60,23 @@ cd go
 go build -o build/navcontrol ./cmd/navcontrol
 ```
 
-Start explicitly with an administrator-owned configuration, a private regular
-DSN file (0600), and a high-entropy operator bearer token whose SHA-256 is supplied
-as `-operator-token-sha256`. Keep the actual token in private operator tooling,
+Start explicitly with the shared authority file, a private regular DSN file
+(0600), and a high-entropy operator bearer token whose SHA-256 is supplied as
+`-operator-token-sha256`. Keep the actual token in private operator tooling,
 never a command example, source file or URL.
 
 ```sh
-build/navcontrol -config /etc/navlistener/navlistener.toml \
-  -dsn-file /etc/navlistener/control.dsn \
+build/navcontrol -authorities /usr/local/etc/navlistener/authorities.toml \
+  -dsn-file /usr/local/etc/navcontrol/control.dsn \
   -operator enrollment-operator \
   -operator-token-sha256 OPERATOR_TOKEN_SHA256
 ```
+
+Add `-check` to validate the flags, authority file and DSN file and exit without
+connecting; a service script runs it before starting the API under supervision.
+The authority file must not be group- or world-writable. `navcontrol` does not
+read the collector's `registry_state`; its own registry floor is the
+`navl_registry_floors` table, enforced in each enrollment transaction.
 
 The API binds loopback `127.0.0.1:5581` by default and refuses non-loopback binds.
 Remote access requires an authenticated TLS reverse proxy. This initial API is
@@ -128,14 +137,46 @@ claims that override the server record.
 
 Optional `collection_ids`, `declared_capabilities` and `publication` are
 operator-controlled policy. Omitted publication is private, metadata hidden and
-raw export denied. See `identity.PublicationPolicy` for its JSON fields; feed and
-audience grants do not come from ordinary device messages. Bodies are bounded to
+raw export denied. `publication` uses the same names as `[[push.observer]]`:
+`aggregate_use`, `station_metadata`, `event_visibility`, `raw_export`,
+`federation_peers`, `publish_signals` and `policy_revision`. Signal selectors in
+`publish_signals` and `declared_capabilities` are `{"gnss_id":0,"sig_id":0}`.
+Feed and audience grants do not come from ordinary device messages. Bodies are bounded to
 64 KiB; unknown fields, duplicate JSON keys and trailing content are rejected.
 
-`navl_read_credentials` is deliberately separate. An administrator may register
-read-token digests and canonical audience grants there and emit
-`NOTIFY navlistener_authorization_changed`; enrolling an observer or knowing the
-operator API token does not grant access to historical/private observations.
+## Policy changes
+
+POST to `/v1/enrollments/policy` to change an active enrollment's policy without a
+new device credential: `enrollment_id`, `feed_grants`, `collection_ids`,
+`declared_capabilities` and `publication`, restated in full. The device keeps its
+token and enrollment ID, so adding a station to a collection or changing its
+publication needs no reprovisioning. `publication.policy_revision` must differ
+from the current one: collector receipts stamp the revision they were received
+under, so earlier observations stay attributed to the earlier policy. The
+previous snapshot is kept as a `policy` service event. Organization, authorities,
+evidence and credentials are not policy; changing them is a service transition.
+Connected feeders are closed on their next authorization recheck and reconnect
+under the new policy.
+
+## Read credentials
+
+Read credentials are deliberately separate from enrollment. Enrolling an observer
+or knowing the operator API token does not grant access to historical or private
+observations.
+
+POST `{"principal_id":"...","audience_grants":["organization:..."],"revision":"..."}`
+to `/v1/read-credentials`. Grants follow the collector's rules: at least one
+private audience, none public or repeated. The response carries `principal_id`,
+`token` and `token_sha256`; the token is returned only this once and only its
+digest is stored. POST `{"token_sha256":"..."}` to `/v1/read-credentials/disable`
+to withdraw one. A principal may hold more than one enabled credential, so a new
+token can be issued and deployed before the old digest is disabled. Disabled rows
+remain, so a digest is never reissued. Every change is recorded by digest in
+`navl_read_credential_events` and notifies the collector.
+
+A request the operator can correct, such as an unchanged `policy_revision` or a
+public audience grant, answers 422 with its reason. Other failures answer 409
+without detail.
 
 ## Service, revocation and receipts
 

@@ -94,8 +94,8 @@ const (
 // Signal is one normalized constellation/signal selector. An empty policy list
 // means all collector-supported signals; it never bypasses an export grant.
 type Signal struct {
-	GnssID int
-	SigID  int
+	GnssID int `json:"gnss_id"`
+	SigID  int `json:"sig_id"`
 }
 
 // StationMetadata controls the most identifying station representation that a
@@ -111,14 +111,15 @@ const (
 // PublicationPolicy is the receipt-time policy snapshot relevant to the first
 // audience-safe implementation slice. Raw federation export is evaluated by a
 // separate destination grant and is intentionally not represented as a bool here.
+// JSON names match the [[push.observer]] TOML keys and the enrollment columns.
 type PublicationPolicy struct {
-	AggregateUse    AggregateUse
-	StationMetadata StationMetadata
-	EventVisibility EventVisibility
-	RawExport       RawExport
-	FederationPeers []string
-	Signals         []Signal
-	Revision        string
+	AggregateUse    AggregateUse    `json:"aggregate_use"`
+	StationMetadata StationMetadata `json:"station_metadata"`
+	EventVisibility EventVisibility `json:"event_visibility"`
+	RawExport       RawExport       `json:"raw_export"`
+	FederationPeers []string        `json:"federation_peers"`
+	Signals         []Signal        `json:"publish_signals"`
+	Revision        string          `json:"policy_revision"`
 }
 
 // ObserverContext is resolved by the collector from trusted config/AAA state.

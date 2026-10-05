@@ -357,16 +357,9 @@ func (s *Service) Enroll(ctx context.Context, operator string, r Request) (strin
 		return "", "", err
 	}
 	c := v.Context
-	signals := func(values []identity.Signal) []string {
-		out := []string{}
-		for _, v := range values {
-			out = append(out, fmt.Sprintf("%d:%d", v.GnssID, v.SigID))
-		}
-		return out
-	}
 	_, err = tx.Exec(ctx, `INSERT INTO navl_enrollments(id,observer_id,operational_authority_id,manufacturer_authority_id,organization_id,collector_instance_id,token_sha256,issuer_spki,credential_fingerprint,credential_tier,certificate_pem,certificate_expires,attestation_tier,snapshot,feed_grants,collection_ids,declared_capabilities,aggregate_use,station_metadata,event_visibility,raw_export,federation_peers,publish_signals,policy_revision,core_record,commissioning_record,registry_sequence,registry_signer_spki)
  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`,
-		id, r.ObserverID, r.OperationalAuthorityID, nullable(r.ManufacturerAuthorityID), r.OrganizationID, r.CollectorInstanceID, hex.EncodeToString(digest[:]), c.IssuerSPKI, c.CredentialFingerprint, c.CredentialTier, r.CertificatePEM, v.CertificateExpires, c.AttestationTier, snapshot, c.FeedGrants, nonNil(c.CollectionIDs), signals(c.DeclaredCapabilities), c.Publication.AggregateUse, c.Publication.StationMetadata, c.Publication.EventVisibility, c.Publication.RawExport, nonNil(c.Publication.FederationPeers), signals(c.Publication.Signals), c.Publication.Revision, v.Core, v.Commission, v.RegistrySequence, v.RegistrySignerSPKI)
+		id, r.ObserverID, r.OperationalAuthorityID, nullable(r.ManufacturerAuthorityID), r.OrganizationID, r.CollectorInstanceID, hex.EncodeToString(digest[:]), c.IssuerSPKI, c.CredentialFingerprint, c.CredentialTier, r.CertificatePEM, v.CertificateExpires, c.AttestationTier, snapshot, c.FeedGrants, nonNil(c.CollectionIDs), signalStrings(c.DeclaredCapabilities), c.Publication.AggregateUse, c.Publication.StationMetadata, c.Publication.EventVisibility, c.Publication.RawExport, nonNil(c.Publication.FederationPeers), signalStrings(c.Publication.Signals), c.Publication.Revision, v.Core, v.Commission, v.RegistrySequence, v.RegistrySignerSPKI)
 	if err != nil {
 		return "", "", err
 	}

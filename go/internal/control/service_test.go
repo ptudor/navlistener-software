@@ -318,6 +318,8 @@ func TestOperatorHTTPBoundary(t *testing.T) {
 		{"valid", token, "/v1/enrollments/validate", string(body), http.StatusOK},
 		{"duplicate", token, "/v1/enrollments/validate", `{"observer_id":"a","observer_id":"b"}`, http.StatusBadRequest},
 		{"unknown field", token, "/v1/enrollments/validate", `{"hardware_trust":"trusted"}`, http.StatusBadRequest},
+		{"publication policy", token, "/v1/enrollments/validate", `{"observer_id":"software","operational_authority_id":"customer","organization_id":"owner","collector_instance_id":"collector","feed_grants":["ubx"],"publication":{"aggregate_use":"public_attributed","station_metadata":"coarse","event_visibility":"private","raw_export":"deny","publish_signals":[{"gnss_id":0,"sig_id":0}],"policy_revision":"r1"}}`, http.StatusOK},
+		{"field-name publication", token, "/v1/enrollments/validate", `{"observer_id":"software","operational_authority_id":"customer","organization_id":"owner","collector_instance_id":"collector","feed_grants":["ubx"],"publication":{"AggregateUse":"public_attributed"}}`, http.StatusBadRequest},
 		{"oversize", token, "/v1/enrollments/validate", strings.Repeat(" ", 65<<10), http.StatusBadRequest},
 		{"trailing", token, "/v1/enrollments/validate", string(body) + "{}", http.StatusBadRequest},
 	} {

@@ -26,7 +26,7 @@ import (
 type bench struct {
 	ab, cd  *testauthority.Pair
 	service *Service
-	config  *config.Config
+	config  *config.Authorities
 }
 
 func newBench(t *testing.T) bench {
@@ -42,7 +42,7 @@ func newBench(t *testing.T) bench {
 		id := []string{"ab", "cd"}[i]
 		manufacturers = append(manufacturers, config.HardwareTrust{Active: true, ManufacturerAuthorityID: id, ManufacturerKeys: p.ManufacturerPaths, Products: []commissioning.ProductPolicy{{Product: 1, Revision: 258}}})
 	}
-	cfg := &config.Config{Authorities: set, OperationalAuthorities: ops, ManufacturerAuthorities: manufacturers}
+	cfg := &config.Authorities{Set: set, OperationalAuthorities: ops, ManufacturerAuthorities: manufacturers}
 	return bench{ab: ab, cd: cd, service: &Service{Authorities: set, Manufacturers: manufacturers}, config: cfg}
 }
 

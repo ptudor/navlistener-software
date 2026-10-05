@@ -155,6 +155,13 @@ CREATE TABLE IF NOT EXISTS navl_read_credentials (
     principal_id text NOT NULL, audience_grants text[] NOT NULL,
     revision text NOT NULL, enabled boolean NOT NULL DEFAULT false
 );
+-- Every read-credential change made through the operator API, by digest only.
+CREATE TABLE IF NOT EXISTS navl_read_credential_events (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    token_sha256 text NOT NULL, principal_id text NOT NULL,
+    kind text NOT NULL CHECK(kind IN ('create','disable')), operator_id text NOT NULL,
+    recorded_at timestamptz NOT NULL DEFAULT now(), detail jsonb NOT NULL
+);
 CREATE OR REPLACE VIEW navlistener_read_authorization_v1 AS
 SELECT token_sha256,principal_id,audience_grants,revision,enabled FROM navl_read_credentials;
 CREATE OR REPLACE VIEW navlistener_observer_authorization_v3 AS

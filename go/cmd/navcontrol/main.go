@@ -29,11 +29,12 @@ func main() {
 }
 
 func run() error {
-	path := flag.String("config", "", "collector authority configuration")
+	path := flag.String("authorities", "", "authority file shared with the collector (its authority_file)")
 	listen := flag.String("listen", "127.0.0.1:5581", "loopback operator API address")
 	dsnFile := flag.String("dsn-file", "", "private file containing the control-plane PostgreSQL DSN")
 	operator := flag.String("operator", "", "audit identity of the authorized operator")
 	hash := flag.String("operator-token-sha256", "", "SHA-256 of the operator's bearer token")
+	check := flag.Bool("check", false, "validate the flags, authority file and DSN file, then exit without connecting")
 	flag.Parse()
 	if !identity.ValidScopeID(*operator) {
 		return fmt.Errorf("operator id is required")
@@ -50,7 +51,7 @@ func run() error {
 	if ip == nil || !ip.IsLoopback() {
 		return fmt.Errorf("operator API must bind a loopback IP; use an authenticated TLS reverse proxy for remote access")
 	}
-	cfg, err := config.Load(*path)
+	authorities, err := config.LoadAuthorities(*path)
 	if err != nil {
 		return err
 	}
@@ -65,6 +66,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if _, err := pgxpool.ParseConfig(strings.TrimSpace(string(dsn))); err != nil {
+		return fmt.Errorf("DSN file: %w", err)
+	}
+	if *check {
+		fmt.Printf("navcontrol configuration valid: %d operational and %d manufacturer authorities\n",
+			len(authorities.OperationalAuthorities), len(authorities.ManufacturerAuthorities))
+		return nil
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	db, err := pgxpool.New(ctx, strings.TrimSpace(string(dsn)))
@@ -72,8 +81,8 @@ func run() error {
 		return err
 	}
 	defer db.Close()
-	svc := &control.Service{DB: db, Authorities: cfg.Authorities, Manufacturers: cfg.ManufacturerAuthorities}
-	if err := svc.Initialize(ctx, cfg); err != nil {
+	svc := &control.Service{DB: db, Authorities: authorities.Set, Manufacturers: authorities.ManufacturerAuthorities}
+	if err := svc.Initialize(ctx, authorities); err != nil {
 		return err
 	}
 	srv := &http.Server{Addr: *listen, Handler: svc.Handler(*operator, *hash), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}

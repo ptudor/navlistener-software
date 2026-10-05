@@ -230,6 +230,19 @@ the post-handshake SPKI/authority check. Customer operational credentials on A/B
 hardware require an explicit pairing; do not combine customer manufacturer keys
 with the A/B keys. Hardware enrollment uses [navcontrol](../../../docs/CONTROL-PLANE.md).
 
+### `authority_file` — authorities shared with navcontrol
+
+`authority_file` names a separate TOML file holding only the `[[operational_authority]]` and
+`[[manufacturer_authority]]` tables, with the same keys and checks as inline tables. The
+enrollment control plane loads that file alone through `LoadAuthorities`, so it registers
+exactly the collector's authorities without reading the collector's DSNs or push TLS key. The
+file holds certificate and public-key paths only. It must be a regular file that is not group-
+or world-writable, because whoever can write it can register signing keys. Inline authority
+tables beside `authority_file` are an error rather than a merge. An empty operational list keeps
+the token-only `local` default, as it does inline. `LoadAuthorities` requires an operational
+authority, skips the collector's push requirement and ignores `registry_state`: that file is the
+collector's private rollback record, and the control plane keeps its own floor in PostgreSQL.
+
 ### `[[federation.export_grant]]` — directed egress authorization
 
 These rows do not start a peer connection. They are parsed into the transport-independent

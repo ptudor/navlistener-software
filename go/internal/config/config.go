@@ -103,6 +103,13 @@ type Config struct {
 	Federation              Federation              `toml:"federation"`
 	Ingest                  []Source                `toml:"ingest"`
 
+	// AuthorityFile names a separate, credential-free file holding the
+	// [[operational_authority]] and [[manufacturer_authority]] tables. The
+	// enrollment control plane reads the same file through LoadAuthorities, so
+	// both register identical authorities without the control plane reading this
+	// file's credentials or the push TLS key. It excludes inline authority tables.
+	AuthorityFile string `toml:"authority_file"`
+
 	// ShutdownTimeout bounds graceful shutdown; kept out of the wire format.
 	ShutdownTimeout time.Duration `toml:"-"`
 
@@ -493,11 +500,103 @@ func Load(path string) (*Config, error) {
 	if err := decoder.Decode(cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
+	if cfg.AuthorityFile != "" {
+		if err := cfg.useAuthorityFile(raw); err != nil {
+			return nil, fmt.Errorf("invalid config %s: %w", path, err)
+		}
+	}
 	if err := cfg.finalize(); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	cfg.addPermissionWarnings(path)
 	return cfg, nil
+}
+
+// Authorities is the authority registration the collector and the enrollment
+// control plane share: certificate and public-key paths, pairings, product
+// policy and the manufacturer registry. It holds no credential.
+type Authorities struct {
+	OperationalAuthorities  []authority.Operational `toml:"operational_authority"`
+	ManufacturerAuthorities ManufacturerAuthorities `toml:"manufacturer_authority"`
+	Set                     *authority.Set          `toml:"-"`
+}
+
+// readAuthorityFile decodes an authority file strictly. The file decides which
+// keys may sign records and certificates, so a group- or world-writable file is
+// refused rather than warned about: anyone able to write it could register keys.
+func readAuthorityFile(path string) (*Authorities, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("authority_file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("authority_file %s is not a regular file", path)
+	}
+	if m := info.Mode().Perm(); m&0o022 != 0 {
+		return nil, fmt.Errorf("authority_file %s is group- or world-writable (mode %04o); anyone who can write it can register signing keys", path, m)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("authority_file: %w", err)
+	}
+	a := &Authorities{}
+	decoder := toml.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(a); err != nil {
+		return nil, fmt.Errorf("parse authority_file %s: %w", path, err)
+	}
+	return a, nil
+}
+
+// useAuthorityFile replaces the inline authority tables with the named file's.
+// raw is the main config, checked again so a table written in both places is an
+// error rather than one copy silently winning.
+func (c *Config) useAuthorityFile(raw []byte) error {
+	var inline struct {
+		Operational  []map[string]any `toml:"operational_authority"`
+		Manufacturer []map[string]any `toml:"manufacturer_authority"`
+	}
+	if err := toml.Unmarshal(raw, &inline); err != nil {
+		return err
+	}
+	if len(inline.Operational) > 0 || len(inline.Manufacturer) > 0 {
+		return fmt.Errorf("authority_file and inline [[operational_authority]] or [[manufacturer_authority]] tables cannot both be set")
+	}
+	a, err := readAuthorityFile(c.AuthorityFile)
+	if err != nil {
+		return err
+	}
+	// An empty operational list keeps the token-only default, exactly as a
+	// config without inline operational tables does.
+	if len(a.OperationalAuthorities) > 0 {
+		c.OperationalAuthorities = a.OperationalAuthorities
+	}
+	c.ManufacturerAuthorities = a.ManufacturerAuthorities
+	return nil
+}
+
+// LoadAuthorities reads a standalone authority file for the enrollment control
+// plane. It applies the collector's key, certificate, pairing, product and
+// registry checks without the collector's listener settings, so the control
+// plane needs neither the collector's credentials nor its TLS key.
+//
+// registry_state is the collector's private rollback record. The control plane
+// keeps its own persistent floor in its database and does not read that file.
+func LoadAuthorities(path string) (*Authorities, error) {
+	a, err := readAuthorityFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(a.OperationalAuthorities) == 0 {
+		return nil, fmt.Errorf("authority_file %s registers no operational authority", path)
+	}
+	for i := range a.ManufacturerAuthorities {
+		a.ManufacturerAuthorities[i].RegistryState = ""
+	}
+	if a.Set, err = finalizeAuthorities(a.OperationalAuthorities, a.ManufacturerAuthorities, nil); err != nil {
+		return nil, fmt.Errorf("invalid authority_file %s: %w", path, err)
+	}
+	return a, nil
 }
 
 // addPermissionWarnings warns when the config file itself is group/world-
@@ -858,45 +957,62 @@ func (c *Config) finalize() error {
 // error rather than a no-op: an operator who set require_registry_entry with no
 // registry would otherwise believe unlisted boards are refused when nothing is.
 func (c *Config) finalizeHardwareTrust() error {
-	manufacturers := map[string]bool{}
-	for i := range c.ManufacturerAuthorities {
-		h := &c.ManufacturerAuthorities[i]
-		if _, exists := manufacturers[h.ManufacturerAuthorityID]; exists {
-			return fmt.Errorf("duplicate manufacturer authority %q", h.ManufacturerAuthorityID)
-		}
-		manufacturers[h.ManufacturerAuthorityID] = h.Active
-		if err := c.finalizeManufacturer(h); err != nil {
-			return err
-		}
-	}
-	var err error
-	c.Authorities, err = authority.New(c.OperationalAuthorities, manufacturers, time.Now())
+	set, err := finalizeAuthorities(c.OperationalAuthorities, c.ManufacturerAuthorities, c)
 	if err != nil {
 		return err
 	}
-	c.Push.Authorities = c.Authorities
-	if c.Push.RequireClientCertificate && len(c.Authorities.ClientPool().Subjects()) == 0 {
+	c.Authorities = set
+	c.Push.Authorities = set
+	if c.Push.RequireClientCertificate && len(set.ClientPool().Subjects()) == 0 {
 		return fmt.Errorf("push.require_client_certificate requires an enabled Issuing intermediate")
+	}
+	for _, o := range c.Push.Observers {
+		if err := set.Allows(o.ObserverContext.OperationalAuthorityID, ""); err != nil {
+			return fmt.Errorf("push observer %s: %w", o.Station, err)
+		}
+	}
+	return nil
+}
+
+// finalizeAuthorities validates every manufacturer scope, builds the operational
+// authority set and refuses a key registered in two roles or scopes. collector
+// is the daemon's config, which adds the push requirement and collects
+// warnings; the control plane passes nil.
+func finalizeAuthorities(operational []authority.Operational, manufacturers ManufacturerAuthorities, collector *Config) (*authority.Set, error) {
+	enabled := map[string]bool{}
+	for i := range manufacturers {
+		h := &manufacturers[i]
+		if _, exists := enabled[h.ManufacturerAuthorityID]; exists {
+			return nil, fmt.Errorf("duplicate manufacturer authority %q", h.ManufacturerAuthorityID)
+		}
+		enabled[h.ManufacturerAuthorityID] = h.Active
+		if err := finalizeManufacturer(h, collector); err != nil {
+			return nil, err
+		}
+	}
+	set, err := authority.New(operational, enabled, time.Now())
+	if err != nil {
+		return nil, err
 	}
 	seen := map[string]string{}
 	paths := map[string]bool{}
-	for _, h := range c.ManufacturerAuthorities {
+	for _, h := range manufacturers {
 		for role, files := range map[string][]string{"manufacturer": h.ManufacturerKeys, "registry": h.RegistryKeys} {
 			if len(files) == 0 {
 				continue
 			}
 			keys, err := commissioning.LoadKeySet(files)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			for _, key := range keys.PublicKeys() {
 				pin := commissioning.KeyFingerprint(key)
 				owner := h.ManufacturerAuthorityID + ":" + role
 				if prior, exists := seen[pin]; exists {
-					return fmt.Errorf("public key registered for both %s and %s", prior, owner)
+					return nil, fmt.Errorf("public key registered for both %s and %s", prior, owner)
 				}
-				if c.Authorities.CAKey(pin) {
-					return fmt.Errorf("%s uses an operational CA key", owner)
+				if set.CAKey(pin) {
+					return nil, fmt.Errorf("%s uses an operational CA key", owner)
 				}
 				seen[pin] = owner
 			}
@@ -904,27 +1020,22 @@ func (c *Config) finalizeHardwareTrust() error {
 		if h.RegistryState != "" {
 			path := filepath.Clean(h.RegistryState)
 			if paths[path] {
-				return fmt.Errorf("registry state path shared across manufacturer authorities")
+				return nil, fmt.Errorf("registry state path shared across manufacturer authorities")
 			}
 			paths[path] = true
 		}
 	}
-	for _, o := range c.Push.Observers {
-		if err := c.Authorities.Allows(o.ObserverContext.OperationalAuthorityID, ""); err != nil {
-			return fmt.Errorf("push observer %s: %w", o.Station, err)
-		}
-	}
-	return nil
+	return set, nil
 }
 
-func (c *Config) finalizeManufacturer(h *HardwareTrust) error {
+func finalizeManufacturer(h *HardwareTrust, collector *Config) error {
 	if len(h.ManufacturerKeys) == 0 {
 		return fmt.Errorf("manufacturer authority settings require manufacturer_keys")
 	}
 	if !identity.ValidScopeID(h.ManufacturerAuthorityID) {
 		return fmt.Errorf("manufacturer_authority.manufacturer_authority_id is required and must be a valid scope id")
 	}
-	if c.Push.Addr == "" {
+	if collector != nil && collector.Push.Addr == "" {
 		return fmt.Errorf("manufacturer_authority requires the push endpoint: evidence arrives only on a GNF1 session")
 	}
 	switch {
@@ -954,8 +1065,10 @@ func (c *Config) finalizeManufacturer(h *HardwareTrust) error {
 	// Apply the recorded floor read-only, so this check refuses exactly the
 	// registry the daemon would refuse and never creates or touches the file.
 	if h.RegistryState == "" {
-		c.Warnings = append(c.Warnings,
-			"manufacturer_authority.registry is set without registry_state: a restart forgets the newest registry sequence adopted, so an older registry that still carries a valid signature would be accepted and could restore a withdrawn board")
+		if collector != nil {
+			collector.Warnings = append(collector.Warnings,
+				"manufacturer_authority.registry is set without registry_state: a restart forgets the newest registry sequence adopted, so an older registry that still carries a valid signature would be accepted and could restore a withdrawn board")
+		}
 	} else {
 		floor, err := commissioning.ReadRegistryState(h.RegistryState, h.ManufacturerAuthorityID)
 		if err != nil {

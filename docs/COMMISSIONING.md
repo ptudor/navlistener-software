@@ -420,6 +420,10 @@ product = 1
 revision = 258
 ```
 
+With `navcontrol`, keep these tables in a separate file named by the collector's
+`authority_file` setting and passed to `navcontrol -authorities`, so both
+register the same authorities from one credential-free file.
+
 Manufacturer and registry key files hold P-256 `PUBLIC KEY` PEM, never CA
 certificates. Root slot-0 CA keys, Issuing keys, manufacturer slot-5 keys and
 registry keys are separate roles; ambiguous ownership or role reuse is rejected.

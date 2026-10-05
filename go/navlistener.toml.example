@@ -95,6 +95,13 @@ ack_interval = "1s"
 # stamps the result on every receipt as hardware_trust (none, open, test, trusted).
 # Evidence labels data and never refuses a session. Without manufacturer_keys,
 # evidence is read and answered "unconfigured". The files hold public keys only.
+#
+# With navcontrol, put these tables in their own file instead and name it here.
+# Both processes then read one credential-free file: navcontrol needs neither
+# this config's credentials nor the push TLS key. The file must not be group- or
+# world-writable, and inline tables beside authority_file are an error.
+# authority_file = "/usr/local/etc/navlistener/authorities.toml"
+#
 # [[operational_authority]]
 # id = "example-operations"
 # enabled = true
