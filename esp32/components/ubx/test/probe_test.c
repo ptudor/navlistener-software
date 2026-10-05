@@ -20,6 +20,16 @@ int main(void)
     assert(pkt[10] == 0x32 && pkt[11] == 2 && pkt[12] == 0x91 && pkt[13] == 0x20 && pkt[14] == 1);
     assert(ubx_set_ram(pkt, 0x40520001, 460800, 4) == 20);
     assert(pkt[14] == 0 && pkt[15] == 8 && pkt[16] == 7 && pkt[17] == 0);
+    // Only the ZED-X20P adds antenna short detection, as the last key.
+    const uint32_t *keys, *x20_keys;
+    size_t count = ubx_ram_keys("NEO-M9N", &keys), x20_count = ubx_ram_keys("ZED-X20P", &x20_keys);
+    assert(count == 8 && keys[0] == 0x10740001 && keys[1] == 0x20910232 && keys[7] == 0x20910346);
+    assert(x20_count == count + 1 && x20_keys[count] == 0x10a3002f && !memcmp(keys, x20_keys, count * sizeof *keys));
+    assert(ubx_ram_keys("MAX-M10S", &keys) == count && ubx_ram_keys(NULL, &keys) == count);
+    assert(ubx_ram_keys("ZED-X20", &keys) == count && ubx_ram_keys("ZED-X20P ", &keys) == count);
+    for (size_t i = 0; i < count; i++) assert(keys[i] != 0x10a3002f);
+    assert(ubx_set_ram(pkt, 0x10a3002f, 1, 1) == 17);
+    assert(pkt[10] == 0x2f && pkt[11] == 0 && pkt[12] == 0xa3 && pkt[13] == 0x10 && pkt[14] == 1);
     uint8_t version[220] = {0}; strcpy((char *)version+40, "MOD=NEO-M9N");
     assert(ubx_version_is_module(version, 70, "NEO-M9N"));
     assert(!ubx_version_is_module(version, 70, "NEO-M9") && !ubx_version_is_module(version, 70, "ZED-X20P"));
@@ -50,5 +60,5 @@ int main(void)
     const char *corrupt = "$GPGLL,4916.45,N,12311.12,W,225444,A,*00\r\n";
     for (size_t i = 0; corrupt[i]; i++) valid += nmea_probe_feed(&nmea, corrupt[i]);
     assert(valid == 1);
-    puts("UBX probe: fragmented checksums, RAM-only commands, model identity and NMEA detection passed");
+    puts("UBX probe: fragmented checksums, RAM-only commands, per-model keys, model identity and NMEA detection passed");
 }

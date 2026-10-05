@@ -152,6 +152,12 @@ extension names it: `MOD=NEO-M9N` on the NEO, `MOD=ZED-X20P` on the ZED/X20 and
 `MOD=MAX-M10S` on the MAX. With no receiver listed, none is configured. It switches to `NVF_RX_BAUD`, then requests UBX output,
 SFRBX, MON-RF, NAV-SAT, NAV-SIG, NAV-PVT, NAV-STATUS and TIM-TP through RAM-only
 CFG-VALSET. Firmware logs ACK/NAK and bounded timeouts for each message setting.
+On the ZED-X20P it also sets `CFG-HW-ANT_CFG_SHORTDET`, so the receiver reads the
+board's antenna-switch fault on `ANT_SHORT_N` (pin 6, default active-low polarity)
+and MON-RF reports SHORT, which the collector raises as `antenna_fault`.
+`CFG-HW-ANT_CFG_PWRDOWN` stays off because `ANT_OFF` is not connected. The switch
+latches off and the receiver keeps reporting SHORT until `3V3_GNSS` is power-cycled,
+which also resets the receiver; the firmware does not cycle it automatically.
 Receiver flash and battery-backed configuration are not written. Any other model is
 observed without automatic configuration. The keys have the same IDs in the
 [M9 SPG 4.04](https://content.u-blox.com/sites/default/files/u-blox-M9-SPG-4.04_InterfaceDescription_UBX-21022436.pdf),

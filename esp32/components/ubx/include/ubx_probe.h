@@ -8,6 +8,8 @@
 #include <stdint.h>
 size_t ubx_poll_version(uint8_t out[8]);
 size_t ubx_set_ram(uint8_t out[20], uint32_t key, uint32_t value, unsigned width);
+// The single-byte keys set to 1 in RAM for a listed receiver; returns the count.
+size_t ubx_ram_keys(const char *module, const uint32_t **keys);
 // A MON-VER body whose extensions include exactly "MOD=<module>", such as "NEO-M9N".
 bool ubx_version_is_module(const uint8_t *body, size_t len, const char *module);
 typedef struct { unsigned state, length; uint8_t checksum, expected; } nmea_probe_t;

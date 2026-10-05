@@ -91,8 +91,8 @@ static void rx_task(void *arg)
     size_t rate_index = 0;
     // One key per request: a receiver rejecting SFRBX must still get telemetry. The IDs are
     // the same on all three receivers (ubx_probe.h).
-    const uint32_t keys[] = {0x10740001, 0x20910232, 0x2091035a, 0x20910016, 0x20910007, 0x2091001b,
-        0x2091017e, 0x20910346}; // TIM-TP and NAV-SIG UART1, RAM only
+    const uint32_t *keys;
+    const size_t key_count = ubx_ram_keys(module, &keys);
     unsigned setting = 0, tries = 0;
     bool configured = false, baud_attempted = false;
     int64_t cfg_deadline = 0;
@@ -150,7 +150,7 @@ static void rx_task(void *arg)
                 version_seen = expected_model = false;
                 last_valid = now;
                 poll_version(); next_probe = now + 3000;
-            } else if (setting < sizeof(keys) / sizeof(keys[0])) {
+            } else if (setting < key_count) {
                 if (tries && cfg_ack != 0) {
                     ESP_LOGI(TAG, "RAM key 0x%08lx: %s", (unsigned long)keys[setting], cfg_ack > 0 ? "ACK" : "NAK (unsupported)");
                     setting++; tries = 0; cfg_ack = 0;
