@@ -27,6 +27,7 @@ import (
 	"github.com/ptudor/navlistener/internal/commissioning"
 	"github.com/ptudor/navlistener/internal/federation"
 	"github.com/ptudor/navlistener/internal/identity"
+	"github.com/ptudor/navlistener/internal/integrity"
 	"github.com/ptudor/navlistener/internal/reception"
 	"github.com/ptudor/navlistener/internal/updates"
 )
@@ -88,6 +89,7 @@ var knownDialTypes = map[string]bool{
 // Config is the whole-daemon configuration.
 type Config struct {
 	Reception               reception.Config        `toml:"reception"`
+	Integrity               Integrity               `toml:"integrity"`
 	Updates                 updates.Config          `toml:"updates"`
 	Collector               Collector               `toml:"collector"`
 	Logging                 Logging                 `toml:"logging"`
@@ -120,6 +122,11 @@ type Config struct {
 	// dev config; remote Prometheus scraping behind a firewall) — but never a
 	// silent one. Populated by Load/finalize.
 	Warnings []string `toml:"-"`
+
+	// integrityStations is the resolved installation of every station that has
+	// one, from [[integrity.station]] and [[reception.station]]. Populated by
+	// finalize; read through IntegrityStations.
+	integrityStations map[string]integrity.StationProfile
 }
 
 // Collector names this deployment's stable trust/authorization realm. It is
@@ -661,6 +668,9 @@ func (c *Config) finalize() error {
 		if !ValidObserverID(site.Observer) {
 			return fmt.Errorf("reception: invalid observer %q", site.Observer)
 		}
+	}
+	if err := c.finalizeIntegrity(); err != nil {
+		return err
 	}
 	if err := c.Updates.Validate(); err != nil {
 		return fmt.Errorf("updates: %w", err)

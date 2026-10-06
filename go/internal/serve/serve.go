@@ -22,6 +22,7 @@ import (
 	"github.com/ptudor/navlistener/internal/audience"
 	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/identity"
+	"github.com/ptudor/navlistener/internal/integrity"
 	"github.com/ptudor/navlistener/internal/metrics"
 	"github.com/ptudor/navlistener/internal/orbitref"
 	"github.com/ptudor/navlistener/internal/state"
@@ -569,12 +570,19 @@ type envelope struct {
 // consumer (and the integrity layer) knows what it should be reporting (docs/CONSTELLATIONS.md
 // §7, docs/INTEGRITY.md §6).
 type observer struct {
-	ID           string                    `json:"id"`
-	Vendor       string                    `json:"vendor"`
-	Remark       string                    `json:"remark"`
-	Disabled     bool                      `json:"disabled"`
-	Board        *state.StationBoard       `json:"board,omitempty"`
-	RF           *state.StationRF          `json:"rf,omitempty"`
+	ID       string              `json:"id"`
+	Vendor   string              `json:"vendor"`
+	Remark   string              `json:"remark"`
+	Disabled bool                `json:"disabled"`
+	Board    *state.StationBoard `json:"board,omitempty"`
+	RF       *state.StationRF    `json:"rf,omitempty"`
+	// Integrity is the station's assurance assessment
+	// (docs/proposals/STATION-ASSURANCE.md): the fused state, every check's state
+	// with its measured values and thresholds, and the configuration hash. It
+	// carries offsets from a surveyed position, never coordinates. Like Board, it
+	// is private: it is evaluated from the receiver's own solution and the
+	// board's pulse timing, which public views exclude.
+	Integrity    *integrity.Assessment     `json:"integrity,omitempty"`
 	Capabilities []state.StationCapability `json:"capabilities,omitempty"`
 	// Declared/Unexpected/Missing surface the tudorgps capability mismatch directly in the
 	// feed (docs/INTEGRITY.md §6), so an operator sees a signal the silicon shouldn't produce
@@ -588,8 +596,10 @@ type observer struct {
 func (s *Server) observers(now time.Time, st *state.Store, sources []config.Source, selected identity.Audience) []observer {
 	rf := st.FeedStationRF(now)
 	var boards map[string]state.StationBoard
+	var assessments map[string]integrity.Assessment
 	if selected.Kind != identity.AudiencePublic {
 		boards = st.FeedStationBoards(now)
+		assessments = st.FeedStationIntegrity(now)
 	}
 	reps := st.FeedCapabilityReports(now)
 	seen := make(map[string]bool, len(sources))
@@ -618,6 +628,9 @@ func (s *Server) observers(now time.Time, st *state.Store, sources []config.Sour
 		if r, ok := rf[src.Name]; ok {
 			o.RF = &r
 		}
+		if a, ok := assessments[src.Name]; ok {
+			o.Integrity = &a
+		}
 		if rep, ok := reps[src.Name]; ok {
 			o.Capabilities = rep.Observed
 			o.Declared = rep.Declared
@@ -645,6 +658,12 @@ func (s *Server) observers(now time.Time, st *state.Store, sources []config.Sour
 			extra = append(extra, id)
 		}
 	}
+	for id := range assessments { // private audiences only, like boards
+		if !seen[id] {
+			seen[id] = true
+			extra = append(extra, id)
+		}
+	}
 	for id := range boards {
 		if !seen[id] {
 			seen[id] = true
@@ -662,6 +681,9 @@ func (s *Server) observers(now time.Time, st *state.Store, sources []config.Sour
 		}
 		if r, ok := rf[id]; ok {
 			o.RF = &r
+		}
+		if a, ok := assessments[id]; ok {
+			o.Integrity = &a
 		}
 		if rep, ok := reps[id]; ok {
 			o.Capabilities = rep.Observed

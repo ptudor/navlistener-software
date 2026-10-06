@@ -196,12 +196,27 @@ receiver disagreement on them is an integrity signal, not an averaging problem.
 
 ### 1.3 `observers` — the station list
 
-Array of station records: `id`, `owner`, `remark`, `latitude_deg`, `longitude_deg`,
-`height_m` (ellipsoidal), `hw_version`, `sw_version`, `git_hash`, `vendor`, `mods`,
-`serial_no`, `last_seen` (epoch s), `uptime_s`, `clock_drift_ns`, `accuracy_m`, and `svs` —
-a map keyed `name@sigid` of per-SV reception mirroring the `perrecv` shape (§1.1) plus
-`age_s`. String fields that originate on the receiver (`owner`, `remark`, `vendor`, …) are
-sanitized before serialization (INTEGRITY.md §9).
+Array of station records: `id`, `vendor`, `remark`, `disabled`, the station RF
+read model `rf` (DEFENSE-PNT.md §6), the demonstrated `capabilities`, and, when a
+capability fingerprint is declared, `declared_capabilities`,
+`unexpected_capabilities` and `missing_capabilities`. Configured dial sources and
+push stations seen in live RF or capability state share the shape; dial-only
+metadata is absent for push stations. Operator-supplied strings (`vendor`,
+`remark`) are sanitized before serialization (INTEGRITY.md §9). Station
+coordinates, versions, clock drift and per-SV reception are not served here; the
+per-SV view is the `svs` feed's `perrecv` (§1.1).
+
+Authorized operator, organization and collection rows add `integrity`, the
+station's assurance assessment ([proposal](proposals/STATION-ASSURANCE.md)):
+`state` (`unavailable`, `unassured`, `inconsistent` or `assured`), the fused
+`score`, `unassured_domains`, `spoofing_indicated`, `engine_version`,
+`config_hash`, the installation (`mode`, `surveyed_position`, `max_speed_mps`),
+and `checks`. Each check has its served `state`, the filtered `candidate`
+behind it, `since`, `recovering_since` while a recovery is held, `evaluated_at`,
+and the latest `metrics`, `thresholds` and `reasons`. It carries offsets from a
+surveyed position, never coordinates. Public views exclude it, as they exclude
+board telemetry, because it is evaluated from the receiver's own solution and
+the board's pulse timing.
 
 Implemented board telemetry adds optional `board` to authorized operator,
 organization and collection observer rows. `board.latest.details.environment`
@@ -495,7 +510,9 @@ CREATE TABLE nav_frames_seq_seen (
 Raw-plus-decoded means a decoder bug fix lets us **re-derive every historical ephemeris**
 from `raw` without re-collecting — the same re-decodability guarantee `radiolistener` keeps.
 
-Receiver RF telemetry has its own private `rf_samples` hypertable. It stores the
+Receiver RF telemetry has its own private `rf_samples` hypertable. Its `kind` is
+`reception` (NAV-SAT), `jamming` (MON-RF/MON-HW) or `solution` (the receiver's
+own position, velocity, clock and status, telemetry `0x03`). It stores the
 exact versioned receiver body in `raw`, its decoded JSON projection in `data`,
 `sample_time`, evidence kind, decoder version, source session/sequence and the
 same immutable receipt-time ownership, trust and publication scope as

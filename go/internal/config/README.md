@@ -13,6 +13,8 @@ validated. TOML at `/usr/local/etc/navlistener/navlistener.toml`, passed with `-
 | `config.go` | The whole package: every config struct, `Load`, validation, defaults, and the two identity validators. |
 | `config_test.go` | Load/validate cases, defaults, and the rejection paths. |
 | `hardware_trust_test.go` | `[[manufacturer_authority]]`: key loading, registry verification, and every incomplete combination. |
+| `integrity.go` | `[[integrity.station]]` installations, merged with the surveyed `[[reception.station]]` sites. |
+| `integrity_test.go` | Installation resolution and every rejection. |
 | `README.md` | This file. |
 
 See `../../navlistener.toml.example` for a commented reference config.
@@ -56,6 +58,7 @@ fleet ingest. The daemon runs happily as a collector-only process.
 | `[[federation.export_grant]]` | no transport | explicit directed export authorization, validated before peer transport exists |
 | `[[push.observer]]` | — | credential/feed grant plus server-owned organization and publication context |
 | `[[ingest]]` | per entry | dial connector plus the same server-owned organization/publication context |
+| `[[integrity.station]]` | per entry | a station's installation for the integrity checks: `mode` fixed or mobile, surveyed `position`, `max_speed_mps` |
 
 ---
 
@@ -255,6 +258,17 @@ wildcard.
 
 The grant is only half the decision: each send must also pass the immutable receipt policy and
 the current owner policy. A peer HELLO/subscription may narrow these values but never widen them.
+
+### `[[integrity.station]]` — station installations
+
+Every station's integrity checks run without configuration. An installation adds the checks
+that depend on how the antenna is mounted ([proposal](../../../docs/proposals/STATION-ASSURANCE.md)):
+a `fixed` station gets the static-position and stationary-velocity checks, and a `mobile` one the
+motion bound, which needs `max_speed_mps`. A fixed station's surveyed `position` defaults to its
+`[[reception.station]]` position; setting both to different values is rejected so the survey has
+one home. A `[[reception.station]]` is a fixed site by definition, so one without an
+`[[integrity.station]]` entry is resolved as a fixed installation at its position, and a mobile
+installation cannot have one. `IntegrityStations` returns the resolved installations.
 
 ### The two identity validators
 

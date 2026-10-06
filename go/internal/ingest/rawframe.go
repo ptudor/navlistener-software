@@ -43,6 +43,11 @@ type RawFrame struct {
 	ReceptionPowerCheck *reception.PowerCheck // independently recomputed server power verdict
 	BoardSampleStamped  bool                  // original envelope carried an accepted wall-clock stamp
 	RF                  *RawRF                // RF-environment telemetry (MON-RF/MON-HW/NAV-SAT), nil for nav frames
+	Solution            *ReceiverSolution     // the receiver's own solution for one epoch (telemetry 0x03), nil for nav frames
+	// RecvStamped reports that a push frame's Recv is the observer's own accepted
+	// wall-clock stamp rather than the collector's arrival time. Dial frames leave it
+	// false; their Recv is already this host's clock.
+	RecvStamped bool
 
 	// Seq is the feeder's GNF1 global sequence, set only for push-path frames
 	// (HasSeq true). On feeder reconnect, DATA frames past the last ack are

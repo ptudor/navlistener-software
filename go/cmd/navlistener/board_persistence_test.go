@@ -56,3 +56,31 @@ func TestRFPersistenceMapping(t *testing.T) {
 		t.Fatalf("jamming mapping: %+v", saved)
 	}
 }
+
+// TestSolutionPersistenceMapping: receiver solutions are private RF evidence of kind
+// "solution". A push frame keeps its exact body; a dial frame stores the canonical one.
+func TestSolutionPersistenceMapping(t *testing.T) {
+	now := time.Now()
+	cx := identity.NewPrivateContext("test-solution", identity.CredentialLocalDial)
+	sol := &ingest.ReceiverSolution{
+		PVT:   &ingest.SolutionPVT{TOWMS: 1000, FixType: 3, FixFlags: ingest.FixFlagOK, LatE7: 374219000, LonE7: -1220841000, HeightMM: 12500},
+		Clock: &ingest.SolutionClock{TOWMS: 1000, BiasNS: -412_345, DriftNSS: 87},
+	}
+	saved := frameForPersistence(&ingest.RawFrame{Source: "test-solution", Recv: now, Observer: cx, MsgType: ingest.TelemReceiverSolution, Solution: sol})
+	if saved.RF == nil || saved.RF.Kind != "solution" || saved.Board != nil {
+		t.Fatalf("solution mapping: %+v", saved)
+	}
+	if want := ingest.EncodeReceiverSolution(sol); string(saved.Raw) != string(want) {
+		t.Fatalf("canonical raw body = %x, want %x", saved.Raw, want)
+	}
+	var decoded ingest.ReceiverSolution
+	if err := json.Unmarshal(saved.RF.Data, &decoded); err != nil || decoded.PVT == nil || decoded.Clock.BiasNS != -412_345 {
+		t.Fatalf("decoded projection: %+v %v", decoded, err)
+	}
+	body := ingest.EncodeReceiverSolution(sol)
+	saved = frameForPersistence(&ingest.RawFrame{Source: "test-solution", Recv: now, Observer: cx, Bytes: body,
+		MsgType: ingest.TelemReceiverSolution, Solution: sol})
+	if saved.RF == nil || string(saved.Raw) != string(body) {
+		t.Fatalf("push body not kept exactly: %+v", saved)
+	}
+}

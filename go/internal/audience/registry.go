@@ -77,6 +77,10 @@ type Registry struct {
 	// is per frame, so an unlimited log would itself become the outage.
 	log             *slog.Logger
 	lastCeilingWarn time.Time
+
+	// integrity is the station integrity configuration every view evaluates
+	// with, including views materialized later; nil means the store default.
+	integrity *state.IntegrityConfig
 }
 
 func NewRegistry(shards int, sources []config.Source) *Registry {
@@ -152,6 +156,9 @@ func (r *Registry) ensureDynamic(a identity.Audience) (View, bool) {
 		return View{}, false
 	}
 	view = View{Audience: a, Store: state.NewProjection(r.shards), Sources: sourcesForAudience(r.sources, a)}
+	if r.integrity != nil {
+		view.Store.SetIntegrity(r.integrity)
+	}
 	r.views[key] = view
 	r.dynamic++
 	metrics.AudienceViewsMaterialized.Set(float64(r.dynamic))
@@ -185,6 +192,17 @@ func (r *Registry) SetLogger(log *slog.Logger) {
 	r.mu.Lock()
 	r.log = log
 	r.mu.Unlock()
+}
+
+// SetIntegrity applies a station integrity configuration to every registered view
+// and to views materialized afterwards.
+func (r *Registry) SetIntegrity(cfg *state.IntegrityConfig) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.integrity = cfg
+	for _, view := range r.views {
+		view.Store.SetIntegrity(cfg)
+	}
 }
 
 func sourcesForAudience(sources []config.Source, a identity.Audience) []config.Source {

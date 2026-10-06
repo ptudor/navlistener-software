@@ -21,6 +21,7 @@ can be validated, routed and stored.
 | `push.go` | `PushServer` — TLS termination, feeder authentication, GNF1 stream handling. |
 | `durable.go` | `DurableTracker` — the GNF1 ACK watermark under the regression fix durability contract. |
 | `telemetry.go` | GNF1 telemetry record codecs (RF state and per-SV C/N₀). |
+| `solution.go` | The receiver-solution telemetry codec (`0x03`), the UBX NAV-PVT/NAV-CLOCK/NAV-STATUS parsers, and the epoch assembler that joins them. |
 | `testdata/` | Real captured UBX byte streams — see `testdata/README.md`. |
 | `*_test.go` | Unit tests, real-frame regression, and the C↔Go feeder end-to-end suite. |
 
@@ -67,7 +68,7 @@ missing data with no signal.
 
 | Type | Framing | Notes |
 |---|---|---|
-| `ubx` | sync `0xB5 0x62`, class/id, LE length, payload, 2-byte Fletcher checksum | The primary path. RXM-SFRBX carries raw nav words; RXM-RAWX carries observables; MON-RF/MON-HW/NAV-SAT carry RF telemetry. |
+| `ubx` | sync `0xB5 0x62`, class/id, LE length, payload, 2-byte Fletcher checksum | The primary path. RXM-SFRBX carries raw nav words; RXM-RAWX carries observables; MON-RF/MON-HW/NAV-SAT carry RF telemetry; NAV-PVT/NAV-CLOCK/NAV-STATUS are joined per epoch into a receiver solution. |
 | `sbf` | sync `$@`, LE CRC-16, ID (low 13 bits = block number), LE length (multiple of 4), body | CRC-16-CCITT covers ID+Length+body. SBF delivers already-de-interleaved ICD nav bits, so the raw block body is emitted tagged with its block number. |
 | `rtcm` | `0xD3` preamble, 6 reserved bits + 10-bit BE length, payload, 3-byte CRC-24Q | The message number is the first 12 bits of the payload. The raw payload is emitted tagged with its message number. |
 | `ntrip` | HTTP-ish caster subscription wrapping one of the above | Basic auth; TLS by default with explicit opt-outs required for plaintext. |
@@ -213,6 +214,8 @@ discriminated by the record's `frame_type` byte:
 
 - **telemetry types are `< 0x10`**, raw-nav frame types (§6.1) are `≥ 0x10`
 - `TelemReceptionData = 0x01` — NAV-SAT per-SV C/N₀ + elevation → the spoof gate
+- `TelemReceiverSolution = 0x03` — one epoch of the receiver's own position, velocity, clock and
+  status → the station integrity checks
 - `TelemJammingStats = 0x05` — MON-RF/MON-HW AGC + jamming + antenna → the jam gate
 
 The record's `gnssId`/`svId`/`sigId`/`freqId` header fields are unused for telemetry (the sample
@@ -223,8 +226,14 @@ unrecognised-version bodies — the untrusted-input discipline applied to the pu
 the dial-mode parsers apply it. `EncodeReceptionData` caps the satellite count so the body fits
 the feeder's record buffer.
 
-Only the two types the RF detector consumes are transported today; the remaining §6.2 types get
-their own body codecs when their features land.
+A receiver solution's body holds up to three blocks — solution, clock and status — and its
+length must match the blocks present exactly; calendar fields are range-checked only while the
+receiver marks them valid. A push frame records whether its receive time is the observer's own
+accepted stamp (`RecvStamped`): only then, or on a dial connection, is it an independent clock
+for the receiver's UTC. The dial-mode scanner joins NAV-PVT, NAV-CLOCK and NAV-STATUS by GPS
+time of week, completing an epoch when a later one starts or NAV-EOE ends it.
+
+The remaining §6.2 types get their own body codecs when their features land.
 
 ### `RawFrame.Seq` and historian dedup
 

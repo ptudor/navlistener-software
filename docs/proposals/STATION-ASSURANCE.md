@@ -104,8 +104,10 @@ indications = 3), time to first fix (U32 ms), milliseconds since receiver start
 The collector rejects unknown versions and presence bits, a wrong length,
 out-of-range coordinates or UTC fields, and blocks whose time of week exceeds a
 week. Stored bodies go to `rf_samples` with kind `solution`. Coordinates are
-private: no public feed serves them, and evidence bundles that contain them are
-served only to private audiences.
+private: no feed serves them, and evidence bundles that contain them are served
+only to private audiences. The station assessment is served to private audiences
+only, like board telemetry, since it is evaluated from these records and the
+board's pulse timing.
 
 ## 3. Checks
 
@@ -214,16 +216,16 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 
 | # | Item | Status |
 |---|---|---|
-| 1.1 | Go codec for telemetry `0x03`, push decoding, `rf_samples` kind `solution` | planned |
-| 1.2 | Collector dial-mode UBX parsing of NAV-PVT, NAV-CLOCK and NAV-STATUS, with epoch assembly | planned |
+| 1.1 | Go codec for telemetry `0x03`, push decoding, `rf_samples` kind `solution` | done |
+| 1.2 | Collector dial-mode UBX parsing of NAV-PVT, NAV-CLOCK and NAV-STATUS, with epoch assembly | done |
 | 1.3 | ESP32: parse NAV-PVT fully, enable NAV-CLOCK and NAV-EOE, encode and send `0x03` | planned |
 | 1.4 | C feeder: parse and send `0x03`; `--configure-ubx` enables the messages | planned |
-| 1.5 | Station integrity profile: fixed or mobile, maximum speed, surveyed position shared with `[[reception.station]]` | planned |
-| 1.6 | Position checks: `static_position`, `stationary_velocity`, `motion_bound`, `position_velocity` | done (checks); wiring in 1.10 |
-| 1.7 | Clock checks: `clock_bias_drift`, `clock_drift_rate` | done (checks); wiring in 1.10 |
-| 1.8 | Time-reference checks `utc_offset` and `pps_rtc_phase` | done (checks); wiring in 1.10 |
-| 1.9 | `receiver_spoofing` input, and the existing C/N₀ and AGC logic as checks | done (checks); wiring in 1.10 |
-| 1.10 | Per-station assessment in live state, served as `integrity` in the observers feed | planned |
+| 1.5 | Station integrity profile: fixed or mobile, maximum speed, surveyed position shared with `[[reception.station]]` | done |
+| 1.6 | Position checks: `static_position`, `stationary_velocity`, `motion_bound`, `position_velocity` | done (`88fceb6`) |
+| 1.7 | Clock checks: `clock_bias_drift`, `clock_drift_rate` | done (`88fceb6`) |
+| 1.8 | Time-reference checks `utc_offset` and `pps_rtc_phase` | done (`88fceb6`) |
+| 1.9 | `receiver_spoofing` input, and the existing C/N₀ and AGC logic as checks | done (`88fceb6`) |
+| 1.10 | Per-station assessment in live state, served as `integrity` in the private observers feed | done |
 | 1.11 | Domain-based spoofing fusion and the `station_assurance` event, with check parameters, versions and configuration hash | planned |
 
 ### Phase 2 — evidence, replay, durable baselines

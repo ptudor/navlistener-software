@@ -113,6 +113,16 @@ func frameForPersistence(f *ingest.RawFrame) *store.NavFrame {
 			}
 		}
 	}
+	if f.Solution != nil {
+		data, err := json.Marshal(f.Solution)
+		if err != nil {
+			panic(err)
+		}
+		saved.RF = &store.RFSample{Kind: "solution", Data: data}
+		if len(saved.Raw) == 0 {
+			saved.Raw = ingest.EncodeReceiverSolution(f.Solution)
+		}
+	}
 	return saved
 }
 

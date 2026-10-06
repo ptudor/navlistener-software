@@ -36,6 +36,7 @@ import (
 	"github.com/ptudor/navlistener/internal/detect"
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/ingest"
+	"github.com/ptudor/navlistener/internal/integrity"
 	"github.com/ptudor/navlistener/internal/metrics"
 	"github.com/ptudor/navlistener/internal/orbitref"
 	"github.com/ptudor/navlistener/internal/reception"
@@ -151,6 +152,14 @@ func run() int {
 	audienceRegistry.SetLogger(log)
 	audienceRegistry.Register(identity.Audience{Kind: identity.AudiencePublic}, publicLive, audience.PublicSources(cfg.Ingest))
 	audienceRegistry.Register(identity.Audience{Kind: identity.AudienceOperator, ID: cfg.Collector.InstanceID}, live, cfg.Ingest)
+	integrityCfg, err := state.NewIntegrityConfig(integrity.DefaultProfile(), cfg.IntegrityStations())
+	if err != nil {
+		log.Error("station integrity configuration invalid", "error", err)
+		return 1
+	}
+	publicEventsLive.SetIntegrity(integrityCfg)
+	audienceRegistry.SetIntegrity(integrityCfg) // live and publicLive are registered views
+	log.Info("station integrity checks configured", "installations", len(cfg.IntegrityStations()), "engine", integrity.EngineVersion)
 	policyEpochs := audience.NewPolicyEpochs(time.Now())
 	detector := detect.New(0)
 	publicDetector := detect.New(0)

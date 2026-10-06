@@ -405,7 +405,7 @@ CREATE TABLE IF NOT EXISTS rf_samples (
     publish_signals       TEXT[] NOT NULL DEFAULT '{}',
     policy_revision       TEXT   NOT NULL DEFAULT 'legacy-private-v1',
     sample_time TIMESTAMPTZ NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('reception', 'jamming', 'combined')),
+    kind TEXT NOT NULL CHECK (kind IN ('reception', 'jamming', 'combined', 'solution')),
     raw BYTEA NOT NULL,
     data JSONB NOT NULL,
     decoder_ver TEXT,
@@ -419,6 +419,21 @@ ALTER TABLE rf_samples ADD COLUMN IF NOT EXISTS manufacturer_authority_id TEXT;
 ALTER TABLE rf_samples ADD COLUMN IF NOT EXISTS operational_authority_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE rf_samples ADD COLUMN IF NOT EXISTS authority_evidence JSONB NOT NULL DEFAULT '{}';
 ALTER TABLE rf_samples ADD COLUMN IF NOT EXISTS commissioning_fingerprint TEXT NOT NULL DEFAULT '';
+-- Receiver solutions (telemetry 0x03) joined the kinds after the table first
+-- shipped. Widen an older inline constraint in place; this is a no-op once the
+-- constraint already admits 'solution'.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'rf_samples'::regclass AND conname = 'rf_samples_kind_check'
+          AND pg_get_constraintdef(oid) NOT LIKE '%solution%'
+    ) THEN
+        ALTER TABLE rf_samples DROP CONSTRAINT rf_samples_kind_check;
+        ALTER TABLE rf_samples ADD CONSTRAINT rf_samples_kind_check
+            CHECK (kind IN ('reception', 'jamming', 'combined', 'solution'));
+    END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS idx_rf_samples_source_time
     ON rf_samples (source_id, kind, sample_time DESC);
 CREATE INDEX IF NOT EXISTS idx_rf_samples_org_time

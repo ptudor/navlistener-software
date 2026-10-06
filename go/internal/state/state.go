@@ -612,6 +612,9 @@ type Store struct {
 	rfMu   sync.Mutex
 	rf     map[string]*rfStation
 	boards map[string]*boardStation // also guarded by rfMu
+	// Per-station integrity assurance (integrity.go), also guarded by rfMu.
+	integrity    map[string]*integrityStation
+	integrityCfg *IntegrityConfig // nil: default profile, no installations
 
 	// Per-station capability fingerprint (docs/CONSTELLATIONS.md §7, INTEGRITY §6): the set
 	// of (gnssId, sigId) each observer has actually produced nav frames on, so the integrity
@@ -634,6 +637,7 @@ func New(n int) *Store {
 		gloAlmanac:       make(map[int]gloAlmSlot),
 		rf:               make(map[string]*rfStation),
 		boards:           make(map[string]*boardStation),
+		integrity:        make(map[string]*integrityStation),
 		caps:             make(map[string]*capStation),
 	}
 	for i := range s.shards {
@@ -673,6 +677,10 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 			declared = append(declared, CapSignal{Gnss: capability.GnssID, Sig: capability.SigID})
 		}
 		s.SetDeclaredCapabilitiesFor(f.Source, declared)
+	}
+	if f.Solution != nil {
+		s.applySolution(f) // station-scoped, like RF below
+		return
 	}
 	if f.RF != nil {
 		// Station-scoped telemetry: the frame header carries no svId to

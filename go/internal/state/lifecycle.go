@@ -30,6 +30,9 @@ func (s *Store) Reset() {
 	s.gloNA = 0
 	s.rf = make(map[string]*rfStation)
 	s.boards = make(map[string]*boardStation)
+	// Integrity checks hold the same withdrawn receipts in their histories; the
+	// configuration (integrityCfg) is not authorization evidence and stays.
+	s.integrity = make(map[string]*integrityStation)
 	s.caps = make(map[string]*capStation)
 	// Declarations are authorization evidence too. They are relearned from
 	// post-change trusted receipts; retaining them could expose a withdrawn

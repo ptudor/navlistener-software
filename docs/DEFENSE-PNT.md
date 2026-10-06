@@ -55,7 +55,7 @@ decoding remain planned; listing a receiver message here does not imply a wired 
 | **UBX-SEC-SIG / SEC-SIGLOG** | per-signal spoofing-detection state, jamming-detection state (multi-tier) | `JammingStats` (0x05) | receiver's own spoofing verdict (an input, §3) |
 | **UBX-NAV-SAT / NAV-SIG** | per-SV C/N₀, elevation, azimuth, used-in-solution | `ReceptionData` (0x01) | C/N₀-vs-elevation plausibility (§3) |
 | **UBX-RXM-RAWX** | pseudorange, carrier phase, Doppler, lock-time, C/N₀ | `RFData` (0x02) | Doppler plausibility, measured iono (§3, `docs/MATH.md §7.4`) |
-| **UBX-NAV-PVT / TIMEUTC** | fix time, clock offset/drift, fix validity flags | `ObserverPosition`/`ObserverDetails` (0x03/0x04) | time-jump plausibility (§3) |
+| **UBX-NAV-PVT / NAV-CLOCK / NAV-STATUS** | position, velocity, UTC, clock bias/drift, fix and spoofing state | `ReceiverSolution` (0x03) | position, clock and time-reference integrity checks |
 
 **Software task P-Jam-1 (done for MON-RF/MON-HW/NAV-SAT):** the `JammingStats` (0x05) record
 carries the full MON-RF per-band block (per RF path: AGC, noiseLevel, cwSuppression/jamInd,

@@ -1217,6 +1217,17 @@ func telemetryToFrame(rec wire.RawRecord, source string, recv, local time.Time) 
 			return nil
 		}
 		rf.Sats = sats
+	case TelemReceiverSolution:
+		if rec.GnssID != 0 || rec.SvID != 0 || rec.SigID != 0 || rec.FreqID != 0 {
+			return nil
+		}
+		sol, err := decodeReceiverSolution(rec.Raw)
+		if err != nil {
+			return nil
+		}
+		stamped := rec.RecvUnixNs > 0 && receiveTimestampPlausible(time.Unix(0, rec.RecvUnixNs), local)
+		return &RawFrame{Recv: recv, RecvLocal: local, Source: source, MsgType: TelemReceiverSolution,
+			Bytes: append([]byte(nil), rec.Raw...), Solution: sol, RecvStamped: stamped}
 	default:
 		return nil // a telemetry type we don't transport yet
 	}

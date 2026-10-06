@@ -102,6 +102,7 @@ func (s *Store) applyBoard(f *ingest.RawFrame) {
 		old.snapshot = nil
 	}
 	old.last = sample
+	s.integrityBoard(f, sample.ReceivedAt)
 	if f.Details.Reception != nil {
 		copy := sample
 		old.reception = &copy
@@ -178,7 +179,9 @@ func (s *Store) applyBoard(f *ingest.RawFrame) {
 }
 
 // FeedStationBoards returns private board context. It does not influence GNSS
-// liveness, satellite counts, constellation confidence, or detector thresholds.
+// liveness, satellite counts, constellation confidence, or detector thresholds;
+// only its pulse timing and receiver spoofing state feed the station integrity
+// checks (integrity.go).
 // These are bounded live snapshots, with the preceding report retained for the
 // latest receiver interference transition; they are not a durable archive.
 func (s *Store) FeedStationBoards(now time.Time) map[string]StationBoard {

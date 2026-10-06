@@ -265,3 +265,18 @@ ack_interval = "1s"
 # power_min_deviation_dbhz = 6
 # power_mad_multiplier = 4
 # power_min_support_days = 3
+
+# Optional station installations for the integrity checks
+# (docs/proposals/STATION-ASSURANCE.md). Every station is checked without one; an
+# installation adds the static-position and stationary-velocity checks (fixed) or the
+# motion bound (mobile). A [[reception.station]] already implies a fixed installation at
+# its position, so list such an observer here only to restate it.
+# [[integrity.station]]
+# observer = "mast-observer"
+# mode = "fixed"
+# position = [35.0, 140.0, 50.0] # replace: latitude degrees, longitude degrees, height m
+#
+# [[integrity.station]]
+# observer = "vehicle-observer"
+# mode = "mobile"
+# max_speed_mps = 35

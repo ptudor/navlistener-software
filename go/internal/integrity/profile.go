@@ -254,7 +254,7 @@ func (s StationProfile) Validate() error {
 		p := s.Position
 		if !finite(p.LatDeg) || !finite(p.LonDeg) || !finite(p.HeightM) ||
 			p.LatDeg < -90 || p.LatDeg > 90 || p.LonDeg < -180 || p.LonDeg > 180 ||
-			p.HeightM < -1000 || p.HeightM > 10000 {
+			p.HeightM < -1000 || p.HeightM > 20000 {
 			return fmt.Errorf("integrity: surveyed position out of range: %+v", *p)
 		}
 		if s.Mode == ModeMobile {

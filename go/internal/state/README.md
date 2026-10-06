@@ -15,6 +15,7 @@ stream of bits into an opinion about whether a satellite is behaving.
 | `feed.go` | The `Feed*` read models — the JSON shapes `serve` publishes. |
 | `capability.go` | The empirical capability fingerprint and `CapabilityDiff`. |
 | `rf.go` | PNT-defense Tier-0: RF telemetry → per-station jamming and spoof-gate metrics. |
+| `integrity.go` | Per-station integrity checks: receiver solutions, board pulse timing, NAV-SAT fits and MON-RF reports feed `internal/integrity`; `FeedStationIntegrity` serves the assessments. |
 | `iono.go` | The measured dual-frequency ionosphere per receiver. |
 | `snapshot.go` | The compact `/debug/state` diagnostic view. |
 | `*_test.go` | 27 test files — per-constellation folding, disco computation, health, expiry, capability, RF, and the regression guards. |

@@ -103,6 +103,7 @@ func (s *Store) applyRF(f *ingest.RawFrame) {
 		st.haveCn0 = st.cn0NumSats >= cn0MinSats
 		st.cn0LastSeen = recv
 	}
+	s.integrityRF(st, f, recv)
 }
 
 // cn0ElevationResidualByConstellation keeps the single-constellation transmitter
