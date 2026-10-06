@@ -59,6 +59,16 @@ type integrityStation struct {
 	lastStatus time.Time
 }
 
+// StationConfigHash is the configuration hash a station's assessments carry under
+// this configuration (integrity.ConfigHash), for tools that report it.
+func (c *IntegrityConfig) StationConfigHash(id string) (string, error) {
+	eval, err := integrity.NewStation(c.profile, c.stations[id])
+	if err != nil {
+		return "", err
+	}
+	return eval.ConfigHash(), nil
+}
+
 // SetIntegrity installs an integrity configuration. Per-station state evaluated
 // under any previous configuration is discarded. A store with no configuration
 // evaluates every station with the default profile and no installation profile.

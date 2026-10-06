@@ -237,9 +237,9 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 
 | # | Item | Status |
 |---|---|---|
-| 2.1 | Evidence bundle written when a station event is confirmed: a bounded window of stored inputs, check results, baselines, versions and configuration, exempt from raw retention | done; the check results, versions and configuration hash travel in the event's parameters |
-| 2.2 | Private single-event API returning the event with its evidence | done (`/gnss/api/v2/event-evidence`) |
-| 2.3 | Replay command: run stored station inputs or a bundle through the checks with a pinned or current profile, and compare with stored events | planned |
+| 2.1 | Evidence bundle written when a station event is confirmed: a bounded window of stored inputs, check results, baselines, versions and configuration, exempt from raw retention | done (`ca1b111`, receipt clocks `8416a4a`); the check results, versions and configuration hash travel in the event's parameters |
+| 2.2 | Private single-event API returning the event with its evidence | done (`ca1b111`, `/gnss/api/v2/event-evidence`) |
+| 2.3 | Replay command: run stored station inputs or a bundle through the checks with a pinned or current profile, and compare with stored events | done (`go/cmd/stationreplay`, current profile; the timeline names its configuration hash) |
 | 2.4 | Durable AGC baseline: longer decimated window, warm-up reported as unavailable, bounded drift rate, checkpoint and restore like the power model | planned |
 | 2.5 | Fixtures for normal sky, receiver and clock resets, slow drift, position and time steps, uniform C/N₀, AGC compression, loss and reacquisition | planned |
 

@@ -1,11 +1,13 @@
 # Go build artifacts
 /go/navlistener
 /go/gloreplay
+/go/stationreplay
 # `go build` inside a command directory leaves its binary beside the source.
 /go/cmd/*/navlistener
 /go/cmd/*/gloreplay
 /go/cmd/*/mfgattest
 /go/cmd/*/navcontrol
+/go/cmd/*/stationreplay
 /go/build/
 /go/dist/
 *.test

@@ -12,10 +12,13 @@ behind the Integrity Constellation Map. Feeders forward raw frames; decoding and
 | Path | What it is |
 |---|---|
 | `cmd/navlistener/` | `package main` — flags, startup ordering, wiring, graceful shutdown. |
+| `cmd/stationreplay/` | Replays a station's stored inputs, or one event's captured evidence, through the station integrity checks and detectors; can compare the result with the stored events. |
+| `cmd/gloreplay/` | Replays stored or captured GLONASS frames to measure changeover discontinuities. |
 | `internal/config/` | TOML config loading and validation. |
 | `internal/wire/` | GNF1 — the feeder↔collector framing. |
 | `internal/ingest/` | Dial connectors (UBX/SBF/RTCM/NTRIP) and the authenticated GNF1 push server. |
 | `internal/state/` | Live per-SV state: ephemeris store, propagation, the integrity *compute*. |
+| `internal/integrity/` | Station assurance checks, their filter and recovery hold, and fusion. |
 | `internal/commissioning/` | Manufacturer commissioning records, session proofs and the signed registry: what the push server verifies about hardware. |
 | `internal/detect/` | The integrity *detect* stage: debounced classifiers → typed events. |
 | `internal/store/` | The TimescaleDB historian: batched raw frames, events, feed snapshots. |
