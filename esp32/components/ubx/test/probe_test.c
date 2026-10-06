@@ -23,7 +23,8 @@ int main(void)
     // Only the ZED-X20P adds antenna short detection, as the last key.
     const uint32_t *keys, *x20_keys;
     size_t count = ubx_ram_keys("NEO-M9N", &keys), x20_count = ubx_ram_keys("ZED-X20P", &x20_keys);
-    assert(count == 8 && keys[0] == 0x10740001 && keys[1] == 0x20910232 && keys[7] == 0x20910346);
+    assert(count == 10 && keys[0] == 0x10740001 && keys[1] == 0x20910232 && keys[7] == 0x20910346);
+    assert(keys[8] == 0x20910066 && keys[9] == 0x20910160); // NAV-CLOCK, NAV-EOE on UART1
     assert(x20_count == count + 1 && x20_keys[count] == 0x10a3002f && !memcmp(keys, x20_keys, count * sizeof *keys));
     assert(ubx_ram_keys("MAX-M10S", &keys) == count && ubx_ram_keys(NULL, &keys) == count);
     assert(ubx_ram_keys("ZED-X20", &keys) == count && ubx_ram_keys("ZED-X20P ", &keys) == count);

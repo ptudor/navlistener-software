@@ -59,7 +59,10 @@ solution record. It is receiver-neutral: a u-blox connector fills it from
 NAV-PVT, NAV-CLOCK and NAV-STATUS, and another receiver family can fill the same
 fields. One record is sent per navigation epoch. The sender assembles the blocks
 that share an epoch time and flushes the record when the epoch time changes or on
-NAV-EOE.
+NAV-EOE, drops a repeated block of an epoch it already sent (a polled message), and
+stamps the record with the arrival time of the epoch's first block. The shared C
+implementation is `common/receiver_solution.h`; `testdata/receiver_solution_v1.txt`
+is the golden case the Go codec, the ESP32 parser and the C feeder must reproduce.
 
 Body version 1, big-endian like the other telemetry bodies:
 
@@ -219,7 +222,7 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 |---|---|---|
 | 1.1 | Go codec for telemetry `0x03`, push decoding, `rf_samples` kind `solution` | done (`d5857fd`) |
 | 1.2 | Collector dial-mode UBX parsing of NAV-PVT, NAV-CLOCK and NAV-STATUS, with epoch assembly | done (`d5857fd`) |
-| 1.3 | ESP32: parse NAV-PVT fully, enable NAV-CLOCK and NAV-EOE, encode and send `0x03` | planned |
+| 1.3 | ESP32: parse NAV-PVT fully, enable NAV-CLOCK and NAV-EOE, encode and send `0x03` | done; awaiting bench acknowledgement of the new keys |
 | 1.4 | C feeder: parse and send `0x03`; `--configure-ubx` enables the messages | planned |
 | 1.5 | Station integrity profile: fixed or mobile, maximum speed, surveyed position shared with `[[reception.station]]` | done (`d5857fd`) |
 | 1.6 | Position checks: `static_position`, `stationary_velocity`, `motion_bound`, `position_velocity` | done (`88fceb6`) |
@@ -227,7 +230,7 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 | 1.8 | Time-reference checks `utc_offset` and `pps_rtc_phase` | done (`88fceb6`) |
 | 1.9 | `receiver_spoofing` input, and the existing C/N₀ and AGC logic as checks | done (`88fceb6`) |
 | 1.10 | Per-station assessment in live state, served as `integrity` in the private observers feed | done (`d5857fd`) |
-| 1.11 | Domain-based spoofing fusion and the `station_assurance` event, with check parameters, versions and configuration hash | done |
+| 1.11 | Domain-based spoofing fusion and the `station_assurance` event, with check parameters, versions and configuration hash | done (`10b5cf8`) |
 | 1.12 | Integrity Station app: show the assessment and handle `station_assurance` | planned |
 
 ### Phase 2 — evidence, replay, durable baselines

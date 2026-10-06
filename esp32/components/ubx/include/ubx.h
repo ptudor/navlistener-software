@@ -8,6 +8,8 @@
 //   UBX-MON-RF     -> a JammingStats telemetry record (0x05)
 //   UBX-MON-HW     -> a JammingStats telemetry record (0x05, single band)
 //   UBX-NAV-SAT    -> a ReceptionData telemetry record (0x01)
+//   UBX-NAV-PVT, NAV-CLOCK, NAV-STATUS (one epoch, joined by time of week and completed by
+//                     the next epoch or NAV-EOE) -> a ReceiverSolution record (0x03)
 // The edge does NOT decode nav content — it frames and forwards (docs/DESIGN.md §1).
 //
 // Push model: feed bytes as they arrive off the UART; complete messages fire the callback.
@@ -22,6 +24,7 @@
 #include <stdint.h>
 
 #include "gnf1.h"
+#include "../../../../common/receiver_solution.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -58,6 +61,7 @@ typedef struct {
     uint8_t exp_a, exp_b;       // received checksum
     uint8_t payload[UBX_MAX_PAYLOAD];
     uint8_t scratch[GNF1_RECORD_MAX]; // record assembly (emit target)
+    rs_assembler_t solution;          // the receiver-solution epoch being joined
 
     // counters (for the display/telemetry) — _Atomic : written by rx_task's
     // parser and read by ui_task's dashboard, so plain uint32_t cross-task access is a
@@ -69,7 +73,8 @@ typedef struct {
     _Atomic uint32_t bytes;        // UART bytes, even when no supported records arrive
     _Atomic uint32_t frames_valid; // all checksum-valid UBX messages
     _Atomic uint32_t frames_nav;   // SFRBX records emitted
-    _Atomic uint32_t frames_telem; // MON-RF/MON-HW/NAV-SAT records emitted
+    _Atomic uint32_t frames_telem; // MON-RF/MON-HW/NAV-SAT/receiver-solution records emitted
+    _Atomic uint32_t solution_rejected; // NAV-PVT/CLOCK/STATUS/EOE the record cannot carry
     _Atomic uint32_t bad_checksum; // messages dropped on checksum
     _Atomic uint32_t oversize;     // messages skipped for exceeding UBX_MAX_PAYLOAD
 } ubx_parser_t;

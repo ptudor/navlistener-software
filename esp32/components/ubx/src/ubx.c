@@ -152,6 +152,21 @@ static void emit_navsat(ubx_parser_t *p, const uint8_t *payload, uint16_t len)
     atomic_fetch_add_explicit(&p->frames_telem, 1, memory_order_relaxed); /* regression fix */
 }
 
+// emit_solution: one completed epoch -> ReceiverSolution (0x03). The record carries the
+// arrival time of the epoch's first message, not its completion, which without NAV-EOE
+// is the next epoch.
+static void emit_solution(ubx_parser_t *p, const rs_epoch_t *epoch)
+{
+    uint8_t *rec = p->scratch;
+    size_t body_len = rs_encode(epoch, rec + GNF1_RECORD_HDR, GNF1_MAX_RAW);
+    if (!body_len) return;
+    gnf1_be64(rec, epoch->arrived_ns);
+    rec[8] = rec[9] = rec[10] = rec[11] = 0;
+    rec[12] = GNF1_T_SOLUTION;
+    p->emit(rec, GNF1_RECORD_HDR + body_len, p->ctx);
+    atomic_fetch_add_explicit(&p->frames_telem, 1, memory_order_relaxed);
+}
+
 // dispatch routes a checksum-valid message to its emitter.
 static void dispatch(ubx_parser_t *p)
 {
@@ -161,6 +176,13 @@ static void dispatch(ubx_parser_t *p)
     else if (p->cls == UBX_CLASS_MON && p->id == UBX_ID_MONRF) emit_monrf(p, p->payload, p->len);
     else if (p->cls == UBX_CLASS_MON && p->id == UBX_ID_MONHW) emit_monhw(p, p->payload, p->len);
     else if (p->cls == UBX_CLASS_NAV && p->id == UBX_ID_NAVSAT) emit_navsat(p, p->payload, p->len);
+    else if (p->cls == UBX_CLASS_NAV) {
+        rs_epoch_t done;
+        bool bad;
+        if (rs_ubx_feed(&p->solution, p->cls, p->id, p->payload, p->len, p->now(), &done, &bad))
+            emit_solution(p, &done);
+        if (bad) atomic_fetch_add_explicit(&p->solution_rejected, 1, memory_order_relaxed);
+    }
 }
 
 // ck accumulates one byte into the running Fletcher-8 checksum.

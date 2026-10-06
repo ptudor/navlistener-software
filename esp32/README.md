@@ -150,8 +150,14 @@ NMEA locks the baud; 15 seconds without valid traffic restarts probing.
 `NVF_RX_CONFIGURE` configures only the receiver the manifest lists, once a MON-VER
 extension names it: `MOD=NEO-M9N` on the NEO, `MOD=ZED-X20P` on the ZED/X20 and
 `MOD=MAX-M10S` on the MAX. With no receiver listed, none is configured. It switches to `NVF_RX_BAUD`, then requests UBX output,
-SFRBX, MON-RF, NAV-SAT, NAV-SIG, NAV-PVT, NAV-STATUS and TIM-TP through RAM-only
-CFG-VALSET. Firmware logs ACK/NAK and bounded timeouts for each message setting.
+SFRBX, MON-RF, NAV-SAT, NAV-PVT, NAV-STATUS, TIM-TP, NAV-SIG, NAV-CLOCK and NAV-EOE through
+RAM-only CFG-VALSET, one key per request so a receiver that rejects one still gets the rest.
+Firmware logs ACK/NAK and bounded timeouts for each message setting.
+NAV-PVT, NAV-CLOCK and NAV-STATUS of one navigation epoch are joined into the
+receiver-solution telemetry record (`0x03`, [contract](../docs/proposals/STATION-ASSURANCE.md#2-receiver-solution-telemetry-gnf1-type-0x03))
+that feeds the collector's station integrity checks. NAV-EOE completes each epoch at
+once; without it an epoch completes when the next begins. Either way the record carries
+the arrival time of the epoch's first message.
 On the ZED-X20P it also sets `CFG-HW-ANT_CFG_SHORTDET`, so the receiver reads the
 board's antenna-switch fault on `ANT_SHORT_N` (pin 6, default active-low polarity)
 and MON-RF reports SHORT, which the collector raises as `antenna_fault`.
@@ -178,7 +184,9 @@ initial communication at 38400 baud and operation at 460800 after RAM
 configuration. All five message/protocol settings returned ACK. Satellite
 reception and actual SFRBX output still await the RF connector and antenna.
 The ZED-X20P and MAX-M10S paths have not yet run on hardware; a rising SFRBX
-counter on each is their acceptance test.
+counter on each is their acceptance test. The NAV-CLOCK and NAV-EOE keys were added
+after that check and have not yet been acknowledged on any board; the receiver-solution
+records reaching the collector are their acceptance test.
 
 ### Custom-board status LEDs
 

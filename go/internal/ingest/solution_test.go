@@ -255,3 +255,37 @@ func FuzzReceiverSolution(f *testing.F) {
 		}
 	})
 }
+
+// TestScanUBXDropsRepeatedEpoch: a polled NAV-PVT for an epoch already completed is
+// not sent twice.
+func TestScanUBXDropsRepeatedEpoch(t *testing.T) {
+	var stream []byte
+	stream = append(stream, ubxMsg(ubxClassNAV, ubxIDNAVPVT, ubxPVT(1000, 0, 0))...)
+	stream = append(stream, ubxMsg(ubxClassNAV, ubxIDNAVEOE, ubxEOE(1000))...)
+	stream = append(stream, ubxMsg(ubxClassNAV, ubxIDNAVPVT, ubxPVT(1000, 0, 0))...) // polled repeat
+	stream = append(stream, ubxMsg(ubxClassNAV, ubxIDNAVPVT, ubxPVT(2000, 0, 0))...)
+	stream = append(stream, ubxMsg(ubxClassNAV, ubxIDNAVEOE, ubxEOE(2000))...)
+	frames, errs := scanSolutions(t, stream)
+	if len(errs) != 0 || len(frames) != 2 || frames[0].Solution.tow() != 1000 || frames[1].Solution.tow() != 2000 {
+		t.Fatalf("frames %d errs %v", len(frames), errs)
+	}
+}
+
+// TestScanUBXStampsFirstBlockArrival: without NAV-EOE an epoch completes only when the
+// next begins, so its frame must carry the arrival time of its first block.
+func TestScanUBXStampsFirstBlockArrival(t *testing.T) {
+	var stream []byte
+	stream = append(stream, ubxMsg(ubxClassNAV, ubxIDNAVPVT, ubxPVT(1000, 0, 0))...)
+	stream = append(stream, ubxMsg(ubxClassNAV, ubxIDNAVCLOCK, ubxClock(1000, 0, 0))...)
+	stream = append(stream, ubxMsg(ubxClassNAV, ubxIDNAVPVT, ubxPVT(2000, 0, 0))...)
+	clock := time.Unix(1_700_000_000, 0)
+	tick := func() time.Time { clock = clock.Add(400 * time.Millisecond); return clock }
+	var frames []*RawFrame
+	_ = scanUBX(bytes.NewReader(stream), "stn", tick, func(f *RawFrame) { frames = append(frames, f) }, func(string) {})
+	if len(frames) != 1 {
+		t.Fatalf("got %d frames", len(frames))
+	}
+	if want := time.Unix(1_700_000_000, 0).Add(400 * time.Millisecond); !frames[0].Recv.Equal(want) {
+		t.Fatalf("epoch stamped %v, want its first block's arrival %v", frames[0].Recv, want)
+	}
+}

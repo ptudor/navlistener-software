@@ -35,9 +35,9 @@ const (
 func scanUBX(r io.Reader, source string, now func() time.Time, emit func(*RawFrame), onErr func(kind string)) error {
 	br := bufio.NewReaderSize(r, 1<<16)
 	var epoch solutionAssembler
-	emitSolution := func(s *ReceiverSolution) {
-		if s != nil {
-			emit(solutionFrame(s, source, now()))
+	emitSolution := func(e *completedEpoch) {
+		if e != nil {
+			emit(solutionFrame(e, source))
 		}
 	}
 	for {
@@ -124,19 +124,19 @@ func scanUBX(r io.Reader, source string, now func() time.Time, emit func(*RawFra
 			}
 		case cls == ubxClassNAV && id == ubxIDNAVPVT:
 			if p := parseNAVPVT(body); p != nil {
-				emitSolution(epoch.add(p.TOWMS, func(s *ReceiverSolution) { s.PVT = p }))
+				emitSolution(epoch.add(p.TOWMS, now(), func(s *ReceiverSolution) { s.PVT = p }))
 			} else {
 				onErr("ubx_navpvt")
 			}
 		case cls == ubxClassNAV && id == ubxIDNAVCLOCK:
 			if c := parseNAVCLOCK(body); c != nil {
-				emitSolution(epoch.add(c.TOWMS, func(s *ReceiverSolution) { s.Clock = c }))
+				emitSolution(epoch.add(c.TOWMS, now(), func(s *ReceiverSolution) { s.Clock = c }))
 			} else {
 				onErr("ubx_navclock")
 			}
 		case cls == ubxClassNAV && id == ubxIDNAVSTATUS:
 			if st := parseNAVSTATUS(body); st != nil {
-				emitSolution(epoch.add(st.TOWMS, func(s *ReceiverSolution) { s.Status = st }))
+				emitSolution(epoch.add(st.TOWMS, now(), func(s *ReceiverSolution) { s.Status = st }))
 			} else {
 				onErr("ubx_navstatus")
 			}

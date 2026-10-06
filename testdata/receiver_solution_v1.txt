@@ -1,0 +1,10 @@
+# Telemetry 0x03 (receiver solution) golden case, body version 1
+# (docs/proposals/STATION-ASSURANCE.md §2). The three UBX payloads are one
+# epoch, little-endian as the receiver sends them, with bits the record drops
+# set (validMag, psmState, headVehValid, correction age). body is the record
+# body every implementation must produce from them. Regenerate with
+#   go test ./internal/ingest -run TestReceiverSolutionGolden -update
+nav-pvt 00709914ea070a05150e1e0f190000002efbffff032fe011d8713bb7f8204e16d4300000c8af0000dc050000c40900000c000000f9ffffff0300000000000000000000005a0000000000000087001f00000000000000000000000000
+nav-clock 0070991447b5f9ff57000000190000009a010000
+nav-status 00709914030d0112606d000080ee3600
+body 01071499700007ea0a05150e1e0700000019fffffb2e03031100b73b71d8164e20f8000030d4000005dc000009c40000000cfffffff9000000030000005a0087000114997000fff9b54700000057000000190000019a14997000030d010200006d600036ee80

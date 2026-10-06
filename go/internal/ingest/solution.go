@@ -331,34 +331,56 @@ func parseNAVSTATUS(p []byte) *SolutionStatus {
 
 // solutionAssembler joins the NAV-PVT, NAV-CLOCK and NAV-STATUS blocks of one
 // navigation epoch into a single record. An epoch is complete when a block from a
-// different epoch arrives or the receiver sends NAV-EOE for it.
+// different epoch arrives or the receiver sends NAV-EOE for it. It matches
+// common/receiver_solution.h, the edge implementation.
 type solutionAssembler struct {
 	pending *ReceiverSolution
+	// arrived is when the pending epoch's first block arrived. The record is
+	// stamped with it, not the completion time, which without NAV-EOE is the
+	// next epoch.
+	arrived time.Time
+	// lastDone is the last completed epoch; a later block with its time of week
+	// (a polled repeat) is dropped rather than sent twice.
+	lastDone uint32
+	haveDone bool
 }
 
-// add merges one block, returning the previous epoch if this block starts a new one.
-func (a *solutionAssembler) add(tow uint32, merge func(*ReceiverSolution)) *ReceiverSolution {
-	var done *ReceiverSolution
+// completedEpoch is an assembled epoch with the arrival time of its first block.
+type completedEpoch struct {
+	solution *ReceiverSolution
+	arrived  time.Time
+}
+
+// add merges one block that arrived at now, returning the previous epoch if this
+// block starts a new one.
+func (a *solutionAssembler) add(tow uint32, now time.Time, merge func(*ReceiverSolution)) *completedEpoch {
+	if a.haveDone && tow == a.lastDone {
+		return nil
+	}
+	var done *completedEpoch
 	if a.pending != nil && a.pending.tow() != tow {
-		done, a.pending = a.pending, nil
+		done = &completedEpoch{a.pending, a.arrived}
+		a.pending = nil
+		a.lastDone, a.haveDone = done.solution.tow(), true
 	}
 	if a.pending == nil {
-		a.pending = &ReceiverSolution{}
+		a.pending, a.arrived = &ReceiverSolution{}, now
 	}
 	merge(a.pending)
 	return done
 }
 
 // endOfEpoch completes the pending epoch if it is the one that ended.
-func (a *solutionAssembler) endOfEpoch(tow uint32) *ReceiverSolution {
+func (a *solutionAssembler) endOfEpoch(tow uint32) *completedEpoch {
 	if a.pending == nil || a.pending.tow() != tow {
 		return nil
 	}
-	done := a.pending
+	done := &completedEpoch{a.pending, a.arrived}
 	a.pending = nil
+	a.lastDone, a.haveDone = tow, true
 	return done
 }
 
-func solutionFrame(s *ReceiverSolution, source string, recv time.Time) *RawFrame {
-	return &RawFrame{Source: source, Recv: recv, MsgType: TelemReceiverSolution, Solution: s}
+func solutionFrame(e *completedEpoch, source string) *RawFrame {
+	return &RawFrame{Source: source, Recv: e.arrived, MsgType: TelemReceiverSolution, Solution: e.solution}
 }

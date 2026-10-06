@@ -415,9 +415,9 @@ menu "navfeeder-esp"
         help
             After MON-VER names the receiver the manifest lists (NEO-M9N,
             ZED-X20P or MAX-M10S), select the configured baud and request UBX output,
-            SFRBX, MON-RF, NAV-SAT, NAV-PVT, NAV-STATUS and TIM-TP via
-            CFG-VALSET. Check ACK/NAK for each setting. Do not write receiver
-            flash or battery-backed config.
+            SFRBX, MON-RF, NAV-SAT, NAV-PVT, NAV-STATUS, TIM-TP, NAV-SIG, NAV-CLOCK
+            and NAV-EOE via CFG-VALSET, one key per request. Check ACK/NAK for each
+            setting. Do not write receiver flash or battery-backed config.
 
     config NVF_RX_BAUD
         int "Receiver UART baud"
