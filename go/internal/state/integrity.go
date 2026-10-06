@@ -160,14 +160,13 @@ func (s *Store) integrityRF(st *rfStation, f *ingest.RawFrame, recv time.Time) {
 		return
 	}
 	if len(f.RF.Bands) > 0 {
-		sample := integrity.RFSample{Received: recv}
+		sample := integrity.RFSample{Received: recv, Cn0Drop: s.cn0DropCorroboration(st, recv)}
 		for _, b := range st.bands {
 			if recv.Sub(b.lastSeen) > rfStaleAfter {
 				continue
 			}
 			band := integrity.RFBand{Block: b.block, CWSuppress: b.cwSuppress, JamState: b.jamState, AntStatus: b.antStatus}
-			if b.haveBaseline {
-				dep := b.baseline - float64(b.agc)
+			if dep, ok := b.departure(); ok {
 				band.Departure = &dep
 			}
 			sample.Bands = append(sample.Bands, band)
@@ -181,7 +180,20 @@ func (s *Store) integrityRF(st *rfStation, f *ingest.RawFrame, recv time.Time) {
 			fit.PerConstellation[id] = integrity.Cn0Group{Mean: g.Mean, ResidVar: g.Resid, NumSats: g.NumSats}
 		}
 		is.eval.ApplyCn0(fit)
+		snap := integrity.Cn0Snapshot{Received: recv, Signals: make([]integrity.Cn0Signal, len(f.RF.Sats))}
+		for i, sat := range f.RF.Sats {
+			snap.Signals[i] = integrity.Cn0Signal{GnssID: sat.GnssID, SvID: sat.SvID, Cn0: sat.Cn0, Used: sat.Used}
+		}
+		is.eval.ApplyCn0Snapshot(snap)
+		if served, _ := is.eval.Served(integrity.CheckCn0Drop, recv); degradedState(served) {
+			st.cn0DropAt = recv
+		}
 	}
+}
+
+// degradedState reports an inconsistent or unassured served state.
+func degradedState(s integrity.State) bool {
+	return s == integrity.Inconsistent || s == integrity.Unassured
 }
 
 // integrityBoard folds an accepted board report: its pulse timing, and the

@@ -73,7 +73,9 @@ family seeds its first observation silently, whatever it is.
 
 **Station RF** (`TickStations`): `jamming_detected`, `antenna_fault`, and `station_rf_degraded`.
 Each raises at its warning or critical severity and clears at info, like the other integrity
-alarms. Station liveness comes separately from `TickStationLiveness` → `station_offline`.
+alarms. A moderate AGC departure is jamming only when a CW tone, the receiver's jam flag or a
+simultaneous C/N₀ drop (`StationRF.Cn0Drop`, from the integrity `cn0_drop` check) corroborates
+it; alone, each is a degradation. Station liveness comes separately from `TickStationLiveness` → `station_offline`.
 
 **Station integrity** (`TickIntegrity`): `spoofing_suspected` and `station_assurance`, from each
 station's assessment. Both carry the whole assessment as evidence.

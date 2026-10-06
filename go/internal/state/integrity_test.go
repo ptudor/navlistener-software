@@ -201,3 +201,68 @@ func TestSolutionFrameNotCountedAsNavigation(t *testing.T) {
 		t.Fatalf("solution frame created %d satellite entries", n)
 	}
 }
+
+// navSatFrame is one NAV-SAT epoch of eight used GPS signals, lowered by dropDB.
+func navSatFrame(source string, at time.Time, dropDB int) *ingest.RawFrame {
+	sats := make([]ingest.SatCN0, 8)
+	for i := range sats {
+		sats[i] = ingest.SatCN0{GnssID: 0, SvID: i + 1, Cn0: 36 + i - dropDB, ElevDeg: 20 + 8*i, Used: true}
+	}
+	return &ingest.RawFrame{Source: source, Recv: at, RF: &ingest.RawRF{Sats: sats}}
+}
+
+// TestCn0DropCorroborationLastsThroughTheDeparture: a simultaneous C/N₀ drop at the
+// onset of an AGC departure keeps corroborating it after the drop itself has passed,
+// until the departure ends; a drop that passed before a departure began does not.
+func TestCn0DropCorroborationLastsThroughTheDeparture(t *testing.T) {
+	const id = "board-0001-aa"
+	s := New(1)
+	cfg, err := NewIntegrityConfig(integrity.DefaultProfile(), map[string]integrity.StationProfile{id: fixedSite()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetIntegrity(cfg)
+	at := integrityT0
+	step := func(agc, dropDB int) {
+		s.Apply(rfSample(id, 0, agc, 0, 2, at))
+		s.Apply(navSatFrame(id, at, dropDB))
+		at = at.Add(time.Second)
+	}
+	for i := 0; i < 11*60; i++ { // the AGC baseline is established
+		step(4000+i%5, 0)
+	}
+	if s.FeedStationRF(at)[id].Cn0Drop {
+		t.Fatal("quiet station reports a C/N0 drop")
+	}
+	for i := 0; i < 10; i++ { // the jammer comes on: AGC down, every signal 5 dB down
+		step(3000, 5)
+	}
+	if !s.FeedStationRF(at)[id].Cn0Drop {
+		t.Fatal("onset drop not reported")
+	}
+	for i := 0; i < 15*60; i++ { // it stays on; C/N0 holds at the lower level
+		step(3000, 5)
+	}
+	if served, _ := s.integrity[id].eval.Served(integrity.CheckCn0Drop, at); served != integrity.Assured {
+		t.Fatalf("cn0_drop still served %s fifteen minutes after the step", served)
+	}
+	rf := s.FeedStationRF(at)[id]
+	if !rf.Cn0Drop {
+		t.Fatal("corroboration lapsed while the departure continues")
+	}
+	if r := integrityResult(t, s.FeedStationIntegrity(at)[id], integrity.CheckAGC); r.State != integrity.Unassured || r.Metrics["cn0_drop"] != 1 {
+		t.Fatalf("agc = %s %v, want unassured by the corroborated departure", r.State, r.Metrics)
+	}
+	for i := 0; i < 30; i++ { // the jammer goes away
+		step(4000, 5)
+	}
+	if s.FeedStationRF(at)[id].Cn0Drop {
+		t.Fatal("corroboration outlived the departure")
+	}
+	for i := 0; i < 15*60; i++ { // a later departure without a drop of its own
+		step(3000, 5)
+	}
+	if s.FeedStationRF(at)[id].Cn0Drop {
+		t.Fatal("an earlier drop corroborated a later departure")
+	}
+}

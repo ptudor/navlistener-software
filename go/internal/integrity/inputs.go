@@ -135,6 +135,21 @@ type Cn0Fit struct {
 	PerConstellation map[int]Cn0Group
 }
 
+// Cn0Snapshot is one NAV-SAT epoch's per-satellite C/N₀. The station keeps it for
+// the drop comparison, so Signals must not be modified after it is applied.
+type Cn0Snapshot struct {
+	Received time.Time
+	Signals  []Cn0Signal
+}
+
+// Cn0Signal is one satellite's C/N₀ in dB-Hz, zero when it is not tracked, and
+// whether the receiver used it in its solution.
+type Cn0Signal struct {
+	GnssID, SvID int
+	Cn0          int
+	Used         bool
+}
+
 // Cn0Group is one constellation's fit.
 type Cn0Group struct {
 	Mean, ResidVar float64
@@ -152,8 +167,11 @@ type RFBand struct {
 	AntStatus  int
 }
 
-// RFSample is one front-end report.
+// RFSample is one front-end report. Cn0Drop reports a simultaneous C/N₀ drop that
+// accompanies the current front-end evidence: one the cn0_drop check serves now, or
+// one it served during the current AGC departure (the caller tracks the departure).
 type RFSample struct {
 	Received time.Time
 	Bands    []RFBand
+	Cn0Drop  bool
 }

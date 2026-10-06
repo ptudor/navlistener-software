@@ -32,7 +32,7 @@ func TestStationCheckOrder(t *testing.T) {
 		names = append(names, r.Check)
 	}
 	want := []string{CheckStaticPosition, CheckStationaryVelocity, CheckPositionVelocity, CheckClockBiasDrift, CheckClockDriftRate,
-		CheckUTCOffset, CheckPPSRTCPhase, CheckCn0Uniformity, CheckAGC, CheckReceiverSpoofing}
+		CheckUTCOffset, CheckPPSRTCPhase, CheckCn0Uniformity, CheckCn0Drop, CheckAGC, CheckReceiverSpoofing}
 	if !slices.Equal(names, want) {
 		t.Fatalf("checks = %v, want %v", names, want)
 	}
@@ -50,6 +50,7 @@ func feedHealthy(s *Station, from, n int) {
 		s.ApplyStatus(ReceiverStatus{Received: at, SpoofState: SpoofNone, SinceStartMS: uint32(10_000_000 + i*1000), HaveStart: true})
 		s.ApplyTiming(timingAt(i, 0))
 		s.ApplyCn0(Cn0Fit{Received: at, Mean: 41, ResidVar: 16, NumSats: 12})
+		s.ApplyCn0Snapshot(skyAt(at, i, 0))
 		dep := 20.0
 		s.ApplyRF(RFSample{Received: at, Bands: []RFBand{{Departure: &dep, AntStatus: 2}}})
 	}

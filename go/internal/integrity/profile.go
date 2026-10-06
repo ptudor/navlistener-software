@@ -41,6 +41,7 @@ type Profile struct {
 	UTCOffset          UTCOffsetProfile        `json:"utc_offset"`
 	PPSRTCPhase        PPSRTCPhaseProfile      `json:"pps_rtc_phase"`
 	Cn0Uniformity      Cn0UniformityProfile    `json:"cn0_uniformity"`
+	Cn0Drop            Cn0DropProfile          `json:"cn0_drop"`
 	AGC                AGCProfile              `json:"agc"`
 }
 
@@ -103,7 +104,14 @@ func DefaultProfile() Profile {
 			MaxSampleGap: 5 * time.Second, InconsistentNs: 20_000, UnassuredNs: 100_000,
 		},
 		Cn0Uniformity: Cn0UniformityProfile{ResidVar: DefaultCn0ResidVar, Mean: DefaultCn0Mean, MinSats: DefaultCn0MinSats},
-		AGC:           AGCProfile{Departure: DefaultAGCDeparture, DepartureSevere: DefaultAGCDepartureSevere, CWSuppress: DefaultCWSuppress},
+		// Epsilon's C/N₀ drop monitor alarms when every signal falls by 1 dB within
+		// 5 s. u-blox reports whole dB-Hz, so 1 dB is a single step; six signals
+		// and a graded median keep chance coincidences of that step out.
+		Cn0Drop: Cn0DropProfile{
+			Window: 5 * time.Second, MinSpan: 3 * time.Second, MinSignals: 6,
+			EveryDB: 1, InconsistentDB: 3, UnassuredDB: 6,
+		},
+		AGC: AGCProfile{Departure: DefaultAGCDeparture, DepartureSevere: DefaultAGCDepartureSevere, CWSuppress: DefaultCWSuppress},
 	}
 }
 
@@ -151,6 +159,9 @@ func (p Profile) Validate() error {
 		positive("pps_rtc_phase.max_sample_gap", p.PPSRTCPhase.MaxSampleGap.Seconds()),
 		positive("cn0_uniformity.resid_var_db2", p.Cn0Uniformity.ResidVar),
 		positive("cn0_uniformity.mean_db_hz", p.Cn0Uniformity.Mean),
+		window("cn0_drop", p.Cn0Drop.MinSpan, p.Cn0Drop.Window),
+		positive("cn0_drop.every_drop_db", p.Cn0Drop.EveryDB),
+		bands("cn0_drop.median", p.Cn0Drop.InconsistentDB, p.Cn0Drop.UnassuredDB),
 		bands("agc.departure", p.AGC.Departure, p.AGC.DepartureSevere),
 	}
 	if sp.DriftMinEpochs < 1 {
@@ -161,6 +172,9 @@ func (p Profile) Validate() error {
 	}
 	if p.Cn0Uniformity.MinSats < 3 {
 		errs = append(errs, fmt.Errorf("cn0_uniformity.min_sats must be at least 3"))
+	}
+	if p.Cn0Drop.MinSignals < 3 {
+		errs = append(errs, fmt.Errorf("cn0_drop.min_signals must be at least 3"))
 	}
 	if p.AGC.CWSuppress < 0 || p.AGC.CWSuppress > 255 {
 		errs = append(errs, fmt.Errorf("agc.cw_suppress must be within 0..255"))

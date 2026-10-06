@@ -132,7 +132,8 @@ from stored station data the same way the GLONASS discontinuity bands were.
 | `utc_offset` | solution UTC; the observer's NTP stamp or the collector's clock | receiver UTC against an independent wall-clock stamp of the same record | time reference |
 | `pps_rtc_phase` | timing tag; solution fix state | a step in the RTC-minus-GNSS phase against its recent linear trend | time reference |
 | `cn0_uniformity` | NAV-SAT | the existing C/N₀-vs-elevation gate, unchanged | signal power |
-| `agc` | MON-RF | the existing AGC departure, CW and receiver jam-state classification | RF environment |
+| `cn0_drop` | NAV-SAT | every signal the receiver used falls by at least 1 dB within 3–5 s, graded by the median fall; jamming corroboration | RF environment |
+| `agc` | MON-RF | the existing AGC departure, CW and receiver jam-state classification; a simultaneous C/N₀ drop also corroborates a departure | RF environment |
 | `receiver_spoofing` | status block, or the ObserverDetails receiver context | the receiver's own spoofing state | receiver verdict |
 
 Each raw test passes an M-of-N filter (three of the last four evaluations by
@@ -231,7 +232,7 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 | 1.9 | `receiver_spoofing` input, and the existing C/N₀ and AGC logic as checks | done (`88fceb6`) |
 | 1.10 | Per-station assessment in live state, served as `integrity` in the private observers feed | done (`d5857fd`) |
 | 1.11 | Domain-based spoofing fusion and the `station_assurance` event, with check parameters, versions and configuration hash | done (`10b5cf8`) |
-| 1.12 | Integrity Station app: show the assessment and handle `station_assurance` | done; the collector's current-conditions snapshot now includes `station_assurance` |
+| 1.12 | Integrity Station app: show the assessment and handle `station_assurance` | done (`39ee574`); the collector's current-conditions snapshot now includes `station_assurance` |
 
 ### Phase 2 — evidence, replay, durable baselines
 
@@ -248,7 +249,7 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 | # | Item | Status |
 |---|---|---|
 | 3.1 | NAV-SAT azimuth and signal identity in `0x01` body version 2 | planned |
-| 3.2 | Simultaneous C/N₀ drop as jamming corroboration | planned |
+| 3.2 | Simultaneous C/N₀ drop as jamming corroboration | done; the corroboration lasts while the AGC departure it accompanied continues |
 | 3.3 | MAX board: IMU motion state against GNSS velocity | planned |
 | 3.4 | ZED-X20P: SEC-SIG in `0x05`, after bench confirmation of support | planned |
 | 3.5 | ZED-X20P: RXM-RAWX as `0x02`, and a Doppler-vs-ephemeris check using the receiver clock drift | planned |

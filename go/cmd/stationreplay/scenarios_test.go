@@ -237,6 +237,38 @@ func TestScenarios(t *testing.T) {
 			},
 			want:      []string{"jamming_detected=warn"},
 			forbidden: []string{"spoofing_suspected"}},
+		{name: "broadband jamming with a simultaneous C/N0 drop", seconds: warm + 1200, onset: warm,
+			// A moderate AGC departure, and every signal 5 dB down at the same moment:
+			// corroborated jamming that stays raised while the departure lasts, long
+			// after the drop itself has passed.
+			change: func(i int, e *epoch) {
+				e.agc = 3000
+				e.cn0 = func(sv, elev int) int { return naturalCn0(sv, elev) - 5 }
+			},
+			want:      []string{"jamming_detected=warn", "station_assurance=inconsistent"},
+			forbidden: []string{"jamming_detected=ok", "station_rf_degraded", "spoofing_suspected", "station_assurance=unassured"}},
+		{name: "AGC departure alone", seconds: warm + 600, onset: warm,
+			// One inconsistent lower-only check is absorbed by the assured ones, so
+			// the station stays assured; the RF classifier reports the degradation.
+			change:    func(i int, e *epoch) { e.agc = 3000 },
+			want:      []string{"station_rf_degraded=degraded"},
+			forbidden: []string{"jamming_detected", "spoofing_suspected"}},
+		{name: "simultaneous C/N0 drop alone", seconds: warm + 600, onset: warm,
+			// An obstruction or a failing cable: every signal down, the front end quiet.
+			change:    func(i int, e *epoch) { e.cn0 = func(sv, elev int) int { return naturalCn0(sv, elev) - 5 } },
+			want:      []string{"station_rf_degraded=degraded"},
+			forbidden: []string{"jamming_detected", "spoofing_suspected", "station_assurance"}},
+		{name: "AGC departure after an unrelated C/N0 drop", seconds: warm + 1200, onset: warm,
+			// The drop passed and recovered ten minutes before the departure began, so
+			// it does not corroborate it.
+			change: func(i int, e *epoch) {
+				e.cn0 = func(sv, elev int) int { return naturalCn0(sv, elev) - 5 }
+				if i >= warm+600 {
+					e.agc = 3000
+				}
+			},
+			want:      []string{"station_rf_degraded=degraded"},
+			forbidden: []string{"jamming_detected", "spoofing_suspected", "station_assurance"}},
 		{name: "antenna disconnect", seconds: warm + 600, onset: warm,
 			change: func(i int, e *epoch) {
 				e.ant = 4

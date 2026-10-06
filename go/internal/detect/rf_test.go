@@ -243,3 +243,45 @@ func TestRFUnconfirmedFirstDegradationRevertsSilently(t *testing.T) {
 		t.Fatalf("jamming band = %q, want ok", band)
 	}
 }
+
+// TestRFCn0DropCorroboratesJamming: a moderate AGC departure accompanied by a
+// simultaneous C/N₀ drop across the station's signals is corroborated jamming
+// (docs/DEFENSE-PNT.md §2), and the event says what corroborated it.
+func TestRFCn0DropCorroboratesJamming(t *testing.T) {
+	d := New(0)
+	t0 := time.Unix(1_700_000_000, 0)
+	d.TickStations(t0, station("s", band(0, 0, 2, 0)))
+	jam := station("s", band(1200, 0, 2, 0))
+	st := jam["s"]
+	st.Cn0Drop = true
+	jam["s"] = st
+	d.TickStations(t0.Add(10*time.Second), jam)
+	evs := d.TickStations(t0.Add(75*time.Second), jam)
+	e, ok := find(evs, "jamming_detected")
+	if !ok || e.NewValue != "warn" || e.Params["cn0_drop"] != true {
+		t.Fatalf("jamming_detected = %+v (ok=%v), want warn corroborated by the C/N0 drop", e, ok)
+	}
+	if _, ok := find(evs, "station_rf_degraded"); ok {
+		t.Error("corroborated jamming also reported as a lone degradation")
+	}
+}
+
+// TestRFCn0DropAloneDegraded: a simultaneous drop with a quiet front end is one
+// metric moving alone, such as an obstructed antenna: a degradation, not an attack.
+func TestRFCn0DropAloneDegraded(t *testing.T) {
+	d := New(0)
+	t0 := time.Unix(1_700_000_000, 0)
+	d.TickStations(t0, station("s", band(0, 0, 2, 0)))
+	drop := station("s", band(0, 0, 2, 0))
+	st := drop["s"]
+	st.Cn0Drop = true
+	drop["s"] = st
+	d.TickStations(t0.Add(10*time.Second), drop)
+	evs := d.TickStations(t0.Add(75*time.Second), drop)
+	if _, ok := find(evs, "jamming_detected"); ok {
+		t.Error("a C/N0 drop alone was called jamming")
+	}
+	if e, ok := find(evs, "station_rf_degraded"); !ok || e.NewValue != "degraded" || e.Params["cn0_drop"] != true {
+		t.Fatalf("station_rf_degraded = %+v (ok=%v), want degraded", e, ok)
+	}
+}

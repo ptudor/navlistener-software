@@ -16,11 +16,12 @@ whether the evidence indicates spoofing. The design and its upstream provenance 
 | `tracker.go` | The per-check M-of-N filter, warm-up, staleness, and one-sided recovery hold. |
 | `fuse.go` | `Fuse`: the weighted station level and the domain rules, including the spoofing rule. |
 | `profile.go` | `Profile` (operating points and their defaults), `StationProfile` (installation), validation, and `ConfigHash`. |
-| `inputs.go` | The receiver-neutral inputs: `Solution`, `ClockSample`, `ReceiverStatus`, `TimingSample`, `Cn0Fit`, `RFSample`. |
+| `inputs.go` | The receiver-neutral inputs: `Solution`, `ClockSample`, `ReceiverStatus`, `TimingSample`, `Cn0Fit`, `Cn0Snapshot`, `RFSample`. |
 | `position.go` | `static_position`, `stationary_velocity`, `motion_bound`, `position_velocity`. |
 | `clock.go` | `clock_bias_drift`, `clock_drift_rate`. |
 | `timeref.go` | `utc_offset`, `pps_rtc_phase`. |
 | `rf.go` | `cn0_uniformity`, `agc`, `receiver_spoofing`, and the station RF defaults `internal/detect` shares. |
+| `cn0drop.go` | `cn0_drop`: the simultaneous C/N₀ drop. |
 | `station.go` | `Station`: routes inputs to checks, gates clock and pulse checks on a valid fix, and assembles the `Assessment`. |
 | `*_test.go` | Filter, hold, fusion, profile, per-check and station tests, including determinism and a no-coordinates guard. |
 | `README.md` | This file. |
@@ -84,7 +85,8 @@ toward it. Checks in one domain share their measurements and count once.
 | `utc_offset` | time reference | solution | Receiver UTC against the observer's or collector's wall-clock stamp of the record; 2 and 5 s. |
 | `pps_rtc_phase` | time reference | timing, solution | RTC-minus-GNSS pulse phase against a line fitted to samples 10–180 s old; 20 and 100 µs. Needs a fresh valid fix and an untrimmed RTC. |
 | `cn0_uniformity` | signal power | NAV-SAT fit | The existing C/N₀-vs-elevation gate. Lower-only. |
-| `agc` | RF environment | MON-RF | The jamming classification as a state: collapse or corroborated departure is unassured; any single sign, or an antenna fault, is inconsistent. Lower-only. |
+| `cn0_drop` | RF environment | NAV-SAT | Every signal used 3–5 s earlier and tracked now fell by at least 1 dB, with a median fall of 3 dB (inconsistent) or 6 dB (unassured); at least six signals. Interference evidence, so not a physics domain. Lower-only. |
+| `agc` | RF environment | MON-RF | The jamming classification as a state: collapse, or a departure corroborated by a CW tone, the receiver's jam flag or a simultaneous C/N₀ drop, is unassured; any single sign, or an antenna fault, is inconsistent. Version 2 added the C/N₀ drop corroboration. Lower-only. |
 | `receiver_spoofing` | receiver verdict | status | The receiver's own spoofing flag. Lower-only. |
 
 Duplicate and out-of-order epochs (by GPS time of week, continuous across the week

@@ -12,7 +12,7 @@ func init() {
 	for _, info := range []Info{
 		staticPositionInfo, stationaryVelocityInfo, motionBoundInfo, positionVelocityInfo,
 		clockBiasDriftInfo, clockDriftRateInfo, utcOffsetInfo, ppsRTCPhaseInfo,
-		cn0UniformityInfo, agcInfo, receiverSpoofingInfo,
+		cn0UniformityInfo, cn0DropInfo, agcInfo, receiverSpoofingInfo,
 	} {
 		checkInfos[info.Name] = info
 	}
@@ -31,9 +31,10 @@ type Station struct {
 	order    []string
 	trackers map[string]*tracker
 
-	pos   *positionChecks
-	clock clockChecks
-	pps   ppsRTCPhase
+	pos     *positionChecks
+	clock   clockChecks
+	pps     ppsRTCPhase
+	cn0Drop cn0DropCheck
 
 	haveFix    bool
 	lastFixOK  bool
@@ -53,7 +54,7 @@ func NewStation(p Profile, station StationProfile) (*Station, error) {
 	s := &Station{profile: p, station: station, trackers: map[string]*tracker{}, pos: newPositionChecks(station)}
 	infos := append(s.pos.infos(),
 		clockBiasDriftInfo, clockDriftRateInfo, utcOffsetInfo, ppsRTCPhaseInfo,
-		cn0UniformityInfo, agcInfo, receiverSpoofingInfo)
+		cn0UniformityInfo, cn0DropInfo, agcInfo, receiverSpoofingInfo)
 	versions := make(map[string]int, len(infos))
 	for _, info := range infos {
 		s.order = append(s.order, info.Name)
@@ -131,6 +132,14 @@ func (s *Station) ApplyCn0(f Cn0Fit) {
 	s.update(CheckCn0Uniformity, cn0Uniformity(f, s.profile.Cn0Uniformity), f.Received)
 }
 
+// ApplyCn0Snapshot evaluates the simultaneous C/N₀ drop check for one NAV-SAT epoch.
+// A duplicate or out-of-order epoch is ignored.
+func (s *Station) ApplyCn0Snapshot(snap Cn0Snapshot) {
+	if v, ok := s.cn0Drop.evaluate(snap, s.profile.Cn0Drop); ok {
+		s.update(CheckCn0Drop, v, snap.Received)
+	}
+}
+
 // ApplyRF evaluates the AGC check for one front-end report.
 func (s *Station) ApplyRF(rf RFSample) {
 	s.update(CheckAGC, agc(rf, s.profile.AGC), rf.Received)
@@ -147,6 +156,17 @@ type Assessment struct {
 	Surveyed    bool     `json:"surveyed_position"`
 	MaxSpeedMPS float64  `json:"max_speed_mps,omitempty"`
 	Checks      []Result `json:"checks"`
+}
+
+// Served returns one check's served state as of now, after ageing out stale input.
+// ok is false for a check this station does not run.
+func (s *Station) Served(name string, now time.Time) (State, bool) {
+	t, ok := s.trackers[name]
+	if !ok {
+		return Unavailable, false
+	}
+	t.expire(now, s.profile.StaleAfter, s.profile.Filter)
+	return t.served, true
 }
 
 // Assess ages out stale checks as of now and returns the station's assessment.

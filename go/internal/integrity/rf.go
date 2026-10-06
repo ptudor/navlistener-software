@@ -14,7 +14,7 @@ const (
 
 var (
 	cn0UniformityInfo    = Info{Name: CheckCn0Uniformity, Version: 1, Domain: DomainSignalPower, LowerOnly: true}
-	agcInfo              = Info{Name: CheckAGC, Version: 1, Domain: DomainRFEnvironment, LowerOnly: true}
+	agcInfo              = Info{Name: CheckAGC, Version: 2, Domain: DomainRFEnvironment, LowerOnly: true}
 	receiverSpoofingInfo = Info{Name: CheckReceiverSpoofing, Version: 1, Domain: DomainReceiverVerdict, LowerOnly: true}
 )
 
@@ -109,9 +109,10 @@ func cn0Uniformity(f Cn0Fit, prof Cn0UniformityProfile) Verdict {
 }
 
 // agc classifies the front end like the jamming classifiers do: a severe gain
-// collapse, or a departure corroborated by a CW tone or the receiver's own jam flag,
-// is unassured; any single sign of interference, or an antenna fault, is
-// inconsistent.
+// collapse, or a departure corroborated by a CW tone, the receiver's own jam flag or
+// a simultaneous C/N₀ drop, is unassured; any single sign of interference, or an
+// antenna fault, is inconsistent. A drop alone is the cn0_drop check's to report.
+// Version 2 added the C/N₀ drop corroboration.
 func agc(rf RFSample, prof AGCProfile) Verdict {
 	if len(rf.Bands) == 0 {
 		return Verdict{State: Unavailable, Reasons: []string{ReasonNoBands}}
@@ -133,6 +134,7 @@ func agc(rf RFSample, prof AGCProfile) Verdict {
 		State: Assured,
 		Metrics: map[string]float64{
 			"cw": boolMetric(cw), "receiver_jam": boolMetric(rxJam), "antenna_fault": boolMetric(ant), "bands": float64(len(rf.Bands)),
+			"cn0_drop": boolMetric(rf.Cn0Drop),
 		},
 		Thresholds: map[string]float64{"departure": prof.Departure, "departure_severe": prof.DepartureSevere, "cw_suppress": float64(prof.CWSuppress)},
 	}
@@ -143,8 +145,11 @@ func agc(rf RFSample, prof AGCProfile) Verdict {
 	switch {
 	case haveDep && maxDep >= prof.DepartureSevere:
 		v.State, v.Reasons = Unassured, []string{ReasonAGCCollapse}
-	case dep && (cw || rxJam):
+	case dep && (cw || rxJam || rf.Cn0Drop):
 		v.State, v.Reasons = Unassured, []string{ReasonAGCDeparture}
+		if rf.Cn0Drop {
+			v.Reasons = append(v.Reasons, ReasonSimultaneousDrop)
+		}
 	case dep || cw || rxJam || ant:
 		v.State = Inconsistent
 		if dep {

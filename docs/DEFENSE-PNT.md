@@ -109,6 +109,15 @@ as `agc_departure` + `cw_suppression` + a C/N₀ collapse across *all* SVs that 
 simultaneously. A single metric moving alone is more likely a receiver/antenna fault than an
 attack — surface it as a station-health signal, not a jamming alarm.
 
+The simultaneous drop is the integrity `cn0_drop` check, after the CISA Epsilon C/N₀ drop
+monitor: every signal the receiver used three to five seconds earlier and still tracks has
+fallen by at least 1 dB, the median by at least 3 dB, across at least six signals. A drop
+marks the jammer's onset; C/N₀ then stays low without dropping again. A drop served at any
+point during a band's current AGC departure therefore keeps corroborating that departure
+until it ends, and a drop that had passed before a departure began corroborates nothing. A
+slow ramp below the per-window step does not show as a drop; the bounded AGC baseline covers
+it.
+
 **Planned use of jamming context:** reduce the contribution of a jammed station to
 future broadcast-agreement and spoofing fusion. The current `conf` value counts
 fresh decoded sources; it does not apply RF-derived voting weights.
@@ -203,10 +212,10 @@ added to the vocabulary in `docs/INTEGRITY.md §5`:
 
 | `event_type` | Fires when | Severity |
 |---|---|---|
-| `jamming_detected` | AGC departure + CW/noise corroborated at a station, debounced | 1 → 2 on full lock loss; 0 on clear |
+| `jamming_detected` | AGC departure corroborated by a CW tone, the receiver's jam flag or a simultaneous C/N₀ drop at a station, debounced; a near-total AGC collapse alone | 1 → 2 on full lock loss; 0 on clear |
 | `spoofing_suspected` | ≥2 independent physics domains (§3), or one with the receiver's spoofing flag, unassured at a station, debounced | 2; 0 on clear |
 | `station_assurance` | the station's fused integrity state changes among `assured`, `inconsistent` and `unassured` ([proposal](proposals/STATION-ASSURANCE.md) §4) | 2 unassured, 1 inconsistent, 0 assured |
-| `station_rf_degraded` | a single RF metric departs baseline (fault-or-early-warning, not an attack claim) | 1; 0 on clear |
+| `station_rf_degraded` | a single RF metric departs baseline, or a simultaneous C/N₀ drop with a quiet front end (fault-or-early-warning, not an attack claim) | 1; 0 on clear |
 | `antenna_fault` | MON-RF antenna status open/short, or C/N₀ collapse with no jamming signature | 1; 0 on clear |
 
 **Current thresholds are implemented in `go/internal/integrity`** (`DefaultProfile`, with the

@@ -7,6 +7,7 @@ import (
 
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/navlistener/internal/ingest"
+	"github.com/ptudor/navlistener/internal/integrity"
 )
 
 // PNT-defense Tier-0 (docs/DEFENSE-PNT.md): the collector turns the RF-environment
@@ -61,7 +62,19 @@ type rfBand struct {
 	agc, noise, cwSuppress, jamState int
 	antStatus                        int
 	lastSeen                         time.Time
+	// departedSince starts the current run at or beyond the jamming AGC departure;
+	// zero while the band is within it or has no baseline.
+	departedSince time.Time
 	agcBaseline
+}
+
+// departure is the band's AGC below its learned baseline; ok is false while no
+// baseline is learned.
+func (b *rfBand) departure() (dep float64, ok bool) {
+	if !b.haveBaseline {
+		return 0, false
+	}
+	return b.baseline - float64(b.agc), true
 }
 
 // AGCMinute is one completed minute's median of quiet AGC samples.
@@ -94,6 +107,7 @@ type rfStation struct {
 	cn0NumSats  int
 	cn0ByGNSS   map[int]Cn0Stats
 	cn0LastSeen time.Time // last NAV-SAT sample; ages the spoof gate independently of MON-RF
+	cn0DropAt   time.Time // last NAV-SAT at which the cn0_drop check served a drop
 }
 
 // applyRF folds one RF-telemetry sample into the per-station RF state, updating the
@@ -128,6 +142,13 @@ func (s *Store) applyRF(f *ingest.RawFrame) {
 		band.jamState, band.antStatus = b.JamState, b.AntStatus
 		band.lastSeen = recv
 		band.learn(b.AGC, recv)
+		if dep, ok := band.departure(); ok && dep >= integrity.DefaultAGCDeparture {
+			if band.departedSince.IsZero() {
+				band.departedSince = recv
+			}
+		} else {
+			band.departedSince = time.Time{}
+		}
 	}
 	if len(f.RF.Sats) > 0 {
 		st.cn0Mean, st.cn0Resid, st.cn0NumSats = cn0ElevationResidual(f.RF.Sats)
@@ -301,6 +322,12 @@ type StationRF struct {
 	Cn0Resid *float64        `json:"cn0_elev_resid_var,omitempty"`
 	NumSats  int             `json:"num_sats"`
 	RFTrust  float64         `json:"rf_trust"`
+	// Cn0Drop reports a simultaneous C/N₀ drop across the station's signals: served
+	// now by the integrity cn0_drop check (held through its recovery period), or
+	// served at some point during a band's current AGC departure, so it lasts as long
+	// as that departure. The jamming classifier takes it as corroboration
+	// (docs/DEFENSE-PNT.md §2); the station's assessment serves the check itself.
+	Cn0Drop bool `json:"-"`
 }
 
 // Cn0Stats is one constellation's elevation-fit result. The integrity
@@ -352,6 +379,7 @@ func (s *Store) FeedStationRF(now time.Time) map[string]StationRF {
 			entry.Cn0Mean, entry.Cn0Resid = &m, &r
 			entry.NumSats = st.cn0NumSats
 		}
+		entry.Cn0Drop = s.cn0DropCorroboration(st, now)
 		blocks := make([]int, 0, len(st.bands))
 		for b := range st.bands {
 			blocks = append(blocks, b)
@@ -369,8 +397,7 @@ func (s *Store) FeedStationRF(now time.Time) map[string]StationRF {
 				Block: b.block, AGC: b.agc, CWSuppress: b.cwSuppress,
 				NoiseLevel: b.noise, JamState: b.jamState, AntStatus: b.antStatus,
 			}
-			if b.haveBaseline {
-				dep := b.baseline - float64(b.agc)
+			if dep, ok := b.departure(); ok {
 				sb.AGCDeparture = &dep
 				if dep > agcLearnBand/2 { // a real departure: down-weight this station
 					entry.RFTrust = 0.3
@@ -381,6 +408,28 @@ func (s *Store) FeedStationRF(now time.Time) map[string]StationRF {
 		out[id] = entry
 	}
 	return out
+}
+
+// cn0DropCorroboration reports a simultaneous C/N₀ drop that corroborates the
+// station's front-end evidence as of now: one the cn0_drop check serves now, or one
+// it served during a fresh band's current AGC departure. The drop marks a jammer's
+// onset and C/N₀ then stays low without dropping again, so a drop seen during a
+// departure keeps corroborating it until the departure ends. The caller holds rfMu.
+func (s *Store) cn0DropCorroboration(st *rfStation, now time.Time) bool {
+	if is := s.integrity[st.id]; is != nil {
+		if served, ok := is.eval.Served(integrity.CheckCn0Drop, now); ok && degradedState(served) {
+			return true
+		}
+	}
+	if st.cn0DropAt.IsZero() {
+		return false
+	}
+	for _, b := range st.bands {
+		if now.Sub(b.lastSeen) <= rfStaleAfter && !b.departedSince.IsZero() && !st.cn0DropAt.Before(b.departedSince) {
+			return true
+		}
+	}
+	return false
 }
 
 func medianFloat(v []float64) float64 {

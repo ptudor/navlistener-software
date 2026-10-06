@@ -37,13 +37,15 @@ func (d *Detector) detectStationRF(id string, rf state.StationRF, emit emitFunc)
 	}
 
 	// jamming_detected: a broadband AGC collapse is unambiguous on its own; a lesser
-	// departure must be corroborated by CW or the receiver's own jam flag before it is
-	// called an attack (docs/DEFENSE-PNT.md §2). Otherwise it is a degradation, below.
+	// departure must be corroborated by CW, the receiver's own jam flag, or a
+	// simultaneous C/N₀ drop across the station's signals before it is called an
+	// attack (docs/DEFENSE-PNT.md §2). Otherwise it is a degradation, below.
+	cn0Drop := rf.Cn0Drop
 	jamBand, jamSev := "ok", SevInfo
 	switch {
 	case maxDep >= AGCDepartureSevereThreshold:
 		jamBand, jamSev = "crit", SevCritical
-	case maxDep >= AGCDepartureThreshold && (cwHigh || rxJam):
+	case maxDep >= AGCDepartureThreshold && (cwHigh || rxJam || cn0Drop):
 		jamBand, jamSev = "warn", SevWarning
 	}
 	// no current MON-RF band measurement means unknown, not measured-ok.
@@ -53,7 +55,7 @@ func (d *Detector) detectStationRF(id string, rf state.StationRF, emit emitFunc)
 			return Event{
 				Type: "jamming_detected", OldValue: old, NewValue: jamBand, Severity: jamSev,
 				Message: fmt.Sprintf("station %s jamming %s (AGC departure %.0f)", id, jamBand, maxDep),
-				Params:  map[string]any{"station": id, "agc_departure": maxDep, "cw": cwHigh, "rx_jam": rxJam},
+				Params:  map[string]any{"station": id, "agc_departure": maxDep, "cw": cwHigh, "rx_jam": rxJam, "cn0_drop": cn0Drop},
 			}
 		})
 	}
@@ -75,12 +77,14 @@ func (d *Detector) detectStationRF(id string, rf state.StationRF, emit emitFunc)
 	}
 
 	// station_rf_degraded: a single RF metric departs baseline but was not corroborated
-	// into a jamming claim — a fault-or-early-warning, not an attack assertion.
+	// into a jamming claim — a fault-or-early-warning, not an attack assertion. A
+	// simultaneous C/N₀ drop alone (an obstructed or failing antenna can cause one)
+	// surfaces here too.
 	// the receiver's own jam flag (jamState >= 2) alone surfaces here too, per
 	// DEFENSE-PNT.md §2's single-metric rule — CW-alone and AGC-alone already do; jamInd-alone
 	// previously surfaced as nothing. The jamming-ATTACK claim (jamBand) keeps its AGC-departure
 	// + CW/jam corroboration requirement unchanged.
-	depPresent := (haveDep && maxDep >= AGCDepartureThreshold) || cwHigh || rxJam
+	depPresent := (haveDep && maxDep >= AGCDepartureThreshold) || cwHigh || rxJam || cn0Drop
 	degraded := depPresent && jamBand == "ok"
 	degradedSev := SevInfo
 	if degraded {
@@ -91,8 +95,8 @@ func (d *Detector) detectStationRF(id string, rf state.StationRF, emit emitFunc)
 			return Event{
 				Type: "station_rf_degraded", OldValue: old, NewValue: boolState(degraded, "degraded", "ok"),
 				Severity: degradedSev,
-				Message:  fmt.Sprintf("station %s RF degraded (AGC departure %.0f, cw=%v, rx_jam=%v)", id, maxDep, cwHigh, rxJam),
-				Params:   map[string]any{"station": id, "agc_departure": maxDep, "cw": cwHigh, "rx_jam": rxJam},
+				Message:  fmt.Sprintf("station %s RF degraded (AGC departure %.0f, cw=%v, rx_jam=%v, cn0_drop=%v)", id, maxDep, cwHigh, rxJam, cn0Drop),
+				Params:   map[string]any{"station": id, "agc_departure": maxDep, "cw": cwHigh, "rx_jam": rxJam, "cn0_drop": cn0Drop},
 			}
 		})
 	}
