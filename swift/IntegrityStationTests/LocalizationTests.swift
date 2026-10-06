@@ -1,6 +1,9 @@
 import Foundation
 import SwiftUI
 import Testing
+#if os(macOS)
+import AppKit
+#endif
 @testable import IntegrityStation
 
 private final class LocalizationBundleMarker: NSObject {}
@@ -39,8 +42,21 @@ private final class LocalizationBundleMarker: NSObject {}
     ESPObserverTransport().disconnect()
     #endif
     for view in views {
-        let renderer = ImageRenderer(content:view.environment(controller).frame(width:800,height:1000))
+        let content = view.environment(controller).frame(width:800,height:1000)
+        #if os(macOS)
+        // ImageRenderer cannot flatten AppKit-backed controls (the settings tab
+        // view, text fields), and on macOS 27 it traps on them. A hosting view
+        // draws them as AppKit does.
+        let host = NSHostingView(rootView:content)
+        host.frame = NSRect(x:0,y:0,width:800,height:1000)
+        host.layoutSubtreeIfNeeded()
+        let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in:host.bounds))
+        host.cacheDisplay(in:host.bounds,to:bitmap)
+        #expect(bitmap.pixelsWide > 0 && bitmap.pixelsHigh > 0)
+        #else
+        let renderer = ImageRenderer(content:content)
         #expect(renderer.cgImage != nil)
+        #endif
     }
 }
 

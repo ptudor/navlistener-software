@@ -16,7 +16,7 @@ private final class ScriptedSSEProtocol: URLProtocol, @unchecked Sendable {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         let body = Self.body
-        producer = Task {
+        producer = Task { @Sendable [self] in
             client?.urlProtocol(self, didReceive: HTTPURLResponse(
                 url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [:])!,
                 cacheStoragePolicy: .notAllowed)
