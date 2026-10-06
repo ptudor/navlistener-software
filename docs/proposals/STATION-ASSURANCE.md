@@ -222,8 +222,8 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 |---|---|---|
 | 1.1 | Go codec for telemetry `0x03`, push decoding, `rf_samples` kind `solution` | done (`d5857fd`) |
 | 1.2 | Collector dial-mode UBX parsing of NAV-PVT, NAV-CLOCK and NAV-STATUS, with epoch assembly | done (`d5857fd`) |
-| 1.3 | ESP32: parse NAV-PVT fully, enable NAV-CLOCK and NAV-EOE, encode and send `0x03` | done; awaiting bench acknowledgement of the new keys |
-| 1.4 | C feeder: parse and send `0x03`; `--configure-ubx` enables the messages | planned |
+| 1.3 | ESP32: parse NAV-PVT fully, enable NAV-CLOCK and NAV-EOE, encode and send `0x03` | done (`683937e`); awaiting bench acknowledgement of the new keys |
+| 1.4 | C feeder: parse and send `0x03`; `--configure-ubx` enables the messages | done |
 | 1.5 | Station integrity profile: fixed or mobile, maximum speed, surveyed position shared with `[[reception.station]]` | done (`d5857fd`) |
 | 1.6 | Position checks: `static_position`, `stationary_velocity`, `motion_bound`, `position_velocity` | done (`88fceb6`) |
 | 1.7 | Clock checks: `clock_bias_drift`, `clock_drift_rate` | done (`88fceb6`) |

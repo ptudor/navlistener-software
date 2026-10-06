@@ -29,13 +29,13 @@ endif
 
 all: $(BINARY)
 
-$(BINARY): navfeeder.c ubx_config.h ../common/endpoint_fallback.h
+$(BINARY): navfeeder.c ubx_config.h ../common/endpoint_fallback.h ../common/receiver_solution.h
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ navfeeder.c $(LDLIBS)
 
 check: $(BINARY)
 	@set -eu; test_bin=$$(mktemp "$${TMPDIR:-/tmp}/navfeeder-ubx-test.XXXXXX"); \
 	trap 'rm -f "$$test_bin"' EXIT; \
-	$(CC) $(CFLAGS) $(LDFLAGS) -o "$$test_bin" ubx_config_test.c $(LDLIBS); \
+	$(CC) $(CFLAGS) $(LDFLAGS) -DGOLDEN='"../testdata/receiver_solution_v1.txt"' -o "$$test_bin" ubx_config_test.c $(LDLIBS); \
 	"$$test_bin"; \
 	if ./$(BINARY) --configure-ubx auto 2>/dev/null; then exit 1; fi; \
 	if ./$(BINARY) --server collector.invalid:5580 --source receiver.invalid:2000 \

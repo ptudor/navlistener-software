@@ -8,9 +8,18 @@
 #define UBX_CONFIG_RETRY_S 30
 #define UBX_CONFIG_ACK_S 3
 
+/* awaiting_ack counts the VALSET responses still expected. The receiver answers
+ * in send order, so the first response belongs to packet 0. */
 struct ubx_config {
 	int port, awaiting_ack;
 	time_t next_attempt, ack_deadline;
+};
+
+/* Two VALSETs: a receiver rejects a whole VALSET when it does not support one key,
+ * and the raw-navigation setup must survive a receiver without the solution keys. */
+#define UBX_CONFIG_PACKETS 2
+static const char *const ubx_config_names[UBX_CONFIG_PACKETS] = {
+	"UBX output/SFRBX/NAV-SAT/MON-RF", "NAV-PVT/NAV-STATUS/NAV-CLOCK/NAV-EOE",
 };
 
 static int ubx_config_port(const char *name) {
@@ -20,21 +29,30 @@ static int ubx_config_port(const char *name) {
 	return 0;
 }
 
-/* Exactly four single-byte keys: UBX output enable and three message rates.
+/* Exactly four single-byte keys per packet. Packet 0: UBX output enable and the
+ * SFRBX, NAV-SAT and MON-RF rates. Packet 1: the NAV-PVT, NAV-STATUS, NAV-CLOCK and
+ * NAV-EOE rates of the receiver-solution record (../common/receiver_solution.h).
  * No baud, NMEA, signal, timing, backup RAM or flash configuration is sent. */
-static size_t ubx_config_packet(unsigned char out[32], int port) {
-	static const uint32_t keys[3][4] = {
-		{ 0x10740001, 0x20910232, 0x20910016, 0x2091035a },
-		{ 0x10760001, 0x20910233, 0x20910017, 0x2091035b },
-		{ 0x10780001, 0x20910234, 0x20910018, 0x2091035c },
+static size_t ubx_config_packet(unsigned char out[32], int port, int which) {
+	static const uint32_t keys[UBX_CONFIG_PACKETS][3][4] = {
+		{
+			{ 0x10740001, 0x20910232, 0x20910016, 0x2091035a },
+			{ 0x10760001, 0x20910233, 0x20910017, 0x2091035b },
+			{ 0x10780001, 0x20910234, 0x20910018, 0x2091035c },
+		},
+		{
+			{ 0x20910007, 0x2091001b, 0x20910066, 0x20910160 },
+			{ 0x20910008, 0x2091001c, 0x20910067, 0x20910161 },
+			{ 0x20910009, 0x2091001d, 0x20910068, 0x20910162 },
+		},
 	};
-	if (port < 1 || port > 3) return 0;
+	if (port < 1 || port > 3 || which < 0 || which >= UBX_CONFIG_PACKETS) return 0;
 	memset(out, 0, 32);
 	out[0] = 0xb5; out[1] = 0x62; out[2] = 0x06; out[3] = 0x8a;
 	out[4] = 24; /* payload length */
 	out[6] = 0; out[7] = 1; /* version 0, layers = RAM only */
 	for (unsigned i = 0; i < 4; i++) {
-		uint32_t key = keys[port - 1][i];
+		uint32_t key = keys[which][port - 1][i];
 		for (unsigned j = 0; j < 4; j++) out[10 + i*5 + j] = (unsigned char)(key >> (j*8));
 		out[14 + i*5] = 1;
 	}
@@ -79,21 +97,24 @@ static int ubx_config_write(int fd, const unsigned char *buf, size_t len) {
 static int ubx_config_tick(struct ubx_config *c, int fd, time_t now) {
 	if (!c->port) return 0;
 	if (c->awaiting_ack && now >= c->ack_deadline) {
+		for (int i = UBX_CONFIG_PACKETS - c->awaiting_ack; i < UBX_CONFIG_PACKETS; i++)
+			log_msg("UBX RAM setup (%s): no ACK received; continuing capture", ubx_config_names[i]);
 		c->awaiting_ack = 0;
-		log_msg("UBX RAM setup: no ACK received; continuing capture");
 	}
 	if (now < c->next_attempt) return 0;
-	unsigned char packet[32];
-	size_t len = ubx_config_packet(packet, c->port);
-	if (!len) { errno = EINVAL; return -1; }
-	if (ubx_config_write(fd, packet, len) != 0) {
-		log_msg("UBX RAM setup write failed: %s", strerror(errno));
-		return -1;
+	for (int i = 0; i < UBX_CONFIG_PACKETS; i++) {
+		unsigned char packet[32];
+		size_t len = ubx_config_packet(packet, c->port, i);
+		if (!len) { errno = EINVAL; return -1; }
+		if (ubx_config_write(fd, packet, len) != 0) {
+			log_msg("UBX RAM setup write failed: %s", strerror(errno));
+			return -1;
+		}
 	}
 	c->next_attempt = now + UBX_CONFIG_RETRY_S;
 	c->ack_deadline = now + UBX_CONFIG_ACK_S;
-	c->awaiting_ack = 1;
-	log_msg("UBX RAM setup requested on %s: SFRBX/NAV-SAT/MON-RF; baud and NMEA preserved",
+	c->awaiting_ack = UBX_CONFIG_PACKETS;
+	log_msg("UBX RAM setup requested on %s: SFRBX/NAV-SAT/MON-RF and NAV-PVT/NAV-STATUS/NAV-CLOCK/NAV-EOE; baud and NMEA preserved",
 		c->port == 1 ? "uart1" : c->port == 2 ? "uart2" : "usb");
 	return 0;
 }
@@ -103,9 +124,10 @@ static void ubx_config_ack(struct ubx_config *c, unsigned cls, unsigned id,
 		const unsigned char *payload, unsigned len) {
 	if (!c->awaiting_ack || cls != 0x05 || id > 0x01 || len != 2 ||
 		payload[0] != 0x06 || payload[1] != 0x8a) return;
-	c->awaiting_ack = 0;
-	log_msg(id ? "UBX RAM setup acknowledged" :
-		"UBX RAM setup rejected; receiver must support the requested CFG-VALSET keys; continuing capture");
+	const char *name = ubx_config_names[UBX_CONFIG_PACKETS - c->awaiting_ack];
+	c->awaiting_ack--;
+	if (id) log_msg("UBX RAM setup (%s) acknowledged", name);
+	else log_msg("UBX RAM setup (%s) rejected; receiver must support the requested CFG-VALSET keys; continuing capture", name);
 }
 
 static void ubx_config_observed(struct ubx_config *c, time_t now) {

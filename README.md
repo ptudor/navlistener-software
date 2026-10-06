@@ -50,8 +50,9 @@ transport and cryptographic OSNMA verification remain planned work. The
 [station monitor](docs/DEFENSE-PNT.md) reports jamming and receiver anomalies, and
 checks each station's own position, clock and time against physics and independent
 clocks. It confirms spoofing only when two independent evidence domains agree. The
-receiver-solution telemetry most of those checks need is parsed from dial-mode u-blox
-connections; ESP32 and C feeder support is in progress. ESP32 feeders use
+receiver-solution telemetry most of those checks need comes from dial-mode u-blox
+connections, the C feeder and ESP32 observers; the ESP32's new receiver keys still
+await bench acknowledgement. ESP32 feeders use
 a [RAM-only spool](esp32/README.md#durability-envelope-read-before-deploying-one-as-a-primary-observer).
 
 ## Build and run locally

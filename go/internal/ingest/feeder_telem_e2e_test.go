@@ -31,67 +31,7 @@ func TestNavfeederTelemetryEndToEnd(t *testing.T) {
 		t.Fatalf("expected 3 RF frames from the synthetic capture, got %d", len(expected))
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	out := make(chan *RawFrame, 64)
-	tc := &tls.Config{Certificates: []tls.Certificate{selfSigned(t)}, MinVersion: tls.VersionTLS12}
-	srv := newPushServer("127.0.0.1:0", tc, out, tokenAuth("rf-e2e", "s3cret", "ubx"),
-		25*time.Millisecond, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	pushLn, err := tls.Listen("tcp", "127.0.0.1:0", tc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pushLn.Close()
-	go func() { _ = srv.serve(ctx, pushLn) }()
-
-	// A fake receiver: stream the capture once, then hold the connection open.
-	srcLn, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer srcLn.Close()
-	go func() {
-		for {
-			c, err := srcLn.Accept()
-			if err != nil {
-				return
-			}
-			go func(c net.Conn) {
-				defer c.Close()
-				_, _ = c.Write(capBytes)
-				<-ctx.Done()
-			}(c)
-		}
-	}()
-
-	var ferr bytes.Buffer
-	cmd := exec.CommandContext(ctx, bin,
-		"--server", pushLn.Addr().String(),
-		"--source", srcLn.Addr().String(),
-		"--station", "rf-e2e", "--token", "s3cret", "--feed", "ubx",
-		"--insecure", "--spool", "10000")
-	cmd.Stderr = &ferr
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		if t.Failed() && ferr.Len() > 0 {
-			t.Logf("navfeeder stderr:\n%s", ferr.String())
-		}
-	})
-
-	got := make([]*RawFrame, 0, len(expected))
-	deadline := time.After(20 * time.Second)
-	for len(got) < len(expected) {
-		select {
-		case f := <-out:
-			got = append(got, f)
-		case <-deadline:
-			t.Fatalf("only %d/%d telemetry frames reached the collector", len(got), len(expected))
-		}
-	}
+	got := feederFrames(t, bin, "rf-e2e", capBytes, len(expected))
 
 	for i := range expected {
 		e, g := expected[i], got[i]
@@ -164,4 +104,72 @@ func syntheticRFCapture() []byte {
 	s = append(s, ubxMsg(ubxClassNAV, ubxIDNAVSAT, navsat)...)
 	s = append(s, ubxMsg(ubxClassMON, ubxIDMONHW, monhw)...)
 	return s
+}
+
+// feederFrames runs the real C navfeeder against a real PushServer, with a fake receiver
+// that streams capBytes once, and returns the first n frames the collector produces.
+func feederFrames(t *testing.T, bin, station string, capBytes []byte, n int) []*RawFrame {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	out := make(chan *RawFrame, 64)
+	tc := &tls.Config{Certificates: []tls.Certificate{selfSigned(t)}, MinVersion: tls.VersionTLS12}
+	srv := newPushServer("127.0.0.1:0", tc, out, tokenAuth(station, "s3cret", "ubx"),
+		25*time.Millisecond, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	pushLn, err := tls.Listen("tcp", "127.0.0.1:0", tc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pushLn.Close()
+	go func() { _ = srv.serve(ctx, pushLn) }()
+
+	// A fake receiver: stream the capture once, then hold the connection open.
+	srcLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srcLn.Close()
+	go func() {
+		for {
+			c, err := srcLn.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_, _ = c.Write(capBytes)
+				<-ctx.Done()
+			}(c)
+		}
+	}()
+
+	var ferr bytes.Buffer
+	cmd := exec.CommandContext(ctx, bin,
+		"--server", pushLn.Addr().String(),
+		"--source", srcLn.Addr().String(),
+		"--station", station, "--token", "s3cret", "--feed", "ubx",
+		"--insecure", "--spool", "10000")
+	cmd.Stderr = &ferr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		if t.Failed() && ferr.Len() > 0 {
+			t.Logf("navfeeder stderr:\n%s", ferr.String())
+		}
+	})
+
+	got := make([]*RawFrame, 0, n)
+	deadline := time.After(20 * time.Second)
+	for len(got) < n {
+		select {
+		case f := <-out:
+			got = append(got, f)
+		case <-deadline:
+			t.Fatalf("only %d/%d telemetry frames reached the collector", len(got), n)
+		}
+	}
+	return got
 }

@@ -27,14 +27,19 @@ uses `uart1` or `uart2`; the host device name does not identify this port.
 Use the receiver's existing line rate with `--baud`.
 
 On each serial open, the feeder enables UBX output plus RXM-SFRBX, NAV-SAT
-and MON-RF at rate 1 on that interface. It writes only the **RAM layer**:
+and MON-RF at rate 1 on that interface, and in a second, separate request
+NAV-PVT, NAV-STATUS, NAV-CLOCK and NAV-EOE. A receiver rejects a whole request
+when it does not support one key, so a receiver without the second set keeps
+its raw-navigation setup. The feeder joins each epoch's NAV-PVT, NAV-CLOCK and
+NAV-STATUS into the receiver-solution telemetry record (`0x03`) that feeds the
+collector's station integrity checks. It writes only the **RAM layer**:
 receiver baud, existing NMEA output, GNSS signals and timing/PPS settings
 are untouched. Nothing is saved to backup RAM or flash. A receiver restart
 reloads its stored configuration; the feeder requests these messages again
 after roughly 30 seconds without recognized UBX, including when a UART
 bridge remains connected and continues delivering NMEA.
 
-ACK, rejection and timeout results appear in the log. Capture continues if
+ACK, rejection and timeout results appear in the log, per request. Capture continues if
 the receiver rejects or does not acknowledge setup; verify that frames
 actually arrive. This option requires UBX configuration input to be enabled
 already. Unsupported receivers need separate configuration. Without the

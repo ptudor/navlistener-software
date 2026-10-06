@@ -49,7 +49,8 @@
  *   the DATA record = [8B BE recv_unix_ns][gnssId][svId][sigId][freqId][frame_type][raw…]
  *   raw = the native nav words serialized big-endian (the collector reads them back BE).
  *   A telemetry record (frame_type < 0x10, §6.2) reuses the same DATA frame with a zeroed
- *   gnssId/svId/sigId/freqId and a type-specific body (see emit_monrf/emit_navsat).
+ *   gnssId/svId/sigId/freqId and a type-specific body (see emit_monrf/emit_navsat, and
+ *   emit_solution for the receiver-solution record 0x03 built by ../common/receiver_solution.h).
  *
  * Still deferred in this executable: SBF/RTCM source parsers (the standalone feeder reads
  * u-blox only, although the collector's GNF1 endpoint also accepts RTCM records), mTLS
@@ -85,6 +86,7 @@
 #include <openssl/x509v3.h>
 #include <zstd.h>
 #include "../common/endpoint_fallback.h"
+#include "../common/receiver_solution.h"
 
 #define MAGIC "GNF1"
 #define F_HELLO 0x01
@@ -1168,14 +1170,29 @@ static int emit_sfrbx(const unsigned char *p, unsigned len) {
  * scoped, keyed by the observer at the collector); the body is the type-specific payload
  * and MUST match ../go/internal/ingest/telemetry.go so the C↔Go cross-oracle stays exact.
  * Returns 1 if a record was appended. */
-static int emit_telem(uint8_t type, const unsigned char *body, unsigned bodylen) {
+static int emit_telem_at(uint8_t type, const unsigned char *body, unsigned bodylen, uint64_t stamp_ns) {
 	if (bodylen > MAX_RAW) return 0;
 	unsigned char rec[GNF_RECORD];
-	be64(rec, now_unix_ns());
+	be64(rec, stamp_ns);
 	rec[8] = rec[9] = rec[10] = rec[11] = 0; /* gnssId/svId/sigId/freqId: unused for telemetry */
 	rec[12] = type;
 	memcpy(rec + RECORD_HDR, body, bodylen);
 	return spool_append(&g_spool, rec, RECORD_HDR + bodylen) != 0; /* regression fix */
+}
+
+static int emit_telem(uint8_t type, const unsigned char *body, unsigned bodylen) {
+	return emit_telem_at(type, body, bodylen, now_unix_ns());
+}
+
+/* emit_solution spools one completed receiver-solution epoch (telemetry 0x03,
+ * ../common/receiver_solution.h). It is stamped with the arrival of the epoch's
+ * first message: without NAV-EOE an epoch completes only when the next begins, and
+ * a late stamp would read as a receiver clock offset at the collector. */
+static int emit_solution(const rs_epoch_t *epoch) {
+	unsigned char body[RS_BODY_MAX];
+	size_t n = rs_encode(epoch, body, sizeof body);
+	if (!n) return 0;
+	return emit_telem_at(RS_TELEM_TYPE, body, (unsigned)n, epoch->arrived_ns);
 }
 
 /* emit_monrf converts a UBX-MON-RF payload (F9+ RF-front-end telemetry) into a JammingStats
@@ -1377,6 +1394,8 @@ static void log_ubx_stats(const char *what, unsigned long recognized, unsigned l
 static int run_ubx(int fd, int configure_ubx) {
 	struct rdbuf rb = { .fd = fd, .config = { .port = configure_ubx } };
 	unsigned char head[4], payload[UBX_MAX_PAYLOAD], ck[2];
+	rs_assembler_t solution; /* the receiver-solution epoch being joined */
+	rs_assembler_init(&solution);
 	time_t start = monotonic_s(); /* interval, not wall-clock */
 	time_t last_stats = start;
 	unsigned long frames = 0; /* recognized class/id messages — the regression fix backoff signal */
@@ -1402,6 +1421,14 @@ static int run_ubx(int fd, int configure_ubx) {
 			{ delivered += emit_monhw(payload, len); frames++; }
 		else if (head[0] == UBX_CLASS_NAV && head[1] == UBX_ID_NAVSAT)
 			{ delivered += emit_navsat(payload, len); frames++; }
+		else if (head[0] == RS_UBX_CLASS_NAV && (head[1] == RS_UBX_ID_PVT || head[1] == RS_UBX_ID_CLOCK ||
+		         head[1] == RS_UBX_ID_STATUS || head[1] == RS_UBX_ID_EOE)) {
+			rs_epoch_t done;
+			bool bad;
+			if (rs_ubx_feed(&solution, head[0], head[1], payload, len, now_unix_ns(), &done, &bad))
+				delivered += emit_solution(&done);
+			frames++;
+		}
 		else
 			continue; /* unrecognized class/id: not counted, no stats tick needed */
 		ubx_config_observed(&rb.config, monotonic_s());
@@ -2141,7 +2168,8 @@ static void usage(void) {
 		"  --server host:port    the collector's authenticated push endpoint\n"
 		"  --source SRC          /dev/ttyACM0 (serial) or host:port (TCP bridge to the receiver)\n"
 		"  --baud N              serial baud when --source is a device path (default 460800)\n"
-		"  --configure-ubx PORT  enable SFRBX/NAV-SAT/MON-RF in RAM on uart1, uart2, or usb\n"
+		"  --configure-ubx PORT  enable SFRBX/NAV-SAT/MON-RF and NAV-PVT/NAV-STATUS/NAV-CLOCK/NAV-EOE\n"
+		"                        in RAM on uart1, uart2, or usb\n"
 		"                        (serial only; preserves receiver baud/NMEA; default passive)\n"
 		"  --station ID          this observer's station id (also the mTLS cert's DNS SAN)\n"
 		"  --feed ubx            feed type (only 'ubx' is implemented today; default ubx)\n"
