@@ -39,12 +39,12 @@ func (d *Detector) detectStationRF(id string, rf state.StationRF, emit emitFunc)
 	// jamming_detected: a broadband AGC collapse is unambiguous on its own; a lesser
 	// departure must be corroborated by CW or the receiver's own jam flag before it is
 	// called an attack (docs/DEFENSE-PNT.md §2). Otherwise it is a degradation, below.
-	jamBand, jamSev := "ok", SevWarning
+	jamBand, jamSev := "ok", SevInfo
 	switch {
 	case maxDep >= AGCDepartureSevereThreshold:
 		jamBand, jamSev = "crit", SevCritical
 	case maxDep >= AGCDepartureThreshold && (cwHigh || rxJam):
-		jamBand = "warn"
+		jamBand, jamSev = "warn", SevWarning
 	}
 	// no current MON-RF band measurement means unknown, not measured-ok.
 	// Hold the band-derived machines in their last state until evidence resumes.
@@ -63,16 +63,16 @@ func (d *Detector) detectStationRF(id string, rf state.StationRF, emit emitFunc)
 	// gate; the others (coherent delta-Hz, clock transient, cross-constellation,
 	// measured-iono) plug in here as they are computed, raising the gate count.
 	gates := spoofGates(rf)
-	spoofBand := "ok"
+	spoofBand, spoofSev := "ok", SevInfo
 	if gates >= SpoofGateQuorum {
-		spoofBand = "suspected"
+		spoofBand, spoofSev = "suspected", SevCritical
 	}
 	// an aged-out NAV-SAT fit is likewise unknown; do not feed an "ok"
 	// recovery into the spoofing machine.
 	if rf.Cn0Resid != nil && rf.Cn0Mean != nil {
 		emit(id, "spoofing", spoofBand, func(old string) Event {
 			return Event{
-				Type: "spoofing_suspected", OldValue: old, NewValue: spoofBand, Severity: SevCritical,
+				Type: "spoofing_suspected", OldValue: old, NewValue: spoofBand, Severity: spoofSev,
 				Message: fmt.Sprintf("station %s spoofing suspected (%d gates)", id, gates),
 				Params:  map[string]any{"station": id, "gates": gates},
 			}
@@ -81,14 +81,14 @@ func (d *Detector) detectStationRF(id string, rf state.StationRF, emit emitFunc)
 
 	// antenna_fault: the receiver's antenna status open/short (a C/N₀ collapse with no
 	// jamming signature is a future antenna gate — docs/DEFENSE-PNT.md §4).
-	antState := "ok"
+	antState, antSev := "ok", SevInfo
 	if antFault {
-		antState = "fault"
+		antState, antSev = "fault", SevWarning
 	}
 	if len(rf.Bands) > 0 {
 		emit(id, "antenna", antState, func(old string) Event {
 			return Event{
-				Type: "antenna_fault", OldValue: old, NewValue: antState, Severity: SevWarning,
+				Type: "antenna_fault", OldValue: old, NewValue: antState, Severity: antSev,
 				Message: fmt.Sprintf("station %s antenna %s", id, antState),
 				Params:  map[string]any{"station": id},
 			}
@@ -103,11 +103,15 @@ func (d *Detector) detectStationRF(id string, rf state.StationRF, emit emitFunc)
 	// + CW/jam corroboration requirement unchanged.
 	depPresent := (haveDep && maxDep >= AGCDepartureThreshold) || cwHigh || rxJam
 	degraded := depPresent && jamBand == "ok" && spoofBand == "ok"
+	degradedSev := SevInfo
+	if degraded {
+		degradedSev = SevWarning
+	}
 	if len(rf.Bands) > 0 {
 		emit(id, "rf_degraded", boolState(degraded, "degraded", "ok"), func(old string) Event {
 			return Event{
 				Type: "station_rf_degraded", OldValue: old, NewValue: boolState(degraded, "degraded", "ok"),
-				Severity: SevWarning,
+				Severity: degradedSev,
 				Message:  fmt.Sprintf("station %s RF degraded (AGC departure %.0f, cw=%v, rx_jam=%v)", id, maxDep, cwHigh, rxJam),
 				Params:   map[string]any{"station": id, "agc_departure": maxDep, "cw": cwHigh, "rx_jam": rxJam},
 			}

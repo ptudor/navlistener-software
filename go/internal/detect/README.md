@@ -63,7 +63,8 @@ event contract (`docs/OUTPUT.md §3`).
 **SBAS** (`Tick`): `sbas_lost`, `sbas_health`.
 
 **Station RF** (`TickStations`): the four station-scoped classifiers — `jamming_detected`,
-`spoofing_suspected` (always `SevCritical`), `antenna_fault`, and `station_rf_degraded`. Station
+`spoofing_suspected`, `antenna_fault`, and `station_rf_degraded`. Each raises at its warning or
+critical severity and clears at info, like the other integrity alarms. Station
 liveness comes separately from `TickStationLiveness` → `station_offline`.
 
 **Capability** (`TickCapabilities`): `capability_impossible`, `capability_signal_lost`.

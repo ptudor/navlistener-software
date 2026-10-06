@@ -180,10 +180,10 @@ added to the vocabulary in `docs/INTEGRITY.md §5`:
 
 | `event_type` | Fires when | Severity |
 |---|---|---|
-| `jamming_detected` | AGC departure + CW/noise corroborated at a station, debounced | 1 → 2 on full lock loss |
-| `spoofing_suspected` | ≥2 independent physics gates (§3) agree at a station, debounced | 2 |
-| `station_rf_degraded` | a single RF metric departs baseline (fault-or-early-warning, not an attack claim) | 1 |
-| `antenna_fault` | MON-RF antenna status open/short, or C/N₀ collapse with no jamming signature | 1 |
+| `jamming_detected` | AGC departure + CW/noise corroborated at a station, debounced | 1 → 2 on full lock loss; 0 on clear |
+| `spoofing_suspected` | ≥2 independent physics gates (§3) agree at a station, debounced | 2; 0 on clear |
+| `station_rf_degraded` | a single RF metric departs baseline (fault-or-early-warning, not an attack claim) | 1; 0 on clear |
+| `antenna_fault` | MON-RF antenna status open/short, or C/N₀ collapse with no jamming signature | 1; 0 on clear |
 
 **Current thresholds are implemented in `go/internal/detect/thresholds.go`.** The
 RF state learns a quiet-time AGC baseline, and the detector classifies gross

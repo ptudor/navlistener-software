@@ -197,10 +197,10 @@ The baseline vocabulary and severities below are **verified against intsat's shi
 | `sbas_health` | SBAS message-type-0 / health change (do-not-use is latched on MT0 recency — `sbasType0Hold` — not the last message, so a test-mode MT0/2 interleave reads do-not-use, as a DO-229 receiver would) | sev 0 (info), → sev 2 (critical) on do-not-use — these are event *severities*; the served SBAS `health_code` itself is only ever 1 (OK) or 3 (do-not-use), per the §OUTPUT 2.2 enum |
 | `qzss_health` | QZSS navigation health transition; L1S DC-report enrichment is planned | 1–2 |
 | `navic_health` *(planned)* | NavIC SPS health transition; unavailable until the NavIC decoder lands | 1–2 |
-| `jamming_detected` | station AGC/CW/noise evidence confirms jamming (`DEFENSE-PNT.md §4`) | 1, → 2 on severe/full-lock-loss evidence |
-| `spoofing_suspected` | ≥2 independent station physics gates agree (`DEFENSE-PNT.md §3–4`). **Dormant in v1 : only 1 station-fusion gate is wired, so this cannot fire — see §8's dormancy disclosure and the `spoof_gates_wired`/`spoof_gate_quorum` gauges** | 2 |
-| `station_rf_degraded` | one station RF metric departs its baseline; early warning, not an attack claim | 1 |
-| `antenna_fault` | receiver antenna status reports open/short or equivalent confirmed fault | 1 |
+| `jamming_detected` | station AGC/CW/noise evidence confirms jamming (`DEFENSE-PNT.md §4`) | 1, → 2 on severe/full-lock-loss evidence; 0 on clear |
+| `spoofing_suspected` | ≥2 independent station physics gates agree (`DEFENSE-PNT.md §3–4`). **Dormant in v1 : only 1 station-fusion gate is wired, so this cannot fire — see §8's dormancy disclosure and the `spoof_gates_wired`/`spoof_gate_quorum` gauges** | 2; 0 on clear |
+| `station_rf_degraded` | one station RF metric departs its baseline; early warning, not an attack claim | 1; 0 on clear |
+| `antenna_fault` | receiver antenna status reports open/short or equivalent confirmed fault | 1; 0 on clear |
 | `capability_signal_lost` | a demonstrated `(gnssId,sigId)` is unseen past `CapSignalLostAfter` while its station remains alive | 1 |
 | `capability_impossible` | an observed signal lies outside the station's declared tudorgps capability set | 2 |
 | `ura_alert` | GPS/QZSS URA-alert flag transition : LNAV HOW bit 18 / CNAV bit 38 — the SV's own "use at own risk" declaration (IS-GPS-200N §20.3.3.2, a §6.4.6.3 marginal condition) | 1 on raise, 0 on clear |

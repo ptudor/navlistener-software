@@ -232,3 +232,42 @@ func TestRFSpoofGateUsesPerConstellationFit(t *testing.T) {
 		t.Fatalf("spoof gates = %d, want the flat GPS group to trip one gate", got)
 	}
 }
+
+// TestRFRecoverySeverityInfo guards the clear severity of the station RF alarms: a raise
+// keeps its warning/critical severity, and the confirmed return to the nominal state is
+// info, like the other integrity alarms (wn_mismatch, ura_alert, xsig_divergence).
+func TestRFRecoverySeverityInfo(t *testing.T) {
+	cases := []struct {
+		name, typ, raised string
+		degraded          map[string]state.StationRF
+		raisedSev         int
+	}{
+		{"jamming", "jamming_detected", "crit", station("s", band(2500, 0, 2, 0)), SevCritical},
+		{"antenna", "antenna_fault", "fault", station("s", band(0, 0, 3, 0)), SevWarning},
+		{"degraded", "station_rf_degraded", "degraded", station("s", band(1200, 0, 2, 0)), SevWarning},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := New(0)
+			t0 := time.Unix(1_700_000_000, 0)
+			clear := station("s", band(0, 0, 2, 0))
+			d.TickStations(t0, clear)
+			d.TickStations(t0.Add(10*time.Second), tc.degraded)
+			raise, ok := find(d.TickStations(t0.Add(75*time.Second), tc.degraded), tc.typ)
+			if !ok || raise.NewValue != tc.raised || raise.Severity != tc.raisedSev {
+				t.Fatalf("raise = %+v (ok=%v), want %s/%d", raise, ok, tc.raised, tc.raisedSev)
+			}
+			d.TickStations(t0.Add(80*time.Second), clear)
+			var cleared Event
+			for at := 95 * time.Second; at <= 20*time.Minute; at += 15 * time.Second {
+				if e, ok := find(d.TickStations(t0.Add(at), clear), tc.typ); ok {
+					cleared = e
+					break
+				}
+			}
+			if cleared.NewValue != "ok" || cleared.Severity != SevInfo {
+				t.Fatalf("clear = %+v, want ok/%d", cleared, SevInfo)
+			}
+		})
+	}
+}

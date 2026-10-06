@@ -45,8 +45,8 @@ What is missing:
 - The AGC baseline is seeded by its first sample and spans about one minute. A
   station that starts jammed keeps a low baseline, and a slowly rising jammer
   moves the baseline with it.
-- `spoofing_suspected` and `jamming_detected` recoveries carry critical and
-  warning severity respectively, unlike every other family, which reports a
+- The four station RF events report a clear at their raise severity, while the
+  comparable integrity alarms (`wn_mismatch`, `ura_alert`, `xsig_divergence`)
   clear at info.
 - Events carry a few aggregate numbers. They name no algorithm version,
   threshold set or contributing check, link to no stored input, and outlive the
@@ -202,7 +202,7 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 | # | Item | Status |
 |---|---|---|
 | 0.1 | Persist NAV-SAT and MON-RF evidence in `rf_samples` | done (`ba25c3f`) |
-| 0.2 | Report jamming and spoofing recoveries at info severity | planned |
+| 0.2 | Report station RF event clears at info severity | done |
 | 0.3 | Separate onset and clear dwell for station machines; degraded first observations go through onset | planned |
 | 0.4 | `go/internal/integrity`: states, check contract, profile with versioned defaults, configuration hash, M-of-N filter, held recovery, fusion | planned |
 
