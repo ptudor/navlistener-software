@@ -73,6 +73,25 @@ func ECEFToGeodetic(p gnss.ECEF, ell physconst.Ellipsoid) Geodetic {
 	return Geodetic{Lat: lat, Lon: lon, Height: h}
 }
 
+// ENUBasis returns the local east, north and up unit vectors, expressed in ECEF, at
+// geodetic position ref (docs/MATH.md §5.2). The basis depends only on geodetic
+// latitude and longitude, so it is the same on every ellipsoid.
+func ENUBasis(ref Geodetic) (east, north, up gnss.ECEF) {
+	sinLat, cosLat := math.Sincos(ref.Lat)
+	sinLon, cosLon := math.Sincos(ref.Lon)
+	east = gnss.ECEF{X: -sinLon, Y: cosLon, Z: 0}
+	north = gnss.ECEF{X: -sinLat * cosLon, Y: -sinLat * sinLon, Z: cosLat}
+	up = gnss.ECEF{X: cosLat * cosLon, Y: cosLat * sinLon, Z: sinLat}
+	return east, north, up
+}
+
+// ENU resolves an ECEF vector d (a displacement or a velocity) into its east, north
+// and up components at geodetic position ref.
+func ENU(d gnss.ECEF, ref Geodetic) (e, n, u float64) {
+	east, north, up := ENUBasis(ref)
+	return d.Dot(east), d.Dot(north), d.Dot(up)
+}
+
 // AzEl returns the topocentric azimuth and elevation (radians) of an SV at ECEF
 // position sv as seen from a receiver at geodetic position recv on ellipsoid ell.
 // Azimuth is measured clockwise from north in [0, 2π); elevation in [−π/2, π/2]
@@ -80,18 +99,7 @@ func ECEFToGeodetic(p gnss.ECEF, ell physconst.Ellipsoid) Geodetic {
 func AzEl(sv gnss.ECEF, recv Geodetic, ell physconst.Ellipsoid) (az, el float64) {
 	r := GeodeticToECEF(recv, ell)
 	d := sv.Sub(r) // receiver → SV vector, ECEF
-
-	sinLat, cosLat := math.Sincos(recv.Lat)
-	sinLon, cosLon := math.Sincos(recv.Lon)
-
-	// ENU basis at the receiver.
-	east := gnss.ECEF{X: -sinLon, Y: cosLon, Z: 0}
-	north := gnss.ECEF{X: -sinLat * cosLon, Y: -sinLat * sinLon, Z: cosLat}
-	up := gnss.ECEF{X: cosLat * cosLon, Y: cosLat * sinLon, Z: sinLat}
-
-	e := d.Dot(east)
-	n := d.Dot(north)
-	u := d.Dot(up)
+	e, n, u := ENU(d, recv)
 
 	az = math.Atan2(e, n)
 	if az < 0 {

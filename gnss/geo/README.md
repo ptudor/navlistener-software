@@ -11,7 +11,7 @@ means.
 
 | File | What it is |
 |---|---|
-| `geo.go` | `Geodetic`, `GeodeticToECEF`, `ECEFToGeodetic`, `AzEl`, and the `Deg`/`Rad` helpers. |
+| `geo.go` | `Geodetic`, `GeodeticToECEF`, `ECEFToGeodetic`, `ENUBasis`, `ENU`, `AzEl`, and the `Deg`/`Rad` helpers. |
 | `geo_test.go` | Round-trip and pole/equator checks, the three cardinal az/el cases, and the two NaN-guard regressions. |
 | `README.md` | This file. |
 
@@ -115,6 +115,11 @@ up    = ( cos φ cos λ,  cos φ sin λ, sin φ)
 Azimuth is `atan2(e, n)`, normalized to [0, 2π) — clockwise from north, the surveying and
 astronomy convention. Elevation is in [−π/2, π/2].
 
+That basis is exported as `ENUBasis(ref)`, and `ENU(d, ref)` projects any ECEF vector onto it.
+Station integrity checks use them to resolve a position error against a surveyed antenna into
+horizontal and vertical parts, and to turn a receiver's north/east/down velocity into ECEF:
+`v = vN·north + vE·east − vD·up`. The basis depends only on geodetic latitude and longitude.
+
 **Two degenerate-geometry guards, both from real regressions:**
 
 - **regression fix — coincident points.** If the SV and receiver are at the same ECEF position, `d` has
@@ -153,6 +158,9 @@ mapping.
 | `TestAzElEastHorizon` | Due east gives az 90° — which pins the ENU basis handedness. |
 | `TestAzElOverheadNeverNaN` | The regression fix regression: exactly-overhead never yields NaN. |
 | `TestAzElCoincidentPoint` | The regression fix regression: coincident SV/receiver returns π/2, not NaN. |
+| `TestENUBasisAxes` | At latitude 0, longitude 0 the basis is the ECEF +Y, +Z, +X axes. |
+| `TestENUBasisOrthonormal` | The basis is orthonormal and right-handed (east × north = up), including near a pole. |
+| `TestENUOfHeightOffset` | A pure height change resolves entirely into the up component. |
 
 Run with `go test ./geo/` from `gnss/`.
 

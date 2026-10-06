@@ -129,3 +129,48 @@ func TestAzElCoincidentPoint(t *testing.T) {
 		t.Errorf("coincident-point elevation = %v deg, want 90 (directly overhead convention)", Deg(el))
 	}
 }
+
+// TestENUBasisAxes checks the basis at the origin of latitude and longitude, where
+// east, north and up are the ECEF +Y, +Z and +X axes.
+func TestENUBasisAxes(t *testing.T) {
+	east, north, up := ENUBasis(Geodetic{})
+	want := []gnss.ECEF{{X: 0, Y: 1, Z: 0}, {X: 0, Y: 0, Z: 1}, {X: 1, Y: 0, Z: 0}}
+	for i, got := range []gnss.ECEF{east, north, up} {
+		if got.Sub(want[i]).Norm() > 1e-15 {
+			t.Errorf("axis %d = %+v, want %+v", i, got, want[i])
+		}
+	}
+}
+
+// TestENUBasisOrthonormal checks that the basis is orthonormal and right-handed
+// (east × north = up) away from the axes.
+func TestENUBasisOrthonormal(t *testing.T) {
+	for _, g := range []Geodetic{{Lat: Rad(37.4), Lon: Rad(-122.1)}, {Lat: Rad(-33.9), Lon: Rad(151.2)}, {Lat: Rad(89.9), Lon: Rad(10)}} {
+		e, n, u := ENUBasis(g)
+		for _, v := range []gnss.ECEF{e, n, u} {
+			if math.Abs(v.Norm()-1) > 1e-12 {
+				t.Errorf("%+v: non-unit axis %+v", g, v)
+			}
+		}
+		if math.Abs(e.Dot(n)) > 1e-12 || math.Abs(e.Dot(u)) > 1e-12 || math.Abs(n.Dot(u)) > 1e-12 {
+			t.Errorf("%+v: axes not orthogonal", g)
+		}
+		cross := gnss.ECEF{X: e.Y*n.Z - e.Z*n.Y, Y: e.Z*n.X - e.X*n.Z, Z: e.X*n.Y - e.Y*n.X}
+		if cross.Sub(u).Norm() > 1e-12 {
+			t.Errorf("%+v: east × north = %+v, want up %+v", g, cross, u)
+		}
+	}
+}
+
+// TestENUOfHeightOffset checks that raising a point along the ellipsoid normal shows
+// up purely in the up component.
+func TestENUOfHeightOffset(t *testing.T) {
+	ref := Geodetic{Lat: Rad(51.5), Lon: Rad(-0.1), Height: 40}
+	above := ref
+	above.Height += 12.5
+	d := GeodeticToECEF(above, physconst.WGS84).Sub(GeodeticToECEF(ref, physconst.WGS84))
+	e, n, u := ENU(d, ref)
+	if math.Abs(e) > 1e-6 || math.Abs(n) > 1e-6 || math.Abs(u-12.5) > 1e-6 {
+		t.Fatalf("ENU = (%g, %g, %g), want (0, 0, 12.5)", e, n, u)
+	}
+}
