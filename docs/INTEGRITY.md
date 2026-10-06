@@ -206,7 +206,8 @@ The baseline vocabulary and severities below are **verified against intsat's shi
 | `qzss_health` | QZSS navigation health transition; L1S DC-report enrichment is planned | 1–2 |
 | `navic_health` *(planned)* | NavIC SPS health transition; unavailable until the NavIC decoder lands | 1–2 |
 | `jamming_detected` | station AGC/CW/noise evidence confirms jamming (`DEFENSE-PNT.md §4`) | 1, → 2 on severe/full-lock-loss evidence; 0 on clear |
-| `spoofing_suspected` | ≥2 independent station physics gates agree (`DEFENSE-PNT.md §3–4`). **Dormant in v1 : only 1 station-fusion gate is wired, so this cannot fire — see §8's dormancy disclosure and the `spoof_gates_wired`/`spoof_gate_quorum` gauges** | 2; 0 on clear |
+| `spoofing_suspected` | ≥2 independent station physics domains are unassured together, or one with the receiver's own spoofing flag (`DEFENSE-PNT.md §3–4`); see §8 | 2; 0 on clear |
+| `station_assurance` | a station's fused integrity state changes among `assured`, `inconsistent` and `unassured`; carries every check's evidence ([proposal](proposals/STATION-ASSURANCE.md)) | 2 unassured, 1 inconsistent, 0 assured |
 | `station_rf_degraded` | one station RF metric departs its baseline; early warning, not an attack claim | 1; 0 on clear |
 | `antenna_fault` | receiver antenna status reports open/short or equivalent confirmed fault | 1; 0 on clear |
 | `capability_signal_lost` | a demonstrated `(gnssId,sigId)` is unseen past `CapSignalLostAfter` while its station remains alive | 1 |
@@ -299,6 +300,11 @@ of coverage:
 - **Jamming context** — *implemented* (`jamming_detected`/`station_rf_degraded`, DEFENSE-PNT
   §2/§4): u-blox MON-HW/MON-RF jamming/AGC indicators raise the prior on a receiver's
   environment being hostile, down-weighting its votes (`rf_trust`).
+- **Station solution, clock and time consistency** — *implemented* (station integrity checks,
+  DEFENSE-PNT §3): the receiver's position against its surveyed antenna and its own velocity,
+  its clock bias against its drift, and its time against independent clocks, from telemetry
+  `0x03` and the board's pulse timing. These form the position, receiver-clock and
+  time-reference domains of the spoofing fusion.
 - **Cross-signal broadcast agreement** — *implemented for Galileo (regression fix,
   `xsig_divergence`)*: one SV's independently-decoded I/NAV and F/NAV positions compared under
   one IODnav at one propagation epoch — the intra-SV analogue of §6's cross-receiver
@@ -308,15 +314,16 @@ Every gate is a *plausibility* judgement, cheap and independent of signatures �
 catch (a replayed constellation, a lifted-and-shifted receiver, a bad upload) are exactly the ones
 signatures miss.
 
-> **Dormancy disclosure.** The station-level *fusion* (`spoofing_suspected`) requires
-> `SpoofGateQuorum` (2) independent gates agreeing, and exactly **one** station-fusion gate is
-> wired today (C/N₀-vs-elevation, `WiredSpoofGates = 1`) — so `spoofing_suspected` is
-> **arithmetically unreachable** in v1. That is a deliberate conservative posture (a single gate
-> is a degradation signal, not an attack claim — `station_rf_degraded` carries it), made visible
-> rather than implied: the daemon exports `navlistener_spoof_gates_wired` and
-> `navlistener_spoof_gate_quorum` gauges (alert on `wired < quorum`) and logs the dormancy at
-> startup. The per-SV plausibility gates above (`wn_mismatch`, discos, envelopes) fire
-> independently of the quorum.
+> **Fusion coverage.** The station-level *fusion* (`spoofing_suspected`) requires
+> `SpoofGateQuorum` (2) independent physics domains unassured together, or one with the
+> receiver's own spoofing flag. Four domains are wired (`WiredSpoofGates = 4`): signal power,
+> position, receiver clock and time reference. A station contributes the domains its receiver
+> reports — one that sends only NAV-SAT and MON-RF has signal power alone and cannot reach the
+> quorum — and its integrity assessment says which are available. A single domain is a
+> degradation signal, not an attack claim, and surfaces as `station_assurance` `inconsistent`.
+> The daemon exports `navlistener_spoof_gates_wired` and `navlistener_spoof_gate_quorum` gauges
+> (alert on `wired < quorum`). The per-SV plausibility gates above (`wn_mismatch`, discos,
+> envelopes) fire independently of the quorum.
 
 ---
 
@@ -353,8 +360,8 @@ synchronized access to shared state:
 **Scope :** this table maps the core per-SV integrity signals to their primary feed
 fields; it is deliberately **not** the full event vocabulary. The authoritative, complete event
 list — including `ura_alert`, `wn_mismatch`, `leap_mismatch`, `bds_integrity_flag`,
-`position_unknown`, `xsig_divergence`, the two capability events, and the four station-RF
-events — is §5's table, which is kept matched to the shipped `Type:` literals.
+`position_unknown`, `xsig_divergence`, the two capability events, the four station-RF events
+and `station_assurance` — is §5's table, which is kept matched to the shipped `Type:` literals.
 
 Field names and event vocabulary are defined once, in `docs/OUTPUT.md`; the integrity layer
 emits to that standard and consumers read it from there.

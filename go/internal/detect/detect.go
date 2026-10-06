@@ -58,6 +58,7 @@ const (
 	familyStationRF
 	familyStationLiveness
 	familyCapability
+	familyStationIntegrity
 	numFamilies
 )
 
@@ -93,21 +94,21 @@ func New(debounce time.Duration) *Detector {
 const stateUnknown = "unknown"
 
 // dwellPolicy is how long a provisional state must persist before it is confirmed.
-// nominal is the healthy state of every metric in the family; empty means the family
-// has no nominal state, so a first observation seeds silently whatever it is and one
-// symmetric window applies (the SV, liveness and capability families). With a nominal
-// state, degradation (any change away from nominal) needs onset and the return to
-// nominal needs clear, and a degraded first observation is not seeded: it starts from
+// nominal maps each metric of the family to its healthy state; a metric without
+// one seeds its first observation silently, whatever it is, and uses one symmetric
+// window (the SV, liveness and capability families). With a nominal state,
+// degradation (any change away from nominal) needs onset and the return to nominal
+// needs clear, and a degraded first observation is not seeded: it starts from
 // stateUnknown and must earn its onset like any other degradation, so a station that
 // starts inside a jammed or spoofed environment still raises its event.
 type dwellPolicy struct {
 	onset, clear time.Duration
-	nominal      string
+	nominal      map[string]string
 }
 
-// required is the dwell a change from the machine's current state to s must hold.
-func (p dwellPolicy) required(s string) time.Duration {
-	if p.nominal != "" && s == p.nominal {
+// required is the dwell a change to s must hold, given the metric's nominal state.
+func (p dwellPolicy) required(nominal, s string) time.Duration {
+	if nominal != "" && s == nominal {
 		return p.clear
 	}
 	return p.onset
@@ -116,13 +117,20 @@ func (p dwellPolicy) required(s string) time.Duration {
 // policy returns a family's dwell policy. Station RF machines clear after
 // StationClearDwell (or the debounce, if a test configured a longer one), so an
 // intermittent fault cannot alternate alarm and recovery every debounce window.
+// Station integrity machines need no longer clear: their checks already hold every
+// recovery (internal/integrity) before the assessment shows it.
 func (d *Detector) policy(fam tickFamily) dwellPolicy {
-	if fam == familyStationRF {
+	switch fam {
+	case familyStationRF:
 		clear := StationClearDwell
 		if d.debounce > clear {
 			clear = d.debounce
 		}
-		return dwellPolicy{onset: d.debounce, clear: clear, nominal: "ok"}
+		return dwellPolicy{onset: d.debounce, clear: clear,
+			nominal: map[string]string{"jamming": "ok", "antenna": "ok", "rf_degraded": "ok"}}
+	case familyStationIntegrity:
+		return dwellPolicy{onset: d.debounce, clear: d.debounce,
+			nominal: map[string]string{"spoofing": "ok", "assurance": "assured"}}
 	}
 	return dwellPolicy{onset: d.debounce, clear: d.debounce}
 }
@@ -134,9 +142,10 @@ func (d *Detector) policy(fam tickFamily) dwellPolicy {
 // gen is the current round of the caller's classifier family (see tickFamily).
 func (d *Detector) observe(subject, metric, newState string, now time.Time, gen uint64, p dwellPolicy) (changed bool, old string) {
 	key := subject + "\x00" + metric
+	nominal := p.nominal[metric]
 	m := d.machines[key]
 	if m == nil {
-		if p.nominal == "" || newState == p.nominal {
+		if nominal == "" || newState == nominal {
 			d.machines[key] = &machine{current: newState, lastGen: gen, lastSeen: now}
 			return false, "" // seed; first sighting is not a transition
 		}
@@ -145,7 +154,7 @@ func (d *Detector) observe(subject, metric, newState string, now time.Time, gen 
 		d.machines[key] = &machine{current: stateUnknown, provisional: newState, since: now, lastGen: gen, lastSeen: now}
 		return false, ""
 	}
-	if m.current == stateUnknown && p.nominal != "" && newState == p.nominal {
+	if m.current == stateUnknown && nominal != "" && newState == nominal {
 		// The unconfirmed degradation reverted before onset: seed nominal silently,
 		// exactly as if it had been the first sighting.
 		m.current, m.provisional, m.lastGen, m.lastSeen = newState, "", gen, now
@@ -184,7 +193,7 @@ func (d *Detector) observe(subject, metric, newState string, now time.Time, gen 
 	heldFor := now.Sub(m.lastSeen)
 	m.lastGen = gen
 	m.lastSeen = now
-	dwell := p.required(newState)
+	dwell := p.required(nominal, newState)
 	switch {
 	case newState == m.current:
 		m.provisional = "" // pending change reverted
@@ -226,8 +235,8 @@ func (d *Detector) Tick(now time.Time, svs map[string]state.FeedSV, sbas map[str
 	})
 }
 
-// TickStations advances the station-scoped PNT-defense classifiers (jamming/spoofing/RF-
-// degraded/antenna, docs/DEFENSE-PNT.md §4) over the same debounced state machines as the
+// TickStations advances the station-scoped RF classifiers (jamming/RF-degraded/antenna,
+// docs/DEFENSE-PNT.md §4) over the same debounced state machines as the
 // SV/SBAS metrics, so a station's RF events share the confirmation discipline and event
 // contract. The daemon calls it alongside Tick on the detector cadence.
 func (d *Detector) TickStations(now time.Time, stations map[string]state.StationRF) []Event {

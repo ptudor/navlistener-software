@@ -6,12 +6,12 @@ import (
 	"github.com/ptudor/navlistener/internal/state"
 )
 
-// detectStationRF runs the four station-scoped PNT-defense classifiers over one observer's
-// RF read model (docs/DEFENSE-PNT.md §4). The metrics are computed in internal/state (AGC
-// departures from the learned baseline, the C/N₀-vs-elevation residual); this only
-// classifies and debounces. The design rule applies: no single gate fires a spoofing alarm
-// (a ≥2-gate fusion), and a lone metric departure is reported as a degradation, not an
-// attack. Thresholds are conservative/observational in v1 (docs/DEFENSE-PNT.md §4).
+// detectStationRF runs the station-scoped RF classifiers over one observer's RF read model
+// (docs/DEFENSE-PNT.md §4): jamming_detected, antenna_fault and station_rf_degraded. The
+// metrics are computed in internal/state (AGC departures from the learned baseline); this
+// only classifies and debounces. A lone metric departure is reported as a degradation, not
+// an attack. spoofing_suspected fuses evidence domains instead (integrity.go). Thresholds
+// are conservative/observational in v1 (docs/DEFENSE-PNT.md §4).
 func (d *Detector) detectStationRF(id string, rf state.StationRF, emit emitFunc) {
 	// Aggregate the per-band signals: the worst AGC departure, any CW spike, any
 	// antenna fault, and whether the receiver itself flags jamming.
@@ -58,27 +58,6 @@ func (d *Detector) detectStationRF(id string, rf state.StationRF, emit emitFunc)
 		})
 	}
 
-	// spoofing_suspected: count the independent physics gates that agree at this station
-	// and require a quorum (docs/DEFENSE-PNT.md §3 fusion). v1 wires the C/N₀-vs-elevation
-	// gate; the others (coherent delta-Hz, clock transient, cross-constellation,
-	// measured-iono) plug in here as they are computed, raising the gate count.
-	gates := spoofGates(rf)
-	spoofBand, spoofSev := "ok", SevInfo
-	if gates >= SpoofGateQuorum {
-		spoofBand, spoofSev = "suspected", SevCritical
-	}
-	// an aged-out NAV-SAT fit is likewise unknown; do not feed an "ok"
-	// recovery into the spoofing machine.
-	if rf.Cn0Resid != nil && rf.Cn0Mean != nil {
-		emit(id, "spoofing", spoofBand, func(old string) Event {
-			return Event{
-				Type: "spoofing_suspected", OldValue: old, NewValue: spoofBand, Severity: spoofSev,
-				Message: fmt.Sprintf("station %s spoofing suspected (%d gates)", id, gates),
-				Params:  map[string]any{"station": id, "gates": gates},
-			}
-		})
-	}
-
 	// antenna_fault: the receiver's antenna status open/short (a C/N₀ collapse with no
 	// jamming signature is a future antenna gate — docs/DEFENSE-PNT.md §4).
 	antState, antSev := "ok", SevInfo
@@ -96,13 +75,13 @@ func (d *Detector) detectStationRF(id string, rf state.StationRF, emit emitFunc)
 	}
 
 	// station_rf_degraded: a single RF metric departs baseline but was not corroborated
-	// into a jamming or spoofing claim — a fault-or-early-warning, not an attack assertion.
+	// into a jamming claim — a fault-or-early-warning, not an attack assertion.
 	// the receiver's own jam flag (jamState >= 2) alone surfaces here too, per
 	// DEFENSE-PNT.md §2's single-metric rule — CW-alone and AGC-alone already do; jamInd-alone
 	// previously surfaced as nothing. The jamming-ATTACK claim (jamBand) keeps its AGC-departure
 	// + CW/jam corroboration requirement unchanged.
 	depPresent := (haveDep && maxDep >= AGCDepartureThreshold) || cwHigh || rxJam
-	degraded := depPresent && jamBand == "ok" && spoofBand == "ok"
+	degraded := depPresent && jamBand == "ok"
 	degradedSev := SevInfo
 	if degraded {
 		degradedSev = SevWarning
@@ -140,28 +119,4 @@ func (d *Detector) detectStationOffline(id string, lastSeenS int, emit emitFunc)
 			Params:   map[string]any{"station": id, "last_seen_s": lastSeenS},
 		}
 	})
-}
-
-// spoofGates counts the independent spoofing physics gates currently tripped at a station
-// (docs/DEFENSE-PNT.md §3). v1: the C/N₀-vs-elevation gate — a residual variance that has
-// collapsed at an unnaturally high, uniform C/N₀ (the single-transmitter signature).
-//
-// the function's range is {0, 1} — the per-constellation loop and the
-// aggregate fit are two VIEWS of the same physical gate (the same C/N₀ evidence
-// through two regressions), so they must never sum to 2 and fake a quorum; the
-// early return on the first tripped constellation encodes that. The count of
-// distinct gates this function can see is WiredSpoofGates (thresholds.go) —
-// keep the two in lockstep when adding a gate here.
-func spoofGates(rf state.StationRF) int {
-	gates := 0
-	for _, stats := range rf.Cn0ByConstellation {
-		if stats.Resid < Cn0SpoofResidVar && stats.Mean > Cn0SpoofMean {
-			return 1
-		}
-	}
-	if rf.Cn0Resid != nil && rf.Cn0Mean != nil &&
-		*rf.Cn0Resid < Cn0SpoofResidVar && *rf.Cn0Mean > Cn0SpoofMean {
-		gates++
-	}
-	return gates
 }

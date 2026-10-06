@@ -169,6 +169,18 @@ func (s *Station) Assess(now time.Time) Assessment {
 	}
 }
 
+// WiredPhysicsDomains is how many physics domains have at least one check in this
+// build: the most independent domains the spoofing rule can ever count.
+func WiredPhysicsDomains() int {
+	domains := map[Domain]bool{}
+	for _, info := range checkInfos {
+		if info.Domain.Physics() {
+			domains[info.Domain] = true
+		}
+	}
+	return len(domains)
+}
+
 // CheckVersions returns every known check's version, for documentation and tooling.
 func CheckVersions() map[string]int {
 	out := make(map[string]int, len(checkInfos))

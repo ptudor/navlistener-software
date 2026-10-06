@@ -2,6 +2,11 @@ package integrity
 
 import "slices"
 
+// SpoofingQuorum is how many independent physics domains must be unassured together
+// for the evidence to indicate spoofing; one suffices only with the receiver's own
+// spoofing indication (docs/DEFENSE-PNT.md §3).
+const SpoofingQuorum = 2
+
 // Fusion is a station's combined state.
 type Fusion struct {
 	State State `json:"state"`
@@ -68,7 +73,7 @@ func Fuse(results []Result, weights map[string]float64) Fusion {
 	if domains[DomainRFEnvironment] {
 		corroborated++
 	}
-	f.SpoofingIndicated = physics >= 2 || (physics >= 1 && domains[DomainReceiverVerdict])
+	f.SpoofingIndicated = physics >= SpoofingQuorum || (physics >= 1 && domains[DomainReceiverVerdict])
 
 	f.State = Unavailable
 	if sumW > 0 {

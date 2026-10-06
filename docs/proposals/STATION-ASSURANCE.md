@@ -165,8 +165,9 @@ unassured check holds it at `inconsistent`. An assured mean never hides an
 unassured check. A check that was merely unavailable recovers at once; one that
 was degraded holds the worst candidate seen during its recovery period.
 
-Station event machines get separate onset and clear dwell times. Onset keeps the
-standard 60 s, and a clear needs five minutes. A station's first observation no
+Station RF event machines get separate onset and clear dwell times. Onset keeps
+the standard 60 s, and a clear needs five minutes; the integrity events clear after
+the standard 60 s, because their checks already hold every recovery. A station's first observation no
 longer seeds silently when it is degraded; it goes through the onset dwell, so a
 station that starts jammed or spoofed raises its event. The SV event families keep
 their symmetric dwell.
@@ -216,17 +217,18 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 
 | # | Item | Status |
 |---|---|---|
-| 1.1 | Go codec for telemetry `0x03`, push decoding, `rf_samples` kind `solution` | done |
-| 1.2 | Collector dial-mode UBX parsing of NAV-PVT, NAV-CLOCK and NAV-STATUS, with epoch assembly | done |
+| 1.1 | Go codec for telemetry `0x03`, push decoding, `rf_samples` kind `solution` | done (`d5857fd`) |
+| 1.2 | Collector dial-mode UBX parsing of NAV-PVT, NAV-CLOCK and NAV-STATUS, with epoch assembly | done (`d5857fd`) |
 | 1.3 | ESP32: parse NAV-PVT fully, enable NAV-CLOCK and NAV-EOE, encode and send `0x03` | planned |
 | 1.4 | C feeder: parse and send `0x03`; `--configure-ubx` enables the messages | planned |
-| 1.5 | Station integrity profile: fixed or mobile, maximum speed, surveyed position shared with `[[reception.station]]` | done |
+| 1.5 | Station integrity profile: fixed or mobile, maximum speed, surveyed position shared with `[[reception.station]]` | done (`d5857fd`) |
 | 1.6 | Position checks: `static_position`, `stationary_velocity`, `motion_bound`, `position_velocity` | done (`88fceb6`) |
 | 1.7 | Clock checks: `clock_bias_drift`, `clock_drift_rate` | done (`88fceb6`) |
 | 1.8 | Time-reference checks `utc_offset` and `pps_rtc_phase` | done (`88fceb6`) |
 | 1.9 | `receiver_spoofing` input, and the existing C/N₀ and AGC logic as checks | done (`88fceb6`) |
-| 1.10 | Per-station assessment in live state, served as `integrity` in the private observers feed | done |
-| 1.11 | Domain-based spoofing fusion and the `station_assurance` event, with check parameters, versions and configuration hash | planned |
+| 1.10 | Per-station assessment in live state, served as `integrity` in the private observers feed | done (`d5857fd`) |
+| 1.11 | Domain-based spoofing fusion and the `station_assurance` event, with check parameters, versions and configuration hash | done |
+| 1.12 | Integrity Station app: show the assessment and handle `station_assurance` | planned |
 
 ### Phase 2 — evidence, replay, durable baselines
 

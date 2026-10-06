@@ -474,14 +474,14 @@ func run() int {
 	// Integrity DETECT: the debounced detector runs on a cadence over the same live
 	// read model the feeds serve, persists confirmed events (firing pg_notify) and
 	// pushes them to the SSE broker (docs/INTEGRITY.md, docs/OUTPUT.md §3).
-	// publish the spoofing detector's coverage so its dormancy is a
-	// fact on the operational surface, not an implication — with wired < quorum
-	// (the v1 posture) spoofing_suspected cannot fire, and an operator must be
-	// able to tell that from "no spoofing observed".
+	// publish the spoofing detector's coverage so that any dormancy is a
+	// fact on the operational surface, not an implication — were wired < quorum,
+	// spoofing_suspected could not fire, and an operator must be able to tell
+	// that from "no spoofing observed".
 	metrics.SpoofGatesWired.Set(float64(detect.WiredSpoofGates))
 	metrics.SpoofGateQuorumGauge.Set(float64(detect.SpoofGateQuorum))
 	if detect.WiredSpoofGates < detect.SpoofGateQuorum {
-		log.Warn("spoofing_suspected detector is dormant: fewer independent gates wired than the fusion quorum requires",
+		log.Warn("spoofing_suspected detector is dormant: fewer independent physics domains wired than the fusion quorum requires",
 			"wired", detect.WiredSpoofGates, "quorum", detect.SpoofGateQuorum)
 	}
 	// detectLoop/emitEvent take the eventWriter/eventPublisher interfaces, but
@@ -1060,9 +1060,11 @@ func detectEvents(live *state.Store, det *detect.Detector, audienceKey string) [
 	// GEO stays classifiable after the served feed drops it — the sbas_lost event
 	// has no input otherwise. The served /gnss feed keeps using FeedSBAS.
 	events := det.Tick(now, live.FeedSVs(now), live.SBASDetect(now), live.LiveReceivers(now))
-	// Station-scoped PNT-defense events (jamming/spoofing/RF, docs/DEFENSE-PNT.md)
-	// share the debounce state machine and event pipeline.
+	// Station-scoped PNT-defense events (jamming/RF, docs/DEFENSE-PNT.md) share the
+	// debounce state machine and event pipeline, as do the station integrity events
+	// (spoofing_suspected, station_assurance) evaluated from each station's checks.
 	events = append(events, det.TickStations(now, live.FeedStationRF(now))...)
+	events = append(events, det.TickIntegrity(now, live.FeedStationIntegrity(now))...)
 	// Station liveness (station_offline, regression fix/regression fix) reads the unfiltered
 	// per-station age map — retained state, not the staleness-filtered RF view.
 	stationLastSeen := live.StationLastSeen(now)

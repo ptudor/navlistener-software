@@ -153,18 +153,19 @@ var (
 
 	// SpoofGatesWired / SpoofGateQuorumGauge publish the spoofing
 	// detector's coverage honestly: spoofing_suspected needs quorum-many
-	// independent physics gates agreeing, and while wired < quorum the event is
-	// arithmetically unreachable — a deliberate conservative posture that would
-	// otherwise be invisible (a permanently silent spoofing channel reads the
-	// same as "no spoofing observed"). Set once at startup from the detect
-	// constants; alert on wired < quorum to surface the dormancy.
+	// independent physics domains agreeing, and were wired < quorum the event
+	// would be arithmetically unreachable — a state that would otherwise be
+	// invisible (a permanently silent spoofing channel reads the same as "no
+	// spoofing observed"). Set once at startup from the detect constants; alert
+	// on wired < quorum. These describe the collector; which domains a given
+	// station contributes is in its integrity assessment.
 	SpoofGatesWired = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "navlistener_spoof_gates_wired",
-		Help: "Independent spoofing physics gates implemented (max the fusion can count).",
+		Help: "Independent spoofing physics domains implemented (max the fusion can count).",
 	})
 	SpoofGateQuorumGauge = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "navlistener_spoof_gate_quorum",
-		Help: "Gates that must agree before spoofing_suspected fires; wired < quorum means the detector is dormant.",
+		Help: "Physics domains that must agree before spoofing_suspected fires; wired < quorum means the detector is dormant.",
 	})
 
 	// EventWriteErrorsTotal counts integrity events that failed to persist.

@@ -7,7 +7,11 @@
 // broadcast.
 package detect
 
-import "time"
+import (
+	"time"
+
+	"github.com/ptudor/navlistener/internal/integrity"
+)
 
 // Thresholds are the detection operating points (docs/INTEGRITY.md §2). The values
 // are the standard defined there (cross-checked against intsat's shipped detector);
@@ -107,47 +111,38 @@ const (
 	// deliberately CONSERVATIVE and OBSERVATIONAL in v1: the design mandates learning
 	// per-station quiet-time distributions before freezing alert thresholds, so these
 	// gate only gross, unambiguous departures and the thresholds are expected to move
-	// once real baselines exist (docs/DEFENSE-PNT.md §4 — this file is their single home).
+	// once real baselines exist. Their single home is internal/integrity, whose agc
+	// check applies the same classification; these names keep the station RF
+	// classifiers readable.
 
 	// AGCDepartureThreshold (AGC counts below the learned baseline) at which a band is
 	// considered jamming-suspect; the severe band is a near-total gain collapse.
-	AGCDepartureThreshold       = 800.0
-	AGCDepartureSevereThreshold = 2000.0
+	AGCDepartureThreshold       = integrity.DefaultAGCDeparture
+	AGCDepartureSevereThreshold = integrity.DefaultAGCDepartureSevere
 
 	// CWSuppressThreshold: a CW-suppression / jamming indicator above this points at a
 	// narrowband tone (u-blox reports 0..255).
-	CWSuppressThreshold = 180
-
-	// Cn0SpoofResidVar / Cn0SpoofMean: the C/N₀-vs-elevation gate fires when the residual
-	// variance collapses (an unnaturally flat sky) AT an unnaturally high, uniform C/N₀ —
-	// the single-transmitter spoofer signature (docs/DEFENSE-PNT.md §3).
-	Cn0SpoofResidVar = 2.0
-	Cn0SpoofMean     = 45.0
+	CWSuppressThreshold = integrity.DefaultCWSuppress
 
 	// SpoofGateQuorum is the fusion rule: a spoofing_suspected event needs at least this
-	// many independent physics gates agreeing at one station (docs/DEFENSE-PNT.md §3). In
-	// v1 few gates are wired, so this keeps spoofing alerts corroborated, not trigger-happy.
-	SpoofGateQuorum = 2
+	// many independent physics domains unassured together at one station, or one with
+	// the receiver's own spoofing indication (docs/DEFENSE-PNT.md §3). It is evaluated by
+	// integrity.Fuse; the quorum must not be lowered to 1, because a single domain is a
+	// degradation signal, not an attack claim.
+	SpoofGateQuorum = integrity.SpoofingQuorum
 
-	// WiredSpoofGates is the number of INDEPENDENT physics gates
-	// spoofGates can currently count — the maximum value it can return. v1
-	// wires exactly one: C/N₀-vs-elevation (the per-constellation and
-	// aggregate fits are two views of the SAME gate, so they never sum).
-	// Because WiredSpoofGates < SpoofGateQuorum, spoofing_suspected is
-	// ARITHMETICALLY UNREACHABLE today — a deliberate conservative posture
-	// (the quorum must not be lowered to 1; a single gate is a degradation
-	// signal, not an attack claim), but one that must be VISIBLE, not implied:
-	// main.go exports both numbers as gauges (navlistener_spoof_gates_wired /
-	// navlistener_spoof_gate_quorum) so an operator watching a permanently
-	// silent spoofing channel can distinguish "no spoofing observed" from
-	// "detection not yet armed" (wired < quorum ⇒ dormant), and INTEGRITY §8 /
-	// DEFENSE-PNT §3 mark the remaining gates' status explicitly. The named
-	// next gate is coherent delta-Hz (RAWX Doppler vs predicted range-rate) —
-	// blocked on station positions, which land with the observer-geometry
-	// pass; the Galileo cross-signal comparison is the other
-	// candidate. BUMP THIS CONSTANT with every gate added to spoofGates —
-	// TestWiredSpoofGatesMatchesImplementation enforces the pairing.
-	WiredSpoofGates = 1
+	// WiredSpoofGates is the number of INDEPENDENT physics domains with at least one
+	// wired check — the most the spoofing rule can count: signal power (C/N₀ vs
+	// elevation), position (static position, stationary velocity, motion bound,
+	// position vs velocity), receiver clock (bias vs drift, drift rate) and time
+	// reference (UTC vs an independent clock, PPS vs RTC). Checks in one domain share
+	// their measurements and count once. main.go exports it beside the quorum as gauges
+	// (navlistener_spoof_gates_wired / navlistener_spoof_gate_quorum) so an operator can
+	// tell "no spoofing observed" from "detection not armed". A station contributes only
+	// the domains its receiver reports; its assessment shows which. BUMP THIS CONSTANT
+	// with every physics domain integrity wires — TestWiredSpoofGatesMatchesIntegrity
+	// enforces the pairing.
+	WiredSpoofGates = 4
 
 	// XSigDivergenceMeters is the position-disagreement bound for the
 	// Galileo cross-signal agreement check (I/NAV E##@0 vs F/NAV E##@3). This is

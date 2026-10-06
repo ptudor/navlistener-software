@@ -162,3 +162,12 @@ func TestStationDeterministic(t *testing.T) {
 		t.Fatalf("assessments differ:\n%s\n%s", a, b)
 	}
 }
+
+func TestWiredPhysicsDomains(t *testing.T) {
+	if got := WiredPhysicsDomains(); got != 4 {
+		t.Fatalf("wired physics domains = %d, want signal power, position, receiver clock and time reference", got)
+	}
+	if WiredPhysicsDomains() < SpoofingQuorum {
+		t.Fatal("the spoofing rule cannot be satisfied by physics domains alone")
+	}
+}

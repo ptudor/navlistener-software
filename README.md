@@ -39,16 +39,19 @@ on the signal and input format, and planned extensions are marked in the docs.
 | SBAS | L1 message headers and the message-type-0 “do not use” indication; correction payloads are not decoded |
 | NavIC | Decoder deferred |
 | Receiver inputs | UBX navigation and receiver telemetry; SBF and RTCM capture with raw persistence, pending central decoders; NTRIP transport |
-| Monitoring | Orbit and clock discontinuities, station liveness, signal capabilities, receiver RF telemetry, and stationary received-power history |
+| Monitoring | Orbit and clock discontinuities, station liveness, signal capabilities, receiver RF telemetry, stationary received-power history, and station integrity assurance |
 | Hardware trust | Collector-verified `trusted`, `open`, `test` or `none` per session, from a manufacturer-signed commissioning record and a session proof; implemented in the collector and firmware, with on-device key generation awaiting bench validation |
 | Serving | Native `/gnss/api/v2/*` JSON feeds and `/gnss/events` server-sent events, with public and authorized private audiences |
 
 See the [GNSS library](gnss/README.md), [signal coverage](docs/CONSTELLATIONS.md),
 [observer hardware contract](docs/HARDWARE-OBSERVER.md), and
 [commissioning and hardware trust](docs/COMMISSIONING.md) for details. Federation
-transport and cryptographic OSNMA verification remain planned work. The current
-[RF monitor](docs/DEFENSE-PNT.md) reports jamming and receiver anomalies; confirmed
-spoofing alerts await additional independent detection inputs. ESP32 feeders use
+transport and cryptographic OSNMA verification remain planned work. The
+[station monitor](docs/DEFENSE-PNT.md) reports jamming and receiver anomalies, and
+checks each station's own position, clock and time against physics and independent
+clocks. It confirms spoofing only when two independent evidence domains agree. The
+receiver-solution telemetry most of those checks need is parsed from dial-mode u-blox
+connections; ESP32 and C feeder support is in progress. ESP32 feeders use
 a [RAM-only spool](esp32/README.md#durability-envelope-read-before-deploying-one-as-a-primary-observer).
 
 ## Build and run locally

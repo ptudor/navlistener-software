@@ -213,12 +213,10 @@ type StationRF struct {
 	Cn0Resid *float64        `json:"cn0_elev_resid_var,omitempty"`
 	NumSats  int             `json:"num_sats"`
 	RFTrust  float64         `json:"rf_trust"`
-	// Cn0ByConstellation is detector-only detail. The public observers-feed shape
-	// remains the established aggregate fields above.
-	Cn0ByConstellation map[int]Cn0Stats `json:"-"`
 }
 
-// Cn0Stats is one constellation's elevation-fit result for spoof-gate fusion.
+// Cn0Stats is one constellation's elevation-fit result. The integrity
+// cn0_uniformity check evaluates each one beside the aggregate fit (integrity.go).
 type Cn0Stats struct {
 	Mean    float64
 	Resid   float64
@@ -238,11 +236,11 @@ type StationRFBand struct {
 }
 
 // FeedStationRF builds the per-station RF-defense read model as of now, for the
-// observers feed and the detector. rf_trust falls when a band shows a sustained AGC
-// departure — an untrustworthy RF environment down-weights the station's integrity votes
-// (docs/DEFENSE-PNT.md §2). the C/N₀-vs-elevation residual is computed and served as
-// cn0_resid but is deliberately NOT yet folded into rf_trust (no DEFENSE-PNT-defined collapse
-// threshold exists, and nothing in detect consumes rf_trust); this comment matches the code.
+// observers feed and the station RF classifiers. rf_trust falls when a band shows a
+// sustained AGC departure — an untrustworthy RF environment down-weights the station's
+// integrity votes (docs/DEFENSE-PNT.md §2). The C/N₀-vs-elevation residual is served as
+// cn0_resid and evaluated by the integrity cn0_uniformity check, but is deliberately NOT
+// folded into rf_trust, and nothing in detect consumes rf_trust; this comment matches the code.
 func (s *Store) FeedStationRF(now time.Time) map[string]StationRF {
 	out := make(map[string]StationRF)
 	s.rfMu.Lock()
@@ -259,16 +257,12 @@ func (s *Store) FeedStationRF(now time.Time) map[string]StationRF {
 		// MON-RF and NAV-SAT arrive as independent frames and jointly keep
 		// the station-level lastSeen fresh; without its own staleness check, a
 		// C/N₀ residual computed once and never refreshed (NAV-SAT stopped while
-		// MON-RF kept the station alive) would feed a tripped spoof gate forever
-		// -- it could confirm spoofing_suspected once and never clear.
+		// MON-RF kept the station alive) would be served as current forever. The
+		// integrity cn0_uniformity check ages its own input the same way.
 		if st.haveCn0 && now.Sub(st.cn0LastSeen) <= rfStaleAfter {
 			m, r := st.cn0Mean, st.cn0Resid
 			entry.Cn0Mean, entry.Cn0Resid = &m, &r
 			entry.NumSats = st.cn0NumSats
-			entry.Cn0ByConstellation = make(map[int]Cn0Stats, len(st.cn0ByGNSS))
-			for gnssID, stats := range st.cn0ByGNSS {
-				entry.Cn0ByConstellation[gnssID] = stats
-			}
 		}
 		blocks := make([]int, 0, len(st.bands))
 		for b := range st.bands {

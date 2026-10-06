@@ -12,13 +12,15 @@ the detector can be tested by handing it a map.
 | File | What it is |
 |---|---|
 | `detect.go` | `Detector`, `Event`, and the per-SV / SBAS classifiers. |
-| `thresholds.go` | Every operating point, collected in one place. |
-| `rf.go` | The four station-scoped PNT-defense classifiers. |
+| `thresholds.go` | Every SV operating point, and the station names aliasing `internal/integrity`'s defaults. |
+| `rf.go` | The station RF classifiers: jamming, antenna fault, RF degradation, station offline. |
+| `integrity.go` | `TickIntegrity`: `spoofing_suspected` and `station_assurance` from each station's integrity assessment. |
 | `capability.go` | The capability-plausibility classifiers. |
 | `*_test.go` | Threshold behavior, debounce, flap suppression, and per-classifier transitions. |
 | `README.md` | This file. |
 
-Imports `internal/state` — and only in that direction. `state` never imports `detect`.
+Imports `internal/state` and `internal/integrity` — and only in that direction. Neither imports
+`detect`.
 
 ---
 
@@ -28,6 +30,7 @@ Imports `internal/state` — and only in that direction. `state` never imports `
 func New(debounce time.Duration) *Detector
 func (d *Detector) Tick(now, svs map[string]state.FeedSV, sbas map[string]state.SBASEntry, liveReceivers int) []Event
 func (d *Detector) TickStations(now, stations map[string]state.StationRF) []Event
+func (d *Detector) TickIntegrity(now, stations map[string]integrity.Assessment) []Event
 func (d *Detector) TickStationLiveness(now, lastSeen map[string]int) []Event
 func (d *Detector) TickCapabilities(now, reports map[string]state.StationCapReport) []Event
 func (d *Detector) Reset()
@@ -68,10 +71,12 @@ family seeds its first observation silently, whatever it is.
 
 **SBAS** (`Tick`): `sbas_lost`, `sbas_health`.
 
-**Station RF** (`TickStations`): the four station-scoped classifiers — `jamming_detected`,
-`spoofing_suspected`, `antenna_fault`, and `station_rf_degraded`. Each raises at its warning or
-critical severity and clears at info, like the other integrity alarms. Station
-liveness comes separately from `TickStationLiveness` → `station_offline`.
+**Station RF** (`TickStations`): `jamming_detected`, `antenna_fault`, and `station_rf_degraded`.
+Each raises at its warning or critical severity and clears at info, like the other integrity
+alarms. Station liveness comes separately from `TickStationLiveness` → `station_offline`.
+
+**Station integrity** (`TickIntegrity`): `spoofing_suspected` and `station_assurance`, from each
+station's assessment. Both carry the whole assessment as evidence.
 
 **Capability** (`TickCapabilities`): `capability_impossible`, `capability_signal_lost`.
 
@@ -131,14 +136,25 @@ documented corroboration window stops describing the served one.
 
 ### The station RF classifiers
 
-`detectStationRF` runs four station-scoped PNT-defense classifiers over one observer's RF read
-model (`docs/DEFENSE-PNT.md §4`). The metrics — AGC departures from the learned baseline, the
-C/N₀-vs-elevation residual — are computed in `internal/state`; this only classifies and
-debounces.
+`detectStationRF` runs the station RF classifiers over one observer's RF read model
+(`docs/DEFENSE-PNT.md §4`). The metrics — AGC departures from the learned baseline — are computed
+in `internal/state`; this only classifies and debounces.
 
-**The design rule is explicit and non-negotiable: no single gate fires a spoofing alarm.** A ≥2-gate
-fusion is required, and a lone metric departure is reported as a *degradation*, not an attack.
-Thresholds are conservative and observational in v1.
+### The station integrity classifiers
+
+`TickIntegrity` reads each station's assessment from `internal/integrity`, which has already
+filtered every check, held its recoveries and fused the result. `spoofing_suspected` follows the
+assessment's spoofing indication and `station_assurance` its fused state. A station with no
+available physics check holds its spoofing machine, and an unavailable fused state holds the
+assurance machine, so a lack of input is never a recovery. Because the checks hold recoveries
+themselves, this family clears after the ordinary debounce rather than `StationClearDwell`.
+
+**The design rule is explicit and non-negotiable: no single evidence domain fires a spoofing
+alarm.** Two independent physics domains must agree (or one with the receiver's own flag), and a
+lone domain is reported as a *degradation* — `station_assurance` `inconsistent` — not an attack.
+`WiredSpoofGates` and `SpoofGateQuorum` mirror `internal/integrity`, and
+`TestWiredSpoofGatesMatchesIntegrity` keeps them paired. Thresholds are conservative and
+observational in v1.
 
 That rule exists because the cost asymmetry is brutal. A missed jamming event is a gap in a log;
 a false "you are being spoofed" is an operator scrambling a response for nothing, twice, before

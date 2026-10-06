@@ -1,10 +1,12 @@
 # navlistener — PNT defense: jamming & spoofing detection
 
-**Status: RF monitoring, jamming detection, and stationary received-power history
-implemented; spoofing fusion incomplete.** MON-RF/MON-HW and reception telemetry
-feed the current station detectors. Only one independent spoofing gate is wired,
-below the required quorum of two, so the current collector cannot confirm
-`spoofing_suspected` (§3). Additional inputs and hardware tiers remain planned.
+**Status: RF monitoring, jamming detection, stationary received-power history and
+station integrity checks implemented.** MON-RF/MON-HW, reception telemetry, the
+receiver's own solution (telemetry `0x03`) and the board's pulse timing feed the
+station detectors. Four independent physics domains are wired against the quorum of
+two, so `spoofing_suspected` can be confirmed (§3) at stations whose receivers report
+more than one of them. Doppler, cross-constellation and measured-ionosphere gates,
+SEC-SIG transport and the hardware tiers remain planned.
 
 This document describes how `navlistener` uses receiver telemetry for RF monitoring
 and the planned **jamming and spoofing defense layer** for the fleet. This is
@@ -131,11 +133,21 @@ rule identifies what is wired today, consistent with `docs/INTEGRITY.md §8`.
   `docs/MATH.md §2.2` / `docs/INTEGRITY.md §3`: observed Doppler minus ephemeris-predicted Doppler.
   A *coherent* delta-Hz bias across many SVs at one receiver — all pulled toward a common origin —
   is a wide-area spoofer or a receiver clock error; the sign pattern distinguishes them.
-- **Time / phase transients.** A spoofer capturing the tracking loops forces a non-physical jump
-  in the receiver's clock offset or a carrier-phase step (the receiver's EKF sees an "impossible"
-  transient). Metric: clock-offset / drift discontinuity from `ObserverDetails`, beyond what an
-  oscillator can physically do, gated against a station's own stable-clock baseline (and, on the
-  hardware tier, its disciplined TCXO/RTC — `docs/DESIGN.md §3`).
+- **Position consistency (implemented).** A fixed antenna does not move and a mobile one moves no
+  faster than its platform. The receiver's own solution (telemetry `0x03`) is checked against the
+  surveyed antenna position with accuracy-scaled bands and a ten-minute mean offset, its reported
+  speed against zero, a mobile station's displacement against its maximum speed, and the velocity
+  implied by position differences against the reported velocity. A spoofer that drags the solution
+  breaks one of these unless it reproduces the installation's physics.
+- **Receiver clock transients (implemented).** A spoofer capturing the tracking loops forces a
+  non-physical change in the receiver's clock solution. The clock bias is checked against the
+  integrated clock drift over 30–40 s, with whole-millisecond receiver adjustments removed, and
+  the drift's rate of change over 60–120 s against what an oscillator can do.
+- **Time reference (implemented).** The receiver's UTC is compared with an independent wall-clock
+  stamp of the same record (the observer's NTP clock, or the collector's on a dial connection),
+  catching whole-second steps; on ESP32 observers the GNSS PPS is compared with the board's
+  free-running RTC pulse, catching sub-second steps the RTC did not take. A slow drag below the
+  RTC model's uncertainty is not detected.
 - **Cross-constellation contradiction.** A spoofer that targets only GPS L1 leaves the Galileo /
   GLONASS / BeiDou solutions disagreeing with the GPS one. Metric: divergence of the broadcast
   inter-system time offsets and per-constellation PVT beyond their normal agreement
@@ -145,29 +157,34 @@ rule identifies what is wired today, consistent with `docs/INTEGRITY.md §8`.
   consistent dual-frequency ionospheric delay. The measured slant iono (`docs/MATH.md §7.4`) that
   diverges from the broadcast model *incoherently with the real space-weather picture the rest of
   the fleet sees* is a spoofing tell — one more independent physics gate the network gets for free.
-- **Receiver SEC-SIG verdict (planned input).** The receiver's own spoofing/jamming flags would be ingested and
-  **weighted, not trusted**: a SEC-SIG spoofing flag *raises the prior*, and when it agrees with
-  one or more independent physics gates above the event is confirmed; alone it is recorded but not
+- **Receiver spoofing verdict (NAV-STATUS implemented; SEC-SIG planned).** The receiver's own
+  spoofing flag is ingested and **weighted, not trusted**: it *raises the prior*, and when it agrees
+  with one independent physics gate above the event is confirmed; alone it is recorded but not
   alarmed (§5 — a black-box flag can miss a cold-boot spoof and can false-positive on multipath).
+  NAV-STATUS `spoofDetState` arrives at epoch rate in telemetry `0x03` and at low rate in board
+  reports; per-signal SEC-SIG state remains planned.
 
-**Fusion rule.** No single gate fires a spoofing alarm. A confirmed `spoofing_suspected` event
-requires **≥2 independent gates** agreeing at one station within the debounce window (or one gate
-corroborated by a *neighbouring* station seeing the same anomaly on the same SVs — cross-receiver
-corroboration is the strongest evidence, since a genuine broadcast is identical for every receiver
-in view). This mirrors the broadcast-agreement logic in `docs/INTEGRITY.md §6`.
+**Fusion rule.** No single gate fires a spoofing alarm. Gates are grouped by **evidence domain** —
+the measurements they share — and a domain counts once however many of its checks agree, so two
+views of one measurement cannot make a quorum. A confirmed `spoofing_suspected` event requires
+**≥2 independent physics domains** unassured at one station (signal power, position, receiver
+clock, time reference), or one together with the receiver's own spoofing flag, held for the
+debounce window. A *neighbouring* station seeing the same anomaly on the same SVs would be
+stronger corroboration still, since a genuine broadcast is identical for every receiver in view;
+that input is planned. This mirrors the broadcast-agreement logic in `docs/INTEGRITY.md §6`.
+Interference evidence (AGC, CW) does not count toward the quorum: jamming is not spoofing.
 
-> **As-built status.** Of the gates above, exactly **one** is wired into the fusion
-> today: C/N₀-vs-elevation (`WiredSpoofGates = 1`). Doppler-vs-ephemeris and time-transient need
-> station positions/baselines (the observer-geometry pass); cross-constellation contradiction
-> needs the coherence detector over the now-decoded GGTO/BDT-UTC sets; measured-iono needs the
-> regression fix evaluator; SEC-SIG ingest is not yet transported. With the quorum at 2,
-> `spoofing_suspected` is therefore **arithmetically unreachable in v1** — deliberate (the quorum
-> is not lowered; a lone gate surfaces as `station_rf_degraded`), and disclosed operationally via
-> the `navlistener_spoof_gates_wired` / `navlistener_spoof_gate_quorum` gauges and a startup
-> warning (alert on `wired < quorum`). See `docs/INTEGRITY.md §8`'s per-gate status list.
-> The repeating-ground-track comparison is implemented as an ESP reception warning
-> and private collector check. It shares the C/N₀ evidence family and is not wired as
-> a second central fusion gate, so the gauges and unreachable quorum remain unchanged.
+> **As-built status.** Four physics domains are wired (`WiredSpoofGates = 4`): signal power
+> (C/N₀ vs elevation), position, receiver clock and time reference, evaluated by the station
+> integrity checks in `go/internal/integrity` ([proposal](proposals/STATION-ASSURANCE.md)).
+> Which domains a station contributes depends on what its receiver reports: a station that sends
+> only NAV-SAT and MON-RF has the signal-power domain alone and cannot reach the quorum. Each
+> station's integrity assessment shows its available checks. Doppler-vs-ephemeris needs RAWX on
+> the push path, cross-constellation contradiction needs the coherence detector, measured-iono
+> needs the residual evaluator, and SEC-SIG ingest is not yet transported. The
+> `navlistener_spoof_gates_wired` / `navlistener_spoof_gate_quorum` gauges publish the wiring.
+> The repeating-ground-track comparison is implemented as an ESP reception warning and private
+> collector check; it shares the signal-power evidence family and adds no domain.
 
 ---
 
@@ -181,19 +198,26 @@ added to the vocabulary in `docs/INTEGRITY.md §5`:
 | `event_type` | Fires when | Severity |
 |---|---|---|
 | `jamming_detected` | AGC departure + CW/noise corroborated at a station, debounced | 1 → 2 on full lock loss; 0 on clear |
-| `spoofing_suspected` | ≥2 independent physics gates (§3) agree at a station, debounced | 2; 0 on clear |
+| `spoofing_suspected` | ≥2 independent physics domains (§3), or one with the receiver's spoofing flag, unassured at a station, debounced | 2; 0 on clear |
+| `station_assurance` | the station's fused integrity state changes among `assured`, `inconsistent` and `unassured` ([proposal](proposals/STATION-ASSURANCE.md) §4) | 2 unassured, 1 inconsistent, 0 assured |
 | `station_rf_degraded` | a single RF metric departs baseline (fault-or-early-warning, not an attack claim) | 1; 0 on clear |
 | `antenna_fault` | MON-RF antenna status open/short, or C/N₀ collapse with no jamming signature | 1; 0 on clear |
 
-**Current thresholds are implemented in `go/internal/detect/thresholds.go`.** The
-RF state learns a quiet-time AGC baseline, and the detector classifies gross
-departures using conservative operating points. These remain subject to calibration
+**Current thresholds are implemented in `go/internal/integrity`** (`DefaultProfile`, with the
+station RF classifier names in `go/internal/detect/thresholds.go`). The RF state learns a
+quiet-time AGC baseline, and the detector classifies gross departures using conservative
+operating points. These remain subject to calibration
 with station data; changes must keep the implementation and `docs/INTEGRITY.md`
 aligned. Severity encoding is the shared `0 info · 1 warning · 2 critical`.
 
 Constellation/station scope: these are **station-scoped** events (the threat is at a receiver's
-antenna), unlike the SV-scoped broadcast events. The event's `params` carry the station id, the RF
-band, and the corroborating gate set so a client can localize the headline.
+antenna), unlike the SV-scoped broadcast events. `jamming_detected`, `station_rf_degraded` and
+`antenna_fault` carry the station id and the aggregate RF indicators. `spoofing_suspected` and
+`station_assurance` carry the station's whole assessment: fused state and score, unassured
+domains, every available check's state, measured values, thresholds, version and reasons, the
+names of unavailable checks, the engine version and the configuration hash. Station RF machines
+confirm a recovery only after five minutes; the integrity checks hold their own recoveries, so
+their events clear after the ordinary debounce.
 
 ---
 
@@ -231,6 +255,10 @@ The receiver flag is therefore **one weighted input** into the fusion rule (§3)
   scalar (how much this station's votes are currently down-weighted); `noise_level` is the
   receiver's raw MON-RF indicator, not a dB measurement. Confirmed events go to the
   SSE stream and `gnss_events` like every other integrity event.
+- **Station integrity assessments surface in the private `observers` feed** as `integrity`
+  (`docs/OUTPUT.md §1.3`), with the evidence behind each check. Receiver solutions are stored in
+  `rf_samples` with kind `solution`. Public views carry neither, and public projections drop
+  station RF and solution telemetry entirely.
 - **Baselines are state:** with the historian enabled, the server's repeating-track
   C/N₀ model is versioned in `reception_power_models`, while the observer keeps its
   own CRC-protected model in local NVS. Threshold policy and the explicit hardware/site
