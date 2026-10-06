@@ -183,7 +183,9 @@ Turns the RF telemetry the fleet's receivers already produce — MON-RF/MON-HW A
 indicators, NAV-SAT C/N₀ and elevation — into per-station detection metrics:
 
 - **jamming**: departures from a *learned per-station baseline*, not a fixed threshold. Every site
-  has its own noise floor.
+  has its own noise floor. The baseline is a six-hour median of per-minute medians with a
+  ten-minute warm-up, a bounded drift rate and relearning after a jammed start
+  (`docs/DEFENSE-PNT.md §2`); `AGCBaselines`/`RestoreAGCBaselines` checkpoint and restore it.
 - **spoofing**: the C/N₀-vs-elevation gate. Real satellites show a characteristic C/N₀ rise with
   elevation; a ground transmitter doesn't. `Cn0Stats` carries the per-constellation fit.
 
@@ -203,11 +205,13 @@ separated. Comparing measured against broadcast-model delay is a spoofing tell.
 `feed.go` builds the rich read models that `serve` publishes. `snapshot.go` is a deliberately
 smaller diagnostic view for `/debug/state`, and it stays a subset on purpose.
 
-`snapshot.go` also records the design fact worth repeating : **there is no cross-restart
-state persistence anywhere in the daemon.** Every restart rebuilds from live ingest — positions
-absent until each SV re-broadcasts a full set, discos absent until a second post-restart
-ephemeris. That's consistent with the "re-decode from raw frames" design: `nav_frames` is the
-durable record and offline replay is the recovery path.
+`snapshot.go` also records the design fact worth repeating : **satellite state has no
+cross-restart persistence.** Every restart rebuilds it from live ingest — positions absent until
+each SV re-broadcasts a full set, discos absent until a second post-restart ephemeris. That's
+consistent with the "re-decode from raw frames" design: `nav_frames` is the durable record and
+offline replay is the recovery path. Station models learned over hours are the exception: the
+daemon checkpoints the received-power models and AGC baselines as durable point state and
+restores them at startup, because relearning them would blind those detectors for hours.
 
 `Reset()` is the privacy-withdrawal counterpart: it drops a complete audience materialization
 and advances its generation. Whole-view reset is intentional because merged ephemeris,

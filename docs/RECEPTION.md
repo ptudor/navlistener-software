@@ -108,7 +108,8 @@ The server sends a stable site identity derived from the observer ID, surveyed
 position, configured signal set, availability and power policies, and
 `power_model_epoch`. The observer clears its local model when that identity changes.
 Change `power_model_epoch` before using a different antenna, cable, receiver,
-mounting location or any other change that invalidates the old RF path. The
+mounting location or any other change that invalidates the old RF path. The new epoch
+also discards the station's stored AGC baseline ([DEFENSE-PNT.md](DEFENSE-PNT.md#2-jamming-detection-the-rf-front-end)). The
 software cannot discover every physical change on its own.
 
 Local and delivered references are evaluated separately. The received-power panel

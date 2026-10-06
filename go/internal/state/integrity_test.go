@@ -128,7 +128,8 @@ func TestStoreIntegrityStatusPreferredOverBoard(t *testing.T) {
 func TestStoreIntegrityFromRF(t *testing.T) {
 	s := New(1)
 	at := integrityT0
-	for i := 0; i < 5; i++ {
+	// Eleven minutes: the AGC baseline needs ten quiet minutes before it is served.
+	for i := 0; i < 660; i++ {
 		f := &ingest.RawFrame{Source: "dial-1", Recv: at, RF: &ingest.RawRF{Bands: []ingest.RFBand{{Block: 0, AGC: 5000, JamState: 1, AntStatus: 2}}}}
 		s.Apply(f)
 		sats := make([]ingest.SatCN0, 0, 8)

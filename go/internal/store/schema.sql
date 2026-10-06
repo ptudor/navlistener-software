@@ -463,6 +463,17 @@ CREATE TABLE IF NOT EXISTS reception_power_models (
     data BYTEA NOT NULL
 );
 
+-- Durable point state: each station's learned AGC baselines (docs/DEFENSE-PNT.md §2),
+-- checkpointed every five minutes and at orderly shutdown and restored at startup, so
+-- a restart does not repeat the ten-minute warm-up. epoch is the station's antenna
+-- epoch (power_model_epoch); a checkpoint from another epoch is not restored.
+CREATE TABLE IF NOT EXISTS agc_baselines (
+    source_id TEXT PRIMARY KEY,
+    updated_at TIMESTAMPTZ NOT NULL,
+    epoch TEXT NOT NULL,
+    data JSONB NOT NULL
+);
+
 -- Durable evidence for station integrity events (docs/proposals/STATION-ASSURANCE.md
 -- §7, item 2.1). Raw samples expire with raw_retention while events are kept
 -- forever, so when a station event confirms, the collector copies the bounded

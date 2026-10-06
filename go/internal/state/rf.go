@@ -1,6 +1,7 @@
 package state
 
 import (
+	"math"
 	"sort"
 	"time"
 
@@ -17,13 +18,25 @@ import (
 // publish the metrics and learn per-station quiet-time baselines; alerting stays
 // conservative until real distributions exist (docs/DEFENSE-PNT.md §4).
 
-// rfBaselineRing bounds the per-band quiet-time AGC sample window whose median is the
-// station's clear-sky baseline; agcLearnBand is how far a sample may sit from the
-// current baseline and still be treated as quiet (so a jammer's departure cannot poison
-// the baseline it is measured against — docs/DEFENSE-PNT.md §2).
+// The AGC baseline (docs/DEFENSE-PNT.md §2) is each band's clear-sky level: the median
+// of per-minute AGC medians over agcBaselineWindow. A sample further than agcLearnBand
+// from the baseline is measured but not learned, so a jammer's departure cannot poison
+// the baseline it is measured against. No baseline is served until agcWarmupMinutes of
+// quiet minutes exist, so a station is never measured against its first sample. Once
+// established, the baseline moves at most agcDriftPerHour, so a jammer that ramps up
+// more slowly than the learn band still cannot drag it along. A band persistently
+// quieter than its baseline (gain above it by more than the learn band) for
+// agcRelearnAfter learned its baseline under interference; it starts learning again.
 const (
-	rfBaselineRing = 64
-	agcLearnBand   = 400 // AGC counts; departures beyond this don't update the baseline
+	agcLearnBand        = 400 // AGC counts; departures beyond this don't update the baseline
+	agcMinuteMinSamples = 3   // a minute needs this many quiet samples to count
+	agcMinuteMaxSamples = 600 // bound on one minute's samples (UBX MON-RF is 1 Hz by default)
+	agcWarmupMinutes    = 10
+	agcBaselineWindow   = 6 * time.Hour
+	agcDriftPerHour     = 150.0 // AGC counts
+	agcRelearnAfter     = 15 * time.Minute
+	// agcRestoreMaxAge bounds how old a checkpointed baseline may be when restored.
+	agcRestoreMaxAge = 24 * time.Hour
 	// rfStaleAfter is THE staleness operating point for station-scoped feeds —
 	// and, through the feed.go alias `sbasStaleAfter = rfStaleAfter`, for the
 	// served SBAS feed as well. two other constants are pinned to this
@@ -42,15 +55,30 @@ const (
 )
 
 // rfBand is one RF path's learned state at a station: the latest receiver numbers plus
-// the quiet-time AGC baseline learned as a robust median.
+// the quiet-time AGC baseline.
 type rfBand struct {
 	block                            int
 	agc, noise, cwSuppress, jamState int
 	antStatus                        int
-	baseline                         float64
-	haveBaseline                     bool
-	quiet                            []int // recent quiet-time AGC samples (median → baseline)
 	lastSeen                         time.Time
+	agcBaseline
+}
+
+// AGCMinute is one completed minute's median of quiet AGC samples.
+type AGCMinute struct {
+	Start  time.Time `json:"start"`
+	Median float64   `json:"median"`
+}
+
+// agcBaseline learns one band's clear-sky AGC level (see the constants above).
+type agcBaseline struct {
+	baseline     float64
+	haveBaseline bool
+	baselineAt   time.Time   // when the baseline was last moved
+	minutes      []AGCMinute // completed minutes within agcBaselineWindow, oldest first
+	minuteStart  time.Time
+	current      []int     // quiet samples of the minute in progress
+	aboveSince   time.Time // start of a continuous run above baseline + agcLearnBand
 }
 
 // rfStation is one observer's RF-environment state: per-band front-end state and the
@@ -90,12 +118,16 @@ func (s *Store) applyRF(f *ingest.RawFrame) {
 		band := st.bands[b.Block]
 		if band == nil {
 			band = &rfBand{block: b.Block}
+			if restored, ok := s.agcRestore[f.Source][b.Block]; ok {
+				band.agcBaseline = restored
+				delete(s.agcRestore[f.Source], b.Block)
+			}
 			st.bands[b.Block] = band
 		}
 		band.agc, band.noise, band.cwSuppress = b.AGC, b.NoiseLevel, b.CWSuppress
 		band.jamState, band.antStatus = b.JamState, b.AntStatus
 		band.lastSeen = recv
-		band.learn(b.AGC)
+		band.learn(b.AGC, recv)
 	}
 	if len(f.RF.Sats) > 0 {
 		st.cn0Mean, st.cn0Resid, st.cn0NumSats = cn0ElevationResidual(f.RF.Sats)
@@ -127,20 +159,76 @@ func cn0ElevationResidualByConstellation(sats []ingest.SatCN0) map[int]Cn0Stats 
 	return out
 }
 
-// learn folds an AGC sample into the quiet-time baseline. A sample far from the current
-// baseline (a jamming departure) is measured but not learned, so the baseline stays the
-// clear-sky reference (docs/DEFENSE-PNT.md §2). Before a baseline exists, every sample
-// seeds it.
-func (b *rfBand) learn(agc int) {
-	if b.haveBaseline && absInt(agc-int(b.baseline)) > agcLearnBand {
-		return // a departure: don't let it poison its own reference
+// learn folds an AGC sample received at at into the quiet-time baseline.
+func (b *agcBaseline) learn(agc int, at time.Time) {
+	if b.haveBaseline {
+		switch d := float64(agc) - b.baseline; {
+		case d < -agcLearnBand:
+			// A gain cut: a jamming departure, measured but never learned.
+			b.aboveSince = time.Time{}
+			return
+		case d > agcLearnBand:
+			// Quieter than the clear-sky reference. Brief excursions are not
+			// learned; a sustained one means the reference was learned under
+			// interference, so learning starts again.
+			if b.aboveSince.IsZero() {
+				b.aboveSince = at
+			}
+			if at.Sub(b.aboveSince) < agcRelearnAfter {
+				return
+			}
+			*b = agcBaseline{}
+		default:
+			b.aboveSince = time.Time{}
+		}
 	}
-	b.quiet = append(b.quiet, agc)
-	if len(b.quiet) > rfBaselineRing {
-		b.quiet = b.quiet[len(b.quiet)-rfBaselineRing:]
+	if b.minuteStart.IsZero() {
+		b.minuteStart = at
 	}
-	b.baseline = medianInt(b.quiet)
-	b.haveBaseline = true
+	if at.Sub(b.minuteStart) >= time.Minute {
+		b.closeMinute(at)
+	}
+	if len(b.current) < agcMinuteMaxSamples {
+		b.current = append(b.current, agc)
+	}
+}
+
+// closeMinute completes the minute in progress, drops minutes older than the window,
+// and moves the baseline toward the median of the remaining minutes.
+func (b *agcBaseline) closeMinute(at time.Time) {
+	if len(b.current) >= agcMinuteMinSamples {
+		b.minutes = append(b.minutes, AGCMinute{Start: b.minuteStart, Median: medianInt(b.current)})
+	}
+	b.current, b.minuteStart = b.current[:0], at
+	n := 0
+	for n < len(b.minutes) && at.Sub(b.minutes[n].Start) > agcBaselineWindow {
+		n++
+	}
+	b.minutes = b.minutes[n:]
+	b.update(at)
+}
+
+// update moves the baseline toward the median of the learned minutes, establishing it
+// after the warm-up and then at most agcDriftPerHour.
+func (b *agcBaseline) update(at time.Time) {
+	if len(b.minutes) == 0 {
+		return
+	}
+	medians := make([]float64, len(b.minutes))
+	for i, m := range b.minutes {
+		medians[i] = m.Median
+	}
+	target := medianFloat(medians)
+	switch {
+	case !b.haveBaseline:
+		if len(b.minutes) >= agcWarmupMinutes {
+			b.baseline, b.haveBaseline, b.baselineAt = target, true, at
+		}
+	default:
+		limit := agcDriftPerHour * at.Sub(b.baselineAt).Hours()
+		b.baseline += math.Max(-limit, math.Min(limit, target-b.baseline))
+		b.baselineAt = at
+	}
 }
 
 // cn0ElevationResidual fits C/N₀ against elevation across the tracked SVs and returns the
@@ -295,6 +383,16 @@ func (s *Store) FeedStationRF(now time.Time) map[string]StationRF {
 	return out
 }
 
+func medianFloat(v []float64) float64 {
+	c := append([]float64(nil), v...)
+	sort.Float64s(c)
+	n := len(c)
+	if n%2 == 1 {
+		return c[n/2]
+	}
+	return (c[n/2-1] + c[n/2]) / 2
+}
+
 func medianInt(v []int) float64 {
 	if len(v) == 0 {
 		return 0
@@ -313,4 +411,66 @@ func absInt(x int) int {
 		return -x
 	}
 	return x
+}
+
+// AGCBaseline is one band's durable AGC baseline: what a checkpoint stores and a
+// restart restores, so a collector restart does not repeat the warm-up.
+type AGCBaseline struct {
+	Block      int         `json:"block"`
+	Baseline   float64     `json:"baseline"`
+	BaselineAt time.Time   `json:"baseline_at"`
+	Minutes    []AGCMinute `json:"minutes"`
+}
+
+// AGCBaselines returns every station's established AGC baselines, bands in block order.
+func (s *Store) AGCBaselines() map[string][]AGCBaseline {
+	s.rfMu.Lock()
+	defer s.rfMu.Unlock()
+	out := map[string][]AGCBaseline{}
+	for id, st := range s.rf {
+		blocks := make([]int, 0, len(st.bands))
+		for block, b := range st.bands {
+			if b.haveBaseline {
+				blocks = append(blocks, block)
+			}
+		}
+		sort.Ints(blocks)
+		for _, block := range blocks {
+			b := st.bands[block]
+			out[id] = append(out[id], AGCBaseline{Block: block, Baseline: b.baseline, BaselineAt: b.baselineAt,
+				Minutes: append([]AGCMinute(nil), b.minutes...)})
+		}
+	}
+	return out
+}
+
+// RestoreAGCBaselines queues a station's checkpointed baselines. Each is installed
+// when its band first reports, so a restored station is not live until it is heard
+// from. A baseline older than agcRestoreMaxAge, out of range, or for a band that has
+// already reported is not restored; the count restored is returned.
+func (s *Store) RestoreAGCBaselines(id string, bands []AGCBaseline, now time.Time) int {
+	s.rfMu.Lock()
+	defer s.rfMu.Unlock()
+	restored := 0
+	for _, b := range bands {
+		if b.Block < 0 || b.Block > 255 || math.IsNaN(b.Baseline) || b.Baseline < 0 || b.Baseline > 65535 ||
+			now.Sub(b.BaselineAt) > agcRestoreMaxAge || b.BaselineAt.After(now) {
+			continue
+		}
+		if st := s.rf[id]; st != nil && st.bands[b.Block] != nil {
+			continue
+		}
+		baseline := agcBaseline{baseline: b.Baseline, haveBaseline: true, baselineAt: b.BaselineAt}
+		for _, m := range b.Minutes {
+			if !math.IsNaN(m.Median) && now.Sub(m.Start) <= agcBaselineWindow && !m.Start.After(now) {
+				baseline.minutes = append(baseline.minutes, m)
+			}
+		}
+		if s.agcRestore[id] == nil {
+			s.agcRestore[id] = map[int]agcBaseline{}
+		}
+		s.agcRestore[id][b.Block] = baseline
+		restored++
+	}
+	return restored
 }

@@ -79,9 +79,15 @@ drowned out; the receiver's own front-end is the best jamming sensor we have. Tw
 - **Broadband (noise) jamming.** The AGC steps its gain *down* to keep the ADC from saturating
   when wideband energy floods the band. The detection metric is **AGC departure from the
   station's own clear-sky baseline**, not an absolute threshold — every antenna/cable/site has a
-  different nominal AGC. The collector learns a per-station, per-band AGC baseline (robust median
-  over a rolling quiet window) and flags a sustained downward departure, correlated with a
-  fleet-wide C/N₀ drop at that station.
+  different nominal AGC. The collector learns a per-station, per-band AGC baseline and flags a
+  sustained downward departure, correlated with a fleet-wide C/N₀ drop at that station. The
+  baseline is the median of per-minute AGC medians over six hours. A sample more than 400 counts
+  from it is measured but not learned. No baseline is served until ten quiet minutes exist, so a
+  station is never measured against its first sample. Once established it moves at most 150
+  counts an hour, so a jammer ramping more slowly than the learn band still shows as a departure
+  instead of dragging the baseline along. A band that stays more than 400 counts *above* its
+  baseline (quieter) for fifteen minutes learned that baseline under interference, for example
+  after starting jammed, and starts learning again.
 - **Narrowband (CW) jamming.** A discrete high-amplitude tone (e.g. near 1575.42 MHz) drives the
   receiver's notch filters; the **CW-suppression indicator** spikes toward 100%. The metric is
   the CW-suppression level crossing a band, debounced.
@@ -265,8 +271,12 @@ The receiver flag is therefore **one weighted input** into the fusion rule (§3)
   station RF and solution telemetry entirely.
 - **Baselines are state:** with the historian enabled, the server's repeating-track
   C/N₀ model is versioned in `reception_power_models`, while the observer keeps its
-  own CRC-protected model in local NVS. Threshold policy and the explicit hardware/site
-  epoch remain configuration.
+  own CRC-protected model in local NVS. The AGC baselines are checkpointed in
+  `agc_baselines` every five minutes and at orderly shutdown and restored at startup
+  (when under a day old), so a restart does not repeat the warm-up; a restored band is
+  installed when it first reports. Changing a station's `power_model_epoch` discards its
+  stored AGC baseline too. Scoped audience views learn their own baselines. Threshold
+  policy and the explicit hardware/site epoch remain configuration.
 
 ---
 

@@ -612,6 +612,9 @@ type Store struct {
 	rfMu   sync.Mutex
 	rf     map[string]*rfStation
 	boards map[string]*boardStation // also guarded by rfMu
+	// Checkpointed AGC baselines awaiting their band's first report (rf.go), also
+	// guarded by rfMu.
+	agcRestore map[string]map[int]agcBaseline
 	// Per-station integrity assurance (integrity.go), also guarded by rfMu.
 	integrity    map[string]*integrityStation
 	integrityCfg *IntegrityConfig // nil: default profile, no installations
@@ -638,6 +641,7 @@ func New(n int) *Store {
 		rf:               make(map[string]*rfStation),
 		boards:           make(map[string]*boardStation),
 		integrity:        make(map[string]*integrityStation),
+		agcRestore:       make(map[string]map[int]agcBaseline),
 		caps:             make(map[string]*capStation),
 	}
 	for i := range s.shards {

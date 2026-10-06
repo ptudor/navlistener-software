@@ -6,8 +6,9 @@ import "time"
 // remains a diagnostic subset of the richer native v2 svs feed.
 //
 // regression fix (recorded design fact, not a defect): this is an in-RAM debug view
-// only — there is NO cross-restart state persistence anywhere in the daemon.
-// Every restart rebuilds the registry from live ingest (positions absent until
+// only — satellite state has NO cross-restart persistence. (Station models learned
+// over hours, the received-power models and AGC baselines, are checkpointed by the
+// daemon as durable point state instead.) Every restart rebuilds the registry from live ingest (positions absent until
 // each SV re-broadcasts a full set; discos need a second post-restart ephemeris,
 // correctly gated on prior haveEph), consistent with the "re-decode from raw
 // frames" design: the historian's nav_frames hypertable is the durable record

@@ -33,6 +33,7 @@ func (s *Store) Reset() {
 	// Integrity checks hold the same withdrawn receipts in their histories; the
 	// configuration (integrityCfg) is not authorization evidence and stays.
 	s.integrity = make(map[string]*integrityStation)
+	s.agcRestore = make(map[string]map[int]agcBaseline)
 	s.caps = make(map[string]*capStation)
 	// Declarations are authorization evidence too. They are relearned from
 	// post-change trusted receipts; retaining them could expose a withdrawn

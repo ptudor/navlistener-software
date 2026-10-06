@@ -329,9 +329,13 @@ func run() int {
 	if historian != nil {
 		restoreCtx, restoreCancel := context.WithTimeout(ctx, 30*time.Second)
 		err = restoreReceptionPowerModels(restoreCtx, historian, stationManager, log)
+		if err == nil {
+			// Before ingest starts, so every band's first report finds its checkpoint.
+			err = restoreAGCBaselines(restoreCtx, historian, live, agcEpochs(cfg), time.Now(), log)
+		}
 		restoreCancel()
 		if err != nil {
-			log.Error("reception power model restore failed", "error", err)
+			log.Error("station model restore failed", "error", err)
 			storeCancel()
 			<-storeDone
 			return 1
@@ -352,6 +356,11 @@ func run() int {
 		go func() {
 			defer wg.Done()
 			receptionPowerModelLoop(ctx, historian, stationManager, log)
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			agcBaselineLoop(ctx, historian, live, agcEpochs(cfg), log)
 		}()
 	}
 	wg.Add(1)
@@ -629,6 +638,10 @@ func run() int {
 		if err := saveReceptionPowerModels(checkpointCtx, historian, stationManager, true); err != nil {
 			incomplete = append(incomplete, "reception power model checkpoint")
 			log.Warn("final reception power model checkpoint failed", "error", err)
+		}
+		if err := saveAGCBaselines(checkpointCtx, historian, live, agcEpochs(cfg)); err != nil {
+			incomplete = append(incomplete, "AGC baseline checkpoint")
+			log.Warn("final AGC baseline checkpoint failed", "error", err)
 		}
 		checkpointCancel()
 	}

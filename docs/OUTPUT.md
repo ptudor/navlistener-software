@@ -557,6 +557,11 @@ the window held no stored sample. `event_evidence_samples` copies the matching
 `rf_samples`/`observer_samples` rows, every receipt and provenance column included, with the
 event key and `origin`. It is a hypertable on the event time, compressed after 30 days.
 
+`agc_baselines` is durable point state as well: one row per station with its learned AGC
+baselines as JSON (per band: baseline, when it last moved, and the per-minute medians of the
+last six hours) and the `power_model_epoch` they were learned under, checkpointed every five
+minutes and at orderly shutdown.
+
 `reception_power_models` is durable point state, not a telemetry history. It
 keeps the latest versioned model blob per `source_id`, its update time and the
 decimal `model_id`; the text representation preserves the full unsigned 64-bit

@@ -401,6 +401,7 @@ var requiredColumns = map[string][]string{
 	"observer_samples":       boardColumns,
 	"rf_samples":             rfColumns,
 	"reception_power_models": {"source_id", "updated_at", "model_id", "data"},
+	"agc_baselines":          {"source_id", "updated_at", "epoch", "data"},
 	"nav_frames_seq_seen":    {"source_id", "session_id", "feeder_seq", "seen_at"},
 }
 
