@@ -60,7 +60,7 @@ func TestReceiverMetricsIndependentOfAudienceGrants(t *testing.T) {
 		close(frames)
 		before := snapshot()
 		var last atomic.Int64
-		decodeLoop(frames, live, pub, pubEvents, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), &last, registry, nil)
+		decodeLoop(frames, live, pub, pubEvents, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), &last, registry, nil, nil)
 		after := snapshot()
 		for i := range after {
 			after[i] -= before[i]

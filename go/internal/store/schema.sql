@@ -428,3 +428,13 @@ ALTER TABLE rf_samples SET (
     timescaledb.compress_segmentby = 'organization_id,source_id,kind',
     timescaledb.compress_orderby = 'ts DESC'
 );
+
+-- Latest compact server-side received-power model per configured station. The
+-- blob is versioned and carries its site/configuration fingerprint; changing
+-- the antenna epoch makes an old model fail closed during restore.
+CREATE TABLE IF NOT EXISTS reception_power_models (
+    source_id TEXT PRIMARY KEY,
+    updated_at TIMESTAMPTZ NOT NULL,
+    model_id TEXT NOT NULL,
+    data BYTEA NOT NULL
+);

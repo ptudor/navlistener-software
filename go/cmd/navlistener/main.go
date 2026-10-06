@@ -295,6 +295,31 @@ func run() int {
 		close(storeDone)
 	}
 
+	stationManager := stationcontrol.New(cfg.Reception, func(c identity.ObserverContext, site reception.Site, now time.Time) reception.Expectation {
+		// Public broadcasts or the station's own organization; never the all-source operator view.
+		st := publicLive
+		if c.OrganizationID != identity.UnassignedOrganization {
+			if private, _, ok := audienceRegistry.Resolve(identity.Audience{Kind: identity.AudienceOrganization, ID: c.OrganizationID}); ok {
+				st = private
+			}
+		}
+		return st.ReceptionForecast(site, now)
+	})
+	if pushSrv != nil {
+		pushSrv.SetReception(stationManager)
+	}
+	if historian != nil {
+		restoreCtx, restoreCancel := context.WithTimeout(ctx, 30*time.Second)
+		err = restoreReceptionPowerModels(restoreCtx, historian, stationManager, log)
+		restoreCancel()
+		if err != nil {
+			log.Error("reception power model restore failed", "error", err)
+			storeCancel()
+			<-storeDone
+			return 1
+		}
+	}
+
 	// ingestWG tracks only the frame producers (dial connectors + the authenticated
 	// push server) so shutdown can wait for "nothing will ever send to frames again"
 	// before closing it. decodeLoop's own completion (tracked in wg below)
@@ -304,10 +329,17 @@ func run() int {
 	go func() { defer ingestWG.Done(); mgr.Run(ctx) }()
 
 	var wg sync.WaitGroup
+	if historian != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			receptionPowerModelLoop(ctx, historian, stationManager, log)
+		}()
+	}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		decodeLoop(frames, live, publicLive, publicEventsLive, historian, log, &lastFrameNano, audienceRegistry, scopeController.Apply)
+		decodeLoop(frames, live, publicLive, publicEventsLive, historian, log, &lastFrameNano, audienceRegistry, scopeController.Apply, stationManager)
 	}()
 
 	wg.Add(1)
@@ -353,19 +385,6 @@ func run() int {
 		if pushSrv != nil {
 			pushSrv.SetUpdates(updateManager)
 		}
-	}
-	stationManager := stationcontrol.New(cfg.Reception, func(c identity.ObserverContext, site reception.Site, now time.Time) reception.Expectation {
-		// Public broadcasts or the station's own organization; never the all-source operator view.
-		st := publicLive
-		if c.OrganizationID != identity.UnassignedOrganization {
-			if private, _, ok := audienceRegistry.Resolve(identity.Audience{Kind: identity.AudienceOrganization, ID: c.OrganizationID}); ok {
-				st = private
-			}
-		}
-		return st.ReceptionForecast(site, now)
-	})
-	if pushSrv != nil {
-		pushSrv.SetReception(stationManager)
 	}
 	var apiSrv *serve.Server
 	if cfg.Serve.Addr != "" {
@@ -573,6 +592,21 @@ func run() int {
 		log.Warn("shutdown phase expired draining the decode pipeline")
 	}
 
+	// Checkpoint the final in-memory pass accumulators after decode has consumed
+	// every accepted RF sample and before closing the historian pool.
+	if historian != nil {
+		checkpointBudget := plan.store / 3
+		if checkpointBudget > 5*time.Second {
+			checkpointBudget = 5 * time.Second
+		}
+		checkpointCtx, checkpointCancel := context.WithTimeout(context.Background(), checkpointBudget)
+		if err := saveReceptionPowerModels(checkpointCtx, historian, stationManager, true); err != nil {
+			incomplete = append(incomplete, "reception power model checkpoint")
+			log.Warn("final reception power model checkpoint failed", "error", err)
+		}
+		checkpointCancel()
+	}
+
 	// The historian's reservation. It starts the moment decoding is done (or its
 	// phase expired) and is a fresh budget, so nothing earlier and nothing later
 	// can spend it — that reservation is the whole point of the plan.
@@ -735,7 +769,7 @@ func (c *scopeController) Apply(revocation *ingest.ScopeRevocation) {
 // : it simply ranges frames until the channel is closed, which the owner
 // (run, above) does only after every producer has confirmed it will never send
 // again — so every already-enqueued frame is applied with no drain race.
-func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLive *state.Store, historian *store.Store, log *slog.Logger, lastFrame *atomic.Int64, scoped *audience.Registry, revoke func(*ingest.ScopeRevocation)) {
+func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLive *state.Store, historian *store.Store, log *slog.Logger, lastFrame *atomic.Int64, scoped *audience.Registry, revoke func(*ingest.ScopeRevocation), stations *stationcontrol.Manager) {
 	lim := &panicLogLimiter{}
 	apply := func(f *ingest.RawFrame) {
 		if f != nil && f.ScopeRevocation != nil {
@@ -753,6 +787,17 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLi
 		}
 		if !f.Admission.Current() {
 			return
+		}
+		if stations != nil && f.RF != nil && len(f.RF.Sats) != 0 {
+			observations := make([]reception.PowerObservation, 0, len(f.RF.Sats))
+			for _, sat := range f.RF.Sats {
+				if sat.GnssID < 0 || sat.GnssID > 255 || sat.SvID < 0 || sat.SvID > 255 || sat.Cn0 < 0 || sat.Cn0 > 255 {
+					continue
+				}
+				observations = append(observations, reception.PowerObservation{GNSS: uint8(sat.GnssID), SV: uint8(sat.SvID),
+					Signal: reception.Satellite, CN0: uint8(sat.Cn0), Elevation: int16(sat.ElevDeg)})
+			}
+			stations.ObservePower(f.Source, f.Recv, observations)
 		}
 		live.Apply(f)
 		if scoped != nil {

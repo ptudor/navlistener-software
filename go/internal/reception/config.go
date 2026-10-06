@@ -13,17 +13,21 @@ type Config struct {
 	Stations            []Site `toml:"station"`
 }
 type Site struct {
-	Observer       string    `toml:"observer"`
-	Position       []float64 `toml:"position"` // latitude degrees, longitude degrees, ellipsoid height metres
-	Signals        []string  `toml:"signals"`  // enabled canonical gnss:signal groups
-	PerSignal      bool      `toml:"per_signal"`
-	Elevation      float64   `toml:"elevation_mask_degrees"`
-	RadiusM        uint16    `toml:"radius_m"`
-	AlarmSeconds   uint16    `toml:"alarm_seconds"`
-	ClearSeconds   uint16    `toml:"clear_seconds"`
-	MinExpected    uint8     `toml:"min_expected"`
-	MinMissing     uint8     `toml:"min_missing"`
-	MissingPercent uint8     `toml:"missing_percent"`
+	Observer           string    `toml:"observer"`
+	Position           []float64 `toml:"position"` // latitude degrees, longitude degrees, ellipsoid height metres
+	Signals            []string  `toml:"signals"`  // enabled canonical gnss:signal groups
+	PerSignal          bool      `toml:"per_signal"`
+	Elevation          float64   `toml:"elevation_mask_degrees"`
+	RadiusM            uint16    `toml:"radius_m"`
+	AlarmSeconds       uint16    `toml:"alarm_seconds"`
+	ClearSeconds       uint16    `toml:"clear_seconds"`
+	MinExpected        uint8     `toml:"min_expected"`
+	MinMissing         uint8     `toml:"min_missing"`
+	MissingPercent     uint8     `toml:"missing_percent"`
+	PowerModelEpoch    string    `toml:"power_model_epoch"`
+	PowerMinDeviation  uint8     `toml:"power_min_deviation_dbhz"`
+	PowerMADMultiplier uint8     `toml:"power_mad_multiplier"`
+	PowerMinSupport    uint8     `toml:"power_min_support_days"`
 }
 
 func CanonicalSignal(g, s uint8) uint8 {
@@ -72,6 +76,15 @@ func (s Site) Allows(g, sig uint8) bool {
 	key := fmt.Sprintf("%d:%d", g, CanonicalSignal(g, sig))
 	for _, v := range s.Signals {
 		if v == key {
+			return true
+		}
+	}
+	return false
+}
+func (s Site) AllowsGNSS(g uint8) bool {
+	prefix := fmt.Sprintf("%d:", g)
+	for _, signal := range s.Signals {
+		if strings.HasPrefix(signal, prefix) {
 			return true
 		}
 	}
@@ -126,8 +139,25 @@ func (c *Config) Validate() error {
 		if s.MissingPercent == 0 {
 			s.MissingPercent = 50
 		}
+		if s.PowerModelEpoch == "" {
+			s.PowerModelEpoch = "1"
+		}
+		if s.PowerMinDeviation == 0 {
+			s.PowerMinDeviation = 6
+		}
+		if s.PowerMADMultiplier == 0 {
+			s.PowerMADMultiplier = 4
+		}
+		if s.PowerMinSupport == 0 {
+			s.PowerMinSupport = 3
+		}
 		if s.AlarmSeconds < 5 || s.AlarmSeconds > 120 || s.ClearSeconds < 5 || s.ClearSeconds > 120 || s.MissingPercent > 100 {
 			return fmt.Errorf("reception %s: invalid alarm policy", s.Observer)
+		}
+		if len(s.PowerModelEpoch) > 64 || strings.Trim(s.PowerModelEpoch, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") != "" ||
+			s.PowerMinDeviation < 3 || s.PowerMinDeviation > 30 || s.PowerMADMultiplier == 0 || s.PowerMADMultiplier > 16 ||
+			s.PowerMinSupport < 2 || s.PowerMinSupport > PowerHistoryDays {
+			return fmt.Errorf("reception %s: invalid power model policy", s.Observer)
 		}
 		if len(s.Signals) == 0 {
 			return fmt.Errorf("reception %s: explicitly list enabled signals", s.Observer)

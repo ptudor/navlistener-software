@@ -395,10 +395,11 @@ var requiredColumns = map[string][]string{
 	// undefined_column — class 42 is not poison, so each batch is retried and dropped forever
 	// (silent forensic-record loss while /healthz stays OK). nav_frames_seq_seen is the
 	// push-path dedup ledger; a drift there fails the atomic claim tx and drops the batch.
-	"nav_frames":          copyColumns,
-	"observer_samples":    boardColumns,
-	"rf_samples":          rfColumns,
-	"nav_frames_seq_seen": {"source_id", "session_id", "feeder_seq", "seen_at"},
+	"nav_frames":             copyColumns,
+	"observer_samples":       boardColumns,
+	"rf_samples":             rfColumns,
+	"reception_power_models": {"source_id", "updated_at", "model_id", "data"},
+	"nav_frames_seq_seen":    {"source_id", "session_id", "feeder_seq", "seen_at"},
 }
 
 // verifyRequiredColumns fails fast with an actionable message if a required table

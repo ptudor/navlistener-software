@@ -17,30 +17,33 @@ import (
 // Details, never inside it: Details — including update.trust_profile — is the
 // device's own account, and this is the only field here that is not.
 type BoardSample struct {
-	ReceivedAt     time.Time              `json:"received_at"`
-	SampleTime     *time.Time             `json:"sample_time"`
-	Session        string                 `json:"session"`
-	Sequence       uint64                 `json:"sequence"`
-	HardwareTrust  identity.HardwareTrust `json:"hardware_trust"`
-	Details        ingest.ObserverDetails `json:"details"`
-	ReceptionCheck *reception.Check       `json:"collector_reception,omitempty"`
+	ReceivedAt          time.Time              `json:"received_at"`
+	SampleTime          *time.Time             `json:"sample_time"`
+	Session             string                 `json:"session"`
+	Sequence            uint64                 `json:"sequence"`
+	HardwareTrust       identity.HardwareTrust `json:"hardware_trust"`
+	Details             ingest.ObserverDetails `json:"details"`
+	ReceptionCheck      *reception.Check       `json:"collector_reception,omitempty"`
+	ReceptionPowerCheck *reception.PowerCheck  `json:"collector_reception_power,omitempty"`
 }
 type BoardEventContext struct {
 	Before   *BoardSample `json:"before,omitempty"`
 	Snapshot BoardSample  `json:"snapshot"`
 }
 type StationBoard struct {
-	Latest           *BoardSample       `json:"latest,omitempty"`
-	Stale            bool               `json:"stale"`
-	LastInterference *BoardEventContext `json:"last_interference,omitempty"`
-	Timing           *BoardSample       `json:"timing,omitempty"`
-	Update           *BoardSample       `json:"update,omitempty"`
-	UpdateStale      bool               `json:"update_stale"`
-	TimingStale      bool               `json:"timing_stale"`
-	Reception        *BoardSample       `json:"reception,omitempty"`
-	ReceptionStale   bool               `json:"reception_stale"`
-	ReceptionEvents  []BoardSample      `json:"reception_events,omitempty"`
-	Snapshot         *BoardSample       `json:"snapshot,omitempty"`
+	Latest              *BoardSample       `json:"latest,omitempty"`
+	Stale               bool               `json:"stale"`
+	LastInterference    *BoardEventContext `json:"last_interference,omitempty"`
+	Timing              *BoardSample       `json:"timing,omitempty"`
+	Update              *BoardSample       `json:"update,omitempty"`
+	UpdateStale         bool               `json:"update_stale"`
+	TimingStale         bool               `json:"timing_stale"`
+	Reception           *BoardSample       `json:"reception,omitempty"`
+	ReceptionStale      bool               `json:"reception_stale"`
+	ReceptionPower      *BoardSample       `json:"reception_power,omitempty"`
+	ReceptionPowerStale bool               `json:"reception_power_stale"`
+	ReceptionEvents     []BoardSample      `json:"reception_events,omitempty"`
+	Snapshot            *BoardSample       `json:"snapshot,omitempty"`
 }
 type boardStation struct {
 	latest          *BoardSample
@@ -49,6 +52,7 @@ type boardStation struct {
 	timing          *BoardSample
 	event           *BoardEventContext
 	reception       *BoardSample
+	receptionPower  *BoardSample
 	receptionEvents []BoardSample
 	snapshot        *BoardSample
 }
@@ -74,7 +78,7 @@ func (s *Store) applyBoard(f *ingest.RawFrame) {
 		return
 	}
 	sample := BoardSample{ReceivedAt: f.LocalRecv(), Session: f.Session, Sequence: f.Seq, Details: *f.Details,
-		HardwareTrust: f.Observer.HardwareTrust, ReceptionCheck: f.ReceptionCheck}
+		HardwareTrust: f.Observer.HardwareTrust, ReceptionCheck: f.ReceptionCheck, ReceptionPowerCheck: f.ReceptionPowerCheck}
 	if sample.HardwareTrust == "" { // dial and programmatic frames carry no session evidence
 		sample.HardwareTrust = identity.HardwareTrustNone
 	}
@@ -92,12 +96,17 @@ func (s *Store) applyBoard(f *ingest.RawFrame) {
 		old.update = nil
 		old.event = nil
 		old.reception = nil
+		old.receptionPower = nil
 		old.snapshot = nil
 	}
 	old.last = sample
 	if f.Details.Reception != nil {
 		copy := sample
 		old.reception = &copy
+	}
+	if f.Details.ReceptionPower != nil {
+		copy := sample
+		old.receptionPower = &copy
 	}
 	if f.Details.Snapshot != nil {
 		copy := sample
@@ -121,7 +130,7 @@ func (s *Store) applyBoard(f *ingest.RawFrame) {
 			}
 		}
 	}
-	if f.Details.Reception != nil || f.Details.ReceptionEvent != nil || f.Details.Snapshot != nil {
+	if f.Details.Reception != nil || f.Details.ReceptionEvent != nil || f.Details.ReceptionPower != nil || f.Details.Snapshot != nil {
 		if f.Details.Environment == nil && f.Details.Timing == nil && f.Details.Receiver == nil {
 			return
 		}
@@ -162,6 +171,7 @@ func (s *Store) FeedStationBoards(now time.Time) map[string]StationBoard {
 		}
 		out[id] = StationBoard{Latest: st.latest, Stale: stale(st.latest, 11*time.Minute), LastInterference: st.event,
 			Reception: st.reception, ReceptionStale: stale(st.reception, 15*time.Second), ReceptionEvents: append([]BoardSample(nil), st.receptionEvents...), Snapshot: st.snapshot,
+			ReceptionPower: st.receptionPower, ReceptionPowerStale: stale(st.receptionPower, 15*time.Second),
 			Update: st.update, UpdateStale: stale(st.update, 5*time.Second), Timing: st.timing, TimingStale: stale(st.timing, 5*time.Second)}
 	}
 	return out

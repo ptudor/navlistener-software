@@ -152,9 +152,10 @@ type UpdateCoordinator interface {
 }
 
 type ReceptionCoordinator interface {
-	BeginSession(identity.ObserverContext, string)
-	Pending(identity.ObserverContext, string, time.Time) ([]byte, []byte)
+	BeginSession(identity.ObserverContext, string, uint8)
+	Pending(identity.ObserverContext, string, time.Time) ([]byte, []byte, []byte)
 	Check(identity.ObserverContext, string, reception.Sample, time.Time) *reception.Check
+	CheckPower(identity.ObserverContext, string, reception.PowerSample, time.Time) *reception.PowerCheck
 	SnapshotResult(identity.ObserverContext, string, reception.SnapshotResult)
 }
 
@@ -499,9 +500,9 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 	if p.updates != nil {
 		p.updates.BeginSession(observerContext, session)
 	}
-	if authorized.reception == 1 && feed == "ubx" && p.reception != nil {
-		p.reception.BeginSession(observerContext, session)
-		sessionCtx = context.WithValue(sessionCtx, receptionContextKey{}, true)
+	if (authorized.reception == 1 || authorized.reception == 2) && feed == "ubx" && p.reception != nil {
+		p.reception.BeginSession(observerContext, session, authorized.reception)
+		sessionCtx = context.WithValue(sessionCtx, receptionContextKey{}, authorized.reception)
 	}
 	sessionCtx = context.WithValue(sessionCtx, admissionContextKey{}, admission)
 	go p.watchAuthorization(sessionCtx, ctx, conn, authorized.token, observer, feed, observerContext, authorized.evidence, admission)
@@ -891,15 +892,20 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 			case <-quit:
 				return
 			case <-ackTicker.C:
-				if p.reception != nil && ctx.Value(receptionContextKey{}) == true && time.Now().After(nextReception) && ctx.Err() == nil {
+				if version, ok := ctx.Value(receptionContextKey{}).(uint8); p.reception != nil && ok && time.Now().After(nextReception) && ctx.Err() == nil {
 					nextReception = time.Now().Add(5 * time.Second)
 					admission, _ := ctx.Value(admissionContextKey{}).(*Admission)
 					if admission.Current() {
-						expectation, snapshot := p.reception.Pending(observerContext, session, time.Now())
+						expectation, power, snapshot := p.reception.Pending(observerContext, session, time.Now())
 						for _, c := range []struct {
 							kind wire.FrameType
 							body []byte
-						}{{wire.ReceptionExpectation, expectation}, {wire.SnapshotRequest, snapshot}} {
+						}{{wire.ReceptionExpectation, expectation}, {wire.ReceptionPower, func() []byte {
+							if version >= 2 {
+								return power
+							}
+							return nil
+						}()}, {wire.SnapshotRequest, snapshot}} {
 							if len(c.body) > 0 {
 								if err := w.write(c.kind, c.body); err != nil {
 									_ = w.c.Close()
@@ -1072,6 +1078,9 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				if p.reception != nil && f.Admission.Current() && f.Details != nil {
 					if f.Details.Reception != nil {
 						f.ReceptionCheck = p.reception.Check(observerContext, session, *f.Details.Reception, time.Now())
+					}
+					if f.Details.ReceptionPower != nil {
+						f.ReceptionPowerCheck = p.reception.CheckPower(observerContext, session, *f.Details.ReceptionPower, time.Now())
 					}
 					if f.Details.Snapshot != nil {
 						p.reception.SnapshotResult(observerContext, session, *f.Details.Snapshot)

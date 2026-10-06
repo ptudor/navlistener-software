@@ -51,6 +51,20 @@ func TestReceptionAssessmentTags(t *testing.T) {
 	if _, err := decodeObserverDetails(b); err == nil {
 		t.Fatal("zero request ID accepted")
 	}
+	power := reception.PowerSample{Count: 1, ExpectationID: 9, Unix: 1_800_000_000, UptimeMS: 2000}
+	power.ObservedValid[0] = 1
+	power.Observed[0] = 42
+	powerWire, err := power.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := decodeObserverDetails(receptionDetails(20, powerWire)); err != nil || got.ReceptionPower == nil || *got.ReceptionPower != power {
+		t.Fatalf("power assessment: %+v %v", got, err)
+	}
+	powerWire[7] = 1
+	if _, err := decodeObserverDetails(receptionDetails(20, powerWire)); err == nil {
+		t.Fatal("malformed power assessment accepted")
+	}
 }
 
 func TestReceptionForecastRoundTripTLS(t *testing.T) {
@@ -70,13 +84,14 @@ func TestReceptionForecastRoundTripTLS(t *testing.T) {
 	conn := dialPush(t, addr)
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
-	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "test-token", Station: "edge", Feed: "ubx", Session: "edge-boot", Reception: 1}); err != nil {
+	if err := wire.WriteHello(conn, wire.HelloMsg{Token: "test-token", Station: "edge", Feed: "ubx", Session: "edge-boot", Reception: 2}); err != nil {
 		t.Fatal(err)
 	}
 	if kind, _, err := wire.ReadFrame(conn); err != nil || kind != wire.Welcome {
 		t.Fatalf("welcome: %v %v", kind, err)
 	}
 	var e reception.Expectation
+	var power reception.PowerExpectation
 	for {
 		kind, b, err := wire.ReadFrame(conn)
 		if err != nil {
@@ -87,8 +102,19 @@ func TestReceptionForecastRoundTripTLS(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+		}
+		if kind == wire.ReceptionPower {
+			power, err = reception.DecodePowerExpectation(b)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if e.ID != 0 && power.ExpectationID != 0 {
 			break
 		}
+	}
+	if power.ExpectationID != e.ID || len(power.Entries) != len(e.Entries) {
+		t.Fatalf("power companion not bound to visibility forecast: %+v %+v", e, power)
 	}
 	s := reception.Sample{ExpectationID: e.ID, Unix: e.Issued, UptimeMS: 1000, Valid: 1}
 	s.Matched[0] = 3

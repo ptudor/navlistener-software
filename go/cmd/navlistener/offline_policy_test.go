@@ -79,7 +79,7 @@ func TestIntegrationDisconnectedPolicyWithdrawal(t *testing.T) {
 				ch := make(chan *ingest.RawFrame, 1)
 				ch <- f
 				close(ch)
-				decodeLoop(ch, live, pub, events, nil, log, &last, registry, controller.Apply)
+				decodeLoop(ch, live, pub, events, nil, log, &last, registry, controller.Apply, nil)
 			}
 			decode(frame)
 			api := serve.NewForAudience("127.0.0.1:0", pub, historian, nil, time.Second, time.Second, log, public)

@@ -153,7 +153,7 @@ func TestLateSessionFramesCannotRepopulateResetViews(t *testing.T) {
 						ch <- f
 					}
 					close(ch)
-					decodeLoop(ch, live, pub, events, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), &last, registry, controller.Apply)
+					decodeLoop(ch, live, pub, events, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), &last, registry, controller.Apply, nil)
 				}
 				decode(initial)
 				if len(pub.FeedCapabilityReports(time.Now())) != 1 {

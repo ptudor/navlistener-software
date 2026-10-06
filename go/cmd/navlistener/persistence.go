@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/ingest"
+	"github.com/ptudor/navlistener/internal/stationcontrol"
 	"github.com/ptudor/navlistener/internal/store"
 	"github.com/ptudor/navlistener/internal/version"
 )
@@ -110,5 +114,56 @@ func frameForPersistence(f *ingest.RawFrame) *store.NavFrame {
 		}
 	}
 	return saved
+}
 
+func restoreReceptionPowerModels(ctx context.Context, historian *store.Store, manager *stationcontrol.Manager, log *slog.Logger) error {
+	models, err := historian.LoadReceptionPowerModels(ctx)
+	if err != nil {
+		return err
+	}
+	for _, saved := range models {
+		if _, err := manager.RestorePowerModel(saved.SourceID, saved.ModelID, saved.Data); err != nil {
+			// Configuration/antenna epoch changes intentionally make the old
+			// blob inapplicable. Keep it for forensics and start that station cold.
+			log.Warn("stored reception power model is not applicable", "observer", saved.SourceID, "error", err)
+		}
+	}
+	return nil
+}
+
+func saveReceptionPowerModels(ctx context.Context, historian *store.Store, manager *stationcontrol.Manager, dirtyOnly bool) error {
+	models, err := manager.PowerModels(dirtyOnly)
+	if err != nil {
+		return err
+	}
+	var failures []error
+	for _, model := range models {
+		err := historian.SaveReceptionPowerModel(ctx, store.ReceptionPowerModel{
+			SourceID: model.Observer, UpdatedAt: time.Now(), ModelID: model.ModelID, Data: model.Data,
+		})
+		if err != nil {
+			failures = append(failures, errors.New(model.Observer+": "+err.Error()))
+			continue
+		}
+		manager.MarkPowerModelSaved(model.Observer, model.Revision)
+	}
+	return errors.Join(failures...)
+}
+
+func receptionPowerModelLoop(ctx context.Context, historian *store.Store, manager *stationcontrol.Manager, log *slog.Logger) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			saveCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			err := saveReceptionPowerModels(saveCtx, historian, manager, true)
+			cancel()
+			if err != nil && ctx.Err() == nil {
+				log.Error("reception power model checkpoint failed", "error", err)
+			}
+		}
+	}
 }

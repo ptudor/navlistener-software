@@ -46,6 +46,7 @@ type ObserverDetails struct {
 	Timing         *BoardTiming              `json:"timing,omitempty"`
 	Reception      *reception.Sample         `json:"reception,omitempty"`
 	ReceptionEvent *reception.Sample         `json:"reception_event,omitempty"`
+	ReceptionPower *reception.PowerSample    `json:"reception_power,omitempty"`
 	Snapshot       *reception.SnapshotResult `json:"snapshot,omitempty"`
 }
 type BoardEnvironment struct {
@@ -138,6 +139,12 @@ func decodeObserverDetails(b []byte) (*ObserverDetails, error) {
 				return nil, ErrBadTelemetry
 			}
 			d.Snapshot = &reception.SnapshotResult{ID: u64(v[4:]), Status: v[1], Scopes: v[2]}
+		case 20:
+			sample, err := reception.DecodePowerSample(v)
+			if err != nil {
+				return nil, ErrBadTelemetry
+			}
+			d.ReceptionPower = &sample
 		case 1:
 			if n != 14 || v[0]&^v[1] != 0 || v[1] > 7 {
 				return nil, ErrBadTelemetry

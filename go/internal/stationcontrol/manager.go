@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,18 +20,30 @@ import (
 )
 
 type Forecast func(identity.ObserverContext, reception.Site, time.Time) reception.Expectation
+type powerForecast struct {
+	base  reception.Expectation
+	power reception.PowerExpectation
+}
 type station struct {
-	site         reception.Site
-	session      string
-	lastControl  time.Time
-	lastForecast time.Time
-	forecasts    []reception.Expectation
-	machine      reception.Machine
-	request      uint64
-	scopes       uint8
-	expires      int64
-	result       *reception.SnapshotResult
-	lastUptime   uint64
+	site               reception.Site
+	session            string
+	receptionVersion   uint8
+	lastControl        time.Time
+	lastForecast       time.Time
+	forecasts          []reception.Expectation
+	powerForecasts     []powerForecast
+	machine            reception.Machine
+	remotePowerMachine reception.Machine
+	jointPowerMachine  reception.Machine
+	model              *reception.PowerModel
+	modelRevision      uint64
+	savedRevision      uint64
+	request            uint64
+	scopes             uint8
+	expires            int64
+	result             *reception.SnapshotResult
+	lastUptime         uint64
+	lastPowerUptime    uint64
 }
 type Manager struct {
 	mu       sync.Mutex
@@ -39,31 +52,88 @@ type Manager struct {
 	token    []byte
 }
 
+type PowerModelSnapshot struct {
+	Observer string
+	Revision uint64
+	ModelID  uint64
+	Data     []byte
+}
+
 func New(c reception.Config, f Forecast) *Manager {
 	m := &Manager{stations: map[string]*station{}, forecast: f}
 	m.token, _ = hex.DecodeString(c.OperatorTokenSHA256)
 	for _, s := range c.Stations {
-		m.stations[s.Observer] = &station{site: s}
+		m.stations[s.Observer] = &station{site: s, model: reception.NewPowerModel(s)}
 	}
 	return m
 }
-func (m *Manager) BeginSession(c identity.ObserverContext, session string) {
+
+func (m *Manager) RestorePowerModel(observer string, expectedID uint64, data []byte) (uint64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := m.stations[observer]
+	if s == nil {
+		return 0, reception.ErrPowerModel
+	}
+	model := reception.NewPowerModel(s.site)
+	if err := model.UnmarshalBinary(data); err != nil {
+		return 0, err
+	}
+	if expectedID != 0 && model.ModelID() != expectedID {
+		return 0, reception.ErrPowerModel
+	}
+	s.model = model
+	s.modelRevision, s.savedRevision = 1, 1
+	return model.ModelID(), nil
+}
+
+func (m *Manager) PowerModels(dirtyOnly bool) ([]PowerModelSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]PowerModelSnapshot, 0, len(m.stations))
+	for observer, s := range m.stations {
+		if dirtyOnly && s.modelRevision == s.savedRevision {
+			continue
+		}
+		data, err := s.model.MarshalBinary()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, PowerModelSnapshot{Observer: observer, Revision: s.modelRevision, ModelID: s.model.ModelID(), Data: data})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Observer < out[j].Observer })
+	return out, nil
+}
+
+func (m *Manager) MarkPowerModelSaved(observer string, revision uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s := m.stations[observer]; s != nil && revision > s.savedRevision && revision <= s.modelRevision {
+		s.savedRevision = revision
+	}
+}
+func (m *Manager) BeginSession(c identity.ObserverContext, session string, version uint8) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if s := m.stations[c.ObserverID]; s != nil {
 		s.session = session
+		s.receptionVersion = version
 		s.lastForecast = time.Time{}
 		s.forecasts = nil
+		s.powerForecasts = nil
 		s.machine = reception.Machine{Alarm: s.machine.Alarm}
+		s.remotePowerMachine = reception.Machine{Alarm: s.remotePowerMachine.Alarm}
+		s.jointPowerMachine = reception.Machine{Alarm: s.jointPowerMachine.Alarm}
 		s.lastUptime = 0
+		s.lastPowerUptime = 0
 	}
 }
-func (m *Manager) Pending(c identity.ObserverContext, session string, now time.Time) ([]byte, []byte) {
+func (m *Manager) Pending(c identity.ObserverContext, session string, now time.Time) ([]byte, []byte, []byte) {
 	m.mu.Lock()
 	s := m.stations[c.ObserverID]
 	if s == nil || s.session != session {
 		m.mu.Unlock()
-		return nil, nil
+		return nil, nil, nil
 	}
 	s.lastControl = now
 	due := s.lastForecast.IsZero() || now.Sub(s.lastForecast) >= 30*time.Second
@@ -74,7 +144,7 @@ func (m *Manager) Pending(c identity.ObserverContext, session string, now time.T
 	m.mu.Unlock()
 	// Orbit propagation must not block other stations' reports or controls.
 	var e reception.Expectation
-	var forecast, request []byte
+	var forecast, power, request []byte
 	if due {
 		e = m.forecast(c, site, now)
 		forecast, _ = e.Encode()
@@ -82,16 +152,26 @@ func (m *Manager) Pending(c identity.ObserverContext, session string, now time.T
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if s.session != session {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if due {
 		if s.lastForecast != now {
-			return nil, nil
+			return nil, nil, nil
 		}
 		if len(forecast) != 0 {
 			s.forecasts = append(s.forecasts, e)
 			if len(s.forecasts) > 12 {
 				s.forecasts = s.forecasts[1:]
+			}
+			if s.receptionVersion >= 2 {
+				p := s.model.Forecast(e)
+				power, _ = p.Encode()
+				if len(power) != 0 {
+					s.powerForecasts = append(s.powerForecasts, powerForecast{base: e, power: p})
+					if len(s.powerForecasts) > 12 {
+						s.powerForecasts = s.powerForecasts[1:]
+					}
+				}
 			}
 		} else {
 			s.lastForecast = time.Time{}
@@ -104,7 +184,95 @@ func (m *Manager) Pending(c identity.ObserverContext, session string, now time.T
 		binary.BigEndian.PutUint64(request[4:], s.request)
 		binary.BigEndian.PutUint64(request[12:], uint64(s.expires))
 	}
-	return forecast, request
+	return forecast, power, request
+}
+
+// ObservePower trains only configured, well-above-mask satellite observations.
+// NAV-SAT supplies satellite-level C/N0, so per-signal cells remain explicitly
+// unknown until signal-level receiver telemetry is available.
+func (m *Manager) ObservePower(observer string, at time.Time, observations []reception.PowerObservation) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := m.stations[observer]
+	if s == nil || at.Unix() < 946684800 || at.Unix() >= 4102444800 {
+		return
+	}
+	for _, observation := range observations {
+		if observation.Signal != reception.Satellite || !s.site.AllowsGNSS(observation.GNSS) ||
+			float64(observation.Elevation) < s.site.Elevation+2 {
+			continue
+		}
+		if s.model.Observe(at.Unix(), observation) {
+			s.modelRevision++
+		}
+	}
+}
+
+func bitmapConstellations(base reception.Expectation, count uint8, bits [16]byte) uint8 {
+	if int(count) != len(base.Entries) {
+		return 0
+	}
+	var mask uint8
+	for i, entry := range base.Entries {
+		if bits[i/8]&(1<<uint(i%8)) != 0 {
+			mask |= 1 << entry.GNSS
+		}
+	}
+	return mask
+}
+
+// CheckPower recomputes the delivered-model comparison from the reported C/N0
+// values. Local and remote history must agree before JointAlarm can advance.
+func (m *Manager) CheckPower(c identity.ObserverContext, session string, sample reception.PowerSample, now time.Time) *reception.PowerCheck {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := m.stations[c.ObserverID]
+	if s == nil || s.session != session {
+		return nil
+	}
+	check := &reception.PowerCheck{LocalModelID: sample.LocalModelID, RemoteModelID: sample.RemoteModelID}
+	at := time.Unix(sample.Unix, 0)
+	if now.Sub(at) > 15*time.Second || at.Sub(now) > 5*time.Second {
+		s.remotePowerMachine = reception.Machine{Alarm: s.remotePowerMachine.Alarm}
+		s.jointPowerMachine = reception.Machine{Alarm: s.jointPowerMachine.Alarm}
+		return check
+	}
+	for _, forecast := range s.powerForecasts {
+		if forecast.base.ID != sample.ExpectationID || forecast.power.ModelID != sample.RemoteModelID {
+			continue
+		}
+		remote := reception.ComparePower(forecast.power, sample)
+		check.Modeled, check.Anomalous, check.RemoteValid, check.RemoteAbnormal = reception.CountPower(forecast.base, sample.Count, remote)
+		if sample.Flags&reception.PowerFlagLocal != 0 {
+			_, _, check.LocalValid, check.LocalAbnormal = reception.CountPower(forecast.base, sample.Count, sample.LocalAssessment)
+		}
+		var joint, conflict, disagreement reception.PowerAssessment
+		for i := range joint.Valid {
+			joint.Valid[i] = remote.Valid[i] & sample.LocalAssessment.Valid[i]
+			joint.Bad[i] = remote.Bad[i] & sample.LocalAssessment.Bad[i] & joint.Valid[i]
+			conflict.Bad[i] = (remote.Bad[i] ^ sample.LocalAssessment.Bad[i]) & joint.Valid[i]
+			disagreement.Bad[i] = (remote.Valid[i] ^ sample.RemoteAssessment.Valid[i]) |
+				((remote.Bad[i] ^ sample.RemoteAssessment.Bad[i]) & remote.Valid[i])
+		}
+		_, _, check.JointValid, check.JointAbnormal = reception.CountPower(forecast.base, sample.Count, joint)
+		check.ModelConflict = bitmapConstellations(forecast.base, sample.Count, conflict.Bad)
+		check.ReportDisagreement = bitmapConstellations(forecast.base, sample.Count, disagreement.Bad)
+		s.remotePowerMachine.RetainCoverage(check.RemoteValid)
+		s.jointPowerMachine.RetainCoverage(check.JointValid)
+		if sample.UptimeMS > s.lastPowerUptime {
+			check.RemoteAlarm = s.remotePowerMachine.Step(check.RemoteValid, check.RemoteAbnormal, at, forecast.base.AlarmSeconds, forecast.base.ClearSeconds)
+			check.JointAlarm = s.jointPowerMachine.Step(check.JointValid, check.JointAbnormal, at, forecast.base.AlarmSeconds, forecast.base.ClearSeconds)
+			s.lastPowerUptime = sample.UptimeMS
+		} else {
+			check.RemoteAlarm = s.remotePowerMachine.Alarm
+			check.JointAlarm = s.jointPowerMachine.Alarm
+		}
+		check.ReportDisagreement |= (check.RemoteValid ^ sample.RemoteValid) | (check.RemoteAlarm ^ sample.RemoteAlarm)
+		return check
+	}
+	s.remotePowerMachine = reception.Machine{Alarm: s.remotePowerMachine.Alarm}
+	s.jointPowerMachine = reception.Machine{Alarm: s.jointPowerMachine.Alarm}
+	return check
 }
 func (m *Manager) Check(c identity.ObserverContext, session string, sample reception.Sample, now time.Time) *reception.Check {
 	m.mu.Lock()

@@ -115,6 +115,26 @@ type PowerAssessment struct {
 	Bad   [16]byte `json:"bad"`
 }
 
+// PowerCheck is the collector's independent interpretation of an edge power
+// report. JointAlarm requires both models to flag the same constellation; the
+// two models remain one physical RF gate because they use one antenna/receiver.
+type PowerCheck struct {
+	LocalModelID       uint64   `json:"local_model_id,string"`
+	RemoteModelID      uint64   `json:"remote_model_id,string"`
+	LocalValid         uint8    `json:"local_valid_mask"`
+	LocalAbnormal      uint8    `json:"local_abnormal_mask"`
+	RemoteValid        uint8    `json:"remote_valid_mask"`
+	RemoteAbnormal     uint8    `json:"remote_abnormal_mask"`
+	RemoteAlarm        uint8    `json:"remote_alarm_mask"`
+	JointValid         uint8    `json:"joint_valid_mask"`
+	JointAbnormal      uint8    `json:"joint_abnormal_mask"`
+	JointAlarm         uint8    `json:"joint_alarm_mask"`
+	ModelConflict      uint8    `json:"model_conflict_mask"`
+	ReportDisagreement uint8    `json:"report_disagreement_mask"`
+	Modeled            [8]uint8 `json:"remote_modeled"`
+	Anomalous          [8]uint8 `json:"remote_anomalous"`
+}
+
 // PowerSample carries the measurements required for collector recomputation,
 // plus the edge's results against its local model and the delivered model.
 type PowerSample struct {

@@ -24,7 +24,7 @@ func fixture(now time.Time) (*Manager, identity.ObserverContext) {
 		return e
 	})
 	cx := identity.ObserverContext{ObserverID: "edge"}
-	m.BeginSession(cx, "session")
+	m.BeginSession(cx, "session", 2)
 	m.Pending(cx, "session", now)
 	return m, cx
 }
@@ -90,6 +90,84 @@ func TestRepeatedMeasurementDoesNotAdvanceAlarm(t *testing.T) {
 	}
 }
 
+func TestPowerForecastAndIndependentRecomputation(t *testing.T) {
+	baseUnix := int64(1_800_000_000)
+	_, bin := func() (int64, uint16) {
+		// Keep both training reports and the forecast midpoint inside one
+		// five-minute sidereal cell.
+		cycle := baseUnix / reception.SiderealSeconds
+		phase := baseUnix % reception.SiderealSeconds
+		return cycle, uint16(phase / reception.PowerPhaseSeconds)
+	}()
+	phase := int64(bin)*reception.PowerPhaseSeconds + 60
+	cycle := baseUnix / reception.SiderealSeconds
+	at := func(day int) time.Time { return time.Unix((cycle+int64(day))*reception.SiderealSeconds+phase, 0) }
+	site := reception.Site{Observer: "edge", Position: []float64{0, 0, 0}, Signals: []string{"0:0"}, Elevation: 20,
+		RadiusM: 1000, AlarmSeconds: 5, ClearSeconds: 5, MinExpected: 1, MinMissing: 1, MissingPercent: 100,
+		PowerModelEpoch: "antenna-1", PowerMinDeviation: 6, PowerMADMultiplier: 4, PowerMinSupport: 3}
+	m := New(reception.Config{Stations: []reception.Site{site}}, func(_ identity.ObserverContext, _ reception.Site, now time.Time) reception.Expectation {
+		return reception.Expectation{ID: uint64(now.Unix()), Issued: now.Unix(), RadiusM: 1000, AlarmSeconds: 5, ClearSeconds: 5,
+			MinExpected: 1, MinMissing: 1, MissingPercent: 100,
+			Entries: []reception.Entry{{GNSS: 0, SV: 12, Signal: reception.Satellite, Slots: 31}}}
+	})
+	for day, cn0 := range []uint8{40, 42, 41, 41} {
+		m.ObservePower("edge", at(day), []reception.PowerObservation{{GNSS: 0, SV: 12, Signal: reception.Satellite, CN0: cn0, Elevation: 40}})
+	}
+	snapshots, err := m.PowerModels(true)
+	if err != nil || len(snapshots) != 1 {
+		t.Fatalf("model snapshot: %d %v", len(snapshots), err)
+	}
+	restored := New(reception.Config{Stations: []reception.Site{site}}, func(_ identity.ObserverContext, _ reception.Site, now time.Time) reception.Expectation {
+		return reception.Expectation{}
+	})
+	if id, err := restored.RestorePowerModel("edge", snapshots[0].ModelID, snapshots[0].Data); err != nil || id != snapshots[0].ModelID {
+		t.Fatalf("model restore: %d %v", id, err)
+	}
+	if dirty, err := restored.PowerModels(true); err != nil || len(dirty) != 0 {
+		t.Fatalf("restored model is dirty: %d %v", len(dirty), err)
+	}
+	cx := identity.ObserverContext{ObserverID: "edge"}
+	m.BeginSession(cx, "session", 2)
+	forecastAt := at(3)
+	baseWire, powerWire, _ := m.Pending(cx, "session", forecastAt)
+	base, err := reception.Decode(baseWire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	power, err := reception.DecodePowerExpectation(powerWire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if power.Entries[0].Valid&1 == 0 || power.Entries[0].Expected[0] != 41 || power.Entries[0].Support[0] != 3 {
+		t.Fatalf("mature power reference: %+v", power.Entries[0])
+	}
+	sample := reception.PowerSample{Count: 1, Flags: reception.PowerFlagLocal | reception.PowerFlagRemote,
+		ExpectationID: base.ID, RemoteModelID: power.ModelID, LocalModelID: 123, Unix: base.Issued}
+	sample.ObservedValid[0], sample.Observed[0] = 1, 60
+	sample.LocalAssessment.Valid[0], sample.LocalAssessment.Bad[0] = 1, 1
+	// Claim that the delivered reference found no comparable entry. The
+	// collector must reconstruct the opposite result from Observed.
+	for second := 0; second <= 6; second++ {
+		sample.Unix = base.Issued + int64(second)
+		sample.UptimeMS = uint64(second+1) * 1000
+		check := m.CheckPower(cx, "session", sample, forecastAt.Add(time.Duration(second)*time.Second))
+		if check.RemoteValid != 1 || check.RemoteAbnormal != 1 || check.JointAbnormal != 1 || check.ReportDisagreement != 1 {
+			t.Fatalf("power recomputation at %d: %+v", second, check)
+		}
+		if second == 6 && (check.RemoteAlarm != 1 || check.JointAlarm != 1) {
+			t.Fatalf("power dwell did not alarm: %+v", check)
+		}
+	}
+
+	legacy := New(reception.Config{Stations: []reception.Site{site}}, func(_ identity.ObserverContext, _ reception.Site, now time.Time) reception.Expectation {
+		return base
+	})
+	legacy.BeginSession(cx, "legacy", 1)
+	if _, p, _ := legacy.Pending(cx, "legacy", forecastAt); len(p) != 0 {
+		t.Fatal("power companion sent to a reception-v1 client")
+	}
+}
+
 func TestSnapshotControls(t *testing.T) {
 	now := time.Now()
 	m, cx := fixture(now)
@@ -121,11 +199,11 @@ func TestSnapshotControls(t *testing.T) {
 			t.Fatalf("idempotent request: %d %s", w.Code, w.Body.String())
 		}
 	}
-	_, frame := m.Pending(cx, "session", now.Add(time.Second))
+	_, _, frame := m.Pending(cx, "session", now.Add(time.Second))
 	if len(frame) != 20 || frame[1] != 7 || binary.BigEndian.Uint64(frame[4:]) != 42 {
 		t.Fatalf("command frame: %x", frame)
 	}
-	if _, b := m.Pending(cx, "old-session", now); len(b) != 0 {
+	if _, _, b := m.Pending(cx, "old-session", now); len(b) != 0 {
 		t.Fatal("command escaped active session")
 	}
 	if w := call("POST", strings.Replace(q, `"42"`, `"43"`, 1), "control-test", ""); w.Code != 409 {
@@ -136,7 +214,7 @@ func TestSnapshotControls(t *testing.T) {
 		t.Fatal("stale result accepted")
 	}
 	m.SnapshotResult(cx, "session", reception.SnapshotResult{ID: 42, Status: 2, Scopes: 3})
-	if _, b := m.Pending(cx, "session", now.Add(2*time.Second)); len(b) != 0 {
+	if _, _, b := m.Pending(cx, "session", now.Add(2*time.Second)); len(b) != 0 {
 		t.Fatal("completed command resent")
 	}
 	if w := call("POST", strings.Replace(q, `:7`, `:1`, 1), "control-test", ""); w.Code != 409 {
@@ -145,7 +223,7 @@ func TestSnapshotControls(t *testing.T) {
 	if w := call("POST", strings.Replace(q, `"42"`, `"43"`, 1), "control-test", ""); w.Code != 202 {
 		t.Fatal("new request after completion rejected")
 	}
-	if _, b := m.Pending(cx, "session", now.Add(time.Minute)); len(b) != 0 {
+	if _, _, b := m.Pending(cx, "session", now.Add(time.Minute)); len(b) != 0 {
 		t.Fatal("expired command sent")
 	}
 }
