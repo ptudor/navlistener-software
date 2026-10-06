@@ -250,10 +250,21 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 |---|---|---|
 | 3.1 | NAV-SAT azimuth and signal identity in `0x01` body version 2 | done for azimuth, pseudorange residual, quality indicator and health (`common/reception_data.h`); `cn0_drop` gates on the quality indicator. Signal identity deferred: NAV-SAT reports each satellite once, per-signal entries need NAV-SIG and differ only on multi-band receivers, and none has acknowledged its configuration on the bench |
 | 3.2 | Simultaneous C/N₀ drop as jamming corroboration | done; the corroboration lasts while the AGC departure it accompanied continues |
-| 3.3 | MAX board: IMU motion state against GNSS velocity | planned |
-| 3.4 | ZED-X20P: SEC-SIG in `0x05`, after bench confirmation of support | planned |
-| 3.5 | ZED-X20P: RXM-RAWX as `0x02`, and a Doppler-vs-ephemeris check using the receiver clock drift | planned |
-| 3.6 | Receiver capability table from bench verification | planned |
+| 3.3 | MAX board: IMU motion state against GNSS velocity | deferred: no sound comparison with the current motion summary (below) |
+| 3.4 | ZED-X20P: SEC-SIG in `0x05`, after bench confirmation of support | deferred until the ZED-X20P bench confirms SEC-SIG output |
+| 3.5 | ZED-X20P: RXM-RAWX as `0x02`, and a Doppler-vs-ephemeris check using the receiver clock drift | deferred until the ZED-X20P bench confirms RXM-RAWX; forwarding cannot be verified without it, and the residual bands need recorded measurements |
+| 3.6 | Receiver capability table from bench verification | deferred: needs the bench verification it records |
+
+The MAX board's motion summary (OBSERVER-TELEMETRY tag 13) gives, per board report,
+the IMU's still or moving state and the extremes of its acceleration and rotation-rate
+magnitudes since the previous report. Its motion test responds to jerk, vibration and
+rotation above 5 °/s; steady velocity and gradual acceleration do not register, so
+comparing it with GNSS velocity would alarm on any smooth cruise. The one sound
+comparison, a GNSS course change of at least 15 °/s against the window's maximum
+rotation rate on surface-profile units, applies only during sharp turns: it needs a
+filter for sparse evaluations, which the per-check M-of-N tracker does not provide,
+and recorded drives to set its bands. A real inertial cross-check needs rotation-rate
+and specific-force samples aligned with GNSS epochs.
 
 ### Phase 4 — network checks
 
