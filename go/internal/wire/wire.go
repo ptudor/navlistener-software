@@ -69,6 +69,7 @@ const (
 	Evidence             FrameType = 0x0A // feeder→collector: commissioning record, key and session proof
 	ReceptionExpectation FrameType = 0x0B
 	SnapshotRequest      FrameType = 0x0C
+	ReceptionPower       FrameType = 0x0D
 )
 
 var (
@@ -110,7 +111,7 @@ type HelloMsg struct {
 	// without waiting for WELCOME (docs/COMMISSIONING.md §6). A feeder with no
 	// commissioning record omits it and the handshake is unchanged.
 	Evidence  bool  `json:"evidence,omitempty"`
-	Reception uint8 `json:"reception,omitempty"` // supported expectation/assessment contract; 1 today
+	Reception uint8 `json:"reception,omitempty"` // 1: availability; 2: availability plus received-power references
 }
 
 // SessionMaxLen bounds HelloMsg.Session. 64 comfortably covers the reference
