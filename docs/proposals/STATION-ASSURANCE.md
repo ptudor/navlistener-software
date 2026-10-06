@@ -124,7 +124,8 @@ from stored station data the same way the GLONASS discontinuity bands were.
 | `position_velocity` | solution | velocity implied by position differences over a five-second window against the mean reported velocity | position |
 | `clock_bias_drift` | clock | change in clock bias against the integrated clock drift over 30–40 s; whole-millisecond receiver clock adjustments are removed and recorded | receiver clock |
 | `clock_drift_rate` | clock | rate of change of clock drift over 60–120 s | receiver clock |
-| `time_reference` | timing tag; solution UTC and the observer's NTP stamp | a step in the RTC-minus-GNSS phase against its recent linear trend, and receiver UTC against the observer's independent wall clock | time reference |
+| `utc_offset` | solution UTC; the observer's NTP stamp or the collector's clock | receiver UTC against an independent wall-clock stamp of the same record | time reference |
+| `pps_rtc_phase` | timing tag; solution fix state | a step in the RTC-minus-GNSS phase against its recent linear trend | time reference |
 | `cn0_uniformity` | NAV-SAT | the existing C/N₀-vs-elevation gate, unchanged | signal power |
 | `agc` | MON-RF | the existing AGC departure, CW and receiver jam-state classification | RF environment |
 | `receiver_spoofing` | status block, or the ObserverDetails receiver context | the receiver's own spoofing state | receiver verdict |
@@ -133,8 +134,8 @@ Each raw test passes an M-of-N filter (three of the last four evaluations by
 default) before it changes a check's state, so one noisy epoch cannot move it.
 A check with too little input reports `unavailable`, never `assured`.
 
-The `time_reference` phase test sees only steps under half a second, because the
-phase wraps at ±0.5 s; the UTC comparison covers whole seconds. Neither detects a
+The `pps_rtc_phase` test sees only steps under half a second, because the phase
+wraps at ±0.5 s; `utc_offset` covers whole seconds. Neither detects a
 slow drag smaller than the RTC model's uncertainty. Whole-millisecond clock
 adjustments that the clock check removes are still visible to the phase test,
 since the PPS follows GNSS time rather than the receiver's local clock.
@@ -207,7 +208,7 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 | 0.1 | Persist NAV-SAT and MON-RF evidence in `rf_samples` | done (`ba25c3f`) |
 | 0.2 | Report station RF event clears at info severity | done (`df7c834`) |
 | 0.3 | Separate onset and clear dwell for station machines; degraded first observations go through onset | done (`63e04bd`) |
-| 0.4 | `go/internal/integrity`: states, check contract, profile with versioned defaults, configuration hash, M-of-N filter, held recovery, fusion | done |
+| 0.4 | `go/internal/integrity`: states, check contract, profile with versioned defaults, configuration hash, M-of-N filter, held recovery, fusion | done (`b98465f`) |
 
 ### Phase 1 — receiver-solution checks
 
@@ -218,10 +219,10 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 | 1.3 | ESP32: parse NAV-PVT fully, enable NAV-CLOCK and NAV-EOE, encode and send `0x03` | planned |
 | 1.4 | C feeder: parse and send `0x03`; `--configure-ubx` enables the messages | planned |
 | 1.5 | Station integrity profile: fixed or mobile, maximum speed, surveyed position shared with `[[reception.station]]` | planned |
-| 1.6 | Position checks: `static_position`, `stationary_velocity`, `motion_bound`, `position_velocity` | planned |
-| 1.7 | Clock checks: `clock_bias_drift`, `clock_drift_rate` | planned |
-| 1.8 | `time_reference` from the timing tag and solution UTC | planned |
-| 1.9 | `receiver_spoofing` input, and the existing C/N₀ and AGC logic as checks | planned |
+| 1.6 | Position checks: `static_position`, `stationary_velocity`, `motion_bound`, `position_velocity` | done (checks); wiring in 1.10 |
+| 1.7 | Clock checks: `clock_bias_drift`, `clock_drift_rate` | done (checks); wiring in 1.10 |
+| 1.8 | Time-reference checks `utc_offset` and `pps_rtc_phase` | done (checks); wiring in 1.10 |
+| 1.9 | `receiver_spoofing` input, and the existing C/N₀ and AGC logic as checks | done (checks); wiring in 1.10 |
 | 1.10 | Per-station assessment in live state, served as `integrity` in the observers feed | planned |
 | 1.11 | Domain-based spoofing fusion and the `station_assurance` event, with check parameters, versions and configuration hash | planned |
 

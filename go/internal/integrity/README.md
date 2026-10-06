@@ -15,11 +15,17 @@ whether the evidence indicates spoofing. The design and its upstream provenance 
 | `integrity.go` | `State`, `Domain`, `Info`, `Verdict` and `Result`: the check contract and its served shape. |
 | `tracker.go` | The per-check M-of-N filter, warm-up, staleness, and one-sided recovery hold. |
 | `fuse.go` | `Fuse`: the weighted station level and the domain rules, including the spoofing rule. |
-| `profile.go` | `Profile` (operating points), `StationProfile` (installation), validation, and `ConfigHash`. |
-| `*_test.go` | Filter, hold, fusion and profile tests. |
+| `profile.go` | `Profile` (operating points and their defaults), `StationProfile` (installation), validation, and `ConfigHash`. |
+| `inputs.go` | The receiver-neutral inputs: `Solution`, `ClockSample`, `ReceiverStatus`, `TimingSample`, `Cn0Fit`, `RFSample`. |
+| `position.go` | `static_position`, `stationary_velocity`, `motion_bound`, `position_velocity`. |
+| `clock.go` | `clock_bias_drift`, `clock_drift_rate`. |
+| `timeref.go` | `utc_offset`, `pps_rtc_phase`. |
+| `rf.go` | `cn0_uniformity`, `agc`, `receiver_spoofing`, and the station RF defaults `internal/detect` shares. |
+| `station.go` | `Station`: routes inputs to checks, gates clock and pulse checks on a valid fix, and assembles the `Assessment`. |
+| `*_test.go` | Filter, hold, fusion, profile, per-check and station tests, including determinism and a no-coordinates guard. |
 | `README.md` | This file. |
 
-Imports only the standard library. It holds no clocks, goroutines or I/O: every input
+Imports the standard library and `github.com/ptudor/gnss` for geodesy. It holds no clocks, goroutines or I/O: every input
 arrives with the collector-local instant it was received, so a replay of stored inputs
 evaluates exactly as the live collector did.
 
@@ -64,6 +70,27 @@ raise one. Then two domain rules apply:
 `SpoofingIndicated` is the stricter spoofing rule: two physics domains, or one together with
 the receiver's own spoofing indication. Interference in the RF environment does not count
 toward it. Checks in one domain share their measurements and count once.
+
+### Checks
+
+| Check | Domain | Input | Test (defaults) |
+|---|---|---|---|
+| `static_position` | position | solution, surveyed position | Horizontal and vertical error from the survey; bands 3σ/6σ of the reported accuracy, clamped to 15–100 m and 50–300 m horizontally (25–150 m, 80–450 m vertically). A ten-minute mean offset over 8 m horizontal or 15 m vertical is inconsistent. Fixed stations only. |
+| `stationary_velocity` | position | solution | Reported speed; 3σ/6σ of speed accuracy, at least 0.5 and 2 m/s. Fixed stations only. |
+| `motion_bound` | position | solution | Distance from the last in-bounds epoch ≤ max speed × elapsed + 3 × both 3D accuracies + 10 m, else unassured. Mobile stations only. |
+| `position_velocity` | position | solution | Velocity from a five-second position difference against the reported velocity integrated over the same interval; 3σ/6σ of speed accuracy, at least 1 and 3 m/s. |
+| `clock_bias_drift` | receiver clock | clock | \|Δbias − ∫drift\| over 30–40 s, whole-millisecond adjustments removed; 75 and 145 ns. |
+| `clock_drift_rate` | receiver clock | clock | \|Δdrift\|/Δt over 60–120 s; 0.05 and 0.2 ns/s². |
+| `utc_offset` | time reference | solution | Receiver UTC against the observer's or collector's wall-clock stamp of the record; 2 and 5 s. |
+| `pps_rtc_phase` | time reference | timing, solution | RTC-minus-GNSS pulse phase against a line fitted to samples 10–180 s old; 20 and 100 µs. Needs a fresh valid fix and an untrimmed RTC. |
+| `cn0_uniformity` | signal power | NAV-SAT fit | The existing C/N₀-vs-elevation gate. Lower-only. |
+| `agc` | RF environment | MON-RF | The jamming classification as a state: collapse or corroborated departure is unassured; any single sign, or an antenna fault, is inconsistent. Lower-only. |
+| `receiver_spoofing` | receiver verdict | status | The receiver's own spoofing flag. Lower-only. |
+
+Duplicate and out-of-order epochs (by GPS time of week, continuous across the week
+rollover) are ignored; a receiver-time gap over 10 s, a lost fix, a receiver restart or an
+observer restart resets the affected history. The `profile.go` comments say which defaults
+follow an upstream monitor and why some differ.
 
 ### Profiles and the configuration hash
 
