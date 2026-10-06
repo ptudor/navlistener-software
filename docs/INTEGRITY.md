@@ -299,7 +299,8 @@ of coverage:
   is tracked P6+ work.
 - **Jamming context** — *implemented* (`jamming_detected`/`station_rf_degraded`, DEFENSE-PNT
   §2/§4): u-blox MON-HW/MON-RF jamming/AGC indicators raise the prior on a receiver's
-  environment being hostile, down-weighting its votes (`rf_trust`).
+  environment being hostile, down-weighting its votes (`rf_trust`). With the station's
+  assessment, that weight gives `conf_weighted` (`OUTPUT.md §1.1`).
 - **Station solution, clock and time consistency** — *implemented* (station integrity checks,
   DEFENSE-PNT §3): the receiver's position against its surveyed antenna and its own velocity,
   its clock bias against its drift, and its time against independent clocks, from telemetry

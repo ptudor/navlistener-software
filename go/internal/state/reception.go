@@ -30,7 +30,7 @@ func (s *Store) ReceptionForecast(site reception.Site, now time.Time) reception.
 			if !site.Allows(g, sig) {
 				continue
 			}
-			feed := st.feedSV(now)
+			feed := st.feedSV(now, nil)
 			if feed.HealthCode != 1 || feed.XM == nil {
 				continue
 			}

@@ -2,6 +2,7 @@ package state
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/ptudor/gnss"
@@ -173,6 +174,12 @@ type FeedSV struct {
 	// recent witnesses from a single receiver's testimony without treating it
 	// as proof that those witnesses delivered identical broadcast bits.
 	Conf int `json:"conf"`
+	// ConfWeighted counts the same sources by their vote weight
+	// (Store.sourceVoteWeights): a station whose front end is jammed, or whose
+	// assessment is inconsistent, counts for less, and one that is unassured or
+	// indicates spoofing counts for nothing, since a spoofed receiver's decoded
+	// navigation data is the attacker's. 0 ≤ conf_weighted ≤ conf.
+	ConfWeighted float64 `json:"conf_weighted"`
 
 	Perrecv map[string]*FeedPerRecv `json:"perrecv,omitempty"`
 }
@@ -259,13 +266,14 @@ type SBASEntry struct {
 // FeedSVs builds the svs feed as of now (docs/OUTPUT.md §1.1).
 func (s *Store) FeedSVs(now time.Time) map[string]FeedSV {
 	out := make(map[string]FeedSV)
+	weights := s.sourceVoteWeights(now)
 	for _, sh := range s.shards {
 		sh.mu.Lock()
 		for _, st := range sh.m {
 			if !st.haveEph && !st.haveGloEph && len(st.ionoBySource) == 0 {
 				continue // neither ephemeris nor observables yet: nothing to publish
 			}
-			out[st.key.Name()] = st.feedSV(now)
+			out[st.key.Name()] = st.feedSV(now, weights)
 		}
 		sh.mu.Unlock()
 	}
@@ -280,8 +288,9 @@ func (s *Store) FeedSVs(now time.Time) map[string]FeedSV {
 // keep the two in sync if the operating point moves.
 const freshReceiverWindow = 60 * time.Second
 
-// feedSV projects one svState to a FeedSV. The caller holds the shard lock.
-func (st *svState) feedSV(now time.Time) FeedSV {
+// feedSV projects one svState to a FeedSV. weights are the sources' vote weights;
+// an absent source weighs 1. The caller holds the shard lock.
+func (st *svState) feedSV(now time.Time, weights map[string]float64) FeedSV {
 	g := st.key.G
 	// health_code 0 ("unknown") until this SV's own health bits have
 	// actually been decoded -- an iono-only SV, or a Galileo SV whose
@@ -306,13 +315,22 @@ func (st *svState) feedSV(now time.Time) FeedSV {
 	// window; prune the rest so the map stays bounded by the CURRENT fleet (a
 	// renamed source ages out here rather than lingering). Mutating under the
 	// shard lock the caller holds.
+	var weighted float64
 	for src, at := range st.seenBy {
 		if now.Sub(at) <= freshReceiverWindow {
 			e.Conf++
+			w, ok := weights[src]
+			if !ok {
+				w = 1
+			}
+			weighted += w
 		} else {
 			delete(st.seenBy, src)
 		}
 	}
+	// Hundredths: the weights are tenths and halves, so this removes only the
+	// float summation residue, deterministically whatever the map order.
+	e.ConfWeighted = math.Round(weighted*100) / 100
 	// posFresh gates both the position and (for Kepler-family below) its
 	// paired tow/wn on the same stored propagation epoch, so the two can never
 	// disagree the way "position from the last tick, tow recomputed at feed-build

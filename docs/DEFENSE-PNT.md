@@ -118,9 +118,11 @@ until it ends, and a drop that had passed before a departure began corroborates 
 slow ramp below the per-window step does not show as a drop; the bounded AGC baseline covers
 it.
 
-**Planned use of jamming context:** reduce the contribution of a jammed station to
-future broadcast-agreement and spoofing fusion. The current `conf` value counts
-fresh decoded sources; it does not apply RF-derived voting weights.
+**Use of jamming context:** the `svs` feed's `conf_weighted` counts each fresh decoded
+source by its vote weight: its `rf_trust`, lowered to ½ while its station assessment
+is inconsistent and to 0 while it is unassured or indicates spoofing, since a spoofed
+receiver's decoded navigation data is the attacker's. `conf` still counts every fresh
+source. The planned broadcast-agreement comparison will use the same weights.
 
 ---
 

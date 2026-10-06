@@ -142,6 +142,7 @@ below):
 | `af0`,`af1`,`af2` | float | raw SV clock polynomial (MATH.md §4) |
 | `aodc`,`aode` | int | BeiDou age-of-data (BeiDou only) |
 | `conf` | int | corroboration count (INTEGRITY.md §6): distinct sources with a structurally-decoded nav frame for this satellite×signal within the 60 s fresh-receiver window. Always present — 0 = no current nav corroboration (e.g. an observation-only entry), 1 = a single receiver's testimony, ≥ 2 = independently corroborated. Also stamped into every **satellite×signal (svs-subject) event's** `params` — station-subject (`jamming_detected`/`station_offline`…), SBAS-subject (`S##`), and cross-signal (`xsig_divergence`, physical-name subject) events carry no `conf`. The §6 broadcast-agreement *divergence* detector (same SV/IOD, different bits → hard alarm) is tracked P7 work — conf counts presence, it does not yet compare element sets |
+| `conf_weighted` | float | the same fresh sources counted by vote weight, 0 ≤ `conf_weighted` ≤ `conf`: a source whose front end shows an AGC departure counts by its `rf_trust` (0.3), one whose station assessment is `inconsistent` at most ½, and one that is `unassured` or indicates spoofing not at all; a source with no RF or integrity evidence counts 1. Weights come from the audience's own view of each station, so a public view, which carries no RF or receiver solution, reads `conf_weighted` = `conf`. Stamped beside `conf` in svs-subject event `params` |
 | `perrecv` | object | per-observer reception, keyed by observer id (below) |
 
 `perrecv[<observer_id>]`:
@@ -176,7 +177,7 @@ Illustrative current response (example values, abbreviated):
     "health_code": 1, "health_issue_level": 0, "health_subcode": 0,
     "eph_age_m": 12.4, "sisa_valid": true, "sisa_m": 2.4, "iod": 61,
     "orbit_disco_m": 0.42, "orbit_disco_age_s": 733.0, "time_disco_ns": 0.9,
-    "last_seen_s": 2, "conf": 1,
+    "last_seen_s": 2, "conf": 1, "conf_weighted": 1,
     "x_m": -15637892.3, "y_m": 20984773.1, "z_m": 6512240.7, "tow": 453612, "wn": 2427,
     "af0": 0.000123, "af1": 1.1e-11, "af2": 0.0,
     "perrecv": {

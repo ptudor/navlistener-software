@@ -8,6 +8,7 @@ import (
 
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/navlistener/internal/ingest"
+	"github.com/ptudor/navlistener/internal/integrity"
 	"github.com/ptudor/navlistener/internal/metrics"
 )
 
@@ -110,5 +111,55 @@ func TestConfZeroForObservationOnlyEntry(t *testing.T) {
 	}
 	if e.Conf != 0 {
 		t.Errorf("conf = %d for an observation-only entry, want 0", e.Conf)
+	}
+}
+
+// TestConfWeightedByStationTrust: the weighted corroboration counts a jammed front end
+// at its RF trust, an inconsistent station at half and a station whose evidence
+// indicates spoofing not at all, while conf still counts every fresh source.
+func TestConfWeightedByStationTrust(t *testing.T) {
+	const board = "board-0001-aa"
+	st := New(4)
+	cfg, err := NewIntegrityConfig(integrity.DefaultProfile(), map[string]integrity.StationProfile{board: fixedSite()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.SetIntegrity(cfg)
+	at := clearSky(st, "stnA", 4000, integrityT0, 11*time.Minute) // stnA learns its AGC baseline
+	for i := 0; i < 30; i++ {                                     // then its gain is cut
+		st.Apply(rfSample("stnA", 0, 2500, 0, 2, at.Add(time.Duration(i)*time.Second)))
+	}
+	for i := 540; i < 680; i++ {
+		st.Apply(solutionFrame(i, true, 1))
+	}
+	weighted := func(second int) (int, float64) {
+		t.Helper()
+		when := integrityT0.Add(time.Duration(second) * time.Second)
+		// One source delivers a whole ephemeris set, so the satellite is served.
+		for _, words := range [][]uint32{sf1Words(85), sf2Words(85, 205075516), sf3Words(85)} {
+			st.Apply(&ingest.RawFrame{Recv: when.Add(-5 * time.Second), Source: "stnC", GnssID: gnss.GPS, SvID: 5, Words: words})
+		}
+		for _, src := range []string{"stnA", board, "stnC"} {
+			st.Apply(&ingest.RawFrame{Recv: when.Add(-5 * time.Second), Source: src, GnssID: gnss.GPS, SvID: 5, Words: sf1Words(85)})
+		}
+		sv := st.FeedSVs(when)["G05@0"]
+		return sv.Conf, sv.ConfWeighted
+	}
+	if conf, w := weighted(680); conf != 3 || w != 2.3 {
+		t.Fatalf("jammed stnA = conf %d weighted %v, want 3 and 2.3", conf, w)
+	}
+	for i := 680; i < 690; i++ { // the receiver flags spoofing: one domain alone, inconsistent
+		st.Apply(solutionFrame(i, true, 2))
+	}
+	if conf, w := weighted(690); conf != 3 || w != 1.8 {
+		t.Fatalf("inconsistent board = conf %d weighted %v, want 3 and 1.8", conf, w)
+	}
+	for i := 690; i < 700; i++ { // and its position moves 300 m: spoofing indicated
+		f := solutionFrame(i, true, 2)
+		f.Solution.PVT.LatE7 += 27_000
+		st.Apply(f)
+	}
+	if conf, w := weighted(700); conf != 3 || w != 1.3 {
+		t.Fatalf("spoofed board = conf %d weighted %v, want 3 and 1.3", conf, w)
 	}
 }

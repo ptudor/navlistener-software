@@ -272,7 +272,7 @@ and specific-force samples aligned with GNSS epochs.
 |---|---|---|
 | 4.1 | Regional correlation of simultaneous station RF events; neighbour corroboration as a fusion input | planned |
 | 4.2 | Range check between co-located stations with a known baseline | planned |
-| 4.3 | `rf_trust` weighting of the served confidence count | planned |
+| 4.3 | `rf_trust` weighting of the served confidence count | done; `conf_weighted` beside `conf`, also lowered by the station assessment |
 
 ## 8. Not in scope
 

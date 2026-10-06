@@ -64,6 +64,9 @@
   lasts. Station RF alarms clear at info severity, after five minutes.
 - AGC baselines are learned over six hours and restored across collector
   restarts.
+- The `svs` feed adds `conf_weighted`: the fresh corroborating sources counted
+  by vote weight, so a jammed, inconsistent or spoofed station's testimony
+  counts for less or nothing. `conf` is unchanged.
 - Station events keep a durable copy of the inputs behind them, served by the
   private `/gnss/api/v2/event-evidence`. `stationreplay` reruns the station checks
   over stored inputs or one event's evidence and compares the outcome with the

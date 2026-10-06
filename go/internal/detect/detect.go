@@ -333,6 +333,7 @@ func (d *Detector) detectSV(name string, sv state.FeedSV, now time.Time, liveRec
 				e.Params = map[string]any{}
 			}
 			e.Params["conf"] = sv.Conf
+			e.Params["conf_weighted"] = sv.ConfWeighted
 			e.Params["sigid"] = sv.SigID
 			return e
 		})

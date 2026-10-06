@@ -367,7 +367,7 @@ func (s *Store) FeedStationRF(now time.Time) map[string]StationRF {
 		entry := StationRF{
 			ID:       id,
 			LastSeen: st.lastSeen.Unix(),
-			RFTrust:  1.0,
+			RFTrust:  st.rfTrust(now),
 		}
 		// MON-RF and NAV-SAT arrive as independent frames and jointly keep
 		// the station-level lastSeen fresh; without its own staleness check, a
@@ -399,13 +399,61 @@ func (s *Store) FeedStationRF(now time.Time) map[string]StationRF {
 			}
 			if dep, ok := b.departure(); ok {
 				sb.AGCDeparture = &dep
-				if dep > agcLearnBand/2 { // a real departure: down-weight this station
-					entry.RFTrust = 0.3
-				}
 			}
 			entry.Bands = append(entry.Bands, sb)
 		}
 		out[id] = entry
+	}
+	return out
+}
+
+// rfTrust is how much the station's votes count given its front end: 0.3 while a
+// fresh band shows a real AGC departure, otherwise 1. The caller holds rfMu.
+func (st *rfStation) rfTrust(now time.Time) float64 {
+	for _, b := range st.bands {
+		if now.Sub(b.lastSeen) > rfStaleAfter {
+			continue
+		}
+		if dep, ok := b.departure(); ok && dep > agcLearnBand/2 {
+			return 0.3
+		}
+	}
+	return 1
+}
+
+// sourceVoteWeights returns, as of now, each station whose testimony counts for less
+// than a full vote toward a satellite's weighted corroboration (FeedSV.ConfWeighted):
+// its RF trust, lowered further by its assessment, which maps the integrity levels
+// to weights (assured 1, inconsistent ½, unassured 0) and gives a station whose
+// evidence indicates spoofing no weight. A station with no RF or integrity evidence
+// is absent and weighs 1: lacking evidence is not distrust.
+func (s *Store) sourceVoteWeights(now time.Time) map[string]float64 {
+	s.rfMu.Lock()
+	defer s.rfMu.Unlock()
+	out := map[string]float64{}
+	lower := func(id string, w float64) {
+		if prev, ok := out[id]; ok {
+			w = min(w, prev)
+		}
+		if w < 1 {
+			out[id] = w
+		}
+	}
+	for id, st := range s.rf {
+		if now.Sub(st.lastSeen) <= rfStaleAfter {
+			lower(id, st.rfTrust(now))
+		}
+	}
+	for id, is := range s.integrity {
+		if now.Sub(is.lastInput) > integrityEvictAfter {
+			continue
+		}
+		switch a := is.eval.Assess(now); {
+		case a.SpoofingIndicated || a.State == integrity.Unassured:
+			lower(id, 0)
+		case a.State == integrity.Inconsistent:
+			lower(id, 0.5)
+		}
 	}
 	return out
 }
