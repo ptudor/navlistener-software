@@ -302,6 +302,8 @@ invalid lengths/enums/ranges, and trailing partial TLVs are rejected.
 | 17 reception | 76 | Current edge assessment against a collector forecast; [layout and rules](RECEPTION.md) |
 | 18 reception event | 76 | A retained local journal transition; never advances the live evaluator |
 | 19 snapshot result | 12 | Version, result status, completed scopes, reserved zero, request ID; [contract](RECEPTION.md#repoll-and-submit) |
+| 20 reception power | 256 | Current C/N₀ observations plus local and delivered-model comparisons; [version 2 contract](RECEPTION.md#version-2-received-power-contract) |
+| 21 reception power event | 68 | A retained local/remote/joint power transition; never advances the live evaluator |
 
 Environment mask bits 0/1/2 identify MCP/HDC/BMP respectively; the BMP is the part
 tag 15 names, which on the ZED/X20 is the BMP581. Valid requires
@@ -559,8 +561,14 @@ TIM-TP metadata is not associated with a specific captured edge.
 `board.reception` is an independently paced assessment stream, with
 `details.reception` carrying the edge verdict and `collector_reception` carrying
 the collector's recomputed counts, alarm, disagreement mask and `per_signal`
-flag. Its `reception_stale` bound is 15 seconds. `board.reception_events` retains
-up to 32 local transitions, deduplicated by persistent boot/event identity;
+flag. `board.reception_stale` becomes true after 15 seconds.
+`board.reception_events` retains up to 32 availability transitions, deduplicated
+by persistent boot/event identity.
+`board.reception_power` similarly carries `details.reception_power` and the
+collector's `collector_reception_power` recomputation;
+`board.reception_power_stale` becomes true after 15 seconds.
+`board.reception_power_events` retains up to 32 tag 21 records in
+`details.reception_power_event`, also deduplicated by boot/event identity.
 `board.snapshot` retains the latest command result. These reports do not replace
 environmental baselines or manufacture GNSS liveness. All use private board
 audience rules. [Reception semantics and retention](RECEPTION.md).

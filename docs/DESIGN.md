@@ -14,7 +14,10 @@ GNSS terms are defined on first use; the equations are in [MATH.md](MATH.md).
 > propagates orbits and clocks, monitors integrity, optionally stores raw frames and decoded
 > data in TimescaleDB, and serves versioned JSON feeds and an event stream.
 > ESP32 observers also compare local reception with collector forecasts and own
-> their alarm state and persistent incident history.
+> their alarm state and persistent incident history. Stationary GPS observers
+> keep a local sidereal C/N₀ reference and compare it with the collector's
+> reference before raising the received-power alarm; the historian makes the
+> collector reference durable across restarts.
 
 ---
 
@@ -78,7 +81,8 @@ nav-frame output and forward it untouched. Per source:
 | **RTCM3** | any RTCM source / caster | **Capture-only:** ephemeris/SSR messages are framed, CRC-checked, and raw-persisted; live navigation/SSR decode is planned. |
 
 The `gnss/frame` navigation decoders and orbit propagation live centrally. ESP32
-observers parse receiver telemetry locally for reception comparison and alarms
+observers parse receiver telemetry locally for reception comparison, received-power
+history, and alarms
 ([RECEPTION.md](RECEPTION.md)). Ingest is a **registry
 of thin connectors** — read a local feed → frame → ship — so a new receiver type (Unicore,
 Quectel, a bare NMEA+RTCM caster) is one connector, not a rewrite.
@@ -148,12 +152,13 @@ shape means one mental model and a near-verbatim port of `radiolistener/feeder/f
 | `HELLO` (0x01) | feeder→collector | JSON `{token, station, feed, sw, session, zstd?, evidence?, reception?}` — `feed ∈ {ubx, rtcm}` (SBF is rejected because GNF1 `frame_type` cannot carry SBF block numbers; NMEA is unimplemented). **`session` is REQUIRED** (regression fix, contract revision 2026-07-31): an opaque boot identity (1..64 chars of `[A-Za-z0-9._-]`; reference implementations use 32 hex chars) minted fresh whenever the feeder's DATA sequence space restarts from zero and reused while it continues — the C feeder persists it in each disk-spool header and replays prior-run files on separate connections under their original sessions; every process uses a fresh session for new captures; the ESP32's RAM-only ring mints one per boot. The collector's replay-dedup identity is (canonical authenticated observer, session, seq); the session is never trusted as observer identity. A HELLO without a valid session is rejected before WELCOME |
 | `WELCOME` (0x02) | collector→feeder | JSON `{ok, error?, ack_interval_ms?, zstd?, durable_ack?, hardware_trust?, evidence_error?}`. **Normative: the compact Go `encoding/json` spelling** — servers MUST emit `"ok":true` / `"zstd":true` with no space after the colon (see the note below) |
 | `DATA` (0x03) | feeder→collector | `[8B seq][framed raw record]` — see the record shape below |
-| `ACK` (0x04) | collector→feeder | `[8B seq]` the **durable watermark** for this session (regression fix, revised by regression fix 2026-07-31): the highest seq through which every *received* sequenced frame has been durably resolved — committed by the historian (or deduped against an already-committed ledger claim), quarantined as unfixable, or classified never-persistable (telemetry, malformed). The feeder prunes its spool up to the ack, so the ack stalls — rather than data being lost — while the collector's database is down; the feeder's ack-stall watchdog (10 min) then cycles the connection so reconnect replay redelivers anything the collector shed during the outage. A collector running **without** a historian acks on receipt (the explicit live-only mode; the spool contract is then best-effort by configuration). gap rule is unchanged: never-received sequences are skipped past, not waited for; reconnect replay makes any resulting duplicate harmless |
+| `ACK` (0x04) | collector→feeder | `[8B seq]` the **durable watermark** for this session (regression fix, revised by regression fix 2026-07-31): the highest seq through which every *received* sequenced frame has been durably resolved — committed by the historian (or deduped against an already-committed ledger claim), quarantined as unfixable, or classified never-persistable (raw observables or malformed input). Navigation, board and receiver-RF rows share the ledger claim. The feeder prunes its spool up to the ack, so the ack stalls — rather than data being lost — while the collector's database is down; the feeder's ack-stall watchdog (10 min) then cycles the connection so reconnect replay redelivers anything the collector shed during the outage. A collector running **without** a historian acks on receipt (the explicit live-only mode; the spool contract is then best-effort by configuration). The gap rule is unchanged: never-received sequences are skipped past, not waited for; reconnect replay makes any resulting duplicate harmless |
 | `PING`/`PONG` (0x05/0x06) | both | keepalive |
 | `UPDATE_CONTROL` (0x09) | collector→feeder | a versioned 36-byte update command ([software updates](../esp32/docs/SOFTWARE-UPDATES.md)) |
 | `EVIDENCE` (0x0A) | feeder→collector | a commissioned device's hardware evidence — its manufacturer-signed commissioning record and, for a locked board, its microcontroller key and a proof bound to this TLS session. Sent once, straight after a `HELLO` with `"evidence":true` and before `WELCOME`; never valid later. Layout and evaluation are normative in [COMMISSIONING.md §6](COMMISSIONING.md) |
-| `RECEPTION_EXPECTATION` (0x0B) | collector→feeder | Five-minute station forecast, up to 552 bytes; negotiated by HELLO `"reception":1`. [Contract](RECEPTION.md) |
+| `RECEPTION_EXPECTATION` (0x0B) | collector→feeder | Five-minute station forecast, up to 552 bytes; negotiated by HELLO `"reception":1` or newer. [Contract](RECEPTION.md) |
 | `SNAPSHOT_REQUEST` (0x0C) | collector→feeder | Expiring, scoped repoll-and-submit request, 20 bytes. [Contract](RECEPTION.md) |
+| `RECEPTION_POWER` (0x0D) | collector→feeder | Received-power companion for the exact 0x0B entry order, up to 2,088 bytes; HELLO `"reception":2`. [Contract](RECEPTION.md#version-2-received-power-contract) |
 | `SIGNED_DATA` (0x07) | feeder→collector | *(hardware tier, vNext)* a `DATA` batch + trailing ATECC ECDSA signature over `board_uid ‖ rtc_unix_ns ‖ sha256(payload) ‖ counter` |
 
 **`WELCOME`'s compact spelling is part of the wire contract, not an implementation detail**
@@ -312,7 +317,7 @@ it means the check belongs *after* cert provisioning in any deploy runbook, not 
 ## 6. Engineering priorities
 
 **Architecture:** central navigation decoding and orbit propagation, local reception
-analysis with network forecasts; raw-frame-as-record;
+analysis with network forecasts and local/server sidereal C/N₀ history; raw-frame-as-record;
 spool+ack+replay resilience; the generic Keplerian propagator abstraction; the integrity
 signal set (orbit-disco, time-disco, delta-Hz, health/SISA, RTCM precise-vs-broadcast); the
 debounced alert state machine; the five-feed *concept* (svs/global/observers/almanac/sbas —

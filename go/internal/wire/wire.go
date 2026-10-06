@@ -46,7 +46,9 @@ const (
 	// sequenced frame ≤ N the collector RECEIVED has been durably resolved:
 	// committed by the historian (or deduped as a replay of an
 	// already-committed ledger claim), quarantined as unfixable poison, or
-	// classified never-persistable (telemetry, malformed body). The feeder
+	// classified never-persistable (raw observables or a malformed body).
+	// Navigation, board and receiver-RF telemetry rows wait for the shared
+	// ledger transaction. The feeder
 	// prunes its spool up to the acked seq, so before this revision ACK meant
 	// "queued in RAM" and a DB outage after ACK permanently erased the raw
 	// evidence — now the ack simply stalls until the store commits, and the

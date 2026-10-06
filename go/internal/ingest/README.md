@@ -2,8 +2,9 @@
 
 **Headline:** the front door. Two very different transports — we dial out to receivers on our LAN,
 and fleet feeders dial in to us over TLS — normalized into one `RawFrame` type so nothing
-downstream has to care which way the bytes arrived. **No decoding happens here.** Read a feed,
-frame it, emit it. The edge is dumb and so is this stage.
+downstream has to care which way the bytes arrived. Navigation content remains opaque here:
+read a feed, frame it, emit it. Bounded receiver and board telemetry bodies are parsed so they
+can be validated, routed and stored.
 
 ---
 
@@ -189,8 +190,10 @@ Three behaviors worth internalizing:
 
 - **`Received` is called before the frame is handed to decode**, so a resolution can never race
   its own arrival.
-- **`persistable = false`** marks frames that will never reach the historian — telemetry,
-  malformed bodies — so they advance the watermark without ever holding it back.
+- **`persistable = false`** marks frames that will never reach the historian — raw
+  observables and malformed bodies — so they advance the watermark without ever
+  holding it back. Navigation, board and receiver-RF telemetry wait for their
+  shared replay-ledger transaction.
 - **`Resolved` on an unknown or already-resolved sequence is a harmless no-op**, because the store
   notifies per batch entry and a batch can span a reconnect's replayed duplicates.
 

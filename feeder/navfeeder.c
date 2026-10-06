@@ -6,9 +6,10 @@
  * each frame to the navlistener collector's authenticated TLS ingest endpoint, framed
  * per ../go/internal/wire (GNF1). It also forwards the RF-front-end and per-SV telemetry
  * the collector's PNT-defense layer needs (UBX-MON-RF/MON-HW/NAV-SAT → GNF1 telemetry
- * records, docs/DEFENSE-PNT.md §1). It does NOT decode — the edge is dumb, all decoding and
- * orbit math (and all threat detection) is central in the collector (docs/DESIGN.md §1,
- * docs/CONSTELLATIONS.md §2).
+ * records, docs/DEFENSE-PNT.md §1). This C feeder does not decode navigation content or run
+ * local detectors; its orbit math and threat detection remain central in the collector
+ * (docs/DESIGN.md §1, docs/CONSTELLATIONS.md §2). The ESP observer separately implements
+ * the authenticated reception alarms in docs/RECEPTION.md.
  * C because the observer fleet is OpenWrt/mips routers and SBCs where a tiny static binary
  * fits and a Go runtime does not — the same shape as radiolistener/feeder/feeder.c, which
  * this is a near-verbatim port of (the resilient spool/ack/replay core is reused verbatim;

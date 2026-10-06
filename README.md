@@ -10,9 +10,11 @@ An optional TimescaleDB historian stores raw frames, snapshots, and events for
 later analysis and replay.
 
 Configured ESP32 stations receive expected-reception forecasts and compare them
-with local satellite or signal tracking. They raise and journal their own alarms;
-the collector independently checks their reports. Affected constellation LEDs
-alternate green/yellow every 250 ms. See [edge reception alarms](docs/RECEPTION.md).
+with local satellite or signal tracking. Stationary GPS profiles also compare
+receiver C/N₀ with locally persisted and collector-maintained sidereal history. They
+raise and journal their own alarms; the collector independently checks their
+reports. Affected constellation LEDs alternate green/yellow every 250 ms. See
+[edge reception alarms](docs/RECEPTION.md).
 
 The repository includes a reusable Go GNSS library, the collector, C and ESP32
 feeders, and an Apple station-monitoring app. ESP32 firmware supports the custom
@@ -37,7 +39,7 @@ on the signal and input format, and planned extensions are marked in the docs.
 | SBAS | L1 message headers and the message-type-0 “do not use” indication; correction payloads are not decoded |
 | NavIC | Decoder deferred |
 | Receiver inputs | UBX navigation and receiver telemetry; SBF and RTCM capture with raw persistence, pending central decoders; NTRIP transport |
-| Monitoring | Orbit and clock discontinuities, station liveness, signal capabilities, and receiver RF telemetry |
+| Monitoring | Orbit and clock discontinuities, station liveness, signal capabilities, receiver RF telemetry, and stationary received-power history |
 | Hardware trust | Collector-verified `trusted`, `open`, `test` or `none` per session, from a manufacturer-signed commissioning record and a session proof; implemented in the collector and firmware, with on-device key generation awaiting bench validation |
 | Serving | Native `/gnss/api/v2/*` JSON feeds and `/gnss/events` server-sent events, with public and authorized private audiences |
 

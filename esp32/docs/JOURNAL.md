@@ -2,8 +2,9 @@
 
 The S3 records a bounded history of boots, firmware identity and health in a
 dedicated 512 KiB NVS partition. It works before network provisioning and without
-the optional EEPROM. It also retains reception assessments; it does not store
-continuous raw GNSS frames or make the PSRAM transport spool durable.
+the optional EEPROM. It also retains reception assessments and the stationary
+GPS C/N₀ model; it does not store continuous raw GNSS frames or make the PSRAM
+transport spool durable.
 
 ## FIFO retention and failures
 
@@ -13,7 +14,7 @@ Three independent FIFO queues replace their **oldest** entries automatically:
 |---|---:|---|
 | Lifecycle | 256 events | Boot, local startup confirmation, first usable time and first GNSS-qualified time, OTA selection/failure, a change of the collector's hardware-trust verdict, bench commissioning operations |
 | Health | 1,024 checkpoints | After one minute of uptime, then hourly |
-| Reception | 128 transitions | Local reception alarm, recovery or coverage-validity change |
+| Reception | 128 transitions | Availability alarm/recovery/coverage changes and material local/remote received-power changes |
 
 Hourly checkpoints retain about 42 days of continuous operation. Lifecycle
 retention depends on the number of events, not elapsed days; health records
@@ -101,10 +102,11 @@ plus one for `keygen` (zero when nothing was burned) or the record's profile for
 
 ## Reception evidence
 
-Event 9 uses its own bounded queue, so reception incidents cannot evict boot or
-health history. It retains expectation ID, observation time and uptime, persistent
-boot/event IDs, coverage and alarm masks, expected/observed counts and the matched
-expectation-entry bitmap. Firmware identity comes from the associated boot record.
+Events 9 and 10 use their own bounded reception queue, so reception incidents
+cannot evict boot or health history. Event 9 retains expectation ID, observation
+time and uptime, persistent boot/event IDs, coverage and alarm masks,
+expected/observed counts and the matched expectation-entry bitmap. Firmware
+identity comes from the associated boot record.
 The event discriminator assigns bytes 68–143 of this event's 192-byte record to
 the versioned reception sample; other event layouts are unchanged. CRC and atomic
 NVS writes cover the entire record. No partition migration is needed.
@@ -120,6 +122,25 @@ until the bounded queue wraps. Reconnect uploads never delete them. The stored
 counts are readable without the forecast; the match bitmap needs the exact
 expectation ID's entry list. See [edge analysis](../../docs/RECEPTION.md).
 
+Event 10 shares that 128-record lane and sequence with event 9. It records the
+availability of the local and delivered power models, their model IDs, local,
+remote and joint valid/abnormal/alarm masks, disagreement between the two models,
+measurement time, and persistent boot/event IDs. A routine forecast or model-ID
+refresh does not create a record by itself. The outer record remains atomic and
+CRC-protected; bytes 68–135 hold the versioned 68-byte power event. The management
+JSON names these fields with `local_`, `remote_`, `joint_`, and
+`model_conflict_mask` prefixes, and the default text output summarizes the four
+alarm/conflict masks.
+
+The local C/N₀ history is separate from the FIFO. Namespace `nvf_power` stores
+alternating `model_a` and `model_b` blobs, each with its own version, site identity,
+checkpoint generation and CRC. A changed site identity clears the in-memory model
+and forces a checkpoint. Within a boot, later dirty checkpoints are limited to one
+successful write per six hours, with one-minute retry spacing after a failure. The
+newer valid slot wins at startup; a corrupt or interrupted slot leaves the older
+valid slot available. Model storage is best effort: a failure leaves GNSS and the
+alarm evaluator running and never erases the partition automatically.
+
 ## Installation and readout
 
 Install the updated S3 partition table over USB once. It carves the journal out
@@ -129,6 +150,9 @@ application slots to 4 MiB and moves the partition table and configuration.
 Migrate earlier layouts over USB and reprovision; app-only OTA cannot move them. Subsequent
 ordinary flashes, OTA and configuration resets preserve journal data; whole-chip
 erase does not. The C6 has no journal partition and its journal hooks are no-ops.
+Firmware predating event 10 treats such a record as an unknown journal layout and
+leaves journaling unavailable for that rollback boot; it does not erase the records,
+and current firmware reads them again normally.
 
 Startup prints the most recent lifecycle event and checkpoint, then new events,
 on the physically trusted serial console. For complete paged readout, pair the
@@ -151,9 +175,10 @@ does not pause writes; entries overwritten during a long export can be absent.
 The management connection is local HTTP, so authentication does not encrypt the
 returned diagnostics. No network passwords, keys or location are journaled.
 
-Host tests cover repeated FIFO wrap, preservation of the independent boot queue,
-full/write/commit failures before and after persistence, restart recovery,
-corruption refusal, long uptime and hourly cadence. Physical flash interruption,
+Host tests cover repeated mixed-event FIFO wrap, preservation of the independent
+boot queue, full/write/commit failures before and after persistence, restart
+recovery, power-model CRC restore and site reset, corruption refusal, long uptime
+and hourly cadence. Physical flash interruption, multi-day model collection,
 long-term endurance and management transport still require hardware validation.
 
 ## Pulse totals in checkpoints

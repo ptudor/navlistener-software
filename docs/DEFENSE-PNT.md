@@ -1,10 +1,10 @@
 # navlistener — PNT defense: jamming & spoofing detection
 
-**Status: RF monitoring and jamming detection implemented; spoofing fusion incomplete.**
-MON-RF/MON-HW and reception telemetry feed the current station detectors. Only one
-independent spoofing gate is wired, below the required quorum of two, so the current
-collector cannot confirm `spoofing_suspected` (§3). Additional inputs and hardware
-tiers remain planned.
+**Status: RF monitoring, jamming detection, and stationary received-power history
+implemented; spoofing fusion incomplete.** MON-RF/MON-HW and reception telemetry
+feed the current station detectors. Only one independent spoofing gate is wired,
+below the required quorum of two, so the current collector cannot confirm
+`spoofing_suspected` (§3). Additional inputs and hardware tiers remain planned.
 
 This document describes how `navlistener` uses receiver telemetry for RF monitoring
 and the planned **jamming and spoofing defense layer** for the fleet. This is
@@ -29,13 +29,15 @@ delta-Hz, OSNMA) — those are `docs/INTEGRITY.md`. The raw telemetry plumbing i
 `docs/CONSTELLATIONS.md §6.2`; the emitted fields and events are `docs/OUTPUT.md`; the hardware
 observer is `docs/DESIGN.md §3`.
 
-**The edge does not decide.** As everywhere in this system, the feeder forwards *raw telemetry*
-(AGC/CW indicators, spoofing flags, raw observables) and the collector does all the detection
-centrally. A receiver's own jamming/spoofing flag is treated as **one input among several**, not
-as ground truth — commercial detectors are a black box tuned to detect the *transition* into a
-degraded environment and can be blind to a receiver cold-booted already inside one (§5). We
-recompute what we can from physics and corroborate across receivers, exactly as we do for the
-broadcast.
+**Edge and collector roles.** Feeders forward raw AGC/CW indicators, receiver flags
+and observables for the fleet detectors. A stationary ESP observer additionally owns
+the bounded availability and received-power alarms in
+[RECEPTION.md](RECEPTION.md): it compares GPS C/N₀ with its persisted sidereal
+history and the collector's delivered history. The collector recomputes the delivered
+comparison. This local warning does not emit the collector's
+`spoofing_suspected` event or reduce its independent-gate quorum. A receiver's own
+jamming/spoofing flag remains one input among several; commercial detectors can be
+blind when a receiver boots inside an already degraded environment (§5).
 
 ---
 
@@ -117,6 +119,13 @@ rule identifies what is wired today, consistent with `docs/INTEGRITY.md §8`.
   identical, unnaturally high, elevation-independent C/N₀ is the classic single-transmitter
   spoofer signature. Metric: the **variance of C/N₀ residual after removing the elevation trend**
   collapsing toward zero across a constellation. (Uses `ReceptionData`.)
+- **Repeating-ground-track C/N₀ departure.** A fixed GPS installation compares each
+  satellite at the same sidereal phase with robust local and server histories. Both
+  references must flag the same entries before the edge alarm advances. This catches
+  an abrupt distinctly different level even when the constellation still has normal
+  satellite counts. Both histories use the same receiver stream, so this is part of
+  the C/N₀ plausibility family rather than another independent fusion vote. The full
+  model, persistence and limitations are in [RECEPTION.md](RECEPTION.md#received-power-histories).
 - **Doppler-vs-ephemeris.** Real SVs move at orbital velocity; a static ground spoofer cannot
   reproduce every SV's true range-rate. This is exactly the **delta-Hz** signal already defined in
   `docs/MATH.md §2.2` / `docs/INTEGRITY.md §3`: observed Doppler minus ephemeris-predicted Doppler.
@@ -156,6 +165,9 @@ in view). This mirrors the broadcast-agreement logic in `docs/INTEGRITY.md §6`.
 > is not lowered; a lone gate surfaces as `station_rf_degraded`), and disclosed operationally via
 > the `navlistener_spoof_gates_wired` / `navlistener_spoof_gate_quorum` gauges and a startup
 > warning (alert on `wired < quorum`). See `docs/INTEGRITY.md §8`'s per-gate status list.
+> The repeating-ground-track comparison is implemented as an ESP reception warning
+> and private collector check. It shares the C/N₀ evidence family and is not wired as
+> a second central fusion gate, so the gauges and unreachable quorum remain unchanged.
 
 ---
 
@@ -207,17 +219,20 @@ The receiver flag is therefore **one weighted input** into the fusion rule (§3)
 
 ## 6. Persistence & output
 
-- **RF telemetry is stored like any observation** (`docs/OUTPUT.md §4`): the `JammingStats` /
-  `ReceptionData` records land in the raw telemetry hypertable with their decoded projection, so a
-  detector improvement can be **replayed over history** — the same re-decodability guarantee the
-  nav frames get. A jamming/spoofing incident is then reconstructable after the fact.
+- **RF telemetry is stored like any observation** (`docs/OUTPUT.md §4`): `JammingStats` and
+  `ReceptionData` land in the private `rf_samples` hypertable with exact raw bodies,
+  decoded projections, receipt scope, session and sequence. The write shares the
+  navigation replay-ledger transaction, so a detector improvement can be replayed
+  over history without acknowledging evidence that failed storage.
 - **Station RF health surfaces in the `observers` feed** (`docs/OUTPUT.md §1.3`): per-station,
   per-band `agc_departure`, `cw_suppress`, `noise_level`, `jam_state`, and a `rf_trust`
   scalar (how much this station's votes are currently down-weighted); `noise_level` is the
   receiver's raw MON-RF indicator, not a dB measurement. Confirmed events go to the
   SSE stream and `gnss_events` like every other integrity event.
-- **Baselines are state, not config**: the per-station quiet-time AGC/C/N₀/clock baselines live in
-  the live state and the historian, learned continuously — never hand-tuned constants.
+- **Baselines are state:** with the historian enabled, the server's repeating-track
+  C/N₀ model is versioned in `reception_power_models`, while the observer keeps its
+  own CRC-protected model in local NVS. Threshold policy and the explicit hardware/site
+  epoch remain configuration.
 
 ---
 

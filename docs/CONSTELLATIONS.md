@@ -413,7 +413,7 @@ use §1 and §2.1 for current coverage.
 | 0x01 | `ReceptionData` | per-SV C/N₀, elevation, azimuth, pseudorange-residual, quality-ind, used-in-solution (UBX-NAV-SAT/NAV-SIG) |
 | 0x02 | `RFData` | raw observables: pseudorange, carrier phase, Doppler, lock-time, cno, validity (UBX-RXM-RAWX). Dual-frequency observable pairs feed the measured-ionosphere cross-check (`docs/MATH.md §7.4`) |
 | 0x03 | `ObserverPosition` | receiver ECEF x/y/z, accuracy, ground-speed (UBX-NAV-HPPOSECEF/PVT) |
-| 0x04 | `ObserverDetails` | Implemented v1: uptime, distinct sensor measurements, RTC/ATECC/EEPROM health and identity, spool resources, receiver interference context and firmware version; [wire contract](OBSERVER-TELEMETRY.md) |
+| 0x04 | `ObserverDetails` | Implemented v1 envelope: uptime, sensors, RTC/ATECC/EEPROM health and identity, spool resources, receiver interference context, firmware version, and reception/received-power assessments in versioned tags; [wire contract](OBSERVER-TELEMETRY.md) |
 | 0x05 | `JammingStats` | u-blox MON-HW/MON-RF jamming/AGC/spoofing indicators (MON-RF on F9+; RF-integrity input, `docs/INTEGRITY.md`) |
 | 0x06 | `TimeOffset` | per-GNSS inter-system offsets (GGTO, BGTO, GPS-UTC, …) → `global.json` |
 | 0x07 | `RtcmMessage` | forwarded RTCM3 message (ephemeris 1019/1020/1041/1042/1044/1045/1046; SSR 1057-1068) |

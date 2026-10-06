@@ -261,3 +261,7 @@ ack_interval = "1s"
 # min_expected = 4
 # min_missing = 3
 # missing_percent = 50
+# power_model_epoch = "antenna-1" # change after antenna/cable/receiver/site changes
+# power_min_deviation_dbhz = 6
+# power_mad_multiplier = 4
+# power_min_support_days = 3

@@ -488,16 +488,22 @@ and raises its own alarm after the configured dwell. An affected constellation
 alternates green and yellow on a 500 ms full cycle; the uplink column retains its
 connectivity indication. Unknown coverage cannot clear an alarm. A restored
 journal alarm remains visible after reboot until fresh evidence confirms recovery.
-The collector can also request a fresh receiver/RF/environment snapshot.
+For stationary GPS profiles, reception protocol v2 also learns a local sidereal
+C/N₀ history and compares each fresh NAV-SAT value with that history and the
+collector's delivered history. Only joint local/remote agreement advances the
+received-power alarm. The collector can also request a fresh
+receiver/RF/environment snapshot.
 See [station configuration, wire contract and limitations](../docs/RECEPTION.md).
 
 ## Boot, health and reception journal (ESP32-S3)
 
 The S3 keeps three persistent FIFO histories in a dedicated 512 KiB NVS partition:
-256 lifecycle events, 1,024 hourly health checkpoints and 128 reception transitions. New records replace
-the oldest automatically; logging errors disable logging while GNSS collection
-continues. Boot records include firmware version/ELF hash, reset reason and
-uptime. Qualified GNSS or running-RTC time anchors preserve clock provenance.
+256 lifecycle events, 1,024 hourly health checkpoints and 128 combined availability
+and received-power transitions. The same partition holds the alternating,
+CRC-protected local power-model checkpoints. New records replace the oldest
+automatically; logging errors disable logging while GNSS collection continues.
+Boot records include firmware version/ELF hash, reset reason and uptime. Qualified
+GNSS or running-RTC time anchors preserve clock provenance.
 See [installation, retention and laptop readout](docs/JOURNAL.md). Installing the
 new partition table over USB once enables the journal on earlier S3 layouts.
 

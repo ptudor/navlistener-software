@@ -217,6 +217,19 @@ report as interference context. `board.timing` carries independently paced GNSS
 and RTC pulse measurements, with its own `timing_stale` flag. Public views exclude
 board telemetry.
 
+Reception reports are also independently paced. `board.reception` contains the
+latest availability result in `details.reception` and the collector's independent
+interpretation in `collector_reception`; `board.reception_stale` becomes true
+after 15 seconds. `board.reception_events` retains up to 32 journal replays,
+each under `details.reception_event`. For reception-version-2 observers,
+`board.reception_power` contains the current C/N₀ observations and edge verdict
+in `details.reception_power`, beside the collector's recomputation in
+`collector_reception_power`; `board.reception_power_stale` uses the same 15-second
+bound. `board.reception_power_events` retains up to 32 power transitions under
+`details.reception_power_event`. Both event arrays deduplicate on the observer's
+persistent boot/event identity. See [the reception contract](RECEPTION.md) for
+model, validity, dwell and replay semantics.
+
 Every board sample (`latest`, `timing`, `update` and the `last_interference`
 snapshots) carries `hardware_trust` beside `details`: `none`, `open`, `test` or
 `trusted`, as the collector verified it from the hardware evidence of the session
@@ -481,6 +494,29 @@ CREATE TABLE nav_frames_seq_seen (
 
 Raw-plus-decoded means a decoder bug fix lets us **re-derive every historical ephemeris**
 from `raw` without re-collecting — the same re-decodability guarantee `radiolistener` keeps.
+
+Receiver RF telemetry has its own private `rf_samples` hypertable. It stores the
+exact versioned receiver body in `raw`, its decoded JSON projection in `data`,
+`sample_time`, evidence kind, decoder version, source session/sequence and the
+same immutable receipt-time ownership, trust and publication scope as
+`nav_frames`. This separation prevents receiver measurements from masquerading
+as broadcast navigation words. Original ObserverDetails bodies, including live
+and replayed availability and power reports, continue to use private
+`observer_samples`.
+
+Push-path `nav_frames`, `observer_samples` and `rf_samples` rows share the same
+`nav_frames_seq_seen` claim and database transaction. The collector resolves the
+claim before issuing its durable ACK: a reconnect replay either commits its
+evidence and sequence together or finds the already committed sequence, rather
+than duplicating only one evidence family.
+
+`reception_power_models` is durable point state, not a telemetry history. It
+keeps the latest versioned model blob per `source_id`, its update time and the
+decimal `model_id`; the text representation preserves the full unsigned 64-bit
+identifier. The blob contains the stable site/configuration fingerprint used to
+reject a model after an antenna epoch or station configuration change. The
+collector checkpoints a changed model every five minutes and during orderly
+shutdown; individual five-minute forecasts are not archived.
 
 ---
 
