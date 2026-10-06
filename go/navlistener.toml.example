@@ -280,3 +280,13 @@ ack_interval = "1s"
 # observer = "vehicle-observer"
 # mode = "mobile"
 # max_speed_mps = 35
+#
+# Optional co-located pairs for the baseline check: two antennas a known distance
+# apart should report positions that far apart, and one transmitter feeding both
+# puts them at one position. distance_m defaults to the distance between the two
+# surveyed positions when both stations have one. A station is in at most one pair,
+# and the check can tell a collapse from noise only when the distance exceeds its
+# bands (15 m or more with typical accuracies).
+# [[integrity.baseline]]
+# stations = ["bow-observer", "stern-observer"]
+# distance_m = 42.5

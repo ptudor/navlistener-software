@@ -22,7 +22,9 @@
 //
 // The replay starts cold. Checks warm up and the AGC baseline is learned again, so the
 // first minutes may differ from the live collector, which carried state from earlier;
-// -warmup excludes them from the comparison. Rows stored before the receipt clocks
+// -warmup excludes them from the comparison. A station's baseline check needs its
+// partner's solutions, which a single-station replay does not read, so it stays
+// unavailable. Rows stored before the receipt clocks
 // were recorded are replayed on their persistence time without a wall-clock stamp, and
 // the summary counts them.
 //

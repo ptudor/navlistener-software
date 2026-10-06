@@ -35,6 +35,10 @@ func NewIntegrityConfig(profile integrity.Profile, stations map[string]integrity
 			pos := *sp.Position
 			sp.Position = &pos
 		}
+		if sp.Baseline != nil {
+			pair := *sp.Baseline
+			sp.Baseline = &pair
+		}
 		copied[id] = sp
 	}
 	return &IntegrityConfig{profile: profile, stations: copied}, nil
@@ -51,12 +55,20 @@ const (
 	// statusPreferredFor is how long an epoch-rate receiver status block
 	// supersedes the low-rate spoofing state in board reports.
 	statusPreferredFor = 5 * time.Minute
+	// baselineRecent bounds the solutions a paired station keeps for matching its
+	// partner's epochs, which normally arrive within a second or two.
+	baselineRecent = 16
+	// baselineArrivalSkew bounds how far apart two matched epochs may arrive, so an
+	// epoch from another week cannot match on time of week alone.
+	baselineArrivalSkew = 30 * time.Second
 )
 
 type integrityStation struct {
 	eval       *integrity.Station
 	lastInput  time.Time
 	lastStatus time.Time
+	// recent holds a paired station's latest accepted solutions, oldest first.
+	recent []integrity.Solution
 }
 
 // StationConfigHash is the configuration hash a station's assessments carry under
@@ -136,7 +148,9 @@ func (s *Store) applySolution(f *ingest.RawFrame) {
 		if stamp, ok := f.WallClockStamp(); ok {
 			in.HostStamp = stamp
 		}
-		st.eval.ApplySolution(in)
+		if st.eval.ApplySolution(in) {
+			s.integrityBaseline(f.Source, st, in)
+		}
 	}
 	if c := sol.Clock; c != nil {
 		st.eval.ApplyClock(integrity.ClockSample{
@@ -149,6 +163,43 @@ func (s *Store) applySolution(f *ingest.RawFrame) {
 		st.eval.ApplyStatus(integrity.ReceiverStatus{
 			Received: recv, SpoofState: int(status.SpoofState), SinceStartMS: status.SinceStart, HaveStart: true,
 		})
+	}
+}
+
+// integrityBaseline matches an accepted solution of a paired station with its
+// partner's solution for the same epoch and evaluates the pair for both stations,
+// once: when the second of the two epochs arrives. Only stations that name each other
+// are paired. The caller holds rfMu.
+func (s *Store) integrityBaseline(id string, st *integrityStation, sol integrity.Solution) {
+	if s.integrityCfg == nil || s.integrityCfg.stations[id].Baseline == nil {
+		return
+	}
+	st.recent = append(st.recent, sol)
+	if len(st.recent) > baselineRecent {
+		st.recent = st.recent[len(st.recent)-baselineRecent:]
+	}
+	partnerID := s.integrityCfg.stations[id].Baseline.Partner
+	if back := s.integrityCfg.stations[partnerID].Baseline; back == nil || back.Partner != id {
+		return
+	}
+	partner := s.integrity[partnerID]
+	if partner == nil {
+		return
+	}
+	maxSkew := s.integrityCfg.profile.Baseline.MaxEpochSkew
+	for i := len(partner.recent) - 1; i >= 0; i-- {
+		p := partner.recent[i]
+		apart := sol.Received.Sub(p.Received)
+		if apart > baselineArrivalSkew || apart < -baselineArrivalSkew || integrity.EpochSkew(sol.TOW, p.TOW) > maxSkew {
+			continue
+		}
+		at := sol.Received
+		if p.Received.After(at) {
+			at = p.Received
+		}
+		st.eval.ApplyBaseline(sol, p, at)
+		partner.eval.ApplyBaseline(p, sol, at)
+		return
 	}
 }
 

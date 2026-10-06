@@ -127,6 +127,7 @@ from stored station data the same way the GLONASS discontinuity bands were.
 | `stationary_velocity` | solution, fixed station | reported speed against bands scaled by the speed accuracy | position |
 | `motion_bound` | solution, mobile station | distance from the last assured position must fit within elapsed time × maximum speed plus both accuracy estimates | position |
 | `position_velocity` | solution | velocity implied by position differences over a five-second window against the mean reported velocity | position |
+| `baseline` | solutions of a configured co-located pair | the distance between the two positions at one epoch against the antennas' known distance; both at one position is the single-transmitter signature | position |
 | `clock_bias_drift` | clock | change in clock bias against the integrated clock drift over 30–40 s; whole-millisecond receiver clock adjustments are removed and recorded | receiver clock |
 | `clock_drift_rate` | clock | rate of change of clock drift over 60–120 s | receiver clock |
 | `utc_offset` | solution UTC; the observer's NTP stamp or the collector's clock | receiver UTC against an independent wall-clock stamp of the same record | time reference |
@@ -271,7 +272,7 @@ and specific-force samples aligned with GNSS epochs.
 | # | Item | Status |
 |---|---|---|
 | 4.1 | Regional correlation of simultaneous station RF events; neighbour corroboration as a fusion input | planned |
-| 4.2 | Range check between co-located stations with a known baseline | planned |
+| 4.2 | Range check between co-located stations with a known baseline | done; `[[integrity.baseline]]` pairs, the `baseline` check in the position domain |
 | 4.3 | `rf_trust` weighting of the served confidence count | done; `conf_weighted` beside `conf`, also lowered by the station assessment |
 
 ## 8. Not in scope

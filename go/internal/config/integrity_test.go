@@ -106,3 +106,104 @@ func TestIntegrityStationRejects(t *testing.T) {
 		})
 	}
 }
+
+func TestIntegrityBaselines(t *testing.T) {
+	cfg, err := loadBody(t, receptionSite+`
+[[reception.station]]
+observer = "roof-west"
+position = [37.4219, -122.08455, 12.5]
+signals = ["0:0"]
+
+[[integrity.station]]
+observer = "bow"
+mode = "mobile"
+max_speed_mps = 15
+
+[[integrity.station]]
+observer = "stern"
+mode = "mobile"
+max_speed_mps = 15
+
+[[integrity.baseline]]
+stations = ["roof", "roof-west"]
+
+[[integrity.baseline]]
+stations = ["bow", "stern"]
+distance_m = 42.5
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := cfg.IntegrityStations()
+	roof, west := st["roof"].Baseline, st["roof-west"].Baseline
+	if roof == nil || west == nil || roof.Partner != "roof-west" || west.Partner != "roof" {
+		t.Fatalf("surveyed pair = %+v %+v", roof, west)
+	}
+	// 0.00045° of longitude at 37.42° is about 39.7 m.
+	if roof.DistanceM < 39 || roof.DistanceM > 40.5 || roof.DistanceM != west.DistanceM {
+		t.Fatalf("surveyed baseline = %g m", roof.DistanceM)
+	}
+	if b := st["bow"].Baseline; b == nil || b.Partner != "stern" || b.DistanceM != 42.5 || st["stern"].Baseline.Partner != "bow" {
+		t.Fatalf("configured pair = %+v", b)
+	}
+	// The returned profiles are copies.
+	st["bow"].Baseline.DistanceM = 1
+	if cfg.IntegrityStations()["bow"].Baseline.DistanceM != 42.5 {
+		t.Fatal("IntegrityStations shares the baseline")
+	}
+	// A station named only in a pair still gets the pair.
+	if cfg, err = loadBody(t, `
+[[integrity.baseline]]
+stations = ["a", "b"]
+distance_m = 20
+`); err != nil || cfg.IntegrityStations()["a"].Baseline == nil || cfg.IntegrityStations()["a"].Mode != "" {
+		t.Fatalf("pair without installations = %v", err)
+	}
+}
+
+func TestIntegrityBaselineRejections(t *testing.T) {
+	for name, body := range map[string]string{
+		"one station": `
+[[integrity.baseline]]
+stations = ["a"]
+distance_m = 10`,
+		"same station": `
+[[integrity.baseline]]
+stations = ["a", "a"]
+distance_m = 10`,
+		"invalid observer": `
+[[integrity.baseline]]
+stations = ["a", "not valid"]
+distance_m = 10`,
+		"two pairs": `
+[[integrity.baseline]]
+stations = ["a", "b"]
+distance_m = 10
+[[integrity.baseline]]
+stations = ["b", "c"]
+distance_m = 10`,
+		"no distance": `
+[[integrity.baseline]]
+stations = ["a", "b"]`,
+		"negative": `
+[[integrity.baseline]]
+stations = ["a", "b"]
+distance_m = -3`,
+		"too far": `
+[[integrity.baseline]]
+stations = ["a", "b"]
+distance_m = 200000`,
+		"disagrees with the survey": receptionSite + `
+[[reception.station]]
+observer = "roof-west"
+position = [37.4219, -122.08455, 12.5]
+signals = ["0:0"]
+[[integrity.baseline]]
+stations = ["roof", "roof-west"]
+distance_m = 45`,
+	} {
+		if _, err := loadBody(t, body); err == nil || !strings.Contains(err.Error(), "baseline") {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+}

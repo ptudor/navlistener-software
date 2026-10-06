@@ -22,6 +22,7 @@ whether the evidence indicates spoofing. The design and its upstream provenance 
 | `timeref.go` | `utc_offset`, `pps_rtc_phase`. |
 | `rf.go` | `cn0_uniformity`, `agc`, `receiver_spoofing`, and the station RF defaults `internal/detect` shares. |
 | `cn0drop.go` | `cn0_drop`: the simultaneous C/N₀ drop. |
+| `baseline.go` | `baseline`: a co-located pair's measured distance against the known one. |
 | `station.go` | `Station`: routes inputs to checks, gates clock and pulse checks on a valid fix, and assembles the `Assessment`. |
 | `*_test.go` | Filter, hold, fusion, profile, per-check and station tests, including determinism and a no-coordinates guard. |
 | `README.md` | This file. |
@@ -80,6 +81,7 @@ toward it. Checks in one domain share their measurements and count once.
 | `stationary_velocity` | position | solution | Reported speed; 3σ/6σ of speed accuracy, at least 0.5 and 2 m/s. Fixed stations only. |
 | `motion_bound` | position | solution | Distance from the last in-bounds epoch ≤ max speed × elapsed + 3 × both 3D accuracies + 10 m, else unassured. Mobile stations only. |
 | `position_velocity` | position | solution | Velocity from a five-second position difference against the reported velocity integrated over the same interval; 3σ/6σ of speed accuracy, at least 1 and 3 m/s. |
+| `baseline` | position | solutions of a co-located pair | The distance between the two stations' positions at one GPS epoch (within 100 ms) against the antennas' known distance; 3σ/6σ of the pair's combined 3D accuracy, at least 5 and 15 m. Both at one position is `baseline_collapse`, the single-transmitter signature. Paired stations only; the collector evaluates each matched epoch once, for both. |
 | `clock_bias_drift` | receiver clock | clock | \|Δbias − ∫drift\| over 30–40 s, whole-millisecond adjustments removed; 75 and 145 ns. |
 | `clock_drift_rate` | receiver clock | clock | \|Δdrift\|/Δt over 60–120 s; 0.05 and 0.2 ns/s². |
 | `utc_offset` | time reference | solution | Receiver UTC against the observer's or collector's wall-clock stamp of the record; 2 and 5 s. |

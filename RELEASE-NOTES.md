@@ -64,6 +64,10 @@
   lasts. Station RF alarms clear at info severity, after five minutes.
 - AGC baselines are learned over six hours and restored across collector
   restarts.
+- `[[integrity.baseline]]` pairs two co-located stations whose antennas are a
+  known distance apart. The `baseline` check compares the distance between
+  their positions at each epoch with it, and names a collapse to one position,
+  the signature of a single transmitter feeding both receivers.
 - The `svs` feed adds `conf_weighted`: the fresh corroborating sources counted
   by vote weight, so a jammed, inconsistent or spoofed station's testimony
   counts for less or nothing. `conf` is unchanged.

@@ -266,3 +266,63 @@ func TestCn0DropCorroborationLastsThroughTheDeparture(t *testing.T) {
 		t.Fatal("an earlier drop corroborated a later departure")
 	}
 }
+
+// TestBaselinePairsMatchedEpochs: two paired stations' epochs are matched by GPS time
+// and evaluated for both; when one transmitter puts both at one position, both are
+// unassured with a collapse. A one-sided pairing is never evaluated.
+func TestBaselinePairsMatchedEpochs(t *testing.T) {
+	const a, b = "board-0001-aa", "board-0002-bb"
+	pair := func(partner string) integrity.StationProfile {
+		return integrity.StationProfile{Baseline: &integrity.Baseline{Partner: partner, DistanceM: 50}}
+	}
+	s := New(1)
+	cfg, err := NewIntegrityConfig(integrity.DefaultProfile(), map[string]integrity.StationProfile{a: pair(b), b: pair(a)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetIntegrity(cfg)
+	// 50 m east at this latitude, in 1e-7 degrees of longitude.
+	const east50 = 5654
+	partnerAt := func(i int, eastE7 int32) *ingest.RawFrame {
+		f := solutionFrame(i, true, 1)
+		f.Source = b
+		f.Solution.PVT.LonE7 += eastE7
+		return f
+	}
+	for i := 0; i < 10; i++ {
+		s.Apply(solutionFrame(i, true, 1))
+		s.Apply(partnerAt(i, east50))
+	}
+	at := integrityT0.Add(10 * time.Second)
+	for _, id := range []string{a, b} {
+		r := integrityResult(t, s.FeedStationIntegrity(at)[id], integrity.CheckBaseline)
+		if r.State != integrity.Assured || r.Metrics["measured_m"] < 49 || r.Metrics["measured_m"] > 51 {
+			t.Fatalf("%s apart = %s %v", id, r.State, r.Metrics)
+		}
+	}
+	for i := 10; i < 16; i++ { // the partner's epoch arrives first now
+		s.Apply(partnerAt(i, 0))
+		s.Apply(solutionFrame(i, true, 1))
+	}
+	at = integrityT0.Add(16 * time.Second)
+	for _, id := range []string{a, b} {
+		r := integrityResult(t, s.FeedStationIntegrity(at)[id], integrity.CheckBaseline)
+		if r.State != integrity.Unassured || len(r.Reasons) == 0 || r.Reasons[0] != integrity.ReasonBaselineCollapse {
+			t.Fatalf("%s collapsed = %s %v %v", id, r.State, r.Reasons, r.Metrics)
+		}
+	}
+
+	oneSided := New(1)
+	cfg, err = NewIntegrityConfig(integrity.DefaultProfile(), map[string]integrity.StationProfile{a: pair(b)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oneSided.SetIntegrity(cfg)
+	for i := 0; i < 10; i++ {
+		oneSided.Apply(solutionFrame(i, true, 1))
+		oneSided.Apply(partnerAt(i, 0))
+	}
+	if r := integrityResult(t, oneSided.FeedStationIntegrity(integrityT0.Add(10 * time.Second))[a], integrity.CheckBaseline); r.State != integrity.Unavailable || r.EvaluatedAt != 0 {
+		t.Fatalf("one-sided pair evaluated: %+v", r)
+	}
+}

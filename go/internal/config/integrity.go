@@ -11,8 +11,23 @@ import (
 // (docs/proposals/STATION-ASSURANCE.md). Every station is checked; an installation
 // profile adds the checks that depend on how the antenna is mounted.
 type Integrity struct {
-	Stations []IntegrityStation `toml:"station"`
+	Stations  []IntegrityStation  `toml:"station"`
+	Baselines []IntegrityBaseline `toml:"baseline"`
 }
+
+// IntegrityBaseline pairs two co-located stations whose antennas are a known distance
+// apart, for the baseline check. A station belongs to at most one pair.
+type IntegrityBaseline struct {
+	Stations []string `toml:"stations"`
+	// DistanceM is the antenna separation in metres. It defaults to the distance
+	// between the two surveyed positions when both stations have one, and must
+	// agree with it within baselineSurveyTolerance when both are given.
+	DistanceM float64 `toml:"distance_m"`
+}
+
+// baselineSurveyTolerance is how far a configured baseline may differ from the
+// distance between the two surveyed positions.
+const baselineSurveyTolerance = 1.0
 
 // IntegrityStation is one observer's installation.
 type IntegrityStation struct {
@@ -93,7 +108,53 @@ func (c *Config) finalizeIntegrity() error {
 		}
 		out[observer] = integrity.StationProfile{Mode: integrity.ModeFixed, Position: surveyed}
 	}
+	if err := resolveBaselines(c.Integrity.Baselines, out); err != nil {
+		return err
+	}
 	c.integrityStations = out
+	return nil
+}
+
+// resolveBaselines adds each pair to both stations' installations.
+func resolveBaselines(pairs []IntegrityBaseline, out map[string]integrity.StationProfile) error {
+	for _, b := range pairs {
+		if len(b.Stations) != 2 || b.Stations[0] == b.Stations[1] {
+			return fmt.Errorf("integrity baseline: stations must name two different observers, got %q", b.Stations)
+		}
+		one, other := b.Stations[0], b.Stations[1]
+		for _, id := range b.Stations {
+			if !ValidObserverID(id) {
+				return fmt.Errorf("integrity baseline: invalid observer %q", id)
+			}
+			if out[id].Baseline != nil {
+				return fmt.Errorf("integrity baseline: %s is already in a pair", id)
+			}
+		}
+		if b.DistanceM < 0 || math.IsNaN(b.DistanceM) || math.IsInf(b.DistanceM, 0) {
+			return fmt.Errorf("integrity baseline %s/%s: distance_m must be a finite positive number", one, other)
+		}
+		distance := b.DistanceM
+		a, c := out[one].Position, out[other].Position
+		switch {
+		case a != nil && c != nil:
+			surveyed := integrity.SurveyedDistanceM(*a, *c)
+			if distance == 0 {
+				distance = surveyed
+			} else if math.Abs(distance-surveyed) > baselineSurveyTolerance {
+				return fmt.Errorf("integrity baseline %s/%s: distance_m %g differs from the surveyed positions' %.2f m", one, other, distance, surveyed)
+			}
+		case distance == 0:
+			return fmt.Errorf("integrity baseline %s/%s: distance_m is required unless both stations have surveyed positions", one, other)
+		}
+		for _, side := range [][2]string{{one, other}, {other, one}} {
+			sp := out[side[0]]
+			sp.Baseline = &integrity.Baseline{Partner: side[1], DistanceM: distance}
+			if err := sp.Validate(); err != nil {
+				return fmt.Errorf("integrity baseline %s/%s: %w", one, other, err)
+			}
+			out[side[0]] = sp
+		}
+	}
 	return nil
 }
 
@@ -128,6 +189,10 @@ func (c *Config) IntegrityStations() map[string]integrity.StationProfile {
 		if sp.Position != nil {
 			pos := *sp.Position
 			sp.Position = &pos
+		}
+		if sp.Baseline != nil {
+			pair := *sp.Baseline
+			sp.Baseline = &pair
 		}
 		out[id] = sp
 	}

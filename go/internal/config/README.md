@@ -13,7 +13,7 @@ validated. TOML at `/usr/local/etc/navlistener/navlistener.toml`, passed with `-
 | `config.go` | The whole package: every config struct, `Load`, validation, defaults, and the two identity validators. |
 | `config_test.go` | Load/validate cases, defaults, and the rejection paths. |
 | `hardware_trust_test.go` | `[[manufacturer_authority]]`: key loading, registry verification, and every incomplete combination. |
-| `integrity.go` | `[[integrity.station]]` installations, merged with the surveyed `[[reception.station]]` sites. |
+| `integrity.go` | `[[integrity.station]]` installations, merged with the surveyed `[[reception.station]]` sites, and `[[integrity.baseline]]` pairs. |
 | `integrity_test.go` | Installation resolution and every rejection. |
 | `README.md` | This file. |
 
@@ -59,6 +59,7 @@ fleet ingest. The daemon runs happily as a collector-only process.
 | `[[push.observer]]` | — | credential/feed grant plus server-owned organization and publication context |
 | `[[ingest]]` | per entry | dial connector plus the same server-owned organization/publication context |
 | `[[integrity.station]]` | per entry | a station's installation for the integrity checks: `mode` fixed or mobile, surveyed `position`, `max_speed_mps` |
+| `[[integrity.baseline]]` | per entry | a co-located pair for the baseline check: two `stations` and their antennas' `distance_m`, derived from both surveyed positions when omitted |
 
 ---
 
@@ -269,6 +270,11 @@ motion bound, which needs `max_speed_mps`. A fixed station's surveyed `position`
 one home. A `[[reception.station]]` is a fixed site by definition, so one without an
 `[[integrity.station]]` entry is resolved as a fixed installation at its position, and a mobile
 installation cannot have one. `IntegrityStations` returns the resolved installations.
+
+`[[integrity.baseline]]` pairs two stations whose antennas are a known distance apart; the
+pair is added to both installations. `distance_m` defaults to the distance between the two
+surveyed positions and, when both are given, must agree with it within a metre. A station
+belongs to at most one pair, and a pair needs no other installation.
 
 ### The two identity validators
 

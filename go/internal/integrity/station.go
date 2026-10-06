@@ -12,7 +12,7 @@ func init() {
 	for _, info := range []Info{
 		staticPositionInfo, stationaryVelocityInfo, motionBoundInfo, positionVelocityInfo,
 		clockBiasDriftInfo, clockDriftRateInfo, utcOffsetInfo, ppsRTCPhaseInfo,
-		cn0UniformityInfo, cn0DropInfo, agcInfo, receiverSpoofingInfo,
+		cn0UniformityInfo, cn0DropInfo, agcInfo, receiverSpoofingInfo, baselineInfo,
 	} {
 		checkInfos[info.Name] = info
 	}
@@ -52,7 +52,11 @@ func NewStation(p Profile, station StationProfile) (*Station, error) {
 		return nil, err
 	}
 	s := &Station{profile: p, station: station, trackers: map[string]*tracker{}, pos: newPositionChecks(station)}
-	infos := append(s.pos.infos(),
+	infos := s.pos.infos()
+	if station.Baseline != nil {
+		infos = append(infos, baselineInfo)
+	}
+	infos = append(infos,
 		clockBiasDriftInfo, clockDriftRateInfo, utcOffsetInfo, ppsRTCPhaseInfo,
 		cn0UniformityInfo, cn0DropInfo, agcInfo, receiverSpoofingInfo)
 	versions := make(map[string]int, len(infos))
@@ -84,16 +88,27 @@ func (s *Station) fixOK(at time.Time) (fix, ok bool) {
 }
 
 // ApplySolution evaluates the position and UTC checks for one solution epoch. A
-// duplicate or out-of-order epoch is ignored.
-func (s *Station) ApplySolution(sol Solution) {
+// duplicate or out-of-order epoch is ignored, and false is returned for it.
+func (s *Station) ApplySolution(sol Solution) bool {
 	if !s.pos.accept(sol) {
-		return
+		return false
 	}
 	s.haveFix, s.lastFixOK, s.lastFixAt = true, sol.FixOK && !sol.InvalidLLH, sol.Received
 	for name, v := range s.pos.evaluate(sol, s.profile) {
 		s.update(name, v, sol.Received)
 	}
 	s.update(CheckUTCOffset, utcOffset(sol, s.profile.UTCOffset), sol.Received)
+	return true
+}
+
+// ApplyBaseline evaluates the baseline check for one epoch of this station's solution
+// and its partner's solution for the same epoch, evaluated at the later of their
+// arrivals. A station without a configured partner ignores it.
+func (s *Station) ApplyBaseline(own, partner Solution, at time.Time) {
+	if s.station.Baseline == nil {
+		return
+	}
+	s.update(CheckBaseline, baseline(own, partner, s.station.Baseline.DistanceM, s.profile.Baseline), at)
 }
 
 // ApplyClock evaluates the receiver-clock checks for one clock epoch. A station that
@@ -216,5 +231,9 @@ func (s StationProfile) String() string {
 	if mode == "" {
 		mode = "unknown"
 	}
-	return fmt.Sprintf("mode=%s surveyed=%t max_speed_mps=%g", mode, s.Position != nil, s.MaxSpeedMPS)
+	out := fmt.Sprintf("mode=%s surveyed=%t max_speed_mps=%g", mode, s.Position != nil, s.MaxSpeedMPS)
+	if s.Baseline != nil {
+		out += fmt.Sprintf(" baseline_partner=%s baseline_m=%g", s.Baseline.Partner, s.Baseline.DistanceM)
+	}
+	return out
 }

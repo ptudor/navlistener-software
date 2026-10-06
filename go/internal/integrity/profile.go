@@ -43,6 +43,7 @@ type Profile struct {
 	Cn0Uniformity      Cn0UniformityProfile    `json:"cn0_uniformity"`
 	Cn0Drop            Cn0DropProfile          `json:"cn0_drop"`
 	AGC                AGCProfile              `json:"agc"`
+	Baseline           BaselineProfile         `json:"baseline"`
 }
 
 // DefaultProfile returns the standard operating points. They are conservative
@@ -112,6 +113,15 @@ func DefaultProfile() Profile {
 			EveryDB: 1, InconsistentDB: 3, UnassuredDB: 6,
 		},
 		AGC: AGCProfile{Departure: DefaultAGCDeparture, DepartureSevere: DefaultAGCDepartureSevere, CWSuppress: DefaultCWSuppress},
+		// After the PNT Integrity range-position check: the bands scale with the
+		// pair's combined 3D accuracy, like the static position bands.
+		Baseline: BaselineProfile{
+			Bands: ScaledBands{
+				Inconsistent: ScaledBand{Sigmas: 3, Min: 5, Max: 50},
+				Unassured:    ScaledBand{Sigmas: 6, Min: 15, Max: 150},
+			},
+			MaxEpochSkew: 100 * time.Millisecond,
+		},
 	}
 }
 
@@ -163,6 +173,8 @@ func (p Profile) Validate() error {
 		positive("cn0_drop.every_drop_db", p.Cn0Drop.EveryDB),
 		bands("cn0_drop.median", p.Cn0Drop.InconsistentDB, p.Cn0Drop.UnassuredDB),
 		bands("agc.departure", p.AGC.Departure, p.AGC.DepartureSevere),
+		p.Baseline.Bands.validate("baseline.bands"),
+		nonNegative("baseline.max_epoch_skew", p.Baseline.MaxEpochSkew.Seconds()),
 	}
 	if sp.DriftMinEpochs < 1 {
 		errs = append(errs, fmt.Errorf("static_position.drift_min_epochs must be at least 1"))
@@ -259,6 +271,8 @@ type StationProfile struct {
 	Mode        Mode      `json:"mode"`
 	Position    *Surveyed `json:"position,omitempty"`
 	MaxSpeedMPS float64   `json:"max_speed_mps,omitempty"`
+	// Baseline pairs the station with a co-located partner, for any mode.
+	Baseline *Baseline `json:"baseline,omitempty"`
 }
 
 // Validate rejects an installation profile the checks cannot apply.
@@ -284,6 +298,9 @@ func (s StationProfile) Validate() error {
 	}
 	if s.MaxSpeedMPS > 0 && s.Mode != ModeMobile {
 		return fmt.Errorf("integrity: a maximum speed applies only to a mobile station")
+	}
+	if s.Baseline != nil {
+		return s.Baseline.validate()
 	}
 	return nil
 }
