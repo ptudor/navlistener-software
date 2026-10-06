@@ -37,15 +37,20 @@ func (d *Detector) detectStationRF(id string, rf state.StationRF, emit emitFunc)
 	}
 
 	// jamming_detected: a broadband AGC collapse is unambiguous on its own; a lesser
-	// departure must be corroborated by CW, the receiver's own jam flag, or a
-	// simultaneous C/N₀ drop across the station's signals before it is called an
-	// attack (docs/DEFENSE-PNT.md §2). Otherwise it is a degradation, below.
+	// departure must be corroborated by CW, the receiver's own jam flag, a
+	// simultaneous C/N₀ drop across the station's signals, or interference at a
+	// neighbouring station at the same time before it is called an attack
+	// (docs/DEFENSE-PNT.md §2). Otherwise it is a degradation, below.
 	cn0Drop := rf.Cn0Drop
+	neighbours := make([]any, len(rf.Neighbours))
+	for i, n := range rf.Neighbours {
+		neighbours[i] = n
+	}
 	jamBand, jamSev := "ok", SevInfo
 	switch {
 	case maxDep >= AGCDepartureSevereThreshold:
 		jamBand, jamSev = "crit", SevCritical
-	case maxDep >= AGCDepartureThreshold && (cwHigh || rxJam || cn0Drop):
+	case maxDep >= AGCDepartureThreshold && (cwHigh || rxJam || cn0Drop || len(neighbours) > 0):
 		jamBand, jamSev = "warn", SevWarning
 	}
 	// no current MON-RF band measurement means unknown, not measured-ok.
@@ -55,7 +60,8 @@ func (d *Detector) detectStationRF(id string, rf state.StationRF, emit emitFunc)
 			return Event{
 				Type: "jamming_detected", OldValue: old, NewValue: jamBand, Severity: jamSev,
 				Message: fmt.Sprintf("station %s jamming %s (AGC departure %.0f)", id, jamBand, maxDep),
-				Params:  map[string]any{"station": id, "agc_departure": maxDep, "cw": cwHigh, "rx_jam": rxJam, "cn0_drop": cn0Drop},
+				Params: map[string]any{"station": id, "agc_departure": maxDep, "cw": cwHigh, "rx_jam": rxJam, "cn0_drop": cn0Drop,
+					"neighbours": neighbours},
 			}
 		})
 	}

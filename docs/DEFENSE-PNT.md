@@ -118,6 +118,14 @@ until it ends, and a drop that had passed before a departure began corroborates 
 slow ramp below the per-window step does not show as a drop; the bounded AGC baseline covers
 it.
 
+A jammer also reaches every station near it. A station's departure is corroborated when
+another station within 30 km, located by its surveyed position or a fix from the last ten
+minutes, shows interference evidence of its own within the last two minutes: a departure, a
+CW tone, its receiver's jam flag or a simultaneous drop. Only a station's own evidence counts,
+never a neighbour's corroboration, so two stations cannot confirm each other in a loop, and a
+neighbour alone says nothing about a quiet station. The jamming event names the corroborating
+neighbours. Each audience correlates only the stations it sees.
+
 **Use of jamming context:** the `svs` feed's `conf_weighted` counts each fresh decoded
 source by its vote weight: its `rf_trust`, lowered to ½ while its station assessment
 is inconsistent and to 0 while it is unassured or indicates spoofing, since a spoofed
@@ -214,7 +222,7 @@ added to the vocabulary in `docs/INTEGRITY.md §5`:
 
 | `event_type` | Fires when | Severity |
 |---|---|---|
-| `jamming_detected` | AGC departure corroborated by a CW tone, the receiver's jam flag or a simultaneous C/N₀ drop at a station, debounced; a near-total AGC collapse alone | 1 → 2 on full lock loss; 0 on clear |
+| `jamming_detected` | AGC departure corroborated by a CW tone, the receiver's jam flag, a simultaneous C/N₀ drop or a neighbouring station's interference, debounced; a near-total AGC collapse alone | 1 → 2 on full lock loss; 0 on clear |
 | `spoofing_suspected` | ≥2 independent physics domains (§3), or one with the receiver's spoofing flag, unassured at a station, debounced | 2; 0 on clear |
 | `station_assurance` | the station's fused integrity state changes among `assured`, `inconsistent` and `unassured` ([proposal](proposals/STATION-ASSURANCE.md) §4) | 2 unassured, 1 inconsistent, 0 assured |
 | `station_rf_degraded` | a single RF metric departs baseline, or a simultaneous C/N₀ drop with a quiet front end (fault-or-early-warning, not an attack claim) | 1; 0 on clear |

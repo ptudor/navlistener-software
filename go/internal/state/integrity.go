@@ -69,6 +69,10 @@ type integrityStation struct {
 	lastStatus time.Time
 	// recent holds a paired station's latest accepted solutions, oldest first.
 	recent []integrity.Solution
+	// fix is the latest valid 3D position, for neighbour matching only; it is
+	// never served.
+	fix   integrity.Surveyed
+	fixAt time.Time
 }
 
 // StationConfigHash is the configuration hash a station's assessments carry under
@@ -150,6 +154,9 @@ func (s *Store) applySolution(f *ingest.RawFrame) {
 		}
 		if st.eval.ApplySolution(in) {
 			s.integrityBaseline(f.Source, st, in)
+			if in.Usable3D() {
+				st.fix, st.fixAt = integrity.Surveyed{LatDeg: in.LatDeg, LonDeg: in.LonDeg, HeightM: in.HeightM}, recv
+			}
 		}
 	}
 	if c := sol.Clock; c != nil {
@@ -212,6 +219,9 @@ func (s *Store) integrityRF(st *rfStation, f *ingest.RawFrame, recv time.Time) {
 	}
 	if len(f.RF.Bands) > 0 {
 		sample := integrity.RFSample{Received: recv, Cn0Drop: s.cn0DropCorroboration(st, recv)}
+		if st.departed(recv) {
+			sample.Neighbours = len(s.interferingNeighbours(st.id, recv))
+		}
 		for _, b := range st.bands {
 			if recv.Sub(b.lastSeen) > rfStaleAfter {
 				continue

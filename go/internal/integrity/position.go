@@ -188,7 +188,7 @@ func (p *positionChecks) reset() {
 // evaluate returns every applicable verdict for one accepted solution.
 func (p *positionChecks) evaluate(s Solution, prof Profile) map[string]Verdict {
 	out := map[string]Verdict{}
-	usable := s.usable3D()
+	usable := s.Usable3D()
 	var e epoch
 	if usable {
 		e = epoch{t: p.clock, pos: s.ecef(), vel: s.velocityECEF(), acc3D: math.Hypot(s.HAccM, s.VAccM), sAcc: s.SAccMPS}

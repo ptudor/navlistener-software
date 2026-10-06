@@ -88,7 +88,7 @@ toward it. Checks in one domain share their measurements and count once.
 | `pps_rtc_phase` | time reference | timing, solution | RTC-minus-GNSS pulse phase against a line fitted to samples 10–180 s old; 20 and 100 µs. Needs a fresh valid fix and an untrimmed RTC. |
 | `cn0_uniformity` | signal power | NAV-SAT fit | The existing C/N₀-vs-elevation gate. Lower-only. |
 | `cn0_drop` | RF environment | NAV-SAT | Every signal used 3–5 s earlier and tracked now fell by at least 1 dB, with a median fall of 3 dB (inconsistent) or 6 dB (unassured); at least six signals. Interference evidence, so not a physics domain. Lower-only. |
-| `agc` | RF environment | MON-RF | The jamming classification as a state: collapse, or a departure corroborated by a CW tone, the receiver's jam flag or a simultaneous C/N₀ drop, is unassured; any single sign, or an antenna fault, is inconsistent. Version 2 added the C/N₀ drop corroboration. Lower-only. |
+| `agc` | RF environment | MON-RF | The jamming classification as a state: collapse, or a departure corroborated by a CW tone, the receiver's jam flag, a simultaneous C/N₀ drop or a neighbouring station's interference (`NeighbourProfile`: 30 km, evidence within two minutes), is unassured; any single sign, or an antenna fault, is inconsistent. Version 2 added the C/N₀ drop corroboration, version 3 the neighbours. Lower-only. |
 | `receiver_spoofing` | receiver verdict | status | The receiver's own spoofing flag. Lower-only. |
 
 Duplicate and out-of-order epochs (by GPS time of week, continuous across the week

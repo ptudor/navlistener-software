@@ -21,6 +21,10 @@ func TestProfileValidateRejects(t *testing.T) {
 		"zero stale bound":    func(p *Profile) { p.StaleAfter = 0 },
 		"negative weight":     func(p *Profile) { p.Weights = map[string]float64{"a": -1} },
 		"not-a-number weight": func(p *Profile) { p.Weights = map[string]float64{"a": math.NaN()} },
+		"no neighbour radius": func(p *Profile) { p.Neighbour.RadiusM = 0 },
+		"no neighbour window": func(p *Profile) { p.Neighbour.Window = 0 },
+		"no location age":     func(p *Profile) { p.Neighbour.LocationMaxAge = 0 },
+		"baseline bands":      func(p *Profile) { p.Baseline.Bands.Unassured.Min = 1 },
 	}
 	for name, mutate := range cases {
 		p := DefaultProfile()

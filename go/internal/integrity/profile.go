@@ -44,6 +44,16 @@ type Profile struct {
 	Cn0Drop            Cn0DropProfile          `json:"cn0_drop"`
 	AGC                AGCProfile              `json:"agc"`
 	Baseline           BaselineProfile         `json:"baseline"`
+	Neighbour          NeighbourProfile        `json:"neighbour"`
+}
+
+// NeighbourProfile defines which stations corroborate each other's interference:
+// those within RadiusM of each other, by surveyed position or a fix no older than
+// LocationMaxAge, whose evidence was reported within Window.
+type NeighbourProfile struct {
+	RadiusM        float64       `json:"radius_m"`
+	Window         time.Duration `json:"window_ns"`
+	LocationMaxAge time.Duration `json:"location_max_age_ns"`
 }
 
 // DefaultProfile returns the standard operating points. They are conservative
@@ -122,6 +132,10 @@ func DefaultProfile() Profile {
 			},
 			MaxEpochSkew: 100 * time.Millisecond,
 		},
+		// A vehicle jammer reaches hundreds of metres to a few kilometres and a
+		// high-power one tens of kilometres; 30 km pairs stations one jammer can
+		// plausibly reach without pairing distant regions.
+		Neighbour: NeighbourProfile{RadiusM: 30_000, Window: 2 * time.Minute, LocationMaxAge: 10 * time.Minute},
 	}
 }
 
@@ -175,6 +189,9 @@ func (p Profile) Validate() error {
 		bands("agc.departure", p.AGC.Departure, p.AGC.DepartureSevere),
 		p.Baseline.Bands.validate("baseline.bands"),
 		nonNegative("baseline.max_epoch_skew", p.Baseline.MaxEpochSkew.Seconds()),
+		positive("neighbour.radius_m", p.Neighbour.RadiusM),
+		positive("neighbour.window", p.Neighbour.Window.Seconds()),
+		positive("neighbour.location_max_age", p.Neighbour.LocationMaxAge.Seconds()),
 	}
 	if sp.DriftMinEpochs < 1 {
 		errs = append(errs, fmt.Errorf("static_position.drift_min_epochs must be at least 1"))

@@ -61,7 +61,8 @@
   malformed. The collector still accepts version 1 reception records.
 - A moderate AGC departure is reported as jamming when a simultaneous C/N₀ drop
   across the station's signals accompanies it, for as long as the departure
-  lasts. Station RF alarms clear at info severity, after five minutes.
+  lasts, or when a station within 30 km shows interference at the same time;
+  the event names those neighbours. Station RF alarms clear at info severity, after five minutes.
 - AGC baselines are learned over six hours and restored across collector
   restarts.
 - `[[integrity.baseline]]` pairs two co-located stations whose antennas are a

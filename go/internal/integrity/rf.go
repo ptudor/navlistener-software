@@ -14,7 +14,7 @@ const (
 
 var (
 	cn0UniformityInfo    = Info{Name: CheckCn0Uniformity, Version: 1, Domain: DomainSignalPower, LowerOnly: true}
-	agcInfo              = Info{Name: CheckAGC, Version: 2, Domain: DomainRFEnvironment, LowerOnly: true}
+	agcInfo              = Info{Name: CheckAGC, Version: 3, Domain: DomainRFEnvironment, LowerOnly: true}
 	receiverSpoofingInfo = Info{Name: CheckReceiverSpoofing, Version: 1, Domain: DomainReceiverVerdict, LowerOnly: true}
 )
 
@@ -31,6 +31,8 @@ const (
 	ReasonAntennaFault     = "antenna_fault"
 	ReasonSpoofingUnknown  = "receiver_spoofing_unknown"
 	ReasonSpoofingFlag     = "receiver_spoofing_flag"
+	// ReasonNeighbourInterference: stations nearby show interference at the same time.
+	ReasonNeighbourInterference = "neighbour_interference"
 )
 
 // Station RF defaults. The station event classifiers in internal/detect use the same
@@ -109,10 +111,11 @@ func cn0Uniformity(f Cn0Fit, prof Cn0UniformityProfile) Verdict {
 }
 
 // agc classifies the front end like the jamming classifiers do: a severe gain
-// collapse, or a departure corroborated by a CW tone, the receiver's own jam flag or
-// a simultaneous C/N₀ drop, is unassured; any single sign of interference, or an
-// antenna fault, is inconsistent. A drop alone is the cn0_drop check's to report.
-// Version 2 added the C/N₀ drop corroboration.
+// collapse, or a departure corroborated by a CW tone, the receiver's own jam flag, a
+// simultaneous C/N₀ drop or interference at a neighbouring station, is unassured; any
+// single sign of interference, or an antenna fault, is inconsistent. A drop alone is
+// the cn0_drop check's to report, and a neighbour alone says nothing about this
+// station. Version 2 added the C/N₀ drop corroboration, version 3 the neighbours.
 func agc(rf RFSample, prof AGCProfile) Verdict {
 	if len(rf.Bands) == 0 {
 		return Verdict{State: Unavailable, Reasons: []string{ReasonNoBands}}
@@ -134,7 +137,7 @@ func agc(rf RFSample, prof AGCProfile) Verdict {
 		State: Assured,
 		Metrics: map[string]float64{
 			"cw": boolMetric(cw), "receiver_jam": boolMetric(rxJam), "antenna_fault": boolMetric(ant), "bands": float64(len(rf.Bands)),
-			"cn0_drop": boolMetric(rf.Cn0Drop),
+			"cn0_drop": boolMetric(rf.Cn0Drop), "neighbours": float64(rf.Neighbours),
 		},
 		Thresholds: map[string]float64{"departure": prof.Departure, "departure_severe": prof.DepartureSevere, "cw_suppress": float64(prof.CWSuppress)},
 	}
@@ -145,10 +148,13 @@ func agc(rf RFSample, prof AGCProfile) Verdict {
 	switch {
 	case haveDep && maxDep >= prof.DepartureSevere:
 		v.State, v.Reasons = Unassured, []string{ReasonAGCCollapse}
-	case dep && (cw || rxJam || rf.Cn0Drop):
+	case dep && (cw || rxJam || rf.Cn0Drop || rf.Neighbours > 0):
 		v.State, v.Reasons = Unassured, []string{ReasonAGCDeparture}
 		if rf.Cn0Drop {
 			v.Reasons = append(v.Reasons, ReasonSimultaneousDrop)
+		}
+		if rf.Neighbours > 0 {
+			v.Reasons = append(v.Reasons, ReasonNeighbourInterference)
 		}
 	case dep || cw || rxJam || ant:
 		v.State = Inconsistent

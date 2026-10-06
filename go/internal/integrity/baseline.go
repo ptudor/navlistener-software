@@ -83,7 +83,7 @@ type BaselineProfile struct {
 // can be told from noise only when the known distance exceeds the bands.
 func baseline(own, partner Solution, knownM float64, prof BaselineProfile) Verdict {
 	thresholds := map[string]float64{"max_epoch_skew_ms": float64(prof.MaxEpochSkew.Milliseconds())}
-	if !own.usable3D() || !partner.usable3D() {
+	if !own.Usable3D() || !partner.Usable3D() {
 		return Verdict{State: Unavailable, Reasons: []string{ReasonNo3DFix}, Thresholds: thresholds}
 	}
 	skew := math.Abs(float64(towDelta(own.TOW, partner.TOW)))

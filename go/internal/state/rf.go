@@ -322,6 +322,11 @@ type StationRF struct {
 	Cn0Resid *float64        `json:"cn0_elev_resid_var,omitempty"`
 	NumSats  int             `json:"num_sats"`
 	RFTrust  float64         `json:"rf_trust"`
+	// Neighbours lists, sorted, the stations within the neighbour radius that show
+	// interference evidence of their own (Store.interferingNeighbours), computed only
+	// while this station shows an AGC departure. The jamming classifier takes it as
+	// corroboration and names them; it is not served.
+	Neighbours []string `json:"-"`
 	// Cn0Drop reports a simultaneous C/N₀ drop across the station's signals: served
 	// now by the integrity cn0_drop check (held through its recovery period), or
 	// served at some point during a band's current AGC departure, so it lasts as long
@@ -380,6 +385,9 @@ func (s *Store) FeedStationRF(now time.Time) map[string]StationRF {
 			entry.NumSats = st.cn0NumSats
 		}
 		entry.Cn0Drop = s.cn0DropCorroboration(st, now)
+		if st.departed(now) {
+			entry.Neighbours = s.interferingNeighbours(id, now)
+		}
 		blocks := make([]int, 0, len(st.bands))
 		for b := range st.bands {
 			blocks = append(blocks, b)
@@ -455,6 +463,91 @@ func (s *Store) sourceVoteWeights(now time.Time) map[string]float64 {
 			lower(id, 0.5)
 		}
 	}
+	return out
+}
+
+// departed reports a fresh band at or beyond the jamming AGC departure. The caller
+// holds rfMu.
+func (st *rfStation) departed(now time.Time) bool {
+	for _, b := range st.bands {
+		if now.Sub(b.lastSeen) > rfStaleAfter {
+			continue
+		}
+		if dep, ok := b.departure(); ok && dep >= integrity.DefaultAGCDeparture {
+			return true
+		}
+	}
+	return false
+}
+
+// neighbourProfile is the configured neighbour definition, or the default one.
+func (s *Store) neighbourProfile() integrity.NeighbourProfile {
+	if s.integrityCfg != nil {
+		return s.integrityCfg.profile.Neighbour
+	}
+	return integrity.DefaultProfile().Neighbour
+}
+
+// stationLocation is a station's antenna location for neighbour matching: its
+// surveyed position, or its latest valid fix within the neighbour profile's location
+// age. The caller holds rfMu.
+func (s *Store) stationLocation(id string, now time.Time) (integrity.Surveyed, bool) {
+	if s.integrityCfg != nil {
+		if pos := s.integrityCfg.stations[id].Position; pos != nil {
+			return *pos, true
+		}
+	}
+	if is := s.integrity[id]; is != nil && !is.fixAt.IsZero() && now.Sub(is.fixAt) <= s.neighbourProfile().LocationMaxAge {
+		return is.fix, true
+	}
+	return integrity.Surveyed{}, false
+}
+
+// interferenceEvidence reports a station's own front-end evidence of interference
+// within the window: a band at or beyond the jamming AGC departure, a CW tone or the
+// receiver's jam flag, or a simultaneous C/N₀ drop the cn0_drop check serves.
+// Neighbours' corroboration is not evidence, so stations cannot corroborate each
+// other in a loop. The caller holds rfMu.
+func (s *Store) interferenceEvidence(st *rfStation, now time.Time, window time.Duration) bool {
+	for _, b := range st.bands {
+		if now.Sub(b.lastSeen) > window {
+			continue
+		}
+		if dep, ok := b.departure(); ok && dep >= integrity.DefaultAGCDeparture {
+			return true
+		}
+		if b.cwSuppress >= integrity.DefaultCWSuppress || b.jamState >= 2 {
+			return true
+		}
+	}
+	if is := s.integrity[st.id]; is != nil {
+		if served, ok := is.eval.Served(integrity.CheckCn0Drop, now); ok && degradedState(served) {
+			return true
+		}
+	}
+	return false
+}
+
+// interferingNeighbours lists, sorted, the other stations within the neighbour radius
+// of id that show interference evidence now. Both locations must be known. The caller
+// holds rfMu; callers ask only for a station with a departure of its own, so the scan
+// runs only while one is departed.
+func (s *Store) interferingNeighbours(id string, now time.Time) []string {
+	here, ok := s.stationLocation(id, now)
+	if !ok {
+		return nil
+	}
+	prof := s.neighbourProfile()
+	var out []string
+	for other, st := range s.rf {
+		if other == id || !s.interferenceEvidence(st, now, prof.Window) {
+			continue
+		}
+		if there, ok := s.stationLocation(other, now); ok && integrity.SurveyedDistanceM(here, there) <= prof.RadiusM {
+			out = append(out, other)
+		}
+	}
+	sort.Strings(out)
 	return out
 }
 

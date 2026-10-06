@@ -326,3 +326,76 @@ func TestBaselinePairsMatchedEpochs(t *testing.T) {
 		t.Fatalf("one-sided pair evaluated: %+v", r)
 	}
 }
+
+// TestNeighbourInterferenceCorroborates: stations within the neighbour radius that
+// depart together corroborate each other's departure, by surveyed position or, for a
+// mobile station, a recent fix; a departed station farther away does not, and a
+// neighbour alone corroborates nothing for a quiet station.
+func TestNeighbourInterferenceCorroborates(t *testing.T) {
+	at := func(latDeg float64) *integrity.Surveyed {
+		return &integrity.Surveyed{LatDeg: latDeg, LonDeg: -122.0841, HeightM: 12.5}
+	}
+	s := New(1)
+	cfg, err := NewIntegrityConfig(integrity.DefaultProfile(), map[string]integrity.StationProfile{
+		"near-a": {Mode: integrity.ModeFixed, Position: at(37.4219)},
+		"near-b": {Mode: integrity.ModeFixed, Position: at(37.4219 + 0.0899)}, // about 10 km north
+		"far":    {Mode: integrity.ModeFixed, Position: at(37.4219 + 0.899)},  // about 100 km north
+		"quiet":  {Mode: integrity.ModeFixed, Position: at(37.4219 + 0.01)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetIntegrity(cfg)
+	stations := []string{"near-a", "near-b", "far", "quiet", "board-0001-aa"}
+	now := integrityT0
+	for i := 0; i < 11*60; i++ { // every station learns its AGC baseline
+		for _, id := range stations {
+			s.Apply(rfSample(id, 0, 4000+i%5, 0, 2, now))
+		}
+		now = now.Add(time.Second)
+	}
+	// board-0001-aa is mobile with no survey: its fix puts it beside near-a.
+	s.Apply(solutionFrame(11*60, true, 1))
+	for i := 0; i < 20; i++ { // a jammer: every station but quiet loses gain together
+		for _, id := range stations {
+			agc := 3000
+			if id == "quiet" {
+				agc = 4000
+			}
+			s.Apply(rfSample(id, 0, agc, 0, 2, now))
+		}
+		now = now.Add(time.Second)
+	}
+	rf := s.FeedStationRF(now)
+	for id, want := range map[string][]string{
+		"near-a":        {"board-0001-aa", "near-b"},
+		"near-b":        {"board-0001-aa", "near-a"},
+		"board-0001-aa": {"near-a", "near-b"},
+		"far":           nil,
+		"quiet":         nil, // it has no departure of its own
+	} {
+		if got := rf[id].Neighbours; !slices.Equal(got, want) {
+			t.Errorf("%s neighbours = %v, want %v", id, got, want)
+		}
+	}
+	assess := s.FeedStationIntegrity(now)
+	if r := integrityResult(t, assess["near-a"], integrity.CheckAGC); r.State != integrity.Unassured ||
+		!slices.Contains(r.Reasons, integrity.ReasonNeighbourInterference) || r.Metrics["neighbours"] != 2 {
+		t.Fatalf("near-a agc = %s %v %v", r.State, r.Reasons, r.Metrics)
+	}
+	if r := integrityResult(t, assess["far"], integrity.CheckAGC); r.State != integrity.Inconsistent {
+		t.Fatalf("far agc = %s %v, want a lone departure", r.State, r.Reasons)
+	}
+	// The mobile station's fix ages out of the neighbour profile.
+	later := now.Add(integrity.DefaultProfile().Neighbour.LocationMaxAge)
+	for i := 0; i < 5; i++ {
+		for _, id := range stations {
+			if id != "quiet" {
+				s.Apply(rfSample(id, 0, 3000, 0, 2, later.Add(time.Duration(i)*time.Second)))
+			}
+		}
+	}
+	if got := s.FeedStationRF(later.Add(5 * time.Second))["near-a"].Neighbours; !slices.Equal(got, []string{"near-b"}) {
+		t.Fatalf("near-a neighbours after the fix aged = %v", got)
+	}
+}

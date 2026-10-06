@@ -63,8 +63,8 @@ type Solution struct {
 	SAccMPS          float64
 }
 
-// usable3D reports whether the solution is a valid three-dimensional fix.
-func (s Solution) usable3D() bool {
+// Usable3D reports whether the solution is a valid three-dimensional fix.
+func (s Solution) Usable3D() bool {
 	return s.FixOK && !s.InvalidLLH && (s.FixType == Fix3D || s.FixType == FixGNSSAndDR)
 }
 
@@ -173,8 +173,11 @@ type RFBand struct {
 // RFSample is one front-end report. Cn0Drop reports a simultaneous C/N₀ drop that
 // accompanies the current front-end evidence: one the cn0_drop check serves now, or
 // one it served during the current AGC departure (the caller tracks the departure).
+// Neighbours counts the stations within the neighbour radius that show interference
+// evidence of their own at the same time (NeighbourProfile).
 type RFSample struct {
-	Received time.Time
-	Bands    []RFBand
-	Cn0Drop  bool
+	Received   time.Time
+	Bands      []RFBand
+	Cn0Drop    bool
+	Neighbours int
 }

@@ -285,3 +285,23 @@ func TestRFCn0DropAloneDegraded(t *testing.T) {
 		t.Fatalf("station_rf_degraded = %+v (ok=%v), want degraded", e, ok)
 	}
 }
+
+// TestRFNeighbourCorroboratesJamming: a moderate departure is jamming when a
+// neighbouring station shows interference at the same time, and the event names it.
+func TestRFNeighbourCorroboratesJamming(t *testing.T) {
+	d := New(0)
+	t0 := time.Unix(1_700_000_000, 0)
+	d.TickStations(t0, station("s", band(0, 0, 2, 0)))
+	jam := station("s", band(1200, 0, 2, 0))
+	st := jam["s"]
+	st.Neighbours = []string{"t"}
+	jam["s"] = st
+	d.TickStations(t0.Add(10*time.Second), jam)
+	e, ok := find(d.TickStations(t0.Add(75*time.Second), jam), "jamming_detected")
+	if !ok || e.NewValue != "warn" {
+		t.Fatalf("jamming_detected = %+v (ok=%v), want warn corroborated by a neighbour", e, ok)
+	}
+	if n, _ := e.Params["neighbours"].([]any); len(n) != 1 || n[0] != "t" {
+		t.Fatalf("neighbours = %v", e.Params["neighbours"])
+	}
+}
