@@ -98,6 +98,7 @@ func frameForPersistence(f *ingest.RawFrame) *store.NavFrame {
 			panic(err)
 		}
 		saved.RF = &store.RFSample{Kind: kind, Data: data}
+		stampRFClocks(saved.RF, f)
 		// Push frames retain their exact telemetry body in Bytes. Dial-mode
 		// receiver parsers normalize the same values into that canonical body.
 		if len(saved.Raw) == 0 {
@@ -119,11 +120,21 @@ func frameForPersistence(f *ingest.RawFrame) *store.NavFrame {
 			panic(err)
 		}
 		saved.RF = &store.RFSample{Kind: "solution", Data: data}
+		stampRFClocks(saved.RF, f)
 		if len(saved.Raw) == 0 {
 			saved.Raw = ingest.EncodeReceiverSolution(f.Solution)
 		}
 	}
 	return saved
+}
+
+// stampRFClocks records the clocks the live station checks used for this frame, so
+// a replay of the stored row evaluates it exactly as the collector did.
+func stampRFClocks(rf *store.RFSample, f *ingest.RawFrame) {
+	rf.LocalReceivedAt = f.LocalRecv()
+	if stamp, ok := f.WallClockStamp(); ok {
+		rf.WallClockStamp = &stamp
+	}
 }
 
 func restoreReceptionPowerModels(ctx context.Context, historian *store.Store, manager *stationcontrol.Manager, log *slog.Logger) error {

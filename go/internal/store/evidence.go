@@ -50,8 +50,16 @@ var evidenceColumns = []string{
 }
 
 // evidenceSampleColumns is the event key and origin, then the shared rf_samples /
-// observer_samples layout.
+// observer_samples layout and the two receipt clocks.
 var evidenceSampleColumns = append([]string{"audience", "audience_seq", "event_time", "origin"}, rfColumns...)
+
+// evidenceSelect is each origin's select list for evidenceSampleColumns. A board row's
+// received_at is already the collector-local receipt and its sample_time the
+// observer's stamp, which are exactly the two clocks an RF row stores separately.
+var evidenceSelect = map[string]string{
+	"rf":    strings.Join(rfColumns, ", "),
+	"board": strings.Join(sampleColumns, ", ") + ", received_at, sample_time",
+}
 
 // pendingEvidence is one event whose evidence has not been captured.
 type pendingEvidence struct {
@@ -174,9 +182,8 @@ func (s *Store) captureOne(ctx context.Context, collectorID string, e pendingEvi
 			}
 			n := len(args)
 			insertArgs := append(args, e.audience, e.seq, e.time, src.origin, p.MaxSamples)
-			cols := strings.Join(rfColumns, ", ")
 			tag, err := tx.Exec(ctx, `INSERT INTO event_evidence_samples (`+strings.Join(evidenceSampleColumns, ", ")+`)
-				SELECT $`+strconv.Itoa(n+1)+`, $`+strconv.Itoa(n+2)+`, $`+strconv.Itoa(n+3)+`, $`+strconv.Itoa(n+4)+`, `+cols+where+`
+				SELECT $`+strconv.Itoa(n+1)+`, $`+strconv.Itoa(n+2)+`, $`+strconv.Itoa(n+3)+`, $`+strconv.Itoa(n+4)+`, `+evidenceSelect[src.origin]+where+`
 				ORDER BY `+src.timeColumn+`, ts LIMIT $`+strconv.Itoa(n+5), insertArgs...)
 			if err != nil {
 				return false, fmt.Errorf("evidence capture: copy %s: %w", src.table, err)
@@ -234,15 +241,20 @@ type EventEvidence struct {
 // body and its decoded projection, and its receipt evidence. Sequence is decimal
 // text so browsers keep all 64 bits.
 type EvidenceSample struct {
-	Origin        string          `json:"origin"`
-	Kind          string          `json:"kind"`
-	ReceivedAt    time.Time       `json:"received_at"`
-	SampleTime    *time.Time      `json:"sample_time"`
-	Session       *string         `json:"session"`
-	Sequence      *string         `json:"sequence"`
-	HardwareTrust string          `json:"hardware_trust"`
-	Raw           []byte          `json:"raw"`
-	Data          json.RawMessage `json:"data"`
+	Origin     string     `json:"origin"`
+	Kind       string     `json:"kind"`
+	ReceivedAt time.Time  `json:"received_at"`
+	SampleTime *time.Time `json:"sample_time"`
+	// LocalReceivedAt is the collector-local receipt instant and WallClockStamp the
+	// independent stamp the station checks used; both null on rows stored before
+	// they were recorded.
+	LocalReceivedAt *time.Time      `json:"local_received_at"`
+	WallClockStamp  *time.Time      `json:"wall_clock_stamp"`
+	Session         *string         `json:"session"`
+	Sequence        *string         `json:"sequence"`
+	HardwareTrust   string          `json:"hardware_trust"`
+	Raw             []byte          `json:"raw"`
+	Data            json.RawMessage `json:"data"`
 }
 
 // ErrNoEvidence reports an event without captured evidence in the audience: no such
@@ -278,7 +290,7 @@ func (s *Store) QueryEventEvidence(ctx context.Context, q EvidenceQuery) (EventE
 		out.Event.Params = json.RawMessage(raw)
 	}
 	rows, err := s.pool.Query(ctx, `SELECT origin, kind, received_at, sample_time, source_session, source_seq,
-			hardware_trust, raw, data
+			hardware_trust, raw, data, local_received_at, wall_clock_stamp
 		FROM event_evidence_samples
 		WHERE audience = $1 AND audience_seq = $2 AND event_time = $3
 		ORDER BY origin DESC, received_at, ts, source_session COLLATE "C" NULLS FIRST, source_seq NULLS FIRST
@@ -296,7 +308,7 @@ func (s *Store) QueryEventEvidence(ctx context.Context, q EvidenceQuery) (EventE
 		var sample EvidenceSample
 		var seq *int64
 		if err := rows.Scan(&sample.Origin, &sample.Kind, &sample.ReceivedAt, &sample.SampleTime, &sample.Session, &seq,
-			&sample.HardwareTrust, &sample.Raw, &sample.Data); err != nil {
+			&sample.HardwareTrust, &sample.Raw, &sample.Data, &sample.LocalReceivedAt, &sample.WallClockStamp); err != nil {
 			return out, fmt.Errorf("evidence samples scan: %w", err)
 		}
 		if seq != nil {

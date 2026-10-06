@@ -422,6 +422,12 @@ ALTER TABLE rf_samples ADD COLUMN IF NOT EXISTS manufacturer_authority_id TEXT;
 ALTER TABLE rf_samples ADD COLUMN IF NOT EXISTS operational_authority_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE rf_samples ADD COLUMN IF NOT EXISTS authority_evidence JSONB NOT NULL DEFAULT '{}';
 ALTER TABLE rf_samples ADD COLUMN IF NOT EXISTS commissioning_fingerprint TEXT NOT NULL DEFAULT '';
+-- The clocks the live station checks used, so a replay reproduces them exactly:
+-- the collector-local receipt instant (received_at is the observer's stamp when it
+-- sent one), and the independent wall-clock stamp the receiver's UTC was compared
+-- with, NULL when there was none. NULL on rows stored before these columns.
+ALTER TABLE rf_samples ADD COLUMN IF NOT EXISTS local_received_at TIMESTAMPTZ;
+ALTER TABLE rf_samples ADD COLUMN IF NOT EXISTS wall_clock_stamp TIMESTAMPTZ;
 -- Receiver solutions (telemetry 0x03) joined the kinds after the table first
 -- shipped. Widen an older inline constraint in place; this is a no-op once the
 -- constraint already admits 'solution'.
@@ -517,7 +523,9 @@ CREATE TABLE IF NOT EXISTS event_evidence_samples (
     data JSONB NOT NULL,
     decoder_ver TEXT,
     source_session TEXT,
-    source_seq BIGINT
+    source_seq BIGINT,
+    local_received_at TIMESTAMPTZ,
+    wall_clock_stamp TIMESTAMPTZ
 );
 SELECT create_hypertable('event_evidence_samples', 'event_time',
     chunk_time_interval => INTERVAL '7 days', if_not_exists => TRUE);
@@ -526,6 +534,8 @@ ALTER TABLE event_evidence_samples ADD COLUMN IF NOT EXISTS manufacturer_authori
 ALTER TABLE event_evidence_samples ADD COLUMN IF NOT EXISTS operational_authority_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE event_evidence_samples ADD COLUMN IF NOT EXISTS authority_evidence JSONB NOT NULL DEFAULT '{}';
 ALTER TABLE event_evidence_samples ADD COLUMN IF NOT EXISTS commissioning_fingerprint TEXT NOT NULL DEFAULT '';
+ALTER TABLE event_evidence_samples ADD COLUMN IF NOT EXISTS local_received_at TIMESTAMPTZ;
+ALTER TABLE event_evidence_samples ADD COLUMN IF NOT EXISTS wall_clock_stamp TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_event_evidence_samples_event
     ON event_evidence_samples (audience, audience_seq, origin, received_at);
 ALTER TABLE event_evidence_samples SET (

@@ -44,9 +44,9 @@ type RawFrame struct {
 	BoardSampleStamped  bool                  // original envelope carried an accepted wall-clock stamp
 	RF                  *RawRF                // RF-environment telemetry (MON-RF/MON-HW/NAV-SAT), nil for nav frames
 	Solution            *ReceiverSolution     // the receiver's own solution for one epoch (telemetry 0x03), nil for nav frames
-	// RecvStamped reports that a push frame's Recv is the observer's own accepted
-	// wall-clock stamp rather than the collector's arrival time. Dial frames leave it
-	// false; their Recv is already this host's clock.
+	// RecvStamped reports that a push telemetry frame's Recv is the observer's own
+	// accepted wall-clock stamp rather than the collector's arrival time. Dial frames
+	// leave it false; their Recv is already this host's clock.
 	RecvStamped bool
 
 	// Seq is the feeder's GNF1 global sequence, set only for push-path frames
@@ -99,6 +99,17 @@ type RawFrame struct {
 type ScopeRevocation struct {
 	Previous  identity.ObserverContext
 	ChangedAt time.Time
+}
+
+// WallClockStamp returns an independent wall-clock stamp of the frame's reception:
+// this host's clock on a dial connection, or the observer's own accepted stamp on a
+// push one. A push frame the observer did not stamp has none, because its arrival
+// time may include spool backlog.
+func (f *RawFrame) WallClockStamp() (time.Time, bool) {
+	if f.RecvLocal.IsZero() || f.RecvStamped {
+		return f.Recv, true
+	}
+	return time.Time{}, false
 }
 
 // LocalRecv returns the collector-local receipt time for elapsed-time math

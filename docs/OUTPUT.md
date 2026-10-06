@@ -389,7 +389,8 @@ event's own `id` in that audience. The response's `evidence` object holds the `e
 `window_start`, `window_end`, `captured_at`, the `rf_samples` and `board_samples` counts,
 `truncated` (more than 20,000 samples of one origin were in the window), `has_more`, and a page
 of `samples`. Each sample has its `origin` (`rf` or `board`), `kind`, `received_at`,
-`sample_time`, `session`, decimal `sequence`, `hardware_trust`, the exact stored body as base64
+`sample_time`, `session`, decimal `sequence`, `hardware_trust`, `local_received_at` and
+`wall_clock_stamp` (the clocks the station checks used), the exact stored body as base64
 `raw`, and its decoded `data`. An event without evidence, or one before the audience's current
 policy epoch, returns 404. Public audiences have no evidence, since the samples carry the
 receiver's coordinates.
@@ -529,7 +530,11 @@ from `raw` without re-collecting — the same re-decodability guarantee `radioli
 
 Receiver RF telemetry has its own private `rf_samples` hypertable. Its `kind` is
 `reception` (NAV-SAT), `jamming` (MON-RF/MON-HW) or `solution` (the receiver's
-own position, velocity, clock and status, telemetry `0x03`). It stores the
+own position, velocity, clock and status, telemetry `0x03`). `local_received_at` is
+the collector-local receipt instant (`received_at` is the observer's stamp when it sent
+one) and `wall_clock_stamp` the independent stamp the receiver's UTC was compared with,
+NULL when there was none; with them a replay feeds the station checks exactly the clocks
+the live collector used. It stores the
 exact versioned receiver body in `raw`, its decoded JSON projection in `data`,
 `sample_time`, evidence kind, decoder version, source session/sequence and the
 same immutable receipt-time ownership, trust and publication scope as

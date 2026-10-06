@@ -121,11 +121,10 @@ func (s *Store) applySolution(f *ingest.RawFrame) {
 			SAccMPS: float64(p.SAccMMS) / 1e3,
 		}
 		in.UTC, in.UTCValid = p.UTC()
-		// A dial frame's Recv is this host's clock; a push frame's only when the
-		// observer stamped it. An unstamped push frame's arrival time includes
-		// any spool backlog and is no reference for the receiver's UTC.
-		if f.RecvLocal.IsZero() || f.RecvStamped {
-			in.HostStamp = f.Recv
+		// An unstamped push frame's arrival time includes any spool backlog and
+		// is no reference for the receiver's UTC (RawFrame.WallClockStamp).
+		if stamp, ok := f.WallClockStamp(); ok {
+			in.HostStamp = stamp
 		}
 		st.eval.ApplySolution(in)
 	}

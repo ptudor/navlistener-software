@@ -33,8 +33,26 @@ func TestRFRowSharesReceiptProvenance(t *testing.T) {
 			t.Errorf("RF column %q = %v, want %v", col, row[i], expected)
 		}
 	}
-	if string(row[len(rfColumns)-5].([]byte)) != string(f.Raw) {
+	column := func(name string) any {
+		for i, col := range rfColumns {
+			if col == name {
+				return row[i]
+			}
+		}
+		t.Fatalf("no column %s", name)
+		return nil
+	}
+	if string(column("raw").([]byte)) != string(f.Raw) {
 		t.Fatal("RF raw body changed")
+	}
+	if column("local_received_at") != nil || column("wall_clock_stamp") != nil {
+		t.Fatal("absent receipt clocks must store NULL")
+	}
+	local, stamp := at.Add(2*time.Second), at
+	f.RF.LocalReceivedAt, f.RF.WallClockStamp = local, &stamp
+	row = rfFrameToRow(f)
+	if column("local_received_at") != local || column("wall_clock_stamp") != stamp {
+		t.Fatal("receipt clocks not stored")
 	}
 }
 

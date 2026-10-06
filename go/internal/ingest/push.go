@@ -1194,6 +1194,7 @@ func recordToFrame(rec wire.RawRecord, feed, source string) *RawFrame {
 // the historian stores their exact versioned body in its private RF table.
 func telemetryToFrame(rec wire.RawRecord, source string, recv, local time.Time) *RawFrame {
 	rf := &RawRF{}
+	stamped := rec.RecvUnixNs > 0 && receiveTimestampPlausible(time.Unix(0, rec.RecvUnixNs), local)
 	switch int(rec.FrameType) {
 	case TelemObserverDetails:
 		if rec.GnssID != 0 || rec.SvID != 0 || rec.SigID != 0 || rec.FreqID != 0 {
@@ -1203,7 +1204,6 @@ func telemetryToFrame(rec wire.RawRecord, source string, recv, local time.Time) 
 		if err != nil {
 			return nil
 		}
-		stamped := rec.RecvUnixNs > 0 && receiveTimestampPlausible(time.Unix(0, rec.RecvUnixNs), local)
 		return &RawFrame{Recv: recv, RecvLocal: local, Source: source, Details: details, Bytes: append([]byte(nil), rec.Raw...), BoardSampleStamped: stamped}
 	case TelemJammingStats:
 		bands, err := decodeJammingStats(rec.Raw)
@@ -1225,13 +1225,12 @@ func telemetryToFrame(rec wire.RawRecord, source string, recv, local time.Time) 
 		if err != nil {
 			return nil
 		}
-		stamped := rec.RecvUnixNs > 0 && receiveTimestampPlausible(time.Unix(0, rec.RecvUnixNs), local)
 		return &RawFrame{Recv: recv, RecvLocal: local, Source: source, MsgType: TelemReceiverSolution,
 			Bytes: append([]byte(nil), rec.Raw...), Solution: sol, RecvStamped: stamped}
 	default:
 		return nil // a telemetry type we don't transport yet
 	}
-	return &RawFrame{Recv: recv, RecvLocal: local, Source: source, MsgType: int(rec.FrameType), Bytes: append([]byte(nil), rec.Raw...), RF: rf}
+	return &RawFrame{Recv: recv, RecvLocal: local, Source: source, MsgType: int(rec.FrameType), Bytes: append([]byte(nil), rec.Raw...), RF: rf, RecvStamped: stamped}
 }
 
 // receiveTimestampPlausible applies the asymmetric live-clock/replay contract:

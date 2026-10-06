@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,12 @@ func TestEvidencePolicyValidate(t *testing.T) {
 func TestEvidenceSampleColumnsMatchSchema(t *testing.T) {
 	if len(evidenceSampleColumns) != 4+len(rfColumns) || evidenceSampleColumns[4] != "ts" {
 		t.Fatalf("evidence sample columns = %v", evidenceSampleColumns)
+	}
+	// Every origin selects exactly one expression per column.
+	for origin, sel := range evidenceSelect {
+		if n := len(strings.Split(sel, ", ")); n != len(rfColumns) {
+			t.Fatalf("%s select has %d expressions, want %d", origin, n, len(rfColumns))
+		}
 	}
 }
 

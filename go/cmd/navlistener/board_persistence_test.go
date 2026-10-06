@@ -77,10 +77,22 @@ func TestSolutionPersistenceMapping(t *testing.T) {
 	if err := json.Unmarshal(saved.RF.Data, &decoded); err != nil || decoded.PVT == nil || decoded.Clock.BiasNS != -412_345 {
 		t.Fatalf("decoded projection: %+v %v", decoded, err)
 	}
+	if !saved.RF.LocalReceivedAt.Equal(now) || saved.RF.WallClockStamp == nil || !saved.RF.WallClockStamp.Equal(now) {
+		t.Fatalf("dial clocks: %+v", saved.RF)
+	}
 	body := ingest.EncodeReceiverSolution(sol)
-	saved = frameForPersistence(&ingest.RawFrame{Source: "test-solution", Recv: now, Observer: cx, Bytes: body,
+	local, stamp := now.Add(3*time.Second), now
+	saved = frameForPersistence(&ingest.RawFrame{Source: "test-solution", Recv: stamp, RecvLocal: local, Observer: cx, Bytes: body,
 		MsgType: ingest.TelemReceiverSolution, Solution: sol})
 	if saved.RF == nil || string(saved.Raw) != string(body) {
 		t.Fatalf("push body not kept exactly: %+v", saved)
+	}
+	if !saved.RF.LocalReceivedAt.Equal(local) || saved.RF.WallClockStamp != nil {
+		t.Fatalf("unstamped push clocks: local %v stamp %v", saved.RF.LocalReceivedAt, saved.RF.WallClockStamp)
+	}
+	saved = frameForPersistence(&ingest.RawFrame{Source: "test-solution", Recv: stamp, RecvLocal: local, RecvStamped: true,
+		Observer: cx, Bytes: body, MsgType: ingest.TelemReceiverSolution, Solution: sol})
+	if !saved.RF.LocalReceivedAt.Equal(local) || saved.RF.WallClockStamp == nil || !saved.RF.WallClockStamp.Equal(stamp) {
+		t.Fatalf("stamped push clocks: local %v stamp %v", saved.RF.LocalReceivedAt, saved.RF.WallClockStamp)
 	}
 }
