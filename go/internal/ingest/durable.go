@@ -12,8 +12,9 @@ import (
 // under the regression fix contract: the highest sequence N such that every
 // sequenced frame ≤ N this collector RECEIVED has been durably resolved —
 // committed by the historian (or deduped as a replay of an already-committed
-// row), quarantined as unfixable, or classified never-persistable (telemetry,
-// malformed body). Before the regression fix, ACK meant "queued in RAM": the feeder then
+// row), quarantined as unfixable, or classified never-persistable (raw
+// observables or a malformed body). Before the regression fix, ACK meant
+// "queued in RAM": the feeder then
 // pruned its only replay copy while the historian could still fail, so a DB
 // outage after ACK permanently erased raw forensic evidence with both sides
 // behaving to spec.

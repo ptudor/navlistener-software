@@ -78,6 +78,11 @@ func TestPowerModelPersistenceIsDeterministicAndBound(t *testing.T) {
 	if NewPowerModel(wrong).UnmarshalBinary(b) == nil {
 		t.Fatal("model crossed a configuration epoch")
 	}
+	wrong = modelSite()
+	wrong.Elevation = 25
+	if NewPowerModel(wrong).UnmarshalBinary(b) == nil {
+		t.Fatal("model crossed a reception-policy change")
+	}
 	bad := append([]byte(nil), b...)
 	bad[4]++
 	if NewPowerModel(site).UnmarshalBinary(bad) == nil {

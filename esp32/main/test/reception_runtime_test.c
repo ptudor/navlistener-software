@@ -31,7 +31,8 @@ bool journal_reception_latest(nr_sample_t *s)
 bool journal_reception_next(uint64_t after,nr_sample_t *s)
 {if(after>=persisted_count)return false;*s=persisted[after];return true;}
 bool journal_power_save(nrp_event_t *s)
-{assert(persisted_power_count<128);s->boot=1;s->event=persisted_power_count+1;persisted_power[persisted_power_count++]=*s;return true;}
+{assert(persisted_power_count<128);s->boot=1;s->event=persisted_power_count+1;
+ if(!nrp_event_valid(s)){s->event=0;return false;}persisted_power[persisted_power_count++]=*s;return true;}
 bool journal_power_latest(nrp_event_t *s)
 {if(!persisted_power_count)return false;*s=persisted_power[persisted_power_count-1];return true;}
 bool journal_power_next(uint64_t after,nrp_event_t *s)
@@ -137,5 +138,14 @@ int main(void)
     assert(last_tag==20&&nrp_decode_sample(&power_sample,last_value,NRP_SAMPLE_SIZE));
     assert(power_sample.observed[0]==60&&power_sample.local_alarm==1&&power_sample.remote_alarm==1&&
            persisted_power_count>=2&&persisted_power[persisted_power_count-1].joint_alarm==1);
+    // A new availability forecast can arrive one frame before its power
+    // companion. The joint alarm remains latched, but that transient local-only
+    // state cannot create an internally inconsistent journal record.
+    unsigned before_gap=persisted_power_count;fake_utc=1800000007;forecast(51);p.satellites_ms=8000;
+    assert(reception_poll(&p,8000,NULL)==1&&joint_power_machine.alarm==1);
+    assert(persisted_power_count==before_gap);
+    power_forecast(51,61,site_id);p.satellites_ms=9000;
+    assert(reception_poll(&p,9000,NULL)==1&&persisted_power_count==before_gap+1);
+    assert(nrp_event_valid(&persisted_power[persisted_power_count-1]));
     puts("edge reception: offline alarm, persistence, expiry, fresh recovery, snapshot retry and reconnect passed");
 }

@@ -1,7 +1,8 @@
 // Package ingest reads raw broadcast nav frames from receivers we control and
 // forwards them, undecoded, to the central decode+state stage. Each source is a
-// thin connector (docs/DESIGN.md §1): read a local feed → frame → emit. All
-// decoding and orbit math is central — the edge is dumb.
+// thin connector (docs/DESIGN.md §1): read a local feed → frame → emit. Navigation
+// decoding and orbit math are central; an ESP observer separately evaluates the
+// authenticated reception forecasts documented in docs/RECEPTION.md.
 //
 // Dial connectors open receiver/caster TCP streams, while PushServer accepts
 // authenticated GNF1 feeder streams. Both normalize their input into RawFrame
@@ -17,8 +18,8 @@ import (
 	"github.com/ptudor/navlistener/internal/reception"
 )
 
-// RawFrame is one raw broadcast nav frame lifted off a receiver, tagged with just
-// enough to dispatch it to the right decoder. Word-oriented frames (GPS/QZSS/
+// RawFrame is one receiver record, tagged with enough context to dispatch a
+// broadcast navigation frame or route private receiver telemetry. Word-oriented frames (GPS/QZSS/
 // BeiDou/GLONASS/SBAS from UBX) carry Words; byte-oriented content (RTCM messages
 // and SBF blocks) carries Bytes. RTCM/SBF are currently capture-only: they reach
 // the historian but do not update live constellation state. Word-oriented
@@ -109,8 +110,9 @@ func (f *RawFrame) LocalRecv() time.Time {
 // RawRF is one RF-environment telemetry sample from a receiver: the jamming/AGC
 // front-end state (UBX-MON-RF on F9+, UBX-MON-HW legacy) and/or the per-SV C/N₀ +
 // elevation the spoofing gates need (UBX-NAV-SAT). It is station-scoped (keyed by the
-// ingest source), not per-SV, and feeds the PNT-defense layer (docs/DEFENSE-PNT.md §1);
-// the collector derives the detection metrics centrally — the edge only forwards.
+// ingest source), not per-SV, and feeds the PNT-defense layer (docs/DEFENSE-PNT.md §1).
+// The collector derives fleet and elevation metrics; stationary ESP observers also
+// compare C/N₀ with local and delivered sidereal references.
 type RawRF struct {
 	Bands []RFBand // per-RF-path AGC/noise/CW/jamming/antenna (MON-RF/MON-HW)
 	Sats  []SatCN0 // per-SV C/N₀ and elevation (NAV-SAT), for the C/N₀-vs-elevation gate

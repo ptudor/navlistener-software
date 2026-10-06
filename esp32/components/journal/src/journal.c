@@ -177,7 +177,7 @@ bool journal_power_save(nrp_event_t *sample)
     if(!mutex || xSemaphoreTake(mutex,pdMS_TO_TICKS(100))!=pdTRUE)return false;
     journal_record_t r=current;r.event=JOURNAL_RECEPTION_POWER;r.uptime_ms=esp_timer_get_time()/1000;
     sample->boot=current.boot;sample->event=store.latest[2]+1;r.reception_power=*sample;
-    bool ok=append(&r);if(!ok)sample->event=0;xSemaphoreGive(mutex);return ok;
+    bool ok=nrp_event_valid(sample)&&append(&r);if(!ok)sample->event=0;xSemaphoreGive(mutex);return ok;
 }
 bool journal_power_latest(nrp_event_t *sample)
 {

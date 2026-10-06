@@ -126,6 +126,16 @@ func TestPowerSampleRoundTripAndComparison(t *testing.T) {
 	if _, err := DecodePowerSample(bad); err == nil {
 		t.Fatal("remote capability accepted without a model identity")
 	}
+	bad = append([]byte(nil), b...)
+	bad[3] = 1 << 4
+	if _, err := DecodePowerSample(bad); err == nil {
+		t.Fatal("reserved constellation accepted in aggregate mask")
+	}
+	bad = append([]byte(nil), b...)
+	bad[48] = 0
+	if _, err := DecodePowerSample(bad); err == nil {
+		t.Fatal("model coverage accepted without an observation")
+	}
 }
 
 func TestCountPowerUsesConstellationQuorum(t *testing.T) {
@@ -166,5 +176,15 @@ func TestPowerEventRoundTrip(t *testing.T) {
 	bad[1] = 0
 	if _, err := DecodePowerEvent(bad); err == nil {
 		t.Fatal("reference fields accepted without capability flags")
+	}
+	invalid := want
+	invalid.JointValid = 2
+	if _, err := invalid.Encode(); err == nil {
+		t.Fatal("joint coverage outside local and remote coverage accepted")
+	}
+	invalid = want
+	invalid.ModelConflict = 2
+	if _, err := invalid.Encode(); err == nil {
+		t.Fatal("model conflict outside joint coverage accepted")
 	}
 }

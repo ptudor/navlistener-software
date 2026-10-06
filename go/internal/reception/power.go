@@ -182,10 +182,13 @@ type PowerEvent struct {
 }
 
 func (e PowerEvent) Valid() bool {
-	const constellationBits = uint8(1 << 4)
+	const reservedConstellation = uint8(1 << 4)
 	if e.Flags&^(PowerFlagLocal|PowerFlagRemote) != 0 || e.ExpectationID == 0 || e.Unix < 946684800 || e.Unix >= 4102444800 ||
 		e.Boot == 0 || e.Event == 0 || (e.LocalValid|e.LocalAlarm|e.RemoteValid|e.RemoteAlarm|e.JointValid|e.JointAlarm|
-		e.LocalAbnormal|e.RemoteAbnormal|e.JointAbnormal|e.ModelConflict)&constellationBits != 0 {
+		e.LocalAbnormal|e.RemoteAbnormal|e.JointAbnormal|e.ModelConflict)&reservedConstellation != 0 ||
+		e.LocalAbnormal&^e.LocalValid != 0 || e.RemoteAbnormal&^e.RemoteValid != 0 ||
+		e.JointValid&^(e.LocalValid&e.RemoteValid) != 0 || e.JointAbnormal&^e.JointValid != 0 ||
+		e.ModelConflict&^e.JointValid != 0 {
 		return false
 	}
 	if e.Flags&PowerFlagLocal == 0 && (e.LocalModelID != 0 || e.LocalValid != 0 || e.LocalAlarm != 0 || e.LocalAbnormal != 0) {
@@ -194,7 +197,7 @@ func (e PowerEvent) Valid() bool {
 	if e.Flags&PowerFlagRemote == 0 && (e.RemoteModelID != 0 || e.RemoteValid != 0 || e.RemoteAlarm != 0 || e.RemoteAbnormal != 0) {
 		return false
 	}
-	if e.Flags&PowerFlagLocal != 0 && e.LocalModelID == 0 || e.Flags&PowerFlagRemote != 0 && e.RemoteModelID == 0 {
+	if (e.Flags&PowerFlagLocal != 0 && e.LocalModelID == 0) || (e.Flags&PowerFlagRemote != 0 && e.RemoteModelID == 0) {
 		return false
 	}
 	if e.Flags != (PowerFlagLocal|PowerFlagRemote) && (e.JointValid != 0 || e.JointAlarm != 0 || e.JointAbnormal != 0 || e.ModelConflict != 0) {
@@ -247,12 +250,19 @@ func bitmapTailClear(bits [16]byte, count uint8) bool {
 }
 
 func (s PowerSample) Valid() bool {
+	const reservedConstellation = uint8(1 << 4)
 	if s.Count > MaxEntries || s.Flags&^(PowerFlagLocal|PowerFlagRemote) != 0 || s.ExpectationID == 0 ||
 		s.Unix < 946684800 || s.Unix >= 4102444800 ||
+		(s.LocalValid|s.LocalAlarm|s.RemoteValid|s.RemoteAlarm)&reservedConstellation != 0 ||
 		!bitmapTailClear(s.ObservedValid, s.Count) || !bitmapTailClear(s.LocalAssessment.Valid, s.Count) ||
 		!bitmapTailClear(s.LocalAssessment.Bad, s.Count) || !bitmapTailClear(s.RemoteAssessment.Valid, s.Count) ||
 		!bitmapTailClear(s.RemoteAssessment.Bad, s.Count) {
 		return false
+	}
+	for i := range s.ObservedValid {
+		if (s.LocalAssessment.Valid[i]|s.RemoteAssessment.Valid[i])&^s.ObservedValid[i] != 0 {
+			return false
+		}
 	}
 	for i := 0; i < int(s.Count); i++ {
 		bit := byte(1 << uint(i%8))
@@ -268,7 +278,7 @@ func (s PowerSample) Valid() bool {
 	if s.Flags&PowerFlagRemote == 0 && (s.RemoteModelID != 0 || s.RemoteValid != 0 || s.RemoteAlarm != 0 || s.RemoteAssessment != (PowerAssessment{})) {
 		return false
 	}
-	if s.Flags&PowerFlagLocal != 0 && s.LocalModelID == 0 || s.Flags&PowerFlagRemote != 0 && s.RemoteModelID == 0 {
+	if (s.Flags&PowerFlagLocal != 0 && s.LocalModelID == 0) || (s.Flags&PowerFlagRemote != 0 && s.RemoteModelID == 0) {
 		return false
 	}
 	return true

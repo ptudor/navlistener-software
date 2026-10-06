@@ -56,8 +56,10 @@ func powerFingerprint(site Site) [32]byte {
 	var position [3]float64
 	copy(position[:], site.Position)
 	h := sha256.New()
-	fmt.Fprintf(h, "reception-power-v1\x00%s\x00%s\x00%.9f\x00%.9f\x00%.3f\x00%d\x00%d\x00%d",
+	fmt.Fprintf(h, "reception-power-v1\x00%s\x00%s\x00%.9f\x00%.9f\x00%.3f\x00%t\x00%.6f\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d\x00%d",
 		site.Observer, site.PowerModelEpoch, position[0], position[1], position[2],
+		site.PerSignal, site.Elevation, site.RadiusM, site.AlarmSeconds, site.ClearSeconds,
+		site.MinExpected, site.MinMissing, site.MissingPercent,
 		site.PowerMinDeviation, site.PowerMADMultiplier, site.PowerMinSupport)
 	signals := append([]string(nil), site.Signals...)
 	sort.Strings(signals)

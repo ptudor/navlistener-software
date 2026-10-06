@@ -146,7 +146,8 @@ void power_history_assess(const nr_expectation_t *base,const gnss_status_t *stat
                           uint64_t utc,uint64_t now,bool learn,nrp_sample_t *sample)
 {
     memset(sample->observed_valid,0,sizeof sample->observed_valid);memset(sample->observed,0,sizeof sample->observed);
-    memset(&sample->local,0,sizeof sample->local);sample->count=base->count;
+    memset(&sample->local,0,sizeof sample->local);sample->flags&=~NRP_FLAG_LOCAL;
+    sample->local_model_id=0;sample->local_valid=0;sample->local_alarm=0;sample->count=base->count;
     bool local=model.site_id&&model.cells;
     if(local){sample->flags|=NRP_FLAG_LOCAL;sample->local_model_id=model_id();}
     if(sample->expectation_id!=base->id||utc<base->issued||utc-base->issued>=NR_SLOTS*NR_SLOT_S)return;

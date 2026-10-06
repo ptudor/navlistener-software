@@ -154,8 +154,9 @@ type WelcomeMsg struct {
 }
 
 // RawRecord is the envelope inside a DATA frame: just enough for the collector to
-// dispatch without decoding (docs/DESIGN.md §2). The raw bytes are the untouched
-// broadcast nav frame.
+// dispatch without decoding (docs/DESIGN.md §2). Raw is either the untouched
+// broadcast navigation frame or the exact versioned telemetry body selected by
+// FrameType.
 type RawRecord struct {
 	RecvUnixNs int64       // observer/RTC reception time
 	GnssID     gnss.GNSSID // constellation (u-blox numbering)
@@ -163,7 +164,7 @@ type RawRecord struct {
 	SigID      uint8       // signal id
 	FreqID     uint8       // GLONASS FDMA channel (k = freqId − 7); 0 for other constellations
 	FrameType  uint8       // GNF1 nav message type (docs/CONSTELLATIONS.md §6)
-	Raw        []byte      // the broadcast nav frame, verbatim
+	Raw        []byte      // broadcast frame or versioned telemetry body, verbatim
 }
 
 const recordHeaderLen = 8 + 1 + 1 + 1 + 1 + 1 // recv_unix_ns + gnssId + svId + sigId + freqId + frame_type
