@@ -18,6 +18,7 @@ which direction the dependencies point. Each has its own README with the detail.
 | [`wire/`](wire/) | — | GNF1: the feeder↔collector framing, handshake, and the durable-ACK contract. |
 | [`ingest/`](ingest/) | **INGEST** | Dial connectors (UBX/SBF/RTCM/NTRIP) and the authenticated push server. Normalizes both into `RawFrame`. |
 | [`state/`](state/) | **STATE** | Live per-SV state, decode dispatch, propagation, and the integrity *compute*. |
+| [`integrity/`](integrity/) | **STATE** | Station assurance checks, their filter and recovery hold, and fusion. Pure; fed by `state`. |
 | [`detect/`](detect/) | **DETECT** | Debounced classifiers turning those metrics into typed integrity events. |
 | [`store/`](store/) | **PERSIST** | The TimescaleDB historian: raw frames, events, feed snapshots. |
 | [`serve/`](serve/) | **SERVE** | The native `/gnss/api/v2/*` feeds, the events query API, and the SSE stream. |

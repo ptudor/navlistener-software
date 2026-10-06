@@ -154,10 +154,13 @@ Degradation takes effect at once. A recovery to a better state must hold for the
 check's recovery period (five minutes by default) before it is served. The
 station state fuses the held check states with PNT Integrity's mapping
 (`unassured` = −1, `inconsistent` = 0, `assured` = +1, weighted mean thresholded at
-±0.5). Some checks may only lower a station's state: `cn0_uniformity` and
-`receiver_spoofing` cannot raise it, and `agc` cannot raise it above
-`inconsistent`. Any `unassured` check in the position, receiver clock or time
-reference domains caps the station at `inconsistent`.
+±0.5). `cn0_uniformity`, `agc` and `receiver_spoofing` may only lower a station's
+state: they take part only when they are not assured. A station is `unassured`
+only when a physics domain is unassured and a second domain agrees (another
+physics domain, the receiver's verdict, or the RF environment); otherwise any
+unassured check holds it at `inconsistent`. An assured mean never hides an
+unassured check. A check that was merely unavailable recovers at once; one that
+was degraded holds the worst candidate seen during its recovery period.
 
 Station event machines get separate onset and clear dwell times. Onset keeps the
 standard 60 s, and a clear needs five minutes. A station's first observation no
@@ -203,8 +206,8 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 |---|---|---|
 | 0.1 | Persist NAV-SAT and MON-RF evidence in `rf_samples` | done (`ba25c3f`) |
 | 0.2 | Report station RF event clears at info severity | done (`df7c834`) |
-| 0.3 | Separate onset and clear dwell for station machines; degraded first observations go through onset | done |
-| 0.4 | `go/internal/integrity`: states, check contract, profile with versioned defaults, configuration hash, M-of-N filter, held recovery, fusion | planned |
+| 0.3 | Separate onset and clear dwell for station machines; degraded first observations go through onset | done (`63e04bd`) |
+| 0.4 | `go/internal/integrity`: states, check contract, profile with versioned defaults, configuration hash, M-of-N filter, held recovery, fusion | done |
 
 ### Phase 1 — receiver-solution checks
 
