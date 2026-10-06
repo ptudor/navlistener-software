@@ -697,7 +697,8 @@ transitions after condition reconciliation while the application is active.
 Initial snapshots, history pages and reconnect replay establish a baseline without
 alerts. Raises, recoveries and severity changes use server-classified conditions;
 raw RF measurements do not generate alarms. Offline and RF preferences select
-those event categories; the critical preference additionally selects severity-2
+those event categories, and the RF preference also covers `station_assurance`
+transitions; the critical preference additionally selects severity-2
 raises and recoveries, including critical offline/RF events. Overlapping categories
 produce one notice. Only selected stations in the active read session are eligible.
 

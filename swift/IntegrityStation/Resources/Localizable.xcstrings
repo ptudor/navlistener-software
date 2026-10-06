@@ -756,7 +756,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Alerts cover confirmed live transitions while this app is active. Initial snapshots and replay do not alert. There is no background monitoring when the app is suspended or closed. Critical alerts also cover critical offline and RF events."
+            "value": "Alerts cover confirmed live transitions while this app is active. Initial snapshots and replay do not alert. There is no background monitoring when the app is suspended or closed. Critical alerts also cover critical offline, RF and assurance events."
           }
         }
       }
@@ -776,7 +776,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "RF and antenna changes"
+            "value": "RF, antenna and assurance changes"
           }
         }
       }
@@ -3887,6 +3887,196 @@
           "stringUnit": {
             "state": "translated",
             "value": "The owner portal returned HTTP %d."
+          }
+        }
+      }
+    },
+    "assurance.state.unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unavailable"
+          }
+        }
+      }
+    },
+    "assurance.state.unassured": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unassured"
+          }
+        }
+      }
+    },
+    "assurance.state.inconsistent": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inconsistent"
+          }
+        }
+      }
+    },
+    "assurance.state.assured": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Assured"
+          }
+        }
+      }
+    },
+    "station.assurance.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Assurance"
+          }
+        }
+      }
+    },
+    "station.assurance.spoofing_indicated": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spoofing evidence indicated"
+          }
+        }
+      }
+    },
+    "station.assurance.score": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Score"
+          }
+        }
+      }
+    },
+    "station.assurance.unassured_domains": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unassured domains"
+          }
+        }
+      }
+    },
+    "station.assurance.installation": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installation"
+          }
+        }
+      }
+    },
+    "station.assurance.none": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "None"
+          }
+        }
+      }
+    },
+    "station.assurance.mode.unconfigured": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not configured"
+          }
+        }
+      }
+    },
+    "station.assurance.mode.fixed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fixed, no surveyed position"
+          }
+        }
+      }
+    },
+    "station.assurance.mode.fixed_surveyed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fixed, surveyed position"
+          }
+        }
+      }
+    },
+    "station.assurance.mode.mobile": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mobile"
+          }
+        }
+      }
+    },
+    "station.assurance.mode.mobile_speed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mobile, up to %@ m/s"
+          }
+        }
+      }
+    },
+    "station.assurance.configuration": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Engine %1$@ · configuration %2$@"
+          }
+        }
+      }
+    },
+    "station.assurance.recovering": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recovery to %@ held"
+          }
+        }
+      }
+    },
+    "station.assurance.measured": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Measured: %@"
+          }
+        }
+      }
+    },
+    "station.assurance.limits": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Limits: %@"
           }
         }
       }

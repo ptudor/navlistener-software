@@ -11,7 +11,7 @@ struct ObserversPayload: Codable, Sendable {
             guard !observer.id.isEmpty, ids.insert(observer.id).inserted else {
                 throw FeedError.invalidResponse
             }
-            guard audience != "public" || observer.board == nil else {
+            guard audience != "public" || (observer.board == nil && observer.integrity == nil) else {
                 throw FeedError.invalidResponse
             }
         }
@@ -47,9 +47,10 @@ struct Observer: Codable, Identifiable, Sendable {
     let unexpectedCapabilities: [CapabilitySignal]?
     let missingCapabilities: [CapabilitySignal]?
     var board: StationBoard? = nil
+    var integrity: StationAssessment? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, owner, remark, vendor, mods, disabled, svs, rf, capabilities, board
+        case id, owner, remark, vendor, mods, disabled, svs, rf, capabilities, board, integrity
         case latitudeDeg = "latitude_deg"
         case longitudeDeg = "longitude_deg"
         case heightM = "height_m"
@@ -150,6 +151,63 @@ struct StationRFBand: Codable, Sendable {
         case jamState = "jam_state"
         case antStatus = "ant_status"
     }
+}
+
+/// The collector's station assurance assessment (docs/OUTPUT.md §1.3), served to
+/// authorized private audiences only. State words, check names, domains and reason
+/// codes stay strings so a newer collector's vocabulary remains visible rather than
+/// failing the whole feed. It carries offsets from a surveyed position, never
+/// coordinates.
+struct StationAssessment: Codable, Sendable {
+    let state: String?
+    let score: Double?
+    let unassuredDomains: [String]?
+    let spoofingIndicated: Bool?
+    let evaluatedAt: TimeInterval?
+    let engineVersion: Int?
+    let configHash: String?
+    let mode: String?
+    let surveyedPosition: Bool?
+    let maxSpeedMps: Double?
+    let checks: [AssuranceCheck]?
+
+    enum CodingKeys: String, CodingKey {
+        case state, score, mode, checks
+        case unassuredDomains = "unassured_domains"
+        case spoofingIndicated = "spoofing_indicated"
+        case evaluatedAt = "evaluated_at"
+        case engineVersion = "engine_version"
+        case configHash = "config_hash"
+        case surveyedPosition = "surveyed_position"
+        case maxSpeedMps = "max_speed_mps"
+    }
+}
+
+/// One check's served state and the evidence of its latest evaluation. Metric and
+/// threshold names carry their unit as a suffix (`_m`, `_ns`, `_mps`, ...).
+struct AssuranceCheck: Codable, Sendable {
+    let check: String?
+    let version: Int?
+    let domain: String?
+    let state: String?
+    let candidate: String?
+    let since: TimeInterval?
+    let recoveringSince: TimeInterval?
+    let evaluatedAt: TimeInterval?
+    let metrics: [String: Double]?
+    let thresholds: [String: Double]?
+    let reasons: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case check, version, domain, state, candidate, since, metrics, thresholds, reasons
+        case recoveringSince = "recovering_since"
+        case evaluatedAt = "evaluated_at"
+    }
+}
+
+/// The four assurance levels. A word this build does not know has no level.
+enum AssuranceLevel: String, Sendable {
+    case unavailable, unassured, inconsistent, assured
 }
 
 struct StationCapability: Codable, Sendable {

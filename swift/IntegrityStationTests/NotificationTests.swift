@@ -19,7 +19,8 @@ private actor NoticeCenter: StationNotificationCenter {
 
 @MainActor @Suite struct NotificationTests {
     private func event(_ id: Int64, type: String = "jamming_detected", active: Bool, severity: Int = 1) throws -> GNSSAPIEvent {
-        let value = active ? (type == "station_offline" ? "offline" : type == "capability_impossible" ? "impossible" : "jammed") : "ok"
+        let raised = ["station_offline": "offline", "capability_impossible": "impossible", "station_assurance": "unassured"]
+        let value = active ? raised[type, default: "jammed"] : type == "station_assurance" ? "assured" : "ok"
         return try JSONDecoder().decode(GNSSAPIEvent.self,from:Data("{\"id\":\(id),\"sv\":\"roof\",\"type\":\"\(type)\",\"new_value\":\"\(value)\",\"severity\":\(severity),\"message\":\"Server-authored transition\"}".utf8))
     }
     private func fixture() throws -> (StationNotifications,AppSettings,NoticeCenter,ReadSession,String) {
@@ -53,16 +54,16 @@ private actor NoticeCenter: StationNotificationCenter {
         try await settle();#expect(await center.added.count == 2)
     }
 
-    @Test(arguments:["offline","rf","critical"])
+    @Test(arguments:["offline","rf","assurance","critical"])
     func categoryAndPermissionGates(category:String) async throws {
         let (service,settings,center,session,suite) = try fixture()
         defer {UserDefaults(suiteName:suite)?.removePersistentDomain(forName:suite)}
         settings.notifyOffline = false;settings.notifyRF = false;settings.notifyCritical = false
-        let type = category == "offline" ? "station_offline" : category == "rf" ? "jamming_detected" : "capability_impossible"
+        let type = ["offline": "station_offline", "rf": "jamming_detected", "assurance": "station_assurance"][category, default: "capability_impossible"]
         let raised = try event(1,type:type,active:true,severity:category == "critical" ? 2 : 1)
         service.transition(raised,previous:nil,active:true,session:session)
         try await settle();#expect(await center.added.isEmpty)
-        switch category {case "offline":settings.notifyOffline = true;case "rf":settings.notifyRF = true;default:settings.notifyCritical = true}
+        switch category {case "offline":settings.notifyOffline = true;case "rf","assurance":settings.notifyRF = true;default:settings.notifyCritical = true}
         await center.setPermission(.denied)
         service.transition(raised,previous:nil,active:true,session:session)
         try await settle();#expect(await center.added.isEmpty)

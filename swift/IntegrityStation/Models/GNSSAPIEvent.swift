@@ -44,6 +44,7 @@ extension GNSSAPIEvent {
         "station_offline",
         "jamming_detected",
         "spoofing_suspected",
+        "station_assurance",
         "station_rf_degraded",
         "antenna_fault",
         "capability_signal_lost",
@@ -64,6 +65,7 @@ extension GNSSAPIEvent {
         case "station_offline": newValue == "offline"
         case "jamming_detected": newValue != "ok"
         case "spoofing_suspected": newValue != "ok"
+        case "station_assurance": newValue != "assured"
         case "station_rf_degraded": newValue == "degraded"
         case "antenna_fault": newValue == "fault"
         case "capability_signal_lost": newValue == "lost"

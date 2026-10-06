@@ -49,6 +49,20 @@ func TestIntegrationCurrentConditionsRetainsOldActivation(t *testing.T) {
 	if err != nil || empty.Cursor != 0 || len(empty.Events) != 0 {
 		t.Fatal("audience disclosure", err)
 	}
+	// A station's fused assurance state is a current condition like its RF state:
+	// a reconciling client must see an unassured station without waiting for a
+	// transition.
+	assurance, err := s.WriteEvent(ctx, EventRow{Audience: audience, Time: at.Add(71 * time.Hour), SV: "old-active", Type: "station_assurance", OldValue: "assured", NewValue: "unassured", Severity: 2, DedupeKey: audience + "/old-active/assurance"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = s.CurrentConditions(ctx, audience, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last := snapshot.Events[len(snapshot.Events)-1]; last.ID != assurance || last.Type != "station_assurance" || last.NewValue != "unassured" {
+		t.Fatalf("assurance condition missing: %+v", last)
+	}
 	// More than the documented bound must fail as a whole, not claim a complete
 	// snapshot containing a misleading subset of current conditions.
 	_, err = s.pool.Exec(ctx, `INSERT INTO gnss_events(time,audience,audience_seq,sv,event_type,new_value,severity)

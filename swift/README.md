@@ -18,6 +18,15 @@ marked stale. A recent receipt with no sample UTC cannot establish replay age.
 Board diagnostics do not change the collector's GNSS integrity verdict. Public
 feeds do not contain board telemetry.
 
+Authorized private station details also show the collector's station assurance
+assessment: the fused state and score, unassured evidence domains, whether the
+evidence indicates spoofing, the installation profile, and each check's state with
+its reasons, measured values and limits. It is the collector's current evaluation;
+confirmed `station_assurance` and `spoofing_suspected` transitions are the
+conditions that set station health and notify. The assessment carries offsets from
+a surveyed position, never coordinates, and public feeds do not contain it. See the
+[station assurance proposal](../docs/proposals/STATION-ASSURANCE.md).
+
 Expected reception shows observed/expected counts and separate edge and collector
 verdicts for each constellation. An alarm from either contributes a station
 warning. Unknown or stale coverage keeps a reported alarm visible as held, and

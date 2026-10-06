@@ -27,6 +27,9 @@ struct StationDetailView: View {
                         ) {
                             skyCard
                             rfCard
+                            if let assessment = observer?.integrity {
+                                StationAssuranceView(assessment: assessment)
+                            }
                             identityCard
                         }
                         if let board = observer?.board {

@@ -38,6 +38,39 @@ enum StationFormat {
         value.map { "\($0) dB-Hz" } ?? unknown
     }
 
+    /// The fused assurance score in [−1, +1], signed so its direction reads at a
+    /// glance.
+    static func assuranceScore(_ value: Double?) -> String {
+        guard let value, value.isFinite else { return unknown }
+        return String(format: "%+.2f", locale: Locale(identifier: "en_US_POSIX"), value)
+    }
+
+    /// A check's evidence as `name value` pairs in name order. Each name carries
+    /// its unit as a suffix, as served, so no unit is added or converted here.
+    static func assuranceValues(_ values: [String: Double]?) -> String? {
+        guard let values, !values.isEmpty else { return nil }
+        return values.sorted { $0.key < $1.key }
+            .map { "\($0.key) \(evidenceValue($0.value))" }
+            .joined(separator: "  ")
+    }
+
+    // Six significant digits without an exponent or grouping: nanosecond offsets and
+    // ns/s² rates both stay readable and copyable.
+    private static func evidenceValue(_ value: Double) -> String {
+        guard value.isFinite else { return unknown }
+        return value.formatted(.number.precision(.significantDigits(1...6)).grouping(.never)
+            .locale(Locale(identifier: "en_US_POSIX")))
+    }
+
+    /// A configuration hash shortened for display: its algorithm label and the
+    /// first twelve digest digits, enough to tell configurations apart by eye.
+    static func configurationHash(_ value: String?) -> String {
+        guard let value, !value.isEmpty else { return unknown }
+        let parts = value.split(separator: ":", maxSplits: 1)
+        guard parts.count == 2 else { return String(value.prefix(12)) }
+        return "\(parts[0]):\(parts[1].prefix(12))"
+    }
+
     private static func fixed(_ value: Double) -> String {
         String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), value)
     }

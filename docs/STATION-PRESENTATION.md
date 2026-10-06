@@ -16,7 +16,9 @@ Inventory enablement, collector connectivity and board freshness are separate.
 Condition health uses the complete current-condition endpoint, never a recent
 event-history tail. Offline takes precedence over alarms; an online receiver has
 unknown health until conditions are known. Critical conditions take precedence
-over warnings. Either edge or collector reception alarms contribute a warning,
+over warnings. Station assurance transitions (`station_assurance` other than
+`assured`) are conditions like RF alarms, at the severity the collector assigns.
+Either edge or collector reception alarms contribute a warning,
 including held alarms during stale or unknown coverage. A healthy communication
 path does not establish correct navigation or accurate UTC.
 

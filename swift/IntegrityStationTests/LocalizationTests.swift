@@ -35,6 +35,7 @@ private final class LocalizationBundleMarker: NSObject {}
         AnyView(OnboardingView()), AnyView(SettingsView()),
         AnyView(StationDetailView(stationID:"roof")),
         AnyView(SkyPlotView(signals:payload.observers?.first?.svs ?? [:])),
+        AnyView(StationAssuranceView(assessment:try JSONDecoder().decode(StationAssessment.self,from:Data(#"{"state":"inconsistent","score":0,"unassured_domains":["position"],"spoofing_indicated":false,"engine_version":1,"config_hash":"sha256:00ff","mode":"mobile","max_speed_mps":30,"checks":[{"check":"motion_bound","domain":"position","state":"unassured","candidate":"assured","recovering_since":1,"metrics":{"speed_mps":41.5},"thresholds":{"max_speed_mps":30},"reasons":["motion_bound"]}]}"#.utf8)))),
         AnyView(VStack {forEachHealth})
     ]
     #if os(iOS)

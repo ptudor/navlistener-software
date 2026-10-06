@@ -32,8 +32,8 @@ func (s *Store) CurrentConditions(ctx context.Context, audience string, since ti
      audience_seq,time,sv,event_type,COALESCE(old_value,'') AS old_value,COALESCE(new_value,'') AS new_value,
      severity,COALESCE(message,'') AS message,raw
    FROM visible
-   WHERE event_type IN ('station_offline','jamming_detected','spoofing_suspected','station_rf_degraded',
-                        'antenna_fault','capability_signal_lost','capability_impossible')
+   WHERE event_type IN ('station_offline','jamming_detected','spoofing_suspected','station_assurance',
+                        'station_rf_degraded','antenna_fault','capability_signal_lost','capability_impossible')
    ORDER BY COALESCE(raw->>'station',sv),event_type,COALESCE(raw->>'gnss',''),COALESCE(raw->>'sig',''),audience_seq DESC
  ), bounded AS (SELECT * FROM latest ORDER BY audience_seq LIMIT $3)
  SELECT (SELECT COALESCE(max(audience_seq),0) FROM visible),

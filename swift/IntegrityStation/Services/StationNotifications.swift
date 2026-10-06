@@ -104,7 +104,7 @@ protocol StationNotificationCenter: Sendable {
     }
     private func eligible(_ event: GNSSAPIEvent, previous: GNSSAPIEvent?) -> Bool {
         let offline = event.type == "station_offline"
-        let rf = ["jamming_detected","spoofing_suspected","station_rf_degraded","antenna_fault"].contains(event.type ?? "")
+        let rf = ["jamming_detected","spoofing_suspected","station_assurance","station_rf_degraded","antenna_fault"].contains(event.type ?? "")
         return (offline && settings.notifyOffline) || (rf && settings.notifyRF) ||
             ((event.severity == .critical || previous?.severity == .critical) && settings.notifyCritical)
     }

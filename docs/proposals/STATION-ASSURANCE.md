@@ -231,7 +231,7 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 | 1.9 | `receiver_spoofing` input, and the existing C/N₀ and AGC logic as checks | done (`88fceb6`) |
 | 1.10 | Per-station assessment in live state, served as `integrity` in the private observers feed | done (`d5857fd`) |
 | 1.11 | Domain-based spoofing fusion and the `station_assurance` event, with check parameters, versions and configuration hash | done (`10b5cf8`) |
-| 1.12 | Integrity Station app: show the assessment and handle `station_assurance` | planned |
+| 1.12 | Integrity Station app: show the assessment and handle `station_assurance` | done; the collector's current-conditions snapshot now includes `station_assurance` |
 
 ### Phase 2 — evidence, replay, durable baselines
 
@@ -241,7 +241,7 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 | 2.2 | Private single-event API returning the event with its evidence | done (`ca1b111`, `/gnss/api/v2/event-evidence`) |
 | 2.3 | Replay command: run stored station inputs or a bundle through the checks with a pinned or current profile, and compare with stored events | done (`62c5ff3`, `go/cmd/stationreplay`, current profile; the timeline names its configuration hash) |
 | 2.4 | Durable AGC baseline: longer decimated window, warm-up reported as unavailable, bounded drift rate, checkpoint and restore like the power model | done (`88f9b8a`) |
-| 2.5 | Fixtures for normal sky, receiver and clock resets, slow drift, position and time steps, uniform C/N₀, AGC compression, loss and reacquisition | done (synthetic, `go/cmd/stationreplay/scenarios_test.go`); recorded normal-sky fixtures await bench captures |
+| 2.5 | Fixtures for normal sky, receiver and clock resets, slow drift, position and time steps, uniform C/N₀, AGC compression, loss and reacquisition | done (`374f048`, synthetic, `go/cmd/stationreplay/scenarios_test.go`); recorded normal-sky fixtures await bench captures |
 
 ### Phase 3 — richer observables where the hardware has them
 

@@ -39,6 +39,15 @@ enum StationPalette {
         }
     }
 
+    static func assurance(_ level: AssuranceLevel?) -> Color {
+        switch level {
+        case .assured: ok
+        case .inconsistent: warning
+        case .unassured: critical
+        case .unavailable, nil: stale
+        }
+    }
+
     static func severity(_ severity: EventSeverity?) -> Color {
         switch severity {
         case .critical: critical
@@ -67,6 +76,33 @@ extension HealthState {
         case .critical: "exclamationmark.octagon.fill"
         case .warning: "exclamationmark.triangle.fill"
         case .ok: "checkmark.circle.fill"
+        }
+    }
+}
+
+extension AssuranceLevel {
+    /// A served state word's display name. A word this build does not know is
+    /// shown as served rather than mapped onto a known level.
+    static func displayName(_ word: String?) -> String {
+        guard let word else { return StationFormat.unknown }
+        return AssuranceLevel(rawValue: word)?.localizedName ?? word
+    }
+
+    var localizedName: String {
+        switch self {
+        case .unavailable: String(localized: "assurance.state.unavailable")
+        case .unassured: String(localized: "assurance.state.unassured")
+        case .inconsistent: String(localized: "assurance.state.inconsistent")
+        case .assured: String(localized: "assurance.state.assured")
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .unavailable: "circle.dotted"
+        case .unassured: "exclamationmark.octagon.fill"
+        case .inconsistent: "exclamationmark.triangle.fill"
+        case .assured: "checkmark.shield.fill"
         }
     }
 }
