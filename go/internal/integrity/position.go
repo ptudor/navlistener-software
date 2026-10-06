@@ -18,7 +18,7 @@ const (
 )
 
 var (
-	staticPositionInfo     = Info{Name: CheckStaticPosition, Version: 1, Domain: DomainPosition}
+	staticPositionInfo     = Info{Name: CheckStaticPosition, Version: 2, Domain: DomainPosition}
 	stationaryVelocityInfo = Info{Name: CheckStationaryVelocity, Version: 1, Domain: DomainPosition}
 	motionBoundInfo        = Info{Name: CheckMotionBound, Version: 1, Domain: DomainPosition}
 	positionVelocityInfo   = Info{Name: CheckPositionVelocity, Version: 1, Domain: DomainPosition}
@@ -79,11 +79,16 @@ type StaticPositionProfile struct {
 	Horizontal ScaledBands `json:"horizontal"`
 	Vertical   ScaledBands `json:"vertical"`
 	// The mean offset over DriftWindow (needing at least DriftMinEpochs epochs)
-	// beyond these is inconsistent: a slow drag the instantaneous bands allow.
-	DriftWindow      time.Duration `json:"drift_window_ns"`
-	DriftMinEpochs   int           `json:"drift_min_epochs"`
-	DriftHorizontalM float64       `json:"drift_horizontal_m"`
-	DriftVerticalM   float64       `json:"drift_vertical_m"`
+	// beyond DriftHorizontalM/DriftVerticalM is inconsistent, and beyond the
+	// unassured pair unassured: a slow drag the instantaneous bands allow. A
+	// sustained mean is stronger evidence than one epoch, so its unassured bands
+	// are tighter than the instantaneous ones.
+	DriftWindow               time.Duration `json:"drift_window_ns"`
+	DriftMinEpochs            int           `json:"drift_min_epochs"`
+	DriftHorizontalM          float64       `json:"drift_horizontal_m"`
+	DriftVerticalM            float64       `json:"drift_vertical_m"`
+	DriftUnassuredHorizontalM float64       `json:"drift_unassured_horizontal_m"`
+	DriftUnassuredVerticalM   float64       `json:"drift_unassured_vertical_m"`
 }
 
 // MotionBoundProfile holds the motion_bound operating points.
@@ -254,6 +259,7 @@ func (p *positionChecks) staticPosition(s Solution, e epoch, usable bool, prof S
 			"horizontal_inconsistent_m": hInc, "horizontal_unassured_m": hUn,
 			"vertical_inconsistent_m": vInc, "vertical_unassured_m": vUn,
 			"mean_horizontal_inconsistent_m": prof.DriftHorizontalM, "mean_vertical_inconsistent_m": prof.DriftVerticalM,
+			"mean_horizontal_unassured_m": prof.DriftUnassuredHorizontalM, "mean_vertical_unassured_m": prof.DriftUnassuredVerticalM,
 		},
 	}
 	if hs != Assured {
@@ -271,7 +277,11 @@ func (p *positionChecks) staticPosition(s Solution, e epoch, usable bool, prof S
 		mu := (p.sumENU[2] + e.enu[2]) / float64(n)
 		mh, mv := math.Hypot(me, mn), math.Abs(mu)
 		verdict.Metrics["mean_horizontal_m"], verdict.Metrics["mean_vertical_m"] = mh, mv
-		if mh > prof.DriftHorizontalM || mv > prof.DriftVerticalM {
+		switch {
+		case mh > prof.DriftUnassuredHorizontalM || mv > prof.DriftUnassuredVerticalM:
+			verdict.State = worse(verdict.State, Unassured)
+			verdict.Reasons = append(verdict.Reasons, ReasonMeanOffset)
+		case mh > prof.DriftHorizontalM || mv > prof.DriftVerticalM:
 			verdict.State = worse(verdict.State, Inconsistent)
 			verdict.Reasons = append(verdict.Reasons, ReasonMeanOffset)
 		}

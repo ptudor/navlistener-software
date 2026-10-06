@@ -123,7 +123,7 @@ from stored station data the same way the GLONASS discontinuity bands were.
 
 | Check | Inputs | Test | Domain |
 |---|---|---|---|
-| `static_position` | solution, surveyed position | horizontal and vertical error from the surveyed position, against bands scaled by the reported accuracy; also a ten-minute mean offset for slow drift | position |
+| `static_position` | solution, surveyed position | horizontal and vertical error from the surveyed position, against bands scaled by the reported accuracy; also a ten-minute mean offset for slow drift, inconsistent beyond 8 m and unassured beyond 25 m horizontally | position |
 | `stationary_velocity` | solution, fixed station | reported speed against bands scaled by the speed accuracy | position |
 | `motion_bound` | solution, mobile station | distance from the last assured position must fit within elapsed time × maximum speed plus both accuracy estimates | position |
 | `position_velocity` | solution | velocity implied by position differences over a five-second window against the mean reported velocity | position |
@@ -240,8 +240,8 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 | 2.1 | Evidence bundle written when a station event is confirmed: a bounded window of stored inputs, check results, baselines, versions and configuration, exempt from raw retention | done (`ca1b111`, receipt clocks `8416a4a`); the check results, versions and configuration hash travel in the event's parameters |
 | 2.2 | Private single-event API returning the event with its evidence | done (`ca1b111`, `/gnss/api/v2/event-evidence`) |
 | 2.3 | Replay command: run stored station inputs or a bundle through the checks with a pinned or current profile, and compare with stored events | done (`62c5ff3`, `go/cmd/stationreplay`, current profile; the timeline names its configuration hash) |
-| 2.4 | Durable AGC baseline: longer decimated window, warm-up reported as unavailable, bounded drift rate, checkpoint and restore like the power model | done |
-| 2.5 | Fixtures for normal sky, receiver and clock resets, slow drift, position and time steps, uniform C/N₀, AGC compression, loss and reacquisition | planned |
+| 2.4 | Durable AGC baseline: longer decimated window, warm-up reported as unavailable, bounded drift rate, checkpoint and restore like the power model | done (`88f9b8a`) |
+| 2.5 | Fixtures for normal sky, receiver and clock resets, slow drift, position and time steps, uniform C/N₀, AGC compression, loss and reacquisition | done (synthetic, `go/cmd/stationreplay/scenarios_test.go`); recorded normal-sky fixtures await bench captures |
 
 ### Phase 3 — richer observables where the hardware has them
 

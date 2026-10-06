@@ -75,7 +75,7 @@ toward it. Checks in one domain share their measurements and count once.
 
 | Check | Domain | Input | Test (defaults) |
 |---|---|---|---|
-| `static_position` | position | solution, surveyed position | Horizontal and vertical error from the survey; bands 3σ/6σ of the reported accuracy, clamped to 15–100 m and 50–300 m horizontally (25–150 m, 80–450 m vertically). A ten-minute mean offset over 8 m horizontal or 15 m vertical is inconsistent. Fixed stations only. |
+| `static_position` | position | solution, surveyed position | Horizontal and vertical error from the survey; bands 3σ/6σ of the reported accuracy, clamped to 15–100 m and 50–300 m horizontally (25–150 m, 80–450 m vertically). A ten-minute mean offset over 8 m horizontal or 15 m vertical is inconsistent, and over 25 m or 40 m unassured: a slow drag. Fixed stations only. |
 | `stationary_velocity` | position | solution | Reported speed; 3σ/6σ of speed accuracy, at least 0.5 and 2 m/s. Fixed stations only. |
 | `motion_bound` | position | solution | Distance from the last in-bounds epoch ≤ max speed × elapsed + 3 × both 3D accuracies + 10 m, else unassured. Mobile stations only. |
 | `position_velocity` | position | solution | Velocity from a five-second position difference against the reported velocity integrated over the same interval; 3σ/6σ of speed accuracy, at least 1 and 3 m/s. |
@@ -112,6 +112,13 @@ The tracker tests cover warm-up, outlier rejection, mixed degradation, immediate
 degradation, the recovery hold and its interruption, the worst-candidate rule, gaps, and
 staleness. The fusion table covers every domain rule. The profile tests cover validation
 and that every hashed input changes the hash while map order does not.
+
+End-to-end scenario fixtures live in `../../cmd/stationreplay/scenarios_test.go`: synthetic
+streams of everything a fixed observer sends each second, through state, these checks and
+the detectors, for normal sky, receiver reset, millisecond clock adjustment, loss and
+reacquisition, slow drift, position step, time step, uniform C/N₀ with and without the
+receiver's flag, a combined takeover, AGC compression, narrowband interference, antenna
+disconnect, and duplicate or out-of-order delivery.
 
 ---
 

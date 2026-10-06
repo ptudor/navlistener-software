@@ -69,6 +69,17 @@ func TestStaticPositionMeanOffset(t *testing.T) {
 	if last.State != Inconsistent || !slices.Contains(last.Reasons, ReasonMeanOffset) {
 		t.Fatalf("after %d epochs at 9 m: %+v, want inconsistent mean offset", prof.StaticPosition.DriftMinEpochs, last)
 	}
+
+	// A sustained 30 m offset is inconsistent epoch by epoch but unassured as a mean.
+	p = newPositionChecks(fixedProfile())
+	for i := 0; i < prof.StaticPosition.DriftMinEpochs; i++ {
+		s := solutionAt(i, 30, 0, 0, 0, 0, 0)
+		p.accept(s)
+		last = p.evaluate(s, prof)[CheckStaticPosition]
+	}
+	if last.State != Unassured || !slices.Contains(last.Reasons, ReasonMeanOffset) {
+		t.Fatalf("after %d epochs at 30 m: %+v, want an unassured mean offset", prof.StaticPosition.DriftMinEpochs, last)
+	}
 }
 
 func TestStaticPositionUnavailable(t *testing.T) {

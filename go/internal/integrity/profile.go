@@ -68,6 +68,7 @@ func DefaultProfile() Profile {
 			},
 			DriftWindow: 10 * time.Minute, DriftMinEpochs: 300,
 			DriftHorizontalM: 8, DriftVerticalM: 15,
+			DriftUnassuredHorizontalM: 25, DriftUnassuredVerticalM: 40,
 		},
 		// Epsilon's stationary velocity monitor alarms at 0.71 m/s (0.5 m²/s²).
 		StationaryVelocity: ScaledBands{
@@ -132,8 +133,8 @@ func (p Profile) Validate() error {
 		p.StationaryVelocity.validate("stationary_velocity"),
 		p.PositionVelocity.Bands.validate("position_velocity.bands"),
 		positive("static_position.drift_window", sp.DriftWindow.Seconds()),
-		positive("static_position.drift_horizontal_m", sp.DriftHorizontalM),
-		positive("static_position.drift_vertical_m", sp.DriftVerticalM),
+		bands("static_position.drift_horizontal", sp.DriftHorizontalM, sp.DriftUnassuredHorizontalM),
+		bands("static_position.drift_vertical", sp.DriftVerticalM, sp.DriftUnassuredVerticalM),
 		nonNegative("motion_bound.sigmas", p.MotionBound.Sigmas),
 		nonNegative("motion_bound.margin_m", p.MotionBound.MarginM),
 		positive("motion_bound.max_reference_age", p.MotionBound.MaxReferenceAge.Seconds()),
