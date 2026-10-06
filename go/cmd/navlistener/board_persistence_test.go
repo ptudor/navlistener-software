@@ -30,3 +30,29 @@ func TestBoardPersistenceMapping(t *testing.T) {
 		t.Fatal("sample stamp or kind lost")
 	}
 }
+
+func TestRFPersistenceMapping(t *testing.T) {
+	now := time.Now()
+	cx := identity.NewPrivateContext("test-rf", identity.CredentialLocalDial)
+	sats := []ingest.SatCN0{{GnssID: 0, SvID: 12, Cn0: 43, ElevDeg: 51, Used: true}}
+	f := &ingest.RawFrame{Source: "test-rf", Recv: now, Observer: cx, RF: &ingest.RawRF{Sats: sats}}
+	saved := frameForPersistence(f)
+	if saved.RF == nil || saved.RF.Kind != "reception" || saved.Board != nil || len(saved.Raw) == 0 {
+		t.Fatalf("reception mapping: %+v", saved)
+	}
+	if want := ingest.EncodeReceptionData(sats); string(saved.Raw) != string(want) {
+		t.Fatalf("normalized raw body = %x, want %x", saved.Raw, want)
+	}
+	var decoded ingest.RawRF
+	if err := json.Unmarshal(saved.RF.Data, &decoded); err != nil || len(decoded.Sats) != 1 || decoded.Sats[0].Cn0 != 43 {
+		t.Fatalf("decoded projection: %+v %v", decoded, err)
+	}
+
+	raw := ingest.EncodeJammingStats([]ingest.RFBand{{Block: 0, AGC: 2200, JamState: 2}})
+	f = &ingest.RawFrame{Source: "test-rf", Recv: now, Observer: cx, Bytes: raw,
+		RF: &ingest.RawRF{Bands: []ingest.RFBand{{Block: 0, AGC: 2200, JamState: 2}}}}
+	saved = frameForPersistence(f)
+	if saved.RF == nil || saved.RF.Kind != "jamming" || string(saved.Raw) != string(raw) {
+		t.Fatalf("jamming mapping: %+v", saved)
+	}
+}

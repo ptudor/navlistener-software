@@ -372,3 +372,59 @@ ALTER TABLE observer_samples SET (
     timescaledb.compress_segmentby = 'organization_id,source_id,kind',
     timescaledb.compress_orderby = 'ts DESC'
 );
+
+-- Private receiver RF evidence. Raw contains the exact versioned telemetry
+-- body used by the live detector; data is a decoded projection for analysis.
+-- This table is deliberately separate from broadcast navigation words and
+-- board sensors, while sharing their immutable receipt provenance and replay
+-- ledger transaction.
+CREATE TABLE IF NOT EXISTS rf_samples (
+    ts TIMESTAMPTZ NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL,
+    source_id TEXT NOT NULL,
+    organization_id       TEXT   NOT NULL DEFAULT 'local-unassigned',
+    enrollment_id         TEXT   NOT NULL DEFAULT 'legacy-unassigned',
+    collector_instance_id TEXT   NOT NULL DEFAULT 'local',
+    collection_ids        TEXT[] NOT NULL DEFAULT '{}',
+    feed_grants           TEXT[] NOT NULL DEFAULT '{}',
+    declared_capabilities TEXT[] NOT NULL DEFAULT '{}',
+    provenance            TEXT   NOT NULL DEFAULT 'local',
+    credential_tier       TEXT   NOT NULL DEFAULT 'local_dial',
+    credential_fingerprint TEXT  NOT NULL DEFAULT '',
+    attestation_tier      TEXT   NOT NULL DEFAULT 'none',
+    hardware_trust        TEXT   NOT NULL DEFAULT 'none',
+    manufacturer_authority_id TEXT,
+    operational_authority_id TEXT NOT NULL DEFAULT '',
+    authority_evidence JSONB NOT NULL DEFAULT '{}',
+    commissioning_fingerprint TEXT NOT NULL DEFAULT '',
+    aggregate_use         TEXT   NOT NULL DEFAULT 'private',
+    station_metadata      TEXT   NOT NULL DEFAULT 'none',
+    event_visibility      TEXT   NOT NULL DEFAULT 'private',
+    raw_export            TEXT   NOT NULL DEFAULT 'deny',
+    federation_peers      TEXT[] NOT NULL DEFAULT '{}',
+    publish_signals       TEXT[] NOT NULL DEFAULT '{}',
+    policy_revision       TEXT   NOT NULL DEFAULT 'legacy-private-v1',
+    sample_time TIMESTAMPTZ NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('reception', 'jamming', 'combined')),
+    raw BYTEA NOT NULL,
+    data JSONB NOT NULL,
+    decoder_ver TEXT,
+    source_session TEXT,
+    source_seq BIGINT
+);
+SELECT create_hypertable('rf_samples', 'ts',
+    chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
+ALTER TABLE rf_samples ADD COLUMN IF NOT EXISTS hardware_trust        TEXT   NOT NULL DEFAULT 'none';
+ALTER TABLE rf_samples ADD COLUMN IF NOT EXISTS manufacturer_authority_id TEXT;
+ALTER TABLE rf_samples ADD COLUMN IF NOT EXISTS operational_authority_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE rf_samples ADD COLUMN IF NOT EXISTS authority_evidence JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE rf_samples ADD COLUMN IF NOT EXISTS commissioning_fingerprint TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_rf_samples_source_time
+    ON rf_samples (source_id, kind, sample_time DESC);
+CREATE INDEX IF NOT EXISTS idx_rf_samples_org_time
+    ON rf_samples (organization_id, sample_time DESC);
+ALTER TABLE rf_samples SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'organization_id,source_id,kind',
+    timescaledb.compress_orderby = 'ts DESC'
+);

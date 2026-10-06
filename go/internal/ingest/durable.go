@@ -106,8 +106,8 @@ func NewDurableTracker() *DurableTracker {
 
 // Received records one sequenced frame's arrival BEFORE it is handed to the
 // decode stage (so a resolution can never race its own arrival). persistable
-// is false for frames that will never reach the historian — telemetry
-// (RF/observables) and the acked-immediately malformed classes — which
+// is false for frames that will never reach the historian — raw observables
+// and the acked-immediately malformed classes — which
 // advance the watermark without ever holding it.
 // Received returns false before admitting a frame when the tracking budget is full.
 // The caller must close the stream before handoff; reconnect can replay already

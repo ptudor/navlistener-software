@@ -1060,11 +1060,11 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 					metrics.FramesTotal.WithLabelValues(observer, fmt.Sprint(int(f.GnssID))).Inc()
 				}
 				// register receipt BEFORE the decode handoff, so the
-				// store's resolution can never race its own arrival. Board samples
-				// now wait for persistence alongside navigation. RF/observables
+				// store's resolution can never race its own arrival. Board and RF
+				// samples wait for persistence alongside navigation. Raw observables
 				// remain live-only and advance without a database write.
 				if p.durable != nil {
-					if !p.durable.Received(observer, session, seq, f.RF == nil && f.Obs == nil) {
+					if !p.durable.Received(observer, session, seq, f.Obs == nil) {
 						p.log.Warn("durability tracking budget full; closing for replay", "observer", observer)
 						return
 					}
@@ -1181,8 +1181,8 @@ func recordToFrame(rec wire.RawRecord, feed, source string) *RawFrame {
 // (docs/CONSTELLATIONS.md §6.2), the fleet-push counterpart of the dial-mode MON-RF/NAV-SAT
 // parsers. The sample is tagged with the authenticated observer id — the same station key
 // applyRF uses — so the PNT-defense detector sees push and dial stations alike. An
-// unrecognised telemetry type or malformed body returns nil. RF frames carry no nav words
-// and are never written to the raw-nav historian (main.decodeLoop skips them).
+// unrecognised telemetry type or malformed body returns nil. RF frames carry no nav words;
+// the historian stores their exact versioned body in its private RF table.
 func telemetryToFrame(rec wire.RawRecord, source string, recv, local time.Time) *RawFrame {
 	rf := &RawRF{}
 	switch int(rec.FrameType) {
@@ -1211,7 +1211,7 @@ func telemetryToFrame(rec wire.RawRecord, source string, recv, local time.Time) 
 	default:
 		return nil // a telemetry type we don't transport yet
 	}
-	return &RawFrame{Recv: recv, RecvLocal: local, Source: source, RF: rf}
+	return &RawFrame{Recv: recv, RecvLocal: local, Source: source, MsgType: int(rec.FrameType), Bytes: append([]byte(nil), rec.Raw...), RF: rf}
 }
 
 // receiveTimestampPlausible applies the asymmetric live-clock/replay contract:

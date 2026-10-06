@@ -75,11 +75,11 @@ func TestBoardRowSharesReceiptProvenance(t *testing.T) {
 	}
 }
 
-// Both receipt tables use the first v1 schema. Pre-authority deployments gain
+// All receipt tables use the first v1 schema. Pre-authority deployments gain
 // missing columns; incompatible prototype authority layouts are not converted.
 func TestSchemaDeclaresHardwareEvidenceEverywhere(t *testing.T) {
 	for _, declaration := range []string{"manufacturer_authority_id TEXT,", "operational_authority_id TEXT NOT NULL", "authority_evidence JSONB NOT NULL"} {
-		if strings.Count(strings.ToLower(schemaSQL), "\n    "+strings.ToLower(declaration)) != 2 {
+		if strings.Count(strings.ToLower(schemaSQL), "\n    "+strings.ToLower(declaration)) != 3 {
 			t.Errorf("missing receipt declaration %s", declaration)
 		}
 	}

@@ -271,7 +271,7 @@ func parseMONRF(p []byte, source string, recv time.Time) *RawFrame {
 			CWSuppress: int(b[16]), // jamInd (CW-jamming indicator, 0..255)
 		})
 	}
-	return &RawFrame{Source: source, Recv: recv, RF: rf}
+	return &RawFrame{Source: source, Recv: recv, MsgType: TelemJammingStats, RF: rf}
 }
 
 // parseMONHW converts a legacy UBX-MON-HW payload (60 bytes) into a single-band RF
@@ -289,7 +289,7 @@ func parseMONHW(p []byte, source string, recv time.Time) *RawFrame {
 		JamState:   int((p[22] >> 2) & 0x03),
 		CWSuppress: int(p[45]),
 	}
-	return &RawFrame{Source: source, Recv: recv, RF: &RawRF{Bands: []RFBand{band}}}
+	return &RawFrame{Source: source, Recv: recv, MsgType: TelemJammingStats, RF: &RawRF{Bands: []RFBand{band}}}
 }
 
 // parseNAVSAT converts a UBX-NAV-SAT payload into per-SV C/N₀ + elevation for the
@@ -316,7 +316,7 @@ func parseNAVSAT(p []byte, source string, recv time.Time) *RawFrame {
 			Used:    flags&0x08 != 0,
 		})
 	}
-	return &RawFrame{Source: source, Recv: recv, RF: rf}
+	return &RawFrame{Source: source, Recv: recv, MsgType: TelemReceptionData, RF: rf}
 }
 
 // syncTo advances the reader until the two-byte sync pattern s1,s2 is consumed.

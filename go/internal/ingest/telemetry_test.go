@@ -163,11 +163,17 @@ func TestRecordToFrameTelemetry(t *testing.T) {
 	if len(f.RF.Bands) != 1 || f.RF.Bands[0].AGC != 2500 {
 		t.Errorf("jamming bands = %+v", f.RF.Bands)
 	}
+	if !reflect.DeepEqual(f.Bytes, jam.Raw) {
+		t.Fatal("exact jamming telemetry body was not retained for persistence")
+	}
 
 	rcv := wire.RawRecord{FrameType: TelemReceptionData, Raw: EncodeReceptionData([]SatCN0{{GnssID: 2, SvID: 11, Cn0: 44, ElevDeg: 55, Used: true}})}
 	f = recordToFrame(rcv, "ubx", "obs7")
 	if f == nil || f.RF == nil || len(f.RF.Sats) != 1 || !f.RF.Sats[0].Used {
 		t.Fatalf("reception frame = %+v", f)
+	}
+	if !reflect.DeepEqual(f.Bytes, rcv.Raw) {
+		t.Fatal("exact reception telemetry body was not retained for persistence")
 	}
 
 	if recordToFrame(wire.RawRecord{FrameType: TelemJammingStats, Raw: []byte{0xff}}, "ubx", "obs7") != nil {

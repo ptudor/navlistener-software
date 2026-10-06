@@ -248,15 +248,20 @@ var (
 		Help: "SSE subscriptions rejected at the concurrent-stream cap.",
 	})
 
-	// StoreRowsTotal counts navigation frames and board samples persisted.
+	// StoreRowsTotal counts navigation frames, board samples and RF samples persisted.
 	StoreRowsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "navlistener_store_rows_total",
-		Help: "Navigation frames and board samples written to TimescaleDB.",
+		Help: "Navigation frames, board samples and RF samples written to TimescaleDB.",
 	})
 
 	StoreBoardRowsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "navlistener_store_board_rows_total",
 		Help: "Board samples committed to TimescaleDB, by timing/environment kind.",
+	}, []string{"kind"})
+
+	StoreRFRowsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_store_rf_rows_total",
+		Help: "Receiver RF samples committed to TimescaleDB, by reception/jamming kind.",
 	}, []string{"kind"})
 
 	// StoreDroppedTotal counts frames dropped because the writer queue was full.

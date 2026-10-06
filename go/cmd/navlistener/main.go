@@ -748,7 +748,7 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLi
 		// stamp is the whole data plane's liveness signal for /healthz.
 		lastFrame.Store(time.Now().UnixNano())
 		defer recoverDecodePanic(f, log, lim)
-		if historian != nil && f.Obs == nil && f.RF == nil { // raw navigation and board samples use separate historian tables
+		if historian != nil && f.Obs == nil { // navigation, board and RF inputs route to separate historian tables
 			historian.Enqueue(frameForPersistence(f))
 		}
 		if !f.Admission.Current() {

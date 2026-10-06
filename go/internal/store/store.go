@@ -113,6 +113,7 @@ var copyColumns = []string{
 // projection or nil.
 type NavFrame struct {
 	Board *BoardSample // non-nil routes to private observer_samples, never nav_frames
+	RF    *RFSample    // non-nil routes to private rf_samples, never nav_frames
 
 	Ts         time.Time
 	ReceivedAt time.Time
@@ -396,6 +397,7 @@ var requiredColumns = map[string][]string{
 	// push-path dedup ledger; a drift there fails the atomic claim tx and drops the batch.
 	"nav_frames":          copyColumns,
 	"observer_samples":    boardColumns,
+	"rf_samples":          rfColumns,
 	"nav_frames_seq_seen": {"source_id", "session_id", "feeder_seq", "seen_at"},
 }
 
@@ -573,6 +575,18 @@ func applyPoliciesWithHook(ctx context.Context, pool *pgxpool.Pool, log *slog.Lo
 	} {
 		if err := exec(sql); err != nil {
 			return fmt.Errorf("board sample policy: %w", err)
+		}
+	}
+	// Receiver RF samples use the same evidence horizon while remaining in a
+	// dedicated table whose segment key supports station/kind model replay.
+	for _, sql := range []string{
+		`SELECT remove_compression_policy('rf_samples', if_exists => true)`,
+		fmt.Sprintf(`SELECT add_compression_policy('rf_samples', INTERVAL '%s', if_not_exists => true)`, compAfter),
+		`SELECT remove_retention_policy('rf_samples', if_exists => true)`,
+		fmt.Sprintf(`SELECT add_retention_policy('rf_samples', INTERVAL '%s', if_not_exists => true)`, rawRet),
+	} {
+		if err := exec(sql); err != nil {
+			return fmt.Errorf("RF sample policy: %w", err)
 		}
 	}
 
@@ -848,7 +862,9 @@ func (s *Store) persistAtomicOnce(ctx context.Context, batch []*NavFrame) (writt
 
 	copyRows := make([][]any, 0, len(batch))
 	boardRows := make([][]any, 0, len(batch))
+	rfRows := make([][]any, 0, len(batch))
 	boardCounts := map[string]int{}
+	rfCounts := map[string]int{}
 	emitted := make(map[seqKey]bool, len(fresh))
 	for _, f := range batch {
 		if f.HasSourceSeq {
@@ -861,6 +877,9 @@ func (s *Store) persistAtomicOnce(ctx context.Context, batch []*NavFrame) (writt
 		if f.Board != nil {
 			boardRows = append(boardRows, boardFrameToRow(f))
 			boardCounts[f.Board.Kind]++
+		} else if f.RF != nil {
+			rfRows = append(rfRows, rfFrameToRow(f))
+			rfCounts[f.RF.Kind]++
 		} else {
 			copyRows = append(copyRows, navFrameToRow(f))
 		}
@@ -878,12 +897,22 @@ func (s *Store) persistAtomicOnce(ctx context.Context, batch []*NavFrame) (writt
 		}
 		written += n
 	}
+	if len(rfRows) > 0 {
+		n, err := tx.CopyFrom(ctx, pgx.Identifier{"rf_samples"}, rfColumns, pgx.CopyFromRows(rfRows))
+		if err != nil {
+			return 0, err
+		}
+		written += n
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
 	for kind, n := range boardCounts {
 		metrics.StoreBoardRowsTotal.WithLabelValues(kind).Add(float64(n))
+	}
+	for kind, n := range rfCounts {
+		metrics.StoreRFRowsTotal.WithLabelValues(kind).Add(float64(n))
 	}
 
 	return written, nil

@@ -12,7 +12,7 @@ import (
 	"github.com/ptudor/navlistener/internal/config"
 )
 
-// policySet is the installed compression/retention configuration for the three
+// policySet is the installed compression/retention configuration for the raw
 // hypertables, as the extension's own job metadata reports it. This is the state
 // regression fix is about: a partial set here means a hypertable is running with
 // no retention or no compression.
@@ -21,7 +21,7 @@ func policySet(t *testing.T, ctx context.Context, pool *pgxpool.Pool) []string {
 	rows, err := pool.Query(ctx,
 		`SELECT hypertable_name, proc_name, config::text
 		   FROM timescaledb_information.jobs
-		  WHERE hypertable_name IN ('nav_frames', 'gnss_snapshots', 'gnss_events', 'observer_samples')`)
+		  WHERE hypertable_name IN ('nav_frames', 'gnss_snapshots', 'gnss_events', 'observer_samples', 'rf_samples')`)
 	if err != nil {
 		t.Fatalf("read policy jobs: %v", err)
 	}
@@ -42,7 +42,7 @@ func policySet(t *testing.T, ctx context.Context, pool *pgxpool.Pool) []string {
 }
 
 // TestIntegrationPolicyReplacementIsAtomic proves regression fix against a live
-// database. applyPolicies replaces six policies as remove-then-add pairs; run as
+// database. applyPolicies replaces the policies as remove-then-add pairs; run as
 // independent autocommit statements, any failure or cancellation between a remove
 // and its add left that hypertable with no compression or no retention while
 // startup merely returned an error. Every failure point must now leave the
@@ -83,6 +83,10 @@ func TestIntegrationPolicyReplacementIsAtomic(t *testing.T) {
 		"add_compression_policy('observer_samples'",
 		"remove_retention_policy('observer_samples'",
 		"add_retention_policy('observer_samples'",
+		"remove_compression_policy('rf_samples'",
+		"add_compression_policy('rf_samples'",
+		"remove_retention_policy('rf_samples'",
+		"add_retention_policy('rf_samples'",
 	}
 	// A different interval, so a partial application would be visibly different
 	// from the baseline rather than coincidentally identical.

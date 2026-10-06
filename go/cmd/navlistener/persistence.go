@@ -81,6 +81,34 @@ func frameForPersistence(f *ingest.RawFrame) *store.NavFrame {
 			saved.Board.SampleTime = &stamp
 		}
 	}
+	if f.RF != nil {
+		kind := "combined"
+		switch {
+		case f.MsgType == ingest.TelemReceptionData || len(f.RF.Sats) > 0 && len(f.RF.Bands) == 0:
+			kind = "reception"
+		case f.MsgType == ingest.TelemJammingStats || len(f.RF.Bands) > 0 && len(f.RF.Sats) == 0:
+			kind = "jamming"
+		}
+		data, err := json.Marshal(f.RF)
+		if err != nil {
+			panic(err)
+		}
+		saved.RF = &store.RFSample{Kind: kind, Data: data}
+		// Push frames retain their exact telemetry body in Bytes. Dial-mode
+		// receiver parsers normalize the same values into that canonical body.
+		if len(saved.Raw) == 0 {
+			switch kind {
+			case "reception":
+				saved.Raw = ingest.EncodeReceptionData(f.RF.Sats)
+			case "jamming":
+				saved.Raw = ingest.EncodeJammingStats(f.RF.Bands)
+			default:
+				// No current receiver message combines these inputs. Preserve a
+				// deterministic decoded projection if a future connector does.
+				saved.Raw = data
+			}
+		}
+	}
 	return saved
 
 }
