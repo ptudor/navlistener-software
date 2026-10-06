@@ -108,7 +108,7 @@ func DefaultProfile() Profile {
 		// 5 s. u-blox reports whole dB-Hz, so 1 dB is a single step; six signals
 		// and a graded median keep chance coincidences of that step out.
 		Cn0Drop: Cn0DropProfile{
-			Window: 5 * time.Second, MinSpan: 3 * time.Second, MinSignals: 6,
+			Window: 5 * time.Second, MinSpan: 3 * time.Second, MinSignals: 6, MinQuality: 4,
 			EveryDB: 1, InconsistentDB: 3, UnassuredDB: 6,
 		},
 		AGC: AGCProfile{Departure: DefaultAGCDeparture, DepartureSevere: DefaultAGCDepartureSevere, CWSuppress: DefaultCWSuppress},
@@ -175,6 +175,9 @@ func (p Profile) Validate() error {
 	}
 	if p.Cn0Drop.MinSignals < 3 {
 		errs = append(errs, fmt.Errorf("cn0_drop.min_signals must be at least 3"))
+	}
+	if p.Cn0Drop.MinQuality < 1 || p.Cn0Drop.MinQuality > 7 {
+		errs = append(errs, fmt.Errorf("cn0_drop.min_quality must be within 1..7"))
 	}
 	if p.AGC.CWSuppress < 0 || p.AGC.CWSuppress > 255 {
 		errs = append(errs, fmt.Errorf("agc.cw_suppress must be within 0..255"))

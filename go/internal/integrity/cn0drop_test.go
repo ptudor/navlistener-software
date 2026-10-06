@@ -170,6 +170,8 @@ func TestCn0DropProfileValidation(t *testing.T) {
 		"no step":            func(p *Cn0DropProfile) { p.EveryDB = 0 },
 		"inverted bands":     func(p *Cn0DropProfile) { p.UnassuredDB = p.InconsistentDB - 1 },
 		"too few signals":    func(p *Cn0DropProfile) { p.MinSignals = 2 },
+		"quality above 7":    func(p *Cn0DropProfile) { p.MinQuality = 8 },
+		"no quality gate":    func(p *Cn0DropProfile) { p.MinQuality = 0 },
 	} {
 		p := DefaultProfile()
 		mutate(&p.Cn0Drop)
@@ -201,5 +203,32 @@ func TestStationServedReadsOneCheck(t *testing.T) {
 	}
 	if st, _ := s.Served(CheckCn0Drop, stopped.Add(DefaultProfile().Filter.RecoveryHold)); st != Unavailable {
 		t.Fatalf("served after the hold = %s", st)
+	}
+}
+
+// TestCn0DropGatesOnTheQualityIndicator: with the indicator reported, a signal locked
+// but not used in the solution is compared (Epsilon's gate), and a used signal that is
+// not locked is not.
+func TestCn0DropGatesOnTheQualityIndicator(t *testing.T) {
+	sky := func(at time.Time, second, dropDB int) Cn0Snapshot {
+		snap := skyAt(at, second, dropDB)
+		for i := range snap.Signals {
+			snap.Signals[i].HaveQuality, snap.Signals[i].Quality = true, 7
+		}
+		snap.Signals[0].Used = false  // locked, not used: compared
+		snap.Signals[1].Quality = 3   // used, not locked: not compared
+		snap.Signals[1].Cn0 += dropDB // and it does not drop
+		return snap
+	}
+	s := cn0DropStation(t)
+	for i := 0; i < 20; i++ {
+		s.ApplyCn0Snapshot(sky(t0.Add(time.Duration(i)*time.Second), i, 0))
+	}
+	for i := 20; i < 23; i++ {
+		s.ApplyCn0Snapshot(sky(t0.Add(time.Duration(i)*time.Second), i, 4))
+	}
+	r := checkResult(t, s.Assess(t0.Add(22*time.Second)), CheckCn0Drop)
+	if r.State != Inconsistent || r.Metrics["signals"] != 7 {
+		t.Fatalf("quality-gated drop = %s %v %v", r.State, r.Metrics, r.Reasons)
 	}
 }

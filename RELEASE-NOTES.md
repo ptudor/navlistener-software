@@ -46,6 +46,30 @@
 - Observer IDs beginning `board-` are reserved for hardware enrollment. The
   control plane and its database refuse a software station with such a name, and
   an existing database that holds one stops its upgrade and names the station.
+- The collector assesses each station's PNT integrity
+  ([station assurance](docs/proposals/STATION-ASSURANCE.md)): position, velocity,
+  receiver clock and time checks against the installation configured in
+  `[[integrity.station]]`, beside the C/N₀, C/N₀-drop, AGC and receiver-flag checks.
+  Authorized observer rows serve the assessment as `integrity`, with every
+  check's evidence and the configuration hash. `station_assurance` reports
+  confirmed changes, and `spoofing_suspected` now needs two independent physics
+  domains, or one with the receiver's own flag.
+- Observers and the C feeder send the receiver's solution as telemetry `0x03`
+  (NAV-PVT, NAV-CLOCK and NAV-STATUS) and NAV-SAT reception as `0x01` body
+  version 2, which adds azimuth, pseudorange residual, quality indicator and
+  health. Upgrade the collector first: an older collector discards both as
+  malformed. The collector still accepts version 1 reception records.
+- A moderate AGC departure is reported as jamming when a simultaneous C/N₀ drop
+  across the station's signals accompanies it, for as long as the departure
+  lasts. Station RF alarms clear at info severity, after five minutes.
+- AGC baselines are learned over six hours and restored across collector
+  restarts.
+- Station events keep a durable copy of the inputs behind them, served by the
+  private `/gnss/api/v2/event-evidence`. `stationreplay` reruns the station checks
+  over stored inputs or one event's evidence and compares the outcome with the
+  stored events.
+- Integrity Station shows the assessment on private station details and treats
+  `station_assurance` as a station condition.
 
 Trusted rollout remains gated by commissioning and hardware acceptance in
 [Update operations](esp32/docs/UPDATE-OPERATIONS.md).

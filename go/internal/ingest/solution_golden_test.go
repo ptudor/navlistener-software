@@ -28,7 +28,13 @@ func goldenPayloads() [][2]string {
 
 func readGolden(t *testing.T) map[string][]byte {
 	t.Helper()
-	f, err := os.Open(solutionGoldenPath)
+	return readGoldenFile(t, solutionGoldenPath)
+}
+
+// readGoldenFile reads a golden fixture of "name hex" lines.
+func readGoldenFile(t *testing.T, path string) map[string][]byte {
+	t.Helper()
+	f, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}

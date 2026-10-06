@@ -25,6 +25,7 @@
 
 #include "gnf1.h"
 #include "../../../../common/receiver_solution.h"
+#include "../../../../common/reception_data.h"
 
 #ifdef __cplusplus
 extern "C" {

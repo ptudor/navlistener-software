@@ -55,16 +55,16 @@ decoding remain planned; listing a receiver message here does not imply a wired 
 | **UBX-MON-RF** (F9+) | per-RF-band AGC, noise level, CW-suppression %, jamming state, antenna status | `JammingStats` (0x05) | broadband + narrowband jamming (§2) |
 | **UBX-MON-HW** (legacy) | AGC monitor, noise, `jammingState`, CW indicator | `JammingStats` (0x05) | jamming, older receivers |
 | **UBX-SEC-SIG / SEC-SIGLOG** | per-signal spoofing-detection state, jamming-detection state (multi-tier) | `JammingStats` (0x05) | receiver's own spoofing verdict (an input, §3) |
-| **UBX-NAV-SAT / NAV-SIG** | per-SV C/N₀, elevation, azimuth, used-in-solution | `ReceptionData` (0x01) | C/N₀-vs-elevation plausibility (§3) |
+| **UBX-NAV-SAT** | per-SV C/N₀, elevation, azimuth, pseudorange residual, quality indicator, health, used-in-solution | `ReceptionData` (0x01) | C/N₀-vs-elevation plausibility (§3), simultaneous C/N₀ drop (§2) |
 | **UBX-RXM-RAWX** | pseudorange, carrier phase, Doppler, lock-time, C/N₀ | `RFData` (0x02) | Doppler plausibility, measured iono (§3, `docs/MATH.md §7.4`) |
 | **UBX-NAV-PVT / NAV-CLOCK / NAV-STATUS** | position, velocity, UTC, clock bias/drift, fix and spoofing state | `ReceiverSolution` (0x03) | position, clock and time-reference integrity checks |
 
 **Software task P-Jam-1 (done for MON-RF/MON-HW/NAV-SAT):** the `JammingStats` (0x05) record
 carries the full MON-RF per-band block (per RF path: AGC, noiseLevel, cwSuppression/jamInd,
-jammingState, antStatus) and `ReceptionData` (0x01) carries per-SV C/N₀ + elevation, both as
+jammingState, antStatus) and `ReceptionData` (0x01) carries the NAV-SAT satellite list (body
+version 2, `common/reception_data.h`, shared by the ESP32 and the feeder), both as
 fixed-layout GNF1 telemetry records that ride the existing DATA stream (no protobuf on the wire
-— `docs/DESIGN.md §2`; body layout in `go/internal/ingest/telemetry.go`, feeder emit in
-`feeder/navfeeder.c`). The collector sees the raw receiver numbers rather than a pre-digested
+— `docs/DESIGN.md §2`; body layouts in `go/internal/ingest/telemetry.go`). The collector sees the raw receiver numbers rather than a pre-digested
 flag, and the PNT-defense detector runs identically over dial- and push-sourced stations.
 **Remaining:** fold the UBX-SEC-SIG / SEC-SIGLOG per-signal spoofing/jamming state into the
 `JammingStats` body (raises the spoof-gate fusion count, §3) once that source is wired.

@@ -12,7 +12,9 @@ const CheckCn0Drop = "cn0_drop"
 // once is interference evidence, not spoofing evidence: a jammer raises the noise
 // floor under every signal together. It therefore sits in the RF environment domain,
 // beside the AGC check it corroborates, and cannot join the spoofing quorum.
-var cn0DropInfo = Info{Name: CheckCn0Drop, Version: 1, Domain: DomainRFEnvironment, LowerOnly: true}
+//
+// Version 2 gates on the receiver's quality indicator when the input carries it.
+var cn0DropInfo = Info{Name: CheckCn0Drop, Version: 2, Domain: DomainRFEnvironment, LowerOnly: true}
 
 // ReasonSimultaneousDrop: every compared signal lost C/N₀ within the window.
 const ReasonSimultaneousDrop = "simultaneous_cn0_drop"
@@ -27,9 +29,13 @@ type Cn0DropProfile struct {
 	// the reference.
 	Window  time.Duration `json:"window_ns"`
 	MinSpan time.Duration `json:"min_span_ns"`
-	// MinSignals is the fewest signals, used in the reference and tracked now, that
-	// make "every signal" meaningful.
+	// MinSignals is the fewest signals, locked in the reference and tracked now,
+	// that make "every signal" meaningful.
 	MinSignals int `json:"min_signals"`
+	// MinQuality is the receiver quality indicator (u-blox scale) a reference signal
+	// needs: 4 is code locked and time synchronized. Without the indicator, a signal
+	// the receiver used in its solution stands in for it.
+	MinQuality int `json:"min_quality"`
 	// EveryDB is the drop every compared signal must show. InconsistentDB and
 	// UnassuredDB grade the median drop of a simultaneous drop.
 	EveryDB        float64 `json:"every_drop_db"`
@@ -47,9 +53,10 @@ type cn0DropCheck struct {
 //
 // Following the CISA Epsilon C/N₀ drop monitor, the test is that every signal lost
 // C/N₀ over a few seconds: one signal fading is geometry or multipath, and every
-// signal falling together is the noise floor rising. Only signals the receiver used
-// in the reference and still tracks now are compared, standing in for Epsilon's
-// quality gate; a signal lost outright is not a measured drop. A slow ramp below the
+// signal falling together is the noise floor rising. Only signals locked in the
+// reference (Epsilon's quality gate, or the used flag where the quality indicator is
+// not reported) and still tracked now are compared; a signal lost outright is not a
+// measured drop. A slow ramp below the
 // per-window step does not show here; the AGC baseline's bounded learning covers it.
 func (c *cn0DropCheck) evaluate(snap Cn0Snapshot, prof Cn0DropProfile) (Verdict, bool) {
 	if n := len(c.recent); n > 0 && !snap.Received.After(c.recent[n-1].Received) {
@@ -72,6 +79,7 @@ func (c *cn0DropCheck) evaluate(snap Cn0Snapshot, prof Cn0DropProfile) (Verdict,
 	thresholds := map[string]float64{
 		"every_drop_db": prof.EveryDB, "inconsistent_median_db": prof.InconsistentDB,
 		"unassured_median_db": prof.UnassuredDB, "min_signals": float64(prof.MinSignals),
+		"min_quality": float64(prof.MinQuality),
 	}
 	var v Verdict
 	if ref == nil {
@@ -92,7 +100,11 @@ func cn0Drops(ref, now Cn0Snapshot, prof Cn0DropProfile, thresholds map[string]f
 	before := make(map[key]int, len(ref.Signals))
 	for _, s := range ref.Signals {
 		k := key{s.GnssID, s.SvID}
-		if _, dup := before[k]; !dup && s.Used && s.Cn0 > 0 {
+		locked := s.Used
+		if s.HaveQuality {
+			locked = s.Quality >= prof.MinQuality
+		}
+		if _, dup := before[k]; !dup && locked && s.Cn0 > 0 {
 			before[k] = s.Cn0
 		}
 	}

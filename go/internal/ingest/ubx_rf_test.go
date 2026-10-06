@@ -78,31 +78,31 @@ func TestParseMONHW(t *testing.T) {
 
 // TestParseNAVSAT checks per-SV C/N₀ + elevation extraction and the svUsed flag.
 func TestParseNAVSAT(t *testing.T) {
-	hdr := make([]byte, 8)
-	hdr[5] = 2 // numSvs
-	sv := func(gnss, id, cno byte, elev int8, used bool) []byte {
-		blk := make([]byte, 12)
-		blk[0], blk[1], blk[2], blk[3] = gnss, id, cno, byte(elev)
-		var flags uint32
-		if used {
-			flags |= 0x08
-		}
-		binary.LittleEndian.PutUint32(blk[8:], flags)
-		return blk
-	}
-	payload := append(hdr, sv(0, 5, 47, 61, true)...)
-	payload = append(payload, sv(2, 14, 33, 12, false)...)
+	payload := ubxNavSat(1000,
+		navSatBlock(0, 5, 47, 61, 210, -31, 6|0x08|1<<4),
+		navSatBlock(2, 14, 33, 12, 45, 7, 4|2<<4))
 
 	frames := scanRF(t, ubxMsg(ubxClassNAV, ubxIDNAVSAT, payload))
 	if len(frames) != 1 || frames[0].RF == nil || len(frames[0].RF.Sats) != 2 {
 		t.Fatalf("frames = %+v", frames)
 	}
 	s0, s1 := frames[0].RF.Sats[0], frames[0].RF.Sats[1]
-	if s0.GnssID != 0 || s0.SvID != 5 || s0.Cn0 != 47 || s0.ElevDeg != 61 || !s0.Used {
+	if s0.GnssID != 0 || s0.SvID != 5 || s0.Cn0 != 47 || s0.ElevDeg != 61 || !s0.Used ||
+		!s0.Extended || s0.AziDeg != 210 || s0.PrResDM != -31 || s0.Quality != 6 || s0.Health != 1 {
 		t.Errorf("sat0 = %+v", s0)
 	}
-	if s1.GnssID != 2 || s1.Cn0 != 33 || s1.ElevDeg != 12 || s1.Used {
+	if s1.GnssID != 2 || s1.Cn0 != 33 || s1.ElevDeg != 12 || s1.Used || s1.Quality != 4 || s1.Health != 2 {
 		t.Errorf("sat1 = %+v", s1)
+	}
+	// Another message version, or a length other than the declared count, has a
+	// layout this parser does not know.
+	other := append([]byte(nil), payload...)
+	other[4] = 2
+	if parseNAVSAT(other, "s", fixedTime()) != nil {
+		t.Error("NAV-SAT version 2 parsed")
+	}
+	if parseNAVSAT(append(payload, 0), "s", fixedTime()) != nil {
+		t.Error("NAV-SAT with trailing bytes parsed")
 	}
 }
 

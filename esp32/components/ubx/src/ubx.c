@@ -19,7 +19,7 @@
 #define UBX_ID_MONHW  0x09
 #define UBX_ID_MONRF  0x38
 
-#define MAX_TELEM_SATS 200 // matches navfeeder MAX_TELEM_SATS and Go maxTelemSats
+_Static_assert(RD_BODY_MAX <= GNF1_MAX_RAW, "a ReceptionData body must fit a record");
 
 // framer states
 enum { S_SYNC1 = 0, S_SYNC2, S_CLASS, S_ID, S_LEN1, S_LEN2, S_PAYLOAD, S_CK_A, S_CK_B };
@@ -122,33 +122,17 @@ static void emit_monhw(ubx_parser_t *p, const uint8_t *payload, uint16_t len)
     atomic_fetch_add_explicit(&p->frames_telem, 1, memory_order_relaxed); /* regression fix */
 }
 
-// emit_navsat: UBX-NAV-SAT -> ReceptionData (0x01) for the C/N0-vs-elevation spoof gate.
-// Layout: iTOW U4, version U1, numSvs U1 @5, reserved U1[2], then numSvs x 12-byte blocks
-// (gnssId U1, svId U1, cno U1 @2, elev I1 @3, ..., flags X4 @8 [bit3=svUsed]).
+// emit_navsat: UBX-NAV-SAT -> ReceptionData (0x01), body version 2
+// (common/reception_data.h).
 static void emit_navsat(ubx_parser_t *p, const uint8_t *payload, uint16_t len)
 {
-    if (len < 8) return;
-    unsigned num_svs = payload[5];
-    if (num_svs == 0 || 8u + num_svs * 12u > len) return;
-    unsigned n = num_svs > MAX_TELEM_SATS ? MAX_TELEM_SATS : num_svs;
-
     uint8_t *rec = p->scratch;
-    uint8_t *body = rec + GNF1_RECORD_HDR;
-    body[0] = GNF1_TELEM_VERSION;
-    gnf1_be16(body + 1, (uint16_t)n);
-    for (unsigned i = 0; i < n; i++) {
-        const uint8_t *s = payload + 8 + i * 12;
-        unsigned o = 3 + i * 5;
-        body[o]     = s[0];                          // gnssId
-        body[o + 1] = s[1];                          // svId
-        body[o + 2] = s[2];                          // cno
-        body[o + 3] = s[3];                          // elev (I1, verbatim)
-        body[o + 4] = (rd_le32(s + 8) & 0x08) ? 0x01 : 0x00; // svUsed
-    }
+    size_t body_len = rd_encode_navsat(payload, len, rec + GNF1_RECORD_HDR);
+    if (!body_len) return;
     gnf1_be64(rec, p->now());
     rec[8] = rec[9] = rec[10] = rec[11] = 0;
     rec[12] = GNF1_T_RECEPTION;
-    p->emit(rec, GNF1_RECORD_HDR + 3u + n * 5u, p->ctx);
+    p->emit(rec, GNF1_RECORD_HDR + body_len, p->ctx);
     atomic_fetch_add_explicit(&p->frames_telem, 1, memory_order_relaxed); /* regression fix */
 }
 

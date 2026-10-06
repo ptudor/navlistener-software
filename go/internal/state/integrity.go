@@ -182,7 +182,8 @@ func (s *Store) integrityRF(st *rfStation, f *ingest.RawFrame, recv time.Time) {
 		is.eval.ApplyCn0(fit)
 		snap := integrity.Cn0Snapshot{Received: recv, Signals: make([]integrity.Cn0Signal, len(f.RF.Sats))}
 		for i, sat := range f.RF.Sats {
-			snap.Signals[i] = integrity.Cn0Signal{GnssID: sat.GnssID, SvID: sat.SvID, Cn0: sat.Cn0, Used: sat.Used}
+			snap.Signals[i] = integrity.Cn0Signal{GnssID: sat.GnssID, SvID: sat.SvID, Cn0: sat.Cn0, Used: sat.Used,
+				Quality: sat.Quality, HaveQuality: sat.Extended}
 		}
 		is.eval.ApplyCn0Snapshot(snap)
 		if served, _ := is.eval.Served(integrity.CheckCn0Drop, recv); degradedState(served) {

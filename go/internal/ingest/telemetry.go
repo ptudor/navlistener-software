@@ -27,11 +27,21 @@ const (
 // collector reject an unknown layout cleanly instead of misparsing one.
 const telemBodyVersion = 1
 
-// maxTelemSats bounds a ReceptionData body so it fits the feeder's fixed record buffer
-// (feeder/navfeeder.c MAX_RAW): 3 + 5·200 = 1003 ≤ 1024. A multi-band receiver tracks a
-// few dozen SVs — 200 is headroom the real sky never reaches. The feeder and this codec
-// agree on the cap so the C↔Go cross-oracle stays byte-exact.
+// maxTelemSats bounds a version 1 ReceptionData body so it fits the feeder's fixed
+// record buffer (feeder/navfeeder.c MAX_RAW): 3 + 5·200 = 1003 ≤ 1024. A multi-band
+// receiver tracks a few dozen SVs — 200 is headroom the real sky never reaches.
 const maxTelemSats = 200
+
+// ReceptionData body version 2 (common/reception_data.h) adds azimuth, pseudorange
+// residual, quality indicator and health: 9 bytes a satellite, at most 113 so the body
+// fits 1020 bytes. The edge encoders and this codec agree on the layout, the cap and
+// the order (tracked satellites first) so the C↔Go cross-oracle stays byte-exact.
+const (
+	receptionVersion2   = 2
+	receptionSatLenV2   = 9
+	maxTelemSatsV2      = 113
+	receptionHealthMask = 0x30
+)
 
 // ErrBadTelemetry is returned when a telemetry body is truncated, over-long, or carries an
 // unrecognised version — the untrusted-input discipline (docs/INTEGRITY.md §9), applied to
@@ -123,11 +133,67 @@ func decodeJammingStats(b []byte) ([]RFBand, error) {
 	return bands, nil
 }
 
-// EncodeReceptionData serializes per-SV C/N₀ + elevation (NAV-SAT) into a ReceptionData
-// (0x01) body: [1B version][2B BE nSats] then per sat
-// [1B gnssId][1B svId][1B cn0][1B int8 elev][1B flags] (flags bit 0 = used-in-solution).
-// At most maxTelemSats sats are emitted so the body fits the feeder's record buffer.
+// EncodeReceptionData serializes per-SV NAV-SAT reception into a ReceptionData (0x01)
+// body. When every satellite carries the extended fields it writes body version 2
+// (encodeReceptionV2); otherwise version 1, so a version 1 input is never stored with
+// fields it did not carry.
 func EncodeReceptionData(sats []SatCN0) []byte {
+	extended := len(sats) > 0
+	for _, s := range sats {
+		extended = extended && s.Extended
+	}
+	if extended {
+		return encodeReceptionV2(sats)
+	}
+	return encodeReceptionV1(sats)
+}
+
+// encodeReceptionV2 writes [1B version 2][2B BE n], then per satellite
+// [gnssId][svId][cn0][int8 elev][BE int16 azimuth][BE int16 residual, 0.1 m][flags]
+// with flags bit 0 used, bits 1–3 quality, bits 4–5 health. Tracked satellites
+// (cn0 > 0) come first in their given order, then the others, up to maxTelemSatsV2.
+func encodeReceptionV2(sats []SatCN0) []byte {
+	ordered := make([]SatCN0, 0, min(len(sats), maxTelemSatsV2))
+	for _, tracked := range []bool{true, false} {
+		for _, s := range sats {
+			if len(ordered) < maxTelemSatsV2 && (s.Cn0 > 0) == tracked {
+				ordered = append(ordered, s)
+			}
+		}
+	}
+	buf := make([]byte, 3+len(ordered)*receptionSatLenV2)
+	buf[0] = receptionVersion2
+	binary.BigEndian.PutUint16(buf[1:], uint16(len(ordered)))
+	for i, s := range ordered {
+		o := 3 + i*receptionSatLenV2
+		buf[o] = clampU8(s.GnssID)
+		buf[o+1] = clampU8(s.SvID)
+		buf[o+2] = clampU8(s.Cn0)
+		buf[o+3] = byte(int8(clampElev(s.ElevDeg)))
+		binary.BigEndian.PutUint16(buf[o+4:], uint16(clampI16(s.AziDeg)))
+		binary.BigEndian.PutUint16(buf[o+6:], uint16(clampI16(s.PrResDM)))
+		var flags byte
+		if s.Used {
+			flags = 0x01
+		}
+		flags |= byte(min(max(s.Quality, 0), 7)) << 1
+		if s.Health == 1 || s.Health == 2 {
+			flags |= byte(s.Health) << 4
+		}
+		buf[o+8] = flags
+	}
+	return buf
+}
+
+// clampI16 saturates a value into the signed 16-bit wire field.
+func clampI16(v int) int16 {
+	return int16(min(max(v, -32768), 32767))
+}
+
+// encodeReceptionV1 writes [1B version 1][2B BE nSats] then per sat
+// [1B gnssId][1B svId][1B cn0][1B int8 elev][1B flags] (flags bit 0 = used-in-solution),
+// at most maxTelemSats.
+func encodeReceptionV1(sats []SatCN0) []byte {
 	n := len(sats)
 	if n > maxTelemSats {
 		n = maxTelemSats
@@ -167,9 +233,13 @@ func clampElev(deg int) int {
 	return deg
 }
 
-// decodeReceptionData parses a ReceptionData body back into per-SV samples, bounds-checking
-// the sat count against the body length before indexing.
+// decodeReceptionData parses a ReceptionData body of either version back into per-SV
+// samples, bounds-checking the sat count against the body length before indexing.
+// Observers still sending version 1 remain accepted.
 func decodeReceptionData(b []byte) ([]SatCN0, error) {
+	if len(b) >= 3 && b[0] == receptionVersion2 {
+		return decodeReceptionV2(b)
+	}
 	if len(b) < 3 || b[0] != telemBodyVersion {
 		return nil, ErrBadTelemetry
 	}
@@ -195,6 +265,36 @@ func decodeReceptionData(b []byte) ([]SatCN0, error) {
 			Cn0:     int(b[o+2]),
 			ElevDeg: int(int8(b[o+3])),
 			Used:    b[o+4]&0x01 != 0,
+		}
+	}
+	return sats, nil
+}
+
+// decodeReceptionV2 parses a version 2 body. The count, the exact length, the zero
+// flag bits and the health values are all checked, keeping the cross-oracle exact.
+func decodeReceptionV2(b []byte) ([]SatCN0, error) {
+	n := int(binary.BigEndian.Uint16(b[1:]))
+	if n > maxTelemSatsV2 || len(b) != 3+n*receptionSatLenV2 {
+		return nil, ErrBadTelemetry
+	}
+	sats := make([]SatCN0, n)
+	for i := range sats {
+		o := 3 + i*receptionSatLenV2
+		flags := b[o+8]
+		if flags&0xC0 != 0 || flags&receptionHealthMask == receptionHealthMask {
+			return nil, ErrBadTelemetry
+		}
+		sats[i] = SatCN0{
+			GnssID:   int(b[o]),
+			SvID:     int(b[o+1]),
+			Cn0:      int(b[o+2]),
+			ElevDeg:  int(int8(b[o+3])),
+			Used:     flags&0x01 != 0,
+			Extended: true,
+			AziDeg:   int(int16(binary.BigEndian.Uint16(b[o+4:]))),
+			PrResDM:  int(int16(binary.BigEndian.Uint16(b[o+6:]))),
+			Quality:  int(flags>>1) & 0x07,
+			Health:   int(flags>>4) & 0x03,
 		}
 	}
 	return sats, nil

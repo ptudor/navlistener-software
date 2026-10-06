@@ -157,7 +157,11 @@ NAV-PVT, NAV-CLOCK and NAV-STATUS of one navigation epoch are joined into the
 receiver-solution telemetry record (`0x03`, [contract](../docs/proposals/STATION-ASSURANCE.md#2-receiver-solution-telemetry-gnf1-type-0x03))
 that feeds the collector's station integrity checks. NAV-EOE completes each epoch at
 once; without it an epoch completes when the next begins. Either way the record carries
-the arrival time of the epoch's first message.
+the arrival time of the epoch's first message. Each NAV-SAT becomes a reception record
+(`0x01` body version 2, [`common/reception_data.h`](../common/reception_data.h)) with
+every satellite's C/N₀, elevation, azimuth, pseudorange residual, quality indicator,
+health and used flag. Upgrade the collector before this firmware: an older collector
+discards version 2 reception and `0x03` records as malformed.
 On the ZED-X20P it also sets `CFG-HW-ANT_CFG_SHORTDET`, so the receiver reads the
 board's antenna-switch fault on `ANT_SHORT_N` (pin 6, default active-low polarity)
 and MON-RF reports SHORT, which the collector raises as `antenna_fault`.

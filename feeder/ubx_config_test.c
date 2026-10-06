@@ -4,6 +4,10 @@
 #undef main
 #include <assert.h>
 
+static uint32_t le32(const unsigned char *b) {
+	return (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
+}
+
 static void no_output(int fd) {
 	struct pollfd p = { .fd = fd, .events = POLLIN };
 	assert(poll(&p, 1, 0) == 0);
@@ -14,7 +18,7 @@ static void check_valset(const unsigned char packet[32], const uint32_t keys[4])
 	/* Assert the entire key set: adding a persistent layer, baud or NMEA key
 	 * must fail this test, even when the rest of the receiver setup still works. */
 	for (unsigned i = 0; i < 4; i++) {
-		assert(rd_le32(packet + 10 + i * 5) == keys[i]);
+		assert(le32(packet + 10 + i * 5) == keys[i]);
 		assert(packet[14 + i * 5] == 1);
 	}
 	unsigned sum = 0, weighted = 0;
@@ -111,7 +115,7 @@ static void test_reader_delivery(void) {
 	assert(g_spool.count == 1);
 	struct frame *f = &g_spool.ring[g_spool.head];
 	assert(f->data[12] == F_T_RECEPTION);
-	assert(f->len == RECORD_HDR + 8);
+	assert(f->len == RECORD_HDR + 3 + RD_ENTRY_LEN && f->data[RECORD_HDR] == RD_VERSION);
 	assert(f->data[RECORD_HDR + 4] == 7); /* SV7 survived setup/ACK */
 	free(f->data);
 	free(g_spool.ring);
@@ -139,14 +143,17 @@ static void test_write_failure(void) {
 #ifndef GOLDEN
 #error GOLDEN must name testdata/receiver_solution_v1.txt
 #endif
+#ifndef RECEPTION_GOLDEN
+#error RECEPTION_GOLDEN must name testdata/reception_data_v2.txt
+#endif
 
-static size_t golden_hex(const char *name, unsigned char *out, size_t cap) {
-	FILE *f = fopen(GOLDEN, "r");
+static size_t golden_file_hex(const char *path, const char *name, unsigned char *out, size_t cap) {
+	FILE *f = fopen(path, "r");
 	assert(f);
-	char line[512], key[32], hex[400];
+	char line[4200], key[32], hex[4100];
 	size_t n = 0;
 	while (fgets(line, sizeof line, f)) {
-		if (line[0] == '#' || sscanf(line, "%31s %399s", key, hex) != 2 || strcmp(key, name)) continue;
+		if (line[0] == '#' || sscanf(line, "%31s %4099s", key, hex) != 2 || strcmp(key, name)) continue;
 		n = strlen(hex) / 2;
 		assert(n <= cap);
 		for (size_t i = 0; i < n; i++) { unsigned v; assert(sscanf(hex + 2*i, "%2x", &v) == 1); out[i] = (unsigned char)v; }
@@ -154,6 +161,10 @@ static size_t golden_hex(const char *name, unsigned char *out, size_t cap) {
 	fclose(f);
 	assert(n);
 	return n;
+}
+
+static size_t golden_hex(const char *name, unsigned char *out, size_t cap) {
+	return golden_file_hex(GOLDEN, name, out, cap);
 }
 
 static void *solution_receiver(void *arg) {
@@ -202,13 +213,48 @@ static void test_solution_delivery(void) {
 	close(fd[0]); close(fd[1]);
 }
 
+static void *reception_receiver(void *arg) {
+	int fd = *(int *)arg;
+	unsigned char payload[RD_UBX_SAT_HDR + 255 * RD_UBX_SAT_BLOCK];
+	size_t len = golden_file_hex(RECEPTION_GOLDEN, "nav-sat", payload, sizeof payload);
+	unsigned char msg[sizeof payload + 8] = {0xb5, 0x62, RD_UBX_CLASS_NAV, RD_UBX_ID_SAT, (unsigned char)len, (unsigned char)(len >> 8)};
+	memcpy(msg + 6, payload, len);
+	unsigned char a = 0, b = 0;
+	for (size_t i = 2; i < len + 6; i++) { a += msg[i]; b += a; }
+	msg[len + 6] = a; msg[len + 7] = b;
+	assert(write(fd, msg, len + 8) == (ssize_t)(len + 8));
+	assert(shutdown(fd, SHUT_WR) == 0);
+	return NULL;
+}
+
+/* test_reception_delivery: the golden NAV-SAT through the real reader is spooled as
+ * one reception record whose body is the golden version 2 body. */
+static void test_reception_delivery(void) {
+	int fd[2]; assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fd) == 0);
+	assert(spool_init(&g_spool, 8, NULL, 0) == 0);
+	pthread_t peer; assert(pthread_create(&peer, NULL, reception_receiver, &fd[1]) == 0);
+	assert(run_ubx(fd[0], 0));
+	assert(pthread_join(peer, NULL) == 0);
+	assert(g_spool.count == 1);
+	struct frame *f = &g_spool.ring[g_spool.head];
+	unsigned char body[RD_BODY_MAX];
+	size_t n = golden_file_hex(RECEPTION_GOLDEN, "body", body, sizeof body);
+	assert(f->data[12] == RD_TELEM_TYPE && f->len == RECORD_HDR + n);
+	assert(!memcmp(f->data + RECORD_HDR, body, n));
+	free(f->data);
+	free(g_spool.ring);
+	pthread_mutex_destroy(&g_spool.mu);
+	close(fd[0]); close(fd[1]);
+}
+
 int main(void) {
 	assert(ubx_config_port("uart1") == 1 && ubx_config_port("uart2") == 2);
 	assert(ubx_config_port("usb") == 3 && ubx_config_port("auto") == 0);
 	test_setup_and_recovery();
 	test_reader_delivery();
 	test_solution_delivery();
+	test_reception_delivery();
 	test_write_failure();
-	puts("UBX RAM setup, NMEA-only recovery, interleaved delivery, golden receiver solution and write timeout: PASS");
+	puts("UBX RAM setup, NMEA-only recovery, interleaved delivery, golden receiver solution, golden reception and write timeout: PASS");
 	return 0;
 }

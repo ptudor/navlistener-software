@@ -87,6 +87,7 @@
 #include <zstd.h>
 #include "../common/endpoint_fallback.h"
 #include "../common/receiver_solution.h"
+#include "../common/reception_data.h"
 
 #define MAGIC "GNF1"
 #define F_HELLO 0x01
@@ -107,6 +108,7 @@
 #define TOKEN_CAP 1024
 
 #define MAX_RAW 1024          /* numWords is a u8 → ≤ 1020 raw bytes; round up */
+_Static_assert(RD_BODY_MAX <= MAX_RAW, "a ReceptionData body must fit a record");
 #define GNF_RECORD (RECORD_HDR + MAX_RAW)
 #define DRAIN_BATCH 512
 #define KEEPALIVE_S 30        /* PING when idle this long, to stay under the collector's idle timeout */
@@ -141,10 +143,9 @@
 /* GNF1 telemetry record types (docs/CONSTELLATIONS.md §6.2): receiver-side metadata that
  * rides the same DATA stream as raw-nav frames, discriminated by the record's frame_type
  * byte (< 0x10). The body layouts MUST match ../go/internal/ingest/telemetry.go. */
-#define F_T_RECEPTION 0x01    /* NAV-SAT per-SV C/N0 + elevation */
+#define F_T_RECEPTION RD_TELEM_TYPE /* NAV-SAT per-SV reception (../common/reception_data.h) */
 #define F_T_JAMMING   0x05    /* MON-RF / MON-HW AGC/jamming/antenna */
 #define TELEM_VERSION 1
-#define MAX_TELEM_SATS 200    /* fits a ReceptionData body in MAX_RAW (3 + 5*200 = 1003) */
 
 struct opts {
 	const char *server_host, *server_port;
@@ -317,9 +318,6 @@ static uint32_t rd_be32(const unsigned char *b) {
 /* UBX telemetry fields are little-endian on the wire; the collector reads the GNF1 body
  * big-endian (matching ../go/internal/ingest/telemetry.go), so we byte-swap on emit. */
 static uint16_t rd_le16(const unsigned char *b) { return (uint16_t)b[0] | ((uint16_t)b[1]<<8); }
-static uint32_t rd_le32(const unsigned char *b) {
-	return (uint32_t)b[0]|((uint32_t)b[1]<<8)|((uint32_t)b[2]<<16)|((uint32_t)b[3]<<24);
-}
 static void be64(unsigned char *b, uint64_t v) { for (int i=7;i>=0;i--){ b[i]=v&0xff; v>>=8; } }
 static uint64_t rd_be64(const unsigned char *b) {
 	uint64_t v=0; for (int i=0;i<8;i++) v=(v<<8)|b[i]; return v;
@@ -1242,29 +1240,13 @@ static int emit_monhw(const unsigned char *p, unsigned len) {
 	return emit_telem(F_T_JAMMING, body, sizeof body);
 }
 
-/* emit_navsat converts a UBX-NAV-SAT payload into a ReceptionData (0x01) record for the
- * C/N0-vs-elevation spoofing gate. Layout: iTOW U4, version U1, numSvs U1 @5, reserved U1[2],
- * then numSvs × 12-byte blocks — gnssId U1, svId U1, cno U1 @2, elev I1 @3, …, flags X4 @8
- * (bit 3 = svUsed). Body: [ver][nSats BE16] then per sat [gnssId][svId][cno][elev i8][flags];
- * capped at MAX_TELEM_SATS. Bounds-checked. Returns 1 if a record was appended. */
+/* emit_navsat converts a UBX-NAV-SAT payload into a ReceptionData (0x01) record, body
+ * version 2 (../common/reception_data.h). Returns 1 if a record was appended. */
 static int emit_navsat(const unsigned char *p, unsigned len) {
-	if (len < 8) return 0;
-	unsigned numSvs = p[5];
-	if (numSvs == 0 || 8u + numSvs * 12u > len) return 0;
-	unsigned n = numSvs > MAX_TELEM_SATS ? MAX_TELEM_SATS : numSvs;
-	unsigned char body[3 + MAX_TELEM_SATS * 5];
-	body[0] = TELEM_VERSION;
-	be16(body + 1, (uint16_t)n);
-	for (unsigned i = 0; i < n; i++) {
-		const unsigned char *s = p + 8 + i * 12;
-		unsigned o = 3 + i * 5;
-		body[o]     = s[0];                 /* gnssId */
-		body[o + 1] = s[1];                 /* svId */
-		body[o + 2] = s[2];                 /* cno */
-		body[o + 3] = s[3];                 /* elev (I1, forwarded verbatim) */
-		body[o + 4] = (rd_le32(s + 8) & 0x08) ? 0x01 : 0x00; /* svUsed */
-	}
-	return emit_telem(F_T_RECEPTION, body, 3u + n * 5u);
+	unsigned char body[RD_BODY_MAX];
+	size_t n = rd_encode_navsat(p, len, body);
+	if (!n) return 0;
+	return emit_telem(F_T_RECEPTION, body, (unsigned)n);
 }
 
 /* Receiver setup is opt-in and writes only the volatile configuration layer. */

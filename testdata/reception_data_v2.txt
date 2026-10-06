@@ -1,0 +1,9 @@
+# Telemetry 0x01 (reception) golden case, body version 2
+# (common/reception_data.h). nav-sat is one UBX-NAV-SAT payload, little-endian as
+# the receiver sends it: an untracked satellite listed first, the reserved health
+# value, residual extremes, an out-of-range elevation, and flag bits the record
+# drops. body is the record body every implementation must produce from it.
+# Regenerate with
+#   go test ./internal/ingest -run TestReceptionDataGolden -update
+nav-sat 00709914010500000003000f2c0100001101000000052f3d7b00f4ffdf080000020e210c67015700240000000603195b0000ff7f3d000000031529fbb40000800e000000
+body 02000500052f3d007bfff41f020e210c01670057280603195b00007fff0b031529fb00b480000d0003000f012c000012

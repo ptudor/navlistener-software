@@ -248,7 +248,7 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 
 | # | Item | Status |
 |---|---|---|
-| 3.1 | NAV-SAT azimuth and signal identity in `0x01` body version 2 | planned |
+| 3.1 | NAV-SAT azimuth and signal identity in `0x01` body version 2 | done for azimuth, pseudorange residual, quality indicator and health (`common/reception_data.h`); `cn0_drop` gates on the quality indicator. Signal identity deferred: NAV-SAT reports each satellite once, per-signal entries need NAV-SIG and differ only on multi-band receivers, and none has acknowledged its configuration on the bench |
 | 3.2 | Simultaneous C/N₀ drop as jamming corroboration | done; the corroboration lasts while the AGC departure it accompanied continues |
 | 3.3 | MAX board: IMU motion state against GNSS velocity | planned |
 | 3.4 | ZED-X20P: SEC-SIG in `0x05`, after bench confirmation of support | planned |

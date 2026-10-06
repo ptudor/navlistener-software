@@ -32,7 +32,10 @@ NAV-PVT, NAV-STATUS, NAV-CLOCK and NAV-EOE. A receiver rejects a whole request
 when it does not support one key, so a receiver without the second set keeps
 its raw-navigation setup. The feeder joins each epoch's NAV-PVT, NAV-CLOCK and
 NAV-STATUS into the receiver-solution telemetry record (`0x03`) that feeds the
-collector's station integrity checks. It writes only the **RAM layer**:
+collector's station integrity checks, and sends each NAV-SAT as a reception record
+(`0x01` body version 2, `common/reception_data.h`). Upgrade the collector before
+the feeder; an older one discards both records as malformed. It writes only the
+**RAM layer**:
 receiver baud, existing NMEA output, GNSS signals and timing/PPS settings
 are untouched. Nothing is saved to backup RAM or flash. A receiver restart
 reloads its stored configuration; the feeder requests these messages again

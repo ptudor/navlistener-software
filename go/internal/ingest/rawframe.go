@@ -156,6 +156,13 @@ type SatCN0 struct {
 	Cn0     int // dB-Hz
 	ElevDeg int // −90..+90; degrees
 	Used    bool
+	// Extended reports that the fields below were received: from a ReceptionData
+	// body version 2 or a dial-mode NAV-SAT. A version 1 body does not carry them.
+	Extended bool
+	AziDeg   int // degrees, as the receiver reports it
+	PrResDM  int // pseudorange residual, 0.1 m
+	Quality  int // receiver quality indicator, u-blox scale 0–7
+	Health   int // 0 unknown, 1 healthy, 2 unhealthy
 }
 
 // RawObs is one raw observable measurement (UBX-RXM-RAWX / SBF MeasEpoch): the

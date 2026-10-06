@@ -318,28 +318,38 @@ func parseMONHW(p []byte, source string, recv time.Time) *RawFrame {
 	return &RawFrame{Source: source, Recv: recv, MsgType: TelemJammingStats, RF: &RawRF{Bands: []RFBand{band}}}
 }
 
-// parseNAVSAT converts a UBX-NAV-SAT payload into per-SV C/N₀ + elevation for the
-// C/N₀-vs-elevation spoofing gate (docs/DEFENSE-PNT.md §3). Layout: iTOW U4, version U1,
-// numSvs U1, reserved U1[2], then numSvs × 12-byte blocks — gnssId U1, svId U1, cno U1
-// (dB-Hz), elev I1 (deg), azim I2, prRes I2, flags X4 (bit 3 = svUsed). Bounds-checked.
+// parseNAVSAT converts a UBX-NAV-SAT payload into per-SV reception for the station RF
+// checks (docs/DEFENSE-PNT.md §3). Layout: iTOW U4, version U1 (1), numSvs U1,
+// reserved U1[2], then numSvs × 12-byte blocks — gnssId U1, svId U1, cno U1 (dB-Hz),
+// elev I1 (deg), azim I2 (deg), prRes I2 (0.1 m), flags X4 (qualityInd bits 0–2, svUsed
+// bit 3, health bits 4–5). Bounds-checked; validated as common/reception_data.h does.
 func parseNAVSAT(p []byte, source string, recv time.Time) *RawFrame {
-	if len(p) < 8 {
+	if len(p) < 8 || p[4] != 1 {
 		return nil
 	}
 	numSvs := int(p[5])
-	if numSvs == 0 || 8+numSvs*12 > len(p) {
+	if numSvs == 0 || len(p) != 8+numSvs*12 {
 		return nil
 	}
 	rf := &RawRF{Sats: make([]SatCN0, 0, numSvs)}
 	for i := 0; i < numSvs; i++ {
 		s := p[8+i*12:]
 		flags := binary.LittleEndian.Uint32(s[8:])
+		health := int(flags>>4) & 0x03
+		if health == 3 { // reserved
+			health = 0
+		}
 		rf.Sats = append(rf.Sats, SatCN0{
-			GnssID:  int(s[0]),
-			SvID:    int(s[1]),
-			Cn0:     int(s[2]),
-			ElevDeg: int(int8(s[3])),
-			Used:    flags&0x08 != 0,
+			GnssID:   int(s[0]),
+			SvID:     int(s[1]),
+			Cn0:      int(s[2]),
+			ElevDeg:  int(int8(s[3])),
+			Used:     flags&0x08 != 0,
+			Extended: true,
+			AziDeg:   int(int16(binary.LittleEndian.Uint16(s[4:]))),
+			PrResDM:  int(int16(binary.LittleEndian.Uint16(s[6:]))),
+			Quality:  int(flags & 0x07),
+			Health:   health,
 		})
 	}
 	return &RawFrame{Source: source, Recv: recv, MsgType: TelemReceptionData, RF: rf}

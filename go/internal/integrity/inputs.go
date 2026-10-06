@@ -142,12 +142,15 @@ type Cn0Snapshot struct {
 	Signals  []Cn0Signal
 }
 
-// Cn0Signal is one satellite's C/N₀ in dB-Hz, zero when it is not tracked, and
-// whether the receiver used it in its solution.
+// Cn0Signal is one satellite's C/N₀ in dB-Hz, zero when it is not tracked, whether
+// the receiver used it in its solution, and its quality indicator (u-blox scale 0–7)
+// when the receiver reports one.
 type Cn0Signal struct {
 	GnssID, SvID int
 	Cn0          int
 	Used         bool
+	Quality      int
+	HaveQuality  bool
 }
 
 // Cn0Group is one constellation's fit.
