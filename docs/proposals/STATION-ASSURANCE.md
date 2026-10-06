@@ -249,8 +249,8 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 
 | # | Item | Status |
 |---|---|---|
-| 3.1 | NAV-SAT azimuth and signal identity in `0x01` body version 2 | done for azimuth, pseudorange residual, quality indicator and health (`common/reception_data.h`); `cn0_drop` gates on the quality indicator. Signal identity deferred: NAV-SAT reports each satellite once, per-signal entries need NAV-SIG and differ only on multi-band receivers, and none has acknowledged its configuration on the bench |
-| 3.2 | Simultaneous C/N₀ drop as jamming corroboration | done; the corroboration lasts while the AGC departure it accompanied continues |
+| 3.1 | NAV-SAT azimuth and signal identity in `0x01` body version 2 | done (`6f02b43`) for azimuth, pseudorange residual, quality indicator and health (`common/reception_data.h`); `cn0_drop` gates on the quality indicator. Signal identity deferred: NAV-SAT reports each satellite once, per-signal entries need NAV-SIG and differ only on multi-band receivers, and none has acknowledged its configuration on the bench |
+| 3.2 | Simultaneous C/N₀ drop as jamming corroboration | done (`85b8d99`); the corroboration lasts while the AGC departure it accompanied continues |
 | 3.3 | MAX board: IMU motion state against GNSS velocity | deferred: no sound comparison with the current motion summary (below) |
 | 3.4 | ZED-X20P: SEC-SIG in `0x05`, after bench confirmation of support | deferred until the ZED-X20P bench confirms SEC-SIG output |
 | 3.5 | ZED-X20P: RXM-RAWX as `0x02`, and a Doppler-vs-ephemeris check using the receiver clock drift | deferred until the ZED-X20P bench confirms RXM-RAWX; forwarding cannot be verified without it, and the residual bands need recorded measurements |
@@ -271,9 +271,9 @@ and specific-force samples aligned with GNSS epochs.
 
 | # | Item | Status |
 |---|---|---|
-| 4.1 | Regional correlation of simultaneous station RF events; neighbour corroboration as a fusion input | done; stations within 30 km with their own interference evidence corroborate a departure in `jamming_detected` (named in `params.neighbours`) and in the `agc` check |
-| 4.2 | Range check between co-located stations with a known baseline | done; `[[integrity.baseline]]` pairs, the `baseline` check in the position domain |
-| 4.3 | `rf_trust` weighting of the served confidence count | done; `conf_weighted` beside `conf`, also lowered by the station assessment |
+| 4.1 | Regional correlation of simultaneous station RF events; neighbour corroboration as a fusion input | done (`0a2c600`); stations within 30 km with their own interference evidence corroborate a departure in `jamming_detected` (named in `params.neighbours`) and in the `agc` check |
+| 4.2 | Range check between co-located stations with a known baseline | done (`245a9e3`); `[[integrity.baseline]]` pairs, the `baseline` check in the position domain |
+| 4.3 | `rf_trust` weighting of the served confidence count | done (`058e84d`); `conf_weighted` beside `conf`, also lowered by the station assessment |
 
 ## 8. Not in scope
 
