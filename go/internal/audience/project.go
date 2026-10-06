@@ -49,7 +49,8 @@ func ProjectPublic(f *ingest.RawFrame) (*ingest.RawFrame, bool) {
 	// public "declared but missing" capability/event.
 	out.Observer = c
 	out.Observer.DeclaredCapabilities = filterSignals(c.DeclaredCapabilities, c.Publication)
-	out.RF = nil // no current policy grant exposes RF/security telemetry publicly
+	out.RF = nil       // no current policy grant exposes RF/security telemetry publicly
+	out.Solution = nil // nor the receiver's own position, clock and status
 	switch c.Publication.AggregateUse {
 	case identity.AggregatePublicAnonymous:
 		out.Source = AnonymousPublicSource

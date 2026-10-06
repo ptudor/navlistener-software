@@ -127,3 +127,23 @@ func TestBoardDetailsNeverProjectPublic(t *testing.T) {
 		}
 	}
 }
+
+// TestProjectPublicNeverCarriesReceiverSolution: the receiver's own position, clock
+// and status are private station telemetry under every publication policy,
+// including public events, like RF.
+func TestProjectPublicNeverCarriesReceiverSolution(t *testing.T) {
+	for _, use := range []identity.AggregateUse{identity.AggregatePublicAnonymous, identity.AggregatePublicAttributed} {
+		in := &ingest.RawFrame{Source: "station", Recv: time.Now(), MsgType: ingest.TelemReceiverSolution,
+			Observer: contextFor(use, identity.MetadataCoarse),
+			Solution: &ingest.ReceiverSolution{PVT: &ingest.SolutionPVT{LatE7: 374219000, LonE7: -1220841000}}}
+		if out, ok := ProjectPublic(in); ok && out.Solution != nil {
+			t.Fatalf("%s: public projection carries the receiver solution", use)
+		}
+		if out, ok := ProjectPublicEvents(in); ok && out.Solution != nil {
+			t.Fatalf("%s: public event projection carries the receiver solution", use)
+		}
+		if in.Solution == nil {
+			t.Fatal("projection mutated authenticated input")
+		}
+	}
+}
