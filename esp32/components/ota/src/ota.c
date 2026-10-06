@@ -224,6 +224,22 @@ static esp_err_t journal_post(httpd_req_t *req)
             for(unsigned i=0;i<16;i++)cJSON_AddItemToArray(matched,cJSON_CreateNumber(s->matched[i]));
             cJSON_AddItemToObject(row,"expected",expected);cJSON_AddItemToObject(row,"observed",observed);
             for(unsigned g=0;g<8;g++){cJSON_AddItemToArray(expected,cJSON_CreateNumber(s->expected[g]));cJSON_AddItemToArray(observed,cJSON_CreateNumber(s->observed[g]));}
+        } else if(r->event==JOURNAL_RECEPTION_POWER) {
+            const nrp_event_t *p=&r->reception_power;
+            json_u64(row,"expectation_id",p->expectation_id);json_u64(row,"sample_unix",p->utc);
+            json_u64(row,"measurement_uptime_ms",p->uptime_ms);
+            json_u64(row,"remote_model_id",p->remote_model_id);json_u64(row,"local_model_id",p->local_model_id);
+            cJSON_AddNumberToObject(row,"power_flags",p->flags);
+            cJSON_AddNumberToObject(row,"local_valid_mask",p->local_valid);
+            cJSON_AddNumberToObject(row,"local_abnormal_mask",p->local_abnormal);
+            cJSON_AddNumberToObject(row,"local_alarm_mask",p->local_alarm);
+            cJSON_AddNumberToObject(row,"remote_valid_mask",p->remote_valid);
+            cJSON_AddNumberToObject(row,"remote_abnormal_mask",p->remote_abnormal);
+            cJSON_AddNumberToObject(row,"remote_alarm_mask",p->remote_alarm);
+            cJSON_AddNumberToObject(row,"joint_valid_mask",p->joint_valid);
+            cJSON_AddNumberToObject(row,"joint_abnormal_mask",p->joint_abnormal);
+            cJSON_AddNumberToObject(row,"joint_alarm_mask",p->joint_alarm);
+            cJSON_AddNumberToObject(row,"model_conflict_mask",p->model_conflict);
         }
     }
     char *response=cJSON_PrintUnformatted(json); cJSON_Delete(json);

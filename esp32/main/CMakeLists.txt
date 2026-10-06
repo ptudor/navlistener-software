@@ -1,5 +1,5 @@
 # Sources may follow the configuration; requirements are resolved before it is read.
-set(main_sources "main.c" "receiver.c" "board.c" "commission.c" "reception_runtime.c")
+set(main_sources "main.c" "receiver.c" "board.c" "commission.c" "reception_runtime.c" "power_history.c")
 if(CONFIG_NVF_ETHERNET_W5500)
     list(APPEND main_sources "ethernet.c")
 endif()

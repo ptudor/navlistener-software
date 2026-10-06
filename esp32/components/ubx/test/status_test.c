@@ -23,7 +23,7 @@ static void reception_evidence(void)
     memcpy(sig+40,sig+8,16);sig[41]=2;sig[42]=6;sig[47]=3; // acquired, no code lock
     memcpy(sig+56,sig+8,16);sig[57]=2;sig[58]=7;sig[66]=2; // explicitly unhealthy
     gnss_status_feed(&s,1,0x43,sig,sizeof sig,1000);
-    assert(s.signals_valid && s.signal_count==1 && s.signals[0].signal==3);
+    assert(s.signals_valid && s.signal_count==1 && s.signals[0].signal==3 && s.signals[0].cno==40);
     gnss_status_compare(&s,&e,&sample,1000);
     assert(nr_counts(&e,&sample)==1 && sample.valid==1 && sample.observed[0]==1 && sample.expected[0]==2);
     gnss_status_compare(&s,&e,&sample,17000);nr_counts(&e,&sample);
@@ -86,7 +86,8 @@ int main(void)
     sats[20]=2; sats[22]=30; sats[28]=1; // Galileo searching, not tracked
     sats[32]=6; sats[34]=30; sats[40]=0x24; // unhealthy GLONASS
     gnss_status_feed(&s, 1, 0x35, sats, sizeof sats, 20000);
-    assert(s.tracked[0] == 1 && s.tracked[2] == 0 && s.tracked[6] == 0);
+    assert(s.tracked[0] == 1 && s.tracked[2] == 0 && s.tracked[6] == 0 &&
+           s.satellites[0].cno==30 && s.satellites[0].elevation==0);
     gnss_status_leds(&s, 20000, 0, false, &green, &yellow);
     assert(green == 1 && yellow == 0xbe);
     gnss_status_leds(&s, 40000, 0, false, &green, &yellow);

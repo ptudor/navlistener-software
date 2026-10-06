@@ -35,13 +35,15 @@ static void encode(uint8_t b[JOURNAL_RECORD_SIZE], const journal_record_t *r)
     // Reception events identify firmware through their boot record. The event
     // discriminator gives bytes 68..143 a typed observation payload.
     if(r->event==JOURNAL_RECEPTION) nr_encode_sample(b+68,&r->reception);
+    if(r->event==JOURNAL_RECEPTION_POWER) nrp_encode_event(b+68,&r->reception_power);
     put(b+188,crc(b,188),4);
 }
 static bool decode(journal_record_t *r, const uint8_t b[JOURNAL_RECORD_SIZE])
 {
     if (memcmp(b,"NVJ1",4) || get(b+188,4) != crc(b,188) || !get(b+8,8) ||
-        b[148] < JOURNAL_BOOT || b[148] > JOURNAL_RECEPTION ||
-        b[149] > JOURNAL_TIME_GNSS || (b[148]!=JOURNAL_RECEPTION && (!memchr(b+68,0,32) || !memchr(b+100,0,16)))) return false;
+        b[148] < JOURNAL_BOOT || b[148] > JOURNAL_RECEPTION_POWER ||
+        b[149] > JOURNAL_TIME_GNSS || ((b[148]!=JOURNAL_RECEPTION && b[148]!=JOURNAL_RECEPTION_POWER) &&
+        (!memchr(b+68,0,32) || !memchr(b+100,0,16)))) return false;
     *r = (journal_record_t){.sequence=get(b+8,8), .boot=get(b+16,8),
         .uptime_ms=get(b+24,8), .utc=get(b+32,8), .dropped=get(b+40,8),
         .flags=get(b+48,4), .reset_reason=get(b+52,4), .queued=get(b+56,4),
@@ -49,6 +51,8 @@ static bool decode(journal_record_t *r, const uint8_t b[JOURNAL_RECORD_SIZE])
         .time_source=b[149], .environment=b[150], .rtc=b[151], .rng=b[152], .manifest=b[153]};
     if(r->event==JOURNAL_RECEPTION) {
         if(!nr_decode_sample(&r->reception,b+68,NR_SAMPLE_SIZE)) return false;
+    } else if(r->event==JOURNAL_RECEPTION_POWER) {
+        if(!nrp_decode_event(&r->reception_power,b+68,NRP_EVENT_SIZE)) return false;
     } else {
         memcpy(r->firmware,b+68,32); memcpy(r->partition,b+100,16); memcpy(r->elf_sha256,b+116,32);
     }
@@ -75,7 +79,7 @@ esp_err_t journal_store_open(journal_store_t *s)
         if (err == ESP_ERR_NVS_NOT_FOUND) continue;
         if (err == ESP_OK && ((r.sequence-1)%capacity(lane) != slot ||
             (r.event == JOURNAL_CHECKPOINT) != (lane == 1) ||
-            (r.event == JOURNAL_RECEPTION) != (lane == 2))) err=ESP_ERR_INVALID_STATE;
+            ((r.event == JOURNAL_RECEPTION || r.event == JOURNAL_RECEPTION_POWER) != (lane == 2)))) err=ESP_ERR_INVALID_STATE;
         if (err != ESP_OK) { nvs_close(s->handle); return err; }
         if (r.sequence > s->latest[lane]) s->latest[lane]=r.sequence;
     }
@@ -92,7 +96,7 @@ esp_err_t journal_store_read(journal_store_t *s, unsigned lane, uint64_t sequenc
 }
 esp_err_t journal_store_append(journal_store_t *s, journal_record_t *r)
 {
-    unsigned lane=r->event==JOURNAL_RECEPTION ? 2 : r->event == JOURNAL_CHECKPOINT;
+    unsigned lane=(r->event==JOURNAL_RECEPTION||r->event==JOURNAL_RECEPTION_POWER) ? 2 : r->event == JOURNAL_CHECKPOINT;
     if (!s->ready) return ESP_ERR_INVALID_STATE;
     if (s->latest[lane] == UINT64_MAX) { journal_store_close(s); return ESP_ERR_INVALID_STATE; }
     r->sequence=s->latest[lane]+1;

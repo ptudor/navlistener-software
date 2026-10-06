@@ -9,6 +9,7 @@ func powerFixture() PowerExpectation {
 	p := PowerExpectation{
 		ExpectationID: 42,
 		ModelID:       77,
+		SiteID:        88,
 		Issued:        1_800_000_000,
 		MinDeviation:  6,
 		MADMultiplier: 4,
@@ -45,12 +46,13 @@ func TestPowerExpectationRoundTrip(t *testing.T) {
 	}
 
 	for name, mutate := range map[string]func([]byte){
-		"version":        func(v []byte) { v[0]++ },
-		"slot count":     func(v []byte) { v[1]-- },
-		"reserved":       func(v []byte) { v[31] = 1 },
-		"valid tail":     func(v []byte) { v[PowerHeaderSize] = 0x80 },
-		"false maturity": func(v []byte) { v[PowerHeaderSize+11] = 2 },
-		"bad cno":        func(v []byte) { v[PowerHeaderSize+1] = 100 },
+		"version":         func(v []byte) { v[0]++ },
+		"slot count":      func(v []byte) { v[1]-- },
+		"reserved":        func(v []byte) { v[39] = 1 },
+		"support maximum": func(v []byte) { v[38] = PowerMaxSupport + 1 },
+		"valid tail":      func(v []byte) { v[PowerHeaderSize] = 0x80 },
+		"false maturity":  func(v []byte) { v[PowerHeaderSize+11] = 2 },
+		"bad cno":         func(v []byte) { v[PowerHeaderSize+1] = 100 },
 	} {
 		t.Run(name, func(t *testing.T) {
 			bad := append([]byte(nil), b...)
@@ -117,6 +119,13 @@ func TestPowerSampleRoundTripAndComparison(t *testing.T) {
 	if _, err := DecodePowerSample(bad); err == nil {
 		t.Fatal("bad bit outside valid coverage accepted")
 	}
+	bad = append([]byte(nil), b...)
+	for i := 16; i < 24; i++ {
+		bad[i] = 0
+	}
+	if _, err := DecodePowerSample(bad); err == nil {
+		t.Fatal("remote capability accepted without a model identity")
+	}
 }
 
 func TestCountPowerUsesConstellationQuorum(t *testing.T) {
@@ -137,5 +146,25 @@ func TestCountPowerUsesConstellationQuorum(t *testing.T) {
 	}
 	if _, _, v, b := CountPower(base, 5, a); v != 0 || b != 0 {
 		t.Fatal("accepted assessment bound to a different entry count")
+	}
+}
+
+func TestPowerEventRoundTrip(t *testing.T) {
+	want := PowerEvent{Flags: PowerFlagLocal | PowerFlagRemote, LocalValid: 1, LocalAlarm: 1,
+		RemoteValid: 1, RemoteAlarm: 1, JointValid: 1, JointAlarm: 1, ExpectationID: 7,
+		RemoteModelID: 8, LocalModelID: 9, Unix: 1_800_000_000, UptimeMS: 1234,
+		Boot: 2, Event: 3, LocalAbnormal: 1, RemoteAbnormal: 1, JointAbnormal: 1}
+	b, err := want.Encode()
+	if err != nil || len(b) != PowerEventSize {
+		t.Fatalf("encode: %d %v", len(b), err)
+	}
+	got, err := DecodePowerEvent(b)
+	if err != nil || got != want {
+		t.Fatalf("decode: %+v %v", got, err)
+	}
+	bad := append([]byte(nil), b...)
+	bad[1] = 0
+	if _, err := DecodePowerEvent(bad); err == nil {
+		t.Fatal("reference fields accepted without capability flags")
 	}
 }

@@ -124,7 +124,8 @@ def journal_detail(event, code):
 
 def print_journal(rows):
     events = {1: "boot", 2: "time-anchor", 3: "confirmed", 4: "OTA-ready",
-              5: "OTA-failed", 6: "checkpoint", 7: "hw-trust", 8: "commission", 9: "reception"}
+              5: "OTA-failed", 6: "checkpoint", 7: "hw-trust", 8: "commission", 9: "reception",
+              10: "power"}
     sources = {0: "unknown", 1: "RTC", 2: "GNSS"}
     print("UTC                  SOURCE  BOOT   UPTIME(s) EVENT        FIRMWARE                         RESET FLAGS DROP DETAIL")
     for row in rows:
@@ -133,6 +134,10 @@ def print_journal(rows):
         if row["event"] == 9:
             detail = (f"alarm=0x{row['alarm_mask']:02x} coverage=0x{row['valid_mask']:02x} "
                       f"GPS={row['observed'][0]}/{row['expected'][0]} forecast={row['expectation_id']}")
+        elif row["event"] == 10:
+            detail = (f"joint=0x{row['joint_alarm_mask']:02x} local=0x{row['local_alarm_mask']:02x} "
+                      f"remote=0x{row['remote_alarm_mask']:02x} conflict=0x{row['model_conflict_mask']:02x} "
+                      f"forecast={row['expectation_id']}")
         date = datetime.datetime.fromtimestamp(utc, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S") if utc else "unknown"
         print(f"{date:20} {sources.get(row['time_source'], '?'):7} {row['boot']:6} "
               f"{int(row['uptime_ms']) // 1000:9} {events.get(row['event'], '?'):12} "

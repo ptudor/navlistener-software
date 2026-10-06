@@ -53,7 +53,7 @@ void gnss_status_feed(gnss_status_t *s, uint8_t cls, uint8_t id,
             // lock, nonzero C/N0, and no explicit unhealthy indication.
             if (g < 8 && g!=4 && p[i+1] && p[i+2] && quality >= 4 && health != 2) {
                 s->tracked[g]++;
-                s->satellites[s->satellite_count++]=(gnss_observation_t){g,p[i+1],NR_SATELLITE};
+                s->satellites[s->satellite_count++]=(gnss_observation_t){g,p[i+1],NR_SATELLITE,p[i+2],(int8_t)p[i+3]};
             }
         }
         s->satellites_ms = now; s->satellites_valid = true;
@@ -65,7 +65,14 @@ void gnss_status_feed(gnss_status_t *s, uint8_t cls, uint8_t id,
             if(g>7 || g==4 || !sv || sig>31 || !p[i+6] || p[i+7]<4 || p[i+7]>7 || (p[i+10]&3)==2) continue;
             bool duplicate=false;
             for(unsigned j=0;j<s->signal_count;j++) if(s->signals[j].gnss==g && s->signals[j].sv==sv && s->signals[j].signal==sig) duplicate=true;
-            if(!duplicate) s->signals[s->signal_count++]=(gnss_observation_t){g,sv,sig};
+            if(!duplicate) {
+                int8_t elevation=127;
+                if(s->satellites_valid && fresh(s->satellites_ms,now))
+                    for(unsigned j=0;j<s->satellite_count;j++) if(s->satellites[j].gnss==g && s->satellites[j].sv==sv) {
+                        elevation=s->satellites[j].elevation;break;
+                    }
+                s->signals[s->signal_count++]=(gnss_observation_t){g,sv,sig,p[i+6],elevation};
+            }
         }
         s->signals_ms=now;s->signals_valid=true;
     } else if (cls == 1 && id == 7 && len == 92) {

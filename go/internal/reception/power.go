@@ -7,10 +7,12 @@ import (
 
 const (
 	PowerVersion    = 1
-	PowerHeaderSize = 32
+	PowerHeaderSize = 40
 	PowerEntrySize  = 16
 	PowerMaxSize    = PowerHeaderSize + PowerEntrySize*MaxEntries
 	PowerSampleSize = 256
+	PowerEventSize  = 68
+	PowerMaxSupport = 4
 
 	PowerFlagLocal  = 1 << 0
 	PowerFlagRemote = 1 << 1
@@ -35,6 +37,7 @@ type PowerEntry struct {
 type PowerExpectation struct {
 	ExpectationID uint64       `json:"expectation_id,string"`
 	ModelID       uint64       `json:"model_id,string"`
+	SiteID        uint64       `json:"site_id,string"`
 	Issued        int64        `json:"issued_unix"`
 	MinDeviation  uint8        `json:"minimum_deviation_dbhz"`
 	MADMultiplier uint8        `json:"mad_multiplier"`
@@ -43,9 +46,9 @@ type PowerExpectation struct {
 }
 
 func (p PowerExpectation) Valid() bool {
-	if p.ExpectationID == 0 || p.ModelID == 0 || p.Issued < 946684800 || p.Issued >= 4102444800 ||
+	if p.ExpectationID == 0 || p.ModelID == 0 || p.SiteID == 0 || p.Issued < 946684800 || p.Issued >= 4102444800 ||
 		len(p.Entries) > MaxEntries || p.MinDeviation < 3 || p.MinDeviation > 30 ||
-		p.MADMultiplier == 0 || p.MADMultiplier > 16 || p.MinSupport < 2 {
+		p.MADMultiplier == 0 || p.MADMultiplier > 16 || p.MinSupport < 2 || p.MinSupport > PowerMaxSupport {
 		return false
 	}
 	for _, e := range p.Entries {
@@ -72,7 +75,8 @@ func (p PowerExpectation) Encode() ([]byte, error) {
 	binary.BigEndian.PutUint64(b[4:], p.ExpectationID)
 	binary.BigEndian.PutUint64(b[12:], p.ModelID)
 	binary.BigEndian.PutUint64(b[20:], uint64(p.Issued))
-	b[28], b[29], b[30] = p.MinDeviation, p.MADMultiplier, p.MinSupport
+	binary.BigEndian.PutUint64(b[28:], p.SiteID)
+	b[36], b[37], b[38] = p.MinDeviation, p.MADMultiplier, p.MinSupport
 	for i, e := range p.Entries {
 		o := PowerHeaderSize + PowerEntrySize*i
 		b[o] = e.Valid
@@ -85,14 +89,15 @@ func (p PowerExpectation) Encode() ([]byte, error) {
 
 func DecodePowerExpectation(b []byte) (PowerExpectation, error) {
 	if len(b) < PowerHeaderSize || b[0] != PowerVersion || b[1] != Slots || b[2] != SlotSeconds ||
-		len(b) != PowerHeaderSize+PowerEntrySize*int(b[3]) || b[31] != 0 {
+		len(b) != PowerHeaderSize+PowerEntrySize*int(b[3]) || b[39] != 0 {
 		return PowerExpectation{}, ErrPowerWire
 	}
 	p := PowerExpectation{
 		ExpectationID: binary.BigEndian.Uint64(b[4:]),
 		ModelID:       binary.BigEndian.Uint64(b[12:]),
 		Issued:        int64(binary.BigEndian.Uint64(b[20:])),
-		MinDeviation:  b[28], MADMultiplier: b[29], MinSupport: b[30],
+		SiteID:        binary.BigEndian.Uint64(b[28:]),
+		MinDeviation:  b[36], MADMultiplier: b[37], MinSupport: b[38],
 		Entries: make([]PowerEntry, int(b[3])),
 	}
 	for i := range p.Entries {
@@ -155,6 +160,83 @@ type PowerSample struct {
 	RemoteAssessment PowerAssessment   `json:"remote_assessment"`
 }
 
+type PowerEvent struct {
+	Flags          uint8  `json:"flags"`
+	LocalValid     uint8  `json:"local_valid_mask"`
+	LocalAlarm     uint8  `json:"local_alarm_mask"`
+	RemoteValid    uint8  `json:"remote_valid_mask"`
+	RemoteAlarm    uint8  `json:"remote_alarm_mask"`
+	JointValid     uint8  `json:"joint_valid_mask"`
+	JointAlarm     uint8  `json:"joint_alarm_mask"`
+	ExpectationID  uint64 `json:"expectation_id,string"`
+	RemoteModelID  uint64 `json:"remote_model_id,string"`
+	LocalModelID   uint64 `json:"local_model_id,string"`
+	Unix           int64  `json:"sample_unix"`
+	UptimeMS       uint64 `json:"uptime_ms"`
+	Boot           uint64 `json:"boot,string"`
+	Event          uint64 `json:"event,string"`
+	LocalAbnormal  uint8  `json:"local_abnormal_mask"`
+	RemoteAbnormal uint8  `json:"remote_abnormal_mask"`
+	JointAbnormal  uint8  `json:"joint_abnormal_mask"`
+	ModelConflict  uint8  `json:"model_conflict_mask"`
+}
+
+func (e PowerEvent) Valid() bool {
+	const constellationBits = uint8(1 << 4)
+	if e.Flags&^(PowerFlagLocal|PowerFlagRemote) != 0 || e.ExpectationID == 0 || e.Unix < 946684800 || e.Unix >= 4102444800 ||
+		e.Boot == 0 || e.Event == 0 || (e.LocalValid|e.LocalAlarm|e.RemoteValid|e.RemoteAlarm|e.JointValid|e.JointAlarm|
+		e.LocalAbnormal|e.RemoteAbnormal|e.JointAbnormal|e.ModelConflict)&constellationBits != 0 {
+		return false
+	}
+	if e.Flags&PowerFlagLocal == 0 && (e.LocalModelID != 0 || e.LocalValid != 0 || e.LocalAlarm != 0 || e.LocalAbnormal != 0) {
+		return false
+	}
+	if e.Flags&PowerFlagRemote == 0 && (e.RemoteModelID != 0 || e.RemoteValid != 0 || e.RemoteAlarm != 0 || e.RemoteAbnormal != 0) {
+		return false
+	}
+	if e.Flags&PowerFlagLocal != 0 && e.LocalModelID == 0 || e.Flags&PowerFlagRemote != 0 && e.RemoteModelID == 0 {
+		return false
+	}
+	if e.Flags != (PowerFlagLocal|PowerFlagRemote) && (e.JointValid != 0 || e.JointAlarm != 0 || e.JointAbnormal != 0 || e.ModelConflict != 0) {
+		return false
+	}
+	return true
+}
+
+func (e PowerEvent) Encode() ([]byte, error) {
+	if !e.Valid() {
+		return nil, ErrPowerWire
+	}
+	b := make([]byte, PowerEventSize)
+	b[0], b[1], b[2], b[3] = PowerVersion, e.Flags, e.LocalValid, e.LocalAlarm
+	b[4], b[5], b[6], b[7] = e.RemoteValid, e.RemoteAlarm, e.JointValid, e.JointAlarm
+	binary.BigEndian.PutUint64(b[8:], e.ExpectationID)
+	binary.BigEndian.PutUint64(b[16:], e.RemoteModelID)
+	binary.BigEndian.PutUint64(b[24:], e.LocalModelID)
+	binary.BigEndian.PutUint64(b[32:], uint64(e.Unix))
+	binary.BigEndian.PutUint64(b[40:], e.UptimeMS)
+	binary.BigEndian.PutUint64(b[48:], e.Boot)
+	binary.BigEndian.PutUint64(b[56:], e.Event)
+	b[64], b[65], b[66], b[67] = e.LocalAbnormal, e.RemoteAbnormal, e.JointAbnormal, e.ModelConflict
+	return b, nil
+}
+
+func DecodePowerEvent(b []byte) (PowerEvent, error) {
+	if len(b) != PowerEventSize || b[0] != PowerVersion {
+		return PowerEvent{}, ErrPowerWire
+	}
+	e := PowerEvent{Flags: b[1], LocalValid: b[2], LocalAlarm: b[3], RemoteValid: b[4], RemoteAlarm: b[5],
+		JointValid: b[6], JointAlarm: b[7], ExpectationID: binary.BigEndian.Uint64(b[8:]),
+		RemoteModelID: binary.BigEndian.Uint64(b[16:]), LocalModelID: binary.BigEndian.Uint64(b[24:]),
+		Unix: int64(binary.BigEndian.Uint64(b[32:])), UptimeMS: binary.BigEndian.Uint64(b[40:]),
+		Boot: binary.BigEndian.Uint64(b[48:]), Event: binary.BigEndian.Uint64(b[56:]),
+		LocalAbnormal: b[64], RemoteAbnormal: b[65], JointAbnormal: b[66], ModelConflict: b[67]}
+	if !e.Valid() {
+		return PowerEvent{}, ErrPowerWire
+	}
+	return e, nil
+}
+
 func bitmapTailClear(bits [16]byte, count uint8) bool {
 	for i := int(count); i < MaxEntries; i++ {
 		if bits[i/8]&(1<<uint(i%8)) != 0 {
@@ -184,6 +266,9 @@ func (s PowerSample) Valid() bool {
 		return false
 	}
 	if s.Flags&PowerFlagRemote == 0 && (s.RemoteModelID != 0 || s.RemoteValid != 0 || s.RemoteAlarm != 0 || s.RemoteAssessment != (PowerAssessment{})) {
+		return false
+	}
+	if s.Flags&PowerFlagLocal != 0 && s.LocalModelID == 0 || s.Flags&PowerFlagRemote != 0 && s.RemoteModelID == 0 {
 		return false
 	}
 	return true

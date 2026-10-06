@@ -140,9 +140,16 @@ static void reception(void)
         r.reception.expected[0]=12;r.reception.observed[0]=2;r.reception.matched[0]=3;
         assert(journal_store_append(&s,&r)==ESP_OK);
     }
+    r=record(JOURNAL_RECEPTION_POWER);r.reception_power=(nrp_event_t){.flags=3,.local_valid=1,.local_alarm=1,
+        .remote_valid=1,.remote_alarm=1,.joint_valid=1,.joint_alarm=1,.expectation_id=12,
+        .remote_model_id=22,.local_model_id=33,.utc=1800000000,.uptime_ms=99,.boot=1,.event=JOURNAL_RECEPTION_CAP+11,
+        .local_abnormal=1,.remote_abnormal=1,.joint_abnormal=1};
+    assert(journal_store_append(&s,&r)==ESP_OK);
     journal_store_close(&s);assert(journal_store_open(&s)==ESP_OK);
-    assert(s.latest[0]==2 && s.latest[2]==JOURNAL_RECEPTION_CAP+10);
+    assert(s.latest[0]==2 && s.latest[2]==JOURNAL_RECEPTION_CAP+11);
     assert(journal_store_read(&s,2,s.latest[2],&r)==ESP_OK);
+    assert(r.event==JOURNAL_RECEPTION_POWER&&r.reception_power.joint_alarm==1&&r.reception_power.local_model_id==33);
+    assert(journal_store_read(&s,2,s.latest[2]-1,&r)==ESP_OK);
     assert(r.reception.alarm==1 && r.reception.expected[0]==12 && r.reception.observed[0]==2 && r.reception.matched[0]==3);
     assert(journal_store_read(&s,2,1,&r)==ESP_ERR_NVS_NOT_FOUND);
     journal_store_close(&s);

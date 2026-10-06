@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import hashlib
 import hmac
+import io
 import tempfile
+from contextlib import redirect_stdout
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -103,6 +105,18 @@ class OtaClientTest(unittest.TestCase):
         self.assertEqual(ota.journal_detail(8, 1 | 3 << 16), "keygen ok")
         self.assertEqual(ota.journal_detail(8, 2 | 1 << 8), "install failed")
         self.assertEqual(ota.journal_detail(5, 1234), "")
+
+    def test_journal_prints_received_power_transition(self):
+        row = {"event": 10, "utc": "1800000000", "time_source": 2, "boot": "7",
+               "uptime_ms": "9000", "firmware": "test", "reset_reason": 1,
+               "flags": 0, "dropped": "0", "joint_alarm_mask": 1,
+               "local_alarm_mask": 1, "remote_alarm_mask": 1,
+               "model_conflict_mask": 0, "expectation_id": "42"}
+        output = io.StringIO()
+        with redirect_stdout(output):
+            ota.print_journal([row])
+        self.assertIn("power", output.getvalue())
+        self.assertIn("joint=0x01", output.getvalue())
 
     def test_journal_stuck_cursor_fails_without_looping(self):
         replies = [{"nonce": "ab" * 32}, {"records": [], "next": "9"}] * 2

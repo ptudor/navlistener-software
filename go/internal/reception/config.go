@@ -156,7 +156,7 @@ func (c *Config) Validate() error {
 		}
 		if len(s.PowerModelEpoch) > 64 || strings.Trim(s.PowerModelEpoch, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") != "" ||
 			s.PowerMinDeviation < 3 || s.PowerMinDeviation > 30 || s.PowerMADMultiplier == 0 || s.PowerMADMultiplier > 16 ||
-			s.PowerMinSupport < 2 || s.PowerMinSupport > PowerHistoryDays {
+			s.PowerMinSupport < 2 || s.PowerMinSupport > PowerMaxSupport {
 			return fmt.Errorf("reception %s: invalid power model policy", s.Observer)
 		}
 		if len(s.Signals) == 0 {

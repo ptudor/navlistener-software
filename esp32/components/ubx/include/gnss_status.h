@@ -5,7 +5,10 @@
 #include <stdint.h>
 #include "../../../../common/reception.h"
 #define GNSS_OBS_MAX 200u
-typedef struct { uint8_t gnss, sv, signal; } gnss_observation_t;
+typedef struct {
+    uint8_t gnss,sv,signal,cno;
+    int8_t elevation; // NAV-SAT degrees; 127 when a signal has no fresh satellite geometry
+} gnss_observation_t;
 #define GNSS_REGIONAL_MASK ((1u << 1) | (1u << 5) | (1u << 7))
 typedef struct {
     uint8_t supported, tracked[8];

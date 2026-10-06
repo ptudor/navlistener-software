@@ -65,6 +65,20 @@ func TestReceptionAssessmentTags(t *testing.T) {
 	if _, err := decodeObserverDetails(receptionDetails(20, powerWire)); err == nil {
 		t.Fatal("malformed power assessment accepted")
 	}
+	powerEvent := reception.PowerEvent{Flags: reception.PowerFlagLocal | reception.PowerFlagRemote, LocalValid: 1,
+		RemoteValid: 1, JointValid: 1, ExpectationID: 9, RemoteModelID: 10, LocalModelID: 11,
+		Unix: 1_800_000_000, UptimeMS: 2000, Boot: 12, Event: 13}
+	powerEventWire, err := powerEvent.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := decodeObserverDetails(receptionDetails(21, powerEventWire)); err != nil || got.ReceptionPowerEvent == nil || *got.ReceptionPowerEvent != powerEvent {
+		t.Fatalf("power event: %+v %v", got, err)
+	}
+	powerEventWire[1] = reception.PowerFlagLocal
+	if _, err := decodeObserverDetails(receptionDetails(21, powerEventWire)); err == nil {
+		t.Fatal("power event with orphaned joint verdict accepted")
+	}
 }
 
 func TestReceptionForecastRoundTripTLS(t *testing.T) {

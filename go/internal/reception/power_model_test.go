@@ -83,6 +83,11 @@ func TestPowerModelPersistenceIsDeterministicAndBound(t *testing.T) {
 	if NewPowerModel(site).UnmarshalBinary(bad) == nil {
 		t.Fatal("unknown model version accepted")
 	}
+	bad = append([]byte(nil), b...)
+	bad[powerModelHeader+21] = 0
+	if NewPowerModel(site).UnmarshalBinary(bad) == nil {
+		t.Fatal("noncontiguous partial history accepted")
+	}
 }
 
 func TestPowerModelConfigValidation(t *testing.T) {
@@ -97,5 +102,10 @@ func TestPowerModelConfigValidation(t *testing.T) {
 	c.Stations[0].PowerModelEpoch = "bad epoch"
 	if err := c.Validate(); err == nil {
 		t.Fatal("unsafe model epoch accepted")
+	}
+	c.Stations[0].PowerModelEpoch = "1"
+	c.Stations[0].PowerMinSupport = PowerMaxSupport + 1
+	if err := c.Validate(); err == nil {
+		t.Fatal("edge-incompatible minimum support accepted")
 	}
 }

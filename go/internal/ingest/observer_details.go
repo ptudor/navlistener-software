@@ -34,20 +34,21 @@ type ObserverDetails struct {
 	// slot: "bmp388_bmp384", "bmp580" or "bmp581" (each pair shares a chip ID), "not_listed"
 	// or "conflicting" (more than one listed; none measured). On a board that lists a BMP580
 	// or BMP581, bmp388_bmp384_c and pressure_pa are that part's readings.
-	PressureSensor string                    `json:"pressure_sensor,omitempty"`
-	Rails          *BoardRails               `json:"rails,omitempty"`
-	RTC            *BoardRTC                 `json:"rtc,omitempty"`
-	ATECC          *BoardATECC               `json:"atecc,omitempty"`
-	EEPROM         *BoardEEPROM              `json:"eeprom,omitempty"`
-	Resources      *BoardResources           `json:"resources,omitempty"`
-	Receiver       *BoardReceiver            `json:"receiver,omitempty"`
-	Firmware       string                    `json:"firmware,omitempty"`
-	Update         *BoardUpdate              `json:"update,omitempty"`
-	Timing         *BoardTiming              `json:"timing,omitempty"`
-	Reception      *reception.Sample         `json:"reception,omitempty"`
-	ReceptionEvent *reception.Sample         `json:"reception_event,omitempty"`
-	ReceptionPower *reception.PowerSample    `json:"reception_power,omitempty"`
-	Snapshot       *reception.SnapshotResult `json:"snapshot,omitempty"`
+	PressureSensor      string                    `json:"pressure_sensor,omitempty"`
+	Rails               *BoardRails               `json:"rails,omitempty"`
+	RTC                 *BoardRTC                 `json:"rtc,omitempty"`
+	ATECC               *BoardATECC               `json:"atecc,omitempty"`
+	EEPROM              *BoardEEPROM              `json:"eeprom,omitempty"`
+	Resources           *BoardResources           `json:"resources,omitempty"`
+	Receiver            *BoardReceiver            `json:"receiver,omitempty"`
+	Firmware            string                    `json:"firmware,omitempty"`
+	Update              *BoardUpdate              `json:"update,omitempty"`
+	Timing              *BoardTiming              `json:"timing,omitempty"`
+	Reception           *reception.Sample         `json:"reception,omitempty"`
+	ReceptionEvent      *reception.Sample         `json:"reception_event,omitempty"`
+	ReceptionPower      *reception.PowerSample    `json:"reception_power,omitempty"`
+	ReceptionPowerEvent *reception.PowerEvent     `json:"reception_power_event,omitempty"`
+	Snapshot            *reception.SnapshotResult `json:"snapshot,omitempty"`
 }
 type BoardEnvironment struct {
 	ReadyMask       uint8    `json:"ready_mask"`
@@ -145,6 +146,12 @@ func decodeObserverDetails(b []byte) (*ObserverDetails, error) {
 				return nil, ErrBadTelemetry
 			}
 			d.ReceptionPower = &sample
+		case 21:
+			event, err := reception.DecodePowerEvent(v)
+			if err != nil {
+				return nil, ErrBadTelemetry
+			}
+			d.ReceptionPowerEvent = &event
 		case 1:
 			if n != 14 || v[0]&^v[1] != 0 || v[1] > 7 {
 				return nil, ErrBadTelemetry

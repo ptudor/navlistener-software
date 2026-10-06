@@ -92,8 +92,10 @@ func TestReceptionBoardHistoryAndIndependentCheck(t *testing.T) {
 	apply(2, &ingest.ObserverDetails{UptimeMS: 2, Reception: &reception.Sample{Alarm: 1, Valid: 1}})
 	apply(3, &ingest.ObserverDetails{UptimeMS: 3, ReceptionEvent: &reception.Sample{Boot: 1, Event: 7, Alarm: 1}})
 	apply(4, &ingest.ObserverDetails{UptimeMS: 4, ReceptionEvent: &reception.Sample{Boot: 1, Event: 7, Alarm: 1}})
+	apply(5, &ingest.ObserverDetails{UptimeMS: 5, ReceptionPowerEvent: &reception.PowerEvent{Boot: 1, Event: 8}})
 	b := s.FeedStationBoards(now)["edge"]
-	if b.Latest.Sequence != 1 || b.Reception.Sequence != 2 || b.Reception.ReceptionCheck.Alarm != 1 || len(b.ReceptionEvents) != 1 {
+	if b.Latest.Sequence != 1 || b.Reception.Sequence != 2 || b.Reception.ReceptionCheck.Alarm != 1 || len(b.ReceptionEvents) != 1 ||
+		len(b.ReceptionPowerEvents) != 1 || b.ReceptionPowerEvents[0].Details.ReceptionPowerEvent.Event != 8 {
 		t.Fatalf("independent streams: %+v", b)
 	}
 	if !s.FeedStationBoards(now.Add(16 * time.Second))["edge"].ReceptionStale {

@@ -206,11 +206,22 @@ func (m *PowerModel) ModelID() uint64 {
 	return id
 }
 
+func (m *PowerModel) SiteID() uint64 {
+	if m == nil {
+		return 0
+	}
+	id := binary.BigEndian.Uint64(m.fingerprint[:])
+	if id == 0 {
+		return 1
+	}
+	return id
+}
+
 // Forecast creates a companion whose entry order is exactly base. Signals for
 // which this receiver has no power telemetry remain unknown.
 func (m *PowerModel) Forecast(base Expectation) PowerExpectation {
 	p := PowerExpectation{
-		ExpectationID: base.ID, ModelID: m.ModelID(), Issued: base.Issued,
+		ExpectationID: base.ID, ModelID: m.ModelID(), SiteID: m.SiteID(), Issued: base.Issued,
 		MinDeviation: m.minDeviation, MADMultiplier: m.madMultiplier, MinSupport: m.minSupport,
 		Entries: make([]PowerEntry, len(base.Entries)),
 	}
@@ -299,7 +310,8 @@ func (m *PowerModel) UnmarshalBinary(b []byte) error {
 		copy(cell.History[:], b[o+22:o+30])
 		if key.GNSS > 7 || key.GNSS == 4 || key.SV == 0 || (key.Signal != Satellite && key.Signal > 31) ||
 			int64(key.Bin)*PowerPhaseSeconds >= SiderealSeconds || cell.HistoryLen > PowerHistoryDays ||
-			cell.Next >= PowerHistoryDays || (cell.Count == 0 && cell.Sum != 0) ||
+			cell.Next >= PowerHistoryDays || (cell.HistoryLen < PowerHistoryDays && cell.Next != cell.HistoryLen) ||
+			(cell.Count == 0 && cell.Sum != 0) ||
 			(cell.Count != 0 && (cell.Sum < uint32(cell.Count) || cell.Sum > 99*uint32(cell.Count))) {
 			return ErrPowerModel
 		}

@@ -31,30 +31,32 @@ type BoardEventContext struct {
 	Snapshot BoardSample  `json:"snapshot"`
 }
 type StationBoard struct {
-	Latest              *BoardSample       `json:"latest,omitempty"`
-	Stale               bool               `json:"stale"`
-	LastInterference    *BoardEventContext `json:"last_interference,omitempty"`
-	Timing              *BoardSample       `json:"timing,omitempty"`
-	Update              *BoardSample       `json:"update,omitempty"`
-	UpdateStale         bool               `json:"update_stale"`
-	TimingStale         bool               `json:"timing_stale"`
-	Reception           *BoardSample       `json:"reception,omitempty"`
-	ReceptionStale      bool               `json:"reception_stale"`
-	ReceptionPower      *BoardSample       `json:"reception_power,omitempty"`
-	ReceptionPowerStale bool               `json:"reception_power_stale"`
-	ReceptionEvents     []BoardSample      `json:"reception_events,omitempty"`
-	Snapshot            *BoardSample       `json:"snapshot,omitempty"`
+	Latest               *BoardSample       `json:"latest,omitempty"`
+	Stale                bool               `json:"stale"`
+	LastInterference     *BoardEventContext `json:"last_interference,omitempty"`
+	Timing               *BoardSample       `json:"timing,omitempty"`
+	Update               *BoardSample       `json:"update,omitempty"`
+	UpdateStale          bool               `json:"update_stale"`
+	TimingStale          bool               `json:"timing_stale"`
+	Reception            *BoardSample       `json:"reception,omitempty"`
+	ReceptionStale       bool               `json:"reception_stale"`
+	ReceptionPower       *BoardSample       `json:"reception_power,omitempty"`
+	ReceptionPowerStale  bool               `json:"reception_power_stale"`
+	ReceptionEvents      []BoardSample      `json:"reception_events,omitempty"`
+	ReceptionPowerEvents []BoardSample      `json:"reception_power_events,omitempty"`
+	Snapshot             *BoardSample       `json:"snapshot,omitempty"`
 }
 type boardStation struct {
-	latest          *BoardSample
-	last            BoardSample // ordering across independently paced board/timing records
-	update          *BoardSample
-	timing          *BoardSample
-	event           *BoardEventContext
-	reception       *BoardSample
-	receptionPower  *BoardSample
-	receptionEvents []BoardSample
-	snapshot        *BoardSample
+	latest               *BoardSample
+	last                 BoardSample // ordering across independently paced board/timing records
+	update               *BoardSample
+	timing               *BoardSample
+	event                *BoardEventContext
+	reception            *BoardSample
+	receptionPower       *BoardSample
+	receptionEvents      []BoardSample
+	receptionPowerEvents []BoardSample
+	snapshot             *BoardSample
 }
 
 func (s *Store) applyBoard(f *ingest.RawFrame) {
@@ -130,7 +132,25 @@ func (s *Store) applyBoard(f *ingest.RawFrame) {
 			}
 		}
 	}
-	if f.Details.Reception != nil || f.Details.ReceptionEvent != nil || f.Details.ReceptionPower != nil || f.Details.Snapshot != nil {
+	if event := f.Details.ReceptionPowerEvent; event != nil {
+		duplicate := false
+		for _, row := range old.receptionPowerEvents {
+			if previous := row.Details.ReceptionPowerEvent; previous.Boot == event.Boot && previous.Event == event.Event {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			old.receptionPowerEvents = append(old.receptionPowerEvents, sample)
+			sort.Slice(old.receptionPowerEvents, func(i, j int) bool {
+				return old.receptionPowerEvents[i].Details.ReceptionPowerEvent.Event < old.receptionPowerEvents[j].Details.ReceptionPowerEvent.Event
+			})
+			if len(old.receptionPowerEvents) > 32 {
+				old.receptionPowerEvents = old.receptionPowerEvents[1:]
+			}
+		}
+	}
+	if f.Details.Reception != nil || f.Details.ReceptionEvent != nil || f.Details.ReceptionPower != nil || f.Details.ReceptionPowerEvent != nil || f.Details.Snapshot != nil {
 		if f.Details.Environment == nil && f.Details.Timing == nil && f.Details.Receiver == nil {
 			return
 		}
@@ -172,7 +192,8 @@ func (s *Store) FeedStationBoards(now time.Time) map[string]StationBoard {
 		out[id] = StationBoard{Latest: st.latest, Stale: stale(st.latest, 11*time.Minute), LastInterference: st.event,
 			Reception: st.reception, ReceptionStale: stale(st.reception, 15*time.Second), ReceptionEvents: append([]BoardSample(nil), st.receptionEvents...), Snapshot: st.snapshot,
 			ReceptionPower: st.receptionPower, ReceptionPowerStale: stale(st.receptionPower, 15*time.Second),
-			Update: st.update, UpdateStale: stale(st.update, 5*time.Second), Timing: st.timing, TimingStale: stale(st.timing, 5*time.Second)}
+			ReceptionPowerEvents: append([]BoardSample(nil), st.receptionPowerEvents...),
+			Update:               st.update, UpdateStale: stale(st.update, 5*time.Second), Timing: st.timing, TimingStale: stale(st.timing, 5*time.Second)}
 	}
 	return out
 }

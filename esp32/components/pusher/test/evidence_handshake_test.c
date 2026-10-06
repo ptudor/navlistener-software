@@ -17,7 +17,7 @@ static int test_export(mbedtls_ssl_context *, uint8_t *, size_t, const char *, s
 #undef mbedtls_ssl_export_keying_material
 
 static esp_tls_t transport;
-static uint8_t written[4096], inbound[1024];
+static uint8_t written[4096], inbound[4096];
 static size_t written_len, head, tail, written_at_first_read;
 static bool export_fails, first_read_seen;
 static int exports;
@@ -190,16 +190,18 @@ int main(void)
     s_cfg.reception_control=reception_stub;oversize=false;payload_len=sizeof PAYLOAD;
     assert(run("{\"ok\":true}")==0);
     body=frame(0,&type,&len);
-    assert(body && contains(body,len,"\"evidence\":true,\"reception\":1}"));
-    // The actual TLS reader routes both control types, including a full-size forecast.
-    for(unsigned i=0;i<2;i++) {
-        head=0;tail=GNF1_FRAME_HDR+(i ? 20 : 552);
-        memset(inbound,0,tail);gnf1_frame_header(inbound,i ? 0x0c : 0x0b,tail-GNF1_FRAME_HDR);
+    assert(body && contains(body,len,"\"evidence\":true,\"reception\":2}"));
+    // The actual TLS reader routes availability, power and snapshot controls,
+    // including each maximum-size forecast.
+    const uint8_t kinds[]={0x0b,0x0d,0x0c};const size_t lengths[]={552,2088,20};
+    for(unsigned i=0;i<3;i++) {
+        head=0;tail=GNF1_FRAME_HDR+lengths[i];
+        memset(inbound,0,tail);gnf1_frame_header(inbound,kinds[i],(uint32_t)lengths[i]);
         assert(drain_acks(&transport,3));
-        assert(reception_calls==i+1 && reception_type==(i ? 0x0c : 0x0b) && reception_length==(i ? 20 : 552));
+        assert(reception_calls==i+1 && reception_type==kinds[i] && reception_length==lengths[i]);
     }
-    head=0;tail=GNF1_FRAME_HDR;gnf1_frame_header(inbound,0x0b,553);
-    assert(!drain_acks(&transport,3) && reception_calls==2);
+    head=0;tail=GNF1_FRAME_HDR;gnf1_frame_header(inbound,0x0d,2089);
+    assert(!drain_acks(&transport,3) && reception_calls==3);
     puts("GNF1 evidence is announced, sent after HELLO before any read, and its verdict reported");
     return 0;
 }

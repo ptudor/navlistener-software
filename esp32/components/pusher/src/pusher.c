@@ -5,6 +5,7 @@
 #include "ack_progress.h"
 #include "update_json.h"
 #include "../../../../common/endpoint_fallback.h"
+#include "../../../../common/reception_power.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -66,6 +67,9 @@ static atomic_bool s_via_tunnel;
 static int64_t s_tunnel_retry_us;
 #define TUNNEL_RETRY_US (60LL * 1000000)
 static atomic_bool s_durable;
+// The pusher has one task. Keep the largest authenticated control payload out
+// of its TLS call stack, which is also responsible for reconnect and replay.
+static uint8_t s_control_frame[NRP_MAX_WIRE];
 
 bool pusher_connected(void) { return atomic_load_explicit(&s_connected, memory_order_relaxed); }
 bool pusher_via_tunnel(void) { return atomic_load_explicit(&s_via_tunnel, memory_order_relaxed); }
@@ -213,20 +217,19 @@ static bool readable(esp_tls_t *tls, int fd, int timeout_ms)
 // drain_acks applies every pending ACK (pruning the spool). Returns false on disconnect.
 static bool drain_acks(esp_tls_t *tls, int fd)
 {
-    uint8_t buf[552]; // bounded reception expectation: 40 + 128 * 4
     // Bound each drain so a stream of unchanged ACKs/PONGs cannot starve the
     // durability watchdog in the outer loop.
     for (unsigned n = 0; n < DRAIN_BATCH && readable(tls, fd, 0); n++) {
         uint8_t type;
         size_t len;
-        if (read_frame(tls, &type, buf, sizeof buf, &len) != 0) return false;
+        if (read_frame(tls, &type, s_control_frame, sizeof s_control_frame, &len) != 0) return false;
         if (type == GNF1_F_ACK) {
             uint64_t seq;
-            if (gnf1_decode_ack(buf, len, &seq)) spool_ack(seq);
+            if (gnf1_decode_ack(s_control_frame, len, &seq)) spool_ack(seq);
         } else if (type == 0x09 && s_cfg.update_control) {
-            s_cfg.update_control(buf,len);
-        } else if((type==0x0b || type==0x0c) && s_cfg.reception_control) {
-            s_cfg.reception_control(type,buf,len);
+            s_cfg.update_control(s_control_frame,len);
+        } else if((type==0x0b || type==0x0c || type==0x0d) && s_cfg.reception_control) {
+            s_cfg.reception_control(type,s_control_frame,len);
         }
         // PONG and anything else: ignore.
     }
@@ -332,7 +335,7 @@ static int handshake(esp_tls_t *tls)
     int hn = gnf1_build_hello(hello, sizeof hello, s_cfg.token, s_cfg.station, s_cfg.feed,
                               s_cfg.session, false, evidence_len > 0);
     if(hn>0 && s_cfg.reception_control) {
-        int extra=snprintf(hello+hn-1,sizeof hello-(size_t)hn+1,",\"reception\":1}");
+        int extra=snprintf(hello+hn-1,sizeof hello-(size_t)hn+1,",\"reception\":2}");
         hn=extra<0 || (size_t)extra>=sizeof hello-(size_t)hn+1 ? -1 : hn-1+extra;
     }
     if (hn < 0) {
