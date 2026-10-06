@@ -33,6 +33,9 @@ type EventRow struct {
 	Message        string
 	Raw            []byte // JSON, or nil
 	DedupeKey      string // required; see the type comment
+	// CollectorInstanceID names the collector that confirmed the event, so
+	// evidence capture finds its own events in a shared database. Empty stores NULL.
+	CollectorInstanceID string
 }
 
 const defaultEventAudience = "operator:local"
@@ -129,12 +132,12 @@ func (s *Store) WriteEvent(ctx context.Context, e EventRow) (int64, error) {
 		 )
 		 INSERT INTO gnss_events
 		        (time, audience, audience_seq, redaction_class, sv, event_type,
-		         old_value, new_value, severity, message, raw, dedupe_key)
-		 SELECT $1, $2, next_seq.last_seq, $3, $4, $5, $6, $7, $8, $9, $10, $11
+		         old_value, new_value, severity, message, raw, dedupe_key, collector_instance_id)
+		 SELECT $1, $2, next_seq.last_seq, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 		   FROM next_seq
 		 RETURNING audience_seq`,
 		e.Time, audience, redaction, e.SV, e.Type, nilIfEmpty(e.OldValue), nilIfEmpty(e.NewValue),
-		int16(e.Severity), nilIfEmpty(e.Message), raw, e.DedupeKey,
+		int16(e.Severity), nilIfEmpty(e.Message), raw, e.DedupeKey, nilIfEmpty(e.CollectorInstanceID),
 	).Scan(&audienceSeq)
 	if err != nil {
 		// Unreachable as a dedupe conflict while the advisory lock is held and the

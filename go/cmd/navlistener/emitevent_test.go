@@ -312,7 +312,7 @@ func TestEmitEventBoundaryConvertsTypedNil(t *testing.T) {
 	var typedStore *store.Store   // nil concrete
 	var typedServer *serve.Server // nil concrete
 
-	ew := asEventWriter(typedStore)
+	ew := asEventWriter(typedStore, "local")
 	ep := asEventPublisher(typedServer)
 	if ew != nil {
 		t.Fatal("asEventWriter(nil) must return a true interface nil")

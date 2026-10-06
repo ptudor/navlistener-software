@@ -155,6 +155,8 @@ just one.
 | `navlistener_store_errors_total` | counter |
 | `navlistener_store_quarantined_total` | counter |
 | `navlistener_store_empty_raw_total` | counter |
+| `navlistener_evidence_bundles_total` | counter |
+| `navlistener_evidence_capture_errors_total` | counter |
 
 `store_dropped_total` is the bounded-queue overflow policy made visible — the historian degrading
 so live decode doesn't. A sustained rise means the database can't keep up.

@@ -386,7 +386,9 @@ func applySchema(ctx context.Context, pool *pgxpool.Pool) error {
 // first INSERT/SELECT touching a missing column, not at startup. This check turns
 // that into a clear, fail-fast error instead.
 var requiredColumns = map[string][]string{
-	"gnss_events":                 {"id", "time", "audience", "audience_seq", "redaction_class", "sv", "event_type", "old_value", "new_value", "severity", "message", "raw", "dedupe_key"},
+	"gnss_events":                 {"id", "time", "audience", "audience_seq", "redaction_class", "sv", "event_type", "old_value", "new_value", "severity", "message", "raw", "dedupe_key", "collector_instance_id"},
+	"event_evidence":              evidenceColumns,
+	"event_evidence_samples":      evidenceSampleColumns,
 	"gnss_event_audience_cursors": {"audience", "last_seq"},
 	"gnss_snapshots":              {"time", "audience", "endpoint", "data"},
 	// navlistener's own raw-frame tables get the same fail-fast drift check. A future
@@ -560,6 +562,13 @@ func applyPoliciesWithHook(ctx context.Context, pool *pgxpool.Pool, log *slog.Lo
 	}
 	// events are retention-less BY DESIGN (durability of the confirmed
 	// integrity record) — compression only, never a retention policy here.
+	// Event evidence is retention-less like the events it explains.
+	if err := exec(`SELECT remove_compression_policy('event_evidence_samples', if_exists => true)`); err != nil {
+		return err
+	}
+	if err := exec(`SELECT add_compression_policy('event_evidence_samples', INTERVAL '30 days', if_not_exists => true)`); err != nil {
+		return fmt.Errorf("event evidence compression policy: %w", err)
+	}
 	if err := exec(`SELECT remove_compression_policy('gnss_events', if_exists => true)`); err != nil {
 		return err
 	}

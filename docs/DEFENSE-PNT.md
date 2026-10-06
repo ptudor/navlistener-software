@@ -255,6 +255,10 @@ The receiver flag is therefore **one weighted input** into the fusion rule (§3)
   scalar (how much this station's votes are currently down-weighted); `noise_level` is the
   receiver's raw MON-RF indicator, not a dB measurement. Confirmed events go to the
   SSE stream and `gnss_events` like every other integrity event.
+- **Station events keep their evidence.** When a station event confirms, the collector copies
+  that station's stored inputs from ten minutes before to one minute after into retention-less
+  evidence tables, so the inputs outlive raw retention like the event itself. Private audiences
+  read them with the event (`docs/OUTPUT.md §3`).
 - **Station integrity assessments surface in the private `observers` feed** as `integrity`
   (`docs/OUTPUT.md §1.3`), with the evidence behind each check. Receiver solutions are stored in
   `rf_samples` with kind `solution`. Public views carry neither, and public projections drop

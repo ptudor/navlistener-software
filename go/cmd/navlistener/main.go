@@ -276,9 +276,18 @@ func run() int {
 	// its own context, cancelled only after the decode loop has drained — so no frame
 	// is lost at the decode→persist hop at shutdown.
 	var historian *store.Store
+	var evidence store.EvidencePolicy
 	storeCtx, storeCancel := context.WithCancel(context.Background())
 	storeDone := make(chan struct{})
 	if cfg.Store.DSN != "" {
+		// Evidence capture looks back only as far as raw retention keeps inputs.
+		rawRetention, err := config.ParseInterval(cfg.Store.RawRetention)
+		if err != nil {
+			log.Error("store.raw_retention invalid", "error", err)
+			storeCancel()
+			return 1
+		}
+		evidence = evidencePolicy(rawRetention)
 		historian, err = store.New(ctx, cfg.Store, log)
 		if err != nil {
 			log.Error("historian init failed — TimescaleDB is required when store.dsn is set", "error", err)
@@ -414,6 +423,7 @@ func run() int {
 		apiSrv.SetPolicyEpochs(policyEpochs)
 		if historian != nil {
 			apiSrv.SetObserverHistory(historian, cfg.Collector.InstanceID)
+			apiSrv.SetEventEvidence(historian)
 		}
 		if cfg.Serve.MapReference == nil || *cfg.Serve.MapReference {
 			catalogue := orbitref.New(cfg.Serve.MapReferenceCache, cfg.State.LeapSeconds)
@@ -490,7 +500,7 @@ func run() int {
 	// `== nil` guards in emitEvent would never fire and the first confirmed event would
 	// dereference a nil receiver. Convert to true interface nils here, exactly once, the
 	// same pattern used for serve.EventStore above.
-	ew := asEventWriter(historian)
+	ew := asEventWriter(historian, cfg.Collector.InstanceID)
 	operatorPublisher, publicPublisher := fixedEventPublishers(apiSrv, cfg.Collector.InstanceID)
 	wg.Add(1)
 	go func() {
@@ -508,6 +518,13 @@ func run() int {
 		go func() {
 			defer wg.Done()
 			scopedDetectLoop(ctx, audienceRegistry, ew, apiSrv, policyEpochs, log)
+		}()
+	}
+	if historian != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			evidenceLoop(ctx, historian, cfg.Collector.InstanceID, evidence, log)
 		}()
 	}
 
@@ -1205,11 +1222,23 @@ func (p generationPublisher) PublishEvent(e serve.EventMsg) {
 // pointer is nil. Without this explicit conversion, a nil *store.Store boxed
 // into an eventWriter would be a non-nil interface and defeat emitEvent's nil guard,
 // crashing the daemon on the first confirmed event in any persist-less/serve-less config.
-func asEventWriter(s *store.Store) eventWriter {
+// asEventWriter stamps every event with the collector that confirmed it, so
+// evidence capture finds its own events when several collectors share a database.
+func asEventWriter(s *store.Store, collectorID string) eventWriter {
 	if s == nil {
 		return nil
 	}
-	return s
+	return collectorEventWriter{store: s, collector: collectorID}
+}
+
+type collectorEventWriter struct {
+	store     *store.Store
+	collector string
+}
+
+func (w collectorEventWriter) WriteEvent(ctx context.Context, e store.EventRow) (int64, error) {
+	e.CollectorInstanceID = w.collector
+	return w.store.WriteEvent(ctx, e)
 }
 
 func asEventPublisher(s *serve.Server) eventPublisher {

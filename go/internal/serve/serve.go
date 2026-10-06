@@ -75,6 +75,7 @@ type Server struct {
 	store             *state.Store
 	events            EventStore
 	observerHistory   ObserverHistoryStore
+	eventEvidence     EventEvidenceStore
 	historyCollector  string
 	historySlots      chan struct{}
 	sources           []config.Source
@@ -151,6 +152,7 @@ func NewForAudience(addr string, st *state.Store, events EventStore, sources []c
 	mux.HandleFunc("/gnss/api/v2/global", s.serveFeed("global"))
 	mux.HandleFunc("/gnss/api/v2/observers", s.serveFeed("observers"))
 	mux.HandleFunc("/gnss/api/v2/observer-samples", s.serveObserverSamples)
+	mux.HandleFunc("/gnss/api/v2/event-evidence", s.serveEventEvidence)
 	mux.HandleFunc("/gnss/api/v2/almanac", s.serveFeed("almanac"))
 	mux.HandleFunc("/gnss/api/v2/sbas", s.serveFeed("sbas"))
 	mux.HandleFunc("/gnss/api/v2/audiences", s.serveAudiences)

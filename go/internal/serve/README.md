@@ -36,6 +36,7 @@ when `[serve].addr` is set.
 | `GET /gnss/api/v2/global` | Fleet-wide counts, per-constellation totals, leap seconds. |
 | `GET /gnss/api/v2/observers` | Station list (only `remark` from config — never dial addresses). |
 | `GET /gnss/api/v2/observer-samples` | Authenticated environmental or timing samples for one receiver; see [the history contract](../../../docs/SENSOR-HISTORY.md). |
+| `GET /gnss/api/v2/event-evidence` | Authenticated private audiences: one station event with the stored inputs captured behind it, paged; see [the event contract](../../../docs/OUTPUT.md#3-events-sse--query-api). |
 | `GET /gnss/api/v2/almanac` | Coarse orbits, including SVs currently out of ephemeris view. |
 | `GET /gnss/api/v2/coverage` | Independent reference geometry and audience-scoped fresh navigation witnesses for the monitoring map. |
 | `GET /gnss/api/v2/sbas` | Per-GEO SBAS message-type and health tracking. |

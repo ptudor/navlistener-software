@@ -14,6 +14,7 @@ the live hot path: a slow database degrades the historian, never live decoding.
 | `store.go` | `Store`, the batched `CopyFrom` writer goroutine, schema bootstrap, retention/compression policies, and the degraded-health probe. |
 | `events.go` | `EventRow`, `StoredEvent`, `EventQuery`, event writes and the windowed read API. |
 | `observer_history.go` | Private sensor samples filtered by receipt-time audience and collector, with bounded pages. |
+| `evidence.go` | Station event evidence: `CaptureEventEvidence` copies an event's stored input window into retention-less tables; `QueryEventEvidence` pages it back. |
 | `schema.sql` | The complete DDL — three hypertables, the dedup ledger, indexes, compression settings, and the `pg_notify` trigger. Applied at startup. |
 | `*_test.go` | Batching, dedup, policy application, event query bounds, and the degraded path. |
 | `README.md` | This file. |
@@ -33,6 +34,8 @@ func (s *Store) WriteEvent(ctx, e EventRow) (int64, error)        // direct, ide
 func (s *Store) WriteSnapshot(ctx, at, audience, endpoint string, data []byte) error
 func (s *Store) QueryEvents(ctx, q EventQuery) ([]StoredEvent, int, error)
 func (s *Store) QueryObserverSamples(ctx, q ObserverSampleQuery) (ObserverSamplePage, error)
+func (s *Store) CaptureEventEvidence(ctx, collectorID string, now time.Time, p EvidencePolicy) (int, error)
+func (s *Store) QueryEventEvidence(ctx, q EvidenceQuery) (EventEvidence, error)
 func (s *Store) SummarizeEvents(ctx, since, until) (EventSummary, error)
 func (s *Store) SetDurableNotify(fn func(source, session string, seq uint64))
 func (s *Store) Degraded() string
@@ -197,6 +200,24 @@ column, so `id` has no index by default — and without an explicit one, every n
 `SELECT ... WHERE id = $1` seq-scans **every chunk** of this retention-less table. That cost
 lands entirely on the external consumer, since navlistener itself never queries by id. It would
 have been invisible from inside this repo.
+
+### Event evidence — `event_evidence` and `event_evidence_samples`
+
+Raw samples expire with `raw_retention`; events never do. So the daemon's evidence sweeper
+(`cmd/navlistener/evidence.go`, every 30 s) calls `CaptureEventEvidence`, which finds this
+collector's station events (`spoofing_suspected`, `station_assurance`, `jamming_detected`,
+`station_rf_degraded`, `antenna_fault`) that are at least the post-roll old, still within the
+horizon raw retention covers, and have no `event_evidence` row. For each it copies the station's
+`rf_samples` and `observer_samples` from ten minutes before to one minute after into
+`event_evidence_samples`, in one transaction with the bundle row, scoped like the sensor-history
+reads: an organization audience gets its organization's samples, a collection audience its
+collection's, an operator audience the collector's. The bundle row is inserted first, so a
+concurrent capture waits on its primary key and then skips. Capture state is entirely in the
+database: a failed sweep, a restart or a crash just leaves the event for the next sweep. Each
+origin is capped at the policy's sample bound, and a capped bundle is marked `truncated`.
+
+`gnss_events.collector_instance_id` is what lets each collector find its own events when several
+share a database; rows written before the column existed are never captured.
 
 ### `gnss_snapshots`
 

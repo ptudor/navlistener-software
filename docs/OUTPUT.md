@@ -378,6 +378,22 @@ cursors by `(server, principal, audience, authorization revision)`.
 Event types and their thresholds/severities are defined once, in `docs/INTEGRITY.md §2/§5` —
 this section is the wire shape only.
 
+**Station event evidence.** For `spoofing_suspected`, `station_assurance`, `jamming_detected`,
+`station_rf_degraded` and `antenna_fault`, the collector captures the station's stored inputs
+from ten minutes before to one minute after the confirmation: its `rf_samples` (NAV-SAT, MON-RF
+and receiver solutions) and `observer_samples` (board timing and environment), scoped to the
+event's audience. Capture runs about a minute after the event, once per event, and survives
+restarts while the inputs remain within raw retention. Authorized private audiences read it at
+**`GET /gnss/api/v2/event-evidence?id=<event id>[&limit=1..500][&offset=n]`**, where `id` is the
+event's own `id` in that audience. The response's `evidence` object holds the `event`,
+`window_start`, `window_end`, `captured_at`, the `rf_samples` and `board_samples` counts,
+`truncated` (more than 20,000 samples of one origin were in the window), `has_more`, and a page
+of `samples`. Each sample has its `origin` (`rf` or `board`), `kind`, `received_at`,
+`sample_time`, `session`, decimal `sequence`, `hardware_trust`, the exact stored body as base64
+`raw`, and its decoded `data`. An event without evidence, or one before the audience's current
+policy epoch, returns 404. Public audiences have no evidence, since the samples carry the
+receiver's coordinates.
+
 **Physical-SV grouping.** Subjects are satellite×signal keys, so one physical SV with
 two decoded signals (`E14@0` I/NAV and `E14@3` F/NAV, `C24@0` D1 and `C24@8` B-CNAV2) legitimately
 emits SV-level event types twice, typically at slightly different instants — per-signal health
@@ -415,7 +431,8 @@ CREATE TABLE gnss_events (
     severity   SMALLINT    NOT NULL DEFAULT 0,
     message    TEXT,
     raw        JSONB,
-    dedupe_key TEXT -- internal retry-idempotency key, never served
+    dedupe_key TEXT, -- internal retry-idempotency key, never served
+    collector_instance_id TEXT -- the collector that confirmed it; NULL on older rows
 );
 CREATE TABLE gnss_event_audience_cursors (
     audience TEXT PRIMARY KEY,
@@ -526,6 +543,14 @@ Push-path `nav_frames`, `observer_samples` and `rf_samples` rows share the same
 claim before issuing its durable ACK: a reconnect replay either commits its
 evidence and sequence together or finds the already committed sequence, rather
 than duplicating only one evidence family.
+
+`event_evidence` and `event_evidence_samples` hold the evidence behind station events (§3).
+They are retention-less, like the events, so an event's inputs outlive raw retention.
+`event_evidence` has one row per captured event, keyed by `(audience, audience_seq)`, with the
+station, window, capture time, per-origin counts and the truncation flag; it exists even when
+the window held no stored sample. `event_evidence_samples` copies the matching
+`rf_samples`/`observer_samples` rows, every receipt and provenance column included, with the
+event key and `origin`. It is a hypertable on the event time, compressed after 30 days.
 
 `reception_power_models` is durable point state, not a telemetry history. It
 keeps the latest versioned model blob per `source_id`, its update time and the

@@ -234,6 +234,9 @@ ALTER TABLE gnss_events ADD COLUMN IF NOT EXISTS audience_seq BIGINT;
 -- independently below.
 UPDATE gnss_events SET audience_seq = id WHERE audience_seq IS NULL;
 ALTER TABLE gnss_events ALTER COLUMN audience_seq SET NOT NULL;
+-- The collector that confirmed the event. Evidence capture selects a collector's own
+-- events when several share a database. Rows written before this column are NULL.
+ALTER TABLE gnss_events ADD COLUMN IF NOT EXISTS collector_instance_id TEXT;
 
 CREATE TABLE IF NOT EXISTS gnss_event_audience_cursors (
     audience TEXT PRIMARY KEY,
@@ -452,4 +455,81 @@ CREATE TABLE IF NOT EXISTS reception_power_models (
     updated_at TIMESTAMPTZ NOT NULL,
     model_id TEXT NOT NULL,
     data BYTEA NOT NULL
+);
+
+-- Durable evidence for station integrity events (docs/proposals/STATION-ASSURANCE.md
+-- §7, item 2.1). Raw samples expire with raw_retention while events are kept
+-- forever, so when a station event confirms, the collector copies the bounded
+-- window of that station's stored RF, receiver-solution and board samples here,
+-- scoped to the event's audience. One event_evidence row per captured event,
+-- keyed like the event's public identity; it exists even when the window held no
+-- stored sample, so capture runs once.
+CREATE TABLE IF NOT EXISTS event_evidence (
+    audience TEXT NOT NULL,
+    audience_seq BIGINT NOT NULL,
+    event_time TIMESTAMPTZ NOT NULL,
+    collector_instance_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    window_start TIMESTAMPTZ NOT NULL,
+    window_end TIMESTAMPTZ NOT NULL,
+    captured_at TIMESTAMPTZ NOT NULL,
+    rf_samples INTEGER NOT NULL,
+    board_samples INTEGER NOT NULL,
+    truncated BOOLEAN NOT NULL,
+    PRIMARY KEY (audience, audience_seq)
+);
+
+-- The copied samples: rf_samples and observer_samples share one column layout,
+-- kept here with origin naming the source table. No retention policy, like events.
+CREATE TABLE IF NOT EXISTS event_evidence_samples (
+    audience TEXT NOT NULL,
+    audience_seq BIGINT NOT NULL,
+    event_time TIMESTAMPTZ NOT NULL,
+    origin TEXT NOT NULL CHECK (origin IN ('rf', 'board')),
+    ts TIMESTAMPTZ NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL,
+    source_id TEXT NOT NULL,
+    organization_id       TEXT   NOT NULL,
+    enrollment_id         TEXT   NOT NULL,
+    collector_instance_id TEXT   NOT NULL,
+    collection_ids        TEXT[] NOT NULL,
+    feed_grants           TEXT[] NOT NULL,
+    declared_capabilities TEXT[] NOT NULL,
+    provenance            TEXT   NOT NULL,
+    credential_tier       TEXT   NOT NULL,
+    credential_fingerprint TEXT  NOT NULL,
+    attestation_tier      TEXT   NOT NULL,
+    hardware_trust        TEXT   NOT NULL,
+    manufacturer_authority_id TEXT,
+    commissioning_fingerprint TEXT NOT NULL,
+    operational_authority_id TEXT NOT NULL,
+    authority_evidence JSONB NOT NULL,
+    aggregate_use         TEXT   NOT NULL,
+    station_metadata      TEXT   NOT NULL,
+    event_visibility      TEXT   NOT NULL,
+    raw_export            TEXT   NOT NULL,
+    federation_peers      TEXT[] NOT NULL,
+    publish_signals       TEXT[] NOT NULL,
+    policy_revision       TEXT   NOT NULL,
+    sample_time TIMESTAMPTZ,
+    kind TEXT NOT NULL,
+    raw BYTEA NOT NULL,
+    data JSONB NOT NULL,
+    decoder_ver TEXT,
+    source_session TEXT,
+    source_seq BIGINT
+);
+SELECT create_hypertable('event_evidence_samples', 'event_time',
+    chunk_time_interval => INTERVAL '7 days', if_not_exists => TRUE);
+ALTER TABLE event_evidence_samples ADD COLUMN IF NOT EXISTS hardware_trust        TEXT   NOT NULL DEFAULT 'none';
+ALTER TABLE event_evidence_samples ADD COLUMN IF NOT EXISTS manufacturer_authority_id TEXT;
+ALTER TABLE event_evidence_samples ADD COLUMN IF NOT EXISTS operational_authority_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE event_evidence_samples ADD COLUMN IF NOT EXISTS authority_evidence JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE event_evidence_samples ADD COLUMN IF NOT EXISTS commissioning_fingerprint TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_event_evidence_samples_event
+    ON event_evidence_samples (audience, audience_seq, origin, received_at);
+ALTER TABLE event_evidence_samples SET (
+    timescaledb.compress,
+    timescaledb.compress_segmentby = 'audience,source_id',
+    timescaledb.compress_orderby = 'audience_seq, origin, received_at'
 );

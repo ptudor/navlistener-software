@@ -262,8 +262,19 @@ var (
 
 	StoreRFRowsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "navlistener_store_rf_rows_total",
-		Help: "Receiver RF samples committed to TimescaleDB, by reception/jamming kind.",
+		Help: "Receiver RF samples committed to TimescaleDB, by reception/jamming/solution kind.",
 	}, []string{"kind"})
+
+	// EvidenceBundlesTotal / EvidenceCaptureErrorsTotal make station event evidence
+	// capture visible: bundles written, and sweeps that failed and will retry.
+	EvidenceBundlesTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "navlistener_evidence_bundles_total",
+		Help: "Station event evidence bundles captured into durable storage.",
+	})
+	EvidenceCaptureErrorsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "navlistener_evidence_capture_errors_total",
+		Help: "Evidence capture sweeps that failed; uncaptured events are retried while their inputs remain.",
+	})
 
 	// StoreDroppedTotal counts frames dropped because the writer queue was full.
 	StoreDroppedTotal = promauto.NewCounter(prometheus.CounterOpts{
