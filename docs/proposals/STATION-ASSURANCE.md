@@ -202,8 +202,8 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 | # | Item | Status |
 |---|---|---|
 | 0.1 | Persist NAV-SAT and MON-RF evidence in `rf_samples` | done (`ba25c3f`) |
-| 0.2 | Report station RF event clears at info severity | done |
-| 0.3 | Separate onset and clear dwell for station machines; degraded first observations go through onset | planned |
+| 0.2 | Report station RF event clears at info severity | done (`df7c834`) |
+| 0.3 | Separate onset and clear dwell for station machines; degraded first observations go through onset | done |
 | 0.4 | `go/internal/integrity`: states, check contract, profile with versioned defaults, configuration hash, M-of-N filter, held recovery, fusion | planned |
 
 ### Phase 1 — receiver-solution checks

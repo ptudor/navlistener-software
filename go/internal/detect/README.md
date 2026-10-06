@@ -50,7 +50,13 @@ classifier here is a state machine over transitions, not a threshold test over a
 
 Every classifier shares one debounce discipline (`DebounceDuration`, 60 s by default), so a
 capability event and an orbit-disco event carry the same confirmation semantics and the same
-event contract (`docs/OUTPUT.md §3`).
+event contract (`docs/OUTPUT.md §3`). The station RF family adds two rules on top. A return to
+`ok` must hold for `StationClearDwell` (5 min), so an intermittent fault cannot alternate alarm
+and recovery every minute. And a station whose first observation is already degraded is not
+seeded silently: its machine starts at `unknown` and confirms the degradation after the onset
+debounce, so a station that starts inside a jammed or spoofed environment still raises its
+event. A degraded first sighting that clears before onset seeds `ok` silently. Every other
+family seeds its first observation silently, whatever it is.
 
 ---
 

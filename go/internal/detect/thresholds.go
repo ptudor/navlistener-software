@@ -199,6 +199,12 @@ const (
 // confirmed and emitted — the flap filter (docs/INTEGRITY.md §4).
 const DebounceDuration = 60 * time.Second
 
+// StationClearDwell is how long a station RF metric must stay at its nominal state
+// before the recovery is confirmed (docs/INTEGRITY.md §4). Degradation still confirms
+// after DebounceDuration. The longer clear keeps an intermittent jammer or a marginal
+// antenna from alternating alarm and recovery events every debounce window.
+const StationClearDwell = 5 * time.Minute
+
 // Severity codes (the SSE / gnss_events contract, docs/OUTPUT.md §2.2).
 const (
 	SevInfo     = 0

@@ -87,16 +87,69 @@ func New(debounce time.Duration) *Detector {
 	return &Detector{machines: map[string]*machine{}, debounce: debounce}
 }
 
+// stateUnknown is the confirmed state of a station machine whose first observation
+// was degraded: nothing was confirmed before it, so the onset event reports
+// old_value "unknown" rather than inventing a prior nominal state.
+const stateUnknown = "unknown"
+
+// dwellPolicy is how long a provisional state must persist before it is confirmed.
+// nominal is the healthy state of every metric in the family; empty means the family
+// has no nominal state, so a first observation seeds silently whatever it is and one
+// symmetric window applies (the SV, liveness and capability families). With a nominal
+// state, degradation (any change away from nominal) needs onset and the return to
+// nominal needs clear, and a degraded first observation is not seeded: it starts from
+// stateUnknown and must earn its onset like any other degradation, so a station that
+// starts inside a jammed or spoofed environment still raises its event.
+type dwellPolicy struct {
+	onset, clear time.Duration
+	nominal      string
+}
+
+// required is the dwell a change from the machine's current state to s must hold.
+func (p dwellPolicy) required(s string) time.Duration {
+	if p.nominal != "" && s == p.nominal {
+		return p.clear
+	}
+	return p.onset
+}
+
+// policy returns a family's dwell policy. Station RF machines clear after
+// StationClearDwell (or the debounce, if a test configured a longer one), so an
+// intermittent fault cannot alternate alarm and recovery every debounce window.
+func (d *Detector) policy(fam tickFamily) dwellPolicy {
+	if fam == familyStationRF {
+		clear := StationClearDwell
+		if d.debounce > clear {
+			clear = d.debounce
+		}
+		return dwellPolicy{onset: d.debounce, clear: clear, nominal: "ok"}
+	}
+	return dwellPolicy{onset: d.debounce, clear: d.debounce}
+}
+
 // observe folds a new classification for one (subject, metric) into its state
 // machine and reports whether this is a confirmed transition, with the old value.
-// The first-ever observation seeds the current state silently (no phantom event).
+// A first observation seeds the current state silently (no phantom event) unless the
+// family has a nominal state and the observation is degraded (see dwellPolicy).
 // gen is the current round of the caller's classifier family (see tickFamily).
-func (d *Detector) observe(subject, metric, newState string, now time.Time, gen uint64) (changed bool, old string) {
+func (d *Detector) observe(subject, metric, newState string, now time.Time, gen uint64, p dwellPolicy) (changed bool, old string) {
 	key := subject + "\x00" + metric
 	m := d.machines[key]
 	if m == nil {
-		d.machines[key] = &machine{current: newState, lastGen: gen, lastSeen: now}
-		return false, "" // seed; first sighting is not a transition
+		if p.nominal == "" || newState == p.nominal {
+			d.machines[key] = &machine{current: newState, lastGen: gen, lastSeen: now}
+			return false, "" // seed; first sighting is not a transition
+		}
+		// A degraded first sighting: nothing is confirmed yet, and the degradation
+		// must hold for the onset dwell like any other.
+		d.machines[key] = &machine{current: stateUnknown, provisional: newState, since: now, lastGen: gen, lastSeen: now}
+		return false, ""
+	}
+	if m.current == stateUnknown && p.nominal != "" && newState == p.nominal {
+		// The unconfirmed degradation reverted before onset: seed nominal silently,
+		// exactly as if it had been the first sighting.
+		m.current, m.provisional, m.lastGen, m.lastSeen = newState, "", gen, now
+		return false, ""
 	}
 	// the debounce promises a CONTINUOUS dwell — the provisional state
 	// must have been *observed* for the whole window, not merely have been
@@ -131,16 +184,17 @@ func (d *Detector) observe(subject, metric, newState string, now time.Time, gen 
 	heldFor := now.Sub(m.lastSeen)
 	m.lastGen = gen
 	m.lastSeen = now
+	dwell := p.required(newState)
 	switch {
 	case newState == m.current:
 		m.provisional = "" // pending change reverted
 		return false, ""
 	case newState == m.provisional:
-		if interrupted && heldFor >= d.debounce {
+		if interrupted && heldFor >= dwell {
 			m.since = now // held a full window: the dwell must start over
 			return false, ""
 		}
-		if now.Sub(m.since) >= d.debounce {
+		if now.Sub(m.since) >= dwell {
 			old = m.current
 			m.current, m.provisional = newState, ""
 			return true, old
@@ -208,9 +262,10 @@ func (d *Detector) TickStationLiveness(now time.Time, lastSeen map[string]int) [
 func (d *Detector) run(now time.Time, fam tickFamily, classify func(emit emitFunc)) []Event {
 	d.gen[fam]++
 	gen := d.gen[fam]
+	policy := d.policy(fam)
 	var events []Event
 	emit := func(subject, metric, newState string, ev func(old string) Event) {
-		if changed, old := d.observe(subject, metric, newState, now, gen); changed {
+		if changed, old := d.observe(subject, metric, newState, now, gen, policy); changed {
 			e := ev(old)
 			e.Time, e.SV = now, subject
 			events = append(events, e)

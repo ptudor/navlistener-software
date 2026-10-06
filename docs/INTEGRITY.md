@@ -169,6 +169,14 @@ on each update(metric_value):
         provisional_since = now
 ```
 
+**Station RF machines** (`jamming_detected`, `spoofing_suspected`, `antenna_fault`,
+`station_rf_degraded`) use separate onset and clear windows: a degradation confirms after the
+60 s debounce, and the return to `ok` after `StationClearDwell` (5 min). Their first observation
+seeds silently only when it is `ok`. A degraded first observation starts the machine at
+`unknown` and confirms after the onset window with `old_value` `unknown`, so a station that is
+already jammed when it (or the collector) starts still raises its event. The SV, SBAS,
+liveness and capability machines keep the symmetric window and silent first seed above.
+
 `classify` applies §2's thresholds with **hysteresis** where a metric is continuous (e.g. SISA
 must cross the band by a margin to flip and flip back, so a value dithering on the boundary
 doesn't alternate). Each emitted `Event` carries `params` (the interpolation values — SV,

@@ -343,7 +343,7 @@ Event object (SSE `data:` payload and API rows; the JSON key is `type` — the D
 | `time` | RFC3339 | confirmation time (post-debounce) |
 | `sv` | string | `name@sigid` |
 | `type` | string | event type (INTEGRITY.md §5 — the authoritative vocabulary) |
-| `old_value`,`new_value` | string | pre/post state |
+| `old_value`,`new_value` | string | pre/post state. A station RF event whose machine had no confirmed state reports `old_value` `unknown` ([INTEGRITY.md §4](INTEGRITY.md#4-the-detector-state-machine)) |
 | `severity` | int | §2.2 |
 | `message` | string | English fallback headline |
 | `params` | object | interpolation values for client-side i18n |

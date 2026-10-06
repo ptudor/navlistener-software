@@ -83,9 +83,13 @@ func TestRFMissingBandTelemetryHoldsAlarm(t *testing.T) {
 	if evs := d.TickStations(t0.Add(230*time.Second), missingBands); len(evs) != 0 {
 		t.Fatalf("missing band evidence confirmed a recovery: %+v", evs)
 	}
-	// Actual clear evidence should still recover the held machine.
+	// Actual clear evidence should still recover the held machine, after the
+	// station clear dwell rather than the shorter onset debounce.
 	d.TickStations(t0.Add(240*time.Second), clear)
-	e, ok := find(d.TickStations(t0.Add(310*time.Second), clear), "jamming_detected")
+	if evs := d.TickStations(t0.Add(310*time.Second), clear); len(evs) != 0 {
+		t.Fatalf("recovery confirmed inside the clear dwell: %+v", evs)
+	}
+	e, ok := find(d.TickStations(t0.Add(240*time.Second+StationClearDwell), clear), "jamming_detected")
 	if !ok || e.NewValue != "ok" {
 		t.Fatalf("measured clear state did not recover held alarm: %+v", e)
 	}
@@ -269,5 +273,66 @@ func TestRFRecoverySeverityInfo(t *testing.T) {
 				t.Fatalf("clear = %+v, want ok/%d", cleared, SevInfo)
 			}
 		})
+	}
+}
+
+// TestRFClearDwellAsymmetric guards the station dwell policy: degradation confirms after
+// the onset debounce, and the return to nominal must hold for StationClearDwell.
+func TestRFClearDwellAsymmetric(t *testing.T) {
+	d := New(0)
+	t0 := time.Unix(1_700_000_000, 0)
+	clear, open := station("s", band(0, 0, 2, 0)), station("s", band(0, 0, 4, 0))
+	d.TickStations(t0, clear)
+	d.TickStations(t0.Add(15*time.Second), open)
+	if _, ok := find(d.TickStations(t0.Add(15*time.Second+DebounceDuration), open), "antenna_fault"); !ok {
+		t.Fatal("antenna fault did not confirm after the onset debounce")
+	}
+	recoverAt := t0.Add(2 * time.Minute)
+	d.TickStations(recoverAt, clear)
+	for at := 15 * time.Second; at < StationClearDwell; at += 15 * time.Second {
+		if e, ok := find(d.TickStations(recoverAt.Add(at), clear), "antenna_fault"); ok {
+			t.Fatalf("recovery confirmed %s into a %s clear dwell: %+v", at, StationClearDwell, e)
+		}
+	}
+	e, ok := find(d.TickStations(recoverAt.Add(StationClearDwell), clear), "antenna_fault")
+	if !ok || e.OldValue != "fault" || e.NewValue != "ok" {
+		t.Fatalf("recovery after the clear dwell = %+v (ok=%v)", e, ok)
+	}
+}
+
+// TestRFDegradedFirstObservationRaises guards the cold-start case: a station whose
+// first observation is already jammed must raise jamming_detected after the onset
+// dwell, reporting the unconfirmed prior state as "unknown" rather than seeding the
+// jammed state silently.
+func TestRFDegradedFirstObservationRaises(t *testing.T) {
+	d := New(0)
+	t0 := time.Unix(1_700_000_000, 0)
+	jammed := station("s", band(2500, 0, 2, 0))
+	if evs := d.TickStations(t0, jammed); len(evs) != 0 {
+		t.Fatalf("first observation emitted immediately: %+v", evs)
+	}
+	if evs := d.TickStations(t0.Add(30*time.Second), jammed); len(evs) != 0 {
+		t.Fatalf("confirmed before the onset dwell: %+v", evs)
+	}
+	e, ok := find(d.TickStations(t0.Add(DebounceDuration), jammed), "jamming_detected")
+	if !ok || e.OldValue != stateUnknown || e.NewValue != "crit" || e.Severity != SevCritical {
+		t.Fatalf("cold-start jamming = %+v (ok=%v), want unknown→crit/2", e, ok)
+	}
+}
+
+// TestRFUnconfirmedFirstDegradationRevertsSilently guards against a phantom recovery: a
+// degraded first observation that returns to nominal before its onset confirms seeds
+// nominal silently, exactly as a nominal first sighting would.
+func TestRFUnconfirmedFirstDegradationRevertsSilently(t *testing.T) {
+	d := New(0)
+	t0 := time.Unix(1_700_000_000, 0)
+	d.TickStations(t0, station("s", band(2500, 0, 2, 0)))
+	for at := 15 * time.Second; at <= 10*time.Minute; at += 15 * time.Second {
+		if evs := d.TickStations(t0.Add(at), station("s", band(0, 0, 2, 0))); len(evs) != 0 {
+			t.Fatalf("unconfirmed degradation produced events at +%s: %+v", at, evs)
+		}
+	}
+	if band, _ := d.currentBand("s", "jamming"); band != "ok" {
+		t.Fatalf("jamming band = %q, want ok", band)
 	}
 }

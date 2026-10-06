@@ -207,7 +207,9 @@ must design around:
    genuine baseline to compare against and may report "clean." Our defense against this is
    **cross-receiver corroboration** and **fleet baselines**: a station that boots into a spoofed
    RF field disagrees with its neighbours and with its own historical quiet baseline, which we hold
-   centrally and it cannot.
+   centrally and it cannot. The station detector itself does not seed a degraded first
+   observation as the normal state; it raises the event from `unknown` after the onset window
+   (`docs/INTEGRITY.md §4`).
 2. **Black-box opacity.** We cannot audit the vendor's thresholds, and they change across firmware.
    By deriving our own metrics from the raw MON-RF/RAWX numbers we get an explainable, versioned,
    fleet-consistent detector — the same reason we decode raw nav frames centrally instead of
