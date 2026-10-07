@@ -303,17 +303,25 @@ func (s *Store) QueryEventEvidence(ctx context.Context, q EvidenceQuery) (EventE
 	if len(raw) > 0 {
 		out.Event.Params = json.RawMessage(raw)
 	}
+	// The copied bodies are only as bounded as the wire that carried them was
+	// when they were stored, so the same guards as the observer-history reader
+	// apply: a body over the per-sample cap is nulled before transfer and fails
+	// the page, and the page stops at the shared byte budget with HasMore.
 	rows, err := s.pool.Query(ctx, `SELECT origin, kind, received_at, sample_time, source_session, source_seq,
-			hardware_trust, raw, data, local_received_at, wall_clock_stamp
+			hardware_trust,
+			CASE WHEN octet_length(raw) <= $6 THEN raw END,
+			CASE WHEN octet_length(data::text) <= $6 THEN data END,
+			local_received_at, wall_clock_stamp
 		FROM event_evidence_samples
 		WHERE audience = $1 AND audience_seq = $2 AND event_time = $3
 		ORDER BY origin DESC, received_at, ts, source_session COLLATE "C" NULLS FIRST, source_seq NULLS FIRST
-		LIMIT $4 OFFSET $5`, key, q.Seq, out.Event.Time, q.Limit+1, q.Offset)
+		LIMIT $4 OFFSET $5`, key, q.Seq, out.Event.Time, q.Limit+1, q.Offset, historyMaxSampleBytes)
 	if err != nil {
 		return out, fmt.Errorf("evidence samples: %w", err)
 	}
 	defer rows.Close()
 	out.Samples = []EvidenceSample{}
+	var budget historyPageBudget
 	for rows.Next() {
 		if len(out.Samples) == q.Limit {
 			out.HasMore = true
@@ -325,9 +333,22 @@ func (s *Store) QueryEventEvidence(ctx context.Context, q EvidenceQuery) (EventE
 			&sample.HardwareTrust, &sample.Raw, &sample.Data, &sample.LocalReceivedAt, &sample.WallClockStamp); err != nil {
 			return out, fmt.Errorf("evidence samples scan: %w", err)
 		}
+		// raw is NOT NULL in the table, so a nil here is the size guard above
+		// (pgx scans a NULL bytea as nil and an empty one as a non-nil empty slice).
+		if sample.Raw == nil || !validSampleBody(sample.Data) {
+			return EventEvidence{}, fmt.Errorf("event evidence contains an invalid or oversized sample")
+		}
 		if seq != nil {
 			value := strconv.FormatUint(uint64(*seq), 10)
 			sample.Sequence = &value
+		}
+		fits, err := budget.admit(sample)
+		if err != nil {
+			return EventEvidence{}, fmt.Errorf("evidence samples encode: %w", err)
+		}
+		if !fits {
+			out.HasMore = true
+			break
 		}
 		out.Samples = append(out.Samples, sample)
 	}

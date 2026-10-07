@@ -224,7 +224,7 @@ func TestObserverHistoryPostgres(t *testing.T) {
 	t.Run("oversized sample", func(t *testing.T) {
 		q := base
 		q.Observer = "oversized"
-		insert("collector-a", "org-a", q.Observer, q.Kind, []string{}, stamp, nil, `{"value":"`+strings.Repeat("a", observerHistoryMaxSampleBytes)+`"}`)
+		insert("collector-a", "org-a", q.Observer, q.Kind, []string{}, stamp, nil, `{"value":"`+strings.Repeat("a", historyMaxSampleBytes)+`"}`)
 		if _, err := s.QueryObserverSamples(ctx, q); err == nil {
 			t.Fatal("oversized record accepted")
 		}

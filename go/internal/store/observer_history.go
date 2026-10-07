@@ -12,13 +12,47 @@ import (
 )
 
 const (
-	ObserverHistoryMaxLimit       = 500
-	ObserverHistoryMaxOffset      = 100_000
-	ObserverHistoryMaxWindow      = 30 * 24 * time.Hour
-	ObserverHistoryMaxIDBytes     = 4096
-	observerHistoryMaxSampleBytes = 64 * 1024
-	observerHistoryMaxPageBytes   = 4 * 1024 * 1024
+	ObserverHistoryMaxLimit   = 500
+	ObserverHistoryMaxOffset  = 100_000
+	ObserverHistoryMaxWindow  = 30 * 24 * time.Hour
+	ObserverHistoryMaxIDBytes = 4096
+	// historyMaxSampleBytes caps one stored body (a sample's decoded JSON, an
+	// evidence sample's raw wire body) the history readers will serve, and
+	// historyMaxPageBytes caps the encoded bytes of one page. Both apply to
+	// observer history and event evidence alike.
+	historyMaxSampleBytes = 64 * 1024
+	historyMaxPageBytes   = 4 * 1024 * 1024
 )
+
+// historyPageBudget bounds one page of stored samples — observer history and
+// event evidence alike — by its encoded bytes, so a page of large stored rows is
+// never assembled into one response the read API's write deadline cannot
+// deliver. The reader stops before the sample that would cross the budget and
+// reports HasMore; the row count limit alone cannot bound the bytes, because a
+// stored body may be anything up to the per-sample cap.
+type historyPageBudget struct{ used int }
+
+// admit encodes sample as the page will and charges it to the budget. False
+// means the page is full and sample belongs to the next one.
+func (b *historyPageBudget) admit(sample any) (bool, error) {
+	encoded, err := json.Marshal(sample)
+	if err != nil {
+		return false, err
+	}
+	if b.used+len(encoded) > historyMaxPageBytes {
+		return false, nil
+	}
+	b.used += len(encoded)
+	return true, nil
+}
+
+// validSampleBody reports whether a stored JSON body is present, within the
+// per-sample cap and well formed. The readers' SQL nulls a body over the cap
+// before it is transferred, so an absent body here is an oversized or corrupt
+// stored record, and the page fails rather than silently skipping it.
+func validSampleBody(body json.RawMessage) bool {
+	return len(body) > 0 && len(body) <= historyMaxSampleBytes && json.Valid(body)
+}
 
 // ObserverSampleQuery carries a server-authorized audience, never a scope taken
 // directly from query parameters. The caller must enforce current read grants
@@ -91,13 +125,14 @@ func (s *Store) QueryObserverSamples(ctx context.Context, q ObserverSampleQuery)
 		since = since.Add(time.Microsecond)
 	}
 	args := []any{q.CollectorID, q.Observer, q.Kind, since, q.Until.Truncate(time.Microsecond), q.Limit + 1, q.Offset}
+	args = append(args, historyMaxSampleBytes)
 	scope := ""
 	switch q.Audience.Kind {
 	case identity.AudienceOrganization:
-		scope = " AND organization_id = $8"
+		scope = " AND organization_id = $9"
 		args = append(args, q.Audience.ID)
 	case identity.AudienceCollection:
-		scope = " AND $8 = ANY(collection_ids)"
+		scope = " AND $9 = ANY(collection_ids)"
 		args = append(args, q.Audience.ID)
 	}
 	// Protect the reader from oversized historical records before transferring
@@ -106,7 +141,7 @@ func (s *Store) QueryObserverSamples(ctx context.Context, q ObserverSampleQuery)
 		CASE WHEN octet_length(source_session) <= 256 THEN source_session END,
 		source_seq,
 		CASE WHEN octet_length(hardware_trust) <= 32 THEN hardware_trust END,
-		CASE WHEN octet_length(data::text) <= 65536 AND
+		CASE WHEN octet_length(data::text) <= $8 AND
 			(source_session IS NULL OR octet_length(source_session) <= 256)
 			THEN data END
 		FROM observer_samples
@@ -119,7 +154,7 @@ func (s *Store) QueryObserverSamples(ctx context.Context, q ObserverSampleQuery)
 		return page, fmt.Errorf("observer history query: %w", err)
 	}
 	defer rows.Close()
-	pageBytes := 0
+	var budget historyPageBudget
 	for rows.Next() {
 		if len(page.Samples) == q.Limit {
 			page.HasMore = true
@@ -131,7 +166,7 @@ func (s *Store) QueryObserverSamples(ctx context.Context, q ObserverSampleQuery)
 		if err := rows.Scan(&sample.ReceivedAt, &sample.SampleTime, &sample.Session, &seq, &trust, &sample.Details); err != nil {
 			return ObserverSamplePage{}, fmt.Errorf("observer history scan: %w", err)
 		}
-		if trust == nil || len(sample.Details) == 0 || len(sample.Details) > observerHistoryMaxSampleBytes || !json.Valid(sample.Details) {
+		if trust == nil || !validSampleBody(sample.Details) {
 			return ObserverSamplePage{}, fmt.Errorf("observer history contains an invalid or oversized sample")
 		}
 		sample.HardwareTrust = *trust
@@ -139,15 +174,14 @@ func (s *Store) QueryObserverSamples(ctx context.Context, q ObserverSampleQuery)
 			value := strconv.FormatUint(uint64(*seq), 10)
 			sample.Sequence = &value
 		}
-		encoded, err := json.Marshal(sample)
+		fits, err := budget.admit(sample)
 		if err != nil {
 			return ObserverSamplePage{}, fmt.Errorf("observer history encode: %w", err)
 		}
-		if pageBytes+len(encoded) > observerHistoryMaxPageBytes {
+		if !fits {
 			page.HasMore = true
 			break
 		}
-		pageBytes += len(encoded)
 		page.Samples = append(page.Samples, sample)
 	}
 	if err := rows.Err(); err != nil {

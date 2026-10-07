@@ -14,7 +14,7 @@ the live hot path: a slow database degrades the historian, never live decoding.
 | `store.go` | `Store`, the batched `CopyFrom` writer goroutine, schema bootstrap, retention/compression policies, and the degraded-health probe. |
 | `events.go` | `EventRow`, `StoredEvent`, `EventQuery`, event writes and the windowed read API. |
 | `observer_history.go` | Private sensor samples filtered by receipt-time audience and collector, with bounded pages. |
-| `evidence.go` | Station event evidence: `CaptureEventEvidence` copies an event's stored input window into retention-less tables; `QueryEventEvidence` pages it back. |
+| `evidence.go` | Station event evidence: `CaptureEventEvidence` copies an event's stored input window into retention-less tables; `QueryEventEvidence` pages it back under the same per-sample cap and page byte budget as the sensor history. |
 | `schema.sql` | The complete DDL — three hypertables, the dedup ledger, indexes, compression settings, and the `pg_notify` trigger. Applied at startup. |
 | `*_test.go` | Batching, dedup, policy application, event query bounds, and the degraded path. |
 | `README.md` | This file. |
