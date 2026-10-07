@@ -111,7 +111,14 @@
 _Static_assert(RD_BODY_MAX <= MAX_RAW, "a ReceptionData body must fit a record");
 #define GNF_RECORD (RECORD_HDR + MAX_RAW)
 #define DRAIN_BATCH 512
-#define KEEPALIVE_S 30        /* PING when idle this long, to stay under the collector's idle timeout */
+/* KEEPALIVE_S: PING when idle this long, to stay under the collector's idle timeout. It also
+ * sizes the collector socket's receive/send timeouts (2x) and the reader's poll window.
+ * Overridable at compile time (-DKEEPALIVE_S=1) so a host test can drive the keepalive path,
+ * including a PING through the zstd stream, in seconds instead of minutes; the fleet build
+ * keeps the default. */
+#ifndef KEEPALIVE_S
+#define KEEPALIVE_S 30
+#endif
 #define ACK_STALL_S 600 /* cycle the connection when frames are outstanding and the
                                * durable-ack watermark has not moved this long — reconnect replay is the
                                * only path that redelivers batches the collector shed during a DB outage.
