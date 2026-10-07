@@ -56,12 +56,27 @@ func (s *Store) Degraded() string
 
 `Enqueue` is non-blocking. When the queue is full, the frame is **dropped and counted**
 (`store_dropped_total`) — an explicit, metered policy rather than blocking ingest or growing
-without bound.
+without bound. The first drop after a clean flush cycle logs one warning; the rest of that
+streak is visible only through the counter and, from the second consecutive overflowing cycle,
+through `Degraded()`.
 
 This is the deliberate priority ordering: **live decoding and the integrity monitor matter more
 than the forensic archive.** If the database stalls, the daemon keeps decoding, keeps detecting,
 and keeps serving; what degrades is history. `Degraded()` surfaces that to `/healthz` as
 `degraded` (HTTP 200, not 503) so a DB blip can't flap rc.d into a restart loop.
+
+### The pool and the writer's connection
+
+One `pgxpool` serves the batched writer, the direct event/snapshot/evidence writers and every
+historian query the read API runs. Its size comes from `[store].max_conns` (or the DSN's
+`pool_max_conns`, or the default of 8 — `config.Store.PoolConfig` is the one place it is
+decided). The writer goroutine **holds one connection of that pool for its whole life** —
+acquired when `Run` starts, handed back and re-acquired after a failed persist (a context cut
+mid-statement closes the connection underneath it), released before the pool closes — so a
+burst of API reads that occupies every other connection can never make the writer wait behind
+them through its retry budget and drop the batch. The read side is bounded separately in
+`serve` (query slots for the public event endpoints, history slots for the authenticated
+reads), both sized below the pool.
 
 One frame never reaches the queue at all: a `NavFrame` with a **nil `Raw`**. `raw` is
 `BYTEA NOT NULL`, so a nil would map to SQL NULL and **poison the whole batch** — bisected,
@@ -84,6 +99,18 @@ The writer's failure handling is layered, and each layer has a different account
 The claim-and-copy being one transaction is what makes that last row safe: bisection, retry, and
 retained re-flush all preserve the invariant that a dedup claim exists if and only if the row
 committed.
+
+`Degraded()` watches all three ways frames are discarded, each with the same anti-flap rule —
+one bad flush cycle never degrades, two consecutive ones do:
+
+| Streak | A cycle counts when | Cleared by |
+|---|---|---|
+| Flush failures | the flush exhausted its retries or wall budget | a successful persist, or the idle pool probe |
+| Queue overflow | `Enqueue` dropped any frame since the previous cycle (a database that succeeds too slowly to keep up) | a cycle with no drops, or a full ingest-quiet window |
+| Quarantine flood | more than a tenth of the rows the cycle flushed were quarantined | a cycle below that share, or a full ingest-quiet window |
+
+A lone poison row in a healthy batch is what bisection is for and never degrades health; a
+batch that is mostly poison is a systemic fault the operator must see.
 
 ### `nav_frames` — the forensic record
 

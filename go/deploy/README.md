@@ -120,6 +120,27 @@ and braces — but rotation must target the supervisor regardless.
 Rotation: 7 generations, at 10 MB, mode 640, owned by the daemon user, with `J` (bzip2) and `C`
 (create if missing).
 
+### Reverse-proxy request limits
+
+The read API binds to loopback behind the TLS reverse proxy (`docs/OUTPUT.md §5`). The collector
+bounds how many historian queries run at once — four for the credential-free
+`/gnss/api/events*` endpoints, eight for the authenticated history and evidence reads — and
+answers `503` + `Retry-After: 1` beyond that, but it never sees the client address, so one
+client could keep every slot busy and lock everyone else out. Per-client fairness therefore
+belongs in the reverse proxy, keyed on the client address (`limit_req`/`limit_conn` or the
+equivalent in whichever proxy fronts the collector):
+
+| Path | Request rate per client | Concurrent connections per client |
+|---|---|---|
+| `/gnss/api/events` (events, summary, conditions) | 5 per second, burst 10 | 4 |
+| `/gnss/api/v2/` (feeds, observer samples, event evidence) | 5 per second, burst 20 | 8 |
+
+Keep `/gnss/events` (the SSE stream) out of that small per-client connection cap, or size it for
+the number of streams one dashboard opens, and keep response buffering off on it as §5 requires.
+The rates are a starting point: a dashboard polls the feeds every 30 s and the summary a few
+times a minute, so single-digit requests per second per client is generous for real use and
+still far below what fills the collector's slots.
+
 ### Deploying a new binary
 
 ```sh

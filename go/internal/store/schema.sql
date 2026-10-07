@@ -253,6 +253,10 @@ CREATE INDEX IF NOT EXISTS idx_gnss_events_audience_time ON gnss_events (audienc
 CREATE INDEX IF NOT EXISTS idx_gnss_events_sv_time       ON gnss_events (sv, time DESC);
 CREATE INDEX IF NOT EXISTS idx_gnss_events_type_time     ON gnss_events (event_type, time DESC);
 CREATE INDEX IF NOT EXISTS idx_gnss_events_severity_time ON gnss_events (severity, time DESC);
+-- The current-conditions snapshot (conditions.go) selects one audience's rows of
+-- the eight station-condition types since the policy epoch; this lets it range
+-- over exactly those instead of filtering the audience's whole history.
+CREATE INDEX IF NOT EXISTS idx_gnss_events_audience_type_time ON gnss_events (audience, event_type, time DESC);
 -- the notify contract directs external LISTENers to fetch the full row by id
 -- (the trigger below carries only id/sv/type/severity). A hypertable PK must include the
 -- partition column (time), so id has no index by default; without this, every notify-driven

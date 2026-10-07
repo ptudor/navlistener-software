@@ -435,3 +435,67 @@ func TestEventsSummaryIdle(t *testing.T) {
 		t.Errorf("idle_message = %q, want the 6-hour message", msg)
 	}
 }
+
+// blockedEvents fails the test if any query reaches it: a request refused for
+// lack of a query slot must be answered before the historian is touched.
+type blockedEvents struct{ t *testing.T }
+
+func (b blockedEvents) QueryEvents(context.Context, store.EventQuery) ([]store.StoredEvent, int, error) {
+	b.t.Error("busy request reached QueryEvents")
+	return nil, 0, nil
+}
+
+func (b blockedEvents) SummarizeEventsForAudience(context.Context, string, time.Time, time.Time) (store.EventSummary, error) {
+	b.t.Error("busy request reached SummarizeEventsForAudience")
+	return store.EventSummary{}, nil
+}
+
+func (b blockedEvents) CurrentConditions(context.Context, string, time.Time) (store.ConditionSnapshot, error) {
+	b.t.Error("busy request reached CurrentConditions")
+	return store.ConditionSnapshot{}, nil
+}
+
+// TestEventsEndpointsRejectWhenQuerySlotsBusy guards the three credential-free
+// historian endpoints share a bounded query semaphore: with every slot taken
+// they answer 503 + Retry-After: 1 without reaching the EventStore (mirroring
+// the observer-samples "busy" case), and a served request returns its slot.
+func TestEventsEndpointsRejectWhenQuerySlotsBusy(t *testing.T) {
+	paths := []string{"/gnss/api/events", "/gnss/api/events/summary", "/gnss/api/events/conditions"}
+	for _, path := range paths {
+		t.Run("busy "+path, func(t *testing.T) {
+			s := newTestServer(nil, blockedEvents{t})
+			for i := 0; i < cap(s.querySlots); i++ {
+				s.querySlots <- struct{}{}
+			}
+			rr := httptest.NewRecorder()
+			s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+			if rr.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status %d, want 503: %s", rr.Code, rr.Body.String())
+			}
+			if rr.Header().Get("Retry-After") != "1" {
+				t.Fatalf("Retry-After = %q, want 1", rr.Header().Get("Retry-After"))
+			}
+			if len(s.querySlots) != cap(s.querySlots) {
+				t.Fatal("a refused request changed slot occupancy")
+			}
+		})
+	}
+	for _, path := range paths {
+		t.Run("served "+path, func(t *testing.T) {
+			backend := &fakeConditions{}
+			backend.summary = store.EventSummary{ByType: map[string]int{}, ByConstellation: map[string]int{}}
+			s := newTestServer(nil, backend)
+			for i := 0; i < cap(s.querySlots)-1; i++ {
+				s.querySlots <- struct{}{}
+			}
+			rr := httptest.NewRecorder()
+			s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status %d with one free slot, want 200: %s", rr.Code, rr.Body.String())
+			}
+			if len(s.querySlots) != cap(s.querySlots)-1 {
+				t.Fatal("served request did not return its slot")
+			}
+		})
+	}
+}

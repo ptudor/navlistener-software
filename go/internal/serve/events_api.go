@@ -28,6 +28,14 @@ const (
 	eventsMaxOffset    = 1_000_000
 	eventsQueryTimeout = 5 * time.Second
 
+	// eventsQuerySlots is how many events/summary/conditions queries may run
+	// at once; the rest answer 503 + Retry-After: 1 without touching the
+	// historian. Sized well below the historian pool's default of eight so a
+	// flood of credential-free requests cannot hold every connection (the
+	// writer keeps its own regardless). Per-client fairness is the fronting
+	// proxy's job (docs/OUTPUT.md §5) — the collector never sees the client.
+	eventsQuerySlots = 4
+
 	// client-supplied filter strings, unlike receiver-originated ones
 	// (bounded by sanitize/maxStringField=256), reached the DB with no length
 	// bound — a multi-MB sv= became a large bind value compared per row.
@@ -148,6 +156,14 @@ func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 		Limit:       clampInt(limit, 1, eventsMaxLimit),
 		Offset:      clampInt(offset, 0, eventsMaxOffset),
 	}
+	select {
+	case s.querySlots <- struct{}{}:
+		defer func() { <-s.querySlots }()
+	default:
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusServiceUnavailable, "events history busy; retry request")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), eventsQueryTimeout)
 	defer cancel()
 	events, total, err := s.events.QueryEvents(ctx, query)
@@ -190,8 +206,6 @@ func (s *Server) serveEventsSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	hours := clampInt(hoursRaw, 1, summaryMaxHours)
 	now := s.now()
-	ctx, cancel := context.WithTimeout(r.Context(), eventsQueryTimeout)
-	defer cancel()
 	since := now.Add(-time.Duration(hours) * time.Hour)
 	if s.policyEpochs != nil {
 		_, visibleAt := s.policyEpochs.Current(view.audience.Key())
@@ -199,6 +213,16 @@ func (s *Server) serveEventsSummary(w http.ResponseWriter, r *http.Request) {
 			since = visibleAt
 		}
 	}
+	select {
+	case s.querySlots <- struct{}{}:
+		defer func() { <-s.querySlots }()
+	default:
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusServiceUnavailable, "events history busy; retry request")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), eventsQueryTimeout)
+	defer cancel()
 	sum, err := s.events.SummarizeEventsForAudience(ctx, view.audience.Key(), since, now)
 	if err != nil {
 		s.log.Error("events summary failed", "error", err)

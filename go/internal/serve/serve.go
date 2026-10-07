@@ -78,10 +78,17 @@ type Server struct {
 	eventEvidence     EventEvidenceStore
 	historyCollector  string
 	historySlots      chan struct{}
-	sources           []config.Source
-	log               *slog.Logger
-	now               func() time.Time
-	audience          identity.Audience
+	// querySlots bounds the concurrency of the three historian-backed event
+	// endpoints the public audience reaches without a credential (events,
+	// summary, conditions), the same way historySlots bounds the authenticated
+	// history and evidence reads: each request holds a pool connection for up
+	// to eventsQueryTimeout, and without a bound a modest flood held every
+	// connection the historian's writer needs.
+	querySlots chan struct{}
+	sources    []config.Source
+	log        *slog.Logger
+	now        func() time.Time
+	audience   identity.Audience
 
 	fast time.Duration
 	slow time.Duration
@@ -142,6 +149,7 @@ func NewForAudience(addr string, st *state.Store, events EventStore, sources []c
 		brokers:      map[string]*Broker{},
 		policyEpochs: audience.NewPolicyEpochs(time.Now()),
 		historySlots: make(chan struct{}, 8),
+		querySlots:   make(chan struct{}, eventsQuerySlots),
 	}
 	s.broker.log = log // SSE marshal failures log through the server's real logger
 	s.bindBroker(s.broker, selected)

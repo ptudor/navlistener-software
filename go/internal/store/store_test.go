@@ -55,9 +55,15 @@ func TestRequiredColumnsCoversNavFrames(t *testing.T) {
 // row builds a CopyFrom row whose source_id (index 2) marks it poison when "bad".
 func row(id string) []any { return []any{nil, nil, id} }
 
+// legacyStore builds a pool-free Store on the legacy copy-seam path for the
+// persistRetry policy tests.
+func legacyStore(copy copyRowsFunc) *Store {
+	return &Store{retry: testRetry, copy: copy, log: quietLog()}
+}
+
 func TestPersistRetrySuccess(t *testing.T) {
 	copy := func(context.Context, [][]any) (int64, error) { return 3, nil }
-	w, d := persistRetry(context.Background(), testRetry, copy, [][]any{row("a"), row("b"), row("c")}, quietLog())
+	w, d := legacyStore(copy).persistRetry(context.Background(), [][]any{row("a"), row("b"), row("c")})
 	if w != 3 || d != 0 {
 		t.Errorf("written=%d dropped=%d, want 3/0", w, d)
 	}
@@ -71,7 +77,7 @@ func TestPersistRetryTransientThenSuccess(t *testing.T) {
 		}
 		return int64(len(rows)), nil
 	}
-	w, d := persistRetry(context.Background(), testRetry, copy, [][]any{row("a"), row("b")}, quietLog())
+	w, d := legacyStore(copy).persistRetry(context.Background(), [][]any{row("a"), row("b")})
 	if w != 2 || d != 0 {
 		t.Errorf("written=%d dropped=%d, want 2/0 after retries", w, d)
 	}
@@ -82,7 +88,7 @@ func TestPersistRetryTransientThenSuccess(t *testing.T) {
 
 func TestPersistRetryGivesUp(t *testing.T) {
 	copy := func(context.Context, [][]any) (int64, error) { return 0, errors.New("db down") }
-	w, d := persistRetry(context.Background(), testRetry, copy, [][]any{row("a"), row("b")}, quietLog())
+	w, d := legacyStore(copy).persistRetry(context.Background(), [][]any{row("a"), row("b")})
 	if w != 0 || d != 2 {
 		t.Errorf("written=%d dropped=%d, want 0/2 (dropped after retries)", w, d)
 	}
@@ -100,7 +106,7 @@ func TestPersistRetryQuarantinesPoison(t *testing.T) {
 		return int64(len(rows)), nil
 	}
 	rows := [][]any{row("a"), row("b"), row("bad"), row("d")}
-	w, d := persistRetry(context.Background(), testRetry, copy, rows, quietLog())
+	w, d := legacyStore(copy).persistRetry(context.Background(), rows)
 	if w != 3 || d != 1 {
 		t.Errorf("written=%d dropped=%d, want 3/1 (poison isolated, rest written)", w, d)
 	}

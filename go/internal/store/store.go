@@ -206,6 +206,36 @@ type Store struct {
 	// threshold after one cycle instead of the intended two consecutive ones.
 	flushFailStreak atomic.Int64
 
+	// The other two ways the historian discards frames feed Degraded() through
+	// the same two-consecutive-cycles rule. A flush that merely succeeds slowly
+	// never fails, yet while the writer is blocked in it the queue overflows and
+	// Enqueue drops every further frame; and a batch whose rows are mostly
+	// poison is quarantined row by row. Both used to be counters only.
+	//
+	// cycleOverflow counts Enqueue's queue-full drops since the previous cycle
+	// ended (atomic: Enqueue runs on the ingest goroutines); cycleQuarantined
+	// counts the rows this cycle quarantined (Run-goroutine-only, like
+	// lastIdleProbe). endCycle samples both and advances or resets the streaks.
+	cycleOverflow    atomic.Int64
+	cycleQuarantined int
+	overflowStreak   atomic.Int64
+	quarantineStreak atomic.Int64
+
+	// writer is the connection the Run goroutine holds for its whole life so
+	// the forensic writer never waits behind API reads for a pool slot — the
+	// pool is shared with every historian query the serve front runs, and a
+	// read flood that held every connection used to stall the writer through
+	// its retry budget and drop the batch. Acquired at Run start (or on the
+	// first flush if that fails), handed back after any persist error (a
+	// context cut mid-statement closes the underlying connection, and the pool
+	// discards a closed one on Release) and re-acquired by the next attempt,
+	// and released before the pool is closed. writerMu is held by the Run
+	// goroutine across every persist and by Close, which a read-only consumer
+	// or a test may call without ever starting Run: pool.Close blocks until
+	// every acquired connection is back, so whoever closes must release it.
+	writerMu sync.Mutex
+	writer   *pgxpool.Conn
+
 	// ping probes pool liveness for the regression fix idle-recovery check
 	// (s.pingPool in production). It is a seam because tests construct a Store
 	// with a nil pool; a nil ping simply disables the probe.
@@ -257,7 +287,14 @@ func (s *Store) notifyDurable(batch []*NavFrame) {
 // policies, and returns a ready store. The caller runs Run in a goroutine and feeds
 // it with Enqueue.
 func New(ctx context.Context, cfg config.Store, log *slog.Logger) (*Store, error) {
-	pool, err := pgxpool.New(ctx, cfg.DSN)
+	// The pool is sized by config (max_conns, the DSN's pool_max_conns, or the
+	// documented default) and always holds room for the writer's dedicated
+	// connection plus at least one reader.
+	poolCfg, err := cfg.PoolConfig()
+	if err != nil {
+		return nil, fmt.Errorf("connect: %w", err)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}
@@ -648,11 +685,18 @@ const (
 // idleQuietWindow with no write ATTEMPT at all: recent attempts, failed or not,
 // own the verdict; the probe speaks only for genuinely ingest-silent stretches.
 func (s *Store) clearStreakIfIdleHealthy(ctx context.Context, now time.Time) {
-	if s.ping == nil || s.flushFailStreak.Load() == 0 {
-		return
-	}
 	if !s.lastWriteAttempt.IsZero() && now.Sub(s.lastWriteAttempt) < idleQuietWindow {
 		return // writes were attempted recently: their verdict stands
+	}
+	// The drop streaks describe what happened to the frames of recent cycles.
+	// A full quiet window with no write attempt means no frames arrived, so
+	// none can have overflowed the queue or been quarantined: both streaks are
+	// stale by definition and are cleared without a probe. (A non-empty cycle
+	// clears them itself when it drops nothing; only a cycle can advance them.)
+	s.overflowStreak.Store(0)
+	s.quarantineStreak.Store(0)
+	if s.ping == nil || s.flushFailStreak.Load() == 0 {
+		return
 	}
 	if !s.lastIdleProbe.IsZero() && now.Sub(s.lastIdleProbe) < idleHealthEvery {
 		return
@@ -667,17 +711,60 @@ func (s *Store) clearStreakIfIdleHealthy(ctx context.Context, now time.Time) {
 	s.log.Info("historian reachable again during an ingest-idle window; clearing degraded status")
 }
 
-// Degraded reports a non-empty reason while the batched writer is persistently
-// failing : two or more CONSECUTIVE flush cycles exhausted their bounded
-// retries or wall budget — i.e. the historian has been unable to persist for over
-// a minute (each cycle is ~35 s of retries) and is dropping the forensic record.
-// A single give-up (a transient blip the next cycle absorbs) does not degrade, so
-// /healthz cannot flap on one bad flush. Registered as a health probe in main.
+// Degraded thresholds. degradedCycles is the anti-flap rule every streak
+// shares: a single bad cycle (a transient blip the next cycle absorbs) never
+// degrades, two consecutive ones do. A cycle counts toward the quarantine streak
+// when more than one row in quarantineDegradeDivisor of the rows it flushed was
+// quarantined — a lone poison row in a healthy batch is exactly what bisection
+// exists for, while a batch that is mostly poison is a systemic fault the
+// operator must see. Any queue-overflow drop at all counts toward the overflow
+// streak: each one is a frame of the forensic record that is gone.
+const (
+	degradedCycles           = 2
+	quarantineDegradeDivisor = 10
+)
+
+// Degraded reports a non-empty reason while the historian is persistently
+// discarding the forensic record, on any of its three drop paths, for two or
+// more CONSECUTIVE flush cycles: flushes that exhausted their bounded retries or
+// wall budget (the historian has been unable to persist for over a minute — each
+// cycle is ~35 s of retries), queue overflows (a database that succeeds too
+// slowly to keep up, so Enqueue drops frames while the writer is blocked), or
+// quarantine floods (most of a batch's rows failing deterministically). A single
+// bad cycle does not degrade, so /healthz cannot flap on one bad flush.
+// Registered as a health probe in main; /healthz stays 200 with "degraded".
 func (s *Store) Degraded() string {
-	if n := s.flushFailStreak.Load(); n >= 2 {
+	if n := s.flushFailStreak.Load(); n >= degradedCycles {
 		return fmt.Sprintf("historian: %d consecutive flush cycles failed; frames are being dropped", n)
 	}
+	if n := s.overflowStreak.Load(); n >= degradedCycles {
+		return fmt.Sprintf("historian: queue overflowed in %d consecutive flush cycles; frames are being dropped", n)
+	}
+	if n := s.quarantineStreak.Load(); n >= degradedCycles {
+		return fmt.Sprintf("historian: more than a tenth of the rows were quarantined in %d consecutive flush cycles; frames are being discarded", n)
+	}
 	return ""
+}
+
+// endCycle closes one completed flush cycle's drop accounting: it samples the
+// queue overflows Enqueue counted since the previous cycle ended and the rows
+// this cycle quarantined, then advances or resets the streaks Degraded reads.
+// attempted is the number of rows the cycle tried to persist. Called once per
+// completed flush, so a cycle that is interrupted and retained for the
+// shutdown drain carries its overflows into the drain's own cycle.
+func (s *Store) endCycle(attempted int) {
+	if overflow := s.cycleOverflow.Swap(0); overflow > 0 {
+		s.overflowStreak.Add(1)
+	} else {
+		s.overflowStreak.Store(0)
+	}
+	quarantined := s.cycleQuarantined
+	s.cycleQuarantined = 0
+	if quarantined > 0 && quarantined*quarantineDegradeDivisor > attempted {
+		s.quarantineStreak.Add(1)
+	} else {
+		s.quarantineStreak.Store(0)
+	}
 }
 
 // Enqueue hands a frame to the writer without blocking the caller. On overflow (the
@@ -698,6 +785,15 @@ func (s *Store) Enqueue(f *NavFrame) {
 	case s.in <- f:
 	default:
 		metrics.StoreDroppedTotal.Inc()
+		// One warning per overflow streak: the first drop after a clean cycle.
+		// Every later drop of the streak is visible through the counter and,
+		// from the second consecutive cycle, through Degraded(); logging each
+		// would amplify exactly the load that caused the overflow. (If a cycle
+		// ends between this sample and its streak update, one extra line can
+		// slip through — harmless.)
+		if s.cycleOverflow.Add(1) == 1 && s.overflowStreak.Load() == 0 {
+			s.log.Warn("historian queue full; dropping frames until the writer catches up", "source", f.SourceID, "queue_depth", cap(s.in))
+		}
 	}
 }
 
@@ -709,6 +805,19 @@ func (s *Store) Run(ctx context.Context) {
 	defer ticker.Stop()
 	pruneTicker := time.NewTicker(pruneEvery)
 	defer pruneTicker.Stop()
+
+	if s.pool != nil { // nil only in tests that construct a Store without New()
+		// Reserve the writer's connection before the first frame arrives, so a
+		// read flood can never hold every pool slot ahead of it. Not fatal if
+		// it fails: persistAtomicOnce acquires under its own attempt budget.
+		actx, acancel := context.WithTimeout(ctx, s.retry.attemptTO)
+		s.writerMu.Lock()
+		if _, err := s.writerConn(actx); err != nil {
+			s.log.Warn("historian writer connection not reserved at start; acquiring on the first flush instead", "error", err)
+		}
+		s.writerMu.Unlock()
+		acancel()
+	}
 
 	flush := func() {
 		if len(batch) == 0 {
@@ -755,6 +864,9 @@ func (s *Store) Run(ctx context.Context) {
 			deadline := time.Now().Add(s.shutdownBudget)
 			s.drain(&batch, deadline)
 			s.flush(context.Background(), batch, deadline)
+			// pool.Close blocks until every acquired connection is back, so
+			// the writer's must go first.
+			s.dropWriter()
 			if s.pool != nil { // nil only in tests that construct a Store without New()
 				s.pool.Close()
 			}
@@ -804,6 +916,39 @@ func (s *Store) copyRows(ctx context.Context, rows [][]any) (int64, error) {
 	return s.pool.CopyFrom(ctx, pgx.Identifier{"nav_frames"}, copyColumns, pgx.CopyFromRows(rows))
 }
 
+// writerConn returns the writer's dedicated connection, acquiring one from the
+// pool when none is held. ctx bounds the acquisition — the caller's attempt
+// budget — so a pool with every slot taken by a slow read cannot stall the
+// writer past the retry policy it already lives under. The caller holds writerMu.
+func (s *Store) writerConn(ctx context.Context) (*pgxpool.Conn, error) {
+	if s.writer == nil {
+		conn, err := s.pool.Acquire(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("acquire writer connection: %w", err)
+		}
+		s.writer = conn
+	}
+	return s.writer, nil
+}
+
+// releaseWriter hands the dedicated connection back to the pool, which discards
+// it if the failed statement closed it and keeps it otherwise, so the next
+// persist starts from a usable connection either way. The caller holds writerMu.
+func (s *Store) releaseWriter() {
+	if s.writer != nil {
+		s.writer.Release()
+		s.writer = nil
+	}
+}
+
+// dropWriter releases the dedicated connection, if one is held, so the pool
+// can close. Safe from any goroutine; it waits for an in-flight persist.
+func (s *Store) dropWriter() {
+	s.writerMu.Lock()
+	defer s.writerMu.Unlock()
+	s.releaseWriter()
+}
+
 // seqKey identifies one feeder-assigned sequence for the regression fix replay-dedup
 // ledger. session partitions one observer's sequence spaces across feeder
 // boots — two frames with equal (source, seq) but different
@@ -820,7 +965,21 @@ type seqKey struct {
 // in an earlier transaction and are therefore omitted. Duplicate keys inside one
 // batch are also emitted only once.
 func (s *Store) persistAtomicOnce(ctx context.Context, batch []*NavFrame) (written int64, err error) {
-	tx, err := s.pool.Begin(ctx)
+	s.writerMu.Lock()
+	defer s.writerMu.Unlock()
+	conn, err := s.writerConn(ctx)
+	if err != nil {
+		return 0, err
+	}
+	// Any failure hands the connection back (after the rollback below, which
+	// is deferred later and therefore runs first) so the next attempt
+	// re-acquires: a context cut mid-statement has closed this connection.
+	defer func() {
+		if err != nil {
+			s.releaseWriter()
+		}
+	}()
+	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -968,6 +1127,7 @@ func (s *Store) persistAtomicRetry(ctx context.Context, batch []*NavFrame) (writ
 		if isPoison(err) {
 			if len(batch) == 1 {
 				s.log.Error("store quarantined a poison row", "error", err)
+				s.cycleQuarantined++
 				// quarantine is this frame's durable disposition — the
 				// failure is deterministic row content, so replaying it forever
 				// against the same error would only wedge the feeder's spool.
@@ -1113,6 +1273,7 @@ func (s *Store) flush(parent context.Context, batch []*NavFrame, deadline time.T
 		if dropped > 0 {
 			metrics.StoreQuarantinedTotal.Add(float64(dropped))
 		}
+		s.endCycle(len(batch))
 		return true
 	}
 
@@ -1134,6 +1295,7 @@ func (s *Store) flush(parent context.Context, batch []*NavFrame, deadline time.T
 		} else {
 			batch = dedupBatch(batch, fresh)
 			if len(batch) == 0 {
+				s.endCycle(0)
 				return true
 			}
 		}
@@ -1143,39 +1305,42 @@ func (s *Store) flush(parent context.Context, batch []*NavFrame, deadline time.T
 	for _, f := range batch {
 		rows = append(rows, navFrameToRow(f))
 	}
-	written, dropped := persistRetry(ctx, s.retry, s.copy, rows, s.log)
+	written, dropped := s.persistRetry(ctx, rows)
 	if written > 0 {
 		metrics.StoreRowsTotal.Add(float64(written))
 	}
 	if dropped > 0 {
 		metrics.StoreQuarantinedTotal.Add(float64(dropped))
 	}
+	s.endCycle(len(rows))
 	return true
 }
 
-// persistRetry bulk-loads rows, retrying retryable failures with bounded backoff and
-// quarantining poison rows. Returns the rows written and permanently dropped.
-func persistRetry(ctx context.Context, r flushRetry, copy copyRowsFunc, rows [][]any, log *slog.Logger) (written int64, dropped int) {
+// persistRetry bulk-loads rows through the copy seam, retrying retryable
+// failures with bounded backoff and quarantining poison rows. Returns the rows
+// written and permanently dropped; quarantined rows also count toward the
+// cycle's quarantine accounting like the atomic path's.
+func (s *Store) persistRetry(ctx context.Context, rows [][]any) (written int64, dropped int) {
 	if len(rows) == 0 {
 		return 0, 0
 	}
-	backoff := r.backoff
+	backoff := s.retry.backoff
 	for attempt := 1; ; attempt++ {
-		n, err := copyOnce(ctx, r.attemptTO, copy, rows)
+		n, err := copyOnce(ctx, s.retry.attemptTO, s.copy, rows)
 		if err == nil {
 			return n, 0
 		}
 		metrics.StoreErrorsTotal.Inc()
 		if isPoison(err) {
-			return quarantine(ctx, r, copy, rows, log, err)
+			return s.quarantine(ctx, rows, err)
 		}
-		log.Warn("store flush failed; will retry", "error", err, "rows", len(rows), "attempt", attempt)
-		if attempt >= r.attempts || ctx.Err() != nil {
-			log.Error("store flush giving up; dropping batch", "rows", len(rows), "attempts", attempt)
+		s.log.Warn("store flush failed; will retry", "error", err, "rows", len(rows), "attempt", attempt)
+		if attempt >= s.retry.attempts || ctx.Err() != nil {
+			s.log.Error("store flush giving up; dropping batch", "rows", len(rows), "attempts", attempt)
 			return 0, len(rows)
 		}
 		if !sleepCtx(ctx, backoff) {
-			log.Error("store flush budget exhausted; dropping batch", "rows", len(rows))
+			s.log.Error("store flush budget exhausted; dropping batch", "rows", len(rows))
 			return 0, len(rows)
 		}
 		backoff *= 2
@@ -1190,17 +1355,18 @@ func copyOnce(ctx context.Context, to time.Duration, copy copyRowsFunc, rows [][
 
 // quarantine isolates the poison row(s) in a deterministically-failing batch by
 // bisection, so one bad row can't wedge the writer or take the batch down with it.
-func quarantine(ctx context.Context, r flushRetry, copy copyRowsFunc, rows [][]any, log *slog.Logger, cause error) (written int64, dropped int) {
+func (s *Store) quarantine(ctx context.Context, rows [][]any, cause error) (written int64, dropped int) {
 	if len(rows) == 1 {
-		log.Error("store quarantined a poison row", "error", cause)
+		s.log.Error("store quarantined a poison row", "error", cause)
+		s.cycleQuarantined++
 		return 0, 1
 	}
 	if ctx.Err() != nil {
 		return 0, len(rows)
 	}
 	mid := len(rows) / 2
-	w1, d1 := persistRetry(ctx, r, copy, rows[:mid], log)
-	w2, d2 := persistRetry(ctx, r, copy, rows[mid:], log)
+	w1, d1 := s.persistRetry(ctx, rows[:mid])
+	w2, d2 := s.persistRetry(ctx, rows[mid:])
 	return w1 + w2, d1 + d2
 }
 

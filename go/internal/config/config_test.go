@@ -729,3 +729,60 @@ func TestOpaqueSelectionMatchesTokenAndCertificateAdmission(t *testing.T) {
 		}
 	}
 }
+
+// TestStoreMaxConnsSizesThePool guards store.max_conns and the pool it
+// produces: unset defers to the DSN's pool_max_conns and otherwise to the
+// documented default, an explicit value wins over the DSN, MinConns always
+// covers the writer's dedicated connection plus one reader, and a pool too
+// small for that pair is refused at load rather than at the first connect.
+func TestStoreMaxConnsSizesThePool(t *testing.T) {
+	const dsn = "postgres://navlistener:secret@db.invalid/navlistener"
+	for name, tc := range map[string]struct {
+		max              int
+		dsn              string
+		wantMax, wantMin int32
+	}{
+		"default":      {0, dsn, DefaultStoreMaxConns, minStoreConns},
+		"dsn sized":    {0, dsn + "?pool_max_conns=16", 16, minStoreConns},
+		"dsn min kept": {0, dsn + "?pool_max_conns=16&pool_min_conns=4", 16, 4},
+		"key wins":     {4, dsn + "?pool_max_conns=16", 4, minStoreConns},
+		"smallest":     {minStoreConns, dsn, minStoreConns, minStoreConns},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pc, err := (Store{DSN: tc.dsn, MaxConns: tc.max}).PoolConfig()
+			if err != nil {
+				t.Fatalf("PoolConfig: %v", err)
+			}
+			if pc.MaxConns != tc.wantMax || pc.MinConns != tc.wantMin {
+				t.Fatalf("pool = max %d / min %d, want %d / %d", pc.MaxConns, pc.MinConns, tc.wantMax, tc.wantMin)
+			}
+		})
+	}
+	if _, err := (Store{DSN: dsn + "?pool_max_conns=1"}).PoolConfig(); err == nil {
+		t.Error("a DSN pool of one (no reader beside the writer) was accepted")
+	}
+	for name, body := range map[string]string{
+		"one":           "[store]\nmax_conns = 1\n",
+		"negative":      "[store]\nmax_conns = -1\n",
+		"too many":      "[store]\nmax_conns = 1025\n",
+		"dsn too small": "[store]\ndsn = \"" + dsn + "?pool_max_conns=1\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "store.") {
+				t.Fatalf("err = %v, want a store.max_conns/store.dsn error for:\n%s", err, body)
+			}
+		})
+	}
+	// Zero is the documented automatic value, whether absent or explicit.
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[store]\nmax_conns = 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := Load(path); err != nil || c.Store.MaxConns != 0 {
+		t.Fatalf("explicit max_conns = 0: cfg %+v err %v, want accepted as automatic", c, err)
+	}
+}

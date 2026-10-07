@@ -49,7 +49,7 @@ fleet ingest. The daemon runs happily as a collector-only process.
 | `[logging]` | always | `level` (debug/info/warn/error), `format` (json/text) |
 | `[metrics]` | `addr` set | Prometheus `/metrics` + `/healthz`, loopback-bound |
 | `[state]` | always | shard count, propagate cadence, SV TTL, `leap_seconds` |
-| `[store]` | `dsn` set | TimescaleDB historian, `raw_retention`, `compress_after` |
+| `[store]` | `dsn` set | TimescaleDB historian, `raw_retention`, `compress_after`, `max_conns` |
 | `[authorization]` | `dsn` set | DB-backed observer/read grants, bounded cache, active-session recheck |
 | `[serve]` | `addr` set | native v2 API, public default, authenticated audience selection, refresh cadences |
 | `[[serve.principal]]` | no DB auth | standalone/bootstrap read token and explicit private audience grants |
@@ -64,6 +64,17 @@ fleet ingest. The daemon runs happily as a collector-only process.
 ---
 
 ## Details
+
+### `[store]` — the historian's connection pool
+
+`max_conns` sizes the pool the historian writes through and the read API queries through. The
+batched writer keeps one of those connections for its whole life, so a flood of API reads can
+never hold every connection ahead of the forensic record; the rest serve the read endpoints
+(which run under their own small concurrency bounds) and the low-rate direct writers. `0` (the
+default) means the DSN's own `pool_max_conns` when it carries one, otherwise `8`; a value from
+`2` to `1024` overrides the DSN. A pool smaller than two — no reader beside the writer — is
+rejected at load. `-check-config` sizes the pool exactly as `store.New` does (one
+`Store.PoolConfig`), so the two cannot disagree.
 
 ### `[authorization]` — production control-plane resolution
 

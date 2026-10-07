@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -180,7 +181,7 @@ func TestIntegrationAtomicReplayClaim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	defer s.pool.Close()
+	defer s.Close() // persistAtomicOnce below retains the writer connection; Close releases it
 
 	const source = "r002-atomic-integration"
 	if _, err := s.pool.Exec(ctx, `DELETE FROM nav_frames WHERE source_id = $1`, source); err != nil {
@@ -685,5 +686,107 @@ func TestIntegrationQueryNavFramesLimitIsLoud(t *testing.T) {
 	}
 	if seen != 2 {
 		t.Errorf("delivered %d frames before the cap, want 2", seen)
+	}
+}
+
+// TestIntegrationWriterCommitsWhileReadersHoldThePool proves the batched writer
+// holds its own pool connection: with every other connection held by slow
+// reads, a batch must still commit within one flush cycle instead of waiting
+// behind the readers through the writer's retry budget and being dropped.
+func TestIntegrationWriterCommitsWhileReadersHoldThePool(t *testing.T) {
+	dsn := testDSN(t)
+	ctx := context.Background()
+	cfg := config.Store{DSN: dsn, MaxConns: 3, BatchSize: 100, BatchEvery: 50 * time.Millisecond, RawRetention: "7 days", CompressAfter: "1 day"}
+	s, err := New(ctx, cfg, integrationLog())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	const obs = "obs-pool-integration"
+	if _, err := s.pool.Exec(ctx, `DELETE FROM nav_frames WHERE source_id = $1`, obs); err != nil {
+		t.Fatalf("cleanup nav_frames: %v", err)
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM nav_frames_seq_seen WHERE source_id = $1`, obs); err != nil {
+		t.Fatalf("cleanup nav_frames_seq_seen: %v", err)
+	}
+	resolved := make(chan uint64, 8)
+	s.SetDurableNotify(func(source, session string, seq uint64) {
+		if source == obs {
+			resolved <- seq
+		}
+	})
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); s.Run(runCtx) }()
+	readCtx, stopReaders := context.WithCancel(ctx)
+	var readers sync.WaitGroup
+	var stopOnce sync.Once
+	// Readers release before Run closes the pool: pool.Close blocks until every
+	// acquired connection is back.
+	stop := func() {
+		stopOnce.Do(func() {
+			stopReaders()
+			readers.Wait()
+			cancel()
+			<-done
+		})
+	}
+	defer stop()
+
+	frame := func(seq uint64) *NavFrame {
+		return &NavFrame{Ts: time.Now(), ReceivedAt: time.Now(), SourceID: obs, SvID: 1, MsgType: 1,
+			Raw: []byte{byte(seq)}, SourceSeq: seq, HasSourceSeq: true, Session: "boot-a"}
+	}
+	awaitSeq := func(want uint64, within time.Duration) {
+		t.Helper()
+		timeout := time.After(within)
+		for {
+			select {
+			case seq := <-resolved:
+				if seq == want {
+					return
+				}
+			case <-timeout:
+				t.Fatalf("seq %d not durably resolved within %v", want, within)
+			}
+		}
+	}
+	// A first commit proves the writer is up; it keeps its connection afterwards.
+	s.Enqueue(frame(1))
+	awaitSeq(1, 5*time.Second)
+
+	for i := 0; i < cfg.MaxConns-1; i++ {
+		actx, acancel := context.WithTimeout(ctx, 5*time.Second)
+		conn, err := s.pool.Acquire(actx)
+		acancel()
+		if err != nil {
+			t.Fatalf("acquire reader %d: %v (the writer should hold exactly one of %d connections)", i, err, cfg.MaxConns)
+		}
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			defer conn.Release()
+			_, _ = conn.Exec(readCtx, `SELECT pg_sleep(30)`) // a slow read, cut by stop()
+		}()
+	}
+	if got := s.pool.Stat().AcquiredConns(); got != int32(cfg.MaxConns) {
+		t.Fatalf("acquired connections = %d, want %d (writer + %d readers holding the whole pool)", got, cfg.MaxConns, cfg.MaxConns-1)
+	}
+
+	// Every reader slot is held for 30 s; the writer must not need one.
+	s.Enqueue(frame(2))
+	awaitSeq(2, 2*time.Second)
+	stop()
+
+	verify, err := New(ctx, cfg, integrationLog())
+	if err != nil {
+		t.Fatalf("verify store.New: %v", err)
+	}
+	defer verify.pool.Close()
+	var n int
+	if err := verify.pool.QueryRow(ctx, `SELECT count(*) FROM nav_frames WHERE source_id = $1`, obs).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("nav_frames rows for %s = %d, want 2", obs, n)
 	}
 }
