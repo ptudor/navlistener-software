@@ -89,6 +89,21 @@ func run() int {
 	log := setupLogger(cfg.Logging)
 	slog.SetDefault(log)
 	log.Info("starting", "version", version.Version, "build_number", version.BuildNumber, "revision", version.Revision, "build", version.BuildTime)
+
+	// Signal disposition is installed before anything else starts. Until it is,
+	// Go's defaults apply: SIGINT/SIGTERM terminate at once with no drain, and
+	// SIGHUP terminates too — and startup can legitimately take tens of seconds
+	// (authorization connect, schema and policy setup, model restore). A stop
+	// that arrives during that window is held in the buffered channel and
+	// consumed by the readiness select below, which then runs the ordered
+	// shutdown immediately. Go's default SIGHUP action terminates the process.
+	// Ignore it so a mis-aimed newsyslog HUP (or a HUP at the child pidfile
+	// instead of the daemon(8) supervisor) can never kill the collector, during
+	// startup or mid-drain. Log rotation reopens the logfile via daemon(8)'s -H
+	// on the supervisor; the collector needs no reload signal of its own.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Ignore(syscall.SIGHUP)
 	// regression fix/non-fatal config findings (world-readable secrets file,
 	// non-loopback bind of an unauthenticated surface) — loud at startup, once.
 	for _, w := range cfg.Warnings {
@@ -214,6 +229,24 @@ func run() int {
 		pushSrv.SetEvidenceVerifier(evidenceVerifier)
 	}
 
+	// Update control state (docs/esp32 UPDATE-OPERATIONS). Opened here, before
+	// any listener binds or pipeline goroutine starts: Open creates the state
+	// directory and takes the instance lock, so a directory the daemon user
+	// cannot write, an unreadable or corrupt state file, or a lock still held by
+	// a predecessor draining under the supervisor must fail while the process
+	// has accepted nothing — and through run()'s return, so every deferred
+	// cleanup runs, never through os.Exit. -check-config probes the same
+	// directory and file read-only (config.finalize), without the lock.
+	updateManager, err := updates.Open(cfg.Updates)
+	if err != nil {
+		log.Error("update control state unavailable", "error", err)
+		return 1
+	}
+	if updateManager != nil {
+		defer updateManager.Close()
+		updateManager.SetHardwareVerification(cfg.ManufacturerAuthorities.Enabled())
+	}
+
 	// Bind every configured listener before starting the historian or any producer.
 	// A startup address conflict therefore accepts zero frames and needs no drain.
 	obs := server.New(cfg.Metrics.Addr, log, newDebugStateHandler(live, log))
@@ -281,12 +314,10 @@ func run() int {
 	storeDone := make(chan struct{})
 	if cfg.Store.DSN != "" {
 		// Evidence capture looks back only as far as raw retention keeps inputs.
-		rawRetention, err := config.ParseInterval(cfg.Store.RawRetention)
-		if err != nil {
-			log.Error("store.raw_retention invalid", "error", err)
-			storeCancel()
-			return 1
-		}
+		// config.finalize parsed and defaulted the interval; re-parsing the raw
+		// string here is what once let an explicitly empty raw_retention pass
+		// -check-config and fail startup after every listener was bound.
+		rawRetention := cfg.Store.RawRetentionDuration
 		evidence = evidencePolicy(rawRetention)
 		historian, err = store.New(ctx, cfg.Store, log)
 		if err != nil {
@@ -401,23 +432,19 @@ func run() int {
 		}
 	}()
 
-	// The native v2 read API (docs/OUTPUT.md) is optional (enabled by [serve].addr).
-	// It serves the live feeds from RAM on a loopback listener behind a TLS front,
-	// separate from the ingest write path and the metrics listener.
-	updateManager, err := updates.Open(cfg.Updates)
-	if err != nil {
-		log.Error("update control state unavailable", "error", err)
-		os.Exit(1)
-	}
+	// The update manager was opened before any listener bound (above); the push
+	// endpoint only needs it before Serve, and the lifetime watch is a pipeline
+	// goroutine like the rest.
 	if updateManager != nil {
-		defer updateManager.Close()
-		updateManager.SetHardwareVerification(cfg.ManufacturerAuthorities.Enabled())
 		if pushSrv != nil {
 			pushSrv.SetUpdates(updateManager)
 		}
 		wg.Add(1)
 		go func() { defer wg.Done(); updateManager.WatchLifetimes(ctx.Done(), log) }()
 	}
+	// The native v2 read API (docs/OUTPUT.md) is optional (enabled by [serve].addr).
+	// It serves the live feeds from RAM on a loopback listener behind a TLS front,
+	// separate from the ingest write path and the metrics listener.
 	var apiSrv *serve.Server
 	if cfg.Serve.Addr != "" {
 		// The events query API reads the historian; a true nil interface (not a typed nil
@@ -547,13 +574,8 @@ func run() int {
 		log.Warn("no ingest sources configured")
 	}
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	// Go's default SIGHUP action terminates the process. Ignore it so a mis-aimed
-	// newsyslog HUP (or a HUP at the child pidfile instead of the daemon(8) supervisor) can
-	// never kill the collector mid-drain. Log rotation reopens the logfile via daemon(8)'s
-	// -H on the supervisor; the collector needs no reload signal of its own.
-	signal.Ignore(syscall.SIGHUP)
+	// sigCh was armed at the top of run(), so a stop that arrived during startup
+	// is already waiting here and shuts the collector down in order.
 	exitCode := 0
 	select {
 	case sig := <-sigCh:

@@ -158,11 +158,20 @@ responses are marked `private, no-store`.
 ./navlistener -check-config -config /usr/local/etc/navlistener/navlistener.toml
 ```
 
-`-check-config` has **full startup parity** : it loads the `[push]` TLS keypair and client
-CA, parses the store DSN, validates NTRIP CA files, loads the `[[manufacturer_authority]]` keys and
-verifies the configured registry. On a bare host without certs it fails by
-design. Non-fatal `WARNING:` lines (a world-readable secrets file, a non-loopback bind of an
-unauthenticated surface) are surfaced without blocking startup.
+`-check-config` has **startup parity** for everything the daemon binds before it claims
+readiness: it loads the `[push]` TLS keypair and client CA, parses the store DSN and sizes the
+pool as `store.New` does, validates NTRIP CA files, loads the `[[manufacturer_authority]]` keys
+and verifies the configured registry, and probes the two files the daemon must *write* —
+`manufacturer_authority.registry_state` (its directory must exist and be writable by the
+checking user) and `updates.state_file` (an existing file must be private and loadable; its
+directory, or the nearest existing ancestor the daemon would create it under, must be writable).
+**Not covered:** database connectivity (`store.dsn` and `authorization.dsn` are parsed, never
+connected), listener binds (an address conflict fails at startup before any frame is accepted),
+and the update state's instance lock (a running daemon holds it, so a restart that races a
+predecessor's drain still exits at startup — through the ordered shutdown, and the supervisor
+retries). On a bare host without certs it fails by design. Non-fatal `WARNING:` lines (a
+world-readable secrets file, a non-loopback bind of an unauthenticated surface) are surfaced
+without blocking startup.
 
 ---
 

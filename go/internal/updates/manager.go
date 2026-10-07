@@ -157,35 +157,62 @@ func Open(c Config) (*Manager, error) {
 		return nil, err
 	}
 	m := &Manager{config: c, records: map[string]Record{}, active: map[string]string{}, lock: lock, now: time.Now}
-	if info, err := os.Stat(c.StateFile); err == nil {
-		if info.Size() > 16<<20 || info.Mode().Perm()&0077 != 0 {
-			m.Close()
-			return nil, errors.New("update state must be private and bounded")
-		}
-		data, err := os.ReadFile(c.StateFile)
-		if err != nil {
-			m.Close()
-			return nil, err
-		}
-		if err = json.Unmarshal(data, &m.records); err != nil {
-			m.Close()
-			return nil, err
-		}
-		if len(m.records) > 1024 {
-			m.Close()
-			return nil, errors.New("update state device limit exceeded")
-		}
-		for key, r := range m.records {
-			if key != r.Device.key() || len(r.Transitions) > 32 || len(r.Requests) > 32 || (r.Command.ID != 0 && !r.Command.Valid()) {
-				m.Close()
-				return nil, errors.New("invalid persisted update record")
-			}
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	records, err := loadRecords(c.StateFile)
+	if err != nil {
 		m.Close()
 		return nil, err
 	}
+	m.records = records
 	return m, nil
+}
+
+// Preflight checks an existing state file exactly as Open would load it, and
+// nothing else: it does not create the state directory or the lock file and
+// never takes the instance lock, which the running daemon legitimately holds
+// while a configuration check runs beside it. The directory's writability is
+// the configuration loader's check.
+func (c Config) Preflight() error {
+	if c.StateFile == "" {
+		return nil
+	}
+	_, err := loadRecords(c.StateFile)
+	return err
+}
+
+// loadRecords reads the state file, or returns an empty map when it does not
+// exist yet. It is the one reader shared by Open and Preflight, so a file the
+// daemon would refuse is refused by the configuration check too.
+func loadRecords(path string) (map[string]Record, error) {
+	records := map[string]Record{}
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return records, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("update state must be a regular file")
+	}
+	if info.Size() > 16<<20 || info.Mode().Perm()&0077 != 0 {
+		return nil, errors.New("update state must be private and bounded")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if err = json.Unmarshal(data, &records); err != nil {
+		return nil, err
+	}
+	if len(records) > 1024 {
+		return nil, errors.New("update state device limit exceeded")
+	}
+	for key, r := range records {
+		if key != r.Device.key() || len(r.Transitions) > 32 || len(r.Requests) > 32 || (r.Command.ID != 0 && !r.Command.Valid()) {
+			return nil, errors.New("invalid persisted update record")
+		}
+	}
+	return records, nil
 }
 func (m *Manager) Close() error {
 	if m == nil || m.lock == nil {

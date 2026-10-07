@@ -234,17 +234,27 @@ func TestLoggingLevelValidated(t *testing.T) {
 // valid. finalize (which -check-config runs) must catch it up front, using the
 // same config.IntervalRe the store re-checks in applyPolicies.
 func TestStoreIntervalsValidatedAtFinalize(t *testing.T) {
+	// The partner interval keeps compress < retention: an empty value is the
+	// default ("1 day" / "7 days"), never a way to skip the ordering check, since
+	// the store installs that default regardless.
 	for _, good := range []string{"", "7 days", "1 hour", "30 minutes", "2 weeks"} {
 		c := defaults()
-		c.Store.RawRetention, c.Store.CompressAfter = good, ""
+		c.Store.RawRetention, c.Store.CompressAfter = good, "1 minute"
 		if err := c.finalize(); err != nil {
 			t.Errorf("raw retention interval %q should validate, got %v", good, err)
 		}
 		c = defaults()
-		c.Store.RawRetention, c.Store.CompressAfter = "", good
+		c.Store.RawRetention, c.Store.CompressAfter = "52 weeks", good
 		if err := c.finalize(); err != nil {
 			t.Errorf("compression interval %q should validate, got %v", good, err)
 		}
+	}
+	// An explicitly empty compress_after is the one-day default, so it is
+	// refused beside a shorter retention exactly as the literal would be.
+	short := defaults()
+	short.Store.RawRetention, short.Store.CompressAfter = "1 hour", ""
+	if err := short.finalize(); err == nil || !strings.Contains(err.Error(), "dropped before compression") {
+		t.Errorf("empty compress_after with a 1 hour retention: err = %v, want the ordering refusal", err)
 	}
 	for _, bad := range []string{"soon", "; DROP TABLE nav_frames;--", "7", "days", "0 days"} {
 		c := defaults()
@@ -257,6 +267,33 @@ func TestStoreIntervalsValidatedAtFinalize(t *testing.T) {
 		if err := c.finalize(); err == nil {
 			t.Errorf("store.compress_after %q accepted, want a hard error", bad)
 		}
+	}
+	// An explicitly empty interval is the default, and finalize is the only
+	// owner of that rule: after Load the strings are never empty and the typed
+	// durations are what the daemon and the store consume. Previously the
+	// daemon re-parsed the empty string and refused to start after
+	// -check-config had called the same file valid.
+	path := filepath.Join(t.TempDir(), "navlistener.toml")
+	if err := os.WriteFile(path, []byte("[store]\nraw_retention = \"\"\ncompress_after = \"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("explicitly empty intervals: %v", err)
+	}
+	if c.Store.RawRetention != DefaultRawRetention || c.Store.RawRetentionDuration != 7*24*time.Hour {
+		t.Errorf("raw_retention = %q (%v), want %q (%v)", c.Store.RawRetention, c.Store.RawRetentionDuration, DefaultRawRetention, 7*24*time.Hour)
+	}
+	if c.Store.CompressAfter != DefaultCompressAfter || c.Store.CompressAfterDuration != 24*time.Hour {
+		t.Errorf("compress_after = %q (%v), want %q (%v)", c.Store.CompressAfter, c.Store.CompressAfterDuration, DefaultCompressAfter, 24*time.Hour)
+	}
+	explicit := defaults()
+	explicit.Store.RawRetention, explicit.Store.CompressAfter = "2 weeks", "3 hours"
+	if err := explicit.finalize(); err != nil {
+		t.Fatal(err)
+	}
+	if explicit.Store.RawRetentionDuration != 14*24*time.Hour || explicit.Store.CompressAfterDuration != 3*time.Hour {
+		t.Errorf("typed intervals = %v / %v, want 336h / 3h", explicit.Store.RawRetentionDuration, explicit.Store.CompressAfterDuration)
 	}
 }
 

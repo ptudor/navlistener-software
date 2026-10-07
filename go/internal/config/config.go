@@ -13,6 +13,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"net"
 	"os"
@@ -194,9 +195,17 @@ type Store struct {
 	// forensic record. Confirmed events and feed snapshots live in separate
 	// tables/policies; this setting does not retain a long-term decoded
 	// ephemeris aggregate.
-	RawRetention string `toml:"raw_retention"` // default "7 days"
-	// CompressAfter is when a raw chunk is columnar-compressed (default "1 day").
+	RawRetention string `toml:"raw_retention"` // default DefaultRawRetention
+	// CompressAfter is when a raw chunk is columnar-compressed (default
+	// DefaultCompressAfter).
 	CompressAfter string `toml:"compress_after"`
+	// RawRetentionDuration and CompressAfterDuration are the parsed intervals.
+	// finalize is their single owner: it substitutes the default for an empty
+	// string, so after Load the strings are never empty and every consumer (the
+	// store's policy DDL, the replay-ledger horizon, the evidence policy, the
+	// push policy retention) reads one validated value instead of re-parsing.
+	RawRetentionDuration  time.Duration `toml:"-"`
+	CompressAfterDuration time.Duration `toml:"-"`
 
 	// MaxConns sizes the historian's connection pool. The batched writer holds
 	// one of these connections for its whole life so API reads can never starve
@@ -205,6 +214,16 @@ type Store struct {
 	// or DefaultStoreMaxConns when the DSN has none; see PoolConfig.
 	MaxConns int `toml:"max_conns"`
 }
+
+// DefaultRawRetention and DefaultCompressAfter are the [store] policy intervals
+// used when the keys are unset or explicitly empty. finalize writes them into
+// Store.RawRetention / Store.CompressAfter, so a loaded config never carries an
+// empty interval; the store keeps the same fallback only for a Store built
+// without Load (tests).
+const (
+	DefaultRawRetention  = "7 days"
+	DefaultCompressAfter = "1 day"
+)
 
 // DefaultStoreMaxConns is the historian pool size when neither store.max_conns
 // nor the DSN's pool_max_conns names one. Eight fits the writer's dedicated
@@ -707,7 +726,7 @@ func defaults() *Config {
 		Logging:                Logging{Level: "info", Format: "json"},
 		Metrics:                Metrics{Addr: "127.0.0.1:9100"},
 		State:                  State{Shards: 16, SVTTLs: "2h", PropagateEverys: "1s"},
-		Store:                  Store{BatchSize: 1000, BatchEverys: "1s", RawRetention: "7 days", CompressAfter: "1 day"},
+		Store:                  Store{BatchSize: 1000, BatchEverys: "1s", RawRetention: DefaultRawRetention, CompressAfter: DefaultCompressAfter},
 		Authorization:          Authorization{CacheTTLs: "30s", RecheckEverys: "10s"},
 		Serve:                  Serve{Audience: "public"},
 		Push:                   Push{MaxConns: 512},
@@ -735,6 +754,23 @@ func (c *Config) finalize() error {
 	}
 	if c.Updates.StateFile != "" && (c.Push.Addr == "" || c.Serve.Addr == "") {
 		return fmt.Errorf("updates require both push and serve endpoints")
+	}
+	if c.Updates.StateFile != "" {
+		// The daemon creates the state directory (MkdirAll) and rewrites the
+		// file on every transition, so the preflight must prove both: the
+		// nearest existing ancestor of the directory is writable by this user,
+		// and an existing file is one updates.Open would load. The instance
+		// lock is deliberately not taken — the running daemon holds it.
+		base, err := nearestExistingDir(filepath.Dir(c.Updates.StateFile))
+		if err != nil {
+			return fmt.Errorf("updates.state_file: %w", err)
+		}
+		if err := probeWritableDir("updates.state_file", base); err != nil {
+			return err
+		}
+		if err := c.Updates.Preflight(); err != nil {
+			return fmt.Errorf("updates.state_file: %w", err)
+		}
 	}
 	if !identity.ValidScopeID(c.Collector.InstanceID) {
 		return fmt.Errorf("collector.instance_id %q is invalid", c.Collector.InstanceID)
@@ -798,31 +834,37 @@ func (c *Config) finalize() error {
 	if c.Store.BatchSize <= 0 || c.Store.BatchSize > maxBatchSize {
 		return fmt.Errorf("store.batch_size %d: must be in 1..%d", c.Store.BatchSize, maxBatchSize)
 	}
+	// An explicitly empty interval means the default, and this is the one place
+	// that says so: the store and the daemon used to re-parse the raw string with
+	// their own idea of "empty" (the store defaulted it, the daemon rejected it),
+	// so `raw_retention = ""` passed -check-config and then failed startup after
+	// every listener was bound. Substitute the default here and parse the result,
+	// so every consumer reads the typed value and the strings are never empty.
+	if c.Store.RawRetention == "" {
+		c.Store.RawRetention = DefaultRawRetention
+	}
+	if c.Store.CompressAfter == "" {
+		c.Store.CompressAfter = DefaultCompressAfter
+	}
 	// every parse error is propagated. These were previously
 	// discarded on the premise that the regex had already validated the string,
 	// but the regex says nothing about magnitude — an overflowing count is
 	// syntactically valid and used to reach both the ordering check (as a wrapped
 	// duration) and the database (as its original text).
-	var retention, compress time.Duration
-	if c.Store.RawRetention != "" {
-		d, err := ParseInterval(c.Store.RawRetention)
-		if err != nil {
-			return fmt.Errorf("store.raw_retention: %w", err)
-		}
-		retention = d
+	retention, err := ParseInterval(c.Store.RawRetention)
+	if err != nil {
+		return fmt.Errorf("store.raw_retention: %w", err)
 	}
-	if c.Store.CompressAfter != "" {
-		d, err := ParseInterval(c.Store.CompressAfter)
-		if err != nil {
-			return fmt.Errorf("store.compress_after: %w", err)
-		}
-		compress = d
+	compress, err := ParseInterval(c.Store.CompressAfter)
+	if err != nil {
+		return fmt.Errorf("store.compress_after: %w", err)
 	}
 	// Both operands are now bounded by MaxInterval, so this comparison cannot be
 	// reading wrapped values.
-	if retention > 0 && compress > 0 && compress >= retention {
+	if compress >= retention {
 		return fmt.Errorf("store.compress_after (%q) must be shorter than store.raw_retention (%q), or chunks are dropped before compression runs", c.Store.CompressAfter, c.Store.RawRetention)
 	}
+	c.Store.RawRetentionDuration, c.Store.CompressAfterDuration = retention, compress
 	// 0 is the documented "automatic" value (the DSN's pool_max_conns, else the
 	// default); a positive value must leave at least one reader beside the writer.
 	if c.Store.MaxConns < 0 || (c.Store.MaxConns > 0 && c.Store.MaxConns < minStoreConns) || c.Store.MaxConns > maxStoreConns {
@@ -1149,6 +1191,16 @@ func finalizeManufacturer(h *HardwareTrust, collector *Config) error {
 			return fmt.Errorf("manufacturer_authority.registry_state: %w", err)
 		}
 		verifier.SetRegistryFloor(floor)
+		// The daemon records the adopted sequence on its first successful
+		// registry load, through a temporary file renamed into this directory,
+		// and it never creates the directory. Probe the same operation now so an
+		// unwritable state directory fails -check-config instead of the first
+		// start after it passed. The state file itself stays untouched.
+		if collector != nil {
+			if err := probeWritableDir("manufacturer_authority.registry_state", filepath.Dir(h.RegistryState)); err != nil {
+				return err
+			}
+		}
 	}
 	data, err := os.ReadFile(h.Registry)
 	if err != nil {
@@ -1567,6 +1619,54 @@ func validatePEMFile(field, path string) error {
 		return fmt.Errorf("%s %q: no valid PEM certificate found", field, path)
 	}
 	return nil
+}
+
+// probeWritableDir reports whether dir is an existing directory this process can
+// create files in, by creating and removing a private temporary file — the same
+// operation the daemon performs when it records state there, so the check passes
+// exactly where the daemon would succeed. (Root bypasses the permission bits; the
+// rc.d preflight runs as the daemon user for that reason.) Nothing is left behind.
+func probeWritableDir(field, dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("%s: directory %s: %w", field, dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s: %s is not a directory", field, dir)
+	}
+	f, err := os.CreateTemp(dir, ".navlistener-preflight-*")
+	if err != nil {
+		return fmt.Errorf("%s: directory %s is not writable by this user: %w", field, dir, err)
+	}
+	name := f.Name()
+	if err := f.Close(); err != nil {
+		os.Remove(name)
+		return fmt.Errorf("%s: probe file in %s: %w", field, dir, err)
+	}
+	if err := os.Remove(name); err != nil {
+		return fmt.Errorf("%s: could not remove the probe file %s: %w", field, name, err)
+	}
+	return nil
+}
+
+// nearestExistingDir walks up from dir to the first path that exists: the
+// directory a MkdirAll(dir) would start creating in, and therefore the one that
+// must be writable for the daemon to create the rest.
+func nearestExistingDir(dir string) (string, error) {
+	for {
+		_, err := os.Stat(dir)
+		if err == nil {
+			return dir, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", fmt.Errorf("directory %s: %w", dir, err)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("directory %s: %w", dir, err)
+		}
+		dir = parent
+	}
 }
 
 func isHex(s string) bool {

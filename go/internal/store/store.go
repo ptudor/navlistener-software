@@ -352,19 +352,25 @@ func New(ctx context.Context, cfg config.Store, log *slog.Logger) (*Store, error
 	if be <= 0 {
 		be = time.Second
 	}
-	// derive the replay-ledger horizon from the same parser that
-	// validated the policy interval, and fail rather than silently falling back to
-	// the default — a silent fallback is exactly how the database's retention and
-	// the in-memory dedupe retention came to disagree. An empty value is the
-	// documented "use the default" case (it matches applyPolicies' own "7 days").
-	seqSeenRetention := defaultSeqSeenRetention
-	if cfg.RawRetention != "" {
-		d, err := parseSimpleInterval(cfg.RawRetention)
-		if err != nil {
-			pool.Close()
-			return nil, fmt.Errorf("raw_retention: %w", err)
+	// The replay-ledger horizon is the interval config.finalize parsed and
+	// validated (RawRetentionDuration), so it cannot disagree with the policy
+	// DDL built from the same string. A Store built without Load (tests) carries
+	// only the string: derive the horizon from the same parser then, and fail
+	// rather than silently falling back to the default — a silent fallback is
+	// exactly how the database's retention and the in-memory dedupe retention
+	// came to disagree. An empty value is the documented "use the default" case
+	// (it matches applyPolicies' own fallback).
+	seqSeenRetention := cfg.RawRetentionDuration
+	if seqSeenRetention <= 0 {
+		seqSeenRetention = defaultSeqSeenRetention
+		if cfg.RawRetention != "" {
+			d, err := parseSimpleInterval(cfg.RawRetention)
+			if err != nil {
+				pool.Close()
+				return nil, fmt.Errorf("raw_retention: %w", err)
+			}
+			seqSeenRetention = d
 		}
-		seqSeenRetention = d
 	}
 	s := &Store{
 		pool:             pool,
@@ -613,12 +619,14 @@ func isTransientConflict(err error) bool {
 // remove/add boundary in turn; production always passes nil.
 func applyPoliciesWithHook(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, cfg config.Store,
 	afterExec func(sql string)) error {
+	// config.finalize never leaves these empty; the fallback serves a Store built
+	// without Load (tests) and keeps the same defaults.
 	compAfter, rawRet := cfg.CompressAfter, cfg.RawRetention
 	if compAfter == "" {
-		compAfter = "1 day"
+		compAfter = config.DefaultCompressAfter
 	}
 	if rawRet == "" {
-		rawRet = "7 days"
+		rawRet = config.DefaultRawRetention
 	}
 	// config.ParseInterval re-applies config.IntervalRe, so this keeps its
 	// defense-in-depth role as the injection guard for the DDL interpolation

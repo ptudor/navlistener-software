@@ -226,7 +226,14 @@ The signed registry and state file both carry the configured authority id, so
 neither can be substituted across authorities. `-check-config` reads that file without writing it and
 applies the recorded sequence as a floor, so it refuses exactly the registry the daemon would
 refuse at startup. A state file that is group- or world-writable, oversized or unparsable is an
-error, because whoever can rewrite it can lower the floor. A `registry` with no
+error, because whoever can rewrite it can lower the floor. The file's directory must exist and
+be writable by the checking user: the daemon records the adopted sequence through a temporary
+file renamed into that directory on its first registry load, so the check probes the same
+operation (and leaves nothing behind) rather than letting an unwritable directory pass the
+preflight and fail the first start. The same probe covers `[updates].state_file`, whose
+directory the daemon creates (so the nearest existing ancestor must be writable) and whose
+existing file must be private (0600), a regular file, bounded and loadable; the daemon's
+instance lock beside it is never taken by the check. A `registry` with no
 `registry_state` is a `WARNING`, not an error: it is a legitimate mode for a collector whose
 registry file is itself protected, but never a silent one.
 

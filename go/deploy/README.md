@@ -75,9 +75,16 @@ provisioning fact about that account.
 file it references — `tls_cert`, `tls_key`, `client_ca`, NTRIP `ca_file`. Chown them to the
 daemon user and keep `tls_key` at 0600; a world-readable key is rejected outright.
 
-`-check-config` has **full startup parity** : it loads the `[push]` TLS keypair and client
-CA, parses the store DSN, and validates NTRIP CA files. **On a bare host without certs it fails by
-design** — provision certificates before first start.
+`-check-config` has **startup parity** for everything the daemon binds before readiness: it
+loads the `[push]` TLS keypair and client CA, parses the store DSN, validates NTRIP CA files,
+verifies the `[[manufacturer_authority]]` keys and registry, and probes the two files the daemon
+must *write* — `manufacturer_authority.registry_state` and `updates.state_file` — for a
+directory writable by `${navlistener_user}` and, when the file exists, for one the daemon would
+load. **Not covered:** database connectivity (DSNs are parsed, never connected), listener
+binds, and the update state's instance lock (held by a running daemon). **On a bare host
+without certs it fails by design** — provision certificates before first start, and create the
+state directories (`install -d -o navlistener -m 0700 /var/db/navlistener`) before enabling
+`registry_state` or `[updates]`.
 
 Non-fatal `WARNING:` lines from the preflight (a group/world-readable secrets file, a
 non-loopback bind of an unauthenticated surface) are echoed at start **without** blocking it.

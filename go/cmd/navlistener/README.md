@@ -26,7 +26,7 @@ genuinely belong to the process rather than to a package.
 |---|---|
 | `-config <path>` | Config file path. Without it, `config.DefaultPaths` is searched in order. |
 | `-version` | Print build identity and exit. |
-| `-check-config` | Load and validate the config, print a summary, exit. **Full startup parity** : it loads the `[push]` TLS keypair and client CA, parses the store DSN, and validates NTRIP CA files. On a bare host without certs it fails by design — that's the point. |
+| `-check-config` | Load and validate the config, print a summary, exit. **Startup parity** for everything bound before readiness: it loads the `[push]` TLS keypair and client CA, parses the store DSN, validates NTRIP CA files, verifies the manufacturer keys and registry, and probes the directories of `manufacturer_authority.registry_state` and `updates.state_file` for writability (and an existing update state file for loadability) without creating or locking anything. Not covered: database connectivity, listener binds, the update state's instance lock. On a bare host without certs it fails by design — that's the point. |
 
 ### What lives here rather than in a package
 
