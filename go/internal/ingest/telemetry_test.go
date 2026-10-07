@@ -176,6 +176,15 @@ func TestRecordToFrameTelemetry(t *testing.T) {
 		t.Fatal("exact reception telemetry body was not retained for persistence")
 	}
 
+	jam.SvID = 3
+	if recordToFrame(jam, "ubx", "obs7") != nil {
+		t.Error("jamming telemetry with nonzero satellite header should yield nil")
+	}
+	rcv.SigID = 1
+	if recordToFrame(rcv, "ubx", "obs7") != nil {
+		t.Error("reception telemetry with nonzero signal header should yield nil")
+	}
+
 	if recordToFrame(wire.RawRecord{FrameType: TelemJammingStats, Raw: []byte{0xff}}, "ubx", "obs7") != nil {
 		t.Error("malformed telemetry body should yield nil")
 	}

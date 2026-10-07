@@ -1366,13 +1366,13 @@ func recordToFrame(rec wire.RawRecord, feed, source string) *RawFrame {
 // unrecognised telemetry type or malformed body returns nil. RF frames carry no nav words;
 // the historian stores their exact versioned body in its private RF table.
 func telemetryToFrame(rec wire.RawRecord, source string, recv, local time.Time) *RawFrame {
+	if rec.GnssID != 0 || rec.SvID != 0 || rec.SigID != 0 || rec.FreqID != 0 {
+		return nil
+	}
 	rf := &RawRF{}
 	stamped := rec.RecvUnixNs > 0 && receiveTimestampPlausible(time.Unix(0, rec.RecvUnixNs), local)
 	switch int(rec.FrameType) {
 	case TelemObserverDetails:
-		if rec.GnssID != 0 || rec.SvID != 0 || rec.SigID != 0 || rec.FreqID != 0 {
-			return nil
-		}
 		details, err := decodeObserverDetails(rec.Raw)
 		if err != nil {
 			return nil
@@ -1391,9 +1391,6 @@ func telemetryToFrame(rec wire.RawRecord, source string, recv, local time.Time) 
 		}
 		rf.Sats = sats
 	case TelemReceiverSolution:
-		if rec.GnssID != 0 || rec.SvID != 0 || rec.SigID != 0 || rec.FreqID != 0 {
-			return nil
-		}
 		sol, err := decodeReceiverSolution(rec.Raw)
 		if err != nil {
 			return nil
