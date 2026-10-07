@@ -3,9 +3,9 @@ package frame
 import (
 	"encoding/binary"
 	"errors"
-	"math"
 
 	"github.com/ptudor/gnss/glonass"
+	"github.com/ptudor/gnss/physconst"
 )
 
 // errGLONASSStringOrder is returned when AssembleGLONASS's arguments aren't
@@ -420,9 +420,9 @@ func DecodeGLONASSAlmanac(first, second []uint32, na int) (GLONASSAlmanacEntry, 
 			NA:        na,
 			Slot:      int(slot),
 			FreqCh:    freqCh,
-			Lambda:    float64(lambda) * gloAlm2m20 * math.Pi,
-			DeltaI:    float64(deltaI) * gloAlm2m20 * math.Pi,
-			Omega:     float64(omega) * gloAlm2m15 * math.Pi,
+			Lambda:    float64(lambda) * gloAlm2m20 * physconst.Pi,
+			DeltaI:    float64(deltaI) * gloAlm2m20 * physconst.Pi,
+			Omega:     float64(omega) * gloAlm2m15 * physconst.Pi,
 			Ecc:       float64(ecc) * gloAlm2m20,
 			Tlambda:   float64(tLambda) * gloAlm2m5,
 			DeltaT:    float64(deltaT) * gloAlm2m9,
