@@ -25,6 +25,7 @@
   "error.invalid_credential": "Enter a valid read-side token without spaces. Do not use a feeder credential.",
   "error.invalid_response": "Collector returned an invalid response.",
   "error.missing_data": "Collector response did not contain data.",
+  "error.revision_changed": "Collector authorization changed. Reconnecting.",
   "error.secure_storage": "Integrity Station could not access the protected connection in Keychain.",
   "error.secure_storage_value": "The protected connection value is invalid.",
   "error.server": "Collector reported an error.",

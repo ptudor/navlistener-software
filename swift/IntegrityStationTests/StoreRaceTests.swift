@@ -19,8 +19,10 @@ private actor StoreNetworkState {
         let privateRequest = request.value(forHTTPHeaderField: "Authorization") != nil
         if !privateRequest && failPublicObservers && request.url!.path.hasSuffix("/observers") { throw URLError(.notConnectedToInternet) }
         if request.url!.path.hasSuffix("/audiences") {
+            // Revocation drops the audience from the new discovery; a revision
+            // that merely moved would re-discover instead of signing out.
             return Data((privateRequest
-                ? "{\"ok\":true,\"data\":{\"schema\":\"2.0\",\"principal\":\"reader\",\"revision\":\"\(revoked ? "revoked" : "private-v1")\",\"audiences\":[\"public\",\"organization:org\"]}}"
+                ? "{\"ok\":true,\"data\":{\"schema\":\"2.0\",\"principal\":\"reader\",\"revision\":\"\(revoked ? "revoked" : "private-v1")\",\"audiences\":[\"public\"\(revoked ? "" : ",\"organization:org\"")]}}"
                 : #"{"ok":true,"data":{"schema":"2.0","revision":"public-v1","audiences":["public"]}}"#).utf8)
         }
         let audience = request.value(forHTTPHeaderField: "X-GNSS-Audience") ?? "public"

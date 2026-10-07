@@ -168,6 +168,19 @@ private actor HistoryReadGate {
             return historyDocument()
         }
         defer { HistoryURLProtocol.handler = nil }
+        // The grant is intact but its revision moved: history access changed,
+        // the owner re-discovers and the view reloads under the new session.
+        await #expect(throws: FeedError.revisionChanged) {
+            try await client.fetchSensorHistory(session: historySession, request: historyRequest())
+        }
+        // A withdrawn grant is a genuine loss even under the original revision.
+        HistoryURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("audiences") {
+                count += 1
+                return ["schema": "2.0", "principal": "reader", "revision": "grant-1", "audiences": ["public"]]
+            }
+            return historyDocument()
+        }
         await #expect(throws: FeedError.audienceLost) {
             try await client.fetchSensorHistory(session: historySession, request: historyRequest())
         }
@@ -176,7 +189,7 @@ private actor HistoryReadGate {
         await #expect(throws: FeedError.forbidden(nil)) {
             try await client.fetchSensorHistory(session: publicSession, request: historyRequest())
         }
-        #expect(count == 2)
+        #expect(count == 3)
     }
 
     private func makeClient() -> FeedClient {

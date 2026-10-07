@@ -17,6 +17,14 @@ final class StationStore {
 
     @ObservationIgnored var notifications: StationNotifications?
 
+    /// Set by the owner. Runs after this store has retired a session whose
+    /// discovery revision moved (docs/OUTPUT.md §0.1: a collector restart or an
+    /// ingest-policy change). The owner re-runs discovery with its stored
+    /// credential and starts a fresh session; the store itself never
+    /// re-discovers, because only the owner holds the credential and the
+    /// audience preference.
+    @ObservationIgnored var rediscoveryHandler: (@MainActor (ReadSession) async -> Void)?
+
     var selectedStationIDs: [String] = []
 
     private let feedClient: FeedClient
@@ -377,11 +385,14 @@ final class StationStore {
         guard let discovery = envelope.data?.validated(),
               discovery.audiences.contains(session.audience)
         else { throw FeedError.audienceLost }
-        guard discovery.authorizationRevision == session.authorizationRevision else {
-            throw FeedError.audienceLost
-        }
         if session.audience.isPrivate, discovery.principalID != session.principalID {
             throw FeedError.audienceLost
+        }
+        // The audience is still granted to this principal, so a different
+        // revision is a partition boundary (restart, policy epoch), not a
+        // withdrawn credential: erase and re-discover rather than sign out.
+        guard discovery.authorizationRevision == session.authorizationRevision else {
+            throw FeedError.revisionChanged
         }
     }
 
@@ -399,9 +410,13 @@ final class StationStore {
 
     private func handleAuthorizationLoss(_ error: Error, session: ReadSession, generation: UInt64) async -> Bool {
         guard isCurrent(session, generation: generation),
-              let feedError = error as? FeedError,
-              feedError.isAuthorizationLoss
+              let feedError = error as? FeedError
         else { return false }
+        if feedError == .revisionChanged {
+            await retireChangedRevision(session: session)
+            return true
+        }
+        guard feedError.isAuthorizationLoss else { return false }
 
         stop()
         activeSession = nil
@@ -409,6 +424,27 @@ final class StationStore {
         authorizationLost = true
         errorMessage = feedError.localizedDescription
         eventStreamMessage = feedError.localizedDescription
+        await erasePartition(of: session)
+        return true
+    }
+
+    /// A moved discovery revision retires the session and erases its partition
+    /// (including the SSE cursor, which must not be reused across a revision),
+    /// then hands control to the owner for re-discovery. Only a rejected
+    /// credential or an audience absent from the new discovery ends in
+    /// `authorizationLost`; a collector restart must not strand the app.
+    private func retireChangedRevision(session: ReadSession) async {
+        stop()
+        activeSession = nil
+        resetPresentation()
+        await erasePartition(of: session)
+        guard let rediscoveryHandler else { return }
+        // stop() cancelled the poll or stream task this runs on; the owner's
+        // discovery requests need a task that is not already cancelled.
+        Task { await rediscoveryHandler(session) }
+    }
+
+    private func erasePartition(of session: ReadSession) async {
         if session.audience.isPrivate {
             try? await cache.clearPrivate(
                 forServer: session.baseURL.absoluteString,
@@ -417,7 +453,6 @@ final class StationStore {
         } else {
             try? await cache.clear(session.cacheKey)
         }
-        return true
     }
 
     private func resetPresentation() {

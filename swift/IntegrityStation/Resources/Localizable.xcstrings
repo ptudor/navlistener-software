@@ -281,6 +281,16 @@
         }
       }
     },
+    "error.revision_changed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collector authorization changed. Reconnecting."
+          }
+        }
+      }
+    },
     "error.secure_storage": {
       "localizations": {
         "en": {
