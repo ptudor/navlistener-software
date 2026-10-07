@@ -1051,6 +1051,13 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 		acked = last
 		return true
 	}
+	closeAfterDurable := func(seq uint64) {
+		defer w.c.Close()
+		// A storage outage or shutdown leaves the receipt unacked for replay.
+		if waitForDurable(ctx, p.durable, observer, session, seq, writeTimeout) {
+			sendAck()
+		}
+	}
 	ackTicker := time.NewTicker(p.ackInterval)
 	defer ackTicker.Stop()
 	ackDone := make(chan struct{})
@@ -1234,19 +1241,18 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 						return
 					}
 				}
-				if p.reception != nil && f.Admission.Current() && f.Details != nil {
-					if f.Details.Reception != nil {
-						f.ReceptionCheck = p.reception.Check(observerContext, session, *f.Details.Reception, time.Now())
-					}
-					if f.Details.ReceptionPower != nil {
-						f.ReceptionPowerCheck = p.reception.CheckPower(observerContext, session, *f.Details.ReceptionPower, time.Now())
-					}
-					if f.Details.Snapshot != nil {
-						p.reception.SnapshotResult(observerContext, session, *f.Details.Snapshot)
-					}
-				}
+				quarantined := p.checkReception(f, observerContext, session)
 				select {
 				case p.out <- f:
+					mu.Lock()
+					if seq > highest {
+						highest = seq
+					}
+					mu.Unlock()
+					if quarantined {
+						closeAfterDurable(seq)
+						return
+					}
 					if f.Details != nil && f.Details.UpdateStatusRejected {
 						metrics.PushUpdateStatusRejectedTotal.WithLabelValues(observer).Inc()
 						if !updateStatusRejectedLogged {
@@ -1255,17 +1261,11 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 								"observer", observer, "session", session)
 						}
 					}
-					if p.updates != nil && f.Admission.Current() && f.Details != nil && f.Details.Update != nil {
-						if err := p.updates.Report(observerContext, session, seq, *f.Details.Update); err != nil {
-							p.log.Error("update status storage unavailable", "observer", observer, "error", err)
-						}
+					if p.reportUpdate(f, observerContext, session, seq) {
+						closeAfterDurable(seq)
+						return
 					}
 					unforwarded = 0 // a delivered record proves a live, well-formed stream
-					mu.Lock()
-					if seq > highest {
-						highest = seq
-					}
-					mu.Unlock()
 				case <-ctx.Done(): // daemon teardown; frame is unacked, feeder replays on reconnect
 					return
 				}
@@ -1286,6 +1286,78 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 			p.log.Warn("push feeder sent too many consecutive unusable frames; closing connection",
 				"observer", observer, "limit", maxConsecutiveUnforwarded)
 			return
+		}
+	}
+}
+
+// checkReception isolates derived reception processing from the raw receipt.
+// Recovery marks the frame for the historian; only the historian's committed
+// ledger notification may resolve a persistable sequence.
+func (p *PushServer) checkReception(f *RawFrame, observerContext identity.ObserverContext, session string) (quarantined bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			f.QuarantineReason = "reception_check_panic"
+			quarantined = true
+			metrics.PushErrorsTotal.WithLabelValues(f.Source, "panic").Inc()
+			p.log.Error("push reception check panicked; forwarding raw quarantine", "observer", f.Source,
+				"session", f.Session, "sequence", f.Seq, "reason", f.QuarantineReason, "panic", r)
+		}
+	}()
+	if p.reception != nil && f.Admission.Current() && f.Details != nil {
+		if f.Details.Reception != nil {
+			f.ReceptionCheck = p.reception.Check(observerContext, session, *f.Details.Reception, time.Now())
+		}
+		if f.Details.ReceptionPower != nil {
+			f.ReceptionPowerCheck = p.reception.CheckPower(observerContext, session, *f.Details.ReceptionPower, time.Now())
+		}
+		if f.Details.Snapshot != nil {
+			p.reception.SnapshotResult(observerContext, session, *f.Details.Snapshot)
+		}
+	}
+	return false
+}
+
+// reportUpdate runs after the frame was handed off. Recovery must not mutate
+// that shared frame or enqueue it twice; its original receipt is already on
+// the historian path and the caller waits for its durable ACK before closing.
+func (p *PushServer) reportUpdate(f *RawFrame, observerContext identity.ObserverContext, session string, seq uint64) (panicked bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicked = true
+			metrics.PushErrorsTotal.WithLabelValues(f.Source, "panic").Inc()
+			p.log.Error("push update report panicked; closing after durable receipt", "observer", f.Source,
+				"session", session, "sequence", seq, "reason", "update_report_panic", "panic", r)
+		}
+	}()
+	if p.updates != nil && f.Admission.Current() && f.Details != nil && f.Details.Update != nil {
+		if err := p.updates.Report(observerContext, session, seq, *f.Details.Update); err != nil {
+			p.log.Error("update status storage unavailable", "observer", f.Source, "error", err)
+		}
+	}
+	return false
+}
+
+func waitForDurable(ctx context.Context, tracker *DurableTracker, source, session string, seq uint64, timeout time.Duration) bool {
+	if tracker == nil {
+		return ctx.Err() == nil
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if ctx.Err() != nil {
+			return false
+		}
+		if tracker.Watermark(source, session) >= seq {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+			return false
+		case <-ticker.C:
 		}
 	}
 }
@@ -1377,7 +1449,7 @@ func telemetryToFrame(rec wire.RawRecord, source string, recv, local time.Time) 
 		if err != nil {
 			return nil
 		}
-		return &RawFrame{Recv: recv, RecvLocal: local, Source: source, Details: details, Bytes: append([]byte(nil), rec.Raw...), BoardSampleStamped: stamped}
+		return &RawFrame{Recv: recv, RecvLocal: local, Source: source, MsgType: int(rec.FrameType), Details: details, Bytes: append([]byte(nil), rec.Raw...), BoardSampleStamped: stamped}
 	case TelemJammingStats:
 		bands, err := decodeJammingStats(rec.Raw)
 		if err != nil {
