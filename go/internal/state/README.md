@@ -124,8 +124,10 @@ compared **at a common instant**:
 
 Two design choices matter:
 
-**Evaluate at the midpoint.** Each side extrapolates only half the update interval, which keeps
-both within their fit window instead of asking the outgoing set to predict far past its validity.
+**Evaluate Kepler-family changes at the incoming Toe.** Both ephemerides and clocks
+are evaluated at the new orbit's reference epoch, as specified in
+[INTEGRITY.md §3](../../../docs/INTEGRITY.md). Only GLONASS uses the midpoint between
+the outgoing and incoming reference epochs, with day-relative timing.
 
 **Guard on freshness and prior state.** The outgoing set must actually be older than the
 incoming one, and the SV must have had a prior ephemeris (`haveEph`). That second guard is why a
@@ -254,8 +256,9 @@ The largest test surface in the daemon, roughly grouped:
 
 - **Per-constellation folding** — one file per signal family, exercising the fold, IOD handling,
   health, and the assembler pairing rules from the collector's side.
-- **Disco computation** — midpoint evaluation, the freshness and prior-state guards, GLONASS's
-  day-relative variant, and the no-fake-disco-after-restart property.
+- **Disco computation** — incoming-Toe evaluation for Kepler-family changes, midpoint
+  evaluation for GLONASS, the freshness and prior-state guards, day-relative timing,
+  and the no-fake-disco-after-restart property.
 - **Health semantics** — `HaveHealth`, the CNAV L1-bit drop, GLONASS's joint Bn/ℓn/Cn rule, the
   SBAS MT0-interleave regression.
 - **Capability** — decode-then-record ordering, and `CapabilityDiff` in both directions.
