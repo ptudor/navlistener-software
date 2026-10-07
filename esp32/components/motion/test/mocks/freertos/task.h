@@ -6,3 +6,4 @@ BaseType_t xTaskCreate(void (*entry)(void *), const char *name, unsigned stack,
 void vTaskDelay(TickType_t ticks);
 unsigned ulTaskNotifyTake(BaseType_t clear, TickType_t ticks);
 void vTaskNotifyGiveFromISR(TaskHandle_t task, BaseType_t *woken);
+unsigned uxTaskGetStackHighWaterMark(TaskHandle_t task);

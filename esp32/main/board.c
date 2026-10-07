@@ -67,6 +67,7 @@ static atomic_uint brightness = PANEL_DEFAULT_BRIGHTNESS;
 // boards without a trimmer and whenever the position is unknown (panel_brightness_t).
 static atomic_uint trimmer_reference;
 static uint64_t next_timing;
+static unsigned reports_queued; // ObserverDetails records spooled so far (stack evidence timing)
 static unsigned applied_brightness = PANEL_DEFAULT_BRIGHTNESS, saved_reference;
 static atomic_uint panel_frame;
 static bool pwm_ready;
@@ -751,6 +752,7 @@ static void report_poll(const gnss_status_t *status, int64_t now, uint8_t expect
     size_t n = gnf1_encode_telem(record, report_now_ns ? report_now_ns() : 0, GNF1_T_OBSERVER, body, length);
     if (n && spool_append(record, n)) {
         observer_report_sent(&report_policy, &report);
+        reports_queued++;
         if(requested)reception_snapshot_queued();
         if (imu_listed) motion_report_sent();
         ESP_LOGI(TAG, "ObserverDetails queued: reason=0x%02x environment=0x%02x RTC=0x%02x EEPROM=%u RNG=%u events=%lu bytes=%u",
@@ -788,6 +790,23 @@ static void timing_poll(const gnss_status_t *status)
     hex[2*length]=0;
     ESP_LOGI("pulse_timing","sample=%s",hex);
 }
+// Measured on xtensa with -fstack-usage: with the receiver status, the journal copy and
+// reception's wire scratch in static storage, the deepest measured path (board_task 192 B,
+// reception_poll 1168 B and the non-inlined nrp_decode temporary 2128 B) is about 3.4 KiB.
+// NVS commits, I2C transfers and float formatting underneath add frames the compiler
+// cannot see, so the budget is several times that; the task logs its minimum free stack
+// to confirm it.
+#define BOARD_TASK_STACK 12288
+#define BOARD_STACK_MARGIN 1024
+#define BOARD_STACK_REPORT_MS (60 * 60 * 1000)
+static void board_stack_report(const char *when)
+{
+    unsigned free_bytes = (unsigned)uxTaskGetStackHighWaterMark(NULL);
+    if (free_bytes < BOARD_STACK_MARGIN)
+        ESP_LOGW(TAG, "board stack minimum free=%u bytes %s: under the %u-byte margin",
+                 free_bytes, when, (unsigned)BOARD_STACK_MARGIN);
+    else ESP_LOGI(TAG, "board stack minimum free=%u bytes %s", free_bytes, when);
+}
 static void board_task(void *arg)
 {
     (void)arg;
@@ -797,10 +816,12 @@ static void board_task(void *arg)
     max_sensors_start();
     history_load();
     uint8_t previous_green = 255, previous_yellow = 255;
-    bool brightness_dirty = false;
-    int64_t next_brightness_write = 0;
+    bool brightness_dirty = false, report_stack_logged = false;
+    int64_t next_brightness_write = 0, next_stack_report = 0;
+    // Static: this task is the only user, and together they are 2.8 KB.
+    static gnss_status_t status;
+    static observer_report_t journal_report;
     for (;;) {
-        gnss_status_t status;
         receiver_status(&status);
         uint8_t green, yellow;
         int64_t now = esp_timer_get_time() / 1000;
@@ -839,9 +860,19 @@ static void board_task(void *arg)
         // Every pass: while the humidity heater is on it converts at its own step interval.
         environment_poll(esp_timer_get_time() / 1000);
         timing_poll(&status);
-        observer_report_t journal_report=report;
+        journal_report=report;
         journal_report.rtc=observer_rtc_status();
         journal_poll(&status,&journal_report,esp_timer_get_time()/1000);
+        // Stack evidence: after the first pass, after the first report (sensors, encoder and
+        // journal have all run by then), and hourly so a forecast and power assessment that
+        // arrive later are covered too.
+        if (now >= next_stack_report) {
+            board_stack_report(next_stack_report ? "(hourly)" : "after the first pass");
+            next_stack_report = now + BOARD_STACK_REPORT_MS;
+        } else if (!report_stack_logged && reports_queued) {
+            board_stack_report("after the first report");
+        }
+        report_stack_logged |= reports_queued != 0;
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
@@ -968,7 +999,7 @@ esp_err_t observer_board_start(void)
     if (board && board->bright_button >= 0 && observer_board_lists(CAT_BUTTON, BUTTON_USER_2) &&
         xTaskCreate(panel_input_task, "panel_input", 3072, NULL, 4, NULL) != pdPASS) return ESP_ERR_NO_MEM;
 #endif
-    return xTaskCreate(board_task, "board", 6144, NULL, 3, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
+    return xTaskCreate(board_task, "board", BOARD_TASK_STACK, NULL, 3, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
 #else
 void observer_board_set_brightness(unsigned percent) { (void)percent; }
