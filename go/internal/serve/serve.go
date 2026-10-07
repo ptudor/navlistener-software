@@ -580,12 +580,20 @@ type envelope struct {
 // consumer (and the integrity layer) knows what it should be reporting (docs/CONSTELLATIONS.md
 // §7, docs/INTEGRITY.md §6).
 type observer struct {
-	ID       string              `json:"id"`
-	Vendor   string              `json:"vendor"`
-	Remark   string              `json:"remark"`
-	Disabled bool                `json:"disabled"`
-	Board    *state.StationBoard `json:"board,omitempty"`
-	RF       *state.StationRF    `json:"rf,omitempty"`
+	ID       string `json:"id"`
+	Vendor   string `json:"vendor"`
+	Remark   string `json:"remark"`
+	Disabled bool   `json:"disabled"`
+	// LastSeen (epoch seconds) and LastSeenS (age at serving time) are the
+	// station's receiver liveness: the most recent input of any kind the
+	// collector has from it — the same source the station_offline detector
+	// reads (state.StationLastSeen), not the RF model, which is withheld once
+	// stale. A station the collector has never heard from omits both; a station
+	// that went dark keeps a climbing age, so a client can show it offline.
+	LastSeen  *int64              `json:"last_seen,omitempty"`
+	LastSeenS *int                `json:"last_seen_s,omitempty"`
+	Board     *state.StationBoard `json:"board,omitempty"`
+	RF        *state.StationRF    `json:"rf,omitempty"`
 	// Integrity is the station's assurance assessment
 	// (docs/proposals/STATION-ASSURANCE.md): the fused state, every check's state
 	// with its measured values and thresholds, and the configuration hash. It
@@ -612,6 +620,22 @@ func (s *Server) observers(now time.Time, st *state.Store, sources []config.Sour
 		assessments = st.FeedStationIntegrity(now)
 	}
 	reps := st.FeedCapabilityReports(now)
+	// Receiver liveness from the detector's own read model: unfiltered, so a
+	// dark station keeps its climbing age here after every other model has
+	// withheld it as stale. Public views see only what navigation and RF
+	// inputs establish, like the rest of this row: board reports and receiver
+	// solutions are private and must neither enumerate a station publicly nor
+	// refresh its public age.
+	ages := st.ReceiverLastSeen(now)
+	if selected.Kind != identity.AudiencePublic {
+		ages = st.StationLastSeen(now)
+	}
+	liveness := func(o *observer) {
+		if age, ok := ages[o.ID]; ok {
+			epoch := now.Add(-time.Duration(age) * time.Second).Unix()
+			o.LastSeenS, o.LastSeen = &age, &epoch
+		}
+	}
 	seen := make(map[string]bool, len(sources))
 	out := make([]observer, 0, len(sources))
 	for _, src := range sources {
@@ -646,6 +670,7 @@ func (s *Server) observers(now time.Time, st *state.Store, sources []config.Sour
 			o.Declared = rep.Declared
 			o.Unexpected, o.Missing = state.CapabilityDiff(rep.Observed, rep.Declared)
 		}
+		liveness(&o)
 		out = append(out, o)
 	}
 	// FeedStationRF/FeedCapabilityReports key stations by dial source OR
@@ -680,6 +705,15 @@ func (s *Server) observers(now time.Time, st *state.Store, sources []config.Sour
 			extra = append(extra, id)
 		}
 	}
+	// A station that has gone dark is withheld by every serving read model
+	// above but keeps its liveness age; it stays listed, with that age and
+	// nothing else, so a client can tell "offline" from "never heard of".
+	for id := range ages {
+		if !seen[id] && !(selected.Kind == identity.AudiencePublic && audience.IsAnonymousPublicSource(id)) {
+			seen[id] = true
+			extra = append(extra, id)
+		}
+	}
 	sort.Strings(extra)
 	for _, id := range extra {
 		// Identity again, verbatim: these ids come from the live read models, whose
@@ -700,6 +734,7 @@ func (s *Server) observers(now time.Time, st *state.Store, sources []config.Sour
 			o.Declared = rep.Declared
 			o.Unexpected, o.Missing = state.CapabilityDiff(rep.Observed, rep.Declared)
 		}
+		liveness(&o)
 		out = append(out, o)
 	}
 	return out

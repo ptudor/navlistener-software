@@ -691,6 +691,20 @@ func (s *Store) LiveReceivers(now time.Time) int { return s.countLiveReceivers(n
 // indefinitely rather than freezing mid-state when the rf entry is evicted
 // .
 func (s *Store) StationLastSeen(now time.Time) map[string]int {
+	return s.lastSeenAges(now, true)
+}
+
+// ReceiverLastSeen is StationLastSeen restricted to the inputs public views may
+// know about — navigation frames and RF telemetry. Board reports and receiver
+// solutions are private (public views exclude them), so a public audience's
+// liveness and its station_offline classification must not move on them, or a
+// public row would reveal that private telemetry continues after the receiver
+// went dark.
+func (s *Store) ReceiverLastSeen(now time.Time) map[string]int {
+	return s.lastSeenAges(now, false)
+}
+
+func (s *Store) lastSeenAges(now time.Time, includePrivate bool) map[string]int {
 	last := map[string]time.Time{}
 	s.capMu.Lock()
 	for id, st := range s.caps {
@@ -703,6 +717,24 @@ func (s *Store) StationLastSeen(now time.Time) map[string]int {
 	for id, st := range s.rf {
 		if t, ok := last[id]; !ok || st.lastSeen.After(t) {
 			last[id] = st.lastSeen
+		}
+	}
+	// A station that delivers only board telemetry or receiver solutions
+	// never enters caps or rf, so without these two the offline classifier had
+	// nothing to hold or raise for it: an enrolled observer that lost its
+	// receiver stream but kept reporting was invisible to station_offline.
+	// Liveness is the union of every input a station produces; the live
+	// receiver count (countLiveReceivers) deliberately stays nav/RF-only.
+	if includePrivate {
+		for id, st := range s.boards {
+			if t, ok := last[id]; !ok || st.last.ReceivedAt.After(t) {
+				last[id] = st.last.ReceivedAt
+			}
+		}
+		for id, st := range s.integrity {
+			if t, ok := last[id]; !ok || st.lastInput.After(t) {
+				last[id] = st.lastInput
+			}
 		}
 	}
 	s.rfMu.Unlock()

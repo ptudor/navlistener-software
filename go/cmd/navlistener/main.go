@@ -1127,7 +1127,14 @@ func detectEvents(live *state.Store, det *detect.Detector, audienceKey string) [
 	events = append(events, det.TickIntegrity(now, live.FeedStationIntegrity(now))...)
 	// Station liveness (station_offline, regression fix/regression fix) reads the unfiltered
 	// per-station age map — retained state, not the staleness-filtered RF view.
+	// Private audiences see every input a station produces, so a station that
+	// keeps reporting only board telemetry or receiver solutions still goes
+	// offline when those stop; public views know only navigation and RF inputs,
+	// exactly as the public observers row does.
 	stationLastSeen := live.StationLastSeen(now)
+	if audienceKey == "public" {
+		stationLastSeen = live.ReceiverLastSeen(now)
+	}
 	capabilityReports := live.FeedCapabilityReports(now)
 	if audienceKey == "public" {
 		// Anonymous/redacted contributors may affect satellite-level public

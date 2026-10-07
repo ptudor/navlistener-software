@@ -197,12 +197,17 @@ receiver disagreement on them is an integrity signal, not an averaging problem.
 
 ### 1.3 `observers` — the station list
 
-Array of station records: `id`, `vendor`, `remark`, `disabled`, the station RF
+Array of station records: `id`, `vendor`, `remark`, `disabled`, the receiver
+liveness `last_seen` (epoch seconds) and `last_seen_s` (age at serving time) —
+the most recent input of any kind the collector has from the station, the same
+read model the `station_offline` detector uses, present on every station the
+collector has heard from and omitted for one it never has — the station RF
 read model `rf` (DEFENSE-PNT.md §6), the demonstrated `capabilities`, and, when a
 capability fingerprint is declared, `declared_capabilities`,
 `unexpected_capabilities` and `missing_capabilities`. Configured dial sources and
-push stations seen in live RF or capability state share the shape; dial-only
-metadata is absent for push stations. Operator-supplied strings (`vendor`,
+push stations seen in live state share the shape; dial-only metadata is absent
+for push stations, and a station that has gone dark stays listed with its
+climbing `last_seen_s` after `rf` is withheld as stale. Operator-supplied strings (`vendor`,
 `remark`) are sanitized before serialization (INTEGRITY.md §9). Station
 coordinates, versions, clock drift and per-SV reception are not served here; the
 per-SV view is the `svs` feed's `perrecv` (§1.1).

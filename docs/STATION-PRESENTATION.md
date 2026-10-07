@@ -8,10 +8,18 @@ colors; native system fonts and accessibility behavior remain platform-specific.
 ## Independent status dimensions
 
 Receiver connectivity uses observer `last_seen_s`, or `last_seen` with the
-collector's response time. Contact within 300 seconds is online. A receiver can
-be online without an environmental board report. Missing liveness remains unknown;
-an absent inventory receiver without a recorded contact has no contact recorded.
-Inventory enablement, collector connectivity and board freshness are separate.
+collector's response time. The collector serves both on every observer row it
+has heard from, taken from the receiver-liveness read model the `station_offline`
+detector reads — the most recent input of any kind (navigation frames, RF
+telemetry, board reports or receiver solutions) — so a station that goes dark
+keeps a climbing age after its `rf` model is withheld as stale, and a station
+that delivers only board telemetry has liveness too. Contact within 300 seconds
+is online. A receiver can be online without an environmental board report.
+Missing liveness remains unknown unless a condition is known: a station the
+collector has never heard from omits both fields, and its health is then
+derived from its active conditions when those are known. An absent inventory
+receiver without a recorded contact has no contact recorded. Inventory
+enablement, collector connectivity and board freshness are separate.
 
 Condition health uses the complete current-condition endpoint, never a recent
 event-history tail. Offline takes precedence over alarms; an online receiver has
