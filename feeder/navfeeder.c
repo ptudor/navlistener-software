@@ -1258,15 +1258,21 @@ static uint8_t frame_type(unsigned gnssId, unsigned sigId) {
 }
 
 /* emit_sfrbx builds one GNF1 DATA record from a UBX-RXM-SFRBX payload and appends it to the
- * spool. Layout (F9/M9): gnssId, svId, sigId, freqId, numWords, reserved, version, reserved,
- * then numWords little-endian 32-bit dwrds each holding one native nav word right-aligned.
- * We re-serialize each word big-endian (the collector reads them back with BE, matching its
- * RawBytes()/bytesToWords round-trip), and stamp the host reception time.
+ * spool. Layout (F9/M9, message version 2): gnssId, svId, sigId, freqId, numWords, chn,
+ * version, reserved, then numWords little-endian 32-bit dwrds each holding one native nav
+ * word right-aligned. The M8 generation emits message version 1, whose byte 2 is a reserved
+ * field rather than sigId: an M8 is L1-only, so its sigId is 0 by definition and byte 2 must
+ * not be trusted (a non-zero reserved byte would otherwise label the frame with a bogus
+ * signal and a wrong frame_type, persisted as such). Mirrored in the collector's parseSFRBX
+ * and the ESP32 framer so the three stay a cross-oracle. We re-serialize each word
+ * big-endian (the collector reads them back with BE, matching its RawBytes()/bytesToWords
+ * round-trip), and stamp the host reception time.
  * Returns 1 if a record was appended to the spool, 0 if the inner payload was rejected or the
  * append failed — run_ubx counts those separately from recognized messages. */
 static int emit_sfrbx(const unsigned char *p, unsigned len) {
 	if (len < 8) return 0;
-	unsigned gnssId = p[0], svId = p[1], sigId = p[2], freqId = p[3], numWords = p[4];
+	unsigned gnssId = p[0], svId = p[1], freqId = p[3], numWords = p[4], version = p[6];
+	unsigned sigId = version == 1 ? 0 : p[2];
 	if (numWords == 0 || 8u + numWords * 4u > len) return 0;
 	unsigned rawlen = numWords * 4u;
 	if (rawlen > MAX_RAW) return 0;

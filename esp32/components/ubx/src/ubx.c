@@ -41,14 +41,20 @@ void ubx_parser_init(ubx_parser_t *p, ubx_emit_fn emit, ubx_now_fn now, void *ct
 
 // --- record emitters (payload is the validated UBX message body) -------------------------
 
-// emit_sfrbx: UBX-RXM-SFRBX -> raw-nav record. Layout (F9/M9): gnssId, svId, sigId, freqId,
-// numWords, reserved, version, reserved, then numWords little-endian dwrds each holding one
-// native nav word. Re-serialize each word big-endian (the collector reads them back BE).
+// emit_sfrbx: UBX-RXM-SFRBX -> raw-nav record. Layout (F9/M9, message version 2): gnssId,
+// svId, sigId, freqId, numWords, chn, version, reserved, then numWords little-endian dwrds
+// each holding one native nav word. The M8 generation emits message version 1, whose byte 2
+// is a reserved field rather than sigId: an M8 is L1-only, so its sigId is 0 by definition
+// and byte 2 must not be trusted (a non-zero reserved byte would otherwise label the frame
+// with a bogus signal and a wrong frame_type). The same rule lives in the feeder's
+// emit_sfrbx and the collector's parseSFRBX, so the three stay a cross-oracle. Re-serialize
+// each word big-endian (the collector reads them back BE).
 static void emit_sfrbx(ubx_parser_t *p, const uint8_t *payload, uint16_t len)
 {
     if (len < 8) return;
-    unsigned gnss_id = payload[0], sv_id = payload[1], sig_id = payload[2],
-             freq_id = payload[3], num_words = payload[4];
+    unsigned gnss_id = payload[0], sv_id = payload[1], freq_id = payload[3],
+             num_words = payload[4], version = payload[6];
+    unsigned sig_id = version == 1 ? 0 : payload[2];
     if (num_words == 0 || 8u + num_words * 4u > len) return;
     unsigned raw_len = num_words * 4u;
     if (raw_len > GNF1_MAX_RAW) return;
