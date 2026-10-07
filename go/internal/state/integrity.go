@@ -55,12 +55,12 @@ const (
 	// statusPreferredFor is how long an epoch-rate receiver status block
 	// supersedes the low-rate spoofing state in board reports.
 	statusPreferredFor = 5 * time.Minute
-	// baselineRecent bounds the solutions a paired station keeps for matching its
-	// partner's epochs, which normally arrive within a second or two.
-	baselineRecent = 16
 	// baselineArrivalSkew bounds how far apart two matched epochs may arrive, so an
 	// epoch from another week cannot match on time of week alone.
 	baselineArrivalSkew = 30 * time.Second
+	// baselineRecent retains every expected 1 Hz epoch across the inclusive
+	// arrival-skew bound, even when the current epoch arrives before its partner.
+	baselineRecent = int(baselineArrivalSkew/time.Second) + 1
 )
 
 type integrityStation struct {

@@ -300,7 +300,7 @@ func AssembleGPS(id gnss.GNSSID, svid int, sf1, sf2, sf3 *GPSSubframe) (kepler.E
 		return kepler.Ephemeris{}, clock.Model{}, ErrWrongMsgType
 	}
 	if sf2.IODE != sf3.IODE || sf2.IODE != (sf1.IODC&0xFF) {
-		return kepler.Ephemeris{}, clock.Model{}, errors.New("frame: LNAV IODE/IODC mismatch")
+		return kepler.Ephemeris{}, clock.Model{}, errIODMismatch
 	}
 	eph := sf2.eph // sf2 elements
 	// Merge sf3 orbital elements.

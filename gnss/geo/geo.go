@@ -34,6 +34,7 @@ func GeodeticToECEF(g Geodetic, ell physconst.Ellipsoid) gnss.ECEF {
 // ECEFToGeodetic converts ECEF metres to geodetic on ellipsoid ell by the standard
 // fixed-point latitude/height iteration (docs/MATH.md §5.1; Bowring's closed form
 // is the non-iterative alternative given there).
+// Inputs must be finite and ell a valid ellipsoid; invalid inputs may produce NaN or Inf.
 func ECEFToGeodetic(p gnss.ECEF, ell physconst.Ellipsoid) Geodetic {
 	e2 := ell.E2()
 	lon := math.Atan2(p.Y, p.X)
@@ -96,6 +97,7 @@ func ENU(d gnss.ECEF, ref Geodetic) (e, n, u float64) {
 // position sv as seen from a receiver at geodetic position recv on ellipsoid ell.
 // Azimuth is measured clockwise from north in [0, 2π); elevation in [−π/2, π/2]
 // (docs/MATH.md §5.2). The receiver ECEF is derived from recv on the same datum.
+// Inputs must be finite and ell a valid ellipsoid; invalid inputs may produce NaN or Inf.
 func AzEl(sv gnss.ECEF, recv Geodetic, ell physconst.Ellipsoid) (az, el float64) {
 	r := GeodeticToECEF(recv, ell)
 	d := sv.Sub(r) // receiver → SV vector, ECEF

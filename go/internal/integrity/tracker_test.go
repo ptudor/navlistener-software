@@ -171,13 +171,31 @@ func TestTrackerExpire(t *testing.T) {
 func TestTrackerExpireHoldsDegradedState(t *testing.T) {
 	tr := newTracker(testInfo)
 	last := feed(tr, t0, Unassured, Unassured, Unassured).Add(-time.Second)
+	tr.update(Verdict{
+		State: Unassured, Reasons: []string{"measured_fault"},
+		Metrics: map[string]float64{"residual": 12}, Thresholds: map[string]float64{"limit": 10},
+	}, last, testFilter)
 	stale := last.Add(6 * time.Minute)
 	tr.expire(stale, 5*time.Minute, testFilter)
-	if r := tr.result(); r.State != Unassured {
-		t.Fatalf("stale unassured check = %+v, want the degradation held", r)
+	checkEvidence := func(r Result) {
+		t.Helper()
+		if r.Metrics["residual"] != 12 || r.Thresholds["limit"] != 10 ||
+			!slices.Equal(r.Reasons, []string{"measured_fault", ReasonStale}) || r.EvaluatedAt != last.Unix() {
+			t.Fatalf("stale check lost the real evaluation's evidence: %+v", r)
+		}
+	}
+	for _, at := range []time.Time{stale, stale.Add(time.Minute)} {
+		tr.expire(at, 5*time.Minute, testFilter)
+		r := tr.result()
+		if r.State != Unassured {
+			t.Fatalf("stale unassured check = %+v, want the degradation held", r)
+		}
+		checkEvidence(r)
 	}
 	tr.expire(stale.Add(5*time.Minute), 5*time.Minute, testFilter)
-	if r := tr.result(); r.State != Unavailable {
+	r := tr.result()
+	if r.State != Unavailable {
 		t.Fatalf("after the hold = %+v, want unavailable", r)
 	}
+	checkEvidence(r)
 }

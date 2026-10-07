@@ -257,6 +257,7 @@ func (m *Manager) ObservePower(observer string, at time.Time, observations []rec
 	}
 	for _, observation := range observations {
 		if observation.Signal != reception.Satellite || !s.site.AllowsGNSS(observation.GNSS) ||
+			observation.Elevation < 0 || observation.Elevation > 90 ||
 			float64(observation.Elevation) < s.site.Elevation+2 {
 			continue
 		}

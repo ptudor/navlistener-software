@@ -360,6 +360,13 @@ frequency the broadcast coefficients are referred to — **L1 for GPS/QZSS, L5 f
 
 ### 7.1 Klobuchar (GPS L1, QZSS, and NavIC) — full algorithm
 
+`gnss/iono.Klobuchar` implements the evaluator; callers must supply coefficients.
+The GPS/QZSS frame decoders do not yet decode LNAV subframe 4 page 18 or CNAV
+MT30 ionosphere coefficients, nor UTC parameters from that LNAV page or CNAV MT33.
+The collector does not currently call this evaluator. BeiDou D1 coefficients are
+decoded, but belong to the different model described below and cannot supply GPS
+Klobuchar.
+
 8 coefficients `α0..α3, β0..β3` (broadcast). Inputs: user geodetic `(φu, λu)` and SV
 elevation `E` in semicircles; SV azimuth `A` **in radians** — IS-GPS-200 lists `A` among the
 semicircle inputs, but every `cos A`/`sin A` in the algorithm below is evaluated with `A` in

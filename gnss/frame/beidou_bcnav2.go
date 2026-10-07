@@ -273,9 +273,9 @@ func DecodeBeiDouBCNAV2(words []uint32) (*BeiDouBCNAV2, error) {
 // if present, a clock-bearing message (type 30 or 34) into the ephemeris and
 // clock model. Types 10 and 11 are broadcast continuously together (ICD §6.2.3)
 // and type 11 carries no IODE, so pairing is validated by broadcast adjacency:
-// the two SOWs must be within one frame (3 s) of each other. svid tags the
-// constellation. kepler would apply its B1I-sourced GEO rotation to a
-// C01–C05/C59–C63 ephemeris from ANY source, but the B2a ICD itself defines no
+// the two SOWs must be within one frame (3 s) of each other and both PRNs must
+// match svid. svid tags the constellation. kepler would apply its B1I-sourced
+// GEO rotation to a C01–C05/C59–C63 ephemeris from ANY source, but the B2a ICD itself defines no
 // GEO branch (Table 7-9 is MEO/IGSO only) — unreachable today because BDS-3
 // GEOs don't broadcast B2a; see docs/MATH.md §2.1 "Provenance" before ever
 // relying on a B2a GEO position.
@@ -283,9 +283,9 @@ func DecodeBeiDouBCNAV2(words []uint32) (*BeiDouBCNAV2, error) {
 // mClk freshness : unlike the m10/m11 pairing check above, a stale mClk
 // does not fail the whole assembly — an ephemeris update must not be blocked
 // forever just because this SV's type-30/34 stopped decoding. Instead a mClk
-// whose SOW has drifted too far from m10's is treated as if it were absent
-// (falls back to the zero clock model below), and the caller keeps trying with
-// whatever type-30/34 arrives next. clkOK reports whether the returned clock
+// whose SOW has drifted too far from m10's, or whose PRN differs from svid, is
+// treated as if it were absent (falls back to the zero clock model below), and
+// the caller keeps trying with whatever type-30/34 arrives next. clkOK reports whether the returned clock
 // model actually came from a fresh mClk — false means the zero model was
 // returned and the caller must not treat it as a decoded clock (serve it,
 // difference it for a time-disco, or latch mClk's IODC as applied).
@@ -295,6 +295,12 @@ func AssembleBeiDouBCNAV2(svid int, m10, m11, mClk *BeiDouBCNAV2) (eph kepler.Ep
 	}
 	if m10.MesType != 10 || m11.MesType != 11 || !m11.hasEph2 {
 		return kepler.Ephemeris{}, clock.Model{}, false, ErrWrongMsgType
+	}
+	if m10.PRN != svid || m11.PRN != svid {
+		return kepler.Ephemeris{}, clock.Model{}, false, errPRNMismatch
+	}
+	if mClk != nil && mClk.PRN != svid {
+		mClk = nil
 	}
 	// Both deltas wrap mod 604800 : a 10/11 pair or a current clock
 	// straddling the weekly SOW rollover (e.g. 604797 → 0) is broadcast-adjacent

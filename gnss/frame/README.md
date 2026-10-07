@@ -607,9 +607,8 @@ that a hardened decoder will actually accept. They exist because verifying integ
 every test fixture must carry a valid one. Live decode paths should never call them — they're used
 by this package's tests and by the daemon's `internal/state` and `internal/serve` tests.
 
-One asymmetry to know: the other three stampers no-op on a short slice, while
-`StampGLONASSHamming` **requires at least four words and will panic on a shorter one.**
-Production ingest never synthesizes strings.
+All four stampers leave a short slice unchanged. `StampGLONASSHamming` needs at least
+four words to write its check bits. Production ingest never synthesizes strings.
 
 ---
 

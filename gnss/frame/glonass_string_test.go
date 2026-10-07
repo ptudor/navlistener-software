@@ -3,8 +3,20 @@ package frame
 import (
 	"encoding/binary"
 	"math"
+	"slices"
 	"testing"
 )
+
+func TestStampGLONASSHammingShortSlice(t *testing.T) {
+	for n := 0; n < 4; n++ {
+		words := []uint32{1, 2, 3}[:n]
+		before := slices.Clone(words)
+		StampGLONASSHamming(words)
+		if !slices.Equal(words, before) {
+			t.Fatalf("short slice changed: got %v, want %v", words, before)
+		}
+	}
+}
 
 // gloSetSignMag writes a sign-magnitude field (MSB sign, per GLO-ICD-5.1
 // Table 4.5 Note 2) at absolute block-bit offset start, width n — the encoding

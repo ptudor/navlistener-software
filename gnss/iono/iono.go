@@ -26,6 +26,7 @@ import "math"
 // side-by-side verification is recorded in docs/MATH.md §7.1. BeiDou B1I uses
 // the materially different BDS-SIS-B1I-3.0 §5.2.4.7 model and must not be run
 // through this function.
+// Coefficients and other inputs must be finite; this evaluator does not reject NaN or Inf.
 func Klobuchar(alpha, beta [4]float64, userLat, userLon, az, el, tow float64) float64 {
 	// the model is defined for el >= 0 (IS-GPS-200N §20.3.3.5.2.5); at
 	// el = -0.11π rad (-19.8°) the earth-centred-angle term below divides by

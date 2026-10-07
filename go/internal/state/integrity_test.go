@@ -360,6 +360,37 @@ func TestBaselinePairsMatchedEpochs(t *testing.T) {
 			t.Fatalf("%s collapsed = %s %v %v", id, r.State, r.Reasons, r.Metrics)
 		}
 	}
+	t.Run("partner at arrival-skew bound", func(t *testing.T) {
+		delayed := New(1)
+		delayed.SetIntegrity(cfg)
+		const lag = 30
+		for i := 0; i < lag+16; i++ {
+			delayed.Apply(solutionFrame(i, true, 1))
+			if i < lag {
+				continue
+			}
+			east := int32(east50)
+			if i >= lag+10 {
+				east = 0
+			}
+			f := partnerAt(i-lag, east)
+			f.RecvLocal = integrityT0.Add(time.Duration(i) * time.Second)
+			delayed.Apply(f)
+			if i != lag+9 && i != lag+15 {
+				continue
+			}
+			want := integrity.Assured
+			if east == 0 {
+				want = integrity.Unassured
+			}
+			for _, id := range []string{a, b} {
+				r := integrityResult(t, delayed.FeedStationIntegrity(f.RecvLocal)[id], integrity.CheckBaseline)
+				if r.State != want || r.EvaluatedAt != f.RecvLocal.Unix() {
+					t.Fatalf("%s delayed pair = %+v, want %s at %d", id, r, want, f.RecvLocal.Unix())
+				}
+			}
+		}
+	})
 
 	oneSided := New(1)
 	cfg, err = NewIntegrityConfig(integrity.DefaultProfile(), map[string]integrity.StationProfile{a: pair(b)})

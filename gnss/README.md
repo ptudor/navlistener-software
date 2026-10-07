@@ -77,14 +77,15 @@ az, el := geo.AzEl(sol.Pos, receiver, physconst.WGS84)
 
 ### The contract
 
-Four promises, enforced package-wide:
+The module's computation contracts:
 
 1. **No I/O.** No files, no network, no logging, no globals, no `init()` side effects. This is
    pure computation, which is what makes it testable, fuzzable, deterministic, and linkable from
    anywhere.
-2. **Errors, never NaN.** Degenerate input returns a typed error. A NaN doesn't crash anything —
-   it silently propagates into a feed, freezes a map marker, and poisons an integrity threshold
-   three layers away with no stack trace. Every propagation checks finiteness before returning.
+2. **Finite propagation and decode results.** Propagators check finiteness before returning,
+   and decoders reject malformed input with errors. Pure clock, ionosphere and geometry
+   evaluators expect finite, physically valid inputs and may propagate NaN or Inf. Callers
+   validate those inputs and results before using them in a feed or integrity threshold.
 3. **Never panic on untrusted input.** `frame` is fuzzed for exactly this. A malformed frame is an
    error value, not a crash.
 4. **No third-party dependencies.** The `go.mod` has no `require` block. A vendored math library
@@ -173,7 +174,7 @@ cycles and no back-edges from a lower layer to a higher one.
 
 | Constellation | Signals decoded | Propagation | Notes |
 |---|---|---|---|
-| **GPS** | L1 C/A LNAV, L2C·L5 CNAV | Kepler | Full clock, TGD, ISCs, iono, UTC. |
+| **GPS** | L1 C/A LNAV, L2C·L5 CNAV | Kepler | Full clock, TGD, ISCs; iono/UTC pages not decoded. |
 | **QZSS** | L1 C/A LNAV, L2C·L5 CNAV | Kepler | Reuses the GPS decoders verbatim — QZSS's signal structure is identical for these. Different A_REF for CNAV; a few redefined fields at the same bit positions. |
 | **Galileo** | E1-B I/NAV, E5a F/NAV | Kepler | Both signals decoded independently, which enables the cross-signal integrity check. OSNMA field captured (presence only in v1). GGTO decoded. |
 | **BeiDou** | B1I D1 NAV, B2a B-CNAV2 | Kepler + GEO branch | Cross-validated B1I against B2a on real frames. BDT-UTC and BDGIM coefficients decoded. |

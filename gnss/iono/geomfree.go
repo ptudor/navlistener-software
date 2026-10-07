@@ -96,6 +96,7 @@ const (
 // sin χ = R_E/(R_E+h)·cos E, M = 1/cos χ. Vertical = slant / M. elRad is a
 // physical elevation angle; callers should exclude below-horizon observations
 // before using the resulting mapping in a measurement feed.
+// The input must be finite; this evaluator does not reject NaN or Inf.
 func Obliquity(elRad float64) float64 {
 	sinChi := earthRadiusM / (earthRadiusM + ShellHeightM) * math.Cos(elRad)
 	return 1 / math.Sqrt(1-sinChi*sinChi)
@@ -103,11 +104,13 @@ func Obliquity(elRad float64) float64 {
 
 // TECUToMetres returns the group delay in metres per TECU at frequency fHz:
 // I[m] = 40.308×10¹⁶·TEC/f². At GPS L1 this is 0.162 m/TECU.
+// fHz must be finite and positive; invalid inputs may produce NaN or Inf.
 func TECUToMetres(fHz float64) float64 {
 	return 40.308e16 / (fHz * fHz)
 }
 
 // VTEC maps a slant delay at fHz (metres) and elevation to vertical TEC (TECU).
+// Inputs must be finite and fHz positive; this evaluator does not reject NaN or Inf.
 func VTEC(slantM, fHz, elRad float64) float64 {
 	return slantM / Obliquity(elRad) / TECUToMetres(fHz)
 }

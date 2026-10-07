@@ -886,6 +886,9 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLi
 				if sat.GnssID < 0 || sat.GnssID > 255 || sat.SvID < 0 || sat.SvID > 255 || sat.Cn0 < 0 || sat.Cn0 > 255 {
 					continue
 				}
+				if sat.ElevDeg < 0 || sat.ElevDeg > 90 {
+					continue
+				}
 				observations = append(observations, reception.PowerObservation{GNSS: uint8(sat.GnssID), SV: uint8(sat.SvID),
 					Signal: reception.Satellite, CN0: uint8(sat.Cn0), Elevation: int16(sat.ElevDeg)})
 			}

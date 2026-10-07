@@ -3,9 +3,9 @@ package frame
 import (
 	"encoding/binary"
 	"errors"
-	"math"
 
 	"github.com/ptudor/gnss/glonass"
+	"github.com/ptudor/gnss/physconst"
 )
 
 // errGLONASSStringOrder is returned when AssembleGLONASS's arguments aren't
@@ -107,11 +107,12 @@ func glonassHammingValid(r *BitReader) bool {
 // StampGLONASSHamming computes and writes the 8 ICD §4.7 check bits (β1..β8) for the 85-bit
 // string in words so it passes glonassHammingValid. Exposed for tests (and any GNF1
 // re-framer that must synthesize a valid string), mirroring the exported CRC24Q used the
-// same way. It mutates the first four words in place. Unlike the CRC stamping helpers,
-// this function requires words to contain at least four 32-bit big-endian words and will
-// panic on a shorter slice; production ingest never synthesizes strings and should call
-// DecodeGLONASSString instead.
+// same way. It mutates the first four words in place and leaves shorter slices unchanged.
+// Production ingest never synthesizes strings and should call DecodeGLONASSString instead.
 func StampGLONASSHamming(words []uint32) {
+	if len(words) < 4 {
+		return
+	}
 	buf := make([]byte, 16)
 	for i := 0; i < 4; i++ {
 		binary.BigEndian.PutUint32(buf[i*4:], words[i])
@@ -419,9 +420,9 @@ func DecodeGLONASSAlmanac(first, second []uint32, na int) (GLONASSAlmanacEntry, 
 			NA:        na,
 			Slot:      int(slot),
 			FreqCh:    freqCh,
-			Lambda:    float64(lambda) * gloAlm2m20 * math.Pi,
-			DeltaI:    float64(deltaI) * gloAlm2m20 * math.Pi,
-			Omega:     float64(omega) * gloAlm2m15 * math.Pi,
+			Lambda:    float64(lambda) * gloAlm2m20 * physconst.Pi,
+			DeltaI:    float64(deltaI) * gloAlm2m20 * physconst.Pi,
+			Omega:     float64(omega) * gloAlm2m15 * physconst.Pi,
 			Ecc:       float64(ecc) * gloAlm2m20,
 			Tlambda:   float64(tLambda) * gloAlm2m5,
 			DeltaT:    float64(deltaT) * gloAlm2m9,
