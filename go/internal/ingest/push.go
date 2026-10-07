@@ -1032,6 +1032,25 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 		// line per session; the counter still moves for every report.
 		updateStatusRejectedLogged bool
 	)
+	// Serialize watermark selection and writing across the ticker and final
+	// flood ACK so concurrent writers cannot put a lower ACK on the wire.
+	sendAck := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		last := highest
+		if p.durable != nil {
+			last = p.durable.Watermark(observer, session)
+		}
+		if last <= acked {
+			return true
+		}
+		if err := w.write(wire.Ack, wire.EncodeAck(last)); err != nil {
+			_ = w.c.Close()
+			return false
+		}
+		acked = last
+		return true
+	}
 	ackTicker := time.NewTicker(p.ackInterval)
 	defer ackTicker.Stop()
 	ackDone := make(chan struct{})
@@ -1082,40 +1101,9 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 						}
 					}
 				}
-				var last uint64
-				if p.durable != nil {
-					// ack the durability watermark — the feeder may
-					// prune only what the historian has durably resolved. In
-					// live-only mode (nil tracker, no historian) ack on receipt,
-					// the documented pre-regression fix semantics.
-					last = p.durable.Watermark(observer, session)
-				} else {
-					mu.Lock()
-					last = highest
-					mu.Unlock()
-				}
-				mu.Lock()
-				prev := acked
-				mu.Unlock()
-				// Monotone per connection: a reconnect's replayed low sequences can
-				// transiently regress the watermark (DurableTracker.Watermark);
-				// a regressed ack must never reach the wire.
-				if last <= prev {
-					continue
-				}
-				if err := w.write(wire.Ack, wire.EncodeAck(last)); err != nil {
-					// an ack-write failure means this connection's write side is
-					// dead (e.g. a broken TLS session with the read side still delivering).
-					// Close it so the read loop's blocked ReadFrame errors out too --
-					// otherwise frames are consumed forever, never acked, and the feeder's
-					// spool fills and eventually drops them permanently while this
-					// connection looks alive.
-					_ = w.c.Close()
+				if !sendAck() {
 					return
 				}
-				mu.Lock()
-				acked = last
-				mu.Unlock()
 			}
 		}
 	}()
@@ -1293,6 +1281,7 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 			unforwarded++
 		}
 		if unforwarded >= maxConsecutiveUnforwarded {
+			sendAck() // let the feeder prune the resolved run before reconnecting
 			metrics.PushErrorsTotal.WithLabelValues(observer, "unforwarded_flood").Inc()
 			p.log.Warn("push feeder sent too many consecutive unusable frames; closing connection",
 				"observer", observer, "limit", maxConsecutiveUnforwarded)
