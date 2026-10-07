@@ -189,7 +189,9 @@ func TestIntegrationNavfeederCrashIdentity(t *testing.T) {
 	if err := db.QueryRow(ctx, `SELECT count(*),count(DISTINCT raw) FROM nav_frames WHERE source_id=$1`, station).Scan(&copies, &distinctPayloads); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(ctx, `SELECT count(*) FROM nav_frames_seq_seen WHERE source_id=$1`, station).Scan(&keys); err != nil {
+	// The ledger is keyed by session; the station's claims are reached through
+	// its session rows.
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM nav_frames_seq_seen l JOIN nav_frames_sessions s USING (session_key) WHERE s.source_id=$1`, station).Scan(&keys); err != nil {
 		t.Fatal(err)
 	}
 	if copies != 6 || distinctPayloads != 6 || keys != 6 {
