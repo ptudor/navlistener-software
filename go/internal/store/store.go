@@ -692,6 +692,21 @@ func isTransientConflict(err error) bool {
 	return errors.As(err, &pg) && len(pg.Code) >= 2 && pg.Code[:2] == "40"
 }
 
+// rollbackBudget bounds the detached rollback of an abandoned transaction.
+const rollbackBudget = 2 * time.Second
+
+// rollback abandons tx on a short context of its own, never the operation's. A
+// deferred rollback runs after the last statement, when the caller's deadline
+// may already have passed; pgx answers a rollback it cannot send by closing the
+// connection, so rolling back on the expired context turned an ordinary timeout
+// on an error path into a discarded pooled connection and a reconnect. A no-op
+// once tx has committed.
+func rollback(tx pgx.Tx) {
+	ctx, cancel := context.WithTimeout(context.Background(), rollbackBudget)
+	defer cancel()
+	_ = tx.Rollback(ctx)
+}
+
 // applyPoliciesWithHook is applyPolicies with a per-statement observation seam.
 // The regression fix atomicity test uses it to interrupt the sequence at each
 // remove/add boundary in turn; production always passes nil.
@@ -734,7 +749,7 @@ func applyPoliciesWithHook(ctx context.Context, pool *pgxpool.Pool, log *slog.Lo
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed
+	defer rollback(tx) // no-op once committed
 	exec := func(sql string) error {
 		_, err := tx.Exec(ctx, sql)
 		if afterExec != nil {

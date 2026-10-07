@@ -341,8 +341,12 @@ func (s *Store) SummarizeEvents(ctx, since, until) (EventSummary, error)
 ```
 
 Windowed reads over the historian, bounded per `docs/OUTPUT.md §2.1`, backing `serve`'s
-`/gnss/api/events` and `/gnss/api/events/summary`. Bounds are enforced here rather than in the
-HTTP layer so an unbounded query can't be constructed at all.
+`/gnss/api/events` and `/gnss/api/events/summary`. The page bounds are enforced here —
+`EventQuery.Validate` refuses a limit outside 1..500, an offset outside 0..1 000 000 or an
+inverted window before the database is touched, and `QueryEvents` applies it to every
+query — and `serve` clamps request parameters into the same range before building the query,
+so an unbounded page can't be constructed by any caller. The summary is one grouped
+statement: its `last_critical` comes from the same snapshot as its counts.
 
 ---
 

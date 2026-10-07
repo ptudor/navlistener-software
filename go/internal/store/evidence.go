@@ -138,7 +138,7 @@ func (s *Store) captureOne(ctx context.Context, collectorID string, e pendingEvi
 	if err != nil {
 		return false, fmt.Errorf("evidence capture: begin: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer rollback(tx) // no-op once committed
 
 	// The bundle row first: a concurrent capture of the same event waits on the
 	// primary key and then finds it taken, so samples are never copied twice.

@@ -1,6 +1,39 @@
 package store
 
-import "testing"
+import (
+	"context"
+	"testing"
+	"time"
+)
+
+// TestEventQueryValidateBeforeDatabase: QueryEvents refuses a page outside the
+// store's bounds, or an inverted window, before it touches the database — the
+// Store here has no pool, so reaching the query would panic.
+func TestEventQueryValidateBeforeDatabase(t *testing.T) {
+	s := &Store{}
+	now := time.Now()
+	for name, q := range map[string]EventQuery{
+		"zero limit":      {Limit: 0},
+		"negative limit":  {Limit: -1},
+		"huge limit":      {Limit: 10_000},
+		"negative offset": {Limit: 10, Offset: -1},
+		"huge offset":     {Limit: 10, Offset: EventsMaxOffset + 1},
+		"inverted window": {Limit: 10, Since: now, Until: now.Add(-time.Hour)},
+	} {
+		if _, _, err := s.QueryEvents(context.Background(), q); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	for name, q := range map[string]EventQuery{
+		"max page":    {Limit: EventsMaxLimit, Offset: EventsMaxOffset},
+		"open window": {Limit: 1, Since: now},
+		"ordered":     {Limit: 1, Since: now.Add(-time.Hour), Until: now},
+	} {
+		if err := q.Validate(); err != nil {
+			t.Errorf("%s rejected: %v", name, err)
+		}
+	}
+}
 
 // TestClampSeverityBoundsBeforeInt16Cast guards an out-of-range MinSeverity
 // (e.g. from an unvalidated query param upstream) must be clamped into the valid
