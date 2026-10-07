@@ -121,7 +121,10 @@ func (t *tracker) expire(now time.Time, staleAfter time.Duration, f FilterPolicy
 		return false
 	}
 	lastAt := t.lastAt
-	t.update(Verdict{State: Unavailable, Reasons: []string{ReasonStale}}, now, f)
+	t.update(Verdict{
+		State: Unavailable, Reasons: appendReason(t.last.Reasons, ReasonStale),
+		Metrics: t.last.Metrics, Thresholds: t.last.Thresholds,
+	}, now, f)
 	t.lastAt = lastAt // staleness is measured from the last real evaluation
 	return true
 }
