@@ -178,11 +178,16 @@ rule identifies what is wired today, consistent with `docs/INTEGRITY.md §8`.
   non-physical change in the receiver's clock solution. The clock bias is checked against the
   integrated clock drift over 30–40 s, with whole-millisecond receiver adjustments removed, and
   the drift's rate of change over 60–120 s against what an oscillator can do.
-- **Time reference (implemented).** The receiver's UTC is compared with an independent wall-clock
-  stamp of the same record (the observer's NTP clock, or the collector's on a dial connection),
-  catching whole-second steps; on ESP32 observers the GNSS PPS is compared with the board's
-  free-running RTC pulse, catching sub-second steps the RTC did not take. A slow drag below the
-  RTC model's uncertainty is not detected.
+- **Time reference (implemented; the pulse check is wired but not yet live).** The receiver's
+  UTC is compared with an independent wall-clock stamp of the same record (the observer's NTP
+  clock, or the collector's on a dial connection), catching whole-second steps. On ESP32
+  observers the GNSS PPS is meant to be compared with the board's free-running RTC pulse,
+  catching sub-second steps the RTC did not take; that `pps_rtc_phase` check exists, but its
+  only input today is the board report, sent every 60–300 s, while the check's fit needs
+  samples no more than 5 s apart — so on a real observer it stays `unavailable` and the
+  time-reference domain is carried by `utc_offset` alone until the observer carries the phase
+  in a frequent telemetry record or the fit is re-derived for the report cadence. A slow drag
+  below the RTC model's uncertainty is not detected either way.
 - **Cross-constellation contradiction.** A spoofer that targets only GPS L1 leaves the Galileo /
   GLONASS / BeiDou solutions disagreeing with the GPS one. Metric: divergence of the broadcast
   inter-system time offsets and per-constellation PVT beyond their normal agreement
