@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// The Integrity family palette from apps/intsat/docs/COLOR_STANDARDS.md,
-/// corrected to navlistener's u-blox gnssid order (OUTPUT.md §0).
+/// The Integrity family palette, in navlistener's u-blox gnssid order
+/// (docs/OUTPUT.md §0). The dark-theme values are also listed, with the app
+/// icon that uses them, in swift/docs/ICONS.md.
 enum StationPalette {
     static let accent = Color("AccentColor")
     static let darkBackground = Color(red: 0x0A / 255, green: 0x0A / 255, blue: 0x1A / 255)
