@@ -683,6 +683,16 @@ Event history has no retention policy, so a condition need not have changed in t
 last 24 hours to appear. The existing current-policy/startup boundary still applies;
 this endpoint does not make earlier-process or withdrawn evidence visible again.
 
+**The boundary includes the collector's own restart.** For an audience that has had
+no policy transition the boundary is the process start, so a condition confirmed by
+an earlier process is absent from the snapshot until a detector re-confirms it (at
+least one debounce window, longer for held states). The envelope reports this the way
+the sensor-history endpoint does: `visible_since` (the same instant as `epoch`) and
+`history_limited: true` whenever a boundary applies. An empty `events` list after a
+deploy is therefore "nothing confirmed since `visible_since`", never an all-clear for
+the time before it; consumers that present fleet health must show the boundary (or
+unknown health) rather than a clean fleet until conditions re-confirm.
+
 The query has a five-second deadline and a 10,000-condition limit. Historian absence,
 query failure, or excess conditions returns 503, never an incomplete success. Clients
 must show unknown/reconnecting condition health until a complete snapshot succeeds.

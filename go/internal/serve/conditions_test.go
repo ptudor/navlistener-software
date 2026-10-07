@@ -34,6 +34,9 @@ func TestCurrentConditionsAudienceEpochAndCompleteness(t *testing.T) {
 	if data["complete"] != true || data["cursor"] != float64(250) || data["audience"] != "operator:local" || backend.lastAudience != "operator:local" || !backend.lastSince.Equal(at) {
 		t.Fatalf("snapshot=%v scope=%s since=%v", data, backend.lastAudience, backend.lastSince)
 	}
+	if data["visible_since"] != at.UTC().Format(time.RFC3339Nano) || data["history_limited"] != true {
+		t.Fatalf("snapshot does not report its visibility boundary: %s", rr.Body.String())
+	}
 	if _, ok := backend.lastCtx.Deadline(); !ok {
 		t.Fatal("unbounded query")
 	}
@@ -43,10 +46,37 @@ func TestCurrentConditionsAudienceEpochAndCompleteness(t *testing.T) {
 	if rr.Code != 200 || !backend.lastSince.Equal(at.Add(2*time.Hour)) {
 		t.Fatal("epoch not enforced")
 	}
+	if data := decodeEnvelope(t, rr); data["visible_since"] != at.Add(2*time.Hour).UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("advanced boundary not reported: %s", rr.Body.String())
+	}
 	rr = httptest.NewRecorder()
 	testServer(nil).http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/events/conditions", nil))
 	if rr.Code != 503 {
 		t.Fatal("missing backend claimed complete state")
+	}
+}
+
+// TestCurrentConditionsReportRestartBoundary pins the documented restart
+// behaviour: for an audience with no policy transition the snapshot starts at
+// the process start, so a condition confirmed by an earlier process is not
+// requested from the historian, and the response says so rather than passing
+// as an all-clear.
+func TestCurrentConditionsReportRestartBoundary(t *testing.T) {
+	restarted := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	backend := &fakeConditions{snapshot: store.ConditionSnapshot{Cursor: 7, Events: []store.StoredEvent{}}}
+	s := newTestServer(nil, backend)
+	s.SetPolicyEpochs(audience.NewPolicyEpochs(restarted)) // a fresh process, no transitions
+	rr := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/events/conditions", nil))
+	data := decodeEnvelope(t, rr)
+	if !backend.lastSince.Equal(restarted) {
+		t.Fatalf("snapshot since = %v, want the process start %v", backend.lastSince, restarted)
+	}
+	if data["visible_since"] != restarted.Format(time.RFC3339Nano) || data["epoch"] != restarted.Format(time.RFC3339Nano) {
+		t.Fatalf("visible_since/epoch = %v/%v, want %s", data["visible_since"], data["epoch"], restarted.Format(time.RFC3339Nano))
+	}
+	if data["history_limited"] != true || data["complete"] != true {
+		t.Fatalf("empty post-restart snapshot must be complete but limited: %s", rr.Body.String())
 	}
 }
 
