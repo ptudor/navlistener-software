@@ -903,21 +903,40 @@ func (s *Server) setAudienceCacheHeaders(w http.ResponseWriter, selected identit
 }
 
 func (s *Server) serveEventStream(w http.ResponseWriter, r *http.Request) {
+	// Method first, as on every other endpoint: a POST gets the documented
+	// 405 + Allow rather than a 401 from the credential check, and never
+	// registers a delivery or spawns a re-authorization watcher.
+	if methodNotAllowedGetHead(w, r) {
+		return
+	}
 	view, ok := s.resolveRequestView(w, r)
 	if !ok {
 		return
 	}
+	w.Header().Set("Vary", audienceVary)
+	if view.audience.Kind != identity.AudiencePublic {
+		// Every authenticated response is private, no-store (docs/OUTPUT.md
+		// §0.1); the stream handler keeps a Cache-Control already set and
+		// defaults public streams to no-cache.
+		w.Header().Set("Cache-Control", "private, no-store")
+	}
+	broker := s.brokerFor(view.audience)
+	// HEAD answers with the stream headers and completes at once: it holds no
+	// stream, so it needs neither a revocable delivery nor a watcher.
+	if r.Method == http.MethodHead {
+		broker.serveEvents(w, r)
+		return
+	}
 	delivery := s.beginDelivery(r, view.audience)
 	defer delivery.finish()
-	w.Header().Set("Vary", audienceVary)
 	if view.principal.ID == "" {
-		s.brokerFor(view.audience).serveEvents(w, r)
+		broker.serveEvents(w, r)
 		return
 	}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	go s.watchReadAuthorization(ctx, cancel, view)
-	s.brokerFor(view.audience).serveEvents(w, r.WithContext(ctx))
+	broker.serveEvents(w, r.WithContext(ctx))
 }
 
 func (s *Server) resolveRequestView(w http.ResponseWriter, r *http.Request) (requestView, bool) {

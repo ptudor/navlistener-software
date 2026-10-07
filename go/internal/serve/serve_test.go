@@ -359,6 +359,78 @@ func TestAuthenticatedAudienceSelectionNeverServesAnOperatorSuperset(t *testing.
 	}
 }
 
+// TestPrivateEventStreamIsPrivateNoStore guards the one authenticated response
+// that violated the contract: a private audience's SSE stream (GET and HEAD)
+// must send Cache-Control: private, no-store and Vary, while the public stream
+// keeps no-cache.
+func TestPrivateEventStreamIsPrivateNoStore(t *testing.T) {
+	s := testServer(nil) // private operator default, opted in
+	head := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(head, httptest.NewRequest(http.MethodHead, "/gnss/events", nil))
+	if head.Code != http.StatusOK || head.Header().Get("Cache-Control") != "private, no-store" {
+		t.Fatalf("private HEAD: status %d Cache-Control %q", head.Code, head.Header().Get("Cache-Control"))
+	}
+	if got := head.Header().Get("Vary"); !strings.Contains(got, "Authorization") || !strings.Contains(got, "X-GNSS-Audience") {
+		t.Fatalf("private HEAD Vary = %q", got)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	rr := newSyncRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/gnss/events", nil).WithContext(ctx))
+	}()
+	waitFor(t, func() bool { return strings.Contains(rr.String(), "event: status") })
+	cancel()
+	<-done
+	if got := rr.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("private GET stream Cache-Control = %q, want private, no-store", got)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("private GET stream Content-Type = %q", got)
+	}
+
+	public := newTestServerForAudience(identity.Audience{Kind: identity.AudiencePublic}, nil)
+	head = httptest.NewRecorder()
+	public.http.Handler.ServeHTTP(head, httptest.NewRequest(http.MethodHead, "/gnss/events", nil))
+	if head.Code != http.StatusOK || head.Header().Get("Cache-Control") != "no-cache" {
+		t.Fatalf("public HEAD: status %d Cache-Control %q, want no-cache", head.Code, head.Header().Get("Cache-Control"))
+	}
+}
+
+// TestEventStreamChecksMethodBeforeAuthorization guards the routed stream
+// handler behaves like every other endpoint: a POST without a credential on a
+// private-default listener is 405 + Allow, not 401, and a HEAD never registers
+// a revocable delivery it would tear down at once.
+func TestEventStreamChecksMethodBeforeAuthorization(t *testing.T) {
+	s := testServer(nil)
+	s.EnableAudienceSelection(fixedReadAuthorizer{"token": identity.ReadPrincipal{ID: "viewer", AudienceGrants: []identity.Audience{s.audience}}}, nil, time.Second)
+	rr := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/gnss/events", nil))
+	if rr.Code != http.StatusMethodNotAllowed || rr.Header().Get("Allow") != "GET, HEAD" {
+		t.Fatalf("POST without credential: status %d Allow %q, want 405 GET, HEAD", rr.Code, rr.Header().Get("Allow"))
+	}
+	// The credential check still guards HEAD and GET.
+	rr = httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodHead, "/gnss/events", nil))
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("HEAD without credential: status %d, want 401", rr.Code)
+	}
+	req := httptest.NewRequest(http.MethodHead, "/gnss/events", nil)
+	req.Header.Set("Authorization", "Bearer token")
+	rr = httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("authenticated HEAD: status %d", rr.Code)
+	}
+	s.deliveryMu.Lock()
+	registered := len(s.deliveries)
+	s.deliveryMu.Unlock()
+	if registered != 0 {
+		t.Fatalf("HEAD left %d deliveries registered, want 0", registered)
+	}
+}
+
 // TestSSEPublicShareLeavesPrivateStreamsAdmitted guards the stream cap is
 // partitioned per audience: an anonymous client filling the public share is
 // refused at that share, a private audience's stream is still admitted, and

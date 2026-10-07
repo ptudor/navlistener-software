@@ -260,7 +260,7 @@ func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
 	// the life of a connection that will never read a body.
 	if r.Method == http.MethodHead {
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
+		streamCacheControl(w)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -281,7 +281,7 @@ func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
 	defer b.unsubscribe(client)
 
 	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
+	streamCacheControl(w)
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no") // defeat proxy buffering (docs/OUTPUT.md §3)
 
@@ -351,6 +351,15 @@ func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// streamCacheControl applies the public stream default, no-cache. The server
+// sets `private, no-store` for a private audience before delegating to
+// serveEvents, and a value already present must win.
+func streamCacheControl(w http.ResponseWriter) {
+	if w.Header().Get("Cache-Control") == "" {
+		w.Header().Set("Cache-Control", "no-cache")
 	}
 }
 
