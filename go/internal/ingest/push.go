@@ -1018,6 +1018,9 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 		mu      sync.Mutex
 		highest uint64 // highest sequence received this connection
 		acked   uint64
+		// updateStatusRejectedLogged keeps the undecodable-tag warning to one
+		// line per session; the counter still moves for every report.
+		updateStatusRejectedLogged bool
 	)
 	ackTicker := time.NewTicker(p.ackInterval)
 	defer ackTicker.Stop()
@@ -1229,6 +1232,14 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				}
 				select {
 				case p.out <- f:
+					if f.Details != nil && f.Details.UpdateStatusRejected {
+						metrics.PushUpdateStatusRejectedTotal.WithLabelValues(observer).Inc()
+						if !updateStatusRejectedLogged {
+							updateStatusRejectedLogged = true
+							p.log.Warn("update status tag undecodable; skipped, rest of the observer report kept",
+								"observer", observer, "session", session)
+						}
+					}
 					if p.updates != nil && f.Admission.Current() && f.Details != nil && f.Details.Update != nil {
 						if err := p.updates.Report(observerContext, session, seq, *f.Details.Update); err != nil {
 							p.log.Error("update status storage unavailable", "observer", observer, "error", err)

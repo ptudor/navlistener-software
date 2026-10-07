@@ -34,21 +34,27 @@ type ObserverDetails struct {
 	// slot: "bmp388_bmp384", "bmp580" or "bmp581" (each pair shares a chip ID), "not_listed"
 	// or "conflicting" (more than one listed; none measured). On a board that lists a BMP580
 	// or BMP581, bmp388_bmp384_c and pressure_pa are that part's readings.
-	PressureSensor      string                    `json:"pressure_sensor,omitempty"`
-	Rails               *BoardRails               `json:"rails,omitempty"`
-	RTC                 *BoardRTC                 `json:"rtc,omitempty"`
-	ATECC               *BoardATECC               `json:"atecc,omitempty"`
-	EEPROM              *BoardEEPROM              `json:"eeprom,omitempty"`
-	Resources           *BoardResources           `json:"resources,omitempty"`
-	Receiver            *BoardReceiver            `json:"receiver,omitempty"`
-	Firmware            string                    `json:"firmware,omitempty"`
-	Update              *BoardUpdate              `json:"update,omitempty"`
-	Timing              *BoardTiming              `json:"timing,omitempty"`
-	Reception           *reception.Sample         `json:"reception,omitempty"`
-	ReceptionEvent      *reception.Sample         `json:"reception_event,omitempty"`
-	ReceptionPower      *reception.PowerSample    `json:"reception_power,omitempty"`
-	ReceptionPowerEvent *reception.PowerEvent     `json:"reception_power_event,omitempty"`
-	Snapshot            *reception.SnapshotResult `json:"snapshot,omitempty"`
+	PressureSensor string          `json:"pressure_sensor,omitempty"`
+	Rails          *BoardRails     `json:"rails,omitempty"`
+	RTC            *BoardRTC       `json:"rtc,omitempty"`
+	ATECC          *BoardATECC     `json:"atecc,omitempty"`
+	EEPROM         *BoardEEPROM    `json:"eeprom,omitempty"`
+	Resources      *BoardResources `json:"resources,omitempty"`
+	Receiver       *BoardReceiver  `json:"receiver,omitempty"`
+	Firmware       string          `json:"firmware,omitempty"`
+	Update         *BoardUpdate    `json:"update,omitempty"`
+	// UpdateStatusRejected records a tag 9 this collector could not decode: a
+	// state, trust profile, error domain or security bit from newer firmware,
+	// or progress past the artifact length. The tag is skippable by design, so
+	// the rest of the report stands and Update stays nil; the push session
+	// counts and logs the rejection. Never served or stored.
+	UpdateStatusRejected bool                      `json:"-"`
+	Timing               *BoardTiming              `json:"timing,omitempty"`
+	Reception            *reception.Sample         `json:"reception,omitempty"`
+	ReceptionEvent       *reception.Sample         `json:"reception_event,omitempty"`
+	ReceptionPower       *reception.PowerSample    `json:"reception_power,omitempty"`
+	ReceptionPowerEvent  *reception.PowerEvent     `json:"reception_power_event,omitempty"`
+	Snapshot             *reception.SnapshotResult `json:"snapshot,omitempty"`
 }
 type BoardEnvironment struct {
 	ReadyMask       uint8    `json:"ready_mask"`
@@ -253,9 +259,16 @@ func decodeObserverDetails(b []byte) (*ObserverDetails, error) {
 			}
 			d.Firmware = string(v)
 		case 9:
+			// Update status was made a skippable tag so an older collector keeps
+			// the rest of the report; a value this collector's strict decoder
+			// refuses (an enum from newer firmware, received > total after a
+			// failed download) is treated as absent for the same reason — the
+			// timing, firmware and environment tags beside it stay usable, and
+			// the updates manager never sees the undecodable status.
 			update, err := DecodeBoardUpdate(v)
 			if err != nil {
-				return nil, err
+				d.UpdateStatusRejected = true
+				continue
 			}
 			d.Update = update
 		case 8:
