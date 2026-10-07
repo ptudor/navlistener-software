@@ -22,6 +22,7 @@ type fakeEvents struct {
 	lastCtx      context.Context
 	lastSince    time.Time
 	lastUntil    time.Time
+	calls        int
 	events       []store.StoredEvent
 	total        int
 	summary      store.EventSummary
@@ -29,12 +30,14 @@ type fakeEvents struct {
 }
 
 func (f *fakeEvents) QueryEvents(ctx context.Context, q store.EventQuery) ([]store.StoredEvent, int, error) {
+	f.calls++
 	f.lastQuery = q
 	f.lastCtx = ctx
 	return f.events, f.total, f.err
 }
 
 func (f *fakeEvents) SummarizeEventsForAudience(ctx context.Context, audience string, since, until time.Time) (store.EventSummary, error) {
+	f.calls++
 	f.lastCtx = ctx
 	f.lastAudience = audience
 	f.lastSince, f.lastUntil = since, until
@@ -59,11 +62,45 @@ func TestEventHistoryIsClampedToCurrentPolicyEpoch(t *testing.T) {
 	if query.Code != http.StatusOK || !fe.lastQuery.Since.Equal(transition) {
 		t.Fatalf("query policy boundary = status %d since %v", query.Code, fe.lastQuery.Since)
 	}
+	// The clamp is reported alongside the rows.
+	data := decodeEnvelope(t, query)
+	if data["history_limited"] != true || data["visible_since"] != transition.Format(time.RFC3339) || data["effective_since"] != transition.Format(time.RFC3339) {
+		t.Fatalf("clamped query did not report its boundary: %s", query.Body.String())
+	}
 
 	summary := httptest.NewRecorder()
 	s.http.Handler.ServeHTTP(summary, httptest.NewRequest(http.MethodGet, "/gnss/api/events/summary?hours=24", nil))
 	if summary.Code != http.StatusOK || !fe.lastSince.Equal(transition) {
 		t.Fatalf("summary policy boundary = status %d since %v", summary.Code, fe.lastSince)
+	}
+	if data := decodeEnvelope(t, summary); data["history_limited"] != true || data["visible_since"] != transition.Format(time.RFC3339) {
+		t.Fatalf("clamped summary did not report its boundary: %s", summary.Body.String())
+	}
+
+	// A window that ends before the transition is answered empty without a
+	// query, and says so, instead of running since > until and returning a
+	// "confidently empty" total of 0.
+	calls := fe.calls
+	inverted := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(inverted, httptest.NewRequest(http.MethodGet,
+		"/gnss/api/events?since=2026-08-10T10:00:00Z&until=2026-08-10T10:30:00Z", nil))
+	data = decodeEnvelope(t, inverted)
+	if fe.calls != calls {
+		t.Fatalf("a window entirely before the policy boundary reached the store")
+	}
+	if data["history_limited"] != true || data["total"] != float64(0) || data["visible_since"] != transition.Format(time.RFC3339) {
+		t.Fatalf("pre-boundary window not reported as limited and empty: %s", inverted.Body.String())
+	}
+	if events, ok := data["events"].([]any); !ok || len(events) != 0 {
+		t.Fatalf("pre-boundary window events = %#v, want []", data["events"])
+	}
+
+	// A window inside the current epoch is not limited.
+	open := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(open, httptest.NewRequest(http.MethodGet,
+		"/gnss/api/events?since=2026-08-10T11:30:00Z", nil))
+	if data := decodeEnvelope(t, open); data["history_limited"] != false || data["effective_since"] != "2026-08-10T11:30:00Z" {
+		t.Fatalf("in-epoch window reported as limited: %s", open.Body.String())
 	}
 }
 

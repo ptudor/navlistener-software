@@ -309,6 +309,15 @@ func TestAuthenticatedAudienceSelectionNeverServesAnOperatorSuperset(t *testing.
 		})
 	}
 
+	eventReq := httptest.NewRequest(http.MethodGet, "/gnss/api/events", nil)
+	eventReq.Header.Set("Authorization", "Bearer token-a")
+	eventReq.Header.Set("X-GNSS-Audience", "organization:customer-a")
+	eventRR := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(eventRR, eventReq)
+	if eventRR.Code != http.StatusOK || events.lastQuery.Audience != "organization:customer-a" {
+		t.Fatalf("scoped event query = status %d audience %q", eventRR.Code, events.lastQuery.Audience)
+	}
+
 	discovery := httptest.NewRequest(http.MethodGet, "/gnss/api/v2/audiences", nil)
 	discovery.Header.Set("Authorization", "Bearer token-a")
 	discoveryRR := httptest.NewRecorder()
@@ -352,13 +361,17 @@ func TestAuthenticatedAudienceSelectionNeverServesAnOperatorSuperset(t *testing.
 		}
 	}
 
-	eventReq := httptest.NewRequest(http.MethodGet, "/gnss/api/events", nil)
-	eventReq.Header.Set("Authorization", "Bearer token-a")
-	eventReq.Header.Set("X-GNSS-Audience", "organization:customer-a")
-	eventRR := httptest.NewRecorder()
-	s.http.Handler.ServeHTTP(eventRR, eventReq)
-	if eventRR.Code != http.StatusOK || events.lastQuery.Audience != "organization:customer-a" {
-		t.Fatalf("scoped event query = status %d audience %q", eventRR.Code, events.lastQuery.Audience)
+	// The organization's epoch now starts a second in the future, so a scoped
+	// query's whole window lies before it: answered empty and marked limited,
+	// without reaching the historian.
+	calls := events.calls
+	limitedReq := httptest.NewRequest(http.MethodGet, "/gnss/api/events", nil)
+	limitedReq.Header.Set("Authorization", "Bearer token-a")
+	limitedReq.Header.Set("X-GNSS-Audience", "organization:customer-a")
+	limitedRR := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(limitedRR, limitedReq)
+	if limited := decodeEnvelope(t, limitedRR); limited["history_limited"] != true || limited["total"] != float64(0) || events.calls != calls {
+		t.Fatalf("scoped query across the advanced epoch = %s (store calls %d -> %d)", limitedRR.Body.String(), calls, events.calls)
 	}
 }
 

@@ -338,6 +338,16 @@ New enrichment endpoints (ours — the Japan/India product surface, `docs/CONSTE
 `/gnss/api/navic-text` (planned; unavailable until the NavIC decoder lands). Same envelope; message streams,
 not positioning inputs.
 
+**Reported history clamp.** `/gnss/api/events` and `/gnss/api/events/summary` clamp the start
+of the requested window to the audience's current policy epoch (§0.1) and say so: `data` carries
+`visible_since` (the audience's current visibility boundary), `effective_since` (the window
+start actually queried, after the window-size and policy clamps) and `history_limited` (`true`
+when the caller's `since` — explicit or defaulted — was pulled forward to the boundary), the
+same keys as `/gnss/api/v2/observer-samples`. A window that ends before `visible_since` is
+answered without a database query as `total: 0`, `events: []`, `history_limited: true`, so a
+historical request against a newer policy is visibly empty rather than confidently empty. The
+keys are additive; existing consumers may ignore them.
+
 ### 2.2 Enums (frozen)
 
 | Enum | Values |

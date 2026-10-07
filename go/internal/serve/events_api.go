@@ -154,45 +154,61 @@ func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 		// the caller's anchor; since is pulled forward to eventsMaxWindow before it.
 		since = until.Add(-eventsMaxWindow)
 	}
+	// The policy clamp is reported, not silent: visible_since is the audience's
+	// current boundary, effective_since the window actually queried, and
+	// history_limited says the caller's since was pulled forward — the same
+	// keys the sensor-history endpoint carries. A window that lies entirely
+	// before the boundary is answered empty without a query: running it
+	// inverted would return the "confidently empty" ok:true this endpoint
+	// exists to avoid, with nothing to tell the caller why.
+	requestedSince := since
+	var visibleSince time.Time
 	if s.policyEpochs != nil {
-		_, visibleAt := s.policyEpochs.Current(view.audience.Key())
-		if since.Before(visibleAt) {
-			since = visibleAt
+		_, visibleSince = s.policyEpochs.Current(view.audience.Key())
+		if since.Before(visibleSince) {
+			since = visibleSince
 		}
 	}
-	query := store.EventQuery{
-		Audience:    view.audience.Key(),
-		SV:          q.Get("sv"),
-		Type:        q.Get("type"),
-		MinSeverity: severity,
-		Since:       since,
-		Until:       until,
-		Limit:       clampInt(limit, 1, eventsMaxLimit),
-		Offset:      clampInt(offset, 0, eventsMaxOffset),
-	}
-	select {
-	case s.querySlots <- struct{}{}:
-		defer func() { <-s.querySlots }()
-	default:
-		w.Header().Set("Retry-After", "1")
-		writeError(w, http.StatusServiceUnavailable, "events history busy; retry request")
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), eventsQueryTimeout)
-	defer cancel()
-	events, total, err := s.events.QueryEvents(ctx, query)
-	if err != nil {
-		s.log.Error("events query failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "events query failed")
-		return
-	}
-	if events == nil {
-		events = []store.StoredEvent{}
+	historyLimited := since.After(requestedSince)
+	events, total := []store.StoredEvent{}, 0
+	if !since.After(until) {
+		query := store.EventQuery{
+			Audience:    view.audience.Key(),
+			SV:          q.Get("sv"),
+			Type:        q.Get("type"),
+			MinSeverity: severity,
+			Since:       since,
+			Until:       until,
+			Limit:       clampInt(limit, 1, eventsMaxLimit),
+			Offset:      clampInt(offset, 0, eventsMaxOffset),
+		}
+		select {
+		case s.querySlots <- struct{}{}:
+			defer func() { <-s.querySlots }()
+		default:
+			w.Header().Set("Retry-After", "1")
+			writeError(w, http.StatusServiceUnavailable, "events history busy; retry request")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), eventsQueryTimeout)
+		defer cancel()
+		events, total, err = s.events.QueryEvents(ctx, query)
+		if err != nil {
+			s.log.Error("events query failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "events query failed")
+			return
+		}
+		if events == nil {
+			events = []store.StoredEvent{}
+		}
 	}
 	s.writeEnvelope(w, now, view.audience, delivery, map[string]any{
-		"schema": schemaVersion,
-		"total":  total,
-		"events": events,
+		"schema":          schemaVersion,
+		"total":           total,
+		"events":          events,
+		"visible_since":   visibleSince,
+		"effective_since": since,
+		"history_limited": historyLimited,
 	})
 }
 
@@ -221,27 +237,34 @@ func (s *Server) serveEventsSummary(w http.ResponseWriter, r *http.Request) {
 	hours := clampInt(hoursRaw, 1, summaryMaxHours)
 	now := s.now()
 	since := now.Add(-time.Duration(hours) * time.Hour)
+	// Reported policy clamp, as in serveEventsQuery.
+	requestedSince := since
+	var visibleSince time.Time
 	if s.policyEpochs != nil {
-		_, visibleAt := s.policyEpochs.Current(view.audience.Key())
-		if since.Before(visibleAt) {
-			since = visibleAt
+		_, visibleSince = s.policyEpochs.Current(view.audience.Key())
+		if since.Before(visibleSince) {
+			since = visibleSince
 		}
 	}
-	select {
-	case s.querySlots <- struct{}{}:
-		defer func() { <-s.querySlots }()
-	default:
-		w.Header().Set("Retry-After", "1")
-		writeError(w, http.StatusServiceUnavailable, "events history busy; retry request")
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), eventsQueryTimeout)
-	defer cancel()
-	sum, err := s.events.SummarizeEventsForAudience(ctx, view.audience.Key(), since, now)
-	if err != nil {
-		s.log.Error("events summary failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "events summary failed")
-		return
+	historyLimited := since.After(requestedSince)
+	sum := store.EventSummary{ByType: map[string]int{}, ByConstellation: map[string]int{}}
+	if !since.After(now) {
+		select {
+		case s.querySlots <- struct{}{}:
+			defer func() { <-s.querySlots }()
+		default:
+			w.Header().Set("Retry-After", "1")
+			writeError(w, http.StatusServiceUnavailable, "events history busy; retry request")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), eventsQueryTimeout)
+		defer cancel()
+		sum, err = s.events.SummarizeEventsForAudience(ctx, view.audience.Key(), since, now)
+		if err != nil {
+			s.log.Error("events summary failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "events summary failed")
+			return
+		}
 	}
 
 	var lastCritical, idleMessage any
@@ -261,6 +284,9 @@ func (s *Server) serveEventsSummary(w http.ResponseWriter, r *http.Request) {
 		"by_type":          sum.ByType,
 		"by_constellation": sum.ByConstellation,
 		"idle_message":     idleMessage,
+		"visible_since":    visibleSince,
+		"effective_since":  since,
+		"history_limited":  historyLimited,
 	})
 }
 
