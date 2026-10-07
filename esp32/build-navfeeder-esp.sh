@@ -34,13 +34,22 @@ idf.py -B "$build_dir" -D "SDKCONFIG=$build_dir/sdkconfig" \
     -D IDF_TARGET=esp32s3 build
 # Preserve menuconfig overrides, while still reporting newly added defaults
 # that an existing generated configuration has not picked up. Later files win.
+# A defaults line naming a symbol the generated configuration does not have at
+# all fails the build: Kconfig ignores an unknown symbol without a word, so a
+# misspelled pin would otherwise read as "off" forever.
 python - "$build_dir/sdkconfig" "${board_defaults#;}" <<'PY'
 from pathlib import Path
 import sys
 
 def settings(name):
-    return dict(line.split("=", 1) for line in Path(name).read_text().splitlines()
-                if line.startswith("CONFIG_") and "=" in line)
+    values = {}
+    for line in Path(name).read_text().splitlines():
+        if line.startswith("CONFIG_") and "=" in line:
+            key, value = line.split("=", 1)
+            values[key] = value
+        elif line.startswith("# CONFIG_") and line.endswith(" is not set"):
+            values[line[len("# "):-len(" is not set")]] = "n"  # a disabled bool, as kconfig writes it
+    return values
 
 expected = settings("sdkconfig.defaults")
 expected.update(settings("sdkconfig.defaults.s3"))
@@ -52,7 +61,12 @@ if len(sys.argv) > 2 and sys.argv[2]:
         del expected[key]
     expected.update(chosen)
 actual = settings(sys.argv[1])
-drift = [key for key, value in expected.items() if actual.get(key, "n") != value]
+missing = [key for key in expected if key not in actual]
+if missing:
+    print("ERROR: the S3 defaults pin symbols the generated sdkconfig does not have "
+          "(misspelled, or no longer in Kconfig): " + ", ".join(missing), file=sys.stderr)
+    sys.exit(1)
+drift = [key for key, value in expected.items() if actual[key] != value]
 if drift:
     print("WARNING: generated sdkconfig differs from the S3 defaults: " + ", ".join(drift), file=sys.stderr)
     print("Review menuconfig overrides or use a fresh S3_BUILD_DIR to apply the current defaults.", file=sys.stderr)

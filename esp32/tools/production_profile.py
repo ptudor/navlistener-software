@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check a release build's actual security settings without writing device eFuses."""
 import argparse
+import json
 from pathlib import Path
 
 REQUIRED = {
@@ -26,7 +27,7 @@ REQUIRED = {
 }
 FORBIDDEN = ("CONFIG_NVF_MCU_KEY_UNLOCKED_TEST", "CONFIG_NVF_UPDATE_TEST_KEYS", "CONFIG_NVF_UPDATE_PROFILE_OPEN", "CONFIG_NVF_SETUP_CONSOLE_PASSWORD", "CONFIG_NVF_MANIFEST_FACTORY_INIT",
     "CONFIG_NVF_INSECURE", "CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES", "CONFIG_SECURE_BOOT_ALLOW_JTAG",
-    "CONFIG_SECURE_BOOT_ALLOW_ROM_BASIC", "CONFIG_SECURE_BOOT_V2_AGGRESSIVE_KEY_REVOKE",
+    "CONFIG_SECURE_BOOT_ALLOW_ROM_BASIC", "CONFIG_SECURE_BOOT_ENABLE_AGGRESSIVE_KEY_REVOKE",
     "CONFIG_SECURE_FLASH_UART_BOOTLOADER_ALLOW_ENC", "CONFIG_SECURE_FLASH_UART_BOOTLOADER_ALLOW_DEC",
     "CONFIG_SECURE_FLASH_UART_BOOTLOADER_ALLOW_CACHE", "CONFIG_EFUSE_VIRTUAL")
 
@@ -46,9 +47,64 @@ OPEN_FORBIDDEN = ("CONFIG_NVF_MCU_KEY_UNLOCKED_TEST", "CONFIG_NVF_UPDATE_TEST_KE
     "CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES", "CONFIG_NVS_ENCRYPTION", "CONFIG_EFUSE_VIRTUAL")
 # The trusted track ships only the locked production security baseline above.
 PROFILES = {"trusted": (REQUIRED, FORBIDDEN), "open": (OPEN_REQUIRED, OPEN_FORBIDDEN)}
+# The defaults file each profile is built from (esp32/), checked against the generated
+# configuration by check_defaults.
+PROFILE_DEFAULTS = {"trusted": "sdkconfig.defaults.production", "open": "sdkconfig.defaults.open"}
+SYMBOL_TYPES = ("bool", "int", "hex", "string")
 
 def settings(path):
     return dict(line.split("=", 1) for line in Path(path).read_text().splitlines() if line.startswith("CONFIG_") and "=" in line)
+
+def generated(path):
+    """Every symbol a generated sdkconfig names, reading a disabled bool as "n"."""
+    values = {}
+    for line in Path(path).read_text().splitlines():
+        if line.startswith("CONFIG_") and "=" in line:
+            key, value = line.split("=", 1)
+            values[key] = value
+        elif line.startswith("# CONFIG_") and line.endswith(" is not set"):
+            values[line[len("# "):-len(" is not set")]] = "n"
+    return values
+
+def known_symbols(sdkconfig):
+    """The symbols the build's Kconfig tree declares, visible or not: idf.py writes the menu
+    tree next to the generated sdkconfig. None when that build directory holds no tree."""
+    menus = Path(sdkconfig).resolve().parent / "config" / "kconfig_menus.json"
+    if not menus.is_file():
+        return None
+    names = set()
+
+    def collect(node):
+        if isinstance(node, dict):
+            if node.get("type") in SYMBOL_TYPES and isinstance(node.get("name"), str):
+                names.add("CONFIG_" + node["name"])
+            collect(node.get("children", []))
+        elif isinstance(node, list):
+            for child in node:
+                collect(child)
+    collect(json.loads(menus.read_text()))
+    return names
+
+def check_defaults(sdkconfig, defaults):
+    """Every CONFIG_ line of a profile defaults file must have reached the generated
+    configuration. Kconfig silently ignores a misspelled symbol, and a bool pinned to "n" is
+    indistinguishable from "absent, therefore off" unless the symbol is checked by name. A
+    symbol the build declares but hides (its dependencies are unmet) is pinned to no effect
+    and passes; an unknown one fails."""
+    defaults = Path(defaults)
+    values = generated(sdkconfig)
+    symbols = known_symbols(sdkconfig)
+    bad = []
+    for key, value in settings(defaults).items():
+        if key in values:
+            if values[key] != value:
+                bad.append(f"{key} is {values[key]}, pinned to {value}")
+        elif symbols is None:
+            bad.append(f"{key} is not in the generated sdkconfig, and no config/kconfig_menus.json beside it names the build's symbols")
+        elif key not in symbols:
+            bad.append(f"{key} is not a symbol of this build (misspelled, or the option no longer exists)")
+    if bad:
+        raise ValueError(f"{defaults.name} not applied: " + "; ".join(bad))
 
 def verify(path, profile="trusted"):
     required, forbidden = PROFILES[profile]
@@ -64,6 +120,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--refuse-locking-build", action="store_true")
     parser.add_argument("--profile", choices=sorted(PROFILES), default="trusted")
+    parser.add_argument("--defaults", type=Path,
+                        help="the profile defaults file to check against the generated sdkconfig "
+                             "(default: the profile's own file next to this tool's esp32 directory)")
     parser.add_argument("sdkconfig", type=Path)
     args = parser.parse_args()
     if args.refuse_locking_build:
@@ -72,6 +131,8 @@ def main():
             raise ValueError("first-boot-flash refuses a build that can permanently lock the chip; use the separately reviewed production commissioning procedure")
     else:
         verify(args.sdkconfig, args.profile)
+        defaults = args.defaults or Path(__file__).resolve().parent.parent / PROFILE_DEFAULTS[args.profile]
+        check_defaults(args.sdkconfig, defaults)
     print("security profile check passed; no device was modified")
 
 if __name__ == "__main__":
