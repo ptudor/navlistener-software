@@ -177,4 +177,33 @@ func TestIntegrationEventEvidenceCapture(t *testing.T) {
 	if err != nil || !tr.Truncated || tr.RFSamples != 3 || tr.BoardSamples != 3 {
 		t.Fatalf("truncated bundle: %+v %v", tr, err)
 	}
+	// The bound keeps the samples nearest the event: the event instant survives
+	// in both origins and only the oldest pre-roll samples went. The window holds
+	// samples at the event and one to four minutes before it, so three per
+	// origin reach back at most two minutes.
+	atEvent := map[string]bool{}
+	for _, sample := range tr.Samples {
+		if sample.ReceivedAt.Equal(eventTime) {
+			atEvent[sample.Origin] = true
+		}
+		if sample.ReceivedAt.Before(eventTime.Add(-2 * time.Minute)) {
+			t.Fatalf("truncation kept an older sample over one nearer the event: %+v", sample)
+		}
+	}
+	if !atEvent["rf"] || !atEvent["board"] {
+		t.Fatalf("truncation dropped the sample at the event instant: kept at event %v", atEvent)
+	}
+
+	// A bound the window exactly fills is not a truncation: the operator window
+	// holds ten RF samples and five board samples.
+	exact := p
+	exact.MaxSamples = 10
+	exSeq := write(operator, "station_rf_degraded")
+	if n, err := s.CaptureEventEvidence(ctx, collector, now, exact); err != nil || n != 1 {
+		t.Fatalf("exact capture: %d %v", n, err)
+	}
+	ex, err := s.QueryEventEvidence(ctx, EvidenceQuery{Audience: operator, Seq: exSeq, Limit: EvidenceMaxLimit})
+	if err != nil || ex.Truncated || ex.RFSamples != 10 || ex.BoardSamples != 5 || len(ex.Samples) != 15 {
+		t.Fatalf("exactly filled bundle: truncated %v rf %d board %d samples %d %v", ex.Truncated, ex.RFSamples, ex.BoardSamples, len(ex.Samples), err)
+	}
 }

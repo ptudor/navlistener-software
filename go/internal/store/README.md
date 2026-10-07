@@ -295,7 +295,9 @@ reads: an organization audience gets its organization's samples, a collection au
 collection's, an operator audience the collector's. The bundle row is inserted first, so a
 concurrent capture waits on its primary key and then skips. Capture state is entirely in the
 database: a failed sweep, a restart or a crash just leaves the event for the next sweep. Each
-origin is capped at the policy's sample bound, and a capped bundle is marked `truncated`.
+origin is capped at the policy's sample bound, newest first, so a bundle that hits it keeps the
+event instant and the post-roll and loses the oldest pre-roll samples; the copy and the
+`truncated` decision are one statement over the same rows, so a capped bundle is always marked.
 
 `gnss_events.collector_instance_id` is what lets each collector find its own events when several
 share a database; rows written before the column existed are never captured.
