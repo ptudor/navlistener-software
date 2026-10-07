@@ -274,6 +274,18 @@ A resumed download starts again from byte zero. With a 4 MiB limit this is simpl
 and safer than persisting partial-block state, and it avoids trusting range
 responses or a torn hash checkpoint.
 
+One attempt is bounded by a no-progress deadline and by a cap on the whole
+transfer, and time spent paused for spool pressure counts against neither:
+
+- 30 seconds without a byte declares the link dead. A socket timeout that
+  delivers nothing is waited out until then rather than failing the attempt.
+- 30 minutes for the complete transfer, however slowly it keeps progressing. A
+  4 MiB artifact therefore needs roughly 2.4 KB/s (19 kbit/s) sustained; a
+  slower link never completes an attempt.
+
+An attempt that times out is repeated once from byte zero on the secondary
+origin and then waits for the retry ladder.
+
 Before installation, the device fetches the current channel again. A withdrawn,
 superseded, expired, or newly ineligible staged release is forgotten without
 booting it. A network outage does not invalidate an already verified release,

@@ -16,6 +16,10 @@ static int selected, begun, ended, aborted, complete, chunked, http_status;
 static int short_read, fail_write, fail_end, steps, cut_at;
 static int64_t reported_length, fake_time;
 static bool slow;
+static int64_t read_cost;      // extra clock per data read: a slower link than `slow`
+static int stall_reads;        // socket timeouts (10 s, no data) delivered once the body is under way
+static int64_t pressure_cost;  // clock the progress callback spends paused for spool pressure
+static int progress_calls;
 static int attempts, primary_failure;
 static bool encoded_response;
 static jmp_buf reboot;
@@ -58,7 +62,11 @@ int esp_http_client_get_status_code(esp_http_client_handle_t h)
 bool esp_http_client_is_chunked_response(esp_http_client_handle_t h) { (void)h; return chunked; }
 int esp_http_client_read(esp_http_client_handle_t h,char *out,int n)
 {
-    (void)h; boundary(); if (slow) fake_time += 11000000; if (short_read && offset >= 350) return 0;
+    (void)h; boundary();
+    if (stall_reads > 0 && offset >= 350) { stall_reads--; fake_time += 10000000; return -ESP_ERR_HTTP_EAGAIN; }
+    if (slow) fake_time += 11000000;
+    fake_time += read_cost;
+    if (short_read && offset >= 350) return 0;
     if (primary_failure == 3 && attempts == 1 && offset >= 350) return 0;
     if (n > 37) n = 37; // exercise fragmented headers and final short chunks
     if ((size_t)n > sizeof image-offset) n = sizeof image-offset;
@@ -79,9 +87,13 @@ void spool_stats(uint64_t *n,uint64_t *d,size_t *c) { (void)d;(void)c; *n = 42; 
 uint64_t spool_acked(void) { return 42; }
 static nvf_ota_request_t request;
 static void rehash(void);
+// A progress callback that pauses for spool pressure, as update_runtime's does.
+static bool paused_for_pressure(size_t received, size_t total, void *context)
+{ (void)received; (void)total; (void)context; progress_calls++; fake_time += pressure_cost; return true; }
 static void reset(void)
 {
-    offset=written=0; fake_time=1000; slow=false; encoded_response=false; selected=begun=ended=aborted=0; complete=1; chunked=0; http_status=200;
+    offset=written=0; fake_time=1000; slow=false; read_cost=0; stall_reads=0; pressure_cost=0; progress_calls=0;
+    encoded_response=false; selected=begun=ended=aborted=0; complete=1; chunked=0; http_status=200;
     short_read=fail_write=fail_end=steps=cut_at=attempts=primary_failure=0; reported_length=sizeof image; slot.subtype=16;
     memset(image,0,sizeof image); memset(flash,0xee,sizeof flash);
     image[0]=0xe9; image[1]=1; image[12]=9;
@@ -122,7 +134,24 @@ int main(void)
     reset(); chunked=1; assert(nvf_ota_download(&request) != ESP_OK && !begun);
     reset(); encoded_response=true; assert(nvf_ota_download(&request) != ESP_OK && !begun);
     reset(); assert(nvf_ota_stage(&request,NULL,NULL)==ESP_OK && ended && !selected);
-    reset(); slow=true; assert(nvf_ota_download(&request) == ESP_ERR_TIMEOUT && aborted && !selected);
+    // Deadlines. A link that keeps delivering completes however slowly, within the 30-minute
+    // cap on one attempt: 19 reads of 37 bytes at 11 s each is 209 s, past the old 180 s.
+    reset(); slow=true; assert(nvf_ota_download(&request) == ESP_OK && selected && attempts == 1);
+    // Slower still, 131 s per read, runs past the cap: the attempt times out (this URL has
+    // no secondary origin, so that is the whole download).
+    reset(); slow=true; read_cost=120000000; assert(nvf_ota_download(&request) == ESP_ERR_TIMEOUT && aborted == 1 && !selected && attempts == 1);
+    // Socket timeouts that deliver nothing are waited out: two (20 s) are a hiccup and the
+    // transfer completes; four (40 s) exceed the 30 s stall deadline.
+    reset(); stall_reads=2; assert(nvf_ota_download(&request) == ESP_OK && selected && attempts == 1 && !aborted);
+    reset(); stall_reads=4; assert(nvf_ota_download(&request) == ESP_ERR_TIMEOUT && aborted == 1 && !selected && attempts == 1);
+    // A timed-out attempt on a published origin is repeated once, from byte zero, on the
+    // secondary origin, which here stalls the same way.
+    reset(); stall_reads=8; strcpy(request.url,"https://firmware.intsat.net/firmware/trusted/v1/app.bin");
+    assert(nvf_ota_download(&request) == ESP_ERR_TIMEOUT && aborted == 2 && !selected && attempts == 2);
+    // A pause for spool pressure longer than the stall deadline, on every read of a slow
+    // link, is not transfer time: the staging completes.
+    reset(); slow=true; pressure_cost=35000000;
+    assert(nvf_ota_stage(&request,paused_for_pressure,NULL) == ESP_OK && ended && !selected && progress_calls > 10);
     reset(); short_read=1; assert(nvf_ota_download(&request) != ESP_OK && aborted && !selected);
     reset(); fail_write=1; assert(nvf_ota_download(&request) != ESP_OK && aborted && !selected);
     reset(); fail_end=1; assert(nvf_ota_download(&request) != ESP_OK && ended && !aborted && !selected);
