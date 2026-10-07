@@ -4,18 +4,20 @@ import Testing
 
 /// A collector whose discovery revision can move (restart, policy change) and
 /// whose private grant can be withdrawn, independently.
-private actor RediscoveryNetwork {
-    private(set) var revision = "v1"
-    private(set) var withdrawn = false
-    private(set) var discoveryRequests = 0
-    func setRevision(_ value: String) { revision = value }
-    func withdraw() { withdrawn = true }
+private final class RediscoveryCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var revision = "v1"
+    private var withdrawn = false
+    private var discoveries = 0
+    var discoveryRequests: Int { lock.withLock { discoveries } }
+    func setRevision(_ value: String) { lock.withLock { revision = value } }
+    func withdraw() { lock.withLock { withdrawn = true } }
 
     func response(_ request: URLRequest) -> Data {
         let authenticated = request.value(forHTTPHeaderField: "Authorization") != nil
         let path = request.url!.path
         if path.hasSuffix("/audiences") {
-            discoveryRequests += 1
+            let (revision, withdrawn) = lock.withLock { discoveries += 1; return (revision, withdrawn) }
             let grants = withdrawn ? "[\"public\"]" : "[\"public\",\"organization:org\"]"
             return Data((authenticated
                 ? "{\"ok\":true,\"data\":{\"schema\":\"2.0\",\"principal\":\"reader\",\"revision\":\"private-\(revision)\",\"audiences\":\(grants)}}"
@@ -32,35 +34,16 @@ private actor RediscoveryNetwork {
     }
 }
 
-private final class RediscoveryProtocol: URLProtocol, @unchecked Sendable {
-    nonisolated(unsafe) static var handler: (@Sendable (URLRequest) async throws -> Data)?
-    private var loadingTask: Task<Void, Never>?
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-    override func startLoading() {
-        loadingTask = Task { @Sendable [self] in
-            do {
-                guard let handler = Self.handler else { throw URLError(.badServerResponse) }
-                let data = try await handler(request)
-                client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!, cacheStoragePolicy: .notAllowed)
-                client?.urlProtocol(self, didLoad: data)
-                client?.urlProtocolDidFinishLoading(self)
-            } catch { client?.urlProtocol(self, didFailWithError: error) }
-        }
-    }
-    override func stopLoading() { loadingTask?.cancel() }
-}
-
 /// docs/OUTPUT.md §0.1: a changed discovery revision erases the partition and
 /// requires re-discovery. The app must do that by itself; only a withdrawn
 /// grant or a rejected credential may end in the dead authorization-lost state.
 @Suite(.serialized) @MainActor
 struct RediscoveryTests {
-    private func fixture(network: RediscoveryNetwork) throws -> (app: AppController, cache: SnapshotCache, directory: URL, suite: String) {
-        RediscoveryProtocol.handler = { await network.response($0) }
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [RediscoveryProtocol.self]
-        let session = URLSession(configuration: config)
+    private let host = "rediscover.invalid"
+
+    private func fixture(collector: RediscoveryCollector) throws -> (app: AppController, cache: SnapshotCache, directory: URL, suite: String) {
+        StubCollectorProtocol.register(host: host) { collector.response($0) }
+        let session = StubCollectorProtocol.session()
         let suite = "RediscoveryTests.\(UUID())"
         let defaults = try #require(UserDefaults(suiteName: suite))
         let directory = FileManager.default.temporaryDirectory.appending(path: suite)
@@ -72,7 +55,7 @@ struct RediscoveryTests {
     }
 
     private func cleanUp(_ directory: URL, _ suite: String) {
-        RediscoveryProtocol.handler = nil
+        StubCollectorProtocol.unregister(host: host)
         try? FileManager.default.removeItem(at: directory)
         UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
     }
@@ -88,18 +71,18 @@ struct RediscoveryTests {
 
     @Test(arguments: [true, false])
     func movedRevisionRediscoversWithoutLosingAuthorization(privateAudience: Bool) async throws {
-        let network = RediscoveryNetwork()
-        let (app, cache, directory, suite) = try fixture(network: network)
+        let collector = RediscoveryCollector()
+        let (app, cache, directory, suite) = try fixture(collector: collector)
         defer { cleanUp(directory, suite) }
-        try await app.connect(to: "https://rediscover.invalid", readToken: privateAudience ? "token" : nil)
+        try await app.connect(to: "https://\(host)", readToken: privateAudience ? "token" : nil)
         let old = try #require(app.store.activeSession)
         let prefix = privateAudience ? "private-" : "public-"
         #expect(old.authorizationRevision == prefix + "v1")
         // The first poll writes the old partition before the revision moves.
         #expect(try await settle { try await cache.loadObservers(for: old.cacheKey) != nil })
-        #expect(try await settle { !app.store.isRefreshing })
+        #expect(try await settle { !app.store.isRefreshing && app.store.isEventStreamConnected })
 
-        await network.setRevision("v2")
+        collector.setRevision("v2")
         await app.refresh()
 
         // Within one poll: a fresh session under the new revision, the same
@@ -116,24 +99,24 @@ struct RediscoveryTests {
         #expect(app.selectedAudience == old.audience)
         #expect(try await cache.loadObservers(for: old.cacheKey) == nil)
         #expect(try await cache.loadCursor(for: old.cacheKey) == nil)
-        #expect(try await settle { !app.store.observers.isEmpty })
+        #expect(try await settle { !app.store.observers.isEmpty && app.store.isEventStreamConnected })
         #expect(app.store.observers.map(\.id) == ["roof"])
         await app.store.disconnect(clearCachedScope: true)
     }
 
     @Test func withdrawnGrantStillEndsInAuthorizationLoss() async throws {
-        let network = RediscoveryNetwork()
-        let (app, cache, directory, suite) = try fixture(network: network)
+        let collector = RediscoveryCollector()
+        let (app, cache, directory, suite) = try fixture(collector: collector)
         defer { cleanUp(directory, suite) }
-        try await app.connect(to: "https://rediscover.invalid", readToken: "token")
+        try await app.connect(to: "https://\(host)", readToken: "token")
         let old = try #require(app.store.activeSession)
         #expect(old.audience.isPrivate)
         #expect(try await settle { try await cache.loadObservers(for: old.cacheKey) != nil })
-        #expect(try await settle { !app.store.isRefreshing })
+        #expect(try await settle { !app.store.isRefreshing && app.store.isEventStreamConnected })
 
-        await network.setRevision("v2")
-        await network.withdraw()
-        let discoveries = await network.discoveryRequests
+        collector.setRevision("v2")
+        collector.withdraw()
+        let discoveries = collector.discoveryRequests
         await app.refresh()
 
         #expect(app.store.authorizationLost)
@@ -145,7 +128,7 @@ struct RediscoveryTests {
         try await Task.sleep(for: .milliseconds(150))
         #expect(app.store.activeSession == nil)
         #expect(app.store.authorizationLost)
-        #expect(await network.discoveryRequests == discoveries + 1)
+        #expect(collector.discoveryRequests == discoveries + 1)
         await app.store.disconnect(clearCachedScope: true)
     }
 }

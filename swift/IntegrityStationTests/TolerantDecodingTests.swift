@@ -2,37 +2,11 @@ import Foundation
 import Testing
 @testable import IntegrityStation
 
-/// Serves one fixed SSE body and holds the connection open so the stream ends
-/// only through the consumer breaking out, never by the body running out.
-private final class TolerantSSEProtocol: URLProtocol, @unchecked Sendable {
-    nonisolated(unsafe) static var body = ""
-    private var producer: Task<Void, Never>?
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-    override func startLoading() {
-        let body = Self.body
-        producer = Task { @Sendable [self] in
-            client?.urlProtocol(self, didReceive: HTTPURLResponse(
-                url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [:])!,
-                cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: Data(body.utf8))
-            do {
-                for _ in 0..<2000 {
-                    try Task.checkCancellation()
-                    try await Task.sleep(for: .milliseconds(5))
-                }
-            } catch {}
-            client?.urlProtocolDidFinishLoading(self)
-        }
-    }
-    override func stopLoading() { producer?.cancel() }
-}
-
 /// A newer collector: schema 2.1 everywhere, a fourth severity, an audience
 /// kind this build does not know, a public sub-audience, and a public row
 /// carrying a redacted board subset. Every one of these is additive.
-private actor TolerantNetwork {
-    func response(_ request: URLRequest) -> Data {
+private enum NewerCollector {
+    static func response(_ request: URLRequest) -> Data {
         let authenticated = request.value(forHTTPHeaderField: "Authorization") != nil
         let path = request.url!.path
         if path.hasSuffix("/audiences") {
@@ -50,25 +24,6 @@ private actor TolerantNetwork {
         }
         return Data("{\"ok\":true,\"data\":{\"schema\":\"2.1\",\"audience\":\"\(audience)\",\"observers\":[{\"id\":\"roof\",\"last_seen_s\":1,\"board\":{},\"integrity\":{\"state\":\"assured\"}}],\"events\":[\(condition)]}}".utf8)
     }
-}
-
-private final class TolerantProtocol: URLProtocol, @unchecked Sendable {
-    nonisolated(unsafe) static var handler: (@Sendable (URLRequest) async throws -> Data)?
-    private var loadingTask: Task<Void, Never>?
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-    override func startLoading() {
-        loadingTask = Task { @Sendable [self] in
-            do {
-                guard let handler = Self.handler else { throw URLError(.badServerResponse) }
-                let data = try await handler(request)
-                client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!, cacheStoragePolicy: .notAllowed)
-                client?.urlProtocol(self, didLoad: data)
-                client?.urlProtocolDidFinishLoading(self)
-            } catch { client?.urlProtocol(self, didFailWithError: error) }
-        }
-    }
-    override func stopLoading() { loadingTask?.cancel() }
 }
 
 /// Additive server changes (a new severity, a new audience kind, a minor
@@ -116,14 +71,15 @@ struct TolerantDecodingTests {
     }
 
     @Test func streamDeliversAnEventWithAnUnknownSeverity() async throws {
-        TolerantSSEProtocol.body =
+        let host = "tolerant-stream.invalid"
+        let body = Data((
             "id: 1\nevent: gnss\ndata: {\"id\":1,\"sv\":\"roof\",\"type\":\"jamming_detected\",\"new_value\":\"jammed\",\"severity\":3}\n\n"
-            + "id: 2\nevent: gnss\ndata: {\"id\":2,\"sv\":\"roof\",\"type\":\"jamming_detected\",\"new_value\":\"ok\",\"severity\":0}\n\n"
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [TolerantSSEProtocol.self]
-        let network = URLSession(configuration: config)
+            + "id: 2\nevent: gnss\ndata: {\"id\":2,\"sv\":\"roof\",\"type\":\"jamming_detected\",\"new_value\":\"ok\",\"severity\":0}\n\n").utf8)
+        StubCollectorProtocol.register(host: host) { _ in body }
+        defer { StubCollectorProtocol.unregister(host: host) }
+        let network = StubCollectorProtocol.session()
         defer { network.invalidateAndCancel() }
-        let readSession = try #require(ReadSession(baseURL: URL(string: "https://tolerant.invalid")!,
+        let readSession = try #require(ReadSession(baseURL: URL(string: "https://\(host)")!,
                                                    principalID: nil, audience: .publicAudience,
                                                    authorizationRevision: "a", token: nil))
         var cursors: [String?] = [], ranks: [EventSeverity?] = [], raw: [Int?] = []
@@ -193,12 +149,10 @@ struct TolerantDecodingTests {
 
     @MainActor @Test(arguments: [true, false])
     func newerCollectorStillRendersTheStationList(privateAudience: Bool) async throws {
-        let network = TolerantNetwork()
-        TolerantProtocol.handler = { await network.response($0) }
-        defer { TolerantProtocol.handler = nil }
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [TolerantProtocol.self]
-        let session = URLSession(configuration: config)
+        let host = "newer.invalid"
+        StubCollectorProtocol.register(host: host) { NewerCollector.response($0) }
+        defer { StubCollectorProtocol.unregister(host: host) }
+        let session = StubCollectorProtocol.session()
         let suite = "TolerantDecodingTests.\(UUID())"
         let defaults = try #require(UserDefaults(suiteName: suite))
         let directory = FileManager.default.temporaryDirectory.appending(path: suite)
@@ -208,7 +162,7 @@ struct TolerantDecodingTests {
         let app = AppController(store: store, settings: AppSettings(defaults: defaults),
                                 secureStore: RaceCredentials(), feedClient: FeedClient(session: session))
 
-        try await app.connect(to: "https://newer.invalid", readToken: privateAudience ? "token" : nil)
+        try await app.connect(to: "https://\(host)", readToken: privateAudience ? "token" : nil)
         let active = try #require(store.activeSession)
         #expect(active.audience.isPrivate == privateAudience)
         // The unknown kind and the public sub-audience are dropped; the known
@@ -216,9 +170,11 @@ struct TolerantDecodingTests {
         #expect(app.availableAudiences == (privateAudience
             ? [ReadAudience("organization:org")!, .publicAudience]
             : [.publicAudience]))
-        for _ in 0..<500 where store.observers.isEmpty || store.health(for: "roof") == .unknown {
+        for _ in 0..<500 where store.observers.isEmpty || store.health(for: "roof") == .unknown
+            || !store.isEventStreamConnected || store.isRefreshing {
             try await Task.sleep(for: .milliseconds(10))
         }
+        #expect(store.isEventStreamConnected)
         #expect(store.observers.map(\.id) == ["roof"])
         #expect(store.observers.first?.board == nil || privateAudience)
         #expect(store.observers.first?.integrity == nil || privateAudience)
