@@ -295,9 +295,11 @@ final class AppController {
         } else {
             let publicEnvelope = try await feedClient.fetchAudiences(baseURL: url, token: nil)
             try requireCurrent(operation)
+            // Anonymous discovery must grant `public` to no principal; a future
+            // public sub-audience alongside it is not a contract violation.
             guard let publicDiscovery = publicEnvelope.data?.validated(),
                   publicDiscovery.principalID == nil,
-                  publicDiscovery.audiences == [.publicAudience]
+                  publicDiscovery.audiences.contains(.publicAudience)
             else { throw FeedError.invalidResponse }
             anonymousDiscovery = publicDiscovery
         }

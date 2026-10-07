@@ -79,10 +79,24 @@ struct AudienceDiscoveryPayload: Codable, Sendable {
     let revision: String?
     let audiences: [ReadAudience]?
 
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schema = try container.decodeIfPresent(String.self, forKey: .schema)
+        principal = try container.decodeIfPresent(String.self, forKey: .principal)
+        revision = try container.decodeIfPresent(String.self, forKey: .revision)
+        // An entry this build cannot parse (a future audience kind, an id
+        // outside the scope alphabet) is dropped rather than failing discovery
+        // for the grants that did parse. validated() still requires `public`
+        // among what remains, and the selected audience and principal are
+        // checked strictly before any request is sent.
+        audiences = try container.decodeIfPresent([String].self, forKey: .audiences)?
+            .compactMap { ReadAudience($0) }
+    }
+
     /// Rejects malformed or internally contradictory discovery documents. A
     /// free-form audience entered by a user never reaches a data request.
     func validated() -> AudienceDiscovery? {
-        guard schema == "2.0",
+        guard WireSchema.isSupported(schema),
               let audiences, !audiences.isEmpty,
               audiences.contains(.publicAudience),
               Set(audiences).count == audiences.count,

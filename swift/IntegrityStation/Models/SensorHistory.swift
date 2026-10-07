@@ -102,7 +102,7 @@ struct SensorHistoryPage: Codable, Sendable {
     }
 
     func validate(request: SensorHistoryRequest, session: ReadSession) throws {
-        guard schema == "2.0", audience == session.audience.rawValue, observer == request.observer,
+        guard WireSchema.isSupported(schema), audience == session.audience.rawValue, observer == request.observer,
               kind == request.metric.kind, offset == request.offset, limit == 500, samples.count <= limit,
               !revision.isEmpty, revision.utf8.count <= 256,
               request.revision == nil || request.revision == revision,

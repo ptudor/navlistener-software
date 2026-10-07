@@ -54,9 +54,16 @@ private func assuranceEvent(_ id: Int64, _ value: String) throws -> GNSSAPIEvent
     #expect(cached.configHash == assessment.configHash)
 }
 
-@Test func publicFeedMayNotCarryAnAssessment() throws {
+/// An assessment on a public row is stripped rather than failing the feed;
+/// the private view keeps it.
+@Test func publicFeedAssessmentIsRedactedNotFatal() throws {
     let payload = try JSONDecoder().decode(ObserversPayload.self, from: assurancePayload(audience: "public"))
-    #expect(throws: FeedError.invalidResponse) { try payload.validate() }
+    try payload.validate()
+    #expect(payload.observers?.first?.integrity != nil)
+    #expect(payload.redacted().observers?.first?.integrity == nil)
+    #expect(payload.redacted().observers?.map(\.id) == payload.observers?.map(\.id))
+    let privatePayload = try JSONDecoder().decode(ObserversPayload.self, from: assurancePayload(audience: "organization:example"))
+    #expect(privatePayload.redacted().observers?.first?.integrity != nil)
 }
 
 @Test func assuranceStateWordsKeepUnknownVocabularyVisible() {

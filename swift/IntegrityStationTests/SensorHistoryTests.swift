@@ -43,7 +43,10 @@ private func historyPage(_ changes: [String: Any] = [:]) throws -> SensorHistory
 
 @Test func historyRejectsInvalidBoundariesAndContinuations() throws {
     let request = try historyRequest()
+    // A minor schema bump is additive and accepted; another major is not.
+    try historyPage(["schema": "2.1"]).validate(request: request, session: historySession)
     for change: [String: Any] in [
+        ["schema": "3.0"], ["schema": "2"],
         ["audience": "organization:other"], ["observer": "other"], ["kind": "timing"],
         ["since": "2026-09-30T10:00:00Z"], ["until": "2026-09-30T13:00:00Z"], ["history_limited": true],
         ["revision": ""], ["offset": 1], ["limit": 501], ["next_offset": 1],

@@ -141,10 +141,10 @@ final class StationStore {
         let envelope = try await feedClient.fetchObservers(session: session)
         guard isCurrent(session, generation: generation) else { throw CancellationError() }
         guard let payload = envelope.data else { throw FeedError.missingData }
-        guard payload.schema == "2.0", payload.audience == session.audience.rawValue
+        guard WireSchema.isSupported(payload.schema), payload.audience == session.audience.rawValue
         else { throw FeedError.invalidResponse }
         let snapshot = ObserversSnapshot(receivedAt: Date(), scope: session.cacheKey,
-                                         serverTime: envelope.time, payload: payload)
+                                         serverTime: envelope.time, payload: payload.redacted())
         try apply(snapshot, cached: false)
         return snapshot
     }
@@ -238,7 +238,7 @@ final class StationStore {
             let envelope = try await feedClient.fetchEvents(session: session)
             guard isCurrent(session, generation: generation) else { return }
             guard let payload = envelope.data else { throw FeedError.missingData }
-            guard payload.schema == "2.0",
+            guard WireSchema.isSupported(payload.schema),
                   payload.audience == session.audience.rawValue
             else { throw FeedError.invalidResponse }
             guard isCurrent(session, generation: generation) else { return }
@@ -264,7 +264,7 @@ final class StationStore {
             if let access = cacheAccess,
                let snapshot = try await cache.restoreObservers(for: session.cacheKey, access: access),
                snapshot.scope == session.cacheKey,
-               snapshot.payload.schema == "2.0",
+               WireSchema.isSupported(snapshot.payload.schema),
                snapshot.payload.audience == session.audience.rawValue,
                isCurrent(session, generation: generation) {
                 try apply(snapshot, cached: true)
@@ -276,7 +276,7 @@ final class StationStore {
 
     func apply(_ snapshot: ObserversSnapshot, cached: Bool, now: Date = Date()) throws {
         try snapshot.payload.validate()
-        observers = snapshot.payload.observers ?? []
+        observers = snapshot.payload.redacted().observers ?? []
         lastUpdated = snapshot.receivedAt
         isShowingCachedSnapshot = cached
         fetchedAt = .now
@@ -522,7 +522,7 @@ final class StationStore {
         for _ in 0..<2 {
             let envelope = try await feedClient.fetchConditions(session: session)
             guard isCurrent(session, generation: generation) else { throw CancellationError() }
-            guard let snapshot = envelope.data, snapshot.schema == "2.0",
+            guard let snapshot = envelope.data, WireSchema.isSupported(snapshot.schema),
                   snapshot.audience == session.audience.rawValue else { throw FeedError.invalidResponse }
             if try conditions.install(snapshot) { return }
         }

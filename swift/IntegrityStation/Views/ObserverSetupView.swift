@@ -237,7 +237,7 @@ struct ObserverSetupView: View {
         // Setup can still proceed when private read access is unavailable.
         if let session = controller.store.activeSession, session.audience.isPrivate {
             if let envelope = try? await feed.fetchObservers(session: session),
-               let payload = envelope.data, payload.schema == "2.0", payload.audience == session.audience.rawValue,
+               let payload = envelope.data, WireSchema.isSupported(payload.schema), payload.audience == session.audience.rawValue,
                (try? payload.validate()) != nil, let time = WireDate.parse(envelope.time),
                controller.store.activeSession == session, !Task.isCancelled {
                 let board = payload.observers?.first(where: { $0.id == station })?.board
@@ -267,7 +267,7 @@ struct ObserverSetupView: View {
         do {
             let envelope = try await feed.fetchObservers(session: session)
             guard !Task.isCancelled, controller.store.activeSession == session else { return }
-            guard let payload = envelope.data, payload.schema == "2.0", payload.audience == session.audience.rawValue
+            guard let payload = envelope.data, WireSchema.isSupported(payload.schema), payload.audience == session.audience.rawValue
             else { throw FeedError.invalidResponse }
             try payload.validate()
             guard confirmation.matches(payload) else {

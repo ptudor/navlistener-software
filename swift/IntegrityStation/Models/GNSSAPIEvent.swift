@@ -26,16 +26,37 @@ struct GNSSAPIEvent: Codable, Sendable {
     let type: String?
     let oldValue: String?
     let newValue: String?
-    let severity: EventSeverity?
+    /// The severity exactly as served, including values this build does not
+    /// know. `severity` is the lenient rank used for health and notices.
+    let severityValue: Int?
     let message: String?
     let params: [String: JSONValue]?
     let raw: [String: JSONValue]?
 
+    var severity: EventSeverity? { severityValue.map(EventSeverity.init(lenient:)) }
+
     enum CodingKeys: String, CodingKey {
-        case id, time, type, severity, message, params, raw
+        case id, time, type, message, params, raw
         case subject = "sv"
         case oldValue = "old_value"
         case newValue = "new_value"
+        case severityValue = "severity"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(Int64.self, forKey: .id)
+        time = try container.decodeIfPresent(String.self, forKey: .time)
+        subject = try container.decodeIfPresent(String.self, forKey: .subject)
+        type = try container.decodeIfPresent(String.self, forKey: .type)
+        oldValue = try container.decodeIfPresent(String.self, forKey: .oldValue)
+        newValue = try container.decodeIfPresent(String.self, forKey: .newValue)
+        // A severity outside the known vocabulary, or not an integer at all,
+        // never fails the row: the condition it reports must stay visible.
+        severityValue = try? container.decodeIfPresent(Int.self, forKey: .severityValue)
+        message = try container.decodeIfPresent(String.self, forKey: .message)
+        params = try container.decodeIfPresent([String: JSONValue].self, forKey: .params)
+        raw = try container.decodeIfPresent([String: JSONValue].self, forKey: .raw)
     }
 }
 

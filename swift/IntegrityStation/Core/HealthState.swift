@@ -6,6 +6,20 @@ enum EventSeverity: Int, Codable, CaseIterable, Sendable {
     case info = 0
     case warning = 1
     case critical = 2
+
+    /// Ranks a served severity, including one this build does not know, so a
+    /// new server vocabulary never fails a row or hides a condition. Values
+    /// above the highest known severity rank as critical; any other unknown
+    /// value ranks as at least a warning. The raw value stays on the event.
+    init(lenient value: Int) {
+        if let known = EventSeverity(rawValue: value) {
+            self = known
+        } else if value > EventSeverity.critical.rawValue {
+            self = .critical
+        } else {
+            self = .warning
+        }
+    }
 }
 
 /// Display-side station health. Verdicts still come from the served liveness
