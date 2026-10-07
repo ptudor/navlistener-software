@@ -33,6 +33,7 @@ all: run
 
 run: $(addprefix $(BUILD)/,$(TESTS))
 	@set -e; for t in $(addprefix $(BUILD)/,$(TESTS)); do echo "==> $$t"; ./$$t; done
+	python3 ../../../tools/test_provisioning_label.py
 
 $(BUILD)/netcfg_portal_test: netcfg_portal_test.c $(PORTAL) $(PORTAL_H) $(wildcard mocks/*.h mocks/sys/*.h)
 	@mkdir -p $(BUILD)
