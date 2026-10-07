@@ -34,11 +34,17 @@ const (
 	rootChainLimit = 256
 )
 
+// Choice is the channel's selected release as the operator UI shows it. A
+// Percentage of 0 is a release that is named but held, as after an incident;
+// it is a choice, not an empty channel. Priority and Classification are the
+// publisher's own words for how urgent the release and its advisory are.
 type Choice struct {
-	Generation uint64 `json:"generation,string"`
-	Release    uint64 `json:"release,string"`
-	Percentage int    `json:"percentage"`
-	Advisory   string `json:"advisory"`
+	Generation     uint64 `json:"generation,string"`
+	Release        uint64 `json:"release,string"`
+	Percentage     int    `json:"percentage"`
+	Advisory       string `json:"advisory"`
+	Priority       string `json:"priority,omitempty"`
+	Classification string `json:"classification,omitempty"`
 }
 type reference struct {
 	Version uint64            `json:"version"`
@@ -274,21 +280,31 @@ func (m *Manager) choice(profile, channel string) (*Choice, error) {
 		Generation uint64   `json:"generation"`
 		Release    uint64   `json:"release_sequence"`
 		Percentage int      `json:"percentage"`
+		Priority   string   `json:"priority"`
 		Withdrawn  []uint64 `json:"withdrawn"`
 		Advisory   struct {
-			Summary string `json:"summary"`
+			Summary        string `json:"summary"`
+			Classification string `json:"classification"`
 		} `json:"advisory"`
 	}
 	if err = json.Unmarshal(data, &value); err != nil {
 		return nil, err
 	}
-	if value.Generation == 0 || value.Release == 0 || value.Percentage <= 0 || value.Percentage > 100 {
+	// The publisher writes 0..100: a channel held at 0 % after an incident
+	// still names its release, and the operator must be able to see that it
+	// is held rather than empty. Only a target that names no release, or a
+	// percentage outside the publisher's range, is malformed.
+	if value.Generation == 0 || value.Release == 0 {
 		return nil, errors.New("no selected release")
+	}
+	if value.Percentage < 0 || value.Percentage > 100 {
+		return nil, errors.New("rollout percentage outside 0..100")
 	}
 	for _, release := range value.Withdrawn {
 		if release == value.Release {
 			return nil, errors.New("selected release withdrawn")
 		}
 	}
-	return &Choice{value.Generation, value.Release, value.Percentage, value.Advisory.Summary}, nil
+	return &Choice{Generation: value.Generation, Release: value.Release, Percentage: value.Percentage, Advisory: value.Advisory.Summary,
+		Priority: value.Priority, Classification: value.Advisory.Classification}, nil
 }

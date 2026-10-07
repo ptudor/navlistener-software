@@ -1,14 +1,18 @@
 package stationcontrol
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"log/slog"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/ptudor/navlistener/internal/controlauth"
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/reception"
 )
@@ -225,5 +229,85 @@ func TestSnapshotControls(t *testing.T) {
 	}
 	if _, _, b := m.Pending(cx, "session", now.Add(time.Minute)); len(b) != 0 {
 		t.Fatal("expired command sent")
+	}
+}
+
+// A forecast that cannot be encoded is counted and logged, and retried at the
+// forecast cadence rather than recomputed on every control poll.
+func TestUnencodableForecastIsCountedLoggedAndNotSpunOn(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	digest := sha256.Sum256([]byte("control-test"))
+	calls := 0
+	m := New(reception.Config{OperatorTokenSHA256: hex.EncodeToString(digest[:]), Stations: []reception.Site{{Observer: "edge"}}},
+		func(_ identity.ObserverContext, _ reception.Site, at time.Time) reception.Expectation {
+			calls++
+			e := reception.Expectation{ID: uint64(at.Unix()), Issued: at.Unix(), RadiusM: 1000, AlarmSeconds: 5, ClearSeconds: 5, MinExpected: 4, MinMissing: 3, MissingPercent: 50}
+			// One distinct entry more than the wire format carries.
+			for i := 0; i <= reception.MaxEntries; i++ {
+				e.Entries = append(e.Entries, reception.Entry{GNSS: uint8(i % 4), SV: uint8(i/4 + 1), Signal: reception.Satellite, Slots: 31})
+			}
+			return e
+		})
+	var logged bytes.Buffer
+	m.SetLogger(slog.New(slog.NewTextHandler(&logged, nil)))
+	cx := identity.ObserverContext{ObserverID: "edge"}
+	m.BeginSession(cx, "session", 2)
+	before := testutil.ToFloat64(forecastEncodeFailures.WithLabelValues("edge", "reception"))
+	forecast, power, _ := m.Pending(cx, "session", now)
+	if len(forecast) != 0 || len(power) != 0 {
+		t.Fatal("an unencodable forecast was sent")
+	}
+	if calls != 1 {
+		t.Fatalf("forecast computed %d times", calls)
+	}
+	if got := testutil.ToFloat64(forecastEncodeFailures.WithLabelValues("edge", "reception")); got != before+1 {
+		t.Fatalf("encode failures = %v, want %v", got, before+1)
+	}
+	if !strings.Contains(logged.String(), "could not be encoded") || !strings.Contains(logged.String(), "observer=edge") {
+		t.Fatalf("failure not logged:\n%s", logged.String())
+	}
+	// Control polls inside the cadence do not recompute the forecast.
+	for second := 5; second < 30; second += 5 {
+		m.Pending(cx, "session", now.Add(time.Duration(second)*time.Second))
+	}
+	if calls != 1 {
+		t.Fatalf("forecast recomputed %d times inside one cadence", calls)
+	}
+	// At the cadence it is retried and counted again; the log stays bounded.
+	m.Pending(cx, "session", now.Add(forecastEvery))
+	if calls != 2 {
+		t.Fatalf("forecast not retried at the cadence: %d calls", calls)
+	}
+	if got := testutil.ToFloat64(forecastEncodeFailures.WithLabelValues("edge", "reception")); got != before+2 {
+		t.Fatalf("encode failures = %v, want %v", got, before+2)
+	}
+	if lines := strings.Count(logged.String(), "could not be encoded"); lines != 1 {
+		t.Fatalf("%d log lines inside %v, want one", lines, forecastWarnEvery)
+	}
+}
+
+// A refused control credential is counted; an accepted one is not.
+func TestRefusedControlCredentialIsCounted(t *testing.T) {
+	now := time.Now()
+	m, _ := fixture(now)
+	call := func(token string) int {
+		r := httptest.NewRequest("GET", "/gnss/api/v2/station-snapshot?observer_id=edge", nil)
+		r.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		m.ServeHTTP(w, r)
+		return w.Code
+	}
+	before := testutil.ToFloat64(controlauth.FailuresTotal.WithLabelValues("station-snapshot"))
+	if code := call("read-credential"); code != 401 {
+		t.Fatalf("wrong credential: %d", code)
+	}
+	if got := testutil.ToFloat64(controlauth.FailuresTotal.WithLabelValues("station-snapshot")); got != before+1 {
+		t.Fatalf("failures after a wrong credential = %v, want %v", got, before+1)
+	}
+	if code := call("control-test"); code != 200 {
+		t.Fatalf("right credential: %d", code)
+	}
+	if got := testutil.ToFloat64(controlauth.FailuresTotal.WithLabelValues("station-snapshot")); got != before+1 {
+		t.Fatalf("an accepted credential moved the failure counter: %v", got)
 	}
 }

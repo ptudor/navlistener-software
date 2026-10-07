@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ptudor/navlistener/internal/controlauth"
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/wire"
 )
@@ -89,6 +90,9 @@ type Manager struct {
 	// verifiesHardware is set when the push endpoint pins manufacturer keys, so
 	// an unverified session is a finding rather than the only possible result.
 	verifiesHardware bool
+	// auth records refused control credentials: the endpoint shares the read
+	// listener, so a guessed token must leave a trace.
+	auth controlauth.Limiter
 }
 
 // SetHardwareVerification tells the manager whether the push endpoint verifies
@@ -332,10 +336,16 @@ func (m *Manager) Report(context identity.ObserverContext, session string, seque
 	r.HardwareTrust = trust
 	// A reconnect whose evidence verifies differently is a transition even when
 	// the device's own report is unchanged: it is the one change a device
-	// cannot describe about itself.
+	// cannot describe about itself. The raw error code, partition layout and
+	// the two key ids are compared as the device sent them: two codes the
+	// collector cannot name are still two different errors, and a changed boot
+	// or release key id is exactly the evidence wanted when a rotation goes
+	// wrong. Progress counters and check times churn and are left out.
 	changed := previous == nil || previous.Mode != status.Mode || previous.Channel != status.Channel || previous.State != status.State ||
 		previous.Running != status.Running || previous.Available != status.Available || previous.Staged != status.Staged || previous.Failed != status.Failed ||
-		previous.Security != status.Security || previous.Profile != status.Profile || previous.Error != status.Error || previous.LastCommand != status.LastCommand ||
+		previous.Security != status.Security || previous.Profile != status.Profile || previous.Layout != status.Layout ||
+		previous.ErrorDomain != status.ErrorDomain || previous.ErrorReason != status.ErrorReason || previous.Error != status.Error ||
+		previous.LastCommand != status.LastCommand || previous.BootKey != status.BootKey || previous.ReleaseKey != status.ReleaseKey ||
 		evidence.oldTrust != trust
 	if !changed {
 		m.records[d.key()] = r

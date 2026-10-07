@@ -20,6 +20,10 @@ var (
 	stagedAt      = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_staged_timestamp_seconds", Help: "First reported staging time; zero when no image is staged."}, []string{"observer"})
 	waitingAt     = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_waiting_timestamp_seconds", Help: "First report waiting for a safe reboot; zero otherwise."}, []string{"observer"})
 	adoption      = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_running_release_info", Help: "Current reported release per enrolled device; value is 1, superseded labels are removed."}, []string{"observer", "release"})
+	// A device reporting a different Secure Boot or TUF release key id than its
+	// previous report is the evidence wanted when a track or key rotation goes
+	// wrong; the first report of a device counts nothing.
+	keyChanges = promauto.NewCounterVec(prometheus.CounterOpts{Name: "navlistener_update_key_id_changes_total", Help: "Reports in which an enrolled device's Secure Boot key id (secure_boot) or TUF release key id (tuf_release) differs from its previous report."}, []string{"observer", "key"})
 	// Served from the published catalog on this collector; not a device report.
 	metadataExpiry = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_metadata_expiry_timestamp_seconds", Help: "When each TUF role the collector's published update catalog serves expires, per release track; zero while the catalog cannot be read. Root, targets and releases are offline roles renewed by a signing ceremony (release-rotate-root, release-renew-offline) and are logged 90 days ahead; the others renew with release-refresh-online and are logged a week ahead."}, []string{"track", "role"})
 )
@@ -68,8 +72,16 @@ func observe(observer string, old *wire.UpdateStatus, s wire.UpdateStatus, v ver
 	if s.LastCheck != 0 && (old == nil || s.LastCheck != old.LastCheck) {
 		checks.Inc()
 	}
-	if s.ErrorDomain != 0 && (old == nil || s.Error != old.Error) {
+	// The raw code decides what is a new error: two codes the collector cannot
+	// name share UPDATE_UNKNOWN_ERROR and are still two failures.
+	if s.ErrorDomain != 0 && (old == nil || s.ErrorDomain != old.ErrorDomain || s.ErrorReason != old.ErrorReason) {
 		failures.WithLabelValues(wire.UpdateErrorName(s.ErrorDomain, s.ErrorReason)).Inc()
+	}
+	if old != nil && old.BootKey != s.BootKey {
+		keyChanges.WithLabelValues(observer, "secure_boot").Inc()
+	}
+	if old != nil && old.ReleaseKey != s.ReleaseKey {
+		keyChanges.WithLabelValues(observer, "tuf_release").Inc()
 	}
 	if s.State == "rolled-back" && (old == nil || old.State != s.State || old.Failed != s.Failed) {
 		rollbacks.Inc()

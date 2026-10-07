@@ -94,6 +94,49 @@ func catalog(t *testing.T, track string) {
 	}
 }
 
+// A channel held at 0 % still names its release: the operator sees a choice
+// that is held, not an empty channel. Only a percentage outside the
+// publisher's 0..100 is malformed.
+func TestCatalogReportsAHeldChannelAsAChoice(t *testing.T) {
+	m, _ := setup(t)
+	root := m.config.Repository
+	publish := func(percentage int) {
+		t.Helper()
+		value := map[string]any{"schema": 1, "generation": 4, "release_sequence": 31, "percentage": percentage, "priority": "urgent",
+			"withdrawn": []uint64{}, "advisory": map[string]string{"classification": "security", "summary": "Held after an incident"}}
+		target := writeObject(t, root, "targets/channels/draft.json", value)
+		final := filepath.Join(root, "targets/channels/"+target.Hashes["sha256"]+".lab.json")
+		if err := os.Rename(filepath.Join(root, "targets/channels/draft.json"), final); err != nil {
+			t.Fatal(err)
+		}
+		metadata := func(fields map[string]any) map[string]any {
+			fields["version"] = 1
+			fields["expires"] = "2030-01-01T00:00:00Z"
+			return map[string]any{"signed": fields}
+		}
+		channel := writeObject(t, root, "metadata/1.lab.json", metadata(map[string]any{"targets": map[string]reference{"channels/lab.json": target}}))
+		snapshot := writeObject(t, root, "metadata/1.snapshot.json", metadata(map[string]any{"meta": map[string]reference{"lab.json": channel}}))
+		writeObject(t, root, "metadata/timestamp.json", metadata(map[string]any{"meta": map[string]reference{"snapshot.json": snapshot}}))
+	}
+	publish(0)
+	choice, err := m.choice("trusted", "lab")
+	if err != nil {
+		t.Fatalf("held channel reported as having no choice: %v", err)
+	}
+	if choice.Percentage != 0 || choice.Release != 31 || choice.Generation != 4 {
+		t.Fatalf("held choice = %+v", choice)
+	}
+	if choice.Priority != "urgent" || choice.Classification != "security" || choice.Advisory != "Held after an incident" {
+		t.Fatalf("advisory fields not surfaced: %+v", choice)
+	}
+	for _, malformed := range []int{-1, 101} {
+		publish(malformed)
+		if _, err := m.choice("trusted", "lab"); err == nil {
+			t.Fatalf("percentage %d accepted", malformed)
+		}
+	}
+}
+
 // The served tree's expiry dates are reported as they are, including expired
 // ones, and only the latest root counts: it is where a device's walk ends.
 func TestCatalogReportsRolesExpiringSoon(t *testing.T) {
