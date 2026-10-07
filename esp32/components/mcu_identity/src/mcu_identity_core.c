@@ -185,6 +185,25 @@ uint16_t nvf_commission_security_bits(const nvf_chip_security_t *c)
     return bits;
 }
 
+nvf_mcu_key_action_t nvf_mcu_key_action(unsigned stored, nvf_mcu_block_use_t use)
+{
+    if (use == NVF_MCU_BLOCK_UNUSED || use == NVF_MCU_BLOCK_OTHER) return NVF_MCU_KEY_DISCARD;
+    if (stored == NVF_MCU_STORED_FAULT || use == NVF_MCU_BLOCK_DS_UNPROTECTED) return NVF_MCU_KEY_RECORD_FAULT;
+    return NVF_MCU_KEY_SELF_TEST;
+}
+
+nvf_mcu_key_state_t nvf_mcu_key_unstored(uint8_t faulted, const nvf_mcu_block_use_t use[6], int *block)
+{
+    int orphan = -1, spent = -1;
+    for (int i = 0; i < 6; i++) {
+        bool ds = use[i] == NVF_MCU_BLOCK_DS_PROTECTED || use[i] == NVF_MCU_BLOCK_DS_UNPROTECTED;
+        if (orphan < 0 && ds && !(faulted >> i & 1)) orphan = i;
+        if (faulted >> i & 1) spent = i;
+    }
+    *block = orphan >= 0 ? orphan : spent;
+    return orphan >= 0 ? NVF_MCU_KEY_ORPHANED : faulted ? NVF_MCU_KEY_FAULT : NVF_MCU_KEY_ABSENT;
+}
+
 const char *nvf_mcu_keygen_refusal(const nvf_mcu_keygen_state_t *s)
 {
     if (!s->locked && !s->unlocked_allowed)

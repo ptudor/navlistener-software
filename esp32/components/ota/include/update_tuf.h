@@ -9,6 +9,11 @@
 // refresh. A larger jump is a wrong clock (NETWORK_TIME_UNAVAILABLE, retried), not a ratchet:
 // one spoofed or bad SNTP reply must not make every role read as expired for good.
 #define NVF_TUF_TIME_WINDOW_S (400ULL*86400)
+// How far ahead of the device clock a release manifest's `published` stamp may be. It is
+// the publisher's wall clock at signing, informational: a device checking within seconds
+// of a publish (collector hints make that likely) or with a slightly lagging SNTP clock
+// must not read the manifest as malformed. A stamp further ahead is still malformed.
+#define NVF_TUF_PUBLISHED_SKEW_S 300ULL
 typedef enum {
 #define NVF_UPDATE_ERROR(symbol,domain,reason,name) symbol=(domain)*1000+(reason),
 #include "update_errors.inc"

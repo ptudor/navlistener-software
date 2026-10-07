@@ -6,4 +6,7 @@
 CONFIG_NVF_UPDATE_PROFILE_OPEN=y
 CONFIG_NVF_MANIFEST_FACTORY_INIT=n
 CONFIG_NVF_INSECURE=n
+# A fielded open-track board prints its persistent setup password only on the boot
+# that creates it (the NEW SETUP LABEL line), never again after a configuration reset.
+CONFIG_NVF_SETUP_CONSOLE_PASSWORD=n
 CONFIG_APP_REPRODUCIBLE_BUILD=y

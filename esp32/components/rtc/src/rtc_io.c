@@ -41,26 +41,40 @@ bool rtc_enable_backup(const rtc_io_t *io)
     if (!io->write(io->ctx, 3, &weekday, 1) || !io->read(io->ctx, 3, &weekday, 1)) return false;
     return (weekday & 8) != 0;
 }
-bool rtc_set_verified(const rtc_io_t *io, int64_t epoch)
+bool rtc_set_verified(const rtc_io_t *io, const rtc_time_ref_t *ref, int64_t *written)
 {
     uint8_t old[8], regs[7];
-    if (!io->read(io->ctx, 0, old, sizeof old) || !rtc_encode(epoch, regs) ||
+    // The range check first, before anything is touched; the second loaded is derived
+    // again below, once the oscillator has stopped.
+    if (!io->read(io->ctx, 0, old, sizeof old) ||
+        !rtc_encode(rtc_ref_second(ref, io->now_ms(io->ctx)), regs) ||
         !preserve_power_failure(io, old)) return false;
     // MCP79412 has a crystal on this board. Stop either possible clock source,
     // then wait for OSCRUN to clear before changing calendar registers.
     uint8_t stopped = old[0] & 0x7f, control = old[7] & ~8;
     if (!io->write(io->ctx, 0, &stopped, 1) ||
         !io->write(io->ctx, 7, &control, 1) || !wait_oscillator(io, false)) goto failed;
-    if (!io->write(io->ctx, 0, regs, sizeof regs)) goto failed;
+    // The second to load is the one nearest UTC now, not the one qualified before the stop:
+    // waiting for OSCRUN to clear can take seconds, and the divider chain counts on from
+    // the loaded value once ST restarts the oscillator (DS20002266H section 5.3, note 2).
+    int64_t target = rtc_ref_second(ref, io->now_ms(io->ctx));
+    if (!rtc_encode(target, regs) || !io->write(io->ctx, 0, regs, sizeof regs)) goto failed;
     regs[0] |= 0x80;
     if (!io->write(io->ctx, 0, regs, 1) || !wait_oscillator(io, true)) goto failed;
-    // Read all seven buffered registers together; also prove that seconds advance.
+    // Read all seven buffered registers together. The calendar must sit within a second of
+    // UTC at the read, so a lag (an oscillator slow to start) is reported rather than
+    // accepted; then prove that seconds advance.
     uint8_t readback[7]; int64_t first, later;
     if (!io->read(io->ctx, 0, readback, sizeof readback) ||
-        !rtc_running(readback, &first) || !(readback[3] & 8) || first < epoch || first > epoch + 3) goto failed;
+        !rtc_running(readback, &first) || !(readback[3] & 8)) goto failed;
+    int64_t expected = rtc_ref_second(ref, io->now_ms(io->ctx));
+    if (first < expected - 1 || first > expected + 1) goto failed;
     io->delay(io->ctx, 1200);
     if (io->read(io->ctx, 0, readback, sizeof readback) && rtc_running(readback, &later) &&
-        (readback[3] & 8) && later > first && later <= first + 3) return true;
+        (readback[3] & 8) && later > first && later <= first + 3) {
+        if (written) *written = target;
+        return true;
+    }
 failed:
     // Best effort: a partially written or unverified calendar must not look
     // like a retained running clock on the next boot. A dead bus can prevent

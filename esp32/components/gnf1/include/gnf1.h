@@ -29,7 +29,16 @@ extern "C" {
 #define GNF1_F_HELLO       0x01 // feeder->collector: JSON hello
 #define GNF1_F_WELCOME     0x02 // collector->feeder: JSON welcome
 #define GNF1_F_DATA        0x03 // feeder->collector: [8B seq][record]
-#define GNF1_F_ACK 0x04 // collector->feeder: [8B seq] highest sequence received this connection (regression fix/regression fix; NOT a durability guarantee)
+// ACK carries the DURABLE watermark for this session (docs/DESIGN.md §GNF1, wire.go): the
+// highest seq through which every received sequenced frame has been durably resolved by the
+// collector — committed by the historian (or deduped against an already-committed ledger
+// claim), quarantined as unfixable, or classified never-persistable. The feeder prunes its
+// spool up to it, so the ack stalls, rather than data being lost, while the collector's
+// database is down; the pusher's ack-stall watchdog then reconnects for replay. Only a
+// collector running WITHOUT a historian (the explicit live-only mode) acks on receipt.
+// Never-received sequences are skipped past, not waited for, and reconnect replay makes any
+// resulting duplicate harmless.
+#define GNF1_F_ACK         0x04 // collector->feeder: [8B seq] durable watermark (live-only mode: highest received)
 #define GNF1_F_PING        0x05 // keepalive
 #define GNF1_F_PONG        0x06 // keepalive
 #define GNF1_F_SIGNED_DATA 0x07 // P-hw: ATECC ECDSA batch (reserved)
@@ -89,16 +98,23 @@ size_t gnf1_encode_data(uint8_t *out, uint64_t seq, const uint8_t *record, size_
 // SPOOL_SESSION_CAP (navfeeder.c). Both reference feeders mint 32 hex characters.
 #define GNF1_SESSION_MAX 64
 
+// GNF1_HELLO_MAX is the collector's pre-authentication cap on a HELLO payload
+// (internal/ingest/push.go helloMaxLen) and the C feeder's HELLO_CAP: the buffer a caller
+// hands gnf1_build_hello. The builder escapes straight into that buffer, so the only bound
+// on the token and station is this cap, never a smaller intermediate buffer.
+#define GNF1_HELLO_MAX 4096
+
 // gnf1_session_valid reports whether s is an acceptable GNF1 session identity: 1..
 // GNF1_SESSION_MAX bytes of [A-Za-z0-9._-], the same domain as the collector's
 // wire.ValidSession. Exposed so a caller can check a session before it reaches the wire (and
 // so the host tests can pin the domain).
 bool gnf1_session_valid(const char *s);
 
-// gnf1_build_hello writes the HELLO JSON payload into out (capacity cap). Returns the length
-// written, or -1 on truncation or an invalid/missing session. It carries the bearer token,
-// the station/feed identity, and the regression fix session; TLS certificate configuration, if
-// added, belongs to the connection layer.
+// gnf1_build_hello writes the HELLO JSON payload into out (capacity cap, GNF1_HELLO_MAX for a
+// full-size one). Returns the length written, or -1 when it would not fit (nothing is ever
+// truncated: a shortened token is a different credential) or the session is invalid/missing.
+// It carries the bearer token, the station/feed identity, and the regression fix session; TLS
+// certificate configuration, if added, belongs to the connection layer.
 //
 // session (regression fix, REQUIRED since the 2026-07-31 contract revision) is the feeder's
 // boot/session identity: the collector's replay-dedup key is (observer, session, seq), so the

@@ -10,3 +10,4 @@ esp_err_t i2c_master_bus_add_device(i2c_master_bus_handle_t bus,
 esp_err_t i2c_master_transmit_receive(i2c_master_dev_handle_t device, const void *tx,
                                     size_t tx_length, void *rx, size_t rx_length, int timeout);
 esp_err_t i2c_master_transmit(i2c_master_dev_handle_t device, const void *tx, size_t length, int timeout);
+esp_err_t i2c_master_bus_rm_device(i2c_master_dev_handle_t device);

@@ -21,10 +21,12 @@ bool max31328_encode(int64_t epoch, uint8_t regs[7]);
 // A validated running calendar: oscillator enabled, no stop recorded, calendar valid.
 bool max31328_running(const uint8_t regs[7], uint8_t control, uint8_t status, int64_t *epoch);
 enum { MAX31328_SET_OK, MAX31328_SET_IO, MAX31328_SET_OSF_STUCK, MAX31328_SET_UNVERIFIED };
-// Writes the calendar, clears OSF and proves the clock advances. Anything short of
-// MAX31328_SET_OK leaves the century bit set (best effort on a failing bus), so the
-// calendar reads as invalid. MAX31328_SET_OSF_STUCK means the flag would not clear.
-unsigned max31328_set_verified(const rtc_io_t *io, int64_t epoch);
+// Writes the calendar (the second nearest UTC at the moment of the write, which restarts
+// the countdown chain), clears OSF and proves the clock reads within a second of UTC and
+// advances. Anything short of MAX31328_SET_OK leaves the century bit set (best effort on a
+// failing bus), so the calendar reads as invalid. MAX31328_SET_OSF_STUCK means the flag
+// would not clear. *written (optional) receives the second loaded.
+unsigned max31328_set_verified(const rtc_io_t *io, const rtc_time_ref_t *ref, int64_t *written);
 // 1 Hz on INT/SQW (INTCN and RS clear, no output on battery) with the unused 32 kHz
 // output off. Returns rtc_square_wave's codes: 1 enabled, 2 stopped or invalid calendar,
 // 3 alarm interrupts in use (left alone), 4 I/O failure. OSF is never cleared here.

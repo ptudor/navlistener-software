@@ -46,11 +46,24 @@ def render_qr(payload: str, output: Path) -> None:
     if not executable:
         raise RuntimeError("qrencode is required for --qr-svg; install it on the label workstation")
     output.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [executable, "-t", "SVG", "-m", "4", "-o", str(output), payload],
-        check=True,
-    )
-    os.chmod(output, 0o600)
+    # The payload carries the setup password. It reaches qrencode on stdin, never on the
+    # command line, where any local user can read it from the process list for as long as
+    # the process runs; and the SVG is created private (0600) before qrencode writes a byte
+    # into it, rather than being tightened afterwards. An existing file is never overwritten:
+    # a label is written once, into a fresh private capture directory.
+    try:
+        os.close(os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    except FileExistsError:
+        raise RuntimeError(f"refusing to overwrite an existing label file: {output}") from None
+    try:
+        subprocess.run(
+            [executable, "-t", "SVG", "-m", "4", "-o", str(output)],
+            input=payload.encode("utf-8"),
+            check=True,
+        )
+    except BaseException:
+        output.unlink(missing_ok=True)
+        raise
 
 
 def main() -> int:

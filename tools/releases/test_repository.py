@@ -385,6 +385,19 @@ class RepositoryTests(unittest.TestCase):
         out = self.client(0, first=old, second=(self.directory, 0), second_now=later, second_trusted=True)
         self.assertIn(f"second=0 trusted_time={int(later.timestamp())}\n", out)
 
+    def test_manifest_published_slightly_ahead_of_the_device_clock(self):
+        # `published` is the publisher's wall clock at signing. A device that checks within
+        # seconds of a publish, or whose SNTP clock lags a little, must not read the manifest
+        # as malformed and back off for an hour; a stamp a day ahead is still malformed.
+        self.repo.now = NOW + timedelta(seconds=60)
+        self.repo.add_release(board_family="gnss-color-neo", sequence=32, version="0.1.1", revision="b" * 40,
+            image=b"image", boot_key_id="ab" * 32, provenance=b"{}", licenses=b"[]", notes=b"notes")
+        self.assertIn("sequence=32", self.client(now=NOW))
+        self.repo.now = NOW + timedelta(days=1)
+        self.repo.add_release(board_family="gnss-color-neo", sequence=33, version="0.1.2", revision="c" * 40,
+            image=b"image", boot_key_id="ab" * 32, provenance=b"{}", licenses=b"[]", notes=b"notes")
+        self.client(2001, now=NOW)
+
     def test_withdrawal_does_not_depend_on_manifest_download(self):
         self.repo.set_channel("lab", 31, "releases/31.json", withdrawn=[31])
         self.repo.online()

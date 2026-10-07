@@ -2,8 +2,8 @@
 
 #include "netcfg.h"
 #include "netcfg_form.h"
+#include "netcfg_portal.h"
 #include "netcfg_setup.h"
-#include "netcfg_tunnel.h"
 #include "sdkconfig.h"
 #if CONFIG_NVF_BOARD_GNSS_COLOR
 #include "netcfg_ble.h"
@@ -12,7 +12,6 @@
 
 #include <string.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <stdint.h>
 #include "bootloader_random.h" // seed esp_random() before Wi-Fi is running
 
@@ -266,103 +265,21 @@ static esp_err_t save_post(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    netcfg_t cfg;
-    // Start from the current config so unspecified fields keep their value (    // form_field no longer clears dst on "not found", so a field genuinely absent from the
-    // body leaves this NVS-loaded value untouched). The return value is deliberately
-    // ignored here — an INVALID current config is the normal case on the portal path.
-    netcfg_load(&cfg, NULL, 0);
-    // every negative result — too long, or malformed
-    // percent-encoding / a control byte — refuses the whole POST before anything
-    // reaches NVS, with a reason that never echoes submitted bytes back.
-    const struct { const char *name; char *dst; size_t cap; } text_fields[] = {
-        { "ssid", cfg.wifi_ssid, sizeof cfg.wifi_ssid },
-        { "pass", cfg.wifi_pass, sizeof cfg.wifi_pass },
-        { "host", cfg.host, sizeof cfg.host },
-    };
-    for (size_t i = 0; i < sizeof text_fields / sizeof *text_fields; i++) {
-        form_result_t r = netcfg_form_field(body, text_fields[i].name,
-                                            text_fields[i].dst, text_fields[i].cap);
-        if (r < 0) {
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, netcfg_form_error(r));
-            return ESP_FAIL;
-        }
-    }
-    char port[8] = {0}; // fresh buffer, not a pre-seeded cfg field: must self-init
-    form_result_t port_result = netcfg_form_field(body, "port", port, sizeof port);
-    if (port_result < 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, netcfg_form_error(port_result));
-        return ESP_FAIL;
-    }
-    if (port_result == FORM_OK && port[0]) {
-        // a 99999/negative/garbage port must not be stored verbatim into a
-        // provisioned-but-unconnectable unit. atoi's 0-on-garbage lands in the same
-        // rejected range, so the single netcfg_validate rule below catches every case
-        // (regression fix — this used to be a second, separate bound check right here).
-        cfg.port = atoi(port);
-    }
-    // The station is decoded into its own buffer: on a commissioned board a submitted one is
-    // checked, never stored, and an absent one must not be confused with the stored value.
-    char station[sizeof cfg.station] = {0};
-    form_result_t station_result = netcfg_form_field(body, "station", station, sizeof station);
-    form_result_t token_result = netcfg_form_field(body, "token", cfg.token, sizeof cfg.token);
-    if (station_result < 0 || token_result < 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            netcfg_form_error(station_result < 0 ? station_result : token_result));
-        return ESP_FAIL;
-    }
-    if (netcfg_commissioned()) {
-        // The form shows no station field here, so one arriving is a stale page or a crafted
-        // request. A name stored before commissioning is dropped with this save.
-        char why[NETCFG_ERR_CAP];
-        if (!netcfg_station_input_ok(station, why, sizeof why)) {
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, why);
-            return ESP_FAIL;
-        }
-        memset(cfg.station, 0, sizeof cfg.station);
-    } else if (station_result == FORM_OK) {
-        memcpy(cfg.station, station, sizeof cfg.station);
-    }
-#if CONFIG_NVF_WIREGUARD
-    // The pasted profile is the one multi-line field. Absent keeps the stored profile (a
-    // partial POST), present-but-blank turns the tunnel off and drops its keys, and
-    // anything else must parse and validate whole, or the POST fails with the parser's
-    // fixed reason — never the submitted bytes, which include a private key.
-    char profile[NETCFG_TUNNEL_CONF_CAP];
-    form_result_t wg_result = netcfg_form_field_text(body, "wg", profile, sizeof profile);
-    if (wg_result < 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, netcfg_form_error(wg_result));
-        return ESP_FAIL;
-    }
-    if (wg_result == FORM_OK) {
-        if (strspn(profile, " \t\r\n") == strlen(profile)) {
-            memset(&cfg.tunnel, 0, sizeof cfg.tunnel);
-        } else {
-            char why[NETCFG_ERR_CAP];
-            if (!netcfg_tunnel_parse_conf(profile, &cfg.tunnel, why, sizeof why)) {
-                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, why);
-                return ESP_FAIL;
-            }
-        }
-    }
-#endif
-#if CONFIG_NVF_ALLOW_INSECURE_PORTAL
-    char ins[8] = {0}; // fresh buffer: must self-init
-    form_result_t ins_result = netcfg_form_field(body, "insecure", ins, sizeof ins);
-    if (ins_result < 0) {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, netcfg_form_error(ins_result));
-        return ESP_FAIL;
-    }
-    cfg.insecure = ins[0] != '\0'; // checkbox present => on
-#endif
-    // With the portal control compiled out (regression fix, the shipped default), cfg.insecure
-    // stays exactly what netcfg_load already populated (NVS or the Kconfig/NVF_INSECURE
-    // default) — the form cannot change it either way.
-
-    // the same rule netcfg_load applies at boot. Saving a config the boot path
-    // would reject is how a unit ends up unprovisionable without a serial cable — refuse it
-    // here, with the specific field named, while the operator still has the portal open.
-    char reason[NETCFG_ERR_CAP];
-    if (!netcfg_validate(&cfg, reason, sizeof reason)) {
+    // Every field of the record starts empty (netcfg_portal_decode): a POST that omits one
+    // — a crafted request, or a stale page — must not commit whatever the development
+    // Kconfig holds, which is what seeding the record from netcfg_load() did, and the
+    // compiled NVF_INSECURE default must not reach NVS. The stored record contributes only
+    // the tunnel profile, for a form that omits that field; netcfg_load's compiled fallback
+    // is a boot-path matter. The decoder refuses the whole POST before anything reaches
+    // NVS, with the field named and no submitted bytes echoed, under the same rule
+    // netcfg_load applies at boot — saving a config the boot path would reject is how a
+    // unit ends up unprovisionable without a serial cable.
+    netcfg_t stored, cfg;
+    (void)netcfg_load(&stored, NULL, 0); // an INVALID stored config is the normal case here
+    char reason[NETCFG_PORTAL_ERR_CAP];
+    bool decoded = netcfg_portal_decode(body, &stored.tunnel, &cfg, reason, sizeof reason);
+    memset(&stored, 0, sizeof stored);
+    if (!decoded) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, reason);
         return ESP_FAIL;
     }
@@ -432,6 +349,27 @@ esp_err_t netcfg_start_provisioning(netcfg_provisioning_info_t *info)
     wifi_init_config_t ic = WIFI_INIT_CONFIG_DEFAULT();
     ESP_RETURN_ON_ERROR(esp_wifi_init(&ic), TAG, "initialize Wi-Fi");
 
+    // The SoftAP is configured before anything starts Wi-Fi. A factory-fresh board's Wi-Fi
+    // NVS holds ESP-IDF's open "ESP_xxxxxx" default, which the interface would beacon from
+    // the moment it is raised until this configuration landed. The driver accepts an
+    // interface's configuration only while the mode includes that interface, and a mode
+    // applied to stopped Wi-Fi raises nothing, so the order is mode, configuration, start.
+    // The BLE scheme below starts Wi-Fi station-only and clears only the station
+    // credentials; the AP configuration stays in the driver until APSTA raises it.
+    wifi_config_t ap = {0};
+    snprintf((char *)ap.ap.ssid, sizeof ap.ap.ssid, "%s", setup.name);
+    ap.ap.ssid_len = strlen(setup.name);
+    snprintf((char *)ap.ap.password, sizeof ap.ap.password, "%s", setup.password);
+    ap.ap.max_connection = 2;
+    ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    ap.ap.channel = 1;
+#if CONFIG_NVF_BOARD_GNSS_COLOR
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), TAG, "select setup AP");
+#else
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_AP), TAG, "select setup AP");
+#endif
+    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &ap), TAG, "configure setup AP");
+
 #if CONFIG_NVF_BOARD_GNSS_COLOR
     err = netcfg_ble_start(&setup);
     if (err == ESP_OK) {
@@ -444,26 +382,19 @@ esp_err_t netcfg_start_provisioning(netcfg_provisioning_info_t *info)
     }
 #endif
 
-    wifi_config_t ap = {0};
-    snprintf((char *)ap.ap.ssid, sizeof ap.ap.ssid, "%s", setup.name);
-    ap.ap.ssid_len = strlen(setup.name);
-    snprintf((char *)ap.ap.password, sizeof ap.ap.password, "%s", setup.password);
-    ap.ap.max_connection = 2;
-    ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
-    ap.ap.channel = 1;
-
+    // With BLE active Wi-Fi is already running as a station and this raises the configured
+    // AP beside it; otherwise the AP-only mode is applied to stopped Wi-Fi and started.
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(info->ble_active ? WIFI_MODE_APSTA : WIFI_MODE_AP),
                         TAG, "enable setup AP");
-    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &ap), TAG, "configure setup AP");
     if (!info->ble_active)
         ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "start setup AP");
 
     httpd_handle_t server = NULL;
     httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
     // save_post keeps its locals on this task's stack: body[SAVE_POST_BODY_CAP] (4 KiB),
-    // the pasted profile (1 KiB), a netcfg_t (~0.7 KiB) and scratch, and the httpd default
-    // stack is 4096 — far too tight once httpd's own frames and the NVS/log calls
-    // underneath the handler are added. Size it generously rather than heap-allocating
+    // the decoder's pasted profile (1 KiB), two netcfg_t (~1.4 KiB) and scratch, and the
+    // httpd default stack is 4096 — far too tight once httpd's own frames and the NVS/log
+    // calls underneath the handler are added. Size it generously rather than heap-allocating
     // the body (the portal runs pre-provisioning, when RAM is otherwise idle).
     hcfg.stack_size = 12288;
     ESP_RETURN_ON_ERROR(httpd_start(&server, &hcfg), TAG, "start setup HTTP server");

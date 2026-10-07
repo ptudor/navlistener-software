@@ -10,3 +10,4 @@ typedef int BaseType_t;
 #define pdMS_TO_TICKS(ms) (ms)
 #define portYIELD_FROM_ISR(woken) ((void)(woken))
 #define IRAM_ATTR
+#define pdFAIL 0

@@ -19,13 +19,29 @@ CHECK_H := ../include/netcfg_check.h ../include/netcfg_tunnel.h
 
 TESTS   := netcfg_validate_test netcfg_storage_test netcfg_setup_test \
 	netcfg_reset_setup_test netcfg_form_test netcfg_prov_payload_test \
-	netcfg_tunnel_test
+	netcfg_tunnel_test netcfg_portal_test netcfg_portal_insecure_test
+
+# The portal decoder is built twice from one test source: as shipped (no insecure
+# checkbox) and as a bench build with it, both with the compiled NVF_INSECURE default on
+# to show it never reaches the record.
+PORTAL   := ../src/netcfg_portal.c ../src/netcfg_form.c $(CHECK)
+PORTAL_H := ../include/netcfg_portal.h ../include/netcfg_form.h $(CHECK_H)
+PORTAL_FLAGS := -DCONFIG_NVF_WIREGUARD=1 -DCONFIG_NVF_INSECURE=1 -Imocks -I../include
 
 .PHONY: all run clean
 all: run
 
 run: $(addprefix $(BUILD)/,$(TESTS))
 	@set -e; for t in $(addprefix $(BUILD)/,$(TESTS)); do echo "==> $$t"; ./$$t; done
+	python3 ../../../tools/test_provisioning_label.py
+
+$(BUILD)/netcfg_portal_test: netcfg_portal_test.c $(PORTAL) $(PORTAL_H) $(wildcard mocks/*.h mocks/sys/*.h)
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) $(PORTAL_FLAGS) -o $@ netcfg_portal_test.c $(PORTAL)
+
+$(BUILD)/netcfg_portal_insecure_test: netcfg_portal_test.c $(PORTAL) $(PORTAL_H) $(wildcard mocks/*.h mocks/sys/*.h)
+	@mkdir -p $(BUILD)
+	$(CC) $(CFLAGS) $(PORTAL_FLAGS) -DCONFIG_NVF_ALLOW_INSECURE_PORTAL=1 -o $@ netcfg_portal_test.c $(PORTAL)
 
 $(BUILD)/netcfg_storage_test: netcfg_storage_test.c ../src/netcfg_storage.c $(CHECK) ../include/netcfg.h $(CHECK_H) $(wildcard mocks/*.h mocks/sys/*.h)
 	@mkdir -p $(BUILD)

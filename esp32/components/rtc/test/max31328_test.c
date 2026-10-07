@@ -8,6 +8,7 @@ typedef struct {
     uint8_t regs[0x13];
     bool osf_read_only, frozen;
     unsigned operations, fail_at, writes, elapsed_ms;
+    int64_t clock_ms; // the simulated monotonic clock every delay advances
 } chip_t;
 static bool chip_read(void *ctx, uint8_t reg, uint8_t *out, size_t length)
 {
@@ -22,6 +23,7 @@ static bool chip_write(void *ctx, uint8_t reg, const uint8_t *data, size_t lengt
     chip_t *c = ctx;
     assert(reg + length <= sizeof c->regs);
     c->writes++;
+    if (reg == 0) c->elapsed_ms = 0; // writing the seconds restarts the countdown chain
     for (size_t i = 0; i < length; i++) {
         uint8_t at = reg + i, value = data[i];
         if (at == MAX31328_STATUS) {
@@ -38,6 +40,7 @@ static bool chip_write(void *ctx, uint8_t reg, const uint8_t *data, size_t lengt
 static void chip_delay(void *ctx, unsigned ms)
 {
     chip_t *c = ctx; int64_t epoch;
+    c->clock_ms += ms;
     if (c->frozen || (c->regs[MAX31328_CONTROL] & MAX31328_EOSC) || !max31328_decode(c->regs, &epoch)) return;
     c->elapsed_ms += ms;
     if (c->elapsed_ms >= 1000) {
@@ -45,6 +48,7 @@ static void chip_delay(void *ctx, unsigned ms)
         c->elapsed_ms %= 1000;
     }
 }
+static int64_t chip_now(void *ctx) { return ((chip_t *)ctx)->clock_ms; }
 static rtc_io_t chip_io(chip_t *c)
 {
     memset(c, 0, sizeof *c);
@@ -55,8 +59,11 @@ static rtc_io_t chip_io(chip_t *c)
     c->regs[MAX31328_CONTROL] = 0x1c;
     c->regs[MAX31328_STATUS] = MAX31328_OSF | MAX31328_EN32KHZ | MAX31328_A1F;
     c->regs[MAX31328_AGING] = 0xf3;
-    return (rtc_io_t){.ctx = c, .read = chip_read, .write = chip_write, .delay = chip_delay};
+    return (rtc_io_t){.ctx = c, .read = chip_read, .write = chip_write, .delay = chip_delay, .now_ms = chip_now};
 }
+// A qualified UTC (milliseconds) as of the chip's clock now.
+static rtc_time_ref_t utc_at(const chip_t *c, int64_t utc_ms)
+{ return (rtc_time_ref_t){.utc_ns = utc_ms * 1000000, .sampled_ms = c->clock_ms}; }
 
 static void calendar_test(void)
 {
@@ -84,35 +91,43 @@ static void calendar_test(void)
 
 static void set_test(void)
 {
-    chip_t c; rtc_io_t io = chip_io(&c); int64_t epoch;
-    assert(max31328_set_verified(&io, 1704067200) == MAX31328_SET_OK);
+    chip_t c; rtc_io_t io = chip_io(&c); int64_t epoch, written = 0;
+    rtc_time_ref_t ref = utc_at(&c, 1704067200300); // 0.3 s into the second
+    assert(max31328_set_verified(&io, &ref, &written) == MAX31328_SET_OK && written == 1704067200);
     unsigned operations = c.operations;
     assert(!(c.regs[MAX31328_STATUS] & MAX31328_OSF) && (c.regs[MAX31328_STATUS] & MAX31328_A1F));
     assert(max31328_running(c.regs, c.regs[MAX31328_CONTROL], c.regs[MAX31328_STATUS], &epoch) &&
            epoch == 1704067201);
     assert(c.regs[MAX31328_AGING] == 0xf3 && c.regs[MAX31328_CONTROL] == 0x1c);
+    // Past the half second the next second is loaded, so the clock is within half a second
+    // of UTC either way.
+    io = chip_io(&c); ref = utc_at(&c, 1704067200700);
+    assert(max31328_set_verified(&io, &ref, &written) == MAX31328_SET_OK && written == 1704067201);
+    assert(max31328_running(c.regs, c.regs[MAX31328_CONTROL], c.regs[MAX31328_STATUS], &epoch) &&
+           epoch == 1704067202);
     // The oscillator is re-enabled for battery operation.
-    io = chip_io(&c); c.regs[MAX31328_CONTROL] |= MAX31328_EOSC;
-    assert(max31328_set_verified(&io, 1704067200) == MAX31328_SET_OK && !(c.regs[MAX31328_CONTROL] & MAX31328_EOSC));
+    io = chip_io(&c); c.regs[MAX31328_CONTROL] |= MAX31328_EOSC; ref = utc_at(&c, 1704067200300);
+    assert(max31328_set_verified(&io, &ref, NULL) == MAX31328_SET_OK && !(c.regs[MAX31328_CONTROL] & MAX31328_EOSC));
     // A datasheet-literal read-only OSF: reported, and the calendar is left invalid.
-    io = chip_io(&c); c.osf_read_only = true;
-    assert(max31328_set_verified(&io, 1704067200) == MAX31328_SET_OSF_STUCK && !max31328_decode(c.regs, &epoch));
-    io = chip_io(&c); c.frozen = true;
-    assert(max31328_set_verified(&io, 1704067200) == MAX31328_SET_UNVERIFIED && !max31328_decode(c.regs, &epoch));
-    io = chip_io(&c);
-    assert(max31328_set_verified(&io, 0) == MAX31328_SET_UNVERIFIED && c.writes == 0);
+    io = chip_io(&c); c.osf_read_only = true; ref = utc_at(&c, 1704067200300);
+    assert(max31328_set_verified(&io, &ref, NULL) == MAX31328_SET_OSF_STUCK && !max31328_decode(c.regs, &epoch));
+    io = chip_io(&c); c.frozen = true; ref = utc_at(&c, 1704067200300);
+    assert(max31328_set_verified(&io, &ref, NULL) == MAX31328_SET_UNVERIFIED && !max31328_decode(c.regs, &epoch));
+    io = chip_io(&c); ref = utc_at(&c, 0);
+    assert(max31328_set_verified(&io, &ref, NULL) == MAX31328_SET_UNVERIFIED && c.writes == 0);
     // A fault at any transfer never reports success.
     for (unsigned fail = 1; fail <= operations; fail++) {
-        io = chip_io(&c); c.fail_at = fail;
-        assert(max31328_set_verified(&io, 1704067200) != MAX31328_SET_OK);
+        io = chip_io(&c); c.fail_at = fail; ref = utc_at(&c, 1704067200300);
+        assert(max31328_set_verified(&io, &ref, NULL) != MAX31328_SET_OK);
     }
 }
 
 static void square_test(void)
 {
     chip_t c; rtc_io_t io = chip_io(&c); uint8_t control, aging;
+    rtc_time_ref_t ref = utc_at(&c, 1704067200300);
     assert(max31328_square_wave(&io, &control, &aging) == 2 && c.writes == 0); // OSF set at power-on
-    assert(max31328_set_verified(&io, 1704067200) == MAX31328_SET_OK);
+    assert(max31328_set_verified(&io, &ref, NULL) == MAX31328_SET_OK);
     c.regs[MAX31328_STATUS] |= MAX31328_A2F;
     unsigned writes = c.writes;
     assert(max31328_square_wave(&io, &control, &aging) == 1 && control == 0 && aging == 0xf3);
@@ -122,8 +137,8 @@ static void square_test(void)
     c.regs[MAX31328_CONTROL] = MAX31328_INTCN | MAX31328_A1IE; // someone else's alarm
     assert(max31328_square_wave(&io, &control, &aging) == 3 && c.regs[MAX31328_CONTROL] == (MAX31328_INTCN | MAX31328_A1IE));
     for (unsigned fail = 1; fail <= 5; fail++) {
-        io = chip_io(&c);
-        assert(max31328_set_verified(&io, 1704067200) == MAX31328_SET_OK);
+        io = chip_io(&c); ref = utc_at(&c, 1704067200300);
+        assert(max31328_set_verified(&io, &ref, NULL) == MAX31328_SET_OK);
         c.operations = 0; c.fail_at = fail;
         assert(max31328_square_wave(&io, &control, &aging) == 4);
     }

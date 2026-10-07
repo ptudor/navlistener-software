@@ -25,6 +25,52 @@ static esp_err_t header(esp_http_client_event_t *event) {
        strcasecmp(event->header_value,"identity"))*(bool*)event->user_data=true;
     return ESP_OK;
 }
+
+// One attempt is bounded two ways. NVF_OTA_STALL_US without a byte declares the link dead
+// (the pusher's OP_DEADLINE_S): the socket's own 10 s timeout delivering nothing is waited
+// out until then rather than failing the attempt. NVF_OTA_TRANSFER_US caps the whole
+// restart-from-zero transfer however slowly it keeps progressing, so a 4 MiB artifact needs
+// about 2.4 KB/s (19 kbit/s) sustained. Time the progress callback spends yielding to
+// collection under spool pressure counts against neither (SOFTWARE-UPDATES.md, download).
+#define NVF_OTA_STALL_US    (30LL * 1000000)
+#define NVF_OTA_TRANSFER_US (30LL * 60 * 1000000)
+typedef struct { int64_t stall, transfer; } ota_deadlines;
+static void deadlines_start(ota_deadlines *d)
+{
+    int64_t now = esp_timer_get_time();
+    d->stall = now + NVF_OTA_STALL_US;
+    d->transfer = now + NVF_OTA_TRANSFER_US;
+}
+static bool deadlines_passed(const ota_deadlines *d)
+{
+    int64_t now = esp_timer_get_time();
+    return now > d->stall || now > d->transfer;
+}
+// yield_to_collection runs the progress callback; its back-pressure pause is not transfer time.
+static bool yield_to_collection(nvf_ota_progress_fn progress, void *context, size_t received,
+                                size_t total, ota_deadlines *d)
+{
+    if (!progress) return true;
+    int64_t started = esp_timer_get_time();
+    bool ok = progress(received, total, context);
+    int64_t spent = esp_timer_get_time() - started;
+    d->stall += spent;
+    d->transfer += spent;
+    return ok;
+}
+// read_body reads up to wanted bytes. A socket timeout that delivered nothing is retried
+// until the stall deadline. Returns the count, 0 when the connection ended before the body
+// did, -1 on a transport error and -2 when a deadline passed.
+static int read_body(esp_http_client_handle_t client, uint8_t *out, size_t wanted, ota_deadlines *d)
+{
+    for (;;) {
+        if (deadlines_passed(d)) return -2;
+        int got = esp_http_client_read(client, (char *)out, (int)wanted);
+        if (got == -ESP_ERR_HTTP_EAGAIN) continue;
+        if (got > 0) d->stall = esp_timer_get_time() + NVF_OTA_STALL_US;
+        return got < 0 ? -1 : got;
+    }
+}
 static esp_err_t download_once(const nvf_ota_request_t *request, const char *url, bool *retry,
                               bool stage_only,nvf_ota_progress_fn progress,void *context)
 {
@@ -45,7 +91,8 @@ static esp_err_t download_once(const nvf_ota_request_t *request, const char *url
         .transport_type = HTTP_TRANSPORT_OVER_SSL, .disable_auto_redirect = true,
         .timeout_ms = 10000, .buffer_size = 4096,
     };
-    int64_t deadline = esp_timer_get_time() + 180000000;
+    ota_deadlines deadlines;
+    deadlines_start(&deadlines);
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) return ESP_ERR_NO_MEM;
     esp_http_client_set_header(client,"Accept-Encoding","identity");
@@ -61,8 +108,8 @@ static esp_err_t download_once(const nvf_ota_request_t *request, const char *url
     }
     size_t prefix = 0;
     while (prefix < NVF_OTA_PREFIX_SIZE) {
-        if (esp_timer_get_time() > deadline) { *retry = true; err = ESP_ERR_TIMEOUT; goto done; }
-        int n = esp_http_client_read(client, (char *)buffer + prefix, NVF_OTA_PREFIX_SIZE - prefix);
+        int n = read_body(client, buffer + prefix, NVF_OTA_PREFIX_SIZE - prefix, &deadlines);
+        if (n == -2) { *retry = true; err = ESP_ERR_TIMEOUT; goto done; }
         if (n <= 0) { *retry = true; err = ESP_ERR_INVALID_RESPONSE; goto done; }
         prefix += n;
     }
@@ -77,16 +124,16 @@ static esp_err_t download_once(const nvf_ota_request_t *request, const char *url
     int64_t received = 0;
     size_t n = prefix;
     for (;;) {
-        if (progress && !progress(received, length, context)) { err = ESP_ERR_INVALID_STATE; goto done; }
-        if (esp_timer_get_time() > deadline) { *retry = true; err = ESP_ERR_TIMEOUT; goto done; }
+        if (!yield_to_collection(progress, context, received, length, &deadlines)) { err = ESP_ERR_INVALID_STATE; goto done; }
+        if (deadlines_passed(&deadlines)) { *retry = true; err = ESP_ERR_TIMEOUT; goto done; }
         if (mbedtls_sha256_update(&sha, buffer, n)) { err = ESP_FAIL; goto done; }
         err = esp_ota_write(handle, buffer, n);
         if (err != ESP_OK) goto done;
         received += n;
         if (received == length) break;
-        if (esp_timer_get_time() > deadline) { *retry = true; err = ESP_ERR_TIMEOUT; goto done; }
         size_t wanted = length - received > 4096 ? 4096 : (size_t)(length - received);
-        int got = esp_http_client_read(client, (char *)buffer, wanted);
+        int got = read_body(client, buffer, wanted, &deadlines);
+        if (got == -2) { *retry = true; err = ESP_ERR_TIMEOUT; goto done; }
         if (got <= 0) { *retry = true; err = ESP_ERR_INVALID_RESPONSE; goto done; }
         n = got;
     }
@@ -97,7 +144,7 @@ static esp_err_t download_once(const nvf_ota_request_t *request, const char *url
     }
     err = esp_ota_end(handle); handle = 0; // end frees its handle even on failure
     if (err != ESP_OK) goto done;
-    if (progress && !progress(received, length, context)) { err = ESP_ERR_INVALID_STATE; goto done; }
+    if (!yield_to_collection(progress, context, received, length, &deadlines)) { err = ESP_ERR_INVALID_STATE; goto done; }
     if (stage_only) goto done;
     // Allow an advancing collector to drain the pre-reboot backlog. This is
     // bounded best effort: both RAM tiers are volatile and new records continue.

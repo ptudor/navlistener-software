@@ -81,14 +81,14 @@ static esp_lcd_panel_handle_t    s_panel = NULL;
 static esp_lcd_panel_io_handle_t s_io = NULL;
 static bool s_ready = false;
 // signaled by on_color_trans_done whenever any esp_lcd_panel_draw_bitmap() transfer
-// finishes (framebuffer path included). The fallback (direct-draw) path drains any stale
-// signal before issuing its own draw_bitmap and then blocks on this until ITS transfer
-// completes, before freeing the DMA buffer it just handed to the panel -- draw_bitmap
+// finishes. Both paths drain any stale signal before issuing their draw_bitmap and then
+// block on this until THAT transfer completes: the fallback (direct-draw) path before
+// freeing or reusing the DMA buffer it handed to the panel, display_flush before returning,
+// so the next render never writes s_fb while the DMA engine still reads it -- draw_bitmap
 // queues async SPI/DMA transactions (trans_queue_depth 10) and returns before they've
-// necessarily finished, so freeing right after issuing one races the in-flight DMA read.
-// Safe because display_* calls are only ever made serially from one render task (never
-// concurrently), so there is no other source of a draw_bitmap in flight to confuse the
-// drain-then-wait pairing.
+// necessarily finished. Safe because display_* calls are only ever made serially from one
+// render task (never concurrently), so there is no other source of a draw_bitmap in flight
+// to confuse the drain-then-wait pairing.
 static SemaphoreHandle_t s_trans_sem = NULL;
 // Full-frame off-screen buffer (320x172 RGB565). The dashboard is rendered into this and
 // pushed in one esp_lcd_panel_draw_bitmap, so text is never corrupted by per-glyph DMA-buffer
@@ -115,8 +115,7 @@ static bool trans_done_cb(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_d
 // fully completed. Call immediately after issuing exactly one draw_bitmap and
 // before touching/freeing the buffer it was given. drain_stale_trans_signal must be called
 // first, immediately before that draw_bitmap call, to clear any leftover signal from an
-// earlier, unrelated transfer (e.g. the framebuffer path's display_flush(), which never
-// waits on this semaphore itself).
+// earlier, unrelated transfer.
 static void drain_stale_trans_signal(void) { xSemaphoreTake(s_trans_sem, 0); }
 static void wait_trans_done(void) { xSemaphoreTake(s_trans_sem, portMAX_DELAY); }
 
@@ -267,11 +266,15 @@ static void fill_rect(int x, int y, int w, int h, uint16_t color)
 void display_clear(uint16_t color) { fill_rect(0, 0, LCD_H_RES, LCD_V_RES, color); }
 
 // display_flush pushes the whole framebuffer to the panel in one transaction (no-op in the
-// direct-draw fallback). Call once per complete screen update, never per glyph.
+// direct-draw fallback) and returns once the panel has taken it: the next render writes
+// s_fb, and the DMA engine reads it until on_color_trans_done. Call once per complete screen
+// update, never per glyph.
 static void display_flush(void)
 {
     if (s_ready && s_fb) {
+        drain_stale_trans_signal();
         esp_lcd_panel_draw_bitmap(s_panel, 0, 0, LCD_H_RES, LCD_V_RES, s_fb);
+        wait_trans_done();
     }
 }
 
@@ -310,7 +313,10 @@ void display_text(int x, int y, const char *s, uint16_t fg, uint16_t bg, int sca
         return;
     }
 
-    // Fallback: per-glyph draw straight to the panel via a reused DMA cell.
+    // Fallback: per-glyph draw straight to the panel via a reused DMA cell, clipped to the
+    // panel's rows (the framebuffer path clips per pixel; here whole rows are sent).
+    int row0 = y < 0 ? -y : 0, row1 = y + glyph > LCD_V_RES ? LCD_V_RES - y : glyph;
+    if (row1 <= row0) return;
     uint16_t *cell = heap_caps_malloc((size_t)glyph * glyph * sizeof(uint16_t), MALLOC_CAP_DMA);
     if (!cell) return;
 
@@ -333,11 +339,12 @@ void display_text(int x, int y, const char *s, uint16_t fg, uint16_t bg, int sca
         int w = glyph;
         if (cx + w > LCD_H_RES) w = LCD_H_RES - cx;
         if (w == glyph) {
+            // Full-width rows are contiguous in the cell, so the visible rows go in one transfer.
             drain_stale_trans_signal(); // regression fix
-            esp_lcd_panel_draw_bitmap(s_panel, cx, y, cx + glyph, y + glyph, cell);
+            esp_lcd_panel_draw_bitmap(s_panel, cx, y + row0, cx + glyph, y + row1, &cell[row0 * glyph]);
             wait_trans_done(); // must complete before the next glyph overwrites cell
         } else {
-            for (int gy = 0; gy < glyph; gy++) {
+            for (int gy = row0; gy < row1; gy++) {
                 drain_stale_trans_signal(); // regression fix
                 esp_lcd_panel_draw_bitmap(s_panel, cx, y + gy, cx + w, y + gy + 1, &cell[gy * glyph]);
                 wait_trans_done(); // same reasoning, per clipped row

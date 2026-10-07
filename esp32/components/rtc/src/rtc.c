@@ -3,6 +3,7 @@
 #include "rtc_io.h"
 #include "rtc_max31328.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -22,6 +23,9 @@ void observer_rtc_select(observer_rtc_part_t selected) { part = selected; }
 static bool read_registers(void *ctx, uint8_t reg, uint8_t *out, size_t length)
 { return i2c_master_transmit_receive(ctx, &reg, 1, out, length, 100) == ESP_OK; }
 static void delay_ms(void *ctx, unsigned ms) { (void)ctx; vTaskDelay(pdMS_TO_TICKS(ms)); }
+// The clock the board task samples the receiver on (receiver.c), so a candidate's
+// reference projects onto it.
+static int64_t now_ms(void *ctx) { (void)ctx; return esp_timer_get_time() / 1000; }
 static bool attach(i2c_master_bus_handle_t bus, uint8_t address, int64_t now)
 {
     if (dev) return true;
@@ -61,7 +65,7 @@ static void mcp79412_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss
     next_poll = now + 1000;
     if (!attach(bus, 0x6f, now)) return;
     rtc_io_t io = {.ctx = dev, .read = read_registers, .write = mcp79412_write_registers,
-        .delay = delay_ms, .save_power_failure = save_power_failure};
+        .delay = delay_ms, .now_ms = now_ms, .save_power_failure = save_power_failure};
     unsigned previous_square=square_state;
     square_state=rtc_square_wave(&io,&square_control,&square_trim);
     if (square_state != previous_square)
@@ -93,12 +97,14 @@ static void mcp79412_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss
     // A subsequent oscillator failure is also recoverable, but never from a
     // guessed build date or an unqualified receiver calendar.
     if (!rtc_gnss_candidate(&candidate, gnss, now, &epoch)) return;
-    if (rtc_set_verified(&io, epoch)) {
+    const rtc_time_ref_t reference = rtc_candidate_ref(&candidate);
+    int64_t written = 0;
+    if (rtc_set_verified(&io, &reference, &written)) {
         retry_initialization = false; report_state = RUNNING;
         // The verified write advanced through a second boundary; obtain the actual calendar next poll.
         telemetry = (report_rtc_t){.sampled_ms = now};
         ESP_LOGI(TAG, "initialized from GNSS UTC (epoch=%lld); oscillator advancing, backup enabled; battery presence unverified",
-                 (long long)epoch);
+                 (long long)written);
     } else {
         retry_initialization = true;
         ESP_LOGE(TAG, "RTC initialization/readback failed; time unconfirmed");
@@ -123,7 +129,8 @@ static void max31328_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss
     if (now < MAX31328_RECOVERY_MS) return;
     next_poll = now + 1000;
     if (!attach(bus, MAX31328_ADDRESS, now)) return;
-    rtc_io_t io = {.ctx = dev, .read = read_registers, .write = max31328_write_registers, .delay = delay_ms};
+    rtc_io_t io = {.ctx = dev, .read = read_registers, .write = max31328_write_registers,
+        .delay = delay_ms, .now_ms = now_ms};
     unsigned previous_square = square_state;
     square_state = max31328_square_wave(&io, &square_control, &square_trim);
     if (square_state != previous_square)
@@ -153,12 +160,14 @@ static void max31328_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss
                  state[1] & MAX31328_OSF ? "set: power was lost or the switch to the backup cell failed" : "clear");
     report_state = WAITING;
     if (!rtc_gnss_candidate(&candidate, gnss, now, &epoch)) return;
-    switch (max31328_set_verified(&io, epoch)) {
+    const rtc_time_ref_t reference = rtc_candidate_ref(&candidate);
+    int64_t written = 0;
+    switch (max31328_set_verified(&io, &reference, &written)) {
     case MAX31328_SET_OK:
         report_state = RUNNING;
         telemetry = (report_rtc_t){.sampled_ms = now};
         ESP_LOGI(TAG, "MAX31328 set from GNSS UTC (epoch=%lld); oscillator-stop flag cleared and advancing",
-                 (long long)epoch);
+                 (long long)written);
         break;
     case MAX31328_SET_OSF_STUCK:
         // The flag would not clear, so this part can never show valid time. Stop

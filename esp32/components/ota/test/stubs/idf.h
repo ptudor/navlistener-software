@@ -13,6 +13,8 @@
 #define ESP_ERR_INVALID_RESPONSE 5
 #define ESP_ERR_INVALID_VERSION 6
 #define ESP_ERR_INVALID_CRC 7
+#define ESP_ERR_HTTP_BASE 0x7000
+#define ESP_ERR_HTTP_EAGAIN (ESP_ERR_HTTP_BASE + 7) // esp_http_client_read returns its negative on a timeout with no data
 #define ESP_PARTITION_TYPE_APP 0
 #define ESP_PARTITION_SUBTYPE_APP_OTA_0 16
 #define ESP_PARTITION_SUBTYPE_APP_OTA_1 17

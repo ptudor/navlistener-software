@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 
-from production_profile import OPEN_REQUIRED, REQUIRED, verify
+from production_profile import FORBIDDEN, OPEN_REQUIRED, PROFILE_DEFAULTS, REQUIRED, check_defaults, settings, verify
 
 TOOLS = Path(__file__).resolve().parent
 
@@ -29,8 +29,10 @@ class ProfileTests(unittest.TestCase):
 
     def test_open_release_cannot_lock_a_chip_or_carry_test_trust(self):
         with tempfile.TemporaryDirectory() as temporary:
+            # The setup-password reprint is a development aid; a fielded open board prints
+            # its label only on the boot that creates it, like a trusted one.
             for setting in ("CONFIG_SECURE_BOOT", "CONFIG_SECURE_FLASH_ENC_ENABLED", "CONFIG_NVF_UPDATE_TEST_KEYS",
-                            "CONFIG_NVF_MANIFEST_FACTORY_INIT", "CONFIG_NVF_INSECURE"):
+                            "CONFIG_NVF_MANIFEST_FACTORY_INIT", "CONFIG_NVF_INSECURE", "CONFIG_NVF_SETUP_CONSOLE_PASSWORD"):
                 with self.assertRaisesRegex(ValueError, setting):
                     verify(sdkconfig(temporary, {**OPEN_REQUIRED, setting: "y"}), "open")
             with self.assertRaisesRegex(ValueError, "CONFIG_SECURE_BOOT_SIGNING_KEY"):
@@ -58,6 +60,49 @@ class ProfileTests(unittest.TestCase):
             for setting in ("CONFIG_NVF_UPDATE_PROFILE_OPEN", "CONFIG_NVF_UPDATE_TEST_KEYS"):
                 with self.assertRaisesRegex(ValueError, setting):
                     verify(sdkconfig(temporary, {**REQUIRED, setting: "y"}))
+
+    def test_profile_defaults_must_reach_the_generated_configuration(self):
+        # Kconfig ignores a symbol it does not know, so a misspelled pin in a defaults file
+        # is silent: the generated sdkconfig neither sets nor unsets it. The check reads the
+        # build's menu tree, so a declared-but-hidden symbol (pinned to no effect) passes while
+        # an unknown one fails, and a pin the build overrode fails on its value.
+        with tempfile.TemporaryDirectory() as temporary:
+            build = Path(temporary)
+            (build / "config").mkdir()
+            menus = build / "config" / "kconfig_menus.json"
+            menus.write_text(json.dumps([
+                {"name": "SECURE_BOOT", "type": "bool", "children": []},
+                {"name": "SECURE_BOOT_ENABLE_AGGRESSIVE_KEY_REVOKE", "type": "bool", "children": []},
+                {"name": None, "type": "menu", "children": [
+                    {"name": "NVF_SETUP_CONSOLE_PASSWORD", "type": "bool", "children": []}]}]))
+            generated = sdkconfig(temporary, {"CONFIG_SECURE_BOOT": "y"})
+            generated.write_text(generated.read_text() + "# CONFIG_SECURE_BOOT_ENABLE_AGGRESSIVE_KEY_REVOKE is not set\n")
+            defaults = build / "sdkconfig.defaults.production"
+            # NVF_SETUP_CONSOLE_PASSWORD depends on !SECURE_BOOT, so a locked build hides it.
+            defaults.write_text("CONFIG_SECURE_BOOT=y\nCONFIG_SECURE_BOOT_ENABLE_AGGRESSIVE_KEY_REVOKE=n\n"
+                                "CONFIG_NVF_SETUP_CONSOLE_PASSWORD=n\n")
+            check_defaults(generated, defaults)
+            defaults.write_text("CONFIG_SECURE_BOOT=y\nCONFIG_SECURE_BOOT_V2_AGGRESSIVE_KEY_REVOKE=n\n")
+            with self.assertRaisesRegex(ValueError, "CONFIG_SECURE_BOOT_V2_AGGRESSIVE_KEY_REVOKE is not a symbol"):
+                check_defaults(generated, defaults)
+            defaults.write_text("CONFIG_SECURE_BOOT=y\nCONFIG_SECURE_BOOT_ENABLE_AGGRESSIVE_KEY_REVOKE=y\n")
+            with self.assertRaisesRegex(ValueError, "CONFIG_SECURE_BOOT_ENABLE_AGGRESSIVE_KEY_REVOKE is n, pinned to y"):
+                check_defaults(generated, defaults)
+            # Without the menu tree nothing can vouch for an absent symbol, so it is refused.
+            menus.unlink()
+            defaults.write_text("CONFIG_SECURE_BOOT=y\nCONFIG_NVF_SETUP_CONSOLE_PASSWORD=n\n")
+            with self.assertRaisesRegex(ValueError, "CONFIG_NVF_SETUP_CONSOLE_PASSWORD is not in the generated sdkconfig"):
+                check_defaults(generated, defaults)
+
+    def test_checked_in_profiles_pin_real_symbols(self):
+        # The symbol that disables automatic key revocation is SECURE_BOOT_ENABLE_AGGRESSIVE_KEY_REVOKE
+        # in ESP-IDF's bootloader Kconfig; the earlier spelling pinned nothing.
+        production = settings(TOOLS.parent / PROFILE_DEFAULTS["trusted"])
+        self.assertEqual(production.get("CONFIG_SECURE_BOOT_ENABLE_AGGRESSIVE_KEY_REVOKE"), "n")
+        self.assertIn("CONFIG_SECURE_BOOT_ENABLE_AGGRESSIVE_KEY_REVOKE", FORBIDDEN)
+        for name in PROFILE_DEFAULTS.values():
+            self.assertNotIn("CONFIG_SECURE_BOOT_V2_AGGRESSIVE_KEY_REVOKE", settings(TOOLS.parent / name))
+        self.assertNotIn("CONFIG_SECURE_BOOT_V2_AGGRESSIVE_KEY_REVOKE", FORBIDDEN)
 
 
 class EmbeddedRootTests(unittest.TestCase):

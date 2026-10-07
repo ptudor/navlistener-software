@@ -134,6 +134,13 @@ static void trusted_utc_test(void)
 typedef struct {
     uint8_t regs[32], saved_calendar[7], saved_stamps[8];
     unsigned operations, fail_at, writes, elapsed_ms;
+    int64_t clock_ms; // the simulated monotonic clock every delay advances
+    // OSCRUN follows the oscillator, not the ST bit: a stop shows after stop_latency_ms
+    // (the calendar counting meanwhile), a start after start_latency_ms (nothing counted
+    // until then). Zero is immediate.
+    unsigned stop_latency_ms, start_latency_ms;
+    int64_t pending_until_ms;
+    bool stopping, starting;
     bool stuck_running, stuck_stopped, frozen, corrupt_calendar, saved, save_failed;
 } fake_t;
 static bool fake_read(void *ctx, uint8_t reg, uint8_t *out, size_t length)
@@ -156,9 +163,16 @@ static bool fake_write(void *ctx, uint8_t reg, const uint8_t *data, size_t lengt
     memcpy(f->regs + reg, data, length);
     if (reg <= 3 && reg + length > 3) f->regs[3] &= ~0x10;
     f->regs[3] = (f->regs[3] & ~0x20) | running;
-    if (f->stuck_running || (!f->stuck_stopped && ((f->regs[0] & 0x80) || (f->regs[7] & 8))))
-        f->regs[3] |= 0x20;
-    else f->regs[3] &= ~0x20;
+    bool wants = f->stuck_running || (!f->stuck_stopped && ((f->regs[0] & 0x80) || (f->regs[7] & 8)));
+    if (wants && !running && f->start_latency_ms) {
+        f->starting = true; f->stopping = false; f->pending_until_ms = f->clock_ms + f->start_latency_ms;
+    } else if (!wants && running && f->stop_latency_ms) {
+        f->stopping = true; f->starting = false; f->pending_until_ms = f->clock_ms + f->stop_latency_ms;
+    } else {
+        f->starting = f->stopping = false;
+        if (wants && !running) f->elapsed_ms = 0; // the divider chain starts from zero phase
+        if (wants) f->regs[3] |= 0x20; else f->regs[3] &= ~0x20;
+    }
     if (reg == 0 && length == 7 && f->corrupt_calendar) f->regs[4] = 0;
     if (++f->operations == f->fail_at) return false;
     return true;
@@ -166,16 +180,35 @@ static bool fake_write(void *ctx, uint8_t reg, const uint8_t *data, size_t lengt
 static void fake_delay(void *ctx, unsigned ms)
 {
     fake_t *f = ctx; int64_t epoch;
-    if (!(f->regs[3] & 0x20) || f->frozen || !rtc_decode(f->regs, &epoch)) return;
-    f->elapsed_ms += ms;
-    unsigned seconds = f->elapsed_ms / 1000;
-    f->elapsed_ms %= 1000;
-    if (seconds) {
-        uint8_t power_fail = f->regs[3] & 0x10;
-        assert(rtc_encode(epoch + seconds, f->regs));
-        f->regs[3] |= power_fail;
-        f->regs[0] |= 0x80; f->regs[3] |= 0x20;
+    f->clock_ms += ms;
+    if ((f->regs[3] & 0x20) && !f->frozen && rtc_decode(f->regs, &epoch)) {
+        f->elapsed_ms += ms;
+        unsigned seconds = f->elapsed_ms / 1000;
+        f->elapsed_ms %= 1000;
+        if (seconds) {
+            uint8_t power_fail = f->regs[3] & 0x10;
+            assert(rtc_encode(epoch + seconds, f->regs));
+            f->regs[3] |= power_fail;
+            f->regs[0] |= 0x80; f->regs[3] |= 0x20;
+        }
     }
+    if ((f->stopping || f->starting) && f->clock_ms >= f->pending_until_ms) {
+        if (f->starting) { f->regs[3] |= 0x20; f->elapsed_ms = 0; }
+        else f->regs[3] &= ~0x20;
+        f->stopping = f->starting = false;
+    }
+}
+static int64_t fake_now(void *ctx) { return ((fake_t *)ctx)->clock_ms; }
+// A qualified UTC (milliseconds) as of the fake's clock now.
+static rtc_time_ref_t utc_at(const fake_t *f, int64_t utc_ms)
+{ return (rtc_time_ref_t){.utc_ns = utc_ms * 1000000, .sampled_ms = f->clock_ms}; }
+// The running calendar against simulated UTC now: within a second either way.
+static bool within_second(const fake_t *f, const rtc_time_ref_t *ref)
+{
+    int64_t epoch;
+    if (!rtc_running(f->regs, &epoch)) return false;
+    int64_t diff_ms = epoch * 1000 - (ref->utc_ns / 1000000 + (f->clock_ms - ref->sampled_ms));
+    return diff_ms >= -1000 && diff_ms <= 1000;
 }
 static bool fake_save(void *ctx, const uint8_t calendar[7], const uint8_t stamps[8])
 {
@@ -192,41 +225,59 @@ static rtc_io_t fake_io(fake_t *f)
     f->regs[3] = 0x10; // preserve power-fail flag
     f->regs[7] = 0xb7; // preserve unrelated CONTROL bits
     return (rtc_io_t){.ctx=f, .read=fake_read, .write=fake_write, .delay=fake_delay,
-        .save_power_failure=fake_save};
+        .now_ms=fake_now, .save_power_failure=fake_save};
 }
 static void io_test(void)
 {
-    fake_t f; rtc_io_t io = fake_io(&f); int64_t epoch;
-    assert(rtc_set_verified(&io, 1704067200));
+    fake_t f; rtc_io_t io = fake_io(&f); int64_t epoch, written = 0;
+    rtc_time_ref_t ref = utc_at(&f, 1704067200300); // 0.3 s into the second
+    assert(rtc_set_verified(&io, &ref, &written) && written == 1704067200);
     unsigned operations = f.operations;
-    assert(rtc_running(f.regs, &epoch) && epoch == 1704067201);
+    assert(rtc_running(f.regs, &epoch) && epoch == 1704067201 && within_second(&f, &ref));
     assert((f.regs[3] & 0x18) == 8 && f.regs[7] == 0xb7);
     for (unsigned i = 8; i < 0x18; i++) assert(f.regs[i] == 0xa5);
     assert(f.saved && (f.saved_calendar[3] & 0x10));
     for (unsigned i = 0; i < 8; i++) assert(f.saved_stamps[i] == 0xa5 && f.regs[0x18 + i] == 0);
+    // Past the half second the next second is loaded: the clock leads by less than it
+    // would otherwise lag.
+    io = fake_io(&f); ref = utc_at(&f, 1704067200700);
+    assert(rtc_set_verified(&io, &ref, &written) && written == 1704067201 && within_second(&f, &ref));
+    // A running oscillator that takes 1.5 s to report stopped, the calendar counting on
+    // meanwhile: the second loaded is derived after that wait, so the clock lands within a
+    // second of UTC instead of lagging by the wait.
+    io = fake_io(&f); assert(rtc_encode(1600000000, f.regs)); f.regs[0] |= 0x80; f.regs[3] |= 0x20;
+    f.stop_latency_ms = 1500; ref = utc_at(&f, 1704067200300);
+    assert(rtc_set_verified(&io, &ref, &written) && written == 1704067202 && within_second(&f, &ref));
+    // A crystal slow to start cannot be compensated for by any ordering, so that lag is
+    // reported rather than accepted: 0.4 s is within tolerance, 2 s fails and stops the clock.
+    io = fake_io(&f); f.start_latency_ms = 400; ref = utc_at(&f, 1704067200300);
+    assert(rtc_set_verified(&io, &ref, &written) && within_second(&f, &ref));
+    io = fake_io(&f); f.start_latency_ms = 2000; ref = utc_at(&f, 1704067200300);
+    assert(!rtc_set_verified(&io, &ref, &written) && !(f.regs[0] & 0x80));
     // Fault at every read/write boundary must never report initialization success.
     for (unsigned fail = 1; fail <= operations; fail++) {
-        io = fake_io(&f); f.fail_at = fail;
-        assert(!rtc_set_verified(&io, 1704067200));
+        io = fake_io(&f); f.fail_at = fail; ref = utc_at(&f, 1704067200300);
+        assert(!rtc_set_verified(&io, &ref, NULL));
         assert(!(f.regs[0] & 0x80)); // cleanup stopped an unverified calendar
     }
-    io = fake_io(&f); f.stuck_stopped = true;
-    assert(!rtc_set_verified(&io, 1704067200));
-    io = fake_io(&f); f.stuck_running = true; f.regs[3] |= 0x20;
-    assert(!rtc_set_verified(&io, 1704067200) && f.writes == 3);
-    io = fake_io(&f); f.frozen = true;
-    assert(!rtc_set_verified(&io, 1704067200) && !(f.regs[0] & 0x80));
-    io = fake_io(&f); f.corrupt_calendar = true;
-    assert(!rtc_set_verified(&io, 1704067200));
+    io = fake_io(&f); f.stuck_stopped = true; ref = utc_at(&f, 1704067200300);
+    assert(!rtc_set_verified(&io, &ref, NULL));
+    io = fake_io(&f); f.stuck_running = true; f.regs[3] |= 0x20; ref = utc_at(&f, 1704067200300);
+    assert(!rtc_set_verified(&io, &ref, NULL) && f.writes == 3);
+    io = fake_io(&f); f.frozen = true; ref = utc_at(&f, 1704067200300);
+    assert(!rtc_set_verified(&io, &ref, NULL) && !(f.regs[0] & 0x80));
+    io = fake_io(&f); f.corrupt_calendar = true; ref = utc_at(&f, 1704067200300);
+    assert(!rtc_set_verified(&io, &ref, NULL));
     io = fake_io(&f); f.regs[7] |= 8; f.regs[3] |= 0x20; // unexpected external clock
-    assert(rtc_set_verified(&io, 1704067200) && !(f.regs[7] & 8));
-    io = fake_io(&f);
-    assert(!rtc_set_verified(&io, 0) && f.writes == 0);
-    f.save_failed = true;
-    assert(!rtc_set_verified(&io, 1704067200) && f.writes == 0);
+    ref = utc_at(&f, 1704067200300);
+    assert(rtc_set_verified(&io, &ref, NULL) && !(f.regs[7] & 8));
+    io = fake_io(&f); ref = utc_at(&f, 0);
+    assert(!rtc_set_verified(&io, &ref, NULL) && f.writes == 0);
+    f.save_failed = true; ref = utc_at(&f, 1704067200300);
+    assert(!rtc_set_verified(&io, &ref, NULL) && f.writes == 0);
     assert(!rtc_enable_backup(&io) && f.writes == 0);
     io.save_power_failure = NULL;
-    assert(!rtc_set_verified(&io, 1704067200) && f.writes == 0);
+    assert(!rtc_set_verified(&io, &ref, NULL) && f.writes == 0);
     io = fake_io(&f);
     assert(rtc_encode(1704067200, f.regs));
     f.regs[0] |= 0x80; f.regs[3] = (f.regs[3] | 0x30) & ~8;

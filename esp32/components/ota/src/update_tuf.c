@@ -294,7 +294,7 @@ static int release_info(const metadata *channel,const metadata *manifest,const m
        !number(manifest,manifest->body,"minimum_updater_version",&updater)||!updater||
        !number(manifest,manifest->body,"security_version",&security)||security!=0||
        !profile_marker(manifest,"profile",device->profile)||
-       !expiration(str(manifest,manifest->body,"published"),&out->published)||out->published>device->now||
+       !expiration(str(manifest,manifest->body,"published"),&out->published)||out->published>device->now+NVF_TUF_PUBLISHED_SKEW_S||
        !copy_string(out->version,sizeof out->version,str(manifest,manifest->body,"version"))||
        !sha_text(str(manifest,manifest->body,"sha256"),out->hash)||
        !sha_text(str(manifest,manifest->body,"secure_boot_key_id"),out->boot_key)||

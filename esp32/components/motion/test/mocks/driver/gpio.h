@@ -11,3 +11,4 @@ esp_err_t gpio_config(const gpio_config_t *config);
 esp_err_t gpio_install_isr_service(int flags);
 esp_err_t gpio_set_intr_type(int gpio, int type);
 esp_err_t gpio_isr_handler_add(int gpio, void (*handler)(void *), void *arg);
+esp_err_t gpio_isr_handler_remove(int gpio);
