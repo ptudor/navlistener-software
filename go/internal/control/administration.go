@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/ptudor/navlistener/internal/identity"
@@ -20,6 +21,24 @@ type invalidRequest struct{ error }
 
 func invalid(format string, args ...any) error {
 	return invalidRequest{fmt.Errorf(format, args...)}
+}
+
+// unavailable marks a failure of the control plane's own trust material: a key
+// file, registry or state file it could not read or verify. The operator gets
+// a summary that names the material, never the server path; the detail is in
+// the control plane's log.
+type unavailable struct{ error }
+
+func (s *Service) unavailable(material, reason string, err error) error {
+	s.logger().Error("control plane trust material unavailable", "material", material, "error", err)
+	return unavailable{fmt.Errorf("%s %s; see the control plane log", material, reason)}
+}
+
+func (s *Service) logger() *slog.Logger {
+	if s.Log != nil {
+		return s.Log
+	}
+	return slog.Default()
 }
 
 // PolicyChange restates the operator-controlled policy of one active
@@ -76,6 +95,20 @@ func (s *Service) ChangePolicy(ctx context.Context, operator string, p PolicyCha
 	}
 	if p.Publication.Revision == "" || p.Publication.Revision == revision {
 		return invalid("a policy change requires a policy_revision other than the current %q", revision)
+	}
+	// A revision names one policy interval for the receipts stamped under it.
+	// Reusing one this enrollment has already carried, in its enrollment
+	// snapshot or on either side of an earlier change, would make the stamp
+	// span two intervals, so the service history is the record of what has
+	// been used.
+	var reused bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM navl_service_events WHERE enrollment_id=$1
+ AND (detail->'snapshot'->'Publication'->>'policy_revision'=$2 OR detail->'previous'->'Publication'->>'policy_revision'=$2))`,
+		p.EnrollmentID, p.Publication.Revision).Scan(&reused); err != nil {
+		return err
+	}
+	if reused {
+		return invalid("policy_revision %q has already been used by this enrollment; receipts stamped with it must name one policy interval", p.Publication.Revision)
 	}
 	var c identity.ObserverContext
 	if err := json.Unmarshal(previous, &c); err != nil {

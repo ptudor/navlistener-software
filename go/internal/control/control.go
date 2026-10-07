@@ -17,6 +17,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -38,6 +39,9 @@ type Service struct {
 	Authorities   *authority.Set
 	Manufacturers config.ManufacturerAuthorities
 	Now           func() time.Time
+	// Log receives the detail of failures the API answers only in summary, such
+	// as a key file or registry it could not read; nil selects slog.Default.
+	Log *slog.Logger
 }
 
 // Request is accepted only from an authenticated enrollment operator. Hardware
@@ -87,22 +91,26 @@ func decodeHex(value string, dst []byte) error {
 	return nil
 }
 
+// Validate checks a request without touching the database. A failure the
+// operator can correct is an invalidRequest carrying its reason; trust
+// material of the control plane's own that cannot be read or verified is
+// reported as unavailable with its detail logged, never with its path.
 func (s *Service) Validate(r Request) (Validated, error) {
 	var out Validated
 	if r.ServiceAction != "" && r.ServiceAction != "replace_atecc" {
-		return out, errors.New("unknown service action")
+		return out, invalid("unknown service action")
 	}
 	if (r.ServiceAction == "replace_atecc") != (r.ServiceApproval != "") || (r.ServiceApproval != "" && !identity.ValidScopeID(r.ServiceApproval)) {
-		return out, errors.New("ATECC replacement requires an explicit service approval reference")
+		return out, invalid("ATECC replacement requires an explicit service approval reference")
 	}
 	if r.ServiceAction != "" && (r.ReplaceEnrollmentID == "" || r.ManufacturerAuthorityID == "") {
-		return out, errors.New("ATECC replacement requires a previous hardware enrollment")
+		return out, invalid("ATECC replacement requires a previous hardware enrollment")
 	}
 	if err := s.Authorities.Allows(r.OperationalAuthorityID, r.ManufacturerAuthorityID); err != nil {
-		return out, err
+		return out, invalid("%v", err)
 	}
 	if !identity.ValidScopeID(r.OrganizationID) || !identity.ValidScopeID(r.CollectorInstanceID) {
-		return out, errors.New("organization and collector ids are required")
+		return out, invalid("organization and collector ids are required")
 	}
 	c := identity.NewPrivateContext(r.ObserverID, identity.CredentialToken)
 	c.OperationalAuthorityID, c.ManufacturerAuthorityID = r.OperationalAuthorityID, r.ManufacturerAuthorityID
@@ -110,18 +118,18 @@ func (s *Service) Validate(r Request) (Validated, error) {
 	c.FeedGrants, c.CollectionIDs, c.DeclaredCapabilities, c.Publication = r.FeedGrants, r.CollectionIDs, r.DeclaredCapabilities, r.Publication
 	for _, f := range r.FeedGrants {
 		if f != "ubx" && f != "rtcm" {
-			return out, errors.New("unsupported feed grant")
+			return out, invalid("unsupported feed grant")
 		}
 	}
 	if r.ManufacturerAuthorityID == "" {
 		if r.CoreRecord != "" || r.CommissioningRecord != "" || r.BoardUID != "" || r.BoardUIDKind != "" || r.ATECCSerial != "" || r.Product != 0 || r.Revision != 0 || r.HardwareValidation != "" {
-			return out, errors.New("software enrollment cannot claim hardware evidence")
+			return out, invalid("software enrollment cannot claim hardware evidence")
 		}
 		// A board's name is derived from its factory serial and belongs to that
 		// board. A software station holding it would present as the board and block
 		// the board's own enrollment.
 		if boardid.ReservedObserverID(r.ObserverID) {
-			return out, fmt.Errorf("observer ids beginning %q are reserved for hardware enrollment", boardid.ObserverPrefix)
+			return out, invalid("observer ids beginning %q are reserved for hardware enrollment", boardid.ObserverPrefix)
 		}
 	} else {
 		var h *config.HardwareTrust
@@ -131,75 +139,75 @@ func (s *Service) Validate(r Request) (Validated, error) {
 			}
 		}
 		if h == nil {
-			return out, errors.New("unknown or disabled manufacturer authority")
+			return out, invalid("unknown or disabled manufacturer authority")
 		}
 		if !identity.ValidScopeID(r.HardwareValidation) {
-			return out, errors.New("controlled bench validation reference is required")
+			return out, invalid("controlled bench validation reference is required")
 		}
 		coreID := attestation.HardwareIdentity{Product: r.Product, BoardRevision: r.Revision}
 		uid, err := boardid.Parse(r.BoardUIDKind, r.BoardUID)
 		if err != nil {
-			return out, err
+			return out, invalid("%v", err)
 		}
 		coreID.BoardUID = uid
 		if err := decodeHex(r.ATECCSerial, coreID.ATECCSerial[:]); err != nil {
-			return out, err
+			return out, invalid("atecc_serial: %v", err)
 		}
 		if commissioning.ObserverID(coreID.BoardUID) != r.ObserverID {
-			return out, errors.New("hardware observer id must equal the typed board UID")
+			return out, invalid("hardware observer id must equal the typed board UID")
 		}
 		var core attestation.Record
 		if err := decodeHex(r.CoreRecord, core[:]); err != nil {
-			return out, err
+			return out, invalid("core_record: %v", err)
 		}
 		keys, err := commissioning.LoadKeySet(h.ManufacturerKeys)
 		if err != nil {
-			return out, err
+			return out, s.unavailable("manufacturer keys", "could not be loaded", err)
 		}
 		verified, signer, err := keys.VerifyCore(core, coreID)
 		if err != nil {
-			return out, err
+			return out, invalid("%v", err)
 		}
 		var record commissioning.Record
 		if err := decodeHex(r.CommissioningRecord, record[:]); err != nil {
-			return out, err
+			return out, invalid("commissioning_record: %v", err)
 		}
 		statement, err := keys.Verify(record)
 		if err != nil {
-			return out, err
+			return out, invalid("%v", err)
 		}
 		if statement.Product != commissioning.Product(r.Product) || statement.BoardRevision != r.Revision || statement.BoardUID != coreID.BoardUID || statement.ATECCSerial != coreID.ATECCSerial || statement.Attestation != verified.RecordFingerprint {
-			return out, errors.New("commissioning does not bind the exact verified core")
+			return out, invalid("commissioning does not bind the exact verified core")
 		}
 		allowed := false
 		for _, p := range h.Products {
 			allowed = allowed || p.Allows(statement)
 		}
 		if !allowed {
-			return out, errors.New("assembly is outside manufacturer's product/revision policy")
+			return out, invalid("assembly is outside manufacturer's product/revision policy")
 		}
 		if h.Registry != "" {
 			v, err := h.NewVerifier()
 			if err != nil {
-				return out, err
+				return out, s.unavailable("registry keys", "could not be loaded", err)
 			}
 			if h.RegistryState != "" {
 				floor, err := commissioning.ReadRegistryState(h.RegistryState, h.ManufacturerAuthorityID)
 				if err != nil {
-					return out, err
+					return out, s.unavailable("registry state", "could not be read", err)
 				}
 				v.SetRegistryFloor(floor)
 			}
 			data, err := os.ReadFile(h.Registry)
 			if err != nil {
-				return out, err
+				return out, s.unavailable("registry", "could not be read", err)
 			}
 			registry, err := v.LoadRegistry(data)
 			if err != nil {
-				return out, err
+				return out, s.unavailable("registry", "did not verify or is older than the recorded floor", err)
 			}
 			if err := v.Recheck(commissioning.Result{ManufacturerAuthorityID: h.ManufacturerAuthorityID, Trust: identity.HardwareTrustOpen, Statement: statement, Fingerprint: record.Fingerprint()}); err != nil {
-				return out, err
+				return out, invalid("%v", err)
 			}
 			out.RegistrySequence, out.RegistrySignerSPKI = registry.Sequence, registry.SignerSPKI
 		}
@@ -209,44 +217,44 @@ func (s *Service) Validate(r Request) (Validated, error) {
 		c.CommissioningSignerSPKI = keys.SignerFingerprint(record.KeyID())
 	}
 	if (r.CSRPEM == "") != (r.CertificatePEM == "") {
-		return out, errors.New("CSR and issued certificate must be supplied together")
+		return out, invalid("CSR and issued certificate must be supplied together")
 	}
 	if r.CertificatePEM != "" {
 		csrBlock, rest := pem.Decode([]byte(r.CSRPEM))
 		if csrBlock == nil || len(bytes.TrimSpace(rest)) != 0 || csrBlock.Type != "CERTIFICATE REQUEST" {
-			return out, errors.New("invalid CSR PEM")
+			return out, invalid("invalid CSR PEM")
 		}
 		csr, err := x509.ParseCertificateRequest(csrBlock.Bytes)
 		if err != nil || csr.CheckSignature() != nil {
-			return out, errors.New("CSR proof of possession is invalid")
+			return out, invalid("CSR proof of possession is invalid")
 		}
 		if len(csr.DNSNames) != 1 || csr.DNSNames[0] != r.ObserverID || len(csr.IPAddresses)+len(csr.EmailAddresses)+len(csr.URIs) != 0 {
-			return out, errors.New("CSR must request only the observer DNS SAN")
+			return out, invalid("CSR must request only the observer DNS SAN")
 		}
 		if r.ManufacturerAuthorityID != "" {
 			key, ok := csr.PublicKey.(*ecdsa.PublicKey)
 			if !ok || key.Curve != elliptic.P256() {
-				return out, errors.New("hardware operational key must be ECDSA P-256")
+				return out, invalid("hardware operational key must be ECDSA P-256")
 			}
 		}
 		certBlock, rest := pem.Decode([]byte(r.CertificatePEM))
 		if certBlock == nil || certBlock.Type != "CERTIFICATE" || len(bytes.TrimSpace(rest)) != 0 {
-			return out, errors.New("expected one issued leaf certificate")
+			return out, invalid("expected one issued leaf certificate")
 		}
 		cert, err := x509.ParseCertificate(certBlock.Bytes)
 		if err != nil {
-			return out, err
+			return out, invalid("certificate: %v", err)
 		}
 		if !bytes.Equal(cert.RawSubjectPublicKeyInfo, csr.RawSubjectPublicKeyInfo) || cert.IsCA || cert.KeyUsage != x509.KeyUsageDigitalSignature || len(cert.ExtKeyUsage) != 1 || cert.ExtKeyUsage[0] != x509.ExtKeyUsageClientAuth || len(cert.UnknownExtKeyUsage) != 0 || len(cert.DNSNames) != 1 || cert.DNSNames[0] != r.ObserverID || len(cert.IPAddresses)+len(cert.EmailAddresses)+len(cert.URIs) != 0 {
-			return out, errors.New("leaf does not bind the requested key and sole observer DNS SAN")
+			return out, invalid("leaf does not bind the requested key and sole observer DNS SAN")
 		}
 		chains, err := cert.Verify(x509.VerifyOptions{Roots: s.Authorities.ClientPool(), CurrentTime: s.now(), KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}})
 		if err != nil {
-			return out, err
+			return out, invalid("%v", err)
 		}
 		c.IssuerSPKI, err = s.Authorities.MatchIssuer(chains, r.OperationalAuthorityID)
 		if err != nil {
-			return out, err
+			return out, invalid("%v", err)
 		}
 		c.CredentialFingerprint = authority.Fingerprint(cert.Raw)
 		c.CredentialTier = identity.CredentialSoftwareMTLS
@@ -256,9 +264,11 @@ func (s *Service) Validate(r Request) (Validated, error) {
 		out.CertificateExpires = &cert.NotAfter
 	}
 	var err error
-	c, err = c.Normalize()
+	if c, err = c.Normalize(); err != nil {
+		return out, invalid("%v", err)
+	}
 	out.Context = c
-	return out, err
+	return out, nil
 }
 
 func (s *Service) now() time.Time {
@@ -281,7 +291,7 @@ func (s *Service) Enroll(ctx context.Context, operator string, r Request) (strin
 		return "", "", err
 	}
 	if !identity.ValidScopeID(operator) {
-		return "", "", errors.New("operator id is required")
+		return "", "", invalid("operator id is required")
 	}
 	var secret [32]byte
 	if _, err := rand.Read(secret[:]); err != nil {
@@ -318,16 +328,16 @@ func (s *Service) Enroll(ctx context.Context, operator string, r Request) (strin
 	if err == nil {
 		coreChanged := oldManufacturer != r.ManufacturerAuthorityID || !bytes.Equal(oldCore, v.Core)
 		if coreChanged != (r.ServiceAction == "replace_atecc") || (coreChanged && (oldManufacturer == "" || oldSerial == r.ATECCSerial)) {
-			return "", "", errors.New("new permanent core requires approved replacement of the secure element; provenance cannot be relabeled")
+			return "", "", invalid("new permanent core requires approved replacement of the secure element; provenance cannot be relabeled")
 		}
 		if !bytes.Equal(oldCommission, v.Commission) && uint64(v.Statement.Generation) <= uint64(oldGeneration) {
-			return "", "", errors.New("replacement commissioning generation must increase")
+			return "", "", invalid("replacement commissioning generation must increase")
 		}
 		if prior == "" || r.ReplaceEnrollmentID != prior {
-			return "", "", errors.New("existing station requires its current enrollment for an explicit service transition")
+			return "", "", invalid("existing station requires its current enrollment for an explicit service transition")
 		}
 	} else if r.ReplaceEnrollmentID != "" {
-		return "", "", errors.New("replacement enrollment does not exist")
+		return "", "", invalid("replacement enrollment does not exist")
 	}
 	if v.RegistrySequence > 0 {
 		var floor uint64
@@ -336,7 +346,8 @@ func (s *Service) Enroll(ctx context.Context, operator string, r Request) (strin
 			return "", "", err
 		}
 		if v.RegistrySequence < floor {
-			return "", "", errors.New("registry is below the manufacturer's persistent floor")
+			return "", "", s.unavailable("registry", "copy is older than the floor this control plane has recorded",
+				fmt.Errorf("registry sequence %d is below the recorded floor %d for %s", v.RegistrySequence, floor, r.ManufacturerAuthorityID))
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO navl_registry_floors VALUES($1,$2) ON CONFLICT(manufacturer_authority_id) DO UPDATE SET sequence=GREATEST(navl_registry_floors.sequence,EXCLUDED.sequence)`, r.ManufacturerAuthorityID, v.RegistrySequence); err != nil {
 			return "", "", err
@@ -374,6 +385,37 @@ func (s *Service) Enroll(ctx context.Context, operator string, r Request) (strin
 		return "", "", err
 	}
 	return id, token, nil
+}
+
+// CurrentEnrollment is the enrollment a device currently names, for an
+// operator whose activation response was lost: the token is returned once and
+// never stored, so recovery is a replacement enrollment naming this id, not a
+// second copy of the token.
+type CurrentEnrollment struct {
+	ObserverID   string     `json:"observer_id"`
+	EnrollmentID string     `json:"enrollment_id"`
+	Active       bool       `json:"active"`
+	CreatedAt    time.Time  `json:"created_at"`
+	RevokedAt    *time.Time `json:"revoked_at,omitempty"`
+}
+
+// CurrentEnrollment reads the enrollment id recorded for observerID. It
+// changes nothing and returns no credential.
+func (s *Service) CurrentEnrollment(ctx context.Context, observerID string) (CurrentEnrollment, error) {
+	var current CurrentEnrollment
+	if observerID == "" || len(observerID) > 256 {
+		return current, invalid("observer_id is required")
+	}
+	err := s.DB.QueryRow(ctx, `SELECT d.observer_id,d.current_enrollment_id,e.active,e.created_at,e.revoked_at
+ FROM navl_devices d JOIN navl_enrollments e ON e.id=d.current_enrollment_id WHERE d.observer_id=$1`, observerID).
+		Scan(&current.ObserverID, &current.EnrollmentID, &current.Active, &current.CreatedAt, &current.RevokedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CurrentEnrollment{}, invalid("observer %q has no enrollment", observerID)
+	}
+	if err != nil {
+		return CurrentEnrollment{}, err
+	}
+	return current, nil
 }
 
 func nonNil(v []string) []string {
