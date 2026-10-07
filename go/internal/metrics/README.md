@@ -127,6 +127,7 @@ into live state — the `capture_only` sources (SBF, RTCM) pending central decod
 | `navlistener_push_authorization_unavailable_total` | counter | path |
 | `navlistener_push_connections_refused_total` | counter | reason |
 | `navlistener_push_admission_refused_total` | counter | reason |
+| `navlistener_durable_sessions_evicted_total` | counter | source |
 | `navlistener_push_observers_up` | gauge | |
 | `navlistener_push_server_cert_not_after_seconds` | gauge | |
 

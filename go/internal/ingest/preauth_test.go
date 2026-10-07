@@ -275,8 +275,8 @@ func TestObserverSessionCeiling(t *testing.T) {
 		if i < maxObserverSessions && !welcome.OK {
 			t.Fatalf("session %d refused: %+v", i+1, welcome)
 		}
-		if i == maxObserverSessions && (welcome.OK || !strings.Contains(welcome.Error, "admission")) {
-			t.Fatalf("session %d: welcome %+v, want refused by admission", i+1, welcome)
+		if i == maxObserverSessions && (welcome.OK || welcome.Error != "observer session limit") {
+			t.Fatalf("session %d: welcome %+v, want refused with the observer session limit", i+1, welcome)
 		}
 		if up := testutil.ToFloat64(metrics.PushObserversUp.WithLabelValues("observer16")) - upBefore; up > maxObserverSessions {
 			t.Fatalf("observers_up rose to %v, want at most %d", up, maxObserverSessions)

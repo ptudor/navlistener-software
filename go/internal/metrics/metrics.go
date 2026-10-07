@@ -349,6 +349,14 @@ var (
 		Name: "navlistener_durable_holes_abandoned_total",
 		Help: "Unresolved received sequences abandoned after their push session stayed silent past the abandonment window, by observer.",
 	}, []string{"source"})
+	// DurableSessionsEvictedTotal counts fully resolved sessions dropped at
+	// the per-observer session cap to admit a new session of the same observer
+	// (a station that restarts often mints a session per start). Nothing
+	// outstanding is lost: a resolved session holds no holes.
+	DurableSessionsEvictedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_durable_sessions_evicted_total",
+		Help: "Fully resolved push sessions evicted at the per-observer session cap to admit a new session, by observer.",
+	}, []string{"source"})
 	// PushAdmissionRefusedTotal counts sessions refused by the policy admission
 	// step at the handshake, by reason. The feeder sees the refusal in its
 	// WELCOME, and this is the collector's side of the same event.

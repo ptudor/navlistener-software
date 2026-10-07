@@ -200,7 +200,19 @@ in `navlistener_push_connections_refused_total{reason}`; an authenticated HELLO 
 fleet slot free is answered `WELCOME{ok:false}` (`fleet_capacity`). mTLS cannot stand in for
 these bounds: a certificate is examined only inside the handshake an idle flood never starts.
 Pre-auth warnings are rate-limited to five per address per minute and clip peer-chosen HELLO
-fields to 64 bytes; the auth-failure metrics count every attempt regardless. A transition's reset marker is enqueued off the
+fields to 64 bytes; the auth-failure metrics count every attempt regardless.
+
+Neither retention table is a lockout. The observer policy table (1,024 identities) reclaims,
+when full, every policy with no live session and no admission within the policy retention
+window — the historian's raw retention, past which nothing the observer contributed remains to
+withdraw — before refusing a new identity (`observer_ceiling`, answered
+`WELCOME{ok:false,"collector observer capacity"}`); a policy with a live session is never
+reclaimed, so its generation stays monotonic. The durable tracker's per-observer session cap
+(64; a feeder mints a session per start) evicts that observer's oldest *fully resolved*
+session — one with no unresolved hole, which holds nothing the ledger does not — to admit a new
+one (`navlistener_durable_sessions_evicted_total{source}`), and refuses only when every retained
+session still has a hole; fully resolved sessions are also reclaimed after fifteen minutes of
+silence, while a session with holes keeps the one-hour abandonment window. A transition's reset marker is enqueued off the
 policy lock: `admit` of a same-generation session waits on the pending marker, while
 `release`, stale-lookup refusals and the reconciliation snapshot take the lock only for their
 bookkeeping and never wait behind decode backpressure.

@@ -46,8 +46,14 @@ type sessionDurable struct {
 	touched     time.Time
 }
 
-// Resolved idle sessions are reclaimed after durableSessionIdle.
-const durableSessionIdle = 7 * 24 * time.Hour
+// Fully resolved sessions are reclaimed after durableResolvedIdle of silence.
+// Such a session holds no outstanding state — the historian's ledger, not
+// this table, is the dedup authority — and a feeder that reappears with it
+// simply re-tracks what it replays, so a short idle costs nothing. It used to
+// be seven days, which let a station that restarts more than
+// maxDurableSessionsPerSource times in a week (every start mints a session)
+// lock itself out of durable ingest until a resolved session aged out.
+const durableResolvedIdle = 15 * time.Minute
 
 // durableHoleAbandonAfter bounds how long an unresolved hole is tracked once
 // its session goes silent. A live feeder that still holds the record is
@@ -144,7 +150,11 @@ func (t *DurableTracker) Received(source, session string, seq uint64, persistabl
 		if len(t.m) >= t.maxSessions {
 			return reject("sessions")
 		}
-		if t.perSource[source] >= t.maxPerSource {
+		// At the per-observer cap, a fully resolved session of this observer
+		// is evicted for the new one — the oldest first; it holds nothing the
+		// ledger does not — and the receipt is refused only when every
+		// retained session still has unresolved holes.
+		if t.perSource[source] >= t.maxPerSource && !t.evictResolvedLocked(source) {
 			return reject("observer_sessions")
 		}
 		// Do not allocate a session for a frame the global budget cannot admit.
@@ -215,7 +225,7 @@ func (t *DurableTracker) Watermark(source, session string) uint64 {
 	return s.pending[0] - 1
 }
 
-// pruneLocked reclaims resolved sessions untouched for durableSessionIdle and
+// pruneLocked reclaims resolved sessions untouched for durableResolvedIdle and
 // abandons unresolved sessions untouched for durableHoleAbandonAfter (see that
 // constant: bounded, loud forgetting — never an acknowledgement). A session
 // still being replayed is touched on every receipt and is never reclaimed.
@@ -224,16 +234,46 @@ func (t *DurableTracker) pruneLocked(now time.Time) {
 	for k, s := range t.m {
 		idle := now.Sub(s.touched)
 		switch {
-		case len(s.pending) == 0 && idle > durableSessionIdle:
+		case len(s.pending) == 0 && idle > durableResolvedIdle:
 		case len(s.pending) > 0 && idle > durableHoleAbandonAfter:
 			metrics.DurableHolesAbandonedTotal.WithLabelValues(k.source).Add(float64(len(s.pending)))
 			t.outstanding -= len(s.pending)
 		default:
 			continue
 		}
-		delete(t.m, k)
-		if t.perSource[k.source]--; t.perSource[k.source] <= 0 {
-			delete(t.perSource, k.source)
+		t.forgetLocked(k)
+	}
+}
+
+// evictResolvedLocked drops source's least recently touched fully resolved
+// session to make room for a new one, counting the eviction. It reports false
+// when every retained session of source still has unresolved holes. Caller
+// holds mu.
+func (t *DurableTracker) evictResolvedLocked(source string) bool {
+	var oldest durableKey
+	var found bool
+	var at time.Time
+	for k, s := range t.m {
+		if k.source != source || len(s.pending) > 0 {
+			continue
 		}
+		if !found || s.touched.Before(at) {
+			oldest, at, found = k, s.touched, true
+		}
+	}
+	if !found {
+		return false
+	}
+	metrics.DurableSessionsEvictedTotal.WithLabelValues(source).Inc()
+	t.forgetLocked(oldest)
+	return true
+}
+
+// forgetLocked removes one session and its per-observer accounting. Caller
+// holds mu and has already settled any outstanding holes.
+func (t *DurableTracker) forgetLocked(k durableKey) {
+	delete(t.m, k)
+	if t.perSource[k.source]--; t.perSource[k.source] <= 0 {
+		delete(t.perSource, k.source)
 	}
 }

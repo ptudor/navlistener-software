@@ -307,6 +307,9 @@ func run() int {
 			tracker := ingest.NewDurableTracker()
 			pushSrv.SetDurableTracker(tracker)
 			historian.SetDurableNotify(tracker.Resolved)
+			// A disconnected observer's policy is kept for reconciliation as
+			// long as anything it contributed is still retained.
+			pushSrv.SetPolicyRetention(rawRetention)
 		}
 		log.Info("historian enabled")
 	} else {

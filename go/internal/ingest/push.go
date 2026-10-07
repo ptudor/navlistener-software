@@ -214,6 +214,11 @@ type PushServer struct {
 	// production; tests shrink it).
 	reconcileBudget time.Duration
 
+	// policyRetention is how long a policy with no live session is kept for
+	// reconciliation after its last admission before the table may reclaim it
+	// at its ceiling (SetPolicyRetention; defaultPolicyRetention otherwise).
+	policyRetention time.Duration
+
 	// collectorInstanceID is this deployment's stable realm. A control-plane
 	// row for another instance is rejected even if its credential otherwise
 	// verifies, preventing one database/view mistake from crossing CA realms.
@@ -346,6 +351,7 @@ func newPushServer(addr string, tc *tls.Config, out chan<- *RawFrame, auth Authe
 	local, _ := authority.New([]authority.Operational{{ID: "local", Enabled: true}}, nil, time.Now())
 	return &PushServer{addr: addr, tlsConfig: tc, auth: auth, out: out, ackInterval: ack, authorities: local,
 		reauthorizeEvery: 30 * time.Second, authorityTTL: 30 * time.Second, reconcileBudget: reconciliationBudget,
+		policyRetention:     defaultPolicyRetention,
 		collectorInstanceID: identity.LocalCollectorInstance,
 		policies:            make(map[string]*observerPolicy),
 		log:                 log, conns: make(chan struct{}, maxConns),
@@ -545,7 +551,7 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn, preAuthDone func
 	admission, refused := p.admit(ctx, observerContext, authorized.policyGeneration, func() { sessionCancel(); _ = conn.Close() }, policyCredential{digest: hex.EncodeToString(digest[:]), feed: feed})
 	if admission == nil {
 		metrics.PushAdmissionRefusedTotal.WithLabelValues(refused).Inc()
-		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "policy admission refused"}))
+		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: admissionRefusalError(refused)}))
 		p.log.Warn("push session refused by policy admission", "observer", observer, "feed", feed, "remote", remote, "reason", refused)
 		return
 	}
@@ -589,6 +595,20 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn, preAuthDone func
 	go p.watchAuthorization(sessionCtx, ctx, conn, authorized.token, observer, feed, observerContext, authorized.evidence, admission)
 	p.stream(sessionCtx, frames, w, observerContext, feed, session)
 	sessionCancel()
+}
+
+// admissionRefusalError is the WELCOME error a feeder sees for a policy
+// admission refusal: the two capacity cases name themselves, since the fix is
+// on the collector, not the feeder; the rest is a policy matter the feeder
+// cannot act on beyond backing off.
+func admissionRefusalError(reason string) string {
+	switch reason {
+	case "observer_ceiling":
+		return "collector observer capacity"
+	case "observer_sessions":
+		return "observer session limit"
+	}
+	return "policy admission refused"
 }
 
 // maxConsecutiveUnforwarded bounds how many frames in a row a connection may

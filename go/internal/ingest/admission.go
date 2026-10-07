@@ -34,6 +34,13 @@ type observerPolicy struct {
 	// time since verifiedAt exceeds the documented revocation bound, and the
 	// sweep does not query a policy verified within the authority TTL.
 	verifiedAt time.Time
+	// lastAdmitted is when a session of this observer was last admitted. A
+	// policy with no live session and no admission within the policy
+	// retention window is reclaimed when the table is at its ceiling: nothing
+	// it admitted is still visible to withdraw, and holding it only turned a
+	// churned fleet (replaced boards, bench stations, renamed observers) into
+	// a lockout of the next new identity until restart.
+	lastAdmitted time.Time
 	// transition is non-nil while a policy transition's reset marker is still
 	// being enqueued, and is closed once the marker is in the decode channel.
 	// admit waits on it — never on mu — so no new-generation producer starts
@@ -43,10 +50,18 @@ type observerPolicy struct {
 }
 
 // Bound the retained reconciliation work, including disconnected contributors.
-// At capacity new identities fail closed; retained history is never forgotten
-// merely to admit a new observer. A restart establishes a new history epoch.
+// At capacity, policies with no live session and no admission within the
+// retention window are reclaimed first; only then do new identities fail
+// closed. A policy with a live session is never forgotten. A restart
+// establishes a new history epoch.
 const maxTrackedObserverPolicies = 1024
 const maxPolicyCredentials = 8
+
+// defaultPolicyRetention is how long a policy with no live session is kept
+// for reconciliation after its last admission when no raw-retention horizon
+// is configured (SetPolicyRetention): the historian's default raw retention,
+// past which nothing the observer contributed remains to withdraw.
+const defaultPolicyRetention = 7 * 24 * time.Hour
 
 // maxObserverSessions bounds the sessions one observer may hold at once. A
 // credential legitimately runs a few — the C feeder replays each recovered
@@ -107,14 +122,16 @@ func (p *PushServer) admit(ctx context.Context, current identity.ObserverContext
 	policy := p.policies[current.ObserverID]
 	if policy == nil {
 		if len(p.policies) >= maxTrackedObserverPolicies {
+			p.reclaimIdlePoliciesLocked(time.Now())
+		}
+		if len(p.policies) >= maxTrackedObserverPolicies {
 			p.authorizationMu.Unlock()
 			return nil, "observer_ceiling"
 		}
 		policy = &observerPolicy{sessions: make(map[*Admission]context.CancelFunc)}
 		p.policies[current.ObserverID] = policy
-		// policies are retained for the process lifetime, so this
-		// gauge only rises. It exists so an operator can see the ceiling coming
-		// instead of discovering it when a valid new observer is refused.
+		// The gauge is the table's size, so an operator can see the ceiling
+		// coming instead of discovering it when a valid new observer is refused.
 		metrics.PushObserverPoliciesTracked.Set(float64(len(p.policies)))
 	}
 	p.authorizationMu.Unlock()
@@ -182,9 +199,35 @@ func (p *PushServer) admit(ctx context.Context, current identity.ObserverContext
 	if now.After(policy.verifiedAt) {
 		policy.verifiedAt = now
 	}
+	policy.lastAdmitted = now
 	a := &Admission{policy: policy, generation: policy.generation.Load()}
 	policy.sessions[a] = cancel
 	return a, ""
+}
+
+// reclaimIdlePoliciesLocked forgets every policy with no live session whose
+// last admission is older than the policy retention window, and resets the
+// capacity gauge. A live policy keeps its generation; an observer that
+// returns after reclamation starts a fresh one. Caller holds authorizationMu.
+func (p *PushServer) reclaimIdlePoliciesLocked(now time.Time) {
+	for observer, policy := range p.policies {
+		policy.mu.Lock()
+		idle := len(policy.sessions) == 0 && now.Sub(policy.lastAdmitted) > p.policyRetention
+		policy.mu.Unlock()
+		if idle {
+			delete(p.policies, observer)
+		}
+	}
+	metrics.PushObserverPoliciesTracked.Set(float64(len(p.policies)))
+}
+
+// SetPolicyRetention sets how long a policy with no live session is kept for
+// offline reconciliation after its last admission — the historian's raw
+// retention, past which nothing the observer contributed remains to withdraw.
+func (p *PushServer) SetPolicyRetention(d time.Duration) {
+	if d > 0 {
+		p.policyRetention = d
+	}
 }
 
 // awaitPending releases mu while it waits for a transition's marker to be
