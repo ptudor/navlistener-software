@@ -1015,16 +1015,20 @@ func (s *Server) resolveRequestView(w http.ResponseWriter, r *http.Request) (req
 	return requestView{audience: selected, store: st, sources: sources, principal: principal, token: token}, true
 }
 
+// readBearerToken extracts the single Authorization header's bearer credential.
+// The auth-scheme is case-insensitive (RFC 9110 §11.1), so `bearer x` from a
+// client or proxy that normalizes it is accepted; the one-header, no-whitespace
+// and 4096-byte rules are unchanged.
 func readBearerToken(r *http.Request) (string, error) {
 	values := r.Header.Values("Authorization")
 	if len(values) != 1 {
 		return "", fmt.Errorf("one bearer authorization header is required")
 	}
-	const prefix = "Bearer "
-	if !strings.HasPrefix(values[0], prefix) {
+	scheme, token, ok := strings.Cut(values[0], " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") {
 		return "", fmt.Errorf("bearer authorization is required")
 	}
-	token := strings.TrimSpace(strings.TrimPrefix(values[0], prefix))
+	token = strings.TrimSpace(token)
 	if token == "" || len(token) > 4096 || strings.ContainsAny(token, " \t\r\n") {
 		return "", fmt.Errorf("bearer credential is malformed")
 	}

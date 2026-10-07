@@ -525,6 +525,43 @@ func TestHistorySlotsArePartitionedPerPrincipal(t *testing.T) {
 	}
 }
 
+// TestBearerSchemeIsCaseInsensitive guards the auth-scheme token is
+// case-insensitive (RFC 9110 §11.1): a client or proxy that lower-cases
+// "bearer" must still authenticate, while the single-header, no-whitespace
+// and length rules keep rejecting malformed credentials.
+func TestBearerSchemeIsCaseInsensitive(t *testing.T) {
+	s := testServer(nil)
+	s.EnableAudienceSelection(fixedReadAuthorizer{"secret": identity.ReadPrincipal{ID: "viewer", AudienceGrants: []identity.Audience{s.audience}}}, nil, time.Second)
+	s.refresh("global")
+	for header, want := range map[string]int{
+		"Bearer secret":  http.StatusOK,
+		"bearer secret":  http.StatusOK,
+		"BEARER secret":  http.StatusOK,
+		"Bearer  secret": http.StatusOK, // surrounding whitespace is trimmed, as before
+		"Basic secret":   http.StatusUnauthorized,
+		"Bearer":         http.StatusUnauthorized,
+		"Bearer\tsecret": http.StatusUnauthorized,
+		"Bearer se cret": http.StatusUnauthorized,
+		"Bearer " + strings.Repeat("x", 4097): http.StatusUnauthorized,
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/gnss/api/v2/global", nil)
+		req.Header.Set("Authorization", header)
+		rr := httptest.NewRecorder()
+		s.http.Handler.ServeHTTP(rr, req)
+		if rr.Code != want {
+			t.Errorf("Authorization %q: status %d, want %d: %s", header, rr.Code, want, rr.Body.String())
+		}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/gnss/api/v2/global", nil)
+	req.Header.Add("Authorization", "Bearer secret")
+	req.Header.Add("Authorization", "Bearer secret")
+	rr := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("two Authorization headers: status %d, want 401", rr.Code)
+	}
+}
+
 func TestActiveReadSessionReauthorizationCancelsAfterRevocation(t *testing.T) {
 	principal := identity.ReadPrincipal{ID: "viewer-a", Revision: "grant-v1", AudienceGrants: []identity.Audience{{Kind: identity.AudienceOrganization, ID: "customer-a"}}}
 	auth := &toggleReadAuthorizer{principal: principal}
