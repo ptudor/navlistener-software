@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/store"
@@ -118,6 +120,18 @@ func (s *Server) serveEventsQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(q.Get("type")) > eventsMaxTypeParam {
 		writeError(w, http.StatusBadRequest, "type: too long")
+		return
+	}
+	// A NUL or invalid UTF-8 filter is a client error, not a historian failure:
+	// PostgreSQL rejects it as a text bind, which used to surface as a 500 and
+	// an Error-level log line per request at zero cost to an anonymous caller.
+	// Mirrors ObserverSampleQuery.Validate; absent still means any.
+	if !validFilterParam(q.Get("sv")) {
+		writeError(w, http.StatusBadRequest, "sv: invalid")
+		return
+	}
+	if !validFilterParam(q.Get("type")) {
+		writeError(w, http.StatusBadRequest, "type: invalid")
 		return
 	}
 	severity, err := atoiParam(q.Get("severity"), 0)
@@ -260,6 +274,12 @@ func (s *Server) writeEnvelope(w http.ResponseWriter, now time.Time, selected id
 	w.Header().Set("Content-Type", "application/json")
 	s.setAudienceCacheHeaders(w, selected)
 	delivery.write(w, body)
+}
+
+// validFilterParam reports whether a client-supplied text filter can be a
+// PostgreSQL text bind value: valid UTF-8 with no NUL.
+func validFilterParam(s string) bool {
+	return utf8.ValidString(s) && !strings.ContainsRune(s, 0)
 }
 
 // atoiParam parses an integer query param. An absent (empty) value returns def, nil --

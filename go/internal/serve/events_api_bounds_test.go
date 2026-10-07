@@ -26,6 +26,21 @@ func TestEventsQueryFilterLengthBounds(t *testing.T) {
 		}
 	}
 
+	// A NUL or invalid UTF-8 filter is a client error answered before the
+	// historian is touched, not a text-bind failure turned into a 500 and an
+	// Error-level log line per anonymous request.
+	for _, tc := range []struct{ name, query string }{
+		{"sv NUL", "sv=%00"},
+		{"sv invalid UTF-8", "sv=%FF"},
+		{"type truncated UTF-8", "type=%C3"},
+	} {
+		rr := httptest.NewRecorder()
+		newTestServer(nil, blockedEvents{t}).http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/events?"+tc.query, nil))
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400: %s", tc.name, rr.Code, rr.Body.String())
+		}
+	}
+
 	// Maximum-length values still pass (bounds are limits, not off-by-one traps).
 	rr := httptest.NewRecorder()
 	s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet,
