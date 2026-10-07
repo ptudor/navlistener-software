@@ -23,7 +23,7 @@ struct EventStream: Sendable {
             let task = Task {
                 do {
                     var request = URLRequest(url: url)
-                    request.timeoutInterval = 75
+                    request.timeoutInterval = Self.idleTimeout
                     request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
                     request.setValue("IntegrityStation/0.1", forHTTPHeaderField: "User-Agent")
                     try ReadRequestHeaders.apply(session: readSession, to: &request)
@@ -120,11 +120,16 @@ struct EventStream: Sendable {
         try? decoder.decode(GNSSAPIEvent.self, from: Data(payload.utf8))
     }
 
-    private static func failFastSession() -> URLSession {
+    /// Idle watchdog for a long-lived stream: 75 s covers the collector's 60 s
+    /// heartbeat plus slack (the request carries the same value). The resource
+    /// timeout stays at its default, since it bounds a task's total lifetime,
+    /// not its idle time, and would otherwise cut a healthy stream on a timer.
+    static let idleTimeout: TimeInterval = 75
+
+    static func failFastSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.waitsForConnectivity = false
-        configuration.timeoutIntervalForRequest = 10
-        configuration.timeoutIntervalForResource = 90
+        configuration.timeoutIntervalForRequest = idleTimeout
         return URLSession(configuration: configuration)
     }
 }
