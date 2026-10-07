@@ -63,7 +63,9 @@ func policyTestPush(t *testing.T, auth ingest.Authenticator) (string, <-chan *in
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.SetReauthorizationInterval(20 * time.Millisecond)
+	// The sweep rechecks a policy at most once per cache TTL, so a fast test cadence
+	// needs both the recheck interval and the TTL short: their sum is the bound.
+	p.SetReauthorization(20*time.Millisecond, 20*time.Millisecond)
 	ln, err := p.Listen()
 	if err != nil {
 		t.Fatal(err)
