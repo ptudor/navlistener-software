@@ -511,18 +511,26 @@ SELECT create_hypertable('nav_frames','ts', chunk_time_interval => INTERVAL '1 h
 -- compress_segmentby = 'gnssid', compress_orderby = 'svid, ts DESC'; short raw retention,
 -- long-term lives in per-SV continuous aggregates (ephemeris history).
 
--- Push-path replay-dedup ledger (regression fix + regression fix): the writer claims each frame's
--- (source_id, session_id, feeder_seq) in the same transaction that CopyFroms the rows,
--- so reconnect replay cannot duplicate and a failed commit rolls the claim back.
--- session_id is the feeder's GNF1 boot identity (DESIGN.md §2): a rebooted feeder's
--- fresh session makes its restarted sequence space structurally collision-free against
--- old claims. Dial-mode frames carry no sequence and always pass through.
+-- Push-path replay-dedup ledger: the writer claims each frame's (session, feeder_seq)
+-- in the same transaction that CopyFroms the rows, so reconnect replay cannot
+-- duplicate and a failed commit rolls the claim back. The session is the feeder's
+-- GNF1 boot identity (DESIGN.md §2): a rebooted feeder's fresh session makes its
+-- restarted sequence space structurally collision-free against old claims. The
+-- (source_id, session_id) pair is normalised to a BIGINT key so the ledger — one row
+-- per sequenced frame — carries two integers per claim instead of two strings.
+-- Dial-mode frames carry no sequence and always pass through.
+CREATE TABLE nav_frames_sessions (
+    session_key BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    source_id   TEXT        NOT NULL,
+    session_id  TEXT        NOT NULL,
+    first_seen  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (source_id, session_id)
+);
 CREATE TABLE nav_frames_seq_seen (
-    source_id  TEXT        NOT NULL,
-    session_id TEXT        NOT NULL,
-    feeder_seq BIGINT      NOT NULL,
-    seen_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (source_id, session_id, feeder_seq)
+    session_key BIGINT      NOT NULL,
+    feeder_seq  BIGINT      NOT NULL,
+    seen_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (session_key, feeder_seq)
 );
 ```
 

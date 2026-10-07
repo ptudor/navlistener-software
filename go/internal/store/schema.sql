@@ -134,11 +134,11 @@ CREATE INDEX IF NOT EXISTS idx_nav_frames_org_recv ON nav_frames (organization_i
 -- unique index to include its partition column, and `ts` legitimately differs between
 -- a frame and its replay (ingest time, not broadcast time). So the dedup key lives in
 -- a small side ledger with a real (non-partitioned) unique constraint: the writer
--- claims each push-path frame's (source_id, session_id, feeder_seq) here in the same
+-- claims each push-path frame's (source, session, feeder_seq) here in the same
 -- transaction that CopyFrom's the newly seen rows. A copy/commit failure therefore
 -- rolls the claim back and leaves the edge replay retryable.
 --
--- session_id is the feeder's boot/session identity from the GNF1
+-- The session is the feeder's boot/session identity from the GNF1
 -- HELLO: replay identity is (canonical observer, session, seq), NOT
 -- (observer, seq). Without it, a feeder that restarted without a recoverable
 -- spool (or any ESP32 reboot — RAM-only ring) reset its sequence to zero and
@@ -149,34 +149,53 @@ CREATE INDEX IF NOT EXISTS idx_nav_frames_org_recv ON nav_frames (organization_i
 -- session in its disk-spool header so a spool-recovering restart continues
 -- session and sequence together.
 --
+-- The (source, session) pair is normalised into nav_frames_sessions and the
+-- ledger is keyed by its BIGINT session_key: one row per sequenced frame at
+-- ~26 frames/s per receiver is ~16 M rows per receiver-week, and two TEXT key
+-- columns (a 32-character session id, a free-form observer id) in the heap and
+-- again in the primary key cost ~3 GB per receiver-week — several times the
+-- compressed frames the ledger protects. Keyed as (BIGINT, BIGINT) a row is
+-- 24 bytes of payload with a 16-byte index entry. The writer resolves a
+-- session's key once per process (creating the row inside the claim
+-- transaction, so a rolled-back commit rolls the session back too).
+--
 -- Dial-mode frames carry no feeder sequence and always pass through unfiltered —
 -- duplicates across *different* receivers remain intentional and untouched by this
 -- table. Pruned by the store on the same interval as raw_retention (store.go
--- prunePolicy) — entries older than that are moot, since nav_frames itself has
--- already retired them.
+-- pruneSeqSeen), in bounded chunks on a goroutine of its own — entries older
+-- than that are moot, since nav_frames itself has already retired them; a
+-- session with no entries left is retired after the same window.
 --
--- Migration (regression fix, documented no-compat): a pre-session two-column ledger's
--- rows can never match a session-carrying key (every post-upgrade key has a
--- non-empty session), so the old-shape table is pure dead weight — drop and
--- recreate. The ledger is rebuildable dedup state, not forensic record; the
--- worst case is one bounded window of duplicate raw rows, which dedup-on-read
--- tolerates by design.
+-- Migration (documented no-compat, schemaVersion 2): an earlier ledger shape —
+-- the pre-session two-column one, or the three-column TEXT-keyed one — holds
+-- rows that can never match a session_key claim, so the old-shape table is pure
+-- dead weight: drop and recreate. The ledger is rebuildable dedup state, not
+-- forensic record; the worst case is one bounded window of duplicate raw rows,
+-- which dedup-on-read tolerates by design. The schema marker keeps a
+-- version-1 binary, whose own migration block would drop the re-keyed table,
+-- from starting against it.
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM information_schema.tables
                WHERE table_schema = current_schema() AND table_name = 'nav_frames_seq_seen')
        AND NOT EXISTS (SELECT 1 FROM information_schema.columns
                WHERE table_schema = current_schema() AND table_name = 'nav_frames_seq_seen'
-                 AND column_name = 'session_id') THEN
+                 AND column_name = 'session_key') THEN
         DROP TABLE nav_frames_seq_seen;
     END IF;
 END $$;
+CREATE TABLE IF NOT EXISTS nav_frames_sessions (
+    session_key BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    source_id   TEXT        NOT NULL,
+    session_id  TEXT        NOT NULL,
+    first_seen  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (source_id, session_id)
+);
 CREATE TABLE IF NOT EXISTS nav_frames_seq_seen (
-    source_id  TEXT        NOT NULL,
-    session_id TEXT        NOT NULL,
-    feeder_seq BIGINT      NOT NULL,
-    seen_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (source_id, session_id, feeder_seq)
+    session_key BIGINT      NOT NULL,
+    feeder_seq  BIGINT      NOT NULL,
+    seen_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (session_key, feeder_seq)
 );
 CREATE INDEX IF NOT EXISTS idx_nav_frames_seq_seen_prune ON nav_frames_seq_seen (seen_at);
 
