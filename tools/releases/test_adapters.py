@@ -1,10 +1,12 @@
 import contextlib
+import copy
 from datetime import datetime, timedelta, timezone
 import hashlib
 import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -37,6 +39,28 @@ class BuildAdapterTests(unittest.TestCase):
             self.assertEqual([n["path"] for n in notices], [
                 "LICENSE", "esp-idf/LICENSE", "esp32/components/example/NOTICE"])
             self.assertNotIn(str(base), json.dumps(notices))
+
+    def test_dirty_flag_is_kept_and_may_only_mean_the_regenerated_lock(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary).resolve()
+            git = lambda *args: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t.invalid", "-C", str(source), *args], check=True, capture_output=True)
+            git("init", "-q")
+            (source / "esp32").mkdir()
+            (source / "esp32/dependencies.lock").write_text("a\n")
+            (source / "esp32/main.c").write_text("int main;\n")
+            git("add", "."); git("commit", "-q", "-m", "fixture")
+            build_idf.check_dirty(source, {"project_dirty": False})
+            with self.assertRaisesRegex(ValueError, "could not establish"):
+                build_idf.check_dirty(source, {"project_dirty": None})
+            (source / "esp32/dependencies.lock").write_text("b\n")
+            build_idf.check_dirty(source, {"project_dirty": True})
+            (source / "esp32/main.c").write_text("int main = 1;\n")
+            with self.assertRaisesRegex(ValueError, "beyond esp32/dependencies.lock"):
+                build_idf.check_dirty(source, {"project_dirty": True})
+            git("checkout", "--", "esp32/main.c")
+            (source / "esp32/extra.c").write_text("\n")
+            with self.assertRaisesRegex(ValueError, "beyond esp32/dependencies.lock"):
+                build_idf.check_dirty(source, {"project_dirty": True})
 
     def test_license_inventory_refuses_external_notice_symlink(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -308,6 +332,48 @@ class AdapterTests(unittest.TestCase):
             test_state.mkdir(exist_ok=True); (test_state / "trust-root.json").write_bytes(repository.files["metadata/1.root.json"])
         with self.assertRaisesRegex(ValueError, "marked for another profile"):
             release.configuration(self.release_config(root=str(test_state / "trust-root.json")))
+
+    def test_clean_refuses_a_dirty_pinned_idf_before_any_reservation(self):
+        pin = json.loads((Path(release.SOURCE) / "tools/releases/toolchain.json").read_bytes())
+        idf = Path(tempfile.mkdtemp(dir=self.base))
+        status = [""]
+        def fake_git(*args, cwd=release.SOURCE):
+            if cwd == idf:
+                return pin["esp_idf_revision"] if args == ("rev-parse", "HEAD") else status[0]
+            return {("branch", "--show-current"): "main", ("status", "--porcelain", "--untracked-files=no"): ""}.get(args, "ssh://git.invalid/software")
+        config = {"branch": "main", "remotes": ["origin", "github"]}
+        with patch.object(release, "git", side_effect=fake_git), patch.dict(os.environ, {"IDF_PATH": str(idf)}):
+            release.clean(config)
+            status[0] = " M components/esp_system/system_api.c"
+            with self.assertRaisesRegex(ValueError, f"clean ESP-IDF {re.escape(pin['esp_idf_tag'])} environment"):
+                release.clean(config)
+
+    def test_release_signers_refuse_test_only_adapters_and_warn_about_checkout_paths(self):
+        def written(config):
+            path = Path(tempfile.mkdtemp(dir=self.base)) / "signers.json"
+            path.write_bytes(encoded(config))
+            return path
+        metadata = copy.deepcopy(self.open.config)
+        metadata["roles"]["timestamp"][0]["command"].append("--test-only")
+        with self.assertRaisesRegex(ValueError, "timestamp release signing command enables the adapter's test-only mode"):
+            Signers(written(metadata), profile="open")
+        firmware = copy.deepcopy(self.open.config)
+        firmware["firmware"][0]["command"].append("--test-only")
+        with self.assertRaisesRegex(ValueError, "firmware release signing command enables the adapter's test-only mode"):
+            keys(firmware, True)
+        # The supplied adapter script lives in the checkout by design and is silent;
+        # anything else named there is warned about when the configuration loads.
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            Signers(self.open_keys, profile="open")
+            keys(self.open.config, True)
+        self.assertEqual(err.getvalue(), "")
+        inside = copy.deepcopy(self.open.config)
+        inside["roles"]["snapshot"][0]["command"][-1] = str(Path(release.SOURCE) / "tools/releases/snapshot.key")
+        with contextlib.redirect_stderr(err):
+            Signers(written(inside), profile="open")
+        self.assertIn("warning: snapshot signing command names", err.getvalue())
+        self.assertIn("inside the source checkout", err.getvalue())
 
     def test_release_tool_reports_a_corrupt_bootstrap_root_in_one_line(self):
         corrupt = Path(tempfile.mkdtemp(dir=self.base)) / "trust-root.json"

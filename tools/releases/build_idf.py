@@ -38,6 +38,23 @@ def license_inventory(source, idf, project):
 # The trusted track ships the locked production security baseline.
 DEFAULTS = {"trusted": "sdkconfig.defaults.production", "open": "sdkconfig.defaults.open"}
 
+# The one file ESP-IDF may regenerate inside the isolated checkout.
+REGENERATED = "esp32/dependencies.lock"
+
+def check_dirty(source, provenance):
+    """Keep the provenance's dirty flag and insist on what it is allowed to mean.
+
+    A set flag must come from nothing but the lock IDF regenerates; the CMake
+    gate enforces the same, and the published provenance keeps saying so.
+    """
+    dirty = provenance.get("project_dirty")
+    if dirty is None:
+        raise ValueError("release provenance could not establish whether the isolated checkout is clean")
+    if dirty:
+        status = subprocess.check_output(["git", "-C", str(source), "status", "--porcelain", "--untracked-files=normal"], text=True)
+        if any(line[3:] != REGENERATED for line in status.splitlines()):
+            raise ValueError(f"isolated release checkout differs from its commit beyond {REGENERATED}")
+
 def main():
     request = json.load(sys.stdin)
     profile = request["profile"]
@@ -48,8 +65,8 @@ def main():
     python = Path(os.environ["IDF_PYTHON_ENV_PATH"]) / "bin/python"
     pin = json.loads((source / "tools/releases/toolchain.json").read_bytes())
     revision = subprocess.check_output(["git", "-C", str(idf), "rev-parse", "HEAD"], text=True).strip()
-    if revision != pin["esp_idf_revision"] or subprocess.check_output(["git", "-C", str(idf), "status", "--porcelain", "--untracked-files=no"]):
-        raise ValueError("activate the pinned, clean ESP-IDF checkout before releasing")
+    if revision != pin["esp_idf_revision"]:
+        raise ValueError("activate the pinned ESP-IDF checkout before releasing")
     if os.environ.get("ESP_HARDWARE_DISCOVERY_PATH"):
         raise ValueError("release builds refuse local component overrides")
     # CMake and the compiler can spell a symlinked build directory differently.
@@ -66,7 +83,7 @@ def main():
     provenance = json.loads((build / "firmware-provenance.json").read_bytes())
     if not provenance["dependencies_lock_matches_pin"] or provenance["hardware_discovery"]["local_override"]:
         raise ValueError("release dependency provenance is not pinned")
-    provenance.pop("project_dirty", None)  # IDF regenerates its target-specific resolution.
+    check_dirty(source, provenance)
     provenance["source_revision"] = request["revision"]
     provenance["trust_profile"] = profile
     provenance["elf_sha256"] = hashlib.sha256((build / "navfeeder-esp.elf").read_bytes()).hexdigest()

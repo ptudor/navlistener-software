@@ -17,6 +17,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 from cryptography.hazmat.primitives import serialization
@@ -121,9 +122,26 @@ def immutable(path: Path, data: bytes):
         temporary.unlink(missing_ok=True)
 
 
+CHECKOUT = Path(__file__).resolve().parents[2]
+
+
+def release_command(role, command):
+    """Refuse a release adapter command that signs in the file adapter's test-only mode.
+
+    Any other file it names inside the source checkout is warned about: the
+    supplied Python adapters live there by design, private material never does.
+    """
+    if "--test-only" in command:
+        raise ValueError(f"{role} release signing command enables the adapter's test-only mode; use an encrypted external key")
+    for argument in command:
+        path = Path(argument).expanduser()
+        if path.is_absolute() and path.suffix != ".py" and path.resolve().is_relative_to(CHECKOUT):
+            print(f"warning: {role} signing command names {argument} inside the source checkout; private material belongs outside it", file=sys.stderr)
+
+
 def init_test_keys(directory: Path):
     directory = directory.expanduser().resolve()
-    checkout = Path(__file__).resolve().parents[2]
+    checkout = CHECKOUT
     if directory.is_relative_to(checkout):
         raise ValueError("private test keys must be stored outside the source checkout")
     directory.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -168,6 +186,8 @@ class Signers:
                     raise ValueError("metadata keys must use ECDSA P-256")
                 if not self.test_only and ("test_key" in spec or (spec.get("command") is not None and (not isinstance(spec["command"], list) or not spec["command"]))):
                     raise ValueError("release signing requires an explicit adapter; test key paths are forbidden")
+                if not self.test_only and spec.get("command") is not None:
+                    release_command(role, spec["command"])
                 from cryptography.hazmat.primitives.asymmetric import ec
                 public_key = serialization.load_pem_public_key(key.keyval["public"].encode())
                 if not isinstance(public_key, ec.EllipticCurvePublicKey) or not isinstance(public_key.curve, ec.SECP256R1) or SSlibKey.from_crypto(public_key).keyid != key.keyid:

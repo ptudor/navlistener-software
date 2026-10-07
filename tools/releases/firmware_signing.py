@@ -9,7 +9,7 @@ import zlib
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa, utils
 
-from repository import BOARD_FAMILIES, atomic
+from repository import BOARD_FAMILIES, atomic, release_command
 
 def public_bytes(key):
     return key.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
@@ -51,6 +51,8 @@ def keys(config, release):
             raise ValueError("firmware public key identity differs from configuration")
         if release and ("test_key" in entry or "TEST-ONLY" in entry["public"]):
             raise ValueError("release tracks refuse test firmware keys")
+        if release and entry.get("command"):
+            release_command("firmware", entry["command"])
         result.append(key)
     if len({key_id(key) for key in result}) != 3:
         raise ValueError("firmware recovery keys must be independent")

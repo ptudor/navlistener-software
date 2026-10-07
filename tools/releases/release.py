@@ -104,8 +104,9 @@ def clean(config):
         git("remote", "get-url", "--push", remote)
     pin = json.loads((SOURCE / "tools/releases/toolchain.json").read_bytes())
     idf = Path(os.environ.get("IDF_PATH", "/nonexistent"))
-    if not idf.is_dir() or git("rev-parse", "HEAD", cwd=idf) != pin["esp_idf_revision"]:
-        raise ValueError("activate the pinned ESP-IDF v5.5.4 environment before releasing")
+    # Checked here, before a number is reserved and committed, rather than first by the build adapter.
+    if not idf.is_dir() or git("rev-parse", "HEAD", cwd=idf) != pin["esp_idf_revision"] or git("status", "--porcelain", "--untracked-files=no", cwd=idf):
+        raise ValueError(f"activate the pinned, clean ESP-IDF {pin['esp_idf_tag']} environment before releasing")
 
 def save_transaction(directory, transaction, signers):
     role = "releases" if directory.name.isdecimal() else "timestamp"
