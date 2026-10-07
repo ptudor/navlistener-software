@@ -42,25 +42,32 @@ static unsigned verified_read(const rtc_io_t *io, int64_t *epoch)
     return max31328_running(regs, state[0], state[1], epoch) ? MAX31328_SET_OK : MAX31328_SET_UNVERIFIED;
 }
 
-unsigned max31328_set_verified(const rtc_io_t *io, int64_t epoch)
+unsigned max31328_set_verified(const rtc_io_t *io, const rtc_time_ref_t *ref, int64_t *written)
 {
     uint8_t regs[7], state[2];
-    if (!max31328_encode(epoch, regs)) return MAX31328_SET_UNVERIFIED;
+    // The range check first; the second loaded is derived again right before the write.
+    if (!max31328_encode(rtc_ref_second(ref, io->now_ms(io->ctx)), regs)) return MAX31328_SET_UNVERIFIED;
     if (!io->read(io->ctx, MAX31328_CONTROL, state, 2)) return MAX31328_SET_IO;
     unsigned result = MAX31328_SET_IO;
     // The oscillator must stay enabled on the backup cell.
     uint8_t control = state[0] & ~MAX31328_EOSC, status = status_keeping_flags(state[1]) & ~MAX31328_OSF;
-    // One burst: writing the seconds restarts the countdown chain, and the rest must
-    // follow within the second.
-    if ((control != state[0] && !io->write(io->ctx, MAX31328_CONTROL, &control, 1)) ||
-        !io->write(io->ctx, 0, regs, sizeof regs) ||
+    if (control != state[0] && !io->write(io->ctx, MAX31328_CONTROL, &control, 1)) goto failed;
+    // One burst: writing the seconds restarts the countdown chain, so the second loaded is
+    // the one nearest UTC at this moment, and the rest must follow within the second.
+    int64_t target = rtc_ref_second(ref, io->now_ms(io->ctx));
+    if (!max31328_encode(target, regs) || !io->write(io->ctx, 0, regs, sizeof regs) ||
         !io->write(io->ctx, MAX31328_STATUS, &status, 1)) goto failed;
     int64_t first, later;
     if ((result = verified_read(io, &first)) != MAX31328_SET_OK) goto failed;
-    if (first < epoch || first > epoch + 3) { result = MAX31328_SET_UNVERIFIED; goto failed; }
+    // Within a second of UTC at the read, so a lag is reported rather than accepted.
+    int64_t expected = rtc_ref_second(ref, io->now_ms(io->ctx));
+    if (first < expected - 1 || first > expected + 1) { result = MAX31328_SET_UNVERIFIED; goto failed; }
     io->delay(io->ctx, 1200);
     if ((result = verified_read(io, &later)) != MAX31328_SET_OK) goto failed;
-    if (later > first && later <= first + 3) return MAX31328_SET_OK;
+    if (later > first && later <= first + 3) {
+        if (written) *written = target;
+        return MAX31328_SET_OK;
+    }
     result = MAX31328_SET_UNVERIFIED;
 failed:
     invalidate(io);

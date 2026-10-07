@@ -72,6 +72,10 @@ bool rtc_gnss_candidate(rtc_candidate_t *c, const gnss_status_t *s, int64_t now,
     *epoch = (utc_ns + (now - s->fix_ms) * 1000000) / 1000000000LL;
     return c->samples >= 3 && s->fix_ms - c->first_sample_ms >= 2000;
 }
+rtc_time_ref_t rtc_candidate_ref(const rtc_candidate_t *c)
+{ return (rtc_time_ref_t){.utc_ns = c->last_utc_ns, .sampled_ms = c->last_sample_ms}; }
+int64_t rtc_ref_second(const rtc_time_ref_t *ref, int64_t now_ms)
+{ return (ref->utc_ns + (now_ms - ref->sampled_ms) * 1000000 + 500000000) / 1000000000; }
 unsigned rtc_trusted_utc(rtc_candidate_t *c, const gnss_status_t *g, uint8_t rtc_flags,
                          int64_t rtc_epoch, int64_t rtc_sampled_ms, int64_t now, int64_t *utc)
 {
