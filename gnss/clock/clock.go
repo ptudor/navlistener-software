@@ -43,6 +43,7 @@ func Relativistic(relF, ecc, sqrtA, eccAnom float64) float64 {
 // against the clock reference toc (docs/MATH.md §4). The group delay carried in
 // the model is the one for the tracked signal; a dual-frequency ionosphere-free
 // user cancels it (pass TGD=0).
+// Inputs must be finite; this evaluator does not reject NaN or Inf.
 func Offset(c Model, tow, ecc, sqrtA, eccAnom float64) float64 {
 	dt := gnsstime.EphAge(tow, c.Toc)
 	var relF float64
@@ -120,6 +121,7 @@ type UTCParams struct {
 // epoch in hand can evaluate the exact week-spanning form and the
 // leap-transition arm itself (the navlistener feed does); this
 // tow-only convenience stays on the wrapped axis and the current ΔtLS.
+// Inputs must be finite; this evaluator does not reject NaN or Inf.
 func UTCOffset(u UTCParams, tow float64) float64 {
 	dt := gnsstime.EphAge(tow, u.Tot)
 	return u.A0 + u.A1*dt + u.A2*dt*dt + u.DtLS
