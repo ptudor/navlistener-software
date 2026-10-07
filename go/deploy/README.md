@@ -108,7 +108,12 @@ down — otherwise `-r` would helpfully restart the daemon you just stopped. But
 supervisor pidfile actually names a live `daemon(8)`** first: a stale pidfile could otherwise
 `TERM` a reused, unrelated PID. If the supervisor is already gone but the child survives, it
 `TERM`s the child directly, so a dead supervisor can't leave `service stop` hanging on
-`wait_for_pids` forever. Then it waits on the child.
+`wait_for_pids` forever. Then it waits on **both** the supervisor and the collector: the child
+pidfile is written only after `daemon(8)`'s privilege drop, so it can be absent or stale while
+the supervisor is live (a crash-looping child, a start caught mid-fork), and waiting on the
+child alone would have returned at once and let `restart` race the historian's ordered drain.
+When the pidfile cannot name a live collector, `stop` finds it in the process table by its
+exact command line (`pgrep -f '^/usr/local/bin/navlistener -config '`) and waits on that.
 
 ### Log rotation — signal the supervisor, never the collector
 
@@ -125,7 +130,10 @@ A `SIGHUP` delivered to the collector itself is ignored in `../cmd/navlistener/m
 and braces — but rotation must target the supervisor regardless.
 
 Rotation: 7 generations, at 10 MB, mode 640, owned by the daemon user, with `J` (bzip2) and `C`
-(create if missing).
+(create if missing). `start` pre-creates a missing log with that same ownership and mode
+(`install -o navlistener -g navlistener -m 640 /dev/null /var/log/navlistener.log`), because
+`daemon(8)` runs as root and would otherwise create it `root:wheel 0600` — unreadable to the
+daemon user and the operator group until the first rotation.
 
 ### Reverse-proxy request limits
 

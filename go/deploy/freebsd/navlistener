@@ -86,7 +86,9 @@ navlistener_start() {
 	# invoking environment (so the daemon user's /usr/sbin/nologin shell is not an
 	# obstacle — with -m the CALLER's shell is invoked), and the inner `sh -c` forces
 	# POSIX-sh semantics because root's login shell on FreeBSD is csh.
-	_check="${navlistener_program} -check-config -config ${navlistener_config}"
+	# The config path is single-quoted inside the sh string so a path with spaces
+	# survives both shells (csh passes single quotes through inside double quotes).
+	_check="${navlistener_program} -check-config -config '${navlistener_config}'"
 	if ! _preflight="$(su -m "${navlistener_user}" -c "sh -c \"${_check}\"" 2>&1)"; then
 		# Name the user: with regression fix a permission-denied here is a provisioning
 		# fact about ${navlistener_user}, not about root, and the message must say so.
@@ -97,6 +99,14 @@ navlistener_start() {
 	# Surface the preflight's non-fatal findings without blocking the start.
 	echo "${_preflight}" | grep '^  WARNING:' || :
 	install -d -o "${navlistener_user}" -g "${navlistener_user}" -m 0755 "${navlistener_rundir}"
+	# daemon(8) runs as root and creates a missing -o file root:wheel 0600, which stays
+	# unreadable to the daemon user and the operator group until newsyslog's first
+	# rotation applies navlistener:navlistener 640. Create it with the rotation's
+	# ownership and mode up front — only when absent, since install(1) over an existing
+	# file would replace the log that is there.
+	if [ ! -e "${navlistener_logfile}" ]; then
+		install -o "${navlistener_user}" -g "${navlistener_user}" -m 640 /dev/null "${navlistener_logfile}"
+	fi
 	echo "Starting ${name}."
 	# -H: reopen -o output on SIGHUP so newsyslog can rotate the logfile without killing the
 	# daemon or losing the historian's in-flight batch. Requires daemon(8) 13.x+.
@@ -112,10 +122,12 @@ navlistener_stop() {
 	# a stale supervisor pidfile could otherwise TERM a reused, unrelated PID. If the
 	# supervisor is already gone but the child survives, TERM the child directly so a dead
 	# supervisor can't leave `service stop` hanging on wait_for_pids forever.
-	_child="$(cat ${pidfile} 2>/dev/null)"
+	_child="$(cat "${pidfile}" 2>/dev/null)"
+	_sup=""
 	if [ -f "${supervisor_pidfile}" ] && pgrep -F "${supervisor_pidfile}" daemon >/dev/null 2>&1; then
+		_sup="$(cat "${supervisor_pidfile}")"
 		echo "Stopping ${name}."
-		kill -TERM "$(cat ${supervisor_pidfile})" 2>/dev/null
+		kill -TERM "${_sup}" 2>/dev/null
 	elif [ -n "${_child}" ] && pgrep -F "${pidfile}" "${name}" >/dev/null 2>&1; then
 		echo "Stopping ${name} (supervisor absent; signalling child directly)."
 		kill -TERM "${_child}" 2>/dev/null
@@ -123,7 +135,18 @@ navlistener_stop() {
 		echo "${name} not running."
 		return 0
 	fi
-	wait_for_pids "${_child}"
+	# Wait for the supervisor AND the collector. daemon(8) writes the child pidfile
+	# only after its privilege drop, so the file can be absent or stale while the
+	# supervisor is live (a crash-looping child, a start caught mid-fork); waiting on
+	# an empty child list returned at once and let `restart` race the historian's
+	# ordered drain. When the pidfile cannot name a live collector, find it in the
+	# process table by its exact command line — the supervisor's title and a
+	# -check-config preflight do not match the anchored pattern.
+	if [ -z "${_child}" ] || ! pgrep -F "${pidfile}" "${name}" >/dev/null 2>&1; then
+		_child="$(pgrep -f "^${navlistener_program} -config " 2>/dev/null | tr '\n' ' ')"
+	fi
+	# Unquoted on purpose: each variable may hold zero, one or several pids.
+	wait_for_pids ${_sup} ${_child}
 }
 
 run_rc_command "$1"
