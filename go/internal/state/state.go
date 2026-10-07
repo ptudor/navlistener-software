@@ -2574,8 +2574,8 @@ func (s *Store) Propagate(now time.Time) {
 				}
 				if pos, err := glonass.Propagate(st.gloEph, tk); err == nil && finiteECEF(pos) {
 					st.pos, st.havePos, st.posAt = pos, true, now
+					counts["glonass"]++
 				}
-				counts["glonass"]++
 				continue
 			}
 			if !st.haveEph {
@@ -2601,8 +2601,8 @@ func (s *Store) Propagate(now time.Time) {
 			if pos, err := kepler.Propagate(st.eph, tow); err == nil && finiteECEF(pos) {
 				st.pos, st.havePos, st.posAt = pos, true, now
 				st.posIOD = st.iod // the data set this position came from
+				counts[st.key.G.String()]++
 			}
-			counts[st.key.G.String()]++
 		}
 		sh.mu.Unlock()
 	}
