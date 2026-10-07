@@ -40,6 +40,11 @@ func scanUBX(r io.Reader, source string, now func() time.Time, emit func(*RawFra
 			emit(solutionFrame(e, source))
 		}
 	}
+	defer func() {
+		if epoch.pending != nil {
+			emitSolution(epoch.endOfEpoch(epoch.pending.tow()))
+		}
+	}()
 	for {
 		// Resynchronise to the sync pattern.
 		if err := syncTo(br, ubxSync1, ubxSync2); err != nil {
