@@ -229,8 +229,11 @@ sections above in these places:
   all-ones frame) decides nothing and counts no fault. A failed read stops sampling, but
   the frame is still written in full. The results are logged by the expander's task, never
   by the panel refresh task, whose stack grew from 2 KiB to 3 KiB for the I2C reads.
-- **GP3 can float.** The HDC2080's DRDY/INT output is high impedance until firmware
-  enables it (register 0x0E bit 2, reset 0), and `HUM_INT_N` has no pull-up, so with
-  GPINTEN 0x3E the input floats today. A floating GP3 shows as a climbing `HUM` count in the
-  status line. Enabling the HDC2080's output active low with its interrupts masked, or
-  leaving GP3 out of GPINTEN until then, would hold it still.
+- **GP3 is driven by the HDC.** The HDC2080's DRDY/INT output is high impedance until
+  firmware enables it (0x0E bit 2, reset 0) and `HUM_INT_N` has no pull-up, so GP3 would
+  float under GPINTEN 0x3E. The humidity driver's configuration now masks every HDC
+  interrupt source (0x07 = 0) and enables the output active low in clear-on-read mode (0x0E
+  bits 2-0 = 100; INT_MODE must be 0 or the pin stays high impedance), each read back, so the
+  line holds high (HDC2080 SNAS678C section 8.3.4.1, HDC2022 SNAS774A section 7.3.5.1). A
+  `3V3_SENS` power cycle returns the HDC to high impedance, so a future `SENS_EN` control
+  must configure it again as well as resume the expander.

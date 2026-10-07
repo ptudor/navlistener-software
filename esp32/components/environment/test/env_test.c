@@ -5,7 +5,7 @@
 #include <string.h>
 typedef struct {
     uint8_t mcp[16][2], hdc[256], bmp[256];
-    bool fail, hdc_stuck, bmp_stuck, hdc_pending, bmp_pending, heater_stuck;
+    bool fail, hdc_stuck, bmp_stuck, hdc_pending, bmp_pending, heater_stuck, hdc_mask_stuck;
     uint8_t absent; // this address NACKs
     unsigned delay_ms;
 } fake_t;
@@ -29,7 +29,8 @@ static bool write_bus(void *ctx, uint8_t address, uint8_t reg, const uint8_t *p,
     if (f->fail || address == f->absent) return false;
     if (address == 0x18) { assert(reg == 1 && n == 2); memcpy(f->mcp[reg], p, n); }
     else if (address == 0x40) {
-        assert(n == 1 && (reg == 0xe || reg == 0xf) && !(reg == 0xe && (*p & 0x80))); // never SOFT_RES
+        assert(n == 1 && (reg == 0x07 || reg == 0xe || reg == 0xf) && !(reg == 0xe && (*p & 0x80))); // never SOFT_RES
+        if (reg == 0x07 && f->hdc_mask_stuck) return true;
         f->hdc[reg] = reg == 0xe && f->heater_stuck ? (*p & ~8) | (f->hdc[reg] & 8) : *p;
         if (reg == 0xf && (*p & 1)) f->hdc_pending = true;
     } else {
@@ -59,7 +60,8 @@ static void setup_variant(fake_t *f, env_sensors_t *s, env_hdc_variant_t variant
     f->mcp[5][0] = 0xe1; f->mcp[5][1] = 0x98; // +25.5 C with all alert flags set
     le16(f->hdc + 0xfc, 0x5449); le16(f->hdc + 0xfe, 0x07d0);
     le16(f->hdc, 0x8000); le16(f->hdc + 2, 0x8000); // half-scale: HDC2080 42.12 C at 3.3 V; HDC2022 42.5 C; both 50 %RH
-    f->hdc[0xe] = 0x7b; // auto mode + heater must be cleared, interrupt bits preserved
+    f->hdc[0xe] = 0x7b; // auto mode + heater must be cleared; DRDY/INT becomes a driven active-low output
+    f->hdc[0x07] = 0xf8; // every interrupt source enabled, as a stale setting would leave them
     f->bmp[0] = 0x50; f->bmp[3] = 0x10; // chip ID, command ready
     // Synthetic device trim: t1=25600*256, t2=2^-16, t3=0.
     // Raw temperature 8192000 yields exactly 25 C. Only pressure offset
@@ -92,7 +94,7 @@ static void test_hdc_variants(void)
     for (env_hdc_variant_t variant = ENV_HDC2080; variant <= ENV_HDC2022; variant++) {
         fake_t f; env_sensors_t s; env_sample_t sample;
         setup_variant(&f, &s, variant);
-        assert(s.hdc_ready && s.hdc_variant == variant && f.hdc[0xe] == 3);
+        assert(s.hdc_ready && s.hdc_variant == variant && f.hdc[0xe] == 4 && f.hdc[0x07] == 0);
         for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
             le16(f.hdc, cases[i].raw);
             le16(f.hdc + 2, cases[i].raw);
@@ -161,18 +163,22 @@ static void test_heater_register(void)
     env_sensors_init(&s, &io, ENV_HDC2080, ENV_PART_MCP9808 | ENV_PART_BMP388); assert(s.io_error && s.mcp_ready && s.hdc_ready && !s.bmp_ready);
     env_sensors_read(&s, &sample); assert(sample.mcp_valid && sample.hdc_valid && sample.bus_error);
     // A reboot during a heater run: HEAT_EN is still set and the HDC does not answer at init. It is
-    // not configured blind; a later retry identifies it and clears the heater, keeping INT bits.
+    // not configured blind; a later retry identifies it, clears the heater and drives DRDY/INT.
     setup(&f, &s); io = s.io; f.hdc[0xe] = 0x0b; f.absent = 0x40;
     env_sensors_init(&s, &io, ENV_HDC2080, ENV_PART_MCP9808 | ENV_PART_BMP388); assert(!s.hdc_ready && f.hdc[0xe] == 0x0b);
     assert(!env_sensors_retry_hdc(&s) && !s.hdc_ready && s.io_error && f.hdc[0xe] == 0x0b);
     f.absent = 0;
-    assert(env_sensors_retry_hdc(&s) && s.hdc_ready && !s.io_error && f.hdc[0xe] == 3);
-    assert(env_sensors_retry_hdc(&s) && f.hdc[0xe] == 3); // ready: no further writes
+    assert(env_sensors_retry_hdc(&s) && s.hdc_ready && !s.io_error && f.hdc[0xe] == 4 && f.hdc[0x07] == 0);
+    assert(env_sensors_retry_hdc(&s) && f.hdc[0xe] == 4); // ready: no further writes
     env_sensors_read(&s, &sample); assert(sample.hdc_valid);
     // A part at 0x40 that is not an HDC is never written.
     setup(&f, &s); io = s.io; f.hdc[0xe] = 0x0b; f.hdc[0xfc] = 0;
     env_sensors_init(&s, &io, ENV_HDC2080, ENV_PART_MCP9808 | ENV_PART_BMP388);
     assert(!env_sensors_retry_hdc(&s) && !s.hdc_ready && f.hdc[0xe] == 0x0b);
+    // Interrupt masks that do not read back leave the HDC unconfigured, and its output undriven.
+    setup(&f, &s); io = s.io; f.hdc[0xe] = 0x0b; f.hdc[0x07] = 0xf8; f.hdc_mask_stuck = true;
+    env_sensors_init(&s, &io, ENV_HDC2080, ENV_PART_MCP9808 | ENV_PART_BMP388);
+    assert(!s.hdc_ready && f.hdc[0x07] == 0xf8 && f.hdc[0xe] == 0x0b);
     // Parts the manifest does not list are never touched, even when they answer.
     setup(&f, &s); io = s.io; f.fail = false;
     memset(f.mcp, 0, sizeof f.mcp); f.mcp[6][1] = 0x54; f.mcp[7][0] = 4; f.mcp[1][0] = 1; // asleep
@@ -201,7 +207,7 @@ static void test_heater_register(void)
     assert(!s.hdc_ready && s.mcp_ready && s.bmp_ready);
     assert(!env_sensors_retry_hdc(&s));
     f.heater_stuck = false;
-    assert(env_sensors_retry_hdc(&s) && f.hdc[0xe] == 3);
+    assert(env_sensors_retry_hdc(&s) && f.hdc[0xe] == 4);
 }
 static void test_sensor_recovery(void)
 {
@@ -273,7 +279,7 @@ int main(void)
     fake_t f; env_sensors_t s; env_sample_t sample;
     setup(&f, &s);
     assert(s.mcp_ready && s.hdc_ready && s.bmp_ready);
-    assert(f.hdc[0xe] == 3 && f.bmp[0x1c] == 0x0b); // heater off; pressure 8x, temperature 2x
+    assert(f.hdc[0xe] == 4 && f.bmp[0x1c] == 0x0b); // heater off, DRDY/INT driven; pressure 8x, temperature 2x
     env_sensors_read(&s, &sample);
     assert(sample.mcp_valid && sample.hdc_valid && sample.bmp_valid);
     assert(sample.mcp_c == 25.5 && fabs(sample.hdc_c - 42.12) < 1e-9);

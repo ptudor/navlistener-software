@@ -320,7 +320,9 @@ panel) or a 16-bit one (the 3900 mil board's on-board chain), and later runs log
 mismatched bits. That write holds the LEDs dark for about 12 ms. The firmware never
 switches `3V3_SENS` off today; any future `SENS_EN` control must call
 `io_expander_suspend()` before the rail goes off and `io_expander_resume()` once it is back,
-because GP2–GP5 fall to 0 V with the rail and the I2C pull-ups go with it. The expander's
+because GP2–GP5 fall to 0 V with the rail and the I2C pull-ups go with it, and must configure
+the HDC2080 again: its configuration drives `HUM_INT_N` (which has no pull-up) high, and a
+power cycle returns that output to high impedance. The expander's
 status (configured, chain length, per-line counts and times, readback runs and mismatches,
 and the last INA3221 alert flags) is logged at boot and hourly. It is not in ObserverDetails
 telemetry yet: that needs a new tag in the Go decoder and its fixtures. See

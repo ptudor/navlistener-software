@@ -33,13 +33,17 @@ static void bmp_delay(uint32_t us, void *ctx)
 // Both variants return these IDs; they verify the family, not the variant.
 static void init_hdc(env_sensors_t *s)
 {
-    uint8_t p[4], value;
+    uint8_t p[4];
+    // Every interrupt source masked (0x07), then manual conversions, heater off and the DRDY/INT
+    // output driven: enabled (bit 2), active low (INT_POL 0) and clear-on-read (INT_MODE 0,
+    // without which the pin stays high impedance). With nothing unmasked it holds high, so the
+    // board's HUM_INT_N, which has no pull-up, never floats (HDC2080 SNAS678C section 8.3.4.1,
+    // HDC2022 SNAS774A section 7.3.5.1). The masks go first so the output never shows a stale one.
+    const uint8_t masked = 0, config = 0x04;
     if ((s->hdc_variant == ENV_HDC2080 || s->hdc_variant == ENV_HDC2022) &&
-        read_reg(s, 0x40, 0xfc, p, 4) && le16(p) == 0x5449 && le16(p + 2) == 0x07d0 &&
-        read_reg(s, 0x40, 0x0e, p, 1)) {
-        value = p[0] & 7; // manual conversions, heater off, preserve interrupt configuration
-        s->hdc_ready = write_reg(s, 0x40, 0x0e, &value, 1) &&
-                       read_reg(s, 0x40, 0x0e, p, 1) && p[0] == value;
+        read_reg(s, 0x40, 0xfc, p, 4) && le16(p) == 0x5449 && le16(p + 2) == 0x07d0) {
+        s->hdc_ready = write_reg(s, 0x40, 0x07, &masked, 1) && read_reg(s, 0x40, 0x07, p, 1) && p[0] == masked &&
+                       write_reg(s, 0x40, 0x0e, &config, 1) && read_reg(s, 0x40, 0x0e, p, 1) && p[0] == config;
     }
 }
 bool env_sensors_retry_hdc(env_sensors_t *s)
