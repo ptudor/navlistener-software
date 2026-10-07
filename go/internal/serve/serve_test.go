@@ -1,11 +1,14 @@
 package serve
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -914,6 +917,54 @@ func TestMethodNotAllowed(t *testing.T) {
 	}
 	if env.OK || env.Code != http.StatusMethodNotAllowed {
 		t.Errorf("error envelope = %+v", env)
+	}
+}
+
+// TestRejectedRequestBodyDrainIsBounded guards a POST that declares a body it
+// never sends gets its 405 with Connection: close and the server closes the
+// connection within the body read deadline, instead of parking the connection
+// goroutine in net/http's post-handler body drain for as long as the client
+// likes. Runs against a real listener because the drain lives in net/http's
+// connection loop, not in the handler.
+func TestRejectedRequestBodyDrainIsBounded(t *testing.T) {
+	s := testServer(nil)
+	ln, err := s.Listen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = s.Start(ln) }()
+	defer func() { _ = s.Close() }()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := fmt.Fprintf(conn, "POST /gnss/api/v2/svs HTTP/1.1\r\nHost: navlistener.invalid\r\nContent-Length: 200000\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("no response to a body-less POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusMethodNotAllowed || resp.Header.Get("Allow") != "GET, HEAD" {
+		t.Fatalf("status %d Allow %q, want 405 GET, HEAD", resp.StatusCode, resp.Header.Get("Allow"))
+	}
+	if !resp.Close {
+		t.Errorf("405 did not ask to close the connection (Connection header %q)", resp.Header.Get("Connection"))
+	}
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatalf("reading the 405 body: %v", err)
+	}
+	// The body was never sent; the server must give up draining it and close.
+	if n, err := conn.Read(make([]byte, 1)); err == nil || n != 0 {
+		t.Fatalf("connection still open %v after the 405 (read %d bytes, err %v)", time.Since(start), n, err)
+	} else if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		t.Fatalf("server kept the connection open past the client deadline: the body drain was not bounded")
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("connection closed only after %v, want within the %v body read deadline", elapsed, bodyReadDeadline)
 	}
 }
 

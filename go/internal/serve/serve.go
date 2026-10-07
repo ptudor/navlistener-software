@@ -1146,14 +1146,40 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": msg, "code": code})
 }
 
+// bodyReadDeadline bounds how long net/http's post-handler drain may wait on a
+// request body no handler reads. The server deliberately sets no ReadTimeout
+// (it would cancel SSE contexts through the background disconnect read), so
+// without this a POST declaring a body it trickles in parked the connection
+// goroutine for as long as the client liked. The proxy must still buffer
+// request bodies (go/deploy/README.md); this bounds the exposed-listener case.
+const bodyReadDeadline = time.Second
+
+func boundRequestBodyRead(w http.ResponseWriter) {
+	// Unsupported transports (none on this plain HTTP/1.1 listener) report
+	// ErrNotSupported; the deadline is a bound, not a precondition.
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(bodyReadDeadline))
+}
+
 // methodNotAllowedGetHead writes a 405 with the RFC 9110 §15.5.6 Allow header when the
 // request method is not GET or HEAD, returning true (the caller should then return). // shared by the feed, events-query/summary, and SSE handlers so the Allow header — which the
 // SSE handler already set — is applied consistently on every read endpoint's 405.
+//
+// The 405 is final, so the drain of whatever body was declared is bounded and
+// the connection is closed rather than kept for a client that may never send
+// it. A GET/HEAD that declares a body (or a chunked one, ContentLength -1) is
+// answered without reading it and gets the same bound; a bodiless request — the
+// SSE case — gets no read deadline at all, since the stream's connection is
+// read only by net/http's disconnect detector, which a deadline would trip.
 func methodNotAllowedGetHead(w http.ResponseWriter, r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		boundRequestBodyRead(w)
 		w.Header().Set("Allow", "GET, HEAD")
+		w.Header().Set("Connection", "close")
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return true
+	}
+	if r.ContentLength != 0 {
+		boundRequestBodyRead(w)
 	}
 	return false
 }

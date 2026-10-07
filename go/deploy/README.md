@@ -143,7 +143,9 @@ Apply the `/gnss/events` connection cap as its own `limit_conn` zone rather than
 API zone — a stream is held open for hours, so counting it against the short-request cap would
 starve the dashboard's polling — and keep response buffering off on it as §5 requires. Keep
 request-body buffering **on** for every path (the reverse proxy's usual default), so a slowly
-trickled request body never reaches the collector. The rates are a starting point: a
+trickled request body never reaches the collector: the collector bounds the drain of a
+rejected request's body with a one-second read deadline and closes that connection, but that
+is a backstop for an exposed listener, not a substitute for buffering at the proxy. The rates are a starting point: a
 dashboard polls the feeds every 30 s and the summary a few times a minute, so single-digit
 requests per second per client is generous for real use and still far below what fills the
 collector's slots.
