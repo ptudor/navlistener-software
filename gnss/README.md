@@ -174,7 +174,7 @@ cycles and no back-edges from a lower layer to a higher one.
 
 | Constellation | Signals decoded | Propagation | Notes |
 |---|---|---|---|
-| **GPS** | L1 C/A LNAV, L2C·L5 CNAV | Kepler | Full clock, TGD, ISCs, iono, UTC. |
+| **GPS** | L1 C/A LNAV, L2C·L5 CNAV | Kepler | Full clock, TGD, ISCs; iono/UTC pages not decoded. |
 | **QZSS** | L1 C/A LNAV, L2C·L5 CNAV | Kepler | Reuses the GPS decoders verbatim — QZSS's signal structure is identical for these. Different A_REF for CNAV; a few redefined fields at the same bit positions. |
 | **Galileo** | E1-B I/NAV, E5a F/NAV | Kepler | Both signals decoded independently, which enables the cross-signal integrity check. OSNMA field captured (presence only in v1). GGTO decoded. |
 | **BeiDou** | B1I D1 NAV, B2a B-CNAV2 | Kepler + GEO branch | Cross-validated B1I against B2a on real frames. BDT-UTC and BDGIM coefficients decoded. |
