@@ -35,6 +35,13 @@ function pageDirectory(locale, page) {
   return path.join(dist, ...parts)
 }
 
+// A substitution that finds nothing would silently leave the overview text on
+// the map pages; the export fails instead so index.html and this script move together.
+function replaceOnce(html, from, to) {
+  if (!html.includes(from)) throw new Error(`Static export cannot find ${JSON.stringify(from)} in index.html; update export-static.mjs`)
+  return html.replace(from, to)
+}
+
 try {
   const [{ render }, shell] = await Promise.all([
     import(pathToFileURL(serverBundle)),
@@ -51,9 +58,8 @@ try {
         .replace('<!--locale-links-->', localeHead(locale, page))
         .replace('<!--app-html-->', await render(locale, page))
       if (page === 'map') {
-        html = html
-          .replace("A live view of NavListen's public satellite observations, broadcast health, and receiver activity.", 'Live worldwide GNSS monitoring coverage from the NavListen station network.')
-          .replace('<title>NavListen data service · Integrity Satellite</title>', '<title>GNSS monitoring map · NavListen</title>')
+        html = replaceOnce(html, "A live view of NavListen's public satellite observations, broadcast health, and receiver activity.", 'Live worldwide GNSS monitoring coverage from the NavListen station network.')
+        html = replaceOnce(html, '<title>NavListen data service · Integrity Satellite</title>', '<title>GNSS monitoring map · NavListen</title>')
       }
       const directory = pageDirectory(locale, page)
       await mkdir(directory, { recursive: true })
