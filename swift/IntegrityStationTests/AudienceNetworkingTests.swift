@@ -169,15 +169,18 @@ struct AudienceNetworkingTests {
         )
 
         store.start(session: session, stationIDs: ["private-station"])
-        try await Task.sleep(for: .milliseconds(150))
+        // The state flips before the partition erase runs; wait for both.
+        #expect(try await eventually { store.authorizationLost })
+        #expect(try await eventually {
+            let snapshot = try await cache.loadObservers(for: session.cacheKey)
+            let cursor = try await cache.loadCursor(for: session.cacheKey)
+            return snapshot == nil && cursor == nil
+        })
 
         #expect(store.authorizationLost)
         #expect(store.observers.isEmpty)
         #expect(store.events.isEmpty)
-        let erasedSnapshot = try await cache.loadObservers(for: session.cacheKey)
-        let erasedCursor = try await cache.loadCursor(for: session.cacheKey)
-        #expect(erasedSnapshot == nil)
-        #expect(erasedCursor == nil)
+        #expect(store.activeSession == nil)
     }
 
     @Test

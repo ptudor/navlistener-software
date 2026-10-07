@@ -32,6 +32,10 @@ protocol StationNotificationCenter: Sendable {
         system?.canPresent = { [weak self] id in self?.canPresent(id) ?? false }
     }
 
+    /// Deliveries still running for the current generation; tests wait for
+    /// this to drain rather than sleeping.
+    var pendingDeliveryCount: Int { jobs.count }
+
     func refreshPermission() async { permission = await center.permission() }
     func requestPermission() async {
         _ = try? await center.requestPermission()

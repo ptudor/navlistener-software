@@ -12,6 +12,26 @@ actor ConnectionBarrier {
     func release() { waiter?.resume(); waiter = nil }
 }
 
+/// Counts completions a seam reports, so a test can wait for a held
+/// operation to have finished rather than sleeping past it.
+actor CompletionCounter {
+    private(set) var value = 0
+    func increment() { value += 1 }
+}
+
+/// Waits, bounded, for a condition the code under test reaches on its own.
+/// Where a sleep-then-assert guessed how long the work takes, this returns as
+/// soon as the condition holds and fails at the bound instead of flaking.
+/// Main-actor isolated, like the stores and services the conditions read.
+@MainActor
+func eventually(_ condition: @MainActor () async throws -> Bool) async rethrows -> Bool {
+    for _ in 0..<500 {
+        if try await condition() { return true }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    return try await condition()
+}
+
 actor RaceCredentials: SecureConnectionStoring {
     var lastServer: String?
     var tokens: [String: String] = [:]
