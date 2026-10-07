@@ -167,8 +167,13 @@ observe artifact requests. If the slot was missed while offline, the device
 checks 5–30 minutes after connectivity returns.
 
 Failures retry with randomized 1 hour, 6 hour, and then 24 hour delays. A manual
-check is immediate. Timestamp and channel metadata are small enough to fetch in
-full, which avoids stale-validator and missing-cache ambiguity.
+check is immediate. A completed check whose answer is stable is not a failure:
+a device excluded by its rollout cohort, an incompatible or unknown board, or a
+channel that still selects a release this device already rolled back keeps its
+weekly slot rather than climbing the retry ladder. A `404` from the primary
+origin is likewise an answer, not a reason to ask the secondary origin for the
+same file. Timestamp and channel metadata are small enough to fetch in full,
+which avoids stale-validator and missing-cache ambiguity.
 
 When a channel changes, the collector may send an `UPDATE_CONTROL` CHECK with
 the HINT flag over the device's existing outbound TLS connection. The hint
@@ -305,7 +310,12 @@ ACKs are backed by the historian's durable-resolution watermark. A missing or
 false capability, including an old or live-only collector, prevents unattended
 installation with `SAFETY_DURABILITY_UNAVAILABLE`. Collection and staging
 continue normally. Only the attended local `--discard-backlog` path may override
-that requirement.
+that requirement. An automatic install held by a safety gate retries 5 minutes
+after the first attempt and then on the 1 hour, 6 hour and 24 hour ladder for
+the same staged release; while no check is due and the staged release is still
+the channel's verified choice, a retry re-uses the last check's verdict and
+re-verifies the partition signature locally instead of refreshing the
+repository again. An operator-requested install always refreshes first.
 
 ### Trial boot and rollback
 

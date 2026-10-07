@@ -28,5 +28,17 @@ int nvf_update_accept_command(nvf_update_status_t *,const nvf_update_command_t *
 bool nvf_update_offline_install_allowed(const nvf_update_status_t *,const nvf_tuf_trust_t *);
 uint64_t nvf_update_weekly(uint64_t now,const uint8_t board_uid[NVF_BOARD_UID_SIZE],unsigned channel,uint32_t jitter,const nvf_tuf_io_t *);
 uint64_t nvf_update_retry(uint64_t now,unsigned attempt,uint32_t random);
+// next_check after a check whose verdict is not retried: a stable eligibility result or a
+// release that already rolled back is an answer, so a slot still in the future stays and an
+// overdue one moves to the weekly slot (the first retry step when the clock cannot place
+// one). Always after now, so the worker never re-checks at its loop rate.
+uint64_t nvf_update_settle(uint64_t next_check,uint64_t now,const uint8_t board_uid[NVF_BOARD_UID_SIZE],unsigned channel,uint32_t jitter,const nvf_tuf_io_t *);
+// When automatic installation retries after a safety gate held it: 5 minutes after the first
+// attempt, then the retry ladder (1 h, 6 h, 24 h) for every later one.
+uint64_t nvf_update_install_retry(uint64_t now,unsigned attempts,uint32_t random);
+// An automatic install may trust the last persisted check instead of refreshing: no check is
+// due yet, the last one succeeded, and the staged release is still the channel's verified
+// choice (sequence, generation and hash). Re-verifying the partition signature is local.
+bool nvf_update_staged_current(const nvf_update_status_t *,uint64_t now);
 void nvf_update_encode_status(const nvf_update_status_t *,unsigned profile,uint8_t out[140]);
 const char *nvf_update_error_name(unsigned error);

@@ -50,6 +50,26 @@ int main(void) {
     assert(nvf_update_weekly(now,eui,1,300,&io)==weekly+300);
     assert(nvf_update_weekly(weekly,eui,1,0,&io)==weekly+604800);
     assert(nvf_update_retry(now,0,0)==now+3600 && nvf_update_retry(now,1,0)==now+21600 && nvf_update_retry(now,20,0)==now+86400);
+    // A verdict that is not retried (rolled-back release still selected, cohort exclusion)
+    // keeps a future slot and moves an overdue one past now, onto the weekly slot.
+    assert(nvf_update_settle(now+5,now,eui,1,0,&io)==now+5);
+    assert(nvf_update_settle(now,now,eui,1,0,&io)==weekly && nvf_update_settle(0,now,eui,1,0,&io)==weekly);
+    assert(nvf_update_settle(now-86400,now,eui,1,0,&io)>now);
+    assert(nvf_update_settle(0,now,eui,3,0,&io)==now+3600); // no weekly slot for an unusable channel
+    // Safety-gate retries: 5 minutes once, then the retry ladder, never under an hour.
+    assert(nvf_update_install_retry(now,0,0)==now+300 && nvf_update_install_retry(now,1,0)==now+3600);
+    assert(nvf_update_install_retry(now,2,0)==now+21600 && nvf_update_install_retry(now,9,0)==now+86400);
+    for(unsigned attempts=1;attempts<12;attempts++)assert(nvf_update_install_retry(now,attempts,0xffffffff)>=now+3600 && nvf_update_install_retry(now,attempts,0xffffffff)<=now+604800);
+    // An automatic install trusts the persisted check only while it is current.
+    nvf_update_status_t current={.last_check=now,.next_check=now+1000,.staged={.sequence=31,.generation=7},.available={.sequence=31,.generation=7}};
+    memset(current.staged.hash,0x5a,32);memset(current.available.hash,0x5a,32);
+    assert(nvf_update_staged_current(&current,now));
+    assert(!nvf_update_staged_current(&current,now+1000));
+    current.retry=1;assert(!nvf_update_staged_current(&current,now));current.retry=0;
+    current.available.generation=8;assert(!nvf_update_staged_current(&current,now));current.available.generation=7;
+    current.available.hash[0]^=1;assert(!nvf_update_staged_current(&current,now));current.available.hash[0]^=1;
+    current.last_check=0;assert(!nvf_update_staged_current(&current,now));current.last_check=now;
+    current.staged.sequence=0;assert(!nvf_update_staged_current(&current,now));
     nvf_tuf_trust_t trust={0};s.error=UP_NETWORK;s.staged.generation=7;trust.generations[s.channel]=7;
     assert(nvf_update_offline_install_allowed(&s,&trust));
     // A newer channel may withdraw the staged release and choose a different
