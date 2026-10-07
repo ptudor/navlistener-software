@@ -39,6 +39,10 @@ func ProjectPublic(f *ingest.RawFrame) (*ingest.RawFrame, bool) {
 	if err != nil || !c.PublicEligible() {
 		return nil, false
 	}
+	// f.SigID is the raw receiver tag (Galileo E1-B arrives as sigId 1);
+	// AllowsSignal compares it in the canonical signal space the grant is
+	// stored in, so the documented "2:0" grant admits real E1-B traffic. The
+	// frame keeps its raw sigId: the per-SV feed keys are not canonicalized.
 	if !c.Publication.AllowsSignal(int(f.GnssID), f.SigID) {
 		return nil, false
 	}

@@ -24,8 +24,13 @@ import (
 type GalileoFNAV struct {
 	PageType int
 	IODnav   int
-	SISA     int // page 1 only, SISA(E1,E5a)
-	E5aHS    int // page 1 only, E5a Signal Health Status
+	// SVID is the transmitting satellite's own ID (page 1 only, 1..36,
+	// GAL-OS-SIS-ICD-2.2 Table 30), inside the CRC-24Q boundary — the F/NAV
+	// set's only in-band identity. AssembleGalileoFNAV refuses a page 1 whose
+	// SVID is not the svid being assembled. Zero for every other page type.
+	SVID  int
+	SISA  int // page 1 only, SISA(E1,E5a)
+	E5aHS int // page 1 only, E5a Signal Health Status
 	// E5aDVS is the E5a Data Validity Status (page 1 only, regression fix):
 	// 0 = navigation data valid, 1 = "Working without guarantee"
 	// (GAL-OS-SIS-ICD-2.2 Table 79/81). The ICD gives E5a TWO per-signal
@@ -127,6 +132,7 @@ func DecodeGalileoFNAV(words []uint32) (*GalileoFNAV, error) {
 		// regression fix added SISA/E5aHS; regression fix added E5aDVS; the ionospheric (NeQuick
 		// ai0/ai1/ai2) fields remain undecoded — no NeQuick model exists in
 		// gnss/iono yet (additional constellation models are planned).
+		w.SVID = int(u(6, 6)) // transmitting SVID, 1..36 (Table 30) — the in-band identity
 		w.IODnav = int(u(12, 10))
 		w.SISA = int(u(94, 8))
 		w.E5aHS = int(u(153, 2))
@@ -220,6 +226,12 @@ func AssembleGalileoFNAV(svid int, p1, p2, p3, p4 *GalileoFNAV) (kepler.Ephemeri
 	}
 	if p1.IODnav != p2.IODnav || p2.IODnav != p3.IODnav || p2.IODnav != p4.IODnav {
 		return kepler.Ephemeris{}, clock.Model{}, errIODMismatch
+	}
+	// Page 1's in-band SVID must name the SV being assembled (Galileo SVID
+	// 1..36 equals the receiver's svId directly); otherwise the set is
+	// mis-attributed, the same refusal AssembleGPSCNAV makes on its PRN.
+	if p1.SVID != svid {
+		return kepler.Ephemeris{}, clock.Model{}, errPRNMismatch
 	}
 	eph := p2.eph
 	eph.I0, eph.Omega, eph.DeltaN = p3.eph.I0, p3.eph.Omega, p3.eph.DeltaN

@@ -99,6 +99,25 @@ func TestProjectPublicHonorsSignalAllowList(t *testing.T) {
 	if _, ok := ProjectPublic(&ingest.RawFrame{Source: "obs", Observer: c, GnssID: gnss.Galileo, SigID: 0}); !ok {
 		t.Fatal("allowed Galileo signal rejected")
 	}
+	// Real receivers deliver Galileo E1-B I/NAV pages tagged sigId 1; the
+	// documented "2:0" grant must admit them, and the projected frame keeps
+	// its raw sigId (the per-SV feed keys are not canonicalized).
+	out, ok := ProjectPublic(&ingest.RawFrame{Source: "obs", Observer: c, GnssID: gnss.Galileo, SigID: 1})
+	if !ok {
+		t.Fatal("Galileo E1-B frame (raw sigId 1) refused under the 2:0 public grant")
+	}
+	if out.SigID != 1 {
+		t.Fatalf("projected sigId = %d, want the raw 1 preserved", out.SigID)
+	}
+	if _, ok := ProjectPublic(&ingest.RawFrame{Source: "obs", Observer: c, GnssID: gnss.Galileo, SigID: 3}); ok {
+		t.Fatal("E5a F/NAV (sigId 3) entered public state under a 2:0-only grant")
+	}
+	// The declared-capability narrowing uses the same canonical comparison.
+	c.DeclaredCapabilities = []identity.Signal{{GnssID: int(gnss.Galileo), SigID: 1}, {GnssID: int(gnss.GPS), SigID: 0}}
+	out, ok = ProjectPublic(&ingest.RawFrame{Source: "obs", Observer: c, GnssID: gnss.Galileo, SigID: 1})
+	if !ok || len(out.Observer.DeclaredCapabilities) != 1 || out.Observer.DeclaredCapabilities[0] != (identity.Signal{GnssID: 2, SigID: 0}) {
+		t.Fatalf("public declared capabilities = %+v, want only the canonical Galileo 2:0", out.Observer.DeclaredCapabilities)
+	}
 }
 
 func TestPublicSourcesExposeOnlyAttributedPresentation(t *testing.T) {

@@ -529,8 +529,8 @@ func TestObserversCarryCapabilities(t *testing.T) {
 	s := testServer([]config.Source{{Name: "observer16", Type: "ubx", Addr: "10.0.0.2:2947"}})
 	now := time.Now()
 	// A GPS L1 nav frame and a Galileo E1-B I/NAV frame from this station.
-	s.store.Apply(&ingest.RawFrame{Source: "observer16", GnssID: gnss.GPS, SigID: 0, Recv: now, Words: gpsLNAVWords()})
-	s.store.Apply(&ingest.RawFrame{Source: "observer16", GnssID: gnss.Galileo, SigID: 0, Recv: now, Words: galileoINAVWords()})
+	s.store.Apply(&ingest.RawFrame{Source: "observer16", GnssID: gnss.GPS, SvID: 5, SigID: 0, Recv: now, Words: gpsLNAVWords()})
+	s.store.Apply(&ingest.RawFrame{Source: "observer16", GnssID: gnss.Galileo, SvID: 12, SigID: 0, Recv: now, Words: galileoINAVWords()})
 	s.refresh("observers")
 	rr := httptest.NewRecorder()
 	s.serveFeed("observers")(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/observers", nil))
@@ -566,8 +566,8 @@ func TestObserversCapabilityMismatch(t *testing.T) {
 	now := time.Now()
 	// Observed: GPS L1 (declared, fine) + BeiDou D1 (3:0, not declared → unexpected).
 	// Galileo I/NAV is declared but never seen → missing.
-	s.store.Apply(&ingest.RawFrame{Source: "observer16", GnssID: gnss.GPS, SigID: 0, Recv: now, Words: gpsLNAVWords()})
-	s.store.Apply(&ingest.RawFrame{Source: "observer16", GnssID: gnss.BeiDou, SigID: 0, Recv: now, Words: beidouD1Words()})
+	s.store.Apply(&ingest.RawFrame{Source: "observer16", GnssID: gnss.GPS, SvID: 5, SigID: 0, Recv: now, Words: gpsLNAVWords()})
+	s.store.Apply(&ingest.RawFrame{Source: "observer16", GnssID: gnss.BeiDou, SvID: 6, SigID: 0, Recv: now, Words: beidouD1Words()})
 	s.refresh("observers")
 	rr := httptest.NewRecorder()
 	s.serveFeed("observers")(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/observers", nil))

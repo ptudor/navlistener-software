@@ -31,12 +31,14 @@ import (
 // ErrBadPreamble is returned when a CNAV message's leading byte isn't 0x8B.
 var ErrBadPreamble = errors.New("frame: CNAV preamble mismatch")
 
-// errPRNMismatch is returned when the messages handed to
-// AssembleGPSCNAV carry different header PRNs, or a PRN that isn't svid's. toe
-// equality is deliberately NOT an SV discriminator — the control segment
-// routinely uploads batches of SVs sharing one toe, so SV A's MT10 pairs with
-// SV B's MT11 through the toe gate and assembles a cross-SV chimera ephemeris.
-var errPRNMismatch = errors.New("frame: CNAV PRN mismatch across messages")
+// errPRNMismatch is returned when the messages handed to an assembler carry an
+// in-band satellite identity that isn't svid's: AssembleGPSCNAV's header PRNs
+// (across messages, or against svid), AssembleGalileo's word-4 SVID and
+// AssembleGalileoFNAV's page-1 SVID. toe equality is deliberately NOT an SV
+// discriminator — the control segment routinely uploads batches of SVs sharing
+// one toe, so SV A's MT10 pairs with SV B's MT11 through the toe gate and
+// assembles a cross-SV chimera ephemeris.
+var errPRNMismatch = errors.New("frame: in-band satellite identity does not match the assembled svid")
 
 // CNAV scale factors and reference constants beyond the shared set.
 const (

@@ -123,12 +123,15 @@ func TestDecodeGalileoINAVWord5Health(t *testing.T) {
 // IODnav) word 1-4 set. Field values beyond IODnav are physically meaningless
 // (zeroed) — this test only exercises the assembler's clock/TGD wiring, not
 // orbit propagation.
-func buildGalileoINAVWord1234(t *testing.T, iod uint64) (w1, w2, w3, w4 *GalileoINAV) {
+func buildGalileoINAVWord1234(t *testing.T, svid, iod uint64) (w1, w2, w3, w4 *GalileoINAV) {
 	t.Helper()
 	mk := func(wordType uint64) []uint32 {
 		content := make([]byte, 16)
 		setContentBits(content, 0, wordType, 6)
 		setContentBits(content, 6, iod, 10)
+		if wordType == 4 {
+			setContentBits(content, 16, svid, 6) // word 4 names its transmitter (Table 45)
+		}
 		return buildGalileoINAVWords(content)
 	}
 	var err error
@@ -314,12 +317,13 @@ func TestDecodeGalileoFNAVPage1SISAHealth(t *testing.T) {
 
 // buildFNAVPage constructs one decoded F/NAV page with the given page type and
 // IODnav, at the correct bit offset for that page type (page 1's IODnav sits at
-// bit 12 after its extra SVID field; pages 2-4 share bit offset 6).
-func buildFNAVPage(t *testing.T, pageType, iod int) *GalileoFNAV {
+// bit 12 after its SVID field, which names svid; pages 2-4 share bit offset 6).
+func buildFNAVPage(t *testing.T, svid, pageType, iod int) *GalileoFNAV {
 	t.Helper()
 	buf := make([]byte, 32)
 	setFNAVBufBits(buf, 0, uint64(pageType), 6)
 	if pageType == 1 {
+		setFNAVBufBits(buf, 6, uint64(svid), 6) // page 1 names its transmitter (Table 30)
 		setFNAVBufBits(buf, 12, uint64(iod), 10)
 	} else {
 		setFNAVBufBits(buf, 6, uint64(iod), 10)
@@ -361,16 +365,16 @@ func TestDecodeGalileoFNAVCRC(t *testing.T) {
 // the ephemeris.
 func TestAssembleGalileoFNAVChecksPage1IODnav(t *testing.T) {
 	const iod = 7
-	p1 := buildFNAVPage(t, 1, iod)
-	p2 := buildFNAVPage(t, 2, iod)
-	p3 := buildFNAVPage(t, 3, iod)
-	p4 := buildFNAVPage(t, 4, iod)
+	p1 := buildFNAVPage(t, 14, 1, iod)
+	p2 := buildFNAVPage(t, 14, 2, iod)
+	p3 := buildFNAVPage(t, 14, 3, iod)
+	p4 := buildFNAVPage(t, 14, 4, iod)
 
 	if _, _, err := AssembleGalileoFNAV(14, p1, p2, p3, p4); err != nil {
 		t.Fatalf("matching IODnav across all four pages must assemble cleanly: %v", err)
 	}
 
-	p1Stale := buildFNAVPage(t, 1, iod+1) // page 1's own IODnav now differs
+	p1Stale := buildFNAVPage(t, 14, 1, iod+1) // page 1's own IODnav now differs
 	if _, _, err := AssembleGalileoFNAV(14, p1Stale, p2, p3, p4); err != errIODMismatch {
 		t.Fatalf("AssembleGalileoFNAV with mismatched page-1 IODnav = %v, want errIODMismatch", err)
 	}
@@ -378,16 +382,57 @@ func TestAssembleGalileoFNAVChecksPage1IODnav(t *testing.T) {
 
 func TestGalileoAssemblersRejectWrongSlots(t *testing.T) {
 	const iod = 7
-	w1, w2, w3, w4 := buildGalileoINAVWord1234(t, iod)
+	w1, w2, w3, w4 := buildGalileoINAVWord1234(t, 14, iod)
 	if _, _, err := AssembleGalileo(14, w1, w2, w4, w3, nil); err != ErrWrongMsgType {
 		t.Errorf("I/NAV w3/w4 swap error = %v, want ErrWrongMsgType", err)
 	}
-	p1 := buildFNAVPage(t, 1, iod)
-	p2 := buildFNAVPage(t, 2, iod)
-	p3 := buildFNAVPage(t, 3, iod)
-	p4 := buildFNAVPage(t, 4, iod)
+	p1 := buildFNAVPage(t, 14, 1, iod)
+	p2 := buildFNAVPage(t, 14, 2, iod)
+	p3 := buildFNAVPage(t, 14, 3, iod)
+	p4 := buildFNAVPage(t, 14, 4, iod)
 	if _, _, err := AssembleGalileoFNAV(14, p2, p1, p3, p4); err != ErrWrongMsgType {
 		t.Errorf("F/NAV p1/p2 swap error = %v, want ErrWrongMsgType", err)
+	}
+}
+
+// TestGalileoAssemblersRejectMismatchedSVID: I/NAV word 4 and F/NAV page 1 carry
+// the transmitting SVID inside the CRC-protected word (GAL-OS-SIS-ICD-2.2
+// Tables 45 and 30) — the only in-band identity either ephemeris set has, since
+// words 1–3 and pages 2–4 name no satellite. A CRC-valid word 4 / page 1 from SV
+// 7 handed to the assembler for SV 14 is a mis-attributed set and must be
+// refused with errPRNMismatch, exactly as AssembleGPSCNAV refuses a foreign PRN;
+// the decoders must expose the field so the state layer can gate on it before
+// buffering.
+func TestGalileoAssemblersRejectMismatchedSVID(t *testing.T) {
+	const iod = 7
+	w1, w2, w3, w4 := buildGalileoINAVWord1234(t, 14, iod)
+	if w4.SVID != 14 || w1.SVID != 0 || w2.SVID != 0 || w3.SVID != 0 {
+		t.Fatalf("decoded SVIDs = w1 %d w2 %d w3 %d w4 %d, want 0/0/0/14 (only word 4 carries it)", w1.SVID, w2.SVID, w3.SVID, w4.SVID)
+	}
+	if _, _, err := AssembleGalileo(14, w1, w2, w3, w4, nil); err != nil {
+		t.Fatalf("matching SVID must assemble: %v", err)
+	}
+	_, _, _, foreign := buildGalileoINAVWord1234(t, 7, iod)
+	if foreign.SVID != 7 {
+		t.Fatalf("foreign word 4 SVID = %d, want 7", foreign.SVID)
+	}
+	if _, _, err := AssembleGalileo(14, w1, w2, w3, foreign, nil); err != errPRNMismatch {
+		t.Fatalf("AssembleGalileo with SV 7's word 4 for svid 14 = %v, want errPRNMismatch", err)
+	}
+
+	p1 := buildFNAVPage(t, 14, 1, iod)
+	p2 := buildFNAVPage(t, 14, 2, iod)
+	p3 := buildFNAVPage(t, 14, 3, iod)
+	p4 := buildFNAVPage(t, 14, 4, iod)
+	if p1.SVID != 14 || p2.SVID != 0 || p3.SVID != 0 || p4.SVID != 0 {
+		t.Fatalf("decoded SVIDs = p1 %d p2 %d p3 %d p4 %d, want 14/0/0/0 (only page 1 carries it)", p1.SVID, p2.SVID, p3.SVID, p4.SVID)
+	}
+	if _, _, err := AssembleGalileoFNAV(14, p1, p2, p3, p4); err != nil {
+		t.Fatalf("matching SVID must assemble: %v", err)
+	}
+	foreignP1 := buildFNAVPage(t, 7, 1, iod)
+	if _, _, err := AssembleGalileoFNAV(14, foreignP1, p2, p3, p4); err != errPRNMismatch {
+		t.Fatalf("AssembleGalileoFNAV with SV 7's page 1 for svid 14 = %v, want errPRNMismatch", err)
 	}
 }
 
@@ -675,6 +720,7 @@ func TestAssembleGalileoFNAVBGD(t *testing.T) {
 	const iod = 9
 	buf := make([]byte, 32)
 	setFNAVBufBits(buf, 0, 1, 6)       // page type = 1
+	setFNAVBufBits(buf, 6, 14, 6)      // SVID = 14, the SV assembled below
 	setFNAVBufBits(buf, 12, iod, 10)   // IODnav
 	setFNAVBufBits(buf, 143, 1021, 10) // BGD(E1,E5a) raw = −3 (10-bit two's complement 0b1111111101)
 	words := fnavBufToWords(buf)
@@ -689,9 +735,9 @@ func TestAssembleGalileoFNAVBGD(t *testing.T) {
 		t.Errorf("BGDE1E5a = %v, want %v (raw broadcast value, unscaled)", p1.BGDE1E5a, wantRaw)
 	}
 
-	p2 := buildFNAVPage(t, 2, iod)
-	p3 := buildFNAVPage(t, 3, iod)
-	p4 := buildFNAVPage(t, 4, iod)
+	p2 := buildFNAVPage(t, 14, 2, iod)
+	p3 := buildFNAVPage(t, 14, 3, iod)
+	p4 := buildFNAVPage(t, 14, 4, iod)
 	_, clk, err := AssembleGalileoFNAV(14, p1, p2, p3, p4)
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
@@ -709,7 +755,7 @@ func TestAssembleGalileoFNAVBGD(t *testing.T) {
 // reach the assembled clock model's TGD, which word 4 alone never sets.
 func TestAssembleGalileoBGD(t *testing.T) {
 	const iod = 42
-	w1, w2, w3, w4 := buildGalileoINAVWord1234(t, iod)
+	w1, w2, w3, w4 := buildGalileoINAVWord1234(t, 7, iod)
 
 	// Without word 5, TGD stays 0 (nil-tolerant — word 5 may not have arrived yet).
 	_, clkNoBGD, err := AssembleGalileo(7, w1, w2, w3, w4, nil)

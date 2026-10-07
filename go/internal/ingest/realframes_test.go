@@ -435,6 +435,59 @@ func TestRealGalileoFNAVAgreesWithINAV(t *testing.T) {
 	t.Logf("real F9T capture: %d Galileo SVs agree F/NAV↔I/NAV to <5 m", agreed)
 }
 
+// TestRealGalileoSVIDMatchesHeader pins the in-band identity the assemblers now
+// gate on against every real capture: each CRC-valid I/NAV word 4 and F/NAV
+// page 1 names the transmitting SVID (GAL-OS-SIS-ICD-2.2 Tables 45 and 30),
+// and a genuine receiver's SFRBX svId agrees with it on every page. A decoder
+// offset regression, or a receiver that mislabels pages, would surface here
+// before it silently emptied the Galileo state through the SVID gate.
+func TestRealGalileoSVIDMatchesHeader(t *testing.T) {
+	paths := []string{
+		"testdata/f9t_capture.ubx",
+		"testdata/f9p_capture.ubx",
+		"testdata/glo_superframe_capture.ubx",
+	}
+	word4, page1 := 0, 0
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read capture %s: %v", path, err)
+		}
+		var frames []*RawFrame
+		_ = scanUBX(bytes.NewReader(data), "cap", fixedTime,
+			func(f *RawFrame) { frames = append(frames, f) }, func(string) {})
+		for i, f := range frames {
+			if f.GnssID != gnss.Galileo {
+				continue
+			}
+			switch f.SigID {
+			case 0, 1: // E1-B I/NAV
+				w, err := frame.DecodeGalileoINAV(f.Words)
+				if err != nil || w.Type != 4 {
+					continue
+				}
+				word4++
+				if w.SVID != f.SvID {
+					t.Errorf("%s frame %d: I/NAV word 4 SVID %d under header svId %d", path, i, w.SVID, f.SvID)
+				}
+			case 3: // E5a-I F/NAV
+				p, err := frame.DecodeGalileoFNAV(f.Words)
+				if err != nil || p.PageType != 1 {
+					continue
+				}
+				page1++
+				if p.SVID != f.SvID {
+					t.Errorf("%s frame %d: F/NAV page 1 SVID %d under header svId %d", path, i, p.SVID, f.SvID)
+				}
+			}
+		}
+	}
+	if word4 == 0 || page1 == 0 {
+		t.Fatalf("captures carry %d I/NAV word-4 and %d F/NAV page-1 pages, want both > 0", word4, page1)
+	}
+	t.Logf("%d real I/NAV word-4 and %d F/NAV page-1 SVIDs agree with the receiver svId", word4, page1)
+}
+
 // TestRealBeiDouD1 validates the BeiDou D1 decoder against the real capture:
 // subframes 1/2/3 (B1I, sigId 0) assemble per SV; each must propagate to the BeiDou
 // MEO shell (~27906 km) and carry the ~55° MEO inclination — the latter guards the

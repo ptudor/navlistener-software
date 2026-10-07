@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/gnss/frame"
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/state"
 )
@@ -188,7 +189,7 @@ func TestCapabilitySignalLostWithLiveRFTelemetry(t *testing.T) {
 		w := make([]uint32, 10)
 		w[0] = 0x8B << 22 // receiver-normalized TLM preamble in data bits 1..8
 		w[1] = 1 << 8     // HOW subframe id = 1 (a valid id, not the old all-zero sf-id-0)
-		return &ingest.RawFrame{Source: "s", GnssID: gnss.GPS, SigID: 0, Recv: recv, Words: w}
+		return &ingest.RawFrame{Source: "s", GnssID: gnss.GPS, SvID: 1, SigID: 0, Recv: recv, Words: w}
 	}
 	rfFrame := func(recv time.Time) *ingest.RawFrame {
 		return &ingest.RawFrame{Source: "s", Recv: recv, RF: &ingest.RawRF{
@@ -256,5 +257,44 @@ func TestCapabilityNoDeclaredNoImpossible(t *testing.T) {
 	evs := d.TickCapabilities(t0.Add(70*time.Second), capReport("s", t0.Add(70*time.Second).Unix(), obs, nil))
 	if _, ok := find(evs, "capability_impossible"); ok {
 		t.Error("capability_impossible fired with no declared set")
+	}
+}
+
+// inavWord1Page is a CRC-valid Galileo I/NAV word-type-1 page (odd-part
+// Even/Odd flag set, every other field zero) — enough for the state layer to
+// count a structurally valid decode and record the station's capability.
+func inavWord1Page() []uint32 {
+	w := make([]uint32, 8)
+	w[0] = 1 << 24
+	w[4] = 0x80000000
+	frame.StampGalileoINAVCRC(w)
+	return w
+}
+
+// TestCapabilityImpossibleNotRaisedForReceiverSignalTag runs the live read
+// model end to end: a station declared for "2:0" (Galileo I/NAV) delivers the
+// E1-B pages a real u-blox tags as sigId 1. The fingerprint must land on the
+// canonical 2:0 so the detector never confirms a capability_impossible for a
+// signal the silicon was declared to produce.
+func TestCapabilityImpossibleNotRaisedForReceiverSignalTag(t *testing.T) {
+	s := state.New(1)
+	d := New(0)
+	t0 := time.Unix(1_700_000_000, 0)
+	const station = "obs-e1b"
+	s.SetDeclaredCapabilitiesFor(station, []state.CapSignal{{Gnss: 2, Sig: 0}})
+	for i := 0; i < int(CapMinObservations)+1; i++ {
+		s.Apply(&ingest.RawFrame{GnssID: gnss.Galileo, SvID: 23, SigID: 1, Source: station,
+			Recv: t0.Add(time.Duration(i) * time.Second), Words: inavWord1Page()})
+	}
+	rep := s.FeedCapabilityReports(t0)[station]
+	if len(rep.Observed) != 1 || rep.Observed[0].Gnss != 2 || rep.Observed[0].Sig != 0 {
+		t.Fatalf("observed = %+v, want the canonical (2,0)", rep.Observed)
+	}
+	for _, at := range []time.Time{t0, t0.Add(10 * time.Second), t0.Add(80 * time.Second)} {
+		for _, e := range d.TickCapabilities(at, s.FeedCapabilityReports(at)) {
+			if e.Type == "capability_impossible" {
+				t.Fatalf("capability_impossible raised at +%s for a declared signal: %+v", at.Sub(t0), e)
+			}
+		}
 	}
 }

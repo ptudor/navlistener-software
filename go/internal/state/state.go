@@ -707,6 +707,20 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 		}
 		return
 	}
+	// byte-oriented frames (RTCM messages, SBF blocks) carry Bytes only
+	// and no word-oriented Words -- but they also carry the RawFrame zero values
+	// for GnssID/SvID/SigID (GPS/0/0), which matches the LNAV dispatch case below.
+	// Without this guard, DecodeGPSLNAV(nil) fails on every single RTCM/SBF
+	// message (e.g. once per second on a typical MSM stream), burying real LNAV
+	// decode errors under a permanently-red counter. It sits before the svId
+	// envelope so a byte frame's zero svId is counted as what it is (a captured
+	// byte frame), not as an out-of-envelope GPS header.
+	if f.Obs == nil && f.Words == nil {
+		if !s.projection {
+			metrics.CapturedOnlyTotal.WithLabelValues(f.Source, "byte_frame").Inc()
+		}
+		return
+	}
 	if !svIDInRange(f.GnssID, f.SvID) {
 		if !s.projection {
 			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "svid_range").Inc()
@@ -715,18 +729,6 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 	}
 	if f.Obs != nil {
 		s.applyObservation(f)
-		return
-	}
-	// byte-oriented frames (RTCM messages, SBF blocks) carry Bytes only
-	// and no word-oriented Words -- but they also carry the RawFrame zero values
-	// for GnssID/SigID (GPS/0), which matches the LNAV dispatch case below.
-	// Without this guard, DecodeGPSLNAV(nil) fails on every single RTCM/SBF
-	// message (e.g. once per second on a typical MSM stream), burying real LNAV
-	// decode errors under a permanently-red counter.
-	if f.Words == nil {
-		if !s.projection {
-			metrics.CapturedOnlyTotal.WithLabelValues(f.Source, "byte_frame").Inc()
-		}
 		return
 	}
 	switch {
@@ -851,15 +853,34 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 //	  only if raw L1C/B PRNs ever become consumable.
 //	- NavIC: svId 1–14 per the IRNSS SPS ICD's code-phase assignment
 //	  (NAVIC-SPS-L5S §4.1 Table 7: PRN IDs 1–14).
+//	- GPS: svId 1–32 — u-blox delivers the PRN as svId, and IS-GPS-200N §3.2.2
+//	  defines the lower set of PRN numbers as 1–32 (Appendix II LNAV). The
+//	  upper set 33–63 (§6.4.1, Appendix IV) is an enhancement for modernized
+//	  receivers that no fleet receiver has delivered; admitting it would be a
+//	  deliberate widening to 1..63 once such SVs broadcast, not a default.
+//	- Galileo: svId 1–36 (GAL-OS-SIS-ICD-2.2 §3.6.1: codes are assigned to
+//	  SVID n with n = 1 to 36; the word-4/page-1 SVID fields are 6 bits).
+//	- BeiDou: svId 1–63 (BDS-SIS-B2a-1.0 §7.1: PRN is a 6-bit unsigned integer
+//	  with effective range 1–63; the D1 PRNs lie within it).
 //
-// Other constellations pass unchecked here — their envelopes are the sibling
-// passes' scope (REVIEW-FABLE5_AUGMENTATION regression fix covers augmentation only).
+// The GPS, Galileo and BeiDou messages that assemble live state (LNAV, I/NAV
+// words 1–5, D1) carry no PRN of their own, so without this gate a single
+// corrupted header byte — or a hostile feeder — with an intact payload minted a
+// served `G00@0`/`G200@0`/`E99@0` entry carrying another SV's ephemeris, which
+// every per-SV classifier then evaluated for a satellite that does not exist.
+// GLONASS keeps its own slot envelope at the string decoder (applyGLONASS).
 // Rejects are counted under the svid_range decode-error label so a receiver
 // that starts emitting out-of-envelope svIds is visible in /metrics.
 func svIDInRange(g gnss.GNSSID, sv int) bool {
 	switch g {
+	case gnss.GPS:
+		return sv >= 1 && sv <= 32
 	case gnss.SBAS:
 		return sv >= 120 && sv <= 158
+	case gnss.Galileo:
+		return sv >= 1 && sv <= 36
+	case gnss.BeiDou:
+		return sv >= 1 && sv <= 63
 	case gnss.QZSS:
 		return sv >= 1 && sv <= 10
 	case gnss.NavIC:
@@ -929,7 +950,24 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 		metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "cnav").Inc()
 	}
 	recv := f.LocalRecv() // collector-local clock for staleness/expiry math
-	// capability evidence only after a structurally valid decode.
+	// validation follow-up to regression fix/AssembleGPSCNAV's PRN gate
+	// protects only assembly, but the freshest-wins scalars below (alert,
+	// health, URA_ED, WN) apply before any assembly. A frame whose header PRN
+	// disagrees with the receiver's svId label is mislabeled or corrupt (GPS:
+	// PRN == svId; QZSS: the 6-LSB PRN ID 1–10 == svId, QZSS-PNT-006
+	// §4.3.1.2(2)) — reject it for state purposes so another SV's broadcast can
+	// never stamp this entry's health or alert. Every CNAV message type carries
+	// the PRN in its CRC-protected header, so the gate runs before the
+	// capability fingerprint is recorded (identity is part of structural
+	// validity, as on the B-CNAV2 path): a mislabelled frame is not evidence
+	// that this station produces the signal.
+	if m.PRN != f.SvID {
+		if !s.projection {
+			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "cnav_prn").Inc()
+		}
+		return
+	}
+	// capability evidence only after a structurally valid, correctly attributed decode.
 	if f.Source != "" {
 		s.recordCapability(f.Source, f.GnssID, f.SigID, recv)
 	}
@@ -937,19 +975,6 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 	// almanac/EOP/UTC types are capability evidence only — the B-CNAV2
 	// types-31/32/33/40 precedent.
 	if m.MsgType != 10 && m.MsgType != 11 && (m.MsgType < 30 || m.MsgType > 37) {
-		return
-	}
-	// validation follow-up to regression fix/AssembleGPSCNAV's PRN gate
-	// protects only assembly, but the freshest-wins scalars below (alert,
-	// health, URA_ED, WN) apply before any assembly. A frame whose header PRN
-	// disagrees with the receiver's svId label is mislabeled or corrupt (GPS:
-	// PRN == svId; QZSS: the 6-LSB PRN ID 1–10 == svId, QZSS-PNT-006
-	// §4.3.1.2(2)) — reject it for state purposes so another SV's broadcast can
-	// never stamp this entry's health or alert.
-	if m.PRN != f.SvID {
-		if !s.projection {
-			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "cnav_prn").Inc()
-		}
 		return
 	}
 
@@ -1201,6 +1226,21 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 		s.countDecodeFailure(f, "inav", err)
 		return
 	}
+	// Word type 4 is the only ephemeris word that names its transmitter: the
+	// 6-bit SVID (GAL-OS-SIS-ICD-2.2 Table 45) sits inside the CRC-protected
+	// nav word, while the SFRBX/GNF1 svId is receiver metadata outside it. A
+	// disagreement means the page is internally valid but mis-attributed
+	// (header corruption upstream of the CRC'd payload, a firmware quirk, or a
+	// hostile feeder under FEDERATION.md's trust model); buffering it would
+	// assemble SV A's Cic/Cis/clock into SV B's state. Dropped before any
+	// capability or state effect, as the B-CNAV2 PRN gate does. Words 1–3
+	// carry no SVID and are matched to word 4 by IODnav at assembly.
+	if w.Type == 4 && w.SVID != f.SvID {
+		if !s.projection {
+			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "prn_mismatch").Inc()
+		}
+		return
+	}
 	if !s.projection {
 		metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "inav").Inc()
 	}
@@ -1340,6 +1380,19 @@ func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 	if w.PageType < 1 || w.PageType > 6 {
 		if !s.projection {
 			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "fnav").Inc()
+		}
+		return
+	}
+	// Page 1 names its transmitter: the 6-bit SVID (GAL-OS-SIS-ICD-2.2 Table
+	// 30) is inside the CRC-24Q boundary, the SFRBX/GNF1 svId is not. A page 1
+	// whose SVID disagrees with the header is mis-attributed (corrupt header,
+	// firmware quirk, hostile feeder) and would stamp another SV's clock,
+	// SISA and health onto this @3 entry — dropped before any capability or
+	// state effect, mirroring the I/NAV word-4 and B-CNAV2 PRN gates. Pages
+	// 2–4 carry no SVID and are matched to page 1 by IODnav at assembly.
+	if w.PageType == 1 && w.SVID != f.SvID {
+		if !s.projection {
+			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "prn_mismatch").Inc()
 		}
 		return
 	}

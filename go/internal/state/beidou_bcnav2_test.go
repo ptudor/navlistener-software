@@ -258,14 +258,21 @@ func TestApplyBeiDouBCNAV2PRNMismatchDropped(t *testing.T) {
 	}
 
 	// PRN 0 == svId 0 satisfies bare equality, but §7.1's effective
-	// range is 1–63 — a crafted frame must not mint a "C00@8" state.
-	before = testutil.ToFloat64(counter)
+	// range is 1–63 — a crafted frame must not mint a "C00@8" state. The
+	// BeiDou svId envelope at the Apply gate now refuses svId 0 before the
+	// decoder runs (counted under svid_range); the in-decoder PRN-0 refusal
+	// remains the defence for a frame that reaches it some other way.
+	envelope := metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(gnss.BeiDou)), "svid_range")
+	before, envBefore := testutil.ToFloat64(counter), testutil.ToFloat64(envelope)
 	m34zero := bcnav2Frame(0, 34, 252804, func(buf []byte) {
 		setAbsBits(buf, 133, 10, 3)
 	})
 	s.Apply(&ingest.RawFrame{GnssID: gnss.BeiDou, SvID: 0, SigID: 8, Recv: now, Words: m34zero})
-	if got := testutil.ToFloat64(counter) - before; got != 1 {
-		t.Errorf("prn_mismatch delta for PRN==svId==0 = %v, want 1", got)
+	if got := testutil.ToFloat64(envelope) - envBefore; got != 1 {
+		t.Errorf("svid_range delta for PRN==svId==0 = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(counter) - before; got != 0 {
+		t.Errorf("prn_mismatch delta for PRN==svId==0 = %v, want 0 (rejected by the envelope first)", got)
 	}
 	key0 := Key{G: gnss.BeiDou, Sv: 0, Sig: 8}
 	if st := s.shardFor(key0).m[key0]; st != nil {

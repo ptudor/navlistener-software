@@ -339,6 +339,55 @@ func TestCapabilitiesParsing(t *testing.T) {
 	}
 }
 
+// TestSignalsParseToCanonicalForm: a declaration or grant spelled with the
+// receiver's secondary tag ("2:1" is how u-blox labels Galileo E1-B, "0:4" GPS
+// L2 CM) loads as the canonical primary tuple the example file documents
+// ("2:0", "0:3"), so the capability fingerprint and the public-signal
+// allow-list compare in one signal space; listing both spellings is a
+// duplicate; GLONASS L1OF/L2OF stay distinct.
+func TestSignalsParseToCanonicalForm(t *testing.T) {
+	got, err := parseCapabilities([]string{"2:1", "0:4", "6:2", "6:0"})
+	if err != nil {
+		t.Fatalf("alias spellings rejected: %v", err)
+	}
+	want := []Capability{{2, 0}, {0, 3}, {6, 2}, {6, 0}}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("cap[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	if _, err := parseCapabilities([]string{"2:0", "2:1"}); err == nil {
+		t.Error("two spellings of one signal accepted, want rejected as a duplicate")
+	}
+
+	build := func(publish []string) identity.ObserverContext {
+		t.Helper()
+		c, err := finalizeObserverContext(
+			"observer16", "institution-c", "enrollment-1", "hosted-west", nil,
+			"public_attributed", "coarse", "public", "deny", nil, publish,
+			"policy-3", identity.CredentialToken,
+		)
+		if err != nil {
+			t.Fatalf("publish_signals %v rejected: %v", publish, err)
+		}
+		return c
+	}
+	alias, primary := build([]string{"2:1"}), build([]string{"2:0"})
+	if !alias.AuthorizationEqual(primary) {
+		t.Fatalf("publish_signals [\"2:1\"] and [\"2:0\"] loaded to different policies: %+v vs %+v",
+			alias.Publication.Signals, primary.Publication.Signals)
+	}
+	if len(alias.Publication.Signals) != 1 || alias.Publication.Signals[0] != (identity.Signal{GnssID: 2, SigID: 0}) {
+		t.Fatalf("publish_signals [\"2:1\"] = %+v, want the canonical 2:0", alias.Publication.Signals)
+	}
+	if !alias.Publication.AllowsSignal(2, 1) || !alias.Publication.AllowsSignal(2, 0) || alias.Publication.AllowsSignal(0, 0) {
+		t.Fatalf("canonical grant does not admit exactly the Galileo E1 tags: %+v", alias.Publication)
+	}
+}
+
 // TestNtripSource: an ntrip dial source requires a mountpoint; a valid one passes; ntrip is a
 // dial type but not a push feed grant.
 func TestNtripSource(t *testing.T) {

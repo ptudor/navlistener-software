@@ -177,10 +177,18 @@ func TestCNAVMislabeledPRNIgnored(t *testing.T) {
 
 	// A frame labeled svId 5 but carrying PRN 6's MT10 with the L2 carrier
 	// flagged bad: must be rejected before any state mutation.
-	s.Apply(cnavStateFrame(gnss.GPS, svid, sig, cnavMT10(6, 2288, 0b010, 2, 400), t0))
+	mislabeled := cnavStateFrame(gnss.GPS, svid, sig, cnavMT10(6, 2288, 0b010, 2, 400), t0)
+	mislabeled.Source = "mislabeled"
+	s.Apply(mislabeled)
 	sv := s.FeedSVs(t0)["G05@3"]
 	if sv.HealthCode != 1 {
 		t.Errorf("mislabeled PRN-6 frame flipped G05@3 health to %d, want 1 (rejected)", sv.HealthCode)
+	}
+	// Identity is part of structural validity: the mislabeled frame is not
+	// evidence that its station produces L2C, so the durable capability
+	// fingerprint must not record (0,3) for it.
+	if caps := s.FeedStationCapabilities(t0)["mislabeled"]; len(caps) != 0 {
+		t.Errorf("mislabeled PRN-6 frame recorded capability %+v for its source, want none", caps)
 	}
 }
 

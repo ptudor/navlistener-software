@@ -24,11 +24,10 @@ func navFrame(source string, g gnss.GNSSID, sig int, recv time.Time) *ingest.Raw
 	default: // gnss.GPS (and any other word-1-style constellation these tests use)
 		words = sf1Words(0)
 	}
-	f := &ingest.RawFrame{Source: source, GnssID: g, SigID: sig, Recv: recv, Words: words}
-	if g == gnss.GLONASS {
-		f.SvID = 7 // GLONASS dispatch rejects svId outside the real slot range 1..24
-	}
-	return f
+	// svId 7 is inside every constellation's envelope (GPS 1..32, BeiDou
+	// 1..63, GLONASS slots 1..24); a zero svId is rejected at the Apply gate
+	// before any decoder runs.
+	return &ingest.RawFrame{Source: source, GnssID: g, SvID: 7, SigID: sig, Recv: recv, Words: words}
 }
 
 // TestCapabilityFingerprint records nav frames from two stations across several signals and
@@ -196,5 +195,42 @@ func TestDeclaredCapabilitiesCanArriveFromAuthenticatedContext(t *testing.T) {
 	again := s.FeedCapabilityReports(time.Now())["observer-a"]
 	if again.Declared[0].Sig != 0 {
 		t.Fatal("declared capability read aliased live authorization state")
+	}
+}
+
+// TestCapabilityFingerprintIsCanonical: a real receiver tags Galileo E1-B I/NAV
+// pages as sigId 1 and GPS L2 CM CNAV as sigId 4, while the declared set names
+// the signals by their canonical primary tag ("2:0", "0:3"). The fingerprint
+// must record the canonical tuple so the declared comparison finds neither an
+// "unexpected" (2,1) — a false capability_impossible — nor a forever-"missing" 2:0.
+func TestCapabilityFingerprintIsCanonical(t *testing.T) {
+	s := New(4)
+	t0 := time.Unix(1_700_000_000, 0)
+	const source = "obs-canonical"
+	// The declaration may itself use the alias spelling; it is stored canonically.
+	s.SetDeclaredCapabilitiesFor(source, []CapSignal{{Gnss: 2, Sig: 1}, {Gnss: 0, Sig: 3}, {Gnss: 2, Sig: 0}})
+
+	// A CRC-valid I/NAV word 1 on the E1-B tag, and a CRC-valid CNAV MT10 on the L2 CM tag.
+	s.Apply(&ingest.RawFrame{GnssID: gnss.Galileo, SvID: 23, SigID: 1, Source: source, Recv: t0, Words: inavWordN(1, 23, 3, nil)})
+	s.Apply(&ingest.RawFrame{GnssID: gnss.GPS, SvID: 5, SigID: 4, Source: source, Recv: t0, Words: cnavMT10(5, 2288, 0, 2, 400)})
+
+	rep := s.FeedCapabilityReports(t0.Add(time.Second))[source]
+	if len(rep.Observed) != 2 || rep.Observed[0].Gnss != 0 || rep.Observed[0].Sig != 3 ||
+		rep.Observed[1].Gnss != 2 || rep.Observed[1].Sig != 0 {
+		t.Fatalf("observed = %+v, want exactly (0,3) and (2,0)", rep.Observed)
+	}
+	if len(rep.Declared) != 2 || rep.Declared[0] != (CapSignal{Gnss: 0, Sig: 3}) || rep.Declared[1] != (CapSignal{Gnss: 2, Sig: 0}) {
+		t.Fatalf("declared = %+v, want the alias collapsed into the canonical (0,3), (2,0)", rep.Declared)
+	}
+	if unexpected, missing := CapabilityDiff(rep.Observed, rep.Declared); unexpected != nil || missing != nil {
+		t.Fatalf("CapabilityDiff = unexpected %+v, missing %+v, want nil/nil", unexpected, missing)
+	}
+
+	// The startup installer canonicalizes the same way, and GLONASS L1OF/L2OF
+	// remain two declarations.
+	s.SetDeclaredCapabilities(map[string][]CapSignal{"glo": {{Gnss: 6, Sig: 2}, {Gnss: 6, Sig: 0}, {Gnss: 2, Sig: 1}}})
+	if decl := s.FeedCapabilityReports(t0)["glo"].Declared; len(decl) != 3 ||
+		decl[0] != (CapSignal{Gnss: 2, Sig: 0}) || decl[1] != (CapSignal{Gnss: 6, Sig: 0}) || decl[2] != (CapSignal{Gnss: 6, Sig: 2}) {
+		t.Fatalf("installed declaration = %+v, want (2,0), (6,0), (6,2)", decl)
 	}
 }

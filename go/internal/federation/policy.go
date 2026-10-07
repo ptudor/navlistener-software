@@ -254,12 +254,16 @@ func matchesSource(grant ExportGrant, c identity.ObserverContext) bool {
 	return false
 }
 
+// allowsSignal matches an observation's raw receiver sigId against the grant in
+// the canonical signal space (identity.CanonicalSigID), the same comparison
+// PublicationPolicy.AllowsSignal makes.
 func allowsSignal(signals []identity.Signal, gnssID, sigID int) bool {
 	if len(signals) == 0 {
 		return true
 	}
+	want := identity.Signal{GnssID: gnssID, SigID: sigID}.Canonical()
 	for _, signal := range signals {
-		if signal.GnssID == gnssID && signal.SigID == sigID {
+		if signal.Canonical() == want {
 			return true
 		}
 	}

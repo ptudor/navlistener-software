@@ -6,6 +6,8 @@ import (
 	"math"
 	"strconv"
 	"strings"
+
+	"github.com/ptudor/navlistener/internal/identity"
 )
 
 type Config struct {
@@ -30,47 +32,11 @@ type Site struct {
 	PowerMinSupport    uint8     `toml:"power_min_support_days"`
 }
 
+// CanonicalSignal is the wire-typed view of the collector's single canonical
+// signal mapping (identity.CanonicalSigID), which the reception policy shares
+// with the capability fingerprint and the publication grants.
 func CanonicalSignal(g, s uint8) uint8 {
-	switch g {
-	case 0:
-		if s == 4 {
-			return 3
-		}
-		if s == 7 {
-			return 6
-		}
-	case 2:
-		if s == 1 {
-			return 0
-		}
-		if s == 4 {
-			return 3
-		}
-		if s == 6 {
-			return 5
-		}
-	case 3:
-		if s == 1 {
-			return 0
-		}
-		if s == 3 {
-			return 2
-		}
-		if s == 6 {
-			return 5
-		}
-		if s == 7 {
-			return 8
-		}
-	case 5:
-		if s == 5 {
-			return 4
-		}
-		if s == 9 {
-			return 8
-		}
-	}
-	return s
+	return uint8(identity.CanonicalSigID(int(g), int(s)))
 }
 func (s Site) Allows(g, sig uint8) bool {
 	key := fmt.Sprintf("%d:%d", g, CanonicalSignal(g, sig))
