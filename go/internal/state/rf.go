@@ -434,7 +434,7 @@ func (st *rfStation) rfTrust(now time.Time) float64 {
 		if now.Sub(b.lastSeen) > rfStaleAfter {
 			continue
 		}
-		if dep, ok := b.departure(); ok && dep > agcLearnBand/2 {
+		if dep, ok := b.departure(); ok && dep >= integrity.DefaultAGCDeparture {
 			return 0.3
 		}
 	}

@@ -163,3 +163,19 @@ func TestConfWeightedByStationTrust(t *testing.T) {
 		t.Fatalf("spoofed board = conf %d weighted %v, want 3 and 1.3", conf, w)
 	}
 }
+
+func TestConfWeightedKeepsQuietAGCDrift(t *testing.T) {
+	st := New(4)
+	at := clearSky(st, "stnA", 4000, integrityT0, 11*time.Minute)
+	st.Apply(rfSample("stnA", 0, 3700, 0, 0, at))
+	if rf := st.FeedStationRF(at)["stnA"]; rf.RFTrust != 1 {
+		t.Fatalf("300-count drift rf_trust = %g, want 1", rf.RFTrust)
+	}
+	for _, words := range [][]uint32{sf1Words(85), sf2Words(85, 205075516), sf3Words(85)} {
+		st.Apply(&ingest.RawFrame{Recv: at, Source: "stnA", GnssID: gnss.GPS, SvID: 5, Words: words})
+	}
+	sv := st.FeedSVs(at)["G05@0"]
+	if sv.Conf != 1 || sv.ConfWeighted != float64(sv.Conf) {
+		t.Fatalf("quiet drift conf = %d, weighted = %g", sv.Conf, sv.ConfWeighted)
+	}
+}
