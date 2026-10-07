@@ -7,10 +7,39 @@ import re
 import struct
 
 
-def decode(body):
-    if len(body) != 223 or body[:2] != b"\x01\x04" or body[24:27] != b"\x08\x00\xc4":
+TIMING_TAG, TIMING_LENGTH = 8, 196
+
+
+def timing_element(body):
+    """The tag-8 timing value from an ObserverDetails v1 body.
+
+    The body is a 24-byte header followed by tag-U8/length-U16 elements. A timing-only
+    report carries tag 8 alone, but an OTA build appends the tag-9 update status to the
+    same body before logging it, so the list is walked and other bounded tags are ignored.
+    A truncated element is still rejected.
+    """
+    if len(body) < 24 or body[:2] != b"\x01\x04":
         raise ValueError("expected ObserverDetails v1 timing snapshot")
-    b = body[27:]
+    timing, p = None, 24
+    while p < len(body):
+        if p + 3 > len(body):
+            raise ValueError("truncated ObserverDetails element")
+        tag, length = body[p], struct.unpack_from(">H", body, p + 1)[0]
+        value = body[p + 3:p + 3 + length]
+        if len(value) != length:
+            raise ValueError("truncated ObserverDetails element")
+        if tag == TIMING_TAG:
+            if length != TIMING_LENGTH or timing is not None:
+                raise ValueError("expected ObserverDetails v1 timing snapshot")
+            timing = value
+        p += 3 + length
+    if timing is None:
+        raise ValueError("expected ObserverDetails v1 timing snapshot")
+    return timing
+
+
+def decode(body):
+    b = timing_element(body)
     if b[0] != 1 or b[1] != 1:
         raise ValueError("unsupported timing version/clock")
     u32 = lambda p: struct.unpack_from(">I", b, p)[0]
