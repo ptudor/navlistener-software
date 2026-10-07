@@ -24,7 +24,6 @@ struct ObserverSetupView: View {
     @State private var confirmation: ObserverSetupConfirmation?
     @State private var confirmationSession: ReadSession?
     private let credentials = ObserverSetupCredentials()
-    private let feed = FeedClient()
 
     var body: some View {
         NavigationStack {
@@ -236,7 +235,7 @@ struct ObserverSetupView: View {
         // Establish a collector-clock baseline before sending configuration.
         // Setup can still proceed when private read access is unavailable.
         if let session = controller.store.activeSession, session.audience.isPrivate {
-            if let envelope = try? await feed.fetchObservers(session: session),
+            if let envelope = try? await controller.feedClient.fetchObservers(session: session),
                let payload = envelope.data, WireSchema.isSupported(payload.schema), payload.audience == session.audience.rawValue,
                (try? payload.validate()) != nil, let time = WireDate.parse(envelope.time),
                controller.store.activeSession == session, !Task.isCancelled {
@@ -265,7 +264,7 @@ struct ObserverSetupView: View {
         checking = true
         defer { checking = false }
         do {
-            let envelope = try await feed.fetchObservers(session: session)
+            let envelope = try await controller.feedClient.fetchObservers(session: session)
             guard !Task.isCancelled, controller.store.activeSession == session else { return }
             guard let payload = envelope.data, WireSchema.isSupported(payload.schema), payload.audience == session.audience.rawValue
             else { throw FeedError.invalidResponse }

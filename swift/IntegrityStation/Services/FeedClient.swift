@@ -108,12 +108,16 @@ enum CollectorEndpoint {
     }
 }
 
-struct FeedClient: Sendable {
+struct FeedClient: Sendable, Equatable {
     private let session: URLSession
 
     init(session: URLSession = FeedClient.failFastSession()) {
         self.session = session
     }
+
+    /// Two clients are the same client when they share a URLSession; the
+    /// shared app client must be handed around, never re-created.
+    static func == (lhs: FeedClient, rhs: FeedClient) -> Bool { lhs.session === rhs.session }
 
     func fetchAudiences(baseURL: URL, token: String?) async throws -> APIEnvelope<AudienceDiscoveryPayload> {
         try await fetch(baseURL: baseURL, path: "gnss/api/v2/audiences", token: token)

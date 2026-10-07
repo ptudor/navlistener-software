@@ -17,7 +17,11 @@ final class AppController {
     private(set) var connectionError: String?
 
     @ObservationIgnored private let secureStore: any SecureConnectionStoring
-    @ObservationIgnored private let feedClient: FeedClient
+    /// The one collector client views use for their own requests (sensor
+    /// history, update control, observer setup). A view must not construct a
+    /// FeedClient: a stored property on a View is re-created, URLSession and
+    /// all, on every body evaluation, and detail screens re-evaluate at 1 Hz.
+    @ObservationIgnored let feedClient: FeedClient
     @ObservationIgnored private var activeToken: String?
     @ObservationIgnored private var authenticatedPrincipalID: String?
     @ObservationIgnored private var authenticatedRevision: String?

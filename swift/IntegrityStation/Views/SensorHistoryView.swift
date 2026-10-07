@@ -9,7 +9,6 @@ struct SensorHistoryView: View {
     @State private var hours = 1
     @State private var history = SensorHistoryStore()
     @State private var operation: Task<Void, Never>?
-    private let client = FeedClient()
 
     var body: some View {
         InstrumentCard("history.title", systemImage: "chart.xyaxis.line") {
@@ -103,7 +102,7 @@ struct SensorHistoryView: View {
                 request = try SensorHistoryRequest(observer: observerID, metric: metric, hours: hours, now: clock)
             }
             try await history.load(session: session, request: request, append: append) { session, request in
-                try await client.fetchSensorHistory(session: session, request: request)
+                try await controller.feedClient.fetchSensorHistory(session: session, request: request)
             }
         } catch {
             await controller.store.handleExternalReadFailure(error, session: session)

@@ -8,7 +8,6 @@ struct UpdateControlsView: View {
     @State private var message: String?
     @State private var operation: Task<Void, Never>?
     @State private var operationID = UUID()
-    private let client = FeedClient()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -31,7 +30,7 @@ struct UpdateControlsView: View {
         .task(id: controller.store.activeSession) {
             access = nil
             guard let session = controller.store.activeSession, session.audience.isPrivate else { return }
-            access = try? await client.updateAccess(session: session, observer: observerID)
+            access = try? await controller.feedClient.updateAccess(session: session, observer: observerID)
         }
         .onDisappear { operation?.cancel() }
     }
@@ -45,6 +44,7 @@ struct UpdateControlsView: View {
         message = nil
         operation = Task { @MainActor in
             defer { if operationID == identifier { busy = false } }
+            let client = controller.feedClient
             do {
                 let actions = action == "update" ? ["check", "download", "install"] : [action]
                 for step in actions {
