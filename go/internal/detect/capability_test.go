@@ -189,6 +189,7 @@ func TestCapabilitySignalLostWithLiveRFTelemetry(t *testing.T) {
 		w := make([]uint32, 10)
 		w[0] = 0x8B << 22 // receiver-normalized TLM preamble in data bits 1..8
 		w[1] = 1 << 8     // HOW subframe id = 1 (a valid id, not the old all-zero sf-id-0)
+		frame.StampGPSLNAVParity(w)
 		return &ingest.RawFrame{Source: "s", GnssID: gnss.GPS, SvID: 1, SigID: 0, Recv: recv, Words: w}
 	}
 	rfFrame := func(recv time.Time) *ingest.RawFrame {

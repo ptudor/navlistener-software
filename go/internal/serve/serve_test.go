@@ -507,6 +507,7 @@ func gpsLNAVWords() []uint32 {
 	w := make([]uint32, 10)
 	w[0] = 0x8B << 22 // TLM preamble
 	w[1] = 1 << 8     // HOW subframe id = 1 (id must be 1..5 to decode)
+	frame.StampGPSLNAVParity(w)
 	return w
 }
 func beidouD1Words() []uint32 {

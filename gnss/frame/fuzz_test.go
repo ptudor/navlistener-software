@@ -46,11 +46,14 @@ func FuzzCRC24Q(f *testing.F) {
 }
 
 // FuzzGPSLNAV asserts the LNAV subframe decoder never panics on arbitrary word
-// content — malformed frames must return an error (parity/short), never crash.
+// content — malformed frames must return an error (parity/short), never crash. Ten
+// independent words, so words 5–10 (subframe 3's fields, word 10's fit/AODO) and
+// the per-word chained parity are exercised on their own, not through aliases of
+// words 1–4.
 func FuzzGPSLNAV(f *testing.F) {
-	f.Add(uint32(0x22c00000), uint32(0), uint32(0), uint32(0))
-	f.Fuzz(func(t *testing.T, w0, w1, w2, w3 uint32) {
-		words := []uint32{w0, w1, w2, w3, w0, w1, w2, w3, w0, w1}
+	f.Add(uint32(0x22c00000), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0), uint32(0))
+	f.Fuzz(func(t *testing.T, w0, w1, w2, w3, w4, w5, w6, w7, w8, w9 uint32) {
+		words := []uint32{w0, w1, w2, w3, w4, w5, w6, w7, w8, w9}
 		if sf, err := DecodeGPSLNAV(words); err == nil && sf == nil {
 			t.Fatal("nil subframe without error")
 		}

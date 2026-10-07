@@ -155,6 +155,9 @@ func DecodeBeiDouD1(words []uint32) (*BeiDouSubframe, error) {
 		sf.URAI = int(u(44, 4))
 		sf.WN = int(u(48, 13))
 		sf.Toc = float64(u(61, 17)) * bdsT0
+		if sf.Toc >= weekSeconds {
+			return nil, errBadEpoch // BDS-SIS-ICD-2.1 Table 5-7: toc ≤ 604 792
+		}
 		sf.TGD1 = float64(s(78, 10)) * 1e-10 // 0.1 ns
 		sf.TGD2 = float64(s(88, 10)) * 1e-10
 		sf.Alpha[0] = float64(s(98, 8)) * p2m30
@@ -240,6 +243,11 @@ func AssembleBeiDou(svid int, sf1, sf2, sf3 *BeiDouSubframe) (kepler.Ephemeris, 
 	eph.I0, eph.Cic, eph.OmegaDot = sf3.eph.I0, sf3.eph.Cic, sf3.eph.OmegaDot
 	eph.Cis, eph.Omega0, eph.Omega, eph.IDot = sf3.eph.Cis, sf3.eph.Omega0, sf3.eph.Omega, sf3.eph.IDot
 	eph.Toe = float64(sf2.toeMSB<<15|sf3.toeLSB) * bdsT0
+	if eph.Toe >= weekSeconds {
+		// toe is split across subframes 2 and 3, so the week bound can only be
+		// applied once both halves are in hand (BDS-SIS-ICD-2.1 Table 5-10: ≤ 604 792).
+		return kepler.Ephemeris{}, clock.Model{}, errBadEpoch
+	}
 	eph.ID = gnss.BeiDou
 	eph.SVID = svid
 	clk := clock.Model{

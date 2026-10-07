@@ -244,6 +244,9 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 		sqrtA, _ := r.Bits(94, 32)
 		w.IODnav = int(iod)
 		w.eph.Toe = float64(t0e) * galT0
+		if w.eph.Toe >= weekSeconds {
+			return nil, errBadEpoch // Table 60: t0e ≤ 604 740
+		}
 		w.eph.M0 = float64(m0) * p2m31 * semi
 		w.eph.Ecc = float64(ecc) * p2m33
 		w.eph.SqrtA = float64(sqrtA) * p2m19
@@ -297,6 +300,9 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 			Af1: float64(af1) * p2m46,
 			Af2: float64(af2) * p2m59,
 		}
+		if w.clk.Toc >= weekSeconds {
+			return nil, errBadEpoch // Table 60: t0c ≤ 604 740
+		}
 		w.hasClk = true
 	case 5:
 		// Ionosphere, BGD, health, DVS, GST (GAL-OS-SIS-ICD-2.2 Table 46). Layout
@@ -319,6 +325,9 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 		w.E1BDVS = int(e1bDVS)
 		w.WN = int(wn)
 		w.TOW = float64(tow)
+		if w.TOW >= weekSeconds {
+			return nil, errBadEpoch // the 20-bit count codes up to 1 048 575 s; GST TOW ≤ 604 799
+		}
 		const bgdScale = 1.0 / float64(uint64(1)<<32)
 		w.BGDE1E5a = float64(bgdA) * bgdScale
 		w.BGDE1E5b = float64(bgdB) * bgdScale

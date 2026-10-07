@@ -29,7 +29,7 @@ import (
 func (s *Store) countDecodeFailure(f *ingest.RawFrame, kind string, err error) {
 	if errors.Is(err, frame.ErrBadCRC) || errors.Is(err, frame.ErrBadPreamble) ||
 		errors.Is(err, frame.ErrBadTLMPreamble) || errors.Is(err, frame.ErrBadBCH) ||
-		errors.Is(err, frame.ErrGLONASSHamming) {
+		errors.Is(err, frame.ErrGLONASSHamming) || errors.Is(err, frame.ErrParity) {
 		if !s.projection {
 			metrics.NavCRCFailTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), fmt.Sprint(f.SigID), f.Source).Inc()
 		}
@@ -1237,8 +1237,12 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 	// whose IODC changes only in its two high bits (same low-8 IODE, legal after
 	// the §20.3.4.4 six-hour no-repeat horizon) must still refresh the served
 	// af0/af1/af2/Toc/TGD instead of being dropped by the IODE gate forever.
+	// The changeover also keys on the elements themselves: after the §20.3.4.4
+	// six-hour no-repeat horizon a new upload may legally reuse an IODE, and an
+	// entry kept alive past that (a long sv_ttl, or RAWX keeping lastSeen fresh)
+	// would otherwise serve the stale orbit until the next IODE change.
 	newIOD := st.sf2.IODE
-	ephChanged := !st.haveEph || newIOD != st.iod
+	ephChanged := !st.haveEph || newIOD != st.iod || eph != st.eph
 	clkChanged := !st.haveLnavIODC || st.sf1.IODC != st.lnavIODC
 	if !ephChanged && !clkChanged {
 		return // same data set, nothing new
@@ -1368,8 +1372,8 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 		return // words from different IODnav; wait for a consistent set
 	}
 	newIOD := st.galW[1].IODnav
-	if st.haveEph && newIOD == st.iod {
-		return
+	if st.haveEph && newIOD == st.iod && eph == st.eph {
+		return // same data set, same elements
 	}
 	// A replayed older set never replaces the live one (staleReplay); word 5's
 	// health and the OSNMA/GGTO folds above are per-broadcast and already applied.
@@ -1520,8 +1524,8 @@ func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 		return // pages from different IODnav; wait for a mutually consistent set
 	}
 	newIOD := st.fnav[1].IODnav
-	if st.haveEph && newIOD == st.iod {
-		return // same data set, nothing new
+	if st.haveEph && newIOD == st.iod && eph == st.eph {
+		return // same data set, same elements, nothing new
 	}
 	// A replayed older set never replaces the live one (staleReplay); page 1's
 	// health/SISA and the GGTO fold above are per-broadcast and already applied.
@@ -1789,7 +1793,7 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 	// difference against — absent, not zero), and do not latch the stale
 	// message's IODC as applied (a later fresh type-30 carrying that IODC must
 	// still be recognized as a change).
-	ephChanged := !st.haveEph || st.bc10.IODE != st.iod
+	ephChanged := !st.haveEph || st.bc10.IODE != st.iod || eph != st.eph
 	clkChanged := clkOK && (!st.haveBcIOD || st.bcClk.IODC != st.bcIODC)
 	tgdRefresh := clkOK && nextClkHasTGD && (!st.clkHasBcTGD || clk.TGD != st.clk.TGD)
 	if !ephChanged && !clkChanged && !tgdRefresh {
@@ -1804,11 +1808,16 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		clk = st.clk
 	}
 	if ephChanged && st.haveEph {
-		if clkOK && st.clkHasBcTGD == nextClkHasTGD {
-			s.computeDisco(st, eph, clk, recv)
-		} else {
-			// A clock comparison across differing TGD provenance would turn an
-			// unknown group delay into a false clock jump.
+		// The orbit half of the discontinuity is measured at every ephemeris
+		// changeover; only the time half needs a coherent decoded clock on both
+		// sides with the same group-delay provenance. Gating the whole call on
+		// the clock left the previous changeover's orbit_disco_m served, with a
+		// growing age, through every changeover whose cached type-30/34 had gone
+		// stale — exactly the GPS CNAV path's split (applyGPSCNAV).
+		s.computeDisco(st, eph, clk, recv)
+		if !clkOK || !st.haveClk || st.clkHasBcTGD != nextClkHasTGD {
+			// A clock comparison across a stale or absent clock, or differing TGD
+			// provenance, would turn an unknown group delay into a false clock jump.
 			st.timeDiscoValid = false
 		}
 	}

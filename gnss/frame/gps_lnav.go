@@ -59,6 +59,20 @@ var ErrBadTLMPreamble = errors.New("frame: LNAV TLM preamble mismatch")
 // like out-of-range subframe id rather than exported unvalidated.
 var errBadTOWCount = errors.New("frame: LNAV HOW TOW count out of range (max 100799)")
 
+// weekSeconds is the GNSS week (gnsstime.WeekSeconds): every Kepler-family epoch
+// field — toe, toc, t0e, t0c and the CNAV/Galileo TOW counts — is bounded by the
+// ICDs to lie inside it (GPS ≤ 604 784, Galileo t0e ≤ 604 740, BDS ≤ 604 792, CNAV
+// ≤ 604 500), while the bit fields code values well past it.
+const weekSeconds = 604800.0
+
+// errBadEpoch is returned when a decoded toe/toc/t0e/t0c or TOW count lies outside
+// the week. The field's codespace exceeds the week, and EphAge wraps only once, so
+// an out-of-domain reference would not fail — it would alias into a plausible
+// propagation interval and kepler.Solve would return a finite, wrong position with
+// no error (the GLONASS tb rule, errBadTb, applied to the Kepler family). Never
+// clamped or normalised: an ICD-legal broadcast is always below the bound.
+var errBadEpoch = errors.New("frame: ephemeris/clock epoch outside the week (0..604800 s)")
+
 // GPSSubframe holds the decoded fields of a single LNAV subframe. Only the fields
 // belonging to this subframe's ID are populated; a full ephemeris is assembled
 // from subframes 1, 2, and 3 (AssembleGPS).
@@ -111,18 +125,27 @@ type GPSSubframe struct {
 }
 
 // DecodeGPSLNAV decodes one LNAV subframe from ten 30-bit words as delivered by
-// UBX-RXM-SFRBX, verified against real ZED-F9T frames. (Septentrio's SBF GPSRawCA
-// documents the same normalized-word delivery, so it should decode identically —
-// speculative: we own no Septentrio hardware and no SBF capture has been run.) The
-// receiver has already validated parity and resolved the D30* data inversion, so
-// each word carries the true 24 data bits in bits 29..6. We extract those directly
-// — re-running the broadcast parity on receiver-supplied words fails, because the
-// receiver normalises them (this is why RTKLIB also trusts u-blox SFRBX). The
-// GPSParity primitive remains for a future raw-signal path. Bounds are still fully
-// checked by BitReader; a short input is an error.
+// UBX-RXM-SFRBX, verified against real ZED-F9T and F9P frames. The receiver has
+// resolved the D30* data inversion, so each word carries the true 24 data bits in
+// bits 29..6, which are extracted directly. Its six parity bits are verified too:
+// the receiver's normalisation is deterministic (the whole word is inverted when
+// the previous transmitted D30 was 1 — parity.go), so carrying the transmitted
+// D29*/D30* through the subframe checks all 60 parity bits of a delivered
+// subframe, and a frame delivered as transmitted (a raw-signal source) verifies
+// under GPSParity's chain instead. A word that passes neither is ErrParity: a
+// subframe whose preamble, TOW and id survived but whose ephemeris bits did not
+// would otherwise assemble into live state and, latched under its IODE, serve for
+// the rest of the data set. (Septentrio's SBF GPSRawCA documents normalised
+// delivery as well — speculative: we own no Septentrio hardware and no SBF capture
+// has been run.) Bounds are still fully checked by BitReader; a short input is an
+// error. toc and toe must lie inside the week (errBadEpoch): the bit field codes
+// values past it that EphAge's single wrap would alias into a plausible age.
 func DecodeGPSLNAV(words []uint32) (*GPSSubframe, error) {
 	if len(words) < 10 {
 		return nil, ErrShortFrame
+	}
+	if !lnavParityOK(words[:10]) {
+		return nil, ErrParity
 	}
 	// Pack the 24 data bits (bits 29..6) of each word contiguously (240 bits).
 	buf := make([]byte, 30)
@@ -161,8 +184,14 @@ func DecodeGPSLNAV(words []uint32) (*GPSSubframe, error) {
 	switch sfID {
 	case 1:
 		decodeGPSSf1(r, sf)
+		if sf.Toc >= weekSeconds {
+			return nil, errBadEpoch // IS-GPS-200N Table 20-I: toc ≤ 604 784
+		}
 	case 2:
 		decodeGPSSf2(r, sf)
+		if sf.Toe >= weekSeconds {
+			return nil, errBadEpoch // Table 20-III: toe ≤ 604 784
+		}
 	case 3:
 		decodeGPSSf3(r, sf)
 	case 4, 5:

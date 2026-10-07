@@ -121,12 +121,15 @@ func TestApplyBeiDouBCNAV2StaleClockAtIODEChangeover(t *testing.T) {
 	af0 := st.clk.Af0
 
 	// One hour later the IODE changes; the cached type-30's SOW is now well past
-	// bcnavClkStaleSOW, so the assembler drops it and returns the zero model.
+	// bcnavClkStaleSOW, so the assembler drops it and returns the zero model. The
+	// new set also shifts an orbital element (eccentricity), so the changeover
+	// carries a genuine orbit discontinuity.
 	later := now.Add(time.Hour)
 	apply(bcnav2Frame(prn, 10, 103602, func(buf []byte) {
-		setAbsBits(buf, 53, 8, 8)   // IODE 7 -> 8
-		setAbsBits(buf, 61, 11, 11) // Toe advances one step
-		setAbsBits(buf, 72, 2, 3)
+		setAbsBits(buf, 53, 8, 8)    // IODE 7 -> 8
+		setAbsBits(buf, 61, 11, 11)  // Toe advances one step
+		setAbsBits(buf, 72, 2, 3)    // SatType = MEO
+		setAbsBits(buf, 198, 33, 20) // e shifted by 20 × 2⁻³⁴: a metre-scale orbit jump
 	}), later)
 	apply(bcnav2Frame(prn, 11, 103602, nil), later)
 
@@ -138,6 +141,22 @@ func TestApplyBeiDouBCNAV2StaleClockAtIODEChangeover(t *testing.T) {
 	}
 	if st.timeDiscoValid {
 		t.Errorf("time-disco reported with no fresh clock to difference against: %v ns", st.timeDiscoNs)
+	}
+	// The orbit half of the discontinuity is measured regardless of the clock:
+	// a stale cached clock must not leave the previous changeover's orbit_disco_m
+	// (here: none) served through this one.
+	if !st.orbitDiscoValid || !st.discoAt.Equal(later) {
+		t.Fatalf("orbit disco not measured at the stale-clock changeover: valid=%v at %v", st.orbitDiscoValid, st.discoAt)
+	}
+	sv := s.FeedSVs(later)["C21@8"]
+	if sv.OrbitDiscoM == nil || *sv.OrbitDiscoM <= 0 {
+		t.Fatalf("orbit_disco_m = %v, want the eccentricity jump measured", sv.OrbitDiscoM)
+	}
+	if sv.OrbitDiscoAgeS == nil || *sv.OrbitDiscoAgeS != 0 {
+		t.Errorf("orbit_disco_age_s = %v, want 0 at the changeover", sv.OrbitDiscoAgeS)
+	}
+	if sv.TimeDiscoNs != nil {
+		t.Errorf("time_disco_ns = %v, want absent with no fresh clock", *sv.TimeDiscoNs)
 	}
 }
 

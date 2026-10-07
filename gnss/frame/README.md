@@ -23,7 +23,7 @@ every decoder is fuzzed. It starts hardened, on purpose.
 
 | File | Signal | Delivery | Integrity check |
 |---|---|---|---|
-| `gps_lnav.go` | GPS L1 C/A + QZSS L1 C/A LNAV | 10 × 30-bit words | TLM preamble, TOW range, subframe id (parity pre-validated by the receiver) |
+| `gps_lnav.go` | GPS L1 C/A + QZSS L1 C/A LNAV | 10 × 30-bit words | word parity through the receiver's normalisation chain (or as transmitted), TLM preamble, TOW range, subframe id, toe/toc inside the week |
 | `gps_cnav.go` | GPS/QZSS L2C·L5 CNAV | 10 × 32-bit words (300 bits) | preamble + CRC-24Q over all 300 bits |
 | `galileo_inav.go` | Galileo E1-B I/NAV | 8 × 32-bit words (256-bit page) | page-type flags + CRC-24Q over the reconstructed 196 protected bits + their CRC |
 | `galileo_fnav.go` | Galileo E5a F/NAV | 8 × 32-bit words | CRC-24Q over 238 bits |
@@ -59,9 +59,9 @@ fails its integrity check is rejected outright rather than partially decoded.
 Three principles run through every file:
 
 **1. Verify the broadcast integrity check yourself.** Where the ICD defines a CRC, BCH, or
-Hamming code, we compute it. The one documented exception is GPS/QZSS LNAV parity, explained
-below — and even there, the exception is narrow, deliberate, and written down rather than assumed
-by convenience.
+Hamming code, we compute it — including GPS/QZSS LNAV parity, which is verified through the
+receiver's deterministic normalisation of the delivered words (explained below) rather than
+trusted to the receiver.
 
 **2. Reject out-of-range structural fields at the boundary.** A length-valid frame carrying a
 subframe id of 6, a GLONASS string number of 0, a tb index of 120, or an FDMA channel of +9 is
@@ -140,35 +140,39 @@ be *reconstructed* before checking. `CRC24QBits` deliberately does **not** repea
 `BitReader`'s bounds checks — it's a low-level primitive called only with format constants, after
 the frame length has been checked.
 
-### GPS LNAV parity, and the one place we trust the receiver
+### GPS LNAV parity through the receiver's normalisation
 
 ```go
 func GPSParity(word uint32, d29star, d30star uint32) (data uint32, ok bool)
+func StampGPSLNAVParity(words []uint32)
 ```
 
-Implements IS-GPS-200N §20.3.5 in full: each 30-bit word carries 24 data bits and 6 parity bits
-computed over those data bits plus the previous word's last two parity bits (D29*, D30*), and
-**when D30* is set the 24 data bits are transmitted complemented** and must be inverted first.
+`GPSParity` implements IS-GPS-200N §20.3.5 in full for a word as transmitted: each 30-bit word
+carries 24 data bits and 6 parity bits computed over those data bits plus the previous word's
+last two parity bits (D29*, D30*), and **when D30* is set the 24 data bits are transmitted
+complemented** and must be inverted first.
 
-Here is the honest situation: **`DecodeGPSLNAV` does not call this function.** u-blox
-UBX-RXM-SFRBX — verified against real ZED-F9T frames — delivers LNAV words the receiver has
-*already* parity-checked and D30*-normalized. (Septentrio's SBF GPSRawCA documents the same
-normalized delivery, so it should decode identically; that remains speculative — we own no
-Septentrio hardware and no SBF capture has been run.) Re-running the broadcast parity on
-receiver-normalized words fails, because they aren't the raw broadcast words any more — this is
-the same reason RTKLIB trusts u-blox SFRBX. So the decoder extracts the 24 data bits directly and
-validates what it *can* validate: the TLM preamble, the HOW TOW count range, and the subframe id.
+u-blox UBX-RXM-SFRBX — the fleet's source — delivers LNAV words the receiver has already
+parity-checked and D30*-normalised, so the naive re-run of the broadcast parity on delivered
+words fails (which is why RTKLIB trusts u-blox SFRBX). The normalisation is deterministic,
+though: measured on 3 130 of 3 130 words across two independent captures, the receiver
+delivers `tx XOR (D30* ? 0x3FFFFFFF : 0)` — the whole word, parity bits included, inverted
+when the previous *transmitted* D30 was 1. Carrying the transmitted D29*/D30* through the
+subframe (word 1 starts from 0/0, which the ICD guarantees by solving words 2 and 10 to
+D29 = D30 = 0) therefore verifies all 60 parity bits of a delivered subframe. `DecodeGPSLNAV`
+does exactly that, and also accepts a frame delivered as transmitted (a raw-signal source)
+through `GPSParity`'s chain; a frame that verifies under neither is `ErrParity`, which the
+collector counts with the other integrity failures. Data bits are still extracted directly
+from bits 29..6, so a raw-signal source would additionally need its D30*-complemented data
+bits inverted before extraction — not done today, since no such source exists.
+`StampGPSLNAVParity` writes the normalised parity into a fixture's words, as
+`StampGalileoINAVCRC` does for I/NAV pages. (Septentrio's SBF GPSRawCA documents normalised
+delivery as well; that remains speculative — we own no Septentrio hardware and no SBF
+capture has been run.)
 
-`GPSParity` is retained, tested, and fuzzed for the future raw-signal path (a software-defined
-receiver, or a source that delivers unnormalized words). Related: **`ErrParity` is declared and
-exported but no decoder returns it today.** That's deliberate API surface for the same future
-path, not a dead branch — noted here so nobody spends an afternoon hunting for its call site.
-
-Note the contrast with every other format: LNAV's "the receiver already checked it" claim is
-specific to that format's normalized delivery, and no equivalent guarantee was found for CNAV,
-I/NAV, F/NAV, D1, B-CNAV2, GLONASS strings, or SBAS. Those all verify their own checks (regression fix
-investigated this rather than assuming it) — which matters doubly because push-path frames arrive
-from remote feeders, not just a directly-dialed receiver.
+Every format now verifies its own bit-level check: CRC-24Q, BCH, GLONASS Hamming, or the LNAV
+parity above — which matters doubly because push-path frames arrive from remote feeders, not
+just a directly-dialed receiver.
 
 ### `sowDelta`
 

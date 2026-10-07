@@ -139,6 +139,9 @@ func DecodeGalileoFNAV(words []uint32) (*GalileoFNAV, error) {
 		w.E5aDVS = int(u(187, 1)) // Table 81 — 0 valid, 1 working without guarantee
 		w.WN = int(u(155, 12))    // GST week/TOW, unscaled integer counts (Table 69)
 		w.TOW = float64(u(167, 20))
+		if w.TOW >= weekSeconds {
+			return nil, errBadEpoch // the 20-bit count codes up to 1 048 575 s; GST TOW ≤ 604 799
+		}
 		w.BGDE1E5a = float64(s(143, 10)) * p2m32
 		w.clk = clock.Model{
 			ID:  gnss.Galileo,
@@ -157,6 +160,9 @@ func DecodeGalileoFNAV(words []uint32) (*GalileoFNAV, error) {
 			// ≈BGD false clock offset — exactly as latent note predicted.
 			TGD: float64(s(143, 10)) * p2m32 * clock.E5aGroupDelayFactor,
 		}
+		if w.clk.Toc >= weekSeconds {
+			return nil, errBadEpoch // Table 60: t0c ≤ 604 740
+		}
 		w.hasClk = true
 	case 2: // M0, Ω̇, e, √A, Ω0, IDOT
 		w.eph.M0 = float64(s(16, 32)) * p2m31 * semi
@@ -174,6 +180,9 @@ func DecodeGalileoFNAV(words []uint32) (*GalileoFNAV, error) {
 		w.eph.Crc = float64(s(128, 16)) * p2m5
 		w.eph.Crs = float64(s(144, 16)) * p2m5
 		w.eph.Toe = float64(u(160, 14)) * galT0
+		if w.eph.Toe >= weekSeconds {
+			return nil, errBadEpoch // Table 60: t0e ≤ 604 740
+		}
 	case 4:
 		// Cic, Cis + GST-UTC + GST-GPS conversion + TOW — Table 33: Type(6)
 		// IODnav(10) Cic(16) Cis(16) A0(32) A1(24) ΔtLS(8) t0t(8) WN0t(8)
