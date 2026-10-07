@@ -34,8 +34,13 @@ ProtectHome=yes
 PrivateTmp=yes
 ProtectControlGroups=yes
 ProtectKernelTunables=yes
+# AF_UNIX is deliberately absent: glibc's resolver falls back to plain UDP (AF_INET/AF_INET6)
+# when nss-resolve's varlink socket is unreachable, so name resolution still works without it.
 RestrictAddressFamilies=AF_INET AF_INET6
 ReadWritePaths=/var/spool/navfeeder
+# Spool files hold the station's unsent raw frames; keep them private to the service account
+# (0600) instead of the world-readable default.
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
