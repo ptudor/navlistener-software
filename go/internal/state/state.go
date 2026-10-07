@@ -26,12 +26,39 @@ import (
 	"github.com/ptudor/navlistener/internal/metrics"
 )
 
-func (s *Store) countDecodeFailure(f *ingest.RawFrame, kind string, err error) {
+var gnssIDLabels = [...]string{"0", "1", "2", "3", "4", "5", "6", "7"}
+
+type decodeKind uint8
+
+const (
+	kindCNAV decodeKind = iota
+	kindSBAS
+	kindLNAV
+	kindINAV
+	kindFNAV
+	kindD1
+	kindBCNAV2
+	kindGLO
+)
+
+var decodeKindLabels = [...]struct{ name, alert string }{
+	{"cnav", "cnav_alert"}, {"sbas", "sbas_alert"}, {"lnav", "lnav_alert"}, {"inav", "inav_alert"},
+	{"fnav", "fnav_alert"}, {"d1", "d1_alert"}, {"bcnav2", "bcnav2_alert"}, {"glo", "glo_alert"},
+}
+
+func gnssIDLabel(id gnss.GNSSID) string {
+	if int(id) < len(gnssIDLabels) {
+		return gnssIDLabels[id]
+	}
+	return fmt.Sprint(int(id))
+}
+
+func (s *Store) countDecodeFailure(f *ingest.RawFrame, kind decodeKind, err error) {
 	if errors.Is(err, frame.ErrBadCRC) || errors.Is(err, frame.ErrBadPreamble) ||
 		errors.Is(err, frame.ErrBadTLMPreamble) || errors.Is(err, frame.ErrBadBCH) ||
 		errors.Is(err, frame.ErrGLONASSHamming) || errors.Is(err, frame.ErrParity) {
 		if !s.projection {
-			metrics.NavCRCFailTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), fmt.Sprint(f.SigID), f.Source).Inc()
+			metrics.NavCRCFailTotal.WithLabelValues(gnssIDLabel(f.GnssID), fmt.Sprint(f.SigID), f.Source).Inc()
 		}
 		return
 	}
@@ -47,12 +74,12 @@ func (s *Store) countDecodeFailure(f *ingest.RawFrame, kind string, err error) {
 	// page's semantics, so no health may be invented from one here.
 	if errors.Is(err, frame.ErrGalileoAlertPage) {
 		if !s.projection {
-			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), kind+"_alert").Inc()
+			metrics.DecodeErrorsTotal.WithLabelValues(gnssIDLabel(f.GnssID), decodeKindLabels[kind].alert).Inc()
 		}
 		return
 	}
 	if !s.projection {
-		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), kind).Inc()
+		metrics.DecodeErrorsTotal.WithLabelValues(gnssIDLabel(f.GnssID), decodeKindLabels[kind].name).Inc()
 	}
 }
 
@@ -77,7 +104,7 @@ func (s *Store) staleReplay(f *ingest.RawFrame, appliedRecv time.Time) bool {
 		return false
 	}
 	if !s.projection {
-		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "stale_replay").Inc()
+		metrics.DecodeErrorsTotal.WithLabelValues(gnssIDLabel(f.GnssID), "stale_replay").Inc()
 	}
 	return true
 }
@@ -762,7 +789,7 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 	}
 	if !svIDInRange(f.GnssID, f.SvID) {
 		if !s.projection {
-			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "svid_range").Inc()
+			metrics.DecodeErrorsTotal.WithLabelValues(gnssIDLabel(f.GnssID), "svid_range").Inc()
 		}
 		return
 	}
@@ -800,7 +827,7 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 		// instead of vanishing into the label-free "unsupported" bucket (the navic_deferred
 		// idiom, regression fix).
 		if !s.projection {
-			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "gal_e5b_deferred").Inc()
+			metrics.DecodeErrorsTotal.WithLabelValues(gnssIDLabel(f.GnssID), "gal_e5b_deferred").Inc()
 		}
 	case f.GnssID == gnss.BeiDou && f.SigID == 0: // B1I D1 NAV
 		s.applyBeiDouD1(f)
@@ -816,27 +843,27 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 		// frames vanishing into the label-free "unsupported" bucket.
 		// docs/CONSTELLATIONS.md §2.1: u-blox (3,1)=B1I D2, (3,3)=B2I D2.
 		if !s.projection {
-			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "bds_d2_deferred").Inc()
+			metrics.DecodeErrorsTotal.WithLabelValues(gnssIDLabel(f.GnssID), "bds_d2_deferred").Inc()
 		}
 	case f.GnssID == gnss.BeiDou && f.SigID == 2:
 		// B2I D1 (u-blox (3,2), CONSTELLATIONS.md §2.1) — deferred like D2
 		//; the legacy BDS-2 B2I ICD is vendored (BDS-SIS-B2I-2.1) but
 		// no capture-verified ID mapping exists yet.
 		if !s.projection {
-			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "bds_b2i_deferred").Inc()
+			metrics.DecodeErrorsTotal.WithLabelValues(gnssIDLabel(f.GnssID), "bds_b2i_deferred").Inc()
 		}
 	case f.GnssID == gnss.BeiDou && (f.SigID == 5 || f.SigID == 6):
 		// B1C pilot/data, B-CNAV1 (u-blox (3,5)/(3,6)) — planned (CONSTELLATIONS.md
 		// marks BdsCnav1 reserved), deferred with its own label.
 		if !s.projection {
-			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "bds_b1c_deferred").Inc()
+			metrics.DecodeErrorsTotal.WithLabelValues(gnssIDLabel(f.GnssID), "bds_b1c_deferred").Inc()
 		}
 	case f.GnssID == gnss.BeiDou && f.SigID == 7:
 		// B2a pilot component (u-blox (3,7)). B-CNAV2 arrives on the data
 		// component (sigId 8, decoded above); pilot-tagged frames are counted
 		// separately so a receiver-config change is visible.
 		if !s.projection {
-			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "bds_b2a_pilot_deferred").Inc()
+			metrics.DecodeErrorsTotal.WithLabelValues(gnssIDLabel(f.GnssID), "bds_b2a_pilot_deferred").Inc()
 		}
 	case f.GnssID == gnss.GLONASS && (f.SigID == 0 || f.SigID == 2): // L1OF/L2OF strings
 		// L2OF (6,2) carries the byte-identical 85-bit string format to L1OF and is
@@ -859,11 +886,11 @@ func (s *Store) Apply(f *ingest.RawFrame) {
 		// exists. Counted under its own label so the deferral is visible in /metrics instead of
 		// being hidden in the generic "unsupported" bucket.
 		if !s.projection {
-			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "navic_deferred").Inc()
+			metrics.DecodeErrorsTotal.WithLabelValues(gnssIDLabel(f.GnssID), "navic_deferred").Inc()
 		}
 	default:
 		if !s.projection {
-			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "unsupported").Inc()
+			metrics.DecodeErrorsTotal.WithLabelValues(gnssIDLabel(f.GnssID), "unsupported").Inc()
 		}
 	}
 }
@@ -1007,11 +1034,11 @@ func cnavGroupDelay(id gnss.GNSSID, sig int, m *frame.GPSCNAV) float64 {
 func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 	m, err := frame.DecodeGPSCNAV(f.GnssID, f.Words)
 	if err != nil {
-		s.countDecodeFailure(f, "cnav", err)
+		s.countDecodeFailure(f, kindCNAV, err)
 		return
 	}
 	if !s.projection {
-		metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "cnav").Inc()
+		metrics.DecodeTotal.WithLabelValues(gnssIDLabel(f.GnssID), "cnav").Inc()
 	}
 	recv := f.LocalRecv() // collector-local clock for staleness/expiry math
 	// validation follow-up to regression fix/AssembleGPSCNAV's PRN gate
@@ -1027,7 +1054,7 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 	// that this station produces the signal.
 	if m.PRN != f.SvID {
 		if !s.projection {
-			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "cnav_prn").Inc()
+			metrics.DecodeErrorsTotal.WithLabelValues(gnssIDLabel(f.GnssID), "cnav_prn").Inc()
 		}
 		return
 	}
@@ -1143,7 +1170,7 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 func (s *Store) applySBAS(f *ingest.RawFrame) {
 	m, err := frame.DecodeSBASL1(f.SvID, f.Words)
 	if err != nil {
-		s.countDecodeFailure(f, "sbas", err)
+		s.countDecodeFailure(f, kindSBAS, err)
 		return
 	}
 	// PreambleOK previously gated nothing — even a message whose preamble
@@ -1159,12 +1186,12 @@ func (s *Store) applySBAS(f *ingest.RawFrame) {
 	// its own label so the defense-in-depth gate is visible working in /metrics.
 	if !m.PreambleOK {
 		if !s.projection {
-			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "sbas_preamble").Inc()
+			metrics.DecodeErrorsTotal.WithLabelValues(gnssIDLabel(f.GnssID), "sbas_preamble").Inc()
 		}
 		return
 	}
 	if !s.projection {
-		metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "sbas").Inc()
+		metrics.DecodeTotal.WithLabelValues(gnssIDLabel(f.GnssID), "sbas").Inc()
 	}
 	// all recency below is the collector-local clock — staleness ages
 	// (sbasStaleAfter, capability windows) must never absorb feeder clock skew.
@@ -1195,11 +1222,11 @@ func (s *Store) applySBAS(f *ingest.RawFrame) {
 func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 	sf, err := frame.DecodeGPSLNAV(f.Words)
 	if err != nil {
-		s.countDecodeFailure(f, "lnav", err)
+		s.countDecodeFailure(f, kindLNAV, err)
 		return
 	}
 	if !s.projection {
-		metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "lnav").Inc()
+		metrics.DecodeTotal.WithLabelValues(gnssIDLabel(f.GnssID), "lnav").Inc()
 	}
 	recv := f.LocalRecv() // collector-local clock for all staleness/expiry/disco-age math
 	if f.Source != "" {
@@ -1302,7 +1329,7 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 	w, err := frame.DecodeGalileoINAV(f.Words)
 	if err != nil {
-		s.countDecodeFailure(f, "inav", err)
+		s.countDecodeFailure(f, kindINAV, err)
 		return
 	}
 	// Word type 4 is the only ephemeris word that names its transmitter: the
@@ -1316,12 +1343,12 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 	// carry no SVID and are matched to word 4 by IODnav at assembly.
 	if w.Type == 4 && w.SVID != f.SvID {
 		if !s.projection {
-			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "prn_mismatch").Inc()
+			metrics.DecodeErrorsTotal.WithLabelValues(gnssIDLabel(f.GnssID), "prn_mismatch").Inc()
 		}
 		return
 	}
 	if !s.projection {
-		metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "inav").Inc()
+		metrics.DecodeTotal.WithLabelValues(gnssIDLabel(f.GnssID), "inav").Inc()
 	}
 	recv := f.LocalRecv() // regression fix
 	if f.Source != "" {
@@ -1448,12 +1475,12 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 	w, err := frame.DecodeGalileoFNAV(f.Words)
 	if err != nil {
-		s.countDecodeFailure(f, "fnav", err)
+		s.countDecodeFailure(f, kindFNAV, err)
 		return
 	}
 	if w.PageType == 63 {
 		if !s.projection {
-			metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "fnav_dummy").Inc()
+			metrics.DecodeTotal.WithLabelValues(gnssIDLabel(f.GnssID), "fnav_dummy").Inc()
 		}
 		return
 	}
@@ -1463,7 +1490,7 @@ func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 	// installs the durable capability fingerprint or counts as a healthy decode.
 	if w.PageType < 1 || w.PageType > 6 {
 		if !s.projection {
-			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "fnav").Inc()
+			metrics.DecodeErrorsTotal.WithLabelValues(gnssIDLabel(f.GnssID), "fnav").Inc()
 		}
 		return
 	}
@@ -1476,12 +1503,12 @@ func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 	// 2–4 carry no SVID and are matched to page 1 by IODnav at assembly.
 	if w.PageType == 1 && w.SVID != f.SvID {
 		if !s.projection {
-			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "prn_mismatch").Inc()
+			metrics.DecodeErrorsTotal.WithLabelValues(gnssIDLabel(f.GnssID), "prn_mismatch").Inc()
 		}
 		return
 	}
 	if !s.projection {
-		metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "fnav").Inc()
+		metrics.DecodeTotal.WithLabelValues(gnssIDLabel(f.GnssID), "fnav").Inc()
 	}
 	recv := f.LocalRecv() // regression fix
 	// record the capability fingerprint only after a structurally valid decode.
@@ -1570,11 +1597,11 @@ func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 	sf, err := frame.DecodeBeiDouD1(f.Words)
 	if err != nil {
-		s.countDecodeFailure(f, "d1", err)
+		s.countDecodeFailure(f, kindD1, err)
 		return
 	}
 	if !s.projection {
-		metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "d1").Inc()
+		metrics.DecodeTotal.WithLabelValues(gnssIDLabel(f.GnssID), "d1").Inc()
 	}
 	recv := f.LocalRecv() // regression fix
 	if f.Source != "" {
@@ -1657,7 +1684,7 @@ func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 	m, err := frame.DecodeBeiDouBCNAV2(f.Words)
 	if err != nil {
-		s.countDecodeFailure(f, "bcnav2", err)
+		s.countDecodeFailure(f, kindBCNAV2, err)
 		return
 	}
 	// regression fix/every B-CNAV2 message carries the satellite's own PRN
@@ -1679,12 +1706,12 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 	// the next GPS pass.)
 	if m.PRN == 0 || m.PRN != f.SvID {
 		if !s.projection {
-			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "prn_mismatch").Inc()
+			metrics.DecodeErrorsTotal.WithLabelValues(gnssIDLabel(f.GnssID), "prn_mismatch").Inc()
 		}
 		return
 	}
 	if !s.projection {
-		metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "bcnav2").Inc()
+		metrics.DecodeTotal.WithLabelValues(gnssIDLabel(f.GnssID), "bcnav2").Inc()
 	}
 	recv := f.LocalRecv() // regression fix
 	if f.Source != "" {
@@ -1888,7 +1915,7 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 	// enhancement, not attempted here.
 	if f.SvID < 1 || f.SvID > 24 {
 		if !s.projection {
-			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "glo_unknown_slot").Inc()
+			metrics.DecodeErrorsTotal.WithLabelValues(gnssIDLabel(f.GnssID), "glo_unknown_slot").Inc()
 		}
 		return
 	}
@@ -1899,17 +1926,17 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 	// boundary rule as the slot guard above.
 	if f.FreqID < 0 || f.FreqID > 13 {
 		if !s.projection {
-			metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "glo_bad_freq").Inc()
+			metrics.DecodeErrorsTotal.WithLabelValues(gnssIDLabel(f.GnssID), "glo_bad_freq").Inc()
 		}
 		return
 	}
 	str, err := frame.DecodeGLONASSString(f.Words)
 	if err != nil {
-		s.countDecodeFailure(f, "glo", err)
+		s.countDecodeFailure(f, kindGLO, err)
 		return
 	}
 	if !s.projection {
-		metrics.DecodeTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "glo").Inc()
+		metrics.DecodeTotal.WithLabelValues(gnssIDLabel(f.GnssID), "glo").Inc()
 	}
 	// regression fix — TWO clock domains in this function, deliberately:
 	//   recv (collector-local) — staleness/expiry/disco-age math (lastSeen,
