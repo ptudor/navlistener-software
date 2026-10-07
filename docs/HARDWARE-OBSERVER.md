@@ -587,32 +587,38 @@ names the board: a `CAT_INTSAT` descriptor whose address byte is the board revis
 Firmware and clients know a board's pins and part addresses from that ID and revision; the
 other entries say which parts are installed.
 
-| Entry | NEO first spin | MAX mobile | ZED-X20P square |
+| Entry | NEO first spin | MAX mobile | ZED-X20P (162mm) |
 |---|---|---|---|
 | `CAT_INTSAT`, revision | `INTSAT_NEO`, 1 | `INTSAT_MAX`, 1 | `INTSAT_X20`, 1 |
 | `CAT_GPS` | `GPS_NEO_M9N` | `GPS_MAX_M10S` | `GPS_ZED_X20P` |
-| `CAT_RTC` | `RTC_MCP79412` `0x6F` | `RTC_MCP79412` `0x6F` | `RTC_MAX31328` `0x68` |
+| `CAT_RTC` | `RTC_MCP79412` `0x6F` | `RTC_MCP79412` `0x6F` | `RTC_DS3231M` `0x68` |
 | `CAT_PRESSURE` | `PRESSURE_BMP388` `0x76` | `PRESSURE_MS5607` `0x77` | `PRESSURE_BMP581` `0x46` |
 | `CAT_POWER`, GPIO38 (`3V3_GNSS`) | `POWER_ADM7150` | `POWER_TPS7A20` | `POWER_ADM7150` |
 | `CAT_POWER`, GPIO21 (`3V3_SENS`) | `POWER_RT9193` | `POWER_TPS7A20` | `POWER_TPS7A20` |
 | `CAT_POWER`, I2C | — | — | `POWER_INA3221` `0x41` (rail monitor) |
+| `CAT_IO_EXPANDER` | — | — | `IO_MCP23008` `0x24` (interrupt collector, panel chain readback) |
 | Additional sensors | — | `IMU_ICM45686` `0x69`, `SENSOR_MAG_MMC34160PJ` `0x30`, `SENSOR_THERMOCOUPLE_MAX31856` (SPI) | — |
 | Ethernet | — | — | `COMM_W5500` (SPI), `CONNECTOR_ETHERNET_RJ45` |
 | `CAT_BATTERY` | `BATTERY_CR123A` | `BATTERY_CR2032`; `BATTERY_CR123A` not populated (optional external cell) | `BATTERY_CR2032`, `BATTERY_CR123A` (carrier) |
 | `CAT_BUTTON` | `BUTTON_BOOT` GPIO0 | `BUTTON_BOOT` GPIO0, `BUTTON_USER_2` GPIO18 (brightness) | `BUTTON_BOOT` GPIO0, `BUTTON_USER_2` GPIO18 (brightness) |
 
-All three also list the ESP32-S3, ATECC608C `0x60`, MCP9808 `0x18`, HDC2080 `0x40`, the two
-TLC5916 drivers by output-enable GPIO47/GPIO48, USB-OTG and the Qwiic port.
+All three also list the ESP32-S3, ATECC608C `0x60`, MCP9808 `0x18`, HDC2080 `0x40`, the
+TLC5916 drivers by output-enable GPIO47/GPIO48 (two on the NEO and MAX; the 162mm panel's
+three, of which U12 and U14 share GPIO47), USB-OTG and the Qwiic port. The ZED-X20P column is
+the 162mm mainboard with its required LED panel; revision A was redefined to it on
+2026-10-07, before any X20 EEPROM was programmed, and the 3900 mil square schematic is being
+brought to the same parts so it can carry the list.
 
 One universal firmware image serves all three boards. It drives a board's pins only when the
 manifest's `CAT_INTSAT` entry names that board and a revision it knows, and runs each driver
 only for a part listed installed: RAM-only configuration of the listed receiver (NEO-M9N,
-ZED-X20P or MAX-M10S), the MCP79412 or MAX31328 RTC, the MCP9808, HDC2080/HDC2022, BMP388
+ZED-X20P or MAX-M10S), the MCP79412, MAX31328 or DS3231M RTC, the MCP9808, HDC2080/HDC2022, BMP388
 and ATECC608C, the ZED/X20's BMP581, INA3221 rail monitor (telemetry tags 15-16) and W5500
 Ethernet uplink, the GPIO18 preset buttons
 (`BUTTON_USER_2`) with the GPIO2 brightness trimmer, and the MAX's MS5607, MAX31856,
 ICM-45686 and MMC34160PJ (telemetry tags 11-13 in [OBSERVER-TELEMETRY.md](OBSERVER-TELEMETRY.md)).
-The ZED/X20's mirrored front-panel chain follows the board. A manifest that is unusable,
+The ZED/X20's front panel is its only chain and takes a 24-bit frame with RTK and ATTENTION
+status. A manifest that is unusable,
 names no board, names one or a revision the firmware does not know, or names more than one
 runs nothing board-specific; the receiver still streams, unconfigured. A new board or
 revision therefore needs a firmware row before its first unit is programmed. The single-board

@@ -295,7 +295,7 @@ menu "navfeeder-esp"
             bool "MAX-M10S mobile, revision A"
             depends on NVF_BOARD_SUPPORT_MAX
         config NVF_MANIFEST_BOARD_ZED_X20_A
-            bool "ZED-X20P square, revision A"
+            bool "ZED-X20P, revision A"
             depends on NVF_BOARD_SUPPORT_X20
     endchoice
 

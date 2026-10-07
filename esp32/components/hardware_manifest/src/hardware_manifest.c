@@ -135,7 +135,7 @@ static esp_err_t known_eeprom_uid_store(const uint8_t eui[NVF_BOARD_UID_SIZE])
 // factory CA writes, so both produce identical bytes.
 #if CONFIG_NVF_MANIFEST_BOARD_ZED_X20_A
 #define MANIFEST_BOARD_ID INTSAT_X20
-#define MANIFEST_BOARD_NAME "ZED-X20P square revision A"
+#define MANIFEST_BOARD_NAME "ZED-X20P revision A"
 #elif CONFIG_NVF_MANIFEST_BOARD_MAX_A
 #define MANIFEST_BOARD_ID INTSAT_MAX
 #define MANIFEST_BOARD_NAME "MAX-M10S mobile revision A"

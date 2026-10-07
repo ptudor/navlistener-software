@@ -124,6 +124,8 @@ static bool max31328_write_registers(void *ctx, uint8_t reg, const uint8_t *data
     uint8_t buffer[8]; buffer[0] = reg; memcpy(buffer + 1, data, length);
     return i2c_master_transmit(ctx, buffer, length + 1, 100) == ESP_OK;
 }
+// The DS3231M and the MAX31328 share this register map and driver; logs name the fitted part.
+static const char *tcxo_name(void) { return part == OBSERVER_RTC_DS3231M ? "DS3231M" : "MAX31328"; }
 static void max31328_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss, int64_t now)
 {
     if (now < MAX31328_RECOVERY_MS) return;
@@ -139,7 +141,7 @@ static void max31328_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss
     uint8_t regs[7], state[2]; int64_t epoch;
     telemetry = (report_rtc_t){.sampled_ms = now};
     if (!read_registers(dev, 0, regs, sizeof regs) || !read_registers(dev, MAX31328_CONTROL, state, 2)) {
-        ESP_LOGW(TAG, "MAX31328 read failed; clock left unchanged");
+        ESP_LOGW(TAG, "%s read failed; clock left unchanged", tcxo_name());
         candidate = (rtc_candidate_t){0}; next_poll = now + 30000; return;
     }
     // Backup switchover is automatic, so backup is always enabled; a stop, including a
@@ -149,15 +151,15 @@ static void max31328_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss
     if (max31328_running(regs, state[0], state[1], &epoch)) {
         telemetry.flags |= 16; telemetry.epoch = epoch;
         if (report_state != RUNNING)
-            ESP_LOGI(TAG, "MAX31328 running calendar retained (UTC epoch=%lld); no oscillator stop recorded",
-                     (long long)epoch);
+            ESP_LOGI(TAG, "%s running calendar retained (UTC epoch=%lld); no oscillator stop recorded",
+                     tcxo_name(), (long long)epoch);
         report_state = RUNNING; candidate = (rtc_candidate_t){0}; next_poll = now + 10000;
         return;
     }
     if (report_state == UNUSABLE) { next_poll = now + 600000; return; }
     if (report_state != WAITING)
-        ESP_LOGW(TAG, "MAX31328 calendar invalid (oscillator-stop flag %s); waiting for valid GNSS lock and UTC",
-                 state[1] & MAX31328_OSF ? "set: power was lost or the switch to the backup cell failed" : "clear");
+        ESP_LOGW(TAG, "%s calendar invalid (oscillator-stop flag %s); waiting for valid GNSS lock and UTC",
+                 tcxo_name(), state[1] & MAX31328_OSF ? "set: power was lost or the switch to the backup cell failed" : "clear");
     report_state = WAITING;
     if (!rtc_gnss_candidate(&candidate, gnss, now, &epoch)) return;
     const rtc_time_ref_t reference = rtc_candidate_ref(&candidate);
@@ -166,17 +168,17 @@ static void max31328_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss
     case MAX31328_SET_OK:
         report_state = RUNNING;
         telemetry = (report_rtc_t){.sampled_ms = now};
-        ESP_LOGI(TAG, "MAX31328 set from GNSS UTC (epoch=%lld); oscillator-stop flag cleared and advancing",
-                 (long long)written);
+        ESP_LOGI(TAG, "%s set from GNSS UTC (epoch=%lld); oscillator-stop flag cleared and advancing",
+                 tcxo_name(), (long long)written);
         break;
     case MAX31328_SET_OSF_STUCK:
         // The flag would not clear, so this part can never show valid time. Stop
         // rewriting it; GNSS remains the only trusted time source.
         report_state = UNUSABLE; next_poll = now + 600000;
-        ESP_LOGE(TAG, "MAX31328 oscillator-stop flag does not clear; RTC time will not be trusted");
+        ESP_LOGE(TAG, "%s oscillator-stop flag does not clear; RTC time will not be trusted", tcxo_name());
         break;
     default:
-        ESP_LOGE(TAG, "MAX31328 initialization/readback failed; time unconfirmed");
+        ESP_LOGE(TAG, "%s initialization/readback failed; time unconfirmed", tcxo_name());
         next_poll = now + 30000;
         break;
     }
@@ -187,5 +189,5 @@ void observer_rtc_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss, i
 {
     if (!bus || now < next_poll) return;
     if (part == OBSERVER_RTC_MCP79412) mcp79412_poll(bus, gnss, now);
-    else if (part == OBSERVER_RTC_MAX31328) max31328_poll(bus, gnss, now);
+    else if (part == OBSERVER_RTC_MAX31328 || part == OBSERVER_RTC_DS3231M) max31328_poll(bus, gnss, now);
 }

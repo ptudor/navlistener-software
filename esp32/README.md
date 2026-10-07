@@ -293,8 +293,11 @@ the unit is off takes effect at the next boot. Both controls are ignored for the
 second, while the wiper filter settles, and a reading at or above
 `NVF_PANEL_TRIMMER_OPEN_MV` (3.0 V) is an open wiper that leaves the saved setting in
 place. The board saves each applied brightness change, with the trimmer's position,
-in NVS and restores it before enabling PWM on subsequent boots. The ZED/X20's optional
-front panel shows the same frame on its own chain. The eight-second network configuration-reset
+in NVS and restores it before enabling PWM on subsequent boots. The ZED/X20's front panel is its only chain: GPIO1 carries a 24-bit frame (status, amber,
+green) whose status byte lights RTK while the receiver's RTK_STAT pin is low and ATTENTION
+while an alarm pattern is active. On that board GPIO14 reads the console port's VBUS and GPIO3
+the MCP23008 expander's interrupt; the expander is in the manifest, and its inputs are not yet
+read. The eight-second network configuration-reset
 hold preserves this preference. The dedicated PPS and power LEDs have separate hardware
 paths and are not dimmed. PWM pauses during TLC5916 serial/latch writes because
 OE also participates in mode selection; see [TLC5916 section 9.4](https://www.ti.com/lit/ds/symlink/tlc5916.pdf).
@@ -323,7 +326,8 @@ fitted: a battery is needed to retain time after main power is removed.
 See the [MCP79412 datasheet, sections 5.3 and 5.7](https://ww1.microchip.com/downloads/aemDocuments/documents/MPD/ProductDocuments/DataSheets/MCP79410-MCP79411-MCP79412-Battery-Backed-I2C-RTCC-DS20002266.pdf)
 and [NAV-PVT in the M9 interface description](https://content.u-blox.com/sites/default/files/u-blox-M9-SPG-4.04_InterfaceDescription_UBX-21022436.pdf).
 
-The ZED/X20's MAX31328 needs no backup enable: it switches to its cell by itself
+The ZED/X20's DS3231M (and the MAX31328 of the superseded square list, which shares its
+register map and driver) needs no backup enable: it switches to its cell by itself
 and records any oscillator stop, including a failed switch when its supply falls too
 fast, in its status register (OSF). Firmware treats a set flag as an invalid
 calendar and waits for qualified GNSS UTC. It then writes the whole calendar in one
@@ -644,10 +648,10 @@ The pusher reconnects when sent records remain outstanding without durable ACK a
 ### Hardware-discovery dependency and release evidence
 
 Normal builds pin `esp_hardware_discovery` to commit
-`847ca0888581a1da90ce65c4c3d67c697e9e7088` (24CS256/24CS512 support, the `POWER_TPS7A20`,
-`COMM_W5500`, `SENSOR_THERMOCOUPLE_MAX31856`, `PRESSURE_BMP580` and `PRESSURE_BMP581`
-catalog IDs, the `CAT_INTSAT` board category, part identification and the Intsat board
-templates, whose X20 list names the BMP581 and INA3221), with the IDF 5.5.4/ESP32-S3
+`cafbc9e59aa36e61be26f18f41ba96d1515ed565` (24CS256/24CS512 support, the `POWER_TPS7A20`,
+`COMM_W5500`, `SENSOR_THERMOCOUPLE_MAX31856`, `PRESSURE_BMP580`, `PRESSURE_BMP581` and
+`RTC_DS3231M` catalog IDs, the `CAT_INTSAT` board category, part identification and the Intsat
+board templates, whose X20 list is the 162mm assembly with the DS3231M and MCP23008), with the IDF 5.5.4/ESP32-S3
 resolution committed in `dependencies.lock`. Updating the pin is a deliberate
 source change: review upstream layout changes and run the component's
 `test/host` read/write, page-boundary, interrupted-write, timestamp/footer,

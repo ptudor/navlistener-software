@@ -5,7 +5,8 @@
 #include "observer_report.h"
 // The RTC the manifest lists; nothing else is probed. Call from the board task before
 // the first poll: OBSERVER_RTC_NONE (the default) leaves the RTC unread and unreported.
-typedef enum { OBSERVER_RTC_NONE, OBSERVER_RTC_MCP79412, OBSERVER_RTC_MAX31328 } observer_rtc_part_t;
+// The DS3231M shares the MAX31328's register map and driver.
+typedef enum { OBSERVER_RTC_NONE, OBSERVER_RTC_MCP79412, OBSERVER_RTC_MAX31328, OBSERVER_RTC_DS3231M } observer_rtc_part_t;
 void observer_rtc_select(observer_rtc_part_t part);
 // Call only from the board task. Preserves a running clock; initializes only
 // from qualified receiver UTC. No system-clock or observation-timestamp changes.

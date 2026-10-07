@@ -107,13 +107,14 @@ bool observer_board_wired_uplink(void)
 bool observer_board_sensor_settings(void) { return thermocouple_listed || imu_listed; }
 static observer_rtc_part_t listed_rtc(void)
 {
-    bool mcp = observer_board_lists(CAT_RTC, RTC_MCP79412), max = observer_board_lists(CAT_RTC, RTC_MAX31328);
-    if (mcp && max) {
-        ESP_LOGE(TAG, "the manifest lists both an MCP79412 and a MAX31328; no RTC is used until it is corrected");
+    bool mcp = observer_board_lists(CAT_RTC, RTC_MCP79412), max = observer_board_lists(CAT_RTC, RTC_MAX31328),
+         ds = observer_board_lists(CAT_RTC, RTC_DS3231M);
+    if ((int)mcp + (int)max + (int)ds > 1) {
+        ESP_LOGE(TAG, "the manifest lists more than one RTC; no RTC is used until it is corrected");
         return OBSERVER_RTC_NONE;
     }
-    if (board && !mcp && !max) ESP_LOGW(TAG, "the manifest lists no RTC; none is used");
-    return mcp ? OBSERVER_RTC_MCP79412 : max ? OBSERVER_RTC_MAX31328 : OBSERVER_RTC_NONE;
+    if (board && !mcp && !max && !ds) ESP_LOGW(TAG, "the manifest lists no RTC; none is used");
+    return mcp ? OBSERVER_RTC_MCP79412 : max ? OBSERVER_RTC_MAX31328 : ds ? OBSERVER_RTC_DS3231M : OBSERVER_RTC_NONE;
 }
 // The receiver the manifest lists, as MON-VER names it; NULL configures none.
 static const char *listed_receiver(void)
@@ -225,12 +226,14 @@ void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_
         ESP_LOGE(TAG, "the manifest lists a W5500, but this image or the %s cannot drive it; Ethernet is not used",
                  board->name);
 }
-enum { LED_DATA = 14, LED_CLOCK = 11, LED_LATCH = 12, LED_GREEN_OE = 47, LED_YELLOW_OE = 48 };
+// The chain's clock, latch and output enables are common to every board; its data pins
+// are the board row's led_sdi (on-board chain) and led_panel_sdi (front panel).
+enum { LED_CLOCK = 11, LED_LATCH = 12, LED_GREEN_OE = 47, LED_YELLOW_OE = 48 };
+// The status byte of a 24-bit panel chain (the 162mm panel's U14): OUT0 RTK, OUT1 ATTENTION.
+enum { PANEL_STATUS_RTK = 1, PANEL_STATUS_ATTENTION = 2 };
 // The panel pins are part of the allocation record, not a private choice here.
-_Static_assert((NVF_PIN(LED_DATA) | NVF_PIN(LED_CLOCK) | NVF_PIN(LED_LATCH) |
-                NVF_PIN(LED_GREEN_OE) | NVF_PIN(LED_YELLOW_OE)) ==
-               ((NVF_PIN(LED_DATA) | NVF_PIN(LED_CLOCK) | NVF_PIN(LED_LATCH) |
-                 NVF_PIN(LED_GREEN_OE) | NVF_PIN(LED_YELLOW_OE)) & NVF_PINS_COMMON),
+_Static_assert((NVF_PIN(LED_CLOCK) | NVF_PIN(LED_LATCH) | NVF_PIN(LED_GREEN_OE) | NVF_PIN(LED_YELLOW_OE)) ==
+               ((NVF_PIN(LED_CLOCK) | NVF_PIN(LED_LATCH) | NVF_PIN(LED_GREEN_OE) | NVF_PIN(LED_YELLOW_OE)) & NVF_PINS_COMMON),
     "a panel pin is missing from the board_reservations.h allocation record");
 typedef struct {
     uint32_t magic;
@@ -411,9 +414,9 @@ void observer_board_identity(observer_board_identity_t *out)
     if (!hardware_manifest_i2c_bus() || !crypto_lock) return;
     // Only the parts the manifest lists are read.
     uint8_t rtc_registers[7];
-    if (rtc_part == OBSERVER_RTC_MAX31328) {
-        // MAX31328: its timekeeping registers answering is its presence; it has no serial.
-        out->rtc_model_id = NVF_RTC_MAX31328;
+    if (rtc_part == OBSERVER_RTC_MAX31328 || rtc_part == OBSERVER_RTC_DS3231M) {
+        // MAX31328 and DS3231M: their timekeeping registers answering is their presence; neither has a serial.
+        out->rtc_model_id = rtc_part == OBSERVER_RTC_DS3231M ? NVF_RTC_DS3231 : NVF_RTC_MAX31328;
         out->rtc_present = read_reg(NVF_I2C_RTC_TCXO, 0, rtc_registers, sizeof rtc_registers) == ESP_OK;
     } else if (rtc_part == OBSERVER_RTC_MCP79412) {
         // MCP79412: verify the clock function at 0x6f as well as the factory EUI-64 in the
@@ -472,6 +475,7 @@ static void identify_peripherals(void)
         {CAT_POWER, POWER_INA3221, NVF_I2C_RAIL_MONITOR, "rail monitor"},
         {CAT_RTC, RTC_MCP79412, NVF_I2C_RTC, "RTC"},
         {CAT_RTC, RTC_MAX31328, NVF_I2C_RTC_TCXO, "RTC"},
+        {CAT_RTC, RTC_DS3231M, NVF_I2C_RTC_TCXO, "RTC"},
         {CAT_IMU, IMU_ICM45686, NVF_I2C_IMU, "IMU"},
         {CAT_SENSOR, SENSOR_MAG_MMC34160PJ, NVF_I2C_MAGNETOMETER, "magnetometer"},
     };
@@ -503,7 +507,7 @@ static void identify_peripherals(void)
             ESP_LOGI(TAG, "RTC registers readable: oscillator=%s battery-enable=%s power-fail=%s; clock not adopted",
                 data[3] & 0x20 ? "running" : "stopped", data[3] & 8 ? "yes" : "no", data[3] & 0x10 ? "yes" : "no");
         } else if (address == NVF_I2C_RTC_TCXO && read_reg(NVF_I2C_RTC_TCXO, 0x0e, data, 2) == ESP_OK) {
-            ESP_LOGI(TAG, "MAX31328 control=0x%02x status=0x%02x: oscillator-stop flag %s; clock not adopted",
+            ESP_LOGI(TAG, "DS3231-family RTC control=0x%02x status=0x%02x: oscillator-stop flag %s; clock not adopted",
                 data[0], data[1], data[1] & 0x80 ? "set" : "clear");
         }
     }
@@ -512,24 +516,28 @@ static void identify_peripherals(void)
 static void clock_bit(int bit)
 {
     gpio_set_level(LED_CLOCK, 0);
-    gpio_set_level(LED_DATA, bit);
-    // The optional front panel's own chain shows the same frame and shares clock,
-    // latch and output enables, so both SDI lines carry each bit.
+    // The on-board chain and the front panel's chain show the same frame and share clock,
+    // latch and output enables, so every fitted SDI line carries each bit.
+    if (board && board->led_sdi >= 0) gpio_set_level(board->led_sdi, bit);
     if (board && board->led_panel_sdi >= 0) gpio_set_level(board->led_panel_sdi, bit);
     esp_rom_delay_us(2);
     gpio_set_level(LED_CLOCK, 1);
     esp_rom_delay_us(2);
     gpio_set_level(LED_CLOCK, 0);
 }
-static void panel_write(uint8_t green, uint8_t yellow,unsigned percent)
+static void panel_write(uint8_t status, uint8_t green, uint8_t yellow, unsigned percent)
 {
     // OE also participates in TLC5916 mode switching. Hold both OE pins high
     // for the entire serial/latch transaction; PWM runs only while CLK is idle.
     if (pwm_ready) for (unsigned c = 0; c < 2; c++)
         ledc_stop(LEDC_LOW_SPEED_MODE, c, 1);
-    // U12 (green) is nearest SDI; U13 (yellow) receives the first byte.
-    uint16_t bits = ((uint16_t)yellow << 8) | green;
-    for (int i = 15; i >= 0; i--) clock_bit((bits >> i) & 1);
+    // U12 (green) is nearest SDI and U13 (amber) receives the byte before it. A panel with
+    // a status driver (U14, after U13) takes 24 bits, status first; a 16-bit chain fed the
+    // same frame keeps the last two bytes, so both show the same colours.
+    uint32_t bits = ((uint32_t)yellow << 8) | green;
+    int first = 15;
+    if (board && board->panel_status_byte) { bits |= (uint32_t)status << 16; first = 23; }
+    for (int i = first; i >= 0; i--) clock_bit((bits >> i) & 1);
     gpio_set_level(LED_LATCH, 1); esp_rom_delay_us(2); gpio_set_level(LED_LATCH, 0);
     if (pwm_ready && percent) for (unsigned c = 0; c < 2; c++) {
         ledc_set_duty(LEDC_LOW_SPEED_MODE, c, panel_pwm_off_ticks(percent));
@@ -538,13 +546,19 @@ static void panel_write(uint8_t green, uint8_t yellow,unsigned percent)
 }
 static void panel_refresh_task(void *arg)
 {
-    (void)arg;unsigned previous=UINT32_MAX;
+    (void)arg;unsigned previous=UINT32_MAX,tick=0;bool rtk=false;
     TickType_t wake=xTaskGetTickCount();
     for(;;) {
-        unsigned value=atomic_load(&panel_frame);uint8_t green=value,yellow=value>>8;
-        nr_alarm_leds(value>>16,(uint64_t)esp_timer_get_time()/1000,&green,&yellow);
-        unsigned frame=(value&0xff000000u)|((unsigned)yellow<<8)|green;
-        if(frame!=previous){panel_write(green,yellow,value>>24);previous=frame;}
+        unsigned value=atomic_load(&panel_frame);uint8_t green=value,yellow=value>>8,alarm=value>>16;
+        nr_alarm_leds(alarm,(uint64_t)esp_timer_get_time()/1000,&green,&yellow);
+        // The panel's status driver, where fitted: RTK follows the receiver's RTK_STAT pin (low
+        // while RTK is fixed, toggling while corrections are in use), sampled every 250 ms so a
+        // toggling pin blinks the lamp rather than rewriting the chain at every pass; ATTENTION
+        // is lit while an alarm pattern is active.
+        if(board&&board->rtk_stat>=0&&tick++%10==0)rtk=gpio_get_level(board->rtk_stat)==0;
+        uint8_t status=board&&board->panel_status_byte?(rtk?PANEL_STATUS_RTK:0)|(alarm?PANEL_STATUS_ATTENTION:0):0;
+        unsigned frame=(value&0xff000000u)|((unsigned)status<<16)|((unsigned)yellow<<8)|green;
+        if(frame!=previous){panel_write(status,green,yellow,value>>24);previous=frame;}
         vTaskDelayUntil(&wake,pdMS_TO_TICKS(25));
     }
 }
@@ -957,6 +971,26 @@ static void panel_input_task(void *arg)
     }
 }
 #endif
+// The board's read-only pins, so none is ever left floating or driven: the console port's
+// VBUS sense (a pull-down reads low on a board that leaves the pin unwired), the expander's
+// interrupt (R94 pulls it up) and the receiver's RTK_STAT (pulled up so the lamp stays off
+// while the receiver is in reset or backup; a board that switches 3V3_GNSS off must release
+// this pull first, as the hardware contract requires of every receiver PIO).
+static esp_err_t board_inputs(void)
+{
+    if (!board) return ESP_OK;
+    const struct { int pin; gpio_pull_mode_t pull; } inputs[] = {
+        {board->console_vbus, GPIO_PULLDOWN_ONLY}, {board->exp_int_n, GPIO_FLOATING}, {board->rtk_stat, GPIO_PULLUP_ONLY},
+    };
+    for (size_t i = 0; i < sizeof inputs / sizeof inputs[0]; i++) {
+        if (inputs[i].pin < 0) continue;
+        gpio_config_t config = {.pin_bit_mask = NVF_PIN(inputs[i].pin), .mode = GPIO_MODE_INPUT,
+            .pull_up_en = inputs[i].pull == GPIO_PULLUP_ONLY, .pull_down_en = inputs[i].pull == GPIO_PULLDOWN_ONLY};
+        esp_err_t err = gpio_config(&config);
+        if (err != ESP_OK) return err;
+    }
+    return ESP_OK;
+}
 esp_err_t observer_board_start(void)
 {
     // Restore before PWM starts, including in provisioning mode.
@@ -967,20 +1001,21 @@ esp_err_t observer_board_start(void)
     atomic_store(&brightness, applied_brightness);
     atomic_store(&trimmer_reference, saved_reference);
     if (!crypto_lock && !(crypto_lock = xSemaphoreCreateMutex())) return ESP_ERR_NO_MEM;
-    uint64_t outputs = (1ULL << LED_DATA) | (1ULL << LED_CLOCK) | (1ULL << LED_LATCH) |
-                       (1ULL << LED_GREEN_OE) | (1ULL << LED_YELLOW_OE);
+    uint64_t outputs = (1ULL << LED_CLOCK) | (1ULL << LED_LATCH) | (1ULL << LED_GREEN_OE) | (1ULL << LED_YELLOW_OE);
+    if (board && board->led_sdi >= 0) outputs |= NVF_PIN(board->led_sdi);
     if (board && board->led_panel_sdi >= 0) outputs |= NVF_PIN(board->led_panel_sdi);
     gpio_set_level(LED_GREEN_OE, 1); gpio_set_level(LED_YELLOW_OE, 1);
     gpio_config_t config = {.pin_bit_mask = outputs, .mode = GPIO_MODE_OUTPUT};
     esp_err_t err = gpio_config(&config);
     if (err != ESP_OK) return err;
+    if ((err = board_inputs()) != ESP_OK) return err;
     gpio_set_level(LED_LATCH, 0);
     // Explicit normal-mode sequence, including after an MCU-only reset.
     const int oe[] = {1, 0, 1, 1, 1};
     for (size_t i = 0; i < sizeof oe / sizeof oe[0]; i++) {
         gpio_set_level(LED_GREEN_OE, oe[i]); gpio_set_level(LED_YELLOW_OE, oe[i]); clock_bit(0);
     }
-    panel_write(0, 0xbf,applied_brightness); // six constellations and a disconnected uplink until the receiver reports
+    panel_write(0, 0, 0xbf, applied_brightness); // six constellations and a disconnected uplink until the receiver reports
     ledc_timer_config_t timer = {.speed_mode=LEDC_LOW_SPEED_MODE, .duty_resolution=LEDC_TIMER_10_BIT,
         .timer_num=LEDC_TIMER_0, .freq_hz=4000, .clk_cfg=LEDC_AUTO_CLK};
     err = ledc_timer_config(&timer);

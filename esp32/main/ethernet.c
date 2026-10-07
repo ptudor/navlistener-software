@@ -1,5 +1,5 @@
 // ethernet — see ethernet.h. Configuration follows the hardware contract:
-// polled (INT# reaches only TP12), no reset GPIO (a TPS3808 supervisor owns
+// polled (INT# reaches U39, the MCP23008 expander, not an ESP32 pin), no reset GPIO (a TPS3808 supervisor owns
 // RESET#), and 10 MHz SPI until faster rates are qualified on the routed board.
 #include "ethernet.h"
 

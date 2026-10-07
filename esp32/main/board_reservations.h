@@ -8,8 +8,9 @@
 #define NVF_PIN(n) (1ULL << (n))
 
 // Common to every board: strap, receiver UART, shared I2C, eFuse fault, PPS, the
-// main TLC5916 chain, RTC interrupt/square wave, native USB, the gated rails,
-// the debug UART, the GPIO46 strap and the two panel output enables.
+// TLC5916 chain's clock and latch, RTC interrupt/square wave, native USB, the gated
+// rails, the debug UART, the GPIO46 strap and the two output enables. The chain's
+// data pins are per board (led_sdi and led_panel_sdi in the rows below).
 #define NVF_PINS_COMMON ( \
     NVF_PIN(0)  | /* ESP_BOOT, section 7.7            */ \
     NVF_PIN(4)  | /* GNSS_UART_TX, section 7.1        */ \
@@ -20,7 +21,6 @@
     NVF_PIN(10) | /* GNSS_PPS, section 7.2            */ \
     NVF_PIN(11) | /* LED_SCLK, section 2.1            */ \
     NVF_PIN(12) | /* LED_LATCH, section 2.1           */ \
-    NVF_PIN(14) | /* LED_SDI, section 2.1             */ \
     NVF_PIN(15) | /* RTC_MFP_N, 7.5; also XTAL32K_P   */ \
     NVF_PIN(19) | /* USB_DM, section 7.6              */ \
     NVF_PIN(20) | /* USB_DP, section 7.6              */ \
@@ -32,16 +32,21 @@
     NVF_PIN(47) | /* LED_GREEN_OE_N, section 2.1      */ \
     NVF_PIN(48))  /* LED_YELLOW_OE_N, section 2.1     */
 
-// NEO: interrupts wired to GPIO, TLC readback, backup-cell sense.
+// NEO: the on-board TLC5916 chain, interrupts wired to GPIO, TLC readback,
+// backup-cell sense.
 #define NVF_PINS_NEO (NVF_PINS_COMMON | \
     NVF_PIN(1)  | /* BACKUP_BAT_SENSE path, section 7.3.1 */ \
+    NVF_PIN(14) | /* LED_SDI, section 2.1             */ \
     NVF_PIN(8)  | /* TEMP_ALERT_N, section 7.5        */ \
     NVF_PIN(13) | /* LED_SDO readback, section 2.1    */ \
     NVF_PIN(39) | /* HUM_INT_N, section 7.5           */ \
     NVF_PIN(41))  /* BARO_INT_N, section 7.5          */
 
-// ZED/X20: W5500 on its own SPI bus, the optional panel's data line, the
-// brightness trimmer and preset buttons, the receiver's second UART and status.
+// ZED/X20, the 162mm mainboard with its required LED panel: W5500 on its own SPI
+// bus, the panel's 24-bit chain on GPIO1 (it has no on-board chain), the console
+// port's VBUS sense
+// on GPIO14, the MCP23008 expander's interrupt on GPIO3, the brightness trimmer
+// and the panel's preset button, the receiver's second UART and status pins.
 #define NVF_PIN_ETH_SCLK       8
 #define NVF_PIN_ETH_CS        13
 #define NVF_PIN_ETH_MOSI      39
@@ -50,9 +55,12 @@
 #define NVF_PIN_GNSS_UART2_RX 17
 #define NVF_PIN_RTK_STAT      40
 #define NVF_PIN_GEOFENCE_STAT 42
+#define NVF_PIN_CONSOLE_VBUS  14  /* U32 buffers the console host's VBUS through R97 */
+#define NVF_PIN_EXP_INT_N      3  /* U39 INT, R94 pull-up; a strap read only as an input */
 #define NVF_PINS_ZED_X20 (NVF_PINS_COMMON | \
     NVF_PIN(1)  | /* LED_PANEL_SDI                    */ \
     NVF_PIN(2)  | /* BRIGHT_ADC trimmer wiper         */ \
+    NVF_PIN(NVF_PIN_CONSOLE_VBUS) | NVF_PIN(NVF_PIN_EXP_INT_N) | \
     NVF_PIN(NVF_PIN_ETH_SCLK) | NVF_PIN(NVF_PIN_ETH_CS) | \
     NVF_PIN(NVF_PIN_ETH_MOSI) | NVF_PIN(NVF_PIN_ETH_MISO) | \
     NVF_PIN(NVF_PIN_GNSS_UART2_TX) | NVF_PIN(NVF_PIN_GNSS_UART2_RX) | \
@@ -69,6 +77,7 @@
 #define NVF_PIN_IMU_INT1      16
 #define NVF_PIN_IMU_INT2      17
 #define NVF_PINS_MAX (NVF_PINS_COMMON | \
+    NVF_PIN(14) | /* LED_SDI, section 2.1             */ \
     NVF_PIN(2)  | /* BRIGHT_ADC trimmer wiper         */ \
     NVF_PIN(8)  | /* TEMP_ALERT_N                     */ \
     NVF_PIN(18) | /* BRIGHT_BUTTON presets            */ \
@@ -82,8 +91,12 @@
 // octal PSRAM interface (section 7.7).
 #define NVF_PINS_UNAVAILABLE ((0x7FFULL << 22) | (0x7ULL << 35))
 
-// Strapping pins that section 7.7 keeps clear of external reset-time pulls.
-#define NVF_PINS_STRAP_AVOID (NVF_PIN(3) | NVF_PIN(45))
+// Strapping pins that section 7.7 keeps clear of external reset-time pulls. GPIO3
+// (JTAG_SEL) is the exception the ZED/X20 makes: it only reads the expander's
+// interrupt, whose 10 kOhm pull-up is harmless while EFUSE_STRAP_JTAG_SEL stays
+// unburned, which the firmware never changes.
+#define NVF_PINS_STRAP_AVOID (NVF_PIN(45))
+_Static_assert(((NVF_PINS_NEO | NVF_PINS_MAX) & NVF_PIN(3)) == 0, "GPIO3 is a strap; only the ZED/X20 reads it");
 
 #define NVF_PINS_CHECK(map, name) \
     _Static_assert(((map) & NVF_PINS_UNAVAILABLE) == 0, \
@@ -103,7 +116,8 @@ NVF_PINS_CHECK(NVF_PINS_MAX, "the MAX pin map");
 #define NVF_I2C_BOARD_SERIAL  0x58 /* 24CS128 security interface   */
 #define NVF_I2C_RTC_EUI       0x57 /* MCP79412 EEPROM, NEO and MAX */
 #define NVF_I2C_CRYPTO        0x60 /* ATECC608C                    */
-#define NVF_I2C_RTC_TCXO      0x68 /* MAX31328, ZED/X20            */
+#define NVF_I2C_RTC_TCXO      0x68 /* DS3231M, ZED/X20 (MAX31328 on the superseded square list) */
+#define NVF_I2C_IO_EXPANDER   0x24 /* MCP23008, ZED/X20            */
 #define NVF_I2C_IMU           0x69 /* ICM-45686, MAX, strapped     */
 #define NVF_I2C_RTC           0x6f /* MCP79412 RTCC, NEO and MAX   */
 #define NVF_I2C_PRESSURE      0x76 /* BMP388, NEO                  */
@@ -126,7 +140,12 @@ typedef struct {
     const char *family;         // the signed-release board family
     uint64_t pins;              // everything the board connects, as above
     bool boot_steps_brightness; // BOOT's short press steps the panel presets
-    int led_panel_sdi;          // the optional front panel's chain, mirrored
+    int led_sdi;                // the on-board TLC5916 chain's data pin, or none
+    int led_panel_sdi;          // the front panel's chain: a mirror of the on-board one, or the only chain
+    bool panel_status_byte;     // the panel chain has a third driver: 24 bits, status, amber, green
+    int console_vbus;           // the console port's VBUS, read as an input (pull-down: low where unwired)
+    int exp_int_n;              // the MCP23008's interrupt, read as an input
+    int rtk_stat;               // the receiver's RTK_STAT, low while RTK is fixed
     int bright_adc, bright_button;
     int eth_sclk, eth_cs, eth_mosi, eth_miso;
     int tc_sck, tc_mosi, tc_miso, tc_cs_n, tc_drdy_n;
@@ -137,26 +156,35 @@ typedef struct {
 #define NVF_NONE (-1)
 #define NVF_BOARD_NEO_ROW {.model = BOARD_MODEL_NEO_A, .name = "NEO revision A", .intsat_id = INTSAT_NEO, \
     .family = "gnss-color-neo", .pins = NVF_PINS_NEO, .boot_steps_brightness = true, \
-    .led_panel_sdi = NVF_NONE, .bright_adc = NVF_NONE, .bright_button = NVF_NONE, \
+    .led_sdi = 14, .led_panel_sdi = NVF_NONE, .panel_status_byte = false, \
+    .console_vbus = NVF_NONE, .exp_int_n = NVF_NONE, .rtk_stat = NVF_NONE, \
+    .bright_adc = NVF_NONE, .bright_button = NVF_NONE, \
     .eth_sclk = NVF_NONE, .eth_cs = NVF_NONE, .eth_mosi = NVF_NONE, .eth_miso = NVF_NONE, \
     .tc_sck = NVF_NONE, .tc_mosi = NVF_NONE, .tc_miso = NVF_NONE, .tc_cs_n = NVF_NONE, .tc_drdy_n = NVF_NONE, \
     .imu_int1 = NVF_NONE, .imu_int2 = NVF_NONE}
 #define NVF_BOARD_X20_ROW {.model = BOARD_MODEL_X20_A, .name = "X20 revision A", .intsat_id = INTSAT_X20, \
     .family = "gnss-color-zed-x20", .pins = NVF_PINS_ZED_X20, .boot_steps_brightness = false, \
-    .led_panel_sdi = 1, .bright_adc = 2, .bright_button = 18, \
+    .led_sdi = NVF_NONE, .led_panel_sdi = 1, .panel_status_byte = true, \
+    .console_vbus = NVF_PIN_CONSOLE_VBUS, .exp_int_n = NVF_PIN_EXP_INT_N, .rtk_stat = NVF_PIN_RTK_STAT, \
+    .bright_adc = 2, .bright_button = 18, \
     .eth_sclk = NVF_PIN_ETH_SCLK, .eth_cs = NVF_PIN_ETH_CS, .eth_mosi = NVF_PIN_ETH_MOSI, .eth_miso = NVF_PIN_ETH_MISO, \
     .tc_sck = NVF_NONE, .tc_mosi = NVF_NONE, .tc_miso = NVF_NONE, .tc_cs_n = NVF_NONE, .tc_drdy_n = NVF_NONE, \
     .imu_int1 = NVF_NONE, .imu_int2 = NVF_NONE, \
     .rails = {{"+5V", 20}, {"3V3_GNSS", 50}, {"3V3_SYS", 20}}} /* U37 through R74, R75, R76 */
 #define NVF_BOARD_MAX_ROW {.model = BOARD_MODEL_MAX_A, .name = "MAX revision A", .intsat_id = INTSAT_MAX, \
     .family = "gnss-color-max", .pins = NVF_PINS_MAX, .boot_steps_brightness = false, \
-    .led_panel_sdi = NVF_NONE, .bright_adc = 2, .bright_button = 18, \
+    .led_sdi = 14, .led_panel_sdi = NVF_NONE, .panel_status_byte = false, \
+    .console_vbus = NVF_NONE, .exp_int_n = NVF_NONE, .rtk_stat = NVF_NONE, \
+    .bright_adc = 2, .bright_button = 18, \
     .eth_sclk = NVF_NONE, .eth_cs = NVF_NONE, .eth_mosi = NVF_NONE, .eth_miso = NVF_NONE, \
     .tc_sck = NVF_PIN_TC_SCK, .tc_mosi = NVF_PIN_TC_MOSI, .tc_miso = NVF_PIN_TC_MISO, .tc_cs_n = NVF_PIN_TC_CS_N, \
     .tc_drdy_n = NVF_PIN_TC_DRDY_N, .imu_int1 = NVF_PIN_IMU_INT1, .imu_int2 = NVF_PIN_IMU_INT2}
 // Every function pin is on its board's map.
 _Static_assert(NVF_PIN_ON(NVF_PINS_ZED_X20, 1) && NVF_PIN_ON(NVF_PINS_ZED_X20, 2) &&
-               NVF_PIN_ON(NVF_PINS_ZED_X20, 18), "an X20 function pin is missing from its map");
+               NVF_PIN_ON(NVF_PINS_ZED_X20, 18) && NVF_PIN_ON(NVF_PINS_ZED_X20, NVF_PIN_CONSOLE_VBUS) &&
+               NVF_PIN_ON(NVF_PINS_ZED_X20, NVF_PIN_EXP_INT_N) && NVF_PIN_ON(NVF_PINS_ZED_X20, NVF_PIN_RTK_STAT),
+               "an X20 function pin is missing from its map");
+_Static_assert(NVF_PIN_ON(NVF_PINS_NEO, 14) && NVF_PIN_ON(NVF_PINS_MAX, 14), "the on-board chain's data pin is missing from its map");
 _Static_assert(NVF_PIN_ON(NVF_PINS_MAX, 2) && NVF_PIN_ON(NVF_PINS_MAX, 18),
                "a MAX function pin is missing from its map");
 #endif
