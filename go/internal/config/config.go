@@ -872,6 +872,15 @@ func (c *Config) finalize() error {
 		c.Serve.AudienceContext = identity.Audience{Kind: identity.AudiencePublic}
 	case "operator":
 		c.Serve.AudienceContext = identity.Audience{Kind: identity.AudienceOperator, ID: c.Collector.InstanceID}
+		// The operator view is private. Without a read authorizer the listener
+		// refuses it (503) rather than serving every station's board telemetry,
+		// integrity assessments and operator events credential-free; warn so the
+		// operator sees why the default view answers 503 and only an explicit
+		// `X-GNSS-Audience: public` selection is served.
+		if c.Serve.Addr != "" && c.Authorization.DSN == "" && len(c.Serve.Principals) == 0 {
+			c.Warnings = append(c.Warnings,
+				`serve.audience "operator" requires authorization.dsn or [[serve.principal]]: the private operator view is refused (503) until read authorization is configured; only an explicit X-GNSS-Audience: public selection is served`)
+		}
 	default:
 		return fmt.Errorf("serve.audience %q: want public or operator (organization/collection audiences require authenticated read grants)", c.Serve.Audience)
 	}

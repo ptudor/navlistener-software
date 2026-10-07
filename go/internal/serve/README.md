@@ -80,9 +80,13 @@ func (s *Server) Audience() identity.Audience
 
 `NewForAudience` requires an already isolated state store; it never filters one global
 aggregate at serialization time. Runtime configuration defaults to the `public` projection.
-The explicit `operator` view is private/no-store and must sit behind authenticated access.
-`New` remains the operator-view convenience constructor for internal tests and single-user
-embedding.
+The explicit `operator` view is private/no-store and must sit behind authenticated access:
+a private default audience with no `ReadAuthorizer` installed answers `503` on every feed,
+events query and stream (an explicit `X-GNSS-Audience: public` selection is still served),
+and config load warns when `serve.audience = "operator"` has neither `authorization.dsn` nor
+`[[serve.principal]]`. `ServeUnauthenticated()` is the explicit embedding opt-in that lifts
+that refusal; `New` calls it, and remains the operator-view convenience constructor for
+internal tests and single-user embedding. The daemon never calls it.
 
 ---
 
@@ -95,12 +99,27 @@ slice atomically.** Authenticated organization/collection bodies are rendered fr
 physically separate state after authorization and are not put in the shared cache; this keeps
 private entries from crossing principals or audiences.
 
+The cache is keyed by `(audience, feed)` and admits two audiences only: the listener's
+fixed/default view, and the public view when a caller on a private-default listener selects it
+with `X-GNSS-Audience: public` (public bodies are shared-safe by construction, so one render
+serves every anonymous caller until its cadence elapses or the audience is reset). Every
+admission records the audience's policy generation and the view's state generation it was
+rendered against; a request serves an entry only while both still match, so a reset or policy
+transition invalidates it at once. Renders of one key are **single-flight**: a burst of
+concurrent misses after a reset waits for one render instead of each walking the shards.
+
 Two cadences, because two kinds of data move at different speeds:
 
 | Cadence | Config | Feeds |
 |---|---|---|
 | fast | `[serve].refresh_interval` (default 30s) | `svs`, `global`, `observers`, `sbas` |
 | slow | `[serve].almanac_refresh_interval` (default 90s) | `almanac` |
+
+`coverage` is not ticker-warmed and is not part of the historian's snapshot feed set
+(`docs/MONITORING-MAP.md`): it is rendered on demand into the same cache and reused for
+`coverageTTL` (30 s, half its declared `fresh_seconds`), so a stream of anonymous requests costs
+one shard walk and one reference-catalogue propagation per TTL rather than one per request.
+Witness ageing happens client-side, as that document specifies.
 
 A marshalling failure is logged and **leaves the previous body in place** rather than serving a
 broken or empty feed.
@@ -165,7 +184,12 @@ consumer doesn't have to hold an HTTP connection to this daemon.
 
 - **`sseMaxClients` ** — each connection costs a goroutine, a buffered channel, and a
   socket held open indefinitely. An attacker, or just a buggy reconnect loop, opening unbounded
-  streams exhausts server resources.
+  streams exhausts server resources. The cap is partitioned per audience (`sseAudienceShare`):
+  the credential-free public audience may hold at most half of it and each private audience at
+  most a quarter, so one anonymous client cannot deny every private stream; the global cap
+  stays the outer bound. The same idea bounds the authenticated history/evidence reads per
+  principal (`historyPerPrincipal`, half of `historySlotCount`). Per-client fairness below that
+  is the fronting proxy's `limit_conn`/`limit_req` (`docs/OUTPUT.md §5`).
 - **`sseWriteTimeout` ** — every write and flush is bounded. A client whose TCP receive
   window is full — dead but not reset — must not be able to park the handler goroutine, and its
   buffered events, indefinitely.

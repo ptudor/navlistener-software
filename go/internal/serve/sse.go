@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/metrics"
 )
 
@@ -49,6 +50,22 @@ const (
 var sseMaxClients = 1000
 var sseClients atomic.Int64
 
+// sseAudienceShare is one audience's ceiling under the global sseMaxClients.
+// The global counter alone let one anonymous client holding every slot deny
+// the public and every private stream at once; the collector never sees the
+// client address, so the partition is by audience: public, the only audience
+// reachable without a credential, may hold at most half of the cap, and each
+// private audience at most a quarter, so one tenant cannot starve another.
+// The global cap stays the outer bound. Evaluated at subscribe time so tests
+// that shrink sseMaxClients see the share move with it.
+func sseAudienceShare(a identity.Audience) int {
+	share := sseMaxClients / 4
+	if a.Kind == identity.AudiencePublic {
+		share = sseMaxClients / 2
+	}
+	return max(share, 1)
+}
+
 // sseWriteTimeout bounds every write+flush : a client whose TCP receive
 // window is full (dead-but-not-reset) must not be able to park the handler
 // goroutine (and its buffered EventMsgs) indefinitely. A var, not a const, so
@@ -73,7 +90,11 @@ type Broker struct {
 	generation       atomic.Uint64
 	policyAdmission  func(uint64, func()) bool
 	policyGeneration func() uint64
-	beforePublish    func() // deterministic admission-race seam
+	// maxClients is this audience's share of sseMaxClients (sseAudienceShare),
+	// set when the server binds the broker to an audience; nil applies only
+	// the global cap (unbound brokers in tests).
+	maxClients    func() int
+	beforePublish func() // deterministic admission-race seam
 }
 
 // sseClient carries both the bounded live-event queue and an idempotent overflow
@@ -191,11 +212,16 @@ func (b *Broker) replaySnapshot(lastID int64, hasLast bool) ([]EventMsg, bool) {
 	return out, !found
 }
 
-// subscribe adds a new client, unless sseMaxClients concurrent streams are already
-// connected, in which case it returns ok=false and adds nothing.
+// subscribe adds a new client, unless this audience's share or the global
+// sseMaxClients ceiling is already full, in which case it returns ok=false and
+// adds nothing.
 func (b *Broker) subscribe() (client *sseClient, ok bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.maxClients != nil && len(b.clients) >= b.maxClients() {
+		metrics.SSESubscribeRejectedTotal.Inc() // one audience at its share
+		return nil, false
+	}
 	if total := sseClients.Add(1); total > int64(sseMaxClients) {
 		sseClients.Add(-1)
 		metrics.SSESubscribeRejectedTotal.Inc() // cap pressure/attack signal
@@ -234,7 +260,7 @@ func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
 	// the life of a connection that will never read a body.
 	if r.Method == http.MethodHead {
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
+		streamCacheControl(w)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -255,7 +281,7 @@ func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
 	defer b.unsubscribe(client)
 
 	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
+	streamCacheControl(w)
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no") // defeat proxy buffering (docs/OUTPUT.md §3)
 
@@ -325,6 +351,15 @@ func (b *Broker) serveEvents(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// streamCacheControl applies the public stream default, no-cache. The server
+// sets `private, no-store` for a private audience before delegating to
+// serveEvents, and a value already present must win.
+func streamCacheControl(w http.ResponseWriter) {
+	if w.Header().Get("Cache-Control") == "" {
+		w.Header().Set("Cache-Control", "no-cache")
 	}
 }
 

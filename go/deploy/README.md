@@ -124,22 +124,44 @@ Rotation: 7 generations, at 10 MB, mode 640, owned by the daemon user, with `J` 
 
 The read API binds to loopback behind the TLS reverse proxy (`docs/OUTPUT.md §5`). The collector
 bounds how many historian queries run at once — four for the credential-free
-`/gnss/api/events*` endpoints, eight for the authenticated history and evidence reads — and
-answers `503` + `Retry-After: 1` beyond that, but it never sees the client address, so one
-client could keep every slot busy and lock everyone else out. Per-client fairness therefore
-belongs in the reverse proxy, keyed on the client address (`limit_req`/`limit_conn` or the
+`/gnss/api/events*` endpoints, eight for the authenticated history and evidence reads (at most
+four per read principal) — and how many SSE streams are open (1000, of which the public
+audience may hold at most 500 and each private audience at most 250), answering `503` +
+`Retry-After: 1` beyond that. Those partitions stop one tenant from locking out another, but
+the collector never sees the client address, so within an audience one client could still keep
+every slot busy or hold every public stream. Per-client fairness therefore belongs in the
+reverse proxy and **is required**, keyed on the client address (`limit_req`/`limit_conn` or the
 equivalent in whichever proxy fronts the collector):
 
 | Path | Request rate per client | Concurrent connections per client |
 |---|---|---|
 | `/gnss/api/events` (events, summary, conditions) | 5 per second, burst 10 | 4 |
 | `/gnss/api/v2/` (feeds, observer samples, event evidence) | 5 per second, burst 20 | 8 |
+| `/gnss/events` (the SSE stream) | — | 4 (the streams one dashboard opens) |
 
-Keep `/gnss/events` (the SSE stream) out of that small per-client connection cap, or size it for
-the number of streams one dashboard opens, and keep response buffering off on it as §5 requires.
-The rates are a starting point: a dashboard polls the feeds every 30 s and the summary a few
-times a minute, so single-digit requests per second per client is generous for real use and
-still far below what fills the collector's slots.
+Apply the `/gnss/events` connection cap as its own `limit_conn` zone rather than sharing the
+API zone — a stream is held open for hours, so counting it against the short-request cap would
+starve the dashboard's polling — and keep response buffering off on it as §5 requires. Keep
+request-body buffering **on** for every path (the reverse proxy's usual default), so a slowly
+trickled request body never reaches the collector: the collector bounds the drain of a
+rejected request's body with a one-second read deadline and closes that connection, but that
+is a backstop for an exposed listener, not a substitute for buffering at the proxy. The rates are a starting point: a
+dashboard polls the feeds every 30 s and the summary a few times a minute, so single-digit
+requests per second per client is generous for real use and still far below what fills the
+collector's slots.
+
+### The observability listener is not a public surface
+
+`[metrics].addr` normally stays on loopback. Binding it elsewhere so a remote Prometheus can
+scrape it is allowed (the preflight only warns), but it then **requires a network ACL**: a
+firewall rule or a scraper-only network that admits the scraper's address alone. Nothing on
+that listener authenticates, and `/metrics` labels name every station the collector has seen —
+including stations whose policy keeps them out of the public audience — in its `source` and
+`observer` label values, while the push series show which observers are connected and why
+their authentication fails. `/healthz` reports only a fixed reason code for a failed component;
+the actual error is in the log. Never add a reverse-proxy location that forwards to the
+metrics port: `/metrics`, `/healthz` and `/debug/state` must stay unreachable through the
+public hostname (`go/internal/server/README.md`).
 
 ### Deploying a new binary
 

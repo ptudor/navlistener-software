@@ -1,11 +1,14 @@
 package serve
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -47,6 +50,14 @@ func newTestServer(sources []config.Source, events EventStore) *Server {
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
+// newTestServerForAudience builds a listener whose default view is selected,
+// with no read authorizer and no opt-in: a public default serves credential-
+// free, a private one answers 503 until ServeUnauthenticated is called.
+func newTestServerForAudience(selected identity.Audience, events EventStore) *Server {
+	return NewForAudience("127.0.0.1:0", state.New(4), events, nil, time.Minute, time.Minute,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), selected)
+}
+
 // TestServerIdleTimeoutSet guards an idle keep-alive connection between requests
 // must be bounded, distinct from the SSE per-write deadline and unset WriteTimeout
 // (SSE streams are exempt from that by design).
@@ -73,6 +84,12 @@ func TestPublicAudienceHeadersAndAnonymousObserverFiltering(t *testing.T) {
 	if got := rr.Header().Get("Cache-Control"); !strings.HasPrefix(got, "public") {
 		t.Fatalf("public cache header = %q", got)
 	}
+	// A shared cache keys variants by the stored response's Vary: without it the
+	// cached public body would answer a later credentialed, audience-selected
+	// request on the same URL.
+	if got := rr.Header().Get("Vary"); !strings.Contains(got, "Authorization") || !strings.Contains(got, "X-GNSS-Audience") {
+		t.Fatalf("public Vary = %q, want Authorization and X-GNSS-Audience", got)
+	}
 	if strings.Contains(rr.Body.String(), audience.AnonymousPublicSource) {
 		t.Fatalf("anonymous source leaked into observer feed: %s", rr.Body.String())
 	}
@@ -88,15 +105,137 @@ func TestPublicAudienceHeadersAndAnonymousObserverFiltering(t *testing.T) {
 }
 
 func TestOperatorAudienceResponsesArePrivate(t *testing.T) {
-	s := testServer(nil)
+	s := NewForAudience("127.0.0.1:0", state.New(4), nil, nil, time.Minute, time.Minute,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		identity.Audience{Kind: identity.AudienceOperator, ID: identity.LocalCollectorInstance})
+	s.ServeUnauthenticated() // the explicit credential-free embedding opt-in
 	s.refresh("global")
 	rr := httptest.NewRecorder()
 	s.serveFeed("global")(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/global", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("opted-in operator view status = %d: %s", rr.Code, rr.Body.String())
+	}
 	if got := rr.Header().Get("Cache-Control"); got != "private, no-store" {
 		t.Fatalf("operator cache header = %q", got)
 	}
 	if got := rr.Header().Get("Vary"); !strings.Contains(got, "Authorization") {
 		t.Fatalf("operator Vary = %q", got)
+	}
+}
+
+// TestPrivateDefaultAudienceRequiresReadAuthorization guards a non-public
+// default audience must never be served credential-free by omission: with no
+// ReadAuthorizer and no explicit ServeUnauthenticated opt-in, every feed and
+// the event stream answer 503, and the public selection still works once a
+// resolver can materialize it. The public default audience is unaffected.
+func TestPrivateDefaultAudienceRequiresReadAuthorization(t *testing.T) {
+	operator := identity.Audience{Kind: identity.AudienceOperator, ID: identity.LocalCollectorInstance}
+	s := NewForAudience("127.0.0.1:0", state.New(4), nil, nil, time.Minute, time.Minute,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), operator)
+	s.refreshAll()
+	for _, path := range []string{"/gnss/api/v2/observers", "/gnss/api/v2/coverage", "/gnss/api/events", "/gnss/events"} {
+		rr := httptest.NewRecorder()
+		s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+		if rr.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s without read authorization: status %d, want 503: %s", path, rr.Code, rr.Body.String())
+		}
+		if strings.Contains(rr.Body.String(), `"ok":true`) {
+			t.Errorf("%s served the private operator view credential-free", path)
+		}
+	}
+
+	// A public view materialized by a resolver remains selectable and credential-free.
+	registry := audience.NewRegistry(1, nil)
+	registry.Register(identity.Audience{Kind: identity.AudiencePublic}, state.New(1), nil)
+	s.resolver = registry
+	req := httptest.NewRequest(http.MethodGet, "/gnss/api/v2/observers", nil)
+	req.Header.Set("X-GNSS-Audience", "public")
+	rr := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"audience":"public"`) {
+		t.Fatalf("explicit public selection: status %d body %s", rr.Code, rr.Body.String())
+	}
+
+	// The opt-in restores the convenience behaviour New provides.
+	s.ServeUnauthenticated()
+	rr = httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/observers", nil))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"audience":"operator:local"`) {
+		t.Fatalf("opted-in operator view: status %d body %s", rr.Code, rr.Body.String())
+	}
+	rr = httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodHead, "/gnss/events", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("opted-in event stream HEAD: status %d", rr.Code)
+	}
+
+	// A public default audience never needed the opt-in.
+	public := NewForAudience("127.0.0.1:0", state.New(4), nil, nil, time.Minute, time.Minute,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), identity.Audience{Kind: identity.AudiencePublic})
+	public.refreshAll()
+	rr = httptest.NewRecorder()
+	public.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/observers", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("public default audience: status %d body %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestPublicSelectionUnderPrivateDefaultIsCachedPerAudience guards an
+// anonymous `X-GNSS-Audience: public` request on a private-default listener is
+// admitted to a per-audience public cache (one render per cadence, reused by
+// later requests, invalidated by the audience's reset) instead of re-rendering
+// every feed per request, while the default audience's warmed body stays
+// separate.
+func TestPublicSelectionUnderPrivateDefaultIsCachedPerAudience(t *testing.T) {
+	s := testServer(nil) // operator default, opted in
+	public := identity.Audience{Kind: identity.AudiencePublic}
+	registry := audience.NewRegistry(1, nil)
+	registry.Register(public, state.New(1), nil)
+	s.resolver = registry
+	now := time.Now()
+	s.now = func() time.Time { return now }
+	var renders atomic.Int64
+	s.onBuildFeed = func(feed string, selected identity.Audience) {
+		if feed == "svs" && selected == public {
+			renders.Add(1)
+		}
+	}
+	get := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/gnss/api/v2/svs", nil)
+		req.Header.Set("X-GNSS-Audience", "public")
+		rr := httptest.NewRecorder()
+		s.http.Handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"audience":"public"`) {
+			t.Fatalf("public selection: status %d body %s", rr.Code, rr.Body.String())
+		}
+		if got := rr.Header().Get("Cache-Control"); got != "public, max-age=30" {
+			t.Fatalf("public selection Cache-Control = %q", got)
+		}
+		return rr
+	}
+	first, second := get(), get()
+	if renders.Load() != 1 || first.Body.String() != second.Body.String() {
+		t.Fatalf("public selection rendered %d times for two requests; bodies equal=%v", renders.Load(), first.Body.String() == second.Body.String())
+	}
+	s.InvalidateAudiences([]identity.Audience{public})
+	get()
+	if renders.Load() != 2 {
+		t.Fatalf("public reset did not invalidate the public cache (%d renders)", renders.Load())
+	}
+	now = now.Add(s.fast + time.Second)
+	get()
+	if renders.Load() != 3 {
+		t.Fatalf("public entry past its cadence was not re-rendered (%d renders)", renders.Load())
+	}
+	// The default (operator) audience's warmed body is a separate entry and is
+	// never the public body.
+	rr := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/svs", nil))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"audience":"operator:local"`) {
+		t.Fatalf("default audience body: status %d body %s", rr.Code, rr.Body.String())
+	}
+	if renders.Load() != 3 {
+		t.Fatalf("serving the default audience rendered the public view (%d renders)", renders.Load())
 	}
 }
 
@@ -170,6 +309,15 @@ func TestAuthenticatedAudienceSelectionNeverServesAnOperatorSuperset(t *testing.
 		})
 	}
 
+	eventReq := httptest.NewRequest(http.MethodGet, "/gnss/api/events", nil)
+	eventReq.Header.Set("Authorization", "Bearer token-a")
+	eventReq.Header.Set("X-GNSS-Audience", "organization:customer-a")
+	eventRR := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(eventRR, eventReq)
+	if eventRR.Code != http.StatusOK || events.lastQuery.Audience != "organization:customer-a" {
+		t.Fatalf("scoped event query = status %d audience %q", eventRR.Code, events.lastQuery.Audience)
+	}
+
 	discovery := httptest.NewRequest(http.MethodGet, "/gnss/api/v2/audiences", nil)
 	discovery.Header.Set("Authorization", "Bearer token-a")
 	discoveryRR := httptest.NewRecorder()
@@ -207,14 +355,223 @@ func TestAuthenticatedAudienceSelectionNeverServesAnOperatorSuperset(t *testing.
 		strings.Contains(publicDiscovery.Body.String(), `"principal"`) || !strings.Contains(publicDiscovery.Body.String(), `"revision":"`) {
 		t.Fatalf("anonymous audience discovery leaked auth metadata: status %d body %s", publicDiscovery.Code, publicDiscovery.Body.String())
 	}
+	for name, rr := range map[string]*httptest.ResponseRecorder{"anonymous": publicDiscovery, "authenticated": discoveryRR} {
+		if got := rr.Header().Get("Vary"); !strings.Contains(got, "Authorization") || !strings.Contains(got, "X-GNSS-Audience") {
+			t.Fatalf("%s audience discovery Vary = %q, want Authorization and X-GNSS-Audience", name, got)
+		}
+	}
 
-	eventReq := httptest.NewRequest(http.MethodGet, "/gnss/api/events", nil)
-	eventReq.Header.Set("Authorization", "Bearer token-a")
-	eventReq.Header.Set("X-GNSS-Audience", "organization:customer-a")
-	eventRR := httptest.NewRecorder()
-	s.http.Handler.ServeHTTP(eventRR, eventReq)
-	if eventRR.Code != http.StatusOK || events.lastQuery.Audience != "organization:customer-a" {
-		t.Fatalf("scoped event query = status %d audience %q", eventRR.Code, events.lastQuery.Audience)
+	// The organization's epoch now starts a second in the future, so a scoped
+	// query's whole window lies before it: answered empty and marked limited,
+	// without reaching the historian.
+	calls := events.calls
+	limitedReq := httptest.NewRequest(http.MethodGet, "/gnss/api/events", nil)
+	limitedReq.Header.Set("Authorization", "Bearer token-a")
+	limitedReq.Header.Set("X-GNSS-Audience", "organization:customer-a")
+	limitedRR := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(limitedRR, limitedReq)
+	if limited := decodeEnvelope(t, limitedRR); limited["history_limited"] != true || limited["total"] != float64(0) || events.calls != calls {
+		t.Fatalf("scoped query across the advanced epoch = %s (store calls %d -> %d)", limitedRR.Body.String(), calls, events.calls)
+	}
+}
+
+// TestPrivateEventStreamIsPrivateNoStore guards the one authenticated response
+// that violated the contract: a private audience's SSE stream (GET and HEAD)
+// must send Cache-Control: private, no-store and Vary, while the public stream
+// keeps no-cache.
+func TestPrivateEventStreamIsPrivateNoStore(t *testing.T) {
+	s := testServer(nil) // private operator default, opted in
+	head := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(head, httptest.NewRequest(http.MethodHead, "/gnss/events", nil))
+	if head.Code != http.StatusOK || head.Header().Get("Cache-Control") != "private, no-store" {
+		t.Fatalf("private HEAD: status %d Cache-Control %q", head.Code, head.Header().Get("Cache-Control"))
+	}
+	if got := head.Header().Get("Vary"); !strings.Contains(got, "Authorization") || !strings.Contains(got, "X-GNSS-Audience") {
+		t.Fatalf("private HEAD Vary = %q", got)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	rr := newSyncRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/gnss/events", nil).WithContext(ctx))
+	}()
+	waitFor(t, func() bool { return strings.Contains(rr.String(), "event: status") })
+	cancel()
+	<-done
+	if got := rr.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("private GET stream Cache-Control = %q, want private, no-store", got)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("private GET stream Content-Type = %q", got)
+	}
+
+	public := newTestServerForAudience(identity.Audience{Kind: identity.AudiencePublic}, nil)
+	head = httptest.NewRecorder()
+	public.http.Handler.ServeHTTP(head, httptest.NewRequest(http.MethodHead, "/gnss/events", nil))
+	if head.Code != http.StatusOK || head.Header().Get("Cache-Control") != "no-cache" {
+		t.Fatalf("public HEAD: status %d Cache-Control %q, want no-cache", head.Code, head.Header().Get("Cache-Control"))
+	}
+}
+
+// TestEventStreamChecksMethodBeforeAuthorization guards the routed stream
+// handler behaves like every other endpoint: a POST without a credential on a
+// private-default listener is 405 + Allow, not 401, and a HEAD never registers
+// a revocable delivery it would tear down at once.
+func TestEventStreamChecksMethodBeforeAuthorization(t *testing.T) {
+	s := testServer(nil)
+	s.EnableAudienceSelection(fixedReadAuthorizer{"token": identity.ReadPrincipal{ID: "viewer", AudienceGrants: []identity.Audience{s.audience}}}, nil, time.Second)
+	rr := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/gnss/events", nil))
+	if rr.Code != http.StatusMethodNotAllowed || rr.Header().Get("Allow") != "GET, HEAD" {
+		t.Fatalf("POST without credential: status %d Allow %q, want 405 GET, HEAD", rr.Code, rr.Header().Get("Allow"))
+	}
+	// The credential check still guards HEAD and GET.
+	rr = httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodHead, "/gnss/events", nil))
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("HEAD without credential: status %d, want 401", rr.Code)
+	}
+	req := httptest.NewRequest(http.MethodHead, "/gnss/events", nil)
+	req.Header.Set("Authorization", "Bearer token")
+	rr = httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("authenticated HEAD: status %d", rr.Code)
+	}
+	s.deliveryMu.Lock()
+	registered := len(s.deliveries)
+	s.deliveryMu.Unlock()
+	if registered != 0 {
+		t.Fatalf("HEAD left %d deliveries registered, want 0", registered)
+	}
+}
+
+// TestSSEPublicShareLeavesPrivateStreamsAdmitted guards the stream cap is
+// partitioned per audience: an anonymous client filling the public share is
+// refused at that share, a private audience's stream is still admitted, and
+// the global ceiling remains the outer bound across audiences.
+func TestSSEPublicShareLeavesPrivateStreamsAdmitted(t *testing.T) {
+	old := sseMaxClients
+	sseMaxClients = 4
+	defer func() { sseMaxClients = old }()
+	s := testServer(nil) // operator default; brokers are bound per audience
+	public := identity.Audience{Kind: identity.AudiencePublic}
+	publicBroker := s.brokerFor(public)
+	type held struct {
+		broker *Broker
+		client *sseClient
+	}
+	var admitted []held
+	defer func() {
+		for _, h := range admitted {
+			h.broker.unsubscribe(h.client)
+		}
+	}()
+	for i := 0; i < sseMaxClients; i++ {
+		if c, ok := publicBroker.subscribe(); ok {
+			admitted = append(admitted, held{publicBroker, c})
+		}
+	}
+	if want := sseAudienceShare(public); len(admitted) != want {
+		t.Fatalf("public streams admitted = %d, want the public share %d of %d", len(admitted), want, sseMaxClients)
+	}
+	c, ok := s.broker.subscribe() // the private operator audience
+	if !ok {
+		t.Fatal("private stream refused while only the public share was full")
+	}
+	admitted = append(admitted, held{s.broker, c})
+	orgA := s.brokerFor(identity.Audience{Kind: identity.AudienceOrganization, ID: "customer-a"})
+	c, ok = orgA.subscribe()
+	if !ok {
+		t.Fatal("second private audience refused under the global ceiling")
+	}
+	admitted = append(admitted, held{orgA, c})
+	// Public 2 + operator 1 + customer-a 1 = the global cap: the next audience's
+	// own share is free, but the outer bound holds.
+	orgB := s.brokerFor(identity.Audience{Kind: identity.AudienceOrganization, ID: "customer-b"})
+	if c, ok := orgB.subscribe(); ok {
+		orgB.unsubscribe(c)
+		t.Fatal("global stream ceiling exceeded through per-audience shares")
+	}
+}
+
+// TestHistorySlotsArePartitionedPerPrincipal guards the authenticated
+// history/evidence bound is shared fairly: a principal at its share is
+// refused while another principal is still admitted, releases return both
+// the share and the global slot, and the global pool stays the outer bound.
+func TestHistorySlotsArePartitionedPerPrincipal(t *testing.T) {
+	s := testServer(nil)
+	var releases []func()
+	for i := 0; i < historyPerPrincipal; i++ {
+		release, ok := s.acquireHistorySlot("tenant-a")
+		if !ok {
+			t.Fatalf("tenant-a slot %d refused under its share of %d", i, historyPerPrincipal)
+		}
+		releases = append(releases, release)
+	}
+	if _, ok := s.acquireHistorySlot("tenant-a"); ok {
+		t.Fatal("tenant-a was granted more than its per-principal share")
+	}
+	release, ok := s.acquireHistorySlot("tenant-b")
+	if !ok {
+		t.Fatal("tenant-b refused while tenant-a held only its own share")
+	}
+	releases = append(releases, release)
+	if len(s.historySlots) != historyPerPrincipal+1 {
+		t.Fatalf("global slots in use = %d, want %d", len(s.historySlots), historyPerPrincipal+1)
+	}
+	for _, r := range releases {
+		r()
+	}
+	if len(s.historySlots) != 0 || len(s.historyInUse) != 0 {
+		t.Fatalf("slots not returned: global %d, per-principal %v", len(s.historySlots), s.historyInUse)
+	}
+	for i := 0; i < cap(s.historySlots); i++ {
+		s.historySlots <- struct{}{}
+	}
+	if _, ok := s.acquireHistorySlot("tenant-c"); ok {
+		t.Fatal("a slot was granted with the global pool exhausted")
+	}
+	for i := 0; i < cap(s.historySlots); i++ {
+		<-s.historySlots
+	}
+}
+
+// TestBearerSchemeIsCaseInsensitive guards the auth-scheme token is
+// case-insensitive (RFC 9110 §11.1): a client or proxy that lower-cases
+// "bearer" must still authenticate, while the single-header, no-whitespace
+// and length rules keep rejecting malformed credentials.
+func TestBearerSchemeIsCaseInsensitive(t *testing.T) {
+	s := testServer(nil)
+	s.EnableAudienceSelection(fixedReadAuthorizer{"secret": identity.ReadPrincipal{ID: "viewer", AudienceGrants: []identity.Audience{s.audience}}}, nil, time.Second)
+	s.refresh("global")
+	for header, want := range map[string]int{
+		"Bearer secret":  http.StatusOK,
+		"bearer secret":  http.StatusOK,
+		"BEARER secret":  http.StatusOK,
+		"Bearer  secret": http.StatusOK, // surrounding whitespace is trimmed, as before
+		"Basic secret":   http.StatusUnauthorized,
+		"Bearer":         http.StatusUnauthorized,
+		"Bearer\tsecret": http.StatusUnauthorized,
+		"Bearer se cret": http.StatusUnauthorized,
+		"Bearer " + strings.Repeat("x", 4097): http.StatusUnauthorized,
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/gnss/api/v2/global", nil)
+		req.Header.Set("Authorization", header)
+		rr := httptest.NewRecorder()
+		s.http.Handler.ServeHTTP(rr, req)
+		if rr.Code != want {
+			t.Errorf("Authorization %q: status %d, want %d: %s", header, rr.Code, want, rr.Body.String())
+		}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/gnss/api/v2/global", nil)
+	req.Header.Add("Authorization", "Bearer secret")
+	req.Header.Add("Authorization", "Bearer secret")
+	rr := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("two Authorization headers: status %d, want 401", rr.Code)
 	}
 }
 
@@ -340,7 +697,7 @@ func TestSnapshotFeeds(t *testing.T) {
 	// The returned slice is a copy: mutating it must not corrupt the served cache.
 	snap["svs"][0] = 'X'
 	s.mu.RLock()
-	cached := s.cache["svs"][0]
+	cached := s.cache[cacheKey{audience: s.audience.Key(), feed: "svs"}].body[0]
 	s.mu.RUnlock()
 	if cached == 'X' {
 		t.Error("SnapshotFeeds aliased the live cache")
@@ -610,6 +967,54 @@ func TestMethodNotAllowed(t *testing.T) {
 	}
 	if env.OK || env.Code != http.StatusMethodNotAllowed {
 		t.Errorf("error envelope = %+v", env)
+	}
+}
+
+// TestRejectedRequestBodyDrainIsBounded guards a POST that declares a body it
+// never sends gets its 405 with Connection: close and the server closes the
+// connection within the body read deadline, instead of parking the connection
+// goroutine in net/http's post-handler body drain for as long as the client
+// likes. Runs against a real listener because the drain lives in net/http's
+// connection loop, not in the handler.
+func TestRejectedRequestBodyDrainIsBounded(t *testing.T) {
+	s := testServer(nil)
+	ln, err := s.Listen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = s.Start(ln) }()
+	defer func() { _ = s.Close() }()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := fmt.Fprintf(conn, "POST /gnss/api/v2/svs HTTP/1.1\r\nHost: navlistener.invalid\r\nContent-Length: 200000\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("no response to a body-less POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusMethodNotAllowed || resp.Header.Get("Allow") != "GET, HEAD" {
+		t.Fatalf("status %d Allow %q, want 405 GET, HEAD", resp.StatusCode, resp.Header.Get("Allow"))
+	}
+	if !resp.Close {
+		t.Errorf("405 did not ask to close the connection (Connection header %q)", resp.Header.Get("Connection"))
+	}
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatalf("reading the 405 body: %v", err)
+	}
+	// The body was never sent; the server must give up draining it and close.
+	if n, err := conn.Read(make([]byte, 1)); err == nil || n != 0 {
+		t.Fatalf("connection still open %v after the 405 (read %d bytes, err %v)", time.Since(start), n, err)
+	} else if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		t.Fatalf("server kept the connection open past the client deadline: the body drain was not bounded")
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("connection closed only after %v, want within the %v body read deadline", elapsed, bodyReadDeadline)
 	}
 }
 

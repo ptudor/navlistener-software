@@ -17,6 +17,20 @@ separate from the native read API and from the ingest path, and that separation 
 Enabled when `[metrics].addr` is set. Normally bound to loopback; a non-loopback bind is allowed
 with a startup warning, for remote Prometheus deployments.
 
+**A non-loopback bind requires a network ACL (firewall rule or scraper-only VLAN) in front of
+it.** Nothing on this listener authenticates, and `/metrics` is not anonymous: its `source` and
+`observer` label values are the ids of every station the collector has seen, including stations
+whose publication policy keeps them out of the public audience, and `navlistener_push_*` series
+reveal which observers are connected and how their authentication fails. Restrict the port to the
+scraper's address; do not rely on the bind warning alone. The reverse proxy that fronts the read
+API must never forward any path to this port — `/metrics`, `/healthz` and `/debug/state` are a
+different listener on purpose (see "Why three separate listeners").
+
+`/healthz` reports `status`, the build identity and, for a terminated required component, a
+fixed `failure` reason code (`required_component_terminated`); the component's actual error —
+which may name bind addresses or file paths — goes to the log, never to the unauthenticated body.
+Degraded probes still report their short reason text.
+
 ---
 
 ## Summary
@@ -90,8 +104,11 @@ The view itself is `state.Snapshot` — a deliberately compact diagnostic subset
 | Fleet push | `internal/ingest` | public, TLS mandatory |
 
 Separate listeners mean the public ingest surface cannot reach `/metrics` or `/debug/state`, and
-a misconfigured proxy in front of the read API cannot accidentally expose either. Collapsing them
-onto one port would make every one of those a routing bug away from being wrong.
+a proxy in front of the read API cannot accidentally expose either unless it is configured to
+forward to this port — which it must never be. Collapsing them onto one port would make every one
+of those a routing bug away from being wrong. The `/debug/state` peer gate is a loopback check on
+the TCP peer only (forwarded-address headers are ignored), so a same-host proxy that forwarded the
+path would satisfy it; that is why the rule is "do not forward", not "the gate will catch it".
 
 ---
 

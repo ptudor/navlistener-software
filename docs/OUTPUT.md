@@ -62,8 +62,12 @@ principal before resolving the physically separate live state and detector/event
 Unknown or ungranted values return `403`/`404`; the server never returns an operator superset
 for client filtering. Every feed carries the effective key as `data.audience`.
 
-Public responses remain shared-cacheable. Every authenticated response sends
-`Cache-Control: private, no-store` and `Vary: Authorization, X-GNSS-Audience`; private bodies
+Public responses remain shared-cacheable (`Cache-Control: public, max-age=30`). Every
+response from an audience-selectable endpoint — feeds, `coverage`, `audiences`, the events
+query/summary/conditions and the SSE stream, public bodies included — sends
+`Vary: Authorization, X-GNSS-Audience`, so a shared cache keys the stored public body by those
+selectors instead of answering a later credentialed, audience-selected request with it. Every
+authenticated response additionally sends `Cache-Control: private, no-store`; private bodies
 are rendered outside the shared public cache. Clients partition local caches and
 `Last-Event-ID` by `(server, principal, audience, authorization revision)` and erase the
 applicable private cache family on logout, revision change, audience loss, server/principal
@@ -334,6 +338,16 @@ New enrichment endpoints (ours — the Japan/India product surface, `docs/CONSTE
 `/gnss/api/navic-text` (planned; unavailable until the NavIC decoder lands). Same envelope; message streams,
 not positioning inputs.
 
+**Reported history clamp.** `/gnss/api/events` and `/gnss/api/events/summary` clamp the start
+of the requested window to the audience's current policy epoch (§0.1) and say so: `data` carries
+`visible_since` (the audience's current visibility boundary), `effective_since` (the window
+start actually queried, after the window-size and policy clamps) and `history_limited` (`true`
+when the caller's `since` — explicit or defaulted — was pulled forward to the boundary), the
+same keys as `/gnss/api/v2/observer-samples`. A window that ends before `visible_since` is
+answered without a database query as `total: 0`, `events: []`, `history_limited: true`, so a
+historical request against a newer policy is visibly empty rather than confidently empty. The
+keys are additive; existing consumers may ignore them.
+
 ### 2.2 Enums (frozen)
 
 | Enum | Values |
@@ -600,11 +614,18 @@ The historian-backed endpoints (`/gnss/api/events`, `/gnss/api/events/summary`,
 `/gnss/api/events/conditions`, `/gnss/api/v2/observer-samples`, `/gnss/api/v2/event-evidence`)
 run under a small concurrency bound inside the collector and answer `503` with `Retry-After: 1`
 once it is exhausted; the historian's writer keeps a reserved pool connection, so reads can never
-starve the forensic record. The collector never sees the client address, so **per-client
-fairness is the reverse proxy's job**: apply its per-client request-rate and concurrent-connection
-limits (`limit_req`/`limit_conn` or their equivalent) to `/gnss/api/events` and `/gnss/api/v2/`
-ahead of the collector — generous enough for a dashboard's polling, tight enough that one client
-cannot hold every slot. `go/deploy/README.md` gives the sizing.
+starve the forensic record. The collector's caps are partitioned so one tenant cannot exhaust
+them for everyone: the SSE stream ceiling is shared per audience (the credential-free public
+audience may hold at most half of it, each private audience at most a quarter), and the
+authenticated history/evidence bound is shared per read principal (half of it each); the global
+ceilings remain the outer bound. Below the audience and principal the collector never sees the
+client address, so **per-client fairness is the reverse proxy's job and is required, not
+optional**: the proxy must enforce a per-client concurrent-connection limit (`limit_conn` or
+its equivalent) on `/gnss/events` and a per-client request-rate limit (`limit_req` or its
+equivalent) on `/gnss/api/` ahead of the collector — generous enough for a dashboard's polling
+and its streams, tight enough that one client cannot hold every slot or every stream in its
+audience's share. The proxy must also buffer request bodies before forwarding, so a slowly
+trickled body never reaches the collector. `go/deploy/README.md` gives the sizing.
 
 ---
 
@@ -661,6 +682,16 @@ resolution tombstones. The cursor and transitions come from one database snapsho
 Event history has no retention policy, so a condition need not have changed in the
 last 24 hours to appear. The existing current-policy/startup boundary still applies;
 this endpoint does not make earlier-process or withdrawn evidence visible again.
+
+**The boundary includes the collector's own restart.** For an audience that has had
+no policy transition the boundary is the process start, so a condition confirmed by
+an earlier process is absent from the snapshot until a detector re-confirms it (at
+least one debounce window, longer for held states). The envelope reports this the way
+the sensor-history endpoint does: `visible_since` (the same instant as `epoch`) and
+`history_limited: true` whenever a boundary applies. An empty `events` list after a
+deploy is therefore "nothing confirmed since `visible_since`", never an all-clear for
+the time before it; consumers that present fleet health must show the boundary (or
+unknown health) rather than a clean fleet until conditions re-confirm.
 
 The query has a five-second deadline and a 10,000-condition limit. Historian absence,
 query failure, or excess conditions returns 503, never an incomplete success. Clients

@@ -89,6 +89,26 @@ func TestSanitizeHonorsByteCapExactly(t *testing.T) {
 	}
 }
 
+// TestSanitizeDropsFormatAndBidiCharacters guards operator-supplied display
+// text must not carry invisible Unicode format characters: a bidi override or
+// a zero-width space in a remark can reorder or hide text in a consumer's
+// station list, and unicode.IsControl covers only category Cc.
+func TestSanitizeDropsFormatAndBidiCharacters(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"right-to-left override", "roof \u202Eantenna", "roof antenna"},
+		{"zero-width space", "roof\u200Bantenna", "roofantenna"},
+		{"directional marks", "\u200Eroof\u200F", "roof"},
+		{"bidi embeddings and isolates", "\u202A\u202B\u202C\u202Droof\u2066\u2067\u2068\u2069", "roof"},
+		{"byte order mark", "\uFEFFroof", "roof"},
+		{"C0 and C1 controls still dropped", "ro\x01of\u0085", "roof"},
+		{"printable non-ASCII kept", "stația acoperiș", "stația acoperiș"},
+	} {
+		if got := sanitize(tc.in); got != tc.want {
+			t.Errorf("%s: sanitize(%q) = %q, want %q", tc.name, tc.in, got, tc.want)
+		}
+	}
+}
+
 // The authority-boundary contract: opaque ids are preserved, and only an id that
 // cannot round-trip through JSON at all is refused.
 func TestOpaqueObserverIDContract(t *testing.T) {

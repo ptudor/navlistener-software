@@ -26,6 +26,13 @@ func (s *Server) serveCurrentConditions(w http.ResponseWriter, r *http.Request) 
 	}
 	delivery := s.beginDelivery(r, view.audience)
 	defer delivery.finish()
+	// The snapshot starts at the audience's current policy boundary, which is
+	// the process start for an audience that has had no policy transition: a
+	// condition confirmed by an earlier process is not re-served until a
+	// detector re-confirms it (docs/OUTPUT.md, "Current station conditions").
+	// The response says so — visible_since and history_limited, as the
+	// sensor-history endpoint reports them — so a consumer never reads an
+	// empty snapshot as an all-clear for the time before the boundary.
 	var since time.Time
 	if s.policyEpochs != nil {
 		_, since = s.policyEpochs.Current(view.audience.Key())
@@ -50,5 +57,6 @@ func (s *Server) serveCurrentConditions(w http.ResponseWriter, r *http.Request) 
 		"schema": schemaVersion, "audience": view.audience.Key(), "complete": true,
 		"epoch":  since.UTC().Format(time.RFC3339Nano),
 		"cursor": snapshot.Cursor, "events": snapshot.Events,
+		"visible_since": since, "history_limited": !since.IsZero(),
 	})
 }
