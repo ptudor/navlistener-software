@@ -141,23 +141,47 @@ private actor HistoryReadGate {
 }
 
 @Suite(.serialized) struct SensorHistoryNetworkingTests {
-    @Test func historyScopesBothDiscoveryChecksAndEscapesOpaqueReceiver() async throws {
+    /// Opaque ids may carry any punctuation. The collector decodes the query
+    /// with url.ParseQuery, where a bare `+` is a space, so `+` (and `&`, `=`,
+    /// `%`) must reach the wire percent-encoded or the page comes back for a
+    /// different observer and fails validation.
+    @Test(arguments: ["receiver: 001/東京", "rx+1 a&b=c%d"])
+    func historyScopesBothDiscoveryChecksAndEscapesOpaqueReceiver(observer: String) async throws {
         let client = makeClient()
         nonisolated(unsafe) var paths: [String] = []
+        nonisolated(unsafe) var rawQueries: [String] = []
         HistoryURLProtocol.handler = { request in
             paths.append(request.url!.path)
             #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-read-token")
             if request.url!.path.hasSuffix("audiences") { return Self.discovery(revision: "grant-1") }
             #expect(request.value(forHTTPHeaderField: "X-GNSS-Audience") == "organization:example")
+            rawQueries.append(request.url!.query(percentEncoded: true) ?? "")
             let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
-            #expect(query?.first { $0.name == "observer" }?.value == "receiver: 001/東京")
+            #expect(query?.first { $0.name == "observer" }?.value == observer)
             #expect(!request.url!.absoluteString.contains("test-read-token"))
-            return historyDocument()
+            return historyDocument(["observer": observer])
         }
         defer { HistoryURLProtocol.handler = nil }
-        let result = try await client.fetchSensorHistory(session: historySession, request: historyRequest())
+        let request = try SensorHistoryRequest(observer: observer, metric: .temperature, hours: 1,
+                                               now: WireDate.parse("2026-09-30T12:00:00Z")!)
+        let result = try await client.fetchSensorHistory(session: historySession, request: request)
         #expect(result.samples.count == 1)
         #expect(paths.map { $0.components(separatedBy: "/").last! } == ["audiences", "observer-samples", "audiences"])
+        let raw = try #require(rawQueries.first)
+        #expect(!raw.contains("+"))
+        if observer.contains("+") {
+            #expect(raw.contains("observer=rx%2B1%20a%26b%3Dc%25d&"))
+        }
+    }
+
+    @Test func queryItemsEscapeWhatTheCollectorWouldOtherwiseDecode() throws {
+        var components = try #require(URLComponents(string: "https://collector.invalid/gnss/api/v2/updates"))
+        let observer = "rx+1 a&b=c%d:東京"
+        components.percentEncodedQueryItems = try CollectorEndpoint.percentEncodedQueryItems(
+            [URLQueryItem(name: "observer_id", value: observer)])
+        #expect(components.url?.query(percentEncoded: true) == "observer_id=rx%2B1%20a%26b%3Dc%25d:%E6%9D%B1%E4%BA%AC")
+        #expect(components.queryItems?.first?.value == observer)
+        #expect(try CollectorEndpoint.percentEncodedQueryItems([URLQueryItem(name: "flag", value: nil)]).first?.value == nil)
     }
 
     @Test func grantChangeDiscardsHistoryAndPublicHistoryIsNeverRequested() async throws {

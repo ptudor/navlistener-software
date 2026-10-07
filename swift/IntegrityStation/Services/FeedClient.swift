@@ -106,6 +106,27 @@ enum CollectorEndpoint {
         else { throw FeedError.invalidBaseURL }
         return baseURL.appending(path: path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))
     }
+
+    /// Characters a query name or value may carry unescaped. URLComponents
+    /// leaves `+`, `&`, `=` and `%` alone in query items, but the collector
+    /// parses the query with Go's url.ParseQuery, which decodes a bare `+` as
+    /// a space and splits on `&`/`=`; opaque observer ids may contain any
+    /// punctuation, so those are escaped as well.
+    static let queryAllowed = CharacterSet.urlQueryAllowed.subtracting(CharacterSet(charactersIn: "+&=%"))
+
+    /// Items ready for `URLComponents.percentEncodedQueryItems`.
+    static func percentEncodedQueryItems(_ items: [URLQueryItem]) throws -> [URLQueryItem] {
+        try items.map { item in
+            guard let name = item.name.addingPercentEncoding(withAllowedCharacters: queryAllowed)
+            else { throw FeedError.invalidBaseURL }
+            let value = try item.value.map { raw -> String in
+                guard let encoded = raw.addingPercentEncoding(withAllowedCharacters: queryAllowed)
+                else { throw FeedError.invalidBaseURL }
+                return encoded
+            }
+            return URLQueryItem(name: name, value: value)
+        }
+    }
 }
 
 struct FeedClient: Sendable, Equatable {
@@ -143,7 +164,8 @@ struct FeedClient: Sendable, Equatable {
             ])
         } else {
             var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
-            components?.queryItems = [URLQueryItem(name: "observer_id", value: observer)]
+            components?.percentEncodedQueryItems = try CollectorEndpoint.percentEncodedQueryItems(
+                [URLQueryItem(name: "observer_id", value: observer)])
             request.url = components?.url
         }
         func once(_ request: URLRequest) async throws -> UpdateAccess {
@@ -183,7 +205,8 @@ struct FeedClient: Sendable, Equatable {
         let endpoint = try CollectorEndpoint.url(baseURL: session.baseURL, path: "gnss/api/events")
         var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
         if let since {
-            components?.queryItems = [URLQueryItem(name: "since", value: since.ISO8601Format())]
+            components?.percentEncodedQueryItems = try CollectorEndpoint.percentEncodedQueryItems(
+                [URLQueryItem(name: "since", value: since.ISO8601Format())])
         }
         guard let url = components?.url else { throw FeedError.invalidBaseURL }
         return try await fetch(url: url, session: session)
@@ -206,7 +229,7 @@ struct FeedClient: Sendable, Equatable {
         try await validateGrant()
         let endpoint = try CollectorEndpoint.url(baseURL: session.baseURL, path: "gnss/api/v2/observer-samples")
         var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
-        components?.queryItems = request.query
+        components?.percentEncodedQueryItems = try CollectorEndpoint.percentEncodedQueryItems(request.query)
         guard let url = components?.url else { throw FeedError.invalidBaseURL }
         let envelope: APIEnvelope<SensorHistoryPage> = try await fetch(url: url, session: session)
         guard let page = envelope.data else { throw FeedError.missingData }
