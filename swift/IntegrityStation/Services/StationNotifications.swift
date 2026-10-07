@@ -77,7 +77,7 @@ protocol StationNotificationCenter: Sendable {
         let label = settings.label(for: station) ?? station
         let notice = StationNotice(id: id,
             title: String(format: String(localized: active ? "notification.raised" : "notification.recovered"), label),
-            body: event.message ?? event.type ?? String(localized: "events.unknown_type"))
+            body: event.message ?? event.type ?? String(localized: "event.unknown"))
         jobs[id] = Task { [weak self] in
             guard let self else { return }
             defer { jobs.removeValue(forKey: id) }

@@ -22,6 +22,79 @@ private final class LocalizationBundleMarker: NSObject {}
     }
 }
 
+/// Every key the application source names must exist in the catalog and
+/// resolve in the built bundle, and every catalog key must be named by the
+/// source: a key missing from the catalog renders verbatim (a notification
+/// body once read "events.unknown_type"), and an orphan lingers untranslated.
+/// The expected-strings check above only proves listed keys resolve.
+@Test func sourceAndCatalogNameTheSameKeys() throws {
+    let application = Bundle(for: AppController.self)
+    let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        .appending(path: "IntegrityStation", directoryHint: .isDirectory)
+    let catalog = try #require(JSONSerialization.jsonObject(
+        with: Data(contentsOf: sources.appending(path: "Resources/Localizable.xcstrings"))) as? [String: Any])
+    let catalogKeys = Set(try #require(catalog["strings"] as? [String: Any]).keys)
+
+    var referenced: [String: Set<String>] = [:]
+    let enumerator = try #require(FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil))
+    for case let url as URL in enumerator where url.pathExtension == "swift" {
+        for key in try LocalizationKeyScan.keys(in: try String(contentsOf: url, encoding: .utf8)) {
+            referenced[key, default: []].insert(url.lastPathComponent)
+        }
+    }
+    #expect(referenced.count >= 300)
+
+    let missing = referenced.filter { !catalogKeys.contains($0.key) }
+    #expect(missing.isEmpty, "named in source, absent from the catalog: \(missing)")
+    let unresolved = referenced.keys.filter { application.localizedString(forKey: $0, value: nil, table: nil) == $0 }
+    #expect(unresolved.isEmpty, "resolve to themselves in the application bundle: \(unresolved.sorted())")
+    let orphans = catalogKeys.subtracting(referenced.keys)
+    #expect(orphans.isEmpty, "in the catalog, named by no source: \(orphans.sorted())")
+}
+
+/// Finds catalog keys (lowercase dotted identifiers) in the constructs this
+/// code base uses to name them. A key named through a construct not listed
+/// here surfaces as a catalog orphan in the test above, which is the cue to
+/// extend the scan rather than the cue to drop the key.
+enum LocalizationKeyScan {
+    private static let key = #""([a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+)""#
+    /// Each form captures, in group 1, the text that holds its key literals.
+    private static let forms = [
+        // String(localized: "key") and String(localized: flag ? "a" : "b"), the
+        // argument possibly carrying one level of parentheses.
+        #"String\(localized:\s*((?:[^()]|\([^()]*\))*)\)"#,
+        // SwiftUI initializers and helpers whose first argument is a
+        // LocalizedStringKey literal.
+        #"\b(?:Text|Button|InstrumentCard|DisclosureGroup|Section|TextField|SecureField|Picker|Label|Link|Toggle|ProgressView|LabeledContent|note|navigationTitle)\(\s*("[^"]+")"#,
+        // label: "key", title: "key", prompt: "key" arguments.
+        #"\b(?:label|title|prompt):\s*("[^"]+")"#,
+        // let key: LocalizedStringKey = switch ... { case .x: "key" ... }
+        #"LocalizedStringKey\s*=\s*switch[^{]*\{([^}]*)\}"#,
+        // return "key" and return flag ? "key" : "key" from LocalizedStringKey
+        // functions; a literal followed by anything else (a path, a call) is
+        // not a key.
+        #"\breturn\s+((?:[^\n"]*\?\s*)?"[^"\n]+"(?:\s*:\s*"[^"\n]+")?)\s*\}?\s*$"#
+    ]
+
+    static func keys(in text: String) throws -> Set<String> {
+        let literal = try Regex(key)
+        var found: Set<String> = []
+        for form in forms {
+            let pattern = try Regex(form).anchorsMatchLineEndings()
+            for match in text.matches(of: pattern) {
+                guard let range = match.output[1].range else { continue }
+                let span = text[range]
+                // SF Symbol names look like keys; they never share a span with one.
+                if span.contains("systemName:") || span.contains("systemImage:") { continue }
+                for hit in span.matches(of: literal) {
+                    if let keyRange = hit.output[1].range { found.insert(String(text[keyRange])) }
+                }
+            }
+        }
+        return found
+    }
+}
+
 @MainActor @Test func localizedViewsRenderOnThisPlatform() throws {
     let suite = "LocalizationSmoke.\(UUID())"
     let defaults = try #require(UserDefaults(suiteName:suite))

@@ -441,26 +441,6 @@
         }
       }
     },
-    "menu_bar.title": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Integrity Station"
-          }
-        }
-      }
-    },
-    "menu_bar.unknown": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Station status unknown"
-          }
-        }
-      }
-    },
     "notification.queue_full": {
       "localizations": {
         "en": {
@@ -1277,26 +1257,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Showing the last good station snapshot."
-          }
-        }
-      }
-    },
-    "stations.empty.description": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Add a station to see its signal and RF health."
-          }
-        }
-      }
-    },
-    "stations.empty.title": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No stations yet"
           }
         }
       }
