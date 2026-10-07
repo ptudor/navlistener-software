@@ -1181,6 +1181,18 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				if !dropPermanentlyMalformed(seq, "gnssid_range") {
 					return
 				}
+			} else if !navRecordBounded(rec) {
+				// a navigation record body past the largest legitimate frame by
+				// an order of magnitude is not a frame. The wire allows 1 MiB per
+				// record because HELLO and telemetry share MaxFrameLen, but every
+				// broadcast nav frame is a few hundred bytes and an RTCM3 message
+				// at most 1029, so a larger body can only be a defect or an
+				// attempt to pin the collector's memory and database with raw
+				// bytes it would otherwise persist regardless of decode. No
+				// retransmit can shrink it: the acked permanent-malformation policy.
+				if !dropPermanentlyMalformed(seq, "record_oversize") {
+					return
+				}
 			} else if !wordRecordWellFormed(rec, feed) {
 				// a word-oriented record whose body is empty or not a
 				// multiple of four bytes is malformed on the wire. bytesToWords used
@@ -1400,6 +1412,21 @@ func telemetryToFrame(rec wire.RawRecord, source string, recv, local time.Time) 
 func receiveTimestampPlausible(stamped, now time.Time) bool {
 	d := stamped.Sub(now)
 	return d <= recvTimestampSlack && d >= -recvReplayHorizon
+}
+
+// maxNavRecordBytes bounds a navigation record's body. The largest frame any
+// supported feed legitimately carries is far smaller — a GNSS broadcast nav
+// frame is at most ~600 bytes of words, an RTCM3 message at most 1023 bytes
+// plus 6 of framing, an SBF block at most 4096 — so 4 KiB admits every real
+// frame while refusing the 1 MiB bodies the wire's shared MaxFrameLen would
+// otherwise let a feeder push into the decode queue and the historian.
+// Telemetry records have their own exact-length codecs and are exempt.
+const maxNavRecordBytes = 4096
+
+// navRecordBounded reports whether a non-telemetry record's body is within
+// maxNavRecordBytes.
+func navRecordBounded(rec wire.RawRecord) bool {
+	return IsTelemetryType(int(rec.FrameType)) || len(rec.Raw) <= maxNavRecordBytes
 }
 
 // wordRecordWellFormed enforces the word-feed wire invariant before conversion
