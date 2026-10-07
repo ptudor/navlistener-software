@@ -134,4 +134,79 @@ func TestStationReceiverRestartResetsClock(t *testing.T) {
 	if len(s.clock.samples) != 0 {
 		t.Fatalf("clock history kept across a receiver restart: %d samples", len(s.clock.samples))
 	}
+	// The restart also breaks receiver-time continuity: the next epochs, with a
+	// time-of-week behind the pre-restart one, must re-anchor rather than be
+	// refused as out of order.
+	if s.clock.started || s.pos.started {
+		t.Fatal("receiver-time anchors survived a receiver restart")
+	}
+	restarted := clockAt(0)
+	restarted.Received = t0.Add(51 * time.Second)
+	if v := s.clock.evaluate(restarted, true, DefaultProfile()); v == nil {
+		t.Fatal("first clock epoch after the restart refused")
+	}
+	sol := solutionAt(0, 0, 0, 0, 0, 0, 0)
+	sol.Received = t0.Add(51 * time.Second)
+	if !s.ApplySolution(sol) {
+		t.Fatal("first solution after the restart refused")
+	}
+}
+
+// TestClockBackwardTimeStepReanchors mirrors the position rule for the clock
+// epochs: a backward step larger than an epoch gap re-anchors and restarts the
+// sample history, marked on that epoch; a small one is a reordered duplicate.
+func TestClockBackwardTimeStepReanchors(t *testing.T) {
+	var c clockChecks
+	runClock(t, &c, steadyClock(50))
+	back := clockAt(51)
+	back.TOW = uint32(tow0 - 100_000_000) // a 28-hour backward step
+	v := c.evaluate(back, true, DefaultProfile())
+	if v == nil {
+		t.Fatal("backward time step refused as out of order")
+	}
+	if len(c.samples) != 1 || !slices.Contains(v[CheckClockBiasDrift].Reasons, ReasonReceiverTimeReset) {
+		t.Fatalf("history kept across a time reset (%d samples) or the epoch unmarked: %+v", len(c.samples), v[CheckClockBiasDrift])
+	}
+	next := back
+	next.TOW += 1000
+	if v := c.evaluate(next, true, DefaultProfile()); v == nil || slices.Contains(v[CheckClockBiasDrift].Reasons, ReasonReceiverTimeReset) {
+		t.Fatalf("epoch after the reset = %+v, want evaluated without the reset mark", v)
+	}
+	reordered := next
+	reordered.TOW -= 500
+	if v := c.evaluate(reordered, true, DefaultProfile()); v != nil {
+		t.Fatalf("epoch reordered within an epoch gap evaluated: %+v", v)
+	}
+}
+
+// TestStationBackwardTimeStepKeepsAssessing: through the station, a 28-hour
+// backward step in the reported time-of-week must not leave every solution-fed
+// check unavailable until true time catches up; ten seconds on, the position
+// domain is being evaluated again.
+func TestStationBackwardTimeStepKeepsAssessing(t *testing.T) {
+	s := mustStation(t, StationProfile{Mode: ModeFixed, Position: &Surveyed{LatDeg: 37.4219, LonDeg: -122.0841, HeightM: 12.5}})
+	for i := 0; i < 20; i++ {
+		sol := solutionAt(i, 0, 0, 0, 0, 0, 0)
+		sol.TOW = uint32(500_000_000 + i*1000)
+		if !s.ApplySolution(sol) {
+			t.Fatalf("epoch %d refused", i)
+		}
+	}
+	for i := 0; i < 10; i++ {
+		sol := solutionAt(20+i, 0, 0, 0, 0, 0, 0)
+		sol.TOW = uint32(400_000_000 + i*1000) // stepped back 28 h, then advancing
+		if !s.ApplySolution(sol) {
+			t.Fatalf("epoch %d after the time reset refused", i)
+		}
+	}
+	a := s.Assess(t0.Add(30 * time.Second))
+	available := 0
+	for _, r := range a.Checks {
+		if r.Domain == DomainPosition && r.State != Unavailable {
+			available++
+		}
+	}
+	if available == 0 {
+		t.Fatalf("every position check unavailable after a backward time step: %+v", a.Checks)
+	}
 }

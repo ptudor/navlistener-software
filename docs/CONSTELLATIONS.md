@@ -100,12 +100,17 @@ freqId` (GLONASS FDMA channel, `k = freqId − 7`), `numWords`, and `numWords` l
 2. **Checks integrity** using the coding actually present in SFRBX: GPS/QZSS CNAV, Galileo
    I/NAV and F/NAV, BeiDou B-CNAV2, and SBAS use central **CRC-24Q** checks (polynomial
    `0x1864CFB`); GLONASS uses its central ICD Hamming check; BeiDou D1 centrally verifies the
-   delivered, de-interleaved **BCH(15,11,1)** blocks. GPS/QZSS LNAV is the exception: u-blox
-   delivers D30*-resolved data words, so broadcast word parity cannot be recomputed; the
-   collector checks the fixed TLM preamble structurally and relies on receiver validation for
-   parity. Thus a GNF1 push still has a central bit-level integrity gate for every shipped
-   decoder except LNAV, whose parity trust terminates at the receiver/feeder. BeiDou D2 and
-   NavIC decoding remain unsupported/planned rather than claiming an integrity check.
+   delivered, de-interleaved **BCH(15,11,1)** blocks. GPS/QZSS LNAV word parity is verified
+   too: u-blox delivers each word D30*-normalised — the whole word, parity bits included,
+   inverted when the previous transmitted D30 was 1 (3 130/3 130 words on two independent
+   captures) — so carrying the transmitted D29*/D30* through the subframe checks all 60 parity
+   bits of a delivered subframe, and a frame delivered as transmitted verifies under the ICD's
+   raw parity chain instead; a frame passing neither is rejected and counted with the other
+   integrity failures. Thus a GNF1 push has a central bit-level integrity gate for every
+   shipped decoder. Every Kepler-family epoch field (toe, toc, t0e, t0c, the CNAV and Galileo
+   TOW counts) must also lie inside the week; the bit fields code values past it that the
+   half-week age wrap would alias into a plausible age. BeiDou D2 and NavIC decoding remain
+   unsupported/planned rather than claiming an integrity check.
 3. **Dispatches** on `(gnssId, sigId)` to the constellation decoder, which extracts the ICD
    parameter set (§below) and hands it to the ephemeris store.
 

@@ -73,20 +73,31 @@ func (c *clockChecks) reset() { c.samples = c.samples[:0] }
 // out-of-order epoch. fixOK reports whether the receiver currently has a valid fix
 // (true when no solution is reported at all).
 func (c *clockChecks) evaluate(s ClockSample, fixOK bool, prof Profile) map[string]Verdict {
+	resynced := false
 	if c.started {
 		d := towDelta(c.lastTOW, s.TOW)
-		if d <= 0 {
-			return nil
-		}
-		c.clock += d
-		if d > maxEpochGapMS {
+		switch {
+		case d == 0, d < 0 && -d <= maxEpochGapMS:
+			return nil // duplicate, or reordered within an epoch gap
+		case d < 0:
+			// The receiver's time was reset (positionChecks.accept has the same
+			// rule): re-anchor here and start the sample history afresh.
 			c.reset()
+			resynced = true
+		default:
+			c.clock += d
+			if d > maxEpochGapMS {
+				c.reset()
+			}
 		}
 	}
 	c.started, c.lastTOW = true, s.TOW
 	if !fixOK {
 		c.reset()
 		v := Verdict{State: Unavailable, Reasons: []string{ReasonNoFix}}
+		if resynced {
+			v.Reasons = append(v.Reasons, ReasonReceiverTimeReset)
+		}
 		return map[string]Verdict{CheckClockBiasDrift: v, CheckClockDriftRate: v}
 	}
 
@@ -113,10 +124,17 @@ func (c *clockChecks) evaluate(s ClockSample, fixOK bool, prof Profile) map[stri
 	}
 	c.samples = c.samples[n:]
 
-	return map[string]Verdict{
+	out := map[string]Verdict{
 		CheckClockBiasDrift: c.biasDrift(prof.ClockBiasDrift),
 		CheckClockDriftRate: c.driftRate(prof.ClockDriftRate),
 	}
+	if resynced {
+		for name, v := range out {
+			v.Reasons = appendReason(v.Reasons, ReasonReceiverTimeReset)
+			out[name] = v
+		}
+	}
+	return out
 }
 
 // base returns the index of the newest sample at least minW and at most maxW older

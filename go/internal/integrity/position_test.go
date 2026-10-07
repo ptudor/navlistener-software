@@ -180,6 +180,51 @@ func TestPositionDuplicateAndRollover(t *testing.T) {
 	}
 }
 
+// TestPositionBackwardTimeStepReanchors: a reported time-of-week that steps back by
+// more than an epoch gap is the receiver's time being reset, not a reordered
+// epoch. Refusing it left lastTOW ahead of true time and rejected every genuine
+// epoch for up to half a week; the step must re-anchor receiver time, start the
+// kinematic history afresh, mark that one epoch, and accept what follows.
+func TestPositionBackwardTimeStepReanchors(t *testing.T) {
+	p := newPositionChecks(StationProfile{Mode: ModeMobile, MaxSpeedMPS: 30})
+	prof := DefaultProfile()
+	s := solutionAt(0, 0, 0, 0, 0, 0, 0)
+	s.TOW = 500_000_000
+	if !p.accept(s) {
+		t.Fatal("first epoch rejected")
+	}
+	p.evaluate(s, prof)
+	back := solutionAt(1, 0, 0, 0, 0, 0, 0)
+	back.TOW = 400_000_000 // a 28-hour backward step
+	if !p.accept(back) {
+		t.Fatal("backward time step rejected as out of order")
+	}
+	if len(p.history) != 0 || p.reference != nil {
+		t.Fatalf("history kept across a time reset: %d epochs, reference %v", len(p.history), p.reference)
+	}
+	for name, v := range p.evaluate(back, prof) {
+		if !slices.Contains(v.Reasons, ReasonReceiverTimeReset) {
+			t.Errorf("%s at the reset epoch = %+v, want %s among its reasons", name, v, ReasonReceiverTimeReset)
+		}
+	}
+	next := solutionAt(2, 0, 0, 0, 0, 0, 0)
+	next.TOW = 400_001_000
+	if !p.accept(next) || p.lastTOW != 400_001_000 {
+		t.Fatalf("epoch after the reset rejected (lastTOW %d)", p.lastTOW)
+	}
+	for name, v := range p.evaluate(next, prof) {
+		if slices.Contains(v.Reasons, ReasonReceiverTimeReset) {
+			t.Errorf("%s one epoch after the reset still carries %s: %+v", name, ReasonReceiverTimeReset, v)
+		}
+	}
+	// A small backward step is still a reordered epoch.
+	reordered := next
+	reordered.TOW = 400_000_500
+	if p.accept(reordered) {
+		t.Fatal("epoch reordered within an epoch gap accepted")
+	}
+}
+
 func TestMotionBound(t *testing.T) {
 	sp := StationProfile{Mode: ModeMobile, MaxSpeedMPS: 30}
 	p := newPositionChecks(sp)

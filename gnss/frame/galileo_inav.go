@@ -102,6 +102,13 @@ const (
 type GalileoINAV struct {
 	Type   int
 	IODnav int
+	// SVID is the transmitting satellite's own ID (word type 4 only, 1..36,
+	// GAL-OS-SIS-ICD-2.2 Table 45), carried inside the CRC-protected nav word
+	// — the only in-band identity the I/NAV ephemeris set has. AssembleGalileo
+	// refuses a word 4 whose SVID is not the svid being assembled, so a
+	// mislabelled but CRC-valid page cannot be attached to another SV. Zero
+	// for every other word type.
+	SVID   int
 	SISA   int
 	Health int // E1B health (word 5), when present
 	// E5bSHS is the E5b Signal Health Status (word 5, regression fix). Every E1-B word
@@ -237,6 +244,9 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 		sqrtA, _ := r.Bits(94, 32)
 		w.IODnav = int(iod)
 		w.eph.Toe = float64(t0e) * galT0
+		if w.eph.Toe >= weekSeconds {
+			return nil, errBadEpoch // Table 60: t0e ≤ 604 740
+		}
 		w.eph.M0 = float64(m0) * p2m31 * semi
 		w.eph.Ecc = float64(ecc) * p2m33
 		w.eph.SqrtA = float64(sqrtA) * p2m19
@@ -272,6 +282,7 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 		// Offsets: type(6) IODnav(10) SVID(6) Cic(16) Cis(16) t0c(14) af0(31)
 		// af1(21) af2(6).
 		iod, _ := r.Bits(6, 10)
+		svid, _ := r.Bits(16, 6) // transmitting SVID, 1..36 (Table 45) — the in-band identity
 		cic, _ := r.Signed(22, 16)
 		cis, _ := r.Signed(38, 16)
 		t0c, _ := r.Bits(54, 14)
@@ -279,6 +290,7 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 		af1, _ := r.Signed(99, 21)
 		af2, _ := r.Signed(120, 6)
 		w.IODnav = int(iod)
+		w.SVID = int(svid)
 		w.eph.Cic = float64(cic) * p2m29
 		w.eph.Cis = float64(cis) * p2m29
 		w.clk = clock.Model{
@@ -287,6 +299,9 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 			Af0: float64(af0) * p2m34,
 			Af1: float64(af1) * p2m46,
 			Af2: float64(af2) * p2m59,
+		}
+		if w.clk.Toc >= weekSeconds {
+			return nil, errBadEpoch // Table 60: t0c ≤ 604 740
 		}
 		w.hasClk = true
 	case 5:
@@ -310,6 +325,9 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 		w.E1BDVS = int(e1bDVS)
 		w.WN = int(wn)
 		w.TOW = float64(tow)
+		if w.TOW >= weekSeconds {
+			return nil, errBadEpoch // the 20-bit count codes up to 1 048 575 s; GST TOW ≤ 604 799
+		}
 		const bgdScale = 1.0 / float64(uint64(1)<<32)
 		w.BGDE1E5a = float64(bgdA) * bgdScale
 		w.BGDE1E5b = float64(bgdB) * bgdScale
@@ -374,6 +392,12 @@ func AssembleGalileo(svid int, w1, w2, w3, w4, w5 *GalileoINAV) (kepler.Ephemeri
 	}
 	if w1.IODnav != w2.IODnav || w1.IODnav != w3.IODnav || w1.IODnav != w4.IODnav {
 		return kepler.Ephemeris{}, clock.Model{}, errIODMismatch
+	}
+	// Word 4's in-band SVID must name the SV being assembled (Galileo SVID
+	// 1..36 equals the receiver's svId directly); otherwise the set is
+	// mis-attributed, the same refusal AssembleGPSCNAV makes on its PRN.
+	if w4.SVID != svid {
+		return kepler.Ephemeris{}, clock.Model{}, errPRNMismatch
 	}
 	eph := w1.eph
 	eph.Omega0, eph.I0, eph.Omega, eph.IDot = w2.eph.Omega0, w2.eph.I0, w2.eph.Omega, w2.eph.IDot

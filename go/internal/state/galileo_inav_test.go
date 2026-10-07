@@ -53,11 +53,16 @@ func inavSetBits(content []byte, off int, v uint64, n int) {
 
 // inavWordN builds a minimal I/NAV word of the given type with a matching
 // IODnav (words 1–4; word type at bit 0, IODnav at bit 6 per GAL-OS-SIS-ICD-2.2
-// Tables 42–45), with extra fields applied by mutate before packing.
-func inavWordN(wordType, iod int, mutate func(content []byte)) []uint32 {
+// Tables 42–45), with extra fields applied by mutate before packing. Word 4
+// names its transmitter (SVID at bit 16, Table 45), which the state layer
+// gates against the frame's svId; svid is ignored for every other word type.
+func inavWordN(wordType, svid, iod int, mutate func(content []byte)) []uint32 {
 	content := make([]byte, 16)
 	inavSetBits(content, 0, uint64(wordType), 6)
 	inavSetBits(content, 6, uint64(iod), 10)
+	if wordType == 4 {
+		inavSetBits(content, 16, uint64(svid), 6)
+	}
 	if mutate != nil {
 		mutate(content)
 	}
@@ -66,6 +71,49 @@ func inavWordN(wordType, iod int, mutate func(content []byte)) []uint32 {
 
 func galileoFrame(svid int, words []uint32, recv time.Time) *ingest.RawFrame {
 	return &ingest.RawFrame{GnssID: gnss.Galileo, SvID: svid, SigID: 0, Source: "obs-inav", Recv: recv, Words: words}
+}
+
+// TestApplyGalileoINAVWord4SVIDMismatchDropped: word type 4 carries the
+// transmitting SVID inside the CRC-protected word (GAL-OS-SIS-ICD-2.2 Table
+// 45) while the frame's svId is receiver metadata outside it. A CRC-valid word
+// 4 from SV 7 tagged svId 14 must be dropped before buffering and before the
+// capability fingerprint (counted under prn_mismatch), so SV 7's Cic/Cis and
+// clock can never assemble into E14@0; the genuine word 4 then completes the set.
+func TestApplyGalileoINAVWord4SVIDMismatchDropped(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	const svid, iod, source = 14, 9, "obs-mislabeled"
+	counter := metrics.DecodeErrorsTotal.WithLabelValues("2", "prn_mismatch")
+	decoded := metrics.DecodeTotal.WithLabelValues("2", "inav")
+
+	for _, wt := range []int{1, 2, 3} {
+		s.Apply(galileoFrame(svid, inavWordN(wt, svid, iod, nil), now))
+	}
+	before, decodedBefore := testutil.ToFloat64(counter), testutil.ToFloat64(decoded)
+	foreign := galileoFrame(svid, inavWordN(4, 7, iod, nil), now) // SV 7's word 4 under svId 14
+	foreign.Source = source
+	s.Apply(foreign)
+	if got := testutil.ToFloat64(counter) - before; got != 1 {
+		t.Fatalf("prn_mismatch delta = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(decoded) - decodedBefore; got != 0 {
+		t.Errorf("inav DecodeTotal delta = %v, want 0 (a mis-attributed word is not a decode)", got)
+	}
+	if caps := s.FeedStationCapabilities(now)[source]; len(caps) != 0 {
+		t.Errorf("mis-attributed word 4 recorded capability %+v, want none", caps)
+	}
+	key := Key{G: gnss.Galileo, Sv: svid, Sig: 0}
+	if st := s.shardFor(key).m[key]; st == nil || st.galW[4] != nil || st.haveEph {
+		t.Fatalf("foreign word 4 was buffered or assembled: %+v", st)
+	}
+	if _, ok := s.FeedSVs(now)["E14@0"]; ok {
+		t.Fatal("E14@0 served from a set containing SV 7's word 4")
+	}
+
+	s.Apply(galileoFrame(svid, inavWordN(4, svid, iod, nil), now))
+	if _, ok := s.FeedSVs(now)["E14@0"]; !ok {
+		t.Fatal("genuine word 4 did not complete the E14@0 set")
+	}
 }
 
 // TestFeedGalileoGSTWnMismatch guards the I/NAV word-5 GST WN — dead
@@ -87,7 +135,7 @@ func TestFeedGalileoGSTWnMismatch(t *testing.T) {
 	}
 
 	word5 := func(wn int) []uint32 {
-		return inavWordN(5, 0, func(c []byte) {
+		return inavWordN(5, 0, 0, func(c []byte) {
 			inavSetBits(c, 73, uint64(wn), 12) // GST WN (Table 46/69)
 			inavSetBits(c, 85, 300000, 20)     // mid-week TOW, away from the rollover grace
 		})
@@ -98,7 +146,7 @@ func TestFeedGalileoGSTWnMismatch(t *testing.T) {
 	// FeedSVs publishes only entries with an assembled ephemeris; the check
 	// itself rides word 5 alone.
 	for _, wt := range []int{1, 2, 3, 4} {
-		s.Apply(galileoFrame(svid, inavWordN(wt, 3, nil), now))
+		s.Apply(galileoFrame(svid, inavWordN(wt, svid, 3, nil), now))
 	}
 	s.Apply(galileoFrame(svid, word5(gstWeek&0xFFF), now))
 	sv := s.FeedSVs(now)["E23@0"]
@@ -124,6 +172,7 @@ func TestFeedGalileoGSTWnMismatch(t *testing.T) {
 			}
 		}
 		setBits(0, 1, 6)
+		setBits(6, svid, 6) // page 1 names its transmitter (Table 30)
 		setBits(155, uint64(wn), 12)
 		setBits(167, 300000, 20)
 		words := make([]uint32, 8)
@@ -158,7 +207,7 @@ func TestApplyGalileoINAVAlertPageMetric(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	const svid = 27
 
-	words := inavWordN(1, 3, nil)
+	words := inavWordN(1, svid, 3, nil)
 	words[0] |= 1 << 30 // page bit 1: even-part Page Type = 1 (alert)
 
 	alertCounter := metrics.DecodeErrorsTotal.WithLabelValues("2", "inav_alert")
@@ -217,10 +266,10 @@ func TestFeedGalileoOSNMA(t *testing.T) {
 	const svid, iod = 19, 55
 
 	// Assembled entry with a live OSNMA field on one of its pages.
-	s.Apply(galileoFrame(svid, inavWithOSNMA(inavWordN(1, iod, nil), 0xDEADBEEF01), now))
-	s.Apply(galileoFrame(svid, inavWordN(2, iod, nil), now))
-	s.Apply(galileoFrame(svid, inavWordN(3, iod, nil), now))
-	s.Apply(galileoFrame(svid, inavWordN(4, iod, nil), now))
+	s.Apply(galileoFrame(svid, inavWithOSNMA(inavWordN(1, svid, iod, nil), 0xDEADBEEF01), now))
+	s.Apply(galileoFrame(svid, inavWordN(2, svid, iod, nil), now))
+	s.Apply(galileoFrame(svid, inavWordN(3, svid, iod, nil), now))
+	s.Apply(galileoFrame(svid, inavWordN(4, svid, iod, nil), now))
 
 	sv, ok := s.FeedSVs(now)["E19@0"]
 	if !ok {
@@ -235,7 +284,7 @@ func TestFeedGalileoOSNMA(t *testing.T) {
 	// not absent, because the field IS observed (the SV just isn't in the
 	// distributing subset any more).
 	later := now.Add(2 * time.Minute)
-	s.Apply(galileoFrame(svid, inavWordN(1, iod, nil), later))
+	s.Apply(galileoFrame(svid, inavWordN(1, svid, iod, nil), later))
 	sv = s.FeedSVs(later)["E19@0"]
 	if sv.Osnma == nil || *sv.Osnma {
 		t.Fatalf("osnma = %v two minutes past the last live field, want false", sv.Osnma)
@@ -247,7 +296,7 @@ func TestFeedGalileoOSNMA(t *testing.T) {
 	for _, pt := range []int{1, 2, 3, 4} {
 		s2.Apply(&ingest.RawFrame{
 			GnssID: gnss.Galileo, SvID: 14, SigID: 3, Source: "obs-fnav", Recv: now,
-			Words: fnavPageWords(pt, 7),
+			Words: fnavPageWords(14, pt, 7),
 		})
 	}
 	if sv := s2.FeedSVs(now)["E14@3"]; sv.Osnma != nil {
@@ -268,10 +317,10 @@ func TestFeedGalileoGGTO(t *testing.T) {
 
 	// A minimal served entry needs an assembled ephemeris (FeedSVs skips
 	// eph-less SVs); GGTO itself rides word 10, outside that set.
-	s.Apply(galileoFrame(svid, inavWordN(1, iod, nil), now))
-	s.Apply(galileoFrame(svid, inavWordN(2, iod, nil), now))
-	s.Apply(galileoFrame(svid, inavWordN(3, iod, nil), now))
-	s.Apply(galileoFrame(svid, inavWordN(4, iod, nil), now))
+	s.Apply(galileoFrame(svid, inavWordN(1, svid, iod, nil), now))
+	s.Apply(galileoFrame(svid, inavWordN(2, svid, iod, nil), now))
+	s.Apply(galileoFrame(svid, inavWordN(3, svid, iod, nil), now))
+	s.Apply(galileoFrame(svid, inavWordN(4, svid, iod, nil), now))
 
 	word10 := func(mutate func(c []byte)) []uint32 {
 		content := make([]byte, 16)
@@ -361,10 +410,10 @@ func TestFeedGalileoGGTOOffsetEpoch(t *testing.T) {
 	}
 	wn0g := gstWeek % 64 // the 6-bit truncation the SV actually broadcasts
 
-	s.Apply(galileoFrame(svid, inavWordN(1, iod, nil), now))
-	s.Apply(galileoFrame(svid, inavWordN(2, iod, nil), now))
-	s.Apply(galileoFrame(svid, inavWordN(3, iod, nil), now))
-	s.Apply(galileoFrame(svid, inavWordN(4, iod, nil), now))
+	s.Apply(galileoFrame(svid, inavWordN(1, svid, iod, nil), now))
+	s.Apply(galileoFrame(svid, inavWordN(2, svid, iod, nil), now))
+	s.Apply(galileoFrame(svid, inavWordN(3, svid, iod, nil), now))
+	s.Apply(galileoFrame(svid, inavWordN(4, svid, iod, nil), now))
 
 	// A0G ≈ −0.58 ns; A1G positive and well inside its 12-bit signed range.
 	a0gRaw, a1gRaw := int64(-20), int64(2000)
@@ -418,7 +467,7 @@ func TestApplyGalileoINAVTGDRefresh(t *testing.T) {
 	// — BGD(E1,E5a) at bit 47 belongs to the F/NAV clock and must not
 	// move this TGD.
 	word5 := func(bgdE1E5bRaw uint64) []uint32 {
-		return inavWordN(5, 0, func(c []byte) { inavSetBits(c, 57, bgdE1E5bRaw&0x3FF, 10) })
+		return inavWordN(5, 0, 0, func(c []byte) { inavSetBits(c, 57, bgdE1E5bRaw&0x3FF, 10) })
 	}
 
 	// Word 5 arrives FIRST so the INITIAL TGD comes through the word-1..4
@@ -426,7 +475,7 @@ func TestApplyGalileoINAVTGDRefresh(t *testing.T) {
 	// word 5 changes below is therefore attributable to the fold alone.
 	s.Apply(galileoFrame(svid, word5(41), now))
 	for _, wt := range []int{1, 2, 3, 4} {
-		s.Apply(galileoFrame(svid, inavWordN(wt, iod, nil), now))
+		s.Apply(galileoFrame(svid, inavWordN(wt, svid, iod, nil), now))
 	}
 
 	key := Key{G: gnss.Galileo, Sv: svid, Sig: 0}
@@ -464,12 +513,12 @@ func TestFeedGalileoSISANAPAServesAccIndex(t *testing.T) {
 	const svid, iod = 11, 42
 
 	apply := func(sisa int) {
-		s.Apply(galileoFrame(svid, inavWordN(1, iod, nil), now))
-		s.Apply(galileoFrame(svid, inavWordN(2, iod, nil), now))
-		s.Apply(galileoFrame(svid, inavWordN(3, iod, func(c []byte) {
+		s.Apply(galileoFrame(svid, inavWordN(1, svid, iod, nil), now))
+		s.Apply(galileoFrame(svid, inavWordN(2, svid, iod, nil), now))
+		s.Apply(galileoFrame(svid, inavWordN(3, svid, iod, func(c []byte) {
 			inavSetBits(c, 120, uint64(sisa), 8) // SISA(E1,E5b) @120, Table 44
 		}), now))
-		s.Apply(galileoFrame(svid, inavWordN(4, iod, nil), now))
+		s.Apply(galileoFrame(svid, inavWordN(4, svid, iod, nil), now))
 	}
 
 	apply(255)
@@ -488,12 +537,12 @@ func TestFeedGalileoSISANAPAServesAccIndex(t *testing.T) {
 	// the metres value and the raw index: 107 → 2 m + 7×16 cm = 3.12 m (Table 91
 	// band 100–125).
 	s2 := New(4)
-	s2.Apply(galileoFrame(svid, inavWordN(1, iod, nil), now))
-	s2.Apply(galileoFrame(svid, inavWordN(2, iod, nil), now))
-	s2.Apply(galileoFrame(svid, inavWordN(3, iod, func(c []byte) {
+	s2.Apply(galileoFrame(svid, inavWordN(1, svid, iod, nil), now))
+	s2.Apply(galileoFrame(svid, inavWordN(2, svid, iod, nil), now))
+	s2.Apply(galileoFrame(svid, inavWordN(3, svid, iod, func(c []byte) {
 		inavSetBits(c, 120, 107, 8)
 	}), now))
-	s2.Apply(galileoFrame(svid, inavWordN(4, iod, nil), now))
+	s2.Apply(galileoFrame(svid, inavWordN(4, svid, iod, nil), now))
 	sv = s2.FeedSVs(now)["E11@0"]
 	if !sv.SISAValid || sv.SISAM == nil {
 		t.Fatalf("SISA 107: sisa_valid=%v sisa_m=%v, want a decoded metres value", sv.SISAValid, sv.SISAM)

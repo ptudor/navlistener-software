@@ -119,12 +119,22 @@ slow ramp below the per-window step does not show as a drop; the bounded AGC bas
 it.
 
 A jammer also reaches every station near it. A station's departure is corroborated when
-another station within 30 km, located by its surveyed position or a fix from the last ten
-minutes, shows interference evidence of its own within the last two minutes: a departure, a
-CW tone, its receiver's jam flag or a simultaneous drop. Only a station's own evidence counts,
-never a neighbour's corroboration, so two stations cannot confirm each other in a loop, and a
-neighbour alone says nothing about a quiet station. The jamming event names the corroborating
-neighbours. Each audience correlates only the stations it sees.
+another station within 30 km shows *corroborated* interference evidence of its own within
+the last two minutes: at least two of a departure, a CW tone, its receiver's jam flag and a
+simultaneous drop, or a severe gain collapse alone. A lone sign is the degradation described
+above and corroborates nothing, so two nearby stations with unrelated lone departures (a
+shared antenna environment, a bad restored baseline) cannot escalate each other. The drop
+counts from the instant the `cn0_drop` check last evaluated one, not for as long as its
+served state is held. A neighbour is located by its surveyed position — a fixed installation
+is never relocated by what its receiver reports — or, only for a station configured `mobile`,
+by a fix from the last ten minutes while its position domain is not unassured; a fixed station
+without a survey has no location and takes no part. A station whose own assessment is
+unassured or indicates spoofing corroborates no one, as it casts no vote in `conf_weighted`.
+Only a station's own evidence counts, never a neighbour's corroboration, so two stations
+cannot confirm each other in a loop, and a neighbour alone says nothing about a quiet
+station. The jamming event names the nearest eight corroborating neighbours
+(`params.neighbours`) and carries the total in `params.neighbour_count`. Each audience
+correlates only the stations it sees.
 
 **Use of jamming context:** the `svs` feed's `conf_weighted` counts each fresh decoded
 source by its vote weight: its `rf_trust`, lowered to ½ while its station assessment
@@ -168,11 +178,21 @@ rule identifies what is wired today, consistent with `docs/INTEGRITY.md §8`.
   non-physical change in the receiver's clock solution. The clock bias is checked against the
   integrated clock drift over 30–40 s, with whole-millisecond receiver adjustments removed, and
   the drift's rate of change over 60–120 s against what an oscillator can do.
-- **Time reference (implemented).** The receiver's UTC is compared with an independent wall-clock
-  stamp of the same record (the observer's NTP clock, or the collector's on a dial connection),
-  catching whole-second steps; on ESP32 observers the GNSS PPS is compared with the board's
-  free-running RTC pulse, catching sub-second steps the RTC did not take. A slow drag below the
-  RTC model's uncertainty is not detected.
+- **Time reference (implemented; the pulse check is wired but not yet live).** The receiver's
+  UTC is compared with an independent wall-clock reference for the same record, catching
+  whole-second steps: the collector's own receipt clock when the record arrived live (within
+  two seconds of its stamp), and the observer's NTP-set stamp only for a replayed record, whose
+  receipt time says nothing about its instant. An observer stamps from its free-running clock
+  once NTP has synced, so a stamp is never trusted over the receipt clock for a live record,
+  and a stamp running ahead of receipt by more than a second — impossible for a genuine record
+  — leaves the check without a reference rather than casting a vote. On ESP32
+  observers the GNSS PPS is meant to be compared with the board's free-running RTC pulse,
+  catching sub-second steps the RTC did not take; that `pps_rtc_phase` check exists, but its
+  only input today is the board report, sent every 60–300 s, while the check's fit needs
+  samples no more than 5 s apart — so on a real observer it stays `unavailable` and the
+  time-reference domain is carried by `utc_offset` alone until the observer carries the phase
+  in a frequent telemetry record or the fit is re-derived for the report cadence. A slow drag
+  below the RTC model's uncertainty is not detected either way.
 - **Cross-constellation contradiction.** A spoofer that targets only GPS L1 leaves the Galileo /
   GLONASS / BeiDou solutions disagreeing with the GPS one. Metric: divergence of the broadcast
   inter-system time offsets and per-constellation PVT beyond their normal agreement

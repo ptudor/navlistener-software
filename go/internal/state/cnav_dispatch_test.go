@@ -9,6 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/gnss/frame"
+	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/metrics"
 )
@@ -16,6 +17,7 @@ import (
 func dispatchCNAVWords() []uint32 {
 	buf := make([]byte, 40)
 	buf[0] = 0x8B
+	setAbsBits(buf, 8, 6, 1) // header PRN names svId 1, the frame these words are applied under
 	setAbsBits(buf, 14, 6, 10)
 	setAbsBits(buf, 276, 24, uint64(frame.CRC24QBits(buf, 0, 276)))
 	words := make([]uint32, 10)
@@ -46,9 +48,14 @@ func TestCNAVAndNavICStateDispatch(t *testing.T) {
 				if got := testutil.ToFloat64(counter) - before; got != 1 {
 					t.Fatalf("DecodeTotal delta = %v, want 1", got)
 				}
+				// The fingerprint is keyed in the canonical signal space: the
+				// pilot/secondary tags (GPS 4/7, QZSS 5/9) record the primary
+				// component's capability (0:3/0:6, 5:4/5:8), the same tuple an
+				// operator declares.
+				wantSig := identity.CanonicalSigID(int(tc.id), sig)
 				caps := s.FeedStationCapabilities(now)[source]
-				if len(caps) != 1 || caps[0].Gnss != int(tc.id) || caps[0].Sig != sig {
-					t.Fatalf("capabilities = %+v, want (%d,%d)", caps, tc.id, sig)
+				if len(caps) != 1 || caps[0].Gnss != int(tc.id) || caps[0].Sig != wantSig {
+					t.Fatalf("capabilities = %+v, want (%d,%d)", caps, tc.id, wantSig)
 				}
 				if svs := s.FeedSVs(now); len(svs) != 0 {
 					t.Fatalf("capability-only CNAV created SV state: %+v", svs)

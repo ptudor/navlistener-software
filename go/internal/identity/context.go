@@ -328,12 +328,10 @@ func (c ObserverContext) Normalize() (ObserverContext, error) {
 		}
 		seenCapabilities[capability] = true
 	}
-	sort.Slice(c.DeclaredCapabilities, func(i, j int) bool {
-		if c.DeclaredCapabilities[i].GnssID != c.DeclaredCapabilities[j].GnssID {
-			return c.DeclaredCapabilities[i].GnssID < c.DeclaredCapabilities[j].GnssID
-		}
-		return c.DeclaredCapabilities[i].SigID < c.DeclaredCapabilities[j].SigID
-	})
+	// A declaration is a grant in the canonical signal space (CanonicalSigID):
+	// "2:1" and "2:0" name the same Galileo I/NAV capability, so they fold into
+	// one entry here instead of reaching the fingerprint comparison as two.
+	c.DeclaredCapabilities = canonicalSignals(c.DeclaredCapabilities)
 	if c.CredentialTier == "" {
 		c.CredentialTier = CredentialToken
 	}
@@ -455,12 +453,9 @@ func (c ObserverContext) Normalize() (ObserverContext, error) {
 		}
 		seenSignals[signal] = true
 	}
-	sort.Slice(c.Publication.Signals, func(i, j int) bool {
-		if c.Publication.Signals[i].GnssID != c.Publication.Signals[j].GnssID {
-			return c.Publication.Signals[i].GnssID < c.Publication.Signals[j].GnssID
-		}
-		return c.Publication.Signals[i].SigID < c.Publication.Signals[j].SigID
-	})
+	// Publication grants live in the same canonical signal space as the
+	// declared capabilities; AllowsSignal canonicalizes the frame side.
+	c.Publication.Signals = canonicalSignals(c.Publication.Signals)
 	if c.Publication.Revision == "" {
 		c.Publication.Revision = "config-private-v1"
 	}
@@ -559,13 +554,17 @@ func equalSignals(a, b []Signal) bool {
 }
 
 // AllowsSignal reports whether this policy permits the signal. Empty means all
-// supported signals, matching the normative publication contract.
+// supported signals, matching the normative publication contract. sigID may be
+// the raw receiver tag (Galileo E1-B arrives as sigId 1); it is compared in the
+// canonical signal space the policy is stored in, so a "2:0" grant admits the
+// E1-B frames a real receiver delivers.
 func (p PublicationPolicy) AllowsSignal(gnssID, sigID int) bool {
 	if len(p.Signals) == 0 {
 		return true
 	}
+	want := Signal{GnssID: gnssID, SigID: sigID}.Canonical()
 	for _, signal := range p.Signals {
-		if signal.GnssID == gnssID && signal.SigID == sigID {
+		if signal.Canonical() == want {
 			return true
 		}
 	}

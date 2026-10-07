@@ -211,7 +211,13 @@ capability fingerprint is declared, `declared_capabilities`,
 `unexpected_capabilities` and `missing_capabilities`. Configured dial sources and
 push stations seen in live state share the shape; dial-only metadata is absent
 for push stations, and a station that has gone dark stays listed with its
-climbing `last_seen_s` after `rf` is withheld as stale. Operator-supplied strings (`vendor`,
+climbing `last_seen_s` after `rf` is withheld as stale. Every `sig` in those four
+lists is the signal's canonical primary u-blox sigId, the same vocabulary the
+`capabilities` and `publish_signals` configuration keys use: a receiver tags
+Galileo E1-B pages as sigId 1 and GPS L2 CM as sigId 4, but the fingerprint
+records them as `2:0` and `0:3` (CONSTELLATIONS.md §2.1 lists the pairs). GLONASS
+L1OF (`6:0`) and L2OF (`6:2`) are separate bands and stay distinct. The per-SV
+`svs` keys are not canonicalized: E5a F/NAV entries remain `E##@3`. Operator-supplied strings (`vendor`,
 `remark`) are sanitized before serialization (INTEGRITY.md §9). Station
 coordinates, versions, clock drift and per-SV reception are not served here; the
 per-SV view is the `svs` feed's `perrecv` (§1.1).

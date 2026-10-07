@@ -93,6 +93,7 @@ func (s *Store) SetIntegrity(cfg *IntegrityConfig) {
 	defer s.rfMu.Unlock()
 	s.integrityCfg = cfg
 	s.integrity = make(map[string]*integrityStation)
+	s.neighbours = neighbourEvidence{} // locations and profiles may have changed
 }
 
 // integrityFor returns a station's evaluator, creating it on first input. It returns
@@ -147,11 +148,7 @@ func (s *Store) applySolution(f *ingest.RawFrame) {
 			SAccMPS: float64(p.SAccMMS) / 1e3,
 		}
 		in.UTC, in.UTCValid = p.UTC()
-		// An unstamped push frame's arrival time includes any spool backlog and
-		// is no reference for the receiver's UTC (RawFrame.WallClockStamp).
-		if stamp, ok := f.WallClockStamp(); ok {
-			in.HostStamp = stamp
-		}
+		in.HostStamp, in.HostStampLocal = utcReference(f)
 		if st.eval.ApplySolution(in) {
 			s.integrityBaseline(f.Source, st, in)
 			if in.Usable3D() {
@@ -170,6 +167,48 @@ func (s *Store) applySolution(f *ingest.RawFrame) {
 		st.eval.ApplyStatus(integrity.ReceiverStatus{
 			Received: recv, SpoofState: int(status.SpoofState), SinceStartMS: status.SinceStart, HaveStart: true,
 		})
+	}
+}
+
+// utcReferenceLiveBound is how far behind the collector's receipt clock a frame's
+// reception stamp may be for the frame to count as live (no spool backlog): within
+// it the collector's own clock is the UTC reference. utcReferenceStampLead is how
+// far ahead of the receipt clock a stamp may run before it is distrusted
+// altogether; a backlog only makes stamps older, so a stamp further ahead than
+// transport latency is a clock error at the observer.
+const (
+	utcReferenceLiveBound = 2 * time.Second
+	utcReferenceStampLead = time.Second
+)
+
+// utcReference chooses the independent wall-clock reference the utc_offset check
+// measures the receiver's UTC against, and reports whether it is the collector's
+// own clock. The observer's stamp was taken as the reference whenever the push
+// path had accepted it, but an observer stamps from its free-running clock once
+// NTP has synced once, so an NTP outage of a day lets a crystal drift past the 2 s
+// and 5 s bands and a healthy receiver votes a time-reference fault — a physics
+// domain, one spoofing_suspected quorum member. For a frame received live the
+// collector's receipt clock is the better reference (transport latency is
+// milliseconds against 2 s bands); the observer's stamp is used only for a
+// replayed frame, whose receipt time says nothing about the record's UTC; a stamp
+// ahead of the receipt clock is impossible for a genuine record and leaves the
+// check without a reference (no_host_stamp). A dial frame's Recv is already this
+// host's clock. The push wire format and the replay horizon are untouched.
+func utcReference(f *ingest.RawFrame) (stamp time.Time, local bool) {
+	if f.RecvLocal.IsZero() {
+		return f.Recv, true // dial connection: Recv is this host's clock
+	}
+	if !f.RecvStamped {
+		return time.Time{}, false // arrival time may include spool backlog
+	}
+	lag := f.RecvLocal.Sub(f.Recv)
+	switch {
+	case lag < -utcReferenceStampLead:
+		return time.Time{}, false // the observer's clock runs ahead: untrustworthy
+	case lag <= utcReferenceLiveBound:
+		return f.RecvLocal, true // live: the collector's own clock
+	default:
+		return f.Recv, false // replayed: only the observer's stamp knows the instant
 	}
 }
 
@@ -220,7 +259,10 @@ func (s *Store) integrityRF(st *rfStation, f *ingest.RawFrame, recv time.Time) {
 	if len(f.RF.Bands) > 0 {
 		sample := integrity.RFSample{Received: recv, Cn0Drop: s.cn0DropCorroboration(st, recv)}
 		if st.departed(recv) {
-			sample.Neighbours = len(s.interferingNeighbours(st.id, recv))
+			// The candidate set built by the latest tick (or by the first departed
+			// frame since it) answers every departed station's frame for the next
+			// few seconds; one O(N) pass per neighbourEvidenceReuse, not per frame.
+			_, sample.Neighbours = s.interferingNeighbours(st.id, recv, s.neighbourCandidates(recv, neighbourEvidenceReuse))
 		}
 		for _, b := range st.bands {
 			if recv.Sub(b.lastSeen) > rfStaleAfter {
@@ -249,6 +291,12 @@ func (s *Store) integrityRF(st *rfStation, f *ingest.RawFrame, recv time.Time) {
 		is.eval.ApplyCn0Snapshot(snap)
 		if served, _ := is.eval.Served(integrity.CheckCn0Drop, recv); degradedState(served) {
 			st.cn0DropAt = recv
+		}
+		// The raw verdict of this very snapshot, before the filter and the
+		// recovery hold: the instant a drop was actually seen, for the
+		// neighbour window (interferenceEvidence).
+		if state, at, ok := is.eval.LastEvaluation(integrity.CheckCn0Drop); ok && degradedState(state) && at.Equal(recv) {
+			st.cn0DropEvalAt = at
 		}
 	}
 }

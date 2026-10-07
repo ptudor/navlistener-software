@@ -14,9 +14,14 @@ import (
 // validation (odd-part bit0 = 1, everything else 0), and the word type occupies
 // the low 6 bits of byte 0 (page bits 2-7). Every other field decodes to its
 // zero value, which is enough to assemble a (degenerate but valid) ephemeris.
-func galWord(wordType int) []uint32 {
+func galWord(svid, wordType int) []uint32 {
 	w := make([]uint32, 8)
 	w[0] = uint32(wordType) << 24
+	if wordType == 4 {
+		// word 4 names its transmitter: SVID at content bits 16-21 = page
+		// bits 18-23, i.e. bits 13..8 of the first page word (Table 45).
+		w[0] |= uint32(svid&0x3F) << 8
+	}
 	w[4] = 0x80000000
 	frame.StampGalileoINAVCRC(w)
 	return w
@@ -25,7 +30,7 @@ func galWord(wordType int) []uint32 {
 func galFrame(svid, wordType int, recv time.Time) *ingest.RawFrame {
 	return &ingest.RawFrame{
 		Recv: recv, Source: "test", GnssID: gnss.Galileo, SvID: svid, SigID: 0,
-		Words: galWord(wordType),
+		Words: galWord(svid, wordType),
 	}
 }
 

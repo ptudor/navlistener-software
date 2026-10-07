@@ -44,6 +44,10 @@ func SurveyedDistanceM(a, b Surveyed) float64 {
 	return surveyedECEF(a).Sub(surveyedECEF(b)).Norm()
 }
 
+// SurveyedECEF converts a surveyed position to WGS84 ECEF metres, so a caller that
+// compares one position against many can convert each once instead of per pair.
+func SurveyedECEF(s Surveyed) gnss.ECEF { return surveyedECEF(s) }
+
 func surveyedECEF(s Surveyed) gnss.ECEF {
 	return geo.GeodeticToECEF(geo.Geodetic{Lat: geo.Rad(s.LatDeg), Lon: geo.Rad(s.LonDeg), Height: s.HeightM}, physconst.WGS84)
 }

@@ -17,7 +17,7 @@ import (
 // page 1 — after its SVID field — else @6). Every other field is left zero: this exercises the
 // state-level dispatch → accumulate → assemble wiring, not orbit numerics (the field offsets and
 // IODnav-match rules are covered by gnss/frame's F/NAV unit tests).
-func fnavPageWords(pageType, iod int) []uint32 {
+func fnavPageWords(svid, pageType, iod int) []uint32 {
 	buf := make([]byte, 32)
 	setBits := func(off int, v uint64, n int) {
 		for i := 0; i < n; i++ {
@@ -29,6 +29,7 @@ func fnavPageWords(pageType, iod int) []uint32 {
 	}
 	setBits(0, uint64(pageType), 6)
 	if pageType == 1 {
+		setBits(6, uint64(svid), 6) // page 1 names its transmitter (Table 30)
 		setBits(12, uint64(iod), 10)
 	} else {
 		setBits(6, uint64(iod), 10)
@@ -45,7 +46,7 @@ func fnavPageWords(pageType, iod int) []uint32 {
 // bit 143 (GAL-OS-SIS-ICD-2.2 Table 30, 10-bit two's complement × 2⁻³²)
 // alongside the page type and IODnav — everything else zero, as in
 // fnavPageWords.
-func fnavPage1WithBGD(iod int, bgdRaw uint64) []uint32 {
+func fnavPage1WithBGD(svid, iod int, bgdRaw uint64) []uint32 {
 	buf := make([]byte, 32)
 	setBits := func(off int, v uint64, n int) {
 		for i := 0; i < n; i++ {
@@ -55,7 +56,8 @@ func fnavPage1WithBGD(iod int, bgdRaw uint64) []uint32 {
 			}
 		}
 	}
-	setBits(0, 1, 6) // page type 1
+	setBits(0, 1, 6)            // page type 1
+	setBits(6, uint64(svid), 6) // SVID (Table 30)
 	setBits(12, uint64(iod), 10)
 	setBits(143, bgdRaw&0x3FF, 10)
 	words := make([]uint32, 8)
@@ -75,6 +77,45 @@ func hasCap(caps []StationCapability, g, sig int) bool {
 	return false
 }
 
+// TestApplyGalileoFNAVPage1SVIDMismatchDropped: F/NAV page 1 carries the
+// transmitting SVID inside the CRC-24Q boundary (GAL-OS-SIS-ICD-2.2 Table 30).
+// A CRC-valid page 1 from SV 7 tagged svId 14 must be dropped before buffering
+// and before the capability fingerprint (counted under prn_mismatch), so SV 7's
+// clock, SISA and health never reach E14@3; the genuine page 1 then assembles.
+func TestApplyGalileoFNAVPage1SVIDMismatchDropped(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	const svid, iod, source = 14, 7, "obs-mislabeled"
+	counter := metrics.DecodeErrorsTotal.WithLabelValues("2", "prn_mismatch")
+	decoded := metrics.DecodeTotal.WithLabelValues("2", "fnav")
+	apply := func(src string, words []uint32) {
+		s.Apply(&ingest.RawFrame{GnssID: gnss.Galileo, SvID: svid, SigID: 3, Source: src, Recv: now, Words: words})
+	}
+	for _, pt := range []int{2, 3, 4} {
+		apply("obs-fnav", fnavPageWords(svid, pt, iod))
+	}
+	before, decodedBefore := testutil.ToFloat64(counter), testutil.ToFloat64(decoded)
+	apply(source, fnavPageWords(7, 1, iod)) // SV 7's page 1 under svId 14
+	if got := testutil.ToFloat64(counter) - before; got != 1 {
+		t.Fatalf("prn_mismatch delta = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(decoded) - decodedBefore; got != 0 {
+		t.Errorf("fnav DecodeTotal delta = %v, want 0 (a mis-attributed page is not a decode)", got)
+	}
+	if caps := s.FeedStationCapabilities(now)[source]; len(caps) != 0 {
+		t.Errorf("mis-attributed page 1 recorded capability %+v, want none", caps)
+	}
+	key := Key{G: gnss.Galileo, Sv: svid, Sig: 3}
+	if st := s.shardFor(key).m[key]; st == nil || st.fnav[1] != nil || st.haveEph || st.haveHealth {
+		t.Fatalf("foreign page 1 was buffered, assembled or folded: %+v", st)
+	}
+
+	apply("obs-fnav", fnavPageWords(svid, 1, iod))
+	if st := s.shardFor(key).m[key]; st == nil || !st.haveEph || st.iod != iod {
+		t.Fatalf("genuine page 1 did not complete the E14@3 set: %+v", st)
+	}
+}
+
 // TestApplyGalileoFNAVAssemblesE5aEntry verifies F/NAV wiring: E5a F/NAV pages (u-blox
 // sigId 3, E5a-I) are dispatched to applyGalileoFNAV, accumulated across the 4-page cadence,
 // assembled into a SEPARATE E##@3 SV-state entry (not overwriting the E1-B I/NAV Sig:0 set),
@@ -87,7 +128,7 @@ func TestApplyGalileoFNAVAssemblesE5aEntry(t *testing.T) {
 	for _, pt := range []int{1, 2, 3, 4} {
 		s.Apply(&ingest.RawFrame{
 			GnssID: gnss.Galileo, SvID: svid, SigID: 3, Source: source, Recv: now,
-			Words: fnavPageWords(pt, iod),
+			Words: fnavPageWords(svid, pt, iod),
 		})
 	}
 
@@ -122,7 +163,7 @@ func TestApplyGalileoFNAVR119RejectsBadPageType(t *testing.T) {
 
 	s.Apply(&ingest.RawFrame{
 		GnssID: gnss.Galileo, SvID: svid, SigID: 3, Source: source, Recv: now,
-		Words: fnavPageWords(7, 0), // page type 7: outside the nominal F/NAV set (1..6)
+		Words: fnavPageWords(svid, 7, 0), // page type 7: outside the nominal F/NAV set (1..6)
 	})
 
 	key := Key{G: gnss.Galileo, Sv: svid, Sig: 3}
@@ -160,9 +201,9 @@ func TestApplyGalileoFNAVTGDRefresh(t *testing.T) {
 	// the assembly (the page-1 fold is a no-op while haveClk is still false),
 	// so whatever the second page 1 changes is attributable to the fold alone.
 	for _, pt := range []int{2, 3, 4} {
-		apply(fnavPageWords(pt, iod))
+		apply(fnavPageWords(svid, pt, iod))
 	}
-	apply(fnavPage1WithBGD(iod, 41))
+	apply(fnavPage1WithBGD(svid, iod, 41))
 
 	key := Key{G: gnss.Galileo, Sv: svid, Sig: 3}
 	st := s.shardFor(key).m[key]
@@ -175,7 +216,7 @@ func TestApplyGalileoFNAVTGDRefresh(t *testing.T) {
 
 	// Same data set (IODnav unchanged), revised BGD — negative, so a sign
 	// regression in the refresh path cannot pass either.
-	apply(fnavPage1WithBGD(iod, 1013)) // 10-bit two's complement −11
+	apply(fnavPage1WithBGD(svid, iod, 1013)) // 10-bit two's complement −11
 	if want := -11 * bgdScale * clock.E5aGroupDelayFactor; st.clk.TGD != want {
 		t.Errorf("TGD after BGD revision = %v, want %v — the page-1 freshest-wins fold did not refresh the served @3 clock", st.clk.TGD, want)
 	}
@@ -192,7 +233,7 @@ func TestApplyGalileoFNAVDummyPageIsNotError(t *testing.T) {
 	before := testutil.ToFloat64(errCounter)
 	s.Apply(&ingest.RawFrame{
 		GnssID: gnss.Galileo, SvID: svid, SigID: 3, Source: source, Recv: now,
-		Words: fnavPageWords(63, 0),
+		Words: fnavPageWords(svid, 63, 0),
 	})
 	if got := testutil.ToFloat64(errCounter) - before; got != 0 {
 		t.Errorf("dummy page decode-error delta = %v, want 0", got)
@@ -214,7 +255,7 @@ func TestApplyGalileoFNAVBadCRCNoStateNoCapability(t *testing.T) {
 	s := New(4)
 	now := time.Unix(1_700_000_000, 0)
 	const svid, source = 23, "obs-badcrc"
-	words := fnavPageWords(1, 64)
+	words := fnavPageWords(svid, 1, 64)
 	words[0] ^= 1 << 20 // flip a data bit AFTER the CRC stamp: structurally corrupt
 	crcCounter := metrics.NavCRCFailTotal.WithLabelValues("2", "3", source)
 	errCounter := metrics.DecodeErrorsTotal.WithLabelValues("2", "fnav")

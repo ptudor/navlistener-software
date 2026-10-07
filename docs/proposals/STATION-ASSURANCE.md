@@ -130,11 +130,11 @@ from stored station data the same way the GLONASS discontinuity bands were.
 | `baseline` | solutions of a configured co-located pair | the distance between the two positions at one epoch against the antennas' known distance; both at one position is the single-transmitter signature | position |
 | `clock_bias_drift` | clock | change in clock bias against the integrated clock drift over 30–40 s; whole-millisecond receiver clock adjustments are removed and recorded | receiver clock |
 | `clock_drift_rate` | clock | rate of change of clock drift over 60–120 s | receiver clock |
-| `utc_offset` | solution UTC; the observer's NTP stamp or the collector's clock | receiver UTC against an independent wall-clock stamp of the same record | time reference |
+| `utc_offset` | solution UTC; the collector's receipt clock for a live record, the observer's NTP stamp only for a replayed one | receiver UTC against an independent wall-clock reference of the same record (`reference_local` says which); a stamp running ahead of receipt by more than a second is distrusted and leaves the check unavailable | time reference |
 | `pps_rtc_phase` | timing tag; solution fix state | a step in the RTC-minus-GNSS phase against its recent linear trend | time reference |
 | `cn0_uniformity` | NAV-SAT | the existing C/N₀-vs-elevation gate, unchanged | signal power |
 | `cn0_drop` | NAV-SAT | every signal the receiver used falls by at least 1 dB within 3–5 s, graded by the median fall; jamming corroboration | RF environment |
-| `agc` | MON-RF | the existing AGC departure, CW and receiver jam-state classification; a simultaneous C/N₀ drop or a neighbouring station's interference also corroborates a departure | RF environment |
+| `agc` | MON-RF | the existing AGC departure, CW and receiver jam-state classification; a simultaneous C/N₀ drop or a neighbouring station's own corroborated interference also corroborates a departure | RF environment |
 | `receiver_spoofing` | status block, or the ObserverDetails receiver context | the receiver's own spoofing state | receiver verdict |
 
 Each raw test passes an M-of-N filter (three of the last four evaluations by
@@ -145,7 +145,12 @@ The `pps_rtc_phase` test sees only steps under half a second, because the phase
 wraps at ±0.5 s; `utc_offset` covers whole seconds. Neither detects a
 slow drag smaller than the RTC model's uncertainty. Whole-millisecond clock
 adjustments that the clock check removes are still visible to the phase test,
-since the PPS follows GNSS time rather than the receiver's local clock.
+since the PPS follows GNSS time rather than the receiver's local clock. The phase
+test is fed only by the board report, which the firmware sends every 60–300 s,
+while its fit discards samples more than 5 s apart and needs 60 of them: on a
+real observer it therefore stays `unavailable`, and the time-reference domain is
+carried by `utc_offset` alone until the phase is carried in a frequent telemetry
+record or the fit is re-derived for the report cadence (item 1.8).
 
 ## 4. Assurance states and hysteresis
 
@@ -229,7 +234,7 @@ Status values: planned, in progress, done (with commit), deferred (with reason).
 | 1.5 | Station integrity profile: fixed or mobile, maximum speed, surveyed position shared with `[[reception.station]]` | done (`d5857fd`) |
 | 1.6 | Position checks: `static_position`, `stationary_velocity`, `motion_bound`, `position_velocity` | done (`88fceb6`) |
 | 1.7 | Clock checks: `clock_bias_drift`, `clock_drift_rate` | done (`88fceb6`) |
-| 1.8 | Time-reference checks `utc_offset` and `pps_rtc_phase` | done (`88fceb6`) |
+| 1.8 | Time-reference checks `utc_offset` and `pps_rtc_phase` | `utc_offset` done (`88fceb6`); `pps_rtc_phase` is wired but cannot evaluate from the board report cadence (60–300 s between timing samples, 5 s maximum gap in the fit) — blocked on a decision between carrying the phase in a frequent telemetry record and re-deriving the fit for the report cadence (§3) |
 | 1.9 | `receiver_spoofing` input, and the existing C/N₀ and AGC logic as checks | done (`88fceb6`) |
 | 1.10 | Per-station assessment in live state, served as `integrity` in the private observers feed | done (`d5857fd`) |
 | 1.11 | Domain-based spoofing fusion and the `station_assurance` event, with check parameters, versions and configuration hash | done (`10b5cf8`) |
@@ -271,7 +276,7 @@ and specific-force samples aligned with GNSS epochs.
 
 | # | Item | Status |
 |---|---|---|
-| 4.1 | Regional correlation of simultaneous station RF events; neighbour corroboration as a fusion input | done (`0a2c600`); stations within 30 km with their own interference evidence corroborate a departure in `jamming_detected` (named in `params.neighbours`) and in the `agc` check |
+| 4.1 | Regional correlation of simultaneous station RF events; neighbour corroboration as a fusion input | done (`0a2c600`); stations within 30 km with their own *corroborated* interference evidence (two signs, or a severe collapse, within the window; located by survey or, if mobile, a recent fix; not themselves unassured) corroborate a departure in `jamming_detected` (the nearest eight named in `params.neighbours`, the total in `params.neighbour_count`) and in the `agc` check (version 4). The candidate set is built once per tick and reused by the per-frame path. |
 | 4.2 | Range check between co-located stations with a known baseline | done (`245a9e3`); `[[integrity.baseline]]` pairs, the `baseline` check in the position domain |
 | 4.3 | `rf_trust` weighting of the served confidence count | done (`058e84d`); `conf_weighted` beside `conf`, also lowered by the station assessment |
 

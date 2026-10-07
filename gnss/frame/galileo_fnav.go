@@ -24,8 +24,13 @@ import (
 type GalileoFNAV struct {
 	PageType int
 	IODnav   int
-	SISA     int // page 1 only, SISA(E1,E5a)
-	E5aHS    int // page 1 only, E5a Signal Health Status
+	// SVID is the transmitting satellite's own ID (page 1 only, 1..36,
+	// GAL-OS-SIS-ICD-2.2 Table 30), inside the CRC-24Q boundary — the F/NAV
+	// set's only in-band identity. AssembleGalileoFNAV refuses a page 1 whose
+	// SVID is not the svid being assembled. Zero for every other page type.
+	SVID  int
+	SISA  int // page 1 only, SISA(E1,E5a)
+	E5aHS int // page 1 only, E5a Signal Health Status
 	// E5aDVS is the E5a Data Validity Status (page 1 only, regression fix):
 	// 0 = navigation data valid, 1 = "Working without guarantee"
 	// (GAL-OS-SIS-ICD-2.2 Table 79/81). The ICD gives E5a TWO per-signal
@@ -127,12 +132,16 @@ func DecodeGalileoFNAV(words []uint32) (*GalileoFNAV, error) {
 		// regression fix added SISA/E5aHS; regression fix added E5aDVS; the ionospheric (NeQuick
 		// ai0/ai1/ai2) fields remain undecoded — no NeQuick model exists in
 		// gnss/iono yet (additional constellation models are planned).
+		w.SVID = int(u(6, 6)) // transmitting SVID, 1..36 (Table 30) — the in-band identity
 		w.IODnav = int(u(12, 10))
 		w.SISA = int(u(94, 8))
 		w.E5aHS = int(u(153, 2))
 		w.E5aDVS = int(u(187, 1)) // Table 81 — 0 valid, 1 working without guarantee
 		w.WN = int(u(155, 12))    // GST week/TOW, unscaled integer counts (Table 69)
 		w.TOW = float64(u(167, 20))
+		if w.TOW >= weekSeconds {
+			return nil, errBadEpoch // the 20-bit count codes up to 1 048 575 s; GST TOW ≤ 604 799
+		}
 		w.BGDE1E5a = float64(s(143, 10)) * p2m32
 		w.clk = clock.Model{
 			ID:  gnss.Galileo,
@@ -151,6 +160,9 @@ func DecodeGalileoFNAV(words []uint32) (*GalileoFNAV, error) {
 			// ≈BGD false clock offset — exactly as latent note predicted.
 			TGD: float64(s(143, 10)) * p2m32 * clock.E5aGroupDelayFactor,
 		}
+		if w.clk.Toc >= weekSeconds {
+			return nil, errBadEpoch // Table 60: t0c ≤ 604 740
+		}
 		w.hasClk = true
 	case 2: // M0, Ω̇, e, √A, Ω0, IDOT
 		w.eph.M0 = float64(s(16, 32)) * p2m31 * semi
@@ -168,6 +180,9 @@ func DecodeGalileoFNAV(words []uint32) (*GalileoFNAV, error) {
 		w.eph.Crc = float64(s(128, 16)) * p2m5
 		w.eph.Crs = float64(s(144, 16)) * p2m5
 		w.eph.Toe = float64(u(160, 14)) * galT0
+		if w.eph.Toe >= weekSeconds {
+			return nil, errBadEpoch // Table 60: t0e ≤ 604 740
+		}
 	case 4:
 		// Cic, Cis + GST-UTC + GST-GPS conversion + TOW — Table 33: Type(6)
 		// IODnav(10) Cic(16) Cis(16) A0(32) A1(24) ΔtLS(8) t0t(8) WN0t(8)
@@ -220,6 +235,12 @@ func AssembleGalileoFNAV(svid int, p1, p2, p3, p4 *GalileoFNAV) (kepler.Ephemeri
 	}
 	if p1.IODnav != p2.IODnav || p2.IODnav != p3.IODnav || p2.IODnav != p4.IODnav {
 		return kepler.Ephemeris{}, clock.Model{}, errIODMismatch
+	}
+	// Page 1's in-band SVID must name the SV being assembled (Galileo SVID
+	// 1..36 equals the receiver's svId directly); otherwise the set is
+	// mis-attributed, the same refusal AssembleGPSCNAV makes on its PRN.
+	if p1.SVID != svid {
+		return kepler.Ephemeris{}, clock.Model{}, errPRNMismatch
 	}
 	eph := p2.eph
 	eph.I0, eph.Omega, eph.DeltaN = p3.eph.I0, p3.eph.Omega, p3.eph.DeltaN

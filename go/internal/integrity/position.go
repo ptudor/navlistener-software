@@ -37,6 +37,10 @@ const (
 	ReasonReferenceReset     = "reference_reset"
 	ReasonNoBaseEpoch        = "no_base_epoch"
 	ReasonVelocityResidual   = "velocity_residual"
+	// ReasonReceiverTimeReset marks the one epoch at which the receiver's reported
+	// time stepped backwards by more than an epoch gap: the history was
+	// re-anchored there instead of every later epoch being refused as out of order.
+	ReasonReceiverTimeReset = "receiver_time_reset"
 )
 
 // ScaledBand is a threshold that scales with a reported accuracy:
@@ -135,6 +139,7 @@ type positionChecks struct {
 	lastTOW  uint32
 	clock    int64 // continuous receiver time of the latest epoch, ms
 	started  bool
+	resynced bool    // the latest accepted epoch re-anchored receiver time (ReasonReceiverTimeReset)
 	history  []epoch // accepted 3D epochs within the longest window, oldest first
 	sumENU   [3]float64
 	countENU int
@@ -163,15 +168,30 @@ func (p *positionChecks) infos() []Info {
 }
 
 // accept advances the receiver clock with a new solution. It returns false for a
-// duplicate or out-of-order epoch, which must not be evaluated again.
+// duplicate or an epoch reordered by less than an epoch gap, which must not be
+// evaluated again. A larger backward step is not reordering but the receiver's
+// time being reset — a cold start that reported a default or RTC-derived time
+// before its first time fix, a restart — and is treated as a gap: receiver time
+// re-anchors at the new epoch, the kinematic history starts afresh, and the epoch
+// is evaluated with ReasonReceiverTimeReset. Refusing it instead left lastTOW ahead
+// of true time and silently rejected every genuine epoch until true time caught
+// up, for as long as 3.5 days: all physics domains unavailable and no event raised.
 func (p *positionChecks) accept(s Solution) bool {
+	p.resynced = false
 	if !p.started {
 		p.started, p.lastTOW = true, s.TOW
 		return true
 	}
 	d := towDelta(p.lastTOW, s.TOW)
-	if d <= 0 {
+	switch {
+	case d == 0:
 		return false
+	case d < 0 && -d <= maxEpochGapMS:
+		return false // reordered within an epoch gap
+	case d < 0:
+		p.lastTOW = s.TOW
+		p.resync()
+		return true
 	}
 	p.lastTOW = s.TOW
 	p.clock += d
@@ -179,6 +199,15 @@ func (p *positionChecks) accept(s Solution) bool {
 		p.reset()
 	}
 	return true
+}
+
+// resync re-anchors receiver time at the current epoch after a backward step:
+// the history and motion_bound's reference are discarded, since nothing before
+// the step is comparable with anything after it.
+func (p *positionChecks) resync() {
+	p.reset()
+	p.reference = nil
+	p.resynced = true
 }
 
 func (p *positionChecks) reset() {
@@ -211,6 +240,12 @@ func (p *positionChecks) evaluate(s Solution, prof Profile) map[string]Verdict {
 		out[CheckMotionBound] = p.motionBound(e, usable, prof.MotionBound)
 	}
 	out[CheckPositionVelocity] = p.positionVelocity(e, usable, prof.PositionVelocity)
+	if p.resynced {
+		for name, v := range out {
+			v.Reasons = appendReason(v.Reasons, ReasonReceiverTimeReset)
+			out[name] = v
+		}
+	}
 
 	if usable {
 		p.history = append(p.history, e)

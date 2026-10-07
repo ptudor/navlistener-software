@@ -1378,6 +1378,11 @@ func parseCapabilities(raw []string) ([]Capability, error) {
 	return parseSignals(raw, "capability")
 }
 
+// parseSignals parses a "gnss:sig" list into the canonical signal space
+// (identity.CanonicalSigID): a receiver tags Galileo E1-B as sigId 1 but the
+// signal is declared, granted and fingerprinted as "2:0", so "2:1" is accepted
+// here and stored as 2:0. Two spellings of one signal in the same list are a
+// duplicate, like a literal repeat.
 func parseSignals(raw []string, label string) ([]Capability, error) {
 	if len(raw) == 0 {
 		return nil, nil
@@ -1397,8 +1402,11 @@ func parseSignals(raw []string, label string) ([]Capability, error) {
 		if err != nil || si < 0 || si > 255 {
 			return nil, fmt.Errorf("%s %q: sigId must be 0..255", label, s)
 		}
-		c := Capability{Gnss: gi, Sig: si}
+		c := Capability{Gnss: gi, Sig: identity.CanonicalSigID(gi, si)}
 		if seen[c] {
+			if c.Sig != si {
+				return nil, fmt.Errorf("%s %q: duplicate of canonical signal %d:%d", label, s, c.Gnss, c.Sig)
+			}
 			return nil, fmt.Errorf("%s %q: duplicate", label, s)
 		}
 		seen[c] = true

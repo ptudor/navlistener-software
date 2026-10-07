@@ -23,7 +23,7 @@ func TestGalileoE5bINAVIsTrackedDeferral(t *testing.T) {
 		s := New(1)
 		d0, u0 := testutil.ToFloat64(deferred), testutil.ToFloat64(unsupported)
 		for wt := 1; wt <= 5; wt++ {
-			s.Apply(&ingest.RawFrame{GnssID: gnss.Galileo, SvID: 12, SigID: sig, Source: "obs-e5b", Recv: now, RecvLocal: now, Words: inavWordN(wt, 40, nil)})
+			s.Apply(&ingest.RawFrame{GnssID: gnss.Galileo, SvID: 12, SigID: sig, Source: "obs-e5b", Recv: now, RecvLocal: now, Words: inavWordN(wt, 12, 40, nil)})
 		}
 		if got := testutil.ToFloat64(deferred) - d0; got != 5 {
 			t.Fatalf("sigId %d: gal_e5b_deferred delta = %v, want 5", sig, got)
@@ -45,7 +45,7 @@ func TestGalileoE5bINAVIsTrackedDeferral(t *testing.T) {
 	// Control: the identical pages on E1-B (sigId 0) still decode to the E1 entry.
 	s := New(1)
 	for wt := 1; wt <= 5; wt++ {
-		s.Apply(&ingest.RawFrame{GnssID: gnss.Galileo, SvID: 12, SigID: 0, Source: "obs-e1", Recv: now, RecvLocal: now, Words: inavWordN(wt, 40, nil)})
+		s.Apply(&ingest.RawFrame{GnssID: gnss.Galileo, SvID: 12, SigID: 0, Source: "obs-e1", Recv: now, RecvLocal: now, Words: inavWordN(wt, 12, 40, nil)})
 	}
 	if _, has := s.FeedSVs(now)["E12@0"]; !has {
 		t.Fatal("control: E1-B pages no longer produce E12@0")

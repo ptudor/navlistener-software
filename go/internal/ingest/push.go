@@ -1297,7 +1297,11 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 // contract. Seven days comfortably covers the 256 MiB spool's hours-to-days
 // design while still rejecting absurd/stale clock values.
 const (
-	recvTimestampSlack = 5 * time.Minute
+	// RecvTimestampSlack is the live clock-skew tolerance on a feeder's
+	// reception stamp. Exported because the state layer orders data-set
+	// replacement by the same stamp: a frame received more than this before
+	// the applied set is a replay, not a newer broadcast.
+	RecvTimestampSlack = 5 * time.Minute
 	recvReplayHorizon  = 7 * 24 * time.Hour
 )
 
@@ -1398,7 +1402,7 @@ func telemetryToFrame(rec wire.RawRecord, source string, recv, local time.Time) 
 }
 
 // receiveTimestampPlausible applies the asymmetric live-clock/replay contract:
-// at most recvTimestampSlack in the future, at most recvReplayHorizon in the
+// at most RecvTimestampSlack in the future, at most recvReplayHorizon in the
 // past.
 //
 // both bounds are compared against the signed difference
@@ -1411,7 +1415,7 @@ func telemetryToFrame(rec wire.RawRecord, source string, recv, local time.Time) 
 // replay windows, and every age-based query.
 func receiveTimestampPlausible(stamped, now time.Time) bool {
 	d := stamped.Sub(now)
-	return d <= recvTimestampSlack && d >= -recvReplayHorizon
+	return d <= RecvTimestampSlack && d >= -recvReplayHorizon
 }
 
 // maxNavRecordBytes bounds a navigation record's body. The largest frame any

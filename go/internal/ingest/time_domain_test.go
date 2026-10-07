@@ -30,9 +30,9 @@ func TestReceiveTimestampPlausibleBounds(t *testing.T) {
 		want    bool
 	}{
 		{"now", now, true},
-		{"upper boundary", now.Add(recvTimestampSlack), true},
-		{"one ns past the upper boundary", now.Add(recvTimestampSlack + 1), false},
-		{"one ns inside the upper boundary", now.Add(recvTimestampSlack - 1), true},
+		{"upper boundary", now.Add(RecvTimestampSlack), true},
+		{"one ns past the upper boundary", now.Add(RecvTimestampSlack + 1), false},
+		{"one ns inside the upper boundary", now.Add(RecvTimestampSlack - 1), true},
 		{"lower boundary", now.Add(-recvReplayHorizon), true},
 		{"one ns past the lower boundary", now.Add(-recvReplayHorizon - 1), false},
 		{"one ns inside the lower boundary", now.Add(-recvReplayHorizon + 1), true},

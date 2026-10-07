@@ -31,12 +31,14 @@ import (
 // ErrBadPreamble is returned when a CNAV message's leading byte isn't 0x8B.
 var ErrBadPreamble = errors.New("frame: CNAV preamble mismatch")
 
-// errPRNMismatch is returned when the messages handed to
-// AssembleGPSCNAV carry different header PRNs, or a PRN that isn't svid's. toe
-// equality is deliberately NOT an SV discriminator — the control segment
-// routinely uploads batches of SVs sharing one toe, so SV A's MT10 pairs with
-// SV B's MT11 through the toe gate and assembles a cross-SV chimera ephemeris.
-var errPRNMismatch = errors.New("frame: CNAV PRN mismatch across messages")
+// errPRNMismatch is returned when the messages handed to an assembler carry an
+// in-band satellite identity that isn't svid's: AssembleGPSCNAV's header PRNs
+// (across messages, or against svid), AssembleGalileo's word-4 SVID and
+// AssembleGalileoFNAV's page-1 SVID. toe equality is deliberately NOT an SV
+// discriminator — the control segment routinely uploads batches of SVs sharing
+// one toe, so SV A's MT10 pairs with SV B's MT11 through the toe gate and
+// assembles a cross-SV chimera ephemeris.
+var errPRNMismatch = errors.New("frame: in-band satellite identity does not match the assembled svid")
 
 // CNAV scale factors and reference constants beyond the shared set.
 const (
@@ -133,6 +135,9 @@ func DecodeGPSCNAV(id gnss.GNSSID, words []uint32) (*GPSCNAV, error) {
 		TOW:     float64(u(20, 17)) * 6,
 		Alert:   u(37, 1) != 0, // ICD bit 38, 0-indexed 37 (TOW ends at 37, WN starts at 39)
 	}
+	if m.TOW >= weekSeconds {
+		return nil, errBadEpoch // the 17-bit count codes up to 786 426 s; the week ends at 604 800
+	}
 	semi := physconst.Pi
 	switch {
 	case m.MsgType == 10: // Ephemeris 1
@@ -152,6 +157,9 @@ func DecodeGPSCNAV(id gnss.GNSSID, words []uint32) (*GPSCNAV, error) {
 		// SVs) was mis-decoded (e.g. bits 11111 = −1 read as 31) over half the domain.
 		m.URAED = int(s(65, 5))
 		m.eph.Toe = float64(u(70, 11)) * cnavT0
+		if m.eph.Toe >= weekSeconds {
+			return nil, errBadEpoch // Table 30-I: toe ≤ 604 500
+		}
 		aref := cnavArefGPS
 		if id == gnss.QZSS {
 			aref = cnavArefQZSS
@@ -165,6 +173,9 @@ func DecodeGPSCNAV(id gnss.GNSSID, words []uint32) (*GPSCNAV, error) {
 		m.eph.Omega = float64(s(238, 33)) * p2m32 * semi
 	case m.MsgType == 11: // Ephemeris 2
 		m.eph.Toe = float64(u(38, 11)) * cnavT0
+		if m.eph.Toe >= weekSeconds {
+			return nil, errBadEpoch // Table 30-II: toe ≤ 604 500
+		}
 		m.eph.Omega0 = float64(s(49, 33)) * p2m32 * semi
 		m.eph.I0 = float64(s(82, 33)) * p2m32 * semi
 		m.eph.OmegaDot = (cnavOmgD + float64(s(115, 17))*p2m44) * semi
@@ -183,6 +194,9 @@ func DecodeGPSCNAV(id gnss.GNSSID, words []uint32) (*GPSCNAV, error) {
 			Af0: float64(s(71, 26)) * p2m35,
 			Af1: float64(s(97, 20)) * p2m48,
 			Af2: float64(s(117, 10)) * p2m60,
+		}
+		if m.clk.Toc >= weekSeconds {
+			return nil, errBadEpoch // Table 30-IV: toc ≤ 604 500
 		}
 		m.hasClk = true
 		if m.MsgType == 30 { // group delay + ISCs : MT30-only, not common to 31-37

@@ -7,12 +7,13 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/gnss/frame"
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/metrics"
 )
 
-// --- synthetic LNAV builders (mirror the frame package's, using the exported
-// GPSParity as the parity oracle) ---
+// --- synthetic LNAV builders (mirror the frame package's; the words are stamped
+// with the receiver-normalised parity the decoder verifies) ---
 
 func fieldOff(w, a int) int { return (w-1)*24 + (a - 1) }
 
@@ -52,6 +53,7 @@ func packWords(buf []byte) []uint32 {
 	for i := 0; i < 10; i++ {
 		words[i] = read24(buf, i) << 6
 	}
+	frame.StampGPSLNAVParity(words) // the decoder verifies the receiver-normalised parity
 	return words
 }
 
@@ -156,6 +158,46 @@ func TestStoreDiscoOnIODChange(t *testing.T) {
 	}
 	if e.TimeDisco == nil {
 		t.Error("time_disco not computed on IOD change")
+	}
+}
+
+// TestLNAVRepeatedIODEWithChangedElementsApplies: after the six-hour no-repeat
+// horizon a new upload may legally reuse an IODE. An entry kept alive across such
+// a gap (a 12 h sv_ttl here) used to keep serving the stale orbit until the next
+// IODE change, because the changeover keyed on the IODE alone; the assembled
+// elements themselves now count.
+func TestLNAVRepeatedIODEWithChangedElementsApplies(t *testing.T) {
+	st := New(4)
+	t0 := time.Unix(1_700_000_000, 0)
+	st.Apply(gpsFrame(sf1Words(85), t0))
+	st.Apply(gpsFrame(sf2Words(85, 205075516), t0))
+	st.Apply(gpsFrame(sf3Words(85), t0))
+	key := Key{G: gnss.GPS, Sv: 5, Sig: 0}
+	sh := st.shardFor(key)
+	sh.mu.Lock()
+	oldM0, oldAt := sh.m[key].eph.M0, sh.m[key].ephAt
+	sh.mu.Unlock()
+
+	later := t0.Add(7 * time.Hour)
+	st.Expire(later, 12*time.Hour) // the entry survives the gap under a long sv_ttl
+	st.Apply(gpsFrame(sf1Words(85), later))
+	st.Apply(gpsFrame(sf2Words(85, 205075516+2000), later)) // same IODE, new M0
+	st.Apply(gpsFrame(sf3Words(85), later))
+
+	sh.mu.Lock()
+	s := sh.m[key]
+	m0, at, iod := s.eph.M0, s.ephAt, s.iod
+	sh.mu.Unlock()
+	if m0 == oldM0 || at != later || iod != 85 {
+		t.Fatalf("repeated IODE with changed elements not applied: M0 %v (was %v), ephAt %v (was %v), iod %d", m0, oldM0, at, oldAt, iod)
+	}
+	// An identical re-broadcast is still not a changeover.
+	st.Apply(gpsFrame(sf2Words(85, 205075516+2000), later.Add(30*time.Second)))
+	sh.mu.Lock()
+	again := sh.m[key].ephAt
+	sh.mu.Unlock()
+	if again != later {
+		t.Fatalf("an unchanged re-broadcast re-applied the set: ephAt %v, want %v", again, later)
 	}
 }
 

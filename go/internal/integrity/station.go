@@ -124,11 +124,16 @@ func (s *Station) ApplyClock(c ClockSample) {
 }
 
 // ApplyStatus folds the receiver's own status: its spoofing indication, and a
-// restart, which breaks the clock history.
+// restart, which breaks the clock history and the receiver-time continuity the
+// position and clock epochs are ordered by — the next epoch re-anchors instead of
+// being refused as out of order behind a pre-restart time.
 func (s *Station) ApplyStatus(st ReceiverStatus) {
 	if st.HaveStart {
 		if s.haveStatus && st.SinceStartMS < s.lastStart {
 			s.clock.reset()
+			s.clock.started = false
+			s.pos.resync()
+			s.pos.started = false
 		}
 		s.lastStart, s.haveStatus = st.SinceStartMS, true
 	}
@@ -182,6 +187,34 @@ func (s *Station) Served(name string, now time.Time) (State, bool) {
 	}
 	t.expire(now, s.profile.StaleAfter, s.profile.Filter)
 	return t.served, true
+}
+
+// Fused returns the fusion of the checks' served states exactly as they stand: the
+// read model a vote weight or a neighbour gate needs, without the per-check metric
+// and reason clones Assess makes and without ageing anything out. It never mutates
+// the station, so a read path (a per-request feed render, a per-frame neighbour
+// scan) cannot drive check transitions with its own clock; staleness is applied by
+// Assess and Served on the owner's evaluation cadence.
+func (s *Station) Fused() Fusion {
+	results := make([]Result, 0, len(s.order))
+	for _, name := range s.order {
+		t := s.trackers[name]
+		results = append(results, Result{Check: name, Domain: t.info.Domain, State: t.served, lowerOnly: t.info.LowerOnly})
+	}
+	return Fuse(results, s.profile.Weights)
+}
+
+// LastEvaluation returns one check's latest raw evaluation — its state before the
+// filter and hysteresis — and when it was made. ok is false for a check this
+// station does not run or has never evaluated. It does not mutate the station.
+// Where the served state is deliberately held (a recovery hold, or until staleness
+// ages it out), this is the instant the evidence was actually seen.
+func (s *Station) LastEvaluation(name string) (state State, at time.Time, ok bool) {
+	t, found := s.trackers[name]
+	if !found || !t.seen {
+		return Unavailable, time.Time{}, false
+	}
+	return t.last.State, t.lastAt, true
 }
 
 // Assess ages out stale checks as of now and returns the station's assessment.

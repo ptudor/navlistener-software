@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/navlistener/internal/identity"
 )
 
 // The capability fingerprint (docs/CONSTELLATIONS.md §7, docs/INTEGRITY.md §6). Each observer
@@ -42,7 +43,14 @@ type capStation struct {
 // recordCapability folds one decoded nav frame into the station's fingerprint. Called from
 // Apply for frames carrying a nav payload; station telemetry (MON-RF/NAV-SAT) and raw
 // observables have no per-signal identity and are excluded by the caller.
+//
+// sig is the frame's raw receiver sigId; the fingerprint is keyed in the canonical
+// signal space (identity.CanonicalSigID), the same space the declared sets and the
+// publication grants use, so the Galileo E1-B pages a real receiver tags as sigId 1
+// are evidence for the "2:0" capability the operator declares — not an undeclared
+// (2,1) that would confirm a false capability_impossible and leave 2:0 missing forever.
 func (s *Store) recordCapability(source string, g gnss.GNSSID, sig int, recv time.Time) {
+	sig = identity.CanonicalSigID(int(g), sig)
 	s.capMu.Lock()
 	defer s.capMu.Unlock()
 	st := s.caps[source]
@@ -67,9 +75,31 @@ func (s *Store) recordCapability(source string, g gnss.GNSSID, sig int, recv tim
 
 // CapSignal is one (gnssId, sigId) a station is declared capable of producing — the tudorgps
 // fingerprint the integrity layer checks the observed set against (docs/INTEGRITY.md §6).
+// Sig is a canonical primary sigId (identity.CanonicalSigID); the Set* installers map any
+// alias a caller hands them, so a "2:1" declaration is the same grant as "2:0".
 type CapSignal struct {
 	Gnss int `json:"gnss"`
 	Sig  int `json:"sig"`
+}
+
+// canonicalCapSignals maps a declared set into the canonical signal space,
+// collapses aliases that then coincide, and sorts by (gnss, sig). nil in, nil out.
+func canonicalCapSignals(declared []CapSignal) []CapSignal {
+	if declared == nil {
+		return nil
+	}
+	out := make([]CapSignal, 0, len(declared))
+	seen := make(map[CapSignal]bool, len(declared))
+	for _, c := range declared {
+		c.Sig = identity.CanonicalSigID(c.Gnss, c.Sig)
+		if seen[c] {
+			continue
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	sortCapSignals(out)
+	return out
 }
 
 // CapabilityDiff compares a station's observed signal set against its declared (tudorgps) set
@@ -124,9 +154,7 @@ func (s *Store) SetDeclaredCapabilities(decl map[string][]CapSignal) {
 	defer s.capMu.Unlock()
 	m := make(map[string][]CapSignal, len(decl))
 	for id, sigs := range decl {
-		cp := make([]CapSignal, len(sigs))
-		copy(cp, sigs)
-		m[id] = cp
+		m[id] = canonicalCapSignals(sigs)
 	}
 	s.declared = m
 }
@@ -137,8 +165,7 @@ func (s *Store) SetDeclaredCapabilitiesFor(id string, declared []CapSignal) {
 	if id == "" {
 		return
 	}
-	cp := append([]CapSignal(nil), declared...)
-	sortCapSignals(cp)
+	cp := canonicalCapSignals(declared)
 	s.capMu.Lock()
 	if s.declared == nil {
 		s.declared = make(map[string][]CapSignal)

@@ -2,6 +2,7 @@ package state
 
 import (
 	"math"
+	"slices"
 	"sort"
 	"time"
 
@@ -108,6 +109,11 @@ type rfStation struct {
 	cn0ByGNSS   map[int]Cn0Stats
 	cn0LastSeen time.Time // last NAV-SAT sample; ages the spoof gate independently of MON-RF
 	cn0DropAt   time.Time // last NAV-SAT at which the cn0_drop check served a drop
+	// cn0DropEvalAt is the latest cn0_drop evaluation that itself found a drop (the
+	// check's EvaluatedAt for that verdict), independent of how long the served state
+	// is then held; neighbour corroboration bounds the drop by the neighbour window
+	// from here.
+	cn0DropEvalAt time.Time
 }
 
 // applyRF folds one RF-telemetry sample into the per-station RF state, updating the
@@ -322,11 +328,14 @@ type StationRF struct {
 	Cn0Resid *float64        `json:"cn0_elev_resid_var,omitempty"`
 	NumSats  int             `json:"num_sats"`
 	RFTrust  float64         `json:"rf_trust"`
-	// Neighbours lists, sorted, the stations within the neighbour radius that show
-	// interference evidence of their own (Store.interferingNeighbours), computed only
-	// while this station shows an AGC departure. The jamming classifier takes it as
-	// corroboration and names them; it is not served.
-	Neighbours []string `json:"-"`
+	// Neighbours lists, sorted by id, the nearest maxNamedNeighbours stations within
+	// the neighbour radius that show corroborated interference evidence of their own
+	// (Store.interferingNeighbours), computed only while this station shows an AGC
+	// departure; NeighbourCount is how many qualified in all, so an event payload
+	// names a bounded few while the count still carries the whole picture. The
+	// jamming classifier takes them as corroboration; neither is served.
+	Neighbours     []string `json:"-"`
+	NeighbourCount int      `json:"-"`
 	// Cn0Drop reports a simultaneous C/N₀ drop across the station's signals: served
 	// now by the integrity cn0_drop check (held through its recovery period), or
 	// served at some point during a band's current AGC departure, so it lasts as long
@@ -365,6 +374,9 @@ func (s *Store) FeedStationRF(now time.Time) map[string]StationRF {
 	out := make(map[string]StationRF)
 	s.rfMu.Lock()
 	defer s.rfMu.Unlock()
+	// One pass over the fleet builds the neighbour candidate set every departed
+	// station below is answered from, instead of a scan per departed station.
+	candidates := s.neighbourCandidates(now, 0)
 	for id, st := range s.rf {
 		if now.Sub(st.lastSeen) > rfStaleAfter {
 			continue
@@ -386,7 +398,7 @@ func (s *Store) FeedStationRF(now time.Time) map[string]StationRF {
 		}
 		entry.Cn0Drop = s.cn0DropCorroboration(st, now)
 		if st.departed(now) {
-			entry.Neighbours = s.interferingNeighbours(id, now)
+			entry.Neighbours, entry.NeighbourCount = s.interferingNeighbours(id, now, candidates)
 		}
 		blocks := make([]int, 0, len(st.bands))
 		for b := range st.bands {
@@ -435,6 +447,14 @@ func (st *rfStation) rfTrust(now time.Time) float64 {
 // to weights (assured 1, inconsistent ½, unassured 0) and gives a station whose
 // evidence indicates spoofing no weight. A station with no RF or integrity evidence
 // is absent and weighs 1: lacking evidence is not distrust.
+//
+// The assessment is read from the checks' served states as they stand
+// (integrity.Station.Fused), not re-evaluated: FeedSVs runs on every detect tick
+// and on every authenticated /svs render, so a full Assess here cloned every
+// tracker's metrics for every station under rfMu — stalling applySolution/applyRF
+// for the fleet — and let a request's clock age checks out. Staleness is applied
+// where the assessments are served (FeedStationIntegrity, on the tick), so a
+// weight can lag a check's expiry by at most one tick.
 func (s *Store) sourceVoteWeights(now time.Time) map[string]float64 {
 	s.rfMu.Lock()
 	defer s.rfMu.Unlock()
@@ -456,10 +476,10 @@ func (s *Store) sourceVoteWeights(now time.Time) map[string]float64 {
 		if now.Sub(is.lastInput) > integrityEvictAfter {
 			continue
 		}
-		switch a := is.eval.Assess(now); {
-		case a.SpoofingIndicated || a.State == integrity.Unassured:
+		switch f := is.eval.Fused(); {
+		case f.SpoofingIndicated || f.State == integrity.Unassured:
 			lower(id, 0)
-		case a.State == integrity.Inconsistent:
+		case f.State == integrity.Inconsistent:
 			lower(id, 0.5)
 		}
 	}
@@ -489,66 +509,177 @@ func (s *Store) neighbourProfile() integrity.NeighbourProfile {
 }
 
 // stationLocation is a station's antenna location for neighbour matching: its
-// surveyed position, or its latest valid fix within the neighbour profile's location
-// age. The caller holds rfMu.
+// surveyed position when one is configured — a fixed installation is never
+// relocated by what its receiver reports — or, only for a station configured
+// mobile, its latest valid fix within the neighbour profile's location age, and
+// only while its position domain is not unassured: a receiver whose position is
+// being contested cannot place itself beside a target. A station with neither has
+// no location and takes no part in neighbour matching. The caller holds rfMu.
 func (s *Store) stationLocation(id string, now time.Time) (integrity.Surveyed, bool) {
-	if s.integrityCfg != nil {
-		if pos := s.integrityCfg.stations[id].Position; pos != nil {
-			return *pos, true
-		}
+	if s.integrityCfg == nil {
+		return integrity.Surveyed{}, false
 	}
-	if is := s.integrity[id]; is != nil && !is.fixAt.IsZero() && now.Sub(is.fixAt) <= s.neighbourProfile().LocationMaxAge {
-		return is.fix, true
+	profile := s.integrityCfg.stations[id]
+	if profile.Position != nil {
+		return *profile.Position, true
 	}
-	return integrity.Surveyed{}, false
+	if profile.Mode != integrity.ModeMobile {
+		return integrity.Surveyed{}, false
+	}
+	is := s.integrity[id]
+	if is == nil || is.fixAt.IsZero() || now.Sub(is.fixAt) > s.neighbourProfile().LocationMaxAge {
+		return integrity.Surveyed{}, false
+	}
+	if slices.Contains(is.eval.Fused().UnassuredDomains, integrity.DomainPosition) {
+		return integrity.Surveyed{}, false
+	}
+	return is.fix, true
 }
 
-// interferenceEvidence reports a station's own front-end evidence of interference
-// within the window: a band at or beyond the jamming AGC departure, a CW tone or the
-// receiver's jam flag, or a simultaneous C/N₀ drop the cn0_drop check serves.
-// Neighbours' corroboration is not evidence, so stations cannot corroborate each
-// other in a loop. The caller holds rfMu.
-func (s *Store) interferenceEvidence(st *rfStation, now time.Time, window time.Duration) bool {
+// interferenceEvidence grades a station's own front-end evidence of interference
+// within the window: how many independent signs it shows — a band at or beyond the
+// jamming AGC departure, a CW tone, the receiver's jam flag, a simultaneous C/N₀
+// drop — and whether a band shows a severe collapse. The drop counts only while the
+// cn0_drop check's latest evaluation, not its held served state, found one inside
+// the window: the served state is held through the recovery period and survives
+// staleness, so a drop up to ten minutes old would otherwise corroborate. Neighbours'
+// corroboration is not evidence, so stations cannot corroborate each other in a
+// loop. The caller holds rfMu.
+func (s *Store) interferenceEvidence(st *rfStation, now time.Time, window time.Duration) (signs int, severe bool) {
+	departed, cw, jam := false, false, false
 	for _, b := range st.bands {
 		if now.Sub(b.lastSeen) > window {
 			continue
 		}
 		if dep, ok := b.departure(); ok && dep >= integrity.DefaultAGCDeparture {
-			return true
+			departed = true
+			severe = severe || dep >= integrity.DefaultAGCDepartureSevere
 		}
-		if b.cwSuppress >= integrity.DefaultCWSuppress || b.jamState >= 2 {
-			return true
+		cw = cw || b.cwSuppress >= integrity.DefaultCWSuppress
+		jam = jam || b.jamState >= 2
+	}
+	drop := !st.cn0DropEvalAt.IsZero() && now.Sub(st.cn0DropEvalAt) <= window
+	for _, sign := range []bool{departed, cw, jam, drop} {
+		if sign {
+			signs++
 		}
 	}
-	if is := s.integrity[st.id]; is != nil {
-		if served, ok := is.eval.Served(integrity.CheckCn0Drop, now); ok && degradedState(served) {
-			return true
-		}
-	}
-	return false
+	return signs, severe
 }
 
-// interferingNeighbours lists, sorted, the other stations within the neighbour radius
-// of id that show interference evidence now. Both locations must be known. The caller
-// holds rfMu; callers ask only for a station with a departure of its own, so the scan
-// runs only while one is departed.
-func (s *Store) interferingNeighbours(id string, now time.Time) []string {
-	here, ok := s.stationLocation(id, now)
-	if !ok {
-		return nil
+// corroboratingNeighbour reports whether a station's own evidence is strong enough
+// to corroborate a neighbour's departure: a severe collapse, or at least two of the
+// four signs — a lone departure, tone, flag or drop is the degradation the design
+// classes as a receiver or antenna fault, and two nearby stations with unrelated
+// lone departures must not escalate each other. A station whose own assessment is
+// unassured or indicates spoofing is excluded: its testimony carries no weight for
+// a satellite's corroboration (sourceVoteWeights), so it carries none here either.
+// The caller holds rfMu.
+func (s *Store) corroboratingNeighbour(st *rfStation, now time.Time, window time.Duration) bool {
+	signs, severe := s.interferenceEvidence(st, now, window)
+	if !severe && signs < 2 {
+		return false
+	}
+	if is := s.integrity[st.id]; is != nil {
+		if f := is.eval.Fused(); f.SpoofingIndicated || f.State == integrity.Unassured {
+			return false
+		}
+	}
+	return true
+}
+
+// neighbourCandidate is one station able to corroborate a neighbour's departure: it
+// shows corroborating interference evidence of its own and has a known location,
+// converted to ECEF once so every departed station can measure its distance
+// without a geodetic conversion per pair.
+type neighbourCandidate struct {
+	id   string
+	ecef gnss.ECEF
+}
+
+// neighbourEvidence is the candidate set as of one instant. FeedStationRF builds it
+// once per call and answers every departed station from it; the per-frame
+// integrityRF path reuses it for neighbourEvidenceReuse rather than rescanning the
+// fleet on every MON-RF frame of every departed station (a regional jammer is
+// exactly the case where many stations are departed at once).
+type neighbourEvidence struct {
+	at         time.Time
+	candidates []neighbourCandidate
+}
+
+// neighbourEvidenceReuse is how long the per-frame path may answer from a candidate
+// set built earlier: a third of the detect tick, so a station that has just begun
+// showing evidence corroborates its neighbours within a few seconds while the
+// fleet is scanned at most once per interval instead of once per frame.
+const neighbourEvidenceReuse = 5 * time.Second
+
+// maxNamedNeighbours bounds how many corroborating neighbours a station's read model
+// names (the nearest ones); NeighbourCount carries the total, so a jamming event's
+// payload stays small whatever the fleet size.
+const maxNamedNeighbours = 8
+
+// neighbourCandidates returns the stations able to corroborate a departure as of
+// now, rebuilt in one pass over the fleet unless a set built within reuse of now
+// exists; a zero reuse always rebuilds (a tick wants the fleet as it stands at
+// its own instant, not a set the first departed frame of that instant built).
+// The caller holds rfMu.
+func (s *Store) neighbourCandidates(now time.Time, reuse time.Duration) []neighbourCandidate {
+	if age := now.Sub(s.neighbours.at); reuse > 0 && !s.neighbours.at.IsZero() && age >= 0 && age <= reuse {
+		return s.neighbours.candidates
 	}
 	prof := s.neighbourProfile()
-	var out []string
-	for other, st := range s.rf {
-		if other == id || !s.interferenceEvidence(st, now, prof.Window) {
+	candidates := make([]neighbourCandidate, 0, 8)
+	for id, st := range s.rf {
+		if !s.corroboratingNeighbour(st, now, prof.Window) {
 			continue
 		}
-		if there, ok := s.stationLocation(other, now); ok && integrity.SurveyedDistanceM(here, there) <= prof.RadiusM {
-			out = append(out, other)
+		if there, ok := s.stationLocation(id, now); ok {
+			candidates = append(candidates, neighbourCandidate{id: id, ecef: integrity.SurveyedECEF(there)})
 		}
 	}
-	sort.Strings(out)
-	return out
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].id < candidates[j].id })
+	s.neighbours = neighbourEvidence{at: now, candidates: candidates}
+	return candidates
+}
+
+// interferingNeighbours lists the other candidates within the neighbour radius of
+// id — the nearest maxNamedNeighbours of them, sorted by id — and how many there are
+// in all. Both locations must be known. The caller holds rfMu; callers ask only for
+// a station with a departure of its own.
+func (s *Store) interferingNeighbours(id string, now time.Time, candidates []neighbourCandidate) (named []string, count int) {
+	here, ok := s.stationLocation(id, now)
+	if !ok {
+		return nil, 0
+	}
+	hereECEF := integrity.SurveyedECEF(here)
+	radius := s.neighbourProfile().RadiusM
+	type near struct {
+		id       string
+		distance float64
+	}
+	var within []near
+	for _, c := range candidates {
+		if c.id == id {
+			continue
+		}
+		if d := c.ecef.Sub(hereECEF).Norm(); d <= radius {
+			within = append(within, near{id: c.id, distance: d})
+		}
+	}
+	count = len(within)
+	if count == 0 {
+		return nil, 0
+	}
+	if count > maxNamedNeighbours {
+		sort.SliceStable(within, func(i, j int) bool { return within[i].distance < within[j].distance })
+		within = within[:maxNamedNeighbours]
+	}
+	named = make([]string, 0, len(within))
+	for _, n := range within {
+		named = append(named, n.id)
+	}
+	sort.Strings(named)
+	return named, count
 }
 
 // cn0DropCorroboration reports a simultaneous C/N₀ drop that corroborates the

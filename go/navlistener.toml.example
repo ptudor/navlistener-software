@@ -176,7 +176,10 @@ ack_interval = "1s"
 # event_visibility = "private"              # private | public_redacted | public
 # raw_export = "deny"                        # deny | named_peers | public; destination grant still mandatory
 # federation_peers = []                       # explicit collector-instance ids for named peer policy
-# publish_signals = []                        # optional "gnss:sig" allow-list; empty = all supported
+# publish_signals = []                        # optional "gnss:sig" allow-list; empty = all supported.
+#                             # Signals are named by their canonical primary sigId (the
+#                             # receiver tags Galileo E1-B as sigId 1, but the grant is "2:0";
+#                             # "2:1" is accepted and means the same signal).
 # policy_revision = "customer-a-policy-v1" # receipt-time policy stamped into every raw row
 # capabilities = ["0:0", "2:0", "6:0"]  # declared tudorgps fingerprint, same "gnss:sig"
 #                             # form as on [[ingest]] below; a push observer's declaration

@@ -1,12 +1,15 @@
 package state
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/gnss/frame"
 	"github.com/ptudor/navlistener/internal/ingest"
+	"github.com/ptudor/navlistener/internal/metrics"
 )
 
 // sbasRawWords builds a synthetic 250-bit SBAS L1 message (8-word buffer) with
@@ -238,6 +241,76 @@ func TestApplyRejectsOutOfEnvelopeSvID(t *testing.T) {
 	if svs := s.FeedSVs(now); len(svs) != 1 {
 		t.Errorf("in-envelope QZSS observable missing from svs: %+v", svs)
 	}
+
+	// GPS 1–32, Galileo 1–36 and BeiDou 1–63: the LNAV, I/NAV word 1–3 and D1
+	// messages carry no PRN of their own, so a valid payload under a corrupt or
+	// crafted header svId would otherwise mint a served phantom entry. Each
+	// reject is counted under svid_range; nothing is created.
+	s2 := New(4)
+	entries := func() int {
+		n := 0
+		for _, sh := range s2.shards {
+			sh.mu.Lock()
+			n += len(sh.m)
+			sh.mu.Unlock()
+		}
+		return n
+	}
+	d1 := func(sv int) *ingest.RawFrame { return bdsD1Frame(sv, 1, 100, 0, now) }
+	for _, tc := range []struct {
+		g    gnss.GNSSID
+		sv   int
+		mk   func(sv int) *ingest.RawFrame
+		name string
+	}{
+		{gnss.GPS, 0, func(sv int) *ingest.RawFrame { return lnavFrameFor(sv, sf1Words(0), now) }, "GPS LNAV"},
+		{gnss.GPS, 33, func(sv int) *ingest.RawFrame { return lnavFrameFor(sv, sf1Words(0), now) }, "GPS LNAV"},
+		{gnss.GPS, 255, func(sv int) *ingest.RawFrame { return lnavFrameFor(sv, sf1Words(0), now) }, "GPS LNAV"},
+		{gnss.Galileo, 0, func(sv int) *ingest.RawFrame { return galileoFrame(sv, inavWordN(1, sv, 3, nil), now) }, "Galileo I/NAV"},
+		{gnss.Galileo, 37, func(sv int) *ingest.RawFrame { return galileoFrame(sv, inavWordN(1, sv, 3, nil), now) }, "Galileo I/NAV"},
+		{gnss.BeiDou, 0, d1, "BeiDou D1"},
+		{gnss.BeiDou, 64, d1, "BeiDou D1"},
+	} {
+		counter := metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(tc.g)), "svid_range")
+		before := testutil.ToFloat64(counter)
+		s2.Apply(tc.mk(tc.sv))
+		if got := testutil.ToFloat64(counter) - before; got != 1 {
+			t.Errorf("%s svId %d: svid_range delta = %v, want 1", tc.name, tc.sv, got)
+		}
+		if n := entries(); n != 0 {
+			t.Errorf("%s svId %d created %d SV entries, want none", tc.name, tc.sv, n)
+		}
+	}
+	// Boundary values still assemble a served ephemeris (GPS, Galileo) or a
+	// state entry (BeiDou, whose D1 set needs three subframes).
+	for _, sv := range []int{1, 32} {
+		s2.Apply(lnavFrameFor(sv, sf1Words(85), now))
+		s2.Apply(lnavFrameFor(sv, sf2Words(85, 0), now))
+		s2.Apply(lnavFrameFor(sv, sf3Words(85), now))
+	}
+	for _, sv := range []int{1, 36} {
+		for _, wt := range []int{1, 2, 3, 4} {
+			s2.Apply(galileoFrame(sv, inavWordN(wt, sv, 3, nil), now))
+		}
+	}
+	for _, sv := range []int{1, 63} {
+		s2.Apply(bdsD1Frame(sv, 1, 100, 0, now))
+		s2.Apply(bdsD1Frame(sv, 2, 106, 800, now))
+		s2.Apply(bdsD1Frame(sv, 3, 112, 800, now))
+	}
+	svs := s2.FeedSVs(now)
+	for _, name := range []string{"G01@0", "G32@0", "E01@0", "E36@0", "C01@0", "C63@0"} {
+		if _, ok := svs[name]; !ok {
+			t.Errorf("boundary svId entry %s missing from svs: have %d entries", name, len(svs))
+		}
+	}
+}
+
+// lnavFrameFor is gpsFrame with an explicit svId.
+func lnavFrameFor(sv int, words []uint32, recv time.Time) *ingest.RawFrame {
+	f := gpsFrame(words, recv)
+	f.SvID = sv
+	return f
 }
 
 // TestSBASObservableCreatesNoSVSEntry guards only one SBAS carrier is

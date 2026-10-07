@@ -161,6 +161,9 @@ func DecodeBeiDouBCNAV2(words []uint32) (*BeiDouBCNAV2, error) {
 			aref = bcnavArefIGSO
 		}
 		m.eph.Toe = float64(u(61, 11)) * bcnavT0
+		if m.eph.Toe >= weekSeconds {
+			return nil, errBadEpoch // BDS-SIS-B2a-1.0 Table 6-5: toe ≤ 604 500
+		}
 		m.eph.SqrtA = math.Sqrt(aref + float64(s(74, 26))*p2m9)
 		m.eph.ADot = float64(s(100, 25)) * p2m21 // Ȧ, m/s
 		m.eph.DeltaN = float64(s(125, 17)) * p2m44 * semi
@@ -191,6 +194,9 @@ func DecodeBeiDouBCNAV2(words []uint32) (*BeiDouBCNAV2, error) {
 			Af0: float64(s(53, 25)) * p2m34,
 			Af1: float64(s(78, 22)) * p2m50,
 			Af2: float64(s(100, 11)) * p2m66,
+		}
+		if m.clk.Toc >= weekSeconds {
+			return nil, errBadEpoch // BDS-SIS-B2a-1.0 Table 6-9: toc ≤ 604 500
 		}
 		m.IODC = int(u(111, 10))
 		m.TGDB2ap = float64(s(121, 12)) * p2m34
@@ -225,6 +231,9 @@ func DecodeBeiDouBCNAV2(words []uint32) (*BeiDouBCNAV2, error) {
 			Af0: float64(s(75, 25)) * p2m34,
 			Af1: float64(s(100, 22)) * p2m50,
 			Af2: float64(s(122, 11)) * p2m66,
+		}
+		if m.clk.Toc >= weekSeconds {
+			return nil, errBadEpoch // BDS-SIS-B2a-1.0 Table 6-9: toc ≤ 604 500
 		}
 		m.IODC = int(u(133, 10))
 		// the BDT-UTC time offset block at bits 143–239 (Figure 6-9

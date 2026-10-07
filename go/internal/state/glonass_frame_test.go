@@ -424,12 +424,14 @@ func TestGLONASSClockFromString4(t *testing.T) {
 		t.Errorf("TauN = %v, want %v", eph.TauN, want)
 	}
 
-	// A tb changeover 30 minutes later: fresh strings 1/2/3, but the cached
-	// string 4 is from the old frame — the new set must assemble clockless
-	// rather than pair the stale τn with the new epoch.
+	// A tb changeover 30 minutes later (tb 450 → 452): fresh strings 1/2/3, but
+	// the cached string 4 is from the old frame — the new set must assemble
+	// clockless rather than pair the stale τn with the new epoch. (A same-tb
+	// reassembly would instead carry the known clock forward: same tb, same
+	// clock — so the changeover must really change tb here.)
 	t1 := t0.Add(30 * time.Minute)
 	st.Apply(glonassStringFrame(7, 1, 9000, 10, 1, 0, 0, t1))
-	st.Apply(glonassStringFrame(7, 2, 9500, 20, 2, 0, 450, t1.Add(2*time.Second)))
+	st.Apply(glonassStringFrame(7, 2, 9500, 20, 2, 0, 452, t1.Add(2*time.Second)))
 	st.Apply(glonassStringFrame(7, 3, 9800, 30, 3, 0, 0, t1.Add(4*time.Second)))
 
 	sh.mu.Lock()

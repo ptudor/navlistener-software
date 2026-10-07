@@ -10,12 +10,12 @@ import (
 
 // TestRecordToFrameStampsCollectorLocalClock guards push-path frames carry
 // the FEEDER's wall-clock stamp in Recv (the forensic reception time, accepted with
-// up to recvTimestampSlack of skew), but every staleness/expiry age in live state
+// up to RecvTimestampSlack of skew), but every staleness/expiry age in live state
 // must be an elapsed time on the collector's own clock — so recordToFrame must also
 // stamp RecvLocal from time.Now() here, regardless of what the feeder claimed.
 func TestRecordToFrameStampsCollectorLocalClock(t *testing.T) {
 	before := time.Now()
-	stamp := before.Add(-4 * time.Minute) // within recvTimestampSlack: accepted into Recv
+	stamp := before.Add(-4 * time.Minute) // within RecvTimestampSlack: accepted into Recv
 	rec := wire.RawRecord{
 		RecvUnixNs: stamp.UnixNano(),
 		GnssID:     gnss.GPS, SvID: 5, FrameType: 0x10, // GpsLnav
