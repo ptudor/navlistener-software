@@ -54,7 +54,8 @@ func (s *Store) Degraded() string
 
 ### The bounded queue and the drop policy
 
-`Enqueue` is non-blocking. When the queue is full, the frame is **dropped and counted**
+`Enqueue` is non-blocking. When the queue is full — by frame count or by payload bytes, see
+"The writer queue is bounded by frames and by bytes" below — the frame is **dropped and counted**
 (`store_dropped_total`) — an explicit, metered policy rather than blocking ingest or growing
 without bound. The first drop after a clean flush cycle logs one warning; the rest of that
 streak is visible only through the counter and, from the second consecutive overflowing cycle,
@@ -192,9 +193,44 @@ reboot**. A fresh session per sequence space makes the collision structurally im
 feeder persists the session in its disk-spool header so a spool-recovering restart continues
 session and sequence together.
 
+**The key is normalised.** One row per sequenced frame at ~26 frames/s per receiver is ~16 M
+rows per receiver-week, and two TEXT key columns (a 32-character session id and a free-form
+observer id) stored in the heap and again in the primary key cost about 3 GB per
+receiver-week — several times the compressed frames the ledger protects. So the
+`(source_id, session_id)` pair lives once in `nav_frames_sessions` (`session_key BIGINT`
+identity, `UNIQUE (source_id, session_id)`, `first_seen`) and the ledger is keyed
+`(session_key, feeder_seq)`: 24 bytes of payload and a 16-byte index entry per claim. The
+writer resolves a session's key once per process (`resolveSessionKeys`, one round trip that
+creates missing sessions and returns existing ones) **inside the claim transaction**, so a
+rolled-back commit rolls the new session back too, and the key reaches the in-memory cache
+only after the commit. The claim keeps its `INSERT … ON CONFLICT DO NOTHING RETURNING` shape.
+A pre-normalisation ledger (TEXT-keyed, with or without `session_id`) is dropped and recreated
+by the guarded `DO $$` migration in `schema.sql`; the schema marker (version 2) keeps an
+older binary, whose own migration block would drop the re-keyed table, from starting.
+
 Dial-mode frames carry no feeder sequence and always pass through unfiltered — duplicates across
-*different* receivers are intentional and untouched by this table. The ledger is pruned on the
-same interval as `raw_retention`.
+*different* receivers are intentional and untouched by this table.
+
+**The prune is chunked and off the writer.** Every `pruneEvery` (1 h) a sweep on its own
+goroutine deletes entries older than `raw_retention` in chunks of `pruneChunkRows` (10 000),
+each its own statement under `pruneChunkTimeout` (10 s), until nothing is left or the
+`pruneSweepBudget` (20 min) expires. Progress is durable per chunk: a backlog one sweep
+cannot finish is continued by the next, where one whole-table `DELETE` under one timeout was
+cancelled and rolled back entirely at fleet scale, deleting nothing while the table grew. The
+writer loop keeps consuming the queue during a sweep; `Run` waits a sweep out before closing
+the pool. Sessions with no entries left and a `first_seen` older than the window are retired
+by the same sweep and evicted from the key cache.
+
+### The writer queue is bounded by frames and by bytes
+
+`Enqueue` never blocks: the queue holds at most `queueDepth` (16 384) frames **and** at most
+`maxQueueBytes` (64 MiB) of frame payload (`raw`, `decoded`, board/RF data, the authority
+evidence snapshot, plus a 512-byte allowance per frame for the struct and its provenance
+strings). Whichever bound is reached first drops the newest frame, counted in
+`navlistener_store_dropped_total` and the same overflow streak that feeds `Degraded()`; the
+log line names the bound. The byte bound exists so the historian's memory no longer depends
+on upstream validation of record sizes (ingest separately refuses navigation record bodies
+over 4 KiB).
 
 ### `SetDurableNotify` — closing the ACK loop
 

@@ -201,12 +201,17 @@ receiver disagreement on them is an integrity signal, not an averaging problem.
 
 ### 1.3 `observers` — the station list
 
-Array of station records: `id`, `vendor`, `remark`, `disabled`, the station RF
+Array of station records: `id`, `vendor`, `remark`, `disabled`, the receiver
+liveness `last_seen` (epoch seconds) and `last_seen_s` (age at serving time) —
+the most recent input of any kind the collector has from the station, the same
+read model the `station_offline` detector uses, present on every station the
+collector has heard from and omitted for one it never has — the station RF
 read model `rf` (DEFENSE-PNT.md §6), the demonstrated `capabilities`, and, when a
 capability fingerprint is declared, `declared_capabilities`,
 `unexpected_capabilities` and `missing_capabilities`. Configured dial sources and
-push stations seen in live RF or capability state share the shape; dial-only
-metadata is absent for push stations. Operator-supplied strings (`vendor`,
+push stations seen in live state share the shape; dial-only metadata is absent
+for push stations, and a station that has gone dark stays listed with its
+climbing `last_seen_s` after `rf` is withheld as stale. Operator-supplied strings (`vendor`,
 `remark`) are sanitized before serialization (INTEGRITY.md §9). Station
 coordinates, versions, clock drift and per-SV reception are not served here; the
 per-SV view is the `svs` feed's `perrecv` (§1.1).
@@ -525,18 +530,26 @@ SELECT create_hypertable('nav_frames','ts', chunk_time_interval => INTERVAL '1 h
 -- compress_segmentby = 'gnssid', compress_orderby = 'svid, ts DESC'; short raw retention,
 -- long-term lives in per-SV continuous aggregates (ephemeris history).
 
--- Push-path replay-dedup ledger (regression fix + regression fix): the writer claims each frame's
--- (source_id, session_id, feeder_seq) in the same transaction that CopyFroms the rows,
--- so reconnect replay cannot duplicate and a failed commit rolls the claim back.
--- session_id is the feeder's GNF1 boot identity (DESIGN.md §2): a rebooted feeder's
--- fresh session makes its restarted sequence space structurally collision-free against
--- old claims. Dial-mode frames carry no sequence and always pass through.
+-- Push-path replay-dedup ledger: the writer claims each frame's (session, feeder_seq)
+-- in the same transaction that CopyFroms the rows, so reconnect replay cannot
+-- duplicate and a failed commit rolls the claim back. The session is the feeder's
+-- GNF1 boot identity (DESIGN.md §2): a rebooted feeder's fresh session makes its
+-- restarted sequence space structurally collision-free against old claims. The
+-- (source_id, session_id) pair is normalised to a BIGINT key so the ledger — one row
+-- per sequenced frame — carries two integers per claim instead of two strings.
+-- Dial-mode frames carry no sequence and always pass through.
+CREATE TABLE nav_frames_sessions (
+    session_key BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    source_id   TEXT        NOT NULL,
+    session_id  TEXT        NOT NULL,
+    first_seen  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (source_id, session_id)
+);
 CREATE TABLE nav_frames_seq_seen (
-    source_id  TEXT        NOT NULL,
-    session_id TEXT        NOT NULL,
-    feeder_seq BIGINT      NOT NULL,
-    seen_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (source_id, session_id, feeder_seq)
+    session_key BIGINT      NOT NULL,
+    feeder_seq  BIGINT      NOT NULL,
+    seen_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (session_key, feeder_seq)
 );
 ```
 

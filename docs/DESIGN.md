@@ -186,7 +186,10 @@ plaintext) gives ~3–4× on the repetitive nav bitstream. TLS: the collector fl
 the C feeder **pins TLS 1.2 exactly** — radiolistener's regression fix finding: its split reader/writer
 threads on one SSL object are unsafe under TLS 1.3 KeyUpdate — a constraint `navfeeder`
 inherits with the port. Every frame length is validated against `MaxFrameLen` (1 MiB, RLF1
-parity) before allocation.
+parity) before allocation; that bound is shared with HELLO and telemetry, so the collector
+additionally refuses a navigation record body over 4 KiB (the largest legitimate frame of any
+supported feed is well below that) under the acked permanent-malformation policy, and its
+historian queue is bounded by bytes as well as by frame count.
 
 **Wire implementation.** GNF1 uses a fixed record header that can be implemented
 in a small C binary or ESP-IDF firmware. Adapters for other wire formats run

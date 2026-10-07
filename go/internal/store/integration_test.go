@@ -34,6 +34,27 @@ func testDSN(t *testing.T) string {
 
 func integrationLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
+// clearLedger removes every replay claim of source. The ledger is keyed by
+// session_key, so a source's claims are reached through nav_frames_sessions.
+func clearLedger(t *testing.T, pool *pgxpool.Pool, source string) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`DELETE FROM nav_frames_seq_seen WHERE session_key IN (SELECT session_key FROM nav_frames_sessions WHERE source_id = $1)`, source); err != nil {
+		t.Fatalf("cleanup nav_frames_seq_seen: %v", err)
+	}
+}
+
+// ledgerClaims counts the replay claims held for source.
+func ledgerClaims(t *testing.T, pool *pgxpool.Pool, source string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM nav_frames_seq_seen l JOIN nav_frames_sessions s USING (session_key) WHERE s.source_id = $1`, source).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
 // isolatedDSN returns the DSN for a database with **no navlistener tables** —
 // distinct from testDSN's shared instance — for tests that need to control initial
 // table state (e.g. simulating a pre-existing intsat deployment) before store.New
@@ -97,9 +118,7 @@ func TestIntegrationReplayDedup(t *testing.T) {
 	if _, err := s.pool.Exec(ctx, `DELETE FROM nav_frames WHERE source_id = ANY($1)`, []string{obs, dial}); err != nil {
 		t.Fatalf("cleanup nav_frames: %v", err)
 	}
-	if _, err := s.pool.Exec(ctx, `DELETE FROM nav_frames_seq_seen WHERE source_id = $1`, obs); err != nil {
-		t.Fatalf("cleanup nav_frames_seq_seen: %v", err)
-	}
+	clearLedger(t, s.pool, obs)
 
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -143,16 +162,14 @@ func TestIntegrationReplayDedup(t *testing.T) {
 	}
 	defer verify.pool.Close()
 
-	var navCount, dialCount, ledgerCount int
+	var navCount, dialCount int
 	if err := verify.pool.QueryRow(ctx, `SELECT count(*) FROM nav_frames WHERE source_id = $1`, obs).Scan(&navCount); err != nil {
 		t.Fatal(err)
 	}
 	if err := verify.pool.QueryRow(ctx, `SELECT count(*) FROM nav_frames WHERE source_id = $1`, dial).Scan(&dialCount); err != nil {
 		t.Fatal(err)
 	}
-	if err := verify.pool.QueryRow(ctx, `SELECT count(*) FROM nav_frames_seq_seen WHERE source_id = $1`, obs).Scan(&ledgerCount); err != nil {
-		t.Fatal(err)
-	}
+	ledgerCount := ledgerClaims(t, verify.pool, obs)
 
 	// Three, not two: (boot-a,100), (boot-a,101), and (boot-b,100). The last is the
 	// regression fix case this test's own body was extended to cover — a rebooted feeder
@@ -187,9 +204,7 @@ func TestIntegrationAtomicReplayClaim(t *testing.T) {
 	if _, err := s.pool.Exec(ctx, `DELETE FROM nav_frames WHERE source_id = $1`, source); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.pool.Exec(ctx, `DELETE FROM nav_frames_seq_seen WHERE source_id = $1`, source); err != nil {
-		t.Fatal(err)
-	}
+	clearLedger(t, s.pool, source)
 	now := time.Now()
 	frame := &NavFrame{Ts: now, ReceivedAt: now, SourceID: source, GnssID: 0, SvID: 1,
 		SigID: 0, MsgType: 0x10, Raw: []byte{1}, Decoded: []byte(`{not-json`),
@@ -197,12 +212,13 @@ func TestIntegrationAtomicReplayClaim(t *testing.T) {
 	if _, err := s.persistAtomicOnce(ctx, []*NavFrame{frame}); err == nil {
 		t.Fatal("invalid JSON CopyFrom unexpectedly succeeded")
 	}
-	var claims int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM nav_frames_seq_seen WHERE source_id = $1`, source).Scan(&claims); err != nil {
-		t.Fatal(err)
-	}
-	if claims != 0 {
+	if claims := ledgerClaims(t, s.pool, source); claims != 0 {
 		t.Fatalf("dedup claims after failed CopyFrom = %d, want 0", claims)
+	}
+	// The session the rolled-back claim created rolled back with it, and its
+	// key was never cached, so the retry resolves it afresh.
+	if _, cached := s.sessionKeys[sessionPair{source, "boot-r002"}]; cached {
+		t.Fatal("session key cached from a rolled-back transaction")
 	}
 
 	frame.Decoded = []byte(`{"ok":true}`)
@@ -283,29 +299,45 @@ func TestIntegrationPruneSeqSeen(t *testing.T) {
 	defer s.pool.Close()
 
 	const source = "prune-integration"
-	if _, err := s.pool.Exec(ctx, `DELETE FROM nav_frames_seq_seen WHERE source_id = $1`, source); err != nil {
-		t.Fatalf("cleanup: %v", err)
-	}
+	clearLedger(t, s.pool, source)
 	old := time.Now().Add(-30 * 24 * time.Hour)
 	recent := time.Now()
-	// session_id is part of the ledger's primary key since the regression fix revision
-	// and is NOT NULL; seeding without it violated the constraint. The prune is
-	// keyed on seen_at alone, so one session is enough to exercise it.
+	// The ledger is keyed by the session's BIGINT key; the prune is keyed on
+	// seen_at alone, so one session is enough to exercise it.
+	key := seedSession(t, s.pool, source, "boot-prune")
 	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO nav_frames_seq_seen (source_id, session_id, feeder_seq, seen_at) VALUES ($1, 'boot-prune', 1, $2), ($1, 'boot-prune', 2, $3)`,
-		source, old, recent); err != nil {
+		`INSERT INTO nav_frames_seq_seen (session_key, feeder_seq, seen_at) VALUES ($1, 1, $2), ($1, 2, $3)`,
+		key, old, recent); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
 	s.pruneSeqSeen(ctx)
 
-	var remaining int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM nav_frames_seq_seen WHERE source_id = $1`, source).Scan(&remaining); err != nil {
-		t.Fatal(err)
-	}
-	if remaining != 1 {
+	if remaining := ledgerClaims(t, s.pool, source); remaining != 1 {
 		t.Errorf("remaining ledger rows = %d, want 1 (only the recent entry should survive a 7-day prune)", remaining)
 	}
+	// The session still has a claim, so it survives the sweep's session pass.
+	var sessions int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM nav_frames_sessions WHERE source_id = $1`, source).Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if sessions != 1 {
+		t.Errorf("sessions for %s = %d, want 1 (a session with a live claim is kept)", source, sessions)
+	}
+}
+
+// seedSession creates (or finds) the session row for source/session and
+// returns its key, the way a test seeds ledger rows directly.
+func seedSession(t *testing.T, pool *pgxpool.Pool, source, session string) int64 {
+	t.Helper()
+	var key int64
+	if err := pool.QueryRow(context.Background(),
+		`INSERT INTO nav_frames_sessions (source_id, session_id) VALUES ($1, $2)
+		 ON CONFLICT (source_id, session_id) DO UPDATE SET source_id = EXCLUDED.source_id
+		 RETURNING session_key`, source, session).Scan(&key); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	return key
 }
 
 // intsatGnssEventsDDL and intsatGnssSnapshotsDDL are copied verbatim from
@@ -705,9 +737,7 @@ func TestIntegrationWriterCommitsWhileReadersHoldThePool(t *testing.T) {
 	if _, err := s.pool.Exec(ctx, `DELETE FROM nav_frames WHERE source_id = $1`, obs); err != nil {
 		t.Fatalf("cleanup nav_frames: %v", err)
 	}
-	if _, err := s.pool.Exec(ctx, `DELETE FROM nav_frames_seq_seen WHERE source_id = $1`, obs); err != nil {
-		t.Fatalf("cleanup nav_frames_seq_seen: %v", err)
-	}
+	clearLedger(t, s.pool, obs)
 	resolved := make(chan uint64, 8)
 	s.SetDurableNotify(func(source, session string, seq uint64) {
 		if source == obs {
@@ -935,11 +965,7 @@ func TestIntegrationSystemicConstraintFailureUnderRun(t *testing.T) {
 		t.Fatalf("verify connect: %v", err)
 	}
 	defer pool.Close()
-	var claims int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM nav_frames_seq_seen WHERE source_id = $1`, obs).Scan(&claims); err != nil {
-		t.Fatal(err)
-	}
-	if claims != 0 {
+	if claims := ledgerClaims(t, pool, obs); claims != 0 {
 		t.Errorf("ledger holds %d claims for %s, want 0 (every transaction must have rolled back)", claims, obs)
 	}
 }

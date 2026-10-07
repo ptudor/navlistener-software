@@ -440,6 +440,16 @@ var (
 		Name: "navlistener_push_evidence_rejected_total",
 		Help: "Hardware evidence that established no trust, by reason (unconfigured, malformed, signature, product, identity, unlisted, revoked, superseded, proof_missing, proof).",
 	}, []string{"reason"})
+	// PushUpdateStatusRejectedTotal counts observer reports whose update-status
+	// tag this collector could not decode (an enum, range or length outside its
+	// strict contract — typically firmware newer than the collector). The tag is
+	// skippable: the rest of the report is kept and no update state is stored
+	// from it, so a rising counter means "upgrade the collector", not lost
+	// telemetry.
+	PushUpdateStatusRejectedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_push_update_status_rejected_total",
+		Help: "Observer reports whose update-status tag was undecodable and skipped; the rest of each report was kept.",
+	}, []string{"observer"})
 	// HardwareRegistrySequence, -IssuedTimestampSeconds and -Boards describe the
 	// registry in force. A collector whose sequence or issue time stops advancing
 	// while the manufacturer keeps publishing is holding a stale copy, and a

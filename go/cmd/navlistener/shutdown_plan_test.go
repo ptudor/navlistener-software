@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/ptudor/navlistener/internal/store"
 )
 
 // shutdown used one deadline consumed in order, so a slow
@@ -20,15 +22,17 @@ func TestPlanShutdownReservesPersistenceBudget(t *testing.T) {
 		-time.Second,
 	} {
 		p := planShutdown(total)
-		if p.pipeline <= 0 || p.api <= 0 || p.store <= 0 || p.metrics <= 0 {
+		if p.pipeline <= 0 || p.api <= 0 || p.checkpoint <= 0 || p.store <= 0 || p.metrics <= 0 {
 			t.Errorf("planShutdown(%v) produced a zero-length phase: %+v", total, p)
 		}
 		// The store's reservation must be a real share, not a remainder.
 		if total >= time.Second && p.store < total/4 {
 			t.Errorf("planShutdown(%v) reserved only %v for the historian", total, p.store)
 		}
-		// The serial path (the API phase runs concurrently with the pipeline) must
-		// stay inside the configured bound.
+		// The serial path (the API phase runs concurrently with the pipeline and
+		// is never waited for again) must stay inside the bound: every phase the
+		// shutdown actually runs in sequence, the checkpoint included — the
+		// checkpoint used to take time outside the plan.
 		effective := total
 		if effective <= 0 {
 			effective = 15 * time.Second
@@ -37,9 +41,17 @@ func TestPlanShutdownReservesPersistenceBudget(t *testing.T) {
 		// floor deliberately wins, because a zero-length phase is worse than a
 		// slightly overrunning one.
 		if effective >= 10*time.Millisecond {
-			if serial := p.pipeline + p.store + p.metrics; serial > effective {
-				t.Errorf("planShutdown(%v): serial phases total %v, over the configured bound %v",
+			if serial := p.pipeline + p.checkpoint + p.store + p.metrics; serial > effective {
+				t.Errorf("planShutdown(%v): serial phases total %v, over the bound %v",
 					total, serial, effective)
+			}
+		}
+		// The historian's drain plus the pool close fit the store phase the
+		// daemon waits for, so Run never outlives main's wait on it.
+		if effective >= 2*time.Second {
+			if drain := store.DrainBudget(p.store); drain+store.PoolCloseReserve > p.store {
+				t.Errorf("planShutdown(%v): drain %v + pool close reserve %v exceed the store phase %v",
+					total, drain, store.PoolCloseReserve, p.store)
 			}
 		}
 		// The API phase must fit inside the window it overlaps, so a stuck SSE

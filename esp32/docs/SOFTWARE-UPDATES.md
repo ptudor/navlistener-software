@@ -868,7 +868,11 @@ bit 0 Secure Boot active, bit 1 flash encryption in Release mode, bit 2 default
 NVS encrypted, bit 3 `update_meta` securely initialized, and bit 4 recognized
 partition layout; bits 5–7 are zero. Unknown enum values, nonzero reserved bits,
 and invalid lengths reject the tag, while the enclosing telemetry parser retains
-its normal unknown-tag behavior.
+its normal unknown-tag behavior: the collector keeps the rest of the report
+(timing, firmware, environment and the other tags), records no update state from
+it, counts the rejection in `navlistener_push_update_status_rejected_total`
+(per observer) and logs it once per session. A rising counter therefore means
+the collector is older than the firmware, not that telemetry was lost.
 
 Collector storage retains transitions rather than every repeated status sample.
 It exposes current state to the operator API and metrics for check failures,

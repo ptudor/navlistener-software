@@ -180,6 +180,18 @@ addresses.
   cannot occupy a feeder's slot. mTLS does not gate this: a certificate is examined only inside
   the handshake such a flood never starts.
 - **`ack_interval`** (default 1s) is the GNF1 ACK cadence.
+- **`station` is configured in one place only.** A name that is both an `[[ingest]]` source
+  `name` and a `[[push.observer]]` `station` is an error, even when the dial entry is
+  `disabled = true` (a paused entry keeps its declaration and identity in the audience
+  registry): the two receivers would otherwise merge into one live-state station, with
+  interleaved AGC, reception and integrity inputs and two different observer contexts, and the
+  historian would store both under one `source_id`. When a receiver migrates from dial to push,
+  delete its `[[ingest]]` entry. Observers authorized by `[authorization].dsn` are not config
+  rows and are not covered by this check; keep dial source names disjoint from them too.
+- **`station` must not begin with `board-`** (in any letter case). That namespace belongs to
+  hardware enrollment (`docs/BOARD-IDENTITY.md`): a board's name is derived from its factory
+  serial, and the control plane refuses a software station there, so a config row may not
+  occupy a board's canonical name with `hardware_trust = none` either.
 - **Organization and publication fields** have the same meanings and fail-closed defaults as on
   `[[ingest]]`. They are authorization output, not feeder assertions. Config-backed observers
   can prove `token` or `software_mtls`; config alone can never claim hardware attestation.
@@ -226,7 +238,14 @@ The signed registry and state file both carry the configured authority id, so
 neither can be substituted across authorities. `-check-config` reads that file without writing it and
 applies the recorded sequence as a floor, so it refuses exactly the registry the daemon would
 refuse at startup. A state file that is group- or world-writable, oversized or unparsable is an
-error, because whoever can rewrite it can lower the floor. A `registry` with no
+error, because whoever can rewrite it can lower the floor. The file's directory must exist and
+be writable by the checking user: the daemon records the adopted sequence through a temporary
+file renamed into that directory on its first registry load, so the check probes the same
+operation (and leaves nothing behind) rather than letting an unwritable directory pass the
+preflight and fail the first start. The same probe covers `[updates].state_file`, whose
+directory the daemon creates (so the nearest existing ancestor must be writable) and whose
+existing file must be private (0600), a regular file, bounded and loadable; the daemon's
+instance lock beside it is never taken by the check. A `registry` with no
 `registry_state` is a `WARNING`, not an error: it is a legitimate mode for a collector whose
 registry file is itself protected, but never a silent one.
 

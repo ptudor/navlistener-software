@@ -14,14 +14,20 @@
 # Preflight: `service navlistener start` runs `navlistener -check-config` automatically and
 # refuses to start on failure  — daemon(8) forks and returns 0 immediately, so
 # without the gate a bad config reported success into a 5 s supervisor crash-loop.
-# -check-config has full startup parity : it loads the [push] TLS keypair/client CA,
-# parses the store DSN, and validates ntrip CA files, so provision certs BEFORE first start;
-# on a bare host it fails by design. It runs AS ${navlistener_user}  so its file
+# -check-config has startup parity for everything bound before readiness: it loads the
+# [push] TLS keypair/client CA, parses the store DSN, validates ntrip CA files, verifies the
+# manufacturer keys/registry, and probes the directories the daemon must WRITE
+# (manufacturer_authority.registry_state, updates.state_file) plus an existing update state
+# file, without creating or locking anything. NOT covered: database connectivity (DSNs are
+# parsed, never connected), listener binds, and the update state's instance lock (held by a
+# running daemon). Provision certs and state directories BEFORE first start; on a bare host
+# it fails by design. It runs AS ${navlistener_user}  so its file
 # access rights match the daemon's. Non-fatal "WARNING:" lines (world-readable secrets file,
 # non-loopback binds) are echoed at start without blocking it.
 # Provisioning consequence: ${navlistener_user} must be able to READ the config and every
 # file it references (tls_cert / tls_key / client_ca / ntrip ca_file) — chown them to the
-# daemon user and keep tls_key 0600 (regression fix rejects a world-readable key outright).
+# daemon user and keep tls_key 0600 (regression fix rejects a world-readable key outright) —
+# and WRITE the registry_state and updates state_file directories.
 #
 # Log rotation : daemon(8) is invoked with -H so it reopens ${navlistener_logfile}
 # on SIGHUP; ship deploy/freebsd/newsyslog.conf.d/navlistener.conf to

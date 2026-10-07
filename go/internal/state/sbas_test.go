@@ -76,12 +76,44 @@ func TestStationLastSeen(t *testing.T) {
 	s.rf["stnA"] = &rfStation{id: "stnA", lastSeen: now.Add(-2 * time.Minute)} // fresher RF wins
 	s.recordCapability("stnB", gnss.GPS, 0, now.Add(-40*time.Minute))          // long-dark, caps only
 
+	// Stations that deliver only board telemetry or only receiver solutions
+	// are live stations too; the offline classifier must see their age.
+	s.boards["stnC"] = &boardStation{last: BoardSample{ReceivedAt: now.Add(-7 * time.Minute)}}
+	s.integrity["stnD"] = &integrityStation{lastInput: now.Add(-6 * time.Minute)}
+	s.boards["stnA"] = &boardStation{last: BoardSample{ReceivedAt: now.Add(-20 * time.Minute)}} // older than its RF; never wins
+
 	ages := s.StationLastSeen(now)
 	if got, want := ages["stnA"], 120; got != want {
-		t.Errorf("stnA age = %d, want %d (the fresher of caps/rf)", got, want)
+		t.Errorf("stnA age = %d, want %d (the fresher of caps/rf/board)", got, want)
 	}
 	if got, want := ages["stnB"], 2400; got != want {
 		t.Errorf("stnB age = %d, want %d (retained well past every serving filter)", got, want)
+	}
+	if got, want := ages["stnC"], 420; got != want {
+		t.Errorf("stnC age = %d, want %d (board telemetry only)", got, want)
+	}
+	if got, want := ages["stnD"], 360; got != want {
+		t.Errorf("stnD age = %d, want %d (receiver solutions only)", got, want)
+	}
+	// The live receiver count is unchanged: nav or RF within the window only.
+	if got := s.countLiveReceivers(now); got != 1 {
+		t.Errorf("countLiveReceivers = %d, want 1 (stnA's RF; board- and solution-only stations are not receivers)", got)
+	}
+	// Public views know only navigation and RF inputs: no board- or
+	// solution-only station, and no age refreshed by private telemetry.
+	s.boards["stnA"] = &boardStation{last: BoardSample{ReceivedAt: now.Add(-time.Minute)}}
+	public := s.ReceiverLastSeen(now)
+	if got, want := public["stnA"], 120; got != want {
+		t.Errorf("public stnA age = %d, want %d (a fresher board report must not move a public age)", got, want)
+	}
+	if _, ok := public["stnC"]; ok {
+		t.Error("public liveness enumerates a board-only station")
+	}
+	if _, ok := public["stnD"]; ok {
+		t.Error("public liveness enumerates a solution-only station")
+	}
+	if got, want := s.StationLastSeen(now)["stnA"], 60; got != want {
+		t.Errorf("private stnA age = %d, want %d (the fresher board report counts)", got, want)
 	}
 }
 

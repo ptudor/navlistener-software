@@ -41,7 +41,7 @@ func TestRequiredColumnsCoversNavFrames(t *testing.T) {
 	if !ok {
 		t.Fatal("requiredColumns is missing nav_frames_seq_seen ")
 	}
-	want := []string{"source_id", "session_id", "feeder_seq", "seen_at"} // session_id: regression fix
+	want := []string{"session_key", "feeder_seq", "seen_at"} // session_key: the normalised (source, session) pair
 	if len(seq) != len(want) {
 		t.Fatalf("requiredColumns[nav_frames_seq_seen] = %v, want %v", seq, want)
 	}

@@ -10,16 +10,21 @@ import (
 )
 
 var (
-	checks        = promauto.NewCounter(prometheus.CounterOpts{Name: "navlistener_update_checks_total", Help: "Authenticated device reports of completed metadata checks."})
-	failures      = promauto.NewCounterVec(prometheus.CounterOpts{Name: "navlistener_update_failures_total", Help: "Transitions into reported updater errors, by stable error name."}, []string{"error"})
-	rollbacks     = promauto.NewCounter(prometheus.CounterOpts{Name: "navlistener_update_rollbacks_total", Help: "Reported trial boot rollbacks."})
-	securityDrift = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_security_drift", Help: "1 when an enrolled update device's reports contradict each other or what the collector verified: a trusted build that is not fully locked, an open or test build on a locked chip, or, on a collector that verifies hardware evidence, a device reporting the trusted track whose session did not verify as trusted hardware."}, []string{"observer"})
-	trustProfile  = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_trust_profile_info", Help: "Device-reported update track per enrolled device; value is 1, superseded labels are removed. A report is a label, not evidence of the running firmware."}, []string{"observer", "profile"})
-	hardwareTrust = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_hardware_trust_info", Help: "Hardware trust the collector verified for the reporting session of each enrolled update device (none, open, test, trusted); value is 1, superseded labels are removed."}, []string{"observer", "trust"})
-	lastReport    = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_report_timestamp_seconds", Help: "Collector receipt time for the latest authenticated updater report."}, []string{"observer"})
-	stagedAt      = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_staged_timestamp_seconds", Help: "First reported staging time; zero when no image is staged."}, []string{"observer"})
-	waitingAt     = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_waiting_timestamp_seconds", Help: "First report waiting for a safe reboot; zero otherwise."}, []string{"observer"})
-	adoption      = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_running_release_info", Help: "Current reported release per enrolled device; value is 1, superseded labels are removed."}, []string{"observer", "release"})
+	checks = promauto.NewCounter(prometheus.CounterOpts{Name: "navlistener_update_checks_total", Help: "Authenticated device reports of completed metadata checks."})
+	// capacityRefusals counts the state's own limits turning a device away:
+	// sessions (BeginSession at the device cap), records (a new device at the
+	// record cap) and bytes (the serialised state over its byte limit). Each is
+	// also logged; a validated configuration never reaches sessions or records.
+	capacityRefusals = promauto.NewCounterVec(prometheus.CounterOpts{Name: "navlistener_update_capacity_refusals_total", Help: "Update state refusals by its own capacity, by reason (sessions, records, bytes); a refused device reports into nothing and cannot be commanded."}, []string{"reason"})
+	failures         = promauto.NewCounterVec(prometheus.CounterOpts{Name: "navlistener_update_failures_total", Help: "Transitions into reported updater errors, by stable error name."}, []string{"error"})
+	rollbacks        = promauto.NewCounter(prometheus.CounterOpts{Name: "navlistener_update_rollbacks_total", Help: "Reported trial boot rollbacks."})
+	securityDrift    = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_security_drift", Help: "1 when an enrolled update device's reports contradict each other or what the collector verified: a trusted build that is not fully locked, an open or test build on a locked chip, or, on a collector that verifies hardware evidence, a device reporting the trusted track whose session did not verify as trusted hardware."}, []string{"observer"})
+	trustProfile     = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_trust_profile_info", Help: "Device-reported update track per enrolled device; value is 1, superseded labels are removed. A report is a label, not evidence of the running firmware."}, []string{"observer", "profile"})
+	hardwareTrust    = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_hardware_trust_info", Help: "Hardware trust the collector verified for the reporting session of each enrolled update device (none, open, test, trusted); value is 1, superseded labels are removed."}, []string{"observer", "trust"})
+	lastReport       = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_report_timestamp_seconds", Help: "Collector receipt time for the latest authenticated updater report."}, []string{"observer"})
+	stagedAt         = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_staged_timestamp_seconds", Help: "First reported staging time; zero when no image is staged."}, []string{"observer"})
+	waitingAt        = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_waiting_timestamp_seconds", Help: "First report waiting for a safe reboot; zero otherwise."}, []string{"observer"})
+	adoption         = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_running_release_info", Help: "Current reported release per enrolled device; value is 1, superseded labels are removed."}, []string{"observer", "release"})
 	// Served from the published catalog on this collector; not a device report.
 	metadataExpiry = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_metadata_expiry_timestamp_seconds", Help: "When each TUF role the collector's published update catalog serves expires, per release track; zero while the catalog cannot be read. Root, targets and releases are offline roles renewed by a signing ceremony (release-rotate-root, release-renew-offline) and are logged 90 days ahead; the others renew with release-refresh-online and are logged a week ahead."}, []string{"track", "role"})
 )

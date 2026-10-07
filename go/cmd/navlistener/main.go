@@ -89,6 +89,25 @@ func run() int {
 	log := setupLogger(cfg.Logging)
 	slog.SetDefault(log)
 	log.Info("starting", "version", version.Version, "build_number", version.BuildNumber, "revision", version.Revision, "build", version.BuildTime)
+
+	// Signal disposition is installed before anything else starts. Until it is,
+	// Go's defaults apply: SIGINT/SIGTERM terminate at once with no drain, and
+	// SIGHUP terminates too — and startup can legitimately take tens of seconds
+	// (authorization connect, schema and policy setup, model restore). A stop
+	// that arrives during that window is held in the buffered channel and
+	// consumed by the readiness select below, which then runs the ordered
+	// shutdown immediately. Go's default SIGHUP action terminates the process.
+	// Ignore it so a mis-aimed newsyslog HUP (or a HUP at the child pidfile
+	// instead of the daemon(8) supervisor) can never kill the collector, during
+	// startup or mid-drain. Log rotation reopens the logfile via daemon(8)'s -H
+	// on the supervisor; the collector needs no reload signal of its own.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Ignore(syscall.SIGHUP)
+	// The shutdown plan is fixed by the configuration, so it is decided here
+	// and handed to the historian before it runs: its drain budget is the
+	// plan's store share, not a constant that happens to fit.
+	plan := planShutdown(cfg.ShutdownTimeout)
 	// regression fix/non-fatal config findings (world-readable secrets file,
 	// non-loopback bind of an unauthenticated surface) — loud at startup, once.
 	for _, w := range cfg.Warnings {
@@ -214,6 +233,25 @@ func run() int {
 		pushSrv.SetEvidenceVerifier(evidenceVerifier)
 	}
 
+	// Update control state (docs/esp32 UPDATE-OPERATIONS). Opened here, before
+	// any listener binds or pipeline goroutine starts: Open creates the state
+	// directory and takes the instance lock, so a directory the daemon user
+	// cannot write, an unreadable or corrupt state file, or a lock still held by
+	// a predecessor draining under the supervisor must fail while the process
+	// has accepted nothing — and through run()'s return, so every deferred
+	// cleanup runs, never through os.Exit. -check-config probes the same
+	// directory and file read-only (config.finalize), without the lock.
+	updateManager, err := updates.Open(cfg.Updates)
+	if err != nil {
+		log.Error("update control state unavailable", "error", err)
+		return 1
+	}
+	if updateManager != nil {
+		defer updateManager.Close()
+		updateManager.SetLogger(log)
+		updateManager.SetHardwareVerification(cfg.ManufacturerAuthorities.Enabled())
+	}
+
 	// Bind every configured listener before starting the historian or any producer.
 	// A startup address conflict therefore accepts zero frames and needs no drain.
 	obs := server.New(cfg.Metrics.Addr, log, newDebugStateHandler(live, log))
@@ -281,12 +319,10 @@ func run() int {
 	storeDone := make(chan struct{})
 	if cfg.Store.DSN != "" {
 		// Evidence capture looks back only as far as raw retention keeps inputs.
-		rawRetention, err := config.ParseInterval(cfg.Store.RawRetention)
-		if err != nil {
-			log.Error("store.raw_retention invalid", "error", err)
-			storeCancel()
-			return 1
-		}
+		// config.finalize parsed and defaulted the interval; re-parsing the raw
+		// string here is what once let an explicitly empty raw_retention pass
+		// -check-config and fail startup after every listener was bound.
+		rawRetention := cfg.Store.RawRetentionDuration
 		evidence = evidencePolicy(rawRetention)
 		historian, err = store.New(ctx, cfg.Store, log)
 		if err != nil {
@@ -294,6 +330,9 @@ func run() int {
 			storeCancel()
 			return 1
 		}
+		// The drain gives up inside the plan's store phase, leaving the pool
+		// close its reserve, instead of racing a constant against the share.
+		historian.SetShutdownBudget(plan.store)
 		go func() { defer close(storeDone); historian.Run(storeCtx) }()
 		// surface persistent flush failure (the historian silently
 		// dropping the forensic record) as a degraded /healthz.
@@ -401,23 +440,19 @@ func run() int {
 		}
 	}()
 
-	// The native v2 read API (docs/OUTPUT.md) is optional (enabled by [serve].addr).
-	// It serves the live feeds from RAM on a loopback listener behind a TLS front,
-	// separate from the ingest write path and the metrics listener.
-	updateManager, err := updates.Open(cfg.Updates)
-	if err != nil {
-		log.Error("update control state unavailable", "error", err)
-		os.Exit(1)
-	}
+	// The update manager was opened before any listener bound (above); the push
+	// endpoint only needs it before Serve, and the lifetime watch is a pipeline
+	// goroutine like the rest.
 	if updateManager != nil {
-		defer updateManager.Close()
-		updateManager.SetHardwareVerification(cfg.ManufacturerAuthorities.Enabled())
 		if pushSrv != nil {
 			pushSrv.SetUpdates(updateManager)
 		}
 		wg.Add(1)
 		go func() { defer wg.Done(); updateManager.WatchLifetimes(ctx.Done(), log) }()
 	}
+	// The native v2 read API (docs/OUTPUT.md) is optional (enabled by [serve].addr).
+	// It serves the live feeds from RAM on a loopback listener behind a TLS front,
+	// separate from the ingest write path and the metrics listener.
 	var apiSrv *serve.Server
 	if cfg.Serve.Addr != "" {
 		// The events query API reads the historian; a true nil interface (not a typed nil
@@ -547,13 +582,8 @@ func run() int {
 		log.Warn("no ingest sources configured")
 	}
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	// Go's default SIGHUP action terminates the process. Ignore it so a mis-aimed
-	// newsyslog HUP (or a HUP at the child pidfile instead of the daemon(8) supervisor) can
-	// never kill the collector mid-drain. Log rotation reopens the logfile via daemon(8)'s
-	// -H on the supervisor; the collector needs no reload signal of its own.
-	signal.Ignore(syscall.SIGHUP)
+	// sigCh was armed at the top of run(), so a stop that arrived during startup
+	// is already waiting here and shuts the collector down in order.
 	exitCode := 0
 	select {
 	case sig := <-sigCh:
@@ -583,7 +613,6 @@ func run() int {
 	// permanently, while the process still logged "graceful shutdown complete" and
 	// returned success.
 	cancel()
-	plan := planShutdown(cfg.ShutdownTimeout)
 	var incomplete []string
 
 	// Stop serving immediately and concurrently with the pipeline drain. New
@@ -633,13 +662,11 @@ func run() int {
 	}
 
 	// Checkpoint the final in-memory pass accumulators after decode has consumed
-	// every accepted RF sample and before closing the historian pool.
+	// every accepted RF sample and before closing the historian pool. The phase
+	// has its own share of the plan: it is neither the historian's reservation
+	// nor free time outside the bound.
 	if historian != nil {
-		checkpointBudget := plan.store / 3
-		if checkpointBudget > 5*time.Second {
-			checkpointBudget = 5 * time.Second
-		}
-		checkpointCtx, checkpointCancel := context.WithTimeout(context.Background(), checkpointBudget)
+		checkpointCtx, checkpointCancel := context.WithTimeout(context.Background(), plan.checkpoint)
 		if err := saveReceptionPowerModels(checkpointCtx, historian, stationManager, true); err != nil {
 			incomplete = append(incomplete, "reception power model checkpoint")
 			log.Warn("final reception power model checkpoint failed", "error", err)
@@ -664,10 +691,13 @@ func run() int {
 		log.Warn("shutdown phase expired draining the historian; accepted frames may not be persisted")
 	}
 
-	// The serve teardown has had the pipeline and store phases to complete.
+	// The serve teardown has had the pipeline, checkpoint and store phases to
+	// complete — longer than its own phase, after which its goroutine already
+	// force-closed the listener. Nothing more is waited for: a second wait
+	// here would spend time the plan never allotted.
 	select {
 	case <-apiDone:
-	case <-time.After(plan.api):
+	default:
 		incomplete = append(incomplete, "v2 serve shutdown")
 		if apiSrv != nil {
 			_ = apiSrv.Close()
@@ -700,16 +730,20 @@ func run() int {
 // must be guaranteed: producers and decode feed it, and the API and metrics
 // listeners are cleanup that must never delay it.
 type shutdownPlan struct {
-	pipeline time.Duration // producers -> close frame queue -> finish decoding
-	api      time.Duration // stop serving; force-closed when this expires
-	store    time.Duration // reserved persistence budget
-	metrics  time.Duration
+	pipeline   time.Duration // producers -> close frame queue -> finish decoding
+	api        time.Duration // stop serving; force-closed when this expires
+	checkpoint time.Duration // final reception-model and AGC-baseline checkpoints
+	store      time.Duration // reserved persistence budget (drain + pool close)
+	metrics    time.Duration
 }
 
-// The split is proportional so a deliberately small configured bound still gives
-// every phase a real share rather than whatever the phase before it left over.
-// The API phase overlaps the pipeline phase, so the serial worst case is
-// pipeline + store + metrics, within the configured bound.
+// The split is proportional so a deliberately small bound still gives every
+// phase a real share rather than whatever the phase before it left over. The
+// API phase overlaps the pipeline phase and is never waited for again, so the
+// serial worst case is pipeline + checkpoint + store + metrics, which the
+// shares below keep within the bound (cfg.ShutdownTimeout). The historian's
+// drain budget is derived from the store share (store.DrainBudget), with a
+// fixed slice of that share reserved for closing the pool.
 func planShutdown(total time.Duration) shutdownPlan {
 	if total <= 0 {
 		total = 15 * time.Second
@@ -722,10 +756,11 @@ func planShutdown(total time.Duration) shutdownPlan {
 		return d
 	}
 	return shutdownPlan{
-		pipeline: share(50),
-		api:      share(15),
-		store:    share(40),
-		metrics:  share(10),
+		pipeline:   share(50),
+		api:        share(15),
+		checkpoint: share(8),
+		store:      share(32),
+		metrics:    share(10),
 	}
 }
 
@@ -931,8 +966,10 @@ func recoverDecodePanic(f *ingest.RawFrame, log *slog.Logger, lim *panicLogLimit
 
 // declaredCapabilities collects each station's declared tudorgps fingerprint (the signals its
 // silicon can produce) from the dial sources and push observers, keyed by station id, for the
-// capability-plausibility detector (docs/INTEGRITY.md §6). A station may be configured in only
-// one place; a push observer's declaration overrides a dial source of the same name.
+// capability-plausibility detector (docs/INTEGRITY.md §6). config.finalize enforces that a
+// station is configured in one place only (a dial source or a push observer, never both),
+// so the two loops below never write the same key. A database-authorized observer is not
+// a config row and is not covered by that check.
 func declaredCapabilities(cfg *config.Config) map[string][]state.CapSignal {
 	out := map[string][]state.CapSignal{}
 	add := func(id string, decl []config.Capability) {
@@ -1102,7 +1139,14 @@ func detectEvents(live *state.Store, det *detect.Detector, audienceKey string) [
 	events = append(events, det.TickIntegrity(now, live.FeedStationIntegrity(now))...)
 	// Station liveness (station_offline, regression fix/regression fix) reads the unfiltered
 	// per-station age map — retained state, not the staleness-filtered RF view.
+	// Private audiences see every input a station produces, so a station that
+	// keeps reporting only board telemetry or receiver solutions still goes
+	// offline when those stop; public views know only navigation and RF inputs,
+	// exactly as the public observers row does.
 	stationLastSeen := live.StationLastSeen(now)
+	if audienceKey == "public" {
+		stationLastSeen = live.ReceiverLastSeen(now)
+	}
 	capabilityReports := live.FeedCapabilityReports(now)
 	if audienceKey == "public" {
 		// Anonymous/redacted contributors may affect satellite-level public

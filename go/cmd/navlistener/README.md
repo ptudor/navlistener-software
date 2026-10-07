@@ -26,7 +26,7 @@ genuinely belong to the process rather than to a package.
 |---|---|
 | `-config <path>` | Config file path. Without it, `config.DefaultPaths` is searched in order. |
 | `-version` | Print build identity and exit. |
-| `-check-config` | Load and validate the config, print a summary, exit. **Full startup parity** : it loads the `[push]` TLS keypair and client CA, parses the store DSN, and validates NTRIP CA files. On a bare host without certs it fails by design — that's the point. |
+| `-check-config` | Load and validate the config, print a summary, exit. **Startup parity** for everything bound before readiness: it loads the `[push]` TLS keypair and client CA, parses the store DSN, validates NTRIP CA files, verifies the manufacturer keys and registry, and probes the directories of `manufacturer_authority.registry_state` and `updates.state_file` for writability (and an existing update state file for loadability) without creating or locking anything. Not covered: database connectivity, listener binds, the update state's instance lock. On a bare host without certs it fails by design — that's the point. |
 
 ### What lives here rather than in a package
 
@@ -113,11 +113,21 @@ discarded.
 `SIGINT`/`SIGTERM` (or a fatal from any component) starts a drain bounded by
 `cfg.ShutdownTimeout`:
 
-1. Cancel the ingest context — connectors and the push server stop accepting.
-2. Drain the frame channel so in-flight frames are applied rather than dropped.
-3. Flush remaining events.
-4. Shut down the API server, then the metrics server.
-5. Cancel the **store's separate context** last, so the historian can commit what's queued.
+1. Cancel the ingest context — connectors and the push server stop accepting — and start the
+   API teardown concurrently (15 % of the bound; force-closed when that expires, never waited
+   for again).
+2. Pipeline phase (50 %): producers finish, the frame queue closes, decode drains it so
+   in-flight frames are applied rather than dropped, and the event pipelines flush.
+3. Checkpoint phase (8 %): the final reception power model and AGC baseline checkpoints.
+4. Store phase (32 %): cancel the **store's separate context** so the historian drains and
+   commits what's queued. The historian's drain deadline is this share less a 500 ms reserve
+   for closing the pool (`store.SetShutdownBudget` before `Run`), so the drain never outlives
+   this wait.
+5. Metrics phase (10 %): shut down the metrics server.
+
+The serial sum of the phases the shutdown actually runs in sequence (pipeline + checkpoint +
+store + metrics) is 100 % of the bound; `planShutdown`'s test pins that and the store's
+drain-plus-close fit.
 
 The store deliberately gets its own context: if it shared the ingest one, cancelling ingest would
 cancel the writer mid-batch and lose exactly the frames the drain was trying to save.

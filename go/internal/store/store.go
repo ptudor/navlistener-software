@@ -28,8 +28,17 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-// queueDepth bounds the in-flight frames awaiting a flush.
-const queueDepth = 16384
+// queueDepth bounds the in-flight frames awaiting a flush, and maxQueueBytes
+// bounds their payload: a frame count alone let one feeder's oversized records
+// pin queueDepth × their size in memory, so the queue is bounded by both and
+// Enqueue drops (and counts) on whichever is reached first.
+const (
+	queueDepth    = 16384
+	maxQueueBytes = 64 << 20
+	// frameQueueOverhead is the accounting weight of a NavFrame beyond its
+	// payload slices: the struct and its provenance strings.
+	frameQueueOverhead = 512
+)
 
 // Flush retry/quarantine budgets: a failed CopyFrom is retried with bounded backoff
 // (transient DB blips) rather than discarding a batch of the forensic record on the
@@ -44,14 +53,48 @@ const queueDepth = 16384
 // (one deadline for the whole drain, never a fresh budget per chunk).
 const (
 	normalFlushBudget   = 35 * time.Second
-	shutdownFlushBudget = 5 * time.Second
+	shutdownFlushBudget = 5 * time.Second // for a Store whose budget was never set (tests)
 )
 
-// pruneEvery is how often nav_frames_seq_seen (the regression fix replay-dedup ledger) is
-// swept of entries older than the raw-retention window. Coarse cadence: the table
-// is small (one row per historically-seen (source, feeder_seq) pair) and the
-// window is days-scale, so hourly is more than enough to keep it bounded.
-const pruneEvery = 1 * time.Hour
+// PoolCloseReserve is the slice of the daemon's store phase kept for
+// pool.Close() after the drain gives up: Close waits for acquired connections
+// to return, and that wait must not come out of time the process no longer has.
+const PoolCloseReserve = 500 * time.Millisecond
+
+// minDrainBudget keeps a degenerate phase from producing a drain that cannot
+// flush a single chunk.
+const minDrainBudget = 100 * time.Millisecond
+
+// DrainBudget is the shutdown drain deadline the writer derives from the
+// daemon's store phase: the phase less PoolCloseReserve, so drain plus close
+// fit the phase the daemon actually waits for. The daemon's plan test pins
+// DrainBudget(phase) + PoolCloseReserve <= phase.
+func DrainBudget(phase time.Duration) time.Duration {
+	return max(phase-PoolCloseReserve, minDrainBudget)
+}
+
+// SetShutdownBudget tells the writer how long the daemon's shutdown plan gives
+// the whole store phase; the drain gives up DrainBudget(phase) after it starts
+// and the remainder closes the pool. Call before Run. The single shared
+// deadline across drain chunks is unchanged — only where it comes from.
+func (s *Store) SetShutdownBudget(phase time.Duration) {
+	s.shutdownBudget = DrainBudget(phase)
+}
+
+// pruneEvery is how often nav_frames_seq_seen (the replay-dedup ledger) is
+// swept of entries older than the raw-retention window. The sweep runs on its
+// own goroutine, never the writer's, and deletes in chunks of pruneChunkRows,
+// each its own statement under pruneChunkTimeout, so progress is durable chunk
+// by chunk: a backlog one sweep's pruneSweepBudget cannot finish is continued
+// by the next instead of being rolled back whole. At ~26 sequenced frames/s per
+// receiver the hourly backlog is ~94k rows per receiver, so a fleet's sweep is
+// a few hundred chunks.
+const (
+	pruneEvery        = 1 * time.Hour
+	pruneChunkRows    = 10000
+	pruneChunkTimeout = 10 * time.Second
+	pruneSweepBudget  = 20 * time.Minute
+)
 
 const defaultSeqSeenRetention = 7 * 24 * time.Hour // mirrors the "7 days" RawRetention default
 
@@ -191,6 +234,25 @@ type Store struct {
 	copy             copyRowsFunc  // defaults to s.copyRows (pool-backed); tests substitute a fake
 	atomicPersist    bool          // production: claim replay keys and copy rows in one transaction
 	shutdownBudget   time.Duration // defaults to shutdownFlushBudget; tests shrink it to run fast
+
+	// Ledger sweep: its cadence and per-sweep budget default to pruneEvery and
+	// pruneSweepBudget (tests shrink them); pruning guards against overlapping
+	// sweeps and pruneWG lets Run wait the sweep out before closing the pool.
+	pruneEvery       time.Duration
+	pruneSweepBudget time.Duration
+	pruning          atomic.Bool
+	pruneWG          sync.WaitGroup
+
+	// sessionKeys caches nav_frames_sessions keys per (source, session) so each
+	// feeder boot is resolved once per process; filled only after the
+	// resolving transaction committed, evicted when the sweep retires a session.
+	sessionMu   sync.Mutex
+	sessionKeys map[sessionPair]int64
+
+	// queueBytes is the accounting weight of every frame in `in`
+	// (frameQueueBytes), bounded by queueBytesLimit (0 = maxQueueBytes).
+	queueBytes      atomic.Int64
+	queueBytesLimit int64
 	// persistOnce is the one-transaction claim+copy (s.persistAtomicOnce in
 	// production); a seam so the retry/abort/retention policy around it
 	// is unit-testable without a database, mirroring the copy seam above.
@@ -352,19 +414,25 @@ func New(ctx context.Context, cfg config.Store, log *slog.Logger) (*Store, error
 	if be <= 0 {
 		be = time.Second
 	}
-	// derive the replay-ledger horizon from the same parser that
-	// validated the policy interval, and fail rather than silently falling back to
-	// the default — a silent fallback is exactly how the database's retention and
-	// the in-memory dedupe retention came to disagree. An empty value is the
-	// documented "use the default" case (it matches applyPolicies' own "7 days").
-	seqSeenRetention := defaultSeqSeenRetention
-	if cfg.RawRetention != "" {
-		d, err := parseSimpleInterval(cfg.RawRetention)
-		if err != nil {
-			pool.Close()
-			return nil, fmt.Errorf("raw_retention: %w", err)
+	// The replay-ledger horizon is the interval config.finalize parsed and
+	// validated (RawRetentionDuration), so it cannot disagree with the policy
+	// DDL built from the same string. A Store built without Load (tests) carries
+	// only the string: derive the horizon from the same parser then, and fail
+	// rather than silently falling back to the default — a silent fallback is
+	// exactly how the database's retention and the in-memory dedupe retention
+	// came to disagree. An empty value is the documented "use the default" case
+	// (it matches applyPolicies' own fallback).
+	seqSeenRetention := cfg.RawRetentionDuration
+	if seqSeenRetention <= 0 {
+		seqSeenRetention = defaultSeqSeenRetention
+		if cfg.RawRetention != "" {
+			d, err := parseSimpleInterval(cfg.RawRetention)
+			if err != nil {
+				pool.Close()
+				return nil, fmt.Errorf("raw_retention: %w", err)
+			}
+			seqSeenRetention = d
 		}
-		seqSeenRetention = d
 	}
 	s := &Store{
 		pool:             pool,
@@ -376,6 +444,10 @@ func New(ctx context.Context, cfg config.Store, log *slog.Logger) (*Store, error
 		seqSeenRetention: seqSeenRetention,
 		atomicPersist:    true,
 		shutdownBudget:   shutdownFlushBudget,
+		pruneEvery:       pruneEvery,
+		pruneSweepBudget: pruneSweepBudget,
+		sessionKeys:      map[sessionPair]int64{},
+		queueBytesLimit:  maxQueueBytes,
 	}
 	s.copy = s.copyRows
 	s.persistOnce = s.persistAtomicOnce
@@ -428,7 +500,13 @@ func applySchema(ctx context.Context, pool *pgxpool.Pool) error {
 // constraint — and never for a purely additive, idempotent migration, which an
 // older binary can run against unharmed. A build refuses to start against a
 // database marked with a higher version than it knows.
-const schemaVersion = 1
+//
+// Version 2 re-keyed the replay ledger: nav_frames_seq_seen is keyed by a
+// BIGINT session_key into nav_frames_sessions instead of two TEXT columns. A
+// version-1 binary's migration block would drop the re-keyed table (it looks
+// like the pre-session shape to it) and recreate the old one, so the marker
+// keeps that binary from starting at all.
+const schemaVersion = 2
 
 // checkSchemaVersion refuses to run against a database whose schema a newer
 // build has marked: the migrations here can only ever be behind such a schema,
@@ -497,7 +575,8 @@ var requiredColumns = map[string][]string{
 	"rf_samples":             rfColumns,
 	"reception_power_models": {"source_id", "updated_at", "model_id", "data"},
 	"agc_baselines":          {"source_id", "updated_at", "epoch", "data"},
-	"nav_frames_seq_seen":    {"source_id", "session_id", "feeder_seq", "seen_at"},
+	"nav_frames_seq_seen":    {"session_key", "feeder_seq", "seen_at"},
+	"nav_frames_sessions":    {"session_key", "source_id", "session_id", "first_seen"},
 }
 
 // verifyRequiredColumns fails fast with an actionable message if a required table
@@ -613,12 +692,14 @@ func isTransientConflict(err error) bool {
 // remove/add boundary in turn; production always passes nil.
 func applyPoliciesWithHook(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, cfg config.Store,
 	afterExec func(sql string)) error {
+	// config.finalize never leaves these empty; the fallback serves a Store built
+	// without Load (tests) and keeps the same defaults.
 	compAfter, rawRet := cfg.CompressAfter, cfg.RawRetention
 	if compAfter == "" {
-		compAfter = "1 day"
+		compAfter = config.DefaultCompressAfter
 	}
 	if rawRet == "" {
-		rawRet = "7 days"
+		rawRet = config.DefaultRawRetention
 	}
 	// config.ParseInterval re-applies config.IntervalRe, so this keeps its
 	// defense-in-depth role as the injection guard for the DDL interpolation
@@ -870,21 +951,63 @@ func (s *Store) Enqueue(f *NavFrame) {
 		s.notifyDurable([]*NavFrame{f})
 		return
 	}
+	// The byte budget is reserved before the send so the two bounds compose:
+	// a frame is queued only when both its slot and its bytes fit.
+	n := frameQueueBytes(f)
+	if s.queueBytes.Add(n) > s.queueByteLimit() {
+		s.queueBytes.Add(-n)
+		s.dropOverflow(f, "queue_bytes")
+		return
+	}
 	select {
 	case s.in <- f:
 	default:
-		metrics.StoreDroppedTotal.Inc()
-		// One warning per overflow streak: the first drop after a clean cycle.
-		// Every later drop of the streak is visible through the counter and,
-		// from the second consecutive cycle, through Degraded(); logging each
-		// would amplify exactly the load that caused the overflow. (If a cycle
-		// ends between this sample and its streak update, one extra line can
-		// slip through — harmless.)
-		if s.cycleOverflow.Add(1) == 1 && s.overflowStreak.Load() == 0 {
-			s.log.Warn("historian queue full; dropping frames until the writer catches up", "source", f.SourceID, "queue_depth", cap(s.in))
-		}
+		s.queueBytes.Add(-n)
+		s.dropOverflow(f, "queue_depth")
 	}
 }
+
+// dropOverflow records a frame the queue could not take: by count or by bytes,
+// both the same backpressure condition for the streak accounting.
+func (s *Store) dropOverflow(f *NavFrame, bound string) {
+	metrics.StoreDroppedTotal.Inc()
+	// One warning per overflow streak: the first drop after a clean cycle.
+	// Every later drop of the streak is visible through the counter and,
+	// from the second consecutive cycle, through Degraded(); logging each
+	// would amplify exactly the load that caused the overflow. (If a cycle
+	// ends between this sample and its streak update, one extra line can
+	// slip through — harmless.)
+	if s.cycleOverflow.Add(1) == 1 && s.overflowStreak.Load() == 0 {
+		s.log.Warn("historian queue full; dropping frames until the writer catches up",
+			"source", f.SourceID, "bound", bound, "queue_depth", cap(s.in), "queue_bytes", s.queueBytes.Load(), "queue_bytes_limit", s.queueByteLimit())
+	}
+}
+
+// queueByteLimit is the configured byte bound, maxQueueBytes for a Store built
+// without New (tests).
+func (s *Store) queueByteLimit() int64 {
+	if s.queueBytesLimit > 0 {
+		return s.queueBytesLimit
+	}
+	return maxQueueBytes
+}
+
+// frameQueueBytes is f's accounting weight in the queue: every payload slice
+// it retains plus a fixed allowance for the struct and its provenance strings.
+func frameQueueBytes(f *NavFrame) int64 {
+	n := frameQueueOverhead + len(f.Raw) + len(f.Decoded) + len(f.SBFHeader) + len(f.AuthorityEvidence)
+	if f.Board != nil {
+		n += len(f.Board.Data)
+	}
+	if f.RF != nil {
+		n += len(f.RF.Data)
+	}
+	return int64(n)
+}
+
+// dequeued releases f's byte reservation once the writer has taken it off the
+// queue; the batch it joins is bounded by batchSize, not by this budget.
+func (s *Store) dequeued(f *NavFrame) { s.queueBytes.Add(-frameQueueBytes(f)) }
 
 // Run is the batched writer loop. It flushes on a size or time threshold and, on
 // shutdown, drains and flushes the remainder before closing the pool.
@@ -892,7 +1015,11 @@ func (s *Store) Run(ctx context.Context) {
 	batch := make([]*NavFrame, 0, s.batchSize)
 	ticker := time.NewTicker(s.batchEvery)
 	defer ticker.Stop()
-	pruneTicker := time.NewTicker(pruneEvery)
+	every := s.pruneEvery
+	if every <= 0 {
+		every = pruneEvery
+	}
+	pruneTicker := time.NewTicker(every)
 	defer pruneTicker.Stop()
 
 	if s.pool != nil { // nil only in tests that construct a Store without New()
@@ -934,6 +1061,7 @@ func (s *Store) Run(ctx context.Context) {
 	for {
 		select {
 		case f := <-s.in:
+			s.dequeued(f)
 			batch = append(batch, f)
 			if len(batch) >= s.batchSize {
 				flush()
@@ -941,7 +1069,9 @@ func (s *Store) Run(ctx context.Context) {
 		case <-ticker.C:
 			flush()
 		case <-pruneTicker.C:
-			s.pruneSeqSeen(ctx)
+			// On its own goroutine: a sweep at fleet scale runs for minutes,
+			// and the queue must keep draining meanwhile.
+			s.startPrune(ctx)
 		case <-ctx.Done():
 			// One shared deadline for the entire shutdown drain, not a fresh budget
 			// per chunk flush — a full queue at batchSize chunks would otherwise take
@@ -954,8 +1084,10 @@ func (s *Store) Run(ctx context.Context) {
 			s.drain(&batch, deadline)
 			s.flush(context.Background(), batch, deadline)
 			// pool.Close blocks until every acquired connection is back, so
-			// the writer's must go first.
+			// the writer's must go first, and a sweep still in flight (its
+			// chunk statement is already cancelled with ctx) must have returned.
 			s.dropWriter()
+			s.pruneWG.Wait()
 			if s.pool != nil { // nil only in tests that construct a Store without New()
 				s.pool.Close()
 			}
@@ -965,20 +1097,101 @@ func (s *Store) Run(ctx context.Context) {
 	}
 }
 
-// pruneSeqSeen deletes replay-dedup ledger entries older than the raw-retention
-// window : once nav_frames itself has retired a chunk that old, there's
-// nothing left for a stale entry to deduplicate against.
-func (s *Store) pruneSeqSeen(ctx context.Context) {
-	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	cutoff := time.Now().Add(-s.seqSeenRetention)
-	tag, err := s.pool.Exec(cctx, `DELETE FROM nav_frames_seq_seen WHERE seen_at < $1`, cutoff)
-	if err != nil {
-		s.log.Warn("nav_frames_seq_seen prune failed", "error", err)
+// startPrune runs one ledger sweep on its own goroutine unless the previous
+// sweep is still running (a backlog that outlasts pruneEvery is simply picked
+// up by the next tick after it finishes).
+func (s *Store) startPrune(ctx context.Context) {
+	if !s.pruning.CompareAndSwap(false, true) {
 		return
 	}
-	if n := tag.RowsAffected(); n > 0 {
-		s.log.Info("nav_frames_seq_seen pruned", "rows", n, "cutoff", cutoff)
+	s.pruneWG.Add(1)
+	go func() {
+		defer s.pruneWG.Done()
+		defer s.pruning.Store(false)
+		s.pruneSeqSeen(ctx)
+	}()
+}
+
+// pruneSeqSeen deletes replay-dedup ledger entries older than the raw-retention
+// window: once nav_frames itself has retired a chunk that old, there's nothing
+// left for a stale entry to deduplicate against. It deletes in chunks of
+// pruneChunkRows, each its own statement under its own timeout, until nothing
+// is left or the sweep budget expires, so every finished chunk stays deleted
+// (one whole-table DELETE under one timeout rolled back entirely when it could
+// not finish, and the backlog then only grew). Sessions with no entries left
+// and older than the window are retired afterwards; a session that resumes in
+// the instant between that check and its deletion keeps claiming under its
+// cached key until the eviction below makes the next flush re-create it.
+func (s *Store) pruneSeqSeen(ctx context.Context) {
+	cutoff := time.Now().Add(-s.seqSeenRetention)
+	budget := s.pruneSweepBudget
+	if budget <= 0 {
+		budget = pruneSweepBudget
+	}
+	deadline := time.Now().Add(budget)
+	var rows int64
+	chunks := 0
+	exhausted := false
+	for ctx.Err() == nil {
+		if !time.Now().Before(deadline) {
+			exhausted = true
+			break
+		}
+		cctx, cancel := context.WithTimeout(ctx, pruneChunkTimeout)
+		tag, err := s.pool.Exec(cctx,
+			`DELETE FROM nav_frames_seq_seen
+			  WHERE ctid = ANY(ARRAY(SELECT ctid FROM nav_frames_seq_seen WHERE seen_at < $1 LIMIT $2))`,
+			cutoff, pruneChunkRows)
+		cancel()
+		if err != nil {
+			s.log.Warn("nav_frames_seq_seen prune failed; finished chunks are kept", "error", err, "rows", rows, "chunks", chunks)
+			return
+		}
+		n := tag.RowsAffected()
+		rows += n
+		if n == 0 {
+			break
+		}
+		chunks++
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	cctx, cancel := context.WithTimeout(ctx, pruneChunkTimeout)
+	defer cancel()
+	retired, err := s.pool.Query(cctx,
+		`DELETE FROM nav_frames_sessions s
+		  WHERE s.first_seen < $1
+		    AND NOT EXISTS (SELECT 1 FROM nav_frames_seq_seen l WHERE l.session_key = s.session_key)
+		  RETURNING s.source_id, s.session_id`, cutoff)
+	if err != nil {
+		s.log.Warn("nav_frames_sessions prune failed", "error", err)
+		return
+	}
+	var sessions []sessionPair
+	for retired.Next() {
+		var p sessionPair
+		if err := retired.Scan(&p.source, &p.session); err != nil {
+			retired.Close()
+			s.log.Warn("nav_frames_sessions prune failed", "error", err)
+			return
+		}
+		sessions = append(sessions, p)
+	}
+	retired.Close()
+	if err := retired.Err(); err != nil {
+		s.log.Warn("nav_frames_sessions prune failed", "error", err)
+		return
+	}
+	if len(sessions) > 0 {
+		s.sessionMu.Lock()
+		for _, p := range sessions {
+			delete(s.sessionKeys, p)
+		}
+		s.sessionMu.Unlock()
+	}
+	if rows > 0 || len(sessions) > 0 {
+		s.log.Info("nav_frames_seq_seen pruned", "rows", rows, "chunks", chunks, "sessions", len(sessions), "cutoff", cutoff, "budget_exhausted", exhausted)
 	}
 }
 
@@ -990,6 +1203,7 @@ func (s *Store) drain(batch *[]*NavFrame, deadline time.Time) {
 	for {
 		select {
 		case f := <-s.in:
+			s.dequeued(f)
 			*batch = append(*batch, f)
 			if len(*batch) >= s.batchSize {
 				s.flush(context.Background(), *batch, deadline)
@@ -1048,6 +1262,181 @@ type seqKey struct {
 	seq     uint64
 }
 
+// sessionPair is the TEXT half of a replay key — one feeder boot of one
+// observer — which nav_frames_sessions normalises to a BIGINT session_key so
+// the ledger carries two integers per frame instead of two strings.
+type sessionPair struct {
+	source  string
+	session string
+}
+
+// rowQuerier is the one method the ledger claim needs from a pool or a
+// transaction.
+type rowQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// resolveSessionKeys returns the session_key of every pair, creating the
+// sessions that do not exist yet through q — the claim transaction in
+// production, so a rolled-back commit also rolls back any session it created.
+// Pairs already cached cost nothing. The caller publishes newly resolved keys
+// with rememberSessionKeys once their transaction has committed; until then a
+// key that the rollback discards is never cached.
+func (s *Store) resolveSessionKeys(ctx context.Context, q rowQuerier, pairs []sessionPair) (map[sessionPair]int64, error) {
+	keys := make(map[sessionPair]int64, len(pairs))
+	var missing []sessionPair
+	s.sessionMu.Lock()
+	for _, p := range pairs {
+		if k, ok := s.sessionKeys[p]; ok {
+			keys[p] = k
+		} else {
+			missing = append(missing, p)
+		}
+	}
+	s.sessionMu.Unlock()
+	if len(missing) == 0 {
+		return keys, nil
+	}
+	sources := make([]string, len(missing))
+	sessions := make([]string, len(missing))
+	for i, p := range missing {
+		sources[i], sessions[i] = p.source, p.session
+	}
+	// Sessions the INSERT creates come back through its RETURNING; sessions
+	// that already existed come from the base table, which the statement's own
+	// snapshot shows without the rows the CTE just inserted, so the union never
+	// repeats a pair and one round trip resolves both kinds.
+	const resolve = `WITH wanted(source_id, session_id) AS (SELECT * FROM unnest($1::text[], $2::text[])),
+	      created AS (
+	        INSERT INTO nav_frames_sessions (source_id, session_id)
+	        SELECT source_id, session_id FROM wanted
+	        ON CONFLICT (source_id, session_id) DO NOTHING
+	        RETURNING session_key, source_id, session_id)
+	 SELECT session_key, source_id, session_id FROM created
+	 UNION ALL
+	 SELECT s.session_key, s.source_id, s.session_id
+	   FROM nav_frames_sessions s JOIN wanted w USING (source_id, session_id)`
+	if err := scanSessionKeys(ctx, q, resolve, sources, sessions, keys); err != nil {
+		return nil, err
+	}
+	// A pair neither created nor found can only mean another writer inserted
+	// it between this statement's snapshot and its ON CONFLICT; the store has
+	// one writer, but a plain lookup settles it either way.
+	var unresolved []sessionPair
+	for _, p := range missing {
+		if _, ok := keys[p]; !ok {
+			unresolved = append(unresolved, p)
+		}
+	}
+	if len(unresolved) > 0 {
+		sources, sessions = sources[:0], sessions[:0]
+		for _, p := range unresolved {
+			sources, sessions = append(sources, p.source), append(sessions, p.session)
+		}
+		const lookup = `SELECT s.session_key, s.source_id, s.session_id
+		   FROM nav_frames_sessions s
+		   JOIN unnest($1::text[], $2::text[]) AS w(source_id, session_id) USING (source_id, session_id)`
+		if err := scanSessionKeys(ctx, q, lookup, sources, sessions, keys); err != nil {
+			return nil, err
+		}
+		for _, p := range unresolved {
+			if _, ok := keys[p]; !ok {
+				return nil, fmt.Errorf("nav_frames_sessions: no session for %s/%s", p.source, p.session)
+			}
+		}
+	}
+	return keys, nil
+}
+
+func scanSessionKeys(ctx context.Context, q rowQuerier, sql string, sources, sessions []string, into map[sessionPair]int64) error {
+	rows, err := q.Query(ctx, sql, sources, sessions)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key int64
+		var p sessionPair
+		if err := rows.Scan(&key, &p.source, &p.session); err != nil {
+			return err
+		}
+		into[p] = key
+	}
+	return rows.Err()
+}
+
+// rememberSessionKeys publishes resolved keys to the cache once the
+// transaction that may have created their sessions has committed.
+func (s *Store) rememberSessionKeys(keys map[sessionPair]int64) {
+	if len(keys) == 0 {
+		return
+	}
+	s.sessionMu.Lock()
+	if s.sessionKeys == nil {
+		s.sessionKeys = map[sessionPair]int64{}
+	}
+	for p, k := range keys {
+		s.sessionKeys[p] = k
+	}
+	s.sessionMu.Unlock()
+}
+
+// claimSeqKeys claims every key in unique in the ledger through q and returns
+// the ones that were newly claimed (not a replay of an already-persisted
+// sequence) together with the session keys it resolved, which the caller
+// caches once q's transaction has committed. ON CONFLICT DO NOTHING plus
+// RETURNING means a key already in the ledger is silently absent from the
+// result — exactly the "already stored, drop this replay" signal.
+func (s *Store) claimSeqKeys(ctx context.Context, q rowQuerier, unique []seqKey) (fresh map[seqKey]bool, resolved map[sessionPair]int64, err error) {
+	fresh = make(map[seqKey]bool, len(unique))
+	if len(unique) == 0 {
+		return fresh, nil, nil
+	}
+	pairs := make([]sessionPair, 0, len(unique))
+	seenPair := make(map[sessionPair]bool, len(unique))
+	for _, k := range unique {
+		p := sessionPair{k.source, k.session}
+		if !seenPair[p] {
+			seenPair[p] = true
+			pairs = append(pairs, p)
+		}
+	}
+	resolved, err = s.resolveSessionKeys(ctx, q, pairs)
+	if err != nil {
+		return nil, nil, err
+	}
+	keys := make([]int64, len(unique))
+	seqs := make([]int64, len(unique))
+	byKey := make(map[int64]sessionPair, len(resolved))
+	for p, k := range resolved {
+		byKey[k] = p
+	}
+	for i, k := range unique {
+		keys[i], seqs[i] = resolved[sessionPair{k.source, k.session}], int64(k.seq)
+	}
+	rows, err := q.Query(ctx,
+		`INSERT INTO nav_frames_seq_seen (session_key, feeder_seq)
+		 SELECT * FROM unnest($1::bigint[], $2::bigint[])
+		 ON CONFLICT (session_key, feeder_seq) DO NOTHING
+		 RETURNING session_key, feeder_seq`, keys, seqs)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, seq int64
+		if err := rows.Scan(&key, &seq); err != nil {
+			return nil, nil, err
+		}
+		p := byKey[key]
+		fresh[seqKey{p.source, p.session, uint64(seq)}] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	return fresh, resolved, nil
+}
+
 // persistAtomicOnce claims replay keys and inserts their corresponding raw rows in
 // one transaction. A failed CopyFrom or commit rolls the claims back, so reconnect
 // replay can retry them. Existing claims are durable proof that the row committed
@@ -1087,36 +1476,12 @@ func (s *Store) persistAtomicOnce(ctx context.Context, batch []*NavFrame) (writt
 		}
 	}
 
-	fresh := make(map[seqKey]bool, len(unique))
-	if len(unique) > 0 {
-		sources := make([]string, len(unique))
-		sessions := make([]string, len(unique))
-		seqs := make([]int64, len(unique))
-		for i, k := range unique {
-			sources[i], sessions[i], seqs[i] = k.source, k.session, int64(k.seq)
-		}
-		rows, qerr := tx.Query(ctx,
-			`INSERT INTO nav_frames_seq_seen (source_id, session_id, feeder_seq)
-			 SELECT * FROM unnest($1::text[], $2::text[], $3::bigint[])
-			 ON CONFLICT (source_id, session_id, feeder_seq) DO NOTHING
-			 RETURNING source_id, session_id, feeder_seq`, sources, sessions, seqs)
-		if qerr != nil {
-			return 0, qerr
-		}
-		for rows.Next() {
-			var src, sess string
-			var seq int64
-			if qerr = rows.Scan(&src, &sess, &seq); qerr != nil {
-				rows.Close()
-				return 0, qerr
-			}
-			fresh[seqKey{src, sess, uint64(seq)}] = true
-		}
-		qerr = rows.Err()
-		rows.Close()
-		if qerr != nil {
-			return 0, qerr
-		}
+	// The session rows a claim may create live in this transaction too: a
+	// rolled-back copy rolls them back, and their keys reach the cache only
+	// after the commit below.
+	fresh, resolved, err := s.claimSeqKeys(ctx, tx, unique)
+	if err != nil {
+		return 0, err
 	}
 
 	copyRows := make([][]any, 0, len(batch))
@@ -1167,6 +1532,7 @@ func (s *Store) persistAtomicOnce(ctx context.Context, batch []*NavFrame) (writt
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
+	s.rememberSessionKeys(resolved)
 	for kind, n := range boardCounts {
 		metrics.StoreBoardRowsTotal.WithLabelValues(kind).Add(float64(n))
 	}
@@ -1387,43 +1753,21 @@ func frameKind(f *NavFrame) string {
 	return "nav"
 }
 
-// checkSeqSeen upserts keys into nav_frames_seq_seen in one round trip and returns
-// the subset that were newly inserted (i.e. not a replay of an already-persisted
-// sequence). ON CONFLICT DO NOTHING + RETURNING means a key already present in the
-// ledger is silently absent from the result — exactly the "already stored, drop
-// this replay" signal dedupBatch needs.
+// checkSeqSeen claims keys in nav_frames_seq_seen outside any transaction
+// (the legacy, non-atomic path) and returns the subset that were newly
+// claimed — not a replay of an already-persisted sequence — which is the
+// signal dedupBatch needs. Each statement autocommits, so the sessions it
+// resolved are durable and cached at once.
 func (s *Store) checkSeqSeen(ctx context.Context, keys []seqKey) (map[seqKey]bool, error) {
 	if len(keys) == 0 {
 		return nil, nil
 	}
-	sources := make([]string, len(keys))
-	sessions := make([]string, len(keys))
-	seqs := make([]int64, len(keys))
-	for i, k := range keys {
-		sources[i] = k.source
-		sessions[i] = k.session
-		seqs[i] = int64(k.seq)
-	}
-	rows, err := s.pool.Query(ctx,
-		`INSERT INTO nav_frames_seq_seen (source_id, session_id, feeder_seq)
-		 SELECT * FROM unnest($1::text[], $2::text[], $3::bigint[])
-		 ON CONFLICT (source_id, session_id, feeder_seq) DO NOTHING
-		 RETURNING source_id, session_id, feeder_seq`,
-		sources, sessions, seqs)
+	fresh, resolved, err := s.claimSeqKeys(ctx, s.pool, keys)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	fresh := make(map[seqKey]bool, len(keys))
-	for rows.Next() {
-		var src, sess string
-		var seq int64
-		if err := rows.Scan(&src, &sess, &seq); err != nil {
-			return nil, err
-		}
-		fresh[seqKey{src, sess, uint64(seq)}] = true
-	}
-	return fresh, rows.Err()
+	s.rememberSessionKeys(resolved)
+	return fresh, nil
 }
 
 // dedupBatch drops replayed push-path frames: an entry with a feeder sequence not

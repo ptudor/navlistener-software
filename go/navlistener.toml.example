@@ -125,8 +125,9 @@ ack_interval = "1s"
 # registry_reload = "30s"          # how often the file is checked for a change
 # Records the newest registry sequence adopted, so a restart cannot be handed an
 # older registry that still carries a valid signature. The collector writes it
-# (0600); the directory must exist and be writable by the daemon. Omitting it is
-# a startup WARNING: the registry is then monotonic only within one process.
+# (0600); the directory must exist and be writable by the daemon (-check-config
+# probes it). Omitting it is a startup WARNING: the registry is then monotonic
+# only within one process.
 # registry_state = "/var/db/navlistener/registry.state"
 # require_registry_entry = false   # true withholds trust from boards the registry does not list
 #
