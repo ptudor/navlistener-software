@@ -341,6 +341,16 @@
         }
       }
     },
+    "error.update_denied": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The collector has not granted update control for this observer."
+          }
+        }
+      }
+    },
     "event.unknown": {
       "localizations": {
         "en": {
@@ -3007,6 +3017,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "Request sent. Follow the device state above for download, reboot and confirmation."
+          }
+        }
+      }
+    },
+    "update.denied": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update control is not granted: %@"
+          }
+        }
+      }
+    },
+    "update.unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update controls are unavailable: %@"
           }
         }
       }

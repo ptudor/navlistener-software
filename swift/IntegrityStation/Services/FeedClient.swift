@@ -22,6 +22,12 @@ enum FeedError: Error, Equatable, LocalizedError, Sendable {
     // Skipping it let the client accept a later cursor and step permanently past
     // a durable transition while still presenting conditions as known.
     case malformedEvent(id: String?)
+    // Update control (gnss/api/v2/updates) answers outside the v2 envelope
+    // with plain-text reasons. A denial concerns the update grant for one
+    // observer, never the read credential, so it is not an authorization
+    // loss; any other rejection carries the collector's reason and status.
+    case updateDenied(String?)
+    case updateRejected(status: Int, message: String)
 
     var errorDescription: String? {
         switch self {
@@ -39,6 +45,8 @@ enum FeedError: Error, Equatable, LocalizedError, Sendable {
         case .inputLimit: String(localized: "error.input_limit")
         case .streamEnded: String(localized: "error.stream_ended")
         case .malformedEvent: String(localized: "error.malformed_event")
+        case .updateDenied(let message): message ?? String(localized: "error.update_denied")
+        case .updateRejected(_, let message): message
         }
     }
 
@@ -74,10 +82,13 @@ enum CollectorEndpoint {
             return error.code != .cancelled && error.code != .userAuthenticationRequired
                 && error.code != .userCancelledAuthentication && error.code != .badURL
         }
-        if case FeedError.http(let status) = error {
-            return status == 408 || status == 421 || status == 429 || (500...599).contains(status)
-        }
+        if case FeedError.http(let status) = error { return isRetryableStatus(status) }
+        if case FeedError.updateRejected(let status, _) = error { return isRetryableStatus(status) }
         return false
+    }
+
+    static func isRetryableStatus(_ status: Int) -> Bool {
+        status == 408 || status == 421 || status == 429 || (500...599).contains(status)
     }
 
     static func stream(session: URLSession, request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
@@ -146,7 +157,7 @@ struct FeedClient: Sendable, Equatable {
 
     func updateAccess(session: ReadSession, observer: String, action: String? = nil,
                       choice: UpdateAccess.Choice? = nil, requestID: String = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()) async throws -> UpdateAccess {
-        guard session.audience.isPrivate, session.token != nil else { throw FeedError.forbidden(nil) }
+        guard session.audience.isPrivate, session.token != nil else { throw FeedError.updateDenied(nil) }
         let endpoint = try CollectorEndpoint.url(baseURL: session.baseURL, path: "gnss/api/v2/updates")
         var request = URLRequest(url: endpoint)
         request.timeoutInterval = 15
@@ -172,7 +183,14 @@ struct FeedClient: Sendable, Equatable {
             let (bytes, response) = try await self.session.bytes(for: request, delegate: CredentialRedirectGuard(request: request))
             defer { bytes.task.cancel() }
             guard let http = response as? HTTPURLResponse else { throw FeedError.invalidResponse }
-            guard (200...299).contains(http.statusCode) else { throw Self.responseError(status: http.statusCode) }
+            guard (200...299).contains(http.statusCode) else {
+                // The reason is a short plain-text line; an oversized body
+                // carries none worth keeping.
+                let body: Data?
+                do { body = try await NetworkLimits.body(bytes, maximum: NetworkLimits.errorBytes) }
+                catch FeedError.inputLimit { body = nil }
+                throw Self.updateResponseError(status: http.statusCode, mimeType: http.mimeType, data: body)
+            }
             guard response.expectedContentLength <= NetworkLimits.responseBytes else { throw FeedError.inputLimit }
             let data = try await NetworkLimits.body(bytes, maximum: NetworkLimits.responseBytes)
             return try JSONDecoder().decode(UpdateAccess.self, from: data)
@@ -323,6 +341,34 @@ struct FeedClient: Sendable, Equatable {
         case 403: .forbidden(message)
         default: .http(status)
         }
+    }
+
+    /// Longest server reason shown to the user.
+    static let reasonCharacters = 256
+
+    /// The update-control endpoint answers outside the v2 envelope with
+    /// http.Error text ("update grant required for this enrolled observer",
+    /// the 409 conflict reason, "update controls are not configured"). That
+    /// text, bounded, is the message; a JSON `error` field is honoured should
+    /// one ever appear; any other content (a proxy's HTML page) carries no
+    /// reason. 401 and 403 here concern the update credential and grant for
+    /// one observer, so they never read as a withdrawn read authorization.
+    static func updateResponseError(status: Int, mimeType: String?, data: Data?) -> FeedError {
+        let reason = data.flatMap { reason(mimeType: mimeType, data: $0) }
+        return switch status {
+        case 401, 403: .updateDenied(reason)
+        default: reason.map { .updateRejected(status: status, message: $0) } ?? .http(status)
+        }
+    }
+
+    private static func reason(mimeType: String?, data: Data) -> String? {
+        let text: String? = switch mimeType {
+        case "application/json": try? JSONDecoder().decode(APIErrorEnvelope.self, from: data).error
+        case "text/plain": String(data: data, encoding: .utf8)
+        default: nil
+        }
+        guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
+        return String(trimmed.prefix(reasonCharacters))
     }
 
     /// RFC 9111 §5.1: a recipient reads an `Age` above 2^31 seconds as 2^31.

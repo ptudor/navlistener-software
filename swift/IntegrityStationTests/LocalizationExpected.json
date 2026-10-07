@@ -137,6 +137,7 @@
   "error.server": "Collector reported an error.",
   "error.stream_ended": "Live event stream ended. Reconnecting.",
   "error.unauthorized": "The read credential is missing, expired, or revoked.",
+  "error.update_denied": "The collector has not granted update control for this observer.",
   "event.unknown": "Station event",
   "events.empty.description": "Live integrity events will appear here.",
   "events.empty.title": "No station events",
@@ -392,6 +393,7 @@
   "update.channel": "Channel",
   "update.check_now": "Check now",
   "update.confirmed": "Confirmed",
+  "update.denied": "Update control is not granted: %@",
   "update.development": "Development device: production security has not been locked.",
   "update.download": "Download",
   "update.downloaded": "Downloaded and verified",
@@ -409,6 +411,7 @@
   "update.track.open": "Open",
   "update.track.test": "Test",
   "update.track.trusted": "Trusted",
+  "update.unavailable": "Update controls are unavailable: %@",
   "update.update_now": "Update now",
   "update.waiting_safe": "Waiting for durable acknowledgments",
   "update.watch_status": "Request sent. Follow the device state above for download, reboot and confirmation."
