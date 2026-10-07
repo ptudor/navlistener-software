@@ -29,8 +29,10 @@ class ProfileTests(unittest.TestCase):
 
     def test_open_release_cannot_lock_a_chip_or_carry_test_trust(self):
         with tempfile.TemporaryDirectory() as temporary:
+            # The setup-password reprint is a development aid; a fielded open board prints
+            # its label only on the boot that creates it, like a trusted one.
             for setting in ("CONFIG_SECURE_BOOT", "CONFIG_SECURE_FLASH_ENC_ENABLED", "CONFIG_NVF_UPDATE_TEST_KEYS",
-                            "CONFIG_NVF_MANIFEST_FACTORY_INIT", "CONFIG_NVF_INSECURE"):
+                            "CONFIG_NVF_MANIFEST_FACTORY_INIT", "CONFIG_NVF_INSECURE", "CONFIG_NVF_SETUP_CONSOLE_PASSWORD"):
                 with self.assertRaisesRegex(ValueError, setting):
                     verify(sdkconfig(temporary, {**OPEN_REQUIRED, setting: "y"}), "open")
             with self.assertRaisesRegex(ValueError, "CONFIG_SECURE_BOOT_SIGNING_KEY"):

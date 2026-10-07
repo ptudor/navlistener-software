@@ -317,6 +317,14 @@ does not become a trusted one by updating. Open signing keys deserve the same
 custody as trusted ones: they are the only thing standing between the network
 and every unlocked board that follows the track.
 
+The open profile also sets `CONFIG_NVF_SETUP_CONSOLE_PASSWORD=n`, as the
+production profile does: a fielded open board prints its BLE/SoftAP setup
+password on the USB console only on the boot that creates the label (the
+`NEW SETUP LABEL` line), never again on a later unprovisioned boot or after the
+eight-second configuration reset. Capture that first line at the bench as
+[PROVISIONING.md](PROVISIONING.md) describes; afterwards the password is
+available only from the physical label or the paired app.
+
 ## Signing adapters and the dangerous parts
 
 There are two independent kinds of signing key:
