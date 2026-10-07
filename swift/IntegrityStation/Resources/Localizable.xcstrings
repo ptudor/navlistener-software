@@ -3891,6 +3891,16 @@
         }
       }
     },
+    "portal.cannot_present": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The sign-in window could not be shown. Bring Integrity Station to the front and try again."
+          }
+        }
+      }
+    },
     "assurance.state.unavailable": {
       "localizations": {
         "en": {

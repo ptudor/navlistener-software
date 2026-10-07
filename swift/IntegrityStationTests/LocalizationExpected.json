@@ -200,6 +200,7 @@
   "portal.antenna": "Antenna",
   "portal.board_revision": "Board revision",
   "portal.cancel": "Cancel",
+  "portal.cannot_present": "The sign-in window could not be shown. Bring Integrity Station to the front and try again.",
   "portal.collector": "Collector",
   "portal.components": "Components",
   "portal.conditions": "Active conditions",

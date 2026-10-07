@@ -28,6 +28,9 @@ enum FeedError: Error, Equatable, LocalizedError, Sendable {
     // loss; any other rejection carries the collector's reason and status.
     case updateDenied(String?)
     case updateRejected(status: Int, message: String)
+    // The owner-portal browser sign-in had no window to present from, or the
+    // system declined to present it; nothing was received from the portal.
+    case signInUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -47,6 +50,7 @@ enum FeedError: Error, Equatable, LocalizedError, Sendable {
         case .malformedEvent: String(localized: "error.malformed_event")
         case .updateDenied(let message): message ?? String(localized: "error.update_denied")
         case .updateRejected(_, let message): message
+        case .signInUnavailable: String(localized: "portal.cannot_present")
         }
     }
 
