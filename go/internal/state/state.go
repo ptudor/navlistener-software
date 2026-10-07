@@ -56,6 +56,32 @@ func (s *Store) countDecodeFailure(f *ingest.RawFrame, kind string, err error) {
 	}
 }
 
+// staleReplay reports whether f is too old, by forensic reception time, to
+// replace the data set received at appliedRecv — and counts it under the
+// stale_replay decode-error label when it is. Data-set replacement is ordered
+// by reception time, not arrival order: a reconnecting station drains up to
+// recvReplayHorizon of spool through the same decode channel other stations
+// stream live on, and every changeover test is an inequality, so an older set
+// delivered later would otherwise be applied as "new", regress the served
+// ephemeris, difference the discos with the sides reversed, and flap them for
+// the length of the drain. A frame received more than ingest.RecvTimestampSlack
+// (the live clock-skew tolerance between feeders) before the applied set is a
+// replay of history, never a newer broadcast; within the slack two live
+// stations' stamps are not ordered and the existing freshest-wins rule stands.
+// The caller still folds the per-broadcast scalars (health, alert, flags) and
+// liveness from the frame; only the set replacement is skipped. The historian
+// keeps the raw frame regardless (it dedups by sequence), so nothing forensic
+// is lost. A zero appliedRecv (no set yet) never blocks.
+func (s *Store) staleReplay(f *ingest.RawFrame, appliedRecv time.Time) bool {
+	if appliedRecv.IsZero() || appliedRecv.Sub(f.Recv) <= ingest.RecvTimestampSlack {
+		return false
+	}
+	if !s.projection {
+		metrics.DecodeErrorsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID)), "stale_replay").Inc()
+	}
+	return true
+}
+
 // gpsEpochUnix is 1980-01-06T00:00:00Z. every production epoch FOLD
 // (wall-clock → GPS/BDT week/TOW) now routes through gnsstime's single
 // epochGPSSeconds table; this local constant remains only for the tests'
@@ -258,17 +284,27 @@ type svState struct {
 	bc10, bc11, bcClk *frame.BeiDouBCNAV2
 	// Measured-iono tracks per ingest source (dual-frequency observables).
 	ionoBySource map[string]*ionoTrack
-	// GLONASS string assembly buffers + Cartesian ephemeris (RK4, not kepler).
-	// gloS{1,2,3}At are each string's reception time : strings 1/2/3 carry
-	// x/y/z of one PZ-90 state valid only within one ~30 s frame, and unlike
-	// GPS/Galileo/BeiDou they carry no per-changeover tag, so recency is the only
-	// coherence guard — assembly is gated on all three having arrived within one
-	// frame window of each other.
-	gloS1, gloS2, gloS3, gloS4         *frame.GLONASSString
-	gloS1At, gloS2At, gloS3At, gloS4At time.Time
-	gloEph                             glonass.Ephemeris
-	gloFreqID                          int
-	haveGloEph                         bool
+	// GLONASS immediate-data string buffers + Cartesian ephemeris (RK4, not
+	// kepler). Strings 1/2/3 carry x/y/z of one PZ-90 state valid only within one
+	// ~30 s frame, string 4 its clock, and unlike GPS/Galileo/BeiDou they carry
+	// no per-changeover tag, so reception adjacency is the only coherence guard
+	// — assembly is gated on the strings having arrived within one frame window
+	// of each other. The buffers are keyed per RELAY (receiver source, session,
+	// signal), exactly as gloAlmPending is: the window compares feeder stamps,
+	// and only one relay's stamps are mutually comparable. With one slot per SV
+	// shared by every station hearing it, two feeders whose clocks differed by
+	// 20–34 s could leave station A's new-frame string 1 beside station B's
+	// old-frame strings 2/3 inside the 8 s window and assemble a chimera (X
+	// from the new set, Y/Z and tb from the old) that replaced the served set
+	// as a same-tb reassembly, and the genuine set two seconds later then
+	// differenced against it as a multi-thousand-km orbit-disco; a station
+	// draining a days-old spool likewise flip-flopped the shared slots and
+	// blocked live assembly for the SV. The per-SV outputs below (gloEph,
+	// gloTbAt, discos) stay shared and freshest-wins.
+	gloFrames  map[gloAlmRelay]*gloFrameBuf
+	gloEph     glonass.Ephemeris
+	gloFreqID  int
+	haveGloEph bool
 	// gloBn/gloLn are GLONASS's two broadcast per-SV malfunction flags, tracked
 	// separately because they ride different strings (Bn: string 2; ℓn: strings
 	// 3/5/7/9/11/13/15 — regression fix) and either arriving must rebuild the packed
@@ -1039,6 +1075,12 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 	if !ephChanged && !clkChanged {
 		return
 	}
+	// A replayed older set (forensic reception before the applied set by more
+	// than the live skew) never replaces the live ephemeris or clock; the
+	// per-broadcast scalars above already folded freshest-wins.
+	if st.haveEph && s.staleReplay(f, st.ephRecvAt) {
+		return
+	}
 	if ephChanged {
 		if st.haveEph {
 			s.computeDisco(st, eph, clk, recv)
@@ -1198,6 +1240,11 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 	if !ephChanged && !clkChanged {
 		return // same data set, nothing new
 	}
+	// A replayed older set never replaces the live ephemeris or clock
+	// (staleReplay); health/URA/alert above already folded freshest-wins.
+	if st.haveEph && s.staleReplay(f, st.ephRecvAt) {
+		return
+	}
 	if ephChanged {
 		// A new ephemeris (new IODE): compute the changeover discontinuities
 		// against the outgoing set before replacing it (docs/INTEGRITY.md §3).
@@ -1319,6 +1366,11 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 	}
 	newIOD := st.galW[1].IODnav
 	if st.haveEph && newIOD == st.iod {
+		return
+	}
+	// A replayed older set never replaces the live one (staleReplay); word 5's
+	// health and the OSNMA/GGTO folds above are per-broadcast and already applied.
+	if st.haveEph && s.staleReplay(f, st.ephRecvAt) {
 		return
 	}
 	if st.haveEph {
@@ -1468,6 +1520,11 @@ func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 	if st.haveEph && newIOD == st.iod {
 		return // same data set, nothing new
 	}
+	// A replayed older set never replaces the live one (staleReplay); page 1's
+	// health/SISA and the GGTO fold above are per-broadcast and already applied.
+	if st.haveEph && s.staleReplay(f, st.ephRecvAt) {
+		return
+	}
 	if st.haveEph {
 		s.computeDisco(st, eph, clk, recv)
 	}
@@ -1545,6 +1602,11 @@ func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 		if !st.haveClk || clk != st.clk {
 			st.clk, st.haveClk = clk, true
 		}
+		return
+	}
+	// A replayed older set never replaces the live one (staleReplay); subframe
+	// 1's health/URA/AOD above are per-broadcast and already applied.
+	if st.haveEph && s.staleReplay(f, st.ephRecvAt) {
 		return
 	}
 	if st.haveEph {
@@ -1730,6 +1792,11 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 	if !ephChanged && !clkChanged && !tgdRefresh {
 		return
 	}
+	// A replayed older set never replaces the live ephemeris, clock or group
+	// delay (staleReplay); the per-message flags above are already folded.
+	if st.haveEph && s.staleReplay(f, st.ephRecvAt) {
+		return
+	}
 	if !clkOK {
 		clk = st.clk
 	}
@@ -1838,7 +1905,6 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 	}
 	st.lastSeen = recv
 	st.markSeenBy(f.Source, recv) // conf corroboration recency
-	st.gloFreqID = f.FreqID
 
 	// fold the ℓn fast malfunction flag from whichever string carried it
 	// (3/5/7/9/11/13/15 — 7 of 15, so it refreshes about every other string, the
@@ -1857,17 +1923,19 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		}
 	}
 
+	// Immediate-data strings 1–4 are buffered per relay (svState.gloFrames):
+	// the frame-window check below compares feeder stamps, which are only
+	// mutually comparable within one (source, session, signal).
+	relay := gloAlmRelay{f.Source, f.Session, f.SigID}
+	var buf *gloFrameBuf
 	switch {
-	case str.Number == 1:
-		st.gloS1, st.gloS1At = str, f.Recv // feeder stamp: broadcast adjacency (regression fix, above)
-	case str.Number == 2:
-		st.gloS2, st.gloS2At = str, f.Recv
-		st.gloBn = str.Health // raw 3-bit Bn; only the MSB is the malfunction flag
-		st.health, st.haveHealth = st.gloBn|st.gloLn<<gloLnShift, true
-	case str.Number == 3:
-		st.gloS3, st.gloS3At = str, f.Recv
-	case str.Number == 4: // SV clock: τn/Δτn; joins the frame-window assembly below
-		st.gloS4, st.gloS4At = str, f.Recv
+	case str.Number >= 1 && str.Number <= 4:
+		buf = st.gloFrameBuffer(relay, recv)
+		buf.s[str.Number], buf.at[str.Number], buf.local = str, f.Recv, recv // feeder stamp: broadcast adjacency (regression fix, above)
+		if str.Number == 2 {
+			st.gloBn = str.Health // raw 3-bit Bn; only the MSB is the malfunction flag
+			st.health, st.haveHealth = st.gloBn|st.gloLn<<gloLnShift, true
+		}
 	case str.Number == 5: // time string: carries the frame day-number NA
 		if na, err := frame.DecodeGLONASSFrameNA(f.Words); err == nil {
 			s.setGloNA(na)
@@ -1877,7 +1945,7 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		// Buffered per relay (see svState.gloAlmPending); f.Recv is the feeder
 		// stamp for broadcast adjacency (regression fix, above), recv the collector
 		// clock for aging out a relay whose mate never arrives.
-		st.bufferGloAlmFirst(gloAlmRelay{f.Source, f.Session, f.SigID}, str.Number, f.Words, f.Recv, recv)
+		st.bufferGloAlmFirst(relay, str.Number, f.Words, f.Recv, recv)
 		if str.Number == 6 {
 			st.gloFrameBaseSlot = 0 // new frame's first almanac; base slot set on pairing
 		}
@@ -1894,7 +1962,6 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		// negative feeder-time deltas are not reordered or paired. The entry is
 		// consumed either way — a mismatched odd string from the SAME relay
 		// means its even mate is stale (a lost string), exactly as before.
-		relay := gloAlmRelay{f.Source, f.Session, f.SigID}
 		first, pending := st.gloAlmPending[relay]
 		if !pending {
 			return
@@ -1919,16 +1986,17 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 	default:
 		return
 	}
-	if st.gloS1 == nil || st.gloS2 == nil || st.gloS3 == nil {
+	if buf.s[1] == nil || buf.s[2] == nil || buf.s[3] == nil {
 		return
 	}
 	// strings 1/2/3 are coherent only within one ~30s frame (broadcast order
 	// 1,2,3, each ~2s apart); reassembling on every arrival with no temporal guard
 	// mixes epochs at every tb changeover (a fresh string arriving pairs with the
 	// other two still-cached, up-to-30-minutes-old strings). Gate on all three
-	// having arrived within one frame window of each other.
-	oldest, newest := st.gloS1At, st.gloS1At
-	for _, t := range []time.Time{st.gloS2At, st.gloS3At} {
+	// having arrived within one frame window of each other — this relay's own
+	// three, whose feeder stamps are mutually comparable.
+	oldest, newest := buf.at[1], buf.at[1]
+	for _, t := range []time.Time{buf.at[2], buf.at[3]} {
 		if t.Before(oldest) {
 			oldest = t
 		}
@@ -1945,22 +2013,41 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 	// frame must not pair with fresh strings 1–3, exactly the regression fix rule. When
 	// excluded the set assembles clockless (ClockKnown false) and the clock
 	// arrives ~2 s later when string 4 completes the frame and reassembles.
-	s4 := st.gloS4
+	s4 := buf.s[4]
 	if s4 != nil {
 		lo, hi := oldest, newest
-		if st.gloS4At.Before(lo) {
-			lo = st.gloS4At
+		if buf.at[4].Before(lo) {
+			lo = buf.at[4]
 		}
-		if st.gloS4At.After(hi) {
-			hi = st.gloS4At
+		if buf.at[4].After(hi) {
+			hi = buf.at[4]
 		}
 		if hi.Sub(lo) > glonassFrameWindow {
 			s4 = nil
 		}
 	}
-	eph, err := frame.AssembleGLONASS(f.SvID, st.gloFreqID, st.gloS1, st.gloS2, st.gloS3, s4)
+	// The FDMA channel is the assembling relay's own tag, like its strings.
+	eph, err := frame.AssembleGLONASS(f.SvID, f.FreqID, buf.s[1], buf.s[2], buf.s[3], s4)
 	if err != nil {
 		return
+	}
+	// Data-set replacement is ordered by forensic reception time (staleReplay):
+	// a set received more than the live skew tolerance before the applied one
+	// is a spool replay and must not regress the served set, re-stamp gloTbAt
+	// or gloEphRecvAt, difference a disco with the sides reversed, or complete a
+	// deferred time-disco with a day-old clock whose tb index happens to match.
+	if st.haveGloEph && s.staleReplay(f, st.gloEphRecvAt) {
+		return
+	}
+	// A same-tb reassembly without string 4 (every frame's string 3 arrives
+	// ~28 s after the previous frame's string 4) describes the same broadcast
+	// set as the clocked one it replaces: same tb ⇒ same τn/Δτn, so carry the
+	// known clock forward instead of degrading the set to clockless. A string 4
+	// lost right before a changeover then still leaves the outgoing set clocked,
+	// and the time-disco for that changeover stays computable. Never carried
+	// across a tb change — the new tb's clock is unknown until its string 4.
+	if st.haveGloEph && eph.Tb == st.gloEph.Tb && !eph.ClockKnown && st.gloEph.ClockKnown {
+		eph.TauN, eph.DeltaTauN, eph.ClockKnown = st.gloEph.TauN, st.gloEph.DeltaTauN, true
 	}
 	// compute the orbit/time discontinuity across a tb changeover before replacing
 	// the outgoing set — the same integrity metric the Kepler family gets from computeDisco.
@@ -1997,6 +2084,7 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		st.gloTbAt = f.Recv
 	}
 	st.gloEph, st.haveGloEph = eph, true
+	st.gloFreqID = f.FreqID  // the relay whose strings assembled
 	st.gloEphAt = recv       // collector-local, as ephAt
 	st.gloEphRecvAt = f.Recv // forensic stamp for the replay-aware serving gate
 }
@@ -2149,6 +2237,50 @@ const gloAlmPendingMax = 16
 // feeder-time glonassFrameWindow so a network stall between the two strings
 // (feeder stamps still adjacent) does not lose the pair. Engineering bound.
 const gloAlmPendingStale = time.Minute
+
+// gloFrameBuf is one relay's immediate-data string buffer: strings 1–4 of the
+// frame it is currently hearing, each with the feeder stamp that establishes
+// broadcast adjacency (the frame-window check runs over these alone), and the
+// collector clock of the last write, used only to age out a relay that went
+// quiet. Bounded per SV like gloAlmPending (gloAlmPendingMax/gloAlmPendingStale).
+type gloFrameBuf struct {
+	s     [5]*frame.GLONASSString // indexed by string number 1..4; [0] unused
+	at    [5]time.Time            // feeder stamps, same indexing
+	local time.Time
+}
+
+// gloFrameBuffer returns relay's immediate-data buffer, creating it on first
+// use and applying the same eviction policy as bufferGloAlmFirst: relays silent
+// for gloAlmPendingStale on the collector clock are dropped, and at capacity the
+// oldest relay is evicted. Caller holds the SV's shard lock.
+func (st *svState) gloFrameBuffer(relay gloAlmRelay, local time.Time) *gloFrameBuf {
+	if st.gloFrames == nil {
+		st.gloFrames = make(map[gloAlmRelay]*gloFrameBuf, 2)
+	}
+	for k, b := range st.gloFrames {
+		if k != relay && local.Sub(b.local) > gloAlmPendingStale {
+			delete(st.gloFrames, k)
+		}
+	}
+	buf, present := st.gloFrames[relay]
+	if present {
+		return buf
+	}
+	if len(st.gloFrames) >= gloAlmPendingMax {
+		var oldest gloAlmRelay
+		var oldestAt time.Time
+		first := true
+		for k, b := range st.gloFrames {
+			if first || b.local.Before(oldestAt) {
+				oldest, oldestAt, first = k, b.local, false
+			}
+		}
+		delete(st.gloFrames, oldest)
+	}
+	buf = &gloFrameBuf{}
+	st.gloFrames[relay] = buf
+	return buf
+}
 
 // bufferGloAlmFirst stores relay's even almanac string, evicting stale relays
 // and, at capacity, the oldest one. Caller holds the SV's shard lock.
@@ -2536,7 +2668,7 @@ const wnRolloverGraceS = 4 * 3600
 // against the collector's week W+1 — and the grace window's gpsTOW(now)
 // ran on drain time, not reception time — firing false SevCritical
 // wn_mismatch across the whole replayed sky. f.Recv is already
-// plausibility-bounded at ingest (±recvTimestampSlack live / −recvReplayHorizon
+// plausibility-bounded at ingest (±RecvTimestampSlack live / −recvReplayHorizon
 // replay), ±5 min cannot span a week outside the existing 4 h grace, and a
 // spoofed live replay is still caught because the feeder stamps its true
 // reception time. Dial frames are unaffected (Recv == local clock).

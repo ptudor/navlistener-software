@@ -70,7 +70,7 @@ type RawFrame struct {
 	// clock (carrying Go's monotonic reading) at the push ingest boundary
 	//. On that path Recv is the feeder's wall-clock stamp — the
 	// forensic reception time, preserved for the historian and accepted with up
-	// to recvTimestampSlack of skew or recvReplayHorizon of spool-replay age —
+	// to RecvTimestampSlack of skew or recvReplayHorizon of spool-replay age —
 	// so subtracting it from this host's time.Now() compares two machines'
 	// clocks: a feeder lagging near the 5 min slack would sit permanently at the
 	// equally-sized liveness/RF staleness windows, and a spool replay would
