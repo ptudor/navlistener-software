@@ -13,9 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/ptudor/navlistener/internal/audience"
 	"github.com/ptudor/navlistener/internal/detect"
 	"github.com/ptudor/navlistener/internal/identity"
+	"github.com/ptudor/navlistener/internal/metrics"
 	"github.com/ptudor/navlistener/internal/serve"
 	"github.com/ptudor/navlistener/internal/store"
 )
@@ -202,6 +204,50 @@ func TestEventPipelineFinalFlushUsesFreshContext(t *testing.T) {
 	}
 	if pipeline.len() != 0 {
 		t.Fatalf("final flush left %d queued events", pipeline.len())
+	}
+}
+
+// A write cancelled by shutdown is deferred to the final flush, which then
+// writes it: neither the error counter nor an ERROR line may claim a persistence
+// failure that did not happen.
+func TestEventPipelineShutdownMidWriteIsNotAnError(t *testing.T) {
+	var logBuf strings.Builder
+	log := slog.New(slog.NewTextHandler(&logBuf, nil))
+	w := &switchEventWriter{block: true}
+	p := &lockedPublisher{}
+	pipeline := newEventPipeline(w, p, log)
+	pipeline.enqueue(*prepareEvent(detect.Event{Time: time.Now(), SV: "G01@0", Type: "orbit_disco", Severity: 2}, w, log))
+	before := testutil.ToFloat64(metrics.EventWriteErrorsTotal)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pipeline.run(ctx)
+	}()
+	w.waitCalls(t, 1) // the writer is blocked on the pipeline's context
+	w.mu.Lock()
+	w.block, w.available = false, true // the final flush's fresh context succeeds
+	w.mu.Unlock()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pipeline did not return after cancellation")
+	}
+	if d := testutil.ToFloat64(metrics.EventWriteErrorsTotal) - before; d != 0 {
+		t.Fatalf("event_write_errors_total delta = %v, want 0 for a write the final flush completed", d)
+	}
+	if got := p.snapshot(); len(got) != 1 {
+		t.Fatalf("published %d events, want exactly 1", len(got))
+	}
+	if pipeline.len() != 0 {
+		t.Fatalf("%d events left queued after the final flush", pipeline.len())
+	}
+	if strings.Contains(logBuf.String(), "level=ERROR") {
+		t.Fatalf("shutdown-interrupted write logged as an error:\n%s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "deferred to the final flush") {
+		t.Fatalf("missing the deferral line:\n%s", logBuf.String())
 	}
 }
 

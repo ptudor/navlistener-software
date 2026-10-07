@@ -69,16 +69,22 @@ startup concern; serving is a runtime one.
 
 ### The decode loop and its panic guard
 
-Every frame goes through a `recover`-wrapped `apply`. The reasoning is specific: a
+Every frame goes through a `recover`-wrapped `apply` — the recover is deferred before anything
+else runs, so the scope-revocation marker path (registry reset, detector resets, epoch advance,
+audience invalidation) is covered too, not only the decoders. The reasoning is specific: a
 decoder that panics on a particular broadcast bit pattern will panic on **every** recurrence —
 the same SV re-transmits it every few seconds, and crafted frames replay it deliberately. This is
 a PNT-defense product; malformed frames are the threat model. So a recovered panic drops one
-frame, increments `navlistener_decode_panics_total{gnssid}`, and the daemon keeps running.
+frame, increments `navlistener_decode_panics_total{gnssid}`, and the daemon keeps running. Only
+a navigation frame has a constellation: a panic while applying an RF, board, solution or
+observables sample, or a scope-revocation marker, is counted with an empty `gnssid` and logged
+with `kind=rf|board|solution|obs|control` rather than filed under GPS (their `GnssID` is the
+zero value).
 
-A rate limiter (`panicLogLimiter`, keyed on gnssId/svId/sigId) keeps a repeating panic from
-flooding the log while still counting every occurrence in the metric. `decode_panics_total` is
-the alertable signal for a failure class `decode_errors_total` — which counts *rejections* —
-structurally cannot see.
+A rate limiter (`panicLogLimiter`, keyed on gnssId/svId/sigId for navigation frames and on the
+frame kind otherwise) keeps a repeating panic from flooding the log while still counting every
+occurrence in the metric. `decode_panics_total` is the alertable signal for a failure class
+`decode_errors_total` — which counts *rejections* — structurally cannot see.
 
 ### The health model
 
