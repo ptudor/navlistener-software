@@ -8,7 +8,9 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"github.com/ptudor/navlistener/internal/boardid"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/ptudor/navlistener/internal/attestation"
 	"github.com/ptudor/navlistener/internal/authorization"
 	"github.com/ptudor/navlistener/internal/commissioning"
@@ -335,5 +338,55 @@ func TestOperatorHTTPBoundary(t *testing.T) {
 				t.Fatal("cacheable credential response")
 			}
 		})
+	}
+
+	// A request the operator can correct gets its reason.
+	unsupported := valid
+	unsupported.FeedGrants = []string{"sbf"}
+	w := operatorRequest(t, handler, token, "/v1/enrollments/validate", unsupported)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "unsupported feed grant") {
+		t.Fatalf("correctable validate failure: %d %s", w.Code, w.Body.String())
+	}
+
+	// Trust material the control plane itself cannot read is reported in
+	// summary, with the detail in its log and never the path in the response.
+	var logged bytes.Buffer
+	b.service.Log = slog.New(slog.NewTextHandler(&logged, nil))
+	registry := filepath.Join(t.TempDir(), "absent-registry-dir", "registry.json")
+	b.service.Manufacturers[0].RegistryKeys = []string{b.ab.RegistryPath}
+	b.service.Manufacturers[0].Registry = registry
+	hardware := b.request(t, b.ab.ManufacturerKeys[0], b.ab.ManufacturerKeys[1])
+	w = operatorRequest(t, handler, token, "/v1/enrollments/validate", hardware)
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "registry could not be read") {
+		t.Fatalf("unreadable registry: %d %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "absent-registry-dir") {
+		t.Fatalf("server path reached the response: %s", w.Body.String())
+	}
+	if !strings.Contains(logged.String(), "absent-registry-dir") {
+		t.Fatalf("detail not logged server-side:\n%s", logged.String())
+	}
+
+	// A transaction the control plane could not complete, or a request that
+	// ended first, is answered as retryable rather than as a rejection.
+	for name, err := range map[string]error{
+		"serialization failure": &pgconn.PgError{Code: "40001", Message: "could not serialize access"},
+		"deadlock":              &pgconn.PgError{Code: "40P01", Message: "deadlock detected"},
+		"cancelled request":     fmt.Errorf("begin: %w", context.Canceled),
+	} {
+		w := httptest.NewRecorder()
+		if reportRejection(w, err, "enrollment rejected") {
+			t.Fatalf("%s reported as success", name)
+		}
+		if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" || !strings.Contains(w.Body.String(), "retry the same request") {
+			t.Fatalf("%s: %d %q %s", name, w.Code, w.Header().Get("Retry-After"), w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "serialize") || strings.Contains(w.Body.String(), "deadlock") {
+			t.Fatalf("%s: database detail reached the response: %s", name, w.Body.String())
+		}
+	}
+	w = httptest.NewRecorder()
+	if reportRejection(w, &pgconn.PgError{Code: "23505", Message: "duplicate key"}, "enrollment rejected"); w.Code != http.StatusConflict || strings.Contains(w.Body.String(), "duplicate") {
+		t.Fatalf("other database failure: %d %s", w.Code, w.Body.String())
 	}
 }

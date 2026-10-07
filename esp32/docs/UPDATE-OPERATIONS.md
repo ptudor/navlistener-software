@@ -441,6 +441,9 @@ the device wait; the updater does not silently discard observations.
 Metrics include update checks, errors, rollbacks, release adoption, the
 reported track (`navlistener_update_trust_profile_info`), the verified hardware
 trust of the session (`navlistener_update_hardware_trust_info{observer,trust}`),
+reports in which a device's Secure Boot or TUF release key id differs from its
+previous report (`navlistener_update_key_id_changes_total{observer,key}`, the
+evidence wanted when a track or key rotation goes wrong),
 security profile drift, last report time, staging time, time waiting for
 safe reboot and, for each track the collector serves, when every catalog role
 expires (`navlistener_update_metadata_expiry_timestamp_seconds{track,role}`,

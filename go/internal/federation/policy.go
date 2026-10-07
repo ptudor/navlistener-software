@@ -40,10 +40,24 @@ const (
 	TrustRevoked  ReceivedTrust = "revoked"
 )
 
-// Observation is the immutable receipt plus relay provenance being considered.
+// DefaultMaxPeerHops is the hard backstop on a relayed frame's path when the
+// transport sets no cap (FEDERATION.md §8, `max_peer_hops`, matching the §1.2
+// span). A frame that has already traversed this many collectors is dropped.
+const DefaultMaxPeerHops = 8
+
+// Observation is the immutable receipt plus relay provenance being considered,
+// together with the two facts only the local collector can supply: its own
+// instance id and the hop cap it applies.
+//
+// LocalCollectorInstanceID is required. For a relayed observation the receipt's
+// collector is the origin's, so falling back to it would let a grant written
+// for the origin match on a relay; an evaluator that does not know who it is
+// has no authority to export (fail closed). MaxPeerHops of zero selects
+// DefaultMaxPeerHops.
 type Observation struct {
 	Context                  identity.ObserverContext
 	LocalCollectorInstanceID string
+	MaxPeerHops              int
 	OriginPeerID             string
 	ReceivedTrust            ReceivedTrust
 	Path                     []string
@@ -135,7 +149,7 @@ func EvaluateExport(now time.Time, observation Observation, current identity.Obs
 	}
 	localCollector := observation.LocalCollectorInstanceID
 	if localCollector == "" {
-		localCollector = receipt.CollectorInstanceID
+		return deny("local collector instance is not established")
 	}
 	if grant.SourceCollectorInstanceID != localCollector {
 		return deny("grant belongs to a different source collector")
@@ -159,7 +173,20 @@ func EvaluateExport(now time.Time, observation Observation, current identity.Obs
 	default:
 		return deny("observation has unknown inbound provenance")
 	}
+	// FEDERATION.md §8: a frame whose path already names this collector has
+	// looped back and is dropped before it can be relayed on to a third peer;
+	// the hop cap is the hard backstop on any path, matching or not.
+	maxHops := observation.MaxPeerHops
+	if maxHops <= 0 {
+		maxHops = DefaultMaxPeerHops
+	}
+	if len(observation.Path) >= maxHops {
+		return deny("federation path exceeds the peer hop cap")
+	}
 	for _, hop := range observation.Path {
+		if hop == localCollector {
+			return deny("federation path has already traversed this collector")
+		}
 		if hop == request.DestinationPeerID {
 			return deny("federation path would loop to destination")
 		}

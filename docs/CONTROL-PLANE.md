@@ -106,7 +106,12 @@ Database initialization and writes require only the control service's role.
 4. POST the request to `/v1/enrollments/validate`, then `/v1/enrollments`, with
    `Authorization: Bearer <operator-token>`. Validation alone changes no database
    state. Activation returns an `enrollment_id` and a newly generated device token
-   once. Only its digest is stored. Responses are `no-store`.
+   once. Only its digest is stored. Responses are `no-store`. If the activation
+   response is lost (a client timeout or a reset after the commit), POST
+   `{"observer_id":"..."}` to `/v1/enrollments/current`: it returns the
+   `enrollment_id` the station currently names, whether it is active, and when it
+   was created or revoked, and changes nothing. The token cannot be recovered;
+   enroll a replacement naming that id as `replace_enrollment_id`.
 5. Install the operational credential using the device's supported procedure,
    reconnect, and confirm collector admission and the independently evaluated
    hardware evidence. Offline signature validation does not establish `trusted`;
@@ -150,10 +155,13 @@ POST to `/v1/enrollments/policy` to change an active enrollment's policy without
 new device credential: `enrollment_id`, `feed_grants`, `collection_ids`,
 `declared_capabilities` and `publication`, restated in full. The device keeps its
 token and enrollment ID, so adding a station to a collection or changing its
-publication needs no reprovisioning. `publication.policy_revision` must differ
-from the current one: collector receipts stamp the revision they were received
-under, so earlier observations stay attributed to the earlier policy. The
-previous snapshot is kept as a `policy` service event. Organization, authorities,
+publication needs no reprovisioning. `publication.policy_revision` must be one
+this enrollment has never carried, not merely different from the current one:
+collector receipts stamp the revision they were received under, so earlier
+observations stay attributed to the earlier policy, and a revision that came
+back would make its stamp span two policy intervals. The service history is the
+record of what has been used. The previous snapshot is kept as a `policy`
+service event. Organization, authorities,
 evidence and credentials are not policy; changing them is a service transition.
 Connected feeders are closed on their next authorization recheck and reconnect
 under the new policy.
@@ -174,9 +182,15 @@ token can be issued and deployed before the old digest is disabled. Disabled row
 remain, so a digest is never reissued. Every change is recorded by digest in
 `navl_read_credential_events` and notifies the collector.
 
-A request the operator can correct, such as an unchanged `policy_revision` or a
-public audience grant, answers 422 with its reason. Other failures answer 409
-without detail.
+A request the operator can correct, such as an unchanged `policy_revision`, a
+public audience grant or evidence that does not verify, answers 422 with its
+reason. A transaction the control plane could not complete (a serialization
+failure or deadlock between concurrent requests, or a request cancelled before
+it committed) answers 503 with `Retry-After`; retry the same request. Trust
+material the control plane itself cannot read or verify (manufacturer keys, the
+registry or its state file) also answers 503, naming the material and never its
+path; the detail is in the navcontrol log. Other failures answer 409 without
+detail.
 
 ## Service, revocation and receipts
 

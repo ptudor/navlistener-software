@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/ptudor/navlistener/internal/strictjson"
 )
 
@@ -50,8 +52,7 @@ func (s *Service) Handler(operator, tokenSHA256 string) http.Handler {
 				return
 			}
 			v, err := s.Validate(request)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			if !reportRejection(w, err, "validation rejected") {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -62,13 +63,25 @@ func (s *Service) Handler(operator, tokenSHA256 string) http.Handler {
 				return
 			}
 			id, token, err := s.Enroll(r.Context(), operator, request)
-			if err != nil {
-				http.Error(w, "enrollment rejected; validate evidence and current enrollment before retrying", http.StatusConflict)
+			if !reportRejection(w, err, "enrollment rejected") {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]string{"enrollment_id": id, "token": token})
+		case "/v1/enrollments/current":
+			var request struct {
+				ObserverID string `json:"observer_id"`
+			}
+			if !decode(&request) {
+				return
+			}
+			current, err := s.CurrentEnrollment(r.Context(), request.ObserverID)
+			if !reportRejection(w, err, "enrollment lookup rejected") {
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(current)
 		case "/v1/enrollments/policy":
 			var request PolicyChange
 			if !decode(&request) {
@@ -120,8 +133,11 @@ func (s *Service) Handler(operator, tokenSHA256 string) http.Handler {
 }
 
 // reportRejection answers a failed operation and reports whether it succeeded.
-// A request the operator can correct gets its reason; anything else gets only
-// the fixed summary, so database and internal errors never reach the response.
+// A request the operator can correct gets its reason (422). A transaction the
+// control plane could not complete, or trust material it could not read, is
+// the operator's cue to retry or to look at the server, not to re-validate
+// (503). Anything else gets only the fixed summary (409), so database and
+// internal errors never reach the response.
 func reportRejection(w http.ResponseWriter, err error, summary string) bool {
 	if err == nil {
 		return true
@@ -131,6 +147,28 @@ func reportRejection(w http.ResponseWriter, err error, summary string) bool {
 		http.Error(w, summary+": "+bad.Error(), http.StatusUnprocessableEntity)
 		return false
 	}
+	var down unavailable
+	if errors.As(err, &down) {
+		http.Error(w, summary+": "+down.Error(), http.StatusServiceUnavailable)
+		return false
+	}
+	if retryable(err) {
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, summary+"; the control plane could not complete the transaction, retry the same request", http.StatusServiceUnavailable)
+		return false
+	}
 	http.Error(w, summary, http.StatusConflict)
 	return false
+}
+
+// retryable reports a failure the same request can be expected to get past:
+// a PostgreSQL transaction-rollback condition (SQLSTATE class 40: the
+// serialization failure Serializable isolation raises between concurrent
+// enrollments, or a deadlock), or a request context that ended first.
+func retryable(err error) bool {
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) && strings.HasPrefix(pg.Code, "40") {
+		return true
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }

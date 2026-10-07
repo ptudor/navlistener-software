@@ -72,6 +72,7 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(r.Header.Values("Authorization")) != 1 || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+		m.auth.Failed("updates", r)
 		http.Error(w, "explicit update credential required", http.StatusUnauthorized)
 		return
 	}
@@ -100,14 +101,20 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	actor, d, ok := m.authorized(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), values["observer_id"])
 	if !ok {
+		m.auth.Failed("updates", r)
 		http.Error(w, "update grant required for this enrolled observer", 403)
 		return
 	}
 	var record Record
+	// current is the command the record holds now. A replayed request_id is
+	// answered with its own, possibly older, command; comparing the two is what
+	// tells a truthful "superseded" from a current command's "requested".
+	var current uint64
 	if r.Method == http.MethodGet {
 		m.mu.Lock()
 		record = m.records[d.key()]
 		m.mu.Unlock()
+		current = record.Command.ID
 	} else {
 		if len(values) != 5 || len(values["request_id"]) != 32 || strings.Trim(values["request_id"], "0123456789abcdef") != "" {
 			http.Error(w, "request_id must be 32 lowercase hex characters and all five fields are required", 400)
@@ -127,14 +134,23 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), 409)
 			return
 		}
+		m.mu.Lock()
+		current = m.records[d.key()].Command.ID
+		m.mu.Unlock()
 		w.WriteHeader(http.StatusAccepted)
 	}
+	// The device reports the highest command id it accepted, so only an exact
+	// match says this command was accepted. An older command is superseded by
+	// the one the record holds now, whether or not the device ever ran it.
 	state := "requested"
-	if record.Command.ID == 0 {
+	switch {
+	case record.Command.ID == 0:
 		state = "none"
-	} else if record.Status != nil && record.Status.LastCommand >= record.Command.ID {
+	case record.Status != nil && record.Status.LastCommand == record.Command.ID:
 		state = "accepted"
-	} else if record.Command.Expires <= uint64(m.now().Unix()) {
+	case record.Command.ID < current:
+		state = "superseded"
+	case record.Command.Expires <= uint64(m.now().Unix()):
 		state = "expired"
 	}
 	var choice *Choice

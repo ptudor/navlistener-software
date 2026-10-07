@@ -13,7 +13,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -69,7 +71,7 @@ func runCommissionVerify(args []string) error {
 	fs := flag.NewFlagSet("commission-verify", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var keys keyFiles
-	fs.Var(&keys, "key", "manufacturer P-256 public key or certificate PEM (repeatable)")
+	fs.Var(&keys, "key", "manufacturer P-256 PUBLIC KEY PEM (repeatable; a certificate is not a pin)")
 	authorityID := fs.String("manufacturer-authority", "", "configured manufacturer authority id")
 	recordHex := fs.String("record", "", fmt.Sprintf("%d-byte commissioning record as hex", commissioning.RecordSize))
 	if err := fs.Parse(args); err != nil {
@@ -102,6 +104,13 @@ func runCommissionVerify(args []string) error {
 	if s.IdentityFlags&commissioning.IdentityRTCEUIRecorded != 0 {
 		rtcEUI = hex.EncodeToString(s.RTCEUI64[:])
 	}
+	// The signed value is the integer. It is printed as signed, and rendered
+	// as a date only where time.Unix can represent it: a verifier prints what
+	// was signed, never a wrapped negative date.
+	var commissionedAt any
+	if s.CommissionedAt <= math.MaxInt64 {
+		commissionedAt = time.Unix(int64(s.CommissionedAt), 0).UTC().Format(time.RFC3339)
+	}
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{
 		"ok":                        true,
 		"manufacturer_authority_id": *authorityID,
@@ -109,7 +118,8 @@ func runCommissionVerify(args []string) error {
 		"profile":                   s.Profile.String(),
 		"product":                   uint16(s.Product),
 		"generation":                s.Generation,
-		"commissioned_at":           time.Unix(int64(s.CommissionedAt), 0).UTC().Format(time.RFC3339),
+		"commissioned_at_unix":      strconv.FormatUint(s.CommissionedAt, 10),
+		"commissioned_at":           commissionedAt,
 		"board_revision":            s.BoardRevision,
 		"security":                  s.Security,
 		"identity_flags":            s.IdentityFlags,
@@ -136,7 +146,7 @@ func runRegistryVerify(args []string) error {
 	fs := flag.NewFlagSet("registry-verify", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var keys keyFiles
-	fs.Var(&keys, "key", "registry P-256 public key or certificate PEM (repeatable)")
+	fs.Var(&keys, "key", "registry P-256 PUBLIC KEY PEM (repeatable; a certificate is not a pin)")
 	authorityID := fs.String("manufacturer-authority", "", "configured manufacturer authority id")
 	path := fs.String("file", "", "signed registry file")
 	if err := fs.Parse(args); err != nil {
@@ -254,7 +264,7 @@ func runVerify(args []string) error {
 	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var keys keyFiles
-	fs.Var(&keys, "key", "manufacturer P-256 public key or certificate PEM (repeatable)")
+	fs.Var(&keys, "key", "manufacturer P-256 PUBLIC KEY PEM (repeatable; a certificate is not a pin)")
 	authorityID := fs.String("manufacturer-authority", "", "configured manufacturer authority id")
 	recordHex := fs.String("record", "", "72-byte slot record as hex")
 	var ids identityFlags
@@ -359,6 +369,9 @@ func readPrivateKey(path string) (*ecdsa.PrivateKey, error) {
 	return key, nil
 }
 
+// readPublicKey reads one pin for verify: a P-256 `PUBLIC KEY` PEM, the same
+// form commissioning.LoadKeySet accepts for commission-verify, registry-verify
+// and the collector's own pins, so the three commands agree on one flag.
 func readPublicKey(path string) (*ecdsa.PublicKey, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -368,12 +381,8 @@ func readPublicKey(path string) (*ecdsa.PublicKey, error) {
 	if block == nil {
 		return nil, errors.New("public key: no PEM block")
 	}
-	if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
-		key, ok := cert.PublicKey.(*ecdsa.PublicKey)
-		if !ok {
-			return nil, fmt.Errorf("certificate key type %T: want ECDSA P-256", cert.PublicKey)
-		}
-		return key, nil
+	if block.Type != "PUBLIC KEY" {
+		return nil, fmt.Errorf("public key: PEM block is %q; a pin is a P-256 PUBLIC KEY PEM, not a certificate", block.Type)
 	}
 	anyKey, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {

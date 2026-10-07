@@ -12,6 +12,7 @@
 
 #define MANIFEST_NVS_NAMESPACE "hwmanifest"
 #define MANIFEST_NVS_UID_KEY "eeprom_uid"
+#define MANIFEST_NVS_BOARD_KEY "board_uid"
 
 static const char *TAG = "hw_manifest";
 static i2c_master_bus_handle_t s_i2c_bus;
@@ -61,72 +62,77 @@ esp_err_t hardware_manifest_read_identity(nvf_board_identity_t *out)
     return ESP_OK;
 }
 
-static esp_err_t board_uid_load(void)
+// The adopted identity is one 35-byte typed UID kept under two keys: the
+// manifest layer's "eeprom_uid" (is this the EEPROM we know?) and discovery's
+// "board_uid" (refuse a changed board). They are the same value and are read,
+// reconciled and written together, so a boot never sees one without the other.
+
+// adopted_uid_read reads one key; absent is not an error.
+static esp_err_t adopted_uid_read(nvs_handle_t nvs, const char *key, bool *present,
+                                  uint8_t uid[NVF_BOARD_UID_SIZE])
 {
-    nvs_handle_t nvs;
-    esp_err_t err = nvs_open(MANIFEST_NVS_NAMESPACE, NVS_READONLY, &nvs);
-    s_uid_known = false;
-    if (err == ESP_ERR_NVS_NOT_FOUND) return ESP_OK;
-    if (err != ESP_OK) return err;
-    size_t n = sizeof s_uid;
-    err = nvs_get_blob(nvs, "board_uid", s_uid, &n);
-    nvs_close(nvs);
-    if (err == ESP_ERR_NVS_NOT_FOUND) return ESP_OK;
-    if (err != ESP_OK) return err;
-    if (n != sizeof s_uid || !nvf_uid_valid(s_uid)) return ESP_ERR_INVALID_RESPONSE;
-    s_uid_known = true;
-    return ESP_OK;
-}
-
-static esp_err_t board_uid_store(const uint8_t *uid)
-{
-    nvs_handle_t nvs;
-    ESP_RETURN_ON_ERROR(nvs_open(MANIFEST_NVS_NAMESPACE, NVS_READWRITE, &nvs), TAG, "open UID NVS");
-    esp_err_t err = nvs_set_blob(nvs, "board_uid", uid, NVF_BOARD_UID_SIZE);
-    if (err == ESP_OK) err = nvs_commit(nvs);
-    nvs_close(nvs);
-    if (err == ESP_OK) { memcpy(s_uid, uid, sizeof s_uid); s_uid_known = true; }
-    return err;
-}
-
-
-static esp_err_t known_eeprom_uid_load(bool *present,
-                                uint8_t eui[NVF_BOARD_UID_SIZE])
-{
-    nvs_handle_t nvs;
-    esp_err_t err = nvs_open(MANIFEST_NVS_NAMESPACE, NVS_READONLY, &nvs);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
-        *present = false;
-        return ESP_OK;
-    }
-    ESP_RETURN_ON_ERROR(err, TAG, "open identity NVS");
-
     size_t len = NVF_BOARD_UID_SIZE;
-    err = nvs_get_blob(nvs, MANIFEST_NVS_UID_KEY, eui, &len);
-    nvs_close(nvs);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
-        *present = false;
-        return ESP_OK;
-    }
-    ESP_RETURN_ON_ERROR(err, TAG, "read known manifest UID");
-    if (len != NVF_BOARD_UID_SIZE) {
-        ESP_LOGE(TAG, "known manifest UID has invalid length %u", (unsigned)len);
-        return ESP_ERR_INVALID_SIZE;
+    esp_err_t err = nvs_get_blob(nvs, key, uid, &len);
+    *present = false;
+    if (err == ESP_ERR_NVS_NOT_FOUND) return ESP_OK;
+    ESP_RETURN_ON_ERROR(err, TAG, "read adopted UID %s", key);
+    if (len != NVF_BOARD_UID_SIZE || !nvf_uid_valid(uid)) {
+        ESP_LOGE(TAG, "adopted UID %s is invalid (%u bytes)", key, (unsigned)len);
+        return ESP_ERR_INVALID_RESPONSE;
     }
     *present = true;
     return ESP_OK;
 }
 
-static esp_err_t known_eeprom_uid_store(const uint8_t eui[NVF_BOARD_UID_SIZE])
+// adopted_uid_load loads the identity this board adopted. Both keys present and
+// equal is the normal state. One key alone is a write that was interrupted
+// after the other had committed: the value is adopted and *complete is false
+// so the boot rewrites both. Two different values is a state no sequence of
+// this firmware's writes produces, so it is refused rather than guessed at.
+static esp_err_t adopted_uid_load(bool *present, uint8_t uid[NVF_BOARD_UID_SIZE], bool *complete)
+{
+    nvs_handle_t nvs;
+    *present = false;
+    *complete = true;
+    s_uid_known = false;
+    esp_err_t err = nvs_open(MANIFEST_NVS_NAMESPACE, NVS_READONLY, &nvs);
+    if (err == ESP_ERR_NVS_NOT_FOUND) return ESP_OK;
+    ESP_RETURN_ON_ERROR(err, TAG, "open identity NVS");
+    bool have_eeprom = false, have_board = false;
+    uint8_t eeprom[NVF_BOARD_UID_SIZE], board[NVF_BOARD_UID_SIZE];
+    err = adopted_uid_read(nvs, MANIFEST_NVS_UID_KEY, &have_eeprom, eeprom);
+    if (err == ESP_OK) err = adopted_uid_read(nvs, MANIFEST_NVS_BOARD_KEY, &have_board, board);
+    nvs_close(nvs);
+    if (err != ESP_OK) return err;
+    if (!have_eeprom && !have_board) return ESP_OK;
+    if (have_eeprom && have_board && memcmp(eeprom, board, NVF_BOARD_UID_SIZE)) {
+        ESP_LOGE(TAG, "adopted board UID and remembered manifest UID disagree; refusing to adopt either");
+        return ESP_ERR_INVALID_STATE;
+    }
+    memcpy(uid, have_board ? board : eeprom, NVF_BOARD_UID_SIZE);
+    if (!(have_eeprom && have_board)) {
+        *complete = false;
+        ESP_LOGW(TAG, "adopted UID held under %s only; the other key will be rewritten",
+                 have_board ? MANIFEST_NVS_BOARD_KEY : MANIFEST_NVS_UID_KEY);
+    }
+    memcpy(s_uid, uid, sizeof s_uid);
+    s_uid_known = true;
+    *present = true;
+    return ESP_OK;
+}
+
+// adopted_uid_store writes both keys under one commit, so a power loss leaves
+// either the previous state or both new values, never one of them.
+static esp_err_t adopted_uid_store(const uint8_t uid[NVF_BOARD_UID_SIZE])
 {
     nvs_handle_t nvs;
     ESP_RETURN_ON_ERROR(nvs_open(MANIFEST_NVS_NAMESPACE, NVS_READWRITE, &nvs),
                         TAG, "open identity NVS for write");
-    esp_err_t err = nvs_set_blob(nvs, MANIFEST_NVS_UID_KEY, eui,
-                                 NVF_BOARD_UID_SIZE);
-    if (err == ESP_OK)
-        err = nvs_commit(nvs);
+    esp_err_t err = nvs_set_blob(nvs, MANIFEST_NVS_UID_KEY, uid, NVF_BOARD_UID_SIZE);
+    if (err == ESP_OK) err = nvs_set_blob(nvs, MANIFEST_NVS_BOARD_KEY, uid, NVF_BOARD_UID_SIZE);
+    if (err == ESP_OK) err = nvs_commit(nvs);
     nvs_close(nvs);
+    if (err == ESP_OK) { memcpy(s_uid, uid, sizeof s_uid); s_uid_known = true; }
     return err;
 }
 
@@ -223,11 +229,10 @@ esp_err_t hardware_manifest_boot(bool allow_factory_init,
                             "initialize EEPROM discovery");
     }
 
-    bool known_present = false;
+    bool known_present = false, known_complete = true;
     uint8_t known_eui[NVF_BOARD_UID_SIZE] = {0};
-    ESP_RETURN_ON_ERROR(known_eeprom_uid_load(&known_present, known_eui), TAG,
-                        "load known manifest identity");
-    ESP_RETURN_ON_ERROR(board_uid_load(), TAG, "load adopted board UID");
+    ESP_RETURN_ON_ERROR(adopted_uid_load(&known_present, known_eui, &known_complete), TAG,
+                        "load adopted identity");
     ESP_RETURN_ON_ERROR(hardware_manifest_read_identity(&result->identity), TAG, "discover board identity");
     uint8_t address = result->identity.eeprom_address;
     if (!result->identity.eeprom_valid) {
@@ -269,14 +274,18 @@ esp_err_t hardware_manifest_boot(bool allow_factory_init,
         }
     }
 
-    if (result->action == HARDWARE_MANIFEST_ACTION_USE && !known_present) {
-        ESP_RETURN_ON_ERROR(known_eeprom_uid_store(result->identity.eeprom_uid), TAG,
-                            "remember manifest UID");
-        ESP_LOGI(TAG, "remembered manifest UID in independent identity NVS");
+    // Adopt the identity once, under both keys in one commit: on first use, or
+    // to complete an adoption an earlier boot left under one key. Discovery
+    // has already checked a known identity against the live board, so the
+    // value rewritten here is the one it confirmed.
+    if (result->action == HARDWARE_MANIFEST_ACTION_USE && (!known_present || !known_complete)) {
+        if (!result->identity.board_valid) {
+            ESP_LOGW(TAG, "manifest UID not remembered: no board identity was adopted");
+        } else {
+            ESP_RETURN_ON_ERROR(adopted_uid_store(result->identity.board_uid), TAG, "remember adopted identity");
+            ESP_LOGI(TAG, "remembered adopted identity under both identity NVS keys");
+        }
     }
-
-    if (result->action == HARDWARE_MANIFEST_ACTION_USE && !s_uid_known && result->identity.board_valid)
-        ESP_RETURN_ON_ERROR(board_uid_store(result->identity.board_uid), TAG, "remember board UID");
 
     if (result->action == HARDWARE_MANIFEST_ACTION_USE && result->capabilities_valid) {
         uint8_t id, revision;

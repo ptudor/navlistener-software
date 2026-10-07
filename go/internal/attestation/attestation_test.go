@@ -7,6 +7,8 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"github.com/ptudor/navlistener/internal/boardid"
+	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/ptudor/navlistener/internal/identity"
@@ -99,6 +101,36 @@ func TestRecordAndIdentityValidationFailClosed(t *testing.T) {
 	record[10] ^= 1
 	if _, err := Verify(record, h, &key.PublicKey); err == nil {
 		t.Fatal("tampered signature verified")
+	}
+}
+
+// A record's high-S twin verifies as plain ECDSA but carries a different
+// record fingerprint, which is what enrollment stores and commissioning
+// binds. It is refused, and the signer never emits one.
+func TestHighSTwinIsRefusedAndNeverSigned(t *testing.T) {
+	h, key := testIdentity(), testKey(t)
+	n := key.Params().N
+	for i := 0; i < 32; i++ {
+		record, err := Sign(VersionV1, h, key, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := new(big.Int).SetBytes(record[40:72])
+		if !lowS(s, n) {
+			t.Fatal("signer emitted a high-S signature")
+		}
+		verified, err := Verify(record, h, &key.PublicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		twin := record
+		new(big.Int).Sub(n, s).FillBytes(twin[40:72])
+		if sha256.Sum256(twin[:]) == verified.RecordFingerprint {
+			t.Fatal("the twin has the record's fingerprint")
+		}
+		if _, err := Verify(twin, h, &key.PublicKey); err == nil || !strings.Contains(err.Error(), "low-S") {
+			t.Fatalf("high-S twin accepted: %v", err)
+		}
 	}
 }
 

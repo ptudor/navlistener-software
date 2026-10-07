@@ -408,6 +408,8 @@ func (k keySigner) SignDigest(d [32]byte) ([SignatureSize]byte, error) {
 	if err != nil {
 		return out, fmt.Errorf("sign: %w", err)
 	}
+	// Canonical records only: verifiers refuse the high-S twin.
+	s = NormalizeS(s, k.key.Params().N)
 	r.FillBytes(out[:32])
 	s.FillBytes(out[32:])
 	return out, nil
@@ -507,10 +509,32 @@ func (ks *KeySet) verifyDigest(id [KeyIDSize]byte, d [32]byte, sig []byte) error
 	if r.Sign() <= 0 || s.Sign() <= 0 || r.Cmp(n) >= 0 || s.Cmp(n) >= 0 {
 		return errors.New("signature scalar is out of range")
 	}
+	// A record's fingerprint covers its signature bytes, and (r, n-s) verifies
+	// as well as (r, s). Only the low-S form is a record: otherwise one board's
+	// record would have two fingerprints, and anyone holding it could present
+	// the one the manufacturer never published.
+	if !LowS(s, n) {
+		return errors.New("signature is not in low-S form")
+	}
 	if !ecdsa.Verify(key, d[:], r, s) {
 		return errors.New("signature verification failed")
 	}
 	return nil
+}
+
+// LowS reports whether s is the canonical one of the two ECDSA S values,
+// s <= n/2, that verify for the same R.
+func LowS(s, n *big.Int) bool {
+	half := new(big.Int).Rsh(n, 1)
+	return s.Cmp(half) <= 0
+}
+
+// NormalizeS returns s in low-S form, n-s when s > n/2.
+func NormalizeS(s, n *big.Int) *big.Int {
+	if LowS(s, n) {
+		return s
+	}
+	return new(big.Int).Sub(n, s)
 }
 
 func digest(domain, body []byte) [32]byte {

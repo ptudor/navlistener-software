@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -190,19 +191,35 @@ func (v *Verifier) WatchRegistry(ctx context.Context, path string, every time.Du
 				return
 			case <-ticker.C:
 			}
-			st, err := os.Stat(path)
-			if err == nil && st.ModTime().Equal(seen.modTime) && st.Size() == seen.size {
-				continue
-			}
-			next, err := v.loadRegistryFile(path)
-			if loaded != nil {
-				loaded(v.Registry(), err)
+			// The bytes decide whether anything changed: a registry rewritten
+			// within the file system's timestamp granularity at the same length
+			// is still a new registry, and the one bad file is still the same
+			// bad file however many ticks pass.
+			next, data, err := readRegistryFile(path)
+			if err == nil {
+				if next.same(seen) {
+					continue
+				}
+				err = v.adoptRegistry(path, data)
 			}
 			if err != nil {
+				// One Error line and one report per distinct bad file. Its stamp
+				// is remembered so the same bytes are not read, verified and
+				// reported again every tick; the registry in force is kept.
+				if next.same(seen) {
+					continue
+				}
+				seen = next
+				if loaded != nil {
+					loaded(v.Registry(), err)
+				}
 				log.Error("registry reload failed; keeping the registry already in force", "path", path, "error", err)
 				continue
 			}
 			seen = next
+			if loaded != nil {
+				loaded(v.Registry(), nil)
+			}
 			log.Info("registry reloaded", "path", path, "sequence", v.Registry().Sequence, "boards", v.Registry().Len())
 			if err := v.recordRegistrySequence(); err != nil {
 				log.Error("registry adopted, but its sequence was not recorded; a restart could accept an older registry", "path", path, "error", err)
@@ -233,27 +250,58 @@ func (v *Verifier) recordRegistrySequence() error {
 	return nil
 }
 
+// fileStamp identifies what one read of the registry file found: the SHA-256
+// of the bytes when they were read, otherwise (the file missing or over the
+// size limit) the stat values that refused it.
 type fileStamp struct {
 	modTime time.Time
 	size    int64
+	sum     [32]byte
+	read    bool
 }
 
-func (v *Verifier) loadRegistryFile(path string) (fileStamp, error) {
+// same reports whether two reads found the same thing: the same bytes, or the
+// same refusal.
+func (s fileStamp) same(o fileStamp) bool {
+	if s.read && o.read {
+		return s.sum == o.sum
+	}
+	return s.read == o.read && s.size == o.size && s.modTime.Equal(o.modTime)
+}
+
+// readRegistryFile reads the registry file and stamps what it found. The
+// stamp is returned with the error too, so a refusal can be remembered.
+func readRegistryFile(path string) (fileStamp, []byte, error) {
 	st, err := os.Stat(path)
 	if err != nil {
-		return fileStamp{}, fmt.Errorf("registry: %w", err)
+		return fileStamp{}, nil, fmt.Errorf("registry: %w", err)
 	}
+	stamp := fileStamp{modTime: st.ModTime(), size: st.Size()}
 	if st.Size() > registryMaxBytes {
-		return fileStamp{}, fmt.Errorf("registry %s is %d bytes, limit %d", path, st.Size(), registryMaxBytes)
+		return stamp, nil, fmt.Errorf("registry %s is %d bytes, limit %d", path, st.Size(), registryMaxBytes)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fileStamp{}, fmt.Errorf("registry: %w", err)
+		return stamp, nil, fmt.Errorf("registry: %w", err)
 	}
+	stamp.sum, stamp.read = sha256.Sum256(data), true
+	return stamp, data, nil
+}
+
+// adoptRegistry verifies data read from path and puts it in force.
+func (v *Verifier) adoptRegistry(path string, data []byte) error {
 	if _, err := v.LoadRegistry(data); err != nil {
-		return fileStamp{}, fmt.Errorf("registry %s: %w", path, err)
+		return fmt.Errorf("registry %s: %w", path, err)
 	}
-	return fileStamp{modTime: st.ModTime(), size: st.Size()}, nil
+	return nil
+}
+
+func (v *Verifier) loadRegistryFile(path string) (fileStamp, error) {
+	stamp, data, err := readRegistryFile(path)
+	if err != nil {
+		return stamp, err
+	}
+	return stamp, v.adoptRegistry(path, data)
 }
 
 // Evaluate decides what evidence proves for the authenticated observer on one
@@ -268,14 +316,17 @@ func (v *Verifier) Evaluate(observerID string, e Evidence, exported []byte) (Res
 	if err != nil {
 		return reject(ReasonSignature, err)
 	}
-	// The manufacturer key signs for other product lines too. Only a board built
-	// as an observer proves anything to an observer collector.
+	// The manufacturer key signs for other product lines and revisions too.
+	// Only a board built as an observer, at a revision this collector serves,
+	// proves anything to an observer collector. The reason label stays
+	// "product"; the message names both fields so the operator looks at the
+	// right one.
 	allowed := false
 	for _, policy := range v.products {
 		allowed = allowed || policy.Allows(s)
 	}
 	if !allowed {
-		return reject(ReasonProduct, fmt.Errorf("record is for product %d, not an observer", s.Product))
+		return reject(ReasonProduct, fmt.Errorf("record is for product %d revision %d, outside the manufacturer's product policy %s", s.Product, s.BoardRevision, describeProducts(v.products)))
 	}
 	if s.ObserverID() != observerID {
 		return reject(ReasonIdentity, fmt.Errorf("record is for observer %s, session is %s", s.ObserverID(), observerID))
@@ -346,8 +397,24 @@ func (v *Verifier) Recheck(r Result) error {
 	return nil
 }
 
-// LoadKeySet reads P-256 public keys, or certificates carrying them, from PEM
-// files and pins them.
+// describeProducts renders a product policy for an error message, as
+// product/revision pairs in the order configured.
+func describeProducts(products []ProductPolicy) string {
+	var b bytes.Buffer
+	b.WriteByte('[')
+	for i, p := range products {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%d/%d", p.Product, p.Revision)
+	}
+	b.WriteByte(']')
+	return b.String()
+}
+
+// LoadKeySet reads P-256 `PUBLIC KEY` PEM files and pins them. A certificate
+// is refused: a pin names the exact key, not whatever a certificate may say
+// about it.
 func LoadKeySet(paths []string) (*KeySet, error) {
 	keys := make([]*ecdsa.PublicKey, 0, len(paths))
 	for _, path := range paths {

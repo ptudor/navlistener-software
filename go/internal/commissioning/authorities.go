@@ -27,6 +27,13 @@ func (p ProductPolicy) Allows(s Statement) bool {
 type Authorities map[string]*Verifier
 
 func (a Authorities) Evaluate(c identity.ObserverContext, e Evidence, exported []byte) (Result, error) {
+	// An enrollment with no manufacturer authority is a software station: the
+	// evidence does not belong to it, whatever this collector can verify.
+	// "unconfigured" is reserved for the collector's own state, an authority it
+	// does not pin or has disabled.
+	if c.ManufacturerAuthorityID == "" {
+		return reject(ReasonIdentity, errors.New("enrollment names no manufacturer authority; evidence does not belong to a software enrollment"))
+	}
 	v := a[c.ManufacturerAuthorityID]
 	if v == nil {
 		return reject(ReasonUnconfigured, errors.New("enrolled manufacturer authority is unknown or disabled"))

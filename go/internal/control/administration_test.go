@@ -89,9 +89,46 @@ func TestPolicyChangeKeepsCredential(t *testing.T) {
 	if w := operatorRequest(t, handler, operatorToken, "/v1/enrollments/policy", change); w.Code != http.StatusNoContent {
 		t.Fatalf("HTTP policy change: %d %s", w.Code, w.Body.String())
 	}
+	// A revision this enrollment has already carried cannot come back: receipts
+	// stamped r1 or r2 must keep naming one policy interval.
+	for _, used := range []string{"r1", "r2"} {
+		reused := change
+		reused.Publication.Revision = used
+		if err := b.service.ChangePolicy(ctx, "operator", reused); !errors.As(err, &bad) || !strings.Contains(err.Error(), "already been used") {
+			t.Fatalf("revision %s reused: err = %v, want a request error naming the reuse", used, err)
+		}
+	}
+	reused := change
+	reused.Publication.Revision = "r1"
+	if w := operatorRequest(t, handler, operatorToken, "/v1/enrollments/policy", reused); w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "already been used") {
+		t.Fatalf("HTTP reused revision: %d %s", w.Code, w.Body.String())
+	}
+
+	// The current enrollment id can be recovered without the database when the
+	// activation response was lost; the token cannot, and nothing is changed.
+	w = operatorRequest(t, handler, operatorToken, "/v1/enrollments/current", map[string]string{"observer_id": "software"})
+	if w.Code != http.StatusOK || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("current enrollment: %d %s", w.Code, w.Body.String())
+	}
+	var current CurrentEnrollment
+	if err := json.Unmarshal(w.Body.Bytes(), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.EnrollmentID != id || !current.Active || current.ObserverID != "software" || current.RevokedAt != nil {
+		t.Fatalf("current enrollment = %+v, want active %s", current, id)
+	}
+	if strings.Contains(w.Body.String(), token) || strings.Contains(w.Body.String(), `"token"`) {
+		t.Fatal("recovery response carried a credential")
+	}
+	if w := operatorRequest(t, handler, operatorToken, "/v1/enrollments/current", map[string]string{"observer_id": "nobody"}); w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("unknown observer lookup: %d %s", w.Code, w.Body.String())
+	}
 
 	if err := b.service.Revoke(ctx, "operator", id); err != nil {
 		t.Fatal(err)
+	}
+	if current, err := b.service.CurrentEnrollment(ctx, "software"); err != nil || current.EnrollmentID != id || current.Active || current.RevokedAt == nil {
+		t.Fatalf("revoked current enrollment = %+v, %v", current, err)
 	}
 	change.Publication.Revision = "r4"
 	if err := b.service.ChangePolicy(ctx, "operator", change); !errors.As(err, &bad) {

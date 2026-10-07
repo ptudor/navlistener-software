@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -81,7 +82,10 @@ func run() error {
 		return err
 	}
 	defer db.Close()
-	svc := &control.Service{DB: db, Authorities: authorities.Set, Manufacturers: authorities.ManufacturerAuthorities}
+	// Failures the API answers only in summary (a key file or registry it could
+	// not read) log their detail here, on the operator host, never in a response.
+	svc := &control.Service{DB: db, Authorities: authorities.Set, Manufacturers: authorities.ManufacturerAuthorities,
+		Log: slog.New(slog.NewTextHandler(os.Stderr, nil))}
 	if err := svc.Initialize(ctx, authorities); err != nil {
 		return err
 	}

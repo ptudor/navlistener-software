@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -15,8 +16,29 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/ptudor/navlistener/internal/controlauth"
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/reception"
+)
+
+// A forecast that cannot be encoded reaches no station. The counter is the
+// alertable signal; the log line, bounded per station, says which station and
+// which companion so the forecast function can be reproduced.
+var forecastEncodeFailures = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "navlistener_station_forecast_encode_failures_total",
+	Help: "Reception forecasts (reception) or power companions (power) the collector computed but could not encode for a station; the station received none for that cadence.",
+}, []string{"observer", "kind"})
+
+const (
+	// forecastEvery is the cadence at which a station receives a forecast; a
+	// forecast that failed to encode is retried at the same cadence rather
+	// than on every control poll, so a persistent fault does not burn orbit
+	// propagation every few seconds.
+	forecastEvery = 30 * time.Second
+	// forecastWarnEvery bounds the encode-failure log per station.
+	forecastWarnEvery = 5 * time.Minute
 )
 
 type Forecast func(identity.ObserverContext, reception.Site, time.Time) reception.Expectation
@@ -44,12 +66,30 @@ type station struct {
 	result             *reception.SnapshotResult
 	lastUptime         uint64
 	lastPowerUptime    uint64
+	lastForecastWarn   time.Time
 }
 type Manager struct {
 	mu       sync.Mutex
 	stations map[string]*station
 	forecast Forecast
 	token    []byte
+	auth     controlauth.Limiter
+	log      *slog.Logger
+}
+
+// SetLogger directs this manager's log lines; without it they go through
+// slog.Default.
+func (m *Manager) SetLogger(log *slog.Logger) {
+	m.mu.Lock()
+	m.log = log
+	m.mu.Unlock()
+}
+
+func (m *Manager) logger() *slog.Logger {
+	if m.log != nil {
+		return m.log
+	}
+	return slog.Default()
 }
 
 type PowerModelSnapshot struct {
@@ -136,7 +176,7 @@ func (m *Manager) Pending(c identity.ObserverContext, session string, now time.T
 		return nil, nil, nil
 	}
 	s.lastControl = now
-	due := s.lastForecast.IsZero() || now.Sub(s.lastForecast) >= 30*time.Second
+	due := s.lastForecast.IsZero() || now.Sub(s.lastForecast) >= forecastEvery
 	site := s.site
 	if due {
 		s.lastForecast = now
@@ -145,9 +185,10 @@ func (m *Manager) Pending(c identity.ObserverContext, session string, now time.T
 	// Orbit propagation must not block other stations' reports or controls.
 	var e reception.Expectation
 	var forecast, power, request []byte
+	var encodeErr error
 	if due {
 		e = m.forecast(c, site, now)
-		forecast, _ = e.Encode()
+		forecast, encodeErr = e.Encode()
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -158,23 +199,28 @@ func (m *Manager) Pending(c identity.ObserverContext, session string, now time.T
 		if s.lastForecast != now {
 			return nil, nil, nil
 		}
-		if len(forecast) != 0 {
+		if encodeErr != nil {
+			// The station gets no forecast this cadence. lastForecast stays at
+			// now, so the next attempt is a cadence away rather than on the
+			// next control poll: a persistent fault is retried, not spun on.
+			m.forecastFailed(s, c.ObserverID, "reception", encodeErr, now)
+		} else {
 			s.forecasts = append(s.forecasts, e)
 			if len(s.forecasts) > 12 {
 				s.forecasts = s.forecasts[1:]
 			}
 			if s.receptionVersion >= 2 {
 				p := s.model.Forecast(e)
-				power, _ = p.Encode()
-				if len(power) != 0 {
+				var powerErr error
+				if power, powerErr = p.Encode(); powerErr != nil {
+					m.forecastFailed(s, c.ObserverID, "power", powerErr, now)
+				} else {
 					s.powerForecasts = append(s.powerForecasts, powerForecast{base: e, power: p})
 					if len(s.powerForecasts) > 12 {
 						s.powerForecasts = s.powerForecasts[1:]
 					}
 				}
 			}
-		} else {
-			s.lastForecast = time.Time{}
 		}
 	}
 	if s.request != 0 && s.result == nil && s.expires > now.Unix() {
@@ -185,6 +231,18 @@ func (m *Manager) Pending(c identity.ObserverContext, session string, now time.T
 		binary.BigEndian.PutUint64(request[12:], uint64(s.expires))
 	}
 	return forecast, power, request
+}
+
+// forecastFailed counts a forecast the station will not receive and logs it,
+// at most once per forecastWarnEvery per station. Called with m.mu held.
+func (m *Manager) forecastFailed(s *station, observer, kind string, err error, now time.Time) {
+	forecastEncodeFailures.WithLabelValues(observer, kind).Inc()
+	if !s.lastForecastWarn.IsZero() && now.Sub(s.lastForecastWarn) < forecastWarnEvery {
+		return
+	}
+	s.lastForecastWarn = now
+	m.logger().Warn("station forecast could not be encoded; the station receives none this cadence",
+		"observer", observer, "kind", kind, "error", err, "retry_after", forecastEvery)
 }
 
 // ObservePower trains only configured, well-above-mask satellite observations.
@@ -321,7 +379,14 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	auth := r.Header.Get("Authorization")
 	digest := sha256.Sum256([]byte(strings.TrimPrefix(auth, "Bearer ")))
-	if len(m.token) != 32 || r.Header.Get("Origin") != "" || len(r.Header.Values("Authorization")) != 1 || !strings.HasPrefix(auth, "Bearer ") || subtle.ConstantTimeCompare(digest[:], m.token) != 1 {
+	// A browser-origin request is refused before its credential is judged, so
+	// it is not counted as a guessed one.
+	if r.Header.Get("Origin") != "" {
+		http.Error(w, "station control credential required", http.StatusUnauthorized)
+		return
+	}
+	if len(m.token) != 32 || len(r.Header.Values("Authorization")) != 1 || !strings.HasPrefix(auth, "Bearer ") || subtle.ConstantTimeCompare(digest[:], m.token) != 1 {
+		m.auth.Failed("station-snapshot", r)
 		http.Error(w, "station control credential required", http.StatusUnauthorized)
 		return
 	}
