@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -139,6 +141,14 @@ func TestNavfeederDiskSpillAcrossSpoolDeletion(t *testing.T) {
 }
 
 func runFeederE2E(t *testing.T, useZstd bool, extraArgs ...string) {
+	runFeederE2EWith(t, useZstd, nil, true, extraArgs...)
+}
+
+// runFeederE2EWith is runFeederE2E with the collector's TLS configuration and the
+// feeder's verification mode under the caller's control: a nil tc means a fresh selfSigned
+// certificate, and insecure=false omits --insecure so the feeder verifies the collector
+// (the caller then passes --ca in extraArgs).
+func runFeederE2EWith(t *testing.T, useZstd bool, tc *tls.Config, insecure bool, extraArgs ...string) {
 	bin := feederBinary(t)
 
 	// Ground truth: the nav frames the Go scanner lifts off the capture.
@@ -158,7 +168,9 @@ func runFeederE2E(t *testing.T, useZstd bool, extraArgs ...string) {
 	// The collector push endpoint. A generous out buffer so the drain loop never loses a
 	// frame to the queue-full drop while we read.
 	out := make(chan *RawFrame, 8192)
-	tc := &tls.Config{Certificates: []tls.Certificate{selfSigned(t)}, MinVersion: tls.VersionTLS12}
+	if tc == nil {
+		tc = &tls.Config{Certificates: []tls.Certificate{selfSigned(t)}, MinVersion: tls.VersionTLS12}
+	}
 	srv := newPushServer("127.0.0.1:0", tc, out, tokenAuth("f9t-e2e", "s3cret", "ubx"),
 		25*time.Millisecond, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	pushLn, err := tls.Listen("tcp", "127.0.0.1:0", tc)
@@ -195,7 +207,9 @@ func runFeederE2E(t *testing.T, useZstd bool, extraArgs ...string) {
 		"--server", pushLn.Addr().String(),
 		"--source", srcLn.Addr().String(),
 		"--station", "f9t-e2e", "--token", "s3cret", "--feed", "ubx",
-		"--insecure",
+	}
+	if insecure {
+		args = append(args, "--insecure")
 	}
 	if len(extraArgs) > 0 {
 		args = append(args, extraArgs...) // caller overrides/extends (e.g. tiny --spool + --spool-file)
@@ -289,4 +303,22 @@ func feederBinary(t *testing.T) string {
 		t.Fatalf("navfeeder binary is older than %s; rebuild with: make -C feeder", source)
 	}
 	return p
+}
+
+// feederBinaryWithDefines compiles the real feeder source with the given -D overrides
+// (the source guards its timing constants with #ifndef), so paths that take 30 s in the
+// fleet build — the keepalive PING, the stuck/unreadable spool bounds — run in seconds.
+func feederBinaryWithDefines(t *testing.T, name string, defines ...string) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), name)
+	args := []string{"-O1", "-g", "-Wall", "-Wextra", "-std=c11", "-D_FILE_OFFSET_BITS=64"}
+	args = append(args, defines...)
+	if runtime.GOOS == "darwin" {
+		args = append(args, "-I/opt/local/include", "-L/opt/local/lib")
+	}
+	args = append(args, "-o", bin, "../../../feeder/navfeeder.c", "-lssl", "-lcrypto", "-lzstd", "-lpthread")
+	if out, err := exec.Command("cc", args...).CombinedOutput(); err != nil {
+		t.Fatalf("compile %s (%s): %v\n%s", name, strings.Join(defines, " "), err, out)
+	}
+	return bin
 }

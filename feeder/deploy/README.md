@@ -138,3 +138,8 @@ for that stable device path); TCP bridge sources need no device permission.
   outage while the box stays up but does NOT survive a reboot there (regression fix; the init caps the
   tmpfs spool at 16 MiB). Both tiers are lossless up to their caps; overflow drops the oldest
   and is counted in the disconnect log.
+- **Signals.** `SIGTERM`, `SIGINT` and `SIGHUP` all mean "stop": the feeder flushes its
+  unacked RAM ring to the disk spool, fsyncs it and exits 0 (1 if the flush was incomplete).
+  There is no reload — the configuration is argv, read once at start — so a service
+  manager's "reload" action (typically `SIGHUP`) or a controlling-terminal hangup is an
+  orderly stop; restart the service and the spool recovery replays what the flush saved.

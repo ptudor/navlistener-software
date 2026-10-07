@@ -63,6 +63,52 @@ func TestNavfeederShutdownDurabilityIsHonest(t *testing.T) {
 		})
 	}
 
+	// A spool directory that became unwritable after startup (ownership changed, a
+	// read-only remount, a recreated /var) used to drop every evicted frame and the
+	// whole shutdown flush with no log line at all; only the dropped= counter at the
+	// next disconnect hinted at it. The open failure must be named, with its cause,
+	// at the first eviction and the flush must still report itself incomplete.
+	t.Run("unwritable spool directory", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("directory permissions do not apply to root, so EACCES cannot be provoked")
+		}
+		ro := filepath.Join(t.TempDir(), "ro")
+		if err := os.Mkdir(ro, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(ro, 0o700) })
+		spool := filepath.Join(ro, "spool")
+		stderr, code, _, after := runShutdownFlushWith(t, "", syscall.SIGTERM, spool)
+		if code == 0 {
+			t.Fatalf("feeder exited 0 although no spool file could be opened:\n%s", stderr)
+		}
+		if !strings.Contains(stderr, "disk spool open failed ("+spool+"): Permission denied") {
+			t.Errorf("the open failure was not logged with its cause:\n%s", stderr)
+		}
+		if !strings.Contains(stderr, "shutdown flush INCOMPLETE") || !strings.Contains(stderr, "could not be opened") {
+			t.Errorf("the flush did not report the unopenable spool:\n%s", stderr)
+		}
+		if after != "" {
+			t.Errorf("a spool file appeared in an unwritable directory (%d bytes)", len(after))
+		}
+	})
+
+	// SIGHUP is a stop, not a reload (there is nothing to reload): a service manager's
+	// reload action or a controlling-terminal hangup must flush the ring exactly like
+	// SIGTERM instead of killing the process with the default disposition.
+	t.Run("SIGHUP flushes like SIGTERM", func(t *testing.T) {
+		stderr, code, _, after := runShutdownFlushWith(t, "", syscall.SIGHUP, "")
+		if code != 0 {
+			t.Fatalf("SIGHUP flush exited %d:\n%s", code, stderr)
+		}
+		if !strings.Contains(stderr, "shutdown flush complete") {
+			t.Errorf("no completion diagnostic after SIGHUP:\n%s", stderr)
+		}
+		if len(after) < 8 || !strings.HasPrefix(after, "NAVSPO01") {
+			t.Errorf("spool file is not readable as a spool after a SIGHUP flush (%d bytes)", len(after))
+		}
+	})
+
 	t.Run("clean flush exits zero and is readable", func(t *testing.T) {
 		stderr, code, _, after := runShutdownFlush(t, "")
 		if code != 0 {
@@ -88,9 +134,17 @@ func TestNavfeederShutdownDurabilityIsHonest(t *testing.T) {
 // exit code, and the spool file's contents before and after the flush.
 func runShutdownFlush(t *testing.T, env string) (stderr string, code int, before, after string) {
 	t.Helper()
+	return runShutdownFlushWith(t, env, syscall.SIGTERM, "")
+}
+
+// runShutdownFlushWith is runShutdownFlush with the stop signal and the spool path
+// under the caller's control (an empty spool means a fresh temp directory).
+func runShutdownFlushWith(t *testing.T, env string, sig syscall.Signal, spool string) (stderr string, code int, before, after string) {
+	t.Helper()
 	bin := spoolTestBinary(t)
-	dir := t.TempDir()
-	spool := filepath.Join(dir, "spool")
+	if spool == "" {
+		spool = filepath.Join(t.TempDir(), "spool")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -168,7 +222,7 @@ func runShutdownFlush(t *testing.T, env string) (stderr string, code int, before
 	if b, err := os.ReadFile(spool); err == nil {
 		before = string(b)
 	}
-	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+	if err := cmd.Process.Signal(sig); err != nil {
 		t.Fatal(err)
 	}
 	started = true

@@ -205,6 +205,11 @@ struct spool {
 	FILE *disk_w;
 	int disk_append_disabled; /* repair/delete failed: never append past an untrusted boundary */
 	uint64_t disk_max_seq, disk_bytes, disk_max_bytes, disk_dropped;
+	/* disk_min_seq is the seq of the first record in the current file (0 = no record yet),
+	 * so the at-cap diagnostic in disk_put can say how many already-acked frames the file
+	 * still retains; reset whenever the file is deleted or the accounting restarts. Mutated
+	 * under mu. */
+	uint64_t disk_min_seq;
 	/* disk_gen counts file shrink/replace events — the unlink in disk_maybe_delete and
 	 * the boundary repair in disk_rollback. disk_drain's per-connection read
 	 * cursor is tagged with the generation it scanned; a mismatch forces a full rescan,
@@ -214,6 +219,11 @@ struct spool {
 	/* replay spools only: monotonic second the file was first found fully acked
 	 * yet not removable (see replay_retire_stuck); 0 = not stuck */
 	time_t retire_stuck_since;
+	/* monotonic second disk_drain first failed to open this file with a retryable error
+	 * (EACCES, EMFILE, ...) in the current run of consecutive failures; 0 = opening works.
+	 * Bounds how long an unreadable spool may stall delivery (see disk_open_failed).
+	 * Mutated under mu. */
+	time_t disk_open_fail_since;
 	pthread_mutex_t mu;
 	/* set only after pthread_mutex_init succeeded. spool_free must
 	 * never pthread_mutex_destroy an object that was never initialized, and no
@@ -493,23 +503,44 @@ static int sync_parent_dir(const char *path) {
 	return rc;
 }
 
-/* Link + directory fsync before unlink keeps the old name recoverable until its
- * replay name is durable. A crash between the two names only causes dedup-safe
- * replay. Never overwrite an existing archive or append to a file we cannot move. */
+/* archive_spool moves the prior run's file to its replay name. Preferred: link + directory
+ * fsync before unlink, which keeps the old name recoverable until its replay name is
+ * durable (a crash between the two names only causes dedup-safe replay). Filesystems
+ * without hard links — FAT/exFAT SD cards and USB sticks, some overlay/NFS setups — fail
+ * link() with EPERM/EOPNOTSUPP (or EXDEV/EMLINK); there the atomic rename() is used
+ * instead, giving up only the both-names-during-a-crash window that the duplicate-session
+ * check already tolerates. Without the fallback such a box kept the file at <path> forever:
+ * never replayed, and with the disk tier disabled on every start. Never overwrite an
+ * existing archive or append to a file we cannot move. */
 static int archive_spool(struct spool *s, const char *dir) {
 	char archived[PATH_MAX];
 	if (snprintf(archived, sizeof archived, "%s.replay.%s", s->path, s->session) >= (int)sizeof archived) return -1;
+	int renamed = 0;
 	if (link(s->path, archived) != 0) {
+		int e = errno;
 		struct stat a, b;
-		if (errno != EEXIST || stat(s->path, &a) || stat(archived, &b) || a.st_dev != b.st_dev || a.st_ino != b.st_ino) return -1;
+		if (e == EEXIST) {
+			/* A crash between link and unlink leaves both names on one inode: resume. */
+			if (stat(s->path, &a) || stat(archived, &b) || a.st_dev != b.st_dev || a.st_ino != b.st_ino) return -1;
+		} else if (e == EPERM || e == EOPNOTSUPP || e == ENOTSUP || e == EXDEV || e == EMLINK) {
+			/* rename() would silently replace an existing archive, so refuse one explicitly
+			 * (link() reports that as EEXIST only where links are supported). */
+			if (stat(archived, &b) == 0 || errno != ENOENT) return -1;
+			if (rename(s->path, archived) != 0) return -1;
+			renamed = 1;
+		} else {
+			return -1;
+		}
 	}
 	int fd = open(dir, O_RDONLY);
 	if (fd < 0) return -1;
 	int rc = fsync(fd);
-	if (!rc) rc = unlink(s->path);
-	if (!rc) rc = fsync(fd);
+	if (!rc && !renamed) rc = unlink(s->path);
+	if (!rc && !renamed) rc = fsync(fd);
 	close(fd);
 	if (rc) return -1;
+	log_msg("archived prior spool as %s (%s)", archived,
+		renamed ? "renamed: this filesystem has no hard links" : "linked, then unlinked");
 	free((void *)s->path);
 	s->path = strdup(archived);
 	if (!s->path) die("out of memory for replay path");
@@ -654,11 +685,51 @@ static void disk_put(struct spool *s, uint64_t seq, const unsigned char *data, u
 	if (s->disk_append_disabled) { s->disk_dropped++; return; }
 	if (!s->disk_w) {
 		s->disk_w = fopen(s->path, "ab");
-		if (!s->disk_w) { s->dropped++; return; }
+		if (!s->disk_w) {
+			/* A spool directory that became unwritable after startup (ownership change,
+			 * read-only remount, a recreated /var, fd exhaustion) used to drop every
+			 * evicted frame — and the whole shutdown flush — without a word; the only
+			 * trace was the dropped= counter at the next disconnect. Say so, throttled on
+			 * the monotonic clock with the first-warn guard (see disk_rollback). The
+			 * accounting is unchanged: an open failure stays under `dropped`. */
+			int open_err = errno;
+			static time_t last_warn;
+			time_t nowt = monotonic_s();
+			if (last_warn == 0 || nowt - last_warn >= 60) {
+				last_warn = nowt ? nowt : 1;
+				log_msg("disk spool open failed (%s): %s; evicted frames are being dropped",
+					s->path, strerror(open_err));
+			}
+			s->dropped++;
+			return;
+		}
 	}
 	uint64_t rec = 12 + (uint64_t)len;
 	uint64_t hdr_need = (s->disk_bytes == 0) ? SPOOL_HDR_LEN : 0;
-	if (s->disk_bytes + hdr_need + rec > s->disk_max_bytes) { s->disk_dropped++; return; }
+	if (s->disk_bytes + hdr_need + rec > s->disk_max_bytes) {
+		s->disk_dropped++;
+		/* The file is freed only once EVERY record in it is acked, so an ack stream that
+		 * flows but lags behind the ring's span keeps appending behind a growing acked
+		 * prefix until the cap is hit — from then on evictions are dropped although most
+		 * of the file is dead weight. Nothing compacts that prefix; make the condition
+		 * visible (throttled, first-warn guarded) so an operator can tell "disk full of
+		 * unsent frames" from "disk full of frames the collector already has". The count is
+		 * an upper bound: a seq dropped at the cap earlier has no record in the file. */
+		if (s->disk_min_seq && s->acked >= s->disk_min_seq) {
+			uint64_t upto = s->acked < s->disk_max_seq ? s->acked : s->disk_max_seq;
+			static time_t last_warn;
+			time_t nowt = monotonic_s();
+			if (last_warn == 0 || nowt - last_warn >= 60) {
+				last_warn = nowt ? nowt : 1;
+				log_msg("disk spool at cap (%llu bytes) while retaining up to %llu already-acked frame(s) "
+					"(seq %llu..%llu); evicted frames are being dropped until the file is fully acked",
+					(unsigned long long)s->disk_bytes,
+					(unsigned long long)(upto - s->disk_min_seq + 1),
+					(unsigned long long)s->disk_min_seq, (unsigned long long)upto);
+			}
+		}
+		return;
+	}
 	if (hdr_need) {
 		/* Fresh file (first spill, or the post-ack unlink reset the accounting):
 		 * write the regression fix session header before any record, under the same
@@ -696,6 +767,7 @@ static void disk_put(struct spool *s, uint64_t seq, const unsigned char *data, u
 	}
 	s->disk_bytes += rec;
 	s->disk_max_seq = seq;
+	if (!s->disk_min_seq) s->disk_min_seq = seq;
 }
 
 /* spool_append copies a record in, assigns the next seq, and on overflow spills the oldest
@@ -886,46 +958,70 @@ static int numeric_host(const char *host) {
 	return inet_pton(AF_INET, host, buf) == 1 || inet_pton(AF_INET6, host, buf) == 1;
 }
 
-static int tcp_dial(const char *host, const char *port, int rcv_timeout_s) {
+/* tcp_dial connects to host:port and returns the socket, or -1 with `why` naming the
+ * failure: the resolver's verdict (gai_strerror, or errno for EAI_SYSTEM) or the last
+ * candidate address's connect error (SO_ERROR, an immediate connect errno, or ETIMEDOUT for
+ * the per-candidate poll window). A DNS failure, a refused port and a black-holed host all
+ * used to print the same line; a field operator cannot tell a wrong hostname from a dead
+ * bridge without the reason. */
+static int tcp_dial(const char *host, const char *port, int rcv_timeout_s, char *why, size_t whycap) {
 	struct addrinfo hints, *res, *rp;
 	memset(&hints, 0, sizeof hints);
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
-	if (getaddrinfo(host, port, &hints, &res) != 0) return -1;
+	int gai = getaddrinfo(host, port, &hints, &res);
+	if (gai != 0) {
+		/* EAI_SYSTEM carries the real cause in errno; everything else is the resolver's verdict. */
+		snprintf(why, whycap, "resolving %s: %s", host,
+			gai == EAI_SYSTEM ? strerror(errno) : gai_strerror(gai));
+		return -1;
+	}
 	int fd = -1;
+	int last_err = 0; /* the most recent candidate's failure, for the diagnostic */
 	for (rp = res; rp; rp = rp->ai_next) {
 		fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-		if (fd < 0) continue;
+		if (fd < 0) { last_err = errno; continue; }
 		/* non-blocking connect + poll(POLLOUT) + SO_ERROR per candidate,
 		 * keeping the multi-address iteration; on success the socket is returned to
 		 * blocking mode (every later read/write relies on blocking semantics plus
 		 * SO_RCVTIMEO/SO_SNDTIMEO). POSIX: an EINTR'd connect keeps completing
 		 * asynchronously — poll for it exactly like EINPROGRESS. */
 		int fl = fcntl(fd, F_GETFL);
-		if (fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) != 0) { close(fd); fd = -1; continue; }
+		if (fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) != 0) { last_err = errno; close(fd); fd = -1; continue; }
 		int rc = connect(fd, rp->ai_addr, rp->ai_addrlen);
 		if (rc != 0 && (errno == EINPROGRESS || errno == EINTR)) {
 			struct pollfd pfd = { .fd = fd, .events = POLLOUT };
 			do { rc = poll(&pfd, 1, CONNECT_TIMEOUT_S * 1000); } while (rc < 0 && errno == EINTR);
 			if (rc > 0) {
 				int soerr = 0; socklen_t sl = sizeof soerr;
-				rc = (getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &sl) == 0 && soerr == 0) ? 0 : -1;
+				if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &sl) != 0) soerr = errno;
+				if (soerr) last_err = soerr;
+				rc = soerr == 0 ? 0 : -1;
 			} else {
-				rc = -1; /* poll timeout (rc==0) or poll error */
+				last_err = rc == 0 ? ETIMEDOUT : errno; /* poll timeout (rc==0) or poll error */
+				rc = -1;
 			}
+		} else if (rc != 0) {
+			last_err = errno;
 		}
 		if (rc == 0 && fcntl(fd, F_SETFL, fl) == 0) break; /* connected, blocking restored */
+		if (rc == 0) last_err = errno; /* connected, but blocking mode could not be restored */
 		close(fd); fd = -1;
 	}
 	freeaddrinfo(res);
-	if (fd >= 0 && rcv_timeout_s > 0) {
+	if (fd < 0) {
+		snprintf(why, whycap, "connecting to %s:%s: %s", host, port,
+			last_err ? strerror(last_err) : "no usable address");
+		return -1;
+	}
+	if (rcv_timeout_s > 0) {
 		struct timeval tv = { rcv_timeout_s, 0 };
 		if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv) != 0) {
 			/* regression fix verification correction: without the timeout a quiet/wedged TCP
 			 * source can block the producer forever, so fail this dial and retry. */
-			log_msg("failed to set receive timeout on %s:%s: %s", host, port, strerror(errno));
+			snprintf(why, whycap, "setting the receive timeout on %s:%s: %s", host, port, strerror(errno));
 			close(fd);
-			fd = -1;
+			return -1;
 		}
 	}
 	return fd;
@@ -944,14 +1040,18 @@ static int ssl_write_all(struct tls_io *io, const void *buf, size_t n) {
 	return 0;
 }
 
-/* Wait without holding the per-SSL mutex. SSL_pending is inspected under the mutex because
- * buffered plaintext belongs to the same shared SSL object and must be drained even when the
- * kernel fd is no longer readable. */
+/* Wait without holding the per-SSL mutex. SSL_has_pending is inspected under the mutex
+ * because buffered data belongs to the same shared SSL object and must be drained even when
+ * the kernel fd is no longer readable. SSL_has_pending (not SSL_pending) is the question
+ * actually being asked: it also reports a record OpenSSL has read off the socket but not yet
+ * processed, which SSL_pending cannot see — with read-ahead enabled, or a buffered BIO, such
+ * a record (and the ACK inside it) would otherwise sit out the whole poll window below.
+ * Read-ahead stays off today; this keeps the reader correct if that ever changes. */
 static int ssl_wait_readable(struct tls_io *io) {
 	pthread_mutex_lock(&io->mu);
-	int pending = SSL_pending(io->ssl);
+	int pending = SSL_has_pending(io->ssl);
 	pthread_mutex_unlock(&io->mu);
-	if (pending > 0) return 1;
+	if (pending) return 1;
 
 	struct pollfd pfd = { .fd = io->fd, .events = POLLIN };
 	int rc;
@@ -980,11 +1080,15 @@ static int ssl_read_full(struct tls_io *io, void *buf, size_t n) {
 		if (ready <= 0) return n == want && ready == 0 ? -2 : -1;
 		pthread_mutex_lock(&io->mu);
 		int r = SSL_read(io->ssl, p, (int)n);
+		/* Capture errno before SSL_get_error and the unlock: both are library calls
+		 * that may set it, and the timeout-versus-dead classification below depends on
+		 * the value the failing read() left behind. */
+		int saved = errno;
 		int err = r <= 0 ? SSL_get_error(io->ssl, r) : SSL_ERROR_NONE;
 		pthread_mutex_unlock(&io->mu);
 		if (r <= 0) {
 			if (err == SSL_ERROR_WANT_READ ||
-			    (err == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK)))
+			    (err == SSL_ERROR_SYSCALL && (saved == EAGAIN || saved == EWOULDBLOCK)))
 				return n == want ? -2 : -1;
 			return -1;
 		}
@@ -1039,17 +1143,33 @@ static int send_ping(struct conn *c) {
 	return conn_write(c, frame, 5);
 }
 
-/* read_frame reads one wire frame. Returns 0 on success, -1 on a real error, or -2
- * on a receive timeout with the frame boundary intact — i.e. only from the header read with
- * zero bytes consumed, so reader_thread's loop can tell "idle" from "dead" apart. Once the
- * header has been consumed, a payload-read timeout is mid-frame: it is converted to -1 so
- * the caller never resumes parsing from a torn frame. */
+/* read_frame reads one wire frame. Returns 0 on success, -1 on a real error, -2 on a
+ * receive timeout with the frame boundary intact — i.e. only from the header read with zero
+ * bytes consumed, so reader_thread's loop can tell "idle" from "dead" apart — or -3 when a
+ * well-formed frame was larger than the caller's buffer and has been read and discarded,
+ * leaving the stream aligned on the next frame. Once the header has been consumed, a
+ * payload-read timeout is mid-frame: it is converted to -1 so the caller never resumes
+ * parsing from a torn frame. Only a length past MAX_FRAME (the wire's own bound) is a
+ * protocol error: the collector may legitimately send frame types this feeder does not
+ * consume (reception expectations, power references, future notices), and tearing the
+ * session down over one of them would put every feeder into a reconnect-and-replay loop the
+ * moment the collector grew a new message. */
 static int read_frame(struct tls_io *io, uint8_t *type, unsigned char *buf, uint32_t cap, uint32_t *len) {
 	unsigned char hdr[5];
 	int rc = ssl_read_full(io, hdr, 5);
 	if (rc != 0) return rc;
 	uint32_t n = rd_be32(hdr+1);
-	if (n > MAX_FRAME || n > cap) return -1;
+	if (n > MAX_FRAME) return -1;
+	if (n > cap) {
+		unsigned char scratch[256];
+		for (uint32_t left = n; left > 0; ) {
+			uint32_t chunk = left < sizeof scratch ? left : (uint32_t)sizeof scratch;
+			if (ssl_read_full(io, scratch, chunk) != 0) return -1; /* mid-frame: torn, not idle */
+			left -= chunk;
+		}
+		*type = hdr[0]; *len = n;
+		return -3;
+	}
 	if (n && ssl_read_full(io, buf, n) != 0) return -1;
 	*type = hdr[0]; *len = n;
 	return 0;
@@ -1076,6 +1196,7 @@ static void *reader_thread(void *arg) {
 			if (g_disconnected) break;
 			continue;
 		}
+		if (rc == -3) continue; /* a frame too large for buf, of a type this feeder does not consume: skipped intact */
 		if (rc != 0) break;
 		if (type == F_ACK && len >= 8) spool_ack(args->spool, rd_be64(buf));
 	}
@@ -1456,12 +1577,24 @@ static speed_t baud_to_speed(int baud) {
 }
 
 /* open_serial opens a receiver device in raw mode at the configured baud. u-blox USB CDC-ACM
- * ignores the line rate, but a real UART bridge needs it (the fleet runs 460800). */
-static int open_serial(const char *path, int baud, int configure_ubx) {
+ * ignores the line rate, but a real UART bridge needs it (the fleet runs 460800). On failure
+ * it returns -1 with `why` naming the failing step and its errno: ENOENT (unplugged), EACCES
+ * (a device node the service account cannot open — read/write is needed with --configure-ubx),
+ * EBUSY (another process holds the port) and ENXIO all used to print the same line. */
+static int open_serial(const char *path, int baud, int configure_ubx, char *why, size_t whycap) {
 	int fd = open(path, (configure_ubx ? O_RDWR : O_RDONLY) | O_NOCTTY | O_NONBLOCK);
-	if (fd < 0) return -1;
+	if (fd < 0) {
+		snprintf(why, whycap, "open%s: %s",
+			configure_ubx ? " for read/write (--configure-ubx)" : "", strerror(errno));
+		return -1;
+	}
 	struct termios t;
-	if (tcgetattr(fd, &t) != 0) { close(fd); return -1; }
+	if (tcgetattr(fd, &t) != 0) {
+		int e = errno; /* close() may clobber errno */
+		close(fd);
+		snprintf(why, whycap, "tcgetattr: %s", strerror(e));
+		return -1;
+	}
 	cfmakeraw(&t);
 	/* cfmakeraw() does not touch flow control (glibc or BSD). An inherited
 	 * CRTSCTS on the common 3-wire hookup (RTS/CTS unwired) holds RX off waiting for a
@@ -1473,40 +1606,52 @@ static int open_serial(const char *path, int baud, int configure_ubx) {
 #endif
 	t.c_iflag &= (tcflag_t)~IXOFF;
 	speed_t sp = baud_to_speed(baud);
-	if (sp == 0) { close(fd); log_msg("unsupported --baud %d", baud); return -1; }
+	if (sp == 0) { close(fd); snprintf(why, whycap, "unsupported --baud %d", baud); return -1; }
 	cfsetispeed(&t, sp);
 	cfsetospeed(&t, sp);
 	t.c_cflag |= (CLOCAL | CREAD);
 	t.c_cc[VMIN] = 1;   /* block for at least one byte */
 	t.c_cc[VTIME] = 0;
-	if (tcsetattr(fd, TCSANOW, &t) != 0) { close(fd); return -1; }
+	if (tcsetattr(fd, TCSANOW, &t) != 0) {
+		int e = errno;
+		close(fd);
+		snprintf(why, whycap, "tcsetattr: %s", strerror(e));
+		return -1;
+	}
 	int fl = fcntl(fd, F_GETFL);
-	if (fl < 0 || fcntl(fd, F_SETFL, fl & ~O_NONBLOCK) != 0) { close(fd); return -1; }
+	if (fl < 0 || fcntl(fd, F_SETFL, fl & ~O_NONBLOCK) != 0) {
+		int e = errno;
+		close(fd);
+		snprintf(why, whycap, "fcntl: %s", strerror(e));
+		return -1;
+	}
 	return fd;
 }
 
 /* open_source opens the receiver: a device path (leading '/') is a serial port; otherwise a
- * host:port TCP bridge (ser2net / a receiver's raw TCP port). */
-static int open_source(const struct opts *o) {
-	if (o->source[0] == '/') return open_serial(o->source, o->baud, o->configure_ubx);
+ * host:port TCP bridge (ser2net / a receiver's raw TCP port). On failure `why` carries the
+ * reason for the producer's single retry log line. */
+static int open_source(const struct opts *o, char *why, size_t whycap) {
+	if (o->source[0] == '/') return open_serial(o->source, o->baud, o->configure_ubx, why, whycap);
 	/* one strict parser, and no fixed-buffer copy that could
 	 * silently truncate a long authority into a different endpoint. */
 	char host[NI_MAXHOST], port[16];
-	const char *why = NULL;
-	if (parse_authority(o->source, host, sizeof host, port, sizeof port, &why) != 0) {
-		log_msg("--source %s: %s (expected /dev/... , host:port, or [v6]:port)", o->source, why);
+	const char *parse_why = NULL;
+	if (parse_authority(o->source, host, sizeof host, port, sizeof port, &parse_why) != 0) {
+		snprintf(why, whycap, "%s (expected /dev/... , host:port, or [v6]:port)", parse_why);
 		return -1;
 	}
-	return tcp_dial(host, port, 5);
+	return tcp_dial(host, port, 5, why, whycap);
 }
 
 static void *producer_thread(void *arg) {
 	const struct opts *o = arg;
 	int backoff = 1;
 	for (;;) {
-		int fd = open_source(o);
+		char why[256] = "";
+		int fd = open_source(o, why, sizeof why);
 		if (fd < 0) {
-			log_msg("source open failed (%s); retry in %ds", o->source, backoff);
+			log_msg("source open failed (%s): %s; retry in %ds", o->source, why, backoff);
 			sleep(backoff); if ((backoff *= 2) > 30) backoff = 30;
 			continue;
 		}
@@ -1525,12 +1670,25 @@ static void *producer_thread(void *arg) {
 
 /* ── consumer: spool -> collector, replaying unacked on every reconnect ───── */
 
-static SSL *tls_connect(SSL_CTX *ctx, const struct opts *o, int *out_fd) {
+/* tls_connect dials the collector and completes the TLS handshake. On failure it returns
+ * NULL with `why` naming the cause: the OpenSSL verify verdict when the peer certificate was
+ * rejected (a wrong --ca, an expired collector cert, a host whose cert lacks the right SAN,
+ * a missing CA bundle on a router — SSL_CTX_set_default_verify_paths succeeds even when no
+ * bundle is installed), otherwise the library's reason, or the socket error for
+ * SSL_ERROR_SYSCALL. With SSL_VERIFY_PEER a verification failure aborts the handshake
+ * inside SSL_connect, so without this the only observable output was a generic "connect
+ * failed" every 30 s: feeder up, collector up, nothing flowing, and the log unable to say
+ * why. Nothing here ever logs the token. */
+static SSL *tls_connect(SSL_CTX *ctx, const struct opts *o, int *out_fd, char *why, size_t whycap) {
+	/* The thread-local error queue must describe THIS attempt only: entries left by an
+	 * earlier failed handshake would otherwise be reported as this one's reason, and could
+	 * make SSL_get_error misclassify a later result on this thread. */
+	ERR_clear_error();
 	/* a receive timeout (2x KEEPALIVE_S) so reader_thread wakes periodically
 	 * instead of blocking in SSL_read indefinitely on a half-open peer; long enough
 	 * that a normally-idle link (waiting on ACKs between our own KEEPALIVE_S pings)
 	 * is never mistaken for dead — see ssl_read_full/reader_thread. */
-	int fd = tcp_dial(o->server_host, o->server_port, 2 * KEEPALIVE_S);
+	int fd = tcp_dial(o->server_host, o->server_port, 2 * KEEPALIVE_S, why, whycap);
 	if (fd < 0) return NULL;
 	/* bound the WRITE side too (regression fix only bounded reads). If the collector stops
 	 * reading while TCP stays alive (its decode stage stalls; zero-window probes keep the
@@ -1543,13 +1701,13 @@ static SSL *tls_connect(SSL_CTX *ctx, const struct opts *o, int *out_fd) {
 		if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &snd, sizeof snd) != 0) {
 			/* regression fix verification correction: continuing would silently restore the
 			 * indefinite SSL_write hang the finding requires us to eliminate. */
-			log_msg("failed to set collector send timeout: %s", strerror(errno));
+			snprintf(why, whycap, "setting the send timeout: %s", strerror(errno));
 			close(fd);
 			return NULL;
 		}
 	}
 	SSL *ssl = SSL_new(ctx);
-	if (!ssl) { close(fd); return NULL; }
+	if (!ssl) { snprintf(why, whycap, "SSL_new failed"); close(fd); return NULL; }
 	SSL_set_fd(ssl, fd);
 	if (!o->insecure) {
 		/* SSL_set_tlsext_host_name() only sets SNI (which name to request); it does
@@ -1558,7 +1716,7 @@ static SSL *tls_connect(SSL_CTX *ctx, const struct opts *o, int *out_fd) {
 		 * attacker holding any publicly-trusted cert for any domain passes. */
 		SSL_set_hostflags(ssl, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
 		if (SSL_set1_host(ssl, o->server_host) != 1) {
-			log_msg("failed to set expected TLS peer name");
+			snprintf(why, whycap, "failed to set the expected TLS peer name");
 			SSL_free(ssl); close(fd); return NULL;
 		}
 		/* RFC 6066 §3 forbids a literal address in server_name, and
@@ -1567,9 +1725,34 @@ static SSL *tls_connect(SSL_CTX *ctx, const struct opts *o, int *out_fd) {
 		 * certificate's iPAddress SANs (see numeric_host). */
 		if (!numeric_host(o->server_host)) SSL_set_tlsext_host_name(ssl, o->server_host);
 	}
-	if (SSL_connect(ssl) != 1) { SSL_free(ssl); close(fd); return NULL; }
+	int rc = SSL_connect(ssl);
+	if (rc != 1) {
+		int sys_err = errno; /* before any further library call can disturb it */
+		int err = SSL_get_error(ssl, rc);
+		unsigned long queued = ERR_get_error();
+		/* With SSL_VERIFY_NONE the library still records the chain verdict, so only a
+		 * verifying connection may blame the certificate. */
+		long vr = o->insecure ? X509_V_OK : SSL_get_verify_result(ssl);
+		if (vr != X509_V_OK)
+			snprintf(why, whycap, "certificate verification failed: %s", X509_verify_cert_error_string(vr));
+		else if (queued)
+			snprintf(why, whycap, "handshake failed: %s",
+				ERR_reason_error_string(queued) ? ERR_reason_error_string(queued) : "unknown OpenSSL error");
+		else if (err == SSL_ERROR_SYSCALL)
+			snprintf(why, whycap, "handshake failed: %s",
+				sys_err ? strerror(sys_err) : "connection closed during the handshake");
+		else if (err == SSL_ERROR_ZERO_RETURN)
+			snprintf(why, whycap, "handshake failed: connection closed by the collector");
+		else
+			snprintf(why, whycap, "handshake failed (SSL_get_error %d)", err);
+		SSL_free(ssl); close(fd); return NULL;
+	}
+	/* Defence in depth: SSL_VERIFY_PEER already aborted the handshake above on a rejected
+	 * certificate, so this cannot normally fire; keep it so a verify-mode mistake can
+	 * never hand back an unverified session. */
 	if (!o->insecure && SSL_get_verify_result(ssl) != X509_V_OK) {
-		log_msg("server certificate verification failed");
+		snprintf(why, whycap, "certificate verification failed: %s",
+			X509_verify_cert_error_string(SSL_get_verify_result(ssl)));
 		SSL_free(ssl); close(fd); return NULL;
 	}
 	*out_fd = fd;
@@ -1614,6 +1797,18 @@ static int json_escape(char *dst, size_t dstcap, const char *src) {
 		di += elen;
 	}
 	dst[di] = 0;
+	return 0;
+}
+
+/* has_non_ascii reports whether s carries any byte >= 0x80. json_escape copies such bytes
+ * verbatim, and the collector's JSON decoder replaces an invalid UTF-8 sequence with U+FFFD,
+ * so a token with a stray Latin-1 byte (a mangled paste) would authenticate as a DIFFERENT
+ * credential — the same silent, endless "unauthorized" reconnect loop the startup HELLO
+ * precheck exists to prevent. Tokens minted by the control plane, station ids and feed
+ * names are plain ASCII, so the precheck rejects anything else without echoing the value. */
+static int has_non_ascii(const char *s) {
+	for (const unsigned char *p = (const unsigned char *)s; *p; p++)
+		if (*p >= 0x80) return 1;
 	return 0;
 }
 
@@ -1700,8 +1895,12 @@ static int handshake(struct tls_io *io, const struct opts *o, const char *sessio
  * next process start recovers the file again, replays it (the collector dedups
  * on (observer, session, seq)), lands here again after the same bound, and says
  * so — bounded churn, logged, instead of a feeder that only ever sends PINGs
- * (astra-6 verification of regression fix). */
+ * (astra-6 verification of regression fix). The same bound limits how long an
+ * unreadable spool file may stall delivery (disk_open_failed). Overridable at compile
+ * time (-DREPLAY_RETIRE_STUCK_S=1) so a host test can drive both bounds in seconds. */
+#ifndef REPLAY_RETIRE_STUCK_S
 #define REPLAY_RETIRE_STUCK_S 30
+#endif
 
 /* replay_retire_stuck forces a stuck replay spool's retirement (disk_max_seq = 0,
  * which ends its connection and pops it from g_replays) once it has been fully
@@ -1729,7 +1928,7 @@ static void disk_maybe_delete(struct spool *s) {
 		if (s->disk_w) { fclose(s->disk_w); s->disk_w = NULL; }
 		if (unlink(s->path) == 0 || errno == ENOENT) {
 			cleared_bytes = s->disk_bytes;
-			s->disk_max_seq = s->disk_bytes = 0;
+			s->disk_max_seq = s->disk_bytes = s->disk_min_seq = 0;
 			s->disk_append_disabled = 0;
 			s->disk_gen++; /* the next spill starts a new file; cursors reset */
 		} else {
@@ -1760,6 +1959,71 @@ static void disk_maybe_delete(struct spool *s) {
  * serve_collector, initialized {0,0} for every new connection. */
 struct disk_cursor { uint64_t off, gen; };
 
+/* disk_open_failed handles disk_drain's fopen failure on a file that still has frames
+ * pending past sent_upto. Returns 1 when the spool's disk accounting was reset (nothing is
+ * left to drain from that file), 0 when the caller should keep retrying. Without it an
+ * unopenable file stalled ALL delivery forever: a replay spool stuck at the head of the
+ * list kept the live spool behind it, and for the live spool serve_collector discarded
+ * every ring batch while disk_max_seq stayed ahead of sent_upto — a connection that sent
+ * only PINGs while the ring filled and dropped, with one throttled line a minute as the
+ * only trace. Two classes:
+ *   ENOENT — the file is gone (an operator "cleaning up" the spool directory, a recreated
+ *     tmpfs): waiting cannot bring it back. A REPLAY spool is retired on the spot
+ *     (disk_max_seq = 0 ends its connection and pops it from g_replays, exactly as
+ *     replay_retire_stuck does). The LIVE spool's disk accounting is reset so ring delivery
+ *     resumes: the pending disk frames are counted as disk_dropped, the writer is closed
+ *     (it held the unlinked inode, so later spills went to a file no reader could open),
+ *     disk_gen is bumped and the next spill starts a fresh file.
+ *   EACCES/EMFILE and anything else — possibly transient (a chown being fixed, fd
+ *     pressure): keep retrying, but bounded. After REPLAY_RETIRE_STUCK_S of consecutive
+ *     failures a replay spool is retired (its file is untouched and recovered on the next
+ *     start; the collector dedups whatever was already delivered), and the live spool's
+ *     disk tier is disabled for this run: appends stop, the accounting is reset so the
+ *     ring flows again, and the file is preserved for the next start, where its unacked
+ *     records replay. Nothing is counted as dropped in that case; the records still exist.
+ * Logs once per event; disk_drain's throttled line covers the retry window. */
+static int disk_open_failed(struct spool *s, int open_err, uint64_t sent_upto) {
+	time_t now = monotonic_s();
+	int replay = s != &g_spool;
+	int gone = open_err == ENOENT;
+	pthread_mutex_lock(&s->mu);
+	if (!gone) {
+		if (s->disk_open_fail_since == 0) s->disk_open_fail_since = now ? now : 1; /* 0 means "never" */
+		if (now - s->disk_open_fail_since < REPLAY_RETIRE_STUCK_S) { pthread_mutex_unlock(&s->mu); return 0; }
+	}
+	uint64_t pending = s->disk_max_seq > sent_upto ? s->disk_max_seq - sent_upto : 0;
+	const char *path = s->path;
+	if (s->disk_w) { fclose(s->disk_w); s->disk_w = NULL; }
+	s->disk_max_seq = 0;
+	s->disk_open_fail_since = 0;
+	if (!replay) {
+		s->disk_bytes = s->disk_min_seq = 0;
+		s->disk_gen++; /* cursors must not resume into a file that no longer matches the accounting */
+		if (gone) s->disk_dropped += pending;
+		else s->disk_append_disabled = 1; /* the file still exists: never append past an unknown boundary */
+	}
+	pthread_mutex_unlock(&s->mu);
+	if (replay && gone)
+		log_msg("replay spool %s is gone (%s); retiring it: %llu frame(s) past seq %llu cannot be delivered; "
+			"the next spool is served",
+			path, strerror(open_err), (unsigned long long)pending, (unsigned long long)sent_upto);
+	else if (replay)
+		log_msg("replay spool %s unreadable for %d s (%s); retiring it: %llu frame(s) past seq %llu stay in the "
+			"file for the next start -- fix the spool directory permissions; the next spool is served",
+			path, REPLAY_RETIRE_STUCK_S, strerror(open_err), (unsigned long long)pending,
+			(unsigned long long)sent_upto);
+	else if (gone)
+		log_msg("disk spool %s is gone (%s); %llu frame(s) past seq %llu lost (counted as disk_dropped); "
+			"disk tier reset, ring delivery resumes",
+			path, strerror(open_err), (unsigned long long)pending, (unsigned long long)sent_upto);
+	else
+		log_msg("disk spool %s unreadable for %d s (%s); disk overflow disabled for this run, %llu frame(s) past "
+			"seq %llu stay in the file for the next start -- fix the spool directory permissions; ring delivery resumes",
+			path, REPLAY_RETIRE_STUCK_S, strerror(open_err), (unsigned long long)pending,
+			(unsigned long long)sent_upto);
+	return 1;
+}
+
 /* disk_drain sends disk-spooled frames with seq > *sent_upto (oldest first). Returns the
  * count sent, or -1 on a send failure. The disk always holds seqs older than the ring.
  *
@@ -1788,6 +2052,10 @@ static int disk_drain(struct spool *s, struct conn *c, uint64_t *sent_upto, stru
 
 	FILE *r = fopen(path, "rb");
 	if (!r) {
+		int open_err = errno;
+		/* A vanished file, or one unreadable past the retry bound, is resolved for good
+		 * (retired or reset) by disk_open_failed; nothing is left to drain from it. */
+		if (disk_open_failed(s, open_err, *sent_upto)) return 0;
 		/* regression fix follow-up: an unopenable spool file (fd exhaustion, external
 		 * unlink) is otherwise indistinguishable from "nothing to drain" while
 		 * disk_max_seq stays ahead of sent_upto — the caller paces its retry
@@ -1799,11 +2067,15 @@ static int disk_drain(struct spool *s, struct conn *c, uint64_t *sent_upto, stru
 		time_t nowt = monotonic_s();
 		if (last_warn == 0 || nowt - last_warn >= 60) {
 			last_warn = nowt;
-			log_msg("disk spool open failed (frames pending past seq %llu): %s",
-				(unsigned long long)*sent_upto, strerror(errno));
+			log_msg("disk spool open failed (frames pending past seq %llu): %s; retrying",
+				(unsigned long long)*sent_upto, strerror(open_err));
 		}
 		return 0;
 	}
+	/* Opening works: any run of consecutive open failures is over. */
+	pthread_mutex_lock(&s->mu);
+	s->disk_open_fail_since = 0;
+	pthread_mutex_unlock(&s->mu);
 	if (cur->off < SPOOL_HDR_LEN)
 		cur->off = SPOOL_HDR_LEN; /* records start after the regression fix session header */
 	if (fseeko(r, (off_t)cur->off, SEEK_SET) != 0) {
@@ -1860,8 +2132,12 @@ static int disk_drain(struct spool *s, struct conn *c, uint64_t *sent_upto, stru
  * regression fix/regression fix exist to prevent. */
 static int serve_collector(SSL_CTX *ctx, const struct opts *o, struct spool *s) {
 	int tls_fd;
-	SSL *ssl = tls_connect(ctx, o, &tls_fd);
-	if (!ssl) { log_msg("collector TLS connect failed"); return -1; }
+	char why[256] = "";
+	SSL *ssl = tls_connect(ctx, o, &tls_fd, why, sizeof why);
+	if (!ssl) {
+		log_msg("collector TLS connect failed (%s:%s): %s", o->server_host, o->server_port, why);
+		return -1;
+	}
 	struct tls_io io = { .ssl = ssl, .fd = tls_fd };
 	if (pthread_mutex_init(&io.mu, NULL) != 0) {
 		SSL_free(ssl); close(tls_fd); return -1;
@@ -2167,20 +2443,26 @@ static void usage(void) {
 		"  --insecure            skip TLS verification (dev only)\n");
 }
 
-/* signal_thread waits for SIGTERM/SIGINT (blocked in every other thread) and, on an orderly
- * stop/reboot, spills every ring-resident (unacked) frame to the disk spool oldest-first,
- * then one final fsync, then _exit(0). Without this, `service stop`/`systemctl
+/* signal_thread waits for SIGTERM/SIGINT/SIGHUP (blocked in every other thread) and, on an
+ * orderly stop/reboot, spills every ring-resident (unacked) frame to the disk spool
+ * oldest-first, then one final fsync, then _exit(0). Without this, `service stop`/`systemctl
  * restart`/an orderly reboot delivers SIGTERM whose default action kills the process
  * instantly, losing every unacked RAM-ring frame — up to the full spool_cap newest backlog
  * when stopped mid-outage (the disk tier holds only the OLDEST overflow, so the newest
  * frames die with the process). The single shutdown fsync is a wear-acceptable one-off; the
- * work is bounded (≤ spool_cap frames) and fits the 90 s systemd/procd stop timeout. */
+ * work is bounded (≤ spool_cap frames) and fits the 90 s systemd/procd stop timeout.
+ * SIGHUP is treated identically: the feeder has no reload semantics (its configuration is
+ * argv, re-read only by a restart), and a service manager's "reload", a `systemctl kill -s
+ * HUP`, or a controlling-terminal hangup when run by hand on a router must flush the ring
+ * rather than kill the process with the default disposition. SIGQUIT keeps its default
+ * (core dump) as a debugging aid. */
 static void *signal_thread(void *arg) {
 	(void)arg;
 	sigset_t set;
 	sigemptyset(&set);
 	sigaddset(&set, SIGTERM);
 	sigaddset(&set, SIGINT);
+	sigaddset(&set, SIGHUP);
 	int sig = 0;
 	sigwait(&set, &sig);
 	log_msg("shutdown signal %d; flushing unacked ring to disk spool", sig);
@@ -2258,13 +2540,14 @@ int main(int argc, char **argv) {
 	// process outright, losing the entire unacked RAM ring. Ignore it so the
 	// write instead fails with EPIPE and the normal reconnect path handles it.
 	signal(SIGPIPE, SIG_IGN);
-	// block SIGTERM/SIGINT in main (and thus every thread it later spawns) so they are
-	// delivered only to the dedicated signal_thread, which flushes the ring to disk before
-	// exiting. Set before any pthread_create so the block is inherited.
+	// block SIGTERM/SIGINT/SIGHUP in main (and thus every thread it later spawns) so they
+	// are delivered only to the dedicated signal_thread, which flushes the ring to disk
+	// before exiting. Set before any pthread_create so the block is inherited.
 	sigset_t block;
 	sigemptyset(&block);
 	sigaddset(&block, SIGTERM);
 	sigaddset(&block, SIGINT);
+	sigaddset(&block, SIGHUP);
 	if (pthread_sigmask(SIG_BLOCK, &block, NULL) != 0)
 		die("failed to block shutdown signals for the flush thread");
 	struct opts o; memset(&o, 0, sizeof o);
@@ -2333,8 +2616,13 @@ int main(int argc, char **argv) {
 	 * BEFORE opening a socket. Without this, an over-long token produced an
 	 * endless connect/"unauthorized"/reconnect loop with no local diagnostic. The
 	 * session id is not minted yet, so a maximum-length placeholder of the same
-	 * charset stands in — it is the longest a real one can be. */
+	 * charset stands in — it is the longest a real one can be. Non-ASCII bytes are
+	 * refused first (see has_non_ascii); the diagnostic names the field, never its value. */
 	{
+		if (has_non_ascii(o.token))
+			die("--token/--token-file contains non-ASCII bytes; the credential must be plain ASCII (check for a mangled paste)");
+		if (has_non_ascii(o.station)) die("--station contains non-ASCII bytes; station ids are plain ASCII");
+		if (has_non_ascii(o.feed)) die("--feed contains non-ASCII bytes");
 		char probe[HELLO_CAP];
 		char placeholder[sizeof g_session];
 		memset(placeholder, 'a', sizeof placeholder - 1);
