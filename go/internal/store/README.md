@@ -15,7 +15,7 @@ the live hot path: a slow database degrades the historian, never live decoding.
 | `events.go` | `EventRow`, `StoredEvent`, `EventQuery`, event writes and the windowed read API. |
 | `observer_history.go` | Private sensor samples filtered by receipt-time audience and collector, with bounded pages. |
 | `evidence.go` | Station event evidence: `CaptureEventEvidence` copies an event's stored input window into retention-less tables; `QueryEventEvidence` pages it back under the same per-sample cap and page byte budget as the sensor history. |
-| `schema.sql` | The complete DDL — three hypertables, the dedup ledger, indexes, compression settings, and the `pg_notify` trigger. Applied at startup. |
+| `schema.sql` | The complete DDL — six hypertables (`nav_frames`, `gnss_events`, `gnss_snapshots`, `observer_samples`, `rf_samples`, `event_evidence_samples`), the dedup ledger and its session table, the audience cursors, the evidence bundle table, the two point-state tables, indexes, compression settings, and the `pg_notify` trigger. Applied at startup. |
 | `*_test.go` | Batching, dedup, policy application, event query bounds, and the degraded path. |
 | `README.md` | This file. |
 
@@ -313,15 +313,43 @@ compressed by `(audience, endpoint)`, so an operator payload cannot be replayed 
 cache. The snapshot loop writes all materialized audience views, not only the listener's default
 public/operator view.
 
+### Point state — `agc_baselines` and `reception_power_models`
+
+Two small plain tables hold learned station state that would otherwise be relearned after every
+restart: each station's AGC baselines (`docs/DEFENSE-PNT.md §2`, a ten-minute warm-up) and its
+received-power model. The daemon checkpoints both every five minutes and once more during the
+ordered shutdown, and restores them before ingest starts. Both are keyed by
+`(collector_instance_id, source_id)`, so collectors sharing a database keep and restore their
+own rows; `LoadAGCBaselines` and `LoadReceptionPowerModels` take the collector id and the saves
+carry it.
+
+**The restore is epoch-gated, not unconditional.** An AGC checkpoint carries the station's
+antenna epoch (`power_model_epoch`), and the power-model blob carries its own configuration
+fingerprint; a row that no longer matches the station's current epoch is left in place for
+forensics and skipped with a log line, so that station relearns. Changing `power_model_epoch`
+after an antenna, cable or receiver change is therefore how an operator forces a clean relearn;
+a plain restart restores what was learned. This is the one piece of cross-restart state the
+daemon keeps, and it lives in the historian rather than in a state file — live positions, discos
+and detector state are still rebuilt from the broadcast after a restart.
+
 ### Retention and compression policies
 
-Applied at startup from config:
+`applyPolicies` installs ten policies at startup, in one transaction (remove-then-add each, so a
+changed interval actually applies on an existing deployment, and all-or-nothing, so an
+interrupted start never leaves a hypertable with no policy):
 
-| Setting | Default | Applies to |
-|---|---|---|
-| `raw_retention` | `"7 days"` | `nav_frames` drop policy (and the dedup ledger's prune) |
-| `compress_after` | `"1 day"` | `nav_frames` compression policy |
-| — | 30 days | `gnss_events` compression (fixed, not configurable) |
+| Hypertable | Compression after | Retention | From |
+|---|---|---|---|
+| `nav_frames` | `compress_after` (default `"1 day"`) | `raw_retention` (default `"7 days"`; also the dedup ledger's prune horizon) | config |
+| `observer_samples` | `compress_after` | `raw_retention` | config |
+| `rf_samples` | `compress_after` | `raw_retention` | config |
+| `gnss_snapshots` | 7 days | 90 days | fixed |
+| `gnss_events` | 30 days | **none, ever** | fixed |
+| `event_evidence_samples` | 30 days | **none**, like the events it explains | fixed |
+
+The raw-evidence tables (`nav_frames`, `observer_samples`, `rf_samples`) share the two
+configurable intervals because they are one short-window forensic record; `event_evidence`
+(the bundle rows) and the point-state tables are plain tables with no policy.
 
 Both configurable values are PostgreSQL INTERVAL literals validated against
 `config.IntervalRe` — which is simultaneously the format allowlist **and the injection guard**

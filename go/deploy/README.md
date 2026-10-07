@@ -186,11 +186,16 @@ make build-freebsd                     # on the dev box → build/navlistener-fr
 service navlistener restart
 ```
 
-Restarting loses in-RAM live state by design — there is no cross-restart persistence anywhere in
-the daemon. Positions return as each SV re-broadcasts a full ephemeris set, and discos
-return once a second post-restart ephemeris arrives. The `nav_frames` hypertable is the durable
-record; offline replay is the recovery path. Check `navlistener_build_info` afterwards to confirm
-the fleet is on the version you think it is.
+Restarting loses in-RAM live state by design: positions return as each SV re-broadcasts a full
+ephemeris set, and discos return once a second post-restart ephemeris arrives. The one
+exception is learned station state — each station's AGC baselines and received-power model —
+which the daemon checkpoints to the historian (`agc_baselines`, `reception_power_models`) every
+five minutes and at shutdown and restores at the next start, **gated on the station's antenna
+epoch**: a checkpoint from another `power_model_epoch` is skipped and the station relearns, so
+bump that setting after an antenna, cable or receiver change when you want a clean relearn; a
+plain restart restores what was learned (`../internal/store/README.md`, "Point state"). The
+`nav_frames` hypertable is the durable record; offline replay is the recovery path. Check
+`navlistener_build_info` afterwards to confirm the fleet is on the version you think it is.
 
 ---
 
