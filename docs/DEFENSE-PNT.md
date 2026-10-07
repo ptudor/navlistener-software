@@ -140,7 +140,10 @@ correlates only the stations it sees.
 source by its vote weight: its `rf_trust`, lowered to ½ while its station assessment
 is inconsistent and to 0 while it is unassured or indicates spoofing, since a spoofed
 receiver's decoded navigation data is the attacker's. `conf` still counts every fresh
-source. The planned broadcast-agreement comparison will use the same weights.
+source. RF trust is 1 for a quiet front end and 0.3 when a fresh band has an
+AGC departure of at least 800 counts, the same threshold used by the jamming
+checks. A 300-count drift stays at full weight. The planned broadcast-agreement
+comparison will use the same weights.
 
 ---
 

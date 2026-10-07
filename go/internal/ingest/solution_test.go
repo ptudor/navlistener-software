@@ -3,6 +3,7 @@ package ingest
 import (
 	"bytes"
 	"encoding/binary"
+	"io"
 	"reflect"
 	"testing"
 	"time"
@@ -282,10 +283,30 @@ func TestScanUBXStampsFirstBlockArrival(t *testing.T) {
 	tick := func() time.Time { clock = clock.Add(400 * time.Millisecond); return clock }
 	var frames []*RawFrame
 	_ = scanUBX(bytes.NewReader(stream), "stn", tick, func(f *RawFrame) { frames = append(frames, f) }, func(string) {})
-	if len(frames) != 1 {
+	if len(frames) != 2 {
 		t.Fatalf("got %d frames", len(frames))
 	}
 	if want := time.Unix(1_700_000_000, 0).Add(400 * time.Millisecond); !frames[0].Recv.Equal(want) {
 		t.Fatalf("epoch stamped %v, want its first block's arrival %v", frames[0].Recv, want)
+	}
+	if want := time.Unix(1_700_000_000, 0).Add(1200 * time.Millisecond); !frames[1].Recv.Equal(want) {
+		t.Fatalf("final epoch stamped %v, want its first block's arrival %v", frames[1].Recv, want)
+	}
+}
+
+func TestScanUBXFlushesPendingSolutionAtEOF(t *testing.T) {
+	stream := ubxMsg(ubxClassNAV, ubxIDNAVPVT, ubxPVT(1000, 0, 0))
+	arrived := time.Unix(1700000000, 0)
+	var frames []*RawFrame
+	err := scanUBX(bytes.NewReader(stream), "stn", func() time.Time { return arrived },
+		func(f *RawFrame) { frames = append(frames, f) }, func(kind string) { t.Errorf("parse error: %s", kind) })
+	if err != io.EOF {
+		t.Fatalf("scan error = %v, want EOF", err)
+	}
+	if len(frames) != 1 || frames[0].Solution == nil || frames[0].Solution.PVT.TOWMS != 1000 {
+		t.Fatalf("frames = %+v, want one PVT epoch at 1000", frames)
+	}
+	if !frames[0].Recv.Equal(arrived) {
+		t.Fatalf("epoch timestamp = %v, want %v", frames[0].Recv, arrived)
 	}
 }

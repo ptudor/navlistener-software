@@ -913,6 +913,7 @@ func (p *PushServer) enqueueScopeRevocation(ctx context.Context, previous identi
 // now in force. That is not a policy transition — ownership, audiences and
 // publication are untouched — so no audience reset accompanies it.
 func (p *PushServer) watchAuthorization(ctx, ingestCtx context.Context, conn net.Conn, token, station, feed string, initial identity.ObserverContext, evidence commissioning.Result, admission *Admission) {
+	defer p.recoverConnectionPanic(conn, initial.ObserverID, "authorization watcher")
 	if p.reauthorizeEvery <= 0 {
 		return
 	}
@@ -980,6 +981,15 @@ func (p *PushServer) watchAuthorization(ctx, ingestCtx context.Context, conn net
 	}
 }
 
+// recoverConnectionPanic contains coordinator failures to the affected feeder.
+func (p *PushServer) recoverConnectionPanic(conn net.Conn, observer, component string) {
+	if r := recover(); r != nil {
+		metrics.PushErrorsTotal.WithLabelValues(observer, "panic").Inc()
+		p.log.Error("push coordinator panicked; closing connection", "observer", observer, "component", component, "panic", r)
+		_ = conn.Close()
+	}
+}
+
 // matchPeerIdentity binds an mTLS-authenticated leaf to the token's canonical
 // observer. GNF1 uses exactly one DNS SAN as the identity field. Legacy CN-only
 // certificates are deliberately rejected; enabling them requires an explicit
@@ -1022,6 +1032,32 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 		// line per session; the counter still moves for every report.
 		updateStatusRejectedLogged bool
 	)
+	// Serialize watermark selection and writing across the ticker and final
+	// flood ACK so concurrent writers cannot put a lower ACK on the wire.
+	sendAck := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		last := highest
+		if p.durable != nil {
+			last = p.durable.Watermark(observer, session)
+		}
+		if last <= acked {
+			return true
+		}
+		if err := w.write(wire.Ack, wire.EncodeAck(last)); err != nil {
+			_ = w.c.Close()
+			return false
+		}
+		acked = last
+		return true
+	}
+	closeAfterDurable := func(seq uint64) {
+		defer w.c.Close()
+		// A storage outage or shutdown leaves the receipt unacked for replay.
+		if waitForDurable(ctx, p.durable, observer, session, seq, writeTimeout) {
+			sendAck()
+		}
+	}
 	ackTicker := time.NewTicker(p.ackInterval)
 	defer ackTicker.Stop()
 	ackDone := make(chan struct{})
@@ -1031,6 +1067,7 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 		var nextControl time.Time
 		var nextReception time.Time
 		defer close(ackDone)
+		defer p.recoverConnectionPanic(w.c, observer, "control writer")
 		for {
 			select {
 			case <-quit:
@@ -1071,40 +1108,9 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 						}
 					}
 				}
-				var last uint64
-				if p.durable != nil {
-					// ack the durability watermark — the feeder may
-					// prune only what the historian has durably resolved. In
-					// live-only mode (nil tracker, no historian) ack on receipt,
-					// the documented pre-regression fix semantics.
-					last = p.durable.Watermark(observer, session)
-				} else {
-					mu.Lock()
-					last = highest
-					mu.Unlock()
-				}
-				mu.Lock()
-				prev := acked
-				mu.Unlock()
-				// Monotone per connection: a reconnect's replayed low sequences can
-				// transiently regress the watermark (DurableTracker.Watermark);
-				// a regressed ack must never reach the wire.
-				if last <= prev {
-					continue
-				}
-				if err := w.write(wire.Ack, wire.EncodeAck(last)); err != nil {
-					// an ack-write failure means this connection's write side is
-					// dead (e.g. a broken TLS session with the read side still delivering).
-					// Close it so the read loop's blocked ReadFrame errors out too --
-					// otherwise frames are consumed forever, never acked, and the feeder's
-					// spool fills and eventually drops them permanently while this
-					// connection looks alive.
-					_ = w.c.Close()
+				if !sendAck() {
 					return
 				}
-				mu.Lock()
-				acked = last
-				mu.Unlock()
 			}
 		}
 	}()
@@ -1193,6 +1199,10 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				if !dropPermanentlyMalformed(seq, "record_oversize") {
 					return
 				}
+			} else if feed == "rtcm" && !IsTelemetryType(int(rec.FrameType)) && len(rec.Raw) < 3 {
+				if !dropPermanentlyMalformed(seq, "rtcm_short") {
+					return
+				}
 			} else if !wordRecordWellFormed(rec, feed) {
 				// a word-oriented record whose body is empty or not a
 				// multiple of four bytes is malformed on the wire. bytesToWords used
@@ -1231,19 +1241,18 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 						return
 					}
 				}
-				if p.reception != nil && f.Admission.Current() && f.Details != nil {
-					if f.Details.Reception != nil {
-						f.ReceptionCheck = p.reception.Check(observerContext, session, *f.Details.Reception, time.Now())
-					}
-					if f.Details.ReceptionPower != nil {
-						f.ReceptionPowerCheck = p.reception.CheckPower(observerContext, session, *f.Details.ReceptionPower, time.Now())
-					}
-					if f.Details.Snapshot != nil {
-						p.reception.SnapshotResult(observerContext, session, *f.Details.Snapshot)
-					}
-				}
+				quarantined := p.checkReception(f, observerContext, session)
 				select {
 				case p.out <- f:
+					mu.Lock()
+					if seq > highest {
+						highest = seq
+					}
+					mu.Unlock()
+					if quarantined {
+						closeAfterDurable(seq)
+						return
+					}
 					if f.Details != nil && f.Details.UpdateStatusRejected {
 						metrics.PushUpdateStatusRejectedTotal.WithLabelValues(observer).Inc()
 						if !updateStatusRejectedLogged {
@@ -1252,17 +1261,11 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 								"observer", observer, "session", session)
 						}
 					}
-					if p.updates != nil && f.Admission.Current() && f.Details != nil && f.Details.Update != nil {
-						if err := p.updates.Report(observerContext, session, seq, *f.Details.Update); err != nil {
-							p.log.Error("update status storage unavailable", "observer", observer, "error", err)
-						}
+					if p.reportUpdate(f, observerContext, session, seq) {
+						closeAfterDurable(seq)
+						return
 					}
 					unforwarded = 0 // a delivered record proves a live, well-formed stream
-					mu.Lock()
-					if seq > highest {
-						highest = seq
-					}
-					mu.Unlock()
 				case <-ctx.Done(): // daemon teardown; frame is unacked, feeder replays on reconnect
 					return
 				}
@@ -1278,10 +1281,83 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 			unforwarded++
 		}
 		if unforwarded >= maxConsecutiveUnforwarded {
+			sendAck() // let the feeder prune the resolved run before reconnecting
 			metrics.PushErrorsTotal.WithLabelValues(observer, "unforwarded_flood").Inc()
 			p.log.Warn("push feeder sent too many consecutive unusable frames; closing connection",
 				"observer", observer, "limit", maxConsecutiveUnforwarded)
 			return
+		}
+	}
+}
+
+// checkReception isolates derived reception processing from the raw receipt.
+// Recovery marks the frame for the historian; only the historian's committed
+// ledger notification may resolve a persistable sequence.
+func (p *PushServer) checkReception(f *RawFrame, observerContext identity.ObserverContext, session string) (quarantined bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			f.QuarantineReason = "reception_check_panic"
+			quarantined = true
+			metrics.PushErrorsTotal.WithLabelValues(f.Source, "panic").Inc()
+			p.log.Error("push reception check panicked; forwarding raw quarantine", "observer", f.Source,
+				"session", f.Session, "sequence", f.Seq, "reason", f.QuarantineReason, "panic", r)
+		}
+	}()
+	if p.reception != nil && f.Admission.Current() && f.Details != nil {
+		if f.Details.Reception != nil {
+			f.ReceptionCheck = p.reception.Check(observerContext, session, *f.Details.Reception, time.Now())
+		}
+		if f.Details.ReceptionPower != nil {
+			f.ReceptionPowerCheck = p.reception.CheckPower(observerContext, session, *f.Details.ReceptionPower, time.Now())
+		}
+		if f.Details.Snapshot != nil {
+			p.reception.SnapshotResult(observerContext, session, *f.Details.Snapshot)
+		}
+	}
+	return false
+}
+
+// reportUpdate runs after the frame was handed off. Recovery must not mutate
+// that shared frame or enqueue it twice; its original receipt is already on
+// the historian path and the caller waits for its durable ACK before closing.
+func (p *PushServer) reportUpdate(f *RawFrame, observerContext identity.ObserverContext, session string, seq uint64) (panicked bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicked = true
+			metrics.PushErrorsTotal.WithLabelValues(f.Source, "panic").Inc()
+			p.log.Error("push update report panicked; closing after durable receipt", "observer", f.Source,
+				"session", session, "sequence", seq, "reason", "update_report_panic", "panic", r)
+		}
+	}()
+	if p.updates != nil && f.Admission.Current() && f.Details != nil && f.Details.Update != nil {
+		if err := p.updates.Report(observerContext, session, seq, *f.Details.Update); err != nil {
+			p.log.Error("update status storage unavailable", "observer", f.Source, "error", err)
+		}
+	}
+	return false
+}
+
+func waitForDurable(ctx context.Context, tracker *DurableTracker, source, session string, seq uint64, timeout time.Duration) bool {
+	if tracker == nil {
+		return ctx.Err() == nil
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if ctx.Err() != nil {
+			return false
+		}
+		if tracker.Watermark(source, session) >= seq {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+			return false
+		case <-ticker.C:
 		}
 	}
 }
@@ -1341,13 +1417,14 @@ func recordToFrame(rec wire.RawRecord, feed, source string) *RawFrame {
 		MsgType:   int(rec.FrameType),
 	}
 	if feed == "rtcm" {
+		if len(rec.Raw) < 3 {
+			return nil
+		}
 		f.Bytes = rec.Raw
 		// the GNF1 frame_type byte is 8 bits and cannot carry an RTCM message
 		// number (12 bits, e.g. 1019/1020); derive it from the payload the same way
 		// scanRTCM does (rtcm.go) rather than trusting the feeder-supplied frame_type.
-		if len(rec.Raw) >= 2 {
-			f.MsgType = int(rec.Raw[0])<<4 | int(rec.Raw[1])>>4
-		}
+		f.MsgType = int(rec.Raw[0])<<4 | int(rec.Raw[1])>>4
 	} else {
 		f.Words = bytesToWords(rec.Raw)
 	}
@@ -1361,18 +1438,18 @@ func recordToFrame(rec wire.RawRecord, feed, source string) *RawFrame {
 // unrecognised telemetry type or malformed body returns nil. RF frames carry no nav words;
 // the historian stores their exact versioned body in its private RF table.
 func telemetryToFrame(rec wire.RawRecord, source string, recv, local time.Time) *RawFrame {
+	if rec.GnssID != 0 || rec.SvID != 0 || rec.SigID != 0 || rec.FreqID != 0 {
+		return nil
+	}
 	rf := &RawRF{}
 	stamped := rec.RecvUnixNs > 0 && receiveTimestampPlausible(time.Unix(0, rec.RecvUnixNs), local)
 	switch int(rec.FrameType) {
 	case TelemObserverDetails:
-		if rec.GnssID != 0 || rec.SvID != 0 || rec.SigID != 0 || rec.FreqID != 0 {
-			return nil
-		}
 		details, err := decodeObserverDetails(rec.Raw)
 		if err != nil {
 			return nil
 		}
-		return &RawFrame{Recv: recv, RecvLocal: local, Source: source, Details: details, Bytes: append([]byte(nil), rec.Raw...), BoardSampleStamped: stamped}
+		return &RawFrame{Recv: recv, RecvLocal: local, Source: source, MsgType: int(rec.FrameType), Details: details, Bytes: append([]byte(nil), rec.Raw...), BoardSampleStamped: stamped}
 	case TelemJammingStats:
 		bands, err := decodeJammingStats(rec.Raw)
 		if err != nil {
@@ -1386,9 +1463,6 @@ func telemetryToFrame(rec wire.RawRecord, source string, recv, local time.Time) 
 		}
 		rf.Sats = sats
 	case TelemReceiverSolution:
-		if rec.GnssID != 0 || rec.SvID != 0 || rec.SigID != 0 || rec.FreqID != 0 {
-			return nil
-		}
 		sol, err := decodeReceiverSolution(rec.Raw)
 		if err != nil {
 			return nil

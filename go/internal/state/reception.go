@@ -30,8 +30,12 @@ func (s *Store) ReceptionForecast(site reception.Site, now time.Time) reception.
 			if !site.Allows(g, sig) {
 				continue
 			}
-			feed := st.feedSV(now, nil)
-			if feed.HealthCode != 1 || feed.XM == nil {
+			if !st.haveHealth {
+				continue
+			}
+			health, _ := healthFor(st.key.G, st.key.Sig, st.health)
+			posFresh := st.havePos && finiteECEF(st.pos) && !st.posAt.IsZero() && now.Sub(st.posAt) <= posStaleBound
+			if health != 1 || !posFresh {
 				continue
 			}
 			witness := false

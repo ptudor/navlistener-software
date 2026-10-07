@@ -274,3 +274,32 @@ func TestNtripAccepted(t *testing.T) {
 		}
 	}
 }
+
+func TestNtripRejectsUnsupportedTransferCodings(t *testing.T) {
+	for _, header := range []string{"gzip, chunked", "chunked, gzip", "gzip", "chunked, chunked", "gzip\r\nTransfer-Encoding: chunked"} {
+		t.Run(header, func(t *testing.T) {
+			client, server := net.Pipe()
+			defer client.Close()
+			reqCh := make(chan string, 1)
+			go fakeCaster(server, reqCh, "HTTP/1.1 200 OK\r\nTransfer-Encoding: "+header+"\r\n\r\n", nil)
+			_, err := ntripConnect(client, config.Source{Addr: "caster.invalid:2101", Mountpoint: "STREAM"})
+			if err == nil || !strings.Contains(err.Error(), "transfer coding") {
+				t.Fatalf("error = %v, want transfer coding error", err)
+			}
+			<-reqCh
+		})
+	}
+}
+
+func TestNtripRedirectReportsLocation(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	reqCh := make(chan string, 1)
+	const location = "http://caster.invalid:2101/NEW"
+	go fakeCaster(server, reqCh, "HTTP/1.1 302 Found\r\nLocation: "+location+"\r\n\r\n", nil)
+	_, err := ntripConnect(client, config.Source{Addr: "caster.invalid:2101", Mountpoint: "OLD"})
+	if err == nil || !strings.Contains(err.Error(), location) || !strings.Contains(err.Error(), "302") {
+		t.Fatalf("redirect error missing status/location: %v", err)
+	}
+	<-reqCh
+}

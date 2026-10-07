@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/ptudor/gnss"
 
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/metrics"
@@ -293,5 +294,23 @@ func TestGLONASSReplayFrozenTbNotReserved(t *testing.T) {
 	}
 	if sv.EphAgeM == nil || *sv.EphAgeM < 24*60-10 {
 		t.Errorf("eph_age_m = %v for a day-old frozen tb, want ≈ %d (forensic tb age)", fmtAgeM(sv.EphAgeM), 24*60)
+	}
+}
+
+func TestLiveSVsGaugeExcludesPropagationFailures(t *testing.T) {
+	s := New(1)
+	now := time.Unix(1700000000, 0)
+	s.Apply(gpsFrame(sf1Words(85), now))
+	s.Apply(gpsFrame(sf2Words(85, 205075516), now))
+	s.Apply(gpsFrame(sf3Words(85), now))
+	s.Propagate(now)
+	if got := testutil.ToFloat64(metrics.LiveSVs.WithLabelValues("gps")); got != 1 {
+		t.Fatalf("initial GPS gauge = %g", got)
+	}
+	key := Key{G: gnss.GPS, Sv: 5, Sig: 0}
+	s.shardFor(key).m[key].eph.Ecc = 1
+	s.Propagate(now.Add(time.Second))
+	if got := testutil.ToFloat64(metrics.LiveSVs.WithLabelValues("gps")); got != 0 {
+		t.Fatalf("failed propagation GPS gauge = %g, want 0", got)
 	}
 }

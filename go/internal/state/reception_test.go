@@ -113,3 +113,30 @@ func TestReceptionBoardHistoryAndIndependentCheck(t *testing.T) {
 		t.Fatal("reconnect replay evicted newer journal evidence")
 	}
 }
+
+func TestReceptionForecastReadsHealthAndPositionWithoutPruningWitnesses(t *testing.T) {
+	for _, gate := range []string{"unknown health", "stale position", "missing position", "nonfinite position", "fresh"} {
+		t.Run(gate, func(t *testing.T) {
+			s, site, st, now := forecastFixture(t)
+			old := now.Add(-freshReceiverWindow - time.Second)
+			st.seenBy["old"] = old
+			switch gate {
+			case "unknown health":
+				st.haveHealth = false
+			case "stale position":
+				st.posAt = now.Add(-posStaleBound - time.Second)
+			case "missing position":
+				st.havePos = false
+			case "nonfinite position":
+				st.pos.X = math.NaN()
+			}
+			got := s.ReceptionForecast(site, now)
+			if (len(got.Entries) > 0) != (gate == "fresh") {
+				t.Fatalf("forecast = %+v", got)
+			}
+			if st.seenBy["old"] != old {
+				t.Fatal("forecast pruned witness history")
+			}
+		})
+	}
+}

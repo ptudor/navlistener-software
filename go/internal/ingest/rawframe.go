@@ -87,6 +87,10 @@ type RawFrame struct {
 	// as private local-unassigned by audience code.
 	Observer identity.ObserverContext
 
+	// QuarantineReason marks a receipt that must be stored as raw evidence without
+	// applying its decoded projection. It never resolves durability by itself.
+	QuarantineReason string
+
 	Admission *Admission // current-policy fence; never changes forensic provenance
 
 	// ScopeRevocation is an ordered control-plane barrier, not a GNSS frame.

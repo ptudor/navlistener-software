@@ -210,3 +210,93 @@ func TestWordRecordWellFormedScope(t *testing.T) {
 		}
 	}
 }
+
+func TestPushRejectsShortRTCMRecords(t *testing.T) {
+	tr := NewDurableTracker()
+	cli, out, _ := streamOnPipe(t, "rtcm", tr)
+	counter := metrics.PushErrorsTotal.WithLabelValues("obs1", "rtcm_short")
+	before := testutil.ToFloat64(counter)
+	for n := 0; n <= 2; n++ {
+		if err := wire.WriteFrame(cli, wire.Data, wire.EncodeData(uint64(n+1), navRecord(n))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec := navRecord(3)
+	rec.Raw = []byte{0x3F, 0xB0, 0x01} // RTCM message 1019
+	if err := wire.WriteFrame(cli, wire.Data, wire.EncodeData(4, rec)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case f := <-out:
+		if f.Seq != 4 || f.MsgType != 1019 || !bytes.Equal(f.Bytes, rec.Raw) {
+			t.Fatalf("forwarded frame = %+v", f)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("valid RTCM payload not forwarded")
+	}
+	expectNoFrame(t, out, "short RTCM records")
+	if got := tr.Watermark("obs1", "boot-a"); got != 3 {
+		t.Fatalf("watermark = %d, want 3", got)
+	}
+	if got := testutil.ToFloat64(counter) - before; got != 3 {
+		t.Fatalf("malformed count = %v, want 3", got)
+	}
+}
+
+func TestPushMalformedFloodFlushesAckAndReplayProgresses(t *testing.T) {
+	tr := NewDurableTracker()
+	var pruned uint64
+	// The flood bound ends the first connection at 256. The remaining 44
+	// records are retired on reconnect; no connection consumes beyond the bound.
+	for _, want := range []uint64{maxConsecutiveUnforwarded, 300} {
+		server, client := net.Pipe()
+		p := &PushServer{out: make(chan *RawFrame), durable: tr, ackInterval: 5 * time.Millisecond,
+			log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			defer server.Close()
+			p.stream(ctx, server, &connWriter{c: server}, identity.NewPrivateContext("obs1", identity.CredentialToken), "ubx", "boot-a")
+		}()
+		writeDone := make(chan struct{})
+		go func(first uint64) {
+			defer close(writeDone)
+			for seq := first; seq <= 300; seq++ {
+				if err := wire.WriteFrame(client, wire.Data, wire.EncodeData(seq, navRecord(1))); err != nil {
+					return
+				}
+			}
+		}(pruned + 1)
+		_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+		for pruned < want {
+			ft, body, err := wire.ReadFrame(client)
+			if err != nil {
+				t.Fatalf("reading ACK through %d: %v", want, err)
+			}
+			if ft != wire.Ack {
+				t.Fatalf("frame = %v, want ACK", ft)
+			}
+			seq, err := wire.DecodeAck(body)
+			if err != nil || seq <= pruned {
+				t.Fatalf("ACK = %d, previous %d, error %v", seq, pruned, err)
+			}
+			pruned = seq
+		}
+		if pruned != want {
+			t.Fatalf("ACK = %d, want %d", pruned, want)
+		}
+		if want == maxConsecutiveUnforwarded {
+			if _, _, err := wire.ReadFrame(client); err != io.EOF {
+				t.Fatalf("flood connection error = %v, want EOF", err)
+			}
+		}
+		cancel()
+		client.Close()
+		<-writeDone
+		<-done
+	}
+	if got := tr.Watermark("obs1", "boot-a"); got != 300 {
+		t.Fatalf("watermark = %d, want 300 with no replay remaining", got)
+	}
+}

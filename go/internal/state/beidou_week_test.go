@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/gnss/gnsstime"
+	"github.com/ptudor/navlistener/internal/ingest"
 )
 
 // TestPosIODStampedAtPropagation guards the regression fix verification follow-up: a
@@ -107,5 +109,43 @@ func TestTowWeekForMatchLegacyReduction(t *testing.T) {
 		if _, ok := weekFor(gnss.GLONASS, now); ok {
 			t.Errorf("dt=%d: weekFor(GLONASS) ok=true, want false", dt)
 		}
+	}
+}
+
+func TestBeiDouBroadcastWeekCrossCheck(t *testing.T) {
+	at := time.Unix(1700000000, 0)
+	week, _ := gnsstime.WeekAt(gnsstime.SysBeiDou, float64(at.Unix()), float64(gpsUTCOffset))
+	for _, sig := range []int{0, 8} {
+		for _, offset := range []int{0, 100} {
+			s := New(1)
+			var words []uint32
+			if sig == 0 {
+				b := make([]byte, 28)
+				setAbsBits(b, 15, 3, 1)
+				setAbsBits(b, 48, 13, uint64(week+offset))
+				words = bdsD1Words(b)
+			} else {
+				words = bcnav2Frame(6, 10, 100002, func(b []byte) { setAbsBits(b, 30, 13, uint64(week+offset)); setAbsBits(b, 72, 2, 3) })
+			}
+			s.Apply(&ingest.RawFrame{Recv: at, Source: "test", GnssID: gnss.BeiDou, SvID: 6, SigID: sig, Words: words})
+			key := Key{G: gnss.BeiDou, Sv: 6, Sig: sig}
+			st := s.shardFor(key).m[key]
+			if st == nil || !st.haveWN || st.wnMismatch != (offset != 0) {
+				t.Fatalf("sig %d offset %d: week state = %+v", sig, offset, st)
+			}
+		}
+	}
+	// At the end of BDT's rollover grace, GPS's clock is already 14 s ahead.
+	const bdtWeekStartUnix = 1699747196
+	st := &svState{}
+	at = time.Unix(bdtWeekStartUnix+wnRolloverGraceS-7, 0)
+	week, _ = gnsstime.WeekAt(gnsstime.SysBeiDou, float64(at.Unix()), float64(gpsUTCOffset))
+	st.checkBroadcastWN(at, gnsstime.SysBeiDou, week-1, 13)
+	if st.wnMismatch {
+		t.Fatal("BDT previous week rejected inside BDT rollover grace")
+	}
+	st.checkBroadcastWN(at.Add(7*time.Second), gnsstime.SysBeiDou, week-1, 13)
+	if !st.wnMismatch {
+		t.Fatal("BDT previous week accepted after rollover grace")
 	}
 }

@@ -4,18 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/ingest"
+	"github.com/ptudor/navlistener/internal/metrics"
 	"github.com/ptudor/navlistener/internal/stationcontrol"
 	"github.com/ptudor/navlistener/internal/store"
 	"github.com/ptudor/navlistener/internal/version"
 )
 
-// frameForPersistence preserves raw framing and immutable receipt provenance.
-func frameForPersistence(f *ingest.RawFrame) *store.NavFrame {
+// rawFrameForPersistence preserves raw framing and immutable receipt provenance.
+func rawFrameForPersistence(f *ingest.RawFrame) *store.NavFrame {
 	observer := f.Observer
 	if observer.ObserverID == "" {
 		// Legacy/programmatic RawFrames have no trusted context. Persistence
@@ -69,6 +71,44 @@ func frameForPersistence(f *ingest.RawFrame) *store.NavFrame {
 		HasSourceSeq:             f.HasSeq,
 		Session:                  f.Session, // dedup-key third component
 	}
+	return saved
+}
+
+func frameForPersistence(f *ingest.RawFrame) *store.NavFrame {
+	saved := rawFrameForPersistence(f)
+	populatePersistence(saved, f)
+	return saved
+}
+
+// safeFrameForPersistence always retains the immutable raw receipt if building
+// a decoded projection fails. The caller still enqueues it through the ordinary
+// transaction so the raw row and replay ledger commit before a durable ACK.
+func safeFrameForPersistence(f *ingest.RawFrame, log *slog.Logger) (saved *store.NavFrame, quarantined bool) {
+	saved = rawFrameForPersistence(f)
+	raw := *saved
+	defer func() {
+		if r := recover(); r != nil {
+			*saved = raw
+			saved.Decoded = []byte(`{"quarantine_reason":"persistence_projection_panic"}`)
+			quarantined = true
+			label := ""
+			if frameKind(f) == "nav" {
+				label = fmt.Sprint(int(f.GnssID))
+			}
+			metrics.DecodePanicsTotal.WithLabelValues(label).Inc()
+			log.Error("persistence projection panicked; preserving raw quarantine", "source", f.Source,
+				"session", f.Session, "sequence", f.Seq, "reason", "persistence_projection_panic", "panic", r)
+		}
+	}()
+	if f.QuarantineReason != "" {
+		saved.Decoded, _ = json.Marshal(map[string]string{"quarantine_reason": f.QuarantineReason})
+		return saved, true
+	}
+	populatePersistence(saved, f)
+	return saved, false
+}
+
+func populatePersistence(saved *store.NavFrame, f *ingest.RawFrame) {
 	if f.Details != nil {
 		kind := "environment"
 		if f.Details.Timing != nil {
@@ -125,7 +165,6 @@ func frameForPersistence(f *ingest.RawFrame) *store.NavFrame {
 			saved.Raw = ingest.EncodeReceiverSolution(f.Solution)
 		}
 	}
-	return saved
 }
 
 // stampRFClocks records the clocks the live station checks used for this frame, so

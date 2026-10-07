@@ -1418,12 +1418,11 @@ func TestRecordToFramePushRTCMDerivesMsgTypeFromPayload(t *testing.T) {
 		t.Errorf("rtcm feed must set Bytes (not Words); Bytes=%v Words=%v", f.Bytes, f.Words)
 	}
 
-	// Too short to hold a 12-bit message number: MsgType falls back to frame_type
-	// rather than indexing out of range.
+	// A short body is malformed and cannot supply a trustworthy message number.
 	short := wire.RawRecord{FrameType: 0x22, Raw: []byte{0xAB}}
 	fs := recordToFrame(short, "rtcm", "obs1")
-	if fs == nil || fs.MsgType != 0x22 {
-		t.Errorf("short rtcm payload: MsgType = %v, want fallback to frame_type 0x22", fs)
+	if fs != nil {
+		t.Errorf("short rtcm payload: frame = %v, want nil", fs)
 	}
 }
 

@@ -111,14 +111,17 @@ func ntripConnect(conn net.Conn, src config.Source) (chunked bool, err error) {
 	if err != nil {
 		return false, fmt.Errorf("ntrip response: %w", err)
 	}
-	if !ntripAccepted(status) {
+	fields := strings.Fields(status)
+	redirect := len(fields) >= 2 && (fields[0] == "HTTP/1.0" || fields[0] == "HTTP/1.1") && len(fields[1]) == 3 && fields[1][0] == '3'
+	if !ntripAccepted(status) && !redirect {
 		return false, fmt.Errorf("ntrip caster refused mountpoint %q: %q", src.Mountpoint, status)
 	}
 	// Drain the remaining headers; the RTCM3 (or chunk-framed RTCM3) stream begins right
 	// after the blank line. regression fix/capture Transfer-Encoding and Content-Type rather
 	// than discard every header, since either can turn "200 OK" into something other than a
 	// live RTCM3 byte stream.
-	contentType := ""
+	contentType, location := "", ""
+	var transferCodings []string
 	for {
 		line, err := readNtripLine(conn)
 		if err != nil {
@@ -133,10 +136,25 @@ func ntripConnect(conn net.Conn, src config.Source) (chunked bool, err error) {
 		}
 		switch strings.ToLower(strings.TrimSpace(name)) {
 		case "transfer-encoding":
-			chunked = strings.EqualFold(strings.TrimSpace(val), "chunked")
+			transferCodings = append(transferCodings, strings.Split(val, ",")...)
+		case "location":
+			location = strings.TrimSpace(val)
 		case "content-type":
 			contentType = strings.TrimSpace(val)
 		}
+	}
+	if redirect {
+		return false, fmt.Errorf("ntrip caster redirected mountpoint %q: %q (Location: %q)", src.Mountpoint, status, location)
+	}
+	for i, coding := range transferCodings {
+		coding = strings.TrimSpace(coding)
+		if !strings.EqualFold(coding, "chunked") {
+			return false, fmt.Errorf("ntrip unsupported transfer coding %q", coding)
+		}
+		if i != len(transferCodings)-1 {
+			return false, fmt.Errorf("ntrip chunked transfer coding must be last")
+		}
+		chunked = true
 	}
 	// a v2 caster answering an unknown mountpoint with "200 OK" and the ASCII
 	// sourcetable as body is a refusal, not a stream, exactly like the v1 SOURCETABLE status
