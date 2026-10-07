@@ -256,13 +256,25 @@ func TestNavfeederReportsRetainedAckedPrefixAtCap(t *testing.T) {
 	})
 
 	// Batch 1 fills the file to the cap; everything that fit (plus the ring) is delivered,
-	// and the lagging acks leave the file permanently short of fully acked.
-	deadline := time.Now().Add(60 * time.Second)
-	for received.Load() < framesToCap+ring {
-		if time.Now().After(deadline) {
-			t.Fatalf("only %d/%d frames of batch 1 delivered; stderr:\n%s", received.Load(), framesToCap+ring, ferr.String())
-		}
+	// and the lagging acks leave the file permanently short of fully acked. The wait is
+	// progress-based: under a full parallel test run the feeder's throughput drops well
+	// below the single-package rate, so a fixed wall-clock bound would time out a healthy
+	// transfer. Only a stall (no new frames for 30 s) or an absolute 5 min cap fails it.
+	const (
+		stallAfter   = 30 * time.Second
+		absoluteWait = 5 * time.Minute
+	)
+	start := time.Now()
+	lastProgress, lastCount := start, received.Load()
+	for lastCount < framesToCap+ring {
 		time.Sleep(50 * time.Millisecond)
+		if n := received.Load(); n != lastCount {
+			lastCount, lastProgress = n, time.Now()
+			continue
+		}
+		if time.Since(lastProgress) > stallAfter || time.Since(start) > absoluteWait {
+			t.Fatalf("only %d/%d frames of batch 1 delivered after %s; stderr:\n%s", lastCount, framesToCap+ring, time.Since(start).Round(time.Second), ferr.String())
+		}
 	}
 	// Batch 2's evictions hit the cap while an acked prefix sits in the file.
 	close(release)
