@@ -29,8 +29,16 @@ struct AppRootView: View {
         .tint(StationPalette.accent)
         .preferredColorScheme(controller.settings.appearance.colorScheme)
         .task { await controller.start(); await controller.notifications.refreshPermission() }
-        .onChange(of: scenePhase, initial: true) { _, phase in controller.store.setForeground(phase == .active) }
+        .onChange(of: scenePhase, initial: true) { _, phase in controller.store.setForeground(phase.keepsForeground) }
     }
+}
+
+extension ScenePhase {
+    /// Only the background is loss of foreground. `.inactive` is transient and
+    /// frequent (the app switcher, Notification Center, a system alert, another
+    /// app in front) and must neither retire delivered notices nor disturb
+    /// live state.
+    var keepsForeground: Bool { self != .background }
 }
 
 #if os(macOS)

@@ -17,6 +17,14 @@ final class StationStore {
 
     @ObservationIgnored var notifications: StationNotifications?
 
+    /// Set by the owner. Runs after this store has retired a session whose
+    /// discovery revision moved (docs/OUTPUT.md §0.1: a collector restart or an
+    /// ingest-policy change). The owner re-runs discovery with its stored
+    /// credential and starts a fresh session; the store itself never
+    /// re-discovers, because only the owner holds the credential and the
+    /// audience preference.
+    @ObservationIgnored var rediscoveryHandler: (@MainActor (ReadSession) async -> Void)?
+
     var selectedStationIDs: [String] = []
 
     private let feedClient: FeedClient
@@ -31,6 +39,7 @@ final class StationStore {
     private var lastEventID: String?
     private var generation: UInt64 = 0
     private var cacheAccess: CacheAccess?
+    private var isForeground = false
 
     private func isCurrent(_ session: ReadSession, generation: UInt64) -> Bool {
         self.generation == generation && activeSession == session && !Task.isCancelled
@@ -133,10 +142,10 @@ final class StationStore {
         let envelope = try await feedClient.fetchObservers(session: session)
         guard isCurrent(session, generation: generation) else { throw CancellationError() }
         guard let payload = envelope.data else { throw FeedError.missingData }
-        guard payload.schema == "2.0", payload.audience == session.audience.rawValue
+        guard WireSchema.isSupported(payload.schema), payload.audience == session.audience.rawValue
         else { throw FeedError.invalidResponse }
         let snapshot = ObserversSnapshot(receivedAt: Date(), scope: session.cacheKey,
-                                         serverTime: envelope.time, payload: payload)
+                                         serverTime: envelope.time, payload: payload.redacted())
         try apply(snapshot, cached: false)
         return snapshot
     }
@@ -230,7 +239,7 @@ final class StationStore {
             let envelope = try await feedClient.fetchEvents(session: session)
             guard isCurrent(session, generation: generation) else { return }
             guard let payload = envelope.data else { throw FeedError.missingData }
-            guard payload.schema == "2.0",
+            guard WireSchema.isSupported(payload.schema),
                   payload.audience == session.audience.rawValue
             else { throw FeedError.invalidResponse }
             guard isCurrent(session, generation: generation) else { return }
@@ -256,7 +265,7 @@ final class StationStore {
             if let access = cacheAccess,
                let snapshot = try await cache.restoreObservers(for: session.cacheKey, access: access),
                snapshot.scope == session.cacheKey,
-               snapshot.payload.schema == "2.0",
+               WireSchema.isSupported(snapshot.payload.schema),
                snapshot.payload.audience == session.audience.rawValue,
                isCurrent(session, generation: generation) {
                 try apply(snapshot, cached: true)
@@ -268,7 +277,7 @@ final class StationStore {
 
     func apply(_ snapshot: ObserversSnapshot, cached: Bool, now: Date = Date()) throws {
         try snapshot.payload.validate()
-        observers = snapshot.payload.observers ?? []
+        observers = snapshot.payload.redacted().observers ?? []
         lastUpdated = snapshot.receivedAt
         isShowingCachedSnapshot = cached
         fetchedAt = .now
@@ -312,7 +321,7 @@ final class StationStore {
     }
 
     private func runEventStream(session: ReadSession, generation: UInt64, access: CacheAccess) async {
-        var retrySeconds = 1
+        var retrySeconds = ReconnectBackoff.initialSeconds
         while !Task.isCancelled, isCurrent(session, generation: generation) {
             do {
                 let updates = try eventStream.updates(session: session, lastEventID: lastEventID) { [weak self] in
@@ -350,7 +359,7 @@ final class StationStore {
                         isEventStreamConnected = true
                         eventStreamMessage = nil
                     }
-                    retrySeconds = 1
+                    retrySeconds = ReconnectBackoff.initialSeconds
                 }
             } catch is CancellationError {
                 return
@@ -363,9 +372,9 @@ final class StationStore {
             }
 
             do {
-                try await Task.sleep(for: .seconds(retrySeconds))
+                try await Task.sleep(for: ReconnectBackoff.delay(seconds: retrySeconds))
             } catch { return }
-            retrySeconds = min(retrySeconds * 2, 30)
+            retrySeconds = ReconnectBackoff.next(after: retrySeconds)
         }
     }
 
@@ -377,11 +386,14 @@ final class StationStore {
         guard let discovery = envelope.data?.validated(),
               discovery.audiences.contains(session.audience)
         else { throw FeedError.audienceLost }
-        guard discovery.authorizationRevision == session.authorizationRevision else {
-            throw FeedError.audienceLost
-        }
         if session.audience.isPrivate, discovery.principalID != session.principalID {
             throw FeedError.audienceLost
+        }
+        // The audience is still granted to this principal, so a different
+        // revision is a partition boundary (restart, policy epoch), not a
+        // withdrawn credential: erase and re-discover rather than sign out.
+        guard discovery.authorizationRevision == session.authorizationRevision else {
+            throw FeedError.revisionChanged
         }
     }
 
@@ -399,9 +411,13 @@ final class StationStore {
 
     private func handleAuthorizationLoss(_ error: Error, session: ReadSession, generation: UInt64) async -> Bool {
         guard isCurrent(session, generation: generation),
-              let feedError = error as? FeedError,
-              feedError.isAuthorizationLoss
+              let feedError = error as? FeedError
         else { return false }
+        if feedError == .revisionChanged {
+            await retireChangedRevision(session: session)
+            return true
+        }
+        guard feedError.isAuthorizationLoss else { return false }
 
         stop()
         activeSession = nil
@@ -409,6 +425,27 @@ final class StationStore {
         authorizationLost = true
         errorMessage = feedError.localizedDescription
         eventStreamMessage = feedError.localizedDescription
+        await erasePartition(of: session)
+        return true
+    }
+
+    /// A moved discovery revision retires the session and erases its partition
+    /// (including the SSE cursor, which must not be reused across a revision),
+    /// then hands control to the owner for re-discovery. Only a rejected
+    /// credential or an audience absent from the new discovery ends in
+    /// `authorizationLost`; a collector restart must not strand the app.
+    private func retireChangedRevision(session: ReadSession) async {
+        stop()
+        activeSession = nil
+        resetPresentation()
+        await erasePartition(of: session)
+        guard let rediscoveryHandler else { return }
+        // stop() cancelled the poll or stream task this runs on; the owner's
+        // discovery requests need a task that is not already cancelled.
+        Task { await rediscoveryHandler(session) }
+    }
+
+    private func erasePartition(of session: ReadSession) async {
         if session.audience.isPrivate {
             try? await cache.clearPrivate(
                 forServer: session.baseURL.absoluteString,
@@ -417,7 +454,6 @@ final class StationStore {
         } else {
             try? await cache.clear(session.cacheKey)
         }
-        return true
     }
 
     private func resetPresentation() {
@@ -477,9 +513,15 @@ final class StationStore {
         }
     }
 
+    /// Scene-phase changes do not touch condition health: the live stream keeps
+    /// running, or fails and invalidates on its own, and the refresh on return
+    /// to the foreground reconciles against the complete snapshot. Marking
+    /// conditions unknown here only turned every online station grey on each
+    /// phase change.
     func setForeground(_ active: Bool) {
+        guard active != isForeground else { return }
+        isForeground = active
         notifications?.setForeground(active)
-        conditions.invalidate()
         if active { Task { await refresh() } }
     }
 
@@ -487,7 +529,7 @@ final class StationStore {
         for _ in 0..<2 {
             let envelope = try await feedClient.fetchConditions(session: session)
             guard isCurrent(session, generation: generation) else { throw CancellationError() }
-            guard let snapshot = envelope.data, snapshot.schema == "2.0",
+            guard let snapshot = envelope.data, WireSchema.isSupported(snapshot.schema),
                   snapshot.audience == session.audience.rawValue else { throw FeedError.invalidResponse }
             if try conditions.install(snapshot) { return }
         }

@@ -17,7 +17,11 @@ final class AppController {
     private(set) var connectionError: String?
 
     @ObservationIgnored private let secureStore: any SecureConnectionStoring
-    @ObservationIgnored private let feedClient: FeedClient
+    /// The one collector client views use for their own requests (sensor
+    /// history, update control, observer setup). A view must not construct a
+    /// FeedClient: a stored property on a View is re-created, URLSession and
+    /// all, on every body evaluation, and detail screens re-evaluate at 1 Hz.
+    @ObservationIgnored let feedClient: FeedClient
     @ObservationIgnored private var activeToken: String?
     @ObservationIgnored private var authenticatedPrincipalID: String?
     @ObservationIgnored private var authenticatedRevision: String?
@@ -71,6 +75,7 @@ final class AppController {
         if let session = store.activeSession { notifications.activate(session) }
         self.secureStore = secureStore
         self.feedClient = feedClient
+        store.rediscoveryHandler = { [weak self] session in await self?.rediscover(after: session) }
     }
 
     var serverURL: URL? {
@@ -102,6 +107,35 @@ final class AppController {
 
     func refresh() async {
         await store.refresh()
+    }
+
+    /// The store retired `session` because the collector's discovery revision
+    /// moved (docs/OUTPUT.md §0.1: a restart or an ingest-policy change). Run
+    /// discovery again with the stored credential and re-select the preferred
+    /// audience, so a routine collector deploy never strands a running app. A
+    /// connection the user started, before or during this, takes precedence.
+    /// Transport failures retry with bounded backoff; a rejected credential or
+    /// an invalid response is reported and stops, as a manual connection would.
+    private func rediscover(after session: ReadSession) async {
+        guard !isConnecting, store.activeSession == nil else { return }
+        let operation = beginIntent()
+        var delaySeconds = ReconnectBackoff.initialSeconds
+        while true {
+            do {
+                try await connect(to: session.baseURL.absoluteString, readToken: nil,
+                                  useStoredCredential: true, operation: operation)
+                return
+            } catch is CancellationError {
+                return
+            } catch {
+                guard operationGeneration == operation else { return }
+                connectionError = error.localizedDescription
+                guard CollectorEndpoint.canRetry(error) else { return }
+            }
+            do { try await Task.sleep(for: ReconnectBackoff.delay(seconds: delaySeconds)) } catch { return }
+            guard operationGeneration == operation else { return }
+            delaySeconds = ReconnectBackoff.next(after: delaySeconds)
+        }
     }
 
     func selectAudience(_ audience: ReadAudience) async throws {
@@ -265,9 +299,11 @@ final class AppController {
         } else {
             let publicEnvelope = try await feedClient.fetchAudiences(baseURL: url, token: nil)
             try requireCurrent(operation)
+            // Anonymous discovery must grant `public` to no principal; a future
+            // public sub-audience alongside it is not a contract violation.
             guard let publicDiscovery = publicEnvelope.data?.validated(),
                   publicDiscovery.principalID == nil,
-                  publicDiscovery.audiences == [.publicAudience]
+                  publicDiscovery.audiences.contains(.publicAudience)
             else { throw FeedError.invalidResponse }
             anonymousDiscovery = publicDiscovery
         }

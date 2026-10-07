@@ -43,7 +43,10 @@ private func historyPage(_ changes: [String: Any] = [:]) throws -> SensorHistory
 
 @Test func historyRejectsInvalidBoundariesAndContinuations() throws {
     let request = try historyRequest()
+    // A minor schema bump is additive and accepted; another major is not.
+    try historyPage(["schema": "2.1"]).validate(request: request, session: historySession)
     for change: [String: Any] in [
+        ["schema": "3.0"], ["schema": "2"],
         ["audience": "organization:other"], ["observer": "other"], ["kind": "timing"],
         ["since": "2026-09-30T10:00:00Z"], ["until": "2026-09-30T13:00:00Z"], ["history_limited": true],
         ["revision": ""], ["offset": 1], ["limit": 501], ["next_offset": 1],
@@ -168,6 +171,19 @@ private actor HistoryReadGate {
             return historyDocument()
         }
         defer { HistoryURLProtocol.handler = nil }
+        // The grant is intact but its revision moved: history access changed,
+        // the owner re-discovers and the view reloads under the new session.
+        await #expect(throws: FeedError.revisionChanged) {
+            try await client.fetchSensorHistory(session: historySession, request: historyRequest())
+        }
+        // A withdrawn grant is a genuine loss even under the original revision.
+        HistoryURLProtocol.handler = { request in
+            if request.url!.path.hasSuffix("audiences") {
+                count += 1
+                return ["schema": "2.0", "principal": "reader", "revision": "grant-1", "audiences": ["public"]]
+            }
+            return historyDocument()
+        }
         await #expect(throws: FeedError.audienceLost) {
             try await client.fetchSensorHistory(session: historySession, request: historyRequest())
         }
@@ -176,7 +192,7 @@ private actor HistoryReadGate {
         await #expect(throws: FeedError.forbidden(nil)) {
             try await client.fetchSensorHistory(session: publicSession, request: historyRequest())
         }
-        #expect(count == 2)
+        #expect(count == 3)
     }
 
     private func makeClient() -> FeedClient {

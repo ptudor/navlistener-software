@@ -11,10 +11,21 @@ struct ObserversPayload: Codable, Sendable {
             guard !observer.id.isEmpty, ids.insert(observer.id).inserted else {
                 throw FeedError.invalidResponse
             }
-            guard audience != "public" || (observer.board == nil && observer.integrity == nil) else {
-                throw FeedError.invalidResponse
-            }
         }
+    }
+
+    /// Public rows never carry receiver board or assurance detail (docs/OUTPUT.md
+    /// §1.3). A newer collector may add a redacted public subset of either; the
+    /// client drops it rather than failing the feed, so the private-only views
+    /// stay private-only and the station list keeps rendering.
+    func redacted() -> ObserversPayload {
+        guard audience == "public", let observers else { return self }
+        return ObserversPayload(schema: schema, audience: audience, observers: observers.map { observer in
+            var row = observer
+            row.board = nil
+            row.integrity = nil
+            return row
+        })
     }
 }
 

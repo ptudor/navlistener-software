@@ -84,9 +84,22 @@ enum BoardFixture {
     #expect(channel.validPeriodErrorPPM == nil)
 }
 
-@Test func publicBoardPayloadIsRejectedBeforePresentationOrCaching() throws {
+/// A board on a public row is a redacted subset a newer collector may serve,
+/// never a reason to drop the station list: it is stripped before
+/// presentation or caching, while private rows keep theirs.
+@MainActor @Test func publicBoardPayloadIsRedactedBeforePresentationOrCaching() throws {
     let payload = try JSONDecoder().decode(ObserversPayload.self, from: Data(BoardFixture.json.replacingOccurrences(of: "organization:example", with: "public").utf8))
-    #expect(throws: FeedError.invalidResponse) { try payload.validate() }
+    try payload.validate()
+    #expect(payload.observers?.first?.board != nil)
+    #expect(payload.redacted().observers?.first?.board == nil)
+    #expect(payload.redacted().observers?.map(\.id) == payload.observers?.map(\.id))
+    let scope = AudienceCacheKey(server: "https://collector.invalid", principal: AudienceCacheKey.anonymousPrincipal,
+                                audience: .publicAudience, authorizationRevision: "public")
+    let store = StationStore()
+    try store.apply(ObserversSnapshot(receivedAt: Date(), scope: scope, serverTime: nil, payload: payload), cached: false)
+    #expect(store.observers.map(\.id) == payload.observers?.map(\.id))
+    #expect(store.observers.allSatisfy { $0.board == nil })
+    #expect(try BoardFixture.payload().redacted().observers?.first?.board != nil)
     let oldCollector = try JSONDecoder().decode(ObserversPayload.self, from: Data(#"{"audience":"public","observers":[{"id":"old"}]}"#.utf8))
     try oldCollector.validate()
     #expect(oldCollector.observers?.first?.board == nil)

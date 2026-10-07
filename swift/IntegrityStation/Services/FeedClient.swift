@@ -9,6 +9,10 @@ enum FeedError: Error, Equatable, LocalizedError, Sendable {
     case unauthorized(String?)
     case forbidden(String?)
     case audienceLost
+    // The collector's discovery revision moved under a session whose audience is
+    // still granted: a restart or an ingest-policy change (docs/OUTPUT.md §0.1).
+    // The partition is erased and discovery re-run; the credential is not lost.
+    case revisionChanged
     case server(code: Int?, message: String)
     case missingData
     case inputLimit
@@ -29,6 +33,7 @@ enum FeedError: Error, Equatable, LocalizedError, Sendable {
         case .unauthorized(let message): message ?? String(localized: "error.unauthorized")
         case .forbidden(let message): message ?? String(localized: "error.forbidden")
         case .audienceLost: String(localized: "error.audience_lost")
+        case .revisionChanged: String(localized: "error.revision_changed")
         case .server(_, let message): message
         case .missingData: String(localized: "error.missing_data")
         case .inputLimit: String(localized: "error.input_limit")
@@ -103,12 +108,16 @@ enum CollectorEndpoint {
     }
 }
 
-struct FeedClient: Sendable {
+struct FeedClient: Sendable, Equatable {
     private let session: URLSession
 
     init(session: URLSession = FeedClient.failFastSession()) {
         self.session = session
     }
+
+    /// Two clients are the same client when they share a URLSession; the
+    /// shared app client must be handed around, never re-created.
+    static func == (lhs: FeedClient, rhs: FeedClient) -> Bool { lhs.session === rhs.session }
 
     func fetchAudiences(baseURL: URL, token: String?) async throws -> APIEnvelope<AudienceDiscoveryPayload> {
         try await fetch(baseURL: baseURL, path: "gnss/api/v2/audiences", token: token)
@@ -186,8 +195,13 @@ struct FeedClient: Sendable {
             let envelope = try await fetchAudiences(baseURL: session.baseURL, token: session.token)
             guard let discovery = envelope.data?.validated(),
                   discovery.principalID == session.principalID,
-                  discovery.authorizationRevision == session.authorizationRevision,
                   discovery.audiences.contains(session.audience) else { throw FeedError.audienceLost }
+            // A moved revision with the grant intact means "history access
+            // changed": the owner re-discovers and the view reloads under the
+            // new session rather than losing the credential.
+            guard discovery.authorizationRevision == session.authorizationRevision else {
+                throw FeedError.revisionChanged
+            }
         }
         try await validateGrant()
         let endpoint = try CollectorEndpoint.url(baseURL: session.baseURL, path: "gnss/api/v2/observer-samples")
