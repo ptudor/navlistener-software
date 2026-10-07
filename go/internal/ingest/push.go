@@ -913,6 +913,7 @@ func (p *PushServer) enqueueScopeRevocation(ctx context.Context, previous identi
 // now in force. That is not a policy transition — ownership, audiences and
 // publication are untouched — so no audience reset accompanies it.
 func (p *PushServer) watchAuthorization(ctx, ingestCtx context.Context, conn net.Conn, token, station, feed string, initial identity.ObserverContext, evidence commissioning.Result, admission *Admission) {
+	defer p.recoverConnectionPanic(conn, initial.ObserverID, "authorization watcher")
 	if p.reauthorizeEvery <= 0 {
 		return
 	}
@@ -980,6 +981,15 @@ func (p *PushServer) watchAuthorization(ctx, ingestCtx context.Context, conn net
 	}
 }
 
+// recoverConnectionPanic contains coordinator failures to the affected feeder.
+func (p *PushServer) recoverConnectionPanic(conn net.Conn, observer, component string) {
+	if r := recover(); r != nil {
+		metrics.PushErrorsTotal.WithLabelValues(observer, "panic").Inc()
+		p.log.Error("push coordinator panicked; closing connection", "observer", observer, "component", component, "panic", r)
+		_ = conn.Close()
+	}
+}
+
 // matchPeerIdentity binds an mTLS-authenticated leaf to the token's canonical
 // observer. GNF1 uses exactly one DNS SAN as the identity field. Legacy CN-only
 // certificates are deliberately rejected; enabling them requires an explicit
@@ -1031,6 +1041,7 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 		var nextControl time.Time
 		var nextReception time.Time
 		defer close(ackDone)
+		defer p.recoverConnectionPanic(w.c, observer, "control writer")
 		for {
 			select {
 			case <-quit:
