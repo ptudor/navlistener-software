@@ -2,8 +2,10 @@ package frame
 
 import (
 	"encoding/binary"
+	"errors"
 	"testing"
 
+	"github.com/ptudor/gnss"
 	"github.com/ptudor/gnss/clock"
 )
 
@@ -238,10 +240,55 @@ func TestBCNAV2MT40DecodesSISAI(t *testing.T) {
 	}
 }
 
+func TestAssembleBeiDouBCNAV2RejectsCrossSVPair(t *testing.T) {
+	for _, tc := range []struct {
+		name                         string
+		svid, prn10, prn11, prnClock int
+		clockType                    int
+		wantErr                      error
+		wantClock                    bool
+	}{
+		{"matched MT30", 28, 28, 28, 28, 30, nil, true},
+		{"matched MT34", 28, 28, 28, 28, 34, nil, true},
+		{"other MT10", 28, 29, 28, 28, 30, errPRNMismatch, false},
+		{"other MT11", 28, 28, 29, 28, 30, errPRNMismatch, false},
+		{"wrong svid", 29, 28, 28, 28, 30, errPRNMismatch, false},
+		{"zero MT10 PRN", 28, 0, 28, 28, 30, errPRNMismatch, false},
+		{"zero MT11 PRN", 28, 28, 0, 28, 30, errPRNMismatch, false},
+		{"other MT30 clock", 28, 28, 28, 29, 30, nil, false},
+		{"other MT34 clock", 28, 28, 28, 29, 34, nil, false},
+		{"zero clock PRN", 28, 28, 28, 0, 30, nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m10 := &BeiDouBCNAV2{PRN: tc.prn10, MesType: 10, SOW: 100}
+			m11 := &BeiDouBCNAV2{PRN: tc.prn11, MesType: 11, SOW: 103, hasEph2: true}
+			mClk := &BeiDouBCNAV2{PRN: tc.prnClock, MesType: tc.clockType, SOW: 103, hasClk: true,
+				clk: clock.Model{ID: gnss.BeiDou, Af0: 1.5}}
+			eph, clk, clkOK, err := AssembleBeiDouBCNAV2(tc.svid, m10, m11, mClk)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("assembly error = %v, want %v", err, tc.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			if eph.ID != gnss.BeiDou || eph.SVID != tc.svid || clkOK != tc.wantClock {
+				t.Fatalf("assembly identity or clock availability: eph=%+v clkOK=%v", eph, clkOK)
+			}
+			wantClock := clock.Model{ID: gnss.BeiDou}
+			if tc.wantClock {
+				wantClock.Af0 = 1.5
+			}
+			if clk != wantClock {
+				t.Fatalf("clock = %+v, want %+v", clk, wantClock)
+			}
+		})
+	}
+}
+
 func TestAssembleBeiDouBCNAV2RejectsWrongSlots(t *testing.T) {
-	m10 := &BeiDouBCNAV2{MesType: 10, SOW: 100}
-	m11 := &BeiDouBCNAV2{MesType: 11, SOW: 103, hasEph2: true}
-	clk := &BeiDouBCNAV2{MesType: 30, SOW: 103, hasClk: true}
+	m10 := &BeiDouBCNAV2{PRN: 1, MesType: 10, SOW: 100}
+	m11 := &BeiDouBCNAV2{PRN: 1, MesType: 11, SOW: 103, hasEph2: true}
+	clk := &BeiDouBCNAV2{PRN: 1, MesType: 30, SOW: 103, hasClk: true}
 	if _, _, _, err := AssembleBeiDouBCNAV2(1, m11, m10, nil); err != ErrWrongMsgType {
 		t.Errorf("transposed args error = %v, want ErrWrongMsgType", err)
 	}
@@ -256,9 +303,9 @@ func TestAssembleBeiDouBCNAV2RejectsWrongSlots(t *testing.T) {
 // (BDS-SIS-B2a-1.0 §7.6.2, Table 7-6) — not the pilot-only eq. 7-4 value.
 func TestAssembleBCNAV2ClockCarriesDataComponentTGD(t *testing.T) {
 	const tgdB2ap, iscB2ad = -137.0 / (1 << 30) / 16, 59.0 / (1 << 30) / 16 // −137·2⁻³⁴, +59·2⁻³⁴ s
-	m10 := &BeiDouBCNAV2{MesType: 10, SOW: 100}
-	m11 := &BeiDouBCNAV2{MesType: 11, SOW: 103, hasEph2: true}
-	m30 := &BeiDouBCNAV2{MesType: 30, SOW: 103, hasClk: true,
+	m10 := &BeiDouBCNAV2{PRN: 28, MesType: 10, SOW: 100}
+	m11 := &BeiDouBCNAV2{PRN: 28, MesType: 11, SOW: 103, hasEph2: true}
+	m30 := &BeiDouBCNAV2{PRN: 28, MesType: 30, SOW: 103, hasClk: true,
 		TGDB2ap: tgdB2ap, ISCB2ad: iscB2ad, clk: clock.Model{Af0: 1.5}}
 	_, clk, clkOK, err := AssembleBeiDouBCNAV2(28, m10, m11, m30)
 	if err != nil || !clkOK {
@@ -270,7 +317,7 @@ func TestAssembleBCNAV2ClockCarriesDataComponentTGD(t *testing.T) {
 	// An MT34-sourced clock has no group-delay field at all: TGD must stay the
 	// zero value for the caller's provenance machinery to override, never a
 	// partial or fabricated correction.
-	m34 := &BeiDouBCNAV2{MesType: 34, SOW: 103, hasClk: true, clk: clock.Model{Af0: 1.5}}
+	m34 := &BeiDouBCNAV2{PRN: 28, MesType: 34, SOW: 103, hasClk: true, clk: clock.Model{Af0: 1.5}}
 	_, clk34, _, err := AssembleBeiDouBCNAV2(28, m10, m11, m34)
 	if err != nil {
 		t.Fatalf("MT34 assembly failed: %v", err)
@@ -284,8 +331,8 @@ func TestAssembleBCNAV2ClockCarriesDataComponentTGD(t *testing.T) {
 // type 11 carries no IODE, so broadcast adjacency (±3 s) is the only guard against
 // stitching elements across an ephemeris changeover.
 func TestBCNAV2PairAdjacency(t *testing.T) {
-	m10 := &BeiDouBCNAV2{MesType: 10, SOW: 100}
-	m11 := &BeiDouBCNAV2{MesType: 11, SOW: 103, hasEph2: true}
+	m10 := &BeiDouBCNAV2{PRN: 28, MesType: 10, SOW: 100}
+	m11 := &BeiDouBCNAV2{PRN: 28, MesType: 11, SOW: 103, hasEph2: true}
 	if _, _, _, err := AssembleBeiDouBCNAV2(28, m10, m11, nil); err != nil {
 		t.Errorf("adjacent pair rejected: %v", err)
 	}
@@ -300,9 +347,9 @@ func TestBCNAV2PairAdjacency(t *testing.T) {
 // not be rejected — the delta wraps mod 604800. A clock a full staleness bound
 // behind across the boundary must still be dropped.
 func TestBCNAV2PairAndClockWeekRollover(t *testing.T) {
-	m10 := &BeiDouBCNAV2{MesType: 10, SOW: 0}
-	m11 := &BeiDouBCNAV2{MesType: 11, SOW: 604797, hasEph2: true}
-	fresh := &BeiDouBCNAV2{MesType: 30, SOW: 604797, IODC: 3, hasClk: true, clk: clock.Model{Af0: 1.5}}
+	m10 := &BeiDouBCNAV2{PRN: 28, MesType: 10, SOW: 0}
+	m11 := &BeiDouBCNAV2{PRN: 28, MesType: 11, SOW: 604797, hasEph2: true}
+	fresh := &BeiDouBCNAV2{PRN: 28, MesType: 30, SOW: 604797, IODC: 3, hasClk: true, clk: clock.Model{Af0: 1.5}}
 	_, clk, clkOK, err := AssembleBeiDouBCNAV2(28, m10, m11, fresh)
 	if err != nil {
 		t.Fatalf("rollover pair (0, 604797) rejected: %v", err)
@@ -311,7 +358,7 @@ func TestBCNAV2PairAndClockWeekRollover(t *testing.T) {
 		t.Errorf("rollover clock dropped: Af0=%v clkOK=%v, want fresh clock applied", clk.Af0, clkOK)
 	}
 
-	stale := &BeiDouBCNAV2{MesType: 30, SOW: 604800 - bcnavClkStaleSOW - 1, hasClk: true, clk: clock.Model{Af0: 9.9}}
+	stale := &BeiDouBCNAV2{PRN: 28, MesType: 30, SOW: 604800 - bcnavClkStaleSOW - 1, hasClk: true, clk: clock.Model{Af0: 9.9}}
 	_, clk2, clkOK2, err := AssembleBeiDouBCNAV2(28, m10, m11, stale)
 	if err != nil {
 		t.Fatalf("ephemeris must still assemble with a cross-boundary stale clock: %v", err)
@@ -323,7 +370,7 @@ func TestBCNAV2PairAndClockWeekRollover(t *testing.T) {
 	// SOW 604800 is outside the transmitted domain [0, 604800): a corrupt
 	// field, rejected by sowDelta rather than wrapped into an apparently
 	// adjacent pair.
-	outOfDomain := &BeiDouBCNAV2{MesType: 11, SOW: 604800, hasEph2: true}
+	outOfDomain := &BeiDouBCNAV2{PRN: 28, MesType: 11, SOW: 604800, hasEph2: true}
 	if _, _, _, err := AssembleBeiDouBCNAV2(28, m10, outOfDomain, fresh); err != errPairSOW {
 		t.Errorf("err = %v, want errPairSOW (out-of-domain SOW)", err)
 	}
@@ -335,9 +382,9 @@ func TestBCNAV2PairAndClockWeekRollover(t *testing.T) {
 // but the ephemeris itself must still assemble, falling back to the zero clock,
 // not fail outright.
 func TestBCNAV2StaleClockDropped(t *testing.T) {
-	m10 := &BeiDouBCNAV2{MesType: 10, SOW: 100000, IODE: 7}
-	m11 := &BeiDouBCNAV2{MesType: 11, SOW: 100002, hasEph2: true}
-	fresh := &BeiDouBCNAV2{MesType: 30, SOW: 100005, IODC: 3, hasClk: true, clk: clock.Model{Af0: 1.5}}
+	m10 := &BeiDouBCNAV2{PRN: 28, MesType: 10, SOW: 100000, IODE: 7}
+	m11 := &BeiDouBCNAV2{PRN: 28, MesType: 11, SOW: 100002, hasEph2: true}
+	fresh := &BeiDouBCNAV2{PRN: 28, MesType: 30, SOW: 100005, IODC: 3, hasClk: true, clk: clock.Model{Af0: 1.5}}
 	eph, clk, clkOK, err := AssembleBeiDouBCNAV2(28, m10, m11, fresh)
 	if err != nil {
 		t.Fatalf("fresh clock rejected: %v", err)
@@ -346,7 +393,7 @@ func TestBCNAV2StaleClockDropped(t *testing.T) {
 		t.Errorf("fresh clock not applied: Af0=%v clkOK=%v", clk.Af0, clkOK)
 	}
 
-	stale := &BeiDouBCNAV2{MesType: 30, SOW: 100000 - bcnavClkStaleSOW - 1, IODC: 2, hasClk: true, clk: clock.Model{Af0: 9.9}}
+	stale := &BeiDouBCNAV2{PRN: 28, MesType: 30, SOW: 100000 - bcnavClkStaleSOW - 1, IODC: 2, hasClk: true, clk: clock.Model{Af0: 9.9}}
 	eph2, clk2, clkOK2, err := AssembleBeiDouBCNAV2(28, m10, m11, stale)
 	if err != nil {
 		t.Fatalf("ephemeris must still assemble when only the clock is stale: %v", err)

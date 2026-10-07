@@ -1,6 +1,7 @@
 package frame
 
 import (
+	"errors"
 	"math"
 	"testing"
 
@@ -264,8 +265,8 @@ func TestGPSLNAVIODEMismatch(t *testing.T) {
 	sf2 := decodeBuf(t, buildSf2(t))
 	sf3 := decodeBuf(t, buildSf3(t))
 	sf3.IODE = 99 // break consistency
-	if _, _, err := AssembleGPS(gnss.GPS, 5, sf1, sf2, sf3); err == nil {
-		t.Error("expected IODE/IODC mismatch error")
+	if _, _, err := AssembleGPS(gnss.GPS, 5, sf1, sf2, sf3); !errors.Is(err, errIODMismatch) {
+		t.Errorf("IODE/IODC mismatch: got %v, want errIODMismatch", err)
 	}
 }
 
