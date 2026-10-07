@@ -94,6 +94,18 @@ func TestRepeatedMeasurementDoesNotAdvanceAlarm(t *testing.T) {
 	}
 }
 
+func TestObservePowerRejectsUnknownElevation(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	for _, elevation := range []int16{-1, 91} {
+		m, _ := fixture(now)
+		before := m.stations["edge"].modelRevision
+		m.ObservePower("edge", now, []reception.PowerObservation{{GNSS: 0, SV: 12, Signal: reception.Satellite, CN0: 40, Elevation: elevation}})
+		if got := m.stations["edge"].modelRevision; got != before {
+			t.Fatalf("elevation %d changed revision from %d to %d", elevation, before, got)
+		}
+	}
+}
+
 func TestPowerForecastAndIndependentRecomputation(t *testing.T) {
 	baseUnix := int64(1_800_000_000)
 	_, bin := func() (int64, uint16) {
