@@ -1572,6 +1572,7 @@ func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 	switch sf.FraID {
 	case 1:
 		st.bd1 = sf
+		st.checkBroadcastWN(f.Recv, gnsstime.SysBeiDou, sf.WN, 13)
 		// apply health/URA/AOD at subframe-1 arrival, BEFORE the toe-changeover
 		// gate below, so a SatH1 flip in a re-broadcast subframe 1 (unchanged toe) reaches
 		// live state instead of being dropped for up to an hour. DecodeBeiDouD1 verifies
@@ -1712,6 +1713,7 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 	switch m.MesType {
 	case 10:
 		st.bc10 = m
+		st.checkBroadcastWN(f.Recv, gnsstime.SysBeiDou, m.WN, 13)
 	case 11:
 		st.bc11 = m
 	case 30:
@@ -2666,9 +2668,9 @@ const wnRolloverGraceS = 4 * 3600
 // time-plausibility gate). GPS and QZSS share GPS week numbering (pass
 // SysGPS); Galileo's 12-bit GST week counts from the 1999-08-22 GST epoch
 // (SysGalileo — GST week = GPS week − 1024, regression fix), so comparing it on the
-// GPS axis would flag every healthy SV. The rollover grace below keys on
-// gpsTOW, which GST shares to the second — revisit if a BDT caller
-// ever appears (BDT TOW is shifted 14 s). Called with the shard lock held;
+// GPS axis would flag every healthy SV. BeiDou uses its BDT epoch and
+// time-of-week, shifted 14 s from GPS, including for rollover grace.
+// Called with the shard lock held;
 // the result feeds wn_mismatch → the detector's debounced wn_mismatch event.
 //
 // regression fix — recv is the FORENSIC reception stamp (f.Recv), NOT LocalRecv():
@@ -2691,7 +2693,8 @@ func (st *svState) checkBroadcastWN(recv time.Time, sys gnsstime.System, wn, bit
 		return // no week numbering for this system; leave haveWN untouched
 	}
 	mismatch := full != expect
-	if mismatch && full == expect-1 && gpsTOW(recv) < wnRolloverGraceS {
+	tow, _ := gnsstime.TOWAt(sys, float64(recv.Unix()), float64(gpsUTCOffset))
+	if mismatch && full == expect-1 && tow < wnRolloverGraceS {
 		mismatch = false // data-set WN lagging across the rollover: designed behavior
 	}
 	st.wnMismatch, st.haveWN = mismatch, true
