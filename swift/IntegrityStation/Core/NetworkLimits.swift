@@ -11,13 +11,28 @@ enum NetworkLimits {
     static let pendingEvents = 64
     static let conditions = 10_000
 
+    /// Bytes gathered before each append to the body. URLSession hands the
+    /// body out one byte at a time; appending to `Data` per byte made a
+    /// multi-megabyte fleet document CPU-bound on the client.
+    static let chunkBytes = 64 * 1024
+
     static func body(_ bytes: URLSession.AsyncBytes, maximum: Int) async throws -> Data {
         var data = Data()
+        var chunk: [UInt8] = []
+        chunk.reserveCapacity(chunkBytes)
+        var received = 0
         for try await byte in bytes {
-            try Task.checkCancellation()
-            guard data.count < maximum else { throw FeedError.inputLimit }
-            data.append(byte)
+            received += 1
+            guard received <= maximum else { throw FeedError.inputLimit }
+            chunk.append(byte)
+            if chunk.count == chunkBytes {
+                try Task.checkCancellation()
+                data.append(contentsOf: chunk)
+                chunk.removeAll(keepingCapacity: true)
+            }
         }
+        try Task.checkCancellation()
+        data.append(contentsOf: chunk)
         return data
     }
 }

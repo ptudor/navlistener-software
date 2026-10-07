@@ -1,13 +1,21 @@
 import Foundation
 
 struct OwnerPortalClient: Sendable {
+    /// Largest portal document accepted, bounded on received bytes.
+    static let responseBytes = 8 * 1024 * 1024
+    /// Idle watchdog between bytes, and a total bound that admits a document
+    /// at the response limit over a slow link (8 MiB in 120 s is about
+    /// 560 kbit/s); the former 20 s could never complete one.
+    static let idleTimeout: TimeInterval = 15
+    static let resourceTimeout: TimeInterval = 120
+
     let session: URLSession
     init(session: URLSession? = nil) {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpShouldSetCookies = false
         configuration.urlCache = nil
-        configuration.timeoutIntervalForRequest = 15
-        configuration.timeoutIntervalForResource = 20
+        configuration.timeoutIntervalForRequest = Self.idleTimeout
+        configuration.timeoutIntervalForResource = Self.resourceTimeout
         self.session = session ?? URLSession(configuration: configuration)
     }
     static func decoder() -> JSONDecoder { let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase; return decoder }
@@ -34,8 +42,8 @@ struct OwnerPortalClient: Sendable {
         if http.statusCode == 401 { throw FeedError.unauthorized(nil) }
         if http.statusCode == 403 { throw FeedError.forbidden(nil) }
         guard http.statusCode == 200 else { throw FeedError.http(http.statusCode) }
-        guard http.mimeType == "application/json", response.expectedContentLength <= 8 * 1024 * 1024 else { throw FeedError.invalidResponse }
-        let data = try await NetworkLimits.body(bytes, maximum: 8 * 1024 * 1024)
+        guard http.mimeType == "application/json", response.expectedContentLength <= Self.responseBytes else { throw FeedError.invalidResponse }
+        let data = try await NetworkLimits.body(bytes, maximum: Self.responseBytes)
         do { return try Self.decoder().decode(type, from: data) } catch { throw FeedError.invalidResponse }
     }
     func get<T: Decodable & Sendable>(_ type: T.Type, connection: PortalConnection, path: String,

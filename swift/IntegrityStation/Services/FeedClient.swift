@@ -319,11 +319,18 @@ struct FeedClient: Sendable, Equatable {
         return min(TimeInterval(seconds), maximumCacheAge)
     }
 
+    /// A short idle watchdog between bytes, and a total bound sized to the
+    /// 32 MiB response limit: 120 s admits a full-size fleet document at about
+    /// 2.2 Mbit/s, where the former 15 s could never complete one and every
+    /// poll of a large fleet on a slow link failed with a timeout.
+    static let idleTimeout: TimeInterval = 10
+    static let resourceTimeout: TimeInterval = 120
+
     static func failFastSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.waitsForConnectivity = false
-        configuration.timeoutIntervalForRequest = 10
-        configuration.timeoutIntervalForResource = 15
+        configuration.timeoutIntervalForRequest = idleTimeout
+        configuration.timeoutIntervalForResource = resourceTimeout
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: configuration)
     }
