@@ -154,12 +154,21 @@ just one.
 | `navlistener_store_dropped_total` | counter |
 | `navlistener_store_errors_total` | counter |
 | `navlistener_store_quarantined_total` | counter |
+| `navlistener_store_quarantined_rows_total{table}` | counter |
+| `navlistener_store_retry_dropped_total` | counter |
 | `navlistener_store_empty_raw_total` | counter |
 | `navlistener_evidence_bundles_total` | counter |
 | `navlistener_evidence_capture_errors_total` | counter |
 
 `store_dropped_total` is the bounded-queue overflow policy made visible — the historian degrading
 so live decode doesn't. A sustained rise means the database can't keep up.
+
+`store_quarantined_total` keeps its original meaning (every row a flush gave up on) for existing
+dashboards; the two counters beside it split it by what happened to the row. `quarantined_rows_total`,
+labelled by table (`nav_frames`, `observer_samples`, `rf_samples`), counts rows whose own content
+failed deterministically — they are acked to the feeder and gone, and the quarantine log line
+carries their identity. `retry_dropped_total` counts rows dropped **unacked** after retries, the
+wall budget, or a constraint every row trips: the feeder's spool still holds them for replay.
 
 ### Serve and events
 

@@ -92,8 +92,10 @@ The writer's failure handling is layered, and each layer has a different account
 | Situation | Behavior | Metric |
 |---|---|---|
 | Retryable DB error | Bounded retry with backoff. | — |
-| A poison row inside a batch | The batch is **bisected** to isolate it; the bad rows are quarantined and the good ones commit. | `store_quarantined_total` |
-| Wall budget expires, parent still live | The batch is dropped and counted — the writer must stay live and memory-bounded through a long outage. | `store_quarantined_total` |
+| A poison row inside a batch (SQLSTATE class 22: a NUL in JSON, an out-of-range smallint) | The batch is **bisected** to isolate it; the bad row is quarantined — logged with its source, session, sequence, table, kind, satellite and SQLSTATE, and **acked**, since no retransmit can fix it — and the good ones commit. | `store_quarantined_total`, `store_quarantined_rows_total{table}` |
+| A unique or check violation (23505, 23514) | Bisected like poison, but a single row is quarantined and acked **only once a sibling row of the same cycle has committed** under the same constraints. A cycle in which nothing commits is a constraint every row trips: nothing is acked, the batch stays replayable, the cycle counts as a give-up. | as poison, or `store_retry_dropped_total` |
+| Any other class-23 violation (23502 not-null, 23503 foreign-key, …) | A constraint every row trips — a newer schema's column, an operator's constraint. No bisection, no ack: the cycle gives up at once, the batch stays replayable from the feeder's spool, and two such cycles degrade `/healthz`. | `store_retry_dropped_total` |
+| Retries or the wall budget exhausted, parent still live | The batch is dropped unacked and counted — the writer must stay live and memory-bounded through a long outage; the feeder replays it. | `store_quarantined_total`, `store_retry_dropped_total` |
 | Shutdown interrupts a flush | The batch is **retained** for the bounded shutdown drain rather than cleared. Nothing was committed, and the atomic claim+copy transaction rolled its replay-key claims back, so the re-flush cannot duplicate. | — |
 
 The claim-and-copy being one transaction is what makes that last row safe: bisection, retry, and
@@ -111,6 +113,22 @@ one bad flush cycle never degrades, two consecutive ones do:
 
 A lone poison row in a healthy batch is what bisection is for and never degrades health; a
 batch that is mostly poison is a systemic fault the operator must see.
+
+### Startup schema checks
+
+`schema.sql` is additive and idempotent, so an older binary runs against a newer database until
+a change lands that an older writer trips on every row — a NOT NULL column without a default, a
+tightened CHECK. Two startup checks catch that before the first batch instead of after it:
+
+- **The schema marker.** `navlistener_schema` holds the schema generation (`schemaVersion` in
+  `store.go`) the last build to apply the schema knew. `store.New` refuses to start when the
+  stored version is higher than its own, and only ever moves the marker forward. Bump
+  `schemaVersion` with any change an older writer cannot satisfy; never for a purely additive
+  migration.
+- **Unsupplied NOT NULL columns.** `verifyRequiredColumns` fails fast when any table this build
+  writes has a NOT NULL column without a default (and neither identity nor generated) that the
+  writer's column list does not supply, naming the table and the columns — the mirror image of
+  its missing-column check.
 
 ### `nav_frames` — the forensic record
 

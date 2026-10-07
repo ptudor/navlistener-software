@@ -289,10 +289,26 @@ var (
 	})
 
 	// StoreQuarantinedTotal counts frames permanently dropped after retries were
-	// exhausted or a poison row was quarantined.
+	// exhausted or a poison row was quarantined. It keeps its original union
+	// semantics for existing dashboards; the two counters below split it.
 	StoreQuarantinedTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "navlistener_store_quarantined_total",
-		Help: "Historian records dropped after flush retries exhausted or a poison row was quarantined.",
+		Help: "Historian records dropped after a flush for any reason: poison rows quarantined plus rows dropped after retries were exhausted (the sum of navlistener_store_quarantined_rows_total and navlistener_store_retry_dropped_total).",
+	})
+
+	// StoreQuarantinedRowsTotal counts rows quarantined as poison (deterministic
+	// row content that no retransmit can fix; acked to the feeder), by table.
+	StoreQuarantinedRowsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_store_quarantined_rows_total",
+		Help: "Historian rows quarantined as poison (deterministic row content), by table.",
+	}, []string{"table"})
+
+	// StoreRetryDroppedTotal counts rows dropped unacked after flush retries,
+	// the wall budget, or a constraint every row trips; the feeder's spool still
+	// holds them for reconnect replay.
+	StoreRetryDroppedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "navlistener_store_retry_dropped_total",
+		Help: "Historian rows dropped unacked after retries, the wall budget or a systemic constraint failure (replayable from the feeder's spool).",
 	})
 
 	// StoreEmptyRawTotal counts frames dropped at Enqueue for having an empty Raw

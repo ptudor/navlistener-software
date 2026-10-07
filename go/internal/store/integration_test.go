@@ -790,3 +790,156 @@ func TestIntegrationWriterCommitsWhileReadersHoldThePool(t *testing.T) {
 		t.Errorf("nav_frames rows for %s = %d, want 2", obs, n)
 	}
 }
+
+// TestIntegrationSchemaVersionNewerThanBuildFailsFast: store.New marks the
+// database with this build's schema generation, and a database marked by a
+// newer build must refuse this one at startup with an actionable message.
+func TestIntegrationSchemaVersionNewerThanBuildFailsFast(t *testing.T) {
+	dsn := isolatedDSN(t)
+	ctx := context.Background()
+	cfg := config.Store{DSN: dsn, BatchSize: 100, BatchEvery: 50 * time.Millisecond, RawRetention: "7 days", CompressAfter: "1 day"}
+	s, err := New(ctx, cfg, integrationLog())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	var stored int
+	if err := s.pool.QueryRow(ctx, `SELECT version FROM navlistener_schema`).Scan(&stored); err != nil || stored != schemaVersion {
+		t.Fatalf("schema marker = %d (%v), want %d", stored, err, schemaVersion)
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE navlistener_schema SET version = $1`, schemaVersion+1); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	defer func() {
+		pool, err := pgxpool.New(ctx, dsn)
+		if err != nil {
+			t.Fatalf("restore connect: %v", err)
+		}
+		defer pool.Close()
+		if _, err := pool.Exec(ctx, `UPDATE navlistener_schema SET version = $1`, schemaVersion); err != nil {
+			t.Fatalf("restore schema marker: %v", err)
+		}
+	}()
+	_, err = New(ctx, cfg, integrationLog())
+	if err == nil || !strings.Contains(err.Error(), "schema is version") {
+		t.Fatalf("store.New against a newer schema: err = %v, want a fail-fast version error", err)
+	}
+	t.Logf("got expected error: %v", err)
+}
+
+// TestIntegrationUnsuppliedNotNullColumnFailsFast: a NOT NULL column without a
+// default that this build does not write — a newer schema's, or an operator's
+// — must fail store.New naming the table and column, not start and trip a
+// not-null violation on every row.
+func TestIntegrationUnsuppliedNotNullColumnFailsFast(t *testing.T) {
+	dsn := isolatedDSN(t)
+	ctx := context.Background()
+	cfg := config.Store{DSN: dsn, BatchSize: 100, BatchEvery: 50 * time.Millisecond, RawRetention: "7 days", CompressAfter: "1 day"}
+	s, err := New(ctx, cfg, integrationLog())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	// The replay ledger is the plain table of the set (TimescaleDB refuses a NOT
+	// NULL column without a default on a columnstore hypertable); a NOT NULL
+	// column cannot be added over existing rows.
+	if _, err := s.pool.Exec(ctx, `DELETE FROM nav_frames_seq_seen`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, `ALTER TABLE nav_frames_seq_seen ADD COLUMN added_later TEXT NOT NULL`); err != nil {
+		t.Fatalf("add column: %v", err)
+	}
+	s.Close()
+	defer dropAddedLater(t, dsn)
+	_, err = New(ctx, cfg, integrationLog())
+	if err == nil || !strings.Contains(err.Error(), "nav_frames_seq_seen") || !strings.Contains(err.Error(), "added_later") {
+		t.Fatalf("store.New with an unsupplied NOT NULL column: err = %v, want it to name nav_frames_seq_seen and added_later", err)
+	}
+	t.Logf("got expected error: %v", err)
+}
+
+// dropAddedLater removes the column the NOT NULL tests add, through a plain
+// pool: store.New itself refuses to start while the column exists.
+func dropAddedLater(t *testing.T, dsn string) {
+	t.Helper()
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("cleanup connect: %v", err)
+	}
+	defer pool.Close()
+	if _, err := pool.Exec(ctx, `ALTER TABLE nav_frames_seq_seen DROP COLUMN IF EXISTS added_later`); err != nil {
+		t.Fatalf("cleanup added_later: %v", err)
+	}
+}
+
+// TestIntegrationSystemicConstraintFailureUnderRun: a NOT NULL column added
+// while the writer runs (a rolling upgrade whose schema outran this binary)
+// makes every row fail. The writer must ack nothing, leave no replay claims in
+// the ledger, and degrade /healthz within two cycles instead of quarantining
+// the whole forensic record with the feeder's spool released.
+func TestIntegrationSystemicConstraintFailureUnderRun(t *testing.T) {
+	dsn := isolatedDSN(t)
+	ctx := context.Background()
+	cfg := config.Store{DSN: dsn, BatchSize: 100, BatchEvery: 50 * time.Millisecond, RawRetention: "7 days", CompressAfter: "1 day"}
+	s, err := New(ctx, cfg, integrationLog())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	const obs = "obs-systemic-integration"
+	if _, err := s.pool.Exec(ctx, `DELETE FROM nav_frames WHERE source_id = $1`, obs); err != nil {
+		t.Fatal(err)
+	}
+	// Emptied wholesale: a NOT NULL column cannot be added over existing rows.
+	if _, err := s.pool.Exec(ctx, `DELETE FROM nav_frames_seq_seen`); err != nil {
+		t.Fatal(err)
+	}
+	acked := make(chan string, 64)
+	s.SetDurableNotify(func(source, session string, seq uint64) {
+		acked <- fmt.Sprintf("%s/%s/%d", source, session, seq)
+	})
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); s.Run(runCtx) }()
+	defer dropAddedLater(t, dsn)
+	// The schema outruns the binary with the writer live: the ledger claim that
+	// opens every atomic persist now trips a not-null violation.
+	if _, err := s.pool.Exec(ctx, `ALTER TABLE nav_frames_seq_seen ADD COLUMN added_later TEXT NOT NULL`); err != nil {
+		cancel()
+		<-done
+		t.Fatalf("add column: %v", err)
+	}
+	frame := func(seq uint64) *NavFrame {
+		return &NavFrame{Ts: time.Now(), ReceivedAt: time.Now(), SourceID: obs, SvID: 1, MsgType: 1,
+			Raw: []byte{byte(seq)}, SourceSeq: seq, HasSourceSeq: true, Session: "boot-a"}
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for s.Degraded() == "" && time.Now().Before(deadline) {
+		for seq := uint64(1); seq <= 4; seq++ { // the same frames each cycle, as a replaying feeder would send
+			s.Enqueue(frame(seq))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	reason := s.Degraded()
+	cancel()
+	<-done
+	if reason == "" {
+		t.Fatal("Degraded() stayed empty while every row failed a NOT NULL constraint")
+	}
+	select {
+	case got := <-acked:
+		t.Fatalf("frame %s was acked although no row could be written", got)
+	default:
+	}
+	pool, err := pgxpool.New(ctx, dsn) // store.New would refuse the column
+	if err != nil {
+		t.Fatalf("verify connect: %v", err)
+	}
+	defer pool.Close()
+	var claims int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM nav_frames_seq_seen WHERE source_id = $1`, obs).Scan(&claims); err != nil {
+		t.Fatal(err)
+	}
+	if claims != 0 {
+		t.Errorf("ledger holds %d claims for %s, want 0 (every transaction must have rolled back)", claims, obs)
+	}
+}

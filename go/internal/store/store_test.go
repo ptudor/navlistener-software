@@ -112,18 +112,29 @@ func TestPersistRetryQuarantinesPoison(t *testing.T) {
 	}
 }
 
-func TestIsPoison(t *testing.T) {
-	if !isPoison(&pgconn.PgError{Code: "23505"}) { // unique violation
-		t.Error("23xxx should be poison")
-	}
-	if !isPoison(&pgconn.PgError{Code: "22P02"}) { // invalid text
-		t.Error("22xxx should be poison")
-	}
-	if isPoison(&pgconn.PgError{Code: "08006"}) { // connection failure
-		t.Error("08xxx (connection) should be retryable, not poison")
-	}
-	if isPoison(errors.New("timeout")) {
-		t.Error("non-PgError should be retryable, not poison")
+// TestClassifyPersistError guards the failure classes: class 22 is poison
+// outright, unique and check violations are poison only if a sibling commits,
+// the rest of class 23 (not-null, foreign-key) is systemic — a constraint every
+// row trips, never acked — and everything else is retried.
+func TestClassifyPersistError(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want failureClass
+	}{
+		{&pgconn.PgError{Code: "22P02"}, failPoison},           // invalid text representation
+		{&pgconn.PgError{Code: "22003"}, failPoison},           // numeric out of range
+		{&pgconn.PgError{Code: "23505"}, failPoisonIfIsolated}, // unique violation
+		{&pgconn.PgError{Code: "23514"}, failPoisonIfIsolated}, // check violation
+		{&pgconn.PgError{Code: "23502"}, failSystemic},         // not-null violation
+		{&pgconn.PgError{Code: "23503"}, failSystemic},         // foreign-key violation
+		{&pgconn.PgError{Code: "23P01"}, failSystemic},         // exclusion violation
+		{&pgconn.PgError{Code: "08006"}, failTransient},        // connection failure
+		{&pgconn.PgError{Code: "42703"}, failTransient},        // undefined column
+		{errors.New("timeout"), failTransient},
+	} {
+		if got := classifyPersistError(tc.err); got != tc.want {
+			t.Errorf("classifyPersistError(%v) = %v, want %v", tc.err, got, tc.want)
+		}
 	}
 }
 

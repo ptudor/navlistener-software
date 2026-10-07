@@ -9,6 +9,18 @@
 -- The same startup schema also creates the durable integrity-event and periodic
 -- feed-snapshot tables below.
 
+-- Schema compatibility marker. The store writes the version this build knows
+-- (store.go schemaVersion) after applying this file, and refuses to start
+-- against a newer one. Every migration here is additive and idempotent, so an
+-- older binary keeps working until a NOT NULL column without a default or a
+-- tightened CHECK lands — exactly the changes that must bump schemaVersion,
+-- because an older writer would trip them on every row.
+CREATE TABLE IF NOT EXISTS navlistener_schema (
+    singleton  BOOLEAN     PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    version    INTEGER     NOT NULL,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS nav_frames (
     ts          TIMESTAMPTZ NOT NULL,   -- ingest time (hypertable dimension)
     received_at TIMESTAMPTZ NOT NULL,   -- receiver/host reception time (indexed)

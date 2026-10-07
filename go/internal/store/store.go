@@ -313,6 +313,10 @@ func New(ctx context.Context, cfg config.Store, log *slog.Logger) (*Store, error
 		pool.Close()
 		return nil, err
 	}
+	if err := checkSchemaVersion(cctx, pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	if err := applySchema(cctx, pool); err != nil {
 		// A pre-existing intsat-shaped gnss_events can make schema.sql's OWN
 		// DDL fail first (gnss_events_public selects `raw`, which has no
@@ -327,6 +331,10 @@ func New(ctx context.Context, cfg config.Store, log *slog.Logger) (*Store, error
 		return nil, fmt.Errorf("schema: %w", err)
 	}
 	if err := verifyRequiredColumns(cctx, pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	if err := recordSchemaVersion(cctx, pool); err != nil {
 		pool.Close()
 		return nil, err
 	}
@@ -414,6 +422,56 @@ func applySchema(ctx context.Context, pool *pgxpool.Pool) error {
 	return err
 }
 
+// schemaVersion is the schema generation this build writes (schema.sql,
+// navlistener_schema). Bump it with any change an older writer would trip on
+// every row — a NOT NULL column without a default, a tightened CHECK, a new
+// constraint — and never for a purely additive, idempotent migration, which an
+// older binary can run against unharmed. A build refuses to start against a
+// database marked with a higher version than it knows.
+const schemaVersion = 1
+
+// checkSchemaVersion refuses to run against a database whose schema a newer
+// build has marked: the migrations here can only ever be behind such a schema,
+// and verifyRequiredColumns catches the shapes it knows about, not a constraint
+// a newer build added. A database without the marker (first start, or one last
+// written by a build that predates it) is accepted as version 0.
+func checkSchemaVersion(ctx context.Context, pool *pgxpool.Pool) error {
+	var table *string
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('navlistener_schema')::text`).Scan(&table); err != nil {
+		return fmt.Errorf("verify schema version: %w", err)
+	}
+	if table == nil {
+		return nil
+	}
+	var stored int
+	err := pool.QueryRow(ctx, `SELECT version FROM navlistener_schema`).Scan(&stored)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("verify schema version: %w", err)
+	}
+	if stored > schemaVersion {
+		return fmt.Errorf("database schema is version %d but this build knows version %d — a newer navlistener has upgraded it; "+
+			"run that build (or newer) here instead of this one", stored, schemaVersion)
+	}
+	return nil
+}
+
+// recordSchemaVersion marks the database with this build's schema generation
+// once the schema has been applied and verified. The marker only moves
+// forward, so an older build that passes checkSchemaVersion against a database
+// at its own or a lower version never rewinds it.
+func recordSchemaVersion(ctx context.Context, pool *pgxpool.Pool) error {
+	_, err := pool.Exec(ctx, `INSERT INTO navlistener_schema (singleton, version, applied_at) VALUES (TRUE, $1, now())
+		 ON CONFLICT (singleton) DO UPDATE SET version = EXCLUDED.version, applied_at = EXCLUDED.applied_at
+		 WHERE navlistener_schema.version < EXCLUDED.version`, schemaVersion)
+	if err != nil {
+		return fmt.Errorf("record schema version: %w", err)
+	}
+	return nil
+}
+
 // requiredColumns is the set of columns this build's WriteEvent/QueryEvents and
 // snapshot writer actually read or write, per table. gnss_events/gnss_snapshots
 // are `CREATE TABLE IF NOT EXISTS` : the DSN can point at a database where
@@ -446,22 +504,36 @@ var requiredColumns = map[string][]string{
 // is missing a column this build reads or writes — most likely because the
 // DSN points at a database where gnss_events/gnss_snapshots pre-date this schema
 // (e.g. an older intsat deployment) and CREATE TABLE IF NOT EXISTS left them as-is.
+//
+// It also fails fast on the opposite drift: a NOT NULL column without a default
+// (and neither identity nor generated) that this build's writer does not
+// supply. A newer schema, or an operator's ALTER, adds such a column while an
+// older binary keeps writing; every row then trips 23502, which is a
+// constraint failure of the whole batch and would otherwise surface only as
+// the writer giving up cycle after cycle.
 func verifyRequiredColumns(ctx context.Context, pool *pgxpool.Pool) error {
 	for table, want := range requiredColumns {
 		rows, err := pool.Query(ctx,
-			`SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1`,
+			`SELECT column_name,
+			        is_nullable = 'NO' AND column_default IS NULL AND is_identity = 'NO' AND is_generated = 'NEVER'
+			   FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1`,
 			table)
 		if err != nil {
 			return fmt.Errorf("verify schema: query columns of %s: %w", table, err)
 		}
 		have := make(map[string]bool)
+		var mustSupply []string
 		for rows.Next() {
 			var col string
-			if err := rows.Scan(&col); err != nil {
+			var required bool
+			if err := rows.Scan(&col, &required); err != nil {
 				rows.Close()
 				return fmt.Errorf("verify schema: scan columns of %s: %w", table, err)
 			}
 			have[col] = true
+			if required {
+				mustSupply = append(mustSupply, col)
+			}
 		}
 		if err := rows.Err(); err != nil {
 			return fmt.Errorf("verify schema: %s: %w", table, err)
@@ -478,6 +550,23 @@ func verifyRequiredColumns(ctx context.Context, pool *pgxpool.Pool) error {
 					"it likely pre-exists from an older/incompatible schema (e.g. intsat's 001_init.sql) "+
 					"and CREATE TABLE IF NOT EXISTS left it unchanged; reconcile the table manually before starting navlistener",
 				table, missing)
+		}
+		supplied := make(map[string]bool, len(want))
+		for _, col := range want {
+			supplied[col] = true
+		}
+		var unsupplied []string
+		for _, col := range mustSupply {
+			if !supplied[col] {
+				unsupplied = append(unsupplied, col)
+			}
+		}
+		if len(unsupplied) > 0 {
+			return fmt.Errorf(
+				"table %q has NOT NULL column(s) %v without a default that this build does not write — "+
+					"the schema is newer than this binary or was altered; run the build that added them, "+
+					"or give them a default, before starting navlistener",
+				table, unsupplied)
 		}
 	}
 	return nil
@@ -1088,6 +1177,22 @@ func (s *Store) persistAtomicOnce(ctx context.Context, batch []*NavFrame) (writt
 	return written, nil
 }
 
+// persistCycle carries what one top-level flush cycle has learned across its
+// bisection: whether any sub-batch committed — the proof that a constraint
+// violation on a single row is that row's own content rather than a constraint
+// every row trips — and the single rows whose verdict waits on that proof.
+type persistCycle struct {
+	committed bool
+	deferred  []deferredFrame
+}
+
+// deferredFrame is a single row that failed with a failPoisonIfIsolated code
+// before any sibling of its cycle had committed.
+type deferredFrame struct {
+	frame *NavFrame
+	err   error
+}
+
 // persistAtomicRetry drives persistOnce with bounded retry and poison-row
 // bisection. aborted=true means ctx was cut (parent cancellation or
 // deadline expiry) before ANY row of this call's batch was resolved — the
@@ -1099,14 +1204,41 @@ func (s *Store) persistAtomicOnce(ctx context.Context, batch []*NavFrame) (writt
 // interruption after partial work counts the remainder dropped instead.
 //
 // gaveUp reports that at least one (sub-)batch exhausted its retry
-// budget on a transient error. It is REPORTED, not counted, here: poison-row
-// bisection recurses, and incrementing flushFailStreak inside each recursive
-// give-up let one top-level flush bump the streak twice (two transient-failing
-// halves), reaching Degraded()'s ≥2 threshold after effectively one cycle rather
-// than the intended two consecutive ones. flush() folds it into a single Add.
-// Note aborted ⇒ !gaveUp by construction: aborted means nothing in this subtree
-// was resolved, and a give-up resolves rows (as dropped).
+// budget on a transient error, or hit a constraint every row trips. It is
+// REPORTED, not counted, here: poison-row bisection recurses, and incrementing
+// flushFailStreak inside each recursive give-up let one top-level flush bump
+// the streak twice (two transient-failing halves), reaching Degraded()'s ≥2
+// threshold after effectively one cycle rather than the intended two
+// consecutive ones. flush() folds it into a single Add. Note aborted ⇒ !gaveUp
+// by construction: aborted means nothing in this subtree was resolved, and a
+// give-up resolves rows (as dropped).
+//
+// Which failures are poison is classifyPersistError's call. A unique or check
+// violation on a single row is quarantined (and acked) only once a sibling row
+// of the same cycle has committed under the same constraints; until then the
+// row is deferred, and a cycle in which nothing committed treats every deferred
+// row as systemic: unacked, replayable, counted as a give-up. Every class-23
+// error used to be acked as poison, so a schema that rejected every row
+// released the feeder's spool copy of the whole forensic record while /healthz
+// stayed green.
 func (s *Store) persistAtomicRetry(ctx context.Context, batch []*NavFrame) (written int64, dropped int, aborted, gaveUp bool) {
+	c := &persistCycle{}
+	written, dropped, aborted, gaveUp = s.persistSub(ctx, c, batch)
+	if aborted || len(c.deferred) == 0 {
+		return written, dropped, aborted, gaveUp
+	}
+	if c.committed {
+		for _, d := range c.deferred {
+			s.quarantineFrame(d.frame, d.err)
+		}
+		return written, dropped + len(c.deferred), false, gaveUp
+	}
+	s.logSystemic(c.deferred[0].err, len(c.deferred), "no row of the cycle committed")
+	return written, dropped + len(c.deferred), false, true
+}
+
+// persistSub is persistAtomicRetry's recursive body for one (sub-)batch.
+func (s *Store) persistSub(ctx context.Context, c *persistCycle, batch []*NavFrame) (written int64, dropped int, aborted, gaveUp bool) {
 	if len(batch) == 0 {
 		return 0, 0, false, false
 	}
@@ -1117,6 +1249,7 @@ func (s *Store) persistAtomicRetry(ctx context.Context, batch []*NavFrame) (writ
 		cancel()
 		if err == nil {
 			s.flushFailStreak.Store(0) // any successful persist ends a failure streak
+			c.committed = true
 			// the transaction committed — every sequenced frame in the
 			// batch is durably resolved (persisted, or omitted because its
 			// ledger claim proves an earlier commit) and may now be acked.
@@ -1124,25 +1257,33 @@ func (s *Store) persistAtomicRetry(ctx context.Context, batch []*NavFrame) (writ
 			return n, 0, false, false
 		}
 		metrics.StoreErrorsTotal.Inc()
-		if isPoison(err) {
+		switch class := classifyPersistError(err); class {
+		case failPoison, failPoisonIfIsolated:
 			if len(batch) == 1 {
-				s.log.Error("store quarantined a poison row", "error", err)
-				s.cycleQuarantined++
-				// quarantine is this frame's durable disposition — the
-				// failure is deterministic row content, so replaying it forever
-				// against the same error would only wedge the feeder's spool.
-				s.notifyDurable(batch)
+				if class == failPoisonIfIsolated && !c.committed {
+					// Nothing has committed yet, so this may be a constraint
+					// every row trips; the cycle decides once it knows.
+					c.deferred = append(c.deferred, deferredFrame{frame: batch[0], err: err})
+					return 0, 0, false, false
+				}
+				s.quarantineFrame(batch[0], err)
 				return 0, 1, false, false
 			}
 			mid := len(batch) / 2
-			w1, d1, a1, g1 := s.persistAtomicRetry(ctx, batch[:mid])
+			w1, d1, a1, g1 := s.persistSub(ctx, c, batch[:mid])
 			if a1 {
 				// Nothing resolved in this call yet: propagate the abort so the
 				// top-level flush can retain the whole batch.
 				return 0, 0, true, false
 			}
-			w2, d2, a2, g2 := s.persistAtomicRetry(ctx, batch[mid:])
+			w2, d2, a2, g2 := s.persistSub(ctx, c, batch[mid:])
 			if a2 {
+				if w1 == 0 && d1 == 0 {
+					// The first half resolved nothing either (at most deferred
+					// rows, which are not resolved): the whole batch is still
+					// retainable.
+					return 0, 0, true, false
+				}
 				// The first half already resolved rows, so retention is off the
 				// table — count the interrupted remainder dropped (the pre-regression fix
 				// accounting for a cut-short bisection).
@@ -1150,6 +1291,13 @@ func (s *Store) persistAtomicRetry(ctx context.Context, batch []*NavFrame) (writ
 			}
 			// OR the halves' give-ups into ONE report for the caller.
 			return w1 + w2, d1 + d2, false, g1 || g2
+		case failSystemic:
+			// Deterministic and not about any one row: bisecting would only run
+			// 2n-1 failing transactions, and acking would release the feeder's
+			// only copy. Leave the batch replayable for a build or schema that
+			// accepts it.
+			s.logSystemic(err, len(batch), "constraint rejects every row")
+			return 0, len(batch), false, true
 		}
 		if ctx.Err() != nil {
 			// Interrupted mid-retry with nothing resolved: signal abort; the caller
@@ -1168,6 +1316,75 @@ func (s *Store) persistAtomicRetry(ctx context.Context, batch []*NavFrame) (writ
 		}
 		backoff *= 2
 	}
+}
+
+// quarantineFrame records one frame's quarantine — its final disposition: the
+// row's identity and the SQLSTATE in the log (the only trace an acked-and-
+// discarded frame leaves for triage), the per-table counter, the cycle's
+// quarantine accounting, and the durable notification.
+func (s *Store) quarantineFrame(f *NavFrame, err error) {
+	table := frameTable(f)
+	s.log.Error("store quarantined a poison row", append(append(pgFields(err), "table", table), frameFields(f)...)...)
+	metrics.StoreQuarantinedRowsTotal.WithLabelValues(table).Inc()
+	s.cycleQuarantined++
+	s.notifyDurable([]*NavFrame{f})
+}
+
+// logSystemic reports a cycle give-up on a constraint that rejects every row,
+// with the SQLSTATE and whatever table, column and constraint the server named.
+func (s *Store) logSystemic(err error, rows int, why string) {
+	s.log.Error("store flush failed on a constraint every row trips; leaving batch replayable and unacked",
+		append(pgFields(err), "rows", rows, "reason", why)...)
+}
+
+// pgFields is a persist error's server-side identity for the log: the error,
+// its SQLSTATE, and whichever of table, column and constraint the server named.
+func pgFields(err error) []any {
+	fields := []any{"error", err}
+	var pg *pgconn.PgError
+	if !errors.As(err, &pg) {
+		return fields
+	}
+	fields = append(fields, "sqlstate", pg.Code)
+	if pg.TableName != "" {
+		fields = append(fields, "relation", pg.TableName)
+	}
+	if pg.ColumnName != "" {
+		fields = append(fields, "column", pg.ColumnName)
+	}
+	if pg.ConstraintName != "" {
+		fields = append(fields, "constraint", pg.ConstraintName)
+	}
+	return fields
+}
+
+// frameFields is a frame's identity for the log: where it came from and what
+// it was, enough to find it again in the feeder's spool or the receiver's output.
+func frameFields(f *NavFrame) []any {
+	return []any{"source", f.SourceID, "session", f.Session, "seq", f.SourceSeq, "sequenced", f.HasSourceSeq,
+		"kind", frameKind(f), "gnssid", f.GnssID, "svid", f.SvID, "msg_type", f.MsgType, "raw_len", len(f.Raw)}
+}
+
+// frameTable names the table a frame is written to.
+func frameTable(f *NavFrame) string {
+	switch {
+	case f.Board != nil:
+		return "observer_samples"
+	case f.RF != nil:
+		return "rf_samples"
+	}
+	return "nav_frames"
+}
+
+// frameKind is the sample kind of a board or RF frame, "nav" for a nav frame.
+func frameKind(f *NavFrame) string {
+	switch {
+	case f.Board != nil:
+		return f.Board.Kind
+	case f.RF != nil:
+		return f.RF.Kind
+	}
+	return "nav"
 }
 
 // checkSeqSeen upserts keys into nav_frames_seq_seen in one round trip and returns
@@ -1273,6 +1490,11 @@ func (s *Store) flush(parent context.Context, batch []*NavFrame, deadline time.T
 		if dropped > 0 {
 			metrics.StoreQuarantinedTotal.Add(float64(dropped))
 		}
+		// Whatever this cycle dropped beyond its quarantined rows was left
+		// unacked and replayable (retries, budget, systemic constraint).
+		if replayable := dropped - s.cycleQuarantined; replayable > 0 {
+			metrics.StoreRetryDroppedTotal.Add(float64(replayable))
+		}
 		s.endCycle(len(batch))
 		return true
 	}
@@ -1312,6 +1534,9 @@ func (s *Store) flush(parent context.Context, batch []*NavFrame, deadline time.T
 	if dropped > 0 {
 		metrics.StoreQuarantinedTotal.Add(float64(dropped))
 	}
+	if replayable := dropped - s.cycleQuarantined; replayable > 0 {
+		metrics.StoreRetryDroppedTotal.Add(float64(replayable))
+	}
 	s.endCycle(len(rows))
 	return true
 }
@@ -1331,8 +1556,14 @@ func (s *Store) persistRetry(ctx context.Context, rows [][]any) (written int64, 
 			return n, 0
 		}
 		metrics.StoreErrorsTotal.Inc()
-		if isPoison(err) {
+		switch classifyPersistError(err) {
+		case failPoison, failPoisonIfIsolated:
+			// This path never acks and has no cycle to defer into, so an
+			// isolated-only code is bisected like poison.
 			return s.quarantine(ctx, rows, err)
+		case failSystemic:
+			s.logSystemic(err, len(rows), "constraint rejects every row")
+			return 0, len(rows)
 		}
 		s.log.Warn("store flush failed; will retry", "error", err, "rows", len(rows), "attempt", attempt)
 		if attempt >= s.retry.attempts || ctx.Err() != nil {
@@ -1357,7 +1588,10 @@ func copyOnce(ctx context.Context, to time.Duration, copy copyRowsFunc, rows [][
 // bisection, so one bad row can't wedge the writer or take the batch down with it.
 func (s *Store) quarantine(ctx context.Context, rows [][]any, cause error) (written int64, dropped int) {
 	if len(rows) == 1 {
-		s.log.Error("store quarantined a poison row", "error", cause)
+		// Rows on this path are nav_frames CopyFrom rows in copyColumns order;
+		// index 2 is source_id.
+		s.log.Error("store quarantined a poison row", append(pgFields(cause), "table", "nav_frames", "source", rows[0][2])...)
+		metrics.StoreQuarantinedRowsTotal.WithLabelValues("nav_frames").Inc()
 		s.cycleQuarantined++
 		return 0, 1
 	}
@@ -1370,18 +1604,49 @@ func (s *Store) quarantine(ctx context.Context, rows [][]any, cause error) (writ
 	return w1 + w2, d1 + d2
 }
 
-// isPoison reports whether err is a deterministic, row-content error (data exception
-// or integrity-constraint violation) that a retry can't fix; other failures
-// (network, timeout, resource) are retryable.
-func isPoison(err error) bool {
+// failureClass is what a persist error says about the batch, which decides
+// whether the rows are retried, bisected and quarantined, or left replayable.
+type failureClass int
+
+const (
+	// failTransient: network, timeout, resource — retry with backoff, then
+	// give up with the batch replayable.
+	failTransient failureClass = iota
+	// failPoison: SQLSTATE class 22 (data exception), deterministic content of
+	// one row (a NUL in JSON, an out-of-range smallint). Bisect to isolate it;
+	// quarantine is its durable disposition, so it is acked.
+	failPoison
+	// failPoisonIfIsolated: unique (23505) or check (23514) violation. Row
+	// content when one row trips a constraint its siblings satisfy; systemic
+	// when the constraint rejects every row (a CHECK tightened by a newer
+	// schema). Bisect, and quarantine a single row only once a sibling of the
+	// same cycle has committed.
+	failPoisonIfIsolated
+	// failSystemic: the rest of class 23 — above all not-null (23502) and
+	// foreign-key (23503) violations, which a newer schema's column or an
+	// operator's constraint inflicts on every row. No bisection, no ack: the
+	// cycle gives up and the batch stays replayable.
+	failSystemic
+)
+
+// classifyPersistError maps a persist error to its failureClass. Anything that
+// is not a server error with a class 22 or 23 SQLSTATE is transient.
+func classifyPersistError(err error) failureClass {
 	var pg *pgconn.PgError
-	if errors.As(err, &pg) && len(pg.Code) >= 2 {
-		switch pg.Code[:2] {
-		case "22", "23":
-			return true
-		}
+	if !errors.As(err, &pg) || len(pg.Code) < 2 {
+		return failTransient
 	}
-	return false
+	switch pg.Code[:2] {
+	case "22":
+		return failPoison
+	case "23":
+		switch pg.Code {
+		case "23505", "23514":
+			return failPoisonIfIsolated
+		}
+		return failSystemic
+	}
+	return failTransient
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {
