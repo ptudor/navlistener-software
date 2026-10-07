@@ -454,6 +454,10 @@ deliberately narrows TUF 1.0.36 to:
   preferred over SNTP for that clock; an SNTP-only clock may move the
   last-trusted time forward by at most 400 days in one check, and a larger jump
   is reported as `NETWORK_TIME_UNAVAILABLE` and retried rather than persisted.
+  A release manifest's `published` stamp is the publisher's wall clock at
+  signing and informational: it may run up to five minutes ahead of the device
+  clock (a check within seconds of a publish, or a lagging SNTP clock); one
+  further ahead is `META_MALFORMED`.
 
 Unsupported algorithms, roles, extensions, or limits fail closed. The device
 implementation must pass repository fixtures produced by the official
