@@ -30,9 +30,11 @@
 //
 // The installation profiles come from -config ([[integrity.station]] and
 // [[reception.station]]), or from -mode, -position and -max-speed, which override
-// the configured one. Thresholds are this build's (integrity.DefaultProfile), so a
-// replay of old inputs under a newer build shows what the newer checks conclude; the
-// timeline's config_hash names the profile used.
+// the configured one. Config parsing is strict, but replay loads only station
+// installations and does not read the daemon's TLS keys or authority files.
+// Thresholds are this build's (integrity.DefaultProfile), so a replay of old inputs
+// under a newer build shows what the newer checks conclude; the timeline's
+// config_hash names the profile used.
 package main
 
 import (
@@ -42,11 +44,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/url"
+	"net"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/ingest"
@@ -94,7 +98,7 @@ func main() {
 func run(ctx context.Context, o options, stdout, stderr io.Writer) (int, error) {
 	stations := map[string]integrity.StationProfile{}
 	if o.configPath != "" {
-		cfg, err := config.Load(o.configPath)
+		cfg, err := config.LoadForReplay(o.configPath)
 		if err != nil {
 			return 0, err
 		}
@@ -250,15 +254,9 @@ func installation(o options, configured integrity.StationProfile) (integrity.Sta
 
 // redactDSN hides a DSN's password for the summary.
 func redactDSN(dsn string) string {
-	u, err := url.Parse(dsn)
-	if err != nil || u.User == nil {
-		if strings.Contains(dsn, "password") {
-			return "(keyword DSN; credentials not shown)"
-		}
-		return dsn
+	cfg, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		return "(DSN not shown)"
 	}
-	if _, ok := u.User.Password(); ok {
-		u.User = url.UserPassword(u.User.Username(), "xxxxx")
-	}
-	return u.String()
+	return fmt.Sprintf("%s/%s (user %q)", net.JoinHostPort(cfg.Host, strconv.Itoa(int(cfg.Port))), cfg.Database, cfg.User)
 }

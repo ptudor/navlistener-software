@@ -138,7 +138,7 @@ func (s *Store) captureOne(ctx context.Context, collectorID string, e pendingEvi
 	if err != nil {
 		return false, fmt.Errorf("evidence capture: begin: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer rollback(tx) // no-op once committed
 
 	// The bundle row first: a concurrent capture of the same event waits on the
 	// primary key and then finds it taken, so samples are never copied twice.
@@ -173,22 +173,36 @@ func (s *Store) captureOne(ctx context.Context, collectorID string, e pendingEvi
 			}
 			where := ` FROM ` + src.table + ` WHERE collector_instance_id = $1 AND source_id = $2
 				AND kind = ANY($3) AND ` + src.timeColumn + ` >= $4 AND ` + src.timeColumn + ` <= $5` + scope
-			var total int64
-			if err := tx.QueryRow(ctx, `SELECT count(*)`+where, args...).Scan(&total); err != nil {
-				return false, fmt.Errorf("evidence capture: count %s: %w", src.table, err)
-			}
-			if total > int64(p.MaxSamples) {
-				truncated = true
-			}
+			// Newest first, so when the bound bites it is the oldest pre-roll samples
+			// that go and the event instant and the post-roll survive — the part of
+			// the window an investigation reads first.
+			order := ` ORDER BY ` + src.timeColumn + ` DESC, ts DESC`
 			n := len(args)
-			insertArgs := append(args, e.audience, e.seq, e.time, src.origin, p.MaxSamples)
-			tag, err := tx.Exec(ctx, `INSERT INTO event_evidence_samples (`+strings.Join(evidenceSampleColumns, ", ")+`)
-				SELECT $`+strconv.Itoa(n+1)+`, $`+strconv.Itoa(n+2)+`, $`+strconv.Itoa(n+3)+`, $`+strconv.Itoa(n+4)+`, `+evidenceSelect[src.origin]+where+`
-				ORDER BY `+src.timeColumn+`, ts LIMIT $`+strconv.Itoa(n+5), insertArgs...)
-			if err != nil {
+			p1, p2, p3, p4 := "$"+strconv.Itoa(n+1), "$"+strconv.Itoa(n+2), "$"+strconv.Itoa(n+3), "$"+strconv.Itoa(n+4)
+			bound, probe := "$"+strconv.Itoa(n+5), "$"+strconv.Itoa(n+6)
+			insertArgs := append(args, e.audience, e.seq, e.time, src.origin, p.MaxSamples, p.MaxSamples+1)
+			// One statement, one snapshot: the candidates are one more than the
+			// bound, the copy keeps the bound, and truncated is decided by the same
+			// rows the copy saw. A separate count ran in its own snapshot, so a
+			// sample committed between the two left a bundle that hit the bound
+			// unmarked, and a window that exactly filled the bound cannot be told
+			// from one that overflowed it by RowsAffected alone.
+			var kept, seen int64
+			if err := tx.QueryRow(ctx, `WITH candidates (`+strings.Join(rfColumns, ", ")+`) AS (
+					SELECT `+evidenceSelect[src.origin]+where+order+` LIMIT `+probe+`
+				), kept AS (
+					INSERT INTO event_evidence_samples (`+strings.Join(evidenceSampleColumns, ", ")+`)
+					SELECT `+p1+`, `+p2+`, `+p3+`, `+p4+`, `+strings.Join(rfColumns, ", ")+`
+					FROM candidates`+order+` LIMIT `+bound+`
+					RETURNING 1
+				)
+				SELECT (SELECT count(*) FROM kept), (SELECT count(*) FROM candidates)`, insertArgs...).Scan(&kept, &seen); err != nil {
 				return false, fmt.Errorf("evidence capture: copy %s: %w", src.table, err)
 			}
-			counts[src.origin] = tag.RowsAffected()
+			counts[src.origin] = kept
+			if seen > kept {
+				truncated = true
+			}
 		}
 	}
 	if _, err := tx.Exec(ctx, `UPDATE event_evidence SET rf_samples = $3, board_samples = $4, truncated = $5
@@ -289,17 +303,25 @@ func (s *Store) QueryEventEvidence(ctx context.Context, q EvidenceQuery) (EventE
 	if len(raw) > 0 {
 		out.Event.Params = json.RawMessage(raw)
 	}
+	// The copied bodies are only as bounded as the wire that carried them was
+	// when they were stored, so the same guards as the observer-history reader
+	// apply: a body over the per-sample cap is nulled before transfer and fails
+	// the page, and the page stops at the shared byte budget with HasMore.
 	rows, err := s.pool.Query(ctx, `SELECT origin, kind, received_at, sample_time, source_session, source_seq,
-			hardware_trust, raw, data, local_received_at, wall_clock_stamp
+			hardware_trust,
+			CASE WHEN octet_length(raw) <= $6 THEN raw END,
+			CASE WHEN octet_length(data::text) <= $6 THEN data END,
+			local_received_at, wall_clock_stamp
 		FROM event_evidence_samples
 		WHERE audience = $1 AND audience_seq = $2 AND event_time = $3
 		ORDER BY origin DESC, received_at, ts, source_session COLLATE "C" NULLS FIRST, source_seq NULLS FIRST
-		LIMIT $4 OFFSET $5`, key, q.Seq, out.Event.Time, q.Limit+1, q.Offset)
+		LIMIT $4 OFFSET $5`, key, q.Seq, out.Event.Time, q.Limit+1, q.Offset, historyMaxSampleBytes)
 	if err != nil {
 		return out, fmt.Errorf("evidence samples: %w", err)
 	}
 	defer rows.Close()
 	out.Samples = []EvidenceSample{}
+	var budget historyPageBudget
 	for rows.Next() {
 		if len(out.Samples) == q.Limit {
 			out.HasMore = true
@@ -311,9 +333,22 @@ func (s *Store) QueryEventEvidence(ctx context.Context, q EvidenceQuery) (EventE
 			&sample.HardwareTrust, &sample.Raw, &sample.Data, &sample.LocalReceivedAt, &sample.WallClockStamp); err != nil {
 			return out, fmt.Errorf("evidence samples scan: %w", err)
 		}
+		// raw is NOT NULL in the table, so a nil here is the size guard above
+		// (pgx scans a NULL bytea as nil and an empty one as a non-nil empty slice).
+		if sample.Raw == nil || !validSampleBody(sample.Data) {
+			return EventEvidence{}, fmt.Errorf("event evidence contains an invalid or oversized sample")
+		}
 		if seq != nil {
 			value := strconv.FormatUint(uint64(*seq), 10)
 			sample.Sequence = &value
+		}
+		fits, err := budget.admit(sample)
+		if err != nil {
+			return EventEvidence{}, fmt.Errorf("evidence samples encode: %w", err)
+		}
+		if !fits {
+			out.HasMore = true
+			break
 		}
 		out.Samples = append(out.Samples, sample)
 	}

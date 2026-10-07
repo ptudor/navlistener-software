@@ -92,7 +92,7 @@ func (s *Store) WriteEvent(ctx context.Context, e EventRow) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("write event: begin: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }() // no-op once committed
+	defer rollback(tx) // no-op once committed
 
 	// Serialize every writer of this exact dedupe identity. The lock is
 	// transaction-scoped, so it is released by commit or rollback — including on
@@ -187,7 +187,8 @@ func clampSeverity(v int) int {
 
 // EventQuery filters a historical events query (docs/OUTPUT.md §2.1/§3). A zero-value
 // string/severity field is "any"; a zero Since/Until is "unbounded on that side". Limit
-// and Offset paginate; the caller clamps them.
+// and Offset paginate within the bounds Validate enforces; QueryEvents validates
+// every query itself, so no caller can run an unbounded page.
 type EventQuery struct {
 	Audience    string
 	SV          string
@@ -197,6 +198,27 @@ type EventQuery struct {
 	Until       time.Time
 	Limit       int
 	Offset      int
+}
+
+// Event page bounds, enforced by EventQuery.Validate. serve clamps request
+// parameters into the same range before it builds a query — defence in depth —
+// and the store refuses anything that reaches it outside them.
+const (
+	EventsMaxLimit  = 500
+	EventsMaxOffset = 1_000_000
+)
+
+// Validate rejects a query the store must not run: a page outside the bounds (a
+// zero Limit is an empty page plus the fallback count, a negative Limit or Offset
+// is a PostgreSQL error, and nothing else bounds the page) or an inverted window.
+func (q EventQuery) Validate() error {
+	if q.Limit < 1 || q.Limit > EventsMaxLimit || q.Offset < 0 || q.Offset > EventsMaxOffset {
+		return fmt.Errorf("limit must be 1..%d and offset 0..%d", EventsMaxLimit, EventsMaxOffset)
+	}
+	if !q.Since.IsZero() && !q.Until.IsZero() && q.Since.After(q.Until) {
+		return fmt.Errorf("events window must be ordered")
+	}
+	return nil
 }
 
 // StoredEvent is one persisted integrity event as read back for the query API. Params is
@@ -232,8 +254,12 @@ type EventSummary struct {
 // QueryEvents returns the events matching q, newest first, plus the total matching the
 // filters before Limit/Offset (for pagination). The filters are parameterized (never
 // interpolated) — untrusted query input cannot reach the SQL. The window is [Since, Until];
-// an unset bound is treated as open on that side.
+// an unset bound is treated as open on that side. A query that fails Validate is
+// refused before the database is touched.
 func (s *Store) QueryEvents(ctx context.Context, q EventQuery) ([]StoredEvent, int, error) {
+	if err := q.Validate(); err != nil {
+		return nil, 0, err
+	}
 	audience := q.Audience
 	if audience == "" {
 		audience = defaultEventAudience
@@ -344,6 +370,10 @@ func (s *Store) SummarizeEventsForAudience(ctx context.Context, audience string,
 	// Subject shape alone cannot distinguish a station named G01 or S120 from
 	// a satellite. Admit only the detector's known satellite event families,
 	// then parse the entire canonical subject, including PRN and signal bounds.
+	//
+	// One statement, one snapshot: each group carries its latest event time, and
+	// the most recent critical one is taken from the groups counted as critical,
+	// so last_critical can never name an event the counts did not see.
 	rows, err := s.pool.Query(ctx,
 		`SELECT event_type,
           CASE WHEN
@@ -351,7 +381,7 @@ func (s *Store) SummarizeEventsForAudience(ctx context.Context, audience string,
             (event_type = 'xsig_divergence' AND sv ~ $6) OR
             (event_type IN ('sbas_lost','sbas_health') AND sv ~ $7)
           THEN LEFT(sv,1) ELSE '' END,
-          severity, count(*)
+          severity, count(*), max(time)
      FROM gnss_events
     WHERE audience = $1 AND time >= $2 AND time <= $3
     GROUP BY event_type, 2, severity`,
@@ -367,7 +397,8 @@ func (s *Store) SummarizeEventsForAudience(ctx context.Context, audience string,
 		var typ, letter string
 		var sev int16
 		var n int
-		if err := rows.Scan(&typ, &letter, &sev, &n); err != nil {
+		var latest time.Time // never NULL: every group holds at least one row
+		if err := rows.Scan(&typ, &letter, &sev, &n, &latest); err != nil {
 			return sum, fmt.Errorf("scan summary: %w", err)
 		}
 		sum.TotalEvents += n
@@ -380,24 +411,15 @@ func (s *Store) SummarizeEventsForAudience(ctx context.Context, audience string,
 		switch {
 		case sev >= 2:
 			sum.CriticalEvents += n
+			if latest := latest.UTC(); sum.LastCritical == nil || latest.After(*sum.LastCritical) {
+				sum.LastCritical = &latest
+			}
 		case sev >= 1:
 			sum.WarningEvents += n
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return sum, fmt.Errorf("iterate summary: %w", err)
-	}
-
-	// max(time) is NULL when the window has no critical events — scan into a pointer.
-	var t *time.Time
-	if err := s.pool.QueryRow(ctx,
-		`SELECT max(time) FROM gnss_events WHERE audience = $1 AND severity >= 2 AND time >= $2 AND time <= $3`,
-		audience, since, until).Scan(&t); err != nil {
-		return sum, fmt.Errorf("summarize last_critical: %w", err)
-	}
-	if t != nil {
-		u := t.UTC()
-		sum.LastCritical = &u
 	}
 	return sum, nil
 }

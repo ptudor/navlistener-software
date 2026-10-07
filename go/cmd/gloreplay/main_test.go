@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -270,11 +274,106 @@ func TestSvStringsCount(t *testing.T) {
 // TestRedactDSN pins that a password never reaches stdout: QA output gets pasted
 // into review docs and tickets.
 func TestRedactDSN(t *testing.T) {
-	got := redactDSN("postgres://app:s3cret@db.invalid:5432/nav")
-	if strings.Contains(got, "s3cret") {
-		t.Errorf("redactDSN leaked the password: %q", got)
+	for _, dsn := range []string{
+		"postgres://app:s3cret@db.invalid:5432/nav",
+		"postgres://app@db.invalid/nav?password=s3cret",
+		"host=db.invalid dbname=nav user=app password=a@b",
+		"postgres://app:s3cret@db.invalid/nav?sslmode=require",
+	} {
+		got := redactDSN(dsn)
+		if got != `db.invalid:5432/nav (user "app")` {
+			t.Errorf("redactDSN returned %q; want only host, port, database and user", got)
+		}
 	}
-	if !strings.Contains(got, "db.invalid") {
-		t.Errorf("redactDSN dropped the host, leaving nothing identifiable: %q", got)
+	if got := redactDSN("postgres://app:s3cret@db.invalid:bad/nav"); got != "(DSN not shown)" {
+		t.Errorf("malformed DSN returned %q", got)
+	}
+}
+
+// UBX solution blocks read the clock independently of frame emission. The
+// duration must cover clock reads, including malformed SFRBX messages.
+func TestCaptureDurationCountsClockReads(t *testing.T) {
+	const groups = 4
+	var capture []byte
+	appendMessage := func(class, id byte, body []byte) {
+		packet := []byte{0xb5, 0x62, class, id, byte(len(body)), byte(len(body) >> 8)}
+		packet = append(packet, body...)
+		var a, b byte
+		for _, v := range packet[2:] {
+			a += v
+			b += a
+		}
+		capture = append(capture, append(packet, a, b)...)
+	}
+	appendMessage(0x02, 0x13, nil) // rejected SFRBX still consumes a clock read
+	for i := 0; i < groups; i++ {
+		for _, block := range []struct {
+			id   byte
+			size int
+		}{{0x07, 92}, {0x22, 20}, {0x03, 16}} {
+			body := make([]byte, block.size)
+			binary.LittleEndian.PutUint32(body, uint32(i*1000))
+			appendMessage(0x01, block.id, body)
+		}
+		body := make([]byte, 24)
+		body[0], body[1], body[3], body[4], body[6] = 6, 1, 7, 4, 2
+		appendMessage(0x02, 0x13, body)
+	}
+	path := filepath.Join(t.TempDir(), "capture.ubx")
+	if err := os.WriteFile(path, capture, 0600); err != nil {
+		t.Fatal(err)
+	}
+	total, glo, ticks, err := countFrames(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if glo != groups || ticks != 1+4*groups || ticks <= total {
+		t.Fatalf("frames=%d GLONASS=%d clock reads=%d", total, glo, ticks)
+	}
+	base := time.Unix(1_700_000_000, 0).UTC()
+	duration := time.Duration(ticks) * time.Second
+	_, _, _, span, err := replay(path, base, duration/time.Duration(ticks), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if span != duration {
+		t.Fatalf("span=%v, want %v", span, duration)
+	}
+	// Check the receive timestamps assigned at the ingest boundary too, without
+	// requiring these structural navigation fixtures to decode ephemerides.
+	var reads int
+	var lastNav time.Time
+	err = ingest.ReplayUBX(bytes.NewReader(capture), "gloreplay", func() time.Time {
+		reads++
+		return base.Add(time.Duration(reads) * duration / time.Duration(ticks))
+	}, func(f *ingest.RawFrame) {
+		if len(f.Words) > 0 {
+			lastNav = f.Recv
+		}
+	}, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !lastNav.Equal(base.Add(duration)) {
+		t.Fatalf("last Recv=%v, want %v", lastNav, base.Add(duration))
+	}
+
+	output, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+	previous := os.Stdout
+	os.Stdout = output
+	defer func() { os.Stdout = previous }()
+	if err := run(path, duration, base.Format(time.RFC3339), 1, ""); err != nil {
+		t.Fatal(err)
+	}
+	text, err := os.ReadFile(output.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(text), "1s per timestamped message (17s span)") {
+		t.Fatalf("incorrect synthetic clock report: %s", text)
 	}
 }

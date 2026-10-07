@@ -259,12 +259,6 @@ SELECT create_hypertable('gnss_events', 'time', if_not_exists => TRUE);
 ALTER TABLE gnss_events ADD COLUMN IF NOT EXISTS dedupe_key TEXT;
 ALTER TABLE gnss_events ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'legacy-operator';
 ALTER TABLE gnss_events ADD COLUMN IF NOT EXISTS redaction_class TEXT NOT NULL DEFAULT 'private';
-ALTER TABLE gnss_events ADD COLUMN IF NOT EXISTS audience_seq BIGINT;
--- Legacy rows are operator-only. Their old global id is safe as a one-time
--- sequence inside that non-public audience; new public/private streams allocate
--- independently below.
-UPDATE gnss_events SET audience_seq = id WHERE audience_seq IS NULL;
-ALTER TABLE gnss_events ALTER COLUMN audience_seq SET NOT NULL;
 -- The collector that confirmed the event. Evidence capture selects a collector's own
 -- events when several share a database. Rows written before this column are NULL.
 ALTER TABLE gnss_events ADD COLUMN IF NOT EXISTS collector_instance_id TEXT;
@@ -273,10 +267,31 @@ CREATE TABLE IF NOT EXISTS gnss_event_audience_cursors (
     audience TEXT PRIMARY KEY,
     last_seq BIGINT NOT NULL CHECK (last_seq > 0)
 );
-INSERT INTO gnss_event_audience_cursors (audience, last_seq)
-SELECT audience, max(audience_seq) FROM gnss_events GROUP BY audience
-ON CONFLICT (audience) DO UPDATE
-SET last_seq = GREATEST(gnss_event_audience_cursors.last_seq, EXCLUDED.last_seq);
+-- Audience-cursor migration for a gnss_events that pre-dates audience_seq.
+-- Legacy rows are operator-only: their old global id is safe as a one-time
+-- sequence inside that non-public audience, and the cursor table is seeded from
+-- the highest one per audience; new public/private streams allocate
+-- independently. Guarded on the column's NOT NULL state so it runs once: SET
+-- NOT NULL takes an ACCESS EXCLUSIVE lock on gnss_events and the seed scans the
+-- whole retention-less table, neither of which a routine restart of one
+-- collector sharing the database may repeat behind other collectors' writes.
+-- A fresh install creates the column NOT NULL above and skips the block.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_attribute
+                   WHERE attrelid = 'gnss_events'::regclass AND attname = 'audience_seq' AND NOT attisdropped) THEN
+        ALTER TABLE gnss_events ADD COLUMN audience_seq BIGINT;
+    END IF;
+    IF NOT (SELECT attnotnull FROM pg_attribute
+            WHERE attrelid = 'gnss_events'::regclass AND attname = 'audience_seq' AND NOT attisdropped) THEN
+        UPDATE gnss_events SET audience_seq = id WHERE audience_seq IS NULL;
+        ALTER TABLE gnss_events ALTER COLUMN audience_seq SET NOT NULL;
+        INSERT INTO gnss_event_audience_cursors (audience, last_seq)
+        SELECT audience, max(audience_seq) FROM gnss_events GROUP BY audience
+        ON CONFLICT (audience) DO UPDATE
+        SET last_seq = GREATEST(gnss_event_audience_cursors.last_seq, EXCLUDED.last_seq);
+    END IF;
+END $$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_gnss_events_dedupe ON gnss_events (time, dedupe_key);
 CREATE INDEX IF NOT EXISTS idx_gnss_events_audience_seq  ON gnss_events (audience, audience_seq DESC);
@@ -326,9 +341,20 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS gnss_event_notify ON gnss_events;
-CREATE TRIGGER gnss_event_notify AFTER INSERT ON gnss_events
-    FOR EACH ROW EXECUTE FUNCTION notify_gnss_event();
+-- The trigger is created once. Dropping and recreating it on every start took
+-- an ACCESS EXCLUSIVE lock on gnss_events — queued behind any long read and
+-- blocking other collectors' WriteEvent in a shared database for the duration.
+-- The function body above is replaced freely (CREATE OR REPLACE locks only the
+-- function); the trigger definition has not changed since it shipped, and a
+-- change to it must drop the old trigger here under a guard of its own.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger
+                   WHERE tgrelid = 'gnss_events'::regclass AND tgname = 'gnss_event_notify') THEN
+        CREATE TRIGGER gnss_event_notify AFTER INSERT ON gnss_events
+            FOR EACH ROW EXECUTE FUNCTION notify_gnss_event();
+    END IF;
+END $$;
 
 CREATE OR REPLACE VIEW gnss_events_public AS
 SELECT audience_seq AS id, time, sv, event_type, old_value, new_value,
@@ -491,23 +517,58 @@ ALTER TABLE rf_samples SET (
 -- Latest compact server-side received-power model per configured station. The
 -- blob is versioned and carries its site/configuration fingerprint; changing
 -- the antenna epoch makes an old model fail closed during restore.
+--
+-- Point state is keyed by the collector that learned it, like every receipt
+-- table: collectors sharing a database each checkpoint and restore their own
+-- stations, and two collectors configured for the same station (failover) no
+-- longer overwrite each other's row every five minutes. Rows from before the
+-- column belong to the default collector instance ('local').
 CREATE TABLE IF NOT EXISTS reception_power_models (
-    source_id TEXT PRIMARY KEY,
+    collector_instance_id TEXT NOT NULL DEFAULT 'local',
+    source_id TEXT NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
     model_id TEXT NOT NULL,
-    data BYTEA NOT NULL
+    data BYTEA NOT NULL,
+    PRIMARY KEY (collector_instance_id, source_id)
 );
 
 -- Durable point state: each station's learned AGC baselines (docs/DEFENSE-PNT.md §2),
 -- checkpointed every five minutes and at orderly shutdown and restored at startup, so
 -- a restart does not repeat the ten-minute warm-up. epoch is the station's antenna
 -- epoch (power_model_epoch); a checkpoint from another epoch is not restored.
+-- Keyed by collector like reception_power_models above.
 CREATE TABLE IF NOT EXISTS agc_baselines (
-    source_id TEXT PRIMARY KEY,
+    collector_instance_id TEXT NOT NULL DEFAULT 'local',
+    source_id TEXT NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
     epoch TEXT NOT NULL,
-    data JSONB NOT NULL
+    data JSONB NOT NULL,
+    PRIMARY KEY (collector_instance_id, source_id)
 );
+
+-- Migration for point-state tables created with source_id alone as the key
+-- (schemaVersion 3): add the collector column, then re-key the primary key to
+-- (collector_instance_id, source_id). The guard is the single-column primary
+-- key, so the block is a no-op once re-keyed and on a fresh install. The
+-- upsert's ON CONFLICT names the two-column key, which is why the marker
+-- bumps: an older binary's ON CONFLICT (source_id) has no matching constraint
+-- after this and every one of its checkpoints would fail.
+ALTER TABLE reception_power_models ADD COLUMN IF NOT EXISTS collector_instance_id TEXT NOT NULL DEFAULT 'local';
+ALTER TABLE agc_baselines ADD COLUMN IF NOT EXISTS collector_instance_id TEXT NOT NULL DEFAULT 'local';
+DO $$
+DECLARE
+    point_table TEXT;
+    single_key  TEXT;
+BEGIN
+    FOREACH point_table IN ARRAY ARRAY['reception_power_models', 'agc_baselines'] LOOP
+        SELECT conname INTO single_key FROM pg_constraint
+         WHERE conrelid = point_table::regclass AND contype = 'p' AND array_length(conkey, 1) = 1;
+        IF single_key IS NOT NULL THEN
+            EXECUTE format('ALTER TABLE %I DROP CONSTRAINT %I', point_table, single_key);
+            EXECUTE format('ALTER TABLE %I ADD PRIMARY KEY (collector_instance_id, source_id)', point_table);
+        END IF;
+    END LOOP;
+END $$;
 
 -- Durable evidence for station integrity events (docs/proposals/STATION-ASSURANCE.md
 -- §7, item 2.1). Raw samples expire with raw_retention while events are kept

@@ -27,15 +27,18 @@ func agcEpochs(cfg *config.Config) map[string]string {
 	return out
 }
 
+// agcBaselineStore is the historian's checkpoint surface, keyed by the collector
+// that learned the baselines so collectors sharing a database keep their own.
 type agcBaselineStore interface {
-	LoadAGCBaselines(context.Context) ([]store.AGCBaselineCheckpoint, error)
+	LoadAGCBaselines(ctx context.Context, collectorID string) ([]store.AGCBaselineCheckpoint, error)
 	SaveAGCBaseline(context.Context, store.AGCBaselineCheckpoint) error
 }
 
-// restoreAGCBaselines queues the stored baselines whose epoch is the station's current
-// one into live state. Checkpoints that no longer apply stay stored for forensics.
-func restoreAGCBaselines(ctx context.Context, historian agcBaselineStore, live *state.Store, epochs map[string]string, now time.Time, log *slog.Logger) error {
-	saved, err := historian.LoadAGCBaselines(ctx)
+// restoreAGCBaselines queues this collector's stored baselines whose epoch is the
+// station's current one into live state. Checkpoints that no longer apply stay
+// stored for forensics.
+func restoreAGCBaselines(ctx context.Context, historian agcBaselineStore, collectorID string, live *state.Store, epochs map[string]string, now time.Time, log *slog.Logger) error {
+	saved, err := historian.LoadAGCBaselines(ctx, collectorID)
 	if err != nil {
 		return err
 	}
@@ -57,8 +60,8 @@ func restoreAGCBaselines(ctx context.Context, historian agcBaselineStore, live *
 	return nil
 }
 
-// saveAGCBaselines checkpoints every established baseline.
-func saveAGCBaselines(ctx context.Context, historian agcBaselineStore, live *state.Store, epochs map[string]string) error {
+// saveAGCBaselines checkpoints every established baseline under this collector.
+func saveAGCBaselines(ctx context.Context, historian agcBaselineStore, collectorID string, live *state.Store, epochs map[string]string) error {
 	var failures []error
 	for id, bands := range live.AGCBaselines() {
 		data, err := json.Marshal(bands)
@@ -66,14 +69,15 @@ func saveAGCBaselines(ctx context.Context, historian agcBaselineStore, live *sta
 			failures = append(failures, errors.New(id+": "+err.Error()))
 			continue
 		}
-		if err := historian.SaveAGCBaseline(ctx, store.AGCBaselineCheckpoint{SourceID: id, UpdatedAt: time.Now(), Epoch: epochs[id], Data: data}); err != nil {
+		if err := historian.SaveAGCBaseline(ctx, store.AGCBaselineCheckpoint{CollectorInstanceID: collectorID, SourceID: id,
+			UpdatedAt: time.Now(), Epoch: epochs[id], Data: data}); err != nil {
 			failures = append(failures, errors.New(id+": "+err.Error()))
 		}
 	}
 	return errors.Join(failures...)
 }
 
-func agcBaselineLoop(ctx context.Context, historian agcBaselineStore, live *state.Store, epochs map[string]string, log *slog.Logger) {
+func agcBaselineLoop(ctx context.Context, historian agcBaselineStore, collectorID string, live *state.Store, epochs map[string]string, log *slog.Logger) {
 	ticker := time.NewTicker(agcBaselineCheckpointInterval)
 	defer ticker.Stop()
 	for {
@@ -82,7 +86,7 @@ func agcBaselineLoop(ctx context.Context, historian agcBaselineStore, live *stat
 			return
 		case <-ticker.C:
 			saveCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			err := saveAGCBaselines(saveCtx, historian, live, epochs)
+			err := saveAGCBaselines(saveCtx, historian, collectorID, live, epochs)
 			cancel()
 			if err != nil && ctx.Err() == nil {
 				log.Error("AGC baseline checkpoint failed", "error", err)

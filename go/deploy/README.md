@@ -108,7 +108,12 @@ down — otherwise `-r` would helpfully restart the daemon you just stopped. But
 supervisor pidfile actually names a live `daemon(8)`** first: a stale pidfile could otherwise
 `TERM` a reused, unrelated PID. If the supervisor is already gone but the child survives, it
 `TERM`s the child directly, so a dead supervisor can't leave `service stop` hanging on
-`wait_for_pids` forever. Then it waits on the child.
+`wait_for_pids` forever. Then it waits on **both** the supervisor and the collector: the child
+pidfile is written only after `daemon(8)`'s privilege drop, so it can be absent or stale while
+the supervisor is live (a crash-looping child, a start caught mid-fork), and waiting on the
+child alone would have returned at once and let `restart` race the historian's ordered drain.
+When the pidfile cannot name a live collector, `stop` finds it in the process table by its
+exact command line (`pgrep -f '^/usr/local/bin/navlistener -config '`) and waits on that.
 
 ### Log rotation — signal the supervisor, never the collector
 
@@ -125,7 +130,10 @@ A `SIGHUP` delivered to the collector itself is ignored in `../cmd/navlistener/m
 and braces — but rotation must target the supervisor regardless.
 
 Rotation: 7 generations, at 10 MB, mode 640, owned by the daemon user, with `J` (bzip2) and `C`
-(create if missing).
+(create if missing). `start` pre-creates a missing log with that same ownership and mode
+(`install -o navlistener -g navlistener -m 640 /dev/null /var/log/navlistener.log`), because
+`daemon(8)` runs as root and would otherwise create it `root:wheel 0600` — unreadable to the
+daemon user and the operator group until the first rotation.
 
 ### Reverse-proxy request limits
 
@@ -178,11 +186,16 @@ make build-freebsd                     # on the dev box → build/navlistener-fr
 service navlistener restart
 ```
 
-Restarting loses in-RAM live state by design — there is no cross-restart persistence anywhere in
-the daemon. Positions return as each SV re-broadcasts a full ephemeris set, and discos
-return once a second post-restart ephemeris arrives. The `nav_frames` hypertable is the durable
-record; offline replay is the recovery path. Check `navlistener_build_info` afterwards to confirm
-the fleet is on the version you think it is.
+Restarting loses in-RAM live state by design: positions return as each SV re-broadcasts a full
+ephemeris set, and discos return once a second post-restart ephemeris arrives. The one
+exception is learned station state — each station's AGC baselines and received-power model —
+which the daemon checkpoints to the historian (`agc_baselines`, `reception_power_models`) every
+five minutes and at shutdown and restores at the next start, **gated on the station's antenna
+epoch**: a checkpoint from another `power_model_epoch` is skipped and the station relearns, so
+bump that setting after an antenna, cable or receiver change when you want a clean relearn; a
+plain restart restores what was learned (`../internal/store/README.md`, "Point state"). The
+`nav_frames` hypertable is the durable record; offline replay is the recovery path. Check
+`navlistener_build_info` afterwards to confirm the fleet is on the version you think it is.
 
 ---
 

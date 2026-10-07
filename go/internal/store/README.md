@@ -14,8 +14,8 @@ the live hot path: a slow database degrades the historian, never live decoding.
 | `store.go` | `Store`, the batched `CopyFrom` writer goroutine, schema bootstrap, retention/compression policies, and the degraded-health probe. |
 | `events.go` | `EventRow`, `StoredEvent`, `EventQuery`, event writes and the windowed read API. |
 | `observer_history.go` | Private sensor samples filtered by receipt-time audience and collector, with bounded pages. |
-| `evidence.go` | Station event evidence: `CaptureEventEvidence` copies an event's stored input window into retention-less tables; `QueryEventEvidence` pages it back. |
-| `schema.sql` | The complete DDL — three hypertables, the dedup ledger, indexes, compression settings, and the `pg_notify` trigger. Applied at startup. |
+| `evidence.go` | Station event evidence: `CaptureEventEvidence` copies an event's stored input window into retention-less tables; `QueryEventEvidence` pages it back under the same per-sample cap and page byte budget as the sensor history. |
+| `schema.sql` | The complete DDL — six hypertables (`nav_frames`, `gnss_events`, `gnss_snapshots`, `observer_samples`, `rf_samples`, `event_evidence_samples`), the dedup ledger and its session table, the audience cursors, the evidence bundle table, the two point-state tables, indexes, compression settings, and the `pg_notify` trigger. Applied at startup. |
 | `*_test.go` | Batching, dedup, policy application, event query bounds, and the degraded path. |
 | `README.md` | This file. |
 
@@ -207,6 +207,8 @@ only after the commit. The claim keeps its `INSERT … ON CONFLICT DO NOTHING RE
 A pre-normalisation ledger (TEXT-keyed, with or without `session_id`) is dropped and recreated
 by the guarded `DO $$` migration in `schema.sql`; the schema marker (version 2) keeps an
 older binary, whose own migration block would drop the re-keyed table, from starting.
+Version 3 re-keyed the two point-state tables below by collector, for the same reason: a
+version-2 binary's checkpoint upsert names a constraint that no longer exists.
 
 Dial-mode frames carry no feeder sequence and always pass through unfiltered — duplicates across
 *different* receivers are intentional and untouched by this table.
@@ -295,7 +297,9 @@ reads: an organization audience gets its organization's samples, a collection au
 collection's, an operator audience the collector's. The bundle row is inserted first, so a
 concurrent capture waits on its primary key and then skips. Capture state is entirely in the
 database: a failed sweep, a restart or a crash just leaves the event for the next sweep. Each
-origin is capped at the policy's sample bound, and a capped bundle is marked `truncated`.
+origin is capped at the policy's sample bound, newest first, so a bundle that hits it keeps the
+event instant and the post-roll and loses the oldest pre-roll samples; the copy and the
+`truncated` decision are one statement over the same rows, so a capped bundle is always marked.
 
 `gnss_events.collector_instance_id` is what lets each collector find its own events when several
 share a database; rows written before the column existed are never captured.
@@ -309,15 +313,43 @@ compressed by `(audience, endpoint)`, so an operator payload cannot be replayed 
 cache. The snapshot loop writes all materialized audience views, not only the listener's default
 public/operator view.
 
+### Point state — `agc_baselines` and `reception_power_models`
+
+Two small plain tables hold learned station state that would otherwise be relearned after every
+restart: each station's AGC baselines (`docs/DEFENSE-PNT.md §2`, a ten-minute warm-up) and its
+received-power model. The daemon checkpoints both every five minutes and once more during the
+ordered shutdown, and restores them before ingest starts. Both are keyed by
+`(collector_instance_id, source_id)`, so collectors sharing a database keep and restore their
+own rows; `LoadAGCBaselines` and `LoadReceptionPowerModels` take the collector id and the saves
+carry it.
+
+**The restore is epoch-gated, not unconditional.** An AGC checkpoint carries the station's
+antenna epoch (`power_model_epoch`), and the power-model blob carries its own configuration
+fingerprint; a row that no longer matches the station's current epoch is left in place for
+forensics and skipped with a log line, so that station relearns. Changing `power_model_epoch`
+after an antenna, cable or receiver change is therefore how an operator forces a clean relearn;
+a plain restart restores what was learned. This is the one piece of cross-restart state the
+daemon keeps, and it lives in the historian rather than in a state file — live positions, discos
+and detector state are still rebuilt from the broadcast after a restart.
+
 ### Retention and compression policies
 
-Applied at startup from config:
+`applyPolicies` installs ten policies at startup, in one transaction (remove-then-add each, so a
+changed interval actually applies on an existing deployment, and all-or-nothing, so an
+interrupted start never leaves a hypertable with no policy):
 
-| Setting | Default | Applies to |
-|---|---|---|
-| `raw_retention` | `"7 days"` | `nav_frames` drop policy (and the dedup ledger's prune) |
-| `compress_after` | `"1 day"` | `nav_frames` compression policy |
-| — | 30 days | `gnss_events` compression (fixed, not configurable) |
+| Hypertable | Compression after | Retention | From |
+|---|---|---|---|
+| `nav_frames` | `compress_after` (default `"1 day"`) | `raw_retention` (default `"7 days"`; also the dedup ledger's prune horizon) | config |
+| `observer_samples` | `compress_after` | `raw_retention` | config |
+| `rf_samples` | `compress_after` | `raw_retention` | config |
+| `gnss_snapshots` | 7 days | 90 days | fixed |
+| `gnss_events` | 30 days | **none, ever** | fixed |
+| `event_evidence_samples` | 30 days | **none**, like the events it explains | fixed |
+
+The raw-evidence tables (`nav_frames`, `observer_samples`, `rf_samples`) share the two
+configurable intervals because they are one short-window forensic record; `event_evidence`
+(the bundle rows) and the point-state tables are plain tables with no policy.
 
 Both configurable values are PostgreSQL INTERVAL literals validated against
 `config.IntervalRe` — which is simultaneously the format allowlist **and the injection guard**
@@ -337,8 +369,12 @@ func (s *Store) SummarizeEvents(ctx, since, until) (EventSummary, error)
 ```
 
 Windowed reads over the historian, bounded per `docs/OUTPUT.md §2.1`, backing `serve`'s
-`/gnss/api/events` and `/gnss/api/events/summary`. Bounds are enforced here rather than in the
-HTTP layer so an unbounded query can't be constructed at all.
+`/gnss/api/events` and `/gnss/api/events/summary`. The page bounds are enforced here —
+`EventQuery.Validate` refuses a limit outside 1..500, an offset outside 0..1 000 000 or an
+inverted window before the database is touched, and `QueryEvents` applies it to every
+query — and `serve` clamps request parameters into the same range before building the query,
+so an unbounded page can't be constructed by any caller. The summary is one grouped
+statement: its `last_critical` comes from the same snapshot as its counts.
 
 ---
 

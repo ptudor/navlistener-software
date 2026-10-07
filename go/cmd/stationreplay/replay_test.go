@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -147,11 +148,19 @@ func TestInstallationOverride(t *testing.T) {
 }
 
 func TestRedactDSN(t *testing.T) {
-	if got := redactDSN("postgres://app:s3cret@db.invalid/nav"); strings.Contains(got, "s3cret") {
-		t.Fatalf("password shown: %s", got)
+	for _, dsn := range []string{
+		"postgres://app:s3cret@db.invalid:5432/nav",
+		"postgres://app@db.invalid/nav?password=s3cret",
+		"host=db.invalid dbname=nav user=app password=a@b",
+		"postgres://app:s3cret@db.invalid/nav?sslmode=require",
+	} {
+		got := redactDSN(dsn)
+		if got != `db.invalid:5432/nav (user "app")` {
+			t.Errorf("redactDSN returned %q; want only host, port, database and user", got)
+		}
 	}
-	if got := redactDSN("host=db.invalid password=s3cret"); strings.Contains(got, "s3cret") {
-		t.Fatalf("keyword password shown: %s", got)
+	if got := redactDSN("postgres://app:s3cret@db.invalid:bad/nav"); got != "(DSN not shown)" {
+		t.Errorf("malformed DSN returned %q", got)
 	}
 }
 
@@ -220,6 +229,39 @@ func TestIntegrationReplayMatchesLive(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"type":"spoofing_suspected"`) {
 		t.Fatalf("timeline lacks the spoofing event:\n%s", stdout.String())
+	}
+
+	// A replay config may name private daemon files the analyst cannot read.
+	// The replay must still load the same installations and historian scope.
+	configPath := filepath.Join(t.TempDir(), "replay.toml")
+	body := fmt.Sprintf(`[collector]
+instance_id = %q
+[store]
+dsn = %q
+[push]
+addr = "127.0.0.1:4443"
+tls_cert = %q
+tls_key = %q
+[[integrity.station]]
+observer = %q
+mode = "fixed"
+position = [37.4219, -122.0841, 12.5]
+`, collector, dsn, filepath.Join(t.TempDir(), "unavailable-cert.pem"), filepath.Join(t.TempDir(), "unavailable-key.pem"), station)
+	if err := os.WriteFile(configPath, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(configPath); err == nil {
+		t.Fatal("daemon accepted unavailable TLS credentials")
+	}
+	var configuredOut, configuredErr bytes.Buffer
+	code, err = run(ctx, options{configPath: configPath, station: station,
+		since: replayT0.Format(time.RFC3339), until: until.Format(time.RFC3339),
+		interval: 15 * time.Second, warmup: time.Minute, compare: true}, &configuredOut, &configuredErr)
+	if err != nil || code != 0 {
+		t.Fatalf("configured replay exit %d %v\n%s", code, err, configuredErr.String())
+	}
+	if configuredOut.String() != stdout.String() {
+		t.Fatal("configured replay differs from explicit station installation")
 	}
 
 	// The same events replay from their captured evidence, which outlives raw retention.

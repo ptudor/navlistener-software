@@ -30,7 +30,7 @@
 // outage, or a receiver on a bench). It reads a raw UBX byte stream — what a plain
 // redirect of the serial port produces with UBX-RXM-SFRBX enabled. That stream
 // carries no timestamps, so gloreplay imposes a synthetic receive clock that advances
-// uniformly across the frames.
+// uniformly across the timestamped UBX messages.
 //
 // The synthetic clock has TWO consumers on the GLONASS path, so -duration is
 // effectively required alongside -start, not an option: (1) computeGloDisco's
@@ -40,7 +40,7 @@
 // clock-immune; and (2) the regression fix/regression fix frame-coherence windows over string
 // reception times (state's glonassFrameWindow, 8 s), which decide WHICH strings
 // may assemble into one set — including whether string 4's clock joins it. The
-// default compressed clock (1 ms per frame) keeps (1) trivially satisfied but
+// default compressed clock (1 ms per timestamped message) keeps (1) trivially satisfied but
 // breaks (2)'s premise: at typical capture frame rates ~30 s of broadcast
 // compresses inside the 8 s window, so strings from DIFFERENT broadcast frames
 // pass the coherence gate and can assemble chimera sets at changeovers, and
@@ -56,10 +56,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"sort"
-	"strings"
+	"strconv"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/navlistener/internal/detect"
@@ -175,7 +178,7 @@ func main() {
 }
 
 func run(capture string, duration time.Duration, startAt string, shards int, jsonOut string) error {
-	total, gloFrames, err := countFrames(capture)
+	total, gloFrames, ticks, err := countFrames(capture)
 	if err != nil {
 		return err
 	}
@@ -188,7 +191,7 @@ func run(capture string, duration time.Duration, startAt string, shards int, jso
 
 	spacing := defaultFrameSpace
 	if duration > 0 {
-		spacing = duration / time.Duration(total)
+		spacing = duration / time.Duration(ticks)
 		if spacing <= 0 {
 			spacing = time.Nanosecond
 		}
@@ -199,7 +202,7 @@ func run(capture string, duration time.Duration, startAt string, shards int, jso
 		// changeovers, and every completion lag compressed. Same severity as the
 		// missing -start warning below: results are unreliable, not just coarse.
 		fmt.Fprintln(os.Stderr, "gloreplay: WARNING -duration not given; the synthetic clock compresses the")
-		fmt.Fprintln(os.Stderr, "  capture to 1 ms/frame, so strings from DIFFERENT broadcast frames fit the")
+		fmt.Fprintln(os.Stderr, "  capture to 1 ms/timestamped message, so strings from DIFFERENT broadcast frames fit the")
 		fmt.Fprintln(os.Stderr, " 8 s frame-coherence window and can assemble chimera sets at")
 		fmt.Fprintln(os.Stderr, "  changeovers. Pass the capture's true wall-clock span for a real measurement.")
 	}
@@ -217,12 +220,12 @@ func run(capture string, duration time.Duration, startAt string, shards int, jso
 		fmt.Fprintln(os.Stderr, "  across the EphAgeDay +/-12 h wrap. Results are unreliable without it.")
 	}
 
-	smp, parseErrs, diag, err := replay(capture, base, spacing, shards)
+	smp, parseErrs, diag, span, err := replay(capture, base, spacing, shards)
 	if err != nil {
 		return err
 	}
 
-	report(capture, total, gloFrames, spacing, smp, parseErrs)
+	report(capture, total, gloFrames, spacing, span, smp, parseErrs)
 	if diag != nil {
 		fmt.Println("\n--- diagnostic: final GLONASS feed state ---")
 		diag()
@@ -329,28 +332,32 @@ func wordsFromRaw(b []byte) []uint32 {
 // redactDSN keeps a connection string out of stdout: a QA run's output gets pasted
 // into review docs and tickets, and the DSN carries a password.
 func redactDSN(dsn string) string {
-	if i := strings.Index(dsn, "@"); i >= 0 {
-		return "…@" + dsn[i+1:]
+	cfg, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		return "(DSN not shown)"
 	}
-	return "(local)"
+	return fmt.Sprintf("%s/%s (user %q)", net.JoinHostPort(cfg.Host, strconv.Itoa(int(cfg.Port))), cfg.Database, cfg.User)
 }
 
 // countFrames is the sizing pass: the synthetic clock's spacing depends on how
-// many frames the capture holds, which is only knowable by parsing it.
-func countFrames(path string) (total, glonass int, err error) {
+// often ingest reads the clock, including messages that emit no frame.
+func countFrames(path string) (total, glonass, ticks int, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	defer f.Close()
-	clock := func() time.Time { return time.Unix(0, 0) }
+	clock := func() time.Time {
+		ticks++
+		return time.Unix(0, 0)
+	}
 	err = ingest.ReplayUBX(f, "gloreplay", clock, func(fr *ingest.RawFrame) {
 		total++
 		if fr.GnssID == gnss.GLONASS {
 			glonass++
 		}
 	}, func(string) {})
-	return total, glonass, err
+	return total, glonass, ticks, err
 }
 
 // replay runs the capture through the real live-state Apply path, sampling the
@@ -359,10 +366,10 @@ func countFrames(path string) (total, glonass int, err error) {
 // completion when the feed first serves it. Sampling through the feed (rather
 // than reaching into svState) keeps this tool on the same exported surface the
 // collector serves, so what it measures is what a consumer would see.
-func replay(path string, base time.Time, spacing time.Duration, shards int) (*sampler, map[string]int, func(), error) {
+func replay(path string, base time.Time, spacing time.Duration, shards int) (*sampler, map[string]int, func(), time.Duration, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, 0, err
 	}
 	defer f.Close()
 
@@ -382,7 +389,7 @@ func replay(path string, base time.Time, spacing time.Duration, shards int) (*sa
 		smp.apply(fr, now)
 	}, func(kind string) { parseErrs[kind]++ })
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, 0, err
 	}
 	smp.finish() // censor deferrals still pending at the capture's end
 	diag := func() {
@@ -409,7 +416,7 @@ func replay(path string, base time.Time, spacing time.Duration, shards int) (*sa
 		}
 		fmt.Printf("  (%d GLONASS entries in feed of %d total)\n", n, len(feed))
 	}
-	return smp, parseErrs, diag, nil
+	return smp, parseErrs, diag, now.Sub(base), nil
 }
 
 // sampler feeds frames through live state and records every GLONASS tb changeover
@@ -505,10 +512,10 @@ func (s *sampler) apply(fr *ingest.RawFrame, now time.Time) {
 	}
 }
 
-func report(path string, total, gloFrames int, spacing time.Duration, smp *sampler, parseErrs map[string]int) {
+func report(path string, total, gloFrames int, spacing, span time.Duration, smp *sampler, parseErrs map[string]int) {
 	fmt.Printf("capture:      %s\n", path)
 	fmt.Printf("frames:       %d total, %d GLONASS\n", total, gloFrames)
-	fmt.Printf("synth clock:  %v per frame (%v span)\n", spacing, time.Duration(total)*spacing)
+	fmt.Printf("synth clock:  %v per timestamped message (%v span)\n", spacing, span)
 	if len(parseErrs) > 0 {
 		fmt.Printf("parse errors: %v\n", parseErrs)
 	}

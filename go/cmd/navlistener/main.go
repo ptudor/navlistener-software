@@ -370,10 +370,10 @@ func run() int {
 	}
 	if historian != nil {
 		restoreCtx, restoreCancel := context.WithTimeout(ctx, 30*time.Second)
-		err = restoreReceptionPowerModels(restoreCtx, historian, stationManager, log)
+		err = restoreReceptionPowerModels(restoreCtx, historian, cfg.Collector.InstanceID, stationManager, log)
 		if err == nil {
 			// Before ingest starts, so every band's first report finds its checkpoint.
-			err = restoreAGCBaselines(restoreCtx, historian, live, agcEpochs(cfg), time.Now(), log)
+			err = restoreAGCBaselines(restoreCtx, historian, cfg.Collector.InstanceID, live, agcEpochs(cfg), time.Now(), log)
 		}
 		restoreCancel()
 		if err != nil {
@@ -397,12 +397,12 @@ func run() int {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			receptionPowerModelLoop(ctx, historian, stationManager, log)
+			receptionPowerModelLoop(ctx, historian, cfg.Collector.InstanceID, stationManager, log)
 		}()
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			agcBaselineLoop(ctx, historian, live, agcEpochs(cfg), log)
+			agcBaselineLoop(ctx, historian, cfg.Collector.InstanceID, live, agcEpochs(cfg), log)
 		}()
 	}
 	wg.Add(1)
@@ -667,11 +667,11 @@ func run() int {
 	// nor free time outside the bound.
 	if historian != nil {
 		checkpointCtx, checkpointCancel := context.WithTimeout(context.Background(), plan.checkpoint)
-		if err := saveReceptionPowerModels(checkpointCtx, historian, stationManager, true); err != nil {
+		if err := saveReceptionPowerModels(checkpointCtx, historian, cfg.Collector.InstanceID, stationManager, true); err != nil {
 			incomplete = append(incomplete, "reception power model checkpoint")
 			log.Warn("final reception power model checkpoint failed", "error", err)
 		}
-		if err := saveAGCBaselines(checkpointCtx, historian, live, agcEpochs(cfg)); err != nil {
+		if err := saveAGCBaselines(checkpointCtx, historian, cfg.Collector.InstanceID, live, agcEpochs(cfg)); err != nil {
 			incomplete = append(incomplete, "AGC baseline checkpoint")
 			log.Warn("final AGC baseline checkpoint failed", "error", err)
 		}
@@ -851,7 +851,17 @@ func (c *scopeController) Apply(revocation *ingest.ScopeRevocation) {
 func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLive *state.Store, historian *store.Store, log *slog.Logger, lastFrame *atomic.Int64, scoped *audience.Registry, revoke func(*ingest.ScopeRevocation), stations *stationcontrol.Manager) {
 	lim := &panicLogLimiter{}
 	apply := func(f *ingest.RawFrame) {
-		if f != nil && f.ScopeRevocation != nil {
+		// The recover is installed before anything else runs: a panic in the
+		// scope-revocation path (registry reset, detector resets, epoch advance,
+		// audience invalidation) drops that one marker, not the process. An
+		// unrecovered panic on this goroutine is fatal to the whole daemon, and
+		// the documented contract is that every frame goes through a
+		// recover-wrapped apply.
+		defer recoverDecodePanic(f, log, lim)
+		if f == nil {
+			return
+		}
+		if f.ScopeRevocation != nil {
 			if revoke != nil {
 				revoke(f.ScopeRevocation)
 			}
@@ -860,7 +870,6 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLi
 		// every dial and push frame funnels through here, so this one
 		// stamp is the whole data plane's liveness signal for /healthz.
 		lastFrame.Store(time.Now().UnixNano())
-		defer recoverDecodePanic(f, log, lim)
 		if historian != nil && f.Obs == nil { // navigation, board and RF inputs route to separate historian tables
 			historian.Enqueue(frameForPersistence(f))
 		}
@@ -927,6 +936,11 @@ const panicLogEvery = time.Minute
 type panicLogLimiter struct {
 	mu   sync.Mutex
 	last map[[3]int]time.Time
+	// kinds limits the line for frames that carry no satellite identity — RF,
+	// board, solution and observables samples and scope-revocation markers —
+	// per frame kind, since a systematically panicking telemetry path recurs at
+	// sample rate just as a bad bit pattern recurs per re-broadcast.
+	kinds map[string]time.Time
 }
 
 func (l *panicLogLimiter) allow(gnssid, svid, sigid int, now time.Time) bool {
@@ -943,6 +957,55 @@ func (l *panicLogLimiter) allow(gnssid, svid, sigid int, now time.Time) bool {
 	return true
 }
 
+func (l *panicLogLimiter) allowKind(kind string, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.kinds == nil {
+		l.kinds = map[string]time.Time{}
+	}
+	if t, ok := l.kinds[kind]; ok && now.Sub(t) < panicLogEvery {
+		return false
+	}
+	l.kinds[kind] = now
+	return true
+}
+
+// frameKind names what a frame carries, for the panic metric and log line:
+// nav (broadcast navigation words), an rf, board, solution or obs sample,
+// control (a scope-revocation marker), or none for a nil frame.
+func frameKind(f *ingest.RawFrame) string {
+	switch {
+	case f == nil:
+		return "none"
+	case f.ScopeRevocation != nil:
+		return "control"
+	case f.Details != nil:
+		return "board"
+	case f.Solution != nil:
+		return "solution"
+	case f.RF != nil:
+		return "rf"
+	case f.Obs != nil:
+		return "obs"
+	default:
+		return "nav"
+	}
+}
+
+// frameSource names where a non-navigation frame came from for the panic log:
+// its ingest source, or for a scope-revocation marker the observer whose scope
+// changed.
+func frameSource(f *ingest.RawFrame) string {
+	switch {
+	case f == nil:
+		return ""
+	case f.ScopeRevocation != nil && f.Source == "":
+		return f.ScopeRevocation.Previous.ObserverID
+	default:
+		return f.Source
+	}
+}
+
 // recoverDecodePanic is decodeLoop's per-frame recover; it must be
 // deferred DIRECTLY (recover() is effective only in a directly-deferred
 // function). The counter is the alertable signal — dashboards watching
@@ -954,11 +1017,24 @@ func recoverDecodePanic(f *ingest.RawFrame, log *slog.Logger, lim *panicLogLimit
 	if r == nil {
 		return
 	}
+	kind := frameKind(f)
+	if kind != "nav" {
+		// Only a navigation frame has a constellation. An RF, board, solution or
+		// observables sample and a scope-revocation marker carry the zero GnssID,
+		// so counting them by it filed every such panic under GPS; they count
+		// without a constellation and the line names the kind instead.
+		metrics.DecodePanicsTotal.WithLabelValues("").Inc()
+		if lim.allowKind(kind, time.Now()) {
+			log.Error("decode panic recovered; frame dropped", "kind", kind,
+				"source", frameSource(f), "recover", fmt.Sprint(r))
+		}
+		return
+	}
 	metrics.DecodePanicsTotal.WithLabelValues(fmt.Sprint(int(f.GnssID))).Inc()
 	// keyed on sigid (the decode-dispatch key), not msg_type; the log line
 	// still carries msg_type for the debugger.
 	if lim.allow(int(f.GnssID), f.SvID, f.SigID, time.Now()) {
-		log.Error("decode panic recovered; frame dropped",
+		log.Error("decode panic recovered; frame dropped", "kind", kind,
 			"gnssid", int(f.GnssID), "svid", f.SvID, "sigid", f.SigID,
 			"source", f.Source, "msg_type", f.MsgType, "recover", fmt.Sprint(r))
 	}
@@ -1603,6 +1679,16 @@ func writeAndPublishRetry(ctx context.Context, row store.EventRow, e detect.Even
 	}
 	id, err := writeEventRetry(ctx, historian, row, retry, log)
 	if err != nil {
+		if queued && ctx.Err() != nil {
+			// Shutdown interrupted the write; the database did not fail it. The
+			// event stays queued and flushFinal re-attempts it on a fresh context,
+			// and flushFinal's own accounting reports the ones genuinely dropped.
+			// Counting it here made every restart that caught a write in flight
+			// a false persistence failure on the error counter and in the log.
+			log.Info("integrity event write interrupted by shutdown; deferred to the final flush",
+				"type", e.Type, "sv", e.SV)
+			return false
+		}
 		metrics.EventWriteErrorsTotal.Inc()
 		msg := "persist integrity event failed during final shutdown flush"
 		if queued {

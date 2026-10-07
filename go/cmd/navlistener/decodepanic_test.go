@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/navlistener/internal/identity"
 	"github.com/ptudor/navlistener/internal/ingest"
 	"github.com/ptudor/navlistener/internal/metrics"
+	"github.com/ptudor/navlistener/internal/state"
 )
 
 // TestDecodePanicCountedEveryTimeLoggedOnce guards a systematically-
@@ -48,6 +51,55 @@ func TestDecodePanicCountedEveryTimeLoggedOnce(t *testing.T) {
 	boom(f2)
 	if n := strings.Count(buf.String(), "decode panic recovered"); n != 2 {
 		t.Errorf("distinct SV's first panic not logged (got %d lines, want 2)", n)
+	}
+}
+
+// TestDecodeLoopRecoversScopeRevocationPanic guards the scope-revocation
+// marker path runs inside the per-frame recover like every other frame: a panic
+// in the revoke callback drops that marker and counts a panic instead of taking
+// the process down, is not filed under GPS, and the loop goes on applying the
+// frames behind it.
+func TestDecodeLoopRecoversScopeRevocationPanic(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	frames := make(chan *ingest.RawFrame, 2)
+	revoked := 0
+	revoke := func(*ingest.ScopeRevocation) {
+		revoked++
+		panic("registry reset failed")
+	}
+	beforeUnlabelled := testutil.ToFloat64(metrics.DecodePanicsTotal.WithLabelValues(""))
+	beforeGPS := testutil.ToFloat64(metrics.DecodePanicsTotal.WithLabelValues("0"))
+	frames <- &ingest.RawFrame{ScopeRevocation: &ingest.ScopeRevocation{
+		Previous: identity.ObserverContext{ObserverID: "obs1"}, ChangedAt: time.Now()}}
+	frames <- &ingest.RawFrame{Recv: time.Now(), Source: "st1", RF: &ingest.RawRF{Bands: []ingest.RFBand{{Block: 0, AGC: 100}}}}
+	close(frames)
+
+	var lastFrame atomic.Int64
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		decodeLoop(frames, state.New(1), state.New(1), state.New(1), nil, log, &lastFrame, nil, revoke, nil)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("decodeLoop did not return after the frames channel closed")
+	}
+	if revoked != 1 {
+		t.Fatalf("revoke called %d times, want 1", revoked)
+	}
+	if d := testutil.ToFloat64(metrics.DecodePanicsTotal.WithLabelValues("")) - beforeUnlabelled; d != 1 {
+		t.Errorf("decode_panics_total without a constellation delta = %v, want 1", d)
+	}
+	if d := testutil.ToFloat64(metrics.DecodePanicsTotal.WithLabelValues("0")) - beforeGPS; d != 0 {
+		t.Errorf("a control-frame panic was filed under GPS (delta %v)", d)
+	}
+	if !strings.Contains(buf.String(), "kind=control") || !strings.Contains(buf.String(), "source=obs1") {
+		t.Errorf("panic log line lacks the frame kind and the observer: %s", buf.String())
+	}
+	if lastFrame.Load() == 0 {
+		t.Error("the frame behind the panicking marker was not applied")
 	}
 }
 

@@ -137,8 +137,10 @@ func stampRFClocks(rf *store.RFSample, f *ingest.RawFrame) {
 	}
 }
 
-func restoreReceptionPowerModels(ctx context.Context, historian *store.Store, manager *stationcontrol.Manager, log *slog.Logger) error {
-	models, err := historian.LoadReceptionPowerModels(ctx)
+// restoreReceptionPowerModels hands this collector's stored models to the station
+// manager; models other collectors learned into a shared database are theirs.
+func restoreReceptionPowerModels(ctx context.Context, historian *store.Store, collectorID string, manager *stationcontrol.Manager, log *slog.Logger) error {
+	models, err := historian.LoadReceptionPowerModels(ctx, collectorID)
 	if err != nil {
 		return err
 	}
@@ -152,7 +154,7 @@ func restoreReceptionPowerModels(ctx context.Context, historian *store.Store, ma
 	return nil
 }
 
-func saveReceptionPowerModels(ctx context.Context, historian *store.Store, manager *stationcontrol.Manager, dirtyOnly bool) error {
+func saveReceptionPowerModels(ctx context.Context, historian *store.Store, collectorID string, manager *stationcontrol.Manager, dirtyOnly bool) error {
 	models, err := manager.PowerModels(dirtyOnly)
 	if err != nil {
 		return err
@@ -160,7 +162,7 @@ func saveReceptionPowerModels(ctx context.Context, historian *store.Store, manag
 	var failures []error
 	for _, model := range models {
 		err := historian.SaveReceptionPowerModel(ctx, store.ReceptionPowerModel{
-			SourceID: model.Observer, UpdatedAt: time.Now(), ModelID: model.ModelID, Data: model.Data,
+			CollectorInstanceID: collectorID, SourceID: model.Observer, UpdatedAt: time.Now(), ModelID: model.ModelID, Data: model.Data,
 		})
 		if err != nil {
 			failures = append(failures, errors.New(model.Observer+": "+err.Error()))
@@ -171,7 +173,7 @@ func saveReceptionPowerModels(ctx context.Context, historian *store.Store, manag
 	return errors.Join(failures...)
 }
 
-func receptionPowerModelLoop(ctx context.Context, historian *store.Store, manager *stationcontrol.Manager, log *slog.Logger) {
+func receptionPowerModelLoop(ctx context.Context, historian *store.Store, collectorID string, manager *stationcontrol.Manager, log *slog.Logger) {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	for {
@@ -180,7 +182,7 @@ func receptionPowerModelLoop(ctx context.Context, historian *store.Store, manage
 			return
 		case <-ticker.C:
 			saveCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			err := saveReceptionPowerModels(saveCtx, historian, manager, true)
+			err := saveReceptionPowerModels(saveCtx, historian, collectorID, manager, true)
 			cancel()
 			if err != nil && ctx.Err() == nil {
 				log.Error("reception power model checkpoint failed", "error", err)

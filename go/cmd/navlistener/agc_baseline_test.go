@@ -13,14 +13,18 @@ import (
 	"github.com/ptudor/navlistener/internal/store"
 )
 
+// memoryAGCStore keeps checkpoints by station and, like the historian, hands a
+// collector back only the rows it saved.
 type memoryAGCStore struct {
 	rows map[string]store.AGCBaselineCheckpoint
 }
 
-func (m *memoryAGCStore) LoadAGCBaselines(context.Context) ([]store.AGCBaselineCheckpoint, error) {
+func (m *memoryAGCStore) LoadAGCBaselines(_ context.Context, collectorID string) ([]store.AGCBaselineCheckpoint, error) {
 	var out []store.AGCBaselineCheckpoint
 	for _, c := range m.rows {
-		out = append(out, c)
+		if c.CollectorInstanceID == collectorID {
+			out = append(out, c)
+		}
 	}
 	return out, nil
 }
@@ -47,16 +51,23 @@ func TestAGCBaselineCheckpointRoundTrip(t *testing.T) {
 	learnAGC(live, "obs-b", now, 11*time.Minute, 3000)
 	mem := &memoryAGCStore{rows: map[string]store.AGCBaselineCheckpoint{}}
 	epochs := map[string]string{"obs-a": "antenna-1", "obs-b": "antenna-1"}
-	if err := saveAGCBaselines(ctx, mem, live, epochs); err != nil || len(mem.rows) != 2 || mem.rows["obs-a"].Epoch != "antenna-1" {
+	const collector = "collector-a"
+	if err := saveAGCBaselines(ctx, mem, collector, live, epochs); err != nil || len(mem.rows) != 2 || mem.rows["obs-a"].Epoch != "antenna-1" {
 		t.Fatalf("saved %+v %v", mem.rows, err)
 	}
-	// obs-b's antenna changed; an unreadable checkpoint is skipped, not fatal.
-	mem.rows["obs-c"] = store.AGCBaselineCheckpoint{SourceID: "obs-c", Data: json.RawMessage(`{"not":"bands"}`)}
+	if mem.rows["obs-a"].CollectorInstanceID != collector || mem.rows["obs-b"].CollectorInstanceID != collector {
+		t.Fatalf("checkpoints not stamped with the collector: %+v", mem.rows)
+	}
+	// obs-b's antenna changed; an unreadable checkpoint is skipped, not fatal;
+	// and another collector's checkpoint for obs-d in a shared database is not
+	// this collector's to restore.
+	mem.rows["obs-c"] = store.AGCBaselineCheckpoint{CollectorInstanceID: collector, SourceID: "obs-c", Data: json.RawMessage(`{"not":"bands"}`)}
+	mem.rows["obs-d"] = store.AGCBaselineCheckpoint{CollectorInstanceID: "collector-b", SourceID: "obs-d", Epoch: "antenna-1", Data: mem.rows["obs-a"].Data}
 	restarted := state.New(1)
-	if err := restoreAGCBaselines(ctx, mem, restarted, map[string]string{"obs-a": "antenna-1", "obs-b": "antenna-2"}, at, log); err != nil {
+	if err := restoreAGCBaselines(ctx, mem, collector, restarted, map[string]string{"obs-a": "antenna-1", "obs-b": "antenna-2", "obs-d": "antenna-1"}, at, log); err != nil {
 		t.Fatal(err)
 	}
-	for station, want := range map[string]bool{"obs-a": true, "obs-b": false} {
+	for station, want := range map[string]bool{"obs-a": true, "obs-b": false, "obs-d": false} {
 		restarted.Apply(&ingest.RawFrame{Source: station, Recv: at, RF: &ingest.RawRF{Bands: []ingest.RFBand{{Block: 0, AGC: 2000, AntStatus: 2}}}})
 		got := restarted.FeedStationRF(at)[station].Bands[0].AGCDeparture != nil
 		if got != want {

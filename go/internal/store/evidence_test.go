@@ -177,4 +177,100 @@ func TestIntegrationEventEvidenceCapture(t *testing.T) {
 	if err != nil || !tr.Truncated || tr.RFSamples != 3 || tr.BoardSamples != 3 {
 		t.Fatalf("truncated bundle: %+v %v", tr, err)
 	}
+	// The bound keeps the samples nearest the event: the event instant survives
+	// in both origins and only the oldest pre-roll samples went. The window holds
+	// samples at the event and one to four minutes before it, so three per
+	// origin reach back at most two minutes.
+	atEvent := map[string]bool{}
+	for _, sample := range tr.Samples {
+		if sample.ReceivedAt.Equal(eventTime) {
+			atEvent[sample.Origin] = true
+		}
+		if sample.ReceivedAt.Before(eventTime.Add(-2 * time.Minute)) {
+			t.Fatalf("truncation kept an older sample over one nearer the event: %+v", sample)
+		}
+	}
+	if !atEvent["rf"] || !atEvent["board"] {
+		t.Fatalf("truncation dropped the sample at the event instant: kept at event %v", atEvent)
+	}
+
+	// A bound the window exactly fills is not a truncation: the operator window
+	// holds ten RF samples and five board samples.
+	exact := p
+	exact.MaxSamples = 10
+	exSeq := write(operator, "station_rf_degraded")
+	if n, err := s.CaptureEventEvidence(ctx, collector, now, exact); err != nil || n != 1 {
+		t.Fatalf("exact capture: %d %v", n, err)
+	}
+	ex, err := s.QueryEventEvidence(ctx, EvidenceQuery{Audience: operator, Seq: exSeq, Limit: EvidenceMaxLimit})
+	if err != nil || ex.Truncated || ex.RFSamples != 10 || ex.BoardSamples != 5 || len(ex.Samples) != 15 {
+		t.Fatalf("exactly filled bundle: truncated %v rf %d board %d samples %d %v", ex.Truncated, ex.RFSamples, ex.BoardSamples, len(ex.Samples), err)
+	}
+}
+
+// TestIntegrationEventEvidencePageBudget: a page of evidence samples is bounded
+// by the shared history byte budget, not only by its row limit, and a stored
+// sample over the per-sample cap fails the page instead of being served.
+func TestIntegrationEventEvidencePageBudget(t *testing.T) {
+	ctx := context.Background()
+	s, err := New(ctx, config.Store{DSN: testDSN(t)}, integrationLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	collector := fmt.Sprintf("evidence-budget-c%d", now.UnixNano())
+	operator := identity.Audience{Kind: identity.AudienceOperator, ID: collector}
+	eventTime := now.Add(-2 * time.Minute)
+	p := testEvidencePolicy()
+
+	// persist stores n RF samples of rawBytes each for a station, inside the
+	// capture window, writes the station's event and captures it.
+	persist := func(station, eventType string, n, rawBytes int) int64 {
+		t.Helper()
+		var frames []*NavFrame
+		for i := 0; i < n; i++ {
+			at := eventTime.Add(time.Duration(-i) * time.Second)
+			frames = append(frames, &NavFrame{Ts: at, ReceivedAt: at, SourceID: station, CollectorInstanceID: collector,
+				Session: "boot", SourceSeq: uint64(i + 1), HasSourceSeq: true, Raw: make([]byte, rawBytes),
+				RF: &RFSample{Kind: "jamming", Data: []byte(`{"Bands":[]}`)}})
+		}
+		if n, err := s.persistAtomicOnce(ctx, frames); err != nil || n != int64(len(frames)) {
+			t.Fatalf("persist samples: %d %v", n, err)
+		}
+		seq, err := s.WriteEvent(ctx, EventRow{Audience: operator.Key(), Time: eventTime, SV: station, Type: eventType,
+			OldValue: "ok", NewValue: "suspected", Severity: 2, DedupeKey: fmt.Sprintf("%s-%s-%d", eventType, station, now.UnixNano()),
+			CollectorInstanceID: collector})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n, err := s.CaptureEventEvidence(ctx, collector, now, p); err != nil || n != 1 {
+			t.Fatalf("capture: %d %v", n, err)
+		}
+		return seq
+	}
+
+	// 100 samples of 40 KiB raw each encode to well over the 4 MiB page budget
+	// while every one of them is under the per-sample cap.
+	large := persist(fmt.Sprintf("evidence-large-%d", now.UnixNano()), "jamming_detected", 100, 40*1024)
+	first, err := s.QueryEventEvidence(ctx, EvidenceQuery{Audience: operator, Seq: large, Limit: EvidenceMaxLimit})
+	if err != nil || !first.HasMore || len(first.Samples) == 0 || len(first.Samples) >= 100 || first.RFSamples != 100 || first.Truncated {
+		t.Fatalf("unbounded page: count=%d more=%v rf=%d truncated=%v err=%v", len(first.Samples), first.HasMore, first.RFSamples, first.Truncated, err)
+	}
+	if len(first.Samples[0].Raw) != 40*1024 {
+		t.Fatalf("raw body changed: %d bytes", len(first.Samples[0].Raw))
+	}
+	next, err := s.QueryEventEvidence(ctx, EvidenceQuery{Audience: operator, Seq: large, Limit: EvidenceMaxLimit, Offset: len(first.Samples)})
+	if err != nil || len(next.Samples) == 0 || !next.Samples[0].ReceivedAt.After(first.Samples[len(first.Samples)-1].ReceivedAt) {
+		t.Fatalf("byte-limited pagination failed: %d %v", len(next.Samples), err)
+	}
+	if len(first.Samples)+len(next.Samples) != 100 || next.HasMore {
+		t.Fatalf("pages do not add up: %d + %d, more=%v", len(first.Samples), len(next.Samples), next.HasMore)
+	}
+
+	// One stored sample over the per-sample cap fails the whole page.
+	oversized := persist(fmt.Sprintf("evidence-oversized-%d", now.UnixNano()), "antenna_fault", 1, historyMaxSampleBytes+1)
+	if _, err := s.QueryEventEvidence(ctx, EvidenceQuery{Audience: operator, Seq: oversized, Limit: EvidenceMaxLimit}); err == nil {
+		t.Fatal("oversized stored sample served")
+	}
 }
