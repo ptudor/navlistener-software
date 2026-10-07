@@ -14,6 +14,8 @@ import subprocess
 import sys
 import urllib.error
 
+import securesystemslib.exceptions
+import tuf.api.exceptions
 from tuf.api.metadata import Metadata, Targets
 from tuf.api.serialization.json import JSONSerializer
 from repository import (Repository, Signers, THRESHOLDS, CHANNELS, RELEASE_PROFILES, OFFLINE_ROLES, RENEWABLE, WARNING_DAYS,
@@ -477,5 +479,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError,
+            tuf.api.exceptions.RepositoryError, tuf.api.exceptions.DownloadError, securesystemslib.exceptions.Error) as error:
         raise SystemExit(str(error)) from None

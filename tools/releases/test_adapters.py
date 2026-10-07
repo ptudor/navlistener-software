@@ -309,6 +309,15 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "marked for another profile"):
             release.configuration(self.release_config(root=str(test_state / "trust-root.json")))
 
+    def test_release_tool_reports_a_corrupt_bootstrap_root_in_one_line(self):
+        corrupt = Path(tempfile.mkdtemp(dir=self.base)) / "trust-root.json"
+        corrupt.write_bytes(b"{not json")
+        tool = str(Path(__file__).with_name("release.py"))
+        result = subprocess.run([sys.executable, tool, "--config", str(self.release_config(root=str(corrupt))), "dry-run"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.stderr.strip().splitlines(), ["Failed to deserialize JSON"])
+
     def test_signer_entry_matches_the_generated_configuration_without_private_material(self):
         config = self.open.config
         spec = config["roles"]["timestamp"][0]
