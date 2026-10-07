@@ -132,7 +132,9 @@ NVF_PINS_CHECK(NVF_PINS_MAX, "the MAX pin map");
 _Static_assert((int)NVF_BOARD_ID_NEO == (int)INTSAT_NEO && (int)NVF_BOARD_ID_ZED_X20 == (int)INTSAT_X20 &&
                (int)NVF_BOARD_ID_MAX == (int)INTSAT_MAX, "OTA board IDs must equal the CAT_INTSAT IDs");
 // An INA3221 channel: the rail it measures and its shunt; a shunt of 0 marks no channel.
-typedef struct { const char *name; uint16_t shunt_mohm; } observer_rail_t;
+// warn_ma is the Warning alert's limit on the averaged current and crit_ma the Critical
+// alert's on each conversion; 0 sets no alert. The limit is mA x mOhm uV across the shunt.
+typedef struct { const char *name; uint16_t shunt_mohm, warn_ma, crit_ma; } observer_rail_t;
 typedef struct {
     board_model_t model;
     const char *name;
@@ -162,6 +164,14 @@ typedef struct {
     .eth_sclk = NVF_NONE, .eth_cs = NVF_NONE, .eth_mosi = NVF_NONE, .eth_miso = NVF_NONE, \
     .tc_sck = NVF_NONE, .tc_mosi = NVF_NONE, .tc_miso = NVF_NONE, .tc_cs_n = NVF_NONE, .tc_drdy_n = NVF_NONE, \
     .imu_int1 = NVF_NONE, .imu_int2 = NVF_NONE}
+// The X20's INA3221 channels. Its alert limits are engineering values to be confirmed on the
+// bench, like the heater thresholds: +5V warns below the input eFuse's 1.45 A minimum limit,
+// so the alert is seen before the eFuse acts; 3V3_GNSS allows the receiver and antenna feed
+// (under 300 mA) against the ADM7150's 800 mA; 3V3_SYS allows the ESP32's Wi-Fi peaks and the
+// panel logic against the LDL1117's 1.2 A.
+#define NVF_X20_RAIL_5V   {.name = "+5V", .shunt_mohm = 20, .warn_ma = 1000, .crit_ma = 1300}
+#define NVF_X20_RAIL_GNSS {.name = "3V3_GNSS", .shunt_mohm = 50, .warn_ma = 350, .crit_ma = 500}
+#define NVF_X20_RAIL_SYS  {.name = "3V3_SYS", .shunt_mohm = 20, .warn_ma = 800, .crit_ma = 1000}
 #define NVF_BOARD_X20_ROW {.model = BOARD_MODEL_X20_A, .name = "X20 revision A", .intsat_id = INTSAT_X20, \
     .family = "gnss-color-zed-x20", .pins = NVF_PINS_ZED_X20, .boot_steps_brightness = false, \
     .led_sdi = NVF_NONE, .led_panel_sdi = 1, .panel_status_byte = true, \
@@ -170,7 +180,7 @@ typedef struct {
     .eth_sclk = NVF_PIN_ETH_SCLK, .eth_cs = NVF_PIN_ETH_CS, .eth_mosi = NVF_PIN_ETH_MOSI, .eth_miso = NVF_PIN_ETH_MISO, \
     .tc_sck = NVF_NONE, .tc_mosi = NVF_NONE, .tc_miso = NVF_NONE, .tc_cs_n = NVF_NONE, .tc_drdy_n = NVF_NONE, \
     .imu_int1 = NVF_NONE, .imu_int2 = NVF_NONE, \
-    .rails = {{"+5V", 20}, {"3V3_GNSS", 50}, {"3V3_SYS", 20}}} /* U37 through R74, R75, R76 */
+    .rails = {NVF_X20_RAIL_5V, NVF_X20_RAIL_GNSS, NVF_X20_RAIL_SYS}} /* U37 through R74, R75, R76 */
 #define NVF_BOARD_MAX_ROW {.model = BOARD_MODEL_MAX_A, .name = "MAX revision A", .intsat_id = INTSAT_MAX, \
     .family = "gnss-color-max", .pins = NVF_PINS_MAX, .boot_steps_brightness = false, \
     .led_sdi = 14, .led_panel_sdi = NVF_NONE, .panel_status_byte = false, \

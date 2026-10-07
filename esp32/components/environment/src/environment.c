@@ -333,7 +333,13 @@ void environment_sample_max(env_barometer_t *b, env_magnetometer_t *m)
         }
     }
 }
-static bool rails_ready, rails_tried;
+static bool rails_ready, rails_tried, alerts_ready, alerts_failing;
+static bool rail_limits(void)
+{
+    for (unsigned c = 0; c < INA3221_CHANNELS; c++)
+        if (parts.rail_warn_uv[c] || parts.rail_crit_uv[c]) return true;
+    return false;
+}
 void environment_sample_rails(env_rails_t *r)
 {
     *r = (env_rails_t){0};
@@ -342,21 +348,44 @@ void environment_sample_rails(env_rails_t *r)
     if (!rails_ready) {
         attach(sensor_bus, RAIL_DEVICE);
         rails_ready = ina3221_init(&io);
+        alerts_ready = false; // the limits reset with the configuration
         if (rails_ready) ESP_LOGI(TAG, "INA3221 identified; 64-sample averages of 1.1 ms shunt and bus conversions");
         else if (!rails_tried) ESP_LOGW(TAG, "INA3221 not identified; retrying at each sample");
         rails_tried = true;
     }
     r->ready = rails_ready;
     if (!rails_ready) return;
+    if (!alerts_ready && rail_limits()) {
+        uint16_t cleared = 0;
+        alerts_ready = ina3221_set_alerts(&io, parts.rail_warn_uv, parts.rail_crit_uv, &cleared);
+        r->alert_flags |= cleared;
+        if (alerts_ready)
+            ESP_LOGI(TAG, "INA3221 alert limits set, latching until read: warning %.2f/%.2f/%.2f mV, "
+                     "critical %.2f/%.2f/%.2f mV across the channel 1/2/3 shunts (0: none)",
+                     parts.rail_warn_uv[0] / 1000.0, parts.rail_warn_uv[1] / 1000.0, parts.rail_warn_uv[2] / 1000.0,
+                     parts.rail_crit_uv[0] / 1000.0, parts.rail_crit_uv[1] / 1000.0, parts.rail_crit_uv[2] / 1000.0);
+        else if (!alerts_failing)
+            ESP_LOGW(TAG, "INA3221 alert limits not confirmed; retrying at each sample");
+        alerts_failing = !alerts_ready;
+    }
     r->valid = ina3221_read(&io, &r->sample);
+    r->alert_flags |= r->sample.alert_flags;
     if (!r->valid) {
         rails_ready = false;
         ESP_LOGW(TAG, "INA3221 measurement unavailable; configuring it again at the next sample");
     }
 }
+bool environment_rail_alerts(ina3221_alerts_t *alerts)
+{
+    *alerts = (ina3221_alerts_t){0};
+    if (!initialized || !parts.ina3221 || !rails_ready) return false;
+    env_io_t io = {.read = read_register, .write = write_register, .delay_ms = delay_ms};
+    return ina3221_read_alerts(&io, alerts);
+}
 #else
 void environment_configure(const env_parts_t *listed) { (void)listed; }
 void environment_sample_rails(env_rails_t *r) { *r = (env_rails_t){0}; }
+bool environment_rail_alerts(ina3221_alerts_t *alerts) { *alerts = (ina3221_alerts_t){0}; return false; }
 void environment_sample_max(env_barometer_t *b, env_magnetometer_t *m)
 {
     *b = (env_barometer_t){0}; *m = (env_magnetometer_t){0};

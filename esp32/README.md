@@ -296,12 +296,36 @@ place. The board saves each applied brightness change, with the trimmer's positi
 in NVS and restores it before enabling PWM on subsequent boots. The ZED/X20's front panel is its only chain: GPIO1 carries a 24-bit frame (status, amber,
 green) whose status byte lights RTK while the receiver's RTK_STAT pin is low and ATTENTION
 while an alarm pattern is active. On that board GPIO14 reads the console port's VBUS and GPIO3
-the MCP23008 expander's interrupt; the expander is in the manifest, and its inputs are not yet
-read. The eight-second network configuration-reset
+the MCP23008 expander's interrupt (see the next paragraph). The eight-second network configuration-reset
 hold preserves this preference. The dedicated PPS and power LEDs have separate hardware
 paths and are not dimmed. PWM pauses during TLC5916 serial/latch writes because
 OE also participates in mode selection; see [TLC5916 section 9.4](https://www.ti.com/lit/ds/symlink/tlc5916.pdf).
 Lower panel power can change nearby temperature readings.
+
+Where the manifest lists the ZED/X20's MCP23008 expander (`IO_MCP23008` at `0x24`), the
+firmware writes its register programme at boot, reads every register back, and retries at
+each board-task pass until it does; only then is the GPIO3 falling-edge handler installed.
+The expander collects five active-low alert lines behind that one interrupt: the W5500's,
+the BMP581's, the HDC2080's, the MCP9808's and `PWR_ALERT_N`, the INA3221's Warning and
+Critical outputs. Each change is counted with its time and logged at most once per line per
+10 seconds. The INA3221 now has warning (averaged) and critical (per-conversion) current
+limits per rail from the board row (`warn_ma` and `crit_ma`: +5V 1000/1300 mA, `3V3_GNSS`
+350/500 mA, `3V3_SYS` 800/1000 mA, engineering values to be confirmed on the bench), set to
+latch until read and set again whenever the monitor is reconfigured after a `3V3_SENS`
+power cycle. A `PWR_ALERT_N` interrupt reads and logs which rail tripped which limit, and
+that read releases the line. Once a minute, and once after the first frame, the panel
+refresh task rewrites the current frame while the expander samples the chain's serial
+output on GP0 before each clock: the first conclusive run adopts a 24-bit chain (the 162mm
+panel) or a 16-bit one (the 3900 mil board's on-board chain), and later runs log any
+mismatched bits. That write holds the LEDs dark for about 12 ms. The firmware never
+switches `3V3_SENS` off today; any future `SENS_EN` control must call
+`io_expander_suspend()` before the rail goes off and `io_expander_resume()` once it is back,
+because GP2–GP5 fall to 0 V with the rail and the I2C pull-ups go with it. The expander's
+status (configured, chain length, per-line counts and times, readback runs and mismatches,
+and the last INA3221 alert flags) is logged at boot and hourly. It is not in ObserverDetails
+telemetry yet: that needs a new tag in the Go decoder and its fixtures. See
+[IO-EXPANDER.md](docs/IO-EXPANDER.md).
+
 Include `build/LICENSE-BMP3-SensorAPI.txt` (emitted by the provenance tool)
 with firmware binary distributions.
 

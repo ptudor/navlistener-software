@@ -618,7 +618,9 @@ Ethernet uplink, the GPIO18 preset buttons
 (`BUTTON_USER_2`) with the GPIO2 brightness trimmer, and the MAX's MS5607, MAX31856,
 ICM-45686 and MMC34160PJ (telemetry tags 11-13 in [OBSERVER-TELEMETRY.md](OBSERVER-TELEMETRY.md)).
 The ZED/X20's front panel is its only chain and takes a 24-bit frame with RTK and ATTENTION
-status. A manifest that is unusable,
+status. Its MCP23008 expander, where listed, collects the sensor and INA3221 alert lines behind
+one interrupt on GPIO3 and reads the panel chain back on GP0 once a minute
+([IO-EXPANDER.md](../esp32/docs/IO-EXPANDER.md)). A manifest that is unusable,
 names no board, names one or a revision the firmware does not know, or names more than one
 runs nothing board-specific; the receiver still streams, unconfigured. A new board or
 revision therefore needs a firmware row before its first unit is programmed. The single-board

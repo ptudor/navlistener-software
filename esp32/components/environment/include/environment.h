@@ -20,6 +20,9 @@ typedef struct {
     bool mcp9808, bmp388, ms5607, mmc34160, ina3221;
     env_bmp5_t bmp5;
     env_hdc_variant_t hdc;
+    // The INA3221's alert limits per channel in shunt microvolts, from the board's rails;
+    // 0 leaves that limit unset (ina3221_set_alerts).
+    int32_t rail_warn_uv[INA3221_CHANNELS], rail_crit_uv[INA3221_CHANNELS];
 } env_parts_t;
 void environment_configure(const env_parts_t *parts);
 // Call from the board task, which owns sensor/RTC transactions. utc_valid means utc is time the
@@ -48,10 +51,17 @@ void environment_sample_max(env_barometer_t *barometer, env_magnetometer_t *magn
 
 // The INA3221 rail monitor (the ZED/X20's), when listed, sampled from the board task after
 // environment_sample. A part that is absent, or whose configuration was lost to a 3V3_SENS
-// power cycle, is configured again at the next sample.
+// power cycle, is configured again at the next sample, and its alert limits with it.
 typedef struct {
     bool ready, valid;
     ina3221_sample_t sample;
+    // The alert flags (CF, SF, WF) this sample's Mask/Enable reads cleared. A flag is
+    // reported once: here, or by environment_rail_alerts if it reads it first.
+    uint16_t alert_flags;
 } env_rails_t;
 void environment_sample_rails(env_rails_t *rails);
+// Reads and decodes the INA3221's Mask/Enable, which releases a latched alert; from the
+// board task, as on the PWR_ALERT_N interrupt. False when the monitor is not listed, not
+// configured, or does not answer.
+bool environment_rail_alerts(ina3221_alerts_t *alerts);
 #endif

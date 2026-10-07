@@ -31,6 +31,7 @@
 #include "observer_rtc.h"
 #include "rtc_policy.h"
 #include "environment.h"
+#include "io_expander_service.h"
 #include "pusher.h"
 #include "nvs.h"
 #include "journal.h"
@@ -91,6 +92,9 @@ static const observer_board_t *board;
 static eeprom_capabilities_t listed;
 static observer_rtc_part_t rtc_part;
 static bool thermocouple_listed, imu_listed, barometer_listed, magnetometer_listed, rails_listed;
+// The MCP23008 is listed and the board row has its interrupt pin; cleared if it cannot start.
+static bool expander_listed;
+_Static_assert(NVF_I2C_IO_EXPANDER == MCP23008_ADDRESS, "the expander's address differs from the allocation record");
 const observer_board_t *observer_board_current(void) { return board; }
 bool observer_board_lists(uint8_t category, uint8_t id)
 {
@@ -205,7 +209,7 @@ void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_
         ESP_LOGE(TAG, "the manifest lists an INA3221, but the %s has no rail shunts for it; it is not used", board->name);
         rails_listed = false;
     }
-    const env_parts_t parts = {
+    env_parts_t parts = {
         .mcp9808 = observer_board_lists(CAT_TEMP, TEMP_MCP9808),
         .bmp388 = report.pressure.part == PRESSURE_PART_BMP388,
         .bmp5 = report.pressure.part == PRESSURE_PART_BMP580 ? ENV_BMP580 :
@@ -214,7 +218,15 @@ void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_
         .hdc = report.humidity.part == HUMIDITY_HDC2080 ? ENV_HDC2080 :
                report.humidity.part == HUMIDITY_HDC2022 ? ENV_HDC2022 : ENV_HDC_NONE,
     };
+    // The rails' alert limits as shunt voltages: mA x mOhm = uV.
+    for (unsigned c = 0; rails_listed && c < INA3221_CHANNELS; c++) {
+        const observer_rail_t *rail = &board->rails[c];
+        parts.rail_warn_uv[c] = (int32_t)rail->warn_ma * rail->shunt_mohm;
+        parts.rail_crit_uv[c] = (int32_t)rail->crit_ma * rail->shunt_mohm;
+    }
     environment_configure(&parts);
+    expander_listed = listed_with_pins(CAT_IO_EXPANDER, IO_MCP23008, board && board->exp_int_n >= 0,
+                                       "MCP23008 I/O expander");
     thermocouple_listed = listed_with_pins(CAT_SENSOR, SENSOR_THERMOCOUPLE_MAX31856,
                                            board && board->tc_sck >= 0, "MAX31856 thermocouple converter");
     imu_listed = listed_with_pins(CAT_IMU, IMU_ICM45686, board && board->imu_int1 >= 0 && board->imu_int2 >= 0,
@@ -478,6 +490,7 @@ static void identify_peripherals(void)
         {CAT_RTC, RTC_DS3231M, NVF_I2C_RTC_TCXO, "RTC"},
         {CAT_IMU, IMU_ICM45686, NVF_I2C_IMU, "IMU"},
         {CAT_SENSOR, SENSOR_MAG_MMC34160PJ, NVF_I2C_MAGNETOMETER, "magnetometer"},
+        {CAT_IO_EXPANDER, IO_MCP23008, NVF_I2C_IO_EXPANDER, "I/O expander"},
     };
     for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) {
         if (!observer_board_lists(parts[i].category, parts[i].id)) continue;
@@ -512,6 +525,7 @@ static void identify_peripherals(void)
         }
     }
     if (observer_board_lists(CAT_CRYPTO, CRYPTO_ATECC608C)) identify_crypto();
+    if (expander_listed) io_expander_log_status("at boot");
 }
 static void clock_bit(int bit)
 {
@@ -525,7 +539,11 @@ static void clock_bit(int bit)
     esp_rom_delay_us(2);
     gpio_set_level(LED_CLOCK, 0);
 }
-static void panel_write(uint8_t status, uint8_t green, uint8_t yellow, unsigned percent)
+static void panel_shift(int bit, void *ctx) { (void)ctx; clock_bit(bit); }
+// verify: the expander samples the chain's SDO on GP0 before each clock of a 24-bit frame and
+// checks it against the chain (io_expander_readback). At about 0.5 ms per I2C read it holds the
+// LEDs dark for some 12 ms; the bus is not sped up for it.
+static void panel_write(uint8_t status, uint8_t green, uint8_t yellow, unsigned percent, bool verify)
 {
     // OE also participates in TLC5916 mode switching. Hold both OE pins high
     // for the entire serial/latch transaction; PWM runs only while CLK is idle.
@@ -537,16 +555,23 @@ static void panel_write(uint8_t status, uint8_t green, uint8_t yellow, unsigned 
     uint32_t bits = ((uint32_t)yellow << 8) | green;
     int first = 15;
     if (board && board->panel_status_byte) { bits |= (uint32_t)status << 16; first = 23; }
-    for (int i = first; i >= 0; i--) clock_bit((bits >> i) & 1);
+    if (verify && first == IO_EXPANDER_FRAME_BITS - 1) (void)io_expander_readback(bits, panel_shift, NULL);
+    else for (int i = first; i >= 0; i--) clock_bit((bits >> i) & 1);
     gpio_set_level(LED_LATCH, 1); esp_rom_delay_us(2); gpio_set_level(LED_LATCH, 0);
     if (pwm_ready && percent) for (unsigned c = 0; c < 2; c++) {
         ledc_set_duty(LEDC_LOW_SPEED_MODE, c, panel_pwm_off_ticks(percent));
         ledc_update_duty(LEDC_LOW_SPEED_MODE, c);
     }
 }
+#define PANEL_READBACK_MS 60000
+static TaskHandle_t panel_task;
 static void panel_refresh_task(void *arg)
 {
     (void)arg;unsigned previous=UINT32_MAX,tick=0;bool rtk=false;
+    // The chain readback where the expander is listed: a verification write of the frame the
+    // chain already holds, once the first frame is in and every 60 s after.
+    const bool readback=expander_listed&&board->panel_status_byte;
+    int64_t next_readback=0;
     TickType_t wake=xTaskGetTickCount();
     for(;;) {
         unsigned value=atomic_load(&panel_frame);uint8_t green=value,yellow=value>>8,alarm=value>>16;
@@ -558,7 +583,11 @@ static void panel_refresh_task(void *arg)
         if(board&&board->rtk_stat>=0&&tick++%10==0)rtk=gpio_get_level(board->rtk_stat)==0;
         uint8_t status=board&&board->panel_status_byte?(rtk?PANEL_STATUS_RTK:0)|(alarm?PANEL_STATUS_ATTENTION:0):0;
         unsigned frame=(value&0xff000000u)|((unsigned)status<<16)|((unsigned)yellow<<8)|green;
-        if(frame!=previous){panel_write(status,green,yellow,value>>24);previous=frame;}
+        if(frame!=previous){panel_write(status,green,yellow,value>>24,false);previous=frame;}
+        else if(readback&&esp_timer_get_time()/1000>=next_readback&&io_expander_ready()){
+            panel_write(status,green,yellow,value>>24,true);
+            next_readback=esp_timer_get_time()/1000+PANEL_READBACK_MS;
+        }
         vTaskDelayUntil(&wake,pdMS_TO_TICKS(25));
     }
 }
@@ -685,11 +714,57 @@ static void motion_report(const env_magnetometer_t *magnetometer, int64_t magnet
         m->mag_ms = (uint64_t)magnetometer_ms;
     }
 }
+// The rails named in a channel mask (bit 0 is channel 1), or "none".
+static const char *rail_names(uint8_t channels, char *out, size_t size)
+{
+    size_t used = 0;
+    out[0] = 0;
+    for (unsigned c = 0; c < INA3221_CHANNELS && used < size; c++) {
+        if (!(channels & (1u << c))) continue;
+        int n = snprintf(out + used, size - used, "%s%s", used ? " " : "", board->rails[c].name);
+        if (n < 0) break;
+        used += (size_t)n;
+    }
+    return used ? out : "none";
+}
+// The INA3221's latched alerts, from the read on PWR_ALERT_N or from a rail sample whose reads
+// cleared the flags first: which rail tripped which limit. A set of flags already logged is
+// repeated at most every 10 s, as the expander's lines are.
+static uint16_t rail_alert_logged;
+static int64_t rail_alert_logged_ms;
+static void rail_alerts_log(uint16_t mask_enable, int64_t now)
+{
+    ina3221_alerts_t a;
+    ina3221_decode_alerts(mask_enable, &a);
+    const uint16_t flags = mask_enable & INA3221_MASK_ALERTS;
+    if (!flags) return;
+    io_expander_rail_alert(flags, now);
+    if (flags == rail_alert_logged && now - rail_alert_logged_ms < 10000) return;
+    rail_alert_logged = flags;
+    rail_alert_logged_ms = now;
+    char critical[48], warning[48];
+    ESP_LOGW(TAG, "INA3221 alert: critical %s, warning %s%s (Mask/Enable flags 0x%04x)",
+             rail_names(a.critical, critical, sizeof critical), rail_names(a.warning, warning, sizeof warning),
+             a.summation ? ", shunt-voltage sum" : "", flags);
+}
+// PWR_ALERT_N went low: reading Mask/Enable decodes the alert and releases the latched line.
+static int64_t rail_alert_failed_ms = INT64_MIN / 2; // never
+static void rail_alert_read(int64_t now)
+{
+    ina3221_alerts_t alerts;
+    if (environment_rail_alerts(&alerts)) {
+        rail_alerts_log(alerts.mask_enable, now);
+    } else if (now - rail_alert_failed_ms >= 10000) {
+        rail_alert_failed_ms = now;
+        ESP_LOGW(TAG, "PWR_ALERT_N asserted, but the INA3221's alert flags could not be read");
+    }
+}
 // Tag 16: the INA3221's three rails, with the board's shunts; current = shunt uV / mOhm.
 static void rails_report(void)
 {
     env_rails_t rails;
     environment_sample_rails(&rails);
+    rail_alerts_log(rails.alert_flags, esp_timer_get_time() / 1000);
     report_rails_t *r = &report.rails;
     *r = (report_rails_t){.present = true, .state = rails.ready};
     for (unsigned c = 0; c < 3; c++) {
@@ -820,6 +895,10 @@ static void board_stack_report(const char *when)
         ESP_LOGW(TAG, "board stack minimum free=%u bytes %s: under the %u-byte margin",
                  free_bytes, when, (unsigned)BOARD_STACK_MARGIN);
     else ESP_LOGI(TAG, "board stack minimum free=%u bytes %s", free_bytes, when);
+    // The panel refresh task's deepest path is the chain readback's I2C reads, where it runs.
+    if (panel_task && expander_listed)
+        ESP_LOGI(TAG, "panel refresh stack minimum free=%u bytes %s",
+                 (unsigned)uxTaskGetStackHighWaterMark(panel_task), when);
 }
 static void board_task(void *arg)
 {
@@ -832,6 +911,7 @@ static void board_task(void *arg)
     uint8_t previous_green = 255, previous_yellow = 255;
     bool brightness_dirty = false, report_stack_logged = false;
     int64_t next_brightness_write = 0, next_stack_report = 0;
+    int64_t next_expander_report = esp_timer_get_time() / 1000 + BOARD_STACK_REPORT_MS;
     // Static: this task is the only user, and together they are 2.8 KB.
     static gnss_status_t status;
     static observer_report_t journal_report;
@@ -842,6 +922,9 @@ static void board_task(void *arg)
         uint8_t learned = reception_history(&status, now);
         gnss_status_leds(&status, now, learned, pusher_connected(), &green, &yellow);
         uint8_t alarm=reception_poll(&status,(uint64_t)now,report_now_ns);
+        // The expander: configured again while it is not, and the INA3221's alert read (which
+        // releases its latched line) when PWR_ALERT_N has gone low.
+        if (expander_listed && io_expander_poll() && rails_listed) rail_alert_read(now);
         unsigned requested = atomic_load(&brightness);
         bool brightness_changed = requested != applied_brightness;
         applied_brightness = requested;
@@ -889,6 +972,10 @@ static void board_task(void *arg)
             board_stack_report("after the first report");
         }
         report_stack_logged |= reports_queued != 0;
+        if (expander_listed && now >= next_expander_report) {
+            io_expander_log_status("(hourly)");
+            next_expander_report = now + BOARD_STACK_REPORT_MS;
+        }
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
@@ -1009,13 +1096,19 @@ esp_err_t observer_board_start(void)
     esp_err_t err = gpio_config(&config);
     if (err != ESP_OK) return err;
     if ((err = board_inputs()) != ESP_OK) return err;
+    // The expander's interrupt handler goes on GPIO3 once its register programme reads back.
+    if (expander_listed && (err = io_expander_start(hardware_manifest_i2c_bus(), board->exp_int_n)) != ESP_OK) {
+        ESP_LOGE(TAG, "MCP23008 I/O expander service unavailable: %s; its lines and the panel readback are not used",
+                 esp_err_to_name(err));
+        expander_listed = false;
+    }
     gpio_set_level(LED_LATCH, 0);
     // Explicit normal-mode sequence, including after an MCU-only reset.
     const int oe[] = {1, 0, 1, 1, 1};
     for (size_t i = 0; i < sizeof oe / sizeof oe[0]; i++) {
         gpio_set_level(LED_GREEN_OE, oe[i]); gpio_set_level(LED_YELLOW_OE, oe[i]); clock_bit(0);
     }
-    panel_write(0, 0, 0xbf, applied_brightness); // six constellations and a disconnected uplink until the receiver reports
+    panel_write(0, 0, 0xbf, applied_brightness, false); // six constellations and a disconnected uplink until the receiver reports
     ledc_timer_config_t timer = {.speed_mode=LEDC_LOW_SPEED_MODE, .duty_resolution=LEDC_TIMER_10_BIT,
         .timer_num=LEDC_TIMER_0, .freq_hz=4000, .clk_cfg=LEDC_AUTO_CLK};
     err = ledc_timer_config(&timer);
@@ -1029,7 +1122,9 @@ esp_err_t observer_board_start(void)
     }
     pwm_ready = true;
     atomic_store(&panel_frame,(applied_brightness<<24)|0xbf00u);
-    if(xTaskCreate(panel_refresh_task,"panel_refresh",2048,NULL,4,NULL)!=pdPASS)return ESP_ERR_NO_MEM;
+    // 3 KiB: the chain readback adds the I2C driver's frames to the 2 KiB the writes needed;
+    // board_stack_report logs its minimum free stack where the readback runs.
+    if(xTaskCreate(panel_refresh_task,"panel_refresh",3072,NULL,4,&panel_task)!=pdPASS)return ESP_ERR_NO_MEM;
     ESP_LOGI(TAG, "panel brightness=%u%% (4 kHz PWM)", applied_brightness);
 #if PANEL_INPUTS
     // The preset button (and the trimmer beside it) only where the manifest lists it.
