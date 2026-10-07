@@ -124,7 +124,10 @@ private struct StationCardView: View {
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
-                    HealthLabel(state: health)
+                    HStack(spacing: 8) {
+                        HealthLabel(state: health)
+                        if observer?.disabled == true { StationDisabledBadge() }
+                    }
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 4) {

@@ -53,6 +53,9 @@ struct OwnerPortalView: View {
                             }
                             Text("portal.on_prem").font(.caption).foregroundStyle(.secondary)
                         }
+                        // The browser session presents from the window that
+                        // owns this card, never from a detached one.
+                        .background(PresentationAnchorReader { browser.anchor = $0 })
                     }
                     if let error = portal.error { FeedErrorBanner(message: error) }
                 }.padding(20).frame(maxWidth: 900).frame(maxWidth: .infinity)

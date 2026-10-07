@@ -10,20 +10,20 @@ enum StationFormat {
         let hours = seconds % 86_400 / 3_600
         let minutes = seconds % 3_600 / 60
 
-        if days > 0 { return "\(days)d \(hours)h" }
-        if hours > 0 { return "\(hours)h \(minutes)m" }
-        if minutes > 0 { return "\(minutes)m \(seconds % 60)s" }
-        return "\(seconds)s"
+        if days > 0 { return String(format: String(localized: "format.uptime.days"), days, hours) }
+        if hours > 0 { return String(format: String(localized: "format.uptime.hours"), hours, minutes) }
+        if minutes > 0 { return String(format: String(localized: "format.uptime.minutes"), minutes, seconds % 60) }
+        return String(format: String(localized: "format.uptime.seconds"), seconds)
     }
 
     static func age(seconds value: TimeInterval?) -> String {
         guard let value, value.isFinite, value >= 0 else { return unknown }
-        if value < 5 { return "now" }
-        if value < 60 { return "\(Int(value))s ago" }
-        if value < 3_600 { return "\(Int(value / 60))m ago" }
-        if value < 86_400 { return "\(Int(value / 3_600))h ago" }
+        if value < 5 { return String(localized: "format.age.now") }
+        if value < 60 { return String(format: String(localized: "format.age.seconds"), Int(value)) }
+        if value < 3_600 { return String(format: String(localized: "format.age.minutes"), Int(value / 60)) }
+        if value < 86_400 { return String(format: String(localized: "format.age.hours"), Int(value / 3_600)) }
         guard let days = Int(exactly: (value / 86_400).rounded(.down)) else { return unknown }
-        return "\(days)d ago"
+        return String(format: String(localized: "format.age.days"), days)
     }
 
     static func clockDrift(nanoseconds value: Double?) -> String {

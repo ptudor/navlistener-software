@@ -17,9 +17,16 @@ actor SnapshotCache {
     private let fileManager: FileManager
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    /// Test seams: the `before` hooks hold an operation at a chosen point so
+    /// a race can be staged, and the `after` hooks report that the held
+    /// operation has completed, so a test waits for the outcome instead of
+    /// sleeping and hoping. Production passes nil for all of them.
     private let beforeCursorSave: (@Sendable () async -> Void)?
     private let beforeObserverSave: (@Sendable () async -> Void)?
     private let beforeCursorLoad: (@Sendable () async -> Void)?
+    private let afterCursorSave: (@Sendable () async -> Void)?
+    private let afterObserverSave: (@Sendable () async -> Void)?
+    private let afterCursorLoad: (@Sendable () async -> Void)?
     /// Test seam : substitutes the POSIX-permission write so the
     /// fail-closed path can be exercised. A process owns the files it just wrote,
     /// so chmod cannot be made to fail on a normal filesystem; production passes
@@ -30,10 +37,16 @@ actor SnapshotCache {
          beforeCursorSave: (@Sendable () async -> Void)? = nil,
          beforeObserverSave: (@Sendable () async -> Void)? = nil,
          beforeCursorLoad: (@Sendable () async -> Void)? = nil,
+         afterCursorSave: (@Sendable () async -> Void)? = nil,
+         afterObserverSave: (@Sendable () async -> Void)? = nil,
+         afterCursorLoad: (@Sendable () async -> Void)? = nil,
          setPermissions: (@Sendable (URL, Int) throws -> Void)? = nil) {
         self.beforeCursorSave = beforeCursorSave
         self.beforeObserverSave = beforeObserverSave
         self.beforeCursorLoad = beforeCursorLoad
+        self.afterCursorSave = afterCursorSave
+        self.afterObserverSave = afterObserverSave
+        self.afterCursorLoad = afterCursorLoad
         self.setPermissions = setPermissions
         self.fileManager = fileManager
         self.directory = directory ?? Self.defaultDirectory(fileManager: fileManager)
@@ -69,6 +82,7 @@ actor SnapshotCache {
         guard snapshot.scope == key else { throw CocoaError(.fileWriteInvalidFileName) }
         try snapshot.payload.validate()
         await beforeObserverSave?()
+        defer { if let afterObserverSave { Task { await afterObserverSave() } } }
         let write = {
             var document = try self.loadDocument(for: key) ?? AudienceCacheDocument(scope: key)
             document.observers = snapshot
@@ -79,11 +93,13 @@ actor SnapshotCache {
 
     func loadCursor(for key: AudienceCacheKey) async throws -> String? {
         await beforeCursorLoad?()
+        defer { if let afterCursorLoad { Task { await afterCursorLoad() } } }
         return try loadDocument(for: key)?.lastEventID
     }
 
     func saveCursor(_ cursor: String?, for key: AudienceCacheKey, access: CacheAccess? = nil) async throws {
         await beforeCursorSave?()
+        defer { if let afterCursorSave { Task { await afterCursorSave() } } }
         let write = {
             var document = try self.loadDocument(for: key) ?? AudienceCacheDocument(scope: key)
             document.lastEventID = cursor

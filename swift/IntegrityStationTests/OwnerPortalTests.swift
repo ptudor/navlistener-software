@@ -106,7 +106,7 @@ private func portalToken() -> [String: Any] {
         let hosting = NSHostingView(rootView: OwnerPortalView(portal: portal).environment(\.scenePhase, .active).environment(\.colorScheme, .dark))
         window.contentView = hosting; window.orderFront(nil)
         defer { window.contentView = nil; window.close() }
-        try await Task.sleep(for: .milliseconds(100))
+        hosting.layoutSubtreeIfNeeded()
         await portal.connect(to: "https://portal.example.invalid/stations/") { url in
             var parts = URLComponents(string: PortalAuthorization.callback)!
             parts.queryItems = [URLQueryItem(name: "code", value: String(repeating: "c", count: 43)),
@@ -114,14 +114,15 @@ private func portalToken() -> [String: Any] {
                                 URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!.first { $0.name == "state" }!]
             return parts.url!
         }
-        try await Task.sleep(for: .milliseconds(300))
-        #expect(portal.identity?.user.id == "42" && portal.connection != nil)
+        #expect(try await eventually { portal.identity?.user.id == "42" && portal.connection != nil })
+        hosting.layoutSubtreeIfNeeded()
         let bitmap = try #require(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
         hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
         try #require(bitmap.representation(using: .png, properties: [:])).write(to: FileManager.default.temporaryDirectory.appending(path: "navlistener-owner-fleets-review.png"))
         hosting.rootView = OwnerPortalView(portal: portal).environment(\.scenePhase, .background).environment(\.colorScheme, .dark)
-        try await Task.sleep(for: .milliseconds(150))
-        #expect(portal.identity == nil && portal.connection != nil)
+        // Leaving the active phase suspends the portal, which drops the
+        // identity while keeping the connection.
+        #expect(try await eventually { portal.identity == nil && portal.connection != nil })
     }
 
     @Test @MainActor func portalStationRendersApprovedInventoryAndRecoveredHistory() async throws {
@@ -169,12 +170,7 @@ private func portalToken() -> [String: Any] {
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 900, height: 1600), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = hosting; window.orderFront(nil)
         defer { window.contentView = nil; window.close() }
-        for _ in 0..<200 {
-            if recorder.contains("history") && recorder.contains(identifier) { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        try await Task.sleep(for: .milliseconds(250))
-        #expect(recorder.contains("history") && recorder.contains(identifier))
+        #expect(try await eventually { recorder.contains("history") && recorder.contains(identifier) })
         hosting.layoutSubtreeIfNeeded()
         let bitmap = try #require(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
         hosting.cacheDisplay(in: hosting.bounds, to: bitmap)

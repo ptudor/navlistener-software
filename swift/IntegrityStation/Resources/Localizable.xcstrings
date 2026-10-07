@@ -341,6 +341,16 @@
         }
       }
     },
+    "error.update_denied": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The collector has not granted update control for this observer."
+          }
+        }
+      }
+    },
     "event.unknown": {
       "localizations": {
         "en": {
@@ -437,26 +447,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Choose a collector and add a station in the app."
-          }
-        }
-      }
-    },
-    "menu_bar.title": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Integrity Station"
-          }
-        }
-      }
-    },
-    "menu_bar.unknown": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Station status unknown"
           }
         }
       }
@@ -1277,26 +1267,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Showing the last good station snapshot."
-          }
-        }
-      }
-    },
-    "stations.empty.description": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Add a station to see its signal and RF health."
-          }
-        }
-      }
-    },
-    "stations.empty.title": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No stations yet"
           }
         }
       }
@@ -3051,6 +3021,26 @@
         }
       }
     },
+    "update.denied": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update control is not granted: %@"
+          }
+        }
+      }
+    },
+    "update.unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update controls are unavailable: %@"
+          }
+        }
+      }
+    },
     "reception.title": {
       "localizations": {
         "en": {
@@ -3901,6 +3891,16 @@
         }
       }
     },
+    "portal.cannot_present": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The sign-in window could not be shown. Bring Integrity Station to the front and try again."
+          }
+        }
+      }
+    },
     "assurance.state.unavailable": {
       "localizations": {
         "en": {
@@ -4087,6 +4087,106 @@
           "stringUnit": {
             "state": "translated",
             "value": "Limits: %@"
+          }
+        }
+      }
+    },
+    "station.disabled": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disabled"
+          }
+        }
+      }
+    },
+    "format.age.now": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "now"
+          }
+        }
+      }
+    },
+    "format.age.seconds": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%llds ago"
+          }
+        }
+      }
+    },
+    "format.age.minutes": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lldm ago"
+          }
+        }
+      }
+    },
+    "format.age.hours": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lldh ago"
+          }
+        }
+      }
+    },
+    "format.age.days": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lldd ago"
+          }
+        }
+      }
+    },
+    "format.uptime.days": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lldd %lldh"
+          }
+        }
+      }
+    },
+    "format.uptime.hours": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lldh %lldm"
+          }
+        }
+      }
+    },
+    "format.uptime.minutes": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lldm %llds"
+          }
+        }
+      }
+    },
+    "format.uptime.seconds": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%llds"
           }
         }
       }

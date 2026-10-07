@@ -7,24 +7,26 @@ continue intsat’s reticle-on-starfield family. The center is a rooftop GNSS ra
 receiving three clean wavefronts on a mast: this app watches the station itself,
 rather than repeating mapintsat’s satellite skyplot.
 
-The colors are the canonical dark-theme GNSS colors from
-`apps/intsat/docs/COLOR_STANDARDS.md`: GPS teal `#2dd4bf`, Galileo blue
-`#58a6ff`, BeiDou violet `#bc8cff`, and GLONASS orange `#f0883e`. The support
-grey is `#8b949e`; the brighter instrument grey is `#c9d1d9`. The field is the
-deep-navy star gradient, `#0c1322` to `#04060c`.
+The colors are the Integrity family's dark-theme GNSS colors, which the app
+itself carries in
+[`StationPalette.swift`](../IntegrityStation/Support/StationPalette.swift):
+GPS teal `#2dd4bf`, Galileo blue `#58a6ff`, BeiDou violet `#bc8cff`, and
+GLONASS orange `#f0883e`. The support grey is `#8b949e`; the brighter
+instrument grey is `#c9d1d9`. The field is the deep-navy star gradient,
+`#0c1322` to `#04060c`.
 
 ## Source and rendering
 
 The source mark is `icon-source/integrity-station.svg`. It is transparent; the
 renderer creates the starfield underneath it at each final pixel size. This
 preserves the small stars instead of destroying them by downscaling a 1024 px
-raster, matching the rule in `apps/intsat/docs/ICONS.md` and the mapintsat icon
-pipeline.
+raster: the starfield is always generated at the target size, never scaled.
 
-MacPorts ImageMagick 6 is the only required renderer:
+MacPorts ImageMagick 6 is the only required renderer. From the repository
+root:
 
 ```sh
-cd apps/navlistener/swift
+cd swift
 sh scripts/render-app-icon.sh
 ```
 

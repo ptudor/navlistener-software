@@ -4,6 +4,7 @@ struct UpdateControlsView: View {
     @Environment(AppController.self) private var controller
     let observerID: String
     @State private var access: UpdateAccess?
+    @State private var unavailable: String?
     @State private var busy = false
     @State private var message: String?
     @State private var operation: Task<Void, Never>?
@@ -25,14 +26,37 @@ struct UpdateControlsView: View {
                 }
                 if busy { ProgressView() }
                 if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
+            } else if let unavailable {
+                Label(unavailable, systemImage: "exclamationmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .task(id: controller.store.activeSession) {
             access = nil
+            unavailable = nil
             guard let session = controller.store.activeSession, session.audience.isPrivate else { return }
-            access = try? await controller.feedClient.updateAccess(session: session, observer: observerID)
+            do {
+                access = try await controller.feedClient.updateAccess(session: session, observer: observerID)
+            } catch is CancellationError {
+            } catch let error as URLError where error.code == .cancelled {
+            } catch {
+                unavailable = Self.loadFailureMessage(error)
+            }
         }
         .onDisappear { operation?.cancel() }
+    }
+
+    /// What stands in for the controls when the access query did not return a
+    /// record. A denied update grant reads as such with the collector's own
+    /// reason; anything else ("update controls are not configured", a
+    /// transport failure) reads as unavailable with its reason, so the three
+    /// cases are never confused with each other or with silence.
+    nonisolated static func loadFailureMessage(_ error: Error) -> String {
+        if case FeedError.updateDenied = error {
+            return String(format: String(localized: "update.denied"), error.localizedDescription)
+        }
+        return String(format: String(localized: "update.unavailable"), error.localizedDescription)
     }
 
     private func run(_ action: String) {

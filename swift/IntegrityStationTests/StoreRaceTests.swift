@@ -76,7 +76,11 @@ struct StoreRaceTests {
         let networkSession = URLSession(configuration: config)
         return StationStore(feedClient: FeedClient(session: networkSession), eventStream: EventStream(session: networkSession), cache: cache)
     }
-    private func settle() async throws { try await Task.sleep(for: .milliseconds(60)) }
+    /// A held cache operation was released and has run to completion, so
+    /// what it could or could not write is final.
+    private func completed(_ counter: CompletionCounter, atLeast count: Int = 1) async throws {
+        #expect(try await eventually { await counter.value >= count })
+    }
 
     @Test func stationAddRetainsLabelsAndRejectsRetiredAudience() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: "AddScope.\(UUID())")
@@ -153,7 +157,12 @@ struct StoreRaceTests {
         let store = store(cache: cache, network: network)
         store.start(session: session, stationIDs: ["public-station"])
         await store.refresh()
-        try await settle()
+        // The explicit refresh may yield to the poll's own refresh already in
+        // flight; either one reconciles against the resolved condition.
+        #expect(try await eventually {
+            let requests = await network.conditionRequests
+            return store.activeEvents(for: "public-station").isEmpty && requests >= 3
+        })
         #expect(store.activeEvents(for: "public-station").isEmpty)
         #expect(await network.conditionRequests >= 3)
         await store.disconnect(clearCachedScope: true)
@@ -161,10 +170,11 @@ struct StoreRaceTests {
 
     @Test(arguments: ["public", "disconnect", "restart", "revoked"])
     func retiredCursorSaveCannotApplyAnOldEvent(transition: String) async throws {
-        let gate = ConnectionBarrier()
+        let gate = ConnectionBarrier(), saves = CompletionCounter()
         let directory = FileManager.default.temporaryDirectory.appending(path: "StoreRace.\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory); StoreConnectionProtocol.handler = nil }
-        let cache = SnapshotCache(directory: directory, beforeCursorSave: { await gate.holdOnce() })
+        let cache = SnapshotCache(directory: directory, beforeCursorSave: { await gate.holdOnce() },
+                                  afterCursorSave: { await saves.increment() })
         let network = StoreNetworkState(); let store = store(cache: cache, network: network)
         let old = try session(privateAudience: true)
         store.start(session: old, stationIDs: ["private-station"])
@@ -176,7 +186,7 @@ struct StoreRaceTests {
         case "revoked": await network.revoke(); await store.refresh(); #expect(store.authorizationLost)
         default: await store.disconnect(clearCachedScope: true)
         }
-        await gate.release(); try await settle()
+        await gate.release(); try await completed(saves)
         #expect(store.events.allSatisfy { $0.id != 987 })
         #expect(store.activeEvents(for: "private-station").isEmpty)
         #expect(try await cache.loadCursor(for: old.cacheKey) == nil)
@@ -185,10 +195,11 @@ struct StoreRaceTests {
     }
 
     @Test func delayedObserverSaveCannotRecreateClearedPrivateCache() async throws {
-        let gate = ConnectionBarrier()
+        let gate = ConnectionBarrier(), saves = CompletionCounter()
         let directory = FileManager.default.temporaryDirectory.appending(path: "StoreRace.\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory); StoreConnectionProtocol.handler = nil }
-        let cache = SnapshotCache(directory: directory, beforeObserverSave: { await gate.holdOnce() })
+        let cache = SnapshotCache(directory: directory, beforeObserverSave: { await gate.holdOnce() },
+                                  afterObserverSave: { await saves.increment() })
         let network = StoreNetworkState(); let store = store(cache: cache, network: network)
         let old = try session(privateAudience: true)
         store.start(session: old, stationIDs: ["private-station"])
@@ -197,7 +208,7 @@ struct StoreRaceTests {
         await network.failPublic()
         store.start(session: try session(privateAudience: false), stationIDs: ["public-station"])
         while store.errorMessage == nil { await Task.yield() }
-        await gate.release(); try await settle()
+        await gate.release(); try await completed(saves)
         #expect(store.errorMessage != nil)
         #expect(store.observers.allSatisfy { $0.id != "private-station" })
         #expect(try await cache.loadObservers(for: old.cacheKey) == nil)
@@ -206,17 +217,20 @@ struct StoreRaceTests {
     }
 
     @Test func delayedCursorRestoreCannotChangePublicCursor() async throws {
-        let gate = ConnectionBarrier()
+        let gate = ConnectionBarrier(), loads = CompletionCounter()
         let directory = FileManager.default.temporaryDirectory.appending(path: "StoreRace.\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory); StoreConnectionProtocol.handler = nil }
-        let cache = SnapshotCache(directory: directory, beforeCursorLoad: { await gate.holdOnce() })
+        let cache = SnapshotCache(directory: directory, beforeCursorLoad: { await gate.holdOnce() },
+                                  afterCursorLoad: { await loads.increment() })
         let old = try session(privateAudience: true)
         try await cache.saveCursor("private-cursor", for: old.cacheKey)
         let network = StoreNetworkState(); let store = store(cache: cache, network: network)
         store.start(session: old, stationIDs: ["private-station"])
         await gate.waitUntilEntered()
         store.start(session: try session(privateAudience: false), stationIDs: ["public-station"])
-        await gate.release(); try await settle()
+        // Both the held private restore and the public session's restore load
+        // a cursor; wait for the two of them.
+        await gate.release(); try await completed(loads, atLeast: 2)
         #expect(await network.publicCursors.isEmpty)
         #expect(store.observers.allSatisfy { $0.id != "private-station" })
         await store.disconnect(clearCachedScope: true)

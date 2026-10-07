@@ -64,8 +64,18 @@ final class StationStore {
         conditions.active.filter { $0.stationID == stationID }
     }
 
+    /// The collector serves `disabled` for a station that is configured but
+    /// deliberately not collected (docs/OUTPUT.md §1.3). Its silence is not an
+    /// outage: it keeps its own health and a badge on the list and detail
+    /// screens, but never drives the rollup behind the menu bar and the
+    /// overview header. With every selected station disabled there is
+    /// nothing to roll up, which reads as unknown.
+    func isDisabled(_ stationID: String) -> Bool {
+        observers.first(where: { $0.id == stationID })?.disabled == true
+    }
+
     var rollupHealth: HealthState {
-        HealthState.rollup(selectedStationIDs.map(health(for:)))
+        HealthState.rollup(selectedStationIDs.filter { !isDisabled($0) }.map(health(for:)))
     }
 
     func health(for stationID: String) -> HealthState {
@@ -145,7 +155,8 @@ final class StationStore {
         guard WireSchema.isSupported(payload.schema), payload.audience == session.audience.rawValue
         else { throw FeedError.invalidResponse }
         let snapshot = ObserversSnapshot(receivedAt: Date(), scope: session.cacheKey,
-                                         serverTime: envelope.time, payload: payload.redacted())
+                                         serverTime: envelope.time, payload: payload.redacted(),
+                                         cacheAge: envelope.cacheAge)
         try apply(snapshot, cached: false)
         return snapshot
     }
@@ -280,7 +291,12 @@ final class StationStore {
         observers = snapshot.payload.redacted().observers ?? []
         lastUpdated = snapshot.receivedAt
         isShowingCachedSnapshot = cached
-        fetchedAt = .now
+        // A document that a shared cache held for `cacheAge` seconds was current
+        // that long before it arrived. Anchoring the fetch instant back by that
+        // much carries the residence into every derived age, board freshness and
+        // the collector clock, instead of stamping the snapshot as fresh.
+        let cacheAge = snapshot.cacheAge.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil } ?? 0
+        fetchedAt = .now - .seconds(min(cacheAge, FeedClient.maximumCacheAge))
         // The collector envelope truncates UTC to whole seconds, while board
         // timestamps retain fractions. Use the end of that second so a newly
         // received pulse is not mistaken for a future timestamp; freshness can
@@ -297,7 +313,10 @@ final class StationStore {
             now.timeIntervalSince1970.isFinite && elapsed.isFinite && elapsed >= 0 &&
             (snapshot.lastRestoredAt.map { $0.timeIntervalSince1970.isFinite && now >= $0 } ?? true)
         let residence = cached ? elapsed : 0
-        let servedAt = WireDate.parse(snapshot.serverTime) ?? (cached ? nil : snapshot.receivedAt)
+        // An absolute `last_seen` can only be aged against the collector's own
+        // `time`. Without it the age is unknown, for a live snapshot as for a
+        // cached one: the device clock would turn clock skew into liveness.
+        let servedAt = WireDate.parse(snapshot.serverTime)
         ageAtFetch = Dictionary(uniqueKeysWithValues: observers.compactMap { observer in
             guard !cached || cacheTimeValid else { return nil }
             let age: TimeInterval

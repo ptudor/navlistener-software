@@ -32,7 +32,12 @@ private actor NoticeCenter: StationNotificationCenter {
         service.activate(session);service.setForeground(true)
         return (service,settings,center,session,suite)
     }
-    private func settle() async throws { try await Task.sleep(for:.milliseconds(50)) }
+    /// Every delivery the service accepted has run to its end, so the center
+    /// holds the final outcome; a transition the service rejected never
+    /// starts a delivery and needs no wait.
+    private func drained(_ service: StationNotifications) async throws {
+        #expect(try await eventually { service.pendingDeliveryCount == 0 })
+    }
 
     @Test func acceptedRaisesAndRecoveriesNotifyOnce() async throws {
         let (service,_,center,session,suite) = try fixture()
@@ -45,13 +50,13 @@ private actor NoticeCenter: StationNotificationCenter {
             let old = state.active.first
             if try state.apply(event),state.isKnown {service.transition(event,previous:old,active:event.isActiveStationCondition == true,session:session)}
         }
-        try await settle()
+        try await drained(service)
         #expect(await center.added.count == 2)
         #expect(await center.added.allSatisfy {$0.body == "Server-authored transition"})
         state.invalidate()
         let replay = try event(4,active:true)
         if try state.apply(replay),state.isKnown {service.transition(replay,previous:nil,active:true,session:session)}
-        try await settle();#expect(await center.added.count == 2)
+        try await drained(service);#expect(await center.added.count == 2)
     }
 
     @Test(arguments:["offline","rf","assurance","critical"])
@@ -62,18 +67,20 @@ private actor NoticeCenter: StationNotificationCenter {
         let type = ["offline": "station_offline", "rf": "jamming_detected", "assurance": "station_assurance"][category, default: "capability_impossible"]
         let raised = try event(1,type:type,active:true,severity:category == "critical" ? 2 : 1)
         service.transition(raised,previous:nil,active:true,session:session)
-        try await settle();#expect(await center.added.isEmpty)
+        try await drained(service);#expect(await center.added.isEmpty)
         switch category {case "offline":settings.notifyOffline = true;case "rf","assurance":settings.notifyRF = true;default:settings.notifyCritical = true}
         await center.setPermission(.denied)
         service.transition(raised,previous:nil,active:true,session:session)
-        try await settle();#expect(await center.added.isEmpty)
+        try await drained(service);#expect(await center.added.isEmpty)
         await center.setPermission(.authorized)
         service.transition(raised,previous:nil,active:true,session:session)
-        try await settle();#expect(await center.added.count == 1)
+        try await drained(service);#expect(await center.added.count == 1)
         service.setForeground(false)
         service.transition(try event(2,type:type,active:true,severity:2),previous:nil,active:true,session:session)
-        try await settle();#expect(await center.added.count == 1)
-        #expect(await center.pending.isEmpty)
+        try await drained(service);#expect(await center.added.count == 1)
+        // Leaving the foreground retires the generation, which removes its
+        // presented notices from the center asynchronously.
+        #expect(try await eventually { await center.pending.isEmpty })
     }
 
     @Test(arguments:["permission","add"])
@@ -87,7 +94,13 @@ private actor NoticeCenter: StationNotificationCenter {
         service.retire()
         let next = try #require(ReadSession(baseURL:session.baseURL,principalID:nil,audience:.publicAudience,authorizationRevision:"public",token:nil))
         service.activate(next)
-        await gate.release();try await settle()
+        await gate.release()
+        if boundary == "add" {
+            // The held add completes for the retired generation, and the
+            // delivery then withdraws it because its generation is gone.
+            #expect(try await eventually { await center.added.count == 1 })
+            #expect(try await eventually { await center.pending.isEmpty })
+        }
         #expect(await center.pending.isEmpty)
         for notice in await center.added {#expect(!service.canPresent(notice.id))}
         if boundary == "permission" {#expect(await center.added.isEmpty)}

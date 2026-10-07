@@ -248,4 +248,8 @@ struct ObserversSnapshot: Codable, Sendable {
     // Optional for existing cache files. Detect a wall clock moving backwards
     // across launches, where ContinuousClock cannot span the process lifetime.
     var lastRestoredAt: Date? = nil
+    // Optional for existing cache files. Seconds the live response had already
+    // spent in an intermediary cache when it was received (RFC 9111 `Age`);
+    // the document was that much older than `receivedAt` on arrival.
+    var cacheAge: TimeInterval? = nil
 }

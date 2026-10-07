@@ -8,6 +8,15 @@ struct APIEnvelope<Payload: Codable & Sendable>: Codable, Sendable {
     let data: Payload?
     let error: String?
     let code: Int?
+    /// Seconds the response had already spent in an intermediary cache when it
+    /// arrived (RFC 9111 `Age`), so `time` and every age derived from the
+    /// payload can be corrected for that residence. Transport metadata set by
+    /// the client, never part of the wire document.
+    var cacheAge: TimeInterval = 0
+
+    enum CodingKeys: String, CodingKey {
+        case ok, time, data, error, code
+    }
 }
 
 /// `schema` is served as "<major>.<minor>" (docs/OUTPUT.md §0). A client built

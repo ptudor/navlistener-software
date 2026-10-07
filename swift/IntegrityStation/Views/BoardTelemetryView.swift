@@ -222,6 +222,8 @@ private struct EnvironmentReadings: View {
         MetricRow(label: "board.environment.hdc", value: BoardFormat.measurement(environment.hdc2080C, unit: "°C"))
         MetricRow(label: "board.environment.bmp", value: BoardFormat.measurement(environment.bmp388BMP384C, unit: "°C"))
         MetricRow(label: "board.environment.humidity", value: BoardFormat.measurement(environment.humidityPercent, unit: "% RH"))
-        MetricRow(label: "board.environment.pressure", value: BoardFormat.measurement(environment.pressurePa.map { Double($0) / 100 }, unit: "hPa"))
+        // Pascals, as served (`pressure_pa`) and as the history and portal
+        // screens show the same quantity.
+        MetricRow(label: "board.environment.pressure", value: BoardFormat.measurement(environment.pressurePa.map { Double($0) }, unit: "Pa"))
     }
 }

@@ -4,6 +4,8 @@ import Testing
 
 private final class FallbackProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var failure = 0
+    /// The transport error the primary reports when `failure` is 0.
+    nonisolated(unsafe) static var primaryError = URLError.Code.cannotFindHost
     nonisolated(unsafe) static var hosts: [String] = []
     nonisolated(unsafe) static var updateBodies: [Data] = []
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -27,7 +29,7 @@ private final class FallbackProtocol: URLProtocol, @unchecked Sendable {
         }
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-token")
         if host == "in.intsat.net" && Self.failure == 0 {
-            client?.urlProtocol(self, didFailWithError: URLError(.cannotFindHost))
+            client?.urlProtocol(self, didFailWithError: URLError(Self.primaryError))
             return
         }
         let status = host == "in.intsat.net" ? Self.failure : 200
@@ -68,10 +70,36 @@ struct EndpointFallbackTests {
         }
         #expect(!CollectorEndpoint.canRetry(URLError(.cancelled)))
         #expect(!CollectorEndpoint.canRetry(FeedError.forbidden(nil)))
+        for code in [URLError.Code.cannotFindHost, .timedOut, .networkConnectionLost, .cannotConnectToHost] {
+            #expect(CollectorEndpoint.canRetry(URLError(code)))
+        }
+        // A certificate or TLS failure on the primary is shown, never routed
+        // around through the alias.
+        for code in [URLError.Code.secureConnectionFailed, .serverCertificateHasBadDate, .serverCertificateUntrusted,
+                     .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid, .clientCertificateRejected,
+                     .clientCertificateRequired, .appTransportSecurityRequiresSecureConnection] {
+            #expect(!CollectorEndpoint.canRetry(URLError(code)), "\(code)")
+        }
+    }
+
+    @Test func certificateFailureOnThePrimaryIsNotMaskedByTheAlias() async throws {
+        FallbackProtocol.failure = 0; FallbackProtocol.primaryError = .serverCertificateUntrusted; FallbackProtocol.hosts = []
+        defer { FallbackProtocol.primaryError = .cannotFindHost }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [FallbackProtocol.self]
+        let network = URLSession(configuration: config)
+        defer { network.invalidateAndCancel() }
+        do {
+            _ = try await FeedClient(session: network).fetchAudiences(baseURL: URL(string: "https://in.intsat.net")!, token: "test-token")
+            Issue.record("Expected the certificate failure to surface")
+        } catch let error as URLError {
+            #expect(error.code == .serverCertificateUntrusted)
+        }
+        #expect(FallbackProtocol.hosts == ["in.intsat.net"])
     }
 
     @Test(arguments: [0, 503, 401, 403]) func discoveryUsesOnlyApprovedPeer(failure: Int) async throws {
-        FallbackProtocol.failure = failure; FallbackProtocol.hosts = []
+        FallbackProtocol.failure = failure; FallbackProtocol.primaryError = .cannotFindHost; FallbackProtocol.hosts = []
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [FallbackProtocol.self]
         let network = URLSession(configuration: config)

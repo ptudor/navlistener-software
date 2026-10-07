@@ -126,3 +126,17 @@ struct ConstellationBadge: View {
         .accessibilityElement(children: .combine)
     }
 }
+
+/// Marks a station the collector serves as `disabled` (docs/OUTPUT.md §1.3):
+/// configured, but deliberately not collected, so its silence is not an
+/// outage and it is left out of the health rollup.
+struct StationDisabledBadge: View {
+    var body: some View {
+        Text("station.disabled")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(.primary.opacity(0.06), in: Capsule())
+    }
+}

@@ -22,6 +22,15 @@ enum FeedError: Error, Equatable, LocalizedError, Sendable {
     // Skipping it let the client accept a later cursor and step permanently past
     // a durable transition while still presenting conditions as known.
     case malformedEvent(id: String?)
+    // Update control (gnss/api/v2/updates) answers outside the v2 envelope
+    // with plain-text reasons. A denial concerns the update grant for one
+    // observer, never the read credential, so it is not an authorization
+    // loss; any other rejection carries the collector's reason and status.
+    case updateDenied(String?)
+    case updateRejected(status: Int, message: String)
+    // The owner-portal browser sign-in had no window to present from, or the
+    // system declined to present it; nothing was received from the portal.
+    case signInUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -39,6 +48,9 @@ enum FeedError: Error, Equatable, LocalizedError, Sendable {
         case .inputLimit: String(localized: "error.input_limit")
         case .streamEnded: String(localized: "error.stream_ended")
         case .malformedEvent: String(localized: "error.malformed_event")
+        case .updateDenied(let message): message ?? String(localized: "error.update_denied")
+        case .updateRejected(_, let message): message
+        case .signInUnavailable: String(localized: "portal.cannot_present")
         }
     }
 
@@ -69,15 +81,29 @@ enum CollectorEndpoint {
         return nil
     }
 
+    /// A certificate or TLS failure on the primary is shown, never routed
+    /// around: an expired certificate or an interception on one host must not
+    /// be masked by a successful alias, and the alias must not be tried with
+    /// the credential after the primary's identity could not be verified.
+    static let transportSecurityCodes: Set<URLError.Code> = [
+        .secureConnectionFailed, .serverCertificateHasBadDate, .serverCertificateUntrusted,
+        .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid, .clientCertificateRejected,
+        .clientCertificateRequired, .appTransportSecurityRequiresSecureConnection
+    ]
+
     static func canRetry(_ error: Error) -> Bool {
         if let error = error as? URLError {
             return error.code != .cancelled && error.code != .userAuthenticationRequired
                 && error.code != .userCancelledAuthentication && error.code != .badURL
+                && !transportSecurityCodes.contains(error.code)
         }
-        if case FeedError.http(let status) = error {
-            return status == 408 || status == 421 || status == 429 || (500...599).contains(status)
-        }
+        if case FeedError.http(let status) = error { return isRetryableStatus(status) }
+        if case FeedError.updateRejected(let status, _) = error { return isRetryableStatus(status) }
         return false
+    }
+
+    static func isRetryableStatus(_ status: Int) -> Bool {
+        status == 408 || status == 421 || status == 429 || (500...599).contains(status)
     }
 
     static func stream(session: URLSession, request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
@@ -106,6 +132,27 @@ enum CollectorEndpoint {
         else { throw FeedError.invalidBaseURL }
         return baseURL.appending(path: path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))
     }
+
+    /// Characters a query name or value may carry unescaped. URLComponents
+    /// leaves `+`, `&`, `=` and `%` alone in query items, but the collector
+    /// parses the query with Go's url.ParseQuery, which decodes a bare `+` as
+    /// a space and splits on `&`/`=`; opaque observer ids may contain any
+    /// punctuation, so those are escaped as well.
+    static let queryAllowed = CharacterSet.urlQueryAllowed.subtracting(CharacterSet(charactersIn: "+&=%"))
+
+    /// Items ready for `URLComponents.percentEncodedQueryItems`.
+    static func percentEncodedQueryItems(_ items: [URLQueryItem]) throws -> [URLQueryItem] {
+        try items.map { item in
+            guard let name = item.name.addingPercentEncoding(withAllowedCharacters: queryAllowed)
+            else { throw FeedError.invalidBaseURL }
+            let value = try item.value.map { raw -> String in
+                guard let encoded = raw.addingPercentEncoding(withAllowedCharacters: queryAllowed)
+                else { throw FeedError.invalidBaseURL }
+                return encoded
+            }
+            return URLQueryItem(name: name, value: value)
+        }
+    }
 }
 
 struct FeedClient: Sendable, Equatable {
@@ -125,7 +172,7 @@ struct FeedClient: Sendable, Equatable {
 
     func updateAccess(session: ReadSession, observer: String, action: String? = nil,
                       choice: UpdateAccess.Choice? = nil, requestID: String = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()) async throws -> UpdateAccess {
-        guard session.audience.isPrivate, session.token != nil else { throw FeedError.forbidden(nil) }
+        guard session.audience.isPrivate, session.token != nil else { throw FeedError.updateDenied(nil) }
         let endpoint = try CollectorEndpoint.url(baseURL: session.baseURL, path: "gnss/api/v2/updates")
         var request = URLRequest(url: endpoint)
         request.timeoutInterval = 15
@@ -143,14 +190,22 @@ struct FeedClient: Sendable, Equatable {
             ])
         } else {
             var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
-            components?.queryItems = [URLQueryItem(name: "observer_id", value: observer)]
+            components?.percentEncodedQueryItems = try CollectorEndpoint.percentEncodedQueryItems(
+                [URLQueryItem(name: "observer_id", value: observer)])
             request.url = components?.url
         }
         func once(_ request: URLRequest) async throws -> UpdateAccess {
             let (bytes, response) = try await self.session.bytes(for: request, delegate: CredentialRedirectGuard(request: request))
             defer { bytes.task.cancel() }
             guard let http = response as? HTTPURLResponse else { throw FeedError.invalidResponse }
-            guard (200...299).contains(http.statusCode) else { throw Self.responseError(status: http.statusCode) }
+            guard (200...299).contains(http.statusCode) else {
+                // The reason is a short plain-text line; an oversized body
+                // carries none worth keeping.
+                let body: Data?
+                do { body = try await NetworkLimits.body(bytes, maximum: NetworkLimits.errorBytes) }
+                catch FeedError.inputLimit { body = nil }
+                throw Self.updateResponseError(status: http.statusCode, mimeType: http.mimeType, data: body)
+            }
             guard response.expectedContentLength <= NetworkLimits.responseBytes else { throw FeedError.inputLimit }
             let data = try await NetworkLimits.body(bytes, maximum: NetworkLimits.responseBytes)
             return try JSONDecoder().decode(UpdateAccess.self, from: data)
@@ -183,7 +238,8 @@ struct FeedClient: Sendable, Equatable {
         let endpoint = try CollectorEndpoint.url(baseURL: session.baseURL, path: "gnss/api/events")
         var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
         if let since {
-            components?.queryItems = [URLQueryItem(name: "since", value: since.ISO8601Format())]
+            components?.percentEncodedQueryItems = try CollectorEndpoint.percentEncodedQueryItems(
+                [URLQueryItem(name: "since", value: since.ISO8601Format())])
         }
         guard let url = components?.url else { throw FeedError.invalidBaseURL }
         return try await fetch(url: url, session: session)
@@ -206,7 +262,7 @@ struct FeedClient: Sendable, Equatable {
         try await validateGrant()
         let endpoint = try CollectorEndpoint.url(baseURL: session.baseURL, path: "gnss/api/v2/observer-samples")
         var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
-        components?.queryItems = request.query
+        components?.percentEncodedQueryItems = try CollectorEndpoint.percentEncodedQueryItems(request.query)
         guard let url = components?.url else { throw FeedError.invalidBaseURL }
         let envelope: APIEnvelope<SensorHistoryPage> = try await fetch(url: url, session: session)
         guard let page = envelope.data else { throw FeedError.missingData }
@@ -248,6 +304,11 @@ struct FeedClient: Sendable, Equatable {
     ) async throws -> APIEnvelope<Payload> {
         var request = URLRequest(url: url)
         request.timeoutInterval = 10
+        // Feed documents are this client's clock source. An answer from the
+        // URL cache within the public feed's max-age would be stamped with the
+        // current fetch time and understate every age, so even anonymous
+        // discovery goes to the origin.
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("IntegrityStation/0.1", forHTTPHeaderField: "User-Agent")
         if let session {
@@ -271,7 +332,7 @@ struct FeedClient: Sendable, Equatable {
         }
         guard success else { throw Self.responseError(status: http.statusCode, data: data) }
 
-        let envelope: APIEnvelope<Payload>
+        var envelope: APIEnvelope<Payload>
         do {
             envelope = try JSONDecoder().decode(APIEnvelope<Payload>.self, from: data)
         } catch {
@@ -284,6 +345,7 @@ struct FeedClient: Sendable, Equatable {
             )
         }
         guard envelope.data != nil else { throw FeedError.missingData }
+        envelope.cacheAge = Self.cacheAge(of: http)
         return envelope
     }
 
@@ -296,12 +358,64 @@ struct FeedClient: Sendable, Equatable {
         }
     }
 
-    private static func failFastSession() -> URLSession {
+    /// Longest server reason shown to the user.
+    static let reasonCharacters = 256
+
+    /// The update-control endpoint answers outside the v2 envelope with
+    /// http.Error text ("update grant required for this enrolled observer",
+    /// the 409 conflict reason, "update controls are not configured"). That
+    /// text, bounded, is the message; a JSON `error` field is honoured should
+    /// one ever appear; any other content (a proxy's HTML page) carries no
+    /// reason. 401 and 403 here concern the update credential and grant for
+    /// one observer, so they never read as a withdrawn read authorization.
+    static func updateResponseError(status: Int, mimeType: String?, data: Data?) -> FeedError {
+        let reason = data.flatMap { reason(mimeType: mimeType, data: $0) }
+        return switch status {
+        case 401, 403: .updateDenied(reason)
+        default: reason.map { .updateRejected(status: status, message: $0) } ?? .http(status)
+        }
+    }
+
+    private static func reason(mimeType: String?, data: Data) -> String? {
+        let text: String? = switch mimeType {
+        case "application/json": try? JSONDecoder().decode(APIErrorEnvelope.self, from: data).error
+        case "text/plain": String(data: data, encoding: .utf8)
+        default: nil
+        }
+        guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
+        return String(trimmed.prefix(reasonCharacters))
+    }
+
+    /// RFC 9111 §5.1: a recipient reads an `Age` above 2^31 seconds as 2^31.
+    static let maximumCacheAge: TimeInterval = 2_147_483_648
+
+    /// Seconds a shared cache (a reverse proxy, a CDN) held the response before
+    /// forwarding it. The local URL cache is bypassed, but a proxy answering
+    /// within the public feed's max-age still serves an older document than
+    /// its `time` suggests; the store moves its fetch instant back by this much.
+    /// `Age` is delta-seconds: a non-negative integer. Anything else is no age.
+    static func cacheAge(of response: HTTPURLResponse) -> TimeInterval {
+        guard let value = response.value(forHTTPHeaderField: "Age")?
+                .trimmingCharacters(in: .whitespaces),
+              !value.isEmpty, value.utf8.allSatisfy({ (48...57).contains($0) })
+        else { return 0 }
+        guard let seconds = UInt64(value) else { return maximumCacheAge }
+        return min(TimeInterval(seconds), maximumCacheAge)
+    }
+
+    /// A short idle watchdog between bytes, and a total bound sized to the
+    /// 32 MiB response limit: 120 s admits a full-size fleet document at about
+    /// 2.2 Mbit/s, where the former 15 s could never complete one and every
+    /// poll of a large fleet on a slow link failed with a timeout.
+    static let idleTimeout: TimeInterval = 10
+    static let resourceTimeout: TimeInterval = 120
+
+    static func failFastSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.waitsForConnectivity = false
-        configuration.timeoutIntervalForRequest = 10
-        configuration.timeoutIntervalForResource = 15
-        configuration.requestCachePolicy = .useProtocolCachePolicy
+        configuration.timeoutIntervalForRequest = idleTimeout
+        configuration.timeoutIntervalForResource = resourceTimeout
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: configuration)
     }
 }
@@ -310,9 +424,11 @@ enum ReadRequestHeaders {
     static func apply(session: ReadSession, to request: inout URLRequest) throws {
         if session.audience.isPrivate { try requireSecureTransport(request.url) }
         request.setValue(session.audience.rawValue, forHTTPHeaderField: "X-GNSS-Audience")
+        // Every audience's requests go to the origin: the public feed is served
+        // with max-age=30, and a cached answer would be presented as a fresh poll.
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         if let token = session.token {
             try apply(token: token, to: &request)
-            request.cachePolicy = .reloadIgnoringLocalCacheData
         }
     }
 

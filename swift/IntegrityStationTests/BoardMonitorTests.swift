@@ -66,13 +66,19 @@ private final class BoardMonitorProtocol: URLProtocol, @unchecked Sendable {
         for _ in 0..<200 where store.observers.isEmpty || store.isRefreshing { try await Task.sleep(for: .milliseconds(10)) }
         #expect(store.observers.first?.board?.timing != nil)
         let monitor = Task { await store.monitorBoard(for: "observer-s3") }
-        try await Task.sleep(for: .milliseconds(1200))
-        #expect(await network.observerRequests >= 3)
+        #expect(try await eventually { await network.observerRequests >= 3 })
+        // Hold the next poll open, cancel the monitor while that poll is in
+        // flight, then let it go: the loop must exit and no poll may follow.
+        let gate = ConnectionBarrier()
+        await network.hold(gate)
+        await gate.waitUntilEntered()
+        let inFlight = await network.observerRequests
         monitor.cancel()
+        await gate.release()
         await monitor.value
-        let stopped = await network.observerRequests
-        try await Task.sleep(for: .milliseconds(1100))
-        #expect(await network.observerRequests == stopped)
+        #expect(await network.observerRequests == inFlight)
+        #expect(store.activeSession != nil)
+        #expect(store.observers.first?.board?.timing != nil)
         await store.disconnect(clearCachedScope: true)
     }
 
