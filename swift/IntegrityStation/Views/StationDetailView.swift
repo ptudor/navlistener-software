@@ -59,7 +59,10 @@ struct StationDetailView: View {
     private var header: some View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                HealthLabel(state: controller.store.health(for: stationID))
+                HStack(spacing: 8) {
+                    HealthLabel(state: controller.store.health(for: stationID))
+                    if observer?.disabled == true { StationDisabledBadge() }
+                }
                 Text(stationID)
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)

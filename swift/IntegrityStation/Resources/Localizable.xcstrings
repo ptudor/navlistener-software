@@ -4051,6 +4051,16 @@
         }
       }
     },
+    "station.disabled": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disabled"
+          }
+        }
+      }
+    },
     "format.age.now": {
       "localizations": {
         "en": {

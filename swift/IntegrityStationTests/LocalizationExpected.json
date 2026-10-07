@@ -346,6 +346,7 @@
   "station.assurance.title": "Assurance",
   "station.assurance.unassured_domains": "Unassured domains",
   "station.detail.title": "Station",
+  "station.disabled": "Disabled",
   "station.identity.accuracy": "Reported accuracy",
   "station.identity.clock": "Clock drift",
   "station.identity.git": "Git",

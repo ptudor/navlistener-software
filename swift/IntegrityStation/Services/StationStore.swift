@@ -64,8 +64,18 @@ final class StationStore {
         conditions.active.filter { $0.stationID == stationID }
     }
 
+    /// The collector serves `disabled` for a station that is configured but
+    /// deliberately not collected (docs/OUTPUT.md §1.3). Its silence is not an
+    /// outage: it keeps its own health and a badge on the list and detail
+    /// screens, but never drives the rollup behind the menu bar and the
+    /// overview header. With every selected station disabled there is
+    /// nothing to roll up, which reads as unknown.
+    func isDisabled(_ stationID: String) -> Bool {
+        observers.first(where: { $0.id == stationID })?.disabled == true
+    }
+
     var rollupHealth: HealthState {
-        HealthState.rollup(selectedStationIDs.map(health(for:)))
+        HealthState.rollup(selectedStationIDs.filter { !isDisabled($0) }.map(health(for:)))
     }
 
     func health(for stationID: String) -> HealthState {
