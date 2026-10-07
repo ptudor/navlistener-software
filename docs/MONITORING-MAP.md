@@ -5,8 +5,11 @@ the complete location, redundancy, reference, and audience controls. Both are
 static exports from `collector-web/` and read the Go collector's
 `/gnss/api/v2/coverage` endpoint on the same origin. The Go service publishes the
 API only. When using a private collector, serve the static export and route
-`/gnss/api/v2/` through the same authenticated reverse proxy. The page makes no
-external browser requests.
+`/gnss/api/v2/` through the same authenticated reverse proxy. Every feed is
+requested with same-origin credentials, so the proxy must authenticate
+`/gnss/api/v2/*` with a same-origin cookie or HTTP Basic credential; one
+browser login then serves the overview feeds and the map alike. The page makes
+no external browser requests.
 
 The world is a 2:1 equirectangular map with calculated daylight, observation gaps,
 and satellite subpoints. Filters select GPS, Galileo, BeiDou, GLONASS, and QZSS;

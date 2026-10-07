@@ -299,7 +299,9 @@ async function fetchFeed(key) {
     const response = await fetch(`/gnss/api/v2/${key}`, {
       signal: controller.signal,
       cache: 'no-cache',
-      credentials: 'omit',
+      // Same as the map: behind an authenticating same-origin proxy every feed
+      // shares one browser login. validateEnvelope still admits only 'public'.
+      credentials: 'same-origin',
       headers: { Accept: 'application/json' },
     })
     if (!response.ok) throw new Error('Feed unavailable')

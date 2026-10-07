@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sunDirection, site, elevation, modelFromFeed, assess, worldGrid } from '../src/map/geometry.js';
+import { sunDirection, site, elevation, modelFromFeed, assess, serverOffset, worldGrid } from '../src/map/geometry.js';
 
 const at = Date.parse('2026-09-22T12:00:00Z');
 function feed(satellites, observations = []) {
@@ -81,6 +81,34 @@ test('unknown orbit, missing constellation and failed reference cannot look comp
     assert.equal(assess(model, 0, 0, 10, 2).status, 'unknown');
     assert.equal(worldGrid(model, 10, 2, 10).coveredPercent, 0);
   }
+});
+test('staleness and witness ageing follow the collector clock from the Date header', () => {
+  const header = new Date(at).toUTCString();
+  const fastBrowser = at + 5 * 60000;
+  assert.equal(serverOffset(header, fastBrowser), -5 * 60000);
+  assert.equal(serverOffset(null, fastBrowser), null);
+  assert.equal(serverOffset('soon', fastBrowser), null);
+  const envelope = feed([sv], [observer(1)]);
+  assert.equal(modelFromFeed(envelope, new Set([0]), fastBrowser).stale, true);
+  const corrected = modelFromFeed(envelope, new Set([0]), fastBrowser + serverOffset(header, fastBrowser));
+  assert.equal(corrected.stale, false);
+  assert.equal(corrected.satellites[0].witnesses, 1);
+  assert.equal(assess(corrected, 0, 0, 10, 1).status, 'covered');
+});
+test('an unparsable reference download time or unknown status cannot break the model', () => {
+  const envelope = feed([sv]);
+  envelope.data.reference.fetched_at = 'soon';
+  envelope.data.reference.status = 'brand-new';
+  const model = modelFromFeed(envelope, new Set([0]), at);
+  assert.equal(model.reference.fetchedAt, null);
+  assert.equal(model.reference.status, 'unavailable');
+  assert.equal(model.uncertain, true);
+  envelope.data.reference.fetched_at = new Date(at).toISOString();
+  envelope.data.reference.status = 'current';
+  const current = modelFromFeed(envelope, new Set([0]), at);
+  assert.equal(current.reference.fetchedAt, at);
+  assert.equal(current.reference.status, 'current');
+  assert.equal(modelFromFeed(feed([sv]), new Set([0]), at).reference.fetchedAt, null, 'an omitted download time is simply pending');
 });
 test('dateline, poles and elevation use consistent WGS-84 geometry', () => {
   assert.ok(Math.abs(elevation(sv.ecef_m, site(0, 0)) - 90) < 1e-6);

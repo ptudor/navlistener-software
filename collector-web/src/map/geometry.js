@@ -54,6 +54,17 @@ function validPosition(position) {
     && Math.hypot(...position) > 2e7 && Math.hypot(...position) < 5e7
 }
 
+export const REFERENCE_STATUSES = new Set(['current', 'delayed', 'unavailable'])
+
+// How far the collector's clock, read from a same-origin response's Date
+// header, is ahead of the browser's. Feed times are collector times, so the
+// staleness and witness windows must be measured on that clock, not the
+// browser's. null when the header is absent or unparsable.
+export function serverOffset(dateHeader, local = Date.now()) {
+  const server = Date.parse(dateHeader)
+  return Number.isFinite(server) ? server - local : null
+}
+
 export function modelFromFeed(envelope, selected, now = Date.now()) {
   if (!envelope?.ok || !Array.isArray(envelope.data?.reference?.satellites) || !Array.isArray(envelope.data?.observations)) {
     throw new Error('Invalid coverage response')
@@ -62,6 +73,14 @@ export function modelFromFeed(envelope, selected, now = Date.now()) {
   const sampled = Date.parse(envelope.time)
   if (!Number.isFinite(sampled)) throw new Error('Invalid coverage time')
   const stale = now - sampled > 90000 || sampled - now > 10000
+  // Parsed once here so the template formats a number or shows "pending";
+  // an unknown status is never mistaken for a current reference.
+  const fetchedAt = Date.parse(data.reference.fetched_at)
+  const reference = {
+    ...data.reference,
+    status: REFERENCE_STATUSES.has(data.reference.status) ? data.reference.status : 'unavailable',
+    fetchedAt: Number.isFinite(fetchedAt) ? fetchedAt : null,
+  }
   const observations = new Map(data.observations.map((satellite) => [satellite.name, satellite]))
   const all = new Map(data.reference.satellites.map((satellite) => [satellite.name, { ...satellite, reference: true }]))
   for (const satellite of observations.values()) {
@@ -85,8 +104,8 @@ export function modelFromFeed(envelope, selected, now = Date.now()) {
     stale,
     sampled,
     audience: data.audience,
-    reference: data.reference,
-    uncertain: stale || data.reference.status !== 'current' || unknown.length > 0 || absentSystems.length > 0,
+    reference,
+    uncertain: stale || reference.status !== 'current' || unknown.length > 0 || absentSystems.length > 0,
     absentSystems,
   }
 }

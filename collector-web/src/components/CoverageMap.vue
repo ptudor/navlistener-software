@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { mapPagePath } from '../siteRoutes.js'
-import { SYSTEMS, assess, elevation, modelFromFeed, site, subpoint, sunDirection, worldGrid } from '../map/geometry.js'
+import { SYSTEMS, assess, elevation, modelFromFeed, serverOffset, site, subpoint, sunDirection, worldGrid } from '../map/geometry.js'
 
 const props = defineProps({
   full: { type: Boolean, default: false },
@@ -39,6 +39,10 @@ let ageTimer
 let request
 let revision = 0
 let hitTargets = []
+// The collector's clock relative to the browser's, from the latest response.
+// Snapshot and witness times are collector times, so staleness is judged on it.
+let clockOffset = 0
+const now = () => Date.now() + clockOffset
 
 const fullMapHref = computed(() => mapPagePath(props.locale))
 const selectedSet = computed(() => new Set(selectedSystems.value))
@@ -74,8 +78,8 @@ const notice = computed(() => {
 })
 const referenceSummary = computed(() => {
   if (!model.value) return t('map.reference_pending')
-  const fetched = model.value.reference.fetched_at
-    ? t('map.reference_downloaded', { time: new Date(model.value.reference.fetched_at).toISOString().replace('T', ' ').slice(0, 19) })
+  const fetched = model.value.reference.fetchedAt !== null
+    ? t('map.reference_downloaded', { time: new Date(model.value.reference.fetchedAt).toISOString().replace('T', ' ').slice(0, 19) })
     : t('map.reference_not_downloaded')
   return `${model.value.reference.source}: ${model.value.reference.status}. ${fetched}`
 })
@@ -136,10 +140,15 @@ function systemName(satellite) {
   return SYSTEMS.find((system) => system.id === satellite.gnssid)?.name || ''
 }
 
+// A stable key for styling; statusText is the translated label beside it.
+function statusKey(satellite) {
+  if (!satellite.witnesses) return 'missing'
+  if (satellite.witnesses < Number(stationTarget.value)) return 'thin'
+  return 'met'
+}
+
 function statusText(satellite) {
-  if (!satellite.witnesses) return t('map.status_missing')
-  if (satellite.witnesses < Number(stationTarget.value)) return t('map.status_redundancy')
-  return t('map.status_met')
+  return t({ missing: 'map.status_missing', thin: 'map.status_redundancy', met: 'map.status_met' }[statusKey(satellite)])
 }
 
 function toggleSystem(id) {
@@ -170,6 +179,8 @@ async function read(path, signal) {
       ? t('map.access_unavailable')
       : t('map.request_failed', { status: response.status }))
   }
+  const offset = serverOffset(response.headers.get('Date'))
+  if (offset !== null) clockOffset = offset
   return response.json()
 }
 
@@ -190,8 +201,9 @@ function recalculate() {
     return
   }
   try {
-    const next = modelFromFeed(envelope.value, selectedSet.value)
-    const complete = modelFromFeed(envelope.value, new Set(SYSTEMS.map((system) => system.id)))
+    const at = now()
+    const next = modelFromFeed(envelope.value, selectedSet.value, at)
+    const complete = modelFromFeed(envelope.value, new Set(SYSTEMS.map((system) => system.id)), at)
     model.value = next
     grid.value = worldGrid(next, Number(elevationLimit.value), Number(stationTarget.value))
     emit('activity', SYSTEMS.map((system) => {
@@ -220,7 +232,7 @@ async function refresh() {
   try {
     const next = await read('coverage', request.signal)
     if (mine !== revision) return
-    modelFromFeed(next, selectedSet.value)
+    modelFromFeed(next, selectedSet.value, now())
     envelope.value = next
     failure.value = ''
     loading.value = false
@@ -599,7 +611,7 @@ onBeforeUnmount(() => {
               <tbody>
                 <tr v-for="satellite in visibleSatellites" :key="satellite.name">
                   <td><button type="button" class="satellite-link" @click="selectSatellite(satellite.name)">{{ satellite.name }}</button></td>
-                  <td>{{ satellite.elevation.toFixed(0) }}°</td><td>{{ satellite.witnesses }}</td><td :data-status="statusText(satellite)">{{ statusText(satellite) }}</td>
+                  <td>{{ satellite.elevation.toFixed(0) }}°</td><td>{{ satellite.witnesses }}</td><td :data-status="statusKey(satellite)">{{ statusText(satellite) }}</td>
                 </tr>
                 <tr v-if="groundLocation && !visibleSatellites.length"><td colspan="4" class="empty">{{ t('map.none_visible') }}</td></tr>
               </tbody>
@@ -711,9 +723,9 @@ table { width: 100%; border-collapse: collapse; text-align: left; font: 11px/1.5
 th, td { padding: 9px 8px; border-bottom: 1px solid var(--soft-line); }
 th { position: sticky; top: 0; background: var(--deep); color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
 .satellite-link { min-height: 0; padding: 0; border: 0; background: transparent; color: var(--accent); font: inherit; text-decoration: underline; text-underline-offset: 3px; }
-td[data-status="Missing"] { color: var(--error); }
-td[data-status="Needs redundancy"] { color: var(--warning); }
-td[data-status="Target met"] { color: var(--gps); }
+td[data-status="missing"] { color: var(--error); }
+td[data-status="thin"] { color: var(--warning); }
+td[data-status="met"] { color: var(--gps); }
 .unknown-list, .access-status { margin-top: 12px; }
 .map-explanation > p + p { margin-top: 10px; }
 details { margin-top: 17px; }
