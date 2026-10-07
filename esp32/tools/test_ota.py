@@ -81,6 +81,9 @@ class OtaClientTest(unittest.TestCase):
     def test_journal_authentication_and_pagination(self):
         key, nonce = bytes(range(32)), "ab" * 32
         bodies = []
+        def row(sequence):
+            # A record carries every field the printer reads; the test only looks at sequence.
+            return {"sequence": sequence, **{field: 0 for field in ota.JOURNAL_FIELDS}}
         def exchange(device, path, data=None, headers=None):
             if path == "/ota":
                 return json.dumps({"nonce": nonce}).encode()
@@ -89,11 +92,11 @@ class OtaClientTest(unittest.TestCase):
             signature = headers["X-OTA-Authorization"]
             self.assertEqual(signature, ota.authorization(key, nonce, data, b"navfeeder-journal-v1\n"))
             self.assertNotEqual(signature, ota.authorization(key, nonce, data))
-            page = {"records": [{"sequence": "9"}], "next": "9"} if len(bodies) == 1 else {
-                "records": [{"sequence": "8"}], "next": "0"}
+            page = {"records": [row("9")], "next": "9"} if len(bodies) == 1 else {
+                "records": [row("8")], "next": "0"}
             return json.dumps(page).encode()
         with patch.object(ota, "exchange", side_effect=exchange):
-            self.assertEqual(ota.read_journal("device", key, "life", 10), [{"sequence": "9"}, {"sequence": "8"}])
+            self.assertEqual(ota.read_journal("device", key, "life", 10), [row("9"), row("8")])
         self.assertEqual(bodies, [b"life\n0", b"life\n9"])
 
     def test_journal_decodes_hardware_trust_and_commissioning_events(self):
@@ -123,6 +126,43 @@ class OtaClientTest(unittest.TestCase):
         with patch.object(ota, "exchange", side_effect=[json.dumps(r).encode() for r in replies]):
             with self.assertRaisesRegex(ValueError, "cursor did not advance"):
                 ota.read_journal("device", bytes(32), "health", 1024)
+
+    def test_unexpected_device_shapes_are_messages_not_tracebacks(self):
+        # Device JSON is untrusted input: a record without the fields the printer reads, a
+        # status body that is a list, non-JSON, and a shape the checks never anticipated all
+        # end in SystemExit carrying a readable message.
+        with tempfile.TemporaryDirectory() as folder:
+            key = Path(folder) / "key"
+            ota.read_key(key, create=True)
+            journal = ["--device", "d", "journal", "--key-file", str(key)]
+            replies = [{"nonce": "ab" * 32}, {"records": [{}], "next": "0"}]
+            with patch.object(ota, "exchange", side_effect=[json.dumps(r).encode() for r in replies]):
+                with self.assertRaises(SystemExit) as stopped:
+                    ota.run(journal)
+            self.assertIn("a record lacks utc", str(stopped.exception))
+            replies = [{"nonce": "ab" * 32}, {"records": [{"utc": "1", "event": 9}], "next": "0"}]
+            with patch.object(ota, "exchange", side_effect=[json.dumps(r).encode() for r in replies]):
+                with self.assertRaises(SystemExit) as stopped:
+                    ota.run(journal)
+            self.assertIn("alarm_mask", str(stopped.exception))
+            with patch.object(ota, "exchange", return_value=b"[]"):
+                with self.assertRaises(SystemExit) as stopped:
+                    ota.run(["--device", "d", "status"])
+            self.assertIn("not a JSON object", str(stopped.exception))
+            with patch.object(ota, "exchange", return_value=b"<html>"):
+                with self.assertRaises(SystemExit) as stopped:
+                    ota.run(["--device", "d", "status"])
+            self.assertIn("not JSON", str(stopped.exception))
+            with patch.object(ota, "exchange", return_value=json.dumps({"nonce": None}).encode()):
+                with self.assertRaises(SystemExit) as stopped:
+                    ota.run(["--device", "d", "check", "--key-file", str(key)])
+            self.assertIn("invalid device challenge", str(stopped.exception))
+            with patch.object(ota, "api_status", side_effect=KeyError("surprise")):
+                with self.assertRaises(SystemExit) as stopped:
+                    ota.run(["--device", "d", "status"])
+            self.assertIn("unexpected device response", str(stopped.exception))
+        # A well-formed page still passes the same checks.
+        self.assertEqual(ota.journal_row({key: 0 for key in ota.JOURNAL_FIELDS}), {key: 0 for key in ota.JOURNAL_FIELDS})
 
 
 if __name__ == "__main__":

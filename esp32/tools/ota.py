@@ -80,19 +80,49 @@ def authorization(key, nonce, body, domain=b"navfeeder-ota-v1\n"):
     return hmac.new(key, message, hashlib.sha256).hexdigest()
 
 
+def device_object(body, what):
+    """Decode a device reply that must be a JSON object. The device is untrusted input (another
+    unit, a captive portal on the setup AP, a partial firmware), so its shape is checked once
+    here and a surprise is a message, not a traceback."""
+    try:
+        value = json.loads(body)
+    except ValueError:
+        raise ValueError(f"{what}: the device reply is not JSON") from None
+    if not isinstance(value, dict):
+        raise ValueError(f"{what}: the device reply is not a JSON object")
+    return value
+
+
+# The fields print_journal reads from every row, and the extra ones per event.
+JOURNAL_FIELDS = ("utc", "event", "time_source", "boot", "uptime_ms", "firmware", "reset_reason", "flags", "dropped")
+RECEPTION_FIELDS = ("alarm_mask", "valid_mask", "observed", "expected", "expectation_id")
+POWER_FIELDS = ("joint_alarm_mask", "local_alarm_mask", "remote_alarm_mask", "model_conflict_mask", "expectation_id")
+
+
+def journal_row(row):
+    if not isinstance(row, dict):
+        raise ValueError("invalid journal page: a record is not a JSON object")
+    event = row.get("event")
+    extra = RECEPTION_FIELDS if event == 9 else POWER_FIELDS if event == 10 else ()
+    missing = [key for key in JOURNAL_FIELDS + extra if key not in row]
+    if missing:
+        raise ValueError("invalid journal page: a record lacks " + ", ".join(missing))
+    return row
+
+
 def read_journal(device, key, lane, limit):
     rows, before = [], 0
     while len(rows) < limit:
-        status = json.loads(exchange(device, "/ota"))
+        status = device_object(exchange(device, "/ota"), "pairing status")
         body = f"{lane}\n{before}".encode("ascii")
         signature = authorization(key, status.get("nonce"), body, b"navfeeder-journal-v1\n")
-        page = json.loads(exchange(device, "/journal", body, {
+        page = device_object(exchange(device, "/journal", body, {
             "Content-Type": "text/plain", "X-OTA-Nonce": status["nonce"],
             "X-OTA-Authorization": signature,
-        }))
-        if not isinstance(page.get("records"), list) or len(page["records"]) > 8:
+        }), "journal page")
+        if not isinstance(page.get("records"), list) or len(page["records"]) > 8 or "next" not in page:
             raise ValueError("invalid journal page")
-        rows.extend(page["records"])
+        rows.extend(journal_row(row) for row in page["records"])
         next_cursor = int(page["next"])
         if not next_cursor:
             break
@@ -155,7 +185,7 @@ def api_authorization(key, nonce, method, path, body):
 
 
 def api_status(device):
-    return json.loads(exchange(device, "/ota/v1/status"))
+    return device_object(exchange(device, "/ota/v1/status"), "update status")
 
 
 def api_mutation(device, key, command, value):
@@ -164,10 +194,10 @@ def api_mutation(device, key, command, value):
     body = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     status = api_status(device)
     signature = api_authorization(key, status.get("nonce"), method, path, body)
-    return json.loads(exchange(device, path, body, {
+    return device_object(exchange(device, path, body, {
         "Content-Type": "application/json", "X-OTA-Nonce": status["nonce"],
         "X-OTA-Authorization": signature,
-    }, method=method, timeout=75 if value.get("discard_backlog") else 10))
+    }, method=method, timeout=75 if value.get("discard_backlog") else 10), command)
 
 
 def wait_for(device, predicate, *, timeout=600):
@@ -188,7 +218,7 @@ def sequence(value):
     return value
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", required=True, help="device IP/hostname, optionally :port")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -215,7 +245,7 @@ def main():
     recovery.add_argument("--image", required=True)
     recovery.add_argument("--url", required=True)
     recovery.add_argument("--acknowledge-reboot-and-backlog-loss", action="store_true", required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.command == "pair":
         key = read_key(args.key_file, create=True)
         print(exchange(args.device, "/ota/pair", key.hex().encode("ascii"), {"Content-Type": "text/plain"}).decode().strip())
@@ -231,7 +261,7 @@ def main():
     elif args.command == "service-recovery":
         body = update_body(args.image, args.url)
         key = read_key(args.key_file)
-        status = json.loads(exchange(args.device, "/ota"))
+        status = device_object(exchange(args.device, "/ota"), "pairing status")
         if not status.get("confirmed"):
             raise ValueError("running firmware has not passed its startup checks")
         signature = authorization(key, status.get("nonce"), body)
@@ -270,8 +300,17 @@ def main():
         print("Request accepted. Device status reports the actual result.")
 
 
-if __name__ == "__main__":
+def run(argv=None):
+    """main with every failure an operator can act on turned into a message. KeyError and
+    TypeError are the backstop for a device reply whose shape the checks above did not
+    anticipate: still a message naming the surprise, never a traceback."""
     try:
-        main()
+        main(argv)
     except (OSError, ValueError, urllib.error.URLError) as error:
         raise SystemExit(str(error)) from None
+    except (KeyError, TypeError) as error:
+        raise SystemExit(f"unexpected device response: {error!r}") from None
+
+
+if __name__ == "__main__":
+    run()
