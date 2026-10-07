@@ -27,6 +27,19 @@ type observerPolicy struct {
 	// fingerprint, so rotation is not a policy transition) around its third
 	// rotation until restart (astra-6 verification of regression fix).
 	credentials map[policyCredential]time.Time
+	// verifiedAt is when the control plane last confirmed this policy's
+	// authority: at an admission, at a live session's periodic recheck, or in
+	// a reconciliation sweep. A recheck the control plane could not answer
+	// leaves the policy as it is; a live session is withdrawn only once the
+	// time since verifiedAt exceeds the documented revocation bound, and the
+	// sweep does not query a policy verified within the authority TTL.
+	verifiedAt time.Time
+	// transition is non-nil while a policy transition's reset marker is still
+	// being enqueued, and is closed once the marker is in the decode channel.
+	// admit waits on it — never on mu — so no new-generation producer starts
+	// before the marker, while release and the reconciliation snapshot take mu
+	// for their bookkeeping without waiting behind decode backpressure.
+	transition chan struct{}
 }
 
 // Bound the retained reconciliation work, including disconnected contributors.
@@ -48,6 +61,23 @@ type Admission struct {
 
 func (a *Admission) Current() bool {
 	return a == nil || a.policy.generation.Load() == a.generation
+}
+
+// verified records that the control plane confirmed this admission's policy
+// at now (the unavailability bound and the sweep's skip rule read it).
+func (a *Admission) verified(now time.Time) {
+	a.policy.mu.Lock()
+	if now.After(a.policy.verifiedAt) {
+		a.policy.verifiedAt = now
+	}
+	a.policy.mu.Unlock()
+}
+
+// verifiedAt is when the control plane last confirmed this admission's policy.
+func (a *Admission) verifiedAt() time.Time {
+	a.policy.mu.Lock()
+	defer a.policy.mu.Unlock()
+	return a.policy.verifiedAt
 }
 
 type admissionContextKey struct{}
@@ -82,22 +112,43 @@ func (p *PushServer) admit(ctx context.Context, current identity.ObserverContext
 	p.authorizationMu.Unlock()
 	policy.mu.Lock()
 	defer policy.mu.Unlock()
-	if ctx.Err() != nil {
-		return nil, "canceled"
-	}
-	generation := policy.generation.Load()
-	// A lookup begun before another authoritative transition cannot undo it.
-	// Equal-policy simultaneous connections remain legitimate.
-	if generation != lookedUpAt && !policy.current.AuthorizationEqual(current) {
-		return nil, "stale_lookup"
-	}
-	if generation == 0 {
-		policy.current = current
-		policy.generation.Store(1)
-	} else if !policy.current.AuthorizationEqual(current) {
-		if !p.transitionPolicyLocked(ctx, policy, current) {
+	for {
+		if ctx.Err() != nil {
+			return nil, "canceled"
+		}
+		generation := policy.generation.Load()
+		// A lookup begun before another authoritative transition cannot undo it.
+		// Equal-policy simultaneous connections remain legitimate. Decided
+		// before waiting on any pending marker: a refusal produces no DATA.
+		if generation != lookedUpAt && !policy.current.AuthorizationEqual(current) {
+			return nil, "stale_lookup"
+		}
+		if pending := policy.transition; pending != nil {
+			// Another session's transition is still enqueueing its reset
+			// marker: no new-generation producer may start before it. Wait
+			// off the lock, so releases and bookkeeping proceed meanwhile.
+			if !awaitPending(&policy.mu, pending, ctx) {
+				return nil, "canceled"
+			}
+			continue
+		}
+		if generation == 0 {
+			policy.current = current
+			policy.generation.Store(1)
+			break
+		}
+		if policy.current.AuthorizationEqual(current) {
+			break
+		}
+		previous, pending := p.beginTransitionLocked(policy, current)
+		policy.mu.Unlock()
+		enqueued := p.completeTransition(ctx, policy, previous, pending)
+		policy.mu.Lock()
+		if !enqueued {
 			return nil, "reset_blocked"
 		}
+		// The marker is in. The policy is this session's unless a later
+		// transition moved it again, which the next pass reports as stale.
 	}
 	now := time.Now()
 	for _, credential := range credentials {
@@ -116,19 +167,45 @@ func (p *PushServer) admit(ctx context.Context, current identity.ObserverContext
 		}
 		policy.credentials[credential] = now
 	}
+	// The handshake that reached admission verified this policy just now.
+	if now.After(policy.verifiedAt) {
+		policy.verifiedAt = now
+	}
 	a := &Admission{policy: policy, generation: policy.generation.Load()}
 	policy.sessions[a] = cancel
 	return a, ""
 }
 
+// awaitPending releases mu while it waits for a transition's marker to be
+// enqueued (pending closes) or for ctx to end, then re-acquires mu. It reports
+// whether the marker was enqueued.
+func awaitPending(mu *sync.Mutex, pending <-chan struct{}, ctx context.Context) bool {
+	mu.Unlock()
+	defer mu.Lock()
+	select {
+	case <-pending:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// release ends a session's admission. It takes only the policy lock, which no
+// transition holds across its marker send, so an ending session never waits
+// behind decode backpressure.
 func (a *Admission) release() {
 	a.policy.mu.Lock()
 	delete(a.policy.sessions, a)
 	a.policy.mu.Unlock()
 }
 
-func (p *PushServer) transitionPolicyLocked(ctx context.Context, policy *observerPolicy, current identity.ObserverContext) bool {
-	previous := policy.current
+// beginTransitionLocked records a policy transition under policy.mu: the
+// generation advances, the context is replaced, every older session is
+// cancelled and the retained credentials are dropped. The reset marker is not
+// yet enqueued; the returned channel is closed by completeTransition once it
+// is, and admit waits on it so no new-generation DATA precedes the marker.
+func (p *PushServer) beginTransitionLocked(policy *observerPolicy, current identity.ObserverContext) (previous identity.ObserverContext, pending chan struct{}) {
+	previous = policy.current
 	policy.generation.Add(1)
 	policy.current = current
 	policy.credentials = nil
@@ -136,16 +213,35 @@ func (p *PushServer) transitionPolicyLocked(ctx context.Context, policy *observe
 		cancel()
 		delete(policy.sessions, a)
 	}
-	// Hold the per-observer lock until the marker is admitted. New-policy
-	// producers cannot start before it; old producers carry obsolete generations.
-	return p.enqueueScopeRevocation(ctx, previous)
+	pending = make(chan struct{})
+	policy.transition = pending
+	return previous, pending
+}
+
+// completeTransition enqueues the transition's reset marker — off the policy
+// lock, since the decode channel may be backpressured — then clears the pending
+// state and wakes every admission waiting on it. It reports whether the marker
+// was enqueued, which fails only when ctx ended first (shutdown). Exactly one
+// marker per transition: beginTransitionLocked hands out one pending channel,
+// and this is its only consumer.
+func (p *PushServer) completeTransition(ctx context.Context, policy *observerPolicy, previous identity.ObserverContext, pending chan struct{}) bool {
+	enqueued := p.enqueueScopeRevocation(ctx, previous)
+	policy.mu.Lock()
+	if policy.transition == pending {
+		policy.transition = nil
+	}
+	policy.mu.Unlock()
+	close(pending)
+	return enqueued
 }
 
 func (p *PushServer) changeAdmission(ctx context.Context, a *Admission, current identity.ObserverContext) {
 	a.policy.mu.Lock()
-	defer a.policy.mu.Unlock()
 	if !a.Current() {
+		a.policy.mu.Unlock()
 		return
 	} // a late old-session watcher is not new authority
-	p.transitionPolicyLocked(ctx, a.policy, current)
+	previous, pending := p.beginTransitionLocked(a.policy, current)
+	a.policy.mu.Unlock()
+	p.completeTransition(ctx, a.policy, previous, pending)
 }

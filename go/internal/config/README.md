@@ -85,7 +85,10 @@ The collector reads the stable `navlistener_observer_authorization_v3` and
 for `NOTIFY navlistener_authorization_changed`. `cache_ttl` (default 30s, maximum 5m) is the
 stale-authority ceiling when notifications are interrupted. `session_recheck_interval`
 (default 10s, maximum 5m) closes active feeder/read sessions after a revoked or changed row is
-observed. The worst case without NOTIFY is their sum.
+observed. The worst case without NOTIFY is their sum. That sum is also how long a live feeder
+session may keep its last confirmed authority while the control plane cannot answer its
+rechecks: a recheck that fails to complete is not a revocation, and the session is withdrawn
+only once its last confirmation is older than the sum.
 
 The authorization DSN should use a read-only database role with access only to the versioned
 views and notification channel. Because it contains credentials, normal config-permission

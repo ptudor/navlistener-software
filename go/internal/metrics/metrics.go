@@ -349,13 +349,23 @@ var (
 		Name: "navlistener_durable_holes_abandoned_total",
 		Help: "Unresolved received sequences abandoned after their push session stayed silent past the abandonment window, by observer.",
 	}, []string{"source"})
-	// PushAdmissionRefusedTotal counts sessions refused AFTER a successful
-	// WELCOME by the policy admission step, by reason, so a
-	// feeder that sees handshake-then-close is explicable from the collector.
+	// PushAdmissionRefusedTotal counts sessions refused by the policy admission
+	// step at the handshake, by reason. The feeder sees the refusal in its
+	// WELCOME, and this is the collector's side of the same event.
 	PushAdmissionRefusedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "navlistener_push_admission_refused_total",
-		Help: "Push sessions refused by policy admission after WELCOME, by reason (observer_ceiling, canceled, stale_lookup, reset_blocked).",
+		Help: "Push sessions refused by policy admission at the handshake, by reason (observer_ceiling, canceled, stale_lookup, reset_blocked).",
 	}, []string{"reason"})
+	// PushAuthorizationUnavailableTotal counts authorization rechecks the
+	// control plane could not answer — a transport failure, a timeout, a
+	// lookup that raced an invalidation — by path (session: a live session's
+	// periodic recheck; sweep: the offline reconciliation sweep). Neither path
+	// withdraws authority on such a check; a live session is withdrawn only
+	// once it has stayed unverifiable past the documented revocation bound.
+	PushAuthorizationUnavailableTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_push_authorization_unavailable_total",
+		Help: "Authorization rechecks the control plane could not answer, by path (session, sweep); authority is kept until the revocation bound passes.",
+	}, []string{"path"})
 	// SSEPublishRejectedTotal counts committed events refused at SSE broker
 	// admission because the audience's policy generation advanced between the
 	// pre-write guard and admission. Rare and expected around a

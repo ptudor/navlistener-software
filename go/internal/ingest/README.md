@@ -172,6 +172,25 @@ recheck therefore also calls `Verifier.Recheck`: a board withdrawn or superseded
 has its session closed, and the feeder's reconnect is evaluated against the registry in force.
 That close is not a policy transition either.
 
+A recheck the control plane cannot answer is not a verdict. When the `Authenticator` also
+implements `AuthorizationVerifier` (the database provider does), `authorize` reports such a
+check as `ErrAuthorizationUnavailable`; the watcher counts it
+(`navlistener_push_authorization_unavailable_total{path="session"}`), logs it and keeps the
+session, its policy and its generation exactly as they were — no `ScopeRevocation`, no audience
+reset — and only an authoritative denial or change withdraws the session with its one marker. A
+check that completes after the session has already ended is discarded for the same reason. The
+documented revocation bound still holds: once the policy's last confirmation (admission, a
+successful recheck, or a reconciliation sweep) is older than cache TTL plus recheck interval,
+an unverifiable session is withdrawn and its reconnect is denied until the control plane
+answers again.
+
+Policy admission happens **before** `WELCOME` is answered, so a session refused by admission
+(`navlistener_push_admission_refused_total{reason}`) receives `WELCOME{ok:false}` instead of a
+close after a success it had already acted on. A transition's reset marker is enqueued off the
+policy lock: `admit` of a same-generation session waits on the pending marker, while
+`release`, stale-lookup refusals and the reconciliation snapshot take the lock only for their
+bookkeeping and never wait behind decode backpressure.
+
 `Listen()` is called **synchronously at startup**, before any producer or historian goroutine, so
 a bad certificate or an already-bound address kills the process rather than leaving a
 half-started daemon.

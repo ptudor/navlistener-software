@@ -2,6 +2,7 @@ package authorization
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -122,14 +123,16 @@ func TestReconciliationBypassesCachedAuthority(t *testing.T) {
 		t.Fatal("initial authority denied")
 	}
 	allowed = false
-	if _, ok := p.ReconcileObserver(context.Background(), "digest", "observer-a", "ubx"); ok {
-		t.Fatal("offline recheck used cached authority")
+	if _, ok, err := p.ReconcileObserver(context.Background(), "digest", "observer-a", "ubx"); ok || err != nil {
+		t.Fatalf("offline recheck used cached authority: (ok %v, err %v), want an authoritative denial", ok, err)
 	}
 	p.lookupObserver = func(context.Context, string, string, string) (identity.ObserverContext, bool, error) {
 		p.InvalidateAll()
 		return testContext(), true, nil
 	}
-	if _, ok := p.ReconcileObserver(context.Background(), "digest", "observer-a", "ubx"); ok {
-		t.Fatal("racing invalidation returned stale reconciliation")
+	// A result from before a racing invalidation is untrusted — but that is a
+	// failure to verify, not a denial: the sweep must retry it, not withdraw.
+	if _, ok, err := p.ReconcileObserver(context.Background(), "digest", "observer-a", "ubx"); ok || !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("racing invalidation: (ok %v, err %v), want (false, ErrUnavailable)", ok, err)
 	}
 }
