@@ -104,6 +104,10 @@ func run() int {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	signal.Ignore(syscall.SIGHUP)
+	// The shutdown plan is fixed by the configuration, so it is decided here
+	// and handed to the historian before it runs: its drain budget is the
+	// plan's store share, not a constant that happens to fit.
+	plan := planShutdown(cfg.ShutdownTimeout)
 	// regression fix/non-fatal config findings (world-readable secrets file,
 	// non-loopback bind of an unauthenticated surface) — loud at startup, once.
 	for _, w := range cfg.Warnings {
@@ -326,6 +330,9 @@ func run() int {
 			storeCancel()
 			return 1
 		}
+		// The drain gives up inside the plan's store phase, leaving the pool
+		// close its reserve, instead of racing a constant against the share.
+		historian.SetShutdownBudget(plan.store)
 		go func() { defer close(storeDone); historian.Run(storeCtx) }()
 		// surface persistent flush failure (the historian silently
 		// dropping the forensic record) as a degraded /healthz.
@@ -606,7 +613,6 @@ func run() int {
 	// permanently, while the process still logged "graceful shutdown complete" and
 	// returned success.
 	cancel()
-	plan := planShutdown(cfg.ShutdownTimeout)
 	var incomplete []string
 
 	// Stop serving immediately and concurrently with the pipeline drain. New
@@ -656,13 +662,11 @@ func run() int {
 	}
 
 	// Checkpoint the final in-memory pass accumulators after decode has consumed
-	// every accepted RF sample and before closing the historian pool.
+	// every accepted RF sample and before closing the historian pool. The phase
+	// has its own share of the plan: it is neither the historian's reservation
+	// nor free time outside the bound.
 	if historian != nil {
-		checkpointBudget := plan.store / 3
-		if checkpointBudget > 5*time.Second {
-			checkpointBudget = 5 * time.Second
-		}
-		checkpointCtx, checkpointCancel := context.WithTimeout(context.Background(), checkpointBudget)
+		checkpointCtx, checkpointCancel := context.WithTimeout(context.Background(), plan.checkpoint)
 		if err := saveReceptionPowerModels(checkpointCtx, historian, stationManager, true); err != nil {
 			incomplete = append(incomplete, "reception power model checkpoint")
 			log.Warn("final reception power model checkpoint failed", "error", err)
@@ -687,10 +691,13 @@ func run() int {
 		log.Warn("shutdown phase expired draining the historian; accepted frames may not be persisted")
 	}
 
-	// The serve teardown has had the pipeline and store phases to complete.
+	// The serve teardown has had the pipeline, checkpoint and store phases to
+	// complete — longer than its own phase, after which its goroutine already
+	// force-closed the listener. Nothing more is waited for: a second wait
+	// here would spend time the plan never allotted.
 	select {
 	case <-apiDone:
-	case <-time.After(plan.api):
+	default:
 		incomplete = append(incomplete, "v2 serve shutdown")
 		if apiSrv != nil {
 			_ = apiSrv.Close()
@@ -723,16 +730,20 @@ func run() int {
 // must be guaranteed: producers and decode feed it, and the API and metrics
 // listeners are cleanup that must never delay it.
 type shutdownPlan struct {
-	pipeline time.Duration // producers -> close frame queue -> finish decoding
-	api      time.Duration // stop serving; force-closed when this expires
-	store    time.Duration // reserved persistence budget
-	metrics  time.Duration
+	pipeline   time.Duration // producers -> close frame queue -> finish decoding
+	api        time.Duration // stop serving; force-closed when this expires
+	checkpoint time.Duration // final reception-model and AGC-baseline checkpoints
+	store      time.Duration // reserved persistence budget (drain + pool close)
+	metrics    time.Duration
 }
 
-// The split is proportional so a deliberately small configured bound still gives
-// every phase a real share rather than whatever the phase before it left over.
-// The API phase overlaps the pipeline phase, so the serial worst case is
-// pipeline + store + metrics, within the configured bound.
+// The split is proportional so a deliberately small bound still gives every
+// phase a real share rather than whatever the phase before it left over. The
+// API phase overlaps the pipeline phase and is never waited for again, so the
+// serial worst case is pipeline + checkpoint + store + metrics, which the
+// shares below keep within the bound (cfg.ShutdownTimeout). The historian's
+// drain budget is derived from the store share (store.DrainBudget), with a
+// fixed slice of that share reserved for closing the pool.
 func planShutdown(total time.Duration) shutdownPlan {
 	if total <= 0 {
 		total = 15 * time.Second
@@ -745,10 +756,11 @@ func planShutdown(total time.Duration) shutdownPlan {
 		return d
 	}
 	return shutdownPlan{
-		pipeline: share(50),
-		api:      share(15),
-		store:    share(40),
-		metrics:  share(10),
+		pipeline:   share(50),
+		api:        share(15),
+		checkpoint: share(8),
+		store:      share(32),
+		metrics:    share(10),
 	}
 }
 

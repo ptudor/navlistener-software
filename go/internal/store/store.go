@@ -53,8 +53,33 @@ const (
 // (one deadline for the whole drain, never a fresh budget per chunk).
 const (
 	normalFlushBudget   = 35 * time.Second
-	shutdownFlushBudget = 5 * time.Second
+	shutdownFlushBudget = 5 * time.Second // for a Store whose budget was never set (tests)
 )
+
+// PoolCloseReserve is the slice of the daemon's store phase kept for
+// pool.Close() after the drain gives up: Close waits for acquired connections
+// to return, and that wait must not come out of time the process no longer has.
+const PoolCloseReserve = 500 * time.Millisecond
+
+// minDrainBudget keeps a degenerate phase from producing a drain that cannot
+// flush a single chunk.
+const minDrainBudget = 100 * time.Millisecond
+
+// DrainBudget is the shutdown drain deadline the writer derives from the
+// daemon's store phase: the phase less PoolCloseReserve, so drain plus close
+// fit the phase the daemon actually waits for. The daemon's plan test pins
+// DrainBudget(phase) + PoolCloseReserve <= phase.
+func DrainBudget(phase time.Duration) time.Duration {
+	return max(phase-PoolCloseReserve, minDrainBudget)
+}
+
+// SetShutdownBudget tells the writer how long the daemon's shutdown plan gives
+// the whole store phase; the drain gives up DrainBudget(phase) after it starts
+// and the remainder closes the pool. Call before Run. The single shared
+// deadline across drain chunks is unchanged — only where it comes from.
+func (s *Store) SetShutdownBudget(phase time.Duration) {
+	s.shutdownBudget = DrainBudget(phase)
+}
 
 // pruneEvery is how often nav_frames_seq_seen (the replay-dedup ledger) is
 // swept of entries older than the raw-retention window. The sweep runs on its
