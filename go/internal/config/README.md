@@ -10,7 +10,9 @@ validated. TOML at `/usr/local/etc/navlistener/navlistener.toml`, passed with `-
 
 | File | What it is |
 |---|---|
-| `config.go` | The whole package: every config struct, `Load`, validation, defaults, and the two identity validators. |
+| `config.go` | Core configuration structs, `Load`, validation, defaults, and identity validators. |
+| `replay.go` | Strict replay configuration loading without daemon startup files. |
+| `replay_test.go` | Replay installation resolution and isolation from daemon credentials. |
 | `config_test.go` | Load/validate cases, defaults, and the rejection paths. |
 | `hardware_trust_test.go` | `[[manufacturer_authority]]`: key loading, registry verification, and every incomplete combination. |
 | `integrity.go` | `[[integrity.station]]` installations, merged with the surveyed `[[reception.station]]` sites, and `[[integrity.baseline]]` pairs. |
@@ -25,6 +27,7 @@ See `../../navlistener.toml.example` for a commented reference config.
 
 ```go
 func Load(path string) (*Config, error)
+func LoadForReplay(path string) (*Config, error)
 var DefaultPaths = []string{
     "/usr/local/etc/navlistener/navlistener.toml",
     "/etc/navlistener/navlistener.toml",
@@ -34,6 +37,13 @@ var DefaultPaths = []string{
 
 `Load` reads an explicit path, or the first default path that exists. It parses, applies
 defaults, validates, and populates `Config.Warnings`.
+
+`LoadForReplay` takes an explicit path for `stationreplay`. It rejects unknown TOML keys,
+validates the collector id, and resolves reception and integrity installations, including
+baseline pairs. It reads no push TLS keys, CA files, authority files or manufacturer
+registries, and performs no daemon startup checks or permission warnings. The replay
+uses `[store].dsn` and `[collector].instance_id`; database connection validation happens
+when its reader opens. Daemon startup and `-check-config` continue to use `Load`.
 
 **Optional stages stay dormant when their enabling value is empty** (`docs/DESIGN.md §5`). No
 `[store].dsn` means no historian. No `[serve].addr` means no read API. No `[push].addr` means no

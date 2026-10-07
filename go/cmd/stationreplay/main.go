@@ -30,9 +30,11 @@
 //
 // The installation profiles come from -config ([[integrity.station]] and
 // [[reception.station]]), or from -mode, -position and -max-speed, which override
-// the configured one. Thresholds are this build's (integrity.DefaultProfile), so a
-// replay of old inputs under a newer build shows what the newer checks conclude; the
-// timeline's config_hash names the profile used.
+// the configured one. Config parsing is strict, but replay loads only station
+// installations and does not read the daemon's TLS keys or authority files.
+// Thresholds are this build's (integrity.DefaultProfile), so a replay of old inputs
+// under a newer build shows what the newer checks conclude; the timeline's
+// config_hash names the profile used.
 package main
 
 import (
@@ -96,7 +98,7 @@ func main() {
 func run(ctx context.Context, o options, stdout, stderr io.Writer) (int, error) {
 	stations := map[string]integrity.StationProfile{}
 	if o.configPath != "" {
-		cfg, err := config.Load(o.configPath)
+		cfg, err := config.LoadForReplay(o.configPath)
 		if err != nil {
 			return 0, err
 		}
