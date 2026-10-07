@@ -100,11 +100,22 @@ func Sign(version byte, h HardwareIdentity, key *ecdsa.PrivateKey, rng io.Reader
 	if err != nil {
 		return Record{}, fmt.Errorf("sign manufacturer attestation: %w", err)
 	}
+	// Canonical records only: Verify refuses the high-S twin, so the record
+	// fingerprint the enrollment stores is the one the signer emitted.
+	if n := key.Params().N; !lowS(s, n) {
+		s = new(big.Int).Sub(n, s)
+	}
 	var out Record
 	out[0] = version
 	r.FillBytes(out[8:40])
 	s.FillBytes(out[40:72])
 	return out, nil
+}
+
+// lowS reports whether s is the canonical one of the two ECDSA S values,
+// s <= n/2, that verify for the same R.
+func lowS(s, n *big.Int) bool {
+	return s.Cmp(new(big.Int).Rsh(n, 1)) <= 0
 }
 
 // Verify checks the slot record against live-read identifiers and the distinct
@@ -124,6 +135,12 @@ func Verify(record Record, h HardwareIdentity, manufacturer *ecdsa.PublicKey) (V
 	s := new(big.Int).SetBytes(record[40:72])
 	if r.Sign() <= 0 || s.Sign() <= 0 || r.Cmp(manufacturer.Params().N) >= 0 || s.Cmp(manufacturer.Params().N) >= 0 {
 		return Verification{}, fmt.Errorf("manufacturer attestation signature scalar is out of range")
+	}
+	// The record fingerprint covers the signature bytes and (r, n-s) verifies
+	// as well as (r, s); only the low-S form is the record, so one board has
+	// one fingerprint.
+	if !lowS(s, manufacturer.Params().N) {
+		return Verification{}, fmt.Errorf("manufacturer attestation signature is not in low-S form")
 	}
 	if !ecdsa.Verify(manufacturer, digest[:], r, s) {
 		return Verification{}, fmt.Errorf("manufacturer attestation signature verification failed")

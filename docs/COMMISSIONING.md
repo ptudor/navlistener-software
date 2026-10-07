@@ -265,7 +265,7 @@ Evaluation order, with the rejection reason for each step:
 |---:|---|---|
 | 1 | the payload and its statement are well formed | `malformed` |
 | 2 | the record verifies under a pinned manufacturer key | `signature` |
-| 3 | the record is for the observer product | `product` |
+| 3 | the record's product and board revision are within the manufacturer's product policy (`product_policy`, §10) | `product` |
 | 4 | the record's typed board UID, rendered as an observer id, equals the authenticated observer | `identity` |
 | 5 | with a registry: the board is listed, when the collector requires it | `unlisted` |
 | 6 | with a registry: the board is not revoked | `revoked` |
@@ -274,7 +274,12 @@ Evaluation order, with the rejection reason for each step:
 | 9 | the presented key is the one the record names, is RSA-3072 with `e = 65537`, and the proof verifies for this session | `proof` |
 
 A collector with no pinned manufacturer keys still reads the frame, to keep the
-handshake in step, and answers `none` with `unconfigured`.
+handshake in step, and answers `none` with `unconfigured`. The same reason
+covers an enrollment whose manufacturer authority this collector does not pin
+or has disabled: in both cases it is the collector that cannot judge. Evidence
+from an enrollment that names no manufacturer authority at all, a software
+station, is answered with `identity`: the evidence does not belong to that
+enrollment, whatever the collector could verify.
 
 Step 4 is what ties the evidence to the operational credential. A credential
 for one observer cannot borrow another board's record, and a record is useless

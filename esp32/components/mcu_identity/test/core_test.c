@@ -334,18 +334,27 @@ static void test_pss(void)
 
 int main(void)
 {
-    const char *variants[] = {"trusted-no-rtc", "open-no-rtc", "test-no-rtc", "mcp79412-model", "ds3231-model",
-                              "max31328-model"};
+    // Every case the Go reference writes, with the RTC description each one
+    // carries: the three profiles and the two UID kinds record an MCP79412 with
+    // its EUI-64, the no-rtc variants record none, the model variants record a
+    // model without an instance id.
+    static const struct { const char *name; uint16_t identity_flags, rtc_model_id; } variants[] = {
+        {"trusted", NVF_IDENTITY_KNOWN, 1}, {"open", NVF_IDENTITY_KNOWN, 1}, {"test", NVF_IDENTITY_KNOWN, 1},
+        {"serial128", NVF_IDENTITY_KNOWN, 1}, {"st-uid128", NVF_IDENTITY_KNOWN, 1},
+        {"trusted-no-rtc", 0, 0}, {"open-no-rtc", 0, 0}, {"test-no-rtc", 0, 0},
+        {"mcp79412-model", NVF_IDENTITY_RTC_PRESENT, 1}, {"ds3231-model", NVF_IDENTITY_RTC_PRESENT, 2},
+        {"max31328-model", NVF_IDENTITY_RTC_PRESENT, 3},
+    };
     for (unsigned i = 0; i < sizeof variants / sizeof variants[0]; i++) {
         char name[64];
         uint8_t bytes[NVF_COMMISSION_STATEMENT_SIZE], expected[32], actual[32];
-        snprintf(name, sizeof name, "%s-statement", variants[i]);
+        snprintf(name, sizeof name, "%s-statement", variants[i].name);
         assert(fixture(name, bytes, sizeof bytes) == sizeof bytes);
         nvf_commission_statement_t parsed;
         assert(nvf_commission_parse(bytes, sizeof bytes, &parsed));
-        assert(parsed.identity_flags == (i < 3 ? 0 : NVF_IDENTITY_RTC_PRESENT));
-        assert(parsed.rtc_model_id == (i < 3 ? 0 : i - 2));
-        snprintf(name, sizeof name, "%s-digest", variants[i]);
+        assert(parsed.identity_flags == variants[i].identity_flags);
+        assert(parsed.rtc_model_id == variants[i].rtc_model_id);
+        snprintf(name, sizeof name, "%s-digest", variants[i].name);
         assert(fixture(name, expected, sizeof expected) == sizeof expected);
         assert(nvf_commission_digest(bytes, ref_sha256, actual));
         assert(!memcmp(expected, actual, 32));

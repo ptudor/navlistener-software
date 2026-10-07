@@ -1,8 +1,9 @@
 # `mfgattest` — manufacturer-record verifier and fixture tool
 
 Production manufacturer records are issued by the hardware Root ceremony, not
-by this program. `mfgattest verify` accepts one or more pinned public keys or
-certificates, requires exactly one signer to match, and emits its key id, the
+by this program. `mfgattest verify` accepts one or more pinned P-256 `PUBLIC KEY`
+PEM files (a certificate is not a pin, here or in the collector's configuration),
+requires exactly one signer to match, and emits its key id, the
 verified tier, and statement/record fingerprints for the enrollment row. The
 selected manufacturer authority is explicit in its output.
 

@@ -29,8 +29,11 @@ type registryState struct {
 // been adopted yet. It never writes, so a configuration check may call it.
 //
 // The file carries no secret, but its integrity is the point: a file another
-// local account could rewrite would let that account lower the floor, so one
-// that is group- or world-writable is refused.
+// local account could rewrite, or rename into place, would let that account
+// lower the floor. So the file must be owned by the caller and not group- or
+// world-writable, and its directory must not let other accounts replace
+// entries: group- or world-writable only with the sticky bit set. The
+// ownership and directory checks are Unix-specific (state_unix.go).
 func ReadRegistryState(path, expectedAuthorityID string) (uint64, error) {
 	if !identity.ValidScopeID(expectedAuthorityID) {
 		return 0, errors.New("registry state: expected manufacturer authority id is required and must be a valid scope id")
@@ -47,6 +50,12 @@ func ReadRegistryState(path, expectedAuthorityID string) (uint64, error) {
 	}
 	if info.Mode().Perm()&0o022 != 0 {
 		return 0, fmt.Errorf("registry state %s is group- or world-writable (mode %04o)", path, info.Mode().Perm())
+	}
+	if err := stateOwnershipError(path, info); err != nil {
+		return 0, err
+	}
+	if err := stateDirectoryError(filepath.Dir(path)); err != nil {
+		return 0, err
 	}
 	if info.Size() > registryStateMaxBytes {
 		return 0, fmt.Errorf("registry state %s is %d bytes, limit %d", path, info.Size(), registryStateMaxBytes)

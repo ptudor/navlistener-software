@@ -19,9 +19,11 @@ import (
 	"github.com/ptudor/navlistener/internal/identity"
 )
 
-// The fixtures are the cross-implementation contract: the firmware's C
-// formatter and the factory's Python implementation are tested against the
-// same files. Regenerate them only for a deliberate format change:
+// The fixtures are the cross-implementation contract: this package writes
+// them, and the firmware's C formatter (esp32/components/mcu_identity) and the
+// mfgattest verifier are tested against the same files. No other
+// implementation of the signing domains exists in this repository. Regenerate
+// them only for a deliberate format change:
 //
 //	go test ./internal/commissioning -run TestFixtures -update-fixtures
 var updateFixtures = flag.Bool("update-fixtures", false, "regenerate common/fixtures/commissioning-*")
@@ -297,18 +299,39 @@ func TestFixtures(t *testing.T) {
 	if ix.boards[revoked].status != StatusRevoked {
 		t.Fatal("fixture registry does not revoke the bench board")
 	}
-	// The single-value hex files must stay in step with the JSON master.
-	for name, want := range map[string]string{
-		"commissioning-statement-v1.hex": f.Cases["trusted"].Statement,
-		"commissioning-record-v1.hex":    f.Cases["trusted"].Record,
-		"commissioning-evidence-v1.hex":  f.Cases["trusted"].Evidence,
-	} {
+	// Every hex file must stay in step with the JSON master: the firmware's
+	// host tests read the hex files as their oracle and carry no JSON parser,
+	// so a stale or edited hex file would validate the C formatter against the
+	// wrong bytes with nothing else noticing.
+	files := map[string]string{
+		"commissioning-statement-v1.hex":    f.Cases["trusted"].Statement,
+		"commissioning-digest-v1.hex":       f.Cases["trusted"].Digest,
+		"commissioning-record-v1.hex":       f.Cases["trusted"].Record,
+		"commissioning-exported-v1.hex":     f.Cases["trusted"].Exported,
+		"commissioning-proof-digest-v1.hex": f.Cases["trusted"].ProofDigest,
+		"commissioning-mcu-key-v1.hex":      f.Cases["trusted"].MCUPublicKey,
+		"commissioning-proof-v1.hex":        f.Cases["trusted"].Proof,
+		"commissioning-evidence-v1.hex":     f.Cases["trusted"].Evidence,
+	}
+	for name, c := range f.Cases {
+		files["commissioning-"+name+"-statement-v1.hex"] = c.Statement
+		files["commissioning-"+name+"-digest-v1.hex"] = c.Digest
+	}
+	for name, want := range files {
 		got, err := os.ReadFile(filepath.Join(fixtureDir, name))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if string(got) != want+"\n" {
+		if want == "" || string(got) != want+"\n" {
 			t.Fatalf("%s is out of step with commissioning-v1.json", name)
 		}
+	}
+	// Nothing else may masquerade as a fixture of this family.
+	matches, err := filepath.Glob(filepath.Join(fixtureDir, "commissioning-*-v1.hex"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != len(files) {
+		t.Fatalf("%d commissioning-*-v1.hex files, %d asserted", len(matches), len(files))
 	}
 }

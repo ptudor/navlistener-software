@@ -10,10 +10,12 @@ import (
 	"encoding/pem"
 	"github.com/ptudor/navlistener/internal/boardid"
 	"io"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ptudor/navlistener/internal/attestation"
 	"github.com/ptudor/navlistener/internal/commissioning"
@@ -158,6 +160,82 @@ func TestRegistryVerify(t *testing.T) {
 	}
 	if _, err := capture(t, "registry-verify", "-manufacturer-authority", f.ManufacturerAuthorityID, "-key", filepath.Join(dir, "registry.pem"), "-file", filepath.Join(dir, "absent.json")); err == nil {
 		t.Error("missing registry file accepted")
+	}
+}
+
+// A verifier prints what was signed. A commissioning time at or above 2^63 is
+// absurd but valid, and must appear as the integer it is, with no date rather
+// than a wrapped negative one.
+func TestCommissionVerifyPrintsTheSignedTimeAsAnInteger(t *testing.T) {
+	dir := t.TempDir()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin := writePublicKey(t, dir, "manufacturer.pem", &key.PublicKey)
+	signer, err := commissioning.NewKeySigner(key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statement := commissioning.Statement{Profile: commissioning.ProfileOpen, MCUFamily: commissioning.MCUESP32S3, Product: 1, BoardRevision: 258,
+		Generation: 1, CommissionedAt: 1 << 63, BoardUID: boardid.MustParse("serial128", "00112233445566778899aabbccddeeff"),
+		ATECCSerial: [9]byte{1, 2, 3, 4, 5, 6, 7, 8, 9}, MCUMAC: [6]byte{1, 2, 3, 4, 5, 6}, Attestation: [32]byte{1}}
+	verify := func(t *testing.T, s commissioning.Statement) map[string]any {
+		t.Helper()
+		record, err := commissioning.Sign(s, signer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := capture(t, "commission-verify", "-manufacturer-authority", "test-manufacturer", "-key", pin, "-record", hex.EncodeToString(record[:]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	out := verify(t, statement)
+	if out["commissioned_at_unix"] != "9223372036854775808" || out["commissioned_at"] != nil {
+		t.Fatalf("commissioned_at = %v, commissioned_at_unix = %v; want the integer and no date", out["commissioned_at"], out["commissioned_at_unix"])
+	}
+	statement.CommissionedAt = 1789646400
+	out = verify(t, statement)
+	if out["commissioned_at_unix"] != "1789646400" || out["commissioned_at"] != "2026-09-17T12:00:00Z" {
+		t.Fatalf("representable time: %v / %v", out["commissioned_at_unix"], out["commissioned_at"])
+	}
+}
+
+// A pin is a P-256 PUBLIC KEY PEM. A certificate carrying the key is refused by
+// all three commands alike, as the help says and as the collector's own pins
+// are.
+func TestACertificateIsNotAPin(t *testing.T) {
+	f, dir := loadFixtures(t)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert := filepath.Join(dir, "cert.pem")
+	if err := os.WriteFile(cert, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hardware := attestation.HardwareIdentity{Product: 1, BoardRevision: 0x1234, BoardUID: boardid.MustParse("serial128", "00112233445566778899aabbccddeeff")}
+	copy(hardware.ATECCSerial[:], []byte{0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x11})
+	core, err := attestation.Sign(attestation.VersionV1, hardware, key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, args := range map[string][]string{
+		"verify": {"verify", "-manufacturer-authority", "test-manufacturer", "-key", cert, "-record", hex.EncodeToString(core[:]),
+			"-product", "1", "-board-rev", "0x1234", "-board-uid-kind", "serial128", "-board-uid", hardware.BoardUID.Hex(), "-atecc-serial", hex.EncodeToString(hardware.ATECCSerial[:])},
+		"commission-verify": {"commission-verify", "-manufacturer-authority", f.ManufacturerAuthorityID, "-key", cert, "-record", f.Cases["trusted"].Record},
+		"registry-verify":   {"registry-verify", "-manufacturer-authority", f.ManufacturerAuthorityID, "-key", cert, "-file", filepath.Join(dir, "registry.json")},
+	} {
+		if _, err := capture(t, args...); err == nil || !strings.Contains(err.Error(), "not a") || !strings.Contains(strings.ToLower(err.Error()), "certificate") {
+			t.Errorf("%s accepted a certificate as a pin: %v", name, err)
+		}
 	}
 }
 

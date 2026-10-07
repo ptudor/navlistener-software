@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/ptudor/navlistener/internal/boardid"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -553,6 +554,19 @@ func TestEvaluate(t *testing.T) {
 		result, err := newVerifier(t, false, nil).Evaluate(observer, e, exported)
 		expectReason(t, result, err, ReasonProduct)
 	})
+	t.Run("observer product at an unlisted revision", func(t *testing.T) {
+		other := s
+		other.BoardRevision = 0x0103
+		otherRecord, _ := Sign(other, mfg)
+		e := Evidence{Record: otherRecord, MCUKey: evidence.MCUKey, Proof: prove(t, mcuKey(), exported, otherRecord)}
+		result, err := newVerifier(t, false, nil).Evaluate(observer, e, exported)
+		expectReason(t, result, err, ReasonProduct)
+		// The label stays "product"; the message sends the operator to the
+		// revision and shows the policy that refused it.
+		if !strings.Contains(err.Error(), "revision 259") || !strings.Contains(err.Error(), "[1/258]") {
+			t.Fatalf("message does not name the revision and the policy: %v", err)
+		}
+	})
 	t.Run("record for another observer", func(t *testing.T) {
 		result, err := newVerifier(t, false, nil).Evaluate("00-04-a3-00-00-00-00-01", evidence, exported)
 		expectReason(t, result, err, ReasonIdentity)
@@ -675,7 +689,7 @@ func TestWatchRegistryReloadsAndKeepsLastGood(t *testing.T) {
 			return nil
 		}
 	}
-	if err := os.WriteFile(path, []byte("not a registry, and a different length"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("not a registry"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := waitLoad(); err == nil {
@@ -683,6 +697,14 @@ func TestWatchRegistryReloadsAndKeepsLastGood(t *testing.T) {
 	}
 	if v.Registry().Sequence != 1 {
 		t.Fatal("corrupt registry displaced the one in force")
+	}
+	// One corrupt file is one report: the ticks that follow find the same
+	// bytes and neither read, verify nor report them again, so the failure
+	// counter measures bad publishes rather than elapsed ticks.
+	select {
+	case err := <-loads:
+		t.Fatalf("unchanged corrupt registry was reported again: %v", err)
+	case <-time.After(100 * time.Millisecond):
 	}
 	second, _ := SignRegistry(registryFor(t, 2, StatusRevoked, record), ops)
 	if err := os.WriteFile(path, second, 0o600); err != nil {
@@ -692,6 +714,198 @@ func TestWatchRegistryReloadsAndKeepsLastGood(t *testing.T) {
 		if err := waitLoad(); err != nil {
 			continue
 		}
+	}
+}
+
+// A registry rewritten at the same length within the file system's timestamp
+// granularity is still a new registry: the bytes decide, not the stamp.
+func TestWatchRegistryAdoptsASameLengthRewriteWithPreservedMtime(t *testing.T) {
+	mfg, mfgKeys := testSigner(t)
+	ops, opsKeys := testSigner(t)
+	record, _ := Sign(trustedStatement(t), mfg)
+	path := filepath.Join(t.TempDir(), "registry.json")
+	first, _ := SignRegistry(registryFor(t, 1, StatusActive, record), ops)
+	second, _ := SignRegistry(registryFor(t, 2, StatusActive, record), ops)
+	if len(first) != len(second) {
+		t.Fatalf("test needs two registries of one length, got %d and %d", len(first), len(second))
+	}
+	if err := os.WriteFile(path, first, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stamp, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, _ := newTestVerifier(testManufacturerAuthority, mfgKeys)
+	if err := v.UseRegistry(opsKeys, false); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	loads := make(chan error, 16)
+	if err := v.WatchRegistry(ctx, path, 5*time.Millisecond, nil, func(_ *RegistryIndex, err error) { loads <- err }); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-loads; err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, second, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, stamp.ModTime(), stamp.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(5 * time.Second)
+	for v.Registry().Sequence != 2 {
+		select {
+		case err := <-loads:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-deadline:
+			t.Fatal("same-length rewrite with its mtime preserved was not adopted")
+		}
+	}
+}
+
+// A record's high-S twin verifies as plain ECDSA but is not the record: its
+// fingerprint differs from the one the manufacturer published. It is refused,
+// and the Go signer never emits one.
+func TestHighSSignaturesAreRefusedAndNeverEmitted(t *testing.T) {
+	mfg, keys := testSigner(t)
+	n := elliptic.P256().Params().N
+	for i := 0; i < 32; i++ {
+		record, err := Sign(trustedStatement(t), mfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := new(big.Int).SetBytes(record[StatementSize+KeyIDSize+32:])
+		if !LowS(s, n) {
+			t.Fatal("signer emitted a high-S signature")
+		}
+		if _, err := keys.Verify(record); err != nil {
+			t.Fatal(err)
+		}
+		twin := record
+		new(big.Int).Sub(n, s).FillBytes(twin[StatementSize+KeyIDSize+32:])
+		if twin.Fingerprint() == record.Fingerprint() {
+			t.Fatal("the twin has the record's fingerprint")
+		}
+		if _, err := keys.Verify(twin); err == nil || !strings.Contains(err.Error(), "low-S") {
+			t.Fatalf("high-S twin accepted: %v", err)
+		}
+	}
+}
+
+// Documented outcome, pending a decision on §7's "one valid signature from a
+// pinned key is sufficient": a signature under a pinned key id that does not
+// verify refuses the whole registry, even beside a valid pinned signature. A
+// verifier that does not pin the garbled key's id ignores it as the doc says.
+func TestRegistryWithAGarbledPinnedSignatureIsRefused(t *testing.T) {
+	mfg, _ := testSigner(t)
+	opsA, keysA := testSigner(t)
+	_, keysB := testSigner(t)
+	record, _ := Sign(trustedStatement(t), mfg)
+	data, err := SignRegistry(registryFor(t, 1, StatusActive, record), opsA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env registryEnvelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		t.Fatal(err)
+	}
+	idB := keysB.IDs()[0]
+	env.Signatures = append(env.Signatures, registrySignature{KeyID: idB, Signature: base64.StdEncoding.EncodeToString(make([]byte, SignatureSize))})
+	twoSignatures, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	both, err := NewKeySet(append(keysA.PublicKeys(), keysB.PublicKeys()...)...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyRegistry(twoSignatures, both, testManufacturerAuthority); err == nil || !strings.Contains(err.Error(), idB) {
+		t.Fatalf("registry with a garbled pinned signature: err = %v, want a refusal naming key %s", err, idB)
+	}
+	if _, err := VerifyRegistry(twoSignatures, keysA, testManufacturerAuthority); err != nil {
+		t.Fatalf("a signature from an unpinned key was not ignored: %v", err)
+	}
+}
+
+// Evidence is labelled by what is missing. An enrollment that names no
+// manufacturer authority is a software station and the evidence does not
+// belong to it (identity); an authority this collector does not pin, or no
+// authorities at all, is the collector's own gap (unconfigured).
+func TestAuthoritiesLabelEvidenceByWhatIsMissing(t *testing.T) {
+	mfg, mfgKeys := testSigner(t)
+	s := openStatement(t)
+	record, _ := Sign(s, mfg)
+	v, _ := newTestVerifier(testManufacturerAuthority, mfgKeys)
+	authorities := Authorities{testManufacturerAuthority: v}
+	evidence, exported := Evidence{Record: record}, exportedFor("session")
+	reasonOf := func(t *testing.T, a Authorities, c identity.ObserverContext) string {
+		t.Helper()
+		result, err := a.Evaluate(c, evidence, exported)
+		var rejection *Rejection
+		if !errors.As(err, &rejection) || result.Trust != identity.HardwareTrustNone {
+			t.Fatalf("result = %+v, %v; want a rejection with no trust", result, err)
+		}
+		return rejection.Reason
+	}
+	software := identity.ObserverContext{ObserverID: "software-receiver"}
+	if got := reasonOf(t, authorities, software); got != ReasonIdentity {
+		t.Fatalf("software enrollment presenting evidence = %q, want %q", got, ReasonIdentity)
+	}
+	hardware := identity.ObserverContext{ObserverID: s.ObserverID(), ManufacturerAuthorityID: "other-manufacturer",
+		HardwareProduct: uint16(s.Product), HardwareRevision: s.BoardRevision, CoreAttestationFingerprint: hex.EncodeToString(s.Attestation[:])}
+	if got := reasonOf(t, authorities, hardware); got != ReasonUnconfigured {
+		t.Fatalf("unpinned manufacturer authority = %q, want %q", got, ReasonUnconfigured)
+	}
+	hardware.ManufacturerAuthorityID = testManufacturerAuthority
+	if got := reasonOf(t, Authorities{}, hardware); got != ReasonUnconfigured {
+		t.Fatalf("collector with no authorities = %q, want %q", got, ReasonUnconfigured)
+	}
+	if result, err := authorities.Evaluate(hardware, evidence, exported); err != nil || result.Trust != identity.HardwareTrustOpen {
+		t.Fatalf("enrolled open board = %+v, %v", result, err)
+	}
+}
+
+// Documented outcome, pending the author's decision on COMMISSIONING.md §3/§4
+// ("only a test board may be unattested"): through Authorities, which is the
+// only production path, an unattested test record is refused as identity
+// because the enrollment binds the core record's fingerprint and the record
+// binds none; test trust is reached only with an attested test record. The
+// verifier alone labels the unattested record test, which is what the fixture
+// test exercises.
+func TestAuthoritiesRefuseAnUnattestedTestRecordForAnEnrolledBoard(t *testing.T) {
+	mfg, mfgKeys := testSigner(t)
+	bench := openStatement(t)
+	bench.Profile, bench.Attestation = ProfileTest, [32]byte{}
+	unattested, err := Sign(bench, mfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, _ := newTestVerifier(testManufacturerAuthority, mfgKeys)
+	authorities := Authorities{testManufacturerAuthority: v}
+	core := sha256.Sum256([]byte("slot 14 record"))
+	enrolled := identity.ObserverContext{ObserverID: bench.ObserverID(), ManufacturerAuthorityID: testManufacturerAuthority,
+		HardwareProduct: uint16(bench.Product), HardwareRevision: bench.BoardRevision, CoreAttestationFingerprint: hex.EncodeToString(core[:])}
+	exported := exportedFor("session")
+	result, err := authorities.Evaluate(enrolled, Evidence{Record: unattested}, exported)
+	var rejection *Rejection
+	if !errors.As(err, &rejection) || rejection.Reason != ReasonIdentity || result.Trust != identity.HardwareTrustNone {
+		t.Fatalf("unattested test record through Authorities = %+v, %v; want %q", result, err, ReasonIdentity)
+	}
+	if direct, err := v.Evaluate(bench.ObserverID(), Evidence{Record: unattested}, exported); err != nil || direct.Trust != identity.HardwareTrustTest {
+		t.Fatalf("verifier alone = %+v, %v; want test", direct, err)
+	}
+	bench.Attestation = core
+	attested, err := Sign(bench, mfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := authorities.Evaluate(enrolled, Evidence{Record: attested}, exported); err != nil || result.Trust != identity.HardwareTrustTest {
+		t.Fatalf("attested test record through Authorities = %+v, %v; want test", result, err)
 	}
 }
 

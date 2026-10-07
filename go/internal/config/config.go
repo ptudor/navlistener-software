@@ -272,9 +272,10 @@ type HardwareTrust struct {
 	// ManufacturerAuthorityID selects the administrative authority whose key set
 	// is pinned below. It also scopes the registry and rollback floor.
 	ManufacturerAuthorityID string `toml:"manufacturer_authority_id"`
-	// ManufacturerKeys are PEM public keys, or certificates carrying them, that
-	// may sign commissioning records. More than one is normal over a fleet's
-	// life; removing one withdraws every record it signed.
+	// ManufacturerKeys are P-256 `PUBLIC KEY` PEM files that may sign
+	// commissioning records; a certificate is not accepted as a pin. More than
+	// one is normal over a fleet's life; removing one withdraws every record it
+	// signed.
 	ManufacturerKeys []string `toml:"manufacturer_keys"`
 	// Registry is the signed registry file. It can only withdraw trust. Without
 	// it every valid record is honoured and nothing can be revoked.
