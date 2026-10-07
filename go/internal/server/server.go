@@ -147,12 +147,22 @@ func (s *Server) status() (string, string, map[string]string) {
 	return "ok", "", nil
 }
 
-// Fail transitions health to non-OK before controlled process shutdown.
+// failureReason is the fixed `failure` value /healthz reports once Fail has
+// been called. The endpoint is unauthenticated and the listener may be bound
+// off loopback for remote scraping, so the component's error text — bind
+// addresses, file paths, whatever a connector or store wrapped — stays in the
+// log; a probe only needs to know that a required component terminated.
+const failureReason = "required_component_terminated"
+
+// Fail transitions health to non-OK before controlled process shutdown. The
+// first failure wins; its full error is logged here and reported to /healthz
+// only as failureReason.
 func (s *Server) Fail(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.failure == "" && err != nil {
-		s.failure = err.Error()
+		s.failure = failureReason
+		s.log.Error("required component terminated; health is now failed", "error", err)
 	}
 }
 

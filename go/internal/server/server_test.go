@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"log/slog"
@@ -24,6 +25,37 @@ func TestHealthFailsAfterRequiredComponentFailure(t *testing.T) {
 	check(http.StatusOK, "ok")
 	s.Fail(errors.New("push endpoint: terminal accept failure"))
 	check(http.StatusServiceUnavailable, "failed")
+}
+
+// TestHealthzFailureDoesNotEchoError guards /healthz is unauthenticated and
+// may be scraped off loopback: a component's error (bind addresses, file
+// paths) must reach the log, while the body carries only the fixed reason code
+// next to the status and version.
+func TestHealthzFailureDoesNotEchoError(t *testing.T) {
+	var logBuf bytes.Buffer
+	s := New("127.0.0.1:0", slog.New(slog.NewTextHandler(&logBuf, nil)), nil)
+	s.Fail(errors.New("push endpoint: listen 192.0.2.10:7777: bind: address already in use (/usr/local/etc/navlistener/navlistener.toml)"))
+	r := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	w := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(w, r)
+	body := w.Body.String()
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(body, `"status":"failed"`) {
+		t.Fatalf("health = %d %s, want 503 failed", w.Code, body)
+	}
+	if !strings.Contains(body, `"failure":"`+failureReason+`"`) {
+		t.Errorf("body %s lacks the fixed failure reason %q", body, failureReason)
+	}
+	for _, leak := range []string{"192.0.2.10", "7777", "navlistener.toml", "address already in use"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("/healthz echoed the raw component error (%q): %s", leak, body)
+		}
+	}
+	if !strings.Contains(body, `"version":`) {
+		t.Errorf("body %s lost the version", body)
+	}
+	if logged := logBuf.String(); !strings.Contains(logged, "192.0.2.10:7777") || !strings.Contains(logged, "navlistener.toml") {
+		t.Errorf("full error missing from the log: %s", logged)
+	}
 }
 
 // TestMetricsServerTimeoutsSet guards /metrics, /healthz, and

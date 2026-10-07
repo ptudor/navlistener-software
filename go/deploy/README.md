@@ -148,6 +148,19 @@ dashboard polls the feeds every 30 s and the summary a few times a minute, so si
 requests per second per client is generous for real use and still far below what fills the
 collector's slots.
 
+### The observability listener is not a public surface
+
+`[metrics].addr` normally stays on loopback. Binding it elsewhere so a remote Prometheus can
+scrape it is allowed (the preflight only warns), but it then **requires a network ACL**: a
+firewall rule or a scraper-only network that admits the scraper's address alone. Nothing on
+that listener authenticates, and `/metrics` labels name every station the collector has seen —
+including stations whose policy keeps them out of the public audience — in its `source` and
+`observer` label values, while the push series show which observers are connected and why
+their authentication fails. `/healthz` reports only a fixed reason code for a failed component;
+the actual error is in the log. Never add a reverse-proxy location that forwards to the
+metrics port: `/metrics`, `/healthz` and `/debug/state` must stay unreachable through the
+public hostname (`go/internal/server/README.md`).
+
 ### Deploying a new binary
 
 ```sh
