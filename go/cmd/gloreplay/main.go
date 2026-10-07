@@ -56,10 +56,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"sort"
-	"strings"
+	"strconv"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/navlistener/internal/detect"
@@ -329,10 +332,11 @@ func wordsFromRaw(b []byte) []uint32 {
 // redactDSN keeps a connection string out of stdout: a QA run's output gets pasted
 // into review docs and tickets, and the DSN carries a password.
 func redactDSN(dsn string) string {
-	if i := strings.Index(dsn, "@"); i >= 0 {
-		return "…@" + dsn[i+1:]
+	cfg, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		return "(DSN not shown)"
 	}
-	return "(local)"
+	return fmt.Sprintf("%s/%s (user %q)", net.JoinHostPort(cfg.Host, strconv.Itoa(int(cfg.Port))), cfg.Database, cfg.User)
 }
 
 // countFrames is the sizing pass: the synthetic clock's spacing depends on how

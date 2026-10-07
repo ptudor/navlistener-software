@@ -147,11 +147,19 @@ func TestInstallationOverride(t *testing.T) {
 }
 
 func TestRedactDSN(t *testing.T) {
-	if got := redactDSN("postgres://app:s3cret@db.invalid/nav"); strings.Contains(got, "s3cret") {
-		t.Fatalf("password shown: %s", got)
+	for _, dsn := range []string{
+		"postgres://app:s3cret@db.invalid:5432/nav",
+		"postgres://app@db.invalid/nav?password=s3cret",
+		"host=db.invalid dbname=nav user=app password=a@b",
+		"postgres://app:s3cret@db.invalid/nav?sslmode=require",
+	} {
+		got := redactDSN(dsn)
+		if got != `db.invalid:5432/nav (user "app")` {
+			t.Errorf("redactDSN returned %q; want only host, port, database and user", got)
+		}
 	}
-	if got := redactDSN("host=db.invalid password=s3cret"); strings.Contains(got, "s3cret") {
-		t.Fatalf("keyword password shown: %s", got)
+	if got := redactDSN("postgres://app:s3cret@db.invalid:bad/nav"); got != "(DSN not shown)" {
+		t.Errorf("malformed DSN returned %q", got)
 	}
 }
 

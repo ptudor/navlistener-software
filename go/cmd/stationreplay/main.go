@@ -42,11 +42,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/url"
+	"net"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/ingest"
@@ -250,15 +252,9 @@ func installation(o options, configured integrity.StationProfile) (integrity.Sta
 
 // redactDSN hides a DSN's password for the summary.
 func redactDSN(dsn string) string {
-	u, err := url.Parse(dsn)
-	if err != nil || u.User == nil {
-		if strings.Contains(dsn, "password") {
-			return "(keyword DSN; credentials not shown)"
-		}
-		return dsn
+	cfg, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		return "(DSN not shown)"
 	}
-	if _, ok := u.User.Password(); ok {
-		u.User = url.UserPassword(u.User.Username(), "xxxxx")
-	}
-	return u.String()
+	return fmt.Sprintf("%s/%s (user %q)", net.JoinHostPort(cfg.Host, strconv.Itoa(int(cfg.Port))), cfg.Database, cfg.User)
 }
