@@ -53,16 +53,24 @@ clean:
 # ARCH drops the _musl suffix (mipsel_24kc_musl -> mipsel_24kc); GCCPFX is the gcc prefix
 # (mipsel-openwrt-linux). Keep these comments off the assignment lines: a trailing inline
 # comment in a := assignment captures the spaces before # into the value.
+#
+# HARDEN carries the compiler/linker hardening the OpenWrt buildroot applies to every
+# package by default; invoking the cross-compiler directly bypasses those defaults, and this
+# daemon parses untrusted receiver bytes and network frames on internet-facing routers.
+# Stack canaries, fortified libc calls (musl honours the macro through fortify-headers when
+# present and ignores it otherwise), a position-independent executable for ASLR, full RELRO
+# with immediate binding, and a non-executable stack. -Wextra matches the host build.
 TARGET   ?= mipsel_24kc_musl
 GCC_VER  ?= 15.2.0
 ARCH     := $(TARGET:_musl=)
 GCCPFX   := $(firstword $(subst _, ,$(TARGET)))-openwrt-linux
 TC       := $(STAGING_DIR)/toolchain-$(ARCH)_gcc-$(GCC_VER)_musl
 SYS      := $(STAGING_DIR)/target-$(TARGET)
+HARDEN   := -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE -pie -Wl,-z,relro,-z,now -Wl,-z,noexecstack
 openwrt:
 	@test -n "$(STAGING_DIR)" || { echo "set STAGING_DIR=<openwrt>/staging_dir"; exit 2; }
 	STAGING_DIR=$(STAGING_DIR) $(TC)/bin/$(GCCPFX)-gcc \
-		-Os -Wall -std=c11 -D_FILE_OFFSET_BITS=64 --sysroot=$(SYS) \
+		-Os -Wall -Wextra -std=c11 -D_FILE_OFFSET_BITS=64 $(HARDEN) --sysroot=$(SYS) \
 		-I$(SYS)/usr/include -L$(SYS)/usr/lib -L$(TC)/lib \
 		-Wl,-rpath-link,$(SYS)/usr/lib -Wl,-rpath-link,$(TC)/lib \
 		-o $(BINARY) navfeeder.c -lssl -lcrypto -lzstd -lpthread -latomic

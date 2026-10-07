@@ -36,6 +36,12 @@ static size_t test_fwrite(const void *, size_t, size_t, FILE *);
  * successful allocation replays the retained spool in order. */
 static ZSTD_CCtx *test_ZSTD_createCCtx(void);
 static size_t test_ZSTD_CStreamOutSize(void);
+/* fail_link makes link() fail with that errno, the way FAT/exFAT (EPERM/EOPNOTSUPP)
+ * and some overlay or NFS mounts (EXDEV/EMLINK) refuse hard links, so archive_spool's
+ * rename fallback is exercised against the real recovery path. 0 = the real link. */
+static int fail_link;
+static int test_link(const char *, const char *);
+#define link test_link
 #define fopen test_fopen
 #define fread test_fread
 #define ferror test_ferror
@@ -49,6 +55,7 @@ static size_t test_ZSTD_CStreamOutSize(void);
 #define main navfeeder_main
 #include "navfeeder.c"
 #undef main
+#undef link
 #undef fopen
 #undef fread
 #undef ferror
@@ -57,6 +64,10 @@ static size_t test_ZSTD_CStreamOutSize(void);
 #undef fflush
 #undef fsync
 #undef fwrite
+static int test_link(const char *from, const char *to) {
+    if (fail_link) { errno = fail_link; return -1; }
+    return link(from, to);
+}
 /* g_spool is defined by navfeeder.c above, so these can scope faults to the
  * live spool writer and leave every other stream untouched. */
 static int spool_writer(FILE *f) { return f && f == g_spool.disk_w; }
@@ -193,6 +204,58 @@ static void spool_free_stack(struct spool *s) {
     free(s->ring);
 }
 
+static void free_replays(void) {
+    while (g_replays) { struct spool *next = g_replays->next; spool_free(g_replays); g_replays = next; }
+}
+
+/* A filesystem without hard links (FAT/exFAT SD cards and USB sticks, some overlay and
+ * NFS mounts) fails link() with EPERM/EOPNOTSUPP, or EXDEV/EMLINK elsewhere. The prior
+ * run's file must still be archived — by rename — and queued for replay, instead of
+ * staying at <path> forever with the disk tier disabled on every start. The fallback
+ * must never replace an archive that already exists. */
+static void link_fallback(const char *path) {
+    int codes[] = { EPERM, EOPNOTSUPP, ENOTSUP, EXDEV, EMLINK };
+    char archived[PATH_MAX];
+    snprintf(archived, sizeof archived, "%s.replay.old", path);
+    for (size_t i = 0; i < sizeof codes / sizeof *codes; i++) {
+        unsigned char before[1024], after[1024];
+        unlink(archived);
+        fixture(path, 0);
+        size_t n = bytes(path, before);
+        g_replays = NULL;
+        struct spool current;
+        assert(spool_init(&current, 1, strdup(path), 4096) == 0);
+        fail_link = codes[i];
+        spool_recover_all(&current);
+        fail_link = 0;
+        /* Renamed under the replay name, byte-identical, queued, and the disk tier stays on. */
+        assert(g_replays && !g_replays->next && !strcmp(g_replays->session, "old") && g_replays->seq == 3);
+        assert(!strcmp(g_replays->path, archived));
+        assert(access(path, F_OK) != 0 && errno == ENOENT);
+        assert(bytes(archived, after) == n && !memcmp(before, after, n));
+        assert(current.disk_append_disabled == 0);
+        free_replays();
+        spool_free_stack(&current); free((void *)current.path);
+
+        /* The archive now exists: a fresh file for the same session must be preserved,
+         * never renamed over it, and recovery must fail closed exactly as the link path does. */
+        fixture(path, 0);
+        struct spool again;
+        assert(spool_init(&again, 1, strdup(path), 4096) == 0);
+        fail_link = codes[i];
+        spool_recover_all(&again);
+        fail_link = 0;
+        assert(again.disk_append_disabled == 1);
+        assert(access(path, F_OK) == 0);
+        assert(bytes(archived, after) == n && !memcmp(before, after, n));
+        assert(g_replays && !g_replays->next && !strcmp(g_replays->path, archived)); /* the scan still lists the archive */
+        free_replays();
+        spool_free_stack(&again); free((void *)again.path);
+        assert(!unlink(path) && !unlink(archived));
+    }
+    fixture(path, 0);
+}
+
 /* one strict authority parser for --server and a TCP --source.
  * Both used to split at the LAST colon with no bracket awareness, so a standard
  * [v6]:port left brackets in the name given to getaddrinfo and an unbracketed
@@ -274,6 +337,7 @@ int main(int argc, char **argv) {
     fixture(path,0); assert(!truncate(path, 20)); check_preserved(path,-1);
     /* Full migration on repeated restarts never changes an old payload's key. */
     fixture(path,0);
+    link_fallback(path);
     mutex_init_faults(path);
     assert(spool_init(&g_spool, 1, path, 4096) == 0); spool_recover_all(&g_spool);
     assert(g_replays && !strcmp(g_replays->session,"old") && g_replays->seq == 3);
@@ -281,6 +345,6 @@ int main(int argc, char **argv) {
     assert(spool_append(&g_spool,data,sizeof data) == 1);
     assert(!strcmp(g_spool.session,"fresh"));
     assert(!spool_append(g_replays,data,sizeof data));
-    puts("spool recovery faults, corruption, torn tail, mutex-init faults, authority parsing, retry and session isolation PASS");
+    puts("spool recovery faults, corruption, torn tail, mutex-init faults, link fallback, authority parsing, retry and session isolation PASS");
     return 0;
 }

@@ -238,9 +238,15 @@ func parseRAWX(p []byte, source string, recv time.Time, emit func(*RawFrame)) (i
 func finiteFloat(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 
 // parseSFRBX converts a UBX-RXM-SFRBX payload to a RawFrame. Layout (F9/M9
-// generation): gnssId, svId, sigId, freqId, numWords, reserved, version,
-// reserved, then numWords little-endian 32-bit dwrds each holding one native nav
-// word right-aligned. Returns nil on a malformed/short payload.
+// generation, message version 2): gnssId, svId, sigId, freqId, numWords, chn,
+// version, reserved, then numWords little-endian 32-bit dwrds each holding one
+// native nav word right-aligned. The M8 generation emits message version 1,
+// whose byte 2 is a reserved field rather than sigId: an M8 is L1-only, so its
+// sigId is 0 by definition and byte 2 must not be trusted (a non-zero reserved
+// byte would otherwise label the frame with a bogus signal and a wrong NavType,
+// persisted as such). The same rule lives in feeder/navfeeder.c (emit_sfrbx)
+// and the ESP32 ubx framer, so the three stay a cross-oracle. Returns nil on a
+// malformed/short payload.
 func parseSFRBX(p []byte, source string, recv time.Time) *RawFrame {
 	if len(p) < 8 {
 		return nil
@@ -248,6 +254,9 @@ func parseSFRBX(p []byte, source string, recv time.Time) *RawFrame {
 	gnssID := gnss.GNSSID(p[0])
 	svID := int(p[1])
 	sigID := int(p[2])
+	if p[6] == 1 {
+		sigID = 0
+	}
 	freqID := int(p[3])
 	numWords := int(p[4])
 	if numWords == 0 || 8+numWords*4 > len(p) {

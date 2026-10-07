@@ -1,11 +1,15 @@
 CC ?= cc
 CFLAGS ?= -O1 -g -Wall -Wextra -Werror -std=c11
 .PHONY: all clean
-all: build/probe_test build/status_test build/solution_test build/reception_test
+all: build/probe_test build/status_test build/solution_test build/reception_test build/sfrbx_test
 	./build/probe_test
 	./build/status_test
 	./build/solution_test
 	./build/reception_test
+	./build/sfrbx_test
+build/sfrbx_test: sfrbx_test.c ../src/ubx.c ../include/ubx.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -I../include -I../../gnf1/include sfrbx_test.c ../src/ubx.c ../../gnf1/src/gnf1.c -o $@
 build/status_test: status_test.c ../src/gnss_status.c ../include/gnss_status.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -I../include status_test.c ../src/gnss_status.c -lm -o $@

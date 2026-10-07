@@ -56,6 +56,10 @@ func TestNavfeederRejectsUnpresentableTokensAtStartup(t *testing.T) {
 		{"content after the first line", "goodtoken\nsecond line\n", "content after the first line"},
 		{"empty file", "", "empty --token-file"},
 		{"whitespace-only file", "   \n", "empty --token-file"},
+		// A Latin-1 byte would be copied verbatim into the HELLO JSON and replaced with
+		// U+FFFD by the collector's decoder: a different credential, rejected forever
+		// with no local diagnostic. It must fail here, naming the problem, not the value.
+		{"non-ASCII byte in the token", "goodtoken\xe9\n", "non-ASCII"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
