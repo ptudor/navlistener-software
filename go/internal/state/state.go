@@ -968,6 +968,31 @@ func cnavCarrierHealth(id gnss.GNSSID, sig, h3 int) int {
 	return l5
 }
 
+// cnavGroupDelay combines MT30 TGD and the tracked signal's ISC into the
+// clock.Model delay: subtracting TGD - ISC applies -TGD + ISC to the clock.
+func cnavGroupDelay(id gnss.GNSSID, sig int, m *frame.GPSCNAV) float64 {
+	if id == gnss.GPS {
+		switch sig {
+		case 3, 4:
+			return m.TGD - m.ISCL2C
+		case 6:
+			return m.TGD - m.ISCL5I5
+		case 7:
+			return m.TGD - m.ISCL5Q5
+		}
+	} else if id == gnss.QZSS {
+		switch sig {
+		case 4, 5:
+			return m.TGD - m.ISCL2C
+		case 8:
+			return m.TGD - m.ISCL5I5
+		case 9:
+			return m.TGD - m.ISCL5Q5
+		}
+	}
+	return m.TGD
+}
+
 // applyGPSCNAV decodes a GPS/QZSS L2C/L5 CNAV message and folds it
 // into a SEPARATE per-signal SV state keyed on the frame's own sigId — the same
 // secondary-signal pattern as Galileo E5a F/NAV (Sig:3) and BeiDou B-CNAV2
@@ -1071,7 +1096,7 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 		// MT30 whose toc the assembler rejected: TGD is an SV-level quasi-static
 		// hardware correction (IS-GPS-200N §30.3.3.3.1.1), not part of the
 		// per-data-set clock, so the freshest broadcast value is the right one.
-		clk.TGD = st.gc30.TGD
+		clk.TGD = cnavGroupDelay(f.GnssID, f.SigID, st.gc30)
 	}
 	ephChanged := !st.haveEph || int(eph.Toe) != st.iod
 	clkChanged := clkOK && (!st.haveClk || clk != st.clk)

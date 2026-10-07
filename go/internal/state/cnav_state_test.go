@@ -400,7 +400,7 @@ func TestCNAVClockContentRefreshAndCoherentAvailability(t *testing.T) {
 			corrections := *st.gc30
 			for mt := 31; mt <= 37; mt++ {
 				apply(clockWords(mt, 400, uint64(70000+mt), 0), t0.Add(time.Duration(mt)*time.Second))
-				if st.clk.Af0 != math.Ldexp(float64(70000+mt), -35) || st.clk.TGD != math.Ldexp(9, -35) {
+				if st.clk.Af0 != math.Ldexp(float64(70000+mt), -35) || st.clk.TGD != math.Ldexp(9-22, -35) {
 					t.Fatalf("MT%d erased known correction or failed clock update", mt)
 				}
 				if *st.gc30 != corrections || st.ephAt != ephAt || st.ephRecvAt != ephRecvAt {
@@ -415,12 +415,41 @@ func TestCNAVClockContentRefreshAndCoherentAvailability(t *testing.T) {
 			newEphAt, newEphRecvAt := st.ephAt, st.ephRecvAt
 			apply(clockWords(31, 401, 80000, 0), t0.Add(2*time.Minute))
 			sv = s.FeedSVs(t0.Add(2 * time.Minute))[key.Name()]
-			if !st.haveClk || sv.Af0 == nil || *sv.Af0 != math.Ldexp(80000, -35) || st.clk.TGD != math.Ldexp(9, -35) {
+			if !st.haveClk || sv.Af0 == nil || *sv.Af0 != math.Ldexp(80000, -35) || st.clk.TGD != math.Ldexp(9-22, -35) {
 				t.Fatal("late matching clock or retained SV correction missing")
 			}
 			if st.ephAt != newEphAt || st.ephRecvAt != newEphRecvAt || st.timeDiscoValid {
 				t.Fatal("late clock refreshed orbit or invented time discontinuity")
 			}
 		})
+	}
+}
+
+func TestCNAVSignalGroupDelay(t *testing.T) {
+	at := time.Unix(1700000000, 0)
+	for _, tc := range []struct {
+		id  gnss.GNSSID
+		sig int
+		isc float64
+	}{
+		{gnss.GPS, 3, 22}, {gnss.GPS, 4, 22}, {gnss.GPS, 6, 33}, {gnss.GPS, 7, 44},
+		{gnss.QZSS, 4, 22}, {gnss.QZSS, 5, 22}, {gnss.QZSS, 8, 33}, {gnss.QZSS, 9, 44},
+	} {
+		s := New(1)
+		s.Apply(cnavStateFrame(tc.id, 5, tc.sig, cnavMT10(5, 2288, 0, 2, 400), at))
+		s.Apply(cnavStateFrame(tc.id, 5, tc.sig, cnavStateWords(5, 11, func(b []byte) { setAbsBits(b, 38, 11, 400) }), at))
+		s.Apply(cnavStateFrame(tc.id, 5, tc.sig, cnavStateWords(5, 30, func(b []byte) {
+			setAbsBits(b, 60, 11, 400)
+			setAbsBits(b, 127, 13, 9)
+			setAbsBits(b, 153, 13, 22)
+			setAbsBits(b, 166, 13, 33)
+			setAbsBits(b, 179, 13, 44)
+		}), at))
+		key := Key{G: tc.id, Sv: 5, Sig: tc.sig}
+		st := s.shardFor(key).m[key]
+		want := math.Ldexp(9-tc.isc, -35)
+		if st == nil || !st.haveClk || st.clk.TGD != want {
+			t.Fatalf("%s signal %d: clock = %+v, want TGD %g", tc.id, tc.sig, st, want)
+		}
 	}
 }
