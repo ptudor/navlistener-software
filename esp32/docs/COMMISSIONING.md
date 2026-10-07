@@ -125,7 +125,14 @@ Then, in order:
    source whenever Wi-Fi is up, which is the normal state in both setup and
    station mode; otherwise the SAR ADC source is enabled for the duration.
    Expect tens of seconds to a few minutes. The console task drops to the idle
-   priority while it works so the task watchdog stays fed.
+   priority while it works so the task watchdog stays fed, and the identity
+   lock is not held during this step: a mutex held for minutes at the idle
+   priority would inherit the pusher's priority the moment it asked for session
+   evidence, starve the idle task and trip the watchdog mid-burn. Run `keygen`
+   on an unprovisioned unit, or stop the pusher first: a session that starts
+   while the key is being made has its evidence built from the state before
+   the burn, and the key is only re-checked for refusal, stored and burned
+   once generation is complete.
 2. Derive the peripheral's operands and encrypt them under the HMAC key.
 3. **Store** the ciphertext and the public key, marked *staged*.
 4. **Burn** the HMAC key into the first free key block. The eFuse API writes the

@@ -134,6 +134,23 @@ typedef struct {
 } nvf_mcu_keygen_state_t;
 const char *nvf_mcu_keygen_refusal(const nvf_mcu_keygen_state_t *state);
 
+// The order of one key generation, with the board's own steps injected so the sequence is
+// host-tested. The identity lock is held for the refusal checks and the commit, never while
+// the key is generated: that takes minutes, and a mutex held that long by a task at the idle
+// priority inherits the pusher's priority as soon as it asks for evidence, starves the idle
+// task and trips the task watchdog mid-burn. Each step returns NULL to continue or the reason
+// it stopped; refusal runs again after generation because the board may have changed
+// meanwhile, and a refusal then costs only the generated key, since nothing was burned.
+typedef struct {
+    void *context;
+    void (*lock)(void *context);
+    void (*unlock)(void *context);
+    const char *(*refusal)(void *context);  // with the lock held
+    const char *(*generate)(void *context); // without the lock
+    const char *(*commit)(void *context);   // with the lock held: store, burn, protect, test
+} nvf_mcu_keygen_steps_t;
+const char *nvf_mcu_keygen_run(const nvf_mcu_keygen_steps_t *steps);
+
 // Canonical observer id: board-<four lowercase kind digits>-<complete value hex>.
 void nvf_commission_observer_id(const uint8_t uid[NVF_BOARD_UID_SIZE], char out[NVF_BOARD_OBSERVER_SIZE]);
 

@@ -251,6 +251,61 @@ static void test_security_bits_and_keygen_rules(void)
     k = fresh; k.key_ready = true; k.rd_dis_sealed = true; assert(nvf_mcu_keygen_refusal(&k));
 }
 
+// The identity lock is a FreeRTOS mutex on the board; here a flag plays it. Every step
+// records whether it ran with the lock held, which is what the sequence must guarantee.
+typedef struct {
+    bool held;
+    unsigned refusals, generates, commits;
+    const char *refuse_on_call; unsigned refuse_call; // refusal returns this on its Nth call
+    const char *generate_fault;
+    bool generate_saw_lock, commit_saw_lock, refusal_saw_unlocked;
+} keygen_trace_t;
+static void trace_lock(void *c) { keygen_trace_t *t = c; assert(!t->held); t->held = true; }
+static void trace_unlock(void *c) { keygen_trace_t *t = c; assert(t->held); t->held = false; }
+static const char *trace_refusal(void *c)
+{
+    keygen_trace_t *t = c;
+    if (!t->held) t->refusal_saw_unlocked = true;
+    return ++t->refusals == t->refuse_call ? t->refuse_on_call : NULL;
+}
+static const char *trace_generate(void *c)
+{
+    keygen_trace_t *t = c;
+    if (t->held) t->generate_saw_lock = true;
+    t->generates++;
+    return t->generate_fault;
+}
+static const char *trace_commit(void *c)
+{
+    keygen_trace_t *t = c;
+    t->commit_saw_lock = t->held;
+    t->commits++;
+    return NULL;
+}
+static void test_keygen_sequence(void)
+{
+    keygen_trace_t t = {0};
+    nvf_mcu_keygen_steps_t steps = { .context = &t, .lock = trace_lock, .unlock = trace_unlock,
+        .refusal = trace_refusal, .generate = trace_generate, .commit = trace_commit };
+    // The normal run: refused twice (before and after), generated once without the lock,
+    // committed once with it, and the lock released at the end.
+    assert(!nvf_mcu_keygen_run(&steps));
+    assert(t.refusals == 2 && t.generates == 1 && t.commits == 1 && !t.held);
+    assert(!t.generate_saw_lock && t.commit_saw_lock && !t.refusal_saw_unlocked);
+    // A refusal before generation spends nothing on the key.
+    t = (keygen_trace_t){ .refuse_on_call = "no", .refuse_call = 1 };
+    assert(nvf_mcu_keygen_run(&steps) == t.refuse_on_call);
+    assert(t.refusals == 1 && !t.generates && !t.commits && !t.held);
+    // The board changed while the key was being made: it is refused again and never burned.
+    t = (keygen_trace_t){ .refuse_on_call = "changed", .refuse_call = 2 };
+    assert(nvf_mcu_keygen_run(&steps) == t.refuse_on_call);
+    assert(t.refusals == 2 && t.generates == 1 && !t.commits && !t.held);
+    // A generation fault stops before the lock is taken again.
+    t = (keygen_trace_t){ .generate_fault = "RSA key generation failed" };
+    assert(nvf_mcu_keygen_run(&steps) == t.generate_fault);
+    assert(t.refusals == 1 && t.generates == 1 && !t.commits && !t.held);
+}
+
 static void test_pss(void)
 {
     // 1. The fixture proof, opened with the fixture public key, is an encoding the reference
@@ -311,6 +366,7 @@ int main(void)
     test_validation();
     test_match();
     test_security_bits_and_keygen_rules();
+    test_keygen_sequence();
     test_pss();
     puts("Commissioning statement, record, proof digest, evidence and EMSA-PSS match the shared fixtures");
     return 0;

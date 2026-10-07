@@ -175,7 +175,9 @@ static void keygen(void)
 {
     const char *reason = NULL;
     // Prime generation keeps a core busy for minutes. At the idle priority it shares time
-    // slices with the idle task, which keeps the task watchdog fed.
+    // slices with the idle task, which keeps the task watchdog fed. That only holds because
+    // the identity lock is not held while the key is generated: a mutex held that long
+    // would lend this task the pusher's priority the moment it asked for evidence.
     UBaseType_t priority = uxTaskPriorityGet(NULL);
     vTaskPrioritySet(NULL, tskIDLE_PRIORITY);
     esp_err_t err = nvf_mcu_identity_provision(&reason);

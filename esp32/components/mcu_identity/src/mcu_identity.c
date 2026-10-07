@@ -385,15 +385,15 @@ static bool entropy_begin(void)
 }
 static void entropy_end(bool enabled) { if (enabled) bootloader_random_disable(); }
 
-// generate fills the peripheral parameters, the ciphertext and the public key, and burns the
-// key block. *burned is the spent block, or -1 when nothing was burned. Every intermediate
-// that depends on the private key is erased before it returns.
-static const char *generate(esp_ds_data_t *data, uint8_t *der, size_t *der_len, int *burned)
+// generate_key fills the peripheral parameters, the ciphertext and the public key, and leaves
+// the HMAC key for commit_key to burn. It touches no shared state, so the identity lock is
+// not held while it runs. Every other intermediate that depends on the private key is erased
+// before it returns, and on a fault the HMAC key is too.
+static const char *generate_key(esp_ds_data_t *data, uint8_t *der, size_t *der_len, uint8_t hmac_key[32])
 {
-    *burned = -1;
     static const unsigned char personalization[] = "navlistener microcontroller key";
     const char *fault = NULL;
-    uint8_t hmac_key[32], iv[ESP_DS_IV_LEN], buffer[NVF_MCU_KEY_DER_MAX];
+    uint8_t iv[ESP_DS_IV_LEN], buffer[NVF_MCU_KEY_DER_MAX];
     esp_ds_p_data_t *params = heap_caps_calloc(1, sizeof *params, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     mbedtls_entropy_context entropy; mbedtls_ctr_drbg_context drbg; mbedtls_pk_context pk;
     mbedtls_mpi n, d, r;
@@ -420,32 +420,38 @@ static const char *generate(esp_ds_data_t *data, uint8_t *der, size_t *der_len, 
     for (int i = 0; i < 5; i++) inverse *= 2 - params->M[0] * inverse;
     params->M_prime = 0u - inverse;
     params->length = ESP_DS_RSA_3072;
-    if (mbedtls_ctr_drbg_random(&drbg, hmac_key, sizeof hmac_key) != 0 || mbedtls_ctr_drbg_random(&drbg, iv, sizeof iv) != 0) { fault = "random generator failed"; goto done; }
+    if (mbedtls_ctr_drbg_random(&drbg, hmac_key, 32) != 0 || mbedtls_ctr_drbg_random(&drbg, iv, sizeof iv) != 0) { fault = "random generator failed"; goto done; }
     if (esp_ds_encrypt_params(data, iv, params, hmac_key) != ESP_OK || data->rsa_length != ESP_DS_RSA_3072) { fault = "parameter encryption failed"; goto done; }
+done:
+    if (fault) mbedtls_platform_zeroize(hmac_key, 32);
+    mbedtls_platform_zeroize(iv, sizeof iv); mbedtls_platform_zeroize(buffer, sizeof buffer);
+    if (params) { mbedtls_platform_zeroize(params, sizeof *params); heap_caps_free(params); }
+    mbedtls_mpi_free(&n); mbedtls_mpi_free(&d); mbedtls_mpi_free(&r);
+    mbedtls_pk_free(&pk); mbedtls_ctr_drbg_free(&drbg); mbedtls_entropy_free(&entropy);
+    return fault;
+}
 
+// commit_key stores the ciphertext as staged and burns the HMAC key into a free key block.
+// Caller holds the lock. *burned is the spent block, or -1 when nothing was burned.
+static const char *commit_key(const esp_ds_data_t *data, const uint8_t *der, size_t der_len, const uint8_t hmac_key[32], int *burned)
+{
+    *burned = -1;
     esp_efuse_block_t block = esp_efuse_find_unused_key_block();
-    if (block == EFUSE_BLK_KEY_MAX) { fault = "no free eFuse key block"; goto done; }
+    if (block == EFUSE_BLK_KEY_MAX) return "no free eFuse key block";
     int index = (int)(block - EFUSE_BLK_KEY0);
-    if (store_key(data, der, *der_len, index, STORED_STAGED) != ESP_OK) { discard_key(); fault = "could not store the ciphertext; nothing was burned"; goto done; }
-    esp_err_t err = esp_efuse_write_key(block, DS_PURPOSE, hmac_key, sizeof hmac_key);
+    if (store_key(data, der, der_len, index, STORED_STAGED) != ESP_OK) { discard_key(); return "could not store the ciphertext; nothing was burned"; }
+    esp_err_t err = esp_efuse_write_key(block, DS_PURPOSE, hmac_key, 32);
     if (err != ESP_OK && esp_efuse_key_block_unused(block)) {
         // Refused while the batch was being prepared: it was cancelled and the block is free.
         ESP_LOGE(TAG, "eFuse key block %d was not burned: %s", index, esp_err_to_name(err));
         discard_key();
-        fault = "the eFuse burn was refused; nothing was burned";
-        goto done;
+        return "the eFuse burn was refused; nothing was burned";
     }
     // A failure while the batch was being committed can leave the block partly burned. It
     // is spent either way; the caller's protection check and self-test decide what it is.
     if (err != ESP_OK) ESP_LOGE(TAG, "eFuse key block %d burn reported %s after it began", index, esp_err_to_name(err));
     *burned = index;
-done:
-    mbedtls_platform_zeroize(hmac_key, sizeof hmac_key); mbedtls_platform_zeroize(iv, sizeof iv);
-    mbedtls_platform_zeroize(buffer, sizeof buffer);
-    if (params) { mbedtls_platform_zeroize(params, sizeof *params); heap_caps_free(params); }
-    mbedtls_mpi_free(&n); mbedtls_mpi_free(&d); mbedtls_mpi_free(&r);
-    mbedtls_pk_free(&pk); mbedtls_ctr_drbg_free(&drbg); mbedtls_entropy_free(&entropy);
-    return fault;
+    return NULL;
 }
 
 // seal_field write-protects the eFuse read-protection field. Callers have just seen the
@@ -457,15 +463,27 @@ static esp_err_t seal_field(void)
     return err == ESP_OK && !sealed() ? ESP_FAIL : err;
 }
 
-esp_err_t nvf_mcu_identity_provision(const char **reason)
+// One key generation in flight (nvf_mcu_keygen_run drives the steps below). The context
+// belongs to the job until adopt() takes it; the HMAC key lives here only between
+// generation and the burn, and is erased either way.
+typedef struct {
+    esp_ds_data_t *data;
+    uint8_t *der;
+    size_t der_len;
+    uint8_t hmac_key[32];
+    int burned;
+    bool refused, ready;
+    esp_err_t result;
+} keygen_job_t;
+static void keygen_lock(void *context) { (void)context; xSemaphoreTake(lock, portMAX_DELAY); }
+static void keygen_unlock(void *context) { (void)context; xSemaphoreGive(lock); }
+// Caller holds the lock. Every refusal comes before anything is burned. In particular a key
+// block that could not be read-protected would leave the HMAC key readable by software: the
+// bootloader write-protects the read-protection field when it enables Secure Boot unless it
+// was built with SECURE_BOOT_V2_ALLOW_EFUSE_RD_DIS.
+static const char *keygen_refusal(void *context)
 {
-    *reason = NULL;
-    if (!lock || !storage_ready) { *reason = "hardware trust storage is unavailable"; return ESP_ERR_INVALID_STATE; }
-    xSemaphoreTake(lock, portMAX_DELAY);
-    // Every refusal comes before anything is burned. In particular a key block that could
-    // not be read-protected would leave the HMAC key readable by software: the bootloader
-    // write-protects the read-protection field when it enables Secure Boot unless it was
-    // built with SECURE_BOOT_V2_ALLOW_EFUSE_RD_DIS.
+    keygen_job_t *job = context;
     nvf_mcu_keygen_state_t state = {
         .locked = esp_secure_boot_enabled() && esp_get_flash_encryption_mode() == ESP_FLASH_ENC_MODE_RELEASE,
         .unlocked_allowed = CONFIG_NVF_UPDATE_TEST_KEYS && CONFIG_NVF_MCU_KEY_UNLOCKED_TEST,
@@ -476,44 +494,69 @@ esp_err_t nvf_mcu_identity_provision(const char **reason)
         .free_block = esp_efuse_find_unused_key_block() != EFUSE_BLK_KEY_MAX,
     };
     const char *why = nvf_mcu_keygen_refusal(&state);
-    if (why) { xSemaphoreGive(lock); *reason = why; return ESP_ERR_NOT_ALLOWED; }
-
-    esp_err_t result = ESP_FAIL;
-    int burned = -1;
-    bool ready = false;
-    esp_ds_data_t *data = context_alloc();
-    uint8_t *der = malloc(NVF_MCU_KEY_DER_MAX);
-    size_t der_len = 0;
-    if (!data || !der) { why = "out of internal memory"; result = ESP_ERR_NO_MEM; heap_caps_free(data); }
-    else {
-        bool entropy = entropy_begin();
-        why = generate(data, der, &der_len, &burned);
-        entropy_end(entropy);
-        if (why) heap_caps_free(data); // nothing was burned; the earlier state stands
-        else if (!block_protected(EFUSE_BLK_KEY0 + burned)) {
-            adopt(data, der, der_len, burned, NVF_MCU_KEY_FAULT); record_fault(burned);
-            why = "the key block was burned without full read and write protection";
-        } else if ((result = self_test(data, burned, der, der_len)) == ESP_ERR_NO_MEM) {
-            // Not a verdict on the key: it stays staged and is tested again at the next boot.
-            adopt(data, der, der_len, burned, NVF_MCU_KEY_FAULT);
-            why = "the key block was burned but its self-test ran out of memory; restart to test it again";
-        } else if (result != ESP_OK) {
-            adopt(data, der, der_len, burned, NVF_MCU_KEY_FAULT); record_fault(burned);
-            why = "the key block was burned but a signature through the peripheral did not verify";
-        } else {
-            adopt(data, der, der_len, burned, NVF_MCU_KEY_READY);
-            ready = true;
-            if ((result = store_state(STORED_READY)) != ESP_OK) why = "the key is ready but its state could not be stored; restart, then run `commission seal`";
-        }
-    }
-    free(der);
-    if (burned >= 0 && fault_confirmed())
+    if (why) { job->refused = true; job->result = ESP_ERR_NOT_ALLOWED; }
+    return why;
+}
+// Runs without the lock: minutes of prime search that touch nothing shared.
+static const char *keygen_generate(void *context)
+{
+    keygen_job_t *job = context;
+    bool entropy = entropy_begin();
+    const char *why = generate_key(job->data, job->der, &job->der_len, job->hmac_key);
+    entropy_end(entropy);
+    return why;
+}
+// Caller holds the lock. Once the block is burned it is spent either way and the context
+// belongs to the identity whatever the verdict; before that a fault leaves the earlier
+// state standing.
+static const char *keygen_commit(void *context)
+{
+    keygen_job_t *job = context;
+    const char *why = commit_key(job->data, job->der, job->der_len, job->hmac_key, &job->burned);
+    mbedtls_platform_zeroize(job->hmac_key, sizeof job->hmac_key);
+    if (why) return why;
+    esp_ds_data_t *data = job->data;
+    int burned = job->burned;
+    job->data = NULL;
+    if (!block_protected(EFUSE_BLK_KEY0 + burned)) why = "the key block was burned without full read and write protection";
+    else if ((job->result = self_test(data, burned, job->der, job->der_len)) == ESP_ERR_NO_MEM) {
+        // Not a verdict on the key: it stays staged and is tested again at the next boot.
+        adopt(data, job->der, job->der_len, burned, NVF_MCU_KEY_FAULT);
+        return "the key block was burned but its self-test ran out of memory; restart to test it again";
+    } else if (job->result != ESP_OK) why = "the key block was burned but a signature through the peripheral did not verify";
+    if (why) {
+        adopt(data, job->der, job->der_len, burned, NVF_MCU_KEY_FAULT); record_fault(burned);
         ESP_LOGE(TAG, "eFuse key block %d is spent and unusable: %s. Read protection stays unsealed, so another free block can be tried once the cause is understood", burned, why);
-    xSemaphoreGive(lock);
-    journal_event(JOURNAL_COMMISSION, (int32_t)(1 | (ready ? 0 : 1) << 8 | (burned + 1) << 16));
+        return why;
+    }
+    adopt(data, job->der, job->der_len, burned, NVF_MCU_KEY_READY);
+    job->ready = true;
+    if ((job->result = store_state(STORED_READY)) != ESP_OK) return "the key is ready but its state could not be stored; restart, then run `commission seal`";
+    return NULL;
+}
+
+esp_err_t nvf_mcu_identity_provision(const char **reason)
+{
+    *reason = NULL;
+    if (!lock || !storage_ready) { *reason = "hardware trust storage is unavailable"; return ESP_ERR_INVALID_STATE; }
+    keygen_job_t job = { .data = context_alloc(), .der = malloc(NVF_MCU_KEY_DER_MAX), .burned = -1, .result = ESP_FAIL };
+    const char *why;
+    if (!job.data || !job.der) { why = "out of internal memory"; job.result = ESP_ERR_NO_MEM; }
+    else {
+        const nvf_mcu_keygen_steps_t steps = { .context = &job, .lock = keygen_lock, .unlock = keygen_unlock,
+            .refusal = keygen_refusal, .generate = keygen_generate, .commit = keygen_commit };
+        why = nvf_mcu_keygen_run(&steps);
+    }
+    heap_caps_free(job.data); // NULL once the identity adopted it
+    mbedtls_platform_zeroize(job.hmac_key, sizeof job.hmac_key);
+    free(job.der);
+    // A refusal, before or after generation, changed nothing on the chip and is not journaled.
+    if (job.refused) { *reason = why; return ESP_ERR_NOT_ALLOWED; }
+    esp_err_t result = job.result;
+    journal_event(JOURNAL_COMMISSION, (int32_t)(1 | (job.ready ? 0 : 1) << 8 | (job.burned + 1) << 16));
     // Sealing is the last step and only follows a key that is burned, protected, tested and
     // stored. Until it succeeds the chip does not report the key's security bit.
-    if (ready && !why) {
+    if (job.ready && !why) {
         result = seal_field();
         journal_event(JOURNAL_COMMISSION, (int32_t)(4 | (result != ESP_OK) << 8));
         if (result != ESP_OK) why = "the key is ready but eFuse read protection could not be sealed; run `commission seal`";
