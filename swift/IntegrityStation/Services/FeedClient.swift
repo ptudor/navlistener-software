@@ -248,6 +248,11 @@ struct FeedClient: Sendable, Equatable {
     ) async throws -> APIEnvelope<Payload> {
         var request = URLRequest(url: url)
         request.timeoutInterval = 10
+        // Feed documents are this client's clock source. An answer from the
+        // URL cache within the public feed's max-age would be stamped with the
+        // current fetch time and understate every age, so even anonymous
+        // discovery goes to the origin.
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("IntegrityStation/0.1", forHTTPHeaderField: "User-Agent")
         if let session {
@@ -271,7 +276,7 @@ struct FeedClient: Sendable, Equatable {
         }
         guard success else { throw Self.responseError(status: http.statusCode, data: data) }
 
-        let envelope: APIEnvelope<Payload>
+        var envelope: APIEnvelope<Payload>
         do {
             envelope = try JSONDecoder().decode(APIEnvelope<Payload>.self, from: data)
         } catch {
@@ -284,6 +289,7 @@ struct FeedClient: Sendable, Equatable {
             )
         }
         guard envelope.data != nil else { throw FeedError.missingData }
+        envelope.cacheAge = Self.cacheAge(of: http)
         return envelope
     }
 
@@ -296,12 +302,29 @@ struct FeedClient: Sendable, Equatable {
         }
     }
 
-    private static func failFastSession() -> URLSession {
+    /// RFC 9111 §5.1: a recipient reads an `Age` above 2^31 seconds as 2^31.
+    static let maximumCacheAge: TimeInterval = 2_147_483_648
+
+    /// Seconds a shared cache (a reverse proxy, a CDN) held the response before
+    /// forwarding it. The local URL cache is bypassed, but a proxy answering
+    /// within the public feed's max-age still serves an older document than
+    /// its `time` suggests; the store moves its fetch instant back by this much.
+    /// `Age` is delta-seconds: a non-negative integer. Anything else is no age.
+    static func cacheAge(of response: HTTPURLResponse) -> TimeInterval {
+        guard let value = response.value(forHTTPHeaderField: "Age")?
+                .trimmingCharacters(in: .whitespaces),
+              !value.isEmpty, value.utf8.allSatisfy({ (48...57).contains($0) })
+        else { return 0 }
+        guard let seconds = UInt64(value) else { return maximumCacheAge }
+        return min(TimeInterval(seconds), maximumCacheAge)
+    }
+
+    static func failFastSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.waitsForConnectivity = false
         configuration.timeoutIntervalForRequest = 10
         configuration.timeoutIntervalForResource = 15
-        configuration.requestCachePolicy = .useProtocolCachePolicy
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: configuration)
     }
 }
@@ -310,9 +333,11 @@ enum ReadRequestHeaders {
     static func apply(session: ReadSession, to request: inout URLRequest) throws {
         if session.audience.isPrivate { try requireSecureTransport(request.url) }
         request.setValue(session.audience.rawValue, forHTTPHeaderField: "X-GNSS-Audience")
+        // Every audience's requests go to the origin: the public feed is served
+        // with max-age=30, and a cached answer would be presented as a fresh poll.
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         if let token = session.token {
             try apply(token: token, to: &request)
-            request.cachePolicy = .reloadIgnoringLocalCacheData
         }
     }
 

@@ -145,7 +145,8 @@ final class StationStore {
         guard WireSchema.isSupported(payload.schema), payload.audience == session.audience.rawValue
         else { throw FeedError.invalidResponse }
         let snapshot = ObserversSnapshot(receivedAt: Date(), scope: session.cacheKey,
-                                         serverTime: envelope.time, payload: payload.redacted())
+                                         serverTime: envelope.time, payload: payload.redacted(),
+                                         cacheAge: envelope.cacheAge)
         try apply(snapshot, cached: false)
         return snapshot
     }
@@ -280,7 +281,12 @@ final class StationStore {
         observers = snapshot.payload.redacted().observers ?? []
         lastUpdated = snapshot.receivedAt
         isShowingCachedSnapshot = cached
-        fetchedAt = .now
+        // A document that a shared cache held for `cacheAge` seconds was current
+        // that long before it arrived. Anchoring the fetch instant back by that
+        // much carries the residence into every derived age, board freshness and
+        // the collector clock, instead of stamping the snapshot as fresh.
+        let cacheAge = snapshot.cacheAge.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil } ?? 0
+        fetchedAt = .now - .seconds(min(cacheAge, FeedClient.maximumCacheAge))
         // The collector envelope truncates UTC to whole seconds, while board
         // timestamps retain fractions. Use the end of that second so a newly
         // received pulse is not mistaken for a future timestamp; freshness can
