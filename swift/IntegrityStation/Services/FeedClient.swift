@@ -77,10 +77,21 @@ enum CollectorEndpoint {
         return nil
     }
 
+    /// A certificate or TLS failure on the primary is shown, never routed
+    /// around: an expired certificate or an interception on one host must not
+    /// be masked by a successful alias, and the alias must not be tried with
+    /// the credential after the primary's identity could not be verified.
+    static let transportSecurityCodes: Set<URLError.Code> = [
+        .secureConnectionFailed, .serverCertificateHasBadDate, .serverCertificateUntrusted,
+        .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid, .clientCertificateRejected,
+        .clientCertificateRequired, .appTransportSecurityRequiresSecureConnection
+    ]
+
     static func canRetry(_ error: Error) -> Bool {
         if let error = error as? URLError {
             return error.code != .cancelled && error.code != .userAuthenticationRequired
                 && error.code != .userCancelledAuthentication && error.code != .badURL
+                && !transportSecurityCodes.contains(error.code)
         }
         if case FeedError.http(let status) = error { return isRetryableStatus(status) }
         if case FeedError.updateRejected(let status, _) = error { return isRetryableStatus(status) }
