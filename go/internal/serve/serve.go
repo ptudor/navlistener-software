@@ -690,6 +690,7 @@ func (s *Server) serveFeed(feed string) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		s.setAudienceCacheHeaders(w, view.audience)
 		if body == nil {
+			w.Header().Set("Retry-After", "1")
 			writeError(w, http.StatusServiceUnavailable, "feed not ready")
 			return
 		}
@@ -1066,7 +1067,16 @@ func (s *Server) watchReadAuthorization(ctx context.Context, cancel context.Canc
 	}
 }
 
+// writeError is authoritative for an error's cache semantics: whatever
+// Cache-Control the handler had set for its success body, the error must not be
+// stored. An explicit freshness such as `public, max-age=30` makes any final
+// status storable (RFC 9111 §3), which turned a transient 503 into a 30 s cached
+// outage for every public consumer behind a shared cache. A handler's stricter
+// `private, no-store` is kept; any Vary already set is kept.
 func writeError(w http.ResponseWriter, code int, msg string) {
+	if !strings.Contains(w.Header().Get("Cache-Control"), "no-store") {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": msg, "code": code})

@@ -67,6 +67,9 @@ func (s *Server) invalidateDeliveries(selected identity.Audience) {
 
 func (d *responseDelivery) write(w http.ResponseWriter, body []byte) {
 	if !d.current() {
+		// The caller set the success body's cache headers before deciding;
+		// writeError replaces them so the transient 503 is never stored.
+		w.Header().Set("Retry-After", "1")
 		writeError(w, http.StatusServiceUnavailable, "audience policy changed; retry request")
 		return
 	}
