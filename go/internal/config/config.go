@@ -27,6 +27,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/ptudor/navlistener/internal/authority"
+	"github.com/ptudor/navlistener/internal/boardid"
 	"github.com/ptudor/navlistener/internal/commissioning"
 	"github.com/ptudor/navlistener/internal/federation"
 	"github.com/ptudor/navlistener/internal/identity"
@@ -1065,6 +1066,20 @@ func (c *Config) finalize() error {
 			return fmt.Errorf("ingest %q identity evidence: %w", s.Name, err)
 		}
 	}
+	// A station is configured in exactly one place. A dial source and a push
+	// observer of one name would feed live state under one Source key (the AGC
+	// baseline, the reception model, every station integrity check and liveness
+	// would see two receivers interleaved) while carrying different observer
+	// contexts, and the historian would store both under one source_id. A
+	// disabled dial entry still counts: it keeps its declaration and identity in
+	// the audience registry, so pausing a migrated receiver is not a way around
+	// the rule — delete the entry. (Observers authorized by [authorization].dsn
+	// are not config rows and are not checked here.)
+	for i, o := range c.Push.Observers {
+		if seen[o.Station] {
+			return fmt.Errorf("push.observer[%d] station %q is also an [[ingest]] source name: a station is configured in one place only, as a dial source or as a push observer (a disabled dial entry counts; remove it)", i, o.Station)
+		}
+	}
 	return nil
 }
 
@@ -1495,6 +1510,13 @@ func (c *Config) finalizePush() error {
 			return fmt.Errorf("push.observer[%d]: duplicate station %q", i, o.Station)
 		}
 		stations[o.Station] = true
+		// A board's name is derived from its factory serial and belongs to that
+		// board (docs/BOARD-IDENTITY.md). The control plane refuses a software
+		// station in that namespace; this provider must too, or a config row
+		// could occupy a board's canonical name with hardware_trust none.
+		if boardid.ReservedObserverID(o.Station) {
+			return fmt.Errorf("push.observer[%d]: station %q begins with %q, which is reserved for hardware enrollment", i, o.Station, boardid.ObserverPrefix)
+		}
 		if p.ClientCA != "" && !ValidObserverID(o.Station) {
 			return fmt.Errorf("push.observer %q: station must be a certificate-bindable name (ASCII letters/digits/./- only, at most 253 bytes) when push.client_ca is set", o.Station)
 		}

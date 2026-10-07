@@ -180,6 +180,18 @@ addresses.
   cannot occupy a feeder's slot. mTLS does not gate this: a certificate is examined only inside
   the handshake such a flood never starts.
 - **`ack_interval`** (default 1s) is the GNF1 ACK cadence.
+- **`station` is configured in one place only.** A name that is both an `[[ingest]]` source
+  `name` and a `[[push.observer]]` `station` is an error, even when the dial entry is
+  `disabled = true` (a paused entry keeps its declaration and identity in the audience
+  registry): the two receivers would otherwise merge into one live-state station, with
+  interleaved AGC, reception and integrity inputs and two different observer contexts, and the
+  historian would store both under one `source_id`. When a receiver migrates from dial to push,
+  delete its `[[ingest]]` entry. Observers authorized by `[authorization].dsn` are not config
+  rows and are not covered by this check; keep dial source names disjoint from them too.
+- **`station` must not begin with `board-`** (in any letter case). That namespace belongs to
+  hardware enrollment (`docs/BOARD-IDENTITY.md`): a board's name is derived from its factory
+  serial, and the control plane refuses a software station there, so a config row may not
+  occupy a board's canonical name with `hardware_trust = none` either.
 - **Organization and publication fields** have the same meanings and fail-closed defaults as on
   `[[ingest]]`. They are authorization output, not feeder assertions. Config-backed observers
   can prove `token` or `software_mtls`; config alone can never claim hardware attestation.

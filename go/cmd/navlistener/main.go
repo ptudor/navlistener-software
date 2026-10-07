@@ -953,8 +953,10 @@ func recoverDecodePanic(f *ingest.RawFrame, log *slog.Logger, lim *panicLogLimit
 
 // declaredCapabilities collects each station's declared tudorgps fingerprint (the signals its
 // silicon can produce) from the dial sources and push observers, keyed by station id, for the
-// capability-plausibility detector (docs/INTEGRITY.md §6). A station may be configured in only
-// one place; a push observer's declaration overrides a dial source of the same name.
+// capability-plausibility detector (docs/INTEGRITY.md §6). config.finalize enforces that a
+// station is configured in one place only (a dial source or a push observer, never both),
+// so the two loops below never write the same key. A database-authorized observer is not
+// a config row and is not covered by that check.
 func declaredCapabilities(cfg *config.Config) map[string][]state.CapSignal {
 	out := map[string][]state.CapSignal{}
 	add := func(id string, decl []config.Capability) {
