@@ -37,6 +37,14 @@ private final class ProvisioningRequest<Value: Sendable> {
     }
 }
 
+/// The `@preconcurrency` conformance gives the main-actor delegate witnesses
+/// a runtime isolation check, so this relies on ESPProvision 3.1.0 (pinned in
+/// project.yml) invoking `ESPDeviceConnectionDelegate` on the main queue: the
+/// BLE central is created with `queue: nil` (main), and `initialiseSession`,
+/// the only caller of `getProofOfPossesion`/`getUsername`, is reached through
+/// `DispatchQueue.main.async` in `ESPDevice.getDeviceVersionInfo`. Re-check
+/// that before moving the pin; off-main callbacks would need `nonisolated`
+/// witnesses that hop to the main actor.
 @MainActor
 final class ESPObserverTransport: ObserverProvisioningTransport, @preconcurrency ESPDeviceConnectionDelegate {
     private var device: ESPDevice?
