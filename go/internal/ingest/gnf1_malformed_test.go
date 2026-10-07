@@ -210,3 +210,35 @@ func TestWordRecordWellFormedScope(t *testing.T) {
 		}
 	}
 }
+
+func TestPushRejectsShortRTCMRecords(t *testing.T) {
+	tr := NewDurableTracker()
+	cli, out, _ := streamOnPipe(t, "rtcm", tr)
+	counter := metrics.PushErrorsTotal.WithLabelValues("obs1", "rtcm_short")
+	before := testutil.ToFloat64(counter)
+	for n := 0; n <= 2; n++ {
+		if err := wire.WriteFrame(cli, wire.Data, wire.EncodeData(uint64(n+1), navRecord(n))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec := navRecord(3)
+	rec.Raw = []byte{0x3F, 0xB0, 0x01} // RTCM message 1019
+	if err := wire.WriteFrame(cli, wire.Data, wire.EncodeData(4, rec)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case f := <-out:
+		if f.Seq != 4 || f.MsgType != 1019 || !bytes.Equal(f.Bytes, rec.Raw) {
+			t.Fatalf("forwarded frame = %+v", f)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("valid RTCM payload not forwarded")
+	}
+	expectNoFrame(t, out, "short RTCM records")
+	if got := tr.Watermark("obs1", "boot-a"); got != 3 {
+		t.Fatalf("watermark = %d, want 3", got)
+	}
+	if got := testutil.ToFloat64(counter) - before; got != 3 {
+		t.Fatalf("malformed count = %v, want 3", got)
+	}
+}

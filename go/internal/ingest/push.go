@@ -1193,6 +1193,10 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				if !dropPermanentlyMalformed(seq, "record_oversize") {
 					return
 				}
+			} else if feed == "rtcm" && !IsTelemetryType(int(rec.FrameType)) && len(rec.Raw) < 3 {
+				if !dropPermanentlyMalformed(seq, "rtcm_short") {
+					return
+				}
 			} else if !wordRecordWellFormed(rec, feed) {
 				// a word-oriented record whose body is empty or not a
 				// multiple of four bytes is malformed on the wire. bytesToWords used
@@ -1341,13 +1345,14 @@ func recordToFrame(rec wire.RawRecord, feed, source string) *RawFrame {
 		MsgType:   int(rec.FrameType),
 	}
 	if feed == "rtcm" {
+		if len(rec.Raw) < 3 {
+			return nil
+		}
 		f.Bytes = rec.Raw
 		// the GNF1 frame_type byte is 8 bits and cannot carry an RTCM message
 		// number (12 bits, e.g. 1019/1020); derive it from the payload the same way
 		// scanRTCM does (rtcm.go) rather than trusting the feeder-supplied frame_type.
-		if len(rec.Raw) >= 2 {
-			f.MsgType = int(rec.Raw[0])<<4 | int(rec.Raw[1])>>4
-		}
+		f.MsgType = int(rec.Raw[0])<<4 | int(rec.Raw[1])>>4
 	} else {
 		f.Words = bytesToWords(rec.Raw)
 	}
