@@ -1,4 +1,7 @@
+import contextlib
+from datetime import datetime, timedelta, timezone
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -212,6 +215,67 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(release.load_transaction(directory,self.signers)["phase"],"prepared")
         checked=Repository(directory/"candidate",self.signers);checked.load(bootstrap)
         self.assertEqual(checked.channel_value("canary")["percentage"],25)
+
+    def aged_state(self, days):
+        """A published test repository bootstrapped the given number of days before the real clock."""
+        state = Path(tempfile.mkdtemp(dir=self.base))
+        repo = Repository(state / "repository", self.signers, now=datetime.now(timezone.utc) - timedelta(days=days))
+        repo.bootstrap()
+        image, key = sign_image(self.image(), self.signers.config, False)
+        repo.add_release(sequence=31, version="0.1.0", revision="a" * 40, image=image, board_family=board_family(image), boot_key_id=key, provenance=b"{}", licenses=b"[]", notes=b"Notes\n")
+        repo.publish_local()
+        return state, repo.files["metadata/1.root.json"], digest(repo.files["metadata/timestamp.json"])
+
+    def test_offline_renewal_transactions_start_from_an_expired_repository(self):
+        # The transactions use the real clock; this repository's targets and
+        # releases expired 35 days ago while root has two years to run.
+        state, bootstrap, previous = self.aged_state(400)
+        directory = state / "transactions/metadata-3"; directory.mkdir(parents=True)
+        tx = {"phase": "preparing", "previous_timestamp": previous, "action": "renew-offline", "roles": ["targets", "releases"],
+              "new_signers": None, "release": None, "channel": None, "percent": None}
+        release.save_transaction(directory, tx, self.signers)
+        with self.assertRaisesRegex(ValueError, "offline targets expired"):
+            Repository(state / "repository", self.signers).load(bootstrap)
+        release.prepare_metadata(directory, tx, {"state_dir": str(state), "track": "test"}, self.signers, bootstrap)
+        self.assertEqual(release.load_transaction(directory, self.signers)["phase"], "prepared")
+        checked = Repository(directory / "candidate", self.signers); checked.load(bootstrap)
+        self.assertEqual((checked.versions["targets"], checked.versions["releases"], checked.versions["root"]), (2, 3, 1))
+        # Root expired as well: only a rotation starts, and it leaves the other
+        # offline roles for renew-offline to follow, so its candidate check is relaxed.
+        state, bootstrap, previous = self.aged_state(800)
+        directory = state / "transactions/metadata-3"; directory.mkdir(parents=True)
+        tx = {**tx, "action": "rotate-root", "roles": []}
+        release.save_transaction(directory, tx, self.signers)
+        release.prepare_metadata(directory, tx, {"state_dir": str(state), "track": "test"}, self.signers, bootstrap)
+        self.assertEqual(release.load_transaction(directory, self.signers)["phase"], "prepared")
+        with self.assertRaisesRegex(ValueError, "offline targets expired"):
+            Repository(directory / "candidate", self.signers).load(bootstrap)
+        checked = Repository(directory / "candidate", self.signers); checked.load(bootstrap, renewing=True)
+        self.assertEqual((checked.versions["root"], checked.expired_offline()), (2, ["targets", "releases"]))
+
+    def test_lifetime_report_warns_ninety_days_before_an_offline_role_expires(self):
+        state, bootstrap, _ = self.aged_state(0)
+        def report(days):
+            repository = Repository(state / "repository", self.signers, now=datetime.now(timezone.utc) + timedelta(days=days))
+            repository.load(bootstrap, renewing=True)
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                release.report_lifetimes(repository)
+            return out.getvalue(), err.getvalue()
+        out, err = report(10)
+        self.assertRegex(out, r"root\s+version 1\s+expires \d{4}-\d{2}-\d{2}  7(19|20) days left")
+        self.assertRegex(out, r"timestamp\s+version 2\s+expires \d{4}-\d{2}-\d{2}  [34] days left")
+        self.assertEqual(err, "")
+        out, err = report(300)
+        self.assertIn("warning: offline targets expires in 6", err)
+        self.assertIn("make release-renew-offline ROLES=targets", err)
+        self.assertIn("make release-renew-offline ROLES=releases", err)
+        self.assertNotIn("rotate-root", err)
+        out, err = report(700)
+        self.assertIn("warning: offline targets has expired", err)
+        self.assertIn("warning: offline root expires in", err)
+        self.assertIn("make release-rotate-root", err)
+        self.assertRegex(out, r"targets\s+version 1\s+expires \d{4}-\d{2}-\d{2}  expired 33[45] days ago")
 
     def release_config(self, **changes):
         directory = Path(tempfile.mkdtemp(dir=self.base))

@@ -3,7 +3,7 @@
 from __future__ import annotations
 import argparse
 import copy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fcntl
 import json
 import os
@@ -16,13 +16,17 @@ import urllib.error
 
 from tuf.api.metadata import Metadata, Targets
 from tuf.api.serialization.json import JSONSerializer
-from repository import Repository, Signers, THRESHOLDS, CHANNELS, RELEASE_PROFILES, atomic, immutable, encoded, digest, init_test_keys
+from repository import (Repository, Signers, THRESHOLDS, CHANNELS, RELEASE_PROFILES, OFFLINE_ROLES, RENEWABLE, WARNING_DAYS,
+                        atomic, immutable, encoded, digest, init_test_keys)
 from firmware_signing import board_family, sign_image, verify_image, key_id, keys as firmware_keys
 from publisher import ORIGINS, fetch, publish, verify_public
 
 SOURCE = Path(__file__).resolve().parents[2]
 # Release numbers are shared, so a number names one source commit and one track.
 TAGS = {"trusted": "firmware-{}", "open": "firmware-open-{}"}
+# The offline ceremonies: the only transactions that may start from a repository
+# whose offline roles have already expired.
+RENEWALS = ("renew-offline", "rotate-root")
 APPROVALS = {
     "trusted": "the trusted track is not approved; complete and retain the commissioning and soak checklist first",
     "open": "the open track is not approved; back up its signing keys and confirm both open origins serve before releasing",
@@ -142,13 +146,30 @@ def public_timestamp(origins):
         raise ValueError("the primary and secondary firmware origins disagree")
     return values[0]
 
-def validate_repository(repository, bootstrap):
+def validate_repository(repository, bootstrap, *, renewing=False):
     checked = Repository(repository.directory, repository.signers, now=repository.now)
-    checked.load(bootstrap)
+    checked.load(bootstrap, renewing=renewing)
     for role in ("releases", *CHANNELS):
         for path, target in checked.metadata[role].signed.targets.items():
             target.verify_length_and_hashes(checked.target_bytes(role, path))
     return checked
+
+def report_lifetimes(repository):
+    """Print how long each role stays valid; warn ahead of every offline ceremony."""
+    now = repository.now
+    expiry = repository.expiry()
+    print(f"Metadata lifetimes on the {repository.signers.profile} track at {now:%Y-%m-%dT%H:%M:%SZ}:")
+    for role in (*OFFLINE_ROLES, "snapshot", *CHANNELS, "timestamp"):
+        remaining = expiry[role] - now
+        state = f"expired {(now - expiry[role]).days} days ago" if remaining < timedelta(0) else f"{remaining.days} days left"
+        print(f"  {role:<10} version {repository.versions[role]:<4} expires {expiry[role]:%Y-%m-%d}  {state}")
+    for role in OFFLINE_ROLES:
+        remaining = expiry[role] - now
+        if remaining >= timedelta(days=WARNING_DAYS):
+            continue
+        command = "make release-rotate-root" if role == "root" else f"make release-renew-offline ROLES={role}"
+        when = "has expired" if remaining < timedelta(0) else f"expires in {remaining.days} days"
+        print(f"warning: offline {role} {when}; plan the signing ceremony: {command}", file=sys.stderr)
 
 def release_build(directory, tx, config, signers):
     if tx["phase"] == "reserved":
@@ -246,7 +267,7 @@ def finish(directory, tx, config, signers, bootstrap):
                 subprocess.run(["git", "push", remote, f"{tx['revision']}:refs/heads/{config['branch']}", f"refs/tags/{tag}"], cwd=SOURCE, check=True)
             tx["phase"] = "source-pushed"; save_transaction(directory, tx, signers)
         files = {name: (candidate / name).read_bytes() for name in index}
-        repository = Repository(candidate, signers); repository.load(bootstrap)
+        repository = Repository(candidate, signers); repository.load(bootstrap, renewing=tx.get("action") in RENEWALS)
         targets = list(repository.metadata["releases"].signed.targets)
         def committed():
             tx["phase"] = "published"; save_transaction(directory, tx, signers)
@@ -262,6 +283,16 @@ def finish(directory, tx, config, signers, bootstrap):
         print(f"Release {tx['sequence']} is selected for 100% of Lab on the {config['track']} track. Inspect device status before promotion.")
         print(f"make release-promote RELEASE={tx['sequence']} CHANNEL=canary PERCENT=1")
         print(f"make release-withdraw RELEASE={tx['sequence']} CHANNEL=lab")
+    if tx["phase"] == "complete" and tx.get("action") in RENEWALS:
+        published = Repository(candidate, signers); published.load(bootstrap, renewing=True)
+        if tx["action"] == "renew-offline":
+            print(f"Renewed offline {', '.join(tx['roles'])} on the {config['track']} track.")
+        elif tx.get("new_signers"):
+            print(f"Root version {published.versions['root']} names the keys in {tx['new_signers']}. Point the release configuration's "
+                  "signers at that file before the next command; the previous configuration no longer satisfies this root.")
+        else:
+            print(f"Root version {published.versions['root']} renews the current keys on the {config['track']} track.")
+        report_lifetimes(published)
 
 def freeze_candidate(directory, tx, signers):
     data = encoded(inventory(directory / "candidate")); immutable(directory / "inventory.json", data)
@@ -276,11 +307,16 @@ def prepare_metadata(directory,tx,config,signers,bootstrap):
         if path.is_file() and path.relative_to(base).as_posix()!="metadata/timestamp.json":
             immutable(candidate/path.relative_to(base),path.read_bytes())
     bundle_path=directory/"candidate-bundle.json"
+    renewing=tx["action"] in RENEWALS
     if not bundle_path.exists():
         atomic(candidate/"metadata/timestamp.json",(base/"metadata/timestamp.json").read_bytes())
-        repository=Repository(candidate,signers);repository.load(bootstrap)
+        repository=Repository(candidate,signers);repository.load(bootstrap,renewing=renewing)
         if tx["action"]=="refresh-online":
             for channel in CHANNELS:repository.metadata_for(channel,copy.deepcopy(repository.metadata[channel].signed))
+        elif tx["action"]=="renew-offline":
+            repository.renew(tx["roles"])
+        elif tx["action"]=="rotate-root":
+            repository.rotate_root(Signers(Path(tx["new_signers"]),profile=config["track"]) if tx.get("new_signers") else None)
         else:
             path=f"releases/{tx['release']}.json"
             if path not in repository.metadata["releases"].signed.targets:raise ValueError("release is not authorized by the offline release role")
@@ -294,7 +330,9 @@ def prepare_metadata(directory,tx,config,signers,bootstrap):
         immutable(bundle_path,encoded({path:base64.b64encode(data).decode() for path,data in repository.files.items()}))
     repository=Repository(candidate,signers)
     repository.files={path:base64.b64decode(value,validate=True) for path,value in json.loads(bundle_path.read_bytes()).items()}
-    repository.publish_local();validate_repository(repository,bootstrap);freeze_candidate(directory,tx,signers)
+    repository.publish_local()
+    # A rotation may leave targets/releases expired until renew-offline follows it; a renewal must leave nothing expired.
+    validate_repository(repository,bootstrap,renewing=tx["action"]=="rotate-root");freeze_candidate(directory,tx,signers)
 
 def license_inventory(source):
     paths = [source/line for line in git("ls-files",cwd=source).splitlines() if Path(line).name.startswith(("LICENSE","COPYING"))]
@@ -316,10 +354,18 @@ def main():
         if name != "check": p.add_argument("--channel", choices=CHANNELS, required=True)
         if name == "promote": p.add_argument("--percent", type=int, required=True)
     sub.add_parser("refresh-online")
+    p = sub.add_parser("renew-offline", help="re-sign the offline targets and/or releases roles unchanged under a new expiry")
+    p.add_argument("--roles", default="targets", help="comma-separated offline roles to renew: targets, releases or both")
+    p = sub.add_parser("rotate-root", help="publish the next root: renew its expiry, or hand over to a new signer configuration")
+    p.add_argument("--new-signers", type=Path, help="signers.json whose keys the next root names; omit to keep the current keys")
     p = sub.add_parser("signer-entry", help="print the public half of a signers.json entry for one public key")
     p.add_argument("--public-key", required=True, type=Path); p.add_argument("--firmware", action="store_true")
     args = parser.parse_args()
     if args.command=="promote" and not 0<=args.percent<=100:raise ValueError("rollout percentage must be between 0 and 100")
+    if args.command == "renew-offline":
+        args.roles = tuple(dict.fromkeys(role.strip() for role in args.roles.split(",")))
+        if not args.roles or any(role not in RENEWABLE for role in args.roles):
+            raise ValueError("--roles names targets, releases or both")
     if args.command == "signer-entry":
         print(json.dumps(signer_entry(args.public_key, firmware=args.firmware), indent=2)); return
     if args.command.startswith("init-"):
@@ -376,6 +422,27 @@ def main():
             if load_transaction(path.parent, signers)["phase"] != "complete":
                 raise ValueError(f"unfinished transaction {path.parent.name}; use release-resume")
         clean(config)
+        # Every command starts from the authenticated local cache. Only the two
+        # offline ceremonies may start from expired offline roles; anything
+        # else would publish metadata the devices already refuse.
+        base = Repository(state / "repository", signers); base.load(bootstrap, renewing=True)
+        report_lifetimes(base)
+        expired = base.expired_offline()
+        if expired and args.command not in RENEWALS:
+            raise ValueError(f"offline {', '.join(expired)} expired; renew with rotate-root and renew-offline before other commands")
+        if args.command == "renew-offline":
+            if "root" in expired:
+                raise ValueError("offline root expired; run rotate-root first")
+            missing = [role for role in expired if role not in args.roles]
+            if missing:
+                raise ValueError(f"offline {', '.join(missing)} expired as well; renew it in the same ceremony: --roles {','.join(args.roles + tuple(missing))}")
+        new_signers = None
+        if args.command == "rotate-root" and args.new_signers is not None:
+            new_signers = args.new_signers.expanduser().resolve(strict=True)
+            if new_signers.is_relative_to(SOURCE):
+                raise ValueError("signer configurations must stay outside the checkout")
+            # The next configuration replaces the current one after the rotation, so it must be complete now.
+            firmware_keys(Signers(new_signers, profile=config["track"]).config, True)
         if args.command == "dry-run":
             print(f"The {config['track']} track preflight passed. No number reserved, signer called, build run, source pushed or file published."); return
         previous = public_timestamp(config["origins"])
@@ -395,7 +462,6 @@ def main():
             subprocess.run(["git", "commit", "-m", f"Reserve firmware release {sequence}", "--", "BUILD_NUMBER"], cwd=SOURCE, check=True)
             tx["revision"] = git("rev-parse", "HEAD"); tx["phase"] = "reserved"; save_transaction(directory, tx, signers)
         else:
-            base = Repository(state / "repository", signers); base.load(bootstrap)
             if args.command in ("promote","withdraw"):
                 if f"releases/{args.release}.json" not in base.metadata["releases"].signed.targets:raise ValueError("release is not authorized by the offline release role")
                 old=base.channel_value(args.channel)
@@ -403,7 +469,8 @@ def main():
                 if args.command=="withdraw" and len(set(old["withdrawn"]+[args.release]))>32:raise ValueError("withdrawal list exceeds the device profile")
             directory = state / "transactions" / f"metadata-{base.versions['timestamp'] + 1}"; directory.mkdir(parents=True, exist_ok=False)
             tx = {"phase": "preparing", "previous_timestamp": previous,"action":args.command,
-                "release":getattr(args,"release",None),"channel":getattr(args,"channel",None),"percent":getattr(args,"percent",None)}
+                "release":getattr(args,"release",None),"channel":getattr(args,"channel",None),"percent":getattr(args,"percent",None),
+                "roles":list(getattr(args,"roles",())),"new_signers":str(new_signers) if new_signers else None}
             save_transaction(directory,tx,signers)
         finish(directory, tx, config, signers, bootstrap)
 

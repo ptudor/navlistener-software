@@ -20,6 +20,8 @@ var (
 	stagedAt      = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_staged_timestamp_seconds", Help: "First reported staging time; zero when no image is staged."}, []string{"observer"})
 	waitingAt     = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_waiting_timestamp_seconds", Help: "First report waiting for a safe reboot; zero otherwise."}, []string{"observer"})
 	adoption      = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_running_release_info", Help: "Current reported release per enrolled device; value is 1, superseded labels are removed."}, []string{"observer", "release"})
+	// Served from the published catalog on this collector; not a device report.
+	metadataExpiry = promauto.NewGaugeVec(prometheus.GaugeOpts{Name: "navlistener_update_metadata_expiry_timestamp_seconds", Help: "When each TUF role the collector's published update catalog serves expires, per release track; zero while the catalog cannot be read. Root, targets and releases are offline roles renewed by a signing ceremony (release-rotate-root, release-renew-offline) and are logged 90 days ahead; the others renew with release-refresh-online and are logged a week ahead."}, []string{"track", "role"})
 )
 
 // drifted reports security flags that contradict the reported track. Open and

@@ -3,7 +3,11 @@ RELEASE_PYTHON ?= python3
 RELEASE_CONFIG ?=
 NOTES ?= RELEASE-NOTES.md
 PERCENT ?= 1
-.PHONY: release release-dry-run release-resume release-promote release-withdraw release-check release-refresh-online release-test-setup release-test release-tests
+# Offline ceremonies: ROLES names the offline roles renew-offline re-signs;
+# NEW_SIGNERS hands the root over to another signer configuration.
+ROLES ?= targets
+NEW_SIGNERS ?=
+.PHONY: release release-dry-run release-resume release-promote release-withdraw release-check release-refresh-online release-renew-offline release-rotate-root release-test-setup release-test release-tests
 release:
 	$(RELEASE_PYTHON) tools/releases/release.py --config '$(RELEASE_CONFIG)' release --notes '$(NOTES)'
 release-dry-run:
@@ -18,6 +22,10 @@ release-check:
 	$(RELEASE_PYTHON) tools/releases/release.py --config '$(RELEASE_CONFIG)' check --release '$(RELEASE)'
 release-refresh-online:
 	$(RELEASE_PYTHON) tools/releases/release.py --config '$(RELEASE_CONFIG)' refresh-online
+release-renew-offline:
+	$(RELEASE_PYTHON) tools/releases/release.py --config '$(RELEASE_CONFIG)' renew-offline --roles '$(ROLES)'
+release-rotate-root:
+	$(RELEASE_PYTHON) tools/releases/release.py --config '$(RELEASE_CONFIG)' rotate-root $(if $(NEW_SIGNERS),--new-signers '$(NEW_SIGNERS)')
 release-test-setup:
 	$(RELEASE_PYTHON) tools/releases/release.py init-test --keys '$(KEYS)' --state '$(STATE)'
 release-test:

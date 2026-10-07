@@ -467,19 +467,26 @@ select, stage, pause, or withdraw an already authorized release. It cannot add
 a new release artifact. Snapshot prevents role mix-and-match; the short-lived
 online timestamp identifies the current snapshot and limits freeze attacks.
 
-Initial metadata lifetimes balance a weekly client schedule with useful freeze
+Metadata lifetimes balance a weekly client schedule with useful freeze
 detection:
 
 | Role | Refresh | Expiry |
 | --- | --- | --- |
-| Timestamp | Daily automated signing | 14 days |
-| Snapshot and channel roles | On change, or weekly automated renewal | 45 days |
-| Release targets and top-level targets | Each release; planned offline renewal | 1 year |
-| Root | Planned offline ceremony | 2 years |
+| Timestamp | Every publishing command, and `make release-refresh-online` at least every 14 days; nothing schedules it | 14 days |
+| Snapshot and channel roles | On change, and by `make release-refresh-online` | 45 days |
+| Release targets | Each release, or `make release-renew-offline ROLES=releases` | 1 year |
+| Top-level targets | `make release-renew-offline` (otherwise signed once, at initialisation) | 1 year |
+| Root | `make release-rotate-root`, renewing the same keys or handing over to new ones | 2 years |
 
-Collector alerts begin 90 days before any offline role expires. The online
-refresh job can renew timestamp, snapshot, and unchanged channel metadata; it
-cannot extend root or release authority.
+The release tool prints every role's remaining lifetime with each command and
+warns 90 days before an offline role expires; `make release-dry-run` is the
+cheapest way to ask. A collector that serves the catalog exports
+`navlistener_update_metadata_expiry_timestamp_seconds{track,role}` and logs
+offline roles 90 days ahead and online roles a week ahead. The online refresh
+renews timestamp, snapshot and unchanged channel metadata; it cannot extend
+root or release authority, which is what the two offline ceremonies in
+[UPDATE-OPERATIONS](UPDATE-OPERATIONS.md#renewing-the-offline-roles) are for.
+An expired offline role stops updates until its renewal is published.
 
 Each channel target file contains:
 
@@ -677,6 +684,8 @@ make release-promote RELEASE=31 CHANNEL=stable PERCENT=1
 make release-withdraw RELEASE=31 CHANNEL=canary
 make release-check RELEASE=31        # verify the public files and signatures
 make release-refresh-online          # renew short-lived TUF metadata
+make release-renew-offline ROLES=targets,releases   # re-sign offline roles under a new expiry
+make release-rotate-root             # publish the next root; NEW_SIGNERS=... hands the keys over
 ```
 
 `make release` is one transaction with a durable local state directory:

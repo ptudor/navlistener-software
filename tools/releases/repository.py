@@ -9,6 +9,7 @@ the throwaway bench profile. None can authorize firmware for another.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -20,6 +21,7 @@ import tempfile
 
 from cryptography.hazmat.primitives import serialization
 from securesystemslib.signer import CryptoSigner, SSlibKey, Signature
+from tuf.api.exceptions import UnsignedMetadataError
 from tuf.api.metadata import (
     Metadata, Root, Role, Targets, Snapshot, Timestamp, Delegations,
     DelegatedRole, TargetFile, MetaFile,
@@ -40,6 +42,11 @@ COUNTS = {"root": 3, "targets": 3, "releases": 3, **{c: 1 for c in CHANNELS}, "s
 THRESHOLDS = {r: 2 if n == 3 else 1 for r, n in COUNTS.items()}
 LIMITS = {"root": 8192, "timestamp": 4096, "snapshot": 8192, **{r: 12288 for r in ("targets", "releases", *CHANNELS)}}
 LIFETIMES = {"root": 730, "targets": 365, "releases": 365, "timestamp": 14, "snapshot": 45, **{c: 45 for c in CHANNELS}}
+# Offline roles are renewed in a planned signing ceremony: targets and releases
+# in place by renew-offline, root by rotate-root. Reports warn this far ahead.
+OFFLINE_ROLES = ("root", "targets", "releases")
+RENEWABLE = ("targets", "releases")
+WARNING_DAYS = 90
 
 
 def encoded(value):
@@ -324,7 +331,13 @@ class Repository:
         self.online()
         return value
 
-    def load(self, bootstrap=None):
+    def load(self, bootstrap=None, *, renewing=False):
+        """Authenticate the stored repository from the trusted bootstrap root.
+
+        Offline roles must be unexpired unless renewing: the renewal commands
+        load an expired repository precisely to re-sign it, so the signature
+        chain is still verified and only the freshness check is left to clients.
+        """
         timestamp = Metadata.from_file(str(self.directory / "metadata/timestamp.json"))
         snapshot = Metadata.from_file(str(self.directory / f"metadata/{timestamp.signed.snapshot_meta.version}.snapshot.json"))
         roots = sorted(int(p.name.split(".", 1)[0]) for p in (self.directory / "metadata").glob("*.root.json"))
@@ -350,7 +363,7 @@ class Repository:
             root.verify_delegate("root", newer)
             newer.verify_delegate("root", newer)
             root = newer
-        if root.signed.is_expired(self.now):
+        if root.signed.is_expired(self.now) and not renewing:
             raise ValueError("offline root expired; an offline renewal is required")
         self.metadata["root"] = root
         root.verify_delegate("timestamp", timestamp)
@@ -365,9 +378,70 @@ class Repository:
             snapshot.signed.meta[role + ".json"].verify_length_and_hashes((self.directory / f"metadata/{md.signed.version}.{role}.json").read_bytes())
             parent = root if role == "targets" else self.metadata["targets"]
             parent.verify_delegate(role, md)
-            if role in ("targets", "releases") and md.signed.is_expired(self.now):
+            if role in RENEWABLE and md.signed.is_expired(self.now) and not renewing:
                 raise ValueError(f"offline {role} expired; offline renewal is required")
         self.versions = {role: md.signed.version for role, md in self.metadata.items()}
+
+    def expiry(self):
+        """When each loaded role expires, for lifetime reports."""
+        return {role: md.signed.expires for role, md in self.metadata.items()}
+
+    def expired_offline(self):
+        return [role for role in OFFLINE_ROLES if self.metadata[role].signed.is_expired(self.now)]
+
+    def renew(self, roles):
+        """Re-sign offline roles unchanged, one version higher, with a new expiry.
+
+        The keys stay the same; snapshot and timestamp follow through online().
+        """
+        for role in roles:
+            if role not in RENEWABLE:
+                raise ValueError("only the offline targets and releases roles renew in place; rotate-root renews root")
+            self.metadata_for(role, copy.deepcopy(self.metadata[role].signed))
+
+    def rotate_root(self, new_signers=None):
+        """Write the next root, signed by the current root's threshold and its own.
+
+        Without new signers this renews the root's expiry under the same keys.
+        With them the next root names their root, targets, snapshot and
+        timestamp keys, and everything signed afterwards uses them; the targets
+        role is re-signed when its keys changed. The delegated releases and
+        channel keys are named by the targets role, so a rotation cannot change
+        them. Clients walk sequential roots from the bootstrap root, so each
+        step is verified here as a client verifies it.
+        """
+        current = self.metadata["root"]
+        new = new_signers or self.signers
+        if new.profile != self.signers.profile:
+            raise ValueError("the next root must keep the repository's trust profile")
+        delegations = self.metadata["targets"].signed.delegations.roles
+        for role in ("releases", *CHANNELS):
+            if {key.keyid for key in new.keys[role]} != set(delegations[role].keyids):
+                raise ValueError(f"rotate-root cannot change the delegated {role} keys; the targets role names them")
+        root = Root(roles={r: Role([], THRESHOLDS[r]) for r in ("root", "targets", "snapshot", "timestamp")},
+                    unrecognized_fields={"x_navlisten_profile": self.signers.profile})
+        for role in root.roles:
+            for key in new.keys[role]:
+                root.add_key(key, role)
+        data = self.metadata_for("root", root)
+        metadata = self.metadata["root"]
+        if new is not self.signers:
+            previous = dict(metadata.signatures)
+            new.sign("root", metadata)
+            metadata.signatures.update(previous)
+            data = metadata.to_bytes(JSONSerializer(compact=True))
+            if len(data) > LIMITS["root"]:
+                raise ValueError("root metadata exceeds the device's bounded profile")
+            self.files[f"metadata/{root.version}.root.json"] = data
+        try:
+            current.verify_delegate("root", metadata)
+            metadata.verify_delegate("root", metadata)
+        except UnsignedMetadataError as error:
+            raise ValueError("the next root needs the current root's signing threshold and its own; connect both signer sets") from error
+        self.signers = new
+        if {key.keyid for key in new.keys["targets"]} != set(current.signed.roles["targets"].keyids):
+            self.renew(("targets",))
+        return root.version
 
     def publish_local(self):
         paths = {path: object_path(self.directory, path) for path in self.files}

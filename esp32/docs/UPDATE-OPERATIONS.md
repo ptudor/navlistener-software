@@ -224,10 +224,42 @@ older unselected entries leave the index when it would exceed 32 targets.
 Their immutable files remain on disk for audit and retention.
 
 Renew online metadata regularly: timestamp expires after 14 days, the other
-online roles after 45 days. Offline targets/releases expire after one year
-and root after two years; renewing or rotating those authorities requires the
-offline signers. Preserve the old-to-new root chain. Freshness checks deliberately
-stop updates when metadata expires, while normal collection continues.
+online roles after 45 days, and nothing runs `release-refresh-online` for you.
+Every command first prints each role's remaining lifetime and warns 90 days
+before an offline role expires; a collector that serves the catalog reports
+the same through `navlistener_update_metadata_expiry_timestamp_seconds` and
+its log. Freshness checks deliberately stop updates when metadata expires,
+while normal collection continues.
+
+### Renewing the offline roles
+
+The top-level targets role is signed once at initialisation and the releases
+role with each release; both expire after one year, root after two. Each
+renewal is a signing ceremony with the offline adapters connected:
+
+```sh
+make release-renew-offline ROLES=targets            # or releases, or targets,releases
+make release-rotate-root                            # the next root, same keys
+make release-rotate-root NEW_SIGNERS=/secure/navlisten/next-signers.json
+```
+
+`release-renew-offline` re-signs the named roles unchanged, one version
+higher, then publishes new snapshot and timestamp metadata exactly like a
+promotion. `release-rotate-root` publishes the next `N.root.json`, signed by
+the current root threshold and, with `NEW_SIGNERS`, by the new one as well:
+that root names the new configuration's root, targets, snapshot and timestamp
+keys, and the targets role is re-signed when its keys changed. The delegated
+releases and channel keys are named by the targets role and cannot move in a
+rotation. After a hand-over, point the release configuration's `signers` at
+the new file before the next command; the old configuration no longer
+satisfies the published root. Devices and the public verifier walk the root
+chain from the root they trust, so the embedded bootstrap root stays as it is.
+
+These two commands are the only ones that start from a repository whose
+offline roles have already expired: rotate root first when it has lapsed, then
+renew the targets or releases role, and include every expired role in the same
+`ROLES`. Everything else refuses until the renewal is published. An expired
+role only stops updates; renewing late harms no device.
 
 ### Bringing up the open track
 
@@ -396,8 +428,11 @@ the device wait; the updater does not silently discard observations.
 Metrics include update checks, errors, rollbacks, release adoption, the
 reported track (`navlistener_update_trust_profile_info`), the verified hardware
 trust of the session (`navlistener_update_hardware_trust_info{observer,trust}`),
-security profile drift, last report time, staging time and time waiting for
-safe reboot. Drift is raised when security flags contradict the reported track:
+security profile drift, last report time, staging time, time waiting for
+safe reboot and, for each track the collector serves, when every catalog role
+expires (`navlistener_update_metadata_expiry_timestamp_seconds{track,role}`,
+checked at startup and every six hours, with a log line 90 days before an
+offline role expires and a week before an online one). Drift is raised when security flags contradict the reported track:
 a trusted build that is not fully locked, or an open or test build on a locked
 chip. On a collector that verifies commissioning evidence it is also raised when
 a device reports `trusted` while the session's verified `hardware_trust` is not

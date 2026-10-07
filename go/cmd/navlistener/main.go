@@ -412,6 +412,8 @@ func run() int {
 		if pushSrv != nil {
 			pushSrv.SetUpdates(updateManager)
 		}
+		wg.Add(1)
+		go func() { defer wg.Done(); updateManager.WatchLifetimes(ctx.Done(), log) }()
 	}
 	var apiSrv *serve.Server
 	if cfg.Serve.Addr != "" {

@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from fixtures import PASSPHRASE_ENV, init_release_keys
-from repository import Repository, Signers, init_test_keys, encoded
+from repository import CHANNELS, RENEWABLE, Repository, Signers, atomic, init_test_keys, encoded
 from tuf.api.metadata import Metadata
 from tuf.ngclient import Updater
 from tuf.ngclient.fetcher import FetcherInterface
@@ -53,7 +53,7 @@ class RepositoryTests(unittest.TestCase):
         self.repo.add_release(board_family="gnss-color-neo", sequence=31, version="0.1.0", revision="a" * 40,
             image=b"firmware fixture" * 50, boot_key_id="ab" * 32, provenance=b"{}", licenses=b"[]", notes=b"Test release\n")
 
-    def client(self, expected=0, second=None, profile=None, family=None):
+    def client(self, expected=0, second=None, profile=None, family=None, now=None):
         self.repo.publish_local()
         command = [str(CLIENT), str(self.directory), str(expected)]
         if second:
@@ -62,6 +62,8 @@ class RepositoryTests(unittest.TestCase):
             command.append(f"--profile={profile}")
         if family is not None:
             command.append(f"--family={family}")
+        if now is not None:
+            command.append(f"--now={int(now.timestamp())}")
         result = subprocess.run(command, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result.stdout
@@ -162,6 +164,101 @@ class RepositoryTests(unittest.TestCase):
         root.signed.version = 2
         (old / "metadata/2.root.json").write_bytes(self.signers.sign("root", root))
         self.client(0, second=(old, 2004))
+
+    def body(self, role):
+        value = self.repo.metadata[role].signed.to_dict()
+        return {key: value[key] for key in value if key not in ("version", "expires")}
+
+    def refresh_online(self, now):
+        """What release-refresh-online publishes: the online roles re-signed at the given time."""
+        self.repo.now = now
+        for channel in CHANNELS:
+            self.repo.metadata_for(channel, copy.deepcopy(self.repo.metadata[channel].signed))
+        self.repo.online()
+
+    def test_offline_roles_renew_in_place_before_and_after_expiry(self):
+        root = self.repo.files["metadata/1.root.json"]
+        bodies = {role: self.body(role) for role in RENEWABLE}
+        # A planned renewal, 300 days in: the bodies and keys stay, the expiry moves.
+        self.repo.now = NOW + timedelta(days=300)
+        self.repo.renew(RENEWABLE)
+        self.repo.online()
+        self.assertEqual((self.repo.versions["targets"], self.repo.versions["releases"]), (2, 3))
+        self.assertEqual({role: self.body(role) for role in RENEWABLE}, bodies)
+        # Past the original expiry, routinely refreshed online roles are enough.
+        later = NOW + timedelta(days=400)
+        self.refresh_online(later)
+        self.assertIn("sequence=31", self.client(now=later))
+        Repository(self.directory, self.signers, now=later).load(root)
+        # Past the renewed expiry the device refuses the chain and only a renewing
+        # load reads the repository; the renewal it signs restores both.
+        lapsed = NOW + timedelta(days=700)
+        self.refresh_online(lapsed)
+        self.assertIn("refresh=2003", self.client(2003, now=lapsed))
+        with self.assertRaisesRegex(ValueError, "offline targets expired"):
+            Repository(self.directory, self.signers, now=lapsed).load(root)
+        expired = Repository(self.directory, self.signers, now=lapsed)
+        expired.load(root, renewing=True)
+        self.assertEqual(expired.expired_offline(), ["targets", "releases"])
+        with self.assertRaisesRegex(ValueError, "rotate-root renews root"):
+            expired.renew(("root",))
+        self.repo.now = lapsed
+        self.repo.renew(RENEWABLE)
+        self.repo.online()
+        self.assertIn("sequence=31", self.client(now=lapsed))
+        renewed = Repository(self.directory, self.signers, now=lapsed)
+        renewed.load(root)
+        self.assertEqual(renewed.expired_offline(), [])
+        self.assertEqual({role: renewed.metadata[role].signed.version for role in RENEWABLE}, {"targets": 3, "releases": 4})
+
+    def test_root_rotation_renews_or_hands_over_the_root_keys(self):
+        root = self.repo.files["metadata/1.root.json"]
+        # Two years on, root has expired: a renewing load still authenticates
+        # the chain, and the same keys sign root 2 so the device walks to it.
+        lapsed = NOW + timedelta(days=800)
+        self.refresh_online(lapsed)
+        self.assertIn("refresh=2003", self.client(2003, now=lapsed))
+        with self.assertRaisesRegex(ValueError, "offline root expired"):
+            Repository(self.directory, self.signers, now=lapsed).load(root)
+        Repository(self.directory, self.signers, now=lapsed).load(root, renewing=True)
+        self.repo.now = lapsed
+        self.assertEqual(self.repo.rotate_root(), 2)
+        self.assertIs(self.repo.signers, self.signers)
+        self.repo.renew(RENEWABLE)
+        self.repo.online()
+        self.assertIn("sequence=31", self.client(now=lapsed))
+        checked = Repository(self.directory, self.signers, now=lapsed)
+        checked.load(root)
+        self.assertEqual((checked.versions["root"], checked.versions["targets"]), (2, 2))
+        # Handing over: root 3 names the next configuration's root, targets,
+        # snapshot and timestamp keys and carries both thresholds; the targets
+        # role is re-signed by its new keys, and the delegated keys cannot move.
+        fresh = json.loads(init_test_keys(self.directory.parent / "TEST-ONLY-next").read_bytes())
+        with self.assertRaisesRegex(ValueError, "delegated releases keys"):
+            self.repo.rotate_root(Signers(self.directory.parent / "TEST-ONLY-next/signers.json", profile="test"))
+        merged = copy.deepcopy(self.signers.config)
+        for role in ("root", "targets", "snapshot", "timestamp"):
+            merged["roles"][role] = fresh["roles"][role]
+        path = self.directory.parent / "TEST-ONLY-next/handover.json"
+        atomic(path, encoded(merged), private=True)
+        replacement = Signers(path, profile="test")
+        self.assertEqual(self.repo.rotate_root(replacement), 3)
+        self.assertIs(self.repo.signers, replacement)
+        self.assertEqual(self.repo.versions["targets"], 3)
+        rotated = Metadata.from_bytes(self.repo.files["metadata/3.root.json"])
+        expected = {key.keyid for keys in (self.signers.keys["root"], replacement.keys["root"]) for key in keys}
+        self.assertEqual(set(rotated.signatures), expected)
+        self.assertEqual(set(rotated.signed.roles["targets"].keyids), {key.keyid for key in replacement.keys["targets"]})
+        self.repo.online()
+        self.assertIn("sequence=31", self.client(now=lapsed))
+        checked = Repository(self.directory, replacement, now=lapsed)
+        checked.load(root)
+        self.assertEqual((checked.versions["root"], checked.versions["targets"]), (3, 3))
+        # The retired configuration can no longer rotate: root 3's threshold is not its own.
+        retired = Repository(self.directory, self.signers, now=lapsed)
+        retired.load(root)
+        with self.assertRaisesRegex(ValueError, "current root's signing threshold"):
+            retired.rotate_root()
 
     def test_repository_paths_cannot_escape_before_writing(self):
         self.repo.files["targets/../../escape.bin"] = b"escaped"

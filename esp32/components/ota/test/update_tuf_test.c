@@ -41,7 +41,8 @@ int main(int argc,char **argv) {
     nvf_tuf_trust_t trust;nvf_tuf_io_t io={.fetch=fetch,.sha256=sha,.public_key=public_key,.verify=verify,.save=save};
     unsigned profile=UP_PROFILE_TEST;
     // --family= sets the device's board family; empty is a device whose manifest names none.
-    const char *family="gnss-color-neo";bool family_given=false;
+    // --now= sets the device clock in Unix seconds, so a repository can be checked past an expiry.
+    const char *family="gnss-color-neo";bool family_given=false;uint64_t now=1800000000;
     while(argc>3 && !strncmp(argv[argc-1],"--",2)) {
         const char *option=argv[--argc];
         if(!strncmp(option,"--profile=",10)) {
@@ -49,12 +50,14 @@ int main(int argc,char **argv) {
             assert(profile<=UP_PROFILE_TEST);
         } else if(!strncmp(option,"--family=",9)) {
             family=option[9]?option+9:NULL;family_given=true;
+        } else if(!strncmp(option,"--now=",6)) {
+            now=strtoull(option+6,NULL,10);assert(now);
         } else return 2;
     }
     int err=nvf_tuf_initialize(&trust,bytes,length,profile,&io);free(bytes);
     if(err){printf("initialize=%d\n",err);return err==atoi(argv[2])?0:1;}
     persisted=trust;
-    nvf_update_device_t device={.now=1800000000,.hardware_known=true,.hardware_revision=1,.layout=1,.profile=profile,
+    nvf_update_device_t device={.now=now,.hardware_known=true,.hardware_revision=1,.layout=1,.profile=profile,
         .board_family=family,.board_uid={0,3,16,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}};
     nvf_update_release_t result;
     nvf_tuf_trust_t initial=trust;
