@@ -186,11 +186,15 @@ type PushServer struct {
 	out         chan<- *RawFrame
 	ackInterval time.Duration
 	log         *slog.Logger
-	// conns bounds concurrent in-flight connections : a buffered semaphore
-	// acquired before spawning a handler goroutine, released in its defer. Without
-	// mTLS (ClientCA unset), this is the only cap between the internet and
-	// unbounded goroutine/FD growth from a pre-auth connection flood.
-	conns chan struct{}
+	// conns bounds authenticated feeder sessions: a slot is taken once the
+	// HELLO has authenticated and held until the session ends. Unauthenticated
+	// connections live in preAuth instead — a separate pool under
+	// preAuthDeadline and the per-address bounds of addresses — so an idle
+	// TCP flood, which never reaches the TLS layer whether mTLS is configured
+	// or not, cannot occupy a feeder's slot (see preauth.go).
+	conns     chan struct{}
+	preAuth   chan struct{}
+	addresses *addressGuard
 
 	// durable, when non-nil, switches ACK to the regression fix durability
 	// watermark (see DurableTracker). nil = live-only mode (no historian):
@@ -344,7 +348,9 @@ func newPushServer(addr string, tc *tls.Config, out chan<- *RawFrame, auth Authe
 		reauthorizeEvery: 30 * time.Second, authorityTTL: 30 * time.Second, reconcileBudget: reconciliationBudget,
 		collectorInstanceID: identity.LocalCollectorInstance,
 		policies:            make(map[string]*observerPolicy),
-		log:                 log, conns: make(chan struct{}, maxConns)}
+		log:                 log, conns: make(chan struct{}, maxConns),
+		preAuth:   make(chan struct{}, preAuthSlots(maxConns)),
+		addresses: newAddressGuard(time.Now)}
 }
 
 // Run listens until ctx is cancelled, handling each feeder connection concurrently.
@@ -418,18 +424,28 @@ func (p *PushServer) serve(ctx context.Context, ln net.Listener) error {
 			continue
 		}
 		backoff = acceptBackoffInitial
-		select {
-		case p.conns <- struct{}{}:
-		case <-ctx.Done():
+		// Nothing here blocks the accept loop or costs TLS work: a connection
+		// over its address's bounds, or arriving while every pre-auth slot is
+		// held by a connection still in its handshake, is simply closed. The
+		// fleet's MaxConns slot is taken in handle, after the HELLO authenticates.
+		release, reason := p.addresses.admit(remoteHost(conn.RemoteAddr().String()))
+		if reason == "" {
+			select {
+			case p.preAuth <- struct{}{}:
+			default:
+				release()
+				reason = "preauth_budget"
+			}
+		}
+		if reason != "" {
+			metrics.PushConnectionsRefusedTotal.WithLabelValues(reason).Inc()
 			_ = conn.Close()
-			wg.Wait()
-			return nil // clean shutdown; don't block admission on a full semaphore
+			continue
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			defer func() { <-p.conns }()
-			p.handle(hctx, conn)
+			p.handle(hctx, conn, func() { <-p.preAuth; release() })
 		}()
 	}
 }
@@ -448,12 +464,18 @@ func (w *connWriter) write(ft wire.FrameType, payload []byte) error {
 	return wire.WriteFrame(w.c, ft, payload)
 }
 
-// handle runs one feeder connection: TLS is already up, so read the GNF1 magic,
-// authenticate the HELLO, then stream DATA frames into the decode stage with acked,
-// in-order sequence tracking.
-func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
+// handle runs one feeder connection: drive the TLS handshake and read the GNF1
+// magic under the pre-auth deadline, authenticate the HELLO, take a fleet slot,
+// then stream DATA frames into the decode stage with acked, in-order sequence
+// tracking. preAuthDone gives back the pre-auth slot and the address
+// reservation; it runs exactly once, when the HELLO authenticates and the
+// fleet slot takes over, or when the connection ends before that.
+func (p *PushServer) handle(ctx context.Context, conn net.Conn, preAuthDone func()) {
 	defer conn.Close()
 	remote := conn.RemoteAddr().String()
+	var preAuthOnce sync.Once
+	finishPreAuth := func() { preAuthOnce.Do(preAuthDone) }
+	defer finishPreAuth()
 
 	// recover so a future parser edge case in the push path (wire.DecodeData,
 	// decodeJammingStats, decodeReceptionData, bytesToWords, rtcm) reconnects this one
@@ -478,13 +500,14 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 		}
 	}()
 
-	// The magic + handshake are plaintext and time-boxed; the DATA stream that follows
+	// The TLS handshake (driven by the first read), the magic and the HELLO are
+	// time-boxed together by the pre-auth deadline; the DATA stream that follows
 	// refreshes its own deadline through idleConn below.
-	if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(preAuthDeadline)); err != nil {
 		return
 	}
 	if err := wire.ReadMagic(conn); err != nil {
-		p.log.Warn("push bad handshake", "remote", remote, "error", err)
+		p.preAuthWarn(remote, "push bad handshake", "error", err)
 		return
 	}
 	w := &connWriter{c: conn}
@@ -496,6 +519,19 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 	}
 	observerContext, feed, session, useZstd := authorized.observer, authorized.feed, authorized.session, authorized.useZstd
 	observer = observerContext.ObserverID
+	// Authenticated: take a slot from the fleet budget. None free means the
+	// fleet is at capacity; the HELLO is answered so the feeder backs off
+	// knowing why, instead of waiting in the accept backlog.
+	select {
+	case p.conns <- struct{}{}:
+		defer func() { <-p.conns }()
+	default:
+		metrics.PushConnectionsRefusedTotal.WithLabelValues("fleet_capacity").Inc()
+		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "collector at connection capacity"}))
+		p.log.Warn("push feeder refused: fleet connection budget full", "observer", observer, "remote", remote, "max_conns", cap(p.conns))
+		return
+	}
+	finishPreAuth()
 	// Admit this session under the observer's policy generation before
 	// WELCOME is answered: a context that differs from the observer's current
 	// policy — a transfer or revocation that happened while the feeder was
@@ -610,12 +646,12 @@ type authorizedHello struct {
 func (p *PushServer) handshake(ctx context.Context, conn net.Conn, w *connWriter, remote string) (authorizedHello, bool) {
 	ft, payload, err := wire.ReadFrameMax(conn, helloMaxLen)
 	if err != nil || ft != wire.Hello {
-		p.log.Warn("push expected HELLO", "remote", remote, "frame", ft, "error", err)
+		p.preAuthWarn(remote, "push expected HELLO", "frame", ft, "error", err)
 		return authorizedHello{}, false
 	}
 	h, err := wire.ParseHello(payload)
 	if err != nil {
-		p.log.Warn("push bad HELLO json", "remote", remote, "error", err)
+		p.preAuthWarn(remote, "push bad HELLO json", "error", err)
 		return authorizedHello{}, false
 	}
 	policyGeneration := p.policyGeneration(h.Station)
@@ -628,7 +664,7 @@ func (p *PushServer) handshake(ctx context.Context, conn net.Conn, w *connWriter
 		}
 		metrics.PushAuthFailuresByReasonTotal.WithLabelValues(reason).Inc()
 		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "unauthorized"}))
-		p.log.Warn("push auth rejected", "remote", remote, "station", h.Station, "feed", h.Feed, "error", authErr)
+		p.preAuthWarn(remote, "push auth rejected", "station", clipHelloField(h.Station), "feed", clipHelloField(h.Feed), "error", authErr)
 		return authorizedHello{}, false
 	}
 	obs := observerContext.ObserverID

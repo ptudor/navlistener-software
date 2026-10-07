@@ -173,9 +173,12 @@ addresses.
   checked, so mTLS is defense in depth rather than a replacement.
 - **`token_sha256`** stores the SHA-256 of the bearer token. The token itself is shown once at
   enrollment and never committed.
-- **`max_conns`** (default 512) bounds concurrent in-flight feeder connections.
-  Production should gate admission at the TLS layer via `client_ca`; when it isn't set, this is
-  the only thing between the internet and unbounded goroutine and file-descriptor growth.
+- **`max_conns`** (default 512) bounds concurrent *authenticated* feeder sessions; a slot is
+  taken once a HELLO has authenticated. Connections still in their TLS/HELLO handshake live in a
+  separate pre-auth pool (half of `max_conns`, at least 64) under a 10 s deadline and per-address
+  in-flight and rate caps, and are closed at accept beyond those, so an idle connection flood
+  cannot occupy a feeder's slot. mTLS does not gate this: a certificate is examined only inside
+  the handshake such a flood never starts.
 - **`ack_interval`** (default 1s) is the GNF1 ACK cadence.
 - **Organization and publication fields** have the same meanings and fail-closed defaults as on
   `[[ingest]]`. They are authorization output, not feeder assertions. Config-backed observers

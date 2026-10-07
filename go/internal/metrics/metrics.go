@@ -354,7 +354,18 @@ var (
 	// WELCOME, and this is the collector's side of the same event.
 	PushAdmissionRefusedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "navlistener_push_admission_refused_total",
-		Help: "Push sessions refused by policy admission at the handshake, by reason (observer_ceiling, canceled, stale_lookup, reset_blocked).",
+		Help: "Push sessions refused by policy admission at the handshake, by reason (observer_ceiling, observer_sessions, canceled, stale_lookup, reset_blocked).",
+	}, []string{"reason"})
+	// PushConnectionsRefusedTotal counts connections the push listener turned
+	// away before or at authentication, by reason: address_inflight and
+	// address_rate (one remote address over its pre-auth bounds) and
+	// preauth_budget (every pre-auth slot held by a connection still in its
+	// handshake) are closed at accept, before any TLS work; fleet_capacity is
+	// an authenticated HELLO with no MaxConns slot free, answered
+	// WELCOME{ok:false} so the feeder backs off knowing why.
+	PushConnectionsRefusedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_push_connections_refused_total",
+		Help: "Push connections refused before or at authentication, by reason (address_inflight, address_rate, preauth_budget, fleet_capacity).",
 	}, []string{"reason"})
 	// PushAuthorizationUnavailableTotal counts authorization rechecks the
 	// control plane could not answer — a transport failure, a timeout, a

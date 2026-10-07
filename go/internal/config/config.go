@@ -356,10 +356,14 @@ type Push struct {
 	AckIntervals string        `toml:"ack_interval"` // ack cadence, default "1s"
 	AckInterval  time.Duration `toml:"-"`
 
-	// MaxConns bounds concurrent in-flight feeder connections : production
-	// should gate admission at the TLS layer via ClientCA (mTLS), but when it isn't
-	// set this is the only cap between the internet and unbounded goroutine/FD
-	// growth. Default 512 — a generous multiple of any fleet size in this project.
+	// MaxConns bounds concurrent authenticated feeder sessions: a slot is taken
+	// once a HELLO has authenticated. Connections still in their TLS/HELLO
+	// handshake are bounded separately (a pre-auth pool of half this size, a
+	// 10 s deadline, and per-address in-flight and rate caps), so an idle
+	// connection flood cannot occupy these slots — and mTLS alone never could
+	// prevent that, since a certificate is examined only inside the handshake
+	// such a flood never starts. Default 512 — a generous multiple of any fleet
+	// size in this project.
 	MaxConns int `toml:"max_conns"`
 
 	Observers []PushObserver `toml:"observer"`

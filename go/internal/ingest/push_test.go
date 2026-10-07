@@ -1095,9 +1095,11 @@ func TestPushMaxConnsBounded(t *testing.T) {
 	go func() { _ = srv.serve(ctx, ln) }()
 	addr := ln.Addr().String()
 
-	// Open maxConns connections that never send the GNF1 magic — each is accepted
-	// and holds a semaphore slot indefinitely (parked reading the handshake).
-	held := make([]*tls.Conn, maxConns)
+	// Open more connections than the fleet budget that never send a HELLO —
+	// each is accepted and parked in its handshake. They hold pre-auth slots,
+	// never a fleet slot: an unauthenticated connection cannot occupy what an
+	// authenticated feeder needs.
+	held := make([]*tls.Conn, maxConns+1)
 	for i := range held {
 		held[i] = dialPush(t, addr) // WriteMagic only; no HELLO, so handle() blocks reading it
 	}
@@ -1111,28 +1113,29 @@ func TestPushMaxConnsBounded(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		if len(srv.conns) == maxConns {
+		if len(srv.preAuth) == len(held) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("semaphore never filled: len=%d, want %d", len(srv.conns), maxConns)
+			t.Fatalf("pre-auth pool never filled: len=%d, want %d", len(srv.preAuth), len(held))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	if len(srv.conns) != 0 {
+		t.Fatalf("%d fleet slots taken by connections that never authenticated, want 0", len(srv.conns))
+	}
 
-	// A full semaphore must not block shutdown: a pending Accept()'s admit attempt
-	// (or, as here, an already-parked handler) must not prevent ctx cancellation
-	// from draining and returning promptly.
+	// A closed pre-auth connection gives its slot back.
 	held[0].Close()
 	held[0] = nil
 
 	deadline = time.Now().Add(2 * time.Second)
 	for {
-		if len(srv.conns) < maxConns {
+		if len(srv.preAuth) < len(held) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("semaphore slot was not released after the connection closed")
+			t.Fatal("pre-auth slot was not released after the connection closed")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -1162,9 +1165,9 @@ func TestPushMaxConnsShutdownCompletes(t *testing.T) {
 	defer conn.Close()
 
 	deadline := time.Now().Add(2 * time.Second)
-	for len(srv.conns) < maxConns {
+	for len(srv.preAuth) < 1 {
 		if time.Now().After(deadline) {
-			t.Fatal("semaphore never filled")
+			t.Fatal("pre-auth pool never took the parked connection")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -1176,7 +1179,7 @@ func TestPushMaxConnsShutdownCompletes(t *testing.T) {
 			t.Errorf("serve() = %v, want nil on clean shutdown", err)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("serve() did not return after ctx cancellation with a full semaphore")
+		t.Fatal("serve() did not return after ctx cancellation with a parked handshake")
 	}
 }
 

@@ -186,7 +186,21 @@ answers again.
 
 Policy admission happens **before** `WELCOME` is answered, so a session refused by admission
 (`navlistener_push_admission_refused_total{reason}`) receives `WELCOME{ok:false}` instead of a
-close after a success it had already acted on. A transition's reset marker is enqueued off the
+close after a success it had already acted on. Admission also caps one observer at four
+concurrent sessions (`observer_sessions`): enough for the C feeder's spool replays and a
+reconnect overlapping the session it replaces, not enough for one stolen token to fill the
+fleet's slots, each with its own zstd window.
+
+**Before authentication** a connection holds none of the fleet's `max_conns` slots. It lives in
+a separate pre-auth pool (half of `max_conns`, at least 64) for at most 10 s — TLS, the GNF1
+magic, the HELLO and any EVIDENCE frame all happen under that deadline — and each remote
+address may have at most eight such connections in flight and open new ones at 32 per second
+(burst 64). Anything beyond those bounds is closed at accept, before any TLS work, and counted
+in `navlistener_push_connections_refused_total{reason}`; an authenticated HELLO that finds no
+fleet slot free is answered `WELCOME{ok:false}` (`fleet_capacity`). mTLS cannot stand in for
+these bounds: a certificate is examined only inside the handshake an idle flood never starts.
+Pre-auth warnings are rate-limited to five per address per minute and clip peer-chosen HELLO
+fields to 64 bytes; the auth-failure metrics count every attempt regardless. A transition's reset marker is enqueued off the
 policy lock: `admit` of a same-generation session waits on the pending marker, while
 `release`, stale-lookup refusals and the reconciliation snapshot take the lock only for their
 bookkeeping and never wait behind decode backpressure.

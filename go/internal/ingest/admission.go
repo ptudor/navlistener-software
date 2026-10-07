@@ -48,6 +48,14 @@ type observerPolicy struct {
 const maxTrackedObserverPolicies = 1024
 const maxPolicyCredentials = 8
 
+// maxObserverSessions bounds the sessions one observer may hold at once. A
+// credential legitimately runs a few — the C feeder replays each recovered
+// spool on its own connection, one after another, and a reconnect briefly
+// overlaps the session it replaces until the old one times out — but never
+// the fleet's worth: one stolen token must not occupy every slot, each with
+// its own zstd window.
+const maxObserverSessions = 4
+
 type policyCredential struct{ digest, feed string }
 
 // Admission binds immutable receipt provenance to a policy generation. A
@@ -149,6 +157,9 @@ func (p *PushServer) admit(ctx context.Context, current identity.ObserverContext
 		}
 		// The marker is in. The policy is this session's unless a later
 		// transition moved it again, which the next pass reports as stale.
+	}
+	if len(policy.sessions) >= maxObserverSessions {
+		return nil, "observer_sessions"
 	}
 	now := time.Now()
 	for _, credential := range credentials {
