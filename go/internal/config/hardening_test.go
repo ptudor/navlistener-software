@@ -142,6 +142,52 @@ func TestNonLoopbackBindWarnings(t *testing.T) {
 	}
 }
 
+// TestOperatorAudienceWithoutReadAuthorizationWarns guards the private
+// operator view must not be configured credential-free silently: with neither
+// authorization.dsn nor [[serve.principal]] the config loads (the listener
+// refuses the view at request time) but carries a named warning.
+func TestOperatorAudienceWithoutReadAuthorizationWarns(t *testing.T) {
+	c := defaults()
+	c.Serve.Addr = "127.0.0.1:8080"
+	c.Serve.Audience = "operator"
+	if err := c.finalize(); err != nil {
+		t.Fatalf("finalize: %v (operator audience without auth must warn, not fail)", err)
+	}
+	var warned bool
+	for _, w := range c.Warnings {
+		if strings.Contains(w, "serve.audience") && strings.Contains(w, "authorization.dsn") && strings.Contains(w, "[[serve.principal]]") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("operator audience without read authorization produced no warning: %v", c.Warnings)
+	}
+
+	// A static read grant satisfies the requirement.
+	c = defaults()
+	c.Serve.Addr = "127.0.0.1:8080"
+	c.Serve.Audience = "operator"
+	c.Serve.Principals = []ServePrincipal{{ID: "viewer", TokenSHA256: strings.Repeat("ab", 32), Audiences: []string{"operator:local"}, Revision: "v1"}}
+	if err := c.finalize(); err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range c.Warnings {
+		if strings.Contains(w, "serve.audience") {
+			t.Errorf("operator audience with a read grant still warned: %q", w)
+		}
+	}
+
+	// Serve disabled: the audience is inert, so there is nothing to warn about.
+	c = defaults()
+	c.Serve.Audience = "operator"
+	if err := c.finalize(); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Warnings) != 0 {
+		t.Errorf("disabled serve listener warned: %v", c.Warnings)
+	}
+}
+
 func TestIsLoopbackHost(t *testing.T) {
 	cases := map[string]bool{
 		"127.0.0.1:9100":   true,

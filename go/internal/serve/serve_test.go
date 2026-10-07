@@ -88,15 +88,78 @@ func TestPublicAudienceHeadersAndAnonymousObserverFiltering(t *testing.T) {
 }
 
 func TestOperatorAudienceResponsesArePrivate(t *testing.T) {
-	s := testServer(nil)
+	s := NewForAudience("127.0.0.1:0", state.New(4), nil, nil, time.Minute, time.Minute,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		identity.Audience{Kind: identity.AudienceOperator, ID: identity.LocalCollectorInstance})
+	s.ServeUnauthenticated() // the explicit credential-free embedding opt-in
 	s.refresh("global")
 	rr := httptest.NewRecorder()
 	s.serveFeed("global")(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/global", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("opted-in operator view status = %d: %s", rr.Code, rr.Body.String())
+	}
 	if got := rr.Header().Get("Cache-Control"); got != "private, no-store" {
 		t.Fatalf("operator cache header = %q", got)
 	}
 	if got := rr.Header().Get("Vary"); !strings.Contains(got, "Authorization") {
 		t.Fatalf("operator Vary = %q", got)
+	}
+}
+
+// TestPrivateDefaultAudienceRequiresReadAuthorization guards a non-public
+// default audience must never be served credential-free by omission: with no
+// ReadAuthorizer and no explicit ServeUnauthenticated opt-in, every feed and
+// the event stream answer 503, and the public selection still works once a
+// resolver can materialize it. The public default audience is unaffected.
+func TestPrivateDefaultAudienceRequiresReadAuthorization(t *testing.T) {
+	operator := identity.Audience{Kind: identity.AudienceOperator, ID: identity.LocalCollectorInstance}
+	s := NewForAudience("127.0.0.1:0", state.New(4), nil, nil, time.Minute, time.Minute,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), operator)
+	s.refreshAll()
+	for _, path := range []string{"/gnss/api/v2/observers", "/gnss/api/v2/coverage", "/gnss/api/events", "/gnss/events"} {
+		rr := httptest.NewRecorder()
+		s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+		if rr.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s without read authorization: status %d, want 503: %s", path, rr.Code, rr.Body.String())
+		}
+		if strings.Contains(rr.Body.String(), `"ok":true`) {
+			t.Errorf("%s served the private operator view credential-free", path)
+		}
+	}
+
+	// A public view materialized by a resolver remains selectable and credential-free.
+	registry := audience.NewRegistry(1, nil)
+	registry.Register(identity.Audience{Kind: identity.AudiencePublic}, state.New(1), nil)
+	s.resolver = registry
+	req := httptest.NewRequest(http.MethodGet, "/gnss/api/v2/observers", nil)
+	req.Header.Set("X-GNSS-Audience", "public")
+	rr := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"audience":"public"`) {
+		t.Fatalf("explicit public selection: status %d body %s", rr.Code, rr.Body.String())
+	}
+
+	// The opt-in restores the convenience behaviour New provides.
+	s.ServeUnauthenticated()
+	rr = httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/observers", nil))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"audience":"operator:local"`) {
+		t.Fatalf("opted-in operator view: status %d body %s", rr.Code, rr.Body.String())
+	}
+	rr = httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodHead, "/gnss/events", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("opted-in event stream HEAD: status %d", rr.Code)
+	}
+
+	// A public default audience never needed the opt-in.
+	public := NewForAudience("127.0.0.1:0", state.New(4), nil, nil, time.Minute, time.Minute,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), identity.Audience{Kind: identity.AudiencePublic})
+	public.refreshAll()
+	rr = httptest.NewRecorder()
+	public.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/observers", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("public default audience: status %d body %s", rr.Code, rr.Body.String())
 	}
 }
 

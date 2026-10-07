@@ -101,6 +101,13 @@ type Server struct {
 	resolver         ViewResolver
 	reauthorizeEvery time.Duration
 	policyEpochs     *audience.PolicyEpochs
+	// unauthenticatedPrivate is the explicit embedding opt-in that lets a
+	// non-public default audience be served with no ReadAuthorizer installed.
+	// Without it (and without EnableAudienceSelection) a private default
+	// audience answers 503: the operator view carries every station's board
+	// telemetry, integrity assessments and operator events, and must never be
+	// reachable credential-free by omission. See ServeUnauthenticated.
+	unauthenticatedPrivate bool
 
 	mu                   sync.RWMutex
 	cache                map[string][]byte
@@ -116,9 +123,16 @@ type Server struct {
 // stations as they are seen, so the observer feed is the union of configured
 // dial sources and active push identities. fast/slow are the refresh cadences
 // (§5); zero uses the defaults (30 s / 90 s).
+//
+// New is the operator-view convenience constructor for tests and single-user
+// embedding: it serves the local operator audience credential-free, which is
+// the explicit ServeUnauthenticated opt-in. The daemon constructs through
+// NewForAudience and installs a ReadAuthorizer instead.
 func New(addr string, st *state.Store, events EventStore, sources []config.Source, fast, slow time.Duration, log *slog.Logger) *Server {
-	return NewForAudience(addr, st, events, sources, fast, slow, log,
+	s := NewForAudience(addr, st, events, sources, fast, slow, log,
 		identity.Audience{Kind: identity.AudienceOperator, ID: identity.LocalCollectorInstance})
+	s.ServeUnauthenticated()
+	return s
 }
 
 // NewForAudience builds one physically separated audience view. Callers must
@@ -205,6 +219,16 @@ func (s *Server) SetPolicyEpochs(epochs *audience.PolicyEpochs) {
 		s.policyEpochs = epochs
 	}
 }
+
+// ServeUnauthenticated opts a non-public default audience into credential-free
+// serving on a listener with no ReadAuthorizer. It is the embedding/test
+// escape hatch, not a deployment mode: the daemon never calls it, and a
+// private default audience without it (and without EnableAudienceSelection)
+// answers 503 "private audience requires read authorization" on every feed,
+// events query and stream, while an explicit X-GNSS-Audience: public selection
+// is still served. Public default audiences are unaffected either way. Call it
+// before Listen/Start.
+func (s *Server) ServeUnauthenticated() { s.unauthenticatedPrivate = true }
 
 // EnableAudienceSelection installs authenticated organization/collection view
 // selection. It must be called before Listen/Start. Public remains credential-
@@ -769,6 +793,14 @@ func (s *Server) resolveRequestView(w http.ResponseWriter, r *http.Request) (req
 	if s.readAuth == nil {
 		if selected != s.audience {
 			writeError(w, http.StatusForbidden, "audience selection requires read authorization")
+			return requestView{}, false
+		}
+		// Only the public audience is ever served without a credential by
+		// default; a private default audience needs the explicit embedding
+		// opt-in, otherwise the listener was deployed without the read
+		// authorization its view requires and fails closed.
+		if !s.unauthenticatedPrivate {
+			writeError(w, http.StatusServiceUnavailable, "private audience requires read authorization")
 			return requestView{}, false
 		}
 		st, sources, ok := resolve()
