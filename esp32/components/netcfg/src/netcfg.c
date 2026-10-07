@@ -432,6 +432,27 @@ esp_err_t netcfg_start_provisioning(netcfg_provisioning_info_t *info)
     wifi_init_config_t ic = WIFI_INIT_CONFIG_DEFAULT();
     ESP_RETURN_ON_ERROR(esp_wifi_init(&ic), TAG, "initialize Wi-Fi");
 
+    // The SoftAP is configured before anything starts Wi-Fi. A factory-fresh board's Wi-Fi
+    // NVS holds ESP-IDF's open "ESP_xxxxxx" default, which the interface would beacon from
+    // the moment it is raised until this configuration landed. The driver accepts an
+    // interface's configuration only while the mode includes that interface, and a mode
+    // applied to stopped Wi-Fi raises nothing, so the order is mode, configuration, start.
+    // The BLE scheme below starts Wi-Fi station-only and clears only the station
+    // credentials; the AP configuration stays in the driver until APSTA raises it.
+    wifi_config_t ap = {0};
+    snprintf((char *)ap.ap.ssid, sizeof ap.ap.ssid, "%s", setup.name);
+    ap.ap.ssid_len = strlen(setup.name);
+    snprintf((char *)ap.ap.password, sizeof ap.ap.password, "%s", setup.password);
+    ap.ap.max_connection = 2;
+    ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    ap.ap.channel = 1;
+#if CONFIG_NVF_BOARD_GNSS_COLOR
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), TAG, "select setup AP");
+#else
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_AP), TAG, "select setup AP");
+#endif
+    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &ap), TAG, "configure setup AP");
+
 #if CONFIG_NVF_BOARD_GNSS_COLOR
     err = netcfg_ble_start(&setup);
     if (err == ESP_OK) {
@@ -444,17 +465,10 @@ esp_err_t netcfg_start_provisioning(netcfg_provisioning_info_t *info)
     }
 #endif
 
-    wifi_config_t ap = {0};
-    snprintf((char *)ap.ap.ssid, sizeof ap.ap.ssid, "%s", setup.name);
-    ap.ap.ssid_len = strlen(setup.name);
-    snprintf((char *)ap.ap.password, sizeof ap.ap.password, "%s", setup.password);
-    ap.ap.max_connection = 2;
-    ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
-    ap.ap.channel = 1;
-
+    // With BLE active Wi-Fi is already running as a station and this raises the configured
+    // AP beside it; otherwise the AP-only mode is applied to stopped Wi-Fi and started.
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(info->ble_active ? WIFI_MODE_APSTA : WIFI_MODE_AP),
                         TAG, "enable setup AP");
-    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &ap), TAG, "configure setup AP");
     if (!info->ble_active)
         ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "start setup AP");
 
