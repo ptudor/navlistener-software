@@ -1,6 +1,7 @@
 package federation
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +34,7 @@ func fixture() (time.Time, Observation, identity.ObserverContext, ExportGrant, E
 		Purposes: []string{"integrity-monitoring"}, ValidFrom: now.Add(-time.Hour), ValidUntil: now.Add(time.Hour),
 		ApprovedBy: "owner-a", Revision: "grant-v3", Enabled: true,
 	}
-	obs := Observation{Context: c, ReceivedTrust: TrustLocal, GnssID: 0, SigID: 0, EndToEndObserverSigned: true}
+	obs := Observation{Context: c, LocalCollectorInstanceID: "collector-a", ReceivedTrust: TrustLocal, GnssID: 0, SigID: 0, EndToEndObserverSigned: true}
 	req := ExportRequest{DestinationPeerID: "peer-b", DataClass: DataRaw, Attribution: AttributionOriginID,
 		Retention: time.Hour, Purpose: "integrity-monitoring"}
 	return now, obs, current, grant, req
@@ -254,5 +255,52 @@ func TestRevokedApproverAndStaleGrantAreExpressedByTheGrantRow(t *testing.T) {
 	grant.ApprovedBy = ""
 	if EvaluateExport(now, obs, current, grant, req).Allowed {
 		t.Fatal("grant without approval provenance exported")
+	}
+}
+
+// The evaluator never guesses which collector it is. For a relayed
+// observation the receipt's collector is the origin's, so a relay that forgot
+// to say who it is must not match a grant written for the origin.
+func TestLocalCollectorMustBeEstablished(t *testing.T) {
+	now, obs, current, grant, req := fixture()
+	obs.LocalCollectorInstanceID = ""
+	if got := EvaluateExport(now, obs, current, grant, req); got.Allowed || !strings.Contains(got.Reason, "local collector") {
+		t.Fatalf("empty local collector did not deny: %+v", got)
+	}
+}
+
+// FEDERATION.md §8: a frame whose path already names this collector has
+// looped back and is dropped, whatever its destination.
+func TestPathThroughThisCollectorIsDropped(t *testing.T) {
+	now, obs, current, grant, req := fixture()
+	obs.ReceivedTrust = TrustTrusted
+	obs.Path = []string{"origin", "collector-a", "peer-c"}
+	if got := EvaluateExport(now, obs, current, grant, req); got.Allowed || !strings.Contains(got.Reason, "already traversed") {
+		t.Fatalf("frame that looped through this collector relayed on: %+v", got)
+	}
+	obs.Path = []string{"origin", "peer-c"}
+	if got := EvaluateExport(now, obs, current, grant, req); !got.Allowed {
+		t.Fatalf("path through other collectors denied: %+v", got)
+	}
+}
+
+// The hop cap is the hard backstop: the default is eight, a transport may
+// lower it, and a path at the cap is not relayed again.
+func TestPeerHopCapIsEnforced(t *testing.T) {
+	now, obs, current, grant, req := fixture()
+	obs.ReceivedTrust = TrustTrusted
+	for hop := 0; hop < DefaultMaxPeerHops; hop++ {
+		obs.Path = append(obs.Path, fmt.Sprintf("peer-%d", hop))
+	}
+	if got := EvaluateExport(now, obs, current, grant, req); got.Allowed || !strings.Contains(got.Reason, "hop cap") {
+		t.Fatalf("path of %d hops relayed: %+v", DefaultMaxPeerHops, got)
+	}
+	obs.Path = obs.Path[:DefaultMaxPeerHops-1]
+	if got := EvaluateExport(now, obs, current, grant, req); !got.Allowed {
+		t.Fatalf("path below the default cap denied: %+v", got)
+	}
+	obs.MaxPeerHops = 3
+	if got := EvaluateExport(now, obs, current, grant, req); got.Allowed || !strings.Contains(got.Reason, "hop cap") {
+		t.Fatalf("transport's lower cap ignored: %+v", got)
 	}
 }
