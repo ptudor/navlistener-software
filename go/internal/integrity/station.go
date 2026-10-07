@@ -124,11 +124,16 @@ func (s *Station) ApplyClock(c ClockSample) {
 }
 
 // ApplyStatus folds the receiver's own status: its spoofing indication, and a
-// restart, which breaks the clock history.
+// restart, which breaks the clock history and the receiver-time continuity the
+// position and clock epochs are ordered by — the next epoch re-anchors instead of
+// being refused as out of order behind a pre-restart time.
 func (s *Station) ApplyStatus(st ReceiverStatus) {
 	if st.HaveStart {
 		if s.haveStatus && st.SinceStartMS < s.lastStart {
 			s.clock.reset()
+			s.clock.started = false
+			s.pos.resync()
+			s.pos.started = false
 		}
 		s.lastStart, s.haveStatus = st.SinceStartMS, true
 	}
