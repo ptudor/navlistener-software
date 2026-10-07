@@ -605,6 +605,30 @@ func TestPushStationMustBindToCertWhenMTLS(t *testing.T) {
 	}
 }
 
+// TestPushClientCAAndRequireClientCertificateAreExclusive: the two mTLS
+// switches select different trust pools and the listener can install only one
+// (require_client_certificate silently replaced the client_ca pool), so the
+// pair must fail at config load with a message naming both keys.
+func TestPushClientCAAndRequireClientCertificateAreExclusive(t *testing.T) {
+	cert, key := testKeypair(t)
+	obs := []PushObserver{{Station: "observer-16", TokenSHA256: goodHash, Feeds: []string{"ubx"}}}
+	c := pushConfig(Push{Addr: "0.0.0.0:5580", TLSCert: cert, TLSKey: key,
+		ClientCA: cert, RequireClientCertificate: true, Observers: obs})
+	err := c.finalizePush()
+	if err == nil || !strings.Contains(err.Error(), "push.client_ca") || !strings.Contains(err.Error(), "push.require_client_certificate") {
+		t.Fatalf("client_ca + require_client_certificate error = %v, want a rejection naming both keys", err)
+	}
+	for name, p := range map[string]Push{
+		"client_ca only":   {Addr: "0.0.0.0:5580", TLSCert: cert, TLSKey: key, ClientCA: cert, Observers: obs},
+		"require only":     {Addr: "0.0.0.0:5580", TLSCert: cert, TLSKey: key, RequireClientCertificate: true, Observers: obs},
+		"neither (bearer)": {Addr: "0.0.0.0:5580", TLSCert: cert, TLSKey: key, Observers: obs},
+	} {
+		if err := pushConfig(p).finalizePush(); err != nil {
+			t.Errorf("%s: finalizePush = %v, want accepted", name, err)
+		}
+	}
+}
+
 // TestCheckConfigParity guards a malformed push.addr, an unloadable TLS keypair, an
 // unparsable store.dsn, and a missing ntrip ca_file must each fail config finalize with a
 // named-field error (parity with what startup requires), not pass -check-config and die later.

@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -1416,6 +1417,15 @@ func (c *Config) finalizePush() error {
 	if p.ClientCA != "" {
 		if err := validatePEMFile("push.client_ca", p.ClientCA); err != nil {
 			return err
+		}
+		// The two mTLS switches select different trust pools, and the listener
+		// can install only one: require_client_certificate wins and the
+		// client_ca pool is silently discarded. Refuse the pair so the operator
+		// chooses one deliberately instead of discovering the loser at connect.
+		if p.RequireClientCertificate {
+			return errors.New("push.client_ca and push.require_client_certificate are mutually exclusive: " +
+				"require_client_certificate verifies feeders against the registered [[operational_authority]] issuers, " +
+				"client_ca against the file; set one")
 		}
 	}
 	stations := make(map[string]bool, len(p.Observers))
