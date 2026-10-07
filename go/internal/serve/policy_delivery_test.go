@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,7 +34,7 @@ func TestResetBetweenRenderAndCacheAdmission(t *testing.T) {
 	<-done
 	s.beforeCacheAdmission = nil
 	s.mu.RLock()
-	body := s.cache["observers"]
+	body := s.cache[cacheKey{audience: s.audience.Key(), feed: "observers"}].body
 	s.mu.RUnlock()
 	if body != nil {
 		t.Fatal("stale render admitted after reset")
@@ -41,6 +43,49 @@ func TestResetBetweenRenderAndCacheAdmission(t *testing.T) {
 	s.serveFeed("observers")(rr, httptest.NewRequest("GET", "/", nil))
 	if strings.Contains(rr.Body.String(), "withdrawn") {
 		t.Fatal("new request received withdrawn state")
+	}
+}
+
+// TestConcurrentMissesAfterResetRenderOnce guards the on-demand refresh is
+// single-flight: after a reset invalidates the warmed body, a burst of
+// concurrent public requests performs exactly one render and every request is
+// answered from it, instead of N shard walks racing on admission.
+func TestConcurrentMissesAfterResetRenderOnce(t *testing.T) {
+	s := testServer(nil)
+	s.refresh("observers")
+	var renders atomic.Int64
+	s.onBuildFeed = func(feed string, _ identity.Audience) {
+		if feed == "observers" {
+			renders.Add(1)
+		}
+	}
+	ready, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	s.beforeCacheAdmission = func() { once.Do(func() { close(ready) }); <-release }
+	resetTestAudience(s)
+	const n = 16
+	codes := make([]int, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rr := httptest.NewRecorder()
+			s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/observers", nil))
+			codes[i] = rr.Code
+		}(i)
+	}
+	<-ready // one render is in flight and parked before admission
+	close(release)
+	wg.Wait()
+	s.beforeCacheAdmission = nil
+	if got := renders.Load(); got != 1 {
+		t.Fatalf("%d concurrent misses rendered %d times, want exactly 1", n, got)
+	}
+	for i, code := range codes {
+		if code != http.StatusOK {
+			t.Errorf("request %d: status %d, want 200 from the shared render", i, code)
+		}
 	}
 }
 

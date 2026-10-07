@@ -47,6 +47,14 @@ func newTestServer(sources []config.Source, events EventStore) *Server {
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
+// newTestServerForAudience builds a listener whose default view is selected,
+// with no read authorizer and no opt-in: a public default serves credential-
+// free, a private one answers 503 until ServeUnauthenticated is called.
+func newTestServerForAudience(selected identity.Audience, events EventStore) *Server {
+	return NewForAudience("127.0.0.1:0", state.New(4), events, nil, time.Minute, time.Minute,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), selected)
+}
+
 // TestServerIdleTimeoutSet guards an idle keep-alive connection between requests
 // must be bounded, distinct from the SSE per-write deadline and unset WriteTimeout
 // (SSE streams are exempt from that by design).
@@ -166,6 +174,65 @@ func TestPrivateDefaultAudienceRequiresReadAuthorization(t *testing.T) {
 	public.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/observers", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("public default audience: status %d body %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestPublicSelectionUnderPrivateDefaultIsCachedPerAudience guards an
+// anonymous `X-GNSS-Audience: public` request on a private-default listener is
+// admitted to a per-audience public cache (one render per cadence, reused by
+// later requests, invalidated by the audience's reset) instead of re-rendering
+// every feed per request, while the default audience's warmed body stays
+// separate.
+func TestPublicSelectionUnderPrivateDefaultIsCachedPerAudience(t *testing.T) {
+	s := testServer(nil) // operator default, opted in
+	public := identity.Audience{Kind: identity.AudiencePublic}
+	registry := audience.NewRegistry(1, nil)
+	registry.Register(public, state.New(1), nil)
+	s.resolver = registry
+	now := time.Now()
+	s.now = func() time.Time { return now }
+	var renders atomic.Int64
+	s.onBuildFeed = func(feed string, selected identity.Audience) {
+		if feed == "svs" && selected == public {
+			renders.Add(1)
+		}
+	}
+	get := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/gnss/api/v2/svs", nil)
+		req.Header.Set("X-GNSS-Audience", "public")
+		rr := httptest.NewRecorder()
+		s.http.Handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"audience":"public"`) {
+			t.Fatalf("public selection: status %d body %s", rr.Code, rr.Body.String())
+		}
+		if got := rr.Header().Get("Cache-Control"); got != "public, max-age=30" {
+			t.Fatalf("public selection Cache-Control = %q", got)
+		}
+		return rr
+	}
+	first, second := get(), get()
+	if renders.Load() != 1 || first.Body.String() != second.Body.String() {
+		t.Fatalf("public selection rendered %d times for two requests; bodies equal=%v", renders.Load(), first.Body.String() == second.Body.String())
+	}
+	s.InvalidateAudiences([]identity.Audience{public})
+	get()
+	if renders.Load() != 2 {
+		t.Fatalf("public reset did not invalidate the public cache (%d renders)", renders.Load())
+	}
+	now = now.Add(s.fast + time.Second)
+	get()
+	if renders.Load() != 3 {
+		t.Fatalf("public entry past its cadence was not re-rendered (%d renders)", renders.Load())
+	}
+	// The default (operator) audience's warmed body is a separate entry and is
+	// never the public body.
+	rr := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/svs", nil))
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"audience":"operator:local"`) {
+		t.Fatalf("default audience body: status %d body %s", rr.Code, rr.Body.String())
+	}
+	if renders.Load() != 3 {
+		t.Fatalf("serving the default audience rendered the public view (%d renders)", renders.Load())
 	}
 }
 
@@ -414,7 +481,7 @@ func TestSnapshotFeeds(t *testing.T) {
 	// The returned slice is a copy: mutating it must not corrupt the served cache.
 	snap["svs"][0] = 'X'
 	s.mu.RLock()
-	cached := s.cache["svs"][0]
+	cached := s.cache[cacheKey{audience: s.audience.Key(), feed: "svs"}].body[0]
 	s.mu.RUnlock()
 	if cached == 'X' {
 		t.Error("SnapshotFeeds aliased the live cache")

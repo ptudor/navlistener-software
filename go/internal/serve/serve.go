@@ -61,8 +61,38 @@ type requestView struct {
 const schemaVersion = "2.0"
 
 // feedGroup is the set of feeds refreshed on the fast cadence; almanac refreshes on
-// its own slower cadence (docs/OUTPUT.md §5).
+// its own slower cadence (docs/OUTPUT.md §5). Together with almanac these are the
+// historian's fixed snapshot feed set (§4); coverage is cached too but is never
+// part of that set (docs/MONITORING-MAP.md).
 var fastFeeds = []string{"svs", "global", "observers", "sbas"}
+
+// coverageTTL bounds how stale a served coverage body may be. Coverage is not
+// warmed by the refresh tickers: it is rendered on demand, single-flight, and
+// reused until this age so a stream of requests costs one shard walk and one
+// reference-catalogue propagation per TTL instead of one per request. It is
+// half the feed's declared fresh_seconds (60), so client-side witness ageing
+// (docs/MONITORING-MAP.md) stays inside the contract.
+const coverageTTL = 30 * time.Second
+
+// cacheKey identifies one warmed envelope: a feed rendered for one audience.
+// Only the fixed/default audience and the public audience (whose bodies are
+// shared-safe by construction) are ever admitted; principal-bearing private
+// requests are rendered per request and never enter the cache.
+type cacheKey struct {
+	audience string
+	feed     string
+}
+
+// cacheEntry is one admitted render with the facts it was rendered under. A
+// request serves it only while the audience's policy generation and the view's
+// state generation still match, and, for entries with a serve-time TTL, while
+// it is younger than that TTL.
+type cacheEntry struct {
+	body       []byte
+	epoch      uint64
+	state      uint64
+	renderedAt time.Time
+}
 
 // Server is the v2 read API. It caches each feed's marshalled envelope and swaps it
 // under an RWMutex on refresh, so a request never blocks on state-lock contention or
@@ -109,11 +139,15 @@ type Server struct {
 	// reachable credential-free by omission. See ServeUnauthenticated.
 	unauthenticatedPrivate bool
 
-	mu                   sync.RWMutex
-	cache                map[string][]byte
-	cacheEpoch           map[string]uint64
-	cacheState           map[string]uint64
-	beforeCacheAdmission func() // deterministic render/admission race seam
+	mu    sync.RWMutex
+	cache map[cacheKey]cacheEntry
+	// rendering holds one mutex per cache key so concurrent misses on a key
+	// (a cold or just-invalidated feed under a request burst) wait for one
+	// render instead of each walking the shards and marshalling the feed.
+	renderMu             sync.Mutex
+	rendering            map[cacheKey]*sync.Mutex
+	beforeCacheAdmission func()                                        // deterministic render/admission race seam
+	onBuildFeed          func(feed string, selected identity.Audience) // render-count seam for cache tests
 	deliveryMu           sync.Mutex
 	deliveries           map[*responseDelivery]struct{}
 }
@@ -157,9 +191,8 @@ func NewForAudience(addr string, st *state.Store, events EventStore, sources []c
 		fast:         fast,
 		slow:         slow,
 		broker:       newBroker(),
-		cache:        map[string][]byte{},
-		cacheEpoch:   map[string]uint64{},
-		cacheState:   map[string]uint64{},
+		cache:        map[cacheKey]cacheEntry{},
+		rendering:    map[cacheKey]*sync.Mutex{},
 		brokers:      map[string]*Broker{},
 		policyEpochs: audience.NewPolicyEpochs(time.Now()),
 		historySlots: make(chan struct{}, 8),
@@ -321,13 +354,13 @@ func (s *Server) PublishEventForAudience(a identity.Audience, e EventMsg) {
 func (s *Server) InvalidateAudiences(audiences []identity.Audience) {
 	for _, selected := range audiences {
 		s.invalidateDeliveries(selected)
-		if selected == s.audience {
-			s.mu.Lock()
-			clear(s.cache)
-			clear(s.cacheEpoch)
-			clear(s.cacheState)
-			s.mu.Unlock()
+		s.mu.Lock()
+		for key := range s.cache {
+			if key.audience == selected.Key() {
+				delete(s.cache, key)
+			}
 		}
+		s.mu.Unlock()
 		s.brokerMu.Lock()
 		broker := s.brokers[selected.Key()]
 		s.brokerMu.Unlock()
@@ -379,21 +412,25 @@ func (s *Server) closeBrokers() {
 // Audience returns the immutable view key served and snapshotted by this server.
 func (s *Server) Audience() identity.Audience { return s.audience }
 
-// SnapshotFeeds returns a copy of every warmed feed's current marshalled envelope, keyed
-// by feed name, for the historian's replay/backfill record (docs/OUTPUT.md §4). Feeds not
-// yet built are omitted; the returned byte slices are copies, so the caller may retain them
-// without racing the next refresh's cache swap.
+// SnapshotFeeds returns a copy of every warmed snapshot feed's current marshalled
+// envelope, keyed by feed name, for the historian's replay/backfill record
+// (docs/OUTPUT.md §4). The set is the fixed fast feeds plus almanac; coverage is
+// cached for serving but is not a historian feed. Feeds not yet built are omitted;
+// the returned byte slices are copies, so the caller may retain them without racing
+// the next refresh's cache swap.
 func (s *Server) SnapshotFeeds() map[string][]byte {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make(map[string][]byte, len(s.cache))
 	epoch, _ := s.policyEpochs.Current(s.audience.Key())
-	for f, b := range s.cache {
-		if len(b) == 0 || s.cacheEpoch[f] != epoch || s.cacheState[f] != s.store.Generation() {
+	stateGeneration := s.store.Generation()
+	out := make(map[string][]byte, len(fastFeeds)+1)
+	for _, f := range append(append([]string(nil), fastFeeds...), "almanac") {
+		entry, ok := s.cache[cacheKey{audience: s.audience.Key(), feed: f}]
+		if !ok || len(entry.body) == 0 || entry.epoch != epoch || entry.state != stateGeneration {
 			continue
 		}
-		cp := make([]byte, len(b))
-		copy(cp, b)
+		cp := make([]byte, len(entry.body))
+		copy(cp, entry.body)
 		out[f] = cp
 	}
 	return out
@@ -452,31 +489,99 @@ func (s *Server) refreshAll() {
 	s.refresh("almanac")
 }
 
-// refresh rebuilds one feed's cached envelope bytes. A marshalling failure is logged
-// and leaves the previous (stale) bytes in place rather than serving a broken body.
+// refresh rebuilds one of the default audience's cached envelopes: the ticker
+// path, and the on-demand path for a cold default-audience feed. A marshalling
+// failure is logged and leaves the previous (stale) bytes in place rather than
+// serving a broken body.
 func (s *Server) refresh(feed string) {
+	key := cacheKey{audience: s.audience.Key(), feed: feed}
+	unlock := s.lockRender(key)
+	defer unlock()
+	s.render(key, feed, s.audience, s.store, s.sources)
+}
+
+// lockRender serializes renders of one cache key (single-flight). The caller
+// re-checks the cache after acquiring: a concurrent miss that lost the race
+// finds the winner's body admitted and must not render again.
+func (s *Server) lockRender(key cacheKey) (unlock func()) {
+	s.renderMu.Lock()
+	mu := s.rendering[key]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		s.rendering[key] = mu
+	}
+	s.renderMu.Unlock()
+	mu.Lock()
+	return mu.Unlock
+}
+
+// render builds one feed for one cacheable audience and admits it under the
+// policy generation and state generation it was rendered against, so a reset
+// or policy transition during the render cannot admit a body that mixes
+// pre-withdrawal and post-withdrawal state. The caller holds the key's render
+// lock. The refresh metrics describe the ticker-warmed default-audience feeds
+// only: coverage and the public-under-private-default cache are rendered on
+// demand, so a quiet period would otherwise read as a stalled refresh loop.
+func (s *Server) render(key cacheKey, feed string, selected identity.Audience, st *state.Store, sources []config.Source) {
 	now := s.now()
-	stateGeneration := s.store.Generation()
-	epoch, _ := s.policyEpochs.Current(s.audience.Key())
-	body, err := s.buildFeed(feed, s.audience, s.store, s.sources, now)
+	stateGeneration := st.Generation()
+	epoch, _ := s.policyEpochs.Current(selected.Key())
+	tickerWarmed := selected == s.audience && feed != "coverage"
+	body, err := s.buildFeed(feed, selected, st, sources, now)
 	if err != nil {
-		metrics.ServeFeedMarshalErrorsTotal.WithLabelValues(feed).Inc()
-		s.log.Error("serve feed marshal failed", "feed", feed, "audience", s.audience.Key(), "error", err)
+		if tickerWarmed {
+			metrics.ServeFeedMarshalErrorsTotal.WithLabelValues(feed).Inc()
+		}
+		s.log.Error("serve feed marshal failed", "feed", feed, "audience", selected.Key(), "error", err)
 		return
 	}
 	if s.beforeCacheAdmission != nil {
 		s.beforeCacheAdmission()
 	}
 	s.mu.Lock()
-	s.policyEpochs.IfCurrent(s.audience.Key(), epoch, func() {
-		if s.store.Generation() == stateGeneration {
-			s.cache[feed] = body
-			s.cacheEpoch[feed] = epoch
-			s.cacheState[feed] = stateGeneration
+	s.policyEpochs.IfCurrent(selected.Key(), epoch, func() {
+		if st.Generation() == stateGeneration {
+			s.cache[key] = cacheEntry{body: body, epoch: epoch, state: stateGeneration, renderedAt: now}
 		}
 	})
 	s.mu.Unlock()
-	metrics.ServeFeedRefreshTimestamp.WithLabelValues(feed).SetToCurrentTime()
+	if tickerWarmed {
+		metrics.ServeFeedRefreshTimestamp.WithLabelValues(feed).SetToCurrentTime()
+	}
+}
+
+// cacheTTL is the serve-time age bound of a cached entry; zero means the entry
+// stays valid until the ticker replaces it or a reset/policy transition
+// invalidates it. Coverage always expires (it is never ticker-warmed), and so
+// does every feed of a public audience that is not this listener's default,
+// which no ticker refreshes either.
+func (s *Server) cacheTTL(feed string, selected identity.Audience) time.Duration {
+	switch {
+	case feed == "coverage":
+		return coverageTTL
+	case selected == s.audience:
+		return 0
+	case feed == "almanac":
+		return s.slow
+	default:
+		return s.fast
+	}
+}
+
+// cachedBody returns key's admitted body when it is still current for a request
+// made at now under the audience's policy generation and the view's state
+// generation, or nil when the request must render.
+func (s *Server) cachedBody(key cacheKey, epoch, stateGeneration uint64, ttl time.Duration, now time.Time) []byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	entry, ok := s.cache[key]
+	if !ok || len(entry.body) == 0 || entry.epoch != epoch || entry.state != stateGeneration {
+		return nil
+	}
+	if ttl > 0 && now.Sub(entry.renderedAt) > ttl {
+		return nil
+	}
+	return entry.body
 }
 
 func (s *Server) buildFeed(feed string, selected identity.Audience, st *state.Store, sources []config.Source, now time.Time) ([]byte, error) {
@@ -497,6 +602,9 @@ func (s *Server) buildFeed(feed string, selected identity.Audience, st *state.St
 }
 
 func (s *Server) buildFeedOnce(feed string, selected identity.Audience, st *state.Store, sources []config.Source, now time.Time) ([]byte, error) {
+	if s.onBuildFeed != nil {
+		s.onBuildFeed(feed, selected)
+	}
 	data := map[string]any{"schema": schemaVersion, "audience": selected.Key()}
 	switch feed {
 	case "svs":
@@ -544,10 +652,13 @@ func (s *Server) serveFeed(feed string) http.HandlerFunc {
 		}
 		delivery := s.beginDelivery(r, view.audience)
 		defer delivery.finish()
-		// Only the fixed/default view uses the shared warmed cache. Authenticated
-		// private responses are rendered per request so cache entries never cross
-		// principals or audiences.
-		if feed == "coverage" || view.principal.ID != "" || view.audience != s.audience {
+		// The fixed/default view and the public view (shared-safe by
+		// construction, even when it is not this listener's default) use the
+		// per-audience warmed cache. Principal-bearing private responses are
+		// rendered per request so cache entries never cross principals or
+		// audiences.
+		cacheable := view.principal.ID == "" && (view.audience == s.audience || view.audience.Kind == identity.AudiencePublic)
+		if !cacheable {
 			body, err := s.buildFeed(feed, view.audience, view.store, view.sources, s.now())
 			if err != nil {
 				s.log.Error("serve scoped feed marshal failed", "feed", feed, "audience", view.audience.Key(), "error", err)
@@ -561,20 +672,20 @@ func (s *Server) serveFeed(feed string) http.HandlerFunc {
 			}
 			return
 		}
-		s.mu.RLock()
-		body := s.cache[feed]
-		if s.cacheEpoch[feed] != delivery.generation || s.cacheState[feed] != view.store.Generation() {
-			body = nil
-		}
-		s.mu.RUnlock()
+		key := cacheKey{audience: view.audience.Key(), feed: feed}
+		ttl := s.cacheTTL(feed, view.audience)
+		now := s.now()
+		body := s.cachedBody(key, delivery.generation, view.store.Generation(), ttl, now)
 		if body == nil {
-			s.refresh(feed)
-			s.mu.RLock()
-			body = s.cache[feed]
-			if s.cacheEpoch[feed] != delivery.generation || s.cacheState[feed] != view.store.Generation() {
-				body = nil
+			// Single-flight: a burst of misses after a reset or on a cold/expired
+			// entry waits for one render; the re-check after the lock finds it.
+			unlock := s.lockRender(key)
+			body = s.cachedBody(key, delivery.generation, view.store.Generation(), ttl, now)
+			if body == nil {
+				s.render(key, feed, view.audience, view.store, view.sources)
+				body = s.cachedBody(key, delivery.generation, view.store.Generation(), ttl, now)
 			}
-			s.mu.RUnlock()
+			unlock()
 		}
 		w.Header().Set("Content-Type", "application/json")
 		s.setAudienceCacheHeaders(w, view.audience)
