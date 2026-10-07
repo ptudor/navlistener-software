@@ -130,7 +130,7 @@ from stored station data the same way the GLONASS discontinuity bands were.
 | `baseline` | solutions of a configured co-located pair | the distance between the two positions at one epoch against the antennas' known distance; both at one position is the single-transmitter signature | position |
 | `clock_bias_drift` | clock | change in clock bias against the integrated clock drift over 30–40 s; whole-millisecond receiver clock adjustments are removed and recorded | receiver clock |
 | `clock_drift_rate` | clock | rate of change of clock drift over 60–120 s | receiver clock |
-| `utc_offset` | solution UTC; the observer's NTP stamp or the collector's clock | receiver UTC against an independent wall-clock stamp of the same record | time reference |
+| `utc_offset` | solution UTC; the collector's receipt clock for a live record, the observer's NTP stamp only for a replayed one | receiver UTC against an independent wall-clock reference of the same record (`reference_local` says which); a stamp running ahead of receipt by more than a second is distrusted and leaves the check unavailable | time reference |
 | `pps_rtc_phase` | timing tag; solution fix state | a step in the RTC-minus-GNSS phase against its recent linear trend | time reference |
 | `cn0_uniformity` | NAV-SAT | the existing C/N₀-vs-elevation gate, unchanged | signal power |
 | `cn0_drop` | NAV-SAT | every signal the receiver used falls by at least 1 dB within 3–5 s, graded by the median fall; jamming corroboration | RF environment |

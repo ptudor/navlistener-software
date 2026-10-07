@@ -34,6 +34,13 @@ func solutionFrame(i int, stamped bool, spoof uint8) *ingest.RawFrame {
 		MsgType: ingest.TelemReceiverSolution, Solution: sol}
 }
 
+// setPVTUTC writes at (as UTC) into the solution's date and time fields.
+func setPVTUTC(p *ingest.SolutionPVT, at time.Time) {
+	utc := at.UTC()
+	p.Year, p.Month, p.Day = uint16(utc.Year()), uint8(utc.Month()), uint8(utc.Day())
+	p.Hour, p.Minute, p.Second, p.NanoNS = uint8(utc.Hour()), uint8(utc.Minute()), uint8(utc.Second()), int32(utc.Nanosecond())
+}
+
 func integrityResult(t *testing.T, a integrity.Assessment, name string) integrity.Result {
 	t.Helper()
 	for _, r := range a.Checks {
@@ -97,6 +104,48 @@ func TestStoreIntegrityHostStamp(t *testing.T) {
 	r = integrityResult(t, dial.FeedStationIntegrity(integrityT0.Add(5 * time.Second))["board-0001-aa"], integrity.CheckUTCOffset)
 	if r.State != integrity.Assured {
 		t.Fatalf("dial frame: %+v", r)
+	}
+
+	// A live stamped push frame (received within the no-backlog bound of its
+	// stamp) is measured against the collector's own receipt clock, not the
+	// observer's stamp, so an observer clock drifting after an NTP outage does
+	// not become the time reference; the verdict records which clock it used.
+	live := New(1)
+	for i := 0; i < 5; i++ {
+		f := solutionFrame(i, true, 1)
+		f.Recv = f.RecvLocal.Add(-1500 * time.Millisecond) // the observer's clock lags a little
+		live.Apply(f)
+	}
+	r = integrityResult(t, live.FeedStationIntegrity(integrityT0.Add(5 * time.Second))["board-0001-aa"], integrity.CheckUTCOffset)
+	if r.State != integrity.Assured || r.Metrics["reference_local"] != 1 {
+		t.Fatalf("live stamped frame against the collector clock: %+v", r)
+	}
+
+	// A stamp running ahead of the receipt clock is impossible for a genuine
+	// record: no reference at all, rather than an unassured vote.
+	ahead := New(1)
+	for i := 0; i < 5; i++ {
+		f := solutionFrame(i, true, 1)
+		f.Recv = f.RecvLocal.Add(10 * time.Second)
+		ahead.Apply(f)
+	}
+	r = integrityResult(t, ahead.FeedStationIntegrity(integrityT0.Add(5 * time.Second))["board-0001-aa"], integrity.CheckUTCOffset)
+	if r.State != integrity.Unavailable || !slices.Contains(r.Reasons, integrity.ReasonNoHostStamp) {
+		t.Fatalf("stamp 10 s ahead of receipt: %+v, want unavailable/no_host_stamp", r)
+	}
+
+	// A replayed frame (stamped three hours before it arrived) still uses the
+	// observer's stamp: its receipt time says nothing about the record's UTC.
+	replay := New(1)
+	for i := 0; i < 5; i++ {
+		f := solutionFrame(i, true, 1)
+		f.Recv = f.RecvLocal.Add(-3 * time.Hour)
+		setPVTUTC(f.Solution.PVT, f.Recv.Add(-250*time.Millisecond)) // the receiver's UTC at the record's true instant
+		replay.Apply(f)
+	}
+	r = integrityResult(t, replay.FeedStationIntegrity(integrityT0.Add(5 * time.Second))["board-0001-aa"], integrity.CheckUTCOffset)
+	if r.State != integrity.Assured || r.Metrics["reference_local"] != 0 {
+		t.Fatalf("replayed stamped frame against the observer stamp: %+v", r)
 	}
 }
 

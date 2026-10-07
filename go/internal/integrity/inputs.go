@@ -48,7 +48,11 @@ type Solution struct {
 	UTCValid bool
 	// HostStamp is an independent wall-clock stamp of the record from the
 	// observer or the collector host, zero when no trustworthy stamp exists.
-	HostStamp time.Time
+	// HostStampLocal reports that it is the collector's own clock (a live record,
+	// received without backlog) rather than the observer's stamp, which is used
+	// only for replayed records; the utc_offset verdict records the choice.
+	HostStamp      time.Time
+	HostStampLocal bool
 
 	FixType int
 	FixOK   bool

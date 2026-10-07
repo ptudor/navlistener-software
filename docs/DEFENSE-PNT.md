@@ -179,8 +179,13 @@ rule identifies what is wired today, consistent with `docs/INTEGRITY.md §8`.
   integrated clock drift over 30–40 s, with whole-millisecond receiver adjustments removed, and
   the drift's rate of change over 60–120 s against what an oscillator can do.
 - **Time reference (implemented; the pulse check is wired but not yet live).** The receiver's
-  UTC is compared with an independent wall-clock stamp of the same record (the observer's NTP
-  clock, or the collector's on a dial connection), catching whole-second steps. On ESP32
+  UTC is compared with an independent wall-clock reference for the same record, catching
+  whole-second steps: the collector's own receipt clock when the record arrived live (within
+  two seconds of its stamp), and the observer's NTP-set stamp only for a replayed record, whose
+  receipt time says nothing about its instant. An observer stamps from its free-running clock
+  once NTP has synced, so a stamp is never trusted over the receipt clock for a live record,
+  and a stamp running ahead of receipt by more than a second — impossible for a genuine record
+  — leaves the check without a reference rather than casting a vote. On ESP32
   observers the GNSS PPS is meant to be compared with the board's free-running RTC pulse,
   catching sub-second steps the RTC did not take; that `pps_rtc_phase` check exists, but its
   only input today is the board report, sent every 60–300 s, while the check's fit needs

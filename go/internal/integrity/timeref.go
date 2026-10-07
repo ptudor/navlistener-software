@@ -62,8 +62,11 @@ func utcOffset(s Solution, prof UTCOffsetProfile) Verdict {
 	offset := s.UTC.Sub(s.HostStamp)
 	mag := offset.Abs()
 	v := Verdict{
-		State:      Assured,
-		Metrics:    map[string]float64{"offset_s": offset.Seconds()},
+		State: Assured,
+		// reference_local says which clock the offset was measured against: 1 the
+		// collector's own receipt clock (a live record), 0 the observer's stamp (a
+		// replayed record).
+		Metrics:    map[string]float64{"offset_s": offset.Seconds(), "reference_local": boolMetric(s.HostStampLocal)},
 		Thresholds: map[string]float64{"offset_inconsistent_s": prof.Inconsistent.Seconds(), "offset_unassured_s": prof.Unassured.Seconds()},
 	}
 	switch {
