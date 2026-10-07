@@ -184,7 +184,12 @@ consumer doesn't have to hold an HTTP connection to this daemon.
 
 - **`sseMaxClients` ** — each connection costs a goroutine, a buffered channel, and a
   socket held open indefinitely. An attacker, or just a buggy reconnect loop, opening unbounded
-  streams exhausts server resources.
+  streams exhausts server resources. The cap is partitioned per audience (`sseAudienceShare`):
+  the credential-free public audience may hold at most half of it and each private audience at
+  most a quarter, so one anonymous client cannot deny every private stream; the global cap
+  stays the outer bound. The same idea bounds the authenticated history/evidence reads per
+  principal (`historyPerPrincipal`, half of `historySlotCount`). Per-client fairness below that
+  is the fronting proxy's `limit_conn`/`limit_req` (`docs/OUTPUT.md §5`).
 - **`sseWriteTimeout` ** — every write and flush is bounded. A client whose TCP receive
   window is full — dead but not reset — must not be able to park the handler goroutine, and its
   buffered events, indefinitely.

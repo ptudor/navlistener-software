@@ -91,14 +91,13 @@ func (s *Server) serveEventEvidence(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	select {
-	case s.historySlots <- struct{}{}:
-		defer func() { <-s.historySlots }()
-	default:
+	release, ok := s.acquireHistorySlot(view.principal.ID)
+	if !ok {
 		w.Header().Set("Retry-After", "1")
 		writeError(w, http.StatusServiceUnavailable, "event evidence busy; retry request")
 		return
 	}
+	defer release()
 	evidence, err := s.eventEvidence.QueryEventEvidence(ctx, q)
 	_, visibleSince := s.policyEpochs.Current(view.audience.Key())
 	switch {

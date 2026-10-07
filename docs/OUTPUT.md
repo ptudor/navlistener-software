@@ -604,11 +604,18 @@ The historian-backed endpoints (`/gnss/api/events`, `/gnss/api/events/summary`,
 `/gnss/api/events/conditions`, `/gnss/api/v2/observer-samples`, `/gnss/api/v2/event-evidence`)
 run under a small concurrency bound inside the collector and answer `503` with `Retry-After: 1`
 once it is exhausted; the historian's writer keeps a reserved pool connection, so reads can never
-starve the forensic record. The collector never sees the client address, so **per-client
-fairness is the reverse proxy's job**: apply its per-client request-rate and concurrent-connection
-limits (`limit_req`/`limit_conn` or their equivalent) to `/gnss/api/events` and `/gnss/api/v2/`
-ahead of the collector — generous enough for a dashboard's polling, tight enough that one client
-cannot hold every slot. `go/deploy/README.md` gives the sizing.
+starve the forensic record. The collector's caps are partitioned so one tenant cannot exhaust
+them for everyone: the SSE stream ceiling is shared per audience (the credential-free public
+audience may hold at most half of it, each private audience at most a quarter), and the
+authenticated history/evidence bound is shared per read principal (half of it each); the global
+ceilings remain the outer bound. Below the audience and principal the collector never sees the
+client address, so **per-client fairness is the reverse proxy's job and is required, not
+optional**: the proxy must enforce a per-client concurrent-connection limit (`limit_conn` or
+its equivalent) on `/gnss/events` and a per-client request-rate limit (`limit_req` or its
+equivalent) on `/gnss/api/` ahead of the collector — generous enough for a dashboard's polling
+and its streams, tight enough that one client cannot hold every slot or every stream in its
+audience's share. The proxy must also buffer request bodies before forwarding, so a slowly
+trickled body never reaches the collector. `go/deploy/README.md` gives the sizing.
 
 ---
 

@@ -60,6 +60,17 @@ type requestView struct {
 // schemaVersion is the OUTPUT contract version carried in every feed's data object.
 const schemaVersion = "2.0"
 
+// historySlotCount is how many authenticated history/evidence reads may run at
+// once (each holds a historian pool connection for up to its deadline);
+// historyPerPrincipal is one principal's share of them, so a tenant at its
+// share is refused while another tenant can still be admitted. The global
+// count stays the outer bound; per-client fairness beyond the principal is the
+// fronting proxy's job (docs/OUTPUT.md §5).
+const (
+	historySlotCount    = 8
+	historyPerPrincipal = historySlotCount / 2
+)
+
 // feedGroup is the set of feeds refreshed on the fast cadence; almanac refreshes on
 // its own slower cadence (docs/OUTPUT.md §5). Together with almanac these are the
 // historian's fixed snapshot feed set (§4); coverage is cached too but is never
@@ -107,7 +118,13 @@ type Server struct {
 	observerHistory   ObserverHistoryStore
 	eventEvidence     EventEvidenceStore
 	historyCollector  string
-	historySlots      chan struct{}
+	// historySlots bounds the authenticated history and evidence reads
+	// globally; historyInUse partitions them per principal (see
+	// acquireHistorySlot) so one tenant's slow evidence queries cannot hold
+	// every slot against every other tenant.
+	historySlots chan struct{}
+	historyMu    sync.Mutex
+	historyInUse map[string]int
 	// querySlots bounds the concurrency of the three historian-backed event
 	// endpoints the public audience reaches without a credential (events,
 	// summary, conditions), the same way historySlots bounds the authenticated
@@ -195,7 +212,8 @@ func NewForAudience(addr string, st *state.Store, events EventStore, sources []c
 		rendering:    map[cacheKey]*sync.Mutex{},
 		brokers:      map[string]*Broker{},
 		policyEpochs: audience.NewPolicyEpochs(time.Now()),
-		historySlots: make(chan struct{}, 8),
+		historySlots: make(chan struct{}, historySlotCount),
+		historyInUse: map[string]int{},
 		querySlots:   make(chan struct{}, eventsQuerySlots),
 	}
 	s.broker.log = log // SSE marshal failures log through the server's real logger
@@ -385,6 +403,7 @@ func (s *Server) brokerFor(a identity.Audience) *Broker {
 }
 
 func (s *Server) bindBroker(b *Broker, a identity.Audience) {
+	b.maxClients = func() int { return sseAudienceShare(a) }
 	b.policyAdmission = func(generation uint64, admit func()) bool {
 		admitted := s.policyEpochs.IfCurrent(a.Key(), generation, admit)
 		if !admitted {
@@ -395,6 +414,32 @@ func (s *Server) bindBroker(b *Broker, a identity.Audience) {
 		return admitted
 	}
 	b.policyGeneration = func() uint64 { generation, _ := s.policyEpochs.Current(a.Key()); return generation }
+}
+
+// acquireHistorySlot takes one bounded history/evidence query slot for
+// principal, refusing without blocking when the principal already holds
+// historyPerPrincipal slots or the global pool is exhausted. release returns
+// both the principal's share and the global slot.
+func (s *Server) acquireHistorySlot(principal string) (release func(), ok bool) {
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
+	if s.historyInUse[principal] >= historyPerPrincipal {
+		return nil, false
+	}
+	select {
+	case s.historySlots <- struct{}{}:
+	default:
+		return nil, false
+	}
+	s.historyInUse[principal]++
+	return func() {
+		s.historyMu.Lock()
+		if s.historyInUse[principal]--; s.historyInUse[principal] <= 0 {
+			delete(s.historyInUse, principal)
+		}
+		s.historyMu.Unlock()
+		<-s.historySlots
+	}, true
 }
 
 func (s *Server) closeBrokers() {

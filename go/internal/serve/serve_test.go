@@ -359,6 +359,97 @@ func TestAuthenticatedAudienceSelectionNeverServesAnOperatorSuperset(t *testing.
 	}
 }
 
+// TestSSEPublicShareLeavesPrivateStreamsAdmitted guards the stream cap is
+// partitioned per audience: an anonymous client filling the public share is
+// refused at that share, a private audience's stream is still admitted, and
+// the global ceiling remains the outer bound across audiences.
+func TestSSEPublicShareLeavesPrivateStreamsAdmitted(t *testing.T) {
+	old := sseMaxClients
+	sseMaxClients = 4
+	defer func() { sseMaxClients = old }()
+	s := testServer(nil) // operator default; brokers are bound per audience
+	public := identity.Audience{Kind: identity.AudiencePublic}
+	publicBroker := s.brokerFor(public)
+	type held struct {
+		broker *Broker
+		client *sseClient
+	}
+	var admitted []held
+	defer func() {
+		for _, h := range admitted {
+			h.broker.unsubscribe(h.client)
+		}
+	}()
+	for i := 0; i < sseMaxClients; i++ {
+		if c, ok := publicBroker.subscribe(); ok {
+			admitted = append(admitted, held{publicBroker, c})
+		}
+	}
+	if want := sseAudienceShare(public); len(admitted) != want {
+		t.Fatalf("public streams admitted = %d, want the public share %d of %d", len(admitted), want, sseMaxClients)
+	}
+	c, ok := s.broker.subscribe() // the private operator audience
+	if !ok {
+		t.Fatal("private stream refused while only the public share was full")
+	}
+	admitted = append(admitted, held{s.broker, c})
+	orgA := s.brokerFor(identity.Audience{Kind: identity.AudienceOrganization, ID: "customer-a"})
+	c, ok = orgA.subscribe()
+	if !ok {
+		t.Fatal("second private audience refused under the global ceiling")
+	}
+	admitted = append(admitted, held{orgA, c})
+	// Public 2 + operator 1 + customer-a 1 = the global cap: the next audience's
+	// own share is free, but the outer bound holds.
+	orgB := s.brokerFor(identity.Audience{Kind: identity.AudienceOrganization, ID: "customer-b"})
+	if c, ok := orgB.subscribe(); ok {
+		orgB.unsubscribe(c)
+		t.Fatal("global stream ceiling exceeded through per-audience shares")
+	}
+}
+
+// TestHistorySlotsArePartitionedPerPrincipal guards the authenticated
+// history/evidence bound is shared fairly: a principal at its share is
+// refused while another principal is still admitted, releases return both
+// the share and the global slot, and the global pool stays the outer bound.
+func TestHistorySlotsArePartitionedPerPrincipal(t *testing.T) {
+	s := testServer(nil)
+	var releases []func()
+	for i := 0; i < historyPerPrincipal; i++ {
+		release, ok := s.acquireHistorySlot("tenant-a")
+		if !ok {
+			t.Fatalf("tenant-a slot %d refused under its share of %d", i, historyPerPrincipal)
+		}
+		releases = append(releases, release)
+	}
+	if _, ok := s.acquireHistorySlot("tenant-a"); ok {
+		t.Fatal("tenant-a was granted more than its per-principal share")
+	}
+	release, ok := s.acquireHistorySlot("tenant-b")
+	if !ok {
+		t.Fatal("tenant-b refused while tenant-a held only its own share")
+	}
+	releases = append(releases, release)
+	if len(s.historySlots) != historyPerPrincipal+1 {
+		t.Fatalf("global slots in use = %d, want %d", len(s.historySlots), historyPerPrincipal+1)
+	}
+	for _, r := range releases {
+		r()
+	}
+	if len(s.historySlots) != 0 || len(s.historyInUse) != 0 {
+		t.Fatalf("slots not returned: global %d, per-principal %v", len(s.historySlots), s.historyInUse)
+	}
+	for i := 0; i < cap(s.historySlots); i++ {
+		s.historySlots <- struct{}{}
+	}
+	if _, ok := s.acquireHistorySlot("tenant-c"); ok {
+		t.Fatal("a slot was granted with the global pool exhausted")
+	}
+	for i := 0; i < cap(s.historySlots); i++ {
+		<-s.historySlots
+	}
+}
+
 func TestActiveReadSessionReauthorizationCancelsAfterRevocation(t *testing.T) {
 	principal := identity.ReadPrincipal{ID: "viewer-a", Revision: "grant-v1", AudienceGrants: []identity.Audience{{Kind: identity.AudienceOrganization, ID: "customer-a"}}}
 	auth := &toggleReadAuthorizer{principal: principal}

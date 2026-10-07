@@ -114,14 +114,13 @@ func (s *Server) serveObserverSamples(w http.ResponseWriter, r *http.Request) {
 	if q.Since.Before(visibleSince) {
 		q.Since = visibleSince
 	}
-	select {
-	case s.historySlots <- struct{}{}:
-		defer func() { <-s.historySlots }()
-	default:
+	release, ok := s.acquireHistorySlot(view.principal.ID)
+	if !ok {
 		w.Header().Set("Retry-After", "1")
 		writeError(w, http.StatusServiceUnavailable, "sensor history busy; retry request")
 		return
 	}
+	defer release()
 	page := store.ObserverSamplePage{Samples: []store.StoredObserverSample{}}
 	if !q.Since.After(q.Until) {
 		page, err = s.observerHistory.QueryObserverSamples(ctx, q)
