@@ -115,7 +115,7 @@ final class AppController {
     private func rediscover(after session: ReadSession) async {
         guard !isConnecting, store.activeSession == nil else { return }
         let operation = beginIntent()
-        var delaySeconds = 1
+        var delaySeconds = ReconnectBackoff.initialSeconds
         while true {
             do {
                 try await connect(to: session.baseURL.absoluteString, readToken: nil,
@@ -128,9 +128,9 @@ final class AppController {
                 connectionError = error.localizedDescription
                 guard CollectorEndpoint.canRetry(error) else { return }
             }
-            do { try await Task.sleep(for: .seconds(delaySeconds)) } catch { return }
+            do { try await Task.sleep(for: ReconnectBackoff.delay(seconds: delaySeconds)) } catch { return }
             guard operationGeneration == operation else { return }
-            delaySeconds = min(delaySeconds * 2, 30)
+            delaySeconds = ReconnectBackoff.next(after: delaySeconds)
         }
     }
 

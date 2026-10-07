@@ -320,7 +320,7 @@ final class StationStore {
     }
 
     private func runEventStream(session: ReadSession, generation: UInt64, access: CacheAccess) async {
-        var retrySeconds = 1
+        var retrySeconds = ReconnectBackoff.initialSeconds
         while !Task.isCancelled, isCurrent(session, generation: generation) {
             do {
                 let updates = try eventStream.updates(session: session, lastEventID: lastEventID) { [weak self] in
@@ -358,7 +358,7 @@ final class StationStore {
                         isEventStreamConnected = true
                         eventStreamMessage = nil
                     }
-                    retrySeconds = 1
+                    retrySeconds = ReconnectBackoff.initialSeconds
                 }
             } catch is CancellationError {
                 return
@@ -371,9 +371,9 @@ final class StationStore {
             }
 
             do {
-                try await Task.sleep(for: .seconds(retrySeconds))
+                try await Task.sleep(for: ReconnectBackoff.delay(seconds: retrySeconds))
             } catch { return }
-            retrySeconds = min(retrySeconds * 2, 30)
+            retrySeconds = ReconnectBackoff.next(after: retrySeconds)
         }
     }
 
