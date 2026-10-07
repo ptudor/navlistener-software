@@ -27,6 +27,26 @@ func cachedObservationAgeIncludesResidence() throws {
     }
 }
 
+/// An absolute `last_seen` is aged against the envelope `time` only. When
+/// that is absent or unparseable the age is unknown even for a live snapshot;
+/// the device clock is never the "served at" instant. A relative
+/// `last_seen_s` needs no server clock and stays known.
+@MainActor @Test
+func liveSnapshotWithoutServerTimeHasUnknownAbsoluteAge() throws {
+    let key = AudienceCacheKey(server: "https://collector.invalid", principal: "anonymous", audience: .publicAudience, authorizationRevision: "public")
+    let payload = try JSONDecoder().decode(ObserversPayload.self, from: Data(#"{"schema":"2.0","audience":"public","observers":[{"id":"absolute","last_seen":1786388398},{"id":"rf","rf":{"last_seen":1786388398}},{"id":"relative","last_seen_s":2}]}"#.utf8))
+    for serverTime in [nil, "", "not-a-date"] {
+        let store = StationStore()
+        try store.apply(ObserversSnapshot(receivedAt: Date(timeIntervalSince1970: 1_786_388_400), scope: key, serverTime: serverTime, payload: payload), cached: false)
+        #expect(store.currentLastSeenAge(for: "absolute") == nil)
+        #expect(store.currentLastSeenAge(for: "rf") == nil)
+        #expect(try #require(store.currentLastSeenAge(for: "relative")) >= 2)
+    }
+    let store = StationStore()
+    try store.apply(ObserversSnapshot(receivedAt: Date(), scope: key, serverTime: "2026-08-10T19:00:00Z", payload: payload), cached: false)
+    #expect(try #require(store.currentLastSeenAge(for: "absolute")) >= 2)
+}
+
 @MainActor @Test
 func cacheRestoreWatermarkPreventsYoungerRelaunch() async throws {
     let dir = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)

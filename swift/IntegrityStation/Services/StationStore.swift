@@ -303,7 +303,10 @@ final class StationStore {
             now.timeIntervalSince1970.isFinite && elapsed.isFinite && elapsed >= 0 &&
             (snapshot.lastRestoredAt.map { $0.timeIntervalSince1970.isFinite && now >= $0 } ?? true)
         let residence = cached ? elapsed : 0
-        let servedAt = WireDate.parse(snapshot.serverTime) ?? (cached ? nil : snapshot.receivedAt)
+        // An absolute `last_seen` can only be aged against the collector's own
+        // `time`. Without it the age is unknown, for a live snapshot as for a
+        // cached one: the device clock would turn clock skew into liveness.
+        let servedAt = WireDate.parse(snapshot.serverTime)
         ageAtFetch = Dictionary(uniqueKeysWithValues: observers.compactMap { observer in
             guard !cached || cacheTimeValid else { return nil }
             let age: TimeInterval
