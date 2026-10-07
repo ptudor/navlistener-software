@@ -428,7 +428,10 @@ deliberately narrows TUF 1.0.36 to:
 - integer-only release fields, duplicate-key rejection, valid UTF-8, and no
   dynamic mirror or arbitrary delegated-role discovery;
 - a fixed update start time and a persisted last-trusted time that never moves
-  backward for expiry decisions.
+  backward for expiry decisions. The board's GNSS- or RTC-qualified UTC is
+  preferred over SNTP for that clock; an SNTP-only clock may move the
+  last-trusted time forward by at most 400 days in one check, and a larger jump
+  is reported as `NETWORK_TIME_UNAVAILABLE` and retried rather than persisted.
 
 Unsupported algorithms, roles, extensions, or limits fail closed. The device
 implementation must pass repository fixtures produced by the official

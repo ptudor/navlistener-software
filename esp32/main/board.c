@@ -856,6 +856,8 @@ static void board_task(void *arg)
         int64_t utc;
         bool utc_valid = rtc_trusted_utc(&utc_candidate, &status, rtc.flags, (int64_t)rtc.epoch,
                                          (int64_t)rtc.sampled_ms, now, &utc) != RTC_UTC_UNKNOWN;
+        // The updater prefers this GNSS/RTC time over SNTP for metadata expiry decisions.
+        if (utc_valid) nvf_update_time_reference((uint64_t)utc, now);
         report_poll(&status, now, gnss_status_expected(&status, now, learned), utc_valid, utc);
         // Every pass: while the humidity heater is on it converts at its own step interval.
         environment_poll(esp_timer_get_time() / 1000);

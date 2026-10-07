@@ -42,6 +42,10 @@ int main(int argc,char **argv) {
     unsigned profile=UP_PROFILE_TEST;
     // --family= sets the device's board family; empty is a device whose manifest names none.
     const char *family="gnss-color-neo";bool family_given=false;
+    // --second-now= sets the device clock for the second refresh, --second-trusted marks it as
+    // the board's GNSS/RTC time rather than SNTP, and --third=<expected> runs a third refresh
+    // at the harness's correct time against the second directory.
+    uint64_t second_now=0;bool second_trusted=false,third_given=false;int third=0;
     while(argc>3 && !strncmp(argv[argc-1],"--",2)) {
         const char *option=argv[--argc];
         if(!strncmp(option,"--profile=",10)) {
@@ -49,6 +53,12 @@ int main(int argc,char **argv) {
             assert(profile<=UP_PROFILE_TEST);
         } else if(!strncmp(option,"--family=",9)) {
             family=option[9]?option+9:NULL;family_given=true;
+        } else if(!strncmp(option,"--second-now=",13)) {
+            second_now=strtoull(option+13,NULL,10);assert(second_now);
+        } else if(!strcmp(option,"--second-trusted")) {
+            second_trusted=true;
+        } else if(!strncmp(option,"--third=",8)) {
+            third=atoi(option+8);third_given=true;
         } else return 2;
     }
     int err=nvf_tuf_initialize(&trust,bytes,length,profile,&io);free(bytes);
@@ -70,6 +80,18 @@ int main(int argc,char **argv) {
         persisted=kept;saves=kept_saves;
     }
     if(err!=atoi(argv[2]))return 1;
-    if(argc>3){trust=persisted;directory=argv[3];err=nvf_tuf_refresh(&trust,2,&device,&result,&io);printf("second=%d\n",err);return err==atoi(argv[4])?0:1;}
+    if(argc>3) {
+        trust=persisted;directory=argv[3];
+        if(second_now)device.now=second_now;
+        device.now_trusted=second_trusted;
+        err=nvf_tuf_refresh(&trust,2,&device,&result,&io);
+        printf("second=%d trusted_time=%llu\n",err,(unsigned long long)persisted.trusted_time);
+        if(err!=atoi(argv[4]))return 1;
+        if(!third_given)return 0;
+        trust=persisted;device.now=1800000000;device.now_trusted=false;
+        err=nvf_tuf_refresh(&trust,2,&device,&result,&io);
+        printf("third=%d trusted_time=%llu\n",err,(unsigned long long)persisted.trusted_time);
+        return err==third?0:1;
+    }
     return 0;
 }

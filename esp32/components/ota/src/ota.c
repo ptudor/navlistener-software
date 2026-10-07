@@ -400,17 +400,47 @@ esp_err_t nvf_ota_start(void)
     else ESP_LOGI(TAG, "authenticated OTA control available on port 80");
     return err;
 }
+// Returns ESP_OK when the boot may continue: the image is confirmed, or it already boots
+// without limits and there is nothing to confirm. An error means a trial boot must not be
+// marked valid; the caller restarts so the bootloader rolls back to the previous image.
 esp_err_t nvf_ota_confirm_boot(void)
 {
-    if(!nvf_update_boot_ready())return ESP_ERR_INVALID_STATE;
     const esp_partition_t *running = esp_ota_get_running_partition();
     if (!running) return ESP_ERR_INVALID_STATE;
     esp_ota_img_states_t status;
     esp_err_t err = esp_ota_get_state_partition(running, &status);
-    if (err == ESP_OK && status == ESP_OTA_IMG_PENDING_VERIFY)
-        err = esp_ota_mark_app_valid_cancel_rollback();
-    else if (running->subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY) err = ESP_OK;
-    else if (err == ESP_OK && status != ESP_OTA_IMG_VALID) err = ESP_ERR_INVALID_STATE;
+    bool trial = err == ESP_OK && status == ESP_OTA_IMG_PENDING_VERIFY;
+    if (!nvf_update_boot_ready()) {
+        // A trial boot must not confirm when its transactional update state is unreadable:
+        // rollback is the recovery. An image that already boots without limits keeps
+        // collecting with the updater left in its error state; aborting here would only
+        // turn one unreadable record into a boot loop with no way out but USB.
+        nvf_update_status_t s;
+        nvf_update_status(&s);
+        if (trial) {
+            ESP_LOGE(TAG, "trial boot with unreadable update state (%s); not confirming",
+                     nvf_update_error_name(s.error));
+            return ESP_ERR_INVALID_STATE;
+        }
+        ESP_LOGW(TAG, "update state unavailable (%s); updater disabled, collection continues",
+                 nvf_update_error_name(s.error));
+        journal_event(JOURNAL_OTA_FAILED, (int32_t)s.error);
+    }
+    if (trial) err = esp_ota_mark_app_valid_cancel_rollback();
+    else if (running->subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY || err == ESP_ERR_NOT_FOUND ||
+             (err == ESP_OK && (status == ESP_OTA_IMG_VALID || status == ESP_OTA_IMG_UNDEFINED ||
+                                status == ESP_OTA_IMG_NEW))) {
+        // Already running without a pending verification (a confirmed slot, the factory app,
+        // a slot selected without rollback bookkeeping, or no otadata entry): nothing to confirm.
+        err = ESP_OK;
+    } else {
+        // INVALID or ABORTED on the slot that is running, or otadata that cannot be read:
+        // the bootloader's bookkeeping disagrees with what is running. Restarting would boot
+        // the same inconsistency again, so keep collecting with the updater idle.
+        ESP_LOGW(TAG, "running slot state cannot be confirmed (%s, state %d); updater stays idle",
+                 esp_err_to_name(err), err == ESP_OK ? (int)status : -1);
+        return ESP_OK;
+    }
     if (err == ESP_OK) {
         atomic_store(&confirmed, true);
         nvf_update_confirmed();

@@ -85,7 +85,26 @@ static QueueHandle_t discard_results,discard_replies;
 static bool is_cancelled(void){return atomic_load(&cancel_epoch)!=operation_epoch;}
 static nvs_handle_t storage;
 static bool storage_ready,secondary;
-static uint64_t clock_now(void){time_t t=time(NULL);return t>0?(uint64_t)t:0;}
+// The board's trusted UTC (nvf_update_time_reference), under its own spinlock because the
+// board task feeds it before this component starts and clock_now runs under view_lock.
+static portMUX_TYPE reference_lock=portMUX_INITIALIZER_UNLOCKED;
+static uint64_t reference_utc;
+static int64_t reference_uptime_ms;
+#define REFERENCE_MAX_AGE_MS (24*60*60*1000)
+void nvf_update_time_reference(uint64_t utc,int64_t uptime_ms) {
+    if(!utc)return;
+    taskENTER_CRITICAL(&reference_lock);reference_utc=utc;reference_uptime_ms=uptime_ms;taskEXIT_CRITICAL(&reference_lock);
+}
+// Metadata time and scheduling share one clock: the board's GNSS/RTC reference projected by
+// uptime while it is fresh, otherwise the system clock that SNTP sets. *trusted says which.
+static uint64_t clock_source(bool *trusted) {
+    taskENTER_CRITICAL(&reference_lock);uint64_t utc=reference_utc;int64_t sampled=reference_uptime_ms;taskEXIT_CRITICAL(&reference_lock);
+    int64_t uptime=esp_timer_get_time()/1000;
+    if(utc && uptime>=sampled && uptime-sampled<=REFERENCE_MAX_AGE_MS){if(trusted)*trusted=true;return utc+(uint64_t)(uptime-sampled)/1000;}
+    if(trusted)*trusted=false;
+    time_t t=time(NULL);return t>0?(uint64_t)t:0;
+}
+static uint64_t clock_now(void){return clock_source(NULL);}
 static void publish(void) {
     xSemaphoreTake(view_lock,portMAX_DELAY);view=record.status;xSemaphoreGive(view_lock);
 }
@@ -159,7 +178,7 @@ static void failure(unsigned error,bool retry) {
 static bool check(void) {
     if(!hooks.online || !hooks.online()){failure(UP_NETWORK,true);return false;}
     record.status.state=UP_CHECKING;record.status.error=UP_OK;publish();
-    nvf_update_device_t device=hooks.device;device.now=clock_now();device.running_sequence=record.status.running;
+    nvf_update_device_t device=hooks.device;device.now=clock_source(&device.now_trusted);device.running_sequence=record.status.running;
     nvf_update_release_t release;secondary=false;
     int err=nvf_tuf_refresh(&record.trust,record.status.channel,&device,&release,&io);
     // A transport success with stale/corrupt content also gets a second origin.
@@ -455,6 +474,7 @@ bool nvf_update_discard_result(uint32_t *count,unsigned timeout){return discard_
 void nvf_update_discard_response(bool sent){if(discard_replies)xQueueOverwrite(discard_replies,&sent);}
 #else
 esp_err_t nvf_update_start(const nvf_update_hooks_t *h){(void)h;return ESP_ERR_NOT_SUPPORTED;}
+void nvf_update_time_reference(uint64_t utc,int64_t uptime_ms){(void)utc;(void)uptime_ms;}
 bool nvf_update_boot_ready(void){return true;}
 void nvf_update_confirmed(void){}
 void nvf_update_status(nvf_update_status_t *s){*s=(nvf_update_status_t){.mode=UP_MANUAL};}
