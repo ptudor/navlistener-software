@@ -304,4 +304,33 @@ func TestRFNeighbourCorroboratesJamming(t *testing.T) {
 	if n, _ := e.Params["neighbours"].([]any); len(n) != 1 || n[0] != "t" {
 		t.Fatalf("neighbours = %v", e.Params["neighbours"])
 	}
+	if c, _ := e.Params["neighbour_count"].(int); c != 1 {
+		t.Fatalf("neighbour_count = %v, want 1 (the named list when no total is carried)", e.Params["neighbour_count"])
+	}
+}
+
+// TestRFNeighbourEventNamesBoundedNeighbours: the read model names the nearest few
+// corroborating neighbours and carries the total separately; the event echoes
+// both, so a regional jammer's payload stays bounded while neighbour_count still
+// says how many stations corroborated.
+func TestRFNeighbourEventNamesBoundedNeighbours(t *testing.T) {
+	d := New(0)
+	t0 := time.Unix(1_700_000_000, 0)
+	d.TickStations(t0, station("s", band(0, 0, 2, 0)))
+	jam := station("s", band(1200, 0, 2, 0))
+	st := jam["s"]
+	st.Neighbours = []string{"n1", "n2", "n3", "n4", "n5", "n6", "n7", "n8"}
+	st.NeighbourCount = 40
+	jam["s"] = st
+	d.TickStations(t0.Add(10*time.Second), jam)
+	e, ok := find(d.TickStations(t0.Add(75*time.Second), jam), "jamming_detected")
+	if !ok || e.NewValue != "warn" {
+		t.Fatalf("jamming_detected = %+v (ok=%v), want warn corroborated by neighbours", e, ok)
+	}
+	if n, _ := e.Params["neighbours"].([]any); len(n) != 8 || n[0] != "n1" || n[7] != "n8" {
+		t.Fatalf("neighbours = %v, want the eight named", e.Params["neighbours"])
+	}
+	if c, _ := e.Params["neighbour_count"].(int); c != 40 {
+		t.Fatalf("neighbour_count = %v, want 40", e.Params["neighbour_count"])
+	}
 }

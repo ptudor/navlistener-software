@@ -14,7 +14,7 @@ const (
 
 var (
 	cn0UniformityInfo    = Info{Name: CheckCn0Uniformity, Version: 1, Domain: DomainSignalPower, LowerOnly: true}
-	agcInfo              = Info{Name: CheckAGC, Version: 3, Domain: DomainRFEnvironment, LowerOnly: true}
+	agcInfo              = Info{Name: CheckAGC, Version: 4, Domain: DomainRFEnvironment, LowerOnly: true}
 	receiverSpoofingInfo = Info{Name: CheckReceiverSpoofing, Version: 1, Domain: DomainReceiverVerdict, LowerOnly: true}
 )
 
@@ -116,6 +116,11 @@ func cn0Uniformity(f Cn0Fit, prof Cn0UniformityProfile) Verdict {
 // single sign of interference, or an antenna fault, is inconsistent. A drop alone is
 // the cn0_drop check's to report, and a neighbour alone says nothing about this
 // station. Version 2 added the C/N₀ drop corroboration, version 3 the neighbours.
+// Version 4 tightened what the caller may count as a neighbour: a station whose own
+// evidence is corroborated (two signs, or a severe collapse) within the neighbour
+// window, located by its surveyed position or — only when configured mobile — a
+// recent fix, and not itself unassured or indicating spoofing (the rule lives in the
+// state layer's neighbour scan; the verdict here is unchanged).
 func agc(rf RFSample, prof AGCProfile) Verdict {
 	if len(rf.Bands) == 0 {
 		return Verdict{State: Unavailable, Reasons: []string{ReasonNoBands}}

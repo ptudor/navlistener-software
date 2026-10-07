@@ -134,7 +134,7 @@ from stored station data the same way the GLONASS discontinuity bands were.
 | `pps_rtc_phase` | timing tag; solution fix state | a step in the RTC-minus-GNSS phase against its recent linear trend | time reference |
 | `cn0_uniformity` | NAV-SAT | the existing C/N₀-vs-elevation gate, unchanged | signal power |
 | `cn0_drop` | NAV-SAT | every signal the receiver used falls by at least 1 dB within 3–5 s, graded by the median fall; jamming corroboration | RF environment |
-| `agc` | MON-RF | the existing AGC departure, CW and receiver jam-state classification; a simultaneous C/N₀ drop or a neighbouring station's interference also corroborates a departure | RF environment |
+| `agc` | MON-RF | the existing AGC departure, CW and receiver jam-state classification; a simultaneous C/N₀ drop or a neighbouring station's own corroborated interference also corroborates a departure | RF environment |
 | `receiver_spoofing` | status block, or the ObserverDetails receiver context | the receiver's own spoofing state | receiver verdict |
 
 Each raw test passes an M-of-N filter (three of the last four evaluations by
@@ -271,7 +271,7 @@ and specific-force samples aligned with GNSS epochs.
 
 | # | Item | Status |
 |---|---|---|
-| 4.1 | Regional correlation of simultaneous station RF events; neighbour corroboration as a fusion input | done (`0a2c600`); stations within 30 km with their own interference evidence corroborate a departure in `jamming_detected` (named in `params.neighbours`) and in the `agc` check |
+| 4.1 | Regional correlation of simultaneous station RF events; neighbour corroboration as a fusion input | done (`0a2c600`); stations within 30 km with their own *corroborated* interference evidence (two signs, or a severe collapse, within the window; located by survey or, if mobile, a recent fix; not themselves unassured) corroborate a departure in `jamming_detected` (the nearest eight named in `params.neighbours`, the total in `params.neighbour_count`) and in the `agc` check (version 4). The candidate set is built once per tick and reused by the per-frame path. |
 | 4.2 | Range check between co-located stations with a known baseline | done (`245a9e3`); `[[integrity.baseline]]` pairs, the `baseline` check in the position domain |
 | 4.3 | `rf_trust` weighting of the served confidence count | done (`058e84d`); `conf_weighted` beside `conf`, also lowered by the station assessment |
 

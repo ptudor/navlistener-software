@@ -654,6 +654,9 @@ type Store struct {
 	// Per-station integrity assurance (integrity.go), also guarded by rfMu.
 	integrity    map[string]*integrityStation
 	integrityCfg *IntegrityConfig // nil: default profile, no installations
+	// neighbours is the cached neighbour-corroboration candidate set (rf.go),
+	// also guarded by rfMu.
+	neighbours neighbourEvidence
 
 	// Per-station capability fingerprint (docs/CONSTELLATIONS.md §7, INTEGRITY §6): the set
 	// of (gnssId, sigId) each observer has actually produced nav frames on, so the integrity

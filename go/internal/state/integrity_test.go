@@ -327,75 +327,147 @@ func TestBaselinePairsMatchedEpochs(t *testing.T) {
 	}
 }
 
-// TestNeighbourInterferenceCorroborates: stations within the neighbour radius that
-// depart together corroborate each other's departure, by surveyed position or, for a
-// mobile station, a recent fix; a departed station farther away does not, and a
-// neighbour alone corroborates nothing for a quiet station.
+// rfSampleJam is rfSample with the receiver's own jam flag set, so a station shows
+// two independent signs of interference (departure + flag) — corroborated evidence.
+func rfSampleJam(source string, agc, jam int, recv time.Time) *ingest.RawFrame {
+	return &ingest.RawFrame{
+		Source: source, Recv: recv,
+		RF: &ingest.RawRF{Bands: []ingest.RFBand{{Block: 0, AGC: agc, AntStatus: 2, JamState: jam}}},
+	}
+}
+
+// TestNeighbourInterferenceCorroborates: stations within the neighbour radius whose
+// own interference evidence is corroborated (two signs, or a severe collapse)
+// corroborate each other's departure, by surveyed position or, for a station
+// configured mobile, a recent fix; a departed station farther away does not, and a
+// neighbour alone corroborates nothing for a quiet station. The gates on the
+// corroborator: a lone departure is a degradation and corroborates nothing; a
+// station whose own assessment is unassured or indicates spoofing is excluded; a
+// fixed installation is never relocated by a reported fix, and a fixed station
+// without a survey has no location; a C/N₀ drop counts only within the neighbour
+// window of its last evaluation, not for as long as the served state is held.
 func TestNeighbourInterferenceCorroborates(t *testing.T) {
 	at := func(latDeg float64) *integrity.Surveyed {
 		return &integrity.Surveyed{LatDeg: latDeg, LonDeg: -122.0841, HeightM: 12.5}
 	}
 	s := New(1)
 	cfg, err := NewIntegrityConfig(integrity.DefaultProfile(), map[string]integrity.StationProfile{
-		"near-a": {Mode: integrity.ModeFixed, Position: at(37.4219)},
-		"near-b": {Mode: integrity.ModeFixed, Position: at(37.4219 + 0.0899)}, // about 10 km north
-		"far":    {Mode: integrity.ModeFixed, Position: at(37.4219 + 0.899)},  // about 100 km north
-		"quiet":  {Mode: integrity.ModeFixed, Position: at(37.4219 + 0.01)},
+		"near-a":        {Mode: integrity.ModeFixed, Position: at(37.4219)},
+		"near-b":        {Mode: integrity.ModeFixed, Position: at(37.4219 + 0.0899)}, // about 10 km north
+		"dropper":       {Mode: integrity.ModeFixed, Position: at(37.4219 + 0.045)},  // about 5 km north
+		"lone":          {Mode: integrity.ModeFixed, Position: at(37.4219 + 0.018)},  // about 2 km north
+		"far":           {Mode: integrity.ModeFixed, Position: at(37.4219 + 0.899)},  // about 100 km north
+		"quiet":         {Mode: integrity.ModeFixed, Position: at(37.4219 + 0.01)},
+		"unsurveyed":    {Mode: integrity.ModeFixed}, // fixed, no survey: no location
+		"board-0001-aa": {Mode: integrity.ModeMobile, MaxSpeedMPS: 30},
+		"rover":         {Mode: integrity.ModeMobile, MaxSpeedMPS: 30},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.SetIntegrity(cfg)
-	stations := []string{"near-a", "near-b", "far", "quiet", "board-0001-aa"}
-	now := integrityT0
-	for i := 0; i < 11*60; i++ { // every station learns its AGC baseline
-		for _, id := range stations {
-			s.Apply(rfSample(id, 0, 4000+i%5, 0, 2, now))
+	stations := []string{"near-a", "near-b", "dropper", "lone", "far", "quiet", "unsurveyed", "board-0001-aa", "rover"}
+	corroborated := map[string]bool{"near-a": true, "near-b": true, "unsurveyed": true, "board-0001-aa": true, "rover": true}
+	second := 0
+	now := func() time.Time { return integrityT0.Add(time.Duration(second) * time.Second) }
+	fixFor := func(source string, spoof uint8, moved bool) {
+		f := solutionFrame(second, true, spoof)
+		f.Source = source
+		if moved {
+			f.Solution.PVT.LatE7 += 27_000 // about 300 m north: the static position check trips
 		}
-		now = now.Add(time.Second)
+		s.Apply(f)
 	}
-	// board-0001-aa is mobile with no survey: its fix puts it beside near-a.
-	s.Apply(solutionFrame(11*60, true, 1))
-	for i := 0; i < 20; i++ { // a jammer: every station but quiet loses gain together
+	// jammerOn feeds one second of the jammer: every station but quiet loses gain;
+	// the corroborated stations also raise their receiver's jam flag, dropper shows
+	// a C/N₀ drop while dropping is set, lone and far show the departure alone.
+	jammerOn := func(dropping bool) {
 		for _, id := range stations {
-			agc := 3000
-			if id == "quiet" {
-				agc = 4000
+			switch {
+			case id == "quiet":
+				s.Apply(rfSample(id, 0, 4000, 0, 2, now()))
+			case corroborated[id]:
+				s.Apply(rfSampleJam(id, 3000, 2, now()))
+			default:
+				s.Apply(rfSample(id, 0, 3000, 0, 2, now()))
 			}
-			s.Apply(rfSample(id, 0, agc, 0, 2, now))
 		}
-		now = now.Add(time.Second)
+		if dropping {
+			s.Apply(navSatFrame("dropper", now(), 5))
+		}
+		second++
 	}
-	rf := s.FeedStationRF(now)
+
+	for ; second < 11*60; second++ { // every station learns its AGC baseline
+		for _, id := range stations {
+			s.Apply(rfSample(id, 0, 4000+second%5, 0, 2, now()))
+		}
+		s.Apply(navSatFrame("dropper", now(), 0))
+	}
+	// The mobile stations' fixes put them beside near-a (a solution every second,
+	// so their position checks have an assured history). The fixed stations far
+	// and unsurveyed report the same fix: far keeps its surveyed position,
+	// unsurveyed gains no location.
+	for _, id := range []string{"far", "unsurveyed"} {
+		fixFor(id, 1, false)
+	}
+	var roverFixAt time.Time
+	for i := 0; i < 20; i++ {
+		fixFor("board-0001-aa", 1, false)
+		fixFor("rover", 1, false)
+		roverFixAt = now()
+		jammerOn(true)
+	}
+	rf := s.FeedStationRF(now())
 	for id, want := range map[string][]string{
-		"near-a":        {"board-0001-aa", "near-b"},
-		"near-b":        {"board-0001-aa", "near-a"},
-		"board-0001-aa": {"near-a", "near-b"},
-		"far":           nil,
-		"quiet":         nil, // it has no departure of its own
+		"near-a":        {"board-0001-aa", "dropper", "near-b", "rover"},
+		"near-b":        {"board-0001-aa", "dropper", "near-a", "rover"},
+		"board-0001-aa": {"dropper", "near-a", "near-b", "rover"},
+		"lone":          {"board-0001-aa", "dropper", "near-a", "near-b", "rover"}, // corroborated by others, never a corroborator
+		"far":           nil,                                                       // 100 km away, and a lone departure
+		"quiet":         nil,                                                       // it has no departure of its own
+		"unsurveyed":    nil,                                                       // no location without a survey
 	} {
 		if got := rf[id].Neighbours; !slices.Equal(got, want) {
 			t.Errorf("%s neighbours = %v, want %v", id, got, want)
 		}
+		if got := rf[id].NeighbourCount; got != len(want) {
+			t.Errorf("%s neighbour count = %d, want %d", id, got, len(want))
+		}
 	}
-	assess := s.FeedStationIntegrity(now)
+	assess := s.FeedStationIntegrity(now())
 	if r := integrityResult(t, assess["near-a"], integrity.CheckAGC); r.State != integrity.Unassured ||
-		!slices.Contains(r.Reasons, integrity.ReasonNeighbourInterference) || r.Metrics["neighbours"] != 2 {
+		!slices.Contains(r.Reasons, integrity.ReasonNeighbourInterference) || r.Metrics["neighbours"] != 4 {
 		t.Fatalf("near-a agc = %s %v %v", r.State, r.Reasons, r.Metrics)
 	}
 	if r := integrityResult(t, assess["far"], integrity.CheckAGC); r.State != integrity.Inconsistent {
 		t.Fatalf("far agc = %s %v, want a lone departure", r.State, r.Reasons)
 	}
-	// The mobile station's fix ages out of the neighbour profile.
-	later := now.Add(integrity.DefaultProfile().Neighbour.LocationMaxAge)
-	for i := 0; i < 5; i++ {
-		for _, id := range stations {
-			if id != "quiet" {
-				s.Apply(rfSample(id, 0, 3000, 0, 2, later.Add(time.Duration(i)*time.Second)))
-			}
-		}
+
+	// The board's receiver flags spoofing while its position moves 300 m: spoofing
+	// indicated, so it no longer corroborates anyone. Dropper's NAV-SAT stops here.
+	for i := 0; i < 10; i++ {
+		fixFor("board-0001-aa", 2, true)
+		jammerOn(false)
 	}
-	if got := s.FeedStationRF(later.Add(5 * time.Second))["near-a"].Neighbours; !slices.Equal(got, []string{"near-b"}) {
-		t.Fatalf("near-a neighbours after the fix aged = %v", got)
+	if got := s.FeedStationRF(now())["near-a"].Neighbours; !slices.Equal(got, []string{"dropper", "near-b", "rover"}) {
+		t.Fatalf("near-a neighbours with the board spoofed = %v, want dropper, near-b and rover", got)
+	}
+
+	// Six minutes on, dropper's last drop evaluation is outside the neighbour
+	// window although its served cn0_drop state is still held: a lone departure.
+	for i := 0; i < 6*60; i++ {
+		jammerOn(false)
+	}
+	if got := s.FeedStationRF(now())["near-a"].Neighbours; !slices.Equal(got, []string{"near-b", "rover"}) {
+		t.Fatalf("near-a neighbours six minutes after dropper's drop = %v, want near-b and rover", got)
+	}
+
+	// The rover's fix ages out of the neighbour profile.
+	for now().Sub(roverFixAt) <= integrity.DefaultProfile().Neighbour.LocationMaxAge {
+		jammerOn(false)
+	}
+	if got := s.FeedStationRF(now())["near-a"].Neighbours; !slices.Equal(got, []string{"near-b"}) {
+		t.Fatalf("near-a neighbours after the rover's fix aged = %v, want near-b", got)
 	}
 }

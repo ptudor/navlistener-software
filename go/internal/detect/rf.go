@@ -40,17 +40,20 @@ func (d *Detector) detectStationRF(id string, rf state.StationRF, emit emitFunc)
 	// departure must be corroborated by CW, the receiver's own jam flag, a
 	// simultaneous C/N₀ drop across the station's signals, or interference at a
 	// neighbouring station at the same time before it is called an attack
-	// (docs/DEFENSE-PNT.md §2). Otherwise it is a degradation, below.
+	// (docs/DEFENSE-PNT.md §2). Otherwise it is a degradation, below. The read
+	// model names only the nearest few corroborating neighbours and carries the
+	// total separately, so the event payload stays bounded whatever the fleet size.
 	cn0Drop := rf.Cn0Drop
 	neighbours := make([]any, len(rf.Neighbours))
 	for i, n := range rf.Neighbours {
 		neighbours[i] = n
 	}
+	neighbourCount := max(rf.NeighbourCount, len(rf.Neighbours))
 	jamBand, jamSev := "ok", SevInfo
 	switch {
 	case maxDep >= AGCDepartureSevereThreshold:
 		jamBand, jamSev = "crit", SevCritical
-	case maxDep >= AGCDepartureThreshold && (cwHigh || rxJam || cn0Drop || len(neighbours) > 0):
+	case maxDep >= AGCDepartureThreshold && (cwHigh || rxJam || cn0Drop || neighbourCount > 0):
 		jamBand, jamSev = "warn", SevWarning
 	}
 	// no current MON-RF band measurement means unknown, not measured-ok.
@@ -61,7 +64,7 @@ func (d *Detector) detectStationRF(id string, rf state.StationRF, emit emitFunc)
 				Type: "jamming_detected", OldValue: old, NewValue: jamBand, Severity: jamSev,
 				Message: fmt.Sprintf("station %s jamming %s (AGC departure %.0f)", id, jamBand, maxDep),
 				Params: map[string]any{"station": id, "agc_departure": maxDep, "cw": cwHigh, "rx_jam": rxJam, "cn0_drop": cn0Drop,
-					"neighbours": neighbours},
+					"neighbours": neighbours, "neighbour_count": neighbourCount},
 			}
 		})
 	}

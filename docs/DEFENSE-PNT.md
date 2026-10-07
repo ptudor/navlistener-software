@@ -119,12 +119,22 @@ slow ramp below the per-window step does not show as a drop; the bounded AGC bas
 it.
 
 A jammer also reaches every station near it. A station's departure is corroborated when
-another station within 30 km, located by its surveyed position or a fix from the last ten
-minutes, shows interference evidence of its own within the last two minutes: a departure, a
-CW tone, its receiver's jam flag or a simultaneous drop. Only a station's own evidence counts,
-never a neighbour's corroboration, so two stations cannot confirm each other in a loop, and a
-neighbour alone says nothing about a quiet station. The jamming event names the corroborating
-neighbours. Each audience correlates only the stations it sees.
+another station within 30 km shows *corroborated* interference evidence of its own within
+the last two minutes: at least two of a departure, a CW tone, its receiver's jam flag and a
+simultaneous drop, or a severe gain collapse alone. A lone sign is the degradation described
+above and corroborates nothing, so two nearby stations with unrelated lone departures (a
+shared antenna environment, a bad restored baseline) cannot escalate each other. The drop
+counts from the instant the `cn0_drop` check last evaluated one, not for as long as its
+served state is held. A neighbour is located by its surveyed position — a fixed installation
+is never relocated by what its receiver reports — or, only for a station configured `mobile`,
+by a fix from the last ten minutes while its position domain is not unassured; a fixed station
+without a survey has no location and takes no part. A station whose own assessment is
+unassured or indicates spoofing corroborates no one, as it casts no vote in `conf_weighted`.
+Only a station's own evidence counts, never a neighbour's corroboration, so two stations
+cannot confirm each other in a loop, and a neighbour alone says nothing about a quiet
+station. The jamming event names the nearest eight corroborating neighbours
+(`params.neighbours`) and carries the total in `params.neighbour_count`. Each audience
+correlates only the stations it sees.
 
 **Use of jamming context:** the `svs` feed's `conf_weighted` counts each fresh decoded
 source by its vote weight: its `rf_trust`, lowered to ½ while its station assessment
