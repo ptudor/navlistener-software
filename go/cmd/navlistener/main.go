@@ -370,10 +370,10 @@ func run() int {
 	}
 	if historian != nil {
 		restoreCtx, restoreCancel := context.WithTimeout(ctx, 30*time.Second)
-		err = restoreReceptionPowerModels(restoreCtx, historian, stationManager, log)
+		err = restoreReceptionPowerModels(restoreCtx, historian, cfg.Collector.InstanceID, stationManager, log)
 		if err == nil {
 			// Before ingest starts, so every band's first report finds its checkpoint.
-			err = restoreAGCBaselines(restoreCtx, historian, live, agcEpochs(cfg), time.Now(), log)
+			err = restoreAGCBaselines(restoreCtx, historian, cfg.Collector.InstanceID, live, agcEpochs(cfg), time.Now(), log)
 		}
 		restoreCancel()
 		if err != nil {
@@ -397,12 +397,12 @@ func run() int {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			receptionPowerModelLoop(ctx, historian, stationManager, log)
+			receptionPowerModelLoop(ctx, historian, cfg.Collector.InstanceID, stationManager, log)
 		}()
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			agcBaselineLoop(ctx, historian, live, agcEpochs(cfg), log)
+			agcBaselineLoop(ctx, historian, cfg.Collector.InstanceID, live, agcEpochs(cfg), log)
 		}()
 	}
 	wg.Add(1)
@@ -667,11 +667,11 @@ func run() int {
 	// nor free time outside the bound.
 	if historian != nil {
 		checkpointCtx, checkpointCancel := context.WithTimeout(context.Background(), plan.checkpoint)
-		if err := saveReceptionPowerModels(checkpointCtx, historian, stationManager, true); err != nil {
+		if err := saveReceptionPowerModels(checkpointCtx, historian, cfg.Collector.InstanceID, stationManager, true); err != nil {
 			incomplete = append(incomplete, "reception power model checkpoint")
 			log.Warn("final reception power model checkpoint failed", "error", err)
 		}
-		if err := saveAGCBaselines(checkpointCtx, historian, live, agcEpochs(cfg)); err != nil {
+		if err := saveAGCBaselines(checkpointCtx, historian, cfg.Collector.InstanceID, live, agcEpochs(cfg)); err != nil {
 			incomplete = append(incomplete, "AGC baseline checkpoint")
 			log.Warn("final AGC baseline checkpoint failed", "error", err)
 		}

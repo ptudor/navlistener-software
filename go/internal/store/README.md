@@ -207,6 +207,8 @@ only after the commit. The claim keeps its `INSERT … ON CONFLICT DO NOTHING RE
 A pre-normalisation ledger (TEXT-keyed, with or without `session_id`) is dropped and recreated
 by the guarded `DO $$` migration in `schema.sql`; the schema marker (version 2) keeps an
 older binary, whose own migration block would drop the re-keyed table, from starting.
+Version 3 re-keyed the two point-state tables below by collector, for the same reason: a
+version-2 binary's checkpoint upsert names a constraint that no longer exists.
 
 Dial-mode frames carry no feeder sequence and always pass through unfiltered — duplicates across
 *different* receivers are intentional and untouched by this table.

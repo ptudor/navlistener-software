@@ -506,7 +506,12 @@ func applySchema(ctx context.Context, pool *pgxpool.Pool) error {
 // version-1 binary's migration block would drop the re-keyed table (it looks
 // like the pre-session shape to it) and recreate the old one, so the marker
 // keeps that binary from starting at all.
-const schemaVersion = 2
+//
+// Version 3 keyed the point-state tables (reception_power_models,
+// agc_baselines) by (collector_instance_id, source_id). A version-2 binary's
+// checkpoint upsert names ON CONFLICT (source_id), which has no matching
+// constraint once re-keyed, so every one of its checkpoints would fail.
+const schemaVersion = 3
 
 // checkSchemaVersion refuses to run against a database whose schema a newer
 // build has marked: the migrations here can only ever be behind such a schema,
@@ -573,8 +578,8 @@ var requiredColumns = map[string][]string{
 	"nav_frames":             copyColumns,
 	"observer_samples":       boardColumns,
 	"rf_samples":             rfColumns,
-	"reception_power_models": {"source_id", "updated_at", "model_id", "data"},
-	"agc_baselines":          {"source_id", "updated_at", "epoch", "data"},
+	"reception_power_models": {"collector_instance_id", "source_id", "updated_at", "model_id", "data"},
+	"agc_baselines":          {"collector_instance_id", "source_id", "updated_at", "epoch", "data"},
 	"nav_frames_seq_seen":    {"session_key", "feeder_seq", "seen_at"},
 	"nav_frames_sessions":    {"session_key", "source_id", "session_id", "first_seen"},
 }

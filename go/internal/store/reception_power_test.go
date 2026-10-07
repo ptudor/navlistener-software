@@ -17,7 +17,8 @@ func TestIntegrationReceptionPowerModelUpsert(t *testing.T) {
 	}
 	defer s.Close()
 	source := fmt.Sprintf("power-model-test-%d", time.Now().UnixNano())
-	first := ReceptionPowerModel{SourceID: source, UpdatedAt: time.Now().UTC().Add(-time.Minute), ModelID: ^uint64(0), Data: []byte{1, 2, 3}}
+	collector := fmt.Sprintf("power-model-collector-%d", time.Now().UnixNano())
+	first := ReceptionPowerModel{CollectorInstanceID: collector, SourceID: source, UpdatedAt: time.Now().UTC().Add(-time.Minute), ModelID: ^uint64(0), Data: []byte{1, 2, 3}}
 	if err := s.SaveReceptionPowerModel(ctx, first); err != nil {
 		t.Fatal(err)
 	}
@@ -28,18 +29,33 @@ func TestIntegrationReceptionPowerModelUpsert(t *testing.T) {
 	if err := s.SaveReceptionPowerModel(ctx, second); err != nil {
 		t.Fatal(err)
 	}
-	models, err := s.LoadReceptionPowerModels(ctx)
+	// Another collector's model for the same station is a row of its own.
+	other := first
+	other.CollectorInstanceID = collector + "-other"
+	other.ModelID = 7
+	other.Data = []byte{6}
+	if err := s.SaveReceptionPowerModel(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	models, err := s.LoadReceptionPowerModels(ctx, collector)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got *ReceptionPowerModel
-	for i := range models {
-		if models[i].SourceID == source {
-			got = &models[i]
-			break
-		}
+	if len(models) != 1 {
+		t.Fatalf("collector loaded %d models, want only its own", len(models))
 	}
-	if got == nil || got.ModelID != second.ModelID || string(got.Data) != string(second.Data) || !got.UpdatedAt.Equal(second.UpdatedAt) {
+	got := models[0]
+	if got.SourceID != source || got.CollectorInstanceID != collector || got.ModelID != second.ModelID || string(got.Data) != string(second.Data) || !got.UpdatedAt.Equal(second.UpdatedAt) {
 		t.Fatalf("upserted model: %+v", got)
+	}
+	theirs, err := s.LoadReceptionPowerModels(ctx, other.CollectorInstanceID)
+	if err != nil || len(theirs) != 1 || theirs[0].ModelID != 7 || string(theirs[0].Data) != string(other.Data) {
+		t.Fatalf("other collector's model: %+v %v", theirs, err)
+	}
+	if _, err := s.LoadReceptionPowerModels(ctx, ""); err == nil {
+		t.Fatal("load without a collector id accepted")
+	}
+	if err := s.SaveReceptionPowerModel(ctx, ReceptionPowerModel{SourceID: source, ModelID: 1, Data: []byte{1}}); err != ErrInvalidReceptionPowerModel {
+		t.Fatalf("save without a collector id: %v", err)
 	}
 }

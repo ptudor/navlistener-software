@@ -491,23 +491,58 @@ ALTER TABLE rf_samples SET (
 -- Latest compact server-side received-power model per configured station. The
 -- blob is versioned and carries its site/configuration fingerprint; changing
 -- the antenna epoch makes an old model fail closed during restore.
+--
+-- Point state is keyed by the collector that learned it, like every receipt
+-- table: collectors sharing a database each checkpoint and restore their own
+-- stations, and two collectors configured for the same station (failover) no
+-- longer overwrite each other's row every five minutes. Rows from before the
+-- column belong to the default collector instance ('local').
 CREATE TABLE IF NOT EXISTS reception_power_models (
-    source_id TEXT PRIMARY KEY,
+    collector_instance_id TEXT NOT NULL DEFAULT 'local',
+    source_id TEXT NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
     model_id TEXT NOT NULL,
-    data BYTEA NOT NULL
+    data BYTEA NOT NULL,
+    PRIMARY KEY (collector_instance_id, source_id)
 );
 
 -- Durable point state: each station's learned AGC baselines (docs/DEFENSE-PNT.md §2),
 -- checkpointed every five minutes and at orderly shutdown and restored at startup, so
 -- a restart does not repeat the ten-minute warm-up. epoch is the station's antenna
 -- epoch (power_model_epoch); a checkpoint from another epoch is not restored.
+-- Keyed by collector like reception_power_models above.
 CREATE TABLE IF NOT EXISTS agc_baselines (
-    source_id TEXT PRIMARY KEY,
+    collector_instance_id TEXT NOT NULL DEFAULT 'local',
+    source_id TEXT NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
     epoch TEXT NOT NULL,
-    data JSONB NOT NULL
+    data JSONB NOT NULL,
+    PRIMARY KEY (collector_instance_id, source_id)
 );
+
+-- Migration for point-state tables created with source_id alone as the key
+-- (schemaVersion 3): add the collector column, then re-key the primary key to
+-- (collector_instance_id, source_id). The guard is the single-column primary
+-- key, so the block is a no-op once re-keyed and on a fresh install. The
+-- upsert's ON CONFLICT names the two-column key, which is why the marker
+-- bumps: an older binary's ON CONFLICT (source_id) has no matching constraint
+-- after this and every one of its checkpoints would fail.
+ALTER TABLE reception_power_models ADD COLUMN IF NOT EXISTS collector_instance_id TEXT NOT NULL DEFAULT 'local';
+ALTER TABLE agc_baselines ADD COLUMN IF NOT EXISTS collector_instance_id TEXT NOT NULL DEFAULT 'local';
+DO $$
+DECLARE
+    point_table TEXT;
+    single_key  TEXT;
+BEGIN
+    FOREACH point_table IN ARRAY ARRAY['reception_power_models', 'agc_baselines'] LOOP
+        SELECT conname INTO single_key FROM pg_constraint
+         WHERE conrelid = point_table::regclass AND contype = 'p' AND array_length(conkey, 1) = 1;
+        IF single_key IS NOT NULL THEN
+            EXECUTE format('ALTER TABLE %I DROP CONSTRAINT %I', point_table, single_key);
+            EXECUTE format('ALTER TABLE %I ADD PRIMARY KEY (collector_instance_id, source_id)', point_table);
+        END IF;
+    END LOOP;
+END $$;
 
 -- Durable evidence for station integrity events (docs/proposals/STATION-ASSURANCE.md
 -- §7, item 2.1). Raw samples expire with raw_retention while events are kept
