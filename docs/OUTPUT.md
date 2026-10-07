@@ -62,8 +62,12 @@ principal before resolving the physically separate live state and detector/event
 Unknown or ungranted values return `403`/`404`; the server never returns an operator superset
 for client filtering. Every feed carries the effective key as `data.audience`.
 
-Public responses remain shared-cacheable. Every authenticated response sends
-`Cache-Control: private, no-store` and `Vary: Authorization, X-GNSS-Audience`; private bodies
+Public responses remain shared-cacheable (`Cache-Control: public, max-age=30`). Every
+response from an audience-selectable endpoint — feeds, `coverage`, `audiences`, the events
+query/summary/conditions and the SSE stream, public bodies included — sends
+`Vary: Authorization, X-GNSS-Audience`, so a shared cache keys the stored public body by those
+selectors instead of answering a later credentialed, audience-selected request with it. Every
+authenticated response additionally sends `Cache-Control: private, no-store`; private bodies
 are rendered outside the shared public cache. Clients partition local caches and
 `Last-Event-ID` by `(server, principal, audience, authorization revision)` and erase the
 applicable private cache family on logout, revision change, audience loss, server/principal

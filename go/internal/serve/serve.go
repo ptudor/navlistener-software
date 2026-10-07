@@ -729,13 +729,20 @@ func (s *Server) observers(now time.Time, st *state.Store, sources []config.Sour
 	return out
 }
 
+// audienceVary names the request headers every audience-selectable response
+// varies on, public bodies included: HTTP caches key variants by the Vary of
+// the stored response, so a public body stored without it would be served to a
+// later request on the same URL that carries a credential and selects a
+// private audience, silently disabling audience selection behind any cache.
+const audienceVary = "Authorization, X-GNSS-Audience"
+
 func (s *Server) setAudienceCacheHeaders(w http.ResponseWriter, selected identity.Audience) {
+	w.Header().Set("Vary", audienceVary)
 	if selected.Kind == identity.AudiencePublic {
 		w.Header().Set("Cache-Control", "public, max-age=30")
 		return
 	}
 	w.Header().Set("Cache-Control", "private, no-store")
-	w.Header().Set("Vary", "Authorization, X-GNSS-Audience")
 }
 
 func (s *Server) serveEventStream(w http.ResponseWriter, r *http.Request) {
@@ -745,9 +752,7 @@ func (s *Server) serveEventStream(w http.ResponseWriter, r *http.Request) {
 	}
 	delivery := s.beginDelivery(r, view.audience)
 	defer delivery.finish()
-	if view.audience.Kind != identity.AudiencePublic {
-		w.Header().Set("Vary", "Authorization, X-GNSS-Audience")
-	}
+	w.Header().Set("Vary", audienceVary)
 	if view.principal.ID == "" {
 		s.brokerFor(view.audience).serveEvents(w, r)
 		return
@@ -907,7 +912,7 @@ func (s *Server) serveAudiences(w http.ResponseWriter, r *http.Request) {
 		s.setAudienceCacheHeaders(w, identity.Audience{Kind: identity.AudiencePublic})
 	} else {
 		w.Header().Set("Cache-Control", "private, no-store")
-		w.Header().Set("Vary", "Authorization")
+		w.Header().Set("Vary", audienceVary)
 	}
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(body)

@@ -73,6 +73,12 @@ func TestPublicAudienceHeadersAndAnonymousObserverFiltering(t *testing.T) {
 	if got := rr.Header().Get("Cache-Control"); !strings.HasPrefix(got, "public") {
 		t.Fatalf("public cache header = %q", got)
 	}
+	// A shared cache keys variants by the stored response's Vary: without it the
+	// cached public body would answer a later credentialed, audience-selected
+	// request on the same URL.
+	if got := rr.Header().Get("Vary"); !strings.Contains(got, "Authorization") || !strings.Contains(got, "X-GNSS-Audience") {
+		t.Fatalf("public Vary = %q, want Authorization and X-GNSS-Audience", got)
+	}
 	if strings.Contains(rr.Body.String(), audience.AnonymousPublicSource) {
 		t.Fatalf("anonymous source leaked into observer feed: %s", rr.Body.String())
 	}
@@ -269,6 +275,11 @@ func TestAuthenticatedAudienceSelectionNeverServesAnOperatorSuperset(t *testing.
 	if publicDiscovery.Code != http.StatusOK || !strings.Contains(publicDiscovery.Body.String(), `"audiences":["public"]`) ||
 		strings.Contains(publicDiscovery.Body.String(), `"principal"`) || !strings.Contains(publicDiscovery.Body.String(), `"revision":"`) {
 		t.Fatalf("anonymous audience discovery leaked auth metadata: status %d body %s", publicDiscovery.Code, publicDiscovery.Body.String())
+	}
+	for name, rr := range map[string]*httptest.ResponseRecorder{"anonymous": publicDiscovery, "authenticated": discoveryRR} {
+		if got := rr.Header().Get("Vary"); !strings.Contains(got, "Authorization") || !strings.Contains(got, "X-GNSS-Audience") {
+			t.Fatalf("%s audience discovery Vary = %q, want Authorization and X-GNSS-Audience", name, got)
+		}
 	}
 
 	eventReq := httptest.NewRequest(http.MethodGet, "/gnss/api/events", nil)
