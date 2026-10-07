@@ -204,7 +204,7 @@ func run() int {
 			log.Error("push endpoint init failed", "error", err)
 			return 1
 		}
-		pushSrv.SetReauthorizationInterval(cfg.Authorization.RecheckEvery)
+		pushSrv.SetReauthorization(cfg.Authorization.RecheckEvery, cfg.Authorization.CacheTTL)
 		pushSrv.SetCollectorInstance(cfg.Collector.InstanceID)
 		evidenceVerifier, err := startManufacturers(ctx, cfg.ManufacturerAuthorities, log)
 		if err != nil {
@@ -307,6 +307,9 @@ func run() int {
 			tracker := ingest.NewDurableTracker()
 			pushSrv.SetDurableTracker(tracker)
 			historian.SetDurableNotify(tracker.Resolved)
+			// A disconnected observer's policy is kept for reconciliation as
+			// long as anything it contributed is still retained.
+			pushSrv.SetPolicyRetention(rawRetention)
 		}
 		log.Info("historian enabled")
 	} else {

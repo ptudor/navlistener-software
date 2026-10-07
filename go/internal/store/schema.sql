@@ -9,6 +9,18 @@
 -- The same startup schema also creates the durable integrity-event and periodic
 -- feed-snapshot tables below.
 
+-- Schema compatibility marker. The store writes the version this build knows
+-- (store.go schemaVersion) after applying this file, and refuses to start
+-- against a newer one. Every migration here is additive and idempotent, so an
+-- older binary keeps working until a NOT NULL column without a default or a
+-- tightened CHECK lands — exactly the changes that must bump schemaVersion,
+-- because an older writer would trip them on every row.
+CREATE TABLE IF NOT EXISTS navlistener_schema (
+    singleton  BOOLEAN     PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    version    INTEGER     NOT NULL,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS nav_frames (
     ts          TIMESTAMPTZ NOT NULL,   -- ingest time (hypertable dimension)
     received_at TIMESTAMPTZ NOT NULL,   -- receiver/host reception time (indexed)
@@ -253,6 +265,10 @@ CREATE INDEX IF NOT EXISTS idx_gnss_events_audience_time ON gnss_events (audienc
 CREATE INDEX IF NOT EXISTS idx_gnss_events_sv_time       ON gnss_events (sv, time DESC);
 CREATE INDEX IF NOT EXISTS idx_gnss_events_type_time     ON gnss_events (event_type, time DESC);
 CREATE INDEX IF NOT EXISTS idx_gnss_events_severity_time ON gnss_events (severity, time DESC);
+-- The current-conditions snapshot (conditions.go) selects one audience's rows of
+-- the eight station-condition types since the policy epoch; this lets it range
+-- over exactly those instead of filtering the audience's whole history.
+CREATE INDEX IF NOT EXISTS idx_gnss_events_audience_type_time ON gnss_events (audience, event_type, time DESC);
 -- the notify contract directs external LISTENers to fetch the full row by id
 -- (the trigger below carries only id/sv/type/severity). A hypertable PK must include the
 -- partition column (time), so id has no index by default; without this, every notify-driven

@@ -30,6 +30,14 @@ func (s *Server) serveCurrentConditions(w http.ResponseWriter, r *http.Request) 
 	if s.policyEpochs != nil {
 		_, since = s.policyEpochs.Current(view.audience.Key())
 	}
+	select {
+	case s.querySlots <- struct{}{}:
+		defer func() { <-s.querySlots }()
+	default:
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusServiceUnavailable, "current conditions busy; retry request")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), eventsQueryTimeout)
 	defer cancel()
 	snapshot, err := backend.CurrentConditions(ctx, view.audience.Key(), since)

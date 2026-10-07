@@ -129,6 +129,13 @@ GET /gnss/api/events/summary?hours=
 - Results are newest-first, with the total count *before* pagination.
 - The summary returns totals, active critical and warning counts, the last critical time, and
   breakdowns by event type and constellation.
+- The three historian-backed event endpoints (`/gnss/api/events`, `/events/summary`,
+  `/events/conditions`) share four query slots. A request that finds none answers `503` with
+  `Retry-After: 1` before touching the historian — the same shape as `observer-samples` and
+  `event-evidence` with their eight history slots. Each query holds a pool connection for up to
+  5 s, and the public audience reaches these without a credential, so the bound is what keeps a
+  flood from occupying the historian's pool. The collector never sees the client address;
+  per-client fairness is the fronting proxy's job (`docs/OUTPUT.md §5`).
 
 **Two parameter-handling rules worth stating explicitly:**
 

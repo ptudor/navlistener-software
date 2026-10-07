@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -21,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/ptudor/navlistener/internal/authority"
@@ -54,9 +56,10 @@ var ntripMountpointRe = regexp.MustCompile(`^[!-~]+$`)
 // batch_size/max_conns were similarly unbounded upward. Values sit far above
 // any sane deployment while still catching a pasted extra digit.
 const (
-	maxShards    = 4096
-	maxBatchSize = 1_000_000
-	maxPushConns = 65535
+	maxShards     = 4096
+	maxBatchSize  = 1_000_000
+	maxPushConns  = 65535
+	maxStoreConns = 1024
 )
 
 // DefaultPaths are searched in order when -config is not given.
@@ -194,6 +197,57 @@ type Store struct {
 	RawRetention string `toml:"raw_retention"` // default "7 days"
 	// CompressAfter is when a raw chunk is columnar-compressed (default "1 day").
 	CompressAfter string `toml:"compress_after"`
+
+	// MaxConns sizes the historian's connection pool. The batched writer holds
+	// one of these connections for its whole life so API reads can never starve
+	// the forensic record; the rest serve the read endpoints and the low-rate
+	// direct writers. 0 (the default) defers to the DSN's own pool_max_conns,
+	// or DefaultStoreMaxConns when the DSN has none; see PoolConfig.
+	MaxConns int `toml:"max_conns"`
+}
+
+// DefaultStoreMaxConns is the historian pool size when neither store.max_conns
+// nor the DSN's pool_max_conns names one. Eight fits the writer's dedicated
+// connection, the serve front's bounded query slots and the low-rate direct
+// writers (events, snapshots, evidence) on a single-host deployment.
+const DefaultStoreMaxConns = 8
+
+// minStoreConns is the smallest usable historian pool: the writer goroutine
+// keeps one connection, so anything smaller leaves none for a read.
+const minStoreConns = 2
+
+// PoolConfig parses DSN into the historian's pool configuration with its
+// connection limits applied: max_conns when set, otherwise the DSN's own
+// pool_max_conns, otherwise DefaultStoreMaxConns. MinConns is raised to
+// minStoreConns (the writer's dedicated connection plus one warm reader) unless
+// the DSN asks for more. It is the one place the pool is sized, shared by
+// -check-config and store.New so the two cannot disagree.
+func (s Store) PoolConfig() (*pgxpool.Config, error) {
+	// pgxpool.ParseConfig consumes pool_max_conns from the runtime parameters
+	// and substitutes max(4, NumCPU) when it is absent, so the pool config alone
+	// cannot say whether the DSN sized itself; the underlying pgx parse can.
+	cc, err := pgx.ParseConfig(s.DSN)
+	if err != nil {
+		return nil, err
+	}
+	_, dsnSized := cc.RuntimeParams["pool_max_conns"]
+	pc, err := pgxpool.ParseConfig(s.DSN)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case s.MaxConns > 0:
+		pc.MaxConns = int32(s.MaxConns)
+	case !dsnSized:
+		pc.MaxConns = DefaultStoreMaxConns
+	}
+	if pc.MaxConns < minStoreConns {
+		return nil, fmt.Errorf("pool_max_conns %d leaves no connection for reads beside the historian writer; use at least %d", pc.MaxConns, minStoreConns)
+	}
+	if pc.MinConns < minStoreConns {
+		pc.MinConns = minStoreConns
+	}
+	return pc, nil
 }
 
 // Authorization selects the shared, read-only ingest control-plane provider. When DSN
@@ -302,10 +356,14 @@ type Push struct {
 	AckIntervals string        `toml:"ack_interval"` // ack cadence, default "1s"
 	AckInterval  time.Duration `toml:"-"`
 
-	// MaxConns bounds concurrent in-flight feeder connections : production
-	// should gate admission at the TLS layer via ClientCA (mTLS), but when it isn't
-	// set this is the only cap between the internet and unbounded goroutine/FD
-	// growth. Default 512 — a generous multiple of any fleet size in this project.
+	// MaxConns bounds concurrent authenticated feeder sessions: a slot is taken
+	// once a HELLO has authenticated. Connections still in their TLS/HELLO
+	// handshake are bounded separately (a pre-auth pool of half this size, a
+	// 10 s deadline, and per-address in-flight and rate caps), so an idle
+	// connection flood cannot occupy these slots — and mTLS alone never could
+	// prevent that, since a certificate is examined only inside the handshake
+	// such a flood never starts. Default 512 — a generous multiple of any fleet
+	// size in this project.
 	MaxConns int `toml:"max_conns"`
 
 	Observers []PushObserver `toml:"observer"`
@@ -765,10 +823,16 @@ func (c *Config) finalize() error {
 	if retention > 0 && compress > 0 && compress >= retention {
 		return fmt.Errorf("store.compress_after (%q) must be shorter than store.raw_retention (%q), or chunks are dropped before compression runs", c.Store.CompressAfter, c.Store.RawRetention)
 	}
-	// parse the DSN at load so a malformed store.dsn fails -check-config, not at the
-	// first pool connect.
+	// 0 is the documented "automatic" value (the DSN's pool_max_conns, else the
+	// default); a positive value must leave at least one reader beside the writer.
+	if c.Store.MaxConns < 0 || (c.Store.MaxConns > 0 && c.Store.MaxConns < minStoreConns) || c.Store.MaxConns > maxStoreConns {
+		return fmt.Errorf("store.max_conns %d: must be 0 (pool_max_conns from the DSN, else %d) or in %d..%d",
+			c.Store.MaxConns, DefaultStoreMaxConns, minStoreConns, maxStoreConns)
+	}
+	// parse the DSN at load so a malformed store.dsn — or a pool sized too small
+	// for the writer plus one reader — fails -check-config, not the first pool connect.
 	if c.Store.DSN != "" {
-		if _, err := pgxpool.ParseConfig(c.Store.DSN); err != nil {
+		if _, err := c.Store.PoolConfig(); err != nil {
 			return fmt.Errorf("store.dsn: %w", err)
 		}
 	}
@@ -1357,6 +1421,15 @@ func (c *Config) finalizePush() error {
 	if p.ClientCA != "" {
 		if err := validatePEMFile("push.client_ca", p.ClientCA); err != nil {
 			return err
+		}
+		// The two mTLS switches select different trust pools, and the listener
+		// can install only one: require_client_certificate wins and the
+		// client_ca pool is silently discarded. Refuse the pair so the operator
+		// chooses one deliberately instead of discovering the loser at connect.
+		if p.RequireClientCertificate {
+			return errors.New("push.client_ca and push.require_client_certificate are mutually exclusive: " +
+				"require_client_certificate verifies feeders against the registered [[operational_authority]] issuers, " +
+				"client_ca against the file; set one")
 		}
 	}
 	stations := make(map[string]bool, len(p.Observers))

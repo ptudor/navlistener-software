@@ -19,24 +19,31 @@ type ConditionSnapshot struct {
 // gnss_events has no retention policy. Only the current policy epoch is visible;
 // neither the history API's 24h default nor its pagination limits apply here.
 // A timeout or too many conditions fails the whole snapshot, never truncates it.
+//
+// One statement runs under one snapshot, so the cursor and the conditions are
+// consistent without materializing the audience's history first: `latest`
+// touches only the eight condition types (idx_gnss_events_audience_type_time)
+// and the cursor is an index-only aggregate over idx_gnss_events_audience_seq.
+// The previous MATERIALIZED CTE copied every visible row of the audience, raw
+// JSONB included, into a tuplestore per request, which grew with uptime on an
+// endpoint the public audience reaches without a credential.
 func (s *Store) CurrentConditions(ctx context.Context, audience string, since time.Time) (ConditionSnapshot, error) {
 	out := ConditionSnapshot{Events: []StoredEvent{}}
 	if since.IsZero() {
 		since = time.Unix(0, 0)
 	}
 	rows, err := s.pool.Query(ctx, `
- WITH visible AS MATERIALIZED (
-   SELECT * FROM gnss_events WHERE audience=$1 AND time >= $2
- ), latest AS (
+ WITH latest AS (
    SELECT DISTINCT ON (COALESCE(raw->>'station',sv),event_type,COALESCE(raw->>'gnss',''),COALESCE(raw->>'sig',''))
      audience_seq,time,sv,event_type,COALESCE(old_value,'') AS old_value,COALESCE(new_value,'') AS new_value,
      severity,COALESCE(message,'') AS message,raw
-   FROM visible
-   WHERE event_type IN ('station_offline','jamming_detected','spoofing_suspected','station_assurance',
+   FROM gnss_events
+   WHERE audience=$1 AND time >= $2
+     AND event_type IN ('station_offline','jamming_detected','spoofing_suspected','station_assurance',
                         'station_rf_degraded','antenna_fault','capability_signal_lost','capability_impossible')
    ORDER BY COALESCE(raw->>'station',sv),event_type,COALESCE(raw->>'gnss',''),COALESCE(raw->>'sig',''),audience_seq DESC
  ), bounded AS (SELECT * FROM latest ORDER BY audience_seq LIMIT $3)
- SELECT (SELECT COALESCE(max(audience_seq),0) FROM visible),
+ SELECT (SELECT COALESCE(max(audience_seq),0) FROM gnss_events WHERE audience=$1 AND time >= $2),
         COALESCE((SELECT jsonb_agg(to_jsonb(bounded)) FROM bounded),'[]'::jsonb)`,
 		audience, since, MaxCurrentConditions+1)
 	if err != nil {

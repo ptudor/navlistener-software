@@ -42,14 +42,30 @@ rejected as a stored private grant. Duplicate rows, malformed audiences, and emp
 fail closed. The same cache TTL, generation-safe invalidation, and digest-only key discipline
 apply to read credentials.
 
+A verdict and a failure to verify are kept apart. `VerifyAuthorization` and
+`ReconcileObserver` return an error wrapping `ErrUnavailable` when the control plane could
+not answer — a transport failure, a timeout, a malformed row, a lookup that raced an
+invalidation — and `ok=false` with a nil error only for the control plane's own denial. A
+handshake that cannot verify is denied. A live session whose periodic recheck cannot verify
+keeps the authority the control plane last confirmed until that confirmation is older than
+the revocation bound (cache TTL plus recheck interval), and only then is withdrawn; a
+revocation the control plane answers still closes the session at the next recheck.
+
 Retained push contributors are also reconciled while disconnected. The push server retains
 only credential digests, with a ceiling of 1,024 observer policy identities and eight
 credential/feed pairs per current policy. New admissions beyond those ceilings fail closed;
 existing unresolved policy evidence is not evicted to make room. Every configured recheck
 interval, up to 16 workers bypass the authorization cache under one five-second sweep
-budget. Unreconciled or changed identities advance the ingest policy generation and enqueue
-an ordered audience reset, independent of another device connection. The offline withdrawal
-bound is the recheck interval plus five seconds and ordered decoder-drain latency; overload
-or database failure withdraws unverified derived visibility instead of extending that bound.
-Raw history keeps its immutable receipt-time context. A process restart starts a new derived
-history epoch. Normal shutdown cancels and joins reconciliation before closing ingest.
+budget, querying only policies the control plane has not confirmed within the cache TTL
+(an admission, a live recheck or an earlier sweep each count) and at most 1,024
+credential/feed pairs per sweep, least recently confirmed first, so a larger retained fleet
+is covered round-robin. A changed or denied identity advances the ingest policy generation
+and enqueues an ordered audience reset, independent of another device connection. The
+offline withdrawal bound for a fleet within one sweep's cap is the cache TTL plus the recheck
+interval plus five seconds and ordered decoder-drain latency; a larger fleet adds one recheck
+interval per further 1,024 pairs. A check the control plane could not answer, or that the
+sweep budget cut off, changes nothing for that contributor: it is counted
+(`navlistener_push_authorization_unavailable_total{path="sweep"}`), logged once per sweep,
+and is first in line for the next sweep. Raw history keeps its immutable receipt-time
+context. A process restart starts a new derived history epoch. Normal shutdown cancels and
+joins reconciliation before closing ingest.

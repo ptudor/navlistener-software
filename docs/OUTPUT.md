@@ -596,6 +596,16 @@ Refresh cadence (satellites move slowly; over-polling wastes cache):
 A reverse-proxy cache must honor audience policy: only public feeds are cacheable.
 Private responses use `Cache-Control: private, no-store`; SSE must stream without buffering.
 
+The historian-backed endpoints (`/gnss/api/events`, `/gnss/api/events/summary`,
+`/gnss/api/events/conditions`, `/gnss/api/v2/observer-samples`, `/gnss/api/v2/event-evidence`)
+run under a small concurrency bound inside the collector and answer `503` with `Retry-After: 1`
+once it is exhausted; the historian's writer keeps a reserved pool connection, so reads can never
+starve the forensic record. The collector never sees the client address, so **per-client
+fairness is the reverse proxy's job**: apply its per-client request-rate and concurrent-connection
+limits (`limit_req`/`limit_conn` or their equivalent) to `/gnss/api/events` and `/gnss/api/v2/`
+ahead of the collector — generous enough for a dashboard's polling, tight enough that one client
+cannot hold every slot. `go/deploy/README.md` gives the sizing.
+
 ---
 
 ## 6. Migration

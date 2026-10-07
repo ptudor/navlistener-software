@@ -49,7 +49,7 @@ fleet ingest. The daemon runs happily as a collector-only process.
 | `[logging]` | always | `level` (debug/info/warn/error), `format` (json/text) |
 | `[metrics]` | `addr` set | Prometheus `/metrics` + `/healthz`, loopback-bound |
 | `[state]` | always | shard count, propagate cadence, SV TTL, `leap_seconds` |
-| `[store]` | `dsn` set | TimescaleDB historian, `raw_retention`, `compress_after` |
+| `[store]` | `dsn` set | TimescaleDB historian, `raw_retention`, `compress_after`, `max_conns` |
 | `[authorization]` | `dsn` set | DB-backed observer/read grants, bounded cache, active-session recheck |
 | `[serve]` | `addr` set | native v2 API, public default, authenticated audience selection, refresh cadences |
 | `[[serve.principal]]` | no DB auth | standalone/bootstrap read token and explicit private audience grants |
@@ -65,6 +65,17 @@ fleet ingest. The daemon runs happily as a collector-only process.
 
 ## Details
 
+### `[store]` — the historian's connection pool
+
+`max_conns` sizes the pool the historian writes through and the read API queries through. The
+batched writer keeps one of those connections for its whole life, so a flood of API reads can
+never hold every connection ahead of the forensic record; the rest serve the read endpoints
+(which run under their own small concurrency bounds) and the low-rate direct writers. `0` (the
+default) means the DSN's own `pool_max_conns` when it carries one, otherwise `8`; a value from
+`2` to `1024` overrides the DSN. A pool smaller than two — no reader beside the writer — is
+rejected at load. `-check-config` sizes the pool exactly as `store.New` does (one
+`Store.PoolConfig`), so the two cannot disagree.
+
 ### `[authorization]` — production control-plane resolution
 
 Setting `dsn` replaces static credential rows; it never supplements or falls back to them.
@@ -74,7 +85,10 @@ The collector reads the stable `navlistener_observer_authorization_v3` and
 for `NOTIFY navlistener_authorization_changed`. `cache_ttl` (default 30s, maximum 5m) is the
 stale-authority ceiling when notifications are interrupted. `session_recheck_interval`
 (default 10s, maximum 5m) closes active feeder/read sessions after a revoked or changed row is
-observed. The worst case without NOTIFY is their sum.
+observed. The worst case without NOTIFY is their sum. That sum is also how long a live feeder
+session may keep its last confirmed authority while the control plane cannot answer its
+rechecks: a recheck that fails to complete is not a revocation, and the session is withdrawn
+only once its last confirmation is older than the sum.
 
 The authorization DSN should use a read-only database role with access only to the versioned
 views and notification channel. Because it contains credentials, normal config-permission
@@ -159,9 +173,12 @@ addresses.
   checked, so mTLS is defense in depth rather than a replacement.
 - **`token_sha256`** stores the SHA-256 of the bearer token. The token itself is shown once at
   enrollment and never committed.
-- **`max_conns`** (default 512) bounds concurrent in-flight feeder connections.
-  Production should gate admission at the TLS layer via `client_ca`; when it isn't set, this is
-  the only thing between the internet and unbounded goroutine and file-descriptor growth.
+- **`max_conns`** (default 512) bounds concurrent *authenticated* feeder sessions; a slot is
+  taken once a HELLO has authenticated. Connections still in their TLS/HELLO handshake live in a
+  separate pre-auth pool (half of `max_conns`, at least 64) under a 10 s deadline and per-address
+  in-flight and rate caps, and are closed at accept beyond those, so an idle connection flood
+  cannot occupy a feeder's slot. mTLS does not gate this: a certificate is examined only inside
+  the handshake such a flood never starts.
 - **`ack_interval`** (default 1s) is the GNF1 ACK cadence.
 - **Organization and publication fields** have the same meanings and fail-closed defaults as on
   `[[ingest]]`. They are authorization output, not feeder assertions. Config-backed observers

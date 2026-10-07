@@ -55,9 +55,15 @@ func TestRequiredColumnsCoversNavFrames(t *testing.T) {
 // row builds a CopyFrom row whose source_id (index 2) marks it poison when "bad".
 func row(id string) []any { return []any{nil, nil, id} }
 
+// legacyStore builds a pool-free Store on the legacy copy-seam path for the
+// persistRetry policy tests.
+func legacyStore(copy copyRowsFunc) *Store {
+	return &Store{retry: testRetry, copy: copy, log: quietLog()}
+}
+
 func TestPersistRetrySuccess(t *testing.T) {
 	copy := func(context.Context, [][]any) (int64, error) { return 3, nil }
-	w, d := persistRetry(context.Background(), testRetry, copy, [][]any{row("a"), row("b"), row("c")}, quietLog())
+	w, d := legacyStore(copy).persistRetry(context.Background(), [][]any{row("a"), row("b"), row("c")})
 	if w != 3 || d != 0 {
 		t.Errorf("written=%d dropped=%d, want 3/0", w, d)
 	}
@@ -71,7 +77,7 @@ func TestPersistRetryTransientThenSuccess(t *testing.T) {
 		}
 		return int64(len(rows)), nil
 	}
-	w, d := persistRetry(context.Background(), testRetry, copy, [][]any{row("a"), row("b")}, quietLog())
+	w, d := legacyStore(copy).persistRetry(context.Background(), [][]any{row("a"), row("b")})
 	if w != 2 || d != 0 {
 		t.Errorf("written=%d dropped=%d, want 2/0 after retries", w, d)
 	}
@@ -82,7 +88,7 @@ func TestPersistRetryTransientThenSuccess(t *testing.T) {
 
 func TestPersistRetryGivesUp(t *testing.T) {
 	copy := func(context.Context, [][]any) (int64, error) { return 0, errors.New("db down") }
-	w, d := persistRetry(context.Background(), testRetry, copy, [][]any{row("a"), row("b")}, quietLog())
+	w, d := legacyStore(copy).persistRetry(context.Background(), [][]any{row("a"), row("b")})
 	if w != 0 || d != 2 {
 		t.Errorf("written=%d dropped=%d, want 0/2 (dropped after retries)", w, d)
 	}
@@ -100,24 +106,35 @@ func TestPersistRetryQuarantinesPoison(t *testing.T) {
 		return int64(len(rows)), nil
 	}
 	rows := [][]any{row("a"), row("b"), row("bad"), row("d")}
-	w, d := persistRetry(context.Background(), testRetry, copy, rows, quietLog())
+	w, d := legacyStore(copy).persistRetry(context.Background(), rows)
 	if w != 3 || d != 1 {
 		t.Errorf("written=%d dropped=%d, want 3/1 (poison isolated, rest written)", w, d)
 	}
 }
 
-func TestIsPoison(t *testing.T) {
-	if !isPoison(&pgconn.PgError{Code: "23505"}) { // unique violation
-		t.Error("23xxx should be poison")
-	}
-	if !isPoison(&pgconn.PgError{Code: "22P02"}) { // invalid text
-		t.Error("22xxx should be poison")
-	}
-	if isPoison(&pgconn.PgError{Code: "08006"}) { // connection failure
-		t.Error("08xxx (connection) should be retryable, not poison")
-	}
-	if isPoison(errors.New("timeout")) {
-		t.Error("non-PgError should be retryable, not poison")
+// TestClassifyPersistError guards the failure classes: class 22 is poison
+// outright, unique and check violations are poison only if a sibling commits,
+// the rest of class 23 (not-null, foreign-key) is systemic — a constraint every
+// row trips, never acked — and everything else is retried.
+func TestClassifyPersistError(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want failureClass
+	}{
+		{&pgconn.PgError{Code: "22P02"}, failPoison},           // invalid text representation
+		{&pgconn.PgError{Code: "22003"}, failPoison},           // numeric out of range
+		{&pgconn.PgError{Code: "23505"}, failPoisonIfIsolated}, // unique violation
+		{&pgconn.PgError{Code: "23514"}, failPoisonIfIsolated}, // check violation
+		{&pgconn.PgError{Code: "23502"}, failSystemic},         // not-null violation
+		{&pgconn.PgError{Code: "23503"}, failSystemic},         // foreign-key violation
+		{&pgconn.PgError{Code: "23P01"}, failSystemic},         // exclusion violation
+		{&pgconn.PgError{Code: "08006"}, failTransient},        // connection failure
+		{&pgconn.PgError{Code: "42703"}, failTransient},        // undefined column
+		{errors.New("timeout"), failTransient},
+	} {
+		if got := classifyPersistError(tc.err); got != tc.want {
+			t.Errorf("classifyPersistError(%v) = %v, want %v", tc.err, got, tc.want)
+		}
 	}
 }
 

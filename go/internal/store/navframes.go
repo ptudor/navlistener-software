@@ -99,11 +99,14 @@ type StoredNavFrame struct {
 // The daemon does not need this — Run closes the pool on its shutdown path — but a
 // read-only consumer (a replay or export tool) never starts Run and would otherwise
 // leak the pool. Guarded by a sync.Once so calling it alongside a Run shutdown is
-// safe rather than a double close.
+// safe rather than a double close. The writer's dedicated connection is released
+// first: pool.Close waits for every acquired connection, and a direct persist
+// (never followed by Run) leaves one held.
 func (s *Store) Close() {
 	if s == nil || s.pool == nil {
 		return
 	}
+	s.dropWriter()
 	s.closeOnce.Do(s.pool.Close)
 }
 

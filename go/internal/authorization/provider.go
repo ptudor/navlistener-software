@@ -130,6 +130,11 @@ type Provider struct {
 	lookupObserver observerLookup
 	lookupRead     readLookup
 
+	// acquireNotifier opens one LISTEN connection for RunInvalidation; nil
+	// (no database) leaves only the TTL sweeper running. A seam so the
+	// listener's reconnect behaviour is testable without a database.
+	acquireNotifier func(context.Context) (notifier, error)
+
 	// lookupSlots bounds control-plane queries in flight. It is fixed at
 	// construction and never reassigned, so it needs no lock.
 	lookupSlots chan struct{}
@@ -170,6 +175,7 @@ func NewDatabase(ctx context.Context, dsn string, ttl time.Duration, log *slog.L
 	p.pool = pool
 	p.lookupObserver = p.lookupObserverDatabase
 	p.lookupRead = p.lookupReadDatabase
+	p.acquireNotifier = p.acquirePoolNotifier
 	return p, nil
 }
 
@@ -307,10 +313,30 @@ func (p *Provider) AuthorizeRead(ctx context.Context, token string) (identity.Re
 	return cloneReadPrincipal(principal), allowed
 }
 
+// ErrUnavailable reports that a credential could not be verified right now — a
+// transport failure, a timeout, a malformed control-plane row, or a lookup
+// that raced a cache invalidation. It says nothing about the credential: the
+// caller retries later, and a handshake that cannot verify is denied, but a
+// live session is not withdrawn on it the way an authoritative denial
+// withdraws one.
+var ErrUnavailable = errors.New("authorization unavailable")
+
 // Authenticate implements ingest.Authenticator structurally without importing
 // the ingest package. It fails closed on malformed control-plane rows or DB
 // errors and returns a defensive copy of cached slice fields.
 func (p *Provider) Authenticate(ctx context.Context, token, station, feed string) (identity.ObserverContext, bool) {
+	resolved, allowed, err := p.VerifyAuthorization(ctx, token, station, feed)
+	if err != nil {
+		return identity.ObserverContext{}, false
+	}
+	return resolved, allowed
+}
+
+// VerifyAuthorization is Authenticate with the verdict's provenance kept: a
+// non-nil error (wrapping ErrUnavailable) means the credential could not be
+// verified, while ok=false with a nil error is an authoritative denial that
+// the control plane answered. It implements ingest.AuthorizationVerifier.
+func (p *Provider) VerifyAuthorization(ctx context.Context, token, station, feed string) (identity.ObserverContext, bool, error) {
 	sum := sha256.Sum256([]byte(token))
 	key := observerCacheKey{tokenSHA256: hex.EncodeToString(sum[:]), station: station, feed: feed}
 	folded := observerFoldedKey(key)
@@ -320,14 +346,14 @@ func (p *Provider) Authenticate(ctx context.Context, token, station, feed string
 	if entry, ok := p.observers[key]; ok {
 		if now.Before(entry.expires) {
 			p.mu.Unlock()
-			return cloneObserverContext(entry.context), entry.allowed
+			return cloneObserverContext(entry.context), entry.allowed, nil
 		}
 		delete(p.observers, key)
 	}
 	if until, ok := p.deniedObservers[folded]; ok {
 		if now.Before(until) {
 			p.mu.Unlock()
-			return identity.ObserverContext{}, false
+			return identity.ObserverContext{}, false, nil
 		}
 		delete(p.deniedObservers, folded)
 	}
@@ -337,12 +363,15 @@ func (p *Provider) Authenticate(ctx context.Context, token, station, feed string
 		case <-inflight.done:
 		case <-ctx.Done():
 			// This handshake gave up; the leader still finishes for the rest.
-			return identity.ObserverContext{}, false
+			return identity.ObserverContext{}, false, fmt.Errorf("%w: %w", ErrUnavailable, ctx.Err())
 		}
-		if inflight.err != nil || !inflight.trusted {
-			return identity.ObserverContext{}, false
+		if inflight.err != nil {
+			return identity.ObserverContext{}, false, fmt.Errorf("%w: %w", ErrUnavailable, inflight.err)
 		}
-		return cloneObserverContext(inflight.observer), inflight.allowed
+		if !inflight.trusted {
+			return identity.ObserverContext{}, false, fmt.Errorf("%w: lookup raced a cache invalidation", ErrUnavailable)
+		}
+		return cloneObserverContext(inflight.observer), inflight.allowed, nil
 	}
 	flight := &lookupFlight{done: make(chan struct{}), generation: p.generation}
 	p.flightObservers[folded] = flight
@@ -383,10 +412,13 @@ func (p *Provider) Authenticate(ctx context.Context, token, station, feed string
 	p.mu.Unlock()
 	close(flight.done)
 
-	if err != nil || !trusted {
-		return identity.ObserverContext{}, false
+	if err != nil {
+		return identity.ObserverContext{}, false, fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
-	return cloneObserverContext(resolved), allowed
+	if !trusted {
+		return identity.ObserverContext{}, false, fmt.Errorf("%w: lookup raced a cache invalidation", ErrUnavailable)
+	}
+	return cloneObserverContext(resolved), allowed, nil
 }
 
 // runReadLookup and runObserverLookup bound one control-plane query to the
@@ -543,24 +575,39 @@ func (p *Provider) lookupObserverDatabase(ctx context.Context, tokenSHA256, stat
 
 // ReconcileObserver bypasses caches for retained contributors, even while the
 // device is offline. Only digests from successful admissions reach this method.
-func (p *Provider) ReconcileObserver(ctx context.Context, digest, station, feed string) (identity.ObserverContext, bool) {
+// Like VerifyAuthorization it keeps the verdict's provenance: a non-nil error
+// (wrapping ErrUnavailable) is a check that could not be completed and leaves
+// the contributor's policy as it is; ok=false with a nil error is the control
+// plane's own denial.
+func (p *Provider) ReconcileObserver(ctx context.Context, digest, station, feed string) (identity.ObserverContext, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, p.lookupTimeout)
 	defer cancel()
 	p.mu.Lock()
 	generation := p.generation
 	p.mu.Unlock()
 	current, allowed, err := p.lookupObserver(ctx, digest, station, feed)
-	if err != nil || !allowed || ctx.Err() != nil {
-		return identity.ObserverContext{}, false
+	if err != nil {
+		return identity.ObserverContext{}, false, fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	if ctx.Err() != nil {
+		return identity.ObserverContext{}, false, fmt.Errorf("%w: %w", ErrUnavailable, ctx.Err())
+	}
+	if !allowed {
+		return identity.ObserverContext{}, false, nil
 	}
 	current, err = current.Normalize()
 	p.mu.Lock()
 	unchanged := generation == p.generation
 	p.mu.Unlock()
-	if err != nil || !unchanged || current.ObserverID != station {
-		return identity.ObserverContext{}, false
+	switch {
+	case err != nil:
+		return identity.ObserverContext{}, false, fmt.Errorf("%w: control-plane row rejected: %w", ErrUnavailable, err)
+	case current.ObserverID != station:
+		return identity.ObserverContext{}, false, fmt.Errorf("%w: resolved observer does not match retained station", ErrUnavailable)
+	case !unchanged:
+		return identity.ObserverContext{}, false, fmt.Errorf("%w: lookup raced a cache invalidation", ErrUnavailable)
 	}
-	return current, true
+	return current, true, nil
 }
 
 func (p *Provider) lookupReadDatabase(ctx context.Context, tokenSHA256 string) (identity.ReadPrincipal, bool, error) {
@@ -655,9 +702,50 @@ func (p *Provider) InvalidateAll() {
 	p.mu.Unlock()
 }
 
-// RunInvalidation listens for control-plane changes. Reconnect always clears
-// the cache because notifications may have been missed while disconnected.
+// notifier is one LISTEN connection to the control plane: Listen subscribes to
+// the change channel, Wait blocks until a notification arrives or the
+// connection fails. The pool-backed form is production; tests substitute one
+// whose LISTEN fails.
+type notifier interface {
+	Listen(ctx context.Context) error
+	Wait(ctx context.Context) error
+	Release()
+}
+
+type poolNotifier struct{ conn *pgxpool.Conn }
+
+func (n poolNotifier) Listen(ctx context.Context) error {
+	_, err := n.conn.Exec(ctx, "LISTEN "+pgx.Identifier{changeNotifyChannel}.Sanitize())
+	return err
+}
+
+func (n poolNotifier) Wait(ctx context.Context) error {
+	_, err := n.conn.Conn().WaitForNotification(ctx)
+	return err
+}
+
+func (n poolNotifier) Release() { n.conn.Release() }
+
+func (p *Provider) acquirePoolNotifier(ctx context.Context) (notifier, error) {
+	conn, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return poolNotifier{conn: conn}, nil
+}
+
+// RunInvalidation listens for control-plane changes. Every time the listener
+// comes up — at start, and again after any failed period — the caches are
+// cleared once, because notifications may have been missed while it was down.
 // Connection loss is non-fatal: TTL continues to bound stale authority.
+//
+// The clearing happens when the LISTEN statement succeeds, not when a
+// connection is merely acquired: a control plane that accepts connections but
+// fails the LISTEN (a pooler restarting) used to empty every positive cache on
+// each of its quarter-second retries, sending every read request and live
+// session recheck to the bounded lookup budget at once — a larger blast radius
+// than the TTL-bounded staleness the invalidation guards against. Entries now
+// survive a failed period until the listener is back or their TTL expires.
 func (p *Provider) RunInvalidation(ctx context.Context) {
 	// Expiry must not depend on NOTIFY traffic, database availability, or a
 	// client reusing a particular token. Join the sweeper on normal shutdown.
@@ -665,21 +753,24 @@ func (p *Provider) RunInvalidation(ctx context.Context) {
 	swept := make(chan struct{})
 	go func() { defer close(swept); p.runCacheExpiry(sweepCtx) }()
 	defer func() { stopSweep(); <-swept }()
-	if p.pool == nil {
+	if p.acquireNotifier == nil {
 		<-ctx.Done()
 		return
 	}
 	backoff := listenBackoffInitial
-	listenSQL := "LISTEN " + pgx.Identifier{changeNotifyChannel}.Sanitize()
 	for ctx.Err() == nil {
-		conn, err := p.pool.Acquire(ctx)
+		conn, err := p.acquireNotifier(ctx)
 		healthy := false
 		if err == nil {
-			p.InvalidateAll()
-			_, err = conn.Exec(ctx, listenSQL)
+			err = conn.Listen(ctx)
 			listenedAt := p.now()
+			if err == nil {
+				// Subscribed again: whatever changed while the listener was
+				// down was not heard, so start from an empty cache — once.
+				p.InvalidateAll()
+			}
 			for err == nil && ctx.Err() == nil {
-				_, err = conn.Conn().WaitForNotification(ctx)
+				err = conn.Wait(ctx)
 				if err == nil {
 					// A delivered notification is proof the listener worked.
 					healthy = true

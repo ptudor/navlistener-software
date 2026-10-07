@@ -289,10 +289,26 @@ var (
 	})
 
 	// StoreQuarantinedTotal counts frames permanently dropped after retries were
-	// exhausted or a poison row was quarantined.
+	// exhausted or a poison row was quarantined. It keeps its original union
+	// semantics for existing dashboards; the two counters below split it.
 	StoreQuarantinedTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "navlistener_store_quarantined_total",
-		Help: "Historian records dropped after flush retries exhausted or a poison row was quarantined.",
+		Help: "Historian records dropped after a flush for any reason: poison rows quarantined plus rows dropped after retries were exhausted (the sum of navlistener_store_quarantined_rows_total and navlistener_store_retry_dropped_total).",
+	})
+
+	// StoreQuarantinedRowsTotal counts rows quarantined as poison (deterministic
+	// row content that no retransmit can fix; acked to the feeder), by table.
+	StoreQuarantinedRowsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_store_quarantined_rows_total",
+		Help: "Historian rows quarantined as poison (deterministic row content), by table.",
+	}, []string{"table"})
+
+	// StoreRetryDroppedTotal counts rows dropped unacked after flush retries,
+	// the wall budget, or a constraint every row trips; the feeder's spool still
+	// holds them for reconnect replay.
+	StoreRetryDroppedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "navlistener_store_retry_dropped_total",
+		Help: "Historian rows dropped unacked after retries, the wall budget or a systemic constraint failure (replayable from the feeder's spool).",
 	})
 
 	// StoreEmptyRawTotal counts frames dropped at Enqueue for having an empty Raw
@@ -333,13 +349,42 @@ var (
 		Name: "navlistener_durable_holes_abandoned_total",
 		Help: "Unresolved received sequences abandoned after their push session stayed silent past the abandonment window, by observer.",
 	}, []string{"source"})
-	// PushAdmissionRefusedTotal counts sessions refused AFTER a successful
-	// WELCOME by the policy admission step, by reason, so a
-	// feeder that sees handshake-then-close is explicable from the collector.
+	// DurableSessionsEvictedTotal counts fully resolved sessions dropped at
+	// the per-observer session cap to admit a new session of the same observer
+	// (a station that restarts often mints a session per start). Nothing
+	// outstanding is lost: a resolved session holds no holes.
+	DurableSessionsEvictedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_durable_sessions_evicted_total",
+		Help: "Fully resolved push sessions evicted at the per-observer session cap to admit a new session, by observer.",
+	}, []string{"source"})
+	// PushAdmissionRefusedTotal counts sessions refused by the policy admission
+	// step at the handshake, by reason. The feeder sees the refusal in its
+	// WELCOME, and this is the collector's side of the same event.
 	PushAdmissionRefusedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "navlistener_push_admission_refused_total",
-		Help: "Push sessions refused by policy admission after WELCOME, by reason (observer_ceiling, canceled, stale_lookup, reset_blocked).",
+		Help: "Push sessions refused by policy admission at the handshake, by reason (observer_ceiling, observer_sessions, canceled, stale_lookup, reset_blocked).",
 	}, []string{"reason"})
+	// PushConnectionsRefusedTotal counts connections the push listener turned
+	// away before or at authentication, by reason: address_inflight and
+	// address_rate (one remote address over its pre-auth bounds) and
+	// preauth_budget (every pre-auth slot held by a connection still in its
+	// handshake) are closed at accept, before any TLS work; fleet_capacity is
+	// an authenticated HELLO with no MaxConns slot free, answered
+	// WELCOME{ok:false} so the feeder backs off knowing why.
+	PushConnectionsRefusedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_push_connections_refused_total",
+		Help: "Push connections refused before or at authentication, by reason (address_inflight, address_rate, preauth_budget, fleet_capacity).",
+	}, []string{"reason"})
+	// PushAuthorizationUnavailableTotal counts authorization rechecks the
+	// control plane could not answer — a transport failure, a timeout, a
+	// lookup that raced an invalidation — by path (session: a live session's
+	// periodic recheck; sweep: the offline reconciliation sweep). Neither path
+	// withdraws authority on such a check; a live session is withdrawn only
+	// once it has stayed unverifiable past the documented revocation bound.
+	PushAuthorizationUnavailableTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_push_authorization_unavailable_total",
+		Help: "Authorization rechecks the control plane could not answer, by path (session, sweep); authority is kept until the revocation bound passes.",
+	}, []string{"path"})
 	// SSEPublishRejectedTotal counts committed events refused at SSE broker
 	// admission because the audience's policy generation advanced between the
 	// pre-write guard and admission. Rare and expected around a

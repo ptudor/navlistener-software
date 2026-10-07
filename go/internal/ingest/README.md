@@ -172,6 +172,51 @@ recheck therefore also calls `Verifier.Recheck`: a board withdrawn or superseded
 has its session closed, and the feeder's reconnect is evaluated against the registry in force.
 That close is not a policy transition either.
 
+A recheck the control plane cannot answer is not a verdict. When the `Authenticator` also
+implements `AuthorizationVerifier` (the database provider does), `authorize` reports such a
+check as `ErrAuthorizationUnavailable`; the watcher counts it
+(`navlistener_push_authorization_unavailable_total{path="session"}`), logs it and keeps the
+session, its policy and its generation exactly as they were — no `ScopeRevocation`, no audience
+reset — and only an authoritative denial or change withdraws the session with its one marker. A
+check that completes after the session has already ended is discarded for the same reason. The
+documented revocation bound still holds: once the policy's last confirmation (admission, a
+successful recheck, or a reconciliation sweep) is older than cache TTL plus recheck interval,
+an unverifiable session is withdrawn and its reconnect is denied until the control plane
+answers again.
+
+Policy admission happens **before** `WELCOME` is answered, so a session refused by admission
+(`navlistener_push_admission_refused_total{reason}`) receives `WELCOME{ok:false}` instead of a
+close after a success it had already acted on. Admission also caps one observer at four
+concurrent sessions (`observer_sessions`): enough for the C feeder's spool replays and a
+reconnect overlapping the session it replaces, not enough for one stolen token to fill the
+fleet's slots, each with its own zstd window.
+
+**Before authentication** a connection holds none of the fleet's `max_conns` slots. It lives in
+a separate pre-auth pool (half of `max_conns`, at least 64) for at most 10 s — TLS, the GNF1
+magic, the HELLO and any EVIDENCE frame all happen under that deadline — and each remote
+address may have at most eight such connections in flight and open new ones at 32 per second
+(burst 64). Anything beyond those bounds is closed at accept, before any TLS work, and counted
+in `navlistener_push_connections_refused_total{reason}`; an authenticated HELLO that finds no
+fleet slot free is answered `WELCOME{ok:false}` (`fleet_capacity`). mTLS cannot stand in for
+these bounds: a certificate is examined only inside the handshake an idle flood never starts.
+Pre-auth warnings are rate-limited to five per address per minute and clip peer-chosen HELLO
+fields to 64 bytes; the auth-failure metrics count every attempt regardless.
+
+Neither retention table is a lockout. The observer policy table (1,024 identities) reclaims,
+when full, every policy with no live session and no admission within the policy retention
+window — the historian's raw retention, past which nothing the observer contributed remains to
+withdraw — before refusing a new identity (`observer_ceiling`, answered
+`WELCOME{ok:false,"collector observer capacity"}`); a policy with a live session is never
+reclaimed, so its generation stays monotonic. The durable tracker's per-observer session cap
+(64; a feeder mints a session per start) evicts that observer's oldest *fully resolved*
+session — one with no unresolved hole, which holds nothing the ledger does not — to admit a new
+one (`navlistener_durable_sessions_evicted_total{source}`), and refuses only when every retained
+session still has a hole; fully resolved sessions are also reclaimed after fifteen minutes of
+silence, while a session with holes keeps the one-hour abandonment window. A transition's reset marker is enqueued off the
+policy lock: `admit` of a same-generation session waits on the pending marker, while
+`release`, stale-lookup refusals and the reconciliation snapshot take the lock only for their
+bookkeeping and never wait behind decode backpressure.
+
 `Listen()` is called **synchronously at startup**, before any producer or historian goroutine, so
 a bad certificate or an already-bound address kills the process rather than leaving a
 half-started daemon.

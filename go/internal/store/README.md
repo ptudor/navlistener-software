@@ -56,12 +56,27 @@ func (s *Store) Degraded() string
 
 `Enqueue` is non-blocking. When the queue is full, the frame is **dropped and counted**
 (`store_dropped_total`) — an explicit, metered policy rather than blocking ingest or growing
-without bound.
+without bound. The first drop after a clean flush cycle logs one warning; the rest of that
+streak is visible only through the counter and, from the second consecutive overflowing cycle,
+through `Degraded()`.
 
 This is the deliberate priority ordering: **live decoding and the integrity monitor matter more
 than the forensic archive.** If the database stalls, the daemon keeps decoding, keeps detecting,
 and keeps serving; what degrades is history. `Degraded()` surfaces that to `/healthz` as
 `degraded` (HTTP 200, not 503) so a DB blip can't flap rc.d into a restart loop.
+
+### The pool and the writer's connection
+
+One `pgxpool` serves the batched writer, the direct event/snapshot/evidence writers and every
+historian query the read API runs. Its size comes from `[store].max_conns` (or the DSN's
+`pool_max_conns`, or the default of 8 — `config.Store.PoolConfig` is the one place it is
+decided). The writer goroutine **holds one connection of that pool for its whole life** —
+acquired when `Run` starts, handed back and re-acquired after a failed persist (a context cut
+mid-statement closes the connection underneath it), released before the pool closes — so a
+burst of API reads that occupies every other connection can never make the writer wait behind
+them through its retry budget and drop the batch. The read side is bounded separately in
+`serve` (query slots for the public event endpoints, history slots for the authenticated
+reads), both sized below the pool.
 
 One frame never reaches the queue at all: a `NavFrame` with a **nil `Raw`**. `raw` is
 `BYTEA NOT NULL`, so a nil would map to SQL NULL and **poison the whole batch** — bisected,
@@ -77,13 +92,43 @@ The writer's failure handling is layered, and each layer has a different account
 | Situation | Behavior | Metric |
 |---|---|---|
 | Retryable DB error | Bounded retry with backoff. | — |
-| A poison row inside a batch | The batch is **bisected** to isolate it; the bad rows are quarantined and the good ones commit. | `store_quarantined_total` |
-| Wall budget expires, parent still live | The batch is dropped and counted — the writer must stay live and memory-bounded through a long outage. | `store_quarantined_total` |
+| A poison row inside a batch (SQLSTATE class 22: a NUL in JSON, an out-of-range smallint) | The batch is **bisected** to isolate it; the bad row is quarantined — logged with its source, session, sequence, table, kind, satellite and SQLSTATE, and **acked**, since no retransmit can fix it — and the good ones commit. | `store_quarantined_total`, `store_quarantined_rows_total{table}` |
+| A unique or check violation (23505, 23514) | Bisected like poison, but a single row is quarantined and acked **only once a sibling row of the same cycle has committed** under the same constraints. A cycle in which nothing commits is a constraint every row trips: nothing is acked, the batch stays replayable, the cycle counts as a give-up. | as poison, or `store_retry_dropped_total` |
+| Any other class-23 violation (23502 not-null, 23503 foreign-key, …) | A constraint every row trips — a newer schema's column, an operator's constraint. No bisection, no ack: the cycle gives up at once, the batch stays replayable from the feeder's spool, and two such cycles degrade `/healthz`. | `store_retry_dropped_total` |
+| Retries or the wall budget exhausted, parent still live | The batch is dropped unacked and counted — the writer must stay live and memory-bounded through a long outage; the feeder replays it. | `store_quarantined_total`, `store_retry_dropped_total` |
 | Shutdown interrupts a flush | The batch is **retained** for the bounded shutdown drain rather than cleared. Nothing was committed, and the atomic claim+copy transaction rolled its replay-key claims back, so the re-flush cannot duplicate. | — |
 
 The claim-and-copy being one transaction is what makes that last row safe: bisection, retry, and
 retained re-flush all preserve the invariant that a dedup claim exists if and only if the row
 committed.
+
+`Degraded()` watches all three ways frames are discarded, each with the same anti-flap rule —
+one bad flush cycle never degrades, two consecutive ones do:
+
+| Streak | A cycle counts when | Cleared by |
+|---|---|---|
+| Flush failures | the flush exhausted its retries or wall budget | a successful persist, or the idle pool probe |
+| Queue overflow | `Enqueue` dropped any frame since the previous cycle (a database that succeeds too slowly to keep up) | a cycle with no drops, or a full ingest-quiet window |
+| Quarantine flood | more than a tenth of the rows the cycle flushed were quarantined | a cycle below that share, or a full ingest-quiet window |
+
+A lone poison row in a healthy batch is what bisection is for and never degrades health; a
+batch that is mostly poison is a systemic fault the operator must see.
+
+### Startup schema checks
+
+`schema.sql` is additive and idempotent, so an older binary runs against a newer database until
+a change lands that an older writer trips on every row — a NOT NULL column without a default, a
+tightened CHECK. Two startup checks catch that before the first batch instead of after it:
+
+- **The schema marker.** `navlistener_schema` holds the schema generation (`schemaVersion` in
+  `store.go`) the last build to apply the schema knew. `store.New` refuses to start when the
+  stored version is higher than its own, and only ever moves the marker forward. Bump
+  `schemaVersion` with any change an older writer cannot satisfy; never for a purely additive
+  migration.
+- **Unsupplied NOT NULL columns.** `verifyRequiredColumns` fails fast when any table this build
+  writes has a NOT NULL column without a default (and neither identity nor generated) that the
+  writer's column list does not supply, naming the table and the columns — the mirror image of
+  its missing-column check.
 
 ### `nav_frames` — the forensic record
 

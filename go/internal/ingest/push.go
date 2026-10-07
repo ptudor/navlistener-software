@@ -76,6 +76,21 @@ type Authenticator interface {
 	Authenticate(context.Context, string, string, string) (identity.ObserverContext, bool)
 }
 
+// AuthorizationVerifier is the error-reporting form of Authenticator. ok=false
+// with a nil error is an authoritative denial; a non-nil error means the
+// credential could not be verified right now — a transport failure, a timeout,
+// a lookup that raced a cache invalidation — and says nothing about it. The
+// push server prefers it when its Authenticator implements it: a handshake
+// that cannot verify is still denied, but a live session's recheck that merely
+// could not be completed keeps the session and its policy as they are.
+type AuthorizationVerifier interface {
+	VerifyAuthorization(ctx context.Context, token, station, feed string) (identity.ObserverContext, bool, error)
+}
+
+// ErrAuthorizationUnavailable wraps every authorize error that is a failure to
+// verify rather than a verdict.
+var ErrAuthorizationUnavailable = errors.New("authorization unavailable")
+
 // configAuth authenticates against the [[push.observer]] table: it matches the
 // SHA-256 of the presented bearer token and checks the feed grant.
 type configAuth struct {
@@ -171,11 +186,15 @@ type PushServer struct {
 	out         chan<- *RawFrame
 	ackInterval time.Duration
 	log         *slog.Logger
-	// conns bounds concurrent in-flight connections : a buffered semaphore
-	// acquired before spawning a handler goroutine, released in its defer. Without
-	// mTLS (ClientCA unset), this is the only cap between the internet and
-	// unbounded goroutine/FD growth from a pre-auth connection flood.
-	conns chan struct{}
+	// conns bounds authenticated feeder sessions: a slot is taken once the
+	// HELLO has authenticated and held until the session ends. Unauthenticated
+	// connections live in preAuth instead — a separate pool under
+	// preAuthDeadline and the per-address bounds of addresses — so an idle
+	// TCP flood, which never reaches the TLS layer whether mTLS is configured
+	// or not, cannot occupy a feeder's slot (see preauth.go).
+	conns     chan struct{}
+	preAuth   chan struct{}
+	addresses *addressGuard
 
 	// durable, when non-nil, switches ACK to the regression fix durability
 	// watermark (see DurableTracker). nil = live-only mode (no historian):
@@ -185,8 +204,20 @@ type PushServer struct {
 
 	// reauthorizeEvery bounds how long an active feeder can retain authority
 	// after a credential/enrollment/policy revocation. The provider's cache TTL
-	// is the other half of the documented bound.
+	// (authorityTTL) is the other half of the documented bound: their sum is
+	// how long a live session may stay unverifiable before it is withdrawn,
+	// and a policy verified within the TTL is not queried by the sweep.
 	reauthorizeEvery time.Duration
+	authorityTTL     time.Duration
+
+	// reconcileBudget is one sweep's whole deadline (reconciliationBudget in
+	// production; tests shrink it).
+	reconcileBudget time.Duration
+
+	// policyRetention is how long a policy with no live session is kept for
+	// reconciliation after its last admission before the table may reclaim it
+	// at its ceiling (SetPolicyRetention; defaultPolicyRetention otherwise).
+	policyRetention time.Duration
 
 	// collectorInstanceID is this deployment's stable realm. A control-plane
 	// row for another instance is rejected even if its credential otherwise
@@ -223,6 +254,24 @@ func (p *PushServer) SetReauthorizationInterval(every time.Duration) {
 	if every > 0 {
 		p.reauthorizeEvery = every
 	}
+}
+
+// SetReauthorization sets the active-session recheck cadence and the
+// authorization provider's cache TTL together; their sum is the documented
+// revocation bound, which also caps how long a session may stay unverifiable.
+// Config validation requires positive bounded values.
+func (p *PushServer) SetReauthorization(every, cacheTTL time.Duration) {
+	p.SetReauthorizationInterval(every)
+	if cacheTTL > 0 {
+		p.authorityTTL = cacheTTL
+	}
+}
+
+// unavailabilityBound is how long a live session's authority may go
+// unconfirmed — rechecks the control plane cannot answer — before the session
+// is withdrawn: the documented worst case for a revocation to take effect.
+func (p *PushServer) unavailabilityBound() time.Duration {
+	return p.authorityTTL + p.reauthorizeEvery
 }
 
 // SetCollectorInstance binds every admitted observer to this collector realm.
@@ -301,9 +350,13 @@ func newPushServer(addr string, tc *tls.Config, out chan<- *RawFrame, auth Authe
 	}
 	local, _ := authority.New([]authority.Operational{{ID: "local", Enabled: true}}, nil, time.Now())
 	return &PushServer{addr: addr, tlsConfig: tc, auth: auth, out: out, ackInterval: ack, authorities: local,
-		reauthorizeEvery: 30 * time.Second, collectorInstanceID: identity.LocalCollectorInstance,
-		policies: make(map[string]*observerPolicy),
-		log:      log, conns: make(chan struct{}, maxConns)}
+		reauthorizeEvery: 30 * time.Second, authorityTTL: 30 * time.Second, reconcileBudget: reconciliationBudget,
+		policyRetention:     defaultPolicyRetention,
+		collectorInstanceID: identity.LocalCollectorInstance,
+		policies:            make(map[string]*observerPolicy),
+		log:                 log, conns: make(chan struct{}, maxConns),
+		preAuth:   make(chan struct{}, preAuthSlots(maxConns)),
+		addresses: newAddressGuard(time.Now)}
 }
 
 // Run listens until ctx is cancelled, handling each feeder connection concurrently.
@@ -377,18 +430,28 @@ func (p *PushServer) serve(ctx context.Context, ln net.Listener) error {
 			continue
 		}
 		backoff = acceptBackoffInitial
-		select {
-		case p.conns <- struct{}{}:
-		case <-ctx.Done():
+		// Nothing here blocks the accept loop or costs TLS work: a connection
+		// over its address's bounds, or arriving while every pre-auth slot is
+		// held by a connection still in its handshake, is simply closed. The
+		// fleet's MaxConns slot is taken in handle, after the HELLO authenticates.
+		release, reason := p.addresses.admit(remoteHost(conn.RemoteAddr().String()))
+		if reason == "" {
+			select {
+			case p.preAuth <- struct{}{}:
+			default:
+				release()
+				reason = "preauth_budget"
+			}
+		}
+		if reason != "" {
+			metrics.PushConnectionsRefusedTotal.WithLabelValues(reason).Inc()
 			_ = conn.Close()
-			wg.Wait()
-			return nil // clean shutdown; don't block admission on a full semaphore
+			continue
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			defer func() { <-p.conns }()
-			p.handle(hctx, conn)
+			p.handle(hctx, conn, func() { <-p.preAuth; release() })
 		}()
 	}
 }
@@ -407,12 +470,18 @@ func (w *connWriter) write(ft wire.FrameType, payload []byte) error {
 	return wire.WriteFrame(w.c, ft, payload)
 }
 
-// handle runs one feeder connection: TLS is already up, so read the GNF1 magic,
-// authenticate the HELLO, then stream DATA frames into the decode stage with acked,
-// in-order sequence tracking.
-func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
+// handle runs one feeder connection: drive the TLS handshake and read the GNF1
+// magic under the pre-auth deadline, authenticate the HELLO, take a fleet slot,
+// then stream DATA frames into the decode stage with acked, in-order sequence
+// tracking. preAuthDone gives back the pre-auth slot and the address
+// reservation; it runs exactly once, when the HELLO authenticates and the
+// fleet slot takes over, or when the connection ends before that.
+func (p *PushServer) handle(ctx context.Context, conn net.Conn, preAuthDone func()) {
 	defer conn.Close()
 	remote := conn.RemoteAddr().String()
+	var preAuthOnce sync.Once
+	finishPreAuth := func() { preAuthOnce.Do(preAuthDone) }
+	defer finishPreAuth()
 
 	// recover so a future parser edge case in the push path (wire.DecodeData,
 	// decodeJammingStats, decodeReceptionData, bytesToWords, rtcm) reconnects this one
@@ -437,13 +506,14 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 		}
 	}()
 
-	// The magic + handshake are plaintext and time-boxed; the DATA stream that follows
+	// The TLS handshake (driven by the first read), the magic and the HELLO are
+	// time-boxed together by the pre-auth deadline; the DATA stream that follows
 	// refreshes its own deadline through idleConn below.
-	if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(preAuthDeadline)); err != nil {
 		return
 	}
 	if err := wire.ReadMagic(conn); err != nil {
-		p.log.Warn("push bad handshake", "remote", remote, "error", err)
+		p.preAuthWarn(remote, "push bad handshake", "error", err)
 		return
 	}
 	w := &connWriter{c: conn}
@@ -455,6 +525,40 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 	}
 	observerContext, feed, session, useZstd := authorized.observer, authorized.feed, authorized.session, authorized.useZstd
 	observer = observerContext.ObserverID
+	// Authenticated: take a slot from the fleet budget. None free means the
+	// fleet is at capacity; the HELLO is answered so the feeder backs off
+	// knowing why, instead of waiting in the accept backlog.
+	select {
+	case p.conns <- struct{}{}:
+		defer func() { <-p.conns }()
+	default:
+		metrics.PushConnectionsRefusedTotal.WithLabelValues("fleet_capacity").Inc()
+		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "collector at connection capacity"}))
+		p.log.Warn("push feeder refused: fleet connection budget full", "observer", observer, "remote", remote, "max_conns", cap(p.conns))
+		return
+	}
+	finishPreAuth()
+	// Admit this session under the observer's policy generation before
+	// WELCOME is answered: a context that differs from the observer's current
+	// policy — a transfer or revocation that happened while the feeder was
+	// disconnected — transitions the policy, cancels every older session and
+	// enqueues the ordered reset marker before a single newly-authorized DATA
+	// record can enter live state. A refusal is therefore a refused handshake
+	// the feeder can see, not a close after a WELCOME it took as success. The
+	// credential digest is retained (never the token) so a later withdrawal
+	// can be reconciled without a reconnect.
+	digest := sha256.Sum256([]byte(authorized.token))
+	admission, refused := p.admit(ctx, observerContext, authorized.policyGeneration, func() { sessionCancel(); _ = conn.Close() }, policyCredential{digest: hex.EncodeToString(digest[:]), feed: feed})
+	if admission == nil {
+		metrics.PushAdmissionRefusedTotal.WithLabelValues(refused).Inc()
+		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: admissionRefusalError(refused)}))
+		p.log.Warn("push session refused by policy admission", "observer", observer, "feed", feed, "remote", remote, "reason", refused)
+		return
+	}
+	defer admission.release()
+	if err := w.write(wire.Welcome, mustWelcome(authorized.welcome)); err != nil {
+		return
+	}
 	metrics.PushConnectsTotal.WithLabelValues(observer).Inc()
 	metrics.PushObserversUp.WithLabelValues(observer).Inc()
 	defer metrics.PushObserversUp.WithLabelValues(observer).Dec()
@@ -479,23 +583,6 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 		frames = zr
 	}
 
-	// Admit this session under the observer's policy generation : a
-	// context that differs from the observer's current policy — a transfer or
-	// revocation that happened while the feeder was disconnected — transitions
-	// the policy, cancels every older session and enqueues the ordered reset
-	// marker before a single newly-authorized DATA record can enter live state.
-	// The credential digest is retained (never the token) so a later
-	// withdrawal can be reconciled without a reconnect.
-	digest := sha256.Sum256([]byte(authorized.token))
-	admission, refused := p.admit(ctx, observerContext, authorized.policyGeneration, func() { sessionCancel(); _ = conn.Close() }, policyCredential{digest: hex.EncodeToString(digest[:]), feed: feed})
-	if admission == nil {
-		// WELCOME{ok:true} has already been written, so the feeder sees a
-		// successful handshake followed by a close: say why on this side.
-		metrics.PushAdmissionRefusedTotal.WithLabelValues(refused).Inc()
-		p.log.Warn("push session refused by policy admission after WELCOME", "observer", observer, "feed", feed, "reason", refused)
-		return
-	}
-	defer admission.release()
 	metrics.PushHardwareTrustSessionsTotal.WithLabelValues(string(observerContext.HardwareTrust)).Inc()
 	if p.updates != nil {
 		p.updates.BeginSession(observerContext, session)
@@ -508,6 +595,20 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn) {
 	go p.watchAuthorization(sessionCtx, ctx, conn, authorized.token, observer, feed, observerContext, authorized.evidence, admission)
 	p.stream(sessionCtx, frames, w, observerContext, feed, session)
 	sessionCancel()
+}
+
+// admissionRefusalError is the WELCOME error a feeder sees for a policy
+// admission refusal: the two capacity cases name themselves, since the fix is
+// on the collector, not the feeder; the rest is a policy matter the feeder
+// cannot act on beyond backing off.
+func admissionRefusalError(reason string) string {
+	switch reason {
+	case "observer_ceiling":
+		return "collector observer capacity"
+	case "observer_sessions":
+		return "observer session limit"
+	}
+	return "policy admission refused"
 }
 
 // maxConsecutiveUnforwarded bounds how many frames in a row a connection may
@@ -552,19 +653,25 @@ type authorizedHello struct {
 	session  string
 	token    string
 	useZstd  bool
+	// welcome is the WELCOME{ok:true} the handshake prepared. The caller writes
+	// it once the session is admitted under the observer's policy, so a
+	// refused admission answers the HELLO instead of closing after a success.
+	welcome wire.WelcomeMsg
 }
 
-// handshake reads and authenticates the HELLO, replying WELCOME. The bearer
-// token remains session-local only so active authorization can be rechecked.
+// handshake reads and authenticates the HELLO and prepares the WELCOME. Every
+// refusal is answered here; the successful WELCOME is the caller's to write
+// after policy admission. The bearer token remains session-local only so
+// active authorization can be rechecked.
 func (p *PushServer) handshake(ctx context.Context, conn net.Conn, w *connWriter, remote string) (authorizedHello, bool) {
 	ft, payload, err := wire.ReadFrameMax(conn, helloMaxLen)
 	if err != nil || ft != wire.Hello {
-		p.log.Warn("push expected HELLO", "remote", remote, "frame", ft, "error", err)
+		p.preAuthWarn(remote, "push expected HELLO", "frame", ft, "error", err)
 		return authorizedHello{}, false
 	}
 	h, err := wire.ParseHello(payload)
 	if err != nil {
-		p.log.Warn("push bad HELLO json", "remote", remote, "error", err)
+		p.preAuthWarn(remote, "push bad HELLO json", "error", err)
 		return authorizedHello{}, false
 	}
 	policyGeneration := p.policyGeneration(h.Station)
@@ -577,7 +684,7 @@ func (p *PushServer) handshake(ctx context.Context, conn net.Conn, w *connWriter
 		}
 		metrics.PushAuthFailuresByReasonTotal.WithLabelValues(reason).Inc()
 		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "unauthorized"}))
-		p.log.Warn("push auth rejected", "remote", remote, "station", h.Station, "feed", h.Feed, "error", authErr)
+		p.preAuthWarn(remote, "push auth rejected", "station", clipHelloField(h.Station), "feed", clipHelloField(h.Feed), "error", authErr)
 		return authorizedHello{}, false
 	}
 	obs := observerContext.ObserverID
@@ -620,10 +727,8 @@ func (p *PushServer) handshake(ctx context.Context, conn net.Conn, w *connWriter
 			metrics.PushEvidenceRejectedTotal.WithLabelValues(reason).Inc()
 		}
 	}
-	if err := w.write(wire.Welcome, mustWelcome(welcome)); err != nil {
-		return authorizedHello{}, false
-	}
-	return authorizedHello{observer: observerContext, evidence: evidence, feed: h.Feed, session: h.Session, token: h.Token, useZstd: h.Zstd, policyGeneration: policyGeneration, reception: h.Reception}, true
+	return authorizedHello{observer: observerContext, evidence: evidence, feed: h.Feed, session: h.Session, token: h.Token, useZstd: h.Zstd,
+		policyGeneration: policyGeneration, reception: h.Reception, welcome: welcome}, true
 }
 
 // readEvidence reads the one EVIDENCE frame a HELLO announced, under the
@@ -701,7 +806,17 @@ func stampEvidence(observer identity.ObserverContext, result commissioning.Resul
 // connection. A control-plane hardware label is rejected unless this is mTLS,
 // the active leaf fingerprint matches, and manufacturer attestation is present.
 func (p *PushServer) authorize(ctx context.Context, conn net.Conn, token, station, feed string) (identity.ObserverContext, bool, error) {
-	resolved, ok := p.auth.Authenticate(ctx, token, station, feed)
+	var resolved identity.ObserverContext
+	var ok bool
+	if verifier, verifies := p.auth.(AuthorizationVerifier); verifies {
+		var err error
+		resolved, ok, err = verifier.VerifyAuthorization(ctx, token, station, feed)
+		if err != nil {
+			return identity.ObserverContext{}, false, fmt.Errorf("%w: %w", ErrAuthorizationUnavailable, err)
+		}
+	} else {
+		resolved, ok = p.auth.Authenticate(ctx, token, station, feed)
+	}
 	if !ok {
 		return identity.ObserverContext{}, false, nil
 	}
@@ -811,6 +926,31 @@ func (p *PushServer) watchAuthorization(ctx, ingestCtx context.Context, conn net
 			checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			current, ok, err := p.authorize(checkCtx, conn, token, station, feed)
 			cancel()
+			if ctx.Err() != nil {
+				// The session ended while the check ran (the ticker and the
+				// cancellation were both ready). Whatever the answer was, it is
+				// not new authority over a session that is already gone.
+				return
+			}
+			if errors.Is(err, ErrAuthorizationUnavailable) {
+				// Not a verdict. The session keeps the authority the control
+				// plane last confirmed, until that confirmation is older than
+				// the documented revocation bound; then it is withdrawn so the
+				// bound still holds, and the reconnect is denied until the
+				// control plane answers again.
+				metrics.PushAuthorizationUnavailableTotal.WithLabelValues("session").Inc()
+				unverifiedFor := time.Since(admission.verifiedAt())
+				if bound := p.unavailabilityBound(); unverifiedFor <= bound {
+					p.log.Warn("push feeder authorization recheck could not be completed; keeping the session within the revocation bound",
+						"observer", initial.ObserverID, "unverified_for", unverifiedFor, "bound", bound, "error", err)
+					continue
+				}
+				p.log.Warn("push feeder authorization unverifiable past the revocation bound; closing active session",
+					"observer", initial.ObserverID, "unverified_for", unverifiedFor, "error", err)
+				p.changeAdmission(ingestCtx, admission, identity.ObserverContext{})
+				_ = conn.Close()
+				return
+			}
 			if !ok || !initial.AuthorizationEqual(current) {
 				p.log.Warn("push feeder authorization changed; closing active session",
 					"observer", initial.ObserverID, "authorized", ok, "error", err)
@@ -821,6 +961,7 @@ func (p *PushServer) watchAuthorization(ctx, ingestCtx context.Context, conn net
 				_ = conn.Close()
 				return
 			}
+			admission.verified(time.Now())
 			if p.evidence != nil {
 				if err := p.evidence.Recheck(evidence); err != nil {
 					reason := commissioning.ReasonMalformed

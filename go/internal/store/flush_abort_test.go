@@ -387,3 +387,116 @@ func TestNormalFlushSkippedOnceShutdownBegun(t *testing.T) {
 		}
 	}
 }
+
+// TestDegradedAfterConsecutiveQueueOverflows guards the second drop path: a
+// database that succeeds too slowly to keep up never fails a flush, but while
+// the writer is blocked in one the queue fills and Enqueue drops every further
+// frame. Two consecutive cycles with overflow drops must surface through
+// Degraded() (and the drops through StoreDroppedTotal).
+func TestDegradedAfterConsecutiveQueueOverflows(t *testing.T) {
+	const batchEvery = 20 * time.Millisecond
+	slow := func(ctx context.Context, batch []*NavFrame) (int64, error) {
+		select {
+		case <-time.After(2 * batchEvery): // a slow-but-working DB
+			return int64(len(batch)), nil
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
+	s := atomicStore(slow)
+	s.in = make(chan *NavFrame, queueDepth)
+	s.batchSize = 100
+	s.batchEvery = batchEvery
+	droppedBefore := testutil.ToFloat64(metrics.StoreDroppedTotal)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); s.Run(ctx) }()
+
+	frame := &NavFrame{SourceID: "dial", Raw: []byte{1}}
+	deadline := time.Now().Add(10 * time.Second)
+	for s.Degraded() == "" && time.Now().Before(deadline) {
+		for i := 0; i < queueDepth; i++ { // keep the queue overflowing while the writer is blocked
+			s.Enqueue(frame)
+		}
+	}
+	reason, streak := s.Degraded(), s.overflowStreak.Load()
+	cancel()
+	<-done
+	if reason == "" {
+		t.Fatal("Degraded() empty after consecutive overflowing cycles, want a reason")
+	}
+	if streak < degradedCycles {
+		t.Errorf("overflowStreak = %d while degraded (%q), want ≥ %d (the overflow streak must be what degraded)", streak, reason, degradedCycles)
+	}
+	if d := testutil.ToFloat64(metrics.StoreDroppedTotal) - droppedBefore; d <= 0 {
+		t.Errorf("StoreDroppedTotal delta = %v, want > 0", d)
+	}
+}
+
+// TestDegradedAfterConsecutiveQuarantineFloods guards the third drop path: a
+// batch whose rows are mostly poison is quarantined row by row, acked as
+// durable and discarded. Two consecutive cycles that quarantine more than a
+// tenth of their rows must degrade; one must not; a clean cycle resets; and a
+// lone poison row in a healthy batch (what bisection exists for) never counts.
+func TestDegradedAfterConsecutiveQuarantineFloods(t *testing.T) {
+	poison := &pgconn.PgError{Code: "22P02"}
+	s := atomicStore(func(ctx context.Context, batch []*NavFrame) (int64, error) {
+		for _, f := range batch {
+			if f.Raw[0] == 0xBA {
+				return 0, poison
+			}
+		}
+		return int64(len(batch)), nil
+	})
+	deadline := func() time.Time { return time.Now().Add(time.Second) }
+	flood := make([]*NavFrame, 0, 10)
+	for i := 0; i < 10; i++ {
+		flood = append(flood, &NavFrame{SourceID: "dial", Raw: []byte{0xBA}})
+	}
+	if s.flush(context.Background(), flood, deadline()); s.Degraded() != "" {
+		t.Errorf("Degraded() = %q after ONE flood cycle, want empty", s.Degraded())
+	}
+	if s.flush(context.Background(), flood, deadline()); s.Degraded() == "" {
+		t.Error("Degraded() empty after two consecutive flood cycles, want a reason")
+	}
+	healthy := []*NavFrame{{SourceID: "dial", Raw: []byte{1}}}
+	if s.flush(context.Background(), healthy, deadline()); s.Degraded() != "" {
+		t.Errorf("Degraded() = %q after a clean cycle, want empty (streak must reset)", s.Degraded())
+	}
+	lone := make([]*NavFrame, 0, 20)
+	for i := 0; i < 20; i++ {
+		raw := byte(1)
+		if i == 7 {
+			raw = 0xBA
+		}
+		lone = append(lone, &NavFrame{SourceID: "dial", Raw: []byte{raw}})
+	}
+	for i := 0; i < 3; i++ {
+		s.flush(context.Background(), lone, deadline())
+	}
+	if s.Degraded() != "" || s.quarantineStreak.Load() != 0 {
+		t.Errorf("Degraded() = %q, quarantineStreak = %d after repeated single-poison-row batches, want healthy (one row in twenty is below the flood threshold)", s.Degraded(), s.quarantineStreak.Load())
+	}
+}
+
+// TestDropStreaksClearedAfterQuietWindow guards the overflow and quarantine
+// streaks are cleared by a full ingest-quiet window with no write attempt (no
+// frames arrived, so none can have been dropped) and only then — recent
+// attempts own the verdict — without the pool probe the failure streak needs.
+func TestDropStreaksClearedAfterQuietWindow(t *testing.T) {
+	s := atomicStore(func(ctx context.Context, batch []*NavFrame) (int64, error) { return int64(len(batch)), nil })
+	now := time.Now()
+	s.overflowStreak.Store(degradedCycles)
+	s.quarantineStreak.Store(degradedCycles)
+	s.lastWriteAttempt = now.Add(-idleQuietWindow / 2)
+	s.clearStreakIfIdleHealthy(context.Background(), now)
+	if s.Degraded() == "" {
+		t.Fatal("drop streaks cleared while a write was attempted inside the quiet window")
+	}
+	s.lastWriteAttempt = now.Add(-2 * idleQuietWindow)
+	s.clearStreakIfIdleHealthy(context.Background(), now)
+	if s.Degraded() != "" {
+		t.Fatalf("Degraded() = %q after a full quiet window, want empty", s.Degraded())
+	}
+}

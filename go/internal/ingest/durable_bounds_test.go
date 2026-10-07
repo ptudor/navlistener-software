@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log/slog"
@@ -277,13 +278,125 @@ func TestPushObserverPolicyCapacityIsVisible(t *testing.T) {
 	if got := testutil.ToFloat64(metrics.PushObserverPoliciesTracked); got != 5 {
 		t.Errorf("gauge = %v after a repeat identity; it must count distinct policies", got)
 	}
-	// And the documented ceiling still fails closed, with its existing reason.
+	// And the documented ceiling still fails closed, with its existing reason,
+	// while every retained policy was admitted recently (none is reclaimable).
+	p.policyRetention = defaultPolicyRetention
 	p.authorizationMu.Lock()
 	for i := range maxTrackedObserverPolicies {
-		p.policies[fmt.Sprintf("filler-%d", i)] = &observerPolicy{sessions: map[*Admission]context.CancelFunc{}}
+		p.policies[fmt.Sprintf("filler-%d", i)] = &observerPolicy{sessions: map[*Admission]context.CancelFunc{}, lastAdmitted: time.Now()}
 	}
 	p.authorizationMu.Unlock()
 	if a, reason := admit("one-too-many"); a != nil || reason != "observer_ceiling" {
 		t.Errorf("admission past the ceiling = %v/%q, want a refusal with observer_ceiling", a, reason)
+	}
+}
+
+// TestIdlePoliciesReclaimedAtCeiling guards the ceiling is not a lockout: a
+// policy with no live session whose last admission is older than the policy
+// retention window is reclaimed when the table is full, so a new observer is
+// admitted and the gauge follows; a policy admitted recently, or one with a
+// live session, stays.
+func TestIdlePoliciesReclaimedAtCeiling(t *testing.T) {
+	p := newPushServer("", &tls.Config{}, make(chan *RawFrame, 8), nil, time.Second, 8, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx := context.Background()
+	for i := range maxTrackedObserverPolicies {
+		c := identity.NewPrivateContext(fmt.Sprintf("obs-%d", i), identity.CredentialToken)
+		a, reason := p.admit(ctx, c, 0, func() {})
+		if a == nil {
+			t.Fatalf("admission %d refused: %s", i, reason)
+		}
+		if i != 0 { // obs-0 keeps a live session
+			a.release()
+		}
+	}
+	stale := func(observer string) {
+		policy := p.policies[observer]
+		policy.mu.Lock()
+		policy.lastAdmitted = time.Now().Add(-p.policyRetention - time.Minute)
+		policy.mu.Unlock()
+	}
+	stale("obs-0") // live session: must survive however old its admission
+	stale("obs-1") // idle and past retention: reclaimable
+	newcomer := identity.NewPrivateContext("replacement-board", identity.CredentialToken)
+	a, reason := p.admit(ctx, newcomer, 0, func() {})
+	if a == nil {
+		t.Fatalf("new observer refused at the ceiling although an idle policy was reclaimable: %s", reason)
+	}
+	if _, kept := p.policies["obs-1"]; kept {
+		t.Fatal("idle policy past retention was not reclaimed")
+	}
+	if _, kept := p.policies["obs-0"]; !kept {
+		t.Fatal("policy with a live session was reclaimed")
+	}
+	if _, kept := p.policies["obs-2"]; !kept {
+		t.Fatal("recently admitted policy was reclaimed")
+	}
+	if got := testutil.ToFloat64(metrics.PushObserverPoliciesTracked); got != maxTrackedObserverPolicies {
+		t.Fatalf("tracked-policies gauge = %v after reclaim and admission, want %d", got, maxTrackedObserverPolicies)
+	}
+	// With nothing reclaimable the ceiling still refuses.
+	if b, reason := p.admit(ctx, identity.NewPrivateContext("one-too-many", identity.CredentialToken), 0, func() {}); b != nil || reason != "observer_ceiling" {
+		t.Fatalf("admission past a full table of live or recent policies = %v/%q, want observer_ceiling", b, reason)
+	}
+}
+
+// TestDurablePerSourceCapEvictsResolvedSessions guards a restart-looping
+// station is not locked out of durable ingest: at the per-observer session
+// cap, the oldest fully resolved session is evicted (counted) and the new
+// session's receipt admitted; when every retained session has an unresolved
+// hole the receipt is still refused.
+func TestDurablePerSourceCapEvictsResolvedSessions(t *testing.T) {
+	tr := NewDurableTracker()
+	evicted := metrics.DurableSessionsEvictedTotal.WithLabelValues("looper")
+	before := testutil.ToFloat64(evicted)
+	for i := 0; i < maxDurableSessionsPerSource; i++ {
+		session := fmt.Sprint("boot-", i)
+		if !tr.Received("looper", session, 1, true) {
+			t.Fatalf("session %d refused under the cap", i)
+		}
+		tr.Resolved("looper", session, 1)
+		tr.mu.Lock()
+		tr.m[durableKey{"looper", session}].touched = time.Now().Add(-time.Duration(maxDurableSessionsPerSource-i) * time.Second)
+		tr.mu.Unlock()
+	}
+	if !tr.Received("looper", "boot-new", 1, true) {
+		t.Fatal("new session refused although every retained session was resolved")
+	}
+	if _, kept := tr.m[durableKey{"looper", "boot-0"}]; kept {
+		t.Fatal("the oldest resolved session was not the one evicted")
+	}
+	if _, kept := tr.m[durableKey{"looper", "boot-new"}]; !kept || tr.perSource["looper"] != maxDurableSessionsPerSource {
+		t.Fatalf("accounting after eviction: kept=%v perSource=%d", kept, tr.perSource["looper"])
+	}
+	if got := testutil.ToFloat64(evicted) - before; got != 1 {
+		t.Fatalf("evictions counted %v, want 1", got)
+	}
+	// Every retained session holding a hole: the cap stands.
+	holes := NewDurableTracker()
+	for i := 0; i < maxDurableSessionsPerSource; i++ {
+		if !holes.Received("looper", fmt.Sprint("boot-", i), 1, true) {
+			t.Fatalf("session %d refused under the cap", i)
+		}
+	}
+	if holes.Received("looper", "boot-new", 1, true) {
+		t.Fatal("a session with an unresolved hole was evicted for a new one")
+	}
+	// A resolved session is reclaimed after a short idle, not a week.
+	tr.mu.Lock()
+	tr.m[durableKey{"looper", "boot-new"}].touched = time.Now().Add(-durableResolvedIdle - time.Minute)
+	tr.pruneLocked(time.Now())
+	_, kept := tr.m[durableKey{"looper", "boot-new"}]
+	tr.mu.Unlock()
+	if !kept {
+		t.Fatal("a session with an outstanding receipt was reclaimed as resolved")
+	}
+	tr.Resolved("looper", "boot-new", 1)
+	tr.mu.Lock()
+	tr.m[durableKey{"looper", "boot-new"}].touched = time.Now().Add(-durableResolvedIdle - time.Minute)
+	tr.pruneLocked(time.Now())
+	_, kept = tr.m[durableKey{"looper", "boot-new"}]
+	tr.mu.Unlock()
+	if kept {
+		t.Fatalf("resolved session idle past %v was not reclaimed", durableResolvedIdle)
 	}
 }

@@ -44,6 +44,8 @@ batch_size     = 1000    # rows per CopyFrom
 batch_interval = "1s"    # flush cadence
 compress_after = "1 day" # columnar-compress raw chunks older than this
 raw_retention  = "7 days" # drop raw frames older than this; events/snapshots have separate policies
+# max_conns    = 8        # historian pool: the writer keeps one connection, the rest serve reads.
+#                         # 0 or absent: the DSN's pool_max_conns if it has one, else 8.
 
 # Production ownership, enrollment, credential, membership, and publication
 # resolution. When dsn is set, [[push.observer]] bootstrap rows are forbidden—DB
