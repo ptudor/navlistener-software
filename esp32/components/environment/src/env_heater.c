@@ -101,8 +101,10 @@ env_heater_action_t env_heater_step(env_heater_t *h, int64_t now, const env_samp
         peak(&h->run.hdc_peak, &h->run.valid, ENV_RUN_HDC_PEAK, s->hdc_c);
         h->run.rh_stop = s->rh_percent; h->run.valid |= ENV_RUN_RH_STOP;
     }
-    // Safety first when several conditions coincide in one step.
-    if (s->bus_error) return stop(h, ENV_HEATER_BUS_ERROR);
+    // Safety first when several conditions coincide in one step. Only a failed transfer with
+    // the HDC itself ends the run: a listed-but-absent MCP9808 NACKing on the same bus shows
+    // up as mcp_valid=false, and its peak stays best-effort.
+    if (s->hdc_bus_error) return stop(h, ENV_HEATER_BUS_ERROR);
     if (!s->hdc_valid || !heat_en) return stop(h, ENV_HEATER_SENSOR_LOST); // no data, or reset
     if (s->hdc_c >= h->c.overtemp_c) return stop(h, ENV_HEATER_OVERTEMP);
     if (s->rh_percent <= h->c.dry_rh) return stop(h, ENV_HEATER_DRY);

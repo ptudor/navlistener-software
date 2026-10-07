@@ -45,6 +45,35 @@ class TimingPlotTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 timing_plot.decode(b[:n])
 
+    def ota_build_body(self):
+        # What timing_poll logs on a CONFIG_NVF_OTA build: the timing body with the tag-9
+        # update status (3-byte header, 140-byte value) appended by append_update.
+        return self.golden() + bytes([9, 0, 140]) + bytes(140)
+
+    def test_update_status_element_is_ignored(self):
+        self.assertEqual(timing_plot.decode(self.ota_build_body()), timing_plot.decode(self.golden()))
+        # An unknown bounded tag in front of the timing element is skipped the same way.
+        reordered = self.golden()[:24] + bytes([9, 0, 140]) + bytes(140) + self.golden()[24:]
+        self.assertEqual(timing_plot.decode(reordered), timing_plot.decode(self.golden()))
+
+    def test_truncated_or_missing_elements_are_rejected(self):
+        b = self.ota_build_body()
+        for n in range(len(self.golden()) + 1, len(b)):  # a partial tag-9 header or value
+            with self.assertRaises(ValueError):
+                timing_plot.decode(b[:n])
+        with self.assertRaises(ValueError):
+            timing_plot.decode(self.golden()[:24] + bytes([9, 0, 140]) + bytes(140))  # no timing element
+        with self.assertRaises(ValueError):
+            timing_plot.decode(self.golden() + self.golden()[24:])  # two timing elements
+
+    def test_ota_build_log_exports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)/"timing.log"
+            p.write_text("I (10) pulse_timing: sample=" + self.ota_build_body().hex() + "\n")
+            rows = timing_plot.read_log(p)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["elapsed_s"], 999)
+
 
 if __name__ == "__main__":
     unittest.main()

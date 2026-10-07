@@ -5,6 +5,10 @@
 #define NVF_TUF_ROOT_CAP 8192
 #define NVF_UPDATE_PATH_CAP 193
 #define NVF_UPDATE_VERSION 1
+// How far an unauthenticated clock may move the persisted trusted time forward in one
+// refresh. A larger jump is a wrong clock (NETWORK_TIME_UNAVAILABLE, retried), not a ratchet:
+// one spoofed or bad SNTP reply must not make every role read as expired for good.
+#define NVF_TUF_TIME_WINDOW_S (400ULL*86400)
 typedef enum {
 #define NVF_UPDATE_ERROR(symbol,domain,reason,name) symbol=(domain)*1000+(reason),
 #include "update_errors.inc"
@@ -33,6 +37,9 @@ typedef struct {
 } nvf_update_release_t;
 typedef struct {
     uint64_t now, running_sequence;
+    // now came from the board's GNSS- or RTC-qualified UTC (rtc_policy.h) rather than SNTP;
+    // only such a clock may move the persisted trusted time past NVF_TUF_TIME_WINDOW_S.
+    bool now_trusted;
     uint8_t board_uid[NVF_BOARD_UID_SIZE];
     uint16_t hardware_revision, layout;
     bool hardware_known;

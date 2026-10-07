@@ -389,7 +389,15 @@ static void confirm_startup(void)
         ESP_LOGE(TAG, "receiver task did not become ready; rebooting");
         esp_restart();
     }
-    ESP_ERROR_CHECK(nvf_ota_confirm_boot());
+    esp_err_t confirm = nvf_ota_confirm_boot();
+    if (confirm != ESP_OK) {
+        // Only a trial boot whose update state could not be confirmed gets here. Leaving the
+        // slot unconfirmed and restarting lets the bootloader roll back to the previous image;
+        // an already valid or factory image never fails this call, so there is no boot loop.
+        ESP_LOGE(TAG, "trial boot not confirmed (%s); restarting for rollback", esp_err_to_name(confirm));
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        esp_restart();
+    }
     ESP_LOGI(TAG, "startup stack minimum free=%u bytes",
              (unsigned)uxTaskGetStackHighWaterMark(NULL));
 }

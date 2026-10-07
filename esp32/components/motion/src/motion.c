@@ -60,7 +60,7 @@ static void IRAM_ATTR int1_isr(void *arg)
 static void motion_task(void *arg)
 {
     (void)arg;
-    bool announced = false;
+    bool announced = false, stack_logged = false;
     uint32_t last_packets = 0;
     int64_t last_progress = 0, next_attempt = 0;
     for (;;) {
@@ -88,6 +88,12 @@ static void motion_task(void *arg)
                 status.ready = false;
             } else {
                 if (status.stats.latest_packet != before) status.latest_ms = now;
+                if (!stack_logged) {
+                    // The FIFO service and its float logging are this task's deepest path.
+                    stack_logged = true;
+                    ESP_LOGI(TAG, "motion stack minimum free=%u bytes after the first FIFO service",
+                             (unsigned)uxTaskGetStackHighWaterMark(NULL));
+                }
                 bool moving;
                 if (icm45686_rate_due(&status.stats, now, &moving)) {
                     if (icm45686_set_rate(&io, profile, moving, &status.stats))
@@ -127,7 +133,10 @@ esp_err_t motion_start(i2c_master_bus_handle_t bus, int int1_gpio, int int2_gpio
         .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_DISABLE, .pull_down_en = GPIO_PULLDOWN_ENABLE,
         .intr_type = GPIO_INTR_DISABLE};
     ESP_RETURN_ON_ERROR(gpio_config(&inputs), TAG, "interrupt inputs");
-    if (xTaskCreate(motion_task, "motion", 3072, NULL, 4, &task) != pdPASS) return ESP_ERR_NO_MEM;
+    // Measured on xtensa with -fstack-usage: motion_task 112 B + icm45686_service 304 B, plus
+    // the I2C driver and float formatting underneath (unmeasured, about 1.5 KiB). 4 KiB keeps
+    // the 1 KiB margin; the task logs its minimum free stack after its first FIFO service.
+    if (xTaskCreate(motion_task, "motion", 4096, NULL, 4, &task) != pdPASS) return ESP_ERR_NO_MEM;
     esp_err_t err = gpio_install_isr_service(0);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
     ESP_RETURN_ON_ERROR(gpio_set_intr_type(int1_gpio, GPIO_INTR_POSEDGE), TAG, "INT1 edge");

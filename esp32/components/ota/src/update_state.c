@@ -35,6 +35,19 @@ uint64_t nvf_update_retry(uint64_t now,unsigned attempt,uint32_t random) {
     uint64_t delay=attempt==0?3600:attempt==1?21600:86400;
     return now+delay+random%(delay/4+1);
 }
+uint64_t nvf_update_settle(uint64_t next_check,uint64_t now,const uint8_t board_uid[NVF_BOARD_UID_SIZE],unsigned channel,uint32_t jitter,const nvf_tuf_io_t *io) {
+    if(next_check>now)return next_check;
+    uint64_t weekly=nvf_update_weekly(now,board_uid,channel,jitter,io);
+    return weekly>now?weekly:nvf_update_retry(now,0,jitter);
+}
+uint64_t nvf_update_install_retry(uint64_t now,unsigned attempts,uint32_t random) {
+    return attempts==0?now+300:nvf_update_retry(now,attempts-1,random);
+}
+bool nvf_update_staged_current(const nvf_update_status_t *s,uint64_t now) {
+    return s->staged.sequence && s->last_check && !s->retry && s->next_check>now &&
+        s->available.sequence==s->staged.sequence && s->available.generation==s->staged.generation &&
+        !memcmp(s->available.hash,s->staged.hash,32);
+}
 void nvf_update_encode_status(const nvf_update_status_t *s,unsigned profile,uint8_t p[140]) {
     memset(p,0,140);p[0]=1;p[1]=s->mode;p[2]=s->channel+1;p[3]=s->state;p[4]=s->security;p[5]=(uint8_t)profile;
     put(p+6,s->layout,2);put(p+8,s->running,8);put(p+16,s->available.sequence,8);put(p+24,s->staged.sequence,8);put(p+32,s->failed,8);

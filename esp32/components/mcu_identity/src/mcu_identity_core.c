@@ -197,6 +197,21 @@ const char *nvf_mcu_keygen_refusal(const nvf_mcu_keygen_state_t *s)
     return NULL;
 }
 
+const char *nvf_mcu_keygen_run(const nvf_mcu_keygen_steps_t *steps)
+{
+    steps->lock(steps->context);
+    const char *why = steps->refusal(steps->context);
+    steps->unlock(steps->context);
+    if (why) return why;
+    why = steps->generate(steps->context);
+    if (why) return why;
+    steps->lock(steps->context);
+    why = steps->refusal(steps->context);
+    if (!why) why = steps->commit(steps->context);
+    steps->unlock(steps->context);
+    return why;
+}
+
 void nvf_commission_observer_id(const uint8_t uid[NVF_BOARD_UID_SIZE], char out[NVF_BOARD_OBSERVER_SIZE])
 {
     nvf_uid_observer(uid, out);

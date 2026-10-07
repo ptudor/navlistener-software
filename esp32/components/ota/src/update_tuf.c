@@ -322,6 +322,9 @@ static int release_info(const metadata *channel,const metadata *manifest,const m
 int nvf_tuf_refresh(nvf_tuf_trust_t *trust,unsigned channel_index,const nvf_update_device_t *device,nvf_update_release_t *out,const nvf_tuf_io_t *io) {
     if(channel_index>=3 || !trust->root_length || trust->root_length>NVF_TUF_ROOT_CAP)return UP_TRUST_UNCONFIGURED;
     if(device->now<1704067200)return UP_TIME;
+    // The persisted trusted time never moves backwards, and an unauthenticated clock may move
+    // it forward only within the plausibility window; the board's own GNSS/RTC time may go further.
+    if(!device->now_trusted && trust->trusted_time && device->now>trust->trusted_time+NVF_TUF_TIME_WINDOW_S)return UP_TIME;
     uint64_t now=device->now>trust->trusted_time?device->now:trust->trusted_time;
     metadata root={0},timestamp={0},snapshot={0},targets={0},releases={0},channel={0},choice={0},manifest={0};
     nvf_tuf_trust_t *candidate=nvf_update_alloc(sizeof *candidate);if(!candidate)return UP_STORAGE;*candidate=*trust;

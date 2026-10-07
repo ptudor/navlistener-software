@@ -39,6 +39,7 @@ static inline void *esp_tls_get_ssl_context(esp_tls_t *t){return t;}
 static inline int mbedtls_ssl_export_keying_material(mbedtls_ssl_context *s,uint8_t *out,size_t n,const char *label,size_t label_len,const unsigned char *c,size_t cn,int use)
 {(void)s;(void)label;(void)label_len;(void)c;(void)cn;(void)use;for(size_t i=0;i<n;i++)out[i]=(uint8_t)(0xe0+i);return 0;}
 void vTaskDelay(int);
+static inline unsigned uxTaskGetStackHighWaterMark(void *task){(void)task;return 8192;}
 uint32_t esp_random(void);
 int xTaskCreate(void (*)(void*),const char*,int,void*,int,void*);
 static inline SemaphoreHandle_t xSemaphoreCreateMutex(void){return 1;}

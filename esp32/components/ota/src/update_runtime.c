@@ -85,7 +85,26 @@ static QueueHandle_t discard_results,discard_replies;
 static bool is_cancelled(void){return atomic_load(&cancel_epoch)!=operation_epoch;}
 static nvs_handle_t storage;
 static bool storage_ready,secondary;
-static uint64_t clock_now(void){time_t t=time(NULL);return t>0?(uint64_t)t:0;}
+// The board's trusted UTC (nvf_update_time_reference), under its own spinlock because the
+// board task feeds it before this component starts and clock_now runs under view_lock.
+static portMUX_TYPE reference_lock=portMUX_INITIALIZER_UNLOCKED;
+static uint64_t reference_utc;
+static int64_t reference_uptime_ms;
+#define REFERENCE_MAX_AGE_MS (24*60*60*1000)
+void nvf_update_time_reference(uint64_t utc,int64_t uptime_ms) {
+    if(!utc)return;
+    taskENTER_CRITICAL(&reference_lock);reference_utc=utc;reference_uptime_ms=uptime_ms;taskEXIT_CRITICAL(&reference_lock);
+}
+// Metadata time and scheduling share one clock: the board's GNSS/RTC reference projected by
+// uptime while it is fresh, otherwise the system clock that SNTP sets. *trusted says which.
+static uint64_t clock_source(bool *trusted) {
+    taskENTER_CRITICAL(&reference_lock);uint64_t utc=reference_utc;int64_t sampled=reference_uptime_ms;taskEXIT_CRITICAL(&reference_lock);
+    int64_t uptime=esp_timer_get_time()/1000;
+    if(utc && uptime>=sampled && uptime-sampled<=REFERENCE_MAX_AGE_MS){if(trusted)*trusted=true;return utc+(uint64_t)(uptime-sampled)/1000;}
+    if(trusted)*trusted=false;
+    time_t t=time(NULL);return t>0?(uint64_t)t:0;
+}
+static uint64_t clock_now(void){return clock_source(NULL);}
 static void publish(void) {
     xSemaphoreTake(view_lock,portMAX_DELAY);view=record.status;xSemaphoreGive(view_lock);
 }
@@ -143,7 +162,9 @@ done:
 }
 static int fetch(void *context,const char *path,size_t limit,char **bytes,size_t *length) {
     (void)context;int err=fetch_one(secondary?1:0,path,limit,bytes,length);
-    if(err && !secondary)err=fetch_one(1,path,limit,bytes,length);
+    // A clean 404 is an answer (the next root rotation does not exist yet), not a transport
+    // failure: the whole refresh moves to the secondary origin when it has to, in check().
+    if(err && err!=UP_NOT_FOUND && !secondary)err=fetch_one(1,path,limit,bytes,length);
     return err;
 }
 static const nvf_tuf_io_t io={.fetch=fetch,.sha256=sha256,.public_key=public_key,.verify=verify,.save=save_trust};
@@ -159,7 +180,7 @@ static void failure(unsigned error,bool retry) {
 static bool check(void) {
     if(!hooks.online || !hooks.online()){failure(UP_NETWORK,true);return false;}
     record.status.state=UP_CHECKING;record.status.error=UP_OK;publish();
-    nvf_update_device_t device=hooks.device;device.now=clock_now();device.running_sequence=record.status.running;
+    nvf_update_device_t device=hooks.device;device.now=clock_source(&device.now_trusted);device.running_sequence=record.status.running;
     nvf_update_release_t release;secondary=false;
     int err=nvf_tuf_refresh(&record.trust,record.status.channel,&device,&release,&io);
     // A transport success with stale/corrupt content also gets a second origin.
@@ -169,14 +190,23 @@ static bool check(void) {
     }
     if(err){
         if(err/1000==3){
+            // A stable eligibility verdict (cohort, hardware, compatibility) is an answer from a
+            // completed check, not a failure to retry: record it and keep the weekly slot.
             record.status.available=release;memset(&record.status.staged,0,sizeof record.status.staged);
-            record.staged_address=0;record.status.received=0;record.status.last_check=device.now;
+            record.staged_address=0;record.status.received=0;record.status.last_check=device.now;record.status.retry=0;
+            record.status.next_check=nvf_update_settle(record.status.next_check,device.now,device.board_uid,record.status.channel,esp_random(),&io);
+            failure(err,false);return false;
         }
         failure(err,true);return false;
     }
     if(record.status.available.sequence!=release.sequence)record.status.received=0;
     record.status.available=release;record.status.last_check=device.now;record.status.retry=0;
-    if(release.sequence && release.sequence==record.status.failed){failure(UP_TRIAL_FAILED,false);return false;}
+    if(release.sequence && release.sequence==record.status.failed){
+        // The rolled-back release is still the channel's choice: nothing to do until the
+        // channel changes, so wait for the weekly slot rather than re-checking every pass.
+        record.status.next_check=nvf_update_settle(record.status.next_check,device.now,device.board_uid,record.status.channel,esp_random(),&io);
+        failure(UP_TRIAL_FAILED,false);return false;
+    }
     record.status.error=UP_OK;record.status.next_check=nvf_update_weekly(device.now,device.board_uid,record.status.channel,esp_random(),&io);
     if(record.status.staged.sequence && (record.status.staged.sequence!=release.sequence ||
        memcmp(record.status.staged.hash,release.hash,32))) {
@@ -251,7 +281,10 @@ static bool stage(uint64_t sequence) {
 static bool install(uint64_t sequence,bool discard,bool automatic) {
     if(!record.status.staged.sequence || (sequence && sequence!=record.status.staged.sequence)){failure(UP_INELIGIBLE,false);return false;}
     nvf_update_release_t saved=record.status.staged;
-    bool fresh=check();
+    // An automatic retry held by a safety gate re-uses the persisted verdict while no check is
+    // due and the staged release is still the channel's verified choice; the partition
+    // signature is re-verified locally below either way. Operator installs always refresh.
+    bool fresh=(automatic && nvf_update_staged_current(&record.status,clock_now())) || check();
     if(!fresh && (automatic || !nvf_update_offline_install_allowed(&record.status,&record.trust)))return false;
     if(fresh && (!record.status.staged.sequence || record.status.available.sequence!=saved.sequence)){failure(UP_INELIGIBLE,false);return false;}
     if(is_cancelled())return false;
@@ -327,7 +360,8 @@ static void worker(void *unused) {
            (j.action==UP_CHECK || j.action==UP_CANCEL || record.status.command.generation==record.status.available.generation))do_job(&j);
         else {record.command_pending=false;persist();}
     }
-    uint64_t next_install=0;
+    // Safety-gate retries back off per staged release: 5 minutes, then the retry ladder.
+    uint64_t next_install=0,attempted_release=0;unsigned install_attempts=0;
     for(;;) {
         job j;
         if(xQueueReceive(jobs,&j,pdMS_TO_TICKS(1000))==pdTRUE){do_job(&j);continue;}
@@ -342,8 +376,11 @@ static void worker(void *unused) {
             nvf_update_release();
         }
         if(record.status.mode==UP_INSTALL && record.status.staged.sequence && clock_now()>=next_install && nvf_update_claim()) {
-            operation_epoch=atomic_load(&cancel_epoch);next_install=clock_now()+300;
+            operation_epoch=atomic_load(&cancel_epoch);
+            if(record.status.staged.sequence!=attempted_release){attempted_release=record.status.staged.sequence;install_attempts=0;}
             install(record.status.staged.sequence,false,true);
+            next_install=nvf_update_install_retry(clock_now(),install_attempts,esp_random());
+            if(install_attempts<8)install_attempts++; // the ladder is flat past the third attempt
             if(record.status.retry && record.status.next_check>next_install)next_install=record.status.next_check;
             nvf_update_release();
         }
@@ -455,6 +492,7 @@ bool nvf_update_discard_result(uint32_t *count,unsigned timeout){return discard_
 void nvf_update_discard_response(bool sent){if(discard_replies)xQueueOverwrite(discard_replies,&sent);}
 #else
 esp_err_t nvf_update_start(const nvf_update_hooks_t *h){(void)h;return ESP_ERR_NOT_SUPPORTED;}
+void nvf_update_time_reference(uint64_t utc,int64_t uptime_ms){(void)utc;(void)uptime_ms;}
 bool nvf_update_boot_ready(void){return true;}
 void nvf_update_confirmed(void){}
 void nvf_update_status(nvf_update_status_t *s){*s=(nvf_update_status_t){.mode=UP_MANUAL};}

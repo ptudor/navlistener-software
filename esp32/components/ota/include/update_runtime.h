@@ -11,6 +11,10 @@ typedef struct {
     void (*resume)(void);
 } nvf_update_hooks_t;
 esp_err_t nvf_update_start(const nvf_update_hooks_t *);
+// The wall-clock UTC the board trusts (rtc_policy.h: GNSS, else a validated RTC calendar),
+// stamped with the uptime it was read at. Fed on every board pass; the updater prefers it
+// over SNTP for metadata time and scheduling while it is less than a day old.
+void nvf_update_time_reference(uint64_t utc,int64_t uptime_ms);
 bool nvf_update_boot_ready(void);
 void nvf_update_confirmed(void);
 void nvf_update_status(nvf_update_status_t *);

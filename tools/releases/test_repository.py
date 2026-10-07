@@ -53,9 +53,9 @@ class RepositoryTests(unittest.TestCase):
         self.repo.add_release(board_family="gnss-color-neo", sequence=31, version="0.1.0", revision="a" * 40,
             image=b"firmware fixture" * 50, boot_key_id="ab" * 32, provenance=b"{}", licenses=b"[]", notes=b"Test release\n")
 
-    def client(self, expected=0, second=None, profile=None, family=None, now=None):
+    def client(self, expected=0, second=None, profile=None, family=None, now=None, second_now=None, second_trusted=False, third=None, first=None):
         self.repo.publish_local()
-        command = [str(CLIENT), str(self.directory), str(expected)]
+        command = [str(CLIENT), str(first or self.directory), str(expected)]
         if second:
             command += [str(second[0]), str(second[1])]
         if profile:
@@ -64,6 +64,12 @@ class RepositoryTests(unittest.TestCase):
             command.append(f"--family={family}")
         if now is not None:
             command.append(f"--now={int(now.timestamp())}")
+        if second_now is not None:
+            command.append(f"--second-now={int(second_now.timestamp())}")
+        if second_trusted:
+            command.append("--second-trusted")
+        if third is not None:
+            command.append(f"--third={third}")
         result = subprocess.run(command, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result.stdout
@@ -347,6 +353,37 @@ class RepositoryTests(unittest.TestCase):
         path = f"metadata/{self.repo.versions['lab']}.lab.json"
         self.repo.files.pop(path)
         self.client(1002, second=(old, 2004))
+
+    def test_wrong_ahead_clock_cannot_ratchet_trusted_time(self):
+        # A refresh has persisted trusted time NOW. A later refresh whose SNTP clock reads
+        # ten years ahead must be refused as a time failure before any role is evaluated, so
+        # the persisted value stays put and a refresh at the correct time still succeeds.
+        self.repo.publish_local()
+        old = self.directory.parent / "old"
+        shutil.copytree(self.directory, old)
+        out = self.client(0, second=(old, 1003), second_now=NOW + timedelta(days=3653), third=0)
+        self.assertIn("second=1003 trusted_time=1800000000\n", out)
+        self.assertIn("third=0 trusted_time=1800000000\n", out)
+
+    def test_board_qualified_clock_may_pass_the_window(self):
+        # The same jump from the board's GNSS/RTC time is a device that was shelved, not a
+        # spoofed clock: against metadata re-signed at that later date it refreshes and
+        # ratchets the trusted time, while the SNTP-only clock is still refused.
+        self.repo.publish_local()
+        old = self.directory.parent / "old"
+        shutil.copytree(self.directory, old)
+        later = NOW + timedelta(days=500)
+        self.repo.now = later
+        self.repo.add_release(board_family="gnss-color-neo", sequence=32, version="0.2.0", revision="b" * 40,
+            image=b"firmware fixture" * 50, boot_key_id="ab" * 32, provenance=b"{}", licenses=b"[]", notes=b"Later release\n")
+        self.repo.set_channel("lab", 32, "releases/32.json", percentage=100)
+        # The top-level targets role is only signed at bootstrap; renew it so nothing has expired.
+        self.repo.metadata_for("targets", self.repo.metadata["targets"].signed)
+        self.repo.online()
+        out = self.client(0, first=old, second=(self.directory, 1003), second_now=later)
+        self.assertIn("second=1003 trusted_time=1800000000\n", out)
+        out = self.client(0, first=old, second=(self.directory, 0), second_now=later, second_trusted=True)
+        self.assertIn(f"second=0 trusted_time={int(later.timestamp())}\n", out)
 
     def test_withdrawal_does_not_depend_on_manifest_download(self):
         self.repo.set_channel("lab", 31, "releases/31.json", withdrawn=[31])

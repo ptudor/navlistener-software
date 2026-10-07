@@ -110,7 +110,10 @@ uint8_t reception_poll(const gnss_status_t *status,uint64_t now,uint64_t (*now_n
             remote_power_machine.alarm=latest_power.remote_alarm;joint_power_machine.alarm=latest_power.joint_alarm;}
         started=true;
     }
-    uint8_t bytes[NR_MAX_WIRE],power_bytes[NRP_MAX_WIRE],request[20];size_t n,power_n;bool pending;
+    // Static: the board task is the only caller. The wire copies and the two decoded
+    // candidates below are 5.3 KB together, more than a task stack should carry; the
+    // decoders' own temporaries (nrp_decode alone is 2 KB on xtensa) stay on the stack.
+    static uint8_t bytes[NR_MAX_WIRE],power_bytes[NRP_MAX_WIRE],request[20];size_t n,power_n;bool pending;
     taskENTER_CRITICAL(&control_lock);
     n=incoming_length;if(n)memcpy(bytes,incoming,n);incoming_length=0;
     power_n=incoming_power_length;if(power_n)memcpy(power_bytes,incoming_power,power_n);incoming_power_length=0;
@@ -118,7 +121,7 @@ uint8_t reception_poll(const gnss_status_t *status,uint64_t now,uint64_t (*now_n
     taskEXIT_CRITICAL(&control_lock);
     uint64_t utc=(uint64_t)time(NULL);
     if(n) {
-        nr_expectation_t candidate;
+        static nr_expectation_t candidate;
         if(nr_decode(&candidate,bytes,n) && candidate.id!=expectation.id && candidate.issued>=expectation.issued &&
            utc>=candidate.issued && utc-candidate.issued<NR_SLOTS*NR_SLOT_S) {
             expectation=candidate;accepted_ms=now;accepted_utc=utc;
@@ -128,7 +131,7 @@ uint8_t reception_poll(const gnss_status_t *status,uint64_t now,uint64_t (*now_n
         }
     }
     if(power_n) {
-        nrp_expectation_t candidate;
+        static nrp_expectation_t candidate;
         if(nrp_decode(&candidate,power_bytes,power_n)&&candidate.expectation_id==expectation.id&&
            candidate.issued==expectation.issued&&candidate.count==expectation.count&&utc>=candidate.issued&&
            utc-candidate.issued<NR_SLOTS*NR_SLOT_S) {

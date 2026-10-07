@@ -22,6 +22,7 @@ unsigned ulTaskNotifyTake(BaseType_t clear, TickType_t ticks)
     return 0; // fallback polling must work even without interrupts
 }
 void vTaskNotifyGiveFromISR(TaskHandle_t t, BaseType_t *woken) { assert(t); *woken = pdFALSE; }
+unsigned uxTaskGetStackHighWaterMark(TaskHandle_t t) { assert(!t); return 4096; }
 BaseType_t xTaskCreate(void (*entry)(void *), const char *name, unsigned stack,
                        void *arg, unsigned priority, TaskHandle_t *out)
 {

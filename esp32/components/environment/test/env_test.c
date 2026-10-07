@@ -236,6 +236,38 @@ static void test_sensor_recovery(void)
     env_sensors_read(&s, &sample);
     assert(s.bmp_ready && sample.bmp_valid);
 }
+// A heater step converts the HDC and the MCP9808 together (mask 3). Which device failed
+// decides whether the heater's safety stop fires, so the failure is attributed per device.
+static void test_bus_error_attribution(void)
+{
+    fake_t f; env_sensors_t s; env_sample_t sample;
+    setup(&f, &s);
+    env_sensors_read_some(&s, &sample, 3);
+    assert(sample.mcp_valid && sample.hdc_valid && !sample.bus_error && !sample.hdc_bus_error);
+    // The listed MCP9808 stops answering mid-run: a bus error, but not an HDC one.
+    f.absent = 0x18;
+    for (unsigned step = 0; step < 3; step++) {
+        env_sensors_read_some(&s, &sample, 3);
+        assert(!sample.mcp_valid && sample.hdc_valid && sample.rh_percent == 50);
+        assert(sample.bus_error && !sample.hdc_bus_error && s.io_error && !s.hdc_io_error);
+    }
+    bool on = true;
+    assert(env_hdc_heater_get(&s, &on) && !on && !s.io_error && !s.hdc_io_error); // clears both
+    // The HDC itself failing is both.
+    f.absent = 0x40;
+    env_sensors_read_some(&s, &sample, 3);
+    assert(!sample.hdc_valid && sample.bus_error && sample.hdc_bus_error && s.hdc_io_error);
+    assert(!env_hdc_heater_get(&s, &on) && s.hdc_io_error);
+    assert(!env_hdc_heater_set(&s, false) && s.hdc_io_error);
+    // Back to normal: the MCP9808 is retried and both flags clear.
+    f.absent = 0;
+    env_sensors_read_some(&s, &sample, 3);
+    assert(sample.mcp_valid && sample.hdc_valid && !sample.bus_error && !sample.hdc_bus_error);
+    // Only the HDC's address counts: a failed BMP388 transfer is not an HDC error either.
+    f.absent = 0x76;
+    env_sensors_read(&s, &sample);
+    assert(sample.mcp_valid && sample.hdc_valid && !sample.bmp_valid && sample.bus_error && !sample.hdc_bus_error);
+}
 int main(void)
 {
     fake_t f; env_sensors_t s; env_sample_t sample;
@@ -267,7 +299,8 @@ int main(void)
     test_hdc_variants();
     test_heater_register();
     test_sensor_recovery();
+    test_bus_error_attribution();
     puts("Environment: HDC2080/HDC2022 selection, units/sign/alerts, Bosch trim compensation, fresh conversions, "
-         "heater register control, HDC retry and fault isolation passed");
+         "heater register control, HDC retry, fault isolation and per-device bus-error attribution passed");
     return 0;
 }

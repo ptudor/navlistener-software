@@ -430,6 +430,14 @@ static int serve(const char *host, const char *verify, bool via_tunnel)
     atomic_store_explicit(&s_connected, true, memory_order_relaxed);
     ESP_LOGI(TAG, "connected: station=%s feed=%s -> %s:%d%s", s_cfg.station, s_cfg.feed,
              host, s_cfg.port, via_tunnel ? " via tunnel" : "");
+    // Stack evidence: the TLS handshake and the evidence builder have both run by the first
+    // WELCOME, and they are this task's deepest path.
+    static bool stack_logged;
+    if (!stack_logged) {
+        stack_logged = true;
+        ESP_LOGI(TAG, "pusher stack minimum free=%u bytes after the first WELCOME",
+                 (unsigned)uxTaskGetStackHighWaterMark(NULL));
+    }
 
     uint64_t sent_upto = spool_acked(); // replay-on-reconnect: resume from the last ack
     spool_frame_t batch[DRAIN_BATCH];

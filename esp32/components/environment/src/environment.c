@@ -204,7 +204,7 @@ void environment_poll(int64_t now)
     env_sample_t sample;
     bool on = false;
     env_sensors_read_some(&sensors, &sample, 3);
-    if (!env_hdc_heater_get(&sensors, &on)) sample.bus_error = true;
+    if (!env_hdc_heater_get(&sensors, &on)) sample.bus_error = sample.hdc_bus_error = true; // a 0x40 transfer
     char b[3][12];
     ESP_LOGI(TAG, "humidity heater step t=%llds: %s %s C %s %%RH, MCP9808 %s C, HEAT_EN=%d%s",
              (long long)((now - heater.run.start_ms) / 1000), hdc_name, reading(b[0], sample.hdc_valid, sample.hdc_c),
