@@ -11,7 +11,13 @@ import (
 const maxStringField = 256
 
 // sanitize makes a string safe to place in a JSON feed (docs/INTEGRITY.md §9): it
-// coerces to valid UTF-8, drops control characters, and length-bounds the result. No untrusted bytes reach the encoder unfiltered.
+// coerces to valid UTF-8, drops control and format characters, and length-bounds
+// the result. No untrusted bytes reach the encoder unfiltered.
+//
+// Format characters (Unicode category Cf) go the same way as C0/C1 controls:
+// the bidi overrides and isolates (U+202A–U+202E, U+2066–U+2069), the zero-width
+// and directional marks (U+200B–U+200F) and U+FEFF are invisible, and a remark
+// carrying one can reorder or hide text in a consumer's station list.
 //
 // This is DISPLAY sanitization and is lossy by design, so it must never be
 // applied to an identity or a key : distinct inputs can map to the
@@ -28,7 +34,7 @@ func sanitize(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
-		if r == utf8.RuneError || unicode.IsControl(r) {
+		if r == utf8.RuneError || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
 			continue
 		}
 		// check the bound BEFORE writing. Testing b.Len() only
