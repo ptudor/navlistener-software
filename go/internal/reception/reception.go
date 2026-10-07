@@ -207,7 +207,7 @@ type SnapshotResult struct {
 
 func (m *Machine) Step(valid, bad uint8, at time.Time, alarmSeconds, clearSeconds uint16) uint8 {
 	now := at.UnixMilli()
-	if m.last != 0 && (now <= m.last || now-m.last > 15000) {
+	if m.last != 0 && (now < m.last || now-m.last > 15000) {
 		m.pending = 0
 	}
 	if now <= m.last {
