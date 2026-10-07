@@ -318,7 +318,13 @@ static bool install(uint64_t sequence,bool discard,bool automatic) {
 }
 static void do_job(job *j) {
     if(!atomic_load(&confirmed) || !nvf_update_claim()){
-        xQueueSend(jobs,j,0);vTaskDelay(pdMS_TO_TICKS(250));return;
+        // Not ready: the job goes back for a later pass. The queue holds four, so a push-back
+        // can fail and lose an accepted request; that must be visible, not silent.
+        if(xQueueSend(jobs,j,0)!=pdTRUE)
+            ESP_LOGE(TAG,"update job dropped: queue full while %s (action=%u mode=%u collector=%d command=%llu release=%llu)",
+                     atomic_load(&confirmed)?"busy":"unconfirmed",j->action,j->mode,(int)j->collector,
+                     (unsigned long long)j->command.id,(unsigned long long)j->release);
+        vTaskDelay(pdMS_TO_TICKS(250));return;
     }
     operation_epoch=j->epoch;
     if(is_cancelled() && j->action!=UP_CANCEL && (!j->collector || j->command.action!=UP_CANCEL))goto finished;
