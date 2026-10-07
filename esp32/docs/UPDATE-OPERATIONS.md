@@ -392,7 +392,12 @@ at least one published static tree (`repository_path` for the trusted track,
 `[[updates.principal.device]]` grants containing `observer_id`, `enrollment_id`,
 `organization_id` and `collector_instance_id`. A read credential gains no update
 permission unless it is also explicitly granted here. Changes take effect when
-the collector restarts. Do not expose its private request-state file.
+the collector restarts. Do not expose its private request-state file. The state
+holds one record and one session per device, at most 1024 distinct devices
+across every principal (the same device granted to several principals counts
+once); a configuration granting more fails validation rather than enrolling
+devices that could never be commanded, and any refusal the state itself makes
+is logged and counted in `navlistener_update_capacity_refusals_total`.
 
 Each device reports the track it was built to follow as `trust_profile`
 (`trusted`, `open`, `test`, or `unreported` from firmware that predates the

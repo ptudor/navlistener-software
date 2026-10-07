@@ -244,6 +244,7 @@ func run() int {
 	}
 	if updateManager != nil {
 		defer updateManager.Close()
+		updateManager.SetLogger(log)
 		updateManager.SetHardwareVerification(cfg.ManufacturerAuthorities.Enabled())
 	}
 
