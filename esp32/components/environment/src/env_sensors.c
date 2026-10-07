@@ -3,15 +3,23 @@
 #include <string.h>
 static uint16_t le16(const uint8_t *p) { return p[0] | ((uint16_t)p[1] << 8); }
 static uint16_t be16(const uint8_t *p) { return ((uint16_t)p[0] << 8) | p[1]; }
+// Failures are attributed per device: the heater's safety stop must see a failed HDC
+// transfer, not a listed-but-absent MCP9808 NACKing on the same bus.
+static void failed(env_sensors_t *s, uint8_t address)
+{
+    s->io_error = true;
+    if (address == 0x40) s->hdc_io_error = true;
+}
+static void clear_errors(env_sensors_t *s) { s->io_error = s->hdc_io_error = false; }
 static bool read_reg(env_sensors_t *s, uint8_t address, uint8_t reg, uint8_t *p, size_t n)
 {
     if (s->io.read(s->io.ctx, address, reg, p, n)) return true;
-    s->io_error = true; return false;
+    failed(s, address); return false;
 }
 static bool write_reg(env_sensors_t *s, uint8_t address, uint8_t reg, const uint8_t *p, size_t n)
 {
     if (s->io.write(s->io.ctx, address, reg, p, n)) return true;
-    s->io_error = true; return false;
+    failed(s, address); return false;
 }
 static int8_t bmp_read(uint8_t reg, uint8_t *p, uint32_t n, void *ctx)
 { return read_reg(ctx, 0x76, reg, p, n) ? 0 : -1; }
@@ -36,7 +44,7 @@ static void init_hdc(env_sensors_t *s)
 }
 bool env_sensors_retry_hdc(env_sensors_t *s)
 {
-    if (!s->hdc_ready) { s->io_error = false; init_hdc(s); }
+    if (!s->hdc_ready) { clear_errors(s); init_hdc(s); }
     return s->hdc_ready;
 }
 static void init_mcp(env_sensors_t *s)
@@ -127,7 +135,7 @@ static bool read_bmp(env_sensors_t *s, env_sample_t *sample)
 }
 void env_sensors_read_some(env_sensors_t *s, env_sample_t *sample, uint8_t mask)
 {
-    *sample = (env_sample_t){0}; s->io_error = false;
+    *sample = (env_sample_t){0}; clear_errors(s);
     if ((mask & 1) && !s->mcp_ready) init_mcp(s);
     if ((mask & 4) && !s->bmp_ready) init_bmp(s);
     uint8_t p[2];
@@ -141,12 +149,13 @@ void env_sensors_read_some(env_sensors_t *s, env_sample_t *sample, uint8_t mask)
     if ((mask & 1) && !sample->mcp_valid) s->mcp_ready = false;
     if ((mask & 4) && !sample->bmp_valid) s->bmp_ready = false;
     sample->bus_error = s->io_error;
+    sample->hdc_bus_error = s->hdc_io_error;
 }
 void env_sensors_read(env_sensors_t *s, env_sample_t *sample) { env_sensors_read_some(s, sample, 7); }
 bool env_hdc_heater_set(env_sensors_t *s, bool on)
 {
     uint8_t value, check;
-    s->io_error = false;
+    clear_errors(s);
     if (!read_reg(s, 0x40, 0x0e, &value, 1)) return false;
     // Bit 7 is SOFT_RES (self-clearing): never write it back.
     value = on ? (value & 0x7f) | 8 : value & 0x77;
@@ -165,7 +174,7 @@ bool env_hdc_heater_off_unlisted(const env_io_t *io, bool *present)
 bool env_hdc_heater_get(env_sensors_t *s, bool *on)
 {
     uint8_t value;
-    s->io_error = false;
+    clear_errors(s);
     if (!read_reg(s, 0x40, 0x0e, &value, 1)) return false;
     *on = value & 8; return true;
 }

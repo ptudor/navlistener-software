@@ -21,13 +21,15 @@ typedef struct {
     env_hdc_variant_t hdc_variant;
     unsigned parts;
     bool mcp_ready, hdc_ready, bmp_ready;
-    bool io_error; // any failed I2C transfer; each read or heater operation clears it first
+    bool io_error;     // any failed I2C transfer; each read or heater operation clears it first
+    bool hdc_io_error; // the same, for transfers with the HDC at 0x40 alone
     struct bmp3_dev bmp;
     struct bmp3_settings settings;
 } env_sensors_t;
 typedef struct {
     bool mcp_valid, hdc_valid, bmp_valid;
-    bool bus_error; // an I2C transfer failed during this sample
+    bool bus_error;     // an I2C transfer failed during this sample
+    bool hdc_bus_error; // a transfer with the HDC failed; the heater's safety stop looks only at this
     double mcp_c, hdc_c, rh_percent, bmp_c, pressure_pa;
 } env_sample_t;
 // The MCP9808 and BMP388 are probed only when parts lists them (the manifest does);

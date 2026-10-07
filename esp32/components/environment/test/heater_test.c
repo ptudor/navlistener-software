@@ -137,11 +137,22 @@ static void test_stops(void)
     }
     assert(!env_heater_step_due(&h, begin + 299999) && env_heater_step_due(&h, begin + 300000));
     assert(env_heater_step(&h, begin + 300000, &mid, true) == ENV_HEATER_STOP && h.run.stop == ENV_HEATER_TIMEOUT);
-    // Any I2C error, even on the MCP9808 alone, stops before the other conditions.
+    // An I2C error with the HDC stops before the other conditions.
     start(&h, &now);
-    env_sample_t s = reading(true, 3, 90); s.bus_error = true;
+    env_sample_t s = reading(true, 3, 90); s.bus_error = s.hdc_bus_error = true;
     now += config.step_ms; assert(env_heater_step(&h, now, &s, true) == ENV_HEATER_STOP && h.run.stop == ENV_HEATER_BUS_ERROR);
     assert(h.run.rh_stop == 3 && h.run.hdc_peak == 90); // the valid conversion is still recorded
+    // A listed MCP9808 that is absent or NACKs during the run is a bus error without an HDC
+    // error: the run goes on with the HDC's readings and ends only on its own conditions.
+    start(&h, &now);
+    s = reading(true, 60, 30); s.bus_error = true; s.mcp_valid = false;
+    for (unsigned i = 1; i <= 29; i++) {
+        now += config.step_ms; assert(env_heater_step_due(&h, now));
+        assert(env_heater_step(&h, now, &s, true) == ENV_HEATER_HOLD && h.state == ENV_HEATER_HEATING);
+    }
+    assert(!(h.run.valid & ENV_RUN_MCP_PEAK) && h.run.hdc_peak == 30);
+    s.rh_percent = 4;
+    now += config.step_ms; assert(env_heater_step(&h, now, &s, true) == ENV_HEATER_STOP && h.run.stop == ENV_HEATER_DRY);
     // No conversion, or HEAT_EN found clear (the part reset): the sensor is lost.
     start(&h, &now);
     s = reading(false, 0, 0);
