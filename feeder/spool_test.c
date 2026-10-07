@@ -41,6 +41,8 @@ static size_t test_ZSTD_CStreamOutSize(void);
  * rename fallback is exercised against the real recovery path. 0 = the real link. */
 static int fail_link;
 static int test_link(const char *, const char *);
+static _Noreturn void test_exit(int);
+#define _exit test_exit
 #define link test_link
 #define fopen test_fopen
 #define fread test_fread
@@ -64,6 +66,28 @@ static int test_link(const char *, const char *);
 #undef fflush
 #undef fsync
 #undef fwrite
+#undef _exit
+/* Force a producer opportunity after the shutdown flush and before process exit.
+ * A frozen spool cannot be entered; an unfenced one evicts a ring record that
+ * was already flushed, leaving a duplicate sequence in the recovery file. */
+static void *append_at_exit(void *unused) {
+    (void)unused;
+    int rc = pthread_mutex_trylock(&g_spool.mu);
+    if (rc == EBUSY) return NULL;
+    assert(rc == 0);
+    pthread_mutex_unlock(&g_spool.mu);
+    unsigned char data[RECORD_HDR] = {0};
+    assert(spool_append(&g_spool, data, sizeof data));
+    return NULL;
+}
+static _Noreturn void test_exit(int status) {
+    if (getenv("NAVFEEDER_TEST_APPEND_AT_EXIT")) {
+        pthread_t producer;
+        assert(pthread_create(&producer, NULL, append_at_exit, NULL) == 0);
+        assert(pthread_join(producer, NULL) == 0);
+    }
+    _exit(status);
+}
 static int test_link(const char *from, const char *to) {
     if (fail_link) { errno = fail_link; return -1; }
     return link(from, to);

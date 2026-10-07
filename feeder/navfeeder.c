@@ -2528,7 +2528,9 @@ static void *signal_thread(void *arg) {
 			durable = 0;
 			if (!*why) why = "no spool writer was open after the flush";
 		}
-		pthread_mutex_unlock(&g_spool.mu);
+		/* Keep the spool frozen through _exit: the ring still contains the
+		 * records just flushed. Resuming the producer here could evict one
+		 * again after the durable tail, corrupting recovery's sequence order. */
 	}
 	/* Never let "flushing" be the last word when the flush was a no-op: after an
 	 * incomplete recovery (disk appends disabled) or with the live budget consumed

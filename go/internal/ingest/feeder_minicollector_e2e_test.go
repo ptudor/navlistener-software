@@ -67,6 +67,49 @@ func (m *miniCollector) handle(ctx context.Context, raw net.Conn) {
 			return
 		}
 	}
+	// Match the collector's independent read and ACK paths. Writing an ACK
+	// synchronously for every DATA can fill both TCP directions: the feeder's
+	// blocked TLS writer holds its SSL mutex while its ACK reader waits for it.
+	// Coalesce cumulative ACKs, keeping the requested lag, and serialize PONGs
+	// through the same writer so response frame bytes cannot interleave.
+	replyCtx, cancelReplies := context.WithCancel(ctx)
+	wakeReplies := make(chan struct{}, 1)
+	repliesDone := make(chan struct{})
+	var ack, pongs atomic.Uint64
+	go func() {
+		defer close(repliesDone)
+		defer conn.Close()
+		var sentAck uint64
+		for {
+			select {
+			case <-replyCtx.Done():
+				return
+			case <-wakeReplies:
+				if next := ack.Load(); next > sentAck {
+					if err := wire.WriteFrame(conn, wire.Ack, wire.EncodeAck(next)); err != nil {
+						return
+					}
+					sentAck = next
+				}
+				for n := pongs.Swap(0); n > 0; n-- {
+					if err := wire.WriteFrame(conn, wire.Pong, nil); err != nil {
+						return
+					}
+				}
+			}
+		}
+	}()
+	defer func() {
+		cancelReplies()
+		conn.Close()
+		<-repliesDone
+	}()
+	wake := func() {
+		select {
+		case wakeReplies <- struct{}{}:
+		default:
+		}
+	}
 	for ctx.Err() == nil {
 		ft, payload, err := wire.ReadFrame(conn)
 		if err != nil {
@@ -84,14 +127,12 @@ func (m *miniCollector) handle(ctx context.Context, raw net.Conn) {
 				return
 			}
 			if seq > m.ackLag {
-				if err := wire.WriteFrame(conn, wire.Ack, wire.EncodeAck(seq-m.ackLag)); err != nil {
-					return
-				}
+				ack.Store(seq - m.ackLag)
+				wake()
 			}
 		case wire.Ping:
-			if err := wire.WriteFrame(conn, wire.Pong, nil); err != nil {
-				return
-			}
+			pongs.Add(1)
+			wake()
 		}
 	}
 }

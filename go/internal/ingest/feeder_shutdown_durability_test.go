@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -14,6 +15,36 @@ import (
 	"testing"
 	"time"
 )
+
+func TestNavfeederShutdownFreezesSpoolUntilExit(t *testing.T) {
+	stderr, code, _, after := runShutdownFlush(t, "NAVFEEDER_TEST_APPEND_AT_EXIT=1")
+	if code != 0 {
+		t.Fatalf("shutdown exited %d:\n%s", code, stderr)
+	}
+	if len(after) < spoolHeaderLen || !strings.HasPrefix(after, "NAVSPO01") {
+		t.Fatalf("shutdown left an invalid spool header (%d bytes)", len(after))
+	}
+	records := []byte(after[spoolHeaderLen:])
+	var count uint64
+	for len(records) > 0 {
+		if len(records) < 12 {
+			t.Fatal("shutdown left a torn record header")
+		}
+		seq := binary.BigEndian.Uint64(records)
+		size := binary.BigEndian.Uint32(records[8:])
+		if uint64(size) > uint64(len(records)-12) {
+			t.Fatal("shutdown left a torn record payload")
+		}
+		count++
+		if seq != count {
+			t.Fatalf("shutdown spool record %d has sequence %d; a post-flush append corrupted recovery order", count, seq)
+		}
+		records = records[12+int(size):]
+	}
+	if count != 6 {
+		t.Fatalf("shutdown retained %d records, want all 6 captured records exactly once", count)
+	}
+}
 
 // TestNavfeederShutdownDurabilityIsHonest proves regression fix. The orderly
 // shutdown flush discarded the return values of its final fflush and fsync,
