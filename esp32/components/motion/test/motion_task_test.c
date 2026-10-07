@@ -6,6 +6,8 @@
 static chip_t chip;
 static int64_t clock_ms;
 static bool bad_rate_read, partial_fifo_read;
+static bool fail_gpio_config, fail_task_create;
+static unsigned handlers_added, handlers_removed, devices_removed, mutexes_deleted;
 static void (*task_entry)(void *);
 static void (*after_iteration)(unsigned);
 static unsigned iteration;
@@ -27,23 +29,27 @@ BaseType_t xTaskCreate(void (*entry)(void *), const char *name, unsigned stack,
                        void *arg, unsigned priority, TaskHandle_t *out)
 {
     (void)name; (void)stack; (void)arg; (void)priority;
+    if (fail_task_create) return pdFAIL;
     task_entry = entry; *out = &chip; return pdPASS;
 }
 SemaphoreHandle_t xSemaphoreCreateMutex(void) { return &chip; }
+void vSemaphoreDelete(SemaphoreHandle_t semaphore) { assert(semaphore == &chip); mutexes_deleted++; }
 BaseType_t xSemaphoreTake(SemaphoreHandle_t semaphore, TickType_t ticks)
 { (void)ticks; assert(semaphore); return pdTRUE; }
 BaseType_t xSemaphoreGive(SemaphoreHandle_t semaphore) { assert(semaphore); return pdTRUE; }
-esp_err_t gpio_config(const gpio_config_t *config) { (void)config; return ESP_OK; }
+esp_err_t gpio_config(const gpio_config_t *config) { (void)config; return fail_gpio_config ? ESP_FAIL : ESP_OK; }
 esp_err_t gpio_install_isr_service(int flags) { (void)flags; return ESP_OK; }
 esp_err_t gpio_set_intr_type(int pin, int type) { (void)pin; (void)type; return ESP_OK; }
 esp_err_t gpio_isr_handler_add(int pin, void (*handler)(void *), void *arg)
-{ (void)pin; (void)handler; (void)arg; return ESP_OK; }
+{ (void)pin; (void)handler; (void)arg; handlers_added++; return ESP_OK; }
+esp_err_t gpio_isr_handler_remove(int pin) { (void)pin; handlers_removed++; return ESP_OK; }
 esp_err_t i2c_master_bus_add_device(i2c_master_bus_handle_t bus,
                                   const i2c_device_config_t *config, i2c_master_dev_handle_t *out)
 {
     assert(bus && config->device_address == ICM45686_ADDRESS);
     *out = &chip; return ESP_OK;
 }
+esp_err_t i2c_master_bus_rm_device(i2c_master_dev_handle_t device) { assert(device == &chip); devices_removed++; return ESP_OK; }
 esp_err_t i2c_master_transmit_receive(i2c_master_dev_handle_t dev, const void *tx,
                                     size_t tx_length, void *rx, size_t rx_length, int timeout)
 {
@@ -128,9 +134,34 @@ static void run(void (*scenario)(unsigned))
     assert(motion_start(&chip, 16, 17, &ICM45686_SURFACE) == ESP_OK);
     if (!setjmp(finished)) task_entry(NULL);
 }
+static void start_failures(void)
+{
+    // A failure after the I2C device exists unwinds it: the device and the mutex are
+    // released, imu and lock are NULL again, no task was created, and a snapshot reports not
+    // ready rather than a half-configured driver.
+    (void)chip_io(&chip);
+    status = (motion_status_t){0};
+    task_entry = NULL;
+    handlers_added = handlers_removed = devices_removed = mutexes_deleted = 0;
+    fail_gpio_config = true;
+    assert(motion_start(&chip, 16, 17, &ICM45686_SURFACE) == ESP_FAIL);
+    assert(imu == NULL && lock == NULL && task_entry == NULL);
+    assert(devices_removed == 1 && mutexes_deleted == 1 && handlers_added == 0 && handlers_removed == 0);
+    motion_status_t snapshot;
+    motion_snapshot(&snapshot);
+    assert(!snapshot.ready);
+    fail_gpio_config = false;
+    // The task is created last: when that fails the interrupt handler is removed too.
+    fail_task_create = true;
+    assert(motion_start(&chip, 16, 17, &ICM45686_SURFACE) == ESP_ERR_NO_MEM);
+    assert(imu == NULL && lock == NULL && task_entry == NULL);
+    assert(handlers_added == 1 && handlers_removed == 1 && devices_removed == 2 && mutexes_deleted == 2);
+    fail_task_create = false;
+}
 int main(void)
 {
     run(rate_failure); run(fifo_failure); run(invalid_stream);
-    puts("Motion task: unverified rate writes, partial FIFO transfers and invalid-sample stalls recover");
+    start_failures();
+    puts("Motion task: unverified rate writes, partial FIFO transfers, invalid-sample stalls and start failures recover");
     return 0;
 }

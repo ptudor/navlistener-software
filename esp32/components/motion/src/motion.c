@@ -53,7 +53,8 @@ static void IRAM_ATTR int1_isr(void *arg)
 {
     (void)arg;
     BaseType_t woken = pdFALSE;
-    vTaskNotifyGiveFromISR(task, &woken);
+    // The handler is installed before the task exists; an edge in between has nobody to wake.
+    if (task) vTaskNotifyGiveFromISR(task, &woken);
     portYIELD_FROM_ISR(woken);
 }
 
@@ -126,22 +127,42 @@ esp_err_t motion_start(i2c_master_bus_handle_t bus, int int1_gpio, int int2_gpio
     if (!bus || !unit_profile) return ESP_ERR_INVALID_ARG;
     profile = unit_profile;
     if (!(lock = xSemaphoreCreateMutex())) return ESP_ERR_NO_MEM;
+    esp_err_t ret = ESP_OK;
+    bool handler = false;
     const i2c_device_config_t device = {.dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = ICM45686_ADDRESS, .scl_speed_hz = IMU_I2C_HZ};
-    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(bus, &device, &imu), TAG, "add IMU");
+    ESP_GOTO_ON_ERROR(i2c_master_bus_add_device(bus, &device, &imu), failed, TAG, "add IMU");
     const gpio_config_t inputs = {.pin_bit_mask = (1ULL << int1_gpio) | (1ULL << int2_gpio),
         .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_DISABLE, .pull_down_en = GPIO_PULLDOWN_ENABLE,
         .intr_type = GPIO_INTR_DISABLE};
-    ESP_RETURN_ON_ERROR(gpio_config(&inputs), TAG, "interrupt inputs");
+    ESP_GOTO_ON_ERROR(gpio_config(&inputs), failed, TAG, "interrupt inputs");
+    ret = gpio_install_isr_service(0);
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) goto failed;
+    ESP_GOTO_ON_ERROR(gpio_set_intr_type(int1_gpio, GPIO_INTR_POSEDGE), failed, TAG, "INT1 edge");
+    ESP_GOTO_ON_ERROR(gpio_isr_handler_add(int1_gpio, int1_isr, NULL), failed, TAG, "INT1 handler");
+    handler = true;
+    // The task is created last, once everything it uses exists: no failure can leave a task
+    // polling a half-configured driver, and the unwind below never deletes a task that may
+    // hold the mutex or be mid-transfer. int1_isr tolerates an edge before the task exists.
     // Measured on xtensa with -fstack-usage: motion_task 112 B + icm45686_service 304 B, plus
     // the I2C driver and float formatting underneath (unmeasured, about 1.5 KiB). 4 KiB keeps
     // the 1 KiB margin; the task logs its minimum free stack after its first FIFO service.
-    if (xTaskCreate(motion_task, "motion", 4096, NULL, 4, &task) != pdPASS) return ESP_ERR_NO_MEM;
-    esp_err_t err = gpio_install_isr_service(0);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
-    ESP_RETURN_ON_ERROR(gpio_set_intr_type(int1_gpio, GPIO_INTR_POSEDGE), TAG, "INT1 edge");
-    ESP_RETURN_ON_ERROR(gpio_isr_handler_add(int1_gpio, int1_isr, NULL), TAG, "INT1 handler");
+    if (xTaskCreate(motion_task, "motion", 4096, NULL, 4, &task) != pdPASS) {
+        ret = ESP_ERR_NO_MEM;
+        goto failed;
+    }
     return ESP_OK;
+failed:
+    // Unwind in reverse, so nothing is leaked, a later motion_start starts clean and
+    // motion_snapshot reports not ready rather than a half-configured driver.
+    if (handler) (void)gpio_isr_handler_remove(int1_gpio);
+    if (imu) {
+        (void)i2c_master_bus_rm_device(imu);
+        imu = NULL;
+    }
+    vSemaphoreDelete(lock);
+    lock = NULL;
+    return ret;
 }
 
 void motion_snapshot(motion_status_t *out)
