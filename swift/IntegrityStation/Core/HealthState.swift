@@ -21,14 +21,20 @@ enum HealthState: String, Codable, CaseIterable, Sendable {
     /// server contract; it is not an independently chosen client threshold.
     static let observerOfflineThreshold: TimeInterval = 300
 
+    /// Offline takes precedence over alarms, and alarms over unknown liveness:
+    /// a station whose contact age the feed does not establish (absent,
+    /// non-finite or negative) still renders the conditions the collector has
+    /// classified for it, including its own `station_offline`, so a missing
+    /// liveness field never hides a critical condition. Only a station with
+    /// neither liveness nor an active condition is unknown.
     static func station(
         lastSeenSeconds: TimeInterval?,
         activeEventSeverities: some Sequence<EventSeverity>,
         conditionsKnown: Bool = true,
         receptionAlarm: Bool = false
     ) -> HealthState {
-        guard let lastSeenSeconds, lastSeenSeconds.isFinite, lastSeenSeconds >= 0 else { return .unknown }
-        guard lastSeenSeconds <= observerOfflineThreshold else { return .offline }
+        let age = lastSeenSeconds.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+        if let age, age > observerOfflineThreshold { return .offline }
 
         guard conditionsKnown else { return .unknown }
         var hasWarning = receptionAlarm
@@ -36,7 +42,8 @@ enum HealthState: String, Codable, CaseIterable, Sendable {
             if severity == .critical { return .critical }
             if severity == .warning { hasWarning = true }
         }
-        return hasWarning ? .warning : .ok
+        if hasWarning { return .warning }
+        return age == nil ? .unknown : .ok
     }
 
     /// Health states are ordered from most severe to least severe:

@@ -253,6 +253,64 @@
       "expected": "unknown"
     },
     {
+      "name": "unknown liveness with critical condition",
+      "last_seen": null,
+      "severities": [
+        2
+      ],
+      "conditions_known": true,
+      "reception_alarm": false,
+      "expected": "critical"
+    },
+    {
+      "name": "unknown liveness with warning condition",
+      "last_seen": null,
+      "severities": [
+        1
+      ],
+      "conditions_known": true,
+      "reception_alarm": false,
+      "expected": "warning"
+    },
+    {
+      "name": "unknown liveness with informational condition",
+      "last_seen": null,
+      "severities": [
+        0
+      ],
+      "conditions_known": true,
+      "reception_alarm": false,
+      "expected": "unknown"
+    },
+    {
+      "name": "unknown liveness with held reception alarm",
+      "last_seen": null,
+      "severities": [],
+      "conditions_known": true,
+      "reception_alarm": true,
+      "expected": "warning"
+    },
+    {
+      "name": "unknown liveness while conditions unknown",
+      "last_seen": null,
+      "severities": [
+        2
+      ],
+      "conditions_known": false,
+      "reception_alarm": false,
+      "expected": "unknown"
+    },
+    {
+      "name": "negative age with critical condition",
+      "last_seen": -1,
+      "severities": [
+        2
+      ],
+      "conditions_known": true,
+      "reception_alarm": false,
+      "expected": "critical"
+    },
+    {
       "name": "online clear",
       "last_seen": 1,
       "severities": [],
