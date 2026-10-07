@@ -32,8 +32,10 @@ default: build
 build: test
 	npm run build
 
+# The lockfile pins prebuilt rolldown and lightningcss binaries per platform;
+# no dependency needs an install script, so none gets to run one.
 install:
-	npm ci
+	npm ci --ignore-scripts
 
 audit:
 	npm audit
