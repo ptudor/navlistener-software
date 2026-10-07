@@ -142,6 +142,42 @@ static void test_json_escape_still_applies(void)
     int n = gnf1_build_hello(out, sizeof out, "a\"b", "s\\t", "ubx", SESSION, false, false);
     CHECK(n > 0 && strstr(out, "\"token\":\"a\\\"b\"") != NULL, "token not escaped: %s", out);
     CHECK(n > 0 && strstr(out, "\"station\":\"s\\\\t\"") != NULL, "station not escaped: %s", out);
+    n = gnf1_build_hello(out, sizeof out, "a\001b\n", "s", "ubx", SESSION, false, false);
+    CHECK(n > 0 && strstr(out, "\"token\":\"a\\u0001b\\n\"") != NULL, "control bytes not escaped: %s", out);
+}
+
+static void test_hello_cap(void)
+{
+    // The HELLO is escaped straight into the caller's buffer, bounded only by its cap: the
+    // collector's 4096-byte limit, which the pusher now hands over. A 900-byte token fits
+    // with room, a 999-byte one is present whole (the old 512-byte escape buffer silently
+    // shortened it to a different credential), and an escaped form that does not fit is
+    // refused rather than truncated.
+    CHECK(GNF1_HELLO_MAX == 4096, "HELLO cap = %d, want the collector's 4096", GNF1_HELLO_MAX);
+    char out[GNF1_HELLO_MAX], token[1000];
+    memset(token, 't', 900); token[900] = 0;
+    int n = gnf1_build_hello(out, sizeof out, token, "navfeeder-AABBCC", "ubx", SESSION, true, true);
+    CHECK(n > 900 && n < GNF1_HELLO_MAX && strlen(out) == (size_t)n && strstr(out, token) != NULL,
+          "900-byte token: length %d", n);
+    memset(token, 'q', 999); token[999] = 0;
+    n = gnf1_build_hello(out, sizeof out, token, "s", "ubx", SESSION, false, false);
+    CHECK(n > 999 && strstr(out, token) != NULL, "999-byte token was shortened (length %d)", n);
+    char quotes[301];
+    memset(quotes, '"', 300); quotes[300] = 0;
+    char small[400];
+    memset(small, 'X', sizeof small);
+    CHECK(gnf1_build_hello(small, sizeof small, quotes, "s", "ubx", SESSION, false, false) < 0 && small[0] == 0,
+          "an escaped token that does not fit was not refused whole");
+    n = gnf1_build_hello(out, sizeof out, quotes, "s", "ubx", SESSION, false, false);
+    CHECK(n > 600 && strstr(out, "\\\"\\\"") != NULL, "300 quotes: length %d, want the doubled escaped form", n);
+    // The cap is exact: a buffer one byte short of the payload plus its terminator refuses.
+    char exact[256];
+    n = gnf1_build_hello(exact, sizeof exact, "tok3n", "navfeeder-AABBCC", "ubx", SESSION, false, false);
+    CHECK(n > 0, "reference hello did not build");
+    CHECK(gnf1_build_hello(exact, (size_t)n + 1, "tok3n", "navfeeder-AABBCC", "ubx", SESSION, false, false) == n,
+          "a buffer of exactly length+1 was refused");
+    CHECK(gnf1_build_hello(exact, (size_t)n, "tok3n", "navfeeder-AABBCC", "ubx", SESSION, false, false) < 0,
+          "a buffer one byte short was accepted");
 }
 
 int main(void)
@@ -152,6 +188,7 @@ int main(void)
     test_session_charset();
     test_truncation();
     test_json_escape_still_applies();
+    test_hello_cap();
 
     if (failures) {
         fprintf(stderr, "hello_test: %d failure(s)\n", failures);

@@ -70,6 +70,10 @@ static atomic_bool s_durable;
 // The pusher has one task. Keep the largest authenticated control payload out
 // of its TLS call stack, which is also responsible for reconnect and replay.
 static uint8_t s_control_frame[NRP_MAX_WIRE];
+// The HELLO, sized to the collector's cap (GNF1_HELLO_MAX, the C feeder's HELLO_CAP too) and
+// kept off the same stack for the same reason: the handshake already runs the TLS handshake
+// and the evidence builder there.
+static char s_hello[GNF1_HELLO_MAX];
 
 bool pusher_connected(void) { return atomic_load_explicit(&s_connected, memory_order_relaxed); }
 bool pusher_via_tunnel(void) { return atomic_load_explicit(&s_via_tunnel, memory_order_relaxed); }
@@ -329,14 +333,14 @@ static int handshake(esp_tls_t *tls)
         if (evidence_len > GNF1_EVIDENCE_MAX) evidence_len = 0;
     }
 
-    char hello[512];
     // s_cfg.session is validated once in pusher_start, so the only way this build can fail is
-    // truncation from an over-long token/station (regression fix adds ~45 bytes to the HELLO).
-    int hn = gnf1_build_hello(hello, sizeof hello, s_cfg.token, s_cfg.station, s_cfg.feed,
+    // a token/station whose escaped form overflows the collector's own HELLO cap.
+    char *hello = s_hello;
+    int hn = gnf1_build_hello(hello, sizeof s_hello, s_cfg.token, s_cfg.station, s_cfg.feed,
                               s_cfg.session, false, evidence_len > 0);
     if(hn>0 && s_cfg.reception_control) {
-        int extra=snprintf(hello+hn-1,sizeof hello-(size_t)hn+1,",\"reception\":2}");
-        hn=extra<0 || (size_t)extra>=sizeof hello-(size_t)hn+1 ? -1 : hn-1+extra;
+        int extra=snprintf(hello+hn-1,sizeof s_hello-(size_t)hn+1,",\"reception\":2}");
+        hn=extra<0 || (size_t)extra>=sizeof s_hello-(size_t)hn+1 ? -1 : hn-1+extra;
     }
     if (hn < 0) {
         ESP_LOGE(TAG, "could not build HELLO (token/station too long?); dropping connection");

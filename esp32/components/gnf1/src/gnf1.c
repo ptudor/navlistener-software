@@ -90,18 +90,26 @@ size_t gnf1_encode_data(uint8_t *out, uint64_t seq, const uint8_t *record, size_
     return GNF1_FRAME_HDR + 8 + record_len;
 }
 
-// gnf1_json_escape copies src into dst as a JSON string body (no surrounding quotes),
-// escaping '"', '\', and control characters : an operator-supplied token/station
+// append copies len bytes into out at *n, leaving room for the terminator. False when they
+// would not fit: the caller refuses the whole HELLO rather than send part of a credential.
+static bool append(char *out, size_t cap, size_t *n, const char *s, size_t len)
+{
+    if (len >= cap - *n) return false;
+    memcpy(out + *n, s, len);
+    *n += len;
+    return true;
+}
+static bool append_text(char *out, size_t cap, size_t *n, const char *s) { return append(out, cap, n, s, strlen(s)); }
+// append_escaped appends src as a JSON string body (no surrounding quotes), escaping '"',
+// '\' and control characters straight into the HELLO: an operator-supplied token/station
 // containing '"' or '\' would otherwise produce invalid JSON, and the collector's
 // ParseHello failing on it manifests as a confusing permanent auth-reject/reconnect loop
-// rather than a clear error at provisioning time. Truncates cleanly (never overruns) if
-// the escaped form would not fit dstcap; dst is always NUL-terminated when dstcap > 0.
-// Well-formed inputs (no '"', '\', or control chars) are copied byte-identical. Mirrors
-// json_escape() in ../../../feeder/navfeeder.c.
-static void gnf1_json_escape(char *dst, size_t dstcap, const char *src)
+// rather than a clear error at provisioning time. No intermediate buffer: the caller's cap
+// is the only bound, so nothing is ever silently truncated. Well-formed inputs (no '"',
+// '\', or control chars) are copied byte-identical. Mirrors json_escape() in
+// ../../../feeder/navfeeder.c.
+static bool append_escaped(char *out, size_t cap, size_t *n, const char *src)
 {
-    if (dstcap == 0) return;
-    size_t di = 0;
     for (const unsigned char *s = (const unsigned char *)src; *s; s++) {
         unsigned char c = *s;
         char ubuf[7];
@@ -118,12 +126,9 @@ static void gnf1_json_escape(char *dst, size_t dstcap, const char *src)
                 esc = ubuf;
             }
         }
-        size_t elen = esc ? strlen(esc) : 1;
-        if (di + elen + 1 > dstcap) break; // would overflow: truncate cleanly
-        if (esc) { memcpy(dst + di, esc, elen); } else { dst[di] = (char)c; }
-        di += elen;
+        if (!(esc ? append_text(out, cap, n, esc) : append(out, cap, n, (const char *)s, 1))) return false;
     }
-    dst[di] = 0;
+    return true;
 }
 
 bool gnf1_session_valid(const char *s)
@@ -156,21 +161,29 @@ int gnf1_build_hello(char *out, size_t cap, const char *token, const char *stati
     // handshake() byte-for-byte (after "sw", before the optional ",\"zstd\":true"): the JSON
     // is order-insensitive to Go's decoder, but a byte-identical HELLO across the two feeders
     // keeps the wire diffable in a packet capture.
-    if (!gnf1_session_valid(session)) return -1;
-    char token_esc[512], station_esc[256], feed_esc[128];
-    gnf1_json_escape(token_esc, sizeof token_esc, token ? token : "");
-    gnf1_json_escape(station_esc, sizeof station_esc, station ? station : "");
-    gnf1_json_escape(feed_esc, sizeof feed_esc, feed ? feed : "ubx");
-    // session needs no escaping: gnf1_session_valid just proved it holds no '"', '\', or
-    // control characters.
-    int n = snprintf(out, cap,
-                     "{\"token\":\"%s\",\"station\":\"%s\",\"feed\":\"%s\",\"sw\":\"navfeeder-esp/1\","
-                     "\"session\":\"%s\"%s%s}",
-                     token_esc, station_esc, feed_esc, session,
-                     zstd ? ",\"zstd\":true" : "",
-                     evidence ? ",\"evidence\":true" : "");
-    if (n < 0 || (size_t)n >= cap) return -1;
-    return n;
+    if (!gnf1_session_valid(session) || !out || cap == 0) return -1;
+    // Escaped straight into out: the caller's cap (GNF1_HELLO_MAX for the pusher) is the one
+    // bound on the token and station. The session needs no escaping: gnf1_session_valid
+    // just proved it holds no '"', '\', or control characters.
+    size_t n = 0;
+    bool ok = append_text(out, cap, &n, "{\"token\":\"") &&
+              append_escaped(out, cap, &n, token ? token : "") &&
+              append_text(out, cap, &n, "\",\"station\":\"") &&
+              append_escaped(out, cap, &n, station ? station : "") &&
+              append_text(out, cap, &n, "\",\"feed\":\"") &&
+              append_escaped(out, cap, &n, feed ? feed : "ubx") &&
+              append_text(out, cap, &n, "\",\"sw\":\"navfeeder-esp/1\",\"session\":\"") &&
+              append_text(out, cap, &n, session) &&
+              append_text(out, cap, &n, "\"") &&
+              (!zstd || append_text(out, cap, &n, ",\"zstd\":true")) &&
+              (!evidence || append_text(out, cap, &n, ",\"evidence\":true")) &&
+              append_text(out, cap, &n, "}");
+    if (!ok) {
+        out[0] = 0;
+        return -1;
+    }
+    out[n] = 0;
+    return (int)n;
 }
 
 bool gnf1_welcome_ok(const char *welcome, size_t len)
