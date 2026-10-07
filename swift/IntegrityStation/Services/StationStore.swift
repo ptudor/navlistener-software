@@ -39,6 +39,7 @@ final class StationStore {
     private var lastEventID: String?
     private var generation: UInt64 = 0
     private var cacheAccess: CacheAccess?
+    private var isForeground = false
 
     private func isCurrent(_ session: ReadSession, generation: UInt64) -> Bool {
         self.generation == generation && activeSession == session && !Task.isCancelled
@@ -512,9 +513,15 @@ final class StationStore {
         }
     }
 
+    /// Scene-phase changes do not touch condition health: the live stream keeps
+    /// running, or fails and invalidates on its own, and the refresh on return
+    /// to the foreground reconciles against the complete snapshot. Marking
+    /// conditions unknown here only turned every online station grey on each
+    /// phase change.
     func setForeground(_ active: Bool) {
+        guard active != isForeground else { return }
+        isForeground = active
         notifications?.setForeground(active)
-        conditions.invalidate()
         if active { Task { await refresh() } }
     }
 
