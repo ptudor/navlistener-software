@@ -15,13 +15,7 @@
 extern "C" {
 #endif
 
-typedef enum {
-    NVF_MCU_KEY_ABSENT,   // no key: nothing stored and no Digital Signature key block burned
-    NVF_MCU_KEY_ORPHANED, // a key block is burned but its ciphertext is missing: restore it
-    NVF_MCU_KEY_READY,    // burned, protected, and a signature through the peripheral verified
-    NVF_MCU_KEY_FAULT,    // burned, but protection is incomplete or the self-test failed: the
-                          // block is spent; another free block may be tried while unsealed
-} nvf_mcu_key_state_t;
+// nvf_mcu_key_state_t, the key's state, is declared with the portable core.
 
 // The exported Digital Signature context: "NDS\1" followed by the peripheral's ciphertext
 // structure. It is useless without the eFuse key of the chip that made it, so the factory

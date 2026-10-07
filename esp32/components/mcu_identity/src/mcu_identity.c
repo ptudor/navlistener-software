@@ -62,7 +62,6 @@ static const uint8_t CONTEXT_MAGIC[4] = { 'N', 'D', 'S', 1 };
 #define CONTEXT_SIZE (sizeof CONTEXT_MAGIC + sizeof(esp_ds_data_t))
 _Static_assert(CONTEXT_SIZE <= NVF_MCU_DS_CONTEXT_MAX, "exported Digital Signature context exceeds its bound");
 #define DS_PURPOSE ESP_EFUSE_KEY_PURPOSE_HMAC_DOWN_DIGITAL_SIGNATURE
-enum { STORED_NONE = 0, STORED_STAGED = 1, STORED_READY = 2, STORED_FAULT = 3 };
 
 static SemaphoreHandle_t lock;
 static nvs_handle_t storage;
@@ -86,6 +85,14 @@ static bool block_protected(esp_efuse_block_t block)
 {
     return esp_efuse_get_key_purpose(block) == DS_PURPOSE && esp_efuse_get_key_dis_read(block) &&
            esp_efuse_get_key_dis_write(block) && esp_efuse_get_keypurpose_dis_write(block);
+}
+// What eFuse key block i holds, for the portable key-state decisions.
+static nvf_mcu_block_use_t block_use(int i)
+{
+    esp_efuse_block_t block = EFUSE_BLK_KEY0 + i;
+    if (esp_efuse_key_block_unused(block)) return NVF_MCU_BLOCK_UNUSED;
+    if (esp_efuse_get_key_purpose(block) != DS_PURPOSE) return NVF_MCU_BLOCK_OTHER;
+    return block_protected(block) ? NVF_MCU_BLOCK_DS_PROTECTED : NVF_MCU_BLOCK_DS_UNPROTECTED;
 }
 
 static bool sealed(void) { return esp_efuse_read_field_bit(ESP_EFUSE_WR_DIS_RD_DIS); }
@@ -219,37 +226,29 @@ static void record_fault(int block)
 {
     faulted |= (uint8_t)(1u << block);
     (void)nvs_set_u8(storage, "faulted", faulted);
-    (void)store_state(STORED_FAULT);
+    (void)store_state(NVF_MCU_STORED_FAULT);
 }
 static bool fault_confirmed(void) { return key_state == NVF_MCU_KEY_FAULT && key_block >= 0 && (faulted >> key_block & 1); }
-// The lowest Digital Signature key block that no recorded fault explains, or -1.
-static int unexplained_key_block(void)
-{
-    for (int i = 0; i < 6; i++)
-        if (!(faulted >> i & 1) && esp_efuse_get_key_purpose(EFUSE_BLK_KEY0 + i) == DS_PURPOSE) return i;
-    return -1;
-}
-// With nothing usable stored: a block nobody has explained is a key awaiting its ciphertext;
-// otherwise recorded faults are all there is; otherwise the chip has no key.
+// With nothing usable stored, the eFuses and the recorded faults decide (nvf_mcu_key_unstored).
 static void resolve_unstored(void)
 {
-    int orphan = unexplained_key_block();
-    key_state = orphan >= 0 ? NVF_MCU_KEY_ORPHANED : faulted ? NVF_MCU_KEY_FAULT : NVF_MCU_KEY_ABSENT;
-    key_block = orphan;
-    for (int i = 0; orphan < 0 && i < 6; i++) if (faulted >> i & 1) key_block = i;
-    if (orphan >= 0) ESP_LOGW(TAG, "eFuse key block %d holds a Digital Signature key but its ciphertext is not stored; restore it from the factory record", orphan);
+    nvf_mcu_block_use_t use[6];
+    for (int i = 0; i < 6; i++) use[i] = block_use(i);
+    key_state = nvf_mcu_key_unstored(faulted, use, &key_block);
+    if (key_state == NVF_MCU_KEY_ORPHANED)
+        ESP_LOGW(TAG, "eFuse key block %d holds a Digital Signature key but its ciphertext is not stored; restore it from the factory record", key_block);
 }
 
 // load_key resolves the stored state against the eFuses. Caller holds the lock.
 static void load_key(void)
 {
-    uint8_t state = STORED_NONE, block = 0;
+    uint8_t state = NVF_MCU_STORED_NONE, block = 0;
     if (nvs_get_u8(storage, "faulted", &faulted) != ESP_OK) faulted = 0;
     faulted &= 0x3f;
     size_t context_len = CONTEXT_SIZE, der_len = sizeof spki;
     uint8_t *context = malloc(CONTEXT_SIZE);
     esp_ds_data_t *data = context_alloc();
-    bool stored = context && data && nvs_get_u8(storage, "state", &state) == ESP_OK && state != STORED_NONE &&
+    bool stored = context && data && nvs_get_u8(storage, "state", &state) == ESP_OK && state != NVF_MCU_STORED_NONE &&
         nvs_get_u8(storage, "block", &block) == ESP_OK && block < 6 &&
         nvs_get_blob(storage, "ds_ctx", context, &context_len) == ESP_OK && context_len == CONTEXT_SIZE &&
         !memcmp(context, CONTEXT_MAGIC, sizeof CONTEXT_MAGIC) &&
@@ -262,27 +261,34 @@ static void load_key(void)
         resolve_unstored();
         return;
     }
-    if (state == STORED_STAGED && esp_efuse_key_block_unused(EFUSE_BLK_KEY0 + block)) {
-        // Reset before the burn: the HMAC key died with RAM, so this ciphertext is unusable.
-        ESP_LOGW(TAG, "discarding a key generation interrupted before its eFuse burn; nothing was burned");
+    nvf_mcu_key_action_t action = nvf_mcu_key_action(state, block_use(block));
+    if (action == NVF_MCU_KEY_DISCARD) {
+        // Staged: a reset before the burn, so the HMAC key died with RAM and the ciphertext
+        // is unusable. Ready or faulted: this chip's block is free, or serves another purpose,
+        // so the ciphertext was stored for another chip (NVS restored from another unit, or the
+        // update_meta image copied). Nothing was burned here, so nothing is recorded as a
+        // fault: the eFuses alone say what this chip has.
+        if (state == NVF_MCU_STORED_STAGED)
+            ESP_LOGW(TAG, "discarding a key generation interrupted before its eFuse burn; nothing was burned");
+        else
+            ESP_LOGW(TAG, "discarding a stored microcontroller key that is not this chip's: eFuse key block %u holds no Digital Signature key", block);
         discard_key();
         heap_caps_free(data);
         resolve_unstored();
         return;
     }
     nvf_mcu_key_state_t resolved = NVF_MCU_KEY_FAULT;
-    if (state == STORED_FAULT) {
-        if (!(faulted >> block & 1)) record_fault(block);
-    } else if (!block_protected(EFUSE_BLK_KEY0 + block)) {
-        ESP_LOGE(TAG, "eFuse key block %u is not a fully protected Digital Signature key", block);
-        record_fault(block);
+    if (action == NVF_MCU_KEY_RECORD_FAULT) {
+        if (state != NVF_MCU_STORED_FAULT)
+            ESP_LOGE(TAG, "eFuse key block %u is not a fully protected Digital Signature key", block);
+        if (state != NVF_MCU_STORED_FAULT || !(faulted >> block & 1)) record_fault(block);
     } else {
         esp_err_t err = self_test(data, block, spki, der_len);
         if (err == ESP_OK) resolved = NVF_MCU_KEY_READY;
         else ESP_LOGE(TAG, "microcontroller key self-test failed on eFuse key block %u: %s", block, esp_err_to_name(err));
         // Only a completed test changes what is stored. An allocation failure leaves the
         // state as it was: unresolved for this boot, and tested again at the next.
-        if (err == ESP_OK && state == STORED_STAGED) (void)store_state(STORED_READY);
+        if (err == ESP_OK && state == NVF_MCU_STORED_STAGED) (void)store_state(NVF_MCU_STORED_READY);
         else if (err != ESP_OK && err != ESP_ERR_NO_MEM) record_fault(block);
     }
     adopt(data, spki, der_len, block, resolved);
@@ -439,7 +445,7 @@ static const char *commit_key(const esp_ds_data_t *data, const uint8_t *der, siz
     esp_efuse_block_t block = esp_efuse_find_unused_key_block();
     if (block == EFUSE_BLK_KEY_MAX) return "no free eFuse key block";
     int index = (int)(block - EFUSE_BLK_KEY0);
-    if (store_key(data, der, der_len, index, STORED_STAGED) != ESP_OK) { discard_key(); return "could not store the ciphertext; nothing was burned"; }
+    if (store_key(data, der, der_len, index, NVF_MCU_STORED_STAGED) != ESP_OK) { discard_key(); return "could not store the ciphertext; nothing was burned"; }
     esp_err_t err = esp_efuse_write_key(block, DS_PURPOSE, hmac_key, 32);
     if (err != ESP_OK && esp_efuse_key_block_unused(block)) {
         // Refused while the batch was being prepared: it was cancelled and the block is free.
@@ -531,7 +537,7 @@ static const char *keygen_commit(void *context)
     }
     adopt(data, job->der, job->der_len, burned, NVF_MCU_KEY_READY);
     job->ready = true;
-    if ((job->result = store_state(STORED_READY)) != ESP_OK) return "the key is ready but its state could not be stored; restart, then run `commission seal`";
+    if ((job->result = store_state(NVF_MCU_STORED_READY)) != ESP_OK) return "the key is ready but its state could not be stored; restart, then run `commission seal`";
     return NULL;
 }
 
@@ -578,7 +584,7 @@ esp_err_t nvf_mcu_identity_seal(const char **reason)
         *reason = "seal only after the microcontroller key is ready and its block protected";
     else if ((err = self_test(ds_data, key_block, spki, spki_len)) != ESP_OK)
         *reason = "the microcontroller key did not pass its self-test; nothing was sealed";
-    else if ((err = store_state(STORED_READY)) != ESP_OK)
+    else if ((err = store_state(NVF_MCU_STORED_READY)) != ESP_OK)
         *reason = "the key's ready state could not be stored; nothing was sealed";
     else if ((err = seal_field()) != ESP_OK)
         *reason = "the eFuse write was refused";
@@ -614,7 +620,7 @@ esp_err_t nvf_mcu_identity_restore(const uint8_t *context, size_t context_len, c
             if (err == ESP_OK) block = i;
             else *reason = "a signature made with this context does not verify under this public key on this chip";
         }
-        if (block >= 0 && (err = store_key(data, der, der_len, block, STORED_READY)) != ESP_OK) *reason = "could not store the restored key";
+        if (block >= 0 && (err = store_key(data, der, der_len, block, NVF_MCU_STORED_READY)) != ESP_OK) *reason = "could not store the restored key";
         else if (block >= 0) {
             if (faulted >> block & 1) { faulted &= (uint8_t)~(1u << block); (void)nvs_set_u8(storage, "faulted", faulted); (void)nvs_commit(storage); }
             adopt(data, der, der_len, block, NVF_MCU_KEY_READY); data = NULL; *reason = NULL;

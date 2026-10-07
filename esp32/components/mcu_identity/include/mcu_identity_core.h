@@ -119,6 +119,38 @@ typedef struct {
 } nvf_chip_security_t;
 uint16_t nvf_commission_security_bits(const nvf_chip_security_t *chip);
 
+// The microcontroller key's state, as the firmware reports it.
+typedef enum {
+    NVF_MCU_KEY_ABSENT,   // no key: nothing stored and no Digital Signature key block burned
+    NVF_MCU_KEY_ORPHANED, // a key block is burned but its ciphertext is missing: restore it
+    NVF_MCU_KEY_READY,    // burned, protected, and a signature through the peripheral verified
+    NVF_MCU_KEY_FAULT,    // burned, but protection is incomplete or the self-test failed: the
+                          // block is spent; another free block may be tried while unsealed
+} nvf_mcu_key_state_t;
+
+// What the eFuses say about one of the six key blocks, as the firmware reads them at boot.
+typedef enum {
+    NVF_MCU_BLOCK_UNUSED,         // free: never burned
+    NVF_MCU_BLOCK_DS_PROTECTED,   // a Digital Signature key, read- and write-protected, purpose locked
+    NVF_MCU_BLOCK_DS_UNPROTECTED, // a Digital Signature key whose protection is incomplete
+    NVF_MCU_BLOCK_OTHER,          // burned for another purpose
+} nvf_mcu_block_use_t;
+// What NVS holds for the key: nothing, ciphertext staged before its burn, a key that passed
+// its self-test, or a recorded fault.
+enum { NVF_MCU_STORED_NONE = 0, NVF_MCU_STORED_STAGED = 1, NVF_MCU_STORED_READY = 2, NVF_MCU_STORED_FAULT = 3 };
+// What to do with a stored key at boot, from its stored state and the eFuse state of the
+// block it names. A block this chip never burned, or burned for another purpose, means the
+// ciphertext is not this chip's (NVS restored from another unit, or the update_meta image
+// copied): discard it and record nothing, so the eFuses alone say what this chip has. A fault
+// is recorded only for a Digital Signature block whose protection is incomplete, or one
+// already on record.
+typedef enum { NVF_MCU_KEY_DISCARD, NVF_MCU_KEY_RECORD_FAULT, NVF_MCU_KEY_SELF_TEST } nvf_mcu_key_action_t;
+nvf_mcu_key_action_t nvf_mcu_key_action(unsigned stored, nvf_mcu_block_use_t use);
+// With nothing usable stored: the lowest Digital Signature block no recorded fault explains is
+// a key awaiting its ciphertext; otherwise recorded faults are all there is; otherwise the chip
+// has no key. *block receives the orphan, else the highest faulted block, else -1.
+nvf_mcu_key_state_t nvf_mcu_key_unstored(uint8_t faulted, const nvf_mcu_block_use_t use[6], int *block);
+
 // Whether a microcontroller key may be generated now. Every refusal comes before anything
 // is burned. A confirmed fault (a key block that was burned but failed its protection check
 // or its self-test) does not end the matter: while the read-protection field is unsealed and

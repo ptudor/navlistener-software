@@ -306,6 +306,37 @@ static void test_keygen_sequence(void)
     assert(t.refusals == 1 && t.generates == 1 && !t.commits && !t.held);
 }
 
+static void test_key_resolution(void)
+{
+    // A stored key names a block this chip never burned (NVS restored from another unit, or
+    // the update_meta image copied): the ciphertext is not this chip's. It is discarded and
+    // the chip resolves from its eFuses alone, so a free chip ends ABSENT with no fault
+    // recorded and the free block may still be burned later.
+    nvf_mcu_block_use_t free_chip[6] = {0};
+    int block = 7;
+    uint8_t faulted = 0;
+    assert(nvf_mcu_key_action(NVF_MCU_STORED_READY, NVF_MCU_BLOCK_UNUSED) == NVF_MCU_KEY_DISCARD);
+    assert(nvf_mcu_key_action(NVF_MCU_STORED_STAGED, NVF_MCU_BLOCK_UNUSED) == NVF_MCU_KEY_DISCARD);
+    assert(nvf_mcu_key_action(NVF_MCU_STORED_FAULT, NVF_MCU_BLOCK_UNUSED) == NVF_MCU_KEY_DISCARD);
+    assert(nvf_mcu_key_action(NVF_MCU_STORED_READY, NVF_MCU_BLOCK_OTHER) == NVF_MCU_KEY_DISCARD);
+    assert(nvf_mcu_key_unstored(faulted, free_chip, &block) == NVF_MCU_KEY_ABSENT && block == -1 && faulted == 0);
+    // A fault is recorded only for a Digital Signature block whose protection is incomplete,
+    // or one already on record; a fully protected block is judged by its self-test.
+    assert(nvf_mcu_key_action(NVF_MCU_STORED_READY, NVF_MCU_BLOCK_DS_UNPROTECTED) == NVF_MCU_KEY_RECORD_FAULT);
+    assert(nvf_mcu_key_action(NVF_MCU_STORED_STAGED, NVF_MCU_BLOCK_DS_UNPROTECTED) == NVF_MCU_KEY_RECORD_FAULT);
+    assert(nvf_mcu_key_action(NVF_MCU_STORED_FAULT, NVF_MCU_BLOCK_DS_PROTECTED) == NVF_MCU_KEY_RECORD_FAULT);
+    assert(nvf_mcu_key_action(NVF_MCU_STORED_READY, NVF_MCU_BLOCK_DS_PROTECTED) == NVF_MCU_KEY_SELF_TEST);
+    assert(nvf_mcu_key_action(NVF_MCU_STORED_STAGED, NVF_MCU_BLOCK_DS_PROTECTED) == NVF_MCU_KEY_SELF_TEST);
+    // Unstored: the lowest Digital Signature block no fault explains is an orphan awaiting its
+    // ciphertext; otherwise the faults are all there is; otherwise nothing.
+    nvf_mcu_block_use_t burned[6] = {NVF_MCU_BLOCK_OTHER, NVF_MCU_BLOCK_UNUSED, NVF_MCU_BLOCK_DS_PROTECTED,
+                                     NVF_MCU_BLOCK_DS_UNPROTECTED, NVF_MCU_BLOCK_UNUSED, NVF_MCU_BLOCK_UNUSED};
+    assert(nvf_mcu_key_unstored(0, burned, &block) == NVF_MCU_KEY_ORPHANED && block == 2);
+    assert(nvf_mcu_key_unstored(1u << 2, burned, &block) == NVF_MCU_KEY_ORPHANED && block == 3);
+    assert(nvf_mcu_key_unstored((1u << 2) | (1u << 3), burned, &block) == NVF_MCU_KEY_FAULT && block == 3);
+    assert(nvf_mcu_key_unstored(1u << 4, free_chip, &block) == NVF_MCU_KEY_FAULT && block == 4);
+}
+
 static void test_pss(void)
 {
     // 1. The fixture proof, opened with the fixture public key, is an encoding the reference
@@ -367,6 +398,7 @@ int main(void)
     test_match();
     test_security_bits_and_keygen_rules();
     test_keygen_sequence();
+    test_key_resolution();
     test_pss();
     puts("Commissioning statement, record, proof digest, evidence and EMSA-PSS match the shared fixtures");
     return 0;
