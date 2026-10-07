@@ -80,3 +80,5 @@ reference/icd/*.pdf
 
 # Python bytecode
 __pycache__/
+#
+review/
