@@ -25,6 +25,9 @@ type Satellite struct {
 	GNSS     int         `json:"gnssid"`
 	Epoch    time.Time   `json:"orbit_epoch"`
 	Position *[3]float64 `json:"ecef_m,omitempty"`
+	// Extrapolated marks a position propagated past its orbit's fit window
+	// while downloads are delayed.
+	Extrapolated bool `json:"extrapolated,omitempty"`
 }
 
 type Snapshot struct {
@@ -150,10 +153,20 @@ func (c *Catalogue) Snapshot(now time.Time) Snapshot {
 			s.Status = "current"
 		}
 	}
+	// A delayed reference keeps placing satellites from their last orbits so an
+	// upstream outage does not erase known gaps from the map. A current
+	// reference never extrapolates: an orbit it has stopped refreshing belongs
+	// to a satellite whose geometry is genuinely unknown.
+	coast := s.Status == "delayed"
 	sort.Slice(orbits, func(i, j int) bool { return orbits[i].Name < orbits[j].Name })
 	for _, o := range orbits {
 		sv := Satellite{Name: o.Name, GNSS: int(o.GNSS), Epoch: o.Epoch}
-		if p, ok := o.position(now); ok {
+		p, ok := o.position(now)
+		if !ok && coast {
+			p, ok = o.extrapolate(now)
+			sv.Extrapolated = ok
+		}
+		if ok {
 			sv.Position = &[3]float64{p.X, p.Y, p.Z}
 		}
 		s.Satellites = append(s.Satellites, sv)

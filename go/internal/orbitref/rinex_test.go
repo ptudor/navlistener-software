@@ -72,17 +72,88 @@ func TestOrbitExpiryRetainsRoster(t *testing.T) {
 	at := time.Date(2024, 1, 10, 12, 30, 0, 0, time.UTC)
 	c := New("", 18)
 	c.data = diskCatalogue{Orbits: orbits, FetchedAt: at}
-	snapshot := c.Snapshot(at.Add(48 * time.Hour))
+	// Past every coast limit, identities remain without coordinates.
+	snapshot := c.Snapshot(at.Add(80 * time.Hour))
 	if snapshot.Status != "delayed" || len(snapshot.Satellites) != 5 {
 		t.Fatalf("lost expected roster: %+v", snapshot)
 	}
 	for _, s := range snapshot.Satellites {
-		if s.Position != nil {
+		if s.Position != nil || s.Extrapolated {
 			t.Fatalf("expired orbit still located: %s", s.Name)
 		}
 	}
 	if _, ok := orbits["G05"].position(at.Add(7 * 24 * time.Hour)); ok {
 		t.Fatal("week-wrapped stale orbit accepted")
+	}
+	if _, ok := orbits["G05"].extrapolate(at.Add(7 * 24 * time.Hour)); ok {
+		t.Fatal("week-wrapped stale orbit extrapolated")
+	}
+}
+
+func TestDelayedReferenceCoastsOnLastOrbits(t *testing.T) {
+	orbits, err := parseRINEX(strings.NewReader(fixture(t)), 18)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2024, 1, 10, 12, 30, 0, 0, time.UTC)
+	c := New("", 18)
+	c.data = diskCatalogue{Orbits: orbits, FetchedAt: at}
+	located := func(now time.Time) map[string]bool {
+		out := map[string]bool{}
+		for _, s := range c.Snapshot(now).Satellites {
+			if (s.Position != nil) != s.Extrapolated && now.Sub(orbits[s.Name].Epoch) > 4*time.Hour {
+				t.Fatalf("%s: position %v extrapolated=%v", s.Name, s.Position, s.Extrapolated)
+			}
+			out[s.Name] = s.Position != nil
+		}
+		return out
+	}
+	// Every orbit is past its fit window, but a download outage keeps the
+	// last orbits on the map instead of erasing every known gap.
+	if got := located(at.Add(40 * time.Hour)); len(got) != 5 || !got["G05"] || !got["E21"] || !got["C11"] || !got["J02"] || !got["R09"] {
+		t.Fatalf("delayed reference dropped coastable orbits: %v", got)
+	}
+	// GLONASS integration stops at two days; Kepler orbits coast to three.
+	if got := located(at.Add(60 * time.Hour)); got["R09"] || !got["G05"] || !got["C11"] {
+		t.Fatalf("per-system coast limits not applied: %v", got)
+	}
+	// Inside the fit window a delayed reference still reports a current orbit.
+	for _, s := range c.Snapshot(at).Satellites {
+		if s.Name == "G05" && (s.Position == nil || s.Extrapolated) {
+			t.Fatalf("in-window orbit marked extrapolated: %+v", s)
+		}
+	}
+	// A current reference never extrapolates an orbit it has stopped refreshing.
+	later := at.Add(40 * time.Hour)
+	c.data.FetchedAt = later
+	snapshot := c.Snapshot(later)
+	if snapshot.Status != "current" {
+		t.Fatalf("status %q", snapshot.Status)
+	}
+	for _, s := range snapshot.Satellites {
+		if s.Position != nil || s.Extrapolated {
+			t.Fatalf("current reference extrapolated %s", s.Name)
+		}
+	}
+	// Coasting only runs forward from the orbit epoch.
+	if _, ok := orbits["G05"].extrapolate(orbits["G05"].Epoch.Add(-3 * time.Hour)); ok {
+		t.Fatal("extrapolated backwards past the fit window")
+	}
+}
+
+func TestRINEXSkipsGLONASSSlotsAboveTwentyFour(t *testing.T) {
+	good := fixture(t)
+	record := good[strings.Index(good, "R09 2024"):]
+	extra := good + strings.Replace(record, "R09", "R27", 1) + strings.Replace(record, "R09", "R30", 1)
+	orbits, err := parseRINEX(strings.NewReader(extra), 18)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(orbits) != 5 || orbits["R09"].Name != "R09" {
+		t.Fatalf("unexpected roster: %d orbits", len(orbits))
+	}
+	if _, err := parseRINEX(strings.NewReader(good+strings.Replace(record, "R09", "R00", 1)), 18); err == nil {
+		t.Fatal("accepted GLONASS slot zero")
 	}
 }
 

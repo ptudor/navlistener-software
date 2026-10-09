@@ -112,9 +112,10 @@ func parseRecord(lines []string, leapSeconds int) (orbit, bool, error) {
 	}
 	n, err := strconv.Atoi(first[1:3])
 	if err != nil || n < 1 || n > map[gnss.GNSSID]int{gnss.GPS: 32, gnss.Galileo: 36, gnss.BeiDou: 63, gnss.QZSS: 10, gnss.GLONASS: 24}[g] {
-		// R25..R27 experimental GLONASS slots can appear in reference files;
-		// the collector cannot decode them, so do not claim monitoring support.
-		if g == gnss.GLONASS && n >= 25 && n <= 27 {
+		// Slots above R24 (R27 and, from 2026-10-08, R30) carry satellites in
+		// test or commissioning slots. The collector cannot decode them, so do
+		// not claim monitoring support, and do not reject the whole file.
+		if g == gnss.GLONASS && n > 24 && n <= 99 {
 			return o, false, nil
 		}
 		return o, false, fmt.Errorf("invalid RINEX satellite %q", first[:3])
@@ -187,20 +188,56 @@ func parseRecord(lines []string, leapSeconds int) (orbit, bool, error) {
 	return o, true, nil
 }
 
+// fitWindow is the conservative interval around the orbit epoch in which a
+// reference orbit counts as current. GLONASS matches the collector's
+// deliberately short fit window.
+func (o orbit) fitWindow() (earliest, latest time.Duration) {
+	if o.GNSS == gnss.GLONASS {
+		return -15 * time.Minute, 30 * time.Minute
+	}
+	return -2 * time.Hour, 4 * time.Hour
+}
+
+// coastLimit bounds how far past its epoch an orbit may still place a
+// satellite on the map while reference downloads are delayed. In one sample,
+// IGS broadcast orbits from 2026-10-05 propagated against fresh orbits up to
+// three days later stayed within 21 km after two days and 36 km after three
+// for every system, far inside a 2° map cell. Kepler propagation wraps time of week,
+// so its limit must stay below half a week; GLONASS integration refuses
+// spans beyond two days.
+func (o orbit) coastLimit() time.Duration {
+	if o.GNSS == gnss.GLONASS {
+		return 48 * time.Hour
+	}
+	return 72 * time.Hour
+}
+
+// position places the satellite only inside its fit window.
 func (o orbit) position(at time.Time) (gnss.ECEF, bool) {
-	age := at.Sub(o.Epoch)
+	earliest, latest := o.fitWindow()
+	if age := at.Sub(o.Epoch); age < earliest || age > latest {
+		return gnss.ECEF{}, false
+	}
+	return o.propagate(at.Sub(o.Epoch))
+}
+
+// extrapolate places the satellite after its fit window has closed, forward
+// in time only and within coastLimit. It is map geometry for an outage, not
+// a current orbit.
+func (o orbit) extrapolate(at time.Time) (gnss.ECEF, bool) {
+	_, latest := o.fitWindow()
+	if age := at.Sub(o.Epoch); age <= latest || age > o.coastLimit() {
+		return gnss.ECEF{}, false
+	}
+	return o.propagate(at.Sub(o.Epoch))
+}
+
+func (o orbit) propagate(age time.Duration) (gnss.ECEF, bool) {
 	var p gnss.ECEF
 	var err error
 	if o.GNSS == gnss.GLONASS {
-		// Match the collector's deliberately short GLONASS fit window.
-		if age < -15*time.Minute || age > 30*time.Minute {
-			return p, false
-		}
 		p, err = glonass.Propagate(o.GLO, age.Seconds())
 	} else {
-		if age < -2*time.Hour || age > 4*time.Hour {
-			return p, false
-		}
 		p, err = kepler.Propagate(o.Kepler, math.Mod(o.Kepler.Toe+age.Seconds()+gnsstime.WeekSeconds, gnsstime.WeekSeconds))
 	}
 	radius := p.Norm()
