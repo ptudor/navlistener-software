@@ -48,6 +48,10 @@ examines every selected satellite above the horizon:
   delayed, missing a selected constellation, or contains satellites without
   usable coordinates. Known red and amber gaps remain visible. Cells with no
   known visible satellites are unknown rather than covered.
+- **Gray hatching:** no satellite with a known position is above the horizon,
+  while some orbits are unknown or a selected constellation is absent from the
+  reference. Nothing there can be assessed, so the cell must not look clearer
+  than the known gaps around it. A stale snapshot hatches the whole map.
 
 The 50% and 80% thresholds grade practical monitoring instead of demanding every
 satellite. The default one-station target therefore clears at 80% observed. With
@@ -72,7 +76,8 @@ or the extent of a satellite's visibility footprint.
 
 This view does not assess local interference, positioning accuracy, every GNSS
 signal, terrain/antenna obstructions, or service availability. SBAS, NavIC and
-experimental GLONASS slots 25–27 are outside its scope. A useful next station can
+GLONASS slots above 24 (test and commissioning slots such as R27 and R30) are
+outside its scope. A useful next station can
 be thousands of kilometres from a missing satellite's subpoint: use the elevation
 list at the proposed site. A snapshot does not establish coverage over a whole
 orbital cycle.
@@ -106,6 +111,17 @@ conservative intervals relative to their absolute orbit epoch:
 |---|---:|---:|
 | GPS, Galileo, BeiDou, QZSS | −2 hours | +4 hours |
 | GLONASS | −15 minutes | +30 minutes |
+
+While the reference is delayed, an orbit past its fit window keeps placing its
+satellite for up to 72 hours after its epoch (48 hours for GLONASS, the GNSS
+library's integration limit), marked `extrapolated`. An upstream outage then
+keeps known gaps on the map instead of erasing every unheard satellite at once.
+In one sample, broadcast orbits from 2026-10-05 propagated against fresh orbits
+up to three days later stayed within 21 km after two days and 36 km after
+three for every system, well inside a 2° cell. A current reference never
+extrapolates: an orbit that a fresh download no longer refreshes belongs to a
+satellite whose geometry is genuinely unknown. Satellite details show the age
+of an extrapolated orbit.
 
 Expired coordinates are omitted, but the satellite identity remains. Missing
 coordinates prevent a trustworthy visibility test, so uncertainty affects the
@@ -152,7 +168,8 @@ selection and policy-delivery fence. Its `data` contains:
 - `schema` and `audience`, as in other v2 feeds;
 - `fresh_seconds`: 60;
 - `reference`: source label, download status/time, and expected satellites with
-  `name`, `gnssid`, absolute `orbit_epoch`, and optional `ecef_m` in metres;
+  `name`, `gnssid`, absolute `orbit_epoch`, optional `ecef_m` in metres, and
+  `extrapolated: true` when that position is propagated past the fit window;
 - `observations`: audience-scoped satellite identities, optional fresh `ecef_m`,
   and `witness_times` (Unix seconds), one timestamp per distinct source across
   all signals, without source identifiers.

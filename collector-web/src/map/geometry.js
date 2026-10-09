@@ -91,10 +91,13 @@ export function modelFromFeed(envelope, selected, now = Date.now()) {
     const witnesses = !stale && Array.isArray(seen?.witness_times)
       ? seen.witness_times.filter((time) => Number.isFinite(time) && time * 1000 <= now + 1000 && now - time * 1000 <= 60000).length
       : 0
-    const position = !stale && validPosition(seen?.ecef_m)
+    const local = !stale && validPosition(seen?.ecef_m)
+    const position = local
       ? seen.ecef_m
       : !stale && validPosition(satellite.ecef_m) ? satellite.ecef_m : null
-    return { ...satellite, position, witnesses }
+    // Only a reference position can be extrapolated past its orbit's fit window.
+    const extrapolated = !local && position !== null && satellite.extrapolated === true
+    return { ...satellite, position, extrapolated, witnesses }
   }).sort((a, b) => a.name.localeCompare(b.name))
   const unknown = satellites.filter((satellite) => !satellite.position)
   const absentSystems = [...selected].filter((id) => !data.reference.satellites.some((satellite) => satellite.gnssid === id))
@@ -131,7 +134,11 @@ export function assess(model, latitude, longitude, minElevation, target, details
   const uncertain = model.uncertain || expected === 0
   const status = expected === 0 ? 'unknown' : observedFraction < COVERAGE.partial ? 'gap'
     : targetFraction < COVERAGE.good ? 'thin' : uncertain ? 'unknown' : 'covered'
-  return { expected, observed, missing, thin, observedFraction, targetFraction, uncertain, status, visible }
+  // No located satellite is overhead while some orbits are unknown or a
+  // selected constellation is absent: nothing here can be assessed, so the
+  // cell must not read as clear sky beside known gaps.
+  const unmapped = expected === 0 && (model.unknown.length > 0 || model.absentSystems.length > 0)
+  return { expected, observed, missing, thin, observedFraction, targetFraction, uncertain, status, unmapped, visible }
 }
 
 export function worldGrid(model, minElevation, target, step = 2) {

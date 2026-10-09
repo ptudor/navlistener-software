@@ -82,6 +82,43 @@ test('unknown orbit, missing constellation and failed reference cannot look comp
     assert.equal(worldGrid(model, 10, 2, 10).coveredPercent, 0);
   }
 });
+test('a sky with no located satellite is unmapped only when orbits are missing', () => {
+  // Complete reference: the far side of the Earth simply has nothing selected overhead.
+  const complete = modelFromFeed(feed([sv]), new Set([0]), at);
+  assert.equal(assess(complete, 0, 180, 10, 1).unmapped, false);
+  // An unknown orbit could be anywhere, so an empty local sky is unassessed, not clear.
+  const missingOrbit = modelFromFeed(feed([sv, { name: 'G02', gnssid: 0 }]), new Set([0]), at);
+  let result = assess(missingOrbit, 0, 180, 10, 1);
+  assert.equal(result.status, 'unknown');
+  assert.equal(result.unmapped, true);
+  assert.equal(assess(missingOrbit, 0, 0, 10, 1).unmapped, false, 'a located satellite overhead is still assessed');
+  assert.equal(assess(missingOrbit, 0, 0, 10, 1).status, 'gap');
+  // A selected constellation absent from the reference leaves its sky unassessed too.
+  const absent = modelFromFeed(feed([sv]), new Set([0, 2]), at);
+  assert.equal(assess(absent, 0, 180, 10, 1).unmapped, true);
+  // A stale snapshot locates nothing anywhere.
+  const stale = modelFromFeed(feed([sv]), new Set([0]), at + 91000);
+  result = assess(stale, 0, 0, 10, 1);
+  assert.equal(result.unmapped, true);
+  assert.ok(worldGrid(stale, 10, 1, 30).cells.every((cell) => cell.unmapped));
+});
+test('only a reference position is reported as extrapolated', () => {
+  const coasted = { ...sv, extrapolated: true };
+  const envelope = feed([coasted]);
+  envelope.data.reference.status = 'delayed';
+  let model = modelFromFeed(envelope, new Set([0]), at);
+  assert.equal(model.satellites[0].extrapolated, true);
+  assert.deepEqual(model.satellites[0].position, sv.ecef_m);
+  assert.equal(assess(model, 0, 0, 10, 1).status, 'gap', 'an extrapolated missing satellite keeps its gap');
+  // A fresh local orbit supersedes the extrapolated reference position.
+  envelope.data.observations = [{ ...observer(1), ecef_m: [26560000, 1000, 0] }];
+  model = modelFromFeed(envelope, new Set([0]), at);
+  assert.equal(model.satellites[0].extrapolated, false);
+  assert.deepEqual(model.satellites[0].position, [26560000, 1000, 0]);
+  // Without any position there is nothing extrapolated to report.
+  model = modelFromFeed(feed([{ name: 'G02', gnssid: 0, extrapolated: true }]), new Set([0]), at);
+  assert.equal(model.satellites[0].extrapolated, false);
+});
 test('staleness and witness ageing follow the collector clock from the Date header', () => {
   const header = new Date(at).toUTCString();
   const fastBrowser = at + 5 * 60000;

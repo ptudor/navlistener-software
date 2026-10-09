@@ -125,12 +125,16 @@ const selectionDetail = computed(() => {
     const position = point
       ? t('map.satellite_position', { latitude: point.lat.toFixed(2), longitude: point.lon.toFixed(2) })
       : t('map.position_unavailable')
+    const orbitAge = (now() - Date.parse(satellite.orbit_epoch)) / 3600000
+    const extrapolated = satellite.extrapolated && Number.isFinite(orbitAge)
+      ? t('map.position_extrapolated', { hours: Math.round(orbitAge) })
+      : ''
     const local = groundLocation.value && satellite.position
       ? t('map.local_elevation', {
           elevation: elevation(satellite.position, site(groundLocation.value.lat, groundLocation.value.lon)).toFixed(1),
         })
       : ''
-    return [monitoring, position, local].filter(Boolean).join(' ')
+    return [monitoring, position, extrapolated, local].filter(Boolean).join(' ')
   }
   if (groundResult.value) return groundSummary.value
   return props.full ? t('map.selection_help_full') : t('map.selection_help')
@@ -378,7 +382,8 @@ function drawCoverage(context, width, height) {
       ? [248, 81, 73, 52 + 64 * (1 - cell.observedFraction)]
       : cell.status === 'thin'
         ? [210, 153, 34, 24 + 72 * (1 - cell.targetFraction)]
-        : cell.status === 'unknown' ? [130, 143, 165, 18] : [0, 0, 0, 0]
+        : cell.unmapped ? [130, 143, 165, 56]
+          : cell.status === 'unknown' ? [130, 143, 165, 18] : [0, 0, 0, 0]
     pixels.data.set(color, index * 4)
   })
   overlayContext.putImageData(pixels, 0, 0)
@@ -386,6 +391,37 @@ function drawCoverage(context, width, height) {
   context.imageSmoothingEnabled = false
   context.drawImage(overlay, 0, 0, width, height)
   context.restore()
+  if (grid.value.cells.some((cell) => cell.unmapped)) drawUnmappedHatch(context, width, height)
+}
+
+// Hatches cells with no located satellite overhead, so an area the map
+// cannot assess never looks clearer than a known gap beside it.
+function drawUnmappedHatch(context, width, height) {
+  const mask = document.createElement('canvas')
+  mask.width = grid.value.columns
+  mask.height = grid.value.rows
+  const maskContext = mask.getContext('2d')
+  const pixels = maskContext.createImageData(mask.width, mask.height)
+  grid.value.cells.forEach((cell, index) => {
+    if (cell.unmapped) pixels.data.set([255, 255, 255, 255], index * 4)
+  })
+  maskContext.putImageData(pixels, 0, 0)
+  const hatch = document.createElement('canvas')
+  hatch.width = width
+  hatch.height = height
+  const hatchContext = hatch.getContext('2d')
+  hatchContext.strokeStyle = 'rgba(196, 206, 222, .42)'
+  hatchContext.lineWidth = 2
+  hatchContext.beginPath()
+  for (let offset = -height; offset < width; offset += 14) {
+    hatchContext.moveTo(offset, height)
+    hatchContext.lineTo(offset + height, 0)
+  }
+  hatchContext.stroke()
+  hatchContext.globalCompositeOperation = 'destination-in'
+  hatchContext.imageSmoothingEnabled = false
+  hatchContext.drawImage(mask, 0, 0, width, height)
+  context.drawImage(hatch, 0, 0)
 }
 
 function drawMarkers(context, width, height) {
@@ -570,6 +606,7 @@ onBeforeUnmount(() => {
           <span><i class="map-swatch thin"></i>{{ t('map.legend_thin') }}</span>
           <span><i class="map-swatch covered"></i>{{ t('map.legend_covered') }}</span>
           <span><i class="map-swatch unknown"></i>{{ t('map.legend_unknown') }}</span>
+          <span><i class="map-swatch unmapped"></i>{{ t('map.legend_unmapped') }}</span>
         </div>
         <div class="map-freshness"><span class="reference-pill" :data-tone="referenceTone">{{ referenceLabel }}</span><span>{{ snapshotText }} UTC</span></div>
       </div>
@@ -687,6 +724,7 @@ canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
 .map-swatch.thin { background: rgba(210, 153, 34, .66); }
 .map-swatch.covered { background: rgba(45, 212, 191, .24); }
 .map-swatch.unknown { background: rgba(130, 143, 165, .24); }
+.map-swatch.unmapped { background: repeating-linear-gradient(135deg, rgba(196, 206, 222, .62) 0 2px, rgba(130, 143, 165, .32) 2px 5px); }
 .map-freshness { justify-content: flex-end; font-family: var(--mono); }
 .reference-pill { padding: 4px 7px; border: 1px solid var(--line); border-radius: 999px; }
 .reference-pill[data-tone="current"] { color: var(--gps); border-color: color-mix(in srgb, var(--gps) 55%, transparent); }

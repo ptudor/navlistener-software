@@ -33,7 +33,11 @@ test('the coverage map is rendered by Vue without inline styles', async () => {
   assert.match(map, /\/gnss\/api\/v2\//)
   assert.match(map, /mapPagePath/)
   assert.doesNotMatch(map, /\s:style=/)
-  assert.doesNotMatch(map, /repeating-linear-gradient/)
+  // A hatched swatch must match hatching on the canvas. Only unassessed sky is
+  // hatched there; the reference-incomplete swatch stays a flat tint.
+  assert.equal(map.match(/repeating-linear-gradient/g)?.length, 1)
+  assert.match(map, /\.map-swatch\.unmapped \{ background: repeating-linear-gradient/)
+  assert.match(map, /function drawUnmappedHatch/)
 })
 
 test('constellation activity uses explicit heard and expected reference totals', async () => {
