@@ -91,11 +91,12 @@ precisely when monitoring gets worse.
 
 Broadcast almanacs narrow that gap without closing it. Every satellite
 broadcasts its whole constellation's almanac, so one station hearing any GPS,
-QZSS or GLONASS satellite learns where all of that constellation's satellites
-are, including those no station hears. The collector decodes these almanacs and
-the map uses them for any satellite without a fresh ephemeris position; they
-are accurate to a few kilometres (GPS within 3.5 days of the almanac reference
-time, QZSS within 72 hours). Galileo and BeiDou almanacs are not decoded yet.
+Galileo, QZSS or GLONASS satellite learns where all of that constellation's
+satellites are, including those no station hears. The collector decodes these
+almanacs and the map uses them for any satellite without a fresh ephemeris
+position; they are accurate to a few kilometres (GPS and Galileo within 3.5
+days of the almanac reference time, QZSS within 72 hours). BeiDou almanacs are
+not decoded yet.
 An almanac still describes only what the constellation broadcasts, and a
 constellation no station hears contributes none.
 

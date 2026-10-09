@@ -13,7 +13,8 @@ import (
 	"github.com/ptudor/gnss/kepler"
 )
 
-// Kepler-family broadcast almanacs (GPS and QZSS LNAV pages). Every satellite
+// Kepler-family broadcast almanacs (GPS and QZSS LNAV pages, Galileo I/NAV
+// word types 7–10). Every satellite
 // broadcasts its whole constellation's almanac, so one station hearing any
 // satellite learns where all of them are, including those no station can
 // hear. Entries are keyed by the satellite an almanac describes, not the one
@@ -36,9 +37,10 @@ type keplerAlmanac struct {
 // keplerAlmanacValidity bounds |t − toa| for accepting and serving an almanac.
 // GPS keeps t within 3.5 days of toa while a set is transmitted
 // (IS-GPS-200N §20.3.3.5.2.2). QZSS's validity period of 144 h is twice
-// |t − toa| (QZSS-PNT-006 Table 4.1.1-2). Inside half a week the
-// time-of-week wrap used by propagation is unambiguous, so the GPS bound is
-// strict.
+// |t − toa| (QZSS-PNT-006 Table 4.1.1-2). GAL-OS-SIS-ICD-2.2 states no almanac
+// validity period, so Galileo uses half a week as an engineering bound. Inside
+// half a week the time-of-week wrap used by propagation is unambiguous, so
+// that bound is strict.
 func keplerAlmanacValidity(g gnss.GNSSID) time.Duration {
 	if g == gnss.QZSS {
 		return 72 * time.Hour
@@ -58,12 +60,33 @@ func (s *Store) applyKeplerAlmanac(g gnss.GNSSID, a *frame.LNAVAlmanac, stamp ti
 	if err != nil {
 		return
 	}
-	age := gnsstime.EphAge(towFor(g, stamp), a.Toa)
+	s.storeAlmanac(eph, stamp, -1)
+}
+
+// applyGalileoAlmanac stores a completed Galileo almanac like applyKeplerAlmanac.
+// The broadcast WNa, the two least significant bits of t0a's GST week
+// (GAL-OS-SIS-ICD-2.2 §5.1.10), must agree with the week t0a resolves to.
+func (s *Store) applyGalileoAlmanac(a frame.GalileoAlmanac, stamp time.Time) {
+	s.storeAlmanac(a.Ephemeris(), stamp, a.WNa)
+}
+
+// storeAlmanac resolves eph's toa (its Toe) to the instant nearest stamp with
+// that time of week and stores it under its subject satellite. wna, when not
+// -1, is the broadcast two-bit week of toa, which the resolved week must match.
+func (s *Store) storeAlmanac(eph kepler.Ephemeris, stamp time.Time, wna int) {
+	g := eph.ID
+	age := gnsstime.EphAge(towFor(g, stamp), eph.Toe)
 	if math.Abs(age) >= keplerAlmanacValidity(g).Seconds() {
 		return
 	}
 	toa := stamp.Add(-time.Duration(age * float64(time.Second)))
-	key := almanacKey{G: g, Sv: a.SVID}
+	if wna >= 0 {
+		week, ok := gnsstime.WeekAt(gnsstime.SysGalileo, float64(toa.Unix()), float64(gpsUTCOffset))
+		if !ok || week&3 != wna {
+			return
+		}
+	}
+	key := almanacKey{G: g, Sv: eph.SVID}
 	s.almMu.Lock()
 	defer s.almMu.Unlock()
 	if prev, ok := s.almanacs[key]; ok && (prev.toa.After(toa) || (prev.toa.Equal(toa) && prev.stamp.After(stamp))) {
@@ -81,7 +104,7 @@ type almanacPosition struct {
 	t0e         int     // the almanac's own reference: toa (s of week) or GLONASS t_λ (s of day)
 }
 
-// keplerAlmanacPositions propagates every GPS and QZSS almanac still inside its
+// keplerAlmanacPositions propagates every GPS, Galileo and QZSS almanac still inside its
 // validity window to now, sorted by name.
 func (s *Store) keplerAlmanacPositions(now time.Time) []almanacPosition {
 	s.almMu.Lock()
@@ -155,7 +178,8 @@ func glonassAlmanacPosition(a frame.GLONASSAlmanacEntry, now time.Time) (gnss.EC
 }
 
 // almanacPositions returns every satellite the decoded almanacs can place at
-// now: GPS and QZSS from LNAV pages, GLONASS from strings 6–15.
+// now: GPS and QZSS from LNAV pages, Galileo from I/NAV word types 7–10,
+// GLONASS from strings 6–15.
 func (s *Store) almanacPositions(now time.Time) []almanacPosition {
 	out := s.keplerAlmanacPositions(now)
 	alms, anchored := s.glonassAlmanacEntries(now)
@@ -176,4 +200,45 @@ func (s *Store) almanacPositions(now time.Time) []almanacPosition {
 		})
 	}
 	return out
+}
+
+// galAlmWord is one relay's most recent Galileo almanac word, with its feeder
+// stamp (broadcast adjacency) and collector clock (aging out a silent relay).
+type galAlmWord struct {
+	w         *frame.GalileoINAV
+	at, local time.Time
+}
+
+// galAlmanacPairWindow bounds the feeder-clock gap between the two words that
+// carry one satellite's almanac. GAL-OS-SIS-ICD-2.2 Table 41 sequences them in
+// the same or the next 30 s sub-frame; a gap past two sub-frames means a word
+// was lost in between. Engineering bound from that sequencing.
+const galAlmanacPairWindow = time.Minute
+
+// swapGalAlmanacWord records word as relay's latest almanac word and returns
+// the one it replaces. Relays silent for gloAlmPendingStale are dropped and, at
+// gloAlmPendingMax, the oldest relay is evicted. Caller holds the SV's shard lock.
+func (st *svState) swapGalAlmanacWord(relay gloAlmRelay, word galAlmWord) (galAlmWord, bool) {
+	if st.galAlmLast == nil {
+		st.galAlmLast = make(map[gloAlmRelay]galAlmWord, 2)
+	}
+	for k, p := range st.galAlmLast {
+		if k != relay && word.local.Sub(p.local) > gloAlmPendingStale {
+			delete(st.galAlmLast, k)
+		}
+	}
+	prev, ok := st.galAlmLast[relay]
+	if !ok && len(st.galAlmLast) >= gloAlmPendingMax {
+		var oldest gloAlmRelay
+		var oldestAt time.Time
+		first := true
+		for k, p := range st.galAlmLast {
+			if first || p.local.Before(oldestAt) {
+				oldest, oldestAt, first = k, p.local, false
+			}
+		}
+		delete(st.galAlmLast, oldest)
+	}
+	st.galAlmLast[relay] = word
+	return prev, ok
 }

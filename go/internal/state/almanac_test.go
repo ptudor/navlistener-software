@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/gnss/gnsstime"
 	"github.com/ptudor/navlistener/internal/ingest"
 )
 
@@ -216,5 +217,127 @@ func TestRealCaptureAlmanacPlacesGPSSatellites(t *testing.T) {
 	}
 	if tracked[23] || tracked[24] {
 		t.Fatal("the capture tracks G23/G24; pick satellites it does not hear")
+	}
+}
+
+// galAlmanacWordAt builds I/NAV almanac word type wt (7–10) of batch iod whose
+// reference matches at: WNa is the two low bits of at's GST week and t0a the
+// 600 s step nearest at's time of week. The satellite it begins (word types
+// 7–9) is head; every satellite gets a nominal Galileo orbit (Δ(√A) = 0, e = 0,
+// δi = 0) with distinct M0.
+func galAlmanacWordAt(t *testing.T, wt, iod, head int, at time.Time) []uint32 {
+	t.Helper()
+	week, ok := gnsstime.WeekAt(gnsstime.SysGalileo, float64(at.Unix()), float64(gpsUTCOffset))
+	if !ok {
+		t.Fatal("no GST week")
+	}
+	t0a := min(uint64(math.Round(gpsTOW(at)/600)), 1007)
+	content := make([]byte, 16)
+	inavSetBits(content, 0, uint64(wt), 6)
+	inavSetBits(content, 6, uint64(iod), 4)
+	switch wt {
+	case 7:
+		inavSetBits(content, 10, uint64(week&3), 2)
+		inavSetBits(content, 12, t0a, 10)
+		inavSetBits(content, 22, uint64(head), 6)
+		inavSetBits(content, 106, 1000, 16) // M0
+	case 8:
+		inavSetBits(content, 43, uint64(head), 6)
+	case 9:
+		inavSetBits(content, 10, uint64(week&3), 2)
+		inavSetBits(content, 12, t0a, 10)
+		inavSetBits(content, 22, 2000, 16) // the previous satellite's M0
+		inavSetBits(content, 71, uint64(head), 6)
+	case 10:
+		inavSetBits(content, 37, 3000, 16) // the previous satellite's M0
+	}
+	return inavContentWords(content)
+}
+
+func galAlmanacFrame(source string, transmitter int, words []uint32, recv time.Time) *ingest.RawFrame {
+	return &ingest.RawFrame{GnssID: gnss.Galileo, SvID: transmitter, SigID: 1, Source: source, Recv: recv, Words: words}
+}
+
+// TestGalileoAlmanacJoinsPerRelay: a satellite's almanac is completed only by
+// the next almanac word from the same relay, within a minute on the feeder
+// clock. Another station's word in between does not break the pair, a lost
+// word does not let a stale one join, and the placed satellite lands on the
+// Galileo shell.
+func TestGalileoAlmanacJoinsPerRelay(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	s.Apply(galAlmanacFrame("a", 2, galAlmanacWordAt(t, 7, 5, 11, now), now))
+	s.Apply(galAlmanacFrame("b", 2, galAlmanacWordAt(t, 8, 5, 12, now), now.Add(time.Second)))
+	if _, ok := s.almanacs[almanacKey{G: gnss.Galileo, Sv: 11}]; ok {
+		t.Fatal("another relay's word 8 completed relay a's SVID 11")
+	}
+	s.Apply(galAlmanacFrame("a", 2, galAlmanacWordAt(t, 8, 5, 12, now), now.Add(2*time.Second)))
+	e11 := monitoringByName(s, now)["E11"]
+	if e11.Position == nil || e11.PositionSource != "almanac" || e11.GNSS != int(gnss.Galileo) {
+		t.Fatalf("E11 = %+v", e11)
+	}
+	if r := math.Sqrt(e11.Position[0]*e11.Position[0] + e11.Position[1]*e11.Position[1] + e11.Position[2]*e11.Position[2]); math.Abs(r-29600000) > 1000 {
+		t.Fatalf("E11 radius %.0f m, want the nominal 29 600 km", r)
+	}
+	// Relay a's word 9 arrives two minutes later: a word was lost, so SVID 12
+	// is not completed from a stale word 8.
+	s.Apply(galAlmanacFrame("a", 2, galAlmanacWordAt(t, 9, 5, 13, now), now.Add(2*time.Minute)))
+	if _, ok := s.almanacs[almanacKey{G: gnss.Galileo, Sv: 12}]; ok {
+		t.Fatal("SVID 12 joined across a gap")
+	}
+	// Word 10 right after word 9 completes SVID 13.
+	s.Apply(galAlmanacFrame("a", 2, galAlmanacWordAt(t, 10, 5, 0, now), now.Add(2*time.Minute+2*time.Second)))
+	if _, ok := s.almanacs[almanacKey{G: gnss.Galileo, Sv: 13}]; !ok {
+		t.Fatal("SVID 13 not completed by word 10")
+	}
+}
+
+// TestGalileoAlmanacChecksReferenceWeek: a batch whose two-bit WNa disagrees
+// with the GST week its t0a resolves to is not stored.
+func TestGalileoAlmanacChecksReferenceWeek(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	lastWeek := now.Add(-7 * 24 * time.Hour)
+	w7 := galAlmanacWordAt(t, 7, 5, 11, lastWeek) // last week's WNa, this week's t0a
+	s.Apply(galAlmanacFrame("a", 2, w7, now))
+	s.Apply(galAlmanacFrame("a", 2, galAlmanacWordAt(t, 8, 5, 12, now), now.Add(time.Second)))
+	if len(s.almanacs) != 0 {
+		t.Fatal("almanac with a mismatched WNa stored")
+	}
+}
+
+// TestRealCaptureAlmanacPlacesGalileoSatellites replays a real capture's E1-B
+// pages, stamped in a week whose low bits match its WNa: the joined almanacs
+// place Galileo satellites the receiver never tracked.
+func TestRealCaptureAlmanacPlacesGalileoSatellites(t *testing.T) {
+	at := time.Unix(1_700_000_000, 0)
+	for {
+		week, _ := gnsstime.WeekAt(gnsstime.SysGalileo, float64(at.Unix()), float64(gpsUTCOffset))
+		if week&3 == 3 { // the capture's WNa
+			break
+		}
+		at = at.Add(7 * 24 * time.Hour)
+	}
+	s := New(4)
+	tracked := map[int]bool{}
+	for _, f := range captureFrames(t, "../ingest/testdata/glo_superframe_capture.ubx", at, gnss.Galileo) {
+		if f.SigID == 1 {
+			tracked[f.SvID] = true
+			s.Apply(f)
+		}
+	}
+	placed, untracked := 0, 0
+	for _, sv := range s.MonitoringSatellites(at) {
+		if sv.GNSS == int(gnss.Galileo) && sv.PositionSource == "almanac" {
+			placed++
+			var n int
+			fmt.Sscanf(sv.Name, "E%d", &n)
+			if !tracked[n] {
+				untracked++
+			}
+		}
+	}
+	if placed < 8 || untracked < 2 {
+		t.Fatalf("almanacs placed %d Galileo satellites, %d untracked", placed, untracked)
 	}
 }

@@ -87,3 +87,85 @@ func TestRealGPSAlmanacMatchesBroadcastEphemeris(t *testing.T) {
 		t.Fatalf("only %d almanac/ephemeris pairs compared", compared)
 	}
 }
+
+// TestRealGalileoAlmanacMatchesBroadcastEphemeris pins the I/NAV word type
+// 7–10 layout to real E1-B pages. Consecutive almanac words from one
+// transmitter join into a satellite's almanac; every completed almanac lies on
+// the Galileo shell, and where a capture also holds the satellite's full
+// ephemeris the almanac is within 5 km of it at toe (seven satellites, 1.0 to
+// 3.1 km observed). Unused entries (SVID 0) and a pair split by an almanac
+// batch change are refused rather than joined.
+func TestRealGalileoAlmanacMatchesBroadcastEphemeris(t *testing.T) {
+	compared, unused := 0, 0
+	for _, name := range []string{"f9t_capture.ubx", "f9p_capture.ubx", "glo_superframe_capture.ubx"} {
+		data, err := os.ReadFile("testdata/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var frames []*RawFrame
+		_ = scanUBX(bytes.NewReader(data), "cap", fixedTime,
+			func(f *RawFrame) { frames = append(frames, f) }, func(string) {})
+		last := map[int]*frame.GalileoINAV{}
+		ephWords := map[int]*[5]*frame.GalileoINAV{}
+		almanacs := map[int]frame.GalileoAlmanac{}
+		for _, f := range frames {
+			if f.GnssID != gnss.Galileo || f.SigID != 1 {
+				continue
+			}
+			w, err := frame.DecodeGalileoINAV(f.Words)
+			if err != nil {
+				continue
+			}
+			if w.Type >= 1 && w.Type <= 4 {
+				ws := ephWords[f.SvID]
+				if ws == nil {
+					ws = &[5]*frame.GalileoINAV{}
+					ephWords[f.SvID] = ws
+				}
+				ws[w.Type] = w
+			}
+			if w.Almanac == nil {
+				continue
+			}
+			if prev := last[f.SvID]; prev != nil && prev.Type+1 == w.Type {
+				a, err := frame.CompleteGalileoAlmanac(prev, w)
+				switch {
+				case err == nil:
+					almanacs[a.SVID] = a
+				case prev.Almanac.HeadSVID == 0:
+					unused++
+				case prev.Almanac.IODa == w.Almanac.IODa:
+					t.Fatalf("%s: E%02d almanac words %d+%d refused: %v", name, f.SvID, prev.Type, w.Type, err)
+				}
+			}
+			last[f.SvID] = w
+		}
+		if len(almanacs) < 4 {
+			t.Fatalf("%s: only %d almanacs completed", name, len(almanacs))
+		}
+		for sv, a := range almanacs {
+			alm := a.Ephemeris()
+			p, err := kepler.Propagate(alm, a.T0a)
+			if err != nil || p.Norm() < 29.4e6 || p.Norm() > 29.8e6 {
+				t.Fatalf("%s: E%02d almanac radius %.0f m, err %v", name, sv, p.Norm(), err)
+			}
+			ws := ephWords[sv]
+			if ws == nil || ws[1] == nil || ws[2] == nil || ws[3] == nil || ws[4] == nil {
+				continue
+			}
+			eph, _, err := frame.AssembleGalileo(sv, ws[1], ws[2], ws[3], ws[4], nil)
+			if err != nil {
+				continue
+			}
+			got, _ := kepler.Propagate(alm, eph.Toe)
+			want, _ := kepler.Propagate(eph, eph.Toe)
+			if miss := got.Sub(want).Norm(); miss > 5000 {
+				t.Fatalf("%s: E%02d almanac %.0f m from its broadcast ephemeris", name, sv, miss)
+			}
+			compared++
+		}
+	}
+	if compared < 7 || unused == 0 {
+		t.Fatalf("compared %d almanac/ephemeris pairs, %d unused entries", compared, unused)
+	}
+}

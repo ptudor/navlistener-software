@@ -105,6 +105,53 @@ func FuzzLNAVAlmanac(f *testing.F) {
 	})
 }
 
+// FuzzGalileoAlmanac fuzzes the content of two CRC-valid I/NAV almanac words
+// of consecutive types: they decode, or fail only for a t0a past the week, and
+// a joined almanac propagates to a finite position or an error, never NaN.
+func FuzzGalileoAlmanac(f *testing.F) {
+	f.Add(uint8(0), []byte("\x1c\x52\x5e\x4b\x0f\x00\x2e\xe0\x00\x10\x00\x00\x00\x0f\xa0\x00"), []byte("\x20\x50\x00\x00\x00\x00\x18\x00\x00\x00\x00\x00\x00\x00\x00\x00"))
+	f.Fuzz(func(t *testing.T, kind uint8, a, b []byte) {
+		wt := 7 + int(kind%3)
+		decode := func(raw []byte, typ int) *GalileoINAV {
+			content := make([]byte, 16)
+			copy(content, raw)
+			content[0] = byte(typ)<<2 | content[0]&3
+			page := make([]byte, 32)
+			page[16] = 0x80
+			copyGalileoBits(page, 2, content, 0, 112)
+			copyGalileoBits(page, 130, content, 112, 16)
+			words := make([]uint32, 8)
+			for i := range words {
+				words[i] = uint32(page[i*4])<<24 | uint32(page[i*4+1])<<16 | uint32(page[i*4+2])<<8 | uint32(page[i*4+3])
+			}
+			StampGalileoINAVCRC(words)
+			w, err := DecodeGalileoINAV(words)
+			if err != nil {
+				if !errors.Is(err, errBadEpoch) {
+					t.Fatalf("CRC-valid word type %d rejected: %v", typ, err)
+				}
+				return nil
+			}
+			if w.Type != typ || w.Almanac == nil {
+				t.Fatalf("word type %d decoded as %+v", typ, w)
+			}
+			return w
+		}
+		first, second := decode(a, wt), decode(b, wt+1)
+		if first == nil || second == nil {
+			return
+		}
+		alm, err := CompleteGalileoAlmanac(first, second)
+		if err != nil {
+			return
+		}
+		if p, err := kepler.Propagate(alm.Ephemeris(), alm.T0a+3600); err == nil &&
+			(math.IsNaN(p.X) || math.IsNaN(p.Y) || math.IsNaN(p.Z)) {
+			t.Fatalf("NaN position from %+v", alm)
+		}
+	})
+}
+
 // FuzzGLONASSAlmanac asserts the almanac-pair decoder never panics on arbitrary word
 // content — a short or malformed pair returns an error or an in-range struct, never a
 // crash or an out-of-bounds bit read.

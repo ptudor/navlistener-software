@@ -37,11 +37,11 @@ every decoder is fuzzed. It starts hardened, on purpose.
 
 `primitives_test.go`, `bitreader_test.go`, `bitreader_signed_test.go`, `crc_test.go`,
 `gps_lnav_test.go`, `gps_lnav_almanac_test.go`, `gps_cnav_test.go`, `galileo_inav_test.go`,
-`beidou_d1_test.go`, `beidou_bcnav2_test.go`, `glonass_string_test.go`,
+`galileo_inav_almanac_test.go`, `beidou_d1_test.go`, `beidou_bcnav2_test.go`, `glonass_string_test.go`,
 `glonass_almanac_guard_test.go`, `sbas_l1_test.go`, `navic_test.go`, and `fuzz_test.go` —
-fifteen fuzz targets covering every exported decoder except the constant-error NavIC stub
-(which parses nothing), the LNAV almanac payload inside parity-valid pages, plus the
-primitives.
+sixteen fuzz targets covering every exported decoder except the constant-error NavIC stub
+(which parses nothing), the LNAV and I/NAV almanac payloads inside integrity-valid pages, plus
+the primitives.
 
 Imports: the root `gnss` package, `clock`, `kepler`, `glonass`, `physconst`, and `gnsstime`. It is
 the top of the module's dependency graph — everything else imports *into* here.
@@ -310,7 +310,7 @@ join, the content must be made contiguous before reading.
   and the standard zero-remainder check runs over that 220-bit message.
 
 **Word types decoded:** 1–3 (ephemeris elements + SISA), 4 (Cic/Cis + the clock polynomial), 5
-(BGDs, health, DVS, GST week/TOW), and 10 (the GST-GPS conversion parameters).
+(BGDs, health, DVS, GST week/TOW), 7–10 (almanacs), and 10 (the GST-GPS conversion parameters).
 
 Word 5 carries subtleties worth naming:
 
@@ -326,10 +326,20 @@ Word 5 carries subtleties worth naming:
 **Word 10's GGTO** carries A0G/A1G/t0G/WN0G for Δt = t_Galileo − t_GPS. §5.1.8's
 withdrawal sentinel — all four parameters all-ones — is checked on the **raw** patterns before
 scaling, because all-ones is a legal −1 for A0G or A1G *alone*; only the four-field conjunction
-is the sentinel. Only the GGTO half of word 10 is decoded: the leading almanac fields (and their
-health bits at 82/84) describe the almanac *subject* satellite SVID3, not the transmitter, and
+is the sentinel. The leading almanac fields of word 10 (and their health bits at 82/84) describe
+the almanac *subject* satellite SVID3, not the transmitter, so they go only into `Almanac`;
 folding those into the transmitting SV's state would be exactly the cross-SV chimera the regression fix
 family guards against.
+
+**Almanacs (word types 7–10)** carry three satellites per batch, each split across two consecutive
+almanac words at different points (Tables 48–51): SVID1 over words 7+8, SVID2 over 8+9, SVID3 over
+9+10. `GalileoINAV.Almanac` holds a word's halves; **`CompleteGalileoAlmanac(first, second)`**
+joins word types n and n+1 of one batch (IODa), takes t0a/WNa from word 7 or 9, applies the
+nominal 29 600 km semi-major axis and 56° inclination (Table 1), and refuses unused entries
+(SVID 0, `errUnusedAlmanac`) and reserved SVIDs above 36. The caller must supply two consecutive
+almanac words from one transmitter; the collector joins only a relay's adjacent words within a
+minute. A t0a past the week is `errBadEpoch`. Real E1-B captures pin the layout: completed
+almanacs land within about 3 km of the same satellites' broadcast ephemerides.
 
 **OSNMA** : the 40-bit protocol-data field rides every nominal page's odd part (bits
 146..185) regardless of word type, and it *is* CRC-protected so it arrives integrity-checked.

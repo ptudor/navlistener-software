@@ -542,11 +542,12 @@ an offset from a per-constellation reference inclination — do not hardcode GPS
 differences from an orbit-type reference (QZSS-PNT-006 Table 5.7.1-3): QZO `e = 0.06 + Δe`,
 `i₀ = 0.25 semicircles (45°) + δi`; GEO and QGEO references are 0. The SV ID in the page selects
 the type (Table 3.2.1-1: 2–5 QZO, 7–8 GEO, 9 QGEO); a GPS-hardcoded reference silently corrupts
-QZSS almanacs. Galileo
-references 56° (OS-SIS-ICD almanac §); BeiDou MEO/IGSO reference 0.3 semicircles, GEO 0.
+QZSS almanacs. Galileo sends `Δ(√A)` from the nominal 29 600 km semi-major axis and `δi` from
+the nominal 56° (GAL-OS-SIS-ICD-2.2 Table 1, Table 86); BeiDou MEO/IGSO reference 0.3
+semicircles, GEO 0.
 GLONASS almanac uses §3.1. We publish
-almanac-derived ECEF in the almanac feed (**metres**, `docs/OUTPUT.md §1.4`) for GLONASS, GPS
-and QZSS; Galileo and BeiDou almanacs are not decoded yet. The reserved `alma_dist_m` field is
+almanac-derived ECEF in the almanac feed (**metres**, `docs/OUTPUT.md §1.4`) for GLONASS, GPS,
+Galileo and QZSS; BeiDou almanacs are not decoded yet. The reserved `alma_dist_m` field is
 for a planned cross-check (distance between the ephemeris ECEF and the almanac/TLE ECEF, a
 coarse sanity check).
 

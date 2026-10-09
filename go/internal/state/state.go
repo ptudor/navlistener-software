@@ -389,6 +389,11 @@ type svState struct {
 	// relay now pairs its own halves; a relay's odd string never disturbs another
 	// relay's buffered even string. Bounded by gloAlmPendingMax/gloAlmPendingStale.
 	gloAlmPending map[gloAlmRelay]gloAlmPendingPair
+	// galAlmLast is each relay's most recent Galileo almanac word (I/NAV word
+	// types 7–10). A satellite's almanac spans two consecutive almanac words, so
+	// each new word is joined only with its own relay's previous one
+	// (applyGalileoINAV). Bounded by gloAlmPendingMax/gloAlmPendingStale.
+	galAlmLast map[gloAlmRelay]galAlmWord
 	// gloFrameBaseSlot is the subject slot of the current frame's first almanac pair
 	// (strings 6/7), used to detect frame 5. Frame 5 carries almanac only for slots
 	// 21–24 (strings 6–13); its strings 14/15 are B1/B2/KP UT1/leap data, NOT almanac, so a
@@ -670,7 +675,7 @@ type Store struct {
 	gloAlmanac map[int]gloAlmSlot
 	gloNA      int
 
-	// GPS and QZSS almanacs, keyed by the satellite each describes (almanac.go).
+	// GPS, Galileo and QZSS almanacs, keyed by the satellite each describes (almanac.go).
 	almMu    sync.Mutex
 	almanacs map[almanacKey]keplerAlmanac
 
@@ -1385,6 +1390,21 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 		st.haveOSNMA = true
 		if w.OSNMA != 0 {
 			st.osnmaLastLive = recv
+		}
+	}
+
+	// Word types 7–10 carry almanacs for other satellites. A satellite's
+	// almanac is the second half of one almanac word joined with the first
+	// half of the next, so only this relay's previous almanac word, of the
+	// preceding type and within galAlmanacPairWindow on the feeder clock, can
+	// complete it.
+	if w.Almanac != nil {
+		relay := gloAlmRelay{f.Source, f.Session, f.SigID}
+		prev, ok := st.swapGalAlmanacWord(relay, galAlmWord{w: w, at: f.Recv, local: recv})
+		if delta := f.Recv.Sub(prev.at); ok && prev.w.Type+1 == w.Type && delta >= 0 && delta <= galAlmanacPairWindow {
+			if a, err := frame.CompleteGalileoAlmanac(prev.w, w); err == nil {
+				s.applyGalileoAlmanac(a, f.Recv)
+			}
 		}
 	}
 

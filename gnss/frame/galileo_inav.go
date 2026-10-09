@@ -3,6 +3,7 @@ package frame
 import (
 	"encoding/binary"
 	"errors"
+	"math"
 
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/gnss/clock"
@@ -166,9 +167,13 @@ type GalileoINAV struct {
 	// INTEGRITY.md §7); TESLA/Merkle verification is the documented later phase.
 	HasOSNMA bool
 	OSNMA    uint64 // the 40 raw bits, MSB-first (HKROOT<<32 | MACK)
-	eph      kepler.Ephemeris
-	clk      clock.Model
-	hasClk   bool
+	// Almanac is the almanac content of word types 7–10; nil for every other
+	// word type. Each satellite's almanac spans two consecutive almanac words
+	// (CompleteGalileoAlmanac).
+	Almanac *GalileoAlmanacWord
+	eph     kepler.Ephemeris
+	clk     clock.Model
+	hasClk  bool
 }
 
 // DecodeGalileoINAV decodes one I/NAV page (eight words) into its word fields.
@@ -335,15 +340,27 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 		// delay for an E1 single-frequency user is BGD(E1,E5b) — not BGD(E1,E5a), which the
 		// old code applied. clock.Model.TGD is "group delay for the tracked signal".
 		w.clk.TGD = w.BGDE1E5b
+	case 7, 8, 9:
+		alm, err := decodeGalileoAlmanacWord(r, int(wt))
+		if err != nil {
+			return nil, err
+		}
+		w.Almanac = alm
 	case 10:
 		// Almanac SVID3 (2/2) + GST-GPS conversion. Table 51 layout:
 		// Type(6) IODa(4) Ω0(16) Ω̇(11) M0(16) af0(16) af1(13) E5bSHS(2)
 		// E1BSHS(2) A0G(16) A1G(12) t0G(8) WN0G(6) = 128 → cumulative offsets
-		// A0G@86, A1G@102, t0G@114, WN0G@122. Only the GGTO half is decoded:
-		// the leading almanac fields (and their E5bSHS/E1BSHS at bits 82/84)
-		// describe the ALMANAC SUBJECT satellite SVID3, not the transmitter —
-		// folding those health bits into the transmitting SV's state would be
-		// the cross-SV chimera the regression fix family guards against.
+		// A0G@86, A1G@102, t0G@114, WN0G@122. The leading almanac fields (and
+		// their E5bSHS/E1BSHS at bits 82/84) describe the ALMANAC SUBJECT
+		// satellite SVID3, not the transmitter, so they go only into
+		// w.Almanac — folding those health bits into the transmitting SV's
+		// state would be the cross-SV chimera the regression fix family guards
+		// against.
+		alm, err := decodeGalileoAlmanacWord(r, 10)
+		if err != nil {
+			return nil, err
+		}
+		w.Almanac = alm
 		a0gRaw, _ := r.Bits(86, 16)
 		a1gRaw, _ := r.Bits(102, 12)
 		t0gRaw, _ := r.Bits(114, 8)
@@ -376,6 +393,174 @@ func DecodeGalileoINAV(words []uint32) (*GalileoINAV, error) {
 		w.WN0G = int(wn0gRaw)
 	}
 	return w, nil
+}
+
+// Galileo almanac references (GAL-OS-SIS-ICD-2.2 Table 1): Δ(√A) is relative to
+// the nominal semi-major axis of 29 600 000 m and δi to the nominal 56°
+// inclination (Table 86).
+var (
+	galAlmanacSqrtA = math.Sqrt(29600000)
+	galAlmanacI0    = 56.0 / 180.0 // semicircles
+)
+
+// errUnusedAlmanac is returned for an almanac entry with SVID 0, which the
+// broadcast uses to mark an unused entry (GAL-OS-SIS-ICD-2.2 Table 77 note).
+var errUnusedAlmanac = errors.New("frame: unused Galileo almanac entry (SVID 0)")
+
+// GalileoAlmanac is one satellite's I/NAV almanac (GAL-OS-SIS-ICD-2.2 Table 86),
+// scaled to SI with the nominal semi-major axis and inclination applied.
+type GalileoAlmanac struct {
+	SVID   int
+	IODa   int
+	WNa    int     // two least significant bits of the GST week of t0a
+	T0a    float64 // almanac reference time, seconds of GST week
+	SqrtA  float64 // √m
+	Ecc    float64
+	I0     float64 // rad
+	Omega0 float64 // rad
+	// OmegaDot is the rate of right ascension, rad/s.
+	OmegaDot float64
+	Omega    float64 // rad
+	M0       float64 // rad
+	Af0      float64 // s
+	Af1      float64 // s/s
+	E5bSHS   int
+	E1BSHS   int
+}
+
+// GalileoAlmanacWord is the almanac content of one I/NAV word type 7–10
+// (GAL-OS-SIS-ICD-2.2 Tables 48–51). Word types 7–9 begin a satellite's almanac
+// and word types 8–10 complete the one begun by the previous almanac word.
+type GalileoAlmanacWord struct {
+	IODa int
+	// HasRef marks word types 7 and 9, which carry WNa and t0a for the batch.
+	HasRef bool
+	WNa    int
+	T0a    float64
+	// HeadSVID is the satellite this word begins (word types 7–9), 0 for an
+	// unused entry and for word type 10.
+	HeadSVID int
+	head     GalileoAlmanac // fields of the satellite this word begins
+	tail     GalileoAlmanac // fields completing the previous word's satellite
+}
+
+// decodeGalileoAlmanacWord reads word type wt (7–10) at the offsets of Tables
+// 48–51. Field scalings are Table 86: Δ(√A) 2⁻⁹, e 2⁻¹⁶, δi, Ω0, ω and M0 2⁻¹⁴
+// or 2⁻¹⁵ semicircles, Ω̇ 2⁻³³ semicircles/s, af0 2⁻¹⁹ s, af1 2⁻³⁸ s/s and t0a
+// 600 s. A t0a past the end of the week is errBadEpoch.
+func decodeGalileoAlmanacWord(r *BitReader, wt int) (*GalileoAlmanacWord, error) {
+	semi := physconst.Pi
+	iod, _ := r.Bits(6, 4)
+	a := &GalileoAlmanacWord{IODa: int(iod)}
+	// orbit reads the SVID, Δ(√A), e, ω and δi run that begins a satellite.
+	orbit := func(off int) {
+		svid, _ := r.Bits(off, 6)
+		dSqrtA, _ := r.Signed(off+6, 13)
+		ecc, _ := r.Bits(off+19, 11)
+		omega, _ := r.Signed(off+30, 16)
+		di, _ := r.Signed(off+46, 11)
+		a.HeadSVID = int(svid)
+		a.head.SVID = int(svid)
+		a.head.SqrtA = galAlmanacSqrtA + float64(dSqrtA)/(1<<9)
+		a.head.Ecc = float64(ecc) / (1 << 16)
+		a.head.Omega = float64(omega) / (1 << 15) * semi
+		a.head.I0 = (galAlmanacI0 + float64(di)/(1<<14)) * semi
+	}
+	angle := func(off int) float64 { v, _ := r.Signed(off, 16); return float64(v) / (1 << 15) * semi }
+	rate := func(off int) float64 { v, _ := r.Signed(off, 11); return float64(v) / float64(uint64(1)<<33) * semi }
+	clock := func(g *GalileoAlmanac, off int) {
+		af0, _ := r.Signed(off, 16)
+		af1, _ := r.Signed(off+16, 13)
+		e5b, _ := r.Bits(off+29, 2)
+		e1b, _ := r.Bits(off+31, 2)
+		g.Af0 = float64(af0) / (1 << 19)
+		g.Af1 = float64(af1) / float64(uint64(1)<<38)
+		g.E5bSHS, g.E1BSHS = int(e5b), int(e1b)
+	}
+	if wt == 7 || wt == 9 {
+		wna, _ := r.Bits(10, 2)
+		t0a, _ := r.Bits(12, 10)
+		a.HasRef, a.WNa, a.T0a = true, int(wna), float64(t0a)*600
+		if a.T0a >= weekSeconds {
+			return nil, errBadEpoch
+		}
+	}
+	switch wt {
+	case 7: // SVID1 (1/2): Δ(√A) e ω δi Ω0 Ω̇ M0
+		orbit(22)
+		a.head.Omega0 = angle(79)
+		a.head.OmegaDot = rate(95)
+		a.head.M0 = angle(106)
+	case 8: // SVID1 (2/2): af0 af1 health; SVID2 (1/2): Δ(√A) e ω δi Ω0 Ω̇
+		clock(&a.tail, 10)
+		orbit(43)
+		a.head.Omega0 = angle(100)
+		a.head.OmegaDot = rate(116)
+	case 9: // SVID2 (2/2): M0 af0 af1 health; SVID3 (1/2): Δ(√A) e ω δi
+		a.tail.M0 = angle(22)
+		clock(&a.tail, 38)
+		orbit(71)
+	case 10: // SVID3 (2/2): Ω0 Ω̇ M0 af0 af1 health
+		a.tail.Omega0 = angle(10)
+		a.tail.OmegaDot = rate(26)
+		a.tail.M0 = angle(37)
+		clock(&a.tail, 53)
+	}
+	return a, nil
+}
+
+// CompleteGalileoAlmanac joins the two consecutive almanac words that carry one
+// satellite's almanac: word type 7 with 8 (SVID1), 8 with 9 (SVID2) or 9 with
+// 10 (SVID3). Both must belong to the same batch (IODa). t0a and WNa come from
+// whichever of the pair is word type 7 or 9. The caller establishes that the
+// two words are consecutive almanac words from one transmitter. An unused entry
+// (SVID 0) is errUnusedAlmanac and SVIDs above 36 are reserved (Table 77).
+func CompleteGalileoAlmanac(first, second *GalileoINAV) (GalileoAlmanac, error) {
+	if first == nil || second == nil || first.Almanac == nil || second.Almanac == nil {
+		return GalileoAlmanac{}, ErrShortFrame
+	}
+	if first.Type < 7 || first.Type > 9 || second.Type != first.Type+1 {
+		return GalileoAlmanac{}, ErrWrongMsgType
+	}
+	h, t := first.Almanac, second.Almanac
+	if h.IODa != t.IODa {
+		return GalileoAlmanac{}, errIODMismatch
+	}
+	out := h.head
+	switch second.Type {
+	case 8:
+		out.Af0, out.Af1, out.E5bSHS, out.E1BSHS = t.tail.Af0, t.tail.Af1, t.tail.E5bSHS, t.tail.E1BSHS
+	case 9:
+		out.M0 = t.tail.M0
+		out.Af0, out.Af1, out.E5bSHS, out.E1BSHS = t.tail.Af0, t.tail.Af1, t.tail.E5bSHS, t.tail.E1BSHS
+	case 10:
+		out.Omega0, out.OmegaDot, out.M0 = t.tail.Omega0, t.tail.OmegaDot, t.tail.M0
+		out.Af0, out.Af1, out.E5bSHS, out.E1BSHS = t.tail.Af0, t.tail.Af1, t.tail.E5bSHS, t.tail.E1BSHS
+	}
+	ref := h
+	if !ref.HasRef {
+		ref = t
+	}
+	out.IODa, out.WNa, out.T0a = h.IODa, ref.WNa, ref.T0a
+	if out.SVID == 0 {
+		return GalileoAlmanac{}, errUnusedAlmanac
+	}
+	if out.SVID > 36 {
+		return GalileoAlmanac{}, errBadAlmanac
+	}
+	return out, nil
+}
+
+// Ephemeris returns the Kepler elements of the almanac: toe is t0a and every
+// parameter the almanac omits is zero (GAL-OS-SIS-ICD-2.2 §5.1.10 "Almanac",
+// propagated with the §5.1.1 algorithm).
+func (a GalileoAlmanac) Ephemeris() kepler.Ephemeris {
+	return kepler.Ephemeris{
+		ID: gnss.Galileo, SVID: a.SVID,
+		SqrtA: a.SqrtA, Ecc: a.Ecc, M0: a.M0, I0: a.I0,
+		Omega0: a.Omega0, OmegaDot: a.OmegaDot, Omega: a.Omega,
+		Toe: a.T0a,
+	}
 }
 
 // AssembleGalileo combines I/NAV word types 1–4 for one SV (matching IODnav) into
