@@ -1,9 +1,12 @@
 package frame
 
 import (
+	"errors"
+	"math"
 	"testing"
 
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/gnss/kepler"
 )
 
 // FuzzBitReader asserts the reader never panics or reads out of bounds for any
@@ -56,6 +59,48 @@ func FuzzGPSLNAV(f *testing.F) {
 		words := []uint32{w0, w1, w2, w3, w4, w5, w6, w7, w8, w9}
 		if sf, err := DecodeGPSLNAV(words); err == nil && sf == nil {
 			t.Fatal("nil subframe without error")
+		}
+	})
+}
+
+// FuzzLNAVAlmanac fuzzes the payload of a parity-valid subframe 4/5 page, which
+// random words almost never reach: a page decodes, or fails only for a toa past
+// the ICD range, and an almanac that Ephemeris accepts for GPS or QZSS
+// propagates to a finite position or an error, never NaN.
+func FuzzLNAVAlmanac(f *testing.F) {
+	// G05 almanac page: data ID 1, SV ID 5, e, toa 74, δi, Ω̇, √A, Ω0, ω, M0.
+	f.Add(uint8(5), uint32(0x452F4D), uint32(0x4A1192), uint32(0xFD4E00), uint32(0xA10E5B),
+		uint32(0xE12A78), uint32(0x3254C4), uint32(0x0F4240), uint32(0))
+	// QZS almanac page: data ID 3, SV ID 2.
+	f.Add(uint8(4), uint32(0xC27C29), uint32(0x47D0A1), uint32(0xFF6000), uint32(0xCAE980),
+		uint32(0x1A2B3C), uint32(0xE00000), uint32(0x000100), uint32(0))
+	f.Fuzz(func(t *testing.T, sf uint8, w3, w4, w5, w6, w7, w8, w9, w10 uint32) {
+		words := make([]uint32, 10)
+		words[0] = 0x8B << 22
+		words[1] = (1000<<7 | uint32(4+sf%2)<<2) << 6
+		for i, w := range []uint32{w3, w4, w5, w6, w7, w8, w9, w10} {
+			words[i+2] = (w & 0xFFFFFF) << 6
+		}
+		StampGPSLNAVParity(words)
+		page, err := DecodeGPSLNAV(words)
+		if err != nil {
+			if !errors.Is(err, errBadEpoch) {
+				t.Fatalf("parity-valid page rejected: %v", err)
+			}
+			return
+		}
+		if page.Almanac == nil {
+			return
+		}
+		for _, id := range []gnss.GNSSID{gnss.GPS, gnss.QZSS} {
+			eph, err := page.Almanac.Ephemeris(id)
+			if err != nil {
+				continue
+			}
+			if p, err := kepler.Propagate(eph, page.Almanac.Toa+3600); err == nil &&
+				(math.IsNaN(p.X) || math.IsNaN(p.Y) || math.IsNaN(p.Z)) {
+				t.Fatalf("NaN position from %+v", eph)
+			}
 		}
 	})
 }

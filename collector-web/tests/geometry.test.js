@@ -119,6 +119,19 @@ test('only a reference position is reported as extrapolated', () => {
   model = modelFromFeed(feed([{ name: 'G02', gnssid: 0, extrapolated: true }]), new Set([0]), at);
   assert.equal(model.satellites[0].extrapolated, false);
 });
+test('position source distinguishes ephemeris, almanac and reference geometry', () => {
+  const envelope = feed([sv, { name: 'G02', gnssid: 0 }, { name: 'G03', gnssid: 0, ecef_m: [0, 26560000, 0] }], [
+    { ...observer(1), position_source: 'ephemeris' },
+    { name: 'G02', gnssid: 0, witness_times: [], ecef_m: [-26560000, 0, 0], position_source: 'almanac' },
+  ]);
+  const model = modelFromFeed(envelope, new Set([0]), at);
+  const source = Object.fromEntries(model.satellites.map((s) => [s.name, s.positionSource]));
+  assert.deepEqual(source, { G01: 'ephemeris', G02: 'almanac', G03: 'reference' });
+  // An almanac places a satellite the reference cannot, so its sky is assessed.
+  assert.equal(model.unknown.length, 0);
+  assert.equal(assess(model, 0, 180, 10, 1).status, 'gap');
+  assert.equal(assess(model, 0, 180, 10, 1).unmapped, false);
+});
 test('staleness and witness ageing follow the collector clock from the Date header', () => {
   const header = new Date(at).toUTCString();
   const fastBrowser = at + 5 * 60000;

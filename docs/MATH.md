@@ -538,13 +538,17 @@ The integrity signals are *derived* here and *thresholded/alerted* in INTEGRITY.
 Reduced-precision Kepler for all-SV acquisition data. GPS/QZSS/NavIC/Galileo/BeiDou almanacs are
 the §2 algorithm with almanac scalings, `toe = toa` (`toa·2¹²` for GPS). **The broadcast `δi` is
 an offset from a per-constellation reference inclination — do not hardcode GPS's:** GPS/NavIC
-`i₀ = 0.3 semicircles (54°) + δi`; QZSS QZO uses its own reference per IS-QZSS-PNT (QZO flies
-~41–45°, nowhere near 54° — a GPS-hardcoded reference silently corrupts QZSS almanacs); Galileo
+`i₀ = 0.3 semicircles (54°) + δi` (IS-GPS-200N Table 20-VI). QZSS sends both `e` and `δi` as
+differences from an orbit-type reference (QZSS-PNT-006 Table 5.7.1-3): QZO `e = 0.06 + Δe`,
+`i₀ = 0.25 semicircles (45°) + δi`; GEO and QGEO references are 0. The SV ID in the page selects
+the type (Table 3.2.1-1: 2–5 QZO, 7–8 GEO, 9 QGEO); a GPS-hardcoded reference silently corrupts
+QZSS almanacs. Galileo
 references 56° (OS-SIS-ICD almanac §); BeiDou MEO/IGSO reference 0.3 semicircles, GEO 0.
 GLONASS almanac uses §3.1. We publish
-almanac-derived ECEF in the almanac feed (**metres**, `docs/OUTPUT.md §1.4`); it also drives
-the `alma_dist_m` cross-check (distance between the ephemeris ECEF and the almanac/TLE ECEF,
-a coarse sanity check).
+almanac-derived ECEF in the almanac feed (**metres**, `docs/OUTPUT.md §1.4`) for GLONASS, GPS
+and QZSS; Galileo and BeiDou almanacs are not decoded yet. The reserved `alma_dist_m` field is
+for a planned cross-check (distance between the ephemeris ECEF and the almanac/TLE ECEF, a
+coarse sanity check).
 
 ---
 

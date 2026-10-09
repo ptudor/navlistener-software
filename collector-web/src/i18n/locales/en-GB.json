@@ -224,6 +224,7 @@
     "satellite_position": "Map subpoint: {latitude}°, {longitude}°.",
     "position_unavailable": "Current position unavailable.",
     "position_extrapolated": "Extrapolated from a reference orbit {hours} hours old.",
+    "position_almanac": "Position from the broadcast almanac, accurate to a few kilometres.",
     "local_elevation": "Elevation at the selected location: {elevation}°.",
     "clear": "Clear",
     "location_heading": "Ground location",

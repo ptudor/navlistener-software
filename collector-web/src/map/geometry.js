@@ -97,7 +97,10 @@ export function modelFromFeed(envelope, selected, now = Date.now()) {
       : !stale && validPosition(satellite.ecef_m) ? satellite.ecef_m : null
     // Only a reference position can be extrapolated past its orbit's fit window.
     const extrapolated = !local && position !== null && satellite.extrapolated === true
-    return { ...satellite, position, extrapolated, witnesses }
+    // A collector position comes from a fresh ephemeris or a decoded almanac.
+    const positionSource = local ? (seen.position_source === 'almanac' ? 'almanac' : 'ephemeris')
+      : position !== null ? 'reference' : null
+    return { ...satellite, position, positionSource, extrapolated, witnesses }
   }).sort((a, b) => a.name.localeCompare(b.name))
   const unknown = satellites.filter((satellite) => !satellite.position)
   const absentSystems = [...selected].filter((id) => !data.reference.satellites.some((satellite) => satellite.gnssid === id))

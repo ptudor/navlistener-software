@@ -36,10 +36,11 @@ every decoder is fuzzed. It starts hardened, on purpose.
 ### Tests
 
 `primitives_test.go`, `bitreader_test.go`, `bitreader_signed_test.go`, `crc_test.go`,
-`gps_lnav_test.go`, `gps_cnav_test.go`, `galileo_inav_test.go`, `beidou_d1_test.go`,
-`beidou_bcnav2_test.go`, `glonass_string_test.go`, `glonass_almanac_guard_test.go`,
-`sbas_l1_test.go`, `navic_test.go`, and `fuzz_test.go` — fourteen fuzz targets covering every
-exported decoder except the constant-error NavIC stub (which parses nothing), plus the
+`gps_lnav_test.go`, `gps_lnav_almanac_test.go`, `gps_cnav_test.go`, `galileo_inav_test.go`,
+`beidou_d1_test.go`, `beidou_bcnav2_test.go`, `glonass_string_test.go`,
+`glonass_almanac_guard_test.go`, `sbas_l1_test.go`, `navic_test.go`, and `fuzz_test.go` —
+fifteen fuzz targets covering every exported decoder except the constant-error NavIC stub
+(which parses nothing), the LNAV almanac payload inside parity-valid pages, plus the
 primitives.
 
 Imports: the root `gnss` package, `clock`, `kepler`, `glonass`, `physconst`, and `gnsstime`. It is
@@ -214,8 +215,17 @@ curve-fit interval, 1 = greater — 6–26 h per the Table 20-XII IODC ranges; Q
 values, 0 = 2 h, at the same bit position) and **AODO** (5 bits × 900 s; 27900 means "NMCT
 unavailable," which is the value QZSS fixes it at).
 
-Subframes 4 and 5 are almanac and iono pages — structurally valid, accepted, not decoded into
-ephemeris fields.
+Subframes 4 and 5: an **almanac page** sets `GPSSubframe.Almanac` (`LNAVAlmanac`, Table 20-VI
+fields scaled to SI). Pages are told apart by word 3's data ID and SV ID: data ID 1 with SV ID
+1..32 is a GPS almanac, data ID 3 with SV ID 1..10 a QZS almanac (QZSS-PNT-006 Table 4.1.2-2);
+dummy SVs (ID 0), QZSS test mode, and the IDs 51..63 used by health, iono/UTC, NMCT and message
+pages leave it nil and are not decoded further. A toa past its 602,112 s maximum is
+`errBadEpoch`. **`LNAVAlmanac.Ephemeris(id)`** turns it into Kepler elements with `toe = toa`
+and every omitted term zero. GPS adds `δi` to i₀ = 0.30 semicircles and enforces the Table
+20-VI ranges for e, √A and Ω̇. QZSS adds `Δe` and `δi` to the orbit-type reference of the
+SV ID (Table 5.7.1-3, Table 3.2.1-1) and refuses SV IDs with no assigned type. Real captures
+in `go/internal/ingest/testdata` pin the layout: almanacs land within 3 km of the same
+satellites' broadcast ephemerides.
 
 **A documented trap for library users :** `GPSSubframe.TOW` is the HOW's truncated count ×
 6, and per the ICD that is the seconds-of-week at the start of the **next** subframe, not this

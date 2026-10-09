@@ -9,11 +9,14 @@ import (
 // MonitoringSatellite reports observation evidence even before a complete
 // ephemeris is assembled. Witnesses are distinct sources across all signals,
 // never reference-file records. Source identities remain inside this audience.
+// A position comes from a fresh broadcast ephemeris when one exists, otherwise
+// from a decoded almanac, which also places satellites no station hears.
 type MonitoringSatellite struct {
-	Name         string      `json:"name"`
-	GNSS         int         `json:"gnssid"`
-	WitnessTimes []int64     `json:"witness_times"`
-	Position     *[3]float64 `json:"ecef_m,omitempty"`
+	Name           string      `json:"name"`
+	GNSS           int         `json:"gnssid"`
+	WitnessTimes   []int64     `json:"witness_times"`
+	Position       *[3]float64 `json:"ecef_m,omitempty"`
+	PositionSource string      `json:"position_source,omitempty"` // "ephemeris" or "almanac"
 }
 
 func (s *Store) MonitoringSatellites(now time.Time) []MonitoringSatellite {
@@ -41,11 +44,23 @@ func (s *Store) MonitoringSatellites(now time.Time) []MonitoringSatellite {
 			if sig, ok := bestSig[name]; !ok || st.key.Sig < sig {
 				if st.havePos && !st.posAt.IsZero() && !st.posAt.After(now) && now.Sub(st.posAt) <= posStaleBound && finiteECEF(st.pos) {
 					sv.Position = &[3]float64{st.pos.X, st.pos.Y, st.pos.Z}
+					sv.PositionSource = "ephemeris"
 					bestSig[name] = st.key.Sig
 				}
 			}
 		}
 		sh.mu.Unlock()
+	}
+	for _, a := range s.almanacPositions(now) {
+		sv := byName[a.name]
+		if sv == nil {
+			sv = &MonitoringSatellite{Name: a.name, GNSS: int(a.g), WitnessTimes: []int64{}}
+			byName[a.name] = sv
+		}
+		if sv.Position == nil {
+			sv.Position = &[3]float64{a.pos.X, a.pos.Y, a.pos.Z}
+			sv.PositionSource = "almanac"
+		}
 	}
 	s.monitoringMu.Lock()
 	for name, g := range s.monitoringRoster {

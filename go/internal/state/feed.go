@@ -7,9 +7,7 @@ import (
 
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/gnss/accuracy"
-	"github.com/ptudor/gnss/frame"
 	"github.com/ptudor/gnss/geo"
-	"github.com/ptudor/gnss/glonass"
 	"github.com/ptudor/gnss/gnsstime"
 	"github.com/ptudor/gnss/physconst"
 )
@@ -210,9 +208,9 @@ type GlobalFeed struct {
 
 // AlmanacEntry is one coarse-orbit entry (docs/OUTPUT.md §1.4). This build fills it
 // from the precise broadcast ephemeris for every currently-observed SV (eph_source
-// 0, observed true). Decoded GLONASS almanac slots also contribute coarse,
-// potentially out-of-view entries; almanac-only coverage for other
-// constellations and the TLE fill remain future work.
+// 0, observed true). Decoded GLONASS, GPS and QZSS almanacs also contribute
+// coarse, potentially out-of-view entries. Galileo and BeiDou almanacs are not
+// decoded yet, and there is no TLE fill.
 type AlmanacEntry struct {
 	Name           string  `json:"name"`
 	GnssID         int     `json:"gnssid"`
@@ -812,6 +810,7 @@ func (s *Store) FeedAlmanac(now time.Time) map[string]AlmanacEntry {
 		sh.mu.Unlock()
 	}
 	s.addGlonassAlmanac(out, now)
+	s.addKeplerAlmanac(out, now)
 	return out
 }
 
@@ -821,33 +820,13 @@ var gloMeanInclination = 63.0 * physconst.Pi / 180.0
 
 // addGlonassAlmanac adds an almanac entry for every GLONASS slot that is not already
 // observed (out-of-view SVs the ephemeris store cannot carry). Each is propagated to now
-// with the analytic almanac propagator (docs/MATH.md §3.1). the propagation TARGET
-// day is the actual current MT calendar day (gloNTDay), not the broadcast NA — NA is only
-// the day each almanac's elements are referenced to (stored per-entry in Alm.NA), and it
-// lags the calendar, so propagating at NA would evaluate every out-of-view SV's position a
-// day (or more) in the past, off by tens of thousands of km along-track.
+// with the analytic almanac propagator (docs/MATH.md §3.1) at the actual current MT
+// day (glonassAlmanacPosition).
 func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
-	s.gloAlmMu.Lock()
-	na := s.gloNA
-	alms := make([]frame.GLONASSAlmanacEntry, 0, len(s.gloAlmanac))
-	for _, slot := range s.gloAlmanac {
-		// a slot the constellation's ground control has actually retired
-		// stops being rebroadcast by any satellite within a few ~2.5h cycles; without
-		// this cutoff a decommissioned slot's last-ever almanac would be propagated
-		// out to an ever-more-speculative "ghost" position at the current day number
-		// forever. (Feed filter; the RAM entry is evicted by ExpireStations, regression fix.)
-		if now.Sub(slot.lastSeen) > gloAlmanacStaleAfter {
-			continue
-		}
-		alms = append(alms, slot.entry)
-	}
-	s.gloAlmMu.Unlock()
-	if na == 0 {
+	alms, anchored := s.glonassAlmanacEntries(now)
+	if !anchored {
 		return // no day-number anchor yet; the almanac time base is unknown
 	}
-
-	ti := gloTOD(now)
-	n0 := gloNTDay(now) // actual current MT day; NA (per-entry Alm.NA) is only the reference day
 	ell := physconst.WGS84
 	if p, ok := physconst.For(gnss.GLONASS); ok {
 		ell = p.Datum
@@ -874,8 +853,8 @@ func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
 			}
 			continue // observed → its precise broadcast-ephemeris entry wins
 		}
-		pos, err := glonass.PropagateAlmanacECEF(a.Alm, n0, ti)
-		if err != nil || !finiteECEF(pos) {
+		pos, ok := glonassAlmanacPosition(a, now)
+		if !ok {
 			continue
 		}
 		gd := geo.ECEFToGeodetic(pos, ell)
@@ -897,6 +876,35 @@ func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
 			TLambdaNA:      &tLambda,
 			Operable:       &operable,
 			FreqCh:         &freqCh,
+		}
+	}
+}
+
+// addKeplerAlmanac adds a coarse entry for every GPS and QZSS satellite whose
+// decoded almanac is valid but which no receiver currently observes.
+func (s *Store) addKeplerAlmanac(out map[string]AlmanacEntry, now time.Time) {
+	for _, a := range s.keplerAlmanacPositions(now) {
+		if ent, seen := out[a.name]; seen && ent.Observed {
+			continue // observed → its precise broadcast-ephemeris entry wins
+		}
+		ell := physconst.WGS84
+		if p, ok := physconst.For(a.g); ok {
+			ell = p.Datum
+		}
+		gd := geo.ECEFToGeodetic(a.pos, ell)
+		out[a.name] = AlmanacEntry{
+			Name:           a.name,
+			GnssID:         int(a.g),
+			Observed:       false,
+			EcefXM:         a.pos.X,
+			EcefYM:         a.pos.Y,
+			EcefZM:         a.pos.Z,
+			LatDeg:         geo.Deg(gd.Lat),
+			LonDeg:         geo.Deg(gd.Lon),
+			InclinationRad: a.inclination,
+			T0e:            a.t0e,
+			T:              int(now.Unix()),
+			EphSource:      0,
 		}
 	}
 }

@@ -128,7 +128,7 @@ const selectionDetail = computed(() => {
     const orbitAge = (now() - Date.parse(satellite.orbit_epoch)) / 3600000
     const extrapolated = satellite.extrapolated && Number.isFinite(orbitAge)
       ? t('map.position_extrapolated', { hours: Math.round(orbitAge) })
-      : ''
+      : satellite.positionSource === 'almanac' ? t('map.position_almanac') : ''
     const local = groundLocation.value && satellite.position
       ? t('map.local_elevation', {
           elevation: elevation(satellite.position, site(groundLocation.value.lat, groundLocation.value.lon)).toFixed(1),

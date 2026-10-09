@@ -18,6 +18,7 @@ func (s *Store) Reset() {
 	}
 	s.sbasMu.Lock()
 	s.gloAlmMu.Lock()
+	s.almMu.Lock()
 	s.rfMu.Lock()
 	s.capMu.Lock()
 	s.monitoringMu.Lock()
@@ -28,6 +29,7 @@ func (s *Store) Reset() {
 	s.sbas = make(map[int]*sbasState)
 	s.gloAlmanac = make(map[int]gloAlmSlot)
 	s.gloNA = 0
+	s.almanacs = make(map[almanacKey]keplerAlmanac)
 	s.rf = make(map[string]*rfStation)
 	s.boards = make(map[string]*boardStation)
 	// Integrity checks hold the same withdrawn receipts in their histories; the
@@ -45,6 +47,7 @@ func (s *Store) Reset() {
 	s.monitoringMu.Unlock()
 	s.capMu.Unlock()
 	s.rfMu.Unlock()
+	s.almMu.Unlock()
 	s.gloAlmMu.Unlock()
 	s.sbasMu.Unlock()
 	for i := len(s.shards) - 1; i >= 0; i-- {

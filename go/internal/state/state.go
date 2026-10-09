@@ -670,6 +670,10 @@ type Store struct {
 	gloAlmanac map[int]gloAlmSlot
 	gloNA      int
 
+	// GPS and QZSS almanacs, keyed by the satellite each describes (almanac.go).
+	almMu    sync.Mutex
+	almanacs map[almanacKey]keplerAlmanac
+
 	// Per-station RF-environment state for the PNT-defense layer (docs/DEFENSE-PNT.md):
 	// station-scoped (keyed by ingest source / observer id), not per-SV.
 	rfMu   sync.Mutex
@@ -704,6 +708,7 @@ func New(n int) *Store {
 		monitoringRoster: make(map[string]int),
 		sbas:             make(map[int]*sbasState),
 		gloAlmanac:       make(map[int]gloAlmSlot),
+		almanacs:         make(map[almanacKey]keplerAlmanac),
 		rf:               make(map[string]*rfStation),
 		boards:           make(map[string]*boardStation),
 		integrity:        make(map[string]*integrityStation),
@@ -1273,7 +1278,12 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 	case 3:
 		st.sf3 = sf
 	default:
-		return // subframes 4/5 (almanac/iono) not consumed here
+		// Subframes 4/5: an almanac page describes any satellite of the
+		// constellation; iono/UTC, health and message pages are not consumed.
+		if sf.Almanac != nil {
+			s.applyKeplerAlmanac(f.GnssID, sf.Almanac, f.Recv)
+		}
+		return
 	}
 	if st.sf1 == nil || st.sf2 == nil || st.sf3 == nil {
 		return
@@ -2659,9 +2669,10 @@ func (s *Store) Expire(now time.Time, ttl time.Duration) {
 const stationEvictAfter = 12 * rfStaleAfter
 
 // ExpireStations deletes sbas, rf, and GLONASS-almanac entries whose last
-// sample is far past their serving-staleness windows. The feeds
-// already FILTER stale entries (rfStaleAfter / sbasStaleAfter /
-// gloAlmanacStaleAfter) — this makes the "dropped" language true in RAM too.
+// sample is far past their serving-staleness windows, and GPS/QZSS almanacs
+// past their validity window. The feeds already FILTER stale entries
+// (rfStaleAfter / sbasStaleAfter / gloAlmanacStaleAfter /
+// keplerAlmanacValidity) — this makes the "dropped" language true in RAM too.
 // The maps are bounded in practice (SBAS PRNs, 24 GLONASS slots, fleet-sized
 // station ids), so this is residue hygiene, not a leak fix. The capability
 // fingerprint (s.caps) is deliberately NOT evicted: durability is its design
@@ -2696,6 +2707,8 @@ func (s *Store) ExpireStations(now time.Time) {
 		}
 	}
 	s.gloAlmMu.Unlock()
+
+	s.expireKeplerAlmanacs(now)
 }
 
 // wnRolloverGraceS tolerates the legitimate broadcast-WN lag across the weekly

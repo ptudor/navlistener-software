@@ -89,6 +89,16 @@ They cannot reliably enumerate satellites the collector has never heard. Removin
 an expired satellite from that inventory could make a coverage map look better
 precisely when monitoring gets worse.
 
+Broadcast almanacs narrow that gap without closing it. Every satellite
+broadcasts its whole constellation's almanac, so one station hearing any GPS,
+QZSS or GLONASS satellite learns where all of that constellation's satellites
+are, including those no station hears. The collector decodes these almanacs and
+the map uses them for any satellite without a fresh ephemeris position; they
+are accurate to a few kilometres (GPS within 3.5 days of the almanac reference
+time, QZSS within 72 hours). Galileo and BeiDou almanacs are not decoded yet.
+An almanac still describes only what the constellation broadcasts, and a
+constellation no station hears contributes none.
+
 The map therefore downloads BKG's merged RINEX 3 broadcast-navigation file and
 keeps its expected identities separately from local observations. These public
 orbits are used only for map geometry. They never enter the ingest store, integrity
@@ -126,8 +136,8 @@ of an extrapolated orbit.
 Expired coordinates are omitted, but the satellite identity remains. Missing
 coordinates prevent a trustworthy visibility test, so uncertainty affects the
 whole selected view; turning off the affected constellation can still give a
-useful assessment of the others. A fresh local orbit may supply geometry while
-the reference orbit is stale. The public catalogue remains independent of all
+useful assessment of the others. A fresh local ephemeris or a decoded almanac
+may supply geometry while the reference orbit is stale. The public catalogue remains independent of all
 private audience data.
 
 BKG is an independent reference, not a guaranteed complete operational fleet
@@ -170,9 +180,11 @@ selection and policy-delivery fence. Its `data` contains:
 - `reference`: source label, download status/time, and expected satellites with
   `name`, `gnssid`, absolute `orbit_epoch`, optional `ecef_m` in metres, and
   `extrapolated: true` when that position is propagated past the fit window;
-- `observations`: audience-scoped satellite identities, optional fresh `ecef_m`,
-  and `witness_times` (Unix seconds), one timestamp per distinct source across
-  all signals, without source identifiers.
+- `observations`: audience-scoped satellite identities, optional fresh `ecef_m`
+  with `position_source` (`ephemeris` from a fresh broadcast ephemeris, or
+  `almanac` from a decoded almanac, including satellites no station hears), and
+  `witness_times` (Unix seconds), one timestamp per distinct source across all
+  signals, without source identifiers.
 
 This endpoint is rendered on request rather than stored in the historian's
 fixed feed set. It does not expand that set or change existing feeds. The browser

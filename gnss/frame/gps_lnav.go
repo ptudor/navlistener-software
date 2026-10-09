@@ -122,6 +122,94 @@ type GPSSubframe struct {
 	// 27900 (raw 31) means "NMCT unavailable" (§20.3.3.4.4 "NMCT Validity Time";
 	// regression fix); QZSS fixes it at that sentinel (QZSS-PNT-006 §4.1.2.4(4)). Seconds.
 	AODO int
+
+	// Almanac is set when a subframe 4 or 5 page carries one satellite's
+	// almanac; nil for every other page (and for dummy-SV pages).
+	Almanac *LNAVAlmanac
+}
+
+// LNAVAlmanac is one satellite's almanac from an LNAV subframe 4 or 5 page
+// (IS-GPS-200N §20.3.3.5.1.2, Table 20-VI and Figure 20-1 sheet 4; QZSS-PNT-006
+// §4.1.2.6.2, Table 4.1.2-10), scaled to SI. Eccentricity and inclination are
+// kept as broadcast, relative to a reference that depends on the constellation
+// and, for QZSS, the orbit type; Ephemeris applies it.
+type LNAVAlmanac struct {
+	// DataID is word 3 bits 1–2: 1 (binary 01) for a GPS almanac
+	// (IS-GPS-200N §20.3.3.5.1.1), 3 for a QZS almanac (QZSS-PNT-006 Table 4.1.2-2).
+	DataID int
+	// SVID is word 3 bits 3–8, the satellite the almanac describes: the GPS PRN
+	// (1..32), or the QZSS SV ID (1..10, PRN = 192 + SV ID; QZSS-PNT-006 Table 3.2.1-1).
+	SVID int
+	// Ecc is e for GPS, or the difference from eREF for QZSS (QZSS-PNT-006 Table 5.7.1-3).
+	Ecc float64
+	// Toa is the almanac reference time, seconds of week (8 bits × 2^12).
+	Toa float64
+	// DeltaI is δi in radians, relative to 0.30 semicircles for GPS (Table 20-VI
+	// note ****) or to iREF for QZSS (QZSS-PNT-006 Table 5.7.1-3).
+	DeltaI   float64
+	OmegaDot float64 // rad/s
+	// Health is the 8-bit almanac SV health word (word 5 bits 17–24; IS-GPS-200N §20.3.3.5.1.3).
+	Health int
+	SqrtA  float64 // √m
+	Omega0 float64 // rad
+	Omega  float64 // rad
+	M0     float64 // rad
+	Af0    float64 // s
+	Af1    float64 // s/s
+}
+
+// errBadAlmanac is returned by LNAVAlmanac.Ephemeris for an almanac outside its
+// ICD-valid ranges or tagged for the wrong constellation.
+var errBadAlmanac = errors.New("frame: LNAV almanac invalid for its constellation")
+
+// gpsAlmanacI0 is the GPS almanac's implicit nominal inclination, 0.30
+// semicircles (IS-GPS-200N Table 20-VI note ****, §20.3.3.5.2.1).
+const gpsAlmanacI0 = 0.30
+
+// qzssAlmanacReference holds a QZS almanac's eREF and iREF (semicircles) by SV ID:
+// QZO satellites use eREF 0.06 and iREF 0.25, GEO and QGEO satellites use 0
+// (QZSS-PNT-006 Table 5.7.1-3). The SV ID → category assignment is Table 3.2.1-1:
+// 2–5 QZO, 7 and 8 GEO, 9 QGEO. SV IDs 1, 6 and 10 have no category yet, so an
+// almanac for them cannot be placed.
+var qzssAlmanacReference = map[int][2]float64{
+	2: {0.06, 0.25}, 3: {0.06, 0.25}, 4: {0.06, 0.25}, 5: {0.06, 0.25},
+	7: {0, 0}, 8: {0, 0}, 9: {0, 0},
+}
+
+// Ephemeris converts the almanac into the Kepler elements the propagator
+// consumes, for the constellation id that transmitted it. Every Table 20-IV
+// parameter the almanac does not carry is zero and toe is toa (IS-GPS-200N
+// §20.3.3.5.2.1-2; QZSS-PNT-006 Table 5.7.1-4). It rejects an almanac whose data
+// ID or SV ID does not belong to id, and a GPS almanac outside the Table 20-VI
+// ranges for e (0 to 0.03), √A (2530 to 8192) or Ω̇ (−1.19E-07 to 0
+// semicircles/s).
+func (a *LNAVAlmanac) Ephemeris(id gnss.GNSSID) (kepler.Ephemeris, error) {
+	semi := physconst.Pi
+	eph := kepler.Ephemeris{
+		ID: id, SVID: a.SVID,
+		SqrtA: a.SqrtA, M0: a.M0, Omega0: a.Omega0, OmegaDot: a.OmegaDot, Omega: a.Omega,
+		Toe: a.Toa,
+	}
+	switch id {
+	case gnss.GPS:
+		if a.DataID != 1 || a.SVID < 1 || a.SVID > 32 ||
+			a.Ecc > 0.03 || a.SqrtA < 2530 || a.SqrtA > 8192 ||
+			a.OmegaDot > 0 || a.OmegaDot < -1.19e-7*semi {
+			return kepler.Ephemeris{}, errBadAlmanac
+		}
+		eph.Ecc = a.Ecc
+		eph.I0 = gpsAlmanacI0*semi + a.DeltaI
+	case gnss.QZSS:
+		ref, ok := qzssAlmanacReference[a.SVID]
+		if a.DataID != 3 || !ok {
+			return kepler.Ephemeris{}, errBadAlmanac
+		}
+		eph.Ecc = ref[0] + a.Ecc
+		eph.I0 = ref[1]*semi + a.DeltaI
+	default:
+		return kepler.Ephemeris{}, errBadAlmanac
+	}
+	return eph, nil
 }
 
 // DecodeGPSLNAV decodes one LNAV subframe from ten 30-bit words as delivered by
@@ -195,8 +283,13 @@ func DecodeGPSLNAV(words []uint32) (*GPSSubframe, error) {
 	case 3:
 		decodeGPSSf3(r, sf)
 	case 4, 5:
-		// Almanac/iono pages: a structurally valid subframe id, not decoded into
-		// ephemeris fields here.
+		// Almanac pages are recognised by their SV ID; iono/UTC, NMCT, special
+		// message and health pages are structurally valid and not decoded here.
+		alm, err := decodeLNAVAlmanac(r)
+		if err != nil {
+			return nil, err
+		}
+		sf.Almanac = alm
 	default:
 		// subframe id must be 1..5 (IS-GPS-200N §20.3.2). A frame of the right
 		// length but an out-of-range id (0/6/7) is a mis-tagged or corrupt frame, not a
@@ -285,6 +378,54 @@ func decodeGPSSf3(r *BitReader, sf *GPSSubframe) {
 	sf.eph.Omega = float64(omega) * p2m31 * semi
 	sf.eph.OmegaDot = float64(omgDot) * p2m43 * semi
 	sf.eph.IDot = float64(idot) * p2m43 * semi
+}
+
+// decodeLNAVAlmanac reads an almanac page (IS-GPS-200N Figure 20-1 sheet 4; the
+// QZS almanac page has the same layout, QZSS-PNT-006 Figure 4.1.2-6). Pages are
+// told apart by data ID and SV ID: a GPS almanac page has data ID 1 and SV ID
+// 1..32 (§20.3.3.5.1.1, Table 20-V), a QZS almanac page data ID 3 and SV ID
+// 1..10 (QZSS-PNT-006 Table 4.1.2-2). SV ID 0 marks a dummy SV (or QZSS test
+// mode) and IDs 51..63 are other pages; both return nil. toa is bounded to its
+// ICD range of 0 to 602 112 s (Table 20-VI); a larger count is errBadEpoch.
+func decodeLNAVAlmanac(r *BitReader) (*LNAVAlmanac, error) {
+	semi := physconst.Pi
+	dataID, _ := r.Bits(field(3, 1), 2)
+	svID, _ := r.Bits(field(3, 3), 6)
+	if !(dataID == 1 && svID >= 1 && svID <= 32) && !(dataID == 3 && svID >= 1 && svID <= 10) {
+		return nil, nil
+	}
+	ecc, _ := r.Bits(field(3, 9), 16)
+	toa, _ := r.Bits(field(4, 1), 8)
+	di, _ := r.Signed(field(4, 9), 16)
+	omgDot, _ := r.Signed(field(5, 1), 16)
+	health, _ := r.Bits(field(5, 17), 8)
+	sqrtA, _ := r.Bits(field(6, 1), 24)
+	omg0, _ := r.Signed(field(7, 1), 24)
+	omega, _ := r.Signed(field(8, 1), 24)
+	m0, _ := r.Signed(field(9, 1), 24)
+	// af0 is split around af1 in word 10: 8 MSBs in bits 1–8, 3 LSBs in bits 20–22.
+	af0, _ := r.ConcatSigned(field(10, 1), 8, field(10, 20), 3)
+	af1, _ := r.Signed(field(10, 9), 11)
+
+	a := &LNAVAlmanac{
+		DataID:   int(dataID),
+		SVID:     int(svID),
+		Ecc:      float64(ecc) / (1 << 21),
+		Toa:      float64(toa) * (1 << 12),
+		DeltaI:   float64(di) / (1 << 19) * semi,
+		OmegaDot: float64(omgDot) / float64(uint64(1)<<38) * semi,
+		Health:   int(health),
+		SqrtA:    float64(sqrtA) / (1 << 11),
+		Omega0:   float64(omg0) / (1 << 23) * semi,
+		Omega:    float64(omega) / (1 << 23) * semi,
+		M0:       float64(m0) / (1 << 23) * semi,
+		Af0:      float64(af0) / (1 << 20),
+		Af1:      float64(af1) / float64(uint64(1)<<38),
+	}
+	if a.Toa > 602112 {
+		return nil, errBadEpoch
+	}
+	return a, nil
 }
 
 // AssembleGPS combines a matching subframe 1/2/3 triple for one SV into the

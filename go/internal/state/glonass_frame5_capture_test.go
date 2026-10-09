@@ -19,6 +19,13 @@ import (
 // scanner itself is validated against these same captures by ingest's own tests.
 func glonassCaptureFrames(t *testing.T, path string, at time.Time) []*ingest.RawFrame {
 	t.Helper()
+	return captureFrames(t, path, at, gnss.GLONASS)
+}
+
+// captureFrames returns the capture's SFRBX frames for constellation g, in
+// stream order, all stamped at.
+func captureFrames(t *testing.T, path string, at time.Time, g gnss.GNSSID) []*ingest.RawFrame {
+	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Skipf("no capture fixture: %v", err)
@@ -47,10 +54,10 @@ func glonassCaptureFrames(t *testing.T, path string, at time.Time) []*ingest.Raw
 		if cls == 0x02 && id == 0x13 && n >= 8 { // UBX-RXM-SFRBX
 			p := data[i+6 : i+6+n]
 			words := int(p[4])
-			if gnss.GNSSID(p[0]) == gnss.GLONASS && words > 0 && 8+words*4 <= n {
+			if gnss.GNSSID(p[0]) == g && words > 0 && 8+words*4 <= n {
 				f := &ingest.RawFrame{
 					Recv: at, Source: "cap",
-					GnssID: gnss.GLONASS, SvID: int(p[1]), SigID: int(p[2]), FreqID: int(p[3]),
+					GnssID: g, SvID: int(p[1]), SigID: int(p[2]), FreqID: int(p[3]),
 					Words: make([]uint32, words),
 				}
 				for w := 0; w < words; w++ {

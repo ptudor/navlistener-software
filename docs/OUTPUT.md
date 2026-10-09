@@ -291,8 +291,10 @@ pagination, sequence encoding, resource limits, and explicit history boundaries.
 Object keyed by SV name (`"C01"`, `"R07"`, `"J02"`, `"I03"`). This is the long-life,
 all-SV view (acquisition-grade); `svs` remains the precision view.
 
-Current entries come from live broadcast ephemerides plus decoded GLONASS almanac
-slots. Almanac-only coverage for other constellations and TLE fallback remain planned.
+Current entries come from live broadcast ephemerides plus decoded GLONASS, GPS and
+QZSS almanacs, which also cover satellites no receiver hears. A GPS almanac is
+served while within 3.5 days of its reference time and a QZSS almanac within 72
+hours. Galileo and BeiDou almanacs are not decoded yet, and there is no TLE fallback.
 
 | Field | Type | Meaning |
 |---|---|---|
