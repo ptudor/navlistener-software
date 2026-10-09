@@ -547,14 +547,14 @@ func TestBearerSchemeIsCaseInsensitive(t *testing.T) {
 	s.EnableAudienceSelection(fixedReadAuthorizer{"secret": identity.ReadPrincipal{ID: "viewer", AudienceGrants: []identity.Audience{s.audience}}}, nil, time.Second)
 	s.refresh("global")
 	for header, want := range map[string]int{
-		"Bearer secret":  http.StatusOK,
-		"bearer secret":  http.StatusOK,
-		"BEARER secret":  http.StatusOK,
-		"Bearer  secret": http.StatusOK, // surrounding whitespace is trimmed, as before
-		"Basic secret":   http.StatusUnauthorized,
-		"Bearer":         http.StatusUnauthorized,
-		"Bearer\tsecret": http.StatusUnauthorized,
-		"Bearer se cret": http.StatusUnauthorized,
+		"Bearer secret":                       http.StatusOK,
+		"bearer secret":                       http.StatusOK,
+		"BEARER secret":                       http.StatusOK,
+		"Bearer  secret":                      http.StatusOK, // surrounding whitespace is trimmed, as before
+		"Basic secret":                        http.StatusUnauthorized,
+		"Bearer":                              http.StatusUnauthorized,
+		"Bearer\tsecret":                      http.StatusUnauthorized,
+		"Bearer se cret":                      http.StatusUnauthorized,
 		"Bearer " + strings.Repeat("x", 4097): http.StatusUnauthorized,
 	} {
 		req := httptest.NewRequest(http.MethodGet, "/gnss/api/v2/global", nil)
