@@ -99,9 +99,9 @@ kilometres (GPS and Galileo served within 3.5 days of the almanac reference
 time, QZSS within 72 hours). BeiDou's B2a midi almanacs cover the IGSO and MEO
 satellites to about 20 km, and its B1I D1 almanac pages add the GEOs and the
 satellites the midi almanacs omit; both are served for 7 days. D1 almanacs are
-taken only from satellites reporting the expanded almanac (AmEpID "11"): in a
-real capture the one satellite that did not broadcast a C10 almanac days away
-from everyone else's.
+anchored by the week/toa reference in subframe 5 page 8. Ordinary pages cover
+PRNs 1–30 regardless of AmEpID; expanded pages are used only when the
+transmitter reports AmEpID "11".
 An almanac still describes only what the constellation broadcasts, and a
 constellation no station hears contributes none.
 

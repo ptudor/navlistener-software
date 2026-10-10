@@ -399,6 +399,13 @@ type svState struct {
 	// clock); it decides whether its expanded pages carry almanacs.
 	bdsAmEpID   int
 	bdsAmEpIDAt time.Time
+	// bdsAlmRef is the absolute toa from this satellite's most recent D1
+	// subframe 5 page 8. bdsAlmRefTOW is retained to reject pages from a
+	// different almanac set; bdsAlmRefAt provides freshest-wins ordering in
+	// the collector's monotonic clock domain.
+	bdsAlmRef    time.Time
+	bdsAlmRefTOW float64
+	bdsAlmRefAt  time.Time
 	// gloFrameBaseSlot is the subject slot of the current frame's first almanac pair
 	// (strings 6/7), used to detect frame 5. Frame 5 carries almanac only for slots
 	// 21–24 (strings 6–13); its strings 14/15 are B1/B2/KP UT1/leap data, NOT almanac, so a

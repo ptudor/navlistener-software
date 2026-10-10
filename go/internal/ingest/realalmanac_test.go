@@ -254,8 +254,10 @@ func TestRealBeiDouMidiAlmanacMatchesD1Ephemeris(t *testing.T) {
 // propagated with i0 = 0 and the standard algorithm; IGSO and MEO almanacs
 // agree with the same satellites' midi almanacs within 25 km; and expanded
 // pages resolve to MEO satellites (C44, C45) the midi almanacs do not cover.
-// The capture with C58 also shows why the gate exists: C58 reports AmEpID 0
-// and broadcasts a C10 almanac days away from everyone else's.
+// The capture with C58 also shows why the set's week/toa reference matters:
+// C58 reports AmEpID 0 and broadcasts a C10 almanac days away from the
+// AmEpID-11 set, while subframe 5 page 8 supplies the absolute epoch needed to
+// use ordinary pages without treating AmEpID as their validity flag.
 func TestRealBeiDouD1AlmanacPlacesGEOs(t *testing.T) {
 	geo, compared, expanded, gated := false, 0, 0, 0
 	for _, name := range []string{"f9t_capture.ubx", "f9p_capture.ubx", "glo_superframe_capture.ubx"} {

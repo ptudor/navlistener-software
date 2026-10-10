@@ -76,7 +76,7 @@ func TestGPSAlmanacPlacesUnheardSatellite(t *testing.T) {
 		t.Fatalf("the transmitter G05 = %+v; its own position needs its own almanac or ephemeris", g05)
 	}
 	ent, ok := s.FeedAlmanac(now)["G12"]
-	if !ok || ent.Observed || ent.GnssID != int(gnss.GPS) || ent.T0e != int(toaRaw*4096) {
+	if !ok || ent.Observed || ent.GnssID != int(gnss.GPS) || ent.T0e != int(toaRaw*4096) || ent.PositionSource != "almanac" {
 		t.Fatalf("almanac feed G12 = %+v", ent)
 	}
 }
@@ -94,7 +94,7 @@ func TestEphemerisPositionWinsOverAlmanac(t *testing.T) {
 	if g05 := monitoringByName(s, now)["G05"]; g05.PositionSource != "ephemeris" {
 		t.Fatalf("G05 position source %q", g05.PositionSource)
 	}
-	if ent := s.FeedAlmanac(now)["G05"]; !ent.Observed {
+	if ent := s.FeedAlmanac(now)["G05"]; !ent.Observed || ent.PositionSource != "ephemeris" {
 		t.Fatalf("almanac replaced the observed G05 entry: %+v", ent)
 	}
 }
@@ -488,16 +488,49 @@ func d1AlmanacFrame(tx, fraID, pnum int, last2 uint64, toa, recv time.Time) *ing
 	return &ingest.RawFrame{GnssID: gnss.BeiDou, SvID: tx, SigID: 0, Recv: recv, Words: bdsD1Words(info)}
 }
 
-// TestBeiDouD1AlmanacGate: a satellite reporting AmEpID other than "11"
-// contributes no D1 almanac, an expanded page needs the transmitter's recent
-// AmEpID "11", and a midi almanac, whose own week fixes toa, is never replaced
-// by a D1 almanac resolved from a time of week.
+func d1AlmanacRefFrame(tx, wn int, toa float64, recv time.Time) *ingest.RawFrame {
+	info := make([]byte, 28)
+	setAbsBits(info, 15, 3, 5)
+	setAbsBits(info, 39, 7, 8)
+	setAbsBits(info, 145, 8, uint64(wn&0xFF))
+	setAbsBits(info, 153, 8, uint64(toa/4096))
+	return &ingest.RawFrame{GnssID: gnss.BeiDou, SvID: tx, SigID: 0, Recv: recv, Words: bdsD1Words(info)}
+}
+
+// TestBeiDouD1AlmanacGate: a basic page from any transmitter is accepted once
+// subframe 5 page 8 anchors its week and toa, an expanded page still needs the
+// transmitter's recent AmEpID "11", and a midi almanac, whose own full week
+// fixes toa, is never replaced by a D1 almanac.
 func TestBeiDouD1AlmanacGate(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	s := New(4)
 	s.Apply(d1AlmanacFrame(58, 4, 10, 0, now, now))
 	if len(s.almanacs) != 0 {
-		t.Fatal("almanac from a satellite reporting AmEpID 0 stored")
+		t.Fatal("unanchored almanac from a satellite reporting AmEpID 0 stored")
+	}
+	week, _ := gnsstime.WeekAt(gnsstime.SysBeiDou, float64(now.Unix()), float64(gpsUTCOffset))
+	toa := math.Floor(towFor(gnss.BeiDou, now)/4096) * 4096
+	s.Apply(d1AlmanacRefFrame(58, week, toa, now.Add(time.Second)))
+	s.Apply(d1AlmanacFrame(58, 4, 10, 0, now, now.Add(2*time.Second)))
+	a, ok := s.almanacs[almanacKey{G: gnss.BeiDou, Sv: 10}]
+	wantUnix, _ := gnsstime.GNSSTime{Sys: gnsstime.SysBeiDou, Week: week, TOW: toa}.ToUnix(float64(gpsUTCOffset))
+	wantToa := time.Unix(int64(math.Round(wantUnix)), 0)
+	if !ok || !a.exact || !a.toa.Equal(wantToa) {
+		t.Fatalf("anchored basic almanac from AmEpID 0 = %+v, present %v", a, ok)
+	}
+	// Once a reference is known, an orbit page carrying another set's toa is
+	// rejected rather than attached to the cached week.
+	s.Apply(d1AlmanacFrame(58, 4, 11, 0, now.Add(24*time.Hour), now.Add(3*time.Second)))
+	if _, ok := s.almanacs[almanacKey{G: gnss.BeiDou, Sv: 11}]; ok {
+		t.Fatal("almanac page with a toa different from page 8 stored")
+	}
+	// A page-8 reference at least one week old is outside the D1 validity
+	// window and does not unlock ordinary pages.
+	stale := New(4)
+	stale.Apply(d1AlmanacRefFrame(58, week-1, toa, now))
+	stale.Apply(d1AlmanacFrame(58, 4, 10, 0, now, now.Add(time.Second)))
+	if len(stale.almanacs) != 0 {
+		t.Fatal("almanac stored from an expired page-8 reference")
 	}
 	s.Apply(d1AlmanacFrame(12, 4, 10, 3, now, now))
 	if _, ok := s.almanacs[almanacKey{G: gnss.BeiDou, Sv: 10}]; !ok {
@@ -517,7 +550,7 @@ func TestBeiDouD1AlmanacGate(t *testing.T) {
 			t.Fatalf("expanded page for SV %d used without a fresh AmEpID 11", sv)
 		}
 	}
-	// A midi almanac for C33 outranks a newer D1 one.
+	// A midi almanac for C33 outranks an unreferenced D1 fallback.
 	s.Apply(midiAlmanacFrameAt(t, 20, 33, now.Add(-time.Hour), now))
 	s.Apply(d1AlmanacFrame(12, 4, 10, 3, now, now.Add(8*time.Minute)))
 	s.Apply(d1AlmanacFrame(12, 5, 13, 1, now.Add(2*time.Hour), now.Add(8*time.Minute)))

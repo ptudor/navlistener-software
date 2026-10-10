@@ -52,6 +52,12 @@ The Vue static export consumes this API. The map uses separate reference geometr
 it does not change the existing almanac feed or add reference records to receiver
 observations.
 
+The `almanac` route is the collector's shareable native JSON format. It labels each
+position as `ephemeris` or `almanac` with `position_source`. It is an evaluated
+current-position feed, not a YUMA, SEM, RINEX navigation, or RTCM export; see
+`docs/OUTPUT.md §1.4.1` for retrieval, authentication, caching, and interchange
+limits.
+
 Every JSON response is wrapped in the standard v2 envelope (`docs/OUTPUT.md §0`):
 
 ```json

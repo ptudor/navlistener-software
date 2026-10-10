@@ -406,10 +406,12 @@ describes SV n and subframe 5 pages 1–6 SVs 25–30 (§5.2.4.13); these basic 
 broadcasting satellite's AmEpID is "11"; `ResolveExpanded(amEpID)` applies Table 5-13 (AmID
 01/10/11 → SV 31–43, 44–56, 57–63) and refuses reserved combinations. A reserved page is never
 range-checked at decode, so it cannot fail the frame. An all-zero entry (√A = 0) is unused.
+Subframe 5 page 8 sets `HasAlmanacRef` and supplies the set's eight-bit BDT week (`AlmanacWN`)
+and toa (`AlmanacToa`), allowing callers to recover an absolute reference instant.
 **`BeiDouD1Almanac.Ephemeris()`** uses i₀ = 0.30π, or 0 for a GEO by the `kepler.IsBeiDouGEO`
 list, and sets `Almanac` so GEOs skip the ephemeris-only rotation (Table 5-15). D1 almanacs carry
-no week of their own, so callers resolve toa by the ICD's half-week rule. Real B1I captures pin the
-layout: the GEO C05 lands within 0.2° of its 58.75°E slot.
+toa on each orbit page and one week for the set on page 8. Real B1I captures pin the layout: the
+GEO C05 lands within 0.2° of its 58.75°E slot.
 
 Three layout quirks that will trip you up if you assume GPS shapes:
 

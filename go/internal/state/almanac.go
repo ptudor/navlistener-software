@@ -34,8 +34,8 @@ type keplerAlmanac struct {
 	eph   kepler.Ephemeris // Toe is toa, in the constellation's seconds of week
 	toa   time.Time        // toa resolved to an absolute instant
 	stamp time.Time        // reception stamp of the page that delivered it
-	// exact marks a toa fixed by the almanac's own full week number (BeiDou
-	// midi almanacs) rather than resolved from its time of week.
+	// exact marks a toa fixed by a broadcast week number (BeiDou midi
+	// almanacs and D1 page 8) rather than resolved from its time of week.
 	exact bool
 }
 
@@ -45,11 +45,11 @@ type keplerAlmanac struct {
 // |t − toa| (QZSS-PNT-006 Table 4.1.1-2). The BeiDou almanac algorithm wraps
 // t − toa at half a week (BDS-SIS-B2a-1.0 Table 7-15), but almanacs are only
 // updated in less than 7 days (BDS-SIS-B1I-3.0 Table 5-1); the midi almanac's
-// full week number fixes toa, so almanacAt propagates across the wrap and
-// BeiDou is served for 7 days. GAL-OS-SIS-ICD-2.2 states no almanac validity
-// period, so Galileo uses half a week as an engineering bound. Where toa is
-// resolved from a time of week, inside half a week the resolution is
-// unambiguous, so those bounds are strict.
+// full week or D1 page 8's truncated week fixes toa, so almanacAt propagates
+// across the wrap and BeiDou is served for 7 days. GAL-OS-SIS-ICD-2.2 states
+// no almanac validity period, so Galileo uses half a week as an engineering
+// bound. Where toa is resolved from a time of week, inside half a week the
+// resolution is unambiguous, so those bounds are strict.
 func keplerAlmanacValidity(g gnss.GNSSID) time.Duration {
 	switch g {
 	case gnss.QZSS:
@@ -124,28 +124,56 @@ func (s *Store) applyBeiDouAlmanac(a *frame.BeiDouMidiAlmanac, stamp time.Time) 
 // generous. Engineering bound.
 const bdsAmEpIDFresh = 5 * time.Minute
 
-// applyBeiDouD1Almanac stores the almanac on a D1 subframe 4/5 page. Only a
-// satellite broadcasting AmEpID "11" contributes: it makes expanded pages
-// almanacs (Table 5-13), and in the real captures the one satellite reporting
-// another value broadcast an almanac days older than the rest of the
-// constellation's, which the ICD's half-week wrap (Table 5-15) would misplace.
-// D1 almanacs carry no week of their own, so toa resolves to the instant
-// nearest reception, the ICD's own rule. Caller holds the SV's shard lock.
+// applyBeiDouD1Almanac stores the almanac on a D1 subframe 4/5 page. Subframe
+// 5 page 8 carries the truncated BDT week and toa that anchor the set. Basic
+// pages 1–30 are almanacs for every AmEpID; AmEpID "11" is required only for
+// expanded pages (Table 5-13). Until page 8 arrives, the conservative fallback
+// accepts pages only from an AmEpID "11" transmitter and resolves toa to the
+// instant nearest reception. Caller holds the SV's shard lock.
 func (s *Store) applyBeiDouD1Almanac(st *svState, sf *frame.BeiDouSubframe, stamp, local time.Time) {
 	if sf.HasAmEpID {
 		st.bdsAmEpID, st.bdsAmEpIDAt = sf.AmEpID, local
 	}
+	if sf.HasAlmanacRef {
+		week := gnsstime.DisambiguateWeek(gnsstime.SysBeiDou, sf.AlmanacWN, 8,
+			float64(stamp.Unix()), float64(gpsUTCOffset))
+		unix, ok := gnsstime.GNSSTime{
+			Sys: gnsstime.SysBeiDou, Week: week, TOW: sf.AlmanacToa,
+		}.ToUnix(float64(gpsUTCOffset))
+		if ok {
+			ref := time.Unix(int64(math.Round(unix)), 0)
+			age := stamp.Sub(ref)
+			if age > -keplerAlmanacValidity(gnss.BeiDou) && age < keplerAlmanacValidity(gnss.BeiDou) &&
+				(st.bdsAlmRef.IsZero() || ref.After(st.bdsAlmRef) ||
+					(ref.Equal(st.bdsAlmRef) && local.After(st.bdsAlmRefAt))) {
+				st.bdsAlmRef, st.bdsAlmRefTOW, st.bdsAlmRefAt = ref, sf.AlmanacToa, local
+			}
+		}
+	}
 	a := sf.Almanac
-	if a == nil || st.bdsAmEpIDAt.IsZero() || local.Sub(st.bdsAmEpIDAt) > bdsAmEpIDFresh || st.bdsAmEpID != 3 {
+	if a == nil {
 		return
 	}
 	resolved := *a
-	if resolved.Expanded && !resolved.ResolveExpanded(st.bdsAmEpID) {
-		return
+	freshExpanded := !st.bdsAmEpIDAt.IsZero() && local.Sub(st.bdsAmEpIDAt) <= bdsAmEpIDFresh && st.bdsAmEpID == 3
+	if resolved.Expanded {
+		if !freshExpanded || !resolved.ResolveExpanded(st.bdsAmEpID) {
+			return
+		}
 	}
 	eph, err := resolved.Ephemeris()
 	if err != nil {
 		return
+	}
+	if !st.bdsAlmRef.IsZero() {
+		if resolved.Toa != st.bdsAlmRefTOW {
+			return // page belongs to another almanac set
+		}
+		s.storeAlmanacAt(eph, st.bdsAlmRef, stamp, true)
+		return
+	}
+	if !freshExpanded {
+		return // wait for page 8 rather than risk a one-week ambiguity
 	}
 	s.storeAlmanac(eph, stamp, -1)
 }

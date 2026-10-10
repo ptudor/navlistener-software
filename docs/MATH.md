@@ -553,8 +553,10 @@ which carry no rate or harmonic terms: M₀ += n₀·kW and Ω₀ += (Ω̇ − �
 GLONASS almanac uses §3.1. We publish
 almanac-derived ECEF in the almanac feed (**metres**, `docs/OUTPUT.md §1.4`) for GLONASS, GPS,
 Galileo, QZSS and BeiDou. BeiDou has two sources: the B-CNAV2 midi almanac, whose own week fixes
-toa, and the D1 almanac pages, the only source for the GEOs, whose toa is resolved by the ICD's
-half-week rule; a midi almanac is never replaced by a D1 one. The reserved `alma_dist_m` field is
+toa, and the D1 almanac pages, the only source for the GEOs, whose subframe 5 page 8 supplies an
+eight-bit week and toa for the set. Before that reference page arrives, the collector accepts only
+the conservative AmEpID "11" fallback and resolves toa by the half-week rule; an exact midi or
+referenced D1 almanac is never replaced by that fallback. The reserved `alma_dist_m` field is
 for a planned cross-check (distance between the ephemeris ECEF and the almanac/TLE ECEF, a
 coarse sanity check).
 

@@ -39,6 +39,26 @@ func d1AlmanacWords(fraID, pnum int, toaRaw, last2 uint64, sqrtARaw uint64) []ui
 	return words
 }
 
+// d1AlmanacRefWords builds subframe 5 page 8, which anchors the almanac set's
+// toa to an eight-bit BDT week number (Figure 5-11-3, §5.2.4.16).
+func d1AlmanacRefWords(wn, toaRaw uint64) []uint32 {
+	info := make([]byte, 28)
+	setBits(info, 15, 3, 5)
+	setBits(info, 39, 7, 8)
+	setBits(info, 145, 8, wn)
+	setBits(info, 153, 8, toaRaw)
+	r := NewBitReaderN(info, 224)
+	words := make([]uint32, 10)
+	v, _ := r.Bits(0, 26)
+	words[0] = uint32(v) << 4
+	for i := 1; i < 10; i++ {
+		v, _ = r.Bits(26+(i-1)*22, 22)
+		words[i] = uint32(v) << 8
+	}
+	StampBeiDouD1BCH(words)
+	return words
+}
+
 // TestBeiDouD1AlmanacPages: subframe 4 page n describes SV n and subframe 5
 // pages 1–6 SVs 25–30 (§5.2.4.13), at the Table 5-14 scalings, each carrying
 // AmEpID; a GEO SV ID references i0 = 0 and every almanac skips the GEO
@@ -114,5 +134,18 @@ func TestBeiDouD1ExpandedPages(t *testing.T) {
 	}
 	if _, err := (&BeiDouD1Almanac{Expanded: true}).Ephemeris(); !errors.Is(err, errBadAlmanac) {
 		t.Fatal("unresolved expanded almanac converted")
+	}
+}
+
+func TestBeiDouD1AlmanacReferencePage(t *testing.T) {
+	sf, err := DecodeBeiDouD1(d1AlmanacRefWords(0xA5, 100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sf.FraID != 5 || sf.Pnum != 8 || !sf.HasAlmanacRef || sf.AlmanacWN != 0xA5 || sf.AlmanacToa != 100*4096 || sf.Almanac != nil {
+		t.Fatalf("almanac reference page = %+v", sf)
+	}
+	if _, err := DecodeBeiDouD1(d1AlmanacRefWords(0xA5, 148)); !errors.Is(err, errBadEpoch) {
+		t.Fatalf("toa past 602112 s: %v", err)
 	}
 }

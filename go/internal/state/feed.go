@@ -207,9 +207,10 @@ type GlobalFeed struct {
 }
 
 // AlmanacEntry is one coarse-orbit entry (docs/OUTPUT.md §1.4). This build fills it
-// from the precise broadcast ephemeris for every currently-observed SV (eph_source
-// 0, observed true). Decoded GLONASS, GPS, Galileo, QZSS and BeiDou almanacs
-// also contribute coarse, potentially out-of-view entries. There is no TLE fill.
+// from the precise broadcast ephemeris for every currently-observed SV
+// (position_source "ephemeris", eph_source 0, observed true). Decoded GLONASS,
+// GPS, Galileo, QZSS and BeiDou almanacs also contribute coarse, potentially
+// out-of-view entries with position_source "almanac". There is no TLE fill.
 type AlmanacEntry struct {
 	Name           string  `json:"name"`
 	GnssID         int     `json:"gnssid"`
@@ -223,6 +224,7 @@ type AlmanacEntry struct {
 	T0e            int     `json:"t0e"`
 	T              int     `json:"t"`
 	EphSource      int     `json:"eph_source"`
+	PositionSource string  `json:"position_source"`
 
 	// GLONASS-only ascending-node longitude and its epoch (docs/OUTPUT.md §1.4),
 	// absent for other constellations.
@@ -785,14 +787,15 @@ func (s *Store) FeedAlmanac(now time.Time) map[string]AlmanacEntry {
 			}
 			bestSig[name] = st.key.Sig
 			ent := AlmanacEntry{
-				Name:      name,
-				GnssID:    int(st.key.G),
-				Observed:  true,
-				EcefXM:    st.pos.X,
-				EcefYM:    st.pos.Y,
-				EcefZM:    st.pos.Z,
-				T:         int(st.posAt.Unix()),
-				EphSource: 0,
+				Name:           name,
+				GnssID:         int(st.key.G),
+				Observed:       true,
+				EcefXM:         st.pos.X,
+				EcefYM:         st.pos.Y,
+				EcefZM:         st.pos.Z,
+				T:              int(st.posAt.Unix()),
+				EphSource:      0,
+				PositionSource: "ephemeris",
 			}
 			ell := physconst.WGS84
 			if p, ok := physconst.For(st.key.G); ok {
@@ -871,6 +874,7 @@ func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
 			T0e:            int(a.Alm.Tlambda),
 			T:              int(now.Unix()),
 			EphSource:      0,
+			PositionSource: "almanac",
 			LambdaNA:       &lambda,
 			TLambdaNA:      &tLambda,
 			Operable:       &operable,
@@ -904,6 +908,7 @@ func (s *Store) addKeplerAlmanac(out map[string]AlmanacEntry, now time.Time) {
 			T0e:            a.t0e,
 			T:              int(now.Unix()),
 			EphSource:      0,
+			PositionSource: "almanac",
 		}
 	}
 }

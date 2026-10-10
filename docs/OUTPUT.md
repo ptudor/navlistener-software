@@ -307,12 +307,36 @@ days. There is no TLE fallback.
 | `inclination_rad` | float | orbital inclination, radians |
 | `t0e` | int | constellation-native almanac reference: GPS-family `Toe` in seconds-of-week; GLONASS `t_lambda` in seconds-of-day |
 | `t` | int | evaluation time as Unix UTC seconds |
+| `position_source` | string | `ephemeris` when an observed SV's fresh broadcast ephemeris supplies the position; `almanac` when decoded broadcast almanac elements are propagated |
 | `lambda_na`,`t_lambda_na` | float | GLONASS-only: ascending-node longitude and its epoch (MATH.md §3.1) |
 | `operable` | bool | GLONASS-only : the almanac CnA ground-segment health flag, `true` = operable. **Polarity note:** the broadcast word is inverted vs Bn/ℓn — Cn = 0 means malfunction (GLO-ICD-5.1 §5.3); this field re-normalizes it so `true` is always healthy. For an out-of-view slot this is the SV's only broadcast health surface (the ground path reaches every SV's almanac within ~16 h, §5.3); an inoperable slot's entry is still served — it's the flag that matters, not suppression. Absent for other constellations and until the slot's almanac decodes. |
 | `freq_ch` | int | GLONASS-only : the slot's FDMA channel k from the broadcast almanac word HnA (GLO-ICD-5.1 Table 4.10) — the almanac side of the eph-vs-almanac channel cross-check (see `svs.freq_ch`) |
-| `eph_source` | int | §2.2 enum: 0 broadcast-almanac · 1 tle-sgp4 fill |
+| `eph_source` | int | compatibility enum for orbit provenance: 0 broadcast navigation data · 1 TLE/SGP4 fill; use `position_source` to distinguish broadcast ephemeris from broadcast almanac |
 
 `t0e` and `t` deliberately use different time bases; `t - t0e` is **not** an almanac age.
+
+#### 1.4.1 Sharing and interchange
+
+The public collector-native export is ordinary JSON over HTTP:
+
+```sh
+curl -fsS https://collector.example/gnss/api/v2/almanac
+curl -fsS https://collector.example/gnss/api/v2/almanac | jq '.data.almanac'
+```
+
+Private views use the same endpoint with the read principal's bearer token and an
+`X-GNSS-Audience` value returned by `/gnss/api/v2/audiences`. Public responses are
+shared-cacheable; private responses are `private, no-store`. The envelope's `time`
+is the snapshot time, while every entry's `t` is the instant at which its ECEF was
+evaluated. Consumers should use `position_source`, not `observed`, to identify the
+orbit solution that produced a position.
+
+This is a current-position exchange feed, not a raw broadcast-almanac archive. It
+does not currently emit YUMA, SEM, RINEX navigation, or RTCM, and the JSON snapshot
+cannot be converted losslessly to those formats: it contains propagated position
+and selected metadata, not every original orbit, clock, health, week, source, and
+message field. A future standard exporter must preserve those decoded source
+records separately; it should not synthesize them back from ECEF coordinates.
 
 ### 1.5 `sbas` — augmentation-system health
 
@@ -369,7 +393,7 @@ keys are additive; existing consumers may ignore them.
 | `health_code` | **0** unknown · **1** OK · **2** not-ok · **3** do-not-use. Matches the deployed `useHealth.js CODE_BY_NUM` / intsat `model.HealthCode` — retained because the numbering is already right; never reorder. |
 | `health_issue_level` | 0 none · 1 warning · 2 error |
 | `severity` (events) | 0 info · 1 warning · 2 critical |
-| `eph_source` | 0 computed from broadcast almanac · 1 filled from CelesTrak TLE via SGP4 |
+| `eph_source` | 0 computed from broadcast navigation data · 1 filled from CelesTrak TLE via SGP4; the almanac feed's `position_source` distinguishes broadcast ephemeris from broadcast almanac |
 
 ---
 

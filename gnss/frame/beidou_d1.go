@@ -67,6 +67,13 @@ type BeiDouSubframe struct {
 	// (§5.2.4.14); HasAmEpID marks those pages.
 	AmEpID    int
 	HasAmEpID bool
+	// AlmanacWN and AlmanacToa are the truncated BDT week and time of
+	// almanac carried by subframe 5 page 8 (§5.2.4.14). HasAlmanacRef marks
+	// that page; together the fields anchor every D1 almanac page to an
+	// absolute instant.
+	AlmanacWN     int
+	AlmanacToa    float64
+	HasAlmanacRef bool
 	// Almanac is set for an almanac page that carries one: a basic page, or
 	// an expanded page (subframe 5 pages 11–23) whose satellite is resolved
 	// with ResolveExpanded. Unused entries (√A = 0) leave it nil.
@@ -273,9 +280,19 @@ func DecodeBeiDouD1(words []uint32) (*BeiDouSubframe, error) {
 		sf.eph.Omega = float64(s(191, 32)) * p2m31 * semi
 	case 4, 5:
 		// Almanac pages (Figure 5-11-1; expanded pages Figure 5-11-6 share the
-		// layout with AmID in place of AmEpID). Health, time-offset and WNa
-		// pages are structurally valid and not decoded here.
+		// layout with AmID in place of AmEpID). Subframe 5 page 8 supplies the
+		// WNa/toa reference for the set. Health and time-offset pages are
+		// structurally valid and not decoded here.
 		sf.Pnum = int(u(39, 7))
+		if fra == 5 && sf.Pnum == 8 {
+			sf.AlmanacWN = int(u(145, 8))
+			sf.AlmanacToa = float64(u(153, 8)) * (1 << 12)
+			if sf.AlmanacToa > 602112 {
+				return nil, errBadEpoch // Table 5-14: toa ≤ 602 112 s
+			}
+			sf.HasAlmanacRef = true
+			break
+		}
 		basic := (fra == 4 && sf.Pnum >= 1 && sf.Pnum <= 24) || (fra == 5 && sf.Pnum >= 1 && sf.Pnum <= 6)
 		expanded := fra == 5 && sf.Pnum >= 11 && sf.Pnum <= 23
 		if !basic && !expanded {
