@@ -552,8 +552,9 @@ the collector moves an almanac's reference by whole weeks first — exact for al
 which carry no rate or harmonic terms: M₀ += n₀·kW and Ω₀ += (Ω̇ − ωe)·kW.
 GLONASS almanac uses §3.1. We publish
 almanac-derived ECEF in the almanac feed (**metres**, `docs/OUTPUT.md §1.4`) for GLONASS, GPS,
-Galileo, QZSS and BeiDou (B-CNAV2 midi almanacs; the D1 almanac pages, the only source for the
-GEOs, are not decoded yet). The reserved `alma_dist_m` field is
+Galileo, QZSS and BeiDou. BeiDou has two sources: the B-CNAV2 midi almanac, whose own week fixes
+toa, and the D1 almanac pages, the only source for the GEOs, whose toa is resolved by the ICD's
+half-week rule; a midi almanac is never replaced by a D1 one. The reserved `alma_dist_m` field is
 for a planned cross-check (distance between the ephemeris ECEF and the almanac/TLE ECEF, a
 coarse sanity check).
 

@@ -37,11 +37,11 @@ every decoder is fuzzed. It starts hardened, on purpose.
 
 `primitives_test.go`, `bitreader_test.go`, `bitreader_signed_test.go`, `crc_test.go`,
 `gps_lnav_test.go`, `gps_lnav_almanac_test.go`, `gps_cnav_test.go`, `galileo_inav_test.go`,
-`galileo_inav_almanac_test.go`, `beidou_d1_test.go`, `beidou_bcnav2_test.go`,
-`beidou_bcnav2_almanac_test.go`, `glonass_string_test.go`,
+`galileo_inav_almanac_test.go`, `beidou_d1_test.go`, `beidou_d1_almanac_test.go`,
+`beidou_bcnav2_test.go`, `beidou_bcnav2_almanac_test.go`, `glonass_string_test.go`,
 `glonass_almanac_guard_test.go`, `sbas_l1_test.go`, `navic_test.go`, and `fuzz_test.go` —
-seventeen fuzz targets covering every exported decoder except the constant-error NavIC stub
-(which parses nothing), the LNAV, I/NAV and B-CNAV2 almanac payloads inside integrity-valid
+eighteen fuzz targets covering every exported decoder except the constant-error NavIC stub
+(which parses nothing), the LNAV, I/NAV, D1 and B-CNAV2 almanac payloads inside integrity-valid
 pages, plus the primitives.
 
 Imports: the root `gnss` package, `clock`, `kepler`, `glonass`, `physconst`, and `gnsstime`. It is
@@ -398,7 +398,18 @@ parity in the low bits — four bits in word 1, eight bits (two de-interleaved b
 assembled.
 
 FraID must be 1..5 (`errBadFraID`, regression fix). FraID 1 is clock + Klobuchar; 2 and 3 are the
-ephemeris halves; 4 and 5 are almanac/integrity pages, structurally valid but not decoded.
+ephemeris halves; 4 and 5 carry almanacs, health, time offsets and WNa.
+
+**Almanac pages** (Figure 5-11-1, Table 5-14) set `BeiDouSubframe.Almanac`. Subframe 4 page n
+describes SV n and subframe 5 pages 1–6 SVs 25–30 (§5.2.4.13); these basic pages also carry
+**AmEpID** (`HasAmEpID`). Subframe 5 pages 11–23 are **expanded** pages, almanacs only when the
+broadcasting satellite's AmEpID is "11"; `ResolveExpanded(amEpID)` applies Table 5-13 (AmID
+01/10/11 → SV 31–43, 44–56, 57–63) and refuses reserved combinations. A reserved page is never
+range-checked at decode, so it cannot fail the frame. An all-zero entry (√A = 0) is unused.
+**`BeiDouD1Almanac.Ephemeris()`** uses i₀ = 0.30π, or 0 for a GEO by the `kepler.IsBeiDouGEO`
+list, and sets `Almanac` so GEOs skip the ephemeris-only rotation (Table 5-15). D1 almanacs carry
+no week of their own, so callers resolve toa by the ICD's half-week rule. Real B1I captures pin the
+layout: the GEO C05 lands within 0.2° of its 58.75°E slot.
 
 Three layout quirks that will trip you up if you assume GPS shapes:
 

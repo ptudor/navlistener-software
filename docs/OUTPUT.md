@@ -294,8 +294,8 @@ all-SV view (acquisition-grade); `svs` remains the precision view.
 Current entries come from live broadcast ephemerides plus decoded GLONASS, GPS,
 Galileo, QZSS and BeiDou almanacs, which also cover satellites no receiver hears. A
 GPS or Galileo almanac is served while within 3.5 days of its reference time, a QZSS
-almanac within 72 hours, and a BeiDou B2a midi almanac within 7 days. BeiDou GEO
-almanacs (D1 pages) are not decoded yet, and there is no TLE fallback.
+almanac within 72 hours, and a BeiDou almanac (B2a midi or B1I D1 pages) within 7
+days. There is no TLE fallback.
 
 | Field | Type | Meaning |
 |---|---|---|

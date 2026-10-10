@@ -15,7 +15,8 @@ import (
 )
 
 // Kepler-family broadcast almanacs (GPS and QZSS LNAV pages, Galileo I/NAV
-// word types 7–10, BeiDou B-CNAV2 midi almanacs). Every satellite
+// word types 7–10, BeiDou B-CNAV2 midi almanacs and D1 almanac pages). Every
+// satellite
 // broadcasts its whole constellation's almanac, so one station hearing any
 // satellite learns where all of them are, including those no station can
 // hear. Entries are keyed by the satellite an almanac describes, not the one
@@ -33,6 +34,9 @@ type keplerAlmanac struct {
 	eph   kepler.Ephemeris // Toe is toa, in the constellation's seconds of week
 	toa   time.Time        // toa resolved to an absolute instant
 	stamp time.Time        // reception stamp of the page that delivered it
+	// exact marks a toa fixed by the almanac's own full week number (BeiDou
+	// midi almanacs) rather than resolved from its time of week.
+	exact bool
 }
 
 // keplerAlmanacValidity bounds |t − toa| for accepting and serving an almanac.
@@ -111,7 +115,39 @@ func (s *Store) applyBeiDouAlmanac(a *frame.BeiDouMidiAlmanac, stamp time.Time) 
 	if !ok {
 		return
 	}
-	s.storeAlmanacAt(eph, time.Unix(int64(math.Round(unix)), 0), stamp) // toa is whole seconds
+	s.storeAlmanacAt(eph, time.Unix(int64(math.Round(unix)), 0), stamp, true) // toa is whole seconds
+}
+
+// bdsAmEpIDFresh bounds how old a satellite's last AmEpID may be when one of
+// its expanded pages arrives. Every 30 s D1 frame carries a subframe 4 basic
+// page with AmEpID (BDS-SIS-B1I-3.0 §5.2.4.13–14), so a few minutes is
+// generous. Engineering bound.
+const bdsAmEpIDFresh = 5 * time.Minute
+
+// applyBeiDouD1Almanac stores the almanac on a D1 subframe 4/5 page. Only a
+// satellite broadcasting AmEpID "11" contributes: it makes expanded pages
+// almanacs (Table 5-13), and in the real captures the one satellite reporting
+// another value broadcast an almanac days older than the rest of the
+// constellation's, which the ICD's half-week wrap (Table 5-15) would misplace.
+// D1 almanacs carry no week of their own, so toa resolves to the instant
+// nearest reception, the ICD's own rule. Caller holds the SV's shard lock.
+func (s *Store) applyBeiDouD1Almanac(st *svState, sf *frame.BeiDouSubframe, stamp, local time.Time) {
+	if sf.HasAmEpID {
+		st.bdsAmEpID, st.bdsAmEpIDAt = sf.AmEpID, local
+	}
+	a := sf.Almanac
+	if a == nil || st.bdsAmEpIDAt.IsZero() || local.Sub(st.bdsAmEpIDAt) > bdsAmEpIDFresh || st.bdsAmEpID != 3 {
+		return
+	}
+	resolved := *a
+	if resolved.Expanded && !resolved.ResolveExpanded(st.bdsAmEpID) {
+		return
+	}
+	eph, err := resolved.Ephemeris()
+	if err != nil {
+		return
+	}
+	s.storeAlmanac(eph, stamp, -1)
 }
 
 // storeAlmanac resolves eph's toa (its Toe) to the instant nearest stamp with
@@ -127,13 +163,15 @@ func (s *Store) storeAlmanac(eph kepler.Ephemeris, stamp time.Time, wna int) {
 			return
 		}
 	}
-	s.storeAlmanacAt(eph, toa, stamp)
+	s.storeAlmanacAt(eph, toa, stamp, false)
 }
 
 // storeAlmanacAt stores eph, whose toa is the absolute instant toa, under its
 // subject satellite, unless the page that delivered it (received at stamp) lies
-// outside the validity window around toa.
-func (s *Store) storeAlmanacAt(eph kepler.Ephemeris, toa, stamp time.Time) {
+// outside the validity window around toa. exact marks a toa fixed by a full
+// week number; such an almanac is never replaced by one resolved from a time
+// of week, which could be a week off.
+func (s *Store) storeAlmanacAt(eph kepler.Ephemeris, toa, stamp time.Time, exact bool) {
 	g := eph.ID
 	if age := stamp.Sub(toa); age <= -keplerAlmanacValidity(g) || age >= keplerAlmanacValidity(g) {
 		return
@@ -141,10 +179,15 @@ func (s *Store) storeAlmanacAt(eph kepler.Ephemeris, toa, stamp time.Time) {
 	key := almanacKey{G: g, Sv: eph.SVID}
 	s.almMu.Lock()
 	defer s.almMu.Unlock()
-	if prev, ok := s.almanacs[key]; ok && (prev.toa.After(toa) || (prev.toa.Equal(toa) && prev.stamp.After(stamp))) {
-		return
+	if prev, ok := s.almanacs[key]; ok {
+		if prev.exact && !exact {
+			return
+		}
+		if prev.exact == exact && (prev.toa.After(toa) || (prev.toa.Equal(toa) && prev.stamp.After(stamp))) {
+			return
+		}
 	}
-	s.almanacs[key] = keplerAlmanac{eph: eph, toa: toa, stamp: stamp}
+	s.almanacs[key] = keplerAlmanac{eph: eph, toa: toa, stamp: stamp, exact: exact}
 }
 
 // almanacPosition is one satellite's almanac-propagated position.
@@ -235,7 +278,7 @@ func glonassAlmanacPosition(a frame.GLONASSAlmanacEntry, now time.Time) (gnss.EC
 
 // almanacPositions returns every satellite the decoded almanacs can place at
 // now: GPS and QZSS from LNAV pages, Galileo from I/NAV word types 7–10,
-// BeiDou from B-CNAV2 midi almanacs, GLONASS from strings 6–15.
+// BeiDou from B-CNAV2 midi almanacs and D1 pages, GLONASS from strings 6–15.
 func (s *Store) almanacPositions(now time.Time) []almanacPosition {
 	out := s.keplerAlmanacPositions(now)
 	alms, anchored := s.glonassAlmanacEntries(now)

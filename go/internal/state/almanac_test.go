@@ -473,3 +473,79 @@ func TestRealCaptureMidiAlmanacPlacesBeiDouSatellites(t *testing.T) {
 		t.Fatalf("midi almanacs placed %d BeiDou satellites, %d untracked", placed, untracked)
 	}
 }
+
+// d1AlmanacFrame builds a D1 almanac page from transmitter tx: subframe fraID
+// page pnum with toa = the 2^12 s step of toa's BDT time of week, a MEO orbit,
+// and last2 in the AmEpID/AmID field.
+func d1AlmanacFrame(tx, fraID, pnum int, last2 uint64, toa, recv time.Time) *ingest.RawFrame {
+	info := make([]byte, 28)
+	setAbsBits(info, 15, 3, uint64(fraID))
+	setAbsBits(info, 39, 7, uint64(pnum))
+	setAbsBits(info, 46, 24, 10818560) // √A ≈ 5282.5
+	setAbsBits(info, 149, 8, min(uint64(towFor(gnss.BeiDou, toa)/4096), 147))
+	setAbsBits(info, 198, 24, 0x0ABCDE) // M0
+	setAbsBits(info, 222, 2, last2)
+	return &ingest.RawFrame{GnssID: gnss.BeiDou, SvID: tx, SigID: 0, Recv: recv, Words: bdsD1Words(info)}
+}
+
+// TestBeiDouD1AlmanacGate: a satellite reporting AmEpID other than "11"
+// contributes no D1 almanac, an expanded page needs the transmitter's recent
+// AmEpID "11", and a midi almanac, whose own week fixes toa, is never replaced
+// by a D1 almanac resolved from a time of week.
+func TestBeiDouD1AlmanacGate(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	s := New(4)
+	s.Apply(d1AlmanacFrame(58, 4, 10, 0, now, now))
+	if len(s.almanacs) != 0 {
+		t.Fatal("almanac from a satellite reporting AmEpID 0 stored")
+	}
+	s.Apply(d1AlmanacFrame(12, 4, 10, 3, now, now))
+	if _, ok := s.almanacs[almanacKey{G: gnss.BeiDou, Sv: 10}]; !ok {
+		t.Fatal("C10 almanac from an AmEpID 11 satellite not stored")
+	}
+	// Expanded page 12 with AmID 01 is SV 32 — from C12, whose AmEpID is fresh.
+	s.Apply(d1AlmanacFrame(12, 5, 12, 1, now, now.Add(time.Minute)))
+	if _, ok := s.almanacs[almanacKey{G: gnss.BeiDou, Sv: 32}]; !ok {
+		t.Fatal("expanded page not resolved")
+	}
+	// The same expanded page from C19, which has sent no basic page, and from
+	// C12 after its AmEpID has gone stale, is not used.
+	s.Apply(d1AlmanacFrame(19, 5, 13, 1, now, now.Add(time.Minute)))
+	s.Apply(d1AlmanacFrame(12, 5, 14, 1, now, now.Add(7*time.Minute)))
+	for _, sv := range []int{33, 34} {
+		if _, ok := s.almanacs[almanacKey{G: gnss.BeiDou, Sv: sv}]; ok {
+			t.Fatalf("expanded page for SV %d used without a fresh AmEpID 11", sv)
+		}
+	}
+	// A midi almanac for C33 outranks a newer D1 one.
+	s.Apply(midiAlmanacFrameAt(t, 20, 33, now.Add(-time.Hour), now))
+	s.Apply(d1AlmanacFrame(12, 4, 10, 3, now, now.Add(8*time.Minute)))
+	s.Apply(d1AlmanacFrame(12, 5, 13, 1, now.Add(2*time.Hour), now.Add(8*time.Minute)))
+	if a := s.almanacs[almanacKey{G: gnss.BeiDou, Sv: 33}]; !a.exact {
+		t.Fatal("a D1 almanac replaced the midi almanac")
+	}
+}
+
+// TestRealCaptureD1AlmanacPlacesGEO replays a real capture's B1I frames: the
+// D1 almanac pages place the GEO C05, which no satellite's B2a midi almanac
+// carries, at its 58.75°E slot.
+func TestRealCaptureD1AlmanacPlacesGEO(t *testing.T) {
+	// The capture's D1 frames were broadcast at BDT SOW ≈ 290 370 in a week
+	// whose almanacs reference toa 24 576 s; stamp it then (week 1070).
+	unix, _ := gnsstime.GNSSTime{Sys: gnsstime.SysBeiDou, Week: 1070, TOW: 290370}.ToUnix(float64(gpsUTCOffset))
+	at := time.Unix(int64(unix), 0)
+	s := New(4)
+	for _, f := range captureFrames(t, "../ingest/testdata/f9t_capture.ubx", at, gnss.BeiDou) {
+		if f.SigID == 0 {
+			s.Apply(f)
+		}
+	}
+	c05 := monitoringByName(s, at)["C05"]
+	if c05.Position == nil || c05.PositionSource != "almanac" {
+		t.Fatalf("C05 = %+v", c05)
+	}
+	lon := math.Atan2(c05.Position[1], c05.Position[0]) * 180 / math.Pi
+	if math.Abs(lon-58.75) > 1.5 {
+		t.Fatalf("C05 at %.1f°E, want its 58.75°E slot", lon)
+	}
+}

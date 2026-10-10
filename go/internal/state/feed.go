@@ -209,8 +209,7 @@ type GlobalFeed struct {
 // AlmanacEntry is one coarse-orbit entry (docs/OUTPUT.md §1.4). This build fills it
 // from the precise broadcast ephemeris for every currently-observed SV (eph_source
 // 0, observed true). Decoded GLONASS, GPS, Galileo, QZSS and BeiDou almanacs
-// also contribute coarse, potentially out-of-view entries. BeiDou D1 almanac
-// pages (the GEOs' only almanac) are not decoded yet, and there is no TLE fill.
+// also contribute coarse, potentially out-of-view entries. There is no TLE fill.
 type AlmanacEntry struct {
 	Name           string  `json:"name"`
 	GnssID         int     `json:"gnssid"`

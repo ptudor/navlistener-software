@@ -191,6 +191,50 @@ func FuzzBeiDouMidiAlmanac(f *testing.F) {
 	})
 }
 
+// FuzzBeiDouD1Almanac fuzzes the information bits of a BCH-valid D1 subframe 4
+// or 5 page: it decodes, or fails only for a basic page's toa past its range,
+// and an almanac that resolves and converts propagates to a finite position or
+// an error, never NaN.
+func FuzzBeiDouD1Almanac(f *testing.F) {
+	f.Add(uint8(0), []byte("\x00\x00\x01\x80\x00\x0c\xa5\x0a\x00\xbc\x12\x34\x56\x0f\xa0\xff\xf0\x64\xff\xf0\x40\x00\x00\x0a\xbc\xde\x03\x00"))
+	f.Fuzz(func(t *testing.T, kind uint8, payload []byte) {
+		info := make([]byte, 28)
+		copy(info, payload)
+		setBits(info, 15, 3, uint64(4+kind%2)) // FraID 4 or 5
+		r := NewBitReaderN(info, 224)
+		words := make([]uint32, 10)
+		v, _ := r.Bits(0, 26)
+		words[0] = uint32(v) << 4
+		for i := 1; i < 10; i++ {
+			v, _ = r.Bits(26+(i-1)*22, 22)
+			words[i] = uint32(v) << 8
+		}
+		StampBeiDouD1BCH(words)
+		sf, err := DecodeBeiDouD1(words)
+		if err != nil {
+			if !errors.Is(err, errBadEpoch) {
+				t.Fatalf("BCH-valid page rejected: %v", err)
+			}
+			return
+		}
+		if sf.Almanac == nil {
+			return
+		}
+		a := *sf.Almanac
+		if a.Expanded && !a.ResolveExpanded(int(kind>>1)&3) {
+			return
+		}
+		eph, err := a.Ephemeris()
+		if err != nil {
+			return
+		}
+		if p, err := kepler.Propagate(eph, a.Toa+3600); err == nil &&
+			(math.IsNaN(p.X) || math.IsNaN(p.Y) || math.IsNaN(p.Z)) {
+			t.Fatalf("NaN position from %+v", eph)
+		}
+	})
+}
+
 // FuzzGLONASSAlmanac asserts the almanac-pair decoder never panics on arbitrary word
 // content — a short or malformed pair returns an error or an in-range struct, never a
 // crash or an out-of-bounds bit read.

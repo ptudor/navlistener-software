@@ -161,7 +161,7 @@ func Solve(e Ephemeris, tow float64) (Solution, error) {
 	yp := r * sinU // in-plane y′
 
 	var pos gnss.ECEF
-	if isBeiDouGEO(e.ID, e.SVID) && !e.Almanac {
+	if IsBeiDouGEO(e.ID, e.SVID) && !e.Almanac {
 		pos = beidouGEO(xp, yp, inc, e, p, tk)
 	} else {
 		// Corrected longitude of ascending node, Earth rotation folded in.
@@ -221,9 +221,9 @@ func beidouGEO(xp, yp, inc float64, e Ephemeris, p physconst.Params, tk float64)
 	}
 }
 
-// isBeiDouGEO reports whether a BeiDou SV is a GEO satellite (C01–C05, C59–C63),
-// which uses the §2.1 rotation. Detection is by SV id, never by inclination
-// (docs/MATH.md §2.1).
+// IsBeiDouGEO reports whether a BeiDou SV is a GEO satellite (C01–C05, C59–C63),
+// whose ephemeris uses the §2.1 rotation and whose D1 almanac references
+// i0 = 0. Detection is by SV id, never by inclination (docs/MATH.md §2.1).
 //
 // regression fix caveats, both currently latent (see MATH.md §2.1 "Provenance"):
 // the PRN list is an operational fact, not an ICD constant — a future GEO
@@ -234,7 +234,7 @@ func beidouGEO(xp, yp, inc float64, e Ephemeris, p physconst.Params, tk float64)
 // broadcast B2a). The planned fix is carrying the broadcast SatType (B2a
 // Table 7-8) into Ephemeris to override this list and alert on disagreement —
 // scheduled with the first D2/B-CNAV1/B-CNAV3 decoder, not before.
-func isBeiDouGEO(id gnss.GNSSID, svid int) bool {
+func IsBeiDouGEO(id gnss.GNSSID, svid int) bool {
 	if id != gnss.BeiDou {
 		return false
 	}

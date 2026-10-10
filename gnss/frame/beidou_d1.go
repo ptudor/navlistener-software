@@ -59,6 +59,81 @@ type BeiDouSubframe struct {
 	toeMSB        int
 	toeLSB        int
 	eph           kepler.Ephemeris
+
+	// Pnum is the page number of a subframe 4 or 5 page (§5.2.4.13).
+	Pnum int
+	// AmEpID is the expanded-almanac identification carried by the basic
+	// almanac pages, subframe 4 pages 1–24 and subframe 5 pages 1–6
+	// (§5.2.4.14); HasAmEpID marks those pages.
+	AmEpID    int
+	HasAmEpID bool
+	// Almanac is set for an almanac page that carries one: a basic page, or
+	// an expanded page (subframe 5 pages 11–23) whose satellite is resolved
+	// with ResolveExpanded. Unused entries (√A = 0) leave it nil.
+	Almanac *BeiDouD1Almanac
+}
+
+// BeiDouD1Almanac is one satellite's almanac from a D1 subframe 4 or 5 page
+// (BDS-SIS-B1I-3.0 Figure 5-11-1 and 5-11-6, Table 5-14), scaled to SI.
+type BeiDouD1Almanac struct {
+	// SVID is the satellite described: the page number for subframe 4, page
+	// number + 24 for subframe 5 pages 1–6 (§5.2.4.13), 0 for an expanded page
+	// until ResolveExpanded maps it.
+	SVID     int
+	Pnum     int
+	Expanded bool
+	AmID     int // expanded pages only
+	Toa      float64
+	SqrtA    float64
+	Ecc      float64
+	DeltaI   float64 // rad, relative to i0 = 0.30π (MEO/IGSO) or 0 (GEO)
+	Omega0   float64 // rad
+	OmegaDot float64 // rad/s
+	Omega    float64 // rad
+	M0       float64 // rad
+	A0, A1   float64 // s, s/s
+}
+
+// ResolveExpanded maps an expanded page (subframe 5 pages 11–23) to its
+// satellite by the broadcasting satellite's AmEpID and the page's AmID (Table
+// 5-13): only AmEpID "11" makes these pages almanacs, and AmID 01, 10 and 11
+// select SV IDs 31–43, 44–56 and 57–63 (pages 11–17). Reserved combinations and
+// a toa past 602 112 s (Table 5-14) are refused.
+func (a *BeiDouD1Almanac) ResolveExpanded(amEpID int) bool {
+	if !a.Expanded || amEpID != 3 || a.Toa > 602112 {
+		return false
+	}
+	switch {
+	case a.AmID == 1:
+		a.SVID = 30 + a.Pnum - 10
+	case a.AmID == 2:
+		a.SVID = 43 + a.Pnum - 10
+	case a.AmID == 3 && a.Pnum <= 17:
+		a.SVID = 56 + a.Pnum - 10
+	default:
+		return false
+	}
+	return true
+}
+
+// Ephemeris returns the Kepler elements of the almanac: toe is toa, every
+// parameter the almanac omits is zero, and i0 is 0.30π, or 0 for a GEO
+// (Table 5-15). GEO almanacs use the standard algorithm, so the GEO ephemeris
+// rotation is not applied. An expanded page must be resolved first.
+func (a *BeiDouD1Almanac) Ephemeris() (kepler.Ephemeris, error) {
+	if a.SVID < 1 || a.SVID > 63 {
+		return kepler.Ephemeris{}, errBadAlmanac
+	}
+	i0 := 0.30
+	if kepler.IsBeiDouGEO(gnss.BeiDou, a.SVID) {
+		i0 = 0
+	}
+	return kepler.Ephemeris{
+		ID: gnss.BeiDou, SVID: a.SVID,
+		SqrtA: a.SqrtA, Ecc: a.Ecc, M0: a.M0, I0: i0*physconst.Pi + a.DeltaI,
+		Omega0: a.Omega0, OmegaDot: a.OmegaDot, Omega: a.Omega,
+		Toe: a.Toa, Almanac: true,
+	}, nil
 }
 
 // beidouInfo builds the 224-bit information stream from the ten delivered
@@ -197,7 +272,45 @@ func DecodeBeiDouD1(words []uint32) (*BeiDouSubframe, error) {
 		sf.eph.Omega0 = float64(s(159, 32)) * p2m31 * semi
 		sf.eph.Omega = float64(s(191, 32)) * p2m31 * semi
 	case 4, 5:
-		// Almanac/integrity pages: a structurally valid FraID, not decoded here.
+		// Almanac pages (Figure 5-11-1; expanded pages Figure 5-11-6 share the
+		// layout with AmID in place of AmEpID). Health, time-offset and WNa
+		// pages are structurally valid and not decoded here.
+		sf.Pnum = int(u(39, 7))
+		basic := (fra == 4 && sf.Pnum >= 1 && sf.Pnum <= 24) || (fra == 5 && sf.Pnum >= 1 && sf.Pnum <= 6)
+		expanded := fra == 5 && sf.Pnum >= 11 && sf.Pnum <= 23
+		if !basic && !expanded {
+			break
+		}
+		a := &BeiDouD1Almanac{
+			Pnum:     sf.Pnum,
+			SqrtA:    float64(u(46, 24)) / (1 << 11),
+			A1:       float64(s(70, 11)) / float64(uint64(1)<<38),
+			A0:       float64(s(81, 11)) / (1 << 20),
+			Omega0:   float64(s(92, 24)) / (1 << 23) * semi,
+			Ecc:      float64(u(116, 17)) / (1 << 21),
+			DeltaI:   float64(s(133, 16)) / (1 << 19) * semi,
+			Toa:      float64(u(149, 8)) * (1 << 12),
+			OmegaDot: float64(s(157, 17)) / float64(uint64(1)<<38) * semi,
+			Omega:    float64(s(174, 24)) / (1 << 23) * semi,
+			M0:       float64(s(198, 24)) / (1 << 23) * semi,
+		}
+		if basic {
+			sf.AmEpID, sf.HasAmEpID = int(u(222, 2)), true
+			a.SVID = sf.Pnum
+			if fra == 5 {
+				a.SVID += 24
+			}
+			if a.Toa > 602112 {
+				return nil, errBadEpoch // Table 5-14: toa ≤ 602 112 s
+			}
+		} else {
+			// Reserved unless the satellite's AmEpID is "11"; validated only
+			// by ResolveExpanded, so a reserved page never fails the frame.
+			a.Expanded, a.AmID = true, int(u(222, 2))
+		}
+		if a.SqrtA != 0 { // an unused entry is all zero
+			sf.Almanac = a
+		}
 	default:
 		// FraID must be 1..5 (BDS-SIS-B1I-3.0 §5.2). A length-valid frame with an
 		// out-of-range FraID (0/6/7) is mis-tagged or corrupt — reject so the caller counts

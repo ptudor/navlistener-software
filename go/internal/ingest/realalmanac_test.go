@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"bytes"
+	"math"
 	"os"
 	"testing"
 
@@ -244,5 +245,96 @@ func TestRealBeiDouMidiAlmanacMatchesD1Ephemeris(t *testing.T) {
 	}
 	if compared < 8 || placed < 50 {
 		t.Fatalf("compared %d almanac/ephemeris pairs, placed %d almanacs", compared, placed)
+	}
+}
+
+// TestRealBeiDouD1AlmanacPlacesGEOs pins the D1 almanac page layout to real
+// B1I frames. From satellites broadcasting AmEpID "11": the GEO C05, whose
+// almanac only D1 carries, lands at its 58.75°E slot within 1.5° when
+// propagated with i0 = 0 and the standard algorithm; IGSO and MEO almanacs
+// agree with the same satellites' midi almanacs within 25 km; and expanded
+// pages resolve to MEO satellites (C44, C45) the midi almanacs do not cover.
+// The capture with C58 also shows why the gate exists: C58 reports AmEpID 0
+// and broadcasts a C10 almanac days away from everyone else's.
+func TestRealBeiDouD1AlmanacPlacesGEOs(t *testing.T) {
+	geo, compared, expanded, gated := false, 0, 0, 0
+	for _, name := range []string{"f9t_capture.ubx", "f9p_capture.ubx", "glo_superframe_capture.ubx"} {
+		data, err := os.ReadFile("testdata/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var frames []*RawFrame
+		_ = scanUBX(bytes.NewReader(data), "cap", fixedTime,
+			func(f *RawFrame) { frames = append(frames, f) }, func(string) {})
+		midi := map[int]*frame.BeiDouMidiAlmanac{}
+		d1 := map[int]frame.BeiDouD1Almanac{}
+		amEpID := map[int]int{}
+		sow := 0
+		for _, f := range frames {
+			if f.GnssID != gnss.BeiDou {
+				continue
+			}
+			if f.SigID == 8 {
+				if m, err := frame.DecodeBeiDouBCNAV2(f.Words); err == nil && m.Almanac != nil {
+					midi[m.Almanac.PRN] = m.Almanac
+				}
+				continue
+			}
+			if f.SigID != 0 {
+				continue
+			}
+			sf, err := frame.DecodeBeiDouD1(f.Words)
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			sow = sf.SOW
+			if sf.HasAmEpID {
+				amEpID[f.SvID] = sf.AmEpID
+			}
+			if sf.Almanac == nil {
+				continue
+			}
+			if amEpID[f.SvID] != 3 {
+				gated++
+				continue
+			}
+			a := *sf.Almanac
+			if a.Expanded {
+				if !a.ResolveExpanded(3) {
+					continue
+				}
+				expanded++
+			}
+			d1[a.SVID] = a
+		}
+		for svid, a := range d1 {
+			eph, err := a.Ephemeris()
+			if err != nil {
+				t.Fatalf("%s: C%02d: %v", name, svid, err)
+			}
+			p, err := kepler.Propagate(eph, float64(sow))
+			if err != nil {
+				t.Fatalf("%s: C%02d: %v", name, svid, err)
+			}
+			if svid == 5 {
+				lon := math.Atan2(p.Y, p.X) * 180 / math.Pi
+				lat := math.Atan2(p.Z, math.Hypot(p.X, p.Y)) * 180 / math.Pi
+				if math.Abs(lon-58.75) > 1.5 || math.Abs(lat) > 5 || p.Norm() < 41.5e6 || p.Norm() > 42.8e6 {
+					t.Fatalf("%s: GEO C05 at %.1f°, %.1f°, %.0f m", name, lat, lon, p.Norm())
+				}
+				geo = true
+			}
+			if m := midi[svid]; m != nil {
+				me, _ := m.Ephemeris()
+				pm, _ := kepler.Propagate(me, float64(sow))
+				if miss := p.Sub(pm).Norm(); miss > 25000 {
+					t.Fatalf("%s: C%02d D1 almanac %.0f m from its midi almanac", name, svid, miss)
+				}
+				compared++
+			}
+		}
+	}
+	if !geo || compared < 6 || expanded == 0 || gated == 0 {
+		t.Fatalf("GEO placed %v, %d D1/midi pairs, %d expanded, %d gated", geo, compared, expanded, gated)
 	}
 }

@@ -394,6 +394,11 @@ type svState struct {
 	// each new word is joined only with its own relay's previous one
 	// (applyGalileoINAV). Bounded by gloAlmPendingMax/gloAlmPendingStale.
 	galAlmLast map[gloAlmRelay]galAlmWord
+	// bdsAmEpID is the expanded-almanac identification this BeiDou satellite
+	// last broadcast on a D1 basic almanac page, at bdsAmEpIDAt (collector
+	// clock); it decides whether its expanded pages carry almanacs.
+	bdsAmEpID   int
+	bdsAmEpIDAt time.Time
 	// gloFrameBaseSlot is the subject slot of the current frame's first almanac pair
 	// (strings 6/7), used to detect frame 5. Frame 5 carries almanac only for slots
 	// 21–24 (strings 6–13); its strings 14/15 are B1/B2/KP UT1/leap data, NOT almanac, so a
@@ -1672,7 +1677,9 @@ func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 	case 3:
 		st.bd3 = sf
 	default:
-		return // subframes 4/5 (almanac/iono) not consumed here
+		// Subframes 4/5: almanac pages describe other satellites (almanac.go).
+		s.applyBeiDouD1Almanac(st, sf, f.Recv, recv)
+		return
 	}
 	if st.bd1 == nil || st.bd2 == nil || st.bd3 == nil {
 		return
