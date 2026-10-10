@@ -64,6 +64,7 @@ func (s *Store) ExpireStations(now)                // drop stale sbas/rf/almanac
 func (s *Store) FeedSVs(now) map[string]FeedSV     // the svs feed
 func (s *Store) FeedGlobal(now) GlobalFeed
 func (s *Store) FeedAlmanac(now) map[string]AlmanacEntry
+func (s *Store) FeedAlmanacRecords(now) []AlmanacRecord
 func (s *Store) FeedSBAS(now) map[string]SBASEntry
 func (s *Store) FeedStationRF(now) map[string]StationRF
 func (s *Store) FeedStationCapabilities(now) map[string][]StationCapability
@@ -239,8 +240,8 @@ conversion shifts by 1 s, which is about 3.9 km of satellite motion.
 
 ### Expiry, and keeping it in sync with detect
 
-`Expire` drops SVs unseen for `[state].sv_ttl`; `ExpireStations` drops stale SBAS, RF, and
-GLONASS-almanac entries.
+`Expire` drops SVs unseen for `[state].sv_ttl`; `ExpireStations` drops stale SBAS, RF,
+GLONASS-almanac, and Kepler-family almanac/source-record entries.
 
 **regression fix is a standing coupling to respect:** the expiry window must stay comfortably longer
 than the detector's silence thresholds. If state expires an SV before `detect` can observe it

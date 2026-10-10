@@ -366,7 +366,7 @@ SELECT audience_seq AS id, time, sv, event_type, old_value, new_value,
 CREATE TABLE IF NOT EXISTS gnss_snapshots (
     time     TIMESTAMPTZ NOT NULL,
     audience TEXT        NOT NULL DEFAULT 'legacy-operator',
-    endpoint TEXT        NOT NULL,  -- 'svs' | 'global' | 'observers' | 'almanac' | 'sbas'
+    endpoint TEXT        NOT NULL,  -- 'svs' | 'global' | 'observers' | 'almanac' | 'almanac-records' | 'sbas'
     data     JSONB       NOT NULL
 );
 SELECT create_hypertable('gnss_snapshots', 'time', if_not_exists => TRUE);

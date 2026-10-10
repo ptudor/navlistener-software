@@ -36,7 +36,8 @@ func icdAlmanac(slot int) frame.GLONASSAlmanacEntry {
 func TestFeedGlonassAlmanacOutOfView(t *testing.T) {
 	s := New(4)
 	s.gloNA = 615
-	s.gloAlmanac[7] = gloAlmSlot{entry: icdAlmanac(7), lastSeen: time.Now()}
+	now := time.Now()
+	s.gloAlmanac[7] = gloAlmSlot{entry: icdAlmanac(7), lastSeen: now, transmitter: 11}
 
 	out := s.FeedAlmanac(time.Now())
 	ent, ok := out["R07"]
@@ -58,6 +59,12 @@ func TestFeedGlonassAlmanacOutOfView(t *testing.T) {
 	}
 	if math.Abs(*ent.TLambdaNA-27122.09375) > 1e-3 {
 		t.Errorf("t_lambda_na = %v, want the broadcast tλ", *ent.TLambdaNA)
+	}
+	records := s.FeedAlmanacRecords(now)
+	if len(records) != 1 || records[0].Name != "R07" || records[0].Transmitter != "R11" ||
+		records[0].Source != almanacSourceGLONASSFDMA || records[0].GLONASSFDMA == nil ||
+		records[0].GLONASSFDMA.ReferenceDay != 615 || !records[0].GLONASSFDMA.Operable {
+		t.Fatalf("GLONASS source records = %+v", records)
 	}
 }
 

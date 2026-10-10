@@ -38,6 +38,8 @@ when `[serve].addr` is set.
 | `GET /gnss/api/v2/observer-samples` | Authenticated environmental or timing samples for one receiver; see [the history contract](../../../docs/SENSOR-HISTORY.md). |
 | `GET /gnss/api/v2/event-evidence` | Authenticated private audiences: one station event with the stored inputs captured behind it, paged; see [the event contract](../../../docs/OUTPUT.md#3-events-sse--query-api). |
 | `GET /gnss/api/v2/almanac` | Coarse orbits, including SVs currently out of ephemeris view. |
+| `GET /gnss/api/v2/almanac-records` | Complete normalized decoded source records for native multi-GNSS interchange. |
+| `GET /gnss/api/v2/almanac/gps.yuma` | Currently valid GPS LNAV records in ICD-GPS-240D YUMA `.alm` format. |
 | `GET /gnss/api/v2/coverage` | Independent reference geometry and audience-scoped fresh navigation witnesses for the monitoring map. |
 | `GET /gnss/api/v2/sbas` | Per-GEO SBAS message-type and health tracking. |
 | `GET /gnss/api/events` | Filtered, paginated window over persisted integrity events. |
@@ -52,11 +54,12 @@ The Vue static export consumes this API. The map uses separate reference geometr
 it does not change the existing almanac feed or add reference records to receiver
 observations.
 
-The `almanac` route is the collector's shareable native JSON format. It labels each
-position as `ephemeris` or `almanac` with `position_source`. It is an evaluated
-current-position feed, not a YUMA, SEM, RINEX navigation, or RTCM export; see
-`docs/OUTPUT.md §1.4.1` for retrieval, authentication, caching, and interchange
-limits.
+The `almanac` route is an evaluated current-position feed and labels each position
+as `ephemeris` or `almanac` with `position_source`. `almanac-records` is the
+shareable native source representation; it retains each message family's orbit,
+clock, health, reference, and provenance fields. `almanac/gps.yuma` is the standard
+GPS text export. See `docs/OUTPUT.md §1.4.1` for schemas, retrieval, authentication,
+caching, and format limits.
 
 Every JSON response is wrapped in the standard v2 envelope (`docs/OUTPUT.md §0`):
 
@@ -119,7 +122,7 @@ Two cadences, because two kinds of data move at different speeds:
 | Cadence | Config | Feeds |
 |---|---|---|
 | fast | `[serve].refresh_interval` (default 30s) | `svs`, `global`, `observers`, `sbas` |
-| slow | `[serve].almanac_refresh_interval` (default 90s) | `almanac` |
+| slow | `[serve].almanac_refresh_interval` (default 90s) | `almanac`, `almanac-records` |
 
 `coverage` is not ticker-warmed and is not part of the historian's snapshot feed set
 (`docs/MONITORING-MAP.md`): it is rendered on demand into the same cache and reused for

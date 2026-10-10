@@ -405,6 +405,7 @@ type svState struct {
 	// the collector's monotonic clock domain.
 	bdsAlmRef    time.Time
 	bdsAlmRefTOW float64
+	bdsAlmRefWN  int
 	bdsAlmRefAt  time.Time
 	// gloFrameBaseSlot is the subject slot of the current frame's first almanac pair
 	// (strings 6/7), used to detect frame 5. Frame 5 carries almanac only for slots
@@ -690,6 +691,9 @@ type Store struct {
 	// GPS, Galileo, QZSS and BeiDou almanacs, keyed by the satellite each describes (almanac.go).
 	almMu    sync.Mutex
 	almanacs map[almanacKey]keplerAlmanac
+	// almanacRecords retains every decoded message family's complete normalized
+	// source record for native interchange and standard-format exporters.
+	almanacRecords map[almanacRecordKey]almanacSourceRecord
 
 	// Per-station RF-environment state for the PNT-defense layer (docs/DEFENSE-PNT.md):
 	// station-scoped (keyed by ingest source / observer id), not per-SV.
@@ -726,6 +730,7 @@ func New(n int) *Store {
 		sbas:             make(map[int]*sbasState),
 		gloAlmanac:       make(map[int]gloAlmSlot),
 		almanacs:         make(map[almanacKey]keplerAlmanac),
+		almanacRecords:   make(map[almanacRecordKey]almanacSourceRecord),
 		rf:               make(map[string]*rfStation),
 		boards:           make(map[string]*boardStation),
 		integrity:        make(map[string]*integrityStation),
@@ -1298,7 +1303,7 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 		// Subframes 4/5: an almanac page describes any satellite of the
 		// constellation; iono/UTC, health and message pages are not consumed.
 		if sf.Almanac != nil {
-			s.applyKeplerAlmanac(f.GnssID, sf.Almanac, f.Recv)
+			s.applyKeplerAlmanac(f.GnssID, st.key.Sv, sf.Almanac, f.Recv)
 		}
 		return
 	}
@@ -1415,7 +1420,7 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 		prev, ok := st.swapGalAlmanacWord(relay, galAlmWord{w: w, at: f.Recv, local: recv})
 		if delta := f.Recv.Sub(prev.at); ok && prev.w.Type+1 == w.Type && delta >= 0 && delta <= galAlmanacPairWindow {
 			if a, err := frame.CompleteGalileoAlmanac(prev.w, w); err == nil {
-				s.applyGalileoAlmanac(a, f.Recv)
+				s.applyGalileoAlmanac(st.key.Sv, a, f.Recv)
 			}
 		}
 	}
@@ -1854,7 +1859,7 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		// describes the satellite PRNa.
 		st.accKind, st.accIdx = accSISAIRaw, m.SISAIoe<<11|m.SISAIocb<<6|m.SISAIoc1<<3|m.SISAIoc2
 		if m.Almanac != nil {
-			s.applyBeiDouAlmanac(m.Almanac, f.Recv)
+			s.applyBeiDouAlmanac(st.key.Sv, m.Almanac, f.Recv)
 		}
 		return
 	default:
@@ -2089,7 +2094,7 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 			// unknown base (string 6 lost) conservatively still pairs (the slot-range guard
 			// in applyGloAlmanac remains the backstop).
 			if !(first.number == 14 && st.gloFrameBaseSlot >= 21) {
-				slot := s.applyGloAlmanac(first.words, f.Words, recv)
+				slot := s.applyGloAlmanac(st.key.Sv, first.words, f.Words, f.Recv, recv)
 				if first.number == 6 && slot > 0 {
 					st.gloFrameBaseSlot = slot
 				}
@@ -2431,8 +2436,10 @@ func (s *Store) IsProjection() bool { return s.projection }
 // decommissioned slot's last-ever almanac would be served forever, propagated out to an
 // ever-more-speculative position at the current day number.
 type gloAlmSlot struct {
-	entry    frame.GLONASSAlmanacEntry
-	lastSeen time.Time
+	entry       frame.GLONASSAlmanacEntry
+	lastSeen    time.Time
+	receivedAt  time.Time
+	transmitter int
 }
 
 // gloAlmanacStaleAfter bounds how long a GLONASS almanac slot may go un-rebroadcast
@@ -2444,11 +2451,11 @@ type gloAlmSlot struct {
 const gloAlmanacStaleAfter = 3 * 24 * time.Hour
 
 // applyGloAlmanac decodes one satellite's almanac from its two-string pair and stores it
-// by subject slot, alongside recv as the slot's last-(re)broadcast time. Decoding is pure
-// and done outside the lock; only the map write is guarded. Called with the transmitting
+// by subject slot, alongside the feeder stamp and collector-local last-seen time. Decoding
+// is pure and done outside the lock; only the map write is guarded. Called with the transmitting
 // SV's shard lock held (ordering shard→gloAlm). Returns the stored subject slot (1..24), or
 // 0 if nothing was stored (used by frame-5 detection).
-func (s *Store) applyGloAlmanac(first, second []uint32, recv time.Time) int {
+func (s *Store) applyGloAlmanac(transmitter int, first, second []uint32, stamp, local time.Time) int {
 	s.gloAlmMu.Lock()
 	na := s.gloNA
 	s.gloAlmMu.Unlock()
@@ -2465,7 +2472,7 @@ func (s *Store) applyGloAlmanac(first, second []uint32, recv time.Time) int {
 		return 0
 	}
 	s.gloAlmMu.Lock()
-	s.gloAlmanac[a.Alm.Slot] = gloAlmSlot{entry: a, lastSeen: recv}
+	s.gloAlmanac[a.Alm.Slot] = gloAlmSlot{entry: a, lastSeen: local, receivedAt: stamp, transmitter: transmitter}
 	s.gloAlmMu.Unlock()
 	return a.Alm.Slot
 }
@@ -2706,8 +2713,9 @@ func (s *Store) Expire(now time.Time, ttl time.Duration) {
 const stationEvictAfter = 12 * rfStaleAfter
 
 // ExpireStations deletes sbas, rf, and GLONASS-almanac entries whose last
-// sample is far past their serving-staleness windows, and GPS/QZSS almanacs
-// past their validity window. The feeds already FILTER stale entries
+// sample is far past their serving-staleness windows, and Kepler-family
+// almanacs/source records past their validity window. The feeds already FILTER
+// stale entries
 // (rfStaleAfter / sbasStaleAfter / gloAlmanacStaleAfter /
 // keplerAlmanacValidity) — this makes the "dropped" language true in RAM too.
 // The maps are bounded in practice (SBAS PRNs, 24 GLONASS slots, fleet-sized

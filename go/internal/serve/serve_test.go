@@ -640,7 +640,7 @@ func TestPrivateObservationCannotChangePublicFeedBytes(t *testing.T) {
 func TestEnvelopeAndSchema(t *testing.T) {
 	s := testServer(nil)
 	s.refreshAll()
-	for _, feed := range []string{"svs", "global", "observers", "almanac", "sbas"} {
+	for _, feed := range []string{"svs", "global", "observers", "almanac", "almanac-records", "sbas"} {
 		rr := httptest.NewRecorder()
 		s.serveFeed(feed)(rr, httptest.NewRequest(http.MethodGet, "/gnss/api/v2/"+feed, nil))
 		if rr.Code != http.StatusOK {
@@ -679,7 +679,7 @@ func TestSnapshotFeeds(t *testing.T) {
 	}
 	s.refreshAll()
 	snap := s.SnapshotFeeds()
-	for _, feed := range []string{"svs", "global", "observers", "almanac", "sbas"} {
+	for _, feed := range []string{"svs", "global", "observers", "almanac", "almanac-records", "sbas"} {
 		body, ok := snap[feed]
 		if !ok || len(body) == 0 {
 			t.Fatalf("feed %q missing from snapshot", feed)

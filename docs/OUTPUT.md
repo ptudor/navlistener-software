@@ -16,8 +16,10 @@ current responses. Consumer migration requirements are recorded in §6.1. See
 
 ## 0. The contract at a glance
 
-- **One API**, versioned: `/gnss/api/v2/{audiences, svs, global, observers, almanac, sbas}` plus the
-  operational endpoints (§2), the event API and SSE stream (§3).
+- **One API**, versioned: the `/gnss/api/v2/` feeds (`audiences`, `svs`, `global`,
+  `observers`, `almanac`, `almanac-records`, `sbas`), the GPS YUMA download at
+  `/gnss/api/v2/almanac/gps.yuma`, plus the operational endpoints (§2), event API,
+  and SSE stream (§3).
 - **Envelope** on every JSON response:
 
   ```json
@@ -317,26 +319,75 @@ days. There is no TLE fallback.
 
 #### 1.4.1 Sharing and interchange
 
-The public collector-native export is ordinary JSON over HTTP:
+There are three almanac sharing surfaces. The evaluated position feed remains
+the compact choice for maps and current-geometry consumers:
 
 ```sh
 curl -fsS https://collector.example/gnss/api/v2/almanac
 curl -fsS https://collector.example/gnss/api/v2/almanac | jq '.data.almanac'
 ```
 
-Private views use the same endpoint with the read principal's bearer token and an
-`X-GNSS-Audience` value returned by `/gnss/api/v2/audiences`. Public responses are
-shared-cacheable; private responses are `private, no-store`. The envelope's `time`
-is the snapshot time, while every entry's `t` is the instant at which its ECEF was
-evaluated. Consumers should use `position_source`, not `observed`, to identify the
-orbit solution that produced a position.
+The native source-record feed retains the decoded message-family records rather
+than attempting to recover elements from ECEF:
 
-This is a current-position exchange feed, not a raw broadcast-almanac archive. It
-does not currently emit YUMA, SEM, RINEX navigation, or RTCM, and the JSON snapshot
-cannot be converted losslessly to those formats: it contains propagated position
-and selected metadata, not every original orbit, clock, health, week, source, and
-message field. A future standard exporter must preserve those decoded source
-records separately; it should not synthesize them back from ECEF coordinates.
+```sh
+curl -fsS https://collector.example/gnss/api/v2/almanac-records
+curl -fsS https://collector.example/gnss/api/v2/almanac-records \
+  | jq '.data.almanac_records[] | select(.name == "G12")'
+```
+
+`data.almanac_records` is an array because one subject may legitimately have
+more than one source record (currently BeiDou D1 and B-CNAV2). It is ordered by
+`name`, then `source`. Every record has:
+
+| Field | Meaning |
+|---|---|
+| `name`, `gnssid` | subject satellite |
+| `source` | `gps_lnav`, `qzss_lnav`, `galileo_inav`, `beidou_bcnav2`, `beidou_d1`, or `glonass_fdma` |
+| `transmitter` | satellite whose frame carried the record; an almanac normally describes another satellite |
+| `received_at` | original feeder reception time, Unix UTC seconds |
+| `time_system` | `GPST`, `GST`, `BDT`, or `GLONASST` |
+| `reference_time` | resolved almanac reference instant, Unix UTC seconds; absent for GLONASS, whose cyclic `NA` remains in its payload |
+| `reference_week` | full, rollover-resolved week in `time_system`; absent for GLONASS |
+| `week_raw`, `week_bits` | the week field actually broadcast with the source record/set, when it has one; absent for GPS/QZSS LNAV pages, which carry only time-of-applicability |
+| message-family object | exactly one of `lnav`, `galileo_inav`, `beidou_bcnav2`, `beidou_d1`, or `glonass_fdma`, with all decoded orbit, clock, health, reference, page/issue, and source-specific fields in named SI units |
+
+This is the collector's complete normalized decoded representation. It preserves
+the values the decoders consume, including clock and health fields that the
+evaluated `almanac` feed does not need. It is not a bit-for-bit recording of the
+navigation words; deployments that require parity bits and undecoded/reserved
+fields should retain the historian's raw frames.
+
+For standard GPS interchange, the collector also emits the YUMA `.alm` layout
+from ICD-GPS-240D §40.5:
+
+```sh
+curl -fsS -o current.alm \
+  https://collector.example/gnss/api/v2/almanac/gps.yuma
+```
+
+The YUMA file includes currently valid GPS LNAV records only. Angular values are
+radians, inclination is the direct angle, and the week is the specified
+modulo-1024 decimal value. LNAV's individual almanac page carries an eight-bit
+health word while YUMA carries the corresponding six-bit form: the exporter
+copies the five signal-health bits and reduces the three-bit LNAV-data status to
+its one-bit healthy/unhealthy summary. Empty live state produces an empty file.
+
+Private views use the same endpoints with the read principal's bearer token and an
+`X-GNSS-Audience` value returned by `/gnss/api/v2/audiences`. Public responses are
+shared-cacheable; private responses are `private, no-store`. In the JSON position
+feed, the envelope's `time` is the snapshot time and every entry's `t` is the instant
+at which its ECEF was evaluated. Consumers should use `position_source`, not
+`observed`, to identify the orbit solution that produced a position.
+
+The collector does not label its other constellations as YUMA: that format is a
+GPS control-segment format, not a generic multi-GNSS container. It does not emit
+SEM because a conforming control-segment SEM record also needs SVN, 730-hour
+average URA, and page-25 configuration values that are not part of an individual
+broadcast almanac orbit record. RINEX navigation and RTCM are observation/message
+exchange families rather than generic current multi-constellation almanac
+snapshots. Those formats should be added only with their actual required source
+data and semantics, never synthesized from evaluated ECEF.
 
 ### 1.5 `sbas` — augmentation-system health
 
@@ -511,7 +562,7 @@ CREATE TRIGGER gnss_event_notify AFTER INSERT ON gnss_events
 CREATE TABLE gnss_snapshots (
     time     TIMESTAMPTZ NOT NULL,
     audience TEXT        NOT NULL,
-    endpoint TEXT        NOT NULL,   -- 'svs' | 'global' | 'observers' | 'almanac' | 'sbas'
+    endpoint TEXT        NOT NULL,   -- 'svs' | 'global' | 'observers' | 'almanac' | 'almanac-records' | 'sbas'
     data     JSONB       NOT NULL
 );
 SELECT create_hypertable('gnss_snapshots','time', if_not_exists => TRUE);
@@ -650,7 +701,7 @@ Refresh cadence (satellites move slowly; over-polling wastes cache):
 | Feed | Cadence |
 |---|---|
 | `svs`, `global`, `observers`, `sbas` | 30 s |
-| `almanac` | 60–120 s |
+| `almanac`, `almanac-records` | 60–120 s |
 | `/gnss/events` SSE | push-on-change (server-driven) |
 
 A reverse-proxy cache must honor audience policy: only public feeds are cacheable.

@@ -79,6 +79,16 @@ func TestGPSAlmanacPlacesUnheardSatellite(t *testing.T) {
 	if !ok || ent.Observed || ent.GnssID != int(gnss.GPS) || ent.T0e != int(toaRaw*4096) || ent.PositionSource != "almanac" {
 		t.Fatalf("almanac feed G12 = %+v", ent)
 	}
+	records := s.FeedAlmanacRecords(now)
+	if len(records) != 1 {
+		t.Fatalf("almanac records = %d, want 1", len(records))
+	}
+	record := records[0]
+	if record.Name != "G12" || record.Transmitter != "G05" || record.Source != "gps_lnav" ||
+		record.TimeSystem != "GPST" || record.ReferenceTime == nil || record.ReferenceWeek == nil ||
+		record.LNAV == nil || record.LNAV.SVID != 12 || record.LNAV.MeanAnomalyRad == 0 {
+		t.Fatalf("GPS almanac source record = %+v", record)
+	}
 }
 
 // TestEphemerisPositionWinsOverAlmanac: a satellite with a fresh broadcast
@@ -115,8 +125,8 @@ func TestAlmanacValidityWindow(t *testing.T) {
 		t.Fatal("G12 served past 3.5 days from toa")
 	}
 	s.ExpireStations(expired)
-	if len(s.almanacs) != 0 {
-		t.Fatal("expired almanac kept in RAM")
+	if len(s.almanacs) != 0 || len(s.almanacRecords) != 0 {
+		t.Fatal("expired almanac or source record kept in RAM")
 	}
 
 	q := New(4)
@@ -194,7 +204,7 @@ func TestResetClearsAlmanacs(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	s.Apply(almanacFrame(gnss.GPS, 5, almanacPageWords(1, 12, toaRawNear(now), 1000000), now))
 	s.Reset()
-	if len(s.almanacs) != 0 || monitoringByName(s, now)["G12"].Position != nil {
+	if len(s.almanacs) != 0 || len(s.almanacRecords) != 0 || monitoringByName(s, now)["G12"].Position != nil {
 		t.Fatal("reset kept an almanac")
 	}
 }
@@ -518,6 +528,18 @@ func TestBeiDouD1AlmanacGate(t *testing.T) {
 	if !ok || !a.exact || !a.toa.Equal(wantToa) {
 		t.Fatalf("anchored basic almanac from AmEpID 0 = %+v, present %v", a, ok)
 	}
+	var c10Record *AlmanacRecord
+	for _, record := range s.FeedAlmanacRecords(now.Add(2 * time.Second)) {
+		if record.Name == "C10" && record.Source == almanacSourceBeiDouD1 {
+			c10Record = &record
+			break
+		}
+	}
+	if c10Record == nil || c10Record.Transmitter != "C58" || c10Record.TimeSystem != "BDT" ||
+		c10Record.WeekRaw == nil || *c10Record.WeekRaw != week&0xff || c10Record.WeekBits != 8 ||
+		c10Record.ReferenceWeek == nil || *c10Record.ReferenceWeek != week || c10Record.BeiDouD1 == nil {
+		t.Fatalf("anchored C10 D1 source record = %+v", c10Record)
+	}
 	// Once a reference is known, an orbit page carrying another set's toa is
 	// rejected rather than attached to the cached week.
 	s.Apply(d1AlmanacFrame(58, 4, 11, 0, now.Add(24*time.Hour), now.Add(3*time.Second)))
@@ -556,6 +578,15 @@ func TestBeiDouD1AlmanacGate(t *testing.T) {
 	s.Apply(d1AlmanacFrame(12, 5, 13, 1, now.Add(2*time.Hour), now.Add(8*time.Minute)))
 	if a := s.almanacs[almanacKey{G: gnss.BeiDou, Sv: 33}]; !a.exact {
 		t.Fatal("a D1 almanac replaced the midi almanac")
+	}
+	sources := map[string]bool{}
+	for _, record := range s.FeedAlmanacRecords(now.Add(8 * time.Minute)) {
+		if record.Name == "C33" {
+			sources[record.Source] = true
+		}
+	}
+	if !sources[almanacSourceBeiDouBCNAV2] || !sources[almanacSourceBeiDouD1] {
+		t.Fatalf("C33 source records = %v, want B-CNAV2 and D1 retained independently", sources)
 	}
 }
 

@@ -39,6 +39,41 @@ type keplerAlmanac struct {
 	exact bool
 }
 
+// almanacRecordKey keeps independently useful message families for the same
+// subject satellite. BeiDou, for example, can supply both a D1 and a B-CNAV2
+// almanac for one PRN; collapsing those to the propagated winner would make a
+// source-format export impossible.
+type almanacRecordKey struct {
+	almanacKey
+	source string
+}
+
+// almanacSourceRecord is the complete normalized decoder result retained for
+// interchange. Exactly one message-family payload is non-nil. The records are
+// immutable after insertion, so feed readers can copy the struct under almMu
+// and encode it after releasing the lock.
+type almanacSourceRecord struct {
+	g                    gnss.GNSSID
+	subject, transmitter int
+	source               string
+	toa, stamp           time.Time
+	exact                bool
+	weekRaw, weekBits    int
+	lnav                 *frame.LNAVAlmanac
+	galileo              *frame.GalileoAlmanac
+	beidouMidi           *frame.BeiDouMidiAlmanac
+	beidouD1             *frame.BeiDouD1Almanac
+}
+
+const (
+	almanacSourceGPSLNAV      = "gps_lnav"
+	almanacSourceQZSSLNAV     = "qzss_lnav"
+	almanacSourceGalileoINAV  = "galileo_inav"
+	almanacSourceBeiDouBCNAV2 = "beidou_bcnav2"
+	almanacSourceBeiDouD1     = "beidou_d1"
+	almanacSourceGLONASSFDMA  = "glonass_fdma"
+)
+
 // keplerAlmanacValidity bounds |t − toa| for accepting and serving an almanac.
 // GPS keeps t within 3.5 days of toa while a set is transmitted
 // (IS-GPS-200N §20.3.3.5.2.2). QZSS's validity period of 144 h is twice
@@ -89,24 +124,44 @@ func almanacAt(eph kepler.Ephemeris, toa, now time.Time) (kepler.Ephemeris, bool
 // for the same toa replaces the stored one unless it was received earlier, so
 // a re-upload that keeps toa still takes effect. Called with the transmitting
 // SV's shard lock held (ordering shard→alm).
-func (s *Store) applyKeplerAlmanac(g gnss.GNSSID, a *frame.LNAVAlmanac, stamp time.Time) {
+func (s *Store) applyKeplerAlmanac(g gnss.GNSSID, transmitter int, a *frame.LNAVAlmanac, stamp time.Time) {
 	eph, err := a.Ephemeris(g)
 	if err != nil {
 		return
 	}
-	s.storeAlmanac(eph, stamp, -1)
+	toa, ok := s.storeAlmanac(eph, stamp, -1)
+	if !ok {
+		return
+	}
+	copy := *a
+	source := almanacSourceGPSLNAV
+	if g == gnss.QZSS {
+		source = almanacSourceQZSSLNAV
+	}
+	s.storeAlmanacRecord(almanacSourceRecord{
+		g: g, subject: a.SVID, transmitter: transmitter, source: source,
+		toa: toa, stamp: stamp, lnav: &copy,
+	})
 }
 
 // applyGalileoAlmanac stores a completed Galileo almanac like applyKeplerAlmanac.
 // The broadcast WNa, the two least significant bits of t0a's GST week
 // (GAL-OS-SIS-ICD-2.2 §5.1.10), must agree with the week t0a resolves to.
-func (s *Store) applyGalileoAlmanac(a frame.GalileoAlmanac, stamp time.Time) {
-	s.storeAlmanac(a.Ephemeris(), stamp, a.WNa)
+func (s *Store) applyGalileoAlmanac(transmitter int, a frame.GalileoAlmanac, stamp time.Time) {
+	toa, ok := s.storeAlmanac(a.Ephemeris(), stamp, a.WNa)
+	if !ok {
+		return
+	}
+	copy := a
+	s.storeAlmanacRecord(almanacSourceRecord{
+		g: gnss.Galileo, subject: a.SVID, transmitter: transmitter, source: almanacSourceGalileoINAV,
+		toa: toa, stamp: stamp, weekRaw: a.WNa, weekBits: 2, galileo: &copy,
+	})
 }
 
 // applyBeiDouAlmanac stores a B-CNAV2 midi almanac. Its 13-bit BDT week fixes
 // toa exactly (BDS-SIS-B2a-1.0 §7.9.2: toa counts from the start of WNa).
-func (s *Store) applyBeiDouAlmanac(a *frame.BeiDouMidiAlmanac, stamp time.Time) {
+func (s *Store) applyBeiDouAlmanac(transmitter int, a *frame.BeiDouMidiAlmanac, stamp time.Time) {
 	eph, err := a.Ephemeris()
 	if err != nil {
 		return
@@ -115,7 +170,13 @@ func (s *Store) applyBeiDouAlmanac(a *frame.BeiDouMidiAlmanac, stamp time.Time) 
 	if !ok {
 		return
 	}
-	s.storeAlmanacAt(eph, time.Unix(int64(math.Round(unix)), 0), stamp, true) // toa is whole seconds
+	toa := time.Unix(int64(math.Round(unix)), 0) // toa is whole seconds
+	s.storeAlmanacAt(eph, toa, stamp, true)
+	copy := *a
+	s.storeAlmanacRecord(almanacSourceRecord{
+		g: gnss.BeiDou, subject: a.PRN, transmitter: transmitter, source: almanacSourceBeiDouBCNAV2,
+		toa: toa, stamp: stamp, exact: true, weekRaw: a.WN, weekBits: 13, beidouMidi: &copy,
+	})
 }
 
 // bdsAmEpIDFresh bounds how old a satellite's last AmEpID may be when one of
@@ -147,6 +208,7 @@ func (s *Store) applyBeiDouD1Almanac(st *svState, sf *frame.BeiDouSubframe, stam
 				(st.bdsAlmRef.IsZero() || ref.After(st.bdsAlmRef) ||
 					(ref.Equal(st.bdsAlmRef) && local.After(st.bdsAlmRefAt))) {
 				st.bdsAlmRef, st.bdsAlmRefTOW, st.bdsAlmRefAt = ref, sf.AlmanacToa, local
+				st.bdsAlmRefWN = sf.AlmanacWN
 			}
 		}
 	}
@@ -170,28 +232,65 @@ func (s *Store) applyBeiDouD1Almanac(st *svState, sf *frame.BeiDouSubframe, stam
 			return // page belongs to another almanac set
 		}
 		s.storeAlmanacAt(eph, st.bdsAlmRef, stamp, true)
+		copy := resolved
+		s.storeAlmanacRecord(almanacSourceRecord{
+			g: gnss.BeiDou, subject: resolved.SVID, transmitter: st.key.Sv, source: almanacSourceBeiDouD1,
+			toa: st.bdsAlmRef, stamp: stamp, exact: true,
+			weekRaw: st.bdsAlmRefWN, weekBits: 8, beidouD1: &copy,
+		})
 		return
 	}
 	if !freshExpanded {
 		return // wait for page 8 rather than risk a one-week ambiguity
 	}
-	s.storeAlmanac(eph, stamp, -1)
+	toa, ok := s.storeAlmanac(eph, stamp, -1)
+	if !ok {
+		return
+	}
+	copy := resolved
+	s.storeAlmanacRecord(almanacSourceRecord{
+		g: gnss.BeiDou, subject: resolved.SVID, transmitter: st.key.Sv, source: almanacSourceBeiDouD1,
+		toa: toa, stamp: stamp, beidouD1: &copy,
+	})
 }
 
 // storeAlmanac resolves eph's toa (its Toe) to the instant nearest stamp with
 // that time of week and stores it under its subject satellite. wna, when not
 // -1, is the broadcast two-bit week of toa, which the resolved week must match.
-func (s *Store) storeAlmanac(eph kepler.Ephemeris, stamp time.Time, wna int) {
+func (s *Store) storeAlmanac(eph kepler.Ephemeris, stamp time.Time, wna int) (time.Time, bool) {
 	g := eph.ID
 	age := gnsstime.EphAge(towFor(g, stamp), eph.Toe)
 	toa := stamp.Add(-time.Duration(age * float64(time.Second)))
 	if wna >= 0 {
 		week, ok := gnsstime.WeekAt(gnsstime.SysGalileo, float64(toa.Unix()), float64(gpsUTCOffset))
 		if !ok || week&3 != wna {
-			return
+			return time.Time{}, false
 		}
 	}
 	s.storeAlmanacAt(eph, toa, stamp, false)
+	return toa, true
+}
+
+// storeAlmanacRecord retains a decoder record independently of the propagated
+// winner. Freshest-wins ordering is per subject and message family; an exactly
+// week-anchored record cannot be displaced by a time-of-week-only fallback.
+func (s *Store) storeAlmanacRecord(record almanacSourceRecord) {
+	if age := record.stamp.Sub(record.toa); age <= -keplerAlmanacValidity(record.g) || age >= keplerAlmanacValidity(record.g) {
+		return
+	}
+	key := almanacRecordKey{almanacKey: almanacKey{G: record.g, Sv: record.subject}, source: record.source}
+	s.almMu.Lock()
+	defer s.almMu.Unlock()
+	if prev, ok := s.almanacRecords[key]; ok {
+		if prev.exact && !record.exact {
+			return
+		}
+		if prev.exact == record.exact && (prev.toa.After(record.toa) ||
+			(prev.toa.Equal(record.toa) && prev.stamp.After(record.stamp))) {
+			return
+		}
+	}
+	s.almanacRecords[key] = record
 }
 
 // storeAlmanacAt stores eph, whose toa is the absolute instant toa, under its
@@ -267,6 +366,11 @@ func (s *Store) expireKeplerAlmanacs(now time.Time) {
 	for key, a := range s.almanacs {
 		if age := now.Sub(a.toa); age <= -keplerAlmanacValidity(key.G) || age >= keplerAlmanacValidity(key.G) {
 			delete(s.almanacs, key)
+		}
+	}
+	for key, a := range s.almanacRecords {
+		if age := now.Sub(a.toa); age <= -keplerAlmanacValidity(key.G) || age >= keplerAlmanacValidity(key.G) {
+			delete(s.almanacRecords, key)
 		}
 	}
 }

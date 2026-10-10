@@ -323,8 +323,9 @@ it means the check belongs *after* cert provisioning in any deploy runbook, not 
 analysis with network forecasts and local/server sidereal C/N₀ history; raw-frame-as-record;
 spool+ack+replay resilience; the generic Keplerian propagator abstraction; the integrity
 signal set (orbit-disco, time-disco, delta-Hz, health/SISA, RTCM precise-vs-broadcast); the
-debounced alert state machine; the five-feed *concept* (svs/global/observers/almanac/sbas —
-reshaped to our own contract, `docs/OUTPUT.md`).
+debounced alert state machine; the compact live-feed contract
+(svs/global/observers/almanac/almanac-records/sbas — reshaped to our own contract,
+`docs/OUTPUT.md`).
 
 **Implementation priorities:**
 - **Signal coverage** with explicit implemented and deferred status (`docs/CONSTELLATIONS.md`).

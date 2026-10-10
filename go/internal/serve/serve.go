@@ -71,11 +71,16 @@ const (
 	historyPerPrincipal = historySlotCount / 2
 )
 
-// feedGroup is the set of feeds refreshed on the fast cadence; almanac refreshes on
-// its own slower cadence (docs/OUTPUT.md §5). Together with almanac these are the
-// historian's fixed snapshot feed set (§4); coverage is cached too but is never
-// part of that set (docs/MONITORING-MAP.md).
+// fastFeeds and slowFeeds are the historian's fixed snapshot feed set (§4);
+// coverage is cached too but is never part of that set (docs/MONITORING-MAP.md).
 var fastFeeds = []string{"svs", "global", "observers", "sbas"}
+var slowFeeds = []string{"almanac", "almanac-records"}
+
+func snapshotFeedNames() []string {
+	out := make([]string, 0, len(fastFeeds)+len(slowFeeds))
+	out = append(out, fastFeeds...)
+	return append(out, slowFeeds...)
+}
 
 // coverageTTL bounds how stale a served coverage body may be. Coverage is not
 // warmed by the refresh tickers: it is rendered on demand, single-flight, and
@@ -227,6 +232,8 @@ func NewForAudience(addr string, st *state.Store, events EventStore, sources []c
 	mux.HandleFunc("/gnss/api/v2/observer-samples", s.serveObserverSamples)
 	mux.HandleFunc("/gnss/api/v2/event-evidence", s.serveEventEvidence)
 	mux.HandleFunc("/gnss/api/v2/almanac", s.serveFeed("almanac"))
+	mux.HandleFunc("/gnss/api/v2/almanac-records", s.serveFeed("almanac-records"))
+	mux.HandleFunc("/gnss/api/v2/almanac/gps.yuma", s.serveGPSYUMA)
 	mux.HandleFunc("/gnss/api/v2/sbas", s.serveFeed("sbas"))
 	mux.HandleFunc("/gnss/api/v2/audiences", s.serveAudiences)
 	mux.HandleFunc("/gnss/api/v2/station-snapshot", func(w http.ResponseWriter, r *http.Request) {
@@ -330,7 +337,9 @@ func (s *Server) Run(ctx context.Context) {
 				s.refresh(f)
 			}
 		case <-slow.C:
-			s.refresh("almanac")
+			for _, f := range slowFeeds {
+				s.refresh(f)
+			}
 		case <-ctx.Done():
 			return
 		}
@@ -459,8 +468,8 @@ func (s *Server) Audience() identity.Audience { return s.audience }
 
 // SnapshotFeeds returns a copy of every warmed snapshot feed's current marshalled
 // envelope, keyed by feed name, for the historian's replay/backfill record
-// (docs/OUTPUT.md §4). The set is the fixed fast feeds plus almanac; coverage is
-// cached for serving but is not a historian feed. Feeds not yet built are omitted;
+// (docs/OUTPUT.md §4). The set is the fixed fast and slow feeds; coverage is cached
+// for serving but is not a historian feed. Feeds not yet built are omitted;
 // the returned byte slices are copies, so the caller may retain them without racing
 // the next refresh's cache swap.
 func (s *Server) SnapshotFeeds() map[string][]byte {
@@ -468,8 +477,8 @@ func (s *Server) SnapshotFeeds() map[string][]byte {
 	defer s.mu.RUnlock()
 	epoch, _ := s.policyEpochs.Current(s.audience.Key())
 	stateGeneration := s.store.Generation()
-	out := make(map[string][]byte, len(fastFeeds)+1)
-	for _, f := range append(append([]string(nil), fastFeeds...), "almanac") {
+	out := make(map[string][]byte, len(fastFeeds)+len(slowFeeds))
+	for _, f := range snapshotFeedNames() {
 		entry, ok := s.cache[cacheKey{audience: s.audience.Key(), feed: f}]
 		if !ok || len(entry.body) == 0 || entry.epoch != epoch || entry.state != stateGeneration {
 			continue
@@ -498,10 +507,10 @@ func (s *Server) SnapshotAllFeeds() []FeedSnapshot {
 		audiences = lister.Audiences()
 	}
 	now := s.now()
-	out := make([]FeedSnapshot, 0, len(audiences)*len(fastFeeds))
+	out := make([]FeedSnapshot, 0, len(audiences)*(len(fastFeeds)+len(slowFeeds)))
 	for _, selected := range audiences {
 		if selected == s.audience {
-			for _, feed := range append(append([]string(nil), fastFeeds...), "almanac") {
+			for _, feed := range snapshotFeedNames() {
 				if body := defaultFeeds[feed]; len(body) > 0 {
 					out = append(out, FeedSnapshot{Audience: selected, Feed: feed, Body: body})
 				}
@@ -515,7 +524,7 @@ func (s *Server) SnapshotAllFeeds() []FeedSnapshot {
 		if !ok {
 			continue
 		}
-		for _, feed := range append(append([]string(nil), fastFeeds...), "almanac") {
+		for _, feed := range snapshotFeedNames() {
 			body, err := s.buildFeed(feed, selected, st, sources, now)
 			if err != nil {
 				s.log.Error("snapshot scoped feed marshal failed", "audience", selected.Key(), "feed", feed, "error", err)
@@ -531,7 +540,9 @@ func (s *Server) refreshAll() {
 	for _, f := range fastFeeds {
 		s.refresh(f)
 	}
-	s.refresh("almanac")
+	for _, f := range slowFeeds {
+		s.refresh(f)
+	}
 }
 
 // refresh rebuilds one of the default audience's cached envelopes: the ticker
@@ -606,7 +617,7 @@ func (s *Server) cacheTTL(feed string, selected identity.Audience) time.Duration
 		return coverageTTL
 	case selected == s.audience:
 		return 0
-	case feed == "almanac":
+	case feed == "almanac" || feed == "almanac-records":
 		return s.slow
 	default:
 		return s.fast
@@ -668,6 +679,8 @@ func (s *Server) buildFeedOnce(feed string, selected identity.Audience, st *stat
 		data["observers"] = s.observers(now, st, sources, selected)
 	case "almanac":
 		data["almanac"] = st.FeedAlmanac(now)
+	case "almanac-records":
+		data["almanac_records"] = st.FeedAlmanacRecords(now)
 	case "sbas":
 		data["sbas"] = st.FeedSBAS(now)
 	case "coverage":

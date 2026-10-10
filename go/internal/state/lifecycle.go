@@ -30,6 +30,7 @@ func (s *Store) Reset() {
 	s.gloAlmanac = make(map[int]gloAlmSlot)
 	s.gloNA = 0
 	s.almanacs = make(map[almanacKey]keplerAlmanac)
+	s.almanacRecords = make(map[almanacRecordKey]almanacSourceRecord)
 	s.rf = make(map[string]*rfStation)
 	s.boards = make(map[string]*boardStation)
 	// Integrity checks hold the same withdrawn receipts in their histories; the

@@ -159,7 +159,7 @@ type Serve struct {
 
 	RefreshFasts string        `toml:"refresh_interval"` // svs/global/observers/sbas, default "30s"
 	RefreshFast  time.Duration `toml:"-"`
-	RefreshSlows string        `toml:"almanac_refresh_interval"` // almanac, default "90s"
+	RefreshSlows string        `toml:"almanac_refresh_interval"` // almanac source/position feeds, default "90s"
 	RefreshSlow  time.Duration `toml:"-"`
 	// SnapshotEvery is the cadence at which each served feed's current body is persisted
 	// to the historian as a replay/backfill record (docs/OUTPUT.md §4). Only active when
