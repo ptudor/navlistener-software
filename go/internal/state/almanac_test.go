@@ -8,6 +8,8 @@ import (
 
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/gnss/gnsstime"
+	"github.com/ptudor/gnss/kepler"
+	"github.com/ptudor/gnss/physconst"
 	"github.com/ptudor/navlistener/internal/ingest"
 )
 
@@ -339,5 +341,135 @@ func TestRealCaptureAlmanacPlacesGalileoSatellites(t *testing.T) {
 	}
 	if placed < 8 || untracked < 2 {
 		t.Fatalf("almanacs placed %d Galileo satellites, %d untracked", placed, untracked)
+	}
+}
+
+// midiAlmanacFrameAt builds a B-CNAV2 message type 40 from transmitter tx whose
+// midi almanac describes prn (a MEO satellite) with toa = the 2^12 s step of
+// toa's BDT time of week in its BDT week.
+func midiAlmanacFrameAt(t *testing.T, tx, prn int, toa, recv time.Time) *ingest.RawFrame {
+	t.Helper()
+	week, ok := gnsstime.WeekAt(gnsstime.SysBeiDou, float64(toa.Unix()), float64(gpsUTCOffset))
+	if !ok {
+		t.Fatal("no BDT week")
+	}
+	toaRaw := min(uint64(towFor(gnss.BeiDou, toa)/4096), 147)
+	words := bcnav2Frame(tx, 40, 3000, func(buf []byte) {
+		setAbsBits(buf, 69, 6, uint64(prn))
+		setAbsBits(buf, 75, 2, 3) // MEO
+		setAbsBits(buf, 77, 13, uint64(week))
+		setAbsBits(buf, 90, 8, toaRaw)
+		setAbsBits(buf, 120, 17, 84522) // √A ≈ 5282.6
+		setAbsBits(buf, 180, 16, 1000)  // M0
+	})
+	return &ingest.RawFrame{GnssID: gnss.BeiDou, SvID: tx, SigID: 8, Recv: recv, Words: words}
+}
+
+// TestBeiDouMidiAlmanacServedForSevenDays: a midi almanac's own week fixes its
+// toa, so it is served across the half-week time-of-week wrap until it is 7
+// days old (BDS-SIS-B1I-3.0 Table 5-1), then evicted.
+func TestBeiDouMidiAlmanacServedForSevenDays(t *testing.T) {
+	s := New(4)
+	now := time.Unix(1_700_000_000, 0)
+	s.Apply(midiAlmanacFrameAt(t, 20, 33, now, now))
+	for _, age := range []time.Duration{0, 4 * 24 * time.Hour, 6 * 24 * time.Hour} {
+		c33 := monitoringByName(s, now.Add(age))["C33"]
+		if c33.Position == nil || c33.PositionSource != "almanac" {
+			t.Fatalf("C33 at %v = %+v", age, c33)
+		}
+		if r := math.Sqrt(c33.Position[0]*c33.Position[0] + c33.Position[1]*c33.Position[1] + c33.Position[2]*c33.Position[2]); r < 27.6e6 || r > 28.2e6 {
+			t.Fatalf("C33 radius %.0f m at %v", r, age)
+		}
+	}
+	expired := now.Add(7*24*time.Hour + 2*time.Hour)
+	if c33 := monitoringByName(s, expired)["C33"]; c33.Position != nil {
+		t.Fatal("C33 served past 7 days")
+	}
+	s.ExpireStations(expired)
+	if len(s.almanacs) != 0 {
+		t.Fatal("expired BeiDou almanac kept")
+	}
+	// A page received more than 7 days from its toa is not stored at all.
+	s.Apply(midiAlmanacFrameAt(t, 20, 33, now, now.Add(8*24*time.Hour)))
+	if len(s.almanacs) != 0 {
+		t.Fatal("stale midi almanac stored")
+	}
+}
+
+// TestAlmanacReepochIsExact: re-referencing an almanac by whole weeks gives the
+// same position as evaluating the Table 7-15 algorithm with the true elapsed
+// time, which the propagator's own half-week wrap cannot represent.
+func TestAlmanacReepochIsExact(t *testing.T) {
+	toa := time.Unix(1_700_000_000, 0)
+	eph := kepler.Ephemeris{
+		ID: gnss.BeiDou, SVID: 33, Almanac: true,
+		SqrtA: 5282.6, Ecc: 0.0005, M0: 1.1, I0: 0.95, Omega0: -2.0, OmegaDot: -6.9e-9, Omega: 0.4,
+		Toe: towFor(gnss.BeiDou, toa),
+	}
+	p, _ := physconst.For(gnss.BeiDou)
+	// oracle evaluates BDS-SIS-B2a-1.0 Table 7-15 with tk as given.
+	oracle := func(tk float64) gnss.ECEF {
+		a := eph.SqrtA * eph.SqrtA
+		m := eph.M0 + math.Sqrt(p.Mu/(a*a*a))*tk
+		e := m
+		for i := 0; i < 30; i++ {
+			e = m + eph.Ecc*math.Sin(e)
+		}
+		nu := math.Atan2(math.Sqrt(1-eph.Ecc*eph.Ecc)*math.Sin(e), math.Cos(e)-eph.Ecc)
+		u := nu + eph.Omega
+		r := a * (1 - eph.Ecc*math.Cos(e))
+		om := eph.Omega0 + (eph.OmegaDot-p.OmegaE)*tk - p.OmegaE*eph.Toe
+		x, y := r*math.Cos(u), r*math.Sin(u)
+		return gnss.ECEF{
+			X: x*math.Cos(om) - y*math.Cos(eph.I0)*math.Sin(om),
+			Y: x*math.Sin(om) + y*math.Cos(eph.I0)*math.Cos(om),
+			Z: y * math.Sin(eph.I0),
+		}
+	}
+	for _, days := range []float64{1, 4, 6.5, -5} {
+		now := toa.Add(time.Duration(days * 24 * float64(time.Hour)))
+		shifted, ok := almanacAt(eph, toa, now)
+		if !ok {
+			t.Fatal("re-epoch refused")
+		}
+		got, err := kepler.Propagate(shifted, towFor(gnss.BeiDou, now))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if miss := got.Sub(oracle(now.Sub(toa).Seconds())).Norm(); miss > 0.01 {
+			t.Fatalf("%.1f days from toa: %.3f m from the true-elapsed-time position", days, miss)
+		}
+	}
+}
+
+// TestRealCaptureMidiAlmanacPlacesBeiDouSatellites replays a real capture's B2a
+// frames: midi almanacs place the IGSO and MEO satellites, including ones the
+// receiver never tracked.
+func TestRealCaptureMidiAlmanacPlacesBeiDouSatellites(t *testing.T) {
+	// The capture's almanacs reference BDT week 1070, toa 421 888 s, and its
+	// ephemerides were broadcast three days later; stamp it then.
+	unix, _ := gnsstime.GNSSTime{Sys: gnsstime.SysBeiDou, Week: 1071, TOW: 79200}.ToUnix(float64(gpsUTCOffset))
+	at := time.Unix(int64(unix), 0)
+	s := New(4)
+	tracked := map[int]bool{}
+	for _, f := range captureFrames(t, "../ingest/testdata/glo_superframe_capture.ubx", at, gnss.BeiDou) {
+		if f.SigID == 8 {
+			tracked[f.SvID] = true
+			s.Apply(f)
+		}
+	}
+	placed, untracked := 0, 0
+	for _, sv := range s.MonitoringSatellites(at) {
+		if sv.GNSS == int(gnss.BeiDou) && sv.PositionSource == "almanac" {
+			placed++
+			var n int
+			fmt.Sscanf(sv.Name, "C%d", &n)
+			if !tracked[n] {
+				untracked++
+			}
+		}
+	}
+	if placed < 25 || untracked < 10 {
+		t.Fatalf("midi almanacs placed %d BeiDou satellites, %d untracked", placed, untracked)
 	}
 }

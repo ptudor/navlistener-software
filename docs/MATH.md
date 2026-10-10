@@ -543,11 +543,17 @@ differences from an orbit-type reference (QZSS-PNT-006 Table 5.7.1-3): QZO `e = 
 `i₀ = 0.25 semicircles (45°) + δi`; GEO and QGEO references are 0. The SV ID in the page selects
 the type (Table 3.2.1-1: 2–5 QZO, 7–8 GEO, 9 QGEO); a GPS-hardcoded reference silently corrupts
 QZSS almanacs. Galileo sends `Δ(√A)` from the nominal 29 600 km semi-major axis and `δi` from
-the nominal 56° (GAL-OS-SIS-ICD-2.2 Table 1, Table 86); BeiDou MEO/IGSO reference 0.3
-semicircles, GEO 0.
+the nominal 56° (GAL-OS-SIS-ICD-2.2 Table 1, Table 86). BeiDou references i₀ = 0.30π for MEO/IGSO
+and 0 for GEO; the B-CNAV2 midi almanac names the orbit type in its SatType and its own 13-bit
+week (BDS-SIS-B2a-1.0 Table 7-13), and **GEO almanacs use the standard algorithm, not the §2.1
+rotation** (Table 7-15; B1I Table 5-15 likewise). The propagator wraps `t − toa` at half a week
+as every ICD does; BeiDou almanacs are refreshed within 7 days (BDS-SIS-B1I-3.0 Table 5-1), so
+the collector moves an almanac's reference by whole weeks first — exact for almanac elements,
+which carry no rate or harmonic terms: M₀ += n₀·kW and Ω₀ += (Ω̇ − ωe)·kW.
 GLONASS almanac uses §3.1. We publish
 almanac-derived ECEF in the almanac feed (**metres**, `docs/OUTPUT.md §1.4`) for GLONASS, GPS,
-Galileo and QZSS; BeiDou almanacs are not decoded yet. The reserved `alma_dist_m` field is
+Galileo, QZSS and BeiDou (B-CNAV2 midi almanacs; the D1 almanac pages, the only source for the
+GEOs, are not decoded yet). The reserved `alma_dist_m` field is
 for a planned cross-check (distance between the ephemeris ECEF and the almanac/TLE ECEF, a
 coarse sanity check).
 

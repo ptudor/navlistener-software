@@ -559,7 +559,7 @@ func (a GalileoAlmanac) Ephemeris() kepler.Ephemeris {
 		ID: gnss.Galileo, SVID: a.SVID,
 		SqrtA: a.SqrtA, Ecc: a.Ecc, M0: a.M0, I0: a.I0,
 		Omega0: a.Omega0, OmegaDot: a.OmegaDot, Omega: a.Omega,
-		Toe: a.T0a,
+		Toe: a.T0a, Almanac: true,
 	}
 }
 

@@ -169,3 +169,80 @@ func TestRealGalileoAlmanacMatchesBroadcastEphemeris(t *testing.T) {
 		t.Fatalf("compared %d almanac/ephemeris pairs, %d unused entries", compared, unused)
 	}
 }
+
+// TestRealBeiDouMidiAlmanacMatchesD1Ephemeris pins the B-CNAV2 message type 40
+// midi almanac layout to real B2a frames. Every midi almanac converts to an
+// orbit on the IGSO or MEO shell its SatType names, and where the capture
+// holds the same satellite's D1 ephemeris the almanac, three days from its
+// reference time, is within 25 km of it at toe (7.5 to 16.6 km observed; the
+// 2⁻⁴ √A step alone allows about 17 km of along-track drift in three days).
+func TestRealBeiDouMidiAlmanacMatchesD1Ephemeris(t *testing.T) {
+	compared, placed := 0, 0
+	for _, name := range []string{"f9t_capture.ubx", "glo_superframe_capture.ubx"} {
+		data, err := os.ReadFile("testdata/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var frames []*RawFrame
+		_ = scanUBX(bytes.NewReader(data), "cap", fixedTime,
+			func(f *RawFrame) { frames = append(frames, f) }, func(string) {})
+		d1 := map[int]*[4]*frame.BeiDouSubframe{}
+		midi := map[int]*frame.BeiDouMidiAlmanac{}
+		for _, f := range frames {
+			if f.GnssID != gnss.BeiDou {
+				continue
+			}
+			switch f.SigID {
+			case 0:
+				if sf, err := frame.DecodeBeiDouD1(f.Words); err == nil && sf.FraID <= 3 {
+					x := d1[f.SvID]
+					if x == nil {
+						x = &[4]*frame.BeiDouSubframe{}
+						d1[f.SvID] = x
+					}
+					x[sf.FraID] = sf
+				}
+			case 8:
+				m, err := frame.DecodeBeiDouBCNAV2(f.Words)
+				if err != nil {
+					t.Fatalf("%s: %v", name, err)
+				}
+				if m.Almanac != nil {
+					midi[m.Almanac.PRN] = m.Almanac
+				}
+			}
+		}
+		if len(midi) < 20 {
+			t.Fatalf("%s: only %d midi almanacs", name, len(midi))
+		}
+		for prn, a := range midi {
+			alm, err := a.Ephemeris()
+			if err != nil {
+				t.Fatalf("%s: C%02d: %v", name, prn, err)
+			}
+			p, err := kepler.Propagate(alm, a.Toa)
+			shell := map[int][2]float64{2: {41.5e6, 42.8e6}, 3: {27.6e6, 28.2e6}}[a.SatType]
+			if err != nil || p.Norm() < shell[0] || p.Norm() > shell[1] {
+				t.Fatalf("%s: C%02d (SatType %d) radius %.0f m, err %v", name, prn, a.SatType, p.Norm(), err)
+			}
+			placed++
+			x := d1[prn]
+			if x == nil || x[1] == nil || x[2] == nil || x[3] == nil {
+				continue
+			}
+			eph, _, err := frame.AssembleBeiDou(prn, x[1], x[2], x[3])
+			if err != nil {
+				continue
+			}
+			got, _ := kepler.Propagate(alm, eph.Toe)
+			want, _ := kepler.Propagate(eph, eph.Toe)
+			if miss := got.Sub(want).Norm(); miss > 25000 {
+				t.Fatalf("%s: C%02d midi almanac %.0f m from its D1 ephemeris", name, prn, miss)
+			}
+			compared++
+		}
+	}
+	if compared < 8 || placed < 50 {
+		t.Fatalf("compared %d almanac/ephemeris pairs, placed %d almanacs", compared, placed)
+	}
+}

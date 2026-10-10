@@ -188,7 +188,7 @@ func (a *LNAVAlmanac) Ephemeris(id gnss.GNSSID) (kepler.Ephemeris, error) {
 	eph := kepler.Ephemeris{
 		ID: id, SVID: a.SVID,
 		SqrtA: a.SqrtA, M0: a.M0, Omega0: a.Omega0, OmegaDot: a.OmegaDot, Omega: a.Omega,
-		Toe: a.Toa,
+		Toe: a.Toa, Almanac: true,
 	}
 	switch id {
 	case gnss.GPS:

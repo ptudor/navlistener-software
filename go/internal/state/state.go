@@ -675,7 +675,7 @@ type Store struct {
 	gloAlmanac map[int]gloAlmSlot
 	gloNA      int
 
-	// GPS, Galileo and QZSS almanacs, keyed by the satellite each describes (almanac.go).
+	// GPS, Galileo, QZSS and BeiDou almanacs, keyed by the satellite each describes (almanac.go).
 	almMu    sync.Mutex
 	almanacs map[almanacKey]keplerAlmanac
 
@@ -1835,10 +1835,13 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		}
 		st.accKind, st.accIdx = accSISAIRaw, oe<<11|m.SISAIocb<<6|m.SISAIoc1<<3|m.SISAIoc2
 	case 40:
-		// MT40 builds no ephemeris/clock state (midi almanac — capability
-		// evidence only, like 31/32/33), but its SISAI block is the only
-		// carrier of SISAIoe : fold and return.
+		// MT40 builds no ephemeris/clock state for the transmitter, but its
+		// SISAI block is the only carrier of SISAIoe; its midi almanac
+		// describes the satellite PRNa.
 		st.accKind, st.accIdx = accSISAIRaw, m.SISAIoe<<11|m.SISAIocb<<6|m.SISAIoc1<<3|m.SISAIoc2
+		if m.Almanac != nil {
+			s.applyBeiDouAlmanac(m.Almanac, f.Recv)
+		}
 		return
 	default:
 		return // types 31/32/33 (almanac/EOP/BGTO) not consumed here

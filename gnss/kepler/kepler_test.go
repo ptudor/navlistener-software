@@ -140,6 +140,33 @@ func TestBeiDouGEOBranch(t *testing.T) {
 	}
 }
 
+// TestBeiDouGEOAlmanacUsesStandardAlgorithm: BeiDou almanacs place GEO
+// satellites with the standard algorithm (BDS-SIS-B1I-3.0 Table 5-15,
+// BDS-SIS-B2a-1.0 Table 7-15), so an almanac for a GEO SV ID propagates exactly
+// as the same elements on a MEO SV ID, not through the GEO ephemeris rotation.
+func TestBeiDouGEOAlmanacUsesStandardAlgorithm(t *testing.T) {
+	alm := Ephemeris{
+		ID: gnss.BeiDou, SVID: 2, Almanac: true,
+		SqrtA: math.Sqrt(42164000.0), Ecc: 0.0003, M0: 0.1,
+		I0: 0.02, Omega0: 0.5, Omega: 0.2, Toe: 0,
+	}
+	got, err := Propagate(alm, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	standard := alm
+	standard.SVID, standard.Almanac = 20, false
+	want, _ := Propagate(standard, 100)
+	if got.Sub(want).Norm() != 0 {
+		t.Fatalf("GEO almanac %v differs from the standard algorithm %v", got, want)
+	}
+	ephemeris := alm
+	ephemeris.Almanac = false
+	if rotated, _ := Propagate(ephemeris, 100); rotated.Sub(got).Norm() < 1000 {
+		t.Fatal("GEO ephemeris rotation no longer differs; the test proves nothing")
+	}
+}
+
 // TestBeiDouGEOStationarity guards a BeiDou GEO SV is nearly Earth-fixed in ECEF, so
 // over an hour it drifts far less than a MEO SV over the same hour. A sign error in the GEO
 // frame's Rz(ωe·tk)/Rx(−5°) rotation would make the GEO sweep at roughly Earth rate (tens of

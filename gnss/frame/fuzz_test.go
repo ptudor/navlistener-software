@@ -152,6 +152,45 @@ func FuzzGalileoAlmanac(f *testing.F) {
 	})
 }
 
+// FuzzBeiDouMidiAlmanac fuzzes the midi almanac of a CRC-valid B-CNAV2 message
+// type 40: it decodes, or fails only for a toa past its range, and an almanac
+// that converts propagates to a finite position or an error, never NaN.
+func FuzzBeiDouMidiAlmanac(f *testing.F) {
+	f.Add([]byte("\x5f\x20\xb3\x67\x04\xb0\xff\xa5\x29\x4a\x30\x39\xfd\xe8\xb1\xe0\x75\x30\xff\x90\x4c"))
+	f.Fuzz(func(t *testing.T, payload []byte) {
+		buf := make([]byte, 36)
+		setBits(buf, 0, 6, 30) // PRN
+		setBits(buf, 6, 6, 40) // MesType
+		midi := make([]byte, 20)
+		copy(midi, payload)
+		copyGalileoBits(buf, 69, midi, 0, 156)
+		c := CRC24Q(buf[:33])
+		buf[33], buf[34], buf[35] = byte(c>>16), byte(c>>8), byte(c)
+		words := make([]uint32, 9)
+		for i := range words {
+			words[i] = uint32(buf[i*4])<<24 | uint32(buf[i*4+1])<<16 | uint32(buf[i*4+2])<<8 | uint32(buf[i*4+3])
+		}
+		m, err := DecodeBeiDouBCNAV2(words)
+		if err != nil {
+			if !errors.Is(err, errBadEpoch) {
+				t.Fatalf("CRC-valid message type 40 rejected: %v", err)
+			}
+			return
+		}
+		if m.MesType != 40 || m.Almanac == nil {
+			return
+		}
+		eph, err := m.Almanac.Ephemeris()
+		if err != nil {
+			return
+		}
+		if p, err := kepler.Propagate(eph, m.Almanac.Toa+3600); err == nil &&
+			(math.IsNaN(p.X) || math.IsNaN(p.Y) || math.IsNaN(p.Z)) {
+			t.Fatalf("NaN position from %+v", eph)
+		}
+	})
+}
+
 // FuzzGLONASSAlmanac asserts the almanac-pair decoder never panics on arbitrary word
 // content — a short or malformed pair returns an error or an in-range struct, never a
 // crash or an out-of-bounds bit read.

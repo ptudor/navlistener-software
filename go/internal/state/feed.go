@@ -208,9 +208,9 @@ type GlobalFeed struct {
 
 // AlmanacEntry is one coarse-orbit entry (docs/OUTPUT.md §1.4). This build fills it
 // from the precise broadcast ephemeris for every currently-observed SV (eph_source
-// 0, observed true). Decoded GLONASS, GPS, Galileo and QZSS almanacs also
-// contribute coarse, potentially out-of-view entries. BeiDou almanacs are not
-// decoded yet, and there is no TLE fill.
+// 0, observed true). Decoded GLONASS, GPS, Galileo, QZSS and BeiDou almanacs
+// also contribute coarse, potentially out-of-view entries. BeiDou D1 almanac
+// pages (the GEOs' only almanac) are not decoded yet, and there is no TLE fill.
 type AlmanacEntry struct {
 	Name           string  `json:"name"`
 	GnssID         int     `json:"gnssid"`
@@ -880,7 +880,7 @@ func (s *Store) addGlonassAlmanac(out map[string]AlmanacEntry, now time.Time) {
 	}
 }
 
-// addKeplerAlmanac adds a coarse entry for every GPS, Galileo and QZSS satellite whose
+// addKeplerAlmanac adds a coarse entry for every GPS, Galileo, QZSS and BeiDou satellite whose
 // decoded almanac is valid but which no receiver currently observes.
 func (s *Store) addKeplerAlmanac(out map[string]AlmanacEntry, now time.Time) {
 	for _, a := range s.keplerAlmanacPositions(now) {

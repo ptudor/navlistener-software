@@ -64,6 +64,8 @@ type Ephemeris struct {
     Crc, Crs  float64 // radius corrections, m
     Cic, Cis  float64 // inclination corrections, rad
     Toe       float64 // reference time of ephemeris, seconds of week
+
+    Almanac bool // elements from a broadcast almanac (no GEO rotation, below)
 }
 ```
 
@@ -151,6 +153,11 @@ currently latent :
 The planned fix is carrying the broadcast SatType (B2a Table 7-8) into `Ephemeris` to override
 the PRN list and alert on disagreement, scheduled with the first D2/B-CNAV1/B-CNAV3 decoder. Read
 `docs/MATH.md §2.1 "Provenance"` before relying on a B2a GEO position.
+
+**Almanacs never take the GEO branch.** The BeiDou almanac algorithms place GEO satellites with
+the standard formula and i₀ = 0 (BDS-SIS-B1I-3.0 Table 5-15, BDS-SIS-B2a-1.0 Table 7-15), so
+`Solve` skips the rotation when `Ephemeris.Almanac` is set; the frame decoders set it on every
+almanac they convert.
 
 ### `Velocity` — central difference, and the wrap it refuses
 

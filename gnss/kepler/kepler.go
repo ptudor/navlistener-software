@@ -37,6 +37,12 @@ type Ephemeris struct {
 	Crc, Crs  float64 // radius corrections, metres
 	Cic, Cis  float64 // inclination corrections, rad
 	Toe       float64 // reference time of ephemeris, seconds of week
+
+	// Almanac marks elements decoded from a broadcast almanac. BeiDou
+	// almanacs place GEO satellites with the standard algorithm and i0 = 0
+	// (BDS-SIS-B1I-3.0 Table 5-15, BDS-SIS-B2a-1.0 Table 7-15), so the GEO
+	// ephemeris rotation is not applied to them.
+	Almanac bool
 }
 
 // Solution is the result of a propagation: the ECEF position plus the eccentric
@@ -155,7 +161,7 @@ func Solve(e Ephemeris, tow float64) (Solution, error) {
 	yp := r * sinU // in-plane y′
 
 	var pos gnss.ECEF
-	if isBeiDouGEO(e.ID, e.SVID) {
+	if isBeiDouGEO(e.ID, e.SVID) && !e.Almanac {
 		pos = beidouGEO(xp, yp, inc, e, p, tk)
 	} else {
 		// Corrected longitude of ascending node, Earth rotation folded in.

@@ -104,6 +104,10 @@ type BeiDouBCNAV2 struct {
 	SISAIoc2 int
 	SISAIoe  int // MT40 only
 
+	// Almanac is message type 40's midi almanac, which describes the satellite
+	// PRNa, not the transmitter; nil for other types and for PRNa 0.
+	Almanac *BeiDouMidiAlmanac
+
 	eph     kepler.Ephemeris
 	hasEph2 bool
 	hasClk  bool
@@ -265,8 +269,74 @@ func DecodeBeiDouBCNAV2(words []uint32) (*BeiDouBCNAV2, error) {
 		m.SISAIocb = int(u(58, 5))
 		m.SISAIoc1 = int(u(63, 3))
 		m.SISAIoc2 = int(u(66, 3))
+		// Midi almanac at 69–224 (Figure 6-20, Table 7-13).
+		alm := &BeiDouMidiAlmanac{
+			PRN:      int(u(69, 6)),
+			SatType:  int(u(75, 2)),
+			WN:       int(u(77, 13)),
+			Toa:      float64(u(90, 8)) * (1 << 12),
+			Ecc:      float64(u(98, 11)) / (1 << 16),
+			DeltaI:   float64(s(109, 11)) / (1 << 14) * semi,
+			SqrtA:    float64(u(120, 17)) / (1 << 4),
+			Omega0:   float64(s(137, 16)) / (1 << 15) * semi,
+			OmegaDot: float64(s(153, 11)) / float64(uint64(1)<<33) * semi,
+			Omega:    float64(s(164, 16)) / (1 << 15) * semi,
+			M0:       float64(s(180, 16)) / (1 << 15) * semi,
+			Af0:      float64(s(196, 11)) / (1 << 20),
+			Af1:      float64(s(207, 10)) / float64(uint64(1)<<37),
+			Health:   int(u(217, 8)),
+		}
+		if alm.Toa > 602112 {
+			return nil, errBadEpoch // Table 7-13: toa 0~602112 s
+		}
+		if alm.PRN != 0 {
+			m.Almanac = alm
+		}
 	}
 	return m, nil
+}
+
+// BeiDouMidiAlmanac is one satellite's B-CNAV2 midi almanac (BDS-SIS-B2a-1.0
+// §7.9, Table 7-13), scaled to SI.
+type BeiDouMidiAlmanac struct {
+	PRN int // PRNa, the satellite described (1..63)
+	// SatType is the orbit type: 1 GEO, 2 IGSO, 3 MEO; 0 is reserved.
+	SatType int
+	// WN is the 13-bit BDT week of toa; toa counts from its start (§7.9.2).
+	WN       int
+	Toa      float64 // s
+	Ecc      float64
+	DeltaI   float64 // rad, relative to i0 = 0.30π (IGSO/MEO) or 0 (GEO)
+	SqrtA    float64 // √m
+	Omega0   float64 // rad
+	OmegaDot float64 // rad/s
+	Omega    float64 // rad
+	M0       float64 // rad
+	Af0      float64 // s
+	Af1      float64 // s/s
+	Health   int     // Table 7-14
+}
+
+// Ephemeris returns the Kepler elements of the almanac: toe is toa, every
+// parameter the almanac omits is zero, and i0 is 0.30π for IGSO and MEO
+// satellites or 0 for GEO (Table 7-15). The almanac algorithm is the standard
+// one for every orbit type, so the GEO ephemeris rotation is not applied. A
+// reserved SatType cannot be placed.
+func (a *BeiDouMidiAlmanac) Ephemeris() (kepler.Ephemeris, error) {
+	i0 := 0.30
+	switch a.SatType {
+	case 1:
+		i0 = 0
+	case 2, 3:
+	default:
+		return kepler.Ephemeris{}, errBadSatType
+	}
+	return kepler.Ephemeris{
+		ID: gnss.BeiDou, SVID: a.PRN,
+		SqrtA: a.SqrtA, Ecc: a.Ecc, M0: a.M0, I0: i0*physconst.Pi + a.DeltaI,
+		Omega0: a.Omega0, OmegaDot: a.OmegaDot, Omega: a.Omega,
+		Toe: a.Toa, Almanac: true,
+	}, nil
 }
 
 // AssembleBeiDouBCNAV2 combines message types 10 and 11 (Ephemeris I + II) and,

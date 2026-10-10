@@ -37,11 +37,12 @@ every decoder is fuzzed. It starts hardened, on purpose.
 
 `primitives_test.go`, `bitreader_test.go`, `bitreader_signed_test.go`, `crc_test.go`,
 `gps_lnav_test.go`, `gps_lnav_almanac_test.go`, `gps_cnav_test.go`, `galileo_inav_test.go`,
-`galileo_inav_almanac_test.go`, `beidou_d1_test.go`, `beidou_bcnav2_test.go`, `glonass_string_test.go`,
+`galileo_inav_almanac_test.go`, `beidou_d1_test.go`, `beidou_bcnav2_test.go`,
+`beidou_bcnav2_almanac_test.go`, `glonass_string_test.go`,
 `glonass_almanac_guard_test.go`, `sbas_l1_test.go`, `navic_test.go`, and `fuzz_test.go` —
-sixteen fuzz targets covering every exported decoder except the constant-error NavIC stub
-(which parses nothing), the LNAV and I/NAV almanac payloads inside integrity-valid pages, plus
-the primitives.
+seventeen fuzz targets covering every exported decoder except the constant-error NavIC stub
+(which parses nothing), the LNAV, I/NAV and B-CNAV2 almanac payloads inside integrity-valid
+pages, plus the primitives.
 
 Imports: the root `gnss` package, `clock`, `kepler`, `glonass`, `physconst`, and `gnsstime`. It is
 the top of the module's dependency graph — everything else imports *into* here.
@@ -432,7 +433,15 @@ IGSO/GEO. SatType 0 is reserved and rejected (`errBadSatType`).
 
 Ephemeris splits across **MT10/MT11**; **MT30** carries clock + group delays + the nine BDGIM
 ionosphere coefficients; **MT34** carries clock + the BDT-UTC parameter set; **MT40** carries the
-midi almanac (not consumed) plus accuracy indices.
+midi almanac plus accuracy indices.
+
+- **MT40's midi almanac** (`BeiDouBCNAV2.Almanac`, Table 7-13) describes the satellite PRNa,
+  not the transmitter, and carries its own 13-bit week and SatType, so it needs no outside
+  reference. PRNa 0 carries none; a toa past 602,112 s is `errBadEpoch`.
+  **`BeiDouMidiAlmanac.Ephemeris()`** uses i₀ = 0.30π for IGSO/MEO and 0 for GEO, sets
+  `kepler.Ephemeris.Almanac` so a GEO almanac skips the ephemeris-only GEO rotation
+  (Table 7-15), and refuses the reserved SatType. Real B2a captures pin the layout: midi
+  almanacs three days from toa land within 17 km of the same satellites' D1 ephemerides.
 
 - **MT34's BDT-UTC block** decodes into a `clock.UTCParams` including the A2 drift-rate
   term. ΔtLS/ΔtLSF are the BDT-**UTC** leap counts; BDT itself is leap-free.

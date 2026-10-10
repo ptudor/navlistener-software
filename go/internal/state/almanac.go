@@ -11,10 +11,11 @@ import (
 	"github.com/ptudor/gnss/glonass"
 	"github.com/ptudor/gnss/gnsstime"
 	"github.com/ptudor/gnss/kepler"
+	"github.com/ptudor/gnss/physconst"
 )
 
 // Kepler-family broadcast almanacs (GPS and QZSS LNAV pages, Galileo I/NAV
-// word types 7–10). Every satellite
+// word types 7–10, BeiDou B-CNAV2 midi almanacs). Every satellite
 // broadcasts its whole constellation's almanac, so one station hearing any
 // satellite learns where all of them are, including those no station can
 // hear. Entries are keyed by the satellite an almanac describes, not the one
@@ -37,15 +38,44 @@ type keplerAlmanac struct {
 // keplerAlmanacValidity bounds |t − toa| for accepting and serving an almanac.
 // GPS keeps t within 3.5 days of toa while a set is transmitted
 // (IS-GPS-200N §20.3.3.5.2.2). QZSS's validity period of 144 h is twice
-// |t − toa| (QZSS-PNT-006 Table 4.1.1-2). GAL-OS-SIS-ICD-2.2 states no almanac
-// validity period, so Galileo uses half a week as an engineering bound. Inside
-// half a week the time-of-week wrap used by propagation is unambiguous, so
-// that bound is strict.
+// |t − toa| (QZSS-PNT-006 Table 4.1.1-2). The BeiDou almanac algorithm wraps
+// t − toa at half a week (BDS-SIS-B2a-1.0 Table 7-15), but almanacs are only
+// updated in less than 7 days (BDS-SIS-B1I-3.0 Table 5-1); the midi almanac's
+// full week number fixes toa, so almanacAt propagates across the wrap and
+// BeiDou is served for 7 days. GAL-OS-SIS-ICD-2.2 states no almanac validity
+// period, so Galileo uses half a week as an engineering bound. Where toa is
+// resolved from a time of week, inside half a week the resolution is
+// unambiguous, so those bounds are strict.
 func keplerAlmanacValidity(g gnss.GNSSID) time.Duration {
-	if g == gnss.QZSS {
+	switch g {
+	case gnss.QZSS:
 		return 72 * time.Hour
+	case gnss.BeiDou:
+		return 7 * 24 * time.Hour
 	}
 	return 84 * time.Hour
+}
+
+// almanacAt re-references eph by whole weeks so that now lies within half a
+// week of its toe, where the propagator's time-of-week wrap is the true
+// elapsed time. An almanac carries no rate or harmonic terms, so the shift is
+// exact: over k weeks the mean anomaly advances by n0·kW and, because Ω0 is
+// referenced to the start of toa's week, the node by (Ω̇ − Ω̇e)·kW
+// (IS-GPS-200N Table 20-IV; BDS-SIS-B2a-1.0 Table 7-15).
+func almanacAt(eph kepler.Ephemeris, toa, now time.Time) (kepler.Ephemeris, bool) {
+	weeks := math.Round(now.Sub(toa).Seconds() / gnsstime.WeekSeconds)
+	if weeks == 0 {
+		return eph, true
+	}
+	p, ok := physconst.For(eph.ID)
+	a := eph.SqrtA * eph.SqrtA
+	if !ok || !(a > 0) {
+		return eph, false
+	}
+	dt := weeks * gnsstime.WeekSeconds
+	eph.M0 = math.Remainder(eph.M0+math.Sqrt(p.Mu/(a*a*a))*dt, 2*math.Pi)
+	eph.Omega0 = math.Remainder(eph.Omega0+(eph.OmegaDot-p.OmegaE)*dt, 2*math.Pi)
+	return eph, true
 }
 
 // applyKeplerAlmanac stores an LNAV almanac page received at stamp (the
@@ -70,21 +100,43 @@ func (s *Store) applyGalileoAlmanac(a frame.GalileoAlmanac, stamp time.Time) {
 	s.storeAlmanac(a.Ephemeris(), stamp, a.WNa)
 }
 
+// applyBeiDouAlmanac stores a B-CNAV2 midi almanac. Its 13-bit BDT week fixes
+// toa exactly (BDS-SIS-B2a-1.0 §7.9.2: toa counts from the start of WNa).
+func (s *Store) applyBeiDouAlmanac(a *frame.BeiDouMidiAlmanac, stamp time.Time) {
+	eph, err := a.Ephemeris()
+	if err != nil {
+		return
+	}
+	unix, ok := gnsstime.GNSSTime{Sys: gnsstime.SysBeiDou, Week: a.WN, TOW: a.Toa}.ToUnix(float64(gpsUTCOffset))
+	if !ok {
+		return
+	}
+	s.storeAlmanacAt(eph, time.Unix(int64(math.Round(unix)), 0), stamp) // toa is whole seconds
+}
+
 // storeAlmanac resolves eph's toa (its Toe) to the instant nearest stamp with
 // that time of week and stores it under its subject satellite. wna, when not
 // -1, is the broadcast two-bit week of toa, which the resolved week must match.
 func (s *Store) storeAlmanac(eph kepler.Ephemeris, stamp time.Time, wna int) {
 	g := eph.ID
 	age := gnsstime.EphAge(towFor(g, stamp), eph.Toe)
-	if math.Abs(age) >= keplerAlmanacValidity(g).Seconds() {
-		return
-	}
 	toa := stamp.Add(-time.Duration(age * float64(time.Second)))
 	if wna >= 0 {
 		week, ok := gnsstime.WeekAt(gnsstime.SysGalileo, float64(toa.Unix()), float64(gpsUTCOffset))
 		if !ok || week&3 != wna {
 			return
 		}
+	}
+	s.storeAlmanacAt(eph, toa, stamp)
+}
+
+// storeAlmanacAt stores eph, whose toa is the absolute instant toa, under its
+// subject satellite, unless the page that delivered it (received at stamp) lies
+// outside the validity window around toa.
+func (s *Store) storeAlmanacAt(eph kepler.Ephemeris, toa, stamp time.Time) {
+	g := eph.ID
+	if age := stamp.Sub(toa); age <= -keplerAlmanacValidity(g) || age >= keplerAlmanacValidity(g) {
+		return
 	}
 	key := almanacKey{G: g, Sv: eph.SVID}
 	s.almMu.Lock()
@@ -104,7 +156,7 @@ type almanacPosition struct {
 	t0e         int     // the almanac's own reference: toa (s of week) or GLONASS t_λ (s of day)
 }
 
-// keplerAlmanacPositions propagates every GPS, Galileo and QZSS almanac still inside its
+// keplerAlmanacPositions propagates every GPS, Galileo, QZSS and BeiDou almanac still inside its
 // validity window to now, sorted by name.
 func (s *Store) keplerAlmanacPositions(now time.Time) []almanacPosition {
 	s.almMu.Lock()
@@ -117,7 +169,11 @@ func (s *Store) keplerAlmanacPositions(now time.Time) []almanacPosition {
 	s.almMu.Unlock()
 	out := make([]almanacPosition, 0, len(entries))
 	for _, a := range entries {
-		pos, err := kepler.Propagate(a.eph, towFor(a.eph.ID, now))
+		eph, ok := almanacAt(a.eph, a.toa, now)
+		if !ok {
+			continue
+		}
+		pos, err := kepler.Propagate(eph, towFor(a.eph.ID, now))
 		if err != nil || !finiteECEF(pos) {
 			continue
 		}
@@ -179,7 +235,7 @@ func glonassAlmanacPosition(a frame.GLONASSAlmanacEntry, now time.Time) (gnss.EC
 
 // almanacPositions returns every satellite the decoded almanacs can place at
 // now: GPS and QZSS from LNAV pages, Galileo from I/NAV word types 7–10,
-// GLONASS from strings 6–15.
+// BeiDou from B-CNAV2 midi almanacs, GLONASS from strings 6–15.
 func (s *Store) almanacPositions(now time.Time) []almanacPosition {
 	out := s.keplerAlmanacPositions(now)
 	alms, anchored := s.glonassAlmanacEntries(now)
