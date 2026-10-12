@@ -195,8 +195,11 @@ records reaching the collector are their acceptance test.
 ### Custom-board status LEDs
 
 The two TLC5916 drivers operate the green/yellow rows, including before WiFi
-provisioning. Columns are GPS, SBAS, Galileo, BeiDou, QZSS, GLONASS, NavIC and
-uplink. Green means a fresh NAV-SAT report contains a code-locked signal with
+provisioning. The frame's bits are GPS, SBAS, Galileo, BeiDou, QZSS, GLONASS, NavIC
+and uplink, which is how the NEO and MAX chains are wired. The 162mm panel reads
+SBAS, GPS, Galileo, BeiDou, GLONASS, QZSS, NavIC and LINK from left to right, so its
+board row carries a column map (`panel_columns`) and each colour byte is permuted
+onto the drivers' outputs as it is shifted. Green means a fresh NAV-SAT report contains a code-locked signal with
 nonzero C/N0 and no unhealthy flag. Yellow means supported and expected, but
 not tracked. Data older than 15 seconds cannot leave an indicator green.
 Uplink is green while the collector connection is up, otherwise yellow.

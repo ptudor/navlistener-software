@@ -181,7 +181,10 @@ Both drivers use this pin-level circuit:
 
 Use the same channel order in both colours: `OUT0` GPS, `OUT1` SBAS,
 `OUT2` Galileo, `OUT3` BeiDou, `OUT4` QZSS, `OUT5` GLONASS, `OUT6`
-NavIC, `OUT7` uplink. Since the data enters `U12` first, firmware transmits the
+NavIC, `OUT7` uplink. The 162mm panel is the exception: its columns are wired
+SBAS, GPS, Galileo, BeiDou, GLONASS, QZSS, NavIC and LINK on `OUT0`–`OUT7`, and
+its board row maps the frame onto them (`panel_columns`), so the frame itself keeps
+this order on every board. Since the data enters `U12` first, firmware transmits the
 yellow byte first and the green byte second before pulsing `LED_LATCH`. Place one
 10 µF, 10 V X7R bulk capacitor from the `+5V` LED-anode bus to GND near the
 middle of the row; it is in addition to the 100 nF logic bypass at each driver.
