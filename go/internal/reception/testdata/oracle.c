@@ -11,9 +11,10 @@ int main(void)
         uint8_t bad=nr_counts(&e,&s);s.alarm=nr_step(&m,s.valid,bad,s.uptime_ms,e.alarm_s,e.clear_s);
         if(sec==31||sec==70){uint8_t out[NR_SAMPLE_SIZE];nr_encode_sample(out,&s);assert(fwrite(out,1,sizeof out,stdout)==sizeof out);}
     }
-    uint8_t g=0x82,y=0x04;nr_alarm_leds(1,249,&g,&y);assert(g==0x83&&y==0x04);
-    nr_alarm_leds(1,250,&g,&y);assert(g==0x82&&y==0x05);
-    nr_alarm_leds(1,500,&g,&y);assert(g==0x83&&y==0x04);
+    // An SBAS alarm (gnssId 1) flashes the first column: the row is SBAS, GPS, GAL, BDS, GLO, QZSS, NavIC.
+    uint8_t g=0x82,y=0x04;nr_alarm_leds(2,249,&g,&y);assert(g==0x83&&y==0x04);
+    nr_alarm_leds(2,250,&g,&y);assert(g==0x82&&y==0x05);
+    nr_alarm_leds(2,500,&g,&y);assert(g==0x83&&y==0x04);
     for(size_t i=0;i<n;i++)assert(!nr_decode(&e,b,i));
     return 0;
 }

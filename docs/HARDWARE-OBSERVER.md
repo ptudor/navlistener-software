@@ -179,12 +179,10 @@ Both drivers use this pin-level circuit:
 | 15 `R-EXT` | 2.49 kΩ, 1%, 0603 to GND. The power-on current is approximately 7.5 mA/channel; trim the two values independently after the diffuser is chosen. |
 | 16 `VDD` | `3V3_SYS`, with 100 nF X7R directly from pin 16 to pin 1. Do **not** power TLC logic from 5 V: its guaranteed high threshold is 0.7 × VDD, so a 3.3 V ESP output would not be a guaranteed high. |
 
-Use the same channel order in both colours: `OUT0` GPS, `OUT1` SBAS,
-`OUT2` Galileo, `OUT3` BeiDou, `OUT4` QZSS, `OUT5` GLONASS, `OUT6`
-NavIC, `OUT7` uplink. The 162mm panel is the exception: its columns are wired
-SBAS, GPS, Galileo, BeiDou, GLONASS, QZSS, NavIC and LINK on `OUT0`–`OUT7`, and
-its board row maps the frame onto them (`panel_columns`), so the frame itself keeps
-this order on every board. Since the data enters `U12` first, firmware transmits the
+Use the same channel order in both colours: `OUT0` SBAS, `OUT1` GPS,
+`OUT2` Galileo, `OUT3` BeiDou, `OUT4` GLONASS, `OUT5` QZSS, `OUT6`
+NavIC, `OUT7` uplink, so the four systems a receiver anywhere tracks sit
+together and the two regional systems sit beside NavIC. Since the data enters `U12` first, firmware transmits the
 yellow byte first and the green byte second before pulsing `LED_LATCH`. Place one
 10 µF, 10 V X7R bulk capacitor from the `+5V` LED-anode bus to GND near the
 middle of the row; it is in addition to the 100 nF logic bypass at each driver.

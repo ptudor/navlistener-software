@@ -125,10 +125,14 @@ static inline uint8_t nr_signal(uint8_t g,uint8_t s)
     return s;
 }
 
+// The status panel's constellation columns, left to right, as gnssIds: SBAS, GPS, Galileo,
+// BeiDou, GLONASS, QZSS, NavIC; bit 7 of each colour byte is the uplink. The four systems a
+// receiver anywhere tracks sit together, and the two regional systems sit beside NavIC.
+#define NR_PANEL_GNSS {1, 0, 2, 3, 6, 5, 7}
 // 500 ms full cycle: green for 250 ms, yellow for 250 ms, affected columns only.
 static inline void nr_alarm_leds(uint8_t alarm,uint64_t now,uint8_t *green,uint8_t *yellow)
 {
-    const uint8_t gnss[7]={0,1,2,3,5,6,7};
+    const uint8_t gnss[7]=NR_PANEL_GNSS;
     for(unsigned i=0;i<7;i++) if(alarm&(1u<<gnss[i])) {
         *green&=~(1u<<i);*yellow&=~(1u<<i);
         if((now/250)%2) *yellow|=1u<<i;else *green|=1u<<i;

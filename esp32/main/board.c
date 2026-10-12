@@ -543,20 +543,8 @@ static void panel_shift(int bit, void *ctx) { (void)ctx; clock_bit(bit); }
 // verify: the expander samples the chain's SDO on GP0 before each clock of a 24-bit frame and
 // checks it against the chain (io_expander_readback). At about 0.5 ms per I2C read it holds the
 // LEDs dark for some 12 ms; the bus is not sped up for it.
-// The frame bit each colour driver output shows (board_reservations.h panel_columns). The frame
-// is in gnssId order; the 162mm panel's columns are wired SBAS, GPS, GAL, BDS, GLO, QZSS, NAVIC,
-// LINK, so its outputs 0/1 and 4/5 take the other bit. Both colour drivers share one map.
-static uint8_t panel_outputs(uint8_t frame)
-{
-    if (!board) return frame;
-    uint8_t outputs = 0;
-    for (unsigned out = 0; out < 8; out++)
-        if (frame & (1u << board->panel_columns[out])) outputs |= 1u << out;
-    return outputs;
-}
 static void panel_write(uint8_t status, uint8_t green, uint8_t yellow, unsigned percent, bool verify)
 {
-    green = panel_outputs(green); yellow = panel_outputs(yellow);
     // OE also participates in TLC5916 mode switching. Hold both OE pins high
     // for the entire serial/latch transaction; PWM runs only while CLK is idle.
     if (pwm_ready) for (unsigned c = 0; c < 2; c++)
@@ -943,7 +931,7 @@ static void board_task(void *arg)
         atomic_store(&panel_frame,(applied_brightness<<24)|((unsigned)alarm<<16)|((unsigned)yellow<<8)|green);
         if (green != previous_green || yellow != previous_yellow || brightness_changed) {
             if (brightness_changed) ESP_LOGI(TAG, "panel brightness=%u%%", applied_brightness);
-            ESP_LOGI(TAG, "panel green=0x%02x yellow=0x%02x (frame bits GPS SBAS GAL BDS QZSS GLO NavIC uplink)", green, yellow);
+            ESP_LOGI(TAG, "panel green=0x%02x yellow=0x%02x (SBAS GPS GAL BDS GLO QZSS NavIC uplink)", green, yellow);
             previous_green = green; previous_yellow = yellow;
         }
         unsigned reference = atomic_load(&trimmer_reference);

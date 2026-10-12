@@ -144,7 +144,7 @@ uint8_t gnss_status_expected(const gnss_status_t *s, int64_t now, uint8_t learne
 void gnss_status_leds(const gnss_status_t *s, int64_t now, uint8_t learned,
                       bool uplink, uint8_t *green, uint8_t *yellow)
 {
-    const unsigned gnss[] = {0, 1, 2, 3, 5, 6, 7};
+    const unsigned gnss[] = NR_PANEL_GNSS; // column i shows this gnssId; bit 7 is the uplink
     uint8_t expected = gnss_status_expected(s, now, learned);
     *green = uplink ? 0x80 : 0; *yellow = uplink ? 0 : 0x80;
     bool current = s->satellites_valid && fresh(s->satellites_ms, now);

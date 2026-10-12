@@ -153,26 +153,9 @@ typedef struct {
     int tc_sck, tc_mosi, tc_miso, tc_cs_n, tc_drdy_n;
     int imu_int1, imu_int2;
     observer_rail_t rails[3];   // INA3221 channels 1-3, where the board has the monitor
-    uint8_t panel_columns[8];   // the frame bit each colour driver's output 0-7 shows (below)
 } observer_board_t;
 #define NVF_PIN_ON(map, pin) ((pin) < 0 || ((map) & NVF_PIN((pin) < 0 ? 0 : (pin))) != 0)
 #define NVF_NONE (-1)
-// The colour bytes are built in gnssId order (gnss_status_leds): bit 0 GPS, 1 SBAS, 2 Galileo,
-// 3 BeiDou, 4 QZSS, 5 GLONASS, 6 NavIC, 7 uplink, and the NEO and MAX chains are wired that way.
-// A panel wired in another order lists, for each driver output 0-7, the frame bit it shows, and
-// panel_write maps both colour bytes through it before shifting. The 162mm panel reads SBAS,
-// GPS, GAL, BDS, GLO, QZSS, NAVIC, LINK from left to right, so its outputs 0/1 and 4/5 swap.
-// An order is a comma list; the indirection expands it before the eight-argument macros see it.
-#define NVF_PANEL_COLUMNS_LIST(...) {__VA_ARGS__}
-#define NVF_PANEL_COLUMNS(order) NVF_PANEL_COLUMNS_LIST(order)
-#define NVF_PANEL_COLUMNS_MASK_(a, b, c, d, e, f, g, h) \
-    ((1u << (a)) | (1u << (b)) | (1u << (c)) | (1u << (d)) | (1u << (e)) | (1u << (f)) | (1u << (g)) | (1u << (h)))
-#define NVF_PANEL_COLUMNS_MASK(order) NVF_PANEL_COLUMNS_MASK_(order)
-#define NVF_PANEL_COLUMNS_FRAME_ORDER 0, 1, 2, 3, 4, 5, 6, 7
-#define NVF_PANEL_COLUMNS_162MM       1, 0, 2, 3, 5, 4, 6, 7
-_Static_assert(NVF_PANEL_COLUMNS_MASK(NVF_PANEL_COLUMNS_FRAME_ORDER) == 0xff &&
-               NVF_PANEL_COLUMNS_MASK(NVF_PANEL_COLUMNS_162MM) == 0xff,
-               "a panel column map must show every frame bit exactly once");
 #define NVF_BOARD_NEO_ROW {.model = BOARD_MODEL_NEO_A, .name = "NEO revision A", .intsat_id = INTSAT_NEO, \
     .family = "gnss-color-neo", .pins = NVF_PINS_NEO, .boot_steps_brightness = true, \
     .led_sdi = 14, .led_panel_sdi = NVF_NONE, .panel_status_byte = false, \
@@ -180,8 +163,7 @@ _Static_assert(NVF_PANEL_COLUMNS_MASK(NVF_PANEL_COLUMNS_FRAME_ORDER) == 0xff &&
     .bright_adc = NVF_NONE, .bright_button = NVF_NONE, \
     .eth_sclk = NVF_NONE, .eth_cs = NVF_NONE, .eth_mosi = NVF_NONE, .eth_miso = NVF_NONE, \
     .tc_sck = NVF_NONE, .tc_mosi = NVF_NONE, .tc_miso = NVF_NONE, .tc_cs_n = NVF_NONE, .tc_drdy_n = NVF_NONE, \
-    .imu_int1 = NVF_NONE, .imu_int2 = NVF_NONE, \
-    .panel_columns = NVF_PANEL_COLUMNS(NVF_PANEL_COLUMNS_FRAME_ORDER)}
+    .imu_int1 = NVF_NONE, .imu_int2 = NVF_NONE}
 // The X20's INA3221 channels. Its alert limits are engineering values to be confirmed on the
 // bench, like the heater thresholds: +5V warns below the input eFuse's 1.45 A minimum limit,
 // so the alert is seen before the eFuse acts; 3V3_GNSS allows the receiver and antenna feed
@@ -198,8 +180,7 @@ _Static_assert(NVF_PANEL_COLUMNS_MASK(NVF_PANEL_COLUMNS_FRAME_ORDER) == 0xff &&
     .eth_sclk = NVF_PIN_ETH_SCLK, .eth_cs = NVF_PIN_ETH_CS, .eth_mosi = NVF_PIN_ETH_MOSI, .eth_miso = NVF_PIN_ETH_MISO, \
     .tc_sck = NVF_NONE, .tc_mosi = NVF_NONE, .tc_miso = NVF_NONE, .tc_cs_n = NVF_NONE, .tc_drdy_n = NVF_NONE, \
     .imu_int1 = NVF_NONE, .imu_int2 = NVF_NONE, \
-    .rails = {NVF_X20_RAIL_5V, NVF_X20_RAIL_GNSS, NVF_X20_RAIL_SYS}, /* U37 through R74, R75, R76 */ \
-    .panel_columns = NVF_PANEL_COLUMNS(NVF_PANEL_COLUMNS_162MM)} /* panel U12/U13 OUT0-OUT7: SBAS GPS GAL BDS GLO QZSS NAVIC LINK */
+    .rails = {NVF_X20_RAIL_5V, NVF_X20_RAIL_GNSS, NVF_X20_RAIL_SYS}} /* U37 through R74, R75, R76 */
 #define NVF_BOARD_MAX_ROW {.model = BOARD_MODEL_MAX_A, .name = "MAX revision A", .intsat_id = INTSAT_MAX, \
     .family = "gnss-color-max", .pins = NVF_PINS_MAX, .boot_steps_brightness = false, \
     .led_sdi = 14, .led_panel_sdi = NVF_NONE, .panel_status_byte = false, \
@@ -207,8 +188,7 @@ _Static_assert(NVF_PANEL_COLUMNS_MASK(NVF_PANEL_COLUMNS_FRAME_ORDER) == 0xff &&
     .bright_adc = 2, .bright_button = 18, \
     .eth_sclk = NVF_NONE, .eth_cs = NVF_NONE, .eth_mosi = NVF_NONE, .eth_miso = NVF_NONE, \
     .tc_sck = NVF_PIN_TC_SCK, .tc_mosi = NVF_PIN_TC_MOSI, .tc_miso = NVF_PIN_TC_MISO, .tc_cs_n = NVF_PIN_TC_CS_N, \
-    .tc_drdy_n = NVF_PIN_TC_DRDY_N, .imu_int1 = NVF_PIN_IMU_INT1, .imu_int2 = NVF_PIN_IMU_INT2, \
-    .panel_columns = NVF_PANEL_COLUMNS(NVF_PANEL_COLUMNS_FRAME_ORDER)}
+    .tc_drdy_n = NVF_PIN_TC_DRDY_N, .imu_int1 = NVF_PIN_IMU_INT1, .imu_int2 = NVF_PIN_IMU_INT2}
 // Every function pin is on its board's map.
 _Static_assert(NVF_PIN_ON(NVF_PINS_ZED_X20, 1) && NVF_PIN_ON(NVF_PINS_ZED_X20, 2) &&
                NVF_PIN_ON(NVF_PINS_ZED_X20, 18) && NVF_PIN_ON(NVF_PINS_ZED_X20, NVF_PIN_CONSOLE_VBUS) &&

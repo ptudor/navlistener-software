@@ -74,7 +74,7 @@ int main(void)
     uint8_t expected = gnss_status_expected(&s, 1000, 0);
     assert((expected & (1u<<1)) && !(expected & (1u<<5)));
     gnss_status_leds(&s, 1000, 0, true, &green, &yellow);
-    assert(green == 0x80 && yellow == 0x2f);
+    assert(green == 0x80 && yellow == 0x1f); // SBAS GPS GAL BDS GLO expected; QZSS outside its region
     assert(gnss_status_expected(&s, 1000, 1u<<5) & (1u<<5)); // learned reception overrides map
     position(&s, 35.7, 139.7, 1000); assert(gnss_status_expected(&s, 1000, 0) & (1u<<5));
     position(&s, 51.5, -0.1, 1000); assert(!(gnss_status_expected(&s, 1000, 0) & (1u<<5)));
@@ -89,7 +89,7 @@ int main(void)
     assert(s.tracked[0] == 1 && s.tracked[2] == 0 && s.tracked[6] == 0 &&
            s.satellites[0].cno==30 && s.satellites[0].elevation==0);
     gnss_status_leds(&s, 20000, 0, false, &green, &yellow);
-    assert(green == 1 && yellow == 0xbe);
+    assert(green == 2 && yellow == 0xbd); // GPS tracked lights the second column
     gnss_status_leds(&s, 40000, 0, false, &green, &yellow);
     assert(green == 0 && yellow == 0xbf); // receiver disappearance cannot leave stale green
     gnss_status_t previous = s;
