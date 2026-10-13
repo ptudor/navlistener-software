@@ -27,6 +27,22 @@ const (
 	OrbitDiscoThreshold       = 1.45
 	OrbitDiscoSevereThreshold = 10.0
 
+	// Independent reference-orbit delta (metres). The BKG source is a merged
+	// broadcast-navigation catalogue, not a precise-orbit product, and it may
+	// straddle an issue-of-data changeover with the live receiver. These gross
+	// error bands deliberately sit far above normal broadcast accuracy and
+	// continuity while still catching wrong decoding, time systems, PRNs and
+	// orbital shells. The check is alarm-only and runs only while the external
+	// reference is current.
+	ReferenceOrbitThreshold       = 1_000.0
+	ReferenceOrbitSevereThreshold = 10_000.0
+	// Decoded almanacs are intentionally coarse: the served families are
+	// normally within a few kilometres, or about 20 km for BeiDou B2a. These
+	// much wider bands make this a wrong-PRN/time/shell alarm, not an almanac
+	// accuracy grade.
+	ReferenceAlmanacThreshold       = 100_000.0
+	ReferenceAlmanacSevereThreshold = 1_000_000.0
+
 	// Time-disco / clock jump (nanoseconds): warn band, then a severe band.
 	TimeDiscoThreshold       = 2.5
 	TimeDiscoSevereThreshold = 10.0

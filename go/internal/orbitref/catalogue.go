@@ -149,7 +149,7 @@ func (c *Catalogue) Snapshot(now time.Time) Snapshot {
 		at := data.FetchedAt
 		s.FetchedAt = &at
 		s.Status = "delayed"
-		if age := now.Sub(at); age >= 0 && age <= 35*time.Minute {
+		if referenceCurrent(at, now) {
 			s.Status = "current"
 		}
 	}
@@ -172,6 +172,36 @@ func (c *Catalogue) Snapshot(now time.Time) Snapshot {
 		s.Satellites = append(s.Satellites, sv)
 	}
 	return s
+}
+
+// CurrentPosition evaluates one independently downloaded broadcast orbit at
+// the exact epoch of a collector position. It deliberately refuses delayed
+// references and coasted geometry: the map may keep using those coordinates
+// for continuity, but an integrity alarm must never compare live data with a
+// stale external orbit. now determines reference freshness; at is the position
+// epoch and is returned only when the reference orbit's own fit window covers
+// it.
+func (c *Catalogue) CurrentPosition(name string, now, at time.Time) (Satellite, bool) {
+	c.mu.RLock()
+	fetchedAt := c.data.FetchedAt
+	o, ok := c.data.Orbits[name]
+	c.mu.RUnlock()
+	if !ok || at.IsZero() || at.After(now) || !referenceCurrent(fetchedAt, now) {
+		return Satellite{}, false
+	}
+	p, ok := o.position(at)
+	if !ok {
+		return Satellite{}, false
+	}
+	return Satellite{
+		Name: name, GNSS: int(o.GNSS), Epoch: o.Epoch,
+		Position: &[3]float64{p.X, p.Y, p.Z},
+	}, true
+}
+
+func referenceCurrent(fetchedAt, now time.Time) bool {
+	age := now.Sub(fetchedAt)
+	return !fetchedAt.IsZero() && age >= 0 && age <= 35*time.Minute
 }
 
 func (c *Catalogue) load() error {

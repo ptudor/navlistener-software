@@ -41,7 +41,7 @@ type Detector struct {
 	// family. Each Tick* entry point advances only its own counter and
 	// classifies a DISJOINT set of (subject, metric) machines, so "was this
 	// machine observed in the previous round?" is only a meaningful question
-	// within a family — the four entry points run on the same daemon cadence but
+	// within a family — the entry points run on the same daemon cadence but
 	// are separate calls, and a shared counter would read every machine as
 	// perpetually skipped.
 	gen [numFamilies]uint64
@@ -50,7 +50,8 @@ type Detector struct {
 // tickFamily identifies one classifier family's round counter. The key spaces are
 // disjoint by construction: SV/xsig/SBAS subjects and metrics from Tick, the four
 // RF metrics from TickStations, "offline" from TickStationLiveness, and
-// "cap_lost:*"/"cap_impossible" from TickCapabilities.
+// "cap_lost:*"/"cap_impossible" from TickCapabilities, and the independent
+// reference-orbit metric from TickOrbitReference.
 type tickFamily int
 
 const (
@@ -59,6 +60,7 @@ const (
 	familyStationLiveness
 	familyCapability
 	familyStationIntegrity
+	familyOrbitReference
 	numFamilies
 )
 
@@ -131,6 +133,9 @@ func (d *Detector) policy(fam tickFamily) dwellPolicy {
 	case familyStationIntegrity:
 		return dwellPolicy{onset: d.debounce, clear: d.debounce,
 			nominal: map[string]string{"spoofing": "ok", "assurance": "assured"}}
+	case familyOrbitReference:
+		return dwellPolicy{onset: d.debounce, clear: d.debounce,
+			nominal: map[string]string{"reference_orbit": "ok", "reference_almanac": "ok"}}
 	}
 	return dwellPolicy{onset: d.debounce, clear: d.debounce}
 }

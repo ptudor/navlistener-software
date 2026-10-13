@@ -1,5 +1,6 @@
-// Package orbitref supplies independent geometry for the monitoring map. These
-// orbits are never ingested as receiver observations or used by detectors.
+// Package orbitref supplies independent geometry for the monitoring map and the
+// alarm-only gross-error orbit comparison. Reference orbits are never ingested
+// as receiver observations, and delayed/coasted positions remain map-only.
 package orbitref
 
 import (

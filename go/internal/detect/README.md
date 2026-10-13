@@ -33,6 +33,7 @@ func (d *Detector) TickStations(now, stations map[string]state.StationRF) []Even
 func (d *Detector) TickIntegrity(now, stations map[string]integrity.Assessment) []Event
 func (d *Detector) TickStationLiveness(now, lastSeen map[string]int) []Event
 func (d *Detector) TickCapabilities(now, reports map[string]state.StationCapReport) []Event
+func (d *Detector) TickOrbitReference(now, comparisons map[string]OrbitReferenceComparison) []Event
 func (d *Detector) Reset()
 
 type Event struct {
@@ -58,8 +59,10 @@ event contract (`docs/OUTPUT.md §3`). The station RF family adds two rules on t
 and recovery every minute. And a station whose first observation is already degraded is not
 seeded silently: its machine starts at `unknown` and confirms the degradation after the onset
 debounce, so a station that starts inside a jammed or spoofed environment still raises its
-event. A degraded first sighting that clears before onset seeds `ok` silently. Every other
-family seeds its first observation silently, whatever it is.
+event. The independent-orbit family uses the same startup rule, so a collector that starts
+while a gross orbit error is already present still alarms. A degraded first sighting that
+clears before onset seeds the nominal state silently. Families without an explicit nominal
+state seed their first observation silently, whatever it is.
 
 ---
 
@@ -68,6 +71,13 @@ family seeds its first observation silently, whatever it is.
 **Per-SV** (`Tick`): `orbit_disco`, `clock_jump`, `eph_aged`, `sisa_change`, `ura_alert`,
 `wn_mismatch`, `leap_mismatch`, `bds_integrity_flag`, `osnma_change`, `observation_lost`,
 `position_unknown`, `xsig_divergence`.
+
+**Independent orbit reference** (`TickOrbitReference`):
+`reference_orbit_divergence` for each ephemeris signal and
+`reference_almanac_divergence` for each physical-SV almanac. The daemon compares
+positions at the exact same epoch and supplies no observations while the external
+reference is delayed, so the detector holds rather than raising from coasted
+geometry or falsely clearing.
 
 **SBAS** (`Tick`): `sbas_lost`, `sbas_health`.
 
@@ -98,6 +108,8 @@ detector).
 | `EphAgeThresholdGalileo` | 105 min | Galileo refreshes fastest, so it's stricter. |
 | `EphAgeThresholdGPS` | 140 min | The default for every non-Galileo constellation; QZSS and NavIC inherit it. |
 | `OrbitDiscoThreshold` / `Severe` | 1.45 m / 10 m | Warn band, then severe. |
+| `ReferenceOrbitThreshold` / `Severe` | 1 km / 10 km | Gross-error bands for the independent merged broadcast reference; alarm-only, current-reference-only. |
+| `ReferenceAlmanacThreshold` / `Severe` | 100 km / 1,000 km | Coarse-orbit gross-error bands; far above normal almanac error, and current-reference-only. |
 | `TimeDiscoThreshold` / `Severe` | 2.5 ns / 10 ns | The number that makes `physconst`'s per-constellation μ matter. |
 | `SISAAlertThreshold` / `SISAExitThreshold` | 3.0 m / 2.5 m | **Asymmetric on purpose** — see below. |
 | `SilentThreshold` | 3600 s | An SV unseen this long is lost. |

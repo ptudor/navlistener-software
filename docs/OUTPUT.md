@@ -508,6 +508,15 @@ every SV event) and disambiguate the emitting signal with **`params.sigid`**; no
 parsing needed. Station/SBAS/cross-signal events use their own subject spaces (station id,
 `S<prn>`, physical name).
 
+`reference_orbit_divergence` is likewise satellite×signal. Its params add
+`reference_orbit_delta_m`, `position_epoch`, `reference_orbit_epoch`, and
+`reference_source`, with `position_source: "ephemeris"`.
+`reference_almanac_divergence` uses the physical-SV subject because an almanac
+describes a satellite rather than a tracked signal; it carries the same reference
+fields plus `position_source: "almanac"`, and does not invent `sigid` or `conf`.
+Both are absent—not healthy—while the independent reference is delayed, coasted,
+missing that SV, or outside its orbit fit window.
+
 **Galileo E5b (u-blox sigId 5/6) has no served rows**. E5b I/NAV pages are carried
 raw under the `GalInav` page-layout label and counted under the `gal_e5b_deferred` decode
 label; no `E##@5`/`E##@6` SV entries, station capabilities, or events exist until the E5b
@@ -890,8 +899,9 @@ Event summaries count every matching row in `total_events`, `by_type`, and its
 severity bucket. `by_constellation` is a subset: only known satellite-scoped
 event types with a completely valid canonical subject qualify. Signal events
 use `G01@0`-style names (including three-digit SBAS PRNs); Galileo cross-signal
-events use bare `E14`, and SBAS events use `S120` (signal-qualified historical
-forms are also accepted). Station event families stay excluded even when an
+events use bare `E14`, reference-almanac events use a physical name such as
+`C51`, and SBAS events use `S120` (signal-qualified historical forms are also
+accepted). Station event families stay excluded even when an
 opaque station ID is exactly `G01`, `S120` or `G01@0`. Unknown event types and
 malformed subjects remain in totals/type/severity without guessed constellation
 attribution. Thus constellation totals can legitimately sum to less than the

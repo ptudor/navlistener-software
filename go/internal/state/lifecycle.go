@@ -1,6 +1,9 @@
 package state
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+	"time"
+)
 
 // Generation changes whenever the whole materialized view is invalidated.
 // Feed builders compare it before/after a render so a concurrent reset cannot
@@ -31,6 +34,10 @@ func (s *Store) Reset() {
 	s.gloNA = 0
 	s.almanacs = make(map[almanacKey]keplerAlmanac)
 	s.almanacRecords = make(map[almanacRecordKey]almanacSourceRecord)
+	s.bdsAlmRef = time.Time{}
+	s.bdsAlmRefTOW = 0
+	s.bdsAlmRefWN = 0
+	s.bdsAlmRefAt = time.Time{}
 	s.rf = make(map[string]*rfStation)
 	s.boards = make(map[string]*boardStation)
 	// Integrity checks hold the same withdrawn receipts in their histories; the

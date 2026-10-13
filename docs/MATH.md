@@ -554,11 +554,16 @@ GLONASS almanac uses §3.1. We publish
 almanac-derived ECEF in the almanac feed (**metres**, `docs/OUTPUT.md §1.4`) for GLONASS, GPS,
 Galileo, QZSS and BeiDou. BeiDou has two sources: the B-CNAV2 midi almanac, whose own week fixes
 toa, and the D1 almanac pages, the only source for the GEOs, whose subframe 5 page 8 supplies an
-eight-bit week and toa for the set. Before that reference page arrives, the collector accepts only
-the conservative AmEpID "11" fallback and resolves toa by the half-week rule; an exact midi or
-referenced D1 almanac is never replaced by that fallback. The reserved `alma_dist_m` field is
+eight-bit week and toa for the constellation-wide set. Every D1 page waits for that exact anchor.
+Expanded pages additionally require AmEpID "11" observed from that transmitter under the same
+anchored set; no arbitrary freshness timer or half-week fallback decides the association. The
+reserved `alma_dist_m` field is
 for a planned cross-check (distance between the ephemeris ECEF and the almanac/TLE ECEF, a
 coarse sanity check).
+Inactive D1 expanded slots can carry a non-zero fill pattern rather than an all-zero unused
+entry. Before propagation, the decoder requires the resulting semi-major axis to lie near one
+of BDS's MEO or IGSO/GEO reference shells (B1I §3.1; B2a Table 7-8), and requires a GEO PRN
+to use the GEO/IGSO shell. This is an orbit-family validity check, not an almanac accuracy claim.
 
 ---
 

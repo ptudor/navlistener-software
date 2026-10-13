@@ -406,6 +406,9 @@ describes SV n and subframe 5 pages 1–6 SVs 25–30 (§5.2.4.13); these basic 
 broadcasting satellite's AmEpID is "11"; `ResolveExpanded(amEpID)` applies Table 5-13 (AmID
 01/10/11 → SV 31–43, 44–56, 57–63) and refuses reserved combinations. A reserved page is never
 range-checked at decode, so it cannot fail the frame. An all-zero entry (√A = 0) is unused.
+Inactive expanded slots have also been observed carrying a repeated non-zero fill pattern. D1
+almanacs are exposed only when their semi-major axis is within a generous bound of the BDS MEO
+or IGSO/GEO reference shells (B1I §3.1; B2a Table 7-8); GEO PRNs must use the latter shell.
 Subframe 5 page 8 sets `HasAlmanacRef` and supplies the set's eight-bit BDT week (`AlmanacWN`)
 and toa (`AlmanacToa`), allowing callers to recover an absolute reference instant.
 **`BeiDouD1Almanac.Ephemeris()`** uses i₀ = 0.30π, or 0 for a GEO by the `kepler.IsBeiDouGEO`

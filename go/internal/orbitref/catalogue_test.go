@@ -51,3 +51,31 @@ func TestFetchKeepsLastGoodRosterAndCache(t *testing.T) {
 		t.Fatal("restart erased reference identities")
 	}
 }
+
+func TestCurrentPositionRefusesDelayedAndCoastedReference(t *testing.T) {
+	at := time.Date(2024, 1, 10, 13, 0, 0, 0, time.UTC)
+	c := New("", 18)
+	orbits, err := parseRINEX(strings.NewReader(fixture(t)), 18)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.data = diskCatalogue{FetchedAt: at, Orbits: orbits}
+
+	var name string
+	for candidate := range c.data.Orbits {
+		name = candidate
+		break
+	}
+	if name == "" {
+		t.Fatal("fixture contains no reference orbits")
+	}
+	if sv, ok := c.CurrentPosition(name, at, at); !ok || sv.Position == nil || sv.Extrapolated {
+		t.Fatalf("current position = %+v, %v", sv, ok)
+	}
+	if _, ok := c.CurrentPosition(name, at.Add(36*time.Minute), at); ok {
+		t.Fatal("delayed reference was admitted to the integrity comparison")
+	}
+	if _, ok := c.CurrentPosition(name, at, at.Add(time.Second)); ok {
+		t.Fatal("future observation epoch was admitted")
+	}
+}

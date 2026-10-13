@@ -59,6 +59,8 @@ consumer align to it.
 | **Ephemeris age (Galileo)** | `eph-age-m > 105` (`EphAgeThresholdGalileo`) | **warn** (`eph_aged`) | Galileo refreshes fastest; stale = suspect |
 | **Ephemeris age (all non-Galileo)** | `eph-age-m > 140` (`EphAgeThresholdGPS`) | **warn** | despite the name, this constant is intsat's default for *every* non-Galileo constellation; QZSS/NavIC inherit it |
 | **Orbit disco** | `> 1.45 m` (`OrbitDiscoThreshold`) → warn | `> 10 m` (`OrbitDiscoSevereThreshold`) → crit | GPS+Galileo only in intsat today; §3 |
+| **Independent reference-orbit delta** | `> 1 km` (`ReferenceOrbitThreshold`) → warn | `> 10 km` (`ReferenceOrbitSevereThreshold`) → crit | Live broadcast ECEF vs independently downloaded merged-broadcast ECEF at the exact same epoch. Alarm-only: it never suppresses served data. Classified only while the external reference is current; delayed/coasted/missing references hold state rather than raising or clearing. These deliberately gross bands tolerate issue-of-data changeovers and are not a user-range-accuracy claim |
+| **Independent reference-almanac delta** | `> 100 km` (`ReferenceAlmanacThreshold`) → warn | `> 1,000 km` (`ReferenceAlmanacSevereThreshold`) → crit | Decoded almanac ECEF vs the same current reference at the exact same epoch. The bands sit far above the documented few-kilometre / ~20 km coarse-orbit expectations: this detects wrong PRNs, epochs and orbital shells rather than grading almanac accuracy |
 | **Time disco (clock jump)** | `> 2.5 ns` (`TimeDiscoThreshold`) → warn | `> 10 ns` (`TimeDiscoSevereThreshold`) → crit | Galileo only in intsat today; `ns/3.335 ≈ m`; §3 |
 | **SISA / URA change** | crosses `3.0 m` (`SISAAlertThreshold`) | warn | accuracy degradation |
 | **Silent SV** | unseen `> 3600 s` (`SilentThreshold`), classified only with `≥ 4` live receivers (`SilenceMinReceivers`) | warn (`observation_lost`) | **precondition : "always in view" is true of the constellation as seen by a globally distributed fleet, not of one station's sky** — from a sub-footprint fleet every MEO/IGSO SV sets once per orbital pass and the classifier manufactured a false warning pair per pass. Below the floor the classifier is suppressed (machines hold, regression fix); constellation-outage coverage there comes from `eph_aged`/`position_unknown`/`capability_signal_lost`. The floor is a necessary-not-sufficient proxy until the observer-geometry pass lands the real gate (propagated elevation > mask from ≥ 1 live station) |
@@ -125,6 +127,17 @@ with `ClockOffset` = `af0 + af1·Δt + af2·Δt² + Δtr` (docs/MATH.md §4), th
 computed consistently for both models. A legitimate ephemeris update has sub-nanosecond,
 sub-metre discontinuities; a real orbit/clock event, an upload error, or a spoofer swapping the
 broadcast shows up as metres / nanoseconds. This discontinuity measure is also used in galmon's Galileo integrity reporting.
+
+**Independent reference-orbit delta.** While the BKG merged broadcast-navigation
+catalogue is current, the collector propagates its orbit to the exact timestamp
+that produced each live signal's cached ephemeris ECEF position and measures the
+3-D difference. A sustained difference above 1 km warns and above 10 km is
+critical. Every decoded almanac is compared independently, including almanacs for
+satellites that also have a current ephemeris; its deliberately wider bands are
+100 km and 1,000 km. These are gross decode/time-system/PRN/orbital-shell alarms,
+not accuracy estimators. They are alarm-only: receiver-derived positions continue
+to be served with their provenance, and an unavailable or delayed reference
+produces no classification. Map-only coasting is never integrity evidence.
 
 **delta-Hz (planned)** (per receiver): observed Doppler − ephemeris-predicted Doppler (docs/MATH.md §2.2),
 optionally clock-corrected (`delta_hz_corr`). A *coherent* delta-Hz across independent receivers
@@ -195,6 +208,8 @@ The baseline vocabulary and severities below are **verified against intsat's shi
 | `health_change` | broadcast health transition (`health_code`/`health_issue_level`) | 1–2 (severity follows `health_issue_level` — marginal component codes warn, do-not-use/nav-data-bad is critical) |
 | `eph_aged` | ephemeris age crosses the constellation threshold (§2) | 1 |
 | `orbit_disco` | orbit-disco band change (§2) | 1, → 2 above 10 m |
+| `reference_orbit_divergence` | live broadcast position differs from the current independent reference by >1 km for the debounce window; >10 km is the gross-error band. Subject is satellite×signal and params include both epochs, source, delta and corroboration. Delayed/coasted reference geometry is never classified | 1, → 2 above 10 km; 0 on clear |
+| `reference_almanac_divergence` | decoded almanac position differs from the current independent reference by >100 km for the debounce window; >1,000 km is the wrong-shell band. Subject is the physical satellite and params identify `position_source: "almanac"`; no signal id is invented | 1, → 2 above 1,000 km; 0 on clear |
 | `clock_jump` | time-disco band change | 1, → 2 above 10 ns |
 | `sisa_change` | SISA/URA crosses 3 m, or the broadcast index decodes to the "no accuracy prediction — use at own risk" sentinel (`new_value` `no_accuracy`, regression fix). BeiDou `C##@8` (packed B-CNAV2 SISAI, OUTPUT.md §1.1 `acc_index`): no metres decode exists, so transitions carry `raw_<packed>` values at **info** severity instead of the 3 m band | 1 |
 | `observation_lost` | SV silent > 3600 s — classified only while `≥ SilenceMinReceivers` stations are live (below the fleet-footprint floor, silence is orbital mechanics, not an outage; §2) | 1 |

@@ -107,8 +107,14 @@ constellation no station hears contributes none.
 
 The map therefore downloads BKG's merged RINEX 3 broadcast-navigation file and
 keeps its expected identities separately from local observations. These public
-orbits are used only for map geometry. They never enter the ingest store, integrity
-detectors, edge reception forecasts, receiver counts, or ordinary almanac feed.
+orbits never enter the ingest store, edge reception forecasts, receiver counts,
+or ordinary almanac feed. While the reference is current, the integrity detector
+also uses it for alarm-only gross-error comparisons. Each live ephemeris ECEF
+position is compared with the reference propagated to the exact same epoch
+(warning above 1 km, critical above 10 km). Every decoded almanac is compared as
+well, including one hidden in the map by a fresher ephemeris, with coarse-orbit
+bands of 100 km and 1,000 km. Neither comparison replaces or suppresses
+receiver-derived data.
 
 With the read listener enabled, reference downloads run at startup and every
 15 minutes. The previous UTC day's file also bootstraps the catalogue at startup
@@ -138,6 +144,11 @@ three for every system, well inside a 2° cell. A current reference never
 extrapolates: an orbit that a fresh download no longer refreshes belongs to a
 satellite whose geometry is genuinely unknown. Satellite details show the age
 of an extrapolated orbit.
+
+Delayed and extrapolated positions are map continuity only. They are never used
+by the integrity comparison, and missing reference evidence holds the detector's
+prior state rather than raising or clearing `reference_orbit_divergence` or
+`reference_almanac_divergence`.
 
 Expired coordinates are omitted, but the satellite identity remains. Missing
 coordinates prevent a trustworthy visibility test, so uncertainty affects the

@@ -94,6 +94,27 @@ func TestBeiDouD1AlmanacPages(t *testing.T) {
 	if sf, err := DecodeBeiDouD1(d1AlmanacWords(4, 9, 0, 3, 0)); err != nil || sf.Almanac != nil || !sf.HasAmEpID {
 		t.Fatalf("unused all-zero entry: %+v, %v", sf, err)
 	}
+	// Inactive expanded slots in a real broadcast carried the repeated
+	// 0xfcfcfc/0x7e7e fill pattern rather than zero. Its √A would put a
+	// satellite on a 65 539 km semi-major axis, outside both BDS shells.
+	if sf, err := DecodeBeiDouD1(d1AlmanacWords(5, 18, 126, 2, 0xfcfcfc)); err != nil || sf.Almanac != nil {
+		t.Fatalf("non-zero filler entry: %+v, %v", sf.Almanac, err)
+	}
+	if _, err := (&BeiDouD1Almanac{SVID: 51, SqrtA: float64(0xfcfcfc) / (1 << 11)}).Ephemeris(); !errors.Is(err, errBadAlmanac) {
+		t.Fatalf("off-shell almanac: %v", err)
+	}
+	if _, err := (&BeiDouD1Almanac{SVID: 51, SqrtA: -math.Sqrt(bcnavArefMEO)}).Ephemeris(); !errors.Is(err, errBadAlmanac) {
+		t.Fatalf("negative √A: %v", err)
+	}
+	// A non-GEO PRN may be MEO or IGSO, but a GEO PRN must use the GEO/IGSO
+	// shell. Keep both legitimate D1 orbit classes while rejecting a swapped
+	// shell before propagation.
+	if _, err := (&BeiDouD1Almanac{SVID: 56, SqrtA: math.Sqrt(bcnavArefIGSO)}).Ephemeris(); err != nil {
+		t.Fatalf("IGSO almanac: %v", err)
+	}
+	if _, err := (&BeiDouD1Almanac{SVID: 63, SqrtA: math.Sqrt(bcnavArefMEO)}).Ephemeris(); !errors.Is(err, errBadAlmanac) {
+		t.Fatalf("GEO on MEO shell: %v", err)
+	}
 	if _, err := DecodeBeiDouD1(d1AlmanacWords(4, 12, 148, 3, 10818560)); !errors.Is(err, errBadEpoch) {
 		t.Fatalf("toa past 602112 s: %v", err)
 	}

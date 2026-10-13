@@ -179,22 +179,14 @@ func (s *Store) applyBeiDouAlmanac(transmitter int, a *frame.BeiDouMidiAlmanac, 
 	})
 }
 
-// bdsAmEpIDFresh bounds how old a satellite's last AmEpID may be when one of
-// its expanded pages arrives. Every 30 s D1 frame carries a subframe 4 basic
-// page with AmEpID (BDS-SIS-B1I-3.0 §5.2.4.13–14), so a few minutes is
-// generous. Engineering bound.
-const bdsAmEpIDFresh = 5 * time.Minute
-
 // applyBeiDouD1Almanac stores the almanac on a D1 subframe 4/5 page. Subframe
-// 5 page 8 carries the truncated BDT week and toa that anchor the set. Basic
-// pages 1–30 are almanacs for every AmEpID; AmEpID "11" is required only for
-// expanded pages (Table 5-13). Until page 8 arrives, the conservative fallback
-// accepts pages only from an AmEpID "11" transmitter and resolves toa to the
-// instant nearest reception. Caller holds the SV's shard lock.
+// 5 page 8 carries the truncated BDT week and toa that anchor the
+// constellation-wide set. Basic pages 1–30 are almanacs for every AmEpID;
+// AmEpID "11" is required only for expanded pages (Table 5-13). No D1 page is
+// accepted until page 8 fixes its exact week, and an expanded page additionally
+// requires AmEpID "11" observed from the same transmitter under that exact
+// set. Caller holds the SV's shard lock.
 func (s *Store) applyBeiDouD1Almanac(st *svState, sf *frame.BeiDouSubframe, stamp, local time.Time) {
-	if sf.HasAmEpID {
-		st.bdsAmEpID, st.bdsAmEpIDAt = sf.AmEpID, local
-	}
 	if sf.HasAlmanacRef {
 		week := gnsstime.DisambiguateWeek(gnsstime.SysBeiDou, sf.AlmanacWN, 8,
 			float64(stamp.Unix()), float64(gpsUTCOffset))
@@ -204,11 +196,14 @@ func (s *Store) applyBeiDouD1Almanac(st *svState, sf *frame.BeiDouSubframe, stam
 		if ok {
 			ref := time.Unix(int64(math.Round(unix)), 0)
 			age := stamp.Sub(ref)
-			if age > -keplerAlmanacValidity(gnss.BeiDou) && age < keplerAlmanacValidity(gnss.BeiDou) &&
-				(st.bdsAlmRef.IsZero() || ref.After(st.bdsAlmRef) ||
-					(ref.Equal(st.bdsAlmRef) && local.After(st.bdsAlmRefAt))) {
-				st.bdsAlmRef, st.bdsAlmRefTOW, st.bdsAlmRefAt = ref, sf.AlmanacToa, local
-				st.bdsAlmRefWN = sf.AlmanacWN
+			if age > -keplerAlmanacValidity(gnss.BeiDou) && age < keplerAlmanacValidity(gnss.BeiDou) {
+				s.almMu.Lock()
+				if s.bdsAlmRef.IsZero() || ref.After(s.bdsAlmRef) ||
+					(ref.Equal(s.bdsAlmRef) && local.After(s.bdsAlmRefAt)) {
+					s.bdsAlmRef, s.bdsAlmRefTOW, s.bdsAlmRefAt = ref, sf.AlmanacToa, local
+					s.bdsAlmRefWN = sf.AlmanacWN
+				}
+				s.almMu.Unlock()
 			}
 		}
 	}
@@ -217,9 +212,20 @@ func (s *Store) applyBeiDouD1Almanac(st *svState, sf *frame.BeiDouSubframe, stam
 		return
 	}
 	resolved := *a
-	freshExpanded := !st.bdsAmEpIDAt.IsZero() && local.Sub(st.bdsAmEpIDAt) <= bdsAmEpIDFresh && st.bdsAmEpID == 3
+	s.almMu.Lock()
+	ref, refTOW, refWN := s.bdsAlmRef, s.bdsAlmRefTOW, s.bdsAlmRefWN
+	s.almMu.Unlock()
+	if ref.IsZero() || resolved.Toa != refTOW {
+		return // page 8 has not arrived, has expired, or names another set
+	}
+	if age := stamp.Sub(ref); age <= -keplerAlmanacValidity(gnss.BeiDou) || age >= keplerAlmanacValidity(gnss.BeiDou) {
+		return
+	}
+	if sf.HasAmEpID {
+		st.bdsAmEpID, st.bdsAmEpIDRef = sf.AmEpID, ref
+	}
 	if resolved.Expanded {
-		if !freshExpanded || !resolved.ResolveExpanded(st.bdsAmEpID) {
+		if st.bdsAmEpID != 3 || !st.bdsAmEpIDRef.Equal(ref) || !resolved.ResolveExpanded(st.bdsAmEpID) {
 			return
 		}
 	}
@@ -227,30 +233,12 @@ func (s *Store) applyBeiDouD1Almanac(st *svState, sf *frame.BeiDouSubframe, stam
 	if err != nil {
 		return
 	}
-	if !st.bdsAlmRef.IsZero() {
-		if resolved.Toa != st.bdsAlmRefTOW {
-			return // page belongs to another almanac set
-		}
-		s.storeAlmanacAt(eph, st.bdsAlmRef, stamp, true)
-		copy := resolved
-		s.storeAlmanacRecord(almanacSourceRecord{
-			g: gnss.BeiDou, subject: resolved.SVID, transmitter: st.key.Sv, source: almanacSourceBeiDouD1,
-			toa: st.bdsAlmRef, stamp: stamp, exact: true,
-			weekRaw: st.bdsAlmRefWN, weekBits: 8, beidouD1: &copy,
-		})
-		return
-	}
-	if !freshExpanded {
-		return // wait for page 8 rather than risk a one-week ambiguity
-	}
-	toa, ok := s.storeAlmanac(eph, stamp, -1)
-	if !ok {
-		return
-	}
+	s.storeAlmanacAt(eph, ref, stamp, true)
 	copy := resolved
 	s.storeAlmanacRecord(almanacSourceRecord{
 		g: gnss.BeiDou, subject: resolved.SVID, transmitter: st.key.Sv, source: almanacSourceBeiDouD1,
-		toa: toa, stamp: stamp, beidouD1: &copy,
+		toa: ref, stamp: stamp, exact: true,
+		weekRaw: refWN, weekBits: 8, beidouD1: &copy,
 	})
 }
 
@@ -324,6 +312,33 @@ type almanacPosition struct {
 	pos         gnss.ECEF
 	inclination float64 // rad
 	t0e         int     // the almanac's own reference: toa (s of week) or GLONASS t_λ (s of day)
+}
+
+// AlmanacReferencePosition is one decoded broadcast almanac propagated to an
+// exact epoch for the independent-reference integrity comparison. It is a
+// detector input, not part of the public almanac wire format. Unlike
+// FeedAlmanac, it includes an almanac position even when a fresh ephemeris for
+// the same satellite is also available.
+type AlmanacReferencePosition struct {
+	Name     string
+	GNSSID   int
+	Position [3]float64
+	At       time.Time
+}
+
+// AlmanacReferencePositions returns every valid decoded almanac at now. The
+// caller must compare it with a reference propagated to this identical epoch;
+// even a sub-second skew is kilometres of apparent along-track error.
+func (s *Store) AlmanacReferencePositions(now time.Time) []AlmanacReferencePosition {
+	positions := s.almanacPositions(now)
+	out := make([]AlmanacReferencePosition, 0, len(positions))
+	for _, p := range positions {
+		out = append(out, AlmanacReferencePosition{
+			Name: p.name, GNSSID: int(p.g),
+			Position: [3]float64{p.pos.X, p.pos.Y, p.pos.Z}, At: now,
+		})
+	}
+	return out
 }
 
 // keplerAlmanacPositions propagates every GPS, Galileo, QZSS and BeiDou almanac still inside its

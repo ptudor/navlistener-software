@@ -344,6 +344,7 @@ var summarySignalEventTypes = []string{
 	"health_change", "qzss_health", "navic_health", "eph_aged", "orbit_disco",
 	"clock_jump", "sisa_change", "ura_alert", "wn_mismatch", "bds_integrity_flag",
 	"leap_mismatch", "osnma_change", "observation_lost", "position_unknown",
+	"reference_orbit_divergence",
 }
 
 // Canonical %02d satellite names in the uint8 wire domain, with the existing
@@ -379,7 +380,8 @@ func (s *Store) SummarizeEventsForAudience(ctx context.Context, audience string,
           CASE WHEN
             (event_type = ANY($4::text[]) AND sv ~ $5) OR
             (event_type = 'xsig_divergence' AND sv ~ $6) OR
-            (event_type IN ('sbas_lost','sbas_health') AND sv ~ $7)
+            (event_type = 'reference_almanac_divergence' AND sv ~ $7) OR
+            (event_type IN ('sbas_lost','sbas_health') AND sv ~ $8)
           THEN LEFT(sv,1) ELSE '' END,
           severity, count(*), max(time)
      FROM gnss_events
@@ -388,6 +390,7 @@ func (s *Store) SummarizeEventsForAudience(ctx context.Context, audience string,
 		audience, since, until, summarySignalEventTypes,
 		"^"+summarySVName+"@"+summarySignal+"$",
 		"^E"+summarySVNumber+"$", // detector's physical Galileo SV, without @signal
+		"^"+summarySVName+"$",    // detector's physical SV, without @signal
 		"^S(1[2-4][0-9]|15[0-8])(@"+summarySignal+")?$")
 	if err != nil {
 		return sum, fmt.Errorf("summarize events: %w", err)

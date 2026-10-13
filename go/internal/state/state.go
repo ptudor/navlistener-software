@@ -395,18 +395,13 @@ type svState struct {
 	// (applyGalileoINAV). Bounded by gloAlmPendingMax/gloAlmPendingStale.
 	galAlmLast map[gloAlmRelay]galAlmWord
 	// bdsAmEpID is the expanded-almanac identification this BeiDou satellite
-	// last broadcast on a D1 basic almanac page, at bdsAmEpIDAt (collector
-	// clock); it decides whether its expanded pages carry almanacs.
-	bdsAmEpID   int
-	bdsAmEpIDAt time.Time
-	// bdsAlmRef is the absolute toa from this satellite's most recent D1
-	// subframe 5 page 8. bdsAlmRefTOW is retained to reject pages from a
-	// different almanac set; bdsAlmRefAt provides freshest-wins ordering in
-	// the collector's monotonic clock domain.
-	bdsAlmRef    time.Time
-	bdsAlmRefTOW float64
-	bdsAlmRefWN  int
-	bdsAlmRefAt  time.Time
+	// last broadcast on a D1 basic almanac page under bdsAmEpIDRef; it decides
+	// whether its expanded pages carry almanacs.
+	bdsAmEpID int
+	// bdsAmEpIDRef is the exact page-8 almanac-set reference under which
+	// bdsAmEpID was observed. Expanded pages are accepted only while that set
+	// is still current, avoiding an arbitrary wall-clock freshness window.
+	bdsAmEpIDRef time.Time
 	// gloFrameBaseSlot is the subject slot of the current frame's first almanac pair
 	// (strings 6/7), used to detect frame 5. Frame 5 carries almanac only for slots
 	// 21–24 (strings 6–13); its strings 14/15 are B1/B2/KP UT1/leap data, NOT almanac, so a
@@ -694,6 +689,13 @@ type Store struct {
 	// almanacRecords retains every decoded message family's complete normalized
 	// source record for native interchange and standard-format exporters.
 	almanacRecords map[almanacRecordKey]almanacSourceRecord
+	// BeiDou D1 page 8 names the constellation-wide almanac set. Keep its
+	// absolute reference globally: any satellite may supply page 8 and another
+	// may supply the following basic/expanded pages.
+	bdsAlmRef    time.Time
+	bdsAlmRefTOW float64
+	bdsAlmRefWN  int
+	bdsAlmRefAt  time.Time
 
 	// Per-station RF-environment state for the PNT-defense layer (docs/DEFENSE-PNT.md):
 	// station-scoped (keyed by ingest source / observer id), not per-SV.

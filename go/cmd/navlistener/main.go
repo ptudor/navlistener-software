@@ -454,6 +454,7 @@ func run() int {
 	// It serves the live feeds from RAM on a loopback listener behind a TLS front,
 	// separate from the ingest write path and the metrics listener.
 	var apiSrv *serve.Server
+	var orbitCatalogue *orbitref.Catalogue
 	if cfg.Serve.Addr != "" {
 		// The events query API reads the historian; a true nil interface (not a typed nil
 		// *store.Store) keeps the endpoints reporting "unavailable" when persistence is off.
@@ -475,10 +476,10 @@ func run() int {
 			apiSrv.SetEventEvidence(historian)
 		}
 		if cfg.Serve.MapReference == nil || *cfg.Serve.MapReference {
-			catalogue := orbitref.New(cfg.Serve.MapReferenceCache, cfg.State.LeapSeconds)
-			apiSrv.SetMapReference(catalogue)
+			orbitCatalogue = orbitref.New(cfg.Serve.MapReferenceCache, cfg.State.LeapSeconds)
+			apiSrv.SetMapReference(orbitCatalogue)
 			wg.Add(1)
-			go func() { defer wg.Done(); catalogue.Run(ctx, log) }()
+			go func() { defer wg.Done(); orbitCatalogue.Run(ctx, log) }()
 		}
 		apiSrv.SetReceptionControls(stationManager)
 		if updateManager != nil {
@@ -554,19 +555,19 @@ func run() int {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		detectLoop(ctx, live, detector, ew, operatorPublisher, policyEpochs, log,
+		detectLoop(ctx, live, detector, ew, operatorPublisher, policyEpochs, orbitCatalogue, log,
 			(identity.Audience{Kind: identity.AudienceOperator, ID: cfg.Collector.InstanceID}).Key())
 	}()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		detectLoop(ctx, publicEventsLive, publicDetector, ew, publicPublisher, policyEpochs, log, "public")
+		detectLoop(ctx, publicEventsLive, publicDetector, ew, publicPublisher, policyEpochs, orbitCatalogue, log, "public")
 	}()
 	if readAuthorizer != nil && historian != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			scopedDetectLoop(ctx, audienceRegistry, ew, apiSrv, policyEpochs, log)
+			scopedDetectLoop(ctx, audienceRegistry, ew, apiSrv, policyEpochs, orbitCatalogue, log)
 		}()
 	}
 	if historian != nil {
@@ -1156,7 +1157,7 @@ const detectInterval = 15 * time.Second
 // debounced detector, and routes each confirmed event to the historian (which
 // assigns the id and fires pg_notify) and the SSE broker. Only durable events are
 // published, so the database id is the sole replay cursor domain.
-func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, historian eventWriter, api eventPublisher, epochs *audience.PolicyEpochs, log *slog.Logger, audienceKey ...string) {
+func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, historian eventWriter, api eventPublisher, epochs *audience.PolicyEpochs, reference *orbitref.Catalogue, log *slog.Logger, audienceKey ...string) {
 	tick := time.NewTicker(detectInterval)
 	defer tick.Stop()
 	// regression fix/detector sampling and durable writes have separate owners. The
@@ -1173,7 +1174,7 @@ func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, hi
 	for {
 		select {
 		case <-tick.C:
-			detectTick(live, det, writer, log)
+			detectTick(live, det, writer, reference, log)
 		case <-ctx.Done():
 			// writer.run performs one bounded final flush with a fresh
 			// context while run() deliberately keeps the historian alive.
@@ -1188,7 +1189,7 @@ func detectLoop(ctx context.Context, live *state.Store, det *detect.Detector, hi
 // an event write must reconnect/skip this tick, not kill the detect goroutine (which has
 // no supervisor within the process) and with it all integrity monitoring. Events already
 // appended to the writer-owned FIFO remain visible if a later classification panics.
-func detectTick(live *state.Store, det *detect.Detector, writer *eventPipeline, log *slog.Logger) {
+func detectTick(live *state.Store, det *detect.Detector, writer *eventPipeline, reference *orbitref.Catalogue, log *slog.Logger) {
 	defer func() {
 		if r := recover(); r != nil {
 			metrics.EventWriteErrorsTotal.Inc()
@@ -1196,7 +1197,7 @@ func detectTick(live *state.Store, det *detect.Detector, writer *eventPipeline, 
 		}
 	}()
 	generation := writer.policyGeneration()
-	for _, e := range detectEvents(live, det, writer.audience) {
+	for _, e := range detectEvents(live, det, writer.audience, reference) {
 		if pe := prepareEvent(e, writer.historian, log); pe != nil {
 			pe.row.Audience = writer.audience
 			pe.row.RedactionClass = writer.redactionClass
@@ -1206,7 +1207,7 @@ func detectTick(live *state.Store, det *detect.Detector, writer *eventPipeline, 
 	}
 }
 
-func detectEvents(live *state.Store, det *detect.Detector, audienceKey string) []detect.Event {
+func detectEvents(live *state.Store, det *detect.Detector, audienceKey string, reference *orbitref.Catalogue) []detect.Event {
 	now := time.Now()
 	// the live-receiver count gates the per-SV silence classifier — from a
 	// sub-constellation-footprint fleet, "unseen for an hour" is orbital mechanics,
@@ -1214,7 +1215,10 @@ func detectEvents(live *state.Store, det *detect.Detector, audienceKey string) [
 	// the detector reads the UNFILTERED SBAS view (SBASDetect) so a dark
 	// GEO stays classifiable after the served feed drops it — the sbas_lost event
 	// has no input otherwise. The served /gnss feed keeps using FeedSBAS.
-	events := det.Tick(now, live.FeedSVs(now), live.SBASDetect(now), live.LiveReceivers(now))
+	svs := live.FeedSVs(now)
+	events := det.Tick(now, svs, live.SBASDetect(now), live.LiveReceivers(now))
+	events = append(events, det.TickOrbitReference(now, referenceOrbitComparisons(
+		reference, now, svs, live.AlmanacReferencePositions(now)))...)
 	// Station-scoped PNT-defense events (jamming/RF, docs/DEFENSE-PNT.md) share the
 	// debounce state machine and event pipeline, as do the station integrity events
 	// (spoofing_suspected, station_assurance) evaluated from each station's checks.
@@ -1244,7 +1248,60 @@ func detectEvents(live *state.Store, det *detect.Detector, audienceKey string) [
 	return events
 }
 
-func detectEventsSafely(live *state.Store, det *detect.Detector, audienceKey string, log *slog.Logger) (events []detect.Event) {
+// referenceOrbitComparisons evaluates the independent orbit and the receiver's
+// decoded broadcast position at the identical epoch. A nil/delayed catalogue,
+// a missing SV, or an orbit outside its fit window yields no classification;
+// detector state then holds rather than inventing either an alarm or recovery.
+func referenceOrbitComparisons(reference *orbitref.Catalogue, now time.Time, svs map[string]state.FeedSV, almanacs []state.AlmanacReferencePosition) map[string]detect.OrbitReferenceComparison {
+	comparisons := make(map[string]detect.OrbitReferenceComparison)
+	if reference == nil {
+		return comparisons
+	}
+	for subject, sv := range svs {
+		if sv.XM == nil || sv.YM == nil || sv.ZM == nil || sv.PosAtUnixNs == 0 {
+			continue
+		}
+		positionAt := time.Unix(0, sv.PosAtUnixNs)
+		independent, ok := reference.CurrentPosition(sv.Name, now, positionAt)
+		if !ok || independent.Position == nil || independent.GNSS != sv.GnssID {
+			continue
+		}
+		dx := *sv.XM - independent.Position[0]
+		dy := *sv.YM - independent.Position[1]
+		dz := *sv.ZM - independent.Position[2]
+		delta := math.Sqrt(dx*dx + dy*dy + dz*dz)
+		if math.IsNaN(delta) || math.IsInf(delta, 0) {
+			continue
+		}
+		comparisons[subject] = detect.OrbitReferenceComparison{
+			Name: sv.Name, GNSSID: sv.GnssID, SigID: sv.SigID, DeltaM: delta,
+			Conf: sv.Conf, ConfWeighted: sv.ConfWeighted,
+			PositionAt: positionAt, ReferenceEpoch: independent.Epoch,
+			ReferenceSource: orbitref.Source,
+		}
+	}
+	for _, almanac := range almanacs {
+		independent, ok := reference.CurrentPosition(almanac.Name, now, almanac.At)
+		if !ok || independent.Position == nil || independent.GNSS != almanac.GNSSID {
+			continue
+		}
+		dx := almanac.Position[0] - independent.Position[0]
+		dy := almanac.Position[1] - independent.Position[1]
+		dz := almanac.Position[2] - independent.Position[2]
+		delta := math.Sqrt(dx*dx + dy*dy + dz*dz)
+		if math.IsNaN(delta) || math.IsInf(delta, 0) {
+			continue
+		}
+		comparisons[almanac.Name] = detect.OrbitReferenceComparison{
+			Name: almanac.Name, GNSSID: almanac.GNSSID, DeltaM: delta,
+			PositionAt: almanac.At, ReferenceEpoch: independent.Epoch,
+			ReferenceSource: orbitref.Source, PositionSource: "almanac",
+		}
+	}
+	return comparisons
+}
+
+func detectEventsSafely(live *state.Store, det *detect.Detector, audienceKey string, reference *orbitref.Catalogue, log *slog.Logger) (events []detect.Event) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			metrics.EventWriteErrorsTotal.Inc()
@@ -1252,7 +1309,7 @@ func detectEventsSafely(live *state.Store, det *detect.Detector, audienceKey str
 			events = nil
 		}
 	}()
-	return detectEvents(live, det, audienceKey)
+	return detectEvents(live, det, audienceKey, reference)
 }
 
 type scopedEventPublisher struct {
@@ -1277,7 +1334,7 @@ func fixedEventPublishers(api *serve.Server, collector string) (operator, public
 // scopedDetectLoop gives each organization/collection an independent detector
 // state machine and durable audience cursor. Writer goroutines are allocated
 // lazily only after a view confirms its first event.
-func scopedDetectLoop(ctx context.Context, registry *audience.Registry, historian eventWriter, api *serve.Server, epochs *audience.PolicyEpochs, log *slog.Logger) {
+func scopedDetectLoop(ctx context.Context, registry *audience.Registry, historian eventWriter, api *serve.Server, epochs *audience.PolicyEpochs, reference *orbitref.Catalogue, log *slog.Logger) {
 	tick := time.NewTicker(detectInterval)
 	defer tick.Stop()
 	type scopedState struct {
@@ -1306,7 +1363,7 @@ func scopedDetectLoop(ctx context.Context, registry *audience.Registry, historia
 					scoped.generation = generation
 				}
 				policyGeneration, _ := epochs.Current(key)
-				events := detectEventsSafely(view.Store, scoped.detector, key, log)
+				events := detectEventsSafely(view.Store, scoped.detector, key, reference, log)
 				if len(events) == 0 {
 					continue
 				}

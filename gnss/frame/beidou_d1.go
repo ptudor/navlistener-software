@@ -2,6 +2,7 @@ package frame
 
 import (
 	"errors"
+	"math"
 
 	"github.com/ptudor/gnss"
 	"github.com/ptudor/gnss/clock"
@@ -101,6 +102,26 @@ type BeiDouD1Almanac struct {
 	A0, A1   float64 // s, s/s
 }
 
+// bdsAlmanacAxisTolerance is deliberately much wider than the complete
+// B-CNAV2 ΔA range around the constellation's two reference axes (Table 7-8).
+// It accepts coarse D1 elements for every BDS MEO, IGSO and GEO orbit while
+// rejecting inactive expanded slots observed carrying a non-zero fill pattern
+// that decodes to a physically impossible 65 539 km semi-major axis.
+const bdsAlmanacAxisTolerance = 1_000_000.0
+
+func validBeiDouAlmanacAxis(svid int, sqrtA float64) bool {
+	if !(sqrtA > 0) || math.IsInf(sqrtA, 0) {
+		return false
+	}
+	a := sqrtA * sqrtA
+	meo := math.Abs(a-bcnavArefMEO) <= bdsAlmanacAxisTolerance
+	geoIGSO := math.Abs(a-bcnavArefIGSO) <= bdsAlmanacAxisTolerance
+	if svid != 0 && kepler.IsBeiDouGEO(gnss.BeiDou, svid) {
+		return geoIGSO
+	}
+	return meo || geoIGSO
+}
+
 // ResolveExpanded maps an expanded page (subframe 5 pages 11–23) to its
 // satellite by the broadcasting satellite's AmEpID and the page's AmID (Table
 // 5-13): only AmEpID "11" makes these pages almanacs, and AmID 01, 10 and 11
@@ -128,7 +149,7 @@ func (a *BeiDouD1Almanac) ResolveExpanded(amEpID int) bool {
 // (Table 5-15). GEO almanacs use the standard algorithm, so the GEO ephemeris
 // rotation is not applied. An expanded page must be resolved first.
 func (a *BeiDouD1Almanac) Ephemeris() (kepler.Ephemeris, error) {
-	if a.SVID < 1 || a.SVID > 63 {
+	if a.SVID < 1 || a.SVID > 63 || !validBeiDouAlmanacAxis(a.SVID, a.SqrtA) {
 		return kepler.Ephemeris{}, errBadAlmanac
 	}
 	i0 := 0.30
@@ -325,7 +346,11 @@ func DecodeBeiDouD1(words []uint32) (*BeiDouSubframe, error) {
 			// by ResolveExpanded, so a reserved page never fails the frame.
 			a.Expanded, a.AmID = true, int(u(222, 2))
 		}
-		if a.SqrtA != 0 { // an unused entry is all zero
+		// Inactive entries are not consistently all zero. Live expanded pages
+		// also use a repeated non-zero fill pattern; only expose an Almanac when
+		// its axis lies on one of the BDS constellation's two orbital shells.
+		// SVID 0 means an expanded page not yet mapped through AmID.
+		if validBeiDouAlmanacAxis(a.SVID, a.SqrtA) {
 			sf.Almanac = a
 		}
 	default:
