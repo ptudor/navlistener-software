@@ -21,7 +21,7 @@ All of this is from the board's netlist and the IC review; do not re-derive it.
 | GP0 | `PANEL_SDO`, the last TLC5916's SDO of the LED chain (3V3_SYS logic, through 33 Ω). On the 162mm board the chain is 24 bits: U12 green, U13 amber, U14 status. On the 3900 mil square board, which runs the same X20 row, GP0 reads that board's on-board 16-bit chain instead |
 | GP1 | `ETH_INT_N`, W5500 INTn (3V3_ETH logic, no external pull-up). The W5500 is polled and its interrupt masks are zero, so this line idles high today |
 | GP2 | `BARO_INT_N`, BMP581 INT, 10 kΩ to `3V3_SENS`. Not enabled by firmware today (the sensor is polled) |
-| GP3 | `HUM_INT_N`, HDC2080 DRDY/INT, push-pull, no pull-up. Not enabled by firmware today |
+| GP3 | `HUM_INT_N`, HDC2080 DRDY/INT, push-pull, 10 kΩ to `3V3_SENS` (the output is high impedance until firmware enables it). Not enabled by firmware today |
 | GP4 | `TEMP_ALERT_N`, MCP9808 Alert, open drain, 10 kΩ to `3V3_SENS`. Not enabled by firmware today |
 | GP5 | `PWR_ALERT_N`, INA3221 Warning (pin 8) and Critical (pin 9) wired-OR, open drain, 10 kΩ to `3V3_SENS`. The INA3221's limit registers reset to their maximum, so this line never asserts until firmware programs limits (section 4) |
 | GP6, GP7 | unconnected |
@@ -230,10 +230,11 @@ sections above in these places:
   the frame is still written in full. The results are logged by the expander's task, never
   by the panel refresh task, whose stack grew from 2 KiB to 3 KiB for the I2C reads.
 - **GP3 is driven by the HDC.** The HDC2080's DRDY/INT output is high impedance until
-  firmware enables it (0x0E bit 2, reset 0) and `HUM_INT_N` has no pull-up, so GP3 would
-  float under GPINTEN 0x3E. The humidity driver's configuration now masks every HDC
-  interrupt source (0x07 = 0) and enables the output active low in clear-on-read mode (0x0E
-  bits 2-0 = 100; INT_MODE must be 0 or the pin stays high impedance), each read back, so the
-  line holds high (HDC2080 SNAS678C section 8.3.4.1, HDC2022 SNAS774A section 7.3.5.1). A
-  `3V3_SENS` power cycle returns the HDC to high impedance, so a future `SENS_EN` control
-  must configure it again as well as resume the expander.
+  firmware enables it (0x0E bit 2, reset 0). The board's 10 kΩ pull-up from `HUM_INT_N` to
+  `3V3_SENS` holds GP3 high until then, and whenever the HDC is missing or not listed. The
+  humidity driver's configuration masks every HDC interrupt source (0x07 = 0) and enables
+  the output active low in clear-on-read mode (0x0E bits 2-0 = 100; INT_MODE must be 0 or
+  the pin stays high impedance), each read back, so the HDC itself drives the line high
+  (HDC2080 SNAS678C section 8.3.4.1, HDC2022 SNAS774A section 7.3.5.1). A `3V3_SENS` power
+  cycle returns the HDC to high impedance, leaving the pull-up to hold the line, so a future
+  `SENS_EN` control must configure it again as well as resume the expander.

@@ -621,7 +621,10 @@ ICM-45686 and MMC34160PJ (telemetry tags 11-13 in [OBSERVER-TELEMETRY.md](OBSERV
 The ZED/X20's front panel is its only chain and takes a 24-bit frame with RTK and ATTENTION
 status. Its MCP23008 expander, where listed, collects the sensor and INA3221 alert lines behind
 one interrupt on GPIO3 and reads the panel chain back on GP0 once a minute
-([IO-EXPANDER.md](../esp32/docs/IO-EXPANDER.md)). A manifest that is unusable,
+([IO-EXPANDER.md](../esp32/docs/IO-EXPANDER.md)). Its internal pull-ups stay off on the
+sensor and Ethernet inputs, so each source holds its own line: the HDC2080's `HUM_INT_N` has
+a 10 kΩ pull-up to `3V3_SENS`, like `BARO_INT_N` and `TEMP_ALERT_N`, because its push-pull
+output is high impedance until firmware enables it. A manifest that is unusable,
 names no board, names one or a revision the firmware does not know, or names more than one
 runs nothing board-specific; the receiver still streams, unconfigured. A new board or
 revision therefore needs a firmware row before its first unit is programmed. The single-board

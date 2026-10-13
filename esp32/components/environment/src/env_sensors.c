@@ -36,9 +36,10 @@ static void init_hdc(env_sensors_t *s)
     uint8_t p[4];
     // Every interrupt source masked (0x07), then manual conversions, heater off and the DRDY/INT
     // output driven: enabled (bit 2), active low (INT_POL 0) and clear-on-read (INT_MODE 0,
-    // without which the pin stays high impedance). With nothing unmasked it holds high, so the
-    // board's HUM_INT_N, which has no pull-up, never floats (HDC2080 SNAS678C section 8.3.4.1,
-    // HDC2022 SNAS774A section 7.3.5.1). The masks go first so the output never shows a stale one.
+    // without which the pin stays high impedance). With nothing unmasked it drives the board's
+    // HUM_INT_N high, as the line's 10 kohm pull-up to 3V3_SENS does while the pin is high
+    // impedance (HDC2080 SNAS678C section 8.3.4.1, HDC2022 SNAS774A section 7.3.5.1). The masks
+    // go first so the output never shows a stale one.
     const uint8_t masked = 0, config = 0x04;
     if ((s->hdc_variant == ENV_HDC2080 || s->hdc_variant == ENV_HDC2022) &&
         read_reg(s, 0x40, 0xfc, p, 4) && le16(p) == 0x5449 && le16(p + 2) == 0x07d0) {
