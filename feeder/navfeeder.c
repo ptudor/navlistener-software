@@ -159,6 +159,7 @@ struct opts {
 	const char *source;    /* /dev/ttyACM0 (serial) or host:port (TCP bridge) */
 	int baud;              /* serial baud when --source is a device path */
 	int configure_ubx;     /* 0 = passive; 1/2/3 = receiver UART1/UART2/USB */
+	int enable_gps_l5;     /* apply CFG-SIGNAL-GPS_L5_ENA in RAM with receiver setup */
 	const char *token, *station, *feed, *ca;
 	const char *cert, *key; /* mTLS client cert + key (PEM); one DNS SAN = the station */
 	const char *spool_file; /* NULL = in-memory only (drop-oldest on overflow) */
@@ -1507,8 +1508,10 @@ static void log_ubx_stats(const char *what, unsigned long recognized, unsigned l
  * never repairs. What WAS missing is the operator's ability to see "link alive, nothing
  * spooling": `delivered` counts the records that actually reached the spool, separately, and
  * both counts are logged (periodically and at source close). Do not merge the two counters. */
-static int run_ubx(int fd, int configure_ubx) {
-	struct rdbuf rb = { .fd = fd, .config = { .port = configure_ubx } };
+static int run_ubx(int fd, int configure_ubx, int enable_gps_l5) {
+	struct rdbuf rb = { .fd = fd, .config = {
+		.port = configure_ubx, .enable_gps_l5 = enable_gps_l5,
+	} };
 	unsigned char head[4], payload[UBX_MAX_PAYLOAD], ck[2];
 	rs_assembler_t solution; /* the receiver-solution epoch being joined */
 	rs_assembler_init(&solution);
@@ -1669,7 +1672,7 @@ static void *producer_thread(void *arg) {
 			continue;
 		}
 		log_msg("source open (ubx): %s", o->source);
-		int useful = run_ubx(fd, o->configure_ubx);
+		int useful = run_ubx(fd, o->configure_ubx, o->enable_gps_l5);
 		close(fd);
 		if (useful) {
 			backoff = 1;
@@ -2442,6 +2445,8 @@ static void usage(void) {
 		"  --configure-ubx PORT  enable SFRBX/NAV-SAT/MON-RF and NAV-PVT/NAV-STATUS/NAV-CLOCK/NAV-EOE\n"
 		"                        in RAM on uart1, uart2, or usb\n"
 		"                        (serial only; preserves receiver baud/NMEA; default passive)\n"
+		"  --enable-gps-l5       with --configure-ubx, enable GPS L5 in RAM on a receiver\n"
+		"                        known to support it; re-applied after opens/resets\n"
 		"  --station ID          this observer's station id (also the mTLS cert's DNS SAN)\n"
 		"  --feed ubx            feed type (only 'ubx' is implemented today; default ubx)\n"
 		"  --token TOK           bearer token (prefer --token-file so it stays out of argv)\n"
@@ -2581,6 +2586,7 @@ int main(int argc, char **argv) {
 			o.configure_ubx = ubx_config_port(argv[++i]);
 			if (!o.configure_ubx) die("--configure-ubx requires uart1, uart2, or usb");
 		}
+		else if (!strcmp(a, "--enable-gps-l5")) o.enable_gps_l5 = 1;
 		else if (!strcmp(a, "--token") && i+1 < argc) o.token = argv[++i];
 		else if (!strcmp(a, "--token-file") && i+1 < argc) o.token = read_token_file(argv[++i]);
 		else if (!strcmp(a, "--station") && i+1 < argc) o.station = argv[++i];
@@ -2603,6 +2609,8 @@ int main(int argc, char **argv) {
 	need(o.source, "source");
 	if (o.configure_ubx && o.source[0] != '/')
 		die("--configure-ubx requires a local serial device source");
+	if (o.enable_gps_l5 && !o.configure_ubx)
+		die("--enable-gps-l5 requires --configure-ubx");
 	need(o.station, "station");
 	if (strcmp(o.feed, "ubx") != 0)
 		die("only --feed ubx is implemented today (sbf/rtcm source modes are deferred)");

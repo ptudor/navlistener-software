@@ -9,17 +9,22 @@
 #define UBX_CONFIG_ACK_S 3
 
 /* awaiting_ack counts the VALSET responses still expected. The receiver answers
- * in send order, so the first response belongs to packet 0. */
+ * in send order, so the first response belongs to packet 0. sent_packets records
+ * whether the optional signal-policy packet was present in that transaction. */
 struct ubx_config {
-	int port, awaiting_ack;
+	int port, enable_gps_l5, awaiting_ack, sent_packets;
 	time_t next_attempt, ack_deadline;
 };
 
 /* Two VALSETs: a receiver rejects a whole VALSET when it does not support one key,
- * and the raw-navigation setup must survive a receiver without the solution keys. */
-#define UBX_CONFIG_PACKETS 2
-static const char *const ubx_config_names[UBX_CONFIG_PACKETS] = {
+ * and the raw-navigation setup must survive a receiver without the solution keys.
+ * GPS L5 policy is a third, separate packet so a receiver without that signal can
+ * reject it without disabling capture. */
+#define UBX_CONFIG_BASE_PACKETS 2
+#define UBX_CONFIG_MAX_PACKETS 3
+static const char *const ubx_config_names[UBX_CONFIG_MAX_PACKETS] = {
 	"UBX output/SFRBX/NAV-SAT/MON-RF", "NAV-PVT/NAV-STATUS/NAV-CLOCK/NAV-EOE",
+	"GPS L5 signal",
 };
 
 static int ubx_config_port(const char *name) {
@@ -32,9 +37,10 @@ static int ubx_config_port(const char *name) {
 /* Exactly four single-byte keys per packet. Packet 0: UBX output enable and the
  * SFRBX, NAV-SAT and MON-RF rates. Packet 1: the NAV-PVT, NAV-STATUS, NAV-CLOCK and
  * NAV-EOE rates of the receiver-solution record (../common/receiver_solution.h).
- * No baud, NMEA, signal, timing, backup RAM or flash configuration is sent. */
+ * The base packets send no baud, NMEA, signal, timing, backup RAM or flash
+ * configuration; optional signal policy is isolated below. */
 static size_t ubx_config_packet(unsigned char out[32], int port, int which) {
-	static const uint32_t keys[UBX_CONFIG_PACKETS][3][4] = {
+	static const uint32_t keys[UBX_CONFIG_BASE_PACKETS][3][4] = {
 		{
 			{ 0x10740001, 0x20910232, 0x20910016, 0x2091035a },
 			{ 0x10760001, 0x20910233, 0x20910017, 0x2091035b },
@@ -46,9 +52,23 @@ static size_t ubx_config_packet(unsigned char out[32], int port, int which) {
 			{ 0x20910009, 0x2091001d, 0x20910068, 0x20910162 },
 		},
 	};
-	if (port < 1 || port > 3 || which < 0 || which >= UBX_CONFIG_PACKETS) return 0;
+	if (port < 1 || port > 3 || which < 0 || which >= UBX_CONFIG_MAX_PACKETS) return 0;
 	memset(out, 0, 32);
 	out[0] = 0xb5; out[1] = 0x62; out[2] = 0x06; out[3] = 0x8a;
+	if (which == 2) {
+		/* CFG-SIGNAL-GPS_L5_ENA. RAM-only is deliberate: fleet policy is
+		 * re-applied on every source open/reset without consuming receiver flash
+		 * endurance or making an old policy survive replacement software. */
+		out[4] = 9; /* payload: VALSET header + one L item */
+		out[6] = 0; out[7] = 1; /* version 0, layers = RAM only */
+		const uint32_t key = 0x10310004;
+		for (unsigned j = 0; j < 4; j++) out[10 + j] = (unsigned char)(key >> (j*8));
+		out[14] = 1;
+		unsigned char a = 0, b = 0;
+		for (unsigned i = 2; i < 15; i++) { a += out[i]; b += a; }
+		out[15] = a; out[16] = b;
+		return 17;
+	}
 	out[4] = 24; /* payload length */
 	out[6] = 0; out[7] = 1; /* version 0, layers = RAM only */
 	for (unsigned i = 0; i < 4; i++) {
@@ -97,12 +117,13 @@ static int ubx_config_write(int fd, const unsigned char *buf, size_t len) {
 static int ubx_config_tick(struct ubx_config *c, int fd, time_t now) {
 	if (!c->port) return 0;
 	if (c->awaiting_ack && now >= c->ack_deadline) {
-		for (int i = UBX_CONFIG_PACKETS - c->awaiting_ack; i < UBX_CONFIG_PACKETS; i++)
+		for (int i = c->sent_packets - c->awaiting_ack; i < c->sent_packets; i++)
 			log_msg("UBX RAM setup (%s): no ACK received; continuing capture", ubx_config_names[i]);
 		c->awaiting_ack = 0;
 	}
 	if (now < c->next_attempt) return 0;
-	for (int i = 0; i < UBX_CONFIG_PACKETS; i++) {
+	int packets = UBX_CONFIG_BASE_PACKETS + !!c->enable_gps_l5;
+	for (int i = 0; i < packets; i++) {
 		unsigned char packet[32];
 		size_t len = ubx_config_packet(packet, c->port, i);
 		if (!len) { errno = EINVAL; return -1; }
@@ -113,9 +134,11 @@ static int ubx_config_tick(struct ubx_config *c, int fd, time_t now) {
 	}
 	c->next_attempt = now + UBX_CONFIG_RETRY_S;
 	c->ack_deadline = now + UBX_CONFIG_ACK_S;
-	c->awaiting_ack = UBX_CONFIG_PACKETS;
-	log_msg("UBX RAM setup requested on %s: SFRBX/NAV-SAT/MON-RF and NAV-PVT/NAV-STATUS/NAV-CLOCK/NAV-EOE; baud and NMEA preserved",
-		c->port == 1 ? "uart1" : c->port == 2 ? "uart2" : "usb");
+	c->sent_packets = packets;
+	c->awaiting_ack = packets;
+	log_msg("UBX RAM setup requested on %s: SFRBX/NAV-SAT/MON-RF and NAV-PVT/NAV-STATUS/NAV-CLOCK/NAV-EOE%s; baud and NMEA preserved",
+		c->port == 1 ? "uart1" : c->port == 2 ? "uart2" : "usb",
+		c->enable_gps_l5 ? " plus GPS L5 enabled" : "");
 	return 0;
 }
 
@@ -124,7 +147,7 @@ static void ubx_config_ack(struct ubx_config *c, unsigned cls, unsigned id,
 		const unsigned char *payload, unsigned len) {
 	if (!c->awaiting_ack || cls != 0x05 || id > 0x01 || len != 2 ||
 		payload[0] != 0x06 || payload[1] != 0x8a) return;
-	const char *name = ubx_config_names[UBX_CONFIG_PACKETS - c->awaiting_ack];
+	const char *name = ubx_config_names[c->sent_packets - c->awaiting_ack];
 	c->awaiting_ack--;
 	if (id) log_msg("UBX RAM setup (%s) acknowledged", name);
 	else log_msg("UBX RAM setup (%s) rejected; receiver must support the requested CFG-VALSET keys; continuing capture", name);

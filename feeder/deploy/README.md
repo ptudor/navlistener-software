@@ -35,12 +35,22 @@ NAV-STATUS into the receiver-solution telemetry record (`0x03`) that feeds the
 collector's station integrity checks, and sends each NAV-SAT as a reception record
 (`0x01` body version 2, `common/reception_data.h`). Upgrade the collector before
 the feeder; an older one discards both records as malformed. It writes only the
-**RAM layer**:
-receiver baud, existing NMEA output, GNSS signals and timing/PPS settings
+**RAM layer**. Without an explicit signal-policy option, receiver baud,
+existing NMEA output, GNSS signals and timing/PPS settings
 are untouched. Nothing is saved to backup RAM or flash. A receiver restart
 reloads its stored configuration; the feeder requests these messages again
 after roughly 30 seconds without recognized UBX, including when a UART
 bridge remains connected and continues delivering NMEA.
+
+For a receiver profile known to support GPS L5, add `--enable-gps-l5` beside
+`--configure-ubx`. GPS L5 is disabled in the ZED-F9T-10B factory profile; this
+option enables `CFG-SIGNAL-GPS_L5_ENA` in a separate RAM-only request on every
+source open and after a detected receiver reset. Keeping fleet policy in the
+feeder makes a power cycle or receiver replacement self-correcting without
+repeated backup-RAM/flash writes. The separate request means a receiver that
+does not support GPS L5 can reject it without losing raw-navigation output.
+Assign the option only to an L5-capable hardware profile and treat an ACK as
+configuration acceptance; observed NAV-SIG/SFRBX remains the reception proof.
 
 ACK, rejection and timeout results appear in the log, per request. Capture continues if
 the receiver rejects or does not acknowledge setup; verify that frames
@@ -85,7 +95,7 @@ SERVER=collector.host.invalid:5580     # the collector's [push] endpoint
 SOURCE=/dev/ttyACM0                    # serial receiver, OR host:port for a TCP bridge
 BAUD=460800                            # serial line rate (ignored for a TCP source)
 STATION=observer16
-EXTRA=--zstd                           # optional: request DATA-stream compression
+EXTRA=--zstd --configure-ubx uart1 --enable-gps-l5  # L1/L5 receiver fleet profile
 ```
 
 Then:

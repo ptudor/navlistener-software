@@ -41,6 +41,8 @@ check: $(BINARY)
 	if ./$(BINARY) --configure-ubx auto 2>/dev/null; then exit 1; fi; \
 	if ./$(BINARY) --server collector.invalid:5580 --source receiver.invalid:2000 \
 	    --station test --token test --configure-ubx uart1 2>/dev/null; then exit 1; fi
+	@if ./$(BINARY) --server collector.invalid:5580 --source receiver.invalid:2000 \
+	    --station test --token test --enable-gps-l5 2>/dev/null; then exit 1; fi
 
 clean:
 	rm -f $(BINARY)

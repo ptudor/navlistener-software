@@ -28,7 +28,7 @@ static void check_valset(const unsigned char packet[32], const uint32_t keys[4])
 
 /* check_packet reads both VALSETs: the raw-navigation setup first, then the
  * receiver-solution messages, so a receiver rejecting the second keeps the first. */
-static void check_packet(int fd, int port) {
+static void check_packet(int fd, int port, int enable_gps_l5) {
 	unsigned char packet[32];
 	unsigned p = (unsigned)port;
 	assert(recv(fd, packet, sizeof packet, MSG_WAITALL) == sizeof packet);
@@ -39,6 +39,14 @@ static void check_packet(int fd, int port) {
 	/* NAV-PVT, NAV-STATUS, NAV-CLOCK, NAV-EOE on the same port. */
 	const uint32_t solution[4] = { 0x20910006u + p, 0x2091001au + p, 0x20910065u + p, 0x2091015fu + p };
 	check_valset(packet, solution);
+	if (enable_gps_l5) {
+		assert(recv(fd, packet, 17, MSG_WAITALL) == 17);
+		assert(!memcmp(packet, "\xb5\x62\x06\x8a\x09\x00\x00\x01\x00\x00", 10));
+		assert(le32(packet + 10) == 0x10310004u && packet[14] == 1);
+		unsigned sum = 0, weighted = 0;
+		for (unsigned i = 2; i < 15; i++) { sum += packet[i]; weighted += (15-i)*packet[i]; }
+		assert(packet[15] == (sum & 255) && packet[16] == (weighted & 255));
+	}
 }
 
 static void test_setup_and_recovery(void) {
@@ -51,12 +59,12 @@ static void test_setup_and_recovery(void) {
 		int flags = fcntl(fd[0], F_GETFL);
 		assert(ubx_config_tick(&c, fd[0], 100) == 0);
 		assert((fcntl(fd[0], F_GETFL) & O_NONBLOCK) == (flags & O_NONBLOCK));
-		check_packet(fd[1], port);
-		assert(c.awaiting_ack == UBX_CONFIG_PACKETS);
+		check_packet(fd[1], port, 0);
+		assert(c.awaiting_ack == UBX_CONFIG_BASE_PACKETS);
 		const unsigned char unrelated[] = {0x06, 0x01}, ack[] = {0x06, 0x8a};
 		ubx_config_ack(&c, 5, 1, unrelated, 2);
 		ubx_config_ack(&c, 5, 1, ack, 1);
-		assert(c.awaiting_ack == UBX_CONFIG_PACKETS);
+		assert(c.awaiting_ack == UBX_CONFIG_BASE_PACKETS);
 		ubx_config_ack(&c, 5, 1, ack, 2); /* the raw-navigation setup */
 		assert(c.awaiting_ack == 1);
 		ubx_config_ack(&c, 5, 1, ack, 2); /* the receiver-solution setup */
@@ -68,7 +76,7 @@ static void test_setup_and_recovery(void) {
 		assert(ubx_config_tick(&c, fd[0], 130) == 0);
 		no_output(fd[1]);
 		assert(ubx_config_tick(&c, fd[0], 155) == 0);
-		check_packet(fd[1], port);
+		check_packet(fd[1], port, 0);
 		/* A NAK of either leaves input capture and a bounded retry available. */
 		ubx_config_ack(&c, 5, 1, ack, 2);
 		ubx_config_ack(&c, 5, 0, ack, 2);
@@ -76,24 +84,35 @@ static void test_setup_and_recovery(void) {
 		assert(ubx_config_tick(&c, fd[0], 184) == 0);
 		no_output(fd[1]);
 		assert(ubx_config_tick(&c, fd[0], 185) == 0);
-		check_packet(fd[1], port);
+		check_packet(fd[1], port, 0);
 		assert(ubx_config_tick(&c, fd[0], 188) == 0);
 		assert(!c.awaiting_ack);
 		no_output(fd[1]);
 	}
+	/* Signal policy is isolated in a third packet: its rejection cannot reject
+	 * either message-output packet, and the ACK name/order remains deterministic. */
+	c = (struct ubx_config){ .port = 1, .enable_gps_l5 = 1 };
+	assert(ubx_config_tick(&c, fd[0], 200) == 0);
+	check_packet(fd[1], 1, 1);
+	assert(c.awaiting_ack == UBX_CONFIG_MAX_PACKETS);
+	const unsigned char ack[] = {0x06, 0x8a};
+	ubx_config_ack(&c, 5, 1, ack, 2);
+	ubx_config_ack(&c, 5, 1, ack, 2);
+	ubx_config_ack(&c, 5, 0, ack, 2);
+	assert(!c.awaiting_ack);
 	/* A powered-down receiver behind a live UART bridge resumes NMEA only.
 	 * Force the recovery deadline due and drive the real buffered sync scan. */
 	struct rdbuf rb = { .fd = fd[0], .config = { .port = 1, .next_attempt = 1 } };
 	const unsigned char nmea[] = "$GNTXT,01,01,02,boot*00\r\n\xb5\x62";
 	assert(write(fd[1], nmea, sizeof nmea - 1) == sizeof nmea - 1);
 	assert(sync_ubx(&rb) == 0);
-	check_packet(fd[1], 1);
+	check_packet(fd[1], 1, 0);
 	close(fd[0]); close(fd[1]);
 }
 
 static void *receiver(void *arg) {
 	int fd = *(int *)arg;
-	check_packet(fd, 1);
+	check_packet(fd, 1, 1);
 	/* Interleave ACK and NAV-SAT with NMEA. A setup response must not consume
 	 * or flush the navigation message needed by the ordinary spool path. */
 	const unsigned char prefix[] = "$GNTXT,01,01,02,test*00\r\n\xb5\x62\x05\x01\x02\x00\x06\x8a\x98\xc1";
@@ -110,7 +129,7 @@ static void test_reader_delivery(void) {
 	int fd[2]; assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fd) == 0);
 	assert(spool_init(&g_spool, 8, NULL, 0) == 0);
 	pthread_t peer; assert(pthread_create(&peer, NULL, receiver, &fd[1]) == 0);
-	assert(run_ubx(fd[0], 1));
+	assert(run_ubx(fd[0], 1, 1));
 	assert(pthread_join(peer, NULL) == 0);
 	assert(g_spool.count == 1);
 	struct frame *f = &g_spool.ring[g_spool.head];
@@ -132,7 +151,7 @@ static void test_write_failure(void) {
 	assert(errno == EAGAIN || errno == EWOULDBLOCK);
 	assert(fcntl(fd[0], F_SETFL, flags) == 0);
 	unsigned char packet[32]; assert(ubx_config_packet(packet, 1, 0) == sizeof packet);
-	assert(ubx_config_packet(packet, 1, UBX_CONFIG_PACKETS) == 0 && ubx_config_packet(packet, 4, 0) == 0);
+	assert(ubx_config_packet(packet, 1, UBX_CONFIG_MAX_PACKETS) == 0 && ubx_config_packet(packet, 4, 0) == 0);
 	time_t start = monotonic_s();
 	assert(ubx_config_write(fd[0], packet, sizeof packet) == -1);
 	assert(errno == ETIMEDOUT && monotonic_s() - start <= 3);
@@ -196,7 +215,7 @@ static void test_solution_delivery(void) {
 	assert(spool_init(&g_spool, 8, NULL, 0) == 0);
 	pthread_t peer; assert(pthread_create(&peer, NULL, solution_receiver, &fd[1]) == 0);
 	uint64_t before = now_unix_ns();
-	assert(run_ubx(fd[0], 0));
+	assert(run_ubx(fd[0], 0, 0));
 	assert(pthread_join(peer, NULL) == 0);
 	assert(g_spool.count == 1);
 	struct frame *f = &g_spool.ring[g_spool.head];
@@ -233,7 +252,7 @@ static void test_reception_delivery(void) {
 	int fd[2]; assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fd) == 0);
 	assert(spool_init(&g_spool, 8, NULL, 0) == 0);
 	pthread_t peer; assert(pthread_create(&peer, NULL, reception_receiver, &fd[1]) == 0);
-	assert(run_ubx(fd[0], 0));
+	assert(run_ubx(fd[0], 0, 0));
 	assert(pthread_join(peer, NULL) == 0);
 	assert(g_spool.count == 1);
 	struct frame *f = &g_spool.ring[g_spool.head];
