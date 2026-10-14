@@ -68,7 +68,7 @@ The M9's "no spoofing indicated" state is not proof of authentic reception; see
   trim and the pinned Bosch BMP3 SensorAPI. Fresh forced conversions use pressure
   8× and temperature 2× oversampling. Chip ID `0x50` does not distinguish these
   two variants. Pressure is local absolute pressure, without sea-level correction.
-- ZED/X20 BMP581 (or BMP580) at `0x46`: the part compensates on chip. At each
+- ZED/X20 BMP580 (or BMP581) at `0x46`: the part compensates on chip. At each
   sample it is identified after a soft reset (CHIP_ID `0x50` at register `0x01`, NVM
   ready without error, reset reported), then makes one forced conversion at pressure
   16× and temperature 2× oversampling with the IIR filter bypassed, waited for
@@ -306,7 +306,7 @@ invalid lengths/enums/ranges, and trailing partial TLVs are rejected.
 | 21 reception power event | 68 | A retained local/remote/joint power transition; never advances the live evaluator |
 
 Environment mask bits 0/1/2 identify MCP/HDC/BMP respectively; the BMP is the part
-tag 15 names, which on the ZED/X20 is the BMP581. Valid requires
+tag 15 names, which on the ZED/X20 is the BMP580. Valid requires
 ready. Temperature units are 0.01 °C, RH units 0.01%, pressure units Pa. Invalid
 measurements must be encoded as zero and are served as JSON `null`; valid zero
 is preserved. Valid temperature ranges: MCP/HDC −40…125 °C, BMP −40…85 °C;
