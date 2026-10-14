@@ -266,9 +266,9 @@ A failed transfer or unverified rate change causes reconfiguration before more
 samples are accepted; four seconds without a valid sample also causes recovery.
 The host tests simulate these faults, including a transfer that stops mid-packet.
 
-The ZED/X20 replaces the BMP388 with a BMP580 at `0x46`, whose readings fill the same
-pressure and temperature fields; tag 15 names the part the manifest lists (`PRESSURE_BMP580`,
-or `PRESSURE_BMP581`, which shares its register map and chip ID, where that part is fitted). It also adds
+The ZED/X20 replaces the BMP388 with a BMP581 at `0x46`, whose readings fill the same
+pressure and temperature fields; tag 15 names the part the manifest lists (`PRESSURE_BMP581`,
+or `PRESSURE_BMP580`, which shares its register map and chip ID, where that part is fitted). It also adds
 an INA3221 rail monitor at `0x41` (`POWER_INA3221`) that measures +5V after the input eFuse,
 `3V3_GNSS` and `3V3_SYS` through the board's shunts; each report carries the three
 voltages and currents as tag 16, see
@@ -307,7 +307,7 @@ Where the manifest lists the ZED/X20's MCP23008 expander (`IO_MCP23008` at `0x24
 firmware writes its register programme at boot, reads every register back, and retries at
 each board-task pass until it does; only then is the GPIO3 falling-edge handler installed.
 The expander collects five active-low alert lines behind that one interrupt: the W5500's,
-the BMP580's, the HDC2080's, the MCP9808's and `PWR_ALERT_N`, the INA3221's Warning and
+the BMP581's, the HDC2080's, the MCP9808's and `PWR_ALERT_N`, the INA3221's Warning and
 Critical outputs. Each change is counted with its time and logged at most once per line per
 10 seconds. The INA3221 now has warning (averaged) and critical (per-conversion) current
 limits per rail from the board row (`warn_ma` and `crit_ma`: +5V 1000/1300 mA, `3V3_GNSS`
@@ -675,10 +675,10 @@ The pusher reconnects when sent records remain outstanding without durable ACK a
 ### Hardware-discovery dependency and release evidence
 
 Normal builds pin `esp_hardware_discovery` to commit
-`b705250d922553ded6f17c520877dc41f74fe0d9` (24CS256/24CS512 support, the `POWER_TPS7A20`,
+`42569e5dbe8d89fccf885c1054ec0e9dc883c37b` (24CS256/24CS512 support, the `POWER_TPS7A20`,
 `COMM_W5500`, `SENSOR_THERMOCOUPLE_MAX31856`, `PRESSURE_BMP580`, `PRESSURE_BMP581` and
 `RTC_DS3231M` catalog IDs, the `CAT_INTSAT` board category, part identification and the Intsat
-board templates, whose X20 list is the 162mm assembly with the DS3231M, MCP23008 and BMP580), with the IDF 5.5.4/ESP32-S3
+board templates, whose X20 list is the 162mm assembly with the DS3231M, MCP23008 and BMP581), with the IDF 5.5.4/ESP32-S3
 resolution committed in `dependencies.lock`. Updating the pin is a deliberate
 source change: review upstream layout changes and run the component's
 `test/host` read/write, page-boundary, interrupted-write, timestamp/footer,

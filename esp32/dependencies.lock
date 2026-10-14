@@ -1,6 +1,6 @@
 dependencies:
   esp_hardware_discovery:
-    component_hash: 7ba631fecfbcddc0f52176d5fe9a8f0a3b6fe2921df7cbfb5d8bd783bdd6ae18
+    component_hash: e37dcaaf1ba45079e5122b3485f1c3a5ab31ca1859bc03c08fb59d26b77d3f39
     dependencies:
     - name: idf
       version: '>=5.2.0'
@@ -16,7 +16,7 @@ dependencies:
     - esp32c3
     - esp32c6
     - esp32h2
-    version: b705250d922553ded6f17c520877dc41f74fe0d9
+    version: 42569e5dbe8d89fccf885c1054ec0e9dc883c37b
   esphome/libsodium:
     component_hash: 860ef0c4c58b57e5c83f9396cbfb9b664cea8c457fc1baf447518079a3da4207
     dependencies: []
@@ -42,6 +42,6 @@ dependencies:
 direct_dependencies:
 - esp_hardware_discovery
 - esphome/wireguard
-manifest_hash: 4e27c3e3cd8cbb1eb2f761f4daa8ab0bc8eb6e36950b0c7428c4bb9cfbee805e
+manifest_hash: 669d15562c7db21e2c078faacd7e45be19d041584310dbd2220f977f16a95a6b
 target: esp32s3
 version: 2.0.0

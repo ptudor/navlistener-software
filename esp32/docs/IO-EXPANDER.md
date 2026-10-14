@@ -20,7 +20,7 @@ All of this is from the board's netlist and the IC review; do not re-derive it.
 | INT | to ESP32 **GPIO3**, net `EXP_INT_N`, 10 kΩ pull-up to `3V3_SYS`. Default push-pull active-low output (IOCON ODR = 0, INTPOL = 0) stays. GPIO3 is a strapping pin (JTAG_SEL): read it only, never drive it, never burn `EFUSE_STRAP_JTAG_SEL` |
 | GP0 | `PANEL_SDO`, the last TLC5916's SDO of the LED chain (3V3_SYS logic, through 33 Ω). On the 162mm board the chain is 24 bits: U12 green, U13 amber, U14 status. On the 3900 mil square board, which runs the same X20 row, GP0 reads that board's on-board 16-bit chain instead |
 | GP1 | `ETH_INT_N`, W5500 INTn (3V3_ETH logic, no external pull-up). The W5500 is polled and its interrupt masks are zero, so this line idles high today |
-| GP2 | `BARO_INT_N`, BMP580 INT, 10 kΩ to `3V3_SENS`. Not enabled by firmware today (the sensor is polled) |
+| GP2 | `BARO_INT_N`, BMP581 INT, 10 kΩ to `3V3_SENS`. Not enabled by firmware today (the sensor is polled) |
 | GP3 | `HUM_INT_N`, HDC2080 DRDY/INT, push-pull, 10 kΩ to `3V3_SENS` (the output is high impedance until firmware enables it). Not enabled by firmware today |
 | GP4 | `TEMP_ALERT_N`, MCP9808 Alert, open drain, 10 kΩ to `3V3_SENS`. Not enabled by firmware today |
 | GP5 | `PWR_ALERT_N`, INA3221 Warning (pin 8) and Critical (pin 9) wired-OR, open drain, 10 kΩ to `3V3_SENS`. The INA3221's limit registers reset to their maximum, so this line never asserts until firmware programs limits (section 4) |
