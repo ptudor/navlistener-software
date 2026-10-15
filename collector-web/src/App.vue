@@ -5,11 +5,14 @@ import CoverageMap from './components/CoverageMap.vue'
 import { LOCALE_LABELS, SUPPORTED_LOCALES } from './i18n/localeLabels.js'
 import {
   SYSTEMS,
+  GPS_L5_SERVICE_STATUS,
   count,
   duration,
   groupSatellites,
   health,
   isNumber,
+  signalHealth,
+  signalName,
   stamp,
   systemFor,
   utc,
@@ -58,7 +61,9 @@ const presentSystems = computed(() => {
   const ids = new Set(satellites.value.map((satellite) => satellite.id))
   return SYSTEMS.filter((system) => ids.has(system.id))
 })
-const flaggedCount = computed(() => satellites.value.filter((satellite) => satellite.health.kind === 'flagged').length)
+const flaggedCount = computed(() => satellites.value.filter((satellite) => satellite.healthKinds.includes('flagged')).length)
+const preoperationalCount = computed(() => satellites.value.filter((satellite) => satellite.healthKinds.includes('preoperational')).length)
+const hasGPSL5Context = computed(() => satellites.value.some((satellite) => satellite.signals.some((signal) => signalHealth(signal).preOperational)))
 const activeSystems = computed(() => {
   return coverageActivity.value.map((activity) => ({
     ...SYSTEMS.find((system) => system.id === activity.id),
@@ -70,7 +75,7 @@ const filteredSatellites = computed(() => {
   const search = query.value.trim().toLowerCase()
   return satellites.value.filter((satellite) => (
     (constellation.value === 'all' || satellite.id === Number(constellation.value))
-    && (healthFilter.value === 'all' || satellite.health.kind === healthFilter.value)
+    && (healthFilter.value === 'all' || satellite.healthKinds.includes(healthFilter.value))
     && `${satellite.name} ${systemFor(satellite.id).name}`.toLowerCase().includes(search)
   ))
 })
@@ -135,9 +140,8 @@ function signalAccuracy(signal) {
 }
 
 function displaySignalName(signal) {
-  if (signal.gnssid === 2 && signal.sigid === 3) return 'E5a'
-  if (signal.gnssid === 3 && signal.sigid === 8) return 'B2a'
-  return signal.sigid === 0 ? systemFor(signal.gnssid).primary : t('satellite.signal_name', { id: signal.sigid })
+  const name = signalName(signal)
+  return name === `Signal ${signal.sigid}` ? t('satellite.signal_name', { id: signal.sigid }) : name
 }
 
 function healthText(info) {
@@ -147,6 +151,7 @@ function healthText(info) {
     Warning: 'health.warning',
     OK: 'health.ok',
     'Partly known': 'health.partly_known',
+    'Pre-operational': 'health.preoperational',
     Unknown: 'health.unknown',
   }
   return t(keys[info.name] || 'health.unknown')
@@ -270,10 +275,10 @@ function setReceiverOpen(number, event) {
   event.target.open ? receiverOpened.add(number) : receiverOpened.delete(number)
 }
 
-async function selectFlagged() {
+async function selectHealth(kind) {
   constellation.value = 'all'
   query.value = ''
-  healthFilter.value = 'flagged'
+  healthFilter.value = kind
   await nextTick()
   document.getElementById('health-filter')?.focus({ preventScroll: true })
   document.getElementById('satellites')?.scrollIntoView({ block: 'start' })
@@ -434,7 +439,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
     <p v-if="statusView.notice" class="notice" role="status">{{ statusView.notice }}</p>
-    <noscript><p>{{ t('status.javascript') }}</p></noscript>
+    <noscript>{{ t('status.javascript') }}</noscript>
 
     <dl class="metrics" :aria-label="t('metrics.label')">
       <div class="metric"><dt>{{ t('metrics.navigation_satellites') }}</dt><dd><strong>{{ count(feeds.global.data?.total_live_svs) }}</strong><small>{{ t('metrics.current_feed') }}</small></dd></div>
@@ -446,7 +451,10 @@ onBeforeUnmount(() => {
     <section id="satellites" class="content-section" aria-labelledby="satellite-heading">
       <div class="section-heading">
         <div><h2 id="satellite-heading"><span class="section-index" aria-hidden="true">01</span>{{ t('satellite.heading') }}</h2><p>{{ t('satellite.description') }}</p></div>
-        <button v-if="flaggedCount" class="flag-link" type="button" @click="selectFlagged">{{ t(flaggedCount === 1 ? 'satellite.flagged_count' : 'satellite.flagged_count_plural', { count: flaggedCount }) }}</button>
+        <div v-if="flaggedCount || preoperationalCount" class="health-summary">
+          <button v-if="flaggedCount" class="flag-link" type="button" @click="selectHealth('flagged')">{{ t(flaggedCount === 1 ? 'satellite.flagged_count' : 'satellite.flagged_count_plural', { count: flaggedCount }) }}</button>
+          <button v-if="preoperationalCount" class="flag-link" type="button" @click="selectHealth('preoperational')">{{ t(preoperationalCount === 1 ? 'satellite.preoperational_count' : 'satellite.preoperational_count_plural', { count: preoperationalCount }) }}</button>
+        </div>
       </div>
       <div class="panel">
         <div class="toolbar">
@@ -458,7 +466,7 @@ onBeforeUnmount(() => {
             <label for="search" class="sr-only">{{ t('satellite.search') }}</label>
             <input id="search" v-model="query" type="search" :placeholder="t('satellite.search_placeholder')" autocomplete="off" maxlength="100">
             <label for="health-filter" class="sr-only">{{ t('satellite.health_filter') }}</label>
-            <select id="health-filter" v-model="healthFilter"><option value="all">{{ t('satellite.all_health') }}</option><option value="flagged">{{ t('satellite.broadcast_flags') }}</option><option value="ok">{{ t('satellite.reported_ok') }}</option><option value="unknown">{{ t('satellite.unknown_health') }}</option></select>
+            <select id="health-filter" v-model="healthFilter"><option value="all">{{ t('satellite.all_health') }}</option><option value="flagged">{{ t('satellite.broadcast_flags') }}</option><option value="preoperational">{{ t('satellite.preoperational_flags') }}</option><option value="ok">{{ t('satellite.reported_ok') }}</option><option value="unknown">{{ t('satellite.unknown_health') }}</option></select>
           </div>
         </div>
         <div class="table-wrap">
@@ -470,8 +478,12 @@ onBeforeUnmount(() => {
                 <tr class="sat-row">
                   <td><span class="sat-name"><span class="sat-symbol" :class="toneClass(systemFor(satellite.id))" aria-hidden="true">✦</span><span><span class="sat-id">{{ satellite.name }}</span><span class="sat-system">{{ systemFor(satellite.id).name }}</span></span></span></td>
                   <td class="col-signals mono muted">{{ satellite.signals.length }}</td>
-                  <td><span class="badge" :data-tone="satellite.health.tone"><span class="dot" aria-hidden="true"></span><span>{{ healthText(satellite.health) }}</span></span></td>
-                  <td><span class="age" :class="ageClass(satellite.lastSeen, 'svs')" :title="ageTitle(satellite.lastSeen, 'svs')">{{ ageText(satellite.lastSeen, 'svs') }}</span></td>
+                  <td><ul class="signal-summary"><li v-for="signal in satellite.signals" :key="signal.sigid">
+                    <span class="signal-label">{{ displaySignalName(signal) }}</span>
+                    <span class="badge" :data-tone="signalHealth(signal).tone"><span class="dot" aria-hidden="true"></span><span>{{ healthText(signalHealth(signal)) }}</span></span>
+                    <a v-if="signalHealth(signal).preOperational" class="signal-context" href="#gps-l5-note" :aria-label="t('satellite.l5_context')" :title="t('satellite.l5_note')">ⓘ</a>
+                  </li></ul></td>
+                  <td><ul class="signal-summary signal-reception"><li v-for="signal in satellite.signals" :key="signal.sigid"><span class="sr-only">{{ displaySignalName(signal) }}: </span><span class="age" :class="ageClass(signal.last_seen_s, 'svs')" :title="ageTitle(signal.last_seen_s, 'svs')">{{ ageText(signal.last_seen_s, 'svs') }}</span></li></ul></td>
                   <td class="expand-cell"><button class="expand" type="button" :aria-label="t('satellite.detail_label', { name: satellite.name })" :aria-expanded="opened.has(satellite.key)" :aria-controls="`detail-${satellite.key}`" @click="toggleSatellite(satellite.key)">{{ opened.has(satellite.key) ? '−' : '+' }}</button></td>
                 </tr>
                 <tr :id="`detail-${satellite.key}`" :hidden="!opened.has(satellite.key)">
@@ -479,9 +491,13 @@ onBeforeUnmount(() => {
                     <p class="detail-intro">{{ t('satellite.detail_intro') }}</p>
                     <div class="signal-list">
                       <article v-for="signal in satellite.signals" :key="signal.sigid" class="signal-card">
-                        <h3><span>{{ displaySignalName(signal) }}</span><span class="badge" :data-tone="health([signal]).tone"><span class="dot" aria-hidden="true"></span><span>{{ healthText(health([signal])) }}</span></span></h3>
+                        <h3><span>{{ displaySignalName(signal) }}</span><span class="badge" :data-tone="signalHealth(signal).tone"><span class="dot" aria-hidden="true"></span><span>{{ healthText(signalHealth(signal)) }}</span></span></h3>
+                        <p v-if="signalHealth(signal).preOperational" class="signal-note">{{ t('satellite.l5_note') }} <a :href="GPS_L5_SERVICE_STATUS.source">{{ t('satellite.l5_source') }}</a></p>
                         <dl class="facts">
                           <dt>{{ t('satellite.signal_id') }}</dt><dd>{{ count(signal.sigid) }}</dd>
+                          <dt>{{ t('satellite.raw_broadcast_health') }}</dt><dd>{{ healthText(health([signal])) }}</dd>
+                          <template v-if="signal.alert === true"><dt>{{ t('satellite.accuracy_alert') }}</dt><dd>{{ t('satellite.raised') }}</dd></template>
+                          <template v-if="signal.wn_mismatch === true"><dt>{{ t('satellite.broadcast_week') }}</dt><dd>{{ t('satellite.mismatch') }}</dd></template>
                           <dt>{{ t('satellite.last_received') }}</dt><dd><span class="age" :class="ageClass(signal.last_seen_s, 'svs')" :title="ageTitle(signal.last_seen_s, 'svs')">{{ ageText(signal.last_seen_s, 'svs') }}</span></dd>
                           <dt>{{ t('satellite.broadcast_accuracy') }}</dt><dd>{{ signalAccuracy(signal) }}</dd>
                           <dt>{{ t('satellite.orbit_reference') }}</dt><dd>{{ orbitReference(signal) }}</dd>
@@ -501,6 +517,7 @@ onBeforeUnmount(() => {
         <div class="pagination"><p role="status">{{ resultCount }}</p><div class="controls"><button class="button" type="button" :disabled="page === 0" @click="page--">{{ t('satellite.previous') }}</button><button class="button" type="button" :disabled="pageStart + PAGE_SIZE >= filteredSatellites.length" @click="page++">{{ t('satellite.next') }}</button></div></div>
       </div>
       <p class="feed-note" :data-tone="feedNoteTone('svs')">{{ feedNote('svs') }}</p>
+      <p v-if="hasGPSL5Context" id="gps-l5-note" class="feed-note" tabindex="-1">{{ t('satellite.l5_note') }} <a :href="GPS_L5_SERVICE_STATUS.source">{{ t('satellite.l5_source') }}</a></p>
     </section>
 
     <section id="observers" class="content-section" aria-labelledby="receiver-heading">

@@ -39,7 +39,39 @@ export function health(signals) {
   return { name: signals.some((signal) => signal.health_code === 1) ? 'Partly known' : 'Unknown', tone: '', kind: 'unknown' }
 }
 
+// Presentation policy, independent of the decoded broadcast health. Review this
+// source when GPS L5's service status changes; an unhealthy bit cannot identify
+// the reason for the flag or establish navigation accuracy.
+export const GPS_L5_SERVICE_STATUS = Object.freeze({
+  phase: 'pre-operational',
+  reviewed: '2026-10-14',
+  source: 'https://www.gps.gov/civil-navigation-cnav-message',
+})
+
+export function signalHealth(signal, l5ServiceStatus = GPS_L5_SERVICE_STATUS) {
+  const broadcast = health([signal])
+  const preOperational = l5ServiceStatus.phase === 'pre-operational'
+    && signal.gnssid === 0 && [6, 7].includes(signal.sigid)
+  // Match only the known CNAV carrier-health flag, with a decoded, clear alert
+  // bit. Missing evidence and additional warnings must remain in the flag view.
+  const expectedFlag = preOperational
+    && signal.health_code === 3 && signal.health_subcode === 1 && signal.health_issue_level === 2
+    && signal.alert === false && signal.wn_mismatch !== true
+    && signal.acc_index !== 15 && signal.acc_index !== -16
+  return expectedFlag
+    ? { name: 'Pre-operational', tone: 'warning', kind: 'preoperational', preOperational }
+    : { ...broadcast, preOperational }
+}
+
 export function signalName(signal) {
+  if (signal.gnssid === 0) {
+    const name = { 3: 'L2C M', 4: 'L2C L', 6: 'L5 I', 7: 'L5 Q' }[signal.sigid]
+    if (name) return name
+  }
+  if (signal.gnssid === 5) {
+    const name = { 4: 'L2C M', 5: 'L2C L', 8: 'L5 I', 9: 'L5 Q' }[signal.sigid]
+    if (name) return name
+  }
   if (signal.gnssid === 2 && signal.sigid === 3) return 'E5a'
   if (signal.gnssid === 3 && signal.sigid === 8) return 'B2a'
   return signal.sigid === 0 ? systemFor(signal.gnssid).primary : `Signal ${signal.sigid}`
@@ -65,9 +97,7 @@ export function groupSatellites(feed) {
   const satellites = [...groups.values()].sort((left, right) => left.id - right.id || left.svid - right.svid)
   for (const satellite of satellites) {
     satellite.signals.sort((left, right) => left.sigid - right.sigid)
-    satellite.health = health(satellite.signals)
-    const ages = satellite.signals.map((signal) => signal.last_seen_s).filter((age) => isNumber(age) && age >= 0)
-    satellite.lastSeen = ages.length ? Math.min(...ages) : null
+    satellite.healthKinds = [...new Set(satellite.signals.map((signal) => signalHealth(signal).kind))]
   }
   return satellites
 }

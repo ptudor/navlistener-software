@@ -10,6 +10,18 @@ exported at `/in/map/`, with a localized map page beside every locale overview.
 The collector supplies coverage data through its API and does not serve page
 content.
 
+The satellite table shows health and reception age for each signal. Health
+filters match any signal on a satellite, so a satellite can appear in more than
+one category. GPS L5's expected pre-operational health flag has its own category;
+the original broadcast health remains in the details and the API is unchanged.
+Additional accuracy alerts, broadcast-week mismatches, and no-accuracy-prediction
+indices keep that signal in the other-flags category.
+
+`GPS_L5_SERVICE_STATUS` in `src/model.js` records the presentation policy, source,
+and review date. Review the [GPS.gov CNAV service status](https://www.gps.gov/civil-navigation-cnav-message)
+and update the policy when L5 becomes operational. This annotation does not infer
+navigation accuracy or the cause of an individual unhealthy broadcast.
+
 The export writes real directories for the source English page and four English
 regional placeholders. Apache retains ordinary 404 behavior because there is no
 single-page fallback. Replace a placeholder catalog in `src/i18n/locales/` when
