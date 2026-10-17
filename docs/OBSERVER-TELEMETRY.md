@@ -6,6 +6,14 @@ provides environmental context and diagnostics through GNF1 `ObserverDetails`
 Upgrade the collector before deploying this firmware: older collectors discard
 unknown telemetry and acknowledge it as permanently malformed.
 
+Receiver-solution records (`frame_type=0x03`) separately support body version 2:
+the unchanged version 1 block sequence is followed by one timestamp-source byte
+(1 unknown, 2 RTC continuity, 3 qualified GNSS, 4 network, 5 factory reference).
+Version 1 remains accepted. Deploy the matching collector before the new ESP32
+producer. Raw persistence retains the original version and provenance. During
+backlog replay, unknown, RTC and receiver-derived stamps cannot supply an
+independent absolute UTC comparison. See [RTC service](../esp32/docs/RTC-SERVICE.md).
+
 ## Reporting policy
 
 The board task samples temperature, humidity and pressure every 30 seconds.
@@ -314,11 +322,15 @@ RH 0…100%, pressure 30000…125000 Pa.
 
 RTC flag bits: readable=1, oscillator-running=2, backup-enabled=4,
 power-fail=8, validated running calendar=16. Unix seconds must be zero without
-the last flag; validated calendars cover 2000–2099. On the ZED/X20's MAX31328,
+the last flag; validated calendars cover 2000–2099. On the ZED/X20's DS3231M
+(and the MAX31328 supported by the same driver),
 backup switching is automatic, so backup-enabled is always set with readable;
 oscillator-running means the oscillator is enabled and its stop flag (OSF) is clear;
 power-fail is never set, because a lost calendar shows as OSF instead. Read/check/event uptimes
 cannot exceed snapshot uptime. Last-read fields do not imply a fresh battery test.
+A powered battery replacement can preserve the calendar without changing these
+flags; they do not identify battery installation or replacement. See the
+[RTC service guide](../esp32/docs/RTC-SERVICE.md).
 
 ATECC lock enums: 0 unknown, 1 unlocked, 2 locked, 3 invalid lock byte.
 RNG enums: 0 untested, 1 repetition-screening pass, 2 repeating output, 3 I/O error.

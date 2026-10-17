@@ -154,4 +154,18 @@ static void reception(void)
     assert(journal_store_read(&s,2,1,&r)==ESP_ERR_NVS_NOT_FOUND);
     journal_store_close(&s);
 }
-int main(void) { fifo(); faults(); cadence(); previous_format(); reception(); puts("journal FIFO, recovery, full-store, compatibility and cadence tests passed"); }
+static void time_events(void)
+{
+    reset();journal_store_t s;assert(journal_store_open(&s)==ESP_OK);
+    journal_record_t r=record(JOURNAL_BOOT);r.utc=0;assert(journal_store_append(&s,&r)==ESP_OK);
+    r=record(JOURNAL_CLOCK_CHANGE);r.clock_source=2;r.clock_old_ns=1000000000LL;
+    r.clock_new_ns=1760000000000000000LL;r.clock_sampled_ms=1234;r.clock_uncertainty_known=true;r.clock_uncertainty_ns=1000000;
+    assert(journal_store_append(&s,&r)==ESP_OK);
+    r=record(JOURNAL_RTC_SERVICE);r.error=5;assert(journal_store_append(&s,&r)==ESP_OK);
+    journal_store_close(&s);assert(journal_store_open(&s)==ESP_OK);
+    assert(journal_store_read(&s,0,1,&r)==ESP_OK && r.utc==0); // later anchors never rewrite earlier captures
+    assert(journal_store_read(&s,0,2,&r)==ESP_OK && r.event==JOURNAL_CLOCK_CHANGE && r.clock_source==2 && r.clock_old_ns==1000000000LL && r.clock_new_ns==1760000000000000000LL && r.clock_sampled_ms==1234 && r.clock_uncertainty_known && r.clock_uncertainty_ns==1000000);
+    assert(journal_store_read(&s,0,3,&r)==ESP_OK && r.event==JOURNAL_RTC_SERVICE && r.error==5);
+    journal_store_close(&s);
+}
+int main(void) { fifo(); faults(); cadence(); previous_format(); reception();time_events(); puts("journal FIFO, recovery, full-store, compatibility, time-change and cadence tests passed"); }

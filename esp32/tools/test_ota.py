@@ -108,6 +108,8 @@ class OtaClientTest(unittest.TestCase):
         self.assertEqual(ota.journal_detail(8, 1 | 3 << 16), "keygen ok")
         self.assertEqual(ota.journal_detail(8, 2 | 1 << 8), "install failed")
         self.assertEqual(ota.journal_detail(5, 1234), "")
+        self.assertEqual(ota.journal_detail(12, 1), "verified")
+        self.assertEqual(ota.journal_detail(12, 4), "audit-failed")
 
     def test_journal_prints_received_power_transition(self):
         row = {"event": 10, "utc": "1800000000", "time_source": 2, "boot": "7",

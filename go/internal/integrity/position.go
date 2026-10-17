@@ -15,6 +15,7 @@ const (
 	CheckStationaryVelocity = "stationary_velocity"
 	CheckMotionBound        = "motion_bound"
 	CheckPositionVelocity   = "position_velocity"
+	CheckMotionKinematics   = "motion_kinematics"
 )
 
 var (
@@ -22,6 +23,7 @@ var (
 	stationaryVelocityInfo = Info{Name: CheckStationaryVelocity, Version: 1, Domain: DomainPosition}
 	motionBoundInfo        = Info{Name: CheckMotionBound, Version: 1, Domain: DomainPosition}
 	positionVelocityInfo   = Info{Name: CheckPositionVelocity, Version: 1, Domain: DomainPosition}
+	motionKinematicsInfo   = Info{Name: CheckMotionKinematics, Version: 1, Domain: DomainPosition}
 )
 
 // Reason codes for the position checks.
@@ -40,7 +42,11 @@ const (
 	// ReasonReceiverTimeReset marks the one epoch at which the receiver's reported
 	// time stepped backwards by more than an epoch gap: the history was
 	// re-anchored there instead of every later epoch being refused as out of order.
-	ReasonReceiverTimeReset = "receiver_time_reset"
+	ReasonReceiverTimeReset    = "receiver_time_reset"
+	ReasonInsufficientAccuracy = "insufficient_accuracy"
+	ReasonSolutionQuality      = "solution_quality"
+	ReasonSegmentGap           = "segment_gap"
+	ReasonRelocation           = "declared_relocation"
 )
 
 // ScaledBand is a threshold that scales with a reported accuracy:
@@ -128,6 +134,7 @@ type epoch struct {
 	sAcc   float64
 	enu    [3]float64 // offset from the surveyed position, when one exists
 	hasENU bool
+	up     gnss.ECEF
 }
 
 // positionChecks evaluates the position domain from solution epochs.
@@ -144,7 +151,10 @@ type positionChecks struct {
 	sumENU   [3]float64
 	countENU int
 
-	reference *epoch // motion_bound's last epoch that was within bounds
+	reference  *epoch // motion_bound's last epoch that was within bounds
+	lastUsable int64
+	haveUsable bool
+	segmented  bool
 }
 
 func newPositionChecks(station StationProfile) *positionChecks {
@@ -162,7 +172,11 @@ func (p *positionChecks) infos() []Info {
 	case ModeFixed:
 		return []Info{staticPositionInfo, stationaryVelocityInfo, positionVelocityInfo}
 	case ModeMobile:
-		return []Info{motionBoundInfo, positionVelocityInfo}
+		out := []Info{motionBoundInfo, positionVelocityInfo}
+		if p.station.Motion.ReportedSpeed || p.station.Motion.MaxAccelerationMPS2 > 0 || p.station.Motion.MaxLateralAccelerationMPS2 > 0 || p.station.Motion.MaxVerticalSpeedMPS > 0 {
+			out = append(out, motionKinematicsInfo)
+		}
+		return out
 	}
 	return []Info{positionVelocityInfo}
 }
@@ -178,6 +192,7 @@ func (p *positionChecks) infos() []Info {
 // up, for as long as 3.5 days: all physics domains unavailable and no event raised.
 func (p *positionChecks) accept(s Solution) bool {
 	p.resynced = false
+	p.segmented = false
 	if !p.started {
 		p.started, p.lastTOW = true, s.TOW
 		return true
@@ -195,6 +210,12 @@ func (p *positionChecks) accept(s Solution) bool {
 	}
 	p.lastTOW = s.TOW
 	p.clock += d
+	if p.station.Motion.ResetAfterGap && ((d > p.station.Motion.Gap.Milliseconds()) || (p.haveUsable && p.clock-p.lastUsable > p.station.Motion.Gap.Milliseconds())) {
+		p.resync()
+		p.resynced = false
+		p.segmented = true
+		p.haveUsable = false
+	}
 	if d > maxEpochGapMS {
 		p.reset()
 	}
@@ -218,9 +239,23 @@ func (p *positionChecks) reset() {
 func (p *positionChecks) evaluate(s Solution, prof Profile) map[string]Verdict {
 	out := map[string]Verdict{}
 	usable := s.Usable3D()
+	if p.station.Motion != (MotionPolicy{}) || p.station.Fixed != (FixedPolicy{}) {
+		usable = usable && validCoordinates(s) && finite(s.HAccM) && finite(s.VAccM) && s.HAccM > 0 && s.VAccM > 0 && finite(s.SAccMPS) && s.SAccMPS > 0 && finite(s.VelN) && finite(s.VelE) && finite(s.VelD)
+	}
+	if p.station.Motion.MaxPositionAccuracyM > 0 && math.Max(s.HAccM, s.VAccM) > p.station.Motion.MaxPositionAccuracyM {
+		usable = false
+	}
+	f := p.station.Fixed
+	if f != (FixedPolicy{}) && (s.NumSV < f.MinSV || (f.RequireGNSSOnly && s.FixType != Fix3D) || (f.MaxHorizontalAccuracyM > 0 && s.HAccM > f.MaxHorizontalAccuracyM) || (f.MaxVerticalAccuracyM > 0 && s.VAccM > f.MaxVerticalAccuracyM)) {
+		usable = false
+	}
+	if !usable && (p.station.Motion != (MotionPolicy{}) || f != (FixedPolicy{})) {
+		p.reset()
+	}
 	var e epoch
 	if usable {
 		e = epoch{t: p.clock, pos: s.ecef(), vel: s.velocityECEF(), acc3D: math.Hypot(s.HAccM, s.VAccM), sAcc: s.SAccMPS}
+		_, _, e.up = geo.ENUBasis(s.geodetic())
 		if p.station.Position != nil {
 			east, north, up := geo.ENU(e.pos.Sub(p.surveyed), p.surveyedGeo)
 			e.enu, e.hasENU = [3]float64{east, north, up}, true
@@ -238,6 +273,9 @@ func (p *positionChecks) evaluate(s Solution, prof Profile) map[string]Verdict {
 		out[CheckStationaryVelocity] = stationaryVelocity(s, usable, prof.StationaryVelocity)
 	case ModeMobile:
 		out[CheckMotionBound] = p.motionBound(e, usable, prof.MotionBound)
+		if p.station.Motion != (MotionPolicy{}) {
+			out[CheckMotionKinematics] = p.kinematics(s, e, usable)
+		}
 	}
 	out[CheckPositionVelocity] = p.positionVelocity(e, usable, prof.PositionVelocity)
 	if p.resynced {
@@ -248,6 +286,7 @@ func (p *positionChecks) evaluate(s Solution, prof Profile) map[string]Verdict {
 	}
 
 	if usable {
+		p.lastUsable, p.haveUsable = p.clock, true
 		p.history = append(p.history, e)
 		if e.hasENU {
 			for i := range e.enu {
@@ -279,7 +318,14 @@ func (p *positionChecks) staticPosition(s Solution, e epoch, usable bool, prof S
 	case p.station.Position == nil:
 		return Verdict{State: Unavailable, Reasons: []string{ReasonNoSurveyedPosition}}
 	case !usable:
-		return Verdict{State: Unavailable, Reasons: []string{ReasonNo3DFix}}
+		reasons := []string{ReasonNo3DFix}
+		if p.station.Fixed != (FixedPolicy{}) {
+			reasons = append(reasons, ReasonInsufficientAccuracy, ReasonSolutionQuality)
+		}
+		return Verdict{State: Unavailable, Reasons: reasons}
+	}
+	if p.station.Fixed.DisplacementM > 0 || p.station.Fixed.VerticalDisplacementM > 0 {
+		return p.displacement(s, e)
 	}
 	h, v := math.Hypot(e.enu[0], e.enu[1]), math.Abs(e.enu[2])
 	hs, hInc, hUn := prof.Horizontal.classify(h, s.HAccM)

@@ -6,10 +6,16 @@
 #include <assert.h>
 #include <setjmp.h>
 #include <stdio.h>
+#include <time.h>
+static time_t fake_utc;
+static unsigned clock_waits;
+static time_t test_time(time_t *out) {if(out)*out=fake_utc;return fake_utc;}
 #include "idf_stubs.h"
 #define select test_select
+#define time test_time
 #include "../src/pusher.c"
 #undef select
+#undef time
 
 static jmp_buf stop;
 static bool tunnel_state;
@@ -45,7 +51,10 @@ int xTaskCreate(void (*f)(void *), const char *n, int s, void *a, int p, void *h
 void esp_tls_conn_destroy(esp_tls_t *t) { (void)t; destroyed++; }
 esp_err_t esp_tls_get_conn_sockfd(esp_tls_t *t, int *fd) { (void)t; *fd = 3; return ESP_OK; }
 int esp_tls_get_bytes_avail(esp_tls_t *t) { (void)t; return (int)(tail - head); }
-void vTaskDelay(int ticks) { last_wait = ticks; clock_us += (int64_t)ticks * 1000; }
+void vTaskDelay(int ticks) {
+    if(fake_utc==0){assert(!attempts && ticks==1000);if(++clock_waits==3)fake_utc=1760000000;}
+    last_wait = ticks; clock_us += (int64_t)ticks * 1000;
+}
 
 int esp_tls_conn_new_sync(const char *host, int len, int port, const esp_tls_cfg_t *cfg, esp_tls_t *tls)
 {
@@ -124,6 +133,7 @@ int main(void)
     tunnel_state = false;
     if (!setjmp(stop)) pusher_task(NULL);
     assert(attempts == 4);
+    assert(clock_waits==3); // no certificate/network attempt preceded clock bootstrap
     // Attempts 1-3 each destroyed their transport (two refused connects, one session that
     // was deliberately ended to move over); the moved-onto tunnel session is still live.
     assert(destroyed == 3);

@@ -8,6 +8,8 @@ void journal_start(void);
 void journal_poll(const gnss_status_t *gnss, const observer_report_t *report, uint64_t now_ms);
 // Thread-safe best-effort lifecycle write. Never aborts normal firmware work.
 void journal_event(uint8_t event, int32_t error);
+void journal_clock_change(uint8_t source, int64_t old_ns, int64_t new_ns,
+                          int64_t sampled_ms, bool uncertainty_known, uint64_t uncertainty_ns);
 bool journal_reception_save(nr_sample_t *sample);
 bool journal_reception_latest(nr_sample_t *sample);
 bool journal_reception_next(uint64_t after, nr_sample_t *sample);

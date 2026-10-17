@@ -24,6 +24,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <inttypes.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -41,6 +43,10 @@
 #include "mcu_identity.h"
 #include "update_runtime.h"
 #include "update_tuf.h"
+#include "observer_rtc.h"
+#include "observer_time.h"
+#include "esp_timer.h"
+#include "journal.h"
 
 _Static_assert(GNF1_EVIDENCE_EXPORTED_SIZE == NVF_MCU_EXPORTED_SIZE && GNF1_EVIDENCE_MAX == NVF_EVIDENCE_MAX,
                "gnf1 and mcu_identity disagree about the evidence exchange");
@@ -219,8 +225,82 @@ static void restore(char *arguments)
     answer("restore", err, reason);
 }
 
+static cJSON *time_sample(const observer_time_sample_t *s,int64_t now)
+{
+    cJSON *j=cJSON_CreateObject();if(!j)return NULL;
+    cJSON_AddStringToObject(j,"source",observer_time_source_name(s->source));
+    cJSON_AddBoolToObject(j,"fresh",observer_time_fresh(s,now));
+    cJSON_AddNumberToObject(j,"age_ms",s->source && now>=s->sampled_ms?now-s->sampled_ms:0);
+    if(s->uncertainty_known)cJSON_AddNumberToObject(j,"reported_uncertainty_ns",s->uncertainty_ns);else cJSON_AddNullToObject(j,"reported_uncertainty_ns");
+    return j;
+}
+static void rtc_print(const rtc_service_record_t *r)
+{
+    cJSON *j=cJSON_CreateObject();if(!j){puts("NVF-RTC-ERROR out of memory");return;}
+    cJSON_AddNumberToObject(j,"sequence",r->sequence);cJSON_AddNumberToObject(j,"result",r->result);
+    cJSON_AddNumberToObject(j,"rtc_part",r->rtc_part);
+    cJSON_AddStringToObject(j,"source",observer_time_source_name(r->request.source));
+    cJSON_AddStringToObject(j,"reference_id",r->request.reference_id);cJSON_AddStringToObject(j,"reason",r->request.reason);
+    cJSON_AddBoolToObject(j,"battery_service",r->request.battery_service);cJSON_AddBoolToObject(j,"audit_complete",r->audit_complete);
+    cJSON_AddBoolToObject(j,"verify_only",r->request.verify_only);
+    cJSON_AddBoolToObject(j,"old_read",r->old_read);cJSON_AddBoolToObject(j,"old_valid",r->old_valid);cJSON_AddNumberToObject(j,"old_epoch",r->old_epoch);
+    char raw[15];hex(r->old_calendar,7,raw);cJSON_AddStringToObject(j,"old_calendar",raw);
+    cJSON_AddNumberToObject(j,"old_control",r->old_control);cJSON_AddNumberToObject(j,"old_status",r->old_status);
+    cJSON_AddBoolToObject(j,"readback_read",r->readback_read);cJSON_AddBoolToObject(j,"readback_valid",r->readback_valid);cJSON_AddNumberToObject(j,"readback_epoch",r->readback_epoch);
+    hex(r->readback_calendar,7,raw);cJSON_AddStringToObject(j,"readback_calendar",raw);
+    cJSON_AddNumberToObject(j,"readback_control",r->readback_control);cJSON_AddNumberToObject(j,"readback_status",r->readback_status);
+    cJSON_AddNumberToObject(j,"started_ms",r->started_ms);cJSON_AddNumberToObject(j,"completed_ms",r->completed_ms);
+    if(r->request.verify_only)cJSON_AddNullToObject(j,"uncertainty_ns");else cJSON_AddNumberToObject(j,"uncertainty_ns",r->request.uncertainty_ns);
+    char *body=cJSON_PrintUnformatted(j);if(body)printf("NVF-RTC-SERVICE %s\n",body);else puts("NVF-RTC-ERROR out of memory");cJSON_free(body);cJSON_Delete(j);
+}
+static void rtc_command(char *command)
+{
+    if(!strcmp(command,"status")) {
+        observer_time_state_t s=observer_time_status();int64_t now=esp_timer_get_time()/1000;
+        cJSON *j=cJSON_CreateObject();if(!j){puts("NVF-RTC-ERROR out of memory");return;}
+        cJSON_AddItemToObject(j,"system",time_sample(&s.system,now));cJSON_AddItemToObject(j,"independent",time_sample(&s.independent,now));
+        cJSON_AddNumberToObject(j,"changes",s.changes);cJSON_AddNumberToObject(j,"last_change_ms",s.changed_ms);
+        cJSON_AddNumberToObject(j,"old_epoch",s.old_utc_ns/1000000000LL);cJSON_AddNumberToObject(j,"new_epoch",s.new_utc_ns/1000000000LL);
+        char *body=cJSON_PrintUnformatted(j);if(body)printf("NVF-RTC-STATUS %s\n",body);else puts("NVF-RTC-ERROR out of memory");cJSON_free(body);cJSON_Delete(j);return;
+    }
+    if(!strcmp(command,"last") || !strncmp(command,"record ",7)) {
+        rtc_service_record_t r;uint32_t seq=0;
+        if(!strncmp(command,"record ",7)){char *end;errno=0;unsigned long n=strtoul(command+7,&end,10);if(errno || *end || n>UINT32_MAX || !n){puts("NVF-RTC-ERROR invalid sequence");return;}seq=(uint32_t)n;}
+        if(observer_rtc_service_read(seq,&r))rtc_print(&r);else puts("NVF-RTC-ERROR record unavailable");return;
+    }
+    rtc_service_request_t r={0};char *reason=NULL;
+    int64_t received=esp_timer_get_time()/1000;
+    if(!strncmp(command,"verify ",7) || !strncmp(command,"battery ",8)) {
+        r.verify_only=true;r.battery_service=command[0]=='b';r.source=OBS_TIME_RTC;strcpy(r.reference_id,"retained_calendar");reason=command+(r.battery_service?8:7);
+    }
+    else if(!strncmp(command,"gnss ",5)) {r.source=OBS_TIME_GNSS;strcpy(r.reference_id,"receiver_utc");reason=command+5;}
+    else if(!strncmp(command,"factory ",8)) {
+        char *end;errno=0;int64_t ms=strtoll(command+8,&end,10);
+        if(errno || *end!=' ' || ms<946684800000LL || ms>=4102444800000LL)goto usage;
+        char *start=end+1;errno=0;unsigned long uncertainty=strtoul(start,&end,10);
+        if(errno || end==start || *end!=' ' || uncertainty>100)goto usage;
+        start=end+1;end=strchr(start,' ');if(!end || end==start || (size_t)(end-start)>=sizeof r.reference_id)goto usage;
+        memcpy(r.reference_id,start,(size_t)(end-start));reason=end+1;
+        r.source=OBS_TIME_FACTORY;r.reference=(rtc_time_ref_t){.utc_ns=ms*1000000LL,.sampled_ms=received};r.uncertainty_ns=uncertainty*1000000ULL;
+    } else goto usage;
+    // Prefix the maintenance reason with battery: for an operator-declared
+    // battery service; the oscillator does not detect a replacement cell.
+    if(!strncmp(reason,"battery:",8))r.battery_service=true;
+    if(!*reason || strlen(reason)>=sizeof r.reason)goto usage;
+    strcpy(r.reason,reason);
+    if(!observer_rtc_service_request(&r)){puts("NVF-RTC-ERROR service busy");return;}
+    for(unsigned i=0;i<200;i++) {
+        rtc_service_record_t result;
+        if(observer_rtc_service_result(&result)){rtc_print(&result);return;}
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    puts("NVF-RTC-ERROR service pending; use rtc last to inspect its durable result");return;
+usage:
+    puts("NVF-RTC-ERROR usage: rtc status | last | record <sequence> | verify <reason> | battery <reason> | gnss <reason> | factory <unix_ms> <uncertainty_ms> <reference_id> <reason>");
+}
 static void run(char *line)
 {
+    if(!strncmp(line,"rtc ",4)){rtc_command(line+4);return;}
     static const char prefix[] = "commission ";
     if (strncmp(line, prefix, sizeof prefix - 1)) return; // not ours: the console sees stray keys
     char *command = line + sizeof prefix - 1, *argument = strchr(command, ' ');

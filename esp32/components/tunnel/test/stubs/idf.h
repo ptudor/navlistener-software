@@ -18,8 +18,9 @@ typedef int esp_err_t;
 typedef uint32_t TickType_t;
 typedef struct { uint32_t addr; } ip4_addr_t;
 struct netif { ip4_addr_t gateway; };
-typedef struct { const char *server; } esp_sntp_config_t;
-#define ESP_NETIF_SNTP_DEFAULT_CONFIG(host) {host}
+struct timeval;
+typedef struct { const char *server; void (*sync_cb)(struct timeval *); } esp_sntp_config_t;
+#define ESP_NETIF_SNTP_DEFAULT_CONFIG(host) {.server=host, .sync_cb=NULL}
 typedef struct {
     const char *private_key, *public_key, *preshared_key, *address, *netmask, *endpoint;
     uint16_t port, persistent_keepalive, listen_port;

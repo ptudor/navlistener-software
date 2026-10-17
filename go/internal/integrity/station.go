@@ -10,7 +10,7 @@ var checkInfos = map[string]Info{}
 
 func init() {
 	for _, info := range []Info{
-		staticPositionInfo, stationaryVelocityInfo, motionBoundInfo, positionVelocityInfo,
+		staticPositionInfo, stationaryVelocityInfo, motionBoundInfo, positionVelocityInfo, motionKinematicsInfo,
 		clockBiasDriftInfo, clockDriftRateInfo, utcOffsetInfo, ppsRTCPhaseInfo,
 		cn0UniformityInfo, cn0DropInfo, agcInfo, receiverSpoofingInfo, baselineInfo,
 	} {
@@ -41,6 +41,9 @@ type Station struct {
 	lastFixAt  time.Time
 	lastStart  uint32
 	haveStatus bool
+	survey     *Survey
+	segment    uint64
+	segments   []SegmentRecord
 }
 
 // NewStation builds a station evaluator. Both profiles are validated.
@@ -51,7 +54,11 @@ func NewStation(p Profile, station StationProfile) (*Station, error) {
 	if err := station.Validate(); err != nil {
 		return nil, err
 	}
+	station = station.Clone()
 	s := &Station{profile: p, station: station, trackers: map[string]*tracker{}, pos: newPositionChecks(station)}
+	if station.Survey != nil {
+		s.survey, _ = NewSurvey(*station.Survey)
+	}
 	infos := s.pos.infos()
 	if station.Baseline != nil {
 		infos = append(infos, baselineInfo)
@@ -92,6 +99,12 @@ func (s *Station) fixOK(at time.Time) (fix, ok bool) {
 func (s *Station) ApplySolution(sol Solution) bool {
 	if !s.pos.accept(sol) {
 		return false
+	}
+	if s.pos.segmented {
+		s.startSegment(sol.Received, ReasonSegmentGap)
+	}
+	if s.survey != nil {
+		s.survey.Apply(sol)
 	}
 	s.haveFix, s.lastFixOK, s.lastFixAt = true, sol.FixOK && !sol.InvalidLLH, sol.Received
 	for name, v := range s.pos.evaluate(sol, s.profile) {
@@ -169,14 +182,66 @@ func (s *Station) ApplyRF(rf RFSample) {
 // and what produced them. It carries no coordinates.
 type Assessment struct {
 	Fusion
-	EvaluatedAt int64    `json:"evaluated_at"`
-	Engine      int      `json:"engine_version"`
-	ConfigHash  string   `json:"config_hash"`
-	Mode        Mode     `json:"mode,omitempty"`
-	Surveyed    bool     `json:"surveyed_position"`
-	MaxSpeedMPS float64  `json:"max_speed_mps,omitempty"`
-	Checks      []Result `json:"checks"`
+	EvaluatedAt  int64           `json:"evaluated_at"`
+	Engine       int             `json:"engine_version"`
+	ConfigHash   string          `json:"config_hash"`
+	Mode         Mode            `json:"mode,omitempty"`
+	Surveyed     bool            `json:"surveyed_position"`
+	MaxSpeedMPS  float64         `json:"max_speed_mps,omitempty"`
+	Checks       []Result        `json:"checks"`
+	Installation Installation    `json:"installation,omitempty"`
+	Motion       MotionPolicy    `json:"motion"`
+	Fixed        FixedPolicy     `json:"fixed"`
+	Segment      uint64          `json:"segment,omitempty"`
+	SegmentID    string          `json:"segment_id,omitempty"`
+	Segments     []SegmentRecord `json:"segments,omitempty"`
+	SurveyReady  bool            `json:"survey_candidate_ready,omitempty"`
 }
+
+// SegmentRecord keeps the preceding alarm results, without coordinates. Raw
+// inputs and event history retain their normal persistence and retention rules.
+type SegmentRecord struct {
+	Previous uint64    `json:"previous"`
+	At       time.Time `json:"at"`
+	Reason   string    `json:"reason"`
+	Checks   []Result  `json:"checks"`
+}
+
+func (s *Station) startSegment(at time.Time, reason string) {
+	r := SegmentRecord{Previous: s.segment, At: at, Reason: reason}
+	for _, name := range []string{CheckMotionBound, CheckMotionKinematics, CheckPositionVelocity, CheckClockBiasDrift, CheckClockDriftRate, CheckPPSRTCPhase} {
+		if t := s.trackers[name]; t != nil {
+			r.Checks = append(r.Checks, t.result())
+			s.trackers[name] = newTracker(t.info)
+			s.update(name, Verdict{State: Unavailable, Reasons: []string{reason}}, at)
+		}
+	}
+	s.segments = append(s.segments, r)
+	if len(s.segments) > 8 {
+		s.segments = s.segments[len(s.segments)-8:]
+	}
+	s.segment++
+	s.clock = clockChecks{}
+	s.pps = ppsRTCPhase{}
+	s.haveFix = false
+}
+
+// Relocate is an explicit operator action, available only to portable test
+// installations. It does not change identity, stored observations or references.
+func (s *Station) Relocate(at time.Time, reason string) error {
+	if s.station.Installation != PortableTest || reason == "" {
+		return fmt.Errorf("integrity: relocation requires portable_test and a maintenance reason")
+	}
+	s.pos.resync()
+	s.pos.started = false
+	s.pos.haveUsable = false
+	s.startSegment(at, ReasonRelocation+": "+reason)
+	return nil
+}
+
+// SurveyCandidate returns a copy for an operator to review and explicitly pin.
+// Candidates are never folded into the configured surveyed position.
+func (s *Station) SurveyCandidate() *SurveyCandidate { return s.survey.Candidate() }
 
 // Served returns one check's served state as of now, after ageing out stale input.
 // ok is false for a check this station does not run.
@@ -226,15 +291,42 @@ func (s *Station) Assess(now time.Time) Assessment {
 		results = append(results, t.result())
 	}
 	return Assessment{
-		Fusion:      Fuse(results, s.profile.Weights),
-		EvaluatedAt: now.Unix(),
-		Engine:      EngineVersion,
-		ConfigHash:  s.hash,
-		Mode:        s.station.Mode,
-		Surveyed:    s.station.Position != nil,
-		MaxSpeedMPS: s.station.MaxSpeedMPS,
-		Checks:      results,
+		Fusion:       Fuse(results, s.profile.Weights),
+		EvaluatedAt:  now.Unix(),
+		Engine:       EngineVersion,
+		ConfigHash:   s.hash,
+		Mode:         s.station.Mode,
+		Surveyed:     s.station.Position != nil,
+		MaxSpeedMPS:  s.station.MaxSpeedMPS,
+		Checks:       results,
+		Installation: s.station.Installation, Motion: s.station.Motion, Fixed: s.station.Fixed,
+		Segment: s.segment, SegmentID: s.station.SegmentID, Segments: s.segmentHistory(), SurveyReady: s.SurveyCandidate() != nil,
 	}
+}
+
+func (s *Station) segmentHistory() []SegmentRecord {
+	out := append([]SegmentRecord(nil), s.segments...)
+	for i := range out {
+		out[i].Checks = append([]Result(nil), out[i].Checks...)
+		for j := range out[i].Checks {
+			r := &out[i].Checks[j]
+			r.Reasons = append([]string(nil), r.Reasons...)
+			r.Metrics = cloneMetrics(r.Metrics)
+			r.Thresholds = cloneMetrics(r.Thresholds)
+		}
+	}
+	return out
+}
+
+func cloneMetrics(in map[string]float64) map[string]float64 {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]float64, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // WiredPhysicsDomains is how many physics domains have at least one check in this

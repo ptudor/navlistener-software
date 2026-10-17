@@ -49,7 +49,18 @@ type ReceiverSolution struct {
 	PVT    *SolutionPVT    `json:"pvt,omitempty"`
 	Clock  *SolutionClock  `json:"clock,omitempty"`
 	Status *SolutionStatus `json:"status,omitempty"`
+	// StampSource is zero for legacy V1 records; V2 explicitly records the
+	// observer system-clock origin at the epoch's first arrival.
+	StampSource uint8 `json:"stamp_source,omitempty"`
 }
+
+const (
+	StampUnknown uint8 = 1 + iota
+	StampRTC
+	StampGNSS
+	StampNetwork
+	StampFactory
+)
 
 // SolutionPVT is the position, velocity and time block, in the receiver's integer
 // units: degrees × 1e7, millimetres, mm/s and nanoseconds.
@@ -129,6 +140,10 @@ func EncodeReceiverSolution(s *ReceiverSolution) []byte {
 	}
 	b := make([]byte, n)
 	b[0], b[1] = telemBodyVersion, present
+	if s.StampSource != 0 {
+		b = append(b, s.StampSource)
+		b[0] = 2
+	}
 	o := 2
 	be := binary.BigEndian
 	if p := s.PVT; p != nil {
@@ -173,7 +188,7 @@ func EncodeReceiverSolution(s *ReceiverSolution) []byte {
 // blocks exactly, every reserved bit and byte must be zero, and every field the
 // checks interpret must be in range; anything else is ErrBadTelemetry.
 func decodeReceiverSolution(b []byte) (*ReceiverSolution, error) {
-	if len(b) < 2 || b[0] != telemBodyVersion || b[1] == 0 || b[1]&^(solutionHasPVT|solutionHasClock|solutionHasStatus) != 0 {
+	if len(b) < 2 || (b[0] != telemBodyVersion && b[0] != 2) || b[1] == 0 || b[1]&^(solutionHasPVT|solutionHasClock|solutionHasStatus) != 0 {
 		return nil, ErrBadTelemetry
 	}
 	present := b[1]
@@ -187,11 +202,20 @@ func decodeReceiverSolution(b []byte) (*ReceiverSolution, error) {
 	if present&solutionHasStatus != 0 {
 		want += solutionStatusLen
 	}
+	if b[0] == 2 {
+		want++
+	}
 	if len(b) != want {
 		return nil, ErrBadTelemetry
 	}
 	be := binary.BigEndian
 	s := &ReceiverSolution{}
+	if b[0] == 2 {
+		s.StampSource = b[len(b)-1]
+		if s.StampSource < StampUnknown || s.StampSource > StampFactory {
+			return nil, ErrBadTelemetry
+		}
+	}
 	o := 2
 	if present&solutionHasPVT != 0 {
 		v := b[o : o+solutionPVTLen]

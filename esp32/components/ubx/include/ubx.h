@@ -52,6 +52,7 @@ typedef struct {
     void *observe_ctx;
     ubx_emit_fn emit;
     ubx_now_fn now;
+    uint64_t (*solution_stamp)(uint8_t *source); // optional atomic RS V2 stamp/provenance
     void *ctx;
 
     // framer state machine

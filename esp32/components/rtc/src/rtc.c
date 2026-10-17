@@ -1,4 +1,5 @@
 #include <string.h>
+#include <stdio.h>
 #include "observer_rtc.h"
 #include "rtc_io.h"
 #include "rtc_max31328.h"
@@ -19,6 +20,52 @@ static rtc_candidate_t candidate;
 static int64_t next_poll;
 static enum { UNREPORTED, WAITING, RUNNING, UNUSABLE } report_state;
 static bool retry_initialization;
+static rtc_candidate_t service_candidate;
+static portMUX_TYPE service_lock=portMUX_INITIALIZER_UNLOCKED;
+static rtc_service_request_t service_request;
+static rtc_service_record_t service_record;
+static enum { SERVICE_IDLE, SERVICE_QUEUED, SERVICE_ACTIVE, SERVICE_DONE } service_state;
+bool observer_rtc_service_request(const rtc_service_request_t *r)
+{
+    portENTER_CRITICAL(&service_lock);
+    bool ok=service_state==SERVICE_IDLE || service_state==SERVICE_DONE;
+    if(ok){service_request=*r;service_state=SERVICE_QUEUED;}
+    portEXIT_CRITICAL(&service_lock);return ok;
+}
+bool observer_rtc_service_result(rtc_service_record_t *r)
+{portENTER_CRITICAL(&service_lock);bool ok=service_state==SERVICE_DONE;if(ok)*r=service_record;portEXIT_CRITICAL(&service_lock);return ok;}
+static bool service_latest(nvs_handle_t nvs,uint32_t *latest)
+{
+    *latest=0;
+    for(unsigned i=0;i<32;i++) {
+        char key[16];snprintf(key,sizeof key,"service%02u",i);
+        rtc_service_record_t r;size_t size=sizeof r;
+        esp_err_t err=nvs_get_blob(nvs,key,&r,&size);
+        if(err==ESP_ERR_NVS_NOT_FOUND)continue;
+        if(err!=ESP_OK || size!=sizeof r || r.version!=1 || !r.sequence || r.sequence%32!=i)return false;
+        if(r.sequence>*latest)*latest=r.sequence;
+    }
+    return true;
+}
+bool observer_rtc_service_read(uint32_t sequence,rtc_service_record_t *r)
+{
+    nvs_handle_t nvs;if(nvs_open_from_partition("journal","rtc_service",NVS_READONLY,&nvs)!=ESP_OK)return false;
+    if(!sequence && !service_latest(nvs,&sequence)){nvs_close(nvs);return false;}
+    char key[16];snprintf(key,sizeof key,"service%02lu",(unsigned long)(sequence%32));size_t size=sizeof *r;
+    bool ok=sequence && nvs_get_blob(nvs,key,r,&size)==ESP_OK && size==sizeof *r && r->version==1 && r->sequence==sequence && memchr(r->request.reason,0,sizeof r->request.reason) && memchr(r->request.reference_id,0,sizeof r->request.reference_id);
+    nvs_close(nvs);return ok;
+}
+static bool service_save(void *ctx,rtc_service_record_t *r)
+{
+    r->rtc_part=(uint8_t)part;
+    (void)ctx;nvs_handle_t nvs;if(nvs_open_from_partition("journal","rtc_service",NVS_READWRITE,&nvs)!=ESP_OK)return false;
+    esp_err_t err=ESP_OK;
+    if(!r->sequence){uint32_t seq=0;if(!service_latest(nvs,&seq) || seq==UINT32_MAX)err=ESP_FAIL;else r->sequence=seq+1;}
+    char key[16];snprintf(key,sizeof key,"service%02lu",(unsigned long)(r->sequence%32));
+    if(err==ESP_OK)err=nvs_set_blob(nvs,key,r,sizeof *r);
+    if(err==ESP_OK)err=nvs_commit(nvs);
+    nvs_close(nvs);return err==ESP_OK;
+}
 void observer_rtc_select(observer_rtc_part_t selected) { part = selected; }
 static bool read_registers(void *ctx, uint8_t reg, uint8_t *out, size_t length)
 { return i2c_master_transmit_receive(ctx, &reg, 1, out, length, 100) == ESP_OK; }
@@ -148,7 +195,7 @@ static void max31328_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss
     // failed switchover, shows as OSF and leaves the oscillator-running flag clear.
     bool oscillator = !(state[0] & MAX31328_EOSC) && !(state[1] & MAX31328_OSF);
     telemetry.flags = 1 | (oscillator ? 2 : 0) | 4;
-    if (max31328_running(regs, state[0], state[1], &epoch)) {
+    if (!retry_initialization && max31328_running(regs, state[0], state[1], &epoch)) {
         telemetry.flags |= 16; telemetry.epoch = epoch;
         if (report_state != RUNNING)
             ESP_LOGI(TAG, "%s running calendar retained (UTC epoch=%lld); no oscillator stop recorded",
@@ -166,6 +213,7 @@ static void max31328_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss
     int64_t written = 0;
     switch (max31328_set_verified(&io, &reference, &written)) {
     case MAX31328_SET_OK:
+        retry_initialization=false;
         report_state = RUNNING;
         telemetry = (report_rtc_t){.sampled_ms = now};
         ESP_LOGI(TAG, "%s set from GNSS UTC (epoch=%lld); oscillator-stop flag cleared and advancing",
@@ -178,6 +226,7 @@ static void max31328_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss
         ESP_LOGE(TAG, "%s oscillator-stop flag does not clear; RTC time will not be trusted", tcxo_name());
         break;
     default:
+        retry_initialization=true;
         ESP_LOGE(TAG, "%s initialization/readback failed; time unconfirmed", tcxo_name());
         next_poll = now + 30000;
         break;
@@ -187,6 +236,40 @@ static void max31328_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss
 
 void observer_rtc_poll(i2c_master_bus_handle_t bus, const gnss_status_t *gnss, int64_t now)
 {
+    int64_t qualified;
+    bool gnss_ready=rtc_gnss_candidate(&service_candidate,gnss,now,&qualified);
+    // Repeated snapshots do not add samples, but a fully qualified fresh
+    // candidate remains usable for an explicit service action.
+    gnss_ready=gnss_ready || (service_candidate.samples>=3 && service_candidate.last_sample_ms-service_candidate.first_sample_ms>=2000 && now>=service_candidate.last_sample_ms && now-service_candidate.last_sample_ms<=2000);
+    portENTER_CRITICAL(&service_lock);
+    bool requested=service_state==SERVICE_QUEUED;
+    rtc_service_request_t req=service_request;
+    if(requested)service_state=SERVICE_ACTIVE;
+    portEXIT_CRITICAL(&service_lock);
+    if(requested) {
+        rtc_service_record_t result={.version=1,.request=req,.started_ms=now,.result=RTC_SERVICE_NO_DEVICE};
+        bool tcxo=part==OBSERVER_RTC_MAX31328 || part==OBSERVER_RTC_DS3231M;
+        if(tcxo && now<MAX31328_RECOVERY_MS) {
+            portENTER_CRITICAL(&service_lock);service_state=SERVICE_QUEUED;portEXIT_CRITICAL(&service_lock);return;
+        }
+        if(bus && part!=OBSERVER_RTC_NONE && attach(bus,tcxo?MAX31328_ADDRESS:0x6f,now)) {
+            rtc_io_t io={.ctx=dev,.read=read_registers,.write=tcxo?max31328_write_registers:mcp79412_write_registers,.delay=delay_ms,.now_ms=now_ms,.save_power_failure=save_power_failure};
+            if(req.source==OBS_TIME_GNSS) {
+                req.reference=gnss_ready?rtc_candidate_ref(&service_candidate):(rtc_time_ref_t){0};
+                const uint8_t *p=gnss->pvt_utc+8;
+                req.uncertainty_ns=p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);
+            }
+            (void)rtc_service_execute(&io,tcxo,&req,service_save,NULL,&result);
+            if(result.result==RTC_SERVICE_OK){report_state=RUNNING;retry_initialization=false;}
+            else if(result.result==RTC_SERVICE_WRITE_FAILED || result.result==RTC_SERVICE_OSF_STUCK || (result.result==RTC_SERVICE_AUDIT_FAILED && result.written_epoch)) {
+                report_state=result.result==RTC_SERVICE_OSF_STUCK?UNUSABLE:WAITING;retry_initialization=true;
+            }
+            candidate=(rtc_candidate_t){0};next_poll=0;
+            telemetry=(report_rtc_t){0}; // never reuse pre-service calendar evidence
+        } else { result.completed_ms=now;result.audit_complete=true;if(!service_save(NULL,&result)){result.audit_complete=false;result.result=RTC_SERVICE_AUDIT_FAILED;} }
+        portENTER_CRITICAL(&service_lock);service_record=result;service_state=SERVICE_DONE;portEXIT_CRITICAL(&service_lock);
+        return;
+    }
     if (!bus || now < next_poll) return;
     if (part == OBSERVER_RTC_MCP79412) mcp79412_poll(bus, gnss, now);
     else if (part == OBSERVER_RTC_MAX31328 || part == OBSERVER_RTC_DS3231M) max31328_poll(bus, gnss, now);

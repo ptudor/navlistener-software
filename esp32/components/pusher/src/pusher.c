@@ -10,6 +10,7 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <sys/select.h>
 
@@ -510,7 +511,16 @@ static void pusher_task(void *arg)
     char secondary[64];
     nav_endpoint_secondary(s_cfg.host, secondary, sizeof secondary);
     const char *host = s_cfg.host;
+    unsigned waiting_for_time=0;
     for (;;) {
+        // Certificate dates use the system clock. Capture/spooling continues
+        // while the board time service or SNTP obtains a usable calendar.
+        time_t utc=time(NULL);
+        if(utc<1704067200 || utc>=4102444800LL) {
+            if(waiting_for_time++%60==0)ESP_LOGI(TAG,"waiting for a usable system clock before collector TLS");
+            vTaskDelay(pdMS_TO_TICKS(1000));continue;
+        }
+        waiting_for_time=0;
         // The WireGuard path is taken whenever its peer session is valid; TLS then verifies
         // the configured collector name against the certificate exactly as it does
         // directly. A down tunnel costs nothing: the public endpoint carries on.

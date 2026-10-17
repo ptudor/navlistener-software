@@ -169,7 +169,11 @@ static void dispatch(ubx_parser_t *p)
     else if (p->cls == UBX_CLASS_NAV) {
         rs_epoch_t done;
         bool bad;
-        if (rs_ubx_feed(&p->solution, p->cls, p->id, p->payload, p->len, p->now(), &done, &bad))
+        bool pending=p->solution.have_pending;uint32_t previous=p->solution.pending.tow;
+        uint8_t source=0;uint64_t arrival=p->solution_stamp?p->solution_stamp(&source):p->now();
+        bool completed=rs_ubx_feed(&p->solution, p->cls, p->id, p->payload, p->len, arrival, &done, &bad);
+        if(p->solution.have_pending && (!pending || p->solution.pending.tow!=previous))p->solution.pending.stamp_source=source;
+        if (completed)
             emit_solution(p, &done);
         if (bad) atomic_fetch_add_explicit(&p->solution_rejected, 1, memory_order_relaxed);
     }

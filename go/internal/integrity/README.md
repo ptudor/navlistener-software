@@ -1,5 +1,9 @@
 # `internal/integrity` — station assurance checks
 
+Named installation policies, motion envelopes, portable segments and explicit
+survey acceptance are documented in [observer installation](../../../docs/OBSERVER-INSTALLATION.md).
+They remain separate from receiver dynamics configuration.
+
 **Headline:** turns one station's receiver measurements into explainable assurance states.
 Each check reports a candidate state with the values and thresholds behind it; a tracker
 filters and holds those states; fusion combines them into a station state and decides
@@ -92,9 +96,14 @@ toward it. Checks in one domain share their measurements and count once.
 | `receiver_spoofing` | receiver verdict | status | The receiver's own spoofing flag. Lower-only. |
 
 Duplicate and out-of-order epochs (by GPS time of week, continuous across the week
-rollover) are ignored; a receiver-time gap over 10 s, a lost fix, a receiver restart or an
-observer restart resets the affected history. The `profile.go` comments say which defaults
-follow an upstream monitor and why some differ.
+rollover) are ignored. For legacy fixed/mobile policies, a receiver-time gap over
+10 s resets position-difference history. The mobile displacement reference
+survives such a gap and loss of fix until it is over ten minutes old or an in-bounds
+solution replaces it; a receiver restart or backward time reset clears it. A lost
+fix makes position checks unavailable. Named installations can configure gap and
+relocation handling as described in the observer installation guide above. The
+`profile.go` comments say which defaults follow an upstream monitor and why some
+differ.
 
 ### Profiles and the configuration hash
 

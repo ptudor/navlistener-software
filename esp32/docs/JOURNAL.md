@@ -102,6 +102,17 @@ plus one for `keygen` (zero when nothing was burned) or the record's profile for
 
 ## Reception evidence
 
+System-clock changes use lifecycle event 11 and a typed payload in bytes 68–147:
+source, old/new nanoseconds, source sample uptime, uncertainty-known flag and
+reported uncertainty. The associated boot record supplies firmware identity.
+The ordinary journal UTC/source fields stay separate and never adopt SNTP.
+RTC service outcomes use lifecycle event 12; its `error` is the service result.
+The complete before/write/readback record is in the separate 32-attempt NVS
+service history. See [RTC service](RTC-SERVICE.md) for commands and limitations.
+Older firmware cannot decode these new event kinds; its journal may be
+unavailable after a downgrade, while collection continues. No partition layout
+change or automatic evidence erasure is involved.
+
 Events 9 and 10 use their own bounded reception queue, so reception incidents
 cannot evict boot or health history. Event 9 retains expectation ID, observation
 time and uptime, persistent boot/event IDs, coverage and alarm masks,

@@ -50,6 +50,7 @@
 #include "reception_runtime.h"
 #include "mcu_identity.h"
 #include "commission.h"
+#include "observer_time.h"
 #if CONFIG_NVF_ETHERNET_W5500
 #include "esp_eth.h"
 #include "ethernet.h"
@@ -206,14 +207,13 @@ static void session_init(void)
         snprintf(s_session + 2 * i, 3, "%02x", b[i]);
 }
 
-// Use a plausible wall clock for reception timestamps. S3 station-mode OTA
-// initializes SNTP; hardware RTC/PPS time validation remains P-hw work. Before
-// time sync, return 0 so the collector uses its own reception time. SNTP alone
-// is not authenticated GNSS time.
+// Use a plausible system clock for reception timestamps. The time service can
+// bootstrap it from qualified GNSS or RTC continuity; SNTP also supplies time.
+// Solution records separately carry their clock origin for replay evidence.
 static uint64_t app_now_ns(void)
 {
     struct timespec ts;
-    if (clock_gettime(CLOCK_REALTIME, &ts) == 0 && ts.tv_sec > 1600000000) // ~2020-09
+    if (clock_gettime(CLOCK_REALTIME, &ts) == 0 && ts.tv_sec >= 1704067200 && ts.tv_sec < 4102444800LL)
         return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
     return 0;
 }
@@ -461,8 +461,10 @@ void app_main(void)
         esp_restart();
     }
     ubx_parser_init(&s_parser, on_record, app_now_ns, NULL);
+    s_parser.solution_stamp=observer_time_capture;
     // Priority 7 drains UART ahead of TLS work. Startup failure must not leave
     // a network-connected observer silently collecting no bytes.
+    observer_time_start();
     ESP_ERROR_CHECK(receiver_start(&s_parser));
     if (observer_board_start() != ESP_OK)
         ESP_LOGW(TAG, "observer panel/diagnostics task unavailable");

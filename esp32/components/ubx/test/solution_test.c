@@ -53,6 +53,8 @@ static void feed(ubx_parser_t *p, uint8_t id, const uint8_t *payload, size_t len
 
 static uint64_t clock_ns;
 static uint64_t now(void) { return clock_ns += 100000000ull; }
+static uint8_t current_source;
+static uint64_t stamp(uint8_t *source) {*source=current_source;return now();}
 
 static uint8_t records[4][GNF1_RECORD_MAX];
 static size_t record_len[4], n_records;
@@ -138,6 +140,15 @@ int main(void)
     uint8_t out[RS_BODY_MAX];
     assert(rs_encode(&empty, out, sizeof out) == 0);
     rs_epoch_t full = {.present = RS_HAS_PVT | RS_HAS_CLOCK | RS_HAS_STATUS};
-    assert(rs_encode(&full, out, RS_BODY_MAX - 1) == 0 && rs_encode(&full, out, sizeof out) == RS_BODY_MAX);
+    assert(rs_encode(&full, out, RS_BODY_MAX - 2) == 0 && rs_encode(&full, out, sizeof out) == RS_BODY_MAX-1);
+    full.stamp_source=3;
+    assert(rs_encode(&full,out,RS_BODY_MAX-1)==0 && rs_encode(&full,out,sizeof out)==RS_BODY_MAX && out[0]==2 && out[RS_BODY_MAX-1]==3);
+    full.stamp_source=6;assert(rs_encode(&full,out,sizeof out)==0);
+    // A network sync between the first PVT and EOE must not relabel that
+    // earlier GNSS-derived capture as independent network time.
+    n_records=0;clock_ns=0;ubx_parser_init(&parser,emit,now,NULL);parser.solution_stamp=stamp;
+    current_source=3;feed(&parser,0x07,pvt.bytes,pvt.len);
+    current_source=4;feed(&parser,0x22,clk.bytes,clk.len);eoe(&parser,tow);
+    assert(n_records==1 && records[0][GNF1_RECORD_HDR]==2 && records[0][record_len[0]-1]==3 && be64(records[0])==100000000ull);
     puts("UBX solution: golden 0x03 body, first-arrival stamp, repeat drop and rejection passed");
 }

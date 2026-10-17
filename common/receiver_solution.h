@@ -21,13 +21,16 @@
 
 #define RS_TELEM_TYPE 0x03
 #define RS_VERSION    1
+#define RS_VERSION_TIME 2
+/* V2 appends one timestamp provenance byte. Zero remains V1/legacy; V2
+ * values: 1 unknown, 2 retained RTC, 3 qualified GNSS, 4 network, 5 factory. */
 #define RS_HAS_PVT    0x01
 #define RS_HAS_CLOCK  0x02
 #define RS_HAS_STATUS 0x04
 #define RS_PVT_LEN    64
 #define RS_CLOCK_LEN  20
 #define RS_STATUS_LEN 16
-#define RS_BODY_MAX   (2 + RS_PVT_LEN + RS_CLOCK_LEN + RS_STATUS_LEN)
+#define RS_BODY_MAX   (3 + RS_PVT_LEN + RS_CLOCK_LEN + RS_STATUS_LEN)
 #define RS_WEEK_MS    604800000u
 
 /* u-blox NAV message ids and exact payload lengths. */
@@ -48,6 +51,7 @@ typedef struct {
 	/* The caller's clock when the epoch's first block arrived. A record is stamped
 	 * with it, not the completion time, which without NAV-EOE is the next epoch. */
 	uint64_t arrived_ns;
+	uint8_t stamp_source;
 	uint8_t pvt[RS_PVT_LEN];
 	uint8_t clock[RS_CLOCK_LEN];
 	uint8_t status[RS_STATUS_LEN];
@@ -217,13 +221,16 @@ static inline size_t rs_encode(const rs_epoch_t *e, uint8_t *out, size_t cap)
 	if (e->present & RS_HAS_PVT) n += RS_PVT_LEN;
 	if (e->present & RS_HAS_CLOCK) n += RS_CLOCK_LEN;
 	if (e->present & RS_HAS_STATUS) n += RS_STATUS_LEN;
+	if (e->stamp_source) n++;
+	if (e->stamp_source>5) return 0;
 	if (!(e->present & (RS_HAS_PVT | RS_HAS_CLOCK | RS_HAS_STATUS)) || n > cap) return 0;
-	out[0] = RS_VERSION;
+	out[0] = e->stamp_source ? RS_VERSION_TIME : RS_VERSION;
 	out[1] = e->present & (RS_HAS_PVT | RS_HAS_CLOCK | RS_HAS_STATUS);
 	size_t o = 2;
 	if (e->present & RS_HAS_PVT) { memcpy(out + o, e->pvt, RS_PVT_LEN); o += RS_PVT_LEN; }
 	if (e->present & RS_HAS_CLOCK) { memcpy(out + o, e->clock, RS_CLOCK_LEN); o += RS_CLOCK_LEN; }
 	if (e->present & RS_HAS_STATUS) { memcpy(out + o, e->status, RS_STATUS_LEN); }
+	if (e->stamp_source) out[n-1]=e->stamp_source;
 	return n;
 }
 

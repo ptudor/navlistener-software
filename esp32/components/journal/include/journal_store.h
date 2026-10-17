@@ -16,7 +16,7 @@ enum { JOURNAL_BOOT=1, JOURNAL_TIME=2, JOURNAL_CONFIRMED=3,
        // changes, never per connection; COMMISSION records a bench operation. Their
        // `error` encodings are in docs/JOURNAL.md.
        JOURNAL_HW_TRUST=7, JOURNAL_COMMISSION=8, JOURNAL_RECEPTION=9,
-       JOURNAL_RECEPTION_POWER=10 };
+       JOURNAL_RECEPTION_POWER=10, JOURNAL_CLOCK_CHANGE=11, JOURNAL_RTC_SERVICE=12 };
 enum { JOURNAL_TIME_UNKNOWN, JOURNAL_TIME_RTC, JOURNAL_TIME_GNSS };
 enum { JOURNAL_RECEIVER=1, JOURNAL_FIX=2, JOURNAL_LINK=4, JOURNAL_WIFI=8,
        JOURNAL_PSRAM=16, JOURNAL_SAMPLED=32 };
@@ -32,6 +32,12 @@ typedef struct {
     int32_t timing_phase_ticks;
     nr_sample_t reception; // event 9: expectation, evidence and local alarm transition
     nrp_event_t reception_power; // event 10: local/remote received-power transition
+    // event 11: system clock step; source uses observer_time_source_t. The
+    // record's time_source/utc retain independent journal evidence semantics.
+    uint8_t clock_source;
+    bool clock_uncertainty_known;
+    int64_t clock_old_ns, clock_new_ns, clock_sampled_ms;
+    uint64_t clock_uncertainty_ns;
 } journal_record_t;
 typedef struct { nvs_handle_t handle; uint64_t latest[3]; bool ready; } journal_store_t;
 // Separate FIFO lanes: lifecycle events cannot be evicted by hourly checkpoints.

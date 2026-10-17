@@ -81,7 +81,7 @@ unsigned rtc_trusted_utc(rtc_candidate_t *c, const gnss_status_t *g, uint8_t rtc
 {
     int64_t epoch;
     (void)rtc_gnss_candidate(c, g, now, &epoch);
-    if (c->samples >= 3 && now >= c->last_sample_ms && now - c->last_sample_ms <= 2000) {
+    if (c->samples >= 3 && c->last_sample_ms-c->first_sample_ms>=2000 && now >= c->last_sample_ms && now - c->last_sample_ms <= 2000) {
         *utc = (c->last_utc_ns + (now - c->last_sample_ms) * 1000000) / 1000000000; return RTC_UTC_GNSS;
     }
     if ((rtc_flags & 19) == 19 && now >= rtc_sampled_ms && now - rtc_sampled_ms <= 30000) {

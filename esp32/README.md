@@ -363,12 +363,28 @@ the flag would not clear, it stops retrying and trusts only GNSS time. The part 
 accessed during its 300 ms power-up recovery (tREC). See the
 [MAX31328 datasheet](https://www.analog.com/media/en/technical-documentation/data-sheets/max31328.pdf).
 
-This establishes a seconds-resolution RTC baseline. It does not adopt RTC time
-as system time, change observation timestamps, authenticate GNSS time, or provide
-PPS alignment. The 2026-09-14 S3 flash check confirmed that a stopped RTC waits
+This establishes a seconds-resolution RTC baseline. Qualified GNSS or a running
+RTC can now bootstrap the system clock, with source and clock changes recorded;
+this does not authenticate GNSS time or provide PPS alignment.
+The 2026-09-14 S3 flash check confirmed that a stopped RTC waits
 for GNSS lock while the NEO-M9N communicates but reports no tracked satellites.
 Actual GNSS initialization and battery retention still need a bench check with
 reception and a fitted battery.
+
+Battery replacement while valid main power remains at the RTC normally preserves
+its calendar and may leave no detectable event. Backup-enabled is not a battery
+presence or health test. Firmware recovers a stopped/invalid clock from qualified
+GNSS UTC. USB service commands can explicitly reset a running calendar or accept
+a stated factory reference and record a maintenance reason. RTC replacement/service
+does not change the board's commissioning identity.
+
+Qualified GNSS/RTC UTC feeds the journal, board reports and updater metadata
+decisions, and can bootstrap the system wall clock used by TLS, WireGuard,
+observation reception stamps and edge forecasts. SNTP availability and independent
+evidence retain separate provenance. Without usable UTC, local capture and uptime-based journal records continue;
+time-dependent networking can remain unavailable. See the
+[RTC service guide](docs/RTC-SERVICE.md) for USB commands, uncertainty and replay
+rules, and remaining physical retention and service tests.
 
 The ATECC check uses a wake response, CRC-verified Info revision, configuration
 lock-byte reads and three Random requests. It rejects fixed/short-period output
@@ -573,7 +589,7 @@ Notable properties:
   uplink. SNTP, OTA downloads and DNS keep the ordinary uplink.
 - **Time first.** A WireGuard handshake carries a timestamp the peer rejects if
   it is not newer than the last from that key, so the first handshake waits for a
-  plausible wall clock (SNTP today; hardware RTC time remains P-hw work). A reboot
+  plausible wall clock (SNTP, qualified GNSS or retained RTC continuity). A reboot
   therefore reconnects only once the clock is set, the same bar the collector's
   TLS certificate check already imposes.
 - **Reconnect and preference.** The tunnel task waits for Wi-Fi, brings the peer

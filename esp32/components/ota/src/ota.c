@@ -202,6 +202,13 @@ static esp_err_t journal_post(httpd_req_t *req)
         char hash[65]; nvf_ota_hex(r->elf_sha256,32,hash);
         cJSON_AddStringToObject(row,"elf_sha256",hash);
         cJSON_AddNumberToObject(row,"event",r->event); cJSON_AddNumberToObject(row,"time_source",r->time_source);
+        if(r->event==JOURNAL_CLOCK_CHANGE) {
+            cJSON_AddNumberToObject(row,"clock_source",r->clock_source);
+            char ns[32];snprintf(ns,sizeof ns,"%lld",(long long)r->clock_old_ns);cJSON_AddStringToObject(row,"clock_old_ns",ns);
+            snprintf(ns,sizeof ns,"%lld",(long long)r->clock_new_ns);cJSON_AddStringToObject(row,"clock_new_ns",ns);
+            cJSON_AddNumberToObject(row,"clock_sampled_ms",r->clock_sampled_ms);
+            if(r->clock_uncertainty_known)cJSON_AddNumberToObject(row,"clock_uncertainty_ns",r->clock_uncertainty_ns);else cJSON_AddNullToObject(row,"clock_uncertainty_ns");
+        }
         cJSON_AddNumberToObject(row,"reset_reason",r->reset_reason);
         cJSON_AddNumberToObject(row,"flags",r->flags); cJSON_AddNumberToObject(row,"queued",r->queued);
         cJSON_AddNumberToObject(row,"internal_free",r->internal_free);
@@ -368,7 +375,9 @@ esp_err_t nvf_ota_start(void)
     // The provisioning server uses the same port in a separate boot path.
     wifi_mode_t mode;
     if (esp_wifi_get_mode(&mode) != ESP_OK || mode != WIFI_MODE_STA) return ESP_ERR_INVALID_STATE;
+    extern void observer_time_network_sync(struct timeval *) __attribute__((weak));
     esp_sntp_config_t sntp = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    sntp.sync_cb = observer_time_network_sync;
     esp_err_t err = esp_netif_sntp_init(&sntp);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
     nvs_handle_t nvs;

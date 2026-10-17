@@ -10,7 +10,7 @@
 // Time: a WireGuard handshake carries a TAI64N timestamp and the peer drops any that is
 // not newer than the last it accepted from this key. A reboot into 1970 would therefore
 // be ignored until the clock is right, so the first attempt waits for a plausible wall
-// clock (SNTP today; the RTC path is P-hw work).
+// clock (network time, qualified GNSS or RTC continuity via the board time service).
 //
 // Threading: the port drives lwIP's raw netif, udp and dns APIs directly. This firmware
 // runs lwIP without core locking (the ESP-IDF default), so those calls are legal only on
@@ -47,7 +47,7 @@ static const char *TAG = "tunnel";
 #include "lwip/netif.h"
 #include "netcfg_tunnel.h"
 
-#define WALL_CLOCK_FLOOR  1600000000LL // ~2020-09: the same bar app_now_ns() applies
+#define WALL_CLOCK_FLOOR  1704067200LL // 2024-01-01: the time service's bootstrap floor
 #define POLL_MS           1000
 // The port stops re-sending handshake initiations 90 s after the last trigger. A peer
 // still down after that gets a fresh connect, which also re-resolves the endpoint name.
@@ -72,7 +72,7 @@ bool tunnel_up(void) { return atomic_load_explicit(&s_up, memory_order_relaxed);
 
 const char *tunnel_collector_address(void) { return s_started ? s_collector : NULL; }
 
-static bool wall_clock_plausible(void) { return time(NULL) > (time_t)WALL_CLOCK_FLOOR; }
+static bool wall_clock_plausible(void) { time_t utc=time(NULL);return utc >= (time_t)WALL_CLOCK_FLOOR && utc<4102444800LL; }
 
 // --- bodies executed on the tcpip thread --------------------------------------------------
 
@@ -134,7 +134,9 @@ static void tunnel_task(void *arg)
             if (!sntp_requested) {
                 // Station-mode OTA normally starts SNTP first; this is the fallback when that
                 // option is off. Already-initialised is not an error.
+                extern void observer_time_network_sync(struct timeval *) __attribute__((weak));
                 esp_sntp_config_t sntp = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+                sntp.sync_cb = observer_time_network_sync;
                 esp_err_t err = esp_netif_sntp_init(&sntp);
                 if (err != ESP_OK && err != ESP_ERR_INVALID_STATE)
                     ESP_LOGW(TAG, "SNTP start failed (%s); waiting for another time source",

@@ -91,6 +91,15 @@ void journal_event(uint8_t event, int32_t error)
     append(&r);
     xSemaphoreGive(mutex);
 }
+void journal_clock_change(uint8_t source,int64_t old,int64_t new,int64_t sampled,bool known,uint64_t uncertainty)
+{
+    if(!mutex || xSemaphoreTake(mutex,pdMS_TO_TICKS(100))!=pdTRUE)return;
+    journal_record_t r=current;r.event=JOURNAL_CLOCK_CHANGE;r.uptime_ms=esp_timer_get_time()/1000;
+    r.utc=0;r.time_source=JOURNAL_TIME_UNKNOWN;
+    r.clock_source=source;r.clock_old_ns=old;r.clock_new_ns=new;r.clock_sampled_ms=sampled;
+    r.clock_uncertainty_known=known;r.clock_uncertainty_ns=uncertainty;
+    append(&r);xSemaphoreGive(mutex);
+}
 void journal_poll(const gnss_status_t *g, const observer_report_t *report, uint64_t now)
 {
     if (!mutex || xSemaphoreTake(mutex,0) != pdTRUE) return;
@@ -201,6 +210,8 @@ void journal_start(void) {}
 void journal_poll(const gnss_status_t *g, const observer_report_t *r, uint64_t now)
 { (void)g; (void)r; (void)now; }
 void journal_event(uint8_t event, int32_t error) { (void)event; (void)error; }
+void journal_clock_change(uint8_t source,int64_t old,int64_t new,int64_t sampled,bool known,uint64_t uncertainty)
+{(void)source;(void)old;(void)new;(void)sampled;(void)known;(void)uncertainty;}
 bool journal_reception_save(nr_sample_t *s) { (void)s;return false; }
 bool journal_reception_latest(nr_sample_t *s) { (void)s;return false; }
 bool journal_reception_next(uint64_t a,nr_sample_t *s) { (void)a;(void)s;return false; }

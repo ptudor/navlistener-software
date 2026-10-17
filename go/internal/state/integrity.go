@@ -28,16 +28,9 @@ func NewIntegrityConfig(profile integrity.Profile, stations map[string]integrity
 	}
 	copied := make(map[string]integrity.StationProfile, len(stations))
 	for id, sp := range stations {
+		sp = sp.Clone()
 		if err := sp.Validate(); err != nil {
 			return nil, fmt.Errorf("integrity station %s: %w", id, err)
-		}
-		if sp.Position != nil {
-			pos := *sp.Position
-			sp.Position = &pos
-		}
-		if sp.Baseline != nil {
-			pair := *sp.Baseline
-			sp.Baseline = &pair
 		}
 		copied[id] = sp
 	}
@@ -208,6 +201,9 @@ func utcReference(f *ingest.RawFrame) (stamp time.Time, local bool) {
 	case lag <= utcReferenceLiveBound:
 		return f.RecvLocal, true // live: the collector's own clock
 	default:
+		if f.Solution != nil && f.Solution.StampSource != 0 && f.Solution.StampSource != ingest.StampNetwork && f.Solution.StampSource != ingest.StampFactory {
+			return time.Time{}, false
+		}
 		return f.Recv, false // replayed: only the observer's stamp knows the instant
 	}
 }

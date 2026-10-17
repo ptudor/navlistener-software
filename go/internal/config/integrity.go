@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/ptudor/navlistener/internal/integrity"
 )
@@ -39,7 +40,32 @@ type IntegrityStation struct {
 	// [[reception.station]] position; set it in one place only.
 	Position []float64 `toml:"position"`
 	// MaxSpeedMPS is a mobile station's maximum plausible speed, required.
-	MaxSpeedMPS float64 `toml:"max_speed_mps"`
+	MaxSpeedMPS  float64                      `toml:"max_speed_mps"`
+	Installation integrity.Installation       `toml:"installation"`
+	Motion       *IntegrityMotion             `toml:"motion"`
+	Fixed        integrity.FixedPolicy        `toml:"fixed"`
+	Reference    *integrity.ReferenceEvidence `toml:"reference"`
+	Survey       *IntegritySurvey             `toml:"survey"`
+	SegmentID    string                       `toml:"segment_id"`
+}
+
+type IntegrityMotion struct {
+	ReportedSpeed              *bool    `toml:"reported_speed"`
+	MaxAccelerationMPS2        *float64 `toml:"max_acceleration_mps2"`
+	MaxLateralAccelerationMPS2 *float64 `toml:"max_lateral_acceleration_mps2"`
+	MaxVerticalSpeedMPS        *float64 `toml:"max_vertical_speed_mps"`
+	MaxSpeedAccuracyMPS        *float64 `toml:"max_speed_accuracy_mps"`
+	MaxPositionAccuracyM       *float64 `toml:"max_position_accuracy_m"`
+	Gap                        string   `toml:"gap"`
+	ResetAfterGap              *bool    `toml:"reset_after_gap"`
+}
+
+type IntegritySurvey struct {
+	Duration       string  `toml:"duration"`
+	MinSamples     int     `toml:"min_samples"`
+	MaxDispersionM float64 `toml:"max_dispersion_m"`
+	MaxAccuracyM   float64 `toml:"max_accuracy_m"`
+	MinSV          int     `toml:"min_sv"`
 }
 
 // finalizeIntegrity validates the section and resolves every installation. A
@@ -59,6 +85,47 @@ func (c *Config) finalizeIntegrity() error {
 			return fmt.Errorf("integrity: duplicate observer %q", s.Observer)
 		}
 		sp := integrity.StationProfile{Mode: integrity.Mode(s.Mode)}
+		if s.Installation != "" {
+			var err error
+			sp, err = integrity.InstallationDefaults(s.Installation)
+			if err != nil {
+				return err
+			}
+			if s.Mode != "" && integrity.Mode(s.Mode) != sp.Mode {
+				return fmt.Errorf("integrity %s: mode conflicts with installation", s.Observer)
+			}
+		}
+		sp.Fixed, sp.Reference, sp.SegmentID = s.Fixed, s.Reference, s.SegmentID
+		if m := s.Motion; m != nil {
+			for _, x := range []struct {
+				from *float64
+				to   *float64
+			}{{m.MaxAccelerationMPS2, &sp.Motion.MaxAccelerationMPS2}, {m.MaxLateralAccelerationMPS2, &sp.Motion.MaxLateralAccelerationMPS2}, {m.MaxVerticalSpeedMPS, &sp.Motion.MaxVerticalSpeedMPS}, {m.MaxSpeedAccuracyMPS, &sp.Motion.MaxSpeedAccuracyMPS}, {m.MaxPositionAccuracyM, &sp.Motion.MaxPositionAccuracyM}} {
+				if x.from != nil {
+					*x.to = *x.from
+				}
+			}
+			if m.ReportedSpeed != nil {
+				sp.Motion.ReportedSpeed = *m.ReportedSpeed
+			}
+			if m.ResetAfterGap != nil {
+				sp.Motion.ResetAfterGap = *m.ResetAfterGap
+			}
+			if m.Gap != "" {
+				var err error
+				sp.Motion.Gap, err = time.ParseDuration(m.Gap)
+				if err != nil {
+					return fmt.Errorf("integrity %s: motion gap: %w", s.Observer, err)
+				}
+			}
+		}
+		if q := s.Survey; q != nil {
+			d, err := time.ParseDuration(q.Duration)
+			if err != nil {
+				return fmt.Errorf("integrity %s: survey duration: %w", s.Observer, err)
+			}
+			sp.Survey = &integrity.SurveyPolicy{Duration: d, MinSamples: q.MinSamples, MaxDispersionM: q.MaxDispersionM, MaxAccuracyM: q.MaxAccuracyM, MinSV: q.MinSV}
+		}
 		site, hasSite := reception[s.Observer]
 		switch sp.Mode {
 		case integrity.ModeFixed:
@@ -86,17 +153,26 @@ func (c *Config) finalizeIntegrity() error {
 			if len(s.Position) != 0 {
 				return fmt.Errorf("integrity %s: a mobile station has no surveyed position", s.Observer)
 			}
-			if math.IsNaN(s.MaxSpeedMPS) || math.IsInf(s.MaxSpeedMPS, 0) || s.MaxSpeedMPS <= 0 || s.MaxSpeedMPS > 1000 {
+			if s.MaxSpeedMPS != 0 {
+				sp.MaxSpeedMPS = s.MaxSpeedMPS
+			}
+			if math.IsNaN(sp.MaxSpeedMPS) || math.IsInf(sp.MaxSpeedMPS, 0) || sp.MaxSpeedMPS <= 0 || sp.MaxSpeedMPS > 1000 {
 				return fmt.Errorf("integrity %s: a mobile station needs max_speed_mps in (0, 1000]", s.Observer)
 			}
-			sp.MaxSpeedMPS = s.MaxSpeedMPS
 		default:
 			return fmt.Errorf("integrity %s: mode must be \"fixed\" or \"mobile\", got %q", s.Observer, s.Mode)
 		}
 		if err := sp.Validate(); err != nil {
 			return fmt.Errorf("integrity %s: %w", s.Observer, err)
 		}
-		out[s.Observer] = sp
+		if sp.Reference != nil && hasSite {
+			for _, site := range c.Reception.Stations {
+				if site.Observer == s.Observer && site.PowerModelEpoch != sp.Reference.SiteID {
+					return fmt.Errorf("integrity %s: reference site_id must match reception power_model_epoch; change both for a new site", s.Observer)
+				}
+			}
+		}
+		out[s.Observer] = sp.Clone()
 	}
 	for observer, pos := range reception {
 		if _, configured := out[observer]; configured {
@@ -186,14 +262,7 @@ func slicesEqualFloat(a, b []float64) bool {
 func (c *Config) IntegrityStations() map[string]integrity.StationProfile {
 	out := make(map[string]integrity.StationProfile, len(c.integrityStations))
 	for id, sp := range c.integrityStations {
-		if sp.Position != nil {
-			pos := *sp.Position
-			sp.Position = &pos
-		}
-		if sp.Baseline != nil {
-			pair := *sp.Baseline
-			sp.Baseline = &pair
-		}
+		sp = sp.Clone()
 		out[id] = sp
 	}
 	return out

@@ -1,4 +1,5 @@
 #include "rtc_max31328.h"
+#include "rtc_service.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -144,9 +145,29 @@ static void square_test(void)
     }
 }
 
+static unsigned audits;
+static bool service_audit(void *ctx,rtc_service_record_t *r)
+{chip_t *c=ctx;if(++audits==1){assert(!c->writes);r->sequence=1;}return true;}
+static void service_test(void)
+{
+    chip_t c;rtc_io_t io=chip_io(&c);rtc_service_record_t r;
+    rtc_service_request_t req={.source=OBS_TIME_GNSS,.reference=utc_at(&c,1704067200300),.uncertainty_ns=1000000,.reference_id="receiver_utc",.reason="retry after oscillator service"};
+    audits=0;c.osf_read_only=true;
+    assert(rtc_service_execute(&io,true,&req,service_audit,&c,&r)==RTC_SERVICE_OSF_STUCK && r.audit_complete && !r.readback_valid);
+    c.osf_read_only=false;c.writes=0;audits=0;req.reference=utc_at(&c,1704067200300);
+    assert(rtc_service_execute(&io,true,&req,service_audit,&c,&r)==RTC_SERVICE_OK && r.readback_valid);
+    io=chip_io(&c);audits=0;req.reference=utc_at(&c,1704067200300);
+    assert(rtc_service_execute(&io,true,&req,service_audit,&c,&r)==RTC_SERVICE_OK);
+    unsigned operations=c.operations;
+    for(unsigned fail=1;fail<=operations;fail++) {
+        io=chip_io(&c);c.fail_at=fail;audits=0;req.reference=utc_at(&c,1704067200300);
+        // Every injected I/O failure is recorded, without claiming success.
+        assert(rtc_service_execute(&io,true,&req,service_audit,&c,&r)!=RTC_SERVICE_OK);
+    }
+}
 int main(void)
 {
-    calendar_test(); set_test(); square_test();
+    calendar_test(); set_test(); square_test();service_test();
     puts("MAX31328 calendar, OSF, verified set, square wave and I2C fault tests passed");
     return 0;
 }

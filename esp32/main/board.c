@@ -30,6 +30,7 @@
 #include "receiver.h"
 #include "observer_rtc.h"
 #include "rtc_policy.h"
+#include "observer_time.h"
 #include "environment.h"
 #include "io_expander_service.h"
 #include "pusher.h"
@@ -949,7 +950,17 @@ static void board_task(void *arg)
             next_brightness_write = err == ESP_OK ? 0 : now + 60000;
         }
         observer_rtc_poll(hardware_manifest_i2c_bus(), &status, now);
+        static uint32_t serviced_sequence;
+        static int64_t serviced_started=-1;
+        rtc_service_record_t service_result;
+        if(observer_rtc_service_result(&service_result) && (service_result.sequence!=serviced_sequence || service_result.started_ms!=serviced_started)) {
+            serviced_sequence=service_result.sequence;serviced_started=service_result.started_ms;
+            journal_event(JOURNAL_RTC_SERVICE,(int32_t)service_result.result);
+            observer_time_service_applied(&service_result);
+        }
         report_rtc_t rtc = observer_rtc_status();
+        now=esp_timer_get_time()/1000; // verified RTC writes can cross a second boundary
+        observer_time_poll(&status,rtc,now);
         int64_t utc;
         bool utc_valid = rtc_trusted_utc(&utc_candidate, &status, rtc.flags, (int64_t)rtc.epoch,
                                          (int64_t)rtc.sampled_ms, now, &utc) != RTC_UTC_UNKNOWN;

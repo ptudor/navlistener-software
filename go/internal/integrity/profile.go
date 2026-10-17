@@ -278,22 +278,32 @@ const (
 // Surveyed is a surveyed antenna position: WGS-84 latitude and longitude in degrees,
 // height above the ellipsoid in metres.
 type Surveyed struct {
-	LatDeg  float64 `json:"lat_deg"`
-	LonDeg  float64 `json:"lon_deg"`
-	HeightM float64 `json:"height_m"`
+	LatDeg  float64 `toml:"lat_deg" json:"lat_deg"`
+	LonDeg  float64 `toml:"lon_deg" json:"lon_deg"`
+	HeightM float64 `toml:"height_m" json:"height_m"`
 }
 
 // StationProfile is one station's installation profile.
 type StationProfile struct {
-	Mode        Mode      `json:"mode"`
-	Position    *Surveyed `json:"position,omitempty"`
-	MaxSpeedMPS float64   `json:"max_speed_mps,omitempty"`
+	Mode         Mode               `json:"mode"`
+	Position     *Surveyed          `json:"position,omitempty"`
+	MaxSpeedMPS  float64            `json:"max_speed_mps,omitempty"`
+	Installation Installation       `json:"installation,omitempty"`
+	Motion       MotionPolicy       `json:"motion,omitempty"`
+	Fixed        FixedPolicy        `json:"fixed,omitempty"`
+	Reference    *ReferenceEvidence `json:"reference,omitempty"`
+	Survey       *SurveyPolicy      `json:"survey,omitempty"`
+	// SegmentID declares a new portable deployment when configuration is reloaded.
+	SegmentID string `json:"segment_id,omitempty"`
 	// Baseline pairs the station with a co-located partner, for any mode.
 	Baseline *Baseline `json:"baseline,omitempty"`
 }
 
 // Validate rejects an installation profile the checks cannot apply.
 func (s StationProfile) Validate() error {
+	if err := s.validateInstallation(); err != nil {
+		return err
+	}
 	switch s.Mode {
 	case ModeUnknown, ModeFixed, ModeMobile:
 	default:

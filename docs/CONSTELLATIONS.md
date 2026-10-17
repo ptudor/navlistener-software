@@ -146,7 +146,11 @@ policy and validation against the corresponding signal specification.
 
 ### 2.2 Septentrio — SBF raw-nav blocks
 
-`navfeeder --source-mode sbf` reads the SBF stream and forwards the raw-nav blocks. SBF wraps
+The collector's TCP dial connector (`[[ingest]]`, `type = "sbf"`) reads SBF
+streams. The standalone C feeder currently implements only UBX input, the ESP32
+receiver path is UBX-specific, and GNF1 push rejects SBF feeds. See the
+[mosaic-G5 P3 integration proposal](proposals/OBSERVER-TIME-MOTION-AND-SEPTENTRIO.md#custom-mosaic-g5-p3-observer)
+for the remaining transport, telemetry and decoding work. SBF wraps
 the *already-de-interleaved* ICD nav bits (Septentrio does the word unpacking on the
 receiver), so a future central decoder skips step 1 above and goes straight to parity/CRC +
 parameter extraction. The current `sbf.go` validates framing/CRC and persists raw blocks only
@@ -185,9 +189,10 @@ is part of the planned NavIC support.
 > 4024) are confirmed against published SBF reference guides. The newest-generation entries —
 > `QZSRawL1S`/`QZSRawL1C`, `QZSRawL6`, `BDSRawB2b`, `GPSRawL1C`, and especially `NAVICLNAVRaw`
 > (Septentrio may not yet emit a NavIC-L1 raw block at all) — must be re-verified against the
-> receiver's *shipping* firmware SBF Reference Guide when `sbf.go` is written in P3; Septentrio
-> adds raw-nav blocks per firmware release. The dispatch table is config-data, not logic, so a
-> corrected ID is a one-line change.
+> receiver's *shipping* firmware SBF Reference Guide and actual capabilities before
+> implementing live block decoders. Septentrio adds raw-nav blocks per firmware
+> release; this table is a decoding plan, not an implemented dispatch table or a
+> guarantee that a particular module emits every listed block.
 
 ### 2.3 RTCM3 — ephemeris & SSR
 

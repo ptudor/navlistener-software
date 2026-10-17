@@ -1,4 +1,5 @@
 #include "rtc_io.h"
+#include "rtc_service.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -129,6 +130,12 @@ static void trusted_utc_test(void)
     assert(utc == 1704067202);
     assert(rtc_trusted_utc(&c, &s, 0, 0, 0, 5000, &utc) == RTC_UTC_GNSS && utc == 1704067204);
     assert(rtc_trusted_utc(&c, &s, 0, 0, 0, 5001, &utc) == RTC_UTC_UNKNOWN && utc == 0); // stale fix
+    c=(rtc_candidate_t){0};s=(gnss_status_t){0};
+    // High-rate reports can reach three samples before two seconds have elapsed.
+    for(unsigned i=0;i<3;i++) {
+        pvt(p,0);put32(p+16,i*100000000);gnss_status_feed(&s,1,7,p,sizeof p,1000+i*100);
+        assert(rtc_trusted_utc(&c,&s,0,0,0,s.fix_ms,&utc)==RTC_UTC_UNKNOWN);
+    }
 }
 
 typedef struct {
@@ -227,6 +234,45 @@ static rtc_io_t fake_io(fake_t *f)
     return (rtc_io_t){.ctx=f, .read=fake_read, .write=fake_write, .delay=fake_delay,
         .now_ms=fake_now, .save_power_failure=fake_save};
 }
+static unsigned audit_calls,audit_fail;
+static bool audit(void *ctx,rtc_service_record_t *r)
+{
+    fake_t *f=ctx;
+    if(++audit_calls==1){assert(f->writes==0);assert(r->old_read);r->sequence=42;}
+    return audit_calls!=audit_fail;
+}
+static void service_test(void)
+{
+    fake_t f;rtc_io_t io=fake_io(&f);
+    assert(rtc_encode(1600000000,f.regs));f.regs[0]|=0x80;f.regs[3]|=0x20;
+    rtc_service_request_t req={.source=OBS_TIME_FACTORY,.reference=utc_at(&f,1704067200300),.uncertainty_ns=20000000,.reason="battery: powered service",.reference_id="bench_reference",.battery_service=true};
+    rtc_service_record_t r;audit_calls=audit_fail=0;
+    assert(rtc_service_execute(&io,false,&req,audit,&f,&r)==RTC_SERVICE_OK);
+    assert(r.old_valid && r.old_epoch==1600000000 && r.readback_valid && r.readback_epoch==1704067201 && r.sequence==42 && r.audit_complete && audit_calls==2);
+    // An unavailable audit store must prevent calendar writes.
+    io=fake_io(&f);audit_calls=0;audit_fail=1;
+    assert(rtc_service_execute(&io,false,&req,audit,&f,&r)==RTC_SERVICE_AUDIT_FAILED && f.writes==0);
+    // A failed final save must not return a completed durable success.
+    io=fake_io(&f);audit_calls=0;audit_fail=2;
+    assert(rtc_service_execute(&io,false,&req,audit,&f,&r)==RTC_SERVICE_AUDIT_FAILED && !r.audit_complete);
+    // Stale, future, unqualified and missing-reason references never write.
+    for(unsigned i=0;i<4;i++) {
+        io=fake_io(&f);audit_calls=audit_fail=0;rtc_service_request_t bad=req;
+        if(i==0)f.clock_ms=2001;if(i==1)bad.reference.sampled_ms=1;if(i==2)bad.source=OBS_TIME_NETWORK;if(i==3)bad.reason[0]=0;
+        assert(rtc_service_execute(&io,false,&bad,audit,&f,&r)==RTC_SERVICE_BAD_REFERENCE && f.writes==0);
+    }
+    io=fake_io(&f);audit_calls=audit_fail=0;f.frozen=true;
+    assert(rtc_service_execute(&io,false,&req,audit,&f,&r)==RTC_SERVICE_WRITE_FAILED);
+    // The next explicit operation retries a previously failed calendar.
+    f.frozen=false;req.reference=utc_at(&f,1704067200300);f.writes=0;audit_calls=0;
+    assert(rtc_service_execute(&io,false,&req,audit,&f,&r)==RTC_SERVICE_OK);
+    // Powered battery service needs no new absolute time and writes no RTC registers.
+    req=(rtc_service_request_t){.source=OBS_TIME_RTC,.verify_only=true,.battery_service=true,.reason="powered cell replacement",.reference_id="retained_calendar"};
+    f.writes=0;audit_calls=0;
+    assert(rtc_service_execute(&io,false,&req,audit,&f,&r)==RTC_SERVICE_OK && !f.writes && r.old_valid && r.readback_epoch>r.old_epoch);
+    f.frozen=true;audit_calls=0;
+    assert(rtc_service_execute(&io,false,&req,audit,&f,&r)==RTC_SERVICE_VERIFY_FAILED && !f.writes);
+}
 static void io_test(void)
 {
     fake_t f; rtc_io_t io = fake_io(&f); int64_t epoch, written = 0;
@@ -312,7 +358,7 @@ static void square_test(void)
 }
 int main(void)
 {
-    calendar_test(); gnss_test(); trusted_utc_test(); io_test(); square_test();
+    calendar_test(); gnss_test(); trusted_utc_test(); io_test(); square_test();service_test();
     puts("RTC calendar, GNSS qualification, trusted UTC and I2C fault tests passed");
     return 0;
 }
