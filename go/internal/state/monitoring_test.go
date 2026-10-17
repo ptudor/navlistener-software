@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/navlistener/internal/ingest"
 )
 
 func TestMonitoringWitnessesExpiryAndReset(t *testing.T) {
@@ -34,5 +35,29 @@ func TestMonitoringWitnessesExpiryAndReset(t *testing.T) {
 	s.Reset()
 	if len(s.MonitoringSatellites(now)) != 0 {
 		t.Fatal("withdrawn identity survived audience reset")
+	}
+}
+
+func TestMonitoringReplayCannotRefreshOrRewindWitness(t *testing.T) {
+	s := New(1)
+	now := time.Now()
+	apply := func(stamp, arrival time.Time, stamped bool) {
+		s.Apply(&ingest.RawFrame{Source: "station", Recv: stamp, RecvLocal: arrival, RecvStamped: stamped,
+			GnssID: gnss.GPS, SvID: 5, Words: sf1Words(85)})
+	}
+	apply(now.Add(-12*time.Hour), now, true)
+	if len(s.MonitoringSatellites(now)[0].WitnessTimes) != 0 {
+		t.Fatal("historical observation became current on arrival")
+	}
+	apply(now, now, true)
+	apply(now.Add(-12*time.Hour), now.Add(time.Second), true)
+	got := s.MonitoringSatellites(now.Add(time.Second))[0].WitnessTimes
+	if len(got) != 1 || got[0] != now.Unix() {
+		t.Fatalf("old replay rewound newer evidence: %v", got)
+	}
+	apply(now, now.Add(61*time.Second), true)
+	apply(now.Add(61*time.Second), now.Add(61*time.Second), false)
+	if len(s.MonitoringSatellites(now.Add(61 * time.Second))[0].WitnessTimes) != 0 {
+		t.Fatal("retry or unstamped receipt renewed an expired witness")
 	}
 }

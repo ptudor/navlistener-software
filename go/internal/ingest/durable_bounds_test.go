@@ -147,11 +147,13 @@ func TestPushTrackingBudgetStopsBeforeHandoff(t *testing.T) {
 	defer client.Close()
 	out := make(chan *RawFrame, 4)
 	p := &PushServer{out: out, ackInterval: time.Millisecond, durable: tr, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		defer server.Close()
-		p.stream(context.Background(), server, &connWriter{c: server}, identity.NewPrivateContext("obs", identity.CredentialToken), "ubx", "session")
+		p.stream(ctx, server, &connWriter{c: server}, identity.NewPrivateContext("obs", identity.CredentialToken), "ubx", "session")
 	}()
 	rec := wire.RawRecord{RecvUnixNs: time.Now().UnixNano(), GnssID: gnss.GPS, SvID: 1, Raw: make([]byte, 40)}
 	for _, seq := range []uint64{10, 20} {
@@ -173,16 +175,89 @@ func TestPushTrackingBudgetStopsBeforeHandoff(t *testing.T) {
 			}
 		}
 	}
+	cancel() // shutdown also interrupts the bounded persistence wait
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("budget did not close stream")
+		t.Fatal("cancelled budget wait did not close stream")
 	}
 	if len(out) != 1 || (<-out).Seq != 10 {
 		t.Fatal("over-budget frame reached decoder")
 	}
 	if tr.Watermark("obs", "session") != 9 {
 		t.Fatal("old unresolved receipt was forgotten")
+	}
+}
+
+// A replay burst can fill the tracking budget before the first periodic ACK.
+// Closing immediately then replays the same prefix forever, even when every
+// database write succeeds. Wait for that prefix to commit and keep draining.
+func TestPushReplayBurstWaitsForDurability(t *testing.T) {
+	tr := NewDurableTracker()
+	tr.maxPerSession = 4
+	server, client := net.Pipe()
+	defer client.Close()
+	out := make(chan *RawFrame, 8)
+	p := &PushServer{out: out, ackInterval: time.Hour, durable: tr, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer server.Close()
+		p.stream(ctx, server, &connWriter{c: server}, identity.NewPrivateContext("burst", identity.CredentialToken), "ubx", "boot")
+	}()
+	rec := wire.RawRecord{RecvUnixNs: time.Now().UnixNano(), GnssID: gnss.GPS, SvID: 1, Raw: make([]byte, 40)}
+	for seq := uint64(1); seq <= 5; seq++ {
+		if err := wire.WriteFrame(client, wire.Data, wire.EncodeData(seq, rec)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for seq := uint64(1); seq <= 4; seq++ {
+		select {
+		case f := <-out:
+			if f.Seq != seq {
+				t.Fatalf("received sequence %d, want %d", f.Seq, seq)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("admitted prefix did not reach persistence")
+		}
+	}
+	select {
+	case <-done:
+		t.Fatal("replay disconnected before its admitted prefix could commit")
+	case <-time.After(25 * time.Millisecond):
+	}
+	if len(out) != 0 || tr.Watermark("burst", "boot") != 0 {
+		t.Fatal("over-budget frame admitted or unresolved evidence acknowledged")
+	}
+	for seq := uint64(1); seq <= 4; seq++ {
+		tr.Resolved("burst", "boot", seq)
+	}
+	_ = client.SetReadDeadline(time.Now().Add(time.Second))
+	kind, body, err := wire.ReadFrame(client)
+	if err != nil || kind != wire.Ack {
+		t.Fatalf("no progress ACK after commit: %v, %v", kind, err)
+	}
+	if seq, err := wire.DecodeAck(body); err != nil || seq != 4 {
+		t.Fatalf("ACK = %d, %v; want committed prefix 4", seq, err)
+	}
+	select {
+	case f := <-out:
+		if f.Seq != 5 {
+			t.Fatalf("resumed at %d, want 5", f.Seq)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("replay did not resume after persistence released capacity")
+	}
+	if tr.Watermark("burst", "boot") != 4 {
+		t.Fatal("newly admitted frame acknowledged before persistence")
+	}
+	client.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("stream did not exit")
 	}
 }
 

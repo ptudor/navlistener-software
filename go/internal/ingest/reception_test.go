@@ -132,7 +132,7 @@ func TestReceptionForecastRoundTripTLS(t *testing.T) {
 	}
 	s := reception.Sample{ExpectationID: e.ID, Unix: e.Issued, UptimeMS: 1000, Valid: 1}
 	s.Matched[0] = 3
-	record := wire.RawRecord{FrameType: TelemObserverDetails, Raw: receptionDetails(17, s.Encode())}
+	record := wire.RawRecord{RecvUnixNs: time.Now().UnixNano(), FrameType: TelemObserverDetails, Raw: receptionDetails(17, s.Encode())}
 	if err := wire.WriteFrame(conn, wire.Data, wire.EncodeData(1, record)); err != nil {
 		t.Fatal(err)
 	}

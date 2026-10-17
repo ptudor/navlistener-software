@@ -605,20 +605,22 @@ func (st *svState) foldGGTO(valid bool, a0g, a1g, t0g float64, wn0g int) {
 }
 
 // markSeenBy records source as having delivered a structurally-decoded nav frame
-// for this satellite×signal at recv. Called next to every nav-path
+// for this satellite×signal at its original observation time. Called next to every nav-path
 // `st.lastSeen = recv` with the shard lock held, so it inherits each decoder's
 // structural gates (CRC/parity, PRN-mismatch, svId envelope) — a frame those
 // gates reject corroborates nothing. RAWX observables deliberately do NOT mark:
 // they carry no nav bits, so they cannot corroborate broadcast *content*
 // (their per-source evidence is already served as perrecv iono).
 func (st *svState) markSeenBy(source string, recv time.Time) {
-	if source == "" {
+	if source == "" || recv.IsZero() {
 		return
 	}
 	if st.seenBy == nil {
 		st.seenBy = map[string]time.Time{}
 	}
-	st.seenBy[source] = recv
+	if recv.After(st.seenBy[source]) {
+		st.seenBy[source] = recv
+	}
 }
 
 // accuracy-table selectors for accKind (docs/MATH.md §6).
@@ -1108,7 +1110,7 @@ func (s *Store) applyGPSCNAV(f *ingest.RawFrame) {
 		sh.m[key] = st
 	}
 	st.lastSeen = recv
-	st.markSeenBy(f.Source, recv) // conf corroboration recency
+	st.markSeenBy(f.Source, f.ObservationTime()) // observation age survives replay
 	// the alert flag rides every applied message's header (types
 	// outside 10/11/30–37 returned above) — freshest-wins, as LNAV. Alert is
 	// NOTE1 "CEI refinement" in IS-GPS-200N Table 6-I-1: it may change without a
@@ -1273,7 +1275,7 @@ func (s *Store) applyGPSLNAV(f *ingest.RawFrame) {
 		sh.m[key] = st
 	}
 	st.lastSeen = recv
-	st.markSeenBy(f.Source, recv) // conf corroboration recency
+	st.markSeenBy(f.Source, f.ObservationTime()) // observation age survives replay
 	// the HOW alert flag rides EVERY subframe (1–5) and belongs to no
 	// IODC-gated data set — apply freshest-wins before the subframe switch, so
 	// even an almanac page's HOW keeps it current (the regression fix discipline).
@@ -1400,7 +1402,7 @@ func (s *Store) applyGalileoINAV(f *ingest.RawFrame) {
 		sh.m[key] = st
 	}
 	st.lastSeen = recv
-	st.markSeenBy(f.Source, recv) // conf corroboration recency
+	st.markSeenBy(f.Source, f.ObservationTime()) // observation age survives replay
 
 	// OSNMA presence rides every nominal non-dummy page, whatever the
 	// word type — fold it before the per-word-type dispatch below so pages
@@ -1583,7 +1585,7 @@ func (s *Store) applyGalileoFNAV(f *ingest.RawFrame) {
 		sh.m[key] = st
 	}
 	st.lastSeen = recv
-	st.markSeenBy(f.Source, recv) // conf corroboration recency
+	st.markSeenBy(f.Source, f.ObservationTime()) // observation age survives replay
 
 	st.fnav[w.PageType] = w
 	// Page 1 carries SISA + the E5a Signal Health Status outside the IODnav-matched eph set;
@@ -1668,7 +1670,7 @@ func (s *Store) applyBeiDouD1(f *ingest.RawFrame) {
 		sh.m[key] = st
 	}
 	st.lastSeen = recv
-	st.markSeenBy(f.Source, recv) // conf corroboration recency
+	st.markSeenBy(f.Source, f.ObservationTime()) // observation age survives replay
 
 	switch sf.FraID {
 	case 1:
@@ -1780,7 +1782,7 @@ func (s *Store) applyBeiDouBCNAV2(f *ingest.RawFrame) {
 		sh.m[key] = st
 	}
 	st.lastSeen = recv
-	st.markSeenBy(f.Source, recv) // conf corroboration recency
+	st.markSeenBy(f.Source, f.ObservationTime()) // observation age survives replay
 
 	// the per-signal integrity flag block (DIF/SIF/AIF(B2a) + SISMAI)
 	// rides every message type this decoder parses (Figures 6-3…6-10), and HS
@@ -2024,7 +2026,7 @@ func (s *Store) applyGLONASS(f *ingest.RawFrame) {
 		sh.m[key] = st
 	}
 	st.lastSeen = recv
-	st.markSeenBy(f.Source, recv) // conf corroboration recency
+	st.markSeenBy(f.Source, f.ObservationTime()) // observation age survives replay
 
 	// fold the ℓn fast malfunction flag from whichever string carried it
 	// (3/5/7/9/11/13/15 — 7 of 15, so it refreshes about every other string, the

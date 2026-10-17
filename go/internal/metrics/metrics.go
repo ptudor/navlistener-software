@@ -42,6 +42,11 @@ var (
 		Help: "Raw nav frames ingested, by source and gnssId.",
 	}, []string{"source", "gnssid"})
 
+	LiveProjectionRejectedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_live_projection_rejected_total",
+		Help: "Receipts excluded from live state by observation freshness; historian persistence is unaffected.",
+	}, []string{"source", "reason"})
+
 	// IngestErrorsTotal counts connection/framing errors per source.
 	IngestErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "navlistener_ingest_errors_total",

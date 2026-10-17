@@ -41,7 +41,7 @@ func lifecycleCNAV(msg int, now time.Time, c identity.ObserverContext) *ingest.R
 	for i := range words {
 		words[i] = binary.BigEndian.Uint32(b[i*4:])
 	}
-	return &ingest.RawFrame{Recv: now, RecvLocal: now, Source: c.ObserverID, Observer: c, GnssID: gnss.GPS, SvID: 5, SigID: 3, Words: words}
+	return &ingest.RawFrame{Recv: now, RecvLocal: now, RecvStamped: true, Source: c.ObserverID, Observer: c, GnssID: gnss.GPS, SvID: 5, SigID: 3, Words: words}
 }
 func eventuallyLifecycle(t *testing.T, check func() bool) {
 	t.Helper()

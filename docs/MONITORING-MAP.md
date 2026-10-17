@@ -64,6 +64,13 @@ Station counts deduplicate sources across navigation signals for each satellite.
 They measure recent structural navigation decoding, not bitwise agreement, full
 ephemeris reception on every signal, physical separation, or authenticated RF.
 RAWX measurements and reference downloads never count as navigation witnesses.
+Witness times retain the original observation time across retries. Historical
+spool replay is stored and acknowledged after persistence but cannot refresh
+live observations, receiver telemetry, or detector inputs. Live admission requires
+an accepted observation timestamp no more than 60 seconds old, including queueing
+time, and no more than one second ahead of the collector clock. Missing or invalid
+push timestamps contribute history only; collector arrival is not substituted as
+proof of a fresh observation. Feeders therefore need synchronized clocks.
 Satellite health is deliberately separate: an unhealthy satellite can still be
 monitored, and a healthy satellite can be missing from this collector.
 

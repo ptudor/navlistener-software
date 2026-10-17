@@ -279,7 +279,7 @@ func (s *Store) FeedSVs(now time.Time) map[string]FeedSV {
 	return out
 }
 
-// freshReceiverWindow bounds how recently a source must have delivered a decoded
+// freshReceiverWindow bounds how recently a source must have observed a decoded
 // nav frame for its corroboration vote to count toward conf. Mirrors
 // detect.FreshReceiverThreshold ("a receiver's vote only counts if it saw the SV
 // this recently", docs/INTEGRITY.md §2) — duplicated as a local constant because

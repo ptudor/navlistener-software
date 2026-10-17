@@ -1039,7 +1039,7 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 		defer mu.Unlock()
 		last := highest
 		if p.durable != nil {
-			last = p.durable.Watermark(observer, session)
+			last = min(last, p.durable.Watermark(observer, session))
 		}
 		if last <= acked {
 			return true
@@ -1057,6 +1057,27 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 		if waitForDurable(ctx, p.durable, observer, session, seq, writeTimeout) {
 			sendAck()
 		}
+	}
+	// Replay can fill the tracking window faster than a database batch commits
+	// or the ACK ticker fires. Apply bounded backpressure instead of repeatedly
+	// disconnecting before the feeder can learn that its prefix was committed.
+	admitReceipt := func(seq uint64, persistable bool) bool {
+		if p.durable == nil || p.durable.Received(observer, session, seq, persistable) {
+			return true
+		}
+		mu.Lock()
+		last := highest
+		mu.Unlock()
+		if last != 0 && waitForDurable(ctx, p.durable, observer, session, last, writeTimeout) {
+			if sendAck() && p.durable.Received(observer, session, seq, persistable) {
+				return true
+			}
+		}
+		// A partial commit still earns its ACK; unresolved evidence stays in
+		// the feeder's spool. Never ACK the refused record or exceed the budget.
+		sendAck()
+		p.log.Warn("durability tracking budget full after drain; closing for replay", "observer", observer)
+		return false
 	}
 	ackTicker := time.NewTicker(p.ackInterval)
 	defer ackTicker.Stop()
@@ -1127,11 +1148,8 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 	dropPermanentlyMalformed := func(seq uint64, reason string) bool {
 		metrics.PushErrorsTotal.WithLabelValues(observer, reason).Inc()
 		unforwarded++
-		if p.durable != nil {
-			if !p.durable.Received(observer, session, seq, false) {
-				p.log.Warn("durability tracking budget full; closing for replay", "observer", observer)
-				return false
-			}
+		if !admitReceipt(seq, false) {
+			return false
 		}
 		mu.Lock()
 		if seq > highest {
@@ -1235,11 +1253,8 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				// store's resolution can never race its own arrival. Board and RF
 				// samples wait for persistence alongside navigation. Raw observables
 				// remain live-only and advance without a database write.
-				if p.durable != nil {
-					if !p.durable.Received(observer, session, seq, f.Obs == nil) {
-						p.log.Warn("durability tracking budget full; closing for replay", "observer", observer)
-						return
-					}
+				if !admitReceipt(seq, f.Obs == nil) {
+					return
 				}
 				quarantined := p.checkReception(f, observerContext, session)
 				select {
@@ -1294,6 +1309,9 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 // Recovery marks the frame for the historian; only the historian's committed
 // ledger notification may resolve a persistable sequence.
 func (p *PushServer) checkReception(f *RawFrame, observerContext identity.ObserverContext, session string) (quarantined bool) {
+	if f.LiveRejection(time.Now()) != "" {
+		return false
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			f.QuarantineReason = "reception_check_panic"
@@ -1407,14 +1425,15 @@ func recordToFrame(rec wire.RawRecord, feed, source string) *RawFrame {
 		return telemetryToFrame(rec, source, recv, local)
 	}
 	f := &RawFrame{
-		Recv:      recv,
-		RecvLocal: local,
-		Source:    source,
-		GnssID:    rec.GnssID,
-		SvID:      int(rec.SvID),
-		SigID:     int(rec.SigID),
-		FreqID:    int(rec.FreqID),
-		MsgType:   int(rec.FrameType),
+		Recv:        recv,
+		RecvLocal:   local,
+		RecvStamped: rec.RecvUnixNs > 0 && receiveTimestampPlausible(time.Unix(0, rec.RecvUnixNs), local),
+		Source:      source,
+		GnssID:      rec.GnssID,
+		SvID:        int(rec.SvID),
+		SigID:       int(rec.SigID),
+		FreqID:      int(rec.FreqID),
+		MsgType:     int(rec.FrameType),
 	}
 	if feed == "rtcm" {
 		if len(rec.Raw) < 3 {

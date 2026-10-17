@@ -44,7 +44,7 @@ type RawFrame struct {
 	BoardSampleStamped  bool                  // original envelope carried an accepted wall-clock stamp
 	RF                  *RawRF                // RF-environment telemetry (MON-RF/MON-HW/NAV-SAT), nil for nav frames
 	Solution            *ReceiverSolution     // the receiver's own solution for one epoch (telemetry 0x03), nil for nav frames
-	// RecvStamped reports that a push telemetry frame's Recv is the observer's own
+	// RecvStamped reports that a push frame's Recv is the observer's own
 	// accepted wall-clock stamp rather than the collector's arrival time. Dial frames
 	// leave it false; their Recv is already this host's clock.
 	RecvStamped bool
@@ -74,11 +74,11 @@ type RawFrame struct {
 	// so subtracting it from this host's time.Now() compares two machines'
 	// clocks: a feeder lagging near the 5 min slack would sit permanently at the
 	// equally-sized liveness/RF staleness windows, and a spool replay would
-	// rewind lastSeen/ephAt days backward mid-stream. All elapsed-time math in
-	// live state (SV TTL expiry, live-receiver windows, RF/SBAS staleness, the
-	// disco trust gates, GLONASS frame-coherence windows) must therefore read
-	// LocalRecv(), never Recv. Dial-mode connectors stamp Recv from this host's
-	// clock already and leave RecvLocal zero.
+	// rewind lastSeen/ephAt days backward mid-stream. Collector housekeeping
+	// uses LocalRecv. Live admission separately requires a recent observation
+	// stamp; witness windows use ObservationTime, and broadcast frame-coherence
+	// windows retain Recv. Dial connectors stamp Recv from this host's clock
+	// already and leave RecvLocal zero.
 	RecvLocal time.Time
 
 	// Observer is the server-resolved administrative/publication context stamped
@@ -110,10 +110,45 @@ type ScopeRevocation struct {
 // push one. A push frame the observer did not stamp has none, because its arrival
 // time may include spool backlog.
 func (f *RawFrame) WallClockStamp() (time.Time, bool) {
-	if f.RecvLocal.IsZero() || f.RecvStamped {
+	if f.RecvLocal.IsZero() || f.RecvStamped || f.BoardSampleStamped {
 		return f.Recv, true
 	}
 	return time.Time{}, false
+}
+
+// LiveMaxAge is the live observation window. A transport arrival does not
+// establish a recent observation: a push stream may be draining old evidence.
+const LiveMaxAge = time.Minute
+
+// LiveRejection checks freshness before a receipt enters any live projection.
+// Unknown/invalid push stamps remain eligible for history, never for a claim
+// of current reception. A one-second future tolerance covers timestamp rounding;
+// accepted future stamps are capped at arrival by ObservationTime.
+func (f *RawFrame) LiveRejection(now time.Time) string {
+	stamp, ok := f.WallClockStamp()
+	if !ok || stamp.IsZero() {
+		return "unstamped"
+	}
+	if stamp.After(now.Add(time.Second)) || stamp.After(f.LocalRecv().Add(time.Second)) {
+		return "future"
+	}
+	if now.Sub(stamp) > LiveMaxAge || now.Sub(f.LocalRecv()) > LiveMaxAge {
+		return "stale"
+	}
+	return ""
+}
+
+// ObservationTime preserves the observation's age across retries, capped at
+// collector arrival so a slightly fast feeder cannot extend a witness window.
+func (f *RawFrame) ObservationTime() time.Time {
+	stamp, ok := f.WallClockStamp()
+	if !ok {
+		return time.Time{}
+	}
+	if stamp.After(f.LocalRecv()) {
+		return f.LocalRecv()
+	}
+	return stamp
 }
 
 // LocalRecv returns the collector-local receipt time for elapsed-time math

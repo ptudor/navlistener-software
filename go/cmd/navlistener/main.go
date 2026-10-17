@@ -199,8 +199,8 @@ func run() int {
 	}
 	frames := make(chan *ingest.RawFrame, frameQueue)
 	mgr := ingest.New(cfg.Ingest, frames, log)
-	// lastFrameNano is the decode funnel's last-ingested stamp (every dial and
-	// push frame passes decodeLoop), feeding the /healthz ingest probe.
+	// lastFrameNano tracks receipts admitted to live state. Historical replay
+	// alone must not keep the /healthz ingest probe healthy.
 	var lastFrameNano atomic.Int64
 
 	// validate/construct the authenticated push endpoint (TLS cert/key/CA
@@ -281,12 +281,12 @@ func run() int {
 				// Nothing ingested yet: allow the same window from process start
 				// (sources dial with backoff; feeders reconnect on their own time).
 				if age := time.Since(startAt); age > ingestStaleAfter {
-					return fmt.Sprintf("no frames ingested since start %s ago", age.Round(time.Second))
+					return fmt.Sprintf("no fresh frames ingested since start %s ago", age.Round(time.Second))
 				}
 				return ""
 			}
 			if age := time.Since(time.Unix(0, last)); age > ingestStaleAfter {
-				return fmt.Sprintf("no frames ingested for %s", age.Round(time.Second))
+				return fmt.Sprintf("no fresh frames ingested for %s", age.Round(time.Second))
 			}
 			return ""
 		})
@@ -868,9 +868,6 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLi
 			}
 			return
 		}
-		// every dial and push frame funnels through here, so this one
-		// stamp is the whole data plane's liveness signal for /healthz.
-		lastFrame.Store(time.Now().UnixNano())
 		if historian != nil && f.Obs == nil { // navigation, board and RF inputs route to separate historian tables
 			saved, quarantined := safeFrameForPersistence(f, log)
 			historian.Enqueue(saved)
@@ -881,6 +878,14 @@ func decodeLoop(frames <-chan *ingest.RawFrame, live, publicLive, publicEventsLi
 		if f.QuarantineReason != "" || !f.Admission.Current() {
 			return
 		}
+		// Persist first, then fence every live projection and detector from
+		// backlog replay. Arrival time alone cannot make an old sample current.
+		now := time.Now()
+		if reason := f.LiveRejection(now); reason != "" {
+			metrics.LiveProjectionRejectedTotal.WithLabelValues(f.Source, reason).Inc()
+			return
+		}
+		lastFrame.Store(now.UnixNano())
 		if stations != nil && f.RF != nil && len(f.RF.Sats) != 0 {
 			observations := make([]reception.PowerObservation, 0, len(f.RF.Sats))
 			for _, sat := range f.RF.Sats {

@@ -247,6 +247,21 @@ Three behaviors worth internalizing:
 the wire: `stream()` only sends monotonically increasing acks per connection, and the feeder
 additionally ignores regressions.
 
+A burst that fills the tracking window pauses for up to 30 seconds while the
+admitted prefix commits, sends its durable ACK, and retries admission. This keeps
+fast replay from repeatedly disconnecting before the first periodic ACK. If
+persistence cannot catch up, the connection closes with unresolved records still
+in the feeder spool. ACKs never exceed this connection's accepted sequences.
+
+Raw history and live observation freshness are separate. The decode funnel stores
+receipts before checking their original observation timestamps. Records older than
+60 seconds (including queueing), more than one second in the future, or without an
+accepted timestamp do not enter any live audience or keep the ingest health probe
+healthy. They still follow the ordinary durable ACK contract. The
+`navlistener_live_projection_rejected_total{source,reason}` counter distinguishes
+stale, future, and unstamped receipts. Receiver clocks must be synchronized;
+arrival time cannot establish freshness while a spool is being replayed.
+
 **The tracker is nil when the collector runs without a historian** — live-only mode, where the
 stream acks on receipt.
 

@@ -34,6 +34,14 @@ func recoveredSessions(log string) map[string]int {
 // session's identity — before a single live frame. Earlier tests covered one replay
 // file; this is the first with two, so an interleaving or a lost second file shows here.
 func TestNavfeederReplaysTwoFilesBeforeLive(t *testing.T) {
+	runFeederReplayOrder(t, false)
+}
+
+func TestNavfeederDurableReplayBurst(t *testing.T) {
+	runFeederReplayOrder(t, true)
+}
+
+func runFeederReplayOrder(t *testing.T, durable bool) {
 	bin := feederBinary(t)
 	capBytes := syntheticSFRBXCapture(30, 0)
 	spool := filepath.Join(t.TempDir(), "spool.bin")
@@ -81,8 +89,16 @@ func TestNavfeederReplaysTwoFilesBeforeLive(t *testing.T) {
 
 	out := make(chan *RawFrame, 4096)
 	tc := &tls.Config{Certificates: []tls.Certificate{selfSigned(t)}, MinVersion: tls.VersionTLS12}
+	ackEvery := 25 * time.Millisecond
+	var tracker *DurableTracker
+	if durable {
+		ackEvery = time.Second
+		tracker = NewDurableTracker()
+		tracker.maxPerSession = 8
+	}
 	srv := newPushServer("127.0.0.1:0", tc, out, tokenAuth("order-e2e", "s3cret", "ubx"),
-		25*time.Millisecond, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		ackEvery, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv.SetDurableTracker(tracker)
 	pushLn, err := tls.Listen("tcp", "127.0.0.1:0", tc)
 	if err != nil {
 		t.Fatal(err)
@@ -125,6 +141,12 @@ func TestNavfeederReplaysTwoFilesBeforeLive(t *testing.T) {
 		select {
 		case f := <-out:
 			got = append(got, f)
+			if tracker != nil {
+				// Persistence is slower than the replay sender: the window fills
+				// before the ACK ticker, then commits release it without a restart.
+				time.Sleep(10 * time.Millisecond)
+				tracker.Resolved(f.Source, f.Session, f.Seq)
+			}
 		case <-deadline:
 			t.Fatalf("only %d/%d replayed frames (plus a live one) reached the collector", len(got), want+1)
 		}

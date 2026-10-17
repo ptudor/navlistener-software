@@ -99,7 +99,7 @@ func TestPushReceptionPanicPreservesReceiptUntilDurable(t *testing.T) {
 				defer server.Close()
 				p.stream(ctx, server, &connWriter{c: server}, identity.NewPrivateContext("poison", identity.CredentialToken), "ubx", "boot")
 			}()
-			if err := wire.WriteFrame(client, wire.Data, wire.EncodeData(1, wire.RawRecord{FrameType: TelemObserverDetails, Raw: body})); err != nil {
+			if err := wire.WriteFrame(client, wire.Data, wire.EncodeData(1, wire.RawRecord{RecvUnixNs: time.Now().UnixNano(), FrameType: TelemObserverDetails, Raw: body})); err != nil {
 				t.Fatal(err)
 			}
 			var f *RawFrame

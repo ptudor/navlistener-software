@@ -38,7 +38,7 @@ func TestReceiverMetricsIndependentOfAudienceGrants(t *testing.T) {
 			c.Publication.EventVisibility = identity.EventsPublic
 			c.Publication.StationMetadata = identity.MetadataFull
 		}
-		now := time.Unix(1700000000, 0)
+		now := time.Now()
 		good := lifecycleCNAV(10, now, c)
 		bad := *good
 		bad.Words = append([]uint32(nil), good.Words...)
