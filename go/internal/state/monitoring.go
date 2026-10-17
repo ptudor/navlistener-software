@@ -90,13 +90,16 @@ func (s *Store) MonitoringSatellites(now time.Time) []MonitoringSatellite {
 // local geometry can still fall back to an almanac or the independent reference.
 func (st *svState) monitoringOrbitCurrent(now time.Time) bool {
 	if st.haveGloEph {
-		if st.gloTbAt.IsZero() || st.gloTbAt.After(now) {
+		if st.gloTbAt.IsZero() || st.gloTbAt.After(now) || !st.posOrbitAt.Equal(st.gloTbAt) {
 			return false
 		}
 		age := gnsstime.EphAgeDay(gloTOD(st.gloTbAt), st.gloEph.Tb) + now.Sub(st.gloTbAt).Seconds()
 		return finite(age) && age >= -15*60 && age <= 30*60
 	}
-	if !st.haveEph || st.ephAt.IsZero() || st.ephAt.After(now) || st.wnMismatch || st.posIOD != st.iod {
+	// Toe is week-relative. Without a validated broadcast week, a set from a
+	// different week can alias into the current fit window.
+	if !st.haveEph || st.ephAt.IsZero() || st.ephAt.After(now) || !st.haveWN || st.wnMismatch ||
+		!st.posOrbitAt.Equal(st.ephAt) || st.posIOD != st.iod {
 		return false
 	}
 	// Unwrap once at assembly, then advance monotonically. Reducing against

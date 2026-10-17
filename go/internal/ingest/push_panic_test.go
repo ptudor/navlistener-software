@@ -192,7 +192,7 @@ func TestPushUpdatePanicWaitsForAlreadyHandedOffReceipt(t *testing.T) {
 		p.stream(ctx, server, &connWriter{c: server}, identity.NewPrivateContext("poison-update", identity.CredentialToken), "ubx", "boot")
 	}()
 	body := tlv(observerGolden(t), 9, updateStatus(nil))
-	if err := wire.WriteFrame(client, wire.Data, wire.EncodeData(1, wire.RawRecord{FrameType: TelemObserverDetails, Raw: body})); err != nil {
+	if err := wire.WriteFrame(client, wire.Data, wire.EncodeData(1, wire.RawRecord{RecvUnixNs: time.Now().UnixNano(), FrameType: TelemObserverDetails, Raw: body})); err != nil {
 		t.Fatal(err)
 	}
 	select {

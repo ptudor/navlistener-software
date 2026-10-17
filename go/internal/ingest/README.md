@@ -257,7 +257,8 @@ Raw history and live observation freshness are separate. The decode funnel store
 receipts before checking their original observation timestamps. Records older than
 60 seconds (including queueing), more than one second in the future, or without an
 accepted timestamp do not enter any live audience or keep the ingest health probe
-healthy. They still follow the ordinary durable ACK contract. The
+healthy, and observer-status replay does not update the reception or firmware-update
+coordinators. They still follow the ordinary durable ACK contract. The
 `navlistener_live_projection_rejected_total{source,reason}` counter distinguishes
 stale, future, and unstamped receipts. Receiver clocks must be synchronized;
 arrival time cannot establish freshness while a spool is being replayed.

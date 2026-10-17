@@ -20,7 +20,7 @@ func TestMonitoringWitnessesExpiryAndReset(t *testing.T) {
 			seen["another-station"] = now.Add(-time.Second)
 		}
 		s.shardFor(key).m[key] = &svState{key: key, lastSeen: now, seenBy: seen, havePos: true, pos: gnss.ECEF{X: 29600000}, posAt: now,
-			haveEph: true, eph: kepler.Ephemeris{Toe: towFor(key.G, now)}, ephAt: now}
+			haveEph: true, eph: kepler.Ephemeris{Toe: towFor(key.G, now)}, ephAt: now, haveWN: true, posOrbitAt: now}
 	}
 	got := s.MonitoringSatellites(now)
 	if len(got) != 1 || len(got[0].WitnessTimes) != 2 || got[0].Position == nil {
@@ -67,28 +67,45 @@ func TestMonitoringReplayCannotRefreshOrRewindWitness(t *testing.T) {
 
 func TestMonitoringOldOrbitCannotBecomeCurrentByReceptionOrPropagation(t *testing.T) {
 	now := time.Date(2026, 10, 17, 10, 0, 0, 0, time.UTC)
-	for _, name := range []string{"old rebroadcast", "week rollover", "wrong week", "unpropagated changeover", "old GLONASS", "day rollover"} {
+	cases := []string{
+		"old rebroadcast", "week rollover", "unknown week", "wrong week",
+		"unpropagated changeover", "reused issue before propagation",
+		"old GLONASS", "GLONASS changeover before propagation", "day rollover",
+	}
+	for _, name := range cases {
 		t.Run(name, func(t *testing.T) {
 			s := New(1)
 			key := Key{G: gnss.BeiDou, Sv: 6}
 			st := &svState{key: key, haveEph: true, ephAt: now, eph: kepler.Ephemeris{Toe: towFor(key.G, now)},
-				havePos: true, pos: gnss.ECEF{X: 29600000}, posAt: now, seenBy: map[string]time.Time{"station": now}}
+				haveWN: true, havePos: true, pos: gnss.ECEF{X: 29600000}, posAt: now, posOrbitAt: now,
+				seenBy: map[string]time.Time{"station": now}}
 			switch name {
 			case "old rebroadcast":
 				st.eph.Toe = towFor(key.G, now.Add(-78*time.Hour))
 			case "week rollover":
 				st.ephAt = now.Add(-7 * 24 * time.Hour)
+				st.posOrbitAt = st.ephAt
+			case "unknown week":
+				st.haveWN = false
 			case "wrong week":
 				st.wnMismatch = true
 			case "unpropagated changeover":
 				st.iod = 1
-			case "old GLONASS", "day rollover":
+			case "reused issue before propagation":
+				st.posOrbitAt = now.Add(-time.Minute)
+			case "old GLONASS", "GLONASS changeover before propagation", "day rollover":
 				key.G, st.key.G = gnss.GLONASS, gnss.GLONASS
 				st.haveEph, st.haveGloEph = false, true
 				st.gloTbAt = now
+				st.posOrbitAt = now
 				st.gloEph = glonass.Ephemeris{Tb: gloTOD(now.Add(-time.Hour))}
-				if name == "day rollover" {
+				switch name {
+				case "GLONASS changeover before propagation":
+					st.gloEph.Tb = gloTOD(now)
+					st.posOrbitAt = now.Add(-time.Minute)
+				case "day rollover":
 					st.gloTbAt = now.Add(-24 * time.Hour)
+					st.posOrbitAt = st.gloTbAt
 					st.gloEph.Tb = gloTOD(now)
 				}
 			}
@@ -111,7 +128,8 @@ func TestMonitoringUsesFreshSignalWhenPrimaryOrbitIsOld(t *testing.T) {
 			toe = towFor(key.G, now.Add(-78*time.Hour))
 		}
 		s.shardFor(key).m[key] = &svState{key: key, haveEph: true, ephAt: now, eph: kepler.Ephemeris{Toe: toe},
-			havePos: true, pos: gnss.ECEF{X: 29600000, Y: float64(sig)}, posAt: now, seenBy: map[string]time.Time{"station": now}}
+			haveWN: true, havePos: true, pos: gnss.ECEF{X: 29600000, Y: float64(sig)}, posAt: now, posOrbitAt: now,
+			seenBy: map[string]time.Time{"station": now}}
 	}
 	got := s.MonitoringSatellites(now)
 	if len(got) != 1 || got[0].Position == nil || got[0].Position[1] != 8 || len(got[0].WitnessTimes) != 1 {

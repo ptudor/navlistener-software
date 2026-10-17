@@ -76,8 +76,10 @@ monitored, and a healthy satellite can be missing from this collector.
 Local orbital coordinates also require a current orbit epoch: the conservative
 window is two hours before through four hours after the Kepler epoch, or
 15 minutes before through 30 minutes after the GLONASS epoch. Receiving or
-propagating an old broadcast again does not renew that window. A recently heard
-satellite retains its witness count even when its orbit is too old to locate;
+propagating an old broadcast again does not renew that window. Kepler-family
+coordinates also require a matching broadcast week and a propagation from the
+current data set. A recently heard satellite retains its witness count even when
+its orbit is too old to locate;
 the map then uses an available almanac or independent reference, or marks the
 geometry unknown. Diagnostic feeds retain the broadcast's health and age.
 

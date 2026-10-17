@@ -69,3 +69,28 @@ func TestReplayedReceptionReportDoesNotReachLiveCoordinator(t *testing.T) {
 		t.Fatal("historical report reached the live reception coordinator")
 	}
 }
+
+type recordingUpdateCoordinator struct{ reports int }
+
+func (*recordingUpdateCoordinator) BeginSession(identity.ObserverContext, string) {}
+func (*recordingUpdateCoordinator) Pending(identity.ObserverContext) []byte       { return nil }
+func (c *recordingUpdateCoordinator) Report(identity.ObserverContext, string, uint64, wire.UpdateStatus) error {
+	c.reports++
+	return nil
+}
+
+func TestReplayedUpdateReportDoesNotReachLiveCoordinator(t *testing.T) {
+	now := time.Now()
+	updates := &recordingUpdateCoordinator{}
+	p := &PushServer{updates: updates}
+	status := &wire.UpdateStatus{State: "idle"}
+	f := &RawFrame{Source: "history", Recv: now.Add(-time.Hour), RecvLocal: now, RecvStamped: true,
+		Details: &ObserverDetails{Update: status}}
+	if p.reportUpdate(f, identity.NewPrivateContext("history", identity.CredentialToken), "boot", 1) || updates.reports != 0 {
+		t.Fatal("historical update report reached the live update coordinator")
+	}
+	f.Recv = now
+	if p.reportUpdate(f, identity.NewPrivateContext("history", identity.CredentialToken), "boot", 2) || updates.reports != 1 {
+		t.Fatal("fresh update report did not reach the live update coordinator")
+	}
+}

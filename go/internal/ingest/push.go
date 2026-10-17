@@ -1339,6 +1339,9 @@ func (p *PushServer) checkReception(f *RawFrame, observerContext identity.Observ
 // that shared frame or enqueue it twice; its original receipt is already on
 // the historian path and the caller waits for its durable ACK before closing.
 func (p *PushServer) reportUpdate(f *RawFrame, observerContext identity.ObserverContext, session string, seq uint64) (panicked bool) {
+	if f.LiveRejection(time.Now()) != "" {
+		return false
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			panicked = true

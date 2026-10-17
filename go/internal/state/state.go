@@ -556,6 +556,12 @@ type svState struct {
 
 	pos     gnss.ECEF
 	havePos bool
+	// posOrbitAt identifies the orbit content that produced pos: ephAt for the
+	// Kepler family and gloTbAt for GLONASS. Monitoring uses it to withhold the
+	// previous data set's coordinates between a changeover and the next
+	// propagation tick. posIOD alone cannot do that when an issue number is
+	// reused, and GLONASS has no issue number.
+	posOrbitAt time.Time
 	// posIOD is the issue-of-data of the ephemeris that PRODUCED pos, stamped
 	// atomically with it in Propagate (regression fix verification follow-up): st.iod
 	// is the CURRENT data set, which can change between a changeover apply and
@@ -2632,6 +2638,7 @@ func (s *Store) Propagate(now time.Time) {
 				}
 				if pos, err := glonass.Propagate(st.gloEph, tk); err == nil && finiteECEF(pos) {
 					st.pos, st.havePos, st.posAt = pos, true, now
+					st.posOrbitAt = st.gloTbAt
 					counts["glonass"]++
 				}
 				continue
@@ -2658,6 +2665,7 @@ func (s *Store) Propagate(now time.Time) {
 			tow := towFor(st.key.G, now)
 			if pos, err := kepler.Propagate(st.eph, tow); err == nil && finiteECEF(pos) {
 				st.pos, st.havePos, st.posAt = pos, true, now
+				st.posOrbitAt = st.ephAt
 				st.posIOD = st.iod // the data set this position came from
 				counts[st.key.G.String()]++
 			}
