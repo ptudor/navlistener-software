@@ -101,8 +101,9 @@ func TestGPSAlmanacPlacesUnheardSatellite(t *testing.T) {
 func TestEphemerisPositionWinsOverAlmanac(t *testing.T) {
 	s := New(4)
 	now := time.Unix(1_700_000_000, 0)
-	s.Apply(gpsFrame(sf1Words(85), now))
-	s.Apply(gpsFrame(sf2Words(85, 205075516), now))
+	week, _ := weekFor(gnss.GPS, now)
+	s.Apply(gpsFrame(sf1WordsWN(int64(week), 85), now))
+	s.Apply(gpsFrame(sf2WordsToe(85, 205075516, int64(gpsTOW(now)/16)), now))
 	s.Apply(gpsFrame(sf3Words(85), now))
 	s.Apply(almanacFrame(gnss.GPS, 5, almanacPageWords(1, 5, toaRawNear(now), 1000000), now))
 	s.Propagate(now)

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"github.com/ptudor/gnss/gnsstime"
 )
 
 // MonitoringSatellite reports observation evidence even before a complete
@@ -42,7 +44,7 @@ func (s *Store) MonitoringSatellites(now time.Time) []MonitoringSatellite {
 				}
 			}
 			if sig, ok := bestSig[name]; !ok || st.key.Sig < sig {
-				if st.havePos && !st.posAt.IsZero() && !st.posAt.After(now) && now.Sub(st.posAt) <= posStaleBound && finiteECEF(st.pos) {
+				if st.havePos && !st.posAt.IsZero() && !st.posAt.After(now) && now.Sub(st.posAt) <= posStaleBound && finiteECEF(st.pos) && st.monitoringOrbitCurrent(now) {
 					sv.Position = &[3]float64{st.pos.X, st.pos.Y, st.pos.Z}
 					sv.PositionSource = "ephemeris"
 					bestSig[name] = st.key.Sig
@@ -79,4 +81,26 @@ func (s *Store) MonitoringSatellites(now time.Time) []MonitoringSatellite {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// monitoringOrbitCurrent checks orbital content, not its latest reception or
+// propagation time. An unhealthy satellite can keep broadcasting an old set.
+// Use the reference catalogue's conservative fit windows for local geometry;
+// the diagnostic feeds retain the old set and its health/age evidence. Missing
+// local geometry can still fall back to an almanac or the independent reference.
+func (st *svState) monitoringOrbitCurrent(now time.Time) bool {
+	if st.haveGloEph {
+		if st.gloTbAt.IsZero() || st.gloTbAt.After(now) {
+			return false
+		}
+		age := gnsstime.EphAgeDay(gloTOD(st.gloTbAt), st.gloEph.Tb) + now.Sub(st.gloTbAt).Seconds()
+		return finite(age) && age >= -15*60 && age <= 30*60
+	}
+	if !st.haveEph || st.ephAt.IsZero() || st.ephAt.After(now) || st.wnMismatch || st.posIOD != st.iod {
+		return false
+	}
+	// Unwrap once at assembly, then advance monotonically. Reducing against
+	// now would make a week-old orbit appear current again at the next rollover.
+	age := gnsstime.EphAge(towFor(st.key.G, st.ephAt), st.eph.Toe) + now.Sub(st.ephAt).Seconds()
+	return finite(age) && age >= -2*60*60 && age <= 4*60*60
 }

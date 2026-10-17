@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/ptudor/gnss"
+	"github.com/ptudor/gnss/glonass"
+	"github.com/ptudor/gnss/kepler"
 	"github.com/ptudor/navlistener/internal/ingest"
 )
 
@@ -17,7 +19,8 @@ func TestMonitoringWitnessesExpiryAndReset(t *testing.T) {
 		if sig == 3 {
 			seen["another-station"] = now.Add(-time.Second)
 		}
-		s.shardFor(key).m[key] = &svState{key: key, lastSeen: now, seenBy: seen, havePos: true, pos: gnss.ECEF{X: 29600000}, posAt: now}
+		s.shardFor(key).m[key] = &svState{key: key, lastSeen: now, seenBy: seen, havePos: true, pos: gnss.ECEF{X: 29600000}, posAt: now,
+			haveEph: true, eph: kepler.Ephemeris{Toe: towFor(key.G, now)}, ephAt: now}
 	}
 	got := s.MonitoringSatellites(now)
 	if len(got) != 1 || len(got[0].WitnessTimes) != 2 || got[0].Position == nil {
@@ -59,5 +62,59 @@ func TestMonitoringReplayCannotRefreshOrRewindWitness(t *testing.T) {
 	apply(now.Add(61*time.Second), now.Add(61*time.Second), false)
 	if len(s.MonitoringSatellites(now.Add(61 * time.Second))[0].WitnessTimes) != 0 {
 		t.Fatal("retry or unstamped receipt renewed an expired witness")
+	}
+}
+
+func TestMonitoringOldOrbitCannotBecomeCurrentByReceptionOrPropagation(t *testing.T) {
+	now := time.Date(2026, 10, 17, 10, 0, 0, 0, time.UTC)
+	for _, name := range []string{"old rebroadcast", "week rollover", "wrong week", "unpropagated changeover", "old GLONASS", "day rollover"} {
+		t.Run(name, func(t *testing.T) {
+			s := New(1)
+			key := Key{G: gnss.BeiDou, Sv: 6}
+			st := &svState{key: key, haveEph: true, ephAt: now, eph: kepler.Ephemeris{Toe: towFor(key.G, now)},
+				havePos: true, pos: gnss.ECEF{X: 29600000}, posAt: now, seenBy: map[string]time.Time{"station": now}}
+			switch name {
+			case "old rebroadcast":
+				st.eph.Toe = towFor(key.G, now.Add(-78*time.Hour))
+			case "week rollover":
+				st.ephAt = now.Add(-7 * 24 * time.Hour)
+			case "wrong week":
+				st.wnMismatch = true
+			case "unpropagated changeover":
+				st.iod = 1
+			case "old GLONASS", "day rollover":
+				key.G, st.key.G = gnss.GLONASS, gnss.GLONASS
+				st.haveEph, st.haveGloEph = false, true
+				st.gloTbAt = now
+				st.gloEph = glonass.Ephemeris{Tb: gloTOD(now.Add(-time.Hour))}
+				if name == "day rollover" {
+					st.gloTbAt = now.Add(-24 * time.Hour)
+					st.gloEph.Tb = gloTOD(now)
+				}
+			}
+			s.shardFor(key).m[key] = st
+			got := s.MonitoringSatellites(now)
+			if len(got) != 1 || len(got[0].WitnessTimes) != 1 || got[0].Position != nil {
+				t.Fatalf("old geometry became current or fresh witness vanished: %+v", got)
+			}
+		})
+	}
+}
+
+func TestMonitoringUsesFreshSignalWhenPrimaryOrbitIsOld(t *testing.T) {
+	now := time.Now()
+	s := New(1)
+	for _, sig := range []int{0, 8} {
+		key := Key{G: gnss.BeiDou, Sv: 6, Sig: sig}
+		toe := towFor(key.G, now)
+		if sig == 0 {
+			toe = towFor(key.G, now.Add(-78*time.Hour))
+		}
+		s.shardFor(key).m[key] = &svState{key: key, haveEph: true, ephAt: now, eph: kepler.Ephemeris{Toe: toe},
+			havePos: true, pos: gnss.ECEF{X: 29600000, Y: float64(sig)}, posAt: now, seenBy: map[string]time.Time{"station": now}}
+	}
+	got := s.MonitoringSatellites(now)
+	if len(got) != 1 || got[0].Position == nil || got[0].Position[1] != 8 || len(got[0].WitnessTimes) != 1 {
+		t.Fatalf("fresh alternate signal was not selected: %+v", got)
 	}
 }
