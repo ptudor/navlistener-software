@@ -13,4 +13,5 @@
 // failure, including a board without Ethernet pins (ESP_ERR_NOT_SUPPORTED), leaves
 // nothing allocated and the Wi-Fi station unaffected.
 esp_err_t ethernet_start(const observer_board_t *board);
+bool ethernet_diagnostics(uint16_t *speed_mbps,uint8_t *duplex,uint8_t *autoneg);
 #endif

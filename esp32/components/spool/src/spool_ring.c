@@ -34,6 +34,13 @@ uint64_t spool_ring_append(spool_ring_t *r, const uint8_t *data, uint32_t len)
     r->count++;
     return slot->seq;
 }
+uint64_t spool_ring_try_append(spool_ring_t *r,const uint8_t *data,uint32_t len)
+{
+    if(!data || !len || r->seq==UINT64_MAX || r->count>=r->capacity ||
+       r->capacity-r->count<=r->capacity/4 || r->byte_capacity-r->used<r->byte_capacity/4 ||
+       len>r->byte_capacity-r->used-r->byte_capacity/4)return 0;
+    return spool_ring_append(r,data,len);
+}
 void spool_ring_ack(spool_ring_t *r, uint64_t seq)
 {
     if (seq > r->seq) seq = r->seq;

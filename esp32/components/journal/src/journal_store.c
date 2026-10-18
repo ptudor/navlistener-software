@@ -2,9 +2,9 @@
 #include <stdio.h>
 #include <string.h>
 
-static unsigned capacity(unsigned lane) { return lane==2 ? JOURNAL_RECEPTION_CAP : lane ? JOURNAL_HEALTH_CAP : JOURNAL_LIFE_CAP; }
+static unsigned capacity(unsigned lane) { return lane==3 ? JOURNAL_NETWORK_CAP : lane==2 ? JOURNAL_RECEPTION_CAP : lane ? JOURNAL_HEALTH_CAP : JOURNAL_LIFE_CAP; }
 static void key_for(char key[16], unsigned lane, uint64_t sequence)
-{ snprintf(key, 16, "%c%04u", lane==2 ? 'r' : lane ? 'h' : 'b', (unsigned)((sequence-1) % capacity(lane))); }
+{ snprintf(key, 16, "%c%04u", lane==3 ? 'n' : lane==2 ? 'r' : lane ? 'h' : 'b', (unsigned)((sequence-1) % capacity(lane))); }
 static void put(uint8_t *p, uint64_t v, unsigned n)
 { for (unsigned i=0; i<n; i++) { p[i] = v; v >>= 8; } }
 static uint64_t get(const uint8_t *p, unsigned n)
@@ -41,20 +41,24 @@ static void encode(uint8_t b[JOURNAL_RECORD_SIZE], const journal_record_t *r)
         put(b+70,(uint64_t)r->clock_old_ns,8);put(b+78,(uint64_t)r->clock_new_ns,8);
         put(b+86,(uint64_t)r->clock_sampled_ms,8);put(b+94,r->clock_uncertainty_ns,8);
     }
+    if(r->event==JOURNAL_NETWORK){memcpy(b+68,r->network,80);memcpy(b+154,r->network+80,32);}
     put(b+188,crc(b,188),4);
 }
 static bool decode(journal_record_t *r, const uint8_t b[JOURNAL_RECORD_SIZE])
 {
     if (memcmp(b,"NVJ1",4) || get(b+188,4) != crc(b,188) || !get(b+8,8) ||
-        b[148] < JOURNAL_BOOT || b[148] > JOURNAL_RTC_SERVICE ||
-        b[149] > JOURNAL_TIME_GNSS || ((b[148]!=JOURNAL_RECEPTION && b[148]!=JOURNAL_RECEPTION_POWER && b[148]!=JOURNAL_CLOCK_CHANGE) &&
+        b[148] < JOURNAL_BOOT || b[148] > JOURNAL_NETWORK ||
+        b[149] > JOURNAL_TIME_GNSS || ((b[148]!=JOURNAL_RECEPTION && b[148]!=JOURNAL_RECEPTION_POWER && b[148]!=JOURNAL_CLOCK_CHANGE && b[148]!=JOURNAL_NETWORK) &&
         (!memchr(b+68,0,32) || !memchr(b+100,0,16)))) return false;
     *r = (journal_record_t){.sequence=get(b+8,8), .boot=get(b+16,8),
         .uptime_ms=get(b+24,8), .utc=get(b+32,8), .dropped=get(b+40,8),
         .flags=get(b+48,4), .reset_reason=get(b+52,4), .queued=get(b+56,4),
         .internal_free=get(b+60,4), .error=get(b+64,4), .event=b[148],
         .time_source=b[149], .environment=b[150], .rtc=b[151], .rng=b[152], .manifest=b[153]};
-    if(r->event==JOURNAL_RECEPTION) {
+    if(r->event==JOURNAL_NETWORK) {
+        memcpy(r->network,b+68,80);memcpy(r->network+80,b+154,32);
+        return r->network[0]==1;
+    } else if(r->event==JOURNAL_RECEPTION) {
         if(!nr_decode_sample(&r->reception,b+68,NR_SAMPLE_SIZE)) return false;
     } else if(r->event==JOURNAL_RECEPTION_POWER) {
         if(!nrp_decode_event(&r->reception_power,b+68,NRP_EVENT_SIZE)) return false;
@@ -82,13 +86,14 @@ esp_err_t journal_store_open(journal_store_t *s)
     *s=(journal_store_t){0};
     esp_err_t err=nvs_open_from_partition("journal","nvf_journal",NVS_READWRITE,&s->handle);
     if (err != ESP_OK) return err;
-    for (unsigned lane=0; lane<3; lane++) for (unsigned slot=0; slot<capacity(lane); slot++) {
+    for (unsigned lane=0; lane<4; lane++) for (unsigned slot=0; slot<capacity(lane); slot++) {
         char key[16]; journal_record_t r; key_for(key,lane,slot+1);
         err=read_key(s,key,&r);
         if (err == ESP_ERR_NVS_NOT_FOUND) continue;
         if (err == ESP_OK && ((r.sequence-1)%capacity(lane) != slot ||
             (r.event == JOURNAL_CHECKPOINT) != (lane == 1) ||
-            ((r.event == JOURNAL_RECEPTION || r.event == JOURNAL_RECEPTION_POWER) != (lane == 2)))) err=ESP_ERR_INVALID_STATE;
+            ((r.event == JOURNAL_RECEPTION || r.event == JOURNAL_RECEPTION_POWER) != (lane == 2)) ||
+            (r.event == JOURNAL_NETWORK) != (lane == 3))) err=ESP_ERR_INVALID_STATE;
         if (err != ESP_OK) { nvs_close(s->handle); return err; }
         if (r.sequence > s->latest[lane]) s->latest[lane]=r.sequence;
     }
@@ -98,14 +103,14 @@ void journal_store_close(journal_store_t *s)
 { if (s->ready) nvs_close(s->handle); s->ready=false; }
 esp_err_t journal_store_read(journal_store_t *s, unsigned lane, uint64_t sequence, journal_record_t *r)
 {
-    if (!s->ready || lane > 2 || !sequence) return ESP_ERR_INVALID_STATE;
+    if (!s->ready || lane > 3 || !sequence) return ESP_ERR_INVALID_STATE;
     char key[16]; key_for(key,lane,sequence);
     esp_err_t err=read_key(s,key,r);
     return err == ESP_OK && r->sequence != sequence ? ESP_ERR_NVS_NOT_FOUND : err;
 }
 esp_err_t journal_store_append(journal_store_t *s, journal_record_t *r)
 {
-    unsigned lane=(r->event==JOURNAL_RECEPTION||r->event==JOURNAL_RECEPTION_POWER) ? 2 : r->event == JOURNAL_CHECKPOINT;
+    unsigned lane=r->event==JOURNAL_NETWORK ? 3 : (r->event==JOURNAL_RECEPTION||r->event==JOURNAL_RECEPTION_POWER) ? 2 : r->event == JOURNAL_CHECKPOINT;
     if (!s->ready) return ESP_ERR_INVALID_STATE;
     if (s->latest[lane] == UINT64_MAX) { journal_store_close(s); return ESP_ERR_INVALID_STATE; }
     r->sequence=s->latest[lane]+1;
@@ -125,7 +130,7 @@ esp_err_t journal_store_page(journal_store_t *s, unsigned lane, uint64_t before,
                              journal_record_t out[8], unsigned *count, uint64_t *next)
 {
     *count=0; *next=0;
-    if (!s->ready || lane > 2) return ESP_ERR_INVALID_STATE;
+    if (!s->ready || lane > 3) return ESP_ERR_INVALID_STATE;
     uint64_t seq=before ? before-1 : s->latest[lane];
     if (seq > s->latest[lane]) seq=s->latest[lane];
     unsigned cap=capacity(lane);

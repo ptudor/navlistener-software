@@ -52,6 +52,9 @@ typedef struct {
     // evidence was rejected, the reason. Either string is NULL when the collector sent none.
     size_t (*evidence)(const uint8_t *exported, uint8_t *out, size_t cap);
     void (*hardware_trust)(const char *trust, const char *error);
+    // Optional passive inspection of the established socket. Returns the
+    // network-health interface enum and fills IPv4 peer bytes when available.
+    uint8_t (*socket_interface)(int fd, uint8_t peer[4]);
 } pusher_cfg_t;
 
 // pusher_start copies cfg and spawns the push task. The spool must already be initialised,

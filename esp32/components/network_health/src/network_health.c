@@ -55,7 +55,10 @@ static void event(uint8_t kind,uint8_t interface,int32_t code,int32_t detail,uin
     case NH_HANDSHAKE_FAILED:case NH_AUTH_REJECTED:increment(&state.counters[NH_HANDSHAKE_ERRORS]);error=true;break;
     case NH_READ_FAILED:increment(&state.counters[NH_READ_ERRORS]);error=true;break;
     case NH_WRITE_FAILED:increment(&state.counters[NH_WRITE_ERRORS]);error=true;break;
-    case NH_ACK_STALLED:increment(&state.counters[NH_ACK_STALLS]);error=true;break;
+    case NH_ACK_STALLED:
+        increment(&state.counters[NH_ACK_STALLS]);error=true;
+        if(code>0 && (uint32_t)code>state.max_ack_gap_ms)state.max_ack_gap_ms=(uint32_t)code;
+        break;
     case NH_ETH_FAILED:error=true;break;
     default:break;
     }

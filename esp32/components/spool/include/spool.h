@@ -40,6 +40,9 @@ bool spool_init(size_t cap);
 // drops (and counts) the oldest records. Invalid/oversized records return 0 and
 // increment dropped without assigning a sequence. Thread-safe.
 uint64_t spool_append(const uint8_t *data, uint32_t len);
+// Low-priority diagnostics: never wait for producer gates or evict a record.
+// A refused attempt consumes neither sequence nor drop count; caller may retry.
+uint64_t spool_try_append(const uint8_t *data,uint32_t len);
 
 // spool_ack drops every record with seq <= n and advances the ack watermark.
 void spool_ack(uint64_t n);

@@ -8,13 +8,14 @@ transport spool durable.
 
 ## FIFO retention and failures
 
-Three independent FIFO queues replace their **oldest** entries automatically:
+Four independent FIFO queues replace their **oldest** entries automatically:
 
 | Queue | Capacity | Writes |
 |---|---:|---|
 | Lifecycle | 256 events | Boot, local startup confirmation, first usable time and first GNSS-qualified time, OTA selection/failure, a change of the collector's hardware-trust verdict, bench commissioning operations |
 | Health | 1,024 checkpoints | After one minute of uptime, then hourly |
 | Reception | 128 transitions | Availability alarm/recovery/coverage changes and material local/remote received-power changes |
+| Network | 128 summaries | Changed event counters, at most once per minute; otherwise hourly |
 
 Hourly checkpoints retain about 42 days of continuous operation. Lifecycle
 retention depends on the number of events, not elapsed days; health records
@@ -22,6 +23,25 @@ cannot evict boot history. A board switched off for years writes nothing while
 off, so its last records remain until subsequent FIFO turnover or explicit flash
 erasure. Flash retention over that duration is a property of the actual hardware,
 not a lifetime guarantee from this software.
+
+Network summaries preserve link flags, sampled RSSI/minimum/channel, Ethernet
+negotiation, all seventeen connection/link counters, the last Wi-Fi reason and
+the last error's native codes and uptime. Queue depth, drops and boot identity
+remain in the journal header. Read them with `tools/ota.py --device
+observer.example.invalid journal --lane network --key-file device-update-key`.
+The `--json` output includes a decoded `network` object. This lane retains about
+two hours of continuous changes or five days of stable checkpoints. It does not
+preserve every transition, IP address or packet; a power loss before the next
+checkpoint can lose the most recent minute. Collector history retains the
+complete delivered reports and their eight-event windows.
+
+Event 13's 112-byte summary occupies record bytes 68–147 and 154–185, leaving
+the existing header, event discriminator and CRC intact. It concatenates tag
+22 bytes 0–11, 36–103, 104–107, 28–31, 116–135, 18–19 and two zero bytes, all
+in their original big-endian order. The authenticated journal API returns this
+as `network_summary` hex; the client decodes it. Network keys use the separate
+`n` prefix, so earlier firmware ignores this lane on rollback and retains its
+existing lifecycle and health records. No partition-table change is required.
 
 Each record is one atomic NVS blob, with a format version, sequence and CRC.
 The sequence is stored inside the record, avoiding a separately committed queue

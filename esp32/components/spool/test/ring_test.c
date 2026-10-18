@@ -6,6 +6,18 @@
 typedef struct { uint64_t seq; unsigned len; uint8_t data[300]; } record;
 int main(void)
 {
+    { // Diagnostic reports preserve a quarter of both budgets for navigation.
+        spool_slot_t slots[4];uint8_t bytes[100],data[30]={0};spool_ring_t r;
+        spool_ring_init(&r,slots,4,bytes,sizeof bytes);
+        assert(spool_ring_try_append(&r,data,30)==1);
+        assert(spool_ring_try_append(&r,data,30)==2);
+        assert(!spool_ring_try_append(&r,data,30));
+        assert(r.seq==2 && r.dropped==0 && r.count==2);
+        assert(spool_ring_append(&r,data,30)==3);
+        assert(!spool_ring_try_append(&r,data,1));
+        assert(r.seq==3 && r.dropped==0 && r.count==3);
+        spool_ring_ack(&r,3);assert(spool_ring_try_append(&r,data,30)==4);
+    }
     for (unsigned frames = 1; frames < 20; frames += 3) {
         spool_slot_t slots[20]; uint8_t bytes[97]; spool_ring_t ring;
         record model[20]; size_t count = 0, used = 0; uint64_t seq = 0, dropped = 0, ack = 0;

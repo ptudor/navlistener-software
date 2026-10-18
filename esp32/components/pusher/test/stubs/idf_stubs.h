@@ -17,6 +17,12 @@
 #define ESP_LOGW(tag,...) ((void)(tag))
 #define ESP_LOGE(tag,...) ((void)(tag))
 typedef int esp_err_t;
+typedef void *esp_tls_error_handle_t;
+#define ESP_ERR_ESP_TLS_CANNOT_RESOLVE_HOSTNAME 0x8001
+#define ESP_ERR_ESP_TLS_CANNOT_CREATE_SOCKET 0x8002
+#define ESP_ERR_ESP_TLS_CONNECTION_TIMEOUT 0x8006
+static inline int esp_tls_get_error_handle(void *tls,esp_tls_error_handle_t *h){*h=tls;return 0;}
+static inline int esp_tls_get_and_clear_last_error(esp_tls_error_handle_t h,int *code,int *flags){(void)h;*code=0;*flags=0;return 0x8004;}
 typedef int TickType_t;
 typedef int SemaphoreHandle_t;
 typedef struct {int dummy;} esp_tls_t;

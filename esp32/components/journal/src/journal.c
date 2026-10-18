@@ -17,6 +17,7 @@
 #include "rtc_policy.h"
 #include "spool.h"
 #include "pusher.h"
+#include "network_health.h"
 
 static const char *TAG="journal";
 static journal_store_t store;
@@ -143,13 +144,33 @@ void journal_poll(const gnss_status_t *g, const observer_report_t *report, uint6
         current.event=JOURNAL_CHECKPOINT;
         if (append(&current)) journal_checkpoint_saved(&policy,now);
     }
+    // A separate bounded lane protects boot history from a flapping network.
+    // Summarize changes at most once a minute; stable state needs only an hourly
+    // checkpoint. Flash I/O runs on the board task, never in a link callback.
+    static uint64_t network_saved_ms;
+    static uint32_t network_saved_events;
+    static bool network_saved;
+    static nh_report_t network;
+    static uint8_t wire[NH_WIRE_SIZE];
+    if(now>=15000 && (!network_saved || now-network_saved_ms>=60000)) {
+        network_health_read(&network);
+        if(network.event_total && (!network_saved || network.event_total!=network_saved_events || now-network_saved_ms>=3600000)) {
+            nh_encode(wire,sizeof wire,&network);
+            journal_record_t r=current;r.event=JOURNAL_NETWORK;r.uptime_ms=esp_timer_get_time()/1000;
+            memcpy(r.network,wire,12);memcpy(r.network+12,wire+36,68);
+            memcpy(r.network+80,wire+104,4);memcpy(r.network+84,wire+28,4);
+            memcpy(r.network+88,wire+116,20);memcpy(r.network+108,wire+18,2);
+            r.network[110]=r.network[111]=0;
+            if(append(&r)){network_saved=true;network_saved_ms=now;network_saved_events=network.event_total;}
+        }
+    }
     xSemaphoreGive(mutex);
 }
 esp_err_t journal_page(unsigned lane, uint64_t before, journal_record_t out[8],
                         unsigned *count, uint64_t *next)
 {
     *count=0; *next=0;
-    if (lane > 2 || !mutex || xSemaphoreTake(mutex,pdMS_TO_TICKS(100)) != pdTRUE)
+    if (lane > 3 || !mutex || xSemaphoreTake(mutex,pdMS_TO_TICKS(100)) != pdTRUE)
         return ESP_ERR_INVALID_STATE;
     esp_err_t err=journal_store_page(&store,lane,before,out,count,next);
     xSemaphoreGive(mutex); return err;

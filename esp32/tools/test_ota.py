@@ -12,6 +12,16 @@ import ota
 
 
 class OtaClientTest(unittest.TestCase):
+    def test_network_journal_decodes_signed_errors_and_unavailable_signal(self):
+        wire=bytes.fromhex((Path(__file__).resolve().parents[2]/"testdata/network_health_v1.hex").read_text())
+        summary=wire[:12]+wire[36:104]+wire[104:108]+wire[28:32]+wire[116:136]+wire[18:20]+b"\0\0"
+        n=ota.network_summary(summary.hex())
+        self.assertEqual(n["counters"]["dns_failures"],12)
+        self.assertEqual(n["last_error_detail"],-1)
+        self.assertEqual(n["minimum_rssi_dbm"],-81)
+        self.assertIsNone(n["rssi_dbm"])
+        for invalid in (None,"",summary[:-1].hex(),"zz"*112):
+            with self.assertRaises(ValueError):ota.network_summary(invalid)
     def test_update_api_mac_binds_method_path_exact_body_and_nonce(self):
         key=bytes(range(32));nonce="ab"*32;body=b'{"release_sequence":"9007199254740993","discard_backlog":false}'
         signed=ota.api_authorization(key,nonce,"POST","/ota/v1/install",body)

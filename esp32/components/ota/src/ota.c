@@ -178,7 +178,8 @@ static esp_err_t journal_post(httpd_req_t *req)
     if (!strncmp(body,"life\n",5)) { lane=0; number=body+5; }
     else if (!strncmp(body,"health\n",7)) { lane=1; number=body+7; }
     else if (!strncmp(body,"reception\n",10)) { lane=2; number=body+10; }
-    else return error_response(req,"400 Bad Request","expected life, health or reception and a cursor");
+    else if (!strncmp(body,"network\n",8)) { lane=3; number=body+8; }
+    else return error_response(req,"400 Bad Request","expected life, health, reception or network and a cursor");
     if (!*number || strspn(number,"0123456789") != strlen(number))
         return error_response(req,"400 Bad Request","invalid cursor");
     errno=0; uint64_t before=strtoull(number,NULL,10);
@@ -189,7 +190,7 @@ static esp_err_t journal_post(httpd_req_t *req)
     cJSON *json=cJSON_CreateObject(), *records=cJSON_CreateArray();
     if (!json || !records) { cJSON_Delete(json); cJSON_Delete(records); return ESP_ERR_NO_MEM; }
     cJSON_AddItemToObject(json,"records",records); json_u64(json,"next",next);
-    cJSON_AddNumberToObject(json,"capacity",lane==2 ? JOURNAL_RECEPTION_CAP : lane ? JOURNAL_HEALTH_CAP : JOURNAL_LIFE_CAP);
+    cJSON_AddNumberToObject(json,"capacity",lane==3 ? JOURNAL_NETWORK_CAP : lane==2 ? JOURNAL_RECEPTION_CAP : lane ? JOURNAL_HEALTH_CAP : JOURNAL_LIFE_CAP);
     for (unsigned i=0; i<count; i++) {
         const journal_record_t *r=&rows[i]; cJSON *row=cJSON_CreateObject();
         if (!row) { cJSON_Delete(json); return ESP_ERR_NO_MEM; }
@@ -202,6 +203,10 @@ static esp_err_t journal_post(httpd_req_t *req)
         char hash[65]; nvf_ota_hex(r->elf_sha256,32,hash);
         cJSON_AddStringToObject(row,"elf_sha256",hash);
         cJSON_AddNumberToObject(row,"event",r->event); cJSON_AddNumberToObject(row,"time_source",r->time_source);
+        if(r->event==JOURNAL_NETWORK){
+            char summary[225];nvf_ota_hex(r->network,sizeof r->network,summary);
+            cJSON_AddStringToObject(row,"network_summary",summary);
+        }
         if(r->event==JOURNAL_CLOCK_CHANGE) {
             cJSON_AddNumberToObject(row,"clock_source",r->clock_source);
             char ns[32];snprintf(ns,sizeof ns,"%lld",(long long)r->clock_old_ns);cJSON_AddStringToObject(row,"clock_old_ns",ns);

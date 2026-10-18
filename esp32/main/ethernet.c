@@ -23,6 +23,17 @@
 #define ETH_READY_US   (33 * 1000)
 
 static const char *TAG = "ethernet";
+static esp_eth_handle_t active_driver;
+bool ethernet_diagnostics(uint16_t *speed_mbps,uint8_t *duplex,uint8_t *autoneg)
+{
+    if(!active_driver)return false;
+    eth_speed_t speed;eth_duplex_t mode;bool negotiation;
+    bool ok=true;
+    if(esp_eth_ioctl(active_driver,ETH_CMD_G_SPEED,&speed)==ESP_OK)*speed_mbps=speed==ETH_SPEED_100M?100:10;else ok=false;
+    if(esp_eth_ioctl(active_driver,ETH_CMD_G_DUPLEX_MODE,&mode)==ESP_OK)*duplex=mode==ETH_DUPLEX_FULL?2:1;else ok=false;
+    if(esp_eth_ioctl(active_driver,ETH_CMD_G_AUTONEGO,&negotiation)==ESP_OK)*autoneg=negotiation?2:1;else ok=false;
+    return ok;
+}
 
 esp_err_t ethernet_start(const observer_board_t *board)
 {
@@ -80,6 +91,7 @@ esp_err_t ethernet_start(const observer_board_t *board)
     ESP_GOTO_ON_FALSE(glue, ESP_ERR_NO_MEM, fail, TAG, "Ethernet interface glue");
     ESP_GOTO_ON_ERROR(esp_netif_attach(netif, glue), fail, TAG, "attach Ethernet interface");
     ESP_GOTO_ON_ERROR(esp_eth_start(driver), fail, TAG, "start Ethernet");
+    active_driver=driver;
     ESP_LOGI(TAG, "W5500 up at %d MHz, polled every %d ms, MAC " MACSTR, ETH_SPI_HZ / 1000000,
              ETH_POLL_MS, MAC2STR(address));
     return ESP_OK;

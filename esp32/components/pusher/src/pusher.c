@@ -2,6 +2,9 @@
 // Mirrors navfeeder.c serve_collector(), single-task (select-gated ACK reads).
 
 #include "pusher.h"
+#include "network_health.h"
+#include <errno.h>
+#include <limits.h>
 #include "ack_progress.h"
 #include "update_json.h"
 #include "../../../../common/endpoint_fallback.h"
@@ -75,6 +78,16 @@ static uint8_t s_control_frame[NRP_MAX_WIRE];
 // kept off the same stack for the same reason: the handshake already runs the TLS handshake
 // and the evidence builder there.
 static char s_hello[GNF1_HELLO_MAX];
+static uint8_t s_diag_interface;
+static uint64_t s_outstanding_ms;
+static bool s_outstanding;
+static bool s_io_failed;
+static uint64_t diag_now(void) { return (uint64_t)(esp_timer_get_time()/1000); }
+static uint32_t diag_duration(uint64_t start,uint64_t end)
+{ return end<start ? 0 : end-start>UINT32_MAX ? UINT32_MAX : (uint32_t)(end-start); }
+static void diagnostic(uint8_t kind,int32_t code,int32_t detail)
+{ if(kind==NH_READ_FAILED || kind==NH_WRITE_FAILED)s_io_failed=true;
+  network_health_event(kind,s_diag_interface,code,detail,diag_now()); }
 
 bool pusher_connected(void) { return atomic_load_explicit(&s_connected, memory_order_relaxed); }
 bool pusher_via_tunnel(void) { return atomic_load_explicit(&s_via_tunnel, memory_order_relaxed); }
@@ -149,15 +162,18 @@ static int tls_write_all(esp_tls_t *tls, const uint8_t *buf, size_t n)
     size_t off = 0;
     int64_t deadline_start_us = esp_timer_get_time();
     while (off < n) {
+        errno=0;
         ssize_t w = esp_tls_conn_write(tls, buf + off, n - off);
         if (w == ESP_TLS_ERR_SSL_WANT_WRITE || w == ESP_TLS_ERR_SSL_WANT_READ) {
             if (esp_timer_get_time() - deadline_start_us > (int64_t)OP_DEADLINE_S * 1000000) {
+                diagnostic(NH_WRITE_FAILED,ETIMEDOUT,(int32_t)w);
                 return -1; // no progress for OP_DEADLINE_S -- declare the link dead
             }
             tls_wait_ready(tls, w == ESP_TLS_ERR_SSL_WANT_WRITE); // always yield
             continue;
         }
-        if (w <= 0) return -1;
+        if (w <= 0) { diagnostic(NH_WRITE_FAILED,(int32_t)w,errno);return -1; }
+        network_health_io((uint64_t)w,0,0);
         off += (size_t)w;
         deadline_start_us = esp_timer_get_time(); // progress made; restart the deadline
     }
@@ -169,15 +185,18 @@ static int tls_read_full(esp_tls_t *tls, uint8_t *buf, size_t n)
     size_t off = 0;
     int64_t deadline_start_us = esp_timer_get_time();
     while (off < n) {
+        errno=0;
         ssize_t r = esp_tls_conn_read(tls, buf + off, n - off);
         if (r == ESP_TLS_ERR_SSL_WANT_READ || r == ESP_TLS_ERR_SSL_WANT_WRITE) {
             if (esp_timer_get_time() - deadline_start_us > (int64_t)OP_DEADLINE_S * 1000000) {
+                diagnostic(NH_READ_FAILED,ETIMEDOUT,(int32_t)r);
                 return -1; // no progress for OP_DEADLINE_S -- declare the link dead
             }
             tls_wait_ready(tls, r == ESP_TLS_ERR_SSL_WANT_WRITE); // always yield
             continue;
         }
-        if (r <= 0) return -1;
+        if (r <= 0) { diagnostic(NH_READ_FAILED,(int32_t)r,errno);return -1; }
+        network_health_io(0,(uint64_t)r,0);
         off += (size_t)r;
         deadline_start_us = esp_timer_get_time(); // progress made; restart the deadline
     }
@@ -230,7 +249,13 @@ static bool drain_acks(esp_tls_t *tls, int fd)
         if (read_frame(tls, &type, s_control_frame, sizeof s_control_frame, &len) != 0) return false;
         if (type == GNF1_F_ACK) {
             uint64_t seq;
-            if (gnf1_decode_ack(s_control_frame, len, &seq)) spool_ack(seq);
+            if (gnf1_decode_ack(s_control_frame, len, &seq)) {
+                uint64_t previous=spool_acked();spool_ack(seq);
+                if(spool_acked()>previous){uint64_t now=diag_now();
+                    network_health_ack(now,s_outstanding?diag_duration(s_outstanding_ms,now):0);
+                    s_outstanding_ms=now;
+                }
+            }
         } else if (type == 0x09 && s_cfg.update_control) {
             s_cfg.update_control(s_control_frame,len);
         } else if((type==0x0b || type==0x0c || type==0x0d) && s_cfg.reception_control) {
@@ -291,9 +316,17 @@ static esp_tls_t *connect_collector(const char *host, const char *verify)
     }
 
     esp_tls_t *tls = esp_tls_init();
-    if (!tls) return NULL;
+    if (!tls) { diagnostic(NH_TLS_FAILED,ENOMEM,0);return NULL; }
     int r = esp_tls_conn_new_sync(host, (int)strlen(host), s_cfg.port, &tls_cfg, tls);
     if (r != 1) {
+        esp_tls_error_handle_t handle=NULL;int tls_code=0,tls_flags=0;
+        esp_err_t code=0;
+        if(esp_tls_get_error_handle(tls,&handle)==ESP_OK)
+            code=esp_tls_get_and_clear_last_error(handle,&tls_code,&tls_flags);
+        uint8_t kind=code==ESP_ERR_ESP_TLS_CANNOT_RESOLVE_HOSTNAME ? NH_DNS_FAILED :
+            (code>=ESP_ERR_ESP_TLS_CANNOT_CREATE_SOCKET && code<=ESP_ERR_ESP_TLS_CONNECTION_TIMEOUT) ? NH_TCP_FAILED : NH_TLS_FAILED;
+        diagnostic(kind,code,tls_code);
+        ESP_LOGW(TAG,"connect failure: stage=%u code=%d tls=%d verify_flags=0x%x",kind,(int)code,tls_code,tls_flags);
         esp_tls_conn_destroy(tls);
         return NULL;
     }
@@ -405,6 +438,8 @@ static int send_ping(esp_tls_t *tls)
 // would never grow.
 static int serve(const char *host, const char *verify, bool via_tunnel)
 {
+    s_diag_interface=via_tunnel?NH_VPN:NH_UNKNOWN;s_outstanding=false;s_io_failed=false;
+    uint64_t attempt_ms=diag_now();diagnostic(NH_CONNECT_ATTEMPT,0,via_tunnel);
     esp_tls_t *tls = connect_collector(host, verify);
     if (!tls) {
         ESP_LOGW(TAG, "TLS connect to %s:%d%s failed", host, s_cfg.port,
@@ -413,6 +448,7 @@ static int serve(const char *host, const char *verify, bool via_tunnel)
     }
     int hs = handshake(tls);
     if (hs != 0) {
+        if(hs==-2 || !s_io_failed)diagnostic(hs==-2?NH_AUTH_REJECTED:NH_HANDSHAKE_FAILED,hs,0);
         esp_tls_conn_destroy(tls);
         return hs;
     }
@@ -428,11 +464,16 @@ static int serve(const char *host, const char *verify, bool via_tunnel)
         // poll is a failed connection: tear it down and let the backoff loop reconnect.
         ESP_LOGW(TAG, "esp_tls_get_conn_sockfd failed (err=%d fd=%d); dropping connection",
                  (int)fdrc, fd);
+        diagnostic(NH_TCP_FAILED,fdrc,fd);
         esp_tls_conn_destroy(tls);
         return -1;
     }
     atomic_store_explicit(&s_via_tunnel, via_tunnel, memory_order_relaxed);
     atomic_store_explicit(&s_connected, true, memory_order_relaxed);
+    uint8_t peer[4]={0};
+    if(s_cfg.socket_interface){uint8_t interface=s_cfg.socket_interface(fd,peer);if(!via_tunnel)s_diag_interface=interface;}
+    network_health_path(s_diag_interface,peer);
+    diagnostic(NH_COLLECTOR_CONNECTED,(int32_t)diag_duration(attempt_ms,diag_now()),via_tunnel);
     ESP_LOGI(TAG, "connected: station=%s feed=%s -> %s:%d%s", s_cfg.station, s_cfg.feed,
              host, s_cfg.port, via_tunnel ? " via tunnel" : "");
     // Stack evidence: the TLS handshake and the evidence builder have both run by the first
@@ -452,11 +493,13 @@ static int serve(const char *host, const char *verify, bool via_tunnel)
 
     for (;;) {
         if (!drain_acks(tls, fd)) break;
+        if(spool_acked()>=sent_upto)s_outstanding=false;
         // healthy writes/PONGs are not historian progress. The C6's
         // default RAM ring holds about 100 s of traffic, so recover stalled
         // durability after 30 s rather than the larger C feeder's ten minutes.
         // Reconnect preserves s_cfg.session and replays from spool_acked().
         if (ack_progress_stalled(&progress, spool_acked(), sent_upto, esp_timer_get_time())) {
+            diagnostic(NH_ACK_STALLED,(int32_t)diag_duration(s_outstanding_ms,diag_now()),0);
             ESP_LOGW(TAG, "durable ACK stalled with records outstanding; reconnecting for replay");
             break;
         }
@@ -470,6 +513,7 @@ static int serve(const char *host, const char *verify, bool via_tunnel)
             if (!via_tunnel && tunnel_preferred() && sent_upto == spool_acked() &&
                 esp_timer_get_time() - session_start_us >= (int64_t)USEFUL_CONN_S * 1000000) {
                 ESP_LOGI(TAG, "tunnel is up; moving the session onto it");
+                diagnostic(NH_PATH_SWITCH,0,NH_VPN);
                 break;
             }
             if (esp_timer_get_time() - last_tx_us >= (int64_t)KEEPALIVE_S * 1000000) {
@@ -483,7 +527,10 @@ static int serve(const char *host, const char *verify, bool via_tunnel)
         for (size_t i = 0; i < n; i++) {
             if (ok) {
                 size_t flen = gnf1_encode_data(frame, batch[i].seq, batch[i].data, batch[i].len);
-                if (tls_write_all(tls, frame, flen) == 0) sent_upto = batch[i].seq;
+                if (tls_write_all(tls, frame, flen) == 0) {
+                    sent_upto = batch[i].seq;network_health_io(0,0,1);
+                    if(!s_outstanding){s_outstanding=true;s_outstanding_ms=diag_now();}
+                }
                 else ok = false;
             }
             free(batch[i].data);
@@ -493,6 +540,7 @@ static int serve(const char *host, const char *verify, bool via_tunnel)
     }
 
     atomic_store_explicit(&s_connected, false, memory_order_relaxed);
+    diagnostic(NH_COLLECTOR_CLOSED,0,0);
     atomic_store_explicit(&s_via_tunnel, false, memory_order_relaxed);
     atomic_store(&s_durable,false);
     esp_tls_conn_destroy(tls);

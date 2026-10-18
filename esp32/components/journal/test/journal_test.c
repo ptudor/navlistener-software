@@ -4,13 +4,13 @@
 #include <stdio.h>
 #include <string.h>
 
-static struct { bool present; uint8_t bytes[JOURNAL_RECORD_SIZE]; } slots[3][JOURNAL_HEALTH_CAP];
+static struct { bool present; uint8_t bytes[JOURNAL_RECORD_SIZE]; } slots[4][JOURNAL_HEALTH_CAP];
 static unsigned sets, commits;
 // NVS provides atomic blobs. Model an error either before or after the blob
 // becomes durable, including commit failure after a successful set.
 static enum { GOOD, FAIL_BEFORE_SET, FAIL_AFTER_SET, FAIL_COMMIT } fault;
 static void key_parts(const char *key, unsigned *lane, unsigned *slot)
-{ *lane=key[0]=='r' ? 2 : key[0]=='h'; assert(sscanf(key+1,"%u",slot)==1); assert(*slot<(*lane==2 ? JOURNAL_RECEPTION_CAP : *lane ? JOURNAL_HEALTH_CAP : JOURNAL_LIFE_CAP)); }
+{ *lane=key[0]=='n' ? 3 : key[0]=='r' ? 2 : key[0]=='h'; assert(sscanf(key+1,"%u",slot)==1); assert(*slot<(*lane==3 ? JOURNAL_NETWORK_CAP : *lane==2 ? JOURNAL_RECEPTION_CAP : *lane ? JOURNAL_HEALTH_CAP : JOURNAL_LIFE_CAP)); }
 esp_err_t nvs_open_from_partition(const char *part,const char *ns,int mode,nvs_handle_t *h)
 { assert(!strcmp(part,"journal") && !strcmp(ns,"nvf_journal") && mode==NVS_READWRITE); *h=1; return ESP_OK; }
 void nvs_close(nvs_handle_t h) { assert(h==1); }
@@ -46,6 +46,18 @@ static void fifo(void)
     reset(); journal_store_t s; assert(journal_store_open(&s)==ESP_OK);
     journal_record_t r=record(JOURNAL_BOOT), got;
     assert(journal_store_append(&s,&r)==ESP_OK);
+    // Network summaries wrap independently and remain readable after reboot.
+    for(unsigned i=0;i<JOURNAL_NETWORK_CAP+3;i++){
+        journal_record_t n=record(JOURNAL_NETWORK);n.network[0]=1;
+        for(unsigned j=1;j<sizeof n.network;j++)n.network[j]=(uint8_t)(i+j);
+        assert(journal_store_append(&s,&n)==ESP_OK);
+    }
+    journal_store_close(&s);assert(journal_store_open(&s)==ESP_OK);
+    assert(s.latest[3]==JOURNAL_NETWORK_CAP+3);
+    assert(journal_store_read(&s,3,s.latest[3],&got)==ESP_OK);
+    assert(got.network[0]==1 && got.network[111]==(uint8_t)(JOURNAL_NETWORK_CAP+2+111));
+    assert(got.firmware[0]==0 && got.timing_flags==0);
+    assert(journal_store_read(&s,3,1,&got)==ESP_ERR_NVS_NOT_FOUND);
     // Many complete wraps never increase the live key count or fail when full.
     for (unsigned i=0;i<JOURNAL_HEALTH_CAP*4+17;i++) {
         r=record(JOURNAL_CHECKPOINT); r.uptime_ms=i*JOURNAL_CHECKPOINT_MS;
@@ -75,7 +87,7 @@ static void fifo(void)
     } while (cursor);
     assert(total==JOURNAL_HEALTH_CAP);
     assert(journal_store_page(&s,1,2,page,&count,&cursor)==ESP_OK && !count && !cursor);
-    assert(journal_store_page(&s,3,0,page,&count,&cursor)!=ESP_OK);
+    assert(journal_store_page(&s,4,0,page,&count,&cursor)!=ESP_OK);
     assert(sets==commits); journal_store_close(&s);
 }
 static void faults(void)

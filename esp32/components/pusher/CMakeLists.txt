@@ -1,6 +1,6 @@
 idf_component_register(
     SRCS "src/pusher.c" "src/ack_progress.c"
     INCLUDE_DIRS "include"
-    REQUIRES gnf1 spool
+    REQUIRES gnf1 spool network_health
     PRIV_REQUIRES esp-tls mbedtls esp_timer freertos lwip ota
 )

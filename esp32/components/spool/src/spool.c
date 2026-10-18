@@ -52,6 +52,13 @@ uint64_t spool_append(const uint8_t *data, uint32_t len)
     xSemaphoreGive(producer_gate);
     return seq;
 }
+uint64_t spool_try_append(const uint8_t *data,uint32_t len)
+{
+    if(!producer_gate || !mu || xSemaphoreTake(producer_gate,0)!=pdTRUE)return 0;
+    if(xSemaphoreTake(mu,0)!=pdTRUE){xSemaphoreGive(producer_gate);return 0;}
+    uint64_t seq=spool_ring_try_append(&g,data,len);
+    xSemaphoreGive(mu);xSemaphoreGive(producer_gate);return seq;
+}
 bool spool_pause_producers(uint64_t *final)
 {
     if (!producer_gate || !final || xSemaphoreTake(producer_gate, pdMS_TO_TICKS(500)) != pdTRUE) return false;

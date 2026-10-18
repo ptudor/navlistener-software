@@ -101,6 +101,12 @@ int main(void){
     assert(serve(s_cfg.host, NULL, false)==0);
     assert(connections==before+1&&clock_us-start_us>=ACK_STALL_US&&clock_us-start_us<ACK_STALL_US+2000000);
     assert(hellos==connections);
+    nh_report_t health;network_health_read(&health);
+    assert(health.counters[NH_ACK_STALLS]==4);
+    assert(health.counters[NH_CONNECTS]==(unsigned)connections);
+    assert(health.counters[NH_DISCONNECTS]==(unsigned)connections);
+    assert(health.tx_bytes>0 && health.rx_bytes>0 && health.sent_records>=produced);
+    assert(health.max_ack_gap_ms>=30000 && !(health.flags&NH_CONNECTED));
     puts("ACK-stall replay, healthy heartbeats, repeated outages, idle, slow and flooding ACK progress PASS");
     return 0;
 }

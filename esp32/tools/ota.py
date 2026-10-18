@@ -107,7 +107,38 @@ def journal_row(row):
     missing = [key for key in JOURNAL_FIELDS + extra if key not in row]
     if missing:
         raise ValueError("invalid journal page: a record lacks " + ", ".join(missing))
+    if event == 13:
+        row = dict(row, network=network_summary(row.get("network_summary")))
     return row
+
+
+def network_summary(value):
+    """Decode the bounded, reboot-surviving network journal summary."""
+    if not isinstance(value, str) or len(value) != 224:
+        raise ValueError("invalid network summary")
+    try:
+        b = bytes.fromhex(value)
+    except ValueError as exc:
+        raise ValueError("invalid network summary") from exc
+    if len(b) != 112 or b[0] != 1:
+        raise ValueError("unsupported network summary")
+    names = ("wifi_disconnects", "wifi_associations", "ethernet_link_ups", "ethernet_link_downs",
+             "wifi_address_events", "ethernet_address_events", "ip_losses", "connect_attempts",
+             "collector_connections", "collector_disconnects", "dns_failures", "tcp_failures",
+             "tls_failures", "handshake_failures", "ack_stalls", "read_failures", "write_failures")
+    number = lambda start, size, signed=False: int.from_bytes(b[start:start+size], "big", signed=signed)
+    valid = number(108, 2)
+    return {"flags": b[1], "default_interface": b[2], "socket_interface": b[3],
+            "rssi_dbm": number(4, 1, True) if valid & 1 else None,
+            "minimum_rssi_dbm": number(5, 1, True) if valid & 2 else None,
+            "channel": b[6] if valid & 1 else None,
+            "speed_mbps": number(8, 2) or None, "duplex": ("unknown", "half", "full")[min(b[10], 2)],
+            "autonegotiation": None if not b[11] else b[11] == 2,
+            "counters": {name: number(12+4*i, 4) for i, name in enumerate(names)},
+            "wifi_disconnect_reason": number(80, 2), "event_total": number(84, 4),
+            "last_error_kind": b[88], "last_error_interface": b[89],
+            "last_error_code": number(92, 4, True), "last_error_detail": number(96, 4, True),
+            "last_error_uptime_ms": number(100, 8)}
 
 
 def read_journal(device, key, lane, limit):
@@ -158,7 +189,7 @@ def journal_detail(event, code):
 def print_journal(rows):
     events = {1: "boot", 2: "time-anchor", 3: "confirmed", 4: "OTA-ready",
               5: "OTA-failed", 6: "checkpoint", 7: "hw-trust", 8: "commission", 9: "reception",
-              10: "power", 11: "clock-change", 12: "RTC-service"}
+              10: "power", 11: "clock-change", 12: "RTC-service", 13: "network"}
     sources = {0: "unknown", 1: "RTC", 2: "GNSS"}
     print("UTC                  SOURCE  BOOT   UPTIME(s) EVENT        FIRMWARE                         RESET FLAGS DROP DETAIL")
     for row in rows:
@@ -176,6 +207,13 @@ def print_journal(rows):
             detail = (f"{origin.get(row.get('clock_source'), '?')} "
                       f"{row.get('clock_old_ns', '?')} -> {row.get('clock_new_ns', '?')} ns "
                       f"uncertainty={row.get('clock_uncertainty_ns')} ns")
+        elif row["event"] == 13:
+            n = row.get("network") or network_summary(row.get("network_summary"))
+            detail = (f"RSSI={n['rssi_dbm']} min={n['minimum_rssi_dbm']} dBm "
+                      f"Ethernet={n['speed_mbps']}Mbps/{n['duplex']} "
+                      f"Wi-Fi drops={n['counters']['wifi_disconnects']} reason={n['wifi_disconnect_reason']} "
+                      f"connects={n['counters']['collector_connections']} ACK stalls={n['counters']['ack_stalls']} "
+                      f"error={n['last_error_kind']}:{n['last_error_code']}/{n['last_error_detail']}")
         date = datetime.datetime.fromtimestamp(utc, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S") if utc else "unknown"
         print(f"{date:20} {sources.get(row['time_source'], '?'):7} {row['boot']:6} "
               f"{int(row['uptime_ms']) // 1000:9} {events.get(row['event'], '?'):12} "
@@ -235,7 +273,7 @@ def main(argv=None):
     commands.add_parser("status")
     journal = commands.add_parser("journal", help="read the persistent diagnostic FIFO")
     journal.add_argument("--key-file", required=True)
-    journal.add_argument("--lane", choices=("life", "health", "reception"), default="life")
+    journal.add_argument("--lane", choices=("life", "health", "reception", "network"), default="life")
     journal.add_argument("--limit", type=int, default=256)
     journal.add_argument("--json", action="store_true")
     for name in ("check", "download", "install", "update", "cancel", "set-policy"):

@@ -51,6 +51,9 @@
 #include "mcu_identity.h"
 #include "commission.h"
 #include "observer_time.h"
+#include "network_health.h"
+#include "network_monitor.h"
+#include "esp_timer.h"
 #if CONFIG_NVF_ETHERNET_W5500
 #include "esp_eth.h"
 #include "ethernet.h"
@@ -299,16 +302,24 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
     (void)arg;
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         if (s_wifi_joins) esp_wifi_connect();
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
+        network_health_event(NH_ASSOCIATED,NH_WIFI,0,0,esp_timer_get_time()/1000);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        const wifi_event_sta_disconnected_t *ev=data;
+        network_health_event(NH_WIFI_DISCONNECTED,NH_WIFI,ev?ev->reason:0,ev?ev->rssi:127,esp_timer_get_time()/1000);
         uplink_set(UPLINK_WIFI, false);
         if (s_wifi_joins) {
-            ESP_LOGW(TAG, "wifi disconnected; reconnecting");
+            ESP_LOGW(TAG, "wifi disconnected: reason=%u RSSI=%d dBm; reconnecting",ev?ev->reason:0,ev?ev->rssi:127);
             esp_wifi_connect();
         }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *ev = data;
         uplink_set(UPLINK_WIFI, true);
+        network_health_event(NH_WIFI_ADDRESS,NH_WIFI,0,0,esp_timer_get_time()/1000);
         ESP_LOGI(TAG, "wifi up: " IPSTR, IP2STR(&ev->ip_info.ip));
+    } else if (base == IP_EVENT && id == IP_EVENT_STA_LOST_IP) {
+        uplink_set(UPLINK_WIFI,false);
+        network_health_event(NH_WIFI_LOST_IP,NH_WIFI,0,0,esp_timer_get_time()/1000);
     }
 }
 
@@ -317,15 +328,19 @@ static void ethernet_event_handler(void *arg, esp_event_base_t base, int32_t id,
 {
     (void)arg;
     if (base == ETH_EVENT && id == ETHERNET_EVENT_CONNECTED) {
+        network_health_event(NH_ETH_CONNECTED,NH_ETHERNET,0,0,esp_timer_get_time()/1000);
         ESP_LOGI(TAG, "ethernet link up");
     } else if (base == ETH_EVENT && id == ETHERNET_EVENT_DISCONNECTED) {
+        network_health_event(NH_ETH_DISCONNECTED,NH_ETHERNET,0,0,esp_timer_get_time()/1000);
         uplink_set(UPLINK_ETHERNET, false);
         ESP_LOGW(TAG, "ethernet link down");
     } else if (base == IP_EVENT && id == IP_EVENT_ETH_GOT_IP) {
+        network_health_event(NH_ETH_ADDRESS,NH_ETHERNET,0,0,esp_timer_get_time()/1000);
         ip_event_got_ip_t *ev = data;
         uplink_set(UPLINK_ETHERNET, true);
         ESP_LOGI(TAG, "ethernet up: " IPSTR, IP2STR(&ev->ip_info.ip));
     } else if (base == IP_EVENT && id == IP_EVENT_ETH_LOST_IP) {
+        network_health_event(NH_ETH_LOST_IP,NH_ETHERNET,0,0,esp_timer_get_time()/1000);
         uplink_set(UPLINK_ETHERNET, false);
         ESP_LOGW(TAG, "ethernet lost its address");
     }
@@ -341,6 +356,7 @@ static void ethernet_uplink_start(void)
                                                         ethernet_event_handler, NULL, NULL));
     // A dead port leaves the unit on Wi-Fi, when one is configured.
     esp_err_t err = ethernet_start(observer_board_current());
+    if(err!=ESP_OK)network_health_event(NH_ETH_FAILED,NH_ETHERNET,err,0,esp_timer_get_time()/1000);
     if (err != ESP_OK)
         ESP_LOGE(TAG, "ethernet unavailable (%s)%s", esp_err_to_name(err),
                  s_wifi_joins ? "; continuing on wifi" : "; no uplink until it is repaired");
@@ -352,6 +368,7 @@ static void network_start(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     s_wifi_joins = netcfg_has_wifi(&g_cfg);
+    network_health_configure(s_wifi_joins,observer_board_wired_uplink());
 #if CONFIG_NVF_ETHERNET_W5500
     if (observer_board_wired_uplink()) ethernet_uplink_start();
 #endif
@@ -361,6 +378,8 @@ static void network_start(void)
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
                                                         wifi_event_handler, NULL, NULL));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                                        wifi_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_LOST_IP,
                                                         wifi_event_handler, NULL, NULL));
     wifi_config_t wc = {0};
     // wifi_sta_config_t's ssid[32]/password[64] accept a full-length, non-NUL-
@@ -600,6 +619,7 @@ void app_main(void)
 #endif
         .evidence = session_evidence,
         .hardware_trust = nvf_mcu_identity_verdict,
+        .socket_interface = network_monitor_socket,
     };
     // retry pusher_start with backoff rather than spooling-until-overflow-and-never-
     // pushing on a transient boot OOM. pusher_cfg_free (fa67e92) leaves s_cfg zeroed, so
@@ -614,5 +634,6 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(delay_ms));
         if ((delay_ms *= 2) > 8000) delay_ms = 8000;
     }
+    network_monitor_start(app_now_ns);
     confirm_startup();
 }

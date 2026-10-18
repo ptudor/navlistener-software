@@ -9,6 +9,7 @@
 #define JOURNAL_LIFE_CAP 256u
 #define JOURNAL_HEALTH_CAP 1024u
 #define JOURNAL_RECEPTION_CAP 128u
+#define JOURNAL_NETWORK_CAP 128u
 #define JOURNAL_RECORD_SIZE 192u
 enum { JOURNAL_BOOT=1, JOURNAL_TIME=2, JOURNAL_CONFIRMED=3,
        JOURNAL_OTA_READY=4, JOURNAL_OTA_FAILED=5, JOURNAL_CHECKPOINT=6,
@@ -16,7 +17,8 @@ enum { JOURNAL_BOOT=1, JOURNAL_TIME=2, JOURNAL_CONFIRMED=3,
        // changes, never per connection; COMMISSION records a bench operation. Their
        // `error` encodings are in docs/JOURNAL.md.
        JOURNAL_HW_TRUST=7, JOURNAL_COMMISSION=8, JOURNAL_RECEPTION=9,
-       JOURNAL_RECEPTION_POWER=10, JOURNAL_CLOCK_CHANGE=11, JOURNAL_RTC_SERVICE=12 };
+       JOURNAL_RECEPTION_POWER=10, JOURNAL_CLOCK_CHANGE=11, JOURNAL_RTC_SERVICE=12,
+       JOURNAL_NETWORK=13 };
 enum { JOURNAL_TIME_UNKNOWN, JOURNAL_TIME_RTC, JOURNAL_TIME_GNSS };
 enum { JOURNAL_RECEIVER=1, JOURNAL_FIX=2, JOURNAL_LINK=4, JOURNAL_WIFI=8,
        JOURNAL_PSRAM=16, JOURNAL_SAMPLED=32 };
@@ -38,8 +40,9 @@ typedef struct {
     bool clock_uncertainty_known;
     int64_t clock_old_ns, clock_new_ns, clock_sampled_ms;
     uint64_t clock_uncertainty_ns;
+    uint8_t network[112]; // event 13: bounded network summary; see JOURNAL.md
 } journal_record_t;
-typedef struct { nvs_handle_t handle; uint64_t latest[3]; bool ready; } journal_store_t;
+typedef struct { nvs_handle_t handle; uint64_t latest[4]; bool ready; } journal_store_t;
 // Separate FIFO lanes: lifecycle events cannot be evicted by hourly checkpoints.
 // No erase-on-error, heap queue, retry loop, or mandatory dependency on logging.
 esp_err_t journal_store_open(journal_store_t *store);
