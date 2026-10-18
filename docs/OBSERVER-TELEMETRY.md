@@ -26,6 +26,12 @@ minute. The first report waits fifteen seconds for startup. Counters and the
 eight most recent events survive reconnections within a boot. They are scoped
 to the report's GNF1 session, not lifetime device counters.
 
+Enqueue is nonblocking and never evicts another record. Reports defer when the
+spool cannot retain a quarter of its byte and record capacity for navigation.
+The reporter retries later; it does not accumulate a diagnostic backlog of its
+own. The separate [persistent network journal](../esp32/docs/JOURNAL.md) keeps
+bounded summaries through resets. See the [troubleshooting guide](NETWORK-DIAGNOSTICS.md).
+
 The fixed 448-byte tag body uses big-endian integers. Reserved bytes are zero.
 `common/network_health.h` defines the wire enums. The C producer and Go decoder
 share `testdata/network_health_v1.hex` as a contract fixture.
@@ -46,7 +52,7 @@ share `testdata/network_health_v1.hex` as a contract fixture.
 | 136–163 | Connected-since U64 ms, last advancing ACK uptime U64 ms (0 unavailable), maximum outstanding ACK gap U32 ms, last/max connection establishment duration U32 ms each |
 | 164–187 | TLS plaintext bytes written/read and DATA records sent (including replay), U64 each |
 | 188–223 | Wi-Fi address/netmask/gateway, Ethernet address/netmask/gateway, two DNS addresses, collector peer: IPv4 network-order octets; zero means unavailable |
-| 224–239 | Queue high-water U32 records, dropped U64 records, current queued U32 records |
+| 224–239 | Sampled queue high-water U32 records, dropped U64 records, current queued U32 records; depth sampled every two seconds |
 | 240–255 | Weak RSSI sample count U32 (≤ −75 dBm), total RSSI samples U32, sample failures U32, event count U8 (0–8), three reserved bytes |
 | 256–447 | Eight event slots, oldest first: uptime U64 ms, kind U8, interface U8, RSSI I8 (127 unknown), flags U8, native code I32, detail I32, sequence U32. Unused slots are zero. |
 

@@ -463,6 +463,20 @@ the radio is the random-number generator's entropy source for TLS. With no netwo
 not scan or associate. A W5500 that does not answer is logged, and the unit carries on over
 Wi-Fi if one is configured.
 
+## Network diagnostics
+
+ESP32 observers report passive link and collector health in their private board
+metadata: Wi-Fi RSSI, channel, AP identity and disconnect reasons; Ethernet
+carrier, negotiated speed/duplex and autonegotiation; addresses and routing;
+connection failures, ACK stalls and queue pressure. A separate network card in
+Integrity Station exposes the latest report, events, history and JSON export.
+
+Stable reports run every five minutes, with changes coalesced to at most once a
+minute. A bounded persistent journal keeps summaries through reboots. Diagnostics
+defer under spool pressure and never evict navigation records. Upgrade the
+collector before the firmware. See the [troubleshooting guide](../docs/NETWORK-DIAGNOSTICS.md)
+for interpretation, retrieval and the limits of the available counters.
+
 ## On-demand OTA updates (ESP32-S3)
 
 `NVF_OTA` enables a laptop-initiated HTTPS download into the inactive OTA slot.
@@ -554,11 +568,11 @@ received-power alarm. The collector can also request a fresh
 receiver/RF/environment snapshot.
 See [station configuration, wire contract and limitations](../docs/RECEPTION.md).
 
-## Boot, health and reception journal (ESP32-S3)
+## Boot, health, reception and network journal (ESP32-S3)
 
-The S3 keeps three persistent FIFO histories in a dedicated 512 KiB NVS partition:
+The S3 keeps four persistent FIFO histories in a dedicated 512 KiB NVS partition:
 256 lifecycle events, 1,024 hourly health checkpoints and 128 combined availability
-and received-power transitions. The same partition holds the alternating,
+and received-power transitions, plus 128 network summaries. The same partition holds the alternating,
 CRC-protected local power-model checkpoints. New records replace the oldest
 automatically; logging errors disable logging while GNSS collection continues.
 Boot records include firmware version/ELF hash, reset reason and uptime. Qualified

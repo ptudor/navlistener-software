@@ -28,6 +28,12 @@ struct BoardTelemetryView: View {
             if let sample = board.update, let update = sample.details?.update {
                 updateCard(update, sample: sample)
             }
+            if let sample = board.network, let network = sample.details?.network {
+                InstrumentCard("network.title", systemImage: "network") {
+                    freshness(sample, stale: board.networkStale)
+                    NetworkDiagnosticsView(network: network, sample: sample, observerID: observerID)
+                }
+            }
             if let sample = board.timing, let timing = sample.details?.timing {
                 timingCard(timing, sample: sample)
             }

@@ -114,6 +114,7 @@ targets:
       - path: IntegrityStationTests/LocalizationExpected.json
       - path: IntegrityStationTests/BoardTelemetryTests.swift
       - path: IntegrityStationTests/SensorHistoryTests.swift
+      - path: IntegrityStationTests/NetworkDiagnosticsTests.swift
       - path: IntegrityStationTests/OwnerPortalTests.swift
     dependencies:
       - target: IntegrityStation

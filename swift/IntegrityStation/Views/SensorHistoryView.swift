@@ -10,6 +10,11 @@ struct SensorHistoryView: View {
     @State private var history = SensorHistoryStore()
     @State private var operation: Task<Void, Never>?
 
+    init(observerID: String, initialMetric: SensorMetric = .temperature) {
+        self.observerID = observerID
+        _metric = State(initialValue: initialMetric)
+    }
+
     var body: some View {
         InstrumentCard("history.title", systemImage: "chart.xyaxis.line") {
             ViewThatFits(in: .horizontal) {
@@ -81,6 +86,15 @@ struct SensorHistoryView: View {
                                         sample.sampleTime ?? String(localized: "board.freshness.unknown")))
                             Text(String(format: String(localized: "history.session"), sample.session ?? StationFormat.unknown))
                             Text(BoardFormat.hardwareTrust(sample.hardwareTrust))
+                            if let network = sample.details?.network {
+                                DisclosureGroup("network.title") {
+                                    NetworkDiagnosticsView(network: network,
+                                        sample: BoardSample(receivedAt: sample.receivedAt, sampleTime: sample.sampleTime,
+                                            session: sample.session, sequence: sample.sequence.flatMap(UInt64.init),
+                                            details: sample.details, hardwareTrust: sample.hardwareTrust),
+                                        observerID: observerID, showHistory: false)
+                                }
+                            }
                         }
                         .font(.caption).textSelection(.enabled)
                         Divider()

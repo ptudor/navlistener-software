@@ -4190,6 +4190,396 @@
           }
         }
       }
+    },
+    "network.ack_gap": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Longest outstanding ACK gap"
+          }
+        }
+      }
+    },
+    "network.ack_stalls": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Durable ACK stalls"
+          }
+        }
+      }
+    },
+    "network.addresses": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Addresses and access point"
+          }
+        }
+      }
+    },
+    "network.autoneg": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Autonegotiation"
+          }
+        }
+      }
+    },
+    "network.bssid": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Access point BSSID"
+          }
+        }
+      }
+    },
+    "network.channel": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wi-Fi channel"
+          }
+        }
+      }
+    },
+    "network.connect_max": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Slowest connection establishment"
+          }
+        }
+      }
+    },
+    "network.connect_time": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last connection establishment"
+          }
+        }
+      }
+    },
+    "network.connected": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collector connected at sample"
+          }
+        }
+      }
+    },
+    "network.connections": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collector connections this boot"
+          }
+        }
+      }
+    },
+    "network.counters": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Counters and delivery timing"
+          }
+        }
+      }
+    },
+    "network.dns": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DNS servers"
+          }
+        }
+      }
+    },
+    "network.duplex": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Duplex"
+          }
+        }
+      }
+    },
+    "network.ethernet_link": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ethernet carrier"
+          }
+        }
+      }
+    },
+    "network.events": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recent link events"
+          }
+        }
+      }
+    },
+    "network.export": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export diagnostic snapshot"
+          }
+        }
+      }
+    },
+    "network.gateway": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gateway"
+          }
+        }
+      }
+    },
+    "network.history": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Network history"
+          }
+        }
+      }
+    },
+    "network.ip": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "IPv4 address"
+          }
+        }
+      }
+    },
+    "network.last_error": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last recorded failure"
+          }
+        }
+      }
+    },
+    "network.mask": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Netmask"
+          }
+        }
+      }
+    },
+    "network.minimum": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lowest sampled signal this boot"
+          }
+        }
+      }
+    },
+    "network.note": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Passive snapshots, normally every five minutes. Counters reset at boot. ACK gaps include collector storage delays and are not network RTT. Unavailable NIC error counters do not establish an error-free link. Event wall times are estimated from the sample clock."
+          }
+        }
+      }
+    },
+    "network.overwritten": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Older events overwritten"
+          }
+        }
+      }
+    },
+    "network.path": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collector socket interface"
+          }
+        }
+      }
+    },
+    "network.peer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Collector peer"
+          }
+        }
+      }
+    },
+    "network.queue_peak": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Highest sampled queue depth"
+          }
+        }
+      }
+    },
+    "network.route": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Default route"
+          }
+        }
+      }
+    },
+    "network.rssi": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wi-Fi signal"
+          }
+        }
+      }
+    },
+    "network.rx": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TLS plaintext bytes read"
+          }
+        }
+      }
+    },
+    "network.sample_failures": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sampling failures"
+          }
+        }
+      }
+    },
+    "network.samples": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wi-Fi samples"
+          }
+        }
+      }
+    },
+    "network.speed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Negotiated speed"
+          }
+        }
+      }
+    },
+    "network.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Network diagnostics"
+          }
+        }
+      }
+    },
+    "network.tx": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TLS plaintext bytes written"
+          }
+        }
+      }
+    },
+    "network.weak_samples": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Samples at or below −75 dBm"
+          }
+        }
+      }
+    },
+    "network.wifi_drops": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wi-Fi disconnects this boot"
+          }
+        }
+      }
+    },
+    "network.wifi_reason": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last Wi-Fi reason code"
+          }
+        }
+      }
+    },
+    "network.wifi_link": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Wi-Fi associated"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

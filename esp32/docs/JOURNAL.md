@@ -198,7 +198,7 @@ python3 tools/ota.py --device observer.example.invalid journal \
 ```
 
 Readout is newest-first. `--json` includes all fields; decimal strings preserve
-64-bit integers. `/journal` accepts authenticated POSTs with `life\n<cursor>`, `reception\n<cursor>` or
+64-bit integers. `/journal` accepts authenticated POSTs with `life\n<cursor>`, `reception\n<cursor>`, `network\n<cursor>` or
 `health\n<cursor>` bodies, using the `/ota` single-use nonce and a distinct
 `navfeeder-journal-v1\n` HMAC domain. Cursor zero starts at the newest record;
 subsequent cursors are exclusive sequence bounds, eight rows per page. Export

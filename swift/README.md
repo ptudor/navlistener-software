@@ -40,6 +40,15 @@ receipt gaps and reboots; individual samples retain source UTC and verification.
 History is bounded by collector startup/current audience policy, even when older
 rows remain stored. It does not read the device's local journal.
 
+In direct collector mode, the separate **Network diagnostics** card shows passive Wi-Fi and Ethernet
+link data, the collector connection path, recent transitions, native errors and
+boot-scoped counters. Expand addresses or detailed counters when troubleshooting,
+or export the sample as JSON with its observer, session and time provenance.
+**Network history** adds RSSI, Wi-Fi disconnect and collector connection plots
+with full sample details.
+Unknown NIC error counters remain unavailable. See the
+[network troubleshooting guide](../docs/NETWORK-DIAGNOSTICS.md).
+
 History stays in memory, is limited to 5,000 displayed samples, and is discarded
 when its selection retires or access fails. Each page rechecks the collector's
 grant and validates its receiver, audience, bounds and revision. The sample table

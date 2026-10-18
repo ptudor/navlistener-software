@@ -1,11 +1,13 @@
 import Foundation
 
 enum SensorMetric: String, CaseIterable, Identifiable, Sendable {
-    case temperature, humidity, pressure, phase
+    case temperature, humidity, pressure, phase, networkRSSI, networkDisconnects, networkConnections
     var id: String { rawValue }
-    var kind: String { self == .phase ? "timing" : "environment" }
+    var kind: String {
+        switch self { case .phase: "timing"; case .networkRSSI, .networkDisconnects, .networkConnections: "network"; default: "environment" }
+    }
     var unit: String {
-        switch self { case .temperature: "°C"; case .humidity: "%"; case .pressure: "Pa"; case .phase: "ns" }
+        switch self { case .temperature: "°C"; case .humidity: "%"; case .pressure: "Pa"; case .phase: "ns"; case .networkRSSI: "dBm"; case .networkDisconnects, .networkConnections: "" }
     }
     var title: String {
         switch self {
@@ -13,6 +15,9 @@ enum SensorMetric: String, CaseIterable, Identifiable, Sendable {
         case .humidity: String(localized: "history.humidity")
         case .pressure: String(localized: "history.pressure")
         case .phase: String(localized: "history.phase")
+        case .networkRSSI: String(localized: "network.rssi")
+        case .networkDisconnects: String(localized: "network.wifi_drops")
+        case .networkConnections: String(localized: "network.connections")
         }
     }
     var gapSeconds: Double { self == .phase ? 5 : 660 }
@@ -22,6 +27,9 @@ enum SensorMetric: String, CaseIterable, Identifiable, Sendable {
         case .humidity: sample.details?.environment?.humidityPercent
         case .pressure: sample.details?.environment?.pressurePa.map(Double.init)
         case .phase: sample.details?.timing?.rtcMinusGNSSPhaseNS
+        case .networkRSSI: sample.details?.network?.wifi?.rssiDBM.map(Double.init)
+        case .networkDisconnects: sample.details?.network?.counters?["wifi_disconnects"].map(Double.init)
+        case .networkConnections: sample.details?.network?.counters?["collector_connections"].map(Double.init)
         }
         return value.flatMap { $0.isFinite ? $0 : nil }
     }

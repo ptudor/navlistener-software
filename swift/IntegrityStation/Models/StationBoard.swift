@@ -13,10 +13,13 @@ struct StationBoard: Codable, Sendable {
     var reception: BoardSample? = nil
     var receptionStale: Bool? = nil
     var receptionEvents: [BoardSample]? = nil
+    var network: BoardSample? = nil
+    var networkStale: Bool? = nil
     let lastInterference: BoardInterference?
 
     enum CodingKeys: String, CodingKey {
-        case latest, stale, timing, update, reception
+        case latest, stale, timing, update, reception, network
+        case networkStale = "network_stale"
         case receptionStale = "reception_stale"
         case receptionEvents = "reception_events"
         case updateStale = "update_stale"
@@ -92,9 +95,10 @@ struct BoardDetails: Codable, Sendable {
     var update: BoardUpdate? = nil
     var reception: ReceptionAssessment? = nil
     var receptionEvent: ReceptionAssessment? = nil
+    var network: BoardNetwork? = nil
 
     enum CodingKeys: String, CodingKey {
-        case version, reason, environment, rtc, atecc, eeprom, resources, receiver, firmware, timing, update, reception
+        case version, reason, environment, rtc, atecc, eeprom, resources, receiver, firmware, timing, update, reception, network
         case receptionEvent = "reception_event"
         case uptimeMS = "uptime_ms"
         case eventCount = "event_count"

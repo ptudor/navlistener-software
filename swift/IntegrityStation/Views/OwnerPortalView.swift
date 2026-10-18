@@ -272,7 +272,11 @@ private struct PortalHistoryView: View {
     @State private var run = UUID()
     var body: some View {
         InstrumentCard("history.title", systemImage: "chart.xyaxis.line") {
-            Picker("history.measurement", selection: $metric) { ForEach(SensorMetric.allCases) { Text($0.title).tag($0) } }
+            // The portal has its own metric API; network history currently uses
+            // the direct collector endpoint, not the portal's sensor mapping.
+            Picker("history.measurement", selection: $metric) {
+                ForEach(SensorMetric.allCases.filter { $0.kind != "network" }) { Text($0.title).tag($0) }
+            }
             Picker("history.window", selection: $hours) { Text("history.hour").tag(1); Text("history.six_hours").tag(6); Text("history.day").tag(24); Text("history.week").tag(168) }
             Button("action.refresh") { operation?.cancel(); operation = Task { await load() } }.disabled(loading)
             if loading { ProgressView() }
