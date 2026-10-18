@@ -410,7 +410,7 @@ CREATE TABLE IF NOT EXISTS observer_samples (
     publish_signals       TEXT[] NOT NULL DEFAULT '{}',
     policy_revision       TEXT   NOT NULL DEFAULT 'legacy-private-v1',
     sample_time TIMESTAMPTZ, -- NULL if the feeder had no accepted UTC stamp
-    kind TEXT NOT NULL CHECK (kind IN ('environment', 'timing')),
+    kind TEXT NOT NULL CHECK (kind IN ('environment', 'timing', 'network')),
     raw BYTEA NOT NULL,      -- original ObserverDetails wire body
     data JSONB NOT NULL,     -- decoded units, validity, uptime and clock metadata
     decoder_ver TEXT,
@@ -427,6 +427,18 @@ ALTER TABLE observer_samples ADD COLUMN IF NOT EXISTS manufacturer_authority_id 
 ALTER TABLE observer_samples ADD COLUMN IF NOT EXISTS operational_authority_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE observer_samples ADD COLUMN IF NOT EXISTS authority_evidence JSONB NOT NULL DEFAULT '{}';
 ALTER TABLE observer_samples ADD COLUMN IF NOT EXISTS commissioning_fingerprint TEXT NOT NULL DEFAULT '';
+-- Replace the earlier two-kind check only once, including on hypertable chunks.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint
+               WHERE conrelid = 'observer_samples'::regclass
+                 AND conname = 'observer_samples_kind_check'
+                 AND position('network' in pg_get_constraintdef(oid)) = 0) THEN
+        ALTER TABLE observer_samples DROP CONSTRAINT observer_samples_kind_check;
+        ALTER TABLE observer_samples ADD CONSTRAINT observer_samples_kind_check
+            CHECK (kind IN ('environment', 'timing', 'network'));
+    END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS idx_observer_samples_source_time
     ON observer_samples (source_id, kind, received_at DESC);
 CREATE INDEX IF NOT EXISTS idx_observer_samples_org_time

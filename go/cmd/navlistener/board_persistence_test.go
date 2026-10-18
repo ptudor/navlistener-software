@@ -29,6 +29,14 @@ func TestBoardPersistenceMapping(t *testing.T) {
 	if saved.Board.Kind != "environment" || saved.Board.SampleTime == nil || !saved.Board.SampleTime.Equal(f.Recv) {
 		t.Fatal("sample stamp or kind lost")
 	}
+	f.Details.Network = &ingest.BoardNetwork{EventTotal: 7}
+	saved = frameForPersistence(f)
+	if saved.Board.Kind != "network" || string(saved.Raw) != string(f.Bytes) || saved.Session != "boot" {
+		t.Fatal("network provenance lost")
+	}
+	if err := json.Unmarshal(saved.Board.Data, &d); err != nil || d.Network == nil || d.Network.EventTotal != 7 {
+		t.Fatal("network counters lost", err)
+	}
 }
 
 func TestRFPersistenceMapping(t *testing.T) {

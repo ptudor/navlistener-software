@@ -125,7 +125,7 @@ func (s *Store) CaptureEventEvidence(ctx context.Context, collectorID string, no
 // query can use the (source_id, kind, time) indexes.
 var (
 	rfKinds    = []string{"reception", "jamming", "combined", "solution"}
-	boardKinds = []string{"environment", "timing"}
+	boardKinds = []string{"environment", "timing", "network"}
 )
 
 func (s *Store) captureOne(ctx context.Context, collectorID string, e pendingEvidence, now time.Time, p EvidencePolicy) (bool, error) {

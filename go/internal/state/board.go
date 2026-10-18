@@ -35,6 +35,8 @@ type StationBoard struct {
 	Stale                bool               `json:"stale"`
 	LastInterference     *BoardEventContext `json:"last_interference,omitempty"`
 	Timing               *BoardSample       `json:"timing,omitempty"`
+	Network              *BoardSample       `json:"network,omitempty"`
+	NetworkStale         bool               `json:"network_stale"`
 	Update               *BoardSample       `json:"update,omitempty"`
 	UpdateStale          bool               `json:"update_stale"`
 	TimingStale          bool               `json:"timing_stale"`
@@ -51,6 +53,7 @@ type boardStation struct {
 	last                 BoardSample // ordering across independently paced board/timing records
 	update               *BoardSample
 	timing               *BoardSample
+	network              *BoardSample
 	event                *BoardEventContext
 	reception            *BoardSample
 	receptionPower       *BoardSample
@@ -95,6 +98,7 @@ func (s *Store) applyBoard(f *ingest.RawFrame) {
 	if old.last.Session != f.Session {
 		old.latest = nil
 		old.timing = nil
+		old.network = nil
 		old.update = nil
 		old.event = nil
 		old.reception = nil
@@ -102,6 +106,13 @@ func (s *Store) applyBoard(f *ingest.RawFrame) {
 		old.snapshot = nil
 	}
 	old.last = sample
+	if f.Details.Network != nil {
+		copy := sample
+		old.network = &copy
+		if f.Details.Environment == nil && f.Details.Timing == nil && f.Details.Resources == nil && f.Details.Receiver == nil && f.Details.Update == nil {
+			return
+		}
+	}
 	s.integrityBoard(f, sample.ReceivedAt)
 	if f.Details.Reception != nil {
 		copy := sample
@@ -193,6 +204,7 @@ func (s *Store) FeedStationBoards(now time.Time) map[string]StationBoard {
 			return sample == nil || now.Sub(sample.ReceivedAt) > after || (sample.SampleTime != nil && now.Sub(*sample.SampleTime) > after)
 		}
 		out[id] = StationBoard{Latest: st.latest, Stale: stale(st.latest, 11*time.Minute), LastInterference: st.event,
+			Network: st.network, NetworkStale: stale(st.network, 11*time.Minute),
 			Reception: st.reception, ReceptionStale: stale(st.reception, 15*time.Second), ReceptionEvents: append([]BoardSample(nil), st.receptionEvents...), Snapshot: st.snapshot,
 			ReceptionPower: st.receptionPower, ReceptionPowerStale: stale(st.receptionPower, 15*time.Second),
 			ReceptionPowerEvents: append([]BoardSample(nil), st.receptionPowerEvents...),

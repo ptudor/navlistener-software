@@ -210,6 +210,10 @@ var (
 		Name: "navlistener_push_errors_total",
 		Help: "Push connection errors, by observer and kind.",
 	}, []string{"observer", "kind"})
+	PushDisconnectsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "navlistener_push_disconnects_total",
+		Help: "Feeder streams ending on a read failure, by observer and reason (idle_timeout, eof, read_error).",
+	}, []string{"observer", "reason"})
 
 	// Serve-tier self-observability. The read tier is the daemon's
 	// reason to exist, and before these collectors it emitted nothing: a feed

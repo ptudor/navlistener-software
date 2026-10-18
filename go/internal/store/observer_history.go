@@ -80,8 +80,8 @@ func (q ObserverSampleQuery) Validate() error {
 	if !identity.ValidOpaqueObserverID(q.Observer) || strings.ContainsRune(q.Observer, 0) || len(q.Observer) > ObserverHistoryMaxIDBytes {
 		return fmt.Errorf("observer must be nonempty UTF-8, without NUL, at most %d bytes", ObserverHistoryMaxIDBytes)
 	}
-	if q.Kind != "environment" && q.Kind != "timing" {
-		return fmt.Errorf("kind must be environment or timing")
+	if q.Kind != "environment" && q.Kind != "timing" && q.Kind != "network" {
+		return fmt.Errorf("kind must be environment, timing or network")
 	}
 	if q.Since.IsZero() || q.Until.IsZero() || q.Since.After(q.Until) || q.Until.Sub(q.Since) > ObserverHistoryMaxWindow {
 		return fmt.Errorf("history window must be ordered and at most 30 days")

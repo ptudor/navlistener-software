@@ -71,7 +71,7 @@ an ordinary empty window through `history_limited`.
 | Parameter | Meaning and bounds |
 | --- | --- |
 | `observer` | Required opaque receiver ID; nonempty UTF-8, no NUL, maximum 4096 bytes. |
-| `kind` | `environment` (default) or `timing`. |
+| `kind` | `environment` (default), `timing` or `network`. |
 | `since` | Inclusive collector receipt-time lower bound, RFC3339 with optional fractional seconds; defaults to one hour before `until`. |
 | `until` | Inclusive receipt-time upper bound, RFC3339; defaults to now, future values clamp to now. |
 | `limit` | Integer 1–500; defaults to 100. |
@@ -133,7 +133,11 @@ An example response, with the revision abbreviated for readability:
 object, with its original units, validity flags, missing fields, and nulls.
 `environment` is the historian's general non-timing board-report category;
 it can also contain resource, reception, or update reports. It does not promise
-that every sample has an `environment` object. Timing has its own category.
+that every sample has an `environment` object. Timing and network diagnostics
+have their own categories. Network samples preserve `details.network`, including
+boot-scoped counters and the recent event window; use session plus event sequence
+to deduplicate overlapping windows. Reboots start a new counter baseline. The
+sample's UTC, uptime and collector receipt time remain distinct during replay.
 
 `received_at` is the collector receipt time and drives the query window.
 `sample_time` is nullable feeder UTC, not a substitute receipt timestamp.

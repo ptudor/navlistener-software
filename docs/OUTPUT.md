@@ -250,6 +250,14 @@ report as interference context. `board.timing` carries independently paced GNSS
 and RTC pulse measurements, with its own `timing_stale` flag. Public views exclude
 board telemetry.
 
+Independently paced network reports appear as `board.network.details.network`,
+with `board.network_stale` after eleven minutes. They include passive link and
+collector diagnostics, boot-scoped counters, and the last eight transitions.
+They do not overwrite `board.latest`, refresh GNSS signal health, or appear in
+public projections. Historical queries use `observer-samples?kind=network` with
+the same authorization and receipt provenance as sensor history. See
+[network telemetry](OBSERVER-TELEMETRY.md#network-diagnostics-tag-22-version-1).
+
 Reception reports are also independently paced. `board.reception` contains the
 latest availability result in `details.reception` and the collector's independent
 interpretation in `collector_reception`; `board.reception_stale` becomes true

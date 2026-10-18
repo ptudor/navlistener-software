@@ -114,6 +114,9 @@ func populatePersistence(saved *store.NavFrame, f *ingest.RawFrame) {
 		if f.Details.Timing != nil {
 			kind = "timing"
 		}
+		if f.Details.Network != nil {
+			kind = "network"
+		}
 		data, err := json.Marshal(f.Details)
 		if err != nil {
 			panic(err)

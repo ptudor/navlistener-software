@@ -1167,8 +1167,14 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 		ft, payload, err := wire.ReadFrame(frames)
 		if err != nil {
 			if !errors.Is(err, os.ErrDeadlineExceeded) {
+				reason := "read_error"
+				if errors.Is(err, io.EOF) {
+					reason = "eof"
+				}
+				metrics.PushDisconnectsTotal.WithLabelValues(observer, reason).Inc()
 				p.log.Info("push feeder disconnected", "observer", observer, "error", err)
 			} else {
+				metrics.PushDisconnectsTotal.WithLabelValues(observer, "idle_timeout").Inc()
 				p.log.Warn("push feeder idle timeout", "observer", observer)
 			}
 			return
