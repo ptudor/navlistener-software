@@ -16,6 +16,57 @@ independent absolute UTC comparison. See [RTC service](../esp32/docs/RTC-SERVICE
 
 ## Reporting policy
 
+### Network diagnostics (tag 22, version 1)
+
+Network health uses its own low-priority ObserverDetails report. It observes the
+existing links and collector traffic, with no scans, pings, speed tests or extra
+connections. The producer samples link attributes every ten seconds, reports
+every five minutes when stable, and coalesces changes to at most one report per
+minute. The first report waits fifteen seconds for startup. Counters and the
+eight most recent events survive reconnections within a boot. They are scoped
+to the report's GNF1 session, not lifetime device counters.
+
+The fixed 448-byte tag body uses big-endian integers. Reserved bytes are zero.
+`common/network_health.h` defines the wire enums. The C producer and Go decoder
+share `testdata/network_health_v1.hex` as a contract fixture.
+
+| Offset | Contents |
+|---|---|
+| 0 | Version U8 = 1 |
+| 1 | Flags U8: Wi-Fi configured, Ethernet present, Wi-Fi associated, Wi-Fi IPv4, Ethernet link, Ethernet IPv4, collector connected, collector via tunnel (bits 0–7) |
+| 2–3 | Default interface, collector socket interface: 0 unknown, 1 Wi-Fi, 2 Ethernet, 3 tunnel, 4 other |
+| 4–7 | RSSI I8 dBm, boot minimum RSSI I8 dBm, primary channel U8, secondary channel U8 (0 none, 1 above, 2 below) |
+| 8–17 | Ethernet speed U16 Mbps (0 unknown); duplex U8 (0 unknown, 1 half, 2 full); autonegotiation U8 (0 unknown, 1 off, 2 on); BSSID six bytes |
+| 18 | Validity U16: current RSSI/AP, minimum RSSI, Wi-Fi IPv4, Ethernet IPv4, DNS (bits 0–4) |
+| 20 | Link sample uptime U64 ms |
+| 28–35 | Total event sequence U32; overwritten event count U32 |
+| 36–103 | Seventeen U32 counters in `NH_COUNTERS` order: Wi-Fi disconnects/associations, Ethernet ups/downs, Wi-Fi/Ethernet address events, IP losses, collector attempts/connections/disconnects, DNS/TCP/TLS/handshake failures, ACK stalls, read/write failures |
+| 104–115 | Last Wi-Fi disconnect reason U16, reserved U16, disconnect uptime U64 ms |
+| 116–135 | Last error kind/interface U8 each, reserved U16, native code/detail I32 each, error uptime U64 ms |
+| 136–163 | Connected-since U64 ms, last advancing ACK uptime U64 ms (0 unavailable), maximum outstanding ACK gap U32 ms, last/max connection establishment duration U32 ms each |
+| 164–187 | TLS plaintext bytes written/read and DATA records sent (including replay), U64 each |
+| 188–223 | Wi-Fi address/netmask/gateway, Ethernet address/netmask/gateway, two DNS addresses, collector peer: IPv4 network-order octets; zero means unavailable |
+| 224–239 | Queue high-water U32 records, dropped U64 records, current queued U32 records |
+| 240–255 | Weak RSSI sample count U32 (≤ −75 dBm), total RSSI samples U32, sample failures U32, event count U8 (0–8), three reserved bytes |
+| 256–447 | Eight event slots, oldest first: uptime U64 ms, kind U8, interface U8, RSSI I8 (127 unknown), flags U8, native code I32, detail I32, sequence U32. Unused slots are zero. |
+
+The JSON projection keeps unsupported Wi-Fi retry and Ethernet frame-error
+counters `null`. A null value does not mean zero errors. The W5500 port is
+10/100 Mbps; its SPI clock is a separate bus speed. No current firmware driver
+provides the NIC error counters this report would need. RSSI samples describe
+the associated AP; they do not measure channel utilization or interference.
+The −75 dBm bucket is a diagnostic count, not a GNSS or network alarm threshold.
+
+ACK gaps include collector persistence delays and are **not network RTT**.
+Byte counts are plaintext accepted by/read from TLS, not physical interface
+traffic, and record counts include replay. Interface selection distinguishes
+the current default route from the already-open collector socket. IP addresses
+are IPv4-only in this version. SSIDs, credentials and packet contents are not
+included. Like other board telemetry, network details are restricted to
+authorized audiences; public station projections exclude them.
+
+### Environmental reporting
+
 The board task samples temperature, humidity and pressure every 30 seconds.
 It queues a complete report at startup, at a five-minute check-in, or when a
 measurement has changed from the last queued report by at least:

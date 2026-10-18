@@ -40,6 +40,7 @@ type ObserverDetails struct {
 	ATECC          *BoardATECC     `json:"atecc,omitempty"`
 	EEPROM         *BoardEEPROM    `json:"eeprom,omitempty"`
 	Resources      *BoardResources `json:"resources,omitempty"`
+	Network        *BoardNetwork   `json:"network,omitempty"`
 	Receiver       *BoardReceiver  `json:"receiver,omitempty"`
 	Firmware       string          `json:"firmware,omitempty"`
 	Update         *BoardUpdate    `json:"update,omitempty"`
@@ -128,6 +129,12 @@ func decodeObserverDetails(b []byte) (*ObserverDetails, error) {
 		v := b[off : off+n]
 		off += n
 		switch tag {
+		case 22:
+			var err error
+			d.Network, err = decodeNetwork(v, d.UptimeMS)
+			if err != nil {
+				return nil, err
+			}
 		case 17, 18:
 			sample, err := reception.DecodeSample(v)
 			if err != nil {
