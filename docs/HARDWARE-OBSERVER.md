@@ -1646,7 +1646,7 @@ against the hardware repository's netlist.
 | 16, 17 | `ESP_UART_CTS_N`, `ESP_UART_RTS_N` | COM2 flow control, left unconfigured until SBF support enables it on both ends |
 | 18 | `BRIGHT_BUTTON` | Preset buttons on the card (SW3) and the panel |
 | 39 | `HUM_INT_N` | HDC2080 interrupt, not enabled |
-| 41 | `PWR_ALERT_N` | INA3221 Warning and Critical; the rail samples read and clear the latched flags |
+| 41 | `PWR_ALERT_N` | INA3221 Warning and Critical, open drain with R107 to `3V3_SENS`; the falling edge wakes the board task, which reads Mask/Enable to name the rail and limit and release the latched line, and every pass reads it again while the line stays low |
 
 The shared bus adds `0x1F` (U47, the LDL1117 spreader's MCP9808), `0x27` (HIH8121) and `0x44`
 (SHT35) to the addresses the other boards use; it has no `0x24`, `0x46`, `0x68` or `0x76`

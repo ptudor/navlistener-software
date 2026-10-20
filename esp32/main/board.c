@@ -100,6 +100,12 @@ static observer_rtc_part_t rtc_part;
 static bool thermocouple_listed, imu_listed, barometer_listed, magnetometer_listed, rails_listed;
 // The MCP23008 is listed and the board row has its interrupt pin; cleared if it cannot start.
 static bool expander_listed;
+// The INA3221's alert line reaches its own pin (the P3's PWR_ALERT_N on GPIO41) rather than the
+// expander: its falling edge wakes the board task, which reads and releases the latched flags.
+static bool rail_alert_direct;
+static TaskHandle_t board_task_handle;
+// The board task's wait between passes, which a PWR_ALERT_N edge cuts short.
+#define BOARD_PASS_MS 500
 // The row's regulator-spreader MCP9808 is listed at its address: the Wi-Fi throttle runs, from
 // the board task alone (regulator_poll).
 static bool regulator_listed;
@@ -267,6 +273,7 @@ void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_
     environment_configure(&parts);
     expander_listed = listed_with_pins(CAT_IO_EXPANDER, IO_MCP23008, board && board->exp_int_n >= 0,
                                        "MCP23008 I/O expander");
+    rail_alert_direct = rails_listed && board->pwr_alert_n >= 0;
     thermocouple_listed = listed_with_pins(CAT_SENSOR, SENSOR_THERMOCOUPLE_MAX31856,
                                            board && board->tc_sck >= 0, "MAX31856 thermocouple converter");
     imu_listed = listed_with_pins(CAT_IMU, IMU_ICM45686, board && board->imu_int1 >= 0 && board->imu_int2 >= 0,
@@ -789,6 +796,30 @@ static void rail_alerts_log(uint16_t mask_enable, int64_t now)
              rail_names(a.critical, critical, sizeof critical), rail_names(a.warning, warning, sizeof warning),
              a.summation ? ", shunt-voltage sum" : "", flags);
 }
+// The direct alert line's falling edge: the board task reads the flags on its next pass, now.
+static void IRAM_ATTR rail_alert_isr(void *arg)
+{
+    (void)arg;
+    BaseType_t woken = pdFALSE;
+    if (board_task_handle) vTaskNotifyGiveFromISR(board_task_handle, &woken);
+    portYIELD_FROM_ISR(woken);
+}
+// The handler goes on once the board task exists. Without it the line is still read at every
+// pass, the alert latched until then, so only the wake is lost.
+static void rail_alert_start(void)
+{
+    if (!rail_alert_direct) return;
+    const int pin = board->pwr_alert_n;
+    esp_err_t err = gpio_install_isr_service(0);
+    if (err == ESP_ERR_INVALID_STATE) err = ESP_OK; // another driver installed it
+    if (err == ESP_OK) err = gpio_set_intr_type(pin, GPIO_INTR_NEGEDGE);
+    if (err == ESP_OK) err = gpio_isr_handler_add(pin, rail_alert_isr, NULL);
+    if (err != ESP_OK)
+        ESP_LOGW(TAG, "PWR_ALERT_N interrupt on GPIO%d unavailable (%s); the line is read every %d ms instead",
+                 pin, esp_err_to_name(err), BOARD_PASS_MS);
+    else
+        ESP_LOGI(TAG, "PWR_ALERT_N on GPIO%d: falling-edge interrupt reads the INA3221's latched alerts", pin);
+}
 // PWR_ALERT_N went low: reading Mask/Enable decodes the alert and releases the latched line.
 static int64_t rail_alert_failed_ms = INT64_MIN / 2; // never
 static void rail_alert_read(int64_t now)
@@ -1064,6 +1095,8 @@ static void board_task(void *arg)
         // The expander: configured again while it is not, and the INA3221's alert read (which
         // releases its latched line) when PWR_ALERT_N has gone low.
         if (expander_listed && io_expander_poll() && rails_listed) rail_alert_read(now);
+        // The direct line stays low while an alert is latched, whether or not its edge woke us.
+        if (rail_alert_direct && gpio_get_level(board->pwr_alert_n) == 0) rail_alert_read(now);
         unsigned requested = atomic_load(&brightness);
         bool brightness_changed = requested != applied_brightness;
         applied_brightness = requested;
@@ -1126,7 +1159,8 @@ static void board_task(void *arg)
             io_expander_log_status("(hourly)");
             next_expander_report = now + BOARD_STACK_REPORT_MS;
         }
-        vTaskDelay(pdMS_TO_TICKS(500));
+        // A falling PWR_ALERT_N ends the wait early.
+        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(BOARD_PASS_MS));
     }
 }
 #if PANEL_INPUTS
@@ -1210,14 +1244,16 @@ static void panel_input_task(void *arg)
 #endif
 // The board's read-only pins, so none is ever left floating or driven: the console port's
 // VBUS sense (a pull-down reads low on a board that leaves the pin unwired), the expander's
-// interrupt (R94 pulls it up) and the receiver's RTK_STAT (pulled up so the lamp stays off
-// while the receiver is in reset or backup; a board that switches 3V3_GNSS off must release
-// this pull first, as the hardware contract requires of every receiver PIO).
+// interrupt (R94 pulls it up), the INA3221's own alert line (the P3's R107 pulls it up to
+// 3V3_SENS) and the receiver's RTK_STAT (pulled up so the lamp stays off while the receiver is
+// in reset or backup; a board that switches 3V3_GNSS off must release this pull first, as the
+// hardware contract requires of every receiver PIO).
 static esp_err_t board_inputs(void)
 {
     if (!board) return ESP_OK;
     const struct { int pin; gpio_pull_mode_t pull; } inputs[] = {
-        {board->console_vbus, GPIO_PULLDOWN_ONLY}, {board->exp_int_n, GPIO_FLOATING}, {board->rtk_stat, GPIO_PULLUP_ONLY},
+        {board->console_vbus, GPIO_PULLDOWN_ONLY}, {board->exp_int_n, GPIO_FLOATING}, {board->pwr_alert_n, GPIO_FLOATING},
+        {board->rtk_stat, GPIO_PULLUP_ONLY},
     };
     for (size_t i = 0; i < sizeof inputs / sizeof inputs[0]; i++) {
         if (inputs[i].pin < 0) continue;
@@ -1281,7 +1317,9 @@ esp_err_t observer_board_start(void)
     if (board && board->bright_button >= 0 && observer_board_lists(CAT_BUTTON, BUTTON_USER_2) &&
         xTaskCreate(panel_input_task, "panel_input", 3072, NULL, 4, NULL) != pdPASS) return ESP_ERR_NO_MEM;
 #endif
-    return xTaskCreate(board_task, "board", BOARD_TASK_STACK, NULL, 3, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
+    if (xTaskCreate(board_task, "board", BOARD_TASK_STACK, NULL, 3, &board_task_handle) != pdPASS) return ESP_ERR_NO_MEM;
+    rail_alert_start();
+    return ESP_OK;
 }
 #else
 void observer_board_set_brightness(unsigned percent) { (void)percent; }

@@ -343,7 +343,10 @@ limits per rail from the board row (`warn_ma` and `crit_ma`: +5V 1000/1300 mA, `
 350/500 mA, `3V3_SYS` 800/1000 mA, engineering values to be confirmed on the bench), set to
 latch until read and set again whenever the monitor is reconfigured after a `3V3_SENS`
 power cycle. A `PWR_ALERT_N` interrupt reads and logs which rail tripped which limit, and
-that read releases the line. Once a minute, and once after the first frame, the panel
+that read releases the line. The P3 has no expander: its `PWR_ALERT_N` reaches GPIO41
+directly, where a falling edge wakes the board task for the same read; each 500 ms pass
+also reads the flags while the line stays low, so an alert latched before the handler was
+installed is still seen. Once a minute, and once after the first frame, the panel
 refresh task rewrites the current frame while the expander samples the chain's serial
 output on GP0 before each clock: the first conclusive run adopts a 24-bit chain (the 162mm
 panel) or a 16-bit one (the 3900 mil board's on-board chain), and later runs log any

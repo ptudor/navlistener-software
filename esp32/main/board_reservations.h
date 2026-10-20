@@ -92,18 +92,20 @@
 // P3_RESET_DRV drives Q1, which pulls the receiver's reset low while GPIO13 is high;
 // R97 holds Q1 off, so the firmware leaves GPIO13 an input and the receiver runs.
 // ESP_UART_CTS_N and ESP_UART_RTS_N stay unconfigured until SBF support enables COM2 flow
-// control. TEMP_ALERT_N, HUM_INT_N and PWR_ALERT_N are open drain with pull-ups and are
-// read only by sampling the parts.
+// control. TEMP_ALERT_N, HUM_INT_N and PWR_ALERT_N are open drain with pull-ups. PWR_ALERT_N
+// (R107 to 3V3_SENS) interrupts on its falling edge; the other two are read only by sampling
+// the parts.
 #define NVF_PIN_P3_RESET_DRV  13
 #define NVF_PIN_P3_UART_CTS_N 16
 #define NVF_PIN_P3_UART_RTS_N 17
+#define NVF_PIN_P3_PWR_ALERT_N 41
 #define NVF_PINS_MOSAIC_P3 (NVF_PINS_COMMON | \
     NVF_PIN(2)  | /* BRIGHT_ADC trimmer wiper         */ \
     NVF_PIN(8)  | /* TEMP_ALERT_N, both MCP9808s      */ \
     NVF_PIN(14) | /* LED_SDI to the panel's chain     */ \
     NVF_PIN(18) | /* BRIGHT_BUTTON presets            */ \
     NVF_PIN(39) | /* HUM_INT_N                        */ \
-    NVF_PIN(41) | /* PWR_ALERT_N, INA3221 Warning and Critical */ \
+    NVF_PIN(NVF_PIN_P3_PWR_ALERT_N) | /* INA3221 Warning and Critical */ \
     NVF_PIN(NVF_PIN_P3_RESET_DRV) | NVF_PIN(NVF_PIN_P3_UART_CTS_N) | NVF_PIN(NVF_PIN_P3_UART_RTS_N))
 
 // Not pins on this part or consumed by the module: GPIO22-25 do not exist on the
@@ -177,6 +179,7 @@ typedef struct {
     bool panel_status_byte;     // the panel chain has a third driver: 24 bits, status, amber, green
     int console_vbus;           // the console port's VBUS, read as an input (pull-down: low where unwired)
     int exp_int_n;              // the MCP23008's interrupt, read as an input
+    int pwr_alert_n;            // the INA3221's alert line on its own pin (no expander): falling-edge interrupt
     int rtk_stat;               // the receiver's RTK_STAT, low while RTK is fixed
     int bright_adc, bright_button;
     int eth_sclk, eth_cs, eth_mosi, eth_miso;
@@ -190,7 +193,7 @@ typedef struct {
 #define NVF_BOARD_NEO_ROW {.model = BOARD_MODEL_NEO_A, .name = "NEO revision A", .intsat_id = INTSAT_NEO, \
     .family = "gnss-color-neo", .pins = NVF_PINS_NEO, .boot_steps_brightness = true, \
     .led_sdi = 14, .led_panel_sdi = NVF_NONE, .panel_status_byte = false, \
-    .console_vbus = NVF_NONE, .exp_int_n = NVF_NONE, .rtk_stat = NVF_NONE, \
+    .console_vbus = NVF_NONE, .exp_int_n = NVF_NONE, .pwr_alert_n = NVF_NONE, .rtk_stat = NVF_NONE, \
     .bright_adc = NVF_NONE, .bright_button = NVF_NONE, \
     .eth_sclk = NVF_NONE, .eth_cs = NVF_NONE, .eth_mosi = NVF_NONE, .eth_miso = NVF_NONE, \
     .tc_sck = NVF_NONE, .tc_mosi = NVF_NONE, .tc_miso = NVF_NONE, .tc_cs_n = NVF_NONE, .tc_drdy_n = NVF_NONE, \
@@ -206,7 +209,8 @@ typedef struct {
 #define NVF_BOARD_X20_ROW {.model = BOARD_MODEL_X20_A, .name = "X20 revision A", .intsat_id = INTSAT_X20, \
     .family = "gnss-color-zed-x20", .pins = NVF_PINS_ZED_X20, .boot_steps_brightness = false, \
     .led_sdi = NVF_NONE, .led_panel_sdi = 1, .panel_status_byte = true, \
-    .console_vbus = NVF_PIN_CONSOLE_VBUS, .exp_int_n = NVF_PIN_EXP_INT_N, .rtk_stat = NVF_PIN_RTK_STAT, \
+    .console_vbus = NVF_PIN_CONSOLE_VBUS, .exp_int_n = NVF_PIN_EXP_INT_N, .pwr_alert_n = NVF_NONE, \
+    .rtk_stat = NVF_PIN_RTK_STAT, \
     .bright_adc = 2, .bright_button = 18, \
     .eth_sclk = NVF_PIN_ETH_SCLK, .eth_cs = NVF_PIN_ETH_CS, .eth_mosi = NVF_PIN_ETH_MOSI, .eth_miso = NVF_PIN_ETH_MISO, \
     .tc_sck = NVF_NONE, .tc_mosi = NVF_NONE, .tc_miso = NVF_NONE, .tc_cs_n = NVF_NONE, .tc_drdy_n = NVF_NONE, \
@@ -215,7 +219,7 @@ typedef struct {
 #define NVF_BOARD_MAX_ROW {.model = BOARD_MODEL_MAX_A, .name = "MAX revision A", .intsat_id = INTSAT_MAX, \
     .family = "gnss-color-max", .pins = NVF_PINS_MAX, .boot_steps_brightness = false, \
     .led_sdi = 14, .led_panel_sdi = NVF_NONE, .panel_status_byte = false, \
-    .console_vbus = NVF_NONE, .exp_int_n = NVF_NONE, .rtk_stat = NVF_NONE, \
+    .console_vbus = NVF_NONE, .exp_int_n = NVF_NONE, .pwr_alert_n = NVF_NONE, .rtk_stat = NVF_NONE, \
     .bright_adc = 2, .bright_button = 18, \
     .eth_sclk = NVF_NONE, .eth_cs = NVF_NONE, .eth_mosi = NVF_NONE, .eth_miso = NVF_NONE, \
     .tc_sck = NVF_PIN_TC_SCK, .tc_mosi = NVF_PIN_TC_MOSI, .tc_miso = NVF_PIN_TC_MISO, .tc_cs_n = NVF_PIN_TC_CS_N, \
@@ -248,7 +252,7 @@ _Static_assert(NVF_P3_REGULATOR_RELEASE_CENTI_C < NVF_P3_REGULATOR_THROTTLE_CENT
 #define NVF_BOARD_P3_ROW {.model = BOARD_MODEL_P3_A, .name = "P3 revision A", .intsat_id = INTSAT_MOSAIC_P3, \
     .family = "gnss-color-mosaic-p3", .pins = NVF_PINS_MOSAIC_P3, .boot_steps_brightness = false, \
     .led_sdi = NVF_NONE, .led_panel_sdi = 14, .panel_status_byte = true, \
-    .console_vbus = NVF_NONE, .exp_int_n = NVF_NONE, .rtk_stat = NVF_NONE, \
+    .console_vbus = NVF_NONE, .exp_int_n = NVF_NONE, .pwr_alert_n = NVF_PIN_P3_PWR_ALERT_N, .rtk_stat = NVF_NONE, \
     .bright_adc = 2, .bright_button = 18, \
     .eth_sclk = NVF_NONE, .eth_cs = NVF_NONE, .eth_mosi = NVF_NONE, .eth_miso = NVF_NONE, \
     .tc_sck = NVF_NONE, .tc_mosi = NVF_NONE, .tc_miso = NVF_NONE, .tc_cs_n = NVF_NONE, .tc_drdy_n = NVF_NONE, \
@@ -264,5 +268,6 @@ _Static_assert(NVF_PIN_ON(NVF_PINS_NEO, 14) && NVF_PIN_ON(NVF_PINS_MAX, 14), "th
 _Static_assert(NVF_PIN_ON(NVF_PINS_MAX, 2) && NVF_PIN_ON(NVF_PINS_MAX, 18),
                "a MAX function pin is missing from its map");
 _Static_assert(NVF_PIN_ON(NVF_PINS_MOSAIC_P3, 2) && NVF_PIN_ON(NVF_PINS_MOSAIC_P3, 14) &&
-               NVF_PIN_ON(NVF_PINS_MOSAIC_P3, 18), "a P3 function pin is missing from its map");
+               NVF_PIN_ON(NVF_PINS_MOSAIC_P3, 18) && NVF_PIN_ON(NVF_PINS_MOSAIC_P3, NVF_PIN_P3_PWR_ALERT_N),
+               "a P3 function pin is missing from its map");
 #endif

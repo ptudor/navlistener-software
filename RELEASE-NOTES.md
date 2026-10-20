@@ -90,6 +90,9 @@
 - The P3's SHT35 and HIH8121 humidity sensors are driven when the manifest lists them:
   ObserverDetails tags 24 and 25 report each one's temperature and humidity as `sht3x` and
   `hih8121`, apart from the environment component, with the HIH8121's status bits.
+- On the P3, the INA3221's `PWR_ALERT_N` on GPIO41 interrupts on its falling edge: the
+  board task reads and logs which rail tripped which limit at once, rather than at the next
+  rail sample, and that read releases the latched line.
 
 Trusted rollout remains gated by commissioning and hardware acceptance in
 [Update operations](esp32/docs/UPDATE-OPERATIONS.md).
