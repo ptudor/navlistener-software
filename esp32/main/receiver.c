@@ -1,9 +1,14 @@
 // UART discovery is independent of EEPROM presence and network provisioning.
 #include "receiver.h"
 #include "ubx_probe.h"
+#include "sbf.h"
+#include "sbf_control.h"
+#include "sbf_status.h"
 #include <string.h>
 #include "sdkconfig.h"
+#include "driver/gpio.h"
 #include "driver/uart.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_task_wdt.h"
@@ -27,10 +32,11 @@
 static const char *TAG = "receiver";
 // The receiver the manifest lists, as MON-VER names it; only that model is configured.
 static const char *module;
-// A receiver this firmware does not speak (the P3's mosaic-G5): nothing is transmitted on its
-// port, and its bytes are counted but never given to the UBX parser, where a chance sync and
-// checksum match inside another protocol's stream would become a false record.
-static bool listen_only;
+// A Septentrio receiver (the P3's mosaic-G5) is spoken to in SBF on its own task; its bytes
+// never reach the UBX parser, where a chance sync and checksum match inside another protocol's
+// stream would become a false record.
+static bool sbf_mode;
+static receiver_sbf_pins_t sbf_pins = {.rts = -1, .cts = -1, .reset = -1};
 static atomic_uint s_ticks;
 static atomic_bool snapshot_requested;
 void receiver_request_snapshot(void) {atomic_store(&snapshot_requested,true);}
@@ -189,34 +195,168 @@ static void rx_task(void *arg)
     }
 }
 void receiver_set_module(const char *name) { module = name; }
-void receiver_set_listen_only(bool listen) { listen_only = listen; }
-// The listen-only reader: the same liveness and watchdog as rx_task, at the configured baud,
-// with no probing, polling or configuration.
-static void listen_task(void *arg)
+void receiver_set_sbf(const receiver_sbf_pins_t *pins) { sbf_mode = true; sbf_pins = *pins; }
+
+// The Septentrio path: COM2 at the receiver's default 115200 baud, RTS throughout and CTS once
+// the receiver confirms RTS|CTS (sbf_control.h), the reset line held low but for a recovery
+// pulse. The reader, whose buffer holds the largest block, is allocated only on this path.
+#define SBF_BAUD 115200
+static sbf_reader_t *sbf_reader;
+static sbf_status_t sbf_adapter;
+static sbf_control_t sbf_ctl;
+static sbf_setup_t sbf_identity;
+static bool sbf_status_known;
+static sbf_rx_status_t sbf_last_status;
+static void sbf_publish(void)
+{
+    taskENTER_CRITICAL(&health_lock);
+    snapshot = health;
+    taskEXIT_CRITICAL(&health_lock);
+}
+static void sbf_on_block(const uint8_t *block, size_t length, void *ctx)
+{
+    (void)ctx;
+    const int64_t now = esp_timer_get_time() / 1000;
+    sbf_control_block(&sbf_ctl, block, length, now);
+    if (sbf_status_feed(&sbf_adapter, &health, block, length, now)) sbf_publish();
+    sbf_setup_t setup;
+    sbf_rx_status_t status;
+    if (sbf_number(block) == SBF_RECEIVER_SETUP && sbf_receiver_setup(block, length, &setup) &&
+        memcmp(&setup, &sbf_identity, sizeof setup)) {
+        sbf_identity = setup;
+        ESP_LOGI(TAG, "receiver: %s (engine %s), firmware %s, serial %s%s", setup.product[0] ? setup.product : "unnamed",
+                 setup.name, setup.version, setup.serial,
+                 strncmp(setup.product, "mosaic-G5", 9) && strncmp(setup.name, "mosaic-G5", 9) ?
+                 "; not a mosaic-G5, the receiver the manifest lists" : "");
+    } else if (sbf_number(block) == SBF_RECEIVER_STATUS && sbf_receiver_status(block, length, &status)) {
+        const uint32_t watched = SBF_RXERROR_ANTENNA | SBF_RXERROR_CONGESTION;
+        if (!sbf_status_known || (status.rx_state ^ sbf_last_status.rx_state) & SBF_RXSTATE_ACTIVE_ANTENNA ||
+            (status.rx_error ^ sbf_last_status.rx_error) & watched)
+            ESP_LOGI(TAG, "receiver status: active antenna %s, antenna overcurrent %s, output congestion %s, CPU %u%%, up %lu s",
+                     status.rx_state & SBF_RXSTATE_ACTIVE_ANTENNA ? "sensed" : "not sensed",
+                     status.rx_error & SBF_RXERROR_ANTENNA ? "yes" : "no",
+                     status.rx_error & SBF_RXERROR_CONGESTION ? "yes" : "no", status.cpu_load,
+                     (unsigned long)status.uptime_s);
+        sbf_status_known = true;
+        sbf_last_status = status;
+    }
+}
+static void sbf_on_line(const char *line, void *ctx)
+{
+    (void)ctx;
+    if (!strncmp(line, "$R?", 3)) ESP_LOGW(TAG, "receiver refused a command: %s", line);
+    sbf_control_line(&sbf_ctl, line);
+}
+static void sbf_on_prompt(const char *prompt, void *ctx) { (void)ctx; (void)prompt; sbf_control_prompt(&sbf_ctl); }
+static int sbf_rts_threshold(void) { return UART_HW_FIFO_LEN(RX_UART) - 8; }
+// Carries out the control's actions until it has none for now.
+static void sbf_act(int64_t now)
+{
+    for (unsigned i = 0; i < 8; i++) {
+        const sbf_action_t a = sbf_control_poll(&sbf_ctl, now);
+        esp_err_t err = ESP_OK;
+        switch (a.kind) {
+        case SBF_ACTION_NONE:
+            return;
+        case SBF_ACTION_SEND:
+            // The TX ring takes the line whole, so a write never waits on the receiver.
+            if (uart_write_bytes(RX_UART, a.text, strlen(a.text)) < 0) err = ESP_FAIL;
+            break;
+        case SBF_ACTION_CTS_ON:
+            err = uart_set_hw_flow_ctrl(RX_UART, UART_HW_FLOWCTRL_CTS_RTS, sbf_rts_threshold());
+            ESP_LOGI(TAG, "COM2 RTS/CTS confirmed by the receiver; honoring CTS on GPIO%d", sbf_pins.cts);
+            break;
+        case SBF_ACTION_CTS_OFF:
+            err = uart_set_hw_flow_ctrl(RX_UART, UART_HW_FLOWCTRL_RTS, sbf_rts_threshold());
+            break;
+        case SBF_ACTION_RESET_ON:
+            ESP_LOGW(TAG, "receiver not answering commands; reset pulse %u of this boot on GPIO%d", sbf_ctl.resets,
+                     sbf_pins.reset);
+            err = gpio_set_level(sbf_pins.reset, 1);
+            break;
+        case SBF_ACTION_RESET_OFF:
+            err = gpio_set_level(sbf_pins.reset, 0);
+            break;
+        }
+        if (err != ESP_OK) ESP_LOGW(TAG, "receiver action %d failed: %s", a.kind, esp_err_to_name(err));
+    }
+}
+static void sbf_task(void *arg)
 {
     (void)arg;
     uint8_t buf[512];
-    uint32_t bytes = 0;
     int64_t next_log = 0;
+    unsigned configurations = 0;
+    sbf_reader_init(sbf_reader, sbf_on_block, sbf_on_line, sbf_on_prompt, NULL);
+    sbf_status_init(&sbf_adapter);
+    sbf_control_init(&sbf_ctl, sbf_pins.reset >= 0, esp_timer_get_time() / 1000);
     esp_task_wdt_add(NULL);
     for (;;) {
         esp_task_wdt_reset();
         atomic_fetch_add_explicit(&s_ticks, 1, memory_order_relaxed);
-        int n = uart_read_bytes(RX_UART, buf, sizeof buf, pdMS_TO_TICKS(100));
-        if (n > 0) bytes += (uint32_t)n;
-        // A snapshot request has nothing to poll here; the receiver status stays unavailable.
+        int n = uart_read_bytes(RX_UART, buf, sizeof buf, pdMS_TO_TICKS(50));
+        if (n > 0) sbf_reader_feed(sbf_reader, buf, (size_t)n);
+        // Each epoch is fresh within a second, so a snapshot request needs no poll.
         atomic_store(&snapshot_requested, false);
-        int64_t now = esp_timer_get_time() / 1000;
+        const int64_t now = esp_timer_get_time() / 1000;
+        sbf_act(now);
+        if (sbf_ctl.configurations != configurations) {
+            configurations = sbf_ctl.configurations;
+            ESP_LOGI(TAG, "receiver COM2 configured (%u time%s this boot, %u command error%s): SBF at 1 Hz",
+                     configurations, configurations == 1 ? "" : "s", sbf_ctl.command_errors,
+                     sbf_ctl.command_errors == 1 ? "" : "s");
+            if (sbf_ctl.supported_known && health.supported != sbf_ctl.supported) {
+                health.supported = sbf_ctl.supported;
+                sbf_publish();
+                ESP_LOGI(TAG, "receiver tracks constellations 0x%02x (UBX gnssId bits)", health.supported);
+            }
+        }
         if (now >= next_log) {
-            ESP_LOGI(TAG, "UART1 TX=GPIO%d RX=GPIO%d baud=%d bytes=%lu; listening only: this receiver's protocol is not decoded",
-                     RX_PIN_TX, RX_PIN_RX, CONFIG_NVF_RX_BAUD, (unsigned long)bytes);
-            next_log = now + 60000;
+            static const char *const states[] = {"starting", "configuring", "running", "waiting to retry", "resetting"};
+            ESP_LOGI(TAG, "UART1 TX=GPIO%d RX=GPIO%d RTS=GPIO%d CTS=GPIO%d baud=%d bytes=%lu SBF=%lu CRC errors=%lu "
+                     "scrambled epochs=%lu resets=%u %s%s",
+                     RX_PIN_TX, RX_PIN_RX, sbf_pins.rts, sbf_pins.cts, SBF_BAUD, (unsigned long)sbf_reader->bytes,
+                     (unsigned long)sbf_reader->blocks, (unsigned long)sbf_reader->crc_errors,
+                     (unsigned long)sbf_adapter.scrambled_epochs, sbf_ctl.resets, states[sbf_ctl.state],
+                     sbf_ctl.cts ? ", CTS honored" : "");
+            if (!sbf_reader->bytes) ESP_LOGW(TAG, "no UART bytes observed; check GNSS power and the COM2 path");
+            if (sbf_adapter.scrambled_epochs)
+                ESP_LOGW(TAG, "MeasEpoch scrambled: the receiver lacks the Measurement Availability permission");
+            if (health.satellites_valid)
+                ESP_LOGI(TAG, "tracked: GPS=%u SBAS=%u GAL=%u BDS=%u QZSS=%u GLO=%u NavIC=%u fix=%s",
+                         health.tracked[0], health.tracked[1], health.tracked[2], health.tracked[3], health.tracked[5],
+                         health.tracked[6], health.tracked[7], gnss_status_position_fresh(&health, now) ? "valid" : "unavailable");
+            next_log = now + 10000;
         }
     }
+}
+static esp_err_t sbf_start(void)
+{
+    if (sbf_pins.rts < 0 || sbf_pins.cts < 0) return ESP_ERR_INVALID_ARG;
+    sbf_reader = heap_caps_malloc_prefer(sizeof *sbf_reader, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!sbf_reader) return ESP_ERR_NO_MEM;
+    // Q1 off before anything else: the receiver runs unless a recovery pulse holds it.
+    if (sbf_pins.reset >= 0) {
+        gpio_set_level(sbf_pins.reset, 0);
+        const gpio_config_t reset = {.pin_bit_mask = 1ULL << sbf_pins.reset, .mode = GPIO_MODE_OUTPUT};
+        esp_err_t err = gpio_config(&reset);
+        if (err != ESP_OK) return err;
+    }
+    uart_config_t cfg = {.baud_rate = SBF_BAUD, .data_bits = UART_DATA_8_BITS, .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1, .flow_ctrl = UART_HW_FLOWCTRL_RTS, .rx_flow_ctrl_thresh = (uint8_t)sbf_rts_threshold(),
+        .source_clk = UART_SCLK_DEFAULT};
+    // An 8 KiB RX ring holds about two seconds of the 1 Hz output; the TX ring keeps writes from blocking.
+    esp_err_t err = uart_driver_install(RX_UART, 8192, 1024, 0, NULL, 0);
+    if (err == ESP_OK) err = uart_param_config(RX_UART, &cfg);
+    if (err == ESP_OK) err = uart_set_pin(RX_UART, RX_PIN_TX, RX_PIN_RX, sbf_pins.rts, sbf_pins.cts);
+    if (err != ESP_OK) return err;
+    return xTaskCreate(sbf_task, "rx", 4096, NULL, 7, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
 esp_err_t receiver_start(ubx_parser_t *parser)
 {
+    if (sbf_mode) return sbf_start();
     uart_config_t cfg = {.baud_rate = CONFIG_NVF_RX_BAUD, .data_bits = UART_DATA_8_BITS,
         .parity = UART_PARITY_DISABLE, .stop_bits = UART_STOP_BITS_1,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE, .source_clk = UART_SCLK_DEFAULT};
@@ -224,7 +364,6 @@ esp_err_t receiver_start(ubx_parser_t *parser)
     if (err != ESP_OK) return err;
     if ((err = uart_param_config(RX_UART, &cfg)) != ESP_OK) return err;
     if ((err = uart_set_pin(RX_UART, RX_PIN_TX, RX_PIN_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE)) != ESP_OK) return err;
-    if (listen_only) return xTaskCreate(listen_task, "rx", 4096, NULL, 7, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
     parser->observe = observe;
     return xTaskCreate(rx_task, "rx", 4096, parser, 7, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }

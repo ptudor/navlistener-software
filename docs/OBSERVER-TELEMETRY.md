@@ -504,6 +504,12 @@ Jamming: 0 unknown, 1 OK, 2 warning, 3 critical. Spoofing: 0 unknown/deactivated
 1 no indication, 2 indication, 3 multiple indications. This is receiver context,
 not a replacement for high-rate ReceptionData/JammingStats.
 
+On the P3 the mosaic-G5's SBF fills the same fields ([SBF-RECEIVER.md](../esp32/docs/SBF-RECEIVER.md)
+§6). Counts come from MeasEpoch, and the fix from PVTGeodetic. Both RF fields and their uptimes
+come from RFStatus: jamming is OK without detected interference, and with it warning while a fix
+holds and critical without one; spoofing is an indication when either authenticity flag is set.
+The receiver never reports multiple indications (3).
+
 ## ZED/X20 rail monitor (tag 16, version 1)
 
 Each environmental report carries tag 16 when the manifest lists the INA3221

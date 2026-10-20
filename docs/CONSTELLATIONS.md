@@ -147,8 +147,9 @@ policy and validation against the corresponding signal specification.
 ### 2.2 Septentrio — SBF raw-nav blocks
 
 The collector's TCP dial connector (`[[ingest]]`, `type = "sbf"`) reads SBF
-streams. The standalone C feeder currently implements only UBX input, the ESP32
-receiver path is UBX-specific, and GNF1 push rejects SBF feeds. See the
+streams. The standalone C feeder currently implements only UBX input, and GNF1 push
+rejects SBF feeds. The ESP32 configures and reads a P3's mosaic-G5 in SBF for its own
+receiver status ([SBF-RECEIVER.md](../esp32/docs/SBF-RECEIVER.md)) but forwards no SBF. See the
 [mosaic-G5 P3 integration proposal](proposals/OBSERVER-TIME-MOTION-AND-SEPTENTRIO.md#custom-mosaic-g5-p3-observer)
 for the remaining transport, telemetry and decoding work. SBF wraps
 the *already-de-interleaved* ICD nav bits (Septentrio does the word unpacking on the

@@ -31,9 +31,10 @@ supported substitute. Its drivers and partition table remain as legacy source.
   configures, the RTC, the environmental sensors, the ATECC, the Ethernet port, the panel
   buttons and the MAX's sensors. A board without a usable manifest naming a board this
   image knows runs nothing board-specific and logs that it may not have been configured.
-  On the P3 the firmware does not decode the mosaic-G5's SBF yet: it only listens on the
-  receiver's port, transmitting nothing to it, and drives the board's shared services
-  (panel, RTC, sensors, rail monitor and Wi-Fi uplink).
+  On the P3 the firmware speaks SBF to the mosaic-G5 on COM2, with RTS/CTS flow control and
+  the GPIO13 reset for recovery, and reads its blocks into the same receiver status the
+  u-blox boards fill ([docs/SBF-RECEIVER.md](docs/SBF-RECEIVER.md)); it drives the board's
+  shared services (panel, RTC, sensors, rail monitor and Wi-Fi uplink) as elsewhere.
   `NVF_BOARD_ASSEMBLY` also offers single-board test builds (NEO, ZED/X20, MAX or P3 only):
   they carry one board's drivers, run nothing board-specific on any other board, and
   install over the air only on their own board. Startup reads the 128-bit factory serial and manifest;

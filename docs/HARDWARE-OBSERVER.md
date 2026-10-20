@@ -625,8 +625,10 @@ and 25) and its regulator-spreader MCP9808, which throttles Wi-Fi transmit power
 ICM-45686 and MMC34160PJ (telemetry tags 11-13 in [OBSERVER-TELEMETRY.md](OBSERVER-TELEMETRY.md)).
 The ZED/X20's front panel is its only chain and takes a 24-bit frame with RTK and ATTENTION
 status; the P3 drives the same panel from GPIO14, without an RTK input. The P3's mosaic-G5
-speaks SBF, which this firmware does not decode yet: its port is only listened to, and nothing
-is transmitted to it (§7.11). The ZED/X20's MCP23008 expander, where listed, collects the
+speaks SBF: the firmware configures its COM2 with RTS/CTS flow control and reads PVT, time,
+measurement, visibility and RF status blocks into the same receiver status the u-blox boards
+fill, and recovers it with the GPIO13 reset ([SBF-RECEIVER.md](../esp32/docs/SBF-RECEIVER.md),
+§7.11). The ZED/X20's MCP23008 expander, where listed, collects the
 sensor and INA3221 alert lines behind
 one interrupt on GPIO3 and reads the panel chain back on GP0 once a minute
 ([IO-EXPANDER.md](../esp32/docs/IO-EXPANDER.md)). Its internal pull-ups stay off on the
@@ -1641,9 +1643,9 @@ against the hardware repository's netlist.
 |---:|---|---|
 | 2 | `BRIGHT_ADC` | Brightness trimmer wiper |
 | 8 | `TEMP_ALERT_N` | Both MCP9808 Alert outputs, open drain with a 10 kΩ pull-up; both stay at their power-on setting (disabled) and the line is not read |
-| 13 | `P3_RESET_DRV` | Drives Q1, which holds the receiver in reset while high; R97 keeps Q1 off, and firmware leaves the pin an input |
+| 13 | `P3_RESET_DRV` | Drives Q1, which holds the receiver in reset while high; R97 keeps Q1 off until firmware drives the pin low, and it is pulsed high for 500 ms, at most once per 10 minutes, only to recover a receiver that stops answering |
 | 14 | `LED_SDI` | The 162mm panel's 24-bit chain through J1 |
-| 16, 17 | `ESP_UART_CTS_N`, `ESP_UART_RTS_N` | COM2 flow control, left unconfigured until SBF support enables it on both ends |
+| 16, 17 | `ESP_UART_CTS_N`, `ESP_UART_RTS_N` | COM2 flow control: UART1 drives RTS from the start and honors CTS once the receiver confirms `RTS\|CTS` ([SBF-RECEIVER.md](../esp32/docs/SBF-RECEIVER.md) §3) |
 | 18 | `BRIGHT_BUTTON` | Preset buttons on the card (SW3) and the panel |
 | 39 | `HUM_INT_N` | HDC2080 interrupt, not enabled |
 | 41 | `PWR_ALERT_N` | INA3221 Warning and Critical, open drain with R107 to `3V3_SENS`; the falling edge wakes the board task, which reads Mask/Enable to name the rail and limit and release the latched line, and every pass reads it again while the line stays low |

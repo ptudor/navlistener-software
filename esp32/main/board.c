@@ -143,14 +143,26 @@ static observer_rtc_part_t listed_rtc(void)
     if (board && !mcp && !max && !ds) ESP_LOGW(TAG, "the manifest lists no RTC; none is used");
     return mcp ? OBSERVER_RTC_MCP79412 : max ? OBSERVER_RTC_MAX31328 : ds ? OBSERVER_RTC_DS3231M : OBSERVER_RTC_NONE;
 }
-// The receiver the manifest lists, as MON-VER names it; NULL configures none. A listed
-// receiver this firmware does not speak, the P3's mosaic-G5, is only listened to: receiver.c
-// then transmits nothing on its port, so no u-blox poll reaches it.
+// The receiver the manifest lists, as MON-VER names it; NULL configures no u-blox receiver. The
+// P3's mosaic-G5 is spoken to in SBF instead (receiver_set_sbf), with the row's COM2 flow
+// control and reset pins; without them it is left alone.
 static const char *listed_receiver(void)
 {
     if (observer_board_lists(CAT_GPS, GPS_MOSAIC_G5_P3)) {
-        ESP_LOGW(TAG, "the manifest lists a mosaic-G5 P3; this firmware does not decode its SBF, so its port is only listened to");
-        receiver_set_listen_only(true);
+        if (observer_board_lists(CAT_GPS, GPS_NEO_M9N) || observer_board_lists(CAT_GPS, GPS_ZED_X20P) ||
+            observer_board_lists(CAT_GPS, GPS_MAX_M10S)) {
+            ESP_LOGE(TAG, "the manifest lists more than one receiver; none is configured until it is corrected");
+            return NULL;
+        }
+        if (board->rx_rts < 0 || board->rx_cts < 0) {
+            ESP_LOGE(TAG, "the manifest lists a mosaic-G5 P3, but the %s has no COM2 flow control for it; no receiver is used",
+                     board->name);
+            return NULL;
+        }
+        const receiver_sbf_pins_t pins = {.rts = board->rx_rts, .cts = board->rx_cts, .reset = board->rx_reset};
+        receiver_set_sbf(&pins);
+        ESP_LOGI(TAG, "receiver from the manifest: mosaic-G5 P3, SBF on COM2 (RTS GPIO%d, CTS GPIO%d, reset GPIO%d)",
+                 pins.rts, pins.cts, pins.reset);
         return NULL;
     }
     static const struct { uint8_t id; const char *module; } receivers[] = {

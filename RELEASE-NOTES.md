@@ -79,8 +79,7 @@
 - Integrity Station shows the assessment on private station details and treats
   `station_assurance` as a station condition.
 - The universal ESP32-S3 image recognizes the mosaic-G5 P3 board (`CAT_INTSAT` 5) and
-  drives its panel, RTC, sensors, rail monitor and Wi-Fi uplink. The firmware does not
-  decode SBF yet, so it only listens on the receiver's port and transmits nothing to it.
+  drives its panel, RTC, sensors, rail monitor and Wi-Fi uplink.
   Single-board P3 test images carry the `gnss-color-mosaic-p3` release family.
 - On the P3, the MCP9808 on the LDL1117 regulator's heat spreader throttles Wi-Fi: the
   radio's maximum transmit power steps down from 16.5 to 8.5 dBm while the spreader is at or
@@ -93,6 +92,11 @@
 - On the P3, the INA3221's `PWR_ALERT_N` on GPIO41 interrupts on its falling edge: the
   board task reads and logs which rail tripped which limit at once, rather than at the next
   rail sample, and that read releases the latched line.
+- The P3's mosaic-G5 is spoken to in SBF on COM2: RAM-only configuration with RTS/CTS flow
+  control, 1 Hz PVT, time, measurement, visibility and RF status blocks into the receiver
+  status the panel, tag 6, the reception assessment and the RTC use, identity and constellation
+  discovery, and a GPIO13 reset pulse, at most every 10 minutes, for a receiver that stops
+  answering. The collector receives no SBF from it yet.
 
 Trusted rollout remains gated by commissioning and hardware acceptance in
 [Update operations](esp32/docs/UPDATE-OPERATIONS.md).

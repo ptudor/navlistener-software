@@ -192,10 +192,10 @@ short/long gaps, relocation and implausible motion.
 |---|---|---|
 | Collector SBF input | TCP dial capture, framing/CRC, original header/revision/body persistence and exact reconstruction | Real P3 captures and block-specific decoding. |
 | C feeder | UBX input | SBF source/configuration support. |
-| ESP32 receiver | UBX parser, MON-VER discovery and UBX configuration; on a P3 the port is only listened to, with nothing transmitted | SBF framing, Septentrio command/reply handling, COM2 flow control, capability discovery and status/time/solution adaptation. |
+| ESP32 receiver | UBX parser, MON-VER discovery and UBX configuration; on a P3, SBF framing and CRC, Septentrio command/reply handling, COM2 RTS/CTS, identity and constellation discovery, receiver reset recovery, and status/time adaptation into the receiver-neutral status ([SBF-RECEIVER.md](../../esp32/docs/SBF-RECEIVER.md)) | Raw navigation bits and solution records toward the collector, which wait on the GNF1 SBF representation; higher baud rates; validation on a P3. |
 | GNF1 push and enrollment | `ubx`/`rtcm` feed grants; SBF rejected | Versioned SBF representation preserving the full block header; feeder, collector, grant validation, spool and replay updates together. |
 | Station analysis | Receiver-neutral solution record and integrity engine | Map P3 solution, uncertainty, time, tracking and RF evidence; retain unavailable fields rather than inventing UBX equivalents. |
-| Board platform | Identity EEPROM, manifest, ATECC, commissioning, OTA, RTC, panel and selected sensors; the P3 board ID, revision 1 parts list, pins, OTA target, rail monitor, and SHT35 and HIH8121 drivers | Receiver reset control. |
+| Board platform | Identity EEPROM, manifest, ATECC, commissioning, OTA, RTC, panel and selected sensors; the P3 board ID, revision 1 parts list, pins, OTA target, rail monitor and its alert interrupt, SHT35 and HIH8121 drivers, and receiver reset control | Bring-up on an assembled P3. |
 
 The present GNF1 DATA `frame_type` cannot carry an SBF block number. Widening or
 truncating it locally is not a transport design. A new representation needs
