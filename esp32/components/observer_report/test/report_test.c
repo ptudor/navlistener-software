@@ -5,7 +5,7 @@
 #include <string.h>
 int main(int argc, char **argv)
 {
-    assert(argc == 5);
+    assert(argc == 6);
     observer_report_t r = {.uptime_ms=1000000, .event_count=3, .event_ms=999000,
         .reason=8, .event_flags=1, .event_states=6,
         .environment={7,7,2550,4212,2500,5000,100000},
@@ -133,6 +133,36 @@ int main(int argc, char **argv)
     assert(observer_report_due(&p,&x)==REPORT_CHANGE); // the monitor stopped answering
     observer_report_sent(&p,&x); x.uptime_ms+=60000; x.pressure.part=PRESSURE_PART_CONFLICT;
     assert(observer_report_due(&p,&x)==REPORT_CHANGE);
+
+    // The regulator tag (23) follows the rails: the X20 fixture with a throttled spreader.
+    observer_report_t g=x; g.pressure.part=PRESSURE_PART_BMP581;
+    g.rails.state=1; g.rails.valid=7;
+    g.rails.bus_mv[0]=5008; g.rails.bus_mv[1]=3296; g.rails.bus_mv[2]=3304;
+    g.rails.shunt_uv[0]=12280; g.rails.shunt_uv[1]=5000; g.rails.shunt_uv[2]=-4000;
+    g.uptime_ms=golden.uptime_ms;
+    g.regulator=(report_regulator_t){.present=true,.state=1,.valid=3,.level=2,.centi_c=9712,.peak_centi_c=9850,
+        .tx_cap=52,.changes=2,.throttled_s=95,.throttle_centi_c=9500,.full_centi_c=10500,.release_centi_c=8500};
+    f=fopen(argv[5],"r"); assert(f); size_t regulator_count=0;
+    while (fscanf(f,"%2x",&byte)==1) { assert(regulator_count<sizeof expected); expected[regulator_count++]=byte; }
+    fclose(f);
+    assert(regulator_count==x20_count+26);
+    assert(observer_report_encode(actual,sizeof actual,&g)==regulator_count && !memcmp(actual,expected,regulator_count));
+    static const uint8_t regulator_tail[]={0x17,0,23, 1,1,3,2, 0x25,0xf0, 0x26,0x7a, 52, 0,0,0,2, 0,0,0,95,
+        0x25,0x1c, 0x29,0x04, 0x21,0x34};
+    assert(!memcmp(actual+regulator_count-sizeof regulator_tail,regulator_tail,sizeof regulator_tail));
+    p=(report_policy_t){0}; observer_report_sent(&p,&g);
+    g.uptime_ms+=60000; g.regulator.centi_c+=199; g.regulator.peak_centi_c=g.regulator.centi_c;
+    g.regulator.throttled_s+=60;
+    assert(!observer_report_due(&p,&g)); // under 2 C, and the counters ride along
+    g.regulator.centi_c+=1;
+    assert(observer_report_due(&p,&g)==REPORT_CHANGE); // 2 C at the spreader
+    observer_report_sent(&p,&g); g.uptime_ms+=60000; g.regulator.level=3; g.regulator.tx_cap=44;
+    g.regulator.changes++;
+    assert(observer_report_due(&p,&g)==REPORT_CHANGE); // a throttle step
+    observer_report_sent(&p,&g); g.uptime_ms+=60000; g.regulator.state=0; g.regulator.valid&=~1; g.regulator.centi_c=0;
+    assert(observer_report_due(&p,&g)==REPORT_CHANGE); // the sensor stopped answering
+    observer_report_sent(&p,&g); g.uptime_ms+=60000; g.regulator.peak_centi_c-=500;
+    assert(!observer_report_due(&p,&g)); // the peak alone is not a change
     assert(panel_pwm_off_ticks(50)==512 && panel_pwm_off_ticks(20)==819 && panel_pwm_off_ticks(10)==922);
     assert(panel_pwm_off_ticks(100)==0 && panel_pwm_off_ticks(0)==1024);
     assert(panel_next_brightness(20)==10 && panel_next_brightness(10)==50 && panel_next_brightness(50)==20);

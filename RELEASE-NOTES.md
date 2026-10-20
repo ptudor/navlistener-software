@@ -82,6 +82,11 @@
   drives its panel, RTC, sensors, rail monitor and Wi-Fi uplink. The firmware does not
   decode SBF yet, so it only listens on the receiver's port and transmits nothing to it.
   Single-board P3 test images carry the `gnss-color-mosaic-p3` release family.
+- On the P3, the MCP9808 on the LDL1117 regulator's heat spreader throttles Wi-Fi: the
+  radio's maximum transmit power steps down from 16.5 to 8.5 dBm while the spreader is at or
+  above 95 °C and recovers at or below 85 °C. ObserverDetails tag 23 reports the spreader
+  temperature, throttle level and limits as `regulator`, apart from the environmental
+  readings; it raises no alarm.
 
 Trusted rollout remains gated by commissioning and hardware acceptance in
 [Update operations](esp32/docs/UPDATE-OPERATIONS.md).

@@ -618,7 +618,8 @@ manifest's `CAT_INTSAT` entry names that board and a revision it knows, and runs
 only for a part listed installed: RAM-only configuration of the listed receiver (NEO-M9N,
 ZED-X20P or MAX-M10S), the MCP79412, MAX31328 or DS3231M RTC, the MCP9808, HDC2080/HDC2022, BMP388
 and ATECC608C, the ZED/X20's BMP581, INA3221 rail monitor (telemetry tags 15-16) and W5500
-Ethernet uplink, the P3's INA3221 and MS5607, the GPIO18 preset buttons
+Ethernet uplink, the P3's INA3221 and MS5607 and its regulator-spreader MCP9808, which throttles
+Wi-Fi transmit power (tag 23, §6.2), the GPIO18 preset buttons
 (`BUTTON_USER_2`) with the GPIO2 brightness trimmer, and the MAX's MS5607, MAX31856,
 ICM-45686 and MMC34160PJ (telemetry tags 11-13 in [OBSERVER-TELEMETRY.md](OBSERVER-TELEMETRY.md)).
 The ZED/X20's front panel is its only chain and takes a 24-bit frame with RTK and ATTENTION
@@ -756,6 +757,14 @@ Three distinct uses, all justifying a tracked slot rather than a nice-to-have:
    that correlation visible across five units instead of anecdotal.
 3. **Barometric conversion.** The pressure-to-altitude relation is temperature-dependent, so §6.1
    needs it regardless.
+
+The P3 adds a fourth, separate use: **regulator protection.** Its second MCP9808, U47 at `0x1F`,
+sits on the LDL1117 system regulator's heat spreader, whose loss follows the `3V3_SYS` current
+that Wi-Fi transmission dominates. Firmware samples it every 5 s and throttles the radio's
+maximum transmit power while it is hot (from 95 °C at the sensor, entirely from 105 °C,
+released at 85 °C; telemetry tag 23). It is the regulator's temperature, not the air's: it is
+not one of the board temperatures above, never enters the environmental report, and raises no
+alarm.
 
 ### 6.3 RTC versus GNSS time
 
@@ -1640,7 +1649,8 @@ against the hardware repository's netlist.
 The shared bus adds `0x1F` (U47, the LDL1117 spreader's MCP9808), `0x27` (HIH8121) and `0x44`
 (SHT35) to the addresses the other boards use; it has no `0x24`, `0x46`, `0x68` or `0x76`
 device. U47 is powered from `3V3_SYS_LDO` and stays up when `SENS_EN` removes `3V3_SENS`, but
-the bus pull-ups do not.
+the bus pull-ups do not. Firmware polls it every 5 s for the Wi-Fi throttle (§6.2) and leaves
+its Alert output disabled.
 
 ## 8. Alignment with `shepherdprotocol`
 

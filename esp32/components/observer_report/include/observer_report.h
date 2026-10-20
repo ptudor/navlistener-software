@@ -83,6 +83,19 @@ typedef struct {
     int32_t shunt_uv[3];
     uint16_t shunt_mohm[3];
 } report_rails_t;
+// The system regulator's heat-spreader sensor and the Wi-Fi throttle it drives (the P3's U47
+// beside the LDL1117); tag 23. Not ambient temperature, and never part of tag 1. Invalid
+// temperatures stay zero; the limits are the board's, in force for the whole boot.
+typedef struct {
+    bool present;
+    uint8_t state;                // 0 not responding, 1 ready
+    uint8_t valid;                // bit 0 latest temperature, bit 1 peak
+    uint8_t level;                // throttle level, 0 unthrottled ... 4
+    int16_t centi_c, peak_centi_c;
+    uint8_t tx_cap;               // the radio's maximum transmit power, 0.25 dBm; 0 at level 0
+    uint32_t changes, throttled_s;
+    int16_t throttle_centi_c, full_centi_c, release_centi_c;
+} report_regulator_t;
 typedef struct { uint8_t flags; uint64_t epoch, sampled_ms; } report_rtc_t;
 typedef struct {
     uint64_t checked_ms;
@@ -115,6 +128,7 @@ typedef struct {
     report_humidity_t humidity;
     report_pressure_t pressure;
     report_rails_t rails;
+    report_regulator_t regulator;
     report_rtc_t rtc;
     report_crypto_t crypto;
     report_manifest_t manifest;

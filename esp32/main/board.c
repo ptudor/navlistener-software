@@ -21,6 +21,7 @@
 #include "esp_log.h"
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -99,6 +100,10 @@ static observer_rtc_part_t rtc_part;
 static bool thermocouple_listed, imu_listed, barometer_listed, magnetometer_listed, rails_listed;
 // The MCP23008 is listed and the board row has its interrupt pin; cleared if it cannot start.
 static bool expander_listed;
+// The row's regulator-spreader MCP9808 is listed at its address: the Wi-Fi throttle runs, from
+// the board task alone (regulator_poll).
+static bool regulator_listed;
+static regulator_thermal_t regulator;
 _Static_assert(NVF_I2C_IO_EXPANDER == MCP23008_ADDRESS, "the expander's address differs from the allocation record");
 const observer_board_t *observer_board_current(void) { return board; }
 bool observer_board_lists(uint8_t category, uint8_t id)
@@ -240,6 +245,18 @@ void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_
         parts.rail_warn_uv[c] = (int32_t)rail->warn_ma * rail->shunt_mohm;
         parts.rail_crit_uv[c] = (int32_t)rail->crit_ma * rail->shunt_mohm;
     }
+    // The regulator's sensor is the row's, at the row's address; the board's own MCP9808 is the
+    // one at 0x18, and neither stands in for the other.
+    regulator_listed = board && board->regulator.address &&
+                       observer_board_lists_at(CAT_TEMP, TEMP_MCP9808, board->regulator.address);
+    if (board && board->regulator.address && !regulator_listed)
+        ESP_LOGW(TAG, "the manifest does not list the %s's %s spreader MCP9808 at 0x%02x; Wi-Fi is not throttled",
+                 board->name, board->regulator.part, board->regulator.address);
+    if (regulator_listed && !regulator_thermal_init(&regulator, &board->regulator.limits, esp_timer_get_time() / 1000)) {
+        ESP_LOGE(TAG, "the %s's regulator limits are out of order; Wi-Fi is not throttled", board->name);
+        regulator_listed = false;
+    }
+    parts.regulator_mcp9808 = regulator_listed ? board->regulator.address : 0;
     environment_configure(&parts);
     expander_listed = listed_with_pins(CAT_IO_EXPANDER, IO_MCP23008, board && board->exp_int_n >= 0,
                                        "MCP23008 I/O expander");
@@ -795,6 +812,85 @@ static void rails_report(void)
                  (unsigned)rail->shunt_mohm);
     }
 }
+// The Wi-Fi throttle's actuator, from the board task alone. The radio's own maximum is read at
+// the first chance, before any cap, and stands at level 0. A Wi-Fi restart can reset the
+// driver's limit, so each sample compares the limit with what the last setting left and sets
+// it again when they differ; before Wi-Fi starts there is nothing to set, and the cap applies
+// once it does. The driver rounds a setting to its table, so the read-back is what is compared.
+static int8_t wifi_tx_baseline, wifi_tx_target, wifi_tx_expected;
+static int64_t wifi_tx_failed_ms = INT64_MIN / 2; // never
+static void wifi_throttle_apply(uint8_t level, int64_t now)
+{
+    int8_t current;
+    if (esp_wifi_get_max_tx_power(&current) != ESP_OK) return;
+    if (!wifi_tx_baseline) {
+        wifi_tx_baseline = wifi_tx_target = wifi_tx_expected = current;
+        ESP_LOGI(TAG, "Wi-Fi maximum transmit power %.2f dBm before any throttle", current / 4.0);
+    }
+    const int8_t cap = regulator_thermal_tx_cap(level);
+    const int8_t want = cap && cap < wifi_tx_baseline ? cap : wifi_tx_baseline;
+    if (want == wifi_tx_target && current == wifi_tx_expected) return;
+    const bool restored = want == wifi_tx_target;
+    esp_err_t err = esp_wifi_set_max_tx_power(want);
+    if (err == ESP_OK) err = esp_wifi_get_max_tx_power(&current);
+    if (err != ESP_OK) {
+        if (now - wifi_tx_failed_ms >= 60000) {
+            wifi_tx_failed_ms = now;
+            ESP_LOGW(TAG, "Wi-Fi transmit power not set to %.2f dBm: %s; retrying at each sample", want / 4.0,
+                     esp_err_to_name(err));
+        }
+        return;
+    }
+    wifi_tx_target = want;
+    wifi_tx_expected = current;
+    if (restored) ESP_LOGI(TAG, "Wi-Fi transmit limit %.2f dBm set again after the radio reset it", current / 4.0);
+}
+// Every five seconds: a regulator-spreader reading into the throttle, and the radio's limit
+// checked. The reading is the regulator's, not the air's: it moves the throttle and its own
+// telemetry tag, never the environmental readings or an alarm.
+#define REGULATOR_SAMPLE_MS 5000
+static int64_t next_regulator;
+static bool regulator_responding;
+static void regulator_poll(int64_t now)
+{
+    if (!regulator_listed || now < next_regulator) return;
+    next_regulator = now + REGULATOR_SAMPLE_MS;
+    env_regulator_t r;
+    environment_sample_regulator(&r);
+    const uint8_t before = regulator.level;
+    if (regulator_thermal_sample(&regulator, now, r.valid, r.centi_c)) {
+        const int8_t cap = regulator_thermal_tx_cap(regulator.level);
+        if (cap) ESP_LOGI(TAG, "%s spreader %.2f C: Wi-Fi throttle level %u of %u, transmit power capped at %.2f dBm",
+                          board->regulator.part, regulator.centi_c / 100.0, regulator.level,
+                          (unsigned)(REGULATOR_THERMAL_LEVELS - 1), cap / 4.0);
+        else ESP_LOGI(TAG, "%s spreader %.2f C: Wi-Fi throttle released from level %u", board->regulator.part,
+                      regulator.centi_c / 100.0, before);
+    }
+    const bool responding = regulator_thermal_responding(&regulator, now);
+    if (regulator_responding && !responding)
+        ESP_LOGW(TAG, "%s spreader temperature unavailable for %d s; the Wi-Fi throttle holds at level %u until it reads again",
+                 board->regulator.part, REGULATOR_THERMAL_LOST_MS / 1000, regulator.level);
+    regulator_responding = responding;
+    wifi_throttle_apply(regulator.level, now);
+}
+// Tag 23: the regulator sensor and the throttle, at the report's cadence.
+static void regulator_report(int64_t now)
+{
+    const regulator_thermal_t *t = &regulator;
+    const bool responding = regulator_thermal_responding(t, now);
+    const uint64_t throttled_s = t->throttled_ms / 1000;
+    report_regulator_t *g = &report.regulator;
+    *g = (report_regulator_t){.present = true, .state = responding, .level = t->level,
+        .tx_cap = (uint8_t)regulator_thermal_tx_cap(t->level), .changes = t->changes,
+        .throttled_s = throttled_s > UINT32_MAX ? UINT32_MAX : (uint32_t)throttled_s,
+        .throttle_centi_c = t->limits.throttle_centi_c, .full_centi_c = t->limits.full_centi_c,
+        .release_centi_c = t->limits.release_centi_c};
+    if (responding) { g->valid |= 1; g->centi_c = t->centi_c; }
+    if (t->peak_valid) { g->valid |= 2; g->peak_centi_c = t->peak_centi_c; }
+    if (responding)
+        ESP_LOGI(TAG, "%s spreader %.2f C (peak %.2f C since the last report), Wi-Fi throttle level %u",
+                 board->regulator.part, t->centi_c / 100.0, t->peak_centi_c / 100.0, t->level);
+}
 // Tags 11-13, each present only when its parts are listed.
 static void max_sensors_report(void)
 {
@@ -820,6 +916,7 @@ static void report_poll(const gnss_status_t *status, int64_t now, uint8_t expect
     environment_sample(hardware_manifest_i2c_bus(), now, utc_valid, utc, &sample, &e->ready, &heater);
     max_sensors_report();
     if (rails_listed) rails_report();
+    if (regulator_listed) regulator_report(now);
     // After every sample, so no component's time is later than the report's.
     last_environment = esp_timer_get_time() / 1000;
     next_environment = last_environment + 30000;
@@ -860,6 +957,7 @@ static void report_poll(const gnss_status_t *status, int64_t now, uint8_t expect
         reports_queued++;
         if(requested)reception_snapshot_queued();
         if (imu_listed) motion_report_sent();
+        if (regulator_listed) regulator_thermal_report_sent(&regulator);
         ESP_LOGI(TAG, "ObserverDetails queued: reason=0x%02x environment=0x%02x RTC=0x%02x EEPROM=%u RNG=%u events=%lu bytes=%u",
             report.reason, e->valid, report.rtc.flags, report.manifest.action, report.crypto.rng,
             (unsigned long)report.event_count, (unsigned)n);
@@ -984,6 +1082,7 @@ static void board_task(void *arg)
         report_poll(&status, now, gnss_status_expected(&status, now, learned), utc_valid, utc);
         // Every pass: while the humidity heater is on it converts at its own step interval.
         environment_poll(esp_timer_get_time() / 1000);
+        regulator_poll(esp_timer_get_time() / 1000);
         timing_poll(&status);
         journal_report=report;
         journal_report.rtc=observer_rtc_status();

@@ -10,6 +10,11 @@
 #include "freertos/task.h"
 #include "nvs.h"
 static const char *TAG = "environment";
+// 0x40 is attached even when no HDC is listed, to confirm an unlisted one's heater is off. The
+// regulator sensor's address is the board's (environment_configure); 0 leaves it unused.
+static uint8_t addresses[] = {0x18, 0x40, 0x76, MS5607_ADDRESS, MMC34160_ADDRESS, BMP5_ADDRESS, INA3221_ADDRESS, 0};
+enum { TEMPERATURE_DEVICE, HUMIDITY_DEVICE, PRESSURE_DEVICE, BAROMETER_DEVICE, MAGNETOMETER_DEVICE, BMP5_DEVICE,
+       RAIL_DEVICE, REGULATOR_DEVICE };
 // The parts the manifest lists, set by the board before the first sample; nothing else
 // is probed. HDC2080 and HDC2022 share their ID registers, so only the manifest can
 // choose the temperature formula.
@@ -22,16 +27,13 @@ static const char *barometer_name = "BMP388/BMP384";
 void environment_configure(const env_parts_t *listed)
 {
     parts = *listed;
+    addresses[REGULATOR_DEVICE] = parts.regulator_mcp9808;
     barometer_name = parts.bmp5 == ENV_BMP581 ? "BMP581" : parts.bmp5 == ENV_BMP580 ? "BMP580" : "BMP388/BMP384";
     hdc_variant = parts.hdc;
     hdc_name = hdc_variant == ENV_HDC2022 ? "HDC2022" : hdc_variant == ENV_HDC2080 ? "HDC2080" : "HDC";
     hdc_conversion = hdc_variant == ENV_HDC2022 ? "Rev A conversion" :
                      hdc_variant == ENV_HDC2080 ? "Rev C conversion, nominal 3.3 V correction" : "";
 }
-// 0x40 is attached even when no HDC is listed, to confirm an unlisted one's heater is off.
-static const uint8_t addresses[] = {0x18, 0x40, 0x76, MS5607_ADDRESS, MMC34160_ADDRESS, BMP5_ADDRESS, INA3221_ADDRESS};
-enum { TEMPERATURE_DEVICE, HUMIDITY_DEVICE, PRESSURE_DEVICE, BAROMETER_DEVICE, MAGNETOMETER_DEVICE, BMP5_DEVICE,
-       RAIL_DEVICE };
 #define DEVICE_COUNT (sizeof addresses / sizeof addresses[0])
 static i2c_master_dev_handle_t devices[DEVICE_COUNT];
 static i2c_master_bus_handle_t sensor_bus;
@@ -69,14 +71,14 @@ static env_heater_t heater;
 // Adds addresses[i] to the bus once it answers a probe.
 static void attach(i2c_master_bus_handle_t bus, unsigned i)
 {
-    if (devices[i] || i2c_master_probe(bus, addresses[i], 100) != ESP_OK) return;
+    if (devices[i] || !addresses[i] || i2c_master_probe(bus, addresses[i], 100) != ESP_OK) return;
     i2c_device_config_t config = {.dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = addresses[i], .scl_speed_hz = 100000};
     if (i2c_master_bus_add_device(bus, &config, &devices[i]) != ESP_OK) devices[i] = NULL;
 }
 static i2c_master_dev_handle_t device(uint8_t address)
 {
-    for (unsigned i = 0; i < DEVICE_COUNT; i++) if (addresses[i] == address) return devices[i];
+    for (unsigned i = 0; address && i < DEVICE_COUNT; i++) if (addresses[i] == address) return devices[i];
     return NULL;
 }
 static bool read_register(void *ctx, uint8_t address, uint8_t reg, uint8_t *p, size_t n)
@@ -382,7 +384,33 @@ bool environment_rail_alerts(ina3221_alerts_t *alerts)
     env_io_t io = {.read = read_register, .write = write_register, .delay_ms = delay_ms};
     return ina3221_read_alerts(&io, alerts);
 }
+static bool regulator_ready, regulator_tried;
+void environment_sample_regulator(env_regulator_t *r)
+{
+    *r = (env_regulator_t){0};
+    if (!initialized || !parts.regulator_mcp9808) return;
+    env_io_t io = {.read = read_register, .write = write_register, .delay_ms = delay_ms};
+    if (!regulator_ready) {
+        attach(sensor_bus, REGULATOR_DEVICE);
+        regulator_ready = mcp9808_start(&io, parts.regulator_mcp9808);
+        if (regulator_ready) ESP_LOGI(TAG, "regulator-spreader MCP9808 identified at 0x%02x", parts.regulator_mcp9808);
+        else if (!regulator_tried) ESP_LOGW(TAG, "regulator-spreader MCP9808 not identified at 0x%02x; retrying at each sample",
+                                            parts.regulator_mcp9808);
+        regulator_tried = true;
+    }
+    r->ready = regulator_ready;
+    if (!regulator_ready) return;
+    int16_t sixteenths;
+    r->valid = mcp9808_read(&io, parts.regulator_mcp9808, &sixteenths);
+    // 1/16 C is 6.25 hundredths; truncation toward zero loses at most 0.0075 C.
+    if (r->valid) r->centi_c = (int16_t)(sixteenths * 25 / 4);
+    else {
+        regulator_ready = false;
+        ESP_LOGW(TAG, "regulator-spreader MCP9808 measurement unavailable; identifying it again at the next sample");
+    }
+}
 #else
+void environment_sample_regulator(env_regulator_t *r) { *r = (env_regulator_t){0}; }
 void environment_configure(const env_parts_t *listed) { (void)listed; }
 void environment_sample_rails(env_rails_t *r) { *r = (env_rails_t){0}; }
 bool environment_rail_alerts(ina3221_alerts_t *alerts) { *alerts = (ina3221_alerts_t){0}; return false; }

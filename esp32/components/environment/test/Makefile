@@ -1,10 +1,10 @@
 CC ?= cc
 CFLAGS ?= -O1 -g -Wall -Wextra -Werror -std=c11
-SOURCES := env_test.c ../src/env_sensors.c ../vendor/bmp3/bmp3.c
-HEADERS := ../include/env_sensors.h ../vendor/bmp3/bmp3.h ../vendor/bmp3/bmp3_defs.h
+SOURCES := env_test.c ../src/env_sensors.c ../src/mcp9808.c ../vendor/bmp3/bmp3.c
+HEADERS := ../include/env_sensors.h ../include/mcp9808.h ../vendor/bmp3/bmp3.h ../vendor/bmp3/bmp3_defs.h
 .PHONY: all clean
 all: build/env_test build/heater_test build/ms5607_test build/max31856_test build/mmc34160_test build/bmp5_test \
-     build/ina3221_test
+     build/ina3221_test build/mcp9808_test
 	./build/env_test
 	./build/heater_test
 	./build/ms5607_test
@@ -12,6 +12,7 @@ all: build/env_test build/heater_test build/ms5607_test build/max31856_test buil
 	./build/mmc34160_test
 	./build/bmp5_test
 	./build/ina3221_test
+	./build/mcp9808_test
 build/env_test: $(SOURCES) $(HEADERS)
 	@mkdir -p build
 	$(CC) $(CFLAGS) -I../include -I../vendor/bmp3 $(SOURCES) -lm -o $@
@@ -33,5 +34,8 @@ build/bmp5_test: bmp5_test.c ../src/bmp5.c ../include/bmp5.h $(HEADERS)
 build/ina3221_test: ina3221_test.c ../src/ina3221.c ../include/ina3221.h $(HEADERS)
 	@mkdir -p build
 	$(CC) $(CFLAGS) -I../include -I../vendor/bmp3 ina3221_test.c ../src/ina3221.c -o $@
+build/mcp9808_test: mcp9808_test.c ../src/mcp9808.c ../include/mcp9808.h $(HEADERS)
+	@mkdir -p build
+	$(CC) $(CFLAGS) -I../include -I../vendor/bmp3 mcp9808_test.c ../src/mcp9808.c -o $@
 clean:
 	rm -rf build

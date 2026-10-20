@@ -1,8 +1,8 @@
 #include "env_sensors.h"
+#include "mcp9808.h"
 #include <math.h>
 #include <string.h>
 static uint16_t le16(const uint8_t *p) { return p[0] | ((uint16_t)p[1] << 8); }
-static uint16_t be16(const uint8_t *p) { return ((uint16_t)p[0] << 8) | p[1]; }
 // Failures are attributed per device: the heater's safety stop must see a failed HDC
 // transfer, not a listed-but-absent MCP9808 NACKing on the same bus.
 static void failed(env_sensors_t *s, uint8_t address)
@@ -21,6 +21,19 @@ static bool write_reg(env_sensors_t *s, uint8_t address, uint8_t reg, const uint
     if (s->io.write(s->io.ctx, address, reg, p, n)) return true;
     failed(s, address); return false;
 }
+// The drivers that take an env_io_t see the bus through these, so their failures are
+// attributed like the transfers above.
+static bool tracked_read(void *ctx, uint8_t address, uint8_t reg, uint8_t *p, size_t n)
+{ return read_reg(ctx, address, reg, p, n); }
+static bool tracked_write(void *ctx, uint8_t address, uint8_t reg, const uint8_t *p, size_t n)
+{ return write_reg(ctx, address, reg, p, n); }
+static void tracked_delay(void *ctx, unsigned ms)
+{
+    env_sensors_t *s = ctx;
+    s->io.delay_ms(s->io.ctx, ms);
+}
+static env_io_t tracked(env_sensors_t *s)
+{ return (env_io_t){.ctx = s, .read = tracked_read, .write = tracked_write, .delay_ms = tracked_delay}; }
 static int8_t bmp_read(uint8_t reg, uint8_t *p, uint32_t n, void *ctx)
 { return read_reg(ctx, 0x76, reg, p, n) ? 0 : -1; }
 static int8_t bmp_write(uint8_t reg, const uint8_t *p, uint32_t n, void *ctx)
@@ -54,16 +67,8 @@ bool env_sensors_retry_hdc(env_sensors_t *s)
 }
 static void init_mcp(env_sensors_t *s)
 {
-    uint8_t p[2];
-    if ((s->parts & ENV_PART_MCP9808) && read_reg(s, 0x18, 6, p, 2) && be16(p) == 0x0054 &&
-        read_reg(s, 0x18, 7, p, 2) && p[0] == 4 && read_reg(s, 0x18, 1, p, 2)) {
-        bool asleep = p[0] & 1; // CONFIG shutdown bit 8
-        p[0] &= ~1;
-        if (!asleep || write_reg(s, 0x18, 1, p, 2)) {
-            if (asleep) s->io.delay_ms(s->io.ctx, 300);
-            s->mcp_ready = true;
-        }
-    }
+    env_io_t io = tracked(s);
+    s->mcp_ready = (s->parts & ENV_PART_MCP9808) && mcp9808_start(&io, 0x18);
 }
 static void init_bmp(env_sensors_t *s)
 {
@@ -143,11 +148,11 @@ void env_sensors_read_some(env_sensors_t *s, env_sample_t *sample, uint8_t mask)
     *sample = (env_sample_t){0}; clear_errors(s);
     if ((mask & 1) && !s->mcp_ready) init_mcp(s);
     if ((mask & 4) && !s->bmp_ready) init_bmp(s);
-    uint8_t p[2];
-    if ((mask & 1) && s->mcp_ready && read_reg(s, 0x18, 5, p, 2)) {
-        uint16_t raw = be16(p);
-        sample->mcp_c = (raw & 0xfff) / 16.0 - ((raw & 0x1000) ? 256.0 : 0.0);
-        sample->mcp_valid = sample->mcp_c >= -40 && sample->mcp_c <= 125;
+    env_io_t io = tracked(s);
+    int16_t sixteenths;
+    if ((mask & 1) && s->mcp_ready && mcp9808_read(&io, 0x18, &sixteenths)) {
+        sample->mcp_c = sixteenths / 16.0;
+        sample->mcp_valid = true;
     }
     if ((mask & 2) && s->hdc_ready) sample->hdc_valid = read_hdc(s, sample);
     if ((mask & 4) && s->bmp_ready) sample->bmp_valid = read_bmp(s, sample);

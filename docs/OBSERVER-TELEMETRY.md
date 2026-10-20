@@ -369,6 +369,7 @@ invalid lengths/enums/ranges, and trailing partial TLVs are rejected.
 | 19 snapshot result | 12 | Version, result status, completed scopes, reserved zero, request ID; [contract](RECEPTION.md#repoll-and-submit) |
 | 20 reception power | 256 | Current C/N₀ observations plus local and delivered-model comparisons; [version 2 contract](RECEPTION.md#version-2-received-power-contract) |
 | 21 reception power event | 68 | A retained local/remote/joint power transition; never advances the live evaluator |
+| 23 regulator | 23 | The system regulator's spreader temperature and the Wi-Fi throttle it drives; layout below |
 
 Environment mask bits 0/1/2 identify MCP/HDC/BMP respectively; the BMP is the part
 tag 15 names, which on the ZED/X20 is the BMP581. Valid requires
@@ -520,6 +521,39 @@ Current is shunt voltage divided by resistance (µV / mΩ = mA). On the ZED/X20,
 channel 1 is +5V, channel 2 `3V3_GNSS` and channel 3 `3V3_SYS`. A channel that is not
 valid has zero voltages; its resistance is still reported.
 
+## Regulator spreader and Wi-Fi throttle (tag 23, version 1)
+
+A board whose row names a sensor on its system regulator's heat spreader, and whose manifest
+lists that MCP9808 at the row's address, carries tag 23 in each environmental report. On the
+P3 it is U47 at `0x1F`, beside the LDL1117's tab; other boards omit the tag. The LDO dissipates
+(VIN − 3.3 V) × the `3V3_SYS` current, which Wi-Fi transmission dominates, so the board lowers
+the radio's maximum transmit power while the spreader is hot. This is the regulator's
+temperature, not the air's: it never enters tag 1 and raises no alarm, and the panel's
+ATTENTION lamp ignores it.
+
+| Offset | Type | Meaning |
+|---:|---|---|
+| 0 | U8 | Version = 1 |
+| 1 | U8 | State: not responding=0, ready=1 (a valid reading within the last 60 s) |
+| 2 | U8 | Validity: latest temperature=1 (requires ready), peak=2 |
+| 3 | U8 | Throttle level: 0 unthrottled, 1–4 |
+| 4 | I16 | Latest spreader temperature, 0.01 °C, −40…125 °C |
+| 6 | I16 | Highest reading since the previous queued report (or the last one seen), 0.01 °C |
+| 8 | U8 | The level's Wi-Fi transmit cap in 0.25 dBm (66, 52, 44, 34: 16.5, 13, 11, 8.5 dBm); 0 at level 0, where the radio's own maximum stands |
+| 9 | U32 | Throttle level changes since ESP boot |
+| 13 | U32 | Seconds spent throttled since ESP boot, saturating |
+| 17 | I16 | Throttle point, 0.01 °C: one level hotter every 30 s at or above it |
+| 19 | I16 | Full point, 0.01 °C: the last level at once at or above it |
+| 21 | I16 | Release point, 0.01 °C: one level cooler every 120 s at or below it |
+
+The board samples the sensor every 5 s. A failed read never relaxes the throttle, because
+without a reading there is no evidence the spreader has cooled; the level holds until the
+sensor reads again. The P3's points are 95, 105 and 85 °C, chosen against the LDL1117's
+125 °C operating junction and 15 °C/W junction-to-case: engineering values to be confirmed by
+logging this tag under sustained Wi-Fi traffic in the closed enclosure. A report is due when
+the level, the state or the latest reading's validity changes, or the reading moves 2 °C;
+the peak and the counters ride along.
+
 ## Timing component (tag 8, version 1)
 
 S3 firmware sends a timing-only record once per second, with reason `check-in`
@@ -578,8 +612,12 @@ top-level `humidity_sensor` (tag 14) says which part the manifest listed:
 `hdc2080`, `hdc2022`, `not_listed` or `conflicting` (the last two measure nothing).
 Likewise `bmp388_bmp384_c` and `pressure_pa` carry the barometer that the top-level
 `pressure_sensor` (tag 15) names: `bmp388_bmp384`, `bmp580`, `bmp581`, `not_listed`
-or `conflicting`. ZED/X20 boards add `rails` (tag 16): `state` and `channels`, each
-with `channel`, `shunt_milliohms`, and nullable `bus_v`, `shunt_uv` and `current_a`.
+or `conflicting`. ZED/X20 and P3 boards add `rails` (tag 16): `state` and `channels`, each
+with `channel`, `shunt_milliohms`, and nullable `bus_v`, `shunt_uv` and `current_a`. P3
+boards add `regulator` (tag 23): `state`, nullable `spreader_c` and `peak_c`,
+`throttle_level`, nullable `wifi_tx_cap_dbm` (null when unthrottled), `throttle_changes`,
+`throttled_s`, and the board's `throttle_c`, `full_c` and `release_c`. It is the regulator's
+temperature, separate from `environment`.
 Component health and identifiers appear under `rtc`, `atecc`, `eeprom`,
 `resources`, `receiver`, and `firmware`. `humidity_heater` carries tag 10:
 `state`, `trusted_utc`, `last_run_readable`, `runs_since_boot`,

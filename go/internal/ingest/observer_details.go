@@ -36,6 +36,7 @@ type ObserverDetails struct {
 	// or BMP581, bmp388_bmp384_c and pressure_pa are that part's readings.
 	PressureSensor string          `json:"pressure_sensor,omitempty"`
 	Rails          *BoardRails     `json:"rails,omitempty"`
+	Regulator      *BoardRegulator `json:"regulator,omitempty"`
 	RTC            *BoardRTC       `json:"rtc,omitempty"`
 	ATECC          *BoardATECC     `json:"atecc,omitempty"`
 	EEPROM         *BoardEEPROM    `json:"eeprom,omitempty"`
@@ -318,6 +319,11 @@ func decodeObserverDetails(b []byte) (*ObserverDetails, error) {
 		case 16:
 			var err error
 			if d.Rails, err = decodeRails(v); err != nil {
+				return nil, err
+			}
+		case 23:
+			var err error
+			if d.Regulator, err = decodeRegulator(v); err != nil {
 				return nil, err
 			}
 		default:

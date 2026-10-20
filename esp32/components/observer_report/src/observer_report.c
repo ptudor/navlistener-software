@@ -61,6 +61,10 @@ uint8_t observer_report_due(const report_policy_t *p, const observer_report_t *r
         long long ma_then = ra->shunt_mohm[c] ? (long long)ra->shunt_uv[c] / ra->shunt_mohm[c] : 0;
         changed = abs(ra->bus_mv[c] - rb->bus_mv[c]) >= 50 || llabs(ma_now - ma_then) >= 25;
     }
+    // A throttle step, the sensor coming or going, or 2 C at the spreader.
+    const report_regulator_t *ga = &p->last.regulator, *gb = &r->regulator;
+    changed = changed || ga->present != gb->present || ga->state != gb->state || (ga->valid & 1) != (gb->valid & 1) ||
+        ga->level != gb->level || ((gb->valid & 1) && abs(ga->centi_c - gb->centi_c) >= 200);
     return changed ? REPORT_CHANGE : 0;
 }
 void observer_report_sent(report_policy_t *p, const observer_report_t *r)
@@ -70,13 +74,13 @@ size_t observer_report_encode(uint8_t *out, size_t cap, const observer_report_t 
     size_t fwlen = 0;
     while (fwlen < 32 && r->firmware[fwlen]) fwlen++;
     // Header 24; six fixed TLVs (14,17,16,40,29,29); firmware TLV; optional heater (58),
-    // barometer (10), thermocouple (12), motion (95), humidity-sensor (2), pressure-sensor (2)
-    // and rails (27) TLVs.
+    // barometer (10), thermocouple (12), motion (95), humidity-sensor (2), pressure-sensor (2),
+    // rails (27) and regulator (23) TLVs.
     size_t length = 24 + 18 + 14 + 17 + 16 + 5 + NVF_BOARD_UID_SIZE + 29 + 29 + 3 + fwlen +
                     (r->heater.present ? 3 + 58 : 0) + (r->barometer.present ? 3 + 10 : 0) +
                     (r->thermocouple.present ? 3 + 12 : 0) + (r->motion.present ? 3 + 95 : 0) +
                     (r->humidity.present ? 3 + 2 : 0) + (r->pressure.present ? 3 + 2 : 0) +
-                    (r->rails.present ? 3 + 27 : 0);
+                    (r->rails.present ? 3 + 27 : 0) + (r->regulator.present ? 3 + 23 : 0);
     if (!out || cap < length) return 0;
     memset(out, 0, length);
     out[0] = 1; out[1] = r->reason; gnf1_be64(out+2, r->uptime_ms);
@@ -137,6 +141,11 @@ size_t observer_report_encode(uint8_t *out, size_t cap, const observer_report_t 
       b[0]=1; b[1]=s->state; b[2]=s->valid;
       for (unsigned i=0;i<3;i++) {
           gnf1_be16(b+3+8*i,s->bus_mv[i]); gnf1_be32(b+5+8*i,s->shunt_uv[i]); gnf1_be16(b+9+8*i,s->shunt_mohm[i]); } }
+    if (r->regulator.present) { TLV(23, 23); const report_regulator_t *g=&r->regulator;
+      b[0]=1; b[1]=g->state; b[2]=g->valid; b[3]=g->level;
+      gnf1_be16(b+4,g->centi_c); gnf1_be16(b+6,g->peak_centi_c); b[8]=g->tx_cap;
+      gnf1_be32(b+9,g->changes); gnf1_be32(b+13,g->throttled_s);
+      gnf1_be16(b+17,g->throttle_centi_c); gnf1_be16(b+19,g->full_centi_c); gnf1_be16(b+21,g->release_centi_c); }
 #undef TLV
     return offset;
 }

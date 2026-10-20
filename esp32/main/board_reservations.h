@@ -153,6 +153,7 @@ NVF_PINS_CHECK(NVF_PINS_MOSAIC_P3, "the P3 pin map");
 // the manifest's CAT_INTSAT entry picks the row at boot (observer_board_current()).
 #include "manifest_board.h"
 #include "nvf_board.h"
+#include "regulator_thermal.h"
 // An image's OTA board ID is the board's CAT_INTSAT ID; 0 is the universal image.
 _Static_assert((int)NVF_BOARD_ID_NEO == (int)INTSAT_NEO && (int)NVF_BOARD_ID_ZED_X20 == (int)INTSAT_X20 &&
                (int)NVF_BOARD_ID_MAX == (int)INTSAT_MAX && (int)NVF_BOARD_ID_MOSAIC_P3 == (int)INTSAT_MOSAIC_P3,
@@ -161,6 +162,9 @@ _Static_assert((int)NVF_BOARD_ID_NEO == (int)INTSAT_NEO && (int)NVF_BOARD_ID_ZED
 // warn_ma is the Warning alert's limit on the averaged current and crit_ma the Critical
 // alert's on each conversion; 0 sets no alert. The limit is mA x mOhm uV across the shunt.
 typedef struct { const char *name; uint16_t shunt_mohm, warn_ma, crit_ma; } observer_rail_t;
+// An MCP9808 on the system regulator's heat spreader, the regulator it watches, and the limits
+// at which it throttles Wi-Fi (regulator_thermal.h); address 0 marks a board without one.
+typedef struct { uint8_t address; const char *part; regulator_thermal_limits_t limits; } observer_regulator_t;
 typedef struct {
     board_model_t model;
     const char *name;
@@ -179,6 +183,7 @@ typedef struct {
     int tc_sck, tc_mosi, tc_miso, tc_cs_n, tc_drdy_n;
     int imu_int1, imu_int2;
     observer_rail_t rails[3];   // INA3221 channels 1-3, where the board has the monitor
+    observer_regulator_t regulator;
 } observer_board_t;
 #define NVF_PIN_ON(map, pin) ((pin) < 0 || ((map) & NVF_PIN((pin) < 0 ? 0 : (pin))) != 0)
 #define NVF_NONE (-1)
@@ -224,6 +229,22 @@ typedef struct {
 #define NVF_P3_RAIL_5V   {.name = "+5V", .shunt_mohm = 20, .warn_ma = 1200, .crit_ma = 1400}
 #define NVF_P3_RAIL_GNSS {.name = "3V3_GNSS", .shunt_mohm = 50, .warn_ma = 350, .crit_ma = 500}
 #define NVF_P3_RAIL_SYS  {.name = "3V3_SYS", .shunt_mohm = 20, .warn_ma = 800, .crit_ma = 1000}
+// The P3's regulator sensor, U47 on the LDL1117's spreader beside the tab. ST rates the LDL1117's
+// junction to 125 C in operation, 15 C/W above its case (DocID030319 Tables 2 and 3): at the
+// 0.72 W the board's supply simulation gives for continuous transmit, the junction sits about
+// 11 C above the tab, and U47 reads no hotter than the tab. Throttling from 95 C and entirely
+// from 105 C keeps the junction near 106-116 C, leaving 9 C for the tab-to-sensor gradient the
+// closed-box bench run must measure; 85 C releases with 10 C of hysteresis. Engineering values
+// to be confirmed on the bench, like the rails' alert limits.
+#define NVF_P3_REGULATOR_THROTTLE_CENTI_C 9500
+#define NVF_P3_REGULATOR_FULL_CENTI_C     10500
+#define NVF_P3_REGULATOR_RELEASE_CENTI_C  8500
+_Static_assert(NVF_P3_REGULATOR_RELEASE_CENTI_C < NVF_P3_REGULATOR_THROTTLE_CENTI_C &&
+               NVF_P3_REGULATOR_THROTTLE_CENTI_C <= NVF_P3_REGULATOR_FULL_CENTI_C,
+               "the P3 regulator limits must satisfy release < throttle <= full");
+#define NVF_P3_REGULATOR {.address = NVF_I2C_REGULATOR_TEMPERATURE, .part = "LDL1117", \
+    .limits = {.throttle_centi_c = NVF_P3_REGULATOR_THROTTLE_CENTI_C, .full_centi_c = NVF_P3_REGULATOR_FULL_CENTI_C, \
+               .release_centi_c = NVF_P3_REGULATOR_RELEASE_CENTI_C}}
 #define NVF_BOARD_P3_ROW {.model = BOARD_MODEL_P3_A, .name = "P3 revision A", .intsat_id = INTSAT_MOSAIC_P3, \
     .family = "gnss-color-mosaic-p3", .pins = NVF_PINS_MOSAIC_P3, .boot_steps_brightness = false, \
     .led_sdi = NVF_NONE, .led_panel_sdi = 14, .panel_status_byte = true, \
@@ -232,7 +253,8 @@ typedef struct {
     .eth_sclk = NVF_NONE, .eth_cs = NVF_NONE, .eth_mosi = NVF_NONE, .eth_miso = NVF_NONE, \
     .tc_sck = NVF_NONE, .tc_mosi = NVF_NONE, .tc_miso = NVF_NONE, .tc_cs_n = NVF_NONE, .tc_drdy_n = NVF_NONE, \
     .imu_int1 = NVF_NONE, .imu_int2 = NVF_NONE, \
-    .rails = {NVF_P3_RAIL_5V, NVF_P3_RAIL_GNSS, NVF_P3_RAIL_SYS}} /* U37 through R89, R75, R76 */
+    .rails = {NVF_P3_RAIL_5V, NVF_P3_RAIL_GNSS, NVF_P3_RAIL_SYS}, /* U37 through R89, R75, R76 */ \
+    .regulator = NVF_P3_REGULATOR}
 // Every function pin is on its board's map.
 _Static_assert(NVF_PIN_ON(NVF_PINS_ZED_X20, 1) && NVF_PIN_ON(NVF_PINS_ZED_X20, 2) &&
                NVF_PIN_ON(NVF_PINS_ZED_X20, 18) && NVF_PIN_ON(NVF_PINS_ZED_X20, NVF_PIN_CONSOLE_VBUS) &&

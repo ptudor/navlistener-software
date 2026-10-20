@@ -280,6 +280,23 @@ voltages and currents as tag 16, see
 Both parts sit on `3V3_SENS`; after a power cycle of that rail each is identified and
 configured again at the next sample.
 
+The P3 has the same INA3221 channels (its +5V limits are 1200/1400 mA, between the board's
+1.18 A simulated maximum load and its eFuse's 1.446 A minimum limit) and a second MCP9808,
+U47 at `0x1F`, on the LDL1117 system regulator's heat spreader. The LDO's loss follows the
+`3V3_SYS` current, which Wi-Fi transmission dominates, so U47 drives a Wi-Fi throttle rather
+than a temperature report: every 5 s its reading enters `regulator_thermal`, which lowers the
+radio's maximum transmit power a step at a time (16.5, 13, 11, then 8.5 dBm, each a step of
+`esp_wifi_set_max_tx_power()`'s table) from 95 °C at the sensor, a step every 30 s, or at
+once to the lowest from 105 °C, and raises it a step every two minutes at or below 85 °C.
+A failed read never relaxes the throttle. The radio's own limit, read before any cap, is
+restored at level 0, and a cap a Wi-Fi restart resets is set again at the next sample. The
+reading is not ambient temperature: it stays out of tag 1, raises no alarm, and goes out as
+its own tag 23, see
+[the regulator tag](../docs/OBSERVER-TELEMETRY.md#regulator-spreader-and-wi-fi-throttle-tag-23-version-1).
+The thresholds sit in the P3's board row; log tag 23 under sustained Wi-Fi traffic in the
+closed enclosure to confirm them. Both MCP9808s keep their Alert outputs disabled, so the
+shared `TEMP_ALERT_N` line stays high and is not read.
+
 The HDC heater stays off except for a rare condensation-recovery run: after four
 continuous hours at 98 %RH or more, at most once per 14 days of trusted UTC. The
 run's start time is saved in the `nvf_env` NVS namespace before the heater is

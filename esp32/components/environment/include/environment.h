@@ -6,6 +6,7 @@
 #include "bmp5.h"
 #include "env_sensors.h"
 #include "ina3221.h"
+#include "mcp9808.h"
 #include "mmc34160.h"
 #include "ms5607.h"
 #include "driver/i2c_master.h"
@@ -23,6 +24,9 @@ typedef struct {
     // The INA3221's alert limits per channel in shunt microvolts, from the board's rails;
     // 0 leaves that limit unset (ina3221_set_alerts).
     int32_t rail_warn_uv[INA3221_CHANNELS], rail_crit_uv[INA3221_CHANNELS];
+    // The I2C address of an MCP9808 on the system regulator's heat spreader (the P3's U47 at
+    // 0x1F), or 0. Its reading is not ambient temperature and never enters env_sample_t.
+    uint8_t regulator_mcp9808;
 } env_parts_t;
 void environment_configure(const env_parts_t *parts);
 // Call from the board task, which owns sensor/RTC transactions. utc_valid means utc is time the
@@ -64,4 +68,13 @@ void environment_sample_rails(env_rails_t *rails);
 // board task, as on the PWR_ALERT_N interrupt. False when the monitor is not listed, not
 // configured, or does not answer.
 bool environment_rail_alerts(ina3221_alerts_t *alerts);
+
+// The regulator-spreader MCP9808, when listed, sampled from the board task (after the first
+// environment_sample). A part that is absent, or fails a read, is identified again at the
+// next sample. Its temperature drives the Wi-Fi throttle, not the environmental report.
+typedef struct {
+    bool ready, valid;
+    int16_t centi_c;
+} env_regulator_t;
+void environment_sample_regulator(env_regulator_t *regulator);
 #endif
