@@ -1165,15 +1165,17 @@ interpretation.
   Keep the factory console and signing-batch containers at v1; their prototype
   contents were never enrolled.
 - Preserve the authority roles in that firmware: Root A/B slot-5 keys sign
-  manufacturer batches, a Factory unit may only relay them, and an Issuing
-  intermediate signs operational observer certificates. Update mixed-batch,
-  relay, counter, replay and two-root tests for the v1 messages.
+  manufacturer batches, a Factory unit may only relay them, and the Observer
+  Factory, the Factory unit holding the Issuing intermediate, signs operational
+  observer certificates at the bench. Update mixed-batch, relay, counter, replay
+  and two-root tests for the v1 messages.
 - Keep authority registration in the host/control plane. The signed v1 core and
   commissioning layouts do not gain hardcoded A/B/C/D labels; verifier-selected
   public-key mappings provide the manufacturer-authority context.
-- A customer Root C/D deployment uses the same Root, Factory and Issuing roles
-  and message formats. Do not create customer-specific firmware branches; export
-  and register its public material under the customer's scoped authority records.
+- A customer Root C/D deployment uses the same Root and Factory roles, one
+  Factory per project, and the same message formats. Do not create
+  customer-specific firmware branches; export and register its public material
+  under the customer's scoped authority records.
 - Continue importing the canonical secure-element slot/profile definitions from
   their maintained owner; do not create a divergent copy in this checkout.
 - Add a basic board target only with its independently reviewed hardware and

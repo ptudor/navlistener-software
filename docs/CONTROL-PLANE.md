@@ -11,7 +11,7 @@ The boundaries are deliberate:
 |---|---|
 | Factory CA Root, slot 5 | Sign permanent core attestations and commissioning records |
 | Factory-role unit | Relay manufacturer batches to a Root; never sign them locally |
-| Registered Issuing intermediate | Sign operational observer certificates |
+| Registered Issuing intermediate | Sign operational observer certificates; held by the project's Observer Factory, a Factory-role unit at the bench, never by a server |
 | `navcontrol` | Validate controlled enrollment evidence, assign authority/policy, activate and revoke credentials |
 | Collector | Authenticate the enrolled credential and exact issuer, verify session evidence, isolate audiences |
 
@@ -99,10 +99,13 @@ Database initialization and writes require only the control service's role.
    A copied record plus an arbitrary software CSR is not proof of hardware key
    custody. Record this controlled check in the private bench ledger; its stable
    reference is `hardware_validation` in the API request.
-3. Obtain the leaf through the configured Factory CA Issuing unit using `cactl
-   sign` and its verified-result/retry procedure. Do not use a Root slot-5 key or
-   add a file-based CA fallback. Store the public ceremony request/result with
-   the bench entry so an interrupted issuance can be reconciled by exact retry.
+3. Obtain the leaf from the configured Observer Factory, the Factory CA unit
+   holding the registered Issuing intermediate, using `cactl sign` and its
+   verified-result/retry procedure. The unit shows each request on its display
+   and signs only after its SIGN button is pressed; no server holds or reaches a
+   signing unit. Do not use a Root slot-5 key or add a file-based CA fallback.
+   Store the public ceremony request/result with the bench entry so an
+   interrupted issuance can be reconciled by exact retry.
 4. POST the request to `/v1/enrollments/validate`, then `/v1/enrollments`, with
    `Authorization: Bearer <operator-token>`. Validation alone changes no database
    state. Activation returns an `enrollment_id` and a newly generated device token
