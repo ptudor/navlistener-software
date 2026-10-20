@@ -3,7 +3,7 @@ CFLAGS ?= -O1 -g -Wall -Wextra -std=c11
 BUILD := build
 COMMON := ../src/ack_progress.c ../../spool/src/spool.c ../../spool/src/spool_ring.c ../../gnf1/src/gnf1.c ../../ota/src/update_json.c ../../network_health/src/network_health.c
 INCLUDES := -Istubs -I../include -I../../spool/include -I../../gnf1/include -I../../ota/include -I../../network_health/include
-TESTS := ack_stall_test tls_want_yield_test endpoint_fallback_test tunnel_path_test evidence_handshake_test
+TESTS := ack_stall_test tls_want_yield_test endpoint_fallback_test tunnel_path_test evidence_handshake_test sbf_session_test
 .PHONY: all clean
 all: $(addprefix $(BUILD)/,$(TESTS))
 	@set -e; for t in $(addprefix $(BUILD)/,$(TESTS)); do ./$$t; done

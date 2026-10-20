@@ -29,6 +29,7 @@ import (
 	"github.com/ptudor/navlistener/internal/commissioning"
 	"github.com/ptudor/navlistener/internal/config"
 	"github.com/ptudor/navlistener/internal/identity"
+	"github.com/ptudor/navlistener/internal/wire"
 )
 
 //go:embed schema.sql
@@ -117,7 +118,7 @@ func (s *Service) Validate(r Request) (Validated, error) {
 	c.OrganizationID, c.CollectorInstanceID = r.OrganizationID, r.CollectorInstanceID
 	c.FeedGrants, c.CollectionIDs, c.DeclaredCapabilities, c.Publication = r.FeedGrants, r.CollectionIDs, r.DeclaredCapabilities, r.Publication
 	for _, f := range r.FeedGrants {
-		if f != "ubx" && f != "rtcm" {
+		if !wire.PushFeed(f) {
 			return out, invalid("unsupported feed grant")
 		}
 	}

@@ -74,7 +74,9 @@ missing data with no signal.
 | `ntrip` | HTTP-ish caster subscription wrapping one of the above | Basic auth; TLS by default with explicit opt-outs required for plaintext. |
 
 **SBF and RTCM are currently capture-only inputs** pending central decoders — `capture_only`
-persists their raw frames without decoding into live state.
+persists their raw frames without decoding into live state. A GNF1 `sbf` push session
+(SBF record format 1, `docs/DESIGN.md §2`) yields the same SBF frames as the dial
+connector: `push.go` checks each whole block with `splitSBFBlock` and keeps its header.
 
 ### Two silence timeouts, and why both exist
 

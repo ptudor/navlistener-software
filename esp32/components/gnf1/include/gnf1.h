@@ -10,7 +10,8 @@
 //   stream = "GNF1" then frames [1B type][4B BE len][payload]
 //   DATA(0x03)  [8B BE seq][record];  ACK(0x04) [8B BE seq]
 //   record = [8B BE recv_unix_ns][gnssId][svId][sigId][freqId][frame_type][raw...]
-//   raw    = native nav words serialized BIG-ENDIAN (the collector reads them back BE).
+//   raw    = native nav words serialized BIG-ENDIAN (the collector reads them back BE),
+//            a telemetry body, or on an sbf feed one whole SBF block (GNF1_SBF_FORMAT).
 
 #ifndef GNF1_H
 #define GNF1_H
@@ -52,12 +53,23 @@ extern "C" {
 #define GNF1_T_JAMMING   0x05 // MON-RF / MON-HW AGC/jamming/antenna
 #define GNF1_TELEM_VERSION 1
 
+// SBF record format 1 (wire.SBFFormat, docs/DESIGN.md §2). A feeder whose HELLO says
+// "feed":"sbf","sbf":1 sends, once the WELCOME confirms "sbf":1, every Septentrio block as one
+// record: frame_type GNF1_T_SBF_BLOCK, zero gnssId/svId/sigId/freqId, and the block exactly as
+// the receiver sent it, "$@" sync through padding, Length bytes. The block's own header carries
+// the block number and revision the one-byte frame_type cannot. Telemetry records are unchanged.
+#define GNF1_SBF_FORMAT     1
+#define GNF1_T_SBF_BLOCK    0x80
+#define GNF1_SBF_RAW_MAX    8192 // the largest block the observer reads (sbf.h SBF_MAX_BLOCK)
+#define GNF1_SBF_RECORD_MAX (GNF1_RECORD_HDR + GNF1_SBF_RAW_MAX)
+
 #define GNF1_MAX_FRAME    (1u << 20) // wire.MaxFrameLen — validate every length prefix
 #define GNF1_RECORD_HDR   13         // recv_ns(8) + gnssId + svId + sigId + freqId + frame_type
 #define GNF1_MAX_RAW      1024       // numWords is u8 => <=1020 raw bytes; round up
 #define GNF1_RECORD_MAX   (GNF1_RECORD_HDR + GNF1_MAX_RAW)
 #define GNF1_FRAME_HDR    5          // [1B type][4B BE len]
-#define GNF1_DATA_MAX     (GNF1_FRAME_HDR + 8 + GNF1_RECORD_MAX)
+#define GNF1_DATA_HDR     (GNF1_FRAME_HDR + 8) // a DATA frame up to its record: header and seq
+#define GNF1_DATA_MAX     (GNF1_DATA_HDR + GNF1_RECORD_MAX)
 #define GNF1_EVIDENCE_MAX 2048       // the collector reads no larger EVIDENCE payload (docs/COMMISSIONING.md §6)
 // The session proof inside EVIDENCE signs keying material both ends export from the TLS
 // session (RFC 5705; RFC 8446 §7.5) under this label, with no context. It is never sent.
@@ -85,13 +97,23 @@ size_t gnf1_encode_record(uint8_t *out, uint64_t recv_ns, uint8_t gnss_id, uint8
 size_t gnf1_encode_telem(uint8_t *out, uint64_t recv_ns, uint8_t type, const uint8_t *body,
                          size_t body_len);
 
+// gnf1_encode_sbf builds an SBF block record (GNF1_SBF_FORMAT) into out, which must be at least
+// GNF1_RECORD_HDR + len bytes. block is one whole block as the receiver sent it, its CRC
+// already checked. Returns the record length, or 0 unless the block starts with "$@", its
+// Length field equals len, len is a multiple of four and at most GNF1_SBF_RAW_MAX.
+size_t gnf1_encode_sbf(uint8_t *out, uint64_t recv_ns, const uint8_t *block, size_t len);
+
 // gnf1_frame_header fills a 5-byte frame header [type][4B BE len] into hdr.
 void gnf1_frame_header(uint8_t hdr[GNF1_FRAME_HDR], uint8_t type, uint32_t len);
 
+// gnf1_data_header fills the start of a DATA frame, [F_DATA][4B BE len][8B BE seq], for a
+// record of record_len bytes that follows it on the wire.
+void gnf1_data_header(uint8_t out[GNF1_DATA_HDR], uint64_t seq, size_t record_len);
+
 // gnf1_encode_data builds a full DATA frame [F_DATA][4B BE len][8B BE seq][record] into out,
-// which must be at least GNF1_FRAME_HDR + 8 + record_len bytes. Returns the total frame
-// length. An oversized record_len is silently clamped to GNF1_RECORD_MAX, matching
-// navfeeder.c send_data(); normal callers pass records produced by the bounded encoders.
+// which must be at least GNF1_DATA_HDR + record_len bytes. Returns the total frame length, or
+// 0 for a record longer than GNF1_RECORD_MAX: a larger record (an SBF block) is sent as
+// gnf1_data_header followed by the record itself, and is never cut short.
 size_t gnf1_encode_data(uint8_t *out, uint64_t seq, const uint8_t *record, size_t record_len);
 
 // GNF1_SESSION_MAX bounds the HELLO session identity, matching wire.SessionMaxLen (Go) and
@@ -128,8 +150,13 @@ bool gnf1_session_valid(const char *s);
 // the collector's WELCOME (docs/COMMISSIONING.md §6). The collector authenticates the HELLO
 // first and then reads exactly one more frame, so the flag and the frame go together: set
 // it only when the frame will be sent, and never send the frame without it.
+//
+// sbf_format is the SBF record format of an sbf feed (GNF1_SBF_FORMAT), emitted as "sbf" after
+// every other field, or 0 on any other feed, which emits nothing. The collector reads it as one
+// byte, so a value above 255 is refused.
 int gnf1_build_hello(char *out, size_t cap, const char *token, const char *station,
-                     const char *feed, const char *session, bool zstd, bool evidence);
+                     const char *feed, const char *session, bool zstd, bool evidence,
+                     unsigned sbf_format);
 
 // gnf1_welcome_ok reports whether a WELCOME JSON payload accepted the handshake.
 // welcome must be NUL-terminated in addition to supplying len. The tiny parser

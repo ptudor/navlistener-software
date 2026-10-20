@@ -74,20 +74,36 @@ size_t gnf1_encode_telem(uint8_t *out, uint64_t recv_ns, uint8_t type, const uin
     return GNF1_RECORD_HDR + body_len;
 }
 
+size_t gnf1_encode_sbf(uint8_t *out, uint64_t recv_ns, const uint8_t *block, size_t len)
+{
+    if (!block || len < 8 || len > GNF1_SBF_RAW_MAX || len % 4 || block[0] != '$' || block[1] != '@' ||
+        (size_t)(block[6] | block[7] << 8) != len)
+        return 0;
+    gnf1_be64(out, recv_ns);
+    out[8] = out[9] = out[10] = out[11] = 0; // the block's own header identifies it
+    out[12] = GNF1_T_SBF_BLOCK;
+    memcpy(out + GNF1_RECORD_HDR, block, len);
+    return GNF1_RECORD_HDR + len;
+}
+
 void gnf1_frame_header(uint8_t hdr[GNF1_FRAME_HDR], uint8_t type, uint32_t len)
 {
     hdr[0] = type;
     gnf1_be32(hdr + 1, len);
 }
 
+void gnf1_data_header(uint8_t out[GNF1_DATA_HDR], uint64_t seq, size_t record_len)
+{
+    gnf1_frame_header(out, GNF1_F_DATA, (uint32_t)(8 + record_len)); // seq + record
+    gnf1_be64(out + GNF1_FRAME_HDR, seq);
+}
+
 size_t gnf1_encode_data(uint8_t *out, uint64_t seq, const uint8_t *record, size_t record_len)
 {
-    if (record_len > GNF1_RECORD_MAX) record_len = GNF1_RECORD_MAX;
-    out[0] = GNF1_F_DATA;
-    gnf1_be32(out + 1, (uint32_t)(8 + record_len)); // seq + record
-    gnf1_be64(out + 5, seq);
-    if (record_len) memcpy(out + GNF1_FRAME_HDR + 8, record, record_len);
-    return GNF1_FRAME_HDR + 8 + record_len;
+    if (record_len > GNF1_RECORD_MAX) return 0;
+    gnf1_data_header(out, seq, record_len);
+    if (record_len) memcpy(out + GNF1_DATA_HDR, record, record_len);
+    return GNF1_DATA_HDR + record_len;
 }
 
 // append copies len bytes into out at *n, leaving room for the terminator. False when they
@@ -150,7 +166,8 @@ bool gnf1_session_valid(const char *s)
 }
 
 int gnf1_build_hello(char *out, size_t cap, const char *token, const char *station,
-                     const char *feed, const char *session, bool zstd, bool evidence)
+                     const char *feed, const char *session, bool zstd, bool evidence,
+                     unsigned sbf_format)
 {
     // session : the boot-identity half of the collector's replay-dedup key
     // (observer, session, seq) — REQUIRED since the 2026-07-31 GNF1 contract revision. A
@@ -161,11 +178,13 @@ int gnf1_build_hello(char *out, size_t cap, const char *token, const char *stati
     // handshake() byte-for-byte (after "sw", before the optional ",\"zstd\":true"): the JSON
     // is order-insensitive to Go's decoder, but a byte-identical HELLO across the two feeders
     // keeps the wire diffable in a packet capture.
-    if (!gnf1_session_valid(session) || !out || cap == 0) return -1;
+    if (!gnf1_session_valid(session) || !out || cap == 0 || sbf_format > 255) return -1;
     // Escaped straight into out: the caller's cap (GNF1_HELLO_MAX for the pusher) is the one
     // bound on the token and station. The session needs no escaping: gnf1_session_valid
     // just proved it holds no '"', '\', or control characters.
     size_t n = 0;
+    char sbf[16] = "";
+    if (sbf_format) snprintf(sbf, sizeof sbf, ",\"sbf\":%u", sbf_format);
     bool ok = append_text(out, cap, &n, "{\"token\":\"") &&
               append_escaped(out, cap, &n, token ? token : "") &&
               append_text(out, cap, &n, "\",\"station\":\"") &&
@@ -177,6 +196,7 @@ int gnf1_build_hello(char *out, size_t cap, const char *token, const char *stati
               append_text(out, cap, &n, "\"") &&
               (!zstd || append_text(out, cap, &n, ",\"zstd\":true")) &&
               (!evidence || append_text(out, cap, &n, ",\"evidence\":true")) &&
+              append_text(out, cap, &n, sbf) &&
               append_text(out, cap, &n, "}");
     if (!ok) {
         out[0] = 0;

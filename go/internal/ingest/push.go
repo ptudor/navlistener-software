@@ -587,7 +587,7 @@ func (p *PushServer) handle(ctx context.Context, conn net.Conn, preAuthDone func
 	if p.updates != nil {
 		p.updates.BeginSession(observerContext, session)
 	}
-	if (authorized.reception == 1 || authorized.reception == 2) && feed == "ubx" && p.reception != nil {
+	if (authorized.reception == 1 || authorized.reception == 2) && (feed == "ubx" || feed == "sbf") && p.reception != nil {
 		p.reception.BeginSession(observerContext, session, authorized.reception)
 		sessionCtx = context.WithValue(sessionCtx, receptionContextKey{}, authorized.reception)
 	}
@@ -690,9 +690,17 @@ func (p *PushServer) handshake(ctx context.Context, conn net.Conn, w *connWriter
 	obs := observerContext.ObserverID
 	// regression fix/regression fix defense-in-depth: push has an explicit wire-contract allow-list,
 	// independent of what a future non-config Authenticator may accidentally grant.
-	// Dial-only sbf/ntrip must never reach recordToFrame's ubx/rtcm branches.
-	if h.Feed != "ubx" && h.Feed != "rtcm" {
+	// Dial-only ntrip must never reach recordToFrame's ubx/rtcm/sbf branches.
+	if !wire.PushFeed(h.Feed) {
 		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "unsupported feed"}))
+		return authorizedHello{}, false
+	}
+	// An sbf session names the one record format it sends, and only an sbf session may
+	// name one: a feeder speaking another format must never have its records read as
+	// format 1, and one that did not ask must never be told SBF was agreed.
+	if (h.Feed == "sbf") != (h.SBF != 0) || (h.SBF != 0 && h.SBF != wire.SBFFormat) {
+		_ = w.write(wire.Welcome, mustWelcome(wire.WelcomeMsg{OK: false, Error: "unsupported sbf format"}))
+		p.log.Warn("push HELLO SBF format refused", "remote", remote, "observer", obs, "feed", h.Feed, "sbf", h.SBF)
 		return authorizedHello{}, false
 	}
 	// the session is the boot-identity half of the replay-dedup key
@@ -707,6 +715,7 @@ func (p *PushServer) handshake(ctx context.Context, conn net.Conn, w *connWriter
 	}
 	welcome := wire.WelcomeMsg{
 		DurableACK: p.durable != nil, OK: true, AckIntervalMS: int(p.ackInterval / time.Millisecond), Zstd: h.Zstd,
+		SBF: h.SBF,
 	}
 	// Hardware evidence is read only now: the HELLO has authenticated and named
 	// a usable feed and session, so an unauthenticated or malformed peer never
@@ -1211,7 +1220,7 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				if !dropPermanentlyMalformed(seq, "gnssid_range") {
 					return
 				}
-			} else if !navRecordBounded(rec) {
+			} else if !navRecordBounded(rec, feed) {
 				// a navigation record body past the largest legitimate frame by
 				// an order of magnitude is not a frame. The wire allows 1 MiB per
 				// record because HELLO and telemetry share MaxFrameLen, but every
@@ -1225,6 +1234,13 @@ func (p *PushServer) stream(ctx context.Context, frames io.Reader, w *connWriter
 				}
 			} else if feed == "rtcm" && !IsTelemetryType(int(rec.FrameType)) && len(rec.Raw) < 3 {
 				if !dropPermanentlyMalformed(seq, "rtcm_short") {
+					return
+				}
+			} else if !sbfRecordWellFormed(rec, feed) {
+				// a record on an sbf session that is neither telemetry nor one whole,
+				// CRC-valid SBF block (wire.SBFFormat). A block that fails its own CRC
+				// or Length was damaged before it was framed; no retransmit restores it.
+				if !dropPermanentlyMalformed(seq, "sbf_block") {
 					return
 				}
 			} else if !wordRecordWellFormed(rec, feed) {
@@ -1390,9 +1406,9 @@ func waitForDurable(ctx context.Context, tracker *DurableTracker, source, sessio
 }
 
 // recordToFrame reconstructs a RawFrame from a GNF1 raw record. A telemetry record
-// (frame_type < 0x10, docs/CONSTELLATIONS.md §6.2) decodes to an RF sample; word-oriented
-// feeds (ubx/sbf nav frames) carry the broadcast words big-endian in Raw; rtcm carries the
-// message bytes. The reception time falls back to now when the feeder did not stamp it. A
+// (frame_type < 0x10, docs/CONSTELLATIONS.md §6.2) decodes to an RF sample; the ubx feed
+// carries the broadcast words big-endian in Raw; rtcm carries the message bytes; sbf
+// carries one whole SBF block, split as a dial capture splits it. The reception time falls back to now when the feeder did not stamp it. A
 // malformed telemetry body returns nil (the caller counts and drops it).
 // Future stamps remain tightly bounded as clock errors. Past stamps have a much
 // wider horizon because the edge feeder deliberately replays its durable spool
@@ -1443,6 +1459,14 @@ func recordToFrame(rec wire.RawRecord, feed, source string) *RawFrame {
 		SigID:       int(rec.SigID),
 		FreqID:      int(rec.FreqID),
 		MsgType:     int(rec.FrameType),
+	}
+	if feed == "sbf" {
+		number, header, body, err := splitSBFBlock(rec.Raw)
+		if err != nil || rec.FrameType != wire.SBFBlockRecord {
+			return nil
+		}
+		f.MsgType, f.SBFHeader, f.Bytes = number, header, body
+		return f
 	}
 	if feed == "rtcm" {
 		if len(rec.Raw) < 3 {
@@ -1520,33 +1544,57 @@ func receiveTimestampPlausible(stamped, now time.Time) bool {
 	return d <= RecvTimestampSlack && d >= -recvReplayHorizon
 }
 
-// maxNavRecordBytes bounds a navigation record's body. The largest frame any
-// supported feed legitimately carries is far smaller — a GNSS broadcast nav
+// maxNavRecordBytes bounds a navigation record's body. The largest frame a
+// word or RTCM feed legitimately carries is far smaller — a GNSS broadcast nav
 // frame is at most ~600 bytes of words, an RTCM3 message at most 1023 bytes
-// plus 6 of framing, an SBF block at most 4096 — so 4 KiB admits every real
-// frame while refusing the 1 MiB bodies the wire's shared MaxFrameLen would
-// otherwise let a feeder push into the decode queue and the historian.
-// Telemetry records have their own exact-length codecs and are exempt.
+// plus 6 of framing — so 4 KiB admits every real frame while refusing the
+// 1 MiB bodies the wire's shared MaxFrameLen would otherwise let a feeder push
+// into the decode queue and the historian. An SBF block is bounded by its own
+// 16-bit Length instead (wire.MaxSBFBlock): a measurement epoch across every
+// tracked signal can exceed 4 KiB. Telemetry records have their own
+// exact-length codecs and are exempt.
 const maxNavRecordBytes = 4096
 
-// navRecordBounded reports whether a non-telemetry record's body is within
-// maxNavRecordBytes.
-func navRecordBounded(rec wire.RawRecord) bool {
-	return IsTelemetryType(int(rec.FrameType)) || len(rec.Raw) <= maxNavRecordBytes
+// navRecordBounded reports whether a non-telemetry record's body is within the
+// bound for its feed.
+func navRecordBounded(rec wire.RawRecord, feed string) bool {
+	if IsTelemetryType(int(rec.FrameType)) {
+		return true
+	}
+	if feed == "sbf" {
+		return len(rec.Raw) <= wire.MaxSBFBlock
+	}
+	return len(rec.Raw) <= maxNavRecordBytes
+}
+
+// sbfRecordWellFormed enforces SBF record format 1 (wire.SBFFormat) on an sbf
+// session: every record that is not telemetry is one whole SBF block with the
+// SBF record type, zero navigation header bytes, a Length equal to its size and
+// a valid CRC. Other feeds are not affected.
+func sbfRecordWellFormed(rec wire.RawRecord, feed string) bool {
+	if feed != "sbf" || IsTelemetryType(int(rec.FrameType)) {
+		return true
+	}
+	if rec.FrameType != wire.SBFBlockRecord || rec.GnssID != 0 || rec.SvID != 0 || rec.SigID != 0 || rec.FreqID != 0 {
+		return false
+	}
+	_, _, _, err := splitSBFBlock(rec.Raw)
+	return err == nil
 }
 
 // wordRecordWellFormed enforces the word-feed wire invariant before conversion
-// . A word-oriented record — every non-telemetry record on a feed
-// other than rtcm — carries whole big-endian 32-bit broadcast words
+// . A word-oriented record — every non-telemetry record on the ubx
+// feed — carries whole big-endian 32-bit broadcast words
 // (docs/CONSTELLATIONS.md §6.1), so its body must be non-empty and a multiple of
 // four bytes. Anything else is malformed on the wire, not merely undecodable:
 // silently truncating it would store raw evidence that differs from the bytes
 // the authenticated feeder actually sent. Telemetry bodies have their own
-// exact-length codecs and rtcm carries byte-oriented messages, so both are
-// exempt. Per-signal word-count expectations deliberately stay in the frame
-// decoders — this gate asserts only what the wire format itself guarantees.
+// exact-length codecs, rtcm carries byte-oriented messages and sbf whole
+// blocks (sbfRecordWellFormed), so all three are exempt. Per-signal word-count
+// expectations deliberately stay in the frame decoders — this gate asserts only
+// what the wire format itself guarantees.
 func wordRecordWellFormed(rec wire.RawRecord, feed string) bool {
-	if IsTelemetryType(int(rec.FrameType)) || feed == "rtcm" {
+	if IsTelemetryType(int(rec.FrameType)) || feed == "rtcm" || feed == "sbf" {
 		return true
 	}
 	return len(rec.Raw) > 0 && len(rec.Raw)%4 == 0

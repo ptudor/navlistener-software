@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ptudor/navlistener/internal/identity"
+	"github.com/ptudor/navlistener/internal/wire"
 )
 
 const goodHash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -449,7 +450,7 @@ func TestNtripSource(t *testing.T) {
 	}
 
 	// ntrip is not a valid push feed grant (a feeder can't push "ntrip").
-	if knownIngestTypes["ntrip"] {
+	if wire.PushFeed("ntrip") {
 		t.Error("ntrip must not be a push feed type")
 	}
 }
@@ -530,21 +531,24 @@ func TestPushFeedGrantValidated(t *testing.T) {
 	}
 }
 
-// TestPushSBFFeedGrantRejected guards GNF1's 1-byte frame_type field
-// cannot carry an SBF block number, so an sbf push grant must be rejected at
-// config validation until a block-number carriage is defined -- dial-mode sbf
-// (a separate, decoder-owned connector) is unaffected.
-func TestPushSBFFeedGrantRejected(t *testing.T) {
-	c := pushConfig(Push{Addr: "0.0.0.0:5580", TLSCert: "c.pem", TLSKey: "k.pem"})
+// TestPushSBFFeedGrant: SBF record format 1 carries each block whole, its
+// block number in its own header, so sbf is a push feed grant beside ubx and
+// rtcm; dial-mode sbf (a separate connector) still requires capture_only.
+func TestPushSBFFeedGrant(t *testing.T) {
+	cert, key := testKeypair(t)
+	c := pushConfig(Push{Addr: "0.0.0.0:5580", TLSCert: cert, TLSKey: key})
 	c.Push.Observers = []PushObserver{{Station: "s", TokenSHA256: goodHash, Feeds: []string{"sbf"}}}
-	if err := c.finalizePush(); err == nil {
-		t.Error("sbf push feed grant accepted, want rejected (no block-number carriage yet)")
+	if err := c.finalizePush(); err != nil {
+		t.Errorf("sbf push feed grant rejected: %v", err)
 	}
-	// Dial-mode sbf remains valid -- this finding is push-only.
 	ok := defaults()
 	ok.Ingest = []Source{{Name: "sbf-recv", Type: "sbf", Addr: "127.0.0.1:5555", CaptureOnly: true}}
 	if err := ok.finalize(); err != nil {
-		t.Errorf("dial-mode sbf source rejected: %v (should be unaffected by the push-only regression fix restriction)", err)
+		t.Errorf("dial-mode sbf source rejected: %v", err)
+	}
+	ok.Ingest[0].CaptureOnly = false
+	if err := ok.finalize(); err == nil {
+		t.Error("dial-mode sbf source accepted without capture_only")
 	}
 }
 

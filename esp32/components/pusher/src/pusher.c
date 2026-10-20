@@ -371,7 +371,7 @@ static int handshake(esp_tls_t *tls)
     // a token/station whose escaped form overflows the collector's own HELLO cap.
     char *hello = s_hello;
     int hn = gnf1_build_hello(hello, sizeof s_hello, s_cfg.token, s_cfg.station, s_cfg.feed,
-                              s_cfg.session, false, evidence_len > 0);
+                              s_cfg.session, false, evidence_len > 0, s_cfg.sbf_format);
     if(hn>0 && s_cfg.reception_control) {
         int extra=snprintf(hello+hn-1,sizeof s_hello-(size_t)hn+1,",\"reception\":2}");
         hn=extra<0 || (size_t)extra>=sizeof s_hello-(size_t)hn+1 ? -1 : hn-1+extra;
@@ -405,7 +405,16 @@ static int handshake(esp_tls_t *tls)
     if (!uj_parse(&welcome,(const char *)buf,len)) return -1;
     const uj_node *accepted=uj_get(&welcome,uj_root(&welcome),"ok");
     const uj_node *durable=uj_get(&welcome,uj_root(&welcome),"durable_ack");
+    const uj_node *sbf=uj_get(&welcome,uj_root(&welcome),"sbf");
     bool ok=accepted && accepted->kind==UJ_BOOL && accepted->number==1;
+    // An sbf session sends nothing until the collector confirms the record format it asked
+    // for; a collector that accepts the session without it would read no block correctly.
+    if (ok && s_cfg.sbf_format && !(sbf && sbf->kind==UJ_UINT && sbf->number==s_cfg.sbf_format)) {
+        ESP_LOGW(TAG, "collector accepted the session without confirming SBF record format %u: %.*s",
+                 s_cfg.sbf_format, (int)len, (const char *)buf);
+        uj_free(&welcome);
+        return -2;
+    }
     atomic_store(&s_durable,ok && durable && durable->kind==UJ_BOOL && durable->number==1);
     // The collector's verdict on the evidence is informational: it labels the data this
     // session sends and never decides whether the session continues.
@@ -418,6 +427,18 @@ static int handshake(esp_tls_t *tls)
         return -2;
     }
     return 0;
+}
+
+// send_record writes one spooled record as a DATA frame. A record that fits GNF1_RECORD_MAX goes
+// out in one write; a larger one (an SBF block) as the DATA header and then the record itself,
+// never cut short. Returns 0 on success.
+static int send_record(esp_tls_t *tls, uint8_t frame[GNF1_DATA_MAX], const spool_frame_t *r)
+{
+    size_t flen = gnf1_encode_data(frame, r->seq, r->data, r->len);
+    if (flen) return tls_write_all(tls, frame, flen);
+    gnf1_data_header(frame, r->seq, r->len);
+    int rc = tls_write_all(tls, frame, GNF1_DATA_HDR);
+    return rc ? rc : tls_write_all(tls, r->data, r->len);
 }
 
 // --- one connection lifetime -------------------------------------------------------------
@@ -526,8 +547,7 @@ static int serve(const char *host, const char *verify, bool via_tunnel)
         bool ok = true;
         for (size_t i = 0; i < n; i++) {
             if (ok) {
-                size_t flen = gnf1_encode_data(frame, batch[i].seq, batch[i].data, batch[i].len);
-                if (tls_write_all(tls, frame, flen) == 0) {
+                if (send_record(tls, frame, &batch[i]) == 0) {
                     sent_upto = batch[i].seq;network_health_io(0,0,1);
                     if(!s_outstanding){s_outstanding=true;s_outstanding_ms=diag_now();}
                 }

@@ -143,3 +143,25 @@ func TestIntegrationSBFHeaderRoundTrip(t *testing.T) {
 		t.Fatalf("count=%d revisions=%v err=%v", count, seen, err)
 	}
 }
+
+// TestSBFPushPersistenceMapping: a block pushed under SBF record format 1 reaches
+// the historian as a dial capture does, a nav_frames row with the block number,
+// the eight original header bytes and the body, plus the session and sequence
+// that dedup a replay. The frame is the one the push path builds
+// (ingest.TestPushSBFRecordsSplitLikeCaptures pins that shape).
+func TestSBFPushPersistenceMapping(t *testing.T) {
+	wires, _ := sbfCaptureFixtures(t)
+	block := wires[1]
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	f := &ingest.RawFrame{Recv: now, RecvLocal: now, RecvStamped: true, Source: "p3-observer", MsgType: 4017,
+		SBFHeader: append([]byte(nil), block[:8]...), Bytes: append([]byte(nil), block[8:]...),
+		Seq: 42, HasSeq: true, Session: "boot-p3"}
+	saved := frameForPersistence(f)
+	if saved.RF != nil || saved.Board != nil {
+		t.Fatalf("pushed SBF block routed off nav_frames: rf=%v board=%v", saved.RF, saved.Board)
+	}
+	if saved.SourceSeq != 42 || !saved.HasSourceSeq || saved.Session != "boot-p3" {
+		t.Fatalf("replay key = %q/%d (has=%v), want boot-p3/42", saved.Session, saved.SourceSeq, saved.HasSourceSeq)
+	}
+	assertSBFCapture(t, store.StoredNavFrame{MsgType: saved.MsgType, Raw: saved.Raw, SBFHeader: saved.SBFHeader}, block, 6)
+}

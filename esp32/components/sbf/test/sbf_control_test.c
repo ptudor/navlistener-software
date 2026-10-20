@@ -172,12 +172,47 @@ static void recovery_test(void)
     assert(c.state == SBF_CONTROL_RUNNING);
 }
 
+// The blocks forwarded to the collector are exactly those the sso commands request: every name
+// in them maps to a forwarded number (4.2), and no other number is forwarded.
+static void forwarded_test(void)
+{
+    static const struct { const char *name; uint16_t number; } blocks[] = {
+        {"PVTGeodetic", 4007}, {"ReceiverTime", 5914}, {"MeasEpoch", 4027}, {"SatVisibility", 4012},
+        {"ReceiverStatus", 4014}, {"RFStatus", 4092}, {"ReceiverSetup", 5902}, {"GPSRawCA", 4017},
+        {"GPSRawL2C", 4018}, {"GPSRawL5", 4019}, {"GLORawCA", 4026}, {"GALRawFNAV", 4022},
+        {"GALRawINAV", 4023}, {"GEORawL1", 4020}, {"BDSRaw", 4047}, {"BDSRawB2a", 4219},
+        {"QZSRawL1CA", 4066}, {"QZSRawL2C", 4067}, {"QZSRawL5", 4068},
+    };
+    const char *const *list;
+    const size_t steps = sbf_control_commands(&list);
+    unsigned named = 0;
+    for (size_t i = 0; i < steps; i++) {
+        if (strncmp(list[i], "sso, ", 5)) continue;
+        char messages[512];
+        const char *start = strchr(strchr(list[i] + 5, ',') + 1, ',') + 2, *end = strrchr(list[i], ',');
+        assert(end > start && (size_t)(end - start) < sizeof messages);
+        memcpy(messages, start, (size_t)(end - start));
+        messages[end - start] = 0;
+        for (char *name = strtok(messages, "+"); name; name = strtok(NULL, "+")) {
+            size_t k = 0;
+            while (k < sizeof blocks / sizeof blocks[0] && strcmp(blocks[k].name, name)) k++;
+            assert(k < sizeof blocks / sizeof blocks[0] && sbf_control_forwarded(blocks[k].number));
+            named++;
+        }
+    }
+    unsigned forwarded = 0;
+    for (unsigned n = 0; n < 8192; n++) forwarded += sbf_control_forwarded((uint16_t)n);
+    assert(named == sizeof blocks / sizeof blocks[0] && forwarded == named);
+}
+
 int main(void)
 {
     configuration_test();
     reply_test();
     recovery_test();
+    forwarded_test();
     puts("SBF control: configuration sequence, CTS only after RTS|CTS is confirmed, constellations, error and "
-         "foreign replies, silence and restart recovery, escape, reset pulses and their 10-minute spacing passed");
+         "foreign replies, silence and restart recovery, escape, reset pulses and their 10-minute spacing, and the "
+         "forwarded blocks passed");
     return 0;
 }

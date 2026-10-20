@@ -56,7 +56,7 @@ func TestPushRejectsOversizedNavRecords(t *testing.T) {
 	// Telemetry is exempt: its codecs bound their own lengths.
 	telem := navRecord(maxNavRecordBytes + 4)
 	telem.FrameType = TelemJammingStats
-	if !navRecordBounded(telem) {
+	if !navRecordBounded(telem, "ubx") {
 		t.Error("telemetry body refused by the navigation record bound")
 	}
 }

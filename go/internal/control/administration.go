@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/ptudor/navlistener/internal/identity"
+	"github.com/ptudor/navlistener/internal/wire"
 )
 
 // invalidRequest marks an error caused by the operator's request rather than by
@@ -67,7 +68,7 @@ func (s *Service) ChangePolicy(ctx context.Context, operator string, p PolicyCha
 		return invalid("at least one feed grant is required")
 	}
 	for _, f := range p.FeedGrants {
-		if f != "ubx" && f != "rtcm" {
+		if !wire.PushFeed(f) {
 			return invalid("unsupported feed grant %q", f)
 		}
 	}

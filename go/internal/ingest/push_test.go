@@ -959,9 +959,10 @@ func TestPushRejectsUngrantedFeed(t *testing.T) {
 }
 
 // Even an Authenticator that explicitly grants a dial-only feed cannot widen the
-// GNF1 push wire contract.
+// GNF1 push wire contract. (sbf became a push feed with SBF record format 1; its
+// handshake is pinned in TestPushSBFHandshake.)
 func TestPushRejectsGrantedDialOnlyFeeds(t *testing.T) {
-	for _, feed := range []string{"sbf", "ntrip"} {
+	for _, feed := range []string{"ntrip", "nmea"} {
 		t.Run(feed, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()

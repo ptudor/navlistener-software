@@ -34,6 +34,7 @@ import (
 	"github.com/ptudor/navlistener/internal/integrity"
 	"github.com/ptudor/navlistener/internal/reception"
 	"github.com/ptudor/navlistener/internal/updates"
+	"github.com/ptudor/navlistener/internal/wire"
 )
 
 // IntervalRe is the simple-interval allowlist for store.Store's raw_retention and
@@ -71,18 +72,12 @@ var DefaultPaths = []string{
 	"./navlistener.toml",
 }
 
-// knownIngestTypes are the raw-frame message formats a feeder may push (the push
-// feed grant, docs/CONSTELLATIONS.md §2). sbf is deliberately absent : GNF1's
-// 1-byte frame_type field cannot carry an SBF block number (dial-mode sbf, decoded
-// directly by the receiver's own connector, is unaffected -- see knownDialTypes
-// below). Re-add it once a block-number carriage is defined.
-var knownIngestTypes = map[string]bool{
-	"ubx":  true, // u-blox UBX-RXM-SFRBX stream
-	"rtcm": true, // RTCM3 ephemeris / SSR
-}
+// The raw-frame message formats a feeder may push (the push feed grant,
+// docs/CONSTELLATIONS.md §2) are wire.PushFeed's: ubx, rtcm and sbf, each with
+// its own record rules in docs/DESIGN.md §2.
 
-// knownDialTypes are the connector types a dial [[ingest]] source may use: the raw-frame
-// formats above plus ntrip, which is an RTCM3 transport (a caster spoken over HTTP), not a
+// knownDialTypes are the connector types a dial [[ingest]] source may use: the push
+// feed formats plus ntrip, which is an RTCM3 transport (a caster spoken over HTTP), not a
 // push feed grant — hence a separate set (a feeder can't push "ntrip").
 var knownDialTypes = map[string]bool{
 	"ubx":   true,
@@ -1551,7 +1546,7 @@ func (c *Config) finalizePush() error {
 			return fmt.Errorf("push.observer %q: at least one feed type is required", o.Station)
 		}
 		for _, f := range o.Feeds {
-			if !knownIngestTypes[f] {
+			if !wire.PushFeed(f) {
 				return fmt.Errorf("push.observer %q: unknown feed type %q", o.Station, f)
 			}
 		}

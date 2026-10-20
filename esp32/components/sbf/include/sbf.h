@@ -32,6 +32,19 @@ enum {
     SBF_RECEIVER_STATUS = 4014,
     SBF_RF_STATUS = 4092,
     SBF_RECEIVER_SETUP = 5902,
+    // Navigation page blocks (4.2.2), forwarded to the collector and not decoded here.
+    SBF_GPS_RAW_CA = 4017,
+    SBF_GPS_RAW_L2C = 4018,
+    SBF_GPS_RAW_L5 = 4019,
+    SBF_GLO_RAW_CA = 4026,
+    SBF_GAL_RAW_FNAV = 4022,
+    SBF_GAL_RAW_INAV = 4023,
+    SBF_GEO_RAW_L1 = 4020,
+    SBF_BDS_RAW = 4047,
+    SBF_BDS_RAW_B2A = 4219,
+    SBF_QZS_RAW_L1CA = 4066,
+    SBF_QZS_RAW_L2C = 4067,
+    SBF_QZS_RAW_L5 = 4068,
 };
 #define SBF_TOW_UNKNOWN 4294967295u
 #define SBF_WNC_UNKNOWN 65535u

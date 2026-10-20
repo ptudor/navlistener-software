@@ -162,7 +162,8 @@ ack_interval = "1s"
 
 # One [[push.observer]] per enrolled feeder. token_sha256 is the hex SHA-256 of the
 # bearer token shown once at enrollment (generate it: printf %s "$TOKEN" | sha256).
-# The token itself is NEVER stored here. feeds is the grant (Device.feed_types).
+# The token itself is NEVER stored here. feeds is the grant (Device.feed_types): any of
+# "ubx", "rtcm" and "sbf" (a P3 observer's Septentrio receiver).
 # [[push.observer]]
 # station      = "observer16"
 # token_sha256 = "….64 hex chars.…"

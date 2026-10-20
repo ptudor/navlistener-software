@@ -73,7 +73,7 @@ func TestPolicyChangeKeepsCredential(t *testing.T) {
 		t.Fatalf("unknown enrollment: err = %v, want a request error", err)
 	}
 	public := change
-	public.Publication.Revision, public.FeedGrants = "r3", []string{"sbf"}
+	public.Publication.Revision, public.FeedGrants = "r3", []string{"nmea"}
 	if err := b.service.ChangePolicy(ctx, "operator", public); !errors.As(err, &bad) {
 		t.Fatalf("unsupported feed: err = %v, want a request error", err)
 	}

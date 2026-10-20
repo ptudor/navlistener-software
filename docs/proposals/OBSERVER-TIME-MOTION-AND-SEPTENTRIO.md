@@ -190,18 +190,19 @@ short/long gaps, relocation and implausible motion.
 
 | Layer | Current support | Remaining work |
 |---|---|---|
-| Collector SBF input | TCP dial capture, framing/CRC, original header/revision/body persistence and exact reconstruction | Real P3 captures and block-specific decoding. |
+| Collector SBF input | TCP dial capture and `sbf` push sessions: framing/CRC, original header/revision/body persistence and exact reconstruction | Real P3 captures and block-specific decoding. |
 | C feeder | UBX input | SBF source/configuration support. |
-| ESP32 receiver | UBX parser, MON-VER discovery and UBX configuration; on a P3, SBF framing and CRC, Septentrio command/reply handling, COM2 RTS/CTS, identity and constellation discovery, receiver reset recovery, and status/time adaptation into the receiver-neutral status ([SBF-RECEIVER.md](../../esp32/docs/SBF-RECEIVER.md)) | Raw navigation bits and solution records toward the collector, which wait on the GNF1 SBF representation; higher baud rates; validation on a P3. |
-| GNF1 push and enrollment | `ubx`/`rtcm` feed grants; SBF rejected | Versioned SBF representation preserving the full block header; feeder, collector, grant validation, spool and replay updates together. |
+| ESP32 receiver | UBX parser, MON-VER discovery and UBX configuration; on a P3, SBF framing and CRC, Septentrio command/reply handling, COM2 RTS/CTS, identity and constellation discovery, receiver reset recovery, status/time adaptation into the receiver-neutral status, and the configured blocks, navigation pages included, forwarded whole on the `sbf` feed ([SBF-RECEIVER.md](../../esp32/docs/SBF-RECEIVER.md)) | Higher baud rates; validation on a P3. |
+| GNF1 push and enrollment | `ubx`/`rtcm`/`sbf` feed grants; SBF record format 1 negotiated in HELLO and WELCOME, each block carried whole with its header, persisted with the session and sequence that dedup replay ([DESIGN.md §2](../DESIGN.md#2-the-gnf1-wire-feeder--collector)) | An SBF source mode in the C feeder, whose disk spool would need a feed and format identity. |
 | Station analysis | Receiver-neutral solution record and integrity engine | Map P3 solution, uncertainty, time, tracking and RF evidence; retain unavailable fields rather than inventing UBX equivalents. |
 | Board platform | Identity EEPROM, manifest, ATECC, commissioning, OTA, RTC, panel and selected sensors; the P3 board ID, revision 1 parts list, pins, OTA target, rail monitor and its alert interrupt, SHT35 and HIH8121 drivers, and receiver reset control | Bring-up on an assembled P3. |
 
-The present GNF1 DATA `frame_type` cannot carry an SBF block number. Widening or
-truncating it locally is not a transport design. A new representation needs
-explicit format/version negotiation and compatibility tests. Central raw-nav
-decoders can reuse signal-level GNSS parsers after SBF unpacking; receiver PVT,
-raw measurements and raw navigation bits remain separate inputs.
+The GNF1 DATA `frame_type` cannot carry an SBF block number, so SBF record
+format 1 carries each block whole, its number and revision in its own header,
+under an explicit HELLO/WELCOME format negotiation; a later format takes a new
+version the same way. Central raw-nav decoders can reuse signal-level GNSS
+parsers after SBF unpacking; receiver PVT, raw measurements and raw navigation
+bits remain separate inputs.
 
 Use the X20 power/protection, rail control and monitoring, identity and service
 patterns, and the MAX Measure's open placement approach as design starting

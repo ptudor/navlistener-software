@@ -8,9 +8,24 @@ static const char *const commands[] = {
     "scst, usec500\r",
     "sso, Res1, COM2, PVTGeodetic+ReceiverTime+MeasEpoch+SatVisibility+ReceiverStatus+RFStatus, sec1\r",
     "sso, Res2, COM2, ReceiverSetup, OnChange\r",
+    "sso, Res3, COM2, GPSRawCA+GPSRawL2C+GPSRawL5+GLORawCA+GALRawFNAV+GALRawINAV+GEORawL1+BDSRaw+BDSRawB2a+QZSRawL1CA+QZSRawL2C+QZSRawL5, OnChange\r",
     "gst\r",
 };
-enum { STEP_FLOW_CONTROL = 0, STEP_TRACKING = 5, STEPS = sizeof commands / sizeof commands[0] };
+enum { STEP_FLOW_CONTROL = 0, STEP_TRACKING = 6, STEPS = sizeof commands / sizeof commands[0] };
+
+bool sbf_control_forwarded(uint16_t number)
+{
+    switch (number) {
+    case SBF_PVT_GEODETIC: case SBF_RECEIVER_TIME: case SBF_MEAS_EPOCH: case SBF_SAT_VISIBILITY:
+    case SBF_RECEIVER_STATUS: case SBF_RF_STATUS: case SBF_RECEIVER_SETUP:
+    case SBF_GPS_RAW_CA: case SBF_GPS_RAW_L2C: case SBF_GPS_RAW_L5: case SBF_GLO_RAW_CA:
+    case SBF_GAL_RAW_FNAV: case SBF_GAL_RAW_INAV: case SBF_GEO_RAW_L1: case SBF_BDS_RAW:
+    case SBF_BDS_RAW_B2A: case SBF_QZS_RAW_L1CA: case SBF_QZS_RAW_L2C: case SBF_QZS_RAW_L5:
+        return true;
+    default:
+        return false;
+    }
+}
 static const char escape[] = "SSSSSSSSSS\r";
 
 size_t sbf_control_commands(const char *const **list) { *list = commands; return STEPS; }

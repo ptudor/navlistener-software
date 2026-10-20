@@ -342,7 +342,7 @@ func TestOperatorHTTPBoundary(t *testing.T) {
 
 	// A request the operator can correct gets its reason.
 	unsupported := valid
-	unsupported.FeedGrants = []string{"sbf"}
+	unsupported.FeedGrants = []string{"nmea"}
 	w := operatorRequest(t, handler, token, "/v1/enrollments/validate", unsupported)
 	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "unsupported feed grant") {
 		t.Fatalf("correctable validate failure: %d %s", w.Code, w.Body.String())

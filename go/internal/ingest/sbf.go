@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"time"
+
+	"github.com/ptudor/navlistener/internal/wire"
 )
 
 // Septentrio SBF framing (docs/CONSTELLATIONS.md §2.2). A block is: sync "$@",
@@ -13,9 +15,9 @@ import (
 // total block length incl the 8-byte header, a multiple of 4), then the body. The
 // CRC-16-CCITT covers ID+Length+body. SBF delivers already-de-interleaved ICD nav
 // bits, so the collector emits the raw block body tagged with its block number.
-// SBF sources are deliberately capture-only today: the block number and body are
-// retained with the original header for historian/future replay, but no block-specific live-state
-// decoder is dispatched.
+// A dial capture and an sbf push session (wire.SBFFormat) give the same frame: the
+// block number and body with the original header, kept for the historian and exact
+// reconstruction. No block-specific live-state decoder is dispatched yet.
 const (
 	sbfSync1 = '$'
 	sbfSync2 = '@'
@@ -107,6 +109,26 @@ func crc16ccitt(groups ...[]byte) uint16 {
 		}
 	}
 	return crc
+}
+
+// splitSBFBlock checks one whole SBF block, as an sbf push record carries it
+// (wire.SBFFormat): the "$@" sync, a Length equal to the block's size and a multiple of
+// four, and the CRC over ID, Length and body. It returns the block number and copies of
+// the eight-byte header and the body, the same RawFrame shape scanSBF gives a dial
+// capture, so both persist and rebuild alike.
+func splitSBFBlock(block []byte) (number int, header, body []byte, err error) {
+	if len(block) < 8 || len(block) > wire.MaxSBFBlock || block[0] != sbfSync1 || block[1] != sbfSync2 {
+		return 0, nil, nil, fmt.Errorf("not an SBF block")
+	}
+	id := binary.LittleEndian.Uint16(block[4:6])
+	length := int(binary.LittleEndian.Uint16(block[6:8]))
+	if length != len(block) || length%4 != 0 {
+		return 0, nil, nil, fmt.Errorf("SBF block length %d does not match its %d bytes", length, len(block))
+	}
+	if crc16ccitt(block[4:8], block[8:]) != binary.LittleEndian.Uint16(block[2:4]) {
+		return 0, nil, nil, fmt.Errorf("SBF block CRC mismatch")
+	}
+	return int(id & 0x1fff), append([]byte(nil), block[:8]...), append([]byte(nil), block[8:]...), nil
 }
 
 // SBFRevision reports the recorded revision. Legacy body-only captures remain

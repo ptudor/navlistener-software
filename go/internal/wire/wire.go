@@ -83,16 +83,20 @@ var (
 	ErrShortRecord = errors.New("wire: DATA record too short")
 )
 
-// HelloMsg is the feeder's opening handshake (JSON). feed ∈ {ubx, rtcm} : the push
-// path deliberately rejects sbf (the GNF1 frame_type can't carry SBF block numbers, regression fix)
-// and nmea is unimplemented — a second feeder implementer mirroring this file must not build
-// an sbf/nmea pusher that can never authenticate.
+// HelloMsg is the feeder's opening handshake (JSON). feed ∈ {ubx, rtcm, sbf}; nmea is
+// unimplemented, and a second feeder implementer mirroring this file must not build an nmea
+// pusher that can never authenticate. An sbf feed names its record format in SBF, which the
+// WELCOME confirms before any SBF record may be sent (docs/DESIGN.md §2).
 type HelloMsg struct {
 	Token   string `json:"token"`
 	Station string `json:"station"`
 	Feed    string `json:"feed"`
 	SW      string `json:"sw"`
 	Zstd    bool   `json:"zstd,omitempty"`
+	// SBF is the SBF record format this session sends: required on an sbf feed and absent
+	// on every other. SBFFormat is the only format defined; any other value, or one on
+	// another feed, is refused before WELCOME.
+	SBF uint8 `json:"sbf,omitempty"`
 	// Session is the feeder's boot/session identity, REQUIRED —
 	// contract revision 2026-07-31: a HELLO without a ValidSession value is
 	// rejected before WELCOME (Error "missing or invalid session"); there are
@@ -153,12 +157,38 @@ type WelcomeMsg struct {
 	// device's journal; neither changes admission.
 	HardwareTrust string `json:"hardware_trust,omitempty"`
 	EvidenceError string `json:"evidence_error,omitempty"`
+	// SBF confirms the SBF record format of an sbf session. A feeder sends SBF records only
+	// after a WELCOME that accepts the session and carries the format it asked for.
+	SBF uint8 `json:"sbf,omitempty"`
+}
+
+// SBFFormat is SBF record format 1: on an sbf feed every record that is not telemetry
+// (frame_type 0x01-0x0F) has frame_type SBFBlockRecord, zero gnssId/svId/sigId/freqId, and
+// a raw body that is one complete Septentrio SBF block exactly as the receiver sent it: the
+// "$@" sync, CRC, ID (block number and revision) and Length, the body and its padding,
+// Length bytes in all, with a valid CRC. The block's own header carries the block number
+// the one-byte frame_type cannot, and the collector keeps all of it, so a stored block
+// rebuilds byte for byte.
+const SBFFormat = 1
+
+// SBFBlockRecord is the record frame_type of one SBF block (docs/CONSTELLATIONS.md §6.3).
+const SBFBlockRecord = 0x80
+
+// MaxSBFBlock is the longest SBF block: Length is 16 bits and a multiple of four.
+const MaxSBFBlock = 65532
+
+// PushFeed reports whether feed is a GNF1 push feed, the one list the collector's
+// configuration, its control plane and the HELLO check share: ubx (UBX-RXM-SFRBX words
+// and receiver telemetry), rtcm (RTCM3 messages) and sbf (Septentrio SBF blocks,
+// SBFFormat). ntrip is a dial transport, not a feed a feeder can push.
+func PushFeed(feed string) bool {
+	return feed == "ubx" || feed == "rtcm" || feed == "sbf"
 }
 
 // RawRecord is the envelope inside a DATA frame: just enough for the collector to
-// dispatch without decoding (docs/DESIGN.md §2). Raw is either the untouched
-// broadcast navigation frame or the exact versioned telemetry body selected by
-// FrameType.
+// dispatch without decoding (docs/DESIGN.md §2). Raw is the untouched broadcast
+// navigation frame, the exact versioned telemetry body selected by FrameType, or, on
+// an sbf feed, one whole SBF block (SBFFormat).
 type RawRecord struct {
 	RecvUnixNs int64       // observer/RTC reception time
 	GnssID     gnss.GNSSID // constellation (u-blox numbering)

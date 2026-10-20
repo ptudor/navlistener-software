@@ -627,7 +627,8 @@ The ZED/X20's front panel is its only chain and takes a 24-bit frame with RTK an
 status; the P3 drives the same panel from GPIO14, without an RTK input. The P3's mosaic-G5
 speaks SBF: the firmware configures its COM2 with RTS/CTS flow control and reads PVT, time,
 measurement, visibility and RF status blocks into the same receiver status the u-blox boards
-fill, and recovers it with the GPIO13 reset ([SBF-RECEIVER.md](../esp32/docs/SBF-RECEIVER.md),
+fill, recovers it with the GPIO13 reset, and forwards those blocks and the receiver's
+navigation pages to the collector on the GNF1 `sbf` feed ([SBF-RECEIVER.md](../esp32/docs/SBF-RECEIVER.md),
 §7.11). The ZED/X20's MCP23008 expander, where listed, collects the
 sensor and INA3221 alert lines behind
 one interrupt on GPIO3 and reads the panel chain back on GP0 once a minute

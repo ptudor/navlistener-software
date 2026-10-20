@@ -138,8 +138,9 @@ for that stable device path); TCP bridge sources need no device permission.
 
 ## Notes
 
-- **Source modes.** Only `--feed ubx` is implemented today (the fleet is u-blox). SBF and
-  RTCM source modes are deferred — the collector's push path wires `ubx`.
+- **Source modes.** Only `--feed ubx` is implemented in this feeder. SBF and RTCM source
+  modes are deferred here; the collector accepts `sbf` pushes (SBF record format 1) from
+  the P3 observer's ESP32.
 - **Never `ssh` from CI/agents** to a box — the commands above are for the operator to run.
 - **Spool.** `--spool` sizes the RAM ring (frames); `--spool-file` adds a disk overflow tier
   capped by `--spool-disk-mb`. On an orderly stop/reboot the ring is flushed to the disk tier

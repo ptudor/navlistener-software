@@ -47,8 +47,12 @@ uint64_t spool_try_append(const uint8_t *data,uint32_t len);
 // spool_ack drops every record with seq <= n and advances the ack watermark.
 void spool_ack(uint64_t n);
 
-// spool_collect copies up to `max` records with seq > `after` into out (oldest first). The
-// caller frees each out[i].data. Returns the count.
+// spool_collect copies up to `max` records with seq > `after` into out (oldest first), in
+// internal RAM, and stops before the copies would pass SPOOL_COLLECT_BYTES, though it always
+// takes the first record. An SBF block record reaches 8 KiB, so a backlog of them must not
+// take the internal heap the network stack needs. The caller frees each out[i].data. Returns
+// the count.
+#define SPOOL_COLLECT_BYTES (32 * 1024)
 size_t spool_collect(uint64_t after, spool_frame_t *out, size_t max);
 
 // spool_acked returns the highest sequence the collector has acked.

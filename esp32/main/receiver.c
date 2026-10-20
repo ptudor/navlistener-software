@@ -4,6 +4,7 @@
 #include "sbf.h"
 #include "sbf_control.h"
 #include "sbf_status.h"
+#include "gnf1.h"
 #include <string.h>
 #include "sdkconfig.h"
 #include "driver/gpio.h"
@@ -196,12 +197,21 @@ static void rx_task(void *arg)
 }
 void receiver_set_module(const char *name) { module = name; }
 void receiver_set_sbf(const receiver_sbf_pins_t *pins) { sbf_mode = true; sbf_pins = *pins; }
+bool receiver_sbf(void) { return sbf_mode; }
 
 // The Septentrio path: COM2 at the receiver's default 115200 baud, RTS throughout and CTS once
 // the receiver confirms RTS|CTS (sbf_control.h), the reset line held low but for a recovery
-// pulse. The reader, whose buffer holds the largest block, is allocated only on this path.
+// pulse. The reader, whose buffer holds the largest block, and the record each forwarded block
+// is framed into are allocated only on this path. Every block the configuration requests goes
+// to the collector whole, through the same emit callback and spool as u-blox records.
 #define SBF_BAUD 115200
+_Static_assert(SBF_MAX_BLOCK <= GNF1_SBF_RAW_MAX, "every block the reader returns fits an SBF record");
 static sbf_reader_t *sbf_reader;
+static uint8_t *sbf_record;
+static ubx_emit_fn sbf_emit;
+static ubx_now_fn sbf_now;
+static void *sbf_emit_ctx;
+static uint32_t sbf_forwarded;
 static sbf_status_t sbf_adapter;
 static sbf_control_t sbf_ctl;
 static sbf_setup_t sbf_identity;
@@ -219,6 +229,13 @@ static void sbf_on_block(const uint8_t *block, size_t length, void *ctx)
     const int64_t now = esp_timer_get_time() / 1000;
     sbf_control_block(&sbf_ctl, block, length, now);
     if (sbf_status_feed(&sbf_adapter, &health, block, length, now)) sbf_publish();
+    if (sbf_control_forwarded(sbf_number(block))) {
+        const size_t n = gnf1_encode_sbf(sbf_record, sbf_now(), block, length);
+        if (n) {
+            sbf_emit(sbf_record, n, sbf_emit_ctx);
+            sbf_forwarded++;
+        }
+    }
     sbf_setup_t setup;
     sbf_rx_status_t status;
     if (sbf_number(block) == SBF_RECEIVER_SETUP && sbf_receiver_setup(block, length, &setup) &&
@@ -313,10 +330,10 @@ static void sbf_task(void *arg)
         }
         if (now >= next_log) {
             static const char *const states[] = {"starting", "configuring", "running", "waiting to retry", "resetting"};
-            ESP_LOGI(TAG, "UART1 TX=GPIO%d RX=GPIO%d RTS=GPIO%d CTS=GPIO%d baud=%d bytes=%lu SBF=%lu CRC errors=%lu "
-                     "scrambled epochs=%lu resets=%u %s%s",
+            ESP_LOGI(TAG, "UART1 TX=GPIO%d RX=GPIO%d RTS=GPIO%d CTS=GPIO%d baud=%d bytes=%lu SBF=%lu forwarded=%lu "
+                     "CRC errors=%lu scrambled epochs=%lu resets=%u %s%s",
                      RX_PIN_TX, RX_PIN_RX, sbf_pins.rts, sbf_pins.cts, SBF_BAUD, (unsigned long)sbf_reader->bytes,
-                     (unsigned long)sbf_reader->blocks, (unsigned long)sbf_reader->crc_errors,
+                     (unsigned long)sbf_reader->blocks, (unsigned long)sbf_forwarded, (unsigned long)sbf_reader->crc_errors,
                      (unsigned long)sbf_adapter.scrambled_epochs, sbf_ctl.resets, states[sbf_ctl.state],
                      sbf_ctl.cts ? ", CTS honored" : "");
             if (!sbf_reader->bytes) ESP_LOGW(TAG, "no UART bytes observed; check GNSS power and the COM2 path");
@@ -330,12 +347,17 @@ static void sbf_task(void *arg)
         }
     }
 }
-static esp_err_t sbf_start(void)
+static esp_err_t sbf_start(const ubx_parser_t *parser)
 {
     if (sbf_pins.rts < 0 || sbf_pins.cts < 0) return ESP_ERR_INVALID_ARG;
+    sbf_emit = parser->emit;
+    sbf_now = parser->now;
+    sbf_emit_ctx = parser->ctx;
     sbf_reader = heap_caps_malloc_prefer(sizeof *sbf_reader, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
                                          MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!sbf_reader) return ESP_ERR_NO_MEM;
+    sbf_record = heap_caps_malloc_prefer(GNF1_SBF_RECORD_MAX, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!sbf_reader || !sbf_record) return ESP_ERR_NO_MEM;
     // Q1 off before anything else: the receiver runs unless a recovery pulse holds it.
     if (sbf_pins.reset >= 0) {
         gpio_set_level(sbf_pins.reset, 0);
@@ -356,7 +378,7 @@ static esp_err_t sbf_start(void)
 
 esp_err_t receiver_start(ubx_parser_t *parser)
 {
-    if (sbf_mode) return sbf_start();
+    if (sbf_mode) return sbf_start(parser);
     uart_config_t cfg = {.baud_rate = CONFIG_NVF_RX_BAUD, .data_bits = UART_DATA_8_BITS,
         .parity = UART_PARITY_DISABLE, .stop_bits = UART_STOP_BITS_1,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE, .source_clk = UART_SCLK_DEFAULT};

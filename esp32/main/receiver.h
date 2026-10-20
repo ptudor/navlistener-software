@@ -10,6 +10,9 @@ void receiver_set_module(const char *name);
 // in reset (the P3's GPIO13 into Q1), or -1 for none. Call before receiver_start.
 typedef struct { int rts, cts, reset; } receiver_sbf_pins_t;
 void receiver_set_sbf(const receiver_sbf_pins_t *pins);
+// Whether the Septentrio path was selected: the receiver's blocks then go to the parser's emit
+// callback as GNF1 SBF records, and the pusher announces the sbf feed.
+bool receiver_sbf(void);
 esp_err_t receiver_start(ubx_parser_t *parser);
 bool receiver_alive(void);
 void receiver_status(gnss_status_t *out);

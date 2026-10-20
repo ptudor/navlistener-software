@@ -607,7 +607,8 @@ void app_main(void)
         .port = g_cfg.port,
         .token = g_cfg.token,
         .station = netcfg_station(&g_cfg),
-        .feed = "ubx",
+        .feed = receiver_sbf() ? "sbf" : "ubx",
+        .sbf_format = receiver_sbf() ? GNF1_SBF_FORMAT : 0,
         .session = s_session,
         .ca_pem = NULL, // P-hw: pin the collector CA; today rely on the Mozilla bundle or insecure
         .insecure = g_cfg.insecure,

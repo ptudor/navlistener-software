@@ -16,7 +16,7 @@ GOLDEN  := ../../../../testdata/gnf1_frame_type.tsv
 
 # frame_type_matrix_test takes the golden-matrix path as argv[1]; every other suite here is
 # self-contained and takes no arguments.
-TESTS   := frame_type_matrix_test hello_test
+TESTS   := frame_type_matrix_test hello_test record_test
 
 .PHONY: all run clean
 all: run

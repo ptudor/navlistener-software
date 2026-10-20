@@ -130,7 +130,8 @@ hardware CSR at enrollment. Bearer hardware enrollment still verifies core and
 commissioning provenance and must provide MCU session proof for `trusted`.
 
 Required request fields are `observer_id`, `operational_authority_id`,
-`organization_id`, `collector_instance_id` and `feed_grants` (`ubx` and/or `rtcm`).
+`organization_id`, `collector_instance_id` and `feed_grants` (any of `ubx`, `rtcm` and
+`sbf`; a P3 observer pushes `sbf`).
 Hardware adds `manufacturer_authority_id`, `hardware_validation`, integer
 `product`/`revision`, `board_uid_kind` and lowercase unseparated hex `board_uid`, `atecc_serial`,
 `core_record` and `commissioning_record`. The observer ID is exactly lowercase

@@ -187,21 +187,23 @@ func TestPushRejectsUnalignedWordRecords(t *testing.T) {
 	}
 }
 
-// The alignment invariant applies to every word-oriented feed and to no other
-// record class: telemetry bodies have their own exact-length codecs, and rtcm
-// carries byte-oriented messages.
+// The alignment invariant applies to the word-oriented ubx feed and to no other
+// record class: telemetry bodies have their own exact-length codecs, rtcm
+// carries byte-oriented messages, and sbf whole blocks checked by
+// sbfRecordWellFormed.
 func TestWordRecordWellFormedScope(t *testing.T) {
-	for _, feed := range []string{"ubx", "sbf"} {
-		for n := 0; n <= 9; n++ {
-			want := n > 0 && n%4 == 0
-			if got := wordRecordWellFormed(navRecord(n), feed); got != want {
-				t.Errorf("wordRecordWellFormed(%s, %d bytes) = %v, want %v", feed, n, got, want)
-			}
+	for n := 0; n <= 9; n++ {
+		want := n > 0 && n%4 == 0
+		if got := wordRecordWellFormed(navRecord(n), "ubx"); got != want {
+			t.Errorf("wordRecordWellFormed(ubx, %d bytes) = %v, want %v", n, got, want)
 		}
 	}
 	for n := 0; n <= 9; n++ {
 		if !wordRecordWellFormed(navRecord(n), "rtcm") {
 			t.Errorf("rtcm body of %d bytes rejected; rtcm is byte-oriented", n)
+		}
+		if !wordRecordWellFormed(navRecord(n), "sbf") {
+			t.Errorf("sbf body of %d bytes rejected by the word-alignment gate", n)
 		}
 		telem := navRecord(n)
 		telem.FrameType = TelemJammingStats

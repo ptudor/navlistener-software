@@ -1,14 +1,14 @@
 # Septentrio receiver on COM2 (P3 revision A)
 
 How the universal image runs the mosaic-G5 P3 on the P3 observer (`INTSAT_MOSAIC_P3`
-revision A): the UART, flow control and reset lines, the commands it sends, the SBF it reads
-and how that becomes the observer's receiver status. The code is the `sbf` component
+revision A): the UART, flow control and reset lines, the commands it sends, the SBF it reads,
+how that becomes the observer's receiver status, and how the blocks reach the collector. The code is the `sbf` component
 (`components/sbf`) and the SBF task in `main/receiver.c`. Field layouts, command syntax and
 reply formats are from the mosaic-G5 firmware reference guide v1.0.1; section numbers below
 refer to it, except where the hardware manual (v2.0.0) is named.
 
 Nothing here has run against a receiver yet. The host tests build every block field by field
-from the reference guide's tables; they are not captures. Section 8 lists what the first
+from the reference guide's tables; they are not captures. Section 9 lists what the first
 P3 must confirm.
 
 ## 1. When it runs
@@ -17,7 +17,8 @@ A manifest that lists `GPS_MOSAIC_G5_P3` on a board row with COM2 flow-control p
 this path in place of the u-blox one; on the P3 those pins are GPIO17 (RTS) and GPIO16 (CTS),
 and GPIO13 drives the receiver's reset. A manifest that lists the mosaic-G5 beside a u-blox
 receiver, or a row without the flow-control pins, configures no receiver. Receiver bytes on
-this path never reach the UBX parser.
+this path never reach the UBX parser, and the observer pushes to the collector on the `sbf`
+feed instead of `ubx` (section 7).
 
 ## 2. Lines
 
@@ -57,10 +58,11 @@ its reply.
 | `scst, usec500` | the receiver time within 0.5 ms of GNSS time once FINETIME is set (2.3), which bounds the time accuracy in section 6 |
 | `sso, Res1, COM2, PVTGeodetic+ReceiverTime+MeasEpoch+SatVisibility+ReceiverStatus+RFStatus, sec1` | the 1 Hz stream |
 | `sso, Res2, COM2, ReceiverSetup, OnChange` | the receiver's identity, every 60 s and on change |
+| `sso, Res3, COM2, GPSRawCA+GPSRawL2C+GPSRawL5+GLORawCA+GALRawFNAV+GALRawINAV+GEORawL1+BDSRaw+BDSRawB2a+QZSRawL1CA+QZSRawL2C+QZSRawL5, OnChange` | each navigation page as it is decoded (4.2.2), for the collector; a fixed interval would decimate them |
 | `gst` | the satellites it may track, read as the constellation mask |
 
 The settings are RAM-only, as on the u-blox path: nothing is saved to the receiver's boot
-configuration. `Res1` and `Res2` are the streams the receiver never saves and resets at boot
+configuration. `Res1` to `Res3` are streams the receiver never saves and resets at boot
 (3.2, `setSBFOutput`), so the observer's output cannot land in a saved configuration or take
 over a stream someone set up for the receiver's own USB port. A command answered with an
 error is logged and counted, and the configuration carries on; a refused `setCOMSettings`
@@ -162,34 +164,70 @@ every board:
 and I are GPS, SBAS, Galileo, BeiDou, QZSS, GLONASS and NavIC. Until it arrives, the default
 mask stands.
 
-## 7. What it does not do yet
+## 7. To the collector
 
-- **Collector data.** This path sends the collector no receiver data of its own. GNF1's raw-nav
-  records and its reception, solution and jamming telemetry are u-blox-shaped. An SBF
-  representation preserving each block's header needs format negotiation in the feeder,
-  collector, grants, spool and replay together (see the [P3 integration
-  proposal](../../docs/proposals/OBSERVER-TIME-MOTION-AND-SEPTENTRIO.md#custom-mosaic-g5-p3-observer)).
+The observer pushes on the GNF1 `sbf` feed with SBF record format 1
+([DESIGN.md §2](../../docs/DESIGN.md#2-the-gnf1-wire-feeder--collector)): its HELLO says
+`"feed":"sbf","sbf":1`, and a WELCOME that does not repeat `"sbf":1` is treated as a refusal,
+so nothing is sent to a collector that would misread it. The observer's enrollment must grant
+the `sbf` feed, and the collector must be one that knows the format: an older collector, or a
+grant of `ubx` alone, refuses the session, and the P3 then sends nothing, its ObserverDetails
+included. Upgrade the collector and grant `sbf` before this firmware reaches a P3.
+
+Every CRC-checked block of the 19 the commands in section 4 request (`sbf_control_forwarded`)
+goes to the spool whole, sync to padding, as one record stamped with the observer's receive
+time, through the same spool and pusher as u-blox records. A record over the inline DATA size
+is written as the frame header and then the record, never cut short, and the pusher copies a
+backlog out of the spool at most 32 KiB at a time. ObserverDetails and the board's other
+telemetry go out on the same session as on every board, and the collector's reception
+forecasts run on `sbf` sessions as on `ubx` ones.
+
+The collector checks each block's sync, Length and CRC, and stores it as it stores a dial-mode
+SBF capture: the block number, the eight original header bytes and the body, which rebuild the
+block byte for byte, with the session and sequence that dedup a replay. It does not decode the
+blocks yet (section 8).
+
+**Line budget.** Estimated from the block sizes in 4.2 for about 45 tracked satellites: the
+1 Hz stream is about 2.7 KB/s, most of it MeasEpoch, and the navigation pages about 1.7 KB/s,
+more where BeiDou's geostationary satellites send a page every 0.6 s. That is under half of
+COM2's 11.5 KB/s at 115200 baud; ReceiverStatus's output-congestion flag, which the observer
+logs, says when it is not. The PSRAM spool's 4 MiB holds about 15 minutes of this output
+through a collector outage, and the historian keeps every block, about 0.4 GB a day per P3 at
+this rate, under its raw retention.
+
+## 8. What it does not do yet
+
+- **Collector decoding.** The collector stores the blocks but decodes none of them: the P3's
+  navigation pages do not update live constellation state, and its PVT, measurement,
+  visibility and RF status blocks do not yet feed the station integrity checks, reception
+  records or interference telemetry the u-blox records feed. Those mappings must keep fields
+  SBF does not provide unavailable rather than invent u-blox equivalents (see the [P3
+  integration proposal](../../docs/proposals/OBSERVER-TIME-MOTION-AND-SEPTENTRIO.md#custom-mosaic-g5-p3-observer)).
   The P3's ObserverDetails, including tags 6, 17 and 20 built from this status, go out as on
   every board.
-- **Raw navigation and PPS.** Raw navigation bits (the `RawNavBits` group) are not requested.
-  The PPS metadata u-blox gives in TIM-TP has no counterpart here, so tag 8's TIM-TP validity
-  stays clear.
-- **Higher baud rates.** 115200 baud carries the 1 Hz stream. A faster stream needs a higher
+- **PPS.** The PPS metadata u-blox gives in TIM-TP has no counterpart here, so tag 8's TIM-TP
+  validity stays clear.
+- **Higher baud rates.** 115200 baud carries the streams above. A faster stream needs a higher
   rate, set first on the receiver and then on the ESP32.
 
-## 8. Bring-up checks
+## 9. Bring-up checks
 
 1. **Identity.** After boot the log names the receiver: product, engine, firmware, serial. A
    receiver that is not a mosaic-G5 is named as such.
 2. **Configuration.** "receiver COM2 configured" appears with no command errors. "COM2 RTS/CTS
    confirmed" appears, and on a scope `ESP_UART_RTS_N` is low while the ESP32 has room.
 3. **Data.** The 10 s log line shows the SBF count rising, no CRC errors, no scrambled epochs,
-   and tracked counts that agree with the receiver's own web or USB view.
-4. **Time.** With an antenna and a fix, the RTC is set from GNSS (RTC-SERVICE.md), and its
+   and tracked counts that agree with the receiver's own web or USB view. The forwarded count
+   rises with it, and the bytes per 10 s show the actual line load against section 7's
+   estimate; the receiver status line reports no output congestion.
+4. **Collector.** The pusher log shows `feed=sbf`, the collector's `nav_frames` gains rows with
+   an `sbf_header` for this observer, and each rebuilds with `SBFWire`. Navigation page blocks
+   (4017 to 4219) arrive within a minute of a fix.
+5. **Time.** With an antenna and a fix, the RTC is set from GNSS (RTC-SERVICE.md), and its
    second agrees with the receiver's ReceiverTime.
-5. **Restart.** Resetting the receiver with SW4 is followed by a new configuration within
+6. **Restart.** Resetting the receiver with SW4 is followed by a new configuration within
    about 30 s and no GPIO13 pulse.
-6. **Recovery.** Lift the receiver's TXD2 test point to stop its data. After 30 s the observer
+7. **Recovery.** Lift the receiver's TXD2 test point to stop its data. After 30 s the observer
    configures again; after the failed configuration it pulses GPIO13 once and logs it.
-7. **Flow control.** An ESP32 busy long enough to fill its FIFO deasserts RTS, and the receiver
+8. **Flow control.** An ESP32 busy long enough to fill its FIFO deasserts RTS, and the receiver
    holds its output; no CRC errors follow.

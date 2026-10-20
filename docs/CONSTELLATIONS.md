@@ -147,15 +147,18 @@ policy and validation against the corresponding signal specification.
 ### 2.2 Septentrio — SBF raw-nav blocks
 
 The collector's TCP dial connector (`[[ingest]]`, `type = "sbf"`) reads SBF
-streams. The standalone C feeder currently implements only UBX input, and GNF1 push
-rejects SBF feeds. The ESP32 configures and reads a P3's mosaic-G5 in SBF for its own
-receiver status ([SBF-RECEIVER.md](../esp32/docs/SBF-RECEIVER.md)) but forwards no SBF. See the
+streams, and GNF1 push carries SBF blocks whole on an `sbf` feed (SBF record format 1,
+[DESIGN.md §2](DESIGN.md#2-the-gnf1-wire-feeder--collector)). The standalone C feeder
+currently implements only UBX input. The ESP32 configures and reads a P3's mosaic-G5 in SBF
+for its own receiver status and forwards the blocks it configures to the collector
+([SBF-RECEIVER.md](../esp32/docs/SBF-RECEIVER.md)). See the
 [mosaic-G5 P3 integration proposal](proposals/OBSERVER-TIME-MOTION-AND-SEPTENTRIO.md#custom-mosaic-g5-p3-observer)
-for the remaining transport, telemetry and decoding work. SBF wraps
+for the remaining telemetry and decoding work. SBF wraps
 the *already-de-interleaved* ICD nav bits (Septentrio does the word unpacking on the
 receiver), so a future central decoder skips step 1 above and goes straight to parity/CRC +
-parameter extraction. The current `sbf.go` validates framing/CRC and persists raw blocks only
-(capture-only, like RTCM below); the block-specific live decoders in this table are planned
+parameter extraction. The current `sbf.go` validates framing/CRC and persists raw blocks only,
+from a dial connector or a push session alike (capture-only, like RTCM below); the
+block-specific live decoders in this table are planned
 (the block ID's low 13 bits, ignoring the 3-bit revision):
 
 | SBF block | ID | Yields |
@@ -432,7 +435,13 @@ use §1 and §2.1 for current coverage.
 | 0x09 | `NavicText` | NavIC special/regional text message — enrichment stream (derived from `NavicNav`) |
 
 Types `0x08`/`0x09` are *derived* enrichment records the collector synthesizes from the raw
-L1S/NavIC frames; they are not sent by the feeder. They give Japan (disaster alerts) and India
+L1S/NavIC frames; they are not sent by the feeder.
+
+### 6.3 Receiver-native records
+
+| # | Name | Content |
+|---|---|---|
+| 0x80 | `SbfBlock` | One whole Septentrio SBF block, header to padding, on an `sbf` feed only (SBF record format 1, [DESIGN.md §2](DESIGN.md#2-the-gnf1-wire-feeder--collector)). The block's own ID carries its number and revision; `gnssId`, `svId`, `sigId` and `freqId` are zero | They give Japan (disaster alerts) and India
 (regional messaging) a visible, distinctive product surface beyond raw positioning — see
 `docs/OUTPUT.md`.
 

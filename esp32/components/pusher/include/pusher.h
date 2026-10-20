@@ -24,7 +24,12 @@ typedef struct {
     int port;             // collector [push] port
     const char *token;    // bearer token (NVS-first; Kconfig is the development fallback)
     const char *station;  // observer/station id
-    const char *feed;     // "ubx"
+    const char *feed;     // "ubx", or "sbf" for a Septentrio receiver
+    // sbf_format is the SBF record format an sbf feed sends (GNF1_SBF_FORMAT), 0 on any other
+    // feed. It goes in the HELLO, and a WELCOME that accepts the session without confirming
+    // the same format is treated as a rejection: no SBF record is sent to a collector that has
+    // not agreed to read it.
+    uint8_t sbf_format;
     // session is the GNF1 boot/session identity sent in every HELLO, REQUIRED:
     // the collector's replay-dedup key is (observer, session, seq) and it rejects a
     // sessionless HELLO outright. It is minted once per boot by app_main (never operator-

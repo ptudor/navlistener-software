@@ -149,8 +149,8 @@ shape means one mental model and a near-verbatim port of `radiolistener/feeder/f
 
 | Frame | Dir | Payload |
 |---|---|---|
-| `HELLO` (0x01) | feeder→collector | JSON `{token, station, feed, sw, session, zstd?, evidence?, reception?}` — `feed ∈ {ubx, rtcm}` (SBF is rejected because GNF1 `frame_type` cannot carry SBF block numbers; NMEA is unimplemented). **`session` is REQUIRED** (regression fix, contract revision 2026-07-31): an opaque boot identity (1..64 chars of `[A-Za-z0-9._-]`; reference implementations use 32 hex chars) minted fresh whenever the feeder's DATA sequence space restarts from zero and reused while it continues — the C feeder persists it in each disk-spool header and replays prior-run files on separate connections under their original sessions; every process uses a fresh session for new captures; the ESP32's RAM-only ring mints one per boot. The collector's replay-dedup identity is (canonical authenticated observer, session, seq); the session is never trusted as observer identity. A HELLO without a valid session is rejected before WELCOME |
-| `WELCOME` (0x02) | collector→feeder | JSON `{ok, error?, ack_interval_ms?, zstd?, durable_ack?, hardware_trust?, evidence_error?}`. **Normative: the compact Go `encoding/json` spelling** — servers MUST emit `"ok":true` / `"zstd":true` with no space after the colon (see the note below) |
+| `HELLO` (0x01) | feeder→collector | JSON `{token, station, feed, sw, session, zstd?, evidence?, reception?, sbf?}` — `feed ∈ {ubx, rtcm, sbf}`; an `sbf` feed must name its record format, `"sbf":1` (SBF record format 1, below), and no other feed may; NMEA is unimplemented. **`session` is REQUIRED** (regression fix, contract revision 2026-07-31): an opaque boot identity (1..64 chars of `[A-Za-z0-9._-]`; reference implementations use 32 hex chars) minted fresh whenever the feeder's DATA sequence space restarts from zero and reused while it continues — the C feeder persists it in each disk-spool header and replays prior-run files on separate connections under their original sessions; every process uses a fresh session for new captures; the ESP32's RAM-only ring mints one per boot. The collector's replay-dedup identity is (canonical authenticated observer, session, seq); the session is never trusted as observer identity. A HELLO without a valid session is rejected before WELCOME |
+| `WELCOME` (0x02) | collector→feeder | JSON `{ok, error?, ack_interval_ms?, zstd?, durable_ack?, hardware_trust?, evidence_error?, sbf?}`; `sbf` confirms the record format of an `sbf` session, and a HELLO naming no format or an unknown one is refused with `"unsupported sbf format"`. **Normative: the compact Go `encoding/json` spelling** — servers MUST emit `"ok":true` / `"zstd":true` with no space after the colon (see the note below) |
 | `DATA` (0x03) | feeder→collector | `[8B seq][framed raw record]` — see the record shape below |
 | `ACK` (0x04) | collector→feeder | `[8B seq]` the **durable watermark** for this session (regression fix, revised by regression fix 2026-07-31): the highest seq through which every *received* sequenced frame has been durably resolved — committed by the historian (or deduped against an already-committed ledger claim), quarantined as unfixable, or classified never-persistable (raw observables or malformed input). Navigation, board and receiver-RF rows share the ledger claim. The feeder prunes its spool up to the ack, so the ack stalls — rather than data being lost — while the collector's database is down; the feeder's ack-stall watchdog (10 min) then cycles the connection so reconnect replay redelivers anything the collector shed during the outage. A collector running **without** a historian acks on receipt (the explicit live-only mode; the spool contract is then best-effort by configuration). The gap rule is unchanged: never-received sequences are skipped past, not waited for; reconnect replay makes any resulting duplicate harmless |
 | `PING`/`PONG` (0x05/0x06) | both | keepalive |
@@ -178,6 +178,21 @@ the registry in CONSTELLATIONS.md), raw_bytes}`. For UBX the
 feeder can forward the whole SFRBX message verbatim and let the collector split it; the record
 envelope is what lets a Septentrio and a u-blox feeder converge on one collector code path.
 
+**SBF record format 1.** The one-byte `frame_type` cannot name an SBF block number, so a
+Septentrio feeder carries each block whole. Its HELLO says `"feed":"sbf","sbf":1`, and it sends
+SBF records only after a WELCOME that accepts the session and repeats `"sbf":1`; a collector
+that does not know the format refuses the HELLO, so neither side guesses. On such a session every
+record that is not telemetry (`frame_type` 0x01–0x0F, unchanged on every feed) has `frame_type`
+0x80 (`SbfBlock`, [CONSTELLATIONS.md §6.3](CONSTELLATIONS.md#63-receiver-native-records)), zero
+`gnssId`/`svId`/`sigId`/`freqId`, and as its raw bytes one complete block exactly as the
+receiver sent it: the `$@` sync, CRC, ID (block number and revision) and Length, then the body
+and padding, Length bytes in all. The collector checks the sync, that Length equals the record's
+size and is a multiple of four, and the CRC, and then stores the block as a dial-mode SBF capture
+is stored: the block number, the eight original header bytes and the body, so it rebuilds byte
+for byte ([OUTPUT.md](OUTPUT.md)). A record that fails is dropped under `sbf_block` and acked as
+permanently malformed. A later format would take a new `sbf` value, offered in the HELLO and
+confirmed in the WELCOME the same way.
+
 Resilience (galmon's "never go down," radiolistener-proven): a bounded RAM ring with monotonic
 sequence numbers; replay all unacked frames on reconnect; spill the oldest to a disk spool on
 overflow (`--spool-file`, with `--spool-disk-mb` cap) that survives reboot; backoff-reconnect
@@ -187,8 +202,9 @@ the C feeder **pins TLS 1.2 exactly** — radiolistener's regression fix finding
 threads on one SSL object are unsafe under TLS 1.3 KeyUpdate — a constraint `navfeeder`
 inherits with the port. Every frame length is validated against `MaxFrameLen` (1 MiB, RLF1
 parity) before allocation; that bound is shared with HELLO and telemetry, so the collector
-additionally refuses a navigation record body over 4 KiB (the largest legitimate frame of any
-supported feed is well below that) under the acked permanent-malformation policy, and its
+additionally refuses a navigation record body over 4 KiB on the `ubx` and `rtcm` feeds (the
+largest legitimate frame of either is well below that), and an SBF block over 65,532 bytes, the
+most its 16-bit Length can describe, under the acked permanent-malformation policy; its
 historian queue is bounded by bytes as well as by frame count.
 
 **Wire implementation.** GNF1 uses a fixed record header that can be implemented

@@ -85,6 +85,9 @@ void sbf_control_block(sbf_control_t *c, const uint8_t *block, size_t length, in
 sbf_action_t sbf_control_poll(sbf_control_t *c, int64_t now_ms);
 // The command list, for logs and tests.
 size_t sbf_control_commands(const char *const **list);
+// Whether a block is one of those the commands request, which the observer forwards to the
+// collector whole (GNF1 SBF record format 1). Anything else that reaches COM2 stays local.
+bool sbf_control_forwarded(uint16_t number);
 // gst's satellite list ("G01+...+R24+E36+...") as a UBX gnssId mask; 0 when it names none.
 uint8_t sbf_control_constellations(const char *text);
 #endif

@@ -3,6 +3,7 @@ package wire
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"testing"
 
 	"github.com/ptudor/gnss"
@@ -224,5 +225,42 @@ func TestEvidenceHandshakeFields(t *testing.T) {
 	}
 	if bytes.Contains(legacy, []byte("hardware_trust")) || bytes.Contains(legacy, []byte("evidence_error")) {
 		t.Errorf("WELCOME to a feeder that sent no evidence mentions it: %s", legacy)
+	}
+}
+
+// TestSBFHandshakeFields pins SBF record format 1's handshake spelling: a HELLO
+// without it is byte-identical to the earlier contract, the edge feeder's
+// "sbf":1 parses, and the WELCOME confirms it compactly.
+func TestSBFHandshakeFields(t *testing.T) {
+	plain, err := json.Marshal(HelloMsg{Token: "t", Station: "s", Feed: "ubx", SW: "x", Session: "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(plain, []byte("sbf")) {
+		t.Fatalf("HELLO without a format carries it: %s", plain)
+	}
+	h, err := ParseHello([]byte(`{"token":"t","station":"s","feed":"sbf","sw":"navfeeder-esp/1","session":"b","sbf":1,"reception":2}`))
+	if err != nil || h.Feed != "sbf" || h.SBF != SBFFormat || h.Reception != 2 {
+		t.Fatalf("ParseHello = %+v, %v", h, err)
+	}
+	b, err := MarshalWelcome(WelcomeMsg{OK: true, SBF: SBFFormat})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(b, []byte(`"ok":true`)) || !bytes.Contains(b, []byte(`"sbf":1`)) {
+		t.Fatalf("WELCOME %s lacks the compact acceptance or format", b)
+	}
+	other, err := MarshalWelcome(WelcomeMsg{OK: true})
+	if err != nil || bytes.Contains(other, []byte("sbf")) {
+		t.Fatalf("WELCOME for another feed names a format: %s %v", other, err)
+	}
+}
+
+func TestPushFeed(t *testing.T) {
+	for feed, want := range map[string]bool{"ubx": true, "rtcm": true, "sbf": true,
+		"ntrip": false, "nmea": false, "": false, "SBF": false, "sbf ": false} {
+		if PushFeed(feed) != want {
+			t.Errorf("PushFeed(%q) = %v, want %v", feed, !want, want)
+		}
 	}
 }

@@ -75,15 +75,17 @@ void spool_ack(uint64_t seq)
 size_t spool_collect(uint64_t after, spool_frame_t *out, size_t max)
 {
     xSemaphoreTake(mu, portMAX_DELAY);
-    size_t n = 0;
+    size_t n = 0, bytes = 0;
     const spool_slot_t *slot;
     while (out && n < max && (slot = spool_ring_after(&g, after, n))) {
+        if (n && bytes + slot->len > SPOOL_COLLECT_BYTES) break;
         // Transport copies use internal RAM. The persistent backlog stays in
         // its fixed arena; appends never allocate or fragment the heap.
         uint8_t *copy = heap_caps_malloc(slot->len, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         if (!copy) break;
         spool_ring_copy(&g, slot, copy);
         out[n++] = (spool_frame_t){.seq = slot->seq, .len = slot->len, .data = copy};
+        bytes += slot->len;
     }
     xSemaphoreGive(mu);
     return n;

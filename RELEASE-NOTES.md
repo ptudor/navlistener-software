@@ -96,7 +96,14 @@
   control, 1 Hz PVT, time, measurement, visibility and RF status blocks into the receiver
   status the panel, tag 6, the reception assessment and the RTC use, identity and constellation
   discovery, and a GPIO13 reset pulse, at most every 10 minutes, for a receiver that stops
-  answering. The collector receives no SBF from it yet.
+  answering.
+- GNF1 gains the `sbf` push feed, SBF record format 1: the HELLO names the format, the
+  WELCOME confirms it, and each Septentrio block travels whole with its own header. The
+  collector checks each block's Length and CRC and stores it as it stores a dial-mode SBF
+  capture, so it rebuilds byte for byte. `sbf` is a valid feed grant in configuration and the
+  control plane. The P3 forwards every block it configures, navigation pages included, and
+  pushes on `sbf`: upgrade the collector and grant `sbf` before this firmware reaches a P3,
+  since an older collector refuses the session. The collector does not decode SBF yet.
 
 Trusted rollout remains gated by commissioning and hardware acceptance in
 [Update operations](esp32/docs/UPDATE-OPERATIONS.md).

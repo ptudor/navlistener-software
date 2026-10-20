@@ -871,12 +871,15 @@ There is no background monitoring guarantee: suspended/terminated applications
 cannot observe new transitions or notify, and reopening reconciles before resuming
 live alerts. Notification tests use a mock center and send no real alerts.
 
-SBF forensic captures preserve the unchanged block body in `nav_frames.raw` and
-its original eight-byte header in the additive nullable `sbf_header` column
+SBF forensic captures, from a dial connector or an `sbf` push session (SBF record
+format 1, [DESIGN.md §2](DESIGN.md#2-the-gnf1-wire-feeder--collector)), preserve the
+unchanged block body in `nav_frames.raw` and its original eight-byte header in the
+additive nullable `sbf_header` column
 (sync, CRC, block/revision bits and length). `msg_type` remains the low-13-bit
 block number. `StoredNavFrame.SBFHeader` and `ingest.RestoreSBF` retain this
 metadata; `SBFRevision` explicitly reports whether it is known, and `SBFWire`
 validates metadata/CRC before returning the exact recorded wire block.
+A pushed block's row also carries its session and sequence like every push receipt.
 Legacy rows remain readable with NULL header and unknown revision; reconstructing
 an original header/CRC for them is unsupported. Apply the additive writer schema
 before using the new reader (the read-only constructor never migrates). No raw

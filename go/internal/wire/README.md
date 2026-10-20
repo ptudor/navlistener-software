@@ -125,6 +125,18 @@ The collector reads the frame only after the HELLO has authenticated, under the 
 deadline and a 2048-byte cap, so an unauthenticated peer can never make it parse a record or
 verify a signature. `Evidence` is not valid in the DATA phase.
 
+### SBF record format 1
+
+A Septentrio feeder pushes on the `sbf` feed (`PushFeed` lists the three push feeds that
+configuration, the control plane and the HELLO check share). Its HELLO carries `"sbf":1`
+(`SBFFormat`), the WELCOME repeats it, and only then does the feeder send SBF records. Each
+is a DATA record with `frame_type` `SBFBlockRecord` (0x80), zero navigation header bytes and
+one whole SBF block, sync through padding, as raw bytes; `MaxSBFBlock` bounds it at the
+block's own 16-bit Length. The block header carries the block number the one-byte
+`frame_type` cannot. The collector refuses an sbf HELLO without the format, an unknown
+format, or a format on another feed, with `"unsupported sbf format"`. The normative text is
+`docs/DESIGN.md §2`.
+
 ### `ValidSession`
 
 ```go
@@ -155,7 +167,9 @@ regression fix) starts clean. `DurableTracker` keys on `(observer, session)` for
 
 `wire_test.go` covers frame round-trips, the magic check, `MaxFrameLen` rejection before
 allocation, `ErrShortRecord` on a truncated DATA envelope, ack encode/decode, the
-`ValidSession` charset, and the evidence fields' spelling.
+`ValidSession` charset, the evidence fields' spelling, the SBF format fields and `PushFeed`.
+`../ingest/sbf_push_test.go` drives SBF sessions through the real handshake and stream, and
+`esp32/components/pusher/test/sbf_session_test.c` the ESP32 side of the same exchange.
 
 The **cross-implementation** tests live in `../ingest`: `TestNavfeeder*` builds the real C feeder
 and runs it against this collector (`make check-e2e`). That's the only test that can catch a
