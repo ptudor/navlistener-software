@@ -5,7 +5,7 @@ revision A): the UART, flow control and reset lines, the commands it sends, the 
 and how that becomes the observer's receiver status. The code is the `sbf` component
 (`components/sbf`) and the SBF task in `main/receiver.c`. Field layouts, command syntax and
 reply formats are from the mosaic-G5 firmware reference guide v1.0.1; section numbers below
-refer to it.
+refer to it, except where the hardware manual (v2.0.0) is named.
 
 Nothing here has run against a receiver yet. The host tests build every block field by field
 from the reference guide's tables; they are not captures. Section 8 lists what the first
@@ -81,8 +81,10 @@ for each path.
   lost the RAM settings: configured again at once.
 - **Reset.** A failed configuration pulses GPIO13 high for 500 ms, at most once per 10 minutes,
   then waits up to 10 s for the receiver to boot before configuring it. Between resets it retries
-  every 30 s. The hardware manual says only that nRST_IN is internally debounced and may take a
-  push-button, so the 500 ms pulse is a conservative choice.
+  every 30 s. The hardware manual (4.1) gives nRST_IN no minimum pulse width; it says the input
+  is internally debounced and may be wired straight to a push-button, so the pulse is long
+  enough to pass any push-button debounce. The receiver's GPIO pins stay in input mode for
+  about 2 s after a reset (4.9), well inside the boot wait.
 
 The ESP32 never resets the receiver at its own boot: an observer that restarts for an update
 keeps the receiver tracking.
