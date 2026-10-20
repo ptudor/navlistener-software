@@ -86,6 +86,26 @@
     NVF_PIN(NVF_PIN_TC_MOSI) | NVF_PIN(NVF_PIN_TC_MISO) | \
     NVF_PIN(NVF_PIN_IMU_INT1) | NVF_PIN(NVF_PIN_IMU_INT2))
 
+// P3: the mosaic-G5 P3 observer, on the 162mm card with the 162mm panel's 24-bit chain on
+// GPIO14 (no on-board chain), the receiver's COM2 flow control and reset driver, the
+// brightness trimmer and preset buttons, and the sensor and rail-monitor alert lines.
+// P3_RESET_DRV drives Q1, which pulls the receiver's reset low while GPIO13 is high;
+// R97 holds Q1 off, so the firmware leaves GPIO13 an input and the receiver runs.
+// ESP_UART_CTS_N and ESP_UART_RTS_N stay unconfigured until SBF support enables COM2 flow
+// control. TEMP_ALERT_N, HUM_INT_N and PWR_ALERT_N are open drain with pull-ups and are
+// read only by sampling the parts.
+#define NVF_PIN_P3_RESET_DRV  13
+#define NVF_PIN_P3_UART_CTS_N 16
+#define NVF_PIN_P3_UART_RTS_N 17
+#define NVF_PINS_MOSAIC_P3 (NVF_PINS_COMMON | \
+    NVF_PIN(2)  | /* BRIGHT_ADC trimmer wiper         */ \
+    NVF_PIN(8)  | /* TEMP_ALERT_N, both MCP9808s      */ \
+    NVF_PIN(14) | /* LED_SDI to the panel's chain     */ \
+    NVF_PIN(18) | /* BRIGHT_BUTTON presets            */ \
+    NVF_PIN(39) | /* HUM_INT_N                        */ \
+    NVF_PIN(41) | /* PWR_ALERT_N, INA3221 Warning and Critical */ \
+    NVF_PIN(NVF_PIN_P3_RESET_DRV) | NVF_PIN(NVF_PIN_P3_UART_CTS_N) | NVF_PIN(NVF_PIN_P3_UART_RTS_N))
+
 // Not pins on this part or consumed by the module: GPIO22-25 do not exist on the
 // S3, GPIO26-32 serve the module's SPI flash, and GPIO35-37 are the N16R8's
 // octal PSRAM interface (section 7.7).
@@ -96,7 +116,8 @@
 // interrupt, whose 10 kOhm pull-up is harmless while EFUSE_STRAP_JTAG_SEL stays
 // unburned, which the firmware never changes.
 #define NVF_PINS_STRAP_AVOID (NVF_PIN(45))
-_Static_assert(((NVF_PINS_NEO | NVF_PINS_MAX) & NVF_PIN(3)) == 0, "GPIO3 is a strap; only the ZED/X20 reads it");
+_Static_assert(((NVF_PINS_NEO | NVF_PINS_MAX | NVF_PINS_MOSAIC_P3) & NVF_PIN(3)) == 0,
+               "GPIO3 is a strap; only the ZED/X20 reads it");
 
 #define NVF_PINS_CHECK(map, name) \
     _Static_assert(((map) & NVF_PINS_UNAVAILABLE) == 0, \
@@ -105,23 +126,27 @@ _Static_assert(((NVF_PINS_NEO | NVF_PINS_MAX) & NVF_PIN(3)) == 0, "GPIO3 is a st
 NVF_PINS_CHECK(NVF_PINS_NEO, "the NEO pin map");
 NVF_PINS_CHECK(NVF_PINS_ZED_X20, "the ZED/X20 pin map");
 NVF_PINS_CHECK(NVF_PINS_MAX, "the MAX pin map");
+NVF_PINS_CHECK(NVF_PINS_MOSAIC_P3, "the P3 pin map");
 
 // Shared-bus I2C addresses. Absence of another board's part is not a fault.
 #define NVF_I2C_MAGNETOMETER  0x30 /* MMC34160PJ, MAX              */
 #define NVF_I2C_TEMPERATURE   0x18 /* MCP9808                      */
+#define NVF_I2C_REGULATOR_TEMPERATURE 0x1F /* MCP9808 on the LDL1117 spreader, P3 U47 */
+#define NVF_I2C_HUMIDITY_HIH  0x27 /* HIH8121, P3                  */
 #define NVF_I2C_HUMIDITY      0x40 /* HDC2080                      */
-#define NVF_I2C_RAIL_MONITOR  0x41 /* INA3221, ZED/X20, A0 to VS   */
+#define NVF_I2C_HUMIDITY_SHT3X 0x44 /* SHT35, P3, ADDR to GND      */
+#define NVF_I2C_RAIL_MONITOR  0x41 /* INA3221, ZED/X20 and P3, A0 to VS */
 #define NVF_I2C_PRESSURE_BMP5 0x46 /* BMP581, ZED/X20, SDO to GND  */
 #define NVF_I2C_BOARD_EEPROM  0x50 /* 24CS128 main array; its 128-bit serial is at 0x58 */
 #define NVF_I2C_BOARD_SERIAL  0x58 /* 24CS128 security interface   */
-#define NVF_I2C_RTC_EUI       0x57 /* MCP79412 EEPROM, NEO and MAX */
+#define NVF_I2C_RTC_EUI       0x57 /* MCP79412 EEPROM, NEO, MAX and P3 */
 #define NVF_I2C_CRYPTO        0x60 /* ATECC608C                    */
 #define NVF_I2C_RTC_TCXO      0x68 /* DS3231M, ZED/X20 (MAX31328 on the superseded square list) */
 #define NVF_I2C_IO_EXPANDER   0x24 /* MCP23008, ZED/X20            */
 #define NVF_I2C_IMU           0x69 /* ICM-45686, MAX, strapped     */
-#define NVF_I2C_RTC           0x6f /* MCP79412 RTCC, NEO and MAX   */
+#define NVF_I2C_RTC           0x6f /* MCP79412 RTCC, NEO, MAX and P3 */
 #define NVF_I2C_PRESSURE      0x76 /* BMP388, NEO                  */
-#define NVF_I2C_PRESSURE_ALT  0x77 /* MS5607, MAX, CSB low         */
+#define NVF_I2C_PRESSURE_ALT  0x77 /* MS5607, MAX and P3, CSB low  */
 
 // Each board's function pins; -1 marks a function the board does not have. board.c holds
 // every row, the image drives the boards it supports (Kconfig NVF_BOARD_SUPPORT_*), and
@@ -130,7 +155,8 @@ NVF_PINS_CHECK(NVF_PINS_MAX, "the MAX pin map");
 #include "nvf_board.h"
 // An image's OTA board ID is the board's CAT_INTSAT ID; 0 is the universal image.
 _Static_assert((int)NVF_BOARD_ID_NEO == (int)INTSAT_NEO && (int)NVF_BOARD_ID_ZED_X20 == (int)INTSAT_X20 &&
-               (int)NVF_BOARD_ID_MAX == (int)INTSAT_MAX, "OTA board IDs must equal the CAT_INTSAT IDs");
+               (int)NVF_BOARD_ID_MAX == (int)INTSAT_MAX && (int)NVF_BOARD_ID_MOSAIC_P3 == (int)INTSAT_MOSAIC_P3,
+               "OTA board IDs must equal the CAT_INTSAT IDs");
 // An INA3221 channel: the rail it measures and its shunt; a shunt of 0 marks no channel.
 // warn_ma is the Warning alert's limit on the averaged current and crit_ma the Critical
 // alert's on each conversion; 0 sets no alert. The limit is mA x mOhm uV across the shunt.
@@ -189,6 +215,24 @@ typedef struct {
     .eth_sclk = NVF_NONE, .eth_cs = NVF_NONE, .eth_mosi = NVF_NONE, .eth_miso = NVF_NONE, \
     .tc_sck = NVF_PIN_TC_SCK, .tc_mosi = NVF_PIN_TC_MOSI, .tc_miso = NVF_PIN_TC_MISO, .tc_cs_n = NVF_PIN_TC_CS_N, \
     .tc_drdy_n = NVF_PIN_TC_DRDY_N, .imu_int1 = NVF_PIN_IMU_INT1, .imu_int2 = NVF_PIN_IMU_INT2}
+// The P3's INA3221 channels, through R89, R75 and R76 (the X20's shunt values). Engineering
+// values to be confirmed on the bench, like the X20's: +5V warns above the 1.18 A simulated
+// maximum load and trips Critical below the TPS259531 eFuse's 1.446 A minimum limit, so both
+// alerts are seen before the eFuse acts; 3V3_GNSS allows the mosaic-G5 (570 mW) and the
+// antenna feed against the ADM7150's 800 mA; 3V3_SYS allows the ESP32's Wi-Fi peaks and the
+// panel logic against the LDL1117's 1.2 A.
+#define NVF_P3_RAIL_5V   {.name = "+5V", .shunt_mohm = 20, .warn_ma = 1200, .crit_ma = 1400}
+#define NVF_P3_RAIL_GNSS {.name = "3V3_GNSS", .shunt_mohm = 50, .warn_ma = 350, .crit_ma = 500}
+#define NVF_P3_RAIL_SYS  {.name = "3V3_SYS", .shunt_mohm = 20, .warn_ma = 800, .crit_ma = 1000}
+#define NVF_BOARD_P3_ROW {.model = BOARD_MODEL_P3_A, .name = "P3 revision A", .intsat_id = INTSAT_MOSAIC_P3, \
+    .family = "gnss-color-mosaic-p3", .pins = NVF_PINS_MOSAIC_P3, .boot_steps_brightness = false, \
+    .led_sdi = NVF_NONE, .led_panel_sdi = 14, .panel_status_byte = true, \
+    .console_vbus = NVF_NONE, .exp_int_n = NVF_NONE, .rtk_stat = NVF_NONE, \
+    .bright_adc = 2, .bright_button = 18, \
+    .eth_sclk = NVF_NONE, .eth_cs = NVF_NONE, .eth_mosi = NVF_NONE, .eth_miso = NVF_NONE, \
+    .tc_sck = NVF_NONE, .tc_mosi = NVF_NONE, .tc_miso = NVF_NONE, .tc_cs_n = NVF_NONE, .tc_drdy_n = NVF_NONE, \
+    .imu_int1 = NVF_NONE, .imu_int2 = NVF_NONE, \
+    .rails = {NVF_P3_RAIL_5V, NVF_P3_RAIL_GNSS, NVF_P3_RAIL_SYS}} /* U37 through R89, R75, R76 */
 // Every function pin is on its board's map.
 _Static_assert(NVF_PIN_ON(NVF_PINS_ZED_X20, 1) && NVF_PIN_ON(NVF_PINS_ZED_X20, 2) &&
                NVF_PIN_ON(NVF_PINS_ZED_X20, 18) && NVF_PIN_ON(NVF_PINS_ZED_X20, NVF_PIN_CONSOLE_VBUS) &&
@@ -197,4 +241,6 @@ _Static_assert(NVF_PIN_ON(NVF_PINS_ZED_X20, 1) && NVF_PIN_ON(NVF_PINS_ZED_X20, 2
 _Static_assert(NVF_PIN_ON(NVF_PINS_NEO, 14) && NVF_PIN_ON(NVF_PINS_MAX, 14), "the on-board chain's data pin is missing from its map");
 _Static_assert(NVF_PIN_ON(NVF_PINS_MAX, 2) && NVF_PIN_ON(NVF_PINS_MAX, 18),
                "a MAX function pin is missing from its map");
+_Static_assert(NVF_PIN_ON(NVF_PINS_MOSAIC_P3, 2) && NVF_PIN_ON(NVF_PINS_MOSAIC_P3, 14) &&
+               NVF_PIN_ON(NVF_PINS_MOSAIC_P3, 18), "a P3 function pin is missing from its map");
 #endif

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 # Build the supported ESP32-S3 observer (16 MiB flash, 8 MiB PSRAM, layout 3).
-# Usage: [NVF_BOARD=universal|neo|zed-x20|max] ./build-navfeeder-esp.sh [flash]
+# Usage: [NVF_BOARD=universal|neo|zed-x20|max|mosaic-p3] ./build-navfeeder-esp.sh [flash]
 # NVF_BOARD selects the universal image (the default, in build/s3-layout3) or a
 # single-board test build, each in its own build directory.
 # S3_BUILD_DIR selects a separate generated configuration; existing values survive.
@@ -16,8 +16,8 @@ fi
 board=${NVF_BOARD:-universal}
 case "$board" in
     universal) board_defaults=; default_dir=build/s3-layout3 ;;
-    neo|zed-x20|max) board_defaults=";sdkconfig.defaults.$board"; default_dir="build/s3-$board-layout3" ;;
-    *) echo "NVF_BOARD must be universal, neo, zed-x20 or max" >&2; exit 2 ;;
+    neo|zed-x20|max|mosaic-p3) board_defaults=";sdkconfig.defaults.$board"; default_dir="build/s3-$board-layout3" ;;
+    *) echo "NVF_BOARD must be universal, neo, zed-x20, max or mosaic-p3" >&2; exit 2 ;;
 esac
 IDF="${IDF_PATH:?Set IDF_PATH to your ESP-IDF 5.5.x checkout}"
 if [ ! -f "$IDF/export.sh" ]; then

@@ -27,6 +27,10 @@
 static const char *TAG = "receiver";
 // The receiver the manifest lists, as MON-VER names it; only that model is configured.
 static const char *module;
+// A receiver this firmware does not speak (the P3's mosaic-G5): nothing is transmitted on its
+// port, and its bytes are counted but never given to the UBX parser, where a chance sync and
+// checksum match inside another protocol's stream would become a false record.
+static bool listen_only;
 static atomic_uint s_ticks;
 static atomic_bool snapshot_requested;
 void receiver_request_snapshot(void) {atomic_store(&snapshot_requested,true);}
@@ -185,6 +189,31 @@ static void rx_task(void *arg)
     }
 }
 void receiver_set_module(const char *name) { module = name; }
+void receiver_set_listen_only(bool listen) { listen_only = listen; }
+// The listen-only reader: the same liveness and watchdog as rx_task, at the configured baud,
+// with no probing, polling or configuration.
+static void listen_task(void *arg)
+{
+    (void)arg;
+    uint8_t buf[512];
+    uint32_t bytes = 0;
+    int64_t next_log = 0;
+    esp_task_wdt_add(NULL);
+    for (;;) {
+        esp_task_wdt_reset();
+        atomic_fetch_add_explicit(&s_ticks, 1, memory_order_relaxed);
+        int n = uart_read_bytes(RX_UART, buf, sizeof buf, pdMS_TO_TICKS(100));
+        if (n > 0) bytes += (uint32_t)n;
+        // A snapshot request has nothing to poll here; the receiver status stays unavailable.
+        atomic_store(&snapshot_requested, false);
+        int64_t now = esp_timer_get_time() / 1000;
+        if (now >= next_log) {
+            ESP_LOGI(TAG, "UART1 TX=GPIO%d RX=GPIO%d baud=%d bytes=%lu; listening only: this receiver's protocol is not decoded",
+                     RX_PIN_TX, RX_PIN_RX, CONFIG_NVF_RX_BAUD, (unsigned long)bytes);
+            next_log = now + 60000;
+        }
+    }
+}
 
 esp_err_t receiver_start(ubx_parser_t *parser)
 {
@@ -195,6 +224,7 @@ esp_err_t receiver_start(ubx_parser_t *parser)
     if (err != ESP_OK) return err;
     if ((err = uart_param_config(RX_UART, &cfg)) != ESP_OK) return err;
     if ((err = uart_set_pin(RX_UART, RX_PIN_TX, RX_PIN_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE)) != ESP_OK) return err;
+    if (listen_only) return xTaskCreate(listen_task, "rx", 4096, NULL, 7, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
     parser->observe = observe;
     return xTaskCreate(rx_task, "rx", 4096, parser, 7, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }

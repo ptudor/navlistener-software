@@ -588,38 +588,43 @@ names the board: a `CAT_INTSAT` descriptor whose address byte is the board revis
 Firmware and clients know a board's pins and part addresses from that ID and revision; the
 other entries say which parts are installed.
 
-| Entry | NEO first spin | MAX mobile | ZED-X20P (162mm) |
-|---|---|---|---|
-| `CAT_INTSAT`, revision | `INTSAT_NEO`, 1 | `INTSAT_MAX`, 1 | `INTSAT_X20`, 1 |
-| `CAT_GPS` | `GPS_NEO_M9N` | `GPS_MAX_M10S` | `GPS_ZED_X20P` |
-| `CAT_RTC` | `RTC_MCP79412` `0x6F` | `RTC_MCP79412` `0x6F` | `RTC_DS3231M` `0x68` |
-| `CAT_PRESSURE` | `PRESSURE_BMP388` `0x76` | `PRESSURE_MS5607` `0x77` | `PRESSURE_BMP581` `0x46` |
-| `CAT_POWER`, GPIO38 (`3V3_GNSS`) | `POWER_ADM7150` | `POWER_TPS7A20` | `POWER_ADM7150` |
-| `CAT_POWER`, GPIO21 (`3V3_SENS`) | `POWER_RT9193` | `POWER_TPS7A20` | `POWER_TPS7A20` |
-| `CAT_POWER`, I2C | — | — | `POWER_INA3221` `0x41` (rail monitor) |
-| `CAT_IO_EXPANDER` | — | — | `IO_MCP23008` `0x24` (interrupt collector, panel chain readback) |
-| Additional sensors | — | `IMU_ICM45686` `0x69`, `SENSOR_MAG_MMC34160PJ` `0x30`, `SENSOR_THERMOCOUPLE_MAX31856` (SPI) | — |
-| Ethernet | — | — | `COMM_W5500` (SPI), `CONNECTOR_ETHERNET_RJ45` |
-| `CAT_BATTERY` | `BATTERY_CR123A` | `BATTERY_CR2032`; `BATTERY_CR123A` not populated (optional external cell) | `BATTERY_CR2032`, `BATTERY_CR123A` (carrier) |
-| `CAT_BUTTON` | `BUTTON_BOOT` GPIO0 | `BUTTON_BOOT` GPIO0, `BUTTON_USER_2` GPIO18 (brightness) | `BUTTON_BOOT` GPIO0, `BUTTON_USER_2` GPIO18 (brightness) |
+| Entry | NEO first spin | MAX mobile | ZED-X20P (162mm) | mosaic-G5 P3 (162mm) |
+|---|---|---|---|---|
+| `CAT_INTSAT`, revision | `INTSAT_NEO`, 1 | `INTSAT_MAX`, 1 | `INTSAT_X20`, 1 | `INTSAT_MOSAIC_P3`, 1 |
+| `CAT_GPS` | `GPS_NEO_M9N` | `GPS_MAX_M10S` | `GPS_ZED_X20P` | `GPS_MOSAIC_G5_P3` |
+| `CAT_RTC` | `RTC_MCP79412` `0x6F` | `RTC_MCP79412` `0x6F` | `RTC_DS3231M` `0x68` | `RTC_MCP79412` `0x6F` |
+| `CAT_PRESSURE` | `PRESSURE_BMP388` `0x76` | `PRESSURE_MS5607` `0x77` | `PRESSURE_BMP581` `0x46` | `PRESSURE_MS5607` `0x77` |
+| `CAT_POWER`, GPIO38 (`3V3_GNSS`) | `POWER_ADM7150` | `POWER_TPS7A20` | `POWER_ADM7150` | `POWER_ADM7150` |
+| `CAT_POWER`, GPIO21 (`3V3_SENS`) | `POWER_RT9193` | `POWER_TPS7A20` | `POWER_TPS7A20` | `POWER_RT9193` |
+| `CAT_POWER`, I2C | — | — | `POWER_INA3221` `0x41` (rail monitor) | `POWER_INA3221` `0x41` (rail monitor) |
+| `CAT_IO_EXPANDER` | — | — | `IO_MCP23008` `0x24` (interrupt collector, panel chain readback) | — |
+| Additional sensors | — | `IMU_ICM45686` `0x69`, `SENSOR_MAG_MMC34160PJ` `0x30`, `SENSOR_THERMOCOUPLE_MAX31856` (SPI) | — | `TEMP_MCP9808` `0x1F` (LDL1117 spreader, U47), `TEMP_SHT35` `0x44`, `SENSOR_HIH8121` `0x27` |
+| Ethernet | — | — | `COMM_W5500` (SPI), `CONNECTOR_ETHERNET_RJ45` | — |
+| `CAT_BATTERY` | `BATTERY_CR123A` | `BATTERY_CR2032`; `BATTERY_CR123A` not populated (optional external cell) | `BATTERY_CR2032`, `BATTERY_CR123A` (carrier) | `BATTERY_CR2032` (RTC only) |
+| `CAT_BUTTON` | `BUTTON_BOOT` GPIO0 | `BUTTON_BOOT` GPIO0, `BUTTON_USER_2` GPIO18 (brightness) | `BUTTON_BOOT` GPIO0, `BUTTON_USER_2` GPIO18 (brightness) | `BUTTON_BOOT` GPIO0, `BUTTON_USER_2` GPIO18 (brightness, on the card and the panel) |
 
-All three also list the ESP32-S3, ATECC608C `0x60`, MCP9808 `0x18`, HDC2080 `0x40`, the
+All four also list the ESP32-S3, ATECC608C `0x60`, MCP9808 `0x18`, HDC2080 `0x40`, the
 TLC5916 drivers by output-enable GPIO47/GPIO48 (two on the NEO and MAX; the 162mm panel's
 three, of which U12 and U14 share GPIO47), USB-OTG and the Qwiic port. The ZED-X20P column is
 the 162mm mainboard with its required LED panel; revision A was redefined to it on
 2026-10-07, before any X20 EEPROM was programmed, and the 3900 mil square schematic is being
-brought to the same parts so it can carry the list.
+brought to the same parts so it can carry the list. The P3 column is the mosaic-G5 P3 card in
+the same enclosure with the same panel on its 24-bit ribbon. It carries two MCP9808s, so
+firmware tells their roles apart by address (`eeprom_has_ic_at()`): `0x18` measures the board,
+`0x1F` the LDL1117 system regulator's heat spreader (§6.2).
 
-One universal firmware image serves all three boards. It drives a board's pins only when the
+One universal firmware image serves all four boards. It drives a board's pins only when the
 manifest's `CAT_INTSAT` entry names that board and a revision it knows, and runs each driver
 only for a part listed installed: RAM-only configuration of the listed receiver (NEO-M9N,
 ZED-X20P or MAX-M10S), the MCP79412, MAX31328 or DS3231M RTC, the MCP9808, HDC2080/HDC2022, BMP388
 and ATECC608C, the ZED/X20's BMP581, INA3221 rail monitor (telemetry tags 15-16) and W5500
-Ethernet uplink, the GPIO18 preset buttons
+Ethernet uplink, the P3's INA3221 and MS5607, the GPIO18 preset buttons
 (`BUTTON_USER_2`) with the GPIO2 brightness trimmer, and the MAX's MS5607, MAX31856,
 ICM-45686 and MMC34160PJ (telemetry tags 11-13 in [OBSERVER-TELEMETRY.md](OBSERVER-TELEMETRY.md)).
 The ZED/X20's front panel is its only chain and takes a 24-bit frame with RTK and ATTENTION
-status. Its MCP23008 expander, where listed, collects the sensor and INA3221 alert lines behind
+status; the P3 drives the same panel from GPIO14, without an RTK input. The P3's mosaic-G5
+speaks SBF, which this firmware does not decode yet: its port is only listened to, and nothing
+is transmitted to it (§7.11). The SHT35 and HIH8121 are listed but not yet driven. Its MCP23008 expander, where listed, collects the sensor and INA3221 alert lines behind
 one interrupt on GPIO3 and reads the panel chain back on GP0 once a minute
 ([IO-EXPANDER.md](../esp32/docs/IO-EXPANDER.md)). Its internal pull-ups stay off on the
 sensor and Ethernet inputs, so each source holds its own line: the HDC2080's `HUM_INT_N` has
@@ -630,9 +635,9 @@ runs nothing board-specific; the receiver still streams, unconfigured. A new boa
 revision therefore needs a firmware row before its first unit is programmed. The single-board
 builds of `NVF_BOARD_ASSEMBLY` are test builds carrying one board's drivers. The OTA image's
 board marker (0 for the universal image, otherwise the `CAT_INTSAT` ID: 1 NEO, 2 ZED/X20,
-3 MAX) and the signed release's `board_family` (`gnss-color` for the universal image) keep a
-test image to its own board, while the universal image installs on any. None of the ZED/X20
-or MAX paths has yet run on assembled hardware.
+3 MAX, 5 P3) and the signed release's `board_family` (`gnss-color` for the universal image) keep a
+test image to its own board, while the universal image installs on any. None of the ZED/X20,
+MAX or P3 paths has yet run on assembled hardware.
 
 The ordinary eight-second configuration-reset gesture erases only `navfeeder`; it does not
 erase `hwmanifest`. The custom-board build also refuses the generic fallback that automatically
@@ -653,6 +658,8 @@ The shared public library now includes these stable entries:
 | `eeprom_sensor_id_t` | `SENSOR_HDC2080`, `SENSOR_THERMOCOUPLE_MAX31856` | The combined temperature/humidity part (§6.4); `TEMP_MCP9808` already exists for the dedicated sensor. `SENSOR_THERMOCOUPLE_MAX31856` (16) is the MAX board's SPI thermocouple converter, which is not a MAX31855. |
 | `eeprom_power_id_t` | `POWER_ADM7150`, `POWER_RT9193`, `POWER_TPS7A20` | The GPIO-gated rails (§3.1); descriptor address byte = the EN GPIO, following `CAT_BUTTON`'s addr-is-GPIO convention. `POWER_TPS7A20` (9) covers the TPS7A2033PDBVR gated rails: both on MAX, `3V3_SENS` on ZED-X20P. |
 | `eeprom_comm_id_t` | `COMM_W5500` | The ZED-X20P board's SPI Ethernet controller (6). |
+| `eeprom_gps_id_t` | `GPS_MOSAIC_G5_P3` | Septentrio's mosaic-G5 P3 (15), the P3 card's receiver. |
+| `eeprom_intsat_id_t` | `INTSAT_MOSAIC_P3` | The mosaic-G5 P3 observer (5). |
 
 `MEMORY_24CS128 = 7` is part of the shared baseline. Every board's manufacturing manifest
 names the fitted EEPROM as its first entry:
@@ -1612,6 +1619,28 @@ driver for the MAX31328 exists yet; this section reserves the bus address and
 the pins, and nothing more.
 
 ---
+
+### 7.11 mosaic-G5 P3 signal and address map
+
+The P3 connects every common pin (`NVF_PINS_COMMON`) with the same function, plus the pads
+below; `NVF_PINS_MOSAIC_P3` in `main/board_reservations.h` is the compiled copy, checked
+against the hardware repository's netlist.
+
+| GPIO | Net | Firmware use |
+|---:|---|---|
+| 2 | `BRIGHT_ADC` | Brightness trimmer wiper |
+| 8 | `TEMP_ALERT_N` | Both MCP9808 Alert outputs, open drain with a 10 kΩ pull-up; both stay at their power-on setting (disabled) and the line is not read |
+| 13 | `P3_RESET_DRV` | Drives Q1, which holds the receiver in reset while high; R97 keeps Q1 off, and firmware leaves the pin an input |
+| 14 | `LED_SDI` | The 162mm panel's 24-bit chain through J1 |
+| 16, 17 | `ESP_UART_CTS_N`, `ESP_UART_RTS_N` | COM2 flow control, left unconfigured until SBF support enables it on both ends |
+| 18 | `BRIGHT_BUTTON` | Preset buttons on the card (SW3) and the panel |
+| 39 | `HUM_INT_N` | HDC2080 interrupt, not enabled |
+| 41 | `PWR_ALERT_N` | INA3221 Warning and Critical; the rail samples read and clear the latched flags |
+
+The shared bus adds `0x1F` (U47, the LDL1117 spreader's MCP9808), `0x27` (HIH8121) and `0x44`
+(SHT35) to the addresses the other boards use; it has no `0x24`, `0x46`, `0x68` or `0x76`
+device. U47 is powered from `3V3_SYS_LDO` and stays up when `SENS_EN` removes `3V3_SENS`, but
+the bus pull-ups do not.
 
 ## 8. Alignment with `shepherdprotocol`
 

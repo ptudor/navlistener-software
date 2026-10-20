@@ -9,6 +9,7 @@ int main(void)
     assert(manifest_board_decide(EEPROM_BOARD_FOUND, INTSAT_NEO, 1) == BOARD_MODEL_NEO_A);
     assert(manifest_board_decide(EEPROM_BOARD_FOUND, INTSAT_X20, 1) == BOARD_MODEL_X20_A);
     assert(manifest_board_decide(EEPROM_BOARD_FOUND, INTSAT_MAX, 1) == BOARD_MODEL_MAX_A);
+    assert(manifest_board_decide(EEPROM_BOARD_FOUND, INTSAT_MOSAIC_P3, 1) == BOARD_MODEL_P3_A);
     // No board named: not configured. Two: the manifest is wrong. Either way nothing
     // board-specific runs.
     assert(manifest_board_decide(EEPROM_BOARD_NONE, 0, 0) == BOARD_MODEL_NONE);
@@ -16,9 +17,11 @@ int main(void)
     // A board or revision this firmware does not know is not guessed at.
     assert(manifest_board_decide(EEPROM_BOARD_FOUND, INTSAT_NEO, 2) == BOARD_MODEL_UNSUPPORTED);
     assert(manifest_board_decide(EEPROM_BOARD_FOUND, INTSAT_X20, 0) == BOARD_MODEL_UNSUPPORTED);
+    assert(manifest_board_decide(EEPROM_BOARD_FOUND, INTSAT_MOSAIC_P3, 2) == BOARD_MODEL_UNSUPPORTED);
     assert(manifest_board_decide(EEPROM_BOARD_FOUND, INTSAT_CARRIER_ARDUSIMPLE, 1) == BOARD_MODEL_UNSUPPORTED);
     assert(manifest_board_decide(EEPROM_BOARD_FOUND, 200, 1) == BOARD_MODEL_UNSUPPORTED);
     assert(!strcmp(manifest_board_name(BOARD_MODEL_X20_A), "X20 revision A"));
+    assert(!strcmp(manifest_board_name(BOARD_MODEL_P3_A), "P3 revision A"));
     assert(!strcmp(manifest_board_name(BOARD_MODEL_NONE), "no board"));
     puts("manifest board: the named board and revision, unconfigured, unsupported and conflicting manifests passed");
     return 0;

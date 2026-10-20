@@ -247,9 +247,9 @@ another OTA slot or reboot twice.
    and SHA-256.
 6. Match chip, board family, hardware revision, partition layout, minimum
    updater version, release sequence, and rollout cohort. A `gnss-color` release
-   (the universal image) fits every board; `gnss-color-neo`, `gnss-color-zed-x20`
-   and `gnss-color-max` releases (single-board test images) fit only a device whose
-   manifest names that board.
+   (the universal image) fits every board; `gnss-color-neo`, `gnss-color-zed-x20`,
+   `gnss-color-max` and `gnss-color-mosaic-p3` releases (single-board test images) fit
+   only a device whose manifest names that board.
 7. Record availability and its authenticated short advisory.
 
 Semantic version strings are for people. Eligibility and ordering use unsigned

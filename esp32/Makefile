@@ -7,7 +7,7 @@
 #
 #   make -C esp32 host-test        # every component's host tests
 #   make -C esp32 clean            # remove their build output
-#   PORT=/dev/cu.usbmodem... [NVF_BOARD=neo|zed-x20|max] make -C esp32 first-boot-flash
+#   PORT=/dev/cu.usbmodem... [NVF_BOARD=neo|zed-x20|max|mosaic-p3] make -C esp32 first-boot-flash
 #
 # `make -C go check` runs host-test, so an ESP32 regression in this shared logic fails the
 # ordinary Go gate on a machine with no ESP-IDF at all. Firmware-only code (UART, TLS, LCD,

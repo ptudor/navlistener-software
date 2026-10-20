@@ -1,0 +1,6 @@
+# navfeeder-esp test build for the mosaic-G5 P3 observer alone: the 162mm card with the
+# 162mm LED panel, MCP79412 RTC and INA3221 rail monitor. The receiver's port is only
+# listened to; this firmware does not decode SBF. It still runs only what the manifest
+# lists. Loaded after sdkconfig.defaults and sdkconfig.defaults.s3; see
+# build-navfeeder-esp.sh.
+CONFIG_NVF_BOARD_GNSS_COLOR_MOSAIC_P3=y

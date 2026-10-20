@@ -289,7 +289,7 @@ class RepositoryTests(unittest.TestCase):
         self.client(3002, family="gnss-color-max")
         self.repo.add_release(board_family="gnss-color", sequence=32, version="0.1.1", revision="b" * 40, image=b"image",
             boot_key_id="ab" * 32, provenance=b"{}", licenses=b"[]", notes=b"notes")
-        for family in ("gnss-color-neo", "gnss-color-zed-x20", "gnss-color-max", ""):
+        for family in ("gnss-color-neo", "gnss-color-zed-x20", "gnss-color-max", "gnss-color-mosaic-p3", ""):
             self.assertIn("sequence=32", self.client(family=family))
 
     def test_wrong_board_layout(self):

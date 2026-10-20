@@ -12,6 +12,9 @@ void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_
 const observer_board_t *observer_board_current(void);
 // Whether that board's manifest lists the part installed; false whenever the board is NULL.
 bool observer_board_lists(uint8_t category, uint8_t id);
+// The same for the part at one address byte (an I2C address, or the GPIO of an IC_GPIO()
+// descriptor), for a board with two identical parts in different roles.
+bool observer_board_lists_at(uint8_t category, uint8_t id, uint8_t address);
 // The board's Ethernet port is listed and driven by this image: the wired uplink.
 bool observer_board_wired_uplink(void);
 // The manifest lists a part with per-unit settings (the thermocouple converter or the IMU).

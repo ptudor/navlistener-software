@@ -9,8 +9,8 @@ cd "$esp_dir"
 board=${NVF_BOARD:-universal}
 case "$board" in
     universal) board_defaults=; default_dir=build/s3-layout3 ;;
-    neo|zed-x20|max) board_defaults=";sdkconfig.defaults.$board"; default_dir="build/s3-$board-layout3" ;;
-    *) echo "NVF_BOARD must be universal, neo, zed-x20 or max" >&2; exit 2 ;;
+    neo|zed-x20|max|mosaic-p3) board_defaults=";sdkconfig.defaults.$board"; default_dir="build/s3-$board-layout3" ;;
+    *) echo "NVF_BOARD must be universal, neo, zed-x20, max or mosaic-p3" >&2; exit 2 ;;
 esac
 build_dir=${S3_BUILD_DIR:-$default_dir}
 

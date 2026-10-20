@@ -25,13 +25,16 @@ supported substitute. Its drivers and partition table remain as legacy source.
 
 - **Custom GNSS color observer:** ESP32-S3, receiver UART on GPIO4/GPIO5, shared I2C on
   GPIO6/GPIO7, and a 24CS128 manifest at `0x50`. One universal image runs on the NEO, the
-  ZED/X20 and the MAX. At boot it reads the manifest: its `CAT_INTSAT` entry names the
+  ZED/X20, the MAX and the mosaic-G5 P3. At boot it reads the manifest: its `CAT_INTSAT` entry names the
   board and revision, which fix the pins ([`main/board_reservations.h`](main/board_reservations.h)),
   and each driver runs only for a part the manifest lists installed: the receiver it
   configures, the RTC, the environmental sensors, the ATECC, the Ethernet port, the panel
   buttons and the MAX's sensors. A board without a usable manifest naming a board this
   image knows runs nothing board-specific and logs that it may not have been configured.
-  `NVF_BOARD_ASSEMBLY` also offers single-board test builds (NEO, ZED/X20 or MAX only):
+  On the P3 the firmware does not decode the mosaic-G5's SBF yet: it only listens on the
+  receiver's port, transmitting nothing to it, and drives the board's shared services
+  (panel, RTC, sensors, rail monitor and Wi-Fi uplink).
+  `NVF_BOARD_ASSEMBLY` also offers single-board test builds (NEO, ZED/X20, MAX or P3 only):
   they carry one board's drivers, run nothing board-specific on any other board, and
   install over the air only on their own board. Startup reads the 128-bit factory serial and manifest;
   `NVF_MANIFEST_FACTORY_INIT` is a manufacturing-only, default-off permission to initialize a
@@ -58,14 +61,15 @@ From this directory:
 export IDF_PATH=/path/to/esp-idf
 "$IDF_PATH/install.sh" esp32s3             # once, after installing ESP-IDF
 ./build-navfeeder-esp.sh                  # build the universal firmware
-NVF_BOARD=max ./build-navfeeder-esp.sh     # a test build: neo, zed-x20 or max
+NVF_BOARD=max ./build-navfeeder-esp.sh     # a test build: neo, zed-x20, max or mosaic-p3
 PORT=/dev/ttyACM0 ./build-navfeeder-esp.sh flash
 ```
 
 Use your board's actual serial device, such as `/dev/ttyACM0` on Linux or
 `/dev/cu.usbmodem...` on macOS. Flashing is requested explicitly by `flash`.
 The wrapper builds the universal image in `build/s3-layout3` and the test builds in
-`build/s3-neo-layout3`, `build/s3-zed-x20-layout3` and `build/s3-max-layout3`, preserving each directory's generated
+`build/s3-neo-layout3`, `build/s3-zed-x20-layout3`, `build/s3-max-layout3` and `build/s3-mosaic-p3-layout3`,
+preserving each directory's generated
 configuration, reporting default-setting differences, and recording firmware
 provenance. Set `S3_BUILD_DIR` to select
 another build directory. It does not erase flash; migration from an older layout
@@ -86,7 +90,7 @@ idf.py -B build/s3-layout3 -p /dev/cu.usbmodemXXXX flash monitor
 ```
 
 This creates a separate S3 configuration and build directory for the universal image;
-append `;sdkconfig.defaults.neo` (or `.zed-x20`, `.max`) for a test build. Existing generated
+append `;sdkconfig.defaults.neo` (or `.zed-x20`, `.max`, `.mosaic-p3`) for a test build. Existing generated
 configurations retain their previous values: generating a separate build from
 the defaults applies PSRAM and OTA settings. Check that the generated S3 config enables `SPIRAM_MODE_OCT`,
 `NVF_SPOOL_PSRAM`, `NVF_OTA`, `BT_NIMBLE_ENABLED`, Security 2, and
@@ -705,10 +709,12 @@ The pusher reconnects when sent records remain outstanding without durable ACK a
 ### Hardware-discovery dependency and release evidence
 
 Normal builds pin `esp_hardware_discovery` to commit
-`42569e5dbe8d89fccf885c1054ec0e9dc883c37b` (24CS256/24CS512 support, the `POWER_TPS7A20`,
-`COMM_W5500`, `SENSOR_THERMOCOUPLE_MAX31856`, `PRESSURE_BMP580`, `PRESSURE_BMP581` and
-`RTC_DS3231M` catalog IDs, the `CAT_INTSAT` board category, part identification and the Intsat
-board templates, whose X20 list is the 162mm assembly with the DS3231M, MCP23008 and BMP581), with the IDF 5.5.4/ESP32-S3
+`b18f4ffbb7fb1e85fd075c206c382433d606e0ed` (24CS256/24CS512 support, the `POWER_TPS7A20`,
+`COMM_W5500`, `SENSOR_THERMOCOUPLE_MAX31856`, `PRESSURE_BMP580`, `PRESSURE_BMP581`,
+`RTC_DS3231M` and `GPS_MOSAIC_G5_P3` catalog IDs, the `CAT_INTSAT` board category with
+`INTSAT_MOSAIC_P3`, part identification, `eeprom_has_ic_at()` and the Intsat board templates,
+whose X20 list is the 162mm assembly with the DS3231M, MCP23008 and BMP581 and whose P3 list
+names both MCP9808s), with the IDF 5.5.4/ESP32-S3
 resolution committed in `dependencies.lock`. Updating the pin is a deliberate
 source change: review upstream layout changes and run the component's
 `test/host` read/write, page-boundary, interrupted-write, timestamp/footer,

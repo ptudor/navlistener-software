@@ -13,6 +13,7 @@ typedef enum {
     BOARD_MODEL_NEO_A,
     BOARD_MODEL_X20_A,
     BOARD_MODEL_MAX_A,
+    BOARD_MODEL_P3_A,
     BOARD_MODEL_UNSUPPORTED,  // a board or revision this firmware does not know
     BOARD_MODEL_CONFLICT,     // more than one board named
 } board_model_t;

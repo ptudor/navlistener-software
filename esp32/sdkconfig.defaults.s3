@@ -21,7 +21,7 @@ CONFIG_PARTITION_TABLE_OFFSET=0x10000
 # GPIO4/GPIO5 receiver UART, GPIO6/GPIO7 manifest bus, and the Waveshare
 # LCD/WS2812 drivers held dormant because their fixed pins are this board's I2C.
 # The universal image is the default: the manifest EEPROM names the board and lists its
-# parts. sdkconfig.defaults.neo, .zed-x20 and .max, loaded after this file, select the
+# parts. sdkconfig.defaults.neo, .zed-x20, .max and .mosaic-p3, loaded after this file, select the
 # single-board test builds (build-navfeeder-esp.sh NVF_BOARD=...).
 CONFIG_NVF_BOARD_GNSS_COLOR=y
 CONFIG_NVF_BOARD_GNSS_COLOR_UNIVERSAL=y

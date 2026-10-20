@@ -50,8 +50,11 @@
 #ifndef CONFIG_NVF_BOARD_SUPPORT_MAX
 #define CONFIG_NVF_BOARD_SUPPORT_MAX 0
 #endif
-// The brightness preset button and trimmer (X20 and MAX); a NEO-only test build omits them.
-#define PANEL_INPUTS (CONFIG_NVF_BOARD_SUPPORT_X20 || CONFIG_NVF_BOARD_SUPPORT_MAX)
+#ifndef CONFIG_NVF_BOARD_SUPPORT_MOSAIC_P3
+#define CONFIG_NVF_BOARD_SUPPORT_MOSAIC_P3 0
+#endif
+// The brightness preset button and trimmer (X20, MAX and P3); a NEO-only test build omits them.
+#define PANEL_INPUTS (CONFIG_NVF_BOARD_SUPPORT_X20 || CONFIG_NVF_BOARD_SUPPORT_MAX || CONFIG_NVF_BOARD_SUPPORT_MOSAIC_P3)
 #if PANEL_INPUTS
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -86,6 +89,7 @@ static const struct { observer_board_t board; bool driven; } known[] = {
     {NVF_BOARD_NEO_ROW, CONFIG_NVF_BOARD_SUPPORT_NEO},
     {NVF_BOARD_X20_ROW, CONFIG_NVF_BOARD_SUPPORT_X20},
     {NVF_BOARD_MAX_ROW, CONFIG_NVF_BOARD_SUPPORT_MAX},
+    {NVF_BOARD_P3_ROW, CONFIG_NVF_BOARD_SUPPORT_MOSAIC_P3},
 };
 // Set once by observer_board_manifest, before the tasks that read them start. The board is
 // NULL, and nothing is listed, unless a usable manifest names a board this image drives.
@@ -100,6 +104,10 @@ const observer_board_t *observer_board_current(void) { return board; }
 bool observer_board_lists(uint8_t category, uint8_t id)
 {
     return board && eeprom_has_ic(&listed, category, id);
+}
+bool observer_board_lists_at(uint8_t category, uint8_t id, uint8_t address)
+{
+    return board && eeprom_has_ic_at(&listed, category, id, address);
 }
 bool observer_board_wired_uplink(void)
 {
@@ -121,9 +129,16 @@ static observer_rtc_part_t listed_rtc(void)
     if (board && !mcp && !max && !ds) ESP_LOGW(TAG, "the manifest lists no RTC; none is used");
     return mcp ? OBSERVER_RTC_MCP79412 : max ? OBSERVER_RTC_MAX31328 : ds ? OBSERVER_RTC_DS3231M : OBSERVER_RTC_NONE;
 }
-// The receiver the manifest lists, as MON-VER names it; NULL configures none.
+// The receiver the manifest lists, as MON-VER names it; NULL configures none. A listed
+// receiver this firmware does not speak, the P3's mosaic-G5, is only listened to: receiver.c
+// then transmits nothing on its port, so no u-blox poll reaches it.
 static const char *listed_receiver(void)
 {
+    if (observer_board_lists(CAT_GPS, GPS_MOSAIC_G5_P3)) {
+        ESP_LOGW(TAG, "the manifest lists a mosaic-G5 P3; this firmware does not decode its SBF, so its port is only listened to");
+        receiver_set_listen_only(true);
+        return NULL;
+    }
     static const struct { uint8_t id; const char *module; } receivers[] = {
         {GPS_NEO_M9N, "NEO-M9N"}, {GPS_ZED_X20P, "ZED-X20P"}, {GPS_MAX_M10S, "MAX-M10S"},
     };
@@ -211,7 +226,7 @@ void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_
         rails_listed = false;
     }
     env_parts_t parts = {
-        .mcp9808 = observer_board_lists(CAT_TEMP, TEMP_MCP9808),
+        .mcp9808 = observer_board_lists_at(CAT_TEMP, TEMP_MCP9808, NVF_I2C_TEMPERATURE),
         .bmp388 = report.pressure.part == PRESSURE_PART_BMP388,
         .bmp5 = report.pressure.part == PRESSURE_PART_BMP580 ? ENV_BMP580 :
                 report.pressure.part == PRESSURE_PART_BMP581 ? ENV_BMP581 : ENV_BMP5_NONE,
@@ -494,7 +509,7 @@ static void identify_peripherals(void)
         {CAT_IO_EXPANDER, IO_MCP23008, NVF_I2C_IO_EXPANDER, "I/O expander"},
     };
     for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) {
-        if (!observer_board_lists(parts[i].category, parts[i].id)) continue;
+        if (!observer_board_lists_at(parts[i].category, parts[i].id, parts[i].address)) continue;
         const uint8_t address = parts[i].address;
         esp_err_t err = i2c_master_probe(bus, address, 100);
         ESP_LOGI(TAG, "%s at 0x%02x: %s", parts[i].name, address, esp_err_to_name(err));
@@ -1151,6 +1166,8 @@ void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_
 { (void)manifest; (void)now_ns; }
 const observer_board_t *observer_board_current(void) { return NULL; }
 bool observer_board_lists(uint8_t category, uint8_t id) { (void)category; (void)id; return false; }
+bool observer_board_lists_at(uint8_t category, uint8_t id, uint8_t address)
+{ (void)category; (void)id; (void)address; return false; }
 bool observer_board_wired_uplink(void) { return false; }
 bool observer_board_sensor_settings(void) { return false; }
 esp_err_t observer_board_start(void) { return ESP_OK; }

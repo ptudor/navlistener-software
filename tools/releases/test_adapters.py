@@ -108,10 +108,12 @@ class AdapterTests(unittest.TestCase):
         old = bytearray(self.image()); old[296] = 1
         with self.assertRaises(ValueError): sign_image(bytes(old), self.signers.config, False)
         # Byte 297 names the board; a release follows it, and an unknown board is refused.
-        for board, family in ((0, "gnss-color"), (1, "gnss-color-neo"), (2, "gnss-color-zed-x20"), (3, "gnss-color-max")):
+        for board, family in ((0, "gnss-color"), (1, "gnss-color-neo"), (2, "gnss-color-zed-x20"), (3, "gnss-color-max"),
+                              (5, "gnss-color-mosaic-p3")):
             marked = bytearray(self.image()); marked[297] = board
             self.assertEqual(board_family(bytes(marked)), family)
-        for board in (4, 255):
+        # 4 is the ArduSimple carrier, which has no image of its own.
+        for board in (4, 6, 255):
             marked = bytearray(self.image()); marked[297] = board
             with self.assertRaises(ValueError): sign_image(bytes(marked), self.signers.config, False)
         with self.assertRaises(ValueError): keys(self.signers.config, True)

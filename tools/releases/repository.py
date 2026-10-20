@@ -34,7 +34,8 @@ from tuf.api.serialization.json import CanonicalJSONSerializer, JSONSerializer
 # NVFOTA1 byte 9: the board's CAT_INTSAT ID. The universal image (0) drives only what each
 # board's manifest lists, so its releases fit every board; the others are single-board
 # test images.
-BOARD_FAMILIES = {0: "gnss-color", 1: "gnss-color-neo", 2: "gnss-color-zed-x20", 3: "gnss-color-max"}
+BOARD_FAMILIES = {0: "gnss-color", 1: "gnss-color-neo", 2: "gnss-color-zed-x20", 3: "gnss-color-max",
+                  5: "gnss-color-mosaic-p3"}
 
 CHANNELS = ("stable", "canary", "lab")
 PROFILES = ("trusted", "open", "test")

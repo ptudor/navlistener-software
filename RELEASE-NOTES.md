@@ -78,6 +78,10 @@
   stored events.
 - Integrity Station shows the assessment on private station details and treats
   `station_assurance` as a station condition.
+- The universal ESP32-S3 image recognizes the mosaic-G5 P3 board (`CAT_INTSAT` 5) and
+  drives its panel, RTC, sensors, rail monitor and Wi-Fi uplink. The firmware does not
+  decode SBF yet, so it only listens on the receiver's port and transmits nothing to it.
+  Single-board P3 test images carry the `gnss-color-mosaic-p3` release family.
 
 Trusted rollout remains gated by commissioning and hardware acceptance in
 [Update operations](esp32/docs/UPDATE-OPERATIONS.md).

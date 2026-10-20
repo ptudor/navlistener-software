@@ -5,6 +5,9 @@
 // The receiver model the manifest lists, as MON-VER names it ("NEO-M9N", "ZED-X20P",
 // "MAX-M10S"), or NULL, which configures no receiver. Call before receiver_start.
 void receiver_set_module(const char *name);
+// A receiver the manifest lists that this firmware does not speak: receiver_start then only
+// reads its port, transmitting nothing and decoding nothing. Call before receiver_start.
+void receiver_set_listen_only(bool listen);
 esp_err_t receiver_start(ubx_parser_t *parser);
 bool receiver_alive(void);
 void receiver_status(gnss_status_t *out);

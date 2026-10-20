@@ -145,6 +145,9 @@ static esp_err_t adopted_uid_store(const uint8_t uid[NVF_BOARD_UID_SIZE])
 #elif CONFIG_NVF_MANIFEST_BOARD_MAX_A
 #define MANIFEST_BOARD_ID INTSAT_MAX
 #define MANIFEST_BOARD_NAME "MAX-M10S mobile revision A"
+#elif CONFIG_NVF_MANIFEST_BOARD_MOSAIC_P3_A
+#define MANIFEST_BOARD_ID INTSAT_MOSAIC_P3
+#define MANIFEST_BOARD_NAME "mosaic-G5 P3 revision A"
 #else
 #define MANIFEST_BOARD_ID INTSAT_NEO
 #define MANIFEST_BOARD_NAME "NEO first-spin revision A"
