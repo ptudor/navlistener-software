@@ -4,7 +4,7 @@ SOURCES := env_test.c ../src/env_sensors.c ../src/mcp9808.c ../vendor/bmp3/bmp3.
 HEADERS := ../include/env_sensors.h ../include/mcp9808.h ../vendor/bmp3/bmp3.h ../vendor/bmp3/bmp3_defs.h
 .PHONY: all clean
 all: build/env_test build/heater_test build/ms5607_test build/max31856_test build/mmc34160_test build/bmp5_test \
-     build/ina3221_test build/mcp9808_test
+     build/ina3221_test build/mcp9808_test build/sht3x_test build/hih8121_test
 	./build/env_test
 	./build/heater_test
 	./build/ms5607_test
@@ -13,6 +13,8 @@ all: build/env_test build/heater_test build/ms5607_test build/max31856_test buil
 	./build/bmp5_test
 	./build/ina3221_test
 	./build/mcp9808_test
+	./build/sht3x_test
+	./build/hih8121_test
 build/env_test: $(SOURCES) $(HEADERS)
 	@mkdir -p build
 	$(CC) $(CFLAGS) -I../include -I../vendor/bmp3 $(SOURCES) -lm -o $@
@@ -37,5 +39,11 @@ build/ina3221_test: ina3221_test.c ../src/ina3221.c ../include/ina3221.h $(HEADE
 build/mcp9808_test: mcp9808_test.c ../src/mcp9808.c ../include/mcp9808.h $(HEADERS)
 	@mkdir -p build
 	$(CC) $(CFLAGS) -I../include -I../vendor/bmp3 mcp9808_test.c ../src/mcp9808.c -o $@
+build/sht3x_test: sht3x_test.c ../src/sht3x.c ../include/sht3x.h $(HEADERS)
+	@mkdir -p build
+	$(CC) $(CFLAGS) -I../include -I../vendor/bmp3 sht3x_test.c ../src/sht3x.c -o $@
+build/hih8121_test: hih8121_test.c ../src/hih8121.c ../include/hih8121.h $(HEADERS)
+	@mkdir -p build
+	$(CC) $(CFLAGS) -I../include -I../vendor/bmp3 hih8121_test.c ../src/hih8121.c -o $@
 clean:
 	rm -rf build

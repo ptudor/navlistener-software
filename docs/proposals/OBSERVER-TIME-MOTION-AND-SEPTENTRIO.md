@@ -195,7 +195,7 @@ short/long gaps, relocation and implausible motion.
 | ESP32 receiver | UBX parser, MON-VER discovery and UBX configuration; on a P3 the port is only listened to, with nothing transmitted | SBF framing, Septentrio command/reply handling, COM2 flow control, capability discovery and status/time/solution adaptation. |
 | GNF1 push and enrollment | `ubx`/`rtcm` feed grants; SBF rejected | Versioned SBF representation preserving the full block header; feeder, collector, grant validation, spool and replay updates together. |
 | Station analysis | Receiver-neutral solution record and integrity engine | Map P3 solution, uncertainty, time, tracking and RF evidence; retain unavailable fields rather than inventing UBX equivalents. |
-| Board platform | Identity EEPROM, manifest, ATECC, commissioning, OTA, RTC, panel and selected sensors; the P3 board ID, revision 1 parts list, pins, OTA target and rail monitor | Receiver reset control, SHT35 and HIH8121 drivers. |
+| Board platform | Identity EEPROM, manifest, ATECC, commissioning, OTA, RTC, panel and selected sensors; the P3 board ID, revision 1 parts list, pins, OTA target, rail monitor, and SHT35 and HIH8121 drivers | Receiver reset control. |
 
 The present GNF1 DATA `frame_type` cannot carry an SBF block number. Widening or
 truncating it locally is not a transport design. A new representation needs

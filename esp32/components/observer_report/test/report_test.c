@@ -5,7 +5,7 @@
 #include <string.h>
 int main(int argc, char **argv)
 {
-    assert(argc == 6);
+    assert(argc == 7);
     observer_report_t r = {.uptime_ms=1000000, .event_count=3, .event_ms=999000,
         .reason=8, .event_flags=1, .event_states=6,
         .environment={7,7,2550,4212,2500,5000,100000},
@@ -163,6 +163,34 @@ int main(int argc, char **argv)
     assert(observer_report_due(&p,&g)==REPORT_CHANGE); // the sensor stopped answering
     observer_report_sent(&p,&g); g.uptime_ms+=60000; g.regulator.peak_centi_c-=500;
     assert(!observer_report_due(&p,&g)); // the peak alone is not a change
+
+    // The extra humidity sensors (tags 24 and 25) follow the regulator: the regulator fixture
+    // with the P3's SHT35 and HIH8121 measured.
+    observer_report_t h=g; h.uptime_ms=golden.uptime_ms;
+    h.regulator=(report_regulator_t){.present=true,.state=1,.valid=3,.level=2,.centi_c=9712,.peak_centi_c=9850,
+        .tx_cap=52,.changes=2,.throttled_s=95,.throttle_centi_c=9500,.full_centi_c=10500,.release_centi_c=8500};
+    h.sht3x=(report_humidity_extra_t){.present=true,.state=1,.valid=1,.centi_c=2345,.centi_rh=4120};
+    h.hih8121=(report_humidity_extra_t){.present=true,.state=1,.valid=1,.status=0,.centi_c=2310,.centi_rh=4375};
+    f=fopen(argv[6],"r"); assert(f); size_t humidity_count=0;
+    while (fscanf(f,"%2x",&byte)==1) { assert(humidity_count<sizeof expected); expected[humidity_count++]=byte; }
+    fclose(f);
+    assert(humidity_count==regulator_count+10+11);
+    assert(observer_report_encode(actual,sizeof actual,&h)==humidity_count && !memcmp(actual,expected,humidity_count));
+    static const uint8_t humidity_tail[]={0x18,0,7, 1,1,1, 0x09,0x29, 0x10,0x18,
+        0x19,0,8, 1,1,1,0, 0x09,0x06, 0x11,0x17};
+    assert(!memcmp(actual+humidity_count-sizeof humidity_tail,humidity_tail,sizeof humidity_tail));
+    p=(report_policy_t){0}; observer_report_sent(&p,&h);
+    h.uptime_ms+=60000; h.sht3x.centi_c+=49; h.hih8121.centi_rh+=199;
+    assert(!observer_report_due(&p,&h)); // drift under 0.5 C and 2 %RH rides along
+    h.sht3x.centi_c+=1;
+    assert(observer_report_due(&p,&h)==REPORT_CHANGE);
+    observer_report_sent(&p,&h); h.uptime_ms+=60000; h.hih8121.centi_rh+=200;
+    assert(observer_report_due(&p,&h)==REPORT_CHANGE);
+    observer_report_sent(&p,&h); h.uptime_ms+=60000;
+    h.hih8121.valid=0; h.hih8121.status=1; h.hih8121.centi_c=0; h.hih8121.centi_rh=0;
+    assert(observer_report_due(&p,&h)==REPORT_CHANGE); // a stale fetch
+    observer_report_sent(&p,&h); h.uptime_ms+=60000; h.sht3x=(report_humidity_extra_t){.present=true};
+    assert(observer_report_due(&p,&h)==REPORT_CHANGE); // the SHT35 stopped answering
     assert(panel_pwm_off_ticks(50)==512 && panel_pwm_off_ticks(20)==819 && panel_pwm_off_ticks(10)==922);
     assert(panel_pwm_off_ticks(100)==0 && panel_pwm_off_ticks(0)==1024);
     assert(panel_next_brightness(20)==10 && panel_next_brightness(10)==50 && panel_next_brightness(50)==20);

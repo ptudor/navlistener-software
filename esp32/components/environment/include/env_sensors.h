@@ -9,6 +9,11 @@ typedef struct {
     bool (*read)(void *ctx, uint8_t address, uint8_t reg, uint8_t *data, size_t len);
     bool (*write)(void *ctx, uint8_t address, uint8_t reg, const uint8_t *data, size_t len);
     void (*delay_ms)(void *ctx, unsigned ms);
+    // For command-driven parts (the SHT3x, the HIH8121): a read with no register pointer
+    // written first, and an address-only write (START, address with the write bit, STOP).
+    // Boards with neither part may leave them NULL; those drivers then report no part.
+    bool (*receive)(void *ctx, uint8_t address, uint8_t *data, size_t len);
+    bool (*request)(void *ctx, uint8_t address);
 } env_io_t;
 // The ID registers are identical; the manifest says which part is fitted.
 typedef enum {

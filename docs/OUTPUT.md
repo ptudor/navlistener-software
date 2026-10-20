@@ -245,7 +245,8 @@ component health, identity and context. `humidity_heater` reports the humidity
 sensor's rare condensation-recovery runs and humidity-dwell counters; while its
 `state` is not `normal`, the HDC values are `null`. On a P3, `regulator` reports the system
 regulator's spreader temperature and the Wi-Fi transmit throttle it drives; it is not an
-environmental reading. `board.latest` separates collector
+environmental reading. A P3's `sht3x` and `hih8121` carry its two other humidity sensors, each
+with its own temperature and humidity, apart from `environment`. `board.latest` separates collector
 receipt time from nullable sample UTC and includes boot session/sequence.
 `board.stale` and `board.last_interference` expose freshness and the previous
 report as interference context. `board.timing` carries independently paced GNSS

@@ -96,6 +96,16 @@ typedef struct {
     uint32_t changes, throttled_s;
     int16_t throttle_centi_c, full_centi_c, release_centi_c;
 } report_regulator_t;
+// The humidity sensors beside the HDC, each reported apart from tag 1: the SHT3x (the P3's
+// SHT35) as tag 24, the HIH8121 as tag 25. Invalid measurements stay zero.
+typedef struct {
+    bool present;
+    uint8_t state;     // SHT3x: 0 not identified, 1 ready; HIH8121: 0 not answering, 1 answering
+    uint8_t valid;     // 1: temperature and humidity measured (requires state 1)
+    uint8_t status;    // HIH8121 only: the fetched status bits, 0 fresh, 1 stale, 2 command mode, 3 unused
+    int16_t centi_c;
+    uint16_t centi_rh;
+} report_humidity_extra_t;
 typedef struct { uint8_t flags; uint64_t epoch, sampled_ms; } report_rtc_t;
 typedef struct {
     uint64_t checked_ms;
@@ -129,6 +139,7 @@ typedef struct {
     report_pressure_t pressure;
     report_rails_t rails;
     report_regulator_t regulator;
+    report_humidity_extra_t sht3x, hih8121;
     report_rtc_t rtc;
     report_crypto_t crypto;
     report_manifest_t manifest;

@@ -104,6 +104,9 @@ static bool expander_listed;
 // the board task alone (regulator_poll).
 static bool regulator_listed;
 static regulator_thermal_t regulator;
+// The humidity sensors beside the HDC (the P3's SHT35 and HIH8121), each listed at its
+// allocated address; tags 24 and 25.
+static bool sht3x_listed, hih8121_listed;
 _Static_assert(NVF_I2C_IO_EXPANDER == MCP23008_ADDRESS, "the expander's address differs from the allocation record");
 const observer_board_t *observer_board_current(void) { return board; }
 bool observer_board_lists(uint8_t category, uint8_t id)
@@ -257,6 +260,10 @@ void observer_board_manifest(const hardware_manifest_result_t *manifest, uint64_
         regulator_listed = false;
     }
     parts.regulator_mcp9808 = regulator_listed ? board->regulator.address : 0;
+    sht3x_listed = observer_board_lists_at(CAT_TEMP, TEMP_SHT35, NVF_I2C_HUMIDITY_SHT3X);
+    hih8121_listed = observer_board_lists_at(CAT_SENSOR, SENSOR_HIH8121, NVF_I2C_HUMIDITY_HIH);
+    parts.sht3x = sht3x_listed ? NVF_I2C_HUMIDITY_SHT3X : 0;
+    parts.hih8121 = hih8121_listed ? NVF_I2C_HUMIDITY_HIH : 0;
     environment_configure(&parts);
     expander_listed = listed_with_pins(CAT_IO_EXPANDER, IO_MCP23008, board && board->exp_int_n >= 0,
                                        "MCP23008 I/O expander");
@@ -513,6 +520,8 @@ static void identify_peripherals(void)
         {CAT_TEMP, TEMP_MCP9808, NVF_I2C_TEMPERATURE, "temperature"},
         {CAT_SENSOR, SENSOR_HDC2080, NVF_I2C_HUMIDITY, "humidity"},
         {CAT_SENSOR, SENSOR_HDC2022, NVF_I2C_HUMIDITY, "humidity"},
+        {CAT_TEMP, TEMP_SHT35, NVF_I2C_HUMIDITY_SHT3X, "SHT35 humidity"},
+        {CAT_SENSOR, SENSOR_HIH8121, NVF_I2C_HUMIDITY_HIH, "HIH8121 humidity"},
         {CAT_PRESSURE, PRESSURE_BMP388, NVF_I2C_PRESSURE, "pressure"},
         {CAT_PRESSURE, PRESSURE_BMP580, NVF_I2C_PRESSURE_BMP5, "pressure"},
         {CAT_PRESSURE, PRESSURE_BMP581, NVF_I2C_PRESSURE_BMP5, "pressure"},
@@ -891,6 +900,21 @@ static void regulator_report(int64_t now)
         ESP_LOGI(TAG, "%s spreader %.2f C (peak %.2f C since the last report), Wi-Fi throttle level %u",
                  board->regulator.part, t->centi_c / 100.0, t->peak_centi_c / 100.0, t->level);
 }
+// Tags 24 and 25: the humidity sensors beside the HDC, each when listed.
+static void humidity_extra_report(void)
+{
+    env_humidity_t h;
+    if (sht3x_listed) {
+        environment_sample_sht3x(&h);
+        report.sht3x = (report_humidity_extra_t){.present = true, .state = h.ready, .valid = h.valid,
+            .centi_c = h.centi_c, .centi_rh = h.centi_rh};
+    }
+    if (hih8121_listed) {
+        environment_sample_hih8121(&h);
+        report.hih8121 = (report_humidity_extra_t){.present = true, .state = h.ready, .valid = h.valid,
+            .status = h.status, .centi_c = h.centi_c, .centi_rh = h.centi_rh};
+    }
+}
 // Tags 11-13, each present only when its parts are listed.
 static void max_sensors_report(void)
 {
@@ -917,6 +941,7 @@ static void report_poll(const gnss_status_t *status, int64_t now, uint8_t expect
     max_sensors_report();
     if (rails_listed) rails_report();
     if (regulator_listed) regulator_report(now);
+    humidity_extra_report();
     // After every sample, so no component's time is later than the report's.
     last_environment = esp_timer_get_time() / 1000;
     next_environment = last_environment + 30000;

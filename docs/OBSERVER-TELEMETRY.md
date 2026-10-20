@@ -370,6 +370,8 @@ invalid lengths/enums/ranges, and trailing partial TLVs are rejected.
 | 20 reception power | 256 | Current C/N₀ observations plus local and delivered-model comparisons; [version 2 contract](RECEPTION.md#version-2-received-power-contract) |
 | 21 reception power event | 68 | A retained local/remote/joint power transition; never advances the live evaluator |
 | 23 regulator | 23 | The system regulator's spreader temperature and the Wi-Fi throttle it drives; layout below |
+| 24 SHT3x | 7 | The SHT3x humidity sensor beside the HDC (the P3's SHT35); layout below |
+| 25 HIH8121 | 8 | The HIH8121 humidity sensor beside the HDC; layout below |
 
 Environment mask bits 0/1/2 identify MCP/HDC/BMP respectively; the BMP is the part
 tag 15 names, which on the ZED/X20 is the BMP581. Valid requires
@@ -554,6 +556,35 @@ logging this tag under sustained Wi-Fi traffic in the closed enclosure. A report
 the level, the state or the latest reading's validity changes, or the reading moves 2 °C;
 the peak and the counters ride along.
 
+## Humidity sensors beside the HDC (tags 24 and 25, version 1)
+
+The P3 carries two humidity sensors besides the HDC2080 at `0x40`: a Sensirion SHT35 (U45) at
+`0x44` and a Honeywell HIH8121 (U44, filtered, through-hole) at `0x27`, for comparison and
+for checking enclosure airflow and temperature bias. A board whose manifest lists the SHT35 at
+`0x44` carries tag 24, and one that lists the HIH8121 at `0x27` carries tag 25, in each
+environmental report. Both are ambient readings, kept out of tag 1 so that its fields mean the
+same on every board.
+
+| Offset | Tag 24 SHT3x | Tag 25 HIH8121 |
+|---:|---|---|
+| 0 | Version U8 = 1 | Version U8 = 1 |
+| 1 | State U8: not identified=0, ready=1 | State U8: not answering=0, answering=1 |
+| 2 | Validity U8: measurement=1 (requires ready) | Validity U8: measurement=1 (requires answering and fresh status) |
+| 3 | Temperature I16, 0.01 °C, −40…125 °C | Status U8: the fetched status bits, fresh=0, stale=1, command mode=2, unused=3; zero when not answering |
+| 4 | | Temperature I16, 0.01 °C, −40…125 °C |
+| 5 | Relative humidity U16, 0.01 %RH, 0…10000 | |
+| 6 | | Relative humidity U16, 0.01 %RH, 0…10000 |
+
+The SHT3x has no identity register. Firmware stops any periodic acquisition, soft-resets the
+part and reads its status word; one that passes its CRC with the heater off identifies it. Each
+sample is a single-shot, high-repeatability conversion without clock stretching, both words
+CRC-checked (SHT3x-DIS datasheet sections 4.3-4.13). The HIH8121 sleeps until a measurement
+request, an address-only write; firmware fetches four bytes 60 ms later, the datasheet's
+power-on-to-data-ready maximum, and uses only a fresh result (Honeywell technical note
+009061-2-EN). A failed conversion or a non-fresh status leaves the values zero, served as
+`null`. A report is due when a part's state, validity or status changes, or its reading moves
+0.5 °C or 2 %RH, as for tag 1.
+
 ## Timing component (tag 8, version 1)
 
 S3 firmware sends a timing-only record once per second, with reason `check-in`
@@ -617,7 +648,9 @@ with `channel`, `shunt_milliohms`, and nullable `bus_v`, `shunt_uv` and `current
 boards add `regulator` (tag 23): `state`, nullable `spreader_c` and `peak_c`,
 `throttle_level`, nullable `wifi_tx_cap_dbm` (null when unthrottled), `throttle_changes`,
 `throttled_s`, and the board's `throttle_c`, `full_c` and `release_c`. It is the regulator's
-temperature, separate from `environment`.
+temperature, separate from `environment`. P3 boards also add `sht3x` (tag 24) and `hih8121`
+(tag 25), each with `state`, nullable `temperature_c` and `humidity_percent`, and for the
+HIH8121 a `status` (`fresh`, `stale`, `command_mode` or `unused`) while it answers.
 Component health and identifiers appear under `rtc`, `atecc`, `eeprom`,
 `resources`, `receiver`, and `firmware`. `humidity_heater` carries tag 10:
 `state`, `trusted_utc`, `last_run_readable`, `runs_since_boot`,

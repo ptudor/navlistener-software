@@ -297,6 +297,14 @@ The thresholds sit in the P3's board row; log tag 23 under sustained Wi-Fi traff
 closed enclosure to confirm them. Both MCP9808s keep their Alert outputs disabled, so the
 shared `TEMP_ALERT_N` line stays high and is not read.
 
+The P3 also lists an SHT35 at `0x44` and an HIH8121 at `0x27` beside its HDC2080. Each is
+sampled with the environment and reported as its own tag, 24 and 25 (`sht3x`, `hih8121`),
+see [the humidity sensor tags](../docs/OBSERVER-TELEMETRY.md#humidity-sensors-beside-the-hdc-tags-24-and-25-version-1).
+The SHT35 takes a single-shot, high-repeatability conversion with both words CRC-checked; the
+HIH8121 wakes on an address-only write and is fetched 60 ms later, a result counting only when
+its status bits read fresh. Neither has an identity register. Like the MCP9808's, their
+readings continue through an HDC heater run; tag 10's state says when one was running.
+
 The HDC heater stays off except for a rare condensation-recovery run: after four
 continuous hours at 98 %RH or more, at most once per 14 days of trusted UTC. The
 run's start time is saved in the `nvf_env` NVS namespace before the heater is

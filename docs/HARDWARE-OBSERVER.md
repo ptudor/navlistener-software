@@ -618,14 +618,16 @@ manifest's `CAT_INTSAT` entry names that board and a revision it knows, and runs
 only for a part listed installed: RAM-only configuration of the listed receiver (NEO-M9N,
 ZED-X20P or MAX-M10S), the MCP79412, MAX31328 or DS3231M RTC, the MCP9808, HDC2080/HDC2022, BMP388
 and ATECC608C, the ZED/X20's BMP581, INA3221 rail monitor (telemetry tags 15-16) and W5500
-Ethernet uplink, the P3's INA3221 and MS5607 and its regulator-spreader MCP9808, which throttles
-Wi-Fi transmit power (tag 23, §6.2), the GPIO18 preset buttons
+Ethernet uplink, the P3's INA3221 and MS5607, its SHT35 and HIH8121 humidity sensors (tags 24
+and 25) and its regulator-spreader MCP9808, which throttles Wi-Fi transmit power (tag 23,
+§6.2), the GPIO18 preset buttons
 (`BUTTON_USER_2`) with the GPIO2 brightness trimmer, and the MAX's MS5607, MAX31856,
 ICM-45686 and MMC34160PJ (telemetry tags 11-13 in [OBSERVER-TELEMETRY.md](OBSERVER-TELEMETRY.md)).
 The ZED/X20's front panel is its only chain and takes a 24-bit frame with RTK and ATTENTION
 status; the P3 drives the same panel from GPIO14, without an RTK input. The P3's mosaic-G5
 speaks SBF, which this firmware does not decode yet: its port is only listened to, and nothing
-is transmitted to it (§7.11). The SHT35 and HIH8121 are listed but not yet driven. Its MCP23008 expander, where listed, collects the sensor and INA3221 alert lines behind
+is transmitted to it (§7.11). The ZED/X20's MCP23008 expander, where listed, collects the
+sensor and INA3221 alert lines behind
 one interrupt on GPIO3 and reads the panel chain back on GP0 once a minute
 ([IO-EXPANDER.md](../esp32/docs/IO-EXPANDER.md)). Its internal pull-ups stay off on the
 sensor and Ethernet inputs, so each source holds its own line: the HDC2080's `HUM_INT_N` has

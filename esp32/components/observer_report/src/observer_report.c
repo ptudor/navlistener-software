@@ -65,6 +65,12 @@ uint8_t observer_report_due(const report_policy_t *p, const observer_report_t *r
     const report_regulator_t *ga = &p->last.regulator, *gb = &r->regulator;
     changed = changed || ga->present != gb->present || ga->state != gb->state || (ga->valid & 1) != (gb->valid & 1) ||
         ga->level != gb->level || ((gb->valid & 1) && abs(ga->centi_c - gb->centi_c) >= 200);
+    // The extra humidity sensors on tag 1's terms: 0.5 C or 2 %RH.
+    const report_humidity_extra_t *xa[] = {&p->last.sht3x, &p->last.hih8121}, *xb[] = {&r->sht3x, &r->hih8121};
+    for (unsigned i = 0; i < 2 && !changed; i++)
+        changed = xa[i]->present != xb[i]->present || xa[i]->state != xb[i]->state || xa[i]->valid != xb[i]->valid ||
+            xa[i]->status != xb[i]->status || (xb[i]->valid && (abs(xa[i]->centi_c - xb[i]->centi_c) >= 50 ||
+                                                               abs(xa[i]->centi_rh - xb[i]->centi_rh) >= 200));
     return changed ? REPORT_CHANGE : 0;
 }
 void observer_report_sent(report_policy_t *p, const observer_report_t *r)
@@ -75,12 +81,13 @@ size_t observer_report_encode(uint8_t *out, size_t cap, const observer_report_t 
     while (fwlen < 32 && r->firmware[fwlen]) fwlen++;
     // Header 24; six fixed TLVs (14,17,16,40,29,29); firmware TLV; optional heater (58),
     // barometer (10), thermocouple (12), motion (95), humidity-sensor (2), pressure-sensor (2),
-    // rails (27) and regulator (23) TLVs.
+    // rails (27), regulator (23), SHT3x (7) and HIH8121 (8) TLVs.
     size_t length = 24 + 18 + 14 + 17 + 16 + 5 + NVF_BOARD_UID_SIZE + 29 + 29 + 3 + fwlen +
                     (r->heater.present ? 3 + 58 : 0) + (r->barometer.present ? 3 + 10 : 0) +
                     (r->thermocouple.present ? 3 + 12 : 0) + (r->motion.present ? 3 + 95 : 0) +
                     (r->humidity.present ? 3 + 2 : 0) + (r->pressure.present ? 3 + 2 : 0) +
-                    (r->rails.present ? 3 + 27 : 0) + (r->regulator.present ? 3 + 23 : 0);
+                    (r->rails.present ? 3 + 27 : 0) + (r->regulator.present ? 3 + 23 : 0) +
+                    (r->sht3x.present ? 3 + 7 : 0) + (r->hih8121.present ? 3 + 8 : 0);
     if (!out || cap < length) return 0;
     memset(out, 0, length);
     out[0] = 1; out[1] = r->reason; gnf1_be64(out+2, r->uptime_ms);
@@ -146,6 +153,10 @@ size_t observer_report_encode(uint8_t *out, size_t cap, const observer_report_t 
       gnf1_be16(b+4,g->centi_c); gnf1_be16(b+6,g->peak_centi_c); b[8]=g->tx_cap;
       gnf1_be32(b+9,g->changes); gnf1_be32(b+13,g->throttled_s);
       gnf1_be16(b+17,g->throttle_centi_c); gnf1_be16(b+19,g->full_centi_c); gnf1_be16(b+21,g->release_centi_c); }
+    if (r->sht3x.present) { TLV(24, 7); const report_humidity_extra_t *h=&r->sht3x;
+      b[0]=1; b[1]=h->state; b[2]=h->valid; gnf1_be16(b+3,h->centi_c); gnf1_be16(b+5,h->centi_rh); }
+    if (r->hih8121.present) { TLV(25, 8); const report_humidity_extra_t *h=&r->hih8121;
+      b[0]=1; b[1]=h->state; b[2]=h->valid; b[3]=h->status; gnf1_be16(b+4,h->centi_c); gnf1_be16(b+6,h->centi_rh); }
 #undef TLV
     return offset;
 }

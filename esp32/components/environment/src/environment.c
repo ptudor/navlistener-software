@@ -11,10 +11,11 @@
 #include "nvs.h"
 static const char *TAG = "environment";
 // 0x40 is attached even when no HDC is listed, to confirm an unlisted one's heater is off. The
-// regulator sensor's address is the board's (environment_configure); 0 leaves it unused.
-static uint8_t addresses[] = {0x18, 0x40, 0x76, MS5607_ADDRESS, MMC34160_ADDRESS, BMP5_ADDRESS, INA3221_ADDRESS, 0};
+// regulator sensor's and the extra humidity sensors' addresses come from the manifest
+// (environment_configure); 0 leaves a slot unused.
+static uint8_t addresses[] = {0x18, 0x40, 0x76, MS5607_ADDRESS, MMC34160_ADDRESS, BMP5_ADDRESS, INA3221_ADDRESS, 0, 0, 0};
 enum { TEMPERATURE_DEVICE, HUMIDITY_DEVICE, PRESSURE_DEVICE, BAROMETER_DEVICE, MAGNETOMETER_DEVICE, BMP5_DEVICE,
-       RAIL_DEVICE, REGULATOR_DEVICE };
+       RAIL_DEVICE, REGULATOR_DEVICE, SHT3X_DEVICE, HIH8121_DEVICE };
 // The parts the manifest lists, set by the board before the first sample; nothing else
 // is probed. HDC2080 and HDC2022 share their ID registers, so only the manifest can
 // choose the temperature formula.
@@ -28,6 +29,8 @@ void environment_configure(const env_parts_t *listed)
 {
     parts = *listed;
     addresses[REGULATOR_DEVICE] = parts.regulator_mcp9808;
+    addresses[SHT3X_DEVICE] = parts.sht3x;
+    addresses[HIH8121_DEVICE] = parts.hih8121;
     barometer_name = parts.bmp5 == ENV_BMP581 ? "BMP581" : parts.bmp5 == ENV_BMP580 ? "BMP580" : "BMP388/BMP384";
     hdc_variant = parts.hdc;
     hdc_name = hdc_variant == ENV_HDC2022 ? "HDC2022" : hdc_variant == ENV_HDC2080 ? "HDC2080" : "HDC";
@@ -94,6 +97,17 @@ static bool write_register(void *ctx, uint8_t address, uint8_t reg, const uint8_
     data[0] = reg;
     if (n) memcpy(data + 1, p, n); // command-only transfers have no payload
     return i2c_master_transmit(dev, data, n + 1, 100) == ESP_OK;
+}
+static bool receive(void *ctx, uint8_t address, uint8_t *p, size_t n)
+{
+    (void)ctx; i2c_master_dev_handle_t dev = device(address);
+    return dev && i2c_master_receive(dev, p, n, 100) == ESP_OK;
+}
+// ESP-IDF's probe is exactly an address-only write: START, the address with the write bit, STOP.
+static bool request(void *ctx, uint8_t address)
+{
+    (void)ctx;
+    return device(address) && i2c_master_probe(sensor_bus, address, 100) == ESP_OK;
 }
 static void delay_ms(void *ctx, unsigned ms)
 {
@@ -409,7 +423,56 @@ void environment_sample_regulator(env_regulator_t *r)
         ESP_LOGW(TAG, "regulator-spreader MCP9808 measurement unavailable; identifying it again at the next sample");
     }
 }
+static bool sht3x_ready, sht3x_tried, hih8121_answered, hih8121_tried;
+void environment_sample_sht3x(env_humidity_t *h)
+{
+    *h = (env_humidity_t){0};
+    if (!initialized || !parts.sht3x) return;
+    env_io_t io = {.read = read_register, .write = write_register, .delay_ms = delay_ms, .receive = receive};
+    if (!sht3x_ready) {
+        attach(sensor_bus, SHT3X_DEVICE);
+        sht3x_ready = sht3x_start(&io, parts.sht3x);
+        if (sht3x_ready) ESP_LOGI(TAG, "SHT3x at 0x%02x: soft reset, heater off", parts.sht3x);
+        else if (!sht3x_tried) ESP_LOGW(TAG, "SHT3x not identified at 0x%02x; retrying at each sample", parts.sht3x);
+        sht3x_tried = true;
+    }
+    h->ready = sht3x_ready;
+    if (!sht3x_ready) return;
+    h->valid = sht3x_read(&io, parts.sht3x, &h->centi_c, &h->centi_rh);
+    if (h->valid) ESP_LOGI(TAG, "SHT3x temperature=%.2f C humidity=%.2f %%RH", h->centi_c / 100.0, h->centi_rh / 100.0);
+    else {
+        h->centi_c = 0; h->centi_rh = 0;
+        sht3x_ready = false;
+        ESP_LOGW(TAG, "SHT3x measurement unavailable; resetting it at the next sample");
+    }
+}
+void environment_sample_hih8121(env_humidity_t *h)
+{
+    *h = (env_humidity_t){0};
+    if (!initialized || !parts.hih8121) return;
+    env_io_t io = {.read = read_register, .write = write_register, .delay_ms = delay_ms, .receive = receive,
+                   .request = request};
+    attach(sensor_bus, HIH8121_DEVICE);
+    hih8121_result_t result;
+    h->valid = hih8121_read(&io, parts.hih8121, &h->centi_c, &h->centi_rh, &result);
+    h->ready = result.answered;
+    h->status = result.answered ? (uint8_t)result.status : 0;
+    if (h->valid) ESP_LOGI(TAG, "HIH8121 temperature=%.2f C humidity=%.2f %%RH", h->centi_c / 100.0, h->centi_rh / 100.0);
+    else {
+        h->centi_c = 0; h->centi_rh = 0;
+        if (!result.answered && (hih8121_answered || !hih8121_tried))
+            ESP_LOGW(TAG, "HIH8121 not answering at 0x%02x; retrying at each sample", parts.hih8121);
+        else if (result.answered)
+            ESP_LOGW(TAG, "HIH8121 answered with status %u (%s); measurement not used", (unsigned)result.status,
+                     result.status == HIH8121_STALE ? "stale" : result.status == HIH8121_COMMAND_MODE ? "command mode" :
+                     result.status == HIH8121_FRESH ? "fresh, out of range" : "unused code");
+    }
+    hih8121_answered = result.answered;
+    hih8121_tried = true;
+}
 #else
+void environment_sample_sht3x(env_humidity_t *h) { *h = (env_humidity_t){0}; }
+void environment_sample_hih8121(env_humidity_t *h) { *h = (env_humidity_t){0}; }
 void environment_sample_regulator(env_regulator_t *r) { *r = (env_regulator_t){0}; }
 void environment_configure(const env_parts_t *listed) { (void)listed; }
 void environment_sample_rails(env_rails_t *r) { *r = (env_rails_t){0}; }

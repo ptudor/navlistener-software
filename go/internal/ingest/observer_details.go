@@ -37,14 +37,18 @@ type ObserverDetails struct {
 	PressureSensor string          `json:"pressure_sensor,omitempty"`
 	Rails          *BoardRails     `json:"rails,omitempty"`
 	Regulator      *BoardRegulator `json:"regulator,omitempty"`
-	RTC            *BoardRTC       `json:"rtc,omitempty"`
-	ATECC          *BoardATECC     `json:"atecc,omitempty"`
-	EEPROM         *BoardEEPROM    `json:"eeprom,omitempty"`
-	Resources      *BoardResources `json:"resources,omitempty"`
-	Network        *BoardNetwork   `json:"network,omitempty"`
-	Receiver       *BoardReceiver  `json:"receiver,omitempty"`
-	Firmware       string          `json:"firmware,omitempty"`
-	Update         *BoardUpdate    `json:"update,omitempty"`
+	// SHT3x and HIH8121 are the humidity sensors beside the HDC (tags 24 and 25), each
+	// present when the manifest lists it.
+	SHT3x     *BoardExtraHumidity `json:"sht3x,omitempty"`
+	HIH8121   *BoardExtraHumidity `json:"hih8121,omitempty"`
+	RTC       *BoardRTC           `json:"rtc,omitempty"`
+	ATECC     *BoardATECC         `json:"atecc,omitempty"`
+	EEPROM    *BoardEEPROM        `json:"eeprom,omitempty"`
+	Resources *BoardResources     `json:"resources,omitempty"`
+	Network   *BoardNetwork       `json:"network,omitempty"`
+	Receiver  *BoardReceiver      `json:"receiver,omitempty"`
+	Firmware  string              `json:"firmware,omitempty"`
+	Update    *BoardUpdate        `json:"update,omitempty"`
 	// UpdateStatusRejected records a tag 9 this collector could not decode: a
 	// state, trust profile, error domain or security bit from newer firmware,
 	// or progress past the artifact length. The tag is skippable by design, so
@@ -325,6 +329,16 @@ func decodeObserverDetails(b []byte) (*ObserverDetails, error) {
 			var err error
 			if d.Regulator, err = decodeRegulator(v); err != nil {
 				return nil, err
+			}
+		case 24, 25:
+			h, err := decodeExtraHumidity(v, tag == 25)
+			if err != nil {
+				return nil, err
+			}
+			if tag == 24 {
+				d.SHT3x = h
+			} else {
+				d.HIH8121 = h
 			}
 		default:
 			continue // bounded unknown extensions are skipped, not interpreted

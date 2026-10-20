@@ -87,6 +87,9 @@
   above 95 °C and recovers at or below 85 °C. ObserverDetails tag 23 reports the spreader
   temperature, throttle level and limits as `regulator`, apart from the environmental
   readings; it raises no alarm.
+- The P3's SHT35 and HIH8121 humidity sensors are driven when the manifest lists them:
+  ObserverDetails tags 24 and 25 report each one's temperature and humidity as `sht3x` and
+  `hih8121`, apart from the environment component, with the HIH8121's status bits.
 
 Trusted rollout remains gated by commissioning and hardware acceptance in
 [Update operations](esp32/docs/UPDATE-OPERATIONS.md).

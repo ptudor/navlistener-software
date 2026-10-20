@@ -9,6 +9,8 @@
 #include "mcp9808.h"
 #include "mmc34160.h"
 #include "ms5607.h"
+#include "sht3x.h"
+#include "hih8121.h"
 #include "driver/i2c_master.h"
 // The BMP5 part the manifest lists at 0x46. BMP580 and BMP581 share their register map and
 // CHIP_ID, so this only names it.
@@ -27,6 +29,9 @@ typedef struct {
     // The I2C address of an MCP9808 on the system regulator's heat spreader (the P3's U47 at
     // 0x1F), or 0. Its reading is not ambient temperature and never enters env_sample_t.
     uint8_t regulator_mcp9808;
+    // The I2C addresses of the humidity sensors beside the HDC, or 0: an SHT3x (the P3's SHT35,
+    // U45 at 0x44) and an HIH8121 (U44 at 0x27). Each reports apart; neither enters env_sample_t.
+    uint8_t sht3x, hih8121;
 } env_parts_t;
 void environment_configure(const env_parts_t *parts);
 // Call from the board task, which owns sensor/RTC transactions. utc_valid means utc is time the
@@ -77,4 +82,17 @@ typedef struct {
     int16_t centi_c;
 } env_regulator_t;
 void environment_sample_regulator(env_regulator_t *regulator);
+
+// The SHT3x and the HIH8121, when listed, sampled from the board task after environment_sample.
+// ready: the SHT3x identified, or the HIH8121 answered its request and fetch; status: the
+// HIH8121's fetched status bits (hih8121_status_t), zero for the SHT3x. A part that is absent
+// or fails a read is tried again at the next sample. Invalid values stay zero.
+typedef struct {
+    bool ready, valid;
+    uint8_t status;
+    int16_t centi_c;
+    uint16_t centi_rh;
+} env_humidity_t;
+void environment_sample_sht3x(env_humidity_t *sample);
+void environment_sample_hih8121(env_humidity_t *sample);
 #endif
