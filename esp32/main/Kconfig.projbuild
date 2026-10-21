@@ -16,11 +16,29 @@ menu "navfeeder-esp"
         depends on !SECURE_BOOT
         default y
         help
-            Reprint the persistent BLE/SoftAP setup label on the USB/serial
+            Reprint the persistent setup label on the USB/serial
             console whenever setup starts, including after a configuration
             reset. This does not print the joined WiFi network's password.
             Disable for production: unfused manufacturing then prints only
             newly created labels. Secure Boot builds never print setup secrets.
+
+    config NVF_BLE_PROVISIONING
+        bool "Offer BLE provisioning beside the setup SoftAP (does not fit)"
+        depends on NVF_BOARD_GNSS_COLOR && BT_NIMBLE_ENABLED
+        default n
+        help
+            Advertise ESP-IDF Unified Provisioning over BLE with Security 2
+            while the WPA2 setup SoftAP and browser form also run, for the
+            Station app's Bluetooth setup. The setup label becomes the ESP
+            Provisioning BLE payload instead of a Wi-Fi network QR.
+
+            This does not fit in internal RAM on the universal image: starting
+            BLE took 67 KB, leaving 12 KB at the setup low point even with
+            NimBLE trimmed to one peripheral connection and Wi-Fi's IRAM
+            optimizations off (esp32/docs/PROVISIONING.md). Enable it only to
+            work on that budget. Bluetooth enabled without this option is
+            refused, since that is an sdkconfig generated before the S3 image
+            turned Bluetooth off.
 
     config NVF_COLLECTOR_HOST
         string "Collector host"

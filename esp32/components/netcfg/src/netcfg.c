@@ -1,11 +1,11 @@
-// netcfg — NVS config + BLE/SoftAP provisioning. See include/netcfg.h.
+// netcfg — NVS config + SoftAP (and, when built, BLE) provisioning. See include/netcfg.h.
 
 #include "netcfg.h"
 #include "netcfg_form.h"
 #include "netcfg_portal.h"
 #include "netcfg_setup.h"
 #include "sdkconfig.h"
-#if CONFIG_NVF_BOARD_GNSS_COLOR
+#if NETCFG_BLE_PROVISIONING
 #include "netcfg_ble.h"
 #endif
 #include "sensor_settings.h"
@@ -333,16 +333,20 @@ esp_err_t netcfg_start_provisioning(netcfg_provisioning_info_t *info)
     esp_err_t err = netcfg_setup_load_or_create(&setup, mac, esp_random, &created);
     bootloader_random_disable();
     ESP_RETURN_ON_ERROR(err, TAG, "load persistent setup credential");
-    ESP_RETURN_ON_ERROR(netcfg_setup_qr_payload(&setup, info->qr_payload,
-                                                sizeof info->qr_payload),
-                        TAG, "format setup QR payload");
+#if NETCFG_BLE_PROVISIONING
+    err = netcfg_setup_qr_payload(&setup, info->qr_payload, sizeof info->qr_payload);
+#else
+    err = netcfg_setup_wifi_qr_payload(&setup, info->qr_payload, sizeof info->qr_payload);
+#endif
+    ESP_RETURN_ON_ERROR(err, TAG, "format setup QR payload");
     snprintf(info->name, sizeof info->name, "%s", setup.name);
     snprintf(info->password, sizeof info->password, "%s", setup.password);
     info->credential_created = created;
 
     ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "initialize network stack");
     ESP_RETURN_ON_ERROR(esp_event_loop_create_default(), TAG, "create event loop");
-#if CONFIG_NVF_BOARD_GNSS_COLOR
+#if NETCFG_BLE_PROVISIONING
+    // BLE provisioning verifies the submitted network by joining it as a station.
     if (!esp_netif_create_default_wifi_sta()) return ESP_ERR_NO_MEM;
 #endif
     if (!esp_netif_create_default_wifi_ap()) return ESP_ERR_NO_MEM;
@@ -354,7 +358,7 @@ esp_err_t netcfg_start_provisioning(netcfg_provisioning_info_t *info)
     // the moment it is raised until this configuration landed. The driver accepts an
     // interface's configuration only while the mode includes that interface, and a mode
     // applied to stopped Wi-Fi raises nothing, so the order is mode, configuration, start.
-    // The BLE scheme below starts Wi-Fi station-only and clears only the station
+    // On a BLE build the scheme below starts Wi-Fi station-only and clears only the station
     // credentials; the AP configuration stays in the driver until APSTA raises it.
     wifi_config_t ap = {0};
     snprintf((char *)ap.ap.ssid, sizeof ap.ap.ssid, "%s", setup.name);
@@ -363,14 +367,14 @@ esp_err_t netcfg_start_provisioning(netcfg_provisioning_info_t *info)
     ap.ap.max_connection = 2;
     ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
     ap.ap.channel = 1;
-#if CONFIG_NVF_BOARD_GNSS_COLOR
+#if NETCFG_BLE_PROVISIONING
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), TAG, "select setup AP");
 #else
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_AP), TAG, "select setup AP");
 #endif
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &ap), TAG, "configure setup AP");
 
-#if CONFIG_NVF_BOARD_GNSS_COLOR
+#if NETCFG_BLE_PROVISIONING
     err = netcfg_ble_start(&setup);
     if (err == ESP_OK) {
         info->ble_active = true;

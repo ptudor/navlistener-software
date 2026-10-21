@@ -3,7 +3,7 @@
 The **ESP32 edge feeder** for [`navlistener`](../): a self-contained GNSS observer that reads
 raw broadcast nav frames off a local u-blox receiver and pushes them, undecoded, to the
 collector over an authenticated, spooled TLS link (GNF1), with a constellation LED panel
-and BLE/browser provisioning on the custom ESP32-S3 observer. It shares the C
+and setup-network provisioning on the custom ESP32-S3 observer. It shares the C
 feeder's role (`../feeder/navfeeder.c`); decoding and orbit math stay central in
 the collector (`../docs/DESIGN.md §1`).
 
@@ -95,11 +95,13 @@ This creates a separate S3 configuration and build directory for the universal i
 append `;sdkconfig.defaults.neo` (or `.zed-x20`, `.max`, `.mosaic-p3`) for a test build. Existing generated
 configurations retain their previous values: generating a separate build from
 the defaults applies PSRAM and OTA settings. Check that the generated S3 config enables `SPIRAM_MODE_OCT`,
-`NVF_SPOOL_PSRAM`, `NVF_OTA`, `BT_NIMBLE_ENABLED`, Security 2, and
-`BOOTLOADER_APP_ROLLBACK_ENABLE`, with `PARTITION_TABLE_OFFSET=0x10000`.
-BLE controller and Security 2 startup require `ESP_MAIN_TASK_STACK_SIZE=12288`;
-the 3584-byte IDF default overflows during provisioning. Startup logs the minimum
-free stack space before the main task returns and releases its stack.
+`NVF_SPOOL_PSRAM`, `NVF_OTA` and `BOOTLOADER_APP_ROLLBACK_ENABLE`, with
+`PARTITION_TABLE_OFFSET=0x10000`, and leaves Bluetooth off. The build refuses a
+configuration generated before Bluetooth was turned off; start such a build
+directory afresh. Startup runs on a 12288-byte main task stack
+(`ESP_MAIN_TASK_STACK_SIZE`), which a BLE provisioning build requires: its
+controller and Security 2 overflow the 3584-byte IDF default. Startup logs the
+minimum free stack space before the main task returns and releases its stack.
 The committed `dependencies.lock` resolves the S3, including its optional tunnel
 components. Archive the resolved lock with firmware provenance. Firmware builds
 share the managed-component directory and must run sequentially.
@@ -440,20 +442,21 @@ See the [implementation status and roadmap](docs/PLAN.md). The P0–P5 core is b
 the firmware boots, brings up the constellation LED panel, runs the clean-room
 UBX framer, spools frames, and pushes them to the collector over GNF1/TLS. Config is NVS-first (`netcfg`), falling back to the compiled Kconfig defaults.
 
-**Provisioning a fresh board (no serial console):** the custom S3 advertises
-`navfeeder-XXYYZZ` over BLE and accepts ESP-IDF Security 2 provisioning from the
-Station app. Scan the physical device QR, select WiFi, and submit the collector,
-station, and enrollment token. The password-protected AP `navfeeder-XXYYZZ` is
-available at the same time as a browser fallback: join it with the password on
-the label and open `http://192.168.4.1/`. Either path writes one validated NVS
-record and reboots into station mode. The firmware/Swift/label contract is [documented here](docs/PROVISIONING.md). (For
+**Provisioning a fresh board (no serial console):** the custom S3 raises the
+password-protected AP `navfeeder-XXYYZZ`. Scan the label's Wi-Fi QR with a phone
+camera, or join the network with the password printed on the label, then open
+`http://192.168.4.1/` and submit WiFi, the collector, the station and the
+enrollment token. The form writes one validated NVS record and reboots into
+station mode. Bluetooth setup from the Station app needs an
+`NVF_BLE_PROVISIONING` build, which does not fit in internal RAM beside the
+setup AP. The firmware/Swift/label contract is [documented here](docs/PROVISIONING.md). (For
 development, configuration can still be pre-seeded through `idf.py menuconfig`
 → "navfeeder-esp".)
 
 **Configuration-reset recovery:** on the custom ESP32-S3 observer, boot the application
 normally, then hold **BOOT/DOWNLOAD for eight seconds**. Once the status panel shows the
 armed pattern, release the button. Firmware erases only the `navfeeder`
-configuration namespace, reboots, and returns to BLE plus browser setup with
+configuration namespace, reboots, and returns to browser setup with
 the **same** label password. On the NEO, short presses continue to cycle panel
 brightness. Merely reaching the hold threshold does not erase anything until a
 debounced release.
@@ -479,7 +482,7 @@ the ZED/X20, which has an Ethernet port), collector host, port in 1–65535, sta
 bearer token are all present — one rule
 (`netcfg_validate`), applied both at boot and by the portal before it writes NVS. A board
 configured only partly (Kconfig defaults, a partial NVS write, external NVS tooling) therefore
-comes up in BLE/browser setup with the missing field named in diagnostics where
+comes up in setup with the missing field named in diagnostics where
 available, instead of looping forever on WiFi/TLS/auth failures that only a
 serial cable could diagnose. Note the deliberate limit: a
 *complete but wrong* config (bad password, unreachable host, revoked token) keeps retrying in
@@ -491,8 +494,8 @@ bus (CS GPIO13, SCLK GPIO8, MOSI GPIO39, MISO GPIO41) at 10 MHz, polling it ever
 and takes an address by DHCP with the MAC address the eFuse reserves for Ethernet. With both
 links up, Ethernet carries the default route; connections already open stay on the link they
 started on, and the WireGuard tunnel moves to the new default route. The observer is online
-while either link has an address. Leave the browser portal's SSID empty for a wired-only unit;
-BLE setup always configures Wi-Fi. The Wi-Fi station starts even without a network, because
+while either link has an address. Leave the browser form's SSID empty for a wired-only unit.
+The Wi-Fi station starts even without a network, because
 the radio is the random-number generator's entropy source for TLS. With no network it does
 not scan or associate. A W5500 that does not answer is logged, and the unit carries on over
 Wi-Fi if one is configured.
@@ -625,9 +628,9 @@ public endpoint for at least 60 seconds before retrying the tunnel. GNF1/TLS
 is unchanged inside the tunnel, so the collector still authenticates the bearer token and the observer still
 verifies the collector's certificate against its configured hostname.
 
-Provision a profile through the Station app's `nav-tunnel` endpoint or by pasting
-a wg-quick `.conf` into the browser portal; the profile format, the byte layout
-and how to generate one are in [PROVISIONING.md](docs/PROVISIONING.md#nav-tunnel-endpoint).
+Provision a profile by pasting a wg-quick `.conf` into the browser form (or, on a
+BLE build, through the Station app's `nav-tunnel` endpoint); the profile format
+and how to generate one are in [PROVISIONING.md](docs/PROVISIONING.md#wireguard-profile).
 Notable properties:
 
 - **IPv4 only, one collector.** `AllowedIPs` names exactly the collector's tunnel
@@ -803,7 +806,7 @@ requires explicit configuration erasure/reprovisioning; old firmware cannot
 interpret this format or its reset flag.
 
 The independent `nvf_setup/credential_v1` record contains the random setup
-password used by BLE Security 2 and the fallback AP. It is created once, checked
+password of the setup AP (and of BLE Security 2 on a BLE build). It is created once, checked
 against the device name and CRC on every setup boot, and deliberately survives
 the logical reset above. Corruption fails closed so firmware cannot silently
 replace the secret behind an already printed label. A full NVS partition erase

@@ -1,34 +1,27 @@
 # ESP32-S3 provisioning contract
 
-The custom observer offers two setup paths whenever its complete operating
-configuration is absent:
+Whenever its complete operating configuration is absent, the custom observer
+raises a WPA2 SoftAP named for the device and serves a setup form at
+`http://192.168.4.1/`. Join the network with the password on the setup label,
+submit the form, and the observer saves one validated `netcfg` record and
+reboots into station mode. This is the S3 image's only setup path: Bluetooth is
+off ([Bluetooth provisioning](#bluetooth-provisioning)).
 
-1. Bluetooth Low Energy through [ESP-IDF Unified Provisioning][unified], using
-   Security 2 (SRP6a authentication and key exchange, then AES-GCM); and
-2. the existing WPA2 SoftAP and browser form at `http://192.168.4.1/`.
-
-Both are available at the same time and commit the same validated `netcfg`
-record. BLE is the normal Station app path. SoftAP is the browser fallback.
-The ESP32-C6 development build retains SoftAP without BLE.
-
-Both paths also accept an **optional WireGuard profile** on the S3, which carries
-the GNF1/TLS session inside a tunnel to the collector whenever the peer is up and
-falls back to the public collector endpoint otherwise. It is described under
-[`nav-tunnel` endpoint](#nav-tunnel-endpoint) and
-[Browser fallback](#browser-fallback). The C6 build has no tunnel support and
-always uses the public endpoint.
-
+The form also accepts an **optional WireGuard profile**, which carries the
+GNF1/TLS session inside a tunnel to the collector whenever the peer is up and
+falls back to the public collector endpoint otherwise
+([WireGuard profile](#wireguard-profile)).
 
 ## Device name and setup credential
 
-The advertised BLE name and SoftAP SSID are both:
+The setup SoftAP's SSID is:
 
 ```text
 navfeeder-XXYYZZ
 ```
 
-`XXYYZZ` is the final three bytes of the Wi-Fi SoftAP MAC in uppercase hex. The
-Security 2 username is the same string.
+`XXYYZZ` is the final three bytes of the Wi-Fi SoftAP MAC in uppercase hex. A
+BLE build advertises the same name and uses it as the Security 2 username.
 
 On the first setup boot, firmware creates a random 12-character password from
 an alphabet that omits visually ambiguous characters. It stores the name,
@@ -40,12 +33,12 @@ with the label.
 The password is deliberately random, not derived from the MAC address. It is
 all of the following:
 
-- the Security 2 password (`pop`) used by the app;
-- the SoftAP WPA2 password; and
-- the device's physical setup recovery secret.
+- the SoftAP WPA2 password;
+- the device's physical setup recovery secret; and
+- on a BLE build, the Security 2 password (`pop`) used by the app.
 
 The ordinary eight-second BOOT configuration reset clears the operating
-configuration but preserves `nvf_setup`, so the label and stored app credential
+configuration but preserves `nvf_setup`, so the label and any stored app credential
 continue to work. Erasing the complete NVS partition destroys both. The next
 boot then creates a different password, emits a new label payload, and
 requires a replacement physical label.
@@ -56,7 +49,7 @@ configuration reset. `NVF_SETUP_CONSOLE_PASSWORD` defaults on. A repeated label
 is prefixed `DEVELOPMENT SETUP LABEL`; first creation uses:
 
 ```text
-NEW SETUP LABEL — print and attach before deployment: { ... }
+NEW SETUP LABEL — print and attach before deployment: WIFI:T:WPA;S:...;;
 ```
 
 Disable `NVF_SETUP_CONSOLE_PASSWORD` for production manufacturing to print only
@@ -67,17 +60,24 @@ password of the Wi-Fi network the observer joins.
 Manufacturing must capture the first-creation line, print and verify the QR label, and attach
 it inside the enclosure or another physically controlled recovery location
 before the observer leaves the bench. The label should also print the device
-name and password as text so browser recovery does not depend on a QR-capable
-app. `tools/provisioning_label.py` validates a captured line and can invoke
+name and password as text so setup does not depend on a phone that reads QR
+codes. `tools/provisioning_label.py` validates a captured line and can invoke
 `qrencode` to create the QR SVG.
 
-The QR content follows Espressif's provisioning schema:
+The QR content is a Wi-Fi network QR, which a phone camera offers to join:
+
+```text
+WIFI:T:WPA;S:navfeeder-A1B2C3;P:FakePass2345;;
+```
+
+Neither the device name nor the password alphabet contains a character that
+form escapes. A BLE build prints Espressif's provisioning schema instead:
 
 ```json
 {"ver":"v1","name":"navfeeder-A1B2C3","username":"navfeeder-A1B2C3","pop":"FakePass2345","transport":"ble"}
 ```
 
-The real `pop` is secret. Do not put a real payload in source control, shared
+The real password is secret. Do not put a real payload in source control, shared
 CI/build logs, issue trackers, or release artifacts. The attended workflow below
 keeps its local capture in private files ignored by Git.
 
@@ -109,7 +109,112 @@ setup also reprints it. The attached label and display remain available. A delib
 secret and also destroys update keys and other NVS state, so it requires a new
 physical label.
 
-## Station app sequence
+## Browser setup
+
+Join `navfeeder-XXYYZZ` with the password printed on the label (or scan its QR),
+then open `http://192.168.4.1/`. Submit Wi-Fi, collector host/port, station ID,
+and enrollment token. The station ID depends on the observer:
+
+- An observer **without** a commissioning record needs one: the name its
+  enrollment token was issued for.
+- A **commissioned** observer names itself. It connects as the observer ID its
+  record names, `board-<kind>-<serial>`
+  ([board identity](../../docs/BOARD-IDENTITY.md)), because a collector accepts
+  its hardware evidence only under that name. The form shows that ID in place of
+  the station field and refuses a submitted one, so a typed name can never
+  displace the record's. Saving also drops a station stored before the board was
+  commissioned.
+
+A commissioned observer that still holds a station provisioned before it was
+commissioned ignores it and logs a warning at boot. That name's enrollment token
+is for a different observer, so provision the unit again with the token enrolled
+for its own name.
+
+On an `NVF_WIREGUARD` build the form also has an optional **WireGuard profile**
+box: paste the wg-quick `.conf` described under [WireGuard profile](#wireguard-profile)
+to enable the tunnel, leave it empty to connect over the public endpoint, or
+clear a stored profile by submitting the box empty. The portal validates the
+complete record, saves it atomically, then reboots. Update-key pairing remains
+available only through this protected setup AP.
+
+On the ZED/X20, whose Ethernet port is its uplink, the Wi-Fi SSID field is
+optional: leave it empty for a wired-only observer. On the MAX the form also has
+two per-unit sensor settings, shown with their stored values: the mains frequency
+where the thermocouple is used (60 or 50 Hz) and the motion profile (surface or
+aerial). They are saved to the `nvf_sensor` namespace before the network record,
+survive the configuration-reset gesture, and are set only through this form.
+
+Setup runs only while the observer is unprovisioned. Treat the label as
+physical setup access; setup never removes the need for a valid collector
+enrollment token.
+
+## WireGuard profile
+
+The optional WireGuard profile carries the GNF1/TLS session inside a tunnel to
+the collector whenever the peer session is up, and falls back to the public
+collector endpoint otherwise, so the tunnel is an uplink upgrade and never a
+single point of failure. The tunnel is IPv4-only. Only the collector's tunnel
+address is routed through it; SNTP, OTA downloads and DNS keep the ordinary
+uplink. The first handshake waits for a plausible wall clock, because a
+WireGuard handshake carries a timestamp the peer rejects if it is not newer than
+the last it accepted from that key.
+
+The collector operator runs a WireGuard peer and issues one profile per
+observer. Generate the observer's keypair, add the observer as a peer on the
+server with its tunnel address as a `/32`, and hand the operator a wg-quick(8)
+`.conf` whose `[Peer]` `AllowedIPs` is the collector's tunnel address as a
+single `/32`:
+
+```ini
+[Interface]
+PrivateKey = <observer private key>
+Address = 10.77.0.12/24
+
+[Peer]
+PublicKey = <collector public key>
+Endpoint = wg.collector.invalid:51820
+AllowedIPs = 10.77.0.1/32
+PersistentKeepalive = 25
+```
+
+The browser form (and on a BLE build, the Station app) parses exactly this format: one
+`[Interface]` and one `[Peer]`, an IPv4 `Address`, an `Endpoint` of `host:port`
+(IPv4 or DNS), and `AllowedIPs` naming the collector's single `/32`. wg-quick
+host-side keys (`ListenPort`, `DNS`, `MTU`, `Table`, `PreUp`, and the like) are
+accepted and ignored; any other key, a second section, or an IPv6 literal is
+refused. Treat the profile as a secret: it contains the observer's private key.
+
+## Bluetooth provisioning
+
+An image built with `NVF_BLE_PROVISIONING` also advertises Bluetooth Low Energy
+through [ESP-IDF Unified Provisioning][unified], using Security 2 (SRP6a
+authentication and key exchange, then AES-GCM), beside the SoftAP. The Station
+app's Bluetooth setup uses it. Both paths commit the same validated `netcfg`
+record. The S3 image leaves Bluetooth off, because the BLE stack does not fit
+beside the SoftAP in internal RAM.
+
+Measured on the universal image in October 2026: with stock settings, Wi-Fi
+initialization left 72 KB of internal heap, starting BLE provisioning exhausted
+it, the SoftAP failed to allocate its beacon, and the board reset in a loop.
+With NimBLE trimmed to one peripheral connection and two controller activities,
+and Wi-Fi's IRAM optimizations turned off to free 18 KB more, BLE provisioning
+started and took 67 KB, leaving 12 KB free at the setup low point and 28 KB
+once setup was idle, before any app session. Without Bluetooth, on stock Wi-Fi
+settings, the image keeps 72 KB at the low point and 85 KB idle.
+
+Two ways to make room were set aside. Placing Wi-Fi and lwIP packet buffers in
+PSRAM would put the setup form's plaintext submissions there, while this board
+keeps secrets and ordinary allocations in internal RAM. Running the Bluetooth
+controller from flash disturbs Bluetooth during flash erases, which provisioning
+performs when it saves. Restoring BLE setup therefore needs internal RAM freed
+elsewhere, or setup that does not run BLE and the SoftAP together.
+
+`NVF_BLE_PROVISIONING` requires NimBLE (with `WIFI_PROV_BLE_SEC_CONN`) and a
+12288-byte main task stack. The build refuses Bluetooth enabled without it: that
+is an `sdkconfig` generated before the S3 image turned Bluetooth off. Start such
+a build directory afresh.
+
+### Station app sequence
 
 Use Espressif's [`ESPProvision` Swift package][ios] and its BLE transport with
 Security 2. The app should:
@@ -138,15 +243,12 @@ custom request and ESP-IDF has successfully connected with the submitted Wi-Fi
 credentials. Failed Wi-Fi authentication leaves the encrypted session available
 for another attempt.
 
-
 Store a remembered setup password in the iOS Keychain with a
 device-only accessibility class. The physical label remains the recovery
 source after app removal, phone replacement, or Keychain loss. Treat QR
-possession as physical setup access: BLE and SoftAP run only while the observer
-is unprovisioned, and neither path removes the need for a valid collector
-enrollment token.
+possession as physical setup access, as for the SoftAP.
 
-## `nav-config` endpoint
+### `nav-config` endpoint
 
 Endpoint name: `nav-config`
 
@@ -172,20 +274,10 @@ The frame must end exactly after the token. Unknown flags, control bytes,
 length mismatch, an empty host or token, and invalid ports are rejected. The
 endpoint cannot set the development-only `insecure` flag.
 
-The station ID depends on the observer:
-
-- An observer **without** a commissioning record needs one: the name its
-  enrollment token was issued for. An empty station ID is rejected.
-- A **commissioned** observer names itself, and the station ID must be empty.
-  It connects as the observer ID its record names, `board-<kind>-<serial>`
-  ([board identity](../../docs/BOARD-IDENTITY.md)), because a collector accepts
-  its hardware evidence only under that name. A non-empty station ID is
-  rejected, so a typed name can never displace the record's.
-
-A commissioned observer that still holds a station provisioned before it was
-commissioned ignores it and logs a warning at boot. That name's enrollment token
-is for a different observer, so provision the unit again with the token enrolled
-for its own name.
+The station ID follows the rule under [Browser setup](#browser-setup): an
+observer without a commissioning record needs one, and an empty station ID is
+rejected; a commissioned observer names itself, and a non-empty station ID is
+rejected.
 
 The five-byte response is ASCII `NVR1` followed by one status byte:
 
@@ -203,7 +295,7 @@ after Wi-Fi success is therefore expected. On reconnect, the app should confirm
 that the observer appears as an enrolled station rather than assuming success
 from the BLE disconnect alone.
 
-## `nav-identity` endpoint
+### `nav-identity` endpoint
 
 Endpoint name: `nav-identity`. Advertised by the `nav-identity-v1` capability.
 Like every custom endpoint it answers only inside the Security 2 session, so the
@@ -222,20 +314,13 @@ The app accepts only a canonical `board-<four hex>-<hex>` name and treats
 anything else as an invalid response. A board reads its commissioning record at
 boot, so a record installed at the bench names the observer from its next boot.
 
-## `nav-tunnel` endpoint
+### `nav-tunnel` endpoint
 
 Endpoint name: `nav-tunnel`. Present only on a build with `NVF_WIREGUARD`, which
 advertises the `nav-tunnel-v1` capability. An app must check that capability
 before sending; a build without it has no such endpoint.
 
-The optional WireGuard profile carries the GNF1/TLS session inside a tunnel to
-the collector whenever the peer session is up, and falls back to the public
-collector endpoint otherwise, so the tunnel is an uplink upgrade and never a
-single point of failure. The tunnel is IPv4-only. Only the collector's tunnel
-address is routed through it; SNTP, OTA downloads and DNS keep the ordinary
-uplink. The first handshake waits for a plausible wall clock, because a
-WireGuard handshake carries a timestamp the peer rejects if it is not newer than
-the last it accepted from that key.
+The profile is described under [WireGuard profile](#wireguard-profile).
 
 Maximum request size: 178 bytes, below the Security 2 BLE transport limit.
 Integer fields are unsigned and big-endian. The keys are the raw 32-byte values,
@@ -274,57 +359,7 @@ Status 5 means Wi-Fi verification completed the save before the profile
 arrived. The app must send the profile before Wi-Fi; on status 5 it should
 reset the device and provision again, tunnel first.
 
-### Generating a profile
-
-The collector operator runs a WireGuard peer and issues one profile per
-observer. Generate the observer's keypair, add the observer as a peer on the
-server with its tunnel address as a `/32`, and hand the operator a wg-quick(8)
-`.conf` whose `[Peer]` `AllowedIPs` is the collector's tunnel address as a
-single `/32`:
-
-```ini
-[Interface]
-PrivateKey = <observer private key>
-Address = 10.77.0.12/24
-
-[Peer]
-PublicKey = <collector public key>
-Endpoint = wg.collector.invalid:51820
-AllowedIPs = 10.77.0.1/32
-PersistentKeepalive = 25
-```
-
-The Station app and the browser portal parse exactly this format: one
-`[Interface]` and one `[Peer]`, an IPv4 `Address`, an `Endpoint` of `host:port`
-(IPv4 or DNS), and `AllowedIPs` naming the collector's single `/32`. wg-quick
-host-side keys (`ListenPort`, `DNS`, `MTU`, `Table`, `PreUp`, and the like) are
-accepted and ignored; any other key, a second section, or an IPv6 literal is
-refused. Treat the profile as a secret: it contains the observer's private key.
-
-## Browser fallback
-
-
-Join `navfeeder-XXYYZZ` with the password printed on the label, then open
-`http://192.168.4.1/`. Submit Wi-Fi, collector host/port, station ID, and
-enrollment token. A commissioned observer shows its own observer ID in place of
-the station field and refuses a submitted one; saving also drops a station
-stored before the board was commissioned. On an `NVF_WIREGUARD` build the form also has an optional
-**WireGuard profile** box: paste the wg-quick `.conf` above to enable the
-tunnel, leave it empty to connect over the public endpoint, or clear a stored
-profile by submitting the box empty. The portal parses and validates the
-profile with the same rules as the `nav-tunnel` endpoint, applies the same
-atomic save used by BLE, then reboots. Update-key pairing remains available only
-through this protected setup AP.
-
-On the ZED/X20, whose Ethernet port is its uplink, the Wi-Fi SSID field is
-optional: leave it empty for a wired-only observer. On the MAX the form also has
-two per-unit sensor settings, shown with their stored values: the mains frequency
-where the thermocouple is used (60 or 50 Hz) and the motion profile (surface or
-aerial). They are saved to the `nvf_sensor` namespace before the network record,
-survive the configuration-reset gesture, and are not part of the BLE contract. The Station app sequence
-above always verifies a Wi-Fi network before it saves, so a wired-only
-observer is set up through this form.
-
+## Physical label and flash protection
 
 The setup secret is visible on the physical label by design. Production flash
 encryption, Secure Boot, and NVS encryption still protect collector, Wi-Fi,

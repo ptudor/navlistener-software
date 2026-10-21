@@ -26,20 +26,24 @@ CONFIG_PARTITION_TABLE_OFFSET=0x10000
 CONFIG_NVF_BOARD_GNSS_COLOR=y
 CONFIG_NVF_BOARD_GNSS_COLOR_UNIVERSAL=y
 
-# First-boot provisioning uses ESP-IDF's BLE manager with NimBLE and
-# protocomm Security 2 (SRP6a authentication/key exchange + AES-GCM). Security
-# 0 and 1 are omitted from the S3 image so a client cannot negotiate a weaker
-# provisioning protocol. The protected SoftAP browser portal runs alongside it.
-CONFIG_BT_ENABLED=y
-CONFIG_BT_NIMBLE_ENABLED=y
+# First-boot setup is the WPA2 SoftAP and its browser form: join navfeeder-XXYYZZ
+# with the label password and open http://192.168.4.1/. Bluetooth is off. BLE
+# provisioning (NVF_BLE_PROVISIONING: ESP-IDF's manager with NimBLE and Security
+# 2) does not fit beside the SoftAP in internal RAM: on the universal image its
+# start took 67 KB, leaving 12 KB at the setup low point even with NimBLE trimmed
+# to one peripheral connection and Wi-Fi's IRAM optimizations off. Untrimmed,
+# the SoftAP could not allocate its beacon and the board reset in a loop. Any
+# protocomm session is held to Security 2 (SRP6a + AES-GCM): Security 0 and 1
+# are omitted so a client cannot negotiate a weaker protocol.
+CONFIG_BT_ENABLED=n
 CONFIG_ESP_PROTOCOMM_SUPPORT_SECURITY_VERSION_0=n
 CONFIG_ESP_PROTOCOMM_SUPPORT_SECURITY_VERSION_1=n
 CONFIG_ESP_PROTOCOMM_SUPPORT_SECURITY_VERSION_2=y
-CONFIG_WIFI_PROV_BLE_SEC_CONN=y
 
-# app_main starts Security 2 and the BLE controller on the same call stack.
-# The IDF 3584-byte default overflows during controller initialization. This
-# startup-only stack is released when app_main returns; task stacks remain internal.
+# app_main runs startup on its own stack: the manifest, update-state and
+# commissioning checks, and on a BLE build the controller and Security 2, which
+# overflow the IDF 3584-byte default. This startup-only stack is released when
+# app_main returns; task stacks remain internal.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
 
 # Hardware edge timestamps must remain serviceable during NVS/OTA flash writes.

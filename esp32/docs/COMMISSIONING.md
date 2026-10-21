@@ -267,7 +267,7 @@ station was provisioned. The name comes from the installed record rather than a
 live EEPROM read, so a failed bus read cannot rename the unit; each session still
 re-checks the live board before presenting evidence. Provisioning a commissioned
 board supplies only the collector and its enrollment token
-([provisioning](PROVISIONING.md#nav-config-endpoint)). A station provisioned before
+([provisioning](PROVISIONING.md#browser-setup)). A station provisioned before
 commissioning is ignored, with a warning at boot naming the observer ID in use.
 
 ## Bench sequence

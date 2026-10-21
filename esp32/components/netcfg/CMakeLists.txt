@@ -12,7 +12,7 @@ set(netcfg_private_requires
     bootloader_support esp_hw_support ota wifi_provisioning protocomm sensor_settings
 )
 
-if(CONFIG_NVF_BOARD_GNSS_COLOR)
+if(CONFIG_NVF_BLE_PROVISIONING)
     list(APPEND netcfg_sources "src/netcfg_ble.c" "src/netcfg_prov_payload.c")
 endif()
 

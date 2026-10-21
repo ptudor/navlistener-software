@@ -46,7 +46,7 @@ stations keep operator-assigned names outside that namespace.
 
 A commissioned observer names itself. Its firmware connects under the observer
 ID its installed commissioning record names and is provisioned without a station
-ID ([ESP32 provisioning](../esp32/docs/PROVISIONING.md#nav-config-endpoint)), so
+ID ([ESP32 provisioning](../esp32/docs/PROVISIONING.md#browser-setup)), so
 the name the collector checks evidence against is never typed by hand.
 
 The permanent core signs product, revision, the complete typed UID and ATECC

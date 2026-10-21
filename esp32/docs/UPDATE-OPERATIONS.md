@@ -22,7 +22,7 @@ does and does not protect.
 
 ## During development
 
-- Setup prints the persistent BLE/SoftAP password on the console each time
+- Setup prints the persistent setup-AP password on the console each time
   setup starts, including after a configuration reset. This is the setup
   password, not the password of the Wi-Fi network the observer joins.
 - Secure Boot builds and chips with Secure Boot already enabled suppress
@@ -318,7 +318,7 @@ custody as trusted ones: they are the only thing standing between the network
 and every unlocked board that follows the track.
 
 The open profile also sets `CONFIG_NVF_SETUP_CONSOLE_PASSWORD=n`, as the
-production profile does: a fielded open board prints its BLE/SoftAP setup
+production profile does: a fielded open board prints its setup-AP
 password on the USB console only on the boot that creates the label (the
 `NEW SETUP LABEL` line), never again on a later unprovisioned boot or after the
 eight-second configuration reset. Capture that first line at the bench as

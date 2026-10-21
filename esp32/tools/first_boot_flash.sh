@@ -17,7 +17,7 @@ build_dir=${S3_BUILD_DIR:-$default_dir}
 cat <<EOF
 === ATTENDED ESP32-S3 FIRST-BOOT FLASH ===
 Watch the console for: NEW SETUP LABEL or DEVELOPMENT SETUP LABEL
-The JSON on that line contains the persistent BLE/SoftAP setup password.
+The payload on that line contains the persistent setup Wi-Fi password.
 Keep it private, print the QR plus text password, and attach the label before deployment.
 Development builds reprint an existing credential whenever setup starts.
 This S3 baseline uses partition layout 3. Moving from an older layout requires

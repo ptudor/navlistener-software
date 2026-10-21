@@ -151,17 +151,44 @@ done:
     return rc;
 }
 
+// The name is the navfeeder-XXXXXX identity identity_for_mac() formats, and the username
+// repeats it. Neither payload escapes anything: both alphabets exclude JSON's quote and
+// backslash and the WIFI: form's special characters (backslash ; , " :).
+static bool credentials_valid(const netcfg_setup_credentials_t *credentials)
+{
+    static const char prefix[] = "navfeeder-";
+    static const char hex[] = "0123456789ABCDEF";
+    const size_t prefix_len = sizeof prefix - 1;
+    if (!credentials ||
+        strnlen(credentials->name, NETCFG_SETUP_NAME_CAP) != prefix_len + 6 ||
+        strncmp(credentials->name, prefix, prefix_len) ||
+        strcmp(credentials->name, credentials->username) ||
+        !password_valid(credentials->password))
+        return false;
+    for (size_t i = prefix_len; i < prefix_len + 6; i++)
+        if (!strchr(hex, credentials->name[i])) return false;
+    return true;
+}
+
 esp_err_t netcfg_setup_qr_payload(const netcfg_setup_credentials_t *credentials,
                                   char *out, size_t out_cap)
 {
-    if (!credentials || !out || !out_cap || !credentials->name[0] ||
-        strcmp(credentials->name, credentials->username) ||
-        !password_valid(credentials->password))
+    if (!out || !out_cap || !credentials_valid(credentials))
         return ESP_ERR_INVALID_ARG;
     int n = snprintf(out, out_cap,
                      "{\"ver\":\"v1\",\"name\":\"%s\",\"username\":\"%s\","
                      "\"pop\":\"%s\",\"transport\":\"ble\"}",
                      credentials->name, credentials->username,
                      credentials->password);
+    return n >= 0 && (size_t)n < out_cap ? ESP_OK : ESP_ERR_INVALID_SIZE;
+}
+
+esp_err_t netcfg_setup_wifi_qr_payload(const netcfg_setup_credentials_t *credentials,
+                                       char *out, size_t out_cap)
+{
+    if (!out || !out_cap || !credentials_valid(credentials))
+        return ESP_ERR_INVALID_ARG;
+    int n = snprintf(out, out_cap, "WIFI:T:WPA;S:%s;P:%s;;",
+                     credentials->name, credentials->password);
     return n >= 0 && (size_t)n < out_cap ? ESP_OK : ESP_ERR_INVALID_SIZE;
 }

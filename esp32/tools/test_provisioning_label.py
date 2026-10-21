@@ -11,6 +11,7 @@ from unittest.mock import patch
 import provisioning_label
 
 PAYLOAD = '{"ver":"v1","name":"navfeeder-0A1B2C","username":"navfeeder-0A1B2C","pop":"abcdefghjkmn","transport":"ble"}'
+WIFI = "WIFI:T:WPA;S:navfeeder-0A1B2C;P:abcdefghjkmn;;"
 
 # Stands in for qrencode: records its argument vector, reads the payload from stdin and
 # writes an SVG that embeds it, so the test can see what reached the process and how. Shell
@@ -70,13 +71,27 @@ class LabelTests(unittest.TestCase):
                 provisioning_label.render_qr(PAYLOAD, output)
         self.assertFalse(output.exists())
 
-    def test_payload_validation(self):
-        value = provisioning_label.extract_payload("NEW SETUP LABEL: " + PAYLOAD + "\n")
-        self.assertEqual(provisioning_label.canonical(value), PAYLOAD)
+    def test_ble_payload_validation(self):
+        label = provisioning_label.extract_label("NEW SETUP LABEL: " + PAYLOAD + "\n")
+        self.assertEqual(label, provisioning_label.SetupLabel("navfeeder-0A1B2C", "abcdefghjkmn", PAYLOAD))
         for broken in (PAYLOAD.replace("abcdefghjkmn", "abcdefghjkm"), PAYLOAD.replace('"ble"', '"softap"'),
                        PAYLOAD.replace("navfeeder-0A1B2C", "navfeeder-0a1b2c", 1), "no payload here"):
             with self.assertRaises(ValueError):
-                provisioning_label.extract_payload(broken)
+                provisioning_label.extract_label(broken)
+
+    def test_wifi_payload_validation(self):
+        line = "W (2942) navfeeder: NEW SETUP LABEL — print and attach before deployment: " + WIFI + "\n"
+        label = provisioning_label.extract_label(line)
+        self.assertEqual(label, provisioning_label.SetupLabel("navfeeder-0A1B2C", "abcdefghjkmn", WIFI))
+        for broken in (WIFI.replace("abcdefghjkmn", "abcdefghjkm"),     # short password
+                       WIFI.replace("abcdefghjkmn", "abcdefghjkm0"),    # ambiguous character
+                       WIFI.replace("navfeeder-0A1B2C", "navfeeder-0a1b2c"),
+                       WIFI.replace("T:WPA", "T:nopass"),
+                       WIFI.replace(";P:", ";H:true;P:"),
+                       WIFI[:-1],                                        # unterminated
+                       "WIFI:"):
+            with self.assertRaises(ValueError, msg=broken):
+                provisioning_label.extract_label(broken)
 
 
 if __name__ == "__main__":

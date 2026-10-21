@@ -66,6 +66,13 @@ with its separate credentials.
 
 ## Bluetooth setup (iPhone and iPad)
 
+The observer firmware's S3 image has Bluetooth off: the BLE stack does not fit
+beside the setup network in the S3's internal RAM. This flow reaches only an
+observer flashed with an `NVF_BLE_PROVISIONING` build. The standard image's
+setup label is a Wi-Fi network QR, which this app does not read; set such an
+observer up by joining the network from the label and using the browser form
+described below.
+
 Choose **Set up an ESP32-S3 observer** in onboarding or Settings. Scan the physical
 setup label, or enter its device name and password. The app requires Security 2
 and the firmware's `nav-config-v1` capability. It then sends the collector's

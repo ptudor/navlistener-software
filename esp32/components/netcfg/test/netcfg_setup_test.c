@@ -82,6 +82,32 @@ int main(void)
     char tiny[8];
     assert(netcfg_setup_qr_payload(&first, tiny, sizeof tiny) == ESP_ERR_INVALID_SIZE);
 
+    char wifi[NETCFG_SETUP_QR_CAP], expected[NETCFG_SETUP_QR_CAP];
+    snprintf(expected, sizeof expected, "WIFI:T:WPA;S:navfeeder-A1B2C3;P:%s;;", first.password);
+    assert(netcfg_setup_wifi_qr_payload(&first, wifi, sizeof wifi) == ESP_OK);
+    assert(!strcmp(wifi, expected));
+    assert(netcfg_setup_wifi_qr_payload(&first, tiny, sizeof tiny) == ESP_ERR_INVALID_SIZE);
+    assert(netcfg_setup_wifi_qr_payload(&first, wifi, 0) == ESP_ERR_INVALID_ARG);
+    assert(netcfg_setup_wifi_qr_payload(NULL, wifi, sizeof wifi) == ESP_ERR_INVALID_ARG);
+
+    // Neither label escapes anything, so a credential outside the minted alphabets is
+    // refused rather than printed as a QR that names a different network or password.
+    netcfg_setup_credentials_t odd = first;
+    snprintf(odd.name, sizeof odd.name, "navfeeder-A1B2;C");
+    snprintf(odd.username, sizeof odd.username, "%s", odd.name);
+    assert(netcfg_setup_wifi_qr_payload(&odd, wifi, sizeof wifi) == ESP_ERR_INVALID_ARG);
+    assert(netcfg_setup_qr_payload(&odd, qr, sizeof qr) == ESP_ERR_INVALID_ARG);
+    odd = first;
+    snprintf(odd.name, sizeof odd.name, "navfeeder-a1b2c3");
+    snprintf(odd.username, sizeof odd.username, "%s", odd.name);
+    assert(netcfg_setup_wifi_qr_payload(&odd, wifi, sizeof wifi) == ESP_ERR_INVALID_ARG);
+    odd = first;
+    snprintf(odd.username, sizeof odd.username, "navfeeder-000000");
+    assert(netcfg_setup_qr_payload(&odd, qr, sizeof qr) == ESP_ERR_INVALID_ARG);
+    odd = first;
+    odd.password[3] = ';';
+    assert(netcfg_setup_wifi_qr_payload(&odd, wifi, sizeof wifi) == ESP_ERR_INVALID_ARG);
+
     unsigned calls_after_create = random_calls;
     created = true;
     assert(netcfg_setup_load_or_create(&loaded, mac, deterministic_random, &created) == ESP_OK);
@@ -110,6 +136,6 @@ int main(void)
            ESP_ERR_NVS_NOT_ENOUGH_SPACE);
     assert(!created && !loaded.password[0]);
 
-    puts("netcfg setup credential: create-once, stable load, QR, and corruption refusal PASS");
+    puts("netcfg setup credential: create-once, stable load, BLE and Wi-Fi QR, and corruption refusal PASS");
     return 0;
 }

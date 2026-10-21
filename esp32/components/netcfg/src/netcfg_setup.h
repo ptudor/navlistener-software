@@ -29,4 +29,9 @@ esp_err_t netcfg_setup_load_or_create(netcfg_setup_credentials_t *out,
 esp_err_t netcfg_setup_qr_payload(const netcfg_setup_credentials_t *credentials,
                                   char *out, size_t out_cap);
 
+// Wi-Fi network QR payload for the WPA2 setup SoftAP, in the WIFI: form that
+// phone cameras join directly.
+esp_err_t netcfg_setup_wifi_qr_payload(const netcfg_setup_credentials_t *credentials,
+                                       char *out, size_t out_cap);
+
 #endif
