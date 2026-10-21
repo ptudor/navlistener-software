@@ -30,6 +30,7 @@ coverage.*
 /swift/*.xcodeproj/
 /swift/build/
 /swift/IntegrityStation/Info-iOS.plist
+/swift/IntegrityStation/Station-iOS.entitlements
 /swift/IntegrityStation/Info-macOS.plist
 
 # GPL-quarantined bridge build artifact (out-of-process; never linked into the core)

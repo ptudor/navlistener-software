@@ -1,9 +1,11 @@
 // netcfg — persisted device config (NVS) + first-boot provisioning.
 //
 // Config precedence: NVS (field-provisioned) over the compiled Kconfig defaults (dev bench).
-// A factory-fresh S3 raises a WPA2 setup SoftAP with a browser form. An image built with
-// NVF_BLE_PROVISIONING also offers encrypted BLE provisioning beside it. Both capture WiFi +
-// collector + token, write one NVS transaction, and reboot into station mode.
+// A factory-fresh S3 raises a WPA2 setup SoftAP serving a browser form and, on the same web
+// server, the Station app's encrypted provisioning (ESP-IDF Unified Provisioning, Security
+// 2). An image built with NVF_BLE_PROVISIONING runs the app's provisioning over BLE instead.
+// Both paths capture WiFi + collector + token, write one NVS transaction, and reboot into
+// station mode.
 // Secrets live only in NVS, never in a committed sdkconfig (docs: config is NVS, never .env).
 
 #ifndef NETCFG_H
@@ -14,8 +16,8 @@
 #include "sdkconfig.h"
 #include "netcfg_check.h" // netcfg_t + netcfg_validate (pure, host-testable)
 
-// BLE provisioning is built only with NVF_BLE_PROVISIONING. The S3 image leaves Bluetooth
-// off: beside the SoftAP the BLE stack does not fit in internal RAM.
+// App provisioning runs over BLE only with NVF_BLE_PROVISIONING. The S3 image leaves
+// Bluetooth off: beside the SoftAP the BLE stack does not fit in internal RAM.
 #if defined(CONFIG_NVF_BLE_PROVISIONING)
 #define NETCFG_BLE_PROVISIONING 1
 #else
@@ -52,16 +54,16 @@ typedef struct {
     char password[NETCFG_PROVISIONING_PASSWORD_CAP];
     char qr_payload[NETCFG_PROVISIONING_QR_CAP];
     bool credential_created; // true only on the boot that minted the label secret
-    bool ble_active;         // false without NETCFG_BLE_PROVISIONING or if BLE failed to start
+    bool app_setup_active;   // the Station app's provisioning started (browser form either way)
 } netcfg_provisioning_info_t;
 
 // Loads or creates the persistent per-device setup credential and starts the
-// password-protected SoftAP browser portal, plus BLE with Security 2 when built
-// with NETCFG_BLE_PROVISIONING. qr_payload is the setup label: a Wi-Fi network
-// QR, or the ESP Provisioning BLE payload on a BLE build. A successful path saves
-// one complete netcfg record and schedules a reboot. The setup credential lives
-// in an independent NVS namespace and survives netcfg_reset_provisioning().
-// Non-blocking.
+// password-protected SoftAP with its browser portal and the Station app's
+// Security 2 provisioning (over BLE with NETCFG_BLE_PROVISIONING). qr_payload
+// is the setup label: a Wi-Fi network QR, or the ESP Provisioning BLE payload on
+// a BLE build. A successful path saves one complete netcfg record and schedules
+// a reboot. The setup credential lives in an independent NVS namespace and
+// survives netcfg_reset_provisioning(). Non-blocking.
 esp_err_t netcfg_start_provisioning(netcfg_provisioning_info_t *info);
 
 #ifdef __cplusplus

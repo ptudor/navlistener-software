@@ -5,6 +5,7 @@ import Testing
 @Test func setupLabelRequiresThePhysicalS3Contract() throws {
     let valid = #"{"ver":"v1","name":"navfeeder-A1B2C3","username":"navfeeder-A1B2C3","pop":"FakePass2345","transport":"ble"}"#
     #expect(try ObserverSetupLabel.parse(valid).name == "navfeeder-A1B2C3")
+    #expect(try ObserverSetupLabel.parse(valid).transport == .ble)
     for invalid in [valid.replacingOccurrences(of: "v1", with: "v2"),
                     valid.replacingOccurrences(of: "ble", with: "softap"),
                     valid.replacingOccurrences(of: "A1B2C3", with: "a1b2c3"),
@@ -12,6 +13,24 @@ import Testing
                     valid.replacingOccurrences(of: #""username":"navfeeder-A1B2C3""#, with: #""username":"different""#),
                     String(repeating: "x", count: 513)] {
         #expect(throws: (any Error).self) { try ObserverSetupLabel.parse(invalid) }
+    }
+}
+
+@Test func wifiSetupLabelCarriesTheSetupNetworkCredential() throws {
+    let valid = "WIFI:T:WPA;S:navfeeder-A1B2C3;P:FakePass2345;;"
+    let label = try ObserverSetupLabel.parse(valid)
+    #expect(label.name == "navfeeder-A1B2C3" && label.username == label.name)
+    #expect(label.pop == "FakePass2345" && label.transport == .softap)
+    for invalid in [valid.replacingOccurrences(of: "T:WPA", with: "T:nopass"),
+                    valid.replacingOccurrences(of: "A1B2C3", with: "a1b2c3"),
+                    valid.replacingOccurrences(of: "FakePass2345", with: "FakePass234"),
+                    valid.replacingOccurrences(of: "FakePass2345", with: "FakePass234!"),
+                    valid.replacingOccurrences(of: "FakePass2345", with: "Fake;Pass234"),
+                    valid.replacingOccurrences(of: ";P:", with: ";H:true;P:"),
+                    String(valid.dropLast()),
+                    "WIFI:T:WPA;S:;;",
+                    "WIFI:"] {
+        #expect(throws: (any Error).self, "\(invalid)") { try ObserverSetupLabel.parse(invalid) }
     }
 }
 
@@ -103,7 +122,7 @@ import Testing
 
 @MainActor @Suite struct ObserverProvisionerTests {
     private var label: ObserverSetupLabel {
-        ObserverSetupLabel(ver: "v1", name: "navfeeder-A1B2C3", username: "navfeeder-A1B2C3", pop: "FakePass2345", transport: "ble")
+        ObserverSetupLabel(ver: "v1", name: "navfeeder-A1B2C3", username: "navfeeder-A1B2C3", pop: "FakePass2345", transport: .softap)
     }
     private var config: ObserverSetupConfig {
         ObserverSetupConfig(host: "collector.invalid", port: 5580, stationID: "roof", enrollmentToken: "ingest-token")
@@ -271,7 +290,7 @@ PersistentKeepalive = 25
     let transport = SetupTransportStub()
     transport.supportsTunnel = true
     let setup = ObserverProvisioner(transport: transport)
-    let label = ObserverSetupLabel(ver: "v1", name: "navfeeder-A1B2C3", username: "navfeeder-A1B2C3", pop: "FakePass2345", transport: "ble")
+    let label = ObserverSetupLabel(ver: "v1", name: "navfeeder-A1B2C3", username: "navfeeder-A1B2C3", pop: "FakePass2345", transport: .softap)
     await setup.connect(label)
     #expect(setup.supportsTunnel)
     let collector = ObserverSetupConfig(host: "collector.invalid", port: 5580, stationID: "roof", enrollmentToken: "ingest-token")
@@ -284,7 +303,7 @@ PersistentKeepalive = 25
     let config = ObserverTunnelConfig(privateKey: Data(0..<32), peerPublicKey: Data(32..<64),
         presharedKey: Data(count: 32), endpointHost: "wg.collector.invalid", endpointPort: 51820,
         address: (10, 77, 0, 12), prefix: 24, collector: (10, 77, 0, 1), keepalive: 25)
-    let label = ObserverSetupLabel(ver: "v1", name: "navfeeder-A1B2C3", username: "navfeeder-A1B2C3", pop: "FakePass2345", transport: "ble")
+    let label = ObserverSetupLabel(ver: "v1", name: "navfeeder-A1B2C3", username: "navfeeder-A1B2C3", pop: "FakePass2345", transport: .softap)
     let collector = ObserverSetupConfig(host: "collector.invalid", port: 5580, stationID: "roof", enrollmentToken: "ingest-token")
 
     // The device did not advertise nav-tunnel: the profile is refused before any BLE call.

@@ -216,10 +216,11 @@ matched to `feeder/navfeeder.c`. No I/O — pure encode/parse over buffers.
 - MON-RF/MON-HW/NAV-SAT telemetry wired from `ubx` into the DATA stream (feeds the
   collector's PNT-defense layer); optional zstd request in the handshake (only if a small
   ESP32 zstd fits the SRAM budget — otherwise leave off and document).
-- `netcfg` provisioning: the S3 runs a protected SoftAP browser form. ESP-IDF
-  BLE Unified Provisioning with Security 2 is built only with
-  `NVF_BLE_PROVISIONING`, which does not fit in internal RAM beside the SoftAP
-  ([provisioning](PROVISIONING.md#bluetooth-provisioning)). Both collect
+- `netcfg` provisioning: the S3 raises a protected SoftAP that serves a browser
+  form and, on the same web server, ESP-IDF Unified Provisioning with Security 2
+  for the Station app. Running that provisioning over BLE
+  (`NVF_BLE_PROVISIONING`) does not fit in internal RAM beside the SoftAP
+  ([provisioning](PROVISIONING.md#ble-transport)). Both collect
   WiFi + collector + token and persist one validated NVS transaction. The random
   per-device setup password survives configuration reset and is recoverable from
   the physical QR/text label; the C6 retains the browser path.

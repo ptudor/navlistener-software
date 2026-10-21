@@ -1,11 +1,15 @@
 # Unreleased
 
-- The S3 observer sets up through its WPA2 setup network and browser form only;
-  Bluetooth is off. BLE provisioning beside the setup network exhausted internal
-  RAM, so an unprovisioned board reset in a loop. The setup label is now a Wi-Fi
-  network QR that a phone camera joins. BLE setup remains as the
-  `NVF_BLE_PROVISIONING` build option, which does not fit beside the setup
-  network, and the build refuses a configuration generated with Bluetooth on.
+- The S3 observer sets up over its WPA2 setup network; Bluetooth is off. BLE
+  provisioning beside the setup network exhausted internal RAM, so an
+  unprovisioned board reset in a loop. The setup label is now a Wi-Fi network QR
+  that a phone camera joins. BLE setup remains as the `NVF_BLE_PROVISIONING`
+  build option, which does not fit beside the setup network, and the build
+  refuses a configuration generated with Bluetooth on.
+- The Station app sets an observer up over that network: it reads the Wi-Fi
+  label, joins the network, and runs the same Security 2 provisioning and
+  `nav-config`, `nav-identity` and `nav-tunnel` endpoints, now served by the
+  observer on the browser form's web server.
 - The collector reads its authority tables from an optional `authority_file`.
   `navcontrol -authorities` loads the same credential-free file, so the control
   plane no longer needs the collector's DSNs or push TLS key.

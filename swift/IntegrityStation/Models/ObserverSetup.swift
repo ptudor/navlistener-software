@@ -23,25 +23,56 @@ enum ObserverSetupError: Error, LocalizedError {
 }
 
 
-/// The physical label is a recovery credential, not a collector read token.
+/// The physical label is a recovery credential, not a collector read token. The standard
+/// observer image prints a Wi-Fi network QR for its WPA2 setup network, and the app sets the
+/// observer up over that network. An `NVF_BLE_PROVISIONING` image prints the ESP Provisioning
+/// BLE payload (JSON) and is set up over Bluetooth. Both use the device name as the Security 2
+/// username and the label password as its proof of possession.
 struct ObserverSetupLabel: Decodable, Sendable {
+    enum Transport: String, Decodable, Sendable { case ble, softap }
+
     let ver: String
     let name: String
     let username: String
     let pop: String
-    let transport: String
+    let transport: Transport
 
-    static func parse(_ json: String) throws -> Self {
-        guard json.utf8.count <= 512,
-              let label = try? JSONDecoder().decode(Self.self, from: Data(json.utf8))
-        else { throw ObserverSetupError.invalidLabel }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= 512 else { throw ObserverSetupError.invalidLabel }
+        let label: Self
+        if text.hasPrefix("WIFI:") {
+            label = try wifi(text)
+        } else {
+            guard let decoded = try? JSONDecoder().decode(Self.self, from: Data(text.utf8)),
+                  decoded.transport == .ble
+            else { throw ObserverSetupError.invalidLabel }
+            label = decoded
+        }
         try label.validate()
         return label
     }
 
+    /// Exactly the firmware's `WIFI:T:WPA;S:<device>;P:<password>;;`. Neither field may hold a
+    /// character the form escapes, so the password must be ASCII letters and digits.
+    private static func wifi(_ text: String) throws -> Self {
+        let prefix = "WIFI:T:WPA;S:", separator = ";P:", suffix = ";;"
+        guard text.hasPrefix(prefix), text.hasSuffix(suffix),
+              text.utf8.count >= prefix.utf8.count + separator.utf8.count + suffix.utf8.count
+        else { throw ObserverSetupError.invalidLabel }
+        let fields = text.index(text.startIndex, offsetBy: prefix.count)
+        let end = text.index(text.endIndex, offsetBy: -suffix.count)
+        guard fields <= end, let split = text.range(of: separator, range: fields..<end)
+        else { throw ObserverSetupError.invalidLabel }
+        let name = String(text[fields..<split.lowerBound])
+        let password = String(text[split.upperBound..<end])
+        guard password.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) })
+        else { throw ObserverSetupError.invalidLabel }
+        return Self(ver: "v1", name: name, username: name, pop: password, transport: .softap)
+    }
+
     func validate() throws {
         let suffix = name.dropFirst("navfeeder-".count)
-        guard ver == "v1", transport == "ble", username == name,
+        guard ver == "v1", username == name,
               name.hasPrefix("navfeeder-"), suffix.utf8.count == 6,
               suffix.utf8.allSatisfy({ (48...57).contains($0) || (65...70).contains($0) }),
               pop.utf8.count == 12, pop.utf8.allSatisfy({ (33...126).contains($0) })

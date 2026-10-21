@@ -34,6 +34,7 @@ targets:
         excludes:
           - Info-iOS.plist
           - Info-macOS.plist
+          - Station-iOS.entitlements
     info:
       path: IntegrityStation/Info-iOS.plist
       properties:
@@ -44,11 +45,17 @@ targets:
         LSApplicationCategoryType: public.app-category.utilities
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
-        NSLocalNetworkUsageDescription: Integrity Station reads status from your GNSS collector on the local network.
+        NSLocalNetworkUsageDescription: Integrity Station reads status from your GNSS collector on the local network and sets up your GNSS observer over its setup network.
         NSBluetoothAlwaysUsageDescription: Integrity Station uses Bluetooth to securely set up your nearby GNSS observer.
         NSCameraUsageDescription: Integrity Station scans the setup label on your GNSS observer.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+    # Observer setup joins the observer's WPA2 setup network named on its label
+    # (NEHotspotConfiguration, through ESPProvision's SoftAP transport).
+    entitlements:
+      path: IntegrityStation/Station-iOS.entitlements
+      properties:
+        com.apple.developer.networking.HotspotConfiguration: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.intsat.station
@@ -69,6 +76,7 @@ targets:
         excludes:
           - Info-iOS.plist
           - Info-macOS.plist
+          - Station-iOS.entitlements
     info:
       path: IntegrityStation/Info-macOS.plist
       properties:

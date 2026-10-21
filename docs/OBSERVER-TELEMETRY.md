@@ -162,9 +162,9 @@ The M9's "no spoofing indicated" state is not proof of authentic reception; see
   by default, or 50 Hz) and the motion profile (surface by default, or aerial) are
   chosen on the setup page and kept in the `nvf_sensor` NVS namespace, which the
   network configuration reset leaves alone. One image serves every unit; the
-  reports carry the values in use. The BLE endpoints of an `NVF_BLE_PROVISIONING`
-  build do not carry them, so a unit set up that way keeps its stored values or
-  the defaults.
+  reports carry the values in use. The Station app's provisioning endpoints do
+  not carry them, so a unit set up through the app keeps its stored values or the
+  defaults.
 - MAX board MAX31856 (tag 12): K type, 4-sample averaging, continuous conversion
   every 100 ms, open-circuit detection for a source below 5 kΩ, and the unit's
   mains notch. A reading is valid only when

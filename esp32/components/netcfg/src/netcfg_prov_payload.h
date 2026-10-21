@@ -32,7 +32,7 @@ void netcfg_prov_encode_response(uint8_t out[NETCFG_PROV_RESPONSE_SIZE],
 // length byte, and its commissioned observer id: length 0 on a board with no commissioning
 // record, which must then be given a station id. The endpoint is reachable only inside the
 // Security 2 session, so the name goes to a holder of the device label, not to anyone in
-// radio range.
+// radio range or on the setup network.
 #define NETCFG_PROV_IDENTITY_MAX (5 + NVF_BOARD_OBSERVER_SIZE - 1)
 bool netcfg_prov_identity_request(const uint8_t *data, size_t size);
 // Returns the response length, or 0 when observer is NULL, not printable ASCII, or too long.

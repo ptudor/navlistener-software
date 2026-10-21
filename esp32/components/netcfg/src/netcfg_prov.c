@@ -1,4 +1,4 @@
-#include "netcfg_ble.h"
+#include "netcfg_prov.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -16,7 +16,11 @@
 #include "netcfg_tunnel.h"
 #include "sdkconfig.h"
 #include "wifi_provisioning/manager.h"
+#if NETCFG_BLE_PROVISIONING
 #include "wifi_provisioning/scheme_ble.h"
+#else
+#include "wifi_provisioning/scheme_softap.h"
+#endif
 
 #ifndef CONFIG_NVF_WIREGUARD
 #define CONFIG_NVF_WIREGUARD 0
@@ -27,7 +31,13 @@
 #define NAV_IDENTITY_ENDPOINT "nav-identity"
 #define SECURITY2_SALT_LEN 16
 
-static const char *TAG = "netcfg_ble";
+static const char *TAG = "netcfg_prov";
+
+#if NETCFG_BLE_PROVISIONING
+#define TRANSPORT_NAME "BLE"
+#else
+#define TRANSPORT_NAME "the setup network"
+#endif
 
 typedef struct {
     SemaphoreHandle_t lock;
@@ -44,15 +54,15 @@ typedef struct {
     char *salt;
     char *verifier;
     wifi_prov_security2_params_t security;
-} ble_context_t;
+} prov_context_t;
 
-static ble_context_t context;
+static prov_context_t context;
 
 static void restart_task(void *arg)
 {
     (void)arg;
-    // Let the encrypted custom-endpoint or Wi-Fi result response leave the
-    // radio before tearing down the provisioning session.
+    // Let the encrypted custom-endpoint or Wi-Fi result response reach the
+    // app before tearing down the provisioning session.
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_restart();
 }
@@ -74,12 +84,12 @@ static netcfg_prov_status_t finish_if_ready(void)
     // nav-tunnel before this save is carried in whichever order the two endpoints came.
     if (context.tunnel_received) complete.tunnel = context.tunnel;
     if (!netcfg_validate(&complete, NULL, 0)) {
-        ESP_LOGE(TAG, "complete BLE provisioning record failed validation");
+        ESP_LOGE(TAG, "complete app provisioning record failed validation");
         return NETCFG_PROV_INVALID_REQUEST;
     }
     esp_err_t err = netcfg_save(&complete);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "BLE provisioning record save failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "app provisioning record save failed: %s", esp_err_to_name(err));
         return NETCFG_PROV_STORAGE_FAILED;
     }
 
@@ -89,7 +99,7 @@ static netcfg_prov_status_t finish_if_ready(void)
     if (!context.restart_scheduled)
         ESP_LOGE(TAG, "configuration saved but restart task creation failed; power-cycle required");
     else
-        ESP_LOGI(TAG, "BLE provisioning complete; rebooting into station mode");
+        ESP_LOGI(TAG, "app provisioning complete; rebooting into station mode");
     return context.restart_scheduled ? NETCFG_PROV_SAVED_REBOOTING
                                      : NETCFG_PROV_SAVED_RESTART_REQUIRED;
 }
@@ -216,7 +226,7 @@ static void provisioning_event(void *user_data, wifi_prov_cb_event_t event,
         context.wifi_received = context.wifi_ssid[0] != '\0';
         context.wifi_connected = false;
         xSemaphoreGive(context.lock);
-        ESP_LOGI(TAG, "received Wi-Fi credentials through encrypted BLE provisioning");
+        ESP_LOGI(TAG, "received Wi-Fi credentials through encrypted app provisioning");
     } else if (event == WIFI_PROV_CRED_SUCCESS) {
         xSemaphoreTake(context.lock, portMAX_DELAY);
         context.wifi_connected = true;
@@ -230,7 +240,7 @@ static void provisioning_event(void *user_data, wifi_prov_cb_event_t event,
         xSemaphoreGive(context.lock);
         esp_err_t err = wifi_prov_mgr_reset_sm_state_on_failure();
         if (err == ESP_OK)
-            ESP_LOGW(TAG, "BLE-provided Wi-Fi credentials did not connect; client may retry");
+            ESP_LOGW(TAG, "app-provided Wi-Fi credentials did not connect; client may retry");
         else
             ESP_LOGE(TAG, "failed to reset provisioning after Wi-Fi error: %s",
                      esp_err_to_name(err));
@@ -247,11 +257,17 @@ static void cleanup_failed_start(bool manager_initialized)
     memset(&context, 0, sizeof context);
 }
 
-esp_err_t netcfg_ble_start(const netcfg_setup_credentials_t *credentials)
+esp_err_t netcfg_prov_start(const netcfg_setup_credentials_t *credentials,
+                            httpd_handle_t *portal)
 {
     if (!credentials || !credentials->name[0] || !credentials->username[0] ||
         !credentials->password[0])
         return ESP_ERR_INVALID_ARG;
+#if !NETCFG_BLE_PROVISIONING
+    if (!portal || !*portal) return ESP_ERR_INVALID_ARG;
+#else
+    (void)portal;
+#endif
     memset(&context, 0, sizeof context);
     context.lock = xSemaphoreCreateMutex();
     if (!context.lock) return ESP_ERR_NO_MEM;
@@ -277,8 +293,13 @@ esp_err_t netcfg_ble_start(const netcfg_setup_credentials_t *credentials)
     };
 
     wifi_prov_mgr_config_t manager_config = {
+#if NETCFG_BLE_PROVISIONING
         .scheme = wifi_prov_scheme_ble,
         .scheme_event_handler = WIFI_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BTDM,
+#else
+        .scheme = wifi_prov_scheme_softap,
+        .scheme_event_handler = WIFI_PROV_EVENT_HANDLER_NONE,
+#endif
         .app_event_handler = {
             .event_cb = provisioning_event,
             .user_data = NULL,
@@ -287,10 +308,18 @@ esp_err_t netcfg_ble_start(const netcfg_setup_credentials_t *credentials)
             .wifi_conn_attempts = 3,
         },
     };
+#if NETCFG_BLE_PROVISIONING
     // The stock BLE scheme switches to STA-only when credentials arrive. This
-    // product also serves its protected browser fallback, so retain APSTA for
+    // product also serves its protected browser form, so retain APSTA for
     // scans, connection attempts, and retries.
     manager_config.scheme.wifi_mode = WIFI_MODE_APSTA;
+    const char *service_key = NULL;
+#else
+    // The endpoints are registered on the setup portal's server, beside the browser form,
+    // and the scheme raises the AP named and keyed like the one the caller configured.
+    wifi_prov_scheme_softap_set_httpd_handle(portal);
+    const char *service_key = credentials->password;
+#endif
     err = wifi_prov_mgr_init(manager_config);
     if (err != ESP_OK) {
         cleanup_failed_start(false);
@@ -315,7 +344,7 @@ esp_err_t netcfg_ble_start(const netcfg_setup_credentials_t *credentials)
         (err = wifi_prov_mgr_disable_auto_stop(1000)) != ESP_OK ||
         (err = wifi_prov_mgr_start_provisioning(WIFI_PROV_SECURITY_2,
                                                 &context.security,
-                                                credentials->name, NULL)) != ESP_OK ||
+                                                credentials->name, service_key)) != ESP_OK ||
         (err = wifi_prov_mgr_endpoint_register(NAV_CONFIG_ENDPOINT,
                                                nav_config_handler, NULL)) != ESP_OK ||
         (err = wifi_prov_mgr_endpoint_register(NAV_IDENTITY_ENDPOINT,
@@ -325,13 +354,13 @@ esp_err_t netcfg_ble_start(const netcfg_setup_credentials_t *credentials)
                                                nav_tunnel_handler, NULL)) != ESP_OK ||
 #endif
         false) {
-        ESP_LOGE(TAG, "BLE provisioning manager start failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "app provisioning manager start failed: %s", esp_err_to_name(err));
         cleanup_failed_start(true);
         return err;
     }
 
-    ESP_LOGI(TAG, "BLE provisioning ready: name='%s', Security 2, endpoints='%s', '%s'%s",
-             credentials->name, NAV_CONFIG_ENDPOINT, NAV_IDENTITY_ENDPOINT,
+    ESP_LOGI(TAG, "app provisioning ready over %s: name='%s', Security 2, endpoints='%s', '%s'%s",
+             TRANSPORT_NAME, credentials->name, NAV_CONFIG_ENDPOINT, NAV_IDENTITY_ENDPOINT,
              CONFIG_NVF_WIREGUARD ? ", '" NAV_TUNNEL_ENDPOINT "'" : "");
     return ESP_OK;
 }

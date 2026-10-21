@@ -1,12 +1,12 @@
-// netcfg — NVS config + SoftAP (and, when built, BLE) provisioning. See include/netcfg.h.
+// netcfg — NVS config + SoftAP browser and Station app provisioning. See include/netcfg.h.
 
 #include "netcfg.h"
 #include "netcfg_form.h"
 #include "netcfg_portal.h"
 #include "netcfg_setup.h"
 #include "sdkconfig.h"
-#if NETCFG_BLE_PROVISIONING
-#include "netcfg_ble.h"
+#if CONFIG_NVF_BOARD_GNSS_COLOR
+#include "netcfg_prov.h"
 #endif
 #include "sensor_settings.h"
 
@@ -317,6 +317,34 @@ static esp_err_t save_post(httpd_req_t *req)
     return ESP_OK;
 }
 
+// The setup web server. Over the SoftAP, app provisioning registers its endpoints here and
+// keeps a pointer to this handle, so it lives for the rest of setup.
+static httpd_handle_t s_portal;
+
+static esp_err_t portal_start(void)
+{
+    httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
+    // save_post keeps its locals on this task's stack: body[SAVE_POST_BODY_CAP] (4 KiB),
+    // the decoder's pasted profile (1 KiB), two netcfg_t (~1.4 KiB) and scratch, and the
+    // httpd default stack is 4096 — far too tight once httpd's own frames and the NVS/log
+    // calls underneath the handler are added. Size it generously rather than heap-allocating
+    // the body (the portal runs pre-provisioning, when RAM is otherwise idle). App
+    // provisioning's Security 2 handshake runs on this task too.
+    hcfg.stack_size = 12288;
+    // The form's three routes and app provisioning's eight endpoints (five standard, three
+    // custom), with one to spare.
+    hcfg.max_uri_handlers = 12;
+    // A phone that leaves while the AP follows the station to another channel can strand
+    // its sockets; reuse the oldest rather than refuse the next connection.
+    hcfg.lru_purge_enable = true;
+    ESP_RETURN_ON_ERROR(httpd_start(&s_portal, &hcfg), TAG, "start HTTP server");
+    httpd_uri_t root = { .uri = "/", .method = HTTP_GET, .handler = root_get };
+    httpd_uri_t save = { .uri = "/save", .method = HTTP_POST, .handler = save_post };
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_portal, &root), TAG, "register setup root");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_portal, &save), TAG, "register setup save");
+    return nvf_ota_register_pairing(s_portal);
+}
+
 esp_err_t netcfg_start_provisioning(netcfg_provisioning_info_t *info)
 {
     if (!info) return ESP_ERR_INVALID_ARG;
@@ -345,8 +373,8 @@ esp_err_t netcfg_start_provisioning(netcfg_provisioning_info_t *info)
 
     ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "initialize network stack");
     ESP_RETURN_ON_ERROR(esp_event_loop_create_default(), TAG, "create event loop");
-#if NETCFG_BLE_PROVISIONING
-    // BLE provisioning verifies the submitted network by joining it as a station.
+#if CONFIG_NVF_BOARD_GNSS_COLOR
+    // App provisioning verifies the submitted network by joining it as a station.
     if (!esp_netif_create_default_wifi_sta()) return ESP_ERR_NO_MEM;
 #endif
     if (!esp_netif_create_default_wifi_ap()) return ESP_ERR_NO_MEM;
@@ -358,8 +386,8 @@ esp_err_t netcfg_start_provisioning(netcfg_provisioning_info_t *info)
     // the moment it is raised until this configuration landed. The driver accepts an
     // interface's configuration only while the mode includes that interface, and a mode
     // applied to stopped Wi-Fi raises nothing, so the order is mode, configuration, start.
-    // On a BLE build the scheme below starts Wi-Fi station-only and clears only the station
-    // credentials; the AP configuration stays in the driver until APSTA raises it.
+    // App provisioning starts Wi-Fi station-only and clears only the station credentials;
+    // the AP configuration stays in the driver until APSTA raises it.
     wifi_config_t ap = {0};
     snprintf((char *)ap.ap.ssid, sizeof ap.ap.ssid, "%s", setup.name);
     ap.ap.ssid_len = strlen(setup.name);
@@ -367,46 +395,41 @@ esp_err_t netcfg_start_provisioning(netcfg_provisioning_info_t *info)
     ap.ap.max_connection = 2;
     ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
     ap.ap.channel = 1;
-#if NETCFG_BLE_PROVISIONING
+#if CONFIG_NVF_BOARD_GNSS_COLOR
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), TAG, "select setup AP");
 #else
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_AP), TAG, "select setup AP");
 #endif
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &ap), TAG, "configure setup AP");
 
-#if NETCFG_BLE_PROVISIONING
-    err = netcfg_ble_start(&setup);
+    // The portal starts first: over the SoftAP, app provisioning adds its endpoints to it.
+    ESP_RETURN_ON_ERROR(portal_start(), TAG, "start setup HTTP server");
+
+#if CONFIG_NVF_BOARD_GNSS_COLOR
+    err = netcfg_prov_start(&setup, &s_portal);
     if (err == ESP_OK) {
-        info->ble_active = true;
+        info->app_setup_active = true;
     } else {
-        // The browser path remains usable even if the optional BLE stack cannot
-        // allocate resources or start. netcfg_ble_start leaves Wi-Fi stopped.
-        ESP_LOGE(TAG, "BLE provisioning unavailable (%s); continuing with browser fallback",
+        // The browser form remains usable even if app provisioning cannot allocate
+        // resources or start. netcfg_prov_start leaves Wi-Fi stopped, and may leave routes
+        // on the portal that lead into its freed state: replace the server.
+        ESP_LOGE(TAG, "Station app setup unavailable (%s); continuing with the browser form",
                  esp_err_to_name(err));
+        httpd_stop(s_portal);
+        s_portal = NULL;
+        ESP_RETURN_ON_ERROR(portal_start(), TAG, "restart setup HTTP server");
     }
 #endif
 
-    // With BLE active Wi-Fi is already running as a station and this raises the configured
-    // AP beside it; otherwise the AP-only mode is applied to stopped Wi-Fi and started.
-    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(info->ble_active ? WIFI_MODE_APSTA : WIFI_MODE_AP),
+    // With app provisioning active Wi-Fi is already running: over the SoftAP its scheme has
+    // raised the AP, over BLE this raises it beside the station. Otherwise the AP-only mode is
+    // applied to stopped Wi-Fi and started. The SoftAP scheme configures its AP as WPA/WPA2
+    // for five clients, so this AP's own configuration is applied again either way.
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(info->app_setup_active ? WIFI_MODE_APSTA : WIFI_MODE_AP),
                         TAG, "enable setup AP");
-    if (!info->ble_active)
+    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &ap), TAG, "configure setup AP");
+    if (!info->app_setup_active)
         ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "start setup AP");
-
-    httpd_handle_t server = NULL;
-    httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
-    // save_post keeps its locals on this task's stack: body[SAVE_POST_BODY_CAP] (4 KiB),
-    // the decoder's pasted profile (1 KiB), two netcfg_t (~1.4 KiB) and scratch, and the
-    // httpd default stack is 4096 — far too tight once httpd's own frames and the NVS/log
-    // calls underneath the handler are added. Size it generously rather than heap-allocating
-    // the body (the portal runs pre-provisioning, when RAM is otherwise idle).
-    hcfg.stack_size = 12288;
-    ESP_RETURN_ON_ERROR(httpd_start(&server, &hcfg), TAG, "start setup HTTP server");
-    httpd_uri_t root = { .uri = "/", .method = HTTP_GET, .handler = root_get };
-    httpd_uri_t save = { .uri = "/save", .method = HTTP_POST, .handler = save_post };
-    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &root), TAG, "register setup root");
-    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(server, &save), TAG, "register setup save");
-    ESP_RETURN_ON_ERROR(nvf_ota_register_pairing(server), TAG, "register OTA pairing");
 
     // The password is returned for the local display and app_main's configured
     // setup-label logging policy. Development setup boots can reprint it.

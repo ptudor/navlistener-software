@@ -9,6 +9,9 @@ struct ObserverSetupView: View {
     @State private var provisioner = ObserverProvisioner(transport: ESPObserverTransport())
     @State private var name = ""
     @State private var password = ""
+    // A scanned label names its transport; a typed name and password are the standard
+    // observer, set up over its Wi-Fi setup network.
+    @State private var labelTransport = ObserverSetupLabel.Transport.softap
     @State private var remember = false
     @State private var ssid = ""
     @State private var wifiPassword = ""
@@ -88,11 +91,12 @@ struct ObserverSetupView: View {
                     SetupLabelScanner { result in
                         scanning = false
                         switch result {
-                        case .success(let json):
+                        case .success(let payload):
                             do {
-                                let label = try ObserverSetupLabel.parse(json)
+                                let label = try ObserverSetupLabel.parse(payload)
                                 name = label.name
                                 password = label.pop
+                                labelTransport = label.transport
                                 message = nil
                             } catch { message = error.localizedDescription }
                         case .failure: message = String(localized: "setup.error.camera")
@@ -200,7 +204,7 @@ struct ObserverSetupView: View {
 
     private func connect() async {
         message = nil
-        let label = ObserverSetupLabel(ver: "v1", name: name, username: name, pop: password, transport: "ble")
+        let label = ObserverSetupLabel(ver: "v1", name: name, username: name, pop: password, transport: labelTransport)
         await provisioner.connect(label)
         guard !Task.isCancelled, provisioner.stage == .ready else { return }
         if remember {

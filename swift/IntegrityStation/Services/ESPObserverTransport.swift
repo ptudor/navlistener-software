@@ -3,7 +3,7 @@ import Foundation
 @preconcurrency import ESPProvision
 
 /// All library callbacks enter the main actor. An operation has one result even
-/// when cancellation, a late BLE callback and its deadline race each other.
+/// when cancellation, a late library callback and its deadline race each other.
 @MainActor
 private final class ProvisioningRequest<Value: Sendable> {
     private var continuation: CheckedContinuation<Value, any Error>?
@@ -37,13 +37,17 @@ private final class ProvisioningRequest<Value: Sendable> {
     }
 }
 
+/// The label chooses the transport. The standard observer is set up over its WPA2 setup
+/// network: ESPProvision joins it with `NEHotspotConfiguration` (iOS asks the operator first),
+/// then runs Security 2 over HTTP to the observer. A BLE label uses Bluetooth instead.
+///
 /// The `@preconcurrency` conformance gives the main-actor delegate witnesses
 /// a runtime isolation check, so this relies on ESPProvision 3.1.0 (pinned in
 /// project.yml) invoking `ESPDeviceConnectionDelegate` on the main queue: the
 /// BLE central is created with `queue: nil` (main), and `initialiseSession`,
 /// the only caller of `getProofOfPossesion`/`getUsername`, is reached through
-/// `DispatchQueue.main.async` in `ESPDevice.getDeviceVersionInfo`. Re-check
-/// that before moving the pin; off-main callbacks would need `nonisolated`
+/// `DispatchQueue.main.async` in `ESPDevice.getDeviceVersionInfo` on both transports.
+/// Re-check that before moving the pin; off-main callbacks would need `nonisolated`
 /// witnesses that hop to the main actor.
 @MainActor
 final class ESPObserverTransport: ObserverProvisioningTransport, @preconcurrency ESPDeviceConnectionDelegate {
@@ -61,14 +65,20 @@ final class ESPObserverTransport: ObserverProvisioningTransport, @preconcurrency
         let operation = generation
         defer { if generation == operation { onDisconnect = nil } }
         ESPProvisionManager.shared.enableLogs(false)
+        let transport = Self.transport(for: label)
         do {
-            try await ProvisioningRequest<Void>().run { complete in
+            // Joining the setup network waits for the operator to answer iOS's prompt.
+            try await ProvisioningRequest<Void>().run(seconds: transport == .softap ? 90 : 30) { complete in
                 onDisconnect = { complete(.failure(.connection)) }
-                hasStartedSearch = true
+                // Only a BLE device search is ever stopped (see disconnect()).
+                hasStartedSearch = transport == .ble
                 // Supply the password through the delegate only after proto-ver
-                // confirms Security 2 and our application capability.
-                ESPProvisionManager.shared.createESPDevice(deviceName: label.name, transport: .ble,
-                                                           security: .secure2, network: .wifi) { [weak self] device, error in
+                // confirms Security 2 and our application capability. Over the SoftAP the
+                // same label password first joins the WPA2 setup network.
+                ESPProvisionManager.shared.createESPDevice(deviceName: label.name, transport: transport,
+                                                           security: .secure2,
+                                                           softAPPassword: transport == .softap ? label.pop : nil,
+                                                           network: .wifi) { [weak self] device, error in
                     Task { @MainActor in
                         guard let self, self.generation == operation else { return }
                         guard error == nil, let device, device.name == label.name else {
@@ -177,8 +187,9 @@ final class ESPObserverTransport: ObserverProvisioningTransport, @preconcurrency
         onDisconnect = nil
         generation += 1
         ESPProvisionManager.shared.enableLogs(false)
-        // ESPProvision's stop method force-unwraps its transport. Closing the
-        // setup screen before the first scan must never call it.
+        // ESPProvision's stop method force-unwraps its BLE transport. Closing the
+        // setup screen before the first scan, or after a SoftAP setup, must never call it.
+        // Disconnecting a SoftAP device removes its network, so the phone rejoins its own.
         if hasStartedSearch {
             hasStartedSearch = false
             ESPProvisionManager.shared.stopESPDevicesSearch()
@@ -207,8 +218,16 @@ final class ESPObserverTransport: ObserverProvisioningTransport, @preconcurrency
     }
 
     private func supports(_ device: ESPDevice) -> Bool {
-        device.transport == .ble && device.security == .secure2 &&
+        guard let label else { return false }
+        return device.transport == Self.transport(for: label) && device.security == .secure2 &&
             ObserverSetupContract.supports(device.versionInfo as? [String: Any])
+    }
+
+    private static func transport(for label: ObserverSetupLabel) -> ESPTransport {
+        switch label.transport {
+        case .softap: .softap
+        case .ble: .ble
+        }
     }
 
     private func connectedDevice() throws -> ESPDevice {

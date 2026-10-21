@@ -64,20 +64,22 @@ as the website. It reads approved inventory, specifications, live conditions and
 history through revocable portal sessions. Direct collector mode remains available
 with its separate credentials.
 
-## Bluetooth setup (iPhone and iPad)
-
-The observer firmware's S3 image has Bluetooth off: the BLE stack does not fit
-beside the setup network in the S3's internal RAM. This flow reaches only an
-observer flashed with an `NVF_BLE_PROVISIONING` build. The standard image's
-setup label is a Wi-Fi network QR, which this app does not read; set such an
-observer up by joining the network from the label and using the browser form
-described below.
+## Observer setup (iPhone and iPad)
 
 Choose **Set up an ESP32-S3 observer** in onboarding or Settings. Scan the physical
-setup label, or enter its device name and password. The app requires Security 2
-and the firmware's `nav-config-v1` capability. It then sends the collector's
-feeder hostname, GNF1 TLS port, assigned station ID and enrollment token before
-submitting Wi-Fi credentials. The collector read token is a separate credential.
+setup label, or enter its device name and password. The app joins the observer's
+`navfeeder-XXYYZZ` setup network with that password, after iOS asks to allow it,
+then provisions over that network with Espressif's SoftAP transport. The app
+requires Security 2 and the firmware's `nav-config-v1` capability. It then sends
+the collector's feeder hostname, GNF1 TLS port, assigned station ID and enrollment
+token before submitting Wi-Fi credentials. The collector read token is a separate
+credential. Leaving setup removes the observer's network from the phone, which
+then rejoins its own. A label holding the ESP Provisioning BLE payload comes from
+an observer built for Bluetooth setup, and the app uses Bluetooth for it instead.
+
+Joining the setup network requires the Hotspot Configuration entitlement, which
+`project.yml` requests; with automatic signing Xcode enables the capability for
+your development team.
 
 Remembered setup passwords use a separate device-only Keychain service. The app
 does not persist Wi-Fi passwords or observer enrollment tokens. The physical
@@ -87,16 +89,17 @@ to version 3.1.0; Xcode resolves it through Swift Package Manager.
 
 With an authorized private collector connection available before configuration,
 **Check collector** confirms a new boot for the enrolled station after setup
-began, then adds the station to the app. Wi-Fi success or a Bluetooth disconnect
-alone leaves confirmation pending. If private read access is unavailable, confirm
-enrollment directly with the collector. Wi-Fi failures can be retried; reconnect
-from the setup form after a lost session.
+began, then adds the station to the app. Wi-Fi success or the observer dropping
+the setup connection alone leaves confirmation pending. If private read access is
+unavailable, confirm enrollment directly with the collector. Wi-Fi failures can be
+retried; reconnect from the setup form after a lost session.
 
 The protected browser portal remains available at `http://192.168.4.1/` after
 joining the observer's setup network with its label password. See the
 [firmware provisioning contract](../esp32/docs/PROVISIONING.md) for reset behavior.
-BLE setup needs a physical observer and an iOS device; simulator tests cover the
-protocol, setup state transitions and UI, but cannot verify radio interaction.
+Setup needs a physical observer and an iOS device: the simulator cannot join Wi-Fi
+networks. Tests cover the label, protocol, setup state transitions and UI, but not
+radio interaction.
 
 ## Build
 

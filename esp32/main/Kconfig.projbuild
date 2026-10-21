@@ -23,14 +23,15 @@ menu "navfeeder-esp"
             newly created labels. Secure Boot builds never print setup secrets.
 
     config NVF_BLE_PROVISIONING
-        bool "Offer BLE provisioning beside the setup SoftAP (does not fit)"
+        bool "Run the Station app's provisioning over BLE (does not fit)"
         depends on NVF_BOARD_GNSS_COLOR && BT_NIMBLE_ENABLED
         default n
         help
-            Advertise ESP-IDF Unified Provisioning over BLE with Security 2
-            while the WPA2 setup SoftAP and browser form also run, for the
-            Station app's Bluetooth setup. The setup label becomes the ESP
-            Provisioning BLE payload instead of a Wi-Fi network QR.
+            Run the Station app's setup (ESP-IDF Unified Provisioning with
+            Security 2) over BLE instead of over the setup SoftAP's web
+            server. The SoftAP and browser form still run. The setup label
+            becomes the ESP Provisioning BLE payload instead of a Wi-Fi
+            network QR.
 
             This does not fit in internal RAM on the universal image: starting
             BLE took 67 KB, leaving 12 KB at the setup low point even with

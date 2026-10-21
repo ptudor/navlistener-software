@@ -2,7 +2,7 @@
 //
 // Pure C (no ESP-IDF, no lwIP), for the same reason as netcfg_check and netcfg_form: the
 // profile is untrusted input. It arrives from the browser portal as pasted wg-quick(8)
-// text and from the Station app as the compact `nav-tunnel` BLE frame, and both must be
+// text and from the Station app as the compact `nav-tunnel` frame, and both must be
 // refused before anything reaches NVS. Everything here is exhaustively host-tested
 // (test/netcfg_tunnel_test.c). The firmware-side `tunnel` component consumes only the
 // validated netcfg_tunnel_t and never re-parses text.
@@ -39,7 +39,7 @@ extern "C" {
 // netcfg_tunnel_validate reports whether an enabled profile is complete: non-zero keys, an
 // endpoint host and port, an IPv4 address with a 1-32 prefix, and a collector address that
 // differs from it. netcfg_validate calls this whenever cfg->tunnel.enabled is set, so the
-// portal, the BLE endpoint and the boot path apply one rule. Reasons stay under 26 chars.
+// portal, the app endpoint and the boot path apply one rule. Reasons stay under 26 chars.
 bool netcfg_tunnel_validate(const netcfg_tunnel_t *t, char *err, size_t errcap);
 
 // netcfg_tunnel_parse_conf parses wg-quick(8) profile text into out (zeroed first).

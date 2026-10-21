@@ -2376,7 +2376,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Connect with Bluetooth"
+            "value": "Connect to observer"
           }
         }
       }
@@ -2386,7 +2386,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Bluetooth disconnected after Wi-Fi configuration. Collector confirmation is still required."
+            "value": "The observer’s setup connection closed after Wi-Fi configuration. Collector confirmation is still required."
           }
         }
       }
@@ -2416,7 +2416,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Could not connect to the observer. Check Bluetooth, device power, and the setup label, then reconnect."
+            "value": "Could not connect to the observer. Check device power and the setup label, allow iOS to join the observer’s setup network, then reconnect."
           }
         }
       }
@@ -2496,7 +2496,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Power the observer and keep its setup label nearby. Bluetooth setup is available while the observer is unprovisioned."
+            "value": "Power the observer and keep its setup label nearby. Setup is available while the observer is unprovisioned, and iOS asks to join the observer’s setup network."
           }
         }
       }
@@ -2606,7 +2606,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "If Bluetooth setup is unavailable, join the observer’s navfeeder-XXYYZZ Wi-Fi network using the password on its label, then open the setup portal. Holding BOOT for eight seconds clears operating settings and preserves the setup password."
+            "value": "If app setup is unavailable, join the observer’s navfeeder-XXYYZZ Wi-Fi network using the password on its label, then open the setup portal at http://192.168.4.1/. Holding BOOT for eight seconds clears operating settings and preserves the setup password."
           }
         }
       }

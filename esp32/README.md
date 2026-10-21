@@ -98,10 +98,10 @@ the defaults applies PSRAM and OTA settings. Check that the generated S3 config 
 `NVF_SPOOL_PSRAM`, `NVF_OTA` and `BOOTLOADER_APP_ROLLBACK_ENABLE`, with
 `PARTITION_TABLE_OFFSET=0x10000`, and leaves Bluetooth off. The build refuses a
 configuration generated before Bluetooth was turned off; start such a build
-directory afresh. Startup runs on a 12288-byte main task stack
-(`ESP_MAIN_TASK_STACK_SIZE`), which a BLE provisioning build requires: its
-controller and Security 2 overflow the 3584-byte IDF default. Startup logs the
-minimum free stack space before the main task returns and releases its stack.
+directory afresh. Startup, including the Security 2 verifier for app setup, runs
+on a 12288-byte main task stack (`ESP_MAIN_TASK_STACK_SIZE`); it peaked at about
+6.4 KB on the bench, beyond the 3584-byte IDF default. Startup logs the minimum
+free stack space before the main task returns and releases its stack.
 The committed `dependencies.lock` resolves the S3, including its optional tunnel
 components. Archive the resolved lock with firmware provenance. Firmware builds
 share the managed-component directory and must run sequentially.
@@ -443,13 +443,13 @@ the firmware boots, brings up the constellation LED panel, runs the clean-room
 UBX framer, spools frames, and pushes them to the collector over GNF1/TLS. Config is NVS-first (`netcfg`), falling back to the compiled Kconfig defaults.
 
 **Provisioning a fresh board (no serial console):** the custom S3 raises the
-password-protected AP `navfeeder-XXYYZZ`. Scan the label's Wi-Fi QR with a phone
-camera, or join the network with the password printed on the label, then open
-`http://192.168.4.1/` and submit WiFi, the collector, the station and the
-enrollment token. The form writes one validated NVS record and reboots into
-station mode. Bluetooth setup from the Station app needs an
-`NVF_BLE_PROVISIONING` build, which does not fit in internal RAM beside the
-setup AP. The firmware/Swift/label contract is [documented here](docs/PROVISIONING.md). (For
+password-protected AP `navfeeder-XXYYZZ`. Scan the label's Wi-Fi QR in the
+Station app, which joins that network and sends WiFi, the collector, the station
+and the enrollment token over ESP-IDF Security 2 provisioning. Or join the
+network with a phone camera or the password printed on the label, then open
+`http://192.168.4.1/` and submit the same settings in the browser form. Either
+path writes one validated NVS record and reboots into station mode. Bluetooth
+is off. The firmware/Swift/label contract is [documented here](docs/PROVISIONING.md). (For
 development, configuration can still be pre-seeded through `idf.py menuconfig`
 → "navfeeder-esp".)
 
@@ -628,9 +628,9 @@ public endpoint for at least 60 seconds before retrying the tunnel. GNF1/TLS
 is unchanged inside the tunnel, so the collector still authenticates the bearer token and the observer still
 verifies the collector's certificate against its configured hostname.
 
-Provision a profile by pasting a wg-quick `.conf` into the browser form (or, on a
-BLE build, through the Station app's `nav-tunnel` endpoint); the profile format
-and how to generate one are in [PROVISIONING.md](docs/PROVISIONING.md#wireguard-profile).
+Provision a profile through the Station app's `nav-tunnel` endpoint or by pasting
+a wg-quick `.conf` into the browser form; the profile format and how to generate
+one are in [PROVISIONING.md](docs/PROVISIONING.md#wireguard-profile).
 Notable properties:
 
 - **IPv4 only, one collector.** `AllowedIPs` names exactly the collector's tunnel
@@ -806,7 +806,7 @@ requires explicit configuration erasure/reprovisioning; old firmware cannot
 interpret this format or its reset flag.
 
 The independent `nvf_setup/credential_v1` record contains the random setup
-password of the setup AP (and of BLE Security 2 on a BLE build). It is created once, checked
+password of the setup AP and of the app's Security 2 session. It is created once, checked
 against the device name and CRC on every setup boot, and deliberately survives
 the logical reset above. Corruption fails closed so firmware cannot silently
 replace the secret behind an already printed label. A full NVS partition erase

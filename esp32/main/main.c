@@ -529,9 +529,9 @@ void app_main(void)
     // Start its task before the unprovisioned path returns to the portal.
     config_reset_start();
     if (!provisioned) {
-        // Setup raises the WPA2 SoftAP and its browser portal, named and keyed by the
-        // persistent setup credential on the physical label. A BLE build also advertises
-        // encrypted BLE provisioning beside it.
+        // Setup raises the WPA2 SoftAP, named and keyed by the persistent setup credential on
+        // the physical label, with its browser portal and the Station app's encrypted
+        // provisioning. A BLE build runs the app's provisioning over BLE instead.
         netcfg_provisioning_info_t setup;
         if (netcfg_start_provisioning(&setup) == ESP_OK) {
             status_led_state(LED_BOOT);
@@ -541,12 +541,14 @@ void app_main(void)
             display_show_portal(setup.name, setup.password, cfg_err);
 #if NETCFG_BLE_PROVISIONING
             ESP_LOGW(TAG, "unprovisioned (%s): %s; browser fallback AP '%s' at http://192.168.4.1/",
-                     cfg_err, setup.ble_active ? "scan the device label in the Station app"
-                                               : "BLE unavailable",
+                     cfg_err, setup.app_setup_active ? "scan the device label in the Station app"
+                                                     : "BLE unavailable",
                      setup.name);
 #else
-            ESP_LOGW(TAG, "unprovisioned (%s): join setup AP '%s' with the label password, "
-                          "then open http://192.168.4.1/", cfg_err, setup.name);
+            ESP_LOGW(TAG, "unprovisioned (%s): scan the device label in the Station app, or join "
+                          "setup AP '%s' with the label password and open http://192.168.4.1/%s",
+                     cfg_err, setup.name,
+                     setup.app_setup_active ? "" : " (Station app setup unavailable)");
 #endif
 #if !defined(CONFIG_SECURE_BOOT) || !CONFIG_SECURE_BOOT
             if (!esp_secure_boot_enabled() && setup.credential_created) {
