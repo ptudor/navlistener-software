@@ -281,8 +281,10 @@ python tools/bench_check.py --port /dev/cu.usbmodem… --build-dir build/s3-layo
     --station bench-1 --flash
 ```
 
-`--flash` writes the build's bootloader, partition table and application first; it
-never erases, so the setup credential and configuration survive. The tool prints
+`--flash` writes what the build's `flash_args` lists first: the bootloader,
+partition table, application and initial OTA data, which makes the board boot the
+application just written. It never erases, so NVS, with the setup credential and
+configuration, survives. The tool prints
 each check, exits 0 when the board passed and 1 when it failed, and writes
 `report.json` and the console capture, both mode 0600, into a new directory under
 the build directory. The capture can hold the setup password and stays on the

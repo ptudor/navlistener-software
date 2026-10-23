@@ -2,8 +2,9 @@
 """Bench-test one ESP32-S3 observer and write its bench report (docs/FLEET-REPORTS.md).
 
 The tool resets the board through its USB port, reads the console for a window and
-judges only what the firmware printed. With --flash it first writes the build's
-images, the bootloader, partition table and application, without erasing NVS. Run it
+judges only what the firmware printed. With --flash it first writes what the build's
+flash_args lists (bootloader, partition table, application and initial OTA data), never
+erasing NVS. Run it
 in the ESP-IDF Python environment, which provides esptool and pyserial.
 
 Before a board is provisioned its console prints the setup label, which holds the setup
