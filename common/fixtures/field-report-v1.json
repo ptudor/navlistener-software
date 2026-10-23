@@ -24,7 +24,7 @@
           }
         },
         {
-          "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+          "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
           "hardware_trust": "none",
           "commissioning_fingerprint": null,
           "last_seen": "2026-10-20T08:00:00Z",
@@ -94,7 +94,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -130,7 +130,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -166,7 +166,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -202,7 +202,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -238,7 +238,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -274,7 +274,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -310,7 +310,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -346,7 +346,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -382,7 +382,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -418,7 +418,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -513,7 +513,7 @@
             ]
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -540,7 +540,7 @@
             "firmware": "0.1.0+1.b8e037c"
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -576,7 +576,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -612,7 +612,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -648,7 +648,43 @@
             }
           },
           {
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+            "hardware_trust": "none",
+            "commissioning_fingerprint": null,
+            "last_seen": "2026-10-20T08:00:00Z",
+            "firmware": null,
+            "update": null
+          }
+        ]
+      }
+    },
+    {
+      "why": "erased board identity",
+      "document": {
+        "format": "navlistener-field-report-v1",
+        "report_id": "6c5b1f0e-8d1a-4c4e-9f7a-2b3c4d5e6f70",
+        "manufacturer_authority_id": "example-manufacturing",
+        "collector_instance_id": "collector-1",
+        "generated_at": "2026-10-23T14:00:05Z",
+        "boards": [
+          {
             "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "hardware_trust": "trusted",
+            "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+            "last_seen": "2026-10-23T13:00:00Z",
+            "firmware": "0.1.0+1.b8e037c",
+            "update": {
+              "channel": "stable",
+              "mode": "install",
+              "state": "idle",
+              "trust_profile": "trusted",
+              "running_release": "17",
+              "failed_release": "0",
+              "error": "OK"
+            }
+          },
+          {
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -684,7 +720,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -720,7 +756,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -756,7 +792,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
             "last_seen": "2026-10-20T08:00:00Z",
@@ -792,7 +828,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -828,7 +864,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -864,7 +900,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -900,7 +936,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -936,7 +972,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -972,7 +1008,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -1000,7 +1036,7 @@
             "update": "idle"
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -1037,7 +1073,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -1072,7 +1108,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -1108,7 +1144,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -1144,7 +1180,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -1180,7 +1216,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -1216,7 +1252,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -1252,7 +1288,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -1288,7 +1324,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -1324,7 +1360,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -1360,7 +1396,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -1396,7 +1432,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",
@@ -1432,7 +1468,7 @@
             }
           },
           {
-            "observer_id": "board-0004-ffffffffffffffffffffffffffffffff",
+            "observer_id": "board-0004-a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
             "hardware_trust": "none",
             "commissioning_fingerprint": null,
             "last_seen": "2026-10-20T08:00:00Z",

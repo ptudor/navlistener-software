@@ -1094,6 +1094,72 @@
       }
     },
     {
+      "why": "observer id erased",
+      "document": {
+        "format": "navlistener-bench-report-v1",
+        "tool": "bench_check.py 1",
+        "station": "bench-1",
+        "started_at": "2026-10-23T14:02:11Z",
+        "finished_at": "2026-10-23T14:02:49Z",
+        "board": {
+          "observer_id": "board-0003-ffffffffffffffffffffffffffffffff",
+          "mcu_mac": "02a1b2c3d4e5"
+        },
+        "firmware": {
+          "image_sha256": "3f1e5a0c9b2d47e8a6c1f0b3d5e7a9c2b4d6f8e0a1c3e5b7d9f1a3c5e7b9d1f3",
+          "app_version": "0.1.0+1.b8e037c",
+          "project_revision": "b8e037c4a1d2e3f405162738495a6b7c8d9e0f1a",
+          "project_dirty": false,
+          "idf_revision": "v5.5.4",
+          "target": "esp32s3"
+        },
+        "checks": [
+          {
+            "name": "firmware.image",
+            "result": "pass",
+            "detail": "ELF SHA-256 d4249998a matches the build"
+          },
+          {
+            "name": "boot",
+            "result": "pass",
+            "detail": "one boot, no panic"
+          },
+          {
+            "name": "board_uid",
+            "result": "pass",
+            "detail": "board-0003-00112233445566778899aabbccddeeff"
+          },
+          {
+            "name": "mcu_mac",
+            "result": "pass",
+            "detail": "02:a1:b2:c3:d4:e5"
+          },
+          {
+            "name": "atecc",
+            "result": "pass",
+            "detail": "ATECC608C revision 00006005, CRC verified"
+          },
+          {
+            "name": "i2c:temperature@0x18",
+            "result": "pass",
+            "detail": "ESP_OK"
+          },
+          {
+            "name": "receiver",
+            "result": "skip",
+            "detail": "no receiver verdict within 30 s"
+          },
+          {
+            "name": "setup",
+            "result": "pass",
+            "detail": "setup network and app provisioning ready"
+          }
+        ],
+        "result": "pass",
+        "console_sha256": "9a7c5e3b1d9f7a5c3e1b9d7f5a3c1e9b7d5f3a1c9e7b5d3f1a9c7e5b3d1f9a7c"
+      }
+    },
+    {
       "why": "observer id in upper case",
       "document": {
         "format": "navlistener-bench-report-v1",

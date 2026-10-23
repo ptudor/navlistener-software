@@ -133,7 +133,7 @@ def valid_observer_id(value: object) -> bool:
     if not isinstance(value, str):
         return False
     match = OBSERVER_ID.fullmatch(value)
-    return bool(match) and match.group(1) != "0" * 32
+    return bool(match) and match.group(1) not in ("0" * 32, "f" * 32)  # blank or erased
 
 
 def _detail(text: str) -> str:

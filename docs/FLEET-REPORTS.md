@@ -63,7 +63,7 @@ document and refuses every invalid one.
 | `tool` | The program and its version, 1–64 characters |
 | `station` | The bench's own name: 1–64 of `A–Z a–z 0–9 . _ -`, starting with a letter or digit |
 | `started_at`, `finished_at` | `finished_at` is not before `started_at`, and at most one hour after it |
-| `board.observer_id` | The board identity the firmware read from its identity EEPROM ([BOARD-IDENTITY.md](BOARD-IDENTITY.md)), or `null` when it read none |
+| `board.observer_id` | The board identity the firmware read from its identity EEPROM, under the same rule as a field report's `observer_id`, or `null` when it read none |
 | `board.mcu_mac` | The microcontroller's factory MAC as 12 hex digits, read from its ROM bootloader, or `null` |
 | `firmware.image_sha256` | SHA-256 of the application image the bench wrote: the build's `firmware_sha256` provenance |
 | `firmware.app_version` | The version the booted image printed, 1–32 characters, or `null` when none was printed |
@@ -141,7 +141,7 @@ The window defaults to 30 seconds.
 | `collector_instance_id` | The collector's `[collector] instance_id`, under the same rule, or `null` when it has none |
 | `generated_at` | When the collector built the report |
 | `boards` | 0–10,000 boards with distinct `observer_id`s. An empty list says the collector is reporting and has none of this manufacturer's boards |
-| `observer_id` | A board identity, `board-0003-…` or `board-0004-…` with 32 hex digits, not all zero |
+| `observer_id` | A board identity ([BOARD-IDENTITY.md](BOARD-IDENTITY.md)), `board-0003-…` or `board-0004-…` with 32 hex digits, neither all zero nor all `f` (erased) |
 | `hardware_trust` | `none`, `open`, `test` or `trusted`: the collector's verdict for the board's latest session |
 | `commissioning_fingerprint` | SHA-256 of the commissioning record the collector verified, or `null` exactly when `hardware_trust` is `none` |
 | `last_seen` | The hour of the collector's latest receipt from the board, with minutes and seconds zero |
